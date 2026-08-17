@@ -12,13 +12,20 @@ export type SectionState =
 
 export type ColumnPos = Readonly<{ x: number; z: number }>;
 export type Vec2 = Readonly<{ x: number; z: number }>;
-export type WorkRequest = Readonly<{
+type WorkRequestBase = Readonly<{
   key: string;
   epoch: number;
   priority: number;
   editVersion: number;
-  kind: 'generate' | 'mesh';
 }>;
+export type GenerateWorkRequest = WorkRequestBase & Readonly<{
+  kind: 'generate';
+}>;
+export type MeshWorkRequest = WorkRequestBase & Readonly<{
+  kind: 'mesh';
+  section: VoxelSection;
+}>;
+export type WorkRequest = GenerateWorkRequest | MeshWorkRequest;
 export type GeneratedSection = Readonly<{
   key: string;
   epoch: number;

@@ -1,7 +1,9 @@
 import { PriorityWorkQueue } from './priority-queue';
 import type {
   ColumnPos,
+  GenerateWorkRequest,
   GeneratedSection,
+  MeshWorkRequest,
   MeshedSection,
   SectionState,
   UploadJob,
@@ -15,11 +17,25 @@ type SectionRecord = {
   editVersion: number;
   priority: number;
   state: SectionState;
+  section?: GeneratedSection['section'];
 };
+
+export type StreamControllerOptions = Readonly<{
+  editVersionForKey?: (key: string) => number;
+}>;
 
 const DEFAULT_SECTION_Y = 0;
 const MINIMUM_UPLOAD_COST_MS = 1;
 const BYTES_PER_UPLOAD_MILLISECOND = 64 * 1024;
+const ALLOWED_TRANSITIONS: Readonly<Record<SectionState, readonly SectionState[]>> = {
+  absent: ['queued'],
+  queued: ['generating'],
+  generating: ['meshing'],
+  meshing: ['uploadQueued'],
+  uploadQueued: ['visible'],
+  visible: [],
+  evicting: [],
+};
 
 function sectionKey(column: ColumnPos): string {
   return `${column.x},${DEFAULT_SECTION_Y},${column.z}`;
@@ -47,6 +63,11 @@ export class StreamController {
   private readonly sections = new Map<string, SectionRecord>();
   private readonly lastEpochByKey = new Map<string, number>();
   private readonly uploads: UploadJob[] = [];
+  private readonly editVersionForKey: (key: string) => number;
+
+  constructor(options: StreamControllerOptions = {}) {
+    this.editVersionForKey = options.editVersionForKey ?? (() => 0);
+  }
 
   requestVisibleColumns(center: ColumnPos, velocity: Vec2, radius: number): void {
     const desired = new Set<string>();
@@ -72,14 +93,14 @@ export class StreamController {
       const record: SectionRecord = {
         key,
         epoch: (this.lastEpochByKey.get(key) ?? 0) + 1,
-        editVersion: 0,
+        editVersion: this.currentEditVersion(key),
         priority: this.priorityFor(center, velocity, column),
         state: 'absent',
       };
       this.lastEpochByKey.set(key, record.epoch);
       this.transition(record, 'absent', 'queued');
       this.sections.set(key, record);
-      this.workQueue.enqueue(this.requestFor(record, 'generate'));
+      this.workQueue.enqueue(this.generateRequestFor(record));
     }
   }
 
@@ -91,8 +112,14 @@ export class StreamController {
       if (request.kind === 'generate') {
         if (record.state !== 'queued') continue;
         this.transition(record, 'queued', 'generating');
-      } else if (record.state !== 'meshing') {
-        continue;
+      } else {
+        if (
+          record.state !== 'meshing' ||
+          record.section !== request.section ||
+          request.section.editVersion !== request.editVersion
+        ) {
+          continue;
+        }
       }
       return request;
     }
@@ -102,16 +129,21 @@ export class StreamController {
   acceptGenerated(result: GeneratedSection): boolean {
     const record = this.sections.get(result.key);
     if (!record || !this.matches(record, result) || record.state !== 'generating') return false;
+    if (this.currentEditVersion(result.key) !== result.editVersion) return false;
+    if (result.section.editVersion !== result.editVersion) return false;
+    record.section = result.section;
     this.transition(record, 'generating', 'meshing');
-    this.workQueue.enqueue(this.requestFor(record, 'mesh'));
+    this.workQueue.enqueue(this.meshRequestFor(record, result.section));
     return true;
   }
 
   acceptMeshed(result: MeshedSection): boolean {
     const record = this.sections.get(result.key);
     if (!record || !this.matches(record, result) || record.state !== 'meshing') return false;
+    if (this.currentEditVersion(result.key) !== result.editVersion) return false;
     if (result.mesh.sourceVersion !== result.editVersion) return false;
     this.transition(record, 'meshing', 'uploadQueued');
+    record.section = undefined;
     this.uploads.push({
       key: result.key,
       editVersion: result.editVersion,
@@ -149,18 +181,29 @@ export class StreamController {
     );
   }
 
-  private requestFor(record: SectionRecord, kind: WorkRequest['kind']): WorkRequest {
+  private generateRequestFor(record: SectionRecord): GenerateWorkRequest {
     return {
       key: record.key,
       epoch: record.epoch,
       priority: record.priority,
       editVersion: record.editVersion,
-      kind,
+      kind: 'generate',
+    };
+  }
+
+  private meshRequestFor(record: SectionRecord, section: GeneratedSection['section']): MeshWorkRequest {
+    return {
+      key: record.key,
+      epoch: record.epoch,
+      priority: record.priority,
+      editVersion: record.editVersion,
+      kind: 'mesh',
+      section,
     };
   }
 
   private transition(record: SectionRecord, from: SectionState, to: SectionState): void {
-    if (record.state !== from) {
+    if (record.state !== from || !ALLOWED_TRANSITIONS[from].includes(to)) {
       throw new Error(`Illegal state transition for ${record.key}: ${record.state} to ${to}`);
     }
     record.state = to;
@@ -176,5 +219,9 @@ export class StreamController {
     for (let index = this.uploads.length - 1; index >= 0; index -= 1) {
       if (this.uploads[index].key === key) this.uploads.splice(index, 1);
     }
+  }
+
+  private currentEditVersion(key: string): number {
+    return this.editVersionForKey(key);
   }
 }

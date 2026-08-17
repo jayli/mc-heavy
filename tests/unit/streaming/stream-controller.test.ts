@@ -21,6 +21,12 @@ function requestedStream(): StreamController {
   return stream;
 }
 
+function sectionAtVersion(version: number): VoxelSection {
+  let section = VoxelSection.filled({ x: 0, y: 0, z: 0 }, 0);
+  for (let index = 0; index < version; index += 1) section = section.set(index, 1);
+  return section;
+}
+
 function take(stream: StreamController, kind: WorkRequest['kind']): WorkRequest {
   const request = stream.takeWork();
   expect(request).toMatchObject({ kind });
@@ -47,19 +53,45 @@ function queueUpload(stream: StreamController): void {
 
 describe('StreamController', () => {
   it('rejects a mesh result whose editVersion is older than the loaded section', () => {
-    const stream = requestedStream();
+    const section = sectionAtVersion(2);
+    const stream = new StreamController({ editVersionForKey: () => section.editVersion });
+    stream.requestVisibleColumns({ x: 0, z: 0 }, { x: 0, z: 0 }, 0);
     const generate = take(stream, 'generate');
     expect(
       stream.acceptGenerated({
         key: generate.key,
         epoch: generate.epoch,
         editVersion: generate.editVersion,
-        section: VoxelSection.filled({ x: 0, y: 0, z: 0 }, 1),
+        section,
       }),
     ).toBe(true);
     const mesh = take(stream, 'mesh');
 
-    expect(stream.acceptMeshed({ ...mesh, editVersion: mesh.editVersion - 1, mesh: emptyMesh() })).toBe(false);
+    expect(mesh.editVersion).toBe(2);
+    expect(stream.acceptMeshed({ ...mesh, editVersion: 1, mesh: emptyMesh(1) })).toBe(false);
+  });
+
+  it('hands the accepted generated section to the mesh work request', () => {
+    const section = sectionAtVersion(2);
+    const stream = new StreamController({ editVersionForKey: () => section.editVersion });
+    stream.requestVisibleColumns({ x: 0, z: 0 }, { x: 0, z: 0 }, 0);
+    const generate = take(stream, 'generate');
+    expect(stream.acceptGenerated({ ...generate, section })).toBe(true);
+
+    const mesh = take(stream, 'mesh');
+    if (mesh.kind !== 'mesh') throw new Error('expected mesh work');
+    expect(mesh.section).toBe(section);
+  });
+
+  it('does not hand a cancelled generated section to a replacement request', () => {
+    const stream = requestedStream();
+    const generate = take(stream, 'generate');
+    expect(stream.acceptGenerated({ ...generate, section: sectionAtVersion(0) })).toBe(true);
+    stream.requestVisibleColumns({ x: 1, z: 0 }, { x: 0, z: 0 }, 0);
+
+    const replacement = take(stream, 'generate');
+    expect(replacement).toMatchObject({ key: '1,0,0', kind: 'generate' });
+    expect(replacement).not.toHaveProperty('section');
   });
 
   it('rejects an obsolete generation callback after its column was cancelled and requested again', () => {
@@ -101,5 +133,20 @@ describe('StreamController', () => {
 
     expect(stream.drainUploads(0.5)).toEqual([]);
     expect(stream.drainUploads(1)).toHaveLength(1);
+  });
+
+  it('throws with the section key when an illegal lifecycle edge is attempted', () => {
+    const stream = new StreamController();
+    const internals = stream as unknown as {
+      transition(
+        record: { key: string; state: 'absent' },
+        from: 'absent',
+        to: 'visible',
+      ): void;
+    };
+
+    expect(() => internals.transition({ key: 'illegal,0,edge', state: 'absent' }, 'absent', 'visible')).toThrow(
+      'illegal,0,edge',
+    );
   });
 });
