@@ -8,11 +8,14 @@ export const PLAYER_BELOW_POSITION = 1;
 export const PLAYER_ABOVE_POSITION = 0.8;
 
 const WALK_SPEED = 4;
+const LOOK_SENSITIVITY = 0.002;
+const HALF_PI = Math.PI / 2;
 const COLLISION_EPSILON = 0.0001;
 
 export class PlayerController {
   private positionValue: Vec3;
-  private facingValue: HorizontalDirection = { x: 0, z: -1 };
+  private yawValue = 0;
+  private pitchValue = 0;
 
   constructor(
     private readonly world: WorldQuery,
@@ -25,8 +28,45 @@ export class PlayerController {
     return Object.freeze({ ...this.positionValue });
   }
 
+  get yaw(): number {
+    return this.yawValue;
+  }
+
+  get pitch(): number {
+    return this.pitchValue;
+  }
+
   get facing(): HorizontalDirection {
-    return Object.freeze({ ...this.facingValue });
+    return Object.freeze({
+      x: -Math.sin(this.yawValue) + 0,
+      z: -Math.cos(this.yawValue),
+    });
+  }
+
+  get viewDirection(): Vec3 {
+    const facing = this.facing;
+    const horizontal = Math.cos(this.pitchValue);
+    return Object.freeze({
+      x: facing.x * horizontal,
+      y: Math.sin(this.pitchValue),
+      z: facing.z * horizontal,
+    });
+  }
+
+  setLook(yaw: number, pitch: number): void {
+    if (!Number.isFinite(yaw) || !Number.isFinite(pitch)) {
+      throw new Error('Player look values must be finite');
+    }
+    this.yawValue = yaw;
+    this.pitchValue = clampPitch(pitch);
+  }
+
+  turn(deltaYawPixels: number, deltaPitchPixels: number): void {
+    if (!Number.isFinite(deltaYawPixels) || !Number.isFinite(deltaPitchPixels)) {
+      throw new Error('Player turn deltas must be finite');
+    }
+    this.yawValue += deltaYawPixels * LOOK_SENSITIVITY;
+    this.pitchValue = clampPitch(this.pitchValue - deltaPitchPixels * LOOK_SENSITIVITY);
   }
 
   setFacing(direction: HorizontalDirection): void {
@@ -34,7 +74,9 @@ export class PlayerController {
     if (!Number.isFinite(length) || length === 0) {
       throw new Error('Player facing direction must be finite and non-zero');
     }
-    this.facingValue = { x: direction.x / length, z: direction.z / length };
+    const x = direction.x / length;
+    const z = direction.z / length;
+    this.yawValue = Math.atan2(-x, -z);
   }
 
   step(input: Readonly<{ x: number; z: number }>, dtSeconds: number): Vec3 {
@@ -46,7 +88,6 @@ export class PlayerController {
       x: (input.x / inputLength) * WALK_SPEED * dtSeconds,
       z: (input.z / inputLength) * WALK_SPEED * dtSeconds,
     };
-    this.setFacing({ x: movement.x, z: movement.z });
     const afterX = { ...this.positionValue, x: this.moveAlongX(movement.x) };
     this.positionValue = { ...afterX, z: this.moveAlongZ(afterX, movement.z) };
     return this.position;
@@ -117,3 +158,5 @@ export class PlayerController {
     return false;
   }
 }
+
+const clampPitch = (pitch: number): number => Math.max(-HALF_PI, Math.min(HALF_PI, pitch));

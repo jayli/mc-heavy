@@ -50,4 +50,61 @@ describe('PlayerController', () => {
     expect(position.x).toBeGreaterThan(0.69);
     expect(position.x).toBeLessThan(0.7);
   });
+
+  it('defaults to a level look facing negative z', () => {
+    const player = new PlayerController(new InMemoryWorld(), { x: 0.5, y: 1, z: 0.5 });
+
+    expect(player.yaw).toBe(0);
+    expect(player.pitch).toBe(0);
+    expect(player.facing).toEqual({ x: 0, z: -1 });
+    expect(player.viewDirection).toEqual({ x: 0, y: 0, z: -1 });
+  });
+
+  it('looks straight up at pitch pi/2 and clamps out-of-range pitch', () => {
+    const player = new PlayerController(new InMemoryWorld(), { x: 0.5, y: 1, z: 0.5 });
+
+    player.setLook(0, Math.PI / 2);
+    const direction = player.viewDirection;
+    expect(direction.x).toBeCloseTo(0);
+    expect(direction.y).toBeCloseTo(1);
+    expect(direction.z).toBeCloseTo(0);
+    expect(player.pitch).toBe(Math.PI / 2);
+
+    player.setLook(0.5, 2);
+    expect(player.pitch).toBe(Math.PI / 2);
+    player.setLook(0.5, -2);
+    expect(player.pitch).toBe(-Math.PI / 2);
+  });
+
+  it('turns by the literal 0.002 radians per pixel sensitivity', () => {
+    const player = new PlayerController(new InMemoryWorld(), { x: 0.5, y: 1, z: 0.5 });
+
+    player.turn(100, -100);
+
+    expect(player.yaw).toBeCloseTo(0.2, 5);
+    expect(player.pitch).toBeCloseTo(0.2, 5);
+  });
+
+  it('derives yaw from setFacing and stops overwriting look from movement input', () => {
+    const player = new PlayerController(new InMemoryWorld(), { x: 0.5, y: 1, z: 0.5 });
+
+    player.setFacing({ x: 1, z: 0 });
+    expect(player.yaw).toBeCloseTo(-Math.PI / 2, 5);
+    expect(player.facing.x).toBeCloseTo(1);
+    expect(player.facing.z).toBeCloseTo(0);
+
+    player.step({ x: 0, z: -1 }, 0.25);
+
+    expect(player.facing.x).toBeCloseTo(1);
+    expect(player.facing.z).toBeCloseTo(0);
+    expect(player.yaw).toBeCloseTo(-Math.PI / 2, 5);
+  });
+
+  it('rejects non-finite look values and turn deltas', () => {
+    const player = new PlayerController(new InMemoryWorld(), { x: 0.5, y: 1, z: 0.5 });
+
+    expect(() => player.setLook(Number.NaN, 0)).toThrow('finite');
+    expect(() => player.setLook(0, Number.POSITIVE_INFINITY)).toThrow('finite');
+    expect(() => player.turn(Number.NaN, 0)).toThrow('finite');
+  });
 });

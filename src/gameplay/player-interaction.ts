@@ -10,7 +10,9 @@ import {
   PlayerController,
 } from './player-controller';
 
-const INTERACTION_REACH = 6;
+// The playable phase has no gravity yet, so the player floats at y=50 above the
+// terrain (16..32) and structures (tops up to y=43). Reach must span that gap.
+const INTERACTION_REACH = 64;
 
 export class PlayerInteraction {
   constructor(

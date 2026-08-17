@@ -27,6 +27,7 @@ const BYTES_PER_UPLOAD_MILLISECOND = 64 * 1_024;
 export type GameApp = Readonly<{
   player: PlayerController;
   placeForTest(pos: BlockPos, block: string): void;
+  readBlockForTest(pos: BlockPos): string;
 }>;
 
 export type GameAppOptions = Readonly<{
@@ -77,10 +78,62 @@ export async function createGameApp(
 
   const player = new PlayerController(world, { x: 0.5, y: CAMERA_HEIGHT, z: 0.5 });
   const inventory = new Inventory();
+  // A stack above one keeps the five fixed hotbar slots stable while playing.
+  inventory.add(1, 64);
+  inventory.add(2, 64);
+  inventory.add(4, 64);
+  inventory.add(5, 64);
+  inventory.add(7, 64);
   const interaction = new PlayerInteraction(inventory, player);
   const metrics = new FrameMetrics();
   const hud = new GameHud(ownerDocument);
   container.append(hud.element);
+
+  const crosshair = ownerDocument.createElement('div');
+  crosshair.dataset.testid = 'crosshair';
+  crosshair.style.cssText = [
+    'position:fixed',
+    'left:50%',
+    'top:50%',
+    'width:6px',
+    'height:6px',
+    'transform:translate(-50%,-50%)',
+    'border:1px solid rgba(255,255,255,.85)',
+    'border-radius:50%',
+    'z-index:2',
+    'pointer-events:none',
+  ].join(';');
+  container.append(crosshair);
+
+  const pointerLockHint = ownerDocument.createElement('div');
+  pointerLockHint.dataset.testid = 'pointer-lock-hint';
+  pointerLockHint.textContent = 'Click to play';
+  pointerLockHint.style.cssText = [
+    'position:fixed',
+    'inset:0',
+    'display:flex',
+    'align-items:center',
+    'justify-content:center',
+    'z-index:3',
+    'background:rgba(8,12,18,.55)',
+    'color:#fff',
+    'font:18px system-ui',
+    'pointer-events:none',
+  ].join(';');
+  container.append(pointerLockHint);
+
+  const hotbar = ownerDocument.createElement('div');
+  hotbar.dataset.testid = 'hotbar';
+  hotbar.style.cssText = [
+    'position:fixed',
+    'left:50%',
+    'bottom:16px',
+    'transform:translateX(-50%)',
+    'display:flex',
+    'gap:4px',
+    'z-index:2',
+  ].join(';');
+  container.append(hotbar);
 
   const uploadedVersions = new Map<string, number>();
   const uploadQueue = new RenderUploadQueue();
@@ -90,7 +143,31 @@ export async function createGameApp(
   let previousFrameMs: number | undefined;
   let previousPosition = player.position;
   let lastHudUpdateMs = Number.NEGATIVE_INFINITY;
+  let inputActive = false;
   const pressedKeys = new Set<string>();
+
+  const updateHotbar = (): void => {
+    const selectedBlockId = inventory.selected()?.blockId ?? null;
+    const cells = inventory.slots().map((slot, index) => {
+      const cell = ownerDocument.createElement('div');
+      cell.dataset.testid = `hotbar-slot-${index + 1}`;
+      cell.dataset.selected = String(slot.blockId === selectedBlockId);
+      cell.textContent = blockById(slot.blockId).key;
+      cell.style.cssText = [
+        'min-width:44px',
+        'padding:6px 10px',
+        'border:1px solid rgba(255,255,255,.4)',
+        'border-radius:4px',
+        'background:rgba(8,12,18,.7)',
+        'color:#fff',
+        'font:12px system-ui',
+        'text-align:center',
+      ].join(';');
+      return cell;
+    });
+    hotbar.replaceChildren(...cells);
+  };
+  updateHotbar();
 
   const placeForTest = (pos: BlockPos, block: string): void => {
     const definition = blockByKey(block);
@@ -115,18 +192,73 @@ export async function createGameApp(
       container.append(output);
     }
     output.textContent = result;
+    updateHotbar();
   };
 
-  const game: GameApp = Object.freeze({ player, placeForTest });
+  const readBlockForTest = (pos: BlockPos): string => blockById(world.getBlock(pos)).key;
+
+  const game: GameApp = Object.freeze({ player, placeForTest, readBlockForTest });
 
   const onKeyDown = (event: KeyboardEvent): void => {
     pressedKeys.add(event.key.toLowerCase());
+    if (event.code.startsWith('Digit')) {
+      const slot = Number(event.code.slice('Digit'.length));
+      if (slot >= 1 && slot <= 9 && inventory.selectSlot(slot - 1)) updateHotbar();
+    }
   };
   const onKeyUp = (event: KeyboardEvent): void => {
     pressedKeys.delete(event.key.toLowerCase());
   };
+  const onMouseMove = (event: MouseEvent): void => {
+    if (!inputActive) return;
+    player.turn(event.movementX, event.movementY);
+  };
+  const onMouseDown = (event: MouseEvent): void => {
+    if (!inputActive) return;
+    if (event.button === 0) {
+      interaction.breakBlock(world, player.position, player.viewDirection);
+      updateHotbar();
+    } else if (event.button === 2) {
+      const selected = inventory.selected();
+      if (selected) {
+        interaction.placeBlock(world, player.position, player.viewDirection, selected.blockId);
+        updateHotbar();
+      }
+    }
+  };
+  const onWheel = (event: WheelEvent): void => {
+    if (!inputActive) return;
+    if (event.deltaY > 0) inventory.selectNext();
+    else if (event.deltaY < 0) inventory.selectPrevious();
+    updateHotbar();
+  };
+  const onContextMenu = (event: MouseEvent): void => {
+    if (!inputActive) return;
+    event.preventDefault();
+  };
+  const onCanvasClick = (event: MouseEvent): void => {
+    if (event.button !== 0) return;
+    inputActive = true;
+    try {
+      const lockRequest = canvas.requestPointerLock?.();
+      if (lockRequest && typeof (lockRequest as PromiseLike<unknown>).then === 'function') {
+        (lockRequest as Promise<unknown>).catch(() => undefined);
+      }
+    } catch {
+      // Pointer lock is best-effort; input still works through the active flag.
+    }
+  };
+  const onPointerLockChange = (): void => {
+    pointerLockHint.hidden = ownerDocument.pointerLockElement === canvas;
+  };
   ownerWindow.addEventListener('keydown', onKeyDown);
   ownerWindow.addEventListener('keyup', onKeyUp);
+  ownerWindow.addEventListener('mousemove', onMouseMove);
+  ownerWindow.addEventListener('wheel', onWheel);
+  ownerWindow.addEventListener('pointerlockchange', onPointerLockChange);
+  canvas.addEventListener('mousedown', onMouseDown);
+  canvas.addEventListener('contextmenu', onContextMenu);
+  canvas.addEventListener('click', onCanvasClick);
 
   const stop = (): void => {
     if (stopped) return;
@@ -134,6 +266,12 @@ export async function createGameApp(
     ownerWindow.cancelAnimationFrame(frameRequest);
     ownerWindow.removeEventListener('keydown', onKeyDown);
     ownerWindow.removeEventListener('keyup', onKeyUp);
+    ownerWindow.removeEventListener('mousemove', onMouseMove);
+    ownerWindow.removeEventListener('wheel', onWheel);
+    ownerWindow.removeEventListener('pointerlockchange', onPointerLockChange);
+    canvas.removeEventListener('mousedown', onMouseDown);
+    canvas.removeEventListener('contextmenu', onContextMenu);
+    canvas.removeEventListener('click', onCanvasClick);
     renderer.dispose();
     world.dispose();
   };
@@ -186,11 +324,10 @@ export async function createGameApp(
       uploadedVersions,
       RENDER_UPLOAD_BUDGET_MS,
     ).uploadedBytes;
-    const facing = player.facing;
     renderer.render({
       camera: {
         position,
-        direction: { x: facing.x, y: -0.45, z: facing.z },
+        direction: player.viewDirection,
         aspect: canvas.clientHeight > 0 ? canvas.clientWidth / canvas.clientHeight : 1,
       },
       timeMs: timestampMs,
@@ -199,6 +336,7 @@ export async function createGameApp(
 
     if (timestampMs - lastHudUpdateMs >= HUD_UPDATE_INTERVAL_MS) {
       lastHudUpdateMs = timestampMs;
+      updateHotbar();
       const streaming = world.streamingDiagnostics();
       const rendering = renderer.diagnostics();
       hud.update({

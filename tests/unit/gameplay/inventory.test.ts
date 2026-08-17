@@ -29,4 +29,45 @@ describe('Inventory', () => {
     expect(inventory.remove(1, 2)).toBe(false);
     expect(inventory.selected()).toEqual({ blockId: 1, count: 1 });
   });
+
+  it('lists stone, grass, sand, wood and glass in insertion order with selection', () => {
+    const inventory = new Inventory();
+    inventory.add(1, 1);
+    inventory.add(2, 1);
+    inventory.add(4, 1);
+    inventory.add(5, 1);
+    inventory.add(7, 1);
+
+    expect(inventory.slots()).toEqual([
+      { blockId: 1, count: 1 },
+      { blockId: 2, count: 1 },
+      { blockId: 4, count: 1 },
+      { blockId: 5, count: 1 },
+      { blockId: 7, count: 1 },
+    ]);
+    expect(inventory.selected()).toEqual({ blockId: 1, count: 1 });
+    expect(inventory.select(4)).toBe(true);
+    expect(inventory.selected()).toEqual({ blockId: 4, count: 1 });
+    expect(inventory.select(99)).toBe(false);
+    expect(inventory.selected()).toEqual({ blockId: 4, count: 1 });
+  });
+
+  it('selects by slot index and cycles next and previous with wrapping', () => {
+    const inventory = new Inventory();
+    inventory.add(1, 1);
+    inventory.add(2, 1);
+    inventory.add(4, 1);
+
+    expect(inventory.selectSlot(2)).toBe(true);
+    expect(inventory.selected()).toEqual({ blockId: 4, count: 1 });
+    inventory.selectNext();
+    expect(inventory.selected()).toEqual({ blockId: 1, count: 1 });
+    inventory.selectPrevious();
+    expect(inventory.selected()).toEqual({ blockId: 4, count: 1 });
+
+    expect(inventory.selectSlot(3)).toBe(false);
+    expect(inventory.selectSlot(-1)).toBe(false);
+    expect(inventory.selectSlot(1.5)).toBe(false);
+    expect(inventory.selected()).toEqual({ blockId: 4, count: 1 });
+  });
 });
