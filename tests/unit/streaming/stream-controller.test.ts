@@ -54,6 +54,20 @@ function queueUpload(stream: StreamController): void {
 }
 
 describe('StreamController', () => {
+  it('requests every configured vertical section for a visible column', () => {
+    const stream = new StreamController(freshWorldEditVersion);
+
+    stream.requestVisibleColumns({ x: 0, z: 0 }, { x: 0, z: 0 }, 0, [0, 1, 2]);
+
+    const keys: string[] = [];
+    let work = stream.takeWork();
+    while (work) {
+      keys.push(work.key);
+      work = stream.takeWork();
+    }
+    expect(new Set(keys)).toEqual(new Set(['0,0,0', '0,1,0', '0,2,0']));
+  });
+
   it('requests a square footprint so radius one covers all nine columns', () => {
     const stream = new StreamController(freshWorldEditVersion);
     stream.requestVisibleColumns({ x: 0, z: 0 }, { x: 0, z: 0 }, 1);
@@ -225,6 +239,19 @@ describe('StreamController', () => {
     stream.requestVisibleColumns({ x: 0, z: 0 }, { x: 1, z: 0 }, 2);
 
     expect(stream.peekPriority({ x: 2, z: 0 })).toBeGreaterThan(stream.peekPriority({ x: -2, z: 0 }));
+  });
+
+  it('re-scores queued work when velocity reverses without changing the visible footprint', () => {
+    const stream = new StreamController(freshWorldEditVersion);
+    stream.requestVisibleColumns({ x: 0, z: 0 }, { x: 1, z: 0 }, 2);
+    expect(stream.peekPriority({ x: 2, z: 0 })).toBeGreaterThan(stream.peekPriority({ x: -2, z: 0 }));
+
+    stream.requestVisibleColumns({ x: 0, z: 0 }, { x: -1, z: 0 }, 2);
+
+    expect(stream.peekPriority({ x: -2, z: 0 })).toBeGreaterThan(stream.peekPriority({ x: 2, z: 0 }));
+    expect(stream.takeWork()?.key).toBe('-1,0,0');
+    expect(stream.takeWork()?.key).toBe('0,0,0');
+    expect(stream.takeWork()?.key).toBe('-1,0,-1');
   });
 
   it('returns no more jobs than fit in the declared upload budget', () => {

@@ -15,7 +15,7 @@ import { InMemoryWorld, type BlockEdit, type VoxelHit, type WorldQuery } from '.
 
 const DEFAULT_VIEW_RADIUS = 8;
 const SPAWN_RADIUS = 1;
-const CANONICAL_SECTION_Y = 0;
+const STREAM_SECTION_YS = [0, 1, 2] as const;
 const ALL_UPLOADS_BUDGET_MS = Number.POSITIVE_INFINITY;
 const MAX_WORK_PER_BATCH = 8;
 
@@ -32,7 +32,7 @@ export type WorkerFailure = Readonly<{
 }>;
 
 const sectionKey = ({ x, y, z }: SectionPos): string => `${x},${y},${z}`;
-const columnKey = ({ x, z }: ColumnPos): string => `${x},${CANONICAL_SECTION_Y},${z}`;
+const columnKey = ({ x, z }: ColumnPos, y: number): string => `${x},${y},${z}`;
 const localCoordinate = (value: number): number => ((value % SECTION_SIZE) + SECTION_SIZE) % SECTION_SIZE;
 
 function sectionPosFromKey(key: string): SectionPos {
@@ -46,7 +46,7 @@ function desiredKeys(center: ColumnPos, radius: number): Set<string> {
   const integerRadius = Math.max(0, Math.floor(radius));
   for (let dz = -integerRadius; dz <= integerRadius; dz += 1) {
     for (let dx = -integerRadius; dx <= integerRadius; dx += 1) {
-      keys.add(columnKey({ x: center.x + dx, z: center.z + dz }));
+      for (const y of STREAM_SECTION_YS) keys.add(columnKey({ x: center.x + dx, z: center.z + dz }, y));
     }
   }
   return keys;
@@ -114,7 +114,7 @@ export class WorldService implements WorldQuery {
     this.assertActive();
     const requested = desiredKeys(center, SPAWN_RADIUS);
     this.setVisibility(center, { x: 0, z: 0 }, SPAWN_RADIUS);
-    this.stream.requestVisibleColumns(center, { x: 0, z: 0 }, SPAWN_RADIUS);
+    this.stream.requestVisibleColumns(center, { x: 0, z: 0 }, SPAWN_RADIUS, STREAM_SECTION_YS);
     await this.pumpPipeline();
     if (requested.size !== this.desired.size || [...requested].some((key) => !this.desired.has(key))) {
       throw new Error('Spawn preparation was superseded by a newer visibility request');
@@ -131,16 +131,26 @@ export class WorldService implements WorldQuery {
       z: Math.floor(player.z / SECTION_SIZE),
     };
     this.setVisibility(center, velocity, this.viewRadius);
-    this.stream.requestVisibleColumns(center, velocity, this.viewRadius);
+    this.stream.requestVisibleColumns(center, velocity, this.viewRadius, STREAM_SECTION_YS);
     void this.pumpPipeline().catch(() => undefined);
   }
 
   loadedColumns(): readonly ColumnPos[] {
-    return [...this.visibleMeshes.keys()]
-      .map(sectionPosFromKey)
-      .filter((pos) => pos.y === CANONICAL_SECTION_Y)
-      .map(({ x, z }) => ({ x, z }))
+    const columns = new Map<string, ColumnPos>();
+    for (const key of this.visibleMeshes.keys()) {
+      const { x, z } = sectionPosFromKey(key);
+      columns.set(`${x},${z}`, { x, z });
+    }
+    return [...columns.values()]
       .sort((a, b) => a.z - b.z || a.x - b.x);
+  }
+
+  loadedSectionKeys(): readonly string[] {
+    return [...this.visibleMeshes.keys()].sort((left, right) => {
+      const a = sectionPosFromKey(left);
+      const b = sectionPosFromKey(right);
+      return a.z - b.z || a.x - b.x || a.y - b.y;
+    });
   }
 
   cachedSectionCount(): number {
@@ -177,6 +187,10 @@ export class WorldService implements WorldQuery {
 
   visibleMeshFor(key: string): OpaqueMesh | undefined {
     return this.visibleMeshes.get(key)?.mesh;
+  }
+
+  sectionPriorityFor(key: string): number {
+    return this.stream.priorityForKey(key);
   }
 
   handleWorkerFailure(failure: WorkerFailure): boolean {
@@ -219,13 +233,15 @@ export class WorldService implements WorldQuery {
         this.editsBySection.set(key, sectionEdits);
       }
       sectionEdits.set(localIndex(edit.pos), edit.blockId);
-      if (pos.y !== CANONICAL_SECTION_Y) continue;
       const localX = localCoordinate(edit.pos.x);
+      const localY = localCoordinate(edit.pos.y);
       const localZ = localCoordinate(edit.pos.z);
       if (localX === 0) haloConsumers.add(sectionKey({ x: pos.x - 1, y: pos.y, z: pos.z }));
       if (localX === SECTION_SIZE - 1) haloConsumers.add(sectionKey({ x: pos.x + 1, y: pos.y, z: pos.z }));
       if (localZ === 0) haloConsumers.add(sectionKey({ x: pos.x, y: pos.y, z: pos.z - 1 }));
       if (localZ === SECTION_SIZE - 1) haloConsumers.add(sectionKey({ x: pos.x, y: pos.y, z: pos.z + 1 }));
+      if (localY === 0) haloConsumers.add(sectionKey({ x: pos.x, y: pos.y - 1, z: pos.z }));
+      if (localY === SECTION_SIZE - 1) haloConsumers.add(sectionKey({ x: pos.x, y: pos.y + 1, z: pos.z }));
     }
     for (const key of editedKeys) this.incrementPersistentVersion(key);
     for (const key of haloConsumers) this.incrementTransientVersion(key);
@@ -291,6 +307,7 @@ export class WorldService implements WorldQuery {
         continue;
       }
 
+      this.pendingMeshes.sort((left, right) => this.stream.priorityForKey(right.key) - this.stream.priorityForKey(left.key));
       const meshBatch = this.pendingMeshes.splice(0, MAX_WORK_PER_BATCH)
         .filter((request) => this.stream.isCurrentWork(request));
       if (meshBatch.length === 0) {
@@ -409,6 +426,8 @@ export class WorldService implements WorldQuery {
     for (const neighbor of [
       { x: x - 1, y, z },
       { x: x + 1, y, z },
+      { x, y: y - 1, z },
+      { x, y: y + 1, z },
       { x, y, z: z - 1 },
       { x, y, z: z + 1 },
     ]) {
@@ -423,13 +442,13 @@ export class WorldService implements WorldQuery {
     if (!this.haloRefreshNeeded || !this.visibility) return;
     this.haloRefreshNeeded = false;
     const { center, velocity, radius } = this.visibility;
-    this.stream.requestVisibleColumns(center, velocity, radius);
+    this.stream.requestVisibleColumns(center, velocity, radius, STREAM_SECTION_YS);
   }
 
   private refreshVisibilityNow(): void {
     if (!this.visibility) return;
     const { center, velocity, radius } = this.visibility;
-    this.stream.requestVisibleColumns(center, velocity, radius);
+    this.stream.requestVisibleColumns(center, velocity, radius, STREAM_SECTION_YS);
   }
 
   private incrementPersistentVersion(key: string): void {

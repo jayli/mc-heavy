@@ -86,22 +86,45 @@ function crashOnceWorkerFactory(): Readonly<{
 }
 
 describe('WorldService worker integration', () => {
-  it('makes all nine spawn columns queryable before resolving prepareSpawn', async () => {
-    const world = new WorldService({ seed: 123, workerFactory: createInProcessWorkerFactory() });
+  it('makes all 27 spawn sections queryable before resolving prepareSpawn', async () => {
+    const world = new WorldService({ seed: 42, workerFactory: createInProcessWorkerFactory() });
 
     await world.prepareSpawn({ x: 0, z: 0 });
 
     expect(world.loadedColumns()).toHaveLength(9);
+    expect(world.loadedSectionKeys()).toEqual([
+      '-1,0,-1', '-1,1,-1', '-1,2,-1',
+      '0,0,-1', '0,1,-1', '0,2,-1',
+      '1,0,-1', '1,1,-1', '1,2,-1',
+      '-1,0,0', '-1,1,0', '-1,2,0',
+      '0,0,0', '0,1,0', '0,2,0',
+      '1,0,0', '1,1,0', '1,2,0',
+      '-1,0,1', '-1,1,1', '-1,2,1',
+      '0,0,1', '0,1,1', '0,2,1',
+      '1,0,1', '1,1,1', '1,2,1',
+    ]);
     const loaded = world.loadedBlockAt({ x: 0, y: 0, z: 0 });
     const queriesBefore = world.streamingDiagnostics().loadedSectionQueries;
-    expect(loaded).toBeDefined();
+    expect(loaded).toBe(1);
     expect(world.getBlock({ x: 0, y: 0, z: 0 })).toBe(loaded);
     expect(world.streamingDiagnostics().loadedSectionQueries).toBe(queriesBefore + 1);
-    expect(world.isSolid({ x: 0, y: 0, z: 0 })).toBe(true);
+    expect(world.getBlock({ x: 0, y: 17, z: 0 })).toBe(4);
+    expect(world.getBlock({ x: 0, y: 25, z: 0 })).toBe(0);
+    expect(world.isSolid({ x: 0, y: 17, z: 0 })).toBe(true);
     const rayQueriesBefore = world.streamingDiagnostics().loadedSectionQueries;
     expect(world.raycast({ x: 0.5, y: 0.5, z: 0.5 }, { x: 0, y: 0, z: 0 }, 1)).not.toBeNull();
     expect(world.streamingDiagnostics().loadedSectionQueries).toBeGreaterThan(rayQueriesBefore);
-    expect(world.visibleMeshFor('0,0,0')?.indices).toHaveLength(12);
+    expect(world.visibleMeshFor('0,1,0')?.indices.length).toBeGreaterThan(0);
+    world.dispose();
+  });
+
+  it('streams a tower column so a section above the terrain surface has a non-empty mesh', async () => {
+    const world = new WorldService({ seed: 42, workerFactory: createInProcessWorkerFactory() });
+
+    await world.prepareSpawn({ x: 3, z: 12 });
+
+    expect(world.getBlock({ x: 53, y: 40, z: 207 })).toBe(1);
+    expect(world.visibleMeshFor('3,2,12')?.indices.length).toBeGreaterThan(0);
     world.dispose();
   });
 
@@ -127,7 +150,7 @@ describe('WorldService worker integration', () => {
     const edgeAfter = world.visibleMeshFor('1,0,0');
     expect(edgeAfter).not.toBe(edgeBefore);
     expect(edgeAfter?.sourceVersion).toBe(1);
-    expect(edgeAfter?.indices).toHaveLength(12);
+    expect(edgeAfter?.indices).toHaveLength(6);
     world.dispose();
   });
 
@@ -138,8 +161,8 @@ describe('WorldService worker integration', () => {
     await world.prepareSpawn({ x: 1, z: 0 });
 
     expect(world.loadedColumns()).toHaveLength(9);
-    expect(world.cachedSectionCount()).toBe(9);
-    expect(world.visibleMeshFor('0,0,0')?.indices).toHaveLength(18);
+    expect(world.cachedSectionCount()).toBe(27);
+    expect(world.visibleMeshFor('0,0,0')?.indices).toHaveLength(12);
     world.dispose();
   });
 
@@ -183,7 +206,7 @@ describe('WorldService worker integration', () => {
     await expect(world.prepareSpawn({ x: 0, z: 0 })).rejects.toThrow('worker crashed');
     await world.prepareSpawn({ x: 0, z: 0 });
 
-    expect(world.visibleMeshFor('0,0,1')?.indices).toHaveLength(18);
+    expect(world.visibleMeshFor('0,0,1')?.indices).toHaveLength(12);
     world.dispose();
   });
 
@@ -263,16 +286,16 @@ describe('WorldService worker integration', () => {
     for (let x = 0; x < 20; x += 1) await world.prepareSpawn({ x, z: 0 });
 
     expect(world.streamingDiagnostics()).toMatchObject({
-      cachedSections: 9,
-      visibleMeshes: 9,
+      cachedSections: 27,
+      visibleMeshes: 27,
       failures: 0,
       persistentEditVersions: 1,
       pendingMeshes: 0,
       queuedWork: 0,
       tombstones: 0,
-      sectionRecords: 9,
+      sectionRecords: 27,
     });
-    expect(world.streamingDiagnostics().transientVersions).toBeLessThanOrEqual(9);
+    expect(world.streamingDiagnostics().transientVersions).toBeLessThanOrEqual(27);
 
     await world.prepareSpawn({ x: 0, z: 0 });
     expect(world.loadedBlockAt({ x: 0, y: 0, z: 0 })).toBe(0);
@@ -290,5 +313,28 @@ describe('WorldService worker integration', () => {
       tombstones: 0,
       sectionRecords: 0,
     });
-  }, 10_000);
+  }, 30_000);
+
+  it('re-scores queued mesh work toward the reversed velocity direction', async () => {
+    const world = new WorldService({ seed: 42, viewRadius: 2, workerFactory: createInProcessWorkerFactory() });
+    world.updateStreaming({ x: 0.5, y: 40, z: 0.5 }, { x: 1, z: 0 });
+    await waitFor(() => world.streamingDiagnostics().pendingMeshes >= 8);
+
+    world.updateStreaming({ x: 0.5, y: 40, z: 0.5 }, { x: -1, z: 0 });
+    await waitFor(() => {
+      const diagnostics = world.streamingDiagnostics();
+      return diagnostics.queuedWork === 0 && diagnostics.pendingMeshes === 0;
+    });
+
+    expect(world.sectionPriorityFor('-2,0,0')).toBeGreaterThan(world.sectionPriorityFor('2,0,0'));
+    world.dispose();
+  }, 30_000);
 });
+
+async function waitFor(predicate: () => boolean, timeoutMs = 20_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error('Timed out waiting for streaming to settle');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}

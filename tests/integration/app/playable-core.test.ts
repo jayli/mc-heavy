@@ -21,13 +21,13 @@ test('bounds renderer pages to loaded columns and reports physical-frustum visib
   await page.goto('/');
   await page.getByText('World ready').waitFor();
   await expect(page.getByTestId('worker-queue')).toHaveText('Worker queue: 0', { timeout: 30_000 });
+  await expect(page.getByTestId('render-pages')).toHaveText('Render pages: 27', { timeout: 30_000 });
 
   const initial = await page.evaluate(() => ({
     pages: Number(document.querySelector('[data-testid="render-pages"]')?.textContent?.split(': ')[1]),
     visible: Number(document.querySelector('[data-testid="visible-sections"]')?.textContent?.split(': ')[1]),
   }));
-  expect(initial.pages).toBeGreaterThan(0);
-  expect(initial.pages).toBeLessThanOrEqual(289);
+  expect(initial.pages).toBe(27);
   expect(initial.visible).toBeLessThan(initial.pages);
 
   await page.evaluate(() => window.game!.player.step({ x: 1, z: 0 }, 100));
@@ -35,5 +35,5 @@ test('bounds renderer pages to loaded columns and reports physical-frustum visib
   await expect(page.getByTestId('worker-queue')).toHaveText('Worker queue: 0', { timeout: 30_000 });
 
   const pagesAfterTravel = await page.getByTestId('render-pages').textContent();
-  expect(Number(pagesAfterTravel?.split(': ')[1])).toBeLessThanOrEqual(289);
+  expect(Number(pagesAfterTravel?.split(': ')[1])).toBeLessThanOrEqual(867);
 });

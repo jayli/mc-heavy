@@ -16,6 +16,17 @@ export class PriorityWorkQueue {
     this.nextSequence += 1;
   }
 
+  updatePriority(key: string, epoch: number, priority: number): boolean {
+    const index = this.entries.findIndex((entry) => entry.request.key === key && entry.request.epoch === epoch);
+    if (index < 0) return false;
+    const entry = this.entries[index];
+    this.entries[index] = {
+      sequence: entry.sequence,
+      request: { ...entry.request, priority },
+    };
+    return true;
+  }
+
   cancel(key: string, epoch: number): void {
     if (this.entries.some((entry) => entry.request.key === key && entry.request.epoch === epoch)) {
       this.tombstones.add(cancellationKey(key, epoch));

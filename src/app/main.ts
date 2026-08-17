@@ -18,7 +18,7 @@ import {
 } from './render-upload-queue';
 
 const DEFAULT_SEED = 0x5eed_1234;
-const CAMERA_HEIGHT = 40;
+const CAMERA_HEIGHT = 50;
 const HUD_UPDATE_INTERVAL_MS = 250;
 const RENDER_UPLOAD_BUDGET_MS = 2;
 const MINIMUM_UPLOAD_COST_MS = 1;
@@ -275,15 +275,14 @@ function updateRenderUploads(
   uploadedVersions: Map<string, number>,
   budgetMs: number,
 ): RenderUploadDrain {
-  const loadedKeys = new Set(world.loadedColumns().map(({ x, z }) => `${x},0,${z}`));
+  const loadedKeys = new Set(world.loadedSectionKeys());
   renderer.retainPages(loadedKeys);
   uploadQueue.retain(loadedKeys);
   for (const key of uploadedVersions.keys()) {
     if (!loadedKeys.has(key)) uploadedVersions.delete(key);
   }
 
-  for (const { x, z } of world.loadedColumns()) {
-    const key = `${x},0,${z}`;
+  for (const key of world.loadedSectionKeys()) {
     const mesh = world.visibleMeshFor(key);
     if (!mesh || uploadedVersions.get(key) === mesh.sourceVersion) continue;
     const bytes = meshByteLength(mesh);

@@ -28,6 +28,16 @@ describe('PriorityWorkQueue', () => {
     expect(queue.take()?.key).toBe('second');
   });
 
+  it('updates the priority of a matching queued epoch in place', () => {
+    const queue = new PriorityWorkQueue();
+    queue.enqueue({ key: 'old-front', epoch: 1, priority: 100, editVersion: 0, kind: 'generate' });
+    queue.enqueue({ key: 'new-front', epoch: 2, priority: 10, editVersion: 0, kind: 'generate' });
+
+    expect(queue.updatePriority('new-front', 2, 200)).toBe(true);
+
+    expect(queue.take()).toMatchObject({ key: 'new-front', priority: 200 });
+  });
+
   it('skips a cancelled epoch without cancelling a later epoch for the same key', () => {
     const queue = new PriorityWorkQueue();
     queue.enqueue({ key: '0,0,0', epoch: 1, priority: 100, editVersion: 0, kind: 'generate' });

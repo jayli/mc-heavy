@@ -22,7 +22,7 @@ type SectionRecord = {
 
 export type EditVersionForKey = (key: string) => number;
 
-const DEFAULT_SECTION_Y = 0;
+const DEFAULT_SECTION_YS = [0] as const;
 const MINIMUM_UPLOAD_COST_MS = 1;
 const BYTES_PER_UPLOAD_MILLISECOND = 64 * 1024;
 const ALLOWED_TRANSITIONS: Readonly<Record<SectionState, readonly SectionState[]>> = {
@@ -35,13 +35,13 @@ const ALLOWED_TRANSITIONS: Readonly<Record<SectionState, readonly SectionState[]
   evicting: [],
 };
 
-function sectionKey(column: ColumnPos): string {
-  return `${column.x},${DEFAULT_SECTION_Y},${column.z}`;
+function sectionKey(column: ColumnPos, y: number): string {
+  return `${column.x},${y},${column.z}`;
 }
 
 function columnForKey(key: string): ColumnPos | null {
   const [x, y, z, ...rest] = key.split(',');
-  if (rest.length !== 0 || Number(y) !== DEFAULT_SECTION_Y) return null;
+  if (rest.length !== 0 || !Number.isInteger(Number(y))) return null;
   const column = { x: Number(x), z: Number(z) };
   return Number.isInteger(column.x) && Number.isInteger(column.z) ? column : null;
 }
@@ -67,17 +67,33 @@ export class StreamController {
     this.editVersionForKey = editVersionForKey;
   }
 
-  requestVisibleColumns(center: ColumnPos, velocity: Vec2, radius: number): void {
+  requestVisibleColumns(
+    center: ColumnPos,
+    velocity: Vec2,
+    radius: number,
+    sectionYs: readonly number[] = DEFAULT_SECTION_YS,
+  ): void {
     const desired = new Set<string>();
     const integerRadius = Math.max(0, Math.floor(radius));
+    const verticalSections = [...new Set(sectionYs)].filter(Number.isInteger);
+    if (verticalSections.length === 0) throw new Error('At least one integer vertical section is required');
     for (let dz = -integerRadius; dz <= integerRadius; dz += 1) {
       for (let dx = -integerRadius; dx <= integerRadius; dx += 1) {
-        desired.add(sectionKey({ x: center.x + dx, z: center.z + dz }));
+        for (const y of verticalSections) {
+          desired.add(sectionKey({ x: center.x + dx, z: center.z + dz }, y));
+        }
       }
     }
 
     for (const [key, record] of this.sections) {
-      if (desired.has(key) && this.currentEditVersion(key) === record.editVersion) continue;
+      if (desired.has(key) && this.currentEditVersion(key) === record.editVersion) {
+        const column = columnForKey(key);
+        if (!column) throw new Error(`Invalid canonical section key ${key}`);
+        const priority = this.priorityFor(center, velocity, column);
+        record.priority = priority;
+        this.workQueue.updatePriority(record.key, record.epoch, priority);
+        continue;
+      }
       this.invalidate(record);
     }
 
@@ -204,7 +220,11 @@ export class StreamController {
   }
 
   peekPriority(column: ColumnPos): number {
-    return this.sections.get(sectionKey(column))?.priority ?? Number.NEGATIVE_INFINITY;
+    return this.sections.get(sectionKey(column, 0))?.priority ?? Number.NEGATIVE_INFINITY;
+  }
+
+  priorityForKey(key: string): number {
+    return this.sections.get(key)?.priority ?? Number.NEGATIVE_INFINITY;
   }
 
   private matches(record: SectionRecord, result: Pick<WorkRequest, 'key' | 'epoch' | 'editVersion'>): boolean {
