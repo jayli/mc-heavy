@@ -1,0 +1,42 @@
+{
+  "name": "mc-heavy",
+  "version": "1.0.0",
+  "description": "mc-heavy",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 8080",
+    "build": "tsc --noEmit && vite build",
+    "test:unit": "vitest run",
+    "test:e2e": "playwright test",
+    "lint": "eslint ."
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jayli/mc-heavy.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/jayli/mc-heavy/issues"
+  },
+  "homepage": "https://github.com/jayli/mc-heavy#readme",
+  "dependencies": {
+    "three": "^0.184.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.62.1",
+    "@vitest/coverage-v8": "^4.1.10",
+    "eslint": "^10.8.1",
+    "fake-indexeddb": "^6.2.5",
+    "playwright": "^1.62.1",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.67.0",
+    "vite": "^8.2.1",
+    "vitest": "^4.1.10"
+  }
+}
