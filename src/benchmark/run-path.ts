@@ -1,19 +1,42 @@
 import type { GameApp } from '../app/main';
+import { PLAYER_WALK_SPEED } from '../gameplay/player-controller';
 import { FrameMetrics } from './frame-metrics';
 
+export type PathLeg = Readonly<{ x: number; z: number }>;
+
+export type BenchmarkPath = Readonly<{
+  legDurationMs: number;
+  speedBlocksPerSecond: number;
+  totalDistanceBlocks: number;
+  legs: readonly PathLeg[];
+}>;
+
 export type BenchmarkReport = Readonly<{
-  onePercentLowFps: number;
+  seed: number;
+  path: BenchmarkPath;
+  averageFps: number;
+  p95FrameMs: number;
   p99FrameMs: number;
+  onePercentLowFps: number;
   frames: number;
 }>;
 
-const PATH_LEG_DURATION_MS = 5_000;
+// Four equal legs of 75 s at 4 blocks/s walk 300 blocks each for a 1200-block
+// path that crosses five 256-block supercells, biome boundaries, and structures.
+const PATH_LEG_DURATION_MS = 75_000;
 const pathDirections = [
   { x: 1, z: 0 },
   { x: 0, z: 1 },
   { x: -1, z: 0 },
   { x: 0, z: -1 },
 ] as const;
+
+export const benchmarkPath: BenchmarkPath = Object.freeze({
+  legDurationMs: PATH_LEG_DURATION_MS,
+  speedBlocksPerSecond: PLAYER_WALK_SPEED,
+  totalDistanceBlocks: PLAYER_WALK_SPEED * (PATH_LEG_DURATION_MS / 1_000) * pathDirections.length,
+  legs: Object.freeze(pathDirections.map((leg) => Object.freeze({ ...leg }))),
+});
 
 export async function runBenchmarkPath(game: GameApp, durationMs: number): Promise<BenchmarkReport> {
   if (!Number.isFinite(durationMs) || durationMs < 0) {
@@ -44,8 +67,12 @@ export async function runBenchmarkPath(game: GameApp, durationMs: number): Promi
 
       const summary = metrics.summary();
       resolve(Object.freeze({
-        onePercentLowFps: summary.onePercentLowFps,
+        seed: game.seed,
+        path: benchmarkPath,
+        averageFps: summary.averageFps,
+        p95FrameMs: summary.p95FrameMs,
         p99FrameMs: summary.p99FrameMs,
+        onePercentLowFps: summary.onePercentLowFps,
         frames: summary.frames,
       }));
     };

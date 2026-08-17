@@ -29,7 +29,13 @@ export async function writePerformanceArtifact(
     completedAt,
     backend,
     durationMs,
-    ...report,
+    seed: report.seed,
+    path: report.path,
+    frames: report.frames,
+    averageFps: report.averageFps,
+    p95FrameMs: report.p95FrameMs,
+    p99FrameMs: report.p99FrameMs,
+    onePercentLowFps: report.onePercentLowFps,
   };
   await writeFile(path, `${JSON.stringify(artifact, null, 2)}\n`, 'utf8');
 }

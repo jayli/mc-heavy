@@ -6,8 +6,8 @@ export type HorizontalDirection = Readonly<{ x: number; z: number }>;
 export const PLAYER_HALF_WIDTH = 0.3;
 export const PLAYER_BELOW_POSITION = 1;
 export const PLAYER_ABOVE_POSITION = 0.8;
+export const PLAYER_WALK_SPEED = 4;
 
-const WALK_SPEED = 4;
 const LOOK_SENSITIVITY = 0.002;
 const HALF_PI = Math.PI / 2;
 const COLLISION_EPSILON = 0.0001;
@@ -85,8 +85,8 @@ export class PlayerController {
     if (!Number.isFinite(inputLength) || inputLength === 0) return this.position;
 
     const movement = {
-      x: (input.x / inputLength) * WALK_SPEED * dtSeconds,
-      z: (input.z / inputLength) * WALK_SPEED * dtSeconds,
+      x: (input.x / inputLength) * PLAYER_WALK_SPEED * dtSeconds,
+      z: (input.z / inputLength) * PLAYER_WALK_SPEED * dtSeconds,
     };
     const afterX = { ...this.positionValue, x: this.moveAlongX(movement.x) };
     this.positionValue = { ...afterX, z: this.moveAlongZ(afterX, movement.z) };

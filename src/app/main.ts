@@ -27,6 +27,7 @@ const MINIMUM_UPLOAD_COST_MS = 1;
 
 export type GameApp = Readonly<{
   player: PlayerController;
+  seed: number;
   placeForTest(pos: BlockPos, block: string): void;
   readBlockForTest(pos: BlockPos): string;
 }>;
@@ -67,6 +68,7 @@ export async function createGameApp(
     viewRadius: options.viewRadius,
     workerFactory: options.workerFactory,
   });
+  const seed = options.seed ?? DEFAULT_SEED;
   let renderer: RendererAdapter;
   try {
     renderer = await createRendererWithFallback(canvas, options.renderer);
@@ -198,7 +200,7 @@ export async function createGameApp(
 
   const readBlockForTest = (pos: BlockPos): string => blockById(world.getBlock(pos)).key;
 
-  const game: GameApp = Object.freeze({ player, placeForTest, readBlockForTest });
+  const game: GameApp = Object.freeze({ player, seed, placeForTest, readBlockForTest });
 
   const onKeyDown = (event: KeyboardEvent): void => {
     pressedKeys.add(event.key.toLowerCase());
