@@ -16,4 +16,15 @@ describe('VoxelSection', () => {
 
     expect(section.set(12, 1)).toBe(section);
   });
+
+  it('expands the palette while preserving the old section and other cells', () => {
+    const before = VoxelSection.filled({ x: 0, y: 0, z: 0 }, 1);
+    const after = before.set(12, 3);
+
+    expect(after.get(12)).toBe(3);
+    expect(before.get(12)).toBe(1);
+    expect(before.get(13)).toBe(1);
+    expect(after.get(13)).toBe(1);
+    expect(after.editVersion).toBe(1);
+  });
 });
