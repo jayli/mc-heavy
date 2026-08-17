@@ -1,12 +1,13 @@
 import { blockById } from '../domain/blocks';
 import type { BlockEdit } from '../world/world-query';
-import type { PlayerSnapshot } from './legacy-import';
+import type { PlayerSnapshot, PreservedEntry } from './legacy-import';
 
 export type WorldSnapshot = Readonly<{
   id: string;
   seed: number;
   player: PlayerSnapshot;
   edits: readonly BlockEdit[];
+  preserved: readonly PreservedEntry[];
 }>;
 
 type StoredSection = Readonly<{
@@ -19,6 +20,11 @@ type StoredManifest = Readonly<{
   seed: number;
   player: PlayerSnapshot;
   sectionIds: readonly string[];
+}>;
+
+type StoredEntities = Readonly<{
+  id: string;
+  entries: readonly PreservedEntry[];
 }>;
 
 const DATABASE_NAME = 'mc-heavy-snapshots';
@@ -39,7 +45,7 @@ export class SnapshotStore {
       const transaction = database.transaction(['sections', 'entities', 'manifests', 'meta'], 'readwrite');
       const sectionStore = transaction.objectStore('sections');
       for (const section of sections) sectionStore.put(section);
-      transaction.objectStore('entities').add({ id: validSnapshot.id, entries: [] });
+      transaction.objectStore('entities').put({ id: validSnapshot.id, entries: validSnapshot.preserved });
       const injectedFailure = this.failureAfterSectionWrites?.();
       if (injectedFailure) {
         transaction.abort();
@@ -70,9 +76,23 @@ export class SnapshotStore {
       const sections = await Promise.all(manifest.sectionIds.map((id) => readRecord<StoredSection>(database, 'sections', id)));
       const validSections = sections.filter(isStoredSection);
       if (validSections.length !== sections.length) return null;
+      const storedEntities = await readRecord<StoredEntities>(database, 'entities', manifest.id);
+      if (!storedEntities || !Array.isArray(storedEntities.entries)) return null;
+      let preserved: readonly PreservedEntry[];
+      try {
+        preserved = Object.freeze(storedEntities.entries.map(validatePreservedEntry));
+      } catch {
+        return null;
+      }
       const edits = validSections.flatMap((section) => section.edits).sort((left, right) => left.index - right.index).map((entry) => entry.edit);
       try {
-        return validateSnapshot({ id: manifest.id, seed: manifest.seed, player: manifest.player, edits });
+        return validateSnapshot({
+          id: manifest.id,
+          seed: manifest.seed,
+          player: manifest.player,
+          edits,
+          preserved,
+        });
       } catch {
         return null;
       }
@@ -114,7 +134,15 @@ function validateSnapshot(snapshot: WorldSnapshot): WorldSnapshot {
   const player = validatePlayer(snapshot.player);
   if (!Array.isArray(snapshot.edits)) throw new Error('Invalid snapshot edits');
   const edits = snapshot.edits.map(validateEdit);
-  return Object.freeze({ id: snapshot.id, seed: snapshot.seed, player, edits: Object.freeze(edits) });
+  if (!Array.isArray(snapshot.preserved)) throw new Error('Invalid snapshot preserved entries');
+  const preserved = Object.freeze(snapshot.preserved.map(validatePreservedEntry));
+  return Object.freeze({
+    id: snapshot.id,
+    seed: snapshot.seed,
+    player,
+    edits: Object.freeze(edits),
+    preserved,
+  });
 }
 
 function validatePlayer(player: unknown): PlayerSnapshot {
@@ -138,6 +166,26 @@ function validateEdit(edit: unknown): BlockEdit {
     pos: Object.freeze({ x: edit.pos.x, y: edit.pos.y, z: edit.pos.z }),
     blockId: edit.blockId,
     ...(edit.orientation === undefined ? {} : { orientation: edit.orientation }),
+  });
+}
+
+function validatePreservedEntry(entry: unknown): PreservedEntry {
+  if (
+    !isRecord(entry)
+    || (entry.kind !== 'block' && entry.kind !== 'entity')
+    || typeof entry.chunk !== 'string'
+    || typeof entry.reason !== 'string'
+    || (entry.key !== undefined && typeof entry.key !== 'string')
+    || !Object.hasOwn(entry, 'payload')
+  ) {
+    throw new Error('Invalid snapshot preserved entry');
+  }
+  return Object.freeze({
+    kind: entry.kind,
+    chunk: entry.chunk,
+    ...(entry.key === undefined ? {} : { key: entry.key }),
+    payload: entry.payload,
+    reason: entry.reason,
   });
 }
 

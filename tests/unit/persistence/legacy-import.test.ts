@@ -19,7 +19,8 @@ describe('parseLegacySnapshot', () => {
     });
 
     expect(result.edits).toEqual([{ pos: { x: 1, y: 2, z: 3 }, blockId: 5, orientation: 2 }]);
-    expect(result.report).toEqual({ importedBlocks: 1, preservedEntries: 0, warnings: [] });
+    expect(result.report).toEqual({ importedBlocks: 1, preservedEntries: 0, warnings: [], preserved: [] });
+    expect(result.preserved).toEqual([]);
   });
 
   it('decodes a numeric legacy coordinate and defaults a string entry orientation', () => {
@@ -52,7 +53,38 @@ describe('parseLegacySnapshot', () => {
         'Preserved unknown block "future_block" at 1,2,3',
         'Preserved 3 unsupported entities in chunk "0,0"',
       ],
+      preserved: [
+        {
+          kind: 'block',
+          chunk: '0,0',
+          key: '1,2,3',
+          payload: 'future_block',
+          reason: 'Preserved unknown block "future_block" at 1,2,3',
+        },
+        {
+          kind: 'entity',
+          chunk: '0,0',
+          key: 'zombie',
+          payload: { id: 'z-1' },
+          reason: 'Preserved 3 unsupported entities in chunk "0,0"',
+        },
+        {
+          kind: 'entity',
+          chunk: '0,0',
+          key: 'carts[0]',
+          payload: { id: 'c-1' },
+          reason: 'Preserved 3 unsupported entities in chunk "0,0"',
+        },
+        {
+          kind: 'entity',
+          chunk: '0,0',
+          key: 'carts[1]',
+          payload: { id: 'c-2' },
+          reason: 'Preserved 3 unsupported entities in chunk "0,0"',
+        },
+      ],
     });
+    expect(result.preserved).toEqual(result.report.preserved);
   });
 
   it('does not import a block whose legacy string coordinate is outside the safe integer range', () => {
@@ -66,23 +98,39 @@ describe('parseLegacySnapshot', () => {
       edits: [],
       report: { importedBlocks: 0, preservedEntries: 1 },
     });
+    expect(result.report.preserved).toEqual([{
+      kind: 'block',
+      chunk: '0,0',
+      key: '999999999999999999999,2,3',
+      payload: 'stone',
+      reason: 'Preserved block with invalid coordinate "999999999999999999999,2,3" in chunk "0,0"',
+    }]);
   });
 
   it.each([
-    ['array', [{ id: 'z-1' }, { id: 'z-2' }], 2],
-    ['primitive', 'zombie', 1],
-    ['null', null, 1],
-  ])('preserves an unsupported %s entity shape', (_shape, entities, preservedEntries) => {
+    ['array', [{ id: 'z-1' }, { id: 'z-2' }], 2, [
+      { kind: 'entity', chunk: '0,0', payload: { id: 'z-1' } },
+      { kind: 'entity', chunk: '0,0', payload: { id: 'z-2' } },
+    ]],
+    ['primitive', 'zombie', 1, [
+      { kind: 'entity', chunk: '0,0', payload: 'zombie' },
+    ]],
+    ['null', null, 1, [
+      { kind: 'entity', chunk: '0,0', payload: null },
+    ]],
+  ])('preserves an unsupported %s entity shape', (_shape, entities, preservedEntries, expectedEntries) => {
     const result = parseLegacySnapshot({
       player: { x: 0, y: 0, z: 0, pitch: 0, yaw: 0 },
       seed: 9,
       worldDeltas: [{ key: '0,0', blocks: {}, entities }],
     });
+    const reason = `Preserved ${preservedEntries} unsupported entities in chunk "0,0"`;
 
     expect(result.report).toEqual({
       importedBlocks: 0,
       preservedEntries,
-      warnings: [`Preserved ${preservedEntries} unsupported entities in chunk "0,0"`],
+      warnings: [reason],
+      preserved: expectedEntries.map((entry) => ({ ...entry, reason })),
     });
   });
 
@@ -101,6 +149,13 @@ describe('parseLegacySnapshot', () => {
         warnings: ['Preserved block with invalid orientation at 1,2,3'],
       },
     });
+    expect(result.report.preserved).toEqual([{
+      kind: 'block',
+      chunk: '0,0',
+      key: '1,2,3',
+      payload: { type: 'wood', orientation: 4 },
+      reason: 'Preserved block with invalid orientation at 1,2,3',
+    }]);
   });
 
   it('rejects the known empty Promise-shaped mc-lite export instead of claiming success', () => {

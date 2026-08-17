@@ -1,10 +1,19 @@
 import { blockByKey } from '../domain/blocks';
 import type { BlockEdit } from '../world/world-query';
 
+export type PreservedEntry = Readonly<{
+  kind: 'block' | 'entity';
+  chunk: string;
+  key?: string;
+  payload: unknown;
+  reason: string;
+}>;
+
 export type LegacyImportReport = Readonly<{
   importedBlocks: number;
   preservedEntries: number;
   warnings: readonly string[];
+  preserved: readonly PreservedEntry[];
 }>;
 
 export type PlayerSnapshot = Readonly<{
@@ -28,6 +37,7 @@ type ParsedLegacySnapshot = Readonly<{
   seed: number;
   edits: readonly BlockEdit[];
   report: LegacyImportReport;
+  preserved: readonly PreservedEntry[];
 }>;
 
 export function parseLegacySnapshot(input: unknown): ParsedLegacySnapshot {
@@ -40,6 +50,7 @@ export function parseLegacySnapshot(input: unknown): ParsedLegacySnapshot {
 
   const edits: BlockEdit[] = [];
   const warnings: string[] = [];
+  const preserved: PreservedEntry[] = [];
   let preservedEntries = 0;
 
   for (const rawChunk of input.worldDeltas) {
@@ -48,20 +59,26 @@ export function parseLegacySnapshot(input: unknown): ParsedLegacySnapshot {
     for (const [key, entry] of Object.entries(blocks)) {
       const position = decodeLegacyPosition(key);
       if (!position) {
+        const reason = `Preserved block with invalid coordinate "${key}" in chunk "${chunk.key}"`;
         preservedEntries += 1;
-        warnings.push(`Preserved block with invalid coordinate "${key}" in chunk "${chunk.key}"`);
+        warnings.push(reason);
+        preserved.push({ kind: 'block', chunk: chunk.key, key, payload: entry, reason });
         continue;
       }
 
       const parsedEntry = parseBlockEntry(entry);
       if (!parsedEntry) {
+        const reason = `Preserved invalid block entry at ${position.x},${position.y},${position.z}`;
         preservedEntries += 1;
-        warnings.push(`Preserved invalid block entry at ${position.x},${position.y},${position.z}`);
+        warnings.push(reason);
+        preserved.push({ kind: 'block', chunk: chunk.key, key, payload: entry, reason });
         continue;
       }
       if (!parsedEntry.orientationValid) {
+        const reason = `Preserved block with invalid orientation at ${position.x},${position.y},${position.z}`;
         preservedEntries += 1;
-        warnings.push(`Preserved block with invalid orientation at ${position.x},${position.y},${position.z}`);
+        warnings.push(reason);
+        preserved.push({ kind: 'block', chunk: chunk.key, key, payload: entry, reason });
         continue;
       }
 
@@ -73,26 +90,33 @@ export function parseLegacySnapshot(input: unknown): ParsedLegacySnapshot {
           ...(block.orientation ? { orientation: parsedEntry.orientation } : {}),
         }));
       } catch {
+        const reason = `Preserved unknown block "${parsedEntry.type}" at ${position.x},${position.y},${position.z}`;
         preservedEntries += 1;
-        warnings.push(`Preserved unknown block "${parsedEntry.type}" at ${position.x},${position.y},${position.z}`);
+        warnings.push(reason);
+        preserved.push({ kind: 'block', chunk: chunk.key, key, payload: entry, reason });
       }
     }
 
     const entityCount = countEntries(chunk.entities);
     if (entityCount > 0) {
+      const reason = `Preserved ${entityCount} unsupported entities in chunk "${chunk.key}"`;
       preservedEntries += entityCount;
-      warnings.push(`Preserved ${entityCount} unsupported entities in chunk "${chunk.key}"`);
+      warnings.push(reason);
+      preserved.push(...preservedEntityEntries(chunk.key, chunk.entities, reason));
     }
   }
 
+  const frozenPreserved = Object.freeze(preserved.map((entry) => Object.freeze(entry)));
   return Object.freeze({
     player,
     seed: input.seed,
     edits: Object.freeze(edits),
+    preserved: frozenPreserved,
     report: Object.freeze({
       importedBlocks: edits.length,
       preservedEntries,
       warnings: Object.freeze(warnings),
+      preserved: frozenPreserved,
     }),
   });
 }
@@ -161,6 +185,27 @@ function countEntries(value: unknown): number {
   if (Array.isArray(value)) return Math.max(1, value.length);
   if (!isRecord(value)) return 1;
   return Object.values(value).reduce<number>((count, entry) => count + (Array.isArray(entry) ? entry.length : 1), 0);
+}
+
+function preservedEntityEntries(chunk: string, entities: unknown, reason: string): PreservedEntry[] {
+  if (entities === undefined) return [];
+  if (Array.isArray(entities)) {
+    const leaves = entities.length === 0 ? [entities] : entities;
+    return leaves.map((payload) => ({ kind: 'entity', chunk, payload, reason }));
+  }
+  if (!isRecord(entities)) return [{ kind: 'entity', chunk, payload: entities, reason }];
+
+  const entries: PreservedEntry[] = [];
+  for (const [category, value] of Object.entries(entities)) {
+    if (Array.isArray(value)) {
+      for (let index = 0; index < value.length; index += 1) {
+        entries.push({ kind: 'entity', chunk, key: `${category}[${index}]`, payload: value[index], reason });
+      }
+    } else {
+      entries.push({ kind: 'entity', chunk, key: category, payload: value, reason });
+    }
+  }
+  return entries;
 }
 
 function validOrientation(value: unknown): value is number {

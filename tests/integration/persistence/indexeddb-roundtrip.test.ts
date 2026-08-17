@@ -23,6 +23,15 @@ describe('IndexedDB snapshot roundtrip', () => {
         { pos: { x: -1, y: 63, z: 1 }, blockId: 1 },
         { pos: { x: 16, y: 64, z: 1 }, blockId: 5, orientation: 3 },
       ],
+      preserved: [
+        {
+          kind: 'block',
+          chunk: '0,0',
+          key: '4,5,6',
+          payload: { type: 'future_block', orientation: 0 },
+          reason: 'Preserved unknown block "future_block" at 4,5,6',
+        },
+      ],
     });
 
     const secondStore = new SnapshotStore(indexedDB);
@@ -33,6 +42,15 @@ describe('IndexedDB snapshot roundtrip', () => {
       edits: [
         { pos: { x: -1, y: 63, z: 1 }, blockId: 1 },
         { pos: { x: 16, y: 64, z: 1 }, blockId: 5, orientation: 3 },
+      ],
+      preserved: [
+        {
+          kind: 'block',
+          chunk: '0,0',
+          key: '4,5,6',
+          payload: { type: 'future_block', orientation: 0 },
+          reason: 'Preserved unknown block "future_block" at 4,5,6',
+        },
       ],
     });
   });
