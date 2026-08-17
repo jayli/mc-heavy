@@ -72,7 +72,6 @@ export class StreamController {
     const integerRadius = Math.max(0, Math.floor(radius));
     for (let dz = -integerRadius; dz <= integerRadius; dz += 1) {
       for (let dx = -integerRadius; dx <= integerRadius; dx += 1) {
-        if (dx * dx + dz * dz > integerRadius * integerRadius) continue;
         desired.add(sectionKey({ x: center.x + dx, z: center.z + dz }));
       }
     }
@@ -152,6 +151,15 @@ export class StreamController {
       mesh: result.mesh,
       estimatedUploadMs: uploadCost(result.mesh),
     });
+    return true;
+  }
+
+  rejectWork(failure: Pick<WorkRequest, 'key' | 'epoch'> & Partial<Pick<WorkRequest, 'editVersion'>>): boolean {
+    const record = this.sections.get(failure.key);
+    if (!record || record.epoch !== failure.epoch) return false;
+    if (failure.editVersion !== undefined && record.editVersion !== failure.editVersion) return false;
+    if (record.state !== 'generating' && record.state !== 'meshing') return false;
+    this.invalidate(record);
     return true;
   }
 

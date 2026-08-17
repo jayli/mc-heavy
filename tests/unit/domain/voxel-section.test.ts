@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { VoxelSection } from '../../../src/domain/voxel-section';
+import { deserializeVoxelSection, serializeVoxelSection } from '../../../src/workers/voxel-section-codec';
 
 describe('VoxelSection', () => {
   it('increments the version once and preserves the previous section after an edit', () => {
@@ -26,5 +27,26 @@ describe('VoxelSection', () => {
     expect(before.get(13)).toBe(1);
     expect(after.get(13)).toBe(1);
     expect(after.editVersion).toBe(1);
+  });
+
+  it('round-trips palette and index arrays through the worker wire codec', () => {
+    const indices = new Uint16Array(16 * 16 * 16);
+    indices[17] = 1;
+    const section = VoxelSection.fromPaletteIndices(
+      { x: -2, y: 3, z: 4 },
+      new Uint16Array([1, 4]),
+      indices,
+      7,
+    );
+
+    const wire = serializeVoxelSection(section);
+    const decoded = deserializeVoxelSection(wire);
+
+    expect(wire.palette).toBeInstanceOf(Uint16Array);
+    expect(wire.indices).toBeInstanceOf(ArrayBuffer);
+    expect(decoded.pos).toEqual({ x: -2, y: 3, z: 4 });
+    expect(decoded.get(17)).toBe(4);
+    expect(decoded.get(18)).toBe(1);
+    expect(decoded.editVersion).toBe(7);
   });
 });

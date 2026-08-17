@@ -54,6 +54,35 @@ function queueUpload(stream: StreamController): void {
 }
 
 describe('StreamController', () => {
+  it('requests a square footprint so radius one covers all nine columns', () => {
+    const stream = new StreamController(freshWorldEditVersion);
+    stream.requestVisibleColumns({ x: 0, z: 0 }, { x: 0, z: 0 }, 1);
+    const keys: string[] = [];
+
+    let work = stream.takeWork();
+    while (work) {
+      keys.push(work.key);
+      work = stream.takeWork();
+    }
+
+    expect(new Set(keys)).toEqual(new Set([
+      '-1,0,-1', '0,0,-1', '1,0,-1',
+      '-1,0,0', '0,0,0', '1,0,0',
+      '-1,0,1', '0,0,1', '1,0,1',
+    ]));
+  });
+
+  it('removes a failed flight so a later visibility refresh can retry it', () => {
+    const stream = requestedStream();
+    const failed = take(stream, 'generate');
+
+    expect(stream.rejectWork(failed)).toBe(true);
+    stream.requestVisibleColumns({ x: 0, z: 0 }, { x: 0, z: 0 }, 0);
+
+    const retry = take(stream, 'generate');
+    expect(retry.epoch).toBeGreaterThan(failed.epoch);
+  });
+
   it('rejects a mesh result whose editVersion is older than the loaded section', () => {
     const section = sectionAtVersion(2);
     const stream = requestedStream(() => section.editVersion);

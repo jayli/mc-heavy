@@ -2,7 +2,7 @@ import type { VoxelSection } from '../domain/voxel-section';
 
 export type MeshingInput = Readonly<{
   section: VoxelSection;
-  neighbors: readonly VoxelSection[];
+  neighbors: readonly (VoxelSection | undefined)[];
   sourceVersion: number;
 }>;
 

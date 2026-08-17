@@ -2,6 +2,11 @@ import type { SectionPos } from './coords';
 
 const CELL_COUNT = 16 * 16 * 16;
 
+export type VoxelSectionData = Readonly<{
+  palette: Uint16Array;
+  indices: Uint16Array;
+}>;
+
 export class VoxelSection {
   readonly pos: SectionPos;
   readonly editVersion: number;
@@ -22,6 +27,28 @@ export class VoxelSection {
 
   static filled(pos: SectionPos, blockId: number): VoxelSection {
     return new VoxelSection(pos, [blockId], new Uint16Array(CELL_COUNT), 0);
+  }
+
+  static fromPaletteIndices(
+    pos: SectionPos,
+    palette: Uint16Array,
+    indices: Uint16Array,
+    editVersion: number,
+  ): VoxelSection {
+    if (palette.length === 0) throw new Error('VoxelSection palette cannot be empty');
+    if (indices.length !== CELL_COUNT) throw new Error(`VoxelSection requires ${CELL_COUNT} indices`);
+    if (!Number.isInteger(editVersion) || editVersion < 0) throw new Error('Invalid VoxelSection editVersion');
+    for (const paletteIndex of indices) {
+      if (paletteIndex >= palette.length) throw new Error(`Invalid VoxelSection palette index ${paletteIndex}`);
+    }
+    return new VoxelSection(pos, Array.from(palette), indices.slice(), editVersion);
+  }
+
+  toPaletteIndices(): VoxelSectionData {
+    return {
+      palette: Uint16Array.from(this.palette),
+      indices: this.indices.slice(),
+    };
   }
 
   get(localIndex: number): number {
