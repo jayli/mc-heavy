@@ -16,6 +16,7 @@ const DEFAULT_VIEW_RADIUS = 8;
 const SPAWN_RADIUS = 1;
 const CANONICAL_SECTION_Y = 0;
 const ALL_UPLOADS_BUDGET_MS = Number.POSITIVE_INFINITY;
+const MAX_WORK_PER_BATCH = 8;
 
 export type WorldServiceOptions = Readonly<{
   seed: number;
@@ -81,26 +82,31 @@ export class WorldService implements WorldQuery {
   private readonly seed: number;
   private readonly viewRadius: number;
   private readonly world: InMemoryWorld;
+  private readonly loadedWorldQuery: InMemoryWorld;
   private readonly workers: WorkerClient;
   private readonly stream: StreamController;
-  private readonly editVersions = new Map<string, number>();
+  private readonly persistentEditVersions = new Map<string, number>();
+  private readonly transientVersions = new Map<string, number>();
   private readonly editsBySection = new Map<string, Map<number, number>>();
   private readonly generatedSections = new Map<string, VoxelSection>();
   private readonly visibleMeshes = new Map<string, UploadJob>();
   private readonly workerFailures = new Map<string, WorkerFailure>();
+  private readonly pendingMeshes: MeshWorkRequest[] = [];
   private desired = new Set<string>();
   private visibility: Readonly<{ center: ColumnPos; velocity: Vec2; radius: number }> | null = null;
   private haloRefreshNeeded = false;
   private pipeline: Promise<void> | null = null;
   private disposed = false;
+  private loadedSectionQueries = 0;
 
   constructor(options: WorldServiceOptions) {
     this.seed = options.seed;
     this.viewRadius = options.viewRadius ?? DEFAULT_VIEW_RADIUS;
     const generator = createGenerator(options.seed);
     this.world = new InMemoryWorld(generator.blockAt);
+    this.loadedWorldQuery = new InMemoryWorld((pos) => this.getBlock(pos));
     this.workers = new WorkerClient(options.workerFactory);
-    this.stream = new StreamController((key) => this.editVersions.get(key) ?? 0);
+    this.stream = new StreamController((key) => this.versionFor(key));
   }
 
   async prepareSpawn(center: ColumnPos): Promise<void> {
@@ -140,13 +146,42 @@ export class WorldService implements WorldQuery {
     return this.generatedSections.size;
   }
 
+  loadedBlockAt(pos: BlockPos): number | undefined {
+    return this.generatedSections.get(sectionKey(sectionOf(pos)))?.get(localIndex(pos));
+  }
+
+  streamingDiagnostics(): Readonly<{
+    cachedSections: number;
+    visibleMeshes: number;
+    failures: number;
+    persistentEditVersions: number;
+    transientVersions: number;
+    pendingMeshes: number;
+    loadedSectionQueries: number;
+    queuedWork: number;
+    tombstones: number;
+    sectionRecords: number;
+  }> {
+    return {
+      cachedSections: this.generatedSections.size,
+      visibleMeshes: this.visibleMeshes.size,
+      failures: this.workerFailures.size,
+      persistentEditVersions: this.persistentEditVersions.size,
+      transientVersions: this.transientVersions.size,
+      pendingMeshes: this.pendingMeshes.length,
+      loadedSectionQueries: this.loadedSectionQueries,
+      ...this.stream.diagnostics(),
+    };
+  }
+
   visibleMeshFor(key: string): OpaqueMesh | undefined {
     return this.visibleMeshes.get(key)?.mesh;
   }
 
-  handleWorkerFailure(failure: WorkerFailure): void {
-    this.stream.rejectWork(failure);
+  handleWorkerFailure(failure: WorkerFailure): boolean {
+    if (!this.stream.rejectWork(failure)) return false;
     this.workerFailures.set(failure.key, failure);
+    return true;
   }
 
   getBlock(pos: BlockPos): number {
@@ -154,7 +189,12 @@ export class WorldService implements WorldQuery {
     const index = localIndex(pos);
     const edits = this.editsBySection.get(key);
     if (edits?.has(index)) return edits.get(index) as number;
-    return this.generatedSections.get(key)?.get(index) ?? this.world.getBlock(pos);
+    const loaded = this.generatedSections.get(key);
+    if (loaded) {
+      this.loadedSectionQueries += 1;
+      return loaded.get(index);
+    }
+    return this.world.getBlock(pos);
   }
 
   isSolid(pos: BlockPos): boolean {
@@ -162,12 +202,13 @@ export class WorldService implements WorldQuery {
   }
 
   raycast(origin: Vec3, direction: Vec3, maxDistance: number): VoxelHit | null {
-    return this.world.raycast(origin, direction, maxDistance);
+    return this.loadedWorldQuery.raycast(origin, direction, maxDistance);
   }
 
   applyEdits(edits: readonly BlockEdit[]): Readonly<{ changedSections: readonly SectionPos[] }> {
     const result = this.world.applyEdits(edits);
-    const invalidated = new Set(result.changedSections.map(sectionKey));
+    const editedKeys = new Set(result.changedSections.map(sectionKey));
+    const haloConsumers = new Set<string>();
     for (const edit of edits) {
       const pos = sectionOf(edit.pos);
       const key = sectionKey(pos);
@@ -180,12 +221,13 @@ export class WorldService implements WorldQuery {
       if (pos.y !== CANONICAL_SECTION_Y) continue;
       const localX = localCoordinate(edit.pos.x);
       const localZ = localCoordinate(edit.pos.z);
-      if (localX === 0) invalidated.add(sectionKey({ x: pos.x - 1, y: pos.y, z: pos.z }));
-      if (localX === SECTION_SIZE - 1) invalidated.add(sectionKey({ x: pos.x + 1, y: pos.y, z: pos.z }));
-      if (localZ === 0) invalidated.add(sectionKey({ x: pos.x, y: pos.y, z: pos.z - 1 }));
-      if (localZ === SECTION_SIZE - 1) invalidated.add(sectionKey({ x: pos.x, y: pos.y, z: pos.z + 1 }));
+      if (localX === 0) haloConsumers.add(sectionKey({ x: pos.x - 1, y: pos.y, z: pos.z }));
+      if (localX === SECTION_SIZE - 1) haloConsumers.add(sectionKey({ x: pos.x + 1, y: pos.y, z: pos.z }));
+      if (localZ === 0) haloConsumers.add(sectionKey({ x: pos.x, y: pos.y, z: pos.z - 1 }));
+      if (localZ === SECTION_SIZE - 1) haloConsumers.add(sectionKey({ x: pos.x, y: pos.y, z: pos.z + 1 }));
     }
-    for (const key of invalidated) this.incrementEditVersion(key);
+    for (const key of editedKeys) this.incrementPersistentVersion(key);
+    for (const key of haloConsumers) this.incrementTransientVersion(key);
     return result;
   }
 
@@ -193,6 +235,21 @@ export class WorldService implements WorldQuery {
     if (this.disposed) return;
     this.disposed = true;
     this.workers.dispose();
+    this.stream.dispose();
+    this.world.clear();
+    this.loadedWorldQuery.clear();
+    this.generatedSections.clear();
+    this.visibleMeshes.clear();
+    this.workerFailures.clear();
+    this.pendingMeshes.length = 0;
+    this.persistentEditVersions.clear();
+    this.transientVersions.clear();
+    this.editsBySection.clear();
+    this.desired.clear();
+    this.visibility = null;
+    this.haloRefreshNeeded = false;
+    this.loadedSectionQueries = 0;
+    this.pipeline = null;
   }
 
   private async pumpPipeline(): Promise<void> {
@@ -210,14 +267,41 @@ export class WorldService implements WorldQuery {
     while (true) {
       const batch: WorkRequest[] = [];
       let work: WorkRequest | null;
-      while ((work = this.stream.takeWork()) !== null) batch.push(work);
-      if (batch.length === 0) return;
+      while (batch.length < MAX_WORK_PER_BATCH && (work = this.stream.takeWork()) !== null) batch.push(work);
+      if (batch.length > 0) {
+        const generation = batch.filter((request): request is Extract<WorkRequest, { kind: 'generate' }> => (
+          request.kind === 'generate'
+        ));
+        this.pendingMeshes.push(...batch.filter((request): request is MeshWorkRequest => request.kind === 'mesh'));
+        const results = await Promise.allSettled(generation.map((request) => this.processWork(request)));
+        this.refreshAfterHaloArrival();
+        const failure = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+        if (failure) throw failure.reason;
+        await yieldToEventLoop();
+        continue;
+      }
 
-      const results = await Promise.allSettled(batch.map((request) => this.processWork(request)));
-      this.publishUploads();
       this.refreshAfterHaloArrival();
+      work = this.stream.takeWork();
+      if (work) {
+        if (work.kind === 'mesh') this.pendingMeshes.push(work);
+        else await this.processWork(work);
+        await yieldToEventLoop();
+        continue;
+      }
+
+      const meshBatch = this.pendingMeshes.splice(0, MAX_WORK_PER_BATCH)
+        .filter((request) => this.stream.isCurrentWork(request));
+      if (meshBatch.length === 0) {
+        if (this.pendingMeshes.length === 0) return;
+        await yieldToEventLoop();
+        continue;
+      }
+      const results = await Promise.allSettled(meshBatch.map((request) => this.processWork(request)));
+      this.publishUploads();
       const failure = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
       if (failure) throw failure.reason;
+      await yieldToEventLoop();
     }
   }
 
@@ -226,8 +310,7 @@ export class WorldService implements WorldQuery {
       if (work.kind === 'generate') await this.generate(work);
       else await this.mesh(work);
     } catch (reason) {
-      this.handleWorkerFailure({ key: work.key, epoch: work.epoch, reason });
-      throw reason;
+      if (this.handleWorkerFailure({ key: work.key, epoch: work.epoch, reason })) throw reason;
     }
   }
 
@@ -246,9 +329,8 @@ export class WorldService implements WorldQuery {
       work.editVersion,
     );
     if (this.stream.acceptGenerated({ ...result, section })) {
-      const isNew = !this.generatedSections.has(work.key);
       this.generatedSections.set(work.key, section);
-      if (isNew) this.invalidateVisibleHaloConsumers(work.key);
+      this.workerFailures.delete(work.key);
     }
   }
 
@@ -264,7 +346,7 @@ export class WorldService implements WorldQuery {
       section: serializeVoxelSection(work.section),
       neighbors,
     });
-    this.stream.acceptMeshed(result);
+    if (this.stream.acceptMeshed(result)) this.workerFailures.delete(work.key);
   }
 
   private neighborSections(key: string): readonly (VoxelSection | undefined)[] {
@@ -289,14 +371,27 @@ export class WorldService implements WorldQuery {
 
   private setVisibility(center: ColumnPos, velocity: Vec2, radius: number): void {
     this.visibility = { center, velocity, radius };
+    const previousDesired = this.desired;
     this.desired = desiredKeys(center, radius);
+    for (const key of this.desired) {
+      if (!previousDesired.has(key)) this.invalidateVisibleHaloConsumers(key);
+    }
     for (const key of this.generatedSections.keys()) {
       if (this.desired.has(key)) continue;
       this.generatedSections.delete(key);
       this.invalidateVisibleHaloConsumers(key);
     }
     for (const key of this.visibleMeshes.keys()) {
-      if (!this.desired.has(key)) this.visibleMeshes.delete(key);
+      if (this.desired.has(key)) continue;
+      this.visibleMeshes.delete(key);
+      this.workerFailures.delete(key);
+      this.transientVersions.delete(key);
+    }
+    for (const key of this.transientVersions.keys()) {
+      if (!this.desired.has(key)) this.transientVersions.delete(key);
+    }
+    for (const key of this.workerFailures.keys()) {
+      if (!this.desired.has(key)) this.workerFailures.delete(key);
     }
   }
 
@@ -313,8 +408,8 @@ export class WorldService implements WorldQuery {
       { x, y, z: z + 1 },
     ]) {
       const neighborKey = sectionKey(neighbor);
-      if (!this.visibleMeshes.has(neighborKey) || !this.desired.has(neighborKey)) continue;
-      this.incrementEditVersion(neighborKey);
+      if (!this.generatedSections.has(neighborKey) || !this.desired.has(neighborKey)) continue;
+      this.incrementTransientVersion(neighborKey);
       this.haloRefreshNeeded = true;
     }
   }
@@ -326,7 +421,20 @@ export class WorldService implements WorldQuery {
     this.stream.requestVisibleColumns(center, velocity, radius);
   }
 
-  private incrementEditVersion(key: string): void {
-    this.editVersions.set(key, (this.editVersions.get(key) ?? 0) + 1);
+  private incrementPersistentVersion(key: string): void {
+    this.persistentEditVersions.set(key, (this.persistentEditVersions.get(key) ?? 0) + 1);
   }
+
+  private incrementTransientVersion(key: string): void {
+    if (!this.desired.has(key)) return;
+    this.transientVersions.set(key, (this.transientVersions.get(key) ?? 0) + 1);
+  }
+
+  private versionFor(key: string): number {
+    return (this.persistentEditVersions.get(key) ?? 0) + (this.transientVersions.get(key) ?? 0);
+  }
+}
+
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
 }

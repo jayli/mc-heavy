@@ -21,6 +21,10 @@ export class EditOverlay {
     sectionEdits.set(localIndex(pos), blockId);
     return section;
   }
+
+  clear(): void {
+    this.edits.clear();
+  }
 }
 
 const sectionKey = ({ x, y, z }: SectionPos): string => `${x},${y},${z}`;

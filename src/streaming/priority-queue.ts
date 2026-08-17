@@ -17,7 +17,9 @@ export class PriorityWorkQueue {
   }
 
   cancel(key: string, epoch: number): void {
-    this.tombstones.add(cancellationKey(key, epoch));
+    if (this.entries.some((entry) => entry.request.key === key && entry.request.epoch === epoch)) {
+      this.tombstones.add(cancellationKey(key, epoch));
+    }
   }
 
   take(): WorkRequest | null {
@@ -27,9 +29,20 @@ export class PriorityWorkQueue {
         if (this.precedes(this.entries[index], this.entries[selectedIndex])) selectedIndex = index;
       }
       const [entry] = this.entries.splice(selectedIndex, 1);
-      if (!this.tombstones.has(cancellationKey(entry.request.key, entry.request.epoch))) return entry.request;
+      const key = cancellationKey(entry.request.key, entry.request.epoch);
+      if (!this.tombstones.delete(key)) return entry.request;
     }
     return null;
+  }
+
+  clear(): void {
+    this.entries.length = 0;
+    this.tombstones.clear();
+    this.nextSequence = 0;
+  }
+
+  diagnostics(): Readonly<{ queuedWork: number; tombstones: number }> {
+    return { queuedWork: this.entries.length, tombstones: this.tombstones.size };
   }
 
   private precedes(candidate: QueueEntry, current: QueueEntry): boolean {

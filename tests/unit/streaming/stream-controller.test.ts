@@ -83,6 +83,22 @@ describe('StreamController', () => {
     expect(retry.epoch).toBeGreaterThan(failed.epoch);
   });
 
+  it('releases queued work, records, uploads, and tombstones when disposed', () => {
+    const stream = requestedStream();
+    const flight = take(stream, 'generate');
+    stream.rejectWork(flight);
+    stream.requestVisibleColumns({ x: 1, z: 0 }, { x: 0, z: 0 }, 1);
+
+    stream.dispose();
+
+    expect(stream.diagnostics()).toEqual({
+      queuedWork: 0,
+      tombstones: 0,
+      sectionRecords: 0,
+      uploads: 0,
+    });
+  });
+
   it('rejects a mesh result whose editVersion is older than the loaded section', () => {
     const section = sectionAtVersion(2);
     const stream = requestedStream(() => section.editVersion);

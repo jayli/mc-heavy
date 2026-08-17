@@ -2,6 +2,15 @@ import { describe, expect, it } from 'vitest';
 import { PriorityWorkQueue } from '../../../src/streaming/priority-queue';
 
 describe('PriorityWorkQueue', () => {
+  it('consumes a cancellation tombstone with its queued request', () => {
+    const queue = new PriorityWorkQueue();
+    queue.enqueue({ key: 'cancelled', epoch: 1, priority: 1, editVersion: 0, kind: 'generate' });
+    queue.cancel('cancelled', 1);
+
+    expect(queue.take()).toBeNull();
+    expect(queue.diagnostics()).toEqual({ queuedWork: 0, tombstones: 0 });
+  });
+
   it('takes the forward high-priority request before a farther side request', () => {
     const queue = new PriorityWorkQueue();
     queue.enqueue({ key: 'forward', epoch: 1, priority: 100, editVersion: 0, kind: 'generate' });

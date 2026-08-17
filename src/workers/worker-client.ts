@@ -86,6 +86,10 @@ export class WorkerClient {
     this.disposed = true;
     this.generationWorker.terminate();
     this.meshingWorker.terminate();
+    this.generationWorker.onmessage = null;
+    this.generationWorker.onerror = null;
+    this.meshingWorker.onmessage = null;
+    this.meshingWorker.onerror = null;
     const error = new Error('WorkerClient disposed');
     this.rejectAll(this.pendingGeneration, error);
     this.rejectAll(this.pendingMeshing, error);

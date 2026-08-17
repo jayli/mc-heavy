@@ -89,6 +89,10 @@ export class InMemoryWorld implements WorldQuery {
     return { changedSections };
   }
 
+  clear(): void {
+    this.overlay.clear();
+  }
+
   private hitAt(block: BlockPos, normal: BlockPos, distance: number): VoxelHit | null {
     const blockId = this.getBlock(block);
     if (!blockById(blockId).solid) return null;

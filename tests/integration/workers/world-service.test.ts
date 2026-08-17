@@ -7,12 +7,17 @@ import {
 } from '../../../src/workers/worker-client';
 import { WorldService } from '../../../src/world/world-service';
 
-function failOnceWorkerFactory(): Readonly<{ factory: WorkerFactory; failNextGeneration(): void }> {
+function failOnceWorkerFactory(): Readonly<{
+  factory: WorkerFactory;
+  failNextGeneration(key?: string): void;
+}> {
   const delegate = createInProcessWorkerFactory();
+  let failureKey: string | undefined;
   let failNext = false;
   return {
-    failNextGeneration: () => {
+    failNextGeneration: (key) => {
       failNext = true;
+      failureKey = key;
     },
     factory: {
       createGenerationWorker() {
@@ -21,13 +26,9 @@ function failOnceWorkerFactory(): Readonly<{ factory: WorkerFactory; failNextGen
           onmessage: null,
           onerror: null,
           postMessage(message, transfer) {
-            if (failNext) {
+            if (failNext && (failureKey === undefined || failureKey === message.key)) {
               failNext = false;
-              queueMicrotask(() => {
-                const error = new Error('worker crashed');
-                port.onerror?.({ error, message: error.message } as ErrorEvent);
-              });
-              return;
+              throw new Error('worker crashed');
             }
             inner.postMessage(message, transfer);
           },
@@ -49,7 +50,15 @@ describe('WorldService worker integration', () => {
     await world.prepareSpawn({ x: 0, z: 0 });
 
     expect(world.loadedColumns()).toHaveLength(9);
-    expect(world.isSolid({ x: 0, y: -1, z: 0 })).toBe(true);
+    const loaded = world.loadedBlockAt({ x: 0, y: 0, z: 0 });
+    const queriesBefore = world.streamingDiagnostics().loadedSectionQueries;
+    expect(loaded).toBeDefined();
+    expect(world.getBlock({ x: 0, y: 0, z: 0 })).toBe(loaded);
+    expect(world.streamingDiagnostics().loadedSectionQueries).toBe(queriesBefore + 1);
+    expect(world.isSolid({ x: 0, y: 0, z: 0 })).toBe(true);
+    const rayQueriesBefore = world.streamingDiagnostics().loadedSectionQueries;
+    expect(world.raycast({ x: 0.5, y: 0.5, z: 0.5 }, { x: 0, y: 0, z: 0 }, 1)).not.toBeNull();
+    expect(world.streamingDiagnostics().loadedSectionQueries).toBeGreaterThan(rayQueriesBefore);
     expect(world.visibleMeshFor('0,0,0')?.indices).toHaveLength(12);
     world.dispose();
   });
@@ -124,6 +133,18 @@ describe('WorldService worker integration', () => {
     world.dispose();
   });
 
+  it('waits for a failed generation retry before meshing its halo consumers', async () => {
+    const controlled = failOnceWorkerFactory();
+    const world = new WorldService({ seed: 123, workerFactory: controlled.factory });
+    controlled.failNextGeneration('0,0,0');
+
+    await expect(world.prepareSpawn({ x: 0, z: 0 })).rejects.toThrow('worker crashed');
+    await world.prepareSpawn({ x: 0, z: 0 });
+
+    expect(world.visibleMeshFor('0,0,1')?.indices).toHaveLength(18);
+    world.dispose();
+  });
+
   it('does not resolve an overlapping spawn request after its ring was superseded', async () => {
     const world = new WorldService({ seed: 123, workerFactory: createInProcessWorkerFactory() });
 
@@ -135,4 +156,81 @@ describe('WorldService worker integration', () => {
     expect(world.loadedColumns().map(({ x }) => x)).toEqual([99, 100, 101, 99, 100, 101, 99, 100, 101]);
     world.dispose();
   });
+
+  it('ignores a failed superseded epoch while completing the latest spawn ring', async () => {
+    const controlled = failOnceWorkerFactory();
+    const world = new WorldService({ seed: 123, workerFactory: controlled.factory });
+    controlled.failNextGeneration('-1,0,-1');
+
+    const superseded = world.prepareSpawn({ x: 0, z: 0 });
+    const current = world.prepareSpawn({ x: 100, z: 0 });
+
+    await expect(superseded).rejects.toThrow('superseded');
+    await current;
+    expect(world.loadedColumns()).toHaveLength(9);
+    expect(world.loadedColumns().every(({ x }) => x >= 99 && x <= 101)).toBe(true);
+    world.dispose();
+  });
+
+  it('continues current mesh work after discarding a delayed stale mesh batch', async () => {
+    const world = new WorldService({ seed: 123, workerFactory: createInProcessWorkerFactory() });
+    const superseded = world.prepareSpawn({ x: 0, z: 0 });
+    while (world.streamingDiagnostics().pendingMeshes < 8) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    const current = world.prepareSpawn({ x: 100, z: 0 });
+
+    await expect(superseded).rejects.toThrow('superseded');
+    await current;
+    expect(world.loadedColumns()).toHaveLength(9);
+    expect(world.loadedColumns().every(({ x }) => x >= 99 && x <= 101)).toBe(true);
+    world.dispose();
+  });
+
+  it('yields between bounded default-radius streaming batches', async () => {
+    const world = new WorldService({ seed: 123, workerFactory: createInProcessWorkerFactory() });
+
+    expect(world.updateStreaming({ x: 0, y: 0, z: 0 }, { x: 0, z: 0 })).toBeUndefined();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(world.cachedSectionCount()).toBeLessThanOrEqual(8);
+    world.dispose();
+  }, 10_000);
+
+  it('keeps transient streaming state bounded across long movement and clears it on dispose', async () => {
+    const world = new WorldService({ seed: 123, workerFactory: createInProcessWorkerFactory() });
+    world.applyEdits([{ pos: { x: 0, y: 0, z: 0 }, blockId: 0 }]);
+
+    for (let x = 0; x < 20; x += 1) await world.prepareSpawn({ x, z: 0 });
+
+    expect(world.streamingDiagnostics()).toMatchObject({
+      cachedSections: 9,
+      visibleMeshes: 9,
+      failures: 0,
+      persistentEditVersions: 1,
+      pendingMeshes: 0,
+      queuedWork: 0,
+      tombstones: 0,
+      sectionRecords: 9,
+    });
+    expect(world.streamingDiagnostics().transientVersions).toBeLessThanOrEqual(9);
+
+    await world.prepareSpawn({ x: 0, z: 0 });
+    expect(world.loadedBlockAt({ x: 0, y: 0, z: 0 })).toBe(0);
+    expect(world.getBlock({ x: 0, y: 0, z: 0 })).toBe(0);
+
+    world.dispose();
+    expect(world.streamingDiagnostics()).toMatchObject({
+      cachedSections: 0,
+      visibleMeshes: 0,
+      failures: 0,
+      transientVersions: 0,
+      persistentEditVersions: 0,
+      pendingMeshes: 0,
+      queuedWork: 0,
+      tombstones: 0,
+      sectionRecords: 0,
+    });
+  }, 10_000);
 });

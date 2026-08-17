@@ -59,9 +59,9 @@ function uploadCost(mesh: MeshedSection['mesh']): number {
 export class StreamController {
   private readonly workQueue = new PriorityWorkQueue();
   private readonly sections = new Map<string, SectionRecord>();
-  private readonly lastEpochByKey = new Map<string, number>();
   private readonly uploads: UploadJob[] = [];
   private readonly editVersionForKey: EditVersionForKey;
+  private nextEpoch = 1;
 
   constructor(editVersionForKey: EditVersionForKey) {
     this.editVersionForKey = editVersionForKey;
@@ -87,12 +87,11 @@ export class StreamController {
       if (!column) throw new Error(`Invalid canonical section key ${key}`);
       const record: SectionRecord = {
         key,
-        epoch: (this.lastEpochByKey.get(key) ?? 0) + 1,
+        epoch: this.takeEpoch(),
         editVersion: this.currentEditVersion(key),
         priority: this.priorityFor(center, velocity, column),
         state: 'absent',
       };
-      this.lastEpochByKey.set(key, record.epoch);
       this.transition(record, 'absent', 'queued');
       this.sections.set(key, record);
       this.workQueue.enqueue(this.generateRequestFor(record));
@@ -161,6 +160,31 @@ export class StreamController {
     if (record.state !== 'generating' && record.state !== 'meshing') return false;
     this.invalidate(record);
     return true;
+  }
+
+  isCurrentWork(work: WorkRequest): boolean {
+    const record = this.sections.get(work.key);
+    if (!record || !this.matches(record, work)) return false;
+    return work.kind === 'mesh' && record.state === 'meshing' && record.section === work.section;
+  }
+
+  dispose(): void {
+    this.workQueue.clear();
+    this.sections.clear();
+    this.uploads.length = 0;
+  }
+
+  diagnostics(): Readonly<{
+    queuedWork: number;
+    tombstones: number;
+    sectionRecords: number;
+    uploads: number;
+  }> {
+    return {
+      ...this.workQueue.diagnostics(),
+      sectionRecords: this.sections.size,
+      uploads: this.uploads.length,
+    };
   }
 
   drainUploads(budgetMs: number): readonly UploadJob[] {
@@ -241,12 +265,11 @@ export class StreamController {
     this.invalidate(record);
     const replacement: SectionRecord = {
       key: record.key,
-      epoch: (this.lastEpochByKey.get(record.key) ?? record.epoch) + 1,
+      epoch: this.takeEpoch(),
       editVersion: this.currentEditVersion(record.key),
       priority: record.priority,
       state: 'absent',
     };
-    this.lastEpochByKey.set(replacement.key, replacement.epoch);
     this.transition(replacement, 'absent', 'queued');
     this.sections.set(replacement.key, replacement);
     this.workQueue.enqueue(this.generateRequestFor(replacement));
@@ -254,5 +277,11 @@ export class StreamController {
 
   private currentEditVersion(key: string): number {
     return this.editVersionForKey(key);
+  }
+
+  private takeEpoch(): number {
+    const epoch = this.nextEpoch;
+    this.nextEpoch += 1;
+    return epoch;
   }
 }
