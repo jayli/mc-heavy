@@ -1,7 +1,6 @@
 import {
   BufferGeometry,
   Float32BufferAttribute,
-  Int8BufferAttribute,
   Mesh,
   Uint16BufferAttribute,
   Uint32BufferAttribute,
@@ -52,7 +51,7 @@ function geometryFor(mesh: OpaqueMesh): BufferGeometry {
   validateMesh(mesh);
   const geometry = new BufferGeometry();
   geometry.setAttribute('position', new Float32BufferAttribute(mesh.positions, 3));
-  geometry.setAttribute('normal', new Int8BufferAttribute(mesh.normals, 3, true));
+  geometry.setAttribute('normal', new Float32BufferAttribute(mesh.normals, 3));
   geometry.setAttribute('uv', new Float32BufferAttribute(mesh.uvs, 2));
   geometry.setAttribute('blockId', new Uint16BufferAttribute(mesh.materialIds, 1));
   geometry.setIndex(new Uint32BufferAttribute(mesh.indices, 1));

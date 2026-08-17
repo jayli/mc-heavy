@@ -1,4 +1,7 @@
 import { Mesh, type Material } from 'three';
+// Three r184 does not publish declarations for this private compatibility utility.
+// @ts-expect-error -- exercised deliberately to probe the real WebGPU vertex layout mapping.
+import WebGPUAttributeUtils from 'three/src/renderers/webgpu/utils/WebGPUAttributeUtils.js';
 import { describe, expect, it } from 'vitest';
 import type { OpaqueMesh } from '../../../src/meshing/mesh-types';
 import { RenderPage, type RenderPageTarget } from '../../../src/render/render-page';
@@ -103,6 +106,35 @@ describe('RenderPage', () => {
     expect(oldWasLiveDuringSwap).toBe(true);
     expect(oldGeometryDisposed).toBe(true);
     expect(page.sourceVersion).toBe(2);
+    page.dispose();
+  });
+
+  it('decodes mesher Int8 normals into a WebGPU-valid float32x3 vertex layout', () => {
+    const input = opaqueMesh(1);
+    const capture = capturingTarget();
+    const page = new RenderPage('0,0,0', undefined, capture.target);
+
+    page.replace(input);
+
+    const normal = capture.current()?.geometry.getAttribute('normal');
+    expect(input.normals).toBeInstanceOf(Int8Array);
+    expect(normal?.array).toBeInstanceOf(Float32Array);
+    expect(normal?.itemSize).toBe(3);
+    expect(normal?.normalized).toBe(false);
+    expect(normal?.array).toEqual(new Float32Array([
+      0, 0, 1,
+      0, 0, 1,
+      0, 0, 1,
+    ]));
+
+    const webGpuAttributes = new WebGPUAttributeUtils({});
+    expect(webGpuAttributes.createShaderVertexBuffers({
+      getAttributes: () => [normal],
+    })).toEqual([{
+      arrayStride: 12,
+      attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }],
+      stepMode: 'vertex',
+    }]);
     page.dispose();
   });
 

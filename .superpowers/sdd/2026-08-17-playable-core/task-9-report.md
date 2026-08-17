@@ -73,3 +73,30 @@ Also confirmed at runtime that `three/webgpu` exports `WebGPURenderer` as a cons
 ## Remaining Concern
 
 The automated fallback test uses the permitted narrow renderer factory because Vitest has no GPU context. The real Three WebGL/WebGPU constructors and r184 APIs are typechecked, and the WebGPU module export is runtime-checked, but a live Chrome-on-macOS GPU smoke test remains a runtime integration step for the application bootstrap task.
+
+## Main Review Fix Round 1: WebGPU Normal Layout
+
+Main review found that a normalized `Int8BufferAttribute` with `itemSize = 3` is not a valid Three r184 WebGPU vertex-buffer layout. The mesher emits tightly packed `Int8Array` xyz normals using values `-1`, `0`, and `1`. Three's `WebGPUAttributeUtils` pads the corresponding vertex format to `snorm8x4` but computes an array stride of three bytes; WebGPU requires the four-byte format and stride alignment to agree. Normalizing the mesher's value `1` would also produce approximately `1 / 127`, not the intended unit component.
+
+The regression imports Three r184's real WebGPU attribute utility and probes the actual RenderPage normal attribute. Before the fix it failed because the uploaded attribute remained an `Int8Array`; the equivalent utility probe for that old attribute yields `snorm8x4` with `arrayStride: 3`.
+
+The minimal fix keeps `OpaqueMesh.normals` and the worker wire format as `Int8Array`, then converts to a non-normalized `Float32BufferAttribute` only inside `RenderPage` geometry creation. The GREEN probe now observes the original xyz values, `float32x3`, and `arrayStride: 12`.
+
+Focused RED/GREEN command:
+
+```text
+npm run test:unit -- tests/unit/render/render-page.test.ts
+RED: 1 failed / 5 passed because normal.array was Int8Array
+GREEN: 6 passed
+```
+
+Post-fix verification:
+
+```text
+focused render tests: 4 files passed, 14 tests passed
+full Vitest suite: 17 files passed, 80 tests passed
+tsc + Vite build: passed
+ESLint: passed
+git diff --check: passed
+independent fix review: approved with no Critical or Important findings
+```
