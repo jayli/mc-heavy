@@ -57,7 +57,7 @@ export class PlayerController {
 
     const { y, z } = this.positionValue;
     if (distance > 0) {
-      const first = Math.floor(this.positionValue.x + PLAYER_HALF_WIDTH) + 1;
+      const first = Math.floor(this.positionValue.x + PLAYER_HALF_WIDTH + COLLISION_EPSILON);
       const last = Math.floor(this.positionValue.x + PLAYER_HALF_WIDTH + distance);
       for (let x = first; x <= last; x += 1) {
         if (this.solidColumnAlongX(x, y, z)) return x - PLAYER_HALF_WIDTH - COLLISION_EPSILON;
@@ -76,7 +76,7 @@ export class PlayerController {
     if (distance === 0) return position.z;
 
     if (distance > 0) {
-      const first = Math.floor(position.z + PLAYER_HALF_WIDTH) + 1;
+      const first = Math.floor(position.z + PLAYER_HALF_WIDTH + COLLISION_EPSILON);
       const last = Math.floor(position.z + PLAYER_HALF_WIDTH + distance);
       for (let z = first; z <= last; z += 1) {
         if (this.solidColumnAlongZ(position.x, z, position.y)) return z - PLAYER_HALF_WIDTH - COLLISION_EPSILON;

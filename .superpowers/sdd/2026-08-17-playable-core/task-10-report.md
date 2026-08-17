@@ -62,3 +62,36 @@ An independent code review also approved the change with no Critical or Importan
 ## Remaining Concern
 
 `PlayerController` intentionally supplies only horizontal movement because the task does not define gravity, jumping, or vertical collision. Those behaviors can be layered on the same AABB constants later.
+
+## Review Fix Round 1: Positive-Axis Exact Contact
+
+Review found that the positive X/Z sweep started at `floor(leadingEdge) + 1`. If the player's leading AABB edge was exactly on the next voxel boundary (for example, center `x: 0.7` with half-width `0.3`), this skipped the contacted solid voxel entirely and allowed penetration.
+
+Added real-`InMemoryWorld` RED tests for exact-contact positive X and Z movement. Both failed by moving the player from `0.7` to `4.7`. The positive-axis scan now begins at `floor(leadingEdge + COLLISION_EPSILON)`, making boundary contact inclusive while a player with a real `0.01` gap can still advance to just before the solid face.
+
+Focused RED/GREEN command:
+
+```text
+npm run test:unit -- tests/unit/gameplay/player-controller.test.ts
+RED: 2 failed / 4 passed
+GREEN: 6 passed
+```
+
+Post-fix verification:
+
+```text
+npm run test:unit -- tests/unit/gameplay
+3 files passed, 17 tests passed
+
+npm run test:unit
+20 files passed, 97 tests passed
+
+npm run build
+tsc --noEmit and Vite build passed
+
+npm run lint
+ESLint passed
+
+git diff --check
+passed
+```
