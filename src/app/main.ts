@@ -12,9 +12,11 @@ import { WorldService } from '../world/world-service';
 import { FrameMetrics } from '../benchmark/frame-metrics';
 import { GameHud } from './hud';
 import {
+  BYTES_PER_UPLOAD_MILLISECOND,
   meshByteLength,
   RenderUploadQueue,
   type RenderUploadDrain,
+  type UploadSink,
 } from './render-upload-queue';
 
 const DEFAULT_SEED = 0x5eed_1234;
@@ -22,7 +24,6 @@ const CAMERA_HEIGHT = 50;
 const HUD_UPDATE_INTERVAL_MS = 250;
 const RENDER_UPLOAD_BUDGET_MS = 2;
 const MINIMUM_UPLOAD_COST_MS = 1;
-const BYTES_PER_UPLOAD_MILLISECOND = 64 * 1_024;
 
 export type GameApp = Readonly<{
   player: PlayerController;
@@ -420,9 +421,22 @@ function updateRenderUploads(
     if (!loadedKeys.has(key)) uploadedVersions.delete(key);
   }
 
+  const sink: UploadSink = {
+    stage: (job, maxBytes) => renderer.stageUpload(job, maxBytes),
+    commit: (job) => {
+      renderer.commitUpload(job);
+      uploadedVersions.set(job.key, job.editVersion);
+    },
+  };
+
   for (const key of world.loadedSectionKeys()) {
     const mesh = world.visibleMeshFor(key);
     if (!mesh || uploadedVersions.get(key) === mesh.sourceVersion) continue;
+    if (mesh.indices.length === 0) {
+      renderer.removePage(key);
+      uploadedVersions.delete(key);
+      continue;
+    }
     const bytes = meshByteLength(mesh);
     uploadQueue.enqueue({
       key,
@@ -431,10 +445,7 @@ function updateRenderUploads(
       estimatedUploadMs: Math.max(MINIMUM_UPLOAD_COST_MS, bytes / BYTES_PER_UPLOAD_MILLISECOND),
     });
   }
-  return uploadQueue.drain(budgetMs, (job) => {
-    renderer.enqueueUpload(job);
-    uploadedVersions.set(job.key, job.editVersion);
-  });
+  return uploadQueue.drain(budgetMs, sink);
 }
 
 function showBootstrapError(error: unknown): void {

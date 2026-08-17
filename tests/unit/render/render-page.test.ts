@@ -198,4 +198,80 @@ describe('RenderPage', () => {
     expect(capture.current()).toBeNull();
     expect(disposeEvents).toBe(1);
   });
+
+  it('keeps the old page visible and versioned until a staged upload commits', () => {
+    const capture = capturingTarget();
+    const page = new RenderPage('0,0,0', undefined, capture.target);
+    page.replace(opaqueMesh(1));
+    const original = capture.current();
+
+    const staging = page.beginStaging(opaqueMesh(2, 4));
+    expect(staging).not.toBeNull();
+    const staged = staging as NonNullable<ReturnType<RenderPage['beginStaging']>>;
+    expect(staged.stage(12)).toBe(12);
+
+    expect(staged.complete).toBe(false);
+    expect(page.sourceVersion).toBe(1);
+    expect(capture.current()).toBe(original);
+    expect(() => staged.commit()).toThrow('incomplete');
+
+    expect(staged.stage(Number.POSITIVE_INFINITY)).toBeGreaterThan(0);
+    expect(staged.complete).toBe(true);
+    staged.commit();
+
+    expect(page.sourceVersion).toBe(2);
+    expect(capture.current()).not.toBe(original);
+    expect(capture.current()?.geometry.getAttribute('blockId').array)
+      .toEqual(new Uint16Array([4, 4, 4]));
+    page.dispose();
+  });
+
+  it('accumulates the staged bounding box and publishes it on commit', () => {
+    const capture = capturingTarget();
+    const page = new RenderPage('0,0,0', undefined, capture.target);
+    const staging = page.beginStaging(opaqueMesh(1)) as NonNullable<ReturnType<RenderPage['beginStaging']>>;
+
+    staging.stage(Number.POSITIVE_INFINITY);
+    staging.commit();
+
+    const geometry = capture.current()?.geometry;
+    expect(geometry?.boundingBox?.min.toArray()).toEqual([0, 0, 0]);
+    expect(geometry?.boundingBox?.max.toArray()).toEqual([1, 1, 0]);
+    page.dispose();
+  });
+
+  it('cancels staging without publishing and rejects a stale version', () => {
+    const capture = capturingTarget();
+    const page = new RenderPage('0,0,0', undefined, capture.target);
+    page.replace(opaqueMesh(1));
+    const original = capture.current();
+    const staging = page.beginStaging(opaqueMesh(2)) as NonNullable<ReturnType<RenderPage['beginStaging']>>;
+
+    staging.stage(10);
+    staging.cancel();
+
+    expect(staging.complete).toBe(false);
+    expect(page.sourceVersion).toBe(1);
+    expect(capture.current()).toBe(original);
+    expect(() => staging.commit()).toThrow('cancel');
+
+    page.replace(opaqueMesh(2));
+    expect(page.beginStaging(opaqueMesh(1))).toBeNull();
+    expect(page.beginStaging(opaqueMesh(2))).toBeNull();
+    page.dispose();
+  });
+
+  it('replaces an in-flight staging with a newer one', () => {
+    const page = new RenderPage('0,0,0');
+    const first = page.beginStaging(opaqueMesh(1)) as NonNullable<ReturnType<RenderPage['beginStaging']>>;
+    const second = page.beginStaging(opaqueMesh(2)) as NonNullable<ReturnType<RenderPage['beginStaging']>>;
+
+    expect(second).not.toBe(first);
+    expect(first.complete).toBe(false);
+    expect(() => first.commit()).toThrow('cancel');
+    second.stage(Number.POSITIVE_INFINITY);
+    second.commit();
+    expect(page.sourceVersion).toBe(2);
+    page.dispose();
+  });
 });

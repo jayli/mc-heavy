@@ -1,6 +1,8 @@
 import type { OpaqueMesh } from '../meshing/mesh-types';
 import type { UploadJob } from '../workers/protocol';
 
+export const BYTES_PER_UPLOAD_MILLISECOND = 64 * 1024;
+
 export type RenderUploadDrain = Readonly<{
   uploads: number;
   uploadedBytes: number;
@@ -8,9 +10,14 @@ export type RenderUploadDrain = Readonly<{
   queued: number;
 }>;
 
+export type UploadSink = Readonly<{
+  stage(job: UploadJob, maxBytes: number): number;
+  commit(job: UploadJob): void;
+}>;
+
 type PendingUpload = {
   job: UploadJob;
-  remainingMs: number;
+  remainingBytes: number;
 };
 
 export class RenderUploadQueue {
@@ -26,7 +33,7 @@ export class RenderUploadQueue {
     }
     const pending = this.jobs.get(job.key);
     if (pending && pending.job.editVersion >= job.editVersion) return;
-    this.jobs.set(job.key, { job, remainingMs: job.estimatedUploadMs });
+    this.jobs.set(job.key, { job, remainingBytes: meshByteLength(job.mesh) });
   }
 
   retain(keys: ReadonlySet<string>): void {
@@ -35,31 +42,38 @@ export class RenderUploadQueue {
     }
   }
 
-  drain(budgetMs: number, upload: (job: UploadJob) => void): RenderUploadDrain {
-    const budget = Math.max(0, budgetMs);
+  drain(budgetMs: number, sink: UploadSink): RenderUploadDrain {
+    const budgetBytes = Math.floor(Math.max(0, budgetMs) * BYTES_PER_UPLOAD_MILLISECOND);
     let uploads = 0;
     let uploadedBytes = 0;
-    let spentMs = 0;
+    let spentBytes = 0;
     for (const [key, pending] of this.jobs) {
-      const remainingBudget = budget - spentMs;
-      const sliceMs = Math.min(pending.remainingMs, remainingBudget);
-      pending.remainingMs -= sliceMs;
-      spentMs += sliceMs;
-      if (pending.remainingMs > 0) break;
+      const remainingBudget = budgetBytes - spentBytes;
+      if (remainingBudget <= 0) break;
+      const maxBytes = Math.min(remainingBudget, pending.remainingBytes);
+      const staged = sink.stage(pending.job, maxBytes);
+      const accepted = Math.max(0, Math.min(staged, maxBytes));
+      pending.remainingBytes -= accepted;
+      spentBytes += accepted;
+      if (pending.remainingBytes > 0) break;
 
-      upload(pending.job);
+      sink.commit(pending.job);
       this.jobs.delete(key);
       uploads += 1;
       uploadedBytes += meshByteLength(pending.job.mesh);
-      if (spentMs >= budget) break;
     }
-    return Object.freeze({ uploads, uploadedBytes, spentMs, queued: this.jobs.size });
+    return Object.freeze({
+      uploads,
+      uploadedBytes,
+      spentMs: spentBytes / BYTES_PER_UPLOAD_MILLISECOND,
+      queued: this.jobs.size,
+    });
   }
 }
 
 export function meshByteLength(mesh: OpaqueMesh): number {
   return mesh.positions.byteLength
-    + mesh.normals.byteLength
+    + mesh.normals.length * Float32Array.BYTES_PER_ELEMENT
     + mesh.uvs.byteLength
     + mesh.materialIds.byteLength
     + mesh.indices.byteLength;

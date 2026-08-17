@@ -12,7 +12,7 @@ import {
 import { WebGLNodesHandler } from 'three/addons/tsl/WebGLNodesHandler.js';
 import type { UploadJob } from '../workers/protocol';
 import { detectRenderBackend } from './backend';
-import { RenderPage, type CameraFrustum, type RenderPageTarget } from './render-page';
+import { RenderPage, RenderStaging, type CameraFrustum, type RenderPageTarget } from './render-page';
 import { TerrainLod } from './terrain-lod';
 import { WaterSurface } from './water';
 
@@ -92,6 +92,7 @@ export class RendererAdapter {
     },
   };
   private readonly pages = new Map<string, RenderPage>();
+  private readonly stagings = new Map<string, RenderStaging>();
   private readonly objects = new Map<string, Mesh>();
   private readonly terrainLod = new TerrainLod();
   private readonly water = new WaterSurface();
@@ -127,6 +128,11 @@ export class RendererAdapter {
 
   enqueueUpload(job: UploadJob): void {
     if (this.disposed) return;
+    const previousStaging = this.stagings.get(job.key);
+    if (previousStaging) {
+      previousStaging.cancel();
+      this.stagings.delete(job.key);
+    }
     let page = this.pages.get(job.key);
     if (!page) {
       const target: RenderPageTarget = {
@@ -138,10 +144,56 @@ export class RendererAdapter {
     page.replace(job.mesh);
   }
 
+  stageUpload(job: UploadJob, maxBytes: number): number {
+    if (this.disposed || maxBytes <= 0) return 0;
+    let staging: RenderStaging | null = this.stagings.get(job.key) ?? null;
+    if (!staging || staging.sourceVersion !== job.mesh.sourceVersion) {
+      staging?.cancel();
+      this.stagings.delete(job.key);
+      let page = this.pages.get(job.key);
+      if (!page) {
+        const target: RenderPageTarget = {
+          swap: (previous, next) => this.swapObject(job.key, previous, next),
+        };
+        page = new RenderPage(job.key, undefined, target);
+        this.pages.set(job.key, page);
+      }
+      staging = page.beginStaging(job.mesh);
+      if (!staging) return 0;
+      this.stagings.set(job.key, staging);
+    }
+    return staging.stage(maxBytes);
+  }
+
+  commitUpload(job: UploadJob): void {
+    if (this.disposed) return;
+    const staging = this.stagings.get(job.key);
+    if (!staging || staging.sourceVersion !== job.mesh.sourceVersion) return;
+    staging.commit();
+    this.stagings.delete(job.key);
+  }
+
+  cancelUpload(key: string): void {
+    const staging = this.stagings.get(key);
+    if (!staging) return;
+    staging.cancel();
+    this.stagings.delete(key);
+  }
+
+  removePage(key: string): void {
+    if (this.disposed) return;
+    const page = this.pages.get(key);
+    if (!page) return;
+    this.cancelUpload(key);
+    page.dispose();
+    this.pages.delete(key);
+  }
+
   retainPages(keys: ReadonlySet<string>): void {
     if (this.disposed) return;
     for (const [key, page] of this.pages) {
       if (keys.has(key)) continue;
+      this.cancelUpload(key);
       page.dispose();
       this.pages.delete(key);
     }
@@ -199,6 +251,7 @@ export class RendererAdapter {
     this.water.dispose();
     this.scene.clear();
     this.pages.clear();
+    this.stagings.clear();
     this.objects.clear();
     this.driver.dispose();
   }
