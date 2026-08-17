@@ -33,6 +33,10 @@ export class InMemoryWorld implements WorldQuery {
     return blockById(this.getBlock(pos)).solid;
   }
 
+  getOrientation(pos: BlockPos): number | undefined {
+    return this.overlay.getOrientation(pos);
+  }
+
   raycast(origin: Vec3, direction: Vec3, maxDistance: number): VoxelHit | null {
     if (maxDistance < 0 || !Number.isFinite(maxDistance)) return null;
 
@@ -79,7 +83,7 @@ export class InMemoryWorld implements WorldQuery {
     const changedSections: SectionPos[] = [];
     const changedKeys = new Set<string>();
     for (const edit of edits) {
-      const section = this.overlay.set(edit.pos, edit.blockId);
+      const section = this.overlay.set(edit.pos, edit.blockId, edit.orientation);
       const key = `${section.x},${section.y},${section.z}`;
       if (!changedKeys.has(key)) {
         changedKeys.add(key);
