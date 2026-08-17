@@ -32,16 +32,27 @@ describe('RenderUploadQueue', () => {
     expect(result).toEqual({ uploads: 2, uploadedBytes: 74, spentMs: 2, queued: 1 });
   });
 
-  it('keeps the head job queued when its estimate exceeds the frame budget', () => {
+  it('resumes an oversized head across bounded frames and then processes later jobs atomically', () => {
     const queue = new RenderUploadQueue();
     queue.enqueue(job('oversized', 2.5));
+    queue.enqueue(job('later', 1));
+    const uploaded: string[] = [];
 
-    expect(queue.drain(2, () => { throw new Error('must remain queued'); })).toEqual({
+    const firstFrame = queue.drain(2, (upload) => uploaded.push(upload.key));
+    expect(uploaded).toEqual([]);
+    queue.enqueue(job('oversized', 2.5));
+    const secondFrame = queue.drain(2, (upload) => uploaded.push(upload.key));
+
+    expect(firstFrame).toEqual({
       uploads: 0,
       uploadedBytes: 0,
-      spentMs: 0,
-      queued: 1,
+      spentMs: 2,
+      queued: 2,
     });
+    expect(uploaded).toEqual(['oversized', 'later']);
+    expect(secondFrame).toEqual({ uploads: 2, uploadedBytes: 74, spentMs: 1.5, queued: 0 });
+    expect(firstFrame.spentMs).toBeLessThanOrEqual(2);
+    expect(secondFrame.spentMs).toBeLessThanOrEqual(2);
   });
 
   it('retains only loaded keys and replaces a queued key with its newest version', () => {

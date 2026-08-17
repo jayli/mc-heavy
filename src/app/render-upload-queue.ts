@@ -8,8 +8,13 @@ export type RenderUploadDrain = Readonly<{
   queued: number;
 }>;
 
+type PendingUpload = {
+  job: UploadJob;
+  remainingMs: number;
+};
+
 export class RenderUploadQueue {
-  private readonly jobs = new Map<string, UploadJob>();
+  private readonly jobs = new Map<string, PendingUpload>();
 
   get queued(): number {
     return this.jobs.size;
@@ -19,7 +24,9 @@ export class RenderUploadQueue {
     if (!Number.isFinite(job.estimatedUploadMs) || job.estimatedUploadMs < 0) {
       throw new Error('Upload estimate must be a finite, non-negative number');
     }
-    this.jobs.set(job.key, job);
+    const pending = this.jobs.get(job.key);
+    if (pending && pending.job.editVersion >= job.editVersion) return;
+    this.jobs.set(job.key, { job, remainingMs: job.estimatedUploadMs });
   }
 
   retain(keys: ReadonlySet<string>): void {
@@ -33,13 +40,18 @@ export class RenderUploadQueue {
     let uploads = 0;
     let uploadedBytes = 0;
     let spentMs = 0;
-    for (const [key, job] of this.jobs) {
-      if (spentMs + job.estimatedUploadMs > budget) break;
-      upload(job);
+    for (const [key, pending] of this.jobs) {
+      const remainingBudget = budget - spentMs;
+      const sliceMs = Math.min(pending.remainingMs, remainingBudget);
+      pending.remainingMs -= sliceMs;
+      spentMs += sliceMs;
+      if (pending.remainingMs > 0) break;
+
+      upload(pending.job);
       this.jobs.delete(key);
       uploads += 1;
-      uploadedBytes += meshByteLength(job.mesh);
-      spentMs += job.estimatedUploadMs;
+      uploadedBytes += meshByteLength(pending.job.mesh);
+      if (spentMs >= budget) break;
     }
     return Object.freeze({ uploads, uploadedBytes, spentMs, queued: this.jobs.size });
   }
