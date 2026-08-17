@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "runStartedAt": "2026-08-17T18:06:04.051Z",
+  "completedAt": "2026-08-17T18:11:05.245Z",
+  "backend": "webgpu",
+  "durationMs": 300000,
+  "seed": 1592594996,
+  "path": {
+    "legDurationMs": 75000,
+    "speedBlocksPerSecond": 4,
+    "totalDistanceBlocks": 1200,
+    "legs": [
+      {
+        "x": 1,
+        "z": 0
+      },
+      {
+        "x": 0,
+        "z": 1
+      },
+      {
+        "x": -1,
+        "z": 0
+      },
+      {
+        "x": 0,
+        "z": -1
+      }
+    ]
+  },
+  "frames": 36001,
+  "averageFps": 120.00065331874255,
+  "p95FrameMs": 9.299999999988358,
+  "p99FrameMs": 10.100000000034925,
+  "onePercentLowFps": 97.53329911110775
+}
