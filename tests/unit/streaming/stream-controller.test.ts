@@ -4,6 +4,8 @@ import type { OpaqueMesh } from '../../../src/meshing/mesh-types';
 import { StreamController } from '../../../src/streaming/stream-controller';
 import type { WorkRequest } from '../../../src/workers/protocol';
 
+const freshWorldEditVersion = (): number => 0;
+
 function emptyMesh(sourceVersion = 0): OpaqueMesh {
   return {
     positions: new Float32Array(),
@@ -15,8 +17,8 @@ function emptyMesh(sourceVersion = 0): OpaqueMesh {
   };
 }
 
-function requestedStream(): StreamController {
-  const stream = new StreamController();
+function requestedStream(editVersionForKey = freshWorldEditVersion): StreamController {
+  const stream = new StreamController(editVersionForKey);
   stream.requestVisibleColumns({ x: 0, z: 0 }, { x: 0, z: 0 }, 0);
   return stream;
 }
@@ -54,8 +56,7 @@ function queueUpload(stream: StreamController): void {
 describe('StreamController', () => {
   it('rejects a mesh result whose editVersion is older than the loaded section', () => {
     const section = sectionAtVersion(2);
-    const stream = new StreamController({ editVersionForKey: () => section.editVersion });
-    stream.requestVisibleColumns({ x: 0, z: 0 }, { x: 0, z: 0 }, 0);
+    const stream = requestedStream(() => section.editVersion);
     const generate = take(stream, 'generate');
     expect(
       stream.acceptGenerated({
@@ -73,8 +74,7 @@ describe('StreamController', () => {
 
   it('hands the accepted generated section to the mesh work request', () => {
     const section = sectionAtVersion(2);
-    const stream = new StreamController({ editVersionForKey: () => section.editVersion });
-    stream.requestVisibleColumns({ x: 0, z: 0 }, { x: 0, z: 0 }, 0);
+    const stream = requestedStream(() => section.editVersion);
     const generate = take(stream, 'generate');
     expect(stream.acceptGenerated({ ...generate, section })).toBe(true);
 
@@ -110,15 +110,80 @@ describe('StreamController', () => {
     ).toBe(false);
   });
 
+  it('requeues a new generation epoch when the live edit version changes in flight', () => {
+    let liveVersion = 2;
+    const stream = requestedStream(() => liveVersion);
+    const staleGenerate = take(stream, 'generate');
+    liveVersion = 3;
+
+    expect(stream.acceptGenerated({ ...staleGenerate, section: sectionAtVersion(2) })).toBe(false);
+
+    const replacement = take(stream, 'generate');
+    expect(replacement).toMatchObject({
+      key: staleGenerate.key,
+      epoch: staleGenerate.epoch + 1,
+      editVersion: 3,
+      kind: 'generate',
+    });
+    expect(replacement).not.toHaveProperty('section');
+  });
+
+  it('requeues an in-flight generation on a visibility refresh after the version changes', () => {
+    let liveVersion = 2;
+    const stream = requestedStream(() => liveVersion);
+    const staleGenerate = take(stream, 'generate');
+    liveVersion = 3;
+    stream.requestVisibleColumns({ x: 0, z: 0 }, { x: 0, z: 0 }, 0);
+
+    const replacement = take(stream, 'generate');
+    expect(replacement).toMatchObject({
+      key: staleGenerate.key,
+      epoch: staleGenerate.epoch + 1,
+      editVersion: 3,
+    });
+    expect(stream.acceptGenerated({ ...staleGenerate, section: sectionAtVersion(2) })).toBe(false);
+    expect(stream.acceptGenerated({ ...replacement, section: sectionAtVersion(3) })).toBe(true);
+  });
+
+  it('requeues a new generation epoch when the live version changes during meshing', () => {
+    let liveVersion = 2;
+    const stream = requestedStream(() => liveVersion);
+    const generate = take(stream, 'generate');
+    expect(stream.acceptGenerated({ ...generate, section: sectionAtVersion(2) })).toBe(true);
+    const staleMesh = take(stream, 'mesh');
+    liveVersion = 3;
+
+    expect(stream.acceptMeshed({ ...staleMesh, mesh: emptyMesh(2) })).toBe(false);
+
+    const replacement = take(stream, 'generate');
+    expect(replacement).toMatchObject({
+      key: staleMesh.key,
+      epoch: staleMesh.epoch + 1,
+      editVersion: 3,
+      kind: 'generate',
+    });
+    expect(replacement).not.toHaveProperty('section');
+  });
+
+  it('does not cancel a current mesh flight for a result with only a stale callback version', () => {
+    const stream = requestedStream(() => 2);
+    const generate = take(stream, 'generate');
+    expect(stream.acceptGenerated({ ...generate, section: sectionAtVersion(2) })).toBe(true);
+    const mesh = take(stream, 'mesh');
+
+    expect(stream.acceptMeshed({ ...mesh, editVersion: 1, mesh: emptyMesh(1) })).toBe(false);
+    expect(stream.acceptMeshed({ ...mesh, mesh: emptyMesh(2) })).toBe(true);
+  });
+
   it('assigns a higher request priority to columns in the velocity direction', () => {
-    const stream = new StreamController();
+    const stream = requestedStream();
     stream.requestVisibleColumns({ x: 0, z: 0 }, { x: 1, z: 0 }, 2);
 
     expect(stream.peekPriority({ x: 2, z: 0 })).toBeGreaterThan(stream.peekPriority({ x: -2, z: 0 }));
   });
 
   it('returns no more jobs than fit in the declared upload budget', () => {
-    const stream = new StreamController();
+    const stream = requestedStream();
     stream.requestVisibleColumns({ x: 0, z: 0 }, { x: 0, z: 0 }, 1);
     queueUpload(stream);
     queueUpload(stream);
@@ -136,7 +201,7 @@ describe('StreamController', () => {
   });
 
   it('throws with the section key when an illegal lifecycle edge is attempted', () => {
-    const stream = new StreamController();
+    const stream = requestedStream();
     const internals = stream as unknown as {
       transition(
         record: { key: string; state: 'absent' },
