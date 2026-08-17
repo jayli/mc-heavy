@@ -26,4 +26,20 @@ describe('InMemoryWorld raycast', () => {
       block: { x: 0, y: 2, z: 0 }, normal: { x: 0, y: -1, z: 0 }, blockId: 1,
     });
   });
+
+  it('does not report a voxel touched only at a diagonal boundary corner', () => {
+    const world = new InMemoryWorld();
+    world.applyEdits([{ pos: { x: 1, y: 0, z: 0 }, blockId: 1 }]);
+
+    expect(world.raycast({ x: 0.5, y: 0.5, z: 0.5 }, { x: 1, y: 1, z: 0 }, 8)).toBeNull();
+  });
+
+  it('reports the diagonally entered voxel with no ambiguous entered-face normal', () => {
+    const world = new InMemoryWorld();
+    world.applyEdits([{ pos: { x: 1, y: 1, z: 0 }, blockId: 1 }]);
+
+    expect(world.raycast({ x: 0.5, y: 0.5, z: 0.5 }, { x: 1, y: 1, z: 0 }, 8)).toMatchObject({
+      block: { x: 1, y: 1, z: 0 }, normal: { x: 0, y: 0, z: 0 }, blockId: 1,
+    });
+  });
 });

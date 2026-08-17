@@ -60,12 +60,14 @@ export class InMemoryWorld implements WorldQuery {
       const hit = this.hitAt(voxel, normal, distance);
       if (hit) return hit;
 
-      const axis = nextAxis(axes);
-      distance = axis.tMax;
+      const enteredAxes = nextAxes(axes);
+      distance = enteredAxes[0].tMax;
       if (distance > maxDistance) return null;
-      axis.tMax += axis.tDelta;
-      voxel = moveVoxel(voxel, axis.index, axis.step);
-      normal = faceNormal(axis.index, axis.step);
+      for (const axis of enteredAxes) axis.tMax += axis.tDelta;
+      voxel = moveAcrossBoundary(voxel, enteredAxes);
+      normal = enteredAxes.length === 1
+        ? faceNormal(enteredAxes[0].index, enteredAxes[0].step)
+        : { x: 0, y: 0, z: 0 };
     }
 
     return null;
@@ -103,17 +105,19 @@ const createAxis = (index: Axis['index'], origin: number, voxel: number, directi
   return { index, step, tMax: (boundary - origin) / direction, tDelta: 1 / Math.abs(direction) };
 };
 
-const nextAxis = (axes: readonly Axis[]): Axis => {
-  const [x, y, z] = axes;
-  if (x.tMax <= y.tMax && x.tMax <= z.tMax) return x;
-  if (y.tMax <= z.tMax) return y;
-  return z;
+const nextAxes = (axes: readonly Axis[]): readonly Axis[] => {
+  const nextDistance = Math.min(...axes.map((axis) => axis.tMax));
+  return axes.filter((axis) => axis.tMax === nextDistance);
 };
 
-const moveVoxel = (voxel: BlockPos, axis: Axis['index'], step: number): BlockPos => {
-  if (axis === 0) return { ...voxel, x: voxel.x + step };
-  if (axis === 1) return { ...voxel, y: voxel.y + step };
-  return { ...voxel, z: voxel.z + step };
+const moveAcrossBoundary = (voxel: BlockPos, axes: readonly Axis[]): BlockPos => {
+  const next = { ...voxel };
+  for (const axis of axes) {
+    if (axis.index === 0) next.x += axis.step;
+    if (axis.index === 1) next.y += axis.step;
+    if (axis.index === 2) next.z += axis.step;
+  }
+  return next;
 };
 
 const faceNormal = (axis: Axis['index'], step: number): BlockPos => {
