@@ -1,5 +1,10 @@
+import { indexedDB } from 'fake-indexeddb';
 import { describe, expect, it } from 'vitest';
-import { parseLegacySnapshot } from '../../../src/persistence/legacy-import';
+import {
+  importFromLegacyIndexedDb,
+  LEGACY_SAME_ORIGIN_GUIDANCE,
+  parseLegacySnapshot,
+} from '../../../src/persistence/legacy-import';
 
 describe('parseLegacySnapshot', () => {
   it('converts a legacy string coordinate and oriented entry into a block edit', () => {
@@ -63,8 +68,59 @@ describe('parseLegacySnapshot', () => {
     });
   });
 
+  it.each([
+    ['array', [{ id: 'z-1' }, { id: 'z-2' }], 2],
+    ['primitive', 'zombie', 1],
+    ['null', null, 1],
+  ])('preserves an unsupported %s entity shape', (_shape, entities, preservedEntries) => {
+    const result = parseLegacySnapshot({
+      player: { x: 0, y: 0, z: 0, pitch: 0, yaw: 0 },
+      seed: 9,
+      worldDeltas: [{ key: '0,0', blocks: {}, entities }],
+    });
+
+    expect(result.report).toEqual({
+      importedBlocks: 0,
+      preservedEntries,
+      warnings: [`Preserved ${preservedEntries} unsupported entities in chunk "0,0"`],
+    });
+  });
+
+  it('preserves a block with an invalid legacy orientation instead of silently rewriting it', () => {
+    const result = parseLegacySnapshot({
+      player: { x: 0, y: 0, z: 0, pitch: 0, yaw: 0 },
+      seed: 9,
+      worldDeltas: [{ key: '0,0', blocks: { '1,2,3': { type: 'wood', orientation: 4 } }, entities: {} }],
+    });
+
+    expect(result).toMatchObject({
+      edits: [],
+      report: {
+        importedBlocks: 0,
+        preservedEntries: 1,
+        warnings: ['Preserved block with invalid orientation at 1,2,3'],
+      },
+    });
+  });
+
   it('rejects the known empty Promise-shaped mc-lite export instead of claiming success', () => {
     expect(() => parseLegacySnapshot({ version: '1.0', exportedAt: '2026-08-17T00:00:00Z' }))
       .toThrow('Legacy save is missing player or worldDeltas');
   });
+
+  it('does not create an empty legacy database when no same-origin legacy save exists', async () => {
+    await deleteDatabase('mc_lite_manual_saves');
+
+    await expect(importFromLegacyIndexedDb(indexedDB)).rejects.toThrow(LEGACY_SAME_ORIGIN_GUIDANCE);
+
+    expect((await indexedDB.databases()).some((database) => database.name === 'mc_lite_manual_saves')).toBe(false);
+  });
 });
+
+function deleteDatabase(name: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.deleteDatabase(name);
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+  });
+}

@@ -38,11 +38,11 @@ describe('SnapshotStore', () => {
   });
 
   it('keeps the previous current manifest if writing the next snapshot fails before commit', async () => {
-    const store = new SnapshotStore(indexedDB);
-    await store.save(snapshotNamed('one'));
-    await addExistingEntityRecord('two');
+    const previousStore = new SnapshotStore(indexedDB);
+    await previousStore.save(snapshotNamed('one'));
+    const store = new SnapshotStore(indexedDB, () => new Error('quota'));
 
-    await expect(store.save(snapshotNamed('two'))).rejects.toThrow();
+    await expect(store.save(snapshotNamed('two'))).rejects.toThrow('quota');
 
     expect((await store.loadCurrent())?.id).toBe('one');
   });
@@ -72,23 +72,3 @@ describe('SnapshotStore', () => {
     await expect(store.loadCurrent()).resolves.toBeNull();
   });
 });
-
-function addExistingEntityRecord(id: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(databaseName);
-    request.onerror = () => reject(request.error);
-    request.onsuccess = () => {
-      const database = request.result;
-      const transaction = database.transaction('entities', 'readwrite');
-      transaction.objectStore('entities').add({ id, entries: [] });
-      transaction.oncomplete = () => {
-        database.close();
-        resolve();
-      };
-      transaction.onerror = () => {
-        database.close();
-        reject(transaction.error);
-      };
-    };
-  });
-}

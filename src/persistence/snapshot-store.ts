@@ -26,7 +26,10 @@ const DATABASE_VERSION = 1;
 const CURRENT_MANIFEST_KEY = 'currentManifestId';
 
 export class SnapshotStore {
-  constructor(private readonly indexedDb: IDBFactory = globalThis.indexedDB) {}
+  constructor(
+    private readonly indexedDb: IDBFactory = globalThis.indexedDB,
+    private readonly failureAfterSectionWrites?: () => Error | undefined,
+  ) {}
 
   async save(snapshot: WorldSnapshot): Promise<void> {
     const validSnapshot = validateSnapshot(snapshot);
@@ -37,6 +40,12 @@ export class SnapshotStore {
       const sectionStore = transaction.objectStore('sections');
       for (const section of sections) sectionStore.put(section);
       transaction.objectStore('entities').add({ id: validSnapshot.id, entries: [] });
+      const injectedFailure = this.failureAfterSectionWrites?.();
+      if (injectedFailure) {
+        transaction.abort();
+        await transactionDone(transaction).catch(() => undefined);
+        throw injectedFailure;
+      }
       transaction.objectStore('manifests').put({
         id: validSnapshot.id,
         seed: validSnapshot.seed,

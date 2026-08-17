@@ -59,6 +59,11 @@ export function parseLegacySnapshot(input: unknown): ParsedLegacySnapshot {
         warnings.push(`Preserved invalid block entry at ${position.x},${position.y},${position.z}`);
         continue;
       }
+      if (!parsedEntry.orientationValid) {
+        preservedEntries += 1;
+        warnings.push(`Preserved block with invalid orientation at ${position.x},${position.y},${position.z}`);
+        continue;
+      }
 
       try {
         const block = blockByKey(parsedEntry.type);
@@ -120,10 +125,12 @@ function parseChunk(value: unknown): LegacyChunk {
   return { key: value.key, blocks: value.blocks, entities: value.entities };
 }
 
-function parseBlockEntry(value: unknown): Readonly<{ type: string; orientation: number }> | null {
-  if (typeof value === 'string') return { type: value, orientation: 0 };
+function parseBlockEntry(value: unknown): Readonly<{ type: string; orientation: number; orientationValid: boolean }> | null {
+  if (typeof value === 'string') return { type: value, orientation: 0, orientationValid: true };
   if (!isRecord(value) || typeof value.type !== 'string') return null;
-  return { type: value.type, orientation: validOrientation(value.orientation) ? value.orientation : 0 };
+  if (!Object.hasOwn(value, 'orientation')) return { type: value.type, orientation: 0, orientationValid: true };
+  if (!validOrientation(value.orientation)) return { type: value.type, orientation: 0, orientationValid: false };
+  return { type: value.type, orientation: value.orientation, orientationValid: true };
 }
 
 function decodeLegacyPosition(key: string): Readonly<{ x: number; y: number; z: number }> | null {
@@ -150,7 +157,9 @@ function decodeLegacyPosition(key: string): Readonly<{ x: number; y: number; z: 
 }
 
 function countEntries(value: unknown): number {
-  if (!isRecord(value)) return 0;
+  if (value === undefined) return 0;
+  if (Array.isArray(value)) return Math.max(1, value.length);
+  if (!isRecord(value)) return 1;
   return Object.values(value).reduce<number>((count, entry) => count + (Array.isArray(entry) ? entry.length : 1), 0);
 }
 
@@ -166,7 +175,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function openLegacyDatabase(indexedDb: IDBFactory): Promise<IDBDatabase> {
+async function openLegacyDatabase(indexedDb: IDBFactory): Promise<IDBDatabase> {
+  try {
+    const databases = await indexedDb.databases();
+    if (!databases.some((database) => database.name === 'mc_lite_manual_saves')) {
+      throw new Error(LEGACY_SAME_ORIGIN_GUIDANCE);
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message === LEGACY_SAME_ORIGIN_GUIDANCE) throw error;
+    throw new Error(LEGACY_SAME_ORIGIN_GUIDANCE);
+  }
   return new Promise((resolve, reject) => {
     let request: IDBOpenDBRequest;
     try {
