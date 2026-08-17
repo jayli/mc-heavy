@@ -43,6 +43,48 @@ function failOnceWorkerFactory(): Readonly<{
   };
 }
 
+function crashOnceWorkerFactory(): Readonly<{
+  factory: WorkerFactory;
+  armForKey(key: string): void;
+  generationWorkerCreations(): number;
+}> {
+  const delegate = createInProcessWorkerFactory();
+  let crashKey: string | undefined;
+  let creations = 0;
+  return {
+    armForKey: (key) => {
+      crashKey = key;
+    },
+    generationWorkerCreations: () => creations,
+    factory: {
+      createGenerationWorker() {
+        creations += 1;
+        const inner = delegate.createGenerationWorker();
+        const port: WorkerPort<GenerationWorkerRequest, GenerationWorkerResponse> = {
+          onmessage: null,
+          onerror: null,
+          postMessage(message, transfer) {
+            if (message.key === crashKey) {
+              crashKey = undefined;
+              queueMicrotask(() => {
+                const error = new Error('generation worker crashed');
+                port.onerror?.({ error, message: error.message } as ErrorEvent);
+              });
+              return;
+            }
+            inner.postMessage(message, transfer);
+          },
+          terminate: () => inner.terminate(),
+        };
+        inner.onmessage = (event) => port.onmessage?.(event);
+        inner.onerror = (event) => port.onerror?.(event);
+        return port;
+      },
+      createMeshingWorker: () => delegate.createMeshingWorker(),
+    },
+  };
+}
+
 describe('WorldService worker integration', () => {
   it('makes all nine spawn columns queryable before resolving prepareSpawn', async () => {
     const world = new WorldService({ seed: 123, workerFactory: createInProcessWorkerFactory() });
@@ -169,6 +211,22 @@ describe('WorldService worker integration', () => {
     await current;
     expect(world.loadedColumns()).toHaveLength(9);
     expect(world.loadedColumns().every(({ x }) => x >= 99 && x <= 101)).toBe(true);
+    world.dispose();
+  });
+
+  it('replaces a crashed generation worker and retries the current ring after supersession', async () => {
+    const controlled = crashOnceWorkerFactory();
+    const world = new WorldService({ seed: 123, workerFactory: controlled.factory });
+    controlled.armForKey('100,0,0');
+
+    const superseded = world.prepareSpawn({ x: 0, z: 0 });
+    const current = world.prepareSpawn({ x: 100, z: 0 });
+
+    await expect(superseded).rejects.toThrow('superseded');
+    await current;
+    expect(world.loadedColumns()).toHaveLength(9);
+    expect(world.loadedColumns().every(({ x }) => x >= 99 && x <= 101)).toBe(true);
+    expect(controlled.generationWorkerCreations()).toBeGreaterThan(1);
     world.dispose();
   });
 

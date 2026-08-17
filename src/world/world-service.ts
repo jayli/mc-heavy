@@ -5,6 +5,7 @@ import type { OpaqueMesh } from '../meshing/mesh-types';
 import { StreamController } from '../streaming/stream-controller';
 import type { ColumnPos, MeshWorkRequest, UploadJob, Vec2, WorkRequest } from '../workers/protocol';
 import {
+  isWorkerWideError,
   WorkerClient,
   type WorkerFactory,
 } from '../workers/worker-client';
@@ -310,6 +311,10 @@ export class WorldService implements WorldQuery {
       if (work.kind === 'generate') await this.generate(work);
       else await this.mesh(work);
     } catch (reason) {
+      if (isWorkerWideError(reason)) {
+        if (this.stream.rejectWork(work)) this.refreshVisibilityNow();
+        return;
+      }
       if (this.handleWorkerFailure({ key: work.key, epoch: work.epoch, reason })) throw reason;
     }
   }
@@ -417,6 +422,12 @@ export class WorldService implements WorldQuery {
   private refreshAfterHaloArrival(): void {
     if (!this.haloRefreshNeeded || !this.visibility) return;
     this.haloRefreshNeeded = false;
+    const { center, velocity, radius } = this.visibility;
+    this.stream.requestVisibleColumns(center, velocity, radius);
+  }
+
+  private refreshVisibilityNow(): void {
+    if (!this.visibility) return;
     const { center, velocity, radius } = this.visibility;
     this.stream.requestVisibleColumns(center, velocity, radius);
   }
