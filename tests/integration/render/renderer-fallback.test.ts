@@ -111,6 +111,73 @@ describe('RendererAdapter fallback', () => {
     adapter.dispose();
   });
 
+  it('derives section visibility from the real camera frustum', async () => {
+    const visiblePageCounts: number[] = [];
+    const driver: RendererDriver = {
+      backend: 'webgl2',
+      render(scene) {
+        visiblePageCounts.push(scene.children.filter(
+          (child) => child.visible && child.name.startsWith('section:'),
+        ).length);
+      },
+      dispose() {},
+    };
+    const adapter = await RendererAdapter.create(canvasWithWebGL2Only({} as WebGL2RenderingContext), {
+      capabilities: { gpu: undefined },
+      rendererFactory: {
+        async createWebGPU() { throw new Error('unexpected WebGPU'); },
+        createWebGL2() { return driver; },
+      },
+    });
+    adapter.enqueueUpload({ key: '0,0,-2', editVersion: 1, mesh, estimatedUploadMs: 1 });
+    adapter.enqueueUpload({ key: '0,0,1', editVersion: 1, mesh, estimatedUploadMs: 1 });
+
+    adapter.render({
+      camera: {
+        position: { x: 8, y: 8, z: 8 },
+        direction: { x: 0, y: 0, z: -1 },
+        aspect: 1,
+      },
+      timeMs: 0,
+    });
+
+    expect(adapter.diagnostics()).toEqual({ pageCount: 2, visiblePageCount: 1 });
+    expect(visiblePageCounts).toEqual([1]);
+    adapter.dispose();
+  });
+
+  it('disposes pages that leave the retained loaded-key set', async () => {
+    let submittedScene: Scene | undefined;
+    const driver: RendererDriver = {
+      backend: 'webgl2',
+      render(scene) { submittedScene = scene; },
+      dispose() {},
+    };
+    const adapter = await RendererAdapter.create(canvasWithWebGL2Only({} as WebGL2RenderingContext), {
+      capabilities: { gpu: undefined },
+      rendererFactory: {
+        async createWebGPU() { throw new Error('unexpected WebGPU'); },
+        createWebGL2() { return driver; },
+      },
+    });
+    adapter.enqueueUpload({ key: '0,0,0', editVersion: 1, mesh, estimatedUploadMs: 1 });
+    adapter.enqueueUpload({ key: '1,0,0', editVersion: 1, mesh, estimatedUploadMs: 1 });
+    adapter.render({
+      camera: { intersectsAabb: () => true, position: { x: 0, y: 0, z: 0 } },
+      timeMs: 0,
+    });
+    const evicted = submittedScene?.getObjectByName('section:1,0,0') as Mesh | undefined;
+    let geometryDisposals = 0;
+    evicted?.geometry.addEventListener('dispose', () => { geometryDisposals += 1; });
+
+    adapter.retainPages(new Set(['0,0,0']));
+
+    expect(adapter.diagnostics()).toEqual({ pageCount: 1, visiblePageCount: 1 });
+    expect(submittedScene?.getObjectByName('section:1,0,0')).toBeUndefined();
+    expect(geometryDisposals).toBe(1);
+    adapter.dispose();
+  });
+
   it('rejects clearly when neither WebGPU nor WebGL2 is available', async () => {
     const canvas = canvasWithWebGL2Only(null);
 

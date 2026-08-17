@@ -3,7 +3,6 @@ import type { BlockPos } from '../domain/coords';
 import { Inventory } from '../gameplay/inventory';
 import { PlayerController } from '../gameplay/player-controller';
 import { PlayerInteraction } from '../gameplay/player-interaction';
-import type { OpaqueMesh } from '../meshing/mesh-types';
 import {
   RendererAdapter,
   type RendererAdapterOptions,
@@ -12,10 +11,18 @@ import type { WorkerFactory } from '../workers/worker-client';
 import { WorldService } from '../world/world-service';
 import { FrameMetrics } from '../benchmark/frame-metrics';
 import { GameHud } from './hud';
+import {
+  meshByteLength,
+  RenderUploadQueue,
+  type RenderUploadDrain,
+} from './render-upload-queue';
 
 const DEFAULT_SEED = 0x5eed_1234;
 const CAMERA_HEIGHT = 40;
 const HUD_UPDATE_INTERVAL_MS = 250;
+const RENDER_UPLOAD_BUDGET_MS = 2;
+const MINIMUM_UPLOAD_COST_MS = 1;
+const BYTES_PER_UPLOAD_MILLISECOND = 64 * 1_024;
 
 export type GameApp = Readonly<{
   player: PlayerController;
@@ -76,6 +83,7 @@ export async function createGameApp(
   container.append(hud.element);
 
   const uploadedVersions = new Map<string, number>();
+  const uploadQueue = new RenderUploadQueue();
   let totalUploadBytes = 0;
   let frameRequest = 0;
   let stopped = false;
@@ -138,7 +146,13 @@ export async function createGameApp(
     throw error;
   }
 
-  totalUploadBytes += drainUploads(world, renderer, uploadedVersions);
+  totalUploadBytes += updateRenderUploads(
+    world,
+    renderer,
+    uploadQueue,
+    uploadedVersions,
+    RENDER_UPLOAD_BUDGET_MS,
+  ).uploadedBytes;
   loading.remove();
   const ready = ownerDocument.createElement('div');
   ready.dataset.testid = 'world-ready';
@@ -165,9 +179,20 @@ export async function createGameApp(
     };
     previousPosition = position;
     world.updateStreaming(position, velocity);
-    totalUploadBytes += drainUploads(world, renderer, uploadedVersions);
+    totalUploadBytes += updateRenderUploads(
+      world,
+      renderer,
+      uploadQueue,
+      uploadedVersions,
+      RENDER_UPLOAD_BUDGET_MS,
+    ).uploadedBytes;
+    const facing = player.facing;
     renderer.render({
-      camera: { position, intersectsAabb: () => true },
+      camera: {
+        position,
+        direction: { x: facing.x, y: -0.45, z: facing.z },
+        aspect: canvas.clientHeight > 0 ? canvas.clientWidth / canvas.clientHeight : 1,
+      },
       timeMs: timestampMs,
     });
     metrics.recordFrame(timestampMs);
@@ -175,10 +200,12 @@ export async function createGameApp(
     if (timestampMs - lastHudUpdateMs >= HUD_UPDATE_INTERVAL_MS) {
       lastHudUpdateMs = timestampMs;
       const streaming = world.streamingDiagnostics();
+      const rendering = renderer.diagnostics();
       hud.update({
         backend: renderer.backend,
         metrics: metrics.summary(),
-        visibleSections: renderer.diagnostics().visiblePageCount,
+        renderPages: rendering.pageCount,
+        visibleSections: rendering.visiblePageCount,
         workerQueue: streaming.queuedWork + streaming.pendingMeshes,
         uploadBytes: totalUploadBytes,
       });
@@ -241,34 +268,36 @@ function adjacentSolidDirection(
   })) ?? null;
 }
 
-function drainUploads(
+function updateRenderUploads(
   world: WorldService,
   renderer: RendererAdapter,
+  uploadQueue: RenderUploadQueue,
   uploadedVersions: Map<string, number>,
-): number {
-  let uploadedBytes = 0;
+  budgetMs: number,
+): RenderUploadDrain {
+  const loadedKeys = new Set(world.loadedColumns().map(({ x, z }) => `${x},0,${z}`));
+  renderer.retainPages(loadedKeys);
+  uploadQueue.retain(loadedKeys);
+  for (const key of uploadedVersions.keys()) {
+    if (!loadedKeys.has(key)) uploadedVersions.delete(key);
+  }
+
   for (const { x, z } of world.loadedColumns()) {
     const key = `${x},0,${z}`;
     const mesh = world.visibleMeshFor(key);
     if (!mesh || uploadedVersions.get(key) === mesh.sourceVersion) continue;
-    renderer.enqueueUpload({
+    const bytes = meshByteLength(mesh);
+    uploadQueue.enqueue({
       key,
       editVersion: mesh.sourceVersion,
       mesh,
-      estimatedUploadMs: 0,
+      estimatedUploadMs: Math.max(MINIMUM_UPLOAD_COST_MS, bytes / BYTES_PER_UPLOAD_MILLISECOND),
     });
-    uploadedVersions.set(key, mesh.sourceVersion);
-    uploadedBytes += meshByteLength(mesh);
   }
-  return uploadedBytes;
-}
-
-function meshByteLength(mesh: OpaqueMesh): number {
-  return mesh.positions.byteLength
-    + mesh.normals.byteLength
-    + mesh.uvs.byteLength
-    + mesh.materialIds.byteLength
-    + mesh.indices.byteLength;
+  return uploadQueue.drain(budgetMs, (job) => {
+    renderer.enqueueUpload(job);
+    uploadedVersions.set(job.key, job.editVersion);
+  });
 }
 
 function showBootstrapError(error: unknown): void {

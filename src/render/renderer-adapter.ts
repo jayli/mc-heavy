@@ -1,7 +1,11 @@
 import {
+  Box3,
   Camera,
+  Frustum,
+  Matrix4,
   PerspectiveCamera,
   Scene,
+  Vector3,
   WebGLRenderer,
   type Mesh,
 } from 'three';
@@ -12,8 +16,14 @@ import { RenderPage, type CameraFrustum, type RenderPageTarget } from './render-
 import { TerrainLod } from './terrain-lod';
 import { WaterSurface } from './water';
 
+export type RenderCamera = Readonly<{
+  position: Readonly<{ x: number; y: number; z: number }>;
+  direction: Readonly<{ x: number; y: number; z: number }>;
+  aspect: number;
+}>;
+
 export type RenderFrame = Readonly<{
-  camera: CameraFrustum;
+  camera: CameraFrustum | RenderCamera;
   timeMs: number;
 }>;
 
@@ -70,6 +80,17 @@ export class RendererAdapter {
   private readonly driver: RendererDriver;
   private readonly scene = new Scene();
   private readonly camera = new PerspectiveCamera(70, 1, 0.1, 4_096);
+  private readonly viewProjection = new Matrix4();
+  private readonly viewFrustum = new Frustum();
+  private readonly visibilityBox = new Box3();
+  private readonly lookTarget = new Vector3();
+  private readonly physicalCameraFrustum: CameraFrustum = {
+    intersectsAabb: (bounds) => {
+      this.visibilityBox.min.set(bounds.min.x, bounds.min.y, bounds.min.z);
+      this.visibilityBox.max.set(bounds.max.x, bounds.max.y, bounds.max.z);
+      return this.viewFrustum.intersectsBox(this.visibilityBox);
+    },
+  };
   private readonly pages = new Map<string, RenderPage>();
   private readonly objects = new Map<string, Mesh>();
   private readonly terrainLod = new TerrainLod();
@@ -117,10 +138,23 @@ export class RendererAdapter {
     page.replace(job.mesh);
   }
 
+  retainPages(keys: ReadonlySet<string>): void {
+    if (this.disposed) return;
+    for (const [key, page] of this.pages) {
+      if (keys.has(key)) continue;
+      page.dispose();
+      this.pages.delete(key);
+    }
+    this.visiblePageCount = [...this.objects.values()].filter((object) => object.visible).length;
+  }
+
   render(frame: RenderFrame): void {
     if (this.disposed) return;
     const cameraPosition = frame.camera.position ?? this.camera.position;
     this.camera.position.copy(cameraPosition);
+    const pageFrustum = isPhysicalCamera(frame.camera)
+      ? this.updatePhysicalCamera(frame.camera)
+      : frame.camera;
     this.camera.updateMatrixWorld();
     this.terrainLod.update(cameraPosition);
     this.water.update(cameraPosition, frame.timeMs);
@@ -128,11 +162,29 @@ export class RendererAdapter {
     for (const [key, page] of this.pages) {
       const object = this.objects.get(key);
       if (!object) continue;
-      object.visible = page.isVisible(frame.camera);
+      object.visible = page.isVisible(pageFrustum);
       if (object.visible) visible += 1;
     }
     this.visiblePageCount = visible;
     this.driver.render(this.scene, this.camera);
+  }
+
+  private updatePhysicalCamera(camera: RenderCamera): CameraFrustum {
+    const aspect = Number.isFinite(camera.aspect) && camera.aspect > 0 ? camera.aspect : 1;
+    if (this.camera.aspect !== aspect) {
+      this.camera.aspect = aspect;
+      this.camera.updateProjectionMatrix();
+    }
+    this.lookTarget.set(
+      camera.position.x + camera.direction.x,
+      camera.position.y + camera.direction.y,
+      camera.position.z + camera.direction.z,
+    );
+    this.camera.lookAt(this.lookTarget);
+    this.camera.updateMatrixWorld();
+    this.viewProjection.multiplyMatrices(this.camera.projectionMatrix, this.camera.matrixWorldInverse);
+    this.viewFrustum.setFromProjectionMatrix(this.viewProjection);
+    return this.physicalCameraFrustum;
   }
 
   diagnostics(): Readonly<{ pageCount: number; visiblePageCount: number }> {
@@ -160,4 +212,8 @@ export class RendererAdapter {
     }
     if (previous) this.scene.remove(previous);
   }
+}
+
+function isPhysicalCamera(camera: CameraFrustum | RenderCamera): camera is RenderCamera {
+  return !('intersectsAabb' in camera);
 }

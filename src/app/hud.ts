@@ -3,6 +3,7 @@ import type { FrameMetricsSummary } from '../benchmark/frame-metrics';
 export type HudDiagnostics = Readonly<{
   backend: 'webgpu' | 'webgl2';
   metrics: FrameMetricsSummary;
+  renderPages: number;
   visibleSections: number;
   workerQueue: number;
   uploadBytes: number;
@@ -13,6 +14,7 @@ const rows = [
   ['average-fps', 'Average FPS'],
   ['one-percent-low', '1% low'],
   ['p99-frame-ms', 'p99 frame'],
+  ['render-pages', 'Render pages'],
   ['visible-sections', 'Visible sections'],
   ['worker-queue', 'Worker queue'],
   ['upload-bytes', 'Upload bytes'],
@@ -54,6 +56,7 @@ export class GameHud {
     this.set('average-fps', `Average FPS: ${diagnostics.metrics.averageFps.toFixed(1)}`);
     this.set('one-percent-low', `1% low: ${diagnostics.metrics.onePercentLowFps.toFixed(1)} FPS`);
     this.set('p99-frame-ms', `p99 frame: ${diagnostics.metrics.p99FrameMs.toFixed(1)} ms`);
+    this.set('render-pages', `Render pages: ${diagnostics.renderPages}`);
     this.set('visible-sections', `Visible sections: ${diagnostics.visibleSections}`);
     this.set('worker-queue', `Worker queue: ${diagnostics.workerQueue}`);
     this.set('upload-bytes', `Upload bytes: ${diagnostics.uploadBytes}`);
