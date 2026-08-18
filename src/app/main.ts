@@ -1,5 +1,6 @@
 import { blockById, blockByKey } from '../domain/blocks';
 import type { BlockPos } from '../domain/coords';
+import { MESH_CHANNELS } from '../meshing/mesh-types';
 import { Inventory } from '../gameplay/inventory';
 import { PlayerController } from '../gameplay/player-controller';
 import { PlayerInteraction } from '../gameplay/player-interaction';
@@ -20,6 +21,9 @@ import {
   type UploadSink,
 } from './render-upload-queue';
 import type { ChannelUploadJob } from '../render/render-page';
+import { channelUploadKey } from '../render/render-page';
+import { buildTextureAtlas } from '../render/texture-atlas';
+import { createTerrainMaterials } from '../render/materials';
 
 const DEFAULT_SEED = 0x5eed_1234;
 const CAMERA_HEIGHT = 50;
@@ -71,10 +75,13 @@ export async function createGameApp(
     workerFactory: options.workerFactory,
   });
   const seed = options.seed ?? DEFAULT_SEED;
+  const builtAtlas = await buildTextureAtlas();
+  const terrainMaterials = createTerrainMaterials(builtAtlas);
   let renderer: RendererAdapter;
   try {
-    renderer = await createRendererWithFallback(canvas, options.renderer);
+    renderer = await createRendererWithFallback(canvas, options.renderer, terrainMaterials);
   } catch (error) {
+    terrainMaterials.dispose();
     world.dispose();
     canvas.remove();
     loading.remove();
@@ -363,9 +370,10 @@ export async function createGameApp(
 async function createRendererWithFallback(
   canvas: HTMLCanvasElement,
   options: RendererAdapterOptions | undefined,
+  materials: ReturnType<typeof createTerrainMaterials>,
 ): Promise<RendererAdapter> {
   try {
-    return await RendererAdapter.create(canvas, options);
+    return await RendererAdapter.create(canvas, options, materials);
   } catch (webGpuError) {
     const gpu = options?.capabilities?.gpu
       ?? (canvas.ownerDocument.defaultView?.navigator as Navigator & { gpu?: unknown } | undefined)?.gpu;
@@ -373,7 +381,7 @@ async function createRendererWithFallback(
     return RendererAdapter.create(canvas, {
       ...options,
       capabilities: { gpu: undefined },
-    });
+    }, materials);
   }
 }
 
@@ -413,9 +421,13 @@ function updateRenderUploads(
 ): RenderUploadDrain {
   const loadedKeys = new Set(world.loadedSectionKeys());
   renderer.retainPages(loadedKeys);
-  uploadQueue.retain(loadedKeys);
+  const channelKeys = new Set<string>();
+  for (const key of loadedKeys) {
+    for (const channel of MESH_CHANNELS) channelKeys.add(channelUploadKey(key, channel));
+  }
+  uploadQueue.retain(channelKeys);
   for (const key of uploadedVersions.keys()) {
-    if (!loadedKeys.has(key)) uploadedVersions.delete(key);
+    if (!channelKeys.has(key)) uploadedVersions.delete(key);
   }
 
   const sink: UploadSink = {
@@ -426,28 +438,39 @@ function updateRenderUploads(
     },
   };
 
-  const jobFor = (key: string, mesh: ReturnType<WorldService['visibleMeshFor']>): ChannelUploadJob | null => {
-    if (!mesh) return null;
-    return {
-      key,
-      sectionKey: key,
-      channel: 'opaque',
-      editVersion: mesh.sourceVersion,
-      mesh,
-      estimatedUploadMs: Math.max(MINIMUM_UPLOAD_COST_MS, meshByteLength(mesh) / BYTES_PER_UPLOAD_MILLISECOND),
-    };
-  };
-
   for (const key of world.loadedSectionKeys()) {
-    const mesh = world.visibleMeshFor(key);
-    if (!mesh || uploadedVersions.get(key) === mesh.sourceVersion) continue;
-    if (mesh.indices.length === 0) {
-      renderer.removePage(key);
-      uploadedVersions.delete(key);
-      continue;
+    const section = world.visibleMeshFor(key);
+    if (!section) continue;
+    let hasContent = false;
+    for (const channel of MESH_CHANNELS) {
+      const mesh = section[channel];
+      const jobKey = channelUploadKey(key, channel);
+      if (mesh.indices.length === 0) {
+        if (uploadedVersions.has(jobKey)) {
+          renderer.removeChannel(key, channel);
+          uploadedVersions.delete(jobKey);
+        }
+        continue;
+      }
+      hasContent = true;
+      if (uploadedVersions.get(jobKey) === mesh.sourceVersion) continue;
+      const job: ChannelUploadJob = {
+        key: jobKey,
+        sectionKey: key,
+        channel,
+        editVersion: mesh.sourceVersion,
+        mesh,
+        estimatedUploadMs: Math.max(
+          MINIMUM_UPLOAD_COST_MS,
+          meshByteLength(mesh) / BYTES_PER_UPLOAD_MILLISECOND,
+        ),
+      };
+      uploadQueue.enqueue(job);
     }
-    const job = jobFor(key, mesh);
-    if (job) uploadQueue.enqueue(job);
+    if (!hasContent) {
+      renderer.removePage(key);
+      for (const channel of MESH_CHANNELS) uploadedVersions.delete(channelUploadKey(key, channel));
+    }
   }
   return uploadQueue.drain(budgetMs, sink);
 }

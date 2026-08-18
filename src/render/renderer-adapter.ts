@@ -2,12 +2,12 @@ import {
   Box3,
   Camera,
   Frustum,
+  Group,
   Matrix4,
   PerspectiveCamera,
   Scene,
   Vector3,
   WebGLRenderer,
-  type Mesh,
 } from 'three';
 import { WebGLNodesHandler } from 'three/addons/tsl/WebGLNodesHandler.js';
 import { detectRenderBackend } from './backend';
@@ -20,6 +20,7 @@ import {
 } from './render-page';
 import { TerrainLod } from './terrain-lod';
 import { WaterSurface } from './water';
+import type { TerrainMaterials } from './materials';
 
 export type RenderCamera = Readonly<{
   position: Readonly<{ x: number; y: number; z: number }>;
@@ -35,6 +36,7 @@ export type RenderFrame = Readonly<{
 export type RendererDriver = Readonly<{
   backend: 'webgpu' | 'webgl2';
   render(scene: Scene, camera: Camera): void;
+  setPixelRatio(scale: number): void;
   dispose(): void;
 }>;
 
@@ -59,6 +61,10 @@ const productionRendererFactory: RendererFactory = {
     return {
       backend,
       render: (scene, camera) => renderer.render(scene, camera),
+      setPixelRatio: (scale) => {
+        renderer.setPixelRatio(scale);
+        renderer.setSize(canvas.clientWidth, canvas.clientHeight, false);
+      },
       dispose: () => renderer.dispose(),
     };
   },
@@ -70,6 +76,10 @@ const productionRendererFactory: RendererFactory = {
     return {
       backend: 'webgl2',
       render: (scene, camera) => renderer.render(scene, camera),
+      setPixelRatio: (scale) => {
+        renderer.setPixelRatio(scale);
+        renderer.setSize(canvas.clientWidth, canvas.clientHeight, false);
+      },
       dispose: () => renderer.dispose(),
     };
   },
@@ -98,19 +108,27 @@ export class RendererAdapter {
   };
   private readonly pages = new Map<string, RenderPage>();
   private readonly stagings = new Map<string, RenderStaging>();
-  private readonly objects = new Map<string, Mesh>();
+  private readonly objects = new Map<string, Group>();
   private readonly terrainLod = new TerrainLod();
   private readonly water = new WaterSurface();
+  private readonly effects = new Group();
+  private readonly materials: TerrainMaterials;
   private visiblePageCount = 0;
   private disposed = false;
 
-  private constructor(driver: RendererDriver) {
+  private constructor(driver: RendererDriver, materials: TerrainMaterials) {
     this.backend = driver.backend;
     this.driver = driver;
-    this.scene.add(this.terrainLod.renderObject(), this.water.renderObject());
+    this.materials = materials;
+    this.effects.name = 'effects';
+    this.scene.add(this.terrainLod.renderObject(), this.water.renderObject(), this.effects);
   }
 
-  static async create(canvas: HTMLCanvasElement, options: RendererAdapterOptions = {}): Promise<RendererAdapter> {
+  static async create(
+    canvas: HTMLCanvasElement,
+    options: RendererAdapterOptions = {},
+    materials: TerrainMaterials,
+  ): Promise<RendererAdapter> {
     let webgl2Context: WebGL2RenderingContext | null = null;
     const gpu = options.capabilities === undefined ? browserGpu() : options.capabilities.gpu;
     const backend = detectRenderBackend({
@@ -123,30 +141,17 @@ export class RendererAdapter {
     const factory = options.rendererFactory ?? productionRendererFactory;
     if (backend === 'webgpu') {
       const driver = await factory.createWebGPU(canvas);
-      return new RendererAdapter(driver);
+      return new RendererAdapter(driver, materials);
     }
     if (backend === 'webgl2' && webgl2Context) {
-      return new RendererAdapter(factory.createWebGL2(canvas, webgl2Context));
+      return new RendererAdapter(factory.createWebGL2(canvas, webgl2Context), materials);
     }
     throw new Error('Renderer initialization failed: Neither WebGPU nor WebGL2 is available');
   }
 
   enqueueUpload(job: ChannelUploadJob): void {
     if (this.disposed) return;
-    const previousStaging = this.stagings.get(job.key);
-    if (previousStaging) {
-      previousStaging.cancel();
-      this.stagings.delete(job.key);
-    }
-    let page = this.pages.get(job.key);
-    if (!page) {
-      const target: RenderPageTarget = {
-        swap: (previous, next) => this.swapObject(job.key, previous, next),
-      };
-      page = new RenderPage(job.key, undefined, target);
-      this.pages.set(job.key, page);
-    }
-    page.replace(job.mesh);
+    this.pageFor(job.sectionKey).replace(job.channel, job.mesh);
   }
 
   stageUpload(job: ChannelUploadJob, maxBytes: number): number {
@@ -155,15 +160,7 @@ export class RendererAdapter {
     if (!staging || staging.sourceVersion !== job.mesh.sourceVersion) {
       staging?.cancel();
       this.stagings.delete(job.key);
-      let page = this.pages.get(job.key);
-      if (!page) {
-        const target: RenderPageTarget = {
-          swap: (previous, next) => this.swapObject(job.key, previous, next),
-        };
-        page = new RenderPage(job.key, undefined, target);
-        this.pages.set(job.key, page);
-      }
-      staging = page.beginStaging(job.mesh);
+      staging = this.pageFor(job.sectionKey).beginStaging(job.channel, job.mesh);
       if (!staging) return 0;
       this.stagings.set(job.key, staging);
     }
@@ -178,6 +175,11 @@ export class RendererAdapter {
     this.stagings.delete(job.key);
   }
 
+  removeChannel(sectionKey: string, channel: ChannelUploadJob['channel']): void {
+    if (this.disposed) return;
+    this.pages.get(sectionKey)?.removeChannel(channel);
+  }
+
   cancelUpload(key: string): void {
     const staging = this.stagings.get(key);
     if (!staging) return;
@@ -189,7 +191,9 @@ export class RendererAdapter {
     if (this.disposed) return;
     const page = this.pages.get(key);
     if (!page) return;
-    this.cancelUpload(key);
+    for (const stagingKey of [...this.stagings.keys()]) {
+      if (stagingKey.startsWith(`${key}#`)) this.cancelUpload(stagingKey);
+    }
     page.dispose();
     this.pages.delete(key);
   }
@@ -198,11 +202,28 @@ export class RendererAdapter {
     if (this.disposed) return;
     for (const [key, page] of this.pages) {
       if (keys.has(key)) continue;
-      this.cancelUpload(key);
+      for (const stagingKey of [...this.stagings.keys()]) {
+        if (stagingKey.startsWith(`${key}#`)) this.cancelUpload(stagingKey);
+      }
       page.dispose();
       this.pages.delete(key);
     }
     this.visiblePageCount = [...this.objects.values()].filter((object) => object.visible).length;
+  }
+
+  setPixelRatio(scale: number): void {
+    if (this.disposed) return;
+    this.driver.setPixelRatio(scale);
+  }
+
+  addTransient(object: Parameters<Group['add']>[0]): void {
+    if (this.disposed) return;
+    this.effects.add(object);
+  }
+
+  removeTransient(object: Parameters<Group['remove']>[0]): void {
+    if (this.disposed) return;
+    this.effects.remove(object);
   }
 
   render(frame: RenderFrame): void {
@@ -218,9 +239,9 @@ export class RendererAdapter {
     let visible = 0;
     for (const [key, page] of this.pages) {
       const object = this.objects.get(key);
-      if (!object) continue;
-      object.visible = page.isVisible(pageFrustum);
-      if (object.visible) visible += 1;
+      const pageVisible = page.isVisible(pageFrustum);
+      if (object) object.visible = pageVisible;
+      if (pageVisible) visible += 1;
     }
     this.visiblePageCount = visible;
     this.driver.render(this.scene, this.camera);
@@ -261,7 +282,7 @@ export class RendererAdapter {
     this.driver.dispose();
   }
 
-  private swapObject(key: string, previous: Mesh | null, next: Mesh | null): void {
+  private swapObject(key: string, previous: Group | null, next: Group | null): void {
     if (next) {
       this.scene.add(next);
       this.objects.set(key, next);
@@ -269,6 +290,18 @@ export class RendererAdapter {
       this.objects.delete(key);
     }
     if (previous) this.scene.remove(previous);
+  }
+
+  private pageFor(key: string): RenderPage {
+    let page = this.pages.get(key);
+    if (!page) {
+      const target: RenderPageTarget = {
+        swap: (previous, next) => this.swapObject(key, previous, next),
+      };
+      page = new RenderPage(key, this.materials, undefined, target);
+      this.pages.set(key, page);
+    }
+    return page;
   }
 }
 

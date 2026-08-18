@@ -2,6 +2,7 @@ import {
   Box3,
   BufferGeometry,
   Float32BufferAttribute,
+  Group,
   Mesh,
   Sphere,
   Uint8BufferAttribute,
@@ -12,7 +13,16 @@ import {
 import { SECTION_SIZE } from '../domain/coords';
 import type { ChannelMesh, MeshChannel } from '../meshing/mesh-types';
 import type { Aabb } from '../world/structure-template';
-import { acquireBlockMaterial, type BlockMaterialLease } from './materials';
+import type { TerrainMaterials } from './materials';
+
+export type CameraFrustum = Readonly<{
+  intersectsAabb(bounds: Aabb): boolean;
+  position?: Readonly<{ x: number; y: number; z: number }>;
+}>;
+
+export type RenderPageTarget = Readonly<{
+  swap(previous: Group | null, next: Group | null): void;
+}>;
 
 export type ChannelUploadJob = Readonly<{
   key: string;
@@ -24,15 +34,6 @@ export type ChannelUploadJob = Readonly<{
 }>;
 
 export const channelUploadKey = (sectionKey: string, channel: MeshChannel): string => `${sectionKey}#${channel}`;
-
-export type CameraFrustum = Readonly<{
-  intersectsAabb(bounds: Aabb): boolean;
-  position?: Readonly<{ x: number; y: number; z: number }>;
-}>;
-
-export type RenderPageTarget = Readonly<{
-  swap(previous: Mesh | null, next: Mesh | null): void;
-}>;
 
 function boundsFromKey(key: string): Aabb {
   const coordinates = key.split(',').map(Number);
@@ -257,62 +258,77 @@ export class RenderStaging {
 
 const nullTarget: RenderPageTarget = { swap() {} };
 
-/** A section-local, versioned owner of render resources only. */
+/** A section-local, versioned owner of one render Group with three channel meshes. */
 export class RenderPage {
   readonly key: string;
   private readonly bounds: Aabb;
   private readonly target: RenderPageTarget;
-  private readonly materialLease: BlockMaterialLease;
-  private current: Mesh | null = null;
-  private currentVersion = -1;
-  private staging: RenderStaging | null = null;
+  private readonly materials: TerrainMaterials;
+  private readonly group = new Group();
+  private readonly channels = new Map<MeshChannel, Mesh>();
+  private readonly channelVersions = new Map<MeshChannel, number>();
+  private readonly stagings = new Map<MeshChannel, RenderStaging>();
+  private mounted = false;
   private disposed = false;
 
-  constructor(key: string, bounds?: Aabb, target: RenderPageTarget = nullTarget) {
+  constructor(
+    key: string,
+    materials: TerrainMaterials,
+    bounds?: Aabb,
+    target: RenderPageTarget = nullTarget,
+  ) {
     this.key = key;
+    this.materials = materials;
     this.bounds = bounds ?? boundsFromKey(key);
     this.target = target;
-    this.materialLease = acquireBlockMaterial();
+    this.group.name = `section:${key}`;
+    this.group.position.set(this.bounds.min.x, this.bounds.min.y, this.bounds.min.z);
   }
 
-  get sourceVersion(): number {
-    return this.currentVersion;
+  channelVersion(channel: MeshChannel): number {
+    return this.channelVersions.get(channel) ?? -1;
   }
 
-  replace(mesh: ChannelMesh): void {
-    if (this.disposed || mesh.sourceVersion <= this.currentVersion) return;
-    this.cancelStaging();
+  replace(channel: MeshChannel, mesh: ChannelMesh): void {
+    if (this.disposed || mesh.sourceVersion <= this.channelVersion(channel)) return;
+    this.cancelStaging(channel);
 
     const geometry = geometryFor(mesh);
-    const next = new Mesh(geometry, this.materialLease.material);
-    next.name = `section:${this.key}`;
-    next.position.set(this.bounds.min.x, this.bounds.min.y, this.bounds.min.z);
-    next.updateMatrix();
+    const next = new Mesh(geometry, this.materials[channel]);
+    next.name = `section:${this.key}:${channel}`;
 
-    const previous = this.current;
-    try {
-      this.target.swap(previous, next);
-    } catch (error) {
-      geometry.dispose();
-      throw error;
-    }
-    this.current = next;
-    this.currentVersion = mesh.sourceVersion;
+    const previous = this.channels.get(channel);
+    if (previous) this.group.remove(previous);
+    this.group.add(next);
+    this.channels.set(channel, next);
+    this.channelVersions.set(channel, mesh.sourceVersion);
     previous?.geometry.dispose();
+    this.mount();
   }
 
-  beginStaging(mesh: ChannelMesh): RenderStaging | null {
-    if (this.disposed || mesh.sourceVersion <= this.currentVersion) return null;
+  removeChannel(channel: MeshChannel): void {
+    if (this.disposed) return;
+    this.cancelStaging(channel);
+    const previous = this.channels.get(channel);
+    if (!previous) return;
+    this.channels.delete(channel);
+    this.channelVersions.delete(channel);
+    this.group.remove(previous);
+    previous.geometry.dispose();
+  }
+
+  beginStaging(channel: MeshChannel, mesh: ChannelMesh): RenderStaging | null {
+    if (this.disposed || mesh.sourceVersion <= this.channelVersion(channel)) return null;
     validateMesh(mesh);
-    this.cancelStaging();
+    this.cancelStaging(channel);
     const staging = new RenderStaging(
       mesh,
-      (completed) => this.commitStaging(completed),
+      (completed) => this.commitStaging(channel, completed),
       (cancelled) => {
-        if (this.staging === cancelled) this.staging = null;
+        if (this.stagings.get(channel) === cancelled) this.stagings.delete(channel);
       },
     );
-    this.staging = staging;
+    this.stagings.set(channel, staging);
     return staging;
   }
 
@@ -320,23 +336,43 @@ export class RenderPage {
     return !this.disposed && camera.intersectsAabb(this.bounds);
   }
 
+  set visible(visible: boolean) {
+    this.group.visible = visible;
+  }
+
+  get visible(): boolean {
+    return this.group.visible;
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    this.cancelStaging();
-    const previous = this.current;
-    this.current = null;
-    try {
-      this.target.swap(previous, null);
-    } finally {
-      previous?.geometry.dispose();
-      this.materialLease.release();
+    for (const channel of [...this.stagings.keys()] as readonly MeshChannel[]) this.cancelStaging(channel);
+    if (this.mounted) {
+      this.mounted = false;
+      this.target.swap(this.group, null);
     }
+    for (const mesh of this.channels.values()) {
+      this.group.remove(mesh);
+      mesh.geometry.dispose();
+    }
+    this.channels.clear();
+    this.channelVersions.clear();
   }
 
-  private commitStaging(completed: RenderStaging): void {
-    if (this.disposed || this.staging !== completed || completed.sourceVersion <= this.currentVersion) {
-      if (this.staging === completed) this.staging = null;
+  private mount(): void {
+    if (this.mounted) return;
+    this.mounted = true;
+    this.target.swap(null, this.group);
+  }
+
+  private commitStaging(channel: MeshChannel, completed: RenderStaging): void {
+    if (
+      this.disposed
+      || this.stagings.get(channel) !== completed
+      || completed.sourceVersion <= this.channelVersion(channel)
+    ) {
+      if (this.stagings.get(channel) === completed) this.stagings.delete(channel);
       return;
     }
     const geometry = new BufferGeometry();
@@ -365,27 +401,22 @@ export class RenderPage {
       ).length() / 2,
     );
 
-    const next = new Mesh(geometry, this.materialLease.material);
-    next.name = `section:${this.key}`;
-    next.position.set(this.bounds.min.x, this.bounds.min.y, this.bounds.min.z);
-    next.updateMatrix();
-
-    const previous = this.current;
-    try {
-      this.target.swap(previous, next);
-    } catch (error) {
-      geometry.dispose();
-      throw error;
-    }
-    this.current = next;
-    this.currentVersion = completed.sourceVersion;
-    this.staging = null;
+    const next = new Mesh(geometry, this.materials[channel]);
+    next.name = `section:${this.key}:${channel}`;
+    const previous = this.channels.get(channel);
+    if (previous) this.group.remove(previous);
+    this.group.add(next);
+    this.channels.set(channel, next);
+    this.channelVersions.set(channel, completed.sourceVersion);
+    this.stagings.delete(channel);
     previous?.geometry.dispose();
+    this.mount();
   }
 
-  private cancelStaging(): void {
-    const staging = this.staging;
-    this.staging = null;
-    staging?.cancel();
+  private cancelStaging(channel: MeshChannel): void {
+    const staging = this.stagings.get(channel);
+    if (!staging) return;
+    this.stagings.delete(channel);
+    staging.cancel();
   }
 }

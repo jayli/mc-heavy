@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import type { DataTexture, Material, Mesh, Scene } from 'three';
+import { Group, Mesh, type Scene } from 'three';
+import { MeshBasicNodeMaterial } from 'three/webgpu';
 import type { ChannelMesh } from '../../../src/meshing/mesh-types';
+import type { TerrainMaterials } from '../../../src/render/materials';
 import {
   RendererAdapter,
   type RendererDriver,
@@ -16,6 +18,19 @@ const mesh: ChannelMesh = {
   indices: new Uint32Array([0, 1, 2]),
   sourceVersion: 1,
 };
+
+function fakeMaterials(): TerrainMaterials {
+  return {
+    opaque: new MeshBasicNodeMaterial(),
+    cutout: new MeshBasicNodeMaterial(),
+    translucent: new MeshBasicNodeMaterial(),
+    dispose() {
+      this.opaque.dispose();
+      this.cutout.dispose();
+      this.translucent.dispose();
+    },
+  };
+}
 
 function canvasWithWebGL2Only(context: WebGL2RenderingContext | null): HTMLCanvasElement {
   return {
@@ -38,6 +53,7 @@ describe('RendererAdapter fallback', () => {
           (child) => child.visible && child.name.startsWith('section:'),
         ).length);
       },
+      setPixelRatio() {},
       dispose() {},
     };
     const factory: RendererFactory = {
@@ -51,12 +67,13 @@ describe('RendererAdapter fallback', () => {
       },
     };
     const canvas = canvasWithWebGL2Only(context);
+    const materials = fakeMaterials();
     const adapter = await RendererAdapter.create(canvas, {
       capabilities: { gpu: undefined },
       rendererFactory: factory,
-    });
-    adapter.enqueueUpload({ key: '0,0,0', sectionKey: '0,0,0', channel: 'opaque', editVersion: 1, mesh, estimatedUploadMs: 0 });
-    adapter.enqueueUpload({ key: '20,0,0', sectionKey: '20,0,0', channel: 'opaque', editVersion: 1, mesh, estimatedUploadMs: 0 });
+    }, materials);
+    adapter.enqueueUpload({ key: '0,0,0#opaque', sectionKey: '0,0,0', channel: 'opaque', editVersion: 1, mesh, estimatedUploadMs: 0 });
+    adapter.enqueueUpload({ key: '20,0,0#opaque', sectionKey: '20,0,0', channel: 'opaque', editVersion: 1, mesh, estimatedUploadMs: 0 });
 
     adapter.render({
       camera: {
@@ -74,26 +91,21 @@ describe('RendererAdapter fallback', () => {
     expect(scene?.getObjectByName('water-surface')?.position.toArray()).toEqual([64, 0, -32]);
     expect(scene?.getObjectByName('water-surface')?.userData.timeMs).toBe(1_500);
 
-    const section = scene?.getObjectByName('section:0,0,0') as Mesh | undefined;
-    const material = section?.material as Material | undefined;
-    const atlas = material?.userData.blockAtlas as DataTexture | undefined;
+    const section = scene?.getObjectByName('section:0,0,0') as Group | undefined;
+    const sectionMesh = section?.children.find((child) => child.name.endsWith(':opaque')) as Mesh | undefined;
+    expect(sectionMesh?.material).toBe(materials.opaque);
     let geometryDisposals = 0;
-    let materialDisposals = 0;
-    let atlasDisposals = 0;
-    section?.geometry.addEventListener('dispose', () => { geometryDisposals += 1; });
-    material?.addEventListener('dispose', () => { materialDisposals += 1; });
-    atlas?.addEventListener('dispose', () => { atlasDisposals += 1; });
+    sectionMesh?.geometry.addEventListener('dispose', () => { geometryDisposals += 1; });
 
     adapter.dispose();
     adapter.dispose();
 
     expect(geometryDisposals).toBe(1);
-    expect(materialDisposals).toBe(1);
-    expect(atlasDisposals).toBe(1);
+    materials.dispose();
   });
 
   it('reports the backend returned by asynchronous WebGPU initialization', async () => {
-    const driver: RendererDriver = { backend: 'webgl2', render() {}, dispose() {} };
+    const driver: RendererDriver = { backend: 'webgl2', render() {}, setPixelRatio() {}, dispose() {} };
     const factory: RendererFactory = {
       async createWebGPU() {
         return driver;
@@ -106,7 +118,7 @@ describe('RendererAdapter fallback', () => {
     const adapter = await RendererAdapter.create(canvasWithWebGL2Only(null), {
       capabilities: { gpu: {} },
       rendererFactory: factory,
-    });
+    }, fakeMaterials());
 
     expect(adapter.backend).toBe('webgl2');
     adapter.dispose();
@@ -121,6 +133,7 @@ describe('RendererAdapter fallback', () => {
           (child) => child.visible && child.name.startsWith('section:'),
         ).length);
       },
+      setPixelRatio() {},
       dispose() {},
     };
     const adapter = await RendererAdapter.create(canvasWithWebGL2Only({} as WebGL2RenderingContext), {
@@ -129,9 +142,9 @@ describe('RendererAdapter fallback', () => {
         async createWebGPU() { throw new Error('unexpected WebGPU'); },
         createWebGL2() { return driver; },
       },
-    });
-    adapter.enqueueUpload({ key: '0,0,-2', sectionKey: '0,0,-2', channel: 'opaque', editVersion: 1, mesh, estimatedUploadMs: 1 });
-    adapter.enqueueUpload({ key: '0,0,1', sectionKey: '0,0,1', channel: 'opaque', editVersion: 1, mesh, estimatedUploadMs: 1 });
+    }, fakeMaterials());
+    adapter.enqueueUpload({ key: '0,0,-2#opaque', sectionKey: '0,0,-2', channel: 'opaque', editVersion: 1, mesh, estimatedUploadMs: 1 });
+    adapter.enqueueUpload({ key: '0,0,1#opaque', sectionKey: '0,0,1', channel: 'opaque', editVersion: 1, mesh, estimatedUploadMs: 1 });
 
     adapter.render({
       camera: {
@@ -152,6 +165,7 @@ describe('RendererAdapter fallback', () => {
     const driver: RendererDriver = {
       backend: 'webgl2',
       render(scene) { submittedScene = scene; },
+      setPixelRatio() {},
       dispose() {},
     };
     const adapter = await RendererAdapter.create(canvasWithWebGL2Only({} as WebGL2RenderingContext), {
@@ -160,16 +174,17 @@ describe('RendererAdapter fallback', () => {
         async createWebGPU() { throw new Error('unexpected WebGPU'); },
         createWebGL2() { return driver; },
       },
-    });
-    adapter.enqueueUpload({ key: '0,0,0', sectionKey: '0,0,0', channel: 'opaque', editVersion: 1, mesh, estimatedUploadMs: 1 });
-    adapter.enqueueUpload({ key: '1,0,0', sectionKey: '1,0,0', channel: 'opaque', editVersion: 1, mesh, estimatedUploadMs: 1 });
+    }, fakeMaterials());
+    adapter.enqueueUpload({ key: '0,0,0#opaque', sectionKey: '0,0,0', channel: 'opaque', editVersion: 1, mesh, estimatedUploadMs: 1 });
+    adapter.enqueueUpload({ key: '1,0,0#opaque', sectionKey: '1,0,0', channel: 'opaque', editVersion: 1, mesh, estimatedUploadMs: 1 });
     adapter.render({
       camera: { intersectsAabb: () => true, position: { x: 0, y: 0, z: 0 } },
       timeMs: 0,
     });
-    const evicted = submittedScene?.getObjectByName('section:1,0,0') as Mesh | undefined;
+    const evicted = submittedScene?.getObjectByName('section:1,0,0') as Group | undefined;
+    const evictedMesh = evicted?.children.find((child) => child.name.endsWith(':opaque')) as Mesh | undefined;
     let geometryDisposals = 0;
-    evicted?.geometry.addEventListener('dispose', () => { geometryDisposals += 1; });
+    evictedMesh?.geometry.addEventListener('dispose', () => { geometryDisposals += 1; });
 
     adapter.retainPages(new Set(['0,0,0']));
 
@@ -184,6 +199,6 @@ describe('RendererAdapter fallback', () => {
 
     await expect(RendererAdapter.create(canvas, {
       capabilities: { gpu: undefined },
-    })).rejects.toThrow('Neither WebGPU nor WebGL2 is available');
+    }, fakeMaterials())).rejects.toThrow('Neither WebGPU nor WebGL2 is available');
   });
 });

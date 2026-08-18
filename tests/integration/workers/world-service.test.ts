@@ -114,7 +114,9 @@ describe('WorldService worker integration', () => {
     const rayQueriesBefore = world.streamingDiagnostics().loadedSectionQueries;
     expect(world.raycast({ x: 0.5, y: 0.5, z: 0.5 }, { x: 0, y: 0, z: 0 }, 1)).not.toBeNull();
     expect(world.streamingDiagnostics().loadedSectionQueries).toBeGreaterThan(rayQueriesBefore);
-    expect(world.visibleMeshFor('0,1,0')?.indices.length).toBeGreaterThan(0);
+    const upper = world.visibleMeshFor('0,1,0');
+    expect(upper!.opaque.indices.length + upper!.cutout.indices.length + upper!.translucent.indices.length)
+      .toBeGreaterThan(0);
     world.dispose();
   });
 
@@ -124,7 +126,7 @@ describe('WorldService worker integration', () => {
     await world.prepareSpawn({ x: 3, z: 12 });
 
     expect(world.getBlock({ x: 53, y: 40, z: 207 })).toBe(1);
-    expect(world.visibleMeshFor('3,2,12')?.indices.length).toBeGreaterThan(0);
+    expect(world.visibleMeshFor('3,2,12')?.opaque.indices.length).toBeGreaterThan(0);
     world.dispose();
   });
 
@@ -163,7 +165,7 @@ describe('WorldService worker integration', () => {
     const edgeAfter = world.visibleMeshFor('1,0,0');
     expect(edgeAfter).not.toBe(edgeBefore);
     expect(edgeAfter?.sourceVersion).toBe(1);
-    expect(edgeAfter?.indices).toHaveLength(6);
+    expect(edgeAfter?.opaque.indices).toHaveLength(6);
     world.dispose();
   });
 
@@ -175,7 +177,9 @@ describe('WorldService worker integration', () => {
 
     expect(world.loadedColumns()).toHaveLength(9);
     expect(world.cachedSectionCount()).toBe(27);
-    expect(world.visibleMeshFor('0,0,0')?.indices).toHaveLength(12);
+    const restored = world.visibleMeshFor('0,0,0');
+    expect(restored!.opaque.indices.length + restored!.cutout.indices.length + restored!.translucent.indices.length)
+      .toBe(12);
     world.dispose();
   });
 
@@ -219,7 +223,9 @@ describe('WorldService worker integration', () => {
     await expect(world.prepareSpawn({ x: 0, z: 0 })).rejects.toThrow('worker crashed');
     await world.prepareSpawn({ x: 0, z: 0 });
 
-    expect(world.visibleMeshFor('0,0,1')?.indices).toHaveLength(12);
+    const boundary = world.visibleMeshFor('0,0,1');
+    expect(boundary!.opaque.indices.length + boundary!.cutout.indices.length + boundary!.translucent.indices.length)
+      .toBe(12);
     world.dispose();
   });
 

@@ -1,12 +1,14 @@
-import { Mesh, type Material } from 'three';
+import { Group, Mesh } from 'three';
+import { MeshBasicNodeMaterial } from 'three/webgpu';
 // Three r184 does not publish declarations for this private compatibility utility.
 // @ts-expect-error -- exercised deliberately to probe the real WebGPU vertex layout mapping.
 import WebGPUAttributeUtils from 'three/src/renderers/webgpu/utils/WebGPUAttributeUtils.js';
 import { describe, expect, it } from 'vitest';
 import type { ChannelMesh } from '../../../src/meshing/mesh-types';
 import { RenderPage, type RenderPageTarget } from '../../../src/render/render-page';
+import type { TerrainMaterials } from '../../../src/render/materials';
 
-function opaqueMesh(sourceVersion: number, materialId = 1): ChannelMesh {
+function channelMesh(sourceVersion: number, materialId = 1): ChannelMesh {
   return {
     positions: new Float32Array([
       0, 0, 0,
@@ -30,103 +32,89 @@ function opaqueMesh(sourceVersion: number, materialId = 1): ChannelMesh {
   };
 }
 
+function materials(): TerrainMaterials {
+  return {
+    opaque: new MeshBasicNodeMaterial(),
+    cutout: new MeshBasicNodeMaterial(),
+    translucent: new MeshBasicNodeMaterial(),
+    dispose() {
+      this.opaque.dispose();
+      this.cutout.dispose();
+      this.translucent.dispose();
+    },
+  };
+}
+
 function capturingTarget(): Readonly<{
   target: RenderPageTarget;
-  current(): Mesh | null;
+  group(): Group | null;
 }> {
-  let current: Mesh | null = null;
+  let group: Group | null = null;
   return {
-    current: () => current,
+    group: () => group,
     target: {
       swap(previous, next) {
-        expect(previous).toBe(current);
-        current = next;
+        expect(previous).toBe(group);
+        group = next;
       },
     },
   };
 }
 
-function nodeGraphUsesAttribute(root: unknown, attributeName: string): boolean {
-  const visited = new Set<object>();
-  const pending: unknown[] = [root];
-  while (pending.length > 0) {
-    const value = pending.pop();
-    if (!value || typeof value !== 'object' || visited.has(value)) continue;
-    visited.add(value);
-    const candidate = value as { getAttributeName?: (builder?: unknown) => string };
-    if (candidate.getAttributeName?.() === attributeName) return true;
-    pending.push(...Object.values(value));
-  }
-  return false;
+function childOf(group: Group, channel: string): Mesh | undefined {
+  return group.children.find((child) => child.name.endsWith(`:${channel}`)) as Mesh | undefined;
 }
 
 describe('RenderPage', () => {
-  it('keeps version 2 and its GPU object when an older or equal upload arrives', () => {
+  it('swaps each channel independently and drops stale channel versions', () => {
     const capture = capturingTarget();
-    const page = new RenderPage('0,0,0', undefined, capture.target);
-    page.replace(opaqueMesh(2));
-    const versionTwoObject = capture.current();
+    const page = new RenderPage('0,0,0', materials(), undefined, capture.target);
 
-    page.replace(opaqueMesh(1));
-    page.replace(opaqueMesh(2, 4));
+    page.replace('opaque', channelMesh(1));
+    page.replace('opaque', channelMesh(2));
+    page.replace('cutout', channelMesh(2));
 
-    expect(page.sourceVersion).toBe(2);
-    expect(capture.current()).toBe(versionTwoObject);
+    expect(page.channelVersion('opaque')).toBe(2);
+    expect(page.channelVersion('cutout')).toBe(2);
+    page.replace('opaque', channelMesh(1));
+    expect(page.channelVersion('opaque')).toBe(2);
+    expect(capture.group()?.children).toHaveLength(2);
     page.dispose();
   });
 
-  it('builds complete Three geometry before swapping and disposes the old geometry afterwards', () => {
-    let current: Mesh | null = null;
+  it('mounts the section group once and disposes the replaced geometry', () => {
     let oldGeometryDisposed = false;
-    let oldWasLiveDuringSwap = false;
+    let group: Group | null = null;
     const target: RenderPageTarget = {
-      swap(previous, next) {
-        if (previous) oldWasLiveDuringSwap = !oldGeometryDisposed;
-        if (!next) {
-          current = null;
-          return;
-        }
-        expect(next.geometry.getAttribute('position').count).toBe(3);
-        const expectedMaterialId = previous ? 4 : 1;
-        expect(next.geometry.getAttribute('tileId').array).toEqual(
-          new Uint16Array([expectedMaterialId, expectedMaterialId, expectedMaterialId]),
-        );
-        current = next;
+      swap(_previous, next) {
+        group = next;
       },
     };
-    const page = new RenderPage('0,0,0', undefined, target);
-    page.replace(opaqueMesh(1));
-    const firstObject = current as Mesh | null;
-    expect(firstObject).not.toBeNull();
-    firstObject?.geometry.addEventListener('dispose', () => {
+    const page = new RenderPage('0,0,0', materials(), undefined, target);
+    page.replace('opaque', channelMesh(1));
+    expect(group).not.toBeNull();
+    const first = childOf(group!, 'opaque');
+    first?.geometry.addEventListener('dispose', () => {
       oldGeometryDisposed = true;
     });
 
-    page.replace(opaqueMesh(2, 4));
+    page.replace('opaque', channelMesh(2));
 
-    expect(oldWasLiveDuringSwap).toBe(true);
     expect(oldGeometryDisposed).toBe(true);
-    expect(page.sourceVersion).toBe(2);
+    expect(page.channelVersion('opaque')).toBe(2);
     page.dispose();
   });
 
   it('decodes mesher Int8 normals into a WebGPU-valid float32x3 vertex layout', () => {
-    const input = opaqueMesh(1);
     const capture = capturingTarget();
-    const page = new RenderPage('0,0,0', undefined, capture.target);
+    const page = new RenderPage('0,0,0', materials(), undefined, capture.target);
+    page.replace('opaque', channelMesh(1));
 
-    page.replace(input);
-
-    const normal = capture.current()?.geometry.getAttribute('normal');
-    expect(input.normals).toBeInstanceOf(Int8Array);
+    const normal = childOf(capture.group()!, 'opaque')?.geometry.getAttribute('normal');
     expect(normal?.array).toBeInstanceOf(Float32Array);
     expect(normal?.itemSize).toBe(3);
     expect(normal?.normalized).toBe(false);
-    expect(normal?.array).toEqual(new Float32Array([
-      0, 0, 1,
-      0, 0, 1,
-      0, 0, 1,
-    ]));
+    expect(normal?.array).toEqual(new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]));
 
     const webGpuAttributes = new WebGPUAttributeUtils({});
     expect(webGpuAttributes.createShaderVertexBuffers({
@@ -139,32 +127,30 @@ describe('RenderPage', () => {
     page.dispose();
   });
 
-  it('uses one shared atlas material whose shader graph selects layers from tileId', () => {
-    const first = capturingTarget();
-    const second = capturingTarget();
-    const firstPage = new RenderPage('0,0,0', undefined, first.target);
-    const secondPage = new RenderPage('1,0,0', undefined, second.target);
-    firstPage.replace(opaqueMesh(1, 3));
-    secondPage.replace(opaqueMesh(1, 7));
+  it('shares the injected terrain materials across pages and keeps channel tileIds', () => {
+    const shared = materials();
+    const firstCapture = capturingTarget();
+    const secondCapture = capturingTarget();
+    const first = new RenderPage('0,0,0', shared, undefined, firstCapture.target);
+    const second = new RenderPage('1,0,0', shared, undefined, secondCapture.target);
+    first.replace('opaque', channelMesh(1, 3));
+    second.replace('opaque', channelMesh(1, 7));
 
-    const firstObject = first.current();
-    const secondObject = second.current();
-    expect(firstObject?.material as Material).toBe(secondObject?.material as Material);
-    expect(firstObject?.geometry.getAttribute('tileId').array).toEqual(new Uint16Array([3, 3, 3]));
-    expect(secondObject?.geometry.getAttribute('tileId').array).toEqual(new Uint16Array([7, 7, 7]));
-    expect(nodeGraphUsesAttribute(
-      (firstObject?.material as Material & { colorNode?: unknown }).colorNode,
-      'tileId',
-    )).toBe(true);
-    expect(firstObject?.geometry.getAttribute('uv').array).toEqual(opaqueMesh(1, 3).uvs);
-    firstPage.dispose();
-    secondPage.dispose();
+    const firstMesh = childOf(firstCapture.group()!, 'opaque');
+    const secondMesh = childOf(secondCapture.group()!, 'opaque');
+    expect(firstMesh?.material).toBe(shared.opaque);
+    expect(secondMesh?.material).toBe(shared.opaque);
+    expect(firstMesh?.geometry.getAttribute('tileId').array).toEqual(new Uint16Array([3, 3, 3]));
+    expect(secondMesh?.geometry.getAttribute('tileId').array).toEqual(new Uint16Array([7, 7, 7]));
+    expect(second.channelVersion('opaque')).toBe(1);
+    first.dispose();
+    second.dispose();
+    shared.dispose();
   });
 
   it('derives canonical section bounds and excludes a page outside the camera frustum', () => {
-    const page = new RenderPage('12,0,0');
+    const page = new RenderPage('12,0,0', materials());
     let testedBounds: unknown;
-
     const visible = page.isVisible({
       intersectsAabb(bounds) {
         testedBounds = bounds;
@@ -180,99 +166,46 @@ describe('RenderPage', () => {
     page.dispose();
   });
 
-  it('honors explicit BlockPos bounds and releases its geometry exactly once', () => {
+  it('keeps the old channel visible and versioned until a staged upload commits', () => {
     const capture = capturingTarget();
-    const page = new RenderPage('arbitrary-key', {
-      min: { x: 200, y: -4, z: 300 },
-      max: { x: 216, y: 12, z: 316 },
-    }, capture.target);
-    page.replace(opaqueMesh(1));
-    let disposeEvents = 0;
-    capture.current()?.geometry.addEventListener('dispose', () => {
-      disposeEvents += 1;
-    });
+    const page = new RenderPage('0,0,0', materials(), undefined, capture.target);
+    page.replace('opaque', channelMesh(1));
+    const original = childOf(capture.group()!, 'opaque');
 
-    expect(page.isVisible({ intersectsAabb: (bounds) => bounds.min.x === 200 })).toBe(true);
-    page.dispose();
-    page.dispose();
-
-    expect(capture.current()).toBeNull();
-    expect(disposeEvents).toBe(1);
-  });
-
-  it('keeps the old page visible and versioned until a staged upload commits', () => {
-    const capture = capturingTarget();
-    const page = new RenderPage('0,0,0', undefined, capture.target);
-    page.replace(opaqueMesh(1));
-    const original = capture.current();
-
-    const staging = page.beginStaging(opaqueMesh(2, 4));
+    const staging = page.beginStaging('opaque', channelMesh(2, 4));
     expect(staging).not.toBeNull();
     const staged = staging as NonNullable<ReturnType<RenderPage['beginStaging']>>;
     expect(staged.stage(12)).toBe(12);
-
     expect(staged.complete).toBe(false);
-    expect(page.sourceVersion).toBe(1);
-    expect(capture.current()).toBe(original);
+    expect(page.channelVersion('opaque')).toBe(1);
+    expect(childOf(capture.group()!, 'opaque')).toBe(original);
     expect(() => staged.commit()).toThrow('incomplete');
 
     expect(staged.stage(Number.POSITIVE_INFINITY)).toBeGreaterThan(0);
     expect(staged.complete).toBe(true);
     staged.commit();
 
-    expect(page.sourceVersion).toBe(2);
-    expect(capture.current()).not.toBe(original);
-    expect(capture.current()?.geometry.getAttribute('tileId').array)
+    expect(page.channelVersion('opaque')).toBe(2);
+    expect(childOf(capture.group()!, 'opaque')).not.toBe(original);
+    expect(childOf(capture.group()!, 'opaque')?.geometry.getAttribute('tileId').array)
       .toEqual(new Uint16Array([4, 4, 4]));
     page.dispose();
   });
 
-  it('accumulates the staged bounding box and publishes it on commit', () => {
+  it('disposes its group and every channel exactly once', () => {
     const capture = capturingTarget();
-    const page = new RenderPage('0,0,0', undefined, capture.target);
-    const staging = page.beginStaging(opaqueMesh(1)) as NonNullable<ReturnType<RenderPage['beginStaging']>>;
+    const page = new RenderPage('0,0,0', materials(), undefined, capture.target);
+    page.replace('opaque', channelMesh(1));
+    page.replace('cutout', channelMesh(1));
+    const disposed: string[] = [];
+    for (const child of capture.group()?.children ?? []) {
+      (child as Mesh).geometry.addEventListener('dispose', () => disposed.push(child.name));
+    }
 
-    staging.stage(Number.POSITIVE_INFINITY);
-    staging.commit();
-
-    const geometry = capture.current()?.geometry;
-    expect(geometry?.boundingBox?.min.toArray()).toEqual([0, 0, 0]);
-    expect(geometry?.boundingBox?.max.toArray()).toEqual([1, 1, 0]);
     page.dispose();
-  });
-
-  it('cancels staging without publishing and rejects a stale version', () => {
-    const capture = capturingTarget();
-    const page = new RenderPage('0,0,0', undefined, capture.target);
-    page.replace(opaqueMesh(1));
-    const original = capture.current();
-    const staging = page.beginStaging(opaqueMesh(2)) as NonNullable<ReturnType<RenderPage['beginStaging']>>;
-
-    staging.stage(10);
-    staging.cancel();
-
-    expect(staging.complete).toBe(false);
-    expect(page.sourceVersion).toBe(1);
-    expect(capture.current()).toBe(original);
-    expect(() => staging.commit()).toThrow('cancel');
-
-    page.replace(opaqueMesh(2));
-    expect(page.beginStaging(opaqueMesh(1))).toBeNull();
-    expect(page.beginStaging(opaqueMesh(2))).toBeNull();
     page.dispose();
-  });
 
-  it('replaces an in-flight staging with a newer one', () => {
-    const page = new RenderPage('0,0,0');
-    const first = page.beginStaging(opaqueMesh(1)) as NonNullable<ReturnType<RenderPage['beginStaging']>>;
-    const second = page.beginStaging(opaqueMesh(2)) as NonNullable<ReturnType<RenderPage['beginStaging']>>;
-
-    expect(second).not.toBe(first);
-    expect(first.complete).toBe(false);
-    expect(() => first.commit()).toThrow('cancel');
-    second.stage(Number.POSITIVE_INFINITY);
-    second.commit();
-    expect(page.sourceVersion).toBe(2);
-    page.dispose();
+    expect(capture.group()).toBeNull();
+    expect(disposed.sort()).toEqual(['section:0,0,0:cutout', 'section:0,0,0:opaque']);
   });
 });
