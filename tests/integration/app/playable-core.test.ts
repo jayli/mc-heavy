@@ -33,7 +33,7 @@ test('binds mouse look and hotbar break and place input to the real world', asyn
     yaw: window.game!.player.yaw,
     pitch: window.game!.player.pitch,
   }));
-  expect(look.yaw).toBeCloseTo(0.2, 5);
+  expect(look.yaw).toBeCloseTo(-0.2, 5);
   expect(look.pitch).toBeCloseTo(0.2, 5);
 
   await page.evaluate(() => window.game!.player.setLook(0, -Math.PI / 2));
@@ -51,6 +51,23 @@ test('binds mouse look and hotbar break and place input to the real world', asyn
   await page.dispatchEvent('canvas', 'mousedown', { button: 0 });
   await page.dispatchEvent('canvas', 'mousedown', { button: 2 });
   expect(await page.evaluate(() => window.game!.readBlockForTest({ x: 0, y: 23, z: 0 }))).toBe('grass');
+
+  // Camera-relative movement: W follows the current view direction rather than
+  // a fixed world axis.
+  const initial = await page.evaluate(() => window.game!.player.position);
+  await page.keyboard.down('w');
+  await page.waitForTimeout(350);
+  await page.keyboard.up('w');
+  const afterForward = await page.evaluate(() => window.game!.player.position);
+  expect(afterForward.z).toBeLessThan(initial.z);
+
+  await page.evaluate(() => window.game!.player.setLook(Math.PI / 2, 0));
+  const beforeTurn = await page.evaluate(() => window.game!.player.position);
+  await page.keyboard.down('w');
+  await page.waitForTimeout(350);
+  await page.keyboard.up('w');
+  const afterTurn = await page.evaluate(() => window.game!.player.position);
+  expect(afterTurn.x).toBeLessThan(beforeTurn.x);
 });
 
 test('bounds renderer pages to loaded columns and reports physical-frustum visibility', async ({ page }) => {

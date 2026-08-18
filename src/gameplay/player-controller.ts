@@ -65,7 +65,7 @@ export class PlayerController {
     if (!Number.isFinite(deltaYawPixels) || !Number.isFinite(deltaPitchPixels)) {
       throw new Error('Player turn deltas must be finite');
     }
-    this.yawValue += deltaYawPixels * LOOK_SENSITIVITY;
+    this.yawValue -= deltaYawPixels * LOOK_SENSITIVITY;
     this.pitchValue = clampPitch(this.pitchValue - deltaPitchPixels * LOOK_SENSITIVITY);
   }
 

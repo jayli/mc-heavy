@@ -81,8 +81,11 @@ describe('PlayerController', () => {
 
     player.turn(100, -100);
 
-    expect(player.yaw).toBeCloseTo(0.2, 5);
+    // Mouse right is +movementX and must turn the view toward +X; mouse up is
+    // -movementY and must pitch the view up.
+    expect(player.yaw).toBeCloseTo(-0.2, 5);
     expect(player.pitch).toBeCloseTo(0.2, 5);
+    expect(player.facing.x).toBeGreaterThan(0);
   });
 
   it('derives yaw from setFacing and stops overwriting look from movement input', () => {

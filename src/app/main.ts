@@ -11,6 +11,7 @@ import type { WorkerFactory } from '../workers/worker-client';
 import { WorldService } from '../world/world-service';
 import { FrameMetrics } from '../benchmark/frame-metrics';
 import { GameHud } from './hud';
+import { movementInputFromKeys } from './input';
 import {
   BYTES_PER_UPLOAD_MILLISECOND,
   meshByteLength,
@@ -310,7 +311,7 @@ export async function createGameApp(
       : Math.min(50, timestampMs - previousFrameMs) / 1_000;
     previousFrameMs = timestampMs;
 
-    const input = inputFromKeys(pressedKeys);
+    const input = movementInputFromKeys(pressedKeys, player.yaw);
     player.step(input, dtSeconds);
     const position = player.position;
     const inverseDt = dtSeconds > 0 ? 1 / dtSeconds : 0;
@@ -373,13 +374,6 @@ async function createRendererWithFallback(
       capabilities: { gpu: undefined },
     });
   }
-}
-
-function inputFromKeys(keys: ReadonlySet<string>): Readonly<{ x: number; z: number }> {
-  return {
-    x: Number(keys.has('d') || keys.has('arrowright')) - Number(keys.has('a') || keys.has('arrowleft')),
-    z: Number(keys.has('s') || keys.has('arrowdown')) - Number(keys.has('w') || keys.has('arrowup')),
-  };
 }
 
 function clearInventory(inventory: Inventory): void {
