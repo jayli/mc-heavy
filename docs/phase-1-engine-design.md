@@ -1,6 +1,6 @@
 # mc-heavy 第一阶段实施设计文档：游戏引擎原型
 
-> 版本：v1.2 ｜ 日期：2026-08-18 ｜ 状态：定稿（经两轮逐条代码核验修订）
+> 版本：v1.6 ｜ 日期：2026-08-19 ｜ 状态：定稿（经六轮逐条核验修订）
 >
 > 目标：在 mc-heavy 仓库从零重建一个功能对标 mc-lite、性能提升一个数量级的体素游戏引擎。
 > 第一阶段只做"引擎底座"：渲染、体素数据、即时地图生成、玩家交互、种子地图、存档原型。
@@ -15,6 +15,41 @@
 > 变长 slot 打包策略，引入 BatchedMesh/sector 候选与 M1 决策门）、内存数字自相矛盾
 > （§4.10/DR-8 统一为 128KB/column）、skylight 边界声明错误（§4.6 纯垂直模型不含水平依赖），
 > 以及 halo 协议内外圈矛盾、normal 编码定死、布局计算移出主线程等收尾勘误。
+
+> v1.3 修订说明：发布层选型反转——经 r185.1 源码核验，`BatchedMesh` 走 GPU multi-draw
+> （一个 BatchedMesh 内 N 个 geometry 合成 1 次 GPU draw），且 `reservedVertexCount`/
+> `setGeometryAt`/`setGeometrySize` 官方 API 原生覆盖了 v1.2 手工设计的 slot 打包机制，
+> 故候选 B（BatchedMesh）升为默认实现、候选 A（column 3-group）降为 fallback（§4.4.2/DR-11/M1）。
+> 补齐三个边界定义：transparent 通道静态排序策略（§4.4.1）、卸载滞回 + 重入 LRU 缓存
+> （§4.9/§4.10/DR-16）、边界方块编辑的最坏重建范围（§4.5.3）。收尾勘误：`updateRanges` →
+> `addUpdateRange()`（r185 实际 API）、顶点格式改 24B 对齐、blocklight 重算覆盖邻 column。
+
+> v1.4 修订说明：权威数据源补齐**方块实体（block entity）通道**——宝箱库存、告示牌文字、
+> 灯开关等富状态无法塞进 8bit meta，mc-lite 已有 `_saveChestStates()`（ChunkConsolidation.js:597）
+> 证明该需求真实存在。§4.1 ChunkColumn 增加 `blockEntities` 稀疏 Map，§4.5.3 edits 条目扩为
+> `{id, meta, blockEntity?}`，§4.8 持久化携带，§9 床/宝箱/门改指向 block entity 通道，
+> 新增 DR-17。同时澄清 light 数组是**可从 blocks+emissive 重算的派生缓存**而非 gameplay 真相
+> 来源（§4.1）。本阶段只预留通道，不实现任何消费者。
+
+> v1.5 修订说明：对 v1.3 引入的 BatchedMesh 发布层做逐行源码核验，修正 4 处实现级
+> API 语义错误——① 补齐 geometry+instance 两层结构（漏掉 instance 层会不渲染，
+> §4.4.2）；② 纠正溢出处理：`setGeometrySize` 是整批重建/收缩且会 throw，非单 slot
+> 扩容，正确路径为 deleteGeometry→addGeometry→addInstance（§4.4.2）；③ 补构造函数
+> 容量预估口径（视距 8 = 2312 slot/通道）；④ transparent 排序默认路径改用 BatchedMesh
+> 内置 `sortObjects` 运行时逐 section 排序，静态排序降级为 fallback 候选 A 专用（§4.4.1）。
+
+> v1.6 修订说明：纠正 v1.3 的核心口径错误——经 WebGPUBackend.js:1806-1824 源码核验，
+> r185.1 的 **WebGPU 后端对 BatchedMesh 不走 multi-draw**（JS 循环逐可见 instance 发
+> drawIndexed；renderMultiDraw 只在 WebGL 后端），「3~9 次 GPU draw」口径删除，选型理由
+> 重写为「draw 数量同量级、单命令成本低一个量级 + 剔除/排序/增量更新官方内置」（§4.4.2/DR-11）。
+> 三处实现级修正：① 构造容量公式改为「预期活跃非空 section 数 × 平均顶点数 × 1.25」
+> （v1.5 按全部 2312 slot 会数倍过度预留显存至 ~555MB/通道），运行时用 unusedVertexCount
+> 监控；② 顶点格式由 interleaved 改 flat 三属性（避开 copyAttributeData 的 interleaved
+> 慢拷贝路径），packed 必须 uint32（WebGPU arrayStride 须 4 字节倍数，uint16 会 validation
+> error；flat 化收益是拷贝快路径而非省显存，每顶点仍 24B）（§4.3）；③ 删除「构造函数支持
+> 多通道」误导（BatchedMesh 无 groups，传材质数组零 render item）。候选 A draw 数纠正为
+> 固定 ~867（`_projectObject` 不看 group.count，v1.5 的 300~500 低估）。M0 新增两项
+> BatchedMesh 120fps 风险点实测（逐 instance 剔除/排序 CPU 循环、setGeometryAt 端到端耗时）。
 
 ---
 
@@ -189,7 +224,9 @@ class ChunkColumn {
   cx; cz;                          // column 坐标
   blocks: Uint16Array(16*16*128);  // 方块 ID，索引 = x + z*16 + (y-MIN_Y)*256
   meta:   Uint8Array(16*16*128);   // orientation(3bit) + 保留位（发光强度等）
-  edits:  Map<index, {id, meta}>;  // 玩家修改稀疏层（生成时叠加，卸载时序列化）
+  edits:  Map<index, {id, meta, blockEntity?}>;  // 玩家修改稀疏层（生成时叠加，卸载时序列化）
+  blockEntities: Map<index, object>;  // 方块实体富状态（宝箱库存/告示牌文字/灯开关等），
+                                      // 稀疏，仅对有状态的方块存在；第一阶段只预留通道
   light:  Uint8Array(16*16*128);   // 高4位 skylight，低4位 blocklight（§4.6）
   sections: Section[8];            // 派生：网格状态（dirty/mesh/version）
   state: 'empty'|'generating'|'ready';
@@ -199,6 +236,18 @@ class ChunkColumn {
 
 - `blocks` 是"terrain + edits 叠加后"的最终数据（生成完毕即叠加），保证读路径零分支。
   `edits` 仅用于持久化与 column 重生成（卸载后内存释放，再进入视距时 terrain 重算 + edits 重放）。
+- **权威边界澄清**：gameplay 的真相来源只有 `blocks` + `meta`（+ `blockEntities` 富状态）。
+  `light` 数组是**可从 blocks + emissive 重算的派生缓存**（为渲染免重算而常驻），
+  不是权威——任何光照不一致都可通过重算收敛，实现时不得把 light 当真相来源。
+  mesh/AO/可见性/碰撞同理，全是派生数据（§1 设计原则 1）。
+- **方块实体通道（v1.4 补齐，只预留不实现消费者）**：宝箱库存、告示牌文字、熔炉进度、
+  可开关灯的亮灭等状态**无法塞进 8bit meta**，需要每位置任意结构化数据。
+  mc-lite 已有该需求的证据：`ChunkConsolidation.js:597 _saveChestStates()` 在 mesh 重建时
+  迁移 `instanceIndexMap['chest']` 的状态（用 InstancedMesh userData 暂存，是补丁式实现）。
+  新引擎把它做成数据模型的一等公民：`blockEntities` 稀疏 Map，key 与 blocks 同索引，
+  value 为任意可序列化对象。第一阶段不实现任何消费者（宝箱/告示牌属后续阶段），
+  但 edits 条目、持久化 schema、重放逻辑现在就把形状定好，避免后续回填引发
+  存档 schemaVersion + edits 重放的二次重构。
 - 方块 ID 0 = air。`BlockRegistry`（src/voxel/block-registry.js）负责 string name ↔ ID 映射与属性表：
 
 ```js
@@ -240,9 +289,13 @@ GEN 任务(cx, cz, seed, edits)
   1. heightmap(16×16)     多层噪声 + biome（移植 mc-lite TerrainGen/MathUtils 噪声）
   2. 3D 填充              地层（bedrock/stone/dirt/表层）、洞穴（保留 rooms 逻辑）、水面填充
   3. 结构注入             StructureIndex.query(cx, cz) → 逐个结构 rasterize 并裁剪到本 column
-  4. 叠加 edits           玩家修改覆盖生成结果
+  4. 叠加 edits           玩家修改覆盖生成结果（仅 blocks/meta，typed array 路径）
   5. 输出 Transferable    blocks/meta 的 ArrayBuffer + 结构元数据（光源点、实体挂点）
 ```
+
+注：edits 重放在 Worker 侧只覆盖 `blocks`/`meta`（typed array，随 Transferable 回传）；
+`blockEntities` 是对象 Map，不进 Worker，由主线程在 GEN 完成接管数据时从 edits 恢复
+（§4.1），保持 typed array 传输路径干净。
 
 **结构系统（对 mc-lite 的继承与改造）**：
 
@@ -294,18 +347,28 @@ GEN 任务(cx, cz, seed, edits)
   特例：water/glass 同类型相邻不画面；cutout（树叶/花）按配置决定是否自剔除
 ```
 
-**顶点格式（interleaved，单 BufferGeometry）**：
+**顶点格式（flat 三属性，v1.6 由 interleaved 改为 flat）**：
 
 ```
-position: float32 ×3   （section 局部坐标，mesh.position 挂 chunk 世界偏移）
-uv:       float32 ×2   （atlas 坐标，构建时写入）
-aoFace:   uint8        （bit0-1: AO 值 0-3，经典四角 AO，移植 mc-lite AOUtils 算法；
-                        bit2-4: 面索引 0-5，供着色器取法线——不依赖导数技巧，M1 前定死）
-light:    uint8        （skylight<<4 | blocklight，§4.6）
+position: Float32BufferAttribute ×3  （section 局部坐标，mesh.position 挂 chunk 世界偏移）
+uv:       Float32BufferAttribute ×2  （atlas 坐标，构建时写入）
+packed:   Uint32BufferAttribute ×1   （bit0-7: light = skylight<<4 | blocklight，§4.6；
+                                      bit8-9: AO 值 0-3，经典四角 AO，移植 mc-lite AOUtils 算法；
+                                      bit10-12: 面索引 0-5，供着色器取法线——不依赖导数技巧，M1 前定死）
 ```
 
+**为什么 flat 而非 interleaved（v1.6 源码核验）**：`setGeometryAt` 的 `copyAttributeData`
+（BatchedMesh.js:97-110，已核验）对 `isInterleavedBufferAttribute` 走逐分量
+`getComponent/setComponent` 慢路径（重 section 十多万次带边界检查的调用），会吃掉
+<2ms 快速路径预算；flat 属性走 `dst.array.set()` 快路径。BatchedMesh 内部本来就是 flat 属性。
+**packed 必须是 uint32 而非 uint16**：WebGPU 规范要求顶点 `arrayStride` 是 4 字节倍数
+（规范原文已核验），flat 的 uint16（itemSize=1）stride=2 字节会在 pipeline 创建时
+validation error；uint32 stride=4 合法，且 13bit 实际用量余余充足。**不要为了"省 2 字节"
+改回 uint16**。每顶点 12+8+4 = 24B，与 interleaved 版总量持平（flat 化的收益是拷贝快路径，
+不是省显存）。
 每面 4 顶点 6 索引（uint32 index buffer）。一个典型地形 section 约 1~4k 面 → 缓冲 100~400KB 级别，
-上传走 `BufferAttribute.updateRanges` 只传变化段。
+上传走 `BufferAttribute.addUpdateRange(start, count)` 只传变化段（r185 正式 API，
+配合 `clearUpdateRanges()`；不要直接改 `updateRanges` 数组）。
 
 **两条重建路径（统一输出格式，版本号收敛）**：
 
@@ -347,47 +410,112 @@ light:    uint8        （skylight<<4 | blocklight，§4.6）
   UV 内缩半 texel；默认 blur=0 时用 NearestFilter + 关闭 mipmap（mc-lite 默认即像素风），
   模糊档位开启时才启用 mipmap（此时 gutter 生效）。
 - 全部不透明方块 = 1 个材质。cutout 用 alphaTest 同 atlas 第二材质；
-  玻璃/水单独透明材质（排序渲染）。
+  玻璃/水单独透明材质。
+- **transparent 通道排序策略（必须显式定义）**：
+  - **默认 BatchedMesh 路径**：`BatchedMesh.sortObjects` 默认 `true`，内置**逐 section
+    运行时距离排序**（源码核验 BatchedMesh.js:221/1578），比静态排序更强——粒度更细、
+    随相机自适应。直接用内置能力，无需自实现。
+  - **fallback 候选 A 路径**：three.js 只做 object 级排序，不排一个缓冲内部的面。
+    此时 meshing 把 transparent 通道的面按「到 column 中心距离」做静态排序（零运行时成本），
+    column 间交界处的少量混合次序 artifact 接受（Minecraft 通行口径）。
+  - 两条路径都不做逐**面**运行时排序（成本不可接受）。
 - mc-lite 的纹理模糊档位（NearestFilter ↔ mipmap）在 atlas 级别保留实现。
 
-**4.4.2 渲染发布粒度：section 重建、合批发布（3-group 语义 + 可插拔发布层）**
+**4.4.2 渲染发布粒度：section 重建、合批发布（BatchedMesh 默认 + 可插拔发布层）**
 
 **决策**：section 继续作为重建与脏标记的最小粒度（快速路径 <2ms 不变），
-但**发布层合批**，且发布层做成可插拔接口（`PublishStrategy`），M1 用微基准在两个候选间定型。
+但**发布层合批**。发布层做成可插拔接口（`PublishStrategy`），M1 用微基准做最终确认，
+但默认实现已由 r185.1 源码核验定型为 **BatchedMesh**（v1.3 反转 v1.2 的默认值）。
 
-**候选 A：column 级 3-group 合批（默认实现）**
+**默认实现：BatchedMesh 通道级合批（v1.3 源码核验后升级）**
 
-- 每 column 一个 Mesh，缓冲区必须是 **channel-major 布局**：opaque 全列连续一段、
-  cutout 一段、transparent 一段，**恰好 3 个 geometry group**。section 在各通道内是
-  连续子区间（offset 表索引）。
-- **draw call 陷阱（必须写死 3-group 语义）**：three.js 在 material 为数组时**每个 group
-  各发一次 draw**。若按 8 section × 3 通道切成 24 个 group，每 column 是 24 次 draw
-  （289 × 24 ≈ 7000 次），比"每 section 一个 Mesh"还差。只有 channel-major 3-group 才能
-  拿到每 column ≤3 draw。WebGPU 路径是否和 WebGL 一样逐 group 发 draw，需在 M0 实测确认，
-  但实现必须按 3-group 语义写死，不能按 24-group 理解。
-- draw call 上限：视距 8 为 289 column × ≤3 ≈ 867 次，实际因空 column/空通道远低（典型 300~500）。
+- **draw 提交模型（v1.6 纠正 v1.3 的核心错误）**：r185.1 的 **WebGPU 后端对 BatchedMesh
+  不走 multi-draw**——`WebGPUBackend.js:1806-1824`（已核验）对 `isBatchedMesh` 是 JS 循环，
+  每个可见 instance 各发一次 `passEncoderGPU.drawIndexed(counts[i], 1, starts[i]/bytesPerElement, 0, i)`。
+  `_indirectTexture` 的真实用途是着色器侧按 instance 读矩阵（batch() 节点），不是 draw 提交；
+  单次 `renderMultiDraw` 只存在于 WebGL 后端（WebGLRenderer.js:1321，依赖 `WEBGL_multi_draw`
+  扩展），我们是 WebGPU 唯一后端，享受不到。
+- **因此「3 个 BatchedMesh ≈ 3~9 次 GPU draw」不成立（v1.6 删除该口径）**。真实情况：
+  3 个 render item、每通道 1 个 pipeline，但 **GPU 命令数 = 可见 section 数**（视距 8
+  预计数百次，具体看视锥与地形）。选型理由相应改写（见 DR-11）：BatchedMesh 与候选 A
+  的 draw 数量**同量级**，但 BatchedMesh 循环内所有 drawIndexed **共享同一 pipeline、
+  同一 bind group、同一顶点缓冲，命令间零状态切换**；空 section 无 instance、零命令；
+  per-instance 视锥剔除与透明逐 section 排序官方内置。
+- **构造函数只接受单个 Material（v1.6 纠正）**：BatchedMesh 从不创建 geometry groups
+  （全文件无 addGroup/groups 赋值，已核验），传 material 数组会在 `_projectObject` 里
+  遍历空 groups → **一个 render item 都不产生**。多通道只能靠「每通道一个 BatchedMesh」，
+  不存在"一个 BatchedMesh 挂多材质"的用法。
+- **两层结构（geometry + instance，v1.5 源码核验补齐，必须写死）**：`BatchedMesh` 是
+  geometry slot + instance 两层。`addGeometry()` 只注册 geometry slot，**不会渲染**；
+  必须再 `addInstance(geometryId)` 创建 instance 并 `setMatrixAt(instanceId, matrix)`
+  定位后才进入渲染（源码示例 BatchedMesh.js:164-175 明确）。本设计每个 section 恰好
+  一个 geometry + 一个 instance（1:1），instance 矩阵 = section 世界偏移的平移矩阵。
+  首次实现若漏掉 instance 层会"加了 geometry 但画面什么都没有"。
+- 布局：**每通道一个 BatchedMesh**（opaque/cutout/transparent 各一），每个 section 占一个
+  geometry slot + 一个 instance。视距 8 全场景 = **3 个 render item**，GPU drawIndexed
+  命令数 = 可见非空 section 数（数百量级，命令间零状态切换）。
+- **构造容量预估（v1.6 纠正过度预留）**：`new BatchedMesh(maxInstanceCount, maxVertexCount,
+  maxIndexCount, material)`。
+  - `maxInstanceCount`：视距 8 = 289 column × 8 section = 2312 slot/通道，取 2312 × 1.2
+    （instance 元数据是矩阵纹理，便宜）。
+  - `maxVertexCount`/`maxIndexCount`：**按"预期活跃非空 section 数/通道 × 平均 section
+    顶点数 × 1.25"预估，不是按全部 2312 slot**（v1.5 公式会数倍过度预留显存：按 P95 8k
+    顶点算，2312×8000×1.25×24B ≈ 555MB/通道，与 §4.10 的 ~100MB 总口径矛盾）。
+    视距 8 典型活跃非空 section：opaque ~800、cutout ~300、transparent ~100；
+    opaque 通道约 800×4000×1.25×24B ≈ 96MB，与 §4.10 吻合。
+  - 运行时用 `unusedVertexCount`/`unusedIndexCount` getter（BatchedMesh.js:316/328，已核验）
+    监控余量；满了走 `setGeometrySize` 整批扩容重建兜底（低频）。
+- 视锥剔除：`perObjectFrustumCulled = true`（默认值，per-instance 包围盒剔除，r185.1 内置），
+  剔除粒度 = section（16³ AABB），比 column 级更细。
+- 增量替换：`setGeometryAt(geometryId, geom)` 原地替换 slot 内容（**超出预留会 throw**，
+  见下方溢出处理）；`setVisibleAt(instanceId, visible)` 控制可见性（卸载/LOD 切换）。
 
-**候选 B：BatchedMesh + sector 合批（M1 微基准对比项）**
+**fallback：column 级 3-group 合批（候选 A，仅当 BatchedMesh 实测不达标时启用）**
 
-- r185.1 的 `BatchedMesh` 已从 addons 进核心 three 包，带
-  `addGeometry(reservedVertexCount)` / `setGeometryAt` / `setGeometrySize` / `setVisibleAt`，
-  天然支持"一次 draw、按 slot 增量替换"。
-- 按 sector（如 4×4 column）合批：视距 8 下约 25 sector × 3 通道 ≈ 75 draw，
-  同时保留 sector 级视锥剔除（`setVisibleAt` + 包围盒）。
+- 每 column 一个 Mesh，缓冲区 **channel-major 布局**：opaque/cutout/transparent 各一段，
+  **恰好 3 个 geometry group**（section 在各通道内是连续子区间）。
+- **draw call 陷阱（3-group 语义必须写死）**：three.js `Renderer._projectObject`
+  （r185.1 Renderer.js:3149-3158，已核验）在 material 为数组时**每个 group 各 push 一个
+  renderList 条目**，即每 group 一次 draw。若按 8 section × 3 通道切成 24 个 group，
+  每 column 是 24 次 draw（289 × 24 ≈ 7000 次），比每 section 一个 Mesh 还差。
+  只有 channel-major 3-group 才能拿到每 column ≤3 draw（视距 8 上限 289×3≈867，
+  **固定 ~867**——`_projectObject` 不看 group.count，空通道也照样入 render list，
+  v1.5 写的「实际 300~500」低估了，v1.6 纠正为固定 867 上限）。
+- 注意：three.js 对透明 object 排序、不透明按深度排序，column 级 object 数 289 本身不是
+  问题，问题只在 group draw 数——实现时不要误判。
 
-**选型标准（M1 硬决策门）**：120fps 基线下，放块/挖块的 p95 帧时。两个候选跑同一套
-放挖压力场景，谁 p95 更稳选谁；若接近，选实现更简单的候选 A。
+**M1 决策门（确认而非选型）**：默认 BatchedMesh；仅当实测出现以下情况才退回候选 A——
+① BatchedMesh 的逐 instance JS 循环 draw 提交在目标硬件 p95 反而比候选 A 的固定
+   867 条 group draw 更差；
+② `setGeometryAt` 增量替换有正确性坑（版本/可见性竞态）；
+③ `onBeforeRender` 的逐 instance 剔除/排序 CPU 循环（~2312 instance，sortObjects 默认
+   true 不透明通道也每帧排序）吃掉 120fps 帧预算。
+对比口径不变：120fps 基线下放挖压力场景的 p95 帧时。
+**选型理由（v1.6 重写）**：BatchedMesh 与候选 A 的 draw 数量同量级（数百 vs 固定 867），
+但 BatchedMesh 循环内所有 drawIndexed 共享同一 pipeline/bind group/顶点缓冲、命令间零
+状态切换，空 section 零命令，剔除/排序/增量更新官方内置——综合单命令成本与工程复杂度占优。
 
-**变长 section 的打包策略（两个候选共用，必须定义清楚）**：
+**变长 section 的打包策略（优先用官方 API，不再手工造轮子）**：
 
-单块编辑重建后该 section 顶点数会变，原地写回会顶掉后续 section 数据。策略：
+单块编辑重建后该 section 顶点数会变。v1.2 手工设计的「slot 预留 + offset 表 + repack」
+恰好就是 BatchedMesh 官方 API 的语义，直接用官方实现：
 
-- **slot 预留余量**：每 section slot 按"上次实际顶点数 × 1.25"预留（首次按典型值），
-  offset 表记录各 slot 起点；重建后若未溢出预留区间，直接 `updateRanges` 增量写回。
-- **溢出触发整列 repack**：slot 溢出时不原地扩，而是把该 column（或 sector）整列
-  在 Worker 重排（摊销——单块编辑极少连续溢出，repack 频率低）。repack 结果携带
-  column.version，回传时版本校验，原子替换 offset 表与缓冲。
-- repack 期间快速路径仍对旧 slot 布局生效（写旧区间），repack 完成后原子切换，无视觉空洞。
+- **预留**：`addGeometry(geom, reservedVertexCount = 实际顶点数 × 1.25, reservedIndexCount 同理)`。
+- **增量写回**：重建后若未溢出预留区间，`setGeometryAt(geometryId, newGeom)` 原地替换
+  （内部走 `addUpdateRange` 增量上传）。**注意**：`setGeometryAt` 在新 geometry 超出
+  该 slot 预留区间时**直接 throw**（"Reserved space not large enough"，源码核验），
+  故调用前必须先比对顶点/索引数与 reserved。
+- **溢出处理（v1.5 纠正 setGeometrySize 语义错误）**：单 slot 溢出**不能**用
+  `setGeometrySize`——它是**整批缓冲重建/收缩**，且当现有用量超过目标容量时直接 throw，
+  不是单 slot 扩容。正确的单 slot 溢出路径（源码核验 BatchedMesh.js:825 deleteGeometry
+  会级联删除关联 instance）：
+  1. `deleteGeometry(geometryId)`（自动级联删该 section 的 instance）；
+  2. `addGeometry(newGeom, reservedVertexCount = 新顶点数 × 1.25)` 拿新 slot；
+  3. `addInstance(newGeometryId)` + `setMatrixAt` 重建 instance。
+  单块编辑极少连续溢出，此路径摊销成本可忽略。整批容量不足（addGeometry throw）时才
+  重建整个 BatchedMesh（低频）。所有重建结果携带 column.version，回传时版本校验，
+  原子切换，无视觉空洞。
+- 候选 A（若启用）保留 v1.2 的手工 offset 表 + 整列 Worker repack 方案作为对照实现。
 
 **其他约束**：
 
@@ -398,7 +526,7 @@ light:    uint8        （skylight<<4 | blocklight，§4.6）
   但它当时只流式加载约 3 个垂直 section；新设计是 8 个 section，工作量约 2.67 倍，
   其结论只能作为量级参照，M1 必须重新跑基线确认。
 - `RenderSectionPool`（缓冲/geometry 复用）只省 CPU 分配与 GC，**不省显存**；
-  显存控制靠视距卸载（§4.10 内存预算）。
+  显存控制靠滞回卸载 + 重入 LRU（§4.9/§4.10）。
 
 **4.4.3 天空/雾/日夜**
 - 移植 mc-lite Engine 的三套视觉风格（morning/overcast/night）、TSL 天空盒、色调映射与色相偏移。
@@ -412,6 +540,8 @@ light:    uint8        （skylight<<4 | blocklight，§4.6）
 **4.4.5 LOD 预留（第一阶段只留接口，不实现）**
 - `MeshingRequest` 带 `lod` 字段；RenderTree 按 `(cx,cz)` 聚合，
   未来视距 > 12 时外圈可切换为 4×4 column 合并的粗网格（只保留高度表层 + 结构轮廓）。
+  默认 BatchedMesh 路径下 LOD 切换 = 外圈 section slot `setVisibleAt(false)` +
+  粗网格 geometry `setGeometryAt` 换入（或独立 LOD BatchedMesh），接口天然兼容。
 - 第一阶段视距 8~10 不需要 LOD，但数据/调度接口按此预留，避免二次重构。
 
 **4.4.6 WebGPU 唯一后端（渲染基线）**
@@ -437,18 +567,20 @@ mc-lite 已在 r184 完成 WebGPU 迁移（含 renderAsync），mc-heavy 直接�
 - **显式管理 draw call（不是指望后端红利）**：纠正一个常见误解——three.js 的
   WebGPURenderer 在 pipeline/bind group 哈希与 render list 排序上的每 draw CPU 开销
   通常**不低于** WebGL。WebGPU 的真正优势在于命令缓冲的批量提交与更少的驱动状态切换，
-  但 draw call 数量仍必须作为一级约束：这正是 §4.4.2 采用 column 级合批发布
-  （而非每 section 一个 Mesh）的原因。
+  但 draw call 数量仍必须作为一级约束：这正是 §4.4.2 采用 BatchedMesh 通道级合批发布
+  （而非每 section/column 一个 Mesh）的原因。
 - **renderAsync 异步渲染循环**：帧循环用 `renderer.setAnimationLoop` + async 语义，
   渲染提交与主线程调度解耦，配合 §4.9 帧预算控制器。
-- **BufferAttribute.updateRanges**：section 网格重建后只上传变化段，避免整缓冲重传
-  （WebGPU 下路径最优）。
+- **BufferAttribute.addUpdateRange(start, count)**：section 网格重建后只上传变化段，
+  避免整缓冲重传（r185 正式 API；BatchedMesh 的 `setGeometryAt` 内部即走此路径）。
 - **TSL NodeMaterial**：天空、水面、雾、色调映射全部用节点材质实现
   （mc-lite 的 TSL 水面/天空盒方案整体移植，r185 节点库更完整）。
-- **frustumCulled + 预计算包围盒**：合批 Mesh 的包围盒在 meshing 时算好随缓冲回传，
-  剔除粒度随发布层——候选 A 逐 column（16×16×128 AABB）、候选 B 逐 sector，零运行时计算。
+- **frustumCulled + 预计算包围盒**：section 包围盒在 meshing 时算好随缓冲回传。
+  默认 BatchedMesh 路径用内置 `perObjectFrustumCulled`（per-section 剔除，零运行时计算）；
+  fallback 候选 A 逐 column（16×16×128 AABB）。
 - **预留（第二阶段+）**：compute shader 做 GPU 驱动剔除/LOD 选择、indirect draw 进一步
-  压缩 draw call。第一阶段不引入，但 section 聚合数据结构（§4.4.5）为其留好形状。
+  压缩 draw 提交。注意 r185.1 的 WebGPU 后端对 BatchedMesh **不是** multi-draw/indirect
+  提交（v1.6 核验，§4.4.2），这条路真要压缩命令数得自己做，第一阶段不引入。
 
 兼容性基线：仅支持原生 WebGPU 的浏览器（Chrome/Edge/Safari 26；Firefox 视平台而定，不作承诺）。
 HUD 显示当前后端为 WebGPU；不支持时启动 gate 拦截并提示。
@@ -471,12 +603,20 @@ HUD 显示当前后端为 WebGPU；不支持时启动 gate 拦截并提示。
 ```
 world.setBlock(x, y, z, id, meta)
   1. column.blocks[idx] = id；meta 写入；column.version++
-  2. column.edits.set(idx, {id, meta})          ← 持久化层
-  3. 标记受影响 section dirty（本 section + 跨界的相邻 section）
-  4. 快速路径：同步重建脏 section（单块 < 2ms）
+  2. column.edits.set(idx, {id, meta, blockEntity?})  ← 持久化层（blockEntity 见 §4.1）
+  3. 标记受影响 section dirty（见下方最坏范围定义）
+  4. 快速路径：同步重建几何实际变化的 section（单块 < 2ms）
   5. 光照增量更新（§4.6，异步）
   6. 事件广播：'block-changed'（物理/实体/音效/粒子订阅）
 ```
+
+**边界方块编辑的最坏重建范围（必须写死）**：位于 section 角上的方块最多影响 8 个 section
+（AO 是对角 1 格依赖）。若快速路径全量同步重建 8 个 section，最坏 8×2ms=16ms，
+直接爆 120fps 帧预算。规则：
+- **快速路径只同步重建几何实际变化的 section**（面增删只发生在正交相邻 section，
+  通常 1~2 个，<2ms）；
+- **仅受 AO 影响的对角 section 置脏走精修路径**（Worker MESH，1 帧内收敛——
+  AO 延迟一帧肉眼不可见），与 §4.3 halo 协议「对角 AO 是永久近似」的口径一致。
 
 批量编辑（TNT/爆炸，后续阶段）走 `world.setBlocks(batch)`：一次版本递增、
 合并脏 section、跳过快速路径直接 Worker REMESH，主线程只做缓冲替换——
@@ -503,7 +643,8 @@ mc-lite 的 batchFaceCullingTimeout / isBatch 补丁语义被原生吸收。
   做 flood fill（强度 15 逐级 -1 衰减）。**放置**光源用增量 BFS 即可；
   **删除**光源时的降光是全流程最难的一步（需撤销传播路径），第一阶段不追求增量删除，
   采用**全 column 重算**（或小半径局部重算）兜底，增量删除 BFS 明确放到后续阶段。
-  重算触发相关 section 精修重建。
+  注意重算范围必须覆盖**该 column + 4 个邻 column**（光会泄漏过界），
+  否则挖掉贴边光源后邻柱残留亮度。重算触发相关 section 精修重建。
 - 视觉效果上保留 mc-lite 的 PointLight 挂灯方案作为**可选增强**（镜面高光），
   但基础照度不再依赖它，避免光源数量增长拖垮渲染。
 
@@ -518,7 +659,8 @@ mc-lite 的 batchFaceCullingTimeout / isBatch 补丁语义被原生吸收。
 ```
 IndexedDB（沿用 mc-lite DB 名/版本约定）
   ├─ meta:    { seed, spawn, schemaVersion, savedAt }
-  ├─ edits:   chunkKey → 压缩的修改列表（仅玩家改过的方块，典型 KB 级/column）
+  ├─ edits:   chunkKey → 压缩的修改列表（仅玩家改过的方块，条目 {id, meta, blockEntity?}，
+  │           典型 KB 级/column；blockEntity 为可序列化对象，第一阶段恒为 undefined）
   ├─ player:  位置/朝向/背包/画质设置
   └─ entities:（第二阶段起：炮塔/矿车/巢穴等运行时实体快照）
 ```
@@ -537,8 +679,10 @@ IndexedDB（沿用 mc-lite DB 名/版本约定）
    - 新 column → 发 GEN 任务（Worker 池，按距离优先级）
    - GEN 完成 → 主线程接管数据（Transferable 零拷贝）→ 发 MESH 任务
    - MESH 完成 → 进入上传队列
+   - 卸载走滞回带（见下方"卸载与重入"）
 3. 帧预算消费（硬上限，超支顺延下帧）：
-   - mesh 上传：≤ 3ms/帧（约 2~4 个 section 的增量段，column 合批后按 section 区间写回）
+   - mesh 上传：≤ 3ms/帧（约 2~4 个 section 的增量段，默认 BatchedMesh 路径走
+     `setGeometryAt` 增量替换；fallback 候选 A 按 section 区间写回）
    - 快速路径重建：≤ 2ms/帧（玩家操作优先，可透支单帧）
    - 光照增量：≤ 1ms/帧
 4. 实体/特效 update（第一期为空/轻量）
@@ -548,6 +692,16 @@ IndexedDB（沿用 mc-lite DB 名/版本约定）
 - **版本协议**：所有异步任务携带 `(columnKey, columnVersion)`，结果回传时版本不匹配即丢弃。
   这是 mc-lite 用十几个补丁（assemblyEpoch/sourceEpoch/staging buffer/原子切换）才逼近的机制，
   新引擎作为基础设施一次做对。
+
+- **卸载与重入（滞回 + LRU，v1.3 补齐）**：玩家在加载半径边界来回走（很常见）会造成
+  GEN/MESH/上传全链路 thrashing。两条便宜规则：
+  - **卸载半径 = 加载半径 + 2（滞回带）**：进圈立即加载、出圈延迟卸载；
+  - **重入 LRU**：刚卸载的 column 保留体素数据与 GPU 缓冲在短 TTL 缓存
+    （5~10s 或 1~2 圈内存配额，先到先踢），重入时零成本恢复，跳过 GEN+MESH+上传。
+    edits 本来就常驻，这条只多占一点显存，换来回头跑不卡。
+  - 卸载的邻接副作用：column 卸载后，邻居边界 section 里「因它存在而被剔除的面」不会
+    立即重 mesh——最外圈被雾遮住，可接受；玩家回移时由 GEN 就绪触发重 mesh 收敛
+    （与 §4.3 第 3 条呼应）。
 - **高刷适配**：渲染循环用 rAF 原生节奏（120Hz 设备自然 120 帧），
   物理/调度按 dt 归一；预算常量按 8.3ms（120fps）帧间隔标定，保证高刷下仍有帧内余量。
 - **HUD 性能面板**：移植 mc-lite 的打点体系（ChunkPerfMonitor 思路），
@@ -561,8 +715,9 @@ IndexedDB（沿用 mc-lite DB 名/版本约定）
 | GPU 顶点缓冲 | **~100 MB 级（大头）** | 活跃 section 平均几十~几百 KB，城市区更重；视距 16 会到数百 MB |
 | atlas 纹理 | ~22 MB | 2048² RGBA + mipmap 链 |
 
-- GPU 顶点缓冲是内存大头，且随视距近似平方增长。**显存控制靠视距卸载**（column 出圈即
-  释放其 column 缓冲），不靠池化——`RenderSectionPool` 只省 CPU 分配与 GC，**不省显存**。
+- GPU 顶点缓冲是内存大头，且随视距近似平方增长。**显存控制靠滞回卸载 + LRU 兜底**
+  （§4.9：出圈 +2 滞回带延迟卸载，重入 LRU 短 TTL 保留缓冲，LRU 满则真正释放），
+  不靠池化——`RenderSectionPool` 只省 CPU 分配与 GC，**不省显存**。
 - 视距 16 前必须先做 §4.4.5 的 LOD（外圈粗模），否则显存与 draw call 双双失控。
 - edits 稀疏层常驻内存（卸载 column 时序列化进 IndexedDB 后可释放），典型 KB 级/column。
 
@@ -613,11 +768,13 @@ AOBridge / AOWorker / 八个 Worker 文件——它们的职责被 §4 的四个
 | DR-8 | 世界高度 128（-32..96） | -16..112 / 64 / 256 | 兼容 mc-lite 坐标（结构零改造移植）；128 对齐 8 个 section 整除；内存 128KB/column 可控；下界 -32 给地形填充（最低 h-12，h 下界约 -16 → 最低块 -28）留足余量，避免截断 |
 | DR-9 | 纯 JavaScript + JSDoc，不用 TypeScript | TS + 构建工具链 | 与 mc-lite 技术栈一致，零迁移成本；无编译环节，Worker/主线程同构代码直接共享；类型表达靠 JSDoc + ESLint 足够 |
 | DR-10 | WebGPU 唯一后端（three r185.1），不做 WebGL2 降级 | WebGPU 优先 + WebGL2 兜底 | 目标用户全在现代浏览器，fallback 收益趋近于零；mc-lite 已验证 WebGPU 主路径；砍掉双后端的正确性/性能双重验证负担；架构不被锁死，未来可后补 |
-| DR-11 | 渲染发布粒度：section 重建、合批发布（可插拔，M1 微基准确定 column 3-group vs BatchedMesh sector） | 每 section 独立 Mesh | section 独立 Mesh 在视距 8 下上限约 3600 draw，120fps 不可接受；合批后候选 A ~289×3、候选 B ~25×3；three.js WebGPU 每 draw CPU 开销不低于 WebGL，draw call 必须一级管控；material 数组逐 group 发 draw，必须 channel-major 3-group 布局 |
+| DR-11 | 渲染发布粒度：section 重建、BatchedMesh 通道级合批（默认，M1 实测确认；fallback 为 column 3-group） | 每 section 独立 Mesh / column 3-group 为默认 | v1.6 纠正 v1.3 的核心口径：r185.1 **WebGPU 后端对 BatchedMesh 不走 multi-draw**（WebGPUBackend.js:1806-1824 JS 循环逐可见 instance 发 drawIndexed；renderMultiDraw 只在 WebGL 后端），故 draw 数量与候选 A 同量级（数百 vs 固定 867），选型理由是**单命令成本低一个量级**（循环内共享同一 pipeline/bind group/顶点缓冲、命令间零状态切换、空 section 零命令）+ 剔除/排序/增量更新官方内置。geometry+instance 两层结构（漏 instance 层不渲染）；构造函数只接受单 Material（BatchedMesh 无 groups，传材质数组零 render item）；`reservedVertexCount`/`setGeometryAt` 覆盖 slot 打包，单 slot 溢出走 deleteGeometry→addGeometry→addInstance（`setGeometrySize` 是整批重建/收缩会 throw，非单 slot 扩容）；per-instance 视锥剔除与 `sortObjects` 运行时排序内置。section 独立 Mesh 视距 8 上限约 3600 draw 不可接受；column 3-group（固定 ~867，`_projectObject` 不看 group.count）仅作实测不达标时的 fallback。three.js WebGPU 每 draw CPU 开销不低于 WebGL，draw call 必须一级管控；material 数组逐 group 发 draw（Renderer.js:3149-3158 已核验），fallback 必须 channel-major 3-group 布局 |
 | DR-12 | 跨 region 结构：邻区索引查询（本 region + 8 邻区） | 地标加硬 margin 禁止跨界 | 地标中心偏移 100~400 + 半尺寸 40~80 必然跨 400 格 region 边界；硬 margin 会改变与 lite 的世界布局、破坏同 seed 对比；邻区布局同 seed 确定性重算，成本由布局广播（DR-13）兜住 |
 | DR-13 | 结构布局单 Worker 算一次、主线程转发广播 | 每 Worker 各持 LRU 缓存 / 主线程直接计算 | City 候选扫描很重：N Worker 重复跑会成为冷启动/进城新卡点，放主线程会卡帧；布局体积小且确定性，单点计算 + 广播成本可忽略；GEN 任务依赖布局就绪（最多 9 份邻区布局） |
 | DR-14 | skylight 用 top-down 逐列传播（纯垂直，不含水平扩散） | 高度图以下衰减近似 / 3D flood fill | 近似模型在洞穴/悬挑下光照错误，且 skylight 本不该随深度衰减；逐列传播实现同样简单、封闭洞穴正确、且无水平邻居依赖；侧开口洞穴偏暗的代价接受，3D flood fill 放后续阶段 |
 | DR-15 | 逐面网格化，不用 greedy meshing | greedy meshing | 上一版 mc-heavy（已清空）用过 greedy；逐面在 AO/编辑增量更新/UV 映射上显著更简单，三角形多 2~3× 但当前瓶颈是 draw call 而非三角形（WebGPU 下三角形吞吐充裕）；视距 16+ 若三角形成为瓶颈再评估 greedy 或 LOD |
+| DR-16 | 卸载滞回（加载半径 +2）+ 重入 LRU（短 TTL 保留体素与 GPU 缓冲） | 出圈即释放 | 玩家在加载半径边界来回走会造成 GEN/MESH/上传全链路 thrashing；滞回带 + LRU 重入零成本恢复，只多占一点显存，回头跑不卡；显存上限由 LRU 配额兜底（§4.9/§4.10） |
+| DR-17 | 权威数据源含方块实体通道：`blocks`+`meta`+`blockEntities` 稀疏 Map；light 为派生缓存非权威 | 富状态塞 meta / 用 InstancedMesh userData 暂存（mc-lite 补丁） | 宝箱库存/告示牌文字/灯开关等富状态塞不进 8bit meta；mc-lite 已有 `_saveChestStates()`（ChunkConsolidation.js:597）证明需求真实，但用 userData 暂存是补丁式实现。做成数据模型一等公民：edits 条目、持久化 schema、重放逻辑现在定形状，第一阶段只预留不实现消费者，避免后续回填引发 schemaVersion + edits 重放二次重构。light 可从 blocks+emissive 重算收敛，不得当真相来源（§4.1） |
 
 ---
 
@@ -627,15 +784,23 @@ AOBridge / AOWorker / 八个 Worker 文件——它们的职责被 §4 的四个
 
 **M0 骨架（0.5 周）**
 - 项目脚手架、import map、Worker 池与 RPC、perf 打点、BlockRegistry + atlas 构建。
-- **WebGPU group-draw 语义实测**：构造 3-group 单 Mesh 与 24-group 单 Mesh 对比，
-  确认 WebGPURenderer 逐 group 发 draw 的行为与 CPU 开销，为 §4.4.2 的 3-group 写死提供实测依据。
+- **WebGPU 发布路径实测**：① 构造 3-group 单 Mesh 与 24-group 单 Mesh 对比，确认
+  WebGPURenderer 逐 group 发 draw 的行为与 CPU 开销（为 fallback 候选 A 的 3-group 写死
+  提供实测依据）；② 构造单 BatchedMesh 挂 ~2312 instance，确认 WebGPU 后端逐 instance
+  drawIndexed 的真实命令数与 CPU 开销（v1.6 已确认非 multi-draw，此项验证量级）；
+  ③ **BatchedMesh 两项 120fps 风险点实测（v1.6 新增）**：~2312 instance 时
+  `onBeforeRender` 的逐 instance 剔除/排序 CPU 循环耗时（sortObjects 默认 true，
+  不透明通道也每帧排序），以及 `setGeometryAt` 单块编辑的端到端耗时（flat 属性
+  array.set 快路径是否真达到 <2ms）。
 - 验收：空白场景渲染 + HUD 帧率面板；atlas 覆盖 mc-lite 全部纹理。
 
 **M1 体素核心闭环（1~1.5 周）**
 - WorldData/ChunkColumn/edits；地形生成（无结构）；section meshing（快速+精修双路径）；
   玩家移动/物理/DDA 射线/放块挖块；最小存档（edits 读写）。
-- **发布层决策门（硬）**：实现 §4.4.2 候选 A（column 3-group）与候选 B（BatchedMesh sector），
-  在同一放挖压力场景下对比 120fps 基线的 p95 帧时，定型发布层实现（含变长 slot 打包策略落地）。
+- **发布层确认门（硬）**：默认实现 §4.4.2 BatchedMesh 通道级合批（含 `reservedVertexCount`
+  预留 + `setGeometryAt` 增量替换落地）；在同一放挖压力场景下对比 120fps 基线的 p95 帧时，
+  仅当逐 instance draw 提交 p95 更差、增量替换有正确性坑、或剔除/排序 CPU 循环吃帧预算时，
+  才退回候选 A（column 3-group）。
 - 验收：平原地形无限行走不掉帧；放块挖块当帧生效；重启后修改保留。
 
 **M2 结构与世界完整性（1~1.5 周）**
@@ -677,7 +842,7 @@ AOBridge / AOWorker / 八个 Worker 文件——它们的职责被 §4 的四个
 | 矿车/轨道 | 方块属性（track 类型）+ 实体运动系统 | BlockRegistry 的 `interact`/`onStep` 钩子 |
 | 创造台 | 模型编辑 → 注册自定义 geometry 模板 | mesher 顶点模板机制 |
 | 灯/光源 | emissive 属性 + blocklight flood fill | 光照管线已含 |
-| 床/宝箱/门 | 多方块结构 + 朝向 + 交互钩子 | meta/orientation 位、交互事件 |
+| 床/宝箱/门 | 多方块结构 + 朝向 + 交互钩子 + 富状态（库存/文字） | meta/orientation 位、`blockEntities` 通道（§4.1）、交互事件 |
 | 存档迁移 | save/codec 版本字段 | schemaVersion 机制 |
 | 音频（挖掘/爆炸/环境音） | AudioManager + 事件订阅 | `block-changed`/交互事件总线（音频挂事件即可） |
 | 输入/指针锁定/相机 | InputManager + PointerLock + 第一人称相机 | 第一阶段已实现基础版，后续武器/载具复用 |
