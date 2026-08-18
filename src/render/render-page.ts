@@ -4,12 +4,13 @@ import {
   Float32BufferAttribute,
   Mesh,
   Sphere,
+  Uint8BufferAttribute,
   Uint16BufferAttribute,
   Uint32BufferAttribute,
   Vector3,
 } from 'three';
 import { SECTION_SIZE } from '../domain/coords';
-import type { OpaqueMesh } from '../meshing/mesh-types';
+import type { ChannelMesh } from '../meshing/mesh-types';
 import type { Aabb } from '../world/structure-template';
 import { acquireBlockMaterial, type BlockMaterialLease } from './materials';
 
@@ -38,25 +39,27 @@ function boundsFromKey(key: string): Aabb {
   };
 }
 
-function validateMesh(mesh: OpaqueMesh): number {
+function validateMesh(mesh: ChannelMesh): number {
   if (mesh.positions.length % 3 !== 0) throw new Error('positions must contain complete xyz vertices');
   const vertexCount = mesh.positions.length / 3;
   if (mesh.normals.length !== mesh.positions.length) throw new Error('normals must match positions');
   if (mesh.uvs.length !== vertexCount * 2) throw new Error('uvs must match the vertex count');
-  if (mesh.materialIds.length !== vertexCount) throw new Error('materialIds must match the vertex count');
+  if (mesh.tileIds.length !== vertexCount) throw new Error('tileIds must match the vertex count');
+  if (mesh.ao.length !== vertexCount) throw new Error('ao must match the vertex count');
   for (const index of mesh.indices) {
     if (index >= vertexCount) throw new Error(`index ${index} exceeds the vertex count`);
   }
   return vertexCount;
 }
 
-function geometryFor(mesh: OpaqueMesh): BufferGeometry {
+function geometryFor(mesh: ChannelMesh): BufferGeometry {
   validateMesh(mesh);
   const geometry = new BufferGeometry();
   geometry.setAttribute('position', new Float32BufferAttribute(mesh.positions, 3));
   geometry.setAttribute('normal', new Float32BufferAttribute(mesh.normals, 3));
   geometry.setAttribute('uv', new Float32BufferAttribute(mesh.uvs, 2));
-  geometry.setAttribute('blockId', new Uint16BufferAttribute(mesh.materialIds, 1));
+  geometry.setAttribute('tileId', new Uint16BufferAttribute(mesh.tileIds, 1));
+  geometry.setAttribute('ao', new Uint8BufferAttribute(mesh.ao, 1));
   geometry.setIndex(new Uint32BufferAttribute(mesh.indices, 1));
   geometry.computeBoundingBox();
   geometry.computeBoundingSphere();
@@ -68,23 +71,25 @@ type StagedBounds = Readonly<{
   max: Readonly<{ x: number; y: number; z: number }>;
 }>;
 
-/** Byte-budgeted, cancellable copy of one opaque mesh upload. */
+/** Byte-budgeted, cancellable copy of one channel mesh upload. */
 export class RenderStaging {
   readonly positions: Float32Array;
   readonly normals: Float32Array;
   readonly uvs: Float32Array;
-  readonly materialIds: Uint16Array;
+  readonly tileIds: Uint16Array;
+  readonly ao: Uint8Array;
   readonly indices: Uint32Array;
   readonly sourceVersion: number;
 
-  private readonly source: OpaqueMesh;
+  private readonly source: ChannelMesh;
   private readonly onCommit: (staging: RenderStaging) => void;
   private readonly onCancel: (staging: RenderStaging) => void;
-  private phase: 0 | 1 | 2 | 3 | 4 = 0;
+  private phase: 0 | 1 | 2 | 3 | 4 | 5 = 0;
   private positionOffset = 0;
   private normalOffset = 0;
   private uvOffset = 0;
-  private materialIdOffset = 0;
+  private tileIdOffset = 0;
+  private aoOffset = 0;
   private indexOffset = 0;
   private minimum = { x: Number.POSITIVE_INFINITY, y: Number.POSITIVE_INFINITY, z: Number.POSITIVE_INFINITY };
   private maximum = { x: Number.NEGATIVE_INFINITY, y: Number.NEGATIVE_INFINITY, z: Number.NEGATIVE_INFINITY };
@@ -92,7 +97,7 @@ export class RenderStaging {
   private released = false;
 
   constructor(
-    mesh: OpaqueMesh,
+    mesh: ChannelMesh,
     onCommit: (staging: RenderStaging) => void,
     onCancel: (staging: RenderStaging) => void,
   ) {
@@ -101,7 +106,8 @@ export class RenderStaging {
     this.positions = new Float32Array(mesh.positions);
     this.normals = new Float32Array(mesh.normals.length);
     this.uvs = new Float32Array(mesh.uvs);
-    this.materialIds = new Uint16Array(mesh.materialIds);
+    this.tileIds = new Uint16Array(mesh.tileIds);
+    this.ao = new Uint8Array(mesh.ao);
     this.indices = new Uint32Array(mesh.indices);
     this.onCommit = onCommit;
     this.onCancel = onCancel;
@@ -171,18 +177,32 @@ export class RenderStaging {
           if (this.uvOffset === this.uvs.length) this.phase = 3;
         }
       } else if (this.phase === 3) {
-        const count = Math.min(this.materialIds.length - this.materialIdOffset, Math.floor(budget / 2));
+        const count = Math.min(this.tileIds.length - this.tileIdOffset, Math.floor(budget / 2));
         if (count === 0) {
           this.phase = 4;
         } else {
-          this.materialIds.set(
-            this.source.materialIds.subarray(this.materialIdOffset, this.materialIdOffset + count),
-            this.materialIdOffset,
+          this.tileIds.set(
+            this.source.tileIds.subarray(this.tileIdOffset, this.tileIdOffset + count),
+            this.tileIdOffset,
           );
-          this.materialIdOffset += count;
+          this.tileIdOffset += count;
           staged += count * 2;
           budget -= count * 2;
-          if (this.materialIdOffset === this.materialIds.length) this.phase = 4;
+          if (this.tileIdOffset === this.tileIds.length) this.phase = 4;
+        }
+      } else if (this.phase === 4) {
+        const count = Math.min(this.ao.length - this.aoOffset, Math.floor(budget));
+        if (count === 0) {
+          this.phase = 5;
+        } else {
+          this.ao.set(
+            this.source.ao.subarray(this.aoOffset, this.aoOffset + count),
+            this.aoOffset,
+          );
+          this.aoOffset += count;
+          staged += count;
+          budget -= count;
+          if (this.aoOffset === this.ao.length) this.phase = 5;
         }
       } else {
         const count = Math.min(this.indices.length - this.indexOffset, Math.floor(budget / 4));
@@ -198,7 +218,7 @@ export class RenderStaging {
       if (staged === before) break;
     }
 
-    if (this.phase === 4 && this.indexOffset === this.indices.length) this.finished = true;
+    if (this.phase === 5 && this.indexOffset === this.indices.length) this.finished = true;
     return staged;
   }
 
@@ -248,7 +268,7 @@ export class RenderPage {
     return this.currentVersion;
   }
 
-  replace(mesh: OpaqueMesh): void {
+  replace(mesh: ChannelMesh): void {
     if (this.disposed || mesh.sourceVersion <= this.currentVersion) return;
     this.cancelStaging();
 
@@ -270,7 +290,7 @@ export class RenderPage {
     previous?.geometry.dispose();
   }
 
-  beginStaging(mesh: OpaqueMesh): RenderStaging | null {
+  beginStaging(mesh: ChannelMesh): RenderStaging | null {
     if (this.disposed || mesh.sourceVersion <= this.currentVersion) return null;
     validateMesh(mesh);
     this.cancelStaging();
@@ -312,7 +332,8 @@ export class RenderPage {
     geometry.setAttribute('position', new Float32BufferAttribute(completed.positions, 3));
     geometry.setAttribute('normal', new Float32BufferAttribute(completed.normals, 3));
     geometry.setAttribute('uv', new Float32BufferAttribute(completed.uvs, 2));
-    geometry.setAttribute('blockId', new Uint16BufferAttribute(completed.materialIds, 1));
+    geometry.setAttribute('tileId', new Uint16BufferAttribute(completed.tileIds, 1));
+    geometry.setAttribute('ao', new Uint8BufferAttribute(completed.ao, 1));
     geometry.setIndex(new Uint32BufferAttribute(completed.indices, 1));
     const stagedBounds = completed.bounds();
     geometry.boundingBox = new Box3(

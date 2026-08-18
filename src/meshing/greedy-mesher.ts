@@ -1,7 +1,7 @@
 import type { BlockRegistry } from '../domain/blocks';
 import { localIndex, SECTION_SIZE, type BlockPos } from '../domain/coords';
 import type { VoxelSection } from '../domain/voxel-section';
-import type { MeshingInput, OpaqueMesh } from './mesh-types';
+import type { ChannelMesh, MeshingInput } from './mesh-types';
 
 const HALO_WEST = 0;
 const HALO_EAST = 1;
@@ -24,7 +24,8 @@ type MeshBuffers = {
   positions: number[];
   normals: number[];
   uvs: number[];
-  materialIds: number[];
+  tileIds: number[];
+  ao: number[];
   indices: number[];
 };
 
@@ -123,7 +124,8 @@ function addQuad(
     const corner = corners[cornerIndex];
     buffers.positions.push(corner[0], corner[1], corner[2]);
     buffers.normals.push(face.normal[0], face.normal[1], face.normal[2]);
-    buffers.materialIds.push(face.blockId);
+    buffers.tileIds.push(face.blockId);
+    buffers.ao.push(3);
   }
   buffers.uvs.push(0, 0, 1, 0, 1, 1, 0, 1);
   buffers.indices.push(vertexBase, vertexBase + 1, vertexBase + 2, vertexBase, vertexBase + 2, vertexBase + 3);
@@ -198,8 +200,15 @@ function meshAxis(input: MeshingInput, blocks: BlockRegistry, axis: Axis, buffer
   }
 }
 
-export function meshOpaque(input: MeshingInput, blocks: BlockRegistry): OpaqueMesh {
-  const buffers: MeshBuffers = { positions: [], normals: [], uvs: [], materialIds: [], indices: [] };
+export function meshOpaque(input: MeshingInput, blocks: BlockRegistry): ChannelMesh {
+  const buffers: MeshBuffers = {
+    positions: [],
+    normals: [],
+    uvs: [],
+    tileIds: [],
+    ao: [],
+    indices: [],
+  };
   meshAxis(input, blocks, 0, buffers);
   meshAxis(input, blocks, 1, buffers);
   meshAxis(input, blocks, 2, buffers);
@@ -208,7 +217,8 @@ export function meshOpaque(input: MeshingInput, blocks: BlockRegistry): OpaqueMe
     positions: new Float32Array(buffers.positions),
     normals: new Int8Array(buffers.normals),
     uvs: new Float32Array(buffers.uvs),
-    materialIds: new Uint16Array(buffers.materialIds),
+    tileIds: new Uint16Array(buffers.tileIds),
+    ao: new Uint8Array(buffers.ao),
     indices: new Uint32Array(buffers.indices),
     sourceVersion: input.sourceVersion,
   };

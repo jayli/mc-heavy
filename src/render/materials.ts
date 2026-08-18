@@ -52,7 +52,7 @@ function createResources(): SharedResources {
   const atlas = createAtlas();
   const material = new MeshBasicNodeMaterial();
   const atlasUv = vec2(
-    attribute<'float'>('blockId', 'float').add(0.5).div(ATLAS_LAYERS),
+    attribute<'float'>('tileId', 'float').add(0.5).div(ATLAS_LAYERS),
     0.5,
   );
   material.colorNode = texture(atlas, atlasUv);

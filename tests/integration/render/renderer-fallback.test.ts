@@ -1,17 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import type { DataTexture, Material, Mesh, Scene } from 'three';
-import type { OpaqueMesh } from '../../../src/meshing/mesh-types';
+import type { ChannelMesh } from '../../../src/meshing/mesh-types';
 import {
   RendererAdapter,
   type RendererDriver,
   type RendererFactory,
 } from '../../../src/render/renderer-adapter';
 
-const mesh: OpaqueMesh = {
+const mesh: ChannelMesh = {
   positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
   normals: new Int8Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
   uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
-  materialIds: new Uint16Array([1, 1, 1]),
+  tileIds: new Uint16Array([1, 1, 1]),
+  ao: new Uint8Array([3, 3, 3]),
   indices: new Uint32Array([0, 1, 2]),
   sourceVersion: 1,
 };

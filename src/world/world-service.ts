@@ -1,7 +1,7 @@
 import { blockById } from '../domain/blocks';
 import { localIndex, SECTION_SIZE, sectionOf, type BlockPos, type SectionPos, type Vec3 } from '../domain/coords';
 import { VoxelSection } from '../domain/voxel-section';
-import type { OpaqueMesh } from '../meshing/mesh-types';
+import type { ChannelMesh } from '../meshing/mesh-types';
 import { StreamController } from '../streaming/stream-controller';
 import type { ColumnPos, MeshWorkRequest, UploadJob, Vec2, WorkRequest } from '../workers/protocol';
 import {
@@ -192,7 +192,7 @@ export class WorldService implements WorldQuery {
     };
   }
 
-  visibleMeshFor(key: string): OpaqueMesh | undefined {
+  visibleMeshFor(key: string): ChannelMesh | undefined {
     return this.visibleMeshes.get(key)?.mesh;
   }
 

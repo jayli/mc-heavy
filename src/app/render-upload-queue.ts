@@ -1,4 +1,4 @@
-import type { OpaqueMesh } from '../meshing/mesh-types';
+import type { ChannelMesh } from '../meshing/mesh-types';
 import type { UploadJob } from '../workers/protocol';
 
 export const BYTES_PER_UPLOAD_MILLISECOND = 64 * 1024;
@@ -71,10 +71,11 @@ export class RenderUploadQueue {
   }
 }
 
-export function meshByteLength(mesh: OpaqueMesh): number {
+export function meshByteLength(mesh: ChannelMesh): number {
   return mesh.positions.byteLength
     + mesh.normals.length * Float32Array.BYTES_PER_ELEMENT
     + mesh.uvs.byteLength
-    + mesh.materialIds.byteLength
+    + mesh.tileIds.byteLength
+    + mesh.ao.byteLength
     + mesh.indices.byteLength;
 }

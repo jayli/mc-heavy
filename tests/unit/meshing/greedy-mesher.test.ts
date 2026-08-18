@@ -3,7 +3,7 @@ import { blockRegistry } from '../../../src/domain/blocks';
 import { localIndex } from '../../../src/domain/coords';
 import { VoxelSection } from '../../../src/domain/voxel-section';
 import { meshOpaque } from '../../../src/meshing/greedy-mesher';
-import type { MeshingInput, OpaqueMesh } from '../../../src/meshing/mesh-types';
+import type { ChannelMesh, MeshingInput } from '../../../src/meshing/mesh-types';
 
 const HALO_SLOT = {
   west: 0,
@@ -34,7 +34,7 @@ function meshingInput(
   return { section, neighbors, sourceVersion };
 }
 
-function countQuadsWithNormal(mesh: OpaqueMesh, normal: readonly [number, number, number]): number {
+function countQuadsWithNormal(mesh: ChannelMesh, normal: readonly [number, number, number]): number {
   let count = 0;
   for (let indexOffset = 0; indexOffset < mesh.indices.length; indexOffset += 6) {
     const offset = mesh.indices[indexOffset] * 3;
@@ -108,7 +108,7 @@ describe('meshOpaque', () => {
     expect(mesh.positions.length % 3).toBe(0);
     expect(mesh.normals.length).toBe(mesh.positions.length);
     expect(mesh.uvs.length).toBe(vertexCount * 2);
-    expect(mesh.materialIds.length).toBe(vertexCount);
+    expect(mesh.tileIds.length).toBe(vertexCount);
     expect(mesh.indices.length % 6).toBe(0);
     expect([...mesh.indices].every((index) => index < vertexCount)).toBe(true);
     expect(mesh.sourceVersion).toBe(121);

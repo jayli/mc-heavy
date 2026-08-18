@@ -1,6 +1,6 @@
 import type { VoxelSection } from '../domain/voxel-section';
 import type { SectionPos } from '../domain/coords';
-import type { OpaqueMesh } from '../meshing/mesh-types';
+import type { ChannelMesh } from '../meshing/mesh-types';
 
 export type SerializedVoxelSection = Readonly<{
   pos: SectionPos;
@@ -40,7 +40,7 @@ export type MeshingWorkerResponse = Readonly<{
   key: string;
   epoch: number;
   editVersion: number;
-  mesh: OpaqueMesh;
+  mesh: ChannelMesh;
 }>;
 
 export type SectionState =
@@ -78,11 +78,11 @@ export type MeshedSection = Readonly<{
   key: string;
   epoch: number;
   editVersion: number;
-  mesh: OpaqueMesh;
+  mesh: ChannelMesh;
 }>;
 export type UploadJob = Readonly<{
   key: string;
   editVersion: number;
-  mesh: OpaqueMesh;
+  mesh: ChannelMesh;
   estimatedUploadMs: number;
 }>;

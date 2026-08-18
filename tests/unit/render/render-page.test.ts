@@ -3,10 +3,10 @@ import { Mesh, type Material } from 'three';
 // @ts-expect-error -- exercised deliberately to probe the real WebGPU vertex layout mapping.
 import WebGPUAttributeUtils from 'three/src/renderers/webgpu/utils/WebGPUAttributeUtils.js';
 import { describe, expect, it } from 'vitest';
-import type { OpaqueMesh } from '../../../src/meshing/mesh-types';
+import type { ChannelMesh } from '../../../src/meshing/mesh-types';
 import { RenderPage, type RenderPageTarget } from '../../../src/render/render-page';
 
-function opaqueMesh(sourceVersion: number, materialId = 1): OpaqueMesh {
+function opaqueMesh(sourceVersion: number, materialId = 1): ChannelMesh {
   return {
     positions: new Float32Array([
       0, 0, 0,
@@ -23,7 +23,8 @@ function opaqueMesh(sourceVersion: number, materialId = 1): OpaqueMesh {
       1, 0,
       0, 1,
     ]),
-    materialIds: new Uint16Array([materialId, materialId, materialId]),
+    tileIds: new Uint16Array([materialId, materialId, materialId]),
+    ao: new Uint8Array([3, 3, 3]),
     indices: new Uint32Array([0, 1, 2]),
     sourceVersion,
   };
@@ -87,7 +88,7 @@ describe('RenderPage', () => {
         }
         expect(next.geometry.getAttribute('position').count).toBe(3);
         const expectedMaterialId = previous ? 4 : 1;
-        expect(next.geometry.getAttribute('blockId').array).toEqual(
+        expect(next.geometry.getAttribute('tileId').array).toEqual(
           new Uint16Array([expectedMaterialId, expectedMaterialId, expectedMaterialId]),
         );
         current = next;
@@ -138,7 +139,7 @@ describe('RenderPage', () => {
     page.dispose();
   });
 
-  it('uses one shared atlas material whose shader graph selects layers from blockId', () => {
+  it('uses one shared atlas material whose shader graph selects layers from tileId', () => {
     const first = capturingTarget();
     const second = capturingTarget();
     const firstPage = new RenderPage('0,0,0', undefined, first.target);
@@ -149,11 +150,11 @@ describe('RenderPage', () => {
     const firstObject = first.current();
     const secondObject = second.current();
     expect(firstObject?.material as Material).toBe(secondObject?.material as Material);
-    expect(firstObject?.geometry.getAttribute('blockId').array).toEqual(new Uint16Array([3, 3, 3]));
-    expect(secondObject?.geometry.getAttribute('blockId').array).toEqual(new Uint16Array([7, 7, 7]));
+    expect(firstObject?.geometry.getAttribute('tileId').array).toEqual(new Uint16Array([3, 3, 3]));
+    expect(secondObject?.geometry.getAttribute('tileId').array).toEqual(new Uint16Array([7, 7, 7]));
     expect(nodeGraphUsesAttribute(
       (firstObject?.material as Material & { colorNode?: unknown }).colorNode,
-      'blockId',
+      'tileId',
     )).toBe(true);
     expect(firstObject?.geometry.getAttribute('uv').array).toEqual(opaqueMesh(1, 3).uvs);
     firstPage.dispose();
@@ -221,7 +222,7 @@ describe('RenderPage', () => {
 
     expect(page.sourceVersion).toBe(2);
     expect(capture.current()).not.toBe(original);
-    expect(capture.current()?.geometry.getAttribute('blockId').array)
+    expect(capture.current()?.geometry.getAttribute('tileId').array)
       .toEqual(new Uint16Array([4, 4, 4]));
     page.dispose();
   });

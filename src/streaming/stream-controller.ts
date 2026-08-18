@@ -51,7 +51,8 @@ function uploadCost(mesh: MeshedSection['mesh']): number {
     mesh.positions.byteLength +
     mesh.normals.byteLength +
     mesh.uvs.byteLength +
-    mesh.materialIds.byteLength +
+    mesh.tileIds.byteLength +
+    mesh.ao.byteLength +
     mesh.indices.byteLength;
   return Math.max(MINIMUM_UPLOAD_COST_MS, bytes / BYTES_PER_UPLOAD_MILLISECOND);
 }

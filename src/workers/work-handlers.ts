@@ -88,7 +88,8 @@ export function meshingTransferables(response: MeshingWorkerResponse): Transfera
     transferableBuffer(response.mesh.positions),
     transferableBuffer(response.mesh.normals),
     transferableBuffer(response.mesh.uvs),
-    transferableBuffer(response.mesh.materialIds),
+    transferableBuffer(response.mesh.tileIds),
+    transferableBuffer(response.mesh.ao),
     transferableBuffer(response.mesh.indices),
   ];
 }
