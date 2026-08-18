@@ -11,6 +11,9 @@ export type WorldGenerator = {
 };
 
 const SEA_LEVEL = 24;
+const HEIGHT_CELL = 24;
+const HEIGHT_AMPLITUDE = 16;
+const HEIGHT_BASE = SEA_LEVEL - 8;
 
 const biomeFor = (seed: number, x: number, z: number): Biome => {
   const noise = hash2(seed ^ 0x1b873593, Math.floor(x / 64), Math.floor(z / 64));
@@ -20,9 +23,21 @@ const biomeFor = (seed: number, x: number, z: number): Biome => {
   return 'plains';
 };
 
-const surfaceHeightAt = (seed: number, x: number, z: number): number => (
-  SEA_LEVEL - 8 + Math.floor(hash2(seed, x, z) * 17)
-);
+const lerp = (from: number, to: number, amount: number): number => from + (to - from) * amount;
+
+/** 在 24×24 网格上做双线性插值的低起伏高度场，相邻列高度最多差 1。 */
+export const surfaceHeightAt = (seed: number, x: number, z: number): number => {
+  const gridX = Math.floor(x / HEIGHT_CELL);
+  const gridZ = Math.floor(z / HEIGHT_CELL);
+  const fx = (x - gridX * HEIGHT_CELL) / HEIGHT_CELL;
+  const fz = (z - gridZ * HEIGHT_CELL) / HEIGHT_CELL;
+  const h00 = hash2(seed ^ 0x27d4eb2d, gridX, gridZ);
+  const h10 = hash2(seed ^ 0x27d4eb2d, gridX + 1, gridZ);
+  const h01 = hash2(seed ^ 0x27d4eb2d, gridX, gridZ + 1);
+  const h11 = hash2(seed ^ 0x27d4eb2d, gridX + 1, gridZ + 1);
+  const top = lerp(lerp(h00, h10, fx), lerp(h01, h11, fx), fz);
+  return HEIGHT_BASE + Math.floor(top * HEIGHT_AMPLITUDE);
+};
 
 const terrainBlockAt = (seed: number, pos: BlockPos): number => {
   const surface = surfaceHeightAt(seed, pos.x, pos.z);

@@ -4,7 +4,7 @@ import { MESH_CHANNELS } from '../meshing/mesh-types';
 import { Inventory } from '../gameplay/inventory';
 import { PlayerController } from '../gameplay/player-controller';
 import { PlayerInteraction } from '../gameplay/player-interaction';
-import { surfaceFeetY } from '../gameplay/spawn';
+import { findSpawnPosition } from '../gameplay/spawn';
 import { createTntSystem } from '../gameplay/tnt';
 import { ChestAnimations } from '../gameplay/chest-animations';
 import { ParticleSystem } from '../render/particles';
@@ -105,10 +105,11 @@ export async function createGameApp(
     throw error;
   }
 
+  const spawn = findSpawnPosition(world, 0.5, 0.5);
   const player = new PlayerController(world, {
-    x: 0.5,
-    y: Math.max(1, surfaceFeetY(world, 0.5, 0.5)),
-    z: 0.5,
+    x: spawn.x,
+    y: Math.max(1, spawn.y),
+    z: spawn.z,
   });
   const inventory = new Inventory();
   // A stack above one keeps the five fixed hotbar slots stable while playing.
@@ -322,7 +323,7 @@ export async function createGameApp(
     placeForTest,
     setBlockForTest,
     readBlockForTest,
-    breakForTest: () => interaction.breakBlock(world, player.position, player.viewDirection),
+    breakForTest: () => interaction.breakBlock(world, player.eyePosition, player.viewDirection),
     igniteTntForTest: (pos) => tntSystem.ignite(pos),
     activeParticles: () => particles.activeCount(),
     setRainEnabled: (enabled) => rain.setEnabled(enabled),
@@ -352,12 +353,12 @@ export async function createGameApp(
   const onMouseDown = (event: MouseEvent): void => {
     if (!inputActive) return;
     if (event.button === 0) {
-      interaction.breakBlock(world, player.position, player.viewDirection);
+      interaction.breakBlock(world, player.eyePosition, player.viewDirection);
       updateHotbar();
     } else if (event.button === 2) {
       const selected = inventory.selected();
       if (selected) {
-        interaction.placeBlock(world, player.position, player.viewDirection, selected.blockId);
+        interaction.placeBlock(world, player.eyePosition, player.viewDirection, selected.blockId);
         updateHotbar();
       }
     }
@@ -480,7 +481,7 @@ export async function createGameApp(
     ).uploadedBytes;
     renderer.render({
       camera: {
-        position,
+        position: player.eyePosition,
         direction: player.viewDirection,
         aspect: canvas.clientHeight > 0 ? canvas.clientWidth / canvas.clientHeight : 1,
       },

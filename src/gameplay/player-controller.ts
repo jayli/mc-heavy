@@ -4,8 +4,9 @@ import type { WorldQuery } from '../world/world-query';
 export type HorizontalDirection = Readonly<{ x: number; z: number }>;
 
 export const PLAYER_HALF_WIDTH = 0.3;
-export const PLAYER_BELOW_POSITION = 1;
-export const PLAYER_ABOVE_POSITION = 0.8;
+export const PLAYER_BELOW_POSITION = 0;
+export const PLAYER_ABOVE_POSITION = 1.8;
+export const PLAYER_EYE_HEIGHT = 1.65;
 export const PLAYER_WALK_SPEED = 4;
 export const PLAYER_GRAVITY = -24;
 export const PLAYER_TERMINAL_VELOCITY = -50;
@@ -48,6 +49,14 @@ export class PlayerController {
 
   get isOnGround(): boolean {
     return this.onGroundValue;
+  }
+
+  get eyePosition(): Vec3 {
+    return Object.freeze({
+      x: this.positionValue.x,
+      y: this.positionValue.y + PLAYER_EYE_HEIGHT,
+      z: this.positionValue.z,
+    });
   }
 
   get facing(): HorizontalDirection {
@@ -116,8 +125,25 @@ export class PlayerController {
       x: (input.x / inputLength) * PLAYER_WALK_SPEED * dtSeconds,
       z: (input.z / inputLength) * PLAYER_WALK_SPEED * dtSeconds,
     };
-    const afterX = { ...this.positionValue, x: this.moveAlongX(movement.x) };
-    this.positionValue = { ...afterX, z: this.moveAlongZ(afterX, movement.z) };
+    const before = this.positionValue;
+    const afterX = { ...before, x: this.moveAlongX(movement.x) };
+    const afterZ = { ...afterX, z: this.moveAlongZ(afterX, movement.z) };
+    const reachedTarget = afterZ.x === before.x + movement.x && afterZ.z === before.z + movement.z;
+    if (!reachedTarget && this.onGroundValue) {
+      const lifted = { ...before, y: before.y + 1 };
+      if (!this.collidesAt(lifted)) {
+        this.positionValue = lifted;
+        const liftedX = { ...lifted, x: this.moveAlongX(movement.x) };
+        const liftedZ = { ...liftedX, z: this.moveAlongZ(liftedX, movement.z) };
+        if (liftedZ.x === before.x + movement.x && liftedZ.z === before.z + movement.z) {
+          this.positionValue = liftedZ;
+          this.onGroundValue = false;
+          return this.position;
+        }
+      }
+      this.positionValue = before;
+    }
+    this.positionValue = afterZ;
     return this.position;
   }
 
@@ -186,6 +212,23 @@ export class PlayerController {
     return false;
   }
 
+  private collidesAt(position: Vec3): boolean {
+    const minY = Math.floor(position.y + COLLISION_EPSILON);
+    const maxY = Math.floor(position.y + PLAYER_ABOVE_POSITION - COLLISION_EPSILON);
+    const minX = Math.floor(position.x - PLAYER_HALF_WIDTH + COLLISION_EPSILON);
+    const maxX = Math.floor(position.x + PLAYER_HALF_WIDTH - COLLISION_EPSILON);
+    const minZ = Math.floor(position.z - PLAYER_HALF_WIDTH + COLLISION_EPSILON);
+    const maxZ = Math.floor(position.z + PLAYER_HALF_WIDTH - COLLISION_EPSILON);
+    for (let y = minY; y <= maxY; y += 1) {
+      for (let z = minZ; z <= maxZ; z += 1) {
+        for (let x = minX; x <= maxX; x += 1) {
+          if (this.world.isSolid({ x, y, z })) return true;
+        }
+      }
+    }
+    return false;
+  }
+
   applyVerticalPhysics(dtSeconds: number): Vec3 {
     if (!Number.isFinite(dtSeconds) || dtSeconds <= 0) return this.position;
 
@@ -204,7 +247,7 @@ export class PlayerController {
       this.positionValue = { ...this.positionValue, y: this.moveAlongY(deltaY) };
     }
     const supportRow = Math.floor(
-      this.positionValue.y - PLAYER_BELOW_POSITION + COLLISION_EPSILON,
+      this.positionValue.y - COLLISION_EPSILON,
     );
     this.onGroundValue = this.verticalVelocityValue === 0
       && this.solidColumnAtY(this.positionValue.x, supportRow, this.positionValue.z);
@@ -228,7 +271,7 @@ export class PlayerController {
       for (let y = first; y >= last; y -= 1) {
         if (this.solidColumnAtY(x, y, z)) {
           this.verticalVelocityValue = 0;
-          return y + PLAYER_BELOW_POSITION;
+          return y + 1;
         }
       }
     }

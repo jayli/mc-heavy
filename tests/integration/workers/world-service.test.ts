@@ -108,8 +108,9 @@ describe('WorldService worker integration', () => {
     expect(loaded).toBe(1);
     expect(world.getBlock({ x: 0, y: 0, z: 0 })).toBe(loaded);
     expect(world.streamingDiagnostics().loadedSectionQueries).toBe(queriesBefore + 1);
-    expect(world.getBlock({ x: 0, y: 17, z: 0 })).toBe(4);
-    expect(world.getBlock({ x: 0, y: 25, z: 0 })).toBe(0);
+    expect(world.getBlock({ x: 0, y: 17, z: 0 })).toBe(1);
+    expect(world.getBlock({ x: 0, y: 27, z: 0 })).toBe(4);
+    expect(world.getBlock({ x: 0, y: 28, z: 0 })).toBe(0);
     expect(world.isSolid({ x: 0, y: 17, z: 0 })).toBe(true);
     const rayQueriesBefore = world.streamingDiagnostics().loadedSectionQueries;
     expect(world.raycast({ x: 0.5, y: 0.5, z: 0.5 }, { x: 0, y: 0, z: 0 }, 1)).not.toBeNull();

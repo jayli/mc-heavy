@@ -23,9 +23,14 @@ test('binds mouse look and hotbar break and place input to the real world', asyn
   await page.getByTestId('import-new').click();
   await page.getByText('World ready').waitFor();
 
-  // Default seed 0x5eed1234: the first solid block below the y=50 spawn camera is
-  // the coast surface at y=23 (sand), computed once with the pure generator.
-  expect(await page.evaluate(() => window.game!.readBlockForTest({ x: 0, y: 23, z: 0 }))).toBe('sand');
+  const surface = await page.evaluate(() => {
+    for (let y = 40; y >= 0; y -= 1) {
+      const block = window.game!.readBlockForTest({ x: 0, y, z: 0 });
+      if (block !== 'air' && block !== 'water') return { y, block };
+    }
+    throw new Error('no surface found below the spawn camera');
+  });
+  expect(surface.block).toBe('sand');
   await expect(page.getByTestId('hotbar-slot-1')).toHaveAttribute('data-selected', 'true');
 
   await page.locator('canvas').click();
@@ -38,17 +43,17 @@ test('binds mouse look and hotbar break and place input to the real world', asyn
   expect(look.yaw).toBeCloseTo(-0.2, 5);
   expect(look.pitch).toBeCloseTo(0.2, 5);
 
-  const resetAimDown = () => page.evaluate(() => {
-    window.game!.player.setPosition({ x: 0.5, y: 25.5, z: 0.5 });
+  const resetAimDown = () => page.evaluate((targetY) => {
+    window.game!.player.setPosition({ x: 0.5, y: targetY, z: 0.5 });
     window.game!.player.setLook(0, -Math.PI / 2);
-  });
+  }, surface.y + 2);
   await resetAimDown();
   await page.dispatchEvent('canvas', 'mousedown', { button: 0 });
-  expect(await page.evaluate(() => window.game!.readBlockForTest({ x: 0, y: 23, z: 0 }))).toBe('air');
+  expect(await page.evaluate(({ y }) => window.game!.readBlockForTest({ x: 0, y, z: 0 }), surface)).toBe('air');
 
   await resetAimDown();
   await page.dispatchEvent('canvas', 'mousedown', { button: 2 });
-  expect(await page.evaluate(() => window.game!.readBlockForTest({ x: 0, y: 23, z: 0 }))).toBe('stone');
+  expect(await page.evaluate(({ y }) => window.game!.readBlockForTest({ x: 0, y, z: 0 }), surface)).toBe('stone');
 
   await page.keyboard.press('Digit2');
   await expect(page.getByTestId('hotbar-slot-2')).toHaveAttribute('data-selected', 'true');
@@ -59,7 +64,7 @@ test('binds mouse look and hotbar break and place input to the real world', asyn
   await page.dispatchEvent('canvas', 'mousedown', { button: 0 });
   await resetAimDown();
   await page.dispatchEvent('canvas', 'mousedown', { button: 2 });
-  expect(await page.evaluate(() => window.game!.readBlockForTest({ x: 0, y: 23, z: 0 }))).toBe('grass');
+  expect(await page.evaluate(({ y }) => window.game!.readBlockForTest({ x: 0, y, z: 0 }), surface)).toBe('grass');
 
   // Camera-relative movement: W follows the current view direction rather than
   // a fixed world axis.

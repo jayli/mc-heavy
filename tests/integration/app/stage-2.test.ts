@@ -33,7 +33,7 @@ test('spawns on the surface and jumps with space', async ({ page }) => {
 
   const baseline = await page.evaluate(() => window.game!.player.position.y);
   expect(baseline).toBeGreaterThan(15);
-  expect(baseline).toBeLessThan(40);
+  expect(baseline).toBeLessThan(35);
 
   await page.keyboard.press('Space');
   await page.waitForFunction((startY) => window.game!.player.position.y > startY + 0.2, baseline);
@@ -45,8 +45,8 @@ test('opens a chest on the first click and breaks it on the second', async ({ pa
   await page.getByText('World ready').waitFor();
 
   const result = await page.evaluate(() => {
-    window.game!.setBlockForTest({ x: 0, y: 24, z: -1 }, 'chest');
-    window.game!.player.setPosition({ x: 0.5, y: 25.5, z: 0.5 });
+    window.game!.setBlockForTest({ x: 0, y: 40, z: -1 }, 'chest');
+    window.game!.player.setPosition({ x: 0.5, y: 41.5, z: 0.5 });
     window.game!.player.setLook(0, -1.05);
     const opened = window.game!.breakForTest();
     const lids = window.game!.activeChestLids();
@@ -55,7 +55,7 @@ test('opens a chest on the first click and breaks it on the second', async ({ pa
       opened,
       lids,
       broken,
-      block: window.game!.readBlockForTest({ x: 0, y: 24, z: -1 }),
+      block: window.game!.readBlockForTest({ x: 0, y: 40, z: -1 }),
     };
   });
 

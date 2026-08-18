@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  PLAYER_EYE_HEIGHT,
   PLAYER_JUMP_FORCE,
   PLAYER_TERMINAL_VELOCITY,
   PlayerController,
@@ -9,7 +10,7 @@ import { InMemoryWorld } from '../../../src/world/world-query';
 describe('PlayerController', () => {
   it('stops horizontal movement before entering a solid voxel', () => {
     const world = new InMemoryWorld();
-    world.applyEdits([{ pos: { x: 1, y: 0, z: 0 }, blockId: 1 }]);
+    world.applyEdits([{ pos: { x: 1, y: 1, z: 0 }, blockId: 1 }]);
     const player = new PlayerController(world, { x: 0.5, y: 1, z: 0.5 });
 
     expect(player.step({ x: 1, z: 0 }, 1).x).toBeLessThan(0.7);
@@ -23,7 +24,7 @@ describe('PlayerController', () => {
 
   it('uses the whole player width when stopping movement along z', () => {
     const world = new InMemoryWorld();
-    world.applyEdits([{ pos: { x: 1, y: 0, z: 1 }, blockId: 1 }]);
+    world.applyEdits([{ pos: { x: 1, y: 1, z: 1 }, blockId: 1 }]);
     const player = new PlayerController(world, { x: 0.8, y: 1, z: 0.5 });
 
     expect(player.step({ x: 0, z: 1 }, 1).z).toBeLessThan(0.7);
@@ -31,7 +32,7 @@ describe('PlayerController', () => {
 
   it('does not enter a solid voxel when stepping positive x from exact contact', () => {
     const world = new InMemoryWorld();
-    world.applyEdits([{ pos: { x: 1, y: 0, z: 0 }, blockId: 1 }]);
+    world.applyEdits([{ pos: { x: 1, y: 1, z: 0 }, blockId: 1 }]);
     const player = new PlayerController(world, { x: 0.7, y: 1, z: 0.5 });
 
     expect(player.step({ x: 1, z: 0 }, 1).x).toBeLessThan(0.7);
@@ -39,7 +40,7 @@ describe('PlayerController', () => {
 
   it('does not enter a solid voxel when stepping positive z from exact contact', () => {
     const world = new InMemoryWorld();
-    world.applyEdits([{ pos: { x: 0, y: 0, z: 1 }, blockId: 1 }]);
+    world.applyEdits([{ pos: { x: 0, y: 1, z: 1 }, blockId: 1 }]);
     const player = new PlayerController(world, { x: 0.5, y: 1, z: 0.7 });
 
     expect(player.step({ x: 0, z: 1 }, 1).z).toBeLessThan(0.7);
@@ -47,7 +48,7 @@ describe('PlayerController', () => {
 
   it('allows a player with a gap to advance until the solid voxel boundary', () => {
     const world = new InMemoryWorld();
-    world.applyEdits([{ pos: { x: 1, y: 0, z: 0 }, blockId: 1 }]);
+    world.applyEdits([{ pos: { x: 1, y: 1, z: 0 }, blockId: 1 }]);
     const player = new PlayerController(world, { x: 0.69, y: 1, z: 0.5 });
 
     const position = player.step({ x: 1, z: 0 }, 1);
@@ -165,5 +166,26 @@ describe('PlayerController', () => {
 
     expect(player.position.y).toBeLessThan(2);
     expect(player.isOnGround).toBe(true);
+  });
+
+  it('exposes the eye position above the feet', () => {
+    const player = new PlayerController(new InMemoryWorld(), { x: 0.5, y: 25, z: 0.5 });
+
+    expect(player.eyePosition).toEqual({ x: 0.5, y: 25 + PLAYER_EYE_HEIGHT, z: 0.5 });
+  });
+
+  it('steps up onto a one-block ledge while walking', () => {
+    const world = new InMemoryWorld();
+    world.applyEdits([
+      { pos: { x: 0, y: 0, z: 0 }, blockId: 1 },
+      { pos: { x: 1, y: 1, z: 0 }, blockId: 1 },
+    ]);
+    const player = new PlayerController(world, { x: 0.5, y: 1, z: 0.5 });
+    player.applyVerticalPhysics(1 / 60);
+
+    player.step({ x: 1, z: 0 }, 1);
+
+    expect(player.position.x).toBeGreaterThan(1);
+    expect(player.position.y).toBe(2);
   });
 });
