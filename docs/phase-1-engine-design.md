@@ -1,15 +1,20 @@
 # mc-heavy 第一阶段实施设计文档：游戏引擎原型
 
-> 版本：v1.1 ｜ 日期：2026-08-18 ｜ 状态：定稿（经逐条代码核验修订）
+> 版本：v1.2 ｜ 日期：2026-08-18 ｜ 状态：定稿（经两轮逐条代码核验修订）
 >
 > 目标：在 mc-heavy 仓库从零重建一个功能对标 mc-lite、性能提升一个数量级的体素游戏引擎。
 > 第一阶段只做"引擎底座"：渲染、体素数据、即时地图生成、玩家交互、种子地图、存档原型。
 > 矿车、炮塔、丧尸、TNT、创造台等功能在引擎稳定后按阶段加入（本文档第 9 节给出扩展点设计）。
 >
 > v1.1 修订说明：依据对 mc-lite 实际代码的逐条核验，修正了渲染发布粒度（§4.4.2 改 column 级合批）、
-> 跨 region 结构溢出（§4.2 邻区索引查询）、结构布局缓存（§4.2 主线程算一次广播）、
+> 跨 region 结构溢出（§4.2 邻区索引查询）、结构布局缓存（§4.2 布局单点计算广播）、
 > section 边界依赖生命周期（§4.3）、skylight/blocklight 模型（§4.6），并补齐内存预算（§4.10）
 > 与若干数字勘误（方块 124 种、纹理 122 张、Worker 8 个、blockData 现状结构）。
+>
+> v1.2 修订说明：修复合批机制的 draw call 陷阱（§4.4.2 明确 channel-major 3-group 布局与
+> 变长 slot 打包策略，引入 BatchedMesh/sector 候选与 M1 决策门）、内存数字自相矛盾
+> （§4.10/DR-8 统一为 128KB/column）、skylight 边界声明错误（§4.6 纯垂直模型不含水平依赖），
+> 以及 halo 协议内外圈矛盾、normal 编码定死、布局计算移出主线程等收尾勘误。
 
 ---
 
@@ -105,7 +110,7 @@ mc-lite 是一个基于 Three.js（r184 WebGPU）的纯前端体素游戏，995 
 
 **新引擎对策**：视距在新架构里只是一个配置项。关键支撑：
 - 逐面网格化 + atlas 后，**单位面积**渲染成本大幅下降（全立方 12 tri/块 → 暴露面 2~8 tri/块，
-  理论上限约 6×）。注意：视距 8 的可见**面积**约为视距 3 的 7 倍，总三角形数仍会高于 lite 视距 3，
+  平均约 2~4×、理论上限 6×）。注意：视距 8 的可见**面积**约为视距 3 的 7 倍，总三角形数仍会高于 lite 视距 3，
   所以收益口径是"每方块/单位面积"而非"总量持平"——真正的瓶颈与解法在 draw call（§4.4.2）；
 - 生成/网格化全在 Worker 池，视距扩大只增加后台任务量，不增加主线程帧内成本；
 - 预留 LOD 接口（§4.4.5）：远圈 chunk 可降级为合并粗模，主线程 draw call 增长有上限。
@@ -253,9 +258,11 @@ GEN 任务(cx, cz, seed, edits)
   的结构全部裁剪注入。不给地标加硬 margin（那会改变与 lite 的世界布局、破坏同 seed 对比）。
 - **结构布局缓存（多 Worker 池的关键约束）**：N 个 Worker 各自持有 StructureIndex LRU 会导致
   同 region 的数百个 chunk 任务落在不同 Worker 上重复跑 City 布局（候选扫描很重），冷启动和
-  进城时成为新卡点。解法：**布局在主线程（或专用布局步骤）算一次后广播**——StructureIndex
-  的 region 布局结果体积小且确定性，主线程算好后随 GEN 任务参数下发给 Worker，Worker 只做
-  rasterize + 裁剪，不重复跑候选发现。
+  进城时成为新卡点。解法：**布局在单个 Worker（或池内带布局锁的任务）里算一次，主线程
+  只转发**——City 候选扫描较重，不能放主线程（会卡帧）；StructureIndex 的 region 布局
+  结果体积小且确定性，布局 Worker 算好后由主线程随 GEN 任务参数下发给各 Worker，Worker 只做
+  rasterize + 裁剪，不重复跑候选发现。**依赖规则**：某 region 的 GEN 任务必须等该 region
+  及相邻 region（跨 region 查询最多涉及 9 份布局）的布局全部就绪后才下发。
 - 结构光栅化：JSON 结构（src/world/structures/*.json 整体复用）与代码结构
   （城市排布、金字塔、tank 等，移植 WorldWorker 内各 generate* 函数）统一实现
   `Structure.rasterize(aabb) → blocks` 接口，输入任意 AABB 输出裁剪后的方块列表。
@@ -292,9 +299,9 @@ GEN 任务(cx, cz, seed, edits)
 ```
 position: float32 ×3   （section 局部坐标，mesh.position 挂 chunk 世界偏移）
 uv:       float32 ×2   （atlas 坐标，构建时写入）
-ao:       uint8        （0-3，经典四角 AO，移植 mc-lite AOUtils 算法）
+aoFace:   uint8        （bit0-1: AO 值 0-3，经典四角 AO，移植 mc-lite AOUtils 算法；
+                        bit2-4: 面索引 0-5，供着色器取法线——不依赖导数技巧，M1 前定死）
 light:    uint8        （skylight<<4 | blocklight，§4.6）
-normal:   编码进 AO/light 字节的空闲位或材质层推导（面朝向由顶点序隐含，不存）
 ```
 
 每面 4 顶点 6 索引（uint32 index buffer）。一个典型地形 section 约 1~4k 面 → 缓冲 100~400KB 级别，
@@ -308,7 +315,7 @@ normal:   编码进 AO/light 字节的空闲位或材质层推导（面朝向由
 | 精修路径 | chunk 首次就绪、光照变化、批量修改 | Worker MESH 任务 | 1 帧~数十帧，结果按 column.version 校验后原子替换 |
 
 快速路径保证手感；精修路径保证最终质量（完整 AO/光照）。两者产出同构缓冲，
-替换时只换 geometry 引用，无 mc-lite 式"动态 Mesh ↔ 合并 Mesh"双状态。
+替换时按 slot 写回 + updateRange 增量上传（§4.4.2），无 mc-lite 式"动态 Mesh ↔ 合并 Mesh"双状态。
 **consolidation 机制由此整体删除。**
 
 **section 边界依赖的生命周期（halo 邻居协议）**：
@@ -316,13 +323,16 @@ normal:   编码进 AO/light 字节的空闲位或材质层推导（面朝向由
 面剔除与 AO 需要 1 格 halo，邻居 column 晚生成会导致边界面错误/接缝闪烁，必须显式管理：
 
 1. **GEN 顺序**：调度按切比雪夫距离排序，保证内圈 column 先就绪；
-2. **MESH 前置条件**：section 的 MESH 任务仅在其 4 个水平邻居 column（对角邻居只影响 AO，
-   允许用"未加载=实心"近似）数据可用后执行；不满足时保持 pending，不产出半成品网格；
+2. **MESH 前置条件**：section 的 MESH 任务仅在其 4 个水平邻居 column **在加载半径内但尚未生成**
+   时保持 pending，不产出半成品网格；半径外的缺失方向不 pending，直接走第 4 条的保守出块。
+   （对角邻居只影响 AO，用"未加载=实心"近似，见第 5 条）；
 3. **邻居到达触发重 mesh**：column B 就绪时，调度器把与 B 相邻的已 mesh column 的
    **边界 section**（贴 B 的那一排）置脏并重新入队 MESH。触发方是调度器（不是 column 自己），
    收敛依据是 column.version——重 mesh 结果携带触发时的邻居版本号，过期即丢弃；
 4. **视距最外圈兜底**：最外圈 column 的 halo 之外是未加载区，面剔除按"未加载=不剔除"
    （保守出块）处理，玩家永远看不到未加载区的内部面；雾距覆盖该圈，视觉上无接缝。
+5. **对角 AO 近似是永久性的**：对角 column 到达**不触发**重 mesh（只触发正交邻居），
+   接受 column 角上 AO 的轻微偏差。若后续视觉验收不接受，再加"对角到达 → 角 section 重 mesh"触发。
 
 **非立方体方块**：花/草（cross）、台阶、栏杆、烟囱、床、活塞头等 mc-lite geomMap 的特殊几何，
 在 mesher 内按 `geometry` 类型展开预定义顶点模板（每种模板 = 一组面 + UV 映射），
@@ -340,23 +350,53 @@ normal:   编码进 AO/light 字节的空闲位或材质层推导（面朝向由
   玻璃/水单独透明材质（排序渲染）。
 - mc-lite 的纹理模糊档位（NearestFilter ↔ mipmap）在 atlas 级别保留实现。
 
-**4.4.2 渲染发布粒度：section 重建、column 合批发布**
+**4.4.2 渲染发布粒度：section 重建、合批发布（3-group 语义 + 可插拔发布层）**
 
 **决策**：section 继续作为重建与脏标记的最小粒度（快速路径 <2ms 不变），
-但**发布到 column 级单一 BufferGeometry**：每 column 一个 Mesh，内部用
-geometry groups / drawRange 按 section 划分三通道（opaque/cutout/transparent）。
+但**发布层合批**，且发布层做成可插拔接口（`PublishStrategy`），M1 用微基准在两个候选间定型。
 
-- **draw call 上限**：视距 8 为 (2×8+1)²=289 column × 至多 3 通道 ≈ 867 次 draw，
-  实际因空 column/空通道远低（典型 300~500）。若按"每 section 一个 Mesh"发布，
-  视距 8 是 600~1200 Mesh、上限约 3600 次 draw，对 120fps 目标是不可接受的风险。
+**候选 A：column 级 3-group 合批（默认实现）**
+
+- 每 column 一个 Mesh，缓冲区必须是 **channel-major 布局**：opaque 全列连续一段、
+  cutout 一段、transparent 一段，**恰好 3 个 geometry group**。section 在各通道内是
+  连续子区间（offset 表索引）。
+- **draw call 陷阱（必须写死 3-group 语义）**：three.js 在 material 为数组时**每个 group
+  各发一次 draw**。若按 8 section × 3 通道切成 24 个 group，每 column 是 24 次 draw
+  （289 × 24 ≈ 7000 次），比"每 section 一个 Mesh"还差。只有 channel-major 3-group 才能
+  拿到每 column ≤3 draw。WebGPU 路径是否和 WebGL 一样逐 group 发 draw，需在 M0 实测确认，
+  但实现必须按 3-group 语义写死，不能按 24-group 理解。
+- draw call 上限：视距 8 为 289 column × ≤3 ≈ 867 次，实际因空 column/空通道远低（典型 300~500）。
+
+**候选 B：BatchedMesh + sector 合批（M1 微基准对比项）**
+
+- r185.1 的 `BatchedMesh` 已从 addons 进核心 three 包，带
+  `addGeometry(reservedVertexCount)` / `setGeometryAt` / `setGeometrySize` / `setVisibleAt`，
+  天然支持"一次 draw、按 slot 增量替换"。
+- 按 sector（如 4×4 column）合批：视距 8 下约 25 sector × 3 通道 ≈ 75 draw，
+  同时保留 sector 级视锥剔除（`setVisibleAt` + 包围盒）。
+
+**选型标准（M1 硬决策门）**：120fps 基线下，放块/挖块的 p95 帧时。两个候选跑同一套
+放挖压力场景，谁 p95 更稳选谁；若接近，选实现更简单的候选 A。
+
+**变长 section 的打包策略（两个候选共用，必须定义清楚）**：
+
+单块编辑重建后该 section 顶点数会变，原地写回会顶掉后续 section 数据。策略：
+
+- **slot 预留余量**：每 section slot 按"上次实际顶点数 × 1.25"预留（首次按典型值），
+  offset 表记录各 slot 起点；重建后若未溢出预留区间，直接 `updateRanges` 增量写回。
+- **溢出触发整列 repack**：slot 溢出时不原地扩，而是把该 column（或 sector）整列
+  在 Worker 重排（摊销——单块编辑极少连续溢出，repack 频率低）。repack 结果携带
+  column.version，回传时版本校验，原子替换 offset 表与缓冲。
+- repack 期间快速路径仍对旧 slot 布局生效（写旧区间），repack 完成后原子切换，无视觉空洞。
+
+**其他约束**：
+
 - **纠正一个前提**："WebGPU 每 draw 的 CPU 成本远低于 WebGL"不成立——three.js 的
-  WebGPURenderer 在 pipeline/bind group 哈希与 render list 排序上的每 draw 开销
+  WebGPURenderer 在 pipeline/bind group 哈希与 render list 排序上的每 draw CPU 开销
   通常不低于 WebGL。draw call 数量必须作为一级约束控制，不能指望后端红利。
 - **历史参照的适用边界**：本仓库上一版 TS 实现（a7feb44^，已清空）验证过 120fps，
   但它当时只流式加载约 3 个垂直 section；新设计是 8 个 section，工作量约 2.67 倍，
   其结论只能作为量级参照，M1 必须重新跑基线确认。
-- section 级脏更新时，只重算该 section 的顶点段并写回 column 缓冲对应区间
-  （`updateRanges` 增量上传），不重建整 column 缓冲。
 - `RenderSectionPool`（缓冲/geometry 复用）只省 CPU 分配与 GC，**不省显存**；
   显存控制靠视距卸载（§4.10 内存预算）。
 
@@ -405,8 +445,8 @@ mc-lite 已在 r184 完成 WebGPU 迁移（含 renderAsync），mc-heavy 直接�
   （WebGPU 下路径最优）。
 - **TSL NodeMaterial**：天空、水面、雾、色调映射全部用节点材质实现
   （mc-lite 的 TSL 水面/天空盒方案整体移植，r185 节点库更完整）。
-- **frustumCulled + 预计算包围盒**：section mesh 的包围盒在 meshing 时算好随缓冲回传，
-  渲染器逐 section 视锥剔除，零运行时计算。
+- **frustumCulled + 预计算包围盒**：合批 Mesh 的包围盒在 meshing 时算好随缓冲回传，
+  剔除粒度随发布层——候选 A 逐 column（16×16×128 AABB）、候选 B 逐 sector，零运行时计算。
 - **预留（第二阶段+）**：compute shader 做 GPU 驱动剔除/LOD 选择、indirect draw 进一步
   压缩 draw call。第一阶段不引入，但 section 聚合数据结构（§4.4.5）为其留好形状。
 
@@ -455,8 +495,10 @@ mc-lite 的 batchFaceCullingTimeout / isBatch 补丁语义被原生吸收。
 - **skylight（修正模型）**：不用"高度图以下衰减"（那在洞穴、悬挑下会给出错误光照，
   且 skylight 本不该随深度衰减）。正确做法：从 y=MAX 向下**逐列**传播，初始强度 15，
   遇 opaque 方块停止（下方为 0），空气/透明方块保持 15——洞穴顶部被遮、洞内为暗，自动正确。
-  生成时随 GEN 计算；玩家挖穿地表时按受影响列增量重算。skylight 同样继承 §4.3 的
-  跨 column 边界依赖（halo 协议），边界列需邻居 column 数据。
+  生成时随 GEN 计算；玩家挖穿地表时按受影响列增量重算。**纯垂直模型不含水平扩散**，
+  因此不依赖任何水平邻居 column（与 §4.3 halo 协议无关）；代价是悬挑/侧开口洞穴的光照
+  与 Minecraft 不同——侧开口洞穴在此模型下也是暗的。"洞穴自动正确"仅指**封闭洞穴**。
+  后续阶段如需侧向透光，可升级为 3D flood fill（届时才引入水平 halo 依赖）。
 - **blocklight**：emissive 方块（灯/萤石/岩浆，移植 LightSourceManager 的方块清单）
   做 flood fill（强度 15 逐级 -1 衰减）。**放置**光源用增量 BFS 即可；
   **删除**光源时的降光是全流程最难的一步（需撤销传播路径），第一阶段不追求增量删除，
@@ -515,7 +557,7 @@ IndexedDB（沿用 mc-lite DB 名/版本约定）
 
 | 项 | 估算 | 说明 |
 |---|---|---|
-| 体素数据（CPU） | ~37 MB | 289 column × 128KB（blocks 32KB + meta/light 各 16KB + edits/开销） |
+| 体素数据（CPU） | ~37 MB | 289 column × 128KB（blocks Uint16Array 64KB + meta/light 各 32KB；保留 Uint16 为 >255 方块留余量） |
 | GPU 顶点缓冲 | **~100 MB 级（大头）** | 活跃 section 平均几十~几百 KB，城市区更重；视距 16 会到数百 MB |
 | atlas 纹理 | ~22 MB | 2048² RGBA + mipmap 链 |
 
@@ -562,19 +604,19 @@ AOBridge / AOWorker / 八个 Worker 文件——它们的职责被 §4 的四个
 | # | 决策 | 备选 | 理由 |
 |---|---|---|---|
 | DR-1 | 删除预生成，纯按需生成 | 预生成提速/分区懒加载 | 生成是确定性的，预生成是冗余计算；按需生成 + 提前量调度后边界问题不存在 |
-| DR-2 | 逐面网格化 + 纹理 atlas | 沿用 InstancedMesh 优化 | 单位面积三角形数降约 6×（全立方 12 tri/块 → 暴露面 2~8 tri/块），配合 column 合批（DR-11）把 draw call 压到数百级，是视距扩展的根本前提 |
+| DR-2 | 逐面网格化 + 纹理 atlas | 沿用 InstancedMesh 优化 | 单位面积三角形数平均降 2~4×、理论上限 6×（全立方 12 tri/块 → 暴露面 2~8 tri/块），配合合批发布（DR-11）把 draw call 压到数百级，是视距扩展的根本前提 |
 | DR-3 | section(16³) 为网格单元 | 整 column 网格 | 单块修改重建成本 < 2ms，当帧生效；column 级重建需 5~15ms 且上传体积大 |
 | DR-4 | 体素 DDA 射线 | 优化 Raycaster（BVH 等） | 体素世界射线有解析解，O(距离)；任何 mesh 求交方案都是数量级劣势 |
-| DR-5 | 单 Worker 池多任务类型 | 每类专属 Worker（mc-lite 7 个） | 池化消除"AO Worker 空闲而生成排队"的负载不均；任务同构代码复用 |
+| DR-5 | 单 Worker 池多任务类型 | 每类专属 Worker（mc-lite 8 个） | 池化消除"AO Worker 空闲而生成排队"的负载不均；任务同构代码复用 |
 | DR-6 | edits 稀疏层 + terrain 可再生 | 存全量 chunk 数据 | 存档 KB 级；加载无恢复阶段；天然支持"重生 chunk 不丢修改" |
 | DR-7 | 无构建步骤 + CDN import map | Vite 构建 | 延续 mc-lite 开发体验；本项目规模下无实质收益 |
-| DR-8 | 世界高度 128（-32..96） | -16..112 / 64 / 256 | 兼容 mc-lite 坐标（结构零改造移植）；128 对齐 8 个 section 整除；内存 32KB/column 可控；下界 -32 给地形填充（最低 h-12，h 下界约 -16 → 最低块 -28）留足余量，避免截断 |
+| DR-8 | 世界高度 128（-32..96） | -16..112 / 64 / 256 | 兼容 mc-lite 坐标（结构零改造移植）；128 对齐 8 个 section 整除；内存 128KB/column 可控；下界 -32 给地形填充（最低 h-12，h 下界约 -16 → 最低块 -28）留足余量，避免截断 |
 | DR-9 | 纯 JavaScript + JSDoc，不用 TypeScript | TS + 构建工具链 | 与 mc-lite 技术栈一致，零迁移成本；无编译环节，Worker/主线程同构代码直接共享；类型表达靠 JSDoc + ESLint 足够 |
 | DR-10 | WebGPU 唯一后端（three r185.1），不做 WebGL2 降级 | WebGPU 优先 + WebGL2 兜底 | 目标用户全在现代浏览器，fallback 收益趋近于零；mc-lite 已验证 WebGPU 主路径；砍掉双后端的正确性/性能双重验证负担；架构不被锁死，未来可后补 |
-| DR-11 | 渲染发布粒度：section 重建、column 级合批发布 | 每 section 独立 Mesh | section 独立 Mesh 在视距 8 下上限约 3600 draw，120fps 不可接受；column 合批压到 ~289×3 且实际远低；three.js WebGPU 每 draw CPU 开销不低于 WebGL，draw call 必须一级管控 |
+| DR-11 | 渲染发布粒度：section 重建、合批发布（可插拔，M1 微基准确定 column 3-group vs BatchedMesh sector） | 每 section 独立 Mesh | section 独立 Mesh 在视距 8 下上限约 3600 draw，120fps 不可接受；合批后候选 A ~289×3、候选 B ~25×3；three.js WebGPU 每 draw CPU 开销不低于 WebGL，draw call 必须一级管控；material 数组逐 group 发 draw，必须 channel-major 3-group 布局 |
 | DR-12 | 跨 region 结构：邻区索引查询（本 region + 8 邻区） | 地标加硬 margin 禁止跨界 | 地标中心偏移 100~400 + 半尺寸 40~80 必然跨 400 格 region 边界；硬 margin 会改变与 lite 的世界布局、破坏同 seed 对比；邻区布局同 seed 确定性重算，成本由布局广播（DR-13）兜住 |
-| DR-13 | 结构布局主线程算一次后广播给 Worker | 每 Worker 各持 LRU 缓存 | City 候选扫描很重，N Worker 重复跑同 region 布局会成为冷启动/进城新卡点；布局体积小且确定性，广播成本可忽略 |
-| DR-14 | skylight 用 top-down 逐列传播 | 高度图以下衰减近似 | 近似模型在洞穴/悬挑下光照错误，且 skylight 本不该随深度衰减；top-down 逐列传播实现同样简单且自动正确 |
+| DR-13 | 结构布局单 Worker 算一次、主线程转发广播 | 每 Worker 各持 LRU 缓存 / 主线程直接计算 | City 候选扫描很重：N Worker 重复跑会成为冷启动/进城新卡点，放主线程会卡帧；布局体积小且确定性，单点计算 + 广播成本可忽略；GEN 任务依赖布局就绪（最多 9 份邻区布局） |
+| DR-14 | skylight 用 top-down 逐列传播（纯垂直，不含水平扩散） | 高度图以下衰减近似 / 3D flood fill | 近似模型在洞穴/悬挑下光照错误，且 skylight 本不该随深度衰减；逐列传播实现同样简单、封闭洞穴正确、且无水平邻居依赖；侧开口洞穴偏暗的代价接受，3D flood fill 放后续阶段 |
 | DR-15 | 逐面网格化，不用 greedy meshing | greedy meshing | 上一版 mc-heavy（已清空）用过 greedy；逐面在 AO/编辑增量更新/UV 映射上显著更简单，三角形多 2~3× 但当前瓶颈是 draw call 而非三角形（WebGPU 下三角形吞吐充裕）；视距 16+ 若三角形成为瓶颈再评估 greedy 或 LOD |
 
 ---
@@ -585,11 +627,15 @@ AOBridge / AOWorker / 八个 Worker 文件——它们的职责被 §4 的四个
 
 **M0 骨架（0.5 周）**
 - 项目脚手架、import map、Worker 池与 RPC、perf 打点、BlockRegistry + atlas 构建。
+- **WebGPU group-draw 语义实测**：构造 3-group 单 Mesh 与 24-group 单 Mesh 对比，
+  确认 WebGPURenderer 逐 group 发 draw 的行为与 CPU 开销，为 §4.4.2 的 3-group 写死提供实测依据。
 - 验收：空白场景渲染 + HUD 帧率面板；atlas 覆盖 mc-lite 全部纹理。
 
 **M1 体素核心闭环（1~1.5 周）**
 - WorldData/ChunkColumn/edits；地形生成（无结构）；section meshing（快速+精修双路径）；
   玩家移动/物理/DDA 射线/放块挖块；最小存档（edits 读写）。
+- **发布层决策门（硬）**：实现 §4.4.2 候选 A（column 3-group）与候选 B（BatchedMesh sector），
+  在同一放挖压力场景下对比 120fps 基线的 p95 帧时，定型发布层实现（含变长 slot 打包策略落地）。
 - 验收：平原地形无限行走不掉帧；放块挖块当帧生效；重启后修改保留。
 
 **M2 结构与世界完整性（1~1.5 周）**
