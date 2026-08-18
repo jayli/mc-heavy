@@ -4,6 +4,7 @@ import { localIndex } from '../../../src/domain/coords';
 import { textureTileId } from '../../../src/domain/texture-tiles';
 import { VoxelSection } from '../../../src/domain/voxel-section';
 import { meshOpaque, meshSection } from '../../../src/meshing/greedy-mesher';
+import { flattenSectionMesh } from '../../../src/meshing/mesh-types';
 import type { ChannelMesh, MeshingInput } from '../../../src/meshing/mesh-types';
 
 const HALO_SLOT = {
@@ -234,5 +235,28 @@ describe('meshSection channels', () => {
       return;
     }
     throw new Error('enclosed top corner was not emitted');
+  });
+
+  it('flattens three channels into one channel without index overlap', () => {
+    const stone = blockByKey('stone').id;
+    const leaves = blockByKey('leaves').id;
+    const water = blockByKey('water').id;
+    const section = sectionWith([
+      { x: 0, y: 0, z: 0, blockId: stone },
+      { x: 0, y: 1, z: 0, blockId: leaves },
+      { x: 0, y: 2, z: 0, blockId: water },
+    ]);
+
+    const mesh = meshSection({ section, neighbors: [], sourceVersion: 7 }, blockRegistry);
+    const flat = flattenSectionMesh(mesh);
+
+    expect(flat.positions.length).toBe(
+      mesh.opaque.positions.length + mesh.cutout.positions.length + mesh.translucent.positions.length,
+    );
+    expect(flat.indices.length).toBe(
+      mesh.opaque.indices.length + mesh.cutout.indices.length + mesh.translucent.indices.length,
+    );
+    for (const index of flat.indices) expect(index).toBeLessThan(flat.positions.length / 3);
+    expect(flat.sourceVersion).toBe(7);
   });
 });

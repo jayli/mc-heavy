@@ -1,5 +1,5 @@
 import type { ChannelMesh } from '../meshing/mesh-types';
-import type { UploadJob } from '../workers/protocol';
+import type { ChannelUploadJob } from '../render/render-page';
 
 export const BYTES_PER_UPLOAD_MILLISECOND = 64 * 1024;
 
@@ -11,12 +11,12 @@ export type RenderUploadDrain = Readonly<{
 }>;
 
 export type UploadSink = Readonly<{
-  stage(job: UploadJob, maxBytes: number): number;
-  commit(job: UploadJob): void;
+  stage(job: ChannelUploadJob, maxBytes: number): number;
+  commit(job: ChannelUploadJob): void;
 }>;
 
 type PendingUpload = {
-  job: UploadJob;
+  job: ChannelUploadJob;
   remainingBytes: number;
 };
 
@@ -27,7 +27,7 @@ export class RenderUploadQueue {
     return this.jobs.size;
   }
 
-  enqueue(job: UploadJob): void {
+  enqueue(job: ChannelUploadJob): void {
     if (!Number.isFinite(job.estimatedUploadMs) || job.estimatedUploadMs < 0) {
       throw new Error('Upload estimate must be a finite, non-negative number');
     }

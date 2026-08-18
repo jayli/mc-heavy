@@ -47,13 +47,15 @@ function columnForKey(key: string): ColumnPos | null {
 }
 
 function uploadCost(mesh: MeshedSection['mesh']): number {
-  const bytes =
-    mesh.positions.byteLength +
-    mesh.normals.byteLength +
-    mesh.uvs.byteLength +
-    mesh.tileIds.byteLength +
-    mesh.ao.byteLength +
-    mesh.indices.byteLength;
+  const bytes = [mesh.opaque, mesh.cutout, mesh.translucent].reduce((total, channel) => (
+    total
+    + channel.positions.byteLength
+    + channel.normals.byteLength
+    + channel.uvs.byteLength
+    + channel.tileIds.byteLength
+    + channel.ao.byteLength
+    + channel.indices.byteLength
+  ), 0);
   return Math.max(MINIMUM_UPLOAD_COST_MS, bytes / BYTES_PER_UPLOAD_MILLISECOND);
 }
 

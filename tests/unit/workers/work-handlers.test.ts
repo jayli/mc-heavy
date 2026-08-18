@@ -38,9 +38,11 @@ describe('worker protocol handlers', () => {
 
     expect(result).toMatchObject({ kind: 'meshed', key: '0,0,0', epoch: 2, editVersion: 0 });
     expect(result.mesh.sourceVersion).toBe(0);
-    expect(result.mesh.positions).toBeInstanceOf(Float32Array);
-    expect(result.mesh.indices).toBeInstanceOf(Uint32Array);
-    expect(result.mesh.positions.buffer).toBeInstanceOf(ArrayBuffer);
-    expect(result.mesh.indices.length).toBeGreaterThan(0);
+    expect(result.mesh.opaque.positions).toBeInstanceOf(Float32Array);
+    expect(result.mesh.opaque.indices).toBeInstanceOf(Uint32Array);
+    expect(result.mesh.opaque.positions.buffer).toBeInstanceOf(ArrayBuffer);
+    expect(result.mesh.opaque.indices.length).toBeGreaterThan(0);
+    expect(result.mesh.cutout.positions).toBeInstanceOf(Float32Array);
+    expect(result.mesh.translucent.positions).toBeInstanceOf(Float32Array);
   });
 });

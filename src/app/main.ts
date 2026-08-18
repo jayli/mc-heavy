@@ -19,6 +19,7 @@ import {
   type RenderUploadDrain,
   type UploadSink,
 } from './render-upload-queue';
+import type { ChannelUploadJob } from '../render/render-page';
 
 const DEFAULT_SEED = 0x5eed_1234;
 const CAMERA_HEIGHT = 50;
@@ -425,6 +426,18 @@ function updateRenderUploads(
     },
   };
 
+  const jobFor = (key: string, mesh: ReturnType<WorldService['visibleMeshFor']>): ChannelUploadJob | null => {
+    if (!mesh) return null;
+    return {
+      key,
+      sectionKey: key,
+      channel: 'opaque',
+      editVersion: mesh.sourceVersion,
+      mesh,
+      estimatedUploadMs: Math.max(MINIMUM_UPLOAD_COST_MS, meshByteLength(mesh) / BYTES_PER_UPLOAD_MILLISECOND),
+    };
+  };
+
   for (const key of world.loadedSectionKeys()) {
     const mesh = world.visibleMeshFor(key);
     if (!mesh || uploadedVersions.get(key) === mesh.sourceVersion) continue;
@@ -433,13 +446,8 @@ function updateRenderUploads(
       uploadedVersions.delete(key);
       continue;
     }
-    const bytes = meshByteLength(mesh);
-    uploadQueue.enqueue({
-      key,
-      editVersion: mesh.sourceVersion,
-      mesh,
-      estimatedUploadMs: Math.max(MINIMUM_UPLOAD_COST_MS, bytes / BYTES_PER_UPLOAD_MILLISECOND),
-    });
+    const job = jobFor(key, mesh);
+    if (job) uploadQueue.enqueue(job);
   }
   return uploadQueue.drain(budgetMs, sink);
 }

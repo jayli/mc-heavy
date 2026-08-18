@@ -50,3 +50,40 @@ export function emptySectionMesh(sourceVersion: number): SectionMesh {
 }
 
 export const channelOf = (channel: MeshChannel): keyof Pick<SectionMesh, 'opaque' | 'cutout' | 'translucent'> => channel;
+
+/** 临时把三通道拼成单一 ChannelMesh，供单材质渲染路径使用；Task 7 后不再使用。 */
+export function flattenSectionMesh(mesh: SectionMesh): ChannelMesh {
+  const channels = MESH_CHANNELS.map((channel) => mesh[channel]);
+  const vertexCount = channels.reduce((count, channel) => count + channel.positions.length / 3, 0);
+  const positions = new Float32Array(vertexCount * 3);
+  const normals = new Int8Array(vertexCount * 3);
+  const uvs = new Float32Array(vertexCount * 2);
+  const tileIds = new Uint16Array(vertexCount);
+  const ao = new Uint8Array(vertexCount);
+  const indices = new Uint32Array(channels.reduce((count, channel) => count + channel.indices.length, 0));
+
+  let vertexOffset = 0;
+  let indexOffset = 0;
+  for (const channel of channels) {
+    positions.set(channel.positions, vertexOffset * 3);
+    normals.set(channel.normals, vertexOffset * 3);
+    uvs.set(channel.uvs, vertexOffset * 2);
+    tileIds.set(channel.tileIds, vertexOffset);
+    ao.set(channel.ao, vertexOffset);
+    for (const index of channel.indices) {
+      indices[indexOffset] = index + vertexOffset;
+      indexOffset += 1;
+    }
+    vertexOffset += channel.positions.length / 3;
+  }
+
+  return Object.freeze({
+    positions,
+    normals,
+    uvs,
+    tileIds,
+    ao,
+    indices,
+    sourceVersion: mesh.sourceVersion,
+  });
+}

@@ -63,7 +63,7 @@ describe('WorkerClient', () => {
 
     expect(section.palette.byteLength).toBe(0);
     expect(section.indices.byteLength).toBe(0);
-    expect((await pending).mesh.indices.length).toBeGreaterThan(0);
+    expect((await pending).mesh.opaque.indices.length).toBeGreaterThan(0);
     client.dispose();
   });
 });

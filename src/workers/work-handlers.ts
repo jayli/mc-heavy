@@ -1,7 +1,8 @@
 import { blockRegistry } from '../domain/blocks';
 import { localIndex, SECTION_SIZE, type SectionPos } from '../domain/coords';
 import { VoxelSection } from '../domain/voxel-section';
-import { meshOpaque } from '../meshing/greedy-mesher';
+import { meshSection } from '../meshing/greedy-mesher';
+import { MESH_CHANNELS } from '../meshing/mesh-types';
 import { createGenerator } from '../world/terrain';
 import type {
   GenerationWorkerRequest,
@@ -70,7 +71,15 @@ export function handleMeshingRequest(request: MeshingWorkerRequest): MeshingWork
     key: request.key,
     epoch: request.epoch,
     editVersion: request.editVersion,
-    mesh: meshOpaque({ section, neighbors, sourceVersion: request.editVersion }, blockRegistry),
+    mesh: meshSection(
+      {
+        section,
+        neighbors,
+        sourceVersion: request.editVersion,
+        orientations: (index) => section.getOrientation(index),
+      },
+      blockRegistry,
+    ),
   };
 }
 
@@ -84,12 +93,15 @@ export function generationTransferables(response: GenerationWorkerResponse): Tra
 }
 
 export function meshingTransferables(response: MeshingWorkerResponse): Transferable[] {
-  return [
-    transferableBuffer(response.mesh.positions),
-    transferableBuffer(response.mesh.normals),
-    transferableBuffer(response.mesh.uvs),
-    transferableBuffer(response.mesh.tileIds),
-    transferableBuffer(response.mesh.ao),
-    transferableBuffer(response.mesh.indices),
-  ];
+  return MESH_CHANNELS.flatMap((channel) => {
+    const mesh = response.mesh[channel];
+    return [
+      transferableBuffer(mesh.positions),
+      transferableBuffer(mesh.normals),
+      transferableBuffer(mesh.uvs),
+      transferableBuffer(mesh.tileIds),
+      transferableBuffer(mesh.ao),
+      transferableBuffer(mesh.indices),
+    ];
+  });
 }

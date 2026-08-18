@@ -30,6 +30,8 @@ const oversizedMesh: ChannelMesh = {
 
 const job = (key: string, mesh: ChannelMesh, estimatedUploadMs: number) => ({
   key,
+  sectionKey: key,
+  channel: 'opaque' as const,
   editVersion: mesh.sourceVersion,
   mesh,
   estimatedUploadMs,

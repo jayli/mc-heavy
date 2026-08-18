@@ -1,7 +1,7 @@
 import { blockById } from '../domain/blocks';
 import { localIndex, SECTION_SIZE, sectionOf, type BlockPos, type SectionPos, type Vec3 } from '../domain/coords';
 import { VoxelSection } from '../domain/voxel-section';
-import type { ChannelMesh } from '../meshing/mesh-types';
+import { flattenSectionMesh, type ChannelMesh } from '../meshing/mesh-types';
 import { StreamController } from '../streaming/stream-controller';
 import type { ColumnPos, MeshWorkRequest, UploadJob, Vec2, WorkRequest } from '../workers/protocol';
 import {
@@ -94,6 +94,7 @@ export class WorldService implements WorldQuery {
   private readonly editsBySection = new Map<string, Map<number, Readonly<{ blockId: number; orientation: number }>>>();
   private readonly generatedSections = new Map<string, VoxelSection>();
   private readonly visibleMeshes = new Map<string, UploadJob>();
+  private readonly renderedMeshes = new Map<string, ChannelMesh>();
   private readonly workerFailures = new Map<string, WorkerFailure>();
   private readonly pendingMeshes: MeshWorkRequest[] = [];
   private desired = new Set<string>();
@@ -193,7 +194,7 @@ export class WorldService implements WorldQuery {
   }
 
   visibleMeshFor(key: string): ChannelMesh | undefined {
-    return this.visibleMeshes.get(key)?.mesh;
+    return this.renderedMeshes.get(key);
   }
 
   sectionPriorityFor(key: string): number {
@@ -267,6 +268,7 @@ export class WorldService implements WorldQuery {
     this.loadedWorldQuery.clear();
     this.generatedSections.clear();
     this.visibleMeshes.clear();
+    this.renderedMeshes.clear();
     this.workerFailures.clear();
     this.pendingMeshes.length = 0;
     this.persistentEditVersions.clear();
@@ -397,7 +399,9 @@ export class WorldService implements WorldQuery {
     for (const job of this.stream.drainUploads(ALL_UPLOADS_BUDGET_MS)) {
       if (!this.desired.has(job.key)) continue;
       const current = this.visibleMeshes.get(job.key);
-      if (!current || current.editVersion <= job.editVersion) this.visibleMeshes.set(job.key, job);
+      if (current && current.editVersion > job.editVersion) continue;
+      this.visibleMeshes.set(job.key, job);
+      this.renderedMeshes.set(job.key, flattenSectionMesh(job.mesh));
     }
   }
 
@@ -416,6 +420,7 @@ export class WorldService implements WorldQuery {
     for (const key of this.visibleMeshes.keys()) {
       if (this.desired.has(key)) continue;
       this.visibleMeshes.delete(key);
+      this.renderedMeshes.delete(key);
       this.workerFailures.delete(key);
       this.transientVersions.delete(key);
     }

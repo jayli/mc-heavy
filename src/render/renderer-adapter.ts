@@ -10,9 +10,14 @@ import {
   type Mesh,
 } from 'three';
 import { WebGLNodesHandler } from 'three/addons/tsl/WebGLNodesHandler.js';
-import type { UploadJob } from '../workers/protocol';
 import { detectRenderBackend } from './backend';
-import { RenderPage, RenderStaging, type CameraFrustum, type RenderPageTarget } from './render-page';
+import {
+  RenderPage,
+  RenderStaging,
+  type CameraFrustum,
+  type ChannelUploadJob,
+  type RenderPageTarget,
+} from './render-page';
 import { TerrainLod } from './terrain-lod';
 import { WaterSurface } from './water';
 
@@ -126,7 +131,7 @@ export class RendererAdapter {
     throw new Error('Renderer initialization failed: Neither WebGPU nor WebGL2 is available');
   }
 
-  enqueueUpload(job: UploadJob): void {
+  enqueueUpload(job: ChannelUploadJob): void {
     if (this.disposed) return;
     const previousStaging = this.stagings.get(job.key);
     if (previousStaging) {
@@ -144,7 +149,7 @@ export class RendererAdapter {
     page.replace(job.mesh);
   }
 
-  stageUpload(job: UploadJob, maxBytes: number): number {
+  stageUpload(job: ChannelUploadJob, maxBytes: number): number {
     if (this.disposed || maxBytes <= 0) return 0;
     let staging: RenderStaging | null = this.stagings.get(job.key) ?? null;
     if (!staging || staging.sourceVersion !== job.mesh.sourceVersion) {
@@ -165,7 +170,7 @@ export class RendererAdapter {
     return staging.stage(maxBytes);
   }
 
-  commitUpload(job: UploadJob): void {
+  commitUpload(job: ChannelUploadJob): void {
     if (this.disposed) return;
     const staging = this.stagings.get(job.key);
     if (!staging || staging.sourceVersion !== job.mesh.sourceVersion) return;

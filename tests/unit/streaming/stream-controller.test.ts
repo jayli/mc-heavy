@@ -1,21 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { VoxelSection } from '../../../src/domain/voxel-section';
-import type { ChannelMesh } from '../../../src/meshing/mesh-types';
+import { emptySectionMesh } from '../../../src/meshing/mesh-types';
 import { StreamController } from '../../../src/streaming/stream-controller';
 import type { WorkRequest } from '../../../src/workers/protocol';
 
 const freshWorldEditVersion = (): number => 0;
 
-function emptyMesh(sourceVersion = 0): ChannelMesh {
-  return {
-    positions: new Float32Array(),
-    normals: new Int8Array(),
-    uvs: new Float32Array(),
-    tileIds: new Uint16Array(),
-    ao: new Uint8Array(),
-    indices: new Uint32Array(),
-    sourceVersion,
-  };
+function emptyMesh(sourceVersion = 0) {
+  return emptySectionMesh(sourceVersion);
 }
 
 function requestedStream(editVersionForKey = freshWorldEditVersion): StreamController {

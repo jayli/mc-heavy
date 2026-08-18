@@ -10,9 +10,20 @@ import {
   Vector3,
 } from 'three';
 import { SECTION_SIZE } from '../domain/coords';
-import type { ChannelMesh } from '../meshing/mesh-types';
+import type { ChannelMesh, MeshChannel } from '../meshing/mesh-types';
 import type { Aabb } from '../world/structure-template';
 import { acquireBlockMaterial, type BlockMaterialLease } from './materials';
+
+export type ChannelUploadJob = Readonly<{
+  key: string;
+  sectionKey: string;
+  channel: MeshChannel;
+  editVersion: number;
+  mesh: ChannelMesh;
+  estimatedUploadMs: number;
+}>;
+
+export const channelUploadKey = (sectionKey: string, channel: MeshChannel): string => `${sectionKey}#${channel}`;
 
 export type CameraFrustum = Readonly<{
   intersectsAabb(bounds: Aabb): boolean;

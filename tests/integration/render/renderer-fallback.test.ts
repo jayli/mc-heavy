@@ -55,8 +55,8 @@ describe('RendererAdapter fallback', () => {
       capabilities: { gpu: undefined },
       rendererFactory: factory,
     });
-    adapter.enqueueUpload({ key: '0,0,0', editVersion: 1, mesh, estimatedUploadMs: 0 });
-    adapter.enqueueUpload({ key: '20,0,0', editVersion: 1, mesh, estimatedUploadMs: 0 });
+    adapter.enqueueUpload({ key: '0,0,0', sectionKey: '0,0,0', channel: 'opaque', editVersion: 1, mesh, estimatedUploadMs: 0 });
+    adapter.enqueueUpload({ key: '20,0,0', sectionKey: '20,0,0', channel: 'opaque', editVersion: 1, mesh, estimatedUploadMs: 0 });
 
     adapter.render({
       camera: {
@@ -130,8 +130,8 @@ describe('RendererAdapter fallback', () => {
         createWebGL2() { return driver; },
       },
     });
-    adapter.enqueueUpload({ key: '0,0,-2', editVersion: 1, mesh, estimatedUploadMs: 1 });
-    adapter.enqueueUpload({ key: '0,0,1', editVersion: 1, mesh, estimatedUploadMs: 1 });
+    adapter.enqueueUpload({ key: '0,0,-2', sectionKey: '0,0,-2', channel: 'opaque', editVersion: 1, mesh, estimatedUploadMs: 1 });
+    adapter.enqueueUpload({ key: '0,0,1', sectionKey: '0,0,1', channel: 'opaque', editVersion: 1, mesh, estimatedUploadMs: 1 });
 
     adapter.render({
       camera: {
@@ -161,8 +161,8 @@ describe('RendererAdapter fallback', () => {
         createWebGL2() { return driver; },
       },
     });
-    adapter.enqueueUpload({ key: '0,0,0', editVersion: 1, mesh, estimatedUploadMs: 1 });
-    adapter.enqueueUpload({ key: '1,0,0', editVersion: 1, mesh, estimatedUploadMs: 1 });
+    adapter.enqueueUpload({ key: '0,0,0', sectionKey: '0,0,0', channel: 'opaque', editVersion: 1, mesh, estimatedUploadMs: 1 });
+    adapter.enqueueUpload({ key: '1,0,0', sectionKey: '1,0,0', channel: 'opaque', editVersion: 1, mesh, estimatedUploadMs: 1 });
     adapter.render({
       camera: { intersectsAabb: () => true, position: { x: 0, y: 0, z: 0 } },
       timeMs: 0,
