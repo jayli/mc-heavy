@@ -8,6 +8,7 @@ import { surfaceFeetY } from '../gameplay/spawn';
 import { createTntSystem } from '../gameplay/tnt';
 import { ChestAnimations } from '../gameplay/chest-animations';
 import { ParticleSystem } from '../render/particles';
+import { RainEffect } from '../render/rain';
 import {
   RendererAdapter,
   type RendererAdapterOptions,
@@ -41,6 +42,8 @@ export type GameApp = Readonly<{
   readBlockForTest(pos: BlockPos): string;
   igniteTntForTest(pos: BlockPos): boolean;
   activeParticles(): number;
+  setRainEnabled(enabled: boolean): void;
+  rainEnabled(): boolean;
 }>;
 
 export type GameAppOptions = Readonly<{
@@ -123,6 +126,13 @@ export async function createGameApp(
     remove: (object) => renderer.removeTransient(object),
   });
   await particles.load();
+  const rain = new RainEffect(
+    {
+      add: (object) => renderer.addTransient(object),
+      remove: (object) => renderer.removeTransient(object),
+    },
+    { isSolid: (x, y, z) => world.isSolid({ x, y, z }) },
+  );
   const chestAnimations = new ChestAnimations(
     {
       add: (object) => renderer.addTransient(object),
@@ -264,6 +274,8 @@ export async function createGameApp(
     readBlockForTest,
     igniteTntForTest: (pos) => tntSystem.ignite(pos),
     activeParticles: () => particles.activeCount(),
+    setRainEnabled: (enabled) => rain.setEnabled(enabled),
+    rainEnabled: () => rain.enabled,
   });
 
   const onKeyDown = (event: KeyboardEvent): void => {
@@ -345,6 +357,7 @@ export async function createGameApp(
     canvas.removeEventListener('click', onCanvasClick);
     renderer.dispose();
     particles.dispose();
+    rain.dispose();
     chestAnimations.dispose();
     tntSystem.dispose();
     world.dispose();
@@ -384,9 +397,10 @@ export async function createGameApp(
     const input = movementInputFromKeys(pressedKeys, player.yaw);
     player.step(input, dtSeconds);
     player.applyVerticalPhysics(dtSeconds);
+    const position = player.position;
     chestAnimations.update(timestampMs);
     particles.update(dtSeconds * 1_000);
-    const position = player.position;
+    rain.update(position, dtSeconds);
     const inverseDt = dtSeconds > 0 ? 1 / dtSeconds : 0;
     const velocity = {
       x: (position.x - previousPosition.x) * inverseDt,
