@@ -58,6 +58,10 @@ export class ChestAnimations {
     }
   }
 
+  activeCount(): number {
+    return this.active.size;
+  }
+
   removeAt(pos: BlockPos): void {
     this.removeKey(`${pos.x},${pos.y},${pos.z}`);
   }

@@ -5,6 +5,21 @@ core of `mc-lite`. Three.js is used only as the render adapter: world truth is
 deterministic generation plus a sparse edit overlay, generation and meshing run
 in versioned workers, and the render thread only submits bounded GPU uploads.
 
+Stage 2 content is live on top of that core: the full mc-lite block registry and
+real texture atlas, non-cube models (cross plants, slabs, pillars, handrails,
+beds and more), chest open animations, TNT chain explosions, pooled break and
+explosion particles, GPU rain, low/medium/high quality presets, and a boot
+screen for importing `mc-lite` snapshots from same-origin IndexedDB or JSON.
+The player spawns on the terrain surface with gravity, collision and jumping.
+
+## Playing
+
+The boot screen offers 开启新世界 (new world) and the two `mc-lite` import
+paths. In game, click to capture the pointer; WASD/arrows move, mouse looks,
+Space jumps, left click breaks (click a chest once to open its lid, again to
+break it; click TNT to ignite), and right click places the selected hotbar
+slot. The ⚙ button opens the quality/rain/TNT settings panel.
+
 ## Development
 
 Install dependencies once:

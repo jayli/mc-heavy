@@ -43,12 +43,14 @@ export type GameApp = Readonly<{
   player: PlayerController;
   seed: number;
   placeForTest(pos: BlockPos, block: string): void;
+  setBlockForTest(pos: BlockPos, block: string): void;
   readBlockForTest(pos: BlockPos): string;
   igniteTntForTest(pos: BlockPos): boolean;
   activeParticles(): number;
   setRainEnabled(enabled: boolean): void;
   rainEnabled(): boolean;
   qualityForTest(): LightQuality;
+  activeChestLids(): number;
 }>;
 
 export type GameAppOptions = Readonly<{
@@ -309,17 +311,22 @@ export async function createGameApp(
   };
 
   const readBlockForTest = (pos: BlockPos): string => blockById(world.getBlock(pos)).key;
+  const setBlockForTest = (pos: BlockPos, block: string): void => {
+    world.applyEdits([{ pos, blockId: blockByKey(block).id }]);
+  };
 
   const game: GameApp = Object.freeze({
     player,
     seed,
     placeForTest,
+    setBlockForTest,
     readBlockForTest,
     igniteTntForTest: (pos) => tntSystem.ignite(pos),
     activeParticles: () => particles.activeCount(),
     setRainEnabled: (enabled) => rain.setEnabled(enabled),
     rainEnabled: () => rain.enabled,
     qualityForTest: () => quality,
+    activeChestLids: () => chestAnimations.activeCount(),
   });
 
   const onKeyDown = (event: KeyboardEvent): void => {
