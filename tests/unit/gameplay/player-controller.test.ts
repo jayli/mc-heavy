@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { PlayerController } from '../../../src/gameplay/player-controller';
+import {
+  PLAYER_JUMP_FORCE,
+  PLAYER_TERMINAL_VELOCITY,
+  PlayerController,
+} from '../../../src/gameplay/player-controller';
 import { InMemoryWorld } from '../../../src/world/world-query';
 
 describe('PlayerController', () => {
@@ -109,5 +113,57 @@ describe('PlayerController', () => {
     expect(() => player.setLook(Number.NaN, 0)).toThrow('finite');
     expect(() => player.setLook(0, Number.POSITIVE_INFINITY)).toThrow('finite');
     expect(() => player.turn(Number.NaN, 0)).toThrow('finite');
+  });
+
+  it('falls under gravity and settles on a solid floor', () => {
+    const world = new InMemoryWorld();
+    world.applyEdits([{ pos: { x: 0, y: 0, z: 0 }, blockId: 1 }]);
+    const player = new PlayerController(world, { x: 0.5, y: 3, z: 0.5 });
+
+    for (let frame = 0; frame < 240; frame += 1) player.applyVerticalPhysics(1 / 60);
+
+    expect(player.position.y).toBeCloseTo(1, 5);
+    expect(player.isOnGround).toBe(true);
+    expect(player.verticalVelocity).toBe(0);
+  });
+
+  it('jumps only from the ground and falls back under gravity', () => {
+    const world = new InMemoryWorld();
+    world.applyEdits([{ pos: { x: 0, y: 0, z: 0 }, blockId: 1 }]);
+    const player = new PlayerController(world, { x: 0.5, y: 1, z: 0.5 });
+
+    player.applyVerticalPhysics(1 / 60);
+    player.requestJump();
+    player.applyVerticalPhysics(1 / 60);
+
+    expect(player.verticalVelocity).toBe(PLAYER_JUMP_FORCE);
+    expect(player.isOnGround).toBe(false);
+    player.applyVerticalPhysics(1 / 60);
+    expect(player.verticalVelocity).toBeLessThan(PLAYER_JUMP_FORCE);
+  });
+
+  it('keeps step horizontal and bounds falling velocity at the terminal value', () => {
+    const player = new PlayerController(new InMemoryWorld(), { x: 0.5, y: 80, z: 0.5 });
+
+    player.step({ x: 1, z: 0 }, 0.25);
+    expect(player.position.y).toBe(80);
+    for (let frame = 0; frame < 200; frame += 1) player.applyVerticalPhysics(1 / 20);
+    expect(player.verticalVelocity).toBeGreaterThanOrEqual(PLAYER_TERMINAL_VELOCITY);
+  });
+
+  it('stops an upward jump at a ceiling and settles back on the ground', () => {
+    const world = new InMemoryWorld();
+    world.applyEdits([
+      { pos: { x: 0, y: 0, z: 0 }, blockId: 1 },
+      { pos: { x: 0, y: 2, z: 0 }, blockId: 1 },
+    ]);
+    const player = new PlayerController(world, { x: 0.5, y: 1, z: 0.5 });
+    player.applyVerticalPhysics(1 / 60);
+    player.requestJump();
+
+    for (let frame = 0; frame < 120; frame += 1) player.applyVerticalPhysics(1 / 60);
+
+    expect(player.position.y).toBeLessThan(2);
+    expect(player.isOnGround).toBe(true);
   });
 });

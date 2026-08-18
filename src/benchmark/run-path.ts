@@ -42,6 +42,13 @@ export async function runBenchmarkPath(game: GameApp, durationMs: number): Promi
   if (!Number.isFinite(durationMs) || durationMs < 0) {
     throw new Error('Benchmark duration must be a finite, non-negative number');
   }
+  // 固定路径基准测量的是流式加载与渲染压力；把玩家抬到地形之上飞行，
+  // 避免地形碰撞使 1200 格路径提前停下。垂直高度不影响流式 section 集合。
+  game.player.setPosition({
+    x: game.player.position.x,
+    y: 60,
+    z: game.player.position.z,
+  });
 
   const metrics = new FrameMetrics();
   let startTimestampMs: number | undefined;

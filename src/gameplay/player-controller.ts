@@ -7,6 +7,9 @@ export const PLAYER_HALF_WIDTH = 0.3;
 export const PLAYER_BELOW_POSITION = 1;
 export const PLAYER_ABOVE_POSITION = 0.8;
 export const PLAYER_WALK_SPEED = 4;
+export const PLAYER_GRAVITY = -24;
+export const PLAYER_TERMINAL_VELOCITY = -50;
+export const PLAYER_JUMP_FORCE = 10;
 
 const LOOK_SENSITIVITY = 0.002;
 const HALF_PI = Math.PI / 2;
@@ -16,6 +19,9 @@ export class PlayerController {
   private positionValue: Vec3;
   private yawValue = 0;
   private pitchValue = 0;
+  private verticalVelocityValue = 0;
+  private onGroundValue = false;
+  private jumpQueued = false;
 
   constructor(
     private readonly world: WorldQuery,
@@ -34,6 +40,14 @@ export class PlayerController {
 
   get pitch(): number {
     return this.pitchValue;
+  }
+
+  get verticalVelocity(): number {
+    return this.verticalVelocityValue;
+  }
+
+  get isOnGround(): boolean {
+    return this.onGroundValue;
   }
 
   get facing(): HorizontalDirection {
@@ -77,6 +91,20 @@ export class PlayerController {
     const x = direction.x / length;
     const z = direction.z / length;
     this.yawValue = Math.atan2(-x, -z);
+  }
+
+  setPosition(position: Vec3): void {
+    if (!Number.isFinite(position.x) || !Number.isFinite(position.y) || !Number.isFinite(position.z)) {
+      throw new Error('Player position must be finite');
+    }
+    this.positionValue = { ...position };
+    this.verticalVelocityValue = 0;
+    this.onGroundValue = false;
+    this.jumpQueued = false;
+  }
+
+  requestJump(): void {
+    this.jumpQueued = true;
   }
 
   step(input: Readonly<{ x: number; z: number }>, dtSeconds: number): Vec3 {
@@ -157,6 +185,69 @@ export class PlayerController {
     }
     return false;
   }
+
+  applyVerticalPhysics(dtSeconds: number): Vec3 {
+    if (!Number.isFinite(dtSeconds) || dtSeconds <= 0) return this.position;
+
+    this.verticalVelocityValue = Math.max(
+      PLAYER_TERMINAL_VELOCITY,
+      this.verticalVelocityValue + PLAYER_GRAVITY * dtSeconds,
+    );
+    if (this.jumpQueued && this.onGroundValue) {
+      this.verticalVelocityValue = PLAYER_JUMP_FORCE;
+      this.onGroundValue = false;
+    }
+    this.jumpQueued = false;
+
+    const deltaY = this.verticalVelocityValue * dtSeconds;
+    if (deltaY !== 0) {
+      this.positionValue = { ...this.positionValue, y: this.moveAlongY(deltaY) };
+    }
+    const supportRow = Math.floor(
+      this.positionValue.y - PLAYER_BELOW_POSITION + COLLISION_EPSILON,
+    );
+    this.onGroundValue = this.verticalVelocityValue === 0
+      && this.solidColumnAtY(this.positionValue.x, supportRow, this.positionValue.z);
+    return this.position;
+  }
+
+  private moveAlongY(distance: number): number {
+    const { x, z } = this.positionValue;
+    if (distance > 0) {
+      const first = Math.floor(this.positionValue.y + PLAYER_ABOVE_POSITION + COLLISION_EPSILON);
+      const last = Math.floor(this.positionValue.y + PLAYER_ABOVE_POSITION + distance);
+      for (let y = first; y <= last; y += 1) {
+        if (this.solidColumnAtY(x, y, z)) {
+          this.verticalVelocityValue = 0;
+          return y - PLAYER_ABOVE_POSITION - COLLISION_EPSILON;
+        }
+      }
+    } else {
+      const first = Math.floor(this.positionValue.y - PLAYER_BELOW_POSITION);
+      const last = Math.floor(this.positionValue.y - PLAYER_BELOW_POSITION + distance);
+      for (let y = first; y >= last; y -= 1) {
+        if (this.solidColumnAtY(x, y, z)) {
+          this.verticalVelocityValue = 0;
+          return y + PLAYER_BELOW_POSITION;
+        }
+      }
+    }
+    return this.positionValue.y + distance;
+  }
+
+  private solidColumnAtY(x: number, y: number, z: number): boolean {
+    const minX = Math.floor(x - PLAYER_HALF_WIDTH + COLLISION_EPSILON);
+    const maxX = Math.floor(x + PLAYER_HALF_WIDTH - COLLISION_EPSILON);
+    const minZ = Math.floor(z - PLAYER_HALF_WIDTH + COLLISION_EPSILON);
+    const maxZ = Math.floor(z + PLAYER_HALF_WIDTH - COLLISION_EPSILON);
+    for (let blockZ = minZ; blockZ <= maxZ; blockZ += 1) {
+      for (let blockX = minX; blockX <= maxX; blockX += 1) {
+        if (this.world.isSolid({ x: blockX, y, z: blockZ })) return true;
+      }
+    }
+    return false;
+  }
+
 }
 
 const clampPitch = (pitch: number): number => Math.max(-HALF_PI, Math.min(HALF_PI, pitch));

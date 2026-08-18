@@ -4,6 +4,7 @@ import { MESH_CHANNELS } from '../meshing/mesh-types';
 import { Inventory } from '../gameplay/inventory';
 import { PlayerController } from '../gameplay/player-controller';
 import { PlayerInteraction } from '../gameplay/player-interaction';
+import { surfaceFeetY } from '../gameplay/spawn';
 import {
   RendererAdapter,
   type RendererAdapterOptions,
@@ -26,7 +27,6 @@ import { buildTextureAtlas } from '../render/texture-atlas';
 import { createTerrainMaterials } from '../render/materials';
 
 const DEFAULT_SEED = 0x5eed_1234;
-const CAMERA_HEIGHT = 50;
 const HUD_UPDATE_INTERVAL_MS = 250;
 const RENDER_UPLOAD_BUDGET_MS = 2;
 const MINIMUM_UPLOAD_COST_MS = 1;
@@ -88,7 +88,11 @@ export async function createGameApp(
     throw error;
   }
 
-  const player = new PlayerController(world, { x: 0.5, y: CAMERA_HEIGHT, z: 0.5 });
+  const player = new PlayerController(world, {
+    x: 0.5,
+    y: Math.max(1, surfaceFeetY(world, 0.5, 0.5)),
+    z: 0.5,
+  });
   const inventory = new Inventory();
   // A stack above one keeps the five fixed hotbar slots stable while playing.
   inventory.add(1, 64);
@@ -213,6 +217,10 @@ export async function createGameApp(
 
   const onKeyDown = (event: KeyboardEvent): void => {
     pressedKeys.add(event.key.toLowerCase());
+    if (event.code === 'Space') {
+      event.preventDefault();
+      player.requestJump();
+    }
     if (event.code.startsWith('Digit')) {
       const slot = Number(event.code.slice('Digit'.length));
       if (slot >= 1 && slot <= 9 && inventory.selectSlot(slot - 1)) updateHotbar();
@@ -321,6 +329,7 @@ export async function createGameApp(
 
     const input = movementInputFromKeys(pressedKeys, player.yaw);
     player.step(input, dtSeconds);
+    player.applyVerticalPhysics(dtSeconds);
     const position = player.position;
     const inverseDt = dtSeconds > 0 ? 1 / dtSeconds : 0;
     const velocity = {

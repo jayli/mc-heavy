@@ -36,10 +36,15 @@ test('binds mouse look and hotbar break and place input to the real world', asyn
   expect(look.yaw).toBeCloseTo(-0.2, 5);
   expect(look.pitch).toBeCloseTo(0.2, 5);
 
-  await page.evaluate(() => window.game!.player.setLook(0, -Math.PI / 2));
+  const resetAimDown = () => page.evaluate(() => {
+    window.game!.player.setPosition({ x: 0.5, y: 25.5, z: 0.5 });
+    window.game!.player.setLook(0, -Math.PI / 2);
+  });
+  await resetAimDown();
   await page.dispatchEvent('canvas', 'mousedown', { button: 0 });
   expect(await page.evaluate(() => window.game!.readBlockForTest({ x: 0, y: 23, z: 0 }))).toBe('air');
 
+  await resetAimDown();
   await page.dispatchEvent('canvas', 'mousedown', { button: 2 });
   expect(await page.evaluate(() => window.game!.readBlockForTest({ x: 0, y: 23, z: 0 }))).toBe('stone');
 
@@ -48,7 +53,9 @@ test('binds mouse look and hotbar break and place input to the real world', asyn
   // Placement targets the face entered by the ray, so a second straight-down
   // place would target the water cell above the just-placed stone. Break the
   // stone again so grass lands in the same literal cell.
+  await resetAimDown();
   await page.dispatchEvent('canvas', 'mousedown', { button: 0 });
+  await resetAimDown();
   await page.dispatchEvent('canvas', 'mousedown', { button: 2 });
   expect(await page.evaluate(() => window.game!.readBlockForTest({ x: 0, y: 23, z: 0 }))).toBe('grass');
 
@@ -87,7 +94,10 @@ test('bounds renderer pages to loaded columns and reports physical-frustum visib
   expect(initial.pages).toBeLessThanOrEqual(867);
   expect(initial.visible).toBeLessThan(initial.pages);
 
-  await page.evaluate(() => window.game!.player.step({ x: 1, z: 0 }, 100));
+  await page.evaluate(() => {
+    window.game!.player.setPosition({ x: 0.5, y: 50, z: 0.5 });
+    window.game!.player.step({ x: 1, z: 0 }, 100);
+  });
   await page.waitForFunction(() => document.querySelector('[data-testid="worker-queue"]')?.textContent !== 'Worker queue: 0');
   await expect(page.getByTestId('worker-queue')).toHaveText('Worker queue: 0', { timeout: 30_000 });
 
