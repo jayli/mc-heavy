@@ -7,6 +7,7 @@ import { PlayerInteraction } from '../gameplay/player-interaction';
 import { surfaceFeetY } from '../gameplay/spawn';
 import { createTntSystem } from '../gameplay/tnt';
 import { ChestAnimations } from '../gameplay/chest-animations';
+import { ParticleSystem } from '../render/particles';
 import {
   RendererAdapter,
   type RendererAdapterOptions,
@@ -39,6 +40,7 @@ export type GameApp = Readonly<{
   placeForTest(pos: BlockPos, block: string): void;
   readBlockForTest(pos: BlockPos): string;
   igniteTntForTest(pos: BlockPos): boolean;
+  activeParticles(): number;
 }>;
 
 export type GameAppOptions = Readonly<{
@@ -108,10 +110,19 @@ export async function createGameApp(
     destroyBlocks: true,
     now: () => performance.now(),
     schedule: (run, delayMs) => ownerWindow.setTimeout(run, delayMs),
-    onExplode: () => {
-      // Task 11 在此接入爆炸粒子。
+    onExplode: (event) => {
+      particles.spawn('explosion', {
+        x: event.center.x + 0.5,
+        y: event.center.y + 0.5,
+        z: event.center.z + 0.5,
+      });
     },
   });
+  const particles = new ParticleSystem({
+    add: (object) => renderer.addTransient(object),
+    remove: (object) => renderer.removeTransient(object),
+  });
+  await particles.load();
   const chestAnimations = new ChestAnimations(
     {
       add: (object) => renderer.addTransient(object),
@@ -125,6 +136,13 @@ export async function createGameApp(
     },
     onChestOpened: (block, orientation) => {
       chestAnimations.open(block, orientation, performance.now());
+    },
+    onBlockBroken: (block) => {
+      particles.spawn('block_crash', {
+        x: block.x + 0.5,
+        y: block.y + 0.5,
+        z: block.z + 0.5,
+      });
     },
   });
   const metrics = new FrameMetrics();
@@ -245,6 +263,7 @@ export async function createGameApp(
     placeForTest,
     readBlockForTest,
     igniteTntForTest: (pos) => tntSystem.ignite(pos),
+    activeParticles: () => particles.activeCount(),
   });
 
   const onKeyDown = (event: KeyboardEvent): void => {
@@ -325,6 +344,7 @@ export async function createGameApp(
     canvas.removeEventListener('contextmenu', onContextMenu);
     canvas.removeEventListener('click', onCanvasClick);
     renderer.dispose();
+    particles.dispose();
     chestAnimations.dispose();
     tntSystem.dispose();
     world.dispose();
@@ -365,6 +385,7 @@ export async function createGameApp(
     player.step(input, dtSeconds);
     player.applyVerticalPhysics(dtSeconds);
     chestAnimations.update(timestampMs);
+    particles.update(dtSeconds * 1_000);
     const position = player.position;
     const inverseDt = dtSeconds > 0 ? 1 / dtSeconds : 0;
     const velocity = {
