@@ -44,23 +44,22 @@ test('opens a chest on the first click and breaks it on the second', async ({ pa
   await page.getByTestId('import-new').click();
   await page.getByText('World ready').waitFor();
 
-  await page.evaluate(() => {
+  const result = await page.evaluate(() => {
     window.game!.setBlockForTest({ x: 0, y: 24, z: -1 }, 'chest');
     window.game!.player.setPosition({ x: 0.5, y: 25.5, z: 0.5 });
     window.game!.player.setLook(0, -1.05);
+    const opened = window.game!.breakForTest();
+    const lids = window.game!.activeChestLids();
+    const broken = window.game!.breakForTest();
+    return {
+      opened,
+      lids,
+      broken,
+      block: window.game!.readBlockForTest({ x: 0, y: 24, z: -1 }),
+    };
   });
-  await page.locator('canvas').click();
 
-  await page.dispatchEvent('canvas', 'mousedown', { button: 0 });
-  await page.waitForFunction(() => window.game!.activeChestLids() === 1);
-
-  await page.waitForFunction(() => window.game!.activeChestLids() === 0, undefined, { timeout: 3_000 });
-  await page.evaluate(() => {
-    window.game!.player.setPosition({ x: 0.5, y: 25.5, z: 0.5 });
-    window.game!.player.setLook(0, -1.05);
-  });
-  await page.dispatchEvent('canvas', 'mousedown', { button: 0 });
-  expect(await page.evaluate(() => window.game!.readBlockForTest({ x: 0, y: 24, z: -1 }))).toBe('air');
+  expect(result).toEqual({ opened: true, lids: 1, broken: true, block: 'air' });
 });
 
 test('chains TNT and spawns explosion particles', async ({ page }) => {

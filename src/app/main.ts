@@ -45,6 +45,7 @@ export type GameApp = Readonly<{
   placeForTest(pos: BlockPos, block: string): void;
   setBlockForTest(pos: BlockPos, block: string): void;
   readBlockForTest(pos: BlockPos): string;
+  breakForTest(): boolean;
   igniteTntForTest(pos: BlockPos): boolean;
   activeParticles(): number;
   setRainEnabled(enabled: boolean): void;
@@ -321,6 +322,7 @@ export async function createGameApp(
     placeForTest,
     setBlockForTest,
     readBlockForTest,
+    breakForTest: () => interaction.breakBlock(world, player.position, player.viewDirection),
     igniteTntForTest: (pos) => tntSystem.ignite(pos),
     activeParticles: () => particles.activeCount(),
     setRainEnabled: (enabled) => rain.setEnabled(enabled),
