@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "runStartedAt": "2026-08-18T02:38:48.538Z",
-  "completedAt": "2026-08-18T02:43:50.099Z",
+  "runStartedAt": "2026-08-18T03:06:10.306Z",
+  "completedAt": "2026-08-18T03:11:11.599Z",
   "backend": "webgpu",
   "durationMs": 300000,
   "seed": 1592594996,
@@ -28,9 +28,9 @@
       }
     ]
   },
-  "frames": 36002,
-  "averageFps": 120.005906629258,
-  "p95FrameMs": 9.10000000000582,
-  "p99FrameMs": 9.399999999965075,
-  "onePercentLowFps": 103.85201806622459
+  "frames": 36004,
+  "averageFps": 120.01081310625811,
+  "p95FrameMs": 8.900000000023283,
+  "p99FrameMs": 9.300000000017462,
+  "onePercentLowFps": 106.55882873831534
 }
