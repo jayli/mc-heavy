@@ -192,6 +192,20 @@ describe('meshSection channels', () => {
     expect(countQuadsWithNormal(mesh.cutout, [-1, 0, 0])).toBeGreaterThanOrEqual(1);
   });
 
+  it('does not draw faces between two adjacent translucent cubes', () => {
+    const water = blockByKey('water').id;
+    const section = sectionWith([
+      { x: 0, y: 0, z: 0, blockId: water },
+      { x: 1, y: 0, z: 0, blockId: water },
+    ]);
+
+    const mesh = meshSection({ section, neighbors: [], sourceVersion: 1 }, blockRegistry);
+
+    expect(countQuadsWithNormal(mesh.translucent, [1, 0, 0])).toBe(1);
+    expect(countQuadsWithNormal(mesh.translucent, [-1, 0, 0])).toBe(1);
+    expect(countQuadsWithNormal(mesh.translucent, [0, 1, 0])).toBeGreaterThan(0);
+  });
+
   it('emits a two-quad cross for a non-solid plant', () => {
     const flower = blockByKey('short_grass').id;
     const section = sectionWith([{ x: 3, y: 3, z: 3, blockId: flower }]);

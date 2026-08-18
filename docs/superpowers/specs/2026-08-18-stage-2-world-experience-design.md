@@ -107,7 +107,7 @@ type SectionMesh = Readonly<{
 
 - opaque：完整立方体走贪心合并；`renderClass==='opaque' && geometryType==='cube'` 的方块才是完整遮挡体。
 - cutout：树叶、花草、宝箱、台阶、柱子、栏杆等；相邻 cutout 之间不互相剔除，仅被完整遮挡体遮住的面剔除。
-- translucent：水、玻璃；相邻 translucent 之间不互相剔除，仅被完整遮挡体遮住的面剔除；使用独立透明材质与深度策略。
+- translucent：水、玻璃；相邻 translucent 方块之间不再绘制内侧面（避免水体内部出现玻璃状夹层），仅对空气、cutout 等非遮挡邻居绘制，被完整遮挡体遮住的面剔除；使用独立透明材质与深度策略。
 - 非立方 opaque 形状（床）输出到 opaque 通道，但不算完整遮挡体；按各自形状生成几何，被完整遮挡体遮住的面跳过。
 
 ### 3.2 异形几何

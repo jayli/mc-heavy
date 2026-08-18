@@ -42,6 +42,10 @@ const channelOf = (definition: BlockDefinition): MeshChannel | null => {
   return null;
 };
 
+const isTranslucentCube = (definition: BlockDefinition): boolean => (
+  definition.renderClass === 'translucent' && definition.geometryType === 'cube'
+);
+
 const axisCoordinate = (axis: Axis, value: number, otherA: number, otherB: number): BlockPos => {
   if (axis === 0) return { x: value, y: otherA, z: otherB };
   if (axis === 1) return { x: otherB, y: value, z: otherA };
@@ -248,7 +252,13 @@ function meshCubeChannel(
           const bOccludes = blocks.isFullOccluder(bBlock);
 
           const maskIndex = i + j * SECTION_SIZE;
-          if (aDefinition.geometryType === 'cube' && channelOf(aDefinition) === channel && !bOccludes) {
+          const aVisible = channel === 'translucent'
+            ? !isTranslucentCube(bDefinition) && !bOccludes
+            : !bOccludes;
+          const bVisible = channel === 'translucent'
+            ? !isTranslucentCube(aDefinition) && !aOccludes
+            : !aOccludes;
+          if (aDefinition.geometryType === 'cube' && channelOf(aDefinition) === channel && aVisible) {
             const localCell = aPos.x >= 0 && aPos.x < SECTION_SIZE
               && aPos.y >= 0 && aPos.y < SECTION_SIZE
               && aPos.z >= 0 && aPos.z < SECTION_SIZE;
@@ -259,7 +269,7 @@ function meshCubeChannel(
               ao: bakeAo ? aoForFace(input, blocks, aPos, u, v) : [3, 3, 3, 3],
             };
           }
-          if (bDefinition.geometryType === 'cube' && channelOf(bDefinition) === channel && !aOccludes) {
+          if (bDefinition.geometryType === 'cube' && channelOf(bDefinition) === channel && bVisible) {
             const localCell = bPos.x >= 0 && bPos.x < SECTION_SIZE
               && bPos.y >= 0 && bPos.y < SECTION_SIZE
               && bPos.z >= 0 && bPos.z < SECTION_SIZE;
