@@ -16,7 +16,7 @@ describe('Inventory', () => {
   it('rejects unknown blocks and non-positive or fractional add counts', () => {
     const inventory = new Inventory();
 
-    expect(() => inventory.add(99, 1)).toThrow('Unknown block id: 99');
+    expect(() => inventory.add(9_999, 1)).toThrow('Unknown block id: 9999');
     expect(() => inventory.add(1, 0)).toThrow('positive integer');
     expect(() => inventory.add(1, 1.5)).toThrow('positive integer');
     expect(inventory.selected()).toBeNull();

@@ -24,8 +24,8 @@ describe('InMemoryWorld edits', () => {
 
     expect(() => world.applyEdits([
       { pos: { x: 0, y: 0, z: 0 }, blockId: 1 },
-      { pos: { x: 1, y: 0, z: 0 }, blockId: 99 },
-    ])).toThrow('Unknown block id: 99');
+      { pos: { x: 1, y: 0, z: 0 }, blockId: 9_999 },
+    ])).toThrow('Unknown block id: 9999');
     expect(world.getBlock({ x: 0, y: 0, z: 0 })).toBe(0);
   });
 });

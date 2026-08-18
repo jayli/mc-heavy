@@ -32,7 +32,7 @@ describe('SnapshotStore', () => {
     const store = new SnapshotStore(indexedDB);
     await store.save(snapshotNamed('one'));
 
-    await expect(store.save({ ...snapshotNamed('two'), edits: [{ pos: { x: 0, y: 0, z: 0 }, blockId: 99 }] }))
+    await expect(store.save({ ...snapshotNamed('two'), edits: [{ pos: { x: 0, y: 0, z: 0 }, blockId: 9_999 }] }))
       .rejects.toThrow('Invalid snapshot block id');
 
     expect((await store.loadCurrent())?.id).toBe('one');
