@@ -11,6 +11,8 @@ import { ParticleSystem } from '../render/particles';
 import { RainEffect } from '../render/rain';
 import { LIGHT_QUALITY_PRESETS, type LightQuality } from '../render/light-quality';
 import { SettingsUi } from './settings-ui';
+import { ImportUi } from './import-ui';
+import type { ParsedLegacySnapshot } from '../persistence/legacy-import';
 import {
   RendererAdapter,
   type RendererAdapterOptions,
@@ -54,6 +56,7 @@ export type GameAppOptions = Readonly<{
   viewRadius?: number;
   workerFactory?: WorkerFactory;
   renderer?: RendererAdapterOptions;
+  legacySnapshot?: ParsedLegacySnapshot;
 }>;
 
 declare global {
@@ -411,6 +414,16 @@ export async function createGameApp(
     stop();
     throw error;
   }
+  if (options.legacySnapshot) {
+    world.applyEdits(options.legacySnapshot.edits);
+    player.setPosition({
+      x: options.legacySnapshot.player.x,
+      y: options.legacySnapshot.player.y,
+      z: options.legacySnapshot.player.z,
+    });
+    player.setLook(options.legacySnapshot.player.yaw, options.legacySnapshot.player.pitch);
+    world.updateStreaming(player.position, { x: 0, z: 0 });
+  }
 
   totalUploadBytes += updateRenderUploads(
     world,
@@ -608,5 +621,19 @@ if (
   && typeof document !== 'undefined'
   && (import.meta as ImportMeta & { env?: { MODE?: string } }).env?.MODE !== 'test'
 ) {
-  void createGameApp(document.body).catch(showBootstrapError);
+  void bootstrapGame(document.body).catch(showBootstrapError);
+}
+
+async function bootstrapGame(container: HTMLElement): Promise<void> {
+  const ownerDocument = container.ownerDocument;
+  const ownerWindow = ownerDocument.defaultView;
+  if (!ownerWindow) throw new Error('GameApp requires a window-backed document');
+  const importUi = new ImportUi(ownerDocument, ownerWindow.indexedDB);
+  container.append(importUi.element);
+  const choice = await importUi.request();
+  const snapshot = choice.kind === 'import' ? choice.snapshot : undefined;
+  await createGameApp(container, snapshot
+    ? { seed: snapshot.seed, legacySnapshot: snapshot }
+    : {});
+  if (snapshot) importUi.showReport(snapshot.report);
 }

@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 
 test('loads a spawn safety ring and changes a targeted block through the public game API', async ({ page }) => {
   await page.goto('/');
+  await page.getByTestId('import-new').click();
   await page.getByText('World ready').waitFor();
 
   await expect(page.getByTestId('backend')).toHaveText(/Backend: (webgpu|webgl2)/);
@@ -19,6 +20,7 @@ test('loads a spawn safety ring and changes a targeted block through the public 
 
 test('binds mouse look and hotbar break and place input to the real world', async ({ page }) => {
   await page.goto('/');
+  await page.getByTestId('import-new').click();
   await page.getByText('World ready').waitFor();
 
   // Default seed 0x5eed1234: the first solid block below the y=50 spawn camera is
@@ -79,6 +81,7 @@ test('binds mouse look and hotbar break and place input to the real world', asyn
 
 test('bounds renderer pages to loaded columns and reports physical-frustum visibility', async ({ page }) => {
   await page.goto('/');
+  await page.getByTestId('import-new').click();
   await page.getByText('World ready').waitFor();
   await expect(page.getByTestId('worker-queue')).toHaveText('Worker queue: 0', { timeout: 30_000 });
   await page.waitForFunction(() => {

@@ -32,7 +32,7 @@ type LegacyChunk = Readonly<{
   entities?: unknown;
 }>;
 
-type ParsedLegacySnapshot = Readonly<{
+export type ParsedLegacySnapshot = Readonly<{
   player: PlayerSnapshot;
   seed: number;
   edits: readonly BlockEdit[];

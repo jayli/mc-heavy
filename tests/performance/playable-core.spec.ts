@@ -13,6 +13,7 @@ test('holds the fixed playable path above 90 FPS on real Chrome WebGPU', async (
   test.setTimeout(BENCHMARK_DURATION_MS + 60_000);
   const artifactRun = await beginPerformanceArtifact(reportPath);
   await page.goto('/');
+  await page.getByTestId('import-new').click();
   await page.locator('[data-testid="world-ready"], [data-testid="renderer-error"]').waitFor();
 
   const startupError = await page.getByTestId('renderer-error').count() === 1
