@@ -20,6 +20,8 @@ export type InteractionEffects = Readonly<{
 }>;
 
 export class PlayerInteraction {
+  private readonly openedChests = new Set<string>();
+
   constructor(
     private readonly inventory: Inventory,
     private readonly player: PlayerController,
@@ -31,6 +33,14 @@ export class PlayerInteraction {
     if (!hit || !world.isSolid(hit.block)) return false;
 
     blockById(hit.blockId);
+    if (hit.blockId === blockByKey('chest').id) {
+      const key = `${hit.block.x},${hit.block.y},${hit.block.z}`;
+      if (!this.openedChests.has(key)) {
+        this.openedChests.add(key);
+        this.effects.onChestOpened?.(hit.block, world.getOrientation?.(hit.block) ?? 0);
+        return true;
+      }
+    }
     if (hit.blockId === blockByKey('tnt').id) {
       world.applyEdits([{ pos: hit.block, blockId: 0 }]);
       this.effects.onTntIgnited?.(hit.block);

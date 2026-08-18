@@ -219,6 +219,14 @@ export class WorldService implements WorldQuery {
     return this.world.getBlock(pos);
   }
 
+  getOrientation(pos: BlockPos): number | undefined {
+    const key = sectionKey(sectionOf(pos));
+    const index = localIndex(pos);
+    const edit = this.editsBySection.get(key)?.get(index);
+    if (edit) return edit.orientation;
+    return this.generatedSections.get(key)?.getOrientation(index);
+  }
+
   isSolid(pos: BlockPos): boolean {
     return blockById(this.getBlock(pos)).solid;
   }

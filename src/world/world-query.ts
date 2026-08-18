@@ -16,6 +16,7 @@ export interface WorldQuery {
   isSolid(pos: BlockPos): boolean;
   raycast(origin: Vec3, direction: Vec3, maxDistance: number): VoxelHit | null;
   applyEdits(edits: readonly BlockEdit[]): Readonly<{ changedSections: readonly SectionPos[] }>;
+  getOrientation?(pos: BlockPos): number | undefined;
 }
 
 type BlockGenerator = (pos: BlockPos) => number;

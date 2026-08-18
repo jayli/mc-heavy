@@ -6,6 +6,7 @@ import { PlayerController } from '../gameplay/player-controller';
 import { PlayerInteraction } from '../gameplay/player-interaction';
 import { surfaceFeetY } from '../gameplay/spawn';
 import { createTntSystem } from '../gameplay/tnt';
+import { ChestAnimations } from '../gameplay/chest-animations';
 import {
   RendererAdapter,
   type RendererAdapterOptions,
@@ -111,9 +112,19 @@ export async function createGameApp(
       // Task 11 在此接入爆炸粒子。
     },
   });
+  const chestAnimations = new ChestAnimations(
+    {
+      add: (object) => renderer.addTransient(object),
+      remove: (object) => renderer.removeTransient(object),
+    },
+    terrainMaterials,
+  );
   const interaction = new PlayerInteraction(inventory, player, {
     onTntIgnited: (block) => {
       tntSystem.ignite(block);
+    },
+    onChestOpened: (block, orientation) => {
+      chestAnimations.open(block, orientation, performance.now());
     },
   });
   const metrics = new FrameMetrics();
@@ -314,6 +325,7 @@ export async function createGameApp(
     canvas.removeEventListener('contextmenu', onContextMenu);
     canvas.removeEventListener('click', onCanvasClick);
     renderer.dispose();
+    chestAnimations.dispose();
     tntSystem.dispose();
     world.dispose();
   };
@@ -352,6 +364,7 @@ export async function createGameApp(
     const input = movementInputFromKeys(pressedKeys, player.yaw);
     player.step(input, dtSeconds);
     player.applyVerticalPhysics(dtSeconds);
+    chestAnimations.update(timestampMs);
     const position = player.position;
     const inverseDt = dtSeconds > 0 ? 1 / dtSeconds : 0;
     const velocity = {
