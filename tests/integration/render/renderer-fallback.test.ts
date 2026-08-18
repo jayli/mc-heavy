@@ -84,7 +84,12 @@ describe('RendererAdapter fallback', () => {
     });
 
     expect(adapter.backend).toBe('webgl2');
-    expect(adapter.diagnostics()).toEqual({ pageCount: 2, visiblePageCount: 1 });
+    expect(adapter.diagnostics()).toEqual({
+      pageCount: 2,
+      visiblePageCount: 1,
+      translucentTriangles: 0,
+      background: '#8fc8ee',
+    });
     expect(visiblePageCounts).toEqual([1]);
     const scene = submittedScene as Scene | null;
     expect(scene?.getObjectByName('terrain-lod')?.position.toArray()).toEqual([64, 0, -32]);
@@ -155,7 +160,12 @@ describe('RendererAdapter fallback', () => {
       timeMs: 0,
     });
 
-    expect(adapter.diagnostics()).toEqual({ pageCount: 2, visiblePageCount: 1 });
+    expect(adapter.diagnostics()).toEqual({
+      pageCount: 2,
+      visiblePageCount: 1,
+      translucentTriangles: 0,
+      background: '#8fc8ee',
+    });
     expect(visiblePageCounts).toEqual([1]);
     adapter.dispose();
   });
@@ -188,7 +198,12 @@ describe('RendererAdapter fallback', () => {
 
     adapter.retainPages(new Set(['0,0,0']));
 
-    expect(adapter.diagnostics()).toEqual({ pageCount: 1, visiblePageCount: 1 });
+    expect(adapter.diagnostics()).toEqual({
+      pageCount: 1,
+      visiblePageCount: 1,
+      translucentTriangles: 0,
+      background: '#8fc8ee',
+    });
     expect(submittedScene?.getObjectByName('section:1,0,0')).toBeUndefined();
     expect(geometryDisposals).toBe(1);
     adapter.dispose();

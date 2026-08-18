@@ -217,7 +217,7 @@ export async function buildTextureAtlas(options: AtlasOptions = {}): Promise<Bui
       rgba[offset] = parsed[0];
       rgba[offset + 1] = parsed[1];
       rgba[offset + 2] = parsed[2];
-      rgba[offset + 3] = 255;
+      rgba[offset + 3] = Math.round((spec.alpha ?? 1) * 255);
     }
     tiles[tileId] = { width: ATLAS_TILE_SIZE, height: ATLAS_TILE_SIZE, rgba };
   }

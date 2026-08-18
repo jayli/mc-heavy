@@ -126,12 +126,13 @@ export const TEXTURE_FILES = Object.freeze([
 export type SyntheticTile = Readonly<{
   key: string;
   color?: string;
+  alpha?: number;
   draw?: 'flower' | 'vine' | 'lilypad';
 }>;
 
 export const SYNTHETIC_TILES = Object.freeze([
-  { key: 'color:#205099', color: '#205099' },
-  { key: 'color:#2F4F4F', color: '#2F4F4F' },
+  { key: 'color:#205099', color: '#205099', alpha: 0.6 },
+  { key: 'color:#2F4F4F', color: '#2F4F4F', alpha: 0.7 },
   { key: 'color:#559944', color: '#559944' },
   { key: 'color:#FFFFFF', color: '#FFFFFF' },
   { key: 'color:#DDA0DD', color: '#DDA0DD' },

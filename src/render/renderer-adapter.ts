@@ -1,6 +1,7 @@
 import {
   Box3,
   Camera,
+  Color,
   Frustum,
   Group,
   Matrix4,
@@ -120,6 +121,7 @@ export class RendererAdapter {
     this.backend = driver.backend;
     this.driver = driver;
     this.materials = materials;
+    this.scene.background = new Color(0x8fc8ee);
     this.effects.name = 'effects';
     this.scene.add(this.terrainLod.renderObject(), this.water.renderObject(), this.effects);
   }
@@ -265,8 +267,25 @@ export class RendererAdapter {
     return this.physicalCameraFrustum;
   }
 
-  diagnostics(): Readonly<{ pageCount: number; visiblePageCount: number }> {
-    return { pageCount: this.pages.size, visiblePageCount: this.visiblePageCount };
+  diagnostics(): Readonly<{
+    pageCount: number;
+    visiblePageCount: number;
+    translucentTriangles: number;
+    background: string | null;
+  }> {
+    let translucentTriangles = 0;
+    for (const page of this.pages.values()) {
+      translucentTriangles += page.channelIndexCount('translucent') / 3;
+    }
+    const background = this.scene.background instanceof Color
+      ? `#${this.scene.background.getHexString()}`
+      : null;
+    return {
+      pageCount: this.pages.size,
+      visiblePageCount: this.visiblePageCount,
+      translucentTriangles,
+      background,
+    };
   }
 
   dispose(): void {

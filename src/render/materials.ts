@@ -86,7 +86,11 @@ export function createTerrainMaterials(atlas: BuiltAtlas): TerrainMaterials {
   const cutout = new MeshBasicNodeMaterial({ alphaTest: 0.5, side: DoubleSide });
   cutout.colorNode = colorNode;
 
-  const translucent = new MeshBasicNodeMaterial({ transparent: true, depthWrite: false });
+  const translucent = new MeshBasicNodeMaterial({
+    transparent: true,
+    depthWrite: false,
+    side: DoubleSide,
+  });
   translucent.colorNode = colorNode;
 
   const refs: LightingUniformRefs = {

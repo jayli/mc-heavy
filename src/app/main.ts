@@ -52,6 +52,12 @@ export type GameApp = Readonly<{
   rainEnabled(): boolean;
   qualityForTest(): LightQuality;
   activeChestLids(): number;
+  rendererDiagnostics(): Readonly<{
+    pageCount: number;
+    visiblePageCount: number;
+    translucentTriangles: number;
+    background: string | null;
+  }>;
 }>;
 
 export type GameAppOptions = Readonly<{
@@ -330,6 +336,7 @@ export async function createGameApp(
     rainEnabled: () => rain.enabled,
     qualityForTest: () => quality,
     activeChestLids: () => chestAnimations.activeCount(),
+    rendererDiagnostics: () => renderer.diagnostics(),
   });
 
   const onKeyDown = (event: KeyboardEvent): void => {

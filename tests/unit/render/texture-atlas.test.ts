@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { DataTexture, DoubleSide, RedFormat, RGBAFormat, UnsignedByteType } from 'three';
 import { packTextureAtlas, type TileInput } from '../../../src/render/texture-atlas';
+import { createTerrainMaterials } from '../../../src/render/materials';
 
 function tile(rgba: readonly number[]): TileInput {
   const pixels = new Uint8ClampedArray(16);
@@ -38,5 +40,16 @@ describe('packTextureAtlas', () => {
 
     expect([...packed.pixels.subarray(0, 4)]).toEqual([255, 0, 255, 255]);
     expect([...packed.emissive]).toEqual([200]);
+  });
+});
+
+describe('createTerrainMaterials', () => {
+  it('renders translucent water surfaces from both sides', () => {
+    const texture = new DataTexture(new Uint8Array(16), 1, 1, RGBAFormat, UnsignedByteType);
+    const emissive = new DataTexture(new Uint8Array(16), 1, 1, RedFormat, UnsignedByteType);
+    const materials = createTerrainMaterials({ texture, emissive, tileCount: 16, columns: 4, rows: 4, failedTiles: [] });
+
+    expect(materials.translucent.side).toBe(DoubleSide);
+    materials.dispose();
   });
 });

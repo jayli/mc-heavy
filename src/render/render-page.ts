@@ -289,6 +289,10 @@ export class RenderPage {
     return this.channelVersions.get(channel) ?? -1;
   }
 
+  channelIndexCount(channel: MeshChannel): number {
+    return this.channels.get(channel)?.geometry.getIndex()?.count ?? 0;
+  }
+
   replace(channel: MeshChannel, mesh: ChannelMesh): void {
     if (this.disposed || mesh.sourceVersion <= this.channelVersion(channel)) return;
     this.cancelStaging(channel);
