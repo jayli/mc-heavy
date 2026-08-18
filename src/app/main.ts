@@ -9,6 +9,8 @@ import { createTntSystem } from '../gameplay/tnt';
 import { ChestAnimations } from '../gameplay/chest-animations';
 import { ParticleSystem } from '../render/particles';
 import { RainEffect } from '../render/rain';
+import { LIGHT_QUALITY_PRESETS, type LightQuality } from '../render/light-quality';
+import { SettingsUi } from './settings-ui';
 import {
   RendererAdapter,
   type RendererAdapterOptions,
@@ -28,7 +30,7 @@ import {
 import type { ChannelUploadJob } from '../render/render-page';
 import { channelUploadKey } from '../render/render-page';
 import { buildTextureAtlas } from '../render/texture-atlas';
-import { createTerrainMaterials } from '../render/materials';
+import { applyLighting, createTerrainMaterials } from '../render/materials';
 
 const DEFAULT_SEED = 0x5eed_1234;
 const HUD_UPDATE_INTERVAL_MS = 250;
@@ -44,6 +46,7 @@ export type GameApp = Readonly<{
   activeParticles(): number;
   setRainEnabled(enabled: boolean): void;
   rainEnabled(): boolean;
+  qualityForTest(): LightQuality;
 }>;
 
 export type GameAppOptions = Readonly<{
@@ -133,6 +136,43 @@ export async function createGameApp(
     },
     { isSolid: (x, y, z) => world.isSolid({ x, y, z }) },
   );
+  let quality: LightQuality = 'high';
+  let tntDestroyEnabled = true;
+  const applyQuality = (next: LightQuality): void => {
+    const preset = LIGHT_QUALITY_PRESETS[next];
+    renderer.setPixelRatio(preset.renderScale);
+    applyLighting(terrainMaterials, {
+      sunEnabled: preset.sunEnabled,
+      aoEnabled: preset.aoEnabled,
+      emissiveEnabled: preset.emissiveEnabled,
+    });
+    rain.setDensity(preset.rainParticleCount);
+  };
+  applyQuality(quality);
+  const settings = new SettingsUi(ownerDocument, {
+    getState: () => ({
+      quality,
+      rainEnabled: rain.enabled,
+      tntDestroyEnabled,
+    }),
+    setQuality: (next) => {
+      quality = next;
+      applyQuality(next);
+      settings.refresh();
+    },
+    toggleRain: () => {
+      rain.setEnabled(!rain.enabled);
+      settings.refresh();
+    },
+    toggleTntDestroy: () => {
+      tntDestroyEnabled = !tntDestroyEnabled;
+      tntSystem.setDestroyBlocks(tntDestroyEnabled);
+      settings.refresh();
+    },
+    onOpen: () => ownerDocument.exitPointerLock?.(),
+    onClose: () => canvas.requestPointerLock(),
+  });
+  settings.attach(container);
   const chestAnimations = new ChestAnimations(
     {
       add: (object) => renderer.addTransient(object),
@@ -276,6 +316,7 @@ export async function createGameApp(
     activeParticles: () => particles.activeCount(),
     setRainEnabled: (enabled) => rain.setEnabled(enabled),
     rainEnabled: () => rain.enabled,
+    qualityForTest: () => quality,
   });
 
   const onKeyDown = (event: KeyboardEvent): void => {
