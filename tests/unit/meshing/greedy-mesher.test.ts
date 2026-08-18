@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { blockRegistry } from '../../../src/domain/blocks';
+import { blockByKey, blockRegistry } from '../../../src/domain/blocks';
 import { localIndex } from '../../../src/domain/coords';
+import { textureTileId } from '../../../src/domain/texture-tiles';
 import { VoxelSection } from '../../../src/domain/voxel-section';
-import { meshOpaque } from '../../../src/meshing/greedy-mesher';
+import { meshOpaque, meshSection } from '../../../src/meshing/greedy-mesher';
 import type { ChannelMesh, MeshingInput } from '../../../src/meshing/mesh-types';
 
 const HALO_SLOT = {
@@ -109,6 +110,7 @@ describe('meshOpaque', () => {
     expect(mesh.normals.length).toBe(mesh.positions.length);
     expect(mesh.uvs.length).toBe(vertexCount * 2);
     expect(mesh.tileIds.length).toBe(vertexCount);
+    expect(mesh.ao.length).toBe(vertexCount);
     expect(mesh.indices.length % 6).toBe(0);
     expect([...mesh.indices].every((index) => index < vertexCount)).toBe(true);
     expect(mesh.sourceVersion).toBe(121);
@@ -137,5 +139,100 @@ describe('meshOpaque', () => {
     const mesh = meshOpaque(meshingInput(center, neighbors), registry);
 
     expect(countQuadsWithNormal(mesh, [1, 0, 0])).toBe(1);
+  });
+});
+
+function someTileOnFace(
+  mesh: { positions: Float32Array; normals: Int8Array; tileIds: Uint16Array; indices: Uint32Array },
+  normal: readonly [number, number, number],
+  tileId: number,
+): boolean {
+  for (let offset = 0; offset < mesh.indices.length; offset += 6) {
+    const vertex = mesh.indices[offset] * 3;
+    if (
+      mesh.normals[vertex] === normal[0]
+      && mesh.normals[vertex + 1] === normal[1]
+      && mesh.normals[vertex + 2] === normal[2]
+      && mesh.tileIds[mesh.indices[offset]] === tileId
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+describe('meshSection channels', () => {
+  it('puts full cubes, cutout cubes and translucent cubes into separate channels', () => {
+    const section = sectionWith([
+      { x: 0, y: 0, z: 0, blockId: blockByKey('stone').id },
+      { x: 0, y: 1, z: 0, blockId: blockByKey('leaves').id },
+      { x: 0, y: 2, z: 0, blockId: blockByKey('water').id },
+    ]);
+
+    const mesh = meshSection({ section, neighbors: [], sourceVersion: 1 }, blockRegistry);
+
+    expect(mesh.opaque.indices.length).toBeGreaterThan(0);
+    expect(mesh.cutout.indices.length).toBeGreaterThan(0);
+    expect(mesh.translucent.indices.length).toBeGreaterThan(0);
+    expect(mesh.opaque.ao.every((value) => value >= 0 && value <= 3)).toBe(true);
+    expect(mesh.sourceVersion).toBe(1);
+  });
+
+  it('emits both faces between two adjacent cutout cubes', () => {
+    const leaves = blockByKey('leaves').id;
+    const section = sectionWith([
+      { x: 0, y: 0, z: 0, blockId: leaves },
+      { x: 1, y: 0, z: 0, blockId: leaves },
+    ]);
+
+    const mesh = meshSection({ section, neighbors: [], sourceVersion: 1 }, blockRegistry);
+
+    expect(countQuadsWithNormal(mesh.cutout, [1, 0, 0])).toBeGreaterThanOrEqual(1);
+    expect(countQuadsWithNormal(mesh.cutout, [-1, 0, 0])).toBeGreaterThanOrEqual(1);
+  });
+
+  it('emits a two-quad cross for a non-solid plant', () => {
+    const flower = blockByKey('short_grass').id;
+    const section = sectionWith([{ x: 3, y: 3, z: 3, blockId: flower }]);
+
+    const mesh = meshSection({ section, neighbors: [], sourceVersion: 1 }, blockRegistry);
+
+    expect(mesh.cutout.indices.length).toBe(12);
+  });
+
+  it('rotates a front-textured cube by its orientation', () => {
+    const chest = blockByKey('chest').id;
+    const section = sectionWith([{ x: 2, y: 2, z: 2, blockId: chest }]);
+    const input = { section, neighbors: [], sourceVersion: 1, orientations: () => 2 };
+
+    const mesh = meshSection(input, blockRegistry);
+
+    expect(someTileOnFace(mesh.cutout, [-1, 0, 0], textureTileId('box_face.png'))).toBe(true);
+  });
+
+  it('shades an enclosed opaque face corner with AO zero', () => {
+    const stone = blockByKey('stone').id;
+    const grass = blockByKey('grass').id;
+    const section = sectionWith([
+      { x: 1, y: 1, z: 1, blockId: stone },
+      { x: 0, y: 1, z: 1, blockId: grass },
+      { x: 1, y: 1, z: 0, blockId: grass },
+      { x: 0, y: 1, z: 0, blockId: grass },
+    ]);
+
+    const mesh = meshSection({ section, neighbors: [], sourceVersion: 1 }, blockRegistry);
+
+    for (let offset = 0; offset < mesh.opaque.indices.length; offset += 6) {
+      const vertexIndex = mesh.opaque.indices[offset];
+      const position = vertexIndex * 3;
+      const isTopCorner = mesh.opaque.positions[position] === 1
+        && mesh.opaque.positions[position + 1] === 2
+        && mesh.opaque.positions[position + 2] === 1;
+      if (!isTopCorner) continue;
+      expect(mesh.opaque.normals[position + 1]).toBe(1);
+      expect(mesh.opaque.ao[vertexIndex]).toBe(0);
+      return;
+    }
+    throw new Error('enclosed top corner was not emitted');
   });
 });
