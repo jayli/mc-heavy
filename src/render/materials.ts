@@ -12,6 +12,7 @@ import {
   attribute,
   float,
   floor,
+  fract,
   max,
   mod,
   normalize,
@@ -59,9 +60,11 @@ export function createTerrainMaterials(atlas: BuiltAtlas): TerrainMaterials {
 
   const column = mod(attribute<'float'>('tileId', 'float'), ATLAS_COLUMNS);
   const row = floor(attribute<'float'>('tileId', 'float').div(ATLAS_COLUMNS));
+  const localU = fract(uv().x);
+  const localV = float(1).sub(fract(float(1).sub(uv().y)));
   const atlasUv = vec2(
-    column.add(uv().x).div(ATLAS_COLUMNS),
-    float(1).sub(row.add(float(1)).sub(uv().y).div(atlasRows)),
+    column.add(localU).div(ATLAS_COLUMNS),
+    float(1).sub(row.add(float(1)).sub(localV).div(atlasRows)),
   );
   const albedo = texture(atlas.texture, atlasUv);
   const diffuse = max(

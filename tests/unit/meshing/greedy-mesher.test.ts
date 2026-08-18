@@ -259,4 +259,29 @@ describe('meshSection channels', () => {
     for (const index of flat.indices) expect(index).toBeLessThan(flat.positions.length / 3);
     expect(flat.sourceVersion).toBe(7);
   });
+
+  it('keeps per-block texture coordinates across a merged top face', () => {
+    const stone = blockByKey('stone').id;
+    const section = sectionWith([
+      { x: 0, y: 0, z: 0, blockId: stone },
+      { x: 1, y: 0, z: 0, blockId: stone },
+      { x: 0, y: 0, z: 1, blockId: stone },
+      { x: 1, y: 0, z: 1, blockId: stone },
+    ]);
+    const mesh = meshSection({ section, neighbors: [], sourceVersion: 1 }, blockRegistry).opaque;
+
+    const uvs = new Set<string>();
+    for (let offset = 0; offset < mesh.indices.length; offset += 6) {
+      const vertex = mesh.indices[offset] * 3;
+      const isTop = mesh.normals[vertex + 1] === 1 && mesh.positions[vertex + 1] === 1;
+      if (!isTop) continue;
+      for (const cornerIndex of [offset, offset + 1, offset + 2, offset + 5]) {
+        const cornerVertex = mesh.indices[cornerIndex] * 2;
+        uvs.add(`${mesh.uvs[cornerVertex]},${mesh.uvs[cornerVertex + 1]}`);
+      }
+      break;
+    }
+
+    expect([...uvs].sort()).toEqual(['0,0', '0,2', '2,0', '2,2']);
+  });
 });

@@ -149,6 +149,8 @@ function addQuad(
   du: Tuple3,
   dv: Tuple3,
   face: Face,
+  uvOrigin: readonly [number, number] = [0, 0],
+  uvSize: readonly [number, number] = [1, 1],
 ): void {
   const [x, y, z] = origin;
   const corners: readonly Tuple3[] = [
@@ -168,7 +170,12 @@ function addQuad(
     buffers.tileIds.push(face.tileId);
     buffers.ao.push(face.ao[cornerIndex]);
   }
-  buffers.uvs.push(0, 0, 1, 0, 1, 1, 0, 1);
+  buffers.uvs.push(
+    uvOrigin[0], uvOrigin[1],
+    uvOrigin[0] + uvSize[0], uvOrigin[1],
+    uvOrigin[0] + uvSize[0], uvOrigin[1] + uvSize[1],
+    uvOrigin[0], uvOrigin[1] + uvSize[1],
+  );
   buffers.indices.push(
     vertexBase,
     vertexBase + 1,
@@ -323,7 +330,7 @@ function greedyMerge(
           mask[maskIndex + (height - 1) * SECTION_SIZE]!.ao[3],
         ],
       };
-      addQuad(buffers, [origin.x, origin.y, origin.z], du, dv, mergedFace);
+      addQuad(buffers, [origin.x, origin.y, origin.z], du, dv, mergedFace, [i, j], [width, height]);
 
       for (let row = 0; row < height; row += 1) {
         for (let column = 0; column < width; column += 1) {
