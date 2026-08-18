@@ -5,6 +5,7 @@ import { Inventory } from '../gameplay/inventory';
 import { PlayerController } from '../gameplay/player-controller';
 import { PlayerInteraction } from '../gameplay/player-interaction';
 import { surfaceFeetY } from '../gameplay/spawn';
+import { createTntSystem } from '../gameplay/tnt';
 import {
   RendererAdapter,
   type RendererAdapterOptions,
@@ -36,6 +37,7 @@ export type GameApp = Readonly<{
   seed: number;
   placeForTest(pos: BlockPos, block: string): void;
   readBlockForTest(pos: BlockPos): string;
+  igniteTntForTest(pos: BlockPos): boolean;
 }>;
 
 export type GameAppOptions = Readonly<{
@@ -100,7 +102,20 @@ export async function createGameApp(
   inventory.add(4, 64);
   inventory.add(5, 64);
   inventory.add(7, 64);
-  const interaction = new PlayerInteraction(inventory, player);
+  const tntSystem = createTntSystem({
+    world,
+    destroyBlocks: true,
+    now: () => performance.now(),
+    schedule: (run, delayMs) => ownerWindow.setTimeout(run, delayMs),
+    onExplode: () => {
+      // Task 11 在此接入爆炸粒子。
+    },
+  });
+  const interaction = new PlayerInteraction(inventory, player, {
+    onTntIgnited: (block) => {
+      tntSystem.ignite(block);
+    },
+  });
   const metrics = new FrameMetrics();
   const hud = new GameHud(ownerDocument);
   container.append(hud.element);
@@ -213,7 +228,13 @@ export async function createGameApp(
 
   const readBlockForTest = (pos: BlockPos): string => blockById(world.getBlock(pos)).key;
 
-  const game: GameApp = Object.freeze({ player, seed, placeForTest, readBlockForTest });
+  const game: GameApp = Object.freeze({
+    player,
+    seed,
+    placeForTest,
+    readBlockForTest,
+    igniteTntForTest: (pos) => tntSystem.ignite(pos),
+  });
 
   const onKeyDown = (event: KeyboardEvent): void => {
     pressedKeys.add(event.key.toLowerCase());
@@ -293,6 +314,7 @@ export async function createGameApp(
     canvas.removeEventListener('contextmenu', onContextMenu);
     canvas.removeEventListener('click', onCanvasClick);
     renderer.dispose();
+    tntSystem.dispose();
     world.dispose();
   };
   ownerWindow.addEventListener('pagehide', stop, { once: true });

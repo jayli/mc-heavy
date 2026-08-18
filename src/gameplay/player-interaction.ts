@@ -1,4 +1,4 @@
-import { blockById } from '../domain/blocks';
+import { blockById, blockByKey } from '../domain/blocks';
 import type { BlockPos, Vec3 } from '../domain/coords';
 import type { WorldQuery } from '../world/world-query';
 import { Inventory } from './inventory';
@@ -12,10 +12,18 @@ import {
 
 const INTERACTION_REACH = 6;
 
+export type InteractionEffects = Readonly<{
+  onBlockBroken?(block: BlockPos, blockId: number): void;
+  onChestOpened?(block: BlockPos, orientation: number): void;
+  onTntIgnited?(block: BlockPos): void;
+  onBlockPlaced?(block: BlockPos, blockId: number): void;
+}>;
+
 export class PlayerInteraction {
   constructor(
     private readonly inventory: Inventory,
     private readonly player: PlayerController,
+    private readonly effects: InteractionEffects = {},
   ) {}
 
   breakBlock(world: WorldQuery, origin: Vec3, direction: Vec3): boolean {
@@ -23,8 +31,14 @@ export class PlayerInteraction {
     if (!hit || !world.isSolid(hit.block)) return false;
 
     blockById(hit.blockId);
+    if (hit.blockId === blockByKey('tnt').id) {
+      world.applyEdits([{ pos: hit.block, blockId: 0 }]);
+      this.effects.onTntIgnited?.(hit.block);
+      return true;
+    }
     world.applyEdits([{ pos: hit.block, blockId: 0 }]);
     this.inventory.add(hit.blockId, 1);
+    this.effects.onBlockBroken?.(hit.block, hit.blockId);
     return true;
   }
 
@@ -51,6 +65,7 @@ export class PlayerInteraction {
     if (!this.inventory.remove(blockId, 1)) {
       throw new Error('Inventory changed during block placement');
     }
+    this.effects.onBlockPlaced?.(target, blockId);
     return true;
   }
 
