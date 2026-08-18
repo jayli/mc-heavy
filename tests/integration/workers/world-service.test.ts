@@ -140,6 +140,19 @@ describe('WorldService worker integration', () => {
     world.dispose();
   });
 
+  it('applies an oriented edit to the regenerated section state', async () => {
+    const world = new WorldService({ seed: 123, workerFactory: createInProcessWorkerFactory() });
+    await world.prepareSpawn({ x: 0, z: 0 });
+
+    world.applyEdits([{ pos: { x: 0, y: 0, z: 0 }, blockId: 5, orientation: 2 }]);
+    await world.prepareSpawn({ x: 0, z: 0 });
+
+    expect(world.loadedBlockAt({ x: 0, y: 0, z: 0 })).toBe(5);
+    expect(world.loadedOrientationAt({ x: 0, y: 0, z: 0 })).toBe(2);
+    expect(world.loadedOrientationAt({ x: 1, y: 0, z: 0 })).toBe(0);
+    world.dispose();
+  });
+
   it('remeshes a visible edge section when a newly loaded column supplies its missing halo', async () => {
     const world = new WorldService({ seed: 123, workerFactory: createInProcessWorkerFactory() });
     await world.prepareSpawn({ x: 0, z: 0 });

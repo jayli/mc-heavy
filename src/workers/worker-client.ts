@@ -67,7 +67,7 @@ function bufferForTransfer(view: ArrayBufferView): ArrayBuffer {
 }
 
 function sectionTransferables(section: SerializedVoxelSection): Transferable[] {
-  return [bufferForTransfer(section.palette), section.indices];
+  return [bufferForTransfer(section.palette), section.indices, section.orientations];
 }
 
 function meshRequestTransferables(request: MeshingWorkerRequest): Transferable[] {

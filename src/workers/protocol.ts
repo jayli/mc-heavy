@@ -6,6 +6,7 @@ export type SerializedVoxelSection = Readonly<{
   pos: SectionPos;
   palette: Uint16Array;
   indices: ArrayBuffer;
+  orientations: ArrayBuffer;
   editVersion: number;
 }>;
 

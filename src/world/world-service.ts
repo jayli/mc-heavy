@@ -54,21 +54,23 @@ function desiredKeys(center: ColumnPos, radius: number): Set<string> {
 
 function sectionWithEdits(
   section: VoxelSection,
-  edits: ReadonlyMap<number, number> | undefined,
+  edits: ReadonlyMap<number, Readonly<{ blockId: number; orientation: number }>> | undefined,
   editVersion: number,
 ): VoxelSection {
   const data = section.toPaletteIndices();
   const palette = Array.from(data.palette);
   const paletteByBlock = new Map(palette.map((blockId, index) => [blockId, index]));
+  const orientations = data.orientations;
   if (edits) {
-    for (const [index, blockId] of edits) {
-      let paletteIndex = paletteByBlock.get(blockId);
+    for (const [index, edit] of edits) {
+      let paletteIndex = paletteByBlock.get(edit.blockId);
       if (paletteIndex === undefined) {
         paletteIndex = palette.length;
-        palette.push(blockId);
-        paletteByBlock.set(blockId, paletteIndex);
+        palette.push(edit.blockId);
+        paletteByBlock.set(edit.blockId, paletteIndex);
       }
       data.indices[index] = paletteIndex;
+      orientations[index] = edit.orientation;
     }
   }
   return VoxelSection.fromPaletteIndices(
@@ -76,6 +78,7 @@ function sectionWithEdits(
     Uint16Array.from(palette),
     data.indices,
     editVersion,
+    orientations,
   );
 }
 
@@ -88,7 +91,7 @@ export class WorldService implements WorldQuery {
   private readonly stream: StreamController;
   private readonly persistentEditVersions = new Map<string, number>();
   private readonly transientVersions = new Map<string, number>();
-  private readonly editsBySection = new Map<string, Map<number, number>>();
+  private readonly editsBySection = new Map<string, Map<number, Readonly<{ blockId: number; orientation: number }>>>();
   private readonly generatedSections = new Map<string, VoxelSection>();
   private readonly visibleMeshes = new Map<string, UploadJob>();
   private readonly workerFailures = new Map<string, WorkerFailure>();
@@ -161,6 +164,10 @@ export class WorldService implements WorldQuery {
     return this.generatedSections.get(sectionKey(sectionOf(pos)))?.get(localIndex(pos));
   }
 
+  loadedOrientationAt(pos: BlockPos): number | undefined {
+    return this.generatedSections.get(sectionKey(sectionOf(pos)))?.getOrientation(localIndex(pos));
+  }
+
   streamingDiagnostics(): Readonly<{
     cachedSections: number;
     visibleMeshes: number;
@@ -203,7 +210,7 @@ export class WorldService implements WorldQuery {
     const key = sectionKey(sectionOf(pos));
     const index = localIndex(pos);
     const edits = this.editsBySection.get(key);
-    if (edits?.has(index)) return edits.get(index) as number;
+    if (edits?.has(index)) return edits.get(index)!.blockId;
     const loaded = this.generatedSections.get(key);
     if (loaded) {
       this.loadedSectionQueries += 1;
@@ -232,7 +239,10 @@ export class WorldService implements WorldQuery {
         sectionEdits = new Map();
         this.editsBySection.set(key, sectionEdits);
       }
-      sectionEdits.set(localIndex(edit.pos), edit.blockId);
+      sectionEdits.set(localIndex(edit.pos), {
+        blockId: edit.blockId,
+        orientation: edit.orientation ?? 0,
+      });
       const localX = localCoordinate(edit.pos.x);
       const localY = localCoordinate(edit.pos.y);
       const localZ = localCoordinate(edit.pos.z);

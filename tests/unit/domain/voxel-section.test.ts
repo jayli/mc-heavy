@@ -49,4 +49,25 @@ describe('VoxelSection', () => {
     expect(decoded.get(18)).toBe(1);
     expect(decoded.editVersion).toBe(7);
   });
+
+  it('stores a per-cell orientation and keeps it across the wire codec', () => {
+    let section = VoxelSection.filled({ x: 0, y: 0, z: 0 }, 5);
+    section = section.set(12, 5, 2);
+
+    expect(section.getOrientation(12)).toBe(2);
+    expect(section.getOrientation(13)).toBe(0);
+
+    const wire = serializeVoxelSection(section);
+    const restored = deserializeVoxelSection(wire);
+    expect(restored.getOrientation(12)).toBe(2);
+    expect(restored.getOrientation(13)).toBe(0);
+    expect(wire.orientations).toBeInstanceOf(ArrayBuffer);
+  });
+
+  it('resets orientation when a cell changes to another block', () => {
+    let section = VoxelSection.filled({ x: 0, y: 0, z: 0 }, 5).set(3, 5, 3);
+    section = section.set(3, 1);
+
+    expect(section.getOrientation(3)).toBe(0);
+  });
 });
