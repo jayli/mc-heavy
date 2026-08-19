@@ -4,7 +4,7 @@ import { seededRandom, noise, getBiome } from '../gen/noise.js';
 import { generateHeight, fillColumn, findSpawnY } from '../gen/terrain.js';
 import { ChunkColumn } from '../voxel/chunk-column.js';
 import { WorldData } from '../voxel/world-data.js';
-import { SEA_Y, WORLD_MIN_Y, blockIndex } from '../voxel/constants.js';
+import { SEA_Y, WORLD_MIN_Y } from '../voxel/constants.js';
 import { createRegistry } from '../voxel/block-registry.js';
 import { BLOCKS } from '../voxel/blocks-data.js';
 
