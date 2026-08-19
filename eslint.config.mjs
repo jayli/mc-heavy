@@ -30,6 +30,7 @@ export default [
         cancelAnimationFrame: 'readonly',
         localStorage: 'readonly',
         sessionStorage: 'readonly',
+        location: 'readonly',
         indexedDB: 'readonly',
         fetch: 'readonly',
         WebSocket: 'readonly',
