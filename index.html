@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>mc-heavy</title>
+  <link rel="icon" href="data:,">
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
+    #app-canvas { display: block; width: 100%; height: 100%; }
+    #webgpu-error {
+      display: none; position: fixed; inset: 0; z-index: 100;
+      background: #1a1a2e; color: #eee;
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      align-items: center; justify-content: center; text-align: center;
+      line-height: 1.8; padding: 24px;
+    }
+  </style>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.webgpu.js",
+      "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.tsl.js",
+      "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.webgpu.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.185.1/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <canvas id="app-canvas"></canvas>
+  <div id="webgpu-error">
+    <div>
+      <h2>需要 WebGPU 支持</h2>
+      <p>mc-heavy 使用 WebGPU 渲染，当前浏览器不支持。</p>
+      <p>请使用最新版 Chrome / Edge / Safari 26 打开。</p>
+    </div>
+  </div>
+  <div id="hud-root"></div>
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
