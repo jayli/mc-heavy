@@ -10,6 +10,7 @@ import { RenderWorld } from '../render/render-world.js';
 import { setupFog } from '../render/materials.js';
 import { loadAtlas } from '../mesh/atlas-loader.js';
 import { findSpawnY } from '../gen/terrain.js';
+import { Player } from '../player/player.js';
 
 export class Game {
   /**
@@ -29,9 +30,12 @@ export class Game {
     this.pool = new WorkerPool({ workerUrl: '/src/workers/world-worker.js' });
     this.renderer = new THREE.WebGPURenderer({ canvas, antialias: true });
     this.scene = new THREE.Scene();
-    this.camera = new THREE.PerspectiveCamera(70, 1, 0.1, viewDistance * 16 * 1.2);
+    // far 覆盖加载半径对角线（滞回 +2 圈 × 16 × sqrt2 余量），与 setupFog 口径一致
+    this.camera = new THREE.PerspectiveCamera(70, 1, 0.1, (viewDistance + 2) * 16 * 1.5);
     this.worldReady = false;
     this._hudRoot = hudRoot;
+    this.player = null;
+    this._lastFrameMs = -1;
   }
 
   async start() {
@@ -54,14 +58,20 @@ export class Game {
       seed: this.seed, viewDistance: this.viewDistance, perf: this.perf,
       renderWorld: this.renderWorld,
     });
+    this.scheduler._atlasMeta = atlasMeta; // 快速路径主线程 mesh 用（与 broadcast 同一份）
 
     // 出生点：(8, 8) 列，3×3 先就绪即可玩（§4.2 冷启动口径）
     this.spawnX = 8; this.spawnZ = 8;
     this.scheduler.update(this.spawnX, this.spawnZ);
     await this._waitForColumn(0, 0, 10000);
     this.spawnY = findSpawnY(this.world, this.spawnX, this.spawnZ);
-    this.camera.position.set(this.spawnX, this.spawnY + 20, this.spawnZ + 20);
-    this.camera.lookAt(this.spawnX, this.spawnY, this.spawnZ);
+    // 玩家出生（第一人称，眼高由 Player 管）
+    this.player = new Player({
+      world: this.world, camera: this.camera, scheduler: this.scheduler,
+      registry: this.registry, canvas: this.renderer.domElement,
+    });
+    this.player.spawn(this.spawnX, this.spawnY, this.spawnZ);
+    this.scene.add(this.player.highlight);
     this.worldReady = true;
 
     this._hud = new PerfHUD(this.perf, this._hudRoot);
@@ -70,7 +80,11 @@ export class Game {
 
     this.renderer.setAnimationLoop((nowMs) => {
       this.perf.tick(nowMs);
-      this.scheduler.update(this.spawnX, this.spawnZ); // Task 9 改为玩家实时位置
+      // dt（秒）：首帧为 0，钳制上限 0.1s 防后台切回大步长
+      const dt = this._lastFrameMs < 0 ? 0 : Math.min((nowMs - this._lastFrameMs) / 1000, 0.1);
+      this._lastFrameMs = nowMs;
+      this.player.update(dt);
+      this.scheduler.update(this.player.physics.pos.x, this.player.physics.pos.z);
       this._hud.update(nowMs);
       this.renderer.render(this.scene, this.camera);
     });

@@ -2,6 +2,7 @@
 // GEN 段（Task 4）+ MESH 段（Task 6：脏 section → Worker 网格化 → 上传预算）。
 import { ChunkColumn } from '../voxel/chunk-column.js';
 import { columnKey, SECTIONS_PER_COLUMN } from '../voxel/constants.js';
+import { buildSectionMesh } from '../mesh/mesher.js';
 
 const CHANNELS = ['opaque', 'cutout', 'transparent'];
 const MESH_UPLOAD_BUDGET_MS = 3;   // 每帧 GPU 上传预算（§4.9）
@@ -61,6 +62,8 @@ export class Scheduler {
     this._meshedSections = new Set();
     this._playerCx = 0;
     this._playerCz = 0;
+    /** atlas tile 元数据（Game 启动时赋值，与 broadcast 给 Worker 的同一份）——快速路径主线程 mesh 用 */
+    this._atlasMeta = null;
   }
 
   onColumnReady(cb) { this._columnReadyCallbacks.push(cb); }
@@ -244,6 +247,30 @@ export class Scheduler {
       if (this._meshQueuedSet.has(skey)) { this._meshQueuedSet.delete(skey); }
       const meshInflight = this._inflightMesh.get(skey);
       if (meshInflight) { this.pool.cancel(meshInflight.callId); this._inflightMesh.delete(skey); }
+    }
+  }
+
+  /**
+   * 方块编辑后重建受影响 section（§4.5.3 快速路径）。
+   * fastPath：主线程同步 buildSectionMesh + 立即上传（<2ms 当帧生效）；
+   * affected 已含编辑所在 section + 正交相邻 section，全部同步重建（M1 口径），
+   * 对角 AO 差异由后续常规 MESH 收敛。
+   * @param {Array<{cx:number, cz:number, sy:number}>} affected
+   * @param {{fastPath?: boolean}} [opts]
+   */
+  remeshSections(affected, { fastPath = true } = {}) {
+    if (!this.renderWorld) return;
+    for (const { cx, cz, sy } of affected) {
+      const col = this.world.getColumn(cx, cz);
+      if (!col || col.state !== 'ready') continue;
+      if (!fastPath) { col.markDirty(sy); this._enqueueMesh(cx, sy, cz); continue; }
+      const t0 = performance.now();
+      const view = this.world.getSectionView(cx, sy, cz);
+      const data = buildSectionMesh(view, this.registry, this._atlasMeta || {}, cx, sy, cz);
+      for (const channel of CHANNELS) {
+        this.renderWorld.uploadSection(cx, sy, cz, channel, data[channel], col.version);
+      }
+      if (this.perf) this.perf.mark('fast-remesh', performance.now() - t0);
     }
   }
 

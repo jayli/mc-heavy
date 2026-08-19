@@ -42,11 +42,11 @@ export function createVoxelMaterials(atlasTexture) {
  *  r185.1 语义：`fog(color, factor)` 返回 vec4 混合节点，
  *  factor = rangeFogFactor(near, far)（0=无雾 1=全雾），赋给 scene.fogNode 即生效。 */
 export function setupFog(scene, viewDistance) {
-  // 雾距按世界半径（viewDistance*16）起、2.2 倍半径止：
-  // 保证 M1 测试相机（spawn 上方 28 单位）与第一人称近景都在清晰区，
-  // 世界边缘（~viewDistance*16 + 相机偏移）才被雾化以遮挡 chunk 边界。
-  const fogNear = uniform(viewDistance * 16 * 1.0);
-  const fogFar = uniform(viewDistance * 16 * 2.2);
+  // 雾距与相机 far / 世界加载半径联动（避免边缘 pop-in）：
+  // 世界加载半径 = (viewDistance+2)*16（滞回 +2），雾在加载边缘前完成（0.95 系数），
+  // 相机 far 覆盖对角线（1.5 > sqrt2）。近景（< 0.75*vd*16）保持清晰。
+  const fogNear = uniform(viewDistance * 16 * 0.75);
+  const fogFar = uniform((viewDistance + 2) * 16 * 0.95);
   const fogColor = uniform(new THREE.Color(0x87ceeb));
   scene.fogNode = fog(fogColor, rangeFogFactor(fogNear, fogFar));
   return { fogNear, fogFar, fogColor };
