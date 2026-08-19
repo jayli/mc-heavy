@@ -1,6 +1,6 @@
 # mc-heavy 第一阶段实施设计文档：游戏引擎原型
 
-> 版本：v1.6 ｜ 日期：2026-08-19 ｜ 状态：定稿（经六轮逐条核验修订）
+> 版本：v1.7 ｜ 日期：2026-08-19 ｜ 状态：定稿（经七轮逐条核验修订）
 >
 > 目标：在 mc-heavy 仓库从零重建一个功能对标 mc-lite、性能提升一个数量级的体素游戏引擎。
 > 第一阶段只做"引擎底座"：渲染、体素数据、即时地图生成、玩家交互、种子地图、存档原型。
@@ -50,6 +50,17 @@
 > 多通道」误导（BatchedMesh 无 groups，传材质数组零 render item）。候选 A draw 数纠正为
 > 固定 ~867（`_projectObject` 不看 group.count，v1.5 的 300~500 低估）。M0 新增两项
 > BatchedMesh 120fps 风险点实测（逐 instance 剔除/排序 CPU 循环、setGeometryAt 端到端耗时）。
+
+> v1.7 修订说明：两处依据实测的勘误。① atlas 贴图尺寸口径修正（§4.4.1）：mc-lite 的
+> 122 张纹理实际分布为 113 张 16×16 + 2 张 32×32 + 7 张 250~362px 特殊几何/实体贴图
+> （handrail/pillar/turret/zombie_nest 等，PIL 实测，不存在 64×64），大图打包时按
+> 128×128 入图（2048² atlas 余量充足，缩到 64×64 会破坏 M2 结构轮廓/配色验收）；
+> ② 无头 WebGPU 环境实测
+> （§8）：本机（macOS ARM，Chromium 151，playwright 1.62.1）实测矩阵——完整 Chromium
+> 新无头模式（`channel:'chromium'`）**零 flag 即走 Metal 拿到 adapter**，而 Playwright
+> 默认的 headless shell 零 flag 拿不到 adapter；SwiftShader 组合（`--enable-unsafe-webgpu`
+> + `--use-angle=swiftshader`）为 Linux CI 兜底；`--enable-features=Vulkan` 在 macOS 上
+> 无作用，已从测试配置删除。
 
 ---
 
@@ -404,7 +415,8 @@ validation error；uint32 stride=4 合法，且 13bit 实际用量余余充足�
 ### 4.4 渲染管线（src/render/）
 
 **4.4.1 纹理图集**
-- 启动时把 mc-lite 现有散纹理（src/assets/textures/*.png，122 张 16×16/64×64）
+- 启动时把 mc-lite 现有散纹理（src/assets/textures/*.png，122 张：113 张 16×16 +
+  2 张 32×32 + 7 张 250~362px 特殊几何/实体贴图按 128×128 入图）
   打包进一张 2048×2048 atlas（离线脚本生成 atlas.json：tile 名 → UV 矩形；运行时也保留 Canvas 合成 fallback）。
 - **atlas 渗色防护**：2048 atlas + mipmap 会跨 tile 渗色。tile 之间留 2px gutter，
   UV 内缩半 texel；默认 blur=0 时用 NearestFilter + 关闭 mipmap（mc-lite 默认即像素风），
@@ -821,9 +833,11 @@ AOBridge / AOWorker / 八个 Worker 文件——它们的职责被 §4 的四个
 
 - **自动跑图**：Playwright 脚本驱动玩家沿固定路线奔跑（含跨 region、进城市、贴墙转向），
   采集帧时分布（p50/p95/p99）、GEN/MESH 队列、上传耗时，输出对比报告。
-  注意：headless Chromium 跑 WebGPU 需要 SwiftShader flag（`--enable-unsafe-webgpu`），
-  且 CI 上帧率采样不稳定——**CI 自动跑图只作为门禁参考（趋势监控），
-  本机设备矩阵才是硬验收**。
+  注意：本机（macOS ARM，Chromium 151）实测 Playwright 默认的 headless shell 零 flag
+  **拿不到 adapter**，必须用完整 Chromium 新无头模式（`channel: 'chromium'`）才能零 flag
+  走 Metal（本地跑图用真 GPU）；Linux CI 无 Metal，用 SwiftShader 组合（`--enable-unsafe-webgpu`
+  + `--use-angle=swiftshader`）。CI 上帧率采样不稳定——**CI 自动跑图只作为门禁参考
+  （趋势监控），本机设备矩阵才是硬验收**。
 - **基线场景**：① 平原冲刺（视距 8）② 城市中心环视（最坏 draw call）③ 连续放/挖 200 块
   ④ 模拟 TNT 批量删除 500 块（M3 用 REMESH 路径验证）。
 - **设备矩阵**：本机高刷屏（120Hz 目标 ≥90fps）+ 中端设备 profile（60fps 目标）。
