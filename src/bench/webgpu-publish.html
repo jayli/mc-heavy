@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>webgpu publish bench</title>
+  <link rel="icon" href="data:,">
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.webgpu.js",
+      "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.tsl.js",
+      "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.webgpu.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.185.1/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+
+function makeSectionGeometry(seed) {
+  // 一个"section"的语义替身：100 个三角形（flat 属性，与 §4.3 顶点格式同构）。
+  // 只验证 draw 命令语义与 per-instance CPU 循环量级，不验证几何吞吐；
+  // 几何吞吐/快路径由下方 benchSetGeometryAt 的 1000 面真实量级用例验证。
+  const tri = 100, v = tri * 3;
+  const pos = new Float32Array(v * 3);
+  const uv = new Float32Array(v * 2);
+  const packed = new Uint32Array(v);
+  for (let i = 0; i < v; i++) {
+    pos[i * 3] = ((i * 7 + seed) % 16);
+    pos[i * 3 + 1] = ((i * 13 + seed) % 16);
+    pos[i * 3 + 2] = ((i * 5 + seed) % 16);
+    packed[i] = 0xFF;
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  g.setAttribute('packed', new THREE.BufferAttribute(packed, 1));
+  return g;
+}
+
+async function benchCase(name, buildScene) {
+  const renderer = new THREE.WebGPURenderer({ antialias: false });
+  renderer.setSize(640, 480);
+  // 隔离场景 draw：关闭 tonemapping + 色彩空间转换的 RTT 输出 pass。
+  // r185.1 WebGPU 后端每帧固定 +1 全屏三角形 draw（_quadMesh.render，源码 38317-38418），
+  // 与发布路径语义无关；不隔离会让 drawCalls 全体系统性 +1（实测 4/25/2313/2313）。
+  // NoToneMapping 需与 LinearSRGBColorSpace 同时设才能消除该 pass（见 m0-bench-report.md）。
+  renderer.toneMapping = THREE.NoToneMapping;
+  renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
+  document.body.appendChild(renderer.domElement);
+  await renderer.init();
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(70, 640 / 480, 0.1, 2000);
+  // 相机俯视网格中心（x/z ∈ [0,94] → 中心 (47,47)），裕量远大于斜视布置：
+  // 远端角实例球心偏离视轴仅 ~19°，距 35° 半视锥有充足余量，杜绝边界剔除的 flaky。
+  camera.position.set(47, 180, 47);
+  camera.up.set(0, 0, -1); // 垂直俯视时默认 up=(0,1,0) 与视线平行会退化，必须改
+  camera.lookAt(47, 0, 47);
+  buildScene(scene);
+
+  // 预热 10 帧
+  for (let i = 0; i < 10; i++) renderer.render(scene, camera);
+  renderer.info.autoReset = false;
+
+  let cpuTotal = 0;
+  let calls = 0;
+  const frames = 100;
+  for (let i = 0; i < frames; i++) {
+    renderer.info.reset(); // drawCalls 每帧清零（calls 是累计值且 reset 不清，勿用）
+    const t0 = performance.now();
+    renderer.render(scene, camera);
+    cpuTotal += performance.now() - t0;
+    calls = renderer.info.render.drawCalls; // 每帧 GPU draw 数（后端逐 drawIndexed 累加）
+  }
+  renderer.info.autoReset = true;
+  renderer.dispose();
+  renderer.domElement.remove();
+  return { name, drawCalls: calls, cpuMs: cpuTotal / frames };
+}
+
+// 设计文档 §7 M0 ③：setGeometryAt 单块编辑快路径（flat 属性 array.set 拷贝路径）
+async function benchSetGeometryAt() {
+  const renderer = new THREE.WebGPURenderer({ antialias: false });
+  renderer.setSize(640, 480);
+  document.body.appendChild(renderer.domElement);
+  await renderer.init();
+
+  // 真实量级 section 替身：约 1000 面 = 4000 顶点（flat 三属性，与 §4.3 顶点格式一致）
+  const faces = 1000, v = faces * 4;
+  const pos = new Float32Array(v * 3);
+  const uv = new Float32Array(v * 2);
+  const packed = new Uint32Array(v);
+  for (let i = 0; i < v; i++) {
+    pos[i * 3] = ((i * 7 + 1) % 16);
+    pos[i * 3 + 1] = ((i * 13 + 2) % 16);
+    pos[i * 3 + 2] = ((i * 5 + 3) % 16);
+    packed[i] = 0xFFFF;
+  }
+  const idx = new Uint32Array(faces * 6);
+  for (let f = 0; f < faces; f++) {
+    const b = f * 4, o = f * 6;
+    idx[o] = b; idx[o + 1] = b + 1; idx[o + 2] = b + 2;
+    idx[o + 3] = b; idx[o + 4] = b + 2; idx[o + 5] = b + 3;
+  }
+  const make = () => {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+    g.setAttribute('packed', new THREE.BufferAttribute(packed, 1));
+    g.setIndex(new THREE.BufferAttribute(idx, 1));
+    return g;
+  };
+
+  const scene = new THREE.Scene();
+  const bm = new THREE.BatchedMesh(1, v * 2, idx.length * 2, new THREE.MeshBasicMaterial());
+  const reservedVertices = Math.ceil(v * 1.25);
+  const reservedIndices = Math.ceil(idx.length * 1.25);
+  const gid = bm.addGeometry(make(), reservedVertices, reservedIndices);
+  const iid = bm.addInstance(gid);
+  bm.setMatrixAt(iid, new THREE.Matrix4().makeTranslation(0, 0, 0));
+  scene.add(bm);
+
+  const camera = new THREE.PerspectiveCamera(70, 640 / 480, 0.1, 100);
+  camera.position.set(8, 24, 8);
+  camera.lookAt(8, 8, 8);
+
+  // 预热 + 首次上传
+  for (let i = 0; i < 10; i++) renderer.render(scene, camera);
+
+  // 预构造两份几何，交替 setGeometryAt；计时只含 slot 拷贝路径，不含 BufferAttribute 分配
+  const gA = make(), gB = make();
+  const N = 200;
+  const t0 = performance.now();
+  for (let i = 0; i < N; i++) bm.setGeometryAt(gid, i % 2 ? gA : gB);
+  const replaceAvgMs = (performance.now() - t0) / N;
+
+  renderer.dispose();
+  renderer.domElement.remove();
+  return { name: 'setGeometryAt', replaceAvgMs };
+}
+
+async function run() {
+  const mat = new THREE.MeshBasicMaterial({ color: 0x88ccff });
+  const mats = [mat, mat.clone(), mat.clone()];
+
+  const threeGroup = await benchCase('3-group', (scene) => {
+    const g = makeSectionGeometry(1);
+    const n = g.attributes.position.count;
+    const third = Math.floor(n / 3 / 3) * 3; // 每 group 整数个三角形
+    g.clearGroups();
+    g.addGroup(0, third, 0);
+    g.addGroup(third, third, 1);
+    g.addGroup(third * 2, n - third * 2, 2);
+    scene.add(new THREE.Mesh(g, mats));
+  });
+
+  const twentyFourGroup = await benchCase('24-group', (scene) => {
+    const g = makeSectionGeometry(2);
+    const n = g.attributes.position.count;
+    const unit = Math.floor(n / 24 / 3) * 3;
+    g.clearGroups();
+    for (let i = 0; i < 24; i++) {
+      g.addGroup(i * unit, i === 23 ? n - 23 * unit : unit, i % 3);
+    }
+    scene.add(new THREE.Mesh(g, mats));
+  });
+
+  const N = 2312; // 视距 8 = 289 column × 8 section（设计文档 §4.4.2）
+  // 共享 1 个 geometry + N 个 instance（正确用法：addGeometry 一次，addInstance N 次）；
+  // 实例排成 48×48 网格、间距 2 格（x/z ∈ [0,94]），相机在网格中心正上方俯视，全部可见。
+  function buildBatched(scene, { culled }) {
+    const bm = new THREE.BatchedMesh(N, N * 300, N * 600, mat);
+    bm.perObjectFrustumCulled = culled;
+    bm.sortObjects = culled;
+    const gid = bm.addGeometry(makeSectionGeometry(3));
+    const m4 = new THREE.Matrix4();
+    for (let i = 0; i < N; i++) {
+      const iid = bm.addInstance(gid);
+      m4.makeTranslation((i % 48) * 2, 0, Math.floor(i / 48) * 2);
+      bm.setMatrixAt(iid, m4);
+    }
+    scene.add(bm);
+  }
+
+  // raw：关剔除/排序，验证逐 instance draw 命令数
+  const batchedRaw = await benchCase('batched-raw', (scene) => buildBatched(scene, { culled: false }));
+  // culled：开剔除+排序，测 per-instance CPU 循环成本（全部 instance 应可见）
+  const batchedCulled = await benchCase('batched-culled', (scene) => buildBatched(scene, { culled: true }));
+
+  // 设计文档 §7 M0 ③：setGeometryAt 快路径
+  const setGeometryAt = await benchSetGeometryAt();
+
+  window.__BENCH__ = { threeGroup, twentyFourGroup, batchedRaw, batchedCulled, setGeometryAt };
+}
+
+run().catch((e) => { window.__BENCH__ = { error: String(e) }; });
+</script>
+</body>
+</html>
