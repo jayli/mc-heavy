@@ -68,10 +68,10 @@ function aoOffsetsFor(face, v) {
  * @param {{data: Uint16Array, light: Uint8Array, missing: boolean}} view
  * @param {*} registry
  * @param {Object} atlasMeta - tiles: { tileName: {u0,v0,u1,v1} }
- * @param {number} cx @param {number} sy @param {number} cz
+ * @param {number} _cx @param {number} _sy @param {number} _cz section 世界坐标（M1 未用，保留接口对称）
  * @returns {{opaque: SectionGeomData, cutout: SectionGeomData, transparent: SectionGeomData}}
  */
-export function buildSectionMesh(view, registry, atlasMeta, cx, sy, cz) {
+export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
   const { data, light } = view;
   const cullTable = registry.cullTable;
   const opaqueTable = registry.opaqueTable;

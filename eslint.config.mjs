@@ -199,10 +199,9 @@ export default [
     },
   },
   {
-    // 方块数据：防御性豁免（若转换产物采用对象键形式
-    // { cobblestone_step_updown: {...} } 会触发 camelcase warning；
-    // def 数组 + 字符串值形式则不会命中——ESLint camelcase 不检查字符串值，保留豁免无害）
-    files: ['src/voxel/blocks-data.js'],
+    // 方块数据 / 面映射：方块名作为对象键（stone_diorite、glass_block 等），
+    // camelcase 规则会命中对象键，需豁免（与 mc-lite 方块命名保持一致）
+    files: ['src/voxel/blocks-data.js', 'src/voxel/faces-data.js', 'src/tests/test-mesher.js'],
     rules: {
       'camelcase': 'off',
     },
