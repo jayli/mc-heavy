@@ -1,5 +1,7 @@
 // src/main.js — 启动入口：WebGPU gate → 空白场景渲染循环
 import * as THREE from 'three';
+import { PerfMonitor } from './core/perf.js';
+import { PerfHUD } from './core/perf-hud.js';
 
 window.__MC_BOOT__ = { webgpu: false, rendererReady: false, error: null };
 
@@ -32,7 +34,12 @@ async function boot() {
     renderer.setSize(window.innerWidth, window.innerHeight);
   });
 
-  renderer.setAnimationLoop(() => {
+  const perf = new PerfMonitor();
+  const hud = new PerfHUD(perf, document.getElementById('hud-root'));
+
+  renderer.setAnimationLoop((nowMs) => {
+    perf.tick(nowMs);
+    hud.update(nowMs);
     renderer.render(scene, camera);
   });
 }

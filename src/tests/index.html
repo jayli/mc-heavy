@@ -11,6 +11,7 @@
     import { runAndExpose } from './runner.js';
     // 测试文件在此逐个 import（后续任务追加）
     import './test-smoke.js';
+    import './test-perf.js';
 
     runAndExpose().then((r) => {
       document.getElementById('report').textContent =
