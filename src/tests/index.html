@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>mc-heavy 测试</title>
+  <link rel="icon" href="data:,">
+</head>
+<body>
+  <pre id="report"></pre>
+  <script type="module">
+    import { runAndExpose } from './runner.js';
+    // 测试文件在此逐个 import（后续任务追加）
+    import './test-smoke.js';
+
+    runAndExpose().then((r) => {
+      document.getElementById('report').textContent =
+        `passed=${r.passed} failed=${r.failed} total=${r.total} passRate=${r.passRate}%`;
+    });
+  </script>
+</body>
+</html>
