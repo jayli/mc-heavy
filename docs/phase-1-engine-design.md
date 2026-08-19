@@ -776,7 +776,7 @@ AOBridge / AOWorker / 八个 Worker 文件——它们的职责被 §4 的四个
 | DR-4 | 体素 DDA 射线 | 优化 Raycaster（BVH 等） | 体素世界射线有解析解，O(距离)；任何 mesh 求交方案都是数量级劣势 |
 | DR-5 | 单 Worker 池多任务类型 | 每类专属 Worker（mc-lite 8 个） | 池化消除"AO Worker 空闲而生成排队"的负载不均；任务同构代码复用 |
 | DR-6 | edits 稀疏层 + terrain 可再生 | 存全量 chunk 数据 | 存档 KB 级；加载无恢复阶段；天然支持"重生 chunk 不丢修改" |
-| DR-7 | 无构建步骤 + CDN import map | Vite 构建 | 延续 mc-lite 开发体验；本项目规模下无实质收益 |
+| DR-7 | 无构建步骤 + 本地 vendor import map | Vite 构建 / CDN import map | 延续 mc-lite 开发体验；three.js r185.1 本地化（vendor/three/）避免 CDN 网络依赖，离线可用 |
 | DR-8 | 世界高度 128（-32..96） | -16..112 / 64 / 256 | 兼容 mc-lite 坐标（结构零改造移植）；128 对齐 8 个 section 整除；内存 128KB/column 可控；下界 -32 给地形填充（最低 h-12，h 下界约 -16 → 最低块 -28）留足余量，避免截断 |
 | DR-9 | 纯 JavaScript + JSDoc，不用 TypeScript | TS + 构建工具链 | 与 mc-lite 技术栈一致，零迁移成本；无编译环节，Worker/主线程同构代码直接共享；类型表达靠 JSDoc + ESLint 足够 |
 | DR-10 | WebGPU 唯一后端（three r185.1），不做 WebGL2 降级 | WebGPU 优先 + WebGL2 兜底 | 目标用户全在现代浏览器，fallback 收益趋近于零；mc-lite 已验证 WebGPU 主路径；砍掉双后端的正确性/性能双重验证负担；架构不被锁死，未来可后补 |
