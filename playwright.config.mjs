@@ -3,6 +3,10 @@ import { defineConfig } from 'playwright/test';
 export default defineConfig({
   testDir: './tests',
   timeout: 60_000,
+  // 串行执行：worker-gen 的 GEN p95<8ms 是计时型冻结断言，
+  // 并行 spec 会争抢 CPU 导致 flaky（实测隔离 4ms / 并行偶发 >8ms）。
+  // suite 很小（6 spec ~4s），串行化消除整类计时抖动。
+  workers: 1,
   use: {
     baseURL: 'http://localhost:8081',
     browserName: 'chromium',

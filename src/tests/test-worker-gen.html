@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><title>worker-gen fixture</title><link rel="icon" href="data:,"></head>
+<body>
+<script type="module">
+  import { WorkerPool } from '../core/worker-pool.js';
+  import { WorldData } from '../voxel/world-data.js';
+  import { Scheduler } from '../core/scheduler.js';
+  import { createRegistry } from '../voxel/block-registry.js';
+  import { BLOCKS } from '../voxel/blocks-data.js';
+  import { WORLD_MIN_Y, blockIndex } from '../voxel/constants.js';
+  import { generateHeight } from '../gen/terrain.js';
+
+  async function run() {
+    const results = { passed: 0, failed: 0, errors: [], genMs: [] };
+    const check = (name, cond) => {
+      if (cond) results.passed++;
+      else { results.failed++; results.errors.push(name); }
+    };
+    const reg = createRegistry();
+    for (const def of BLOCKS) reg.register(def.name, def);
+    reg.freeze();
+
+    // 1. 直接 RPC：gen 返回 Transferable buffer 且内容正确
+    const pool = new WorkerPool({ workerUrl: '/src/workers/world-worker.js', size: 2 });
+    await pool.ready;
+    const t0 = performance.now();
+    const r = await pool.call('gen', { cx: 0, cz: 0, seed: 12345, edits: [] }, { transfer: [] }).promise;
+    results.genMs.push(performance.now() - t0);
+    check('gen returns buffers', r.blocks instanceof ArrayBuffer && r.blocks.byteLength === 32768 * 2);
+    const blocks = new Uint16Array(r.blocks);
+    const h = generateHeight(8, 8, 12345);
+    const idx = blockIndex(8, h, 8);
+    check('surface block non-air', blocks[idx] !== 0);
+    check('bedrock at bottom', blocks[blockIndex(8, WORLD_MIN_Y, 8)] === reg.idOf('bedrock'));
+    check('skylight packed', new Uint8Array(r.light)[blockIndex(8, 90, 8)] >> 4 === 15);
+
+    // 2. edits 重放：gen 携带 edits 时覆盖生成结果
+    const editIdx = blockIndex(5, 60, 5);
+    const r2 = await pool.call('gen', { cx: 0, cz: 0, seed: 12345, edits: [{ index: editIdx, id: 3, meta: 0 }] }).promise;
+    check('edits applied in worker', new Uint16Array(r2.blocks)[editIdx] === 3);
+
+    // 3. GEN 预算：16 个 column 并行，单 column Worker 时间 p95 < 8ms（用主线程往返近似）
+    const times = [];
+    for (let i = 0; i < 4; i++) {
+      const batch = [];
+      for (let j = 0; j < 4; j++) {
+        const s = performance.now();
+        batch.push(pool.call('gen', { cx: i + 1, cz: j + 1, seed: 12345, edits: [] }).promise.then(() => {
+          times.push(performance.now() - s);
+        }));
+      }
+      await Promise.all(batch);
+    }
+    times.sort((a, b) => a - b);
+    results.genP95 = times[Math.floor(times.length * 0.95)];
+    check('gen p95 < 8ms', results.genP95 < 8);
+
+    // 4. Scheduler 集成：update 后出生点 column 就绪
+    const world = new WorldData(reg);
+    const sched = new Scheduler({ world, pool, registry: reg, seed: 12345, viewDistance: 2 });
+    let readyCount = 0;
+    sched.onColumnReady(() => { readyCount++; });
+    sched.update(8, 8);
+    await new Promise((r) => setTimeout(r, 1500));
+    check('scheduler generated columns', world.hasColumn(0, 0));
+    check('column ready callback fired', readyCount > 0);
+    const col = world.getColumn(0, 0);
+    check('column state ready', col && col.state === 'ready');
+
+    // 5. 滞回卸载：走到远处后出生点 column 被卸载
+    for (let i = 0; i < 10; i++) { sched.update(8 + 200, 8); await new Promise((r) => setTimeout(r, 50)); }
+    check('hysteresis unload', !world.hasColumn(0, 0));
+
+    pool.dispose();
+    window.__WORKER_GEN_RESULTS__ = results;
+  }
+  run().catch((e) => { window.__WORKER_GEN_RESULTS__ = { passed: 0, failed: 1, errors: [String(e)] }; });
+</script>
+</body>
+</html>
