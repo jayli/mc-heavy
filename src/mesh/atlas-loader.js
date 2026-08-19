@@ -6,8 +6,9 @@ import * as THREE from 'three';
  */
 export async function loadAtlas() {
   const [meta, texture] = await Promise.all([
-    fetch('./assets/atlas.json').then((r) => r.json()),
-    new THREE.TextureLoader().loadAsync('./assets/atlas.png'),
+    // 绝对路径：fixture 页在 /src/tests/ 下，相对路径会解析成 /src/tests/assets/* → 404
+    fetch('/assets/atlas.json').then((r) => r.json()),
+    new THREE.TextureLoader().loadAsync('/assets/atlas.png'),
   ]);
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.magFilter = THREE.NearestFilter;

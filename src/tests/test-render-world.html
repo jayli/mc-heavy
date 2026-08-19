@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"><title>render-world fixture</title><link rel="icon" href="data:,">
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "/vendor/three/three.webgpu.js",
+      "three/tsl": "/vendor/three/three.tsl.js",
+      "three/webgpu": "/vendor/three/three.webgpu.js",
+      "three/addons/": "/vendor/three/addons/"
+    }
+  }
+  </script>
+</head>
+<body>
+<script type="module">
+  import * as THREE from 'three';
+  import { RenderWorld } from '../render/render-world.js';
+  import { createVoxelMaterials } from '../render/materials.js';
+  import { buildSectionMesh } from '../mesh/mesher.js';
+  import { WorldData } from '../voxel/world-data.js';
+  import { ChunkColumn } from '../voxel/chunk-column.js';
+  import { createRegistry } from '../voxel/block-registry.js';
+  import { BLOCKS } from '../voxel/blocks-data.js';
+  import { WORLD_MIN_Y, blockIndex } from '../voxel/constants.js';
+  import { loadAtlas } from '../mesh/atlas-loader.js';
+
+  async function run() {
+    const results = { passed: 0, failed: 0, errors: [] };
+    const check = (name, cond) => {
+      if (cond) results.passed++;
+      else { results.failed++; results.errors.push(name); }
+    };
+
+    const reg = createRegistry();
+    for (const def of BLOCKS) reg.register(def.name, def);
+    reg.freeze();
+
+    const renderer = new THREE.WebGPURenderer({ antialias: false });
+    renderer.setSize(640, 480);
+    document.body.appendChild(renderer.domElement);
+    await renderer.init();
+
+    const { texture } = await loadAtlas();
+    const scene = new THREE.Scene();
+    const rw = new RenderWorld({ scene, atlasTexture: texture, viewDistance: 2 });
+    check('three batched meshes in scene', scene.children.filter(c => c.isBatchedMesh).length === 3);
+
+    // 构造一个有方块的 column，mesh 一个 section 并上传
+    const world = new WorldData(reg);
+    const col = new ChunkColumn(0, 0);
+    const stoneId = reg.idOf('stone');
+    for (let lx = 0; lx < 16; lx++) for (let lz = 0; lz < 16; lz++) {
+      col.blocks[blockIndex(lx, WORLD_MIN_Y + 16, lz)] = stoneId; // sy=1 层
+    }
+    world.add(col);
+    const view = world.getSectionView(0, 1, 0);
+    const atlasMeta = await (await fetch('/assets/atlas.json')).json();
+    const meshData = buildSectionMesh(view, reg, atlasMeta, 0, 1, 0);
+    rw.uploadSection(0, 1, 0, 'opaque', meshData.opaque, 1);
+    check('section uploaded', rw.stats().sections === 1);
+
+    // 渲染一帧，断言 draw 数 = 可见非空 section 数（opaque 1 个）
+    const camera = new THREE.PerspectiveCamera(70, 640 / 480, 0.1, 1000);
+    camera.position.set(8, WORLD_MIN_Y + 40, 40);
+    camera.lookAt(8, WORLD_MIN_Y + 16, 8);
+    renderer.toneMapping = THREE.NoToneMapping;
+    renderer.outputColorSpace = THREE.LinearSRGBColorSpace; // 隔离 RTT pass（M0 bench 结论）
+    for (let i = 0; i < 5; i++) renderer.render(scene, camera);
+    renderer.info.autoReset = false;
+    renderer.info.reset();
+    renderer.render(scene, camera);
+    const drawCalls = renderer.info.render.drawCalls;
+    renderer.info.autoReset = true;
+    check('draw calls = 1 section (no RTT pass)', drawCalls === 1);
+
+    // 重复上传同 section（setGeometryAt 路径）不增加 section 数
+    rw.uploadSection(0, 1, 0, 'opaque', meshData.opaque, 2);
+    check('re-upload same section', rw.stats().sections === 1);
+
+    // 删除 section
+    rw.removeSection(0, 1, 0);
+    check('section removed', rw.stats().sections === 0);
+
+    renderer.dispose();
+    renderer.domElement.remove();
+    window.__RENDER_WORLD_RESULTS__ = results;
+  }
+  run().catch((e) => { window.__RENDER_WORLD_RESULTS__ = { passed: 0, failed: 1, errors: [String(e)] }; });
+</script>
+</body>
+</html>

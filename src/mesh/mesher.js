@@ -30,6 +30,9 @@ const FACE_UVS = [[0,0],[1,0],[1,1],[0,1]];
 
 function viewIdx(dx, dy, dz) { return dx + dz * 18 + dy * 324; }
 
+// atlas 完全缺失时的兜底 UV（防 tile 查表落空 crash；正常路径总有 tiles['stone']）
+const DEFAULT_TILE = { u0: 0, v0: 0, u1: 0.01, v1: 0.01 };
+
 function getAO(side1, side2, corner) {
   // 经典四角 AO（mc-lite AOUtils.getAOValue 语义逐行一致）：
   // 只有当侧边存在时才考虑对角；两侧都遮挡 → 0（最暗）
@@ -109,7 +112,7 @@ export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
           if (neighborId === id && cullMode >= 2) continue; // water/glass 同类相邻
 
           const tileName = getFaceTile(blockName, face);
-          const tile = tiles[tileName] || tiles['stone'];
+          const tile = tiles[tileName] || tiles['stone'] || DEFAULT_TILE;
 
           const vertBase = ch.pos.length / 3;
           // 面亮度读"面朝向的邻居（空气）格"光照，不是方块自身格——
