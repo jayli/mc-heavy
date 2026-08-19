@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><title>worker-pool fixture</title><link rel="icon" href="data:,"></head>
+<body>
+<script type="module">
+  import { WorkerPool } from '../core/worker-pool.js';
+
+  const workerCode = `
+    import { installRpcHandler } from '${location.origin}/src/core/worker-pool.js';
+    installRpcHandler({
+      echo: (payload) => ({ got: payload }),
+      slow: async (payload) => { await new Promise(r => setTimeout(r, payload.ms)); return { done: true }; },
+      boom: () => { throw new Error('task-failed'); },
+      sumTransfer: (payload) => ({ sum: payload.arr.reduce((a, b) => a + b, 0), detached: payload.arr.length === 0 }),
+    });
+  `;
+  const blobUrl = URL.createObjectURL(new Blob([workerCode], { type: 'text/javascript' }));
+
+  async function run() {
+    const results = { passed: 0, failed: 0, errors: [] };
+    const check = (name, cond) => {
+      if (cond) results.passed++;
+      else { results.failed++; results.errors.push(name); }
+    };
+
+    const pool = new WorkerPool({ workerUrl: blobUrl, size: 2 });
+    await pool.ready;
+
+    // 1. 基本 RPC 往返
+    const r1 = await pool.call('echo', { v: 42 }).promise;
+    check('echo roundtrip', r1.got.v === 42);
+
+    // 2. 并发分发到两个 worker（两个 slow 应并行，总耗时 < 2×ms）
+    const t0 = performance.now();
+    await Promise.all([pool.call('slow', { ms: 100 }).promise, pool.call('slow', { ms: 100 }).promise]);
+    check('parallel dispatch', performance.now() - t0 < 190);
+
+    // 3. worker 抛错 → promise reject
+    let rejected = false;
+    try { await pool.call('boom', {}).promise; } catch (e) { rejected = /task-failed/.test(e.message); }
+    check('error propagation', rejected);
+
+    // 4. Transferable 零拷贝（transfer 后主线程 buffer 被 detach）
+    const buf = new Float32Array([1, 2, 3]).buffer;
+    const r4 = await pool.call('sumTransfer', { arr: new Float32Array(buf) }, { transfer: [buf] }).promise;
+    check('transfer result', r4.sum === 6);
+    check('buffer detached', buf.byteLength === 0);
+
+    // 5. cancel：取消在途任务后，其结果回传被丢弃（promise 永不 settle 也不报错）
+    const c = pool.call('slow', { ms: 50 });
+    pool.cancel(c.id);
+    let settled = false;
+    c.promise.then(() => { settled = true; }, () => { settled = true; });
+    await new Promise((r) => setTimeout(r, 120));
+    check('cancelled call dropped', settled === false);
+
+    // 6. cancel 后池子仍健康
+    const r6 = await pool.call('echo', { i: 1 }).promise;
+    check('pool healthy after cancel', r6.got.i === 1);
+
+    pool.dispose();
+    window.__WORKER_POOL_RESULTS__ = results;
+  }
+  run().catch((e) => { window.__WORKER_POOL_RESULTS__ = { passed: 0, failed: 1, errors: [String(e)] }; });
+</script>
+</body>
+</html>
