@@ -13,7 +13,7 @@ const CAPACITY = {
   transparent: { active: 100, avgVerts: 1000 },
 };
 
-function sectionKey(cx, sy, cz) { return `${cx},${sy},${cz}`; }
+function slotKey(cx, sy, cz, channel) { return `${cx},${sy},${cz},${channel}`; }
 
 export class RenderWorld {
   /**
@@ -28,7 +28,8 @@ export class RenderWorld {
     const maxInstances = Math.ceil((2 * viewDistance + 1) ** 2 * SECTIONS_PER_COLUMN * 1.2);
     /** @type {Object<string, THREE.BatchedMesh>} */
     this.meshes = {};
-    /** @type {Map<string, {channel: string, geometryId: number, instanceId: number, reservedV: number, reservedI: number}>} */
+    /** @type {Map<string, {channel: string, geometryId: number, instanceId: number, reservedV: number, reservedI: number}>}
+     *  key = `${cx},${sy},${cz},${channel}`（一个 section 可同时有 opaque/cutout/transparent 几何） */
     this.slotMap = new Map();
 
     for (const channel of CHANNELS) {
@@ -37,9 +38,28 @@ export class RenderWorld {
       const maxIdx = maxVerts * 1.5;
       const bm = new THREE.BatchedMesh(maxInstances, maxVerts, maxIdx, materials[channel]);
       bm.frustumCulled = false; // 整体不剔除，per-instance 剔除由 perObjectFrustumCulled 负责
+      this._initAttributeLayout(bm);
       scene.add(bm);
       this.meshes[channel] = bm;
     }
+  }
+
+  /**
+   * 强制初始化 BatchedMesh 合并几何的属性布局（position/uv/packed + index）。
+   * BatchedMesh 的属性缓冲在首次 addGeometry 时才由 _initializeGeometry 延迟创建，
+   * 而 TSL 材质在首次 render 时编译——若此时属性尚不存在，attribute('packed') 绑定
+   * 失败默认为 0 → 亮度=0 → 全黑。先 add 再 delete 一个 dummy 几何，确保属性布局
+   * 在首次 render/材质编译前就绪（dummy 删除后不渲染，缓冲按 maxVertexCount 全量分配，
+   * 与首次真实 addGeometry 的分配一致，无额外显存）。
+   */
+  _initAttributeLayout(bm) {
+    const dummy = new THREE.BufferGeometry();
+    dummy.setAttribute('position', new THREE.BufferAttribute(new Float32Array(3 * 3), 3));
+    dummy.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(3 * 2), 2));
+    dummy.setAttribute('packed', new THREE.BufferAttribute(new Uint32Array(3), 1));
+    dummy.setIndex(new THREE.BufferAttribute(new Uint16Array([0, 1, 2]), 1));
+    const id = bm.addGeometry(dummy);
+    bm.deleteGeometry(id);
   }
 
   /** 从 SectionGeomData 构造 three BufferGeometry（flat 属性，M0 bench 验证的快路径格式） */
@@ -57,15 +77,23 @@ export class RenderWorld {
    * 首次 → addGeometry+addInstance+setMatrixAt；已有 → setGeometryAt（溢出走重建路径）。
    */
   uploadSection(cx, sy, cz, channel, geomData, _version) {
-    if (geomData.vertexCount === 0) { this.removeSection(cx, sy, cz); return; }
-    const key = sectionKey(cx, sy, cz);
+    const key = slotKey(cx, sy, cz, channel);
+    if (geomData.vertexCount === 0) {
+      // 只删本通道的 slot（不影响同 section 其他通道）
+      const existing = this.slotMap.get(key);
+      if (existing) {
+        this.meshes[channel].deleteGeometry(existing.geometryId);
+        this.slotMap.delete(key);
+      }
+      return;
+    }
     const bm = this.meshes[channel];
     const geom = this._toGeometry(geomData);
     const reservedV = Math.ceil(geomData.vertexCount * 1.25);
     const reservedI = Math.ceil(geomData.indexCount * 1.25);
     const existing = this.slotMap.get(key);
 
-    if (existing && existing.channel === channel) {
+    if (existing) {
       // 增量替换：未溢出预留 → setGeometryAt 快路径；溢出 → 重建 slot
       if (geomData.vertexCount <= existing.reservedV && geomData.indexCount <= existing.reservedI) {
         bm.setGeometryAt(existing.geometryId, geom);
@@ -77,7 +105,6 @@ export class RenderWorld {
         this.slotMap.set(key, { channel, geometryId: gid, instanceId: iid, reservedV, reservedI });
       }
     } else {
-      if (existing) this.removeSection(cx, sy, cz); // 通道变更
       const gid = bm.addGeometry(geom, reservedV, reservedI);
       const iid = bm.addInstance(gid);
       this._setInstanceMatrix(bm, iid, cx, sy, cz);
@@ -92,11 +119,13 @@ export class RenderWorld {
   }
 
   removeSection(cx, sy, cz) {
-    const key = sectionKey(cx, sy, cz);
-    const slot = this.slotMap.get(key);
-    if (!slot) return;
-    this.meshes[slot.channel].deleteGeometry(slot.geometryId);
-    this.slotMap.delete(key);
+    for (const channel of CHANNELS) {
+      const key = slotKey(cx, sy, cz, channel);
+      const slot = this.slotMap.get(key);
+      if (!slot) continue;
+      this.meshes[channel].deleteGeometry(slot.geometryId);
+      this.slotMap.delete(key);
+    }
   }
 
   removeColumn(cx, cz) {

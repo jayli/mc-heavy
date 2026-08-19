@@ -1,7 +1,6 @@
-// src/main.js — 启动入口：WebGPU gate → 空白场景渲染循环
-import * as THREE from 'three';
-import { PerfMonitor } from './core/perf.js';
-import { PerfHUD } from './core/perf-hud.js';
+// src/main.js — 启动入口：WebGPU gate → Game
+import { Game } from './core/game.js';
+import { buildDefaultRegistry } from './voxel/block-registry.js';
 
 window.__MC_BOOT__ = { webgpu: false, rendererReady: false, error: null };
 
@@ -26,35 +25,18 @@ async function boot() {
   }
   window.__MC_BOOT__.webgpu = true;
 
-  const canvas = document.getElementById('app-canvas');
-  const renderer = new THREE.WebGPURenderer({ canvas, antialias: true });
-  renderer.setSize(window.innerWidth, window.innerHeight);
-  renderer.setPixelRatio(window.devicePixelRatio);
-  await renderer.init();
+  const registry = await buildDefaultRegistry();
+  const seed = 12345; // M1 固定 seed（M2 接存档/随机）
+  const params = new URLSearchParams(location.search);
+  const game = new Game({
+    canvas: document.getElementById('app-canvas'),
+    registry, seed,
+    viewDistance: params.get('vd') ? Number(params.get('vd')) : 8,
+    hudRoot: document.getElementById('hud-root'),
+  });
+  await game.start();
   window.__MC_BOOT__.rendererReady = true;
-
-  const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x87ceeb); // 天空蓝，验收"非黑屏"用
-
-  const camera = new THREE.PerspectiveCamera(
-    70, window.innerWidth / window.innerHeight, 0.1, 1000);
-  camera.position.set(0, 8, 16);
-  camera.lookAt(0, 0, 0);
-
-  window.addEventListener('resize', () => {
-    camera.aspect = window.innerWidth / window.innerHeight;
-    camera.updateProjectionMatrix();
-    renderer.setSize(window.innerWidth, window.innerHeight);
-  });
-
-  const perf = new PerfMonitor();
-  const hud = new PerfHUD(perf, document.getElementById('hud-root'));
-
-  renderer.setAnimationLoop((nowMs) => {
-    perf.tick(nowMs);
-    hud.update(nowMs);
-    renderer.render(scene, camera);
-  });
+  window.__MC_GAME__ = game; // 测试钩子
 }
 
 boot().catch((err) => {

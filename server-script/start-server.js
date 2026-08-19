@@ -41,7 +41,9 @@ const MIME_TYPES = {
 };
 
 const server = http.createServer((req, res) => {
-  const filePath = path.join(ROOT, req.url === '/' ? 'index.html' : req.url);
+  // 剥离 query string（/?vd=2 等测试参数），否则被当成文件路径 → 404
+  const urlPath = new URL(req.url, 'http://localhost').pathname;
+  const filePath = path.join(ROOT, urlPath === '/' ? 'index.html' : urlPath);
 
   // 防止目录遍历攻击
   if (!filePath.startsWith(ROOT)) {

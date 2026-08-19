@@ -14,7 +14,10 @@ export async function loadAtlas() {
   texture.magFilter = THREE.NearestFilter;
   texture.minFilter = THREE.NearestFilter; // 默认像素风，无 mipmap（§4.4.1）
   texture.generateMipmaps = false;
-  texture.flipY = false; // atlas.json 的 v 已按 PNG 行序预翻转
+  // flipY 保持默认 true：build-atlas.mjs 的 v 坐标按 PNG 行序预翻转
+  // （v0 = 1 - (shelfY+h)/SIZE），该约定假设 flipY=true（v=0 在图像底部）。
+  // 曾误设 flipY=false 导致所有 tile 采样到垂直镜像位置（黑色 gutter）——
+  // M0 atlas 测试只校验 image.width/u1>u0 未暴露，Task 7 真实渲染才发现。
 
   const rects = new Map();
   for (const [name, t] of Object.entries(meta.tiles)) {

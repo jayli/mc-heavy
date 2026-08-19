@@ -32,6 +32,7 @@ export default [
         sessionStorage: 'readonly',
         location: 'readonly',
         indexedDB: 'readonly',
+        URLSearchParams: 'readonly',
         fetch: 'readonly',
         WebSocket: 'readonly',
         Worker: 'readonly',
