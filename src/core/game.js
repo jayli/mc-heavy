@@ -11,6 +11,7 @@ import { setupFog } from '../render/materials.js';
 import { loadAtlas } from '../mesh/atlas-loader.js';
 import { findSpawnY } from '../gen/terrain.js';
 import { Player } from '../player/player.js';
+import { Persistence } from '../save/persistence.js';
 
 export class Game {
   /**
@@ -36,6 +37,7 @@ export class Game {
     this._hudRoot = hudRoot;
     this.player = null;
     this._lastFrameMs = -1;
+    this.persistence = null;
   }
 
   async start() {
@@ -53,10 +55,24 @@ export class Game {
     setupFog(this.scene, this.viewDistance);
     this.renderWorld = new RenderWorld({ scene: this.scene, atlasTexture: texture, viewDistance: this.viewDistance });
 
+    // 存档：打开 IndexedDB、恢复 seed、预热视距内 edits 缓存（GEN 前必命中，§4.8）
+    this.persistence = new Persistence();
+    await this.persistence.open();
+    const meta = await this.persistence.loadMeta();
+    if (meta && meta.seed !== undefined) this.seed = meta.seed;
+    else await this.persistence.saveMeta({ seed: this.seed, spawn: [8, 8], savedAt: Date.now() });
+    {
+      const R = this.viewDistance;
+      const keys = [];
+      for (let dx = -R; dx <= R; dx++) for (let dz = -R; dz <= R; dz++) keys.push(`${dx},${dz}`);
+      await this.persistence.preloadEdits(keys);
+    }
+
     this.scheduler = new Scheduler({
       world: this.world, pool: this.pool, registry: this.registry,
       seed: this.seed, viewDistance: this.viewDistance, perf: this.perf,
       renderWorld: this.renderWorld,
+      getEdits: (key) => this.persistence.getEditsSync(key),
     });
     this.scheduler._atlasMeta = atlasMeta; // 快速路径主线程 mesh 用（与 broadcast 同一份）
 
@@ -77,6 +93,11 @@ export class Game {
     this._hud = new PerfHUD(this.perf, this._hudRoot);
     window.addEventListener('resize', () => this._onResize());
     this._onResize();
+    // 存档 flush：页面隐藏/退出立即写盘（§4.8）
+    window.addEventListener('visibilitychange', () => {
+      if (document.hidden) this.persistence.flushNow(this.world);
+    });
+    window.addEventListener('beforeunload', () => this.persistence.flushNow(this.world));
 
     this.renderer.setAnimationLoop((nowMs) => {
       this.perf.tick(nowMs);
@@ -85,6 +106,7 @@ export class Game {
       this._lastFrameMs = nowMs;
       this.player.update(dt);
       this.scheduler.update(this.player.physics.pos.x, this.player.physics.pos.z);
+      this.persistence.scheduleFlush(this.world); // 5s 防抖写盘（有 edits 才真正写）
       this._hud.update(nowMs);
       this.renderer.render(this.scene, this.camera);
     });
