@@ -168,21 +168,21 @@ export class Scheduler {
   // ==================== LIGHT 段 ====================
 
   /**
-   * 悬挑检测：column 内存在"表面之上的 opaque 方块"才需要水平扩散重算
-   * （GEN 的垂直 skylight 对开阔地形已正确；悬挑/结构/玩家搭建才产生侧向阴影）。
-   * 地表高度 = 最高非 air 格的 y。O(32768) 扫描，GEN 就绪时一次。
+   * 阴影检测：column 内存在"空气格但垂直 skylight=0"（上方被遮挡）才需要水平扩散。
+   * GEN 的垂直 skylight 对开阔地形已正确（地表上方空气均 15）；悬挑/结构/洞穴/
+   * 玩家存档 edits 才产生"被遮的空气格"，这些格子只能靠水平扩散点亮。
+   * 判据 = 存在 blocks==0 且 (light>>4)==0 的格。O(32768) 扫描，GEN 就绪时一次。
+   * （旧实现在"最高非 air 块之上"找 opaque，那里必为 air → 永不触发，死代码，
+   *  导致进游戏即见悬挑/洞穴下方黑面、放一块才消失的实玩 bug。）
    */
   _enqueueLightIfOverhang(column) {
     const blocks = column.blocks;
-    let surfaceYi = -1; // yi = y - WORLD_MIN_Y 的 blockIndex 层索引
-    for (let i = blocks.length - 1; i >= 0; i--) {
-      if (blocks[i] !== 0) { surfaceYi = i >> 8; break; }
-    }
-    if (surfaceYi < 0) return;
-    const opaque = this.registry.opaqueTable;
-    for (let i = blocks.length - 1; i >= 0; i--) {
-      if ((i >> 8) <= surfaceYi) break; // 表面及以下无需检查
-      if (opaque[blocks[i]] === 1) { this.enqueueLight(column.cx, column.cz); return; }
+    const light = column.light;
+    for (let i = 0; i < blocks.length; i++) {
+      if (blocks[i] === 0 && (light[i] >> 4) === 0) {
+        this.enqueueLight(column.cx, column.cz);
+        return;
+      }
     }
   }
 
@@ -200,10 +200,22 @@ export class Scheduler {
     let dispatched = 0;
     for (const key of [...this._lightQueue]) {
       if (dispatched >= LIGHT_DISPATCH_PER_FRAME) break;
-      this._lightQueue.delete(key);
       const [cx, cz] = key.split(',').map(Number);
       const col = this.world.getColumn(cx, cz);
       if (!col || col.state !== 'ready' || this._inflightLight.has(key)) continue;
+      // halo 前置（与 MESH 同口径，§4.3）：半径内 4 正交邻居须 ready，否则保留
+      // 队列下帧重试——避免邻居未就绪时区域截断、边界阴影不收敛。
+      let neighborsReady = true;
+      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const ncx = cx + dx, ncz = cz + dz;
+        const dist = Math.max(Math.abs(ncx - this._playerCx), Math.abs(ncz - this._playerCz));
+        if (dist <= this.viewDistance) {
+          const ncol = this.world.getColumn(ncx, ncz);
+          if (!ncol || ncol.state !== 'ready') { neighborsReady = false; break; }
+        }
+      }
+      if (!neighborsReady) continue;
+      this._lightQueue.delete(key);
       const columns = [];
       for (const [dx, dz] of [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]]) {
         const ncol = this.world.getColumn(cx + dx, cz + dz);

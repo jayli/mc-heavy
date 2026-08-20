@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><title>light-init fixture</title><link rel="icon" href="data:,"></head>
+<body>
+<script type="module">
+  import { WorkerPool } from '../core/worker-pool.js';
+  import { WorldData } from '../voxel/world-data.js';
+  import { Scheduler } from '../core/scheduler.js';
+  import { createRegistry } from '../voxel/block-registry.js';
+  import { BLOCKS } from '../voxel/blocks-data.js';
+  import { blockIndex } from '../voxel/constants.js';
+
+  async function run() {
+    const results = { passed: 0, failed: 0, errors: [] };
+    const check = (name, cond) => {
+      if (cond) results.passed++;
+      else { results.failed++; results.errors.push(name); }
+    };
+    const reg = createRegistry();
+    for (const def of BLOCKS) reg.register(def.name, def);
+    reg.freeze();
+    const stoneId = reg.idOf('stone');
+
+    // 存档 edits：在 column (0,0) 造一个悬挑（y=50 处 x=4..12 铺石头，下方悬空）。
+    // 模拟"玩家之前搭过结构、存了档、重新进游戏"——GEN 时叠加 edits，
+    // 悬挑下方空气的垂直 skylight=0，必须靠初始化扩散收敛（无玩家操作）。
+    const edits = [];
+    for (let lx = 4; lx <= 12; lx++) for (let lz = 4; lz <= 12; lz++) {
+      edits.push({ index: blockIndex(lx, 50, lz), id: stoneId, meta: 0 });
+    }
+    const getEdits = (key) => (key === '0,0' ? edits : []);
+
+    const pool = new WorkerPool({ workerUrl: '/src/workers/world-worker.js', size: 2 });
+    await pool.ready;
+    const world = new WorldData(reg);
+    const sched = new Scheduler({ world, pool, registry: reg, seed: 12345, viewDistance: 2, getEdits });
+    sched.update(8, 8);
+    // 等 column 就绪 + 光照收敛（无任何玩家编辑）
+    let skyUnder = 0;
+    for (let i = 0; i < 80; i++) {
+      sched.update(8, 8);
+      await new Promise((r) => setTimeout(r, 100));
+      const col = world.getColumn(0, 0);
+      if (!col || col.state !== 'ready') continue;
+      skyUnder = col.light[blockIndex(8, 49, 8)] >> 4;
+      if (skyUnder > 0 && sched.stats().lightInflight === 0) break;
+    }
+    check('init: overhang from saved edits gets diffused (no player action)', skyUnder > 0);
+    check('init: open area still full bright', (world.getColumn(0, 0)?.light[blockIndex(2, 49, 2)] >> 4) === 15);
+
+    pool.dispose();
+    window.__LIGHT_INIT_RESULTS__ = results;
+  }
+  run().catch((e) => { window.__LIGHT_INIT_RESULTS__ = { passed: 0, failed: 1, errors: [String(e)] }; });
+</script>
+</body>
+</html>
