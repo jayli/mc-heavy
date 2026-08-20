@@ -173,3 +173,20 @@ test('setBlock: 挖块走真实路径后 skylight 增量恢复（黑面 bug 端�
   // 异步 light 任务收敛，故此处相邻列仍为旧值 0（不是 bug，是快路径口径）。
   assertEqual(sky(col, 9, 49, 8), 0, 'sideways spread deferred to async light task');
 });
+
+test('setBlock: 放块不立即压暗下方（防黑闪；暗化由区域扩散异步收敛）', () => {
+  const reg = makeRegistry();
+  const world = new WorldData(reg);
+  const col = new ChunkColumn(0, 0);
+  world.add(col);
+  recomputeLight(world, 0, 0, reg); // 开阔列：全 15
+  assertEqual(sky(col, 8, 59, 8), 15, 'open air full bright');
+  // 放一个悬空方块：同步路径【不得】把下方压成 0——
+  // 同步压暗只能到 0（纯垂直模型），当帧渲染就是黑闪（实玩 bug）。
+  world.setBlock(8, 60, 8, reg.idOf('stone'));
+  assertEqual(sky(col, 8, 59, 8), 15, 'no synchronous darkening below placed block');
+  assertEqual(sky(col, 8, 40, 8), 15, 'deep below also not darkened synchronously');
+  // 异步收敛口径（recomputeLight = worker 区域重算等价）：正确压暗到 14
+  recomputeLight(world, 0, 0, reg);
+  assertEqual(sky(col, 8, 59, 8), 14, 'async diffusion converges to correct shadow');
+});

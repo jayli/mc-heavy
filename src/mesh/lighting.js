@@ -31,6 +31,13 @@ export function computeSkylightColumn(column, registry) {
  * skylight 单列增量重算：只重算 (lx, lz) 这一根垂直列（O(128)）。
  * 编辑快路径用（守 2ms 预算）：垂直模型即时反馈，水平扩散由 scheduler 的
  * 异步 light 任务收敛（computeSkylightRegion）。
+ *
+ * 只升不降：垂直模型是真实（扩散后）光照的下界——列空则两者均 15，
+ * 列被遮挡则垂直=0 而扩散∈[0,14]。因此：
+ * - 挖块（移除遮挡）：垂直值 15 > 现值 → 立即提亮（黑面 bug 修复保留）；
+ * - 放块（新增遮挡）：垂直值 0 < 现值 → 不写入，保持原亮度。
+ *   同步压暗只能到 0（纯垂直模型），当帧渲染即黑闪（实玩 bug）；
+ *   真实暗化（如 15→14）交给异步区域扩散收敛，短暂偏亮 1 档不可见。
  */
 export function recomputeSkylightAt(column, lx, lz, registry) {
   const opaque = registry.opaqueTable;
@@ -38,7 +45,9 @@ export function recomputeSkylightAt(column, lx, lz, registry) {
   for (let y = WORLD_MAX_Y - 1; y >= WORLD_MIN_Y; y--) {
     const idx = blockIndex(lx, y, lz);
     if (opaque[column.blocks[idx]] === 1) sky = 0;
-    column.light[idx] = (column.light[idx] & 0x0F) | (sky << 4);
+    if (sky > (column.light[idx] >> 4)) {
+      column.light[idx] = (column.light[idx] & 0x0F) | (sky << 4);
+    }
   }
 }
 
