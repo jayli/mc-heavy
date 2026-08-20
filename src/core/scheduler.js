@@ -7,6 +7,7 @@ import { buildSectionMesh } from '../mesh/mesher.js';
 const CHANNELS = ['opaque', 'cutout', 'transparent'];
 const MESH_UPLOAD_BUDGET_MS = 3;   // 每帧 GPU 上传预算（§4.9）
 const MESH_DISPATCH_PER_FRAME = 64; // 每帧下发 mesh 任务上限（worker 侧计算，主线程仅 postMessage）
+const LIGHT_DISPATCH_PER_FRAME = 1; // 每帧下发 light 任务上限（区域重算 ~4ms/column，Worker 侧执行）
 
 function sectionKey(cx, sy, cz) { return `${cx},${sy},${cz}`; }
 
@@ -60,6 +61,11 @@ export class Scheduler {
     this._uploadQueue = [];
     /** 至少上传过一次的 section（邻居到达重 mesh 判定用） */
     this._meshedSections = new Set();
+    // ---- LIGHT 段状态（skylight 水平扩散异步收敛，§4.6）----
+    /** 待下发光照重算的 columnKey 集合（去重） */
+    this._lightQueue = new Set();
+    /** @type {Map<string, {callId: number}>} 在途 LIGHT 任务 */
+    this._inflightLight = new Map();
     this._playerCx = 0;
     this._playerCz = 0;
     /** atlas tile 元数据（Game 启动时赋值，与 broadcast 给 Worker 的同一份）——快速路径主线程 mesh 用 */
@@ -129,11 +135,15 @@ export class Scheduler {
       this._processUploadQueue();
     }
 
+    // 4. LIGHT 段：skylight 水平扩散异步收敛（编辑/邻居到达触发，Worker 执行）
+    this._processLightQueue();
+
     if (this.perf) {
       this.perf.mark('gen-inflight', this._inflightGen.size);
       if (this.renderWorld) {
         this.perf.mark('mesh-inflight', this._inflightMesh.size);
         this.perf.mark('upload-queue', this._uploadQueue.length);
+        this.perf.mark('light-inflight', this._inflightLight.size);
       }
     }
   }
@@ -151,7 +161,79 @@ export class Scheduler {
     column.state = 'ready';
     this.world.add(column);
     if (this.renderWorld) this._handleColumnReady(column);
+    this._enqueueLightIfOverhang(column);
     for (const cb of this._columnReadyCallbacks) cb(key, column);
+  }
+
+  // ==================== LIGHT 段 ====================
+
+  /**
+   * 悬挑检测：column 内存在"表面之上的 opaque 方块"才需要水平扩散重算
+   * （GEN 的垂直 skylight 对开阔地形已正确；悬挑/结构/玩家搭建才产生侧向阴影）。
+   * 地表高度 = 最高非 air 格的 y。O(32768) 扫描，GEN 就绪时一次。
+   */
+  _enqueueLightIfOverhang(column) {
+    const blocks = column.blocks;
+    let surfaceYi = -1; // yi = y - WORLD_MIN_Y 的 blockIndex 层索引
+    for (let i = blocks.length - 1; i >= 0; i--) {
+      if (blocks[i] !== 0) { surfaceYi = i >> 8; break; }
+    }
+    if (surfaceYi < 0) return;
+    const opaque = this.registry.opaqueTable;
+    for (let i = blocks.length - 1; i >= 0; i--) {
+      if ((i >> 8) <= surfaceYi) break; // 表面及以下无需检查
+      if (opaque[blocks[i]] === 1) { this.enqueueLight(column.cx, column.cz); return; }
+    }
+  }
+
+  /** 请求异步重算 (cx,cz) 的区域光照（去重；column 未就绪忽略） */
+  enqueueLight(cx, cz) {
+    const key = columnKey(cx, cz);
+    const col = this.world.getColumn(cx, cz);
+    if (!col || col.state !== 'ready') return;
+    if (this._inflightLight.has(key)) return; // 在途：结果回来后由脏标记再触发
+    this._lightQueue.add(key);
+  }
+
+  /** 每帧下发 ≤N 个 light 任务：中心 column + 4 正交邻居的 blocks 副本送 Worker */
+  _processLightQueue() {
+    let dispatched = 0;
+    for (const key of [...this._lightQueue]) {
+      if (dispatched >= LIGHT_DISPATCH_PER_FRAME) break;
+      this._lightQueue.delete(key);
+      const [cx, cz] = key.split(',').map(Number);
+      const col = this.world.getColumn(cx, cz);
+      if (!col || col.state !== 'ready' || this._inflightLight.has(key)) continue;
+      const columns = [];
+      for (const [dx, dz] of [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const ncol = this.world.getColumn(cx + dx, cz + dz);
+        if (!ncol || ncol.state !== 'ready') continue;
+        // 拷贝 blocks（不能 transfer 主线程活跃数据）
+        columns.push({ cx: ncol.cx, cz: ncol.cz, version: ncol.version, blocks: ncol.blocks.slice().buffer });
+      }
+      const { id: callId, promise } = this.pool.call('light', { cx, cz, columns }, {
+        transfer: columns.map((c) => c.blocks),
+      });
+      this._inflightLight.set(key, { callId });
+      promise.then((r) => this._onLightResult(key, r)).catch(() => {
+        this._inflightLight.delete(key); // 失败：下帧由脏标记/邻居到达重试
+      });
+      dispatched++;
+    }
+  }
+
+  /** LIGHT 结果：版本校验 → 写回 light 数组 + 全 section 置脏重 mesh。
+   *  版本不匹配（在途期间玩家编辑过）：丢弃并重新入队收敛，
+   *  否则旧 light 会覆盖 setBlock 快路径已重算的垂直单列新值。 */
+  _onLightResult(key, r) {
+    this._inflightLight.delete(key);
+    for (const res of r.results) {
+      const col = this.world.getColumn(res.cx, res.cz);
+      if (!col || col.state !== 'ready') continue; // 已卸载：丢弃
+      if (col.version !== res.version) { this.enqueueLight(res.cx, res.cz); continue; }
+      col.light.set(new Uint8Array(res.light));
+      for (let sy = 0; sy < SECTIONS_PER_COLUMN; sy++) col.markDirty(sy);
+    }
   }
 
   // ==================== MESH 段 ====================
@@ -240,6 +322,9 @@ export class Scheduler {
   _cleanupColumn(cx, cz, key) {
     const genInflight = this._inflightGen.get(key);
     if (genInflight) { this.pool.cancel(genInflight.callId); this._inflightGen.delete(key); }
+    this._lightQueue.delete(key);
+    const lightInflight = this._inflightLight.get(key);
+    if (lightInflight) { this.pool.cancel(lightInflight.callId); this._inflightLight.delete(key); }
     for (let sy = 0; sy < SECTIONS_PER_COLUMN; sy++) {
       const skey = sectionKey(cx, sy, cz);
       this._meshedSections.delete(skey);
@@ -281,6 +366,7 @@ export class Scheduler {
       meshInflight: this._inflightMesh.size,
       uploadQueue: this._uploadQueue.length,
       sections: this._meshedSections.size,
+      lightInflight: this._inflightLight.size,
     };
   }
 }

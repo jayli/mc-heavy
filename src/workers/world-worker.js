@@ -7,7 +7,7 @@ import { BLOCKS } from '../voxel/blocks-data.js';
 import { ChunkColumn } from '../voxel/chunk-column.js';
 import { WorldData } from '../voxel/world-data.js';
 import { fillColumn } from '../gen/terrain.js';
-import { computeSkylightColumn, computeBlocklightRegion } from '../mesh/lighting.js';
+import { computeSkylightColumn, computeSkylightRegion, computeBlocklightRegion } from '../mesh/lighting.js';
 import { buildSectionMesh } from '../mesh/mesher.js';
 
 // Worker 内自建 registry（与主线程数据同源，blocks-data.js 纯数据）
@@ -67,7 +67,29 @@ installRpcHandler({
       },
     };
   },
-  light() { throw new Error('light: not implemented (Task 6)'); },
+
+  /**
+   * LIGHT：区域光照重算（skylight 垂直+水平扩散 + blocklight flood fill，§4.6）。
+   * 主线程编辑/邻居到达后异步收敛用——区域重算 ~4ms，不在主线程跑（守帧预算）。
+   * @param {{cx:number, cz:number, columns: Array<{cx:number, cz:number, version:number, blocks:ArrayBuffer}>}} p
+   */
+  light(p) {
+    const world = new WorldData(registry);
+    const cols = [];
+    for (const c of p.columns) {
+      const col = new ChunkColumn(c.cx, c.cz);
+      col.blocks = new Uint16Array(c.blocks);
+      col.version = c.version;
+      world.add(col);
+      cols.push(col);
+    }
+    computeSkylightRegion(world, p.cx, p.cz, registry);
+    computeBlocklightRegion(world, p.cx, p.cz, registry);
+    return {
+      cx: p.cx, cz: p.cz,
+      results: cols.map((col) => ({ cx: col.cx, cz: col.cz, version: col.version, light: col.light.buffer })),
+    };
+  },
 
   /**
    * atlas-meta：主线程启动时 broadcast 一次（WorkerPool.broadcast 走 __rpc 通道，

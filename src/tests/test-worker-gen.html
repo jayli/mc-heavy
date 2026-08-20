@@ -72,6 +72,34 @@
     for (let i = 0; i < 10; i++) { sched.update(8 + 200, 8); await new Promise((r) => setTimeout(r, 50)); }
     check('hysteresis unload', !world.hasColumn(0, 0));
 
+    // 6. LIGHT 段集成：悬挑平台 → 异步区域重算 → 下方阴影渐变（非全黑）
+    const world2 = new WorldData(reg);
+    const sched2 = new Scheduler({ world: world2, pool, registry: reg, seed: 12345, viewDistance: 2 });
+    sched2.update(8, 8);
+    await new Promise((r) => setTimeout(r, 1500));
+    const c0 = world2.getColumn(0, 0);
+    check('light: column ready', c0 && c0.state === 'ready');
+    // 在 y=40 搭一个 9×9 悬挑平台（中心 column 内，不贴边）
+    const stoneId = reg.idOf('stone');
+    for (let lx = 4; lx <= 12; lx++) for (let lz = 4; lz <= 12; lz++) {
+      c0.blocks[blockIndex(lx, 40, lz)] = stoneId;
+    }
+    c0.version++;
+    sched2.enqueueLight(0, 0);
+    // 等异步 light 任务收敛（下发 + Worker 重算 + 回写）
+    let converged = false;
+    for (let i = 0; i < 40; i++) {
+      sched2.update(8, 8);
+      await new Promise((r) => setTimeout(r, 100));
+      const under = c0.light[blockIndex(8, 39, 8)] >> 4;
+      if (under > 0 && under < 15 && sched2.stats().lightInflight === 0) { converged = true; break; }
+    }
+    const underCenter = c0.light[blockIndex(8, 39, 8)] >> 4;
+    const underEdge = c0.light[blockIndex(4, 39, 4)] >> 4;
+    const openSky = c0.light[blockIndex(2, 39, 2)] >> 4;
+    check('light: overhang shadow converged (not black)', converged && underCenter > 0);
+    check('light: shadow gradient (edge brighter than center)', underEdge > underCenter);
+    check('light: open area still full bright', openSky === 15);
     pool.dispose();
     window.__WORKER_GEN_RESULTS__ = results;
   }

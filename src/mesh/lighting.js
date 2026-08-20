@@ -1,8 +1,12 @@
-// src/mesh/lighting.js — skylight top-down + blocklight flood fill（§4.6/DR-14）
-// skylight：纯垂直逐列传播，无水平依赖；封闭洞穴正确，侧开口洞穴偏暗（接受）。
+// src/mesh/lighting.js — skylight（垂直 + 水平扩散）+ blocklight flood fill（§4.6/DR-14）
+// skylight 模型（Minecraft 同款）：① 垂直落下不衰减（15 直到遇 opaque）；
+// ② 水平扩散 BFS，每格 -1，opaque 阻挡。光绕过悬挑边缘渗入阴影（渐变暗而非全黑）。
+// 纯垂直近似（v1）在实玩中不可接受：任何高处实心方块把正下方整列截断为 0 → 全黑面。
+// 区域重算（center + 4 正交邻居）走 Worker 异步收敛（scheduler light 任务），
+// 编辑快路径仍用垂直单列（recomputeSkylightAt，O(128)，守 2ms 编辑预算）。
 // blocklight：删除光源不做增量降光，全 column 区域重算兜底（§4.6 第一阶段口径）。
 // Worker 同构：本文件不得 import three。
-import { WORLD_MIN_Y, WORLD_MAX_Y, blockIndex } from '../voxel/constants.js';
+import { WORLD_MIN_Y, WORLD_MAX_Y, WORLD_HEIGHT, blockIndex } from '../voxel/constants.js';
 
 /**
  * skylight：从顶向下逐列传播，初始 15，遇 opaque 停止（该格及下方为 0）。
@@ -25,8 +29,8 @@ export function computeSkylightColumn(column, registry) {
 
 /**
  * skylight 单列增量重算：只重算 (lx, lz) 这一根垂直列（O(128)）。
- * 用于单块编辑后的增量更新——skylight 纯垂直传播，单块编辑只影响同 (lx,lz) 列，
- * 不影响其他列（与 computeSkylightColumn 的全列口径完全一致，只是范围收窄）。
+ * 编辑快路径用（守 2ms 预算）：垂直模型即时反馈，水平扩散由 scheduler 的
+ * 异步 light 任务收敛（computeSkylightRegion）。
  */
 export function recomputeSkylightAt(column, lx, lz, registry) {
   const opaque = registry.opaqueTable;
@@ -35,6 +39,62 @@ export function recomputeSkylightAt(column, lx, lz, registry) {
     const idx = blockIndex(lx, y, lz);
     if (opaque[column.blocks[idx]] === 1) sky = 0;
     column.light[idx] = (column.light[idx] & 0x0F) | (sky << 4);
+  }
+}
+
+/**
+ * skylight 区域重算（Minecraft 模型）：
+ * ① 垂直 pass：region 每列从顶向下传 15，遇 opaque 停（该格及其下 0）。
+ * ② 水平 BFS：所有 skylight>1 的格子向 6 邻居扩散 level-1，opaque 阻挡。
+ * region = 中心 column + 4 正交邻居（与 blocklight region 一致）；邻居缺失 → 截断。
+ * 只写高 4 位（保留 blocklight 低 4 位）。
+ *
+ * 边界截断自洽性：skylight=15 的格子水平最远影响 14 格（15-d≥1），2 个 column 以外
+ * 的亮格到中心 column 边缘已 ≥32 格，贡献为 0——5-column region 对中心列是充分的。
+ */
+export function computeSkylightRegion(world, cx, cz, registry) {
+  const offsets = [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]];
+  const cols = [];
+  for (const [dx, dz] of offsets) {
+    const col = world.getColumn(cx + dx, cz + dz);
+    if (col) cols.push(col);
+  }
+  if (cols.length === 0) return;
+  const opaque = registry.opaqueTable;
+  // ① 垂直 pass
+  for (const col of cols) computeSkylightColumn(col, registry);
+  // ② 水平 BFS
+  const queue = [];
+  for (const col of cols) {
+    const light = col.light;
+    for (let i = 0; i < light.length; i++) {
+      if ((light[i] >> 4) > 1) queue.push(col, i);
+    }
+  }
+  const trySpread = (ncol, nidx, next) => {
+    if (opaque[ncol.blocks[nidx]] === 1) return;
+    if ((ncol.light[nidx] >> 4) >= next) return;
+    ncol.light[nidx] = (ncol.light[nidx] & 0x0F) | (next << 4);
+    queue.push(ncol, nidx);
+  };
+  let head = 0;
+  while (head < queue.length) {
+    const col = queue[head++];
+    const i = queue[head++];
+    const level = col.light[i] >> 4;
+    if (level <= 1) continue;
+    const next = level - 1;
+    const lx = i & 15, lz = (i >> 4) & 15, yi = i >> 8; // yi = y - WORLD_MIN_Y
+    if (yi < WORLD_HEIGHT - 1) trySpread(col, i + 256, next);
+    if (yi > 0) trySpread(col, i - 256, next);
+    if (lx > 0) trySpread(col, i - 1, next);
+    else { const n = world.getColumn(col.cx - 1, col.cz); if (n) trySpread(n, i + 15, next); }
+    if (lx < 15) trySpread(col, i + 1, next);
+    else { const n = world.getColumn(col.cx + 1, col.cz); if (n) trySpread(n, i - 15, next); }
+    if (lz > 0) trySpread(col, i - 16, next);
+    else { const n = world.getColumn(col.cx, col.cz - 1); if (n) trySpread(n, i + 240, next); }
+    if (lz < 15) trySpread(col, i + 16, next);
+    else { const n = world.getColumn(col.cx, col.cz + 1); if (n) trySpread(n, i - 240, next); }
   }
 }
 
@@ -101,12 +161,13 @@ export function computeBlocklightRegion(world, cx, cz, registry) {
 
 /**
  * 全量重算（GEN 完成 / 光源增删时调用）。
+ * skylight 用区域模型（垂直 + 水平扩散），blocklight 用区域 flood fill。
  * @returns {string[]} 受影响的 columnKey 列表（供调度器置脏重 mesh）
  */
 export function recomputeLight(world, cx, cz, registry) {
   const col = world.getColumn(cx, cz);
   if (!col) return [];
-  computeSkylightColumn(col, registry);
+  computeSkylightRegion(world, cx, cz, registry);
   computeBlocklightRegion(world, cx, cz, registry);
   const keys = new Set([`${cx},${cz}`]);
   for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {

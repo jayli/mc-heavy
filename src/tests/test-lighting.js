@@ -1,6 +1,6 @@
 import { test } from './runner.js';
 import { assertEqual } from './assert.js';
-import { computeSkylightColumn, computeBlocklightRegion, recomputeLight } from '../mesh/lighting.js';
+import { computeSkylightColumn, computeSkylightRegion, computeBlocklightRegion, recomputeLight } from '../mesh/lighting.js';
 import { ChunkColumn } from '../voxel/chunk-column.js';
 import { WorldData } from '../voxel/world-data.js';
 import { WORLD_MIN_Y, blockIndex } from '../voxel/constants.js';
@@ -113,7 +113,46 @@ test('recomputeLight: 挖掉 opaque 后 skylight 恢复（挖块黑面 bug 回�
   assertEqual(sky(col, 8, 50, 8), 15, 'dug cell lit');
   assertEqual(sky(col, 8, 49, 8), 15, 'below dug cell lit');
   assertEqual(sky(col, 8, 30, 8), 15, 'deep below dug cell lit');
-  assertEqual(sky(col, 9, 49, 8), 0, 'unrelated column still dark');
+  // 水平扩散模型：挖洞后光向侧向扩散，相邻列下方被照亮（15-1=14）——
+  // Minecraft 正确行为（旧垂直模型此处为 0，断言随模型升级更新）。
+  assertEqual(sky(col, 9, 49, 8), 14, 'light spreads sideways below dug hole');
+});
+
+test('skylight region: 悬挑下方不全黑（水平扩散渗入）', () => {
+  const reg = makeRegistry();
+  const world = new WorldData(reg);
+  const col = new ChunkColumn(0, 0);
+  world.add(col);
+  // 悬挑：y=50 处 x=6..10, z=7..9 的石头平台（3×5 格）
+  for (let lx = 6; lx <= 10; lx++) for (let lz = 7; lz <= 9; lz++) {
+    col.blocks[blockIndex(lx, 50, lz)] = reg.idOf('stone');
+  }
+  computeSkylightRegion(world, 0, 0, reg);
+  // 悬挑正下方紧邻（y=49）：从侧面 15 扩散进来，应 >0（不是全黑）
+  // 边缘格（x=6, z=7）距露天最近 → 最亮；中心格（x=8, z=8）距露天最远 → 较暗但 >0
+  const edge = sky(col, 6, 49, 7);
+  const center = sky(col, 8, 49, 8);
+  assertEqual(edge > 0, true, `edge under overhang lit, got ${edge}`);
+  assertEqual(center > 0, true, `center under overhang lit, got ${center}`);
+  assertEqual(edge > center, true, `edge brighter than center (${edge} > ${center})`);
+  // 远离悬挑的露天格仍然 15
+  assertEqual(sky(col, 2, 49, 2), 15, 'open area still full bright');
+  // 悬挑上方（y=51）露天 15
+  assertEqual(sky(col, 8, 51, 8), 15, 'above overhang full bright');
+});
+
+test('skylight region: 封闭洞穴仍全黑（水平扩散不穿透 opaque）', () => {
+  const reg = makeRegistry();
+  const world = new WorldData(reg);
+  const col = new ChunkColumn(0, 0);
+  world.add(col);
+  // 封闭盒子：y=48..52 全填石头（16×16×5），内部 y=49..51 无光
+  for (let y = 48; y <= 52; y++) for (let lx = 0; lx < 16; lx++) for (let lz = 0; lz < 16; lz++) {
+    col.blocks[blockIndex(lx, y, lz)] = reg.idOf('stone');
+  }
+  computeSkylightRegion(world, 0, 0, reg);
+  assertEqual(sky(col, 8, 50, 8), 0, 'sealed cave is dark');
+  assertEqual(sky(col, 8, 49, 8), 0, 'sealed cave floor dark');
 });
 
 test('setBlock: 挖块走真实路径后 skylight 增量恢复（黑面 bug 端到端）', () => {
@@ -130,5 +169,7 @@ test('setBlock: 挖块走真实路径后 skylight 增量恢复（黑面 bug 端�
   world.setBlock(8, 50, 8, 0);
   assertEqual(sky(col, 8, 50, 8), 15, 'dug cell lit after setBlock');
   assertEqual(sky(col, 8, 49, 8), 15, 'below dug cell lit after setBlock');
-  assertEqual(sky(col, 9, 49, 8), 0, 'unrelated column unaffected');
+  // setBlock 快路径只做垂直单列（守 2ms 编辑预算）：侧向扩散由 scheduler 的
+  // 异步 light 任务收敛，故此处相邻列仍为旧值 0（不是 bug，是快路径口径）。
+  assertEqual(sky(col, 9, 49, 8), 0, 'sideways spread deferred to async light task');
 });
