@@ -83,6 +83,58 @@
     rw.removeSection(0, 1, 0);
     check('section removed', rw.stats().sections === 0);
 
+    // ── 缓冲区耗尽回归（真实游玩事故）：deleteGeometry 不回收缓冲空间，
+    //    delete+add 循环（section 重建/column 流转）累积空洞直至 addGeometry 抛
+    //    "Reserved space request exceeds the maximum buffer size"。
+    //    修复：addGeometry 前容量检查 → optimize() 回收空洞 → 仍不足则
+    //    setGeometrySize() 整批扩容 → 重试（设计文档 §4.4.2 兜底，M1 补实现）。
+    const tiny = new RenderWorld({
+      scene, atlasTexture: texture, viewDistance: 2,
+      capacity: { opaque: { active: 1, avgVerts: 64 } }, // 测试注入口：极小预算便于快速耗尽
+    });
+    // 单 quad（4 顶点 / 6 索引）
+    const quadData = {
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0]),
+      uvs: new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]),
+      packed: new Uint32Array([0, 0, 0, 0]),
+      indices: new Uint32Array([0, 1, 2, 0, 2, 3]),
+      vertexCount: 4,
+      indexCount: 6,
+    };
+    // 1) 空洞回收：100 次 delete+add 循环（预算仅容 8 slot），修复前第 9 次 add 即抛
+    let churnError = null;
+    try {
+      for (let i = 0; i < 100; i++) {
+        tiny.uploadSection(i % 4, 0, 0, 'opaque', quadData, i);
+        tiny.removeSection(i % 4, 0, 0);
+      }
+    } catch (e) { churnError = e; }
+    check('churn: delete+add 循环不再抛缓冲耗尽', churnError === null);
+
+    // 2) 扩容：同时活跃 slot 数超过初始预算 → setGeometrySize 自动扩容
+    const capBefore = tiny.stats().capacity.opaque.maxVertexCount;
+    let growError = null;
+    try {
+      for (let i = 0; i < 100; i++) tiny.uploadSection(i, 1, 0, 'opaque', quadData, 1);
+    } catch (e) { growError = e; }
+    check('grow: 超预算上传不再抛缓冲耗尽', growError === null);
+    check('grow: 100 section 全部在册', tiny.stats().sections === 100);
+    const cap0 = tiny.stats().capacity.opaque;
+    check('grow: 顶点预算已自动扩容（超过初始值）', cap0.maxVertexCount > capBefore);
+    // 扩容重建后数据完整性：逐 slot 包围盒仍正确（quad 局部范围 0..1）
+    const box = new THREE.Box3();
+    let bboxOk = true;
+    for (const slot of tiny.slotMap.values()) {
+      tiny.meshes.opaque.getBoundingBoxAt(slot.geometryId, box);
+      if (box.min.x !== 0 || box.max.x !== 1 || box.min.y !== 0 || box.max.y !== 1) { bboxOk = false; break; }
+    }
+    check('grow: 扩容后逐 slot 包围盒完整', bboxOk);
+    // 扩容后渲染一帧不崩
+    let renderError = null;
+    try { for (let i = 0; i < 3; i++) renderer.render(scene, camera); } catch (e) { renderError = e; }
+    check('grow: 扩容后渲染不抛错', renderError === null);
+    if (typeof tiny.dispose === 'function') tiny.dispose();
+
     renderer.dispose();
     renderer.domElement.remove();
     window.__RENDER_WORLD_RESULTS__ = results;

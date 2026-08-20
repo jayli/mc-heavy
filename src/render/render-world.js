@@ -21,8 +21,9 @@ export class RenderWorld {
    * @param {THREE.Scene} opts.scene
    * @param {THREE.Texture} opts.atlasTexture
    * @param {number} [opts.viewDistance]
+   * @param {Object} [opts.capacity] 测试注入口：按通道覆盖 CAPACITY（{channel: {active, avgVerts}}）
    */
-  constructor({ scene, atlasTexture, viewDistance = 8 }) {
+  constructor({ scene, atlasTexture, viewDistance = 8, capacity }) {
     this.scene = scene;
     const materials = createVoxelMaterials(atlasTexture);
     const maxInstances = Math.ceil((2 * viewDistance + 1) ** 2 * SECTIONS_PER_COLUMN * 1.2);
@@ -31,9 +32,11 @@ export class RenderWorld {
     /** @type {Map<string, {channel: string, geometryId: number, instanceId: number, reservedV: number, reservedI: number}>}
      *  key = `${cx},${sy},${cz},${channel}`（一个 section 可同时有 opaque/cutout/transparent 几何） */
     this.slotMap = new Map();
+    /** 当前各通道缓冲预算（扩容后随之增长；无公开 getter，自行跟踪） */
+    this._capacity = {};
 
     for (const channel of CHANNELS) {
-      const cap = CAPACITY[channel];
+      const cap = (capacity && capacity[channel]) || CAPACITY[channel];
       const maxVerts = Math.ceil(cap.active * cap.avgVerts * 1.25);
       const maxIdx = maxVerts * 1.5;
       const bm = new THREE.BatchedMesh(maxInstances, maxVerts, maxIdx, materials[channel]);
@@ -41,6 +44,7 @@ export class RenderWorld {
       this._initAttributeLayout(bm);
       scene.add(bm);
       this.meshes[channel] = bm;
+      this._capacity[channel] = { maxVertexCount: maxVerts, maxIndexCount: maxIdx };
     }
   }
 
@@ -99,17 +103,47 @@ export class RenderWorld {
         bm.setGeometryAt(existing.geometryId, geom);
       } else {
         bm.deleteGeometry(existing.geometryId); // 级联删 instance
-        const gid = bm.addGeometry(geom, reservedV, reservedI);
+        const gid = this._addGeometrySafe(bm, channel, geom, reservedV, reservedI);
         const iid = bm.addInstance(gid);
         this._setInstanceMatrix(bm, iid, cx, sy, cz);
         this.slotMap.set(key, { channel, geometryId: gid, instanceId: iid, reservedV, reservedI });
       }
     } else {
-      const gid = bm.addGeometry(geom, reservedV, reservedI);
+      const gid = this._addGeometrySafe(bm, channel, geom, reservedV, reservedI);
       const iid = bm.addInstance(gid);
       this._setInstanceMatrix(bm, iid, cx, sy, cz);
       this.slotMap.set(key, { channel, geometryId: gid, instanceId: iid, reservedV, reservedI });
     }
+  }
+
+  /**
+   * 容量保障后再 addGeometry（设计文档 §4.4.2 兜底）。
+   * BatchedMesh.deleteGeometry 只标记 inactive、不回收缓冲空间，delete+add 循环
+   * （section 重建 / column 流转）会累积空洞直至 addGeometry 抛
+   * "Reserved space request exceeds the maximum buffer size"。
+   * 三级兜底：① 空间够直接加；② optimize() 重排回收空洞；③ 仍不足则
+   * setGeometrySize() 整批扩容（重建几何并拷贝现有数据）后重试。
+   */
+  _addGeometrySafe(bm, channel, geom, reservedV, reservedI) {
+    this._ensureCapacity(bm, channel, reservedV, reservedI);
+    return bm.addGeometry(geom, reservedV, reservedI);
+  }
+
+  /** 确保 BatchedMesh 有足够空闲顶点/索引空间；不足时先回收空洞、再整批扩容。 */
+  _ensureCapacity(bm, channel, reservedV, reservedI) {
+    if (bm.unusedVertexCount >= reservedV && bm.unusedIndexCount >= reservedI) return;
+    // ① 回收 deleteGeometry 留下的空洞（_nextVertexStart 不自动回缩）
+    bm.optimize();
+    if (bm.unusedVertexCount >= reservedV && bm.unusedIndexCount >= reservedI) return;
+    // ② 整批扩容：新预算 = max(1.5×当前, 现有占用 + 本次需求)
+    const cap = this._capacity[channel];
+    const usedV = cap.maxVertexCount - bm.unusedVertexCount;
+    const usedI = cap.maxIndexCount - bm.unusedIndexCount;
+    const newV = Math.max(Math.ceil(cap.maxVertexCount * 1.5), usedV + reservedV);
+    const newI = Math.max(Math.ceil(cap.maxIndexCount * 1.5), usedI + reservedI);
+    bm.setGeometrySize(newV, newI);
+    cap.maxVertexCount = newV;
+    cap.maxIndexCount = newI;
   }
 
   _setInstanceMatrix(bm, instanceId, cx, sy, cz) {
@@ -133,6 +167,12 @@ export class RenderWorld {
   }
 
   stats() {
-    return { sections: this.slotMap.size };
+    return { sections: this.slotMap.size, capacity: this._capacity };
+  }
+
+  /** 释放 GPU 资源（几何 + 三通道 BatchedMesh）；材质/纹理归调用方管理。 */
+  dispose() {
+    for (const channel of CHANNELS) this.meshes[channel].dispose();
+    this.slotMap.clear();
   }
 }
