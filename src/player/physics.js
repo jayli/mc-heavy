@@ -41,6 +41,8 @@ export class PlayerPhysics {
     const old = p[k];
     p[k] += delta;
     if (this._collides()) {
+      // 水平轴：尝试自动上台阶（mc-lite tryStepUp 手感，MAX_STEP=1.0）
+      if (axis !== 1 && this._tryStepUp()) return;
       // 二分回退到不碰撞位置
       let lo = 0, hi = 1;
       for (let i = 0; i < 8; i++) {
@@ -52,6 +54,25 @@ export class PlayerPhysics {
       if (axis === 1 && delta < 0) this.onGround = true;
       this.vel[k] = 0;
     }
+  }
+
+  /**
+   * 自动上台阶：水平碰撞且在地面时，尝试把脚底抬到上一格整数面。
+   * 用完整 AABB 检测保证：2 格高墙抬不上去（目标位仍碰撞）、
+   * 头顶净空不足抬不上去（1.8 高需 2 格净空）。
+   * @returns {boolean} 是否成功登上
+   */
+  _tryStepUp() {
+    if (!this.onGround) return false;
+    const oldY = this.pos.y;
+    // 脚底抬到上一格顶面（站立时 y≈整数，+0.01 容错浮点噪声）
+    this.pos.y = Math.floor(oldY + 0.01) + 1;
+    if (!this._collides()) {
+      this.vel.y = 0;
+      return true;
+    }
+    this.pos.y = oldY;
+    return false;
   }
 
   /** AABB 0.6×1.8×0.6 与实心方块采样检测 */
