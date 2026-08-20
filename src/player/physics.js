@@ -14,6 +14,8 @@ export class PlayerPhysics {
     this.vel = { x: 0, y: 0, z: 0 };
     this.onGround = false;
     this.inWater = false;
+    // 本帧 step-up 累积抬升量（供相机视觉缓动消费；物理位置本身瞬时到位）
+    this.stepLiftAccum = 0;
   }
 
   /** 单步积分（调用方按 60Hz 定步长驱动） */
@@ -68,6 +70,7 @@ export class PlayerPhysics {
     // 脚底抬到上一格顶面（站立时 y≈整数，+0.01 容错浮点噪声）
     this.pos.y = Math.floor(oldY + 0.01) + 1;
     if (!this._collides()) {
+      this.stepLiftAccum += this.pos.y - oldY; // 记录抬升量（相机缓动用）
       this.vel.y = 0;
       return true;
     }

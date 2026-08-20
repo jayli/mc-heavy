@@ -2,6 +2,7 @@
 import * as THREE from 'three';
 import { raycastVoxel } from './raycast.js';
 import { PlayerPhysics } from './physics.js';
+import { StepLift } from './step-lift.js';
 
 const EYE_HEIGHT = 1.62;
 const REACH = 40; // mc-lite 枪的 far 语义
@@ -22,6 +23,7 @@ export class Player {
     this.scheduler = scheduler;
     this.registry = registry;
     this.physics = new PlayerPhysics(world);
+    this._stepLift = new StepLift(); // 上台阶相机缓动（物理瞬时，视觉 ease-out）
     this.yaw = 0; this.pitch = 0;
     this.keys = new Set();
     this.hotbarIndex = 0;
@@ -37,6 +39,7 @@ export class Player {
 
   spawn(x, y, z) {
     this.physics.pos = { x, y, z };
+    this._stepLift.offset = 0; // 传送不继承缓动
   }
 
   _bindInput() {
@@ -73,15 +76,22 @@ export class Player {
       this.physics.step(step);
       this._acc -= step; n++;
     }
-    // 相机同步（眼高 1.62）
+    // 消费本帧 step-up 抬升：物理已瞬时到位，相机从旧高度 ease-out 追平
+    if (this.physics.stepLiftAccum > 0) {
+      this._stepLift.trigger(this.physics.stepLiftAccum);
+      this.physics.stepLiftAccum = 0;
+    }
+    this._stepLift.update(dt);
+    // 相机同步（眼高 1.62 + 台阶缓动偏移）
     const p = this.physics.pos;
-    this.camera.position.set(p.x, p.y + EYE_HEIGHT, p.z);
+    const camY = p.y + EYE_HEIGHT + this._stepLift.offset;
+    this.camera.position.set(p.x, camY, p.z);
     this.camera.rotation.set(0, 0, 0);
     this.camera.rotateY(this.yaw);
     this.camera.rotateX(this.pitch);
-    // 每帧 1 次主射线（§4.5.2）
+    // 每帧 1 次主射线（§4.5.2）；原点用相机视觉位置，交互与画面一致
     const dir = new THREE.Vector3(0, 0, -1).applyEuler(this.camera.rotation);
-    const r = raycastVoxel(this.world, [p.x, p.y + EYE_HEIGHT, p.z], [dir.x, dir.y, dir.z], REACH);
+    const r = raycastVoxel(this.world, [p.x, camY, p.z], [dir.x, dir.y, dir.z], REACH);
     this.target = r.hit ? r : null;
     if (this.target) {
       this._highlight.visible = true;
