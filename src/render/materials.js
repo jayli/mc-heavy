@@ -1,10 +1,30 @@
-// src/render/materials.js — TSL 体素材质（packed 属性解包 + atlas 采样 + 雾）
+// src/render/materials.js — TSL 体素材质（顶点阶段 shade + atlas 采样 + 雾）
 // r185.1 TSL：attribute('packed','uint') 读自定义顶点属性；位运算 bitAnd/shiftRight 已核验可用。
+//
+// AO/light 渐变的关键：shade 必须在【顶点阶段】算成 float，经 float varying 传到片元，
+// GPU 才会双线性插值出平滑渐变。若直接在片元读 uint 属性，three.webgpu.js:65404 对
+// int 类型 varying 强制加 `flat` 限定符 → 每三角形一个常量值 → 无色块间渐变
+// （这正是"看不到 AO 渐变"的根因）。mc-lite AONodeSystem.js:140 同款机制
+// （vAo = varying(vertexStage(aoComputed))）。
 import * as THREE from 'three';
 import {
   texture, attribute, float, vec4, mul, max,
   rangeFogFactor, uniform, fog,
+  varying, vertexStage,
 } from 'three/tsl';
+
+// ---- 顶点阶段 shade（light × AO），float varying 传片元 ----
+// packed 属性解包：bit0-7 light（sky<<4|block），bit8-9 AO
+const packed = attribute('packed', 'uint');
+const lightByte = packed.bitAnd(0xFF);
+const sky = float(lightByte.shiftRight(4)).div(15);
+const block = float(lightByte.bitAnd(0xF)).div(15);
+const brightness = max(sky, block);
+const ao = float(packed.shiftRight(8).bitAnd(3));
+// AO 曲线（mc-lite AONodeSystem.js:129 口径）：ao=3（开阔）→1.0，ao=0（墙角）→0.1
+const aoFactor = float(1).sub(float(3).sub(ao).div(3).mul(0.9));
+// 逐顶点最终亮度 = light × AO（Minecraft 原版即逐顶点算最终亮度再插值），float varying
+const vShade = varying(vertexStage(mul(brightness, aoFactor)), 'vShade');
 
 /**
  * 创建三通道体素材质。
@@ -14,19 +34,9 @@ import {
 export function createVoxelMaterials(atlasTexture) {
   const makeMaterial = ({ alphaTest = 0, transparent = false }) => {
     const mat = new THREE.MeshBasicNodeMaterial();
-    // packed 属性解包：bit0-7 light（sky<<4|block），bit8-9 AO
-    const packed = attribute('packed', 'uint');
-    const lightByte = packed.bitAnd(0xFF);
-    const sky = float(lightByte.shiftRight(4)).div(15);
-    const block = float(lightByte.bitAnd(0xF)).div(15);
-    const brightness = max(sky, block);
-    const ao = float(packed.shiftRight(8).bitAnd(3));
-    // AO 曲线（mc-lite AONodeSystem.js:129 口径）：ao=3（开阔）→1.0，ao=0（墙角）→0.1
-    // 1 - (3 - ao) / 3 * 0.9
-    const aoFactor = float(1).sub(float(3).sub(ao).div(3).mul(0.9));
     const uvNode = attribute('uv', 'vec2');
     const texColor = texture(atlasTexture, uvNode);
-    mat.colorNode = vec4(mul(texColor.rgb, mul(brightness, aoFactor)), texColor.a);
+    mat.colorNode = vec4(mul(texColor.rgb, vShade), texColor.a);
     if (alphaTest > 0) { mat.alphaTest = alphaTest; }
     if (transparent) { mat.transparent = true; mat.depthWrite = false; }
     mat.side = THREE.FrontSide;

@@ -23,13 +23,21 @@ test('AO 视觉：墙角顶点比开阔地暗（mc-lite AONodeSystem 曲线口�
 
   const shot = await page.screenshot();
   const png = PNG.sync.read(shot);
-  // 实测扫描线（相机高 14 俯视，墙沿 x）：开阔平台 y∈[110,190] 亮度 ~62（AO=3）；
-  // 墙基 AO 暗带 y∈[202,224] 亮度 ~26（AO=1，factor 0.4）。取大块区域粗采样，
-  // 不依赖手算投影（墙高透视位移会让逐像素公式失真）。
+  // 实测扫描线（相机高 14 俯视，墙沿 x，24.5px/block）：开阔平台 y∈[110,190]（AO=3）；
+  // 墙基 z=7 行 y∈[200,226]：亮边 y≈200（远离墙，AO=3）→ 暗边 y≈226（贴墙，AO=1）。
   const bright = regionBrightness(png, 220, 110, 420, 190);
-  const dark = regionBrightness(png, 220, 202, 420, 224);
-  console.log('AO VISUAL:', JSON.stringify({ bright, dark, ratio: dark / bright }));
-  // 修复后：dark≈0.4×bright（AO1 暗带 vs AO3 开阔地）→ ratio≈0.4，远 <0.8。
-  // 修复前（映射倒置）：开阔地被压暗、暗带反而亮 → ratio>1，测试失败。
-  expect(dark / bright).toBeLessThan(0.8);
+  // 渐变断言：z=7 行内取三条水平带（各 200×5px 抹平石头纹理噪声）。
+  // 正确实现（顶点 AO → float varying 双线性插值）：亮度从亮边到暗边单调下降，
+  // 带间存在中间亮度（连续渐变）。
+  // flat 插值 bug（uint 属性 fragment 读取，three.webgpu.js:65404 对 int 强制 flat）：
+  // 每三角形一个常量值 → 三条带亮度几乎相等（range≈0），渐变断言失败。
+  const s1 = regionBrightness(png, 220, 201, 420, 205); // 亮边（AO≈3）
+  const s2 = regionBrightness(png, 220, 211, 420, 215); // 中段（AO≈2）
+  const s3 = regionBrightness(png, 220, 221, 420, 225); // 暗边（AO≈1）
+  console.log('AO VISUAL:', JSON.stringify({ bright, s1, s2, s3 }));
+  expect(s1 - s2).toBeGreaterThan(5); // 单调下降（容差覆盖纹理噪声）
+  expect(s2 - s3).toBeGreaterThan(5);
+  expect(s1 - s3).toBeGreaterThan(15); // 渐变跨度
+  // 倒置回归：暗边必须明显暗于开阔地（AO1 factor 0.4 → ratio≈0.45）
+  expect(s3 / bright).toBeLessThan(0.8);
 });
