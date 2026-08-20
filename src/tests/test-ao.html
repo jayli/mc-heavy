@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"><title>ao visual fixture</title><link rel="icon" href="data:,">
+  <style>html, body { margin: 0; }</style>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "/vendor/three/three.webgpu.js",
+      "three/tsl": "/vendor/three/three.tsl.js",
+      "three/webgpu": "/vendor/three/three.webgpu.js",
+      "three/addons/": "/vendor/three/addons/"
+    }
+  }
+  </script>
+</head>
+<body>
+<script type="module">
+  import * as THREE from 'three';
+  import { RenderWorld } from '../render/render-world.js';
+  import { buildSectionMesh } from '../mesh/mesher.js';
+  import { computeSkylightColumn } from '../mesh/lighting.js';
+  import { WorldData } from '../voxel/world-data.js';
+  import { ChunkColumn } from '../voxel/chunk-column.js';
+  import { createRegistry } from '../voxel/block-registry.js';
+  import { BLOCKS } from '../voxel/blocks-data.js';
+  import { WORLD_MIN_Y, blockIndex, sectionOf } from '../voxel/constants.js';
+  import { loadAtlas } from '../mesh/atlas-loader.js';
+
+  async function run() {
+    const reg = createRegistry();
+    for (const def of BLOCKS) reg.register(def.name, def);
+    reg.freeze();
+
+    const renderer = new THREE.WebGPURenderer({ antialias: false });
+    renderer.setSize(640, 480);
+    document.body.appendChild(renderer.domElement);
+    await renderer.init();
+
+    const { texture } = await loadAtlas();
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x87ceeb);
+    const rw = new RenderWorld({ scene, atlasTexture: texture, viewDistance: 2 });
+
+    // 场景：16×16 石头平台（grid y=0）+ 沿 x 的一堵墙（grid y=1, z=8, x=3..12）。
+    // 墙基两侧（z=7 / z=9 的平台格）顶点被墙遮挡 → AO 低（应更暗），
+    // 形成一整条暗带；远离墙的平台（z=3 / z=13）AO=3（应最亮）。大面积采样稳定。
+    const world = new WorldData(reg);
+    const col = new ChunkColumn(0, 0);
+    const stoneId = reg.idOf('stone');
+    for (let lx = 0; lx < 16; lx++) for (let lz = 0; lz < 16; lz++) {
+      col.blocks[blockIndex(lx, 0, lz)] = stoneId;
+    }
+    for (let lx = 3; lx <= 12; lx++) col.blocks[blockIndex(lx, 1, 8)] = stoneId;
+    world.add(col);
+    computeSkylightColumn(col, reg); // 全露天 sky=15 → brightness=1，隔离 AO 变量
+
+    const sy = sectionOf(0);
+    const view = world.getSectionView(0, sy, 0);
+    const atlasMeta = await (await fetch('/assets/atlas.json')).json();
+    const meshData = buildSectionMesh(view, reg, atlasMeta, 0, sy, 0);
+    rw.uploadSection(0, sy, 0, 'opaque', meshData.opaque, 1);
+
+    // 相机：平台中心正上方俯视（up=-Z 确定朝向：屏幕 y 随世界 z 增大）。
+    // 墙沿 x（屏幕水平），墙基暗带在 z=7/9（屏幕上下对称）。
+    const camera = new THREE.PerspectiveCamera(70, 640 / 480, 0.1, 100);
+    camera.up.set(0, 0, -1);
+    camera.position.set(8.5, 14, 8.5);
+    camera.lookAt(8.5, 0, 8.5);
+    renderer.toneMapping = THREE.NoToneMapping;
+    renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
+    for (let i = 0; i < 5; i++) renderer.render(scene, camera);
+    window.__AO_READY__ = true;
+  }
+  run().catch((e) => { window.__AO_ERROR__ = String(e); });
+</script>
+</body>
+</html>

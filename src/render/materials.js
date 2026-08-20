@@ -21,7 +21,9 @@ export function createVoxelMaterials(atlasTexture) {
     const block = float(lightByte.bitAnd(0xF)).div(15);
     const brightness = max(sky, block);
     const ao = float(packed.shiftRight(8).bitAnd(3));
-    const aoFactor = float(1).sub(mul(ao, 0.2)); // AO 0→1.0, 3→0.4
+    // AO 曲线（mc-lite AONodeSystem.js:129 口径）：ao=3（开阔）→1.0，ao=0（墙角）→0.1
+    // 1 - (3 - ao) / 3 * 0.9
+    const aoFactor = float(1).sub(float(3).sub(ao).div(3).mul(0.9));
     const uvNode = attribute('uv', 'vec2');
     const texColor = texture(atlasTexture, uvNode);
     mat.colorNode = vec4(mul(texColor.rgb, mul(brightness, aoFactor)), texColor.a);
