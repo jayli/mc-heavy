@@ -10,10 +10,24 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
 - mc-lite 是「功能驱动 + 补丁叠加」长出来的，性能天花板已锁死（视距 2~3 chunk、预生成数十秒、
   扩图卡顿、奔跑掉帧）；
 - mc-heavy 的目标是**保持同样的玩法功能**，用更鲁棒、更可扩展、更高性能的引擎底座重做一遍，
-  第一阶段（M0，当前阶段）只做引擎骨架，矿车、炮塔、丧尸、TNT、创造台等功能按后续阶段加入。
+  第一阶段做引擎底座（M0~M3），矿车、炮塔、丧尸、TNT、创造台等功能按后续阶段加入。
 
 **mc-lite 的地位是「功能与数据来源」，不是「实现蓝本」。** 读它的代码时只提取
 「功能语义、算法、数据、视觉风格」，禁止照搬它的架构组织方式（详见下文「对标 mc-lite」）。
+
+## 当前进度（2026-08-20）
+
+第一阶段分 M0~M3 四个里程碑（设计文档 §7）：
+
+- **M0 骨架 ✅**：脚手架 / Worker 池 RPC / BlockRegistry / atlas / WebGPU 发布路径实测（6 项冻结断言）。
+- **M1 体素核心闭环 ✅**：地形生成 / section meshing 双路径 / BatchedMesh 通道级合批 /
+  玩家物理（step-up + 相机缓动）/ DDA 射线 / 放块挖块 / 最小存档 / 光照（skylight 垂直+水平扩散、
+  AO 顶点阶段 float varying、blocklight flood fill、异步收敛管线）。
+- **M2 结构与世界完整性 ⬜（当前起点）**：StructureIndex / 地标 / 树木 / 洞穴 / 水面 / 日夜。
+- **M3 性能达标与收尾 ⬜**：视距 8 全量调优 / 预算标定 / 雨效 / HUD / 基线脚本 / 报告。
+
+测试现状：14 个 Playwright spec + 57 个浏览器内单元测试全绿；冻结断言达标
+（120Hz 本机 fps ≥115、放/挖编辑 p95 <2ms、draw 受控）。
 
 ## 权威文档（动手前必读）
 
@@ -21,9 +35,11 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
 
 1. [`docs/phase-1-engine-design.md`](/Users/bachi/jaylli/mc-heavy/docs/phase-1-engine-design.md)
    —— 架构唯一权威，当前版本 v1.7（已定稿）。所有子系统边界、DR 决策、验收口径都在这里。
-2. [`docs/superpowers/plans/2026-08-19-m0-engine-skeleton.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/plans/2026-08-19-m0-engine-skeleton.md)
-   —— M0 实施计划，任务级 TDD 步骤，按 checkbox 执行。
-3. `docs/m0-bench-report.md` —— M0 Task 7 的实测报告（执行到该任务后产出）。
+2. [`docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md)
+   —— **第一阶段剩余工作执行计划（M2+M3）**，任务级 TODO + 依赖关系，当前 roadmap。
+3. [`docs/superpowers/plans/2026-08-19-m1-voxel-core-loop.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/plans/2026-08-19-m1-voxel-core-loop.md)
+   —— M1 实施计划（已完成，架构细节参照）。
+4. `docs/m0-bench-report.md` / `docs/m1-acceptance-report.md` —— 实测与验收报告。
 
 规则：
 
@@ -49,16 +65,25 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
 5. **发布粒度**：section(16³) 是重建/脏标记单元；默认 BatchedMesh 通道级合批
    （opaque/cutout/transparent 各一个），fallback 为 column 级 channel-major 3-group。
    顶点格式为 flat 三属性 `position/uv/packed(uint32)`。
+   BatchedMesh 缓冲耗尽走三级兜底：`unusedVertexCount` 检查 → `optimize()` 回收空洞 →
+   `setGeometrySize()` 整批扩容（`render-world.js _ensureCapacity`）。
 6. **体素 DDA 射线**：玩家对地形求交互用 Amanatides-Woo 遍历，禁止对地形 mesh 做
    `THREE.Raycaster.intersectObjects`。
 7. **Worker 池 + 版本协议**：异步任务携带 `(columnKey, columnVersion)`，回传版本不符即丢弃。
    禁止为竞态打 epoch/防抖/staging 之类的补丁（这是 mc-lite 的病根）。
 8. **主线程/Worker 同构纯函数**：gen/mesh 核心算法无 DOM、无 three 依赖，主线程快速路径与
    Worker 精修路径共用同一份代码、输出同构缓冲。
-9. **WebGPU 唯一后端**：three **r185.1**，仅经 CDN import map 引入；不做 WebGL2 降级；
+9. **WebGPU 唯一后端**：three **r185.1**，本地 `vendor/three/` 经 import map 引入；不做 WebGL2 降级；
    启动 `navigator.gpu` gate 不通过即明确提示中止。
 10. **module worker 约束**：worker 不继承页面 import map，`src/workers/` 下任何文件
     **不得 import three**，一律相对路径 import 本项目模块。
+11. **光照模型（M1 定稿）**：skylight = 垂直落下不衰减 + 水平扩散 BFS 每格 -1（Minecraft 模型）。
+    编辑快路径同步重算垂直单列且**只升不降**（挖块立即提亮；放块不压暗，暗化交异步扩散收敛，
+    防黑闪）；区域扩散走 Worker `light` 任务异步收敛（`scheduler.enqueueLight`，编辑/悬挑触发）。
+    AO/light 的 shade 必须在**顶点阶段**算成 float 经 float varying 传片元（three.webgpu.js:65404
+    对 int varying 强制 flat 插值，片元读 uint 属性无渐变）。
+12. **玩家物理手感**：水平碰撞 + onGround 时自动上台阶（`_tryStepUp`，MAX_STEP=1.0，mc-lite 手感）；
+    上台阶相机走 StepLift ease-out 缓动（物理瞬时、视觉平滑）。
 
 ### 重构评审四问（写代码前自检）
 
@@ -100,7 +125,8 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
 ## 技术约束
 
 - **纯 JavaScript（ES2022+ ES Modules）+ JSDoc，禁止 TypeScript，无编译/转译、无 bundler**；
-- three.js **r185.1**，import map 从 CDN 加载 `three.webgpu.js`/`three.tsl.js`；
+- three.js **r185.1**，本地 `vendor/three/`（three.webgpu.js / three.tsl.js / three.core.js），
+  import map 指向本地文件；
 - 端口 **8081**（mc-lite 占 8080，避免并行开发冲突）；
 - 纹理 atlas：2048×2048、2px gutter、半 texel UV 内缩；7 张 250~362px 大图按 128×128 入图；
 - ESLint 9 flat config（以 mc-lite 配置为底，本仓库五处修改见计划 Task 1 Step 3）；
@@ -111,7 +137,8 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
 
 ```
 mc-heavy/
-├─ index.html                  # import map（three@0.185.1 webgpu）+ 启动 gate
+├─ index.html                  # import map（本地 vendor/three）+ WebGPU 启动 gate + 准心
+├─ vendor/three/               # three.js r185.1（three.webgpu.js / three.tsl.js / three.core.js）
 ├─ docs/
 │  └─ phase-1-engine-design.md # 架构权威（v1.7）
 ├─ tools/build-atlas.mjs       # atlas 离线打包（npm run atlas）
@@ -120,20 +147,19 @@ mc-heavy/
 │  ├─ atlas.png + atlas.json   # 生成产物，提交入库
 │  └─ structures/              # 从 mc-lite 复制 JSON
 └─ src/
-   ├─ core/        # Game.js / Engine.js / scheduler.js / worker-pool.js / perf.js
-   ├─ voxel/       # block-registry.js / chunk-column.js / world-data.js / edits.js
-   ├─ gen/         # noise.js / biome.js / terrain.js / structure-index.js / structures/*
-   ├─ mesh/        # mesher.js / lighting.js / section-mesh.js / atlas-loader.js（M0 落盘名；设计文档 §5 记为 atlas.js）
-   ├─ render/      # render-world.js / sky.js / water.js / shadows.js / materials.js
-   ├─ player/      # player.js / physics.js / raycast.js / interaction.js / inventory.js
-   ├─ save/        # persistence.js / codec.js
-   ├─ ui/          # hud.js / hotbar.js / inventory-ui.js
+   ├─ core/        # game.js / scheduler.js / worker-pool.js / perf.js / perf-hud.js
+   ├─ voxel/       # constants / block-registry / chunk-column / world-data / blocks-data / faces-data
+   ├─ gen/         # noise.js / terrain.js（M2 加 structure-index / structures/*）
+   ├─ mesh/        # mesher.js / lighting.js / atlas-loader.js（Worker 同构）
+   ├─ render/      # render-world.js（BatchedMesh 发布层）/ materials.js（TSL）
+   ├─ player/      # player.js / physics.js / raycast.js / step-lift.js
+   ├─ save/        # persistence.js（IndexedDB edits）
    └─ workers/     # world-worker.js（GEN/MESH/LIGHT 统一入口，池化）
 ```
 
 依赖方向单向：`voxel ← gen ← mesh ← render`，反向依赖禁止。`core/` 不依赖 `voxel/`；
-`voxel/` 不依赖 three。M0 阶段还会新增 `src/tests/`、`src/bench/`、`tests/`（Playwright spec）
-与 `server-script/`，以 M0 计划为准。
+`voxel/` 不依赖 three。另有 `src/tests/`（浏览器内单测 + fixture）、`src/bench/`（基准页）、
+`tests/`（Playwright spec）、`server-script/`（静态服务）。
 
 ## 开发命令（M0 Task 1 落地 package.json 后生效）
 
@@ -148,6 +174,8 @@ npm run atlas                  # 重新生成 assets/atlas.png + atlas.json
 - 浏览器内单测入口：`http://localhost:8081/src/tests/index.html`；
 - 测试 runner 暴露 `window.__MC_TEST_RESULTS__`，Playwright 从页面读取断言；
 - 性能基准页：`http://localhost:8081/src/bench/webgpu-publish.html`（暴露 `window.__BENCH__`）。
+- 游戏入口暴露 `window.__MC_GAME__`（world/player/scheduler/registry + perfSnapshot/renderStats），
+  Playwright 交互测试经此编程驱动（无头环境无真实键鼠/pointer lock）。
 
 ## 测试工作流（TDD，沿用 mc-lite）
 
@@ -171,6 +199,9 @@ npm run atlas                  # 重新生成 assets/atlas.png + atlas.json
 - 主线程帧预算按 8.3ms（120fps）标定：mesh 上传 ≤ 3ms、快速路径 ≤ 2ms、光照 ≤ 1ms/帧；
 - 每个里程碑结束跑基线，**性能回退 >10% 即阻断合入**；
 - CI 帧率采样只做趋势参考，**本机设备矩阵才是硬验收**。
+- 帧时口径：120Hz vsync 锁帧下帧间隔被量化为 8.33ms，`frameMs.p95 < 8.3` 数学上不可满足
+  （测的是 vsync 抖动而非渲染负载）。故以 **fps 为主断言**，`frameMs.p95 < 16.7` 作防跌破
+  60fps 二级门。该口径在全部性能 spec 一致采用。
 
 ## 实测环境事实（2026-08-19，勿凭印象改）
 
@@ -179,6 +210,10 @@ npm run atlas                  # 重新生成 assets/atlas.png + atlas.json
   必须 `channel: 'chromium'` 才能零 flag 走 Metal（本机真 GPU）；
   Linux CI 用 `--enable-unsafe-webgpu --use-angle=swiftshader --enable-dawn-features=allow_unsafe_apis`；
   `--enable-features=Vulkan` 在 macOS 无作用，勿加。
+- exec_command 会话之间后台进程会被杀：dev server 必须「启动 + 使用 + 关闭」在**同一条命令**内
+  （`node server-script/start-server.js & SERVER_PID=$!; ...; kill $SERVER_PID`）。
+- 沙箱禁止 `rm`；临时脚本放 `/tmp` 或项目内 `.tmp.mjs` 后用 `mv` 清理。
+- Node v26.4.0；`/tmp` 下的脚本无法解析项目 node_modules，需在项目目录内运行。
 
 ## 后续功能扩展点（引擎稳定后按阶段加入）
 
@@ -193,3 +228,5 @@ TNT/爆炸（`world.setBlocks(batch)` + REMESH）、炮塔/子弹/丧尸（Entit
 - 全部使用中文；解释设计取舍时引用设计文档章节号；
 - 改动前说清楚「为什么」，改动后附验证证据（命令输出、帧时、draw call 数），不凭感觉宣称通过；
 - 提交必须等用户明确指令，提交信息用 Conventional Commits。
+- 诊断 bug 不猜：先在真实游戏/隔离环境复现、读实际数据（light 值/扫描线/队列状态）定位根因，
+  再动手修。光照类 bug 尤其如此（垂直/扩散/快慢路径多，凭印象改会引入回归）。
