@@ -348,6 +348,9 @@ export class Scheduler {
     for (const { cx, cz, sy } of affected) {
       const col = this.world.getColumn(cx, cz);
       if (!col || col.state !== 'ready') continue;
+      // 编辑改变光照：请求异步区域重算收敛水平扩散（setBlock 已同步重算垂直单列做即时反馈）。
+      // enqueueLight 是 O(1) Set.add，不影响编辑帧预算。
+      this.enqueueLight(cx, cz);
       if (!fastPath) { col.markDirty(sy); this._enqueueMesh(cx, sy, cz); continue; }
       const t0 = performance.now();
       const view = this.world.getSectionView(cx, sy, cz);
