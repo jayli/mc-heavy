@@ -24,6 +24,21 @@ export function computeSkylightColumn(column, registry) {
 }
 
 /**
+ * skylight 单列增量重算：只重算 (lx, lz) 这一根垂直列（O(128)）。
+ * 用于单块编辑后的增量更新——skylight 纯垂直传播，单块编辑只影响同 (lx,lz) 列，
+ * 不影响其他列（与 computeSkylightColumn 的全列口径完全一致，只是范围收窄）。
+ */
+export function recomputeSkylightAt(column, lx, lz, registry) {
+  const opaque = registry.opaqueTable;
+  let sky = 15;
+  for (let y = WORLD_MAX_Y - 1; y >= WORLD_MIN_Y; y--) {
+    const idx = blockIndex(lx, y, lz);
+    if (opaque[column.blocks[idx]] === 1) sky = 0;
+    column.light[idx] = (column.light[idx] & 0x0F) | (sky << 4);
+  }
+}
+
+/**
  * blocklight：region 内所有 emissive 源 flood fill（强度 -1/格，opaque 阻挡）。
  * region = 中心 column + 4 正交邻居（光泄漏过界，§4.6）；邻居缺失则截断。
  * 先清零 region 内低 4 位，再 BFS。

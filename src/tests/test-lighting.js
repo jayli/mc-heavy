@@ -95,3 +95,40 @@ test('recomputeLight: 挖掉光源后降光（全 column 重算兜底，§4.6）
   recomputeLight(world, 0, 0, reg);
   assertEqual(blk(col, 8, 51, 8), 0, 'light removed after recompute');
 });
+
+test('recomputeLight: 挖掉 opaque 后 skylight 恢复（挖块黑面 bug 回归）', () => {
+  const reg = makeRegistry();
+  const world = new WorldData(reg);
+  const col = new ChunkColumn(0, 0);
+  world.add(col);
+  // 铺一层石头地面 y=50：下方全黑
+  for (let lx = 0; lx < 16; lx++) for (let lz = 0; lz < 16; lz++) {
+    col.blocks[blockIndex(lx, 50, lz)] = reg.idOf('stone');
+  }
+  recomputeLight(world, 0, 0, reg);
+  assertEqual(sky(col, 8, 49, 8), 0, 'below ground is dark');
+  // 挖掉 (8,50,8)：下方应恢复 skylight 15
+  col.blocks[blockIndex(8, 50, 8)] = 0;
+  recomputeLight(world, 0, 0, reg);
+  assertEqual(sky(col, 8, 50, 8), 15, 'dug cell lit');
+  assertEqual(sky(col, 8, 49, 8), 15, 'below dug cell lit');
+  assertEqual(sky(col, 8, 30, 8), 15, 'deep below dug cell lit');
+  assertEqual(sky(col, 9, 49, 8), 0, 'unrelated column still dark');
+});
+
+test('setBlock: 挖块走真实路径后 skylight 增量恢复（黑面 bug 端到端）', () => {
+  const reg = makeRegistry();
+  const world = new WorldData(reg);
+  const col = new ChunkColumn(0, 0);
+  world.add(col);
+  for (let lx = 0; lx < 16; lx++) for (let lz = 0; lz < 16; lz++) {
+    col.blocks[blockIndex(lx, 50, lz)] = reg.idOf('stone');
+  }
+  recomputeLight(world, 0, 0, reg);
+  assertEqual(sky(col, 8, 49, 8), 0, 'below ground is dark');
+  // 真实游玩路径：world.setBlock 挖块 → 内部增量重算同列 skylight
+  world.setBlock(8, 50, 8, 0);
+  assertEqual(sky(col, 8, 50, 8), 15, 'dug cell lit after setBlock');
+  assertEqual(sky(col, 8, 49, 8), 15, 'below dug cell lit after setBlock');
+  assertEqual(sky(col, 9, 49, 8), 0, 'unrelated column unaffected');
+});

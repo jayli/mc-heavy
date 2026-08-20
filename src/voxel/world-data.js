@@ -3,6 +3,7 @@
 import {
   WORLD_MIN_Y, WORLD_MAX_Y, blockIndex, columnKey,
 } from './constants.js';
+import { recomputeSkylightAt } from '../mesh/lighting.js';
 
 const VIEW = 18; // section halo 视图边长（16 + 2×1）
 
@@ -47,6 +48,10 @@ export class WorldData {
     if (!col) return null;
     const lx = x - cx * 16, lz = z - cz * 16;
     col.set(lx, y, lz, id, meta);
+    // 光照收敛（§4.6）：skylight 纯垂直传播，单块编辑只影响同 (lx,lz) 垂直列，
+    // 增量重算 O(128)。不重算则新暴露面读到旧 light=0 → 全黑（挖块黑面 bug）。
+    // blocklight 增量删除放后续阶段（M1 快捷栏无发光方块，正常游玩不触发 region 重算）。
+    recomputeSkylightAt(col, lx, lz, this.registry);
     const sy = (y - WORLD_MIN_Y) >> 4;
     const affected = [{ cx, cz, sy }];
     const yInSection = y - WORLD_MIN_Y - sy * 16;
