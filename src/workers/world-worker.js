@@ -7,6 +7,7 @@ import { BLOCKS } from '../voxel/blocks-data.js';
 import { ChunkColumn } from '../voxel/chunk-column.js';
 import { WorldData } from '../voxel/world-data.js';
 import { fillColumn } from '../gen/terrain.js';
+import { carveCaves } from '../gen/caves.js';
 import { computeRegionLayout } from '../gen/structures/structure-layout.js';
 import { applyStructuresToColumn } from '../gen/structures/apply.js';
 import { computeSkylightColumn, computeSkylightRegion, computeBlocklightRegion } from '../mesh/lighting.js';
@@ -38,6 +39,7 @@ installRpcHandler({
   async gen(p) {
     const column = new ChunkColumn(p.cx, p.cz);
     fillColumn(column, p.seed, registry);
+    carveCaves(column, p.seed);
     await applyStructuresToColumn(column, p.seed, registry, p.layouts);
     if (p.edits && p.edits.length) column.applyEdits(p.edits);
     computeSkylightColumn(column, registry);
