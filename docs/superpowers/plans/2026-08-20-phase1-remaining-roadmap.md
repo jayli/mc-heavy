@@ -126,14 +126,14 @@
 - `src/world/entities/Tree.js`
 
 **实现要点：**
-- [ ] 树木：确定性位置（seed 驱动），树干 + 树冠（leaves 方块）
-- [ ] 花/草/仙人掌：biome 相关密度，cross 几何（mesher 留接口，M2 实现）
-- [ ] 植被不遮挡光照（transparent/cutout 通道）
+- [x] 树木：确定性位置（seed 驱动），树干 + 树冠（Tree.js 四型移植，Math.random 确定性化；桦树/雪桦走 JSON）
+- [x] 花/草/仙人掌：biome 相关密度（mc-lite 概率原样），cross/lilypad 顶点模板（mesher 实现，cutout DoubleSide）
+- [x] 植被不遮挡光照（solid=false → opaque=0，skylight 穿透；草格上方实测 15）
 
 **测试：**
-- [ ] FOREST biome 有树木
-- [ ] DESERT biome 有仙人掌
-- [ ] 植被不产生 opaque 阴影
+- [x] FOREST biome 有树木
+- [x] DESERT biome 有仙人掌
+- [x] 植被不产生 opaque 阴影
 
 ### Task M2-4: 洞穴
 

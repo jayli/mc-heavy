@@ -32,20 +32,21 @@ const vShade = varying(vertexStage(mul(brightness, aoFactor)), 'vShade');
  * @returns {{opaque: THREE.MeshBasicNodeMaterial, cutout: THREE.MeshBasicNodeMaterial, transparent: THREE.MeshBasicNodeMaterial}}
  */
 export function createVoxelMaterials(atlasTexture) {
-  const makeMaterial = ({ alphaTest = 0, transparent = false }) => {
+  const makeMaterial = ({ alphaTest = 0, transparent = false, side = THREE.FrontSide }) => {
     const mat = new THREE.MeshBasicNodeMaterial();
     const uvNode = attribute('uv', 'vec2');
     const texColor = texture(atlasTexture, uvNode);
     mat.colorNode = vec4(mul(texColor.rgb, vShade), texColor.a);
     if (alphaTest > 0) { mat.alphaTest = alphaTest; }
     if (transparent) { mat.transparent = true; mat.depthWrite = false; }
-    mat.side = THREE.FrontSide;
+    mat.side = side;
     return mat;
   };
 
   return {
     opaque: makeMaterial({}),
-    cutout: makeMaterial({ alphaTest: 0.5 }),
+    // 树叶/cross 植被双面可见（mc-lite 口径）
+    cutout: makeMaterial({ alphaTest: 0.5, side: THREE.DoubleSide }),
     transparent: makeMaterial({ transparent: true }),
   };
 }

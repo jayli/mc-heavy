@@ -3,23 +3,27 @@
 // + JSON 结构光栅化（城市建筑 / 海岛塔 / 平地金字塔岛，按 AABB 裁剪到本 column）。
 // 树木/植被 M2-3 追加。Worker 同构：本文件不得 import three。
 import { generateHeight, generateHeightForBiome } from '../terrain.js';
+import { getBiome, seededRandom } from '../noise.js';
 import {
   getPyramidInfo, generatePyramid, makeColumnSetter,
-  getSnowLandInfo, generateSnowLand,
-  getFrozenMountainInfo, generateFrozenMountain,
-  getIslandInfo, generateIsland, generateIslandSandRing,
+  getSnowLandInfo, generateSnowLand, snowLandSurfaceY,
+  getFrozenMountainInfo, generateFrozenMountain, frozenMountainSurfaceY,
+  getIslandInfo, generateIsland, generateIslandSandRing, islandSurfaceY,
   getPlainLandInfo, generatePlainLand,
   getCityInfo, generateCity,
 } from './landmarks.js';
-import { getCitySurfaceY } from './city-layout.js';
+import { getCitySurfaceY, isPointNearCityStructure } from './city-layout.js';
 import { CITY_STRUCTURE_FOOTPRINT, ISLAND_SEA_LEVEL } from './region-config.js';
 import { preloadStructures, rasterizeStructure, GROUND_SUPPORT_TYPES } from './structure-json.js';
+import { generateTree, rollVegetation, rollCityTree } from './vegetation.js';
+import { SEA_Y } from '../../voxel/constants.js';
 
-/** 城市 placement 用到的 JSON 结构（GEN 携带城市布局时预载） */
+/** 城市 placement 用到的 JSON 结构（GEN 携带城市布局时预载）+ 植被树 JSON */
 const CITY_STRUCTURE_TYPES = [
   'castle', 'bigHouse', 'regularHouse1', 'desertTempleTube', 'boxHouse', 'desertVillage',
   'doubleTower', 'treeTower', 'junglePyramid', 'pyramidIsland', 'smallHouse', 'treeHouse',
   'uglyHouse', 'whiteTower', 'woodHouse', 'gate', 'tank', 'tower',
+  'birchTree', 'birchTreeWithSnow',
 ];
 
 /** AABB 相交判定余量（JSON 实测占地与 footprint 表最大偏差 1 格） */
@@ -30,6 +34,42 @@ function placementIntersects(p, halfX, halfZ, cx, cz) {
   const minX = cx * 16, maxX = cx * 16 + 15, minZ = cz * 16, maxZ = cz * 16 + 15;
   return p.x + halfX + INTERSECT_MARGIN >= minX && p.x - halfX - INTERSECT_MARGIN <= maxX &&
          p.z + halfZ + INTERSECT_MARGIN >= minZ && p.z - halfZ - INTERSECT_MARGIN <= maxZ;
+}
+
+/**
+ * 植被上下文（mc-lite 列循环各分支的植被挂载点）：
+ * kind = city / island / snow / fm / normal / water / none（金字塔/平地不挂植被）。
+ */
+function pointContext(wx, wz, layouts, cityLayout, seed) {
+  if (cityLayout && getCityInfo(wx, wz, cityLayout)) {
+    return { kind: 'city', surfaceY: getCitySurfaceY(wx, wz, cityLayout, seed) };
+  }
+  for (const layout of layouts) {
+    if (getPyramidInfo(wx, wz, layout.pyramid)) return { kind: 'none' };
+    if (layout.island) {
+      const ii = getIslandInfo(wx, wz, layout.island, seed);
+      if (ii) {
+        const sy = islandSurfaceY(wx, wz, ii, seed);
+        if (sy === null) return { kind: 'none' };
+        return { kind: 'island', core: ii.zone === 'core', surfaceY: sy, island: layout.island };
+      }
+    }
+    if (layout.plainLand && getPlainLandInfo(wx, wz, layout.plainLand)) return { kind: 'none' };
+    const slInfo = getSnowLandInfo(wx, wz, layout.snowLand, seed);
+    if (slInfo) {
+      const sy = snowLandSurfaceY(generateHeight(wx, wz, seed), slInfo);
+      return { kind: 'snow', core: slInfo.zone === 'core', belowSea: sy <= SEA_Y - 1, surfaceY: sy };
+    }
+    const fmInfo = getFrozenMountainInfo(wx, wz, layout.frozenMountain, seed);
+    if (fmInfo) {
+      const sy = frozenMountainSurfaceY(generateHeight(wx, wz, seed), fmInfo);
+      return { kind: 'fm', core: fmInfo.zone === 'core', belowSea: sy <= SEA_Y - 1, surfaceY: sy };
+    }
+  }
+  const biome = getBiome(wx, wz, seed);
+  const h = generateHeight(wx, wz, seed);
+  if (h < SEA_Y) return { kind: 'water', biome, h };
+  return { kind: 'normal', biome, h };
 }
 
 /**
@@ -45,7 +85,7 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
   const setBlock = makeColumnSetter(column, registry);
 
   const cityLayout = layouts.find((l) => l.city)?.city || null;
-  if (cityLayout) await preloadStructures(CITY_STRUCTURE_TYPES);
+  await preloadStructures(cityLayout ? CITY_STRUCTURE_TYPES : ['birchTree', 'birchTreeWithSnow']);
 
   // ---- 阶段 1：地形整形（mc-lite 列循环 elif 链）----
   for (let lx = 0; lx < 16; lx++) {
@@ -127,6 +167,68 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
       if (Math.floor(pl.cx / 16) === column.cx && Math.floor(pl.cz / 16) === column.cz) {
         const h = generateHeight(pl.cx, pl.cz, seed);
         rasterizeStructure('pyramidIsland', pl.cx, h + 1, pl.cz, setBlock, column, registry, seed, true);
+      }
+    }
+  }
+
+  // ---- 阶段 3：植被（M2-3，mc-lite 各分支植被规则）----
+  // 树冠半径 ≤3：扫描扩展 3 格，树在基点光栅化（setBlock 自动裁剪到本 column）；
+  // 单格植物只在本 column 内的点写入。
+  const EXT = 3;
+  const minX = column.cx * 16, maxX = column.cx * 16 + 15;
+  const minZ = column.cz * 16, maxZ = column.cz * 16 + 15;
+  for (let wx = minX - EXT; wx <= maxX + EXT; wx++) {
+    for (let wz = minZ - EXT; wz <= maxZ + EXT; wz++) {
+      const inColumn = wx >= minX && wx <= maxX && wz >= minZ && wz <= maxZ;
+      const ctx = pointContext(wx, wz, layouts, cityLayout, seed);
+
+      if (inColumn && ctx.kind === 'water' && ctx.biome === 'SWAMP' && seededRandom(wx, wz, seed + 12) < 0.08) {
+        setBlock(wx, SEA_Y, wz, 'lilypad');
+      }
+
+      let tree = null;
+      let baseY = null;
+      if (ctx.kind === 'normal') {
+        const roll = rollVegetation(wx, wz, ctx.biome, seed);
+        if (inColumn && roll.plant) setBlock(wx, ctx.h + 1, wz, roll.plant);
+        if (roll.tree) { tree = roll.tree; baseY = ctx.h + 1; }
+      } else if (ctx.kind === 'city') {
+        if (!isPointNearCityStructure(wx, wz, cityLayout, 2)) {
+          const roll = rollCityTree(wx, wz, seed);
+          if (roll.tree) { tree = roll.tree; baseY = ctx.surfaceY + 1; }
+        }
+      } else if (ctx.kind === 'snow') {
+        if (ctx.core && !ctx.belowSea && seededRandom(wx, wz, seed + 10) < 0.002) {
+          tree = { type: 'birchTreeWithSnow' }; baseY = ctx.surfaceY + 1;
+        }
+      } else if (ctx.kind === 'fm') {
+        if (ctx.core && !ctx.belowSea && seededRandom(wx, wz, seed + 11) < 0.001) {
+          tree = { type: 'birchTreeWithSnow' }; baseY = ctx.surfaceY + 1;
+        }
+      } else if (inColumn && ctx.kind === 'island' && ctx.core) {
+        // 海岛树：基点抽数量，偏移落点（mc-lite 语义）
+        const treeChance = seededRandom(wx, wz, seed + 100);
+        const treeCount = treeChance < 0.0015 ? 2 : treeChance < 0.003 ? 1 : 0;
+        for (let i = 0; i < treeCount; i++) {
+          const ox = Math.floor(seededRandom(i, i + 10, seed + 200) * 10) - 5;
+          const oz = Math.floor(seededRandom(i + 5, i + 15, seed + 201) * 10) - 5;
+          const treeX = wx + ox, treeZ = wz + oz;
+          const tInfo = getIslandInfo(treeX, treeZ, ctx.island, seed);
+          const distTower = Math.max(Math.abs(treeX - ctx.island.cx), Math.abs(treeZ - ctx.island.cz));
+          if (tInfo && tInfo.zone === 'core' && distTower > 5) {
+            generateTree(treeX, ctx.surfaceY + 1, treeZ, setBlock, seed, 'default');
+          }
+        }
+      }
+
+      if (tree) {
+        if (tree.type === 'birchTree') {
+          rasterizeStructure('birchTree', wx, baseY, wz, setBlock, column, registry, seed, false);
+        } else if (tree.type === 'birchTreeWithSnow') {
+          rasterizeStructure('birchTreeWithSnow', wx, baseY, wz, setBlock, column, registry, seed, false);
+        } else {
+          generateTree(wx, baseY, wz, setBlock, seed, tree.type, tree.customLog || null, tree.customLeaf || null);
+        }
       }
     }
   }

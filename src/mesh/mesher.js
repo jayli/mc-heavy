@@ -102,6 +102,33 @@ export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
         const ch = channels[channel];
         const blockName = nameOf(id);
 
+        // 非立方体几何（§4.3 顶点模板）：flower/vine = cross 双 quad，lilypad = 水平单 quad。
+        // 不做面剔除/AO（植被不遮挡、自身格即光照格）；DoubleSide 由 cutout 材质保证。
+        const geom = registry.geometryNameOf(id);
+        if (geom === 'flower' || geom === 'vine' || geom === 'lilypad') {
+          const tile = tiles[getFaceTile(blockName, 4)] || tiles['stone'] || DEFAULT_TILE;
+          const selfLight = light[viewIdx(vx, vy, vz)];
+          const packed = selfLight | (3 << 8); // AO=3（开阔）
+          const quads = geom === 'lilypad'
+            ? [[0, 0.9375, 0, 1, 0.9375, 0, 1, 0.9375, 1, 0, 0.9375, 1, 2]]
+            : [
+              [0, 0, 0, 1, 0, 1, 1, 1, 1, 0, 1, 0, 4],
+              [1, 0, 0, 0, 0, 1, 0, 1, 1, 1, 1, 1, 0],
+            ];
+          for (const q of quads) {
+            const face = q[12];
+            const vertBase = ch.pos.length / 3;
+            for (let vi = 0; vi < 4; vi++) {
+              ch.pos.push(lx + q[vi * 3], ly + q[vi * 3 + 1], lz + q[vi * 3 + 2]);
+              const [uu, vv] = FACE_UVS[vi];
+              ch.uv.push(tile.u0 + (tile.u1 - tile.u0) * uu, tile.v0 + (tile.v1 - tile.v0) * vv);
+              ch.packed.push(packed | (face << 10));
+            }
+            ch.idx.push(vertBase, vertBase + 1, vertBase + 2, vertBase, vertBase + 2, vertBase + 3);
+          }
+          continue;
+        }
+
         for (let face = 0; face < 6; face++) {
           const [dx, dy, dz] = FACE_DIRS[face];
           const nx = vx + dx, ny = vy + dy, nz = vz + dz;

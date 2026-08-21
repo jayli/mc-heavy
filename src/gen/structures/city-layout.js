@@ -539,3 +539,16 @@ export function getCitySurfaceY(wx, wz, city, seed) {
 export function getCitySpawnPoint(city) {
   return { x: city.centerX, y: city.baseHeight + 3, z: city.centerZ };
 }
+
+/** 点是否靠近城市建筑（mc-lite isPointNearCityStructure，布局 footprint 确定性版本） */
+export function isPointNearCityStructure(wx, wz, city, padding = 2) {
+  for (const placement of city.placements) {
+    const fp = CITY_STRUCTURE_FOOTPRINT[placement.type];
+    if (!fp) continue;
+    if (wx >= placement.x - fp.halfX - padding && wx <= placement.x + fp.halfX + padding &&
+        wz >= placement.z - fp.halfZ - padding && wz <= placement.z + fp.halfZ + padding) {
+      return true;
+    }
+  }
+  return false;
+}

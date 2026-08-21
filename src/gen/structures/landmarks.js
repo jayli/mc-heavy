@@ -812,3 +812,36 @@ export function generateCity(wx, wz, h, cityInfo, setBlock, seed) {
 }
 
 export { CITY_TRANSITION_SIZE };
+
+// ==================== 植被用 surface 计算（与 generate* 同公式，纯函数） ====================
+
+/** 雪原最终表面高（mc-lite generateSnowLand 高差钳制段） */
+export function snowLandSurfaceY(h, slInfo) {
+  let finalSurfaceY;
+  if (slInfo.transitionFactor === 0) finalSurfaceY = h + slInfo.heightOffset;
+  else {
+    const baseHeight = h + slInfo.heightOffset;
+    finalSurfaceY = Math.floor(h + (baseHeight - h) * (1 - slInfo.transitionFactor));
+  }
+  const heightDiff = finalSurfaceY - h;
+  if (Math.abs(heightDiff) > 2) finalSurfaceY = h + Math.sign(heightDiff) * 2;
+  return finalSurfaceY;
+}
+
+/** 冰封山最终表面高（mc-lite generateFrozenMountain 高差钳制段） */
+export function frozenMountainSurfaceY(h, fmInfo) {
+  const originalMountainHeight = h + fmInfo.layerHeight;
+  let finalSurfaceY;
+  if (fmInfo.transitionFactor === 0) finalSurfaceY = originalMountainHeight;
+  else {
+    const smoothHeight = Math.floor(h + (originalMountainHeight - h) * (1 - fmInfo.transitionFactor));
+    const heightDiff = smoothHeight - h;
+    finalSurfaceY = Math.abs(heightDiff) <= 2 ? smoothHeight : h + Math.sign(heightDiff) * 2;
+  }
+  return finalSurfaceY;
+}
+
+/** 海岛内表面（形状噪声判定，mc-lite isInIsland）：岛内 = 海平面，岛外 null */
+export function islandSurfaceY(wx, wz, islandInfo, seed) {
+  return isInIsland(wx, wz, islandInfo, seed) ? ISLAND_SEA_LEVEL : null;
+}
