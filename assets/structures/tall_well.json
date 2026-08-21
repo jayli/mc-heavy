@@ -1,0 +1,2217 @@
+{
+  "blocks": [
+    {
+      "x": -5,
+      "y": 1,
+      "z": -3,
+      "type": "azalea_flowers",
+      "direction": 0
+    },
+    {
+      "x": -5,
+      "y": 10,
+      "z": -2,
+      "type": "handrailA",
+      "direction": 0
+    },
+    {
+      "x": -5,
+      "y": 11,
+      "z": -2,
+      "type": "handrailA",
+      "direction": 0
+    },
+    {
+      "x": -5,
+      "y": 12,
+      "z": -2,
+      "type": "handrailA",
+      "direction": 0
+    },
+    {
+      "x": -5,
+      "y": 13,
+      "z": -2,
+      "type": "handrailA",
+      "direction": 0
+    },
+    {
+      "x": -5,
+      "y": 10,
+      "z": 2,
+      "type": "handrailA",
+      "direction": 0
+    },
+    {
+      "x": -5,
+      "y": 11,
+      "z": 2,
+      "type": "handrailA",
+      "direction": 0
+    },
+    {
+      "x": -5,
+      "y": 12,
+      "z": 2,
+      "type": "handrailA",
+      "direction": 0
+    },
+    {
+      "x": -5,
+      "y": 13,
+      "z": 2,
+      "type": "handrailA",
+      "direction": 0
+    },
+    {
+      "x": -5,
+      "y": 1,
+      "z": 3,
+      "type": "azalea_leaves",
+      "direction": 0
+    },
+    {
+      "x": -4,
+      "y": 1,
+      "z": -4,
+      "type": "leaves",
+      "direction": 0
+    },
+    {
+      "x": -4,
+      "y": 1,
+      "z": -3,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": -4,
+      "y": 11,
+      "z": -3,
+      "type": "leaves",
+      "direction": 0
+    },
+    {
+      "x": -4,
+      "y": 12,
+      "z": -3,
+      "type": "yellow_leaves",
+      "direction": 0
+    },
+    {
+      "x": -4,
+      "y": 13,
+      "z": -3,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": -4,
+      "y": 1,
+      "z": -2,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": -4,
+      "y": 2,
+      "z": -2,
+      "type": "azalea_leaves",
+      "direction": 0
+    },
+    {
+      "x": -4,
+      "y": 9,
+      "z": -2,
+      "type": "leaves",
+      "direction": 0
+    },
+    {
+      "x": -4,
+      "y": 10,
+      "z": -2,
+      "type": "leaves",
+      "direction": 0
+    },
+    {
+      "x": -4,
+      "y": 12,
+      "z": -2,
+      "type": "cobblestone_step_updown",
+      "direction": 0
+    },
+    {
+      "x": -4,
+      "y": 13,
+      "z": -2,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": -4,
+      "y": 1,
+      "z": -1,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": -4,
+      "y": 12,
+      "z": -1,
+      "type": "cobblestone_step_updown",
+      "direction": 0
+    },
+    {
+      "x": -4,
+      "y": 13,
+      "z": -1,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": -4,
+      "y": 1,
+      "z": 0,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": -4,
+      "y": 12,
+      "z": 0,
+      "type": "cobblestone_step_updown",
+      "direction": 0
+    },
+    {
+      "x": -4,
+      "y": 13,
+      "z": 0,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": -4,
+      "y": 1,
+      "z": 1,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": -4,
+      "y": 12,
+      "z": 1,
+      "type": "leaves",
+      "direction": 0
+    },
+    {
+      "x": -4,
+      "y": 13,
+      "z": 1,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": -4,
+      "y": 1,
+      "z": 2,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": -4,
+      "y": 2,
+      "z": 2,
+      "type": "azalea_leaves",
+      "direction": 0
+    },
+    {
+      "x": -4,
+      "y": 9,
+      "z": 2,
+      "type": "azalea_flowers",
+      "direction": 0
+    },
+    {
+      "x": -4,
+      "y": 10,
+      "z": 2,
+      "type": "leaves",
+      "direction": 0
+    },
+    {
+      "x": -4,
+      "y": 11,
+      "z": 2,
+      "type": "leaves",
+      "direction": 0
+    },
+    {
+      "x": -4,
+      "y": 12,
+      "z": 2,
+      "type": "leaves",
+      "direction": 0
+    },
+    {
+      "x": -4,
+      "y": 13,
+      "z": 2,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": -4,
+      "y": 1,
+      "z": 3,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": -4,
+      "y": 12,
+      "z": 3,
+      "type": "leaves",
+      "direction": 0
+    },
+    {
+      "x": -4,
+      "y": 13,
+      "z": 3,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": -4,
+      "y": 1,
+      "z": 4,
+      "type": "azalea_flowers",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 10,
+      "z": -4,
+      "type": "handrailA",
+      "direction": 3
+    },
+    {
+      "x": -3,
+      "y": 11,
+      "z": -4,
+      "type": "handrailA",
+      "direction": 3
+    },
+    {
+      "x": -3,
+      "y": 12,
+      "z": -4,
+      "type": "handrailA",
+      "direction": 1
+    },
+    {
+      "x": -3,
+      "y": 13,
+      "z": -4,
+      "type": "handrailA",
+      "direction": 1
+    },
+    {
+      "x": -3,
+      "y": 1,
+      "z": -3,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 2,
+      "z": -3,
+      "type": "azalea_leaves",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 10,
+      "z": -3,
+      "type": "leaves",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 11,
+      "z": -3,
+      "type": "yellow_leaves",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 12,
+      "z": -3,
+      "type": "yellow_leaves",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 13,
+      "z": -3,
+      "type": "stone",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 1,
+      "z": -2,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 2,
+      "z": -2,
+      "type": "smooth_stone",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 3,
+      "z": -2,
+      "type": "block_of_quartz",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 4,
+      "z": -2,
+      "type": "block_of_quartz",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 5,
+      "z": -2,
+      "type": "block_of_quartz",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 6,
+      "z": -2,
+      "type": "block_of_quartz",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 7,
+      "z": -2,
+      "type": "block_of_quartz",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 8,
+      "z": -2,
+      "type": "block_of_quartz",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 9,
+      "z": -2,
+      "type": "block_of_quartz",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 10,
+      "z": -2,
+      "type": "block_of_quartz",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 11,
+      "z": -2,
+      "type": "block_of_quartz",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 12,
+      "z": -2,
+      "type": "ochre_froglight",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 13,
+      "z": -2,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 14,
+      "z": -2,
+      "type": "weathered_cut_copper",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 1,
+      "z": -1,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 2,
+      "z": -1,
+      "type": "smooth_stone",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 9,
+      "z": -1,
+      "type": "polished_blackstone_bricks",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 13,
+      "z": -1,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 14,
+      "z": -1,
+      "type": "weathered_cut_copper",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 1,
+      "z": 0,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 2,
+      "z": 0,
+      "type": "smooth_stone",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 9,
+      "z": 0,
+      "type": "polished_blackstone_bricks",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 13,
+      "z": 0,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 14,
+      "z": 0,
+      "type": "weathered_cut_copper",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 1,
+      "z": 1,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 2,
+      "z": 1,
+      "type": "smooth_stone",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 9,
+      "z": 1,
+      "type": "polished_blackstone_bricks",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 12,
+      "z": 1,
+      "type": "leaves",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 13,
+      "z": 1,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 14,
+      "z": 1,
+      "type": "weathered_cut_copper",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 1,
+      "z": 2,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 2,
+      "z": 2,
+      "type": "smooth_stone",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 3,
+      "z": 2,
+      "type": "block_of_quartz",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 4,
+      "z": 2,
+      "type": "block_of_quartz",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 5,
+      "z": 2,
+      "type": "block_of_quartz",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 6,
+      "z": 2,
+      "type": "block_of_quartz",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 7,
+      "z": 2,
+      "type": "block_of_quartz",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 8,
+      "z": 2,
+      "type": "block_of_quartz",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 9,
+      "z": 2,
+      "type": "block_of_quartz",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 10,
+      "z": 2,
+      "type": "block_of_quartz",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 11,
+      "z": 2,
+      "type": "block_of_quartz",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 12,
+      "z": 2,
+      "type": "ochre_froglight",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 13,
+      "z": 2,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 14,
+      "z": 2,
+      "type": "weathered_cut_copper",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 1,
+      "z": 3,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 2,
+      "z": 3,
+      "type": "azalea_leaves",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 11,
+      "z": 3,
+      "type": "leaves",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 12,
+      "z": 3,
+      "type": "leaves",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 13,
+      "z": 3,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 10,
+      "z": 4,
+      "type": "handrailA",
+      "direction": 3
+    },
+    {
+      "x": -3,
+      "y": 11,
+      "z": 4,
+      "type": "handrailA",
+      "direction": 3
+    },
+    {
+      "x": -3,
+      "y": 12,
+      "z": 4,
+      "type": "handrailA",
+      "direction": 3
+    },
+    {
+      "x": -3,
+      "y": 13,
+      "z": 4,
+      "type": "handrailA",
+      "direction": 3
+    },
+    {
+      "x": -2,
+      "y": 1,
+      "z": -3,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": -2,
+      "y": 12,
+      "z": -3,
+      "type": "cobblestone_step_updown",
+      "direction": 3
+    },
+    {
+      "x": -2,
+      "y": 13,
+      "z": -3,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": -2,
+      "y": 1,
+      "z": -2,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": -2,
+      "y": 2,
+      "z": -2,
+      "type": "smooth_stone",
+      "direction": 0
+    },
+    {
+      "x": -2,
+      "y": 9,
+      "z": -2,
+      "type": "polished_blackstone_bricks",
+      "direction": 0
+    },
+    {
+      "x": -2,
+      "y": 13,
+      "z": -2,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": -2,
+      "y": 14,
+      "z": -2,
+      "type": "weathered_cut_copper",
+      "direction": 0
+    },
+    {
+      "x": -2,
+      "y": 1,
+      "z": -1,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": -2,
+      "y": 2,
+      "z": -1,
+      "type": "smooth_stone_1",
+      "direction": 0
+    },
+    {
+      "x": -2,
+      "y": 3,
+      "z": -1,
+      "type": "water",
+      "direction": 0
+    },
+    {
+      "x": -2,
+      "y": 9,
+      "z": -1,
+      "type": "glass_block",
+      "direction": 0
+    },
+    {
+      "x": -2,
+      "y": 14,
+      "z": -1,
+      "type": "weathered_cut_copper",
+      "direction": 0
+    },
+    {
+      "x": -2,
+      "y": 15,
+      "z": -1,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": -2,
+      "y": 1,
+      "z": 0,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": -2,
+      "y": 2,
+      "z": 0,
+      "type": "smooth_stone_1",
+      "direction": 0
+    },
+    {
+      "x": -2,
+      "y": 3,
+      "z": 0,
+      "type": "water",
+      "direction": 0
+    },
+    {
+      "x": -2,
+      "y": 9,
+      "z": 0,
+      "type": "glass_block",
+      "direction": 0
+    },
+    {
+      "x": -2,
+      "y": 14,
+      "z": 0,
+      "type": "weathered_cut_copper",
+      "direction": 0
+    },
+    {
+      "x": -2,
+      "y": 15,
+      "z": 0,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": -2,
+      "y": 1,
+      "z": 1,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": -2,
+      "y": 2,
+      "z": 1,
+      "type": "smooth_stone_1",
+      "direction": 0
+    },
+    {
+      "x": -2,
+      "y": 3,
+      "z": 1,
+      "type": "water",
+      "direction": 1
+    },
+    {
+      "x": -2,
+      "y": 9,
+      "z": 1,
+      "type": "glass_block",
+      "direction": 0
+    },
+    {
+      "x": -2,
+      "y": 14,
+      "z": 1,
+      "type": "weathered_cut_copper",
+      "direction": 0
+    },
+    {
+      "x": -2,
+      "y": 15,
+      "z": 1,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": -2,
+      "y": 1,
+      "z": 2,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": -2,
+      "y": 2,
+      "z": 2,
+      "type": "smooth_stone",
+      "direction": 0
+    },
+    {
+      "x": -2,
+      "y": 9,
+      "z": 2,
+      "type": "polished_blackstone_bricks",
+      "direction": 0
+    },
+    {
+      "x": -2,
+      "y": 13,
+      "z": 2,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": -2,
+      "y": 14,
+      "z": 2,
+      "type": "weathered_cut_copper",
+      "direction": 0
+    },
+    {
+      "x": -2,
+      "y": 1,
+      "z": 3,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": -2,
+      "y": 12,
+      "z": 3,
+      "type": "cobblestone_step_updown",
+      "direction": 1
+    },
+    {
+      "x": -2,
+      "y": 13,
+      "z": 3,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": -1,
+      "y": 1,
+      "z": -3,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": -1,
+      "y": 12,
+      "z": -3,
+      "type": "cobblestone_step_updown",
+      "direction": 3
+    },
+    {
+      "x": -1,
+      "y": 13,
+      "z": -3,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": -1,
+      "y": 1,
+      "z": -2,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": -1,
+      "y": 2,
+      "z": -2,
+      "type": "smooth_stone",
+      "direction": 0
+    },
+    {
+      "x": -1,
+      "y": 9,
+      "z": -2,
+      "type": "polished_blackstone_bricks",
+      "direction": 0
+    },
+    {
+      "x": -1,
+      "y": 13,
+      "z": -2,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": -1,
+      "y": 14,
+      "z": -2,
+      "type": "weathered_cut_copper",
+      "direction": 0
+    },
+    {
+      "x": -1,
+      "y": 1,
+      "z": -1,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": -1,
+      "y": 2,
+      "z": -1,
+      "type": "smooth_stone_1",
+      "direction": 0
+    },
+    {
+      "x": -1,
+      "y": 3,
+      "z": -1,
+      "type": "water",
+      "direction": 0
+    },
+    {
+      "x": -1,
+      "y": 9,
+      "z": -1,
+      "type": "glass_block",
+      "direction": 0
+    },
+    {
+      "x": -1,
+      "y": 14,
+      "z": -1,
+      "type": "weathered_cut_copper",
+      "direction": 0
+    },
+    {
+      "x": -1,
+      "y": 15,
+      "z": -1,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": -1,
+      "y": 1,
+      "z": 0,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": -1,
+      "y": 2,
+      "z": 0,
+      "type": "smooth_stone_1",
+      "direction": 0
+    },
+    {
+      "x": -1,
+      "y": 3,
+      "z": 0,
+      "type": "water",
+      "direction": 0
+    },
+    {
+      "x": -1,
+      "y": 9,
+      "z": 0,
+      "type": "glass_block",
+      "direction": 0
+    },
+    {
+      "x": -1,
+      "y": 14,
+      "z": 0,
+      "type": "weathered_cut_copper",
+      "direction": 0
+    },
+    {
+      "x": -1,
+      "y": 15,
+      "z": 0,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": -1,
+      "y": 16,
+      "z": 0,
+      "type": "deepslate_diamond_ore",
+      "direction": 0
+    },
+    {
+      "x": -1,
+      "y": 1,
+      "z": 1,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": -1,
+      "y": 2,
+      "z": 1,
+      "type": "smooth_stone_1",
+      "direction": 0
+    },
+    {
+      "x": -1,
+      "y": 3,
+      "z": 1,
+      "type": "water",
+      "direction": 0
+    },
+    {
+      "x": -1,
+      "y": 9,
+      "z": 1,
+      "type": "glass_block",
+      "direction": 0
+    },
+    {
+      "x": -1,
+      "y": 14,
+      "z": 1,
+      "type": "weathered_cut_copper",
+      "direction": 0
+    },
+    {
+      "x": -1,
+      "y": 15,
+      "z": 1,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": -1,
+      "y": 1,
+      "z": 2,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": -1,
+      "y": 2,
+      "z": 2,
+      "type": "smooth_stone",
+      "direction": 0
+    },
+    {
+      "x": -1,
+      "y": 9,
+      "z": 2,
+      "type": "polished_blackstone_bricks",
+      "direction": 0
+    },
+    {
+      "x": -1,
+      "y": 13,
+      "z": 2,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": -1,
+      "y": 14,
+      "z": 2,
+      "type": "weathered_cut_copper",
+      "direction": 0
+    },
+    {
+      "x": -1,
+      "y": 1,
+      "z": 3,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": -1,
+      "y": 12,
+      "z": 3,
+      "type": "cobblestone_step_updown",
+      "direction": 1
+    },
+    {
+      "x": -1,
+      "y": 13,
+      "z": 3,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": 0,
+      "y": 1,
+      "z": -3,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": 0,
+      "y": 12,
+      "z": -3,
+      "type": "cobblestone_step_updown",
+      "direction": 3
+    },
+    {
+      "x": 0,
+      "y": 13,
+      "z": -3,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": 0,
+      "y": 1,
+      "z": -2,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": 0,
+      "y": 2,
+      "z": -2,
+      "type": "smooth_stone",
+      "direction": 0
+    },
+    {
+      "x": 0,
+      "y": 9,
+      "z": -2,
+      "type": "polished_blackstone_bricks",
+      "direction": 0
+    },
+    {
+      "x": 0,
+      "y": 12,
+      "z": -2,
+      "type": "azalea_flowers",
+      "direction": 0
+    },
+    {
+      "x": 0,
+      "y": 13,
+      "z": -2,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": 0,
+      "y": 14,
+      "z": -2,
+      "type": "weathered_cut_copper",
+      "direction": 0
+    },
+    {
+      "x": 0,
+      "y": 1,
+      "z": -1,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": 0,
+      "y": 2,
+      "z": -1,
+      "type": "smooth_stone_1",
+      "direction": 0
+    },
+    {
+      "x": 0,
+      "y": 3,
+      "z": -1,
+      "type": "water",
+      "direction": 0
+    },
+    {
+      "x": 0,
+      "y": 9,
+      "z": -1,
+      "type": "glass_block",
+      "direction": 0
+    },
+    {
+      "x": 0,
+      "y": 14,
+      "z": -1,
+      "type": "weathered_cut_copper",
+      "direction": 0
+    },
+    {
+      "x": 0,
+      "y": 15,
+      "z": -1,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": 0,
+      "y": 1,
+      "z": 0,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": 0,
+      "y": 2,
+      "z": 0,
+      "type": "smooth_stone_1",
+      "direction": 0
+    },
+    {
+      "x": 0,
+      "y": 3,
+      "z": 0,
+      "type": "water",
+      "direction": 0
+    },
+    {
+      "x": 0,
+      "y": 9,
+      "z": 0,
+      "type": "glass_block",
+      "direction": 0
+    },
+    {
+      "x": 0,
+      "y": 14,
+      "z": 0,
+      "type": "weathered_cut_copper",
+      "direction": 0
+    },
+    {
+      "x": 0,
+      "y": 15,
+      "z": 0,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": 0,
+      "y": 1,
+      "z": 1,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": 0,
+      "y": 2,
+      "z": 1,
+      "type": "smooth_stone_1",
+      "direction": 0
+    },
+    {
+      "x": 0,
+      "y": 3,
+      "z": 1,
+      "type": "water",
+      "direction": 0
+    },
+    {
+      "x": 0,
+      "y": 9,
+      "z": 1,
+      "type": "glass_block",
+      "direction": 0
+    },
+    {
+      "x": 0,
+      "y": 14,
+      "z": 1,
+      "type": "weathered_cut_copper",
+      "direction": 0
+    },
+    {
+      "x": 0,
+      "y": 15,
+      "z": 1,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": 0,
+      "y": 1,
+      "z": 2,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": 0,
+      "y": 2,
+      "z": 2,
+      "type": "smooth_stone",
+      "direction": 0
+    },
+    {
+      "x": 0,
+      "y": 9,
+      "z": 2,
+      "type": "polished_blackstone_bricks",
+      "direction": 0
+    },
+    {
+      "x": 0,
+      "y": 13,
+      "z": 2,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": 0,
+      "y": 14,
+      "z": 2,
+      "type": "weathered_cut_copper",
+      "direction": 0
+    },
+    {
+      "x": 0,
+      "y": 1,
+      "z": 3,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": 0,
+      "y": 12,
+      "z": 3,
+      "type": "cobblestone_step_updown",
+      "direction": 1
+    },
+    {
+      "x": 0,
+      "y": 13,
+      "z": 3,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 10,
+      "z": -4,
+      "type": "handrailA",
+      "direction": 3
+    },
+    {
+      "x": 1,
+      "y": 11,
+      "z": -4,
+      "type": "handrailA",
+      "direction": 3
+    },
+    {
+      "x": 1,
+      "y": 12,
+      "z": -4,
+      "type": "handrailA",
+      "direction": 1
+    },
+    {
+      "x": 1,
+      "y": 13,
+      "z": -4,
+      "type": "handrailA",
+      "direction": 1
+    },
+    {
+      "x": 1,
+      "y": 1,
+      "z": -3,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 2,
+      "z": -3,
+      "type": "azalea_leaves",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 11,
+      "z": -3,
+      "type": "leaves",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 12,
+      "z": -3,
+      "type": "azalea_flowers",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 13,
+      "z": -3,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 1,
+      "z": -2,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 2,
+      "z": -2,
+      "type": "smooth_stone",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 3,
+      "z": -2,
+      "type": "block_of_quartz",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 4,
+      "z": -2,
+      "type": "block_of_quartz",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 5,
+      "z": -2,
+      "type": "block_of_quartz",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 6,
+      "z": -2,
+      "type": "block_of_quartz",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 7,
+      "z": -2,
+      "type": "block_of_quartz",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 8,
+      "z": -2,
+      "type": "block_of_quartz",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 9,
+      "z": -2,
+      "type": "block_of_quartz",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 10,
+      "z": -2,
+      "type": "block_of_quartz",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 11,
+      "z": -2,
+      "type": "block_of_quartz",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 12,
+      "z": -2,
+      "type": "ochre_froglight",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 13,
+      "z": -2,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 14,
+      "z": -2,
+      "type": "weathered_cut_copper",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 1,
+      "z": -1,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 2,
+      "z": -1,
+      "type": "smooth_stone",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 9,
+      "z": -1,
+      "type": "polished_blackstone_bricks",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 13,
+      "z": -1,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 14,
+      "z": -1,
+      "type": "weathered_cut_copper",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 1,
+      "z": 0,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 2,
+      "z": 0,
+      "type": "smooth_stone",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 9,
+      "z": 0,
+      "type": "polished_blackstone_bricks",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 13,
+      "z": 0,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 14,
+      "z": 0,
+      "type": "weathered_cut_copper",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 1,
+      "z": 1,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 2,
+      "z": 1,
+      "type": "smooth_stone",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 9,
+      "z": 1,
+      "type": "polished_blackstone_bricks",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 13,
+      "z": 1,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 14,
+      "z": 1,
+      "type": "weathered_cut_copper",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 1,
+      "z": 2,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 2,
+      "z": 2,
+      "type": "smooth_stone",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 3,
+      "z": 2,
+      "type": "block_of_quartz",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 4,
+      "z": 2,
+      "type": "block_of_quartz",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 5,
+      "z": 2,
+      "type": "block_of_quartz",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 6,
+      "z": 2,
+      "type": "block_of_quartz",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 7,
+      "z": 2,
+      "type": "block_of_quartz",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 8,
+      "z": 2,
+      "type": "block_of_quartz",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 9,
+      "z": 2,
+      "type": "block_of_quartz",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 10,
+      "z": 2,
+      "type": "block_of_quartz",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 11,
+      "z": 2,
+      "type": "block_of_quartz",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 12,
+      "z": 2,
+      "type": "ochre_froglight",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 13,
+      "z": 2,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 14,
+      "z": 2,
+      "type": "weathered_cut_copper",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 1,
+      "z": 3,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 2,
+      "z": 3,
+      "type": "azalea_leaves",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 8,
+      "z": 3,
+      "type": "azalea_leaves",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 9,
+      "z": 3,
+      "type": "azalea_leaves",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 10,
+      "z": 3,
+      "type": "azalea_leaves",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 12,
+      "z": 3,
+      "type": "leaves",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 13,
+      "z": 3,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 10,
+      "z": 4,
+      "type": "handrailA",
+      "direction": 3
+    },
+    {
+      "x": 1,
+      "y": 11,
+      "z": 4,
+      "type": "handrailA",
+      "direction": 3
+    },
+    {
+      "x": 1,
+      "y": 12,
+      "z": 4,
+      "type": "handrailA",
+      "direction": 3
+    },
+    {
+      "x": 1,
+      "y": 13,
+      "z": 4,
+      "type": "handrailA",
+      "direction": 3
+    },
+    {
+      "x": 2,
+      "y": 1,
+      "z": -4,
+      "type": "leaves",
+      "direction": 0
+    },
+    {
+      "x": 2,
+      "y": 1,
+      "z": -3,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": 2,
+      "y": 9,
+      "z": -3,
+      "type": "azalea_leaves",
+      "direction": 0
+    },
+    {
+      "x": 2,
+      "y": 10,
+      "z": -3,
+      "type": "azalea_leaves",
+      "direction": 0
+    },
+    {
+      "x": 2,
+      "y": 11,
+      "z": -3,
+      "type": "azalea_leaves",
+      "direction": 0
+    },
+    {
+      "x": 2,
+      "y": 12,
+      "z": -3,
+      "type": "azalea_leaves",
+      "direction": 0
+    },
+    {
+      "x": 2,
+      "y": 13,
+      "z": -3,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": 2,
+      "y": 1,
+      "z": -2,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": 2,
+      "y": 2,
+      "z": -2,
+      "type": "azalea_leaves",
+      "direction": 0
+    },
+    {
+      "x": 2,
+      "y": 10,
+      "z": -2,
+      "type": "azalea_flowers",
+      "direction": 0
+    },
+    {
+      "x": 2,
+      "y": 12,
+      "z": -2,
+      "type": "azalea_leaves",
+      "direction": 0
+    },
+    {
+      "x": 2,
+      "y": 13,
+      "z": -2,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": 2,
+      "y": 1,
+      "z": -1,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": 2,
+      "y": 12,
+      "z": -1,
+      "type": "cobblestone_step_updown",
+      "direction": 2
+    },
+    {
+      "x": 2,
+      "y": 13,
+      "z": -1,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": 2,
+      "y": 1,
+      "z": 0,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": 2,
+      "y": 12,
+      "z": 0,
+      "type": "cobblestone_step_updown",
+      "direction": 2
+    },
+    {
+      "x": 2,
+      "y": 13,
+      "z": 0,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": 2,
+      "y": 1,
+      "z": 1,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": 2,
+      "y": 12,
+      "z": 1,
+      "type": "cobblestone_step_updown",
+      "direction": 2
+    },
+    {
+      "x": 2,
+      "y": 13,
+      "z": 1,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": 2,
+      "y": 1,
+      "z": 2,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": 2,
+      "y": 2,
+      "z": 2,
+      "type": "azalea_leaves",
+      "direction": 0
+    },
+    {
+      "x": 2,
+      "y": 9,
+      "z": 2,
+      "type": "azalea_flowers",
+      "direction": 0
+    },
+    {
+      "x": 2,
+      "y": 10,
+      "z": 2,
+      "type": "leaves",
+      "direction": 0
+    },
+    {
+      "x": 2,
+      "y": 11,
+      "z": 2,
+      "type": "leaves",
+      "direction": 0
+    },
+    {
+      "x": 2,
+      "y": 12,
+      "z": 2,
+      "type": "leaves",
+      "direction": 0
+    },
+    {
+      "x": 2,
+      "y": 13,
+      "z": 2,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": 2,
+      "y": 1,
+      "z": 3,
+      "type": "floatato",
+      "direction": 0
+    },
+    {
+      "x": 2,
+      "y": 11,
+      "z": 3,
+      "type": "leaves",
+      "direction": 0
+    },
+    {
+      "x": 2,
+      "y": 12,
+      "z": 3,
+      "type": "leaves",
+      "direction": 0
+    },
+    {
+      "x": 2,
+      "y": 13,
+      "z": 3,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": 2,
+      "y": 1,
+      "z": 4,
+      "type": "yellow_leaves",
+      "direction": 0
+    },
+    {
+      "x": 3,
+      "y": 1,
+      "z": -3,
+      "type": "leaves",
+      "direction": 0
+    },
+    {
+      "x": 3,
+      "y": 10,
+      "z": -2,
+      "type": "handrailA",
+      "direction": 0
+    },
+    {
+      "x": 3,
+      "y": 11,
+      "z": -2,
+      "type": "handrailA",
+      "direction": 0
+    },
+    {
+      "x": 3,
+      "y": 12,
+      "z": -2,
+      "type": "handrailA",
+      "direction": 2
+    },
+    {
+      "x": 3,
+      "y": 13,
+      "z": -2,
+      "type": "handrailA",
+      "direction": 2
+    },
+    {
+      "x": 3,
+      "y": 10,
+      "z": 2,
+      "type": "handrailA",
+      "direction": 0
+    },
+    {
+      "x": 3,
+      "y": 11,
+      "z": 2,
+      "type": "handrailA",
+      "direction": 0
+    },
+    {
+      "x": 3,
+      "y": 12,
+      "z": 2,
+      "type": "handrailA",
+      "direction": 2
+    },
+    {
+      "x": 3,
+      "y": 13,
+      "z": 2,
+      "type": "handrailA",
+      "direction": 2
+    },
+    {
+      "x": 3,
+      "y": 1,
+      "z": 3,
+      "type": "leaves",
+      "direction": 0
+    },
+    {
+      "x": 24,
+      "y": 51,
+      "z": 20,
+      "type": "chest",
+      "direction": 0
+    }
+  ],
+  "metadata": {
+    "created": "2026-03-27T12:42:03.200Z",
+    "dimensions": {
+      "width": 43,
+      "height": 55,
+      "depth": 40
+    }
+  }
+}

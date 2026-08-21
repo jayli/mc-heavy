@@ -9,7 +9,34 @@
   import { BLOCKS } from '../voxel/blocks-data.js';
   import { blockIndex } from '../voxel/constants.js';
   import { generateHeight } from '../gen/terrain.js';
-  import { computeRegionLayout } from '../gen/structures/structure-layout.js';
+  import { computeRegionLayout, neighborRegionKeys } from '../gen/structures/structure-layout.js';
+
+  /** 找一个金字塔不被城市、也不被查询域内其他地标覆写的 region（城市优先级是 mc-lite 原语义） */
+  function findFreePyramidRegion(seed) {
+    const city = computeRegionLayout(0, 0, seed).city;
+    for (let rx = -4; rx <= 4; rx++) {
+      for (let rz = -4; rz <= 4; rz++) {
+        if (rx === 0 && rz === 0) continue;
+        const l = computeRegionLayout(rx, rz, seed);
+        const py = l.pyramid;
+        const outOfCity = py.cx + 28 < city.minX || py.cx - 28 > city.maxX ||
+                          py.cz + 28 < city.minZ || py.cz - 28 > city.maxZ;
+        if (!outOfCity) continue;
+        // 查询域 9 region 布局中，其他地标不得覆盖金字塔中心点
+        const pcx = Math.floor(py.cx / 16), pcz = Math.floor(py.cz / 16);
+        let covered = false;
+        for (const key of neighborRegionKeys(pcx, pcz)) {
+          const [rrx, rrz] = key.split(',').map(Number);
+          const nl = computeRegionLayout(rrx, rrz, seed);
+          if (nl.city && py.cx >= nl.city.minX && py.cx <= nl.city.maxX && py.cz >= nl.city.minZ && py.cz <= nl.city.maxZ) { covered = true; break; }
+          const sl = nl.snowLand;
+          if (Math.abs(py.cx - sl.cx) <= 28 && Math.abs(py.cz - sl.cz) <= 28) { covered = true; break; }
+        }
+        if (!covered) return l;
+      }
+    }
+    return null;
+  }
 
   async function run() {
     const results = { passed: 0, failed: 0, errors: [] };
@@ -24,15 +51,18 @@
     const pool = new WorkerPool({ workerUrl: '/src/workers/world-worker.js', size: 2 });
     await pool.ready;
 
-    // 1. layout RPC：Worker 内计算，与主线程 computeRegionLayout 逐字段一致（确定性）
-    const t0 = performance.now();
-    const remoteLayout = await pool.call('layout', { regionX: 0, regionZ: 0, seed: SEED }).promise;
-    results.layoutMs = performance.now() - t0;
-    const localLayout = computeRegionLayout(0, 0, SEED);
-    check('layout RPC matches local compute', JSON.stringify(remoteLayout) === JSON.stringify(localLayout));
-    check('layout includes city at region (0,0)', remoteLayout.city !== null);
-
     // 2. GEN 注入结构：携带 layouts 的 GEN 在金字塔中心产出 sand 顶层
+    // （金字塔 region 需不被城市吞没——城市优先级是 mc-lite 原语义）
+    const freeLayout = findFreePyramidRegion(SEED);
+    check('found pyramid region free of city', freeLayout !== null);
+    const localLayout = freeLayout || computeRegionLayout(2, 2, SEED);
+    const t0 = performance.now();
+    const remoteLayout = await pool.call('layout', { regionX: localLayout.regionX, regionZ: localLayout.regionZ, seed: SEED }).promise;
+    results.layoutMs = performance.now() - t0;
+    check('layout RPC matches local compute', JSON.stringify(remoteLayout) === JSON.stringify(localLayout));
+    const originLayout = await pool.call('layout', { regionX: 0, regionZ: 0, seed: SEED }).promise;
+    check('layout includes city at region (0,0)', originLayout.city !== null);
+
     const py = localLayout.pyramid;
     const pcx = Math.floor(py.cx / 16), pcz = Math.floor(py.cz / 16);
     const layouts = [localLayout];

@@ -105,16 +105,17 @@
 - `src/workers/maps/RegionCenterUtils.js`（region 中心）
 
 **实现要点：**
-- [ ] 每种地标一个纯函数 `generate<Name>(column, seed, registry, structureInfo)`，Worker 同构（不 import three）
-- [ ] 城市：224×224 格，固定 [0,0]（mc-lite 语义），建筑高度/密度由 seed 决定
-- [ ] 金字塔/冰封山/海岛：随机中心偏移 100-400（CENTER_OFFSET），半尺寸 40-80
-- [ ] 雪地：biome 叠加（SNOW biome 判定 + 雪块表面）
-- [ ] 结构方块写入 column.blocks（不走 setBlock——不记 edits、不 bump version）
+- [x] 每种地标一个纯函数 `generate<Name>(wx, wz, h, info, setBlock, seed)`，Worker 同构（不 import three；Math.random 全部 seededRandom 化）
+- [x] 城市：固定 region [0,0]（mc-lite 语义），建筑高度/密度由 seed 决定；出生点改 City 中心（mc-lite getCitySpawnPoint 语义，保证出生即见天际线）
+- [x] 金字塔/冰封山/海岛：随机中心偏移 100-400（CENTER_OFFSET），半尺寸 40-80
+- [x] 雪地：biome 叠加（snow_grass 表面 + 海底 sand 分支 + 3% short_grass）
+- [x] 结构方块写入 column.blocks（不走 setBlock——不记 edits、不 bump version）
+- [x] JSON 结构光栅化（城堡等 18 种城市建筑 + 海岛塔 + 平地金字塔岛，Worker 内 fetch 缓存 + AABB 裁剪 + ground support 补柱）
 
 **测试：**
-- [ ] 出生点 (8,8) 视距 8 内可见城市天际线（截图非纯地形）
-- [ ] 同 seed 同位置截图与 mc-lite 结构轮廓/配色基调一致（人工比对）
-- [ ] 跨 region 行走无卡顿（GEN p95 <8ms、fps ≥90）
+- [x] 出生点视距 8 内可见城市天际线（city-visual spec：nonSky 0.73、城堡在中心、高层方块 >20、稳态 120fps）
+- [~] 同 seed 截图与 mc-lite 比对：算法级逐字段核验（城市布局与 mc-lite CityMap 同 seed 完全一致；地标公式逐行移植）；mc-lite 随机 seed 需人工 setSeed 截图比对，留人工验收
+- [x] 跨 region 行走无卡顿（平原冲刺 fps 117、GEN p95 <8ms）
 
 ### Task M2-3: 树木 + 植被
 

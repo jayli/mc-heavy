@@ -1,16 +1,23 @@
 // src/gen/structures/landmarks.js — 地标位置/形状算法（移植 mc-lite workers/maps/*）
-// M2-1 范围：各 landmark 中心计算 + 金字塔 info/generate；
-// 其余地标 info/generate 随 M2-2 追加。
+// M2-1：中心计算 + 金字塔；M2-2：雪原/冰封山/海岛/平地/城市地形（generateCity + detectNearbyLandmark）。
+// Math.random → seededRandom 确定性化；terrainGen 依赖改为 generateHeight/getBiome 直调。
 // Worker 同构：本文件不得 import three。
 import { getRegionSeededCenter, clampCenterToRegion } from './region-center.js';
 import {
   REGION_SIZE, REGION_MIN_MARGIN,
-  PYRAMID_SIZE, FROZEN_MOUNTAIN_SIZE, PLAIN_LAND_SIZE, ISLAND_SIZE,
+  PYRAMID_SIZE, FROZEN_MOUNTAIN_SIZE, PLAIN_LAND_SIZE, ISLAND_SIZE, SNOW_LAND_SIZE,
   TRANSITION_SIZE, LANDMARK_OFFSET, LANDMARK_MIN_DISTANCE,
+  FROZEN_MOUNTAIN_STEEP_AXIS, FROZEN_MOUNTAIN_STEEP_FACTOR, FROZEN_MOUNTAIN_HEIGHT_FACTOR,
+  ISLAND_SHAPE_NOISE_SCALE, ISLAND_EDGE_NOISE_SCALE,
+  SNOW_LAND_CENTER_BOOST_RADIUS, CITY_TRANSITION_SIZE, CITY_TERRACE_WIDTH,
+  ISLAND_SEA_LEVEL,
 } from './region-config.js';
 import { seededRandom, getBiome } from '../noise.js';
-import { generateHeight } from '../terrain.js';
+import { generateHeight, generateHeightForBiome } from '../terrain.js';
+import { getCityInfo, getCitySurfaceY } from './city-layout.js';
 import { SEA_Y, WORLD_MIN_Y, WORLD_MAX_Y, blockIndex } from '../../voxel/constants.js';
+
+export { getCityInfo };
 
 // ==================== 中心计算 ====================
 
@@ -253,15 +260,555 @@ export function generatePyramid(wx, wz, h, pyInfo, setBlock, seed) {
 export function makeColumnSetter(column, registry) {
   const idCache = new Map();
   const idOf = (name) => {
-    let id = idCache.get(name);
-    if (id === undefined) { id = registry.idOf(name); idCache.set(name, id); }
+    if (idCache.has(name)) return idCache.get(name);
+    const id = registry.idOf(name);
+    idCache.set(name, id);
     return id;
   };
-  return (wx, y, wz, name) => {
+  return (wx, y, wz, name, meta = 0) => {
     const lx = wx - column.cx * 16;
     const lz = wz - column.cz * 16;
     if (lx < 0 || lx > 15 || lz < 0 || lz > 15) return;
     if (y < WORLD_MIN_Y || y >= WORLD_MAX_Y) return;
-    column.blocks[blockIndex(lx, y, lz)] = idOf(name);
+    const id = idOf(name);
+    if (id === undefined) return; // 未注册方块名：跳过（防御 JSON 数据异常）
+    const idx = blockIndex(lx, y, lz);
+    column.blocks[idx] = id;
+    column.meta[idx] = meta;
   };
 }
+
+// ==================== 雪原 ====================
+
+/**
+ * 雪原点位信息（mc-lite SnowLand.getSnowLandInfo，中心由布局给定）。
+ * @param {{cx: number, cz: number}} snowLand
+ */
+export function getSnowLandInfo(wx, wz, snowLand, seed) {
+  const halfSize = Math.floor(SNOW_LAND_SIZE / 2);
+  const transitionSize = TRANSITION_SIZE.SNOW_LAND;
+  const totalHalfSize = halfSize + transitionSize;
+
+  if (wx < snowLand.cx - totalHalfSize || wx > snowLand.cx + totalHalfSize ||
+      wz < snowLand.cz - totalHalfSize || wz > snowLand.cz + totalHalfSize) {
+    return null;
+  }
+
+  const dx = Math.abs(wx - snowLand.cx);
+  const dz = Math.abs(wz - snowLand.cz);
+  const distFromCenterMax = Math.max(dx, dz);
+  const distFromCenterEuclid = Math.sqrt((wx - snowLand.cx) ** 2 + (wz - snowLand.cz) ** 2);
+
+  let zone, transitionFactor;
+  if (distFromCenterMax <= halfSize) {
+    zone = 'core';
+    transitionFactor = 0;
+  } else {
+    zone = 'transition';
+    transitionFactor = (distFromCenterMax - halfSize) / transitionSize;
+  }
+
+  // 平缓高度噪声（高低差 ≤2）+ 中心抬升
+  const noise1 = Math.sin(wx * 0.08 + seed * 0.5) * Math.cos(wz * 0.08 + seed * 0.3);
+  const noise2 = Math.sin(wx * 0.15 + seed * 1.2) * Math.cos(wz * 0.15 + seed * 0.7) * 0.5;
+  const centerBoost = Math.max(0, 2 - distFromCenterEuclid / SNOW_LAND_CENTER_BOOST_RADIUS);
+  const heightOffset = Math.floor((noise1 + noise2) * 1.5 + centerBoost);
+
+  return {
+    centerX: snowLand.cx,
+    centerZ: snowLand.cz,
+    heightOffset,
+    transitionFactor,
+    zone,
+  };
+}
+
+/** 生成雪原方块（mc-lite generateSnowLand；dirt 层数与 short_grass 确定性化） */
+export function generateSnowLand(wx, wz, h, slInfo, setBlock, seed) {
+  const seaLevel = SEA_Y;
+
+  let finalSurfaceY;
+  if (slInfo.transitionFactor === 0) {
+    finalSurfaceY = h + slInfo.heightOffset;
+  } else {
+    const baseHeight = h + slInfo.heightOffset;
+    finalSurfaceY = Math.floor(h + (baseHeight - h) * (1 - slInfo.transitionFactor));
+  }
+  const heightDiff = finalSurfaceY - h;
+  if (Math.abs(heightDiff) > 2) finalSurfaceY = h + Math.sign(heightDiff) * 2;
+
+  const fillStartY = Math.min(h, finalSurfaceY);
+  const fillEndY = Math.max(h, finalSurfaceY);
+  const isBelowSeaLevel = finalSurfaceY <= seaLevel - 1;
+  const dirtLayers = 3 + Math.floor(seededRandom(wx, wz, seed + 311) * 3);
+
+  for (let y = fillStartY; y <= fillEndY; y++) {
+    if (y < WORLD_MIN_Y || y >= WORLD_MAX_Y) continue;
+    if (isBelowSeaLevel) setBlock(wx, y, wz, 'sand');
+    else if (y === fillEndY) setBlock(wx, y, wz, 'snow_grass');
+    else if (fillEndY - y < dirtLayers) setBlock(wx, y, wz, 'dirt');
+    else setBlock(wx, y, wz, 'stone');
+  }
+
+  const rockBaseY = Math.min(h, finalSurfaceY);
+  for (let k = 1; k <= 11; k++) {
+    const rockY = rockBaseY - k;
+    if (rockY < WORLD_MIN_Y) break;
+    setBlock(wx, rockY, wz, k === 11 ? 'end_stone' : 'stone');
+  }
+  if (rockBaseY - 12 >= WORLD_MIN_Y) setBlock(wx, rockBaseY - 12, wz, 'end_stone');
+
+  // 主体区 3% short_grass（原 Math.random，改 seeded）
+  if (slInfo.transitionFactor === 0 && !isBelowSeaLevel && seededRandom(wx, wz, seed + 312) < 0.03) {
+    if (fillEndY + 1 < WORLD_MAX_Y) setBlock(wx, fillEndY + 1, wz, 'short_grass');
+  }
+  return { surfaceY: fillEndY, isBelowSeaLevel };
+}
+
+// ==================== 冰封山峰 ====================
+
+/** 山体噪声（mc-lite mountainNoise） */
+function mountainNoise(x, z, seed, scale) {
+  const nx = x + seed * 0.1;
+  const nz = z + seed * 0.2;
+  return Math.sin(nx * scale) * Math.cos(nz * scale * 0.8) +
+         Math.sin(nx * scale * 2.3 + 1.3) * Math.cos(nz * scale * 1.7 + 0.5) * 0.5;
+}
+
+/**
+ * 冰封山峰点位信息（mc-lite getFrozenMountainInfo 全量移植，中心由布局给定）。
+ * @param {{cx: number, cz: number}} fm
+ */
+export function getFrozenMountainInfo(wx, wz, fm, seed) {
+  const halfSize = Math.floor(FROZEN_MOUNTAIN_SIZE / 2);
+  const transitionSize = TRANSITION_SIZE.FROZEN_MOUNTAIN;
+  const steepAxisFactor = FROZEN_MOUNTAIN_STEEP_FACTOR;
+  const steepAxis = FROZEN_MOUNTAIN_STEEP_AXIS;
+
+  const totalHalfSize = halfSize + transitionSize;
+  if (wx < fm.cx - totalHalfSize || wx > fm.cx + totalHalfSize ||
+      wz < fm.cz - totalHalfSize || wz > fm.cz + totalHalfSize) {
+    return null;
+  }
+
+  const dx = wx - fm.cx;
+  const dz = wz - fm.cz;
+  const angle = Math.atan2(dz, dx);
+
+  // 山形轮廓噪声
+  const shapeNoise1 = mountainNoise(wx, wz, seed + 1000, 0.008);
+  const shapeNoise2 = mountainNoise(wx, wz, seed + 2000, 0.015) * 0.5;
+  const shapeNoise3 = mountainNoise(wx, wz, seed + 3000, 0.025) * 0.25;
+  const shapeNoise = (shapeNoise1 + shapeNoise2 + shapeNoise3) * 0.5 + 0.5;
+
+  const angleVariation = Math.sin(angle * 3 + seed * 0.1) * 4 +
+                         Math.sin(angle * 5 + seed * 0.2) * 2 +
+                         Math.sin(angle * 7 + seed * 0.3) * 1;
+  const effectiveRadius = halfSize + angleVariation + (shapeNoise - 0.5) * 8;
+
+  const adjustedDx = steepAxis === 'x' ? dx / steepAxisFactor : dx;
+  const adjustedDz = steepAxis === 'z' ? dz / steepAxisFactor : dz;
+  const euclidDist = Math.sqrt(adjustedDx * adjustedDx + adjustedDz * adjustedDz);
+  const normalizedDist = euclidDist / Math.max(1, effectiveRadius);
+
+  let zone, transitionFactor;
+  if (normalizedDist <= 1.0) {
+    zone = 'core';
+    transitionFactor = 0;
+  } else {
+    zone = 'transition';
+    const t = (normalizedDist - 1.0) / (transitionSize / halfSize);
+    transitionFactor = Math.max(0, Math.min(1, t));
+  }
+
+  const flatRadiusNoise = mountainNoise(wx, wz, seed + 4000, 0.02) * 3;
+  const flatRadius = Math.max(5, 10 + flatRadiusNoise);
+
+  let baseHeightFloat;
+  const summitHeight = (halfSize - 10) / FROZEN_MOUNTAIN_HEIGHT_FACTOR;
+
+  if (normalizedDist < flatRadius / halfSize) {
+    const summitNoise = mountainNoise(wx, wz, seed + 5000, 0.03) * 0.8;
+    baseHeightFloat = summitHeight + summitNoise;
+  } else {
+    const slopeT = Math.max(0, Math.min(1,
+      (normalizedDist - flatRadius / halfSize) / (1 - flatRadius / halfSize)));
+    const slopeNoise1 = mountainNoise(wx, wz, seed + 6000, 0.006);
+    const slopeNoise2 = mountainNoise(wx, wz, seed + 7000, 0.012) * 0.5;
+    const slopeNoise = (slopeNoise1 + slopeNoise2) * 0.5 + 0.5;
+    const profileExponent = 1.1 + slopeNoise * 0.7;
+    const profile = 1 - Math.pow(slopeT, profileExponent);
+
+    const bumpNoise1 = mountainNoise(wx, wz, seed + 8000, 0.025);
+    const bumpNoise2 = mountainNoise(wx, wz, seed + 9000, 0.045) * 0.5;
+    const bumpNoise3 = mountainNoise(wx, wz, seed + 10000, 0.08) * 0.25;
+    const bumpNoise = bumpNoise1 + bumpNoise2 + bumpNoise3;
+    const bumpMask = Math.sin(Math.PI * slopeT);
+    const bumpOffset = bumpNoise * 2.5 * bumpMask;
+
+    const ridgeAngle1 = angle * 3 + mountainNoise(wx, wz, seed + 11000, 0.01) * 0.5;
+    const ridgeNoise1 = Math.sin(ridgeAngle1) * (1 - slopeT);
+    const ridgeOffset = ridgeNoise1 * 1.5 * (1 - slopeT);
+
+    baseHeightFloat = summitHeight * profile + bumpOffset + ridgeOffset;
+
+    const ruggedNoise =
+      mountainNoise(wx, wz, seed + 12000, 0.06) * 0.6 +
+      mountainNoise(wx, wz, seed + 13000, 0.1) * 0.3 +
+      mountainNoise(wx, wz, seed + 14000, 0.15) * 0.1;
+    baseHeightFloat += ruggedNoise * bumpMask * 0.7;
+  }
+
+  const broadUndulation =
+    mountainNoise(wx, wz, seed + 15000, 0.005) * 1.5 +
+    mountainNoise(wx, wz, seed + 16000, 0.01) * 0.8;
+  const undulationMask = Math.min(1, normalizedDist * 1.2);
+  baseHeightFloat += broadUndulation * undulationMask;
+
+  baseHeightFloat = Math.max(0, baseHeightFloat);
+
+  // 确定性抖动取整
+  const baseFloor = Math.floor(baseHeightFloat);
+  const frac = Math.max(0, Math.min(1, baseHeightFloat - baseFloor));
+  const dither = mountainNoise(wx, wz, seed + 777, 0.09) * 0.5 + 0.5;
+  const baseHeight = baseFloor + (dither < frac ? 1 : 0);
+
+  // 低频平滑扰动（十字采样）
+  const sampleOffsets = [[0, 0], [1.5, 0], [-1.5, 0], [0, 1.5], [0, -1.5]];
+  let smoothNoise = 0;
+  for (const [ox, oz] of sampleOffsets) {
+    const n1 = mountainNoise(wx + ox, wz + oz, seed + 37, 0.014);
+    const n2 = mountainNoise(wx + ox, wz + oz, seed + 91, 0.022) * 0.35;
+    smoothNoise += (n1 + n2);
+  }
+  smoothNoise /= sampleOffsets.length;
+
+  const slopeT = Math.max(0, Math.min(1, (normalizedDist - flatRadius / halfSize) /
+    Math.max(0.01, 1 - flatRadius / halfSize)));
+  const slopeMask = Math.sin(Math.PI * slopeT);
+  const noiseOffsetRaw = Math.round(smoothNoise * slopeMask * 1.1);
+  const noiseOffset = Math.max(-1, Math.min(1, noiseOffsetRaw));
+
+  const mountainLayerHeight = Math.max(0, baseHeight + noiseOffset);
+
+  return {
+    centerX: fm.cx,
+    centerZ: fm.cz,
+    layerHeight: mountainLayerHeight,
+    isBaseLayer: mountainLayerHeight === 0,
+    transitionFactor,
+    zone,
+  };
+}
+
+/** 生成冰封山峰方块（mc-lite generateFrozenMountain；dirt 层数/short_grass 确定性化） */
+export function generateFrozenMountain(wx, wz, h, fmInfo, setBlock, seed) {
+  const seaLevel = SEA_Y;
+  const originalMountainHeight = h + fmInfo.layerHeight;
+
+  let finalSurfaceY;
+  if (fmInfo.transitionFactor === 0) {
+    finalSurfaceY = originalMountainHeight;
+  } else {
+    const smoothHeight = Math.floor(h + (originalMountainHeight - h) * (1 - fmInfo.transitionFactor));
+    const maxDiff = 2;
+    const heightDiff = smoothHeight - h;
+    finalSurfaceY = Math.abs(heightDiff) <= maxDiff ? smoothHeight : h + Math.sign(heightDiff) * maxDiff;
+  }
+
+  const fillStartY = Math.min(h, finalSurfaceY);
+  const fillEndY = Math.max(h, finalSurfaceY);
+  const isBelowSeaLevel = finalSurfaceY <= seaLevel - 1;
+  const dirtLayers = 1 + Math.floor(seededRandom(wx, wz, seed + 313) * 2);
+
+  for (let y = fillStartY; y <= fillEndY; y++) {
+    if (y < WORLD_MIN_Y || y >= WORLD_MAX_Y) continue;
+    if (isBelowSeaLevel) setBlock(wx, y, wz, 'sand');
+    else if (y === fillEndY) setBlock(wx, y, wz, 'snow_grass');
+    else if (fillEndY - y < dirtLayers) setBlock(wx, y, wz, 'dirt');
+    else setBlock(wx, y, wz, 'stone');
+  }
+
+  const rockBaseY = Math.min(h, finalSurfaceY);
+  for (let k = 1; k <= 11; k++) {
+    const rockY = rockBaseY - k;
+    if (rockY < WORLD_MIN_Y) break;
+    setBlock(wx, rockY, wz, k === 11 ? 'end_stone' : 'stone');
+  }
+  if (rockBaseY - 12 >= WORLD_MIN_Y) setBlock(wx, rockBaseY - 12, wz, 'end_stone');
+
+  if (fmInfo.transitionFactor === 0 && !isBelowSeaLevel && seededRandom(wx, wz, seed + 314) < 0.03) {
+    if (fillEndY + 1 < WORLD_MAX_Y) setBlock(wx, fillEndY + 1, wz, 'short_grass');
+  }
+  return { surfaceY: fillEndY, isBelowSeaLevel };
+}
+
+// ==================== 海岛 ====================
+
+/**
+ * 海岛点位信息（mc-lite getIslandInfo；海洋有效性已在布局期判定）。
+ * @param {{cx: number, cz: number}} island
+ */
+export function getIslandInfo(wx, wz, island, seed) {
+  void seed;
+  const halfSize = Math.floor(ISLAND_SIZE / 2);
+  const totalHalfSize = halfSize + TRANSITION_SIZE.ISLAND;
+
+  const dx = Math.abs(wx - island.cx);
+  const dz = Math.abs(wz - island.cz);
+  if (dx > totalHalfSize || dz > totalHalfSize) return null;
+
+  const distFromCenter = Math.max(dx, dz);
+  const zone = distFromCenter <= halfSize ? 'core' : 'transition';
+  const transitionFactor = zone === 'core' ? 0 : (distFromCenter - halfSize) / TRANSITION_SIZE.ISLAND;
+
+  return { centerX: island.cx, centerZ: island.cz, zone, transitionFactor, distFromCenter };
+}
+
+/** 海岛形状噪声（mc-lite getIslandShapeNoise） */
+function getIslandShapeNoise(wx, wz, seed) {
+  const baseNoise = Math.sin(wx * ISLAND_SHAPE_NOISE_SCALE + seed) * Math.cos(wz * ISLAND_SHAPE_NOISE_SCALE + seed);
+  const midNoise = Math.sin(wx * ISLAND_SHAPE_NOISE_SCALE * 2 + seed * 1.5) * Math.cos(wz * ISLAND_SHAPE_NOISE_SCALE * 2 + seed * 1.5) * 0.5;
+  const detailNoise = Math.sin(wx * ISLAND_EDGE_NOISE_SCALE + seed * 2) * Math.cos(wz * ISLAND_EDGE_NOISE_SCALE + seed * 2) * 0.5;
+  const fineNoise = Math.sin(wx * ISLAND_EDGE_NOISE_SCALE * 2 + seed * 3) * Math.cos(wz * ISLAND_EDGE_NOISE_SCALE * 2 + seed * 3) * 0.25;
+  return baseNoise * ISLAND_SHAPE_NOISE_SCALE + midNoise * ISLAND_SHAPE_NOISE_SCALE * 0.5 +
+    detailNoise * ISLAND_EDGE_NOISE_SCALE + fineNoise * ISLAND_EDGE_NOISE_SCALE * 0.5;
+}
+
+/** 是否在海岛范围内（形状噪声扰动海岸线，mc-lite isInIsland） */
+function isInIsland(wx, wz, islandInfo, seed) {
+  const shapeNoise = getIslandShapeNoise(wx, wz, seed);
+  const effectiveDist = islandInfo.distFromCenter - shapeNoise * 8;
+  const halfSize = Math.floor(ISLAND_SIZE / 2);
+  return effectiveDist <= halfSize + TRANSITION_SIZE.ISLAND;
+}
+
+/** 生成海岛方块（mc-lite generateIsland：表面齐海平面，边缘 sand 内部 stone） */
+export function generateIsland(wx, wz, islandInfo, setBlock, seed) {
+  if (!isInIsland(wx, wz, islandInfo, seed)) return null;
+
+  const surfaceY = ISLAND_SEA_LEVEL;
+  const halfSize = Math.floor(ISLAND_SIZE / 2);
+  const distFromCenter = islandInfo.distFromCenter;
+
+  const shapeNoise = getIslandShapeNoise(wx, wz, seed);
+  const beachThreshold = (halfSize - 3) + shapeNoise * 3;
+  const surfaceBlock = distFromCenter > beachThreshold ? 'sand' : 'stone';
+
+  if (surfaceY >= WORLD_MIN_Y && surfaceY < WORLD_MAX_Y) setBlock(wx, surfaceY, wz, surfaceBlock);
+
+  // 地表下 2 层 dirt，再往下 stone 到 surfaceY-11
+  const bedrockY = surfaceY - 11;
+  for (let y = surfaceY - 1; y >= bedrockY; y--) {
+    if (y < WORLD_MIN_Y) break;
+    setBlock(wx, y, wz, y >= surfaceY - 2 ? 'dirt' : 'stone');
+  }
+  return { surfaceY, isBelowSeaLevel: surfaceY <= ISLAND_SEA_LEVEL - 1 };
+}
+
+/** 海岛过渡圈沙洲柱（mc-lite 列循环 island 分支的 sand 填充段） */
+export function generateIslandSandRing(wx, wz, islandInfo, setBlock) {
+  const seaY = ISLAND_SEA_LEVEL;
+  const bedrockY = seaY - 11;
+  for (let y = seaY - 1; y >= bedrockY; y--) {
+    if (y < WORLD_MIN_Y) break;
+    setBlock(wx, y, wz, 'sand');
+  }
+}
+
+// ==================== 平地 ====================
+
+/** 平地点位信息（mc-lite getPlainLandInfo；biome/baseHeight 已在布局期判定） */
+export function getPlainLandInfo(wx, wz, plainLand) {
+  const halfSize = Math.floor(PLAIN_LAND_SIZE / 2);
+  const dx = Math.abs(wx - plainLand.cx);
+  const dz = Math.abs(wz - plainLand.cz);
+  if (dx > halfSize || dz > halfSize) return null;
+  return { centerX: plainLand.cx, centerZ: plainLand.cz, baseHeight: plainLand.baseHeight, halfSize };
+}
+
+/** 生成平地方块（mc-lite generatePlainLand：全 sand 填平到 baseHeight） */
+export function generatePlainLand(wx, wz, h, plainInfo, setBlock) {
+  const surfaceY = plainInfo.baseHeight;
+  const fillStartY = Math.min(h, surfaceY);
+  const fillEndY = Math.max(h, surfaceY);
+  for (let y = fillStartY; y <= fillEndY; y++) {
+    if (y < WORLD_MIN_Y || y >= WORLD_MAX_Y) continue;
+    setBlock(wx, y, wz, 'sand');
+  }
+  const rockBaseY = Math.min(h, surfaceY);
+  for (let k = 1; k <= 11; k++) {
+    const rockY = rockBaseY - k;
+    if (rockY < WORLD_MIN_Y) break;
+    setBlock(wx, rockY, wz, k === 11 ? 'end_stone' : 'stone');
+  }
+  if (rockBaseY - 12 >= WORLD_MIN_Y) setBlock(wx, rockBaseY - 12, wz, 'end_stone');
+  return { surfaceY };
+}
+
+// ==================== 城市地形 ====================
+
+const CITY_MIN_SURFACE_Y = ISLAND_SEA_LEVEL + 1;
+
+/**
+ * 城市过渡带混合用的近旁地标探测（mc-lite detectNearbyLandmark 逐行移植——
+ * 注意 mc-lite 此处用 region 几何中心估算金字塔/冰封山位置，与布局中心不同，保留原语义）。
+ */
+export function detectNearbyLandmark(wx, wz, seed) {
+  const regionX = Math.floor(wx / REGION_SIZE);
+  const regionZ = Math.floor(wz / REGION_SIZE);
+
+  const pyramidOffsetX = LANDMARK_OFFSET.FROZEN_MOUNTAIN_X + 160;
+  const pyramidOffsetZ = LANDMARK_OFFSET.FROZEN_MOUNTAIN_Z;
+  const regionCenterX = regionX * REGION_SIZE + REGION_SIZE / 2;
+  const regionCenterZ = regionZ * REGION_SIZE + REGION_SIZE / 2;
+  const pyramidCx = regionCenterX + pyramidOffsetX;
+  const pyramidCz = regionCenterZ + pyramidOffsetZ;
+  const fmCx = regionCenterX + LANDMARK_OFFSET.FROZEN_MOUNTAIN_X;
+  const fmCz = regionCenterZ + LANDMARK_OFFSET.FROZEN_MOUNTAIN_Z;
+
+  const distToPyramid = Math.sqrt((wx - pyramidCx) ** 2 + (wz - pyramidCz) ** 2);
+  const distToFM = Math.sqrt((wx - fmCx) ** 2 + (wz - fmCz) ** 2);
+
+  const PYRAMID_HALF_SIZE = PYRAMID_SIZE / 2;
+  const PYRAMID_TRANSITION_SIZE = TRANSITION_SIZE.PYRAMID;
+  const PYRAMID_TOTAL_HALF = PYRAMID_HALF_SIZE + PYRAMID_TRANSITION_SIZE;
+  const FM_HALF_SIZE = FROZEN_MOUNTAIN_SIZE / 2;
+  const FM_TRANSITION_SIZE = TRANSITION_SIZE.FROZEN_MOUNTAIN;
+  const FM_TOTAL_HALF = FM_HALF_SIZE + FM_TRANSITION_SIZE;
+
+  const inPyramidRange = distToPyramid <= PYRAMID_TOTAL_HALF + 32;
+  const inFMRange = distToFM <= FM_TOTAL_HALF + 32;
+  if (!inPyramidRange && !inFMRange) return null;
+
+  if (inPyramidRange) {
+    const pyramidDist = Math.max(Math.abs(wx - pyramidCx), Math.abs(wz - pyramidCz));
+    if (pyramidDist <= PYRAMID_TOTAL_HALF) {
+      const layerHeight = Math.floor((PYRAMID_HALF_SIZE - pyramidDist) / 2);
+      if (layerHeight > 0) {
+        const pyramidBaseHeight = generateHeight(pyramidCx, pyramidCz, seed);
+        return {
+          type: 'pyramid',
+          height: pyramidBaseHeight + layerHeight,
+          distance: Math.max(0, pyramidDist - PYRAMID_HALF_SIZE),
+          maxDistance: PYRAMID_TRANSITION_SIZE + 32,
+        };
+      }
+    }
+  }
+
+  if (inFMRange) {
+    const fmDx = wx - fmCx;
+    const fmDz = wz - fmCz;
+    const fmDist = Math.sqrt(fmDx * fmDx + fmDz * fmDz);
+    if (fmDist <= FM_TOTAL_HALF) {
+      const fmBaseHeight = generateHeight(fmCx, fmCz, seed);
+      if (fmDist <= FM_HALF_SIZE) {
+        const summitHeight = (FM_HALF_SIZE - 10) / FROZEN_MOUNTAIN_HEIGHT_FACTOR;
+        const slopeT = fmDist / FM_HALF_SIZE;
+        const profile = 1 - Math.pow(slopeT, 1.4);
+        const layerHeight = Math.max(0, Math.floor(summitHeight * profile));
+        return {
+          type: 'frozenMountain',
+          height: fmBaseHeight + layerHeight,
+          distance: Math.max(0, fmDist - FM_HALF_SIZE * 0.7),
+          maxDistance: FM_TRANSITION_SIZE + FM_HALF_SIZE * 0.3 + 32,
+        };
+      }
+      return {
+        type: 'frozenMountain',
+        height: fmBaseHeight,
+        distance: fmDist - FM_HALF_SIZE,
+        maxDistance: FM_TRANSITION_SIZE + 32,
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * 生成城市地形（mc-lite CityMap.generate 移植：核心 getCitySurfaceY +
+ * 过渡带台阶式混合 + sand/clay/moss 地表分区）。
+ * @param {number} h CITY 压平后的地形高度
+ * @param {Object} cityInfo getCityInfo 结果（含布局字段）
+ * @returns {{surfaceY: number}}
+ */
+export function generateCity(wx, wz, h, cityInfo, setBlock, seed) {
+  const citySurfaceY = getCitySurfaceY(wx, wz, cityInfo, seed);
+  let surfaceY = citySurfaceY;
+
+  const nearbyLandmark = detectNearbyLandmark(wx, wz, seed);
+
+  if (cityInfo.isTransition) {
+    const naturalBiome = getBiome(wx, wz, seed);
+    const naturalH = generateHeightForBiome(wx, wz, seed, naturalBiome);
+
+    let targetHeight = citySurfaceY;
+    let blendFactor = 0;
+    if (nearbyLandmark) {
+      const distFactor = Math.max(0, Math.min(1, nearbyLandmark.distance / nearbyLandmark.maxDistance));
+      targetHeight = nearbyLandmark.height;
+      blendFactor = (1 - distFactor) * cityInfo.transitionFactor;
+    }
+
+    const delta = targetHeight - naturalH;
+    const terraceNoise = Math.sin((wx + seed * 0.23) * 0.08) + Math.cos((wz - seed * 0.29) * 0.075);
+    const terraceBias = terraceNoise > 0.75 ? 1 : (terraceNoise < -0.75 ? -1 : 0);
+    const effectiveEdgeDistance = cityInfo.edgeDistance <= 0
+      ? 0
+      : Math.max(0, cityInfo.edgeDistance + terraceBias);
+    const maxDelta = Math.max(0, Math.floor(effectiveEdgeDistance / CITY_TERRACE_WIDTH));
+
+    let clampedDelta;
+    if (nearbyLandmark && blendFactor > 0) {
+      const rawDelta = targetHeight - naturalH;
+      clampedDelta = Math.max(-2, Math.min(2, rawDelta));
+      const naturalDelta = Math.max(-maxDelta, Math.min(maxDelta, citySurfaceY - naturalH));
+      clampedDelta = naturalDelta * (1 - blendFactor) + clampedDelta * blendFactor;
+    } else {
+      clampedDelta = Math.max(-maxDelta, Math.min(maxDelta, delta));
+    }
+
+    surfaceY = naturalH + Math.round(clampedDelta);
+    surfaceY = Math.max(surfaceY, Math.min(citySurfaceY, naturalH));
+
+    if (nearbyLandmark) {
+      const heightDiff = surfaceY - nearbyLandmark.height;
+      if (Math.abs(heightDiff) > 3) surfaceY = nearbyLandmark.height + Math.sign(heightDiff) * 3;
+    }
+  }
+
+  surfaceY = Math.max(CITY_MIN_SURFACE_Y, surfaceY);
+
+  const fillStartY = Math.min(h, surfaceY);
+  const fillEndY = surfaceY;
+
+  // sand/clay/moss 成片地表（moss 约为 clay 的 1/10）
+  const patch = Math.sin((wx + seed * 0.31) * 0.09) + Math.cos((wz - seed * 0.27) * 0.08);
+  const patch2 = Math.sin((wx + wz + seed * 0.73) * 0.037);
+  let surfaceType;
+  if (patch + patch2 > 0) {
+    surfaceType = 'sand';
+  } else {
+    const mossNoise = Math.sin((wx * 0.15 + seed * 0.17) * 0.5) + Math.cos((wz * 0.13 - seed * 0.19) * 0.5);
+    surfaceType = mossNoise > 1.2 ? 'moss' : 'clay';
+  }
+  const subType = surfaceType === 'sand' ? 'sand' : 'clay';
+
+  for (let y = fillStartY; y <= fillEndY; y++) {
+    if (y < WORLD_MIN_Y || y >= WORLD_MAX_Y) continue;
+    setBlock(wx, y, wz, y === fillEndY ? surfaceType : subType);
+  }
+
+  const rockBaseY = surfaceY;
+  for (let k = 1; k <= 11; k++) {
+    const rockY = rockBaseY - k;
+    if (rockY < WORLD_MIN_Y) break;
+    setBlock(wx, rockY, wz, k === 11 ? 'end_stone' : subType);
+  }
+  if (rockBaseY - 12 >= WORLD_MIN_Y) setBlock(wx, rockBaseY - 12, wz, 'end_stone');
+
+  return { surfaceY };
+}
+
+export { CITY_TRANSITION_SIZE };

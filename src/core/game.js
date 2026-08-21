@@ -10,6 +10,7 @@ import { RenderWorld } from '../render/render-world.js';
 import { setupFog } from '../render/materials.js';
 import { loadAtlas } from '../mesh/atlas-loader.js';
 import { findSpawnY } from '../gen/terrain.js';
+import { getCitySpawnPoint } from '../gen/structures/city-layout.js';
 import { Player } from '../player/player.js';
 import { Persistence } from '../save/persistence.js';
 
@@ -55,18 +56,13 @@ export class Game {
     setupFog(this.scene, this.viewDistance);
     this.renderWorld = new RenderWorld({ scene: this.scene, atlasTexture: texture, viewDistance: this.viewDistance });
 
-    // 存档：打开 IndexedDB、恢复 seed、预热视距内 edits 缓存（GEN 前必命中，§4.8）
+    // 存档：打开 IndexedDB、恢复 seed（edits 预热在出生点确定后，§4.8）
     this.persistence = new Persistence();
     await this.persistence.open();
     const meta = await this.persistence.loadMeta();
-    if (meta && meta.seed !== undefined) this.seed = meta.seed;
+    const hadMeta = !!(meta && meta.seed !== undefined);
+    if (hadMeta) this.seed = meta.seed;
     else await this.persistence.saveMeta({ seed: this.seed, spawn: [8, 8], savedAt: Date.now() });
-    {
-      const R = this.viewDistance;
-      const keys = [];
-      for (let dx = -R; dx <= R; dx++) for (let dz = -R; dz <= R; dz++) keys.push(`${dx},${dz}`);
-      await this.persistence.preloadEdits(keys);
-    }
 
     this.scheduler = new Scheduler({
       world: this.world, pool: this.pool, registry: this.registry,
@@ -76,10 +72,22 @@ export class Game {
     });
     this.scheduler._atlasMeta = atlasMeta; // 快速路径主线程 mesh 用（与 broadcast 同一份）
 
-    // 出生点：(8, 8) 列，3×3 先就绪即可玩（§4.2 冷启动口径）
-    this.spawnX = 8; this.spawnZ = 8;
+    // 出生点（mc-lite 语义：优先 City 中心出生，保证出生即见城市天际线，§7 M2 验收）
+    const regionLayout = await this.scheduler.structureIndex.waitForRegion(0, 0);
+    const citySpawn = getCitySpawnPoint(regionLayout.city);
+    this.spawnX = citySpawn.x; this.spawnZ = citySpawn.z;
+    if (!hadMeta) {
+      await this.persistence.saveMeta({ seed: this.seed, spawn: [this.spawnX, this.spawnZ], savedAt: Date.now() });
+    }
+    {
+      const R = this.viewDistance;
+      const pcx = Math.floor(this.spawnX / 16), pcz = Math.floor(this.spawnZ / 16);
+      const keys = [];
+      for (let dx = -R; dx <= R; dx++) for (let dz = -R; dz <= R; dz++) keys.push(`${pcx + dx},${pcz + dz}`);
+      await this.persistence.preloadEdits(keys);
+    }
     this.scheduler.update(this.spawnX, this.spawnZ);
-    await this._waitForColumn(0, 0, 10000);
+    await this._waitForColumn(Math.floor(this.spawnX / 16), Math.floor(this.spawnZ / 16), 10000);
     this.spawnY = findSpawnY(this.world, this.spawnX, this.spawnZ);
     // 玩家出生（第一人称，眼高由 Player 管）
     this.player = new Player({

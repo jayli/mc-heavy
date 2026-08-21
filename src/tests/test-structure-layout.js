@@ -14,6 +14,22 @@ import { generateHeight } from '../gen/terrain.js';
 
 const SEED = 12345;
 
+/** 找一个金字塔不被城市边界吞没的 region（城市优先级是 mc-lite 原语义） */
+function findFreePyramidLayout(seed) {
+  const city = computeRegionLayout(0, 0, seed).city;
+  for (let rx = -4; rx <= 4; rx++) {
+    for (let rz = -4; rz <= 4; rz++) {
+      if (rx === 0 && rz === 0) continue;
+      const l = computeRegionLayout(rx, rz, seed);
+      const py = l.pyramid;
+      const out = py.cx + 28 < city.minX || py.cx - 28 > city.maxX ||
+                  py.cz + 28 < city.minZ || py.cz - 28 > city.maxZ;
+      if (out) return l;
+    }
+  }
+  return null;
+}
+
 function makeRegistry() {
   const reg = createRegistry();
   for (const def of BLOCKS) reg.register(def.name, def);
@@ -178,15 +194,16 @@ test('getPyramidInfo: 中心 layerHeight 与 mc-lite 公式一致', () => {
   assertTrue(getPyramidInfo(cx + 29, cz, layout.pyramid) === null, 'outside total range');
 });
 
-test('applyStructuresToColumn: 金字塔叠加确定性 + 高度正确', () => {
+test('applyStructuresToColumn: 金字塔叠加确定性 + 高度正确', async () => {
   const reg = makeRegistry();
-  const layout = computeRegionLayout(0, 0, SEED);
+  const layout = findFreePyramidLayout(SEED);
+  assertNotNull(layout, 'found pyramid region outside city');
   const layouts = [layout];
   const cx = Math.floor(layout.pyramid.cx / 16), cz = Math.floor(layout.pyramid.cz / 16);
   const colA = new ChunkColumn(cx, cz);
   const colB = new ChunkColumn(cx, cz);
-  applyStructuresToColumn(colA, SEED, reg, layouts);
-  applyStructuresToColumn(colB, SEED, reg, layouts);
+  await applyStructuresToColumn(colA, SEED, reg, layouts);
+  await applyStructuresToColumn(colB, SEED, reg, layouts);
   // 确定性：两次结果逐格一致
   for (let i = 0; i < colA.blocks.length; i++) assertEqual(colA.blocks[i], colB.blocks[i], `block ${i}`);
   // 中心点：sand 顶 = h + 10（halfSize 20 → layerHeight 10）

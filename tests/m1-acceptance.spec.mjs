@@ -30,7 +30,11 @@ test('M1 验收：放挖压力 p95 帧时（BatchedMesh 确认门）', async ({ 
   test.setTimeout(180_000);
   await page.goto('/?vd=8');
   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
-  await page.waitForFunction(() => window.__MC_GAME__.world.columns.size >= 250, null, { timeout: 60_000 });
+  // 稳态计量口径：视距 8 全 289 列就绪 + 5s 沉淀后再放挖。
+  // （M2-2 起出生在城市，城市填充比平原慢；250 列时后台填充与编辑帧争抢，
+  //  测的是填充负载而非编辑负载。断言阈值不变。）
+  await page.waitForFunction(() => window.__MC_GAME__.world.columns.size >= 289, null, { timeout: 90_000 });
+  await new Promise((r) => setTimeout(r, 5000));
 
   // 连续放/挖 200 块（编程驱动，每块间隔 1 帧）
   const editStats = await page.evaluate(async () => {

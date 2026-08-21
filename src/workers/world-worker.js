@@ -35,10 +35,10 @@ installRpcHandler({
    * layouts：查询域内 region 布局（主线程 StructureIndex 缓存后下发，DR-13）。
    * @param {{cx: number, cz: number, seed: number, edits: Array<{index:number,id:number,meta:number}>, layouts?: Array<Object>}} p
    */
-  gen(p) {
+  async gen(p) {
     const column = new ChunkColumn(p.cx, p.cz);
     fillColumn(column, p.seed, registry);
-    applyStructuresToColumn(column, p.seed, registry, p.layouts);
+    await applyStructuresToColumn(column, p.seed, registry, p.layouts);
     if (p.edits && p.edits.length) column.applyEdits(p.edits);
     computeSkylightColumn(column, registry);
     // blocklight：GEN 时邻柱多半未就绪，只算本 column（截断）；

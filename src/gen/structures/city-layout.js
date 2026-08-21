@@ -534,3 +534,8 @@ export function getCitySurfaceY(wx, wz, city, seed) {
   const variance = Math.round(macro * amplitude);
   return Math.max(CITY_MIN_SURFACE_Y, cityInfo.baseHeight + variance);
 }
+
+/** 城市出生点（mc-lite getCitySpawnPoint：城市中心，baseHeight + 3） */
+export function getCitySpawnPoint(city) {
+  return { x: city.centerX, y: city.baseHeight + 3, z: city.centerZ };
+}

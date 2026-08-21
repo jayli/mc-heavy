@@ -4,13 +4,18 @@
 import { seededRandom, noise, getBiome } from './noise.js';
 import { SEA_Y, WORLD_MIN_Y, WORLD_MAX_Y, blockIndex } from '../voxel/constants.js';
 
-/** 地形高度（与 mc-lite TerrainGen.generateHeight 一致，CITY 分支 M2 补） */
-export function generateHeight(x, z, seed) {
-  const biome = getBiome(x, z, seed);
+/** 指定 biome 的地形高度（biome 调整规则与 mc-lite TerrainGen.generateHeight 一致） */
+export function generateHeightForBiome(x, z, seed, biome) {
   let h = Math.floor(noise(x, z, seed, 0.08) + noise(x, z, seed, 0.02) * 3);
   if (biome === 'DESERT') h = Math.floor(h * 0.5 + 2);
   if (biome === 'SWAMP') h = Math.floor(h * 0.3 - 2);
+  if (biome === 'CITY') h = Math.floor(h * 0.25 + 1); // CITY 压平（M2：城市区域）
   return h;
+}
+
+/** 地形高度（自动取 biome；CITY 判定由结构系统在列循环显式传入 biome） */
+export function generateHeight(x, z, seed) {
+  return generateHeightForBiome(x, z, seed, getBiome(x, z, seed));
 }
 
 const SURFACE_BY_BIOME = {

@@ -1,0 +1,691 @@
+{
+  "blocks": [
+    {
+      "x": -4,
+      "y": 1,
+      "z": -2,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": -4,
+      "y": 1,
+      "z": -1,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": -4,
+      "y": 1,
+      "z": 0,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": -4,
+      "y": 1,
+      "z": 1,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": -4,
+      "y": 1,
+      "z": 2,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": -4,
+      "y": 1,
+      "z": 3,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 1,
+      "z": -2,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 1,
+      "z": -1,
+      "type": "moss",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 1,
+      "z": 0,
+      "type": "moss",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 2,
+      "z": 0,
+      "type": "azalea_flowers",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 1,
+      "z": 1,
+      "type": "moss",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 2,
+      "z": 1,
+      "type": "azalea_leaves",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 1,
+      "z": 2,
+      "type": "grass",
+      "direction": 0
+    },
+    {
+      "x": -3,
+      "y": 1,
+      "z": 3,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": -2,
+      "y": 1,
+      "z": -2,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": -2,
+      "y": 1,
+      "z": -1,
+      "type": "moss",
+      "direction": 0
+    },
+    {
+      "x": -2,
+      "y": 2,
+      "z": -1,
+      "type": "azalea_leaves",
+      "direction": 0
+    },
+    {
+      "x": -2,
+      "y": 1,
+      "z": 0,
+      "type": "moss",
+      "direction": 0
+    },
+    {
+      "x": -2,
+      "y": 2,
+      "z": 0,
+      "type": "moss",
+      "direction": 0
+    },
+    {
+      "x": -2,
+      "y": 1,
+      "z": 1,
+      "type": "moss",
+      "direction": 0
+    },
+    {
+      "x": -2,
+      "y": 2,
+      "z": 1,
+      "type": "moss",
+      "direction": 0
+    },
+    {
+      "x": -2,
+      "y": 3,
+      "z": 1,
+      "type": "azalea_leaves",
+      "direction": 0
+    },
+    {
+      "x": -2,
+      "y": 1,
+      "z": 2,
+      "type": "grass",
+      "direction": 0
+    },
+    {
+      "x": -2,
+      "y": 2,
+      "z": 2,
+      "type": "azalea_flowers",
+      "direction": 0
+    },
+    {
+      "x": -2,
+      "y": 1,
+      "z": 3,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": -1,
+      "y": 1,
+      "z": -2,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": -1,
+      "y": 1,
+      "z": -1,
+      "type": "moss",
+      "direction": 0
+    },
+    {
+      "x": -1,
+      "y": 2,
+      "z": -1,
+      "type": "azalea_flowers",
+      "direction": 0
+    },
+    {
+      "x": -1,
+      "y": 1,
+      "z": 0,
+      "type": "moss",
+      "direction": 0
+    },
+    {
+      "x": -1,
+      "y": 2,
+      "z": 0,
+      "type": "moss",
+      "direction": 0
+    },
+    {
+      "x": -1,
+      "y": 3,
+      "z": 0,
+      "type": "azalea_flowers",
+      "direction": 0
+    },
+    {
+      "x": -1,
+      "y": 1,
+      "z": 1,
+      "type": "moss",
+      "direction": 0
+    },
+    {
+      "x": -1,
+      "y": 2,
+      "z": 1,
+      "type": "moss",
+      "direction": 0
+    },
+    {
+      "x": -1,
+      "y": 3,
+      "z": 1,
+      "type": "azalea_leaves",
+      "direction": 0
+    },
+    {
+      "x": -1,
+      "y": 1,
+      "z": 2,
+      "type": "grass",
+      "direction": 0
+    },
+    {
+      "x": -1,
+      "y": 2,
+      "z": 2,
+      "type": "azalea_leaves",
+      "direction": 0
+    },
+    {
+      "x": -1,
+      "y": 1,
+      "z": 3,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": 0,
+      "y": 1,
+      "z": -2,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": 0,
+      "y": 1,
+      "z": -1,
+      "type": "moss",
+      "direction": 0
+    },
+    {
+      "x": 0,
+      "y": 2,
+      "z": -1,
+      "type": "azalea_leaves",
+      "direction": 0
+    },
+    {
+      "x": 0,
+      "y": 1,
+      "z": 0,
+      "type": "moss",
+      "direction": 0
+    },
+    {
+      "x": 0,
+      "y": 2,
+      "z": 0,
+      "type": "moss",
+      "direction": 0
+    },
+    {
+      "x": 0,
+      "y": 3,
+      "z": 0,
+      "type": "azalea_leaves",
+      "direction": 0
+    },
+    {
+      "x": 0,
+      "y": 1,
+      "z": 1,
+      "type": "moss",
+      "direction": 0
+    },
+    {
+      "x": 0,
+      "y": 2,
+      "z": 1,
+      "type": "moss",
+      "direction": 0
+    },
+    {
+      "x": 0,
+      "y": 3,
+      "z": 1,
+      "type": "azalea_leaves",
+      "direction": 0
+    },
+    {
+      "x": 0,
+      "y": 1,
+      "z": 2,
+      "type": "grass",
+      "direction": 0
+    },
+    {
+      "x": 0,
+      "y": 2,
+      "z": 2,
+      "type": "azalea_flowers",
+      "direction": 0
+    },
+    {
+      "x": 0,
+      "y": 1,
+      "z": 3,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 1,
+      "z": -2,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 1,
+      "z": -1,
+      "type": "moss",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 2,
+      "z": -1,
+      "type": "azalea_leaves",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 1,
+      "z": 0,
+      "type": "moss",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 2,
+      "z": 0,
+      "type": "moss",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 3,
+      "z": 0,
+      "type": "azalea_leaves",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 1,
+      "z": 1,
+      "type": "moss",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 2,
+      "z": 1,
+      "type": "moss",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 1,
+      "z": 2,
+      "type": "grass",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 2,
+      "z": 2,
+      "type": "azalea_leaves",
+      "direction": 0
+    },
+    {
+      "x": 1,
+      "y": 1,
+      "z": 3,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": 2,
+      "y": 1,
+      "z": -2,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": 2,
+      "y": 1,
+      "z": -1,
+      "type": "moss",
+      "direction": 0
+    },
+    {
+      "x": 2,
+      "y": 2,
+      "z": -1,
+      "type": "azalea_flowers",
+      "direction": 0
+    },
+    {
+      "x": 2,
+      "y": 1,
+      "z": 0,
+      "type": "moss",
+      "direction": 0
+    },
+    {
+      "x": 2,
+      "y": 2,
+      "z": 0,
+      "type": "moss",
+      "direction": 0
+    },
+    {
+      "x": 2,
+      "y": 1,
+      "z": 1,
+      "type": "moss",
+      "direction": 0
+    },
+    {
+      "x": 2,
+      "y": 2,
+      "z": 1,
+      "type": "moss",
+      "direction": 0
+    },
+    {
+      "x": 2,
+      "y": 3,
+      "z": 1,
+      "type": "azalea_leaves",
+      "direction": 0
+    },
+    {
+      "x": 2,
+      "y": 1,
+      "z": 2,
+      "type": "grass",
+      "direction": 0
+    },
+    {
+      "x": 2,
+      "y": 2,
+      "z": 2,
+      "type": "azalea_leaves",
+      "direction": 0
+    },
+    {
+      "x": 2,
+      "y": 1,
+      "z": 3,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": 3,
+      "y": 1,
+      "z": -2,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": 3,
+      "y": 1,
+      "z": -1,
+      "type": "moss",
+      "direction": 0
+    },
+    {
+      "x": 3,
+      "y": 2,
+      "z": -1,
+      "type": "azalea_leaves",
+      "direction": 0
+    },
+    {
+      "x": 3,
+      "y": 1,
+      "z": 0,
+      "type": "moss",
+      "direction": 0
+    },
+    {
+      "x": 3,
+      "y": 2,
+      "z": 0,
+      "type": "moss",
+      "direction": 0
+    },
+    {
+      "x": 3,
+      "y": 3,
+      "z": 0,
+      "type": "azalea_flowers",
+      "direction": 0
+    },
+    {
+      "x": 3,
+      "y": 1,
+      "z": 1,
+      "type": "moss",
+      "direction": 0
+    },
+    {
+      "x": 3,
+      "y": 2,
+      "z": 1,
+      "type": "moss",
+      "direction": 0
+    },
+    {
+      "x": 3,
+      "y": 3,
+      "z": 1,
+      "type": "azalea_leaves",
+      "direction": 0
+    },
+    {
+      "x": 3,
+      "y": 1,
+      "z": 2,
+      "type": "moss",
+      "direction": 0
+    },
+    {
+      "x": 3,
+      "y": 2,
+      "z": 2,
+      "type": "azalea_flowers",
+      "direction": 0
+    },
+    {
+      "x": 3,
+      "y": 1,
+      "z": 3,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": 4,
+      "y": 1,
+      "z": -2,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": 4,
+      "y": 1,
+      "z": -1,
+      "type": "moss",
+      "direction": 0
+    },
+    {
+      "x": 4,
+      "y": 1,
+      "z": 0,
+      "type": "moss",
+      "direction": 0
+    },
+    {
+      "x": 4,
+      "y": 2,
+      "z": 0,
+      "type": "azalea_flowers",
+      "direction": 0
+    },
+    {
+      "x": 4,
+      "y": 1,
+      "z": 1,
+      "type": "moss",
+      "direction": 0
+    },
+    {
+      "x": 4,
+      "y": 2,
+      "z": 1,
+      "type": "azalea_leaves",
+      "direction": 0
+    },
+    {
+      "x": 4,
+      "y": 1,
+      "z": 2,
+      "type": "moss",
+      "direction": 0
+    },
+    {
+      "x": 4,
+      "y": 1,
+      "z": 3,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": 5,
+      "y": 1,
+      "z": -2,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": 5,
+      "y": 1,
+      "z": -1,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": 5,
+      "y": 1,
+      "z": 0,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": 5,
+      "y": 1,
+      "z": 1,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": 5,
+      "y": 1,
+      "z": 2,
+      "type": "light_gray_cloth",
+      "direction": 0
+    },
+    {
+      "x": 5,
+      "y": 1,
+      "z": 3,
+      "type": "light_gray_cloth",
+      "direction": 0
+    }
+  ],
+  "metadata": {
+    "created": "2026-03-26T14:35:36.809Z",
+    "dimensions": {
+      "width": 10,
+      "height": 3,
+      "depth": 6
+    }
+  }
+}

@@ -22,16 +22,16 @@ npm run atlas        # 重新生成 assets/atlas.png + atlas.json
 
 ## 当前进度
 
-第一阶段（引擎底座）分 M0~M3 四个里程碑，**当前处于 M2**（M0/M1 已完成，M2-1 StructureIndex 已落地）。
+第一阶段（引擎底座）分 M0~M3 四个里程碑，**当前处于 M2**（M0/M1 已完成，M2-1 StructureIndex + M2-2 地标/城市已落地）。
 
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
 | M0 骨架 | 脚手架 / Worker 池 RPC / Registry / atlas / WebGPU 发布路径实测 | ✅ 完成 |
 | M1 体素核心闭环 | 地形生成 / section meshing / BatchedMesh 合批 / 玩家物理交互 / 最小存档 / 光照 | ✅ 完成 |
-| M2 结构与世界完整性 | StructureIndex / 地标 / 树木 / 洞穴 / 水面 / 日夜 | 🔧 进行中（M2-1 ✅） |
+| M2 结构与世界完整性 | StructureIndex / 地标 / 树木 / 洞穴 / 水面 / 日夜 | 🔧 进行中（M2-1/M2-2 ✅） |
 | M3 性能达标与收尾 | 视距 8 全量调优 / 预算标定 / 雨效 / HUD / 基线脚本 / 报告 | ⬜ 待开始 |
 
-测试现状：**15 个 Playwright spec（18 用例）+ 69 个浏览器内单元测试全绿**；冻结断言达标
+测试现状：**16 个 Playwright spec（19 用例）+ 79 个浏览器内单元测试全绿**；冻结断言达标
 （120Hz 本机 fps ≥115、放/挖编辑 p95 <2ms、draw 受控）。
 
 ## 文档索引

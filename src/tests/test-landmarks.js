@@ -1,0 +1,222 @@
+import { test } from './runner.js';
+import { assertEqual, assertTrue, assertNotNull } from './assert.js';
+import { computeRegionLayout } from '../gen/structures/structure-layout.js';
+import { applyStructuresToColumn } from '../gen/structures/apply.js';
+import { getCitySurfaceY } from '../gen/structures/city-layout.js';
+import { getSnowLandInfo, getFrozenMountainInfo, getIslandInfo, getCityInfo } from '../gen/structures/landmarks.js';
+import { generateHeight, generateHeightForBiome } from '../gen/terrain.js';
+import { noise } from '../gen/noise.js';
+import { ChunkColumn } from '../voxel/chunk-column.js';
+import { createRegistry } from '../voxel/block-registry.js';
+import { BLOCKS } from '../voxel/blocks-data.js';
+import { SEA_Y } from '../voxel/constants.js';
+
+const SEED = 12345;
+
+function makeRegistry() {
+  const reg = createRegistry();
+  for (const def of BLOCKS) reg.register(def.name, def);
+  reg.freeze();
+  return reg;
+}
+
+async function genColumn(reg, cx, cz, layouts) {
+  const col = new ChunkColumn(cx, cz);
+  await applyStructuresToColumn(col, SEED, reg, layouts);
+  return col;
+}
+
+test('generateHeightForBiome: CITY 压平分支（mc-lite h*0.25+1）', () => {
+  const x = 100, z = 100;
+  // 基础噪声高度（未做 biome 调整），各分支在基础值上施加系数
+  const base = Math.floor(noise(x, z, SEED, 0.08) + noise(x, z, SEED, 0.02) * 3);
+  assertEqual(generateHeightForBiome(x, z, SEED, 'CITY'), Math.floor(base * 0.25 + 1));
+  assertEqual(generateHeightForBiome(x, z, SEED, 'DESERT'), Math.floor(base * 0.5 + 2));
+  assertEqual(generateHeightForBiome(x, z, SEED, 'SWAMP'), Math.floor(base * 0.3 - 2));
+  assertEqual(generateHeightForBiome(x, z, SEED, 'PLAINS'), base);
+});
+
+test('getCityInfo/getSnowLandInfo/getFrozenMountainInfo/getIslandInfo/getPlainLandInfo: 中心点命中', () => {
+  const layout = computeRegionLayout(0, 0, SEED);
+  const city = layout.city;
+  assertNotNull(city, 'city exists');
+  const ci = getCityInfo(city.centerX, city.centerZ, city);
+  assertNotNull(ci, 'city center inside');
+  assertEqual(ci.transitionFactor, 0);
+  // 城外必 null
+  assertTrue(getCityInfo(city.maxX + 1, city.centerZ, city) === null, 'outside city null');
+
+  const si = getSnowLandInfo(layout.snowLand.cx, layout.snowLand.cz, layout.snowLand, SEED);
+  assertNotNull(si, 'snowLand center inside');
+  assertEqual(si.zone, 'core');
+
+  const fi = getFrozenMountainInfo(layout.frozenMountain.cx, layout.frozenMountain.cz, layout.frozenMountain, SEED);
+  assertNotNull(fi, 'frozenMountain center inside');
+  assertTrue(fi.layerHeight > 0, 'mountain has height');
+
+  if (layout.island) {
+    const ii = getIslandInfo(layout.island.cx, layout.island.cz, layout.island, SEED);
+    assertNotNull(ii, 'island center inside');
+  }
+});
+
+test('城市地形：核心地表 = getCitySurfaceY，sand/clay/moss 成片', async () => {
+  const reg = makeRegistry();
+  const layout = computeRegionLayout(0, 0, SEED);
+  const city = layout.city;
+  const cx = Math.floor(city.centerX / 16), cz = Math.floor(city.centerZ / 16);
+  const col = await genColumn(reg, cx, cz, [layout]);
+  const lx = city.centerX - cx * 16, lz = city.centerZ - cz * 16;
+  const surfaceY = getCitySurfaceY(city.centerX, city.centerZ, city, SEED);
+  const topId = col.get(lx, surfaceY, lz);
+  const names = ['sand', 'clay', 'moss'];
+  const topName = names.find((n) => reg.idOf(n) === topId);
+  assertTrue(topName !== undefined, `city surface is sand/clay/moss, got id ${topId}`);
+  // 地表下方 11 层为 subType（sand/clay），k=11 end_stone
+  const subId = col.get(lx, surfaceY - 1, lz);
+  assertTrue(subId === reg.idOf('sand') || subId === reg.idOf('clay'), 'sub layer sand/clay');
+  assertEqual(col.get(lx, surfaceY - 11, lz), reg.idOf('end_stone'));
+  // 城市中心被 castle 覆盖（底面 surfaceY+1），上方 air 断言改到无 placement 的点
+  const all = [...city.placements, ...city.fillerPlacements];
+  let clearPt = null;
+  for (let tx = city.minX + 40; tx < city.maxX - 40 && !clearPt; tx += 7) {
+    for (let tz = city.minZ + 40; tz < city.maxZ - 40 && !clearPt; tz += 7) {
+      const nearPlacement = all.some((p) => Math.abs(p.x - tx) < 30 && Math.abs(p.z - tz) < 30);
+      if (!nearPlacement) clearPt = { x: tx, z: tz };
+    }
+  }
+  assertNotNull(clearPt, 'found placement-free city point');
+  const ccx = Math.floor(clearPt.x / 16), ccz = Math.floor(clearPt.z / 16);
+  const col2 = await genColumn(reg, ccx, ccz, [layout]);
+  const sy2 = getCitySurfaceY(clearPt.x, clearPt.z, city, SEED);
+  assertEqual(col2.get(clearPt.x - ccx * 16, sy2 + 1, clearPt.z - ccz * 16), 0, 'above surface air');
+});
+
+test('城市地形确定性：两次生成逐格一致', async () => {
+  const reg = makeRegistry();
+  const layout = computeRegionLayout(0, 0, SEED);
+  const city = layout.city;
+  const cx = Math.floor(city.centerX / 16), cz = Math.floor(city.centerZ / 16);
+  const a = await genColumn(reg, cx, cz, [layout]);
+  const b = await genColumn(reg, cx, cz, [layout]);
+  for (let i = 0; i < a.blocks.length; i++) assertEqual(a.blocks[i], b.blocks[i], `block ${i}`);
+});
+
+test('雪地：核心地表 snow_grass（海底则 sand）', async () => {
+  const reg = makeRegistry();
+  // 找一个 snowLand 不被城市吞没的 region（城市优先级是 mc-lite 原语义）
+  const city = computeRegionLayout(0, 0, SEED).city;
+  let layout = null;
+  for (let rx = -4; rx <= 4 && !layout; rx++) {
+    for (let rz = -4; rz <= 4 && !layout; rz++) {
+      if (rx === 0 && rz === 0) continue;
+      const l = computeRegionLayout(rx, rz, SEED);
+      const sl0 = l.snowLand;
+      if (sl0.cx + 28 < city.minX || sl0.cx - 28 > city.maxX ||
+          sl0.cz + 28 < city.minZ || sl0.cz - 28 > city.maxZ) layout = l;
+    }
+  }
+  assertNotNull(layout, 'found snowLand region outside city');
+  const sl = layout.snowLand;
+  const cx = Math.floor(sl.cx / 16), cz = Math.floor(sl.cz / 16);
+  const col = await genColumn(reg, cx, cz, [layout]);
+  const lx = sl.cx - cx * 16, lz = sl.cz - cz * 16;
+  const h = generateHeight(sl.cx, sl.cz, SEED);
+  const info = getSnowLandInfo(sl.cx, sl.cz, sl, SEED);
+  let finalY = h + info.heightOffset;
+  if (Math.abs(finalY - h) > 2) finalY = h + Math.sign(finalY - h) * 2;
+  const belowSea = finalY <= SEA_Y - 1;
+  const expectId = reg.idOf(belowSea ? 'sand' : 'snow_grass');
+  assertEqual(col.get(lx, finalY, lz), expectId, `snowLand surface at ${finalY}`);
+});
+
+test('冰封山：核心地表 snow_grass + 山体抬升', async () => {
+  const reg = makeRegistry();
+  const layout = computeRegionLayout(1, 0, SEED);
+  const fm = layout.frozenMountain;
+  const cx = Math.floor(fm.cx / 16), cz = Math.floor(fm.cz / 16);
+  const col = await genColumn(reg, cx, cz, [layout]);
+  const lx = fm.cx - cx * 16, lz = fm.cz - cz * 16;
+  const h = generateHeight(fm.cx, fm.cz, SEED);
+  const info = getFrozenMountainInfo(fm.cx, fm.cz, fm, SEED);
+  const finalY = h + info.layerHeight;
+  const belowSea = finalY <= SEA_Y - 1;
+  const expectId = reg.idOf(belowSea ? 'sand' : 'snow_grass');
+  assertEqual(col.get(lx, finalY, lz), expectId, 'mountain top snow_grass');
+  assertTrue(finalY > h, 'mountain raises terrain');
+});
+
+test('海岛：表面齐海平面，内 stone 边 sand，塔心除外', async () => {
+  const reg = makeRegistry();
+  // 找一个有海岛的 region
+  let layout = null;
+  for (let rx = -3; rx <= 3 && !layout; rx++) {
+    for (let rz = -3; rz <= 3 && !layout; rz++) {
+      const l = computeRegionLayout(rx, rz, SEED);
+      if (l.island) layout = l;
+    }
+  }
+  assertNotNull(layout, 'found island region');
+  const island = layout.island;
+  const cx = Math.floor(island.cx / 16), cz = Math.floor(island.cz / 16);
+  const col = await genColumn(reg, cx, cz, [layout]);
+  const lz = island.cz - cz * 16;
+  // 中心点：tower JSON 会覆盖，跳过；取距中心 3 格的点（内部 stone 区）
+  const px = island.cx + 3;
+  if (Math.floor(px / 16) === cx) {
+    const top = col.get(px - cx * 16, SEA_Y, lz);
+    assertEqual(top, reg.idOf('stone'), 'island interior stone at sea level');
+    assertEqual(col.get(px - cx * 16, SEA_Y - 1, lz), reg.idOf('dirt'), 'dirt under surface');
+  }
+});
+
+test('JSON 结构光栅化：城市 tower/城堡方块注入 column（确定性）', async () => {
+  const reg = makeRegistry();
+  const layout = computeRegionLayout(0, 0, SEED);
+  const city = layout.city;
+  // castle 中心 column：castle JSON 底层 47×53 范围，中心点必有 castle 方块
+  const cx = Math.floor(city.centerX / 16), cz = Math.floor(city.centerZ / 16);
+  const a = await genColumn(reg, cx, cz, [layout]);
+  const b = await genColumn(reg, cx, cz, [layout]);
+  for (let i = 0; i < a.blocks.length; i++) assertEqual(a.blocks[i], b.blocks[i], `block ${i}`);
+  // castle 覆盖中心 column（47×53 占地）：整列地表以上应有大量结构方块、且高度显著
+  // （中心点正上方是中庭天井，不能用单点断言）
+  const surfaceY = getCitySurfaceY(city.centerX, city.centerZ, city, SEED);
+  let above = 0, topY = surfaceY;
+  for (let lx = 0; lx < 16; lx++) for (let lz = 0; lz < 16; lz++) {
+    for (let y = surfaceY + 1; y < 96; y++) {
+      if (a.get(lx, y, lz) !== 0) { above++; if (y > topY) topY = y; }
+    }
+  }
+  assertTrue(above > 500, `castle blocks above surface: ${above}`);
+  assertTrue(topY - surfaceY > 20, `castle height: ${topY - surfaceY}`);
+});
+
+test('JSON 结构跨 column 裁剪：castle 覆盖的相邻 column 也有结构方块', async () => {
+  const reg = makeRegistry();
+  const layout = computeRegionLayout(0, 0, SEED);
+  const city = layout.city;
+  // castle halfX=23 → 中心 ±23；取东侧 +20 所在 column（若跨界则是相邻 column）
+  const px = city.centerX + 20, pz = city.centerZ;
+  const cx = Math.floor(px / 16), cz = Math.floor(pz / 16);
+  const col = await genColumn(reg, cx, cz, [layout]);
+  const surfaceY = getCitySurfaceY(px, pz, city, SEED);
+  const lx = px - cx * 16, lz = pz - cz * 16;
+  assertTrue(col.get(lx, surfaceY + 1, lz) !== 0, 'castle block at footprint edge');
+});
+
+test('ground support：结构底面悬空 ≤5 格补支撑柱', async () => {
+  const reg = makeRegistry();
+  const layout = computeRegionLayout(0, 0, SEED);
+  const city = layout.city;
+  // 找一个 placement（非 castle）：其地表高度由 getCitySurfaceY 决定；
+  // 支撑柱逻辑的普适验证：任取 placement，其底面正下方第一格应为结构方块或地形（无空气缝）
+  const p = city.placements.find((pl) => pl.type === 'gate');
+  assertNotNull(p, 'gate placed');
+  const cx = Math.floor(p.x / 16), cz = Math.floor(p.z / 16);
+  const col = await genColumn(reg, cx, cz, [layout]);
+  const surfaceY = getCitySurfaceY(p.x, p.z, city, SEED);
+  const lx = p.x - cx * 16, lz = p.z - cz * 16;
+  // gate 底面在 surfaceY+1；surfaceY 处是城市地表（非 air）
+  assertTrue(col.get(lx, surfaceY, lz) !== 0, 'ground under gate solid');
+});

@@ -73,4 +73,18 @@ export class StructureIndex {
     }
     return out;
   }
+
+  /** 等待单个 region 布局就绪（出生点选择等启动关键路径用） */
+  waitForRegion(regionX, regionZ, timeoutMs = 5000) {
+    const key = `${regionX},${regionZ}`;
+    this.ensureForColumn(regionX * 25, regionZ * 25); // 复用队列入口（该 column 查询域含目标 region）
+    return new Promise((resolve, reject) => {
+      const t0 = performance.now();
+      const timer = setInterval(() => {
+        if (this._layouts.has(key)) { clearInterval(timer); resolve(this._layouts.get(key)); }
+        else if (performance.now() - t0 > timeoutMs) { clearInterval(timer); reject(new Error(`layout timeout: ${key}`)); }
+        else this.dispatch(); // 启动关键路径：驱动下发（主循环尚未开始）
+      }, 20);
+    });
+  }
 }
