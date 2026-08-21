@@ -80,16 +80,16 @@
 **设计文档参照：** §4.2（地形与结构生成）、§2.1（跨 region 溢出）、DR-13（布局主线程算一次广播）
 
 **实现要点：**
-- [ ] StructureIndex：per-region 确定性布局（seed 驱动），查询时同时查本 region + 相邻 8 region（设计文档 §4.2 跨 region 溢出解法）
-- [ ] 布局在 Worker 内计算（GEN 任务内），主线程只转发结果（DR-13 卡帧风险规避）
-- [ ] GEN 任务依赖：某 region 的 GEN 必须等该 region 及相邻 region 的布局就绪
-- [ ] 结构类型枚举：CITY / PYRAMID / FROZEN_MOUNTAIN / SNOW_LAND / ISLAND / TREE
-- [ ] 结构占位：在 fillColumn 之后、光照之前叠加结构方块
+- [x] StructureIndex：per-region 确定性布局（seed 驱动），查询时同时查本 region + 相邻 8 region（设计文档 §4.2 跨 region 溢出解法；跨界 column 取基 region 并集）
+- [x] 布局在 Worker 内计算（'layout' RPC），主线程缓存转发（DR-13；每帧预算 4 + 就近优先级）
+- [x] GEN 任务依赖：某 region 的 GEN 必须等该 region 及相邻 region 的布局就绪（scheduler 门控）
+- [x] 结构类型：布局含 city / pyramid / frozenMountain / snowLand / plainLand / island（TREE 归 M2-3 植被）
+- [x] 结构占位：在 fillColumn 之后、光照之前叠加结构方块（apply.js；M2-1 落地金字塔，其余地标 M2-2）
 
 **测试：**
-- [ ] 同 seed 同 region 布局确定性（两次生成结果一致）
-- [ ] 跨 region 边界结构不截断
-- [ ] GEN p95 仍 <8ms（结构叠加不超预算）
+- [x] 同 seed 同 region 布局确定性（两次生成结果一致；城市布局与 mc-lite CityMap 同 seed 逐字段比对一致）
+- [x] 跨 region 边界结构不截断（snowLand 无 clamp 跨界用例）
+- [x] GEN p95 仍 <8ms（structure-gen fixture：含结构注入 16 column 并行实测）
 
 ### Task M2-2: 地标移植（城市/金字塔/冰封山/雪地/海岛）
 

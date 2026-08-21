@@ -118,6 +118,7 @@ export class Game {
       const timer = setInterval(() => {
         if (this.world.hasColumn(cx, cz)) { clearInterval(timer); resolve(); }
         else if (performance.now() - t0 > timeoutMs) { clearInterval(timer); reject(new Error('spawn column timeout')); }
+        else this.scheduler.update(this.spawnX, this.spawnZ); // 布局门控后 GEN 需后续帧驱动（动画循环尚未启动）
       }, 50);
     });
   }

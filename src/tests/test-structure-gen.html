@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<head><meta charset="UTF-8"><title>structure-gen fixture</title><link rel="icon" href="data:,"></head>
+<body>
+<script type="module">
+  import { WorkerPool } from '../core/worker-pool.js';
+  import { WorldData } from '../voxel/world-data.js';
+  import { Scheduler } from '../core/scheduler.js';
+  import { createRegistry } from '../voxel/block-registry.js';
+  import { BLOCKS } from '../voxel/blocks-data.js';
+  import { blockIndex } from '../voxel/constants.js';
+  import { generateHeight } from '../gen/terrain.js';
+  import { computeRegionLayout } from '../gen/structures/structure-layout.js';
+
+  async function run() {
+    const results = { passed: 0, failed: 0, errors: [] };
+    const check = (name, cond) => {
+      if (cond) results.passed++;
+      else { results.failed++; results.errors.push(name); }
+    };
+    const reg = createRegistry();
+    for (const def of BLOCKS) reg.register(def.name, def);
+    reg.freeze();
+    const SEED = 12345;
+    const pool = new WorkerPool({ workerUrl: '/src/workers/world-worker.js', size: 2 });
+    await pool.ready;
+
+    // 1. layout RPC：Worker 内计算，与主线程 computeRegionLayout 逐字段一致（确定性）
+    const t0 = performance.now();
+    const remoteLayout = await pool.call('layout', { regionX: 0, regionZ: 0, seed: SEED }).promise;
+    results.layoutMs = performance.now() - t0;
+    const localLayout = computeRegionLayout(0, 0, SEED);
+    check('layout RPC matches local compute', JSON.stringify(remoteLayout) === JSON.stringify(localLayout));
+    check('layout includes city at region (0,0)', remoteLayout.city !== null);
+
+    // 2. GEN 注入结构：携带 layouts 的 GEN 在金字塔中心产出 sand 顶层
+    const py = localLayout.pyramid;
+    const pcx = Math.floor(py.cx / 16), pcz = Math.floor(py.cz / 16);
+    const layouts = [localLayout];
+    const r = await pool.call('gen', { cx: pcx, cz: pcz, seed: SEED, edits: [], layouts }).promise;
+    const blocks = new Uint16Array(r.blocks);
+    const lx = py.cx - pcx * 16, lz = py.cz - pcz * 16;
+    const h = generateHeight(py.cx, py.cz, SEED);
+    const sandId = reg.idOf('sand');
+    check('pyramid top = sand at h+10', blocks[blockIndex(lx, h + 10, lz)] === sandId);
+    check('above pyramid top is air', blocks[blockIndex(lx, h + 11, lz)] === 0);
+    // 无 layouts 时该点是普通地形（对照）
+    const r0 = await pool.call('gen', { cx: pcx, cz: pcz, seed: SEED, edits: [] }).promise;
+    const blocks0 = new Uint16Array(r0.blocks);
+    check('no layouts → plain terrain (no sand stack)', blocks0[blockIndex(lx, h + 10, lz)] !== sandId);
+
+    // 3. GEN 预算：含结构注入的 16 column 并行，p95 < 8ms（§4.2 预算，冻结断言口径）
+    const times = [];
+    for (let i = 0; i < 4; i++) {
+      const batch = [];
+      for (let j = 0; j < 4; j++) {
+        const s = performance.now();
+        batch.push(pool.call('gen', { cx: pcx - 2 + i, cz: pcz - 2 + j, seed: SEED, edits: [], layouts }).promise.then(() => {
+          times.push(performance.now() - s);
+        }));
+      }
+      await Promise.all(batch);
+    }
+    times.sort((a, b) => a - b);
+    results.genP95 = times[Math.floor(times.length * 0.95)];
+    check('gen with structures p95 < 8ms', results.genP95 < 8);
+
+    // 4. Scheduler 全链路：布局门控 → GEN 下发 → 出生点 column 含金字塔方块
+    const world = new WorldData(reg);
+    const sched = new Scheduler({ world, pool, registry: reg, seed: SEED, viewDistance: 2 });
+    // 玩家放在金字塔中心所在 column（世界坐标）
+    const px = py.cx + 0.5, pz = py.cz + 0.5;
+    for (let i = 0; i < 60 && !world.hasColumn(pcx, pcz); i++) {
+      sched.update(px, pz);
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    const col = world.getColumn(pcx, pcz);
+    check('scheduler generated pyramid column', col && col.state === 'ready');
+    if (col) {
+      check('scheduler column has pyramid sand', col.blocks[blockIndex(lx, h + 10, lz)] === sandId);
+      check('skylight recomputed after structures', col.light[blockIndex(lx, h + 11, lz)] >> 4 === 15);
+    }
+
+    pool.dispose();
+    window.__STRUCTURE_GEN_RESULTS__ = results;
+  }
+  run().catch((e) => { window.__STRUCTURE_GEN_RESULTS__ = { passed: 0, failed: 1, errors: [String(e && e.stack || e)] }; });
+</script>
+</body>
+</html>

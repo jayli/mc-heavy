@@ -7,6 +7,8 @@ import { BLOCKS } from '../voxel/blocks-data.js';
 import { ChunkColumn } from '../voxel/chunk-column.js';
 import { WorldData } from '../voxel/world-data.js';
 import { fillColumn } from '../gen/terrain.js';
+import { computeRegionLayout } from '../gen/structures/structure-layout.js';
+import { applyStructuresToColumn } from '../gen/structures/apply.js';
 import { computeSkylightColumn, computeSkylightRegion, computeBlocklightRegion } from '../mesh/lighting.js';
 import { buildSectionMesh } from '../mesh/mesher.js';
 
@@ -29,12 +31,14 @@ function packGeom(g) {
 
 installRpcHandler({
   /**
-   * GEN：生成单 column（地形 + 光照 + edits 叠加）。
-   * @param {{cx: number, cz: number, seed: number, edits: Array<{index:number,id:number,meta:number}>}} p
+   * GEN：生成单 column（地形 + 结构 + 光照 + edits 叠加）。
+   * layouts：查询域内 region 布局（主线程 StructureIndex 缓存后下发，DR-13）。
+   * @param {{cx: number, cz: number, seed: number, edits: Array<{index:number,id:number,meta:number}>, layouts?: Array<Object>}} p
    */
   gen(p) {
     const column = new ChunkColumn(p.cx, p.cz);
     fillColumn(column, p.seed, registry);
+    applyStructuresToColumn(column, p.seed, registry, p.layouts);
     if (p.edits && p.edits.length) column.applyEdits(p.edits);
     computeSkylightColumn(column, registry);
     // blocklight：GEN 时邻柱多半未就绪，只算本 column（截断）；
@@ -89,6 +93,15 @@ installRpcHandler({
       cx: p.cx, cz: p.cz,
       results: cols.map((col) => ({ cx: col.cx, cz: col.cz, version: col.version, light: col.light.buffer })),
     };
+  },
+
+  /**
+   * layout：region 结构布局（确定性，seed 驱动）。
+   * 候选扫描较重（城市放置算法），只在 Worker 算一次，主线程缓存后随 GEN 下发（§4.2 DR-13）。
+   * @param {{regionX: number, regionZ: number, seed: number}} p
+   */
+  layout(p) {
+    return computeRegionLayout(p.regionX, p.regionZ, p.seed);
   },
 
   /**

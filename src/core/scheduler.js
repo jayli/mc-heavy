@@ -3,6 +3,7 @@
 import { ChunkColumn } from '../voxel/chunk-column.js';
 import { columnKey, SECTIONS_PER_COLUMN } from '../voxel/constants.js';
 import { buildSectionMesh } from '../mesh/mesher.js';
+import { StructureIndex } from '../gen/structure-index.js';
 
 const CHANNELS = ['opaque', 'cutout', 'transparent'];
 const MESH_UPLOAD_BUDGET_MS = 3;   // 每帧 GPU 上传预算（§4.9）
@@ -46,6 +47,8 @@ export class Scheduler {
     this.perf = perf;
     this.getEdits = getEdits || (() => []);
     this.renderWorld = renderWorld || null;
+    /** 结构布局缓存 + GEN 门控（§4.2 DR-13：布局 Worker 算一次，主线程转发） */
+    this.structureIndex = new StructureIndex({ pool, seed });
     /** @type {Map<string, {callId: number}>} 在途 GEN 任务 */
     this._inflightGen = new Map();
     this._columnReadyCallbacks = [];
@@ -80,6 +83,9 @@ export class Scheduler {
     this._playerCx = pcx; this._playerCz = pcz;
     const R = this.viewDistance;
 
+    // 0. 结构布局下发（GEN 前置依赖，§4.2 DR-13：预算内按就近优先级）
+    this.structureIndex.dispatch();
+
     // 1. GEN 下发（按切比雪夫距离升序，内圈先就绪，§4.3 halo 协议第 1 条）
     const targets = [];
     for (let dx = -R; dx <= R; dx++) {
@@ -88,11 +94,17 @@ export class Scheduler {
       }
     }
     targets.sort((a, b) => a[2] - b[2]);
-    for (const [cx, cz] of targets) {
+    for (const [cx, cz, dist] of targets) {
       const key = columnKey(cx, cz);
       if (this.world.hasColumn(cx, cz) || this._inflightGen.has(key)) continue;
+      // GEN 依赖规则（§4.2）：本 column 查询域（基 region + 相邻 8 region）布局全就绪才下发
+      if (!this.structureIndex.readyForColumn(cx, cz)) {
+        this.structureIndex.ensureForColumn(cx, cz, dist);
+        continue;
+      }
+      const layouts = this.structureIndex.layoutsForColumn(cx, cz);
       const edits = this.getEdits(key);
-      const { id: callId, promise } = this.pool.call('gen', { cx, cz, seed: this.seed, edits });
+      const { id: callId, promise } = this.pool.call('gen', { cx, cz, seed: this.seed, edits, layouts });
       this._inflightGen.set(key, { callId });
       promise.then((r) => this._onGenResult(key, r)).catch(() => {
         this._inflightGen.delete(key); // 失败/取消：下帧重试

@@ -57,12 +57,15 @@
     check('gen p95 < 8ms', results.genP95 < 8);
 
     // 4. Scheduler 集成：update 后出生点 column 就绪
+    // （M2-1 起 GEN 有布局门控：布局往返 ≥2 帧，循环驱动 update 与游戏主循环一致）
     const world = new WorldData(reg);
     const sched = new Scheduler({ world, pool, registry: reg, seed: 12345, viewDistance: 2 });
     let readyCount = 0;
     sched.onColumnReady(() => { readyCount++; });
-    sched.update(8, 8);
-    await new Promise((r) => setTimeout(r, 1500));
+    for (let i = 0; i < 30 && !world.hasColumn(0, 0); i++) {
+      sched.update(8, 8);
+      await new Promise((r) => setTimeout(r, 100));
+    }
     check('scheduler generated columns', world.hasColumn(0, 0));
     check('column ready callback fired', readyCount > 0);
     const col = world.getColumn(0, 0);
@@ -75,8 +78,10 @@
     // 6. LIGHT 段集成：悬挑平台 → 异步区域重算 → 下方阴影渐变（非全黑）
     const world2 = new WorldData(reg);
     const sched2 = new Scheduler({ world: world2, pool, registry: reg, seed: 12345, viewDistance: 2 });
-    sched2.update(8, 8);
-    await new Promise((r) => setTimeout(r, 1500));
+    for (let i = 0; i < 30 && !world2.hasColumn(0, 0); i++) {
+      sched2.update(8, 8);
+      await new Promise((r) => setTimeout(r, 100));
+    }
     const c0 = world2.getColumn(0, 0);
     check('light: column ready', c0 && c0.state === 'ready');
     // 在 y=40 搭一个 9×9 悬挑平台（中心 column 内，不贴边）
