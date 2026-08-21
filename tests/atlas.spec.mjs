@@ -1,6 +1,6 @@
 import { test, expect } from 'playwright/test';
 
-test('atlas 覆盖 mc-lite 全部 122 张纹理且 UV 合法', async ({ page }) => {
+test('atlas 覆盖 mc-lite 全部 122 张纹理 + M2 水纹理且 UV 合法', async ({ page }) => {
   await page.goto('/src/tests/index.html'); // 任意页面，只为同源 fetch
   const report = await page.evaluate(async () => {
     const meta = await (await fetch('/assets/atlas.json')).json();
@@ -10,13 +10,13 @@ test('atlas 覆盖 mc-lite 全部 122 张纹理且 UV 合法', async ({ page }) 
       return !(t.u0 < t.u1 && t.v0 < t.v1 &&
                t.u0 >= 0 && t.u1 <= 1 && t.v0 >= 0 && t.v1 <= 1);
     });
-    // 抽查关键 tile 存在
+    // 抽查关键 tile 存在（含 M2-5 水纹理）
     const need = ['stone', 'dirt', 'grass_carried', 'Bedrock', 'Glowstone',
-                  'Glass', 'bed/Bed_(top_texture)_JE1_BE1'];
+                  'Glass', 'bed/Bed_(top_texture)_JE1_BE1', 'water', 'swamp_water'];
     const missing = need.filter((n) => !meta.tiles[n]);
     return { count: names.length, bad, missing, size: meta.size, gutter: meta.gutter };
   });
-  expect(report.count).toBe(122);
+  expect(report.count).toBe(124);
   expect(report.bad).toEqual([]);
   expect(report.missing).toEqual([]);
   expect(report.size).toBe(2048);

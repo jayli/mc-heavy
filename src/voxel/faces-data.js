@@ -22,8 +22,8 @@ export const FACES_DATA = {
   birch_log: ['Birch_Log_side', 'Birch_Log_side', 'Birch_Log_top', 'Birch_Log_top', 'Birch_Log_side', 'Birch_Log_side'],
   glass_block: 'Glass',
   glass_blink: 'glass_blink',
-  water: 'water_placeholder', // M1 占位（atlas 无此 tile，mesher 兜底 stone），M2 水面特效时替换
-  swamp_water: 'water_placeholder',
+  water: 'water',
+  swamp_water: 'swamp_water',
   leaves: 'leaves',
   azalea_leaves: 'azalea_leaves',
   yellow_leaves: 'leaves_yellow',

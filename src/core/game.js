@@ -8,6 +8,7 @@ import { PerfMonitor } from './perf.js';
 import { PerfHUD } from './perf-hud.js';
 import { RenderWorld } from '../render/render-world.js';
 import { setupFog } from '../render/materials.js';
+import { setupOcean } from '../render/ocean.js';
 import { loadAtlas } from '../mesh/atlas-loader.js';
 import { findSpawnY } from '../gen/terrain.js';
 import { getCitySpawnPoint } from '../gen/structures/city-layout.js';
@@ -54,6 +55,7 @@ export class Game {
 
     this.scene.background = new THREE.Color(0x87ceeb);
     setupFog(this.scene, this.viewDistance);
+    this.ocean = setupOcean(this.scene);
     this.renderWorld = new RenderWorld({ scene: this.scene, atlasTexture: texture, viewDistance: this.viewDistance });
 
     // 存档：打开 IndexedDB、恢复 seed（edits 预热在出生点确定后，§4.8）
@@ -63,6 +65,7 @@ export class Game {
     const hadMeta = !!(meta && meta.seed !== undefined);
     if (hadMeta) this.seed = meta.seed;
     else await this.persistence.saveMeta({ seed: this.seed, spawn: [8, 8], savedAt: Date.now() });
+    this.ocean.setSeed(this.seed);
 
     this.scheduler = new Scheduler({
       world: this.world, pool: this.pool, registry: this.registry,
@@ -115,6 +118,7 @@ export class Game {
       this.player.update(dt);
       this.scheduler.update(this.player.physics.pos.x, this.player.physics.pos.z);
       this.persistence.scheduleFlush(this.world); // 5s 防抖写盘（有 edits 才真正写）
+      this.ocean.update(this.camera, dt);
       this._hud.update(nowMs);
       this.renderer.render(this.scene, this.camera);
     });

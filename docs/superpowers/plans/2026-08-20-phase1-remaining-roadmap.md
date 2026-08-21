@@ -162,15 +162,15 @@
 - `WATER_LEVEL_OFFSET`（海面高度）
 
 **实现要点：**
-- [ ] 海面：大平面 Mesh + TSL 材质（波浪动画 + 半透明 + 反射近似）
-- [ ] 海面跟随相机（无限水面效果）
-- [ ] 体素水：transparent 通道渲染（已有），优化水面与体素水交界
-- [ ] 水面高度 = SEA_Y + 0.5（mc-lite 语义）
+- [x] 海面：800×800 平面 + TSL NodeMaterial（波浪/Blinn-Phong 高光/Fresnel/距离淡出/水域遮罩，移植 mc-lite Engine.js）
+- [x] 海面跟随相机（无限水面）
+- [x] 体素水：transparent 通道 + 新增水纹理入 atlas（替换 M1 占位 water_placeholder）
+- [x] 水面高度 = SEA_Y + 0.5（WATER_LEVEL_OFFSET=-1.5，mc-lite 语义）
 
 **测试：**
-- [ ] 海面可见（截图有蓝色半透明区域）
-- [ ] 体素水与海面交界无明显接缝
-- [ ] 水面动画流畅（fps ≥90）
+- [x] 海面可见（water-visual spec ratio 0.42）
+- [x] 体素水与海面交界（同色族蓝，截图核验）
+- [x] 水面动画流畅（fps 120）
 
 ### Task M2-6: 日夜循环 + 三种视觉风格
 
