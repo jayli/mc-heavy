@@ -17,8 +17,11 @@ import {
 // packed 属性解包：bit0-7 light（sky<<4|block），bit8-9 AO
 const packed = attribute('packed', 'uint');
 const lightByte = packed.bitAnd(0xFF);
-const sky = float(lightByte.shiftRight(4)).div(15);
-const block = float(lightByte.bitAnd(0xF)).div(15);
+// 日夜调制（M2-6）：uSkyDim 黑夜压暗 skylight，uBlockBoost 黑夜相对增强 blocklight
+const uSkyDim = uniform(1.0);
+const uBlockBoost = uniform(1.0);
+const sky = float(lightByte.shiftRight(4)).div(15).mul(uSkyDim);
+const block = float(lightByte.bitAnd(0xF)).div(15).mul(uBlockBoost);
 const brightness = max(sky, block);
 const ao = float(packed.shiftRight(8).bitAnd(3));
 // AO 曲线（mc-lite AONodeSystem.js:129 口径）：ao=3（开阔）→1.0，ao=0（墙角）→0.1
@@ -48,6 +51,7 @@ export function createVoxelMaterials(atlasTexture) {
     // 树叶/cross 植被双面可见（mc-lite 口径）
     cutout: makeMaterial({ alphaTest: 0.5, side: THREE.DoubleSide }),
     transparent: makeMaterial({ transparent: true }),
+    dayNight: { uSkyDim, uBlockBoost },
   };
 }
 

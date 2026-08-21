@@ -26,6 +26,7 @@ export class RenderWorld {
   constructor({ scene, atlasTexture, viewDistance = 8, capacity }) {
     this.scene = scene;
     const materials = createVoxelMaterials(atlasTexture);
+    this.materials = materials;
     const maxInstances = Math.ceil((2 * viewDistance + 1) ** 2 * SECTIONS_PER_COLUMN * 1.2);
     /** @type {Object<string, THREE.BatchedMesh>} */
     this.meshes = {};

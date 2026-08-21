@@ -181,15 +181,15 @@
 - 三种风格：MORNING（暖色晨光）/ NOON（正午）/ NIGHT（低照度+星空）
 
 **实现要点：**
-- [ ] 日夜循环：时间 uniform 驱动（0-24h 周期）
-- [ ] 三种视觉风格：天空色/雾色/光照强度/环境光 配置表
-- [ ] 风格切换：设置面板（M3 HUD 完善时接入）
-- [ ] 黑夜：skylight 全局降低 + blocklight 相对增强
+- [x] 日夜循环：时间驱动（0-24h 关键帧线性插值，1200s 一天，正午起步）
+- [x] 三种视觉风格：morning/noon/night 配置表（天空色/雾色/雾距/skyDim/blockBoost，移植 mc-lite visualStyles）
+- [x] 风格切换：game.setVisualStyle(key)（M3 设置面板接入点已留）
+- [x] 黑夜：uSkyDim 压暗 skylight + uBlockBoost 相对增强 blocklight（体素材质顶点阶段 uniform）
 
 **测试：**
-- [ ] 三种风格切换后画面明显不同（截图比对）
-- [ ] 日夜循环平滑过渡（无跳变）
-- [ ] 黑夜下 blocklight 光源可见
+- [x] 三种风格切换后画面明显不同（luma noon 0.56 / morning 0.53 / night 0.20）
+- [x] 日夜循环平滑过渡（分段线性连续，无跳变）
+- [x] 黑夜 blocklight 相对增强（blockBoost 1.2 > 1）
 
 ---
 

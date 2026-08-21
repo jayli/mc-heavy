@@ -9,6 +9,7 @@ import { PerfHUD } from './perf-hud.js';
 import { RenderWorld } from '../render/render-world.js';
 import { setupFog } from '../render/materials.js';
 import { setupOcean } from '../render/ocean.js';
+import { DayNight } from '../render/daynight.js';
 import { loadAtlas } from '../mesh/atlas-loader.js';
 import { findSpawnY } from '../gen/terrain.js';
 import { getCitySpawnPoint } from '../gen/structures/city-layout.js';
@@ -54,9 +55,17 @@ export class Game {
     this.pool.broadcast('atlas-meta', atlasMeta);
 
     this.scene.background = new THREE.Color(0x87ceeb);
-    setupFog(this.scene, this.viewDistance);
+    const fogUniforms = setupFog(this.scene, this.viewDistance);
     this.ocean = setupOcean(this.scene);
     this.renderWorld = new RenderWorld({ scene: this.scene, atlasTexture: texture, viewDistance: this.viewDistance });
+    // 日夜循环（M2-6）：正午起步（与 M1 视觉口径一致），1200s 一天
+    this.dayNight = new DayNight({
+      scene: this.scene,
+      fog: fogUniforms,
+      voxelUniforms: this.renderWorld.materials.dayNight,
+      baseFogNear: this.viewDistance * 16 * 0.75,
+      baseFogFar: (this.viewDistance + 2) * 16 * 0.95,
+    });
 
     // 存档：打开 IndexedDB、恢复 seed（edits 预热在出生点确定后，§4.8）
     this.persistence = new Persistence();
@@ -119,6 +128,7 @@ export class Game {
       this.scheduler.update(this.player.physics.pos.x, this.player.physics.pos.z);
       this.persistence.scheduleFlush(this.world); // 5s 防抖写盘（有 edits 才真正写）
       this.ocean.update(this.camera, dt);
+      this.dayNight.update(dt);
       this._hud.update(nowMs);
       this.renderer.render(this.scene, this.camera);
     });
@@ -142,6 +152,8 @@ export class Game {
   }
 
   perfSnapshot() { return this.perf.snapshot(); }
+  /** 切换视觉风格（'morning'/'noon'/'night'，null 恢复日夜循环；M2-6，M3 设置面板接入） */
+  setVisualStyle(key) { this.dayNight.setStyle(key); }
   renderStats() {
     return { ...this.renderWorld.stats(), drawCalls: this.renderer.info.render.drawCalls };
   }
