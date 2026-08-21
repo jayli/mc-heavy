@@ -23,7 +23,7 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
 - **M1 体素核心闭环 ✅**：地形生成 / section meshing 双路径 / BatchedMesh 通道级合批 /
   玩家物理（step-up + 相机缓动）/ DDA 射线 / 放块挖块 / 最小存档 / 光照（skylight 垂直+水平扩散、
   AO 顶点阶段 float varying、blocklight flood fill、异步收敛管线）。
-- **M2 结构与世界完整性 ✅**：M2-1 StructureIndex / M2-2 地标 / M2-3 树木植被 / M2-4 洞穴 / M2-5 水面 / M2-6 日夜循环，全部完成。
+- **M2 结构与世界完整性 🔧**：M2-1~M2-6 主体完成；当前为 bug 修复阶段（方块组装/渲染）。
 - **M3 性能达标与收尾 ⬜**：视距 8 全量调优 / 预算标定 / 雨效 / HUD / 基线脚本 / 报告。
 
 测试现状：18 个 Playwright spec（21 用例）+ 95 个浏览器内单元测试全绿；冻结断言达标
