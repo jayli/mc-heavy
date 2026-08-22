@@ -1,0 +1,17 @@
+// src/core/debug-config.js — 调试/性能统计开关（设计文档 §4.9）
+// 开发调试期默认全开；URL 参数可覆盖（main.js 解析，如 ?stats=0），
+// Game 启动时 broadcast 给 Worker 池（mesher 与主线程快速路径同构生效）。
+
+export const DEBUG_FLAGS = {
+  /** 世界数据看板：mesher 面剔除计数 + section 统计聚合 + 通道级顶点统计 + HUD 2s 刷新。
+   *  关闭后 mesher 热循环跳过计数、scheduler/renderWorld 不存统计、HUD 不显示世界数据区。 */
+  worldStats: true,
+  /** 世界数据看板控制台日志：随 HUD 同节奏（2s）console.log 精确数值行 + 原始统计对象。
+   *  依赖 worldStats（采集关闭时无数据可 log）。URL ?log=0 可单独关闭。 */
+  statsLog: true,
+};
+
+/** 合并覆盖开关（main.js URL 参数 / Worker 'debug-flags' broadcast 共用） */
+export function setDebugFlags(patch) {
+  Object.assign(DEBUG_FLAGS, patch);
+}

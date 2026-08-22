@@ -6,6 +6,7 @@ import { Scheduler } from './scheduler.js';
 import { WorkerPool } from './worker-pool.js';
 import { PerfMonitor } from './perf.js';
 import { PerfHUD } from './perf-hud.js';
+import { DEBUG_FLAGS } from './debug-config.js';
 import { RenderWorld } from '../render/render-world.js';
 import { setupFog } from '../render/materials.js';
 import { setupOcean } from '../render/ocean.js';
@@ -41,6 +42,8 @@ export class Game {
     this.player = null;
     this._lastFrameMs = -1;
     this.persistence = null;
+    /** 每帧 render 后捕获的 renderer.info 快照（异步读取不撞 autoReset 重置点） */
+    this._lastRenderInfo = { drawCalls: 0, triangles: 0 };
   }
 
   async start() {
@@ -53,6 +56,8 @@ export class Game {
     this._atlasTexture = texture; // 调试/测试引用
     const atlasMeta = await (await fetch('/assets/atlas.json')).json();
     this.pool.broadcast('atlas-meta', atlasMeta);
+    // 调试开关同步给 Worker（mesher 与主线程快速路径同构生效，§4.9）
+    this.pool.broadcast('debug-flags', { ...DEBUG_FLAGS });
 
     this.scene.background = new THREE.Color(0x87ceeb);
     const fogUniforms = setupFog(this.scene, this.viewDistance);
@@ -110,7 +115,8 @@ export class Game {
     this.scene.add(this.player.highlight);
     this.worldReady = true;
 
-    this._hud = new PerfHUD(this.perf, this._hudRoot);
+    this._hud = new PerfHUD(this.perf, this._hudRoot,
+      DEBUG_FLAGS.worldStats ? () => this.worldStats() : null);
     window.addEventListener('resize', () => this._onResize());
     this._onResize();
     // 存档 flush：页面隐藏/退出立即写盘（§4.8）
@@ -131,6 +137,12 @@ export class Game {
       this.dayNight.update(dt);
       this._hud.update(nowMs);
       this.renderer.render(this.scene, this.camera);
+      // info 在每帧 render 前被 autoReset 清零，render 后捕获才是本帧真实值
+      // （HUD/测试异步读取 renderer.info 会撞上重置点，必须在此快照）
+      this._lastRenderInfo = {
+        drawCalls: this.renderer.info.render.drawCalls,
+        triangles: this.renderer.info.render.triangles,
+      };
     });
   }
 
@@ -155,7 +167,25 @@ export class Game {
   /** 切换视觉风格（'morning'/'noon'/'night'，null 恢复日夜循环；M2-6，M3 设置面板接入） */
   setVisualStyle(key) { this.dayNight.setStyle(key); }
   renderStats() {
-    return { ...this.renderWorld.stats(), drawCalls: this.renderer.info.render.drawCalls };
+    return { ...this.renderWorld.stats(), drawCalls: this._lastRenderInfo.drawCalls };
+  }
+
+  /**
+   * 世界数据看板（HUD 2s 异步刷新）：体素/面剔除统计 + 通道级合批统计 + draw call。
+   * 对应 mc-lite 面板的方块数/面数/剔除面数/合并 mesh 数/节省渲染量语义。
+   * drawCalls/triangles 读 _lastRenderInfo（render 后快照），避免异步读撞上 autoReset 清零。
+   */
+  worldStats() {
+    const voxel = this.scheduler.worldStats();
+    const rw = this.renderWorld.stats();
+    return {
+      ...voxel,
+      channels: rw.channels,
+      sections: rw.sections,
+      columns: this.world.columns.size,
+      drawCalls: this._lastRenderInfo.drawCalls,
+      triangles: this._lastRenderInfo.triangles,
+    };
   }
 
   dispose() {

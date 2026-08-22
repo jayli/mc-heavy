@@ -12,6 +12,7 @@ import { computeRegionLayout } from '../gen/structures/structure-layout.js';
 import { applyStructuresToColumn } from '../gen/structures/apply.js';
 import { computeSkylightColumn, computeSkylightRegion, computeBlocklightRegion } from '../mesh/lighting.js';
 import { buildSectionMesh } from '../mesh/mesher.js';
+import { setDebugFlags } from '../core/debug-config.js';
 
 // Worker 内自建 registry（与主线程数据同源，blocks-data.js 纯数据）
 const registry = createRegistry();
@@ -71,6 +72,7 @@ installRpcHandler({
         cutout: packGeom(result.cutout),
         transparent: packGeom(result.transparent),
       },
+      stats: result.stats,
     };
   },
 
@@ -113,6 +115,16 @@ installRpcHandler({
    */
   'atlas-meta'(p) {
     _atlasMeta = p;
+    return true;
+  },
+
+  /**
+   * debug-flags：主线程启动时 broadcast 一次（调试开关，§4.9）。
+   * mesher 与主线程快速路径同构生效——关闭 worldStats 时热循环跳过计数。
+   * @param {{worldStats?: boolean}} p
+   */
+  'debug-flags'(p) {
+    setDebugFlags(p);
     return true;
   },
 });

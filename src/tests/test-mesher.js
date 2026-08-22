@@ -1,5 +1,5 @@
 import { test } from './runner.js';
-import { assertEqual, assertTrue } from './assert.js';
+import { assertEqual, assertTrue, assertNull } from './assert.js';
 import { buildSectionMesh } from '../mesh/mesher.js';
 import { computeSkylightColumn } from '../mesh/lighting.js';
 import { WorldData } from '../voxel/world-data.js';
@@ -7,6 +7,7 @@ import { ChunkColumn } from '../voxel/chunk-column.js';
 import { createRegistry } from '../voxel/block-registry.js';
 import { BLOCKS } from '../voxel/blocks-data.js';
 import { WORLD_MIN_Y, blockIndex } from '../voxel/constants.js';
+import { DEBUG_FLAGS, setDebugFlags } from '../core/debug-config.js';
 
 function makeRegistry() {
   const reg = createRegistry();
@@ -122,4 +123,38 @@ test('mesher: AO 值在 packed bit8-9', () => {
     const ao = (packed[i] >> 8) & 0x3;
     assertTrue(ao >= 0 && ao <= 3, `AO value ${ao} in range`);
   }
+});
+
+test('mesher: worldStats 开 → 返回面剔除统计', () => {
+  setDebugFlags({ worldStats: true });
+  const reg = makeRegistry();
+  const world = new WorldData(reg);
+  const col = new ChunkColumn(0, 0);
+  const stoneId = reg.idOf('stone');
+  col.blocks[blockIndex(8, WORLD_MIN_Y + 5, 8)] = stoneId;
+  col.blocks[blockIndex(9, WORLD_MIN_Y + 5, 8)] = stoneId;
+  world.add(col);
+  const view = world.getSectionView(0, 0, 0);
+  const result = buildSectionMesh(view, reg, atlasMeta, 0, 0, 0);
+  assertTrue(result.stats !== null, 'stats collected when flag on');
+  assertEqual(result.stats.blocks, 2, 'two non-air blocks');
+  assertEqual(result.stats.candidateFaces, 12, 'two cubes = 12 candidate faces');
+  assertEqual(result.stats.faces, 10, 'shared face culled → 10 emitted');
+  assertEqual(result.stats.culledFaces, 2, 'one shared face × 2 sides culled');
+  assertEqual(result.stats.vertices, 40, '10 faces = 40 vertices');
+});
+
+test('mesher: worldStats 关 → stats 为 null、几何不变', () => {
+  setDebugFlags({ worldStats: false });
+  const reg = makeRegistry();
+  const world = makeWorldWithBlock(reg, 8, WORLD_MIN_Y + 5, 8, reg.idOf('stone'));
+  const view = world.getSectionView(0, 0, 0);
+  const result = buildSectionMesh(view, reg, atlasMeta, 0, 0, 0);
+  assertNull(result.stats, 'stats null when flag off');
+  assertEqual(result.opaque.vertexCount, 24, 'geometry unaffected');
+  setDebugFlags({ worldStats: true }); // 还原默认（开发调试期全开）
+});
+
+test('debug-config: 默认 worldStats 开', () => {
+  assertTrue(DEBUG_FLAGS.worldStats === true, 'default on for dev/debug');
 });

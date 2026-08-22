@@ -2,6 +2,7 @@
 // Worker/主线程同构：本文件不得 import three。
 import { getFaceTile } from '../voxel/faces-data.js';
 import { SECTION_SIZE } from '../voxel/constants.js';
+import { DEBUG_FLAGS } from '../core/debug-config.js';
 
 // 面方向：0:+X, 1:-X, 2:+Y, 3:-Y, 4:+Z, 5:-Z
 const FACE_DIRS = [
@@ -72,7 +73,8 @@ function aoOffsetsFor(face, v) {
  * @param {*} registry
  * @param {Object} atlasMeta - tiles: { tileName: {u0,v0,u1,v1} }
  * @param {number} _cx @param {number} _sy @param {number} _cz section 世界坐标（M1 未用，保留接口对称）
- * @returns {{opaque: SectionGeomData, cutout: SectionGeomData, transparent: SectionGeomData}}
+ * @returns {{opaque: SectionGeomData, cutout: SectionGeomData, transparent: SectionGeomData,
+ *            stats: {blocks: number, candidateFaces: number, faces: number, culledFaces: number, vertices: number}}}
  */
 export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
   const { data, light } = view;
@@ -88,6 +90,12 @@ export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
   };
   const channelNames = ['opaque', 'cutout', 'transparent'];
 
+  // 面剔除统计（HUD 世界数据看板用，§4.9 开关 worldStats）：candidateFaces = 立方体 ×6 候选面，
+  // culledFaces = 被邻居遮挡剔除面，faces = 实际出块面（含植被模板 quad）。
+  // 开关关闭时热循环跳过计数（collect 恒 false，分支预测稳定，零额外开销）。
+  const collect = DEBUG_FLAGS.worldStats;
+  let blocks = 0, candidateFaces = 0, faces = 0, culledFaces = 0;
+
   for (let ly = 0; ly < SECTION_SIZE; ly++) {
     for (let lz = 0; lz < SECTION_SIZE; lz++) {
       for (let lx = 0; lx < SECTION_SIZE; lx++) {
@@ -95,6 +103,7 @@ export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
         const vx = lx + 1, vy = ly + 1, vz = lz + 1;
         const id = data[viewIdx(vx, vy, vz)];
         if (id === 0) continue;
+        if (collect) blocks++;
 
         const cullMode = cullTable[id];
         if (cullMode === 3) continue; // none：不渲染
@@ -115,6 +124,7 @@ export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
               [0, 0, 0, 1, 0, 1, 1, 1, 1, 0, 1, 0, 4],
               [1, 0, 0, 0, 0, 1, 0, 1, 1, 1, 1, 1, 0],
             ];
+          if (collect) faces += quads.length; // 植被模板不做面剔除，全部计入出块面
           for (const q of quads) {
             const face = q[12];
             const vertBase = ch.pos.length / 3;
@@ -129,15 +139,17 @@ export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
           continue;
         }
 
+        if (collect) candidateFaces += 6; // 立方体 6 面进入剔除判定
         for (let face = 0; face < 6; face++) {
           const [dx, dy, dz] = FACE_DIRS[face];
           const nx = vx + dx, ny = vy + dy, nz = vz + dz;
           const neighborId = data[viewIdx(nx, ny, nz)];
 
           // 面剔除：邻居 opaque 则剔除；同类型 transparent 相邻剔除
-          if (opaqueTable[neighborId] === 1) continue;
-          if (neighborId === id && cullMode >= 2) continue; // water/glass 同类相邻
+          if (opaqueTable[neighborId] === 1) { if (collect) culledFaces++; continue; }
+          if (neighborId === id && cullMode >= 2) { if (collect) culledFaces++; continue; } // water/glass 同类相邻
 
+          if (collect) faces++; // 通过剔除，实际出块
           const tileName = getFaceTile(blockName, face);
           const tile = tiles[tileName] || tiles['stone'] || DEFAULT_TILE;
 
@@ -170,9 +182,11 @@ export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
 
   // 转为 typed array
   const result = {};
+  let totalVertices = 0;
   for (const [name, ch] of Object.entries(channels)) {
     const vertexCount = ch.pos.length / 3;
     const indexCount = ch.idx.length;
+    totalVertices += vertexCount;
     result[name] = {
       positions: new Float32Array(ch.pos),
       uvs: new Float32Array(ch.uv),
@@ -182,5 +196,15 @@ export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
       indexCount,
     };
   }
+  // 面剔除统计（§4.3）：供 HUD 世界数据看板展示剔除效率；开关关闭时返回 null（零采集）
+  result.stats = collect
+    ? {
+      blocks,           // 非空方块数（出块候选）
+      candidateFaces,   // 候选面数（立方体 ×6）
+      faces,            // 实际出块面数
+      culledFaces,      // 被剔除面数
+      vertices: totalVertices,
+    }
+    : null;
   return result;
 }

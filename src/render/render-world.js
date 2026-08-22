@@ -3,6 +3,7 @@
 import * as THREE from 'three';
 import { createVoxelMaterials } from './materials.js';
 import { WORLD_MIN_Y, SECTION_SIZE, SECTIONS_PER_COLUMN } from '../voxel/constants.js';
+import { DEBUG_FLAGS } from '../core/debug-config.js';
 
 const CHANNELS = ['opaque', 'cutout', 'transparent'];
 // 视距 8 容量口径（§4.4.2 v1.6）：instance 元数据便宜按全 slot 预留；
@@ -102,19 +103,33 @@ export class RenderWorld {
       // 增量替换：未溢出预留 → setGeometryAt 快路径；溢出 → 重建 slot
       if (geomData.vertexCount <= existing.reservedV && geomData.indexCount <= existing.reservedI) {
         bm.setGeometryAt(existing.geometryId, geom);
+        if (DEBUG_FLAGS.worldStats) {
+          existing.vertexCount = geomData.vertexCount;
+          existing.indexCount = geomData.indexCount;
+        }
       } else {
         bm.deleteGeometry(existing.geometryId); // 级联删 instance
         const gid = this._addGeometrySafe(bm, channel, geom, reservedV, reservedI);
         const iid = bm.addInstance(gid);
         this._setInstanceMatrix(bm, iid, cx, sy, cz);
-        this.slotMap.set(key, { channel, geometryId: gid, instanceId: iid, reservedV, reservedI });
+        this.slotMap.set(key, this._makeSlot(channel, gid, iid, reservedV, reservedI, geomData));
       }
     } else {
       const gid = this._addGeometrySafe(bm, channel, geom, reservedV, reservedI);
       const iid = bm.addInstance(gid);
       this._setInstanceMatrix(bm, iid, cx, sy, cz);
-      this.slotMap.set(key, { channel, geometryId: gid, instanceId: iid, reservedV, reservedI });
+      this.slotMap.set(key, this._makeSlot(channel, gid, iid, reservedV, reservedI, geomData));
     }
+  }
+
+  /** 构造 slot 记录；worldStats 开关开启时才附带顶点/索引计数（通道统计用，§4.9） */
+  _makeSlot(channel, geometryId, instanceId, reservedV, reservedI, geomData) {
+    const slot = { channel, geometryId, instanceId, reservedV, reservedI };
+    if (DEBUG_FLAGS.worldStats) {
+      slot.vertexCount = geomData.vertexCount;
+      slot.indexCount = geomData.indexCount;
+    }
+    return slot;
   }
 
   /**
@@ -168,7 +183,28 @@ export class RenderWorld {
   }
 
   stats() {
-    return { sections: this.slotMap.size, capacity: this._capacity };
+    return { sections: this.slotMap.size, capacity: this._capacity, channels: this.channelStats() };
+  }
+
+  /**
+   * 通道级合批统计（HUD 世界数据看板，§4.4.2）：每通道 slot/instance 数、
+   * 实际顶点/索引/三角形数。对应 mc-lite 面板「consolidation 后 InstancedMesh 数」
+   * 的语义——新架构为 3 个 BatchedMesh（opaque/cutout/transparent 各一），
+   * 每通道 1 次 draw call（per-instance 剔除不改变 draw 数）。
+   */
+  channelStats() {
+    const out = {};
+    for (const channel of CHANNELS) {
+      out[channel] = { slots: 0, vertices: 0, indices: 0, triangles: 0 };
+    }
+    for (const slot of this.slotMap.values()) {
+      const c = out[slot.channel];
+      c.slots++;
+      c.vertices += slot.vertexCount || 0;
+      c.indices += slot.indexCount || 0;
+      c.triangles += Math.floor((slot.indexCount || 0) / 3);
+    }
+    return out;
   }
 
   /** 释放 GPU 资源（几何 + 三通道 BatchedMesh）；材质/纹理归调用方管理。 */

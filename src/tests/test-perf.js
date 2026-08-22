@@ -1,6 +1,8 @@
 import { test } from './runner.js';
 import { assertEqual, assertTrue } from './assert.js';
 import { PerfMonitor } from '../core/perf.js';
+import { PerfHUD } from '../core/perf-hud.js';
+import { setDebugFlags } from '../core/debug-config.js';
 
 test('PerfMonitor: 100 帧 16.67ms 间隔 → fps ≈ 60', () => {
   const m = new PerfMonitor();
@@ -36,4 +38,48 @@ test('PerfMonitor: 窗口滚动，内存有界', () => {
   for (let i = 0; i < 5000; i++) { t += 16; m.tick(t); }
   // 内部采样窗口不应无限增长
   assertTrue(m._frameSamples.count <= m.windowSize, 'sample window bounded');
+});
+
+function makeFakeStats() {
+  return {
+    blocks: 100, candidateFaces: 600, faces: 100, culledFaces: 500,
+    cullRatio: 500 / 600, vertices: 400,
+    channels: { opaque: { slots: 1, vertices: 400, triangles: 200 } },
+    sections: 1, sectionCount: 1, columns: 1, drawCalls: 3, triangles: 200,
+  };
+}
+
+test('PerfHUD: statsLog 开 → 2s 节奏 console.log 世界数据', () => {
+  setDebugFlags({ worldStats: true, statsLog: true });
+  const container = document.createElement('div');
+  const hud = new PerfHUD(new PerfMonitor(), container, () => makeFakeStats());
+  const logs = [];
+  const origLog = console.log;
+  console.log = (...args) => logs.push(args);
+  try {
+    hud.update(250);  // 首次世界刷新（_lastWorldUpdate=-2000）→ log 1 次
+    hud.update(500);  // 距上次世界刷新仅 250ms → 不 log
+    hud.update(2300); // 距上次世界刷新 2050ms → log 第 2 次
+  } finally {
+    console.log = origLog;
+  }
+  assertEqual(logs.length, 2, 'log on 2s cadence');
+  assertTrue(String(logs[0][0]).includes('blocks=100'), 'log line has exact numbers');
+});
+
+test('PerfHUD: statsLog 关 → 不输出控制台日志（HUD 仍渲染）', () => {
+  setDebugFlags({ worldStats: true, statsLog: false });
+  const container = document.createElement('div');
+  const hud = new PerfHUD(new PerfMonitor(), container, () => makeFakeStats());
+  const logs = [];
+  const origLog = console.log;
+  console.log = (...args) => logs.push(args);
+  try {
+    hud.update(250);
+  } finally {
+    console.log = origLog;
+    setDebugFlags({ statsLog: true }); // 还原默认（开发调试期全开）
+  }
+  assertEqual(logs.length, 0, 'no console log when statsLog off');
+  assertTrue(container.textContent.includes('剔除'), 'HUD world section still rendered');
 });

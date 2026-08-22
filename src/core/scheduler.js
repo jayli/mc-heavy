@@ -64,6 +64,9 @@ export class Scheduler {
     this._uploadQueue = [];
     /** 至少上传过一次的 section（邻居到达重 mesh 判定用） */
     this._meshedSections = new Set();
+    /** @type {Map<string, {blocks:number,candidateFaces:number,faces:number,culledFaces:number,vertices:number}>}
+     *  已上传 section 的面剔除统计（mesher 回传，HUD 世界数据看板用） */
+    this._sectionStats = new Map();
     // ---- LIGHT 段状态（skylight 水平扩散异步收敛，§4.6）----
     /** 待下发光照重算的 columnKey 集合（去重） */
     this._lightQueue = new Set();
@@ -335,7 +338,7 @@ export class Scheduler {
     this._inflightMesh.delete(skey);
     const col = this.world.getColumn(r.cx, r.cz);
     if (!col || col.version !== r.version) return; // 过期结果丢弃（§4.9）
-    this._uploadQueue.push({ cx: r.cx, sy: r.sy, cz: r.cz, channels: r.channels, version: r.version });
+    this._uploadQueue.push({ cx: r.cx, sy: r.sy, cz: r.cz, channels: r.channels, version: r.version, stats: r.stats });
   }
 
   /** 上传预算：每帧 ≤3ms，从队列取 section 调 renderWorld.uploadSection */
@@ -348,7 +351,9 @@ export class Scheduler {
       for (const channel of CHANNELS) {
         this.renderWorld.uploadSection(item.cx, item.sy, item.cz, channel, unpackGeom(item.channels[channel]), item.version);
       }
-      this._meshedSections.add(sectionKey(item.cx, item.sy, item.cz));
+      const skey = sectionKey(item.cx, item.sy, item.cz);
+      this._meshedSections.add(skey);
+      if (item.stats) this._sectionStats.set(skey, item.stats);
     }
   }
 
@@ -363,6 +368,7 @@ export class Scheduler {
       const skey = sectionKey(cx, sy, cz);
       this._meshedSections.delete(skey);
       this._pendingMesh.delete(skey);
+      this._sectionStats.delete(skey);
       if (this._meshQueuedSet.has(skey)) { this._meshQueuedSet.delete(skey); }
       const meshInflight = this._inflightMesh.get(skey);
       if (meshInflight) { this.pool.cancel(meshInflight.callId); this._inflightMesh.delete(skey); }
@@ -392,6 +398,7 @@ export class Scheduler {
       for (const channel of CHANNELS) {
         this.renderWorld.uploadSection(cx, sy, cz, channel, data[channel], col.version);
       }
+      if (data.stats) this._sectionStats.set(sectionKey(cx, sy, cz), data.stats);
       if (this.perf) this.perf.mark('fast-remesh', performance.now() - t0);
     }
   }
@@ -404,6 +411,31 @@ export class Scheduler {
       uploadQueue: this._uploadQueue.length,
       sections: this._meshedSections.size,
       lightInflight: this._inflightLight.size,
+    };
+  }
+
+  /**
+   * 世界体素/面剔除统计（HUD 世界数据看板，§4.3）。
+   * 汇总所有已上传 section 的 mesher 统计：方块数、候选面、出块面、剔除面、顶点数。
+   * 剔除率 = culled / candidate，反映面剔除节省的渲染面数。
+   */
+  worldStats() {
+    let blocks = 0, candidateFaces = 0, faces = 0, culledFaces = 0, vertices = 0;
+    for (const s of this._sectionStats.values()) {
+      blocks += s.blocks;
+      candidateFaces += s.candidateFaces;
+      faces += s.faces;
+      culledFaces += s.culledFaces;
+      vertices += s.vertices;
+    }
+    return {
+      blocks,
+      candidateFaces,
+      faces,
+      culledFaces,
+      vertices,
+      cullRatio: candidateFaces > 0 ? culledFaces / candidateFaces : 0,
+      sectionCount: this._sectionStats.size,
     };
   }
 }

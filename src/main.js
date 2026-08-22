@@ -1,6 +1,7 @@
 // src/main.js — 启动入口：WebGPU gate → Game
 import { Game } from './core/game.js';
 import { buildDefaultRegistry } from './voxel/block-registry.js';
+import { setDebugFlags } from './core/debug-config.js';
 
 window.__MC_BOOT__ = { webgpu: false, rendererReady: false, error: null };
 
@@ -28,6 +29,12 @@ async function boot() {
   const registry = await buildDefaultRegistry();
   const seed = 12345; // M1 固定 seed（M2 接存档/随机）
   const params = new URLSearchParams(location.search);
+  // 调试开关 URL 覆盖：?stats=0 关闭世界数据看板统计（对照基线用），?stats=1 强制开
+  if (params.get('stats') === '0') setDebugFlags({ worldStats: false });
+  if (params.get('stats') === '1') setDebugFlags({ worldStats: true });
+  // ?log=0 关闭世界数据控制台日志（HUD 仍显示），?log=1 强制开
+  if (params.get('log') === '0') setDebugFlags({ statsLog: false });
+  if (params.get('log') === '1') setDebugFlags({ statsLog: true });
   const game = new Game({
     canvas: document.getElementById('app-canvas'),
     registry, seed,

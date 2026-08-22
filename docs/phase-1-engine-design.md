@@ -741,6 +741,15 @@ IndexedDB（沿用 mc-lite DB 名/版本约定）
   物理/调度按 dt 归一；预算常量按 8.3ms（120fps）帧间隔标定，保证高刷下仍有帧内余量。
 - **HUD 性能面板**：移植 mc-lite 的打点体系（ChunkPerfMonitor 思路），
   输出 GEN/MESH 队列深度、上传耗时、section 数、draw call、帧时分布——性能验收靠它说话。
+- **世界数据看板 + 调试开关（`src/core/debug-config.js`）**：HUD 追加体素/面剔除/合批统计区
+  （方块数、候选面、出块面、剔除面与剔除率、3 通道 BatchedMesh 的 slot/顶点、draw call、
+  锥内三角/总三角），2s 异步刷新（非实时，守帧预算）。统计采集由 `DEBUG_FLAGS.worldStats`
+  统一门控：开发调试期默认开；URL `?stats=0` 关闭（对照基线用）。关闭时 mesher 热循环跳过计数、
+  scheduler/renderWorld 不存统计、HUD 不显示世界数据区。开关经 `debug-flags` broadcast 同步 Worker，
+  与主线程快速路径同构生效。`DEBUG_FLAGS.statsLog`（URL `?log=0` 可关）随 HUD 同节奏
+  console.log 精确数值行 + 原始统计对象（无鼠标选取环境读数据用）。
+  draw call/三角读 `_lastRenderInfo`（render 后快照），
+  避免异步读撞上 three `info.autoReset` 每帧清零。
 
 ### 4.10 内存预算（视距 8 基线）
 
