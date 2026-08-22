@@ -45,6 +45,39 @@ function viewIdx(dx, dy, dz) { return dx + dz * 18 + dy * 324; }
 // atlas 完全缺失时的兜底 UV（防 tile 查表落空 crash；正常路径总有 tiles['stone']）
 const DEFAULT_TILE = { u0: 0, v0: 0, u1: 0.01, v1: 0.01 };
 
+// ---------------------------------------------------------------------------
+// 朝向渲染消费（§4.3）：meta 低 2 位 = orientation 0-3，yaw = orientation × 90°
+// （mc-lite OrientationUtils 语义，俯视逆时针）。渲染侧无条件消费——与 mc-lite
+// ChunkConsolidation.js:530 逐实例应用 b.orientation 一致。
+// 实现口径：按「模型面」迭代——tile/床 UV 变换查模型面（贴图随方块转）；顶点绕
+// 块中心旋转；面剔除/光照/AO/packed face 位用世界面（模型面经同一旋转映射，双射）。
+// ---------------------------------------------------------------------------
+
+/** 局部偏移（相对块中心）按 90° 步长绕 Y 轴旋转：o=1: (dx,dy,dz)→(dz,dy,-dx) */
+function rotateOffset(dx, dy, dz, o) {
+  switch (o) {
+    case 1: return [dz, dy, -dx];
+    case 2: return [-dx, dy, -dz];
+    case 3: return [-dz, dy, dx];
+    default: return [dx, dy, dz];
+  }
+}
+
+/** 格内顶点（0..1 局部坐标）绕块中心 (0.5,0.5,0.5) 旋转 */
+function rotateVertex(x, y, z, o) {
+  const [rx, ry, rz] = rotateOffset(x - 0.5, y - 0.5, z - 0.5, o);
+  return [rx + 0.5, ry + 0.5, rz + 0.5];
+}
+
+// 模型面 → 世界面映射（面方向向量随 rotateOffset 同转）：
+// o=1: +X→-Z, -X→+Z, +Z→+X, -Z→-X, ±Y 不变；o=2/3 类推。
+const FACE_ROT = [
+  [0, 1, 2, 3, 4, 5],
+  [5, 4, 2, 3, 0, 1],
+  [1, 0, 2, 3, 5, 4],
+  [4, 5, 2, 3, 1, 0],
+];
+
 function getAO(side1, side2, corner) {
   // 经典四角 AO（mc-lite AOUtils.getAOValue 语义逐行一致）：
   // 只有当侧边存在时才考虑对角；两侧都遮挡 → 0（最暗）
@@ -237,7 +270,7 @@ function pushQuad(ch, positions, uvs, packeds, ds) {
  *            stats: {blocks: number, candidateFaces: number, faces: number, culledFaces: number, vertices: number}}}
  */
 export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
-  const { data, light } = view;
+  const { data, light, meta } = view;
   const cullTable = registry.cullTable;
   const opaqueTable = registry.opaqueTable;
   const nameOf = registry.nameOf.bind(registry);
@@ -275,28 +308,33 @@ export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
         // 光照读自身格（模板面在格内，无"邻居格"语义）；AO 按顶点推导。
         const geom = registry.geometryNameOf(id);
         const template = TEMPLATES[geom];
+        // 朝向：meta 低 2 位（view 未打包 meta 时兜底 0——旧调用方/单测）
+        const orient = meta ? (meta[viewIdx(vx, vy, vz)] & 3) : 0;
         if (template) {
           const selfLight = light[viewIdx(vx, vy, vz)];
           let emitted = 0;
           for (const q of template) {
-            const tileName = getFaceTile(blockName, q.face);
+            const tileName = getFaceTile(blockName, q.face); // 模型面：贴图随方块转
             if (!tileName) continue; // null 面（床连接面）不渲染
             const tile = tiles[tileName] || tiles['stone'] || DEFAULT_TILE;
+            const worldFace = FACE_ROT[orient][q.face];
             const positions = [];
             const uvs = [];
             const packeds = [];
             for (let vi = 0; vi < 4; vi++) {
               const [qx, qy, qz] = q.v[vi];
-              positions.push([lx + qx, ly + qy, lz + qz]);
+              const [rx, ry, rz] = orient === 0 ? [qx, qy, qz] : rotateVertex(qx, qy, qz, orient);
+              positions.push([lx + rx, ly + ry, lz + rz]);
               const [cu, cv] = q.uv ? q.uv[vi] : FACE_UVS[q.face][vi];
-              const [uu, vv] = transformUV(blockName, q.face, cu, cv);
+              const [uu, vv] = transformUV(blockName, q.face, cu, cv); // 模型面 UV 变换（床）
               uvs.push([tile.u0 + (tile.u1 - tile.u0) * uu, tile.v0 + (tile.v1 - tile.v0) * vv]);
-              const [s1o, s2o, co] = aoOffsetsFor(q.face, q.v[vi]);
+              // AO 按世界面 + 旋转后顶点（遮挡是世界空间语义）
+              const [s1o, s2o, co] = aoOffsetsFor(worldFace, [rx, ry, rz]);
               const s1 = opaqueTable[data[viewIdx(vx + s1o[0], vy + s1o[1], vz + s1o[2])]] === 1 ? 1 : 0;
               const s2 = opaqueTable[data[viewIdx(vx + s2o[0], vy + s2o[1], vz + s2o[2])]] === 1 ? 1 : 0;
               const co_ = opaqueTable[data[viewIdx(vx + co[0], vy + co[1], vz + co[2])]] === 1 ? 1 : 0;
               const ao = q.ds ? 3 : getAO(s1, s2, co_); // 植被 cross 开阔 AO=3（原口径）
-              packeds.push(selfLight | (ao << 8) | (q.face << 10));
+              packeds.push(selfLight | (ao << 8) | (worldFace << 10));
             }
             pushQuad(ch, positions, uvs, packeds, q.ds);
             emitted++;
@@ -307,16 +345,17 @@ export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
 
         if (collect) candidateFaces += 6; // 立方体 6 面进入剔除判定
         const doubleSide = DOUBLE_SIDE_CUBES.has(blockName);
-        for (let face = 0; face < 6; face++) {
-          const [dx, dy, dz] = FACE_DIRS[face];
+        for (let modelFace = 0; modelFace < 6; modelFace++) {
+          const worldFace = FACE_ROT[orient][modelFace];
+          const [dx, dy, dz] = FACE_DIRS[worldFace];
           const nx = vx + dx, ny = vy + dy, nz = vz + dz;
           const neighborId = data[viewIdx(nx, ny, nz)];
 
-          // 面剔除：邻居 opaque 则剔除；同类型 transparent 相邻剔除
+          // 面剔除：邻居 opaque 则剔除；同类型 transparent 相邻剔除（世界面判定）
           if (opaqueTable[neighborId] === 1) { if (collect) culledFaces++; continue; }
           if (neighborId === id && cullMode >= 2) { if (collect) culledFaces++; continue; } // water/glass 同类相邻
 
-          const tileName = getFaceTile(blockName, face);
+          const tileName = getFaceTile(blockName, modelFace); // 模型面：贴图随方块转
           if (!tileName) continue; // null 面不渲染
           if (collect) faces++; // 通过剔除，实际出块
           const tile = tiles[tileName] || tiles['stone'] || DEFAULT_TILE;
@@ -328,20 +367,21 @@ export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
           const uvs = [];
           const packeds = [];
           for (let vi = 0; vi < 4; vi++) {
-            const [fx, fy, fz] = FACE_VERTICES[face][vi];
-            positions.push([lx + fx, ly + fy, lz + fz]);
-            const [uu, vv] = FACE_UVS[face][vi];
+            const [fx, fy, fz] = FACE_VERTICES[modelFace][vi];
+            const [rx, ry, rz] = orient === 0 ? [fx, fy, fz] : rotateVertex(fx, fy, fz, orient);
+            positions.push([lx + rx, ly + ry, lz + rz]);
+            const [uu, vv] = FACE_UVS[modelFace][vi]; // 模型面 UV 约定（BoxGeometry 旋转自洽）
             uvs.push([
               tile.u0 + (tile.u1 - tile.u0) * uu,
               tile.v0 + (tile.v1 - tile.v0) * vv,
             ]);
-            // AO：四角 AO（从顶点坐标推导邻居，与顶点序无关）
-            const [s1o, s2o, co] = aoOffsetsFor(face, FACE_VERTICES[face][vi]);
+            // AO：世界面 + 旋转后顶点（遮挡是世界空间语义）
+            const [s1o, s2o, co] = aoOffsetsFor(worldFace, [rx, ry, rz]);
             const s1 = opaqueTable[data[viewIdx(vx + s1o[0], vy + s1o[1], vz + s1o[2])]] === 1 ? 1 : 0;
             const s2 = opaqueTable[data[viewIdx(vx + s2o[0], vy + s2o[1], vz + s2o[2])]] === 1 ? 1 : 0;
             const co_ = opaqueTable[data[viewIdx(vx + co[0], vy + co[1], vz + co[2])]] === 1 ? 1 : 0;
             const ao = getAO(s1, s2, co_);
-            packeds.push(faceLight | (ao << 8) | (face << 10));
+            packeds.push(faceLight | (ao << 8) | (worldFace << 10));
           }
           pushQuad(ch, positions, uvs, packeds, doubleSide);
         }

@@ -69,11 +69,13 @@ export class WorldData {
   /**
    * section halo 视图：18×18×18（中心 section + 1 格 halo），跨 column/section 拼接。
    * 任一水平邻居 column 缺失 → missing=true（缺失方向按 air 填充，调用方决策保守出块，§4.3）。
-   * @returns {{data: Uint16Array, light: Uint8Array, missing: boolean}}
+   * meta：朝向等元数据（mesher 朝向消费用，§4.3）；缺失 column 保持 0。
+   * @returns {{data: Uint16Array, light: Uint8Array, meta: Uint8Array, missing: boolean}}
    */
   getSectionView(cx, sy, cz) {
     const data = new Uint16Array(VIEW * VIEW * VIEW);
     const light = new Uint8Array(VIEW * VIEW * VIEW);
+    const meta = new Uint8Array(VIEW * VIEW * VIEW);
     let missing = false;
     const baseY = WORLD_MIN_Y + sy * 16 - 1; // halo 起点世界 y
     for (let dy = 0; dy < VIEW; dy++) {
@@ -94,9 +96,10 @@ export class WorldData {
           const vi = dx + dz * VIEW + dy * VIEW * VIEW;
           data[vi] = col.blocks[idx];
           light[vi] = col.light[idx];
+          meta[vi] = col.meta[idx];
         }
       }
     }
-    return { data, light, missing };
+    return { data, light, meta, missing };
   }
 }

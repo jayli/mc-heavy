@@ -293,6 +293,13 @@ registry.register('grass_block', {
 
 - 属性全部预编译为按 ID 索引的 typed 查找表（`opaqueTable[id]`, `cullTable[id]`…），
   网格化热路径无对象属性访问、无字符串比较。mc-lite 的 BlockData.js（124 种方块）整体迁移为注册表数据。
+- **cullMode 语义勘误（M2 bug 修复）**：cullMode 是**渲染通道**选择（opaque/cutout/transparent
+  三材质之一），必须对齐 mc-lite 的**材质**透明度（MaterialManager 注册的 transparent/alphaTest），
+  而不是 BlockData 的 `isTransparent`（那是面剔除语义：「不剔除邻居面」）。M0 转换曾把二者混同，
+  导致台阶/栏杆/柱子/宝箱等 12 个不透明材质方块落入 blended 通道（depthWrite=false）——
+  L 形台阶自身面片无深度互遮，凹角透视穿帮。已修正：上述方块改 cutout（alphaTest 0.3 对
+  全不透明贴图无副作用、深度写入恢复）；剔除语义由 `opaqueTable` 独立承担，不受影响。
+  真混合通道仅留 water/swamp_water/cloud/glass_block/glass_blink。
 
 **读路径 API**（物理/射线/meshing 共用）
 
@@ -444,6 +451,20 @@ half_block（床，1×0.5×1）、hanging_lamp（绳 cross+灯体盒）。
   （mc-lite 树叶族口径，树冠内表面背向剔除 → 堆积不过密）。
 - **床 UV 变换**：repeat/offset/rotation 等价角点变换（vHalf/uFlip/rot，three setUvTransform 核验）。
 - **模板不做面剔除**（mc-lite 实例级渲染同口径）；光照读自身格；AO 按顶点推导（子格取最近格角）。
+
+**朝向渲染消费（M2 bug 修复阶段提前落地；交互侧放置语义仍属第二阶段）**：
+- meta 低 2 位 = orientation 0-3（mc-lite OrientationUtils 语义：yaw = orientation × 90°，
+  俯视为逆时针；EAST=0/SOUTH=1/WEST=2/NORTH=3）。渲染侧**无条件消费**（meta&3 非零即旋转，
+  与 mc-lite ChunkConsolidation.js:530 逐实例应用 b.orientation 一致——结构 JSON 会给
+  bed/planks 等 orientationEnabled=false 的方块写非零 direction）；`orientationModes`
+  只管放置交互（第二阶段），不参与渲染门控。
+- mesher 按「模型面迭代」实现：tile/床 UV 变换查**模型面**（贴图随方块转）；顶点绕块中心
+  (0.5,0.5,0.5) 按 yaw 旋转（o=1: (dx,dy,dz)→(dz,dy,-dx)；o=2/3 类推）；面剔除/光照/AO/
+  packed face 位用**世界面**（模型面经同一旋转映射，双射）。BoxGeometry UV 约定旋转自洽，
+  侧面无需额外 UV 变换，顶底面随顶点旋转自动正确。绕线在旋转下保持，FrontSide 语义不变。
+- 数据流：`getSectionView` 增打 meta（Uint8Array 18³）；MESH 任务随 data/light transfer；
+  主线程快速路径与 Worker 精修同构消费。orientation=0（绝大多数）走零开销原路径。
+- 结构 JSON 的 direction 经 structure-json.js 写入 meta（既有），本机制是其首个渲染消费者。
 
 ### 4.4 渲染管线（src/render/）
 

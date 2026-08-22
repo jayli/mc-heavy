@@ -26,6 +26,12 @@ const atlasMeta = {
   leaves: { u0: 0.08, v0: 0.0, u1: 0.09, v1: 0.01 },
   water: { u0: 0.10, v0: 0.0, u1: 0.11, v1: 0.01 },
   'procedural/vine': { u0: 0.20, v0: 0.0, u1: 0.21, v1: 0.01 },
+  grass_carried: { u0: 0.30, v0: 0.0, u1: 0.31, v1: 0.01 },
+  grass_side_carried: { u0: 0.32, v0: 0.0, u1: 0.33, v1: 0.01 },
+  box_face: { u0: 0.40, v0: 0.0, u1: 0.41, v1: 0.01 },
+  box_side: { u0: 0.42, v0: 0.0, u1: 0.43, v1: 0.01 },
+  box_top: { u0: 0.44, v0: 0.0, u1: 0.45, v1: 0.01 },
+  Cobblestone: { u0: 0.46, v0: 0.0, u1: 0.47, v1: 0.01 },
 };
 
 function makeWorldWithBlock(reg, lx, y, lz, id) {
@@ -230,11 +236,13 @@ test('mesher: cross 模板两个正交面贴图均竖直（底→v0 顶→v1，�
 test('mesher: cobblestone_step 走 L 形台阶模板（2 box = 12 quad）', () => {
   const reg = makeRegistry();
   const result = meshSingle(reg, 'cobblestone_step');
-  // transparent 通道（blocks-data cullMode），2 个子盒 ×6 面 ×4 顶点
-  assertEqual(result.transparent.vertexCount, 48, 'step = 12 quads');
+  // cutout 通道（深度写入——mc-lite 台阶材质不透明；原 transparent 通道
+  // depthWrite=false 致 L 形凹角透视穿帮，M2 勘误改道）；2 个子盒 ×6 面 ×4 顶点
+  assertEqual(result.cutout.vertexCount, 48, 'step = 12 quads');
+  assertEqual(result.transparent.vertexCount, 0, 'step no longer in blended channel');
   let maxY = -Infinity;
-  for (let i = 0; i < result.transparent.vertexCount; i++) {
-    maxY = Math.max(maxY, result.transparent.positions[i * 3 + 1]);
+  for (let i = 0; i < result.cutout.vertexCount; i++) {
+    maxY = Math.max(maxY, result.cutout.positions[i * 3 + 1]);
   }
   assertTrue(Math.abs(maxY - 9) < 1e-6, 'step full height at left quarter');
 });
@@ -261,4 +269,110 @@ test('faces-data: 全部可渲染方块的 tile 均存在于 atlas', async () =>
       assertTrue(!!meta.tiles[tile], `${def.name} face${f} → tile '${tile}' missing in atlas`);
     }
   }
+});
+
+// ---- 朝向渲染消费（meta 低 2 位 = orientation 0-3，yaw = orientation × 90°）----
+
+// 单方块 section 构建助手（带 meta）
+function meshSingleMeta(reg, name, metaByte) {
+  const data = new Uint16Array(18 * 18 * 18);
+  const light = new Uint8Array(18 * 18 * 18);
+  const meta = new Uint8Array(18 * 18 * 18);
+  const vIdx = (dx, dy, dz) => dx + dz * 18 + dy * 324;
+  data[vIdx(9, 9, 9)] = reg.idOf(name);
+  meta[vIdx(9, 9, 9)] = metaByte;
+  for (let i = 0; i < light.length; i++) light[i] = 0xF0;
+  return buildSectionMesh({ data, light, meta, missing: false }, reg, atlasMeta, 0, 0, 0);
+}
+
+// 按世界面（packed face 位）收集顶点 UV 的 tile u 起点
+function faceTileU(result, channel, faceIdx) {
+  const { packed, uvs } = result[channel];
+  const us = [];
+  for (let i = 0; i < result[channel].vertexCount; i++) {
+    if (((packed[i] >> 10) & 0x7) === faceIdx) us.push(uvs[i * 2]);
+  }
+  return us;
+}
+
+test('朝向: chest orientation=1 → 正面(box_face)转到世界 +X 面', () => {
+  const reg = makeRegistry();
+  const r0 = meshSingleMeta(reg, 'chest', 0);
+  const r1 = meshSingleMeta(reg, 'chest', 1);
+  const inBoxFace = (u) => Math.abs(u - 0.40) < 1e-6;
+  // orientation=0：正面在模型 +Z = 世界 +Z（face4）
+  assertTrue(faceTileU(r0, 'cutout', 4).some(inBoxFace), 'o=0 front on +Z');
+  assertTrue(!faceTileU(r0, 'cutout', 0).some(inBoxFace), 'o=0 +X is side');
+  // orientation=1（yaw +90°）：模型 +Z → 世界 +X（face0）
+  assertTrue(faceTileU(r1, 'cutout', 0).some(inBoxFace), 'o=1 front rotated to +X');
+  assertTrue(!faceTileU(r1, 'cutout', 4).some(inBoxFace), 'o=1 +Z no longer front');
+});
+
+test('朝向: orientation=3 为反向旋转（正面转到世界 -X）', () => {
+  const reg = makeRegistry();
+  const r3 = meshSingleMeta(reg, 'chest', 3);
+  const inBoxFace = (u) => Math.abs(u - 0.40) < 1e-6;
+  assertTrue(faceTileU(r3, 'cutout', 1).some(inBoxFace), 'o=3 front rotated to -X');
+});
+
+test('朝向: meta 低 2 位掩码（meta=4 ≡ meta=0，均不旋转）', () => {
+  const reg = makeRegistry();
+  const r0 = meshSingleMeta(reg, 'stone', 0);
+  const r4 = meshSingleMeta(reg, 'stone', 4); // 4 & 3 = 0
+  assertEqual(r4.opaque.vertexCount, r0.opaque.vertexCount, 'same vertex count');
+  for (let i = 0; i < r0.opaque.positions.length; i++) {
+    assertTrue(Math.abs(r4.opaque.positions[i] - r0.opaque.positions[i]) < 1e-6, 'positions identical');
+  }
+  for (let i = 0; i < r0.opaque.uvs.length; i++) {
+    assertTrue(Math.abs(r4.opaque.uvs[i] - r0.opaque.uvs[i]) < 1e-6, 'uvs identical');
+  }
+});
+
+test('朝向: 顶面 UV 随 orientation 旋转（grass o=1）', () => {
+  const reg = makeRegistry();
+  const r0 = meshSingleMeta(reg, 'grass', 0);
+  const r1 = meshSingleMeta(reg, 'grass', 1);
+  const tile = atlasMeta.grass_carried;
+  // 顶面（face2）某世界顶点 (x=1,z=1)：o=0 → u=1；o=1 → u=0（u=1-world_z）
+  const topU = (r, wx, wz) => {
+    const { positions, uvs, packed } = r.opaque;
+    for (let i = 0; i < r.opaque.vertexCount; i++) {
+      if (((packed[i] >> 10) & 0x7) !== 2) continue;
+      if (Math.abs(positions[i * 3] - (8 + wx)) < 1e-6 && Math.abs(positions[i * 3 + 2] - (8 + wz)) < 1e-6) {
+        return (uvs[i * 2] - tile.u0) / (tile.u1 - tile.u0);
+      }
+    }
+    return null;
+  };
+  assertTrue(Math.abs(topU(r0, 1, 1) - 1) < 1e-4, `o=0 top(x=1,z=1) u=1, got ${topU(r0, 1, 1)}`);
+  assertTrue(Math.abs(topU(r1, 1, 1) - 0) < 1e-4, `o=1 top(x=1,z=1) u=0, got ${topU(r1, 1, 1)}`);
+});
+
+test('朝向: 模板几何随 orientation 旋转（cobblestone_step o=1 高柱移向 +Z 侧）', () => {
+  const reg = makeRegistry();
+  const r0 = meshSingleMeta(reg, 'cobblestone_step', 0);
+  const r1 = meshSingleMeta(reg, 'cobblestone_step', 1);
+  // o=0：高柱在 x∈[0,0.5]，顶面顶点含 (8,9,8)；o=1（+90°）高柱转到 z∈[0.5,1]，(8,9,8) 不再是高柱顶
+  const hasTopVert = (r, x, y, z) => {
+    for (let i = 0; i < r.cutout.vertexCount; i++) {
+      const p = r.cutout.positions;
+      if (Math.abs(p[i * 3] - x) < 1e-6 && Math.abs(p[i * 3 + 1] - y) < 1e-6 && Math.abs(p[i * 3 + 2] - z) < 1e-6) return true;
+    }
+    return false;
+  };
+  assertTrue(hasTopVert(r0, 8, 9, 8), 'o=0 tall-quarter top corner at (0,1,0)');
+  assertTrue(hasTopVert(r1, 8, 9, 9), 'o=1 tall-quarter rotated to (0,1,1)');
+});
+
+test('朝向: getSectionView 打包 meta（halo 视图含朝向）', () => {
+  const reg = makeRegistry();
+  const world = new WorldData(reg);
+  const col = new ChunkColumn(0, 0);
+  // y=WORLD_MIN_Y+8 → halo dy=9（baseY=WORLD_MIN_Y-1），与 vIdx(9,9,9) 约定一致
+  col.blocks[blockIndex(8, WORLD_MIN_Y + 8, 8)] = reg.idOf('chest');
+  col.meta[blockIndex(8, WORLD_MIN_Y + 8, 8)] = 2;
+  world.add(col);
+  const view = world.getSectionView(0, 0, 0);
+  assertTrue(view.meta instanceof Uint8Array, 'view has meta array');
+  assertEqual(view.meta[9 + 9 * 18 + 9 * 324], 2, 'meta carried into halo view');
 });

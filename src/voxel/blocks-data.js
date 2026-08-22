@@ -6,8 +6,12 @@
 //   geometryType ∈ {flower,vine,lilypad,cactus} 或名字含 leaves → 'cutout'（8 个树叶族）；
 //   其余 isTransparent → 'transparent'；其余 → 'opaque'。
 //   orientationEnabled → orientationModes 4/0；geometryType → geometry 原样保留。
-// 简化说明（M0 占位，M1 必须重审）：opaque 暂由 cullMode 推导，遮光语义由 M1 mesher/光照任务定义。
-// 注意：air 必须是第一个元素（ID 0）。faces 纹理映射不在本文件（M1 mesher 任务，依赖 atlas.json）。
+// M2 勘误（cullMode 语义）：cullMode 是渲染通道选择，须对齐 mc-lite 的**材质**透明度
+// （MaterialManager 注册），而非 BlockData.isTransparent（面剔除语义）。12 个不透明材质
+// 方块（4 台阶 + 3 栏杆 + 2 柱子 + chest + azalea_flowers + hanging_lamp）由
+// 'transparent' 改 'cutout'——blended 通道 depthWrite=false 致 L 形台阶凹角透视穿帮。
+// 剔除语义由 opaqueTable 独立承担（这些方块仍不剔除邻居面）。详见设计文档 §4.1 勘误。
+// 注意：air 必须是第一个元素（ID 0）。faces 纹理映射在 faces-data.js（对齐 MaterialManager）。
 
 export const BLOCKS = [
   {"name":"air","solid":false,"cullMode":"none","orientationModes":4,"geometry":"box"},
@@ -24,7 +28,7 @@ export const BLOCKS = [
   {"name":"sky_wood","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
   {"name":"azalea_log","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
   {"name":"azalea_leaves","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"box"},
-  {"name":"azalea_flowers","solid":true,"cullMode":"transparent","orientationModes":4,"geometry":"box"},
+  {"name":"azalea_flowers","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"box"},
   {"name":"yellow_leaves","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"box"},
   {"name":"sky_leaves","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"box"},
   {"name":"realistic_oak_leaves","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"box"},
@@ -39,11 +43,11 @@ export const BLOCKS = [
   {"name":"vine","solid":false,"cullMode":"cutout","orientationModes":4,"geometry":"vine"},
   {"name":"lilypad","solid":false,"cullMode":"cutout","orientationModes":4,"geometry":"lilypad"},
   {"name":"cactus","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"cactus"},
-  {"name":"handrail","solid":true,"cullMode":"transparent","orientationModes":4,"geometry":"handrail"},
-  {"name":"handrailA","solid":true,"cullMode":"transparent","orientationModes":4,"geometry":"handrailA"},
-  {"name":"handrailB","solid":true,"cullMode":"transparent","orientationModes":4,"geometry":"handrailB"},
-  {"name":"vertical_pillar","solid":true,"cullMode":"transparent","orientationModes":4,"geometry":"vertical_pillar"},
-  {"name":"horizontal_pillar","solid":true,"cullMode":"transparent","orientationModes":4,"geometry":"horizontal_pillar"},
+  {"name":"handrail","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"handrail"},
+  {"name":"handrailA","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"handrailA"},
+  {"name":"handrailB","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"handrailB"},
+  {"name":"vertical_pillar","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"vertical_pillar"},
+  {"name":"horizontal_pillar","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"horizontal_pillar"},
   {"name":"chimney","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"chimney"},
   {"name":"swamp_leaves","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"box"},
   {"name":"snow_leaves","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"box"},
@@ -53,7 +57,7 @@ export const BLOCKS = [
   {"name":"diamond","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
   {"name":"obsidian","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
   {"name":"moss","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
-  {"name":"chest","solid":true,"cullMode":"transparent","orientationModes":4,"geometry":"box"},
+  {"name":"chest","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"box"},
   {"name":"realistic_trunk_collider","solid":true,"cullMode":"none","orientationModes":4,"geometry":"box"},
   {"name":"playground_block","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
   {"name":"playground_center_block","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
@@ -64,10 +68,10 @@ export const BLOCKS = [
   {"name":"cobblestone","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
   {"name":"bricks","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
   {"name":"planks","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
-  {"name":"planks_step","solid":true,"cullMode":"transparent","orientationModes":4,"geometry":"planks_step"},
-  {"name":"cobblestone_step","solid":true,"cullMode":"transparent","orientationModes":4,"geometry":"cobblestone_step"},
-  {"name":"cobblestone_step_updown","solid":true,"cullMode":"transparent","orientationModes":4,"geometry":"cobblestone_step_updown"},
-  {"name":"stone_diorite_step","solid":true,"cullMode":"transparent","orientationModes":4,"geometry":"cobblestone_step"},
+  {"name":"planks_step","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"planks_step"},
+  {"name":"cobblestone_step","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"cobblestone_step"},
+  {"name":"cobblestone_step_updown","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"cobblestone_step_updown"},
+  {"name":"stone_diorite_step","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"cobblestone_step"},
   {"name":"white_planks","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
   {"name":"oak_planks","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
   {"name":"gold_ore","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
@@ -133,5 +137,5 @@ export const BLOCKS = [
   {"name":"sand_train_track","solid":true,"cullMode":"opaque","orientationModes":4,"geometry":"box"},
   {"name":"sand_train_track_corner","solid":true,"cullMode":"opaque","orientationModes":4,"geometry":"box"},
   {"name":"mine_cart","solid":false,"cullMode":"none","orientationModes":0,"geometry":"box"},
-  {"name":"hanging_lamp","solid":false,"cullMode":"transparent","emissive":15,"orientationModes":0,"geometry":"hanging_lamp"},
+  {"name":"hanging_lamp","solid":false,"cullMode":"cutout","emissive":15,"orientationModes":0,"geometry":"hanging_lamp"},
 ];

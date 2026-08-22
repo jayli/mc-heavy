@@ -59,11 +59,16 @@ installRpcHandler({
 
   /**
    * MESH：单 section 网格化（Worker 精修路径，§4.3）。
-   * atlasMeta 由主线程启动时 broadcast。
-   * @param {{cx:number, sy:number, cz:number, data:ArrayBuffer, light:ArrayBuffer, version:number}} p
+   * atlasMeta 由主线程启动时 broadcast。meta：朝向元数据（朝向渲染消费，§4.3）。
+   * @param {{cx:number, sy:number, cz:number, data:ArrayBuffer, light:ArrayBuffer, meta?:ArrayBuffer, version:number}} p
    */
   mesh(p) {
-    const view = { data: new Uint16Array(p.data), light: new Uint8Array(p.light), missing: false };
+    const view = {
+      data: new Uint16Array(p.data),
+      light: new Uint8Array(p.light),
+      meta: p.meta ? new Uint8Array(p.meta) : undefined,
+      missing: false,
+    };
     const result = buildSectionMesh(view, registry, _atlasMeta || {}, p.cx, p.sy, p.cz);
     return {
       cx: p.cx, sy: p.sy, cz: p.cz, version: p.version,

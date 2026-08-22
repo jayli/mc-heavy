@@ -325,8 +325,9 @@ export class Scheduler {
       cx, sy, cz,
       data: view.data.buffer,
       light: view.light.buffer,
+      meta: view.meta.buffer,
       version,
-    }, { transfer: [view.data.buffer, view.light.buffer] });
+    }, { transfer: [view.data.buffer, view.light.buffer, view.meta.buffer] });
     this._inflightMesh.set(skey, { callId });
     promise.then((r) => this._onMeshResult(skey, r)).catch(() => {
       this._inflightMesh.delete(skey); // 失败/取消：下帧由脏标记或邻居重查重试
