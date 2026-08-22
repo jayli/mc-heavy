@@ -73,9 +73,10 @@ export function generateTree(wx, y, wz, setBlock, seed, type = 'default', custom
     }
   }
 
-  // _addOptimized：完全被树块包围的透明叶不写（mc-lite 语义）
+  // _addOptimized：完全被树块包围的透明叶不写（mc-lite 语义：isTransparent 动态判定，
+  // 含 azalea_flowers——Tree.js:118 仅排除 vine）
   const keySet = new Set(blocks.map((b) => `${b.x},${b.y},${b.z}`));
-  const TRANSPARENT_LEAF = new Set(['leaves', 'yellow_leaves', 'sky_leaves', 'azalea_leaves', 'swamp_leaves', 'snow_leaves', 'realistic_oak_leaves', 'realistic_yellow_leaves']);
+  const TRANSPARENT_LEAF = new Set(['leaves', 'yellow_leaves', 'sky_leaves', 'azalea_leaves', 'azalea_flowers', 'swamp_leaves', 'snow_leaves', 'realistic_oak_leaves', 'realistic_yellow_leaves']);
   for (const b of blocks) {
     if (TRANSPARENT_LEAF.has(b.type)) {
       const surrounded = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]

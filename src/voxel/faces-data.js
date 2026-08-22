@@ -1,52 +1,152 @@
-// src/voxel/faces-data.js — 方块→纹理面映射（从 mc-lite MaterialManager 转换）
-// 面索引：0:+X, 1:-X, 2:+Y(top), 3:-Y(bottom), 4:+Z, 5:-Z
-// 格式：blockName → [face0tile, face1tile, face2tile, face3tile, face4tile, face5tile]
-// 单 tile 方块用字符串（所有面相同）
+// src/voxel/faces-data.js — 方块→纹理面映射（从 mc-lite MaterialManager.js 逐条转换）
+// 面索引：0:+X(东), 1:-X(西), 2:+Y(top), 3:-Y(bottom), 4:+Z(南), 5:-Z(北)
+// 格式：blockName → [face0tile, ..., face5tile]；单 tile 方块用字符串（所有面相同）。
+// tile 名 = atlas.json 键（纹理文件名去 .png，子目录保留：'procedural/vine'、'bed/Bed_(...)'）。
+// mc-lite 程序化材质（mkMat/mkDetailMat 等无 PNG 文件的）由 tools/bake-procedural-textures.mjs
+// 离线烘焙到 assets/textures/procedural/，逐行复刻其 canvas 绘制参数。
+// null = 该面不渲染（mc-lite 中 transparent opacity 0 的面，如床的连接面/底面）。
 
 export const FACES_DATA = {
-  grass: ['grass_side_carried', 'grass_side_carried', 'grass_carried', 'dirt', 'grass_side_carried', 'grass_side_carried'],
+  // ---- 地形基础 ----
+  grass: ['grass_side_carried', 'grass_side_carried', 'grass_carried', 'procedural/grass_bottom', 'grass_side_carried', 'grass_side_carried'],
   dirt: ['dirt', 'dirt', 'dirt_podzol_top', 'dirt_podzol_top', 'dirt', 'dirt'],
   stone: ['stone', 'stone', 'stone_andesite', 'stone_andesite', 'stone', 'stone'],
   stone_diorite: 'stone_diorite',
-  gold_ore: 'Deepslate_Gold',
-  bricks: 'Bricks',
-  cobblestone: 'Cobblestone',
-  obsidian: 'Obsidian',
-  mossy_stone: 'Mossy_Cobblestone',
-  end_stone: 'End_Stone',
   sand: ['sand_side', 'sand_side', 'sand', 'sand', 'sand_side', 'sand_side'],
-  hay_bale: ['Hay_Bale', 'Hay_Bale', 'Hay_Bale_top', 'Hay_Bale_top', 'Hay_Bale', 'Hay_Bale'],
-  sand_train_track: ['sand', 'sand', 'sand_train_track', 'sand', 'sand', 'sand'],
-  sand_train_track_corner: ['sand', 'sand', 'sand_train_track_conner', 'sand', 'sand', 'sand'],
-  wood: ['log_big_oak', 'log_big_oak', 'log_big_oak_top', 'log_big_oak_top', 'log_big_oak', 'log_big_oak'],
-  birch_log: ['Birch_Log_side', 'Birch_Log_side', 'Birch_Log_top', 'Birch_Log_top', 'Birch_Log_side', 'Birch_Log_side'],
-  glass_block: 'Glass',
-  glass_blink: 'glass_blink',
+  moss: ['dirt_podzol_side', 'dirt_podzol_side', 'moss_block', 'moss_block', 'dirt_podzol_side', 'dirt_podzol_side'],
+  swamp_grass: ['Mossy_Cobblestone_side', 'Mossy_Cobblestone_side', 'procedural/swamp_grass_top', 'procedural/swamp_grass_top', 'Mossy_Cobblestone_side', 'Mossy_Cobblestone_side'],
+  snow: 'Snow_top',
+  snow_grass: ['Snowy_Grass_Block_side', 'Snowy_Grass_Block_side', 'Snow_top', 'dirt', 'Snowy_Grass_Block_side', 'Snowy_Grass_Block_side'],
+  ice: 'ice',
+  marble: 'procedural/marble',
+  clay: 'Clay',
+  bedrock: 'Bedrock',
+  end_stone: 'End_Stone',
+  // ---- 水/天空 ----
   water: 'water',
   swamp_water: 'swamp_water',
+  cloud: 'procedural/cloud',
+  sky_wood: 'procedural/sky_wood',
+  sky_leaves: 'procedural/sky_leaves',
+  // ---- 玻璃 ----
+  glass_block: 'Glass',
+  glass_blink: 'glass_blink',
+  // ---- 树叶族（mc-lite 全 FrontSide + alphaTest，realistic_oak 例外 DoubleSide）----
   leaves: 'leaves',
   azalea_leaves: 'azalea_leaves',
+  azalea_flowers: 'flowering_azalea_leaves',
   yellow_leaves: 'leaves_yellow',
-  sky_leaves: 'leaves',
   realistic_oak_leaves: 'oak_leaves_branch_medium',
   realistic_yellow_leaves: 'leaves_yellow',
-  swamp_leaves: 'leaves',
-  snow_leaves: 'leaves_with_snow',
-  moss: 'moss_block',
-  swamp_grass: ['grass_side_carried', 'grass_side_carried', 'grass_carried', 'dirt', 'grass_side_carried', 'grass_side_carried'],
-  bedrock: 'Bedrock',
-  glowstone: 'Glowstone',
-  lava: 'Lava',
-  hanging_lamp: 'Ochre_Froglight',
-  ochre_froglight: 'Ochre_Froglight',
+  swamp_leaves: 'leaves', // mc-lite 未注册材质（死方块）；按 leaves 渲染兜底
+  snow_leaves: ['leaves_with_snow', 'leaves_with_snow', 'Snow_top', 'leaves', 'leaves_with_snow', 'leaves_with_snow'],
+  // ---- 原木/木板 ----
+  wood: ['log_big_oak', 'log_big_oak', 'log_big_oak_top', 'log_big_oak_top', 'log_big_oak', 'log_big_oak'],
+  dark_oak: 'Stripped_Dark_Oak_Log_(texture)_JE1',
+  birch_log: ['Birch_Log_side', 'Birch_Log_side', 'Birch_Log_top', 'Birch_Log_top', 'Birch_Log_side', 'Birch_Log_side'],
+  azalea_log: 'procedural/azalea_log',
+  planks: 'planks_birch',
+  oak_planks: 'Oak_Planks',
+  oak_planks_1: 'Oak_Planks_1',
+  white_planks: 'White_Wood_Planks',
+  dark_planks: 'dark_planks',
+  blue_planks: 'Blue_Wood_Planks',
+  green_planks: 'Green_Wood_Planks',
+  acacia_planks: 'Acacia_Planks',
+  hay_bale: ['Hay_Bale', 'Hay_Bale', 'Hay_Bale_top', 'Hay_Bale_top', 'Hay_Bale', 'Hay_Bale'],
+  // ---- 石质建材 ----
+  cobblestone: 'Cobblestone',
+  mossy_stone: 'Mossy_Cobblestone',
+  bricks: 'Bricks',
+  stone_bricks: 'Stone_Bricks',
+  smooth_stone: 'Smooth_Stone',
+  smooth_stone_1: 'Smooth_Stone_1',
+  polished_diorite: 'Polished_Diorite',
+  polished_granite: 'Polished_Granite',
+  deepslate: 'Deepslate',
+  deepslate_diamond_ore: 'Deepslate_Diamond_Ore',
+  polished_deepslate: 'Polished_Deepslate',
+  tuff_bricks: 'Tuff_Bricks',
+  mud_bricks: 'Mud_Bricks',
+  end_stone_bricks: 'End_Stone_Bricks',
+  nether_bricks: 'Nether_Bricks',
+  nether_bricks_1: 'Nether_Bricks_1',
+  polished_blackstone_bricks: 'Polished_Blackstone_Bricks',
+  block_of_quartz: 'Block_of_Quartz',
+  quartz_bricks: 'Quartz_Bricks',
+  // ---- 矿石/金属 ----
+  gold_ore: 'Deepslate_Gold',
+  iron_ore: 'Iron_Ore',
+  nether_gold_ore: 'Nether_Gold_Ore',
+  iron: 'iron',
+  gold_block: 'gold_block',
+  diamond: 'diamond',
+  emerald: 'emerald',
+  amethyst: 'amethyst',
+  debris: ['Ancient_Debris_side', 'Ancient_Debris_side', 'Ancient_Debris_top', 'Ancient_Debris_top', 'Ancient_Debris_side', 'Ancient_Debris_side'],
+  obsidian: 'Obsidian',
+  netherrack: 'Netherrack',
+  // ---- 功能方块 ----
   tnt: ['tnt_side', 'tnt_side', 'tnt_top', 'tnt_top', 'tnt_side', 'tnt_side'],
-  // 其余方块默认用 stone（M1 占位，M2 补全）
+  chest: ['box_side', 'box_side', 'box_top', 'box_side', 'box_face', 'box_side'],
+  bookbox: ['Bone_Block_side_texture_JE2_BE2', 'Bone_Block_side_texture_JE2_BE2', 'Bone_Block_top_texture_JE2_BE2', 'Bone_Block_top_texture_JE2_BE2', 'Bookshelf_texture_JE2_BE2', 'Bone_Block_side_texture_JE2_BE2'],
+  glowstone: 'Glowstone',
+  ochre_froglight: 'Ochre_Froglight',
+  lava: 'Lava',
+  oxidized_cut_copper: 'Oxidized_Cut_Copper',
+  weathered_cut_copper: 'Weathered_Cut_Copper',
+  brain_coral_block: 'Brain_Coral_Block',
+  block_of_amber: 'Block_of_Amber',
+  floatato: 'Floatato',
+  light_gray_cloth: 'Light_Gray_Cloth',
+  pink_wool: 'Pink_Wool',
+  snow_block: 'Snow',
+  piston: 'Piston',
+  piston_head: 'Piston_Head',
+  orange_shulker_box: 'Orange_Shulker_Box',
+  zombie_nest_alias_block: 'zombie_nest_alias_block',
+  turret_alias_block: 'procedural/turret_alias_block',
+  playground_block: 'procedural/playground_block',
+  playground_center_block: 'procedural/playground_center_block',
+  // ---- 轨道 ----
+  sand_train_track: ['sand', 'sand', 'sand_train_track', 'sand', 'sand', 'sand'],
+  sand_train_track_corner: ['sand', 'sand', 'sand_train_track_conner', 'sand', 'sand', 'sand'],
+  // ---- 植被（cross/水平 quad 模板，tile 取 face4 条目）----
+  flower: 'procedural/flower',
+  short_grass: 'double_plant_grass_carried',
+  allium: 'flower_Allium',
+  azure_bluet: 'Azure_Bluet',
+  dead_bush: 'Dead_Bush',
+  oxeye_daisy: 'Oxeye_Daisy',
+  red_mushroom: 'Red_Mushroom',
+  vine: 'procedural/vine',
+  lilypad: 'procedural/lilypad',
+  cactus: 'procedural/cactus',
+  // ---- 特殊几何（mc-lite 程序化材质，烘焙入图）----
+  chimney: 'procedural/chimney',
+  handrail: 'procedural/handrail',
+  handrailA: 'procedural/handrailA',
+  handrailB: 'procedural/handrailB',
+  vertical_pillar: 'procedural/pillar',
+  horizontal_pillar: 'procedural/pillar_horizontal',
+  hanging_lamp: 'procedural/hanging_lamp',
+  // ---- 台阶（模板几何，单 tile）----
+  planks_step: 'planks_birch',
+  cobblestone_step: 'Cobblestone',
+  cobblestone_step_updown: 'Cobblestone',
+  stone_diorite_step: 'stone_diorite',
+  // ---- 床（half_block 模板；UV 变换见 mesher BED_UV；null 面不渲染）----
+  bed_head: ['bed/Bed_(top_side_texture)_JE2_BE2', 'bed/Bed_(top_side_texture)_JE2_BE2', 'bed/Bed_(top_texture)_JE1_BE1', null, 'bed/Bed_(back_texture)_JE2_BE2', null],
+  bed_tail: ['bed/Bed_(bottom_side_texture)_JE2_BE2', 'bed/Bed_(bottom_side_texture)_JE2_BE2', 'bed/Bed_(bottom_texture)_JE1_BE1', null, null, 'bed/Bed_(front_texture)_JE2_BE2'],
 };
 
-/** 获取方块某面的 tile 名；未知方块返回 'stone' */
+/**
+ * 获取方块某面的 tile 名。
+ * @returns {string|null} tile 名；数组条目可为 null（该面不渲染）；未知方块返回 'stone' 兜底。
+ */
 export function getFaceTile(blockName, faceIdx) {
   const entry = FACES_DATA[blockName];
   if (!entry) return 'stone';
   if (typeof entry === 'string') return entry;
-  return entry[faceIdx] || 'stone';
+  return entry[faceIdx] ?? null;
 }

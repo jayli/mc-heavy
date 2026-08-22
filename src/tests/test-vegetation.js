@@ -130,7 +130,8 @@ test('mesher：flower 走 cross 模板（cutout 通道 8 顶点，非 box 24 顶
   for (let i = 0; i < light.length; i++) light[i] = 0xF0; // 全亮
   const result = buildSectionMesh({ data, light, missing: false }, reg, {}, 0, 0, 0);
   assertEqual(result.cutout.vertexCount, 8, 'cross = 2 quads × 4 verts');
-  assertEqual(result.cutout.indexCount, 12, 'cross = 2 quads × 6 idx');
+  // 双面绕线（mc-lite DoubleSide 口径）：每 quad 正反两组三角形
+  assertEqual(result.cutout.indexCount, 24, 'cross = 2 quads × 12 idx (double-side)');
   assertEqual(result.opaque.vertexCount, 0, 'no opaque faces');
 });
 

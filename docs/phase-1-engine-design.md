@@ -431,16 +431,36 @@ validation error；uint32 stride=4 合法，且 13bit 实际用量余余充足�
 在 mesher 内按 `geometry` 类型展开预定义顶点模板（每种模板 = 一组面 + UV 映射），
 仍然合入同一 atlas 材质——不再为每种形状维护独立 geometry/material。
 
+**顶点模板已落地清单（M2 对齐 mc-lite，坐标逐格复刻 ChunkConsolidation.js geomMap）**：
+flower/short_grass 等（0.7 cross，y∈[-0.1,0.6]）、vine（0.8 cross，y∈[0.5,1.5]）、
+lilypad（0.8×0.8 水平 quad，y=0.02）、cactus（主干+4 侧枝盒）、chimney（8 段棱柱高 2）、
+handrail/A/B、vertical/horizontal_pillar、planks/cobblestone(_updown)/stone_diorite_step（L 形）、
+half_block（床，1×0.5×1）、hanging_lamp（绳 cross+灯体盒）。
+- **面 UV 口径 = three.js BoxGeometry buildPlane**（vendor/three r185.1 源码核验）：
+  +X: u=1-z,v=y；-X: u=z,v=y；+Y: u=x,v=1-z；-Y: u=x,v=z；+Z: u=x,v=y；-Z: u=1-x,v=y。
+  与 mc-lite InstancedMesh 一致（历史 bug：±X 用统一 UV → 东西面贴图旋转 90°，已修）。
+- **双面口径**：mc-lite 植被/藤蔓/睡莲与 realistic_oak_leaves 为 DoubleSide，其余 FrontSide。
+  单材质通道内用「双向绕线」复刻双面（不拆通道、不加材质）。cutout 材质 alphaTest=0.3
+  （mc-lite 树叶族口径，树冠内表面背向剔除 → 堆积不过密）。
+- **床 UV 变换**：repeat/offset/rotation 等价角点变换（vHalf/uFlip/rot，three setUvTransform 核验）。
+- **模板不做面剔除**（mc-lite 实例级渲染同口径）；光照读自身格；AO 按顶点推导（子格取最近格角）。
+
 ### 4.4 渲染管线（src/render/）
 
 **4.4.1 纹理图集**
 - 启动时把 mc-lite 现有散纹理（src/assets/textures/*.png，122 张：113 张 16×16 +
   2 张 32×32 + 7 张 250~362px 特殊几何/实体贴图按 128×128 入图）
   打包进一张 2048×2048 atlas（离线脚本生成 atlas.json：tile 名 → UV 矩形；运行时也保留 Canvas 合成 fallback）。
+- **程序化贴图烘焙（M2 对齐 mc-lite）**：mc-lite MaterialManager 约 21 种材质是运行时
+  canvas 程序化绘制（mkMat/mkProceduralMat/mkDetailMat，无 PNG）。`tools/bake-procedural-textures.mjs`
+  逐行复刻其绘制参数离线烘焙到 `assets/textures/procedural/`（vine/flower/lilypad/cactus/marble/
+  handrail/pillar/chimney/hanging_lamp/cloud/playground 等），随机源固定种子（确定性红线）。
+  atlas 合计 145 tile（124 + 21 程序化）。faces-data.js 全量 124 方块六面映射对齐 MaterialManager。
 - **atlas 渗色防护**：2048 atlas + mipmap 会跨 tile 渗色。tile 之间留 2px gutter，
   UV 内缩半 texel；默认 blur=0 时用 NearestFilter + 关闭 mipmap（mc-lite 默认即像素风），
   模糊档位开启时才启用 mipmap（此时 gutter 生效）。
-- 全部不透明方块 = 1 个材质。cutout 用 alphaTest 同 atlas 第二材质；
+- 全部不透明方块 = 1 个材质。cutout 用 alphaTest 同 atlas 第二材质（FrontSide + alphaTest 0.3，
+  mc-lite 树叶族口径；双面需求由 mesher 双向绕线解决，见 §4.3）；
   玻璃/水单独透明材质。
 - **transparent 通道排序策略（必须显式定义）**：
   - **默认 BatchedMesh 路径**：`BatchedMesh.sortObjects` 默认 `true`，内置**逐 section

@@ -48,8 +48,10 @@ export function createVoxelMaterials(atlasTexture) {
 
   return {
     opaque: makeMaterial({}),
-    // 树叶/cross 植被双面可见（mc-lite 口径）
-    cutout: makeMaterial({ alphaTest: 0.5, side: THREE.DoubleSide }),
+    // cutout = FrontSide + alphaTest 0.3（mc-lite 树叶族口径：leaves 0.3/FrontSide，
+    // 树冠内表面背向相机不可见 → 堆积不过密）。cross 植被与 DoubleSide 方块
+    // （realistic_oak_leaves）由 mesher 双向绕线复刻双面可见，保持单材质单通道。
+    cutout: makeMaterial({ alphaTest: 0.3, side: THREE.FrontSide }),
     transparent: makeMaterial({ transparent: true }),
     dayNight: { uSkyDim, uBlockBoost },
   };
