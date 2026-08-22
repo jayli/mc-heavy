@@ -54,11 +54,46 @@
 | 放块瞬间黑闪 | `ee28053` | 同步重算只升不降 |
 | 初始化阴影检测死代码 | `77e8550` | 判据修正 + halo 前置 |
 
+### M2 结构与世界完整性 ✅ 主体完成（bug 修复收尾中）
+
+| 项目 | 状态 | 备注 |
+|---|---|---|
+| M2-1 StructureIndex + 确定性结构布局 | ✅ | per-region 布局 + 跨 region 查询 + GEN 门控（`structure-index.js`） |
+| M2-2 地标移植（城市/金字塔/冰封山/雪地/海岛） | ✅ | 类型/公式逐行核验与 mc-lite 一致；**同 seed 截图比对留人工验收（挂起）** |
+| M2-3 树木 + 植被 | ✅ | 四型树 / 花草仙人掌 / cross 模板 + _addOptimized 包围剔除 |
+| M2-4 洞穴 | ✅ | 3D 噪声挖空 + mc-lite rooms 保留 |
+| M2-5 水面特效 | ✅ | TSL 海面 + 水纹理入 atlas |
+| M2-6 日夜循环 | ✅ | morning/noon/night 三风格 |
+
+### M2 后修复（实玩 bug）🔧 进行中
+
+| 修复 | commit | 备注 |
+|---|---|---|
+| 光照黑面根因 | `4c840cd` | 写回改中心 column 权威 + 移除阳光遮挡投影（v1.9 决策） |
+| 世界数据看板 + 调试开关 + 控制台日志 | `3a02dbc` | §4.9 worldStats/statsLog，`?stats=0`/`?log=0` |
+| 方块类型/贴图/几何全面对齐 mc-lite | `d11a8b0` | ±X 面 UV 90° 旋转修复（BoxGeometry 口径）；faces-data 124 方块六面全覆盖；`tools/bake-procedural-textures.mjs` 烘焙 21 张 mc-lite 程序化贴图（atlas 124→145）；12 种特殊几何顶点模板（台阶/栏杆/柱子/烟囱/床/吊灯/仙人掌，逐格复刻 geomMap）；树叶 FrontSide + alphaTest 0.3（冠内不过密）、植被双向绕线；cross 第二张图横躺回归修复 |
+| 朝向渲染消费侧 + 台阶等 12 方块 blended 通道穿帮 | `584813b` | mesher 读 meta 低 2 位按 4 朝向旋转（模型面查 tile/床 UV 变换，世界面做剔除/光照/AO）；getSectionView 打包 meta + MESH transfer；渲染侧无条件消费（对齐 mc-lite 逐实例应用 b.orientation）；交互侧放置语义属第二阶段。另：M0 转换混同 isTransparent（剔除语义）与材质透明度 → 台阶/栏杆/柱子/宝箱等 12 个不透明材质方块 depthWrite=false，L 形凹角无深度互遮透视穿帮；cullMode 改 cutout 修复（设计文档 §4.1 勘误） |
+
+### M2 bug 修复阶段剩余 TODO
+
+1. ~~**提交待提交改动**（朝向消费侧 + 通道修复）~~ ✅ 已提交 `584813b`
+2. **同 seed 截图与 mc-lite 比对**（M2-2 挂起验收项）：mc-lite 侧人工 setSeed 截图，
+   与 mc-heavy 同 seed 同位置比对结构轮廓/配色
+3. **城市边缘残块**：`generateCity` 覆写地表时不清除 fillColumn 预填的自然地形，
+   自然高度 > 城市地表处残留悬空草/土/石（mc-lite 稀疏存储无此问题）——
+   `landmarks.js:783-809` vs mc-lite `WorldWorker.js:793-794`
+4. （可选）**CITY 光晕**：chunk 中心在城内、列在城外时 mc-lite 给 sand/sand 地表，
+   mc-heavy 给自然 biome 地表（`WorldWorker.js:994`）
+5. **朝向交互侧不做**（原地重转 90°/类型记忆）：第二阶段随床/宝箱/门落地，
+   第一阶段只预留 meta 数据位（已完成）
+6. **m1-acceptance 计时 flaky 观察**：放挖 p95 断言在高负载下偶发贴线（16.7±1e-6/2.1ms），
+   非回归（不同断言轮流失败、单独复跑通过）；以实机帧率为准，冻结断言不擅改
+
 ### 测试现状
 
-- 17 个 Playwright spec（全绿）
-- 57 个浏览器内单元测试（harness）
-- 冻结断言：fps ≥90（120Hz 本机 ≥115）、编辑 p95 <2ms、draw 受控
+- 22 个 Playwright spec（全绿；m1-acceptance 计时断言高负载下偶发贴线 flaky）
+- 114 个浏览器内单元测试（harness）
+- 冻结断言：fps ≥90（120Hz 本机 ≥115）、编辑 p95 <2ms、draw 受控；atlas 145 tile（124 + 21 程序化烘焙）
 
 ---
 
