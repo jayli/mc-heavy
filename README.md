@@ -22,7 +22,7 @@ npm run atlas        # 重新生成 assets/atlas.png + atlas.json
 
 ## 当前进度
 
-第一阶段（引擎底座）分 M0~M3 四个里程碑，**当前处于 M2**（M0/M1 已完成，M2-1 StructureIndex + M2-2 地标/城市已落地）。
+第一阶段（引擎底座）分 M0~M3 四个里程碑，**当前处于 M2**；M3 性能报告验收后进入第二阶段，先执行独立的 M4 玩家武器 Epic。
 
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
@@ -30,6 +30,7 @@ npm run atlas        # 重新生成 assets/atlas.png + atlas.json
 | M1 体素核心闭环 | 地形生成 / section meshing / BatchedMesh 合批 / 玩家物理交互 / 最小存档 / 光照 | ✅ 完成 |
 | M2 结构与世界完整性 | StructureIndex / 地标 / 树木 / 洞穴 / 水面 / 日夜 | 🔧 主体完成，bug 修复中 |
 | M3 性能达标与收尾 | 视距 8 全量调优 / 预算标定 / 雨效 / HUD / 基线脚本 / 报告 | ⬜ 待开始 |
+| M4 玩家第一人称武器（第二阶段） | `WorldEditor` / DDA hitscan / 受控 GLB 视图模型 / 曳光 / 音效 | ⬜ 等待 M3 性能报告验收 |
 
 测试现状：**18 个 Playwright spec（21 用例）+ 95 个浏览器内单元测试全绿**；冻结断言达标
 （120Hz 本机 fps ≥115、放/挖编辑 p95 <2ms、draw 受控）。
@@ -40,6 +41,8 @@ npm run atlas        # 重新生成 assets/atlas.png + atlas.json
 |---|---|
 | [docs/phase-1-engine-design.md](docs/phase-1-engine-design.md) | 架构唯一权威（v1.7 定稿） |
 | [docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md](docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md) | **第一阶段剩余工作执行计划（M2+M3，当前 roadmap）** |
+| [docs/superpowers/specs/2026-08-23-m4-player-weapons-design.md](docs/superpowers/specs/2026-08-23-m4-player-weapons-design.md) | M4 玩家第一人称武器设计规格（第二阶段首个 Epic） |
+| [docs/superpowers/plans/2026-08-23-m4-player-weapons.md](docs/superpowers/plans/2026-08-23-m4-player-weapons.md) | M4 TDD 实施计划（M3 验收后执行） |
 | [docs/superpowers/plans/2026-08-19-m0-engine-skeleton.md](docs/superpowers/plans/2026-08-19-m0-engine-skeleton.md) | M0 实施计划（已完成） |
 | [docs/superpowers/plans/2026-08-19-m1-voxel-core-loop.md](docs/superpowers/plans/2026-08-19-m1-voxel-core-loop.md) | M1 实施计划（已完成） |
 | [docs/m0-bench-report.md](docs/m0-bench-report.md) | M0 WebGPU 发布路径实测报告 |

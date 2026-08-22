@@ -1,6 +1,6 @@
 # mc-heavy 第一阶段实施设计文档：游戏引擎原型
 
-> 版本：v1.9 ｜ 日期：2026-08-22 ｜ 状态：定稿（经七轮逐条核验修订）
+> 版本：v1.10 ｜ 日期：2026-08-23 ｜ 状态：定稿（经八轮逐条核验修订）
 >
 > 目标：在 mc-heavy 仓库从零重建一个功能对标 mc-lite、性能提升一个数量级的体素游戏引擎。
 > 第一阶段只做"引擎底座"：渲染、体素数据、即时地图生成、玩家交互、种子地图、存档原型。
@@ -80,6 +80,12 @@
 > 不遮挡），视觉明暗只来自 **AO 墙角阴影 + 日夜全局调制**；blocklight 数据管线与
 > light 任务/中心权威写回机制**完整保留**（遮挡原实现保留为
 > `computeSkylightColumnOccluded`），后续阶段启用阴影时切回（§4.6/DR-14）。
+
+> v1.10 修订说明：登记第二阶段首个独立 Epic **M4 玩家第一人称武器**。M4 不改变
+> 第一阶段 M2/M3 的编号、范围或冻结验收；它在 M3 性能报告验收后，以 `WorldEditor`、DDA
+> hitscan、受控 GLB 视图模型为垂直切片落地（§4.5.3/§9）。详见
+> `docs/superpowers/specs/2026-08-23-m4-player-weapons-design.md` 与
+> `docs/superpowers/plans/2026-08-23-m4-player-weapons.md`。
 
 ---
 
@@ -690,9 +696,12 @@ world.setBlock(x, y, z, id, meta)
 - **仅受 AO 影响的对角 section 置脏走精修路径**（Worker MESH，1 帧内收敛——
   AO 延迟一帧肉眼不可见），与 §4.3 halo 协议「对角 AO 是永久近似」的口径一致。
 
-批量编辑（TNT/爆炸，后续阶段）走 `world.setBlocks(batch)`：一次版本递增、
-合并脏 section、跳过快速路径直接 Worker REMESH，主线程只做缓冲替换——
-mc-lite 的 batchFaceCullingTimeout / isBatch 补丁语义被原生吸收。
+批量编辑由 `WorldEditor.setBlocks(batch)` 协调 `WorldData.setBlocks(batch)`：每个有效格仍写入
+`column.edits`，每个变更 column 仅递增一次版本，合并脏 section，并对变更 column 与边界邻居
+入 `scheduler.enqueueLight()`；批量路径跳过快速路径、统一走 Worker REMESH，主线程只做调度与
+缓冲替换。mc-lite 的 batchFaceCullingTimeout / isBatch 补丁语义被原生吸收。该能力由第二阶段
+M4 玩家武器先行实现，也同时是 TNT/爆炸的共享入口；M4 的范围、DDA 与受控资产约束见
+`docs/superpowers/specs/2026-08-23-m4-player-weapons-design.md`。
 
 **4.5.4 背包/快捷栏**：第一阶段实现创造模式无限背包（mc-lite 默认 1500 格语义），
 物品 = BlockRegistry 条目 + 少量工具项。UI 移植 mc-lite Inventory 的 DOM 方案。
@@ -900,6 +909,12 @@ AOBridge / AOWorker / 八个 Worker 文件——它们的职责被 §4 的四个
   性能回归基线脚本（Playwright 自动跑图采样帧时）。
 - 验收：§1 目标表全部达标；输出性能报告。
 
+> **M4 不属于第一阶段里程碑。** M3 的性能报告与冻结基线验收后，第二阶段以 M4
+> “玩家第一人称武器”作为首个独立 Epic：三把受控 GLB 武器、DDA hitscan、视图模型、曳光、
+> 音效与可选方块破坏；实体伤害、炮塔飞行弹丸和用户模型导入继续后置。规格与实施计划分别为
+> `docs/superpowers/specs/2026-08-23-m4-player-weapons-design.md` 和
+> `docs/superpowers/plans/2026-08-23-m4-player-weapons.md`。
+
 ---
 
 ## 8. 性能验证方案
@@ -924,8 +939,9 @@ AOBridge / AOWorker / 八个 Worker 文件——它们的职责被 §4 的四个
 
 | 功能（mc-lite 已有） | 引擎接入点 | 第一阶段预留 |
 |---|---|---|
-| TNT/爆炸 | `world.setBlocks(batch)` + REMESH + 粒子 | 批量编辑 API、粒子接口 |
-| 炮塔/子弹/丧尸 | EntityManager + 实体射线 + InstancedMesh 实体渲染 | 实体系统骨架、`block-changed` 事件 |
+| M4 玩家第一人称武器 | `WorldEditor` + DDA hitscan + 相机视图模型 + 受控 GLB/Audio | 第二阶段首个 Epic；规格/计划见 `docs/superpowers/{specs,plans}/2026-08-23-m4-player-weapons-*` |
+| TNT/爆炸 | `WorldEditor.setBlocks(batch)` + REMESH + 粒子 | M4-0 批量编辑 API、事件接口 |
+| 炮塔/飞行弹丸/丧尸 | EntityManager + 实体射线 + InstancedMesh 实体渲染 | 实体系统骨架、`block-changed` 事件；不属于 M4 |
 | 矿车/轨道 | 方块属性（track 类型）+ 实体运动系统 | BlockRegistry 的 `interact`/`onStep` 钩子 |
 | 创造台 | 模型编辑 → 注册自定义 geometry 模板 | mesher 顶点模板机制 |
 | 灯/光源 | emissive 属性 + blocklight flood fill | 光照管线已含 |

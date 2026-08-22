@@ -9,13 +9,14 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
 
 - mc-lite 是「功能驱动 + 补丁叠加」长出来的，性能天花板已锁死（视距 2~3 chunk、预生成数十秒、
   扩图卡顿、奔跑掉帧）；
-- mc-heavy 的目标是**保持同样的玩法功能**，用更鲁棒、更可扩展、更高性能的引擎底座重做一遍，
-  第一阶段做引擎底座（M0~M3），矿车、炮塔、丧尸、TNT、创造台等功能按后续阶段加入。
+- mc-heavy 的目标是**保持同样的玩法功能**，用更鲁棒、更可扩展、更高性能的引擎底座重做一遍；
+  第一阶段做引擎底座（M0~M3），M3 性能报告验收后以 M4 玩家第一人称武器作为第二阶段首个独立
+  Epic，矿车、炮塔、丧尸、TNT、创造台等功能继续按后续阶段加入。
 
 **mc-lite 的地位是「功能与数据来源」，不是「实现蓝本」。** 读它的代码时只提取
 「功能语义、算法、数据、视觉风格」，禁止照搬它的架构组织方式（详见下文「对标 mc-lite」）。
 
-## 当前进度（2026-08-22）
+## 当前进度（2026-08-23）
 
 第一阶段分 M0~M3 四个里程碑（设计文档 §7）：
 
@@ -35,6 +36,11 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
     台阶/栏杆/宝箱等不透明材质方块 cullMode 改 cutout 恢复深度写入；交互侧放置语义仍属第二阶段）。
   - 剩余：同 seed 截图与 mc-lite 人工比对（M2-2 挂起验收项）、城市边缘残块清理（见 roadmap TODO）。
 - **M3 性能达标与收尾 ⬜**：视距 8 全量调优 / 预算标定 / 雨效 / HUD / 基线脚本 / 报告。
+- **M4 玩家第一人称武器 ⬜（第二阶段，等待 M3-6）**：独立 Epic；`WorldEditor` 批量编辑、
+  DDA hitscan、手枪/MAG7/加特林的受控 GLB 相机视图模型、曳光、音效和可选方块破坏。
+  规格：`docs/superpowers/specs/2026-08-23-m4-player-weapons-design.md`；计划：
+  `docs/superpowers/plans/2026-08-23-m4-player-weapons.md`。不含炮塔飞行弹丸、实体伤害、
+  用户模型导入、弹药或网络同步。
 
 测试现状：22 个 Playwright spec + 114 个浏览器内单元测试全绿（m1-acceptance 计时断言
 在高负载下偶发贴线 flaky——16.7±1e-6/2.1ms，单独复跑通过，属已记录的计时抖动类）；
@@ -45,12 +51,14 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
 按顺序读完再写代码：
 
 1. [`docs/phase-1-engine-design.md`](/Users/bachi/jaylli/mc-heavy/docs/phase-1-engine-design.md)
-   —— 架构唯一权威，当前版本 v1.7（已定稿）。所有子系统边界、DR 决策、验收口径都在这里。
+   —— 架构唯一权威，当前版本 v1.10（已定稿）。所有子系统边界、DR 决策、验收口径都在这里。
 2. [`docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md)
    —— **第一阶段剩余工作执行计划（M2+M3）**，任务级 TODO + 依赖关系，当前 roadmap。
 3. [`docs/superpowers/plans/2026-08-19-m1-voxel-core-loop.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/plans/2026-08-19-m1-voxel-core-loop.md)
    —— M1 实施计划（已完成，架构细节参照）。
 4. `docs/m0-bench-report.md` / `docs/m1-acceptance-report.md` —— 实测与验收报告。
+5. M4 开始前加读：[`docs/superpowers/specs/2026-08-23-m4-player-weapons-design.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/specs/2026-08-23-m4-player-weapons-design.md)
+   与 [`docs/superpowers/plans/2026-08-23-m4-player-weapons.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/plans/2026-08-23-m4-player-weapons.md)。
 
 规则：
 
@@ -228,8 +236,9 @@ npm run atlas                  # 重新生成 assets/atlas.png + atlas.json
 
 ## 后续功能扩展点（引擎稳定后按阶段加入）
 
-TNT/爆炸（`world.setBlocks(batch)` + REMESH）、炮塔/子弹/丧尸（EntityManager + 实体射线）、
-矿车/轨道（BlockRegistry `interact`/`onStep` 钩子）、创造台（mesher 顶点模板）、
+M4 玩家武器（`WorldEditor` + DDA hitscan + 受控 GLB/Audio，M3 验收后优先）、
+TNT/爆炸（`WorldEditor.setBlocks(batch)` + REMESH）、炮塔/飞行弹丸/丧尸（EntityManager + 实体射线，
+不属于 M4）、矿车/轨道（BlockRegistry `interact`/`onStep` 钩子）、创造台（mesher 顶点模板）、
 灯/光源（emissive + blocklight flood fill）、床/宝箱/门（多方块结构 + `blockEntities` 富状态通道）、
 音频（`block-changed` 事件总线）、设置持久化。**新功能必须通过上述接入点实现，
 不得绕过 meshing/数据/事件管线另开路径。**

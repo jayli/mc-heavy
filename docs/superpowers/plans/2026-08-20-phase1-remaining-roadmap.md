@@ -74,6 +74,15 @@
 | 方块类型/贴图/几何全面对齐 mc-lite | `d11a8b0` | ±X 面 UV 90° 旋转修复（BoxGeometry 口径）；faces-data 124 方块六面全覆盖；`tools/bake-procedural-textures.mjs` 烘焙 21 张 mc-lite 程序化贴图（atlas 124→145）；12 种特殊几何顶点模板（台阶/栏杆/柱子/烟囱/床/吊灯/仙人掌，逐格复刻 geomMap）；树叶 FrontSide + alphaTest 0.3（冠内不过密）、植被双向绕线；cross 第二张图横躺回归修复 |
 | 朝向渲染消费侧 + 台阶等 12 方块 blended 通道穿帮 | `584813b` | mesher 读 meta 低 2 位按 4 朝向旋转（模型面查 tile/床 UV 变换，世界面做剔除/光照/AO）；getSectionView 打包 meta + MESH transfer；渲染侧无条件消费（对齐 mc-lite 逐实例应用 b.orientation）；交互侧放置语义属第二阶段。另：M0 转换混同 isTransparent（剔除语义）与材质透明度 → 台阶/栏杆/柱子/宝箱等 12 个不透明材质方块 depthWrite=false，L 形凹角无深度互遮透视穿帮；cullMode 改 cutout 修复（设计文档 §4.1 勘误） |
 
+## 全局 TODO List（按执行次序）
+
+1. [ ] **M2 收尾**：完成同 seed 截图人工比对与城市边缘残块清理；计时 flaky 保持观察，不修改冻结断言。
+2. [ ] **M3 第一阶段验收**：完成视距 8 调优、雨效、HUD、基线脚本和性能报告；M3-6 报告是冻结基线。
+3. [ ] **M4 第二阶段首个 Epic**：只在 M3-6 验收后开始，交付玩家第一人称手枪/MAG7/加特林的
+   `WorldEditor`、DDA hitscan、受控 GLB 视图模型、曳光和音效。规格：
+   `docs/superpowers/specs/2026-08-23-m4-player-weapons-design.md`；计划：
+   `docs/superpowers/plans/2026-08-23-m4-player-weapons.md`。
+
 ### M2 bug 修复阶段剩余 TODO
 
 1. ~~**提交待提交改动**（朝向消费侧 + 通道修复）~~ ✅ 已提交 `584813b`
@@ -337,6 +346,7 @@ M3-3 (雨效) ← 独立
 M3-4 (HUD 完善) ← 依赖 M2-6（视觉风格切换）
 M3-5 (性能回归基线) ← 依赖 M3-1
 M3-6 (性能报告) ← 依赖 M3-1~M3-5
+M4 (第二阶段玩家武器) ← 依赖 M3-6 冻结验收
 ```
 
 **建议执行顺序：**
@@ -369,8 +379,9 @@ M3-6 (性能报告) ← 依赖 M3-1~M3-5
 
 | 功能 | 引擎接入点 | 第一阶段预留 |
 |---|---|---|
+| M4 玩家武器 | `WorldEditor` + DDA hitscan + 相机视图模型 | 规格：`docs/superpowers/specs/2026-08-23-m4-player-weapons-design.md`；计划：`docs/superpowers/plans/2026-08-23-m4-player-weapons.md` |
 | TNT/爆炸 | `world.setBlocks(batch)` + REMESH + 粒子 | 批量编辑 API、粒子接口 |
-| 炮塔/子弹/丧尸 | EntityManager + 实体射线 + InstancedMesh 实体渲染 | 实体系统骨架、`block-changed` 事件 |
+| 炮塔/飞行弹丸/丧尸 | EntityManager + 实体射线 + InstancedMesh 实体渲染 | 实体系统骨架、`block-changed` 事件；M4 不实现 |
 | 矿车/轨道 | 方块属性（track 类型）+ 实体运动系统 | BlockRegistry 的 `interact`/`onStep` 钩子 |
 | 创造台 | 模型编辑 → 注册自定义 geometry 模板 | mesher 顶点模板机制 |
 | 灯/光源 | emissive 属性 + blocklight flood fill | 光照管线已含 |
