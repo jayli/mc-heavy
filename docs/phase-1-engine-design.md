@@ -1,6 +1,6 @@
 # mc-heavy 第一阶段实施设计文档：游戏引擎原型
 
-> 版本：v1.7 ｜ 日期：2026-08-19 ｜ 状态：定稿（经七轮逐条核验修订）
+> 版本：v1.9 ｜ 日期：2026-08-22 ｜ 状态：定稿（经七轮逐条核验修订）
 >
 > 目标：在 mc-heavy 仓库从零重建一个功能对标 mc-lite、性能提升一个数量级的体素游戏引擎。
 > 第一阶段只做"引擎底座"：渲染、体素数据、即时地图生成、玩家交互、种子地图、存档原型。
@@ -61,6 +61,25 @@
 > 默认的 headless shell 零 flag 拿不到 adapter；SwiftShader 组合（`--enable-unsafe-webgpu`
 > + `--use-angle=swiftshader`）为 Linux CI 兜底；`--enable-features=Vulkan` 在 macOS 上
 > 无作用，已从测试配置删除。
+
+> v1.8 修订说明：skylight 模型与 light 任务写回协议勘误（§4.6/DR-14）。① 模型升级同步：
+> 纯垂直模型在实玩中不可接受（任何高处实心方块把正下方整列截断为 0 → 悬挑/上凹角全黑），
+> 已升级为 Minecraft 同款「垂直落下不衰减 + 水平 BFS 每格 -1」，区域 = 中心 column +
+> 4 正交邻居，编辑快路径保留垂直单列做即时反馈（只升不降），水平扩散交异步 light 任务收敛。
+> ② **写回协议改为中心 column 权威**：旧实现把区域结果写回全部 5 列（last-write-wins），
+> 但每个 task 的 region 所含光源不同（如房屋东窗的光源在 D 列，A 中心 task 的 region 不含 D），
+> 后到的「region 不完整」task 会先清零低/高 4 位再用不完整光源重算，覆盖邻列已收敛的好光
+> → 实玩偶现大片全黑面 + 黑核周围一圈圈截断渐变（dispatch 顺序随计时变化 → 偶现）。
+> 5-column region 对**中心列**充分（15 的光水平最远影响 14 格 < 16），故每列 light 只由
+> 以它为中心的 task 写回；邻列只参与计算、不写回，仅置脏重 mesh 收敛边界脸。
+
+> v1.9 修订说明：**第一阶段不实现阳光遮挡投影**（产品决策，实玩验收驱动）。
+> v1.8 的 Minecraft 式遮挡阴影在实玩中不可接受：大悬空平台/洞穴下方超过扩散距离
+> 就是大片全黑 + 截断渐变环，与 mc-lite 视觉基线（无体素阳光阴影、仅 AO 墙角阴影）
+> 冲突，用户明确不要阳光投影效果。故第一阶段 skylight 恒 15（`computeSkylightColumn`
+> 不遮挡），视觉明暗只来自 **AO 墙角阴影 + 日夜全局调制**；blocklight 数据管线与
+> light 任务/中心权威写回机制**完整保留**（遮挡原实现保留为
+> `computeSkylightColumnOccluded`），后续阶段启用阴影时切回（§4.6/DR-14）。
 
 ---
 
@@ -644,13 +663,17 @@ mc-lite 的 batchFaceCullingTimeout / isBatch 补丁语义被原生吸收。
 - **AO**：经典四角 AO（移植 AOUtils 的 side/corner 判定），meshing 时计算，无独立 AO Worker/脏集——
   mc-lite 的 AOWorker/AOBridge/AONodeSystem/dirtyAOPositions 整套删除，
   因为 AO 在新管线里是 meshing 的免费副产品。
-- **skylight（修正模型）**：不用"高度图以下衰减"（那在洞穴、悬挑下会给出错误光照，
-  且 skylight 本不该随深度衰减）。正确做法：从 y=MAX 向下**逐列**传播，初始强度 15，
-  遇 opaque 方块停止（下方为 0），空气/透明方块保持 15——洞穴顶部被遮、洞内为暗，自动正确。
-  生成时随 GEN 计算；玩家挖穿地表时按受影响列增量重算。**纯垂直模型不含水平扩散**，
-  因此不依赖任何水平邻居 column（与 §4.3 halo 协议无关）；代价是悬挑/侧开口洞穴的光照
-  与 Minecraft 不同——侧开口洞穴在此模型下也是暗的。"洞穴自动正确"仅指**封闭洞穴**。
-  后续阶段如需侧向透光，可升级为 3D flood fill（届时才引入水平 halo 依赖）。
+- **skylight（v1.9：第一阶段不启用阳光遮挡投影）**：`computeSkylightColumn` 恒写 15，
+  悬挑/洞穴下不产生阴影；视觉明暗只来自 **AO 墙角阴影 + 日夜全局调制**（对齐 mc-lite
+  视觉基线；实玩验收驱动的产品决策——遮挡阴影在大悬空平台下产生大片全黑 + 截断渐变，
+  用户明确不要）。**机制完整保留**供后续阶段启用：遮挡模型 = ① 垂直 pass 15 遇 opaque 停
+  ② 水平 BFS 每格 -1（原实现 `computeSkylightColumnOccluded`）；区域重算（light 任务）=
+  中心 column + 4 正交邻居，5-column region 对中心列充分（15 的光水平最远影响 14 格）。
+  **写回协议（中心权威，v1.8）**：每列 light 只由以它为中心的 task 写回；邻列只参与计算
+  不写回（只置脏重 mesh）——旧「写回全部 5 列 last-write-wins」会让 region 不完整的后到
+  task 覆盖邻列已收敛的好光（blocklight 黑核根因）。第一阶段 skylight 恒 15 时该检测
+  （空气格 skylight=0）恒不触发，light 任务仅由编辑触发。
+  **编辑快路径**：`recomputeSkylightAt` 单列 O(128) 置 15（守 2ms 预算）。
 - **blocklight**：emissive 方块（灯/萤石/岩浆，移植 LightSourceManager 的方块清单）
   做 flood fill（强度 15 逐级 -1 衰减）。**放置**光源用增量 BFS 即可；
   **删除**光源时的降光是全流程最难的一步（需撤销传播路径），第一阶段不追求增量删除，
@@ -783,7 +806,7 @@ AOBridge / AOWorker / 八个 Worker 文件——它们的职责被 §4 的四个
 | DR-11 | 渲染发布粒度：section 重建、BatchedMesh 通道级合批（默认，M1 实测确认；fallback 为 column 3-group） | 每 section 独立 Mesh / column 3-group 为默认 | v1.6 纠正 v1.3 的核心口径：r185.1 **WebGPU 后端对 BatchedMesh 不走 multi-draw**（WebGPUBackend.js:1806-1824 JS 循环逐可见 instance 发 drawIndexed；renderMultiDraw 只在 WebGL 后端），故 draw 数量与候选 A 同量级（数百 vs 固定 867），选型理由是**单命令成本低一个量级**（循环内共享同一 pipeline/bind group/顶点缓冲、命令间零状态切换、空 section 零命令）+ 剔除/排序/增量更新官方内置。geometry+instance 两层结构（漏 instance 层不渲染）；构造函数只接受单 Material（BatchedMesh 无 groups，传材质数组零 render item）；`reservedVertexCount`/`setGeometryAt` 覆盖 slot 打包，单 slot 溢出走 deleteGeometry→addGeometry→addInstance（`setGeometrySize` 是整批重建/收缩会 throw，非单 slot 扩容）；per-instance 视锥剔除与 `sortObjects` 运行时排序内置。section 独立 Mesh 视距 8 上限约 3600 draw 不可接受；column 3-group（固定 ~867，`_projectObject` 不看 group.count）仅作实测不达标时的 fallback。three.js WebGPU 每 draw CPU 开销不低于 WebGL，draw call 必须一级管控；material 数组逐 group 发 draw（Renderer.js:3149-3158 已核验），fallback 必须 channel-major 3-group 布局 |
 | DR-12 | 跨 region 结构：邻区索引查询（本 region + 8 邻区） | 地标加硬 margin 禁止跨界 | 地标中心偏移 100~400 + 半尺寸 40~80 必然跨 400 格 region 边界；硬 margin 会改变与 lite 的世界布局、破坏同 seed 对比；邻区布局同 seed 确定性重算，成本由布局广播（DR-13）兜住 |
 | DR-13 | 结构布局单 Worker 算一次、主线程转发广播 | 每 Worker 各持 LRU 缓存 / 主线程直接计算 | City 候选扫描很重：N Worker 重复跑会成为冷启动/进城新卡点，放主线程会卡帧；布局体积小且确定性，单点计算 + 广播成本可忽略；GEN 任务依赖布局就绪（最多 9 份邻区布局） |
-| DR-14 | skylight 用 top-down 逐列传播（纯垂直，不含水平扩散） | 高度图以下衰减近似 / 3D flood fill | 近似模型在洞穴/悬挑下光照错误，且 skylight 本不该随深度衰减；逐列传播实现同样简单、封闭洞穴正确、且无水平邻居依赖；侧开口洞穴偏暗的代价接受，3D flood fill 放后续阶段 |
+| DR-14 | 第一阶段**不启用阳光遮挡投影**：skylight 恒 15，视觉明暗 = AO 墙角阴影 + 日夜全局调制（v1.9 产品决策）；遮挡模型（垂直 pass + 水平 BFS）与 light 任务中心权威写回机制保留，后续阶段启用 | 高度图以下衰减近似 / Minecraft 式遮挡阴影（v1.8） | 高度图衰减在洞穴/悬挑下错误；Minecraft 式遮挡阴影实玩不可接受——大悬空平台/洞穴下方超扩散距离即大片全黑 + 截断渐变环，与 mc-lite 视觉基线冲突，用户明确不要阳光投影。机制保留：5-column region 对中心列充分（15 水平最远 14 格）；写回 5 列 last-write-wins 会覆盖邻列好光（v1.8 已修，中心权威） |
 | DR-15 | 逐面网格化，不用 greedy meshing | greedy meshing | 上一版 mc-heavy（已清空）用过 greedy；逐面在 AO/编辑增量更新/UV 映射上显著更简单，三角形多 2~3× 但当前瓶颈是 draw call 而非三角形（WebGPU 下三角形吞吐充裕）；视距 16+ 若三角形成为瓶颈再评估 greedy 或 LOD |
 | DR-16 | 卸载滞回（加载半径 +2）+ 重入 LRU（短 TTL 保留体素与 GPU 缓冲） | 出圈即释放 | 玩家在加载半径边界来回走会造成 GEN/MESH/上传全链路 thrashing；滞回带 + LRU 重入零成本恢复，只多占一点显存，回头跑不卡；显存上限由 LRU 配额兜底（§4.9/§4.10） |
 | DR-17 | 权威数据源含方块实体通道：`blocks`+`meta`+`blockEntities` 稀疏 Map；light 为派生缓存非权威 | 富状态塞 meta / 用 InstancedMesh userData 暂存（mc-lite 补丁） | 宝箱库存/告示牌文字/灯开关等富状态塞不进 8bit meta；mc-lite 已有 `_saveChestStates()`（ChunkConsolidation.js:597）证明需求真实，但用 userData 暂存是补丁式实现。做成数据模型一等公民：edits 条目、持久化 schema、重放逻辑现在定形状，第一阶段只预留不实现消费者，避免后续回填引发 schemaVersion + edits 重放二次重构。light 可从 blocks+emissive 重算收敛，不得当真相来源（§4.1） |

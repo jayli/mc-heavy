@@ -181,11 +181,9 @@ export class Scheduler {
 
   /**
    * 阴影检测：column 内存在"空气格但垂直 skylight=0"（上方被遮挡）才需要水平扩散。
-   * GEN 的垂直 skylight 对开阔地形已正确（地表上方空气均 15）；悬挑/结构/洞穴/
-   * 玩家存档 edits 才产生"被遮的空气格"，这些格子只能靠水平扩散点亮。
+   * 第一阶段（v1.9）不启用阳光投影、skylight 恒 15 → 恒不触发，light 任务仅由编辑触发；
+   * 检测保留：后续阶段启用遮挡模型时自动恢复 GEN 就绪即触发扩散收敛。
    * 判据 = 存在 blocks==0 且 (light>>4)==0 的格。O(32768) 扫描，GEN 就绪时一次。
-   * （旧实现在"最高非 air 块之上"找 opaque，那里必为 air → 永不触发，死代码，
-   *  导致进游戏即见悬挑/洞穴下方黑面、放一块才消失的实玩 bug。）
    */
   _enqueueLightIfOverhang(column) {
     const blocks = column.blocks;
@@ -246,16 +244,24 @@ export class Scheduler {
     }
   }
 
-  /** LIGHT 结果：版本校验 → 写回 light 数组 + 全 section 置脏重 mesh。
+  /** LIGHT 结果：中心 column 权威写回（v1.8 修订，设计文档 §4.6/DR-14）。
+   *  每列 light 只由以它为中心的 task 写回——5-column region 对中心列充分
+   *  （15 的光水平最远影响 14 格 < 16），而邻列若被写回会遭 last-write-wins：
+   *  后到的 task 其 region 可能不含该列的光源（房屋东窗/萤石在 region 外），
+   *  先清零再用不完整光源重算 → 覆盖已收敛的好光（偶现全黑面 + 截断渐变环根因）。
+   *  邻列只参与计算不写回，仅置脏重 mesh（边界脸采样中心列 light，需收敛）。
    *  版本不匹配（在途期间玩家编辑过）：丢弃并重新入队收敛，
    *  否则旧 light 会覆盖 setBlock 快路径已重算的垂直单列新值。 */
   _onLightResult(key, r) {
     this._inflightLight.delete(key);
+    const [ccx, ccz] = key.split(',').map(Number);
     for (const res of r.results) {
       const col = this.world.getColumn(res.cx, res.cz);
       if (!col || col.state !== 'ready') continue; // 已卸载：丢弃
-      if (col.version !== res.version) { this.enqueueLight(res.cx, res.cz); continue; }
-      col.light.set(new Uint8Array(res.light));
+      if (res.cx === ccx && res.cz === ccz) {
+        if (col.version !== res.version) { this.enqueueLight(res.cx, res.cz); continue; }
+        col.light.set(new Uint8Array(res.light));
+      }
       for (let sy = 0; sy < SECTIONS_PER_COLUMN; sy++) col.markDirty(sy);
     }
   }
@@ -291,10 +297,14 @@ export class Scheduler {
     return true;
   }
 
-  /** section 入 MESH 管线：在途跳过；邻居未就绪挂起；否则进下发队列 */
+  /** section 入 MESH 管线：在途挂起（in-flight 完成由 3b 重查补发——takeDirty 已消费
+   *  脏标记，若此处直接早退会吞掉 light 写回等触发的重 mesh，陈旧几何永久残留）；
+   *  已入下发队列跳过（dispatch 时读最新 view，天然含写回后的 light）；
+   *  邻居未就绪挂起；否则进下发队列 */
   _enqueueMesh(cx, sy, cz) {
     const skey = sectionKey(cx, sy, cz);
-    if (this._inflightMesh.has(skey) || this._meshQueuedSet.has(skey)) return;
+    if (this._inflightMesh.has(skey)) { this._pendingMesh.add(skey); return; }
+    if (this._meshQueuedSet.has(skey)) return;
     if (!this._neighborsReadyForMesh(cx, cz)) { this._pendingMesh.add(skey); return; }
     this._pendingMesh.delete(skey);
     this._meshQueue.push({ cx, sy, cz });

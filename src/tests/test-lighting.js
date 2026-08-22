@@ -24,16 +24,15 @@ test('skylight: 露天列全程 15', () => {
   assertEqual(sky(col, 8, WORLD_MIN_Y + 1, 8), 15);
 });
 
-test('skylight: opaque 方块遮挡（下方为 0，封闭洞穴正确）', () => {
+test('skylight: 第一阶段无阳光投影（opaque 下方仍 15，v1.9）', () => {
   const reg = makeRegistry();
   const col = new ChunkColumn(0, 0);
   const stoneId = reg.idOf('stone');
   col.blocks[blockIndex(8, 50, 8)] = stoneId;
   computeSkylightColumn(col, reg);
   assertEqual(sky(col, 8, 51, 8), 15);
-  assertEqual(sky(col, 8, 50, 8), 0, 'opaque block itself is dark');
-  assertEqual(sky(col, 8, 49, 8), 0, 'below opaque is dark');
-  assertEqual(sky(col, 8, 20, 8), 0);
+  assertEqual(sky(col, 8, 49, 8), 15, 'below opaque is full bright (no sun shadow)');
+  assertEqual(sky(col, 8, 20, 8), 15);
 });
 
 test('skylight: 透明方块不遮挡（玻璃下方仍 15）', () => {
@@ -96,29 +95,25 @@ test('recomputeLight: 挖掉光源后降光（全 column 重算兜底，§4.6）
   assertEqual(blk(col, 8, 51, 8), 0, 'light removed after recompute');
 });
 
-test('recomputeLight: 挖掉 opaque 后 skylight 恢复（挖块黑面 bug 回归）', () => {
+test('recomputeLight: 第一阶段无阳光投影（地下方恒 15，挖块前后不变，v1.9）', () => {
   const reg = makeRegistry();
   const world = new WorldData(reg);
   const col = new ChunkColumn(0, 0);
   world.add(col);
-  // 铺一层石头地面 y=50：下方全黑
+  // 铺一层石头地面 y=50：第一阶段不产生阳光阴影，下方仍全亮
   for (let lx = 0; lx < 16; lx++) for (let lz = 0; lz < 16; lz++) {
     col.blocks[blockIndex(lx, 50, lz)] = reg.idOf('stone');
   }
   recomputeLight(world, 0, 0, reg);
-  assertEqual(sky(col, 8, 49, 8), 0, 'below ground is dark');
-  // 挖掉 (8,50,8)：下方应恢复 skylight 15
+  assertEqual(sky(col, 8, 49, 8), 15, 'below ground is full bright (no sun shadow)');
   col.blocks[blockIndex(8, 50, 8)] = 0;
   recomputeLight(world, 0, 0, reg);
   assertEqual(sky(col, 8, 50, 8), 15, 'dug cell lit');
   assertEqual(sky(col, 8, 49, 8), 15, 'below dug cell lit');
-  assertEqual(sky(col, 8, 30, 8), 15, 'deep below dug cell lit');
-  // 水平扩散模型：挖洞后光向侧向扩散，相邻列下方被照亮（15-1=14）——
-  // Minecraft 正确行为（旧垂直模型此处为 0，断言随模型升级更新）。
-  assertEqual(sky(col, 9, 49, 8), 14, 'light spreads sideways below dug hole');
+  assertEqual(sky(col, 9, 49, 8), 15, 'sideways also full bright (no shadow model)');
 });
 
-test('skylight region: 悬挑下方不全黑（水平扩散渗入）', () => {
+test('skylight region: 第一阶段无阳光投影（悬挑下方全亮、无渐变，v1.9）', () => {
   const reg = makeRegistry();
   const world = new WorldData(reg);
   const col = new ChunkColumn(0, 0);
@@ -128,34 +123,28 @@ test('skylight region: 悬挑下方不全黑（水平扩散渗入）', () => {
     col.blocks[blockIndex(lx, 50, lz)] = reg.idOf('stone');
   }
   computeSkylightRegion(world, 0, 0, reg);
-  // 悬挑正下方紧邻（y=49）：从侧面 15 扩散进来，应 >0（不是全黑）
-  // 边缘格（x=6, z=7）距露天最近 → 最亮；中心格（x=8, z=8）距露天最远 → 较暗但 >0
-  const edge = sky(col, 6, 49, 7);
-  const center = sky(col, 8, 49, 8);
-  assertEqual(edge > 0, true, `edge under overhang lit, got ${edge}`);
-  assertEqual(center > 0, true, `center under overhang lit, got ${center}`);
-  assertEqual(edge > center, true, `edge brighter than center (${edge} > ${center})`);
-  // 远离悬挑的露天格仍然 15
-  assertEqual(sky(col, 2, 49, 2), 15, 'open area still full bright');
-  // 悬挑上方（y=51）露天 15
+  // 第一阶段不产生阳光阴影：悬挑正下方与露天同亮，且无边缘/中心渐变
+  assertEqual(sky(col, 6, 49, 7), 15, 'edge under overhang full bright');
+  assertEqual(sky(col, 8, 49, 8), 15, 'center under overhang full bright');
+  assertEqual(sky(col, 2, 49, 2), 15, 'open area full bright');
   assertEqual(sky(col, 8, 51, 8), 15, 'above overhang full bright');
 });
 
-test('skylight region: 封闭洞穴仍全黑（水平扩散不穿透 opaque）', () => {
+test('skylight region: 第一阶段无阳光投影（封闭洞穴也全亮，v1.9）', () => {
   const reg = makeRegistry();
   const world = new WorldData(reg);
   const col = new ChunkColumn(0, 0);
   world.add(col);
-  // 封闭盒子：y=48..52 全填石头（16×16×5），内部 y=49..51 无光
+  // 封闭盒子：y=48..52 全填石头（16×16×5）；第一阶段无阳光阴影，内部仍 15
   for (let y = 48; y <= 52; y++) for (let lx = 0; lx < 16; lx++) for (let lz = 0; lz < 16; lz++) {
     col.blocks[blockIndex(lx, y, lz)] = reg.idOf('stone');
   }
   computeSkylightRegion(world, 0, 0, reg);
-  assertEqual(sky(col, 8, 50, 8), 0, 'sealed cave is dark');
-  assertEqual(sky(col, 8, 49, 8), 0, 'sealed cave floor dark');
+  assertEqual(sky(col, 8, 50, 8), 15, 'sealed cave full bright (no sun shadow)');
+  assertEqual(sky(col, 8, 49, 8), 15, 'sealed cave floor full bright');
 });
 
-test('setBlock: 挖块走真实路径后 skylight 增量恢复（黑面 bug 端到端）', () => {
+test('setBlock: 挖块走真实路径 skylight 恒亮（第一阶段无阳光投影，v1.9）', () => {
   const reg = makeRegistry();
   const world = new WorldData(reg);
   const col = new ChunkColumn(0, 0);
@@ -164,29 +153,25 @@ test('setBlock: 挖块走真实路径后 skylight 增量恢复（黑面 bug 端�
     col.blocks[blockIndex(lx, 50, lz)] = reg.idOf('stone');
   }
   recomputeLight(world, 0, 0, reg);
-  assertEqual(sky(col, 8, 49, 8), 0, 'below ground is dark');
-  // 真实游玩路径：world.setBlock 挖块 → 内部增量重算同列 skylight
+  assertEqual(sky(col, 8, 49, 8), 15, 'below ground full bright (no sun shadow)');
+  // 真实游玩路径：world.setBlock 挖块 → 快路径重算，仍全亮
   world.setBlock(8, 50, 8, 0);
   assertEqual(sky(col, 8, 50, 8), 15, 'dug cell lit after setBlock');
   assertEqual(sky(col, 8, 49, 8), 15, 'below dug cell lit after setBlock');
-  // setBlock 快路径只做垂直单列（守 2ms 编辑预算）：侧向扩散由 scheduler 的
-  // 异步 light 任务收敛，故此处相邻列仍为旧值 0（不是 bug，是快路径口径）。
-  assertEqual(sky(col, 9, 49, 8), 0, 'sideways spread deferred to async light task');
+  assertEqual(sky(col, 9, 49, 8), 15, 'sideways full bright');
 });
 
-test('setBlock: 放块不立即压暗下方（防黑闪；暗化由区域扩散异步收敛）', () => {
+test('setBlock: 放块不压暗下方（第一阶段无阳光投影，恒 15，v1.9）', () => {
   const reg = makeRegistry();
   const world = new WorldData(reg);
   const col = new ChunkColumn(0, 0);
   world.add(col);
   recomputeLight(world, 0, 0, reg); // 开阔列：全 15
   assertEqual(sky(col, 8, 59, 8), 15, 'open air full bright');
-  // 放一个悬空方块：同步路径【不得】把下方压成 0——
-  // 同步压暗只能到 0（纯垂直模型），当帧渲染就是黑闪（实玩 bug）。
+  // 放一个悬空方块：同步/异步均不产生阳光阴影
   world.setBlock(8, 60, 8, reg.idOf('stone'));
-  assertEqual(sky(col, 8, 59, 8), 15, 'no synchronous darkening below placed block');
-  assertEqual(sky(col, 8, 40, 8), 15, 'deep below also not darkened synchronously');
-  // 异步收敛口径（recomputeLight = worker 区域重算等价）：正确压暗到 14
+  assertEqual(sky(col, 8, 59, 8), 15, 'no darkening below placed block');
+  assertEqual(sky(col, 8, 40, 8), 15, 'deep below also full bright');
   recomputeLight(world, 0, 0, reg);
-  assertEqual(sky(col, 8, 59, 8), 14, 'async diffusion converges to correct shadow');
+  assertEqual(sky(col, 8, 59, 8), 15, 'async recompute keeps full bright (no shadow model)');
 });

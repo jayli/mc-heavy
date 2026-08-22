@@ -1,19 +1,29 @@
-// src/mesh/lighting.js — skylight（垂直 + 水平扩散）+ blocklight flood fill（§4.6/DR-14）
-// skylight 模型（Minecraft 同款）：① 垂直落下不衰减（15 直到遇 opaque）；
-// ② 水平扩散 BFS，每格 -1，opaque 阻挡。光绕过悬挑边缘渗入阴影（渐变暗而非全黑）。
-// 纯垂直近似（v1）在实玩中不可接受：任何高处实心方块把正下方整列截断为 0 → 全黑面。
-// 区域重算（center + 4 正交邻居）走 Worker 异步收敛（scheduler light 任务），
+// src/mesh/lighting.js — skylight + blocklight flood fill（§4.6/DR-14）
+// 第一阶段口径（v1.9 产品决策）：**不做阳光遮挡投影**——skylight 恒 15，
+// 悬挑/洞穴下不产生阴影；视觉明暗只来自 AO 墙角阴影 + 日夜全局调制（对齐 mc-lite
+// 视觉基线）。实玩验证：Minecraft 式遮挡阴影在大悬空平台/洞穴下产生大片全黑 +
+// 扩散截断渐变，与 mc-lite 基线冲突，用户明确不要（后续阶段再启用阴影）。
+// 机制保留供后续阶段：skylight 遮挡模型 = ① 垂直落下不衰减 ② 水平 BFS 每格 -1；
+// 区域重算（center + 4 正交邻居）走 Worker 异步收敛，写回中心 column 权威。
 // 编辑快路径仍用垂直单列（recomputeSkylightAt，O(128)，守 2ms 编辑预算）。
 // blocklight：删除光源不做增量降光，全 column 区域重算兜底（§4.6 第一阶段口径）。
 // Worker 同构：本文件不得 import three。
 import { WORLD_MIN_Y, WORLD_MAX_Y, WORLD_HEIGHT, blockIndex } from '../voxel/constants.js';
 
 /**
- * skylight：从顶向下逐列传播，初始 15，遇 opaque 停止（该格及下方为 0）。
+ * skylight：第一阶段不启用阳光遮挡（v1.9），全列恒 15。
  * 只写 column.light 高 4 位（保留低 4 位 blocklight）。
- * 注意：WORLD_MAX_Y 是排他上界，循环从 WORLD_MAX_Y - 1 起（y ∈ [MIN_Y, MAX_Y)）。
+ * 遮挡模型（垂直落下遇 opaque 停）代码保留在 computeSkylightColumnOccluded，
+ * 后续阶段启用阴影时切回（设计文档 §4.6/DR-14）。
  */
-export function computeSkylightColumn(column, registry) {
+export function computeSkylightColumn(column, _registry) {
+  for (let i = 0; i < column.light.length; i++) {
+    column.light[i] = (column.light[i] & 0x0F) | (15 << 4);
+  }
+}
+
+/** 遮挡模型原实现（后续阶段启用阳光阴影时切回，v1.9 保留不删） */
+export function computeSkylightColumnOccluded(column, registry) {
   const opaque = registry.opaqueTable;
   for (let lx = 0; lx < 16; lx++) {
     for (let lz = 0; lz < 16; lz++) {
@@ -28,26 +38,14 @@ export function computeSkylightColumn(column, registry) {
 }
 
 /**
- * skylight 单列增量重算：只重算 (lx, lz) 这一根垂直列（O(128)）。
- * 编辑快路径用（守 2ms 预算）：垂直模型即时反馈，水平扩散由 scheduler 的
- * 异步 light 任务收敛（computeSkylightRegion）。
- *
- * 只升不降：垂直模型是真实（扩散后）光照的下界——列空则两者均 15，
- * 列被遮挡则垂直=0 而扩散∈[0,14]。因此：
- * - 挖块（移除遮挡）：垂直值 15 > 现值 → 立即提亮（黑面 bug 修复保留）；
- * - 放块（新增遮挡）：垂直值 0 < 现值 → 不写入，保持原亮度。
- *   同步压暗只能到 0（纯垂直模型），当帧渲染即黑闪（实玩 bug）；
- *   真实暗化（如 15→14）交给异步区域扩散收敛，短暂偏亮 1 档不可见。
+ * skylight 单列增量重算（编辑快路径，O(128)，守 2ms 预算）。
+ * 第一阶段无阳光遮挡（v1.9）：该列 skylight 直接置 15。
+ * 后续阶段启用遮挡模型时切回垂直重算 + 只升不降口径。
  */
-export function recomputeSkylightAt(column, lx, lz, registry) {
-  const opaque = registry.opaqueTable;
-  let sky = 15;
+export function recomputeSkylightAt(column, lx, lz, _registry) {
   for (let y = WORLD_MAX_Y - 1; y >= WORLD_MIN_Y; y--) {
     const idx = blockIndex(lx, y, lz);
-    if (opaque[column.blocks[idx]] === 1) sky = 0;
-    if (sky > (column.light[idx] >> 4)) {
-      column.light[idx] = (column.light[idx] & 0x0F) | (sky << 4);
-    }
+    column.light[idx] = (column.light[idx] & 0x0F) | (15 << 4);
   }
 }
 
@@ -57,6 +55,8 @@ export function recomputeSkylightAt(column, lx, lz, registry) {
  * ② 水平 BFS：所有 skylight>1 的格子向 6 邻居扩散 level-1，opaque 阻挡。
  * region = 中心 column + 4 正交邻居（与 blocklight region 一致）；邻居缺失 → 截断。
  * 只写高 4 位（保留 blocklight 低 4 位）。
+ * 第一阶段（v1.9）skylight 恒 15、无遮挡：垂直 pass 写满 15，BFS 无扩散空间，
+ * 本函数等价 no-op——机制保留，后续阶段启用阳光阴影时生效。
  *
  * 边界截断自洽性：skylight=15 的格子水平最远影响 14 格（15-d≥1），2 个 column 以外
  * 的亮格到中心 column 边缘已 ≥32 格，贡献为 0——5-column region 对中心列是充分的。

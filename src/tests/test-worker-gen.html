@@ -75,7 +75,8 @@
     for (let i = 0; i < 10; i++) { sched.update(8 + 200, 8); await new Promise((r) => setTimeout(r, 50)); }
     check('hysteresis unload', !world.hasColumn(0, 0));
 
-    // 6. LIGHT 段集成：悬挑平台 → 异步区域重算 → 下方阴影渐变（非全黑）
+    // 6. LIGHT 段集成：第一阶段无阳光投影（v1.9）——悬挑平台下方恒 15、无渐变；
+    //    仍经 enqueueLight 异步管线跑一遍，验证 light 任务正常下发/回写不报错。
     const world2 = new WorldData(reg);
     const sched2 = new Scheduler({ world: world2, pool, registry: reg, seed: 12345, viewDistance: 2 });
     for (let i = 0; i < 30 && !world2.hasColumn(0, 0); i++) {
@@ -91,19 +92,19 @@
     }
     c0.version++;
     sched2.enqueueLight(0, 0);
-    // 等异步 light 任务收敛（下发 + Worker 重算 + 回写）
-    let converged = false;
+    // 等异步 light 任务完成（下发 + Worker 重算 + 回写）
+    let settled = false;
     for (let i = 0; i < 40; i++) {
       sched2.update(8, 8);
       await new Promise((r) => setTimeout(r, 100));
-      const under = c0.light[blockIndex(8, 39, 8)] >> 4;
-      if (under > 0 && under < 15 && sched2.stats().lightInflight === 0) { converged = true; break; }
+      if (sched2._lightQueue.size === 0 && sched2.stats().lightInflight === 0) { settled = true; break; }
     }
     const underCenter = c0.light[blockIndex(8, 39, 8)] >> 4;
     const underEdge = c0.light[blockIndex(4, 39, 4)] >> 4;
     const openSky = c0.light[blockIndex(2, 39, 2)] >> 4;
-    check('light: overhang shadow converged (not black)', converged && underCenter > 0);
-    check('light: shadow gradient (edge brighter than center)', underEdge > underCenter);
+    check('light: task settled', settled);
+    check('light: no sun shadow (under overhang full bright)', underCenter === 15);
+    check('light: no gradient (edge == center)', underEdge === underCenter);
     check('light: open area still full bright', openSky === 15);
     pool.dispose();
     window.__WORKER_GEN_RESULTS__ = results;

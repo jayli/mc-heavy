@@ -75,7 +75,7 @@ test('洞穴不破坏地表：h-3 以上地层完整（surface 未被挖穿）',
   }
 });
 
-test('洞穴内全黑：封闭洞穴 skylight=0', () => {
+test('洞穴内无阳光投影：洞穴空气 skylight=15（第一阶段口径，v1.9）', () => {
   const reg = makeRegistry();
   let caveCell = null;
   let col = null;
@@ -92,7 +92,8 @@ test('洞穴内全黑：封闭洞穴 skylight=0', () => {
   }
   assertTrue(caveCell !== null, 'found cave cell');
   computeSkylightColumn(col, reg);
-  assertEqual(col.light[blockIndex(caveCell.lx, caveCell.y, caveCell.lz)] >> 4, 0, 'cave skylight 0');
+  // 第一阶段无阳光投影（v1.9）：洞穴内空气 skylight 恒 15
+  assertEqual(col.light[blockIndex(caveCell.lx, caveCell.y, caveCell.lz)] >> 4, 15, 'cave skylight 15 (no sun shadow)');
 });
 
 test('洞穴确定性：两次 carve 逐格一致', () => {
