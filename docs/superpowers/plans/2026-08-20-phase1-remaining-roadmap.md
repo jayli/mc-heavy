@@ -1,11 +1,11 @@
-# 第一阶段剩余工作执行计划（M2 + M3）
+# 第一阶段剩余执行计划与后续路线图（M2–M7）
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 完成设计文档 §7 第一阶段的 M2（结构与世界完整性）和 M3（性能达标与收尾），达成 §1 目标表全部验收指标。
+**Goal:** 完成设计文档 §7 第一阶段的 M2（结构与世界完整性）和 M3（性能达标与收尾），达成 §1 目标表全部验收指标；并登记以 M3-6 冻结基线为门的 M4–M7 独立 Epic 依赖与执行顺序。
 
 **前置文档:**
-- 设计文档：`docs/phase-1-engine-design.md`（v1.7，架构/数据层/渲染/光照/调度全量设计）
+- 设计文档：`docs/phase-1-engine-design.md`（v1.13，架构/数据层/渲染/光照/调度全量设计）
 - M0 计划：`docs/superpowers/plans/2026-08-19-m0-engine-skeleton.md`
 - M1 计划：`docs/superpowers/plans/2026-08-19-m1-voxel-core-loop.md`
 - M0 实测报告：`docs/m0-bench-report.md`
@@ -82,6 +82,20 @@
    `WorldEditor`、DDA hitscan、受控 GLB 视图模型、曳光和音效。规格：
    `docs/superpowers/specs/2026-08-23-m4-player-weapons-design.md`；计划：
    `docs/superpowers/plans/2026-08-23-m4-player-weapons.md`。
+4. [ ] **M5 实体运行时**：M4 验收后交付 `EntityManager`、实体 AABB raycast、受控实体渲染层、
+   临时/持久实体分离和 `entities` snapshot；持久实体卸载采用“冻结/异步保存、可取消、成功后下一帧同步
+   最终移除”协议，不夹带具体敌人、炮塔或矿车。规格：
+   `docs/superpowers/specs/2026-08-23-m5-entity-runtime-design.md`；计划：
+   `docs/superpowers/plans/2026-08-23-m5-entity-runtime.md`。
+5. [ ] **M6 丧尸**：M5 验收后交付默认上限 20 的临时丧尸、20Hz 单条 WorkerPool `ai` RPC、
+   实体/体素最近命中比较、25/35/999 的三把枪实体伤害与六部件固定 slot 渲染；不含玩家生命、
+   近战或死亡/重生，巢穴另列 M7。规格：
+   `docs/superpowers/specs/2026-08-23-m6-zombies-design.md`；计划：
+   `docs/superpowers/plans/2026-08-23-m6-zombies.md`。
+6. [ ] **M7 玩家放置丧尸巢穴**：M6 验收后，以巢穴最高 `gold_block` 的 `blockEntity` 为持久真相，
+   保留“玩家放置、全局最多 8 个、关键方块破坏即失效”的 mc-lite 语义；不是 StructureIndex 地标。
+   规格：`docs/superpowers/specs/2026-08-23-m7-zombie-nests-design.md`；计划：
+   `docs/superpowers/plans/2026-08-23-m7-zombie-nests.md`。
 
 ### M2 bug 修复阶段剩余 TODO
 
@@ -347,6 +361,9 @@ M3-4 (HUD 完善) ← 依赖 M2-6（视觉风格切换）
 M3-5 (性能回归基线) ← 依赖 M3-1
 M3-6 (性能报告) ← 依赖 M3-1~M3-5
 M4 (第二阶段玩家武器) ← 依赖 M3-6 冻结验收
+M5 (实体运行时) ← 依赖 M4
+M6 (丧尸) ← 依赖 M5（并接入 M4 的实体命中比较）
+M7 (玩家放置丧尸巢穴) ← 依赖 M6（并使用 M4 WorldEditor）
 ```
 
 **建议执行顺序：**
@@ -357,6 +374,7 @@ M4 (第二阶段玩家武器) ← 依赖 M3-6 冻结验收
 5. M3-1 → M3-2 → M3-5 → M3-6（性能链）
 6. M3-3（雨效，独立）
 7. M3-4（HUD，依赖 M2-6）
+8. M4 → M5 → M6 → M7（第二阶段实体/敌人链；每一项以前项验收为门）
 
 ---
 
@@ -381,7 +399,11 @@ M4 (第二阶段玩家武器) ← 依赖 M3-6 冻结验收
 |---|---|---|
 | M4 玩家武器 | `WorldEditor` + DDA hitscan + 相机视图模型 | 规格：`docs/superpowers/specs/2026-08-23-m4-player-weapons-design.md`；计划：`docs/superpowers/plans/2026-08-23-m4-player-weapons.md` |
 | TNT/爆炸 | `world.setBlocks(batch)` + REMESH + 粒子 | 批量编辑 API、粒子接口 |
-| 炮塔/飞行弹丸/丧尸 | EntityManager + 实体射线 + InstancedMesh 实体渲染 | 实体系统骨架、`block-changed` 事件；M4 不实现 |
+| M5 实体运行时 | EntityManager + 实体 raycast + 受控渲染层 + `entities` snapshot | 临时实体随 Scheduler “视距 +2”最终卸载回收；持久实体先冻结并异步保存最小 snapshot，玩家重入/保存失败则取消，成功后的下一帧才同步移除；规格：`docs/superpowers/specs/2026-08-23-m5-entity-runtime-design.md`；计划：`docs/superpowers/plans/2026-08-23-m5-entity-runtime.md` |
+| M6 丧尸 | M5 临时 entity + 单 batch WorkerPool AI + M4 武器距离比较 + 6 部件实例渲染 | 默认 20；手枪/加特林/MAG7 为 25/35/999 与 40/40/10；不含 PlayerVitals/近战；规格：`docs/superpowers/specs/2026-08-23-m6-zombies-design.md`；计划：`docs/superpowers/plans/2026-08-23-m6-zombies.md` |
+| M7 玩家放置丧尸巢穴 | `WorldEditor` + `blockEntities` + M6 `ZombieService` | 全局最多 8 个；最高 `gold_block` 破坏即失效；八 offset × 六层出生搜索，GEN 接管 `restoreEdits()` 保持 anchor；不是生成地标；规格/计划见 `docs/superpowers/{specs,plans}/2026-08-23-m7-zombie-nests*` |
+| 炮塔/飞行弹丸 | M5 EntityManager + 实体 raycast + InstancedMesh 实体渲染 | M5 后独立 Epic；不属于 M4–M7 |
+| 玩家生存战斗 | M5 EntityManager + 玩家状态/HUD + 事件 | 独立 PlayerVitals Epic；M6 明确不包含 |
 | 矿车/轨道 | 方块属性（track 类型）+ 实体运动系统 | BlockRegistry 的 `interact`/`onStep` 钩子 |
 | 创造台 | 模型编辑 → 注册自定义 geometry 模板 | mesher 顶点模板机制 |
 | 灯/光源 | emissive 属性 + blocklight flood fill | 光照管线已含 |

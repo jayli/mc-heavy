@@ -1,6 +1,6 @@
 # mc-heavy 第一阶段实施设计文档：游戏引擎原型
 
-> 版本：v1.10 ｜ 日期：2026-08-23 ｜ 状态：定稿（经八轮逐条核验修订）
+> 版本：v1.13 ｜ 日期：2026-08-23 ｜ 状态：定稿（经十一轮逐条核验修订）
 >
 > 目标：在 mc-heavy 仓库从零重建一个功能对标 mc-lite、性能提升一个数量级的体素游戏引擎。
 > 第一阶段只做"引擎底座"：渲染、体素数据、即时地图生成、玩家交互、种子地图、存档原型。
@@ -86,6 +86,23 @@
 > hitscan、受控 GLB 视图模型为垂直切片落地（§4.5.3/§9）。详见
 > `docs/superpowers/specs/2026-08-23-m4-player-weapons-design.md` 与
 > `docs/superpowers/plans/2026-08-23-m4-player-weapons.md`。
+
+> v1.11 修订说明：M4 后的实体路线拆为 M5 实体运行时、M6 丧尸、M7 玩家放置丧尸巢穴。
+> 巢穴不是确定性地标：其蓝图最高 `gold_block`（而非只作放置触发的
+> `zombie_nest_alias_block`）上的锚点 `blockEntity` 为持久真相，运行时控制器订阅 `WorldEditor`
+> 的 `block-changed`，故徒手、武器和 TNT 均可使关键方块破坏立即失效。
+
+> v1.12 修订说明：M5–M7 规格与计划按 mc-lite 逐项复核后收紧。M6 固定为“追逐、受武器
+> 伤害、死亡回收”的临时敌人：默认上限 20，手枪/加特林/MAG7 的实体伤害与射程分别为
+> `25/40`、`35/40`、`999/10`，无 `PlayerVitals`、近战、死亡/重生；AI 为 20Hz 单条批量 WorkerPool
+> RPC，60 格外只冻结 AI。M7 的刷怪搜索明确为八个精确 offset、`dy=3..-2` 的六层；GEN 接管必须
+> `restoreEdits()` 同时恢复 blockEntity 与内存 edits，防止后续 flush 覆盖旧存档。背包、完整 Hotbar
+> 与玩家生存战斗均保持独立后续 Epic。
+
+> v1.13 修订说明：M5 的持久实体卸载改为可取消的两阶段协议，以修正 Scheduler 同帧同步
+> `world.remove()` 与 IndexedDB 异步写入不能排序的矛盾。column 超过卸载半径后仍保留 world/render，
+> 先冻结持久实体并保存 snapshot；仅在保存成功后的下一帧、且仍超界时，才同步释放实体并删除 column。
+> 保存失败或玩家重入均取消并解冻，禁止静默丢失；pending 状态只保存卸载生命周期，不复制体素数据。
 
 ---
 
@@ -266,7 +283,7 @@ class ChunkColumn {
   light:  Uint8Array(16*16*128);   // 高4位 skylight，低4位 blocklight（§4.6）
   sections: Section[8];            // 派生：网格状态（dirty/mesh/version）
   state: 'empty'|'generating'|'ready';
-  version: number;                 // 每次数据变更 +1，所有异步结果校验用
+  version: number;                 // 每次 blocks/meta 数据变更 +1，所有异步结果校验用；纯 blockEntity 状态不进 Worker
 }
 ```
 
@@ -747,12 +764,18 @@ IndexedDB（沿用 mc-lite DB 名/版本约定）
   ├─ edits:   chunkKey → 压缩的修改列表（仅玩家改过的方块，条目 {id, meta, blockEntity?}，
   │           典型 KB 级/column；blockEntity 为可序列化对象，第一阶段恒为 undefined）
   ├─ player:  位置/朝向/背包/画质设置
-  └─ entities:（第二阶段起：炮塔/矿车/巢穴等运行时实体快照）
+  └─ entities:（M5 起：炮塔/矿车等持久运行时实体 snapshot；丧尸为临时实体，
+                丧尸巢穴的锚点/冷却归对应 blockEntity）
 ```
 
 - 写盘完全异步：edits 在内存中按 column 聚合，防抖 5s + 页面隐藏/退出时 flush（Worker 内序列化）。
 - 加载 = 读 meta + 按需读 edits（column 生成时叠加），无"整图恢复"阶段。
 - mc-lite 老存档迁移：提供一次性迁移脚本（第二阶段），读旧 region 记录提取 blockData diff。
+- **M5 持久实体与流式卸载**：column 首次超出“加载半径 + 2”时，Scheduler 创建可取消的 pending
+  unload；`EntityManager` 冻结该 column 的持久实体并把最小 snapshot 写入 `entities`。这段时间 world、
+  render column 与临时实体仍保留。写入成功后的下一帧若仍超界，才同步通知 controller、失效实体 generation、
+  回收实体并删除 column；写入失败或玩家重入则取消、解冻并保留一切运行时 state。pending 只记录 key/handle，
+  不缓存 blocks/meta/light 或产生第二份世界数据。
 
 ### 4.9 调度与帧预算（src/core/scheduler.js）
 
@@ -781,6 +804,9 @@ IndexedDB（沿用 mc-lite DB 名/版本约定）
 - **卸载与重入（滞回 + LRU，v1.3 补齐）**：玩家在加载半径边界来回走（很常见）会造成
   GEN/MESH/上传全链路 thrashing。两条便宜规则：
   - **卸载半径 = 加载半径 + 2（滞回带）**：进圈立即加载、出圈延迟卸载；
+  - **持久实体卸载门（M5 起）**：超出半径的含持久实体 column 先进入可取消的异步保存准备；在 snapshot
+    成功的下一帧、且仍超界时才同步最终移除。准备时重入或写盘失败均取消/解冻并保留 column，不能把
+    IndexedDB Promise 塞进最终移除通知或让失败后仍删除。
   - **重入 LRU**：刚卸载的 column 保留体素数据与 GPU 缓冲在短 TTL 缓存
     （5~10s 或 1~2 圈内存配额，先到先踢），重入时零成本恢复，跳过 GEN+MESH+上传。
     edits 本来就常驻，这条只多占一点显存，换来回头跑不卡。
@@ -909,11 +935,16 @@ AOBridge / AOWorker / 八个 Worker 文件——它们的职责被 §4 的四个
   性能回归基线脚本（Playwright 自动跑图采样帧时）。
 - 验收：§1 目标表全部达标；输出性能报告。
 
-> **M4 不属于第一阶段里程碑。** M3 的性能报告与冻结基线验收后，第二阶段以 M4
-> “玩家第一人称武器”作为首个独立 Epic：三把受控 GLB 武器、DDA hitscan、视图模型、曳光、
-> 音效与可选方块破坏；实体伤害、炮塔飞行弹丸和用户模型导入继续后置。规格与实施计划分别为
-> `docs/superpowers/specs/2026-08-23-m4-player-weapons-design.md` 和
-> `docs/superpowers/plans/2026-08-23-m4-player-weapons.md`。
+> **M4 不属于第一阶段里程碑。** M3 的性能报告与冻结基线验收后，第二阶段按
+> **M4 玩家第一人称武器 → M5 实体运行时 → M6 丧尸 → M7 玩家放置丧尸巢穴** 的依赖链推进。
+> M4 交付三把受控 GLB 武器、DDA hitscan、视图模型、曳光、音效与可选方块破坏；M5–M7 依次把
+> 动态实体、临时敌人与方块锚定刷怪器接入既有数据/事件管线；M5 持久实体先以可取消 snapshot 保存完成
+> 卸载准备，才会同步删除 column。M6 默认最多 20 只丧尸，保留
+> 25/35/999 的三把枪实体伤害和六部件实例渲染，不新增玩家生命或近战；M7 保留玩家放置/全局 8 个/
+> 关键方块失效语义。炮塔飞行弹丸、玩家生存战斗和用户模型导入继续后置。
+> 各 Epic 的规格与实施计划见 `docs/superpowers/{specs,plans}/2026-08-23-m4-player-weapons-*`、
+> `2026-08-23-m5-entity-runtime*`、`2026-08-23-m6-zombies*`、
+> `2026-08-23-m7-zombie-nests*`。
 
 ---
 
@@ -941,7 +972,11 @@ AOBridge / AOWorker / 八个 Worker 文件——它们的职责被 §4 的四个
 |---|---|---|
 | M4 玩家第一人称武器 | `WorldEditor` + DDA hitscan + 相机视图模型 + 受控 GLB/Audio | 第二阶段首个 Epic；规格/计划见 `docs/superpowers/{specs,plans}/2026-08-23-m4-player-weapons-*` |
 | TNT/爆炸 | `WorldEditor.setBlocks(batch)` + REMESH + 粒子 | M4-0 批量编辑 API、事件接口 |
-| 炮塔/飞行弹丸/丧尸 | EntityManager + 实体射线 + InstancedMesh 实体渲染 | 实体系统骨架、`block-changed` 事件；不属于 M4 |
+| M5 实体运行时 | EntityManager + 实体 raycast + 受控渲染层 + entities snapshot | 第二阶段实体底座；临时 entity 随 column 的“视距 +2”最终卸载回收，持久 entity 先可取消地冻结/保存最小 snapshot，成功后的下一帧才最终移除；规格/计划见 `docs/superpowers/{specs,plans}/2026-08-23-m5-entity-runtime*` |
+| M6 丧尸 | M5 临时 entity + WorkerPool AI + 武器距离比较 + 6 部件 InstancedMesh | 默认 20；20Hz 单 batch AI、60 格外冻结、手枪/加特林/MAG7 为 25/35/999 伤害与 40/40/10 格；不含 PlayerVitals/近战；规格/计划见 `docs/superpowers/{specs,plans}/2026-08-23-m6-zombies*` |
+| M7 玩家放置丧尸巢穴 | `WorldEditor` + blockEntities + M6 ZombieService | 最多 8 个，蓝图最高 `gold_block` 破坏即失效（alias 只作最小创造模式放置触发）；8 offset × 六层搜索，`restoreEdits()` 保持 anchor 存档；规格/计划见 `docs/superpowers/{specs,plans}/2026-08-23-m7-zombie-nests*` |
+| 炮塔/飞行弹丸 | M5 EntityManager + 实体射线 + InstancedMesh 实体渲染 | M5 后独立 Epic；不属于 M4–M7 |
+| 玩家生存战斗 | M5 EntityManager + 玩家状态/HUD + 事件 | 独立 PlayerVitals Epic；定义近战、伤害、无敌、死亡与重生后才实施，不夹带入 M6 |
 | 矿车/轨道 | 方块属性（track 类型）+ 实体运动系统 | BlockRegistry 的 `interact`/`onStep` 钩子 |
 | 创造台 | 模型编辑 → 注册自定义 geometry 模板 | mesher 顶点模板机制 |
 | 灯/光源 | emissive 属性 + blocklight flood fill | 光照管线已含 |

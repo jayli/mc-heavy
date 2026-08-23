@@ -10,8 +10,8 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
 - mc-lite 是「功能驱动 + 补丁叠加」长出来的，性能天花板已锁死（视距 2~3 chunk、预生成数十秒、
   扩图卡顿、奔跑掉帧）；
 - mc-heavy 的目标是**保持同样的玩法功能**，用更鲁棒、更可扩展、更高性能的引擎底座重做一遍；
-  第一阶段做引擎底座（M0~M3），M3 性能报告验收后以 M4 玩家第一人称武器作为第二阶段首个独立
-  Epic，矿车、炮塔、丧尸、TNT、创造台等功能继续按后续阶段加入。
+  第一阶段做引擎底座（M0~M3）。M3 性能报告验收后，第二阶段先按 M4 玩家武器 → M5 实体运行时
+  → M6 丧尸 → M7 玩家放置丧尸巢穴的独立 Epic 链推进；矿车、炮塔、TNT、创造台等继续按后续阶段加入。
 
 **mc-lite 的地位是「功能与数据来源」，不是「实现蓝本」。** 读它的代码时只提取
 「功能语义、算法、数据、视觉风格」，禁止照搬它的架构组织方式（详见下文「对标 mc-lite」）。
@@ -41,6 +41,20 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
   规格：`docs/superpowers/specs/2026-08-23-m4-player-weapons-design.md`；计划：
   `docs/superpowers/plans/2026-08-23-m4-player-weapons.md`。不含炮塔飞行弹丸、实体伤害、
   用户模型导入、弹药或网络同步。
+- **M5 实体运行时 ⬜（第二阶段，等待 M4）**：独立的动态实体底座；`EntityManager`、实体 AABB
+  raycast、受控渲染层、临时/持久实体分离与 `entities` snapshot。持久实体卸载先冻结/异步保存，可因重入
+  或失败取消，成功后的下一帧才同步最终移除。规格：
+  `docs/superpowers/specs/2026-08-23-m5-entity-runtime-design.md`；计划：
+  `docs/superpowers/plans/2026-08-23-m5-entity-runtime.md`。不含具体敌人、炮塔或矿车。
+- **M6 丧尸 ⬜（第二阶段，等待 M5）**：临时敌人垂直切片；默认 20 上限、20Hz 单条 WorkerPool
+  `ai` RPC、实体/体素最近命中比较、25/35/999 三把枪伤害与六部件固定 slot 渲染；不含玩家生命、
+  近战或死亡/重生。规格：
+  `docs/superpowers/specs/2026-08-23-m6-zombies-design.md`；计划：
+  `docs/superpowers/plans/2026-08-23-m6-zombies.md`。不含巢穴、掉落与昼夜刷怪。
+- **M7 玩家放置丧尸巢穴 ⬜（第二阶段，等待 M6）**：最高 `gold_block` 的 `blockEntity` 是持久真相；
+  保留玩家放置、全局最多 8 个、关键方块被破坏即失效的 mc-lite 语义，不进入 StructureIndex。
+  规格：`docs/superpowers/specs/2026-08-23-m7-zombie-nests-design.md`；计划：
+  `docs/superpowers/plans/2026-08-23-m7-zombie-nests.md`。
 
 测试现状：22 个 Playwright spec + 114 个浏览器内单元测试全绿（m1-acceptance 计时断言
 在高负载下偶发贴线 flaky——16.7±1e-6/2.1ms，单独复跑通过，属已记录的计时抖动类）；
@@ -51,14 +65,20 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
 按顺序读完再写代码：
 
 1. [`docs/phase-1-engine-design.md`](/Users/bachi/jaylli/mc-heavy/docs/phase-1-engine-design.md)
-   —— 架构唯一权威，当前版本 v1.10（已定稿）。所有子系统边界、DR 决策、验收口径都在这里。
+   —— 架构唯一权威，当前版本 v1.13（已定稿）。所有子系统边界、DR 决策、验收口径都在这里。
 2. [`docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md)
-   —— **第一阶段剩余工作执行计划（M2+M3）**，任务级 TODO + 依赖关系，当前 roadmap。
+   —— **第一阶段剩余执行计划与后续路线图（M2–M7）**，任务级 TODO + 依赖关系，当前 roadmap。
 3. [`docs/superpowers/plans/2026-08-19-m1-voxel-core-loop.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/plans/2026-08-19-m1-voxel-core-loop.md)
    —— M1 实施计划（已完成，架构细节参照）。
 4. `docs/m0-bench-report.md` / `docs/m1-acceptance-report.md` —— 实测与验收报告。
 5. M4 开始前加读：[`docs/superpowers/specs/2026-08-23-m4-player-weapons-design.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/specs/2026-08-23-m4-player-weapons-design.md)
    与 [`docs/superpowers/plans/2026-08-23-m4-player-weapons.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/plans/2026-08-23-m4-player-weapons.md)。
+6. M5 开始前加读：[`docs/superpowers/specs/2026-08-23-m5-entity-runtime-design.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/specs/2026-08-23-m5-entity-runtime-design.md)
+   与 [`docs/superpowers/plans/2026-08-23-m5-entity-runtime.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/plans/2026-08-23-m5-entity-runtime.md)。
+7. M6 开始前加读：[`docs/superpowers/specs/2026-08-23-m6-zombies-design.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/specs/2026-08-23-m6-zombies-design.md)
+   与 [`docs/superpowers/plans/2026-08-23-m6-zombies.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/plans/2026-08-23-m6-zombies.md)。
+8. M7 开始前加读：[`docs/superpowers/specs/2026-08-23-m7-zombie-nests-design.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/specs/2026-08-23-m7-zombie-nests-design.md)
+   与 [`docs/superpowers/plans/2026-08-23-m7-zombie-nests.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/plans/2026-08-23-m7-zombie-nests.md)。
 
 规则：
 
@@ -159,7 +179,7 @@ mc-heavy/
 ├─ index.html                  # import map（本地 vendor/three）+ WebGPU 启动 gate + 准心
 ├─ vendor/three/               # three.js r185.1（three.webgpu.js / three.tsl.js / three.core.js）
 ├─ docs/
-│  └─ phase-1-engine-design.md # 架构权威（v1.7）
+│  └─ phase-1-engine-design.md # 架构权威（v1.13）
 ├─ tools/build-atlas.mjs       # atlas 离线打包（npm run atlas）
 ├─ assets/
 │  ├─ textures/                # 从 mc-lite 复制
@@ -237,10 +257,15 @@ npm run atlas                  # 重新生成 assets/atlas.png + atlas.json
 ## 后续功能扩展点（引擎稳定后按阶段加入）
 
 M4 玩家武器（`WorldEditor` + DDA hitscan + 受控 GLB/Audio，M3 验收后优先）、
-TNT/爆炸（`WorldEditor.setBlocks(batch)` + REMESH）、炮塔/飞行弹丸/丧尸（EntityManager + 实体射线，
-不属于 M4）、矿车/轨道（BlockRegistry `interact`/`onStep` 钩子）、创造台（mesher 顶点模板）、
-灯/光源（emissive + blocklight flood fill）、床/宝箱/门（多方块结构 + `blockEntities` 富状态通道）、
-音频（`block-changed` 事件总线）、设置持久化。**新功能必须通过上述接入点实现，
+M5 实体运行时（EntityManager + 实体 raycast + 受控渲染 + 临时/持久 snapshot；持久实体先可取消地冻结/保存，
+成功后的下一帧才随 column 最终移除；临时实体随最终卸载回收）、
+M6 丧尸（M5 临时实体 + 20Hz 单 batch WorkerPool AI + M4 武器距离比较；默认 20、无 PlayerVitals）、
+M7 玩家放置丧尸巢穴（最高关键 `gold_block` 的 `blockEntity` + `block-changed` 失效 + M6 刷怪；
+八 offset × 六层、GEN 接管 restoreEdits；不是地标）、
+TNT/爆炸（`WorldEditor.setBlocks(batch)` + REMESH）、炮塔/飞行弹丸（M5 后独立 Epic）、
+矿车/轨道（BlockRegistry `interact`/`onStep` 钩子）、创造台（mesher 顶点模板）、灯/光源
+（emissive + blocklight flood fill）、床/宝箱/门（多方块结构 + `blockEntities` 富状态通道）、
+音频（`block-changed` 事件总线）、设置持久化、玩家生存战斗（PlayerVitals 独立 Epic）。**新功能必须通过上述接入点实现，
 不得绕过 meshing/数据/事件管线另开路径。**
 
 ## 沟通与提交纪律

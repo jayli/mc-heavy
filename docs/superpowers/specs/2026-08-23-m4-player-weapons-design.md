@@ -67,7 +67,7 @@ class WorldEditor {
 
 MAG7 的纯扫描算法固定如下：从相机原点沿视线前向取 `d=1..10`、步长 `0.5`；每个距离在相机 right/up 基底上取 `i,j∈{-1,0,1}` 的 3×3 截面采样；坐标向下取整；先用世界坐标去重，再以 `floor((d-1)/2)` 作为距离组排序键。候选先经过 `weapon-target-policy`，之后才计入 40 上限，最后按距离组展平为一次 `WorldEditor.setBlocks()` 调用。这有意修正 mc-lite“基岩可占用 40 名额、但延迟删除时才过滤”的怪癖；M4 的 40 表示最多 40 个实际可破坏候选。
 
-地形命中永远使用 `raycastVoxel()`。每帧保留至多一次主 DDA 结果，开火消费该结果及其 `dist`；将来实体系统提供 `EntityManager.raycast(origin, dir, maxDist)` 后，控制器只比较实体命中与体素命中的距离，取最近者。M4 本身没有 `THREE.Raycaster.intersectObjects()`，也不创建实体射线的临时兼容层。
+地形命中永远使用 `raycastVoxel()`。每帧保留至多一次主 DDA 结果，开火消费该结果及其 `dist`；将来实体系统提供 `EntityManager.raycast(origin, dir, maxDist)` 后，控制器只比较实体命中与体素命中的距离，取最近者。该扩展在 M6 才生效：M6 向冻结 catalog 增补 `entityDamage/entityRange`（手枪 `25/40`、加特林 `35/40`、MAG7 `999/10`），并以“近方块优先”定义遮挡；M4 本身不结算实体伤害。M4 没有 `THREE.Raycaster.intersectObjects()`，也不创建实体射线的临时兼容层。
 
 视图模型采用“单个相机子节点”而非新增地形渲染通道、InstancedMesh 或 BatchedMesh。每次只有当前一把枪存在，模型缓存只保存只读模板，装备时 clone；世界体素继续由既有三通道 BatchedMesh 独占。这避免引入渲染态与游戏态双权威，也不污染 M3 的 draw-call 基线。
 
