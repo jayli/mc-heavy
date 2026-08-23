@@ -1,6 +1,6 @@
 # mc-heavy 第一阶段实施设计文档：游戏引擎原型
 
-> 版本：v1.13 ｜ 日期：2026-08-23 ｜ 状态：定稿（经十一轮逐条核验修订）
+> 版本：v1.14 ｜ 日期：2026-08-23 ｜ 状态：定稿（经十二轮逐条核验修订）
 >
 > 目标：在 mc-heavy 仓库从零重建一个功能对标 mc-lite、性能提升一个数量级的体素游戏引擎。
 > 第一阶段只做"引擎底座"：渲染、体素数据、即时地图生成、玩家交互、种子地图、存档原型。
@@ -103,6 +103,14 @@
 > `world.remove()` 与 IndexedDB 异步写入不能排序的矛盾。column 超过卸载半径后仍保留 world/render，
 > 先冻结持久实体并保存 snapshot；仅在保存成功后的下一帧、且仍超界时，才同步释放实体并删除 column。
 > 保存失败或玩家重入均取消并解冻，禁止静默丢失；pending 状态只保存卸载生命周期，不复制体素数据。
+
+> v1.14 修订说明：M2 增补 **M2-7 空中结构（悬浮空岛与云层）**，补齐此前从 mc-lite 漏列的
+> `world/entities/Island.js` 与 `Cloud.js` 语义。它们是静态、seed 驱动的体素结构，归入
+> StructureIndex + Worker GEN + column 裁剪管线；禁止复活 mc-lite 的 `structureCenters`、跨 chunk
+> 补刷或运行期实体容器。保留空岛的 8% chunk 候选、Y=40..69、sky_stone/sky_grass 岛体，以及
+> 单云/连通云簇的视觉语义；按产品范围删除空岛宝箱与天空树。云通过 BlockRegistry 的通用
+> `supportsPlayer` 属性实现“可站立但非实心”，不在物理代码中按方块名特判。M2 关闭与 M3 冻结
+> 基线均纳入空中结构场景。
 
 ---
 
@@ -360,7 +368,8 @@ GEN 任务(cx, cz, seed, edits)
 **结构系统（对 mc-lite 的继承与改造）**：
 
 - 布局确定性：`StructureIndex` 以 region（400×400，沿用 RegionMapConfig）为键，
-  由 seed 确定性产出该 region 的地标清单与位置（金字塔/冰封山/雪地/海岛/城市/树木候选）。
+  由 seed 确定性产出该 region 的地标清单与位置（金字塔/冰封山/雪地/海岛/城市/树木候选，
+  以及 M2-7 的悬浮空岛与连通云簇候选）。单云层是逐 column 的纯噪声判定，无候选缓存。
   mc-lite 已有 `StructureCandidateIndex` + `RegionCenterUtils` + 各 maps（CityMap/Pyramid/…），
   这套"候选发现"逻辑**整体移植**，只改输出端：从"scatter 分发"改为"每 chunk 查询 + 裁剪"。
 - **跨 region 溢出（真实需求，必须处理）**：mc-lite 地标随机中心偏移为 BASE 100 + SCALE 300
@@ -382,6 +391,13 @@ GEN 任务(cx, cz, seed, edits)
 - **闪现问题的新解法**：结构块随 chunk 一起生成、一起进视距，远圈 chunk 未就绪时
   该区域就是"未加载"（雾遮挡），不存在"玩家跑到跟前结构突然蹦出来"——
   因为加载半径 ≥ 视距 + 生成提前量（§4.9 调度保证），结构永远在玩家看见之前就绪。
+- **空中结构（M2-7）**：悬浮空岛和连通云簇的候选按其来源 chunk 的 `(cx, cz, seed)`
+  纯 hash 在 region layout 中一次计算；`StructureIndex.query(cx, cz)` 仍查询本 region 与相邻 8 个
+  region，再按候选 AABB 与当前 column 相交性过滤。岛体/云簇只把落入当前 column 的体素写入
+  `blocks`，不存结构中心、不创建 entity、不发跨 column 补刷。原 mc-lite 的 `Math.random` 连通云
+  游走改为同一 hash 序列，确保任意加载顺序结果一致。Y=55 的单云层直接由 `(wx,wz,seed)`
+  噪声生成；Y=35 的连通云簇由 region layout 候选驱动；`cloud` 的“可站立”由 BlockRegistry `supportsPlayer` 表驱动，仍为 non-solid、
+  transparent、非遮光方块。
 
 **生成性能预算**：
 - 单 column GEN（无大结构）目标 < 8ms（Worker 时间）；含城市结构切片 < 25ms。
@@ -924,14 +940,14 @@ AOBridge / AOWorker / 八个 Worker 文件——它们的职责被 §4 的四个
 - 验收：平原地形无限行走不掉帧；放块挖块当帧生效；重启后修改保留。
 
 **M2 结构与世界完整性（1~1.5 周）**
-- StructureIndex + 城市/金字塔/冰封山/雪地/海岛/树木移植；biome 全量；洞穴；
+- StructureIndex + 城市/金字塔/冰封山/雪地/海岛/树木移植；悬浮空岛与云层；biome 全量；洞穴；
   光照（skylight/AO/blocklight）；水面（海面+体素水）；日夜与三种视觉风格。
-- 验收：出生点可见城市天际线；地标与 mc-lite 结构轮廓/配色基调一致（同 seed 同位置截图人工比对，
+- 验收：出生点可见城市天际线；地标（含悬浮空岛与云层）与 mc-lite 结构轮廓/配色基调一致（同 seed 同位置截图人工比对，
   不做像素级 diff，因高度与光照模型不同）；
   跨 region 行走无卡顿。
 
 **M3 性能达标与收尾（1 周）**
-- 视距 8 全量调优；预算参数标定（60Hz/120Hz 双档）；雨效；HUD 完善；
+- 视距 8 全量调优（包含 M2-7 空中结构）；预算参数标定（60Hz/120Hz 双档）；雨效；HUD 完善；
   性能回归基线脚本（Playwright 自动跑图采样帧时）。
 - 验收：§1 目标表全部达标；输出性能报告。
 
@@ -1006,6 +1022,7 @@ AOBridge / AOWorker / 八个 Worker 文件——它们的职责被 §4 的四个
 |---|---|
 | TerrainGen / MathUtils(noise,biome) | src/gen/noise.js, biome.js（算法照搬，接口重写） |
 | workers/maps/*（CityMap/Pyramid/…） | src/gen/structures/*（光栅化接口改造） |
+| world/entities/Island.js / Cloud.js | M2-7 `src/gen/structures/sky-structures.js`（确定性 rasterize，非 entity） |
 | structure-index/* | src/gen/structure-index.js（整体移植） |
 | structures/*.json | assets/structures/（原样复用） |
 | BlockData.js | src/voxel/block-registry.js（数据化重写） |

@@ -24,7 +24,7 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
 - **M1 体素核心闭环 ✅**：地形生成 / section meshing 双路径 / BatchedMesh 通道级合批 /
   玩家物理（step-up + 相机缓动）/ DDA 射线 / 放块挖块 / 最小存档 / 光照（skylight 垂直+水平扩散、
   AO 顶点阶段 float varying、blocklight flood fill、异步收敛管线）。
-- **M2 结构与世界完整性 🔧（主体完成，bug 修复收尾中）**：M2-1~M2-6 全部完成
+- **M2 结构与世界完整性 🔧（主体完成，M2-7 追加、bug 修复收尾中）**：M2-1~M2-6 全部完成
   （StructureIndex 确定性布局 / 城市·金字塔·冰封山·雪地·海岛 5 地标 / 树木植被 / 洞穴 /
   水面特效 / 日夜循环三风格）。bug 修复阶段已落地：
   - 光照黑面根因（`4c840cd`：写回改中心 column 权威 + 移除阳光遮挡投影 v1.9）；
@@ -34,7 +34,9 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
   - 朝向渲染消费侧 + 台阶等 12 方块 blended 通道透视穿帮（`584813b`：mesher 读 meta 低 2 位
     按 4 朝向旋转顶点/UV，模型面查 tile、世界面做剔除/AO；view 打包 meta + Worker transfer；
     台阶/栏杆/宝箱等不透明材质方块 cullMode 改 cutout 恢复深度写入；交互侧放置语义仍属第二阶段）。
-  - 剩余：同 seed 截图与 mc-lite 人工比对（M2-2 挂起验收项）、城市边缘残块清理（见 roadmap TODO）。
+  - 追加 M2-7：悬浮空岛与云层走 StructureIndex + Worker GEN + column 裁剪的确定性重写；不含宝箱/天空树，
+    详见 `docs/superpowers/{specs,plans}/2026-08-23-m2-sky-structures*`；
+  - 剩余：M2-7、同 seed 截图与 mc-lite 人工比对（M2-2/M2-7 挂起验收项）、城市边缘残块清理（见 roadmap TODO）。
 - **M3 性能达标与收尾 ⬜**：视距 8 全量调优 / 预算标定 / 雨效 / HUD / 基线脚本 / 报告。
 - **M4 玩家第一人称武器 ⬜（第二阶段，等待 M3-6）**：独立 Epic；`WorldEditor` 批量编辑、
   DDA hitscan、手枪/MAG7/加特林的受控 GLB 相机视图模型、曳光、音效和可选方块破坏。
@@ -56,7 +58,7 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
   规格：`docs/superpowers/specs/2026-08-23-m7-zombie-nests-design.md`；计划：
   `docs/superpowers/plans/2026-08-23-m7-zombie-nests.md`。
 
-测试现状：22 个 Playwright spec + 114 个浏览器内单元测试全绿（m1-acceptance 计时断言
+测试现状：19 个 Playwright spec 文件（22 个测试用例）+ 114 个浏览器内单元测试全绿（m1-acceptance 计时断言
 在高负载下偶发贴线 flaky——16.7±1e-6/2.1ms，单独复跑通过，属已记录的计时抖动类）；
 冻结断言达标（120Hz 本机 fps ≥115、放/挖编辑 p95 <2ms、draw 受控）。
 
@@ -65,7 +67,7 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
 按顺序读完再写代码：
 
 1. [`docs/phase-1-engine-design.md`](/Users/bachi/jaylli/mc-heavy/docs/phase-1-engine-design.md)
-   —— 架构唯一权威，当前版本 v1.13（已定稿）。所有子系统边界、DR 决策、验收口径都在这里。
+   —— 架构唯一权威，当前版本 v1.14（已定稿）。所有子系统边界、DR 决策、验收口径都在这里。
 2. [`docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md)
    —— **第一阶段剩余执行计划与后续路线图（M2–M7）**，任务级 TODO + 依赖关系，当前 roadmap。
 3. [`docs/superpowers/plans/2026-08-19-m1-voxel-core-loop.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/plans/2026-08-19-m1-voxel-core-loop.md)
@@ -179,7 +181,7 @@ mc-heavy/
 ├─ index.html                  # import map（本地 vendor/three）+ WebGPU 启动 gate + 准心
 ├─ vendor/three/               # three.js r185.1（three.webgpu.js / three.tsl.js / three.core.js）
 ├─ docs/
-│  └─ phase-1-engine-design.md # 架构权威（v1.13）
+│  └─ phase-1-engine-design.md # 架构权威（v1.14）
 ├─ tools/build-atlas.mjs       # atlas 离线打包（npm run atlas）
 ├─ assets/
 │  ├─ textures/                # 从 mc-lite 复制
