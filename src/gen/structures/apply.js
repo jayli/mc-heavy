@@ -10,7 +10,7 @@ import {
   getFrozenMountainInfo, generateFrozenMountain, frozenMountainSurfaceY,
   getIslandInfo, generateIsland, generateIslandSandRing, islandSurfaceY,
   getPlainLandInfo, generatePlainLand,
-  getCityInfo, generateCity,
+  getCityInfo, generateCity, getCityFinalSurfaceY,
 } from './landmarks.js';
 import { getCitySurfaceY, isPointNearCityStructure } from './city-layout.js';
 import { CITY_STRUCTURE_FOOTPRINT, ISLAND_SEA_LEVEL } from './region-config.js';
@@ -41,8 +41,9 @@ function placementIntersects(p, halfX, halfZ, cx, cz) {
  * kind = city / island / snow / fm / normal / water / none（金字塔/平地不挂植被）。
  */
 function pointContext(wx, wz, layouts, cityLayout, seed) {
-  if (cityLayout && getCityInfo(wx, wz, cityLayout)) {
-    return { kind: 'city', surfaceY: getCitySurfaceY(wx, wz, cityLayout, seed) };
+  const cityInfo = cityLayout && getCityInfo(wx, wz, cityLayout);
+  if (cityInfo) {
+    return { kind: 'city', surfaceY: getCityFinalSurfaceY(wx, wz, cityInfo, seed) };
   }
   for (const layout of layouts) {
     if (getPyramidInfo(wx, wz, layout.pyramid)) return { kind: 'none' };

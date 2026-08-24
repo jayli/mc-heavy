@@ -726,14 +726,8 @@ export function detectNearbyLandmark(wx, wz, seed) {
   return null;
 }
 
-/**
- * 生成城市地形（mc-lite CityMap.generate 移植：核心 getCitySurfaceY +
- * 过渡带台阶式混合 + sand/clay/moss 地表分区）。
- * @param {number} h CITY 压平后的地形高度
- * @param {Object} cityInfo getCityInfo 结果（含布局字段）
- * @returns {{surfaceY: number}}
- */
-export function generateCity(wx, wz, h, cityInfo, setBlock, seed) {
+/** 城市最终地表高：核心高度或与自然地形混合后的过渡带高度。 */
+export function getCityFinalSurfaceY(wx, wz, cityInfo, seed) {
   const citySurfaceY = getCitySurfaceY(wx, wz, cityInfo, seed);
   let surfaceY = citySurfaceY;
 
@@ -779,6 +773,19 @@ export function generateCity(wx, wz, h, cityInfo, setBlock, seed) {
   }
 
   surfaceY = Math.max(CITY_MIN_SURFACE_Y, surfaceY);
+
+  return surfaceY;
+}
+
+/**
+ * 生成城市地形（mc-lite CityMap.generate 移植：核心 getCitySurfaceY +
+ * 过渡带台阶式混合 + sand/clay/moss 地表分区）。
+ * @param {number} h CITY 压平后的地形高度
+ * @param {Object} cityInfo getCityInfo 结果（含布局字段）
+ * @returns {{surfaceY: number}}
+ */
+export function generateCity(wx, wz, h, cityInfo, setBlock, seed) {
+  const surfaceY = getCityFinalSurfaceY(wx, wz, cityInfo, seed);
 
   const fillStartY = Math.min(h, surfaceY);
   const fillEndY = surfaceY;

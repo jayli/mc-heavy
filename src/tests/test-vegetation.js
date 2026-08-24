@@ -3,7 +3,7 @@ import { assertEqual, assertTrue, assertNotNull } from './assert.js';
 import { computeRegionLayout, neighborRegionKeys } from '../gen/structures/structure-layout.js';
 import { applyStructuresToColumn } from '../gen/structures/apply.js';
 import { getBiome } from '../gen/noise.js';
-import { generateHeight } from '../gen/terrain.js';
+import { fillColumn, generateHeight } from '../gen/terrain.js';
 import { ChunkColumn } from '../voxel/chunk-column.js';
 import { createRegistry } from '../voxel/block-registry.js';
 import { BLOCKS } from '../voxel/blocks-data.js';
@@ -117,6 +117,19 @@ test('植被不产生 opaque 阴影：草格上方 skylight=15', async () => {
     }
   }
   assertTrue(found, 'found short_grass to verify');
+});
+
+test('城市过渡带树根贴地', async () => {
+  const reg = makeRegistry();
+  // 固定种子下 (1,42) 是城市过渡带的默认树候选，城市地表会向自然地形混合。
+  const col = new ChunkColumn(0, 2);
+  fillColumn(col, SEED, reg);
+  await applyStructuresToColumn(col, SEED, reg, layoutsFor(0, 2));
+
+  const root = blockIndex(1, 3, 10);
+  const ground = blockIndex(1, 2, 10);
+  assertEqual(col.blocks[root], reg.idOf('wood'), 'fixture tree root');
+  assertTrue(col.blocks[ground] !== reg.idOf('air'), 'tree root must rest on generated ground');
 });
 
 test('mesher：flower 走 cross 模板（cutout 通道 8 顶点，非 box 24 顶点）', async () => {
