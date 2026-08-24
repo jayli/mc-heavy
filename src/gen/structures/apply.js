@@ -43,7 +43,9 @@ function placementIntersects(p, halfX, halfZ, cx, cz) {
 function pointContext(wx, wz, layouts, cityLayout, seed) {
   const cityInfo = cityLayout && getCityInfo(wx, wz, cityLayout);
   if (cityInfo) {
-    return { kind: 'city', surfaceY: getCityFinalSurfaceY(wx, wz, cityInfo, seed) };
+    const citySurfaceY = getCityFinalSurfaceY(wx, wz, cityInfo, seed);
+    // fillColumn 已预填自然地形；城市压低地表时，树须落在仍可见的自然地表之上。
+    return { kind: 'city', surfaceY: Math.max(citySurfaceY, generateHeight(wx, wz, seed)) };
   }
   for (const layout of layouts) {
     if (getPyramidInfo(wx, wz, layout.pyramid)) return { kind: 'none' };

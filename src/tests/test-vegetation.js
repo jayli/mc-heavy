@@ -132,6 +132,19 @@ test('城市过渡带树根贴地', async () => {
   assertTrue(col.blocks[ground] !== reg.idOf('air'), 'tree root must rest on generated ground');
 });
 
+test('城市残留自然草地上的树从可见地表生根', async () => {
+  const reg = makeRegistry();
+  // 固定种子下 (311,-88) 的城市地表为 y=4，但 fillColumn 的自然草地表残留在 y=15。
+  const col = new ChunkColumn(19, -6);
+  fillColumn(col, SEED, reg);
+  await applyStructuresToColumn(col, SEED, reg, layoutsFor(19, -6));
+
+  const ground = blockIndex(7, 15, 8);
+  const root = blockIndex(7, 16, 8);
+  assertEqual(col.blocks[ground], reg.idOf('grass'), 'visible natural ground');
+  assertEqual(col.blocks[root], reg.idOf('wood'), 'tree root above visible ground');
+});
+
 test('mesher：flower 走 cross 模板（cutout 通道 8 顶点，非 box 24 顶点）', async () => {
   const reg = makeRegistry();
   // 手工 section：中心放一株 flower
