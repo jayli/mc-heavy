@@ -85,7 +85,15 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
   const setBlock = makeColumnSetter(column, registry);
 
   const cityLayout = layouts.find((l) => l.city)?.city || null;
-  await preloadStructures(cityLayout ? CITY_STRUCTURE_TYPES : ['birchTree', 'birchTreeWithSnow']);
+  // 预载清单按布局内容确定：城市建筑 / 海岛中心塔 / 平地金字塔岛 / 植被树
+  // （跨 column 光栅化要求凡查询域内出现对应地标即载入，否则 rasterize 静默跳过）
+  const needTypes = new Set(['birchTree', 'birchTreeWithSnow']);
+  if (cityLayout) for (const t of CITY_STRUCTURE_TYPES) needTypes.add(t);
+  for (const layout of layouts) {
+    if (layout.island) needTypes.add('tower');
+    if (layout.plainLand) needTypes.add('pyramidIsland');
+  }
+  await preloadStructures([...needTypes]);
 
   // ---- 阶段 1：地形整形（mc-lite 列循环 elif 链）----
   for (let lx = 0; lx < 16; lx++) {
@@ -154,17 +162,20 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
   }
 
   for (const layout of layouts) {
-    // 海岛中心塔（表面 = 海平面）
+    // 海岛中心塔（表面 = 海平面）：塔占地 9×10 可跨 column，按 AABB 相交裁剪
     if (layout.island) {
       const t = layout.island;
-      if (Math.floor(t.cx / 16) === column.cx && Math.floor(t.cz / 16) === column.cz) {
+      const fp = CITY_STRUCTURE_FOOTPRINT.tower;
+      if (placementIntersects({ x: t.cx, z: t.cz }, fp.halfX, fp.halfZ, column.cx, column.cz)) {
         rasterizeStructure('tower', t.cx, ISLAND_SEA_LEVEL + 1, t.cz, setBlock, column, registry, seed, false);
       }
     }
-    // 平地中心金字塔岛（mc-lite：y = 自然地形 h + 1，ground support 补平）
+    // 平地中心金字塔岛（mc-lite：y = 自然地形 h + 1，ground support 补平）：
+    // 占地 34×39 必跨多 column，按 AABB 相交裁剪（仅中心 column 光栅化会被 chunk 切割）
     if (layout.plainLand) {
       const pl = layout.plainLand;
-      if (Math.floor(pl.cx / 16) === column.cx && Math.floor(pl.cz / 16) === column.cz) {
+      const fp = CITY_STRUCTURE_FOOTPRINT.pyramidIsland;
+      if (placementIntersects({ x: pl.cx, z: pl.cz }, fp.halfX, fp.halfZ, column.cx, column.cz)) {
         const h = generateHeight(pl.cx, pl.cz, seed);
         rasterizeStructure('pyramidIsland', pl.cx, h + 1, pl.cz, setBlock, column, registry, seed, true);
       }
