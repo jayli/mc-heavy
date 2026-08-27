@@ -815,6 +815,17 @@ export function generateCity(wx, wz, h, cityInfo, setBlock, seed) {
   }
   if (rockBaseY - 12 >= WORLD_MIN_Y) setBlock(wx, rockBaseY - 12, wz, 'end_stone');
 
+  // 清除城市地表上方的自然地形残留（M2 收尾：残丘修复）。
+  // fillColumn 按自然 biome 预填整列到 naturalH；城市覆写仅写至城市地表 surfaceY。
+  // 当 naturalH > surfaceY 时，surfaceY+1..naturalH 的预填草/土/石残留为接地的自然地形丘，
+  // 凸出于城市地表并包裹按城市地表放置的建筑。mc-lite 稀疏存储不预填城内自然地形故无此问题。
+  // 注意：传入的 h 是 CITY 压平高度（很低），不能用作清除上界；须另取自然高度 generateHeight。
+  // 本函数运行于地形整形阶段（结构/植被注入之前），此处清除不会误伤建筑或树木。
+  const naturalH = generateHeight(wx, wz, seed);
+  for (let y = surfaceY + 1; y <= naturalH && y < WORLD_MAX_Y; y++) {
+    setBlock(wx, y, wz, 'air');
+  }
+
   return { surfaceY };
 }
 

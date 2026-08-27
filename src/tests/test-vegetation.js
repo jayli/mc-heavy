@@ -132,17 +132,18 @@ test('城市过渡带树根贴地', async () => {
   assertTrue(col.blocks[ground] !== reg.idOf('air'), 'tree root must rest on generated ground');
 });
 
-test('城市残留自然草地上的树从可见地表生根', async () => {
+test('城市残丘清除后：树植根城市地表，残留自然草地被清除', async () => {
   const reg = makeRegistry();
-  // 固定种子下 (311,-88) 的城市地表为 y=4，但 fillColumn 的自然草地表残留在 y=15。
+  // 固定种子下 (311,-88) 的城市地表为 y=4，fillColumn 的自然草地表原残留在 y=15。
+  // 残丘修复后：y=15 的 grass 被清除为 air，树植根城市地表上方（surfaceY+1 = y=5）。
   const col = new ChunkColumn(19, -6);
   fillColumn(col, SEED, reg);
   await applyStructuresToColumn(col, SEED, reg, layoutsFor(19, -6));
 
-  const ground = blockIndex(7, 15, 8);
-  const root = blockIndex(7, 16, 8);
-  assertEqual(col.blocks[ground], reg.idOf('grass'), 'visible natural ground');
-  assertEqual(col.blocks[root], reg.idOf('wood'), 'tree root above visible ground');
+  const mound = blockIndex(7, 15, 8);
+  const root = blockIndex(7, 5, 8);
+  assertEqual(col.blocks[mound], reg.idOf('air'), 'residual natural mound cleared');
+  assertEqual(col.blocks[root], reg.idOf('wood'), 'tree root at city surface');
 });
 
 test('mesher：flower 走 cross 模板（cutout 通道 8 顶点，非 box 24 顶点）', async () => {

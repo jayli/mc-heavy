@@ -3,8 +3,9 @@ import { assertEqual, assertTrue, assertNotNull } from './assert.js';
 import { computeRegionLayout } from '../gen/structures/structure-layout.js';
 import { applyStructuresToColumn } from '../gen/structures/apply.js';
 import { getCitySurfaceY } from '../gen/structures/city-layout.js';
-import { getSnowLandInfo, getFrozenMountainInfo, getIslandInfo, getCityInfo } from '../gen/structures/landmarks.js';
-import { generateHeight, generateHeightForBiome } from '../gen/terrain.js';
+import { getSnowLandInfo, getFrozenMountainInfo, getIslandInfo, getCityInfo, getCityFinalSurfaceY } from '../gen/structures/landmarks.js';
+import { generateHeight, generateHeightForBiome, fillColumn } from '../gen/terrain.js';
+import { carveCaves } from '../gen/caves.js';
 import { noise } from '../gen/noise.js';
 import { ChunkColumn } from '../voxel/chunk-column.js';
 import { createRegistry } from '../voxel/block-registry.js';
@@ -22,6 +23,15 @@ function makeRegistry() {
 
 async function genColumn(reg, cx, cz, layouts) {
   const col = new ChunkColumn(cx, cz);
+  await applyStructuresToColumn(col, SEED, reg, layouts);
+  return col;
+}
+
+/** 完整生成管线（对齐 world-worker.js：fillColumn → carveCaves → 结构注入） */
+async function genColumnWithTerrain(reg, cx, cz, layouts) {
+  const col = new ChunkColumn(cx, cz);
+  fillColumn(col, SEED, reg);
+  carveCaves(col, SEED);
   await applyStructuresToColumn(col, SEED, reg, layouts);
   return col;
 }
@@ -219,4 +229,56 @@ test('ground support：结构底面悬空 ≤5 格补支撑柱', async () => {
   const lx = p.x - cx * 16, lz = p.z - cz * 16;
   // gate 底面在 surfaceY+1；surfaceY 处是城市地表（非 air）
   assertTrue(col.get(lx, surfaceY, lz) !== 0, 'ground under gate solid');
+});
+
+// ---- 城市覆写残留自然地形清除（M2 收尾：残丘非悬空，底部接地）----
+// 复现点由固定 seed 搜索得出：自然高度 > 城市地表、无建筑 footprint、无邻树干扰。
+// fillColumn 按自然 biome 预填整列，generateCity 仅覆写至城市地表；
+// 自然高度高于城市地表的列会残留接地的自然地形丘（grass/dirt/stone），凸出于城市地表。
+test('城市残丘清除：城内列地表上方无自然地形残留（grass/dirt/stone）', async () => {
+  const reg = makeRegistry();
+  const layout = computeRegionLayout(0, 0, SEED);
+  const city = layout.city;
+  // 固定复现点 (32,-107)：naturalH=6, citySurfaceY=4, gap=2, 无建筑/无树
+  const wx = 32, wz = -107;
+  const ci = getCityInfo(wx, wz, city);
+  assertNotNull(ci, 'point inside city');
+  const naturalH = generateHeight(wx, wz, SEED);
+  const surfaceY = getCityFinalSurfaceY(wx, wz, ci, SEED);
+  assertTrue(naturalH > surfaceY, `fixture precondition: naturalH(${naturalH}) > surfaceY(${surfaceY})`);
+
+  const cx = Math.floor(wx / 16), cz = Math.floor(wz / 16);
+  const col = await genColumnWithTerrain(reg, cx, cz, [layout]);
+  const lx = wx - cx * 16, lz = wz - cz * 16;
+
+  // 城市地表本身存在
+  assertTrue(col.get(lx, surfaceY, lz) !== 0, 'city surface present');
+  // 地表上方直到自然高度：必须全为 air（残丘已清除）
+  for (let y = surfaceY + 1; y <= naturalH; y++) {
+    assertEqual(col.get(lx, y, lz), 0, `residue cleared at y=${y}`);
+  }
+});
+
+test('城市残丘清除：城内树木植根于城市地表而非残留丘顶', async () => {
+  const reg = makeRegistry();
+  const layout = computeRegionLayout(0, 0, SEED);
+  const city = layout.city;
+  // 固定复现点 (52,222)：swamp 树，naturalH=7, citySurfaceY=5, gap=2, 无建筑/无邻树
+  const wx = 52, wz = 222;
+  const ci = getCityInfo(wx, wz, city);
+  assertNotNull(ci, 'point inside city');
+  const naturalH = generateHeight(wx, wz, SEED);
+  const surfaceY = getCityFinalSurfaceY(wx, wz, ci, SEED);
+  assertTrue(naturalH > surfaceY, `fixture precondition: naturalH(${naturalH}) > surfaceY(${surfaceY})`);
+
+  const cx = Math.floor(wx / 16), cz = Math.floor(wz / 16);
+  const col = await genColumnWithTerrain(reg, cx, cz, [layout]);
+  const lx = wx - cx * 16, lz = wz - cz * 16;
+
+  // 树干（wood）应植根于城市地表上方第一格，而非残留丘顶（naturalH+1）
+  assertEqual(col.get(lx, surfaceY + 1, lz), reg.idOf('wood'), 'trunk rooted at city surface');
+  // 残留丘位置（naturalH 处）不再是 grass/dirt，而是树干或 air
+  const atNaturalH = col.get(lx, naturalH, lz);
+  assertTrue(atNaturalH === reg.idOf('wood') || atNaturalH === 0,
+    `no grass/dirt mound at naturalH (got id ${atNaturalH})`);
 });
