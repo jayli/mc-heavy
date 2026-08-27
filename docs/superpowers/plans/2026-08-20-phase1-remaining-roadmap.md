@@ -79,6 +79,9 @@
 ## 全局 TODO List（按执行次序）
 
 1. [ ] **M2 收尾（完成下列退出门后才可关闭 M2）**：
+   - [ ] **水面颜色随镜头转动突变**（[issue #2](https://github.com/jayli/mc-heavy/issues/2)）：
+     岸边转镜头到特定角度水面颜色瞬间变浅、转回恢复（离散跳变）。主嫌疑：体素水块与动画海面平面
+     双层透明叠加的绘制顺序随相机深度交叉而翻转。**下次进入项目从本项排查开始**，在 M2-7 之前处理。
    - [ ] **M2-7 空中结构**：按 `docs/superpowers/specs/2026-08-23-m2-sky-structures-design.md` 与
      `docs/superpowers/plans/2026-08-23-m2-sky-structures.md` 重写 mc-lite 的悬浮空岛和云层；必须走
      StructureIndex + Worker GEN + column 裁剪，不含宝箱/天空树、`structureCenters` 或运行期补刷；同 seed
@@ -119,6 +122,12 @@
 
 #### M2 关闭前必须完成
 
+- [ ] **水面颜色随镜头转动突变**（[issue #2](https://github.com/jayli/mc-heavy/issues/2)，**优先排查**）：
+  站在水边观察水面，镜头转到某个特定角度后水面颜色**瞬间变浅**，转回即恢复——颜色变化是离散跳变而非
+  连续渐变。mc-heavy 水面为双层透明叠加（体素水块 `transparent` 通道 + `ocean.js` 动画海面平面，
+  两者均 `depthWrite=false`），ocean.js 着色器系逐行移植 mc-lite 故嫌疑低；主嫌疑为两层透明物体
+  相对相机深度在镜头转动时交叉、绘制顺序（painter's algorithm）翻转导致混合结果突变。**下次进入
+  项目从本项排查开始**（确认根因 → TDD 修复 → 回归），在 M2-7 之前处理。
 - [x] **城市覆写残留自然地形清除**（原"城市边缘残块"）：`fillColumn` 按自然 biome 预填整列，
   `generateCity` 仅覆写至城市地表，自然高度高于城市地表的列（seed=12345 实测占城市列 20.6%，
   最高差 11 格）残留**接地的自然地形丘**（非悬空），凸出于城市地表并包裹按城市地表放置的建筑。
