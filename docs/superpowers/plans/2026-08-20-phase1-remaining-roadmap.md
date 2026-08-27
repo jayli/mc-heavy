@@ -74,6 +74,7 @@
 | 世界数据看板 + 调试开关 + 控制台日志 | `3a02dbc` | §4.9 worldStats/statsLog，`?stats=0`/`?log=0` |
 | 方块类型/贴图/几何全面对齐 mc-lite | `d11a8b0` | ±X 面 UV 90° 旋转修复（BoxGeometry 口径）；faces-data 124 方块六面全覆盖；`tools/bake-procedural-textures.mjs` 烘焙 21 张 mc-lite 程序化贴图（atlas 124→145）；12 种特殊几何顶点模板（台阶/栏杆/柱子/烟囱/床/吊灯/仙人掌，逐格复刻 geomMap）；树叶 FrontSide + alphaTest 0.3（冠内不过密）、植被双向绕线；cross 第二张图横躺回归修复 |
 | 朝向渲染消费侧 + 台阶等 12 方块 blended 通道穿帮 | `584813b` | mesher 读 meta 低 2 位按 4 朝向旋转（模型面查 tile/床 UV 变换，世界面做剔除/光照/AO）；getSectionView 打包 meta + MESH transfer；渲染侧无条件消费（对齐 mc-lite 逐实例应用 b.orientation）；交互侧放置语义属第二阶段。另：M0 转换混同 isTransparent（剔除语义）与材质透明度 → 台阶/栏杆/柱子/宝箱等 12 个不透明材质方块 depthWrite=false，L 形凹角无深度互遮透视穿帮；cullMode 改 cutout 修复（设计文档 §4.1 勘误） |
+| 城市覆写残留自然地形丘清除 + 树植根城市地表 | `7d09cf1` | fillColumn 预填整列自然地形，generateCity 仅覆写至城市地表 → 自然高度 > 城市地表的列（seed=12345 占 20.6%，最高差 11 格）残留接地自然地形丘，凸出地表包裹建筑；generateCity 清除 surfaceY+1..naturalH + 回退 pointContext 的 max 补丁（5b6c51e）使树植根城市地表；过渡带台阶不受影响 |
 
 ## 全局 TODO List（按执行次序）
 
@@ -82,9 +83,13 @@
      `docs/superpowers/plans/2026-08-23-m2-sky-structures.md` 重写 mc-lite 的悬浮空岛和云层；必须走
      StructureIndex + Worker GEN + column 裁剪，不含宝箱/天空树、`structureCenters` 或运行期补刷；同 seed
      视觉验收与视距 8 性能门通过后才可关闭 M2。
-   - [ ] **城市边缘残块修复**：为城市覆写自然地表的边界情形补复现 fixture；清除
-     `generateCity` 覆写范围内、自然高度高于城市地表而残留的悬空草/土/石；通过定点生成断言和完整
-     Playwright 回归，且不破坏城市建筑、地标或 edits 语义。
+   - [x] **城市覆写残留自然地形清除**（原"城市边缘残块"，措辞修正：残丘底部接地、非悬空）：
+     `fillColumn` 按自然 biome 预填整列，`generateCity` 仅覆写至城市地表，自然高度高于城市地表的列
+     （seed=12345 实测占城市列 20.6%，最高差 11 格）残留**接地的自然地形丘**（grass/dirt/stone），凸出于
+     城市地表并包裹按城市地表放置的建筑；`5b6c51e` 曾以"树植根点取 max(城市地表, 自然地表面)"绕过。
+     修复：`generateCity` 清除 `surfaceY+1..naturalH` 残留 + 回退 `pointContext` 的 max 补丁使树植根城市
+     地表；过渡带台阶（`getCityFinalSurfaceY`）不受影响。已补固定 seed/column 复现 fixture + 完整
+     Playwright 回归，不破坏城市建筑、地标或 edits 语义。
    - [ ] **同 seed 人工视觉验收**：在 mc-lite 与 mc-heavy 固定相同 seed、相同位置和相近相机朝向，
      对城市、金字塔、冰封山、雪地、海岛、悬浮空岛与云层逐项截图比对；按设计文档 §7/§8 仅确认结构轮廓和配色基调，
      不做像素级 diff；将结论及已知有意差异记录回本路线图的 M2-2 验收项。
@@ -114,10 +119,12 @@
 
 #### M2 关闭前必须完成
 
-- [ ] **城市边缘残块**：先用固定 seed/column 写复现 fixture；修复 `generateCity` 覆写地表时未清除
-  `fillColumn` 预填自然地形的问题，消除自然高度 > 城市地表处残留的悬空草/土/石（mc-lite 稀疏存储
-  无此问题）——`landmarks.js:783-809` vs mc-lite `WorldWorker.js:793-794`。补生成级回归断言，之后
-  跑完整 Playwright suite。
+- [x] **城市覆写残留自然地形清除**（原"城市边缘残块"）：`fillColumn` 按自然 biome 预填整列，
+  `generateCity` 仅覆写至城市地表，自然高度高于城市地表的列（seed=12345 实测占城市列 20.6%，
+  最高差 11 格）残留**接地的自然地形丘**（非悬空），凸出于城市地表并包裹按城市地表放置的建筑。
+  mc-lite 稀疏存储不预填城内自然地形故无此问题。修复：`generateCity` 清除 `surfaceY+1..naturalH`
+  （`naturalH` 另取 `generateHeight`，勿用传入的 CITY 压平 `h`）+ 回退 `pointContext` 的 max 补丁
+  （`5b6c51e`）使树植根城市地表。已补固定 seed/column 复现 fixture + 完整 Playwright 回归。
 - [ ] **M2-7 空中结构**：实施 `docs/superpowers/plans/2026-08-23-m2-sky-structures.md` 的三项任务；
   固定 seed 下验证空岛/云层确定性、跨 column 裁剪、云可站立但非实心，以及视距 8 性能门。空岛仅含
   `sky_stone`/`sky_grass`，不迁移宝箱和天空树；云保留单云层与 30..50 块连通云簇。
@@ -140,7 +147,7 @@
 ### 测试现状
 
 - 19 个 Playwright spec 文件（22 个测试用例，均全绿；m1-acceptance 计时断言高负载下偶发贴线 flaky）
-- 114 个浏览器内单元测试（harness）
+- 120 个浏览器内单元测试（harness）
 - 冻结断言：fps ≥90（120Hz 本机 ≥115）、编辑 p95 <2ms、draw 受控；atlas 145 tile（124 + 21 程序化烘焙）
 
 ---
