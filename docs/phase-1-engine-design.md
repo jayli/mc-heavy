@@ -515,10 +515,12 @@ half_block（床，1×0.5×1）、hanging_lamp（绳 cross+灯体盒）。
   canvas 程序化绘制（mkMat/mkProceduralMat/mkDetailMat，无 PNG）。`tools/bake-procedural-textures.mjs`
   逐行复刻其绘制参数离线烘焙到 `assets/textures/procedural/`（vine/flower/lilypad/cactus/marble/
   handrail/pillar/chimney/hanging_lamp/cloud/playground 等），随机源固定种子（确定性红线）。
-  atlas 合计 145 tile（124 + 21 程序化）。faces-data.js 全量 124 方块六面映射对齐 MaterialManager。
-- **atlas 渗色防护**：2048 atlas + mipmap 会跨 tile 渗色。tile 之间留 2px gutter，
-  UV 内缩半 texel；默认 blur=0 时用 NearestFilter + 关闭 mipmap（mc-lite 默认即像素风），
-  模糊档位开启时才启用 mipmap（此时 gutter 生效）。
+  atlas 合计 147 tile（126 + 23 程序化，M2-7 空岛 sky_stone/sky_grass +2）。faces-data.js 全量 126 方块六面映射对齐 MaterialManager。
+- **atlas 渗色防护**：2048 atlas + mipmap 会跨 tile 渗色。tile 之间留 16px gutter，打包时每 tile
+  边缘像素向外 bleed 8px 回填（build-atlas.mjs），UV 内缩半 texel；默认 blur=0 时用 NearestFilter +
+  关闭 mipmap（mc-lite 默认即像素风），模糊档位（`?blur=1`，M3-4 设置面板接线）开启时才启用
+  三线性 mipmap + anisotropy 8（此时 gutter/bleed 生效，覆盖接缝导数尖峰的 mip 足迹）；
+  匀质 tile（cloud）UV 收缩到 tile 中央 1/4，使 wrap 尖峰足迹永不跨 tile。
 - 全部不透明方块 = 1 个材质。cutout 用 alphaTest 同 atlas 第二材质（FrontSide + alphaTest 0.3，
   mc-lite 树叶族口径；双面需求由 mesher 双向绕线解决，见 §4.3）；
   玻璃/水单独透明材质。

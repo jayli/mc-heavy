@@ -13,6 +13,8 @@ export function createRegistry() {
   const emissiveTable = new Uint8Array(MAX_BLOCKS);
   const geometryTable = new Uint8Array(MAX_BLOCKS);
   const orientationModesTable = new Uint8Array(MAX_BLOCKS);
+  /** 向下 Y 碰撞支撑表（M2-7）：默认 0，仅 cloud=1（可站立、非实心） */
+  const supportsPlayerTable = new Uint8Array(MAX_BLOCKS);
   const geometryNames = []; // index → geometryType 字符串
   let count = 0;
   let frozen = false;
@@ -20,10 +22,11 @@ export function createRegistry() {
   return {
     get count() { return count; },
     solidTable, opaqueTable, cullTable, emissiveTable, geometryTable, orientationModesTable,
+    supportsPlayerTable,
 
     /**
      * @param {string} name
-     * @param {{solid?: boolean, opaque?: boolean, cullMode?: string,
+     * @param {{solid?: boolean, opaque?: boolean, supportsPlayer?: boolean, cullMode?: string,
      *          emissive?: number, geometry?: string, orientationModes?: number}} def
      */
     register(name, def) {
@@ -35,6 +38,7 @@ export function createRegistry() {
       idToName[id] = name;
       solidTable[id] = def.solid ? 1 : 0;
       opaqueTable[id] = (def.opaque ?? (def.cullMode === 'opaque')) ? 1 : 0;
+      supportsPlayerTable[id] = def.supportsPlayer ? 1 : 0;
       cullTable[id] = CULL_MODES[def.cullMode ?? 'opaque'];
       emissiveTable[id] = def.emissive ?? 0;
       let gi = geometryNames.indexOf(def.geometry ?? 'cube');
@@ -48,6 +52,8 @@ export function createRegistry() {
     idOf(name) { return nameToId.get(name); },
     nameOf(id) { return idToName[id]; },
     geometryNameOf(id) { return geometryNames[geometryTable[id]]; },
+    /** 向下 Y 碰撞支撑（M2-7）：仅 cloud 为 true */
+    supportsPlayer(id) { return supportsPlayerTable[id] === 1; },
   };
 }
 

@@ -132,6 +132,10 @@ textures.pillar = bakeMat('#b98e5b', 7);          // vertical_pillar
 textures.pillar_horizontal = bakeMat('#b98e5b', 8); // horizontal_pillar
 textures.sky_wood = bakeMat('#DDA0DD', 9);
 
+// 空岛（M2-7，mc-lite Island.js 岛体材质：mkMat('#DDDDDD') / mkMat('#88CCFF')）
+textures.sky_stone = bakeMat('#DDDDDD', 18);
+textures.sky_grass = bakeMat('#88CCFF', 19);
+
 // 天空树叶（mkMat 0.9 不透明度）
 textures.sky_leaves = bakeMat('#FF69B4', 10);
 {
@@ -147,7 +151,13 @@ textures.turret_alias_block = (() => {
 })();
 
 // 云 / 创造台（mkMat 系，MaterialManager.js:805,945-946）
-textures.cloud = bakeMat('#FFFFFF', 15);
+// 云不烘噪点：blur 档 mipmap 下块面 UV wrap 边界导数尖峰采样最高级 mip（整 tile 均值），
+// 噪点使均值偏灰 → 大白面出现方格带；纯白令各级 mip 与基色一致（mc-lite 观感本即纯白）。
+{
+  const buf = makeBuf();
+  fillAll(buf, hexToRgb('#FFFFFF'));
+  textures.cloud = buf;
+}
 textures.playground_block = bakeMat('#808080', 16);
 textures.playground_center_block = bakeMat('#4a90e2', 17);
 

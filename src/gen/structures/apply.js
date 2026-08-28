@@ -15,6 +15,7 @@ import {
 import { getCitySurfaceY, isPointNearCityStructure } from './city-layout.js';
 import { CITY_STRUCTURE_FOOTPRINT, ISLAND_SEA_LEVEL } from './region-config.js';
 import { preloadStructures, rasterizeStructure, GROUND_SUPPORT_TYPES } from './structure-json.js';
+import { applySkyStructures } from './sky-structures.js';
 import { generateTree, rollVegetation, rollCityTree } from './vegetation.js';
 import { SEA_Y } from '../../voxel/constants.js';
 
@@ -182,6 +183,12 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
         rasterizeStructure('pyramidIsland', pl.cx, h + 1, pl.cz, setBlock, column, registry, seed, true);
       }
     }
+  }
+
+  // ---- 阶段 2.5：空中结构（M2-7：Y=55 单云 + 空岛，层序先云后岛；mc-lite 空中内容后写）----
+  const skyCandidates = layouts.map((l) => l.sky).filter(Boolean);
+  if (skyCandidates.length > 0) {
+    applySkyStructures(column, skyCandidates, seed, registry);
   }
 
   // ---- 阶段 3：植被（M2-3，mc-lite 各分支植被规则）----

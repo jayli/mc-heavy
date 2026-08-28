@@ -7,6 +7,17 @@ test('M1 验收：平原冲刺视距 8 帧时达标（120fps 预算）', async (
   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
   // 等视距内 column 大部分就绪（后台填充，§4.2 冷启动口径）
   await page.waitForFunction(() => window.__MC_GAME__.world.columns.size >= 250, null, { timeout: 60_000 });
+  // M2-7：已加载世界必须含空中云层内容（Y=55 单云 / Y=35 云簇，采样计数）
+  await page.waitForFunction(() => {
+    const g = window.__MC_GAME__;
+    const cloudId = g.registry.idOf('cloud');
+    for (const [, col] of g.world.columns) {
+      for (let lx = 0; lx < 16; lx += 2) for (let lz = 0; lz < 16; lz += 2) {
+        if (col.get(lx, 55, lz) === cloudId || col.get(lx, 35, lz) === cloudId) return true;
+      }
+    }
+    return false;
+  }, null, { timeout: 60_000 });
 
   // 驱动奔跑：模拟按住 W 10s（编程注入输入状态，无头环境无真实键盘）
   await page.evaluate(() => { window.__MC_GAME__.player.keys.add('KeyW'); });

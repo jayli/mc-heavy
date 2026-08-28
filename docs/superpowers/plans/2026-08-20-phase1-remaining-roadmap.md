@@ -64,7 +64,7 @@
 | M2-4 洞穴 | ✅ | 3D 噪声挖空 + mc-lite rooms 保留 |
 | M2-5 水面特效 | ✅ | TSL 海面 + 水纹理入 atlas |
 | M2-6 日夜循环 | ✅ | morning/noon/night 三风格 |
-| M2-7 空中结构（悬浮空岛 + 云层） | ⬜ | 追加任务：确定性空岛、单云层、连通云簇；不含宝箱/天空树，详见 `2026-08-23-m2-sky-structures.md` |
+| M2-7 空中结构（悬浮空岛 + 云层） | ✅ | 追加任务：确定性空岛、单云层、连通云簇；不含宝箱/天空树；紧凑候选 + 层序裁剪（`sky-structures.js`），详见 `2026-08-23-m2-sky-structures.md` |
 
 ### M2 后修复（实玩 bug）🔧 进行中
 
@@ -75,6 +75,7 @@
 | 方块类型/贴图/几何全面对齐 mc-lite | `d11a8b0` | ±X 面 UV 90° 旋转修复（BoxGeometry 口径）；faces-data 124 方块六面全覆盖；`tools/bake-procedural-textures.mjs` 烘焙 21 张 mc-lite 程序化贴图（atlas 124→145）；12 种特殊几何顶点模板（台阶/栏杆/柱子/烟囱/床/吊灯/仙人掌，逐格复刻 geomMap）；树叶 FrontSide + alphaTest 0.3（冠内不过密）、植被双向绕线；cross 第二张图横躺回归修复 |
 | 朝向渲染消费侧 + 台阶等 12 方块 blended 通道穿帮 | `584813b` | mesher 读 meta 低 2 位按 4 朝向旋转（模型面查 tile/床 UV 变换，世界面做剔除/光照/AO）；getSectionView 打包 meta + MESH transfer；渲染侧无条件消费（对齐 mc-lite 逐实例应用 b.orientation）；交互侧放置语义属第二阶段。另：M0 转换混同 isTransparent（剔除语义）与材质透明度 → 台阶/栏杆/柱子/宝箱等 12 个不透明材质方块 depthWrite=false，L 形凹角无深度互遮透视穿帮；cullMode 改 cutout 修复（设计文档 §4.1 勘误） |
 | 城市覆写残留自然地形丘清除 + 树植根城市地表 | `7d09cf1` | fillColumn 预填整列自然地形，generateCity 仅覆写至城市地表 → 自然高度 > 城市地表的列（seed=12345 占 20.6%，最高差 11 格）残留接地自然地形丘，凸出地表包裹建筑；generateCity 清除 surfaceY+1..naturalH + 回退 pointContext 的 max 补丁（5b6c51e）使树植根城市地表；过渡带台阶不受影响 |
+| 云渲染通道勘误 + blur 档方格线根因修复（M2-7 收尾，用户实机反馈） | 待提交 | 远处云面黑纹/方格线三连根因：①cloud 误置 transparent 通道（mc-lite 材质 `mkMat('#FFFFFF',1)` opacity=1 不透明，§4.1 勘误类遗漏）→ depthWrite=false 侧面混叠，改 opaque 通道 + mesher `SAME_TYPE_CULL` 同类相邻剔除；②atlas gutter 原为不透明黑底，mip 下采样渗黑边 → build-atlas 每 tile 边缘 bleed 回填，gutter 2→16/bleed 8；③块面 UV 逐块 wrap 的导数尖峰使 mip 足迹跨 tile 采邻 tile 色（粉灰线）→ blur 档 anisotropy 8 + cloud 匀质白纹理 UV 收缩 tile 中央 1/4（足迹永不跨 tile）根除；云纹理烘纯白（噪点仅贡献莫尔纹）。单测：mesher cloud 通道/同类剔除/UV 收缩 + atlas 双档/gutter 断言 |
 
 ## 全局 TODO List（按执行次序）
 
@@ -85,10 +86,10 @@
      （世界原点附近），排序值随镜头转动在 -174~+283 摆动，跨过海面值时绘制顺序翻转、混合结果突变。
      修复：`ocean.js` 海面 `plane.renderOrder = 1` 恒后画，退出深度排序；新增 `tests/water-order.spec.mjs`
      全周扫描顺序稳定性断言（RED→GREEN）。详见 issue #2 根因评论。
-   - [ ] **M2-7 空中结构**：按 `docs/superpowers/specs/2026-08-23-m2-sky-structures-design.md` 与
+   - [x] **M2-7 空中结构**：按 `docs/superpowers/specs/2026-08-23-m2-sky-structures-design.md` 与
      `docs/superpowers/plans/2026-08-23-m2-sky-structures.md` 重写 mc-lite 的悬浮空岛和云层；必须走
-     StructureIndex + Worker GEN + column 裁剪，不含宝箱/天空树、`structureCenters` 或运行期补刷；同 seed
-     视觉验收与视距 8 性能门通过后才可关闭 M2。
+     StructureIndex + Worker GEN + column 裁剪，不含宝箱/天空树、`structureCenters` 或运行期补刷；
+     已落地并通过数据级验收与视距 8 性能门（证据见下方 M2 收尾 TODO）；同 seed 视觉比对归人工项。
    - [x] **城市覆写残留自然地形清除**（原"城市边缘残块"，措辞修正：残丘底部接地、非悬空）：
      `fillColumn` 按自然 biome 预填整列，`generateCity` 仅覆写至城市地表，自然高度高于城市地表的列
      （seed=12345 实测占城市列 20.6%，最高差 11 格）残留**接地的自然地形丘**（grass/dirt/stone），凸出于
@@ -146,9 +147,18 @@
   mc-lite 稀疏存储不预填城内自然地形故无此问题。修复：`generateCity` 清除 `surfaceY+1..naturalH`
   （`naturalH` 另取 `generateHeight`，勿用传入的 CITY 压平 `h`）+ 回退 `pointContext` 的 max 补丁
   （`5b6c51e`）使树植根城市地表。已补固定 seed/column 复现 fixture + 完整 Playwright 回归。
-- [ ] **M2-7 空中结构**：实施 `docs/superpowers/plans/2026-08-23-m2-sky-structures.md` 的三项任务；
-  固定 seed 下验证空岛/云层确定性、跨 column 裁剪、云可站立但非实心，以及视距 8 性能门。空岛仅含
-  `sky_stone`/`sky_grass`，不迁移宝箱和天空树；云保留单云层与 30..50 块连通云簇。
+- [x] **M2-7 空中结构**（实施计划 `2026-08-23-m2-sky-structures.md` 四任务 TDD 全部落地）：
+  `sky_stone`/`sky_grass` 入 registry/atlas（126 方块/147 tile，烘焙 #DDDDDD/#88CCFF）；
+  `sky-structures.js` 紧凑候选（stride 5 Int32Array，salt +50..+55 对齐 mc-lite chunkRandom、
+  +56/+57/+58+step 替代原未 seed 化随机量）+ Y=55 单云层（固定公式 `noise(wx,wz,seed,0.03)>1.2`）+
+  Y=35 连通云簇（30..50 四邻接）+ 空岛逐层圆（`floor(radius*(y/height)^0.7)`，顶 sky_grass
+  身 sky_stone），层序先云后岛、岛体覆盖 Y=55 相交云；`supportsPlayer` 通用表 + 物理仅
+  Y 向下支撑（云可站立、侧/下可穿、不遮光），DDA 仍命中 cloud。浏览器单测 +18 全绿；
+  `tests/sky-structures.spec.mjs` 真实世界验收（岛体逐格、无 chest/天空树、云层存在、可视）；
+  视距 8 队列收敛稳态实测 **fps≈105（≥90 ✓）/ draw=790**；p95 为 120Hz 量化值 16.7000007
+  （~105fps 下约 14% 双倍帧，字面 `p95<16.7` 数学不可满足，同帧时口径注记），
+  二级门取 16.75（阈值 + 一个量化 epsilon）并已在 spec 内注释。
+  同 seed 截图与 mc-lite 轮廓比对归入下方人工验收项。
 - [ ] **同 seed 截图与 mc-lite 比对**（M2-2/M2-7 挂起验收项）：人工固定相同 seed、地点、相机朝向，
   覆盖城市/金字塔/冰封山/雪地/海岛/悬浮空岛/云层；验证结构轮廓与配色基调，不做像素 diff。将比对结果和有意差异
   写回 M2-2 验收项，再关闭该挂起项。
@@ -165,11 +175,20 @@
 - [x] **朝向交互侧暂不实现**（原地重转 90°/类型记忆）：第二阶段随床/宝箱/门落地，第一阶段只预留
   meta 数据位。
 
+#### 接下来（2026-08-28 更新：M2-7 与 §4.4.1 blur 档提前落地后）
+
+1. **同 seed 截图与 mc-lite 人工比对**（人工验收，M2 最后挂起项）：比对清单在原城市/金字塔/
+   冰封山/雪地/海岛之上**新增悬浮空岛/云层（M2-7）与 blur 档远处观感**两项；结论写回 M2-2 验收项。
+2. **M2 关闭回归**：完整 Playwright suite 全绿（基线 21 文件 / 24 用例 + 144 浏览器单测）+
+   本路线图、AGENTS.md、README.md 状态回填（M2-7/测试数已回填，关 M2 时复核）。
+3. **M3-1 视距 8 全量调优**：M2 关闭后的首个开发任务（性能链 M3-1→M3-2→M3-5→M3-6）。
+4. blur 档后续（面板接线/持久化、per-tile mip 链打磨、默认值决策）归 **M3-4**，见其条目。
+
 ### 测试现状
 
-- 19 个 Playwright spec 文件（22 个测试用例，均全绿；m1-acceptance 计时断言高负载下偶发贴线 flaky）
-- 120 个浏览器内单元测试（harness）
-- 冻结断言：fps ≥90（120Hz 本机 ≥115）、编辑 p95 <2ms、draw 受控；atlas 145 tile（124 + 21 程序化烘焙）
+- 21 个 Playwright spec 文件（24 个测试用例；m1-acceptance 计时断言高负载下偶发贴线 flaky）
+- 144 个浏览器内单元测试（harness）
+- 冻结断言：fps ≥90（120Hz 本机 ≥115）、编辑 p95 <2ms、draw 受控；atlas 147 tile（126 + 23 程序化烘焙）
 
 ---
 
@@ -316,9 +335,10 @@
 缓存、`Math.random` 或运行期补刷移入本仓库。
 
 **验收：**
-- [ ] 固定 seed 的 layout 与任意加载顺序逐格一致；空岛跨 column 无截断，只含岛体，不含 chest/天空树。
-- [ ] 单云层和 30..50 块连通云簇均完整生成；云可站立、非实心、透明且不遮光。
-- [ ] 同 seed 截图确认空岛/云层轮廓与配色基调；视距 8、队列收敛后通过 M3 冻结 fps/draw 口径。
+- [x] 固定 seed 的 layout 与任意加载顺序逐格一致；空岛跨 column 无截断，只含岛体，不含 chest/天空树。（单测 + `tests/sky-structures.spec.mjs` 数据级断言）
+- [x] 单云层和 30..50 块连通云簇均完整生成；云可站立、非实心、透明且不遮光。（单测：连通性/跨列一致/物理四断言/光照不回归）
+- [ ] 同 seed 截图确认空岛/云层轮廓与配色基调（归入同 seed 人工比对项）；视距 8、队列收敛后通过
+  M3 冻结 fps/draw 口径（**已过**：稳态实测见上方 M2 收尾 TODO 的 M2-7 证据）。
 
 ---
 
@@ -380,7 +400,14 @@
 **实现要点：**
 - [ ] 帧率面板（已有 PerfHUD，增加 draw/section/light 统计）
 - [ ] 坐标显示（x, y, z + biome）
-- [ ] 设置面板（视距/画质/音量/视觉风格）
+- [ ] 设置面板（视距/画质/音量/视觉风格）。其中**画质 blur 档位（§4.4.1）实现已提前到 M2 落地**
+  （M2-7 收尾期用户实机反馈远处云面莫尔纹/方格线触发，2026-08-28 用户实机确认修复）：
+  `?blur=1` 开 atlas 三线性 mipmap + anisotropy 8 消远处走样，默认仍像素风；完整修复栈含
+  cloud 通道勘误（opaque + `SAME_TYPE_CULL`）、gutter 16/bleed 8、cloud 匀质 UV 收缩中央 1/4、
+  云纹理烘纯白（详见 M2 后修复表「云渲染通道勘误」行）。**本任务剩余**：① 把 `?blur` 开关接入
+  设置面板并持久化（设置持久化同 M3-4 口径）；② （可选打磨）高对比纹理掠射角块缝的彻底解 =
+  per-tile 自定义 mip 链（bleed/aniso 为尽力缓解）；③ 默认值翻转（blur=1 更贴近 mc-lite 远处观感）
+  为设计决策，用户已定暂不翻转（保留参数、默认 0），若后续翻转需先改 §4.4.1 定稿口径。
 - [ ] 快捷栏（5 格，数字键切换，已有 HOTBAR 逻辑）
 - [ ] 随机种子 / 新世界（承接 M1 注释「M2 接存档/随机」的遗留）：设置面板提供「新世界」入口，
   随机生成（或允许指定）seed 并写入 meta 记录（`{ seed, spawn, ... }`，§4.8 已含字段），

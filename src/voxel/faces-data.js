@@ -28,6 +28,8 @@ export const FACES_DATA = {
   cloud: 'procedural/cloud',
   sky_wood: 'procedural/sky_wood',
   sky_leaves: 'procedural/sky_leaves',
+  sky_stone: 'procedural/sky_stone',
+  sky_grass: 'procedural/sky_grass',
   // ---- 玻璃 ----
   glass_block: 'Glass',
   glass_blink: 'glass_blink',

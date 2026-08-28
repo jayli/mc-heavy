@@ -2,18 +2,29 @@
 import * as THREE from 'three';
 
 /**
+ * @param {{mipmap?: boolean}} [opts] blur 档位（§4.4.1）：mipmap=true 时远处三线性
+ *        平均消除莫尔纹（2px gutter + 半 texel 内缩防渗色）；默认 false 像素风。
  * @returns {Promise<{texture: THREE.Texture, tileRect: (name: string) => {u0:number,v0:number,u1:number,v1:number}}>}
  */
-export async function loadAtlas() {
+export async function loadAtlas({ mipmap = false } = {}) {
   const [meta, texture] = await Promise.all([
     // 绝对路径：fixture 页在 /src/tests/ 下，相对路径会解析成 /src/tests/assets/* → 404
     fetch('/assets/atlas.json').then((r) => r.json()),
     new THREE.TextureLoader().loadAsync('/assets/atlas.png'),
   ]);
   texture.colorSpace = THREE.SRGBColorSpace;
-  texture.magFilter = THREE.NearestFilter;
-  texture.minFilter = THREE.NearestFilter; // 默认像素风，无 mipmap（§4.4.1）
-  texture.generateMipmaps = false;
+  texture.magFilter = THREE.NearestFilter; // 近处恒像素风
+  if (mipmap) {
+    texture.generateMipmaps = true;
+    texture.minFilter = THREE.LinearMipmapLinearFilter; // blur 档（§4.4.1）
+    // 各向异性：atlas tile 内 UV wrap 使接缝处单方向导数尖峰，isotropic lod 会取
+    // 较大者 → 边界像素采样跨 tile 平均色（粉灰方格线）。aniso 的 lod 基于较小导数，
+    // 尖峰消除；取值 8 与 build-atlas 的 16px gutter/8px bleed 配套（尖峰足迹半长 ≤8 texel）。
+    texture.anisotropy = 8;
+  } else {
+    texture.minFilter = THREE.NearestFilter; // 默认像素风，无 mipmap（§4.4.1）
+    texture.generateMipmaps = false;
+  }
   // flipY 保持默认 true：build-atlas.mjs 的 v 坐标按 PNG 行序预翻转
   // （v0 = 1 - (shelfY+h)/SIZE），该约定假设 flipY=true（v=0 在图像底部）。
   // 曾误设 flipY=false 导致所有 tile 采样到垂直镜像位置（黑色 gutter）——

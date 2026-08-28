@@ -35,11 +35,15 @@ async function boot() {
   // ?log=0 关闭世界数据控制台日志（HUD 仍显示），?log=1 强制开
   if (params.get('log') === '0') setDebugFlags({ statsLog: false });
   if (params.get('log') === '1') setDebugFlags({ statsLog: true });
+  // ?blur=1 画质档（§4.4.1，M2 提前落地）：atlas 三线性 mipmap + anisotropy 8，
+  // 远处纹理平滑平均、消莫尔纹（代价：远处变糊）；默认 0 = 像素风（Nearest、无 mipmap）。
+  // 入口暂为 URL 参数，M3-4 设置面板接线 + 持久化；默认值翻转属设计决策（暂不）。
   const game = new Game({
     canvas: document.getElementById('app-canvas'),
     registry, seed,
     viewDistance: params.get('vd') ? Number(params.get('vd')) : 8,
     hudRoot: document.getElementById('hud-root'),
+    blurMipmap: params.get('blur') === '1',
   });
   await game.start();
   window.__MC_BOOT__.rendererReady = true;

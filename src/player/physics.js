@@ -41,8 +41,10 @@ export class PlayerPhysics {
     const keys = ['x', 'y', 'z'];
     const k = keys[axis];
     const old = p[k];
+    // M2-7：仅 Y 轴向下把 supportsPlayer（云）计入碰撞；向上/水平/_tryStepUp 只查 solid
+    const supportDown = axis === 1 && delta < 0;
     p[k] += delta;
-    if (this._collides()) {
+    if (this._collides(supportDown)) {
       // 水平轴：尝试自动上台阶（mc-lite tryStepUp 手感，MAX_STEP=1.0）
       if (axis !== 1 && this._tryStepUp()) return;
       // 二分回退到不碰撞位置
@@ -50,7 +52,7 @@ export class PlayerPhysics {
       for (let i = 0; i < 8; i++) {
         const mid = (lo + hi) / 2;
         p[k] = old + delta * mid;
-        if (this._collides()) hi = mid; else lo = mid;
+        if (this._collides(supportDown)) hi = mid; else lo = mid;
       }
       p[k] = old + delta * lo;
       if (axis === 1 && delta < 0) this.onGround = true;
@@ -78,8 +80,12 @@ export class PlayerPhysics {
     return false;
   }
 
-  /** AABB 0.6×1.8×0.6 与实心方块采样检测 */
-  _collides() {
+  /**
+   * AABB 0.6×1.8×0.6 与实心方块采样检测。
+   * @param {boolean} [includeSupportsPlayer=false] 为 true 时 supportsPlayer（云）也计碰撞
+   *        （M2-7：仅 Y 轴向下使用，云可站立但非墙）
+   */
+  _collides(includeSupportsPlayer = false) {
     const w = this.world;
     const hw = PLAYER_WIDTH / 2;
     const x0 = Math.floor(this.pos.x - hw), x1 = Math.floor(this.pos.x + hw);
@@ -87,6 +93,7 @@ export class PlayerPhysics {
     const z0 = Math.floor(this.pos.z - hw), z1 = Math.floor(this.pos.z + hw);
     for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) for (let z = z0; z <= z1; z++) {
       if (w.isSolid(x, y, z)) return true;
+      if (includeSupportsPlayer && w.supportsPlayer(x, y, z)) return true;
     }
     return false;
   }

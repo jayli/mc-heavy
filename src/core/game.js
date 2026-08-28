@@ -25,11 +25,13 @@ export class Game {
    * @param {number} opts.seed
    * @param {number} [opts.viewDistance] 默认 8（测试可传 2 加速）
    * @param {HTMLElement} opts.hudRoot
+   * @param {boolean} [opts.blurMipmap] blur 档位（§4.4.1）：atlas 开 mipmap 消远处莫尔纹
    */
-  constructor({ canvas, registry, seed, viewDistance = 8, hudRoot }) {
+  constructor({ canvas, registry, seed, viewDistance = 8, hudRoot, blurMipmap = false }) {
     this.registry = registry;
     this.seed = seed;
     this.viewDistance = viewDistance;
+    this.blurMipmap = blurMipmap;
     this.world = new WorldData(registry);
     this.perf = new PerfMonitor();
     this.pool = new WorkerPool({ workerUrl: '/src/workers/world-worker.js' });
@@ -52,7 +54,7 @@ export class Game {
     await this.renderer.init();
 
     // atlas：纹理 + tileRect 元数据（broadcast 给 Worker 供 mesher 查 UV）
-    const { texture } = await loadAtlas();
+    const { texture } = await loadAtlas({ mipmap: this.blurMipmap });
     this._atlasTexture = texture; // 调试/测试引用
     const atlasMeta = await (await fetch('/assets/atlas.json')).json();
     this.pool.broadcast('atlas-meta', atlasMeta);

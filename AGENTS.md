@@ -24,9 +24,9 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
 - **M1 体素核心闭环 ✅**：地形生成 / section meshing 双路径 / BatchedMesh 通道级合批 /
   玩家物理（step-up + 相机缓动）/ DDA 射线 / 放块挖块 / 最小存档 / 光照（skylight 垂直+水平扩散、
   AO 顶点阶段 float varying、blocklight flood fill、异步收敛管线）。
-- **M2 结构与世界完整性 🔧（主体完成，M2-7 追加、bug 修复收尾中）**：M2-1~M2-6 全部完成
+- **M2 结构与世界完整性 🔧（主体完成，bug 修复收尾中）**：M2-1~M2-7 全部完成
   （StructureIndex 确定性布局 / 城市·金字塔·冰封山·雪地·海岛 5 地标 / 树木植被 / 洞穴 /
-  水面特效 / 日夜循环三风格）。bug 修复阶段已落地：
+  水面特效 / 日夜循环三风格 / 空中结构）。bug 修复阶段已落地：
   - 光照黑面根因（`4c840cd`：写回改中心 column 权威 + 移除阳光遮挡投影 v1.9）；
   - mc-lite 视觉全面对齐（`d11a8b0`：±X 面 UV 90° 旋转修复、faces-data 124 方块六面全覆盖、
     21 张 mc-lite 程序化贴图离线烘焙入 atlas、12 种特殊几何顶点模板（台阶/栏杆/柱子/烟囱/
@@ -38,9 +38,10 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
     generateCity 仅覆写至城市地表 → 自然高度 > 城市地表的列残留接地自然地形丘凸出地表包裹建筑；
     generateCity 清除 surfaceY+1..naturalH + 回退 pointContext 的 max 补丁使树植根城市地表；
     过渡带台阶不受影响）。
-  - 追加 M2-7：悬浮空岛与云层走 StructureIndex + Worker GEN + column 裁剪的确定性重写；不含宝箱/天空树，
-    详见 `docs/superpowers/{specs,plans}/2026-08-23-m2-sky-structures*`；
-  - 剩余：M2-7、同 seed 截图与 mc-lite 人工比对（M2-2/M2-7 挂起验收项）（见 roadmap TODO）。
+  - M2-7 空中结构已落地：悬浮空岛与云层走 StructureIndex 紧凑候选 + Worker GEN + column 裁剪的
+    确定性重写（层序先云后岛、岛体覆盖云；`supportsPlayer` 通用表令云可站立非实心）；不含宝箱/天空树；
+    方块 126 / atlas 147（+sky_stone/sky_grass）；详见 `docs/superpowers/{specs,plans}/2026-08-23-m2-sky-structures*`；
+  - 剩余：同 seed 截图与 mc-lite 人工比对（M2-2/M2-7 挂起验收项）（见 roadmap TODO）。
 - **M3 性能达标与收尾 ⬜**：视距 8 全量调优 / 预算标定 / 雨效 / HUD / 基线脚本 / 报告。
 - **M4 玩家第一人称武器 ⬜（第二阶段，等待 M3-6）**：独立 Epic；`WorldEditor` 批量编辑、
   DDA hitscan、手枪/MAG7/加特林的受控 GLB 相机视图模型、曳光、音效和可选方块破坏。
@@ -62,7 +63,7 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
   规格：`docs/superpowers/specs/2026-08-23-m7-zombie-nests-design.md`；计划：
   `docs/superpowers/plans/2026-08-23-m7-zombie-nests.md`。
 
-测试现状：19 个 Playwright spec 文件（22 个测试用例）+ 120 个浏览器内单元测试全绿（m1-acceptance 计时断言
+测试现状：21 个 Playwright spec 文件（24 个测试用例）+ 144 个浏览器内单元测试全绿（m1-acceptance 计时断言
 在高负载下偶发贴线 flaky——16.7±1e-6/2.1ms，单独复跑通过，属已记录的计时抖动类）；
 冻结断言达标（120Hz 本机 fps ≥115、放/挖编辑 p95 <2ms、draw 受控）。
 

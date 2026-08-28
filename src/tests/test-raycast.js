@@ -49,3 +49,17 @@ test('raycast: maxDist 截断', () => {
   const r = raycastVoxel(world, [8, 5, 8], [0, -1, 0], 2); // 距离 5 > 2
   assertEqual(r.hit, false, 'beyond maxDist');
 });
+
+test('raycast: cloud 可命中（non-solid 不跳过）、water 仍跳过（M2-7）', () => {
+  const { world, reg } = makeWorld();
+  const col = world.getColumn(0, 0);
+  col.blocks[blockIndex(8, 3, 8)] = reg.idOf('cloud');
+  const r = raycastVoxel(world, [8, 6, 8], [0, -1, 0], 40);
+  assertTrue(r.hit, 'hits cloud');
+  assertEqual(r.blockPos[1], 3, 'hit block is cloud');
+  // water 仍被跳过，命中其下方 stone
+  col.blocks[blockIndex(4, 3, 8)] = reg.idOf('water');
+  col.blocks[blockIndex(4, 2, 8)] = reg.idOf('stone');
+  const r2 = raycastVoxel(world, [4, 6, 8], [0, -1, 0], 40);
+  assertEqual(r2.blockPos[1], 2, 'water skipped, hits stone below');
+});

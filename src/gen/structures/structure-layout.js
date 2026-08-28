@@ -10,6 +10,7 @@ import {
   getIslandCenterInRegion, isIslandValid, isPlainLandValid,
 } from './landmarks.js';
 import { buildCityLayout } from './city-layout.js';
+import { computeSkyCandidates } from './sky-structures.js';
 
 /**
  * 计算单个 region 的确定性布局（纯函数，无缓存——缓存由调用方 StructureIndex 管）。
@@ -21,7 +22,8 @@ import { buildCityLayout } from './city-layout.js';
  *   snowLand: {cx:number, cz:number},
  *   plainLand: ({cx:number, cz:number, baseHeight:number}|null),
  *   island: ({cx:number, cz:number}|null),
- *   city: (Object|null)
+ *   city: (Object|null),
+ *   sky: {skyIslands: Int32Array, cloudClusters: Int32Array}
  * }}
  */
 export function computeRegionLayout(regionX, regionZ, seed) {
@@ -47,7 +49,10 @@ export function computeRegionLayout(regionX, regionZ, seed) {
   // City 全世界唯一，固定在 region [0,0]（mc-lite CITY_REGION 语义）
   const city = (regionX === CITY_REGION.X && regionZ === CITY_REGION.Z) ? buildCityLayout(seed) : null;
 
-  return { regionX, regionZ, pyramidRaw, pyramid, frozenMountain, snowLand, plainLand, island, city };
+  // 空中候选（M2-7）：紧凑 Int32Array，GEN 侧按 AABB 裁剪到 column
+  const sky = computeSkyCandidates(regionX, regionZ, seed);
+
+  return { regionX, regionZ, pyramidRaw, pyramid, frozenMountain, snowLand, plainLand, island, city, sky };
 }
 
 /**

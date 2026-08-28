@@ -34,6 +34,8 @@ export class WorldData {
 
   isSolid(x, y, z) { return this.registry.solidTable[this.getBlockId(x, y, z)] === 1; }
   isOpaque(x, y, z) { return this.registry.opaqueTable[this.getBlockId(x, y, z)] === 1; }
+  /** 向下 Y 支撑（M2-7）：云可站立；物理仅在 Y 轴向下碰撞时查询 */
+  supportsPlayer(x, y, z) { return this.registry.supportsPlayerTable[this.getBlockId(x, y, z)] === 1; }
 
   /**
    * 唯一写入口（§4.5.3）。跨 column 定位；返回受影响 section 列表

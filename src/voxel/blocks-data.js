@@ -1,4 +1,4 @@
-// src/voxel/blocks-data.js — 124 方块声明数据
+// src/voxel/blocks-data.js — 126 方块声明数据
 // 来源：mc-lite src/constants/BlockData.js（BLOCK_DATA，124 键）+
 //       src/core/LightSourceManager.js（LIGHT_CONFIGS，4 个发光方块 → emissive: 15）
 // 转换日期：2026-08-19。转换规则见 docs/superpowers/plans/2026-08-19-m0-engine-skeleton.md Task 5：
@@ -18,7 +18,9 @@ export const BLOCKS = [
   {"name":"collider","solid":true,"cullMode":"none","orientationModes":4,"geometry":"box"},
   {"name":"water","solid":false,"cullMode":"transparent","orientationModes":4,"geometry":"box"},
   {"name":"swamp_water","solid":false,"cullMode":"transparent","orientationModes":4,"geometry":"box"},
-  {"name":"cloud","solid":false,"cullMode":"transparent","orientationModes":4,"geometry":"box"},
+  // M2-7 通道勘误（§4.1 口径）：mc-lite 云材质 mkMat('#FFFFFF',1) opacity=1 不透明；
+  // 原 'transparent' 通道 depthWrite=false 使云块侧面混叠成方格缝。opaqueTable 仍 0（不遮光）。
+  {"name":"cloud","solid":false,"supportsPlayer":true,"cullMode":"opaque","orientationModes":4,"geometry":"box"},
   {"name":"glass_block","solid":true,"cullMode":"transparent","orientationModes":4,"geometry":"box"},
   {"name":"glass_blink","solid":true,"cullMode":"transparent","orientationModes":4,"geometry":"box"},
   {"name":"leaves","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"box"},
@@ -138,4 +140,7 @@ export const BLOCKS = [
   {"name":"sand_train_track_corner","solid":true,"cullMode":"opaque","orientationModes":4,"geometry":"box"},
   {"name":"mine_cart","solid":false,"cullMode":"none","orientationModes":0,"geometry":"box"},
   {"name":"hanging_lamp","solid":false,"cullMode":"cutout","emissive":15,"orientationModes":0,"geometry":"hanging_lamp"},
+  // M2-7 空岛岛体（mc-lite Island.js：sky_stone 岛身 + sky_grass 顶层）
+  {"name":"sky_stone","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
+  {"name":"sky_grass","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
 ];

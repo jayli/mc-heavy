@@ -235,6 +235,9 @@ const DOUBLE_SIDE_CUBES = new Set(['realistic_oak_leaves']);
 // 方块逻辑/物理仍占整格，仅渲染几何下沉。
 const WATER_LIKE = new Set(['water', 'swamp_water']);
 const WATER_SURFACE_SINK = 0.5;
+// 不透明通道但同类相邻仍剔除共享面：cloud（M2-7 通道勘误，opaque 材质语义；
+// 云簇内部相邻面不发射，避免体素爆发；water/glass 走 cullMode>=2 同规则）
+const SAME_TYPE_CULL = new Set(['cloud']);
 
 // 床 UV 变换（mc-lite repeat/offset/rotation → 等价角点变换，three setUvTransform 核验）：
 // vHalf = repeat[1,0.5]+offset[0,0.5]（取图像上半）；uFlip = repeat[-1,…]+offset[1,…]；
@@ -363,14 +366,23 @@ export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
           const nx = vx + dx, ny = vy + dy, nz = vz + dz;
           const neighborId = data[viewIdx(nx, ny, nz)];
 
-          // 面剔除：邻居 opaque 则剔除；同类型 transparent 相邻剔除（世界面判定）
+          // 面剔除：邻居 opaque 则剔除；同类型相邻剔除（世界面判定）
           if (opaqueTable[neighborId] === 1) { if (collect) culledFaces++; continue; }
-          if (neighborId === id && cullMode >= 2) { if (collect) culledFaces++; continue; } // water/glass 同类相邻
+          if (neighborId === id && (cullMode >= 2 || SAME_TYPE_CULL.has(blockName))) { if (collect) culledFaces++; continue; } // water/glass 同类相邻、cloud
 
           const tileName = getFaceTile(blockName, modelFace); // 模型面：贴图随方块转
           if (!tileName) continue; // null 面不渲染
           if (collect) faces++; // 通过剔除，实际出块
           const tile = tiles[tileName] || tiles['stone'] || DEFAULT_TILE;
+          // cloud 是匀质白纹理：UV 收缩到 tile 中央 1/4。块面 UV 逐块 wrap 使接缝处
+          // 导数尖峰，mip 足迹（aniso 8 下半长 ≤~16 texel）若跨 tile 边缘会采到邻 tile
+          // 色 = 方格线；中央 1/4 距 tile 边缘 24 texel，尖峰足迹永远落在纯白区内。
+          let tu0 = tile.u0, tu1 = tile.u1, tv0 = tile.v0, tv1 = tile.v1;
+          if (blockName === 'cloud') {
+            const m = 0.375;
+            tu0 = tile.u0 + (tile.u1 - tile.u0) * m; tu1 = tile.u1 - (tile.u1 - tile.u0) * m;
+            tv0 = tile.v0 + (tile.v1 - tile.v0) * m; tv1 = tile.v1 - (tile.v1 - tile.v0) * m;
+          }
 
           // 面亮度读"面朝向的邻居（空气）格"光照，不是方块自身格——
           // opaque 方块自身格 skylight=0（top-down 光遇 opaque 停止），读自身会全黑。
@@ -386,8 +398,8 @@ export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
             positions.push([lx + rx, ly + ry, lz + rz]);
             const [uu, vv] = FACE_UVS[modelFace][vi]; // 模型面 UV 约定（BoxGeometry 旋转自洽）
             uvs.push([
-              tile.u0 + (tile.u1 - tile.u0) * uu,
-              tile.v0 + (tile.v1 - tile.v0) * vv,
+              tu0 + (tu1 - tu0) * uu,
+              tv0 + (tv1 - tv0) * vv,
             ]);
             // AO：世界面 + 旋转后顶点（遮挡是世界空间语义）
             const [s1o, s2o, co] = aoOffsetsFor(worldFace, [rx, ry, rz]);

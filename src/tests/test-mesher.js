@@ -32,6 +32,9 @@ const atlasMeta = {
   box_side: { u0: 0.42, v0: 0.0, u1: 0.43, v1: 0.01 },
   box_top: { u0: 0.44, v0: 0.0, u1: 0.45, v1: 0.01 },
   Cobblestone: { u0: 0.46, v0: 0.0, u1: 0.47, v1: 0.01 },
+  'procedural/sky_stone': { u0: 0.50, v0: 0.0, u1: 0.51, v1: 0.01 },
+  'procedural/sky_grass': { u0: 0.52, v0: 0.0, u1: 0.53, v1: 0.01 },
+  'procedural/cloud': { u0: 0.54, v0: 0.0, u1: 0.55, v1: 0.01 },
 };
 
 function makeWorldWithBlock(reg, lx, y, lz, id) {
@@ -51,6 +54,23 @@ test('mesher: 单个 opaque 方块 → 6 面 24 顶点', () => {
   assertEqual(result.opaque.indexCount, 36, 'one cube = 36 indices');
   assertEqual(result.cutout.vertexCount, 0);
   assertEqual(result.transparent.vertexCount, 0);
+});
+
+test('mesher: sky_stone/sky_grass 孤立 cube → opaque 六面 + 各自 procedural tile（M2-7）', () => {
+  const reg = makeRegistry();
+  const cases = [['sky_stone', 'procedural/sky_stone'], ['sky_grass', 'procedural/sky_grass']];
+  for (const [name, tileKey] of cases) {
+    const result = meshSingle(reg, name);
+    assertEqual(result.opaque.vertexCount, 24, `${name} = 6 faces 24 verts`);
+    assertEqual(result.cutout.vertexCount, 0, `${name} not in cutout`);
+    assertEqual(result.transparent.vertexCount, 0, `${name} not in transparent`);
+    const tile = atlasMeta[tileKey];
+    for (let i = 0; i < result.opaque.vertexCount; i++) {
+      const u = result.opaque.uvs[i * 2];
+      assertTrue(u >= tile.u0 - 1e-6 && u <= tile.u1 + 1e-6,
+        `${name} uv samples ${tileKey}, got u=${u}`);
+    }
+  }
 });
 
 test('mesher: 两个相邻 opaque 方块 → 共享面剔除（10 面）', () => {
@@ -83,6 +103,33 @@ test('mesher: transparent 方块（glass）→ transparent 通道', () => {
   const result = buildSectionMesh(view, reg, atlasMeta, 0, 0, 0);
   assertEqual(result.transparent.vertexCount, 24);
   assertEqual(result.opaque.vertexCount, 0);
+});
+
+test('mesher: cloud 走 opaque 通道 + 同类相邻剔除共享面（M2-7 通道勘误）', () => {
+  // mc-lite 云材质 mkMat('#FFFFFF', 1) opacity=1 → 不透明材质（§4.1 勘误口径：
+  // cullMode 跟材质透明度）。transparent 通道 depthWrite=false 会使云块侧面
+  // 混叠成方格缝（blur 档 mipmap 平均后尤为明显）。
+  const reg = makeRegistry();
+  const world = new WorldData(reg);
+  const col = new ChunkColumn(0, 0);
+  const cloudId = reg.idOf('cloud');
+  col.blocks[blockIndex(8, WORLD_MIN_Y + 5, 8)] = cloudId;
+  col.blocks[blockIndex(9, WORLD_MIN_Y + 5, 8)] = cloudId;
+  world.add(col);
+  const view = world.getSectionView(0, 0, 0);
+  const result = buildSectionMesh(view, reg, atlasMeta, 0, 0, 0);
+  assertEqual(result.transparent.vertexCount, 0, 'cloud not in transparent channel');
+  assertEqual(result.opaque.vertexCount, 10 * 4, 'two adjacent clouds = 10 faces (shared culled)');
+  // UV 收缩到 tile 中央 1/4（wrap 尖峰足迹不跨 tile，blur 档方格线根因解）
+  const tile = atlasMeta['procedural/cloud'];
+  const m = 0.375;
+  const cu0 = tile.u0 + (tile.u1 - tile.u0) * m, cu1 = tile.u1 - (tile.u1 - tile.u0) * m;
+  const cv0 = tile.v0 + (tile.v1 - tile.v0) * m, cv1 = tile.v1 - (tile.v1 - tile.v0) * m;
+  for (let i = 0; i < result.opaque.vertexCount; i++) {
+    const u = result.opaque.uvs[i * 2], v = result.opaque.uvs[i * 2 + 1];
+    assertTrue(u >= cu0 - 1e-6 && u <= cu1 + 1e-6 && v >= cv0 - 1e-6 && v <= cv1 + 1e-6,
+      `cloud uv in inner quarter, got (${u},${v})`);
+  }
 });
 
 test('mesher: 同类型 water 相邻不画面', () => {
