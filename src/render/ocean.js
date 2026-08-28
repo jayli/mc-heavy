@@ -123,6 +123,10 @@ export function setupOcean(scene) {
   const plane = new THREE.Mesh(waterGeo, waterMaterial);
   plane.rotation.x = -Math.PI / 2;
   plane.position.y = WATER_LEVEL_OFFSET;
+  // issue #2：透明排序按锚点 NDC 深度（海面锚点=相机正下方、体素通道锚点=合并几何
+  // 包围球中心），镜头转动时两者交叉 → 绘制顺序翻转 → 水色离散跳变。
+  // 固定 renderOrder 让海面恒在体素水（默认 0）之后绘制，退出深度排序。
+  plane.renderOrder = 1;
   scene.add(plane);
 
   return {
