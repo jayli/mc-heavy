@@ -230,6 +230,12 @@ const TEMPLATES = {
 // 唯一 realistic_oak_leaves。单材质通道内用双向绕线复刻。
 const DOUBLE_SIDE_CUBES = new Set(['realistic_oak_leaves']);
 
+// 暴露水面下沉（issue #2 遗留）：water/swamp_water 上方无 opaque/同类水覆盖时，
+// 顶面与侧面顶边下沉 0.5，与海面平面（SEA_Y+0.5）共面，消除俯视可见的蓝色顶面模。
+// 方块逻辑/物理仍占整格，仅渲染几何下沉。
+const WATER_LIKE = new Set(['water', 'swamp_water']);
+const WATER_SURFACE_SINK = 0.5;
+
 // 床 UV 变换（mc-lite repeat/offset/rotation → 等价角点变换，three setUvTransform 核验）：
 // vHalf = repeat[1,0.5]+offset[0,0.5]（取图像上半）；uFlip = repeat[-1,…]+offset[1,…]；
 // rot = rotation -π/2 →（u,v）→(1-v,u)。
@@ -345,6 +351,12 @@ export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
 
         if (collect) candidateFaces += 6; // 立方体 6 面进入剔除判定
         const doubleSide = DOUBLE_SIDE_CUBES.has(blockName);
+        // 暴露水面：上方既无 opaque 覆盖也非同种水（顶面会被发射的表层水）
+        let waterSurface = false;
+        if (WATER_LIKE.has(blockName)) {
+          const aboveId = data[viewIdx(vx, vy + 1, vz)];
+          waterSurface = opaqueTable[aboveId] !== 1 && aboveId !== id;
+        }
         for (let modelFace = 0; modelFace < 6; modelFace++) {
           const worldFace = FACE_ROT[orient][modelFace];
           const [dx, dy, dz] = FACE_DIRS[worldFace];
@@ -368,7 +380,9 @@ export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
           const packeds = [];
           for (let vi = 0; vi < 4; vi++) {
             const [fx, fy, fz] = FACE_VERTICES[modelFace][vi];
-            const [rx, ry, rz] = orient === 0 ? [fx, fy, fz] : rotateVertex(fx, fy, fz, orient);
+            let [rx, ry, rz] = orient === 0 ? [fx, fy, fz] : rotateVertex(fx, fy, fz, orient);
+            // 暴露水面下沉：顶边顶点（ry=1）下沉 0.5——顶面整体、侧面顶边；底面顶点 ry=0 不受影响
+            if (waterSurface && ry === 1) ry -= WATER_SURFACE_SINK;
             positions.push([lx + rx, ly + ry, lz + rz]);
             const [uu, vv] = FACE_UVS[modelFace][vi]; // 模型面 UV 约定（BoxGeometry 旋转自洽）
             uvs.push([

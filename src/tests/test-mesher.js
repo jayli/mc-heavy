@@ -376,3 +376,75 @@ test('朝向: getSectionView 打包 meta（halo 视图含朝向）', () => {
   assertTrue(view.meta instanceof Uint8Array, 'view has meta array');
   assertEqual(view.meta[9 + 9 * 18 + 9 * 324], 2, 'meta carried into halo view');
 });
+
+// ---- issue #2 遗留：暴露水面下沉 0.5（与海面平面 SEA_Y+0.5 共面，消除蓝色顶面模）----
+
+function yExtent(geom) {
+  let yMax = -Infinity, yMin = Infinity;
+  for (let i = 0; i < geom.vertexCount; i++) {
+    yMax = Math.max(yMax, geom.positions[i * 3 + 1]);
+    yMin = Math.min(yMin, geom.positions[i * 3 + 1]);
+  }
+  return { yMin, yMax };
+}
+
+test('mesher: 暴露水面下沉——孤立水块顶面/侧面顶边下沉 0.5', () => {
+  const reg = makeRegistry();
+  const world = makeWorldWithBlock(reg, 8, WORLD_MIN_Y + 5, 8, reg.idOf('water'));
+  const view = world.getSectionView(0, 0, 0);
+  const result = buildSectionMesh(view, reg, atlasMeta, 0, 0, 0);
+  const { yMin, yMax } = yExtent(result.transparent);
+  assertEqual(yMin, 5, '底面保持块底不动');
+  assertEqual(yMax, 5.5, '暴露水面下沉 0.5（原为 6）');
+});
+
+test('mesher: 暴露水面下沉——swamp_water 同口径', () => {
+  const reg = makeRegistry();
+  const world = makeWorldWithBlock(reg, 8, WORLD_MIN_Y + 5, 8, reg.idOf('swamp_water'));
+  const view = world.getSectionView(0, 0, 0);
+  const result = buildSectionMesh(view, reg, atlasMeta, 0, 0, 0);
+  const { yMax } = yExtent(result.transparent);
+  assertEqual(yMax, 5.5, 'swamp_water 暴露水面同样下沉 0.5');
+});
+
+test('mesher: 水面下沉——深水块（上方仍是水）侧面保持整格高', () => {
+  const reg = makeRegistry();
+  const world = new WorldData(reg);
+  const col = new ChunkColumn(0, 0);
+  const waterId = reg.idOf('water');
+  col.blocks[blockIndex(8, WORLD_MIN_Y + 5, 8)] = waterId;
+  col.blocks[blockIndex(8, WORLD_MIN_Y + 6, 8)] = waterId;
+  world.add(col);
+  const view = world.getSectionView(0, 0, 0);
+  const result = buildSectionMesh(view, reg, atlasMeta, 0, 0, 0);
+  const p = result.transparent.positions;
+  const { yMax } = yExtent(result.transparent);
+  assertEqual(yMax, 6.5, '表层水顶面下沉后在 6.5');
+  let hasSix = false;
+  for (let i = 0; i < result.transparent.vertexCount; i++) {
+    if (Math.abs(p[i * 3 + 1] - 6) < 1e-6) { hasSix = true; break; }
+  }
+  assertTrue(hasSix, '下层深水侧面顶边仍在 6（整格高，不下沉）');
+});
+
+test('mesher: 水面下沉——水上有 opaque 时不下沉（非暴露水面）', () => {
+  const reg = makeRegistry();
+  const world = new WorldData(reg);
+  const col = new ChunkColumn(0, 0);
+  col.blocks[blockIndex(8, WORLD_MIN_Y + 5, 8)] = reg.idOf('water');
+  col.blocks[blockIndex(8, WORLD_MIN_Y + 6, 8)] = reg.idOf('stone');
+  world.add(col);
+  const view = world.getSectionView(0, 0, 0);
+  const result = buildSectionMesh(view, reg, atlasMeta, 0, 0, 0);
+  const { yMax } = yExtent(result.transparent);
+  assertEqual(yMax, 6, '被 opaque 盖住的水侧面保持整格高');
+});
+
+test('mesher: 水面下沉——非水方块顶面不受影响', () => {
+  const reg = makeRegistry();
+  const world = makeWorldWithBlock(reg, 8, WORLD_MIN_Y + 5, 8, reg.idOf('stone'));
+  const view = world.getSectionView(0, 0, 0);
+  const result = buildSectionMesh(view, reg, atlasMeta, 0, 0, 0);
+  const { yMax } = yExtent(result.opaque);
+  assertEqual(yMax, 6, 'stone 顶面保持块顶不动');
+});
