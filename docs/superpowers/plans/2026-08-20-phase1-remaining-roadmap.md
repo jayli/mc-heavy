@@ -79,9 +79,12 @@
 ## 全局 TODO List（按执行次序）
 
 1. [ ] **M2 收尾（完成下列退出门后才可关闭 M2）**：
-   - [ ] **水面颜色随镜头转动突变**（[issue #2](https://github.com/jayli/mc-heavy/issues/2)）：
-     岸边转镜头到特定角度水面颜色瞬间变浅、转回恢复（离散跳变）。主嫌疑：体素水块与动画海面平面
-     双层透明叠加的绘制顺序随相机深度交叉而翻转。**下次进入项目从本项排查开始**，在 M2-7 之前处理。
+   - [x] **水面颜色随镜头转动突变**（[issue #2](https://github.com/jayli/mc-heavy/issues/2)）：
+     根因：两层透明物体（体素水 `transparent` 通道 BatchedMesh + `ocean.js` 海面）均无 `renderOrder`，
+     three 按排序锚点 NDC 深度定先后——海面锚点钉在相机正下方（恒定），体素锚点为合并几何包围球中心
+     （世界原点附近），排序值随镜头转动在 -174~+283 摆动，跨过海面值时绘制顺序翻转、混合结果突变。
+     修复：`ocean.js` 海面 `plane.renderOrder = 1` 恒后画，退出深度排序；新增 `tests/water-order.spec.mjs`
+     全周扫描顺序稳定性断言（RED→GREEN）。详见 issue #2 根因评论。
    - [ ] **M2-7 空中结构**：按 `docs/superpowers/specs/2026-08-23-m2-sky-structures-design.md` 与
      `docs/superpowers/plans/2026-08-23-m2-sky-structures.md` 重写 mc-lite 的悬浮空岛和云层；必须走
      StructureIndex + Worker GEN + column 裁剪，不含宝箱/天空树、`structureCenters` 或运行期补刷；同 seed
@@ -122,12 +125,16 @@
 
 #### M2 关闭前必须完成
 
-- [ ] **水面颜色随镜头转动突变**（[issue #2](https://github.com/jayli/mc-heavy/issues/2)，**优先排查**）：
+- [x] **水面颜色随镜头转动突变**（[issue #2](https://github.com/jayli/mc-heavy/issues/2)，已修复 `71c0d90`，用户实机验证通过）：
   站在水边观察水面，镜头转到某个特定角度后水面颜色**瞬间变浅**，转回即恢复——颜色变化是离散跳变而非
-  连续渐变。mc-heavy 水面为双层透明叠加（体素水块 `transparent` 通道 + `ocean.js` 动画海面平面，
-  两者均 `depthWrite=false`），ocean.js 着色器系逐行移植 mc-lite 故嫌疑低；主嫌疑为两层透明物体
-  相对相机深度在镜头转动时交叉、绘制顺序（painter's algorithm）翻转导致混合结果突变。**下次进入
-  项目从本项排查开始**（确认根因 → TDD 修复 → 回归），在 M2-7 之前处理。
+  连续渐变。排查结论（包装 `renderer.render` 读 `_renderLists.transparent` 实测）：双层透明叠加
+  （体素水 `transparent` 通道 + `ocean.js` 海面，均 `depthWrite=false` 无 `renderOrder`）的绘制顺序由
+  排序锚点 NDC 深度决定——海面锚点 = 相机正下方平面中心（恒定 ≈ -0.6），体素锚点 = BatchedMesh 合并
+  几何包围球中心（世界原点附近，含预留缓冲），随镜头转动在 -174~+283 摆动；两者交叉时
+  `reversePainterSortStable` 顺序翻转（岸边实测每圈交叉两次），混合结果离散突变。ocean.js 着色器
+  各分支均为距离连续函数，已排除。修复：海面 `plane.renderOrder = 1` 恒在体素水（默认 0）之后绘制；
+  `tests/water-order.spec.mjs` 断言 yaw 全周扫描绘制顺序唯一且体素水先、海面后（修复前 RED：
+  出现 `voxelWater,ocean` 与 `ocean,voxelWater` 两种顺序）。完整回归 23/23 通过。
 - [x] **城市覆写残留自然地形清除**（原"城市边缘残块"）：`fillColumn` 按自然 biome 预填整列，
   `generateCity` 仅覆写至城市地表，自然高度高于城市地表的列（seed=12345 实测占城市列 20.6%，
   最高差 11 格）残留**接地的自然地形丘**（非悬空），凸出于城市地表并包裹按城市地表放置的建筑。
