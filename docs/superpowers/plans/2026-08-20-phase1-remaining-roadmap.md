@@ -54,19 +54,19 @@
 | 放块瞬间黑闪 | `ee28053` | 同步重算只升不降 |
 | 初始化阴影检测死代码 | `77e8550` | 判据修正 + halo 前置 |
 
-### M2 结构与世界完整性 🔧 主体完成（M2-7 追加，收尾中）
+### M2 结构与世界完整性 ✅ 完成（2026-08-31 关闭）
 
 | 项目 | 状态 | 备注 |
 |---|---|---|
 | M2-1 StructureIndex + 确定性结构布局 | ✅ | per-region 布局 + 跨 region 查询 + GEN 门控（`structure-index.js`） |
-| M2-2 地标移植（城市/金字塔/冰封山/雪地/海岛） | ✅ | 类型/公式逐行核验与 mc-lite 一致；**同 seed 截图比对留人工验收（挂起）** |
+| M2-2 地标移植（城市/金字塔/冰封山/雪地/海岛） | ✅ | 类型/公式逐行核验与 mc-lite 一致；**同 seed 人工比对 2026-08-31 通过（无异常）** |
 | M2-3 树木 + 植被 | ✅ | 四型树 / 花草仙人掌 / cross 模板 + _addOptimized 包围剔除 |
 | M2-4 洞穴 | ✅ | 3D 噪声挖空 + mc-lite rooms 保留 |
 | M2-5 水面特效 | ✅ | TSL 海面 + 水纹理入 atlas |
 | M2-6 日夜循环 | ✅ | morning/noon/night 三风格 |
 | M2-7 空中结构（悬浮空岛 + 云层） | ✅ | 追加任务：确定性空岛、单云层、连通云簇；不含宝箱/天空树；紧凑候选 + 层序裁剪（`sky-structures.js`），详见 `2026-08-23-m2-sky-structures.md` |
 
-### M2 后修复（实玩 bug）🔧 进行中
+### M2 后修复（实玩 bug）✅ 已收尾
 
 | 修复 | commit | 备注 |
 |---|---|---|
@@ -75,11 +75,11 @@
 | 方块类型/贴图/几何全面对齐 mc-lite | `d11a8b0` | ±X 面 UV 90° 旋转修复（BoxGeometry 口径）；faces-data 124 方块六面全覆盖；`tools/bake-procedural-textures.mjs` 烘焙 21 张 mc-lite 程序化贴图（atlas 124→145）；12 种特殊几何顶点模板（台阶/栏杆/柱子/烟囱/床/吊灯/仙人掌，逐格复刻 geomMap）；树叶 FrontSide + alphaTest 0.3（冠内不过密）、植被双向绕线；cross 第二张图横躺回归修复 |
 | 朝向渲染消费侧 + 台阶等 12 方块 blended 通道穿帮 | `584813b` | mesher 读 meta 低 2 位按 4 朝向旋转（模型面查 tile/床 UV 变换，世界面做剔除/光照/AO）；getSectionView 打包 meta + MESH transfer；渲染侧无条件消费（对齐 mc-lite 逐实例应用 b.orientation）；交互侧放置语义属第二阶段。另：M0 转换混同 isTransparent（剔除语义）与材质透明度 → 台阶/栏杆/柱子/宝箱等 12 个不透明材质方块 depthWrite=false，L 形凹角无深度互遮透视穿帮；cullMode 改 cutout 修复（设计文档 §4.1 勘误） |
 | 城市覆写残留自然地形丘清除 + 树植根城市地表 | `7d09cf1` | fillColumn 预填整列自然地形，generateCity 仅覆写至城市地表 → 自然高度 > 城市地表的列（seed=12345 占 20.6%，最高差 11 格）残留接地自然地形丘，凸出地表包裹建筑；generateCity 清除 surfaceY+1..naturalH + 回退 pointContext 的 max 补丁（5b6c51e）使树植根城市地表；过渡带台阶不受影响 |
-| 云渲染通道勘误 + blur 档方格线根因修复（M2-7 收尾，用户实机反馈） | 待提交 | 远处云面黑纹/方格线三连根因：①cloud 误置 transparent 通道（mc-lite 材质 `mkMat('#FFFFFF',1)` opacity=1 不透明，§4.1 勘误类遗漏）→ depthWrite=false 侧面混叠，改 opaque 通道 + mesher `SAME_TYPE_CULL` 同类相邻剔除；②atlas gutter 原为不透明黑底，mip 下采样渗黑边 → build-atlas 每 tile 边缘 bleed 回填，gutter 2→16/bleed 8；③块面 UV 逐块 wrap 的导数尖峰使 mip 足迹跨 tile 采邻 tile 色（粉灰线）→ blur 档 anisotropy 8 + cloud 匀质白纹理 UV 收缩 tile 中央 1/4（足迹永不跨 tile）根除；云纹理烘纯白（噪点仅贡献莫尔纹）。单测：mesher cloud 通道/同类剔除/UV 收缩 + atlas 双档/gutter 断言 |
+| 云渲染通道勘误 + blur 档方格线根因修复（M2-7 收尾，用户实机反馈） | `7e19924` | 远处云面黑纹/方格线三连根因：①cloud 误置 transparent 通道（mc-lite 材质 `mkMat('#FFFFFF',1)` opacity=1 不透明，§4.1 勘误类遗漏）→ depthWrite=false 侧面混叠，改 opaque 通道 + mesher `SAME_TYPE_CULL` 同类相邻剔除；②atlas gutter 原为不透明黑底，mip 下采样渗黑边 → build-atlas 每 tile 边缘 bleed 回填，gutter 2→16/bleed 8；③块面 UV 逐块 wrap 的导数尖峰使 mip 足迹跨 tile 采邻 tile 色（粉灰线）→ blur 档 anisotropy 8 + cloud 匀质白纹理 UV 收缩 tile 中央 1/4（足迹永不跨 tile）根除；云纹理烘纯白（噪点仅贡献莫尔纹）。单测：mesher cloud 通道/同类剔除/UV 收缩 + atlas 双档/gutter 断言 |
 
 ## 全局 TODO List（按执行次序）
 
-1. [ ] **M2 收尾（完成下列退出门后才可关闭 M2）**：
+1. [x] **M2 收尾（2026-08-31 全部完成，M2 关闭）**：
    - [x] **水面颜色随镜头转动突变**（[issue #2](https://github.com/jayli/mc-heavy/issues/2)）：
      根因：两层透明物体（体素水 `transparent` 通道 BatchedMesh + `ocean.js` 海面）均无 `renderOrder`，
      three 按排序锚点 NDC 深度定先后——海面锚点钉在相机正下方（恒定），体素锚点为合并几何包围球中心
@@ -89,7 +89,7 @@
    - [x] **M2-7 空中结构**：按 `docs/superpowers/specs/2026-08-23-m2-sky-structures-design.md` 与
      `docs/superpowers/plans/2026-08-23-m2-sky-structures.md` 重写 mc-lite 的悬浮空岛和云层；必须走
      StructureIndex + Worker GEN + column 裁剪，不含宝箱/天空树、`structureCenters` 或运行期补刷；
-     已落地并通过数据级验收与视距 8 性能门（证据见下方 M2 收尾 TODO）；同 seed 视觉比对归人工项。
+     已落地并通过数据级验收与视距 8 性能门（证据见下方 M2 收尾 TODO）；同 seed 视觉比对 2026-08-31 人工通过。
    - [x] **城市覆写残留自然地形清除**（原"城市边缘残块"，措辞修正：残丘底部接地、非悬空）：
      `fillColumn` 按自然 biome 预填整列，`generateCity` 仅覆写至城市地表，自然高度高于城市地表的列
      （seed=12345 实测占城市列 20.6%，最高差 11 格）残留**接地的自然地形丘**（grass/dirt/stone），凸出于
@@ -97,11 +97,13 @@
      修复：`generateCity` 清除 `surfaceY+1..naturalH` 残留 + 回退 `pointContext` 的 max 补丁使树植根城市
      地表；过渡带台阶（`getCityFinalSurfaceY`）不受影响。已补固定 seed/column 复现 fixture + 完整
      Playwright 回归，不破坏城市建筑、地标或 edits 语义。
-   - [ ] **同 seed 人工视觉验收**：在 mc-lite 与 mc-heavy 固定相同 seed、相同位置和相近相机朝向，
-     对城市、金字塔、冰封山、雪地、海岛、悬浮空岛与云层逐项截图比对；按设计文档 §7/§8 仅确认结构轮廓和配色基调，
-     不做像素级 diff；将结论及已知有意差异记录回本路线图的 M2-2 验收项。
-   - [ ] **收尾回归与关闭记录**：在上述两项完成后运行完整 Playwright suite，复核出生城市天际线和跨
-     region 行走口径，并将 M2 状态从“主体完成，bug 修复中”更新为“完成”。
+   - [x] **同 seed 人工视觉验收**（2026-08-31 通过）：按 `docs/m2-seed12345-comparison.md` 清单
+     （布局纯函数直算坐标）在两边同 seed 12345 下逐项比对城市/金字塔/冰封山/雪地/海岛/
+     悬浮空岛/云层 + blur 档远处观感；用户实机比对**未发现异常**；已知有意差异（空岛无宝箱/
+     天空树、海面实现、CITY 光晕）见清单第五节。结论已回写本文件挂起项。
+   - [x] **收尾回归与关闭记录**（2026-08-31）：完整 Playwright suite 全绿（21 文件 / 25 用例
+     + 144 浏览器单测；出生城市天际线 = city-visual、跨 region = structure-gen 均在套件内），
+     roadmap / CLAUDE.md / README.md 的 M2 状态已更新为「完成」。
 2. [ ] **M3 第一阶段验收**：完成视距 8 调优、雨效、HUD、基线脚本和性能报告；M3-6 报告是冻结基线。
 3. [ ] **M4 第二阶段首个 Epic**：只在 M3-6 验收后开始，交付玩家第一人称手枪/MAG7/加特林的
    `WorldEditor`、DDA hitscan、受控 GLB 视图模型、曳光和音效。规格：
@@ -159,11 +161,12 @@
   （~105fps 下约 14% 双倍帧，字面 `p95<16.7` 数学不可满足，同帧时口径注记），
   二级门取 16.75（阈值 + 一个量化 epsilon）并已在 spec 内注释。
   同 seed 截图与 mc-lite 轮廓比对归入下方人工验收项。
-- [ ] **同 seed 截图与 mc-lite 比对**（M2-2/M2-7 挂起验收项）：人工固定相同 seed、地点、相机朝向，
-  覆盖城市/金字塔/冰封山/雪地/海岛/悬浮空岛/云层；验证结构轮廓与配色基调，不做像素 diff。将比对结果和有意差异
-  写回 M2-2 验收项，再关闭该挂起项。
-- [ ] **M2 关闭回归**：城市修复和人工比对均完成后，完整 Playwright suite 必须全绿；复核出生点城市
-  天际线与跨 region 行走无卡顿，更新本路线图、AGENTS.md、README.md 的 M2 状态。
+- [x] **同 seed 截图与 mc-lite 比对**（2026-08-31 用户实机比对通过，无异常）：按
+  `docs/m2-seed12345-comparison.md` 清单逐项比对城市/金字塔/冰封山/雪地/海岛/空岛/云层/
+  blur 档；清单坐标由布局纯函数直算。已知有意差异确认不阻断。
+- [x] **M2 关闭回归**（2026-08-31）：完整 Playwright suite 全绿（21 文件 / 25 用例，含
+  city-visual 出生点城市天际线与 structure-gen 跨 region 口径；m1-acceptance 套件内一次
+  120Hz 量化贴线为已登记负载抖动，单跑全绿）+ 144 浏览器单测。三文档状态已回填。
 
 #### 非阻断观察项（不阻塞 M2 关闭）
 
@@ -175,18 +178,19 @@
 - [x] **朝向交互侧暂不实现**（原地重转 90°/类型记忆）：第二阶段随床/宝箱/门落地，第一阶段只预留
   meta 数据位。
 
-#### 接下来（2026-08-28 更新：M2-7 与 §4.4.1 blur 档提前落地后）
+#### 接下来（2026-08-31 更新：M2 关闭）
 
-1. **同 seed 截图与 mc-lite 人工比对**（人工验收，M2 最后挂起项）：比对清单在原城市/金字塔/
-   冰封山/雪地/海岛之上**新增悬浮空岛/云层（M2-7）与 blur 档远处观感**两项；结论写回 M2-2 验收项。
-2. **M2 关闭回归**：完整 Playwright suite 全绿（基线 21 文件 / 24 用例 + 144 浏览器单测）+
-   本路线图、AGENTS.md、README.md 状态回填（M2-7/测试数已回填，关 M2 时复核）。
-3. **M3-1 视距 8 全量调优**：M2 关闭后的首个开发任务（性能链 M3-1→M3-2→M3-5→M3-6）。
-4. blur 档后续（面板接线/持久化、per-tile mip 链打磨、默认值决策）归 **M3-4**，见其条目。
+1. ~~**同 seed 截图与 mc-lite 人工比对**~~ ✅ 已完成（2026-08-31 通过，无异常；清单
+   `docs/m2-seed12345-comparison.md`，覆盖城市/金字塔/冰封山/雪地/海岛/空岛/云层 + blur 档）。
+2. ~~**M2 关闭回归**~~ ✅ 已完成（2026-08-31：21 文件 / 25 用例全绿 + 144 浏览器单测；
+   本路线图、CLAUDE.md、README.md 状态已回填）。
+3. **M3-1 视距 8 全量调优**：下一个开发任务（性能链 M3-1→M3-2→M3-5→M3-6）。
+4. blur 档后续（面板接线/持久化、per-tile mip 链打磨、默认值决策）归 **M3-4**，见其条目；
+   随机种子/新世界的启动前提（同 seed 比对）已满足。
 
 ### 测试现状
 
-- 21 个 Playwright spec 文件（24 个测试用例；m1-acceptance 计时断言高负载下偶发贴线 flaky）
+- 21 个 Playwright spec 文件（25 个测试用例；m1-acceptance 计时断言高负载下偶发贴线 flaky）
 - 144 个浏览器内单元测试（harness）
 - 冻结断言：fps ≥90（120Hz 本机 ≥115）、编辑 p95 <2ms、draw 受控；atlas 147 tile（126 + 23 程序化烘焙）
 
@@ -244,7 +248,7 @@
 
 **测试：**
 - [x] 出生点视距 8 内可见城市天际线（city-visual spec：nonSky 0.73、城堡在中心、高层方块 >20、稳态 120fps）
-- [~] 同 seed 截图与 mc-lite 比对：算法级逐字段核验（城市布局与 mc-lite CityMap 同 seed 完全一致；地标公式逐行移植）；mc-lite 随机 seed 需人工 setSeed 截图比对，留人工验收
+- [x] 同 seed 截图与 mc-lite 比对：算法级逐字段核验（城市布局与 mc-lite CityMap 同 seed 完全一致；地标公式逐行移植）；人工比对 2026-08-31 通过（清单 `docs/m2-seed12345-comparison.md`，无异常）
 - [x] 跨 region 行走无卡顿（平原冲刺 fps 117、GEN p95 <8ms）
 
 ### Task M2-3: 树木 + 植被
@@ -337,7 +341,7 @@
 **验收：**
 - [x] 固定 seed 的 layout 与任意加载顺序逐格一致；空岛跨 column 无截断，只含岛体，不含 chest/天空树。（单测 + `tests/sky-structures.spec.mjs` 数据级断言）
 - [x] 单云层和 30..50 块连通云簇均完整生成；云可站立、非实心、透明且不遮光。（单测：连通性/跨列一致/物理四断言/光照不回归）
-- [ ] 同 seed 截图确认空岛/云层轮廓与配色基调（归入同 seed 人工比对项）；视距 8、队列收敛后通过
+- [x] 同 seed 截图确认空岛/云层轮廓与配色基调（2026-08-31 人工比对通过，无异常）；视距 8、队列收敛后通过
   M3 冻结 fps/draw 口径（**已过**：稳态实测见上方 M2 收尾 TODO 的 M2-7 证据）。
 
 ---

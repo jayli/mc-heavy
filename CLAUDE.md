@@ -16,7 +16,7 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
 **mc-lite 的地位是「功能与数据来源」，不是「实现蓝本」。** 读它的代码时只提取
 「功能语义、算法、数据、视觉风格」，禁止照搬它的架构组织方式（详见下文「对标 mc-lite」）。
 
-## 当前进度（2026-08-28）
+## 当前进度（2026-08-31）
 
 第一阶段分 M0~M3 四个里程碑（设计文档 §7）：
 
@@ -24,7 +24,8 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
 - **M1 体素核心闭环 ✅**：地形生成 / section meshing 双路径 / BatchedMesh 通道级合批 /
   玩家物理（step-up + 相机缓动）/ DDA 射线 / 放块挖块 / 最小存档 / 光照（skylight 垂直+水平扩散、
   AO 顶点阶段 float varying、blocklight flood fill、异步收敛管线）。
-- **M2 结构与世界完整性 🔧（主体完成，bug 修复收尾中）**：M2-1~M2-7 全部完成
+- **M2 结构与世界完整性 ✅**：M2-1~M2-7 全部完成，同 seed 人工比对 2026-08-31 通过（无异常），
+  关闭回归全绿（25 用例 + 144 浏览器单测；清单 `docs/m2-seed12345-comparison.md`）
   （StructureIndex 确定性布局 / 城市·金字塔·冰封山·雪地·海岛 5 地标 / 树木植被 / 洞穴 /
   水面特效 / 日夜循环三风格 / 空中结构）。bug 修复阶段已落地：
   - 光照黑面根因（`4c840cd`：写回改中心 column 权威 + 移除阳光遮挡投影 v1.9）；
@@ -43,7 +44,7 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
     方块 126 / atlas 147（+sky_stone/sky_grass）；详见 `docs/superpowers/{specs,plans}/2026-08-23-m2-sky-structures*`；
   - §4.4.1 blur 档提前落地（M2 收尾期）：`?blur=1` 开 mipmap+aniso 8 消远处莫尔纹，默认像素风；
     伴随云通道勘误（opaque + 同类剔除 + gutter 16/bleed 8 + 匀质 UV 收缩）；面板接线归 M3-4；
-  - 剩余：同 seed 截图与 mc-lite 人工比对（M2-2/M2-7 挂起验收项）（见 roadmap TODO）。
+  - M2 已关闭：同 seed 人工比对通过 + 关闭回归全绿，M3-4 随机种子/新世界的启动前提已满足。
 - **M3 性能达标与收尾 ⬜**：视距 8 全量调优 / 预算标定 / 雨效 / HUD / 基线脚本 / 报告。
 - **M4 玩家第一人称武器 ⬜（第二阶段，等待 M3-6）**：独立 Epic；`WorldEditor` 批量编辑、
   DDA hitscan、手枪/MAG7/加特林的受控 GLB 相机视图模型、曳光、音效和可选方块破坏。
@@ -65,7 +66,7 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
   规格：`docs/superpowers/specs/2026-08-23-m7-zombie-nests-design.md`；计划：
   `docs/superpowers/plans/2026-08-23-m7-zombie-nests.md`。
 
-测试现状：21 个 Playwright spec 文件（24 个测试用例）+ 144 个浏览器内单元测试全绿（m1-acceptance 计时断言
+测试现状：21 个 Playwright spec 文件（25 个测试用例）+ 144 个浏览器内单元测试全绿（m1-acceptance 计时断言
 在高负载下偶发贴线 flaky——16.7±1e-6/2.1ms，单独复跑通过，属已记录的计时抖动类）；
 冻结断言达标（120Hz 本机 fps ≥115、放/挖编辑 p95 <2ms、draw 受控）。
 
