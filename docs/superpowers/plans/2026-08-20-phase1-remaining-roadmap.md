@@ -77,16 +77,40 @@
 | 城市覆写残留自然地形丘清除 + 树植根城市地表 | `7d09cf1` | fillColumn 预填整列自然地形，generateCity 仅覆写至城市地表 → 自然高度 > 城市地表的列（seed=12345 占 20.6%，最高差 11 格）残留接地自然地形丘，凸出地表包裹建筑；generateCity 清除 surfaceY+1..naturalH + 回退 pointContext 的 max 补丁（5b6c51e）使树植根城市地表；过渡带台阶不受影响 |
 | 云渲染通道勘误 + blur 档方格线根因修复（M2-7 收尾，用户实机反馈） | `7e19924` | 远处云面黑纹/方格线三连根因：①cloud 误置 transparent 通道（mc-lite 材质 `mkMat('#FFFFFF',1)` opacity=1 不透明，§4.1 勘误类遗漏）→ depthWrite=false 侧面混叠，改 opaque 通道 + mesher `SAME_TYPE_CULL` 同类相邻剔除；②atlas gutter 原为不透明黑底，mip 下采样渗黑边 → build-atlas 每 tile 边缘 bleed 回填，gutter 2→16/bleed 8；③块面 UV 逐块 wrap 的导数尖峰使 mip 足迹跨 tile 采邻 tile 色（粉灰线）→ blur 档 anisotropy 8 + cloud 匀质白纹理 UV 收缩 tile 中央 1/4（足迹永不跨 tile）根除；云纹理烘纯白（噪点仅贡献莫尔纹）。单测：mesher cloud 通道/同类剔除/UV 收缩 + atlas 双档/gutter 断言 |
 
-### M3 性能达标与收尾 ✅ 实施完成（2026-09-02，待用户验证后提交）
+### M3 性能达标与收尾 ✅ 完成并提交（2026-09-02，`82da106`）
 
 | 项目 | 状态 | 备注 |
 |---|---|---|
 | M3-1 视距 8 全量调优 | ✅ | 全量场景（城市+空岛+云层+洞穴+水面+日夜）稳态 120fps、队列归零、内存达标（体素 36~40MB / GPU 分配 136.6MB，§4.10 口径内）；BatchedMesh CAPACITY 按实测峰值重标定（消除 cutout 运行时 3× 扩容卡顿 + opaque 过度分配 63MB）；`game.memoryStats()`（§4.10 快照）；`tests/m3-fullscene.spec.mjs` |
 | M3-2 预算参数标定（60Hz/120Hz 双档） | ✅ | `src/core/budget.js`：120Hz=3ms/64、60Hz=6ms/128 冻结档 + auto 判档（matchMedia 静态检测不可信 → 运行时「快帧(<11ms)比例」判据，中位数会被启动 burst 污染）；Scheduler 上传/下发预算接线；`?budget=` URL + 设置面板覆盖；单测 9 + `tests/m3-budget.spec.mjs`（本机判 high / fps 120；low 档显式注入 fps 118） |
 | M3-3 雨效 | ✅ | `src/render/weather.js` 天气状态机（晴 60~180s → 雨 30~90s 随机周期 + 5s 淡入淡出 + force 手动覆盖）+ `src/render/rain.js`（mc-lite RainEffect.js 算法照搬：LineSegments + TSL GPU 下落、267 滴/radius 18/speed 24、isSolid 地面截停、30Hz 距离检查 + 64/帧分批迁移削峰）；`?weather=` 调试入口；雨天 fps 120 / 截图差分显著；单测 9 + `tests/m3-rain.spec.mjs`。注：roadmap 写的 mc-lite 参照 Engine.js 有误，真实实现在 `src/world/effects/RainEffect.js`（无天空压暗/雾距联动语义，未引入） |
-| M3-4 HUD 完善 + 随机种子/新世界 | ✅ | `src/ui/`：坐标+biome HUD（CITY 布局边界判定 + getBiome）、快捷栏 5 格（atlas tile CSS background 裁剪 + 数字键高亮）、设置面板（视距/blur/音量/视觉风格/帧预算档/新世界，⚙ 按钮 + uiModal 门控）；设置持久化 localStorage（URL > 存储 > 默认）；**随机种子新世界**：main.js 固定 12345 改「有存档读存档、无存档随机生成」，`?seed=` 复现入口，`game.newWorld()`（清 edits + 防卸载回写竞态 + meta 落库 + 重载）；视距/blur 切换走带参重载（BatchedMesh maxInstances 与纹理 mip level 均构造期固定）；`tests/m3-hud.spec.mjs` 3 用例。性能/视觉冻结 spec 统一钉 `?seed=12345` 保可复现；clampVD 下限 4 误钳测试 vd=2 的回归已修（下限改 2） |
+| M3-4 HUD 完善 + 随机种子/新世界 | ✅ | `src/ui/`：坐标+biome HUD（CITY 布局边界判定 + getBiome）、快捷栏 5 格（atlas tile CSS background 裁剪 + 数字键高亮）、设置面板（视距/blur/音量/视觉风格/帧预算档/新世界，⚙ 按钮 + uiModal 门控）；设置持久化 localStorage（URL > 存储 > 默认）；**随机种子新世界**：main.js 固定 12345 改「有存档读存档、无存档随机生成」，`?seed=` 复现入口，`game.newWorld()`（清 edits + 防卸载回写竞态 + meta 落库 + 重载）；视距/blur 切换走带参重载（BatchedMesh maxInstances 与纹理 mip level 均构造期固定）；`tests/m3-hud.spec.mjs` 3 用例。性能/视觉冻结 spec 统一钉 `?seed=12345` 保可复现；clampVD 下限 4 误钳测试 vd=2 的回归已修（下限改 2）。**已知偏差（M3.1 收口）**：本任务把 mc-lite
+  `Inventory.js` 列在参照里，但实施要点只含快捷栏展示层，物品数据模型（slots/selectedSlot/Z 键）
+  缺位——依据是 v1.12「背包归独立后续 Epic」，与设计文档 §4.5.4 冲突。v1.16 已定稿背包归 M3.1 |
 | M3-5 性能回归基线脚本 | ✅ | `src/bench/baseline.mjs`（`npm run bench`）：4 基线场景自动跑图（①平原冲刺 40s/255 格/跨 region 1 次——实证选定 z=-100 干燥无障碍走廊，曾误选深海/树冠点 ②城市环视 360° ③放挖 200 块 ④TNT 批删 500 块/affected 684 sections）；采集帧时 p50/p95/p99、四类队列深度、upload-ms/fast-remesh 打点、draw/sections/内存；输出 `docs/m3-baseline.{md,json}`；`--check` 门禁（结构类 2%/性能类 10%/fps 同 adapter，负向验证退出码 1）；两次连跑完全可复现 |
 | M3-6 性能报告 + 第一阶段收尾 | ✅ | `docs/m2-m3-performance-report.md`：§1 目标表 6 项全达标（冷启动 0.5s / 视距 8 默认 + vd=12 冒烟 / 120fps / 跨 region 无感知 / 编辑 1.8ms / 存档 1.7KB）；mc-lite 对比（视距 ~4×、启动数十~百倍、存档 ~千倍）；遗留观察项 5 条（LOD/per-tile mip/音频消费方/60Hz 真机矩阵等） |
+
+### M3.1 背包 ✅ 实施完成（2026-09-02，设计文档 v1.16 定稿）
+
+设计文档 §4.5.4「第一阶段实现背包」与 v1.12「背包归独立后续 Epic」口径冲突的收口：M3-4 只落地了
+快捷栏展示层，物品数据模型缺位（无 slots/selectedSlot、Z 键无响应、放块索引常量数组）。v1.16 定稿
+背包归 M3.1，推迟范围收窄为仅生存战斗与物品消耗规则。任务详情见下方「## M3.1 背包」章节。
+
+| 项目 | 状态 | 备注 |
+|---|---|---|
+| M3.1 背包（物品模型 + Z 键面板 + 快捷栏改读 slots + 输入门控修正） | ✅ | 照搬 mc-lite `Slots.js`/`Inventory.js`/`HUD.renderHotbar()`/`global.css`；122 项物品（126 排除 4 个功能性方块）；`count` 1500 占位不消耗不显示；`uiModal` keydown 守卫是 M4 Task 6 前置条件。落地 5 文件新增 + 6 文件改；单测 170→216（+46）、Playwright 32→38 用例（+6），全量回归 38 passed / 单测 216 全绿 / lint 0 error / `bench --check` 通过（9 problems 均为既有 camelcase warning） |
+
+### M3.2 方块朝向放置交互 ⬜ 进行中（M3 收尾补丁项，设计文档 v1.17 定稿）
+
+设计文档 §4.3「交互侧放置语义仍属第二阶段」与本文件第 211 行「朝向交互侧暂不实现」的收口：
+该项此前**没有排进任何已编号里程碑**（M4~M7 spec/plan 经 grep 核实均不含方块朝向）。渲染消费侧
+M2 已全部打通（`584813b`），`edits` 早已带 meta，缺的只有放置算朝向 + 挖块记朝向两步。
+v1.17 把它从床/宝箱/门 Epic 拆出独立实施，该 Epic 范围收窄为「多方块结构 + `blockEntities` 富状态」。
+任务详情见下方「## M3.2 方块朝向放置交互」章节。
+
+| 项目 | 状态 | 备注 |
+|---|---|---|
+| M3.2 方块朝向放置交互（三分支放置朝向 + 挖块记忆 + `getBlockMeta`） | ⬜ | 照搬 mc-lite `PlayerInteraction.getPlacementOrientation` 三分支 + `OrientationUtils.nextOrientation`；门控复用 `orientationModesTable`（实测与 mc-lite `orientationEnabled` 集合 40 项零差异，不新增字段）；**朝向不看玩家 yaw**——手感是原位挖放转 90°；不做放置消耗/音效/床多方块；`getBlockMeta` 提前交付 M4 plan Task 2 |
 
 ## 全局 TODO List（按执行次序）
 
@@ -115,25 +139,41 @@
    - [x] **收尾回归与关闭记录**（2026-08-31）：完整 Playwright suite 全绿（21 文件 / 25 用例
      + 144 浏览器单测；出生城市天际线 = city-visual、跨 region = structure-gen 均在套件内），
      roadmap / CLAUDE.md / README.md 的 M2 状态已更新为「完成」。
-2. [x] **M3 第一阶段验收（2026-09-02 实施完成，待用户验证后提交）**：视距 8 调优、预算双档、
+2. [x] **M3 第一阶段验收（2026-09-02 完成并提交 `82da106`）**：视距 8 调优、预算双档、
    雨效、HUD/随机种子新世界、基线脚本 + 门禁、性能报告全部落地；冻结基线 =
    `docs/m2-m3-performance-report.md` + `docs/m3-baseline.{md,json}`；收尾回归 32 用例全绿
    （m1-acceptance 贴线项单跑复验通过）+ 170 浏览器单测 + lint 0 error。
-3. [ ] **M4 第二阶段首个 Epic**：只在 M3-6 验收后开始，交付玩家第一人称手枪/MAG7/加特林的
-   `WorldEditor`、DDA hitscan、受控 GLB 视图模型、曳光和音效。规格：
+3. [x] **M3.1 背包（2026-09-02 实施完成，未提交，等用户验证）**：交付创造模式无限背包的物品数据模型
+   （`Slot`/`Inventory`，1000 槽位、每格 `count` 1500 占位不消耗）、Z 键背包面板（122 项物品、
+   点击选中可越出快捷栏 5 格）、快捷栏改读 `slots[0..4]`、`Player.placeBlock()` 改读 `getSelected()`，
+   并修正 `uiModal` keydown 门控漏洞 + 改模态栈（该守卫是 M4 Task 6 的前置条件）。
+   回归：Playwright 38 用例 + 单测 216 全绿、lint 0 error、`bench --check` 通过。
+   与 M4 数据层解耦（M4 排除背包消耗、武器切换走独立 `WeaponController`），排序依据是共用
+   `keydown` 入口。规格见设计文档 §4.5.4；任务详情与门禁诊断记录见本文件「## M3.1 背包」章节。
+4. [ ] **M3.2 方块朝向放置交互（M3 收尾补丁项，v1.17 定稿）**：交付 mc-lite 三分支放置朝向
+   （门控 `orientationModesTable` → 原位重建 `+1 %4` → 类型记忆 → 默认 EAST）、挖块记朝向
+   （`lastRemovedBlock`）、`world.getBlockMeta()`（提前交付 M4 plan Task 2）。**朝向不看玩家 yaw**
+   ——mc-lite 的手感是「转身不改朝向，原位挖掉再放回去转 90°」，照搬。此前该功能没有排进任何
+   已编号里程碑（M4~M7 spec/plan 经核实均不含方块朝向），从床/宝箱/门 Epic 拆出独立实施，
+   该 Epic 范围收窄为「多方块结构 + `blockEntities` 富状态」。不做放置消耗/音效/床多方块。
+   规格见设计文档 §4.3「朝向放置交互」；任务详情见本文件「## M3.2 方块朝向放置交互」章节。
+5. [ ] **M4 第二阶段首个 Epic**：只在 M3.2 完成后开始，交付玩家第一人称手枪/MAG7/加特林的
+   `WorldEditor`、DDA hitscan、受控 GLB 视图模型、曳光和音效。**注意**：Task 2 的 `getBlockMeta`
+   已由 M3.2 交付（改为验证 + 补断言）；Task 6 将 `digBlock()`/`placeBlock()` 改走
+   `editor.setBlock(...)` 时须保留 M3.2 的朝向分支（`WorldEditor.setBlock` 已支持 meta 参数）。规格：
    `docs/superpowers/specs/2026-08-23-m4-player-weapons-design.md`；计划：
    `docs/superpowers/plans/2026-08-23-m4-player-weapons.md`。
-4. [ ] **M5 实体运行时**：M4 验收后交付 `EntityManager`、实体 AABB raycast、受控实体渲染层、
+6. [ ] **M5 实体运行时**：M4 验收后交付 `EntityManager`、实体 AABB raycast、受控实体渲染层、
    临时/持久实体分离和 `entities` snapshot；持久实体卸载采用“冻结/异步保存、可取消、成功后下一帧同步
    最终移除”协议，不夹带具体敌人、炮塔或矿车。规格：
    `docs/superpowers/specs/2026-08-23-m5-entity-runtime-design.md`；计划：
    `docs/superpowers/plans/2026-08-23-m5-entity-runtime.md`。
-5. [ ] **M6 丧尸**：M5 验收后交付默认上限 20 的临时丧尸、20Hz 单条 WorkerPool `ai` RPC、
+7. [ ] **M6 丧尸**：M5 验收后交付默认上限 20 的临时丧尸、20Hz 单条 WorkerPool `ai` RPC、
    实体/体素最近命中比较、25/35/999 的三把枪实体伤害与六部件固定 slot 渲染；不含玩家生命、
    近战或死亡/重生，巢穴另列 M7。规格：
    `docs/superpowers/specs/2026-08-23-m6-zombies-design.md`；计划：
    `docs/superpowers/plans/2026-08-23-m6-zombies.md`。
-6. [ ] **M7 玩家放置丧尸巢穴**：M6 验收后，以巢穴最高 `gold_block` 的 `blockEntity` 为持久真相，
+8. [ ] **M7 玩家放置丧尸巢穴**：M6 验收后，以巢穴最高 `gold_block` 的 `blockEntity` 为持久真相，
    保留“玩家放置、全局最多 8 个、关键方块破坏即失效”的 mc-lite 语义；不是 StructureIndex 地标。
    规格：`docs/superpowers/specs/2026-08-23-m7-zombie-nests-design.md`；计划：
    `docs/superpowers/plans/2026-08-23-m7-zombie-nests.md`。
@@ -189,21 +229,38 @@
 - [ ] **m1-acceptance 计时 flaky 观察**：放挖 p95 断言在高负载下偶发贴线（16.7±1e-6/2.1ms），
   非回归（不同断言轮流失败、单独复跑通过）；以实机帧率为准，冻结断言不擅改。若连续出现同一断言失败，
   再按实际数据启动诊断。
-- [x] **朝向交互侧暂不实现**（原地重转 90°/类型记忆）：第二阶段随床/宝箱/门落地，第一阶段只预留
-  meta 数据位。
+- [x] ~~**朝向交互侧暂不实现**（原地重转 90°/类型记忆）：第二阶段随床/宝箱/门落地，第一阶段只预留
+  meta 数据位。~~ → **已由 M3.2 独立落地**（2026-09-02，设计文档 v1.17 定稿）：从床/宝箱/门
+  Epic 中拆出，该 Epic 范围相应收窄为「多方块结构 + `blockEntities` 富状态」。
+  详见「## M3.2 方块朝向放置交互」章节。
 
-#### 接下来（2026-09-02 更新：M3 实施完成待验证）
+#### 接下来（2026-09-02 更新：M3 已提交，M3.1 实施完成待验证，M3.2 文档已就绪待实施）
 
-1. ~~**M3 全部六任务**~~ ✅ 已实施完成（2026-09-02，M3-1→M3-6 顺序 TDD；未提交，等用户验证）。
+1. ~~**M3 全部六任务**~~ ✅ 已实施完成并提交（2026-09-02，M3-1→M3-6 顺序 TDD；用户验证后
+   经 `/commit` 提交为 `82da106`，含设置面板 mc-lite 风格照搬与 ⚙ 按钮下移 10px 两处实机反馈修改）。
 2. blur 档面板接线/持久化已随 M3-4 落地（重载生效口径）；剩余可选项（per-tile mip 链打磨、
    默认值翻转决策）见 M3-4 条目与性能报告遗留观察项。
-3. **用户验证 M3 后提交** → M3-6 报告即第一阶段冻结基线 → **M4 玩家武器**（第二阶段首个 Epic，
-   加读规格与计划文档后开工）。
+3. ~~**M3.1 背包**~~ ✅ 已实施完成（2026-09-02，TDD 全程；**未提交，等用户验证**）：
+   文档对齐（设计文档 v1.16：§4.5.4 完整规格 + §4.1 `registry.all()` + 消除与 v1.12 的冲突）→
+   物品模型（`Slot`/`Inventory` + `registry.all()` + `Player` 接入 + `hotbarIndex` 收敛为别名）→
+   背包 UI（`src/ui/inventory.js` + 快捷栏改读 slots + `uiModal` 模态栈 + keydown 守卫）→
+   全量回归（38 用例 + 216 单测 + lint 0 error + `bench --check` 通过）。
+   门禁诊断记录（每帧分配致 `fastRemeshP95` 回退的真缺陷 + `frameP95` 抖动离群值的 HEAD 对照）
+   见「## M3.1 背包」章节末尾。
+4. **M3.2 方块朝向放置交互（文档已就绪，代码实施待用户指令）**：设计文档 v1.17 已定稿
+   （§4.3 新增「朝向放置交互」小节 + §4.1 补记 `getBlockMeta` + v1.17 修订说明），本文件
+   「## M3.2」章节 + 里程碑总表 + 全局 TODO 第 4 项 + 依赖链 + 第 232 行收口全部就绪；
+   M4 plan 已加两处标注（Task 2 的 `getBlockMeta` 改为验证已交付、Task 6 重写
+   `digBlock()`/`placeBlock()` 时须保留朝向分支）；CLAUDE.md / README.md 同步完成。
+   **待实施**（RED→GREEN 顺序见 M3.2 章节的测试 checklist）：`src/player/orientation.js`
+   纯函数 + `world.getBlockMeta()` + `Player` 两个交互状态 + `digBlock()`/`placeBlock()` 接入。
+5. **用户验证 M3.1（与 M3.2）后提交** → **M4 玩家武器**（第二阶段首个 Epic，加读规格与计划文档
+   后开工；M3.1 交付的 `uiModal` keydown 守卫 + M3.2 交付的 `getBlockMeta` 均是 M4 的前置条件）。
 
 ### 测试现状
 
-- 24 个 Playwright spec 文件（32 个测试用例；m1-acceptance 计时断言高负载下偶发贴线 flaky，单跑全绿）
-- 170 个浏览器内单元测试（harness）
+- 25 个 Playwright spec 文件（38 个测试用例；m1-acceptance 计时断言高负载下偶发贴线 flaky，单跑全绿）
+- 216 个浏览器内单元测试（harness）
 - 冻结断言：fps ≥90（120Hz 本机 ≥115）、编辑 p95 <2ms、draw 受控；atlas 147 tile（126 + 23 程序化烘焙）
 - 性能基线门禁：`npm run bench` 采集 / `npm run bench -- --check` 回退 >10% 阻断（结构类 2%）
 
@@ -359,7 +416,7 @@
 
 ---
 
-## M3 性能达标与收尾 ✅ 实施完成（2026-09-02，待用户验证后提交）
+## M3 性能达标与收尾 ✅ 完成并提交（2026-09-02，`82da106`）
 
 **验收口径（设计文档 §7）：** §1 目标表全部达标；输出性能报告。
 实测证据汇总：`docs/m2-m3-performance-report.md` + `docs/m3-baseline.{md,json}`。
@@ -490,6 +547,204 @@
 
 ---
 
+## M3.1 背包 ✅ 实施完成（2026-09-02，TDD 全程；未提交，等用户验证）
+
+**背景（口径收口）：** 设计文档 §4.5.4 原写「第一阶段实现创造模式无限背包」，而 v1.12 修订说明
+同期写「背包、完整 Hotbar 与玩家生存战斗均保持独立后续 Epic」——二者冲突。M3-4 实施时按 v1.12
+口径只落地了快捷栏 5 格展示层（`src/ui/hotbar.js` + `HOTBAR_ITEMS` 常量数组），**物品数据模型缺位**：
+无 `slots`、无 `selectedSlot`、Z 键无响应、放块直接索引常量数组。
+v1.16 修订说明已定稿：**背包归 M3.1**，v1.12 的推迟范围收窄为仅玩家生存战斗与物品消耗规则
+（`PlayerVitals`、掉落/拾取、`count` 递减）。完整规格见设计文档 §4.5.4。
+
+**排序依据（非依赖）：** M4 与背包在数据层解耦——M4 spec 第 13 行明确排除「弹药/装填/背包消耗」，
+武器切换走独立 `WeaponController.selectWeapon/cycleWeapon`（KeyR），不经过快捷栏。先做背包的唯一
+理由是 M4 Task 6 要重写 `player.js` 的 `keydown` 入口，背包也在同一段挂 Z/Escape，一次改到位；
+同时 M3.1 修正的 `uiModal` 门控漏洞是 M4 的前置条件（见下）。
+
+**目标：** 补齐创造模式无限背包 —— 物品数据模型 + Z 键背包面板 + 快捷栏改读 slots + 输入门控修正。
+
+**mc-lite 参照：**
+- `src/actors/player/Slots.js`（`Slot` / `Inventory` 数据模型，107 行）
+- `src/ui/Inventory.js`（Z/Escape/数字键 + 点击选中 + DOM 网格渲染，130 行）
+- `src/ui/HUD.js:158-253`（`renderHotbar()`：快捷栏 = `inventory.slots[0..4]` 视图）
+- `src/core/Game.js:206-323`（物品填充，`DEFAULT_INVENTORY_COUNT` 1500）
+- `src/style/global.css:22-63`（`#inventory-modal` / `#inventory-content` / `#inventory-grid` / `.slot` / `.item-name`）
+- `index.html:185-190`（背包 DOM 骨架）
+
+**实现要点：**
+- [x] 物品数据模型（`src/player/inventory.js`）：`Slot{id,item,count,meta}` + `set/clear/isEmpty`、
+  `Inventory(size)` + `slots/selectedSlot/add/remove/has/getSelected/selectSlot`（照搬 mc-lite
+  `Slots.js` 语义：`isEmpty()` = `item===null||count<=0`，`add()` 先堆叠同类再找空位）；
+  **两个数字勿混**：`Inventory(size = 1000)` 是槽位数（mc-lite `Slots.js:57`），
+  `DEFAULT_INVENTORY_COUNT = 1500` 是创造模式填充时每格的 count（mc-lite `GameConfig.js:9`）——
+  原设计文档 §4.5.4 曾写「1500 格语义」混淆二者，v1.16 已勘误。M3.1 填充 122 槽（物品集合大小），
+  其余 878 槽留空供后续生存 Epic 的掉落/拾取
+- [x] 创造模式不消耗：`count` 仅占位，放块/挖掘不递减，`remove()` 保留供后续生存 Epic；
+  **UI 不渲染数量**（产品决策，mc-lite 渲染，无限背包下显示 1500 是噪声）
+- [x] `BlockRegistry.all()`（§4.1 补记）：按注册顺序返回 `{id,name}[]` 只读快照，冷路径专用，
+  禁入 meshing/物理热路径
+- [x] 物品集合：BlockRegistry 全部 126 条目排除 `air`/`collider`/`calcite`/
+  `realistic_trunk_collider`（功能性方块，mc-lite 背包同样排除这 4 项）→ **122 项**；
+  `bed_alias_block`/`mine_cart` 无 faces-data 因而无图标 tile，渲染空槽（mc-lite 背包包含二者）。
+  **顺序冻结**：`slots[0..4]` = `stone`/`dirt`/`grass`/`sand`/`cobblestone`（即既有
+  `HOTBAR_ITEMS`，保持快捷栏默认观感与 `tests/m3-hud.spec.mjs` 断言不变），其余 117 项按
+  `registry.all()` 注册顺序追加。理由：`blocks-data.js` 注册序前几位是 `water`/`swamp_water`/
+  `cloud`/`glass_block`/`glass_blink`，纯注册序会让快捷栏前 5 格变成这些非常用建材
+  （mc-lite 用 `Game.js:206+` 手工列举 107 条、`stone` 居首达到同样效果）
+- [x] `Player` 接入：`placeBlock()` 改读 `inventory.getSelected().item` 解析 ID，不再索引
+  `HOTBAR_ITEMS` 常量；`hotbarIndex` 收敛为 `inventory.selectedSlot` 的别名（单一权威，
+  避免两份选中态）
+- [x] 背包面板（`src/ui/inventory.js`）：Z toggle / Escape 关闭 / 数字键 1-5 / 点击槽位选中；
+  DOM 样式照搬 mc-lite `global.css`（600×400 灰底内容框 + 8 列网格 `overflow-y:auto` +
+  48×48 斜角浮雕槽位 + `.selected` 3px 黄边 + 32×32 pixelated 图标 + `.item-name` 10px 白字）；
+  只列非空槽；样式表按 `settings-panel.js` 同法注入（`mc-` 前缀、幂等）
+- [x] 快捷栏改读 slots（`src/ui/hotbar.js`）：5 格内容来自 `inventory.slots[0..4]`、高亮读
+  `selectedSlot`；`selectedSlot > 4` 时 5 格**无高亮**（mc-lite 同行为）
+- [x] **输入门控修正（既有漏洞）**：`game.uiModal` 原先只在主循环
+  `if (!this.uiModal) this.player.update(dt)` 生效，而 `Player._bindInput()` 的
+  `window.keydown` 不受拦截 → 模态打开期间新按的键仍写入 `keys`、改选中格。M3.1 在 keydown
+  入口加 `uiModal` 守卫（数字键选中一并拦截）。**该守卫是 M4 Task 6 的前置条件**
+  （M4 在同一段 keydown 挂 `KeyR` 切武器，无守卫则面板开着按 R 会切武器并播音效）
+- [x] **模态栈（收口单一布尔的多面板竞争）**：`uiModal` 原为可写布尔，只有设置面板一个消费者时
+  够用；背包加入后二者互相踩——设置面板开着时按 Z 开背包、再关背包会把 `uiModal` 置 false，
+  令仍在显示的设置面板失去门控（WASD 恢复移动）。改为 `game.pushModal(owner)` /
+  `popModal(owner)`（只移除自己的 owner）+ `uiModal` getter（栈非空即 true，读取侧不变、
+  不可写）。mc-lite 无面板互斥（`UIManager.js` 里背包与设置各自独立 toggle），但它也没有
+  共享门控标志——本仓库的 `uiModal` 是 M3-4 引入的，互斥责任落在这里
+- [x] **pointer lock 恢复（口径与 mc-lite 不同，有意）**：mc-lite `Inventory.toggle()` 关闭时
+  `document.body.requestPointerLock()`；本仓库 lock 目标是 **canvas**
+  （`canvas.click` 入口 + `document.pointerLockElement !== this._canvas` 守卫），
+  锁 body 会让视角与放挖全部失效。故关闭面板时 lock 回 `player.canvas`，两个面板统一；
+  程序化 `requestPointerLock()` 可能因 `SecurityError` 失败（需用户手势、无头环境尤甚），
+  调用处 try/catch 吞掉，失败回落到既有「点击画面重新锁定」。设置面板原 `close()`
+  未做 lock 恢复，M3.1 一并补齐
+
+**测试：**
+- [x] 单测（`src/tests/test-inventory.js`）：`Slot` set/clear/isEmpty（含 `count<=0` 视为空）、
+  `Inventory` size=1000 槽位/selectedSlot/getSelected/selectSlot、`add()` 堆叠优先再找空位、
+  `has()` 跨槽累加、`remove()` 扣减到 0 清空、物品集合 122 项且排除项不在内、`registry.all()`
+  顺序与数量、前 5 项 = HOTBAR_ITEMS（顺序冻结）、创造模式填充不消耗
+- [x] 单测（`src/tests/test-inventory-ui.js`）：Z toggle 显隐、Escape 仅打开态关闭（关态按
+  Escape 不误清设置面板门控）、点击槽位改 `selectedSlot`（含越出 5 格）、数字键 1-5、
+  模态栈 push/pop 不误清他人、样式表幂等注入、600×400/8 列/投影等 mc-lite 样式口径、
+  图标 tile 裁剪、count 不渲染、空槽不列出（data-index 仍是真实槽索引）、无 tile 物品降级、
+  dispose 摘除监听与 DOM
+- [x] Playwright（`tests/m3-1-inventory.spec.mjs`）：物品模型（122 项/快捷栏 = slots[0..4] 视图/
+  排除项/registry.all 同源）+ Z 键 toggle + 模态栈 + keydown 守卫（背包开着按 W 不进 keys）+
+  点击第 8 格后放块用该方块（世界实际写入 ID 校验、非 stone）+ 创造模式放块后 count 不变 +
+  模态栈不误清设置面板门控（设置开着按 Z 开背包、关背包后 settings 门控保持）+
+  `uiModal` 只读 + z-index 背包高于设置面板 + count 不渲染（120 个图标 / 2 个降级空槽）
+- [x] 回归：既有 32 Playwright 用例 + 浏览器内单测全绿、lint 0 error、
+  `npm run bench -- --check` 性能无回退（背包为纯 UI + 冷路径构建，不应触碰帧预算）
+
+**实测与门禁诊断记录（2026-09-02）：**
+
+- 单测 170 → **216**（+46：`test-inventory.js` 22 项物品模型 / `test-inventory-ui.js` 24 项面板 UI）；
+  Playwright 32 → **38** 用例（`tests/m3-1-inventory.spec.mjs` 6 项真实游戏集成）。
+  全量回归 **38 passed / EXIT=0**，单测 **216/216**，lint **0 error**（9 个既有 camelcase warning 不变）。
+- **门禁第一次阻断：`fastRemeshP95: 1.1 → 1.3`（回退 18.2%）——本次改动引入的真缺陷。**
+  根因：`hotbar.js` 的 `update()` 里写了 `slots.slice(0,5).map(...)`，**每帧产生 2 个临时数组**；
+  120fps × 6s 编辑场景 ≈ 1440 个待回收数组，GC 压力正好落在 fast-remesh 的计时窗口内。
+  改为逐格 `itemAt(i)` 取值（零分配）后，该指标与 HEAD 分布完全一致（HEAD 1.1/1.2、改动后 1.1/1.2）。
+  **教训：每帧调用的 UI 同步路径禁止 `slice`/`map`/解构展开等隐式分配**——成本不在计算而在 GC 停顿，
+  且只会体现在编辑类场景的 p95 上（稳态渲染场景看不出）。
+- **门禁第二次阻断：场景④ `frameP95: 9 → 10`（11.1%）——抖动离群值，非回退。**
+  按「诊断不猜」纪律做 HEAD 对照（`git stash -u` 后跑 `bench --out /tmp/...` 不覆盖基线）：
+  HEAD 3 次 = 9 / 9.2 / 9.2；改动后 6 次 = 9.1 / **10** / 9.2 / 9.3 / 9.1 / 9.2。
+  仅一个离群值，其余与 HEAD 同分布；同场景 fps 反而更高（改动后 119.36~120.03 vs HEAD 118.64~119.4），
+  且 `draw=526`/`sections` 等结构类指标逐次完全一致。
+  `frameP95` 在 120Hz vsync 锁帧下被量化到 8.33ms 台阶（9.1 vs 10 是抖动跨台阶，非负载差 1ms），
+  10% 阈值对这个指标过于敏感。**未改任何阈值、未重录基线**（冻结断言纪律），复跑门禁通过（EXIT=0）。
+- 基线文件 `docs/m3-baseline.{md,json}` **未被覆盖**（全程用 `--out /tmp/...` 或 `--check` 只读模式），
+  冻结基线仍是 M3-5 提交的那份。
+- 附带修复（非计划内，实施中发现）：① `eslint.config.mjs` 的 globals 漏了
+  `KeyboardEvent`/`MouseEvent`/`getComputedStyle`（UI 单测需派发事件与读计算样式）；
+  ② `Game.dispose()` 未清理面板——背包在 window 挂 keydown 监听，fixture 页多次构造 Game 会串扰，
+  已补 `inventoryPanel?.dispose()`（设置面板无 window 监听，不需 dispose）；
+  ③ 背包 z-index 设 80 > 设置面板 70——两个模态可共存于栈，后开的必须在视觉上层，
+  否则设置面板开着按 Z 打开的是被完全盖住的背包。
+
+---
+
+## M3.2 方块朝向放置交互（M3 收尾补丁项，插在 M3.1 与 M4 之间）
+
+**背景（口径收口）：** 设计文档 §4.3 原写「交互侧放置语义仍属第二阶段」，本文件第 211 行亦记
+「朝向交互侧暂不实现：第二阶段随床/宝箱/门落地」——即它此前**没有排进任何已编号里程碑**。
+逐项核实 M4~M7 的 spec 与 plan（grep `orientation`/`朝向`/`OrientationUtils`/
+`getPlacementOrientation`）：M4 零命中（M4-1 GLB+音频 / M4-2 状态机+DDA+输入 /
+M4-3 视图模型+曳光+联调，均不涉及方块朝向）、M5 零命中、M7 零命中；M6 唯一命中是
+`setTestAim` 注释里的「设置朝向」，指**相机 aim** 而非方块朝向。
+
+渲染消费侧 M2 已全部打通（`584813b`：mesher 读 `meta&3` 按 4 朝向旋转、`getSectionView`
+打包 meta、Worker transfer），`chunk-column.set()` 的 `edits` 条目也早已带 meta；
+缺的只有「玩家放置时算出朝向值并写入」与「挖块时记住朝向」两步。
+
+v1.17 修订说明已定稿：从床/宝箱/门 Epic 中拆出独立实施为 **M3.2**，该 Epic 范围相应收窄为
+「多方块结构 + `blockEntities` 富状态」。完整规格见设计文档 §4.3「朝向放置交互」。
+
+**门控字段复用（实测证据）：** mc-lite 用 `orientationEnabled`（`BlockData.js` 默认值 true），
+M0 转换后在 mc-heavy 名为 `orientationModes`。逐项核对两侧集合：
+
+```
+mc-lite orientationEnabled=true : 40
+mc-heavy orientationModes>0     : 40
+仅 mc-lite 有: (无)    仅 mc-heavy 有: (无)    集合完全一致: true
+```
+
+故直接复用 `registry.orientationModesTable[id]`（>0 即启用朝向），**不新增字段、不改 blocks-data.js**。
+（附带勘误：M3.1 讨论时曾疑该表混入 `air`/`water`/`cloud`/`leaves` 像转换产物——实测 mc-lite
+那边这 4 项同样是 `orientationEnabled: true`，属上游语义，非转换错误。）
+
+**mc-lite 语义更正（勿照印象实现）：** 放置朝向**不看玩家 yaw**——mc-lite 的
+`getPlacementOrientation(x, y, z, type)` 签名里没有朝向参数。真实手感是「转身不改朝向；
+要转 90° 就在原位挖掉再放回去」。
+
+**目标：** 补齐玩家放置/挖掘侧的方块朝向语义（照搬 mc-lite 三分支 + 挖块记忆）。
+
+**mc-lite 参照：**
+- `src/actors/player/PlayerInteraction.js:413-445`（`getPlacementOrientation` 三分支）
+- `src/actors/player/PlayerInteraction.js:399-407`（`recordRemovedBlock` / `clearRemovedBlock`）
+- `src/utils/OrientationUtils.js`（`BlockOrientation` 枚举、`nextOrientation` = `+1 % 4`）
+- `src/actors/player/Player.js:164,168`（`lastRemovedBlock` / `placementOrientationMemory` 两个状态）
+- `src/constants/BlockData.js:12`（`DEFAULT_PROPERTIES.orientationEnabled = true`）
+
+**实现要点：**
+- [ ] 纯函数模块（`src/player/orientation.js`，无 DOM/three，Worker 同构）：
+  `nextOrientation(o) = (o + 1) % 4`；`getPlacementOrientation(...)` 三分支——
+  ① `orientationModes[id] === 0` → 恒 0（84 个方块不参与旋转）；
+  ② `lastRemovedBlock` 且 **x/y/z/type 四者全等** → `nextOrientation(旧朝向)` 并写入类型记忆；
+  ③ 类型记忆存在 → 沿用；④ 否则 → 0（EAST）
+- [ ] `world.getBlockMeta(x, y, z)`（`src/voxel/world-data.js`）：O(1) 直查 `column.meta`，
+  越界/缺列返回 0。**与 M4 plan Task 2 口径一致**（该方法 M4 亦计划新增，M3.2 提前交付）
+- [ ] `Player` 两个交互状态：`lastRemovedBlock = {x,y,z,type,orientation}`（挖前读 meta 记下）、
+  `placementOrientationMemory = Map<type, orientation>`（按类型记忆，跨位置、会话内持久）。
+  二者是 UI 交互态，**不入世界数据、不持久化**（世界权威只有 meta 通道）
+- [ ] `digBlock()`：挖前 `getBlockMeta()` 读旧朝向 → `recordRemovedBlock()`；基岩拦截不变
+- [ ] `placeBlock()`：`getPlacementOrientation()` 算朝向 → 传入 `setBlock(..., meta)` →
+  成功后 `clearRemovedBlock()`。与 M3.1 的 `inventory.getSelected()` 取物品逻辑正交叠加
+- [ ] **明确不照搬**（各撞已定决策或属他 Epic）：① `inventory.remove(type,1)` 放置消耗
+  ——M3.1 定稿创造模式无限背包不消耗；② `audioManager.playSound('put', 0.3)`
+  ——第一阶段无音频消费方（M4 Task 4 才有 AudioManager）；③ `tryPlaceBed()` 床的多方块放置
+  ——属床/宝箱/门 Epic，且 bed_head/bed_tail 在 mc-lite 本就 orientationEnabled=false
+- [ ] **M4 plan 注意事项**（本任务落地时写入 M4 plan）：① Task 2 新增 `getBlockMeta` 的步骤
+  改为「验证已由 M3.2 交付 + 补断言」；② Task 6 将 `digBlock()`/`placeBlock()` 改走
+  `editor.setBlock(...)` 时**须保留 M3.2 的朝向分支**（`WorldEditor.setBlock` 已支持 meta 参数，
+  M4 plan:332 `const meta = change.meta ?? 0`）
+
+**测试：**
+- [ ] 单测（`src/tests/test-orientation.js`）：`nextOrientation` 循环（0→1→2→3→0）、
+  门控集合与 mc-lite 一致（40 项 true / 84 项 false）、三分支各路径、原位判定要求 x/y/z/type
+  四者全等（改任一即不触发重转）、跨位置放置沿用类型记忆、`world.getBlockMeta` 越界/缺列返回 0、
+  挖块记录含从 meta 读出的旧朝向、放置成功清空 `lastRemovedBlock`
+- [ ] Playwright（`tests/m3-2-orientation.spec.mjs`）：放 `chest` 首次 meta=0；原位挖放四次
+  meta 依次 1→2→3→0；跨位置放同类型沿用记忆；`stone`（orientationModes=0）恒 meta=0；
+  带朝向方块存档后重启 meta 保留（edits 通路）；旋转后 section 重建无报错、draw 受控
+- [ ] 回归：既有 Playwright 用例（M3.1 后为 38）+ 浏览器内单测（M3.1 后为 216）全绿、
+  lint 0 error、`npm run bench -- --check` 无回退（朝向只加 O(1) 计算与一次 meta 读，
+  不应触碰帧预算；若 `fastRemeshP95` 波动按 M3.1 的 HEAD 对照法诊断）
+
+---
+
 ## 依赖关系
 
 ```
@@ -508,7 +763,12 @@ M3-3 (雨效) ← 独立
 M3-4 (HUD 完善) ← 依赖 M2-6（视觉风格切换）
 M3-5 (性能回归基线) ← 依赖 M3-1
 M3-6 (性能报告) ← 依赖 M3-1~M3-5
-M4 (第二阶段玩家武器) ← 依赖 M3-6 冻结验收
+M3.1 (背包) ← 依赖 M3-4（快捷栏/设置面板 DOM 基础）；与 M4 数据层解耦，排序仅因共用 keydown 入口
+M3.2 (方块朝向放置交互) ← 依赖 M2 的渲染消费侧（584813b）+ M3.1 的 placeBlock 改造；
+                          渲染/持久化通路 M2 已通，本项只补放置算朝向 + 挖块记朝向两步
+M4 (第二阶段玩家武器) ← 依赖 M3-6 冻结验收 + M3.1（uiModal keydown 守卫是 Task 6 前置条件）
+                       + M3.2（Task 6 重写 digBlock/placeBlock 时须保留朝向分支；
+                         Task 2 的 getBlockMeta 已由 M3.2 交付）
 M5 (实体运行时) ← 依赖 M4
 M6 (丧尸) ← 依赖 M5（并接入 M4 的实体命中比较）
 M7 (玩家放置丧尸巢穴) ← 依赖 M6（并使用 M4 WorldEditor）
@@ -523,7 +783,9 @@ M7 (玩家放置丧尸巢穴) ← 依赖 M6（并使用 M4 WorldEditor）
 6. M3-1 → M3-2 → M3-5 → M3-6（性能链）
 7. M3-3（雨效，独立）
 8. M3-4（HUD，依赖 M2-6）
-9. M4 → M5 → M6 → M7（第二阶段实体/敌人链；每一项以前项验收为门）
+9. M3.1（背包，M3 收尾补丁项；M4 开工前完成，共用 keydown 入口一次改到位）
+10. M3.2（方块朝向放置交互，M3 收尾补丁项；M4 开工前完成，Task 6 重写 placeBlock 前须就位）
+11. M4 → M5 → M6 → M7（第二阶段实体/敌人链；每一项以前项验收为门）
 
 ---
 

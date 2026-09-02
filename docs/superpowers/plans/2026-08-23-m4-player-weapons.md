@@ -254,6 +254,12 @@ Expected: FAIL，浏览器单测因 `world-editor.js` 或 `WorldData.setBlocks` 
 
 - [ ] **Step 3: 实现 WorldData 的批量原子写入**
 
+> **M3.2 前置变更（2026-09-02）**：`getBlockMeta(x,y,z)` 已由 **M3.2 方块朝向放置交互**提前交付
+> （挖块需读旧朝向存 `lastRemovedBlock` 记忆），口径与本步要求一致：O(1) 直查 `column.meta`、
+> 越界或 column 缺失返回 `0`。故本步**不再新增该方法**，改为验证已存在并补断言
+> （`tests/` 里对该方法的 RED 会直接变绿，属预期，不是测试写错）。
+> 设计文档 §4.1 读路径 API 已补记该方法，见 v1.17 修订说明 ④。
+
 在 `WorldData` 中新增 `getBlockMeta(x,y,z)`（越界或 column 缺失返回 `0`），并抽取 `_affectedFor(cx,cz,lx,y,lz)`；现有 `setBlock()` 和新的批量方法都调用它，避免两种编辑在 section 边界的脏标记不同。批量方法使用“最后一次坐标写入获胜”的 `Map`，读取旧 id/meta 后按 column 分组，在每组循环写 `blocks`、`meta`、`edits` 和 dirty section，循环结束后再 `column.version++` 一次。禁止对每格调用 `ChunkColumn.set()`，因为该方法会重复 bump version。
 
 ```js
@@ -942,6 +948,21 @@ Expected: FAIL，`Game.selectWeapon` 未定义；现有 interaction 在迁移后
 - [ ] **Step 3: 在 Game 中装配基础设施并迁移 Player 的世界编辑**
 
 在 `Game.start()` 创建 scheduler 后立即创建 `this.editor = new WorldEditor({world:this.world,scheduler:this.scheduler})`；创建 `WeaponModelLoader`、`AudioManager(this.camera)` 并预加载四个声音（单个失败记录到 console，不中止 `worldReady`）；创建 Player 时注入 editor 和这些运行时对象。`dispose()` 的反向顺序是 Player → AudioManager → WeaponModelLoader → WorkerPool → renderer。
+
+> **M3.2 前置变更（2026-09-02）——重写这两个方法时必须保留朝向分支**：
+> **M3.2 方块朝向放置交互**已在 `Player.digBlock()`/`placeBlock()` 里落地了朝向语义
+> （设计文档 §4.3「朝向放置交互」，mc-lite 三分支）：
+> - `digBlock()`：挖前 `world.getBlockMeta()` 读旧朝向 → 记 `lastRemovedBlock = {x,y,z,type,orientation}`；
+> - `placeBlock()`：`getPlacementOrientation(...)` 算朝向（门控 `registry.orientationModesTable[id]` →
+>   原位重建 `nextOrientation` → `placementOrientationMemory` 类型记忆 → 默认 0）→
+>   **作为 `meta` 参数传入** `setBlock(x,y,z,id,meta)` → 成功后 `clearRemovedBlock()`。
+>
+> 本步改用 `this.editor.setBlock(...)` 时，`WorldEditor.setBlock` 已支持 meta
+> （本文件 Task 2：`const meta = change.meta ?? 0`），把算出的朝向作为 meta 传入即可，
+> **不得退化为只传 id**。同理 `digBlock()` 走 editor 时仍须先读旧 meta 存记忆。
+> 回归依据：`tests/m3-2-orientation.spec.mjs` 的原位挖放四次 0→1→2→3→0 断言必须继续通过。
+> 注意 M3.2 与 M4 数据层解耦——M4 排除背包消耗，武器切换走独立 `WeaponController`，
+> 故本项不是 M4 的依赖，只是同一段代码的先后改动。
 
 将 `Player.digBlock()`/`placeBlock()` 改为 `this.editor.setBlock(...)`，但保留徒手的 bedrock 拦截和 fast path。创建 controller 时注入唯一的 `onEffect: (effect) => this._applyWeaponEffect(effect)`；后者按顺序调用 `viewWeapon.onShot(effect)`、`tracerRenderer.spawn(effect)`、`audioManager.play(effect.sound,effect.volume)`，不再由 update 返回数组重复播放。每帧相机更新、DDA `target` 计算完成后，用 `_buildAim()` 创建 plain `aim`（origin、forward、right、up、target），调用 `weaponController.update(dt,aim)`、`viewWeapon.update(dt,{shooting: weaponController.debugState().triggerHeld})` 和 `tracerRenderer.update(dt,aim)`。现有高亮逻辑保持使用同一 DDA 结果。
 

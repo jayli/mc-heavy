@@ -1,6 +1,6 @@
 # mc-heavy 第一阶段实施设计文档：游戏引擎原型
 
-> 版本：v1.15 ｜ 日期：2026-09-02 ｜ 状态：定稿（经十三轮逐条核验修订）
+> 版本：v1.17 ｜ 日期：2026-09-02 ｜ 状态：定稿（经十五轮逐条核验修订）
 >
 > 目标：在 mc-heavy 仓库从零重建一个功能对标 mc-lite、性能提升一个数量级的体素游戏引擎。
 > 第一阶段只做"引擎底座"：渲染、体素数据、即时地图生成、玩家交互、种子地图、存档原型。
@@ -96,8 +96,10 @@
 > 伤害、死亡回收”的临时敌人：默认上限 20，手枪/加特林/MAG7 的实体伤害与射程分别为
 > `25/40`、`35/40`、`999/10`，无 `PlayerVitals`、近战、死亡/重生；AI 为 20Hz 单条批量 WorkerPool
 > RPC，60 格外只冻结 AI。M7 的刷怪搜索明确为八个精确 offset、`dy=3..-2` 的六层；GEN 接管必须
-> `restoreEdits()` 同时恢复 blockEntity 与内存 edits，防止后续 flush 覆盖旧存档。背包、完整 Hotbar
-> 与玩家生存战斗均保持独立后续 Epic。
+> `restoreEdits()` 同时恢复 blockEntity 与内存 edits，防止后续 flush 覆盖旧存档。玩家生存战斗
+> 保持独立后续 Epic（**v1.16 勘误**：本句原写「背包、完整 Hotbar 与玩家生存战斗均保持独立
+> 后续 Epic」，与 §4.5.4 冲突；背包与完整 Hotbar 已定稿归 M3.1，推迟范围收窄为生存战斗与
+> 物品消耗规则，详见 v1.16 修订说明）。
 
 > v1.13 修订说明：M5 的持久实体卸载改为可取消的两阶段协议，以修正 Scheduler 同帧同步
 > `world.remove()` 与 IndexedDB 异步写入不能排序的矛盾。column 超过卸载半径后仍保留 world/render，
@@ -131,6 +133,31 @@
 > 判档一次锁定防震荡；设置面板/`?budget=` 可显式覆盖。④ 视距/blur 档切换为**持久化 +
 > 带参重载**：BatchedMesh maxInstances 与 WebGPU 纹理 mip level 数均在构造期固定
 > （运行时翻 generateMipmaps 不重建 mip 链），重载是无副作用路径。
+
+> v1.16 修订说明：**消除背包归属的口径矛盾并定稿 M3.1**（2026-09-02）。v1.12 曾写「背包、
+> 完整 Hotbar 与玩家生存战斗均保持独立后续 Epic」，而 §4.5.4 同期写「第一阶段实现创造模式
+> 无限背包」——二者冲突，且 M3-4 实施时按 v1.12 口径只落地了快捷栏 5 格（展示层 +
+> `HOTBAR_ITEMS` 常量数组），物品数据模型缺位。本次定稿：① **背包归 M3.1**，插在 M3（已验收）
+> 与 M4 之间，§4.5.4 由一句话扩写为完整规格（物品模型、槽位语义、物品集合、DOM 样式表、
+> 输入门控）；② v1.12 那句中「背包、完整 Hotbar」的推迟范围**收窄为仅玩家生存战斗与物品
+> 消耗规则**（`PlayerVitals`、掉落/拾取、count 递减仍是独立后续 Epic）；③ §4.1 补记
+> `BlockRegistry.all()` 遍历接口（背包物品集合构建的唯一消费方，禁入热路径）；④ 修正
+> `uiModal` 门控漏洞：模态打开期间 `Player._bindInput()` 的 keydown 不受拦截，M3.1 加守卫，
+> 该守卫同时是 M4 Task 6（`KeyR` 切武器挂同一段 keydown）的前置条件。M4 与背包在数据层解耦
+> （M4 spec 明确排除「弹药/装填/背包消耗」，武器切换走独立 `WeaponController`），排序依据是
+> 共用 keydown 入口的工程效率，非依赖关系。
+
+> v1.17 修订说明：**方块朝向放置交互定稿归 M3.2**（2026-09-02）。v1.16 前 §4.3 写「交互侧放置
+> 语义仍属第二阶段」，roadmap 亦记「朝向交互侧暂不实现：第二阶段随床/宝箱/门落地」——即它此前
+> **没有排进任何已编号里程碑**（M4~M7 spec/plan 经 grep 核实均不含方块朝向）。本次把它从
+> 床/宝箱/门 Epic 中拆出独立实施：① §4.3 新增「朝向放置交互」小节，写完整规格（三分支算法、
+> 门控字段复用、Player 两个交互状态、明确不照搬项、对 M4 的影响）；② 实测证据：mc-lite
+> `orientationEnabled=true` 与 mc-heavy `orientationModes>0` 的方块集合**完全一致（40 项，零差异）**，
+> 故直接复用 `orientationModesTable` 作门控，不新增字段；③ 更正一处此前误述——mc-lite 的放置朝向
+> **不按玩家 yaw 计算**（`getPlacementOrientation(x,y,z,type)` 无朝向参数），手感是「原位挖掉再放
+> 回去转 90°」，本次照搬；④ §4.1 读路径 API 补 `world.getBlockMeta(x,y,z)`（M4 plan Task 2 亦
+> 计划新增，M3.2 提前交付）；⑤ roadmap 第 211 行「朝向交互侧暂不实现」改为已由 M3.2 落地，
+> 床/宝箱/门 Epic 范围相应收窄为多方块结构 + `blockEntities` 富状态（朝向已独立交付）。
 
 ---
 
@@ -344,6 +371,10 @@ registry.register('grass_block', {
 
 - 属性全部预编译为按 ID 索引的 typed 查找表（`opaqueTable[id]`, `cullTable[id]`…），
   网格化热路径无对象属性访问、无字符串比较。mc-lite 的 BlockData.js（124 种方块）整体迁移为注册表数据。
+- **查询接口**（v1.16 补记）：`idOf(name)` / `nameOf(id)` / `geometryNameOf(id)` /
+  `supportsPlayer(id)`，以及 `all()` —— 按注册顺序返回 `{id, name}[]` 只读快照。
+  `all()` 由 §4.5.4 背包物品集合构建消费（冷路径，一次性），**禁止**进入 meshing/物理热路径
+  （热路径仍走 typed 表 + 数字 ID）。冻结后 `all()` 结果不变，可安全缓存。
 - **cullMode 语义勘误（M2 bug 修复）**：cullMode 是**渲染通道**选择（opaque/cutout/transparent
   三材质之一），必须对齐 mc-lite 的**材质**透明度（MaterialManager 注册的 transparent/alphaTest），
   而不是 BlockData 的 `isTransparent`（那是面剔除语义：「不剔除邻居面」）。M0 转换曾把二者混同，
@@ -356,8 +387,10 @@ registry.register('grass_block', {
 
 ```js
 world.getBlockId(x, y, z)      // O(1)，越界返回 0（air）或基岩（y < MIN_Y）
+world.getBlockMeta(x, y, z)    // O(1)，越界/缺列返回 0（M3.2 补记：挖块存朝向记忆需读旧 meta；
+                               // M4 plan Task 2 亦计划新增，M3.2 提前交付，口径一致）
 world.isSolid(x, y, z)         // opaqueTable 直查，无字符串
-world.setBlock(x, y, z, id, meta)  // 见 §4.5.3 编辑管线
+world.setBlock(x, y, z, id, meta)  // 见 §4.5.3 编辑管线；meta 低 2 位 = orientation（§4.3）
 ```
 
 跨 column 读取由 WorldData 维护的 column 索引完成。meshing 的 halo 视图统一为 **section 级**：
@@ -511,12 +544,12 @@ half_block（床，1×0.5×1）、hanging_lamp（绳 cross+灯体盒）。
 - **床 UV 变换**：repeat/offset/rotation 等价角点变换（vHalf/uFlip/rot，three setUvTransform 核验）。
 - **模板不做面剔除**（mc-lite 实例级渲染同口径）；光照读自身格；AO 按顶点推导（子格取最近格角）。
 
-**朝向渲染消费（M2 bug 修复阶段提前落地；交互侧放置语义仍属第二阶段）**：
+**朝向渲染消费（M2 bug 修复阶段提前落地）**：
 - meta 低 2 位 = orientation 0-3（mc-lite OrientationUtils 语义：yaw = orientation × 90°，
   俯视为逆时针；EAST=0/SOUTH=1/WEST=2/NORTH=3）。渲染侧**无条件消费**（meta&3 非零即旋转，
   与 mc-lite ChunkConsolidation.js:530 逐实例应用 b.orientation 一致——结构 JSON 会给
   bed/planks 等 orientationEnabled=false 的方块写非零 direction）；`orientationModes`
-  只管放置交互（第二阶段），不参与渲染门控。
+  只管放置交互（见下「朝向放置交互」），不参与渲染门控。
 - mesher 按「模型面迭代」实现：tile/床 UV 变换查**模型面**（贴图随方块转）；顶点绕块中心
   (0.5,0.5,0.5) 按 yaw 旋转（o=1: (dx,dy,dz)→(dz,dy,-dx)；o=2/3 类推）；面剔除/光照/AO/
   packed face 位用**世界面**（模型面经同一旋转映射，双射）。BoxGeometry UV 约定旋转自洽，
@@ -524,6 +557,41 @@ half_block（床，1×0.5×1）、hanging_lamp（绳 cross+灯体盒）。
 - 数据流：`getSectionView` 增打 meta（Uint8Array 18³）；MESH 任务随 data/light transfer；
   主线程快速路径与 Worker 精修同构消费。orientation=0（绝大多数）走零开销原路径。
 - 结构 JSON 的 direction 经 structure-json.js 写入 meta（既有），本机制是其首个渲染消费者。
+
+**朝向放置交互（M3.2，v1.17 定稿）**：渲染消费侧 M2 已通，本节补齐玩家放置/挖掘侧的朝向语义，
+照搬 mc-lite `PlayerInteraction.js:413 getPlacementOrientation` + `OrientationUtils.js`。
+
+- **门控字段复用**：mc-lite 用 `orientationEnabled`（`BlockData.js` 默认 true），M0 转换后
+  在 mc-heavy 名为 `orientationModes`。实测两侧集合**完全一致（40 项 true，84 项 false，零差异）**，
+  故直接复用 `registry.orientationModesTable[id]`（>0 即启用朝向），不新增字段、不改 blocks-data。
+- **放置朝向三分支**（`src/player/orientation.js` 纯函数，无 DOM/three）：
+  ```
+  getPlacementOrientation(x, y, z, type, orientationModesTable, lastRemovedBlock, memory):
+    ① orientationModes[id] === 0           → 0（84 个方块恒 EAST，不参与旋转）
+    ② lastRemovedBlock 且 x/y/z/type 全等   → nextOrientation(lastRemovedBlock.orientation)，并 memory.set(type, 该值)
+    ③ memory.has(type)                      → memory.get(type)（沿用该类型的上次朝向）
+    ④ 否则                                  → 0（EAST）
+  nextOrientation(o) = (o + 1) % 4          // 顺时针 90°
+  ```
+  **关键语义**：放置朝向**不看玩家 yaw**（mc-lite 签名 `getPlacementOrientation(x,y,z,type)` 无朝向参数）。
+  转身不改朝向；玩家要转 90° 的手感是「原位挖掉再放回去」——这正是分支 ②。
+- **Player 两个交互状态**（对齐 mc-lite `Player.js:164,168`）：
+  - `lastRemovedBlock = {x,y,z,type,orientation}`：`digBlock()` 挖前读 `world.getBlockMeta()` 记下；
+    `placeBlock()` 成功后 `clearRemovedBlock()` 清空；
+  - `placementOrientationMemory = Map<type, orientation>`：按**方块类型**记忆，跨位置、本次会话内持久。
+  二者都是 UI 交互态，**不入世界数据、不持久化**（世界权威只有 meta 通道；player 记录归第二阶段，v1.15 ②）。
+- **读接口补记**：`world.getBlockMeta(x,y,z)`（越界/缺列返回 0）——挖块存记忆需读旧朝向。
+  该方法 M4 plan Task 2 亦计划新增，M3.2 提前交付（见 M4 plan 注意事项）。
+- **持久化免费**：`chunk-column.set()` 的 `edits.set(idx,{id,meta})` 早已带 meta，带朝向方块存档/重载
+  自动正确，无 schema 变更。
+- **明确不照搬 mc-lite 的部分**（各撞已定决策或属他 Epic）：
+  ① `inventory.remove(type,1)` 放置消耗——M3.1 定稿创造模式无限背包不消耗；
+  ② `audioManager.playSound('put')`——第一阶段无音频消费方（M4 Task 4 才有 AudioManager）；
+  ③ `tryPlaceBed()` 床的多方块放置（按玩家位置算床尾）——属床/宝箱/门 Epic，且 bed_head/bed_tail
+     在 mc-lite 本就 orientationEnabled=false，不走本节三分支。
+- **对 M4 的影响**：M4 Task 6 将 `digBlock()`/`placeBlock()` 改走 `editor.setBlock(...)`
+  （`WorldEditor.setBlock` 已支持 meta 参数，M4 plan:332），重写时须保留本节朝向分支；
+  非依赖关系，M4 spec 全程不含方块朝向（已核实 M5/M6/M7 spec 亦不含）。
 
 ### 4.4 渲染管线（src/render/）
 
@@ -758,8 +826,98 @@ world.setBlock(x, y, z, id, meta)
 M4 玩家武器先行实现，也同时是 TNT/爆炸的共享入口；M4 的范围、DDA 与受控资产约束见
 `docs/superpowers/specs/2026-08-23-m4-player-weapons-design.md`。
 
-**4.5.4 背包/快捷栏**：第一阶段实现创造模式无限背包（mc-lite 默认 1500 格语义），
-物品 = BlockRegistry 条目 + 少量工具项。UI 移植 mc-lite Inventory 的 DOM 方案。
+**4.5.4 背包/快捷栏（M3.1，v1.16 定稿）**
+
+创造模式无限背包。**权威数据只有一份**：`player.inventory`（`src/player/inventory.js`），
+快捷栏不是独立容器，而是背包前 5 格的视图。mc-lite 同构（`HUD.renderHotbar()` 读
+`inventory.slots[i]`，i < 5），本设计不引入第二份物品状态。
+
+物品模型照搬 mc-lite `src/actors/player/Slots.js` 语义：
+
+```js
+Slot { id, item /* string|null */, count, meta }   // set/clear/isEmpty
+Inventory(size)  // slots[]、selectedSlot、add/remove/has/getSelected/selectSlot
+```
+
+- `isEmpty()` = `item === null || count <= 0`；`add()` 先堆叠到同类物品槽、再找空位；
+- **两个数字不要混淆**：`Inventory(size = 1000)` 的 `size` 是**槽位数**（mc-lite `Slots.js:57`），
+  `DEFAULT_INVENTORY_COUNT = 1500` 是创造模式填充时**每格的 count**（mc-lite `GameConfig.js:9`）。
+  本设计文档 v1.16 前的 §4.5.4 曾写「mc-lite 默认 1500 格语义」，把二者混为一谈，已勘误。
+  M3.1 实际填充 122 槽（物品集合大小），其余 878 槽留空供后续生存 Epic 的掉落/拾取使用；
+- **创造模式不消耗**：`count` 仅为占位字段，放块/挖掘不递减，`remove()` 保留供后续生存
+  Epic 使用；**UI 不渲染数量**（无限背包语义，显示 1500 是噪声）。mc-lite 显示 count，
+  此处为产品决策差异，非遗漏。
+
+槽位语义（与 mc-lite 一致）：
+
+- **快捷栏 = `slots[0..4]`**，数字键 1-5 → `selectSlot(0..4)`；
+- `selectedSlot` **可越出 5**：背包面板点击任意非空槽即选中，此时快捷栏 5 格**无高亮**
+  （mc-lite 同行为），放块取 `getSelected()` 的物品；
+- `Player.placeBlock()` 从 `inventory.getSelected().item` 解析方块 ID，**不再索引常量数组**。
+
+物品集合：BlockRegistry 全部条目，排除 `air`、`collider`、`calcite`、
+`realistic_trunk_collider`（功能性方块，非玩家可放置建材；mc-lite 背包同样排除这 4 项）→
+**122 项**。`bed_alias_block`、`mine_cart` 无 `faces-data` 条目因而无图标 tile，渲染空槽
+（mc-lite 背包包含二者，保留条目以对齐玩法可用性）。
+
+**物品顺序（冻结）**：`slots[0..4]` = `stone`、`dirt`、`grass`、`sand`、`cobblestone`
+（即 M3-4 既有 `HOTBAR_ITEMS`，保持快捷栏默认观感与既有测试断言不变），
+其余 117 项按 `registry.all()` 注册顺序追加（确定性构建，不依赖 Map 迭代顺序以外的因素）。
+理由：`blocks-data.js` 注册序前几位是 `water`/`swamp_water`/`cloud`/`glass_block`/
+`glass_blink`（非玩家常用建材），纯注册序会让快捷栏前 5 格变成这些，既不合理也破坏
+M3-4 视觉基线。mc-lite 用 `Game.js:206+` 手工列举 107 条（`stone` 居首）达到同样效果；
+本设计以「5 项前置常量 + 注册序补全」表达，集合成员与 mc-lite 的差集为 v1.16 起的
+BlockRegistry 新增方块（如 `sky_stone`/`sky_grass`），属预期扩展。
+
+背包面板（`src/ui/inventory.js`，DOM 方案照搬 mc-lite `src/style/global.css`）：
+
+| 项 | 值 |
+|---|---|
+| 触发 | `Z` toggle、`Escape` 关闭（仅打开态响应） |
+| 遮罩 | `position:fixed; inset:0; background:rgba(0,0,0,.7); z-index:70` |
+| 内容框 | 600×400、`#c6c6c6` 底 + 4px `#555` 边 + `box-shadow:5px 5px 0 #000` |
+| 网格 | `grid-template-columns:repeat(8,1fr)`、gap 8、`overflow-y:auto` |
+| 槽位 | 48×48、`#8b8b8b` 底、左上白/右下 `#373737` 斜角浮雕边；`.selected` 3px `#FFFF00` + `#a0a0a0` 底；`:hover` `#999` |
+| 图标 | 32×32、`image-rendering:pixelated`、atlas tile CSS `background` 裁剪（同快捷栏 `tileStyle()`） |
+| 名称 | `.item-name` 绝对定位顶部、10px 白字 + `text-shadow:1px 1px 0 #000`、溢出省略号 |
+| 空槽 | 不渲染（只列非空槽，mc-lite 同行为） |
+
+**输入门控（M3.1 修正既有漏洞）**：`Z`/`Escape` 与设置面板共用一套模态协议 —— 打开时
+`document.exitPointerLock()` + 清空 `player.keys` + `game.uiModal = true`，关闭时
+恢复 pointer lock（见下）+ `uiModal = false`。
+
+`game.uiModal` 原先只在主循环 `if (!this.uiModal) this.player.update(dt)` 生效，
+而 `Player._bindInput()` 的 `window.keydown` **不受门控**：模态打开期间新按的键仍会
+写入 `keys`、改 `hotbarIndex`。M3.1 在 `keydown` 入口加 `uiModal` 守卫（`digit` 选中一并
+拦截）。该守卫是 M4 Task 6 的前置条件 —— M4 在同一段 `keydown` 挂 `KeyR` 切武器，
+若无守卫则面板打开时按 R 会切武器并播 `gun_load` 音效。
+
+**模态栈（M3.1 新增，收口单一布尔标志的多面板竞争）**：`uiModal` 原先是**可写布尔**，
+只有设置面板一个消费者时够用；背包加入后二者会互相踩 —— 设置面板开着时按 Z 开背包、
+再关背包会把 `uiModal` 置 false，令仍在显示的设置面板**失去输入门控**（WASD 恢复移动、
+`player.update` 恢复）。故 M3.1 把它改为**模态栈**：
+
+```js
+game.uiModal          // getter：栈非空即 true（读取侧完全不变）
+game.pushModal(owner) // 打开时调用；owner 为面板标识（'settings' | 'inventory'）
+game.popModal(owner)  // 关闭时调用；**只移除自己的 owner**，不误清他人的门控
+```
+
+`uiModal` 不再可写（写入抛错或忽略），`tests/m3-hud.spec.mjs` 的读取断言不受影响。
+mc-lite 没有面板互斥（`UIManager.js` 里背包与设置各自独立 toggle、互不感知），
+但它也没有共享的门控标志 —— 本仓库的 `uiModal` 是 M3-4 引入的，故互斥责任落在这里。
+
+**pointer lock 恢复（口径与 mc-lite 不同，有意）**：mc-lite `Inventory.toggle()` 关闭时
+`document.body.requestPointerLock()`；本仓库的 lock 目标是 **canvas**
+（`Player._bindInput()` 的 `canvas.click` 入口 + `document.pointerLockElement !== this._canvas`
+守卫），锁 body 会让视角与放挖全部失效。故 M3.1 关闭面板时 lock 回 `player.canvas`，
+与设置面板统一。**注意**：浏览器的 pointer lock 需要用户手势，程序化 `requestPointerLock()`
+可能因 `SecurityError` 失败（尤其无头环境）—— 调用处必须 try/catch 吞掉，
+失败时回落到既有交互：用户点击画面即重新锁定（canvas click 入口已在）。
+设置面板原 `close()` 未做 lock 恢复，M3.1 一并补齐以统一两个面板的语义。
+
+样式表按 `settings-panel.js` 同法注入（组件自带、`mc-` 前缀防污染、重复构造只注入一次）：
+`.slot:hover`/`.selected` 等伪类与状态类无法用 inline style 表达。
 
 ### 4.6 光照与 AO（src/mesh/lighting.js，Worker 侧）
 
@@ -809,7 +967,9 @@ IndexedDB（沿用 mc-lite DB 名/版本约定）
   ├─ meta:    { seed, spawn, schemaVersion, savedAt }
   ├─ edits:   chunkKey → 压缩的修改列表（仅玩家改过的方块，条目 {id, meta, blockEntity?}，
   │           典型 KB 级/column；blockEntity 为可序列化对象，第一阶段恒为 undefined）
-  ├─ player:  位置/朝向/背包（第二阶段；设置持久化已改落 localStorage，见 v1.15 ②）
+  ├─ player:  位置/朝向/背包（第二阶段；设置持久化已改落 localStorage，见 v1.15 ②。
+  │           注：背包 UI 与物品模型本身已归 M3.1，见 §4.5.4；此处推迟的是其**持久化**——
+  │           第一阶段背包内容确定性构建、无需落盘，玩家改动只体现在世界 edits 中）
   └─ entities:（M5 起：炮塔/矿车等持久运行时实体 snapshot；丧尸为临时实体，
                 丧尸巢穴的锚点/冷却归对应 blockEntity）
 ```

@@ -45,7 +45,7 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
   - §4.4.1 blur 档提前落地（M2 收尾期）：`?blur=1` 开 mipmap+aniso 8 消远处莫尔纹，默认像素风；
     伴随云通道勘误（opaque + 同类剔除 + gutter 16/bleed 8 + 匀质 UV 收缩）；面板接线归 M3-4；
   - M2 已关闭：同 seed 人工比对通过 + 关闭回归全绿，M3-4 随机种子/新世界的启动前提已满足。
-- **M3 性能达标与收尾 ✅（2026-09-02 实施完成，未提交，等用户验证）**：M3-1~M3-6 全部落地：
+- **M3 性能达标与收尾 ✅（2026-09-02 完成并提交 `82da106`）**：M3-1~M3-6 全部落地：
   - M3-1 全量场景稳态 120fps / 队列归零 / 内存达标（体素 36~40MB、GPU 分配 136.6MB）；
     BatchedMesh CAPACITY 按实测峰值重标定（消除 cutout 运行时扩容卡顿）+ `game.memoryStats()`；
   - M3-2 帧预算双档（`src/core/budget.js`：120Hz=3ms/64、60Hz=6ms/128 冻结档；auto 判档用
@@ -64,7 +64,61 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
   - M3-6 性能报告（`docs/m2-m3-performance-report.md`）：§1 目标表 6 项全达标（冷启动 0.5s /
     视距 8 默认 120fps + vd=12 冒烟 / 跨 region 无感知 / 编辑 p95 1.8ms / 存档 1.7KB）；
     mc-lite 对比：视距 ~4×、启动数十~百倍、存档 ~千倍。**第一阶段（M0~M3）验收口径全部达标**。
-- **M4 玩家第一人称武器 ⬜（第二阶段，M3 验证提交后即可开始）**：独立 Epic；`WorldEditor` 批量编辑、
+- **M3.1 背包 ✅（2026-09-02 实施完成，未提交，等用户验证）**：M3 收尾补丁项，插在 M3 与 M4 之间。
+  设计文档 v1.16 定稿的口径收口——§4.5.4 原写「第一阶段实现创造模式无限背包」而 v1.12 写
+  「背包归独立后续 Epic」，二者冲突；M3-4 只落地了快捷栏展示层（`src/ui/hotbar.js` +
+  `HOTBAR_ITEMS` 常量数组），物品数据模型缺位（无 slots/selectedSlot、Z 键无响应、
+  放块索引常量数组）。v1.16 把背包归 M3.1，v1.12 的推迟范围收窄为仅生存战斗与物品消耗规则
+  （PlayerVitals / 掉落拾取 / count 递减）。落地：
+  - `src/player/inventory.js`（`Slot`/`Inventory` 照搬 mc-lite `Slots.js` 语义：**1000 槽位**、
+    创造模式填充每格 `count=1500` 占位不消耗、UI 不显示数量——**两个数字勿混**，
+    原 §4.5.4 曾写「1500 格语义」已勘误）；
+  - `BlockRegistry.all()`（§4.1 补记，按注册序返回 `{id,name}[]` 只读快照，冷路径专用禁入热路径）；
+  - 物品集合 **122 项**（126 排除 `air`/`collider`/`calcite`/`realistic_trunk_collider`，
+    mc-lite 同口径）；**顺序冻结**：前 5 项 = `stone/dirt/grass/sand/cobblestone`（快捷栏观感与
+    既有断言不变），其余 117 按注册序——纯注册序会让快捷栏前 5 格变成 water/cloud 等非常用建材；
+  - `src/ui/inventory.js`（Z toggle / Escape 关闭 / 数字键 1-5 / 点击选中可越出 5 格；DOM 照搬
+    mc-lite `global.css`：600×400 灰底框 + 8 列网格 + 48×48 斜角浮雕槽位 + `.selected` 黄边；
+    z-index 80 > 设置面板 70 保证后开的在上层）；
+  - 快捷栏改读 `slots[0..4]`（视图，非独立容器）、`placeBlock()` 改读 `getSelected()`、
+    `hotbarIndex` 收敛为 `inventory.selectedSlot` 的访问器别名（消除两份选中态）；
+  - **`uiModal` 改模态栈**（`pushModal`/`popModal` + 只读 getter）：原可写布尔在两面板共存时
+    互相踩（设置开着时关背包会误清门控）；`Player._bindInput()` 的 keydown 加模态守卫——
+    **该守卫是 M4 Task 6 的前置条件**（M4 在同一段挂 KeyR 切武器）；关闭面板 lock 回
+    `player.canvas`（mc-lite 锁 body，本仓库锁 body 会令视角与放挖全失效）。
+  - 与 M4 数据层解耦（M4 spec 明确排除背包消耗、武器切换走独立 `WeaponController`），
+    先做背包的唯一理由是共用 keydown 入口一次改到位。
+- **M3.2 方块朝向放置交互 ⬜ 进行中（M3 收尾补丁项，插在 M3.1 与 M4 之间）**：
+  设计文档 v1.17 定稿的口径收口——§4.3 原写「交互侧放置语义仍属第二阶段」、roadmap 原记
+  「朝向交互侧暂不实现：第二阶段随床/宝箱/门落地」，即该功能此前**没有排进任何已编号里程碑**
+  （M4~M7 spec/plan 经 grep 核实均不含方块朝向；M6 唯一命中是 `setTestAim` 注释里的**相机** aim）。
+  渲染消费侧 M2 已全部打通（`584813b`：mesher 读 `meta&3` 按 4 朝向旋转、`getSectionView`
+  打包 meta、Worker transfer），`chunk-column.set()` 的 `edits` 条目也早已带 meta；
+  缺的只有「放置时算朝向并写入」与「挖块时记住朝向」两步。v1.17 把它从床/宝箱/门 Epic 拆出
+  独立实施，该 Epic 范围相应收窄为「多方块结构 + `blockEntities` 富状态」。范围：
+  - **门控字段复用（不新增字段）**：mc-lite 用 `orientationEnabled`（`BlockData.js` 默认 true），
+    M0 转换后在 mc-heavy 名为 `orientationModes`。实测两侧集合**完全一致（40 项 true / 84 项 false，
+    零差异）**，故直接用 `registry.orientationModesTable[id]`（>0 即启用朝向）。
+    附带勘误：M3.1 讨论时曾疑该表混入 `air`/`water`/`cloud`/`leaves` 像转换产物——实测 mc-lite
+    那边这 4 项同样 `orientationEnabled: true`，属上游语义。
+  - **mc-lite 语义更正（勿照印象实现）**：放置朝向**不看玩家 yaw**——mc-lite 的
+    `getPlacementOrientation(x, y, z, type)` 签名里没有朝向参数。三分支为
+    ① 门控关闭 → 恒 0；② **原位重建同类型**（x/y/z/type 四者全等）→ `nextOrientation` = `+1 % 4`
+    并写入类型记忆；③ 有类型记忆 → 沿用；④ 无记忆 → 0（EAST）。真实手感是「转身不改朝向，
+    要转 90° 就在原位挖掉再放回去」。
+  - `src/player/orientation.js`（纯函数，无 DOM/three，Worker 同构）+ `world.getBlockMeta(x,y,z)`
+    （越界/缺列返回 0；**提前交付 M4 plan Task 2 计划新增的同名方法**，口径一致）+
+    `Player` 两个交互状态 `lastRemovedBlock` / `placementOrientationMemory`（UI 交互态，
+    不入世界数据、不持久化——世界权威只有 meta 通道）+ `digBlock()` 挖前记朝向 /
+    `placeBlock()` 算朝向传 meta 并清空记录（与 M3.1 的 `inventory.getSelected()` 正交叠加）。
+  - **明确不照搬 mc-lite 的部分**：① `inventory.remove(type,1)` 放置消耗（撞 M3.1 定稿的
+    创造模式无限背包）；② `audioManager.playSound('put', 0.3)`（第一阶段无音频消费方，
+    M4 Task 4 才有 AudioManager）；③ `tryPlaceBed()` 床的多方块放置（属床/宝箱/门 Epic，
+    且 `bed_head`/`bed_tail` 在 mc-lite 本就 `orientationEnabled: false`，不走三分支）。
+  - **对 M4 的影响（已写入 M4 plan 两处标注）**：Task 2 的 `getBlockMeta` 改为「验证已交付 +
+    补断言」；Task 6 将 `digBlock()`/`placeBlock()` 改走 `editor.setBlock(...)` 时**须保留朝向分支**
+    （`WorldEditor.setBlock` 已支持 meta 参数，不得退化为只传 id）。非依赖关系，只是同一段代码的先后改动。
+- **M4 玩家第一人称武器 ⬜（第二阶段，M3.2 验证提交后即可开始）**：独立 Epic；`WorldEditor` 批量编辑、
   DDA hitscan、手枪/MAG7/加特林的受控 GLB 相机视图模型、曳光、音效和可选方块破坏。
   规格：`docs/superpowers/specs/2026-08-23-m4-player-weapons-design.md`；计划：
   `docs/superpowers/plans/2026-08-23-m4-player-weapons.md`。不含炮塔飞行弹丸、实体伤害、
@@ -84,7 +138,9 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
   规格：`docs/superpowers/specs/2026-08-23-m7-zombie-nests-design.md`；计划：
   `docs/superpowers/plans/2026-08-23-m7-zombie-nests.md`。
 
-测试现状：24 个 Playwright spec 文件（32 个测试用例）+ 170 个浏览器内单元测试全绿（m1-acceptance 计时断言
+测试现状：25 个 Playwright spec 文件（38 个测试用例）+ 216 个浏览器内单元测试全绿
+（**含尚未提交的 M3.1**：`tests/m3-1-inventory.spec.mjs` 6 用例 + 单测 46 项；已提交基线
+`82da106` 为 24 spec / 32 用例 / 170 单测。M3.1 提交后本行去掉该注）（m1-acceptance 计时断言
 在高负载下偶发贴线 flaky——16.7±1e-6/2.1ms，单独复跑通过，属已记录的计时抖动类）；
 冻结断言达标（120Hz 本机 fps ≥115、放/挖编辑 p95 <2ms、draw 受控）；
 性能基线门禁 `npm run bench -- --check`（M3-5，回退 >10% 阻断合入）。
@@ -94,7 +150,7 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
 按顺序读完再写代码：
 
 1. [`docs/phase-1-engine-design.md`](/Users/bachi/jaylli/mc-heavy/docs/phase-1-engine-design.md)
-   —— 架构唯一权威，当前版本 v1.15（已定稿）。所有子系统边界、DR 决策、验收口径都在这里。
+   —— 架构唯一权威，当前版本 v1.17（已定稿）。所有子系统边界、DR 决策、验收口径都在这里。
 2. [`docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md)
    —— **第一阶段剩余执行计划与后续路线图（M2–M7）**，任务级 TODO + 依赖关系，当前 roadmap。
 3. [`docs/superpowers/plans/2026-08-19-m1-voxel-core-loop.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/plans/2026-08-19-m1-voxel-core-loop.md)
@@ -209,7 +265,7 @@ mc-heavy/
 ├─ index.html                  # import map（本地 vendor/three）+ WebGPU 启动 gate + 准心
 ├─ vendor/three/               # three.js r185.1（three.webgpu.js / three.tsl.js / three.core.js）
 ├─ docs/
-│  └─ phase-1-engine-design.md # 架构权威（v1.15）
+│  └─ phase-1-engine-design.md # 架构权威（v1.17）
 ├─ tools/build-atlas.mjs       # atlas 离线打包（npm run atlas）
 ├─ assets/
 │  ├─ textures/                # 从 mc-lite 复制
@@ -222,6 +278,9 @@ mc-heavy/
    ├─ mesh/        # mesher.js / lighting.js / atlas-loader.js（Worker 同构）
    ├─ render/      # render-world.js（BatchedMesh 发布层）/ materials.js（TSL）
    ├─ player/      # player.js / physics.js / raycast.js / step-lift.js
+   │               #（M3-4 加 hotbar-items.js；M3.1 加 inventory.js 物品模型）
+   ├─ ui/          # coords-hud.js / hotbar.js / settings-panel.js / settings.js（M3-4）
+   │               #（M3.1 加 inventory.js 背包面板：DOM 方案照搬 mc-lite）
    ├─ save/        # persistence.js（IndexedDB edits）
    └─ workers/     # world-worker.js（GEN/MESH/LIGHT 统一入口，池化）
 ```
