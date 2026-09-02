@@ -3,7 +3,7 @@ import { test, expect } from 'playwright/test';
 // §8 基线场景 ①：平原冲刺（视距 8）——自动驱动玩家沿直线奔跑 10s，采帧时分布
 test('M1 验收：平原冲刺视距 8 帧时达标（120fps 预算）', async ({ page }) => {
   test.setTimeout(180_000);
-  await page.goto('/?vd=8');
+  await page.goto('/?vd=8&seed=12345');
   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
   // 等视距内 column 大部分就绪（后台填充，§4.2 冷启动口径）
   await page.waitForFunction(() => window.__MC_GAME__.world.columns.size >= 250, null, { timeout: 60_000 });
@@ -39,7 +39,7 @@ test('M1 验收：平原冲刺视距 8 帧时达标（120fps 预算）', async (
 // §8 基线场景 ③：连续放/挖 200 块——发布层确认门（§4.4.2 M1 决策门）
 test('M1 验收：放挖压力 p95 帧时（BatchedMesh 确认门）', async ({ page }) => {
   test.setTimeout(180_000);
-  await page.goto('/?vd=8');
+  await page.goto('/?vd=8&seed=12345');
   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
   // 稳态计量口径：视距 8 全 289 列就绪 + 5s 沉淀后再放挖。
   // （M2-2 起出生在城市，城市填充比平原慢；250 列时后台填充与编辑帧争抢，

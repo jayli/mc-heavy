@@ -16,7 +16,7 @@ function waterRatio(pngBuffer) {
 
 test('M2 验收：海面可见 + 跟随相机 + 帧率达标（§7 M2-5 口径）', async ({ page }) => {
   test.setTimeout(180_000);
-  await page.goto('/?vd=8');
+  await page.goto('/?vd=8&seed=12345');
   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
 
   // 找一片海：扫描窗口内最低点（保证视野中心是水面）

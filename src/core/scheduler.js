@@ -4,10 +4,11 @@ import { ChunkColumn } from '../voxel/chunk-column.js';
 import { columnKey, SECTIONS_PER_COLUMN } from '../voxel/constants.js';
 import { buildSectionMesh } from '../mesh/mesher.js';
 import { StructureIndex } from '../gen/structure-index.js';
+import { BudgetConfig } from './budget.js';
 
 const CHANNELS = ['opaque', 'cutout', 'transparent'];
-const MESH_UPLOAD_BUDGET_MS = 3;   // 每帧 GPU 上传预算（§4.9）
-const MESH_DISPATCH_PER_FRAME = 64; // 每帧下发 mesh 任务上限（worker 侧计算，主线程仅 postMessage）
+// 帧预算双档标定（M3-2）：mesh 上传预算/下发上限由 BudgetConfig 按刷新率档位提供
+// （120Hz=3ms/64，60Hz=6ms/128；默认值与原 §4.9 常量一致，档位判定见 core/budget.js）。
 const LIGHT_DISPATCH_PER_FRAME = 1; // 每帧下发 light 任务上限（区域重算 ~4ms/column，Worker 侧执行）
 
 function sectionKey(cx, sy, cz) { return `${cx},${sy},${cz}`; }
@@ -37,8 +38,10 @@ export class Scheduler {
    *        持久化层提供的 edits 查询（Task 10 接入；缺省返回空数组）
    * @param {import('../render/render-world.js').RenderWorld} [opts.renderWorld]
    *        发布层；缺省（GEN-only 模式，Task 4 测试）则跳过 MESH 段
+   * @param {import('./budget.js').BudgetConfig} [opts.budget]
+   *        帧预算双档配置（M3-2）；缺省自建一个（auto，未定档按 high 口径 3ms/64）
    */
-  constructor({ world, pool, registry, seed, viewDistance = 8, perf, getEdits, renderWorld }) {
+  constructor({ world, pool, registry, seed, viewDistance = 8, perf, getEdits, renderWorld, budget }) {
     this.world = world;
     this.pool = pool;
     this.registry = registry;
@@ -47,6 +50,7 @@ export class Scheduler {
     this.perf = perf;
     this.getEdits = getEdits || (() => []);
     this.renderWorld = renderWorld || null;
+    this.budget = budget || new BudgetConfig();
     /** 结构布局缓存 + GEN 门控（§4.2 DR-13：布局 Worker 算一次，主线程转发） */
     this.structureIndex = new StructureIndex({ pool, seed });
     /** @type {Map<string, {callId: number}>} 在途 GEN 任务 */
@@ -137,9 +141,9 @@ export class Scheduler {
         const [cx, sy, cz] = skey.split(',').map(Number);
         this._enqueueMesh(cx, sy, cz);
       }
-      // 3c. 下发 mesh 任务（每帧上限）
+      // 3c. 下发 mesh 任务（每帧上限，按刷新率档位标定）
       let dispatched = 0;
-      while (this._meshQueue.length && dispatched < MESH_DISPATCH_PER_FRAME) {
+      while (this._meshQueue.length && dispatched < this.budget.meshDispatchPerFrame) {
         const { cx, sy, cz } = this._meshQueue.shift();
         const skey = sectionKey(cx, sy, cz);
         this._meshQueuedSet.delete(skey);
@@ -342,10 +346,11 @@ export class Scheduler {
     this._uploadQueue.push({ cx: r.cx, sy: r.sy, cz: r.cz, channels: r.channels, version: r.version, stats: r.stats });
   }
 
-  /** 上传预算：每帧 ≤3ms，从队列取 section 调 renderWorld.uploadSection */
+  /** 上传预算：每帧 ≤budget.meshUploadBudgetMs（120Hz=3 / 60Hz=6），
+   *  从队列取 section 调 renderWorld.uploadSection */
   _processUploadQueue() {
     const t0 = performance.now();
-    while (this._uploadQueue.length && performance.now() - t0 < MESH_UPLOAD_BUDGET_MS) {
+    while (this._uploadQueue.length && performance.now() - t0 < this.budget.meshUploadBudgetMs) {
       const item = this._uploadQueue.shift();
       const col = this.world.getColumn(item.cx, item.cz);
       if (!col || col.version !== item.version) continue; // 卸载/已变更：丢弃
@@ -356,6 +361,8 @@ export class Scheduler {
       this._meshedSections.add(skey);
       if (item.stats) this._sectionStats.set(skey, item.stats);
     }
+    // 每帧上传实际耗时打点（M3-5 基线采集：§4.9「mesh 上传 ≤3ms/帧」的直接观测）
+    if (this.perf) this.perf.mark('upload-ms', performance.now() - t0);
   }
 
   /** column 卸载：清理 GEN/MESH 在途、挂起、已 mesh 状态 */

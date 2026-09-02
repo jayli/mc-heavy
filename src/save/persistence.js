@@ -67,6 +67,11 @@ export class Persistence {
     }, 5000);
   }
 
+  /** 取消在途防抖 flush（M3-4 新世界：clearAllEdits 后不得再写回旧 edits） */
+  cancelPendingFlush() {
+    if (this._flushTimer) { clearTimeout(this._flushTimer); this._flushTimer = null; }
+  }
+
   /** 立即 flush（页面隐藏/退出/测试用） */
   async flushNow(world) {
     if (!world) return;
@@ -86,6 +91,17 @@ export class Persistence {
       const req = tx.objectStore('edits').count();
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error);
+    });
+  }
+
+  /** 清空全部 edits（M3-4 新世界：旧世界的玩家修改不得带入新 seed） */
+  clearAllEdits() {
+    this.editsCache.clear();
+    return new Promise((resolve, reject) => {
+      const tx = this.db.transaction('edits', 'readwrite');
+      tx.objectStore('edits').clear();
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
     });
   }
 

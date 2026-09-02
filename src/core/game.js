@@ -6,34 +6,56 @@ import { Scheduler } from './scheduler.js';
 import { WorkerPool } from './worker-pool.js';
 import { PerfMonitor } from './perf.js';
 import { PerfHUD } from './perf-hud.js';
+import { BudgetConfig } from './budget.js';
 import { DEBUG_FLAGS } from './debug-config.js';
 import { RenderWorld } from '../render/render-world.js';
 import { setupFog } from '../render/materials.js';
 import { setupOcean } from '../render/ocean.js';
 import { DayNight } from '../render/daynight.js';
+import { RainEffect } from '../render/rain.js';
+import { WeatherState } from '../render/weather.js';
 import { loadAtlas } from '../mesh/atlas-loader.js';
 import { findSpawnY } from '../gen/terrain.js';
-import { getCitySpawnPoint } from '../gen/structures/city-layout.js';
+import { getCitySpawnPoint, getCityInfo } from '../gen/structures/city-layout.js';
 import { Player } from '../player/player.js';
 import { Persistence } from '../save/persistence.js';
+import { CoordsHUD } from '../ui/coords-hud.js';
+import { SettingsPanel } from '../ui/settings-panel.js';
+import { createHotbar, HOTBAR_ITEMS } from '../ui/hotbar.js';
+import { FACES_DATA } from '../voxel/faces-data.js';
+import { getBiome } from '../gen/noise.js';
+import { loadStoredSettings, resolveSettings } from '../ui/settings.js';
+
+/** 随机世界 seed（M3-4 新世界）：24bit 正整数，避开 0（noise 退化）与负值 */
+export function randomSeed() {
+  return 1 + Math.floor(Math.random() * 0xFFFFFF);
+}
 
 export class Game {
   /**
    * @param {Object} opts
    * @param {HTMLCanvasElement} opts.canvas
    * @param {*} opts.registry - BlockRegistry 实例
-   * @param {number} opts.seed
+   * @param {number|null} [opts.seed] 显式 seed（?seed= 调试入口）；缺省 null → 无存档时随机生成（M3-4）
    * @param {number} [opts.viewDistance] 默认 8（测试可传 2 加速）
    * @param {HTMLElement} opts.hudRoot
    * @param {boolean} [opts.blurMipmap] blur 档位（§4.4.1）：atlas 开 mipmap 消远处莫尔纹
+   * @param {'auto'|'high'|'low'} [opts.budgetProfile] 帧预算档位覆盖（M3-2；默认 auto）
+   * @param {'rain'|'clear'|null} [opts.startWeather] 启动即强制天气（M3-3 调试/测试；null 自动周期）
+   * @param {Object} [opts.settings] 生效设置（main.js resolveSettings 结果；缺省 start() 内自行合并）
    */
-  constructor({ canvas, registry, seed, viewDistance = 8, hudRoot, blurMipmap = false }) {
+  constructor({ canvas, registry, seed = null, viewDistance = 8, hudRoot, blurMipmap = false, budgetProfile = 'auto', startWeather = null, settings = null }) {
+    this._settings = settings;
     this.registry = registry;
-    this.seed = seed;
+    this.seed = seed; // null → start() 中无存档时 randomSeed()（有存档恒读存档）
     this.viewDistance = viewDistance;
+    /** 设置面板/弹窗打开标志：主循环跳过 player.update（指针锁定已退出、输入让给 UI） */
+    this.uiModal = false;
     this.blurMipmap = blurMipmap;
     this.world = new WorldData(registry);
     this.perf = new PerfMonitor();
+    /** 帧预算双档标定（M3-2）：Scheduler 上传/下发预算从这里读，主循环喂帧间隔 */
+    this.budget = new BudgetConfig({ profile: budgetProfile });
     this.pool = new WorkerPool({ workerUrl: '/src/workers/world-worker.js' });
     this.renderer = new THREE.WebGPURenderer({ canvas, antialias: true });
     this.scene = new THREE.Scene();
@@ -41,6 +63,7 @@ export class Game {
     this.camera = new THREE.PerspectiveCamera(70, 1, 0.1, (viewDistance + 2) * 16 * 1.5);
     this.worldReady = false;
     this._hudRoot = hudRoot;
+    this._startWeather = startWeather;
     this.player = null;
     this._lastFrameMs = -1;
     this.persistence = null;
@@ -75,18 +98,25 @@ export class Game {
     });
 
     // 存档：打开 IndexedDB、恢复 seed（edits 预热在出生点确定后，§4.8）
+    // M3-4：有存档读存档；无存档时——opts.seed 显式指定（?seed= 调试入口）则用之，
+    // 否则随机生成（roadmap「新世界」语义；随机 seed 保证每次新档地形不同）。
     this.persistence = new Persistence();
     await this.persistence.open();
     const meta = await this.persistence.loadMeta();
     const hadMeta = !!(meta && meta.seed !== undefined);
     if (hadMeta) this.seed = meta.seed;
-    else await this.persistence.saveMeta({ seed: this.seed, spawn: [8, 8], savedAt: Date.now() });
+    else {
+      if (this.seed === null || this.seed === undefined) {
+        this.seed = randomSeed();
+      }
+      await this.persistence.saveMeta({ seed: this.seed, spawn: [8, 8], savedAt: Date.now() });
+    }
     this.ocean.setSeed(this.seed);
 
     this.scheduler = new Scheduler({
       world: this.world, pool: this.pool, registry: this.registry,
       seed: this.seed, viewDistance: this.viewDistance, perf: this.perf,
-      renderWorld: this.renderWorld,
+      renderWorld: this.renderWorld, budget: this.budget,
       getEdits: (key) => this.persistence.getEditsSync(key),
     });
     this.scheduler._atlasMeta = atlasMeta; // 快速路径主线程 mesh 用（与 broadcast 同一份）
@@ -115,10 +145,38 @@ export class Game {
     });
     this.player.spawn(this.spawnX, this.spawnY, this.spawnZ);
     this.scene.add(this.player.highlight);
-    this.worldReady = true;
+
+    // 天气 + 雨效（M3-3）：状态机自动周期（晴 60~180s → 雨 30~90s，5s 过渡），
+    // rain 效果移植 mc-lite RainEffect（world.isSolid 地面截停；267 滴分批迁移削峰）
+    this.weather = new WeatherState();
+    if (this._startWeather) this.weather.force(this._startWeather);
+    this.rain = new RainEffect(this.scene, {
+      world: this.world,
+      playerPos: this.player.physics.pos,
+    });
+    this.rain.setIntensity(this.weather.intensity);
 
     this._hud = new PerfHUD(this.perf, this._hudRoot,
       DEBUG_FLAGS.worldStats ? () => this.worldStats() : null);
+    // M3-4 HUD：坐标+biome、快捷栏（atlas tile CSS 裁剪）、设置面板
+    this._coordsHud = new CoordsHUD(this._hudRoot, this);
+    this._hotbar = createHotbar(this._hudRoot, {
+      items: HOTBAR_ITEMS,
+      atlasTiles: atlasMeta.tiles,
+      atlasSize: atlasMeta.size,
+      tileOfName: (name) => {
+        const f = FACES_DATA[name];
+        return Array.isArray(f) ? f[0] : f; // 侧面（index 0）最具辨识度
+      },
+      atlasUrl: '/assets/atlas.png',
+    });
+    // 生效设置：main.js 已 resolve（存储+URL）传入；缺省自行合并（fixture 页直建 Game 时）
+    this.settings = this._settings || resolveSettings(loadStoredSettings(), new URLSearchParams(location.search));
+    this.settingsPanel = new SettingsPanel(this._hudRoot, this, this.settings);
+    // 启动应用视觉风格（设置持久化：null=日夜循环，M2-6）
+    if (this.settings.visualStyle) this.setVisualStyle(this.settings.visualStyle);
+    this.worldReady = true;
+
     window.addEventListener('resize', () => this._onResize());
     this._onResize();
     // 存档 flush：页面隐藏/退出立即写盘（§4.8）
@@ -131,13 +189,22 @@ export class Game {
       this.perf.tick(nowMs);
       // dt（秒）：首帧为 0，钳制上限 0.1s 防后台切回大步长
       const dt = this._lastFrameMs < 0 ? 0 : Math.min((nowMs - this._lastFrameMs) / 1000, 0.1);
+      // M3-2：预算判档喂原始（未钳制）帧间隔——vsync 量化值正是测量对象
+      if (this._lastFrameMs >= 0) this.budget.observeFrame(nowMs - this._lastFrameMs);
       this._lastFrameMs = nowMs;
-      this.player.update(dt);
+      // 设置面板打开时跳过玩家输入/物理（世界调度继续：后台填充不受 UI 阻塞）
+      if (!this.uiModal) this.player.update(dt);
       this.scheduler.update(this.player.physics.pos.x, this.player.physics.pos.z);
       this.persistence.scheduleFlush(this.world); // 5s 防抖写盘（有 edits 才真正写）
       this.ocean.update(this.camera, dt);
       this.dayNight.update(dt);
+      // 天气状态机推进 + 雨强度接线 + 雨幕跟随玩家（30Hz 内部检查）
+      this.weather.update(dt);
+      this.rain.setIntensity(this.weather.intensity);
+      if (this.weather.isRaining) this.rain.update(this.player.physics.pos, dt);
       this._hud.update(nowMs);
+      this._coordsHud.update(nowMs);
+      this._hotbar.update(this.player.hotbarIndex);
       this.renderer.render(this.scene, this.camera);
       // info 在每帧 render 前被 autoReset 清零，render 后捕获才是本帧真实值
       // （HUD/测试异步读取 renderer.info 会撞上重置点，必须在此快照）
@@ -168,6 +235,92 @@ export class Game {
   perfSnapshot() { return this.perf.snapshot(); }
   /** 切换视觉风格（'morning'/'noon'/'night'，null 恢复日夜循环；M2-6，M3 设置面板接入） */
   setVisualStyle(key) { this.dayNight.setStyle(key); }
+
+  /** 玩家位置的 biome 名（M3-4 坐标 HUD；CITY 布局边界优先，否则 getBiome 纯函数） */
+  biomeAt(x, z) {
+    const layout = this.scheduler?.structureIndex?._layouts?.get('0,0');
+    if (layout?.city && getCityInfo(Math.floor(x), Math.floor(z), layout.city)) return 'CITY';
+    return getBiome(Math.floor(x), Math.floor(z), this.seed);
+  }
+
+  /**
+   * 切换视距（M3-4 设置面板）：持久化后带参重载。
+   * BatchedMesh 的 maxInstances 在 RenderWorld 构造期固定，运行时无法扩容，
+   * 且雾距/相机 far/加载半径全部依赖 viewDistance——重载是最简单且无副作用的路径。
+   * @param {number} vd
+   */
+  applyViewDistance(vd) {
+    const url = new URL(location.href);
+    url.searchParams.set('vd', String(vd));
+    location.assign(url.toString());
+  }
+
+  /**
+   * 切换画质 blur 档（M3-4 设置面板，§4.4.1）：持久化后带参重载。
+   * WebGPU 纹理的 mip level 数在创建期由 generateMipmaps 决定（vendor
+   * three.webgpu.js needsMipmaps → options.levels），运行时翻 generateMipmaps
+   * 不会重建 mip 链，故走重载（与视距同口径）。
+   * @param {boolean} on
+   */
+  setBlurQuality(on) {
+    const url = new URL(location.href);
+    if (on) url.searchParams.set('blur', '1');
+    else url.searchParams.delete('blur');
+    location.assign(url.toString());
+  }
+
+  /**
+   * 新世界（M3-4）：随机（或指定）seed 写入 meta、丢弃旧世界全部修改、带参重载。
+   * 确定性红线 2 不受影响：seed 落库后重启读回同一 seed，地形完全可复现。
+   * 丢弃口径：newWorld 是「离开旧世界」，旧 edits 一律不留——既清 IndexedDB 的 edits
+   * store/缓存，也清 world 内存里各 column 的 edits Map；否则 location.assign 触发的
+   * beforeunload → flushNow(world) 会把旧改动写回刚清空的 store（竞态）。
+   * @param {number|null} seed null = 随机
+   */
+  async newWorld(seed = null) {
+    const newSeed = (seed === null || seed === undefined) ? randomSeed() : seed;
+    this.persistence.cancelPendingFlush(); // 取消在途防抖 flush
+    for (const [, col] of this.world.columns) col.edits.clear(); // 防卸载 flush 写回
+    await this.persistence.clearAllEdits();
+    await this.persistence.saveMeta({ seed: newSeed, spawn: [8, 8], savedAt: Date.now() });
+    const url = new URL(location.href);
+    url.searchParams.set('seed', String(newSeed));
+    location.assign(url.toString());
+  }
+
+  /**
+   * 内存预算快照（§4.10，M3-1 验收用）：
+   * - voxelBytes：所有已加载 column 的 blocks/meta/light 字节和（289 列 ≈ 37MB 基线）；
+   * - gpuVertexBytes：3 通道 BatchedMesh 已分配缓冲字节（maxVertexCount×24B 顶点
+   *   + maxIndexCount×4B 索引；含扩容兜底后的实际分配，CPU 侧副本同额）；
+   * - gpuActiveBytes：slot 预留（reservedV/reservedI）合计 = 实际被几何占用的部分；
+   * - jsHeap*：performance.memory（仅 Chromium；其他环境为 null）。
+   */
+  memoryStats() {
+    let voxelBytes = 0;
+    for (const [, col] of this.world.columns) {
+      voxelBytes += col.blocks.byteLength + col.meta.byteLength + col.light.byteLength;
+    }
+    let gpuVertexBytes = 0;
+    for (const cap of Object.values(this.renderWorld._capacity)) {
+      // flat 三属性顶点 = position(3×f32) + uv(2×f32) + packed(u32) = 24B；索引 u32 = 4B
+      gpuVertexBytes += cap.maxVertexCount * 24 + cap.maxIndexCount * 4;
+    }
+    let gpuActiveBytes = 0;
+    for (const slot of this.renderWorld.slotMap.values()) {
+      gpuActiveBytes += slot.reservedV * 24 + slot.reservedI * 4;
+    }
+    const mem = performance.memory || null;
+    return {
+      columns: this.world.columns.size,
+      sections: this.renderWorld.slotMap.size,
+      voxelBytes,
+      gpuVertexBytes,
+      gpuActiveBytes,
+      jsHeapUsedBytes: mem ? mem.usedJSHeapSize : null,
+      jsHeapLimitBytes: mem ? mem.jsHeapSizeLimit : null,
+    };
+  }
   renderStats() {
     return { ...this.renderWorld.stats(), drawCalls: this._lastRenderInfo.drawCalls };
   }

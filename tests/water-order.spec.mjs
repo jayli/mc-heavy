@@ -11,7 +11,7 @@ import { test, expect } from 'playwright/test';
 
 test('issue#2：体素水与海面绘制顺序不随镜头转动翻转', async ({ page }) => {
   test.setTimeout(180_000);
-  await page.goto('/?vd=8');
+  await page.goto('/?vd=8&seed=12345');
   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
 
   // 找一处岸边（陆地紧邻水面），保证视野内同时有体素水与海面平面

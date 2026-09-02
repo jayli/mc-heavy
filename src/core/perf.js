@@ -54,6 +54,14 @@ export class PerfMonitor {
     buf.push(durationMs);
   }
 
+  /** 清空帧样本与全部 mark（M3-5 基线跑图：每场景隔离采样窗口） */
+  reset() {
+    this._frameSamples.head = 0;
+    this._frameSamples.count = 0;
+    this._lastTick = -1;
+    this._marks.clear();
+  }
+
   snapshot() {
     const frames = this._frameSamples.sorted();
     const avg = frames.length

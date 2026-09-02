@@ -16,7 +16,7 @@ function nonSkyRatio(pngBuffer) {
 
 test('M2 验收：出生在城市中心，可见城市天际线（§7 M2 口径）', async ({ page }) => {
   test.setTimeout(180_000);
-  await page.goto('/?vd=8');
+  await page.goto('/?vd=8&seed=12345');
   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
   // 视距内 column 大部分就绪（城市建筑随 GEN 落地）
   await page.waitForFunction(() => window.__MC_GAME__.world.columns.size >= 200, null, { timeout: 60_000 });

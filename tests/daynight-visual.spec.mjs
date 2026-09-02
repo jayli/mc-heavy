@@ -14,7 +14,7 @@ function meanLuma(pngBuffer) {
 
 test('M2 验收：三种视觉风格截图明显不同 + 夜最暗（§7 M2-6 口径）', async ({ page }) => {
   test.setTimeout(180_000);
-  await page.goto('/?vd=4');
+  await page.goto('/?vd=4&seed=12345');
   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
   await page.waitForTimeout(4000);
 

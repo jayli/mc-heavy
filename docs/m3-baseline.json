@@ -1,0 +1,337 @@
+{
+  "env": {
+    "date": "2026-09-02",
+    "gpu": "apple/metal-3",
+    "node": "v26.4.0",
+    "platform": "darwin arm64",
+    "ci": false
+  },
+  "results": [
+    {
+      "name": "① 平原冲刺",
+      "note": "传送至城外平原（620,-100）按 W 直线奔跑 40s：实测 255 格、跨 region 1 次，streaming 持续 GEN/MESH",
+      "metrics": {
+        "fps": 120.02,
+        "frameMs": {
+          "p50": 8.3,
+          "p95": 9.2,
+          "p99": 9.3
+        },
+        "queue": {
+          "genInflightP95": 0,
+          "meshInflightP95": 0,
+          "uploadQueueP95": 0,
+          "lightInflightP95": 0,
+          "uploadMsP95": 0,
+          "fastRemeshP95": null
+        },
+        "render": {
+          "sections": 1643,
+          "capacity": {
+            "opaque": {
+              "maxVertexCount": 4275000,
+              "maxIndexCount": 6412500
+            },
+            "cutout": {
+              "maxVertexCount": 1800000,
+              "maxIndexCount": 2700000
+            },
+            "transparent": {
+              "maxVertexCount": 125000,
+              "maxIndexCount": 187500
+            }
+          },
+          "channels": {
+            "opaque": {
+              "slots": 1236,
+              "vertices": 1964308,
+              "indices": 2946462,
+              "triangles": 982154
+            },
+            "cutout": {
+              "slots": 320,
+              "vertices": 321864,
+              "indices": 524952,
+              "triangles": 174984
+            },
+            "transparent": {
+              "slots": 87,
+              "vertices": 63676,
+              "indices": 95514,
+              "triangles": 31838
+            }
+          },
+          "drawCalls": 489
+        },
+        "sched": {
+          "inflight": 0,
+          "ready": 323,
+          "meshInflight": 0,
+          "uploadQueue": 0,
+          "sections": 2584,
+          "lightInflight": 0
+        },
+        "mem": {
+          "columns": 323,
+          "sections": 1643,
+          "voxelBytes": 42336256,
+          "gpuVertexBytes": 186000000,
+          "gpuActiveBytes": 107738644,
+          "jsHeapUsedBytes": 269654031,
+          "jsHeapLimitBytes": 4395630592
+        }
+      },
+      "extra": {
+        "distance": 254.7,
+        "columns": 323,
+        "regionCrossed": 1
+      }
+    },
+    {
+      "name": "② 城市中心环视",
+      "note": "出生城市中心原地转 360°（24×15°），最坏 draw call（建筑群全视野）",
+      "metrics": {
+        "fps": 120,
+        "frameMs": {
+          "p50": 8.3,
+          "p95": 9.2,
+          "p99": 9.4
+        },
+        "queue": {
+          "genInflightP95": 0,
+          "meshInflightP95": 0,
+          "uploadQueueP95": 0,
+          "lightInflightP95": 0,
+          "uploadMsP95": 0,
+          "fastRemeshP95": null
+        },
+        "render": {
+          "sections": 1727,
+          "capacity": {
+            "opaque": {
+              "maxVertexCount": 2850000,
+              "maxIndexCount": 4275000
+            },
+            "cutout": {
+              "maxVertexCount": 1800000,
+              "maxIndexCount": 2700000
+            },
+            "transparent": {
+              "maxVertexCount": 125000,
+              "maxIndexCount": 187500
+            }
+          },
+          "channels": {
+            "opaque": {
+              "slots": 1212,
+              "vertices": 1786952,
+              "indices": 2680428,
+              "triangles": 893476
+            },
+            "cutout": {
+              "slots": 425,
+              "vertices": 1164428,
+              "indices": 1771350,
+              "triangles": 590450
+            },
+            "transparent": {
+              "slots": 90,
+              "vertices": 9828,
+              "indices": 14742,
+              "triangles": 4914
+            }
+          },
+          "drawCalls": 545
+        },
+        "sched": {
+          "inflight": 0,
+          "ready": 289,
+          "meshInflight": 0,
+          "uploadQueue": 0,
+          "sections": 2312,
+          "lightInflight": 0
+        },
+        "mem": {
+          "columns": 289,
+          "sections": 1727,
+          "voxelBytes": 37879808,
+          "gpuVertexBytes": 143250000,
+          "gpuActiveBytes": 111170412,
+          "jsHeapUsedBytes": 208028123,
+          "jsHeapLimitBytes": 4395630592
+        }
+      },
+      "extra": {
+        "drawCalls": 545,
+        "sections": 1727
+      }
+    },
+    {
+      "name": "③ 连续放/挖 200 块",
+      "note": "每块间隔 1 帧，fastPath 同步重建；单次编辑 p95（放置 1.7ms / 挖除 1.7ms，冻结门 <2ms）",
+      "metrics": {
+        "fps": 108.33,
+        "frameMs": {
+          "p50": 8.3,
+          "p95": 16.7,
+          "p99": 16.8
+        },
+        "queue": {
+          "genInflightP95": 0,
+          "meshInflightP95": 64,
+          "uploadQueueP95": 0,
+          "lightInflightP95": 2,
+          "uploadMsP95": 0.6,
+          "fastRemeshP95": 1.1
+        },
+        "render": {
+          "sections": 1727,
+          "capacity": {
+            "opaque": {
+              "maxVertexCount": 2850000,
+              "maxIndexCount": 4275000
+            },
+            "cutout": {
+              "maxVertexCount": 1800000,
+              "maxIndexCount": 2700000
+            },
+            "transparent": {
+              "maxVertexCount": 125000,
+              "maxIndexCount": 187500
+            }
+          },
+          "channels": {
+            "opaque": {
+              "slots": 1212,
+              "vertices": 1786816,
+              "indices": 2680224,
+              "triangles": 893408
+            },
+            "cutout": {
+              "slots": 425,
+              "vertices": 1164428,
+              "indices": 1771350,
+              "triangles": 590450
+            },
+            "transparent": {
+              "slots": 90,
+              "vertices": 9828,
+              "indices": 14742,
+              "triangles": 4914
+            }
+          },
+          "drawCalls": 545
+        },
+        "sched": {
+          "inflight": 0,
+          "ready": 289,
+          "meshInflight": 0,
+          "uploadQueue": 0,
+          "sections": 2312,
+          "lightInflight": 0
+        },
+        "mem": {
+          "columns": 289,
+          "sections": 1727,
+          "voxelBytes": 37879808,
+          "gpuVertexBytes": 143250000,
+          "gpuActiveBytes": 111170412,
+          "jsHeapUsedBytes": 215373003,
+          "jsHeapLimitBytes": 4395630592
+        }
+      },
+      "extra": {
+        "placeP95": 1.7,
+        "digP95": 1.7,
+        "placeMax": 7.7,
+        "digMax": 4.8
+      }
+    },
+    {
+      "name": "④ 模拟 TNT 批量删 500 块",
+      "note": "批量 setBlock 删 500 块（2.4ms）+ 一次性异步 REMESH（下发 0.6ms，affected 684 section）；收敛期队列峰值 upload 4/mesh 0",
+      "metrics": {
+        "fps": 119.28,
+        "frameMs": {
+          "p50": 8.3,
+          "p95": 9,
+          "p99": 9.4
+        },
+        "queue": {
+          "genInflightP95": 0,
+          "meshInflightP95": 0,
+          "uploadQueueP95": 0,
+          "lightInflightP95": 0,
+          "uploadMsP95": 0,
+          "fastRemeshP95": null
+        },
+        "render": {
+          "sections": 1471,
+          "capacity": {
+            "opaque": {
+              "maxVertexCount": 2850000,
+              "maxIndexCount": 4275000
+            },
+            "cutout": {
+              "maxVertexCount": 1800000,
+              "maxIndexCount": 2700000
+            },
+            "transparent": {
+              "maxVertexCount": 125000,
+              "maxIndexCount": 187500
+            }
+          },
+          "channels": {
+            "opaque": {
+              "slots": 1103,
+              "vertices": 1778584,
+              "indices": 2667876,
+              "triangles": 889292
+            },
+            "cutout": {
+              "slots": 287,
+              "vertices": 292948,
+              "indices": 479082,
+              "triangles": 159694
+            },
+            "transparent": {
+              "slots": 81,
+              "vertices": 58132,
+              "indices": 87198,
+              "triangles": 29066
+            }
+          },
+          "drawCalls": 526
+        },
+        "sched": {
+          "inflight": 0,
+          "ready": 289,
+          "meshInflight": 0,
+          "uploadQueue": 0,
+          "sections": 2312,
+          "lightInflight": 0
+        },
+        "mem": {
+          "columns": 289,
+          "sections": 1471,
+          "voxelBytes": 37879808,
+          "gpuVertexBytes": 143250000,
+          "gpuActiveBytes": 80061548,
+          "jsHeapUsedBytes": 206700701,
+          "jsHeapLimitBytes": 4395630592
+        }
+      },
+      "extra": {
+        "deleted": 500,
+        "setMs": 2.4,
+        "remeshDispatchMs": 0.6,
+        "affected": 684,
+        "peak": {
+          "upload": 4,
+          "mesh": 0,
+          "gen": 0
+        }
+      }
+    }
+  ]
+}

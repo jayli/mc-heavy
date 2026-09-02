@@ -20,7 +20,7 @@ function nonSkyRatio(pngBuffer) {
 
 test('M2-7 验收：空岛与云层确定性内容 + 可视 + 性能门（视距 8）', async ({ page }) => {
   test.setTimeout(300_000);
-  await page.goto('/?vd=8');
+  await page.goto('/?vd=8&seed=12345');
   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
   // 视距 8 全 289 列就绪
   await page.waitForFunction(() => window.__MC_GAME__.world.columns.size >= 289, null, { timeout: 120_000 });

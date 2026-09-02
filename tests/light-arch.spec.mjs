@@ -5,7 +5,7 @@ import { test, expect } from 'playwright/test';
 // 重算 → 上凹角/悬挑投影下全黑（实玩 bug）。
 test('石拱横梁下方光照经编辑后异步收敛（非全黑）', async ({ page }) => {
   test.setTimeout(120_000);
-  await page.goto('/?vd=2');
+  await page.goto('/?vd=2&seed=12345');
   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 60_000 });
   await page.waitForFunction(() => window.__MC_GAME__.world.columns.size >= 20, null, { timeout: 30_000 });
 

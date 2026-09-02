@@ -2,6 +2,7 @@
 import { Game } from './core/game.js';
 import { buildDefaultRegistry } from './voxel/block-registry.js';
 import { setDebugFlags } from './core/debug-config.js';
+import { loadStoredSettings, resolveSettings } from './ui/settings.js';
 
 window.__MC_BOOT__ = { webgpu: false, rendererReady: false, error: null };
 
@@ -27,7 +28,6 @@ async function boot() {
   window.__MC_BOOT__.webgpu = true;
 
   const registry = await buildDefaultRegistry();
-  const seed = 12345; // M1 固定 seed（M2 接存档/随机）
   const params = new URLSearchParams(location.search);
   // 调试开关 URL 覆盖：?stats=0 关闭世界数据看板统计（对照基线用），?stats=1 强制开
   if (params.get('stats') === '0') setDebugFlags({ worldStats: false });
@@ -35,15 +35,29 @@ async function boot() {
   // ?log=0 关闭世界数据控制台日志（HUD 仍显示），?log=1 强制开
   if (params.get('log') === '0') setDebugFlags({ statsLog: false });
   if (params.get('log') === '1') setDebugFlags({ statsLog: true });
-  // ?blur=1 画质档（§4.4.1，M2 提前落地）：atlas 三线性 mipmap + anisotropy 8，
-  // 远处纹理平滑平均、消莫尔纹（代价：远处变糊）；默认 0 = 像素风（Nearest、无 mipmap）。
-  // 入口暂为 URL 参数，M3-4 设置面板接线 + 持久化；默认值翻转属设计决策（暂不）。
+
+  // 设置统一收口（M3-4）：URL > localStorage > 默认（core/ui/settings.js resolveSettings）。
+  // ?blur=1 画质档（§4.4.1）：atlas 三线性 mipmap + anisotropy 8 消远处莫尔纹；默认像素风。
+  // ?budget=high|low 帧预算档位覆盖（M3-2）；缺省 auto 按刷新率自动标定。
+  // ?vd 视距覆盖；?style 视觉风格覆盖（M2-6）。
+  const settings = resolveSettings(loadStoredSettings(), params);
+  // ?weather=rain|clear 启动即强制天气（M3-3 调试/测试入口）；缺省自动随机周期。
+  const weatherParam = params.get('weather');
+  const startWeather = (weatherParam === 'rain' || weatherParam === 'clear') ? weatherParam : null;
+  // ?seed= 调试/复现入口（M3-4）：显式指定则无存档时用之；缺省 null → 无存档随机生成、
+  // 有存档读存档（确定性红线 2：seed 落库后重启读回同一 seed，地形可复现）。
+  const seedParam = params.get('seed');
+  const seed = seedParam !== null && Number.isFinite(Number(seedParam)) && Number(seedParam) > 0
+    ? Math.floor(Number(seedParam)) : null;
   const game = new Game({
     canvas: document.getElementById('app-canvas'),
     registry, seed,
-    viewDistance: params.get('vd') ? Number(params.get('vd')) : 8,
+    viewDistance: settings.viewDistance,
     hudRoot: document.getElementById('hud-root'),
-    blurMipmap: params.get('blur') === '1',
+    blurMipmap: settings.blur,
+    budgetProfile: settings.budgetProfile,
+    startWeather,
+    settings,
   });
   await game.start();
   window.__MC_BOOT__.rendererReady = true;

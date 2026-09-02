@@ -1,6 +1,6 @@
 # mc-heavy 第一阶段实施设计文档：游戏引擎原型
 
-> 版本：v1.14 ｜ 日期：2026-08-23 ｜ 状态：定稿（经十二轮逐条核验修订）
+> 版本：v1.15 ｜ 日期：2026-09-02 ｜ 状态：定稿（经十三轮逐条核验修订）
 >
 > 目标：在 mc-heavy 仓库从零重建一个功能对标 mc-lite、性能提升一个数量级的体素游戏引擎。
 > 第一阶段只做"引擎底座"：渲染、体素数据、即时地图生成、玩家交互、种子地图、存档原型。
@@ -111,6 +111,26 @@
 > 单云/连通云簇的视觉语义；按产品范围删除空岛宝箱与天空树。云通过 BlockRegistry 的通用
 > `supportsPlayer` 属性实现“可站立但非实心”，不在物理代码中按方块名特判。M2 关闭与 M3 冻结
 > 基线均纳入空中结构场景。
+
+> v1.15 修订说明：M3 实施落地口径回填（2026-09-02，实现细节详见 roadmap M3 条目与
+> `docs/m2-m3-performance-report.md`）。① §4.7 增补**雨效与天气状态机**（M3-3）：mc-lite
+> 真实实现在 `src/world/effects/RainEffect.js`（LineSegments + TSL GPU 下落，非 Engine.js
+> weather 段）；mc-heavy 保留其算法与视觉参数（267 滴/半径 18/速度 24/dropLength 0.5/
+> isSolid 地面截停/30Hz 距离检查 + 64 滴每帧分批迁移削峰），并按 roadmap 验收口径新增
+> mc-lite 没有的**自动天气状态机**（晴 60~180s → 雨 30~90s 随机周期、5s 淡入淡出、
+> force 手动覆盖同语义；周期数值为本次新定，无上游来源）。mc-lite 无天空压暗/雾距联动，
+> 未引入。② §4.8 **设置持久化落点改 localStorage**（M3-4）：画质/音量/视距等设置是
+> 设备级而非世界级（新世界/换存档应保留），存 `mc_heavy_settings_v1` 独立 key，
+> 合并优先级 URL > 存储 > 默认；player 记录（位置/朝向/背包）仍按原设计归第二阶段，
+> 第一阶段 Persistence 维持 meta+edits 两 store 不变。③ §4.9 **帧预算双档标定**（M3-2）：
+> 8.3ms 标定值即 high 档（120Hz：上传 3ms/帧、mesh 下发 64/帧）；60Hz 帧间隔翻倍，
+> 预算等比放宽为 low 档（6ms/128），保证两档设备世界填充速度一致。判档：
+> `matchMedia('(min-refresh-rate:120hz)')` 静态检测（Chromium 未实现恒 false，不可信时
+> 返回 null）→ 运行时「快帧(<11ms)比例 ≥5%」判据兜底（60Hz 物理上产生不了 <11ms 帧间隔，
+> 120Hz 重负载只是量化到 16.7/25ms 仍偶发快帧；中位数判据会被启动 burst 污染误判 low）。
+> 判档一次锁定防震荡；设置面板/`?budget=` 可显式覆盖。④ 视距/blur 档切换为**持久化 +
+> 带参重载**：BatchedMesh maxInstances 与 WebGPU 纹理 mip level 数均在构造期固定
+> （运行时翻 generateMipmaps 不重建 mip 链），重载是无副作用路径。
 
 ---
 
@@ -774,6 +794,14 @@ M4 玩家武器先行实现，也同时是 TNT/爆炸的共享入口；M4 的范
   跟随玩家平移（海面是平面不是体素，成本 O(1)，这是 mc-lite 做对的地方，保留）。
 - **体素水**（swamp_water/河流湖泊）：transparent 材质组，meshing 时只生成与水/空气交界的面，
   顶面按邻居水位降低高度（简单水面高度图，避免 Z-fighting）。
+- **雨效与天气状态机（M3-3，v1.15 增补）**：`render/weather.js` 晴 → 雨 → 晴随机周期状态机
+  （晴 60~180s / 雨 30~90s / 过渡 5s 线性淡入淡出，intensity∈[0,1] 为唯一消费口径；
+  force 手动覆盖与自动周期共用过渡语义，判档一次锁定）。`render/rain.js` 移植 mc-lite
+  `src/world/effects/RainEffect.js`：LineSegments 每滴 2 顶点，下落/循环全在 TSL 顶点阶段
+  （`(uTime×speed×speedScale+phase) mod cycleHeight`），主线程只做 30Hz 距离检查 +
+  64 滴/帧分批雨幕迁移（削峰）；`world.isSolid` 向下搜索 56 格做地面截停（雨滴不穿地）。
+  视觉参数冻结：267 滴 / 半径 18 / 速度 24 / dropLength 0.5 / opacity 0.6。
+  intensity=0 时 LineSegments 隐藏（省 draw）。不引入 mc-lite 没有的天空压暗/雾距联动。
 ### 4.8 持久化（src/save/）
 
 ```
@@ -781,7 +809,7 @@ IndexedDB（沿用 mc-lite DB 名/版本约定）
   ├─ meta:    { seed, spawn, schemaVersion, savedAt }
   ├─ edits:   chunkKey → 压缩的修改列表（仅玩家改过的方块，条目 {id, meta, blockEntity?}，
   │           典型 KB 级/column；blockEntity 为可序列化对象，第一阶段恒为 undefined）
-  ├─ player:  位置/朝向/背包/画质设置
+  ├─ player:  位置/朝向/背包（第二阶段；设置持久化已改落 localStorage，见 v1.15 ②）
   └─ entities:（M5 起：炮塔/矿车等持久运行时实体 snapshot；丧尸为临时实体，
                 丧尸巢穴的锚点/冷却归对应 blockEntity）
 ```

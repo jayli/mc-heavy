@@ -7,6 +7,7 @@
     "start": "node server-script/start-server.js",
     "atlas": "node tools/build-atlas.mjs",
     "test": "playwright test",
+    "bench": "node src/bench/baseline.mjs",
     "lint": "eslint --no-error-on-unmatched-pattern src tools tests"
   },
   "author": "jayli",

@@ -18,8 +18,10 @@ test('地形渲染：出生点地形可见、帧时达标、draw 数受控', asy
   test.setTimeout(120_000);
   const errors = [];
   page.on('pageerror', (e) => errors.push(String(e)));
-  // 视距 2（测试配置，draw 上限断言对应此口径）
-  await page.goto('/?vd=2');
+  // 视距 2（测试配置，draw 上限断言对应此口径）。
+  // ?seed=12345 固定世界：draw<100 / fps>115 是 M1 在该 seed 世界标定的冻结基线；
+  // M3-4 起默认 seed 随机，不钉 seed 会随世界密度浮动破坏可复现性（?seed= 复现入口）。
+  await page.goto('/?vd=2&seed=12345');
   await page.waitForFunction(() => window.__MC_BOOT__?.rendererReady === true, null, { timeout: 30_000 });
   // 等世界就绪（Game 暴露 __MC_GAME__ 状态）
   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 60_000 });

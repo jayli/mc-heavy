@@ -6,11 +6,18 @@ import { WORLD_MIN_Y, SECTION_SIZE, SECTIONS_PER_COLUMN } from '../voxel/constan
 import { DEBUG_FLAGS } from '../core/debug-config.js';
 
 const CHANNELS = ['opaque', 'cutout', 'transparent'];
-// 视距 8 容量口径（§4.4.2 v1.6）：instance 元数据便宜按全 slot 预留；
-// 顶点按预期活跃非空 section × 平均顶点 × 1.25
+// 视距 8 容量口径（§4.4.2 v1.6；M3-1 按实测峰值重标定）：
+// instance 元数据便宜按全 slot 预留；顶点按预期活跃非空 section × 平均顶点 × 1.25。
+// maxVerts = active × avgVerts × 1.25 必须 ≥ 全量场景（城市+空岛+云层+洞穴+水面）
+// 稳态 sum(reservedV)，否则加载/奔跑期触发 setGeometrySize 整批扩容（重建+拷贝 = 帧卡顿）。
+// 实测（seed 12345，视距 8，289 列稳态）：opaque reserved 2.23M / 1212 slot（avg 1843），
+// cutout reserved 1.46M / 425 slot（avg 3425），transparent reserved 12K / 90 slot。
+// 标定值给峰值 ~25% 余量（跨 seed 城市/林地密度浮动 + optimize() 回收前的瞬时高点），
+// 三通道合计 ~143MB（§4.10「~100MB 级」口径；旧值 opaque 4M 过度分配、cutout 562K 偏小
+// 导致运行时 3× 扩容，M3-1 一并修正）。
 const CAPACITY = {
-  opaque:      { active: 800, avgVerts: 4000 },
-  cutout:      { active: 300, avgVerts: 1500 },
+  opaque:      { active: 1200, avgVerts: 1900 },
+  cutout:      { active: 450, avgVerts: 3200 },
   transparent: { active: 100, avgVerts: 1000 },
 };
 

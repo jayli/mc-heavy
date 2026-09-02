@@ -16,7 +16,7 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
 **mc-lite 的地位是「功能与数据来源」，不是「实现蓝本」。** 读它的代码时只提取
 「功能语义、算法、数据、视觉风格」，禁止照搬它的架构组织方式（详见下文「对标 mc-lite」）。
 
-## 当前进度（2026-08-31）
+## 当前进度（2026-09-02）
 
 第一阶段分 M0~M3 四个里程碑（设计文档 §7）：
 
@@ -45,8 +45,26 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
   - §4.4.1 blur 档提前落地（M2 收尾期）：`?blur=1` 开 mipmap+aniso 8 消远处莫尔纹，默认像素风；
     伴随云通道勘误（opaque + 同类剔除 + gutter 16/bleed 8 + 匀质 UV 收缩）；面板接线归 M3-4；
   - M2 已关闭：同 seed 人工比对通过 + 关闭回归全绿，M3-4 随机种子/新世界的启动前提已满足。
-- **M3 性能达标与收尾 ⬜**：视距 8 全量调优 / 预算标定 / 雨效 / HUD / 基线脚本 / 报告。
-- **M4 玩家第一人称武器 ⬜（第二阶段，等待 M3-6）**：独立 Epic；`WorldEditor` 批量编辑、
+- **M3 性能达标与收尾 ✅（2026-09-02 实施完成，未提交，等用户验证）**：M3-1~M3-6 全部落地：
+  - M3-1 全量场景稳态 120fps / 队列归零 / 内存达标（体素 36~40MB、GPU 分配 136.6MB）；
+    BatchedMesh CAPACITY 按实测峰值重标定（消除 cutout 运行时扩容卡顿）+ `game.memoryStats()`；
+  - M3-2 帧预算双档（`src/core/budget.js`：120Hz=3ms/64、60Hz=6ms/128 冻结档；auto 判档用
+    「快帧<11ms 比例」判据——中位数会被启动 burst 污染；`?budget=`/设置面板覆盖）；
+  - M3-3 雨效（`render/weather.js` 晴 60~180s→雨 30~90s 随机周期状态机 + `render/rain.js`
+    mc-lite RainEffect.js 算法照搬：LineSegments+TSL GPU 下落、267 滴、isSolid 截停、
+    30Hz 分批迁移；`?weather=` 调试入口；雨天 fps 120）；
+  - M3-4 HUD（`src/ui/`：坐标+biome、快捷栏 5 格 atlas 裁剪图标、设置面板：视距/blur/音量/
+    视觉风格/预算档/新世界，localStorage 持久化 URL>存储>默认）+ **随机种子新世界**
+    （main.js 固定 12345 改「有存档读存档、无存档随机」；`?seed=` 复现入口；`game.newWorld()`
+    清 edits 防卸载回写竞态；视距/blur 切换走带参重载——BatchedMesh maxInstances 与纹理
+    mip level 均构造期固定；性能/视觉冻结 spec 统一钉 `?seed=12345`）；
+  - M3-5 基线脚本（`src/bench/baseline.mjs`，`npm run bench`：4 场景自动跑图出
+    `docs/m3-baseline.{md,json}`；`--check` 门禁回退>10% 阻断（结构类 2%），负向验证退出码 1；
+    跑图点位实证选定 z=-100 干燥走廊（城市东侧 x>566 是深海、x=520 有树冠挡路，勿凭印象改））；
+  - M3-6 性能报告（`docs/m2-m3-performance-report.md`）：§1 目标表 6 项全达标（冷启动 0.5s /
+    视距 8 默认 120fps + vd=12 冒烟 / 跨 region 无感知 / 编辑 p95 1.8ms / 存档 1.7KB）；
+    mc-lite 对比：视距 ~4×、启动数十~百倍、存档 ~千倍。**第一阶段（M0~M3）验收口径全部达标**。
+- **M4 玩家第一人称武器 ⬜（第二阶段，M3 验证提交后即可开始）**：独立 Epic；`WorldEditor` 批量编辑、
   DDA hitscan、手枪/MAG7/加特林的受控 GLB 相机视图模型、曳光、音效和可选方块破坏。
   规格：`docs/superpowers/specs/2026-08-23-m4-player-weapons-design.md`；计划：
   `docs/superpowers/plans/2026-08-23-m4-player-weapons.md`。不含炮塔飞行弹丸、实体伤害、
@@ -66,21 +84,23 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
   规格：`docs/superpowers/specs/2026-08-23-m7-zombie-nests-design.md`；计划：
   `docs/superpowers/plans/2026-08-23-m7-zombie-nests.md`。
 
-测试现状：21 个 Playwright spec 文件（25 个测试用例）+ 144 个浏览器内单元测试全绿（m1-acceptance 计时断言
+测试现状：24 个 Playwright spec 文件（32 个测试用例）+ 170 个浏览器内单元测试全绿（m1-acceptance 计时断言
 在高负载下偶发贴线 flaky——16.7±1e-6/2.1ms，单独复跑通过，属已记录的计时抖动类）；
-冻结断言达标（120Hz 本机 fps ≥115、放/挖编辑 p95 <2ms、draw 受控）。
+冻结断言达标（120Hz 本机 fps ≥115、放/挖编辑 p95 <2ms、draw 受控）；
+性能基线门禁 `npm run bench -- --check`（M3-5，回退 >10% 阻断合入）。
 
 ## 权威文档（动手前必读）
 
 按顺序读完再写代码：
 
 1. [`docs/phase-1-engine-design.md`](/Users/bachi/jaylli/mc-heavy/docs/phase-1-engine-design.md)
-   —— 架构唯一权威，当前版本 v1.14（已定稿）。所有子系统边界、DR 决策、验收口径都在这里。
+   —— 架构唯一权威，当前版本 v1.15（已定稿）。所有子系统边界、DR 决策、验收口径都在这里。
 2. [`docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md)
    —— **第一阶段剩余执行计划与后续路线图（M2–M7）**，任务级 TODO + 依赖关系，当前 roadmap。
 3. [`docs/superpowers/plans/2026-08-19-m1-voxel-core-loop.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/plans/2026-08-19-m1-voxel-core-loop.md)
    —— M1 实施计划（已完成，架构细节参照）。
-4. `docs/m0-bench-report.md` / `docs/m1-acceptance-report.md` —— 实测与验收报告。
+4. `docs/m0-bench-report.md` / `docs/m1-acceptance-report.md` /
+   `docs/m2-m3-performance-report.md`（M3-6 第一阶段性能报告 = 冻结基线）—— 实测与验收报告。
 5. M4 开始前加读：[`docs/superpowers/specs/2026-08-23-m4-player-weapons-design.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/specs/2026-08-23-m4-player-weapons-design.md)
    与 [`docs/superpowers/plans/2026-08-23-m4-player-weapons.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/plans/2026-08-23-m4-player-weapons.md)。
 6. M5 开始前加读：[`docs/superpowers/specs/2026-08-23-m5-entity-runtime-design.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/specs/2026-08-23-m5-entity-runtime-design.md)
@@ -189,7 +209,7 @@ mc-heavy/
 ├─ index.html                  # import map（本地 vendor/three）+ WebGPU 启动 gate + 准心
 ├─ vendor/three/               # three.js r185.1（three.webgpu.js / three.tsl.js / three.core.js）
 ├─ docs/
-│  └─ phase-1-engine-design.md # 架构权威（v1.14）
+│  └─ phase-1-engine-design.md # 架构权威（v1.15）
 ├─ tools/build-atlas.mjs       # atlas 离线打包（npm run atlas）
 ├─ assets/
 │  ├─ textures/                # 从 mc-lite 复制
@@ -216,6 +236,8 @@ mc-heavy/
 npm install                    # playwright 固定 ^1.62.1（复用本机 chromium-1234 缓存）
 npm start                      # 静态服务 http://localhost:8081
 npm test                       # Playwright 全部验收（tests/*.spec.mjs）
+npm run bench                  # M3-5 性能基线跑图（4 场景 → docs/m3-baseline.{md,json}）
+                               #   加 -- --check 为回归门禁（回退 >10% 阻断，退出码 1）
 npm run lint                   # eslint src tools tests
 npm run atlas                  # 重新生成 assets/atlas.png + atlas.json
 ```

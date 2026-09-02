@@ -3,10 +3,10 @@ import * as THREE from 'three';
 import { raycastVoxel } from './raycast.js';
 import { PlayerPhysics } from './physics.js';
 import { StepLift } from './step-lift.js';
+import { HOTBAR_ITEMS as HOTBAR } from './hotbar-items.js';
 
 const EYE_HEIGHT = 1.62;
 const REACH = 40; // mc-lite 枪的 far 语义
-const HOTBAR = ['stone', 'dirt', 'grass', 'sand', 'cobblestone'];
 
 export class Player {
   /**

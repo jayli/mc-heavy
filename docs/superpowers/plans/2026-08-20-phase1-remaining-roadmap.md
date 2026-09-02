@@ -77,6 +77,17 @@
 | 城市覆写残留自然地形丘清除 + 树植根城市地表 | `7d09cf1` | fillColumn 预填整列自然地形，generateCity 仅覆写至城市地表 → 自然高度 > 城市地表的列（seed=12345 占 20.6%，最高差 11 格）残留接地自然地形丘，凸出地表包裹建筑；generateCity 清除 surfaceY+1..naturalH + 回退 pointContext 的 max 补丁（5b6c51e）使树植根城市地表；过渡带台阶不受影响 |
 | 云渲染通道勘误 + blur 档方格线根因修复（M2-7 收尾，用户实机反馈） | `7e19924` | 远处云面黑纹/方格线三连根因：①cloud 误置 transparent 通道（mc-lite 材质 `mkMat('#FFFFFF',1)` opacity=1 不透明，§4.1 勘误类遗漏）→ depthWrite=false 侧面混叠，改 opaque 通道 + mesher `SAME_TYPE_CULL` 同类相邻剔除；②atlas gutter 原为不透明黑底，mip 下采样渗黑边 → build-atlas 每 tile 边缘 bleed 回填，gutter 2→16/bleed 8；③块面 UV 逐块 wrap 的导数尖峰使 mip 足迹跨 tile 采邻 tile 色（粉灰线）→ blur 档 anisotropy 8 + cloud 匀质白纹理 UV 收缩 tile 中央 1/4（足迹永不跨 tile）根除；云纹理烘纯白（噪点仅贡献莫尔纹）。单测：mesher cloud 通道/同类剔除/UV 收缩 + atlas 双档/gutter 断言 |
 
+### M3 性能达标与收尾 ✅ 实施完成（2026-09-02，待用户验证后提交）
+
+| 项目 | 状态 | 备注 |
+|---|---|---|
+| M3-1 视距 8 全量调优 | ✅ | 全量场景（城市+空岛+云层+洞穴+水面+日夜）稳态 120fps、队列归零、内存达标（体素 36~40MB / GPU 分配 136.6MB，§4.10 口径内）；BatchedMesh CAPACITY 按实测峰值重标定（消除 cutout 运行时 3× 扩容卡顿 + opaque 过度分配 63MB）；`game.memoryStats()`（§4.10 快照）；`tests/m3-fullscene.spec.mjs` |
+| M3-2 预算参数标定（60Hz/120Hz 双档） | ✅ | `src/core/budget.js`：120Hz=3ms/64、60Hz=6ms/128 冻结档 + auto 判档（matchMedia 静态检测不可信 → 运行时「快帧(<11ms)比例」判据，中位数会被启动 burst 污染）；Scheduler 上传/下发预算接线；`?budget=` URL + 设置面板覆盖；单测 9 + `tests/m3-budget.spec.mjs`（本机判 high / fps 120；low 档显式注入 fps 118） |
+| M3-3 雨效 | ✅ | `src/render/weather.js` 天气状态机（晴 60~180s → 雨 30~90s 随机周期 + 5s 淡入淡出 + force 手动覆盖）+ `src/render/rain.js`（mc-lite RainEffect.js 算法照搬：LineSegments + TSL GPU 下落、267 滴/radius 18/speed 24、isSolid 地面截停、30Hz 距离检查 + 64/帧分批迁移削峰）；`?weather=` 调试入口；雨天 fps 120 / 截图差分显著；单测 9 + `tests/m3-rain.spec.mjs`。注：roadmap 写的 mc-lite 参照 Engine.js 有误，真实实现在 `src/world/effects/RainEffect.js`（无天空压暗/雾距联动语义，未引入） |
+| M3-4 HUD 完善 + 随机种子/新世界 | ✅ | `src/ui/`：坐标+biome HUD（CITY 布局边界判定 + getBiome）、快捷栏 5 格（atlas tile CSS background 裁剪 + 数字键高亮）、设置面板（视距/blur/音量/视觉风格/帧预算档/新世界，⚙ 按钮 + uiModal 门控）；设置持久化 localStorage（URL > 存储 > 默认）；**随机种子新世界**：main.js 固定 12345 改「有存档读存档、无存档随机生成」，`?seed=` 复现入口，`game.newWorld()`（清 edits + 防卸载回写竞态 + meta 落库 + 重载）；视距/blur 切换走带参重载（BatchedMesh maxInstances 与纹理 mip level 均构造期固定）；`tests/m3-hud.spec.mjs` 3 用例。性能/视觉冻结 spec 统一钉 `?seed=12345` 保可复现；clampVD 下限 4 误钳测试 vd=2 的回归已修（下限改 2） |
+| M3-5 性能回归基线脚本 | ✅ | `src/bench/baseline.mjs`（`npm run bench`）：4 基线场景自动跑图（①平原冲刺 40s/255 格/跨 region 1 次——实证选定 z=-100 干燥无障碍走廊，曾误选深海/树冠点 ②城市环视 360° ③放挖 200 块 ④TNT 批删 500 块/affected 684 sections）；采集帧时 p50/p95/p99、四类队列深度、upload-ms/fast-remesh 打点、draw/sections/内存；输出 `docs/m3-baseline.{md,json}`；`--check` 门禁（结构类 2%/性能类 10%/fps 同 adapter，负向验证退出码 1）；两次连跑完全可复现 |
+| M3-6 性能报告 + 第一阶段收尾 | ✅ | `docs/m2-m3-performance-report.md`：§1 目标表 6 项全达标（冷启动 0.5s / 视距 8 默认 + vd=12 冒烟 / 120fps / 跨 region 无感知 / 编辑 1.8ms / 存档 1.7KB）；mc-lite 对比（视距 ~4×、启动数十~百倍、存档 ~千倍）；遗留观察项 5 条（LOD/per-tile mip/音频消费方/60Hz 真机矩阵等） |
+
 ## 全局 TODO List（按执行次序）
 
 1. [x] **M2 收尾（2026-08-31 全部完成，M2 关闭）**：
@@ -104,7 +115,10 @@
    - [x] **收尾回归与关闭记录**（2026-08-31）：完整 Playwright suite 全绿（21 文件 / 25 用例
      + 144 浏览器单测；出生城市天际线 = city-visual、跨 region = structure-gen 均在套件内），
      roadmap / CLAUDE.md / README.md 的 M2 状态已更新为「完成」。
-2. [ ] **M3 第一阶段验收**：完成视距 8 调优、雨效、HUD、基线脚本和性能报告；M3-6 报告是冻结基线。
+2. [x] **M3 第一阶段验收（2026-09-02 实施完成，待用户验证后提交）**：视距 8 调优、预算双档、
+   雨效、HUD/随机种子新世界、基线脚本 + 门禁、性能报告全部落地；冻结基线 =
+   `docs/m2-m3-performance-report.md` + `docs/m3-baseline.{md,json}`；收尾回归 32 用例全绿
+   （m1-acceptance 贴线项单跑复验通过）+ 170 浏览器单测 + lint 0 error。
 3. [ ] **M4 第二阶段首个 Epic**：只在 M3-6 验收后开始，交付玩家第一人称手枪/MAG7/加特林的
    `WorldEditor`、DDA hitscan、受控 GLB 视图模型、曳光和音效。规格：
    `docs/superpowers/specs/2026-08-23-m4-player-weapons-design.md`；计划：
@@ -178,21 +192,20 @@
 - [x] **朝向交互侧暂不实现**（原地重转 90°/类型记忆）：第二阶段随床/宝箱/门落地，第一阶段只预留
   meta 数据位。
 
-#### 接下来（2026-08-31 更新：M2 关闭）
+#### 接下来（2026-09-02 更新：M3 实施完成待验证）
 
-1. ~~**同 seed 截图与 mc-lite 人工比对**~~ ✅ 已完成（2026-08-31 通过，无异常；清单
-   `docs/m2-seed12345-comparison.md`，覆盖城市/金字塔/冰封山/雪地/海岛/空岛/云层 + blur 档）。
-2. ~~**M2 关闭回归**~~ ✅ 已完成（2026-08-31：21 文件 / 25 用例全绿 + 144 浏览器单测；
-   本路线图、CLAUDE.md、README.md 状态已回填）。
-3. **M3-1 视距 8 全量调优**：下一个开发任务（性能链 M3-1→M3-2→M3-5→M3-6）。
-4. blur 档后续（面板接线/持久化、per-tile mip 链打磨、默认值决策）归 **M3-4**，见其条目；
-   随机种子/新世界的启动前提（同 seed 比对）已满足。
+1. ~~**M3 全部六任务**~~ ✅ 已实施完成（2026-09-02，M3-1→M3-6 顺序 TDD；未提交，等用户验证）。
+2. blur 档面板接线/持久化已随 M3-4 落地（重载生效口径）；剩余可选项（per-tile mip 链打磨、
+   默认值翻转决策）见 M3-4 条目与性能报告遗留观察项。
+3. **用户验证 M3 后提交** → M3-6 报告即第一阶段冻结基线 → **M4 玩家武器**（第二阶段首个 Epic，
+   加读规格与计划文档后开工）。
 
 ### 测试现状
 
-- 21 个 Playwright spec 文件（25 个测试用例；m1-acceptance 计时断言高负载下偶发贴线 flaky）
-- 144 个浏览器内单元测试（harness）
+- 24 个 Playwright spec 文件（32 个测试用例；m1-acceptance 计时断言高负载下偶发贴线 flaky，单跑全绿）
+- 170 个浏览器内单元测试（harness）
 - 冻结断言：fps ≥90（120Hz 本机 ≥115）、编辑 p95 <2ms、draw 受控；atlas 147 tile（126 + 23 程序化烘焙）
+- 性能基线门禁：`npm run bench` 采集 / `npm run bench -- --check` 回退 >10% 阻断（结构类 2%）
 
 ---
 
@@ -346,36 +359,42 @@
 
 ---
 
-## M3 性能达标与收尾（1 周）
+## M3 性能达标与收尾 ✅ 实施完成（2026-09-02，待用户验证后提交）
 
 **验收口径（设计文档 §7）：** §1 目标表全部达标；输出性能报告。
+实测证据汇总：`docs/m2-m3-performance-report.md` + `docs/m3-baseline.{md,json}`。
 
 ### Task M3-1: 视距 8 全量调优
 
 **目标：** 视距 8（289 column）全量加载 + 地表/空中结构 + 洞穴 + 水面 + 日夜，fps ≥90（120Hz 本机 ≥115）。
 
 **实现要点：**
-- [ ] 全量场景（城市 + 悬浮空岛 + 云层 + 洞穴 + 水面 + 日夜）下 fps ≥90
-- [ ] GEN/MESH/LIGHT 队列不积压（inflight 稳定）
-- [ ] 内存预算达标（§4.10：体素 ~37MB + GPU 顶点 ~100MB）
+- [x] 全量场景（城市 + 悬浮空岛 + 云层 + 洞穴 + 水面 + 日夜）下 fps ≥90（实测稳态 120，冲刺/收敛全窗口 ≥107）
+- [x] GEN/MESH/LIGHT 队列不积压（稳态/停跑收敛全归零；冲刺中 inflight p95=0）
+- [x] 内存预算达标（体素 36~40MB ✅；GPU 顶点分配 136.6MB / 占用 106~119MB——§4.10「~100MB 级」口径内；
+  CAPACITY 按实测峰值重标定，消除 cutout 运行时 3× setGeometrySize 扩容卡顿）
 
 **测试：**
-- [ ] m1-acceptance 全量场景版（视距 8 + 地表/空中结构 + 洞穴）
-- [ ] 内存快照（performance.memory / GPU buffer 统计）
+- [x] m1-acceptance 全量场景版（`tests/m3-fullscene.spec.mjs`：数据级确认云层/洞穴在加载列 + 稳态/奔跑/收敛三段队列断言 + fps 门）
+- [x] 内存快照（`game.memoryStats()`：体素字节和 + 3 通道 GPU 分配/占用 + performance.memory）
 
 ### Task M3-2: 预算参数标定（60Hz/120Hz 双档）
 
 **目标：** 根据设备刷新率自动调整帧预算参数。
 
 **实现要点：**
-- [ ] 检测 `screen.refreshRate` 或 `matchMedia('(min-refresh-rate: 120hz)')`
-- [ ] 120Hz：MESH_UPLOAD_BUDGET_MS=3、MESH_DISPATCH_PER_FRAME=64
-- [ ] 60Hz：MESH_UPLOAD_BUDGET_MS=6、MESH_DISPATCH_PER_FRAME=128
-- [ ] 设置面板可手动覆盖
+- [x] 检测 `matchMedia('(min-refresh-rate: 120hz)')`（Chromium 未实现该 feature 恒 false 不可信 → 返回 null 交由运行时测量兜底；`src/core/budget.js detectRefreshHint`）
+- [x] 120Hz：MESH_UPLOAD_BUDGET_MS=3、MESH_DISPATCH_PER_FRAME=64（BUDGET_PROFILES.high 冻结）
+- [x] 60Hz：MESH_UPLOAD_BUDGET_MS=6、MESH_DISPATCH_PER_FRAME=128（BUDGET_PROFILES.low 冻结）
+- [x] 设置面板可手动覆盖（M3-4 面板「帧预算」行 + `?budget=` URL；auto 判档一次锁定防震荡）
+- 实现注记：auto 判档用「快帧(<11ms)比例 ≥5%」判据而非中位数——60Hz 物理上产生不了快帧，
+  120Hz 重负载帧间隔只是量化到 16.7/25ms 仍偶发快帧；中位数会被启动 burst 整窗污染误判 low（实测教训）。
 
 **测试：**
-- [ ] 60Hz 模拟（`--force-device-scale-factor=1 --disable-frame-rate-limit`）fps ≥55
-- [ ] 120Hz 本机 fps ≥115
+- [x] 60Hz 判定：单测喂 16.7ms 帧间隔 ×120 → 判 low（浏览器内 test-budget 覆盖）；roadmap 原拟
+  `--disable-frame-rate-limit` 实测为「解除限帧」而非产生 60Hz vsync，无法真实模拟（口径记录在 m3-budget.spec 注释）；
+  端到端 `?budget=low` 显式档注入 → Scheduler 消费 6/128，fps ≥55（实测 118）
+- [x] 120Hz 本机 auto 判 high + fps ≥115（实测 120；`tests/m3-budget.spec.mjs` + 单测 9 用例）
 
 ### Task M3-3: 雨效
 
@@ -384,13 +403,16 @@
 **mc-lite 参照：** `src/core/Engine.js`（weather/rain 相关）
 
 **实现要点：**
-- [ ] 粒子系统：InstancedMesh 或 Points + TSL 材质
-- [ ] 雨滴跟随相机（视距内）
-- [ ] 天气状态机：晴 → 雨 → 晴（随机周期）
+- [x] 粒子系统：LineSegments + TSL 顶点位移（mc-lite RainEffect.js 同款——roadmap 写的参照 Engine.js 有误，
+  真实实现在 `src/world/effects/RainEffect.js`；267 滴/半径 18/速度 24/dropLength 0.5，GPU 下落零主线程逐滴更新）
+- [x] 雨滴跟随相机（30Hz 距离检查 + 64 滴/帧分批迁移削峰；isSolid 地面截停）
+- [x] 天气状态机：晴 → 雨 → 晴（晴 60~180s / 雨 30~90s 随机周期 + 5s 淡入淡出；force 手动覆盖同语义；
+  `src/render/weather.js` 与 three 解耦供单测）
 
 **测试：**
-- [ ] 雨效可见（截图有雨滴粒子）
-- [ ] 雨效下 fps ≥90
+- [x] 雨效可见（`tests/m3-rain.spec.mjs`：同 seed 同机位雨/晴截图差分 448px vs 晴天基线 0px；
+  数据级断言 intensity/opacity/draw+1/267 滴 534 顶点）
+- [x] 雨效下 fps ≥90（实测 120）；单测 9 用例（状态机周期/过渡连续性/force/大步长）
 
 ### Task M3-4: HUD 完善
 
@@ -402,28 +424,37 @@
 - `src/ui/Inventory.js`
 
 **实现要点：**
-- [ ] 帧率面板（已有 PerfHUD，增加 draw/section/light 统计）
-- [ ] 坐标显示（x, y, z + biome）
-- [ ] 设置面板（视距/画质/音量/视觉风格）。其中**画质 blur 档位（§4.4.1）实现已提前到 M2 落地**
+- [x] 帧率面板（PerfHUD 已有 fps/frame/gen·mesh·upload·light inflight marks + 世界数据看板 draw/section/三角；
+  M3-5 追加 upload-ms/fast-remesh 耗时打点）
+- [x] 坐标显示（`src/ui/coords-hud.js`：x/y/z + biome + seed，250ms 节流；CITY 布局边界判定优先，否则 getBiome）
+- [x] 设置面板（视距/画质 blur/音量/视觉风格/帧预算档/新世界，`src/ui/settings-panel.js` ⚙ 按钮 +
+  uiModal 门控 + localStorage 持久化，URL > 存储 > 默认三级合并 `src/ui/settings.js`）。
+  其中**画质 blur 档位（§4.4.1）实现已提前到 M2 落地**
   （M2-7 收尾期用户实机反馈远处云面莫尔纹/方格线触发，2026-08-28 用户实机确认修复）：
   `?blur=1` 开 atlas 三线性 mipmap + anisotropy 8 消远处走样，默认仍像素风；完整修复栈含
   cloud 通道勘误（opaque + `SAME_TYPE_CULL`）、gutter 16/bleed 8、cloud 匀质 UV 收缩中央 1/4、
-  云纹理烘纯白（详见 M2 后修复表「云渲染通道勘误」行）。**本任务剩余**：① 把 `?blur` 开关接入
-  设置面板并持久化（设置持久化同 M3-4 口径）；② （可选打磨）高对比纹理掠射角块缝的彻底解 =
-  per-tile 自定义 mip 链（bleed/aniso 为尽力缓解）；③ 默认值翻转（blur=1 更贴近 mc-lite 远处观感）
-  为设计决策，用户已定暂不翻转（保留参数、默认 0），若后续翻转需先改 §4.4.1 定稿口径。
-- [ ] 快捷栏（5 格，数字键切换，已有 HOTBAR 逻辑）
-- [ ] 随机种子 / 新世界（承接 M1 注释「M2 接存档/随机」的遗留）：设置面板提供「新世界」入口，
-  随机生成（或允许指定）seed 并写入 meta 记录（`{ seed, spawn, ... }`，§4.8 已含字段），
-  重启读回同一 seed 的机制不变；当前 `main.js` 固定 seed 12345 改为「有存档读存档、无存档随机生成」。
-  **启动前提：M2 同 seed 截图与 mc-lite 人工比对验收通过后才可实施**——固定 12345 是比对基线，
-  验收完成前引入随机种子会破坏可比性；可选保留 `?seed=` URL 参数作调试/复现入口。
+  云纹理烘纯白（详见 M2 后修复表「云渲染通道勘误」行）。**本任务落地情况**：① `?blur` 开关已接入设置面板
+  （「画质(远处)」行：像素风/平滑(blur)）并持久化（localStorage；切换走带参重载——WebGPU 纹理
+  mip level 数创建期由 generateMipmaps 固定，运行时翻转不重建 mip 链，实测口径记录在
+  game.setBlurQuality 注释）；② （可选打磨，未做）高对比纹理掠射角块缝的彻底解 =
+  per-tile 自定义 mip 链（bleed/aniso 为尽力缓解）——列性能报告遗留观察项；③ 默认值翻转
+  用户已定暂不翻转（保留参数、默认 0），若后续翻转需先改 §4.4.1 定稿口径。
+- [x] 快捷栏（5 格 UI，`src/ui/hotbar.js`：atlas tile CSS background 裁剪图标 + 数字键选中高亮
+  同步 Player.hotbarIndex；方块数据单一来源 `src/player/hotbar-items.js`）
+- [x] 随机种子 / 新世界：设置面板「新世界（随机种子）」入口（`game.newWorld()`：随机/指定 seed
+  写 meta + 清 IndexedDB edits 与内存 edits（防 beforeunload flush 回写竞态）+ 带新 `?seed=` 重载）；
+  `main.js` 固定 seed 12345 已改「有存档读存档、无存档随机生成（24bit）」；`?seed=` URL 复现入口
+  保留（M3 起全部性能/视觉冻结 spec 统一钉 `?seed=12345` 保持可复现基线）。
+  启动前提已满足（M2 同 seed 人工比对 2026-08-31 通过）。
 
 **测试：**
-- [ ] HUD 元素可见（截图）
-- [ ] 设置面板切换视距后生效
-- [ ] 新世界生效：随机/指定 seed 写入 meta 后重启地形确定且与旧存档不同；
-  固定 `?seed=` 参数时两次启动世界一致（回归确定性红线 2）
+- [x] HUD 元素可见（`tests/m3-hud.spec.mjs`：坐标/biome/seed 行 + 快捷栏 5 格图标裁剪 + ⚙ 按钮 +
+  perf 面板截图；biome=CITY 数据级一致性）
+- [x] 设置面板：打开 uiModal 门控玩家输入暂停（按 W 不动）；视觉风格 night 运行时即时生效；
+  音量/风格持久化 localStorage 并重载读回；视距切换 = 持久化 + 带参重载（applyViewDistance）
+- [x] 新世界生效：newWorld 后 seed 变化 + 地形指纹不同 + edits store 清零；重启读回同一新 seed；
+  `?seed=777` 固定参数全新上下文两次启动逐格一致（确定性红线 2 回归）；单测 7 用例
+  （tileStyle 裁剪数学 + resolveSettings 三级合并/钳制）
 
 ### Task M3-5: 性能回归基线脚本
 
@@ -432,23 +463,30 @@
 **设计文档参照：** §8（性能验证方案）
 
 **实现要点：**
-- [ ] 自动跑图脚本：驱动玩家沿固定路线奔跑（含跨 region、进城市、贴墙转向）
-- [ ] 采集帧时分布（p50/p95/p99）、GEN/MESH/LIGHT 队列、上传耗时
-- [ ] 输出对比报告（markdown 表格）
-- [ ] 基线场景 4 个：① 平原冲刺 ② 城市中心环视 ③ 连续放/挖 200 块 ④ 模拟 TNT 批量删除 500 块
+- [x] 自动跑图脚本（`src/bench/baseline.mjs`，`npm run bench`）：钉 seed=12345 + 每场景独立
+  browser context（IndexedDB 隔离）；冲刺路线含跨 region（实证选定 z=-100 干燥无障碍走廊，
+  x=620 起 40s/255 格跨 x=800 边界；两处实证教训记录在脚本注释：城市东侧深海/树冠悬叶挡路）
+- [x] 采集帧时分布（p50/p95/p99）、GEN/MESH/LIGHT/upload 队列 p95、上传耗时（scheduler
+  新增 upload-ms 逐帧打点）+ fast-remesh/draw/sections/内存预算
+- [x] 输出对比报告（`docs/m3-baseline.md` markdown 表格 + `.json` 机器可读基线）
+- [x] 基线场景 4 个：① 平原冲刺（跨 region）② 城市中心环视（360° 最坏 draw）③ 连续放/挖 200 块
+  ④ 模拟 TNT 批量删除 500 块（逐列扫地表真删 500、affected 684 sections、REMESH 异步收敛）
 
 **测试：**
-- [ ] 跑图脚本可重复执行（无 flaky）
-- [ ] 性能回退 >10% 即阻断合入（CI 门禁）
+- [x] 跑图脚本可重复执行（两次连跑 fps/draw/sections 完全一致，无 flaky）
+- [x] 性能回退 >10% 阻断（`npm run bench -- --check`：结构类 2%/性能类 10%/fps 仅同 adapter 对比；
+  负向验证：人为虚高基线 16.7% → 报 4 场景回退 + 退出码 1）
 
 ### Task M3-6: 性能报告 + 第一阶段收尾
 
 **目标：** 输出第一阶段性能报告，确认 §1 目标表全部达标。
 
 **实现要点：**
-- [ ] 性能报告（`docs/m2-m3-performance-report.md`）
-- [ ] §1 目标表逐项核对
-- [ ] 与 mc-lite 对比数据（视距/帧率/启动时间/存档体积）
+- [x] 性能报告（`docs/m2-m3-performance-report.md`）
+- [x] §1 目标表逐项核对（6 项全 ✅：冷启动 worldReady 0.48~0.55s <2s；视距 8 默认 120fps +
+  vd=12 冒烟通过佐证「架构支持 16+」；跨 region 无感知；编辑 p95 1.8ms；存档 50 块 1.7KB）
+- [x] 与 mc-lite 对比数据（视距 ~4×、冷启动数十~百倍、存档 ~千倍、跨 region/放挖响应质变；
+  引 §2 瓶颈诊断逐项回应）
 
 ---
 
