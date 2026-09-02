@@ -21,8 +21,8 @@ import { Player } from '../player/player.js';
 import { Persistence } from '../save/persistence.js';
 import { CoordsHUD } from '../ui/coords-hud.js';
 import { SettingsPanel } from '../ui/settings-panel.js';
-import { createHotbar, HOTBAR_ITEMS } from '../ui/hotbar.js';
-import { FACES_DATA } from '../voxel/faces-data.js';
+import { createHotbar, tileOfName } from '../ui/hotbar.js';
+import { InventoryPanel } from '../ui/inventory.js';
 import { getBiome } from '../gen/noise.js';
 import { loadStoredSettings, resolveSettings } from '../ui/settings.js';
 
@@ -49,8 +49,12 @@ export class Game {
     this.registry = registry;
     this.seed = seed; // null → start() 中无存档时 randomSeed()（有存档恒读存档）
     this.viewDistance = viewDistance;
-    /** 设置面板/弹窗打开标志：主循环跳过 player.update（指针锁定已退出、输入让给 UI） */
-    this.uiModal = false;
+    /**
+     * 模态栈（M3.1，§4.5.4）：设置面板与背包共用。原为可写布尔，单消费者时够用；
+     * 两个面板后会互相踩（设置开着时开/关背包会误清门控）。
+     * 栈内每项是 owner 标识（'settings' | 'inventory'）；`uiModal` getter = 栈非空。
+     */
+    this._modals = [];
     this.blurMipmap = blurMipmap;
     this.world = new WorldData(registry);
     this.perf = new PerfMonitor();
@@ -142,6 +146,9 @@ export class Game {
     this.player = new Player({
       world: this.world, camera: this.camera, scheduler: this.scheduler,
       registry: this.registry, canvas: this.renderer.domElement,
+      // M3.1 模态守卫（§4.5.4）：面板打开时 Player 的 keydown 全部拦截。
+      // 谓词注入而非传 Game 本身，保持 player/ 不反向依赖 core/（依赖方向 §3）
+      isModal: () => this.uiModal,
     });
     this.player.spawn(this.spawnX, this.spawnY, this.spawnZ);
     this.scene.add(this.player.highlight);
@@ -160,14 +167,20 @@ export class Game {
       DEBUG_FLAGS.worldStats ? () => this.worldStats() : null);
     // M3-4 HUD：坐标+biome、快捷栏（atlas tile CSS 裁剪）、设置面板
     this._coordsHud = new CoordsHUD(this._hudRoot, this);
+    // M3.1：快捷栏是背包前 5 格的视图（§4.5.4），内容/高亮都读 inventory，
+    // 不再有第二份物品状态；tileOfName 提到 ui/hotbar.js 供背包面板共用
     this._hotbar = createHotbar(this._hudRoot, {
-      items: HOTBAR_ITEMS,
+      inventory: this.player.inventory,
       atlasTiles: atlasMeta.tiles,
       atlasSize: atlasMeta.size,
-      tileOfName: (name) => {
-        const f = FACES_DATA[name];
-        return Array.isArray(f) ? f[0] : f; // 侧面（index 0）最具辨识度
-      },
+      tileOfName,
+      atlasUrl: '/assets/atlas.png',
+    });
+    // M3.1：背包面板（Z toggle / Escape 关闭 / 点击槽位选中；模态栈 owner 'inventory'）
+    this.inventoryPanel = new InventoryPanel(this._hudRoot, this, {
+      atlasTiles: atlasMeta.tiles,
+      atlasSize: atlasMeta.size,
+      tileOfName,
       atlasUrl: '/assets/atlas.png',
     });
     // 生效设置：main.js 已 resolve（存储+URL）传入；缺省自行合并（fixture 页直建 Game 时）
@@ -230,6 +243,30 @@ export class Game {
     this.camera.aspect = window.innerWidth / window.innerHeight;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(window.innerWidth, window.innerHeight);
+  }
+
+  /**
+   * 模态标志（M3.1，§4.5.4）：栈非空即 true —— 主循环跳过 `player.update`、
+   * `Player._bindInput()` 的 keydown 守卫拦截按键。**只读**，面板通过 push/popModal 改动。
+   */
+  get uiModal() { return this._modals.length > 0; }
+
+  /**
+   * 打开一个模态面板（幂等：同一 owner 重复 push 不叠层）。
+   * @param {string} owner 面板标识（'settings' | 'inventory'）
+   */
+  pushModal(owner) {
+    if (!this._modals.includes(owner)) this._modals.push(owner);
+  }
+
+  /**
+   * 关闭一个模态面板。**只移除自己的 owner**，不误清其他面板的门控
+   * （原可写布尔的竞争根因：设置面板开着时关背包会把门控一起清掉）。
+   * @param {string} owner 面板标识
+   */
+  popModal(owner) {
+    const i = this._modals.indexOf(owner);
+    if (i >= 0) this._modals.splice(i, 1);
   }
 
   perfSnapshot() { return this.perf.snapshot(); }
@@ -345,6 +382,10 @@ export class Game {
 
   dispose() {
     this.renderer.setAnimationLoop(null);
+    // M3.1：背包面板在 window 上挂 keydown 监听，不清理会跨实例串扰
+    // （fixture 页多次构造 Game 时旧面板仍会响应按键）。生产路径不调 dispose，
+    // 此处为完整清理入口的一致性收尾。
+    this.inventoryPanel?.dispose();
     this.pool.dispose();
     this.renderer.dispose();
   }

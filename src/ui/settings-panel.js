@@ -6,7 +6,8 @@
 // （组件自带样式，不依赖宿主页面；重复构造只注入一次）。
 // 档位：视距（持久化+重载生效）/ 画质 blur（重载生效）/ 音量（持久化，第一阶段无音频消费方）
 // / 视觉风格（运行时即时）/ 帧预算档位（运行时即时，M3-2）/ 新世界（随机 seed + 清 edits + 重载）。
-// 打开时：退出 pointer lock + 清空按键 + game.uiModal 置位（主循环跳过 player.update）。
+// 打开时：退出 pointer lock + 清空按键 + game.pushModal('settings')（模态栈，M3.1 §4.5.4；
+// 主循环跳过 player.update、Player keydown 守卫拦截）。关闭时 lock 回 player.canvas。
 import {
   VIEW_DISTANCE_OPTIONS, VISUAL_STYLE_OPTIONS, saveStoredSettings,
 } from './settings.js';
@@ -243,14 +244,23 @@ export class SettingsPanel {
 
   open() {
     this.el.style.display = 'flex';
-    this.game.uiModal = true;
+    this.game.pushModal('settings'); // M3.1 模态栈（§4.5.4）：原 uiModal=true 会与背包互踩
     this.game.player?.keys.clear(); // 打开瞬间清空按键，防 WASD 粘滞
     if (document.pointerLockElement) document.exitPointerLock();
   }
 
   close() {
     this.el.style.display = 'none';
-    this.game.uiModal = false;
+    this.game.popModal('settings'); // 只移除自己的 owner，不误清背包的门控
+    // pointer lock 恢复到 canvas（M3.1 与背包统一口径，§4.5.4）。
+    // 注意：mc-lite 锁 document.body，本仓库必须锁 canvas——否则 Player 的
+    // `document.pointerLockElement !== this.canvas` 守卫会令视角与放挖全失效。
+    // 程序化 requestPointerLock 需用户手势，可能抛 SecurityError（无头环境尤甚），
+    // 故 try/catch 吞掉；失败时回落到既有「点击画面重新锁定」（canvas click 入口）。
+    const canvas = this.game.player?.canvas;
+    if (canvas && !this.game.uiModal) {
+      try { canvas.requestPointerLock(); } catch { /* 忽略：等待用户点击 */ }
+    }
   }
 
   toggle() {

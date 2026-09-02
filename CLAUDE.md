@@ -64,7 +64,7 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
   - M3-6 性能报告（`docs/m2-m3-performance-report.md`）：§1 目标表 6 项全达标（冷启动 0.5s /
     视距 8 默认 120fps + vd=12 冒烟 / 跨 region 无感知 / 编辑 p95 1.8ms / 存档 1.7KB）；
     mc-lite 对比：视距 ~4×、启动数十~百倍、存档 ~千倍。**第一阶段（M0~M3）验收口径全部达标**。
-- **M3.1 背包 ✅（2026-09-02 实施完成，未提交，等用户验证）**：M3 收尾补丁项，插在 M3 与 M4 之间。
+- **M3.1 背包 ✅（2026-09-02 完成并提交）**：M3 收尾补丁项，插在 M3 与 M4 之间。
   设计文档 v1.16 定稿的口径收口——§4.5.4 原写「第一阶段实现创造模式无限背包」而 v1.12 写
   「背包归独立后续 Epic」，二者冲突；M3-4 只落地了快捷栏展示层（`src/ui/hotbar.js` +
   `HOTBAR_ITEMS` 常量数组），物品数据模型缺位（无 slots/selectedSlot、Z 键无响应、
@@ -138,9 +138,7 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
   规格：`docs/superpowers/specs/2026-08-23-m7-zombie-nests-design.md`；计划：
   `docs/superpowers/plans/2026-08-23-m7-zombie-nests.md`。
 
-测试现状：25 个 Playwright spec 文件（38 个测试用例）+ 216 个浏览器内单元测试全绿
-（**含尚未提交的 M3.1**：`tests/m3-1-inventory.spec.mjs` 6 用例 + 单测 46 项；已提交基线
-`82da106` 为 24 spec / 32 用例 / 170 单测。M3.1 提交后本行去掉该注）（m1-acceptance 计时断言
+测试现状：25 个 Playwright spec 文件（38 个测试用例）+ 216 个浏览器内单元测试全绿（m1-acceptance 计时断言
 在高负载下偶发贴线 flaky——16.7±1e-6/2.1ms，单独复跑通过，属已记录的计时抖动类）；
 冻结断言达标（120Hz 本机 fps ≥115、放/挖编辑 p95 <2ms、draw 受控）；
 性能基线门禁 `npm run bench -- --check`（M3-5，回退 >10% 阻断合入）。

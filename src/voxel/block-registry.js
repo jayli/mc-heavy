@@ -49,6 +49,17 @@ export function createRegistry() {
     },
 
     freeze() { frozen = true; },
+    /**
+     * 按注册顺序返回 `{id, name}[]` 只读快照（§4.1 v1.16 补记）。
+     * 唯一消费方是 §4.5.4 背包物品集合构建（冷路径、一次性），
+     * **禁止**进入 meshing/物理热路径（热路径仍走 typed 表 + 数字 ID）。
+     * 冻结后结果不变，调用方可安全缓存。
+     */
+    all() {
+      const out = new Array(count);
+      for (let id = 0; id < count; id++) out[id] = { id, name: idToName[id] };
+      return out;
+    },
     idOf(name) { return nameToId.get(name); },
     nameOf(id) { return idToName[id]; },
     geometryNameOf(id) { return geometryNames[geometryTable[id]]; },

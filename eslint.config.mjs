@@ -42,6 +42,11 @@ export default [
         performance: 'readonly',
         Performance: 'readonly',
         PerformanceObserver: 'readonly',
+        // DOM 构造器与测量 API（M3.1 背包面板单测需派发事件、读计算样式）
+        KeyboardEvent: 'readonly',
+        MouseEvent: 'readonly',
+        Event: 'readonly',
+        getComputedStyle: 'readonly',
         // Worker 作用域全局（src/core/worker-pool.js 的 installRpcHandler 在 worker 内运行）
         self: 'readonly',
         postMessage: 'readonly',
