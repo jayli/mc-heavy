@@ -8,13 +8,13 @@
 // （vAo = varying(vertexStage(aoComputed))）。
 import * as THREE from 'three';
 import {
-  texture, attribute, float, vec4, mul, max,
+  texture, attribute, float, vec3, vec4, mul, add, max,
   rangeFogFactor, uniform, fog,
   varying, vertexStage,
 } from 'three/tsl';
 
 // ---- 顶点阶段 shade（light × AO），float varying 传片元 ----
-// packed 属性解包：bit0-7 light（sky<<4|block），bit8-9 AO
+// packed 属性解包：bit0-7 light（sky<<4|block），bit8-9 AO，bit13 材质自发光标记（§4.3）
 const packed = attribute('packed', 'uint');
 const lightByte = packed.bitAnd(0xFF);
 // 日夜调制（M2-6）：uSkyDim 黑夜压暗 skylight，uBlockBoost 黑夜相对增强 blocklight
@@ -29,17 +29,36 @@ const aoFactor = float(1).sub(float(3).sub(ao).div(3).mul(0.9));
 // 逐顶点最终亮度 = light × AO（Minecraft 原版即逐顶点算最终亮度再插值），float varying
 const vShade = varying(vertexStage(mul(brightness, aoFactor)), 'vShade');
 
+// ---- 材质自发光（§4.3 bit13，v1.21）----
+// 对齐 mc-lite `MeshStandardNodeMaterial` 的 emissive：实测 mc-lite **只有 hanging_lamp**
+// 一处有材质自发光（`MaterialManager.js:1199`，`emissive:'#FFE4B5'` × `emissiveIntensity:0.8`），
+// 故不能给整个通道加（会让 vine/flower/leaves 全部发光），必须按方块区分 → 顶点 bit13 传递。
+// **与 blocks-data 的 `emissive:15` 是不同概念**：那是 blocklight 光照源（照亮周围方块），
+// 这里是材质自身发亮。四个发光方块都有 blocklight 源，但只有 hanging_lamp 有材质自发光。
+//
+// 语义：three `MeshStandardMaterial` 的 emissive 是**独立加项**——不乘贴图色、不受光照/AO 影响，
+// 直接加在 diffuse 之上（黑夜中灯依然发亮）。故加在 `× vShade` 之后。
+// 标记是逐顶点常量（同一 quad 4 顶点同值），走 vertexStage float varying 即可，无需渐变。
+const vEmissive = varying(vertexStage(float(packed.shiftRight(13).bitAnd(1))), 'vEmissive');
+const EMISSIVE_COLOR = vec3(0xFF / 255, 0xE4 / 255, 0xB5 / 255); // '#FFE4B5'（暖黄色）
+const EMISSIVE_INTENSITY = 0.8; // mc-lite emissiveIntensity
+
 /**
  * 创建三通道体素材质。
  * @param {THREE.Texture} atlasTexture
  * @returns {{opaque: THREE.MeshBasicNodeMaterial, cutout: THREE.MeshBasicNodeMaterial, transparent: THREE.MeshBasicNodeMaterial}}
  */
 export function createVoxelMaterials(atlasTexture) {
-  const makeMaterial = ({ alphaTest = 0, transparent = false, side = THREE.FrontSide }) => {
+  const makeMaterial = ({ alphaTest = 0, transparent = false, side = THREE.FrontSide, emissive = false }) => {
     const mat = new THREE.MeshBasicNodeMaterial();
     const uvNode = attribute('uv', 'vec2');
     const texColor = texture(atlasTexture, uvNode);
-    mat.colorNode = vec4(mul(texColor.rgb, vShade), texColor.a);
+    // emissive 只挂在需要的通道（hanging_lamp 走 cutout）：opaque 是最大通道，
+    // 给它加一个恒为 0 的加项会白付一次逐像素 mul+add。
+    const rgb = emissive
+      ? add(mul(texColor.rgb, vShade), mul(EMISSIVE_COLOR, EMISSIVE_INTENSITY).mul(vEmissive))
+      : mul(texColor.rgb, vShade);
+    mat.colorNode = vec4(rgb, texColor.a);
     if (alphaTest > 0) { mat.alphaTest = alphaTest; }
     if (transparent) { mat.transparent = true; mat.depthWrite = false; }
     mat.side = side;
@@ -51,7 +70,8 @@ export function createVoxelMaterials(atlasTexture) {
     // cutout = FrontSide + alphaTest 0.3（mc-lite 树叶族口径：leaves 0.3/FrontSide，
     // 树冠内表面背向相机不可见 → 堆积不过密）。cross 植被与 DoubleSide 方块
     // （realistic_oak_leaves）由 mesher 双向绕线复刻双面可见，保持单材质单通道。
-    cutout: makeMaterial({ alphaTest: 0.3, side: THREE.FrontSide }),
+    // emissive: true —— hanging_lamp 的材质自发光走本通道（§4.3 bit13）。
+    cutout: makeMaterial({ alphaTest: 0.3, side: THREE.FrontSide, emissive: true }),
     transparent: makeMaterial({ transparent: true }),
     dayNight: { uSkyDim, uBlockBoost },
   };

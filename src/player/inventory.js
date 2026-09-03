@@ -24,6 +24,28 @@ export const DEFAULT_INVENTORY_COUNT = 1500;
 export const NON_PLACEABLE_ITEMS = ['air', 'collider', 'calcite', 'realistic_trunk_collider'];
 
 /**
+ * **可放置但不进背包**的方块（与 `NON_PLACEABLE_ITEMS` 语义互斥，勿混为一处）。
+ *
+ * 这些方块本质都能放能挖，只是不出现在背包物品集合里 → 玩家选不到 → 实际不会被放置。
+ * 世界侧逻辑不受影响（结构生成仍可产生、`placeBlock()`/`digBlock()` 仍可作用于它们）。
+ *
+ * - `chimney`（烟囱）：`solid:true` + 有 faces-data + 能放能挖，是正常可放置方块。
+ *   对齐 mc-lite：其背包清单是 `Game.js:206+` 手工列举 **107 项**，`chimney` 不在其中
+ *   （实测核对，非推测）。
+ * - `bed_head`/`bed_tail`/`bed_alias_block`（床）：**渲染存在未修复的镂空透视问题**
+ *   （床侧面有一个面无贴面 → 出现透视穿帮，详见 `src/mesh/mesher.js` 的 TODO）。
+ *   此处是**规避**而非修复：靠「不入背包 → 玩家选不到 → 实际不会被放置」避免暴露该问题，
+ *   床的渲染本身仍待专门解决（归属床/宝箱/门多方块 Epic）。
+ *   注意：mc-lite 背包清单同样不含 `bed_head`/`bed_tail`（手工列举 107 项实测核对），
+ *   但**含 `bed_alias_block`**——本仓库一并移除是因为它 `cullMode:'none'`（不渲染、
+ *   无法出图标），放进背包只会渲染一个空槽。
+ *
+ * 为什么不能塞进 `NON_PLACEABLE_ITEMS`：那个集合的语义是「非玩家可放置的功能性方块」，
+ * 把可放置的方块放进去会让集合语义失真（后续若有人读该集合判断「能否放置」会得出错误结论）。
+ */
+export const HIDDEN_FROM_INVENTORY = ['chimney', 'bed_head', 'bed_tail', 'bed_alias_block'];
+
+/**
  * 单个物品槽（mc-lite `Slot`）。
  * `isEmpty()` 双重判据：无物品名或 count<=0 都算空 —— `remove()` 扣到 0 后即为空槽。
  */
@@ -138,20 +160,21 @@ export class Inventory {
  * —— 同 seed / 不同 seed 下物品集合恒定（红线 2 不受影响：物品集合与世界生成无关）。
  *
  * @param {*} registry BlockRegistry（须已 freeze）
- * @returns {string[]} 122 项方块名
+ * @returns {string[]} 118 项方块名（126 - 4 功能性 - 4 可放置但不进背包）
  */
 export function buildItemNames(registry) {
   const front = HOTBAR_ITEMS.slice(); // 前置 5 项（快捷栏）
   const frontSet = new Set(front);
   const rest = registry.all()
     .map((e) => e.name)
-    .filter((n) => !NON_PLACEABLE_ITEMS.includes(n) && !frontSet.has(n));
+    .filter((n) => !NON_PLACEABLE_ITEMS.includes(n)
+      && !HIDDEN_FROM_INVENTORY.includes(n) && !frontSet.has(n));
   return front.concat(rest);
 }
 
 /**
  * 创造模式无限背包：物品集合全量入包，每格 `count = DEFAULT_INVENTORY_COUNT`。
- * 填充 122 槽，其余 878 槽留空供后续生存 Epic 的掉落/拾取使用。
+ * 填充 118 槽，其余 882 槽留空供后续生存 Epic 的掉落/拾取使用。
  * @param {*} registry BlockRegistry（须已 freeze）
  * @returns {Inventory}
  */

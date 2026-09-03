@@ -1,6 +1,6 @@
 // tests/m3-1-inventory.spec.mjs — M3.1 背包（设计文档 §4.5.4，v1.16 定稿）
 // 真实游戏内集成验证（单测用的是 Game 替身，此处走完整 Game/Player/UI 装配）：
-//   ① 物品模型：背包 122 项、快捷栏 = slots[0..4] 视图（无第二份物品状态）
+//   ① 物品模型：背包 118 项、快捷栏 = slots[0..4] 视图（无第二份物品状态）
 //   ② Z 键 toggle + 模态栈 + keydown 守卫（背包开着按 W/数字键无效）
 //   ③ 点击第 6 格以外的槽位 → 放块用该方块（世界实际写入 ID 校验）
 //   ④ 模态栈不误清设置面板门控（原可写布尔的竞争根因）
@@ -17,7 +17,7 @@ async function boot(page) {
   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 60_000 });
 }
 
-test('M3.1：物品模型 — 背包 122 项、快捷栏是 slots[0..4] 的视图', async ({ page }) => {
+test('M3.1：物品模型 — 背包 118 项、快捷栏是 slots[0..4] 的视图', async ({ page }) => {
   await boot(page);
   const r = await page.evaluate(() => {
     const g = window.__MC_GAME__;
@@ -32,10 +32,10 @@ test('M3.1：物品模型 — 背包 122 项、快捷栏是 slots[0..4] 的视�
       // 快捷栏 DOM 是背包前 5 格的视图：图标数 = 5，前 5 槽物品名
       hotbarCells: document.getElementById('mc-hotbar').children.length,
       front5: inv.slots.slice(0, 5).map((s) => s.item),
-      // 排除的 4 个功能性方块不在物品集合内
-      excluded: ['air', 'collider', 'calcite', 'realistic_trunk_collider']
+      // 排除的 4 个功能性方块 + chimney 不在物品集合内
+      excluded: ['air', 'collider', 'calcite', 'realistic_trunk_collider', 'chimney']
         .filter((n) => nonEmpty.some((s) => s.item === n)),
-      // bed_alias_block/mine_cart 保留（mc-lite 背包包含）
+      // mine_cart 保留（mc-lite 背包包含）；bed_alias_block 已移出背包（规避床渲染问题）
       hasBedAlias: nonEmpty.some((s) => s.item === 'bed_alias_block'),
       hasMineCart: nonEmpty.some((s) => s.item === 'mine_cart'),
       // registry.all() 与物品集合同源
@@ -43,15 +43,15 @@ test('M3.1：物品模型 — 背包 122 项、快捷栏是 slots[0..4] 的视�
     };
   });
   expect(r.slotCount).toBe(1000);
-  expect(r.nonEmpty).toBe(122);
+  expect(r.nonEmpty).toBe(118);
   expect(r.firstCount).toBe(1500);
   expect(r.selectedSlot).toBe(0);
   expect(r.selectedIsAliasOfHotbarIndex).toBe(true);
   expect(r.hotbarCells).toBe(5);
   expect(r.front5).toEqual(['stone', 'dirt', 'grass', 'sand', 'cobblestone']);
   expect(r.excluded).toEqual([]);
-  expect(r.hasBedAlias).toBe(true);
-  expect(r.hasMineCart).toBe(true);
+  expect(r.hasBedAlias).toBe(false); // bed_alias_block 已移出背包（规避床渲染问题）
+  expect(r.hasMineCart).toBe(true); // mine_cart 保留（mc-lite 背包包含）
   expect(r.registryCount).toBe(126);
 });
 
@@ -70,7 +70,7 @@ test('M3.1：Z 键 toggle + 模态栈 + keydown 守卫（背包开着 W 不进 k
   await page.evaluate(() => window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyZ' })));
   await page.waitForFunction(() => window.__MC_GAME__.uiModal === true, null, { timeout: 5_000 });
   expect(await page.evaluate(() => document.getElementById('inventory-modal').style.display)).toBe('flex');
-  expect(await page.evaluate(() => document.querySelectorAll('#inventory-grid .mc-slot').length)).toBe(122);
+  expect(await page.evaluate(() => document.querySelectorAll('#inventory-grid .mc-slot').length)).toBe(118);
 
   // keydown 守卫：背包开着时按 W 不写入 keys（原漏洞：模态期间新按的键仍会进 keys）
   await page.evaluate(() => window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyW' })));
@@ -236,13 +236,14 @@ test('M3.1：背包渲染不显示 count（创造模式无限背包）', async (
       anyShows1500: slots.some((s) => s.textContent.includes('1500')),
       withIcon: slots.filter((s) => s.querySelector('.mc-icon')?.style.backgroundImage.includes('atlas.png')).length,
       total: slots.length,
-      // 无 faces-data 的两项降级为无图标
+      // 无 faces-data 的项降级为无图标（原两项 bed_alias_block/mine_cart，
+      // bed_alias_block 已移出背包 → 只剩 mine_cart）
       noIcon: slots.filter((s) => !s.querySelector('.mc-icon')?.style.backgroundImage).map((s) => s.dataset.index),
     };
   });
   expect(r.countEls).toBe(0);
   expect(r.anyShows1500).toBe(false);
-  expect(r.total).toBe(122);
-  expect(r.withIcon).toBe(120); // 122 - bed_alias_block - mine_cart
-  expect(r.noIcon.length).toBe(2);
+  expect(r.total).toBe(118);
+  expect(r.withIcon).toBe(117); // 118 - mine_cart（bed_alias_block 已移出背包）
+  expect(r.noIcon.length).toBe(1);
 });

@@ -1,6 +1,6 @@
 // src/tests/test-inventory.js — M3.1 背包物品模型（设计文档 §4.5.4，v1.16 定稿）
 // 覆盖：Slot/Inventory 数据模型（照搬 mc-lite Slots.js 语义）、BlockRegistry.all() 遍历接口、
-// 物品集合构建（126 排除 4 个功能性方块 → 122 项；前 5 项顺序冻结 = HOTBAR_ITEMS）、
+// 物品集合构建（126 排除 4 个功能性方块 + chimney → 121 项；前 5 项顺序冻结 = HOTBAR_ITEMS）、
 // 创造模式无限背包填充（count=1500 占位、不消耗）。
 import { test } from './runner.js';
 import {
@@ -10,7 +10,7 @@ import { createRegistry } from '../voxel/block-registry.js';
 import { BLOCKS } from '../voxel/blocks-data.js';
 import { HOTBAR_ITEMS } from '../player/hotbar-items.js';
 import {
-  Slot, Inventory, DEFAULT_INVENTORY_COUNT, NON_PLACEABLE_ITEMS,
+  Slot, Inventory, DEFAULT_INVENTORY_COUNT, NON_PLACEABLE_ITEMS, HIDDEN_FROM_INVENTORY,
   buildItemNames, createCreativeInventory,
 } from '../player/inventory.js';
 
@@ -151,18 +151,33 @@ test('registry.all(): 冻结后结果稳定（两次调用逐项一致，可安�
   assertDeepEqual(reg.all(), reg.all());
 });
 
-// --- 物品集合构建（§4.5.4：122 项 + 顺序冻结） ---
+// --- 物品集合构建（§4.5.4：121 项 + 顺序冻结） ---
 
 test('NON_PLACEABLE_ITEMS = 4 个功能性方块（mc-lite 背包同样排除）', () => {
   assertDeepEqual(NON_PLACEABLE_ITEMS,
     ['air', 'collider', 'calcite', 'realistic_trunk_collider']);
 });
 
-test('buildItemNames: 122 项且不含 4 个功能性方块', () => {
+test('HIDDEN_FROM_INVENTORY = chimney + 三个床方块（可放置但不进背包）', () => {
+  // 这些方块都可放置（能放能挖），故**不能**归入 NON_PLACEABLE_ITEMS
+  // （该集合语义是「非玩家可放置的功能性方块」）。它们属独立概念：可放置、但不进背包。
+  // bed_head/bed_tail/bed_alias_block：床渲染存在未修复的镂空透视问题，靠「不入背包 →
+  // 玩家选不到 → 实际不会被放置」规避（详见 mesher.js 的 TODO），本质仍可放可挖。
+  assertDeepEqual(HIDDEN_FROM_INVENTORY, ['chimney', 'bed_head', 'bed_tail', 'bed_alias_block']);
+  // 与 NON_PLACEABLE_ITEMS 不得重叠（语义互斥，避免两处排除混淆）
+  for (const n of HIDDEN_FROM_INVENTORY) {
+    assertFalse(NON_PLACEABLE_ITEMS.includes(n), `${n} 不应同时属于 NON_PLACEABLE_ITEMS`);
+  }
+});
+
+test('buildItemNames: 118 项（126 - 4 功能性 - 4 可放置但不进背包）', () => {
   const names = buildItemNames(makeRegistry());
-  assertEqual(names.length, 122, '126 - 4 = 122');
-  assertEqual(new Set(names).size, 122, '无重复');
+  assertEqual(names.length, 118, '126 - 4 - 4 = 118');
+  assertEqual(new Set(names).size, 118, '无重复');
   for (const bad of NON_PLACEABLE_ITEMS) {
+    assertFalse(names.includes(bad), `${bad} 不应在物品集合内`);
+  }
+  for (const bad of HIDDEN_FROM_INVENTORY) {
     assertFalse(names.includes(bad), `${bad} 不应在物品集合内`);
   }
   // 常规建材应在内
@@ -182,17 +197,21 @@ test('buildItemNames: 前 5 项 = HOTBAR_ITEMS（快捷栏顺序冻结，§4.5.4
 test('buildItemNames: 第 6 项起按注册顺序补全且不再重复前 5 项', () => {
   const names = buildItemNames(makeRegistry());
   const rest = names.slice(5);
-  assertEqual(rest.length, 117, '122 - 5');
+  assertEqual(rest.length, 113, '118 - 5');
   const reg = makeRegistry();
   const registered = reg.all().map((e) => e.name)
-    .filter((n) => !NON_PLACEABLE_ITEMS.includes(n) && !HOTBAR_ITEMS.includes(n));
-  assertDeepEqual(rest, registered, '其余项 = 注册序（排除功能性方块与前 5 项）');
+    .filter((n) => !NON_PLACEABLE_ITEMS.includes(n)
+      && !HIDDEN_FROM_INVENTORY.includes(n) && !HOTBAR_ITEMS.includes(n));
+  assertDeepEqual(rest, registered, '其余项 = 注册序（排除功能性方块、chimney 与前 5 项）');
 });
 
-test('buildItemNames: 含 bed_alias_block / mine_cart（mc-lite 背包包含，保留玩法可用性）', () => {
+test('buildItemNames: 含 mine_cart（mc-lite 背包包含，保留玩法可用性）；不含床方块', () => {
   const names = buildItemNames(makeRegistry());
-  assertIncludes(names, 'bed_alias_block');
   assertIncludes(names, 'mine_cart');
+  // 床方块三项已从背包移除（规避渲染问题，见 HIDDEN_FROM_INVENTORY 注释）
+  for (const bed of ['bed_head', 'bed_tail', 'bed_alias_block']) {
+    assertFalse(names.includes(bed), `${bed} 不应在物品集合内`);
+  }
 });
 
 test('buildItemNames: 确定性——两次构建逐项一致（红线 2：无随机/无迭代顺序依赖）', () => {
@@ -203,14 +222,18 @@ test('buildItemNames: 确定性——两次构建逐项一致（红线 2：无�
 
 // --- 创造模式无限背包填充 ---
 
-test('createCreativeInventory: 122 槽全部非空且 count=DEFAULT_INVENTORY_COUNT', () => {
+test('createCreativeInventory: 118 槽全部非空且 count=DEFAULT_INVENTORY_COUNT', () => {
   const inv = createCreativeInventory(makeRegistry());
   const filled = inv.slots.filter((s) => !s.isEmpty());
-  assertEqual(filled.length, 122, '物品集合全量入包');
+  assertEqual(filled.length, 118, '物品集合全量入包');
   for (const s of filled) assertEqual(s.count, DEFAULT_INVENTORY_COUNT, `${s.item} count=1500`);
-  // 剩余槽位保持空（未来生存 Epic 的掉落/拾取可用）
-  assertTrue(inv.slots[122].isEmpty());
+  // 剩余槽位保持空（未来生存 Epic 的掉落/拾取可用）；首个空槽 = 下标 118
+  assertTrue(inv.slots[118].isEmpty());
   assertEqual(inv.slots.length, 1000);
+  // 不入包的 4 项
+  for (const n of ['chimney', 'bed_head', 'bed_tail', 'bed_alias_block']) {
+    assertFalse(inv.slots.some((s) => s.item === n), `${n} 不入包`);
+  }
 });
 
 test('createCreativeInventory: 槽序 = buildItemNames，selectedSlot=0 选中 stone', () => {

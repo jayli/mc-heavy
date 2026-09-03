@@ -35,6 +35,10 @@ const atlasMeta = {
   'procedural/sky_stone': { u0: 0.50, v0: 0.0, u1: 0.51, v1: 0.01 },
   'procedural/sky_grass': { u0: 0.52, v0: 0.0, u1: 0.53, v1: 0.01 },
   'procedural/cloud': { u0: 0.54, v0: 0.0, u1: 0.55, v1: 0.01 },
+  // 床（BED_UV 变换需独立 tile 矩形才能反算 uu/vv，否则 fallback stone）
+  'bed/Bed_(top_side_texture)_JE2_BE2': { u0: 0.60, v0: 0.0, u1: 0.61, v1: 0.01 },
+  'bed/Bed_(top_texture)_JE1_BE1':      { u0: 0.62, v0: 0.0, u1: 0.63, v1: 0.01 },
+  'bed/Bed_(back_texture)_JE2_BE2':     { u0: 0.64, v0: 0.0, u1: 0.65, v1: 0.01 },
 };
 
 function makeWorldWithBlock(reg, lx, y, lz, id) {
@@ -248,7 +252,7 @@ test('mesher: +X 面 UV 与 BoxGeometry 一致（u=1-z, v=y，历史 90° 旋转
   assertEqual(checked, 4, '+X face has 4 vertices');
 });
 
-test('mesher: vine 走轴对齐 cross 模板（0.8 宽、y∈[0.5,1.5]、vine tile）', () => {
+test('mesher: vine 走轴对齐 cross 模板（0.8 宽、y∈[0,1] 格内、vine tile）', () => {
   const reg = makeRegistry();
   const result = meshSingle(reg, 'vine');
   assertEqual(result.cutout.vertexCount, 8, 'vine = 2 quads');
@@ -259,8 +263,11 @@ test('mesher: vine 走轴对齐 cross 模板（0.8 宽、y∈[0.5,1.5]、vine ti
     const u = result.cutout.uvs[i * 2];
     if (u >= 0.20 && u <= 0.21) hasVineUV = true;
   }
-  assertTrue(Math.abs(minY - 8.5) < 1e-6, `vine y0=0.5 offset, got ${minY - 8}`);
-  assertTrue(Math.abs(maxY - 9.5) < 1e-6, `vine y1=1.5, got ${maxY - 8}`);
+  // 有意偏离 mc-lite：mc-lite geoVine 局部 y[0,1] + 实例原点 +0.5 → 世界 y[0.5,1.5]，
+  // 向上溢出半格（其源码注释「使几何体从y=0到y=1」说的是局部坐标，误导）。
+  // 本仓库改为落在格内。详见 §4.3。
+  assertTrue(Math.abs(minY - 8) < 1e-6, `vine y0=0（格底）, got ${minY - 8}`);
+  assertTrue(Math.abs(maxY - 9) < 1e-6, `vine y1=1（格顶）, got ${maxY - 8}`);
   assertTrue(hasVineUV, 'vine uses vine tile (not stone fallback)');
 });
 
@@ -272,9 +279,9 @@ test('mesher: cross 模板两个正交面贴图均竖直（底→v0 顶→v1，�
   for (let i = 0; i < result.cutout.vertexCount; i++) {
     const y = pos[i * 3 + 1];
     const vNorm = (uv[i * 2 + 1] - tile.v0) / (tile.v1 - tile.v0);
-    if (Math.abs(y - 8.5) < 1e-6) {
+    if (Math.abs(y - 8) < 1e-6) {
       assertTrue(Math.abs(vNorm - 0) < 1e-4, `bottom vert samples image bottom, got v=${vNorm}`);
-    } else if (Math.abs(y - 9.5) < 1e-6) {
+    } else if (Math.abs(y - 9) < 1e-6) {
       assertTrue(Math.abs(vNorm - 1) < 1e-4, `top vert samples image top, got v=${vNorm}`);
     }
   }
@@ -294,6 +301,58 @@ test('mesher: cobblestone_step 走 L 形台阶模板（2 box = 12 quad）', () =
   assertTrue(Math.abs(maxY - 9) < 1e-6, 'step full height at left quarter');
 });
 
+// packed bit13 = 材质自发光标记（§4.3，v1.21）
+const EMISSIVE_BIT = (1 << 13);
+
+test('mesher: hanging_lamp 顶点置 packed bit13（材质自发光标记）', () => {
+  const reg = makeRegistry();
+  const result = meshSingle(reg, 'hanging_lamp');
+  const packed = result.cutout.packed;
+  assertTrue(result.cutout.vertexCount > 0, 'hanging_lamp 在 cutout 通道');
+  for (let i = 0; i < result.cutout.vertexCount; i++) {
+    assertEqual((packed[i] & EMISSIVE_BIT) ? 1 : 0, 1, `vert${i} bit13 置位`);
+  }
+});
+
+test('mesher: glowstone 不置 bit13（有 blocklight 源但无材质自发光——两个集合不同）', () => {
+  // 关键回归防线：blocks-data 的 `emissive:15` 是 blocklight 光照源（照亮周围方块），
+  // 与材质自发光是**不同概念**。glowstone/lava/ochre_froglight 都有 blocklight 源，
+  // 但 mc-lite 实测只有 hanging_lamp 有材质自发光 → 它们不得置 bit13。
+  // 若有人图省事用 registry.emissiveTable 判断本位，这条会立刻抓到。
+  const reg = makeRegistry();
+  const result = meshSingle(reg, 'glowstone');
+  const packed = result.opaque.packed;
+  assertTrue(result.opaque.vertexCount > 0, 'glowstone 在 opaque 通道');
+  for (let i = 0; i < result.opaque.vertexCount; i++) {
+    assertEqual((packed[i] & EMISSIVE_BIT) ? 1 : 0, 0, `vert${i} bit13 不置位`);
+  }
+});
+
+test('mesher: 普通方块（stone/vine）不置 bit13', () => {
+  const reg = makeRegistry();
+  for (const [name, channel] of [['stone', 'opaque'], ['vine', 'cutout']]) {
+    const result = meshSingle(reg, name);
+    const packed = result[channel].packed;
+    assertTrue(result[channel].vertexCount > 0, `${name} 在 ${channel} 通道`);
+    for (let i = 0; i < result[channel].vertexCount; i++) {
+      assertEqual((packed[i] & EMISSIVE_BIT) ? 1 : 0, 0, `${name} vert${i} bit13 不置位`);
+    }
+  }
+});
+
+test('mesher: bit13 不污染既有位段（light bit0-7 / AO bit8-9 / face bit10-12）', () => {
+  // bit13 是新增位，不得挤占 face 位（bit10-12 只能装 0-7，face 索引 0-5 够用；
+  // 若误用 bit13 当 face 位的一部分会让着色器取法线错位）
+  const reg = makeRegistry();
+  const result = meshSingle(reg, 'hanging_lamp');
+  const packed = result.cutout.packed;
+  for (let i = 0; i < result.cutout.vertexCount; i++) {
+    const faceIdx = (packed[i] >> 10) & 0x7;
+    assertTrue(faceIdx <= 5, `face 索引 ${faceIdx} 应在 0-5`);
+    assertTrue((packed[i] & 0xFF) > 0, 'light 位未被污染（测试 fixture light=0xF0）');
+  }
+});
+
 test('mesher: bed_head 半高块 + null 面剔除（4 面渲染）', () => {
   const reg = makeRegistry();
   const result = meshSingle(reg, 'bed_head');
@@ -304,6 +363,63 @@ test('mesher: bed_head 半高块 + null 面剔除（4 面渲染）', () => {
     maxY = Math.max(maxY, result.opaque.positions[i * 3 + 1]);
   }
   assertTrue(Math.abs(maxY - 8.5) < 1e-6, 'half block top at y=0.5');
+});
+
+test('mesher: hanging_lamp 绳走八段棱柱 + 灯体盒（对齐 CylinderGeometry(0.015,0.015,0.4,8)）', () => {
+  const reg = makeRegistry();
+  const result = meshSingle(reg, 'hanging_lamp');
+  // 绳：prismQuads 8 段 × (1 侧面 + 上下盖) ×4 顶点 = 96；灯体 boxQuads 6 面 ×4 = 24
+  assertEqual(result.cutout.vertexCount, 120, 'rope prism 96 + lamp body 24');
+  // 绳 r=0.015 → 离块中心 (0.5,0.5) 的水平距离不得超出 0.015（cross 近似曾是 0.03 宽）。
+  // 按「贴近轴线」筛绳顶点（灯体盒顶点半径 ≥0.15，天然被排除，无需单独判灯体）。
+  let ropeMaxRadius = 0, ropeMinY = Infinity, ropeMaxY = -Infinity, ropeVerts = 0;
+  const pos = result.cutout.positions;
+  for (let i = 0; i < result.cutout.vertexCount; i++) {
+    const x = pos[i * 3] - 8, y = pos[i * 3 + 1] - 8, z = pos[i * 3 + 2] - 8;
+    const r = Math.hypot(x - 0.5, z - 0.5);
+    if (r > 0.05) continue; // 灯体盒顶点
+    ropeVerts++;
+    ropeMaxRadius = Math.max(ropeMaxRadius, r);
+    ropeMinY = Math.min(ropeMinY, y); ropeMaxY = Math.max(ropeMaxY, y);
+  }
+  assertEqual(ropeVerts, 96, '绳 = 8 段 ×（侧面+上下盖）×4 顶点');
+  assertTrue(ropeMaxRadius <= 0.015 + 1e-6, `绳半径 ≤0.015, got ${ropeMaxRadius}`);
+  assertTrue(Math.abs(ropeMinY - 0.6) < 1e-6, `绳底 y=0.6, got ${ropeMinY}`);
+  assertTrue(Math.abs(ropeMaxY - 1.0) < 1e-6, `绳顶 y=1.0, got ${ropeMaxY}`);
+});
+
+test('mesher: bed_head 侧面采样贴图下半（vv∈[0,0.5]，对齐 mc-lite 实际行为）', () => {
+  const reg = makeRegistry();
+  const result = meshSingle(reg, 'bed_head');
+  // 渲染面顺序 = 模板遍历序（跳过 null 面 3/5）：+X,-X,+Y,+Z → 顶点分组 [0-3],[4-7],[8-11],[12-15]
+  const sideTile = atlasMeta['bed/Bed_(top_side_texture)_JE2_BE2'];
+  const sides = [[0, '+X'], [1, '-X'], [3, '+Z']];
+  for (const [group, label] of sides) {
+    for (let k = 0; k < 4; k++) {
+      const vi = group * 4 + k;
+      const v = result.opaque.uvs[vi * 2 + 1];
+      const vv = (v - sideTile.v0) / (sideTile.v1 - sideTile.v0);
+      // mc-lite 实测：repeat[1,0.5] 生效、offset[0,0.5] 无消费点 → 采样下半 vv∈[0,0.5]
+      // （下半 PNG 行 8-15 有 92 个不透明像素；上半仅 32，opaque 通道会渲成深色块）
+      assertTrue(vv <= 0.5 + 1e-6, `${label} vert${k} vv=${vv.toFixed(2)} 应在下半 [0,0.5]`);
+    }
+  }
+});
+
+test('mesher: bed_head 顶面 UV 不旋转（mc-lite rotation 字段无消费点）', () => {
+  const reg = makeRegistry();
+  const result = meshSingle(reg, 'bed_head');
+  const topTile = atlasMeta['bed/Bed_(top_texture)_JE1_BE1'];
+  // +Y 面 FACE_UVS 口径：(0,0),(1,0),(1,1),(0,1)
+  const expect = [[0, 0], [1, 0], [1, 1], [0, 1]];
+  for (let k = 0; k < 4; k++) {
+    const vi = 2 * 4 + k; // 第 3 组 = +Y
+    const u = result.opaque.uvs[vi * 2], v = result.opaque.uvs[vi * 2 + 1];
+    const uu = (u - topTile.u0) / (topTile.u1 - topTile.u0);
+    const vv = (v - topTile.v0) / (topTile.v1 - topTile.v0);
+    assertEqual(Math.round(uu), expect[k][0], `+Y vert${k} uu`);
+    assertEqual(Math.round(vv), expect[k][1], `+Y vert${k} vv`);
+  }
 });
 
 test('faces-data: 全部可渲染方块的 tile 均存在于 atlas', async () => {

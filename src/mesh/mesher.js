@@ -179,8 +179,11 @@ const STEP_UPDOWN_QUADS = [
 const TEMPLATES = {
   // 花/草：0.7×0.7 cross，y∈[-0.1,0.6]（geoFlower：中心偏移 -0.25）
   flower: crossQuads(0.7, -0.1, 0.6),
-  // 藤蔓：0.8 宽 × 1.0 高 cross，y∈[0.5,1.5]（geoVine：translate +0.5，堆叠连续）
-  vine: crossQuads(0.8, 0.5, 1.5),
+  // 藤蔓：0.8 宽 × 1.0 高 cross，y∈[0,1] 落在格内。
+  // 有意偏离 mc-lite：geoVine 局部 y[0,1] + 实例原点 +0.5 → 世界 y[0.5,1.5]，向上溢出
+  // 半格（其源码注释「向上偏移0.5，使几何体从y=0到y=1」说的是局部坐标，误导）。本仓库改
+  // 为贴合方块上下边界。详见 §4.3。
+  vine: crossQuads(0.8, 0, 1),
   // 睡莲：0.8×0.8 水平 quad，y=0.02（geoLily：贴块底 = 贴水面）
   // (x,z) 序 (0,1),(1,1),(1,0),(0,0) = FACE_VERTICES[2] 口径（缺口朝向与 mc-lite 一致）
   lilypad: [{ v: [[0.1,0.02,0.9],[0.9,0.02,0.9],[0.9,0.02,0.1],[0.1,0.02,0.1]], face: 2, ds: true }],
@@ -217,11 +220,12 @@ const TEMPLATES = {
   cobblestone_step_updown: STEP_UPDOWN_QUADS,
   // 半高块（床）：1×0.5×1 底贴块底（geoHalfBlock）
   half_block: boxQuads(0, 0, 0, 1, 0.5, 1),
-  // 吊灯：细绳 cross（r=0.015 亚像素，用 0.03 宽 cross 近似）+ 灯体 0.3³（geoHangingLamp）
-  // 绳朝 X 平面顶点序同 crossQuads（FACE_VERTICES[0] 口径，防贴图横躺）
+  // 吊灯：细绳八段棱柱 + 灯体 0.3³（geoHangingLamp）
+  // 绳逐格复刻 CylinderGeometry(0.015, 0.015, 0.4, 8) + translate(0,0.3,0)：局部
+  // y[0.1,0.5] → 格内 y[0.6,1.0]，块中心 (0.5,0.5) 为轴。UV 方向已与 three 实测核对
+  // （顶→v=1、底→v=0，与 CylinderGeometry 侧面 v=1-y/heightSegments 同向），贴图不上下颠倒。
   hanging_lamp: [
-    { v: [[0.485,0.6,0.5],[0.515,0.6,0.5],[0.515,1.0,0.5],[0.485,1.0,0.5]], face: 4, ds: true },
-    { v: [[0.5,0.6,0.485],[0.5,1.0,0.485],[0.5,1.0,0.515],[0.5,0.6,0.515]], face: 0, ds: true },
+    ...prismQuads(0.5, 0.5, 0.015, 0.6, 1.0),
     ...boxQuads(0.35, 0.35, 0.35, 0.65, 0.65, 0.65),
   ],
 };
@@ -238,22 +242,37 @@ const WATER_SURFACE_SINK = 0.5;
 // 不透明通道但同类相邻仍剔除共享面：cloud（M2-7 通道勘误，opaque 材质语义；
 // 云簇内部相邻面不发射，避免体素爆发；water/glass 走 cullMode>=2 同规则）
 const SAME_TYPE_CULL = new Set(['cloud']);
+// 材质自发光方块（§4.3 packed bit13，v1.21）：移植 mc-lite **材质层属性**
+// （`MaterialManager.js:1199` hanging_lamp 的 `emissive:'#FFE4B5'` × 0.8）。实测 mc-lite
+// **只有 hanging_lamp 一处**有材质自发光，其余材质 emissive 均为默认 0。
+// 与 `DOUBLE_SIDE_CUBES`（mc-lite 材质 side 属性）、`SAME_TYPE_CULL`（材质语义）同一性质，
+// 故用 hardcoded Set 表达，不入 `blocks-data.js`（后者是 BlockData.js 方块属性的转换产物）。
+// **勿与 blocks-data 的 `emissive:15` 混淆**：那是 blocklight 光照源（照亮周围方块，
+// `registry.emissiveTable` 消费）；本 Set 是材质自身发亮。四个发光方块都有 blocklight 源，
+// 但只有 hanging_lamp 有材质自发光——两个集合不同，不能用 emissiveTable 判断。
+const EMISSIVE_MATERIALS = new Set(['hanging_lamp']);
 
-// 床 UV 变换（mc-lite repeat/offset/rotation → 等价角点变换，three setUvTransform 核验）：
-// vHalf = repeat[1,0.5]+offset[0,0.5]（取图像上半）；uFlip = repeat[-1,…]+offset[1,…]；
-// rot = rotation -π/2 →（u,v）→(1-v,u)。
+// 床 UV 变换（2026-09-03 勘误：原口径照 mc-lite 字段名实现了「取上半 + 顶面旋转」，
+// 但实测 mc-lite 的 offset/rotation 是死字段，故此处按**实际行为**而非字段定义实现）。
+// 床侧面只取贴图下半：mc-lite 定义 `repeat:[1,0.5]` + `offset:[0,0.5]`，但 `offset` 全仓
+// **无任何消费点**（MaterialManager._createMaterial 只消费 repeat；preloadTextures 只调
+// _applyTextureSampling），故实际生效的 uvTransform 是 v'=0.5*v → 采样下半（PNG 行 8~15，
+// 实测 92 个不透明像素）。上半（行 0~8）实测仅 32 个不透明像素、RGB 均 rgb(40,25,25)，
+// 床走 opaque 通道 alpha 不参与混合 → 若采上半会渲成一块深色而非床侧纹理。
+// uFlip 对应 mc-lite `repeat:[-1,0.5]`，RepeatWrapping 下与纯镜像 uu=1-uu 等价（边界
+// u=0/u=1 采样同一 texel，已实测核对）。
+// bed_head 顶面：mc-lite 定义 `rotation:-π/2` 但同样**无消费点**，实际不旋转 → 本仓库不加变换。
 const BED_UV = {
-  bed_head: { 0: { uFlip: true, vHalf: true }, 1: { vHalf: true }, 2: { rot: true }, 4: { vHalf: true } },
-  bed_tail: { 0: { uFlip: true, vHalf: true }, 1: { vHalf: true }, 5: { vHalf: true } },
+  bed_head: { 0: { uFlip: true, vLowerHalf: true }, 1: { vLowerHalf: true }, 4: { vLowerHalf: true } },
+  bed_tail: { 0: { uFlip: true, vLowerHalf: true }, 1: { vLowerHalf: true }, 5: { vLowerHalf: true } },
 };
 
 function transformUV(blockName, face, u, v) {
   const t = BED_UV[blockName]?.[face];
   if (!t) return [u, v];
   let uu = u, vv = v;
-  if (t.rot) { const nu = 1 - vv; vv = uu; uu = nu; }
   if (t.uFlip) uu = 1 - uu;
-  if (t.vHalf) vv = 0.5 + 0.5 * vv;
+  if (t.vLowerHalf) vv = 0.5 * vv;
   return [uu, vv];
 }
 
@@ -312,6 +331,8 @@ export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
         const channel = channelNames[cullMode]; // 0→opaque, 1→cutout, 2→transparent
         const ch = channels[channel];
         const blockName = nameOf(id);
+        // 材质自发光标记（§4.3 bit13）：逐方块算一次，供本方块所有顶点复用
+        const emissiveBit = EMISSIVE_MATERIALS.has(blockName) ? (1 << 13) : 0;
 
         // 非立方体几何（§4.3 顶点模板）：不做面剔除（mc-lite 实例级渲染同口径）；
         // 光照读自身格（模板面在格内，无"邻居格"语义）；AO 按顶点推导。
@@ -324,7 +345,24 @@ export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
           let emitted = 0;
           for (const q of template) {
             const tileName = getFaceTile(blockName, q.face); // 模型面：贴图随方块转
-            if (!tileName) continue; // null 面（床连接面）不渲染
+            // null 面（床连接面）不渲染。
+            // TODO(床渲染，2026-09-03 搁置)：床方块有一个侧面**没有贴面**，导致该面出现
+            // 镂空透视（可以看到方块内部/背景）。**根因未定位**，已排除的是 UV 采样方向问题
+            // （实测 BoxGeometry 每面独立 UV v∈[0,1]，经 mc-lite 的 repeat[1,0.5] 后所有面
+            // 都采样贴图下半，两侧一致）。
+            //
+            // 待验证的假设（未证实，别直接照此修）：`faces-data.js` 里 bed_head 缺 -Y/-Z、
+            // bed_tail 缺 -Y/+Z 四面，本仓库是**直接不发射面**（真镂空）；而 mc-lite 那几面是
+            // `transparent:true + opacity:0`（面**仍在**、只是全透明）。若 mc-lite 的透明材质
+            // 保持默认 depthWrite，那些面仍会**写入深度缓冲**从而遮挡视线——与本仓库「没有面 →
+            // 没有深度写入 → 看到内部」不等价。这可能是差异来源，但需要实际验证
+            // （读 mc-lite 材质的 depthWrite 实际值 + 截图对比）。
+            //
+            // **当前规避方式**：bed_head/bed_tail/bed_alias_block 已从背包移除
+            // （`player/inventory.js` 的 `HIDDEN_FROM_INVENTORY`）→ 玩家选不到 → 实际不会被
+            // 放置，故不会暴露该问题。**这是绕过，不是修复**；床渲染本身归属床/宝箱/门
+            // 多方块 Epic。
+            if (!tileName) continue;
             const tile = tiles[tileName] || tiles['stone'] || DEFAULT_TILE;
             const worldFace = FACE_ROT[orient][q.face];
             const positions = [];
@@ -343,7 +381,7 @@ export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
               const s2 = opaqueTable[data[viewIdx(vx + s2o[0], vy + s2o[1], vz + s2o[2])]] === 1 ? 1 : 0;
               const co_ = opaqueTable[data[viewIdx(vx + co[0], vy + co[1], vz + co[2])]] === 1 ? 1 : 0;
               const ao = q.ds ? 3 : getAO(s1, s2, co_); // 植被 cross 开阔 AO=3（原口径）
-              packeds.push(selfLight | (ao << 8) | (worldFace << 10));
+              packeds.push(selfLight | (ao << 8) | (worldFace << 10) | emissiveBit);
             }
             pushQuad(ch, positions, uvs, packeds, q.ds);
             emitted++;
@@ -407,7 +445,7 @@ export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
             const s2 = opaqueTable[data[viewIdx(vx + s2o[0], vy + s2o[1], vz + s2o[2])]] === 1 ? 1 : 0;
             const co_ = opaqueTable[data[viewIdx(vx + co[0], vy + co[1], vz + co[2])]] === 1 ? 1 : 0;
             const ao = getAO(s1, s2, co_);
-            packeds.push(faceLight | (ao << 8) | (worldFace << 10));
+            packeds.push(faceLight | (ao << 8) | (worldFace << 10) | emissiveBit);
           }
           pushQuad(ch, positions, uvs, packeds, doubleSide);
         }

@@ -256,7 +256,15 @@ test('M3.2：旋转后 section 重建无报错、draw 受控', async ({ page }) 
   expect(after.sections, `旋转不新增 section｜${diag}`).toBe(before.sections);
   expect(maxDraw - before.draw, `draw 不随旋转次数增长｜${diag}`).toBeLessThanOrEqual(2);
   expect(after.draw - before.draw, `收尾 draw 与起始对等｜${diag}`).toBeLessThanOrEqual(2);
-  // 队列最终归零（无永久积压）
+  // 队列最终归零（无永久积压）。必须**再次等待收敛**而不是立刻采样：上面的
+  // waitForFunction 归零后，中间几个同步断言期间世界可能又开始加载（光照异步收敛触发
+  // remesh、或视距内 column 到达），此刻直接采样会读到非零——实测在全量回归负载下
+  // 概率性读到 meshInflight=32（单独跑通过）。语义仍是「无永久积压」，只是改为等它
+  // 真正收敛后再断言，不削弱检查强度。
+  await page.waitForFunction(() => {
+    const s = window.__MC_GAME__.scheduler.stats();
+    return s.inflight === 0 && s.meshInflight === 0 && s.uploadQueue === 0;
+  }, null, { timeout: 30_000 });
   const settled = await page.evaluate(() => window.__MC_GAME__.scheduler.stats());
   expect(settled.inflight).toBe(0);
   expect(settled.meshInflight).toBe(0);

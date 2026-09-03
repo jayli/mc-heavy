@@ -142,11 +142,11 @@ test('背包 open：显示 + pushModal + 清空按键', async () => {
   });
 });
 
-test('背包 open：渲染 122 个非空槽且首槽选中', async () => {
+test('背包 open：渲染 118 个非空槽且首槽选中', async () => {
   await withPanel((panel) => {
     panel.open();
     const slots = document.querySelectorAll('#inventory-grid .mc-slot');
-    assertEqual(slots.length, 122, '物品集合全量入包 = 122 槽');
+    assertEqual(slots.length, 118, '物品集合全量入包 = 118 槽（chimney + 3 个床方块不入包）');
     assertEqual(document.querySelectorAll('#inventory-grid .mc-slot.selected').length, 1);
     assertTrue(slots[0].classList.contains('selected'), 'selectedSlot=0 高亮首槽');
     assertEqual(slots[0].dataset.index, '0');
@@ -319,14 +319,15 @@ test('渲染：图标走 atlas tile CSS background 裁剪（同快捷栏 tileSty
   });
 });
 
-test('渲染：无 faces-data 的物品（bed_alias_block/mine_cart）降级为无图标但仍列槽', async () => {
+test('渲染：无 faces-data 的物品（mine_cart）降级为无图标但仍列槽', async () => {
   await withPanel((panel, game) => {
     panel.open();
     const names = [...document.querySelectorAll('#inventory-grid .mc-item-name')]
       .map((el) => el.textContent);
-    assertTrue(names.includes('bed_alias_block'), '条目在列（mc-lite 背包包含）');
+    // bed_alias_block 已移出背包（规避床渲染问题），现在只剩 mine_cart 无 faces-data
+    assertFalse(names.includes('bed_alias_block'), 'bed_alias_block 不在背包');
     assertTrue(names.includes('mine_cart'));
-    const idx = names.indexOf('bed_alias_block');
+    const idx = names.indexOf('mine_cart');
     const slot = document.querySelectorAll('#inventory-grid .mc-slot')[idx];
     assertEqual(slot.dataset.index, String(idx));
     const icon = slot.querySelector('.mc-icon');
@@ -340,14 +341,14 @@ test('渲染：无 faces-data 的物品（bed_alias_block/mine_cart）降级为�
 test('渲染：空槽不列出（只渲染非空槽，mc-lite 同行为）', async () => {
   await withPanel((panel, game) => {
     panel.open();
-    assertEqual(document.querySelectorAll('#inventory-grid .mc-slot').length, 122);
-    game.player.inventory.slots[121].clear(); // 清空末槽
+    assertEqual(document.querySelectorAll('#inventory-grid .mc-slot').length, 118);
+    game.player.inventory.slots[117].clear(); // 清空末槽（118 项 → 下标 117）
     game.player.inventory.slots[5].clear();
     panel.render();
-    assertEqual(document.querySelectorAll('#inventory-grid .mc-slot').length, 120);
+    assertEqual(document.querySelectorAll('#inventory-grid .mc-slot').length, 116);
     const idxs = [...document.querySelectorAll('#inventory-grid .mc-slot')]
       .map((el) => Number(el.dataset.index));
-    assertFalse(idxs.includes(121), '空槽不在列');
+    assertFalse(idxs.includes(117), '空槽不在列');
     assertFalse(idxs.includes(5));
     assertEqual(idxs[0], 0, 'data-index 仍是背包真实槽索引（非渲染序号）');
     assertEqual(idxs[5], 6, '跳过空槽后索引连续但值跳号');

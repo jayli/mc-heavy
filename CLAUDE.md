@@ -75,7 +75,8 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
     原 §4.5.4 曾写「1500 格语义」已勘误）；
   - `BlockRegistry.all()`（§4.1 补记，按注册序返回 `{id,name}[]` 只读快照，冷路径专用禁入热路径）；
   - 物品集合 **122 项**（126 排除 `air`/`collider`/`calcite`/`realistic_trunk_collider`，
-    mc-lite 同口径）；**顺序冻结**：前 5 项 = `stone/dirt/grass/sand/cobblestone`（快捷栏观感与
+    mc-lite 同口径）。**2026-09-03 起口径变更为 121 项**：再排除 `chimney`（烟囱）——见下方
+    「背包物品集合口径变更」条目；**顺序冻结**：前 5 项 = `stone/dirt/grass/sand/cobblestone`（快捷栏观感与
     既有断言不变），其余 117 按注册序——纯注册序会让快捷栏前 5 格变成 water/cloud 等非常用建材；
   - `src/ui/inventory.js`（Z toggle / Escape 关闭 / 数字键 1-5 / 点击选中可越出 5 格；DOM 照搬
     mc-lite `global.css`：600×400 灰底框 + 8 列网格 + 48×48 斜角浮雕槽位 + `.selected` 黄边；
@@ -126,6 +127,93 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
     216→238（+22）、Playwright 38→44（+6）；lint 0 error、`bench --check` 通过。实施期发现
     两处 v1.17 口径偏差并回填 v1.18（门控 false 计数 84→86、身份键 name→id）；m1-acceptance
     贴线失败经 HEAD 对照连跑证实为既有 vsync 抖动，非本次引入（详见 roadmap「## M3.2」实施记录）。
+- **异形方块渲染勘误 ✅（2026-09-03，M3.2 之后的独立 bugfix；设计文档 v1.19）**：起因是「vine 向上
+  溢出半格、疑似与 mc-lite 不一致」的观感报告。用 vendored three 精确复现 mc-lite `geomMap` 几何
+  构造、实测包围盒后，**三个前提与实测相反**，据此改了 §4.3 三处：
+  - **实例原点换算基准（此前文档与代码注释均未写明，极易误判几何差异）**：mc-lite 几何以**块中心**
+    为原点，四条放置路径全部 `position.set(x+0.5, y+0.5, z+0.5)`（`ChunkConsolidation.js:529` /
+    `Chunk.js:2474` / `WorldWorker.js:181,416,457`）；mc-heavy 模板坐标以**块底角**为原点（0→1）。
+    比对 mc-lite 几何数字时必须 **+0.5** 换算。
+  - **vine 属「双方共同的溢出」而非 mc-heavy 缺陷**：mc-lite `geoVine` 实测世界 y∈[0.5,1.5]，
+    与 mc-heavy 原实现**完全一致**；其源码注释「向上偏移0.5，使几何体从y=0到y=1」说的是**局部**
+    坐标，是误导。经确认改为 **y∈[0,1] 落在格内**——**已知的有意偏离**（§4.3 已标注，
+    视觉比对 mc-lite 时勿按 y∈[0.5,1.5] 判定）。
+  - **床 UV 是真实 bug（根因：照上游「定义」实现而非「行为」）**：mc-lite 床材质定义
+    `repeat:[1,0.5]` + `offset:[0,0.5]`、顶面 `rotation:-π/2`，注释写「只使用纹理下半部分」
+    「顺时针旋转90度」——**但 `offset` 与 `rotation` 全仓无任何消费点**（`grep -rn
+    "\.offset\.set\|texture\.rotation" src/` 零命中；`_createMaterial` 只消费 `repeat`，
+    `preloadTextures` 只调 `_applyTextureSampling`），是死字段。实际生效的 uvTransform 是
+    `v' = 0.5*v` → 采样贴图**下半**（PNG 行 8~15，实测 92 个不透明像素）；顶面**不旋转**。
+    原实现照字段名实现了「取上半 + 顶面旋转」，而上半实测仅 **32** 个不透明像素、RGB 均
+    rgb(40,25,25)，床走 opaque 通道 alpha 不参与混合 → **床侧面渲成一块深色而非床侧纹理**。
+    已改 `vHalf` → `vLowerHalf`（vv = 0.5*vv）+ 删 `rot`。**教训写入 §4.3**：对齐上游须实测其
+    运行时行为，读定义推断会引入回归（与「诊断 bug 不猜」同一原则）。
+  - **cactus 逐格比对两侧完全一致**（主干 + 四侧枝五个盒的世界包围盒逐项相等），未改。
+    hanging_lamp 绳从 0.03 宽 cross 近似改为 `CylinderGeometry(0.015,0.015,0.4,8)` 等价的
+    八段棱柱（复用 chimney 同款 `prismQuads`；UV 方向已与 three 实测核对：顶→v=1，
+    贴图不上下颠倒），顶点 32→120/实例。
+  - 落地 2 改（`src/mesh/mesher.js` 三处模板 + `src/tests/test-mesher.js`）；单测 238→**241**（+3）、
+    Playwright 44 用例不变；lint 0 error（9 个既有 camelcase warning）、首次全量回归 44/44、
+    `bench --check` 通过（fps 112.94~120.21、draw 489~545，无回退）。
+- **背包物品集合口径变更 ✅（2026-09-03；设计文档 v1.20 → v1.21 回填床三项）**：`chimney`（烟囱）
+  与床三项移出背包物品集合，**122 项 → 118 项**（填充 118 槽、其余 882 槽留空）。
+  - **不并入 `NON_PLACEABLE_ITEMS`**：该集合语义是「非玩家可放置的功能性方块」，而这些方块
+    都能放能挖，是正常可放置方块；放进去会让集合语义失真（后续若有人读该集合判断「能否放置」
+    会得出错误结论）。故新增独立常量 `HIDDEN_FROM_INVENTORY`（语义：**可放置但不进背包**），
+    二者语义互斥。
+  - 对齐依据实测核对（非推测）：mc-lite 背包清单是 `Game.js:206+` **手工列举 107 项**，
+    `chimney`/`bed_head`/`bed_tail` 不在其中（`bed_alias_block` **在**，但本仓库一并移除——它
+    `cullMode:'none'` 不渲染、无法出图标，放进背包只会渲染一个空槽）。
+  - **床三项是规避而非修复**：床渲染有未修复的镂空透视问题（床侧面一个面无贴面 → 透视穿帮）。
+    靠「不入背包 → 玩家选不到 → 实际不会被放置」避免暴露；**床渲染本身未修**，已按指令在
+    `src/mesh/mesher.js` 的 null 面跳过处写 TODO 标注（含待验证假设：mc-lite 那几面是
+    `transparent:true + opacity:0`（面仍在、只是透明，可能仍写深度缓冲），本仓库是**直接不发射
+    面**（真镂空），二者语义可能不等价）。归属床/宝箱/门多方块 Epic。
+  - **顺带实测记录两侧集合差异（本次未处理，需单独决策）**：mc-heavy 118 项 vs mc-lite 107 项，
+    差集（除已排除的 chimney/床三项外还有 `sky_*` 等 M2-7 本仓库独有内容、`vine`/`lilypad`/
+    `playground_*` 等）+ 反向差集 1 项 `gold`（mc-heavy 无此方块）。全面对齐需单独决策，
+    不宜简单删除（详见设计文档 §4.5.4 引用块）。
+  - 同步修正 `tests/m3-2-orientation.spec.mjs` 末尾队列断言的实现缺陷：等待归零后未再次等待就采样，
+    中间同步断言期间世界可能又开始加载 → 概率性读到 `meshInflight=32`（单独跑通过）；改为
+    **再次等待收敛后断言**，「无永久积压」语义与检查强度不变（若有永久积压仍会超时失败）。
+  - 床移除落地 5 改（`inventory.js` 常量扩到 4 项 + `test-inventory.js`/`test-inventory-ui.js`/
+    `m3-1-inventory.spec.mjs` 计数 122→118 + `mesher.js` null 面处加 TODO）；单测计数随集合变化
+    （121→118，无新增用例）。
+- **吊灯材质自发光 ✅（2026-09-03；设计文档 v1.21）**：起因是「吊灯贴图图案看起来像背包图标贴在
+  方块上」的观感报告。实测核对后确认**根因不是贴图错误**：
+  - mc-lite 的 `hanging_lamp` 材质（`MaterialManager.js:1197-1220`）确实有 `textureGenerator`
+    （画绳/灯体/发光区/高光），**世界渲染用了这张程序化贴图**；而背包图标（`HUD.js:117-152`
+    的 `generateIcon()`）取的正是**同一个材质**的 `mat.map` —— 即 mc-lite 的背包图标与世界贴图
+    **同源同一张**。mc-heavy 的 `bake-procedural-textures.mjs:204-212` 逐行复刻同样绘制参数，
+    贴图内容一致。**「背包图案贴在方块上」在 mc-lite 里同样成立**。
+  - **真实差异是材质自发光缺失**：mc-lite 材质有 `emissive:'#FFE4B5'` × `emissiveIntensity:0.8`
+    （灯体呈发光暖黄），mc-heavy 三通道是 `MeshBasicNodeMaterial`（贴图色 × shade，无自发光）
+    → 图案静态呈现。**注意 `blocks-data.js:142` 的 `emissive:15` 是 blocklight 光照源**
+    （照亮周围方块），**不是材质自发光**，两个概念不可复用（四个发光方块都有 blocklight 源，
+    但只有 hanging_lamp 有材质自发光 → 不能用 `emissiveTable` 判断）。
+  - 实现：新增 packed **bit13 = 材质自发光标记**（bit0-7 light / bit8-9 AO / bit10-12 面索引
+    之后的空闲位）。实测 mc-lite **只有 hanging_lamp 一处**有材质自发光，故**不能给整个 cutout
+    通道加**（会让 vine/flower/leaves 全部发光）→ 按方块区分，用顶点位传递。mesher 用 hardcoded
+    Set `EMISSIVE_MATERIALS`（与 `DOUBLE_SIDE_CUBES`/`SAME_TYPE_CULL` 同模式，表达 mc-lite
+    **材质层属性**，不入 blocks-data）；materials.js 片元解包 bit13，emissive 是
+    `MeshStandardMaterial` 语义的**独立加项**（不乘贴图色、不受光照/AO 影响 → 黑夜中灯依然发亮），
+    故加在 `× vShade` 之后。**只挂 cutout 通道**（opaque 是最大通道，加恒 0 项会白付逐像素
+    mul+add）。发布粒度不变（红线 5，仍三通道）。
+  - 落地 3 改（`mesher.js` Set + 两处 packed 写入、`materials.js` bit13 解包 + emissive 加项、
+    `test-mesher.js` +4 用例）；单测 242→**246**（+4）。**回归防线**：新增用例钉死
+    「`glowstone`（有 blocklight 源）不得置 bit13」——若有人图省事用 `emissiveTable` 判断本位
+    会立刻被抓到。
+  - **视觉验证**（单测测不到 TSL 节点的 GPU 效果）：截图对照 + 像素级 diff —— 改动侧 vs HEAD
+    **2006 个像素有差异**（0.22%）、最大单像素差异 420（`rgb(200,219,208)` vs `rgb(53,94,60)`）、
+    **整体亮度均值不变（150 = 150）** → 只有吊灯局部变亮，其余方块不受影响，符合预期。
+  - **门禁对照**（未凭文档结论免责）：`bench --check` 通过（fps 110.25~120.41、draw 489~545，
+    无回退）。m1-acceptance 的 `digP95` 曾疑似有上移趋势，经 HEAD 对照各连跑 4 次证实为抖动——
+    HEAD 侧峰值 `placeP95=2.3 / digP95=2.1`（run4），改动侧 `placeP95=2.3 / digP95=2.4`（run1），
+    **两侧峰值相当、均值几乎相同**（HEAD 1.95/1.90 vs 改动侧 1.93/1.90），分布完全重叠。
+    另：`structure-gen` 的 GEN p95 断言在全量负载下概率性失败一次，但单独跑 3 次全通过，且
+    `test-structure-gen.html` **不 import mesher.js/materials.js**（只 import worker-pool/
+    world-data/scheduler/registry/blocks-data/constants/terrain/structure-layout）→ 机制上
+    不可能影响 GEN 计时；HEAD 侧全量同样有 1 failed（m1-acceptance）。
 - **M4 玩家第一人称武器 ⬜（第二阶段，M3.2 已提交，可开始）**：独立 Epic；`WorldEditor` 批量编辑、
   DDA hitscan、手枪/MAG7/加特林的受控 GLB 相机视图模型、曳光、音效和可选方块破坏。
   规格：`docs/superpowers/specs/2026-08-23-m4-player-weapons-design.md`；计划：
@@ -146,7 +234,7 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
   规格：`docs/superpowers/specs/2026-08-23-m7-zombie-nests-design.md`；计划：
   `docs/superpowers/plans/2026-08-23-m7-zombie-nests.md`。
 
-测试现状：27 个 Playwright spec 文件（44 个测试用例）+ 238 个浏览器内单元测试全绿（m1-acceptance 计时断言
+测试现状：27 个 Playwright spec 文件（44 个测试用例）+ 246 个浏览器内单元测试全绿（m1-acceptance 计时断言
 在高负载下偶发贴线 flaky——16.7±1e-6/2.1ms，单独复跑通过，属已记录的计时抖动类；M3.2 实施时经
 HEAD 对照连跑再次证实为既有 vsync 抖动，见 roadmap「## M3.2」实施记录）；
 冻结断言达标（120Hz 本机 fps ≥115、放/挖编辑 p95 <2ms、draw 受控）；
@@ -157,7 +245,7 @@ HEAD 对照连跑再次证实为既有 vsync 抖动，见 roadmap「## M3.2」�
 按顺序读完再写代码：
 
 1. [`docs/phase-1-engine-design.md`](/Users/bachi/jaylli/mc-heavy/docs/phase-1-engine-design.md)
-   —— 架构唯一权威，当前版本 v1.18（已定稿 + M3.2 实施回填校正）。所有子系统边界、DR 决策、验收口径都在这里。
+   —— 架构唯一权威，当前版本 v1.21（已定稿 + M3.2 实施回填 + 异形方块渲染勘误 + 背包物品集合口径 + 吊灯材质自发光）。所有子系统边界、DR 决策、验收口径都在这里。
 2. [`docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md)
    —— **第一阶段剩余执行计划与后续路线图（M2–M7）**，任务级 TODO + 依赖关系，当前 roadmap。
 3. [`docs/superpowers/plans/2026-08-19-m1-voxel-core-loop.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/plans/2026-08-19-m1-voxel-core-loop.md)

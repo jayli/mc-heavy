@@ -1,6 +1,6 @@
 # mc-heavy 第一阶段实施设计文档：游戏引擎原型
 
-> 版本：v1.18 ｜ 日期：2026-09-03 ｜ 状态：定稿（经十五轮逐条核验修订 + M3.2 实施回填校正）
+> 版本：v1.21 ｜ 日期：2026-09-03 ｜ 状态：定稿（经十五轮逐条核验修订 + M3.2 实施回填 + 异形方块渲染勘误 + 背包物品集合口径 + 吊灯材质自发光）
 >
 > 目标：在 mc-heavy 仓库从零重建一个功能对标 mc-lite、性能提升一个数量级的体素游戏引擎。
 > 第一阶段只做"引擎底座"：渲染、体素数据、即时地图生成、玩家交互、种子地图、存档原型。
@@ -168,6 +168,56 @@
 > 数字 **id**，故签名统一为 `getPlacementOrientation(x,y,z,id,...)`、记忆键为 `Map<id, orientation>`
 > （id↔name 一一对应，「按方块类型记忆」的语义等价；`registry.idOf(name)` 在 `placeBlock()` 内
 > 已取到，无需额外转换）。单测 `src/tests/test-orientation.js` 已钉死 40/86 这两个数字。
+
+> v1.19 修订说明：**异形方块渲染勘误**（2026-09-03，M3.2 收尾后的独立 bugfix）。
+> 起因是「vine 向上溢出半格、疑似与 mc-lite 不一致」的观感报告；用 vendored three 精确复现
+> mc-lite `geomMap` 几何构造实测包围盒后，发现**三个前提与实测相反**，据此改了 §4.3 三处：
+> ① **实例原点换算基准**补记——mc-lite 以块中心为原点（四条放置路径全部 +0.5），mc-heavy 以
+> 块底角为原点（0→1），比对时必须 +0.5 换算。此前文档与代码注释均未写明，容易误判几何差异。
+> ② **vine 属「双方共同的溢出」而非 mc-heavy 缺陷**：mc-lite `geoVine` 世界 y∈[0.5,1.5]，
+> 与 mc-heavy 原实现完全一致；其源码注释「使几何体从y=0到y=1」说的是局部坐标，误导。
+> 经确认改为 y∈[0,1] 落在格内——**已知的有意偏离**，§4.3 已标注。
+> ③ **床 UV 是真实 bug**：mc-lite 床材质的 `offset`/`rotation` 字段**全仓无消费点**（死字段），
+> 实际只生效 `repeat:[1,0.5]` → 采样贴图下半；原实现照字段名与注释实现了「取上半 + 顶面旋转」，
+> 而上半实测仅 32 个不透明像素（下半 92），opaque 通道下渲成深色块。已改为 `vLowerHalf` +
+> 顶面不旋转。**教训写入 §4.3**：对齐上游须实测其运行时行为，读定义推断会引入回归。
+> 附带：hanging_lamp 绳从 0.03 宽 cross 近似改为 `CylinderGeometry(0.015,…,8)` 等价的八段棱柱
+> （复用 chimney 同款 `prismQuads`，UV 方向已与 three 实测核对：顶→v=1）。cactus 五盒逐格比对
+> 两侧完全一致，未改。
+
+> v1.20 修订说明：**背包物品集合口径变更**（2026-09-03，§4.5.4）。`chimney`（烟囱）移出背包
+> 物品集合，**122 项 → 121 项**（填充 121 槽、其余 879 槽留空）。
+> ① **不并入 `NON_PLACEABLE_ITEMS`**：该集合语义是「非玩家可放置的功能性方块」，而烟囱
+> `solid:true` + 有 `faces-data` + 能放能挖，是正常可放置方块；放进去会让集合语义失真。
+> 故新增独立常量 `HIDDEN_FROM_INVENTORY`（语义：可放置但不进背包），二者互斥。
+> ② 对齐依据实测核对：mc-lite 背包清单是 `Game.js:206+` **手工列举 107 项**，chimney 不在其中。
+> ③ **顺带实测记录两侧集合差异（本次未处理）**：mc-heavy 121 项 vs mc-lite 107 项，差集 16 项
+> （含 `sky_*` 等 M2-7 本仓库独有内容、`bed_head`/`bed_tail` 等尚未实施的床 Epic 方块）+
+> 反向差集 1 项 `gold`（mc-heavy 无此方块）。详见 §4.5.4 引用块——全面对齐需单独决策，
+> 不宜简单删除。
+> 附：本次还修了 `tests/m3-2-orientation.spec.mjs` 末尾队列断言的实现缺陷（等待归零后未再次
+> 等待就采样，中间同步断言期间世界可能又开始加载 → 概率性读到 `meshInflight=32`；
+> 改为再次等待收敛后断言，「无永久积压」语义与检查强度不变）。
+
+> v1.21 修订说明：**吊灯（hanging_lamp）材质自发光**（2026-09-03，§4.3）。新增 packed
+> **bit13 = 材质自发光标记**，对齐 mc-lite `MeshStandardNodeMaterial` 的 `emissive` +
+> `emissiveIntensity`。
+>
+> 起因是「吊灯的贴图图案看起来像背包图标贴在方块上」的观感报告。实测核对后确认**根因不是贴图
+> 错误**：mc-lite 的 `hanging_lamp` 材质（`MaterialManager.js:1197-1220`）确实有
+> `textureGenerator`（画绳/灯体/发光区/高光），世界渲染用了这张程序化贴图；而背包图标
+> （`HUD.js:117-152` 的 `generateIcon()`）取的正是**同一个材质**的 `mat.map` —— 即 mc-lite
+> 的背包图标与世界贴图**同源同一张**。mc-heavy 的 `bake-procedural-textures.mjs:204-212`
+> 逐行复刻了同样的绘制参数，贴图内容一致。
+>
+> **真实差异是材质自发光缺失**：mc-lite 材质有 `emissive:'#FFE4B5'` + `emissiveIntensity:0.8`
+> （灯体看起来发光的暖黄色），而 mc-heavy 三通道材质是 `MeshBasicNodeMaterial`（贴图色 × shade，
+> 无自发光）→ 贴图图案静态呈现，观感像「图标贴在方块上」。注意 `blocks-data.js:142` 的
+> `emissive:15` 是 **blocklight 光照源**（照亮周围），**不是材质自发光**，两个概念不可复用。
+>
+> 实测 mc-lite **只有 hanging_lamp 一处**有材质自发光（其余材质 emissive 均为默认 0），故
+> **不能给整个 cutout 通道加自发光**（会让 vine/flower/leaves/cactus 全部发光），必须按方块
+> 区分 → 用顶点 bit13 传递（详见 §4.3 顶点格式段）。发布粒度不变（红线 5，仍是三通道）。
 
 ---
 
@@ -493,8 +543,27 @@ position: Float32BufferAttribute ×3  （section 局部坐标，mesh.position �
 uv:       Float32BufferAttribute ×2  （atlas 坐标，构建时写入）
 packed:   Uint32BufferAttribute ×1   （bit0-7: light = skylight<<4 | blocklight，§4.6；
                                       bit8-9: AO 值 0-3，经典四角 AO，移植 mc-lite AOUtils 算法；
-                                      bit10-12: 面索引 0-5，供着色器取法线——不依赖导数技巧，M1 前定死）
+                                      bit10-12: 面索引 0-5，供着色器取法线——不依赖导数技巧，M1 前定死；
+                                      bit13: 材质自发光标记（v1.21 新增，见下））
 ```
+
+**bit13 = 材质自发光标记（v1.21 新增）**：对齐 mc-lite `MeshStandardNodeMaterial` 的
+`emissive` + `emissiveIntensity`（材质层属性）。实测 mc-lite **只有 `hanging_lamp` 一处**有
+材质自发光（`MaterialManager.js:1199`，`emissive:'#FFE4B5'` × 0.8），其余材质的 `emissive`
+都是默认 `0x000000`，故**不能给整个 cutout 通道加自发光**（会让 vine/flower/leaves/cactus
+等全部发光），必须按方块区分 → 用顶点位传递。
+
+- **与 `blocks-data.js` 的 `emissive:15` 是不同概念，不可复用**：后者是 **blocklight 光照源**
+  （照亮周围方块，`mesh/lighting.js:127` 消费 `registry.emissiveTable` 做 flood fill）；
+  本位是**材质自发光**（材质本身发亮，与周围光照无关）。四个发光方块
+  （glowstone/ochre_froglight/lava/hanging_lamp）都有 blocklight 源，但只有 hanging_lamp
+  有材质自发光——所以两个集合不同，不能用 emissiveTable 判断本位。
+- **为什么用 hardcoded Set 而非 blocks-data 字段**：这是 **mc-lite 材质层属性**的移植
+  （`MaterialManager.js` 的材质定义），与 `DOUBLE_SIDE_CUBES`（mc-lite 材质 `side` 属性）、
+  `SAME_TYPE_CULL`（mc-lite 材质语义）同一性质——mesher 用 hardcoded Set 表达，不入
+  `blocks-data.js`（后者是 BlockData.js 的方块属性转换产物）。
+- **发布粒度不变**（红线 5）：不新增材质、不新增通道，仍是 opaque/cutout/transparent 三通道
+  BatchedMesh；自发光在片元阶段按顶点位分支，代价是一次位运算 + 一次混合。
 
 **为什么 flat 而非 interleaved（v1.6 源码核验）**：`setGeometryAt` 的 `copyAttributeData`
 （BatchedMesh.js:97-110，已核验）对 `isInterleavedBufferAttribute` 走逐分量
@@ -541,17 +610,41 @@ validation error；uint32 stride=4 合法，且 13bit 实际用量余余充足�
 仍然合入同一 atlas 材质——不再为每种形状维护独立 geometry/material。
 
 **顶点模板已落地清单（M2 对齐 mc-lite，坐标逐格复刻 ChunkConsolidation.js geomMap）**：
-flower/short_grass 等（0.7 cross，y∈[-0.1,0.6]）、vine（0.8 cross，y∈[0.5,1.5]）、
+flower/short_grass 等（0.7 cross，y∈[-0.1,0.6]）、vine（0.8 cross，y∈[0,1] 格内）、
 lilypad（0.8×0.8 水平 quad，y=0.02）、cactus（主干+4 侧枝盒）、chimney（8 段棱柱高 2）、
 handrail/A/B、vertical/horizontal_pillar、planks/cobblestone(_updown)/stone_diorite_step（L 形）、
-half_block（床，1×0.5×1）、hanging_lamp（绳 cross+灯体盒）。
+half_block（床，1×0.5×1）、hanging_lamp（绳 8 段棱柱 r=0.015 + 灯体盒 0.3³）。
+
+  **实例原点口径（换算基准，勿凭印象改）**：mc-lite 几何以**块中心**为原点，四条放置路径
+  全部 `position.set(x+0.5, y+0.5, z+0.5)`（`ChunkConsolidation.js:529` / `Chunk.js:2474` /
+  `WorldWorker.js:181,416,457`）；mc-heavy 模板坐标以**块底角**为原点（0→1）。故 mc-lite
+  局部坐标须 **+0.5** 才可与 mc-heavy 模板值比对。上表数字均已换算为格内坐标。
+
+  **vine 有意偏离 mc-lite（2026-09-03 勘误）**：mc-lite `geoVine` 为 `PlaneGeometry(0.8,1.0)`
+  + `translate(0,0.5,0)`，局部 y∈[0,1]，加实例原点 +0.5 → **世界 y∈[0.5,1.5]**，向上溢出半格。
+  其源码注释「向上偏移0.5，使几何体从y=0到y=1」说的是**局部**坐标，是误导——藤蔓挂在方块
+  上方半格，不贴合方块边界。mc-heavy 改为 y∈[0,1] 落在格内。这是**已知的有意偏离**，
+  比对 mc-lite 视觉时勿按 y∈[0.5,1.5] 判定。
 - **面 UV 口径 = three.js BoxGeometry buildPlane**（vendor/three r185.1 源码核验）：
   +X: u=1-z,v=y；-X: u=z,v=y；+Y: u=x,v=1-z；-Y: u=x,v=z；+Z: u=x,v=y；-Z: u=1-x,v=y。
   与 mc-lite InstancedMesh 一致（历史 bug：±X 用统一 UV → 东西面贴图旋转 90°，已修）。
 - **双面口径**：mc-lite 植被/藤蔓/睡莲与 realistic_oak_leaves 为 DoubleSide，其余 FrontSide。
   单材质通道内用「双向绕线」复刻双面（不拆通道、不加材质）。cutout 材质 alphaTest=0.3
   （mc-lite 树叶族口径，树冠内表面背向剔除 → 堆积不过密）。
-- **床 UV 变换**：repeat/offset/rotation 等价角点变换（vHalf/uFlip/rot，three setUvTransform 核验）。
+- **床 UV 变换（2026-09-03 勘误：原口径把 mc-lite 的「定义」误当作「行为」）**：
+  mc-lite 床侧面材质定义 `repeat:[1,0.5]` + `offset:[0,0.5]`、顶面定义 `rotation:-π/2`，
+  注释写「只使用纹理下半部分」「顺时针旋转90度」。**但 `offset` 与 `rotation` 全仓无任何
+  消费点**（`grep -rn "\.offset\.set\|texture\.rotation" src/` 零命中；`_createMaterial`
+  只消费 `repeat`，`preloadTextures` 只调 `_applyTextureSampling`）——它们是死字段。
+  实测生效的 uvTransform 是 `v' = 0.5*v`（顶点 v∈[0,1] → 采样 v'∈[0,0.5]）= 贴图**下半**
+  （PNG 行 8~15，实测 92 个不透明像素）；顶面**不旋转**、整图采样。
+  本仓库据此实现 `vLowerHalf`（vv = 0.5*vv）与 `uFlip`（对应 `repeat:[-1,0.5]`，
+  RepeatWrapping 下与纯镜像 uu=1-uu 等价，边界 u=0/u=1 采样同一 texel，已实测核对），
+  顶面不加变换。
+  **教训**：原实现照 mc-lite 的字段名与注释实现了「取上半 + 顶面旋转」，而上半（行 0~8）
+  实测仅 32 个不透明像素、RGB 均 rgb(40,25,25)，床走 opaque 通道 alpha 不参与混合
+  → 床侧面渲成一块深色而非床侧纹理。**对齐上游时必须实测其运行时行为，不能读定义推断**
+  （与「诊断 bug 不猜」同一原则）。
 - **模板不做面剔除**（mc-lite 实例级渲染同口径）；光照读自身格；AO 按顶点推导（子格取最近格角）。
 
 **朝向渲染消费（M2 bug 修复阶段提前落地）**：
@@ -860,7 +953,8 @@ Inventory(size)  // slots[]、selectedSlot、add/remove/has/getSelected/selectSl
 - **两个数字不要混淆**：`Inventory(size = 1000)` 的 `size` 是**槽位数**（mc-lite `Slots.js:57`），
   `DEFAULT_INVENTORY_COUNT = 1500` 是创造模式填充时**每格的 count**（mc-lite `GameConfig.js:9`）。
   本设计文档 v1.16 前的 §4.5.4 曾写「mc-lite 默认 1500 格语义」，把二者混为一谈，已勘误。
-  M3.1 实际填充 122 槽（物品集合大小），其余 878 槽留空供后续生存 Epic 的掉落/拾取使用；
+  M3.1 实际填充 122 槽（物品集合大小），其余 878 槽留空供后续生存 Epic 的掉落/拾取使用。
+  **2026-09-03 起口径变更为 118 槽**（排除 `chimney` 与床三项，见下方物品集合段落），其余 882 槽留空；
 - **创造模式不消耗**：`count` 仅为占位字段，放块/挖掘不递减，`remove()` 保留供后续生存
   Epic 使用；**UI 不渲染数量**（无限背包语义，显示 1500 是噪声）。mc-lite 显示 count，
   此处为产品决策差异，非遗漏。
@@ -872,14 +966,37 @@ Inventory(size)  // slots[]、selectedSlot、add/remove/has/getSelected/selectSl
   （mc-lite 同行为），放块取 `getSelected()` 的物品；
 - `Player.placeBlock()` 从 `inventory.getSelected().item` 解析方块 ID，**不再索引常量数组**。
 
-物品集合：BlockRegistry 全部条目，排除 `air`、`collider`、`calcite`、
-`realistic_trunk_collider`（功能性方块，非玩家可放置建材；mc-lite 背包同样排除这 4 项）→
-**122 项**。`bed_alias_block`、`mine_cart` 无 `faces-data` 条目因而无图标 tile，渲染空槽
-（mc-lite 背包包含二者，保留条目以对齐玩法可用性）。
+物品集合：BlockRegistry 全部条目，排除两类 →**118 项**：
+- `air`、`collider`、`calcite`、`realistic_trunk_collider`（**非玩家可放置的功能性方块**；
+  mc-lite 背包同样排除这 4 项）；
+- `chimney`、`bed_head`、`bed_tail`、`bed_alias_block`（**可放置但不进背包**，2026-09-03 新增
+  排除，归 `HIDDEN_FROM_INVENTORY` 常量）——
+  - `chimney`（烟囱）：`solid:true` + 有 `faces-data` + 能放能挖，是正常可放置方块。对齐依据：
+    mc-lite 背包清单是 `Game.js:206+` **手工列举 107 项**，实测核对 `chimney` 不在其中（非推测）。
+  - `bed_head`/`bed_tail`/`bed_alias_block`（床）：**床渲染存在未修复的镂空透视问题**
+    （床侧面有一个面无贴面 → 透视穿帮，详见 §4.3 顶点模板段 mesher 里的 TODO）。此处是
+    **规避而非修复**：靠「不入背包 → 玩家选不到 → 实际不会被放置」避免暴露该问题，床渲染本身
+    仍待专门解决（归属床/宝箱/门多方块 Epic）。mc-lite 手工清单同样不含 `bed_head`/`bed_tail`；
+    `bed_alias_block` mc-lite **含**，本仓库一并移除是因为它 `cullMode:'none'`（不渲染、无法出
+    图标），放进背包只会渲染一个空槽。
+  - **为什么这些可放置方块不并入上面那 4 项的集合**：那 4 项语义是「非玩家可放置的功能性方块」，
+    把可放置的方块放进去会让集合语义失真（后续若有人读该集合判断「能否放置」会得出错误结论）。
+    故用独立的 `HIDDEN_FROM_INVENTORY` 常量表达（语义：**可放置但不进背包**），二者语义互斥。
+
+`mine_cart` 无 `faces-data` 条目因而无图标 tile，渲染空槽（mc-lite 背包包含它，保留条目以
+对齐玩法可用性；`bed_alias_block` 已移出背包，不再是「无图标但列槽」的用例）。
+
+> **两侧集合仍有差异（2026-09-03 实测记录，未处理）**：mc-heavy 118 项 vs mc-lite 手工清单
+> 107 项。差集中除已排除的 chimney/床三项外还有：`swamp_water`、`sky_wood`/`sky_stone`/
+> `sky_grass`/`sky_leaves`（M2-7 空岛新增，mc-lite 清单成文时这些方块尚不存在）、`azalea_log`、
+> `vine`、`lilypad`、`realistic_oak_leaves`/`realistic_yellow_leaves`/`swamp_leaves`、
+> `playground_block`/`playground_center_block`；反向差集 1 项 `gold`（mc-heavy 无此方块）。
+> **本次只按指令排除 chimney + 床三项**，其余差异项未动——若要全面对齐 mc-lite 的 107 项清单，
+> 需单独决策（`sky_*` 是本仓库独有的 M2-7 内容，不宜简单删除）。
 
 **物品顺序（冻结）**：`slots[0..4]` = `stone`、`dirt`、`grass`、`sand`、`cobblestone`
 （即 M3-4 既有 `HOTBAR_ITEMS`，保持快捷栏默认观感与既有测试断言不变），
-其余 117 项按 `registry.all()` 注册顺序追加（确定性构建，不依赖 Map 迭代顺序以外的因素）。
+其余 113 项按 `registry.all()` 注册顺序追加（确定性构建，不依赖 Map 迭代顺序以外的因素）。
 理由：`blocks-data.js` 注册序前几位是 `water`/`swamp_water`/`cloud`/`glass_block`/
 `glass_blink`（非玩家常用建材），纯注册序会让快捷栏前 5 格变成这些，既不合理也破坏
 M3-4 视觉基线。mc-lite 用 `Game.js:206+` 手工列举 107 条（`stone` 居首）达到同样效果；
