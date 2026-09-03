@@ -5,6 +5,7 @@ import { PlayerPhysics } from './physics.js';
 import { StepLift } from './step-lift.js';
 import { HOTBAR_ITEMS as HOTBAR } from './hotbar-items.js';
 import { createCreativeInventory } from './inventory.js';
+import { getPlacementOrientation, recordRemovedBlock } from './orientation.js';
 
 const EYE_HEIGHT = 1.62;
 const REACH = 40; // mc-lite 枪的 far 语义
@@ -37,6 +38,15 @@ export class Player {
      */
     this.inventory = createCreativeInventory(registry);
     this.target = null; // 当前射线命中
+    /**
+     * M3.2 方块朝向交互态（§4.3，对齐 mc-lite `Player.js:164,168`）。
+     * 二者都是 **UI 交互态，不入世界数据、不持久化**——世界权威只有 meta 通道；
+     * player 侧记录归第二阶段（v1.15 ②）。
+     */
+    /** 最近挖掉的方块（`{x,y,z,id,orientation}`），原位重放时的旋转依据；放置成功后清空 */
+    this.lastRemovedBlock = null;
+    /** 按方块类型记忆的朝向（跨位置、本次会话内持久）：`Map<id, orientation>` */
+    this.placementOrientationMemory = new Map();
     /**
      * pointer lock 目标 canvas（M3.1 改为公开：面板关闭时 lock 回此处，
      * 口径见 §4.5.4——mc-lite 锁 document.body，本仓库必须锁 canvas，
@@ -132,7 +142,11 @@ export class Player {
   digBlock() {
     if (!this.target) return;
     const [x, y, z] = this.target.blockPos;
-    if (this.world.getBlockId(x, y, z) === this.registry.idOf('bedrock')) return; // 基岩不可挖
+    const id = this.world.getBlockId(x, y, z);
+    if (id === this.registry.idOf('bedrock')) return; // 基岩不可挖
+    // M3.2：挖前记下旧朝向（原位重放时的旋转依据）。必须在 setBlock 之前读——
+    // setBlock 会把 meta 清成 0，之后再读就丢了朝向。
+    this.lastRemovedBlock = recordRemovedBlock(x, y, z, id, this.world.getBlockMeta(x, y, z));
     const r = this.world.setBlock(x, y, z, 0);
     if (r) this.scheduler.remeshSections(r.affected, { fastPath: true });
   }
@@ -149,8 +163,16 @@ export class Player {
     if (!slot || slot.isEmpty()) return; // 空槽不放块
     const id = this.registry.idOf(slot.item);
     if (id === undefined) return; // 无该方块（防御：物品集合与 registry 同源，正常不触发）
-    const r = this.world.setBlock(x, y, z, id);
-    if (r) this.scheduler.remeshSections(r.affected, { fastPath: true });
+    // M3.2：算放置朝向（三分支，不看玩家 yaw）。与 M3.1 的取物品逻辑正交叠加。
+    const meta = getPlacementOrientation(x, y, z, id, this.registry.orientationModesTable,
+      this.lastRemovedBlock, this.placementOrientationMemory);
+    const r = this.world.setBlock(x, y, z, id, meta);
+    if (r) {
+      // 放置成功后清除挖块记忆（§4.3 定稿口径：mc-lite 是算完朝向即无条件清空，
+      // 本仓库改为成功后清空——放置失败时保留记忆，避免记忆跨次放置串用）
+      this.lastRemovedBlock = null;
+      this.scheduler.remeshSections(r.affected, { fastPath: true });
+    }
     // 创造模式不消耗：slot.count 保持 DEFAULT_INVENTORY_COUNT 不变
   }
 

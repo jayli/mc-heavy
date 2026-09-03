@@ -16,7 +16,7 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
 **mc-lite 的地位是「功能与数据来源」，不是「实现蓝本」。** 读它的代码时只提取
 「功能语义、算法、数据、视觉风格」，禁止照搬它的架构组织方式（详见下文「对标 mc-lite」）。
 
-## 当前进度（2026-09-02）
+## 当前进度（2026-09-03）
 
 第一阶段分 M0~M3 四个里程碑（设计文档 §7）：
 
@@ -88,24 +88,27 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
     `player.canvas`（mc-lite 锁 body，本仓库锁 body 会令视角与放挖全失效）。
   - 与 M4 数据层解耦（M4 spec 明确排除背包消耗、武器切换走独立 `WeaponController`），
     先做背包的唯一理由是共用 keydown 入口一次改到位。
-- **M3.2 方块朝向放置交互 ⬜ 进行中（M3 收尾补丁项，插在 M3.1 与 M4 之间）**：
-  设计文档 v1.17 定稿的口径收口——§4.3 原写「交互侧放置语义仍属第二阶段」、roadmap 原记
+- **M3.2 方块朝向放置交互 ✅（2026-09-03 完成并提交；M3 收尾补丁项，插在 M3.1 与 M4 之间）**：
+  设计文档 v1.17 定稿、v1.18 实施回填的口径收口——§4.3 原写「交互侧放置语义仍属第二阶段」、roadmap 原记
   「朝向交互侧暂不实现：第二阶段随床/宝箱/门落地」，即该功能此前**没有排进任何已编号里程碑**
   （M4~M7 spec/plan 经 grep 核实均不含方块朝向；M6 唯一命中是 `setTestAim` 注释里的**相机** aim）。
   渲染消费侧 M2 已全部打通（`584813b`：mesher 读 `meta&3` 按 4 朝向旋转、`getSectionView`
   打包 meta、Worker transfer），`chunk-column.set()` 的 `edits` 条目也早已带 meta；
   缺的只有「放置时算朝向并写入」与「挖块时记住朝向」两步。v1.17 把它从床/宝箱/门 Epic 拆出
-  独立实施，该 Epic 范围相应收窄为「多方块结构 + `blockEntities` 富状态」。范围：
+  独立实施，该 Epic 范围相应收窄为「多方块结构 + `blockEntities` 富状态」。落地：
   - **门控字段复用（不新增字段）**：mc-lite 用 `orientationEnabled`（`BlockData.js` 默认 true），
-    M0 转换后在 mc-heavy 名为 `orientationModes`。实测两侧集合**完全一致（40 项 true / 84 项 false，
-    零差异）**，故直接用 `registry.orientationModesTable[id]`（>0 即启用朝向）。
+    M0 转换后在 mc-heavy 名为 `orientationModes`。实测**启用集合两侧零差异（各 40 项 true）**，
+    故直接用 `registry.orientationModesTable[id]`（>0 即启用朝向）。
+    **v1.18 勘误**：不参与旋转的方块 mc-heavy 是 **86** 项、mc-lite 是 84 项（差额为 M2-7 新增的
+    `sky_stone`/`sky_grass`，门控均 0；此前文档沿用 mc-lite 的 84 未换算）。
     附带勘误：M3.1 讨论时曾疑该表混入 `air`/`water`/`cloud`/`leaves` 像转换产物——实测 mc-lite
     那边这 4 项同样 `orientationEnabled: true`，属上游语义。
   - **mc-lite 语义更正（勿照印象实现）**：放置朝向**不看玩家 yaw**——mc-lite 的
     `getPlacementOrientation(x, y, z, type)` 签名里没有朝向参数。三分支为
     ① 门控关闭 → 恒 0；② **原位重建同类型**（x/y/z/type 四者全等）→ `nextOrientation` = `+1 % 4`
     并写入类型记忆；③ 有类型记忆 → 沿用；④ 无记忆 → 0（EAST）。真实手感是「转身不改朝向，
-    要转 90° 就在原位挖掉再放回去」。
+    要转 90° 就在原位挖掉再放回去」。**身份键用数字 `id`**（mc-lite 用 name，id↔name 一一对应，
+    「按方块类型记忆」语义等价；v1.18 补记）。
   - `src/player/orientation.js`（纯函数，无 DOM/three，Worker 同构）+ `world.getBlockMeta(x,y,z)`
     （越界/缺列返回 0；**提前交付 M4 plan Task 2 计划新增的同名方法**，口径一致）+
     `Player` 两个交互状态 `lastRemovedBlock` / `placementOrientationMemory`（UI 交互态，
@@ -118,7 +121,12 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
   - **对 M4 的影响（已写入 M4 plan 两处标注）**：Task 2 的 `getBlockMeta` 改为「验证已交付 +
     补断言」；Task 6 将 `digBlock()`/`placeBlock()` 改走 `editor.setBlock(...)` 时**须保留朝向分支**
     （`WorldEditor.setBlock` 已支持 meta 参数，不得退化为只传 id）。非依赖关系，只是同一段代码的先后改动。
-- **M4 玩家第一人称武器 ⬜（第二阶段，M3.2 验证提交后即可开始）**：独立 Epic；`WorldEditor` 批量编辑、
+  - 落地 3 新增（`src/player/orientation.js` + 两个测试文件）+ 3 改（`world-data.js` 加
+    `getBlockMeta` / `player.js` 两个交互状态与放挖接入 / `tests/index.html` 注册）；单测
+    216→238（+22）、Playwright 38→44（+6）；lint 0 error、`bench --check` 通过。实施期发现
+    两处 v1.17 口径偏差并回填 v1.18（门控 false 计数 84→86、身份键 name→id）；m1-acceptance
+    贴线失败经 HEAD 对照连跑证实为既有 vsync 抖动，非本次引入（详见 roadmap「## M3.2」实施记录）。
+- **M4 玩家第一人称武器 ⬜（第二阶段，M3.2 已提交，可开始）**：独立 Epic；`WorldEditor` 批量编辑、
   DDA hitscan、手枪/MAG7/加特林的受控 GLB 相机视图模型、曳光、音效和可选方块破坏。
   规格：`docs/superpowers/specs/2026-08-23-m4-player-weapons-design.md`；计划：
   `docs/superpowers/plans/2026-08-23-m4-player-weapons.md`。不含炮塔飞行弹丸、实体伤害、
@@ -138,8 +146,9 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
   规格：`docs/superpowers/specs/2026-08-23-m7-zombie-nests-design.md`；计划：
   `docs/superpowers/plans/2026-08-23-m7-zombie-nests.md`。
 
-测试现状：25 个 Playwright spec 文件（38 个测试用例）+ 216 个浏览器内单元测试全绿（m1-acceptance 计时断言
-在高负载下偶发贴线 flaky——16.7±1e-6/2.1ms，单独复跑通过，属已记录的计时抖动类）；
+测试现状：27 个 Playwright spec 文件（44 个测试用例）+ 238 个浏览器内单元测试全绿（m1-acceptance 计时断言
+在高负载下偶发贴线 flaky——16.7±1e-6/2.1ms，单独复跑通过，属已记录的计时抖动类；M3.2 实施时经
+HEAD 对照连跑再次证实为既有 vsync 抖动，见 roadmap「## M3.2」实施记录）；
 冻结断言达标（120Hz 本机 fps ≥115、放/挖编辑 p95 <2ms、draw 受控）；
 性能基线门禁 `npm run bench -- --check`（M3-5，回退 >10% 阻断合入）。
 
@@ -148,7 +157,7 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
 按顺序读完再写代码：
 
 1. [`docs/phase-1-engine-design.md`](/Users/bachi/jaylli/mc-heavy/docs/phase-1-engine-design.md)
-   —— 架构唯一权威，当前版本 v1.17（已定稿）。所有子系统边界、DR 决策、验收口径都在这里。
+   —— 架构唯一权威，当前版本 v1.18（已定稿 + M3.2 实施回填校正）。所有子系统边界、DR 决策、验收口径都在这里。
 2. [`docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md)
    —— **第一阶段剩余执行计划与后续路线图（M2–M7）**，任务级 TODO + 依赖关系，当前 roadmap。
 3. [`docs/superpowers/plans/2026-08-19-m1-voxel-core-loop.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/plans/2026-08-19-m1-voxel-core-loop.md)
@@ -276,7 +285,8 @@ mc-heavy/
    ├─ mesh/        # mesher.js / lighting.js / atlas-loader.js（Worker 同构）
    ├─ render/      # render-world.js（BatchedMesh 发布层）/ materials.js（TSL）
    ├─ player/      # player.js / physics.js / raycast.js / step-lift.js
-   │               #（M3-4 加 hotbar-items.js；M3.1 加 inventory.js 物品模型）
+   │               #（M3-4 加 hotbar-items.js；M3.1 加 inventory.js 物品模型；
+   │               #  M3.2 加 orientation.js 朝向三分支纯函数）
    ├─ ui/          # coords-hud.js / hotbar.js / settings-panel.js / settings.js（M3-4）
    │               #（M3.1 加 inventory.js 背包面板：DOM 方案照搬 mc-lite）
    ├─ save/        # persistence.js（IndexedDB edits）

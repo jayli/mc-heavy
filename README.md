@@ -23,8 +23,8 @@ npm run atlas        # 重新生成 assets/atlas.png + atlas.json
 ## 当前进度
 
 第一阶段（引擎底座）分 M0~M3 四个里程碑，**M0~M3 全部完成**（M3 于 2026-09-02 提交 `82da106`）；第一阶段验收口径全部达标。
-M3 后插入两个收尾补丁项：**M3.1 背包**（v1.16 定稿；2026-09-02 实施完成，待验证提交）与
-**M3.2 方块朝向放置交互**（v1.17 定稿，进行中），随后进入第二阶段，
+M3 后插入两个收尾补丁项：**M3.1 背包**（v1.16 定稿；2026-09-02 完成并提交 `b19029f`）与
+**M3.2 方块朝向放置交互**（v1.17 定稿、v1.18 实施回填；2026-09-03 实施完成），随后进入第二阶段，
 按 M4 玩家武器 → M5 实体运行时 → M6 丧尸 → M7 玩家放置丧尸巢穴的独立 Epic 链推进。
 
 | 里程碑 | 内容 | 状态 |
@@ -34,13 +34,13 @@ M3 后插入两个收尾补丁项：**M3.1 背包**（v1.16 定稿；2026-09-02 
 | M2 结构与世界完整性 | StructureIndex / 地标 / 树木 / 洞穴 / 水面 / 日夜 / 悬浮空岛与云层 | ✅ 完成（2026-08-31 同 seed 人工比对通过 + 关闭回归全绿） |
 | M3 性能达标与收尾 | 视距 8 全量调优 / 预算双档标定 / 雨效 / HUD+随机种子新世界 / 基线脚本+门禁 / 性能报告 | ✅ 完成（2026-09-02 提交 `82da106`；§1 目标表 6 项全达标，报告 `docs/m2-m3-performance-report.md`） |
 | M3.1 背包（M3 收尾补丁项） | 物品模型 `Slot`/`Inventory`（1000 槽位、创造模式每格 count=1500 占位不消耗）/ Z 键背包面板（122 项）/ 快捷栏改读 slots / `uiModal` 模态栈 + keydown 守卫 | ✅ 完成（2026-09-02；设计文档 v1.16 定稿口径收口） |
-| M3.2 方块朝向放置交互（M3 收尾补丁项） | mc-lite 三分支放置朝向（门控 / 原位挖放转 90° / 类型记忆）/ 挖块记朝向 / `world.getBlockMeta()` | ⬜ 进行中（设计文档 v1.17 定稿；门控复用 `orientationModesTable`，实测与 mc-lite `orientationEnabled` 集合 40 项零差异） |
-| M4 玩家第一人称武器（第二阶段） | `WorldEditor` / DDA hitscan / 受控 GLB 视图模型 / 曳光 / 音效 | ⬜ M3.2 验证提交后开始 |
+| M3.2 方块朝向放置交互（M3 收尾补丁项） | mc-lite 三分支放置朝向（门控 / 原位挖放转 90° / 类型记忆）/ 挖块记朝向 / `world.getBlockMeta()` | ✅ 完成（2026-09-03；设计文档 v1.17 定稿 + v1.18 实施回填；门控复用 `orientationModesTable`，启用集合 40 项两侧零差异，不参与旋转 86 项） |
+| M4 玩家第一人称武器（第二阶段） | `WorldEditor` / DDA hitscan / 受控 GLB 视图模型 / 曳光 / 音效 | ⬜ M3.2 已提交，可开始 |
 | M5 实体运行时（第二阶段） | `EntityManager` / 实体 raycast / 受控实体渲染 / 临时与持久 snapshot；持久实体先冻结异步保存，可取消，成功后的下一帧才最终卸载 | ⬜ 等待 M4 验收 |
 | M6 丧尸（第二阶段） | 默认 20 临时丧尸 / 20Hz 批量 AI / 25/35/999 武器命中 / 六部件固定 slot 渲染；无 PlayerVitals | ⬜ 等待 M5 验收 |
 | M7 玩家放置丧尸巢穴（第二阶段） | `blockEntities` 锚点 / `block-changed` 失效 / 八 offset × 六层刷怪 / 全局 8 个上限 | ⬜ 等待 M6 验收 |
 
-测试现状：**25 个 Playwright spec 文件（38 个测试用例）+ 216 个浏览器内单元测试全绿**；冻结断言达标
+测试现状：**27 个 Playwright spec 文件（44 个测试用例）+ 238 个浏览器内单元测试全绿**；冻结断言达标
 （120Hz 本机 fps ≥115、放/挖编辑 p95 <2ms、draw 受控）；性能基线门禁 `npm run bench -- --check`
 （回退 >10% 阻断合入，结构类 2%）。
 
@@ -48,7 +48,7 @@ M3 后插入两个收尾补丁项：**M3.1 背包**（v1.16 定稿；2026-09-02 
 
 | 文档 | 说明 |
 |---|---|
-| [docs/phase-1-engine-design.md](docs/phase-1-engine-design.md) | 架构唯一权威（v1.17 定稿） |
+| [docs/phase-1-engine-design.md](docs/phase-1-engine-design.md) | 架构唯一权威（v1.18 定稿 + M3.2 实施回填校正） |
 | [docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md](docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md) | **第一阶段剩余执行计划与后续路线图（M2–M7，当前 roadmap）** |
 | [docs/superpowers/specs/2026-08-23-m2-sky-structures-design.md](docs/superpowers/specs/2026-08-23-m2-sky-structures-design.md) | M2-7 悬浮空岛与云层设计规格 |
 | [docs/superpowers/plans/2026-08-23-m2-sky-structures.md](docs/superpowers/plans/2026-08-23-m2-sky-structures.md) | M2-7 TDD 实施计划 |

@@ -1,6 +1,6 @@
 # mc-heavy 第一阶段实施设计文档：游戏引擎原型
 
-> 版本：v1.17 ｜ 日期：2026-09-02 ｜ 状态：定稿（经十五轮逐条核验修订）
+> 版本：v1.18 ｜ 日期：2026-09-03 ｜ 状态：定稿（经十五轮逐条核验修订 + M3.2 实施回填校正）
 >
 > 目标：在 mc-heavy 仓库从零重建一个功能对标 mc-lite、性能提升一个数量级的体素游戏引擎。
 > 第一阶段只做"引擎底座"：渲染、体素数据、即时地图生成、玩家交互、种子地图、存档原型。
@@ -158,6 +158,16 @@
 > 回去转 90°」，本次照搬；④ §4.1 读路径 API 补 `world.getBlockMeta(x,y,z)`（M4 plan Task 2 亦
 > 计划新增，M3.2 提前交付）；⑤ roadmap 第 211 行「朝向交互侧暂不实现」改为已由 M3.2 落地，
 > 床/宝箱/门 Epic 范围相应收窄为多方块结构 + `blockEntities` 富状态（朝向已独立交付）。
+
+> v1.18 修订说明：**M3.2 实施回填的两处口径校正**（2026-09-03）。本次为实施期实测发现，
+> 不改变 v1.17 的任何设计决策：① §4.3 门控集合的 false 计数勘误——v1.17 写「40 项 true，
+> **84 项 false**，零差异」，实测 mc-heavy 侧是 **86 项**（126 方块 vs mc-lite 124；差额为
+> M2-7 新增的 `sky_stone`/`sky_grass`，门控均为 0）。**true 集合零差异的结论不变**（各 40 项），
+> 门控字段复用决策不受影响；84 是 mc-lite 侧计数，v1.17 误将其当作 mc-heavy 侧数字沿用。
+> ② 三分支签名与记忆键的表示口径补记：mc-lite 用方块 **name** 作身份键，mc-heavy 世界权威是
+> 数字 **id**，故签名统一为 `getPlacementOrientation(x,y,z,id,...)`、记忆键为 `Map<id, orientation>`
+> （id↔name 一一对应，「按方块类型记忆」的语义等价；`registry.idOf(name)` 在 `placeBlock()` 内
+> 已取到，无需额外转换）。单测 `src/tests/test-orientation.js` 已钉死 40/86 这两个数字。
 
 ---
 
@@ -562,23 +572,30 @@ half_block（床，1×0.5×1）、hanging_lamp（绳 cross+灯体盒）。
 照搬 mc-lite `PlayerInteraction.js:413 getPlacementOrientation` + `OrientationUtils.js`。
 
 - **门控字段复用**：mc-lite 用 `orientationEnabled`（`BlockData.js` 默认 true），M0 转换后
-  在 mc-heavy 名为 `orientationModes`。实测两侧集合**完全一致（40 项 true，84 项 false，零差异）**，
-  故直接复用 `registry.orientationModesTable[id]`（>0 即启用朝向），不新增字段、不改 blocks-data。
+  在 mc-heavy 名为 `orientationModes`。**启用集合两侧零差异（各 40 项）**，故直接复用
+  `registry.orientationModesTable[id]`（>0 即启用朝向），不新增字段、不改 blocks-data。
+  （**v1.18 勘误**：本句原写「完全一致（40 项 true，84 项 false，零差异）」——true 集合确实零差异，
+  但 false 计数两侧不同：mc-lite 124 方块中 84 项不参与旋转，mc-heavy 126 方块中 **86** 项。
+  差额是 M2-7 新增的 `sky_stone`/`sky_grass`（门控均为 0），mc-lite 无此二方块。原文沿用了
+  mc-lite 的 84 未换算，实施时实测校正。）
 - **放置朝向三分支**（`src/player/orientation.js` 纯函数，无 DOM/three）：
   ```
-  getPlacementOrientation(x, y, z, type, orientationModesTable, lastRemovedBlock, memory):
-    ① orientationModes[id] === 0           → 0（84 个方块恒 EAST，不参与旋转）
-    ② lastRemovedBlock 且 x/y/z/type 全等   → nextOrientation(lastRemovedBlock.orientation)，并 memory.set(type, 该值)
-    ③ memory.has(type)                      → memory.get(type)（沿用该类型的上次朝向）
+  getPlacementOrientation(x, y, z, id, orientationModesTable, lastRemovedBlock, memory):
+    ① orientationModes[id] === 0           → 0（86 个方块恒 EAST，不参与旋转）
+    ② lastRemovedBlock 且 x/y/z/id 全等     → nextOrientation(lastRemovedBlock.orientation)，并 memory.set(id, 该值)
+    ③ memory.has(id)                        → memory.get(id)（沿用该类型的上次朝向）
     ④ 否则                                  → 0（EAST）
   nextOrientation(o) = (o + 1) % 4          // 顺时针 90°
   ```
   **关键语义**：放置朝向**不看玩家 yaw**（mc-lite 签名 `getPlacementOrientation(x,y,z,type)` 无朝向参数）。
   转身不改朝向；玩家要转 90° 的手感是「原位挖掉再放回去」——这正是分支 ②。
+  （**v1.18 补记**：mc-lite 用方块 name 作身份键，mc-heavy 世界权威是数字 id，故上述签名与记忆键
+  统一改用 `id`（`registry.idOf(name)` 已在 `placeBlock()` 内取到，无需再转换）。语义与 mc-lite
+  「按方块类型记忆」一致——id 与 name 一一对应，等价。）
 - **Player 两个交互状态**（对齐 mc-lite `Player.js:164,168`）：
-  - `lastRemovedBlock = {x,y,z,type,orientation}`：`digBlock()` 挖前读 `world.getBlockMeta()` 记下；
-    `placeBlock()` 成功后 `clearRemovedBlock()` 清空；
-  - `placementOrientationMemory = Map<type, orientation>`：按**方块类型**记忆，跨位置、本次会话内持久。
+  - `lastRemovedBlock = {x,y,z,id,orientation}`：`digBlock()` 挖前读 `world.getBlockMeta()` 记下；
+    `placeBlock()` 成功后清空；
+  - `placementOrientationMemory = Map<id, orientation>`：按**方块类型**记忆，跨位置、本次会话内持久。
   二者都是 UI 交互态，**不入世界数据、不持久化**（世界权威只有 meta 通道；player 记录归第二阶段，v1.15 ②）。
 - **读接口补记**：`world.getBlockMeta(x,y,z)`（越界/缺列返回 0）——挖块存记忆需读旧朝向。
   该方法 M4 plan Task 2 亦计划新增，M3.2 提前交付（见 M4 plan 注意事项）。

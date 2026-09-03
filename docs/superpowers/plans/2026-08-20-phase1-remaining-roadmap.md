@@ -100,7 +100,7 @@
 |---|---|---|
 | M3.1 背包（物品模型 + Z 键面板 + 快捷栏改读 slots + 输入门控修正） | ✅ | 照搬 mc-lite `Slots.js`/`Inventory.js`/`HUD.renderHotbar()`/`global.css`；122 项物品（126 排除 4 个功能性方块）；`count` 1500 占位不消耗不显示；`uiModal` keydown 守卫是 M4 Task 6 前置条件。落地 5 文件新增 + 6 文件改；单测 170→216（+46）、Playwright 32→38 用例（+6），全量回归 38 passed / 单测 216 全绿 / lint 0 error / `bench --check` 通过（9 problems 均为既有 camelcase warning） |
 
-### M3.2 方块朝向放置交互 ⬜ 进行中（M3 收尾补丁项，设计文档 v1.17 定稿）
+### M3.2 方块朝向放置交互 ✅ 实施完成（2026-09-03，设计文档 v1.17 定稿 / v1.18 实施回填）
 
 设计文档 §4.3「交互侧放置语义仍属第二阶段」与本文件第 211 行「朝向交互侧暂不实现」的收口：
 该项此前**没有排进任何已编号里程碑**（M4~M7 spec/plan 经 grep 核实均不含方块朝向）。渲染消费侧
@@ -110,7 +110,7 @@ v1.17 把它从床/宝箱/门 Epic 拆出独立实施，该 Epic 范围收窄为
 
 | 项目 | 状态 | 备注 |
 |---|---|---|
-| M3.2 方块朝向放置交互（三分支放置朝向 + 挖块记忆 + `getBlockMeta`） | ⬜ | 照搬 mc-lite `PlayerInteraction.getPlacementOrientation` 三分支 + `OrientationUtils.nextOrientation`；门控复用 `orientationModesTable`（实测与 mc-lite `orientationEnabled` 集合 40 项零差异，不新增字段）；**朝向不看玩家 yaw**——手感是原位挖放转 90°；不做放置消耗/音效/床多方块；`getBlockMeta` 提前交付 M4 plan Task 2 |
+| M3.2 方块朝向放置交互（三分支放置朝向 + 挖块记忆 + `getBlockMeta`） | ✅ | 照搬 mc-lite `PlayerInteraction.getPlacementOrientation` 三分支 + `OrientationUtils.nextOrientation`；门控复用 `orientationModesTable`（**启用集合 40 项两侧零差异**，不新增字段；不参与旋转的方块 mc-heavy **86** 项 vs mc-lite 84 项——差额是 M2-7 新增 `sky_stone`/`sky_grass`，见设计文档 v1.18 勘误）；**朝向不看玩家 yaw**——手感是原位挖放转 90°；不做放置消耗/音效/床多方块；`getBlockMeta` 提前交付 M4 plan Task 2。身份键用数字 `id`（mc-lite 用 name，语义等价）。落地 3 新增 + 3 改；单测 216→238（+22）、Playwright 38→44 用例（+6）；lint 0 error、`bench --check` 通过 |
 
 ## 全局 TODO List（按执行次序）
 
@@ -150,13 +150,14 @@ v1.17 把它从床/宝箱/门 Epic 拆出独立实施，该 Epic 范围收窄为
    回归：Playwright 38 用例 + 单测 216 全绿、lint 0 error、`bench --check` 通过。
    与 M4 数据层解耦（M4 排除背包消耗、武器切换走独立 `WeaponController`），排序依据是共用
    `keydown` 入口。规格见设计文档 §4.5.4；任务详情与门禁诊断记录见本文件「## M3.1 背包」章节。
-4. [ ] **M3.2 方块朝向放置交互（M3 收尾补丁项，v1.17 定稿）**：交付 mc-lite 三分支放置朝向
+4. [x] **M3.2 方块朝向放置交互（2026-09-03 实施完成并提交）**：交付 mc-lite 三分支放置朝向
    （门控 `orientationModesTable` → 原位重建 `+1 %4` → 类型记忆 → 默认 EAST）、挖块记朝向
    （`lastRemovedBlock`）、`world.getBlockMeta()`（提前交付 M4 plan Task 2）。**朝向不看玩家 yaw**
    ——mc-lite 的手感是「转身不改朝向，原位挖掉再放回去转 90°」，照搬。此前该功能没有排进任何
    已编号里程碑（M4~M7 spec/plan 经核实均不含方块朝向），从床/宝箱/门 Epic 拆出独立实施，
    该 Epic 范围收窄为「多方块结构 + `blockEntities` 富状态」。不做放置消耗/音效/床多方块。
-   规格见设计文档 §4.3「朝向放置交互」；任务详情见本文件「## M3.2 方块朝向放置交互」章节。
+   规格见设计文档 §4.3「朝向放置交互」；实施记录见本文件「## M3.2 方块朝向放置交互」章节末尾。
+   实施期两处口径校正已回填设计文档 v1.18（门控 false 计数 84→86、身份键 name→id）。
 5. [ ] **M4 第二阶段首个 Epic**：只在 M3.2 完成后开始，交付玩家第一人称手枪/MAG7/加特林的
    `WorldEditor`、DDA hitscan、受控 GLB 视图模型、曳光和音效。**注意**：Task 2 的 `getBlockMeta`
    已由 M3.2 交付（改为验证 + 补断言）；Task 6 将 `digBlock()`/`placeBlock()` 改走
@@ -248,21 +249,26 @@ v1.17 把它从床/宝箱/门 Epic 拆出独立实施，该 Epic 范围收窄为
    全量回归（38 用例 + 216 单测 + lint 0 error + `bench --check` 通过）。
    门禁诊断记录（每帧分配致 `fastRemeshP95` 回退的真缺陷 + `frameP95` 抖动离群值的 HEAD 对照）
    见「## M3.1 背包」章节末尾。
-4. **M3.2 方块朝向放置交互（文档已就绪，代码实施待用户指令）**：设计文档 v1.17 已定稿
-   （§4.3 新增「朝向放置交互」小节 + §4.1 补记 `getBlockMeta` + v1.17 修订说明），本文件
-   「## M3.2」章节 + 里程碑总表 + 全局 TODO 第 4 项 + 依赖链 + 第 232 行收口全部就绪；
-   M4 plan 已加两处标注（Task 2 的 `getBlockMeta` 改为验证已交付、Task 6 重写
-   `digBlock()`/`placeBlock()` 时须保留朝向分支）；CLAUDE.md / README.md 同步完成。
-   **待实施**（RED→GREEN 顺序见 M3.2 章节的测试 checklist）：`src/player/orientation.js`
-   纯函数 + `world.getBlockMeta()` + `Player` 两个交互状态 + `digBlock()`/`placeBlock()` 接入。
-5. ~~**用户验证 M3.1（与 M3.2）后提交**~~ → M3.1 已提交（规格 `5f96a9b` + 代码本次提交）。
-   **M3.2 实施完成后提交** → **M4 玩家武器**（第二阶段首个 Epic，加读规格与计划文档后开工；
-   M3.1 交付的 `uiModal` keydown 守卫 + M3.2 交付的 `getBlockMeta` 均是 M4 的前置条件）。
+4. ~~**M3.2 方块朝向放置交互**~~ ✅ 已实施完成并提交（2026-09-03，TDD 全程）：
+   `src/player/orientation.js` 纯函数（`nextOrientation` + 三分支 `getPlacementOrientation`）→
+   `world.getBlockMeta()`（`src/voxel/world-data.js`，O(1) 直查 column.meta，越界/缺列返回 0）→
+   `Player` 两个交互状态（`lastRemovedBlock` / `placementOrientationMemory`）+ `digBlock()` 挖前
+   记朝向 / `placeBlock()` 算朝向传 meta 并清空记录 → 全量回归（44 用例 + 238 单测 + lint 0 error +
+   `bench --check` 通过）。
+   实施期实测发现两处 v1.17 口径偏差并回填设计文档 v1.18：① 门控 false 计数 mc-heavy 是 **86**
+   而非文档沿用的 mc-lite 侧 84（差额 = M2-7 新增 `sky_stone`/`sky_grass`，门控均 0；启用集合 40 项
+   零差异的结论不变）；② 三分支身份键与记忆键统一用数字 `id`（mc-lite 用 name，语义等价）。
+   门禁诊断：`m1-acceptance` 放挖压力用例的 `frameMs.p95` 贴线失败经 **HEAD 对照连跑证实为既有
+   vsync 抖动**（HEAD 侧 4 次中 1 次同样失败于 `16.700000762939453 vs <16.7`；两侧 placeP95/digP95
+   分布 1.6~1.9 完全重叠，无系统性回退），非本次改动引入。详见「## M3.2」章节末尾。
+5. ~~**用户验证 M3.1（与 M3.2）后提交**~~ → M3.1、M3.2 均已提交。**下一步 M4 玩家武器**
+   （第二阶段首个 Epic，加读规格与计划文档后开工；M3.1 交付的 `uiModal` keydown 守卫 +
+   M3.2 交付的 `getBlockMeta` 均是 M4 的前置条件）。
 
 ### 测试现状
 
-- 25 个 Playwright spec 文件（38 个测试用例；m1-acceptance 计时断言高负载下偶发贴线 flaky，单跑全绿）
-- 216 个浏览器内单元测试（harness）
+- 27 个 Playwright spec 文件（44 个测试用例；m1-acceptance 计时断言高负载下偶发贴线 flaky，单跑全绿）
+- 238 个浏览器内单元测试（harness）
 - 冻结断言：fps ≥90（120Hz 本机 ≥115）、编辑 p95 <2ms、draw 受控；atlas 147 tile（126 + 23 程序化烘焙）
 - 性能基线门禁：`npm run bench` 采集 / `npm run bench -- --check` 回退 >10% 阻断（结构类 2%）
 
@@ -710,6 +716,11 @@ mc-heavy orientationModes>0     : 40
 （附带勘误：M3.1 讨论时曾疑该表混入 `air`/`water`/`cloud`/`leaves` 像转换产物——实测 mc-lite
 那边这 4 项同样是 `orientationEnabled: true`，属上游语义，非转换错误。）
 
+> **实施期勘误（2026-09-03）**：上文「集合完全一致」指的是**启用集合（true）零差异**，结论成立。
+> 但**不参与旋转的方块数两侧不同**——mc-lite 124 方块中 84 项、mc-heavy 126 方块中 **86** 项；
+> 差额是 M2-7 新增的 `sky_stone`/`sky_grass`（门控均为 0，mc-lite 无此二方块）。本文件与设计文档
+> §4.3 此前沿用了 mc-lite 的 84 未换算，实施时实测校正为 86（设计文档 v1.18）。单测已钉死这两个数字。
+
 **mc-lite 语义更正（勿照印象实现）：** 放置朝向**不看玩家 yaw**——mc-lite 的
 `getPlacementOrientation(x, y, z, type)` 签名里没有朝向参数。真实手感是「转身不改朝向；
 要转 90° 就在原位挖掉再放回去」。
@@ -723,40 +734,80 @@ mc-heavy orientationModes>0     : 40
 - `src/actors/player/Player.js:164,168`（`lastRemovedBlock` / `placementOrientationMemory` 两个状态）
 - `src/constants/BlockData.js:12`（`DEFAULT_PROPERTIES.orientationEnabled = true`）
 
-**实现要点：**
-- [ ] 纯函数模块（`src/player/orientation.js`，无 DOM/three，Worker 同构）：
+**实现要点（✅ 全部落地）：**
+- [x] 纯函数模块（`src/player/orientation.js`，无 DOM/three，Worker 同构）：
   `nextOrientation(o) = (o + 1) % 4`；`getPlacementOrientation(...)` 三分支——
-  ① `orientationModes[id] === 0` → 恒 0（84 个方块不参与旋转）；
-  ② `lastRemovedBlock` 且 **x/y/z/type 四者全等** → `nextOrientation(旧朝向)` 并写入类型记忆；
+  ① `orientationModes[id] === 0` → 恒 0（mc-heavy **86** 个方块不参与旋转，见 v1.18 勘误）；
+  ② `lastRemovedBlock` 且 **x/y/z/id 四者全等** → `nextOrientation(旧朝向)` 并写入类型记忆；
   ③ 类型记忆存在 → 沿用；④ 否则 → 0（EAST）
-- [ ] `world.getBlockMeta(x, y, z)`（`src/voxel/world-data.js`）：O(1) 直查 `column.meta`，
+- [x] `world.getBlockMeta(x, y, z)`（`src/voxel/world-data.js`）：O(1) 直查 `column.meta`，
   越界/缺列返回 0。**与 M4 plan Task 2 口径一致**（该方法 M4 亦计划新增，M3.2 提前交付）
-- [ ] `Player` 两个交互状态：`lastRemovedBlock = {x,y,z,type,orientation}`（挖前读 meta 记下）、
-  `placementOrientationMemory = Map<type, orientation>`（按类型记忆，跨位置、会话内持久）。
+- [x] `Player` 两个交互状态：`lastRemovedBlock = {x,y,z,id,orientation}`（挖前读 meta 记下）、
+  `placementOrientationMemory = Map<id, orientation>`（按类型记忆，跨位置、会话内持久）。
   二者是 UI 交互态，**不入世界数据、不持久化**（世界权威只有 meta 通道）
-- [ ] `digBlock()`：挖前 `getBlockMeta()` 读旧朝向 → `recordRemovedBlock()`；基岩拦截不变
-- [ ] `placeBlock()`：`getPlacementOrientation()` 算朝向 → 传入 `setBlock(..., meta)` →
-  成功后 `clearRemovedBlock()`。与 M3.1 的 `inventory.getSelected()` 取物品逻辑正交叠加
-- [ ] **明确不照搬**（各撞已定决策或属他 Epic）：① `inventory.remove(type,1)` 放置消耗
+- [x] `digBlock()`：挖前 `getBlockMeta()` 读旧朝向 → `recordRemovedBlock()`；基岩拦截不变
+- [x] `placeBlock()`：`getPlacementOrientation()` 算朝向 → 传入 `setBlock(..., meta)` →
+  成功后清空 `lastRemovedBlock`。与 M3.1 的 `inventory.getSelected()` 取物品逻辑正交叠加
+- [x] **明确不照搬**（各撞已定决策或属他 Epic）：① `inventory.remove(type,1)` 放置消耗
   ——M3.1 定稿创造模式无限背包不消耗；② `audioManager.playSound('put', 0.3)`
   ——第一阶段无音频消费方（M4 Task 4 才有 AudioManager）；③ `tryPlaceBed()` 床的多方块放置
   ——属床/宝箱/门 Epic，且 bed_head/bed_tail 在 mc-lite 本就 orientationEnabled=false
-- [ ] **M4 plan 注意事项**（本任务落地时写入 M4 plan）：① Task 2 新增 `getBlockMeta` 的步骤
+- [x] **M4 plan 注意事项**（v1.17 已写入 M4 plan 两处标注）：① Task 2 新增 `getBlockMeta` 的步骤
   改为「验证已由 M3.2 交付 + 补断言」；② Task 6 将 `digBlock()`/`placeBlock()` 改走
   `editor.setBlock(...)` 时**须保留 M3.2 的朝向分支**（`WorldEditor.setBlock` 已支持 meta 参数，
   M4 plan:332 `const meta = change.meta ?? 0`）
 
-**测试：**
-- [ ] 单测（`src/tests/test-orientation.js`）：`nextOrientation` 循环（0→1→2→3→0）、
-  门控集合与 mc-lite 一致（40 项 true / 84 项 false）、三分支各路径、原位判定要求 x/y/z/type
+**测试（✅ 全绿）：**
+- [x] 单测（`src/tests/test-orientation.js`，22 用例）：`nextOrientation` 循环（0→1→2→3→0）、
+  门控集合（40 项 true / **86** 项 false）、三分支各路径、原位判定要求 x/y/z/id
   四者全等（改任一即不触发重转）、跨位置放置沿用类型记忆、`world.getBlockMeta` 越界/缺列返回 0、
   挖块记录含从 meta 读出的旧朝向、放置成功清空 `lastRemovedBlock`
-- [ ] Playwright（`tests/m3-2-orientation.spec.mjs`）：放 `chest` 首次 meta=0；原位挖放四次
+- [x] Playwright（`tests/m3-2-orientation.spec.mjs`，6 用例）：放 `chest` 首次 meta=0；原位挖放四次
   meta 依次 1→2→3→0；跨位置放同类型沿用记忆；`stone`（orientationModes=0）恒 meta=0；
   带朝向方块存档后重启 meta 保留（edits 通路）；旋转后 section 重建无报错、draw 受控
-- [ ] 回归：既有 Playwright 用例（M3.1 后为 38）+ 浏览器内单测（M3.1 后为 216）全绿、
-  lint 0 error、`npm run bench -- --check` 无回退（朝向只加 O(1) 计算与一次 meta 读，
-  不应触碰帧预算；若 `fastRemeshP95` 波动按 M3.1 的 HEAD 对照法诊断）
+- [x] 回归：既有 Playwright 用例（M3.1 后 38 → **44**）+ 浏览器内单测（216 → **238**）全绿、
+  lint 0 error、`npm run bench -- --check` 通过（朝向只加 O(1) 计算与一次 meta 读，
+  未触碰帧预算；m1-acceptance 贴线失败经 HEAD 对照证实为既有 vsync 抖动，见下方实施记录）
+
+### 实施记录（2026-09-03，TDD 全程）
+
+**落地文件**：3 新增 + 3 改
+- 新增 `src/player/orientation.js`（`BlockOrientation` 枚举 + `nextOrientation` + `recordRemovedBlock`
+  + `getPlacementOrientation` 三分支；纯函数，无 DOM/three，Worker 同构）
+- 新增 `src/tests/test-orientation.js`（22 用例）、`tests/m3-2-orientation.spec.mjs`（6 用例）
+- 改 `src/voxel/world-data.js`（加 `getBlockMeta`）、`src/player/player.js`（两个交互状态 +
+  `digBlock`/`placeBlock` 接入）、`src/tests/index.html`（注册新单测）
+
+**身份键口径**：mc-lite 用方块 name 作身份键，mc-heavy 世界权威是数字 id，故 `lastRemovedBlock`
+记 `id`、记忆键为 `Map<id, orientation>`（id↔name 一一对应，「按方块类型记忆」语义等价）。
+设计文档伪代码原写 `type`，实施统一改 `id` 并回填 v1.18。
+
+**门禁诊断（m1-acceptance 放挖压力用例）**：全量回归时该用例失败于 `frameMs.p95 =
+16.700000762939453` vs 阈值 `< 16.7`——超出门槛 7.6e-7，正是 CLAUDE.md 记录的「16.7±1e-6 贴线」。
+因本次给 `digBlock()` 新增了一次 `getBlockMeta()` 读与一次 `recordRemovedBlock()` 对象分配
+（M3.1 曾被门禁抓到「每帧分配致 fastRemeshP95 回退」的真缺陷），**未凭文档结论直接归为 flaky**，
+做了 HEAD 对照：
+- `git stash` 后在 HEAD 连跑 4 次：第 4 次出现**完全相同**的失败（`16.700000762939453 vs <16.7`），
+  其余 3 次通过；
+- 恢复改动后连跑 6 次采 `placeP95`/`digP95`：全部落在 **1.6~1.9**，无一超过 2ms 阈值；
+  两侧分布完全重叠，无系统性回退。
+- 结论：**既有 vsync 量化抖动**，非本次引入（失败的是 vsync 帧间隔抖动而非编辑负载）。
+- 另：该用例偶发 `digP95 = 2` 贴线（HEAD 侧亦出现一次），单独复跑即通过。
+
+**本项 draw 用例的稳定判据修正（测试设计缺陷，非抖动）**：`m3-2-orientation.spec.mjs` 第 6 用例
+在完整回归负载下曾概率性失败（单独跑与部分 spec 组合跑均通过）。根因是自己写的稳定判据不足——
+用「队列归零」（`inflight/meshInflight/uploadQueue` 全 0）当「世界稳定」的依据，但它只是**瞬时状态**：
+高负载下后台仍在填充 sections 时队列可能短暂归零，此时采到的 `before.sections` 偏低，旋转期间世界
+继续加载会让 draw/sections 增长，断言测的就成了「加载」而非「旋转」。
+- 修正：改等 **sections 连续两次采样不变 + 队列归零**（跨帧比较，真正稳定后再采 `before`）；
+  循环以 `dig` 结尾使末尾状态与 `before` 对等（否则多一个方块会让 before/after 比两块不同世界）；
+  断言 message 带上实际值便于后续诊断。
+- 修正后完整回归连跑 3 次，本项 6 用例全部通过（其中 1 次 44 用例全绿）。
+- **教训**：`worldReady === true` 只表示出生点邻域就绪，后台仍在填充；「队列归零」不等于「加载完成」。
+  需要「世界稳定」语义的用例应判 sections 停止增长，而非只看队列瞬时为空。
+
+**性能门禁**：`npm run bench -- --check` 通过（4 场景 fps 112~120、p95 ≤16.6、draw 489~545，
+与 `docs/m3-baseline.json` 基线无显著回退）。朝向只加 O(1) 计算与一次 meta 读，未触碰帧预算。
 
 ---
 

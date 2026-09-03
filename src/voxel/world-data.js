@@ -32,6 +32,19 @@ export class WorldData {
     return col.blocks[blockIndex(x - cx * 16, y, z - cz * 16)];
   }
 
+  /**
+   * O(1) 读方块元数据（朝向等，§4.3）。column 缺失或 y 越界 → 0。
+   * M3.2 交付：挖块存朝向记忆需读旧 meta；M4 plan Task 2 亦计划新增同名方法，口径一致
+   * （提前交付，M4 改为验证已存在 + 补断言）。
+   */
+  getBlockMeta(x, y, z) {
+    if (y < WORLD_MIN_Y || y >= WORLD_MAX_Y) return 0;
+    const cx = Math.floor(x / 16), cz = Math.floor(z / 16);
+    const col = this.columns.get(columnKey(cx, cz));
+    if (!col) return 0;
+    return col.meta[blockIndex(x - cx * 16, y, z - cz * 16)];
+  }
+
   isSolid(x, y, z) { return this.registry.solidTable[this.getBlockId(x, y, z)] === 1; }
   isOpaque(x, y, z) { return this.registry.opaqueTable[this.getBlockId(x, y, z)] === 1; }
   /** 向下 Y 支撑（M2-7）：云可站立；物理仅在 Y 轴向下碰撞时查询 */
