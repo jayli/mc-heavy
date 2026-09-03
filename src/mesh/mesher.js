@@ -186,7 +186,10 @@ const STEP_UPDOWN_QUADS = [
 const LAMP_ROPE_REGION = [30.5 / 64, 1 - 19.5 / 64, 33.5 / 64, 1 - 0.5 / 64];
 const LAMP_BODY_REGION = [18.5 / 64, 1 - 47.5 / 64, 45.5 / 64, 1 - 20.5 / 64];
 
-const TEMPLATES = {
+// export：背包图标烘焙（tools/bake-isometric-icons.mjs）复用此模板做等轴测投影——
+// 形状的唯一权威在这里，图标不得有第二份几何定义（§4.5.4 v1.24，红线 1 精神）。
+// 加 export 不改任何几何定义，不影响 buildSectionMesh 的消费路径。
+export const TEMPLATES = {
   // 花/草：0.7×0.7 cross，y∈[-0.1,0.6]（geoFlower：中心偏移 -0.25）
   flower: crossQuads(0.7, -0.1, 0.6),
   // 藤蔓：0.8 宽 × 1.0 高 cross，y∈[0,1] 落在格内。

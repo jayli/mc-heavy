@@ -20,11 +20,18 @@ test('atlas 覆盖 mc-lite 全部 122 张纹理 + M2 水纹理 + 程序化烘焙
                       'procedural/sky_stone', 'procedural/sky_grass'];
     const missing = [...need, ...procNeed].filter((n) => !meta.tiles[n]);
     const procCount = names.filter((n) => n.startsWith('procedural/')).length;
-    return { count: names.length, procCount, bad, missing, size: meta.size, gutter: meta.gutter };
+    // 等轴测背包图标（tools/bake-isometric-icons.mjs，§4.5.4 v1.24）
+    const iconCount = names.filter((n) => n.startsWith('inventory-icons/')).length;
+    return { count: names.length, procCount, iconCount, bad, missing, size: meta.size, gutter: meta.gutter };
   });
   // 124（mc-lite 122 张 + 水×2）+ 23 程序化烘焙 = 147（M2-7 空岛 +2）
-  expect(report.count).toBe(147);
+  // + 9 等轴测背包图标（inventory-icons/，v1.24）= 156
+  expect(report.count).toBe(156);
   expect(report.procCount).toBe(23);
+  // 9 项异形方块的等轴测图标（§4.5.4 v1.24）。**独立于上面的 fetch 检查**：
+  // 若改了 mesher 几何但只跑 `npm run icons` 忘跑 `npm run atlas`，PNG 存在但 atlas
+  // 未更新 → 图标静默过期；本断言钉死 atlas 侧的入图状态。
+  expect(report.iconCount).toBe(9);
   expect(report.bad).toEqual([]);
   expect(report.missing).toEqual([]);
   expect(report.size).toBe(2048);

@@ -310,6 +310,85 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
     `tileOfName()` 只在 `paintIcon()`（物品名变化时）调用、不在 remesh 快路径，且未碰
     `mesher.js`/remesh 任何代码。跑图覆写的 `docs/m3-baseline.{json,md}` 已 `git checkout` 还原
     （抖动结果不入库）。
+- **异形方块等轴测图标 ✅（2026-09-03，v1.23 之后的独立 bugfix；设计文档 v1.24）**：起因是
+  「`handrail`/`handrailA`/`handrailB`/`vertical_pillar`/`horizontal_pillar` 这 5 个非立方体
+  方块在背包里显示为铺满正方形的平面贴图，看不出几何形状」的观感报告 + 要求给出比
+  mc-lite 手工贴图**更优的表达方式**（用户评价 v1.23 手工图标「虽可辨识但确实有点丑陋」）。
+  - **根因比观感报告更严重**：这 5 个方块在 `faces-data` 里映射 `procedural/*` 程序化贴图，
+    实测这些贴图**几乎全是纯色底**——`procedural/handrail` **仅 2 种颜色**（主色
+    rgb(185,142,91) 占 3734/4096px）、`handrailA`/`handrailB` 同样 2 种、`procedural/pillar`
+    38 种（主色占 3730px，其余木纹噪点）。故图标**不仅看不出形状，彼此之间也无法区分**。
+  - **方案：离线烘焙等轴测投影图标，形状权威 = mesher 的 `TEMPLATES`**（红线 1：数据只有
+    一份权威——烘焙脚本 `import { TEMPLATES }`，**禁止手写第二份几何定义**）。
+    `TEMPLATES` 为此加 `export`（不改任何几何定义）。算法：2:1 等轴测投影
+    `sx=x-z, sy=(x+z)/2-y` + painter 深度排序 + 三面明暗（+Y 1.0 / +X 0.75 / +Z 0.55，
+    **UI 图标惯例、不是世界渲染的 `light×AO` 口径**，二者不可复用）+ 重心坐标插值 UV
+    采样贴图 + 透明背景（span 1.12，形状占约 89% 画布）。
+  - **为什么离线烘焙而非运行时合成**：运行时**零开销**（复用既有 CSS background 裁剪路径）、
+    与其余 108 项图标**同一条渲染路径**、确定性、符合红线 3。代价：几何变更需重跑
+    `npm run icons && npm run atlas`（`package.json` 新增 `icons` script）。
+    实测 `PNG.bitblt` 保留 `alpha=0` → `build-atlas.mjs` **无需改动**。
+  - **顺带定位了 v1.23 手工图标「丑陋」的真正根因**：mc-lite 手工图标与游戏内方块**颜色不一致**——
+    实测图标 `handrail.png` 平均色 **rgb(195,163,5)（金黄色）** vs 世界贴图
+    `procedural/handrail.png` **rgb(181,138,89)（木色）** → 背包金黄色栏杆、游戏里木色栏杆，
+    观感割裂。等轴测方案**采样 `faces-data` 的游戏内实际贴图** → 从机制上不可能出现该割裂
+    （采纳的第二条理由；第一条是形状信息量）。
+  - **mc-lite 侧核实（勘误 v1.23 文档的两处错误论断）**：mc-lite 专用图标机制在
+    `src/utils/ItemIconUtils.js:11` 的 `getCustomIconPath()`（14 项「方块名 → PNG 路径」表），
+    **不在 `HUD.js`**。v1.23 曾写「`HUD.js:117-152` 的 `generateIcon()` 是『显式图标表 +
+    `switch(name)` 分支』、台阶走 `getStepMaterial(name)` 换材质」——**均不成立**：
+    `generateIcon()` 无 switch/无按 name 分支，`getStepMaterial` 与 `endsWith('_step')`
+    全仓**零命中**。另 v1.23 写「那批 128×128 orphan tile 是世界渲染贴图（非图标）」也错——
+    实测它们是 **326×326 透明背景手工图标**（透明占 48.5%~69.3%）。
+    **故本次是有意偏离 mc-lite**（理由不是「mc-lite 无图标」而是「手工贴图观感不佳」），
+    已在 §4.5.4 标注，视觉比对时勿按其原样判定。
+  - **覆盖范围 9 项**（用户选定）：栏杆×3 + 柱子×2 + 台阶×4。台阶一并换成等轴测以**统一
+    表达口径**（避免同一背包里「平面横截面图案」与「立体等轴测」两套风格并存）→
+    v1.23 采纳的 4 个台阶手工图标 tile 变成 orphan（PNG 与 tile 都保留，只是没消费方）。
+    保持平面贴图：`cactus`/`vine`/`lilypad`/`hanging_lamp`/`flower` 系 7 个方块；
+    跳过 `chimney`/床三项（不在背包内）与 `mine_cart`（是**实体**不是方块，无 mesher 几何模板
+    → 保持 mc-lite 手工图标）。烘焙脚本**按方块名组织**（几何查 `BLOCKS[].geometry`、
+    贴图查 `faces-data`，二者不必同名）：`stone_diorite_step` 的 geometry 是
+    `cobblestone_step`（mc-lite `BlockData.js:283` 同口径，实测核实**非 bug**）但贴图是
+    `stone_diorite` → 图标形状与 `cobblestone_step` 相同、配色不同。
+  - **两处既有断言口径变更（随事实更新，非擅自放宽）**：① `tests/atlas.spec.mjs` tile 数
+    **147 → 156**（新增 9 张图标 PNG；断言语义是「覆盖全部纹理」，属正当扩展），
+    另新增 `iconCount=9` 断言——**独立于单测的 fetch 检查**：若改了几何只跑 `npm run icons`
+    忘跑 `npm run atlas`，PNG 存在但 atlas 未更新 → 图标静默过期，本断言钉死 atlas 侧状态。
+    ② v1.23 的 4 个台阶手工图标 tile 变 orphan（保留 PNG，理由见上）。
+  - 落地 4 新增（`src/mesh/iso-icon.js` 投影纯函数 + `tools/bake-isometric-icons.mjs` +
+    `src/tests/test-iso-icon.js` + `assets/textures/inventory-icons/*.png`×9）+ 7 改
+    （`mesher.js` 加 export / `hotbar.js` 图标表扩到 10 项 / `test-ui.js` / `test-inventory-ui.js` /
+    `tests/index.html` 注册 / `tests/atlas.spec.mjs` 计数 / `package.json` 加 `icons`）
+    + `eslint.config.mjs` 补配 `createImageBitmap` 全局（标准浏览器 API，配置里已有同性质
+    `Blob`/`FileReader`/`fetch` → 属漏配）；单测 257→**270**（+13）。
+    **回归防线**：钉死「竖柱图标竖长 / 横梁图标横扁」（几何形状相反，撞脸 = 丢失辨识度）+
+    「正置台阶底宽顶窄 / 倒置顶宽底窄」+「柱子图标色数 > 贴图自身 38」（三面明暗生效）+
+    「异形方块不得回落世界渲染贴图」+「范围外异形方块不进图标表」（防擅自扩大范围）。
+  - **视觉验证**（截图在本环境无法目视，改用像素级实测代替）：逐槽位图标截图 → canvas
+    读像素 → 包围盒 + 行剖面。**判据是「形状必须与 `TEMPLATES` 几何定义对应」**：
+    竖柱 13×29 竖长 ↔ `boxQuads(0.35,0,0.35,0.65,1,0.65)`；横梁 29×21 横扁 ↔
+    `boxQuads(0,0.35,0.35,1,0.65,0.65)` 全长 X；`handrailA`（全长横杆，上部 12.7）比
+    `handrailB`（0.5 长横杆，上部 10.3）上部更宽 → 横杆长度差异可辨。**最强一条**：
+    `planks_step` 行剖面 **11.7/13** 与 `cobblestone_step_updown` **13/11.7** 完全相反 →
+    与 `STEP_QUADS` vs `STEP_UPDOWN_QUADS` 严格对应。对照组 `stone`/`planks` 填充
+    **100%** 而异形方块 **32~48%** → 透明背景生效、轮廓可见。
+  - **门禁对照**（未凭文档结论免责）：lint 0 error（16 warnings，新增 2 个 camelcase 与既有
+    方块名同性质，未擅自改配置）；单测 **270 全绿**；Playwright **44/44**；`bench --check`
+    通过（fps 111.64~120.02、draw 489~545）。`m1-acceptance` 放挖 p95 首次全量跑失败
+    （`placeP95=2.0` 撞 `< 2`），经 **HEAD stash 对照各连跑 4 次**证实为既有抖动：
+    HEAD 侧 `2.1/1.9/1.9/1.8`（均值 **1.925**，**3 failed/1 passed**）、改动侧
+    `1.7/1.8/1.9/2.0`（均值 **1.85**，**2 failed/2 passed**）——**HEAD 侧失败率更高、
+    峰值更高、均值也更高**。机制上不可能影响（未碰 `mesher.js` 几何与 `materials.js`，
+    `atlas.png` 是离线资产不参与编辑快路径）。
+    **教训：仅凭「全量跑失败/单独跑通过」判定不够**——全量跑时 `sky-structures` 与
+    `m1-acceptance` 轮换失败，容易误读成「改动侧统计显著」；必须**分开按 spec 连跑
+    拿数值分布比均值与峰值**才能定论。
+  - **已知取舍**：新增 atlas 目录会**重排已有 tile 坐标**（`build-atlas.mjs` 的 `collectPngs`
+    按字母序 + shelf 装箱，`inventory-icons/` 插入序列 → 实测 `procedural/handrail`
+    x=672→1280、`procedural/pillar` x=1152→1760）。**不影响正确性**（`atlas.json` 同步更新，
+    mesher 读 json 的 UV 而非硬编码坐标），但 `atlas.png` 像素重排、体积 +28KB
+    （229733→258628）。若未来有人依赖 tile 坐标做断言需注意。
 - **M4 玩家第一人称武器 ⬜（第二阶段，M3.2 已提交，可开始）**：独立 Epic；`WorldEditor` 批量编辑、
   DDA hitscan、手枪/MAG7/加特林的受控 GLB 相机视图模型、曳光、音效和可选方块破坏。
   规格：`docs/superpowers/specs/2026-08-23-m4-player-weapons-design.md`；计划：
@@ -330,9 +409,10 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
   规格：`docs/superpowers/specs/2026-08-23-m7-zombie-nests-design.md`；计划：
   `docs/superpowers/plans/2026-08-23-m7-zombie-nests.md`。
 
-测试现状：27 个 Playwright spec 文件（44 个测试用例）+ 257 个浏览器内单元测试全绿（m1-acceptance 计时断言
+测试现状：27 个 Playwright spec 文件（44 个测试用例）+ 270 个浏览器内单元测试全绿（m1-acceptance 计时断言
 在高负载下偶发贴线 flaky——16.7±1e-6/2.1ms，单独复跑通过，属已记录的计时抖动类；M3.2 实施时经
-HEAD 对照连跑再次证实为既有 vsync 抖动，见 roadmap「## M3.2」实施记录）；
+HEAD 对照连跑再次证实为既有 vsync 抖动，见 roadmap「## M3.2」实施记录；v1.24 实施时再次经
+HEAD 对照连跑证实——**HEAD 侧失败率反而更高**，见下方「异形方块等轴测图标」条目的教训）；
 冻结断言达标（120Hz 本机 fps ≥115、放/挖编辑 p95 <2ms、draw 受控）；
 性能基线门禁 `npm run bench -- --check`（M3-5，回退 >10% 阻断合入）。
 
@@ -341,7 +421,7 @@ HEAD 对照连跑再次证实为既有 vsync 抖动，见 roadmap「## M3.2」�
 按顺序读完再写代码：
 
 1. [`docs/phase-1-engine-design.md`](/Users/bachi/jaylli/mc-heavy/docs/phase-1-engine-design.md)
-   —— 架构唯一权威，当前版本 v1.23（已定稿 + M3.2 实施回填 + 异形方块渲染勘误 + 背包物品集合口径 + 吊灯材质自发光 + 吊灯 UV 分区 + 背包图标表）。所有子系统边界、DR 决策、验收口径都在这里。
+   —— 架构唯一权威，当前版本 v1.24（已定稿 + M3.2 实施回填 + 异形方块渲染勘误 + 背包物品集合口径 + 吊灯材质自发光 + 吊灯 UV 分区 + 背包图标表 + 等轴测图标）。所有子系统边界、DR 决策、验收口径都在这里。
 2. [`docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md)
    —— **第一阶段剩余执行计划与后续路线图（M2–M7）**，任务级 TODO + 依赖关系，当前 roadmap。
 3. [`docs/superpowers/plans/2026-08-19-m1-voxel-core-loop.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/plans/2026-08-19-m1-voxel-core-loop.md)
@@ -456,10 +536,14 @@ mc-heavy/
 ├─ index.html                  # import map（本地 vendor/three）+ WebGPU 启动 gate + 准心
 ├─ vendor/three/               # three.js r185.1（three.webgpu.js / three.tsl.js / three.core.js）
 ├─ docs/
-│  └─ phase-1-engine-design.md # 架构权威（v1.17）
+│  └─ phase-1-engine-design.md # 架构权威（v1.24）
 ├─ tools/build-atlas.mjs       # atlas 离线打包（npm run atlas）
+├─ tools/bake-procedural-textures.mjs # 程序化贴图烘焙（mc-lite canvas 材质 → PNG）
+├─ tools/bake-isometric-icons.mjs # 异形方块等轴测背包图标烘焙（npm run icons，v1.24）
 ├─ assets/
 │  ├─ textures/                # 从 mc-lite 复制
+│  │  ├─ procedural/           # 程序化贴图烘焙产物
+│  │  └─ inventory-icons/      # 等轴测图标烘焙产物（v1.24）
 │  ├─ atlas.png + atlas.json   # 生成产物，提交入库
 │  └─ structures/              # 从 mc-lite 复制 JSON
 └─ src/
@@ -467,6 +551,8 @@ mc-heavy/
    ├─ voxel/       # constants / block-registry / chunk-column / world-data / blocks-data / faces-data
    ├─ gen/         # noise.js / terrain.js（M2 加 structure-index / structures/*）
    ├─ mesh/        # mesher.js / lighting.js / atlas-loader.js（Worker 同构）
+   │               #（v1.24 加 iso-icon.js 等轴测投影纯函数；mesher.js 导出 TEMPLATES
+   │               #  供图标烘焙复用——形状的唯一权威，图标不得有第二份几何定义）
    ├─ render/      # render-world.js（BatchedMesh 发布层）/ materials.js（TSL）
    ├─ player/      # player.js / physics.js / raycast.js / step-lift.js
    │               #（M3-4 加 hotbar-items.js；M3.1 加 inventory.js 物品模型；
@@ -490,7 +576,9 @@ npm test                       # Playwright 全部验收（tests/*.spec.mjs）
 npm run bench                  # M3-5 性能基线跑图（4 场景 → docs/m3-baseline.{md,json}）
                                #   加 -- --check 为回归门禁（回退 >10% 阻断，退出码 1）
 npm run lint                   # eslint src tools tests
+npm run icons                  # 烘焙异形方块等轴测背包图标（v1.24，改 mesher 几何后需跑）
 npm run atlas                  # 重新生成 assets/atlas.png + atlas.json
+                               #   注：新增 textures 子目录会重排已有 tile 坐标（shelf 装箱按字母序）
 ```
 
 - 浏览器内单测入口：`http://localhost:8081/src/tests/index.html`；

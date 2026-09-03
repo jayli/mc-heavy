@@ -341,7 +341,16 @@ test('渲染：mine_cart 走图标表（Invicon_Minecart），不再是空槽', 
 });
 
 /** 台阶图标在背包 DOM 里必须与母方块图标不同 tile（端到端确认裁剪参数不同） */
-test('渲染：台阶槽位图标裁剪参数与母方块槽位不同', async () => {
+/**
+ * 端到端：异形方块槽位的图标裁剪参数与「会撞脸的那个方块」不同。
+ * v1.24 起异形方块走等轴测图标 tile（`inventory-icons/*`），故与母方块/世界贴图的
+ * 裁剪位置必然不同。比对 `backgroundPosition` 而非 tile 名——tile 更名不影响本判据
+ * （语义是「渲染出的图标不是同一张」）。
+ *
+ * 覆盖 9 项异形方块：台阶 4 项 vs 母方块、栏杆 3 项 vs 彼此（世界贴图几乎相同 →
+ * 撞脸）、柱子 2 项 vs 彼此。
+ */
+test('渲染：异形方块槽位图标裁剪参数互不相同（9 项等轴测图标）', async () => {
   await withPanel((panel) => {
     panel.open();
     const names = [...document.querySelectorAll('#inventory-grid .mc-item-name')]
@@ -352,6 +361,7 @@ test('渲染：台阶槽位图标裁剪参数与母方块槽位不同', async ()
       const icon = document.querySelectorAll('#inventory-grid .mc-slot')[idx].querySelector('.mc-icon');
       return icon.style.backgroundPosition;
     };
+    // 台阶 vs 母方块
     assertTrue(bgOf('planks_step') !== bgOf('planks'),
       'planks_step 裁剪位置不同于 planks');
     assertTrue(bgOf('cobblestone_step') !== bgOf('cobblestone'),
@@ -360,6 +370,15 @@ test('渲染：台阶槽位图标裁剪参数与母方块槽位不同', async ()
       'cobblestone_step_updown 裁剪位置不同于 cobblestone');
     assertTrue(bgOf('stone_diorite_step') !== bgOf('stone_diorite'),
       'stone_diorite_step 裁剪位置不同于 stone_diorite');
+    // 正置/倒置台阶彼此不同（几何形状相反）
+    assertTrue(bgOf('cobblestone_step_updown') !== bgOf('cobblestone_step'),
+      '正置/倒置台阶图标不同');
+    // 竖柱 vs 横梁（几何形状相反；世界贴图 pillar/pillar_horizontal 噪点分布差异极小）
+    assertTrue(bgOf('vertical_pillar') !== bgOf('horizontal_pillar'),
+      '竖柱/横梁图标不同');
+    // 栏杆 3 项彼此不同（世界贴图 procedural/handrail{,A,B} 均仅 2 种颜色 → 此前撞脸）
+    const rails = [bgOf('handrail'), bgOf('handrailA'), bgOf('handrailB')];
+    assertEqual(new Set(rails).size, 3, '栏杆 3 项图标互不相同');
   });
 });
 

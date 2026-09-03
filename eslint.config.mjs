@@ -38,6 +38,8 @@ export default [
         Worker: 'readonly',
         Blob: 'readonly',
         FileReader: 'readonly',
+        // 资源解码 API（v1.24 等轴测图标单测需解码烘焙产物 PNG 读像素做形状断言）
+        createImageBitmap: 'readonly',
         URL: 'readonly',
         performance: 'readonly',
         Performance: 'readonly',

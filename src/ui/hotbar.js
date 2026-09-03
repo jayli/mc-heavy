@@ -9,38 +9,54 @@ import { FACES_DATA } from '../voxel/faces-data.js';
 export { HOTBAR_ITEMS };
 
 /**
- * **背包专用图标表**（§4.5.4 v1.23）：异形方块 → atlas 里的手工图标 tile。
+ * **背包专用图标表**（§4.5.4 v1.23 建、v1.24 改等轴测）：异形方块 → 专用图标 tile。
  *
- * 为什么需要这张表：台阶等异形方块在 `faces-data` 里映射的是**母方块贴图**
- * （`planks_step → planks_birch`、`cobblestone_step → Cobblestone`），图标与母方块
- * 完全一样，在背包里无法区分。mc-lite 的解法是给这些方块配**专用手工图标贴图**
- * （`HUD.js:117-152` 的 `getStepMaterial()` 走 `switch(name)` 换材质，无 canvas 绘制）；
- * 这些 PNG 早已复制进 `assets/textures/` 并烘焙入 atlas，但 `faces-data` 从未引用
- * （实测 atlas 有 13 个 orphan tile，其中 5 个正是背包图标）。
+ * 为什么需要这张表：异形方块在 `faces-data` 里映射的贴图**表达不出形状**——
+ * 台阶映射母方块贴图（`planks_step → planks_birch`，图标与 `planks` 撞脸）；
+ * 栏杆/柱子映射 `procedural/*` 程序化贴图，实测这些贴图**几乎全是纯色底**
+ * （`procedural/handrail` 仅 2 种颜色、`procedural/pillar` 38 种木纹噪点），
+ * 图标不仅看不出形状、**彼此之间也无法区分**。
+ *
+ * v1.24 起这 9 项改用**离线烘焙的等轴测投影图标**（`tools/bake-isometric-icons.mjs`）：
+ * - **形状的唯一权威 = `mesher.js` 的 `TEMPLATES`**（红线 1）——烘焙脚本 import 该模板
+ *   做投影，禁止手写第二份几何定义；几何改了重跑 `npm run icons && npm run atlas` 即跟上；
+ * - 贴图采样走 `faces-data`（**游戏内实际贴图**）→ 配色与世界渲染一致。这是取代
+ *   v1.23 mc-lite 手工图标的第二条理由：手工图标是金黄色栏杆、游戏内却是木色栏杆
+ *   （实测图标 rgb(195,163,5) vs 世界贴图 rgb(181,138,89)），观感割裂；
+ * - 透明背景（异形方块不铺满正方形）→ 形状轮廓可见。
  *
  * 表内条目 = **方块名 → 图标 tile 名**，与 `faces-data`（方块名 → 世界渲染贴图名）
  * 语义不同，勿混为一处：同一个方块的图标与世界贴图可以是两张不同的 PNG。
  *
- * 只收录「图标与母方块贴图不同」的方块。普通方块（stone/dirt/planks…）不进表，
+ * 只收录「图标与世界贴图不同」的方块。普通方块（stone/dirt/planks…）不进表，
  * 照旧走 faces-data —— 进表会让集合语义失真（读表的人无法区分「有意换图标」
- * 与「恰好同贴图」）。
+ * 与「恰好同贴图」）。本次范围外的异形方块（`cactus`/`vine`/`lilypad`/`hanging_lamp`/
+ * `flower` 系）保持平面贴图现状。
  *
- * 覆盖范围与 mc-lite 一致：mc-lite 只为台阶与矿车做了图标，handrail/pillar/cactus
- * 等异形方块两边都没有专用图标（orphan tile 里的 `handrail`/`pillar`/`turret` 是
- * 128×128 **世界渲染**贴图，不是图标）。
+ * 覆盖范围（9 项）= 栏杆×3 + 柱子×2 + 台阶×4。**不含** `chimney`/床三项（不在背包
+ * 118 项内，见 `player/inventory.js` 的 `HIDDEN_FROM_INVENTORY`）与 `mine_cart`
+ * （是**实体**不是方块，mesher 无其几何模板 → 等轴测不适用，保持 mc-lite 手工图标）。
  */
 export const INVENTORY_ICONS = {
-  planks_step: 'Oak_Planks_step',
-  cobblestone_step: 'Cobblestone_step',
-  cobblestone_step_updown: 'Cobblestone_step_updown',
-  stone_diorite_step: 'stone_diorite_step',
-  mine_cart: 'Invicon_Minecart', // 无 faces-data 条目 → 此前渲染空槽
+  // 异形方块 → 等轴测投影图标（tools/bake-isometric-icons.mjs 烘焙入 atlas）
+  handrail: 'inventory-icons/handrail',
+  handrailA: 'inventory-icons/handrailA',
+  handrailB: 'inventory-icons/handrailB',
+  vertical_pillar: 'inventory-icons/vertical_pillar',
+  horizontal_pillar: 'inventory-icons/horizontal_pillar',
+  planks_step: 'inventory-icons/planks_step',
+  cobblestone_step: 'inventory-icons/cobblestone_step',
+  cobblestone_step_updown: 'inventory-icons/cobblestone_step_updown',
+  stone_diorite_step: 'inventory-icons/stone_diorite_step',
+  // 矿车是实体不是方块（无 mesher 几何模板）→ 保持 mc-lite 手工图标。
+  // 无 faces-data 条目 → v1.23 前渲染空槽。
+  mine_cart: 'Invicon_Minecart',
 };
 
 /**
  * 方块名 → 图标 tile 名（图标表优先，其余走 faces-data 侧面）。
  * M3.1 从 game.js 内联提到此处，供快捷栏与背包面板共用（同一份图标口径）。
- * v1.23：加图标表查表（异形方块用专用手工图标，见 `INVENTORY_ICONS`）。
+ * v1.23：加图标表查表；v1.24：表内异形方块改等轴测图标（见 `INVENTORY_ICONS`）。
  * `bed_alias_block` 无 faces-data 条目且不在图标表 → 返回 undefined，调用方降级为无图标空槽。
  * @param {string} name 方块名
  * @returns {string|undefined} atlas tile 名

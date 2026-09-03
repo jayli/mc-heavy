@@ -1,6 +1,6 @@
 # mc-heavy 第一阶段实施设计文档：游戏引擎原型
 
-> 版本：v1.23 ｜ 日期：2026-09-03 ｜ 状态：定稿（经十五轮逐条核验修订 + M3.2 实施回填 + 异形方块渲染勘误 + 背包物品集合口径 + 吊灯材质自发光 + 吊灯 UV 分区 + 背包图标表）
+> 版本：v1.24 ｜ 日期：2026-09-03 ｜ 状态：定稿（经十五轮逐条核验修订 + M3.2 实施回填 + 异形方块渲染勘误 + 背包物品集合口径 + 吊灯材质自发光 + 吊灯 UV 分区 + 背包图标表 + 等轴测图标）
 >
 > 目标：在 mc-heavy 仓库从零重建一个功能对标 mc-lite、性能提升一个数量级的体素游戏引擎。
 > 第一阶段只做"引擎底座"：渲染、体素数据、即时地图生成、玩家交互、种子地图、存档原型。
@@ -254,10 +254,20 @@
 > | `cobblestone_step_updown` | `Cobblestone` | 同上（且与正置台阶撞脸） |
 > | `stone_diorite_step` | `stone_diorite` | 图标与 `stone_diorite` 撞脸 |
 >
-> **mc-lite 的做法（子代理调查核实）**：`HUD.js:117-152` 的 `generateIcon()` 是「显式图标表 +
-> `switch(name)` 分支」结构，台阶走 `getStepMaterial(name)` **换材质**（`if (name.endsWith('_step'))
-> return this.getStepMaterial(name)`），**没有任何 canvas 2D 绘制逻辑**。mc-lite 贴图目录里没有
-> 名字带 step/stair/slab 的 PNG —— 这些台阶图标是**手工绘制的专用图标贴图**。
+> **mc-lite 的做法（v1.24 勘误：v1.23 原文有误，勿再引用）**：v1.23 曾写「`HUD.js:117-152` 的
+> `generateIcon()` 是『显式图标表 + `switch(name)` 分支』结构，台阶走 `getStepMaterial(name)`
+> 换材质（`if (name.endsWith('_step')) return this.getStepMaterial(name)`）」——**这两处论断
+> 均不成立**。实测核实（v1.24）：`generateIcon()` **无 `switch`、无任何按 name 的分支**，
+> 是统一流程（取 `materials.getMaterial(item)` 的 `map` → `drawImage` 进 32×32 canvas →
+> 描边 → `toDataURL` + `iconCache`）；`getStepMaterial` 与 `endsWith('_step')` 在 mc-lite
+> **全仓零命中**（`grep -rn` 核实）。
+>
+> **mc-lite 真正的专用图标机制在 `src/utils/ItemIconUtils.js:11` 的 `getCustomIconPath()`**
+> （v1.23 漏查了此文件），是一张 14 项的「方块名 → PNG 路径」表，`createItemIcon()` 命中即
+> 直接 `img.src = customIconPath`、否则回落 `HUD.generateIcon()`。台阶 4 项与矿车在该表内，
+> **故 v1.23 采纳的 tile 名是对的**，只是机制描述错了——它们来自这张图标表而非
+> `generateIcon()` 的分支。mc-lite 贴图目录里确实没有名字带 step/stair/slab 的 PNG，
+> 台阶图标是手工绘制的专用图标贴图（这一点 v1.23 无误）。
 >
 > **关键发现：这些图标早已在 atlas 里躺着，只是没人引用。** 实测 atlas 有 **13 个 orphan tile**
 > （`faces-data` 从未引用），其中 5 个正是背包图标：
@@ -282,6 +292,16 @@
 > mc-lite 只为台阶与矿车做了专用图标，`handrail`/`pillar`/`cactus` 等异形方块**两边都没有图标**。
 > 故本次图标表的覆盖范围 = mc-lite 的全部专用图标范围（5 项），不是「所有异形方块」。
 >
+> **⚠️ v1.24 勘误（上述两条论断均错，勿再引用）**：实测核实 mc-lite
+> `src/utils/ItemIconUtils.js:11` 的 `getCustomIconPath()` 是 14 项专用图标表，
+> `handrail`/`handrailA`/`handrailB`/`vertical_pillar`/`horizontal_pillar`/`turret_alias_block`
+> **都在表内**——即那 6 个 128×128 orphan tile 正是 **mc-lite 的专用背包图标**
+> （326×326 PNG 按 128×128 入图、透明背景占 48.5%~69.3%），不是世界渲染贴图；
+> 「异形方块两边都没有图标」也不成立。故「覆盖范围 = mc-lite 全部专用图标范围（5 项）」
+> 这个推理的**前提有误**，mc-lite 的实际图标范围是 14 项。v1.23 落地的 5 项仍是对的
+> （当时只修台阶 + 矿车，属用户指定的范围），但**理由需更正**。这 6 个 orphan tile 在
+> v1.24 起由等轴测图标取代（见 v1.24 修订说明）。
+>
 > 方案取舍（三方案对照页 `src/tests/test-step-icon-methods.html` 实测渲染比对）：
 > - **A 用 atlas 现成 tile（采纳）**：资产已就位、零新增文件、走既有 CSS background 裁剪路径、
 >   观感对齐 mc-lite。代价是手工贴图需随方块贴图同步维护。
@@ -290,6 +310,171 @@
 > - C CSS `clip-path` 裁剪：纯 CSS 零资产，但只有轮廓没有明暗，辨识度最弱。
 >
 > 实现见 §4.5.4「背包专用图标表」。
+
+> v1.24 修订说明：**异形方块等轴测投影图标**（2026-09-03，§4.5.4）。起因是「`handrail`/
+> `handrailA`/`handrailB`/`vertical_pillar`/`horizontal_pillar` 这 5 个非立方体方块在背包里
+> 显示为一个铺满正方形的平面贴图，看不出几何形状」的观感报告，并附带要求给出比 mc-lite
+> 手工贴图**更优的表达方式**（用户评价 v1.23 的手工图标「虽然可以辨识，但确实有点丑陋」）。
+>
+> **根因（实测定位，比观感报告更严重）**：这 5 个方块在 `faces-data` 里映射的是
+> `procedural/*` 程序化贴图，实测贴图内容**几乎全是纯色底**：
+>
+> | 方块 | `faces-data` 贴图 | 实测不同色数 | 主色占比 |
+> |---|---|---|---|
+> | `handrail` | `procedural/handrail` | **2** | rgb(185,142,91) 占 3734/4096 px |
+> | `handrailA` | `procedural/handrailA` | **2** | 3429/4096 px |
+> | `handrailB` | `procedural/handrailB` | **2** | 3269/4096 px |
+> | `vertical_pillar` | `procedural/pillar` | 38 | 3730/4096 px（其余为木纹噪点） |
+> | `horizontal_pillar` | `procedural/pillar_horizontal` | 40 | 3724/4096 px |
+>
+> 故这 5 个图标**不仅看不出形状，彼此之间也几乎无法区分**（三张栏杆贴图只差深色噪点
+> 数量、两张柱子贴图只差噪点分布）。观感报告说的「看不出形状区别」成立，实际问题还包含
+> 「5 个图标互相撞脸」。
+>
+> **顺带定位了 v1.23 手工图标「丑陋」的真正根因（用户评价，实测确认）**：mc-lite 的手工
+> 图标 PNG 与游戏内方块**颜色不一致**——实测 mc-lite 图标 `handrail.png` 平均色
+> **rgb(195,163,5)（金黄色，B 分量几乎为 0）**，而游戏内世界贴图 `procedural/handrail.png`
+> 平均色 **rgb(181,138,89)（木色）**；柱子同理（图标 rgb(193,160,9) vs 世界贴图
+> rgb(184,141,90)）。即背包里是金黄色栏杆、游戏里放出来是木色栏杆 —— **观感割裂**。
+> 台阶 4 项的手工图标（v1.23 采纳的那批 16×16）同样是人手绘制的图案，配色与母方块贴图
+> 未必一致。等轴测方案**采样游戏内实际贴图**（`faces-data` 指向的那张），从机制上不可能
+> 出现这个割裂——这是采纳等轴测而非沿用手工贴图的第二条理由（第一条是形状信息量）。
+>
+> **mc-lite 的做法（实测核实）**：mc-lite 的专用图标逻辑在 `src/utils/ItemIconUtils.js:11`
+> 的 `getCustomIconPath()`（**不在 `HUD.js`**），是一张 14 项的「方块名 → PNG 路径」表，
+> `createItemIcon()` 命中即直接用该 PNG、否则回落 `HUD.generateIcon()`（取材质 `map` 画进
+> 32×32 canvas）。**这 5 个方块 mc-lite 确实有专用图标**：`handrail`/`handrailA`/`handrailB`
+> → `handrail{,A,B}.png`、`vertical_pillar` → `pillar.png`、`horizontal_pillar` →
+> `pillar_horizontal.png`。实测这些 PNG 是 **326×326 透明背景手工图标**（透明像素占
+> 48.5%~69.3%、2192~4859 种颜色），与 `faces-data` 引用的 `procedural/handrail`（64×64、
+> **仅 2 种颜色**、世界渲染贴图）是**两套同名但完全不同**的 PNG。
+> mc-lite **没有**等轴测/离屏渲染缩略图机制。**故本次仍是 mc-heavy 的独立改进**
+> （用户明确要求比 mc-lite 手工贴图更优的表达），但理由不是「mc-lite 无图标」而是
+> 「mc-lite 的手工贴图观感不佳」——**已知的有意偏离**（与 v1.22 吊灯 UV 分区、§4.3 vine
+> 同类），视觉比对 mc-lite 时勿按其原样判定。
+>
+> **关键论据：形状的唯一权威已存在，图标不得有第二份几何定义。** 这 5 个方块的几何
+> 已完整定义在 `src/mesh/mesher.js` 的 `TEMPLATES`（§4.3，逐格复刻 mc-lite `geomMap`）：
+> `handrail` = 中柱 0.5² + 东/北把手（3 个 `boxQuads`）、`handrailA` = 柱 0.3² + 全长 X 横杆、
+> `handrailB` = 柱 0.3² + Z 横杆 0.5 长、`vertical_pillar` = `boxQuads(0.35,0,0.35,0.65,1,0.65)`、
+> `horizontal_pillar` = `boxQuads(0,0.35,0.35,1,0.65,0.65)`。**图标烘焙脚本必须 import
+> `TEMPLATES`，禁止手写第二份几何定义**（红线 1 精神：数据只有一份权威）——几何改了图标
+> 自动跟着改，不会出现「图标与真实形状不符」的静默偏差。
+>
+> **渲染算法（原型实测验证）**：2:1 等轴测投影 + painter 深度排序 + 三面明暗 + 按局部 UV
+> 采样贴图 + 透明背景：
+>
+> ```
+> 投影:  sx = x - z,  sy = (x+z)/2 - y      （2:1 等轴测，图标惯例）
+> 可见面: 只取 +X(0) / +Y(2) / +Z(4) 三个朝向观察者的面
+> 明暗:  +Y 顶面 ×1.0、+X 侧面 ×0.75、+Z 侧面 ×0.55
+> 贴图:  重心坐标插值 quad 的 UV → 采样源 PNG（nearest）
+> 背景:  alpha=0 透明（形状轮廓可见，不铺满正方形）
+> span:  包围盒归一化系数 1.12（形状占约 89% 画布）
+> ```
+>
+> **明暗系数是「UI 图标惯例」，不是世界渲染的 shade 口径**：世界渲染的 shade 是
+> `light × AO`（§4.3 顶点阶段 float varying），背包图标不参与光照系统，用固定三面系数
+> 表达立体感。二者不可复用（与 §4.3 吊灯 `emissive:15` blocklight 源 vs 材质自发光的
+> 区分同理）。
+>
+> **原型实测结果**（32/64px 双档均验证）：
+>
+> | 方块 | 不透明占比 | 不同色数 | 形状辨识度 |
+> |---|---|---|---|
+> | `vertical_pillar` | 37.8% | **53**（保留木纹噪点） | 竖长柱体 |
+> | `horizontal_pillar` | 34.1% | — | **横扁横梁**，与竖柱一眼可分 |
+> | `handrail` | 52.4% | 7 | 中柱 + **两侧把手突出** |
+> | `handrailB` | 37.9% | — | 中柱 + 短横杆 |
+> | `handrailA` | — | — | 中柱 + 全长横杆 |
+> | `planks_step` | 56.5% | 25 | **L 形阶梯轮廓清晰** |
+>
+> 等轴测投影能一眼区分这 5 个形状（竖长/横扁/双侧把手/全长横杆/短横杆），且台阶的 L 形
+> 立体轮廓比 v1.23 的平面横截面图案信息量更足。
+>
+> **端到端视觉验证**（截图在本环境无法目视——Read 只返回 URL 不渲染成图像，故改用
+> 像素级实测代替，与 v1.22/v1.23 同口径）：逐槽位图标元素截图 → canvas 读像素 →
+> 轮廓包围盒 + 行分布剖面。**判据是「图标形状必须与 mesher `TEMPLATES` 几何定义对应」**：
+>
+> | 方块 | 包围盒 | 填充% | 上部宽/下部宽 | 对应几何定义 | 判定 |
+> |---|---|---|---|---|---|
+> | `vertical_pillar` | 13×29 | 32.1 | 9.6/9.6 | `boxQuads(0.35,0,0.35,0.65,1,0.65)` 全高 0.3 宽 | ✓ 竖长 |
+> | `horizontal_pillar` | 29×21 | 33.5 | 9.6/9.6 | `boxQuads(0,0.35,0.35,1,0.65,0.65)` 全长 X 0.3 高 | ✓ 横扁 |
+> | `handrail` | 27×29 | 47.9 | 11.9/11.9 | 中柱 0.5² + 东/北把手 | ✓ 把手额外覆盖 |
+> | `handrailA` | 25×29 | 37.4 | **12.7/9.6** | 柱 + 全长 X 横杆（上部更宽） | ✓ 上下不对称 |
+> | `handrailB` | 15×29 | 33.0 | **10.3/9.6** | 柱 + Z 横杆 0.5 长（比 A 窄） | ✓ 上下不对称 |
+> | `planks_step` | 29×29 | 55.5 | **11.7/13** | `STEP_QUADS` 下半全幅 + 左上 1/4 柱 | ✓ 底宽顶窄 |
+> | `cobblestone_step_updown` | 29×29 | 55.5 | **13/11.7** | `STEP_UPDOWN_QUADS` 上半全幅 + 右下 1/4 柱 | ✓ 顶宽底窄 |
+> | `stone`/`planks`（对照） | 32×32 | **100** | 32/32 | 无模板 = 单位立方体 | ✓ 铺满正方形 |
+>
+> 最强一条：`planks_step` 与 `cobblestone_step_updown` 的行剖面**完全相反**（11.7/13 vs
+> 13/11.7）→ 正置/倒置台阶图标形状与几何定义严格对应，不是「恰好看起来不同」。
+> `handrailA`（全长横杆 12.7）比 `handrailB`（0.5 长横杆 10.3）上部更宽 → 横杆长度差异
+> 在图标上可辨。对照组 `stone`/`planks` 填充 100% 而异形方块 32~48% → 透明背景生效、
+> 轮廓可见。
+>
+> **方案取舍（离线烘焙 vs 运行时合成）**：
+> - **A 离线烘焙入 atlas（采纳）**：运行时**零开销**（复用既有 CSS background 裁剪路径）、
+>   与其余 109 项图标**完全同一条渲染路径**（不引入第二套）、确定性（固定算法无随机）、
+>   符合红线 3（重计算离开运行时）。代价：几何变更需重跑脚本 + `npm run atlas`。
+> - B 运行时 canvas 合成：几何变更自动生效，但背包打开时要为每个图标合成（118 项）、
+>   引入第二套图标渲染路径、违反红线 3（主线程做可后台化的重计算）。
+>
+> 采纳 A。`mesher.js` 可在 Node 下 import（无 three/DOM 依赖，符合红线 8 同构纯函数），
+> 只需给 `TEMPLATES` 加 `export`。透明像素可直接入 atlas——实测 `PNG.bitblt` 保留
+> `alpha=0`，`build-atlas.mjs` **无需改动**。
+>
+> **覆盖范围（9 项）**：`handrail`×3 + `vertical_pillar`/`horizontal_pillar` + 台阶 4 项
+> （`planks_step`/`cobblestone_step`/`cobblestone_step_updown`/`stone_diorite_step`）。
+> 台阶一并换成等轴测以统一表达口径（避免同一背包里「平面横截面图案」与「立体等轴测」
+> 两套风格并存）。保持平面贴图现状：`cactus`/`vine`/`lilypad`/`hanging_lamp`/`flower` 系
+> 7 个方块；跳过 `chimney`/床三项（不在背包 118 项内，见 §4.5.4 `HIDDEN_FROM_INVENTORY`）。
+>
+> **`stone_diorite_step` 的 geometry 是 `cobblestone_step`**（mc-lite 同口径，
+> `BlockData.js:283` 的 `geometryType: 'cobblestone_step'`，实测核实**非 bug**），但贴图是
+> `stone_diorite` → 图标烘焙必须**按方块名组织**：几何查 `BLOCKS[].geometry` 字段、
+> 贴图查 `faces-data`，二者不必同名。
+>
+> **两处既有断言口径变更（随事实更新，非擅自放宽）**：
+> 1. `tests/atlas.spec.mjs` 钉死 tile 数 **147 → 156**（新增 9 张图标 PNG）。断言语义是
+>    「atlas 覆盖全部纹理」，新增图标 PNG 属覆盖范围的正当扩展；`procCount`（`procedural/`
+>    前缀 23）不受影响——新图标放独立目录 `assets/textures/inventory-icons/`，前缀不同。
+> 2. v1.23 的 4 个台阶手工图标 tile（`Oak_Planks_step`/`Cobblestone_step`/
+>    `Cobblestone_step_updown`/`stone_diorite_step`）改为等轴测后**变成 orphan**（PNG 与
+>    tile 都保留、atlas 总数只增不减，只是没有消费方）。`Invicon_Minecart` 仍被引用
+>    （`mine_cart` 不在本次 9 项内）。保留理由：删除会让 atlas 计数与 mc-lite 纹理清单
+>    口径脱钩，且这些是 mc-lite 的手工图标资产（有对照价值）。
+>
+> **门禁对照（未凭文档结论免责）**：
+> - `npm run lint`：0 error（16 warnings，新增 2 个 camelcase 来自 `vertical_pillar`/
+>   `horizontal_pillar` 作对象键，与既有方块名 warning 同性质——`eslint.config.mjs`
+>   豁免清单未含 `hotbar.js`，项目接受此类 warning，未擅自改配置）；
+>   顺带补配 `createImageBitmap` 全局（标准浏览器 API，图标单测解码 PNG 需它，
+>   配置里已有同性质的 `Blob`/`FileReader`/`fetch` → 属漏配而非规则问题）；
+> - 浏览器单测 **270 全绿**（257 + 13 新增）；
+> - Playwright **44/44**（`atlas.spec.mjs` 计数更新后全绿）；
+> - `bench --check` 通过（fps 111.64~120.02、draw 489~545，无回退）；
+> - `m1-acceptance` 放挖 p95 首次全量跑失败（`placeP95=2.0` 撞 `< 2` 断言）——
+>   **经 HEAD stash 对照各连跑 4 次证实为既有抖动，非本次引入**：
+>   HEAD 侧 `2.1/1.9/1.9/1.8`（均值 **1.925**，**3 failed / 1 passed**）、
+>   改动侧 `1.7/1.8/1.9/2.0`（均值 **1.85**，**2 failed / 2 passed**）——
+>   **HEAD 侧失败率更高、峰值更高（2.1 vs 2.0）、均值也更高**。
+>   机制上不可能影响：本次未碰 `mesher.js` 几何（只加 `export`）与 `materials.js`，
+>   `atlas.png` 是离线资产不参与编辑快路径（放/挖走 typed array + REMESH）。
+>   **教训**：仅凭「全量跑失败 / 单独跑通过」判定不够——全量跑时 `sky-structures` 与
+>   `m1-acceptance` 轮换失败，容易误读成「改动侧统计显著」。必须**分开按 spec 连跑
+>   拿数值分布比均值与峰值**才能定论。
+> - `sky-structures` p95 首次全量跑 23.5（断言 < 16.75）：单独跑 3 次均 16.6/16.7/16.7
+>   全通过，HEAD 侧全量同样 16.7 通过 → 全量负载抖动（与 CLAUDE.md 既有记录一致）。
+>
+> **已知取舍：新增 atlas 目录会重排已有 tile 坐标**。`build-atlas.mjs` 的 `collectPngs`
+> 按字母序排序、shelf 装箱，`inventory-icons/` 插入序列 → 实测 `procedural/handrail`
+> 坐标 x=672 → x=1280、`procedural/pillar` x=1152 → x=1760（`handrail`/`Oak_Planks_step`
+> 所在 shelf 未受影响）。**不影响正确性**（`atlas.json` 同步更新，mesher 读 json 的 UV
+> 而非硬编码坐标），但 `atlas.png` 像素内容确实重排、体积 +28KB（229733 → 258628）。
+> 若未来有人依赖 tile 坐标做断言，需注意这一副作用。
+>
+> 实现见 §4.5.4「等轴测投影图标」。
 
 ---
 
@@ -1102,6 +1287,51 @@ export function tileOfName(name) {
 `mine_cart` 无 `faces-data` 条目，但 v1.23 起由图标表给出 `Invicon_Minecart` → **有图标**
 （此前渲染空槽）。背包 118 项现在**全部有图标**，`bed_alias_block`（已移出背包）不再是
 「无图标但列槽」的用例。
+
+**等轴测投影图标（v1.24 新增）**：图标表内 9 项异形方块改用**离线烘焙的等轴测投影图标**
+（v1.24 修订说明），tile 放 `assets/textures/inventory-icons/`：
+
+```js
+export const INVENTORY_ICONS = {
+  // 异形方块 → 等轴测投影图标（tools/bake-isometric-icons.mjs 烘焙）
+  handrail: 'inventory-icons/handrail',
+  handrailA: 'inventory-icons/handrailA',
+  handrailB: 'inventory-icons/handrailB',
+  vertical_pillar: 'inventory-icons/vertical_pillar',
+  horizontal_pillar: 'inventory-icons/horizontal_pillar',
+  planks_step: 'inventory-icons/planks_step',
+  cobblestone_step: 'inventory-icons/cobblestone_step',
+  cobblestone_step_updown: 'inventory-icons/cobblestone_step_updown',
+  stone_diorite_step: 'inventory-icons/stone_diorite_step',
+  // mc-lite 手工图标（不在等轴测范围：矿车是实体不是方块，无 mesher 几何模板）
+  mine_cart: 'Invicon_Minecart',
+};
+```
+
+**形状权威 = `mesher.js` 的 `TEMPLATES`**：烘焙脚本必须 `import { TEMPLATES }`，
+**禁止手写第二份几何定义**（红线 1 精神）。几何改了重跑 `npm run icons && npm run atlas`
+即自动跟上；回归防线钉死「竖柱 vs 横梁图标像素形状不同」，图标未跟上时单测会抓到。
+
+`TEMPLATES` 为此加 `export`（不改任何几何定义）。`mesher.js` 可在 Node 下 import
+（无 three/DOM 依赖，符合红线 8 同构纯函数）。透明像素可直接入 atlas——实测
+`PNG.bitblt` 保留 `alpha=0`，`build-atlas.mjs` 无需改动。
+
+烘焙脚本**按方块名组织**（几何查 `BLOCKS[].geometry`、贴图查 `faces-data`，二者不必同名）：
+`stone_diorite_step` 的 geometry 是 `cobblestone_step`（mc-lite `BlockData.js:283` 同口径）
+但贴图是 `stone_diorite` → 图标形状与 `cobblestone_step` 相同、配色不同。
+
+**覆盖范围（9 项）**：栏杆×3 + 柱子×2 + 台阶×4。台阶一并换成等轴测以统一表达口径
+（避免同一背包里「平面横截面图案」与「立体等轴测」两套风格并存）——v1.23 采纳的 4 个
+台阶手工图标 tile 因此变成 orphan（PNG 与 tile 都保留，见 v1.24 修订说明）。
+保持平面贴图现状：`cactus`/`vine`/`lilypad`/`hanging_lamp`/`flower` 系 7 个方块；
+跳过 `chimney`/床三项（不在背包内）。
+
+`mine_cart` 保持 mc-lite 手工图标 `Invicon_Minecart` —— 矿车是**实体**不是方块，
+`mesher.js` 无其几何模板，等轴测方案不适用。
+
+**图标占画布比例**：等轴测形状约占画布 89%（span 系数 1.12 归一化），其余为透明背景。
+异形方块图标视觉上会比铺满正方形的普通方块图标**略小**——这是「能看出形状」的必要代价
+（铺满正方形正是本次要修的 bug）。
 
 > **两侧集合仍有差异（2026-09-03 实测记录，未处理）**：mc-heavy 118 项 vs mc-lite 手工清单
 > 107 项。差集中除已排除的 chimney/床三项外还有：`swamp_water`、`sky_wood`/`sky_stone`/

@@ -20,27 +20,49 @@ test('hotbar: tileStyle 非方形 tile（128 大图）按 w/h 各自缩放', () 
   assertEqual(s.backgroundPosition, '0px -320px'); // -(1024 × 0.3125)；x=0 → "0px"
 });
 
-// --- 背包图标表（§4.5.4 v1.23：异形方块用专用图标 tile，不再复用普通方块贴图） ---
-// 根因：台阶等异形方块在 faces-data 里映射的是普通方块 tile，图标与母方块（planks /
-// Cobblestone 等）完全一样，无法区分。mc-lite 的做法是给这些方块配**专用手工图标贴图**
-// （`HUD.js:117-152` 的 `getStepMaterial()` 走 `switch(name)` 换材质，无 canvas 绘制）。
-// 这些图标 PNG 早已复制进 `assets/textures/` 并烘焙入 atlas，但 faces-data 从未引用
-// （实测 atlas 13 个 orphan tile，其中 5 个是背包图标）。
+// --- 背包图标表（§4.5.4 v1.23 建、v1.24 改等轴测） ---
+// v1.23 根因：台阶等异形方块在 faces-data 里映射的是普通方块 tile，图标与母方块
+// （planks / Cobblestone 等）完全一样，无法区分。mc-lite 的专用图标机制在
+// `src/utils/ItemIconUtils.js:11` 的 `getCustomIconPath()`（14 项「方块名 → PNG 路径」表，
+// `createItemIcon()` 命中即用、否则回落 `HUD.generateIcon()` 取材质 map）——**不在 HUD.js**，
+// v1.23 文档曾误写为「HUD.js 的 getStepMaterial() 走 switch(name) 换材质」，该函数
+// mc-lite 全仓零命中，已在 §4.5.4 v1.24 勘误。
 
-test('hotbar: INVENTORY_ICONS 覆盖 4 个台阶方块 + mine_cart', () => {
-  assertEqual(INVENTORY_ICONS.planks_step, 'Oak_Planks_step');
-  assertEqual(INVENTORY_ICONS.cobblestone_step, 'Cobblestone_step');
-  assertEqual(INVENTORY_ICONS.cobblestone_step_updown, 'Cobblestone_step_updown');
-  assertEqual(INVENTORY_ICONS.stone_diorite_step, 'stone_diorite_step');
+// v1.24：异形方块改用**离线烘焙的等轴测投影图标**（形状权威 = mesher 的 TEMPLATES），
+// 取代 v1.23 的 mc-lite 手工图标 tile。理由见 §4.5.4 v1.24 修订说明：
+// ① 形状信息量更足（立体轮廓 vs 平面横截面图案）；② 采样游戏内实际贴图 → 配色一致
+// （mc-lite 手工图标是金黄色栏杆、游戏内却是木色栏杆，观感割裂）。
+test('hotbar: INVENTORY_ICONS 覆盖 9 项异形方块 + mine_cart', () => {
+  // 异形方块 → 等轴测图标（tools/bake-isometric-icons.mjs 烘焙入 atlas）
+  assertEqual(INVENTORY_ICONS.handrail, 'inventory-icons/handrail');
+  assertEqual(INVENTORY_ICONS.handrailA, 'inventory-icons/handrailA');
+  assertEqual(INVENTORY_ICONS.handrailB, 'inventory-icons/handrailB');
+  assertEqual(INVENTORY_ICONS.vertical_pillar, 'inventory-icons/vertical_pillar');
+  assertEqual(INVENTORY_ICONS.horizontal_pillar, 'inventory-icons/horizontal_pillar');
+  assertEqual(INVENTORY_ICONS.planks_step, 'inventory-icons/planks_step');
+  assertEqual(INVENTORY_ICONS.cobblestone_step, 'inventory-icons/cobblestone_step');
+  assertEqual(INVENTORY_ICONS.cobblestone_step_updown, 'inventory-icons/cobblestone_step_updown');
+  assertEqual(INVENTORY_ICONS.stone_diorite_step, 'inventory-icons/stone_diorite_step');
+  // 矿车保持 mc-lite 手工图标：它是**实体**不是方块，mesher 无其几何模板 → 等轴测不适用
   assertEqual(INVENTORY_ICONS.mine_cart, 'Invicon_Minecart');
-  assertEqual(Object.keys(INVENTORY_ICONS).length, 5, '恰好 5 项（勿混入非图标 tile）');
+  assertEqual(Object.keys(INVENTORY_ICONS).length, 10,
+    '恰好 10 项（9 异形 + 矿车；勿混入非图标 tile）');
 });
 
-test('hotbar: tileOfName 台阶方块返回专用图标 tile（不再是母方块贴图）', () => {
-  assertEqual(tileOfName('planks_step'), 'Oak_Planks_step');
-  assertEqual(tileOfName('cobblestone_step'), 'Cobblestone_step');
-  assertEqual(tileOfName('cobblestone_step_updown'), 'Cobblestone_step_updown');
-  assertEqual(tileOfName('stone_diorite_step'), 'stone_diorite_step');
+test('hotbar: tileOfName 异形方块返回等轴测图标 tile', () => {
+  for (const [block, tile] of [
+    ['handrail', 'inventory-icons/handrail'],
+    ['handrailA', 'inventory-icons/handrailA'],
+    ['handrailB', 'inventory-icons/handrailB'],
+    ['vertical_pillar', 'inventory-icons/vertical_pillar'],
+    ['horizontal_pillar', 'inventory-icons/horizontal_pillar'],
+    ['planks_step', 'inventory-icons/planks_step'],
+    ['cobblestone_step', 'inventory-icons/cobblestone_step'],
+    ['cobblestone_step_updown', 'inventory-icons/cobblestone_step_updown'],
+    ['stone_diorite_step', 'inventory-icons/stone_diorite_step'],
+  ]) {
+    assertEqual(tileOfName(block), tile);
+  }
 });
 
 test('hotbar: tileOfName mine_cart 返回 Invicon_Minecart（原为 undefined 空槽）', () => {
@@ -48,11 +70,13 @@ test('hotbar: tileOfName mine_cart 返回 Invicon_Minecart（原为 undefined �
 });
 
 /**
- * 回归防线：台阶图标**不得**回落到母方块 tile。
- * 若有人删掉 INVENTORY_ICONS 查表（或把表清空），台阶会静默退回 faces-data 的
- * 母方块贴图 —— 图标重新与 planks/Cobblestone 撞脸，正是本次要修的 bug。
+ * 回归防线：异形方块图标**不得**回落到 faces-data 的世界渲染贴图。
+ * 若有人删掉 INVENTORY_ICONS 查表（或把表清空），这些方块会静默退回 faces-data——
+ * 台阶退回母方块贴图（与 planks/Cobblestone 撞脸）、栏杆柱子退回 `procedural/*`
+ * 纯色贴图（彼此撞脸），正是本次要修的两个 bug。
  */
-test('hotbar: tileOfName 台阶不得回落母方块贴图（回归防线）', () => {
+test('hotbar: tileOfName 异形方块不得回落世界渲染贴图（回归防线）', () => {
+  // 台阶：不得回落母方块贴图
   assertFalse(tileOfName('planks_step') === 'planks_birch',
     'planks_step 图标不得是 planks_birch');
   assertFalse(tileOfName('cobblestone_step') === 'Cobblestone',
@@ -61,18 +85,33 @@ test('hotbar: tileOfName 台阶不得回落母方块贴图（回归防线）', (
     'cobblestone_step_updown 图标不得是 Cobblestone');
   assertFalse(tileOfName('stone_diorite_step') === 'stone_diorite',
     'stone_diorite_step 图标不得是 stone_diorite');
+  // 栏杆/柱子：不得回落 procedural/* 纯色世界贴图（彼此几乎相同 → 撞脸）
+  assertFalse(tileOfName('handrail') === 'procedural/handrail',
+    'handrail 图标不得是纯色世界贴图');
+  assertFalse(tileOfName('vertical_pillar') === 'procedural/pillar',
+    'vertical_pillar 图标不得是纯色世界贴图');
+  assertFalse(tileOfName('horizontal_pillar') === 'procedural/pillar_horizontal',
+    'horizontal_pillar 图标不得是纯色世界贴图');
   // 倒置台阶与正置台阶必须不同图标（几何形状相反，撞脸等于丢失辨识度）
   assertFalse(tileOfName('cobblestone_step_updown') === tileOfName('cobblestone_step'),
     '正置/倒置台阶图标必须不同');
+  // 竖柱与横梁必须不同图标（几何形状相反）
+  assertFalse(tileOfName('vertical_pillar') === tileOfName('horizontal_pillar'),
+    '竖柱/横梁图标必须不同');
 });
 
-test('hotbar: tileOfName 普通方块仍走 faces-data（图标表不误伤其余 113 项）', () => {
+test('hotbar: tileOfName 普通方块仍走 faces-data（图标表不误伤其余 108 项）', () => {
   assertEqual(tileOfName('stone'), 'stone');
   assertEqual(tileOfName('cobblestone'), 'Cobblestone'); // faces-data 里是大写 C
   assertEqual(tileOfName('planks'), 'planks_birch');
   // 母方块本身不在图标表里 → 保持原行为
   assertFalse('cobblestone' in INVENTORY_ICONS, 'cobblestone 不进图标表');
   assertFalse('planks_birch' in INVENTORY_ICONS, 'planks 不进图标表');
+  // 本次范围外的异形方块保持平面贴图现状（勿擅自扩大覆盖范围）
+  assertFalse('cactus' in INVENTORY_ICONS, 'cactus 不进图标表（保持平面贴图）');
+  assertFalse('vine' in INVENTORY_ICONS, 'vine 不进图标表（保持平面贴图）');
+  assertFalse('hanging_lamp' in INVENTORY_ICONS, 'hanging_lamp 不进图标表（保持平面贴图）');
+  assertFalse('chimney' in INVENTORY_ICONS, 'chimney 不进图标表（不在背包内）');
 });
 
 test('hotbar: tileOfName 无 faces-data 且无图标表的方块仍返回 undefined', () => {
