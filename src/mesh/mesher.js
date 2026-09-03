@@ -176,6 +176,16 @@ const STEP_UPDOWN_QUADS = [
   ...boxQuads(0.5, 0, 0, 1, 0.5, 1),
 ];
 
+// 吊灯 UV 分区常量（§4.3 v1.22，有意偏离 mc-lite）：把绳与灯体的 UV 限制到贴图各自的
+// 图案区，令「绳呈单色深灰、灯体发光暖黄、灯体四个面不含绳图案」。
+// 区域边界按 **texel 中心**对齐（不是像素边界）：贴图的 fillRect(30,0,4,20) 填 col 30~33 /
+// row 0~19，texel 中心在 30.5~33.5 / 0.5~19.5 → NearestFilter 下采样点落在纯色区内，
+// 不会采到相邻背景 #aaa49a。灯体图案区同理取 col 18~45 / row 20~47。
+// atlas 的 v 轴翻转（build-atlas.mjs:103 `v0 = 1-(shelfY+h)/SIZE`）→ canvas row r
+// 对应 tile 局部 v = 1 - r/64。
+const LAMP_ROPE_REGION = [30.5 / 64, 1 - 19.5 / 64, 33.5 / 64, 1 - 0.5 / 64];
+const LAMP_BODY_REGION = [18.5 / 64, 1 - 47.5 / 64, 45.5 / 64, 1 - 20.5 / 64];
+
 const TEMPLATES = {
   // 花/草：0.7×0.7 cross，y∈[-0.1,0.6]（geoFlower：中心偏移 -0.25）
   flower: crossQuads(0.7, -0.1, 0.6),
@@ -220,13 +230,20 @@ const TEMPLATES = {
   cobblestone_step_updown: STEP_UPDOWN_QUADS,
   // 半高块（床）：1×0.5×1 底贴块底（geoHalfBlock）
   half_block: boxQuads(0, 0, 0, 1, 0.5, 1),
-  // 吊灯：细绳八段棱柱 + 灯体 0.3³（geoHangingLamp）
+  // 吊灯：细绳八段棱柱 + 灯体 0.3³（几何逐格复刻 geoHangingLamp，坐标未变）
   // 绳逐格复刻 CylinderGeometry(0.015, 0.015, 0.4, 8) + translate(0,0.3,0)：局部
-  // y[0.1,0.5] → 格内 y[0.6,1.0]，块中心 (0.5,0.5) 为轴。UV 方向已与 three 实测核对
-  // （顶→v=1、底→v=0，与 CylinderGeometry 侧面 v=1-y/heightSegments 同向），贴图不上下颠倒。
+  // y[0.1,0.5] → 格内 y[0.6,1.0]，块中心 (0.5,0.5) 为轴。
+  //
+  // **UV 与自发光按部件分区（§4.3 v1.22，有意偏离 mc-lite）**：mc-lite 两个几何 UV 实测
+  // 均为 u/v∈[0,1] 全幅（都采样整张贴图 → 灯面含绳图案、绳含灯体图案），且
+  // emissive 加项把绳的深色冲淡到与灯体同亮。本仓库改为分区采样 + 逐部件自发光：
+  //   绳   → uvRegion 绳图案区（单色 #333333）+ em:false（不吃 emissive → 保持深灰）
+  //   灯体 → uvRegion 灯体图案区（不含绳图案）+ em:true（吃 emissive → 发光暖黄）
   hanging_lamp: [
-    ...prismQuads(0.5, 0.5, 0.015, 0.6, 1.0),
-    ...boxQuads(0.35, 0.35, 0.35, 0.65, 0.65, 0.65),
+    ...prismQuads(0.5, 0.5, 0.015, 0.6, 1.0)
+      .map((q) => ({ ...q, uvRegion: LAMP_ROPE_REGION, em: false })),
+    ...boxQuads(0.35, 0.35, 0.35, 0.65, 0.65, 0.65)
+      .map((q) => ({ ...q, uvRegion: LAMP_BODY_REGION, em: true })),
   ],
 };
 
@@ -274,6 +291,12 @@ function transformUV(blockName, face, u, v) {
   if (t.uFlip) uu = 1 - uu;
   if (t.vLowerHalf) vv = 0.5 * vv;
   return [uu, vv];
+}
+
+/** quad 级 UV 子区域重映射（§4.3 v1.22，吊灯用）：把 tile 内 0~1 的 UV 线性映射到
+ *  region = [u0,v0,u1,v1] 指定的子区域。同一方块的不同部件因此可采样贴图的不同区域。 */
+function remapRegion(u, v, r) {
+  return [r[0] + (r[2] - r[0]) * u, r[1] + (r[3] - r[1]) * v];
 }
 
 /** 发射一个 quad（packeds 为 4 个逐顶点 packed；ds=true 追加反向绕线 = 双面可见） */
@@ -331,8 +354,9 @@ export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
         const channel = channelNames[cullMode]; // 0→opaque, 1→cutout, 2→transparent
         const ch = channels[channel];
         const blockName = nameOf(id);
-        // 材质自发光标记（§4.3 bit13）：逐方块算一次，供本方块所有顶点复用
-        const emissiveBit = EMISSIVE_MATERIALS.has(blockName) ? (1 << 13) : 0;
+        // 材质自发光标记（§4.3 bit13）：逐方块算一次作为**默认值**，模板 quad 可用
+        // 可选字段 `em` 逐 quad 覆盖（v1.22：吊灯「绳不发光、灯体发光」）。
+        const blockEmissiveBit = EMISSIVE_MATERIALS.has(blockName) ? (1 << 13) : 0;
 
         // 非立方体几何（§4.3 顶点模板）：不做面剔除（mc-lite 实例级渲染同口径）；
         // 光照读自身格（模板面在格内，无"邻居格"语义）；AO 按顶点推导。
@@ -365,6 +389,9 @@ export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
             if (!tileName) continue;
             const tile = tiles[tileName] || tiles['stone'] || DEFAULT_TILE;
             const worldFace = FACE_ROT[orient][q.face];
+            // quad 级自发光覆盖（§4.3 v1.22）：`em` 未声明 → 方块级默认；声明了 → 逐 quad 定值。
+            // 吊灯用它令「绳不发光、灯体发光」。逐 quad 算一次，供该 quad 4 顶点复用。
+            const emissiveBit = q.em === undefined ? blockEmissiveBit : (q.em ? (1 << 13) : 0);
             const positions = [];
             const uvs = [];
             const packeds = [];
@@ -373,7 +400,9 @@ export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
               const [rx, ry, rz] = orient === 0 ? [qx, qy, qz] : rotateVertex(qx, qy, qz, orient);
               positions.push([lx + rx, ly + ry, lz + rz]);
               const [cu, cv] = q.uv ? q.uv[vi] : FACE_UVS[q.face][vi];
-              const [uu, vv] = transformUV(blockName, q.face, cu, cv); // 模型面 UV 变换（床）
+              // quad 级 UV 子区域（§4.3 v1.22）：先按 region 重映射，再走方块级变换（床）
+              const [ru, rv] = q.uvRegion ? remapRegion(cu, cv, q.uvRegion) : [cu, cv];
+              const [uu, vv] = transformUV(blockName, q.face, ru, rv);
               uvs.push([tile.u0 + (tile.u1 - tile.u0) * uu, tile.v0 + (tile.v1 - tile.v0) * vv]);
               // AO 按世界面 + 旋转后顶点（遮挡是世界空间语义）
               const [s1o, s2o, co] = aoOffsetsFor(worldFace, [rx, ry, rz]);
@@ -445,7 +474,7 @@ export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
             const s2 = opaqueTable[data[viewIdx(vx + s2o[0], vy + s2o[1], vz + s2o[2])]] === 1 ? 1 : 0;
             const co_ = opaqueTable[data[viewIdx(vx + co[0], vy + co[1], vz + co[2])]] === 1 ? 1 : 0;
             const ao = getAO(s1, s2, co_);
-            packeds.push(faceLight | (ao << 8) | (worldFace << 10) | emissiveBit);
+            packeds.push(faceLight | (ao << 8) | (worldFace << 10) | blockEmissiveBit);
           }
           pushQuad(ch, positions, uvs, packeds, doubleSide);
         }

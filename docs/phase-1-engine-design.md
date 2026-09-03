@@ -1,6 +1,6 @@
 # mc-heavy 第一阶段实施设计文档：游戏引擎原型
 
-> 版本：v1.21 ｜ 日期：2026-09-03 ｜ 状态：定稿（经十五轮逐条核验修订 + M3.2 实施回填 + 异形方块渲染勘误 + 背包物品集合口径 + 吊灯材质自发光）
+> 版本：v1.22 ｜ 日期：2026-09-03 ｜ 状态：定稿（经十五轮逐条核验修订 + M3.2 实施回填 + 异形方块渲染勘误 + 背包物品集合口径 + 吊灯材质自发光 + 吊灯 UV 分区）
 >
 > 目标：在 mc-heavy 仓库从零重建一个功能对标 mc-lite、性能提升一个数量级的体素游戏引擎。
 > 第一阶段只做"引擎底座"：渲染、体素数据、即时地图生成、玩家交互、种子地图、存档原型。
@@ -218,6 +218,26 @@
 > 实测 mc-lite **只有 hanging_lamp 一处**有材质自发光（其余材质 emissive 均为默认 0），故
 > **不能给整个 cutout 通道加自发光**（会让 vine/flower/leaves/cactus 全部发光），必须按方块
 > 区分 → 用顶点 bit13 传递（详见 §4.3 顶点格式段）。发布粒度不变（红线 5，仍是三通道）。
+>
+> v1.22 修订说明：**吊灯 UV 分区与 quad 级自发光**（2026-09-03，§4.3）——**已知的有意偏离
+> mc-lite**（照 vine 先例）。起因是「绳应为单色深灰、灯体发光、灯面不应有绳图案」的观感要求。
+> **实测确认 mc-lite 并非如此**（用 vendored three 实跑几何 UV + Playwright 真实渲染 + 像素级
+> 分析定论）：
+>
+> | 实测项 | mc-lite 实际值 | 出处 |
+> |---|---|---|
+> | 绳几何 UV | u∈[0,1] v∈[0,1]，**采样整张贴图** | `ChunkConsolidation.js:216-227`（`CylinderGeometry(0.015,0.015,0.4,8)` 实跑） |
+> | 灯体几何 UV | u∈[0,1] v∈[0,1]，**采样整张贴图** | 同上（`BoxGeometry(0.3,0.3,0.3)` 实跑） |
+> | 贴图布局 | 64×64 canvas：背景 `#aaa49a` 填满全图 + 绳 `#333333`(col30~33,row0~19) + 灯体 `#FFE4B5`(col18~45,row20~47) + 发光区 `#FFF5E6` + 高光 `#FFFFFF` | `MaterialManager.js:1197-1220` |
+> | 按部件拆分 UV | **无** —— 四条放置路径只设 position/rotation，不改 UV | `ChunkConsolidation.js:529` / `Chunk.js:2464` / `ChunkGenerator.js:175,224` |
+> | 真实渲染的绳色 | rgb(231,224,209) —— emissive 加项淹没贴图图案，绳**不呈深色** | 三样本像素分析（mc-lite 原样 ≡ 纯背景色贴图，证明图案被冲淡） |
+>
+> 即 mc-lite 的绳采样整张图（含灯体图案）、灯体四个面也采样整张图（含绳图案），且
+> `emissive:'#FFE4B5' × 0.8` 的加项把深色冲淡到与灯体同亮。**mc-heavy 此前已逐格忠实复刻
+> mc-lite**（几何/UV/贴图/emissive 五项全等，包围盒实测相同），故本次改动即为**偏离**。
+>
+> 目标外观：绳单色深灰、灯体发光暖黄、灯体四个面不含绳图案。实现见 §4.3「吊灯 UV 分区」。
+> **视觉比对 mc-lite 时勿按其原样判定**（与 vine 的 y∈[0,1] 同类：已知的有意偏离）。
 
 ---
 
@@ -564,6 +584,32 @@ packed:   Uint32BufferAttribute ×1   （bit0-7: light = skylight<<4 | blockligh
   `blocks-data.js`（后者是 BlockData.js 的方块属性转换产物）。
 - **发布粒度不变**（红线 5）：不新增材质、不新增通道，仍是 opaque/cutout/transparent 三通道
   BatchedMesh；自发光在片元阶段按顶点位分支，代价是一次位运算 + 一次混合。
+- **粒度：quad 级可覆盖（v1.22）**：默认按方块判定（`EMISSIVE_MATERIALS`），但模板 quad 可用
+  可选字段 `em` 覆盖（`true`/`false`），未声明时走方块级默认 → 既有模板行为零变化。吊灯用它
+  令「绳不发光、灯体发光」（见下）。`materials.js` 的 `vEmissive` 本就是逐顶点 float varying，
+  bit13 降到 quad 级后自动生效，无需改材质。
+
+**吊灯 UV 分区（v1.22 新增，有意偏离 mc-lite）**：模板 quad 的可选字段 `uvRegion: [u0,v0,u1,v1]`
+把该 quad 的 UV 线性重映射到 tile 内子区域（`remapRegion(u,v,r) = [r[0]+(r[2]-r[0])*u,
+r[1]+(r[3]-r[1])*v]` 纯函数），令同一方块的不同部件采样贴图的不同区域：
+
+```js
+// 区域边界按 texel 中心对齐（不是像素边界）：fillRect(30,0,4,20) 填 col 30~33 / row 0~19，
+// texel 中心在 30.5~33.5 / 0.5~19.5 → NearestFilter 下采样点落在纯色区内，不会采到相邻背景。
+// atlas 的 v 轴翻转（build-atlas.mjs:103 `v0 = 1-(shelfY+h)/SIZE`）→ canvas row r 对应
+// tile 局部 v = 1 - r/64。
+const LAMP_ROPE_REGION = [30.5/64, 1-19.5/64, 33.5/64, 1-0.5/64];   // 绳图案 → 单色 #333333
+const LAMP_BODY_REGION = [18.5/64, 1-47.5/64, 45.5/64, 1-20.5/64]; // 灯体图案 → 不含绳图案
+```
+
+- 绳（`prismQuads` 8 段棱柱）→ `uvRegion: LAMP_ROPE_REGION` + `em: false`：整段绳只采样
+  4 texel 宽的绳图案区 → 呈单色深灰；不吃 emissive → 不被暖黄加项冲淡。
+  `prismQuads` 的侧面/顶盖/底盖共用同一 `uv` 数组，故三者统一落到绳区域。
+- 灯体（`boxQuads` 6 面）→ `uvRegion: LAMP_BODY_REGION` + `em: true`：v 只覆盖 row 20~47，
+  **不含 row 0~19 的绳图案** → 灯体四个面无绳图案；吃 emissive → 发光暖黄。
+- **几何坐标不变**（120 顶点、绳 r=0.015/y∈[0.6,1.0]、灯体 0.3³ 块中心），只改 UV 与 bit13。
+- 回归防线：单测钉死「绳 quad UV 全落在绳区域、灯体 quad UV 全落在灯体区域」，并反向钉死
+  「绳区域不含灯体图案区」——若有人把区域常量写成全幅会立刻被抓到。
 
 **为什么 flat 而非 interleaved（v1.6 源码核验）**：`setGeometryAt` 的 `copyAttributeData`
 （BatchedMesh.js:97-110，已核验）对 `isInterleavedBufferAttribute` 走逐分量

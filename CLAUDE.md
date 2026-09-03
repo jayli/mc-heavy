@@ -214,6 +214,48 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
     `test-structure-gen.html` **不 import mesher.js/materials.js**（只 import worker-pool/
     world-data/scheduler/registry/blocks-data/constants/terrain/structure-layout）→ 机制上
     不可能影响 GEN 计时；HEAD 侧全量同样有 1 failed（m1-acceptance）。
+- **吊灯 UV 分区与 quad 级自发光 ✅（2026-09-03；设计文档 v1.22）——**已知的有意偏离 mc-lite****：
+  起因是「绳应为单色深灰、灯体发光、灯面不应有绳图案」的观感要求。**实测确认 mc-lite 并非如此**
+  （用 vendored three 实跑几何 UV + Playwright 真实渲染 + 像素级分析定论，勿照印象实现）：
+  - **mc-lite 两个几何 UV 实测均为 u/v∈[0,1] 全幅**（`CylinderGeometry(0.015,0.015,0.4,8)` 绳 +
+    `BoxGeometry(0.3,0.3,0.3)` 灯体，`ChunkConsolidation.js:216-227`）→ 绳采样整张贴图（含灯体
+    图案）、灯体四个面也采样整张贴图（含绳图案）。mc-lite 四条放置路径
+    （`ChunkConsolidation.js:529` / `Chunk.js:2464` / `ChunkGenerator.js:175,224`）**只设
+    position/rotation，无任何按部件拆分 UV 的处理**。
+  - **emissive 加项把绳的深色冲淡**：三样本像素分析（A=mc-lite 原样 emissive 0.8 / B=同几何
+    emissive 0 / C=纯背景色贴图 emissive 0.8）实测 **A ≡ C**（绳 rgb(231,224,209) 亮度 221.3、
+    灯体 223.0，差 1.7）→ `emissive:'#FFE4B5' × 0.8` 淹没了贴图图案，绳在 mc-lite 里**不呈深色**。
+  - **mc-heavy 此前已逐格忠实复刻 mc-lite**（几何/UV/贴图/emissive 五项全等、包围盒实测相同），
+    故本次改动即为**偏离**（照 vine 先例，§4.3 已标注）。目标外观：绳单色深灰 + 灯体发光暖黄 +
+    灯体四个面不含绳图案。**视觉比对 mc-lite 时勿按其原样判定**。
+  - 实现：模板 quad 新增两个**可选**字段——`uvRegion: [u0,v0,u1,v1]`（tile 内子区域，
+    `remapRegion` 纯函数线性重映射）+ `em`（quad 级自发光覆盖，`q.em === undefined` 走方块级
+    默认 → chimney/台阶/床/cactus 等既有模板行为**零变化**）。绳 → `LAMP_ROPE_REGION` +
+    `em:false`；灯体 → `LAMP_BODY_REGION` + `em:true`。区域边界按 **texel 中心**对齐
+    （`fillRect(30,0,4,20)` 填 col30~33/row0~19，texel 中心 30.5~33.5/0.5~19.5 → NearestFilter
+    下不采到相邻背景 `#aaa49a`）；atlas v 轴翻转 → canvas row r 对应 tile 局部 v = 1-r/64。
+    `materials.js` **无需改动**（`vEmissive` 本就是逐顶点 float varying，bit13 降到 quad 级后
+    自动生效）；发布粒度不变（红线 5，仍三通道）。
+  - **几何坐标不变**（120 顶点、绳 r=0.015/y∈[0.6,1.0]、灯体 0.3³ 块中心），只改 UV 与 bit13。
+  - 落地 3 改（`mesher.js` 加 `remapRegion` + 发射循环 uvRegion/em + hanging_lamp 模板；
+    `test-mesher.js` 改 1 断言 + 新增 3 用例 + 2 个 tile 条目）+ 保留 2 个手动对照 fixture
+    （`src/tests/test-lamp-{compare,lite}.html`，未注册进单测/Playwright 套件）；单测
+    246→**249**（+4 −1 改写）。**回归防线**：钉死「绳 quad UV 全落在绳区域、灯体 quad UV 全落在
+    灯体区域」+ 反向钉死「绳区域 v 下界高于灯体区 v 上界」——若有人把区域常量写回全幅
+    （= mc-lite 原样）会立刻被抓到；另钉死 chimney（**同款 prismQuads**）不受影响。
+  - **视觉验证**（单测测不到 TSL 的 GPU 效果）：截图 + 像素级分析 —— 绳平均色
+    **rgb(42,42,42)** 亮度 42.0（纯灰 → 单色）vs 灯体 rgb(244,242,237) 亮度 241.0，**亮度差 199**
+    （mc-lite 侧仅 1.7）；灯面绳色像素 438→**6 px**（0.1%），且 6 px 全在灯体顶部第一行
+    （y=230）中心附近 = **绳圆柱与灯体几何重叠**（绳 y∈[0.6,1.0] 与灯体 y∈[0.35,0.65] 重叠
+    0.6~0.65），**非灯面 UV 图案**——该重叠 mc-lite 同样存在（几何相同），只是其绳吃 emissive
+    呈亮色所以看不出来。
+  - **门禁对照**（未凭文档结论免责）：lint 0 error（9 个既有 camelcase warning）；
+    `bench --check` 通过（fps 110.06~120.01、draw 489~545，无回退）。Playwright 全量 42 passed /
+    2 failed（`m1-acceptance` 放挖 p95 + `sky-structures` p95），经 **HEAD stash 对照各连跑 3 次**
+    证实为既有抖动：HEAD 侧 m1-acceptance run2/run3 failed、改动侧 run1/run3 failed（**两侧各
+    2/3，失败率相当**），且失败值两侧**完全相同** `p95=16.700000762939453` vs 断言 `16.7` ——
+    超出 **7.6e-7**，是 vsync 把帧间隔量化为 8.33ms 的浮点表示（8.33×2=16.66），**非负载**；
+    `sky-structures` 单独跑两侧均 passed（16.7 < 16.75），全量跑时的 24.2 属全量负载抖动。
 - **M4 玩家第一人称武器 ⬜（第二阶段，M3.2 已提交，可开始）**：独立 Epic；`WorldEditor` 批量编辑、
   DDA hitscan、手枪/MAG7/加特林的受控 GLB 相机视图模型、曳光、音效和可选方块破坏。
   规格：`docs/superpowers/specs/2026-08-23-m4-player-weapons-design.md`；计划：
@@ -234,7 +276,7 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
   规格：`docs/superpowers/specs/2026-08-23-m7-zombie-nests-design.md`；计划：
   `docs/superpowers/plans/2026-08-23-m7-zombie-nests.md`。
 
-测试现状：27 个 Playwright spec 文件（44 个测试用例）+ 246 个浏览器内单元测试全绿（m1-acceptance 计时断言
+测试现状：27 个 Playwright spec 文件（44 个测试用例）+ 249 个浏览器内单元测试全绿（m1-acceptance 计时断言
 在高负载下偶发贴线 flaky——16.7±1e-6/2.1ms，单独复跑通过，属已记录的计时抖动类；M3.2 实施时经
 HEAD 对照连跑再次证实为既有 vsync 抖动，见 roadmap「## M3.2」实施记录）；
 冻结断言达标（120Hz 本机 fps ≥115、放/挖编辑 p95 <2ms、draw 受控）；
@@ -245,7 +287,7 @@ HEAD 对照连跑再次证实为既有 vsync 抖动，见 roadmap「## M3.2」�
 按顺序读完再写代码：
 
 1. [`docs/phase-1-engine-design.md`](/Users/bachi/jaylli/mc-heavy/docs/phase-1-engine-design.md)
-   —— 架构唯一权威，当前版本 v1.21（已定稿 + M3.2 实施回填 + 异形方块渲染勘误 + 背包物品集合口径 + 吊灯材质自发光）。所有子系统边界、DR 决策、验收口径都在这里。
+   —— 架构唯一权威，当前版本 v1.22（已定稿 + M3.2 实施回填 + 异形方块渲染勘误 + 背包物品集合口径 + 吊灯材质自发光 + 吊灯 UV 分区）。所有子系统边界、DR 决策、验收口径都在这里。
 2. [`docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md)
    —— **第一阶段剩余执行计划与后续路线图（M2–M7）**，任务级 TODO + 依赖关系，当前 roadmap。
 3. [`docs/superpowers/plans/2026-08-19-m1-voxel-core-loop.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/plans/2026-08-19-m1-voxel-core-loop.md)

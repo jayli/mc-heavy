@@ -35,6 +35,10 @@ const atlasMeta = {
   'procedural/sky_stone': { u0: 0.50, v0: 0.0, u1: 0.51, v1: 0.01 },
   'procedural/sky_grass': { u0: 0.52, v0: 0.0, u1: 0.53, v1: 0.01 },
   'procedural/cloud': { u0: 0.54, v0: 0.0, u1: 0.55, v1: 0.01 },
+  'procedural/chimney': { u0: 0.56, v0: 0.0, u1: 0.57, v1: 0.01 },
+  // 吊灯（uvRegion 分区断言需独立 64×64 tile 矩形才能反算局部坐标，否则 fallback stone）
+  // 真实 atlas 该 tile 也是 64×64；v0<v1 口径与 build-atlas.mjs 一致（v0 = tile 底）
+  'procedural/hanging_lamp': { u0: 0.70, v0: 0.0, u1: 0.70 + 64 / 2048, v1: 64 / 2048 },
   // 床（BED_UV 变换需独立 tile 矩形才能反算 uu/vv，否则 fallback stone）
   'bed/Bed_(top_side_texture)_JE2_BE2': { u0: 0.60, v0: 0.0, u1: 0.61, v1: 0.01 },
   'bed/Bed_(top_texture)_JE1_BE1':      { u0: 0.62, v0: 0.0, u1: 0.63, v1: 0.01 },
@@ -304,14 +308,98 @@ test('mesher: cobblestone_step 走 L 形台阶模板（2 box = 12 quad）', () =
 // packed bit13 = 材质自发光标记（§4.3，v1.21）
 const EMISSIVE_BIT = (1 << 13);
 
-test('mesher: hanging_lamp 顶点置 packed bit13（材质自发光标记）', () => {
+// 吊灯 UV 分区常量（§4.3 v1.22，有意偏离 mc-lite）：与 mesher.js 的 LAMP_*_REGION 同值。
+// 区域边界按 texel 中心对齐；atlas v 轴翻转 → canvas row r 对应 tile 局部 v = 1 - r/64。
+const LAMP_ROPE_REGION = [30.5 / 64, 1 - 19.5 / 64, 33.5 / 64, 1 - 0.5 / 64];
+const LAMP_BODY_REGION = [18.5 / 64, 1 - 47.5 / 64, 45.5 / 64, 1 - 20.5 / 64];
+
+/** 按「贴近轴线」把吊灯顶点分成绳（前 96）/灯体（后 24）两组索引。
+ *  发射序 = 模板遍历序：prismQuads 绳在前、boxQuads 灯体在后。 */
+function lampVertexGroups(result) {
+  const pos = result.cutout.positions;
+  const rope = [], body = [];
+  for (let i = 0; i < result.cutout.vertexCount; i++) {
+    const x = pos[i * 3] - 8, z = pos[i * 3 + 2] - 8;
+    // 绳顶点贴块中心轴（r ≤ 0.015）；灯体盒顶点半径 ≥ 0.15
+    (Math.hypot(x - 0.5, z - 0.5) > 0.05 ? body : rope).push(i);
+  }
+  return { rope, body };
+}
+
+/** 把 atlas UV 反算回 tile 内局部坐标（0~1），用于校验 uvRegion 分区 */
+function tileLocalUV(result, vi) {
+  const tile = atlasMeta['procedural/hanging_lamp'];
+  const u = result.cutout.uvs[vi * 2], v = result.cutout.uvs[vi * 2 + 1];
+  return [(u - tile.u0) / (tile.u1 - tile.u0), (v - tile.v0) / (tile.v1 - tile.v0)];
+}
+
+test('mesher: hanging_lamp bit13 按部件区分——绳不发光、灯体发光（quad 级自发光）', () => {
   const reg = makeRegistry();
   const result = meshSingle(reg, 'hanging_lamp');
   const packed = result.cutout.packed;
   assertTrue(result.cutout.vertexCount > 0, 'hanging_lamp 在 cutout 通道');
-  for (let i = 0; i < result.cutout.vertexCount; i++) {
-    assertEqual((packed[i] & EMISSIVE_BIT) ? 1 : 0, 1, `vert${i} bit13 置位`);
+  const { rope, body } = lampVertexGroups(result);
+  assertEqual(rope.length, 96, '绳 = 96 顶点');
+  assertEqual(body.length, 24, '灯体 = 24 顶点');
+  // 绳不吃 emissive → 保持单色深灰不被暖黄加项冲淡（§4.3 v1.22）
+  for (const i of rope) assertEqual((packed[i] & EMISSIVE_BIT) ? 1 : 0, 0, `绳 vert${i} bit13 不置位`);
+  // 灯体吃 emissive → 发光暖黄
+  for (const i of body) assertEqual((packed[i] & EMISSIVE_BIT) ? 1 : 0, 1, `灯体 vert${i} bit13 置位`);
+});
+
+test('mesher: hanging_lamp 绳 UV 落在绳图案区（单色 #333333，不含灯体图案）', () => {
+  const reg = makeRegistry();
+  const result = meshSingle(reg, 'hanging_lamp');
+  const { rope } = lampVertexGroups(result);
+  const [ru0, rv0, ru1, rv1] = LAMP_ROPE_REGION;
+  for (const i of rope) {
+    const [lu, lv] = tileLocalUV(result, i);
+    assertTrue(lu >= ru0 - 1e-6 && lu <= ru1 + 1e-6, `绳 vert${i} u=${lu.toFixed(4)} 应在绳区 [${ru0.toFixed(4)},${ru1.toFixed(4)}]`);
+    assertTrue(lv >= rv0 - 1e-6 && lv <= rv1 + 1e-6, `绳 vert${i} v=${lv.toFixed(4)} 应在绳区 [${rv0.toFixed(4)},${rv1.toFixed(4)}]`);
   }
+  // 反向防线：绳区域与灯体图案区不得重叠（v 轴上绳区在灯体区之上）。若有人把区域常量
+  // 写成全幅 u/v∈[0,1]（那正是 mc-lite 的原样，本次已有意偏离）会立刻被抓到。
+  assertTrue(rv0 > LAMP_BODY_REGION[3] - 1e-6,
+    `绳区 v 下界 ${rv0.toFixed(4)} 应高于灯体区 v 上界 ${LAMP_BODY_REGION[3].toFixed(4)}`);
+});
+
+test('mesher: hanging_lamp 灯体 UV 落在灯体图案区（不含 row 0~19 的绳图案）', () => {
+  const reg = makeRegistry();
+  const result = meshSingle(reg, 'hanging_lamp');
+  const { body } = lampVertexGroups(result);
+  const [bu0, bv0, bu1, bv1] = LAMP_BODY_REGION;
+  for (const i of body) {
+    const [lu, lv] = tileLocalUV(result, i);
+    assertTrue(lu >= bu0 - 1e-6 && lu <= bu1 + 1e-6, `灯体 vert${i} u=${lu.toFixed(4)} 应在灯体区 [${bu0.toFixed(4)},${bu1.toFixed(4)}]`);
+    assertTrue(lv >= bv0 - 1e-6 && lv <= bv1 + 1e-6, `灯体 vert${i} v=${lv.toFixed(4)} 应在灯体区 [${bv0.toFixed(4)},${bv1.toFixed(4)}]`);
+  }
+  // 关键语义：atlas v 轴翻转（canvas row r → tile 局部 v = 1-r/64）→ 绳图案（row 0~19）在
+  // **高 v 侧**、灯体图案（row 20~47）在**低 v 侧**。故判据是灯体区 v 上界必须低于绳区
+  // v 下界 → 灯体四个面**采不到**绳图案行。
+  assertTrue(bv1 < LAMP_ROPE_REGION[1] - 1e-6,
+    `灯体区 v 上界 ${bv1.toFixed(4)} 应低于绳区 v 下界 ${LAMP_ROPE_REGION[1].toFixed(4)}`);
+});
+
+test('mesher: chimney 不受 uvRegion/quad 级 em 影响（可选字段默认走方块级）', () => {
+  // 回归防线：uvRegion 与 em 是可选字段，未声明的模板必须保持既有行为——UV 全幅、
+  // bit13 走方块级默认（EMISSIVE_MATERIALS 不含 chimney → 0）。chimney 用**同款
+  // prismQuads**（与吊灯绳共用 helper），是「共用函数未被破坏」的理想防线。
+  const reg = makeRegistry();
+  const result = meshSingle(reg, 'chimney');
+  const packed = result.opaque.packed; // chimney cullMode=opaque（blocks-data.js:53）
+  assertTrue(result.opaque.vertexCount > 0, 'chimney 在 opaque 通道');
+  for (let i = 0; i < result.opaque.vertexCount; i++) {
+    assertEqual((packed[i] & EMISSIVE_BIT) ? 1 : 0, 0, `chimney vert${i} bit13 不置位`);
+  }
+  // UV 仍全幅（未被 uvRegion 重映射）：tile 内局部坐标覆盖 0~1
+  const tile = atlasMeta['procedural/chimney'] || atlasMeta['box_face'];
+  let minU = Infinity, maxU = -Infinity;
+  for (let i = 0; i < result.opaque.vertexCount; i++) {
+    const u = (result.opaque.uvs[i * 2] - tile.u0) / (tile.u1 - tile.u0);
+    minU = Math.min(minU, u); maxU = Math.max(maxU, u);
+  }
+  assertEqual(Math.round(minU), 0, 'chimney UV 起点仍为 0（全幅）');
+  assertEqual(Math.round(maxU), 1, 'chimney UV 终点仍为 1（全幅）');
 });
 
 test('mesher: glowstone 不置 bit13（有 blocklight 源但无材质自发光——两个集合不同）', () => {
