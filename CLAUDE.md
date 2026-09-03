@@ -256,6 +256,60 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
     2/3，失败率相当**），且失败值两侧**完全相同** `p95=16.700000762939453` vs 断言 `16.7` ——
     超出 **7.6e-7**，是 vsync 把帧间隔量化为 8.33ms 的浮点表示（8.33×2=16.66），**非负载**；
     `sky-structures` 单独跑两侧均 passed（16.7 < 16.75），全量跑时的 24.2 属全量负载抖动。
+- **背包专用图标表 ✅（2026-09-03，M3.2 之后的独立 bugfix；设计文档 v1.23）**：起因是「台阶类方块
+  （`planks_step`/`cobblestone_step`/`stone_diorite_step`/`cobblestone_step_updown`）的背包图标与
+  表面贴图完全一样，是一张铺满正方形的贴图，看不出横截面阶梯形状，与母方块（`planks`/`cobblestone`
+  等）撞脸」的观感报告。实测定位根因（非推测）：`tileOfName()` 只查 `faces-data`，而台阶方块在
+  `faces-data` 里映射的是**母方块贴图**（`planks_step → planks_birch`、`cobblestone_step →
+  Cobblestone` 等），故图标与母方块撞脸。
+  - **关键发现：mc-lite 的台阶图标早已在 atlas 里躺着、只是没人引用。** 实测 atlas 有 **13 个
+    orphan tile**（`faces-data` 从未引用），其中 **5 个正是背包图标**（4 张台阶 + `Invicon_Minecart`）。
+    像素差异率证实这些是台阶图案贴图而非重复的普通贴图：`Oak_Planks_step` vs `planks_birch`
+    **256/256（100%）**、`Cobblestone_step` vs `Cobblestone` 64/256（25%，**后 8 行完全相同、前 8 行
+    重绘**）、`stone_diorite_step` 59/256（23%，同样后 8 行相同）、`Cobblestone_step_updown`
+    218/256（85%，全幅重绘）。「后 8 行保留原贴图、前 8 行重绘」正是台阶横截面的表达方式。
+  - **mc-lite 的做法（核实，勿凭印象）**：`HUD.js:117-152` 的 `generateIcon()` 是「显式图标表 +
+    `switch(name)` 分支」结构，台阶走 `getStepMaterial(name)` **换材质**（`if (name.endsWith('_step'))
+    return this.getStepMaterial(name)`），**没有任何 canvas 2D 绘制逻辑**；mc-lite 贴图目录里也没有
+    名字带 step/stair/slab 的 PNG —— 这些台阶图标是手工绘制的专用图标贴图。故本仓库
+    **follow mc-lite**（方案 A：用 atlas 现成 tile），而非另开 canvas 合成（方案 B）或 CSS clip-path
+    （方案 C）——三方案对照页 `src/tests/test-step-icon-methods.html` 实测渲染比对后选定。
+  - **覆盖范围 = mc-lite 的全部专用图标范围（5 项），不是「所有异形方块」**：mc-lite 只为台阶与
+    矿车做了专用图标，`handrail`/`pillar`/`cactus` 等异形方块**两边都没有图标**。orphan tile 里的
+    `handrail`/`pillar`/`pillar_horizontal`/`turret` 是 **128×128 世界渲染贴图**（非图标），
+    `gold`/`leaves_original` 是 16×16 备用贴图，均不进图标表。
+  - 实现：`src/ui/hotbar.js` 新增 `INVENTORY_ICONS` 常量（5 项：4 台阶 + `mine_cart → Invicon_Minecart`）
+    + `tileOfName()` 改为**先查图标表、未命中才落 faces-data**。该表与 `faces-data` 语义不同，
+    **勿混为一处**：`faces-data` 是「方块 → 世界渲染贴图」，图标表是「方块 → 背包图标」，同一方块的
+    两张 PNG 可以不同。只收录「图标与母方块贴图不同」的方块；普通方块进表会让集合语义失真。
+  - **顺带修复 `mine_cart` 空槽**：它无 `faces-data` 条目因而此前渲染空槽，现由图标表给出
+    `Invicon_Minecart` → 有图标。背包 118 项现在**全部有图标**（Playwright 断言 `withIcon` 117→118、
+    `noIcon` 1→0）。
+  - 落地 4 改（`hotbar.js` 图标表 + `tileOfName` / `test-ui.js` +7 用例 / `test-inventory-ui.js` 改
+    1 用例 + 新增 1 / `m3-1-inventory.spec.mjs` 计数同步）+ `inventory.js` 注释勘误（原写
+    「bed_alias_block/mine_cart 无 tile」已不成立）+ 2 个手动对照 fixture（`src/tests/test-step-icons.html`
+    / `test-step-icon-methods.html`，未注册进单测/Playwright 套件）；单测 249→**257**（+8）。
+    **回归防线**：钉死「台阶图标不得回落母方块贴图」+「正置/倒置台阶图标必须不同」+
+    「图标表指向的 tile 必须存在于 atlas.json」（拼错 tile 名不报错但渲染空槽，与 bug 同观感）；
+    另钉死「普通方块仍走 faces-data」防图标表误伤其余 113 项。
+  - **视觉验证**（截图在本环境无法目视，改用像素级实测代替）：逐图标元素截图 → canvas 读像素 →
+    逐行亮度剖面 + 上/下半左右亮度差。判据是「阶梯形状 = 一侧有台阶、另一侧没有 → 左右亮度差增大」：
+    **母方块上下半左右差都很小（1~4%，均质对称）**，而台阶方块**上半左右差显著增大**
+    （`planks_step` 7% / `cobblestone_step` 10% / `stone_diorite_step` **31%**），**下半左右差仍小
+    （0~3%，完整方块面）**。最强一条：`cobblestone_step_updown` **完全相反**（上半 2% 对称、
+    **下半左右差 11%** → 阶梯在下半部），与 mesher 的 `STEP_UPDOWN_QUADS = boxQuads(0,0.5,0,1,1,1) +
+    boxQuads(0.5,0,0,1,0.5,1)`（上半全幅 + 右下 1/4 柱）**几何定义完全对应** → 图标与世界几何形状一致。
+    另：`cobblestone_step` 后 16 行亮度剖面与 `cobblestone` **完全相同**、`stone_diorite_step` 后 16 行
+    与 `stone_diorite` 完全相同 → 印证「下半保留原贴图、上半画阶梯」。
+  - **门禁对照**（未凭文档结论免责）：lint 0 error（14 个既有 camelcase warning，其中新增 5 个来自
+    方块名作对象键，与 `mesher.js` 既有 9 个同性质——`eslint.config.mjs` 豁免清单未含该文件、
+    项目接受此类 warning，未擅自改配置）；Playwright **44/44 全绿**（本次无 flaky）。
+    `bench --check` 首次报「③ 连续放/挖 fastRemeshP95 回退 18.2%（1.1→1.3）」，经 **HEAD stash 对照
+    各连跑 5 次**证实为抖动：HEAD 侧 `1.2,1.2,1.1,1.2,1.1`（均值 **1.16**）、改动侧
+    `1.2,1.1,1.1,1.1,1.1`（均值 **1.12**），**两侧分布完全重叠、改动侧均值反而更低**；机制上
+    `tileOfName()` 只在 `paintIcon()`（物品名变化时）调用、不在 remesh 快路径，且未碰
+    `mesher.js`/remesh 任何代码。跑图覆写的 `docs/m3-baseline.{json,md}` 已 `git checkout` 还原
+    （抖动结果不入库）。
 - **M4 玩家第一人称武器 ⬜（第二阶段，M3.2 已提交，可开始）**：独立 Epic；`WorldEditor` 批量编辑、
   DDA hitscan、手枪/MAG7/加特林的受控 GLB 相机视图模型、曳光、音效和可选方块破坏。
   规格：`docs/superpowers/specs/2026-08-23-m4-player-weapons-design.md`；计划：
@@ -276,7 +330,7 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
   规格：`docs/superpowers/specs/2026-08-23-m7-zombie-nests-design.md`；计划：
   `docs/superpowers/plans/2026-08-23-m7-zombie-nests.md`。
 
-测试现状：27 个 Playwright spec 文件（44 个测试用例）+ 249 个浏览器内单元测试全绿（m1-acceptance 计时断言
+测试现状：27 个 Playwright spec 文件（44 个测试用例）+ 257 个浏览器内单元测试全绿（m1-acceptance 计时断言
 在高负载下偶发贴线 flaky——16.7±1e-6/2.1ms，单独复跑通过，属已记录的计时抖动类；M3.2 实施时经
 HEAD 对照连跑再次证实为既有 vsync 抖动，见 roadmap「## M3.2」实施记录）；
 冻结断言达标（120Hz 本机 fps ≥115、放/挖编辑 p95 <2ms、draw 受控）；
@@ -287,7 +341,7 @@ HEAD 对照连跑再次证实为既有 vsync 抖动，见 roadmap「## M3.2」�
 按顺序读完再写代码：
 
 1. [`docs/phase-1-engine-design.md`](/Users/bachi/jaylli/mc-heavy/docs/phase-1-engine-design.md)
-   —— 架构唯一权威，当前版本 v1.22（已定稿 + M3.2 实施回填 + 异形方块渲染勘误 + 背包物品集合口径 + 吊灯材质自发光 + 吊灯 UV 分区）。所有子系统边界、DR 决策、验收口径都在这里。
+   —— 架构唯一权威，当前版本 v1.23（已定稿 + M3.2 实施回填 + 异形方块渲染勘误 + 背包物品集合口径 + 吊灯材质自发光 + 吊灯 UV 分区 + 背包图标表）。所有子系统边界、DR 决策、验收口径都在这里。
 2. [`docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md)
    —— **第一阶段剩余执行计划与后续路线图（M2–M7）**，任务级 TODO + 依赖关系，当前 roadmap。
 3. [`docs/superpowers/plans/2026-08-19-m1-voxel-core-loop.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/plans/2026-08-19-m1-voxel-core-loop.md)

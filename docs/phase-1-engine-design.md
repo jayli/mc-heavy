@@ -1,6 +1,6 @@
 # mc-heavy 第一阶段实施设计文档：游戏引擎原型
 
-> 版本：v1.22 ｜ 日期：2026-09-03 ｜ 状态：定稿（经十五轮逐条核验修订 + M3.2 实施回填 + 异形方块渲染勘误 + 背包物品集合口径 + 吊灯材质自发光 + 吊灯 UV 分区）
+> 版本：v1.23 ｜ 日期：2026-09-03 ｜ 状态：定稿（经十五轮逐条核验修订 + M3.2 实施回填 + 异形方块渲染勘误 + 背包物品集合口径 + 吊灯材质自发光 + 吊灯 UV 分区 + 背包图标表）
 >
 > 目标：在 mc-heavy 仓库从零重建一个功能对标 mc-lite、性能提升一个数量级的体素游戏引擎。
 > 第一阶段只做"引擎底座"：渲染、体素数据、即时地图生成、玩家交互、种子地图、存档原型。
@@ -238,6 +238,58 @@
 >
 > 目标外观：绳单色深灰、灯体发光暖黄、灯体四个面不含绳图案。实现见 §4.3「吊灯 UV 分区」。
 > **视觉比对 mc-lite 时勿按其原样判定**（与 vine 的 y∈[0,1] 同类：已知的有意偏离）。
+
+> v1.23 修订说明：**背包专用图标表**（2026-09-03，§4.5.4）。起因是「台阶类方块（`planks_step`/
+> `cobblestone_step`/`stone_diorite_step`/`cobblestone_step_updown`）的背包图标与其表面贴图完全
+> 一样，是一张铺满正方形的贴图，无法从图标上看出横截面阶梯形状，与母方块（`planks`/`cobblestone`
+> 等）撞脸」的观感报告。
+>
+> **根因（实测定位，非推测）**：`tileOfName()` 只查 `faces-data`，而台阶方块在 `faces-data` 里映射的
+> 是**母方块贴图**：
+>
+> | 方块 | `faces-data` 映射 | 后果 |
+> |---|---|---|
+> | `planks_step` | `planks_birch` | 图标与 `planks` 撞脸 |
+> | `cobblestone_step` | `Cobblestone` | 图标与 `cobblestone` 撞脸 |
+> | `cobblestone_step_updown` | `Cobblestone` | 同上（且与正置台阶撞脸） |
+> | `stone_diorite_step` | `stone_diorite` | 图标与 `stone_diorite` 撞脸 |
+>
+> **mc-lite 的做法（子代理调查核实）**：`HUD.js:117-152` 的 `generateIcon()` 是「显式图标表 +
+> `switch(name)` 分支」结构，台阶走 `getStepMaterial(name)` **换材质**（`if (name.endsWith('_step'))
+> return this.getStepMaterial(name)`），**没有任何 canvas 2D 绘制逻辑**。mc-lite 贴图目录里没有
+> 名字带 step/stair/slab 的 PNG —— 这些台阶图标是**手工绘制的专用图标贴图**。
+>
+> **关键发现：这些图标早已在 atlas 里躺着，只是没人引用。** 实测 atlas 有 **13 个 orphan tile**
+> （`faces-data` 从未引用），其中 5 个正是背包图标：
+>
+> | orphan tile | 尺寸 | 对应方块 |
+> |---|---|---|
+> | `Oak_Planks_step` | 16×16 | `planks_step` |
+> | `Cobblestone_step` | 16×16 | `cobblestone_step` |
+> | `Cobblestone_step_updown` | 16×16 | `cobblestone_step_updown` |
+> | `stone_diorite_step` | 16×16 | `stone_diorite_step` |
+> | `Invicon_Minecart` | 32×32 | `mine_cart`（此前渲染空槽） |
+>
+> 像素差异率证实这些确实是台阶图案贴图而非重复的普通贴图（图标 vs 母方块贴图）：
+> `Oak_Planks_step` **256/256（100%）**、`Cobblestone_step` 64/256（25%，**后 8 行完全相同、
+> 前 8 行重绘**）、`stone_diorite_step` 59/256（23%，同样后 8 行相同）、
+> `Cobblestone_step_updown` 218/256（85%，全幅重绘）。
+> 「后 8 行保留原贴图、前 8 行重绘」正是台阶横截面的表达方式——下半部是完整方块面、
+> 上半部画出阶梯。
+>
+> 其余 8 个 orphan tile 中，`handrail`/`handrailA`/`handrailB`/`pillar`/`pillar_horizontal`/`turret`
+> 是 **128×128 世界渲染贴图**（非图标），`gold`/`leaves_original` 是 16×16 备用贴图。
+> mc-lite 只为台阶与矿车做了专用图标，`handrail`/`pillar`/`cactus` 等异形方块**两边都没有图标**。
+> 故本次图标表的覆盖范围 = mc-lite 的全部专用图标范围（5 项），不是「所有异形方块」。
+>
+> 方案取舍（三方案对照页 `src/tests/test-step-icon-methods.html` 实测渲染比对）：
+> - **A 用 atlas 现成 tile（采纳）**：资产已就位、零新增文件、走既有 CSS background 裁剪路径、
+>   观感对齐 mc-lite。代价是手工贴图需随方块贴图同步维护。
+> - B canvas 合成遮罩：自动跟随贴图变化、可扩展到所有异形方块，但假明暗非真实几何光照、
+>   观感偏离 mc-lite，且引入运行期合成逻辑。
+> - C CSS `clip-path` 裁剪：纯 CSS 零资产，但只有轮廓没有明暗，辨识度最弱。
+>
+> 实现见 §4.5.4「背包专用图标表」。
 
 ---
 
@@ -1029,8 +1081,27 @@ Inventory(size)  // slots[]、selectedSlot、add/remove/has/getSelected/selectSl
     把可放置的方块放进去会让集合语义失真（后续若有人读该集合判断「能否放置」会得出错误结论）。
     故用独立的 `HIDDEN_FROM_INVENTORY` 常量表达（语义：**可放置但不进背包**），二者语义互斥。
 
-`mine_cart` 无 `faces-data` 条目因而无图标 tile，渲染空槽（mc-lite 背包包含它，保留条目以
-对齐玩法可用性；`bed_alias_block` 已移出背包，不再是「无图标但列槽」的用例）。
+**背包专用图标表（v1.23 新增）**：`src/ui/hotbar.js` 的 `INVENTORY_ICONS` 常量 —— 异形方块
+→ atlas 里的**手工图标 tile**（5 项，见 v1.23 修订说明）。`tileOfName()` 先查该表，未命中才
+落 `faces-data`：
+
+```js
+export function tileOfName(name) {
+  const icon = INVENTORY_ICONS[name];
+  if (icon !== undefined) return icon;   // 台阶/矿车 → 专用手工图标
+  const f = FACES_DATA[name];            // 其余照旧（普通方块）
+  ...
+}
+```
+
+该表与 `faces-data` 语义不同，**勿混为一处**：`faces-data` 是「方块 → 世界渲染贴图」，
+图标表是「方块 → 背包图标」，同一个方块的两张 PNG 可以不同（台阶即如此）。只收录
+「图标与母方块贴图不同」的方块；普通方块进表会让集合语义失真（读表的人无法区分
+「有意换图标」与「恰好同贴图」）。
+
+`mine_cart` 无 `faces-data` 条目，但 v1.23 起由图标表给出 `Invicon_Minecart` → **有图标**
+（此前渲染空槽）。背包 118 项现在**全部有图标**，`bed_alias_block`（已移出背包）不再是
+「无图标但列槽」的用例。
 
 > **两侧集合仍有差异（2026-09-03 实测记录，未处理）**：mc-heavy 118 项 vs mc-lite 手工清单
 > 107 项。差集中除已排除的 chimney/床三项外还有：`swamp_water`、`sky_wood`/`sky_stone`/
@@ -1058,7 +1129,7 @@ BlockRegistry 新增方块（如 `sky_stone`/`sky_grass`），属预期扩展。
 | 内容框 | 600×400、`#c6c6c6` 底 + 4px `#555` 边 + `box-shadow:5px 5px 0 #000` |
 | 网格 | `grid-template-columns:repeat(8,1fr)`、gap 8、`overflow-y:auto` |
 | 槽位 | 48×48、`#8b8b8b` 底、左上白/右下 `#373737` 斜角浮雕边；`.selected` 3px `#FFFF00` + `#a0a0a0` 底；`:hover` `#999` |
-| 图标 | 32×32、`image-rendering:pixelated`、atlas tile CSS `background` 裁剪（同快捷栏 `tileStyle()`） |
+| 图标 | 32×32、`image-rendering:pixelated`、atlas tile CSS `background` 裁剪（同快捷栏 `tileStyle()`）；异形方块走 `INVENTORY_ICONS` 专用手工图标（v1.23） |
 | 名称 | `.item-name` 绝对定位顶部、10px 白字 + `text-shadow:1px 1px 0 #000`、溢出省略号 |
 | 空槽 | 不渲染（只列非空槽，mc-lite 同行为） |
 

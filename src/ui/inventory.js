@@ -176,7 +176,8 @@ export class InventoryPanel {
 
       const icon = document.createElement('div');
       icon.className = 'mc-icon';
-      // 无 faces-data 的物品（bed_alias_block/mine_cart）无 tile → 留空图标，仍可点击选中
+      // 无 tile 的物品留空图标，仍可点击选中。v1.23 起图标表（INVENTORY_ICONS）补齐了
+      // mine_cart（Invicon_Minecart），背包 118 项全部有 tile；该降级分支仅为兜底保留。
       const tile = this.atlasTiles?.[this.tileOfName(slot.item)];
       if (tile) {
         const st = tileStyle(tile, ICON_SIZE, this.atlasSize);

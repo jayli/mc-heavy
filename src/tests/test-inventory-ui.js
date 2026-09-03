@@ -319,22 +319,47 @@ test('渲染：图标走 atlas tile CSS background 裁剪（同快捷栏 tileSty
   });
 });
 
-test('渲染：无 faces-data 的物品（mine_cart）降级为无图标但仍列槽', async () => {
+test('渲染：mine_cart 走图标表（Invicon_Minecart），不再是空槽', async () => {
   await withPanel((panel, game) => {
     panel.open();
     const names = [...document.querySelectorAll('#inventory-grid .mc-item-name')]
       .map((el) => el.textContent);
-    // bed_alias_block 已移出背包（规避床渲染问题），现在只剩 mine_cart 无 faces-data
+    // bed_alias_block 已移出背包（规避床渲染问题），它是唯一真正无图标的物品
     assertFalse(names.includes('bed_alias_block'), 'bed_alias_block 不在背包');
     assertTrue(names.includes('mine_cart'));
     const idx = names.indexOf('mine_cart');
     const slot = document.querySelectorAll('#inventory-grid .mc-slot')[idx];
     assertEqual(slot.dataset.index, String(idx));
     const icon = slot.querySelector('.mc-icon');
-    assertEqual(icon.style.backgroundImage, '', '无 tile → 不设 background-image');
+    // v1.23：mine_cart 无 faces-data 条目，但图标表给了 Invicon_Minecart → 有图标
+    assertTrue(icon.style.backgroundImage.includes('atlas.png'), '有 background-image');
+    assertTrue(/^\d+px \d+px$/.test(icon.style.backgroundSize), 'background-size 已算出');
     // 仍可点击选中（玩法可用性保留）
     slot.click();
     assertEqual(game.player.inventory.selectedSlot, idx);
+  });
+});
+
+/** 台阶图标在背包 DOM 里必须与母方块图标不同 tile（端到端确认裁剪参数不同） */
+test('渲染：台阶槽位图标裁剪参数与母方块槽位不同', async () => {
+  await withPanel((panel) => {
+    panel.open();
+    const names = [...document.querySelectorAll('#inventory-grid .mc-item-name')]
+      .map((el) => el.textContent);
+    const bgOf = (blockName) => {
+      const idx = names.indexOf(blockName);
+      assertTrue(idx >= 0, `${blockName} 在背包内`);
+      const icon = document.querySelectorAll('#inventory-grid .mc-slot')[idx].querySelector('.mc-icon');
+      return icon.style.backgroundPosition;
+    };
+    assertTrue(bgOf('planks_step') !== bgOf('planks'),
+      'planks_step 裁剪位置不同于 planks');
+    assertTrue(bgOf('cobblestone_step') !== bgOf('cobblestone'),
+      'cobblestone_step 裁剪位置不同于 cobblestone');
+    assertTrue(bgOf('cobblestone_step_updown') !== bgOf('cobblestone'),
+      'cobblestone_step_updown 裁剪位置不同于 cobblestone');
+    assertTrue(bgOf('stone_diorite_step') !== bgOf('stone_diorite'),
+      'stone_diorite_step 裁剪位置不同于 stone_diorite');
   });
 });
 

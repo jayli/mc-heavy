@@ -1,0 +1,132 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>台阶图标方案对照</title>
+<style>
+  body { background:#1a1a1a; color:#eee; font:13px monospace; margin:0; padding:16px; }
+  h3 { margin:14px 0 6px; color:#ffcc66; }
+  .row { display:flex; gap:20px; align-items:flex-start; }
+  .cell { text-align:center; }
+  .box { width:100px; height:100px; background:#8b8b8b; border:2px solid #fff;
+         border-right-color:#373737; border-bottom-color:#373737;
+         display:flex; justify-content:center; align-items:center; }
+  .ico { width:64px; height:64px; image-rendering:pixelated; background-repeat:no-repeat; }
+  img.ico, canvas.ico { image-rendering:pixelated; }
+  .lbl { font-size:11px; margin-top:4px; color:#aaa; max-width:100px; }
+</style>
+</head><body>
+<h2>台阶背包图标三种方案对照</h2>
+<p style="color:#999">
+  A = mc-lite 现成专用图标贴图（已在 atlas 内）<br>
+  B = canvas 合成（世界贴图 + 阶梯遮罩 + 假明暗）<br>
+  C = CSS clip-path（世界贴图 + 轮廓裁剪，无明暗）
+</p>
+<div id="out"></div>
+<script type="module">
+const atlasJson = await (await fetch('/assets/atlas.json')).json();
+const ATLAS_URL = '/assets/atlas.png';
+const SIZE = atlasJson.size;
+
+const atlasImg = new Image();
+await new Promise((r) => { atlasImg.onload = r; atlasImg.src = ATLAS_URL; });
+
+// 阶梯轮廓（从 mesher STEP_QUADS / STEP_UPDOWN_QUADS 几何直接推导，归一化 canvas 坐标）
+//   STEP_QUADS       = boxQuads(0,0,0,1,0.5,1) + boxQuads(0,0.5,0,0.5,1,1)
+//                      → 下半部全宽 + 上半部左半
+//   STEP_UPDOWN_QUADS = boxQuads(0,0.5,0,1,1,1) + boxQuads(0.5,0,0,1,0.5,1)
+//                      → 上半部全宽 + 下半部右半
+const SHAPE_STEP = [[0,1],[1,1],[1,0.5],[0.5,0.5],[0.5,0],[0,0]];
+const SHAPE_UPDOWN = [[0,0],[1,0],[1,1],[0.5,1],[0.5,0.5],[0,0.5]];
+
+const CASES = [
+  ['planks_step',             'planks_birch', 'Oak_Planks_step',            SHAPE_STEP],
+  ['cobblestone_step',        'Cobblestone',  'Cobblestone_step',           SHAPE_STEP],
+  ['cobblestone_step_updown', 'Cobblestone',  'Cobblestone_step_updown',    SHAPE_UPDOWN],
+  ['stone_diorite_step',      'stone_diorite','stone_diorite_step',         SHAPE_STEP],
+];
+
+/** 方案 B：canvas 合成 —— 世界贴图裁成阶梯形 + 顶面加亮/侧面加暗 */
+function composite(worldTile, shape, px) {
+  const t = atlasJson.tiles[worldTile];
+  const c = document.createElement('canvas');
+  c.width = px; c.height = px;
+  const ctx = c.getContext('2d');
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(atlasImg, t.x, t.y, t.w, t.h, 0, 0, px, px);
+  // 阶梯遮罩：destination-in 只保留形状内的像素
+  ctx.globalCompositeOperation = 'destination-in';
+  ctx.beginPath();
+  shape.forEach(([x, y], i) => {
+    const X = x * px, Y = y * px;
+    if (i === 0) ctx.moveTo(X, Y); else ctx.lineTo(X, Y);
+  });
+  ctx.closePath();
+  ctx.fill();
+  ctx.globalCompositeOperation = 'source-over';
+  // 假明暗：顶面（形状的上边界带）加亮、右侧侧面加暗 —— 模拟 mc-lite 手工贴图的立体感
+  const top = shape.filter(([, y]) => y === Math.min(...shape.map((p) => p[1])));
+  const xs = top.map(([x]) => x);
+  const x0 = Math.min(...xs) * px, x1 = Math.max(...xs) * px;
+  const yTop = Math.min(...shape.map(([, y]) => y)) * px;
+  ctx.fillStyle = 'rgba(255,255,255,0.28)';
+  ctx.fillRect(x0, yTop, x1 - x0, px * 0.12);
+  ctx.fillStyle = 'rgba(0,0,0,0.30)';
+  ctx.fillRect(px * 0.88, yTop, px * 0.12, px - yTop);
+  return c;
+}
+
+function tileStyle(tile, px) {
+  const sx = px / tile.w, sy = px / tile.h;
+  return `width:${px}px;height:${px}px;image-rendering:pixelated;background-repeat:no-repeat;`
+    + `background-image:url('${ATLAS_URL}');`
+    + `background-size:${Math.round(SIZE*sx)}px ${Math.round(SIZE*sy)}px;`
+    + `background-position:${-Math.round(tile.x*sx)}px ${-Math.round(tile.y*sy)}px;`;
+}
+
+function clipPath(shape) {
+  return 'polygon(' + shape.map(([x, y]) => `${x*100}% ${y*100}%`).join(', ') + ')';
+}
+
+const out = document.getElementById('out');
+for (const [block, worldTile, iconTile, shape] of CASES) {
+  const h = document.createElement('h3');
+  h.textContent = block;
+  out.appendChild(h);
+  const row = document.createElement('div');
+  row.className = 'row';
+
+  // 现状（问题）
+  const t0 = atlasJson.tiles[worldTile];
+  const cells = [
+    ['现状：普通方块贴图\n（与 planks 等无法区分）', (() => {
+      const d = document.createElement('div'); d.className = 'ico';
+      d.setAttribute('style', tileStyle(t0, 64)); return d;
+    })()],
+    ['A：mc-lite 专用图标\n（已在 atlas 内）', (() => {
+      const d = document.createElement('div'); d.className = 'ico';
+      d.setAttribute('style', tileStyle(atlasJson.tiles[iconTile], 64)); return d;
+    })()],
+    ['B：canvas 合成\n（贴图+遮罩+假明暗）', composite(worldTile, shape, 64)],
+    ['C：CSS clip-path\n（贴图+轮廓，无明暗）', (() => {
+      const d = document.createElement('div'); d.className = 'ico';
+      d.setAttribute('style', tileStyle(t0, 64) + `;clip-path:${clipPath(shape)};`);
+      return d;
+    })()],
+  ];
+  for (const [label, node] of cells) {
+    const cell = document.createElement('div');
+    cell.className = 'cell';
+    const box = document.createElement('div');
+    box.className = 'box';
+    if (node instanceof HTMLCanvasElement) node.className = 'ico';
+    box.appendChild(node);
+    const l = document.createElement('div');
+    l.className = 'lbl';
+    l.style.whiteSpace = 'pre';
+    l.textContent = label;
+    cell.append(box, l);
+    row.appendChild(cell);
+  }
+  out.appendChild(row);
+}
+window.__METHODS_DONE__ = true;
+</script>
+</body></html>

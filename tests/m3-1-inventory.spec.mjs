@@ -236,14 +236,14 @@ test('M3.1：背包渲染不显示 count（创造模式无限背包）', async (
       anyShows1500: slots.some((s) => s.textContent.includes('1500')),
       withIcon: slots.filter((s) => s.querySelector('.mc-icon')?.style.backgroundImage.includes('atlas.png')).length,
       total: slots.length,
-      // 无 faces-data 的项降级为无图标（原两项 bed_alias_block/mine_cart，
-      // bed_alias_block 已移出背包 → 只剩 mine_cart）
+      // v1.23：图标表补齐 mine_cart（Invicon_Minecart）→ 118 项**全部有图标**。
+      // bed_alias_block 已移出背包（cullMode:'none' 不渲染、无法出图标），故背包内无空槽项。
       noIcon: slots.filter((s) => !s.querySelector('.mc-icon')?.style.backgroundImage).map((s) => s.dataset.index),
     };
   });
   expect(r.countEls).toBe(0);
   expect(r.anyShows1500).toBe(false);
   expect(r.total).toBe(118);
-  expect(r.withIcon).toBe(117); // 118 - mine_cart（bed_alias_block 已移出背包）
-  expect(r.noIcon.length).toBe(1);
+  expect(r.withIcon).toBe(118); // v1.23：图标表补齐 mine_cart → 全部有图标
+  expect(r.noIcon.length).toBe(0);
 });
