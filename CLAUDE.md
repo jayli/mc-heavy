@@ -24,13 +24,13 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
 依赖链 + 后续扩展点）。本文件不复制进度表 —— 同一事实的多个副本会漂移。
 
 一句话现状：第一阶段 **M0~M3 全部完成**并验收达标，两个收尾补丁项（M3.1 背包 / M3.2 方块朝向
-放置交互）也已落地；此后是一串独立 bugfix 与改造（v1.19~v1.29）；第二阶段 **M4~M7 尚未开始**
+放置交互）也已落地；此后是一串独立 bugfix 与改造（v1.19~v1.30）；第二阶段 **M4~M7 尚未开始**
 （规格与计划已备好，见「权威文档」）。
 
 **历次 bugfix / 改造的完整记录不在本文件。** 权威副本有两份：设计文档的修订说明
-（v1.19~v1.29，每条含根因、实测数据、门禁对照）+
+（v1.19~v1.30，每条含根因、实测数据、门禁对照）+
 [`docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md`](docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md)
-（v1.19~v1.21 独立章节、v1.22~v1.29 表格）。本文件只保留**会影响后续实现决策的活跃约束**
+（v1.19~v1.21 独立章节、v1.22~v1.30 表格）。本文件只保留**会影响后续实现决策的活跃约束**
 （下节）—— 它们散落在历次改动中，读单个文件看不出来。
 
 测试现状：Playwright spec 全量 + 浏览器内单元测试全绿。**用例计数以 `npm run check:data`
@@ -47,10 +47,15 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
   **比对 mc-lite 几何数字时必须 +0.5 换算。**
 - **对齐上游须实测其运行时行为，不能读定义推断**：mc-lite 床材质的 `offset:[0,0.5]` /
   `rotation:-π/2` 全仓**零消费点**（死字段），照字段名实现会渲错。与「诊断 bug 不猜」同一原则。
-- **三处已知的有意偏离 mc-lite**（视觉比对时勿按其原样判定，均在 §4.3/§4.5.4 标注）：
+- **四处已知的有意偏离 mc-lite**（视觉比对时勿按其原样判定，均在 §4.3/§4.5.4 标注）：
   ① `vine` 落格内 y∈[0,1]（mc-lite 溢出半格 y∈[0.5,1.5]）；② 吊灯 UV 按部件分区 + 绳呈单色
   深灰（mc-lite 两几何 UV 全幅、绳吃 emissive 呈亮色）；③ 背包图标用离线烘焙等轴测投影
-  （mc-lite 是手工绘制贴图，其图标与游戏内方块颜色不一致）。
+  （mc-lite 是手工绘制贴图，其图标与游戏内方块颜色不一致）；④ `lilypad` 模板 y=-0.48 +
+  生成格位 `SEA_Y+1`（mc-lite 是装饰实体、原点为块中心 → 叶面 -1.98 沉水 0.98）。
+- **lilypad 的几何与格位是耦合的，改一处必须同时改另一处**（§4.3 标注）：只改模板 y →
+  叶面悬空半格；只改生成格位 → 叶面贴块底仍沉水。水面下沉 0.5 后暴露水面顶面只有**半格高**，
+  与陆地整格顶面差半格 —— 同一份几何无法同时贴合，故 `big_house.json` 的 3 个草地 lilypad 已移除
+  （「`assets/structures/*.json` 原样复用」的唯一有意例外）。
 - **背包物品集合口径 118 项** = registry 126 − `NON_PLACEABLE_ITEMS`（4 项功能性方块）−
   `HIDDEN_FROM_INVENTORY`（4 项可放置但不进背包）。**两个集合语义互斥，勿混为一处**
   —— 把可放置方块塞进 `NON_PLACEABLE_ITEMS` 会让集合语义失真。
@@ -88,6 +93,15 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
 - **重载类断言的导航监听必须在触发动作之前武装**：`waitForLoadState('load')` 写在 click 之后
   会看到「当前页已是 load 态」立即返回，随后 `READY` 在**旧页**本就为真 → 读到动作前的世界。
   正确写法是 `const nav = page.waitForNavigation(...)` 先建 promise，再 click，再 `await nav`。
+- **给「生成类」代码写测试有两个恒真陷阱**（实测踩坑 lilypad，两处都会让缺陷静默逃逸）：
+  ① **落点只按数据条件筛** —— 「biome=SWAMP + h<SEA_Y + rand<0.08」筛出 **12 个候选点**，
+  完整 GEN 后**落地 0 个**（`pointContext` 的 city/island/pyramid/plainLand/snow/fm 六个地标
+  判定都在 water 分支**之前**，这些点全被 clay/sand 地标方块吞掉）→ 断言根本不触发的分支；
+  ② **测试里硬编码「被测代码写入的那个值」** —— 用 `SEA_Y+1` 算叶面高度，而 `SEA_Y+1` 正是
+  `apply.js` 写入的格位 → 回退格位后该测试**仍 PASS**（拿硬编码值算出关系式成立）。
+  正确做法：落点先用廉价脚本复现优先级链扫出、再跑完整 GEN 验证方块真落地；派生量从**实际
+  生成数据里读出**真实格位再算，并补前置断言钉住前提。详见
+  [`docs/testing-policy.md`](docs/testing-policy.md) §2.5。
 
 ## 权威文档（动手前必读）
 
@@ -96,11 +110,11 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
 1. [`docs/roadmap.md`](docs/roadmap.md) —— **项目进度唯一总览**（里程碑总表 M0~M7 + 第二阶段
    依赖链 + 后续扩展点接入点 + 去哪找细节）。想知道「做到哪了、下一步做什么」先看它。
 2. [`docs/phase-1-engine-design.md`](docs/phase-1-engine-design.md) —— **架构唯一权威**，
-   当前 v1.29。所有子系统边界、DR 决策、验收口径都在这里；历次口径变更见其修订说明。
+   当前 v1.30。所有子系统边界、DR 决策、验收口径都在这里；历次口径变更见其修订说明。
 3. [`docs/testing-policy.md`](docs/testing-policy.md) —— **测试分级的唯一权威**（Tier 1~4 判据 +
    门禁分层 + 红线静态门规则 + 与 M4~M7 的关系）。动手前先按它的判据确定本次改动属哪一级。
 4. [`docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md`](docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md)
-   —— **任务级执行清单 + v1.19~v1.29 历次改造记录**（含各次 bugfix 的根因与实测数据）。
+   —— **任务级执行清单 + v1.19~v1.30 历次改造记录**（含各次 bugfix 的根因与实测数据）。
 5. `docs/superpowers/plans/2026-08-19-m1-voxel-core-loop.md` —— M1 实施计划（已完成，架构细节参照）。
 6. `docs/m0-bench-report.md` / `docs/m1-acceptance-report.md` / `docs/m2-m3-performance-report.md`
    （M3-6 第一阶段性能报告 = 冻结基线）—— 实测与验收报告。
@@ -167,7 +181,8 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
 
 - `src/constants/BlockData.js` → `src/voxel/blocks-data.js`（124 方块声明，转换规则见计划 Task 5）；
 - `src/assets/textures/` → `assets/textures/`（122 张：116 顶层 + `bed/` 6 张，文件名原样保留）；
-- `src/world/structures/*.json` → `assets/structures/`（原样复用）；
+- `src/world/structures/*.json` → `assets/structures/`（原样复用；**唯一例外**是 `big_house.json`
+  删了 3 个草地 lilypad，理由见设计文档 §4.3 lilypad 段）；
 - `src/workers/maps/*`（CityMap/Pyramid/FrozenMountain/SnowLand/IslandMap/RegionCenterUtils）
   → `src/gen/structures/*`（**算法照搬，接口改为 `Structure.rasterize(aabb)`，按 chunk 裁剪**）；
 - `AOUtils`（四角 AO）、`OrientationUtils`（朝向 0-3）、`MathUtils`（seededRandom/noise/biome）算法；
@@ -208,7 +223,7 @@ mc-heavy/
 ├─ vendor/three/               # three.js r185.1（three.webgpu.js / three.tsl.js / three.core.js）
 ├─ docs/
 │  ├─ roadmap.md              # 项目进度唯一总览（里程碑总表 + 依赖链 + 扩展点）
-│  ├─ phase-1-engine-design.md # 架构唯一权威（v1.29）
+│  ├─ phase-1-engine-design.md # 架构唯一权威（v1.30）
 │  └─ testing-policy.md        # 测试分级唯一权威（Tier 1~4 判据 + 门禁分层）
 ├─ tools/build-atlas.mjs       # atlas 离线打包（npm run atlas）
 ├─ tools/bake-procedural-textures.mjs # 程序化贴图烘焙（mc-lite canvas 材质 → PNG）

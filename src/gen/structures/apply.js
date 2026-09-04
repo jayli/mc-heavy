@@ -203,7 +203,14 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
       const ctx = pointContext(wx, wz, layouts, cityLayout, seed);
 
       if (inColumn && ctx.kind === 'water' && ctx.biome === 'SWAMP' && seededRandom(wx, wz, seed + 12) < 0.08) {
-        setBlock(wx, SEA_Y, wz, 'lilypad');
+        // 睡莲放在水面格的**上一格**（SEA_Y+1，原本是空气），不是 SEA_Y：
+        // ① 不覆盖 y=SEA_Y 的水 → 消除「水洞」（原实现盖掉最高一层水格，四周水还在，
+        //    且 lilypad.solid=false → 玩家踩上去会掉进洞里）；
+        // ② 配合 TEMPLATES.lilypad 的 y=-0.48 → 叶面 (SEA_Y+1)-0.48 = -1.48，恰好高出
+        //    下沉后的暴露水面顶面 (SEA_Y+1)-0.5 = -1.50 两厘米 → 紧贴水面、不沉水。
+        // mc-lite 的 lilypad 是装饰实体（EntityManager.js:412）不占体素格，故天然无水洞；
+        // 本仓库搬成体素方块后必须显式选格。详见 §4.3。
+        setBlock(wx, SEA_Y + 1, wz, 'lilypad');
       }
 
       let tree = null;

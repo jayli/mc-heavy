@@ -33,7 +33,7 @@ npm run atlas        # 重新生成 assets/atlas.png + atlas.json（世界渲染
 
 一句话现状：第一阶段引擎底座（M0~M3）**全部完成并验收达标**，两个收尾补丁项
 （M3.1 背包 / M3.2 方块朝向放置交互）也已落地；此后是一串独立 bugfix 与改造
-（v1.19~v1.29）；第二阶段 **M4~M7 尚未开始**，规格与计划已成对备好。
+（v1.19~v1.30）；第二阶段 **M4~M7 尚未开始**，规格与计划已成对备好。
 
 测试与计数（用例数、图标项数、atlas tile 数）**以 `npm run check:data` 输出为准**，
 不在文档硬编码 —— 同一事实的多个副本会漂移。
@@ -43,10 +43,10 @@ npm run atlas        # 重新生成 assets/atlas.png + atlas.json（世界渲染
 | 文档 | 说明 |
 |---|---|
 | [docs/roadmap.md](docs/roadmap.md) | **项目进度唯一总览**（里程碑总表 + 依赖链 + 扩展点 + 去哪找细节） |
-| [docs/phase-1-engine-design.md](docs/phase-1-engine-design.md) | **架构唯一权威**；历次口径变更见其修订说明（v1.1~v1.29） |
+| [docs/phase-1-engine-design.md](docs/phase-1-engine-design.md) | **架构唯一权威**；历次口径变更见其修订说明（v1.1~v1.30） |
 | [docs/testing-policy.md](docs/testing-policy.md) | **测试分级唯一权威**（Tier 1~4 判据 + 门禁分层） |
 | [CLAUDE.md](CLAUDE.md) | 协作规范（重构红线 / 对标 mc-lite 取舍 / 技术约束 / 活跃约束） |
-| [docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md](docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md) | 任务级执行清单 + v1.19~v1.29 历次改造记录 |
+| [docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md](docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md) | 任务级执行清单 + v1.19~v1.30 历次改造记录 |
 | docs/superpowers/{specs,plans}/2026-08-23-m4-* | M4 玩家第一人称武器（第二阶段首个 Epic） |
 | docs/superpowers/{specs,plans}/2026-08-23-m5-* | M5 实体运行时 |
 | docs/superpowers/{specs,plans}/2026-08-23-m6-* | M6 丧尸 |

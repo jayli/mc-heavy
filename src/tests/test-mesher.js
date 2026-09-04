@@ -658,6 +658,35 @@ test('mesher: 暴露水面下沉——swamp_water 同口径', () => {
   assertEqual(yMax, 5.5, 'swamp_water 暴露水面同样下沉 0.5');
 });
 
+test('mesher: lilypad 叶面在块底之下半格（模板偏移 -0.48）', () => {
+  const reg = makeRegistry();
+  const world = makeWorldWithBlock(reg, 8, WORLD_MIN_Y + 5, 8, reg.idOf('lilypad'));
+  const view = world.getSectionView(0, 0, 0);
+  const result = buildSectionMesh(view, reg, atlasMeta, 0, 0, 0);
+  const { yMin, yMax } = yExtent(result.cutout);
+  // 块底局部 y=5；模板偏移 -0.48 → 叶面 4.52（原为 +0.02 → 5.02，即贴块底）
+  // **用容差而非 assertEqual**：positions 存进 Float32Array，4.52 不可精确表示
+  // （实测 4.519999980926514）；5.5 可精确表示故旧的水面下沉测试没踩到这点。
+  assertEqual(yMin, yMax, '单 quad 水平面，yMin===yMax');
+  assertTrue(Math.abs(yMin - 4.52) < 1e-5, `叶面 ${yMin} ≈ 块底 5 − 0.48`);
+});
+
+test('mesher: lilypad 浮在水面之上——叶面紧贴暴露水面顶面（差 <0.1）', () => {
+  const reg = makeRegistry();
+  const world = new WorldData(reg);
+  const col = new ChunkColumn(0, 0);
+  // 沼泽水面口径：SEA_Y 格是水（顶面下沉 0.5），lilypad 在其**上一格**
+  col.blocks[blockIndex(8, WORLD_MIN_Y + 5, 8)] = reg.idOf('water');
+  col.blocks[blockIndex(8, WORLD_MIN_Y + 6, 8)] = reg.idOf('lilypad');
+  world.add(col);
+  const view = world.getSectionView(0, 0, 0);
+  const result = buildSectionMesh(view, reg, atlasMeta, 0, 0, 0);
+  const waterTop = yExtent(result.transparent).yMax; // 5.5 = 块顶 6 下沉 0.5
+  const lilyY = yExtent(result.cutout).yMax;         // 5.52 = 块底 6 − 0.48
+  assertTrue(lilyY > waterTop, `叶面 ${lilyY} 须高于水面 ${waterTop}（不能沉在水下）`);
+  assertTrue(lilyY - waterTop < 0.1, `叶面 ${lilyY} 须紧贴水面 ${waterTop}（不能悬空半格）`);
+});
+
 test('mesher: 水面下沉——深水块（上方仍是水）侧面保持整格高', () => {
   const reg = makeRegistry();
   const world = new WorldData(reg);

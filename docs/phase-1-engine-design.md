@@ -1,6 +1,6 @@
 # mc-heavy 第一阶段实施设计文档：游戏引擎原型
 
-> 版本：v1.29 ｜ 日期：2026-09-04 ｜ 状态：定稿（经十五轮逐条核验修订 + M3.2 实施回填 + 异形方块渲染勘误 + 背包物品集合口径 + 吊灯材质自发光 + 吊灯 UV 分区 + 背包图标表 + 等轴测图标 + 测试分级策略与静态门禁 + 全量背包图标离线烘焙 + 背包槽位点选抖动修复 + 等轴测图标遮挡修复 + 删除缓存按钮）
+> 版本：v1.30 ｜ 日期：2026-09-05 ｜ 状态：定稿（经十五轮逐条核验修订 + M3.2 实施回填 + 异形方块渲染勘误 + 背包物品集合口径 + 吊灯材质自发光 + 吊灯 UV 分区 + 背包图标表 + 等轴测图标 + 测试分级策略与静态门禁 + 全量背包图标离线烘焙 + 背包槽位点选抖动修复 + 等轴测图标遮挡修复 + 删除缓存按钮 + 沼泽睡莲水洞与沉水修复）
 >
 > 目标：在 mc-heavy 仓库从零重建一个功能对标 mc-lite、性能提升一个数量级的体素游戏引擎。
 > 第一阶段只做"引擎底座"：渲染、体素数据、即时地图生成、玩家交互、种子地图、存档原型。
@@ -683,6 +683,75 @@
 > `2.0/1.7/1.8/1.9`（1 通过 3 失败 —— **HEAD 侧失败率反而更高**）；`structure-gen` 两侧
 > 各 3/3 全通过。机制上不可能影响：`clearSave`/`_discardEdits` 只在点击时执行一次，
 > **不进主循环**（无热路径改动 → 不需 `bench --check`）。
+>
+> v1.30 修订说明：**沼泽睡莲（lilypad）水洞与沉水修复**（2026-09-05，§4.3）。用户报告两个
+> 视觉缺陷：① 睡莲「镶嵌在沼泽水中」—— 自身无水、周围一圈水包围，像水洞而非浮在水面；
+> ② 睡莲叶面与沼泽水方块**底面**对齐 → 沉在水面之下。用户同时提出修复思路（生成高度 +1
+> 且叶面下移半格贴合水面）—— **思路可行，数值经实测验证正确**。
+>
+> **根因是两个独立问题，实测确认**（诊断脚本，落点 `(-600,-270)`，SEED=12345）：
+>
+> | 问题 | 位置 | 实测数据 |
+> |---|---|---|
+> | ① 水洞 | `apply.js:206` `setBlock(wx, SEA_Y, wz, 'lilypad')` | `fillColumn` 水面填充区间 `(h, SEA_Y]` → 沼泽落点 h=-3 时 **`y=-2` 就是最高一层水格**，被 lilypad 覆盖 → 该格水消失、四周水还在。附带：`lilypad.solid=false` → 玩家踩上去掉进洞里 |
+> | ② 沉水 | `mesher.js` `TEMPLATES.lilypad` y=0.02 | 叶面 = 实例原点(块底角 -2) + 0.02 = **-1.98**；暴露水面顶面 = `(SEA_Y+1)` − `WATER_SURFACE_SINK`(0.5) = **-1.50** → 低 **0.48** |
+>
+> **为什么 mc-lite 沉水更严重却没被发现**：其实例原点 = `Math.floor(y)+0.5` = 块**中心**
+> （`Chunk.js:2474`，对照 CLAUDE.md「+0.5 换算」口径），几何 `translate(0,-0.48)` →
+> 叶面世界 y = **-1.98**，沉在整格水面顶面 -1.0 之下 **0.98**（mc-lite 自身即有此缺陷）。
+> mc-heavy 的水面下沉 0.5 把差距缩到 0.48，反而更扎眼。且 mc-lite 的 lilypad 是**装饰实体**
+> （`EntityManager.js:412`）**不占体素格** → 天然无水洞；是 mc-heavy 搬成体素方块才引入的。
+>
+> **修复须两处耦合改，单独改任一处都错**（只改几何 → 悬空半格；只改格位 → 贴块底仍沉水）：
+> 模板 y `0.02` → `-0.48`，生成格位 `SEA_Y` → `SEA_Y+1`。详见 §4.3 lilypad 段。
+>
+> **落点判定的方法论坑（诊断实测，勿照直觉选测试落点）**：`pointContext` 里 city/island/
+> pyramid/plainLand/snow/fm **六个地标判定都在 water 分支之前**，被地标吞掉的点 `ctx.kind`
+> 不是 `'water'` → 根本不放 lilypad。实测只按「biome=SWAMP + h<SEA_Y + rand<0.08」三条件筛出
+> **12 个候选点**，完整 GEN 后 **落地 0 个**（全被 clay/sand 地标方块覆盖）。必须复现优先级链
+> 才能找到真实落点 —— 首个真实落点是 `(-600,-270)`。
+>
+> **Tier 1 门禁（`mesher.js`/`apply.js` 均在 testing-policy §2.1「纯函数算法」明确列举）**：
+> 4 个新测试 RED → 验证 RED → GREEN（**277/277 全绿**）→ **双向负向验证**：
+> 回退生成格位（`SEA_Y+1`→`SEA_Y`）→ 2 个生成侧测试 FAIL（均 `Expected 2(water), got
+> 27(lilypad)`）而 mesher 几何测试 PASS；回退模板 y（`-0.48`→`0.02`）→ 3 个几何/高度测试
+> FAIL 而「生成位置」测试 PASS。两侧各自独立钉住自己的不变式，职责分工清晰。
+>
+> **自查发现自己测试的恒真弱点并修掉（负向验证的第二轮）**：初版「叶面高度」测试把生成格位
+> **硬编码**为 `SEA_Y + 1` 来算 `lilyY`，而这正是 `apply.js` 里写入的值 → 测试与被测代码
+> **共用同一个假设**。实测证实弱点：回退格位到 `SEA_Y` 后该测试**仍 PASS**（拿硬编码值算出
+> 「叶面 -1.48 > 水面 -1.50」）→ 缺陷静默逃逸。改为**从实际生成数据里扫描出 lilypad 的真实
+> 格位**再算高度，并加「水面格 y=SEA_Y 须仍是水」前置断言。重做负向验证：回退格位后
+> **两个**生成侧测试都 FAIL（强化前只有 1 个）。这是 CLAUDE.md「对照脚本与被测代码必须只差
+> 一个变量」同一原理在**测试内部**的体现，判据见 testing-policy §2.5。
+>
+> **Tier 4 像素级实测（用户报的是视觉 bug，单测数值对不等于渲染呈现对）**：睡莲贴图主色
+> `rgb(34,139,34)`（51% 不透明）作像素基准，传送到落点上方 6 格垂直俯视截图。**担心的风险**：
+> `ocean.js` 无限海面平面在 y=-1.5、`renderOrder=1`（体素透明通道之后绘制）、
+> `depthWrite=false`，而叶面在 -1.48 只高出 0.02 → 若海面盖住 cutout 通道的 lilypad，
+> 单测全绿但玩家仍看不到睡莲。实测**未盖住**（lilypad 在 cutout 通道写深度）：
+>
+> | | 格位 | 画面中心睡莲绿 | 全画面 |
+> |---|---|---|---|
+> | HEAD（旧） | `atSea=lilypad / atSeaPlus1=air` | **30**/14641（0.20%）| 1752 |
+> | 改动侧 | `atSea=water / atSeaPlus1=lilypad` | **266**/14641（1.82%）| 5243 |
+>
+> 中心区域 **8.9 倍**差异：HEAD 侧睡莲沉在水下（y=-1.98）被水体遮挡只剩残影。断言 `>100`
+> 在 HEAD 侧 FAIL(30)、改动侧 PASS(266) → **像素断言有真实区分度，非恒真**。
+>
+> **文档同步**：§4.3 新增 lilypad 有意偏离段（第 ④ 项）+ 顶点模板清单 y 值勘误；
+> CLAUDE.md「三处已知有意偏离」→ **四处**、新增「lilypad 几何与格位耦合」活跃约束；
+> 两处「`structures/*.json` 原样复用」约定（CLAUDE.md + 附录 A 映射表）标注 `big_house.json`
+> **唯一例外**。
+>
+> **全量门禁**：`npm run check` 全绿（check:arch + check:data 8 项契约 + lint 0 error /
+> 9 个既有 camelcase warning）。`npm test` **45 passed / 1 failed**，失败的是 `m1-acceptance`
+> 的 `placeP95`（CLAUDE.md 点名的已知贴线 flaky）。**交替对照实测**（各连跑 3 次，阈值是
+> 冻结断言故未放宽）：改动侧 `placeP95 1.9/1.6/1.7`（**全部 <2ms 通过**，1 次全绿、2 次失败
+> 均为 `frameMs.p95` 贴 16.7±1e-6）、HEAD 侧 `placeP95 1.8/1.9/2.0` + `digP95 2.0/2.1/1.9`
+> （**3/3 全部失败**）。**HEAD 侧失败率 100% > 改动侧 33%**，且失败断言位置在轮换
+> （placeP95/digP95/frameMs.p95 都出现过）→ 非本次改动引入。机制上不可能：改动只碰 GEN 期
+> 格位与几何 y 值，**都不进主线程每帧热路径**（无热路径改动 → 不需 `bench --check`）。
 
 ---
 
@@ -1102,7 +1171,7 @@ validation error；uint32 stride=4 合法，且 13bit 实际用量余余充足�
 
 **顶点模板已落地清单（M2 对齐 mc-lite，坐标逐格复刻 ChunkConsolidation.js geomMap）**：
 flower/short_grass 等（0.7 cross，y∈[-0.1,0.6]）、vine（0.8 cross，y∈[0,1] 格内）、
-lilypad（0.8×0.8 水平 quad，y=0.02）、cactus（主干+4 侧枝盒）、chimney（8 段棱柱高 2）、
+lilypad（0.8×0.8 水平 quad，y=-0.48，**有意溢出格下半格**，见下）、cactus（主干+4 侧枝盒）、chimney（8 段棱柱高 2）、
 handrail/A/B、vertical/horizontal_pillar、planks/cobblestone(_updown)/stone_diorite_step（L 形）、
 half_block（床，1×0.5×1）、hanging_lamp（绳 8 段棱柱 r=0.015 + 灯体盒 0.3³）。
 
@@ -1116,6 +1185,31 @@ half_block（床，1×0.5×1）、hanging_lamp（绳 8 段棱柱 r=0.015 + 灯�
   其源码注释「向上偏移0.5，使几何体从y=0到y=1」说的是**局部**坐标，是误导——藤蔓挂在方块
   上方半格，不贴合方块边界。mc-heavy 改为 y∈[0,1] 落在格内。这是**已知的有意偏离**，
   比对 mc-lite 视觉时勿按 y∈[0.5,1.5] 判定。
+
+  **lilypad 有意偏离 mc-lite（2026-09-05，bug 修复）**：模板 y 从 `0.02` 改为 `-0.48`
+  （叶面落在块底之下半格），生成侧同时从 `SEA_Y` 改放 `SEA_Y+1`。**两处必须一起改，
+  单独改任一处都错**（只改几何 → 叶面悬空半格；只改格位 → 叶面贴块底仍沉水）。
+  换算与实测（诊断脚本，落点 `(-600,-270)`）：
+
+  | | 世界 y |
+  |---|---|
+  | 叶面 = 实例原点(块底角 `SEA_Y+1` = -1) + 模板偏移(-0.48) | **-1.48** |
+  | 暴露水面顶面 = `(SEA_Y+1)` − `WATER_SURFACE_SINK`(0.5) | **-1.50** |
+  | 差 | **+0.02**（紧贴水面之上，不沉水）|
+
+  - **为什么 mc-lite 沉水更严重却没人发现**：其 lilypad 是**装饰实体**（`EntityManager.js:412`），
+    实例原点 = `Math.floor(y)+0.5` = 块**中心**，几何 `translate(0,-0.48)` → 叶面世界 y = **-1.98**，
+    沉在整格水面顶面 -1.0 之下 **0.98**（mc-lite 自身即有此缺陷）。mc-heavy 的水面下沉 0.5
+    把差距缩到 0.48，反而更扎眼。
+  - **为什么不能放 `SEA_Y`**：`fillColumn` 水面填充区间是 `(h, SEA_Y]` → `y=SEA_Y` 是**水格**，
+    覆盖它会挖出「水洞」（四周水还在、该格没水），且 `lilypad.solid=false` → 玩家踩上去掉进洞里。
+    实测负向数据：改前该格 `atSea=lilypad / atSeaPlus1=air`，改后 `atSea=water / atSeaPlus1=lilypad`。
+  - **陆地 lilypad 同口径贴合**：`jungle_pyramid.json` 的 4 个 lilypad 下方是 `cobblestone_step`
+    （顶面 y=1.50）→ 叶面 1.52，贴合（原 y=0.02 时叶面 2.02，反而悬空半格 → 本次一并修正）。
+  - **`big_house.json` 的 3 个草地 lilypad 已移除**（`x=-16/-14/-12, y=2, z=-13`）：其下方是 `grass`，
+    顶面 y=2.00 是**整格高**，而水面/台阶顶面是**半格高**，两者差半格 → 同一份几何无法同时贴合，
+    保留会让睡莲沉进草地 0.48。睡莲是水生植物，长在草地上本身是 mc-lite 数据怪异。
+    这是**对「`assets/structures/*.json` 原样复用」约定的有意例外**（仅此一处，理由如上）。
 - **面 UV 口径 = three.js BoxGeometry buildPlane**（vendor/three r185.1 源码核验）：
   +X: u=1-z,v=y；-X: u=z,v=y；+Y: u=x,v=1-z；-Y: u=x,v=z；+Z: u=x,v=y；-Z: u=1-x,v=y。
   与 mc-lite InstancedMesh 一致（历史 bug：±X 用统一 UV → 东西面贴图旋转 90°，已修）。
@@ -1886,7 +1980,7 @@ AOBridge / AOWorker / 八个 Worker 文件——它们的职责被 §4 的四个
 | workers/maps/*（CityMap/Pyramid/…） | src/gen/structures/*（光栅化接口改造） |
 | world/entities/Island.js / Cloud.js | M2-7 `src/gen/structures/sky-structures.js`（确定性 rasterize，非 entity） |
 | structure-index/* | src/gen/structure-index.js（整体移植） |
-| structures/*.json | assets/structures/（原样复用） |
+| structures/*.json | assets/structures/（原样复用；唯一例外 `big_house.json` 删 3 个草地 lilypad，见 §4.3） |
 | BlockData.js | src/voxel/block-registry.js（数据化重写） |
 | AOUtils.js | src/mesh/mesher.js 内联（算法照搬） |
 | OrientationUtils.js | src/voxel/meta.js + mesher 旋转模板 |

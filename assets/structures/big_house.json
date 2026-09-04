@@ -933,13 +933,6 @@
     },
     {
       "x": -16,
-      "y": 2,
-      "z": -13,
-      "type": "lilypad",
-      "direction": 0
-    },
-    {
-      "x": -16,
       "y": 1,
       "z": -12,
       "type": "grass",
@@ -1517,13 +1510,6 @@
       "y": 1,
       "z": -13,
       "type": "grass",
-      "direction": 0
-    },
-    {
-      "x": -14,
-      "y": 2,
-      "z": -13,
-      "type": "lilypad",
       "direction": 0
     },
     {
@@ -2532,13 +2518,6 @@
       "y": 1,
       "z": -13,
       "type": "grass",
-      "direction": 0
-    },
-    {
-      "x": -12,
-      "y": 2,
-      "z": -13,
-      "type": "lilypad",
       "direction": 0
     },
     {

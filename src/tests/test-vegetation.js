@@ -4,12 +4,13 @@ import { computeRegionLayout, neighborRegionKeys } from '../gen/structures/struc
 import { applyStructuresToColumn } from '../gen/structures/apply.js';
 import { getBiome } from '../gen/noise.js';
 import { fillColumn, generateHeight } from '../gen/terrain.js';
+import { carveCaves } from '../gen/caves.js';
 import { ChunkColumn } from '../voxel/chunk-column.js';
 import { createRegistry } from '../voxel/block-registry.js';
 import { BLOCKS } from '../voxel/blocks-data.js';
-import { buildSectionMesh } from '../mesh/mesher.js';
+import { buildSectionMesh, TEMPLATES } from '../mesh/mesher.js';
 import { computeSkylightColumn } from '../mesh/lighting.js';
-import { blockIndex } from '../voxel/constants.js';
+import { blockIndex, SEA_Y } from '../voxel/constants.js';
 
 const SEED = 12345;
 
@@ -171,6 +172,58 @@ test('mesher：lilypad 走水平单 quad 模板', () => {
   for (let i = 0; i < light.length; i++) light[i] = 0xF0;
   const result = buildSectionMesh({ data, light, missing: false }, reg, {}, 0, 0, 0);
   assertEqual(result.cutout.vertexCount, 4, 'lilypad = 1 quad');
+});
+
+// ---- 沼泽 lilypad 格位与高度（bug 修复：叶面须浮在水面上、不得覆盖水格）----
+// 落点 (-600,-270)：SEED=12345 下 **过 pointContext 优先级链**后 kind==='water' 且
+// biome===SWAMP 且 seededRandom(...,seed+12)<0.08。column (-38,-17)，局部 (8,2)。
+//
+// **为什么不能只按 biome+高度+随机数筛**（诊断实测，勿照直觉选落点）：pointContext 里
+// city/island/pyramid/plainLand/snow/fm 六个地标判定都在 water 分支**之前**，被地标吞掉的点
+// ctx.kind 不是 'water' → 根本不放 lilypad。实测只按三条件筛出 12 个「候选点」，完整 GEN 后
+// **落地 0 个**（全被 clay/sand 地标方块覆盖）。必须复现优先级链才能找到真实落点。
+const LILY_CX = -38, LILY_CZ = -17;
+const LILY_LX = 8, LILY_LZ = 2;
+
+test('沼泽 lilypad：生成在 SEA_Y+1（不覆盖水面格）', async () => {
+  const reg = makeRegistry();
+  const col = new ChunkColumn(LILY_CX, LILY_CZ);
+  fillColumn(col, SEED, reg);          // 先填水面：(h, SEA_Y] → y=-2 是水
+  carveCaves(col, SEED);               // 生产 GEN 顺序（world-worker.js:42-44）：fill→carve→apply
+  await applyStructuresToColumn(col, SEED, reg, layoutsFor(LILY_CX, LILY_CZ));
+  const lilyId = reg.idOf('lilypad'), waterId = reg.idOf('water');
+  assertEqual(col.blocks[blockIndex(LILY_LX, SEA_Y, LILY_LZ)], waterId,
+    'y=SEA_Y 格水必须保留（原被 lilypad 覆盖 → 视觉水洞）');
+  assertEqual(col.blocks[blockIndex(LILY_LX, SEA_Y + 1, LILY_LZ)], lilyId,
+    'lilypad 生成在水面格的**上一格**');
+});
+
+test('沼泽 lilypad：叶面世界 y 紧贴暴露水面顶面（浮在水上、不沉水）', async () => {
+  const reg = makeRegistry();
+  const col = new ChunkColumn(LILY_CX, LILY_CZ);
+  fillColumn(col, SEED, reg);
+  carveCaves(col, SEED);
+  await applyStructuresToColumn(col, SEED, reg, layoutsFor(LILY_CX, LILY_CZ));
+
+  // **从实际生成数据里读出 lilypad 的真实格位**，不硬编码 SEA_Y+1：
+  // 硬编码会让测试与 apply.js 的生成格位**共用同一个假设** —— 若有人把格位改回 SEA_Y
+  // （bug 状态），本测试仍会拿硬编码值算出「叶面 -1.48 > 水面 -1.50」而恒过（静默逃逸）。
+  // 读真实格位后，格位与几何任一侧回归都会让本断言失败。
+  const lilyId = reg.idOf('lilypad');
+  let lilyGridY = null;
+  for (let y = SEA_Y - 3; y <= SEA_Y + 3; y++) {
+    if (col.blocks[blockIndex(LILY_LX, y, LILY_LZ)] === lilyId) { lilyGridY = y; break; }
+  }
+  assertNotNull(lilyGridY, '落点柱内须真的生成了 lilypad（否则本断言无意义）');
+
+  // 叶面世界 y = 实例原点(块底角 = 生成格 y) + TEMPLATES.lilypad 模板偏移
+  // 暴露水面顶面 = (SEA_Y+1) − WATER_SURFACE_SINK(0.5)；水面格必须是水（不是被 lilypad 顶掉）
+  const lilyY = lilyGridY + TEMPLATES.lilypad[0].v[0][1];
+  const waterTop = (SEA_Y + 1) - 0.5;
+  assertEqual(col.blocks[blockIndex(LILY_LX, SEA_Y, LILY_LZ)], reg.idOf('water'),
+    '水面格 y=SEA_Y 须仍是水（叶面高度只在有水面时才有意义）');
+  assertTrue(lilyY > waterTop, `叶面 ${lilyY} 须高于水面 ${waterTop}（不能沉在水下）`);
+  assertTrue(lilyY - waterTop < 0.1, `叶面 ${lilyY} 须紧贴水面 ${waterTop}（不能悬空半格）`);
 });
 
 test('植被确定性：两次生成逐格一致', async () => {
