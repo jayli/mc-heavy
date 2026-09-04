@@ -45,7 +45,14 @@ const PANEL_CSS = `
   overflow-y: auto; margin-top: 15px;
 }
 #inventory-modal .mc-slot {
-  width: 48px; height: 48px; background: #8b8b8b; border: 2px solid #fff;
+  /* 52 = 48 内容区 + 2px 边框 × 2 的等价总盒尺寸。border-box 下 width/height 是**总盒**，
+     故须显式写 52 才能保持改 border-box 之前的观感不变。
+     必须用 border-box：.selected 的边框从 2px 增到 3px，content-box 下总盒 52→54 会把
+     grid 该行撑高 2px → 下一行整体下移（点选抖动的根因，实测位移 2px）。border-box 下
+     边框往内吃，总盒恒 52 → 零抖动。内容区选中时 48→46，32px 图标两种情况都放得下，
+     且中心始终不偏移（边框四边等宽 → flex 居中的内容区始终居中于外框，实测偏移 0/0）。 */
+  box-sizing: border-box; width: 52px; height: 52px;
+  background: #8b8b8b; border: 2px solid #fff;
   border-right-color: #373737; border-bottom-color: #373737;
   display: flex; justify-content: center; align-items: center; position: relative;
   transition: border-color 0.1s; cursor: pointer;
