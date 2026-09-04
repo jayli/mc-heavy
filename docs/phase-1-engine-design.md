@@ -517,6 +517,44 @@
 > 「不知道渲染存在」。把 `recomputeSkylightAt` 挪进 voxel 层属架构改动，须先改本节分层图。
 >
 > 分级策略的唯一权威是 [`docs/testing-policy.md`](testing-policy.md)，本文档不自述分级细节。
+>
+> v1.26 修订说明：**全量背包图标离线烘焙**（2026-09-03，§4.5.4）。起因是用户要求「预生成每个
+> 方块的立体缩略图，运行时直接引用，简化渲染逻辑」。实测确认思路成立且**运行时确实简化**
+> ——我第一轮判断错了（漏了「预生成可以连裁剪数学一起预生成掉」这层）：
+> - 旧路径「`tileOfName()` 两级查表 + `tileStyle()` 裁剪数学 + 写 4 个样式属性 +
+>   `INVENTORY_ICONS` 例外表」→ 新路径 1 行 `icon.style.background = css`
+>   （实测约 91 行 → 1 行，预生成串与旧路径 computed style **逐项相等**，已实测验证）；
+> - **按显示尺寸烘焙**（快捷栏 40px / 背包 32px 两套）→ 运行时零缩放、像素风锐利；
+> - **独立 `icons-atlas.png`**（1024²，占 29.5%）而非入世界 atlas → v1.24 记录的「新增
+>   textures 子目录重排世界 tile 坐标」副作用消失，UI 不必加载 2048² 只为裁图标；
+> - 覆盖全量 **118 项**（等轴测 104 + 平面 14）。平面清单 = 非实心方块（用户指定：等轴测
+>   立方体对植被/水/云不合适），`mine_cart` 保留 mc-lite 手工图标（实体不是方块）。
+>
+> **Tier 1 改造（TDD）**：① 采样回调加第三参数 `face` 做**逐面采样**——实测实心 104 项里
+> 17 项是多面不同贴图（`grass` 顶绿侧土），旧单面采样会让 `grass` 顶面渲成土色（负向验证：
+> 注入「只采 face 0」→ 顶面变土色被抓）；② `cubeQuads()` 复用 mesher 的
+> `FACE_VERTICES`/`FACE_UVS`（97 个实心方块无模板 → fallback 单位立方体；红线 1：形状与 UV
+> 只有一份权威）；③ 消除 `ISO_FACE_UVS` 第二份副本（实测与 mesher `FACE_UVS` 的 face 0/2/4
+> 完全相同）→ 改 import。`mesher.js` 为此导出 `FACE_VERTICES`/`FACE_UVS`（不改几何定义）。
+>
+> **一个测试弱点（实测发现，已写进注释）**：`cubeQuads` 顶点比对断言钉的是**值**，「手写一份
+> 数值完全相同的第二份定义」会通过——它抓的是漂移不是「存在第二份定义」。真正保证来自
+> `iso-icon.js` 走 import（结构上不可能漂移：实测改 mesher 的 +X 顶点，`cubeQuads()` 自动跟上）。
+>
+> **图标过期门禁**：指纹 = 几何顶点序列 + 三个可见面贴图名 + **贴图内容哈希**。实测发现并修掉
+> 一个真实缺陷：只钉贴图名会**漏报**「换同名 PNG 内容」（最危险方向）+ **误报**无关方块
+> （改 `stone.png` 误报 `mine_cart`，因 faces-data 里 `mine_cart` 的 face0 是 `stone`）。
+> 修正后三种失效路径负向验证全过。指纹逻辑放共享模块（烘焙脚本与门禁同一份，红线 1）。
+>
+> **顺带清掉死资产**：删 `tools/bake-isometric-icons.mjs` + `assets/textures/inventory-icons/`
+> 9 张 PNG（零运行时消费方），世界 atlas 156 → **147** tile。`atlas.spec.mjs` 的关系型断言
+> 自动跟上（无需改断言）。
+>
+> **门禁对照（HEAD stash 分开按 spec 连跑拿分布）**：`placeP95` HEAD 侧均值 1.94 / 改动侧 1.92；
+> `fastRemeshP95` HEAD 侧 1.14 / 改动侧 1.16——分布重叠、无回退，**未擅改断言**。全量 E2E 两侧
+> 均偶发 1 failed 且失败 spec 轮换不同（HEAD: `m3-rain` / 改动侧: `m1-acceptance`），单独跑全绿。
+>
+> 实现见 §4.5.4「背包图标」。
 
 ---
 
@@ -1038,7 +1076,10 @@ half_block（床，1×0.5×1）、hanging_lamp（绳 8 段棱柱 r=0.015 + 灯�
   canvas 程序化绘制（mkMat/mkProceduralMat/mkDetailMat，无 PNG）。`tools/bake-procedural-textures.mjs`
   逐行复刻其绘制参数离线烘焙到 `assets/textures/procedural/`（vine/flower/lilypad/cactus/marble/
   handrail/pillar/chimney/hanging_lamp/cloud/playground 等），随机源固定种子（确定性红线）。
-  atlas 合计 156 tile（126 方块 + 23 程序化，M2-7 空岛 sky_stone/sky_grass +2 + 9 等轴测背包图标，§4.5.4 v1.24）。**权威计数以 `npm run check:data` 输出为准**（关系型断言，新增贴图自动跟上，勿在文档/spec 硬编码）。faces-data.js 全量 126 方块六面映射对齐 MaterialManager。
+  atlas 合计 147 tile（126 方块 + 23 程序化，M2-7 空岛 sky_stone/sky_grass +2）。
+  **v1.26 起背包图标独立于本 atlas**（`assets/icons-atlas.png`，§4.5.4），二者不再互相影响。
+  **权威计数以 `npm run check:data` 输出为准**（关系型断言，新增贴图自动跟上，勿在文档/spec 硬编码）。
+  faces-data.js 全量 126 方块六面映射对齐 MaterialManager。
 - **atlas 渗色防护**：2048 atlas + mipmap 会跨 tile 渗色。tile 之间留 16px gutter，打包时每 tile
   边缘像素向外 bleed 8px 回填（build-atlas.mjs），UV 内缩半 texel；默认 blur=0 时用 NearestFilter +
   关闭 mipmap（mc-lite 默认即像素风），模糊档位（`?blur=1`，M3-4 设置面板接线）开启时才启用
@@ -1308,72 +1349,48 @@ Inventory(size)  // slots[]、selectedSlot、add/remove/has/getSelected/selectSl
     把可放置的方块放进去会让集合语义失真（后续若有人读该集合判断「能否放置」会得出错误结论）。
     故用独立的 `HIDDEN_FROM_INVENTORY` 常量表达（语义：**可放置但不进背包**），二者语义互斥。
 
-**背包专用图标表（v1.23 新增）**：`src/ui/hotbar.js` 的 `INVENTORY_ICONS` 常量 —— 异形方块
-→ atlas 里的**手工图标 tile**（5 项，见 v1.23 修订说明）。`tileOfName()` 先查该表，未命中才
-落 `faces-data`：
+**背包图标（v1.26 起为全量离线烘焙）**：图标是**离线预生成产物**，运行时只读一行 CSS 串。
+演进路径：v1.23 手工图标表 → v1.24 异形方块等轴测（9 项，入世界 atlas）→ **v1.26 全量 118 项
+独立 atlas + 预生成 CSS 串**（v1.26 修订说明）。
+
+产物：`assets/icons-atlas.png`（1024²，**独立于世界 atlas**）+ `assets/icons.json`
+（每个方块一条完整 `background` 串，含位置/尺寸/no-repeat，另存输入指纹）。
+运行时（`src/ui/icons.js` 的 `loadIconManifest()`）：
 
 ```js
-export function tileOfName(name) {
-  const icon = INVENTORY_ICONS[name];
-  if (icon !== undefined) return icon;   // 台阶/矿车 → 专用手工图标
-  const f = FACES_DATA[name];            // 其余照旧（普通方块）
-  ...
-}
+// 快捷栏 40px 档 / 背包 32px 档（按显示尺寸烘焙 → 运行时零缩放）
+icon.style.background = manifest.hotbar[name];   // 1 行
 ```
 
-该表与 `faces-data` 语义不同，**勿混为一处**：`faces-data` 是「方块 → 世界渲染贴图」，
-图标表是「方块 → 背包图标」，同一个方块的两张 PNG 可以不同（台阶即如此）。只收录
-「图标与母方块贴图不同」的方块；普通方块进表会让集合语义失真（读表的人无法区分
-「有意换图标」与「恰好同贴图」）。
+取代 v1.24 之前的「`tileOfName()` 两级查表 + `tileStyle()` 裁剪数学 + 写 4 个样式属性 +
+`INVENTORY_ICONS` 例外表」（实测约 91 行 → 1 行；预生成串与旧路径 computed style 逐项相等）。
+**独立 atlas 的额外收益**：消除 v1.24 记录的「新增 textures 子目录重排世界 tile 坐标」副作用，
+且 UI 不必加载 2048² 世界 atlas 只为裁图标。
 
-`mine_cart` 无 `faces-data` 条目，但 v1.23 起由图标表给出 `Invicon_Minecart` → **有图标**
-（此前渲染空槽）。背包 118 项现在**全部有图标**，`bed_alias_block`（已移出背包）不再是
-「无图标但列槽」的用例。
+**形状与 UV 的唯一权威 = `src/mesh/mesher.js`**（红线 1）：烘焙脚本
+（`tools/bake-icon-atlas.mjs`）import 该模块，**禁止手写第二份几何/UV 定义**：
 
-**等轴测投影图标（v1.24 新增）**：图标表内 9 项异形方块改用**离线烘焙的等轴测投影图标**
-（v1.24 修订说明），tile 放 `assets/textures/inventory-icons/`：
+- 异形方块 → `TEMPLATES[geometry]`（v1.24 已导出）；
+- 实心方块（104 项，无模板）→ `cubeQuads()`，由 mesher 的 `FACE_VERTICES`/`FACE_UVS`
+  派生（v1.26 导出这两个常量）。`mesher.js` 可在 Node 下 import（无 three/DOM，红线 8）。
 
-```js
-export const INVENTORY_ICONS = {
-  // 异形方块 → 等轴测投影图标（tools/bake-isometric-icons.mjs 烘焙）
-  handrail: 'inventory-icons/handrail',
-  handrailA: 'inventory-icons/handrailA',
-  handrailB: 'inventory-icons/handrailB',
-  vertical_pillar: 'inventory-icons/vertical_pillar',
-  horizontal_pillar: 'inventory-icons/horizontal_pillar',
-  planks_step: 'inventory-icons/planks_step',
-  cobblestone_step: 'inventory-icons/cobblestone_step',
-  cobblestone_step_updown: 'inventory-icons/cobblestone_step_updown',
-  stone_diorite_step: 'inventory-icons/stone_diorite_step',
-  // mc-lite 手工图标（不在等轴测范围：矿车是实体不是方块，无 mesher 几何模板）
-  mine_cart: 'Invicon_Minecart',
-};
-```
+**逐面采样贴图**（v1.26 关键修正）：采样回调签名为 `(u, v, face)`，按面取 `getFaceTile(name, face)`。
+实测背包实心 104 项里 17 项是多面不同贴图（`grass` 顶绿侧土、`chest`/`tnt` 顶侧不同），
+旧的单面采样会让 `grass` 顶面渲成土色。
 
-**形状权威 = `mesher.js` 的 `TEMPLATES`**：烘焙脚本必须 `import { TEMPLATES }`，
-**禁止手写第二份几何定义**（红线 1 精神）。几何改了重跑 `npm run icons && npm run atlas`
-即自动跟上；回归防线钉死「竖柱 vs 横梁图标像素形状不同」，图标未跟上时单测会抓到。
+**覆盖范围（118 项全量）**：等轴测 104 项 + 平面 14 项。平面清单
+（`tools/icon-fingerprint.mjs` 的 `FLAT_BLOCKS`，用户指定口径）= `water`/`swamp_water`/`cloud`/
+`flower`/`short_grass`/`allium`/`azure_bluet`/`dead_bush`/`oxeye_daisy`/`red_mushroom`/`vine`/
+`lilypad`/`mine_cart`/`hanging_lamp` —— 等轴测立方体对植被/水/云不合适（植被贴图有透明像素，
+实测 `flower` 86% / `vine` 76%；水/云无几何语义），保持平面贴图并**保留 alpha**。
+`mine_cart` 走平面路径采 mc-lite 手工图标 `Invicon_Minecart`（是**实体**不是方块，
+mesher 无其几何模板 → 等轴测不适用）。
 
-`TEMPLATES` 为此加 `export`（不改任何几何定义）。`mesher.js` 可在 Node 下 import
-（无 three/DOM 依赖，符合红线 8 同构纯函数）。透明像素可直接入 atlas——实测
-`PNG.bitblt` 保留 `alpha=0`，`build-atlas.mjs` 无需改动。
-
-烘焙脚本**按方块名组织**（几何查 `BLOCKS[].geometry`、贴图查 `faces-data`，二者不必同名）：
-`stone_diorite_step` 的 geometry 是 `cobblestone_step`（mc-lite `BlockData.js:283` 同口径）
-但贴图是 `stone_diorite` → 图标形状与 `cobblestone_step` 相同、配色不同。
-
-**覆盖范围（9 项）**：栏杆×3 + 柱子×2 + 台阶×4。台阶一并换成等轴测以统一表达口径
-（避免同一背包里「平面横截面图案」与「立体等轴测」两套风格并存）——v1.23 采纳的 4 个
-台阶手工图标 tile 因此变成 orphan（PNG 与 tile 都保留，见 v1.24 修订说明）。
-保持平面贴图现状：`cactus`/`vine`/`lilypad`/`hanging_lamp`/`flower` 系 7 个方块；
-跳过 `chimney`/床三项（不在背包内）。
-
-`mine_cart` 保持 mc-lite 手工图标 `Invicon_Minecart` —— 矿车是**实体**不是方块，
-`mesher.js` 无其几何模板，等轴测方案不适用。
-
-**图标占画布比例**：等轴测形状约占画布 89%（span 系数 1.12 归一化），其余为透明背景。
-异形方块图标视觉上会比铺满正方形的普通方块图标**略小**——这是「能看出形状」的必要代价
-（铺满正方形正是本次要修的 bug）。
+**图标过期门禁（v1.26）**：图标是派生产物，权威输入是 mesher 几何 + `faces-data` 贴图。
+改背包内方块的贴图地址或几何后须重跑 `npm run icons`，否则图标**静默过期**（渲染旧形状/旧配色，
+肉眼看不出）。`npm run check:data` 用**输入指纹**比对当场抓到：指纹 = 几何顶点序列 + 三个可见面
+的贴图名 + **贴图内容哈希**（只钉贴图名会漏掉「换同名 PNG 内容」这条最常见路径，实测踩过）。
+指纹逻辑放共享模块 `tools/icon-fingerprint.mjs`（烘焙脚本与门禁同一份，红线 1）。
 
 > **两侧集合仍有差异（2026-09-03 实测记录，未处理）**：mc-heavy 118 项 vs mc-lite 手工清单
 > 107 项。差集中除已排除的 chimney/床三项外还有：`swamp_water`、`sky_wood`/`sky_stone`/
@@ -1401,7 +1418,7 @@ BlockRegistry 新增方块（如 `sky_stone`/`sky_grass`），属预期扩展。
 | 内容框 | 600×400、`#c6c6c6` 底 + 4px `#555` 边 + `box-shadow:5px 5px 0 #000` |
 | 网格 | `grid-template-columns:repeat(8,1fr)`、gap 8、`overflow-y:auto` |
 | 槽位 | 48×48、`#8b8b8b` 底、左上白/右下 `#373737` 斜角浮雕边；`.selected` 3px `#FFFF00` + `#a0a0a0` 底；`:hover` `#999` |
-| 图标 | 32×32、`image-rendering:pixelated`、atlas tile CSS `background` 裁剪（同快捷栏 `tileStyle()`）；异形方块走 `INVENTORY_ICONS` 专用手工图标（v1.23） |
+| 图标 | 32×32、`image-rendering:pixelated`、读预生成的 `background` 串（v1.26，`icons.json` 的 `inventory` 档）；**按显示尺寸烘焙 → 运行时零缩放** |
 | 名称 | `.item-name` 绝对定位顶部、10px 白字 + `text-shadow:1px 1px 0 #000`、溢出省略号 |
 | 空槽 | 不渲染（只列非空槽，mc-lite 同行为） |
 

@@ -443,6 +443,69 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
     **教训**：首次全量跑报 16 failed，根因是**在全量后台跑期间并发跑了负向验证**——
     两个 Playwright 实例争抢 CPU 与端口 8081 令计时断言系统性失败；单独重跑即 44/44。
     印证 CLAUDE.md 既有那条「计时断言 flaky 须单独跑」的口径，**并发跑测试是新增的失效路径**。
+- **全量背包图标离线烘焙 ✅（2026-09-03，v1.26 之后的独立改造；设计文档 v1.26）**：起因是用户
+  要求「预生成每个方块的立体缩略图，运行时直接引用，简化渲染逻辑」。**实测确认思路成立且运行时
+  确实简化**——我第一轮判断错了（漏了「预生成可以连裁剪数学一起预生成掉」这层）：
+  - **运行时约 91 行 → 1 行**：旧路径是「`tileOfName()` 两级查表 + `tileStyle()` 裁剪数学 +
+    写 4 个样式属性 + `INVENTORY_ICONS` 例外表」，新路径 `icon.style.background = css`。
+    实测预生成串与旧路径 computed style **逐项相等**（`backgroundPosition`/`backgroundSize`/
+    `backgroundImage` 全同）。同时移除 13 个钉 tile 名/裁剪参数的「改动放大器」用例。
+  - **用户四个决策全部落实**：① 非实心 14 项保持平面贴图（等轴测立方体对植被/水/云不合适，
+    实测植被贴图透明像素 `flower` 86% / `vine` 76%）；② **按显示尺寸烘焙**两套精确尺寸
+    （快捷栏 40px / 背包 32px）→ 运行时零缩放、像素风锐利；③ `mine_cart` 保留 mc-lite 手工
+    图标（是实体不是方块，mesher 无其几何模板）；④ 全量 **118 项**覆盖（等轴测 104 + 平面 14）。
+  - **独立 `assets/icons-atlas.png`**（1024²，占 29.5%）而非入世界 atlas → v1.24 记录的「新增
+    textures 子目录重排世界 tile 坐标」副作用**直接消失**，UI 不必加载 2048² 世界 atlas 只为裁图标。
+  - **Tier 1 改造（TDD，RED-GREEN + 负向验证）**：① 采样回调加第三参数 `face` 做**逐面采样**
+    ——实测实心 104 项里 17 项是多面不同贴图（`grass` 顶绿侧土、`chest`/`tnt` 顶侧不同），旧
+    `sampleTex(u,v)` 只采单面 → `grass` 顶面渲成土色（负向验证：注入「只采 face 0」→ 顶面变
+    土色 `G=85 R=121` 被抓）；② `cubeQuads()` 复用 mesher 的 `FACE_VERTICES`/`FACE_UVS`
+    （97 个实心方块无 TEMPLATES 模板 → fallback 单位立方体；红线 1：形状与 UV 只有一份权威）；
+    ③ 消除 `ISO_FACE_UVS` 第二份副本（实测与 mesher `FACE_UVS` 的 face 0/2/4 完全相同）→ 改
+    import。`mesher.js` 为此导出这两个常量（不改几何定义，与 v1.24 给 `TEMPLATES` 加 export 同模式）。
+  - **诚实交代一个测试弱点**（已写进注释，别高估它）：`cubeQuads` 顶点比对断言钉的是**值**，
+    「手写一份数值完全相同的第二份定义」会通过——它抓的是**漂移**不是「存在第二份定义」。
+    真正保证来自 `iso-icon.js` 走 import（结构上不可能漂移：实测改 mesher 的 +X 顶点从 1 到 1.2，
+    `cubeQuads()` 自动跟上、无副本可漏）。
+  - **补图标过期门禁**（范围扩到 118 项后必须补）：`check:data` 加指纹比对——指纹 = 几何顶点
+    序列 + 三个可见面贴图名 + **贴图内容哈希**（FNV-1a）。**实测发现并修掉一个真实缺陷**：
+    只钉贴图名会**漏报**「换同名 PNG 内容」（最危险方向：`Invicon_Minecart.png` 变了图标静默
+    过期而门禁放行）+ **误报**无关方块（改 `stone.png` 误报 `mine_cart`，因 faces-data 里
+    `mine_cart` 的 face0 是 `stone`）。修正：指纹含内容哈希 + 平面路径用 `flatTile()`（与烘焙
+    实际取图口径一致）。三种失效路径负向验证全过：改几何 / 改贴图映射 / 换同名 PNG。
+    指纹逻辑放共享模块 `tools/icon-fingerprint.mjs`（烘焙脚本与门禁**同一份**，红线 1；
+    `FLAT_BLOCKS` 清单也在此，两处漂移会让指纹比对得出错误结论）。
+  - **`tools/icon-fingerprint.mjs` 有意不做自动化测试覆盖（用户决策，2026-09-03）**：
+    该模块的正确性由**烘焙脚本与门禁共用同一份代码**这一结构保证（红线 1：不存在两份会漂移的
+    实现），加上落地时的三条路径负向验证（改几何 / 改贴图映射 / 换同名 PNG 内容，均实测抓到）。
+    **故不为它补单测**——它属 `tools/` 离线脚本，不是运行时热路径；`check:arch` 的静态门只扫
+    `src/`，不含 `tools/`。若将来有人改 `texHash()` 或 `FLAT_BLOCKS` 判定，须自行重跑上述三条
+    路径的负向验证（口径见本节与 `docs/testing-policy.md` §3.3），**不要指望有测试自动兜住**。
+  - **顺带清掉死资产**：删 `tools/bake-isometric-icons.mjs` + `assets/textures/inventory-icons/`
+    9 张 PNG（零运行时消费方、`package.json` 已指向新脚本、faces-data 无引用），重生成世界 atlas
+    **156 → 147** tile（体积 258KB → 230KB）。`atlas.spec.mjs` 的关系型断言自动跟上（无需改断言）。
+  - **一处断言口径改造（不是静默放宽）**：`test-iso-icon.js` 的三面明暗判据从「色数 > 贴图自身
+    38」改为**尺寸无关**的「顶面亮度 > 侧面亮度」。原因：旧阈值是按 64px 图标标定的，图标改 40px
+    后采样像素变少、色数降到 33 → 旧阈值失效。**直接调低数字属于静默放宽断言**（CLAUDE.md 规则
+    禁止），故改为测更本质的不变式（三面明暗差，与分辨率无关）。
+  - 落地 3 新增（`src/ui/icons.js` + `tools/bake-icon-atlas.mjs` + `tools/icon-fingerprint.mjs`）
+    + 2 新增产物（`assets/icons-atlas.png` 356KB + `icons.json`）+ 改（`mesher.js`/`iso-icon.js`
+    加 export 与逐面采样 / `hotbar.js`/`inventory.js`/`game.js` 运行时简化 / 三个测试文件改造 /
+    `check-data.mjs` 加图标门禁 / `eslint.config.mjs` 补 `Image` 全局）+ 删（旧烘焙脚本 + 9 张死 PNG）。
+    `npm run icons` 改指向 `bake-icon-atlas.mjs`。
+  - **门禁对照**（未凭文档免责，HEAD stash 分开按 spec 连跑拿分布）：`placeP95` HEAD 侧均值
+    **1.94**（3 failed/2 passed）vs 改动侧 **1.92**（2 failed/3 passed）——分布重叠、HEAD 侧均值
+    更高；`fastRemeshP95` HEAD 侧 **1.14** vs 改动侧 **1.16**——分布重叠。全量 E2E 两侧均偶发
+    1 failed 且失败 spec **轮换不同**（HEAD: `m3-rain` / 改动侧: `m1-acceptance`），单独跑全绿
+    → 全量负载计时抖动，非回退；`m1-acceptance` 的 `frameMs.p95=16.700000762939453`（超 16.7
+    by 7.6e-7）是已记录的 vsync 量化 flaky。`bench --check` 通过（fps 108~120、draw 489~545）；
+    基线文件未被跑图覆写。单测 270 全绿、lint 0 error（9 既有 camelcase warning）。
+  - **新增的维护约束**：改**背包内方块**的贴图地址或 mesher 几何后须重跑 `npm run icons`，否则
+    图标静默过期（忘跑会被 `check:data` 抓到）。改**非背包方块**的贴图无需重跑。
+  - **流程教训**：本次提交（`176e419`）漏了同步文档，违反 CLAUDE.md「需要新增机制/改动设计时，
+    先更新设计文档再动代码」——事后补了设计文档 v1.26 修订说明 + §4.5.4 图标章节重写 +
+    CLAUDE.md 目录结构/命令清单/Tier 3 例子勘误。**教训：新增产物与删除文件时，必须同步
+    「目录结构清单」「开发命令清单」「现状声明」三类文档，历史记录段不动。**
 - **M4 玩家第一人称武器 ⬜（第二阶段，M3.2 已提交，可开始）**：独立 Epic；`WorldEditor` 批量编辑、
   DDA hitscan、手枪/MAG7/加特林的受控 GLB 相机视图模型、曳光、音效和可选方块破坏。
   规格：`docs/superpowers/specs/2026-08-23-m4-player-weapons-design.md`；计划：
@@ -609,28 +672,34 @@ mc-heavy/
 │  └─ testing-policy.md        # 测试分级唯一权威（Tier 1~4 判据 + 门禁分层）
 ├─ tools/build-atlas.mjs       # atlas 离线打包（npm run atlas）
 ├─ tools/bake-procedural-textures.mjs # 程序化贴图烘焙（mc-lite canvas 材质 → PNG）
-├─ tools/bake-isometric-icons.mjs # 异形方块等轴测背包图标烘焙（npm run icons，v1.24）
+├─ tools/bake-icon-atlas.mjs   # 全量背包图标离线烘焙（npm run icons，v1.26）：118 项×两套尺寸
+│                              #   → assets/icons-atlas.png + icons.json（预生成 CSS 串+指纹）
+├─ tools/icon-fingerprint.mjs  # 图标输入指纹共享模块（v1.26）：烘焙脚本与 check:data 同一份逻辑
 ├─ tools/check-architecture.mjs # 静态架构门（npm run check:arch）：红线可静态检查的部分
 ├─ tools/check-data.mjs        # 数据契约门（npm run check:data）：关系型断言取代硬编码计数
+│                              #   （v1.26 加图标过期指纹检查）
 ├─ assets/
 │  ├─ textures/                # 从 mc-lite 复制
-│  │  ├─ procedural/           # 程序化贴图烘焙产物
-│  │  └─ inventory-icons/      # 等轴测图标烘焙产物（v1.24）
-│  ├─ atlas.png + atlas.json   # 生成产物，提交入库
+│  │  └─ procedural/           # 程序化贴图烘焙产物
+│  ├─ atlas.png + atlas.json   # 世界渲染 atlas 生成产物，提交入库（v1.26 后 147 tile）
+│  ├─ icons-atlas.png          # 背包图标 atlas（v1.26，独立于世界 atlas，1024²）
+│  ├─ icons.json               # 图标 manifest：预生成 CSS 串 + 输入指纹（v1.26）
 │  └─ structures/              # 从 mc-lite 复制 JSON
 └─ src/
    ├─ core/        # game.js / scheduler.js / worker-pool.js / perf.js / perf-hud.js
    ├─ voxel/       # constants / block-registry / chunk-column / world-data / blocks-data / faces-data
    ├─ gen/         # noise.js / terrain.js（M2 加 structure-index / structures/*）
    ├─ mesh/        # mesher.js / lighting.js / atlas-loader.js（Worker 同构）
-   │               #（v1.24 加 iso-icon.js 等轴测投影纯函数；mesher.js 导出 TEMPLATES
-   │               #  供图标烘焙复用——形状的唯一权威，图标不得有第二份几何定义）
+   │               #（v1.24 加 iso-icon.js 等轴测投影纯函数；mesher.js 导出 TEMPLATES /
+   │               #  FACE_VERTICES / FACE_UVS 供图标烘焙复用——形状与 UV 的唯一权威，
+   │               #  图标不得有第二份几何定义。v1.26 加 cubeQuads() 单位立方体 fallback）
    ├─ render/      # render-world.js（BatchedMesh 发布层）/ materials.js（TSL）
    ├─ player/      # player.js / physics.js / raycast.js / step-lift.js
    │               #（M3-4 加 hotbar-items.js；M3.1 加 inventory.js 物品模型；
    │               #  M3.2 加 orientation.js 朝向三分支纯函数）
    ├─ ui/          # coords-hud.js / hotbar.js / settings-panel.js / settings.js（M3-4）
-   │               #（M3.1 加 inventory.js 背包面板：DOM 方案照搬 mc-lite）
+   │               #（M3.1 加 inventory.js 背包面板：DOM 方案照搬 mc-lite；
+   │               #  v1.26 加 icons.js 图标 manifest 加载，hotbar/inventory 改读预生成 CSS 串）
    ├─ save/        # persistence.js（IndexedDB edits）
    └─ workers/     # world-worker.js（GEN/MESH/LIGHT 统一入口，池化）
 ```
@@ -657,9 +726,12 @@ npm test                       # Playwright 全部验收（tests/*.spec.mjs）
 npm run bench                  # M3-5 性能基线跑图（4 场景 → docs/m3-baseline.{md,json}）
                                #   加 -- --check 为回归门禁（回退 >10% 阻断，退出码 1）
 npm run lint                   # eslint src tools tests
-npm run icons                  # 烘焙异形方块等轴测背包图标（v1.24，改 mesher 几何后需跑）
-npm run atlas                  # 重新生成 assets/atlas.png + atlas.json
+npm run icons                  # 烘焙全量背包图标（v1.26）→ assets/icons-atlas.png + icons.json
+                               #   改背包内方块的贴图地址或 mesher 几何后需跑，否则图标静默过期
+                               #   （忘跑会被 npm run check:data 的指纹检查抓到）
+npm run atlas                  # 重新生成 assets/atlas.png + atlas.json（世界渲染 atlas）
                                #   注：新增 textures 子目录会重排已有 tile 坐标（shelf 装箱按字母序）
+                               #   v1.26 起背包图标独立于世界 atlas，二者不再互相影响
 ```
 
 **门禁分层**（何时跑什么，详见 [`docs/testing-policy.md`](docs/testing-policy.md) §6）：
@@ -691,9 +763,15 @@ scheduler/physics）再加 `npm run bench -- --check`。**不要**为改一个�
 测试一开始就通过，说明测试写错了或在测已有行为。RED 阶段不得把新测试从
 `src/tests/index.html` 临时移除来「通过」。
 
-**Tier 3 的典型场景**（用户明确要求的口径）：改 `faces-data.js` 的贴图地址、修正
-`INVENTORY_ICONS` 的 alias 映射、改 HUD 文案 —— **直接改，不需要先写失败测试**，
-改完跑 `npm run check`（2.6s）即可。这类改动的正确性肉眼即可判定，TDD 只增加成本。
+**Tier 3 的典型场景**（用户明确要求的口径）：改 `faces-data.js` 的贴图地址、改 HUD 文案 ——
+**直接改，不需要先写失败测试**，改完跑 `npm run check`（2.6s）即可。这类改动的正确性肉眼即可
+判定，TDD 只增加成本。
+
+> **v1.26 后的一个新约束**：背包图标是离线烘焙产物（`assets/icons-atlas.png`），采样源正是
+> `faces-data` 的贴图。故改**背包内方块**的贴图地址（或 mesher 几何）后，须重跑
+> `npm run icons` 才能让图标跟上 —— 否则图标静默过期（渲染旧形状/旧配色，肉眼看不出）。
+> 忘跑会被 `npm run check:data` 的指纹检查当场抓到（三种失效路径：改几何 / 改贴图映射 /
+> 换同名 PNG 内容，均经负向验证）。改**非背包方块**的贴图无需重跑。
 
 修改 `src/**/*.js` 后任务结束前跑 `npm run lint`，保持新增代码 0 error（warning 可接受）。
 

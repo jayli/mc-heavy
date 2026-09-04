@@ -67,10 +67,14 @@
 | 对象 | 例子 |
 |---|---|
 | 方块→贴图映射 | `voxel/faces-data.js` 的 tile 名 |
-| 背包图标表 | `ui/hotbar.js` 的 `INVENTORY_ICONS` |
+| 图标平面清单 | `tools/icon-fingerprint.mjs` 的 `FLAT_BLOCKS`（哪些方块走平面贴图而非等轴测） |
 | 物品排除集合 | `NON_PLACEABLE_ITEMS` / `HIDDEN_FROM_INVENTORY` |
 | atlas 产物 | tile 数、gutter、size |
 | 资源路径常量 | `WEAPON_ASSET_URLS`（M4）之类 |
+
+> **v1.26 变更**：`ui/hotbar.js` 的 `INVENTORY_ICONS` 图标表已删除（图标改为全量离线烘焙产物
+> `assets/icons-atlas.png` + `icons.json`）。改背包内方块的贴图/几何后须重跑 `npm run icons`
+> ——忘跑会被 `check:data` 的指纹检查抓到（见 §3.3）。
 
 ### 3.2 关键改造：关系型断言取代硬编码计数
 
@@ -82,9 +86,14 @@
 
 | 旧（硬编码） | 新（关系型） | 好处 |
 |---|---|---|
-| `expect(count).toBe(156)` | `faces-data` + 图标表引用的每个 tile 都必须在 atlas 里 | 新增贴图**不用改断言**；悬空引用当场报错 |
+| `expect(count).toBe(156)`（历史断言） | `faces-data` 引用的每个 tile 都必须在 atlas 里 | 新增贴图**不用改断言**；悬空引用当场报错 |
 | `expect(items).toBe(118)` | 物品集合 = `registry.all()` − 两个排除集合 | 改排除集合**自动跟上**（原型已实测验证） |
-| `expect(iconCount).toBe(9)` | 图标表里每个 `inventory-icons/*` 项都必须有对应烘焙产物 | 忘跑 `npm run atlas` 当场报错（图标静默过期） |
+| `expect(iconCount).toBe(9)`（v1.24） | 图标**输入指纹**比对：几何顶点序列 + 贴图名 + 贴图内容哈希 | 改几何/贴图/换同名 PNG 忘跑 `npm run icons` → 当场报错（图标静默过期） |
+
+> **v1.26 变更**：atlas 现为 147 tile（背包图标已独立到 `icons-atlas.png`）。第一行的 `toBe(156)`
+> 是**历史反例**——它正是要批判的「硬编码计数」反模式，实际已改为与 `assets/textures` 的 PNG 数
+> 比对（`atlas.spec.mjs`），新增贴图自动跟上。第三行的图标同步从「tile 计数」改为**指纹比对**
+> （精确判定，含贴图内容哈希，能抓「换同名 PNG 内容」这条计数抓不到的路径）。
 
 **保留硬编码的例外**：`size=2048`、`gutter=16` 是**设计常量**（§4.4.1 定稿），不是随改动漂移的
 计数 → 保留 `toBe`。判据：这个数是「设计决策」还是「事实统计」？前者钉死，后者用关系式。
@@ -92,13 +101,29 @@
 ### 3.3 Tier 2 的门禁
 
 `npm run check:data`（`tools/check-data.mjs`，~1s，无需浏览器）：
-- **引用完整性**：`faces-data` + `INVENTORY_ICONS` 引用的 tile 必须都存在于 `atlas.json`
+- **引用完整性**：`faces-data` + 平面图标手工 tile 引用的 tile 必须都存在于 `atlas.json`
 - **物品集合关系式**：`buildItemNames(registry)` ≡ `registry.all()` − 排除集合
-- **图标同步**：图标表的等轴测项必须都已入 atlas（防「改了 mesher 几何只跑 icons 忘跑 atlas」）
-- **图标表无幽灵**：图标表的每一项都必须是背包集合内的物品
+- **图标 manifest 覆盖**：背包集合与 `icons.json` 两套尺寸档**双向一致**（缺项 = 忘跑 icons；
+  幽灵项 = 方块移出背包但 manifest 残留）
+- **图标 atlas 产物**：`icons-atlas.png` 存在且尺寸与 `icons.json` 的 `size` 一致
+- **图标过期指纹**（v1.26 核心）：用当前源码重算每个方块的输入指纹与烘焙时写进 `icons.json`
+  的比对，不匹配即报「跑 `npm run icons`」。指纹含**贴图内容哈希** → 能抓「换同名 PNG 内容」
+- **几何路径正确性**：非实心方块必须在 `FLAT_BLOCKS`（否则被当实心立方体渲染，错）；异形
+  geometry 指向缺失的 `TEMPLATES` 条目 → 静默 fallback 立方体（错）。`geometry='box'`/null 是
+  正常的单位立方体标记，**不是缺陷**
 - **测试注册完整性**：`src/tests/test-*.js` 必须全部出现在 `src/tests/index.html`
   （漏注册 = 测试静默不跑，比测试失败更危险）
-- **烘焙产物存在性**：`TARGET_BLOCKS` 的每一项都必须有对应 PNG
+
+**改指纹逻辑时须手动重跑的三条负向验证**（`tools/icon-fingerprint.mjs` 无自动化测试，见 §9 例外）：
+
+| 路径 | 做法 | 预期 |
+|---|---|---|
+| 改几何 | 改 `mesher.js` 某个 `TEMPLATES` 条目的顶点 | 不跑 `npm run icons` 直接 `check:data` → 报该方块过期 |
+| 改贴图映射 | 改 `faces-data.js` 某方块的 tile 名 | 同上 → 报该方块过期 |
+| 换同名 PNG 内容 | 改一张贴图 PNG 的像素、不动 `faces-data` | 同上 → 报该方块过期（这条最易漏：只钉贴图名抓不到） |
+
+验完把改动还原。第 3 条同时验证**不误报无关方块**（改 `stone.png` 时 `mine_cart` 不应被报）——
+实测踩过这个缺陷，根因是平面路径的取图口径（`flatTile()`）与指纹不一致。
 
 ---
 
@@ -109,25 +134,32 @@
 改坏了肉眼立刻可见，修复成本 = 改回去。**不需要写测试，不需要 RED-GREEN**，只需 `npm run lint`。
 
 - **贴图地址**：`faces-data.js` 里改 tile 名（如 `planks_step → planks_birch` 改成别的）
-- **alias / 映射修正**：`INVENTORY_ICONS` 里换 tile、修一个写错的键名
 - **CSS / DOM 结构**：`ui/inventory.js` 的样式、`ui/hotbar.js` 的槽位尺寸、`index.html` 的准心样式
 - **文案**：HUD 文字、设置面板标签、错误提示措辞
 - **注释与文档措辞**：代码注释、设计文档行文
 - **资源路径常量**：GLB / 音频 / PNG 的路径字符串
 
+> **v1.26 后的新约束**：改**背包内方块**的贴图地址属于 Tier 3，但改完须重跑 `npm run icons`
+> （图标是离线烘焙产物，采样源正是 `faces-data`）。忘跑会被 `check:data` 的指纹检查抓到。
+> 改**非背包方块**的贴图无需重跑。
+
 ### 4.2 既有 Tier 3 型测试的处理
 
-`src/tests/test-ui.js`（14 用例中 7 个）与 `test-inventory-ui.js`（25 用例中 6 个）里有 **13 个**
-用例钉死具体 tile 名或 CSS 值（如断言 `tileOfName('planks_step') === 'inventory-icons/planks_step'`）。
-这类用例：
+`src/tests/test-ui.js` 与 `test-inventory-ui.js` 曾有 **13 个**用例钉死具体 tile 名或 CSS 值
+（如断言 `tileOfName('planks_step') === 'inventory-icons/planks_step'`）。这类用例的处置：
 
-- **不删除**：它们仍有价值——防「图标表键名写错导致渲染空槽」（与真实 bug 同观感，肉眼难辨是空槽还是贴图）
-- **但降级为 Tier 2 口径**：改 tile 名时**允许直接同步改断言**，不需要 RED-GREEN 流程，
-  不需要在文档里记「两处既有断言口径变更」
-- **保留关系型部分**：其中「异形方块不得回落母方块贴图」「竖柱与横梁图标必须不同」这类
-  **不变式断言**仍是 Tier 1 级（防的是撞脸这类肉眼难辨的错误），不得放宽
+- **钉值的用例随事实更新或随载体删除**：v1.26 把图标改为离线烘焙产物后，`tileOfName()`/
+  `INVENTORY_ICONS` 已删除 → 测它们的 9 个用例**一并删除**（不是「保留但降级」）。
+  它们保护的失效路径「图标回落 `faces-data` → 撞脸」在新架构下**结构上不存在**
+  （图标不再从 faces-data 派生，而是独立烘焙），等价保障改由两处承担：
+  ① Tier 1 单测 `test-iso-icon.js` 钉「`grass` 顶面必须是草绿、不得采成土色」；
+  ② `check:data` 的图标契约（manifest 与背包集合双向一致 + 指纹未过期）。
+- **钉不变式的用例必须保留并迁移**：「异形方块图标必须与母方块不同」「竖柱 vs 横梁形状不同」
+  「正置 vs 倒置台阶形状不同」这类是 **Tier 1 级**（防撞脸这类肉眼难辨的错误），不得放宽。
+  v1.26 把它们从「读旧 PNG」迁到「读 `icons-atlas.png` 裁矩形」，判据不变。
 
-判据：**断言钉的是「值」还是「不变式」**？钉值 → Tier 2/3，可随事实更新；钉不变式 → Tier 1，不得放宽。
+判据：**断言钉的是「值」还是「不变式」**？钉值 → 随载体存亡（载体删了就删，别为死代码留断言）；
+钉不变式 → Tier 1，载体变了要迁移而不是删除。
 
 ---
 
@@ -155,7 +187,7 @@
 | 层 | 命令 | 耗时（本机实测 2026-09-03） | 何时必须跑 |
 |---|---|---|---|
 | **静态架构门** | `npm run check:arch` | 285ms（扫 51 个源文件） | **每次改 `src/**`**（红线回退当场拦住） |
-| **数据契约门** | `npm run check:data` | 277ms（7 项契约） | 改了 `faces-data` / `inventory` / `hotbar` / `tools/` / atlas |
+| **数据契约门** | `npm run check:data` | 307ms（7 项检查） | 改了 `faces-data` / `inventory` / `tools/` / atlas / 背包内方块的贴图或几何 |
 | **lint** | `npm run lint` | 1.1s | 每次改 `src/**/*.js`（0 error，warning 可接受） |
 | **单测** | `npm test`（`tests/harness.spec.mjs` 跑全部浏览器单测） | ~10s | 改了 Tier 1 对象 |
 | **全量 E2E** | `npm test`（27 spec） | ~2.8min | 里程碑收尾、提交前 |
@@ -168,7 +200,7 @@
 | 改动类型 | 最小必跑门禁 |
 |---|---|
 | 改贴图地址 / alias / 文案（Tier 3） | `npm run check` |
-| 改物品集合 / 图标表 / atlas（Tier 2） | `npm run check` |
+| 改物品集合 / `FLAT_BLOCKS` / atlas（Tier 2） | `npm run check` |
 | 改纯函数算法 / 协议 / 数据模型（Tier 1） | `npm run check` + `npm test` |
 | 改热路径（mesher/materials/render/scheduler/physics） | 上述 + `npm run bench -- --check` |
 | 改 GPU 材质效果（Tier 4） | 上述 + 像素级实测 |
@@ -239,3 +271,8 @@ M4~M7 的 plan 文档已按「全部任务 RED-GREEN」写成。本分级策略�
 - **但 §6 的门禁映射表属 Tier 1**（它决定热路径是否跑 bench）→ 改这张表须谨慎，
   漏掉一个热路径目录会让性能回退静默逃逸
 - `tools/check-*.mjs` 自身属 **Tier 1**（门禁脚本错了会放行错误）→ 须有断言覆盖其判定逻辑
+  - **例外（用户决策，2026-09-03）**：`tools/icon-fingerprint.mjs` **不做自动化测试覆盖**。
+    理由：正确性由「烘焙脚本与门禁共用同一份代码」这一结构保证（红线 1，不存在两份会漂移的实现），
+    加上落地时的三条路径负向验证（改几何 / 改贴图映射 / 换同名 PNG 内容）。它是 `tools/` 离线脚本、
+    非运行时热路径。**代价**：若将来改 `texHash()` 或 `FLAT_BLOCKS` 判定，须自行重跑那三条负向验证，
+    没有测试会自动兜住——这是已知取舍，不是遗漏。
