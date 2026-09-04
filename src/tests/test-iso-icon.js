@@ -286,6 +286,79 @@ test('iso-icon: 柱子图标有三面明暗分层（顶面比侧面亮，尺寸�
   assertTrue(right > left, `右侧(+X) ${right.toFixed(1)} > 左侧(+Z) ${left.toFixed(1)}（shade 0.75 > 0.55）`);
 });
 
+// --- 遮挡正确性（v1.28：深度度量 y 符号 + 逐像素深度测试） ---
+
+/**
+ * 恒色贴图下的三面亮度（`ISO_SHADE` × 100）：顶面 100 / +X 75 / +Z 55。
+ * 判据用亮度反推「这块像素属于哪个面」—— 无需暴露面占据统计，现有 API 即可判定。
+ */
+const FLAT_TEX = () => [100, 100, 100];
+
+/** 画布下半部里「顶面亮度（100）」的像素数 —— 顶面出现在下半部即意味着遮挡判定有误 */
+function topFacePixelsInLowerHalf(quads, size = 32) {
+  const d = renderIsoIcon(quads, size, FLAT_TEX);
+  let n = 0;
+  for (let y = Math.floor(size / 2); y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const i = (y * size + x) * 4;
+      if (d[i + 3] === 0) continue;
+      if (d[i] === 100 && d[i + 1] === 100 && d[i + 2] === 100) n++;
+    }
+  }
+  return n;
+}
+
+/**
+ * 深度度量方向：等轴测投影 `sx=x-z`、`sy=(x+z)/2-y` 的两轴叉乘得投影平面法线
+ * `(-1,-1,-1)` → 视线方向 `(1,1,1)` → **正确深度 = x+y+z（越高越近）**。
+ *
+ * 回归防线：屏幕上位置最高的顶面（投影 sy 平均最小）必须同时拥有最大的 depth。
+ * 若有人把深度度量写回 `x+z-y`（y 符号反了），这条会抓到 —— 该度量对只在 y 上不同
+ * 的两点判定完全相反（`(0,1,0)` vs `(0,0,0)`：判成 -1 < 0 = 高处更远）。
+ *
+ * 用 `cobblestone_step_updown` 作载体：它有两个 +Y 面 —— 真顶面（y=1）与下半柱的
+ * 柱顶面（y=0.5，被上半块完全遮住）。现状错度量下真顶面 depth=0.00 < 柱顶面 0.75。
+ */
+test('iso-icon: 屏幕位置最高的顶面 depth 最大（深度度量 y 符号不得反）', () => {
+  const polys = isoPolygons(TEMPLATES.cobblestone_step_updown).filter((p) => p.face === 2);
+  assertEqual(polys.length, 2, '两个 +Y 面（真顶面 y=1 + 柱顶面 y=0.5）');
+  const avgSy = (p) => p.v.reduce((s, v) => s + v[1], 0) / p.v.length;
+  // 屏幕位置最高 = sy 平均最小（sy 越小越靠上）
+  const highest = polys.reduce((a, b) => (avgSy(a) < avgSy(b) ? a : b));
+  const maxDepth = Math.max(...polys.map((p) => p.depth));
+  assertEqual(highest.depth, maxDepth,
+    `屏幕最高的顶面（sy 平均 ${avgSy(highest).toFixed(3)}）depth=${highest.depth.toFixed(3)} ` +
+    `必须是顶面中最大（实得最大 ${maxDepth.toFixed(3)}）——越高越近`);
+});
+
+/**
+ * 回归防线：**被完全遮住的面不得占据像素**（本次修的幻影面 bug）。
+ *
+ * `cobblestone_step_updown` 的下半柱在 y=0.5 有个顶面，被上半块（x/z 范围完整覆盖它）
+ * **完全遮住** —— 现实中看不见。但 `VISIBLE_FACES` 只按面索引过滤、不知道它被遮挡，
+ * 照样发射；painter 的平均深度排序又判它比柱侧面更近 → 覆盖掉本该可见的柱侧面，
+ * 渲成一片亮楔形（实测现状 32px 下 88px 顶面色，修正后 4px 边界残留）。
+ */
+test('iso-icon: 倒置台阶下半部不得出现顶面（被遮住的面不占像素）', () => {
+  const n = topFacePixelsInLowerHalf(TEMPLATES.cobblestone_step_updown);
+  assertTrue(n < 10,
+    `倒置台阶下半画布顶面像素 ${n}px < 10（柱顶面被上半块完全遮住，不应可见）`);
+});
+
+/**
+ * 回归防线的**另一半**：防止「粗暴把所有顶面砍掉」的假修法。
+ *
+ * `planks_step`（下半全幅 + 左上 1/4 柱）的柱顶面在 y=1，是**外部面** = 阶梯踏面，
+ * 现实中**可见**、必须保留。它与倒置台阶互为镜像：修正后倒置的幻影消失（88→4px）、
+ * 正置的踏面反而露出更多（84→109px）。两条合起来才精确表达正确语义 —— 单独任一条
+ * 都能被「全砍」或「全留」的粗暴修法骗过。
+ */
+test('iso-icon: 正置台阶阶梯踏面必须保留（外部顶面不得误判为遮挡）', () => {
+  const n = topFacePixelsInLowerHalf(TEMPLATES.planks_step);
+  assertTrue(n > 100,
+    `正置台阶下半画布顶面像素 ${n}px > 100（柱顶面 y=1 是阶梯踏面，外部面必须可见）`);
+});
+
 // --- v1.26：全量图标（消除 UV 副本 + 单位立方体 fallback + 逐面采样） ---
 // 这三条是 Tier 1 改造点，各有对应的回归防线。
 

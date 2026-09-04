@@ -22,6 +22,21 @@ export function projectIso(x, y, z) {
   return [x - z, (x + z) / 2 - y];
 }
 
+/**
+ * 视线方向上的深度（越大越靠近观察者）。
+ *
+ * 推导：两个投影轴 u=(1,0,-1)、v=(0.5,-1,0.5) 叉乘得投影平面法线
+ * `n = u × v = (-1,-1,-1)` → 视线从 (+,+,+) 看向原点 → **正确深度 = x+y+z**。
+ *
+ * **历史 bug（v1.28 修）**：曾写 `x+z-y`，y 符号反了。与正确度量差 `2y`，对只在 y 上
+ * 不同的两点判定**完全相反**（`(0,1,0)` vs `(0,0,0)`：判成 -1 < 0 = 高处更远）。实心
+ * 方块三个可见面互不重叠，排序不影响结果 → 长期未被发现；异形方块（台阶/栏杆/柱子）
+ * 的面会重叠，错度量直接导致遮挡判定反了。
+ */
+function isoDepth(x, y, z) {
+  return x + y + z;
+}
+
 // 三面明暗系数（**UI 图标惯例，不是世界渲染的 shade 口径**）：
 // 世界渲染的 shade 是 `light × AO`（§4.3 顶点阶段 float varying），背包图标不参与光照
 // 系统，用固定三面系数表达立体感。二者不可复用（与 §4.3 吊灯 blocklight 源 vs 材质
@@ -35,23 +50,31 @@ const VISIBLE_FACES = new Set([0, 2, 4]);
 
 /**
  * quad 数组 → 投影多边形数组（按深度远→近排序，供 painter 算法依次覆盖）。
+ *
+ * **v1.28：额外带 `dv`（逐顶点深度）**。面平均深度 `depth` 只能用于排序，对被整片遮住
+ * 的面无能为力（见 `renderIsoIcon` 的逐像素深度测试说明）；`dv` 供重心插值算出每个
+ * 像素的真深度。
+ *
  * @param {Array<{v:number[][],face:number}>} quads TEMPLATES 条目（格内 0..1 局部坐标）
- * @returns {Array<{v:number[][],face:number,depth:number}>} `v` 已是投影后的 [sx,sy]
+ * @returns {Array<{v:number[][],face:number,depth:number,dv:number[]}>}
+ *          `v` 已是投影后的 [sx,sy]；`dv[i]` 是 `v[i]` 对应顶点的视线深度
  */
 export function isoPolygons(quads) {
   const polys = [];
   for (const q of quads) {
     if (!VISIBLE_FACES.has(q.face)) continue;
-    // 深度 = x + z - y（越大越靠近观察者）。除以顶点数取平均即可——只用于排序，
-    // 不需要绝对尺度。
+    // 深度 = x + y + z（越大越靠近观察者）。除以顶点数取平均即可——只用于排序，
+    // 不需要绝对尺度。逐顶点深度另存于 `dv` 供逐像素测试。
     let depth = 0;
-    const v = [];
+    const v = [], dv = [];
     for (const [x, y, z] of q.v) {
       v.push(projectIso(x, y, z));
-      depth += x + z - y;
+      const d = isoDepth(x, y, z);
+      dv.push(d);
+      depth += d;
     }
     // `uv` 透传：模板自带自定义 UV 的（吊灯绳/灯体棱柱）优先于按面查表
-    polys.push({ v, face: q.face, depth: depth / q.v.length, uv: q.uv });
+    polys.push({ v, face: q.face, depth: depth / q.v.length, dv, uv: q.uv });
   }
   polys.sort((a, b) => b.depth - a.depth); // 远的先画 → 近的覆盖
   return polys;
@@ -90,15 +113,32 @@ export function cubeQuads() {
   }));
 }
 
-// 扫描线填充：把多边形覆盖到的像素标记为 owner（后画的覆盖前画的 = painter 算法）。
-// 返回 { owner, bary }：owner[y][x] = 多边形索引（-1 = 无覆盖），bary[y][x] = UV 插值权重。
+/**
+ * 扫描线填充 + **逐像素深度测试**（v1.28，取代 painter 的整面覆盖）。
+ *
+ * **为什么必须逐像素**：painter 用「面平均深度」排序后整面覆盖，对被**整片遮住**的面
+ * 无能为力 —— 面 A 的平均深度可能比面 B 大（判 A 更近），但 A 的某些区域实际在 B 之后。
+ * 实测载体 `cobblestone_step_updown`：下半柱在 y=0.5 的顶面被上半块完全遮住（现实中
+ * 看不见），但它的平均深度大于柱侧面 → painter 把它画在后面、覆盖掉本该可见的柱侧面，
+ * 渲成一片亮楔形。**仅修正深度度量（`isoDepth`）不够** —— 三方案实测（32px 画布，判据 =
+ * 下半画布顶面亮度像素，与 `test-iso-icon.js` 同一口径）：
+ * 错度量 + painter **88px** → 仅改度量 + painter **仍 88px** → 正确度量 + 逐像素 **4px**
+ * （仅剩深度并列的边界像素）。
+ *
+ * 逐像素深度 = 重心插值该 quad 四个顶点的视线深度（`dv`），与 GPU 的 z-buffer 同语义。
+ * 排序仍保留（`isoPolygons` 的远→近）：它决定**深度并列**时的胜负（`>` 而非 `>=`
+ * → 后画的并列面不覆盖先画的，保持 painter 的既有语义）。
+ *
+ * 返回 { owner, bary }：owner[y][x] = 多边形索引（-1 = 无覆盖），bary[y][x] = UV 插值权重。
+ */
 function scanFill(polys, size, toPx) {
   const owner = new Int32Array(size * size).fill(-1);
   const bary = new Array(size * size);
+  const zbuf = new Float64Array(size * size).fill(-Infinity);
   for (let pi = 0; pi < polys.length; pi++) {
     const p = polys[pi];
     const pts = p.v.map(toPx);
-    // quad 拆两三角形（A,B,C) 与 (A,C,D)），各自重心坐标插值 UV。
+    // quad 拆两三角形（A,B,C) 与 (A,C,D)），各自重心坐标插值 UV 与深度。
     // 模板顶点序是逆时针（从面外向内看），拆法固定。
     const tris = [[0, 1, 2], [0, 2, 3]];
     for (let y = 0; y < size; y++) {
@@ -116,8 +156,17 @@ function scanFill(polys, size, toPx) {
         for (let x = x0; x <= x1; x++) {
           if (x < 0 || x >= size) continue;
           const idx = y * size + x;
+          const bw = baryWeights(p, pts, tris, x + 0.5, y + 0.5);
+          // 重心插值真深度；落空（退化三角形）回落面平均深度
+          let d = p.depth;
+          if (bw) {
+            d = 0;
+            for (let k = 0; k < 3; k++) d += bw.w[k] * p.dv[bw.idx[k]];
+          }
+          if (d <= zbuf[idx]) continue; // 已有更近的面占据 → 本面在此像素被遮挡
+          zbuf[idx] = d;
           owner[idx] = pi;
-          bary[idx] = baryWeights(p, pts, tris, x + 0.5, y + 0.5);
+          bary[idx] = bw;
         }
       }
     }
