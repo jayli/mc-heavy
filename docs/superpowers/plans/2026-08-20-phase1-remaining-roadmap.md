@@ -288,8 +288,10 @@ Playwright 44 用例不变、全量回归 **44/44 全绿**；lint 0 error、`ben
 
 - 27 个 Playwright spec 文件（44 个测试用例；m1-acceptance 计时断言高负载下偶发贴线 flaky，单跑全绿）
 - 浏览器内单元测试全绿（harness；用例数以 `npm run check:data` 输出为准，文档不硬编码计数）
-- 冻结断言：fps ≥90（120Hz 本机 ≥115）、编辑 p95 <2ms、draw 受控；atlas tile 数以 `npm run check:data` 为准（构成：方块纹理 + 程序化烘焙 + 等轴测图标）
+- 冻结断言：fps ≥90（120Hz 本机 ≥115）、编辑 p95 <2ms、draw 受控；atlas tile 数以 `npm run check:data` 为准（构成：方块纹理 + 程序化烘焙。**v1.26 起背包图标独立于世界 atlas**，在 `assets/icons-atlas.png`）
 - 性能基线门禁：`npm run bench` 采集 / `npm run bench -- --check` 回退 >10% 阻断（结构类 2%）
+- **测试分级门禁**（v1.25）：`npm run check` = `check:arch`（红线静态门）+ `check:data`（数据契约，
+  含图标过期指纹检查）+ lint，2.6s，日常改动的最小门。分级判据见 `docs/testing-policy.md`
 
 ---
 
@@ -1034,6 +1036,34 @@ m1-acceptance 的 `digP95` 曾疑似上移，经 HEAD 对照各连跑 4 次证�
 **落地文件**：3 改 —— `src/mesh/mesher.js`（`EMISSIVE_MATERIALS` Set + 两处 packed 写入 OR bit13）
 + `src/render/materials.js`（bit13 解包 + cutout 通道 emissive 加项）
 + `src/tests/test-mesher.js`（+4 用例，含 glowstone 回归防线）。
+
+---
+
+## M3.2 之后的独立 bugfix / 改造记录（v1.22 ~ v1.26）
+
+按时间序。详细实施记录见 CLAUDE.md 的进度条目与设计文档对应版本的修订说明，此处只记
+「做了什么 + 状态 + 对后续的影响」。
+
+| 版本 | 事项 | 状态 | 要点 |
+|---|---|---|---|
+| v1.22 | 吊灯 UV 分区与 quad 级自发光 | ✅ `b9b8699` | **已知有意偏离 mc-lite**（实测 mc-lite 两几何 UV 均为全幅、绳吃 emissive 呈亮色）。目标外观：绳单色深灰 + 灯体发光暖黄 + 灯面不含绳图案。模板 quad 加可选字段 `uvRegion`/`em`；chimney 等同款 prismQuads 行为零变化 |
+| v1.23 | 背包专用图标表 | ✅ `245fb4d` | 台阶类图标与母方块撞脸 → 用 atlas 里 13 个 orphan tile 中的 5 张专用图标。follow mc-lite 的做法（其机制在 `ItemIconUtils.js`，v1.24 勘误了 v1.23 文档对此的两处错误论断） |
+| v1.24 | 异形方块等轴测图标 | ✅ `cd0d7d4` | 9 项异形方块（栏杆×3 + 柱子×2 + 台阶×4）改离线烘焙等轴测投影图标。**形状权威 = mesher `TEMPLATES`**（加 export）；采样走 faces-data 的游戏内实际贴图 → 配色与世界渲染一致。v1.23 的 4 张手工台阶图标 tile 变 orphan |
+| v1.25 | 测试分级策略与静态门禁 | ✅ `8e9f721` | 分级判据 = 「改坏了会怎样、多久能被发现」，非改动大小。Tier 1 必须 TDD / Tier 2 门禁断言免 TDD / Tier 3 免测试 / Tier 4 像素实测。新增 `check:arch`（红线静态门）+ `check:data`（关系型断言取代硬编码计数）。权威：`docs/testing-policy.md` |
+| v1.26 | 全量背包图标离线烘焙 | ✅ `176e419` + `c8e9dc9` | **运行时约 91 行 → 1 行**（预生成 CSS 串取代查表+裁剪数学）。独立 `icons-atlas.png`（与世界 atlas 解耦 → v1.24 的 tile 重排副作用消失）；按显示尺寸烘焙两套（40/32px）；覆盖全量 118 项（等轴测 104 + 平面 14）。`check:data` 加**图标过期指纹检查**（含贴图内容哈希）。删旧脚本 + 9 张死 PNG → 世界 atlas 156 → 147 tile |
+
+**对 M4~M7 的影响**：
+
+- **v1.25 分级策略适用于后续所有 Epic**：M4~M7 的 plan 文档按「全部任务 RED-GREEN」写成，
+  生效后 Tier 1 部分不变（`WorldEditor` 批量语义、DDA hitscan、`EntityManager` 版本协议、
+  实体 AABB raycast、持久实体可取消保存、`ZombieService` 20Hz AI 批次语义），Tier 3 部分放宽
+  （`WEAPON_ASSET_URLS` 路径常量、HUD 武器名文案）。判据不变：**问「改坏了能不能玩出来」**。
+- **v1.25 已把 M5 的静态门要求纳入 `check:arch` 白名单式检查**：`src/entities/**` 不得
+  import three / 不得新增 Worker（M5 plan Task 1 原写 `rg -n "from 'three'|new Worker" src/entities`）。
+- **v1.26 的维护约束**：改**背包内方块**的贴图地址或 mesher 几何后须重跑 `npm run icons`，
+  否则图标静默过期（忘跑会被 `check:data` 抓到）。M4 新增武器图标若走同一烘焙路径，须遵守此约束。
+- **M4 plan Task 6 的前置条件不变**：`uiModal` keydown 守卫（M3.1 交付）仍是 M4 挂 KeyR 切武器的
+  前置；v1.26 只改了图标的取图方式，未碰模态门控。
 
 ---
 
