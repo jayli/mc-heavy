@@ -1,6 +1,6 @@
 # mc-heavy 第一阶段实施设计文档：游戏引擎原型
 
-> 版本：v1.24 ｜ 日期：2026-09-03 ｜ 状态：定稿（经十五轮逐条核验修订 + M3.2 实施回填 + 异形方块渲染勘误 + 背包物品集合口径 + 吊灯材质自发光 + 吊灯 UV 分区 + 背包图标表 + 等轴测图标）
+> 版本：v1.25 ｜ 日期：2026-09-03 ｜ 状态：定稿（经十五轮逐条核验修订 + M3.2 实施回填 + 异形方块渲染勘误 + 背包物品集合口径 + 吊灯材质自发光 + 吊灯 UV 分区 + 背包图标表 + 等轴测图标 + 测试分级策略与静态门禁）
 >
 > 目标：在 mc-heavy 仓库从零重建一个功能对标 mc-lite、性能提升一个数量级的体素游戏引擎。
 > 第一阶段只做"引擎底座"：渲染、体素数据、即时地图生成、玩家交互、种子地图、存档原型。
@@ -475,6 +475,48 @@
 > 若未来有人依赖 tile 坐标做断言，需注意这一副作用。
 >
 > 实现见 §4.5.4「等轴测投影图标」。
+>
+> v1.25 修订说明：**测试分级策略与静态门禁**（2026-09-03，M3 收尾后、M4 开始前）。起因是
+> 「任何小改动全都用 TDD 驱动，连改一个贴图地址、修正一个 alias 映射都要先写失败测试」——
+> 这类改动的正确性肉眼即可判定，TDD 只增加成本不增加保障。分级判据不是「改动大小」也不是
+> 「文件位置」，而是**改坏了会怎样、多久能被发现**：
+> - **Tier 1**（机制/架构/性能/API/稳定性）改坏了是**静默的数据错误**（AO 算错、面剔除漏面、
+>   版本协议竞态、性能回退），肉眼玩不出来、只能靠断言 → **必须 TDD**；
+> - **Tier 2**（数据契约/集合口径）改坏了立刻可见（图标空槽、方块消失）、修复成本 = 改回去
+>   → **门禁断言，免 TDD 流程**；
+> - **Tier 3**（文案/资源引用/观感）→ **免测试**，只需 lint；
+> - **Tier 4**（GPU 渲染结果，TSL 节点在 GPU 求值主线程读不到）→ **像素级实测**，不宣称目视。
+>
+> **核心改造：关系型断言取代硬编码计数**。硬编码计数（`expect(count).toBe(156)`）是
+> 「改动放大器」——新增一张贴图就要改 spec + CLAUDE.md + 设计文档**三处**（同一个事实的三个
+> 副本，违反红线 1 精神）。改为校验不变式：`atlas.spec.mjs` 的 tile 数改为与
+> `assets/textures` 的实际 PNG 数比对（build-atlas 的契约：每张 PNG 打成一个 tile）；
+> `m3-1-inventory.spec.mjs` 的物品集合改为 **Node 侧 `buildItemNames()` 与浏览器侧真实
+> 背包装配两侧独立计算比对**。实测验证：把 `gold_block` 加进 `HIDDEN_FROM_INVENTORY`
+> （118 → 117），**spec 未做任何改动即通过**——旧设计下同一变更要同步改三处文档。
+> 保留硬编码的例外是 `size=2048`/`gutter=16` 这类**设计常量**（§4.4.1 定稿）：判据是
+> 「这个数是设计决策还是事实统计」，前者钉死、后者用关系式。
+>
+> **新增两个静态门**（`tools/check-*.mjs`，均经正负向验证）：`check:arch` 守 12 条重构红线中
+> 可静态检查的部分（three 隔离用**双层判定**——目录默认 + 自声明一致性，实测精确文件列表会让
+> 新增的 `src/mesh/*.js` 绕过检查；禁止类名**只查非注释行**——`mesher.js:51` 引用
+> `ChunkConsolidation.js:530` 是算法出处注释必须放行；依赖方向含白名单）；`check:data` 守数据
+> 契约（引用完整性 / 物品集合关系式 / 图标同步 / 测试注册完整性）。
+>
+> **两处文档漂移勘误**（本次 review 发现）：§4.4.1 曾写「atlas 合计 147 tile」而实测 156
+> （v1.24 加图标时改了 spec 断言却漏了这句）；roadmap「测试现状」曾写「246 个浏览器内单元
+> 测试」而实测 270。两处均改为**指向门禁输出**，文档不再携带硬编码计数。
+> 另勘误 CLAUDE.md 的分层声明「`core/` 不依赖 `voxel/`」——与实测不符
+> （`game.js`/`scheduler.js` 都 import voxel），`core/` 是**装配层**，依赖任何层合法。
+>
+> **已知例外（白名单，均注明理由）**：① `mesh/atlas-loader.js` import three——它不是同构模块
+> （只被 `core/game.js` 消费，运行时加载 atlas 纹理必然依赖 three），分层归属本应在 `render/`
+> 但历史放在 `mesh/`，**不移动**（属架构改动，须设计文档先行）；② `voxel/world-data.js`
+> 依赖 `mesh/lighting.js`——红线 11 要求编辑快路径同步重算垂直单列，而 `lighting.js` 是
+> Worker 同构纯函数（不 import three、无 DOM），故是**算法依赖不是渲染依赖**，voxel 仍
+> 「不知道渲染存在」。把 `recomputeSkylightAt` 挪进 voxel 层属架构改动，须先改本节分层图。
+>
+> 分级策略的唯一权威是 [`docs/testing-policy.md`](testing-policy.md)，本文档不自述分级细节。
 
 ---
 
@@ -996,7 +1038,7 @@ half_block（床，1×0.5×1）、hanging_lamp（绳 8 段棱柱 r=0.015 + 灯�
   canvas 程序化绘制（mkMat/mkProceduralMat/mkDetailMat，无 PNG）。`tools/bake-procedural-textures.mjs`
   逐行复刻其绘制参数离线烘焙到 `assets/textures/procedural/`（vine/flower/lilypad/cactus/marble/
   handrail/pillar/chimney/hanging_lamp/cloud/playground 等），随机源固定种子（确定性红线）。
-  atlas 合计 147 tile（126 + 23 程序化，M2-7 空岛 sky_stone/sky_grass +2）。faces-data.js 全量 126 方块六面映射对齐 MaterialManager。
+  atlas 合计 156 tile（126 方块 + 23 程序化，M2-7 空岛 sky_stone/sky_grass +2 + 9 等轴测背包图标，§4.5.4 v1.24）。**权威计数以 `npm run check:data` 输出为准**（关系型断言，新增贴图自动跟上，勿在文档/spec 硬编码）。faces-data.js 全量 126 方块六面映射对齐 MaterialManager。
 - **atlas 渗色防护**：2048 atlas + mipmap 会跨 tile 渗色。tile 之间留 16px gutter，打包时每 tile
   边缘像素向外 bleed 8px 回填（build-atlas.mjs），UV 内缩半 texel；默认 blur=0 时用 NearestFilter +
   关闭 mipmap（mc-lite 默认即像素风），模糊档位（`?blur=1`，M3-4 设置面板接线）开启时才启用

@@ -287,8 +287,8 @@ Playwright 44 用例不变、全量回归 **44/44 全绿**；lint 0 error、`ben
 ### 测试现状
 
 - 27 个 Playwright spec 文件（44 个测试用例；m1-acceptance 计时断言高负载下偶发贴线 flaky，单跑全绿）
-- 246 个浏览器内单元测试（harness）
-- 冻结断言：fps ≥90（120Hz 本机 ≥115）、编辑 p95 <2ms、draw 受控；atlas 147 tile（126 + 23 程序化烘焙）
+- 浏览器内单元测试全绿（harness；用例数以 `npm run check:data` 输出为准，文档不硬编码计数）
+- 冻结断言：fps ≥90（120Hz 本机 ≥115）、编辑 p95 <2ms、draw 受控；atlas tile 数以 `npm run check:data` 为准（构成：方块纹理 + 程序化烘焙 + 等轴测图标）
 - 性能基线门禁：`npm run bench` 采集 / `npm run bench -- --check` 回退 >10% 阻断（结构类 2%）
 
 ---

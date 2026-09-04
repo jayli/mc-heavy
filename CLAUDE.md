@@ -389,6 +389,60 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
     x=672→1280、`procedural/pillar` x=1152→1760）。**不影响正确性**（`atlas.json` 同步更新，
     mesher 读 json 的 UV 而非硬编码坐标），但 `atlas.png` 像素重排、体积 +28KB
     （229733→258628）。若未来有人依赖 tile 坐标做断言需注意。
+- **测试分级策略与静态门禁 ✅（2026-09-03，M3 收尾后、M4 开始前；设计文档 v1.25）**：起因是
+  「任何小改动全都用 TDD 驱动，连改一个贴图地址、修正一个 alias 映射都要先写失败测试」。
+  **分级判据不是「改动大小」也不是「文件位置」，而是改坏了会怎样、多久能被发现**：
+  Tier 1（机制/架构/性能/API/稳定性）改坏了是**静默的数据错误**（AO 算错、面剔除漏面、
+  版本协议竞态、性能回退），肉眼玩不出来只能靠断言 → **必须 TDD**；Tier 2（数据契约/集合口径）
+  改坏了立刻可见、修复成本 = 改回去 → **门禁断言，免 TDD 流程**；Tier 3（文案/资源引用/观感）
+  → **免测试**只需 lint；Tier 4（GPU 渲染结果，TSL 在 GPU 求值主线程读不到）→ **像素级实测**。
+  唯一权威：[`docs/testing-policy.md`](docs/testing-policy.md)。
+  - **核心改造：关系型断言取代硬编码计数**。硬编码计数（`expect(count).toBe(156)`）是
+    「改动放大器」——新增一张贴图要改 spec + CLAUDE.md + 设计文档**三处**（同一事实的三个副本，
+    违反红线 1 精神）。改为校验不变式：`tests/atlas.spec.mjs` 的 tile 数改与
+    `assets/textures` 实际 PNG 数比对（build-atlas 契约：每张 PNG 打成一个 tile）；
+    `tests/m3-1-inventory.spec.mjs` 的物品集合改 **Node 侧 `buildItemNames()` 与浏览器侧
+    真实背包装配两侧独立计算比对**。**实测验证核心卖点**：把 `gold_block` 加进
+    `HIDDEN_FROM_INVENTORY`（118→117），**spec 未做任何改动即通过**，门禁输出同步跟上
+    （`117 项 = registry 126 − 排除 9`）——旧设计下同一变更要同步改三处文档。
+    保留硬编码的例外是 `size=2048`/`gutter=16` 这类**设计常量**（判据：这个数是「设计决策」
+    还是「事实统计」？前者钉死、后者用关系式）。
+    **中途自己踩到「恒等式陷阱」**：先写成 `nonEmpty = registry − excluded` 与
+    `registry = nonEmpty + excluded` 两条——那是**同一个方程写两遍**，blocks-data 丢方块时
+    两边同时位移、断言静默通过，正是「测试一开始就通过 = 测试写错了」。改为两侧独立计算后
+    经负向验证（注入缺陷令浏览器侧少填 3 项 → `Expected 118 / Received 115` 被抓到）。
+  - **新增两个静态门**（`tools/check-*.mjs`，均经**正负向验证**）：`npm run check:arch`
+    守 12 条重构红线中可静态检查的部分——three 隔离用**双层判定**（目录默认 + 自声明一致性；
+    实测**精确文件列表会让新增的 `src/mesh/*.js` 绕过检查**，故不能用清单）、禁止类名
+    **只查非注释行**（`mesher.js:51` 引用 `ChunkConsolidation.js:530` 是算法出处注释必须放行）、
+    依赖方向含白名单；`npm run check:data` 守数据契约（引用完整性 / 物品集合关系式 /
+    图标同步 / 图标表无幽灵 / 测试注册完整性 / 烘焙产物存在性 / 形状权威）。
+    `npm run check` = arch + data + lint（**2.6s 实测**，日常改动的最小门）。
+  - **两处文档漂移勘误**（本次 review 发现，非推测）：§4.4.1 曾写「atlas 合计 147 tile」而
+    实测 156（v1.24 加图标时改了 spec 断言却漏了这句）；roadmap「测试现状」曾写「246 个
+    浏览器内单元测试」而实测 270。两处均改为**指向门禁输出**，文档不再携带硬编码计数。
+    另勘误 CLAUDE.md 分层声明「`core/` 不依赖 `voxel/`」——与实测不符（`game.js`/
+    `scheduler.js` 都 import voxel），`core/` 是**装配层**，依赖任何层合法。
+  - **已知例外（白名单，均注明理由）**：① `mesh/atlas-loader.js` import three——非同构模块
+    （只被 `core/game.js` 消费，运行时加载 atlas 纹理必然依赖 three），分层归属本应在
+    `render/` 但历史放在 `mesh/`，**不移动**（属架构改动须设计文档先行）；② `voxel/world-data.js`
+    依赖 `mesh/lighting.js`——红线 11 要求编辑快路径同步重算垂直单列，而 `lighting.js` 是
+    Worker 同构纯函数（不 import three、无 DOM），故是**算法依赖不是渲染依赖**，voxel 仍
+    「不知道渲染存在」；挪 `recomputeSkylightAt` 进 voxel 层属架构改动，须先改设计文档 §3。
+  - **子代理调查的一处误报已核实排除**（勿照印象采信）：报告称 `world-data.setBlock`/
+    `setBlockMeta` 是「热路径入口但 0 覆盖」——实测 `test-chunk-column.js:57,72` 与
+    `test-lighting.js:158` 已覆盖 `setBlock`，且 **`setBlockMeta` 方法根本不存在**；
+    `setBlock` 的 meta 参数路径亦已由 `test-orientation.js:189`「`getBlockMeta` 返回
+    `setBlock` 写入的 meta」覆盖。故未新增测试、未写入文档。
+  - 落地 3 新增（`docs/testing-policy.md` + `tools/check-architecture.mjs` +
+    `tools/check-data.mjs`）+ 5 改（`package.json` 加 3 个 script / `tests/atlas.spec.mjs`
+    与 `tests/m3-1-inventory.spec.mjs` 关系型改造 / `CLAUDE.md` 测试工作流与分层勘误 /
+    `docs/phase-1-engine-design.md` v1.25 + §4.4.1 勘误 / roadmap 测试现状勘误）。
+    **门禁对照**：`npm run check` 通过（arch 51 文件全绿 + data 7 项契约一致 + lint 0 error、
+    16 个既有 camelcase warning）；Playwright **44/44 全绿**（2.8min）。
+    **教训**：首次全量跑报 16 failed，根因是**在全量后台跑期间并发跑了负向验证**——
+    两个 Playwright 实例争抢 CPU 与端口 8081 令计时断言系统性失败；单独重跑即 44/44。
+    印证 CLAUDE.md 既有那条「计时断言 flaky 须单独跑」的口径，**并发跑测试是新增的失效路径**。
 - **M4 玩家第一人称武器 ⬜（第二阶段，M3.2 已提交，可开始）**：独立 Epic；`WorldEditor` 批量编辑、
   DDA hitscan、手枪/MAG7/加特林的受控 GLB 相机视图模型、曳光、音效和可选方块破坏。
   规格：`docs/superpowers/specs/2026-08-23-m4-player-weapons-design.md`；计划：
@@ -409,40 +463,55 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
   规格：`docs/superpowers/specs/2026-08-23-m7-zombie-nests-design.md`；计划：
   `docs/superpowers/plans/2026-08-23-m7-zombie-nests.md`。
 
-测试现状：27 个 Playwright spec 文件（44 个测试用例）+ 270 个浏览器内单元测试全绿（m1-acceptance 计时断言
-在高负载下偶发贴线 flaky——16.7±1e-6/2.1ms，单独复跑通过，属已记录的计时抖动类；M3.2 实施时经
-HEAD 对照连跑再次证实为既有 vsync 抖动，见 roadmap「## M3.2」实施记录；v1.24 实施时再次经
-HEAD 对照连跑证实——**HEAD 侧失败率反而更高**，见下方「异形方块等轴测图标」条目的教训）；
-冻结断言达标（120Hz 本机 fps ≥115、放/挖编辑 p95 <2ms、draw 受控）；
+测试现状：Playwright spec 全量 + 浏览器内单元测试全绿。**用例计数以 `npm run check:data`
+输出为准，不在文档硬编码**（旧版本此处写「27 spec / 44 用例 / 270 单测」，每次新增用例都要同步改
+三处文档，属「改动放大器」——同一事实的三个副本，违反红线 1 精神；2026-09-03 harness 升级已改为
+指向门禁输出）。m1-acceptance 计时断言在高负载下偶发贴线 flaky——16.7±1e-6/2.1ms，单独复跑通过，
+属已记录的计时抖动类；M3.2 实施时经 HEAD 对照连跑再次证实为既有 vsync 抖动，见 roadmap「## M3.2」
+实施记录；v1.24 实施时再次经 HEAD 对照连跑证实——**HEAD 侧失败率反而更高**，见下方「异形方块
+等轴测图标」条目的教训。冻结断言达标（120Hz 本机 fps ≥115、放/挖编辑 p95 <2ms、draw 受控）；
 性能基线门禁 `npm run bench -- --check`（M3-5，回退 >10% 阻断合入）。
+
+**测试分级**：分级策略唯一权威是 [`docs/testing-policy.md`](docs/testing-policy.md)——Tier 1
+（机制/架构/性能/API/稳定性）必须 TDD，Tier 2（数据契约/集合口径）走门禁断言免 TDD 流程，
+Tier 3（文案/资源引用/观感）免测试，Tier 4（GPU 渲染结果）用像素级实测。分层静态门
+`npm run check:arch` + 数据契约门 `npm run check:data`（`tools/check-*.mjs`，均经负向验证）。
 
 ## 权威文档（动手前必读）
 
 按顺序读完再写代码：
 
 1. [`docs/phase-1-engine-design.md`](/Users/bachi/jaylli/mc-heavy/docs/phase-1-engine-design.md)
-   —— 架构唯一权威，当前版本 v1.24（已定稿 + M3.2 实施回填 + 异形方块渲染勘误 + 背包物品集合口径 + 吊灯材质自发光 + 吊灯 UV 分区 + 背包图标表 + 等轴测图标）。所有子系统边界、DR 决策、验收口径都在这里。
-2. [`docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md)
+   —— 架构唯一权威，当前版本 v1.25（已定稿 + M3.2 实施回填 + 异形方块渲染勘误 + 背包物品集合口径 + 吊灯材质自发光 + 吊灯 UV 分区 + 背包图标表 + 等轴测图标 + 测试分级策略与静态门禁）。所有子系统边界、DR 决策、验收口径都在这里。
+2. [`docs/testing-policy.md`](/Users/bachi/jaylli/mc-heavy/docs/testing-policy.md)
+   —— **测试分级的唯一权威**（Tier 1~4 判据 + 门禁分层 + 红线静态门规则 + 与 M4~M7 的关系）。
+   动手前先按它的判据确定本次改动属于哪一级，再决定要不要走 TDD。
+3. [`docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md)
    —— **第一阶段剩余执行计划与后续路线图（M2–M7）**，任务级 TODO + 依赖关系，当前 roadmap。
-3. [`docs/superpowers/plans/2026-08-19-m1-voxel-core-loop.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/plans/2026-08-19-m1-voxel-core-loop.md)
+4. [`docs/superpowers/plans/2026-08-19-m1-voxel-core-loop.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/plans/2026-08-19-m1-voxel-core-loop.md)
    —— M1 实施计划（已完成，架构细节参照）。
-4. `docs/m0-bench-report.md` / `docs/m1-acceptance-report.md` /
+5. `docs/m0-bench-report.md` / `docs/m1-acceptance-report.md` /
    `docs/m2-m3-performance-report.md`（M3-6 第一阶段性能报告 = 冻结基线）—— 实测与验收报告。
-5. M4 开始前加读：[`docs/superpowers/specs/2026-08-23-m4-player-weapons-design.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/specs/2026-08-23-m4-player-weapons-design.md)
+6. M4 开始前加读：[`docs/superpowers/specs/2026-08-23-m4-player-weapons-design.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/specs/2026-08-23-m4-player-weapons-design.md)
    与 [`docs/superpowers/plans/2026-08-23-m4-player-weapons.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/plans/2026-08-23-m4-player-weapons.md)。
-6. M5 开始前加读：[`docs/superpowers/specs/2026-08-23-m5-entity-runtime-design.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/specs/2026-08-23-m5-entity-runtime-design.md)
+7. M5 开始前加读：[`docs/superpowers/specs/2026-08-23-m5-entity-runtime-design.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/specs/2026-08-23-m5-entity-runtime-design.md)
    与 [`docs/superpowers/plans/2026-08-23-m5-entity-runtime.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/plans/2026-08-23-m5-entity-runtime.md)。
-7. M6 开始前加读：[`docs/superpowers/specs/2026-08-23-m6-zombies-design.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/specs/2026-08-23-m6-zombies-design.md)
+8. M6 开始前加读：[`docs/superpowers/specs/2026-08-23-m6-zombies-design.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/specs/2026-08-23-m6-zombies-design.md)
    与 [`docs/superpowers/plans/2026-08-23-m6-zombies.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/plans/2026-08-23-m6-zombies.md)。
-8. M7 开始前加读：[`docs/superpowers/specs/2026-08-23-m7-zombie-nests-design.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/specs/2026-08-23-m7-zombie-nests-design.md)
+9. M7 开始前加读：[`docs/superpowers/specs/2026-08-23-m7-zombie-nests-design.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/specs/2026-08-23-m7-zombie-nests-design.md)
    与 [`docs/superpowers/plans/2026-08-23-m7-zombie-nests.md`](/Users/bachi/jaylli/mc-heavy/docs/superpowers/plans/2026-08-23-m7-zombie-nests.md)。
 
 规则：
 
 - 设计与实现冲突时，**以设计文档为准**，不要用「实现方便」推翻已核验的设计决策；
-- 实施必须按计划的任务与步骤走（Red-Green-Refactor），禁止跳步或省略失败验证；
-- 计划中标注「冻结」的断言数字（draw call 数、setGeometryAt 阈值等）实测不符时
+- **Tier 1 改动**（机制/架构/性能/API/稳定性，判据见 [`docs/testing-policy.md`](docs/testing-policy.md)）
+  必须按计划的任务与步骤走（Red-Green-Refactor），禁止跳步或省略失败验证；
+  **Tier 2/3 改动**（数据契约、贴图地址、alias 映射、文案、观感）免 TDD 流程，
+  改完跑 `npm run check` 即可 —— 不要为了改一个贴图地址而先写失败测试；
+- 计划中标注「冻结」的断言数字（draw call 数、fps 阈值、p95 上限等）实测不符时
   **停下来报告，不要擅自改断言或静默放宽**；
+  计时类断言 flaky 时须**分开按 spec 连跑拿数值分布比均值与峰值**，仅凭「全量跑失败/单独跑通过」
+  判定不够（v1.24 实施时 HEAD 侧失败率反而更高，只看全量跑会得出相反结论）；
 - 需要新增机制/改动设计时，先更新设计文档再动代码，不在代码里埋「计划外补丁」。
 
 ## 不可违反的重构红线
@@ -536,10 +605,13 @@ mc-heavy/
 ├─ index.html                  # import map（本地 vendor/three）+ WebGPU 启动 gate + 准心
 ├─ vendor/three/               # three.js r185.1（three.webgpu.js / three.tsl.js / three.core.js）
 ├─ docs/
-│  └─ phase-1-engine-design.md # 架构权威（v1.24）
+│  ├─ phase-1-engine-design.md # 架构权威（v1.25）
+│  └─ testing-policy.md        # 测试分级唯一权威（Tier 1~4 判据 + 门禁分层）
 ├─ tools/build-atlas.mjs       # atlas 离线打包（npm run atlas）
 ├─ tools/bake-procedural-textures.mjs # 程序化贴图烘焙（mc-lite canvas 材质 → PNG）
 ├─ tools/bake-isometric-icons.mjs # 异形方块等轴测背包图标烘焙（npm run icons，v1.24）
+├─ tools/check-architecture.mjs # 静态架构门（npm run check:arch）：红线可静态检查的部分
+├─ tools/check-data.mjs        # 数据契约门（npm run check:data）：关系型断言取代硬编码计数
 ├─ assets/
 │  ├─ textures/                # 从 mc-lite 复制
 │  │  ├─ procedural/           # 程序化贴图烘焙产物
@@ -563,15 +635,24 @@ mc-heavy/
    └─ workers/     # world-worker.js（GEN/MESH/LIGHT 统一入口，池化）
 ```
 
-依赖方向单向：`voxel ← gen ← mesh ← render`，反向依赖禁止。`core/` 不依赖 `voxel/`；
-`voxel/` 不依赖 three。另有 `src/tests/`（浏览器内单测 + fixture）、`src/bench/`（基准页）、
-`tests/`（Playwright spec）、`server-script/`（静态服务）。
+依赖方向单向：`voxel ← gen ← mesh ← render`，反向依赖禁止（`npm run check:arch` 静态门守）。
+`core/` 是**装配层**（`game.js` 组装全部子系统、`scheduler.js` 编排任务），依赖任何层合法——
+旧版本此处曾写「`core/` 不依赖 `voxel/`」，与实测不符（`game.js`/`scheduler.js` 都 import voxel），
+已随 harness 升级勘误。`voxel/`/`gen/`/`mesh/`/`workers/` 是 Worker 同构层，不得 import three；
+例外 `mesh/atlas-loader.js`（主线程专用，运行时加载 atlas 纹理必然依赖 three）见
+`tools/check-architecture.mjs` 白名单。另有 `src/tests/`（浏览器内单测 + fixture）、
+`src/bench/`（基准页）、`tests/`（Playwright spec）、`server-script/`（静态服务）。
 
 ## 开发命令（M0 Task 1 落地 package.json 后生效）
 
 ```bash
 npm install                    # playwright 固定 ^1.62.1（复用本机 chromium-1234 缓存）
 npm start                      # 静态服务 http://localhost:8081
+npm run check                  # 日常最小门（2.6s 实测）= check:arch + check:data + lint
+npm run check:arch             # 静态架构门（Tier 1，285ms）：12 条重构红线可静态检查的部分
+                               #   three 隔离/禁止类名/依赖方向/发布层三级兜底，违规退出码 1
+npm run check:data             # 数据契约门（Tier 2，277ms）：关系型断言取代硬编码计数
+                               #   引用完整性/物品集合关系式/图标同步/测试注册完整性
 npm test                       # Playwright 全部验收（tests/*.spec.mjs）
 npm run bench                  # M3-5 性能基线跑图（4 场景 → docs/m3-baseline.{md,json}）
                                #   加 -- --check 为回归门禁（回退 >10% 阻断，退出码 1）
@@ -581,19 +662,40 @@ npm run atlas                  # 重新生成 assets/atlas.png + atlas.json
                                #   注：新增 textures 子目录会重排已有 tile 坐标（shelf 装箱按字母序）
 ```
 
+**门禁分层**（何时跑什么，详见 [`docs/testing-policy.md`](docs/testing-policy.md) §6）：
+改贴图地址/alias/文案（Tier 3）跑 `npm run check`；改物品集合/图标表/atlas（Tier 2）同左；
+改纯函数算法/协议/数据模型（Tier 1）加 `npm test`；改热路径（mesher/materials/render/
+scheduler/physics）再加 `npm run bench -- --check`。**不要**为改一个贴图地址跑全量 E2E 或 bench，
+**也不要**改了 mesher 几何却只跑 `check`。
+
 - 浏览器内单测入口：`http://localhost:8081/src/tests/index.html`；
 - 测试 runner 暴露 `window.__MC_TEST_RESULTS__`，Playwright 从页面读取断言；
 - 性能基准页：`http://localhost:8081/src/bench/webgpu-publish.html`（暴露 `window.__BENCH__`）。
 - 游戏入口暴露 `window.__MC_GAME__`（world/player/scheduler/registry + perfSnapshot/renderStats），
   Playwright 交互测试经此编程驱动（无头环境无真实键鼠/pointer lock）。
 
-## 测试工作流（TDD，沿用 mc-lite）
+## 测试工作流（分级 TDD）
 
-1. **RED**：先写失败测试；2. **验证 RED**：运行确认按预期失败；3. **GREEN**：最小实现；
-4. **验证 GREEN**：全部通过；5. **REFACTOR**：重构保持绿；6. 重复。
+**分级策略的唯一权威是 [`docs/testing-policy.md`](docs/testing-policy.md)**，本节只给最小口径。
+判据不是「改动大小」也不是「文件位置」，而是**改坏了会怎样、多久能被发现**：
+越底层（机制/性能/架构/API/稳定性）越要 TDD，越表层（文案/资源引用/观感）越不要。
 
-测试一开始就通过，说明测试写错了或在测已有行为。修改 `src/**/*.js` 后任务结束前跑
-`npm run lint`，保持新增代码 0 error（warning 可接受）。
+| 级别 | 改坏了 | 发现方式 | 测试要求 |
+|---|---|---|---|
+| **Tier 1** 机制/架构/性能/API | 静默数据错误、性能回退、红线回退 | 肉眼玩不出来，只能靠断言 | **必须 TDD** + 门禁 |
+| **Tier 2** 数据契约/集合口径 | 约定值不一致（图标空槽、方块消失） | 立刻可见 | **门禁断言，免 TDD 流程** |
+| **Tier 3** 文案/资源引用/观感 | 观感不对 | 立刻可见 | **免测试**，只需 lint |
+| **Tier 4** GPU 渲染结果 | 渲染不对 | 单测测不到（TSL 在 GPU 求值） | **像素级实测**，不宣称目视 |
+
+**Tier 1 的 TDD 流程不变**（RED → 验证 RED → GREEN → 验证 GREEN → REFACTOR）。
+测试一开始就通过，说明测试写错了或在测已有行为。RED 阶段不得把新测试从
+`src/tests/index.html` 临时移除来「通过」。
+
+**Tier 3 的典型场景**（用户明确要求的口径）：改 `faces-data.js` 的贴图地址、修正
+`INVENTORY_ICONS` 的 alias 映射、改 HUD 文案 —— **直接改，不需要先写失败测试**，
+改完跑 `npm run check`（2.6s）即可。这类改动的正确性肉眼即可判定，TDD 只增加成本。
+
+修改 `src/**/*.js` 后任务结束前跑 `npm run lint`，保持新增代码 0 error（warning 可接受）。
 
 ## 性能验收口径（第一阶段）
 

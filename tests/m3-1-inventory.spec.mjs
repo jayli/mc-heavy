@@ -1,15 +1,30 @@
 // tests/m3-1-inventory.spec.mjs — M3.1 背包（设计文档 §4.5.4，v1.16 定稿）
 // 真实游戏内集成验证（单测用的是 Game 替身，此处走完整 Game/Player/UI 装配）：
-//   ① 物品模型：背包 118 项、快捷栏 = slots[0..4] 视图（无第二份物品状态）
+//   ① 物品模型：背包集合数（关系式）、快捷栏 = slots[0..4] 视图（无第二份物品状态）
 //   ② Z 键 toggle + 模态栈 + keydown 守卫（背包开着按 W/数字键无效）
 //   ③ 点击第 6 格以外的槽位 → 放块用该方块（世界实际写入 ID 校验）
 //   ④ 模态栈不误清设置面板门控（原可写布尔的竞争根因）
 //   ⑤ 创造模式不消耗：放块后 count 不变
 // 无头环境无 pointer lock，交互经 window.__MC_GAME__ 编程驱动 + 派发真实 KeyboardEvent。
 import { test, expect } from 'playwright/test';
+import {
+  buildItemNames, NON_PLACEABLE_ITEMS, HIDDEN_FROM_INVENTORY,
+} from '../src/player/inventory.js';
+import { buildDefaultRegistry } from '../src/voxel/block-registry.js';
 
 // 固定 seed：放块点位与地形相关，钉 seed 保可复现（M3 起全部性能/视觉 spec 同口径）
 const URL = '/?vd=4&seed=12345';
+
+// 物品集合数走**两侧独立计算比对**而非硬编码 118（分级策略 docs/testing-policy.md §3.2）。
+//
+// **不能用「registry − 排除集合」直接算然后与被测值比**——那会写出代数恒等式
+// （`nonEmpty = registry − excluded` 与 `registry = nonEmpty + excluded` 是同一个方程，
+// blocks-data 丢方块时两边同时位移、断言静默通过，正是「测试一开始就通过 = 测试写错了」）。
+// 正确做法：在 Node 侧用 `buildItemNames()` 独立跑一遍同一份算法，与浏览器侧的真实
+// 背包状态比对 —— 两条路径（Node 纯函数 / 浏览器完整装配）算出的集合必须一致。
+// 旧版本写死 `toBe(118)`，122→118 变更时要同步改 spec + CLAUDE.md + 设计文档三处。
+const EXPECTED_ITEMS = buildItemNames(await buildDefaultRegistry());
+const EXPECTED_COUNT = EXPECTED_ITEMS.length;
 
 /** 等待世界就绪 + mesh 管线排空（避免采样混入加载期状态） */
 async function boot(page) {
@@ -17,42 +32,50 @@ async function boot(page) {
   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 60_000 });
 }
 
-test('M3.1：物品模型 — 背包 118 项、快捷栏是 slots[0..4] 的视图', async ({ page }) => {
+test('M3.1：物品模型 — 背包集合与 buildItemNames 一致、快捷栏是 slots[0..4] 的视图', async ({ page }) => {
   await boot(page);
-  const r = await page.evaluate(() => {
+  // 排除集合作为参数传入浏览器上下文（page.evaluate 里不能直接访问 Node 侧 import 的标识符）
+  const excludedNames = [...NON_PLACEABLE_ITEMS, ...HIDDEN_FROM_INVENTORY];
+  const r = await page.evaluate((excluded) => {
     const g = window.__MC_GAME__;
     const inv = g.player.inventory;
     const nonEmpty = inv.slots.filter((s) => !s.isEmpty());
+    const items = nonEmpty.map((s) => s.item);
     return {
       slotCount: inv.slots.length,
       nonEmpty: nonEmpty.length,
+      items,
       firstCount: inv.slots[0].count,
       selectedSlot: inv.selectedSlot,
       selectedIsAliasOfHotbarIndex: g.player.hotbarIndex === inv.selectedSlot,
       // 快捷栏 DOM 是背包前 5 格的视图：图标数 = 5，前 5 槽物品名
       hotbarCells: document.getElementById('mc-hotbar').children.length,
       front5: inv.slots.slice(0, 5).map((s) => s.item),
-      // 排除的 4 个功能性方块 + chimney 不在物品集合内
-      excluded: ['air', 'collider', 'calcite', 'realistic_trunk_collider', 'chimney']
-        .filter((n) => nonEmpty.some((s) => s.item === n)),
+      // 排除集合的每一项都不在物品集合内（集合口径由传入常量驱动，勿在此手写清单）
+      excluded: excluded.filter((n) => items.includes(n)),
       // mine_cart 保留（mc-lite 背包包含）；bed_alias_block 已移出背包（规避床渲染问题）
-      hasBedAlias: nonEmpty.some((s) => s.item === 'bed_alias_block'),
-      hasMineCart: nonEmpty.some((s) => s.item === 'mine_cart'),
-      // registry.all() 与物品集合同源
+      hasBedAlias: items.includes('bed_alias_block'),
+      hasMineCart: items.includes('mine_cart'),
       registryCount: g.registry.all().length,
     };
-  });
+  }, excludedNames);
+
   expect(r.slotCount).toBe(1000);
-  expect(r.nonEmpty).toBe(118);
+  // **两侧独立计算比对**：Node 侧 buildItemNames() 与浏览器侧真实背包装配必须算出同一集合。
+  // 这是真断言而非恒等式——两条路径任一处偏离（如浏览器侧漏了排除逻辑）都会失配。
+  expect(r.nonEmpty).toBe(EXPECTED_COUNT);
+  expect(r.items).toEqual(EXPECTED_ITEMS); // 顺序也一致（前 5 项冻结 + 其余注册序）
   expect(r.firstCount).toBe(1500);
   expect(r.selectedSlot).toBe(0);
   expect(r.selectedIsAliasOfHotbarIndex).toBe(true);
   expect(r.hotbarCells).toBe(5);
+  // 前 5 项冻结（§4.5.4：快捷栏观感与既有断言不变，纯注册序会让前 5 格变成 water/cloud）
   expect(r.front5).toEqual(['stone', 'dirt', 'grass', 'sand', 'cobblestone']);
   expect(r.excluded).toEqual([]);
   expect(r.hasBedAlias).toBe(false); // bed_alias_block 已移出背包（规避床渲染问题）
   expect(r.hasMineCart).toBe(true); // mine_cart 保留（mc-lite 背包包含）
-  expect(r.registryCount).toBe(126);
+  // registry 与物品集合的关系：注册表 = 物品集合 + 排除集合（排除项确实是注册过的方块）
+  expect(r.registryCount).toBe(r.nonEmpty + excludedNames.length);
 });
 
 test('M3.1：Z 键 toggle + 模态栈 + keydown 守卫（背包开着 W 不进 keys、数字键由面板处理不双写）', async ({ page }) => {
@@ -70,7 +93,8 @@ test('M3.1：Z 键 toggle + 模态栈 + keydown 守卫（背包开着 W 不进 k
   await page.evaluate(() => window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyZ' })));
   await page.waitForFunction(() => window.__MC_GAME__.uiModal === true, null, { timeout: 5_000 });
   expect(await page.evaluate(() => document.getElementById('inventory-modal').style.display)).toBe('flex');
-  expect(await page.evaluate(() => document.querySelectorAll('#inventory-grid .mc-slot').length)).toBe(118);
+  // 渲染槽位数 = 物品集合数（空槽不渲染、data-index 跳号），走 EXPECTED_COUNT 不写死
+  expect(await page.evaluate(() => document.querySelectorAll('#inventory-grid .mc-slot').length)).toBe(EXPECTED_COUNT);
 
   // keydown 守卫：背包开着时按 W 不写入 keys（原漏洞：模态期间新按的键仍会进 keys）
   await page.evaluate(() => window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyW' })));
@@ -236,14 +260,17 @@ test('M3.1：背包渲染不显示 count（创造模式无限背包）', async (
       anyShows1500: slots.some((s) => s.textContent.includes('1500')),
       withIcon: slots.filter((s) => s.querySelector('.mc-icon')?.style.backgroundImage.includes('atlas.png')).length,
       total: slots.length,
-      // v1.23：图标表补齐 mine_cart（Invicon_Minecart）→ 118 项**全部有图标**。
+      // v1.23：图标表补齐 mine_cart（Invicon_Minecart）→ 背包项**全部有图标**。
       // bed_alias_block 已移出背包（cullMode:'none' 不渲染、无法出图标），故背包内无空槽项。
       noIcon: slots.filter((s) => !s.querySelector('.mc-icon')?.style.backgroundImage).map((s) => s.dataset.index),
     };
   });
   expect(r.countEls).toBe(0);
   expect(r.anyShows1500).toBe(false);
-  expect(r.total).toBe(118);
-  expect(r.withIcon).toBe(118); // v1.23：图标表补齐 mine_cart → 全部有图标
+  // 计数走 EXPECTED_COUNT，不写死 118
+  expect(r.total).toBe(EXPECTED_COUNT);
+  // **不变式**（Tier 1 级，不得放宽）：每个渲染槽都必须有图标 → withIcon ≡ total。
+  // 写死 `toBe(118)` 只是计数副本；真正要钉的是「无空图标槽」这条不变式。
+  expect(r.withIcon).toBe(r.total);
   expect(r.noIcon.length).toBe(0);
 });
