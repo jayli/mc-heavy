@@ -1,6 +1,6 @@
 # mc-heavy 第一阶段实施设计文档：游戏引擎原型
 
-> 版本：v1.28 ｜ 日期：2026-09-03 ｜ 状态：定稿（经十五轮逐条核验修订 + M3.2 实施回填 + 异形方块渲染勘误 + 背包物品集合口径 + 吊灯材质自发光 + 吊灯 UV 分区 + 背包图标表 + 等轴测图标 + 测试分级策略与静态门禁 + 全量背包图标离线烘焙 + 背包槽位点选抖动修复 + 等轴测图标遮挡修复）
+> 版本：v1.29 ｜ 日期：2026-09-04 ｜ 状态：定稿（经十五轮逐条核验修订 + M3.2 实施回填 + 异形方块渲染勘误 + 背包物品集合口径 + 吊灯材质自发光 + 吊灯 UV 分区 + 背包图标表 + 等轴测图标 + 测试分级策略与静态门禁 + 全量背包图标离线烘焙 + 背包槽位点选抖动修复 + 等轴测图标遮挡修复 + 删除缓存按钮）
 >
 > 目标：在 mc-heavy 仓库从零重建一个功能对标 mc-lite、性能提升一个数量级的体素游戏引擎。
 > 第一阶段只做"引擎底座"：渲染、体素数据、即时地图生成、玩家交互、种子地图、存档原型。
@@ -638,6 +638,51 @@
 > 改动侧偏高集中在前 4 次，峰值 2.3 仅 run2 出现一次；`digP95` 两侧几乎相同。机制上不可能影响：
 > `grep -rn "iso-icon" src/ui src/core src/render` **零命中** → 运行时不加载该模块
 > （只被离线烘焙脚本 `tools/bake-icon-atlas.mjs`、单测、指纹门禁引用）。
+>
+> v1.29 修订说明：**设置面板「删除缓存」按钮**（2026-09-04，§4.8）。起因是用户要求在配置面板
+> 增加一个「删除缓存」按钮。先澄清语义再动手（用户提问「点随机种子是不是就等于缓存全清了」）：
+> 不是 —— `newWorld` 只清 edits，**保留 meta**（seed/spawn）且**完全不动 localStorage**。
+> 项目里真正存在的本地持久化只有两处（grep 确认无 service worker / Cache Storage）：
+> IndexedDB `mc_heavy_saves` 的 `edits` + `meta` 两个 store，与 localStorage
+> `mc_heavy_settings_v1`。故「删除缓存」与「新世界」**语义不重叠**，二者区别如下：
+>
+> | | seed | edits | localStorage 设置 |
+> |---|---|---|---|
+> | 新世界（`newWorld`） | **换新** + 写回 meta | 清空 | 不动 |
+> | 删除缓存（`clearSave`） | **保留** | 清空 | 不动 |
+>
+> 用户选定「只清存档改动（保留 seed）」→ 重载后地形回到该世界的**未修改原始版本**
+> （红线 2：地形只由 seed 决定，edits 是叠加层）。实现上把 `newWorld` 原有的三步竞态防护
+> 抽成 `Game._discardEdits()`，与 `clearSave` **共用一份** —— 写两份会漂移（红线 1 精神）。
+> UI 侧为破坏性操作加 **armed 二次确认**（第一次点击只切到「确认删除？」，第二次才执行；
+> 打开面板时复位，防 armed 态跨会话残留）。
+>
+> **竞态防护的实测口径修正（勿照推理实现）**。原注释写「不清内存 edits 就会被
+> `beforeunload → flushNow` 写回」，**实测证伪了它的强度**：对照脚本只差一个变量
+> （reload 前是否 await flushNow）—— 给卸载事务一点时间（多一次 evaluate 往返）确实写回
+> （`savedColumns` 0→1）；紧跟 `location.reload()` 立即卸载则事务来不及提交就被中止、读回 0。
+> 故该缺陷在生产路径上**时序不定**，端到端断言会碰巧读到 0 而让缺陷静默逃逸
+> （负向验证实测：注释掉 `col.edits.clear()` 后 E2E 仍全绿）。
+> **正确门禁 = 内存侧断言**：`tests/clear-save.spec.mjs` 直接断言 `_discardEdits()` 后
+> `memEdits===0 && savedColumns===0 && editsCache.size===0`。负向验证实测：移除该步后
+> 内存断言 FAIL（Received 1）、端到端断言仍 PASS → **印证两条断言的职责分工**。
+>
+> **另两处测试缺陷（RED 阶段实测暴露，均非产品 bug）**：
+> ① 地形指纹不能用 `i += 997` 步长采样（`m3-hud`/`persistence` spec 的口径）—— 那边是
+> 「换 seed」场景（整片地形全变）。本场景只改**一格**，采样和不变（实测基线与改动侧同为
+> 50533）→ 改全量求和；② 导航监听必须在 click **之前**武装：`waitForLoadState('load')`
+> 写在 click 之后会踩竞态（导航未开始 → 看到「当前页已是 load 态」立即返回 → `READY` 在
+> **旧页**本就为真 → 读到 clear 之前的世界），表现为四项断言通过、只有 fp 多出一个
+> stoneId（实测差值恰为 **48** = `stoneId`）。
+>
+> **门禁对照**（未凭文档结论免责）：`npm run check` 通过（arch 全绿 + data 7 项契约一致
+> + lint 0 error、9 个既有 camelcase warning）；核心回归 7 passed
+> （`clear-save` 2 + `m3-hud` 3 + `persistence` 2，`newWorld` 重构未破坏）。全量 44 passed /
+> 2 failed（`m1-acceptance` 的 `placeP95`、`structure-gen` 的 `gen p95`），**交替对照实测
+> 两侧分布重合**：改动侧 `1.7/2.0/1.9/1.8`（2 轮 4 次：3 通过 1 失败）、HEAD 侧
+> `2.0/1.7/1.8/1.9`（1 通过 3 失败 —— **HEAD 侧失败率反而更高**）；`structure-gen` 两侧
+> 各 3/3 全通过。机制上不可能影响：`clearSave`/`_discardEdits` 只在点击时执行一次，
+> **不进主循环**（无热路径改动 → 不需 `bench --check`）。
 
 ---
 
@@ -1599,6 +1644,10 @@ IndexedDB（沿用 mc-lite DB 名/版本约定）
 
 - 写盘完全异步：edits 在内存中按 column 聚合，防抖 5s + 页面隐藏/退出时 flush（Worker 内序列化）。
 - 加载 = 读 meta + 按需读 edits（column 生成时叠加），无"整图恢复"阶段。
+- **丢弃玩家改动的统一入口 `Game._discardEdits()`**（v1.29）：取消在途防抖 flush + 清各
+  column 的内存 edits + 清 IndexedDB `edits` store 与 `editsCache`。两个消费者共用同一份
+  ——`newWorld`（换 seed + 写回 meta）/ `clearSave`（**保留 seed 与设置**，设置面板「删除缓存」）。
+  内存 edits 那步必要但风险窗口窄（卸载事务能否提交时序不定），详见 v1.29 修订说明。
 - mc-lite 老存档迁移：提供一次性迁移脚本（第二阶段），读旧 region 记录提取 blockData diff。
 - **M5 持久实体与流式卸载**：column 首次超出“加载半径 + 2”时，Scheduler 创建可取消的 pending
   unload；`EntityManager` 冻结该 column 的持久实体并把最小 snapshot 写入 `entities`。这段时间 world、

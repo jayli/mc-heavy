@@ -24,13 +24,13 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
 依赖链 + 后续扩展点）。本文件不复制进度表 —— 同一事实的多个副本会漂移。
 
 一句话现状：第一阶段 **M0~M3 全部完成**并验收达标，两个收尾补丁项（M3.1 背包 / M3.2 方块朝向
-放置交互）也已落地；此后是一串独立 bugfix 与改造（v1.19~v1.28）；第二阶段 **M4~M7 尚未开始**
+放置交互）也已落地；此后是一串独立 bugfix 与改造（v1.19~v1.29）；第二阶段 **M4~M7 尚未开始**
 （规格与计划已备好，见「权威文档」）。
 
 **历次 bugfix / 改造的完整记录不在本文件。** 权威副本有两份：设计文档的修订说明
-（v1.19~v1.28，每条含根因、实测数据、门禁对照）+
+（v1.19~v1.29，每条含根因、实测数据、门禁对照）+
 [`docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md`](docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md)
-（v1.19~v1.21 独立章节、v1.22~v1.28 表格）。本文件只保留**会影响后续实现决策的活跃约束**
+（v1.19~v1.21 独立章节、v1.22~v1.29 表格）。本文件只保留**会影响后续实现决策的活跃约束**
 （下节）—— 它们散落在历次改动中，读单个文件看不出来。
 
 测试现状：Playwright spec 全量 + 浏览器内单元测试全绿。**用例计数以 `npm run check:data`
@@ -67,11 +67,27 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
   **M4 Task 6 改走 `editor.setBlock(...)` 时须保留朝向分支**（不得退化为只传 id）。
 - **等轴测图标的深度度量 = `x+y+z`**（由投影轴叉乘得法线 `(-1,-1,-1)` 推出），且遮挡判定必须
   **逐像素深度测试** —— 面平均深度只能用于排序，对被整片遮住的面无能为力。
+- **丢弃玩家改动的唯一入口 = `Game._discardEdits()`**（取消在途 flush + 清各 column **内存**
+  edits + 清 IndexedDB store 与 `editsCache`）。消费者 `newWorld`（换 seed）/ `clearSave`
+  （保留 seed 与设置，设置面板「删除缓存」）。**禁止只清 IndexedDB 不清内存** —— 内存 edits
+  是写盘源，残留会在任何来得及提交的时机把旧改动写回刚清空的 store。
+- **时序不定的竞态只能用内存侧断言钉住，端到端断言会让缺陷静默逃逸**。实测：`beforeunload →
+  flushNow` 的 IndexedDB 事务能否提交取决于卸载快慢（多一次 evaluate 往返则提交；紧跟
+  `location.reload()` 则被中止），故重载后的 `savedColumns` **碰巧**可能读到正确值
+  （负向验证实测：注释掉清内存那步，E2E 仍全绿）。写竞态防护的测试时，断言要落在
+  **同步可观测的内存状态**上，不要只断言重载后的落库结果。
 - **文档同步**：新增产物或删除文件时，必须同步「目录结构清单」「开发命令清单」「现状声明」
   三类文档，历史记录段不动。文档里同一事实的多个副本会漂移（已发生三次版本号漂移）。
 - **计时类断言 flaky 时须分开按 spec 连跑拿数值分布比均值与峰值**，仅凭「全量跑失败/单独跑通过」
   判定不够（实测有 HEAD 侧失败率反而更高的情况，只看全量跑会得出相反结论）。
   **并发跑测试会导致计时断言系统性失败**（争抢 CPU 与端口 8081）。
+  更可靠的做法是**交替对照**（改动侧 N 次 → HEAD 侧 N 次 → 反复），消除机器负载累积带来的
+  顺序效应 —— 单侧连跑会让后跑的一侧承担更高负载。
+- **测试指纹口径须匹配改动范围**：`i += 997` 步长采样只适合「换 seed」类整片变化；
+  **单格改动必须全量求和**（实测踩坑：基线与改动侧同为 50533，断言恒真）。
+- **重载类断言的导航监听必须在触发动作之前武装**：`waitForLoadState('load')` 写在 click 之后
+  会看到「当前页已是 load 态」立即返回，随后 `READY` 在**旧页**本就为真 → 读到动作前的世界。
+  正确写法是 `const nav = page.waitForNavigation(...)` 先建 promise，再 click，再 `await nav`。
 
 ## 权威文档（动手前必读）
 
@@ -80,11 +96,11 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
 1. [`docs/roadmap.md`](docs/roadmap.md) —— **项目进度唯一总览**（里程碑总表 M0~M7 + 第二阶段
    依赖链 + 后续扩展点接入点 + 去哪找细节）。想知道「做到哪了、下一步做什么」先看它。
 2. [`docs/phase-1-engine-design.md`](docs/phase-1-engine-design.md) —— **架构唯一权威**，
-   当前 v1.28。所有子系统边界、DR 决策、验收口径都在这里；历次口径变更见其修订说明。
+   当前 v1.29。所有子系统边界、DR 决策、验收口径都在这里；历次口径变更见其修订说明。
 3. [`docs/testing-policy.md`](docs/testing-policy.md) —— **测试分级的唯一权威**（Tier 1~4 判据 +
    门禁分层 + 红线静态门规则 + 与 M4~M7 的关系）。动手前先按它的判据确定本次改动属哪一级。
 4. [`docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md`](docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md)
-   —— **任务级执行清单 + v1.19~v1.28 历次改造记录**（含各次 bugfix 的根因与实测数据）。
+   —— **任务级执行清单 + v1.19~v1.29 历次改造记录**（含各次 bugfix 的根因与实测数据）。
 5. `docs/superpowers/plans/2026-08-19-m1-voxel-core-loop.md` —— M1 实施计划（已完成，架构细节参照）。
 6. `docs/m0-bench-report.md` / `docs/m1-acceptance-report.md` / `docs/m2-m3-performance-report.md`
    （M3-6 第一阶段性能报告 = 冻结基线）—— 实测与验收报告。
@@ -192,7 +208,7 @@ mc-heavy/
 ├─ vendor/three/               # three.js r185.1（three.webgpu.js / three.tsl.js / three.core.js）
 ├─ docs/
 │  ├─ roadmap.md              # 项目进度唯一总览（里程碑总表 + 依赖链 + 扩展点）
-│  ├─ phase-1-engine-design.md # 架构唯一权威（v1.28）
+│  ├─ phase-1-engine-design.md # 架构唯一权威（v1.29）
 │  └─ testing-policy.md        # 测试分级唯一权威（Tier 1~4 判据 + 门禁分层）
 ├─ tools/build-atlas.mjs       # atlas 离线打包（npm run atlas）
 ├─ tools/bake-procedural-textures.mjs # 程序化贴图烘焙（mc-lite canvas 材质 → PNG）

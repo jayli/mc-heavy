@@ -308,20 +308,54 @@ export class Game {
   /**
    * 新世界（M3-4）：随机（或指定）seed 写入 meta、丢弃旧世界全部修改、带参重载。
    * 确定性红线 2 不受影响：seed 落库后重启读回同一 seed，地形完全可复现。
-   * 丢弃口径：newWorld 是「离开旧世界」，旧 edits 一律不留——既清 IndexedDB 的 edits
-   * store/缓存，也清 world 内存里各 column 的 edits Map；否则 location.assign 触发的
-   * beforeunload → flushNow(world) 会把旧改动写回刚清空的 store（竞态）。
+   * 丢弃口径：newWorld 是「离开旧世界」，旧 edits 一律不留（`_discardEdits`，含防卸载
+   * 写回的竞态三步）。
    * @param {number|null} seed null = 随机
    */
   async newWorld(seed = null) {
     const newSeed = (seed === null || seed === undefined) ? randomSeed() : seed;
-    this.persistence.cancelPendingFlush(); // 取消在途防抖 flush
-    for (const [, col] of this.world.columns) col.edits.clear(); // 防卸载 flush 写回
-    await this.persistence.clearAllEdits();
+    await this._discardEdits();
     await this.persistence.saveMeta({ seed: newSeed, spawn: [8, 8], savedAt: Date.now() });
     const url = new URL(location.href);
     url.searchParams.set('seed', String(newSeed));
     location.assign(url.toString());
+  }
+
+  /**
+   * 删除缓存（设置面板）：丢弃玩家的全部方块改动，**保留 seed 与设置**。
+   * 与 newWorld 的区别：不写新 meta、不带 `?seed=` 参数 → 重载后读回同一 seed，
+   * 地形回到该世界的未修改原始版本（确定性红线 2：地形只由 seed 决定，edits 是叠加层）。
+   * localStorage 设置（视距/画质/音量/风格/帧预算）完全不动。
+   * 与 newWorld 共用 `_discardEdits` —— 两份竞态防护逻辑会漂移（红线 1 精神）。
+   */
+  async clearSave() {
+    await this._discardEdits();
+    location.reload();
+  }
+
+  /**
+   * 丢弃全部玩家改动（内存 edits + IndexedDB edits store）。
+   *
+   * 三步顺序不可省略：
+   * ① `cancelPendingFlush()` 取消在途 5s 防抖写盘；
+   * ② 清 `world.columns` 各 column 的**内存** edits；
+   * ③ `clearAllEdits()` 清 IndexedDB store 与 `editsCache`（预热源不得残留）。
+   *
+   * ② 为什么必要（实测口径，勿照推理实现）：`beforeunload → flushNow(world)` 读的是内存
+   * edits，不清即存在写回风险。但**风险窗口比直觉窄** —— 实测（对照脚本，只差「reload 前
+   * 是否 await flushNow」一个变量）：给卸载事务一点时间（多一次 evaluate 往返）则确实写回
+   * （savedColumns 0→1）；紧跟 `location.reload()` 立即卸载则事务来不及提交就被中止、
+   * 读回 0。故「不清这步」在生产路径上**不一定**当场暴露，却会在任何来得及提交的时机
+   * （标签页关闭较慢、5s 防抖 flush 未被取消、后续任何写盘机会）把旧改动写回刚清空的
+   * store → 用户「点了没生效」。这类时序不定的缺陷只能靠内存侧断言钉住
+   * （`tests/clear-save.spec.mjs`：E2E 断言抓不住，内存断言能抓住 —— 已做负向验证）。
+   *
+   * 消费者：`newWorld`（换 seed）/ `clearSave`（保留 seed）。
+   */
+  async _discardEdits() {
+    this.persistence.cancelPendingFlush();
+    for (const [, col] of this.world.columns) col.edits.clear(); // 防卸载 flush 写回
+    await this.persistence.clearAllEdits();
   }
 
   /**

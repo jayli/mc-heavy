@@ -70,6 +70,12 @@ const PANEL_CSS = `
 }
 #settings-modal .mc-world-row .mc-title { flex: none; }
 #settings-modal .mc-seed { font-size: 12px; color: #555; font-weight: bold; white-space: nowrap; }
+/* 破坏性操作（删除缓存）：暗红底区分于普通灰按钮；armed 态高亮提示「再点一次即执行」 */
+#settings-modal button.danger { background: #8b4b4b; }
+#settings-modal button.danger:hover { background: #9b5b5b; }
+#settings-modal button.danger.armed {
+  background: #b33; border: 2px solid #373737; border-right-color: #fff; border-bottom-color: #fff;
+}
 #settings-modal .mc-footer {
   margin-top: auto; display: flex; justify-content: center; padding-top: 20px;
 }
@@ -124,6 +130,7 @@ export class SettingsPanel {
     box.appendChild(this._rowVisualStyle());
     box.appendChild(this._rowBudget());
     box.appendChild(this._rowNewWorld());
+    box.appendChild(this._rowClearSave());
 
     const footer = document.createElement('div');
     footer.className = 'mc-footer';
@@ -240,10 +247,57 @@ export class SettingsPanel {
     return row;
   }
 
+  /**
+   * 「删除缓存」行：丢弃玩家的方块改动，保留 seed 与设置（`Game.clearSave`）。
+   * 与「新世界」的区别：新世界会**换 seed**（离开旧世界），本功能不换 —— 重载后
+   * 回到同一世界的未修改原始版本。localStorage 设置不受影响。
+   *
+   * 二次确认（armed 态）：破坏性操作单击即执行会让误触毁掉存档。第一次点击只把
+   * 按钮切到「确认删除」，第二次才执行；打开面板时复位，避免确认态跨会话残留。
+   */
+  _rowClearSave() {
+    const row = document.createElement('div');
+    row.className = 'mc-world-row';
+    const t = document.createElement('span');
+    t.className = 'mc-title';
+    t.textContent = '存档';
+    row.appendChild(t);
+
+    const b = document.createElement('button');
+    b.id = 'btn-clear-save';
+    b.className = 'danger';
+    b.textContent = '删除缓存（清除方块改动）';
+    this._clearBtn = b;
+    b.addEventListener('click', () => {
+      if (!b.classList.contains('armed')) {
+        b.classList.add('armed');
+        b.textContent = '确认删除？再点一次';
+        return;
+      }
+      this.game.clearSave(); // 重载：edits 清空 + seed/设置保留
+    });
+    row.appendChild(b);
+
+    const hint = document.createElement('span');
+    hint.className = 'mc-seed';
+    hint.textContent = '保留 seed 与设置';
+    row.appendChild(hint);
+    return row;
+  }
+
+  /** 复位破坏性按钮的确认态（打开面板时调用，避免上次未完成的 armed 态残留） */
+  _resetDangerArmed() {
+    const b = this._clearBtn;
+    if (!b) return;
+    b.classList.remove('armed');
+    b.textContent = '删除缓存（清除方块改动）';
+  }
+
   _save() { saveStoredSettings(this.settings); }
 
   open() {
     this.el.style.display = 'flex';
+    this._resetDangerArmed(); // 破坏性按钮复位，避免上次残留的 armed 态被误触
     this.game.pushModal('settings'); // M3.1 模态栈（§4.5.4）：原 uiModal=true 会与背包互踩
     this.game.player?.keys.clear(); // 打开瞬间清空按键，防 WASD 粘滞
     if (document.pointerLockElement) document.exitPointerLock();
