@@ -1,6 +1,9 @@
 // src/tests/test-inventory-ui.js — M3.1 背包面板 UI（设计文档 §4.5.4）
 // 覆盖：DOM 结构与 mc-lite 样式口径、Z toggle / Escape 关闭 / 数字键 / 点击选中、
-// 模态栈（不误清他人门控）、count 不渲染、空槽不渲染、无 tile 物品降级、样式表幂等注入。
+// 模态栈（不误清他人门控）、count 不渲染、空槽不渲染、无图标物品降级、样式表幂等注入。
+//
+// v1.26：图标改读预生成的 CSS 串（`loadIconManifest()` 的 inventory 档），面板构造参数
+// 从 atlasTiles/atlasSize/tileOfName/atlasUrl 四个收敛为 icons 一个。
 //
 // 组件生命周期：每个测试必须 dispose()（面板在 window 上挂 keydown 监听，
 // 不清理会跨测试串扰——一个实例会响应另一个实例的按键）。
@@ -10,7 +13,7 @@ import { createRegistry } from '../voxel/block-registry.js';
 import { BLOCKS } from '../voxel/blocks-data.js';
 import { createCreativeInventory } from '../player/inventory.js';
 import { InventoryPanel } from '../ui/inventory.js';
-import { tileOfName } from '../ui/hotbar.js';
+import { loadIconManifest } from '../ui/icons.js';
 
 /** 最小 Game 替身：模态栈语义与真实 Game 一致（真实实例的验证在 Playwright spec） */
 function makeGame() {
@@ -37,25 +40,20 @@ function makeGame() {
   };
 }
 
-/** 真实 atlas 元数据（测试页同源，fetch 一次后复用） */
-let atlasMeta = null;
-async function loadAtlas() {
-  if (!atlasMeta) atlasMeta = await (await fetch('/assets/atlas.json')).json();
-  return atlasMeta;
+/** 图标 manifest（测试页同源，fetch 一次后复用）。v1.26：面板不再需要世界 atlas 元数据 */
+let iconMeta = null;
+async function loadIcons() {
+  if (!iconMeta) iconMeta = await loadIconManifest();
+  return iconMeta;
 }
 
 /** 构造面板 + 统一清理的包装（保证 keydown 监听不泄漏到其他测试） */
 async function withPanel(fn) {
   const game = makeGame();
-  const atlas = await loadAtlas();
+  const manifest = await loadIcons();
   const host = document.createElement('div');
   document.body.appendChild(host);
-  const panel = new InventoryPanel(host, game, {
-    atlasTiles: atlas.tiles,
-    atlasSize: atlas.size,
-    tileOfName,
-    atlasUrl: '/assets/atlas.png',
-  });
+  const panel = new InventoryPanel(host, game, { icons: manifest.inventory });
   try {
     return await fn(panel, game, host);
   } finally {
@@ -88,11 +86,11 @@ test('背包 DOM：样式表注入幂等（两次构造只注入一次）', asyn
   await withPanel(async () => {
     const first = document.querySelectorAll('#mc-inventory-style').length;
     const game = makeGame();
-    const atlas = await loadAtlas();
+    const manifest = await loadIcons();
     const host2 = document.createElement('div');
     document.body.appendChild(host2);
     const p2 = new InventoryPanel(host2, game, {
-      atlasTiles: atlas.tiles, atlasSize: atlas.size, tileOfName, atlasUrl: '/assets/atlas.png',
+      icons: manifest.inventory,
     });
     try {
       assertEqual(document.querySelectorAll('#mc-inventory-style').length, first,
@@ -247,11 +245,11 @@ test('键盘数字 1-5：仅打开态改选中槽（关态由 Player 负责）',
 
 test('键盘：dispose 后不再响应（监听器已摘除）', async () => {
   const game = makeGame();
-  const atlas = await loadAtlas();
+  const manifest = await loadIcons();
   const host = document.createElement('div');
   document.body.appendChild(host);
   const panel = new InventoryPanel(host, game, {
-    atlasTiles: atlas.tiles, atlasSize: atlas.size, tileOfName, atlasUrl: '/assets/atlas.png',
+    icons: manifest.inventory,
   });
   panel.dispose();
   host.remove();
@@ -308,18 +306,23 @@ test('渲染：不显示 count（创造模式无限背包，§4.5.4 产品决策
   });
 });
 
-test('渲染：图标走 atlas tile CSS background 裁剪（同快捷栏 tileStyle）', async () => {
+test('渲染：图标走预生成的 CSS background 串（v1.26，取代运行时裁剪计算）', async () => {
   await withPanel((panel) => {
     panel.open();
     const icon = document.querySelector('#inventory-grid .mc-slot .mc-icon');
     assertTrue(!!icon, '图标元素存在');
-    assertTrue(icon.style.backgroundImage.includes('atlas.png'), 'background-image = atlas');
+    // 预生成串是完整 background 简写：url + 位置 + 尺寸 + no-repeat 一次写入
+    assertTrue(icon.style.backgroundImage.includes('icons-atlas.png'),
+      'background-image 指向图标 atlas（不再是世界 atlas）');
     assertTrue(/^\d+px \d+px$/.test(icon.style.backgroundSize), 'background-size 已算出');
-    assertEqual(icon.style.imageRendering, 'pixelated', '像素风放大（blur=0 口径）');
+    assertTrue(/-?\d+px -?\d+px/.test(icon.style.backgroundPosition), 'background-position 已算出');
+    assertEqual(icon.style.backgroundRepeat, 'no-repeat', '简写自带 no-repeat（防图标平铺）');
+    // image-rendering 来自 .mc-icon 的 CSS 类（不再内联写入）→ 用 computed style 断言
+    assertEqual(getComputedStyle(icon).imageRendering, 'pixelated', '像素风（blur=0 口径）');
   });
 });
 
-test('渲染：mine_cart 走图标表（Invicon_Minecart），不再是空槽', async () => {
+test('渲染：mine_cart 有图标（烘焙产物含其手工图标，不再是空槽）', async () => {
   await withPanel((panel, game) => {
     panel.open();
     const names = [...document.querySelectorAll('#inventory-grid .mc-item-name')]
@@ -331,8 +334,9 @@ test('渲染：mine_cart 走图标表（Invicon_Minecart），不再是空槽', 
     const slot = document.querySelectorAll('#inventory-grid .mc-slot')[idx];
     assertEqual(slot.dataset.index, String(idx));
     const icon = slot.querySelector('.mc-icon');
-    // v1.23：mine_cart 无 faces-data 条目，但图标表给了 Invicon_Minecart → 有图标
-    assertTrue(icon.style.backgroundImage.includes('atlas.png'), '有 background-image');
+    // v1.26：mine_cart 是实体不是方块（无 mesher 几何），烘焙时走平面路径采其手工图标
+    // Invicon_Minecart → 有图标。判据是「有 background-image」而非具体 tile 名。
+    assertTrue(icon.style.backgroundImage.includes('icons-atlas.png'), '有 background-image');
     assertTrue(/^\d+px \d+px$/.test(icon.style.backgroundSize), 'background-size 已算出');
     // 仍可点击选中（玩法可用性保留）
     slot.click();
@@ -343,8 +347,9 @@ test('渲染：mine_cart 走图标表（Invicon_Minecart），不再是空槽', 
 /** 台阶图标在背包 DOM 里必须与母方块图标不同 tile（端到端确认裁剪参数不同） */
 /**
  * 端到端：异形方块槽位的图标裁剪参数与「会撞脸的那个方块」不同。
- * v1.24 起异形方块走等轴测图标 tile（`inventory-icons/*`），故与母方块/世界贴图的
- * 裁剪位置必然不同。比对 `backgroundPosition` 而非 tile 名——tile 更名不影响本判据
+ * v1.26 起图标烘进单一 `icons-atlas.png`、运行时读预生成 CSS 串（不再是 `inventory-icons/*`
+ * tile + 运行时裁剪）。等轴测形状各异 → 预生成的 `backgroundPosition` 必然不同。
+ * 比对 `backgroundPosition` 而非具体串——串格式变了不影响本判据
  * （语义是「渲染出的图标不是同一张」）。
  *
  * 覆盖 9 项异形方块：台阶 4 项 vs 母方块、栏杆 3 项 vs 彼此（世界贴图几乎相同 →
@@ -434,11 +439,11 @@ test('渲染：未打开时 render 不写 DOM（mc-lite Inventory.render 早退�
 
 test('dispose：移除 DOM 与监听（不泄漏到其他面板）', async () => {
   const game = makeGame();
-  const atlas = await loadAtlas();
+  const manifest = await loadIcons();
   const host = document.createElement('div');
   document.body.appendChild(host);
   const panel = new InventoryPanel(host, game, {
-    atlasTiles: atlas.tiles, atlasSize: atlas.size, tileOfName, atlasUrl: '/assets/atlas.png',
+    icons: manifest.inventory,
   });
   panel.open();
   assertTrue(game.uiModal);

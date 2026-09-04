@@ -21,8 +21,9 @@ import { Player } from '../player/player.js';
 import { Persistence } from '../save/persistence.js';
 import { CoordsHUD } from '../ui/coords-hud.js';
 import { SettingsPanel } from '../ui/settings-panel.js';
-import { createHotbar, tileOfName } from '../ui/hotbar.js';
+import { createHotbar } from '../ui/hotbar.js';
 import { InventoryPanel } from '../ui/inventory.js';
+import { loadIconManifest } from '../ui/icons.js';
 import { getBiome } from '../gen/noise.js';
 import { loadStoredSettings, resolveSettings } from '../ui/settings.js';
 
@@ -167,21 +168,19 @@ export class Game {
       DEBUG_FLAGS.worldStats ? () => this.worldStats() : null);
     // M3-4 HUD：坐标+biome、快捷栏（atlas tile CSS 裁剪）、设置面板
     this._coordsHud = new CoordsHUD(this._hudRoot, this);
+    // v1.26：图标走预生成的 CSS 串（`npm run icons` → assets/icons.json）。
+    // 两套尺寸档：hotbar=40px / inventory=32px —— 按显示尺寸烘焙，运行时零缩放。
+    // 取代此前的 atlasTiles/atlasSize/tileOfName/atlasUrl 四个参数 + 运行时裁剪数学。
+    const iconManifest = await loadIconManifest();
     // M3.1：快捷栏是背包前 5 格的视图（§4.5.4），内容/高亮都读 inventory，
-    // 不再有第二份物品状态；tileOfName 提到 ui/hotbar.js 供背包面板共用
+    // 不再有第二份物品状态
     this._hotbar = createHotbar(this._hudRoot, {
       inventory: this.player.inventory,
-      atlasTiles: atlasMeta.tiles,
-      atlasSize: atlasMeta.size,
-      tileOfName,
-      atlasUrl: '/assets/atlas.png',
+      icons: iconManifest.hotbar,
     });
     // M3.1：背包面板（Z toggle / Escape 关闭 / 点击槽位选中；模态栈 owner 'inventory'）
     this.inventoryPanel = new InventoryPanel(this._hudRoot, this, {
-      atlasTiles: atlasMeta.tiles,
-      atlasSize: atlasMeta.size,
-      tileOfName,
-      atlasUrl: '/assets/atlas.png',
+      icons: iconManifest.inventory,
     });
     // 生效设置：main.js 已 resolve（存储+URL）传入；缺省自行合并（fixture 页直建 Game 时）
     this.settings = this._settings || resolveSettings(loadStoredSettings(), new URLSearchParams(location.search));

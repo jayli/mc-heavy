@@ -258,7 +258,10 @@ test('M3.1：背包渲染不显示 count（创造模式无限背包）', async (
     return {
       countEls: document.querySelectorAll('#inventory-grid .count').length,
       anyShows1500: slots.some((s) => s.textContent.includes('1500')),
-      withIcon: slots.filter((s) => s.querySelector('.mc-icon')?.style.backgroundImage.includes('atlas.png')).length,
+      // v1.26：图标走独立的 icons-atlas.png（不再是世界 atlas.png）。
+      // 判据必须写精确——`includes('atlas.png')` 对 'icons-atlas.png' 也为真，会掩盖
+      // 「图标仍指向世界 atlas」的回退。
+      withIcon: slots.filter((s) => s.querySelector('.mc-icon')?.style.backgroundImage.includes('icons-atlas.png')).length,
       total: slots.length,
       // v1.23：图标表补齐 mine_cart（Invicon_Minecart）→ 背包项**全部有图标**。
       // bed_alias_block 已移出背包（cullMode:'none' 不渲染、无法出图标），故背包内无空槽项。

@@ -1,134 +1,20 @@
-// M3-4 HUD：hotbar 图标裁剪计算 + 背包图标表 + 设置合并逻辑（纯函数单测）
+// src/tests/test-ui.js — 设置合并逻辑 + 图标 manifest 契约（纯函数单测）
+//
+// **v1.26 说明（为什么这里少了 9 个用例）**：图标路径改为**预生成 CSS 串**
+// （`npm run icons` → `assets/icons.json`，运行时只读 `icon.style.background = css`），
+// `tileStyle()`（裁剪数学）/ `tileOfName()`（两级查表）/ `INVENTORY_ICONS`（例外表）
+// 已删除 → 钉死它们的用例一并移除。这 9 个用例正是 `docs/testing-policy.md` 说的
+// 「改动放大器」：钉的是 tile 名字符串与裁剪参数，改一次贴图地址就要改断言。
+//
+// 它们保护的失效路径（「异形方块图标回落到 faces-data 的世界渲染贴图 → 撞脸」）在
+// 新架构下**结构上不存在**——图标不再从 faces-data 派生，而是独立烘焙产物。
+// 等价保障改由两处承担：① `tools/bake-icon-atlas.mjs` 的逐面采样（Tier 1 单测
+// `test-iso-icon.js` 钉「grass 顶面必须是草绿、不得采成土色」）；② `npm run check:data`
+// 的图标契约检查（背包每项都有图标 + 图标未过期）。
 import { test } from './runner.js';
 import { assertEqual, assertTrue, assertFalse } from './assert.js';
-import { tileStyle, tileOfName, INVENTORY_ICONS } from '../ui/hotbar.js';
 import { DEFAULT_SETTINGS, resolveSettings } from '../ui/settings.js';
-
-test('hotbar: tileStyle 按 atlas tile 像素坐标算 background 裁剪', () => {
-  const tile = { x: 144, y: 352, w: 16, h: 16 };
-  const s = tileStyle(tile, 40, 2048);
-  // 放大倍率 = 40/16 = 2.5；background-size = 2048×2.5 = 5120
-  assertEqual(s.backgroundSize, '5120px 5120px');
-  // 偏移 = -(x×2.5), -(y×2.5)
-  assertEqual(s.backgroundPosition, '-360px -880px');
-});
-
-test('hotbar: tileStyle 非方形 tile（128 大图）按 w/h 各自缩放', () => {
-  const tile = { x: 0, y: 1024, w: 128, h: 128 };
-  const s = tileStyle(tile, 40, 2048);
-  assertEqual(s.backgroundSize, '640px 640px'); // 2048 × 40/128
-  assertEqual(s.backgroundPosition, '0px -320px'); // -(1024 × 0.3125)；x=0 → "0px"
-});
-
-// --- 背包图标表（§4.5.4 v1.23 建、v1.24 改等轴测） ---
-// v1.23 根因：台阶等异形方块在 faces-data 里映射的是普通方块 tile，图标与母方块
-// （planks / Cobblestone 等）完全一样，无法区分。mc-lite 的专用图标机制在
-// `src/utils/ItemIconUtils.js:11` 的 `getCustomIconPath()`（14 项「方块名 → PNG 路径」表，
-// `createItemIcon()` 命中即用、否则回落 `HUD.generateIcon()` 取材质 map）——**不在 HUD.js**，
-// v1.23 文档曾误写为「HUD.js 的 getStepMaterial() 走 switch(name) 换材质」，该函数
-// mc-lite 全仓零命中，已在 §4.5.4 v1.24 勘误。
-
-// v1.24：异形方块改用**离线烘焙的等轴测投影图标**（形状权威 = mesher 的 TEMPLATES），
-// 取代 v1.23 的 mc-lite 手工图标 tile。理由见 §4.5.4 v1.24 修订说明：
-// ① 形状信息量更足（立体轮廓 vs 平面横截面图案）；② 采样游戏内实际贴图 → 配色一致
-// （mc-lite 手工图标是金黄色栏杆、游戏内却是木色栏杆，观感割裂）。
-test('hotbar: INVENTORY_ICONS 覆盖 9 项异形方块 + mine_cart', () => {
-  // 异形方块 → 等轴测图标（tools/bake-isometric-icons.mjs 烘焙入 atlas）
-  assertEqual(INVENTORY_ICONS.handrail, 'inventory-icons/handrail');
-  assertEqual(INVENTORY_ICONS.handrailA, 'inventory-icons/handrailA');
-  assertEqual(INVENTORY_ICONS.handrailB, 'inventory-icons/handrailB');
-  assertEqual(INVENTORY_ICONS.vertical_pillar, 'inventory-icons/vertical_pillar');
-  assertEqual(INVENTORY_ICONS.horizontal_pillar, 'inventory-icons/horizontal_pillar');
-  assertEqual(INVENTORY_ICONS.planks_step, 'inventory-icons/planks_step');
-  assertEqual(INVENTORY_ICONS.cobblestone_step, 'inventory-icons/cobblestone_step');
-  assertEqual(INVENTORY_ICONS.cobblestone_step_updown, 'inventory-icons/cobblestone_step_updown');
-  assertEqual(INVENTORY_ICONS.stone_diorite_step, 'inventory-icons/stone_diorite_step');
-  // 矿车保持 mc-lite 手工图标：它是**实体**不是方块，mesher 无其几何模板 → 等轴测不适用
-  assertEqual(INVENTORY_ICONS.mine_cart, 'Invicon_Minecart');
-  assertEqual(Object.keys(INVENTORY_ICONS).length, 10,
-    '恰好 10 项（9 异形 + 矿车；勿混入非图标 tile）');
-});
-
-test('hotbar: tileOfName 异形方块返回等轴测图标 tile', () => {
-  for (const [block, tile] of [
-    ['handrail', 'inventory-icons/handrail'],
-    ['handrailA', 'inventory-icons/handrailA'],
-    ['handrailB', 'inventory-icons/handrailB'],
-    ['vertical_pillar', 'inventory-icons/vertical_pillar'],
-    ['horizontal_pillar', 'inventory-icons/horizontal_pillar'],
-    ['planks_step', 'inventory-icons/planks_step'],
-    ['cobblestone_step', 'inventory-icons/cobblestone_step'],
-    ['cobblestone_step_updown', 'inventory-icons/cobblestone_step_updown'],
-    ['stone_diorite_step', 'inventory-icons/stone_diorite_step'],
-  ]) {
-    assertEqual(tileOfName(block), tile);
-  }
-});
-
-test('hotbar: tileOfName mine_cart 返回 Invicon_Minecart（原为 undefined 空槽）', () => {
-  assertEqual(tileOfName('mine_cart'), 'Invicon_Minecart');
-});
-
-/**
- * 回归防线：异形方块图标**不得**回落到 faces-data 的世界渲染贴图。
- * 若有人删掉 INVENTORY_ICONS 查表（或把表清空），这些方块会静默退回 faces-data——
- * 台阶退回母方块贴图（与 planks/Cobblestone 撞脸）、栏杆柱子退回 `procedural/*`
- * 纯色贴图（彼此撞脸），正是本次要修的两个 bug。
- */
-test('hotbar: tileOfName 异形方块不得回落世界渲染贴图（回归防线）', () => {
-  // 台阶：不得回落母方块贴图
-  assertFalse(tileOfName('planks_step') === 'planks_birch',
-    'planks_step 图标不得是 planks_birch');
-  assertFalse(tileOfName('cobblestone_step') === 'Cobblestone',
-    'cobblestone_step 图标不得是 Cobblestone');
-  assertFalse(tileOfName('cobblestone_step_updown') === 'Cobblestone',
-    'cobblestone_step_updown 图标不得是 Cobblestone');
-  assertFalse(tileOfName('stone_diorite_step') === 'stone_diorite',
-    'stone_diorite_step 图标不得是 stone_diorite');
-  // 栏杆/柱子：不得回落 procedural/* 纯色世界贴图（彼此几乎相同 → 撞脸）
-  assertFalse(tileOfName('handrail') === 'procedural/handrail',
-    'handrail 图标不得是纯色世界贴图');
-  assertFalse(tileOfName('vertical_pillar') === 'procedural/pillar',
-    'vertical_pillar 图标不得是纯色世界贴图');
-  assertFalse(tileOfName('horizontal_pillar') === 'procedural/pillar_horizontal',
-    'horizontal_pillar 图标不得是纯色世界贴图');
-  // 倒置台阶与正置台阶必须不同图标（几何形状相反，撞脸等于丢失辨识度）
-  assertFalse(tileOfName('cobblestone_step_updown') === tileOfName('cobblestone_step'),
-    '正置/倒置台阶图标必须不同');
-  // 竖柱与横梁必须不同图标（几何形状相反）
-  assertFalse(tileOfName('vertical_pillar') === tileOfName('horizontal_pillar'),
-    '竖柱/横梁图标必须不同');
-});
-
-test('hotbar: tileOfName 普通方块仍走 faces-data（图标表不误伤其余 108 项）', () => {
-  assertEqual(tileOfName('stone'), 'stone');
-  assertEqual(tileOfName('cobblestone'), 'Cobblestone'); // faces-data 里是大写 C
-  assertEqual(tileOfName('planks'), 'planks_birch');
-  // 母方块本身不在图标表里 → 保持原行为
-  assertFalse('cobblestone' in INVENTORY_ICONS, 'cobblestone 不进图标表');
-  assertFalse('planks_birch' in INVENTORY_ICONS, 'planks 不进图标表');
-  // 本次范围外的异形方块保持平面贴图现状（勿擅自扩大覆盖范围）
-  assertFalse('cactus' in INVENTORY_ICONS, 'cactus 不进图标表（保持平面贴图）');
-  assertFalse('vine' in INVENTORY_ICONS, 'vine 不进图标表（保持平面贴图）');
-  assertFalse('hanging_lamp' in INVENTORY_ICONS, 'hanging_lamp 不进图标表（保持平面贴图）');
-  assertFalse('chimney' in INVENTORY_ICONS, 'chimney 不进图标表（不在背包内）');
-});
-
-test('hotbar: tileOfName 无 faces-data 且无图标表的方块仍返回 undefined', () => {
-  assertEqual(tileOfName('bed_alias_block'), undefined);
-  assertEqual(tileOfName('不存在的方块'), undefined);
-});
-
-/**
- * 图标表指向的 tile 必须真实存在于 atlas —— 否则渲染出空槽（与 bug 同观感，
- * 但根因不同：拼错 tile 名时不会有任何报错）。用真实 atlas.json 校验。
- */
-test('hotbar: INVENTORY_ICONS 指向的 tile 全部存在于 atlas.json', async () => {
-  const atlas = await (await fetch('/assets/atlas.json')).json();
-  for (const [block, tileName] of Object.entries(INVENTORY_ICONS)) {
-    assertTrue(!!atlas.tiles[tileName], `${block} 的图标 tile "${tileName}" 存在于 atlas`);
-  }
-});
+import { loadIconManifest, iconCss } from '../ui/icons.js';
 
 test('settings: 默认值（vd=8 / blur=off / volume=1 / 风格自动）', () => {
   assertEqual(DEFAULT_SETTINGS.viewDistance, 8);
@@ -172,4 +58,82 @@ test('settings: visualStyle 只接受合法键', () => {
   assertEqual(resolveSettings({ visualStyle: 'night' }, new URLSearchParams('')).visualStyle, 'night');
   assertEqual(resolveSettings({ visualStyle: 'bogus' }, new URLSearchParams('')).visualStyle, null);
   assertEqual(resolveSettings(null, new URLSearchParams('style=morning')).visualStyle, 'morning');
+});
+
+// --- v1.26：图标 manifest 契约 ---
+// 钉的是**契约与不变式**，不是具体坐标值（坐标由烘焙产物决定，改几何/贴图会漂移）。
+
+test('icons: manifest 两套尺寸档覆盖同一集合（快捷栏/背包不遗漏）', async () => {
+  const m = await loadIconManifest();
+  const hotbar = Object.keys(m.hotbar).sort();
+  const inventory = Object.keys(m.inventory).sort();
+  assertEqual(hotbar.length, inventory.length, '两套尺寸档项数相同');
+  // 逐项一致：任一档漏项都会让对应面板出现空图标槽
+  for (let i = 0; i < hotbar.length; i++) {
+    assertEqual(hotbar[i], inventory[i], `第 ${i} 项两档一致`);
+  }
+  // 背包集合每项都有图标（新增方块忘跑 npm run icons → 这条抓到）
+  const { buildItemNames } = await import('../player/inventory.js');
+  const { buildDefaultRegistry } = await import('../voxel/block-registry.js');
+  const items = buildItemNames(await buildDefaultRegistry());
+  for (const name of items) {
+    assertTrue(iconCss(m, 'hotbar', name) !== undefined, `背包项 ${name} 有快捷栏图标`);
+    assertTrue(iconCss(m, 'inventory', name) !== undefined, `背包项 ${name} 有背包图标`);
+  }
+});
+
+test('icons: CSS 串是完整 background 简写（含 url/位置/尺寸/no-repeat）', async () => {
+  const m = await loadIconManifest();
+  const css = iconCss(m, 'hotbar', 'stone');
+  assertTrue(css.startsWith('url('), '串以 url() 开头');
+  // **url 必须是绝对路径**：manifest 写相对名，而 background 的 url() 相对文档基址解析——
+  // 页面在 /src/tests/index.html 时相对名会去找 /src/tests/icons-atlas.png（404）。
+  assertTrue(css.includes("/assets/icons-atlas.png"), `url 已修正为绝对路径，实得 ${css}`);
+  assertTrue(/-?\d+px -?\d+px \/ \d+px \d+px/.test(css), '含 background-position / background-size');
+  assertTrue(css.includes('no-repeat'), '含 no-repeat（防图标平铺）');
+});
+
+test('icons: 两套尺寸的 CSS 串必须不同（坐标不同 → 各自裁各自的图）', async () => {
+  const m = await loadIconManifest();
+  const a = iconCss(m, 'hotbar', 'grass');
+  const b = iconCss(m, 'inventory', 'grass');
+  assertFalse(a === b, `快捷栏(40px) 与背包(32px) 的串不同，实得 ${a} / ${b}`);
+});
+
+test('icons: 缺失方块返回 undefined（调用方降级为无图标，不抛错）', async () => {
+  const m = await loadIconManifest();
+  assertEqual(iconCss(m, 'hotbar', '不存在的方块'), undefined);
+  assertEqual(iconCss(m, 'hotbar', 'bed_alias_block'), undefined, '不在背包内的方块无图标');
+  assertEqual(iconCss(null, 'hotbar', 'stone'), undefined, 'manifest 缺失时不抛错');
+});
+
+test('icons: 图标 atlas 真实可加载且尺寸与 manifest 一致', async () => {
+  const m = await loadIconManifest();
+  const img = new Image();
+  img.src = '/assets/icons-atlas.png';
+  await img.decode(); // 解码失败会抛 → 证明文件存在且是合法 PNG
+  assertEqual(img.width, m.size, `atlas 宽 = manifest.size (${m.size})`);
+  assertEqual(img.height, m.size, 'atlas 是正方形');
+});
+
+/**
+ * **回归防线**：异形方块的图标必须与母方块不同（防 v1.23/v1.24 那两个 bug 复发）。
+ *
+ * 旧用例钉的是 tile 名（`planks_step → inventory-icons/planks_step`），改贴图就要改断言；
+ * 这里钉的是**不变式**：台阶图标 ≠ 母方块图标、竖柱 ≠ 横梁。等轴测方案下形状不同
+ * → 裁剪坐标必然不同，故比 CSS 串即可。若有人把烘焙产物换回母方块贴图，这条会抓到。
+ */
+test('icons: 异形方块图标与其母方块不同（撞脸回归防线）', async () => {
+  const m = await loadIconManifest();
+  const pairs = [
+    ['planks_step', 'planks', '正置台阶 vs 母方块 planks'],
+    ['cobblestone_step', 'cobblestone', '台阶 vs 母方块 cobblestone'],
+    ['vertical_pillar', 'horizontal_pillar', '竖柱 vs 横梁（几何相反）'],
+    ['cobblestone_step', 'cobblestone_step_updown', '正置 vs 倒置台阶（几何相反）'],
+    ['handrail', 'handrailA', '栏杆三型彼此不同'],
+  ];
+  for (const [a, b, desc] of pairs) {
+    assertFalse(iconCss(m, 'inventory', a) === iconCss(m, 'inventory', b),
+      `${desc} 的图标必须不同（撞脸 = 丢失辨识度）`);
+  }
 });

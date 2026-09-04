@@ -11,7 +11,12 @@ const FACE_DIRS = [
 
 // 每面的 4 个顶点（section 局部坐标，单位 cube）
 // 顶点顺序：逆时针（从面外向内看）
-const FACE_VERTICES = [
+// v1.26 导出：背包图标烘焙（tools/bake-icon-atlas.mjs）需要单位立方体的顶点与 UV——
+// 97 个实心方块无 TEMPLATES 模板，等轴测图标走 cubeQuads() fallback。**形状与 UV 的
+// 唯一权威在这里**（红线 1），iso-icon.js 只 import 不另写第二份定义。
+// 加 export 不改任何几何定义，不影响 buildSectionMesh 的消费路径（与 v1.24 给
+// TEMPLATES 加 export 同模式）。
+export const FACE_VERTICES = [
   // +X
   [[1,0,0],[1,1,0],[1,1,1],[1,0,1]],
   // -X
@@ -31,7 +36,8 @@ const FACE_VERTICES = [
 // InstancedMesh 的 UV 一致：+X: u=1-z, v=y；-X: u=z, v=y；+Y: u=x, v=1-z；
 // -Y: u=x, v=z；+Z: u=x, v=y；-Z: u=1-x, v=y。
 // （历史 bug：±X 曾用统一 [0,0],[1,0],[1,1],[0,1] → 东西面贴图旋转 90°。）
-const FACE_UVS = [
+// v1.26 导出：iso-icon.js 的等轴测图标复用此表（消除 v1.24 的 ISO_FACE_UVS 第二份副本）。
+export const FACE_UVS = [
   [[1,0],[1,1],[0,1],[0,0]], // +X
   [[1,0],[1,1],[0,1],[0,0]], // -X
   [[0,0],[1,0],[1,1],[0,1]], // +Y

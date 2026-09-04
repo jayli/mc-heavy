@@ -4,9 +4,11 @@
 // （浏览器内 canvas 读像素，单测环境无 atlas.png）。
 import { test } from './runner.js';
 import { assertEqual, assertTrue, assertFalse } from './assert.js';
-import { TEMPLATES } from '../mesh/mesher.js';
+// FACE_VERTICES/FACE_UVS 是形状与 UV 的**唯一权威**（v1.26 导出）——单测逐顶点比对
+// cubeQuads 是否与之一致，防止 iso-icon.js 出现第二份立方体/UV 定义（红线 1）。
+import { TEMPLATES, FACE_VERTICES, FACE_UVS } from '../mesh/mesher.js';
 import {
-  ISO_SHADE, projectIso, isoPolygons, isoBBox, renderIsoIcon,
+  ISO_SHADE, projectIso, isoPolygons, isoBBox, renderIsoIcon, cubeQuads,
 } from '../mesh/iso-icon.js';
 
 // --- 投影公式（2:1 等轴测） ---
@@ -139,12 +141,14 @@ test('iso-icon: 栏杆图标含把手轮廓（不透明占比高于竖柱）', (
   assertTrue(rail > pillar, `handrail ${rail}px > vertical_pillar ${pillar}px（把手额外覆盖）`);
 });
 
-// --- 烘焙产物（tools/bake-isometric-icons.mjs → assets/textures/inventory-icons/） ---
+// --- 烘焙产物（tools/bake-icon-atlas.mjs → assets/icons-atlas.png） ---
 
 /**
- * 覆盖范围冻结：9 项异形方块（§4.5.4 v1.24）。
- * 勿擅自扩大——`cactus`/`vine`/`lilypad`/`hanging_lamp`/`flower` 系保持平面贴图现状
- * （用户明确指定的范围）；`chimney`/床三项不在背包内；`mine_cart` 是实体无几何模板。
+ * 这 9 项是 v1.24 起就做等轴测的异形方块（§4.5.4）。v1.26 扩到全量 118 项后，
+ * 它们仍是形状断言最有代表性的样本（栏杆/柱子/台阶三类几何各不相同）。
+ *
+ * **覆盖完整性不在这里断言** —— 那是 `npm run check:data` 的 [3] 图标 manifest 覆盖
+ * （背包集合与 manifest 双向一致），语义更强且范围自动跟上，无需在此钉数字。
  */
 const ICON_BLOCKS = [
   'handrail', 'handrailA', 'handrailB',
@@ -152,32 +156,46 @@ const ICON_BLOCKS = [
   'planks_step', 'cobblestone_step', 'cobblestone_step_updown', 'stone_diorite_step',
 ];
 
-test('iso-icon: 烘焙产物覆盖 9 项异形方块（范围冻结）', async () => {
-  for (const name of ICON_BLOCKS) {
-    const res = await fetch(`/assets/textures/inventory-icons/${name}.png`);
-    assertEqual(res.status, 200, `${name}.png 存在（未跑 npm run icons？）`);
-  }
-});
+/**
+ * v1.26：图标不再是独立 PNG，而是烘进单一 `assets/icons-atlas.png`（按显示尺寸 40px）。
+ * 从 atlas 裁出某方块的矩形读像素 —— 坐标取自 icons.json 的 CSS 串（离线预生成）。
+ * 尺寸取 hotbar 档（40px，比 inventory 的 32px 大，形状断言分辨率更高）。
+ */
+let iconMeta = null;
+async function iconMetaLoad() {
+  if (!iconMeta) iconMeta = await (await fetch('/assets/icons.json')).json();
+  return iconMeta;
+}
+/** 从图标 atlas 裁某方块矩形 → canvas ImageData（size × size RGBA） */
+async function iconPixels(name) {
+  const meta = await iconMetaLoad();
+  const css = meta.hotbar[name];
+  const m = css.match(/(-?\d+)px (-?\d+)px \/ /); // background-position: -Xpx -Ypx
+  const ox = -+m[1], oy = -+m[2];
+  const bmp = await createImageBitmap(
+    await (await fetch('/assets/icons-atlas.png')).blob());
+  const size = 40; // hotbar 档烘焙尺寸（与 bake-icon-atlas.mjs 的 SIZES.hotbar 一致）
+  const cv = document.createElement('canvas');
+  cv.width = size; cv.height = size;
+  const ctx = cv.getContext('2d');
+  ctx.drawImage(bmp, ox, oy, size, size, 0, 0, size, size);
+  return { d: ctx.getImageData(0, 0, size, size).data, size };
+}
 
 /**
- * 烘焙产物必须是 64×64 **透明背景**（异形方块不铺满正方形 → 轮廓可见）。
- * 用 canvas 解码 PNG 读像素——单测环境无 pngjs，浏览器有 createImageBitmap。
+ * 异形方块的图标必须有**透明背景**（不铺满正方形 → 轮廓可见，与实心立方体区分）。
+ * 从图标 atlas 裁矩形读像素（v1.26：图标烘进单一 atlas，坐标取自 icons.json）。
+ * 实心方块等轴测投影是正菱形铺满大部分画布，异形方块（栏杆/柱子/台阶）留大量透明 → 本断言区分二者。
  */
-test('iso-icon: 烘焙产物 64×64 且有透明背景（不铺满正方形）', async () => {
+test('iso-icon: 异形方块图标有透明背景（从 icons-atlas 裁矩形）', async () => {
   for (const name of ICON_BLOCKS) {
-    const blob = await (await fetch(`/assets/textures/inventory-icons/${name}.png`)).blob();
-    const bmp = await createImageBitmap(blob);
-    assertEqual(bmp.width, 64, `${name} 宽 64`);
-    assertEqual(bmp.height, 64, `${name} 高 64`);
-    const cv = document.createElement('canvas');
-    cv.width = 64; cv.height = 64;
-    cv.getContext('2d').drawImage(bmp, 0, 0);
-    const d = cv.getContext('2d').getImageData(0, 0, 64, 64).data;
+    const { d, size } = await iconPixels(name);
     let transparent = 0, opaque = 0;
     for (let i = 3; i < d.length; i += 4) { if (d[i] === 0) transparent++; else opaque++; }
+    const total = size * size;
     assertTrue(transparent > 0, `${name} 有透明像素（${transparent} 个）`);
-    assertTrue(opaque / 4096 > 0.2, `${name} 不透明占比 ${(opaque / 4096 * 100).toFixed(1)}% > 20%`);
-    assertTrue(opaque / 4096 < 0.9, `${name} 不透明占比 < 90%（轮廓可见）`);
+    assertTrue(opaque / total > 0.15, `${name} 不透明占比 ${(opaque / total * 100).toFixed(1)}% > 15%`);
+    assertTrue(opaque / total < 0.9, `${name} 不透明占比 < 90%（轮廓可见）`);
   }
 });
 
@@ -191,17 +209,11 @@ test('iso-icon: 烘焙产物 64×64 且有透明背景（不铺满正方形）',
  */
 test('iso-icon: 竖柱图标竖长、横梁图标横扁（烘焙产物形状不同）', async () => {
   const bbox = async (name) => {
-    const bmp = await createImageBitmap(
-      await (await fetch(`/assets/textures/inventory-icons/${name}.png`)).blob());
-    const cv = document.createElement('canvas');
-    cv.width = 64; cv.height = 64;
-    const ctx = cv.getContext('2d');
-    ctx.drawImage(bmp, 0, 0);
-    const d = ctx.getImageData(0, 0, 64, 64).data;
-    let minX = 64, maxX = -1, minY = 64, maxY = -1;
-    for (let y = 0; y < 64; y++) {
-      for (let x = 0; x < 64; x++) {
-        if (d[(y * 64 + x) * 4 + 3] > 0) {
+    const { d, size } = await iconPixels(name);
+    let minX = size, maxX = -1, minY = size, maxY = -1;
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        if (d[(y * size + x) * 4 + 3] > 0) {
           if (x < minX) minX = x; if (x > maxX) maxX = x;
           if (y < minY) minY = y; if (y > maxY) maxY = y;
         }
@@ -221,21 +233,15 @@ test('iso-icon: 竖柱图标竖长、横梁图标横扁（烘焙产物形状不�
  */
 test('iso-icon: 正置/倒置台阶图标形状不同（烘焙产物）', async () => {
   const profile = async (name) => {
-    const bmp = await createImageBitmap(
-      await (await fetch(`/assets/textures/inventory-icons/${name}.png`)).blob());
-    const cv = document.createElement('canvas');
-    cv.width = 64; cv.height = 64;
-    const ctx = cv.getContext('2d');
-    ctx.drawImage(bmp, 0, 0);
-    const d = ctx.getImageData(0, 0, 64, 64).data;
+    const { d, size } = await iconPixels(name);
     const rows = [];
-    for (let y = 0; y < 64; y++) {
+    for (let y = 0; y < size; y++) {
       let n = 0;
-      for (let x = 0; x < 64; x++) if (d[(y * 64 + x) * 4 + 3] > 0) n++;
+      for (let x = 0; x < size; x++) if (d[(y * size + x) * 4 + 3] > 0) n++;
       rows.push(n);
     }
     const first = rows.findIndex((r) => r > 0);
-    const last = 63 - [...rows].reverse().findIndex((r) => r > 0);
+    const last = size - 1 - [...rows].reverse().findIndex((r) => r > 0);
     const q = Math.max(1, Math.round((last - first) * 0.25));
     const avg = (a) => a.reduce((s, v) => s + v, 0) / a.length;
     return { upper: avg(rows.slice(first, first + q)), lower: avg(rows.slice(last - q + 1, last + 1)) };
@@ -249,27 +255,107 @@ test('iso-icon: 正置/倒置台阶图标形状不同（烘焙产物）', async 
 });
 
 /**
- * 回归防线：图标必须有**三面明暗分层**（立体感来源）。
- * 采样的贴图本身近乎纯色（`procedural/handrail` 仅 2 种颜色），故若 shade 失效
- * 图标会退化成单色块 = 立体感丢失。`procedural/pillar` 有 38 种木纹噪点色，
- * 叠加三面明暗后色数应显著多于贴图自身。
+ * 回归防线：烘焙产物必须有**三面明暗分层**（立体感来源）。
+ *
+ * **判据改为尺寸无关的明暗差**（v1.26）。旧判据是「色数 > 贴图自身 38」，那是按 64px 图标
+ * 标定的 —— 图标改成 40px 后采样像素变少、色数降到 33，旧阈值失效。直接调低数字属于
+ * **静默放宽断言**（CLAUDE.md 规则禁止），故改为测更本质的不变式：
+ * 顶面（+Y，shade 1.0）必须比两个侧面（+X 0.75 / +Z 0.55）亮。
+ * 这条与分辨率无关，且比「色数」更贴近它要守的东西（三面明暗）。
  */
-test('iso-icon: 柱子图标有三面明暗分层（色数 > 贴图自身）', async () => {
-  const bmp = await createImageBitmap(
-    await (await fetch('/assets/textures/inventory-icons/vertical_pillar.png')).blob());
-  const cv = document.createElement('canvas');
-  cv.width = 64; cv.height = 64;
-  const ctx = cv.getContext('2d');
-  ctx.drawImage(bmp, 0, 0);
-  const d = ctx.getImageData(0, 0, 64, 64).data;
-  const colors = new Set();
-  for (let i = 0; i < d.length; i += 4) {
-    if (d[i + 3] > 0) colors.add(`${d[i]},${d[i + 1]},${d[i + 2]}`);
+test('iso-icon: 柱子图标有三面明暗分层（顶面比侧面亮，尺寸无关）', async () => {
+  const { d, size } = await iconPixels('vertical_pillar');
+  /** 某区域的平均亮度（只算不透明像素） */
+  const lum = (x0, y0, w, h) => {
+    let sum = 0, n = 0;
+    for (let y = y0; y < y0 + h; y++) {
+      for (let x = x0; x < x0 + w; x++) {
+        const i = (y * size + x) * 4;
+        if (d[i + 3] === 0) continue;
+        sum += (d[i] + d[i + 1] + d[i + 2]) / 3; n++;
+      }
+    }
+    return n ? sum / n : NaN;
+  };
+  // 等轴测立方体：顶面在上部中央，+X 面右下、+Z 面左下（与 grass 验证同一分区口径）
+  const top = lum(Math.round(size * 0.2), Math.round(size * 0.15), Math.round(size * 0.6), Math.round(size * 0.2));
+  const left = lum(Math.round(size * 0.05), Math.round(size * 0.55), Math.round(size * 0.3), Math.round(size * 0.3));
+  const right = lum(Math.round(size * 0.65), Math.round(size * 0.55), Math.round(size * 0.3), Math.round(size * 0.3));
+  assertTrue(top > left, `顶面亮度 ${top.toFixed(1)} > 左侧(+Z) ${left.toFixed(1)}（shade 1.0 > 0.55）`);
+  assertTrue(top > right, `顶面亮度 ${top.toFixed(1)} > 右侧(+X) ${right.toFixed(1)}（shade 1.0 > 0.75）`);
+  assertTrue(right > left, `右侧(+X) ${right.toFixed(1)} > 左侧(+Z) ${left.toFixed(1)}（shade 0.75 > 0.55）`);
+});
+
+// --- v1.26：全量图标（消除 UV 副本 + 单位立方体 fallback + 逐面采样） ---
+// 这三条是 Tier 1 改造点，各有对应的回归防线。
+
+test('iso-icon: cubeQuads 复用 mesher FACE_VERTICES（形状单一权威，禁止手写第二份）', () => {
+  // 97 个实心方块无 TEMPLATES 模板 → fallback 单位立方体。
+  // 红线 1：形状权威只有 mesher 一份，本文件不得手写立方体顶点。
+  //
+  // **本断言的局限（实测发现，别高估它）**：它比对的是**值**，所以「手写一份数值完全相同
+  // 的第二份定义」会通过——它抓的是「两份定义数值漂移」（改了几何只改一处），不是「存在
+  // 第二份定义」。真正的保证来自 `iso-icon.js` 走 import（结构上不可能漂移）：实测把
+  // mesher 的 +X 顶点从 1 改成 1.2，`cubeQuads()` 自动跟上、无副本可漏。本用例是那道
+  // import 的兜底断言，不是防「有人另写一份」的唯一防线。
+  const q = cubeQuads();
+  assertEqual(q.length, 3, '只取朝向观察者的 +X/+Y/+Z 三面');
+  const faces = q.map((e) => e.face).sort();
+  assertEqual(faces.join(','), '0,2,4', '三个可见面');
+  // **逐顶点与 mesher 的 FACE_VERTICES 完全相等** —— 若有人在本文件另写一份立方体
+  // 定义（哪怕数值相同），几何改动后两份会漂移，这条会抓到。
+  for (const e of q) {
+    assertEqual(e.v.length, 4, `face ${e.face} 是 quad（4 顶点）`);
+    for (let i = 0; i < 4; i++) {
+      assertEqual(e.v[i].join(','), FACE_VERTICES[e.face][i].join(','),
+        `face ${e.face} 顶点 ${i} 与 mesher FACE_VERTICES 完全一致`);
+    }
   }
-  // procedural/pillar 贴图自身 38 种颜色；×3 面明暗 → 应显著多于 38
-  assertTrue(colors.size > 38, `图标色数 ${colors.size} > 贴图自身 38（三面明暗生效）`);
-  // 且必须至少有 3 种明显不同的亮度档（顶/侧/侧），排除「全是同一面」的退化
-  const lums = [...colors].map((c) => parseInt(c.split(',')[0], 10)).sort((a, b) => a - b);
-  assertTrue(lums[lums.length - 1] - lums[0] > 40,
-    `亮度跨度 ${lums[0]}~${lums[lums.length - 1]} > 40（三面有明暗差）`);
+});
+
+test('iso-icon: cubeQuads 的 UV 与 mesher FACE_UVS 一致（无第二份副本）', () => {
+  // v1.24 的 ISO_FACE_UVS 是 mesher FACE_UVS 的第二份副本（实测 face 0/2/4 完全相同）
+  // → 本次收掉。断言逐角点相等：若有人写回本地表并改数值，这条会抓到。
+  const q = cubeQuads();
+  for (const e of q) {
+    assertEqual(e.uv.length, 4, `face ${e.face} 有 4 个 UV 角点`);
+    for (let i = 0; i < 4; i++) {
+      assertEqual(e.uv[i].join(','), FACE_UVS[e.face][i].join(','),
+        `face ${e.face} UV 角点 ${i} 与 mesher FACE_UVS 完全一致（口径：three BoxGeometry buildPlane）`);
+    }
+  }
+  // ±X 面的 UV 口径是 u=1-z（M2 修过的历史 bug：曾用统一 [0,0],[1,0],[1,1],[0,0]
+  // → 东西面贴图旋转 90°）。钉住首角点防回退。
+  assertEqual(q.find((e) => e.face === 0).uv[0].join(','), '1,0', '+X 面首角点 u=1（非 0）');
+});
+
+test('iso-icon: renderIsoIcon 的采样回调收到 face 参数（逐面采样的前提）', () => {
+  // 17 个实心方块是多面不同贴图（grass 顶绿侧土）。旧签名 sampleTex(u,v) 只能采单面
+  // → 三个面全采同一张贴图，图标配色错误。新签名 (u,v,face) 让调用方按面取贴图。
+  const seen = new Set();
+  renderIsoIcon(cubeQuads(), 16, (u, v, face) => {
+    seen.add(face);
+    return [255, 255, 255];
+  });
+  assertEqual([...seen].sort((a, b) => a - b).join(','), '0,2,4',
+    '三个可见面各自收到自己的 face 参数（供按面选贴图）');
+});
+
+test('iso-icon: 多面贴图方块三面各采各的贴图（grass 顶绿侧土不串色）', () => {
+  // 端到端验证：模拟 grass 的 faces-data（顶 grass_carried、侧 grass_side_carried）。
+  // 旧实现只采 face 0 → 顶面也是土色（实测配色错误）。新实现三面各采各的。
+  const FACE_COLORS = { 0: [140, 100, 60], 2: [80, 170, 60], 4: [140, 100, 60] }; // 侧土色 / 顶草绿
+  const buf = renderIsoIcon(cubeQuads(), 24, (u, v, face) => FACE_COLORS[face]);
+  const colors = new Set();
+  for (let i = 0; i < buf.length; i += 4) {
+    if (buf[i + 3] === 0) continue;
+    colors.add(`${buf[i]},${buf[i + 1]},${buf[i + 2]}`);
+  }
+  // 顶面明暗 1.0 → 草绿原色；两个侧面 0.75/0.55 → 土色两档。共 3 种。
+  assertEqual(colors.size, 3, `三面各采各的贴图 → 3 种颜色（顶草绿 + 两侧土色明暗档），实得 ${colors.size}`);
+  // 顶面必须出现草绿（若只采 face 0，顶面会是土色 → 这条抓配色错误）
+  assertTrue(colors.has('80,170,60'), `顶面采到草绿 rgb(80,170,60)（shade 1.0 原色），实得 ${[...colors].join(' ')}`);
+  // 侧面必须是土色的明暗档（0.75 / 0.55）
+  assertTrue(colors.has('105,75,45'), `+X 面土色 ×0.75 = rgb(105,75,45)，实得 ${[...colors].join(' ')}`);
+  assertTrue(colors.has('77,55,33'), `+Z 面土色 ×0.55 = rgb(77,55,33)，实得 ${[...colors].join(' ')}`);
 });

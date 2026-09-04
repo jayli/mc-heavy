@@ -9,12 +9,15 @@
 //   ③ 关闭时 pointer lock 回 **canvas**，不是 mc-lite 的 document.body——本仓库 Player 的
 //      `document.pointerLockElement !== this.canvas` 守卫会令锁 body 时视角与放挖全失效。
 // 模态门控走 game.pushModal/popModal（M3.1 模态栈，收口原可写布尔的多面板竞争）。
-import { tileOfName as defaultTileOfName, tileStyle } from './hotbar.js';
-
 const STYLE_ID = 'mc-inventory-style';
 /** 模态栈 owner 标识（game.popModal 只移除自己，不误清设置面板的门控） */
 const MODAL_OWNER = 'inventory';
-/** 槽位图标边长（mc-lite `.slot img` 32×32） */
+/**
+ * 槽位图标边长（mc-lite `.slot img` 32×32）。
+ * **同时是烘焙尺寸**：`tools/bake-icon-atlas.mjs` 的 `SIZES.inventory = 32` ——
+ * 按显示尺寸烘焙 → 运行时零缩放，像素风锐利。改这个值必须同步改烘焙脚本并重跑
+ * `npm run icons`（`npm run check:data` 的图标检查会抓过期）。
+ */
 const ICON_SIZE = 32;
 
 /** mc-lite global.css 背包相关规则的移植（选择器加 mc- 前缀避免污染宿主页面） */
@@ -75,19 +78,13 @@ export class InventoryPanel {
    * @param {HTMLElement} root hud 根节点（与设置面板同宿主）
    * @param {import('../core/game.js').Game} game 需具备 pushModal/popModal/uiModal/player/registry
    * @param {Object} opts
-   * @param {Object} opts.atlasTiles atlas.json 的 tiles 映射（name → {x,y,w,h}）
-   * @param {number} [opts.atlasSize] atlas 边长（默认 2048）
-   * @param {(name: string) => string|undefined} [opts.tileOfName] 方块名 → tile 名
-   *        （无 faces-data 条目返回 undefined → 该槽无图标，仍可点击选中）
-   * @param {string} opts.atlasUrl atlas.png 的 URL
+   * @param {Object<string,string>} [opts.icons] 图标 CSS 串表（`loadIconManifest()` 的
+   *        `inventory` 档：方块名 → 完整 background 串）。缺失项 → 该槽无图标（仍可点击选中）。
    */
-  constructor(root, game, { atlasTiles, atlasSize = 2048, tileOfName = defaultTileOfName, atlasUrl }) {
+  constructor(root, game, { icons = null }) {
     this.game = game;
     this.root = root;
-    this.atlasTiles = atlasTiles;
-    this.atlasSize = atlasSize;
-    this.tileOfName = tileOfName;
-    this.atlasUrl = atlasUrl;
+    this.icons = icons;
     ensureStyle();
 
     // 模态框（display none/flex 切换，isOpen 依赖该口径——与设置面板一致）
@@ -176,16 +173,11 @@ export class InventoryPanel {
 
       const icon = document.createElement('div');
       icon.className = 'mc-icon';
-      // 无 tile 的物品留空图标，仍可点击选中。v1.23 起图标表（INVENTORY_ICONS）补齐了
-      // mine_cart（Invicon_Minecart），背包 118 项全部有 tile；该降级分支仅为兜底保留。
-      const tile = this.atlasTiles?.[this.tileOfName(slot.item)];
-      if (tile) {
-        const st = tileStyle(tile, ICON_SIZE, this.atlasSize);
-        icon.style.backgroundImage = `url('${this.atlasUrl}')`;
-        icon.style.backgroundSize = st.backgroundSize;
-        icon.style.backgroundPosition = st.backgroundPosition;
-        icon.style.imageRendering = st.imageRendering;
-      }
+      // v1.26：读预生成的 CSS 串（裁剪参数由烘焙脚本离线算好）。无条目的物品留空图标、
+      // 仍可点击选中——正常不触发（背包 118 项全部有图标，`npm run check:data` 钉死此不变式），
+      // 该降级分支仅为「新增方块忘跑 npm run icons」兜底。
+      const css = this.icons?.[slot.item];
+      if (css) icon.style.background = css;
 
       const name = document.createElement('div');
       name.className = 'mc-item-name';

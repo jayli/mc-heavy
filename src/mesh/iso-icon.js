@@ -1,15 +1,18 @@
-// src/mesh/iso-icon.js — 等轴测投影图标（§4.5.4 v1.24）
+// src/mesh/iso-icon.js — 等轴测投影图标（§4.5.4 v1.24 建、v1.26 扩全量）
 //
-// 把 mesher.js 的 `TEMPLATES` 几何模板投影成背包图标。**形状的唯一权威是 TEMPLATES**
-// （红线 1：数据只有一份权威）——本文件不含任何几何定义，只消费传入的 quad 数组。
+// 把 mesher.js 的几何投影成背包图标。**形状与 UV 的唯一权威在 mesher.js**
+// （红线 1：数据只有一份权威）——本文件不含任何几何定义，只 import 并消费：
+//   - 异形方块 → `TEMPLATES[geometry]`（v1.24 已导出）
+//   - 实心方块 → `cubeQuads()`（v1.26，由 mesher 的 `FACE_VERTICES`/`FACE_UVS` 派生）
 //
 // 同构纯函数（红线 8）：无 DOM、无 three、无 node 依赖 —— 烘焙脚本（tools/）与浏览器
 // 单测（src/tests/）共用同一份代码。像素写入返回 Uint8ClampedArray RGBA，落盘 PNG 由
-// 调用方负责（tools/bake-isometric-icons.mjs 用 pngjs）。
+// 调用方负责（tools/bake-icon-atlas.mjs 用 pngjs）。
 //
-// 为什么离线烘焙而非运行时合成：运行时零开销（复用既有 CSS background 裁剪路径）、
-// 与其余 109 项图标同一条渲染路径、确定性（固定算法无随机）、符合红线 3（重计算离开运行时）。
-// 代价是几何变更需重跑 `npm run icons && npm run atlas`。
+// 为什么离线烘焙而非运行时合成：运行时只需一行 `icon.style.background = manifest[name]`
+// （裁剪数学也预生成掉），与其余项同一条路径、确定性（固定算法无随机）、
+// 符合红线 3（重计算离开运行时）。代价是几何/贴图变更需重跑 `npm run icons`。
+import { FACE_VERTICES, FACE_UVS } from './mesher.js';
 
 // 2:1 等轴测投影（图标惯例，Minecraft 同款观感）：
 //   sx = x - z          （+X 向右下、+Z 向左下）
@@ -69,17 +72,23 @@ export function isoBBox(polys) {
 }
 
 /**
- * quad 顶点序 → UV 角点。与 mesher.js 的 `FACE_UVS` 同口径（three.js BoxGeometry
- * buildPlane 语义，M2 已核验）：±X 面 u=1-z/z、v=y；±Y 面 u=x、v=1-z/z；±Z 面 u=x/1-x、v=y。
- * 只列三个可见面（其余不参与图标）。
- * 按顶点索引对应，故与 `TEMPLATES` 的顶点序一致——模板若带自定义 `uv`（如吊灯棱柱）
- * 由 renderIsoIcon 优先采用。
+ * 单位立方体的三个可见面（v1.26）：97 个实心方块在 mesher 里**无 TEMPLATES 模板**，
+ * 走 `mesher.js` 的默认路径（`FACE_VERTICES[modelFace]`）。图标烘焙必须复用同一份
+ * 顶点与 UV —— **红线 1：形状与 UV 只有一份权威，本文件不得手写第二份定义**。
+ *
+ * 返回 `{v, face, uv}` 结构，与 `TEMPLATES` 条目同构 → 可直接喂给 `isoPolygons()`。
+ * 顶点序与 `FACE_VERTICES[face]` 完全一致（未重排），故 `FACE_UVS[face]` 的角点按索引
+ * 对应即可。带 `uv` 字段意味着 `renderIsoIcon` 走「模板自带 uv 优先」分支，不查表。
+ *
+ * @returns {Array<{v:number[][],face:number,uv:number[][]}>} 三个可见面（+X/+Y/+Z）
  */
-const ISO_FACE_UVS = {
-  0: [[1, 0], [1, 1], [0, 1], [0, 0]], // +X
-  2: [[0, 0], [1, 0], [1, 1], [0, 1]], // +Y
-  4: [[0, 0], [1, 0], [1, 1], [0, 1]], // +Z
-};
+export function cubeQuads() {
+  return [0, 2, 4].map((face) => ({
+    v: FACE_VERTICES[face].map((p) => p.slice()), // 拷贝：防调用方改动污染 mesher 的常量
+    face,
+    uv: FACE_UVS[face].map((p) => p.slice()),
+  }));
+}
 
 // 扫描线填充：把多边形覆盖到的像素标记为 owner（后画的覆盖前画的 = painter 算法）。
 // 返回 { owner, bary }：owner[y][x] = 多边形索引（-1 = 无覆盖），bary[y][x] = UV 插值权重。
@@ -138,10 +147,17 @@ function baryWeights(p, pts, tris, px, py) {
  * （`faces-data` 指向的那张），配色与世界渲染一致——不会出现 mc-lite 手工图标那种
  * 「背包金黄色栏杆、游戏内木色栏杆」的割裂（§4.5.4 v1.24）。
  *
- * @param {Array<{v:number[][],face:number,uv?:number[][]}>} quads TEMPLATES 条目
- * @param {number} size 画布边长（px，图标烘焙用 64）
- * @param {(u:number,v:number)=>number[]} sampleTex 贴图采样回调：tile 局部 UV(0..1) → [r,g,b]
- *        （单测传恒色回调验证明暗分层；烘焙脚本传 PNG nearest 采样）
+ * **v1.26：采样回调收到第三个参数 `face`**（逐面采样）。实测背包实心 104 项里有 17 项
+ * 是多面不同贴图（`grass` 顶绿侧土、`chest` 顶/侧/面三张、`tnt` 顶侧不同）。旧签名
+ * `sampleTex(u, v)` 只能采单面 → 三个面全采同一张贴图，`grass` 的顶面会渲成土色。
+ * 调用方按 face 取对应贴图即可（`getFaceTile(name, face)`）。向后兼容：忽略第三参的
+ * 旧回调仍能工作（单测的恒色回调即如此）。
+ *
+ * @param {Array<{v:number[][],face:number,uv?:number[][]}>} quads TEMPLATES 条目或 cubeQuads()
+ * @param {number} size 画布边长（px，按显示尺寸烘焙：快捷栏 40 / 背包 32）
+ * @param {(u:number,v:number,face:number)=>number[]} sampleTex 贴图采样回调：
+ *        tile 局部 UV(0..1) + 面索引 → [r,g,b]（单测传恒色回调验证明暗分层；
+ *        烘焙脚本按 face 取 PNG 做 nearest 采样）
  * @param {number} [spanPad=1.12] 包围盒归一化留白系数（形状占约 89% 画布）
  * @returns {Uint8ClampedArray} RGBA 缓冲，长度 size²×4
  */
@@ -163,8 +179,9 @@ export function renderIsoIcon(quads, size, sampleTex, spanPad = 1.12) {
     if (pi < 0) continue; // 形状外 → alpha 0（轮廓可见）
     const p = polys[pi];
     const o = idx << 2;
-    // UV：模板自带 uv 优先（吊灯棱柱等自定义 UV），否则按面查表
-    const uvs = p.uv ?? ISO_FACE_UVS[p.face];
+    // UV：quad 自带 uv 优先（cubeQuads 与吊灯棱柱等自定义 UV），否则按面查 mesher 的表
+    // （13 个 TEMPLATES 条目不带 uv —— 实测核实，故查表分支必须保留）
+    const uvs = p.uv ?? FACE_UVS[p.face];
     let u = 0, v = 0;
     const bw = bary[idx];
     if (bw && uvs) {
@@ -173,7 +190,7 @@ export function renderIsoIcon(quads, size, sampleTex, spanPad = 1.12) {
         v += bw.w[k] * uvs[bw.idx[k]][1];
       }
     }
-    const [r, g, b] = sampleTex(u, v);
+    const [r, g, b] = sampleTex(u, v, p.face);
     const shade = ISO_SHADE[p.face];
     out[o] = Math.round(r * shade);
     out[o + 1] = Math.round(g * shade);

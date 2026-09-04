@@ -49,6 +49,8 @@ export default [
         MouseEvent: 'readonly',
         Event: 'readonly',
         getComputedStyle: 'readonly',
+        // v1.26 图标 manifest 单测需 decode() 图标 atlas PNG 验证其可加载与尺寸
+        Image: 'readonly',
         // Worker 作用域全局（src/core/worker-pool.js 的 installRpcHandler 在 worker 内运行）
         self: 'readonly',
         postMessage: 'readonly',
