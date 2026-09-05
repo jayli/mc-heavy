@@ -806,7 +806,7 @@
 > 回升是**正确行为**，不是断层伪影。改为断言「阴影梯度延伸进对角格内部」。
 >
 > **门禁**：`npm run check` 全绿（0 error / 9 个既有 camelcase warning；图标指纹检查通过 →
-> **无需重跑 `npm run icons`**，图标烘焙不吃 AO）。`npm test` **45 passed / 1 failed**，
+> **无需重跑 `npm run icons`**，图标烘焙不吃 AO）。`npm test` **46 passed / 1 failed**（新增 ao-corner-visual spec 后用例数 45→46），
 > 失败的仍是 `m1-acceptance` 的 `frameMs.p95`（`16.700000762939453` vs 门限 16.7，超出
 > **7.6e-7**，即 float32 表示 16.7 的下一个可表示值）。**交替对照**：HEAD 侧连跑 3 次
 > **同样失败、数值完全一致** → 与本次改动无关（v1.30 修订说明已记录同一现象：HEAD 侧失败率
