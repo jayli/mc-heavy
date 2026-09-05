@@ -26,6 +26,16 @@ npm run atlas        # 重新生成 assets/atlas.png + atlas.json（世界渲染
 改热路径（mesher/materials/render/scheduler/physics）再加 `npm run bench -- --check`。
 判据见 [`docs/testing-policy.md`](docs/testing-policy.md)。
 
+## Git 远端（双 push）
+
+`origin` 配置了**双 push**：`git push origin <分支>` 会同时推送到 GitHub 与内部 GitLab：
+
+- fetch/pull：`git@github.com:jayli/mc-heavy.git`
+- push ①：`git@github.com:jayli/mc-heavy.git`
+- push ②：`git@gitlab.alibaba-inc.com:bachi/mc-heavy.git`
+
+两个地址串行推送，任一失败则整体报错（另一个可能已推成功，重跑即可）。
+
 ## 当前进度
 
 **项目进度的唯一总览是 [`docs/roadmap.md`](docs/roadmap.md)** —— 里程碑总表（M0~M7）、
