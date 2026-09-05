@@ -188,6 +188,58 @@ test('mesher: AO 值在 packed bit8-9', () => {
   }
 });
 
+// 「仅对角遮挡」AO 断言（§4.3 有意偏离 mc-lite 第 ⑤ 项）：
+// 场景 = y=0 整片石头地面 + (8,1,8) 单个墙角块 B。地面格 (9,0,9) 顶面靠 B 的角
+// 顶点 (9,1,9)：两侧邻居 (8,1,9)/(9,1,8) 都开阔，只有对角 B 遮挡。
+// mc-lite 原版 AOUtils 的对角门控 `(side1||side2)?corner:0` 会让该顶点 AO=3（最亮）
+// → 东南对角格无阴影，与东/南两格（AO=2 有阴影）之间出现一条阴影断层。
+// 本仓库去掉门控 → 该顶点 AO=2，阴影连成环。
+//
+// 断言落点刻意避开两个恒真陷阱（CLAUDE.md 活跃约束 / testing-policy §2.5）：
+// ① 不硬编码被测代码写入的值——期望值 2 由「3 - (0+0+对角遮挡1)」手算得出，
+//    现行门控代码会算成 3 → 本测试在未改源码时**真实失败**（RED 可验证）；
+// ② 按「位置 + 顶面 face 位」定位顶点，不依赖顶点序；并断言该空间顶点在
+//    **所有共享它的顶面 quad 里 AO 一致**（跨 quad 不一致正是「阴影断层」的成因）。
+test('mesher: AO 仅对角遮挡顶点 AO=2（去门控，阴影连成环）', () => {
+  const reg = makeRegistry();
+  const world = new WorldData(reg);
+  const col = new ChunkColumn(0, 0);
+  const stoneId = reg.idOf('stone');
+  const y0 = WORLD_MIN_Y + 5; // 地面层
+  // 前置断言钉住前提：地面与墙角块都真实存在（避免断言到不存在的分支）
+  for (let lx = 0; lx < 16; lx++) {
+    for (let lz = 0; lz < 16; lz++) col.blocks[blockIndex(lx, y0, lz)] = stoneId;
+  }
+  col.blocks[blockIndex(8, y0 + 1, 8)] = stoneId; // 墙角块 B
+  world.add(col);
+  computeSkylightColumn(col, reg); // 全露天 sky=15 → brightness=1，隔离 AO 变量
+
+  const view = world.getSectionView(0, 0, 0);
+  const result = buildSectionMesh(view, reg, atlasMeta, 0, 0, 0);
+  const { positions, packed } = result.opaque;
+  assertTrue(col.blocks[blockIndex(8, y0 + 1, 8)] === stoneId, '墙角块 B 存在');
+
+  // **positions 是 section 局部坐标**（mesher.js 推 lx/ly/lz，非世界坐标）。
+  // section 0 覆盖 y∈[WORLD_MIN_Y, WORLD_MIN_Y+16)，故局部 ly = 世界 y - WORLD_MIN_Y；
+  // cx/cz=0 → 局部 lx/lz 即世界 x/z。地面层 y0 → ly=5，其顶面 ly=6。
+  const lxTarget = 9, lzTarget = 9, lyTop = y0 - WORLD_MIN_Y + 1;
+  let count = 0;
+  const aos = [];
+  for (let i = 0; i < result.opaque.vertexCount; i++) {
+    const x = positions[i * 3], y = positions[i * 3 + 1], z = positions[i * 3 + 2];
+    const face = (packed[i] >> 10) & 0x7;
+    if (face !== 2) continue; // 只看顶面，排除墙角块自身侧面的 AO=1
+    if (Math.abs(x - lxTarget) > 1e-6 || Math.abs(y - lyTop) > 1e-6 || Math.abs(z - lzTarget) > 1e-6) continue;
+    count++;
+    aos.push((packed[i] >> 8) & 0x3);
+  }
+  assertTrue(count >= 3, `空间顶点 (9,1,9) 被 ≥3 个地面格顶面共享，实测 ${count}`);
+  // 期望：去门控后全部 AO=2（仅对角遮挡）。现行门控代码下会出现 3 → RED。
+  for (const ao of aos) {
+    assertEqual(ao, 2, '仅对角遮挡顶点 AO=2（跨 quad 一致，无阴影断层）');
+  }
+});
+
 test('mesher: worldStats 开 → 返回面剔除统计', () => {
   setDebugFlags({ worldStats: true });
   const reg = makeRegistry();

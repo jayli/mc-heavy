@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"><title>ao corner fixture</title><link rel="icon" href="data:,">
+  <style>html, body { margin: 0; }</style>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "/vendor/three/three.webgpu.js",
+      "three/tsl": "/vendor/three/three.tsl.js",
+      "three/webgpu": "/vendor/three/three.webgpu.js",
+      "three/addons/": "/vendor/three/addons/"
+    }
+  }
+  </script>
+</head>
+<body>
+<script type="module">
+  import * as THREE from 'three';
+  import { RenderWorld } from '../render/render-world.js';
+  import { buildSectionMesh } from '../mesh/mesher.js';
+  import { computeSkylightColumn } from '../mesh/lighting.js';
+  import { WorldData } from '../voxel/world-data.js';
+  import { ChunkColumn } from '../voxel/chunk-column.js';
+  import { createRegistry } from '../voxel/block-registry.js';
+  import { BLOCKS } from '../voxel/blocks-data.js';
+  import { blockIndex, sectionOf } from '../voxel/constants.js';
+  import { loadAtlas } from '../mesh/atlas-loader.js';
+
+  // 场景：**对角凹角**（与 test-ao.html 的墙场景互补）。
+  // y=0 整片石头地面 + (8,1,8) 单个墙角块 B。
+  //
+  // mc-lite 原版 AOUtils 的对角门控 `(side1||side2)?corner:0` 会让「两侧开阔、仅对角遮挡」
+  // 的顶点恒为 AO=3（最亮）：B 的东南对角地面格 (9,0,9) 靠 B 的那一角 (9,1,9) 完全不暗，
+  // 而东格 (9,0,8) / 南格 (8,0,9) 同位置的角 AO=2 有阴影 → 阴影在东南断开成一条边。
+  // 去掉门控后该角 AO=2 → 阴影连成环（§4.3 有意偏离 mc-lite 第 ⑤ 项）。
+  //
+  // **取样点必须紧邻角顶点**：AO 逐顶点插值，顶面**中心**是四角的平均（≈2.75），信号被稀释；
+  // 紧邻 (9,1,9) 角处双线性插值权重才偏向该角（实测 AO≈2.28 vs 门控下 3.0，约 18% 亮度差）。
+  // fixture 自己投影世界点 → 屏幕像素（`window.__AO_PROJ__`），spec 不硬编码像素位置。
+  async function run() {
+    const reg = createRegistry();
+    for (const def of BLOCKS) reg.register(def.name, def);
+    reg.freeze();
+
+    const renderer = new THREE.WebGPURenderer({ antialias: false });
+    renderer.setSize(640, 480);
+    document.body.appendChild(renderer.domElement);
+    await renderer.init();
+
+    const { texture } = await loadAtlas();
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x87ceeb);
+    const rw = new RenderWorld({ scene, atlasTexture: texture, viewDistance: 2 });
+
+    const world = new WorldData(reg);
+    const col = new ChunkColumn(0, 0);
+    const stoneId = reg.idOf('stone');
+    for (let lx = 0; lx < 16; lx++) for (let lz = 0; lz < 16; lz++) {
+      col.blocks[blockIndex(lx, 0, lz)] = stoneId;
+    }
+    col.blocks[blockIndex(8, 1, 8)] = stoneId; // 墙角块 B
+    world.add(col);
+    computeSkylightColumn(col, reg); // 全露天 sky=15 → brightness=1，隔离 AO 变量
+
+    const sy = sectionOf(0);
+    const view = world.getSectionView(0, sy, 0);
+    const atlasMeta = await (await fetch('/assets/atlas.json')).json();
+    const meshData = buildSectionMesh(view, reg, atlasMeta, 0, sy, 0);
+    rw.uploadSection(0, sy, 0, 'opaque', meshData.opaque, 1);
+
+    // 相机：B 附近正上方俯视（up=-Z：屏幕 y 随世界 z 增大 → 东南在屏幕右下）。
+    // 高度 9 + fov 70 → y=1 平面约 43px/格，取样区域分辨率充足。
+    const camera = new THREE.PerspectiveCamera(70, 640 / 480, 0.1, 100);
+    camera.up.set(0, 0, -1);
+    camera.position.set(8.5, 9, 8.5);
+    camera.lookAt(8.5, 0, 8.5);
+    renderer.toneMapping = THREE.NoToneMapping;
+    renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
+    for (let i = 0; i < 5; i++) renderer.render(scene, camera);
+
+    // 投影世界点（y=1 地面格顶面）→ 屏幕像素
+    const project = (wx, wz) => {
+      const v = new THREE.Vector3(wx, 1, wz).project(camera);
+      return {
+        x: Math.round((v.x * 0.5 + 0.5) * 640),
+        y: Math.round((-v.y * 0.5 + 0.5) * 480),
+      };
+    };
+    window.__AO_PROJ__ = {
+      // ① **本次修复的强信号点**：块 (9,0,9) 内紧邻 (9,9) 角。门控下该角 AO=3（与开阔地同亮），
+      //    去门控后 AO=2 → 插值 AO≈2.28，比开阔地暗约 18%。
+      nearCorner: project(9.15, 9.15),
+      // ② **同相对位置的开阔对照**：块 (5,0,5) 内紧邻 (5,5) 角，四周无遮挡 → 恒 AO=3。
+      //    与 nearCorner 同相对位置，排除「靠近格角本身就暗」这一混淆变量。
+      controlCorner: project(5.15, 5.15),
+      // ③ 东格 / 南格紧邻 B 的角（mc-lite 与去门控都 AO=2）→ 钉住场景前提没跑偏
+      eCorner: project(9.15, 8.15),
+      sCorner: project(8.15, 9.15),
+      // ④ **对角格内部梯度**：块 (9,0,9) 远离 B 的那一角 (10,1,10) 恒 AO=3（三个邻居全开阔）。
+      //    与 nearCorner 对比可验证「阴影梯度是否延伸到对角格内部」——门控下两角都 AO=3
+      //    （比值≈1.0，整个对角格平坦无阴影）；去门控后 nearCorner 暗、farCorner 亮 → 有梯度。
+      farCorner: project(9.85, 9.85),
+    };
+    window.__AO_READY__ = true;
+  }
+  run().catch((e) => { window.__AO_ERROR__ = String(e); });
+</script>
+</body>
+</html>

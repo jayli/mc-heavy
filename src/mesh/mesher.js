@@ -85,11 +85,21 @@ const FACE_ROT = [
 ];
 
 function getAO(side1, side2, corner) {
-  // 经典四角 AO（mc-lite AOUtils.getAOValue 语义逐行一致）：
-  // 只有当侧边存在时才考虑对角；两侧都遮挡 → 0（最暗）
-  const c = (side1 || side2) ? (corner ? 1 : 0) : 0;
-  if (side1 && side2) return 0;
-  return 3 - (side1 + side2 + c);
+  // 四角 AO。**有意偏离 mc-lite**（§4.3 第 ⑤ 项）：mc-lite AOUtils.getAOValue 有对角
+  // 门控 `(side1||side2)?corner:0`（Minecraft 原版语义——对角方块物理上不太遮挡该顶点），
+  // 本仓库去掉该门控，让「仅对角遮挡」也计入 AO。
+  //
+  // **为什么去掉**：门控会让两侧开阔、仅对角遮挡的顶点恒为 AO=3（最亮）。实玩可见的
+  // 后果是一个方块的两面（如东+南）都是墙角时，两条阴影各沿凹角向外垂直延伸，而**东南
+  // 对角的地面格完全不参与** → 阴影在对角处断开，露出一条阴影断层（实测：对角格顶面
+  // 靠墙角块那两角 AO=3，东/南相邻格同位置顶点 AO=2）。去掉门控后对角格该顶点 AO=2，
+  // 阴影连成环。
+  //
+  // 副作用：所有「两侧开阔、仅对角遮挡」的顶点都会暗一档（悬浮方块斜对角、台阶斜接处等），
+  // 原版 Minecraft 故意让这些不变暗。实测副作用范围有限（多数对角遮挡都伴随至少一侧遮挡）。
+  // 断言见 src/tests/test-mesher.js「AO 仅对角遮挡顶点 AO=2」。
+  if (side1 && side2) return 0; // 两侧都遮挡 → 0（最暗，与 mc-lite 同）
+  return 3 - (side1 + side2 + (corner ? 1 : 0));
 }
 
 /**
