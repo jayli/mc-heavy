@@ -129,6 +129,7 @@ export class SettingsPanel {
     box.appendChild(this._rowVolume());
     box.appendChild(this._rowVisualStyle());
     box.appendChild(this._rowBudget());
+    box.appendChild(this._rowGunDamage());
     box.appendChild(this._rowNewWorld());
     box.appendChild(this._rowClearSave());
 
@@ -225,6 +226,20 @@ export class SettingsPanel {
         this.settings.budgetProfile = v;
         this._save();
         this.game.budget.setProfile(v); // M3-2 手动覆盖
+      });
+  }
+
+  // 枪械破坏开关：对齐 mc-lite `UIManager.js:160` 的「枪械破坏」开/关两按钮
+  // （`game.canGunsDestroyBlocks` + HUD 提示）。mc-heavy 走既有 API
+  // `game.setGunBlockDamage(enabled)`（M4 规格 §4.4：面板直接绑定该 API），默认 false。
+  // MAG7 不受此开关限制（weapon-controller 语义），无需在此区分。
+  _rowGunDamage() {
+    return this._makeRow('枪械破坏', [false, true], ['关闭', '开启'],
+      this.settings.gunBlockDamage,
+      (v) => {
+        this.settings.gunBlockDamage = v;
+        this._save();
+        this.game.setGunBlockDamage(v); // 委派 player→weaponController.setBlockDamage
       });
   }
 

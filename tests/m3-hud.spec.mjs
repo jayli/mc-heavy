@@ -51,7 +51,7 @@ test('M3-4：HUD 元素可见（坐标/快捷栏/设置按钮/perf 面板）', a
   expect(shot.byteLength).toBeGreaterThan(10_000);
 });
 
-test('M3-4：设置面板交互（uiModal 门控 + 风格/音量生效与持久化）', async ({ page }) => {
+test('M3-4：设置面板交互（uiModal 门控 + 风格/音量/枪械破坏生效与持久化）', async ({ page }) => {
   test.setTimeout(180_000);
   await page.goto('/?vd=4');
   await page.waitForFunction(READY, null, { timeout: 90_000 });
@@ -86,6 +86,18 @@ test('M3-4：设置面板交互（uiModal 门控 + 风格/音量生效与持久�
     return s.volume === 0.5 && s.visualStyle === 'night';
   }, null, { timeout: 5_000 });
 
+  // 枪械破坏开启：运行时即时生效（weaponController.blockDamageEnabled）+ 持久化
+  // （M4 遗留 TODO：对齐 mc-lite「枪械破坏」开/关两按钮，委派 game.setGunBlockDamage）
+  await page.evaluate(() => {
+    const btns = [...document.querySelectorAll('#settings-modal button')];
+    btns.find((b) => b.textContent === '开启').click();
+  });
+  await page.waitForFunction(() => {
+    const g = window.__MC_GAME__;
+    return g.player.weaponController.blockDamageEnabled === true
+      && JSON.parse(localStorage.getItem('mc_heavy_settings_v1') || '{}').gunBlockDamage === true;
+  }, null, { timeout: 5_000 });
+
   // 关闭面板 → 输入恢复
   await page.locator('#settings-close').click();
   await expect(page.locator('#settings-modal')).toBeHidden();
@@ -97,9 +109,12 @@ test('M3-4：设置面板交互（uiModal 门控 + 风格/音量生效与持久�
   const restored = await page.evaluate(() => ({
     style: window.__MC_GAME__.dayNight._styleOverride,
     volume: window.__MC_GAME__.settings.volume,
+    // 启动应用持久化值：gunBlockDamage=true 重载后 weaponController 自动开启
+    gunBlockDamage: window.__MC_GAME__.player.weaponController.blockDamageEnabled,
   }));
   expect(restored.style).toBe('night');
   expect(restored.volume).toBe(0.5);
+  expect(restored.gunBlockDamage).toBe(true);
 });
 
 test('M3-4：新世界（seed 变化 + edits 清空 + 重启读回确定性）', async ({ page }) => {

@@ -4,14 +4,14 @@
 > **不重复内容** —— 架构决策见设计文档，历次改动记录见其修订说明，任务级执行清单见
 > `docs/superpowers/plans/`。
 
-最后更新：2026-09-05
+最后更新：2026-09-07
 
 ## 一句话现状
 
 第一阶段引擎底座（M0~M3）**全部完成并验收达标**，两个收尾补丁项（M3.1 背包 / M3.2 方块朝向）
 也已落地。此后是一串独立 bugfix 与改造（v1.19~v1.31）。第二阶段 **M4 玩家武器已完成并验收**
-（验收报告 `docs/m4-weapons-acceptance-report.md`），剩一个 M4 阶段 bugfix TODO——设置面板
-补「破坏方块」开关按钮（见下节）；M5~M7 规格与计划已备好，等待 M4 之后的实体运行时。
+（验收报告 `docs/m4-weapons-acceptance-report.md`），M4 阶段遗留 TODO——设置面板「破坏方块」
+开关按钮——已落地（见下节）；M5~M7 规格与计划已备好，等待 M4 之后的实体运行时。
 
 ## 里程碑总表
 
@@ -32,7 +32,7 @@
 
 | 事项 | 状态 | 要点 |
 |---|---|---|
-| 设置面板添加「破坏方块」开关按钮（对齐 mc-lite 配置面板的「枪械破坏设置」，`UIManager.js:160` 开/关两按钮 → `canGunsDestroyBlocks` + HUD 提示） | ⬜ **TODO（下一个待办）** | mc-heavy 当前只有 API 入口 `game.setGunBlockDamage(enabled)`（M4 规格 §4.4：「M3 HUD 若已实现设置面板，可直接绑定该 API」；面板已实现但未接）。接入点：`src/ui/settings-panel.js` 照既有 `_makeRow`/按钮组模式加一行，点击调既有 API，不新增机制；默认 `false`（与 mc-lite 一致，破坏开关默认关闭） |
+| 设置面板添加「破坏方块」开关按钮（对齐 mc-lite 配置面板的「枪械破坏设置」，`UIManager.js:160` 开/关两按钮 → `canGunsDestroyBlocks` + HUD 提示） | ✅ 完成（commit hash 待回填） | mc-heavy 当前只有 API 入口 `game.setGunBlockDamage(enabled)`（M4 规格 §4.4：「M3 HUD 若已实现设置面板，可直接绑定该 API」）。已落地：`src/ui/settings-panel.js` 照既有 `_makeRow`/按钮组模式加一行，点击调既有 API，不新增机制；默认 `false`（与 mc-lite 一致，破坏开关默认关闭） |
 
 M4 交付后的实玩反馈修正（已落地，记录在验收报告偏离表）：相机入 scene（R 切武器可见）、
 pointer-lock 拒绝捕获、曳光粗细对齐 mc-lite + 起点世界空间冻结（v1.33）、武器灯光（v1.34）。

@@ -227,6 +227,8 @@ export class Game {
     this.settingsPanel = new SettingsPanel(this._hudRoot, this, this.settings);
     // 启动应用视觉风格（设置持久化：null=日夜循环，M2-6）
     if (this.settings.visualStyle) this.setVisualStyle(this.settings.visualStyle);
+    // 启动应用枪械破坏开关（M4：默认 false 已是 weaponController 初值，仅 true 时需调）
+    if (this.settings.gunBlockDamage) this.setGunBlockDamage(true);
     this.worldReady = true;
 
     window.addEventListener('resize', () => this._onResize());

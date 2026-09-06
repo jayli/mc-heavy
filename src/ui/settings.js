@@ -18,6 +18,7 @@ export const DEFAULT_SETTINGS = {
   volume: 1,          // 第一阶段无音频消费方，面板接线 + 持久化先行（§9 扩展点）
   visualStyle: null,  // null = 日夜循环自动（M2-6）
   budgetProfile: 'auto', // M3-2：'auto'|'high'|'low'
+  gunBlockDamage: false, // M4：普通枪是否破坏方块（mc-lite 默认关闭，UIManager.js:160）
 };
 
 function clampVD(v) {
@@ -42,7 +43,7 @@ function normBudget(v) {
 
 /**
  * 合并生效设置：URL 参数 > 存储值 > 默认值。
- * URL 支持的键：vd / blur(0|1) / volume / style / budget（main.js 既有的
+ * URL 支持的键：vd / blur(0|1) / volume / style / budget / guns(0|1)（main.js 既有的
  * ?vd、?blur 语义保持不变，这里统一收口）。
  * @param {Object|null} stored 存储反序列化对象（可能含缺字段/脏值）
  * @param {URLSearchParams} params
@@ -56,6 +57,7 @@ export function resolveSettings(stored, params) {
     if (stored.volume !== undefined) s.volume = clampVolume(stored.volume);
     if ('visualStyle' in stored) s.visualStyle = normStyle(stored.visualStyle);
     if (stored.budgetProfile !== undefined) s.budgetProfile = normBudget(stored.budgetProfile);
+    if (typeof stored.gunBlockDamage === 'boolean') s.gunBlockDamage = stored.gunBlockDamage;
   }
   if (params) {
     if (params.has('vd')) s.viewDistance = clampVD(params.get('vd'));
@@ -63,6 +65,7 @@ export function resolveSettings(stored, params) {
     if (params.has('volume')) s.volume = clampVolume(params.get('volume'));
     if (params.has('style')) s.visualStyle = normStyle(params.get('style'));
     if (params.has('budget')) s.budgetProfile = normBudget(params.get('budget'));
+    if (params.has('guns')) s.gunBlockDamage = params.get('guns') === '1';
   }
   return s;
 }
