@@ -13,7 +13,7 @@
 // 的图标契约检查（背包每项都有图标 + 图标未过期）。
 import { test } from './runner.js';
 import { assertEqual, assertTrue, assertFalse } from './assert.js';
-import { DEFAULT_SETTINGS, resolveSettings } from '../ui/settings.js';
+import { DEFAULT_SETTINGS, resolveSettings, VIEW_DISTANCE_OPTIONS, VIEW_DISTANCE_MIN, VIEW_DISTANCE_MAX } from '../ui/settings.js';
 import { loadIconManifest, iconCss } from '../ui/icons.js';
 
 test('settings: 默认值（vd=8 / blur=off / volume=1 / 风格自动）', () => {
@@ -49,9 +49,25 @@ test('settings: resolveSettings 视距钳制到合法档位（2~16）', () => {
   assertEqual(resolveSettings(null, new URLSearchParams('vd=2')).viewDistance, 2);
 });
 
-test('settings: volume 钳制 [0,1]', () => {
+/**
+ * 面板档位与架构钳制范围是**两套口径**（面板只留 3 档省版面，clampVD 仍 2~16 可达）。
+ * 钉的是关系而非具体档位数字 —— 有人把面板档位写成架构范围外的值（如 20），
+ * 点下去会被 clampVD 钳回来 → 按钮宣称了一个非生效值，而肉眼看不出来。
+ */
+test('settings: 视距 UI 档位全部落在钳制范围内，且默认值在档位中', () => {
+  for (const vd of VIEW_DISTANCE_OPTIONS) {
+    assertEqual(resolveSettings(null, new URLSearchParams(`vd=${vd}`)).viewDistance, vd,
+      `档位 ${vd} 不被钳制改写`);
+    assertTrue(vd >= VIEW_DISTANCE_MIN && vd <= VIEW_DISTANCE_MAX, `档位 ${vd} 在钳制范围内`);
+  }
+  assertTrue(VIEW_DISTANCE_OPTIONS.includes(DEFAULT_SETTINGS.viewDistance),
+    `默认视距 ${DEFAULT_SETTINGS.viewDistance} 是面板档位之一（否则面板无高亮）`);
+});
+
+test('settings: volume 钳制 [0,1]（无面板档位，默认 100%）', () => {
   assertEqual(resolveSettings({ volume: 5 }, new URLSearchParams('')).volume, 1);
   assertEqual(resolveSettings({ volume: -1 }, new URLSearchParams('')).volume, 0);
+  assertEqual(DEFAULT_SETTINGS.volume, 1, '音量默认开启 100%');
 });
 
 test('settings: visualStyle 只接受合法键', () => {

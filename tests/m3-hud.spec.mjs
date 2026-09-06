@@ -2,7 +2,7 @@ import { test, expect } from 'playwright/test';
 
 // M3-4 验收：HUD 完善 + 随机种子/新世界（roadmap Task M3-4）
 // ① HUD 元素可见：perf 面板 / 坐标+biome / 快捷栏 5 格 / ⚙ 设置按钮
-// ② 设置面板：点击打开 → uiModal 置位 + 玩家输入暂停；视觉风格/音量运行时生效与持久化
+// ② 设置面板：点击打开 → uiModal 置位 + 玩家输入暂停；视觉风格/帧预算/枪械破坏生效与持久化
 // ③ 新世界：seed 变化、edits 清空、重启读回同 seed（确定性红线 2 回归）
 // ④ ?seed= 固定参数两次启动世界一致
 
@@ -51,7 +51,7 @@ test('M3-4：HUD 元素可见（坐标/快捷栏/设置按钮/perf 面板）', a
   expect(shot.byteLength).toBeGreaterThan(10_000);
 });
 
-test('M3-4：设置面板交互（uiModal 门控 + 风格/音量/枪械破坏生效与持久化）', async ({ page }) => {
+test('M3-4：设置面板交互（uiModal 门控 + 风格/帧预算/枪械破坏生效与持久化）', async ({ page }) => {
   test.setTimeout(180_000);
   await page.goto('/?vd=4');
   await page.waitForFunction(READY, null, { timeout: 90_000 });
@@ -60,6 +60,17 @@ test('M3-4：设置面板交互（uiModal 门控 + 风格/音量/枪械破坏生
   await page.locator('#settings-btn').click();
   await expect(page.locator('#settings-modal')).toBeVisible();
   expect(await page.evaluate(() => window.__MC_GAME__.uiModal)).toBe(true);
+
+  // 合并盒（画质+枪械破坏）四边框必须完整 —— 钉 CSS 特异性回归（实测踩坑）：
+  // 分隔线规则曾写成 `#settings-modal .mc-column > :first-child`（特异性 1,2,0），
+  // 压过 `#settings-modal .mc-combined`（1,1,0）的装饰边框 → 列首的合并盒上边框被置
+  // none，方框缺一边。用户报告的正是这个观感缺陷（肉眼看不出是特异性冲突）。
+  // 故规则只作用于 `.mc-item`（行型），这条断言钉住「合并盒四边都在」。
+  const combinedSides = await page.evaluate(() => {
+    const cs = getComputedStyle(document.querySelector('#settings-modal .mc-combined'));
+    return ['Top', 'Right', 'Bottom', 'Left'].map((s) => cs[`border${s}Style`]);
+  });
+  expect(combinedSides.every((s) => s === 'solid')).toBe(true);
 
   // 面板打开时玩家输入暂停：按住 W 位置不动
   const posBefore = await page.evaluate(() => ({ ...window.__MC_GAME__.player.physics.pos }));
@@ -76,14 +87,16 @@ test('M3-4：设置面板交互（uiModal 门控 + 风格/音量/枪械破坏生
   });
   await page.waitForFunction(() => window.__MC_GAME__.dayNight._styleOverride === 'night', null, { timeout: 5_000 });
 
-  // 音量 50%：持久化到 localStorage
+  // 帧预算 60Hz 档：持久化到 localStorage
+  // （原断言用「音量 50%」，音量档已移出面板 —— 默认 100% 开启、无消费方时不必占版面；
+  //   改用同为「运行时即时 + 持久化」的帧预算档位，验证路径等价且不会触发重载。）
   await page.evaluate(() => {
     const btns = [...document.querySelectorAll('#settings-modal button')];
-    btns.find((b) => b.textContent === '50%').click();
+    btns.find((b) => b.textContent === '60Hz 档').click();
   });
   await page.waitForFunction(() => {
     const s = JSON.parse(localStorage.getItem('mc_heavy_settings_v1') || '{}');
-    return s.volume === 0.5 && s.visualStyle === 'night';
+    return s.budgetProfile === 'low' && s.visualStyle === 'night';
   }, null, { timeout: 5_000 });
 
   // 枪械破坏开启：运行时即时生效（weaponController.blockDamageEnabled）+ 持久化
@@ -108,12 +121,12 @@ test('M3-4：设置面板交互（uiModal 门控 + 风格/音量/枪械破坏生
   await page.waitForFunction(READY, null, { timeout: 90_000 });
   const restored = await page.evaluate(() => ({
     style: window.__MC_GAME__.dayNight._styleOverride,
-    volume: window.__MC_GAME__.settings.volume,
+    budgetProfile: window.__MC_GAME__.settings.budgetProfile,
     // 启动应用持久化值：gunBlockDamage=true 重载后 weaponController 自动开启
     gunBlockDamage: window.__MC_GAME__.player.weaponController.blockDamageEnabled,
   }));
   expect(restored.style).toBe('night');
-  expect(restored.volume).toBe(0.5);
+  expect(restored.budgetProfile).toBe('low');
   expect(restored.gunBlockDamage).toBe(true);
 });
 

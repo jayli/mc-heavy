@@ -4,9 +4,14 @@
 
 export const STORAGE_KEY = 'mc_heavy_settings_v1';
 
-/** 视距 UI 预设档位（§1：默认 8，架构支持 16+；设置面板提供 4~16 快捷选择） */
-export const VIEW_DISTANCE_OPTIONS = [4, 6, 8, 12, 16];
-/** 视距钳制下限（架构支持的最小值，M1 测试与调试用 vd=2；UI 预设不含但 URL 可达） */
+/** 视距 UI 预设档位（§1：默认 8，架构支持 16+；面板只留 3 档以省版面，其余档走 URL） */
+export const VIEW_DISTANCE_OPTIONS = [8, 12, 16];
+/**
+ * 视距钳制下限（架构支持的最小值，M1 测试与调试用 vd=2；**UI 预设不含**，URL 可达）。
+ * 注意 clampVD 与 VIEW_DISTANCE_OPTIONS 是两套口径：前者是架构钳制范围（2~16，
+ * 测试/调试依赖 vd=2、vd=4 可达），后者只是面板按钮档位。故面板须容错
+ * 「当前值不在档位内」（URL 或旧存档带来的 4）—— 见 settings-panel.js `_rowViewDistance`。
+ */
 export const VIEW_DISTANCE_MIN = 2;
 export const VIEW_DISTANCE_MAX = 16;
 /** 视觉风格选项（M2-6 VISUAL_STYLE_KEYS + null=日夜循环自动） */

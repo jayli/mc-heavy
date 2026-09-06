@@ -43,14 +43,17 @@ test('删除缓存：清 edits 但保留 seed 与设置，重载后回到未修�
   await page.waitForFunction(STABLE, null, { timeout: 60_000, polling: 500 });
   const pristine = await page.evaluate(FINGERPRINT);
 
-  // 2. 改设置（音量 50%）——删除缓存不得动 localStorage
+  // 2. 改设置（环境风格 → 黑夜）——删除缓存不得动 localStorage
+  // （原用「音量 50%」，音量档已移出面板 —— 默认 100% 开启、第一阶段无音频消费方。
+  //   代理档位选环境风格而非帧预算：帧预算 low 档会降低 scheduler 每帧预算、拖慢
+  //   第 5 步的 STABLE 收敛；环境风格是纯视觉 override，对本 spec 的指纹断言零影响。）
   await page.locator('#settings-btn').click();
   await page.evaluate(() => {
     const btns = [...document.querySelectorAll('#settings-modal button')];
-    btns.find((b) => b.textContent === '50%').click();
+    btns.find((b) => b.textContent === '黑夜').click();
   });
   await page.waitForFunction(() =>
-    JSON.parse(localStorage.getItem('mc_heavy_settings_v1') || '{}').volume === 0.5,
+    JSON.parse(localStorage.getItem('mc_heavy_settings_v1') || '{}').visualStyle === 'night',
   null, { timeout: 5_000 });
 
   // 3. 放一块石头留下 edits 并落库
@@ -84,6 +87,10 @@ test('删除缓存：清 edits 但保留 seed 与设置，重载后回到未修�
   await expect(page.locator('#settings-modal')).toBeVisible();
   const clearBtn = page.locator('#btn-clear-save');
   await expect(clearBtn).toBeVisible();
+  // 常态文案 = 构造时写的短文案（`CLEAR_SAVE_LABEL`）。钉这条是因为复位路径
+  // `_resetDangerArmed()` 另写一份文案会覆盖构造值（实测踩坑：复位写死旧长文案 →
+  // 面板打开后按钮显示的是长文案，而构造代码里写的短文案形同虚设）。
+  await expect(clearBtn).toHaveText('删除缓存');
   await clearBtn.click();                            // 第一次：进入确认态，不得立即执行
   await expect(clearBtn).toHaveText(/确认/);
   expect(await page.evaluate(() => window.__MC_GAME__.seed)).toBe(12345); // 尚未重载
@@ -103,14 +110,14 @@ test('删除缓存：清 edits 但保留 seed 与设置，重载后回到未修�
     stone: window.__MC_GAME__.world.getBlockId(p.x, p.y, p.z),
     seed: window.__MC_GAME__.seed,
     savedColumns: await window.__MC_GAME__.persistence.countSavedColumns(),
-    volume: JSON.parse(localStorage.getItem('mc_heavy_settings_v1') || '{}').volume,
+    visualStyle: JSON.parse(localStorage.getItem('mc_heavy_settings_v1') || '{}').visualStyle,
   }), placed);
 
   expect(clearedDetail.seed).toBe(12345);       // seed 保留（与 newWorld 的区别）
   expect(cleared.columns).toBe(pristine.columns);
   expect(cleared.fp).toBe(pristine.fp);         // 地形回到未修改的原始版本
   expect(clearedDetail.stone).toBe(0);          // 放的石头没了
-  expect(clearedDetail.volume).toBe(0.5);       // 设置未受影响
+  expect(clearedDetail.visualStyle).toBe('night'); // 设置未受影响
 
   // 7. 端到端：重载两次后 edits 不重现（第一次的事实在第二次时必已提交）
   await page.reload();

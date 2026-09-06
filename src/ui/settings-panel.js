@@ -4,8 +4,12 @@
 // + 斜角浮雕按钮（左上白/右下深灰，:hover 提亮，:active 反向斜角，选中态绿色 #559944）。
 // hover/active/.active 等伪类与状态类无法用 inline style 表达，故注入一次性样式表
 // （组件自带样式，不依赖宿主页面；重复构造只注入一次）。
-// 档位：视距（持久化+重载生效）/ 画质 blur（重载生效）/ 音量（持久化，第一阶段无音频消费方）
-// / 视觉风格（运行时即时）/ 帧预算档位（运行时即时，M3-2）/ 新世界（随机 seed + 清 edits + 重载）。
+// **布局**：沿用 mc-lite 的两列盒（`.settings-columns` + `.setting-combined-item`），
+// 但行列分配按 mc-heavy 当前档位需要重排（面板是后续功能的配置入口，须留扩展余量）：
+// 左列 = 画质+枪械破坏合并盒 / 环境风格；右列 = 视距 / 帧预算 / 世界（新世界 + 删除缓存）。
+// 档位：视距（持久化+重载生效，面板 3 档）/ 画质 blur（重载生效）/ 视觉风格（运行时即时）
+// / 帧预算档位（运行时即时，M3-2）/ 枪械破坏（运行时即时）/ 世界操作（新世界 / 删除缓存）。
+// 音量不入面板（默认 100% 开启，`settings.js` 仍持久化 + `?volume=` URL 可达，待音频消费方接线）。
 // 打开时：退出 pointer lock + 清空按键 + game.pushModal('settings')（模态栈，M3.1 §4.5.4；
 // 主循环跳过 player.update、Player keydown 守卫拦截）。关闭时 lock 回 player.canvas。
 import {
@@ -13,8 +17,15 @@ import {
 } from './settings.js';
 
 const STYLE_ID = 'mc-settings-style';
+/** 「删除缓存」按钮的常态文案。复位与构造必须共用同一份 —— 写两处会漂移（红线 1 精神） */
+const CLEAR_SAVE_LABEL = '删除缓存';
 
-/** mc-lite global.css 设置弹窗相关规则的移植（选择器加 mc- 前缀避免污染宿主页面） */
+/**
+ * mc-lite global.css 设置弹窗相关规则的移植（选择器加 mc- 前缀避免污染宿主页面）。
+ * 两列盒（`.mc-columns`/`.mc-column`）与合并盒（`.mc-combined`）取自 mc-lite
+ * `.settings-columns` / `.setting-combined-item`（`src/style/global.css:124-176`）——
+ * 合并盒正是 mc-lite 用来把两组两按钮档位挤进同一行的手法。
+ */
 const PANEL_CSS = `
 #settings-btn {
   position: fixed; top: 66px; right: 8px; width: 33px; height: 33px;
@@ -33,7 +44,7 @@ const PANEL_CSS = `
 }
 #settings-modal .mc-content {
   background: #c6c6c6; border: 4px solid #555; padding: 20px;
-  width: 480px; min-height: 250px; border-radius: 4px;
+  width: 770px; min-height: 250px; border-radius: 4px;   /* mc-lite #settings-content 同宽 */
   box-shadow: 5px 5px 0 #000;
   display: flex; flex-direction: column; text-align: center;
   max-height: 80vh; overflow: auto;
@@ -41,12 +52,19 @@ const PANEL_CSS = `
 #settings-modal h2 {
   margin: 0 0 12px; text-align: left; font-size: 18px; font-weight: bold; color: #333;
 }
+/* 两列布局：每列独立纵向堆叠，列间分隔线画在列内各项之间（非列首项）。
+   分隔线只作用于 .mc-item（行型）—— 写成通配 :first-child 会连带抹掉 .mc-combined
+   合并盒自己的装饰边框（实测踩坑：#settings-modal .mc-column > :first-child 特异性
+   (1,2,0) 压过 #settings-modal .mc-combined 的 (1,1,0)，上边框被置 none → 方框缺一边）。
+   ⚠ 本文件在 JS 模板字面量内，注释里**不得用反引号**包裹标识符（会提前终止模板字符串）。 */
+#settings-modal .mc-columns { display: flex; gap: 20px; flex: 1; }
+#settings-modal .mc-column { flex: 1; display: flex; flex-direction: column; gap: 10px; }
+#settings-modal .mc-column > .mc-item { border-top: 1px solid #999; padding-top: 10px; }
+#settings-modal .mc-column > .mc-item:first-child { border-top: none; padding-top: 0; }
 #settings-modal .mc-item {
   margin: 0; display: flex; flex-direction: column; gap: 8px;
   font-weight: bold; color: #333;
-  border-top: 1px solid #999; padding-top: 10px;
 }
-#settings-modal .mc-item:first-of-type { border-top: none; padding-top: 0; }
 #settings-modal .mc-title { text-align: left; font-size: 14px; line-height: 1.2; font-weight: bold; }
 #settings-modal .mc-btn-group { display: flex; gap: 8px; width: 100%; }
 #settings-modal button {
@@ -64,12 +82,19 @@ const PANEL_CSS = `
   background: #559944; /* 绿色表示选中（mc-lite 同款） */
   border: 2px solid #373737; border-right-color: #fff; border-bottom-color: #fff;
 }
-#settings-modal .mc-world-row {
-  display: flex; align-items: center; gap: 8px;
-  border-top: 1px solid #999; padding-top: 10px; margin-top: 10px;
+/* 合并盒：两组档位横向共用一行（mc-lite .setting-combined-item 同款） */
+#settings-modal .mc-combined {
+  border: 1px solid #888; padding: 8px; background: rgba(255,255,255,0.15);
 }
-#settings-modal .mc-world-row .mc-title { flex: none; }
-#settings-modal .mc-seed { font-size: 12px; color: #555; font-weight: bold; white-space: nowrap; }
+#settings-modal .mc-combined-box { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+#settings-modal .mc-combined-col {
+  display: flex; flex-direction: column; gap: 6px; padding: 0 8px;
+}
+#settings-modal .mc-combined-col:first-child { border-right: 1px solid #888; padding-left: 0; }
+#settings-modal .mc-combined-col:last-child { padding-right: 0; }
+/* 世界操作：两个破坏性/不可逆按钮共用一行 + 一行小字说明（省版面） */
+#settings-modal .mc-world { display: flex; flex-direction: column; gap: 8px; }
+#settings-modal .mc-hint { font-size: 11px; color: #555; font-weight: bold; text-align: left; }
 /* 破坏性操作（删除缓存）：暗红底区分于普通灰按钮；armed 态高亮提示「再点一次即执行」 */
 #settings-modal button.danger { background: #8b4b4b; }
 #settings-modal button.danger:hover { background: #9b5b5b; }
@@ -124,14 +149,23 @@ export class SettingsPanel {
     // 点击遮罩关闭（mc-lite settingsModal.onclick 语义）
     this.el.addEventListener('click', (e) => { if (e.target === this.el) this.close(); });
 
-    box.appendChild(this._rowViewDistance());
-    box.appendChild(this._rowBlur());
-    box.appendChild(this._rowVolume());
-    box.appendChild(this._rowVisualStyle());
-    box.appendChild(this._rowBudget());
-    box.appendChild(this._rowGunDamage());
-    box.appendChild(this._rowNewWorld());
-    box.appendChild(this._rowClearSave());
+    // 两列盒（mc-lite `.settings-columns`）。分配按「档位数 + 文案长度」排：
+    // 左列吃两组两按钮档位（合并盒）+ 四档风格；右列吃三档视距/帧预算 + 世界操作。
+    // 后续新配置优先往右列填（右列纵向余量更大），避免继续增高左列。
+    const columns = document.createElement('div');
+    columns.className = 'mc-columns';
+    const left = document.createElement('div');
+    const right = document.createElement('div');
+    left.className = right.className = 'mc-column';
+    columns.appendChild(left);
+    columns.appendChild(right);
+    box.appendChild(columns);
+
+    left.appendChild(this._combinedBlurGunDamage()); // 画质 + 枪械破坏共用一行
+    left.appendChild(this._rowVisualStyle());
+    right.appendChild(this._rowViewDistance());
+    right.appendChild(this._rowBudget());
+    right.appendChild(this._rowWorld());             // 新世界 + 删除缓存共用一行
 
     const footer = document.createElement('div');
     footer.className = 'mc-footer';
@@ -146,15 +180,18 @@ export class SettingsPanel {
   // ---- 行构造（mc-lite .setting-item + .btn-group：标题左对齐、按钮等宽一行、选中态绿色） ----
 
   /**
-   * @param {string} title 行标题
+   * 构造「标题 + 按钮组」一组档位控件。
+   * `wrap` 决定宿主容器类名：`mc-item` = 独占一行；`mc-combined-col` = 塞进合并盒与另一组共用一行。
+   * @param {string} title 组标题
    * @param {Array<*>} values 档位值
    * @param {Array<string>} labels 档位文案
    * @param {*} current 当前值（渲染选中态）
    * @param {(v: *) => void} onPick 选档回调
+   * @param {string} [wrap='mc-item'] 宿主容器类名
    */
-  _makeRow(title, values, labels, current, onPick) {
+  _makeGroup(title, values, labels, current, onPick, wrap = 'mc-item') {
     const row = document.createElement('div');
-    row.className = 'mc-item';
+    row.className = wrap;
     const t = document.createElement('span');
     t.className = 'mc-title';
     t.textContent = title;
@@ -179,8 +216,27 @@ export class SettingsPanel {
     return row;
   }
 
+  /** 独占一行的档位组（便捷入口） */
+  _makeRow(title, values, labels, current, onPick) {
+    return this._makeGroup(title, values, labels, current, onPick, 'mc-item');
+  }
+
+  /** 合并盒：把两组档位塞进同一行（mc-lite `.setting-combined-item` 同款） */
+  _makeCombined(groups) {
+    const box = document.createElement('div');
+    box.className = 'mc-combined';
+    const grid = document.createElement('div');
+    grid.className = 'mc-combined-box';
+    box.appendChild(grid);
+    for (const g of groups) grid.appendChild(g);
+    return box;
+  }
+
   _rowViewDistance() {
-    // 视距改动 → 持久化 + 带参重载（BatchedMesh maxInstances 构造期固定，不支持运行时扩容）
+    // 视距改动 → 持久化 + 带参重载（BatchedMesh maxInstances 构造期固定，不支持运行时扩容）。
+    // 面板只留 3 档（省版面），其余档仍可达：`?vd=` URL 与旧存档 → clampVD(2~16)。
+    // 当前值不在档位内（如 URL 带 vd=4）时无按钮高亮 —— 档位是「快捷选择」而非全集，
+    // 刻意不做「就近高亮」（那会让按钮宣称了一个非生效值）。
     return this._makeRow('视距', VIEW_DISTANCE_OPTIONS,
       VIEW_DISTANCE_OPTIONS.map(String), this.settings.viewDistance,
       (v) => {
@@ -190,23 +246,33 @@ export class SettingsPanel {
       });
   }
 
-  _rowBlur() {
-    return this._makeRow('画质（远处纹理）', [false, true], ['像素风', '平滑'],
+  _groupBlur() {
+    return this._makeGroup('画质（远处纹理）', [false, true], ['像素风', '平滑'],
       this.settings.blur,
       (v) => {
         this.settings.blur = v;
         this._save();
         this.game.setBlurQuality(v); // 重载生效（纹理 mip level 创建期固定）
-      });
+      }, 'mc-combined-col');
   }
 
-  _rowVolume() {
-    return this._makeRow('音量', [0, 0.5, 1], ['静音', '50%', '100%'],
-      this.settings.volume,
+  // 枪械破坏开关：对齐 mc-lite `UIManager.js:160` 的「枪械破坏」开/关两按钮
+  // （`game.canGunsDestroyBlocks` + HUD 提示）。mc-heavy 走既有 API
+  // `game.setGunBlockDamage(enabled)`（M4 规格 §4.4：面板直接绑定该 API），默认 false。
+  // MAG7 不受此开关限制（weapon-controller 语义），无需在此区分。
+  _groupGunDamage() {
+    return this._makeGroup('枪械破坏', [false, true], ['关闭', '开启'],
+      this.settings.gunBlockDamage,
       (v) => {
-        this.settings.volume = v;
-        this._save(); // 第一阶段无音频消费方（§9 扩展点），仅持久化
-      });
+        this.settings.gunBlockDamage = v;
+        this._save();
+        this.game.setGunBlockDamage(v); // 委派 player→weaponController.setBlockDamage
+      }, 'mc-combined-col');
+  }
+
+  // 画质与枪械破坏都是两按钮档位，各占一行浪费版面 → 合并盒共用一行（mc-lite 同手法）。
+  _combinedBlurGunDamage() {
+    return this._makeCombined([this._groupBlur(), this._groupGunDamage()]);
   }
 
   _rowVisualStyle() {
@@ -229,73 +295,54 @@ export class SettingsPanel {
       });
   }
 
-  // 枪械破坏开关：对齐 mc-lite `UIManager.js:160` 的「枪械破坏」开/关两按钮
-  // （`game.canGunsDestroyBlocks` + HUD 提示）。mc-heavy 走既有 API
-  // `game.setGunBlockDamage(enabled)`（M4 规格 §4.4：面板直接绑定该 API），默认 false。
-  // MAG7 不受此开关限制（weapon-controller 语义），无需在此区分。
-  _rowGunDamage() {
-    return this._makeRow('枪械破坏', [false, true], ['关闭', '开启'],
-      this.settings.gunBlockDamage,
-      (v) => {
-        this.settings.gunBlockDamage = v;
-        this._save();
-        this.game.setGunBlockDamage(v); // 委派 player→weaponController.setBlockDamage
-      });
-  }
-
-  _rowNewWorld() {
-    const row = document.createElement('div');
-    row.className = 'mc-world-row';
-    const t = document.createElement('span');
-    t.className = 'mc-title';
-    t.textContent = '世界';
-    row.appendChild(t);
-    const b = document.createElement('button');
-    b.id = 'btn-new-world';
-    b.textContent = '新世界（随机种子）';
-    b.addEventListener('click', () => this.game.newWorld(null)); // null = 随机 seed
-    row.appendChild(b);
-    const cur = document.createElement('span');
-    cur.className = 'mc-seed';
-    cur.textContent = `当前 seed ${this.game.seed}`;
-    row.appendChild(cur);
-    return row;
-  }
-
   /**
-   * 「删除缓存」行：丢弃玩家的方块改动，保留 seed 与设置（`Game.clearSave`）。
-   * 与「新世界」的区别：新世界会**换 seed**（离开旧世界），本功能不换 —— 重载后
-   * 回到同一世界的未修改原始版本。localStorage 设置不受影响。
+   * 「世界」组：新世界 + 删除缓存**两个破坏性/不可逆操作共用一行**（省版面），
+   * 二者语义区别落在下方一行小字说明里。
+   *
+   * - 新世界（`Game.newWorld`）：**换 seed**（离开旧世界）+ 清 edits + 写回 meta + 重载；
+   * - 删除缓存（`Game.clearSave`）：**保留 seed** + 清 edits + 重载 → 回到同一世界的
+   *   未修改原始版本（红线 2：地形只由 seed 决定，edits 是叠加层）。
+   * 两者都不动 localStorage 设置。
    *
    * 二次确认（armed 态）：破坏性操作单击即执行会让误触毁掉存档。第一次点击只把
    * 按钮切到「确认删除」，第二次才执行；打开面板时复位，避免确认态跨会话残留。
    */
-  _rowClearSave() {
+  _rowWorld() {
     const row = document.createElement('div');
-    row.className = 'mc-world-row';
+    row.className = 'mc-item mc-world';
     const t = document.createElement('span');
     t.className = 'mc-title';
-    t.textContent = '存档';
+    t.textContent = '世界';
     row.appendChild(t);
 
-    const b = document.createElement('button');
-    b.id = 'btn-clear-save';
-    b.className = 'danger';
-    b.textContent = '删除缓存（清除方块改动）';
-    this._clearBtn = b;
-    b.addEventListener('click', () => {
-      if (!b.classList.contains('armed')) {
-        b.classList.add('armed');
-        b.textContent = '确认删除？再点一次';
+    const group = document.createElement('div');
+    group.className = 'mc-btn-group';
+    row.appendChild(group);
+
+    const newWorld = document.createElement('button');
+    newWorld.id = 'btn-new-world';
+    newWorld.textContent = '新世界';
+    newWorld.addEventListener('click', () => this.game.newWorld(null)); // null = 随机 seed
+    group.appendChild(newWorld);
+
+    const clear = document.createElement('button');
+    clear.id = 'btn-clear-save';
+    clear.className = 'danger';
+    clear.textContent = CLEAR_SAVE_LABEL;
+    this._clearBtn = clear;
+    clear.addEventListener('click', () => {
+      if (!clear.classList.contains('armed')) {
+        clear.classList.add('armed');
+        clear.textContent = '确认删除？再点一次';
         return;
       }
       this.game.clearSave(); // 重载：edits 清空 + seed/设置保留
     });
-    row.appendChild(b);
+    group.appendChild(clear);
 
     const hint = document.createElement('span');
-    hint.className = 'mc-seed';
-    hint.textContent = '保留 seed 与设置';
+    hint.className = 'mc-hint';
+    hint.textContent = `新世界：换随机种子｜删除缓存：清除方块改动、保留当前种子（seed ${this.game.seed}）`;
     row.appendChild(hint);
     return row;
   }
@@ -305,7 +352,7 @@ export class SettingsPanel {
     const b = this._clearBtn;
     if (!b) return;
     b.classList.remove('armed');
-    b.textContent = '删除缓存（清除方块改动）';
+    b.textContent = CLEAR_SAVE_LABEL; // 与构造共用同一份文案（写两处会漂移）
   }
 
   _save() { saveStoredSettings(this.settings); }
