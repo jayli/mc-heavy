@@ -8,8 +8,13 @@ import { collectMag7Changes } from './mag7-pattern.js';
 
 /** 无 DDA 命中时曳光延伸距离（mc-lite 40 格 hitscan 语义） */
 const MISS_RANGE = 40;
-/** MAG7 无候选时效果终点：前方 10 格 */
-const MAG7_MISS_RANGE = 10;
+/**
+ * MAG7 曳光终点距离（准心轴上）：= 准心命中距离与扫描范围上限的较小者；准心无命中时取上限。
+ * **终点恒在准心轴上**，与「有没有扫到可破坏候选」无关 —— 候选在 right/up 基底上散布 ±1 格，
+ * 拿候选当终点会让曳光斜向偏转、与枪管方向不对齐。
+ * 上限直接派生自 catalog 的 `scan.max`（mc-lite `raycaster.far=10` 同口径），不另写一份字面量。
+ */
+const MAG7_MISS_RANGE = WEAPONS[WEAPON_IDS.MAG7].scan.max;
 
 const CYCLE_ORDER = [WEAPON_IDS.ARM, WEAPON_IDS.PISTOL, WEAPON_IDS.MAG7, WEAPON_IDS.MINIGUN];
 
@@ -148,18 +153,26 @@ export class WeaponController {
     return this._makeEffect(weapon, aim, end);
   }
 
-  /** MAG7：无视开关，一次批量编辑提交全部可破坏候选（M4 有意偏离 mc-lite 的分批定时器）。 */
+  /**
+   * MAG7：无视开关，一次批量编辑提交全部可破坏候选（M4 有意偏离 mc-lite 的分批定时器）。
+   * 曳光终点必须在准心轴上（见 MAG7_MISS_RANGE 注释）：3×3 体积扫描的首个候选常在准心轴
+   * 之外（right/up 基底上 i,j∈{-1,0,1}），拿它当终点会让曳光斜向偏转、与枪管方向不对齐。
+   */
   _fireMag7(aim, weapon) {
     const changes = collectMag7Changes(aim, this.blockQuery, this.registry);
     if (changes.length > 0) this.editor.setBlocks(changes);
-    const first = changes[0];
-    const end = first
-      ? [first.x + 0.5, first.y + 0.5, first.z + 0.5]
-      : [
-        aim.origin[0] + aim.forward[0] * MAG7_MISS_RANGE,
-        aim.origin[1] + aim.forward[1] * MAG7_MISS_RANGE,
-        aim.origin[2] + aim.forward[2] * MAG7_MISS_RANGE,
-      ];
+    // 终点距离 = 准心射线的命中距离（钳到扫描范围上限），无命中则取上限。
+    // 不用普通枪的 target.dist 原值：主 DDA 的 REACH=40 远超 MAG7 的 1~10 格扫描范围，
+    // 曳光延伸到 40 格会宣称「打到了扫描范围之外」。
+    const { origin, forward, target } = aim;
+    const dist = target && target.hit
+      ? Math.min(target.dist, MAG7_MISS_RANGE)
+      : MAG7_MISS_RANGE;
+    const end = [
+      origin[0] + forward[0] * dist,
+      origin[1] + forward[1] * dist,
+      origin[2] + forward[2] * dist,
+    ];
     return this._makeEffect(weapon, aim, end);
   }
 

@@ -598,7 +598,7 @@ export function isMag7Candidate(id, registry) {
 }
 ```
 
-`start` 必须按 `origin + right*localStart[0] + up*localStart[1] - forward*localStart[2]` 计算；没有 DDA 命中时 `end=origin+forward*40`，有命中时使用 `target.dist`。MAG7 用扫描中第一个距离组的中心候选作为效果终点，无候选时用 10 格前方。每次 effect 调用 `onEffect(effect)`，但状态机自身不播放声音或创建 mesh。
+`start` 必须按 `origin + right*localStart[0] + up*localStart[1] - forward*localStart[2]` 计算；没有 DDA 命中时 `end=origin+forward*40`，有命中时使用 `target.dist`。**MAG7 的曳光终点恒在准心轴上**：`end = origin + forward * min(target.dist ?? scan.max, scan.max)` —— 准心命中取命中距离并钳到扫描范围上限（`scan.max`=10，主 DDA 的 REACH=40 远超 MAG7 的 1~10 格扫描范围），无命中取上限。**不用扫描候选当终点**（v1.36 勘误，原写「用第一个距离组的中心候选」是错的）：候选在 right/up 基底上散布 `i,j∈{-1,0,1}`，准心无命中而邻格有方块时首个候选偏离准心轴 → 曳光斜向偏转、与枪管方向不对齐。mc-lite 的实际行为也是准心轴（`Player.js:781-783` 的 `raycaster.setFromCamera(this.center)` + `far=10` → `Gun.onFire` 命中点），拿候选当终点是移植偏差。每次 effect 调用 `onEffect(effect)`，但状态机自身不播放声音或创建 mesh。
 
 - [x] **Step 5: 验证 GREEN 和 DDA 红线**
 

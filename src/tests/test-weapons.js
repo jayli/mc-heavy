@@ -134,6 +134,97 @@ test('MAG7: 世界坐标去重（0.5 步长相邻采样同格只留一次）', (
   assertEqual(keys.size, changes.length, '无重复坐标');
 });
 
+// ---------- MAG7 曳光终点不变式（恒在准心轴上） ----------
+
+/**
+ * 把曳光终点相对 origin 分解到准心基底，得到 forward/right/up 三个分量。
+ * 不变式：right 与 up 分量必须恒为 0 —— 终点一旦有横向/纵向分量，曳光就斜向偏转、
+ * 与枪管方向不对齐（用户实玩报告的观感来源）。
+ */
+function decomposeEndOnAimAxis(aim, end) {
+  const d = [end[0] - aim.origin[0], end[1] - aim.origin[1], end[2] - aim.origin[2]];
+  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  return { forward: dot(d, aim.forward), right: dot(d, aim.right), up: dot(d, aim.up) };
+}
+
+test('MAG7: 准心无命中但邻格有方块时，曳光终点仍在准心轴上（不得斜向偏转）', () => {
+  const { registry, ids } = makeRegistryWithWeaponBlocks();
+  const editor = {
+    batchCalls: 0,
+    lastBatch: null,
+    setBlock() { return { changes: [] }; },
+    setBlocks(changes) { this.batchCalls++; this.lastBatch = changes; return { changes: [] }; },
+  };
+  const controller = new WeaponController({
+    registry,
+    // 正前方（forward=+X）整条射线全是空气；右邻格（right=+Z，z=1）是一片石墙。
+    // MAG7 是 right/up 基底上 i,j∈{-1,0,1} 的 3×3 体积扫描，必然扫到右邻格 ——
+    // 这正是用户报告的场景：准心没瞄到任何方块，射界内却击中了旁边的方块。
+    blockQuery: {
+      getBlockId: (x, y, z) => (z === 1 && x >= 1 && x <= 6 && y === 0 ? ids.stone : ids.air),
+    },
+    editor,
+    onEffect: () => {},
+  });
+  controller.select('mag7');
+  const aim = {
+    origin: [0.5, 0.5, 0.5], forward: [1, 0, 0], right: [0, 0, 1], up: [0, 1, 0],
+    target: null, // 准心射线无命中（正前方全空气）
+  };
+  const fired = controller.fireOnce(aim);
+  assertEqual(fired.length, 1);
+  // 前置断言：复现条件确实成立（候选存在、且首个候选偏离准心轴）——
+  // 否则下面的不变式断言根本不触发被测分支，会恒真。
+  assertTrue(editor.lastBatch.length > 0, '右邻格石墙必须产生候选');
+  const first = editor.lastBatch[0];
+  assertTrue(first.y !== 0 || first.z !== 0, '首个候选必须偏离准心轴');
+  const axis = decomposeEndOnAimAxis(aim, fired[0].end);
+  assertEqual(axis.right, 0, '终点横向分量必须为 0');
+  assertEqual(axis.up, 0, '终点纵向分量必须为 0');
+  assertEqual(axis.forward, 10, '准心无命中 → 终点为前方 10 格（mc-lite raycaster.far=10）');
+});
+
+test('MAG7: 准心命中时曳光终点停在 target.dist 且仍在准心轴上', () => {
+  const { registry, ids } = makeRegistryWithWeaponBlocks();
+  const controller = new WeaponController({
+    registry,
+    blockQuery: { getBlockId: () => ids.stone },
+    editor: { setBlock() {}, setBlocks() { return { changes: [] }; } },
+    onEffect: () => {},
+  });
+  controller.select('mag7');
+  const aim = {
+    origin: [0, 0, 0], forward: [1, 0, 0], right: [0, 0, 1], up: [0, 1, 0],
+    target: { hit: true, blockPos: [3, 0, 0], dist: 3 },
+  };
+  const fired = controller.fireOnce(aim);
+  const axis = decomposeEndOnAimAxis(aim, fired[0].end);
+  assertEqual(axis.forward, 3, '终点距离 = 准心命中距离');
+  assertEqual(axis.right, 0);
+  assertEqual(axis.up, 0);
+});
+
+test('MAG7: 准心命中超出扫描范围时曳光终点钳到 10 格', () => {
+  const { registry, ids } = makeRegistryWithWeaponBlocks();
+  const controller = new WeaponController({
+    registry,
+    blockQuery: { getBlockId: () => ids.stone },
+    editor: { setBlock() {}, setBlocks() { return { changes: [] }; } },
+    onEffect: () => {},
+  });
+  controller.select('mag7');
+  // 主 DDA 的 REACH 是 40 格，远大于 MAG7 的 1~10 格扫描范围
+  const aim = {
+    origin: [0, 0, 0], forward: [1, 0, 0], right: [0, 0, 1], up: [0, 1, 0],
+    target: { hit: true, blockPos: [25, 0, 0], dist: 25 },
+  };
+  const fired = controller.fireOnce(aim);
+  const axis = decomposeEndOnAimAxis(aim, fired[0].end);
+  assertEqual(axis.forward, 10, '终点钳到 MAG7 扫描范围上限');
+  assertEqual(axis.right, 0);
+  assertEqual(axis.up, 0);
+});
+
 // ---------- controller ----------
 
 test('WeaponController: MAG7 单发且无视开关，手枪按住依冷却重复', () => {
