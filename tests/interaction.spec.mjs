@@ -15,14 +15,14 @@ test('放块挖块当帧生效（§7 M1 验收）', async ({ page }) => {
     for (let y = 60; y > -32; y--) { if (world.getBlockId(px + 2, y, pz) !== 0) { groundY = y; break; } }
     const stoneId = registry.idOf('stone');
     const before = world.getBlockId(px + 2, groundY + 1, pz);
-    const r = world.setBlock(px + 2, groundY + 1, pz, stoneId);
-    game.scheduler.remeshSections(r.affected, { fastPath: true });
+    // M4：放挖走唯一编辑路径 WorldEditor（remesh/light/event 由它协调）
+    game.editor.setBlock({ x: px + 2, y: groundY + 1, z: pz, id: stoneId });
     const after = world.getBlockId(px + 2, groundY + 1, pz);
     // edits 记录了修改
     const col = world.getColumn(Math.floor((px + 2) / 16), Math.floor(pz / 16));
     const editRecorded = col.edits.size > 0;
     // 挖掉
-    world.setBlock(px + 2, groundY + 1, pz, 0);
+    game.editor.setBlock({ x: px + 2, y: groundY + 1, z: pz, id: 0 });
     const dug = world.getBlockId(px + 2, groundY + 1, pz);
     return { before, after, dug, stoneId, editRecorded };
   });

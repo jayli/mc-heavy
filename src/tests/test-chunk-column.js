@@ -76,6 +76,37 @@ test('WorldData: setBlock 返回受影响 section（贴边跨 column）', () => 
   assertTrue(keys.includes('1,0:0'), 'neighbor boundary section');
 });
 
+test('WorldData: setBlocks 跨 column 原子写入（每列一次版本 + 逐格 edits + meta）', () => {
+  const world = new WorldData(makeRegistry());
+  const a = new ChunkColumn(0, 0), b = new ChunkColumn(1, 0);
+  world.add(a); world.add(b);
+  a.state = 'ready'; b.state = 'ready';
+  const va = a.version, vb = b.version;
+  const r = world.setBlocks([
+    { x: 1, y: WORLD_MIN_Y + 3, z: 0, id: 9, meta: 2 },   // column a
+    { x: 2, y: WORLD_MIN_Y + 3, z: 0, id: 10 },           // column a
+    { x: 16, y: WORLD_MIN_Y + 3, z: 0, id: 11, meta: 1 }, // column b（x=16 → cx=1）
+    { x: 1, y: WORLD_MIN_Y + 3, z: 0, id: 12 },           // 同坐标再写：最后一次获胜
+  ]);
+  assertEqual(a.version, va + 1, 'column a 只 bump 一次');
+  assertEqual(b.version, vb + 1, 'column b 只 bump 一次');
+  assertEqual(r.changes.length, 3, '同坐标去重后 3 项变更');
+  assertEqual(world.getBlockId(1, WORLD_MIN_Y + 3, 0), 12, '最后写入获胜');
+  assertEqual(world.getBlockMeta(1, WORLD_MIN_Y + 3, 0), 0, '最后写入的 meta 生效');
+  assertEqual(world.getBlockMeta(16, WORLD_MIN_Y + 3, 0), 1, 'meta 写入');
+  assertEqual(a.edits.size, 2, 'column a 逐格记录 edits');
+  assertEqual(b.edits.size, 1, 'column b 逐格记录 edits');
+  assertTrue(r.changedColumns.includes(columnKey(0, 0)));
+  assertTrue(r.changedColumns.includes(columnKey(1, 0)));
+});
+
+test('WorldData: getBlockMeta 越界/缺 column 返回 0', () => {
+  const world = new WorldData(makeRegistry());
+  assertEqual(world.getBlockMeta(0, WORLD_MAX_Y + 1, 0), 0, 'y 越上界');
+  assertEqual(world.getBlockMeta(0, WORLD_MIN_Y - 1, 0), 0, 'y 越下界');
+  assertEqual(world.getBlockMeta(999, 0, 999), 0, 'column 缺失');
+});
+
 test('WorldData: getSectionView 拼接 halo', () => {
   const world = new WorldData(makeRegistry());
   const a = new ChunkColumn(0, 0), b = new ChunkColumn(1, 0);

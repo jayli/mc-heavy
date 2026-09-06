@@ -14,6 +14,11 @@ import { setupOcean } from '../render/ocean.js';
 import { DayNight } from '../render/daynight.js';
 import { RainEffect } from '../render/rain.js';
 import { WeatherState } from '../render/weather.js';
+import { WeaponModelLoader } from '../render/weapon-model-loader.js';
+import { AudioManager } from '../render/audio-manager.js';
+import { ViewWeapon } from '../render/view-weapon.js';
+import { TracerRenderer } from '../render/tracer-renderer.js';
+import { WorldEditor } from './world-editor.js';
 import { loadAtlas } from '../mesh/atlas-loader.js';
 import { findSpawnY } from '../gen/terrain.js';
 import { getCitySpawnPoint, getCityInfo } from '../gen/structures/city-layout.js';
@@ -66,6 +71,11 @@ export class Game {
     this.scene = new THREE.Scene();
     // far 覆盖加载半径对角线（滞回 +2 圈 × 16 × sqrt2 余量），与 setupFog 口径一致
     this.camera = new THREE.PerspectiveCamera(70, 1, 0.1, (viewDistance + 2) * 16 * 1.5);
+    // M4：camera 必须加入 scene 图——three.js 中挂在 camera 下的子节点（视图武器模型）
+    // 只有当 camera 本身在 scene 里才会被渲染。对齐 mc-lite Engine.js:139
+    // `this.scene.add(this.camera)`；不加则 ViewWeapon 把枪挂到 camera 后永不渲染
+    // （表现为「按 R 切武器没反应」）。camera 自身无几何，加入 scene 不产生 draw call。
+    this.scene.add(this.camera);
     this.worldReady = false;
     this._hudRoot = hudRoot;
     this._startWeather = startWeather;
@@ -90,6 +100,20 @@ export class Game {
     this.pool.broadcast('debug-flags', { ...DEBUG_FLAGS });
 
     this.scene.background = new THREE.Color(0x87ceeb);
+    // M4：武器模型灯光（设计文档 §4.2「武器模型灯光」段）—— GLTFLoader 对 GLB 生成
+    // MeshPhysicalMaterial（PBR，必须吃场景灯光），而 mc-heavy 全场景是 unlit 设计（体素亮度
+    // 烘焙在顶点 shade，ocean/rain/tracer/highlight 均不吃灯光），场景原本零灯光 → 枪体渲染
+    // 为纯黑（建模颜色没丢在资源里，丢在渲染端没有光源）。补 mc-lite 同款双灯：
+    // AmbientLight(0xddeeff, 2.3) = Engine.js:194 的 1 × _ambientBoost（TSL 管线间接漫射偏暗的
+    // 经验补偿）；DirectionalLight(0xfffaf0, 3.2) 方向 [0,0.8,0.6]（Engine.js:168,161）——
+    // 手枪 METAL 材质 metallicFactor=1（金属 diffuse 为 0、全靠镜面反射），只有环境光金属件
+    // 仍然发黑，方向光高光不可省。灯光只影响 PBR 材质（枪），unlit 材质一律不吃灯光 →
+    // 世界视觉零回归。方向恒定不跟随玩家：mc-lite 的光源跟随（Game.js:556）是为阴影投射
+    // 服务，mc-heavy 不开 castShadow；月光与日夜灯光调制不移植（体素日夜走独立 uniform 体系）。
+    this.scene.add(new THREE.AmbientLight(0xddeeff, 2.3));
+    const weaponSun = new THREE.DirectionalLight(0xfffaf0, 3.2);
+    weaponSun.position.set(0, 0.8, 0.6); // 光源在太阳方向 → 照射方向 = -[0,0.8,0.6]（mc-lite 口径）
+    this.scene.add(weaponSun);
     const fogUniforms = setupFog(this.scene, this.viewDistance);
     this.ocean = setupOcean(this.scene);
     this.renderWorld = new RenderWorld({ scene: this.scene, atlasTexture: texture, viewDistance: this.viewDistance });
@@ -125,6 +149,9 @@ export class Game {
       getEdits: (key) => this.persistence.getEditsSync(key),
     });
     this.scheduler._atlasMeta = atlasMeta; // 快速路径主线程 mesh 用（与 broadcast 同一份）
+    // M4-0：世界编辑协调器 —— 唯一世界写入入口（remesh/light/event）。
+    // 玩家挖放、武器破坏、未来 TNT 全部经此，不持有第二份体素真相。
+    this.editor = new WorldEditor({ world: this.world, scheduler: this.scheduler });
 
     // 出生点（mc-lite 语义：优先 City 中心出生，保证出生即见城市天际线，§7 M2 验收）
     const regionLayout = await this.scheduler.structureIndex.waitForRegion(0, 0);
@@ -143,10 +170,23 @@ export class Game {
     this.scheduler.update(this.spawnX, this.spawnZ);
     await this._waitForColumn(Math.floor(this.spawnX / 16), Math.floor(this.spawnZ / 16), 10000);
     this.spawnY = findSpawnY(this.world, this.spawnX, this.spawnZ);
+    // M4：武器渲染/音频运行时（只在主线程；不进 Worker/体素 meshing 管线）。
+    // 模型加载失败只记录 console，不中止 worldReady——玩家保持徒手可玩。
+    this.weaponModelLoader = new WeaponModelLoader();
+    this.audioManager = new AudioManager(this.camera);
+    this.audioManager.preload().catch((err) => console.warn('[audio] preload failed:', err));
+    this.viewWeapon = new ViewWeapon({ camera: this.camera, modelLoader: this.weaponModelLoader });
+    this.tracerRenderer = new TracerRenderer({ scene: this.scene });
     // 玩家出生（第一人称，眼高由 Player 管）
     this.player = new Player({
       world: this.world, camera: this.camera, scheduler: this.scheduler,
       registry: this.registry, canvas: this.renderer.domElement,
+      editor: this.editor,
+      weaponRuntime: {
+        viewWeapon: this.viewWeapon,
+        tracerRenderer: this.tracerRenderer,
+        audioManager: this.audioManager,
+      },
       // M3.1 模态守卫（§4.5.4）：面板打开时 Player 的 keydown 全部拦截。
       // 谓词注入而非传 Game 本身，保持 player/ 不反向依赖 core/（依赖方向 §3）
       isModal: () => this.uiModal,
@@ -413,12 +453,30 @@ export class Game {
     };
   }
 
+  // ---- M4 公开 API（Playwright 与 UI 都走这些方法，委派给同一控制器，不复制玩法逻辑）----
+
+  /** 选择武器（arm/pistol/mag7/minigun）。@returns {Promise<string>} 当前选中 id */
+  selectWeapon(id) { return this.player.selectWeapon(id); }
+
+  /** 开一枪（走与键鼠相同路径，仍遵守冷却）。@returns {object[]} 效果事件 */
+  fireWeaponOnce() { return this.player.fireWeaponOnce(); }
+
+  /** 设置普通枪是否破坏方块（默认 false；MAG7 不受限）。@returns {boolean} */
+  setGunBlockDamage(enabled) { return this.player.setGunBlockDamage(enabled); }
+
+  /** 只读武器调试状态（含曳光池/视图模型/音频请求计数）。 */
+  weaponDebugState() { return this.player.weaponDebugState(); }
+
   dispose() {
     this.renderer.setAnimationLoop(null);
     // M3.1：背包面板在 window 上挂 keydown 监听，不清理会跨实例串扰
     // （fixture 页多次构造 Game 时旧面板仍会响应按键）。生产路径不调 dispose，
     // 此处为完整清理入口的一致性收尾。
     this.inventoryPanel?.dispose();
+    // M4：反向释放武器运行时（Player → Audio → ModelLoader → WorkerPool → renderer）
+    this.player?.dispose();
+    this.audioManager?.dispose();
+    this.weaponModelLoader?.dispose();
     this.pool.dispose();
     this.renderer.dispose();
   }

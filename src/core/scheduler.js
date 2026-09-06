@@ -412,13 +412,19 @@ export class Scheduler {
   }
 
   stats() {
+    // M4：保留既有字段，追加只读队列观测值（只读已有容器的 size/length，不参与调度分支）。
+    // Playwright 据此对「队列已收敛、无过期 mesh 写回」作直接断言（weapons-performance/world-edit）。
     return {
       inflight: this._inflightGen.size,
+      genInflight: this._inflightGen.size,
       ready: this.world.columns.size,
       meshInflight: this._inflightMesh.size,
+      meshQueued: this._meshQueue.length,
+      pendingMesh: this._pendingMesh.size,
       uploadQueue: this._uploadQueue.length,
       sections: this._meshedSections.size,
       lightInflight: this._inflightLight.size,
+      lightQueued: this._lightQueue.size,
     };
   }
 

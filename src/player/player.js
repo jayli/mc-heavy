@@ -6,9 +6,16 @@ import { StepLift } from './step-lift.js';
 import { HOTBAR_ITEMS as HOTBAR } from './hotbar-items.js';
 import { createCreativeInventory } from './inventory.js';
 import { getPlacementOrientation, recordRemovedBlock } from './orientation.js';
+import { WeaponController } from './weapons/weapon-controller.js';
+import { WEAPON_IDS } from './weapons/weapon-catalog.js';
 
 const EYE_HEIGHT = 1.62;
 const REACH = 40; // mc-lite 枪的 far 语义
+
+// _buildAim 复用的临时向量（避免每帧分配）
+const _forward = new THREE.Vector3();
+const _right = new THREE.Vector3();
+const _up = new THREE.Vector3();
 
 export class Player {
   /**
@@ -19,15 +26,26 @@ export class Player {
    * @param {*} opts.registry
    * @param {HTMLCanvasElement} opts.canvas - pointer lock 目标（M3.1 起公开为 `player.canvas`，
    *        面板关闭时 lock 回此处；mc-lite 锁 document.body，本仓库必须锁 canvas）
+   * @param {import('../core/world-editor.js').WorldEditor} opts.editor 唯一世界写入入口（M4-0）
+   * @param {{viewWeapon?: object, tracerRenderer?: object, audioManager?: object}} [opts.weaponRuntime]
+   *        M4 武器渲染/音频运行时（Game 注入）。weaponController 由 Game 在 Player 创建后注入
+   *        （onEffect 需委派回 player，避免循环引用）
    * @param {() => boolean} [opts.isModal] 模态谓词（M3.1）：返回 true 时 keydown 全部拦截。
    *        注入而非直接引用 Game，保持 Player 不反向依赖 core/（依赖方向 §3）
    */
-  constructor({ world, camera, scheduler, registry, canvas, isModal = () => false }) {
+  constructor({ world, camera, scheduler, registry, canvas, editor, weaponRuntime = null, isModal = () => false }) {
     this.world = world;
     this.camera = camera;
     this.scheduler = scheduler;
     this.registry = registry;
+    this.editor = editor;
     this._isModal = isModal;
+    // M4 武器运行时（视图模型/曳光/音频由 Game 注入；controller 随后由 Game 赋值）
+    this.viewWeapon = weaponRuntime?.viewWeapon ?? null;
+    this.tracerRenderer = weaponRuntime?.tracerRenderer ?? null;
+    this.audioManager = weaponRuntime?.audioManager ?? null;
+    /** @type {WeaponController | null} */
+    this.weaponController = null;
     this.physics = new PlayerPhysics(world);
     this._stepLift = new StepLift(); // 上台阶相机缓动（物理瞬时，视觉 ease-out）
     this.yaw = 0; this.pitch = 0;
@@ -58,6 +76,16 @@ export class Player {
       new THREE.EdgesGeometry(new THREE.BoxGeometry(1.002, 1.002, 1.002)),
       new THREE.LineBasicMaterial({ color: 0x000000 }));
     this._highlight.visible = false;
+    // M4：武器状态机。blockQuery 只读体素；editor 是唯一写世界入口；onEffect 委派回本类
+    // 的 _applyWeaponEffect（视图模型/曳光/音频）。controller 不 import three、不创建 mesh。
+    this.weaponController = new WeaponController({
+      registry,
+      blockQuery: { getBlockId: (x, y, z) => this.world.getBlockId(x, y, z) },
+      editor,
+      onEffect: (effect) => this._applyWeaponEffect(effect),
+    });
+    // 事件监听器保存 bound 引用，dispose 时移除（避免重启/Playwright reload 后监听器叠加）
+    this._boundHandlers = {};
     this._bindInput();
   }
 
@@ -67,11 +95,10 @@ export class Player {
   }
 
   _bindInput() {
-    window.addEventListener('keydown', (e) => {
+    const onKeyDown = (e) => {
       // 模态守卫（M3.1，§4.5.4）：设置面板/背包打开时拦截全部按键——
       // 否则模态期间新按的键仍会写入 keys（主循环虽跳过 player.update，
-      // 但 keys 残留会在关闭后粘滞）并改选中格。
-      // **该守卫是 M4 Task 6 的前置条件**：M4 在此挂 KeyR 切武器，
+      // 但 keys 残留会在关闭后粘滞）并改选中格。M4 在此挂 KeyR 切武器，
       // 无守卫则面板开着按 R 会切武器并播 gun_load 音效。
       if (this._isModal()) { this.keys.clear(); return; }
       this.keys.add(e.code);
@@ -79,21 +106,50 @@ export class Player {
         const n = Number(e.code.slice(5)) - 1;
         if (n >= 0 && n < HOTBAR.length) this.hotbarIndex = n;
       }
-    });
-    window.addEventListener('keyup', (e) => this.keys.delete(e.code));
-    this.canvas.addEventListener('click', () => this.canvas.requestPointerLock());
-    window.addEventListener('mousemove', (e) => {
+      // M4：KeyR 循环切武器（徒手→手枪→MAG7→加特林）。非重复事件才触发，
+      // 并在用户手势内解锁音频（浏览器自动播放策略）。
+      if (e.code === 'KeyR' && !e.repeat) {
+        void this.cycleWeapon();
+        if (this.audioManager) void this.audioManager.unlock();
+      }
+    };
+    const onKeyUp = (e) => this.keys.delete(e.code);
+    // pointer lock 请求必须吞掉拒绝（mc-lite Player.js:292 同款 `.catch(() => {})`）：
+    // 浏览器规定退出锁后 ~1s 内不得重新锁定，用户按 Esc 后立刻点击 canvas 会抛
+    // SecurityError: "Pointer lock cannot be acquired immediately after the user has
+    // exited the lock."——不吞掉就是控制台未捕获错误（用户会误判为游戏坏了）。
+    // 本次点击放弃锁定即可，下次点击自然成功。
+    const onClick = () => this.canvas.requestPointerLock().catch(() => {});
+    const onMouseMove = (e) => {
       if (document.pointerLockElement !== this.canvas) return;
       this.yaw -= e.movementX * 0.002;
       this.pitch -= e.movementY * 0.002;
       this.pitch = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, this.pitch));
-    });
-    window.addEventListener('mousedown', (e) => {
+    };
+    const onMouseDown = (e) => {
+      // pointer-lock 守卫保留（不得为自动化移除；无头测试只走公开 API）
       if (document.pointerLockElement !== this.canvas) return;
-      if (e.button === 0) this.digBlock();
-      if (e.button === 2) this.placeBlock();
-    });
-    window.addEventListener('contextmenu', (e) => e.preventDefault());
+      if (e.button === 0) {
+        if (this.audioManager) void this.audioManager.unlock();
+        // 徒手左键挖掘；持枪左键按下式射击（手枪/加特林按住连射，MAG7 单发）
+        if (this.weaponController.debugState().selectedId === WEAPON_IDS.ARM) this.digBlock();
+        else this.weaponController.pointerDown(this._buildAim());
+      }
+      if (e.button === 2) this.placeBlock(); // 右键始终放块
+    };
+    const onMouseUp = (e) => {
+      if (document.pointerLockElement !== this.canvas) return;
+      if (e.button === 0) this.weaponController.pointerUp();
+    };
+    const onContextMenu = (e) => e.preventDefault();
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    this.canvas.addEventListener('click', onClick);
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mousedown', onMouseDown);
+    window.addEventListener('mouseup', onMouseUp);
+    window.addEventListener('contextmenu', onContextMenu);
+    this._boundHandlers = { onKeyDown, onKeyUp, onClick, onMouseMove, onMouseDown, onMouseUp, onContextMenu };
   }
 
   /** 60Hz 定步长累加器（渲染帧率与物理解耦，§4.5.1） */
@@ -127,6 +183,86 @@ export class Player {
       this._highlight.visible = true;
       this._highlight.position.set(r.blockPos[0] + 0.5, r.blockPos[1] + 0.5, r.blockPos[2] + 0.5);
     } else this._highlight.visible = false;
+    // M4：武器状态机推进（按住连射/冷却）、视图模型动画、曳光寿命。
+    // aim 每帧从当前相机姿态重建（plain arrays），控制器不 import three。
+    const aim = this._buildAim();
+    this.weaponController.update(dt, aim);
+    if (this.viewWeapon) this.viewWeapon.update(dt, { shooting: this.weaponController.debugState().triggerHeld });
+    if (this.tracerRenderer) this.tracerRenderer.update(dt, aim);
+  }
+
+  /**
+   * 从当前相机姿态构建 aim 快照（plain arrays，供无 three 的控制器消费）。
+   * 每次调用实时读取 camera.position / getWorldDirection / quaternion 与当前 player.target，
+   * 不使用帧缓存——fireWeaponOnce 等公开 API 必须拿到调用时刻的姿态。
+   * @returns {{origin:number[], forward:number[], right:number[], up:number[], target:object|null}}
+   */
+  _buildAim() {
+    const pos = this.camera.position;
+    this.camera.getWorldDirection(_forward);
+    _right.crossVectors(_forward, _up.set(0, 1, 0)).normalize();
+    _up.crossVectors(_right, _forward).normalize();
+    return {
+      origin: [pos.x, pos.y, pos.z],
+      forward: [_forward.x, _forward.y, _forward.z],
+      right: [_right.x, _right.y, _right.z],
+      up: [_up.x, _up.y, _up.z],
+      target: this.target ? { hit: true, blockPos: this.target.blockPos, dist: this.target.dist } : null,
+    };
+  }
+
+  /** 效果事件统一出口：视图模型后坐 → 曳光 → 音效（顺序固定，M4 规格 §4.2）。 */
+  _applyWeaponEffect(effect) {
+    if (this.viewWeapon) this.viewWeapon.onShot(effect);
+    if (this.tracerRenderer) this.tracerRenderer.spawn(effect);
+    if (this.audioManager) this.audioManager.play(effect.sound, effect.volume);
+  }
+
+  /**
+   * 选择武器（公开 API）。先由控制器校验/切换，再异步加载视图模型；
+   * 非徒手时播放 gun_load。模型加载失败不阻塞玩法（控制器仍可开火）。
+   * @param {string} id @returns {Promise<string>} 当前选中 id
+   */
+  async selectWeapon(id) {
+    if (!this.weaponController.select(id)) return this.weaponController.debugState().selectedId;
+    if (this.viewWeapon) await this.viewWeapon.select(id);
+    if (id !== WEAPON_IDS.ARM && this.audioManager) this.audioManager.play('gun_load', 0.4);
+    return this.weaponController.debugState().selectedId;
+  }
+
+  /** R 键循环切武器（与键鼠同路径）。@returns {Promise<string>} */
+  async cycleWeapon() {
+    const next = this.weaponController.cycle();
+    return this.selectWeapon(next);
+  }
+
+  /** 自动化测试入口：走与键鼠完全相同的控制器路径，仍遵守冷却。@returns {object[]} */
+  fireWeaponOnce() {
+    return this.weaponController.fireOnce(this._buildAim());
+  }
+
+  /** 设置普通枪是否破坏方块（MAG7 不受限）。@param {boolean} enabled @returns {boolean} */
+  setGunBlockDamage(enabled) {
+    return this.weaponController.setBlockDamage(enabled);
+  }
+
+  /**
+   * 只读调试状态（合并控制器 + 曳光池 + 视图模型 + 音频请求计数）。
+   * @returns {{selectedId:string, cooldown:number, triggerHeld:boolean, shotsFired:number,
+   *            activeTracers:number, lastEffect:object|null, viewLoaded:boolean, audioPlayRequests:number}}
+   */
+  weaponDebugState() {
+    const base = this.weaponController.debugState();
+    let audioPlayRequests = 0;
+    if (this.audioManager) {
+      for (const n of this.audioManager.playRequests.values()) audioPlayRequests += n;
+    }
+    return {
+      ...base,
+      activeTracers: this.tracerRenderer ? this.tracerRenderer.activeCount : 0,
+      viewLoaded: this.viewWeapon ? this.viewWeapon.state.loaded : false,
+      audioPlayRequests,
+    };
   }
 
   _applyInput() {
@@ -143,12 +279,12 @@ export class Player {
     if (!this.target) return;
     const [x, y, z] = this.target.blockPos;
     const id = this.world.getBlockId(x, y, z);
-    if (id === this.registry.idOf('bedrock')) return; // 基岩不可挖
-    // M3.2：挖前记下旧朝向（原位重放时的旋转依据）。必须在 setBlock 之前读——
+    if (id === this.registry.idOf('bedrock')) return; // 基岩不可挖（徒手拦截保留；editor 也有同语义过滤）
+    // M3.2：挖前记下旧朝向（原位重放时的旋转依据）。必须在编辑之前读——
     // setBlock 会把 meta 清成 0，之后再读就丢了朝向。
     this.lastRemovedBlock = recordRemovedBlock(x, y, z, id, this.world.getBlockMeta(x, y, z));
-    const r = this.world.setBlock(x, y, z, 0);
-    if (r) this.scheduler.remeshSections(r.affected, { fastPath: true });
+    // M4-0：改走唯一编辑路径（remesh fast path / 事件由 WorldEditor 协调）
+    this.editor.setBlock({ x, y, z, id: 0 });
   }
 
   placeBlock() {
@@ -166,14 +302,31 @@ export class Player {
     // M3.2：算放置朝向（三分支，不看玩家 yaw）。与 M3.1 的取物品逻辑正交叠加。
     const meta = getPlacementOrientation(x, y, z, id, this.registry.orientationModesTable,
       this.lastRemovedBlock, this.placementOrientationMemory);
-    const r = this.world.setBlock(x, y, z, id, meta);
-    if (r) {
+    // M4-0：改走唯一编辑路径。朝向作为 meta 传入——不得退化为只传 id（M3.2 语义）。
+    const report = this.editor.setBlock({ x, y, z, id, meta });
+    if (report.changes.length > 0) {
       // 放置成功后清除挖块记忆（§4.3 定稿口径：mc-lite 是算完朝向即无条件清空，
       // 本仓库改为成功后清空——放置失败时保留记忆，避免记忆跨次放置串用）
       this.lastRemovedBlock = null;
-      this.scheduler.remeshSections(r.affected, { fastPath: true });
     }
     // 创造模式不消耗：slot.count 保持 DEFAULT_INVENTORY_COUNT 不变
+  }
+
+  /** 移除 window/canvas 事件监听（重启或 Playwright reload 后不叠加）。 */
+  dispose() {
+    const h = this._boundHandlers;
+    if (h.onKeyDown) {
+      window.removeEventListener('keydown', h.onKeyDown);
+      window.removeEventListener('keyup', h.onKeyUp);
+      this.canvas.removeEventListener('click', h.onClick);
+      window.removeEventListener('mousemove', h.onMouseMove);
+      window.removeEventListener('mousedown', h.onMouseDown);
+      window.removeEventListener('mouseup', h.onMouseUp);
+      window.removeEventListener('contextmenu', h.onContextMenu);
+      this._boundHandlers = {};
+    }
+    if (this.viewWeapon) this.viewWeapon.dispose();
+    if (this.tracerRenderer) this.tracerRenderer.dispose();
   }
 
   get highlight() { return this._highlight; }

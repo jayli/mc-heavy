@@ -10,6 +10,8 @@
 
 **Spec:** `docs/superpowers/specs/2026-08-23-m4-player-weapons-design.md`
 
+**实施记录（2026-09-05）：** Task 2~7 全部完成（各提交步骤等待用户授权）。实测：weapons-performance fps before=119.99/during=119.97/after=119.98、draw 363→363→363（增量 0 ≤ +2）；weapons-world-edit 普通枪 p95=0.8ms（<2ms 门）、MAG7 p95=0.6ms、200/20 发全删空、发布版本 600 == 权威版本 600、scene/camera child 7/2 无增长、队列全 0；`npm test` 54/54、`npm run bench -- --check` 通过、验收报告 `docs/m4-weapons-acceptance-report.md`。
+
 ## Global Constraints
 
 - M4 是第二阶段首个 Epic；不得改变第一阶段 M2/M3 的编号、范围、性能阈值或验收报告口径。
@@ -147,7 +149,7 @@ export class WorldEditor {
 
 `changes` 中每项都为 `{x,y,z,oldId,oldMeta,newId,newMeta}`；`affected` 是去重后的 `{cx,cz,sy}`；`skipped` 中每项附带 `reason: 'out-of-bounds'|'column-missing'|'bedrock'|'no-change'`。后续 Task 3 的 `WeaponController` 只能依赖 `WorldEditor`，不能触碰 `WorldData.blocks`。
 
-- [ ] **Step 1: 写失败的批量语义与协调器测试**
+- [x] **Step 1: 写失败的批量语义与协调器测试**
 
 新建 `src/tests/test-world-editor.js`，复用 `test-chunk-column.js` 的 `makeRegistry()` 模式，编写以下测试。先把它追加到 `src/tests/index.html`，此时 import 必须失败，因为 `../core/world-editor.js` 尚不存在。
 
@@ -244,7 +246,7 @@ test('M4-0：WorldEditor 浏览器单测通过', async ({ page }) => {
 
 RED 阶段，将 `test-world-editor.js` 注册到 `src/tests/index.html` 后，整页 ESM import 会因尚不存在的 `../core/world-editor.js` 失败，`__MC_TEST_RESULTS__` 不会出现；这正是本 Playwright spec 应观察到的失败模式，不能把新测试临时从 index 移除来“通过” RED。
 
-- [ ] **Step 2: 运行 RED 验证**
+- [x] **Step 2: 运行 RED 验证**
 
 ```bash
 npm test -- tests/world-editor.spec.mjs
@@ -252,7 +254,7 @@ npm test -- tests/world-editor.spec.mjs
 
 Expected: FAIL，浏览器单测因 `world-editor.js` 或 `WorldData.setBlocks` 未导出而失败。
 
-- [ ] **Step 3: 实现 WorldData 的批量原子写入**
+- [x] **Step 3: 实现 WorldData 的批量原子写入**
 
 > **M3.2 前置变更（2026-09-02）**：`getBlockMeta(x,y,z)` 已由 **M3.2 方块朝向放置交互**提前交付
 > （挖块需读旧朝向存 `lastRemovedBlock` 记忆），口径与本步要求一致：O(1) 直查 `column.meta`、
@@ -326,7 +328,7 @@ setBlocks(rawChanges) {
 
 保留现有 `setBlock()` 的同步 `recomputeSkylightAt()` 行为，防止 M1 挖/放当帧视觉回归；批量方法不做逐格同步光照，交给下一步的异步 light 队列。
 
-- [ ] **Step 4: 实现无缓存的 WorldEditor**
+- [x] **Step 4: 实现无缓存的 WorldEditor**
 
 创建 `src/core/world-editor.js`。构造器只保存传入的 `world`、`scheduler` 和 listener 集合。`setBlock()` 先检查 y、目标 column、基岩目标和 no-change；有效时读取 old 值后调用既有 `world.setBlock()`，形成 `EditReport`、调用 `scheduler.remeshSections(affected,{fastPath})` 并广播一次事件，因而保留单块同步 `recomputeSkylightAt()`。`setBlocks()` 调用新 `world.setBlocks()`，对每个 `affected` 唯一 `(cx,cz)` 调用 `scheduler.enqueueLight(cx,cz)`，再调用一次 `scheduler.remeshSections(report.affected,{fastPath:false})`，最后只在 `changes.length > 0` 时广播事件。
 
@@ -376,7 +378,7 @@ subscribe(listener) {
 
 不得把 event log、light 值或 world snapshot 放进 `WorldEditor`。
 
-- [ ] **Step 5: 验证 GREEN 与持久化回归**
+- [x] **Step 5: 验证 GREEN 与持久化回归**
 
 ```bash
 npm test -- tests/world-editor.spec.mjs tests/interaction.spec.mjs tests/persistence.spec.mjs
@@ -432,7 +434,7 @@ export class WeaponController {
 
 `aim` 只使用 plain arrays：`{origin,forward,right,up,target}`。其中 `target` 是 Player 已算好的 DDA 结果；控制器不 import three、不重新跑 terrain Raycaster。
 
-- [ ] **Step 1: 写失败的纯逻辑测试**
+- [x] **Step 1: 写失败的纯逻辑测试**
 
 新建 `src/tests/test-weapons.js`，先导入尚不存在的模块，并加入如下覆盖：catalog 的三套冷却/transform/`MAX_ACTIVE_TRACERS=32`；武器 policy；MAG7 扫描；按住逻辑。测试文件先定义如下独立 fixture，不能依赖其他测试文件的非导出 helper：
 
@@ -516,7 +518,7 @@ test('WeaponController: MAG7 单发且无视开关，手枪按住依冷却重复
 
 追加下列用例：手/枪循环四次回到手；普通枪关闭开关时 `fireOnce(aim)` 返回一个 end 为 `[2,0,0]` 的效果但 `singleCalls===0`；同一次冷却期间再次 `fireOnce(aim)` 返回空数组；开启开关、推进 `.09` 秒后手枪删首个命中；`end_stone` 命中仍令效果终点停在 `target.dist` 但不调用 editor；加特林 `pointerDown()` 后仅在两次 `update(.07,aim)` 各增加一次 `shotsFired`。在 catalog 断言中固定 `WEAPONS[WEAPON_IDS.PISTOL].cooldown===.09`、MAG7 `.scan.maxBlocks===40`、加特林 `.transform.rotationOrder==='YXZ'` 与 `MAX_ACTIVE_TRACERS===32`。
 
-- [ ] **Step 2: 运行 RED 验证**
+- [x] **Step 2: 运行 RED 验证**
 
 ```bash
 npm test -- tests/weapons-logic.spec.mjs
@@ -524,7 +526,7 @@ npm test -- tests/weapons-logic.spec.mjs
 
 Expected: FAIL，浏览器单测报告 `weapon-catalog.js`、`mag7-pattern.js` 或 `weapon-controller.js` 无法导入。
 
-- [ ] **Step 3: 实现 catalog、policy 和扫描器**
+- [x] **Step 3: 实现 catalog、policy 和扫描器**
 
 在 `weapon-catalog.js` 使用下面完整 literal；`freeze()` 必须递归冻结对象与数组，防止渲染层意外改写玩法目录。所有坐标均为相机局部坐标，`cooldown` 单位为秒。
 
@@ -581,7 +583,7 @@ export function isMag7Candidate(id, registry) {
 
 在 `mag7-pattern.js` 按规格构造坐标，`Math.floor` 后以 `${x},${y},${z}` 去重；只有通过 policy 的格才消耗 40 配额，输出 `{x,y,z,id:0,meta:0,group}`，按 `group` 升序稳定排序。水会通过 policy，`end_stone_bricks` 也会通过；不要扩展免疫名单。
 
-- [ ] **Step 4: 实现 WeaponController，不创建 three 对象**
+- [x] **Step 4: 实现 WeaponController，不创建 three 对象**
 
 控制器维护 `selectedId`、`cooldown`、`triggerHeld`、`shotsFired`、`blockDamageEnabled` 和效果队列。`pointerDown()` 对 pistol/minigun 立即尝试一次并置 `triggerHeld=true`；MAG7 仅在边沿尝试一次。`update(dt,aim)` 先将冷却钳为 `Math.max(0,cooldown-dt)`，只让 pistol/minigun 在 triggerHeld 时重复。对普通枪调用 `editor.setBlock({x,y,z,id:0})` 的条件是开关开启且 `isWeaponDestructible()`；对 MAG7 无视开关并只调用一次 `editor.setBlocks(collectMag7Changes(...))`。
 
@@ -598,7 +600,7 @@ export function isMag7Candidate(id, registry) {
 
 `start` 必须按 `origin + right*localStart[0] + up*localStart[1] - forward*localStart[2]` 计算；没有 DDA 命中时 `end=origin+forward*40`，有命中时使用 `target.dist`。MAG7 用扫描中第一个距离组的中心候选作为效果终点，无候选时用 10 格前方。每次 effect 调用 `onEffect(effect)`，但状态机自身不播放声音或创建 mesh。
 
-- [ ] **Step 5: 验证 GREEN 和 DDA 红线**
+- [x] **Step 5: 验证 GREEN 和 DDA 红线**
 
 ```bash
 npm test -- tests/weapons-logic.spec.mjs
@@ -657,7 +659,7 @@ export class AudioManager {
 
 `npm run validate:weapon-assets` 在复制资产、Playwright 和提交前必须通过。
 
-- [ ] **Step 1: 写失败的资源加载测试**
+- [x] **Step 1: 写失败的资源加载测试**
 
 新建 `tests/weapon-assets.spec.mjs`，使用 WebGPU Chromium 动态导入尚不存在的 `WeaponModelLoader`，并验证三件资源均有 child、pistol 有 3 个 primitive、未知 id 的错误包含 id、加载失败不让页面 boot 崩溃。
 
@@ -698,7 +700,7 @@ test('M4 GLB 资源经本地 r185 loader 加载且无外链依赖', async ({ pag
 });
 ```
 
-- [ ] **Step 2: 运行 RED 验证**
+- [x] **Step 2: 运行 RED 验证**
 
 ```bash
 npm test -- tests/weapon-assets.spec.mjs
@@ -706,7 +708,7 @@ npm test -- tests/weapon-assets.spec.mjs
 
 Expected: FAIL，`/src/render/weapon-model-loader.js` 尚不存在。
 
-- [ ] **Step 3: 复制二进制资产和 three 依赖闭包**
+- [x] **Step 3: 复制二进制资产和 three 依赖闭包**
 
 从 mc-lite 复制且只复制下列文件，保留二进制字节，不引入 `gun.gltf`、OBJ/MTL、Draco/KTX2 loader 或任何 CDN URL：
 
@@ -723,7 +725,7 @@ cp /Users/bachi/jaylli/mc-lite/src/assets/sound/minigun_fire.mp3 assets/sounds/m
 
 从 **npm `three@0.185.1`** 解包后的 `examples/jsm/` 复制 `GLTFLoader.js` 及它的两个直接依赖 `BufferGeometryUtils.js`、`SkeletonUtils.js` 到上述 vendor 路径；不得从不明 Git 分支、CDN 或其他 three 小版本取源。这与当前本地构建 `vendor/three/three.core.js` 的 `REVISION = '185'` 同源。验证 `GLTFLoader.js` 只从 `three`、`../utils/BufferGeometryUtils.js` 和 `../utils/SkeletonUtils.js` 导入。不要修改 `index.html`：它已映射 `three/addons/`。
 
-- [ ] **Step 4: 实现可审计的 GLB 验证器和 loader**
+- [x] **Step 4: 实现可审计的 GLB 验证器和 loader**
 
 `tools/validate-weapon-assets.mjs` 读取 GLB header（magic `0x46546c67`、version 2、JSON chunk），验证三个 manifest 条目、文件精确上限（pistol 2 MiB、mag7 256 KiB、minigun 128 KiB）、无 `buffers[].uri`/`images[].uri` 外链、无 `extensionsRequired`，并输出每个文件的 bytes、mesh、primitive、image、animation、skin 数。失败必须 `process.exitCode=1` 并打印 id/path/reason。新增 package script：
 
@@ -733,13 +735,13 @@ cp /Users/bachi/jaylli/mc-lite/src/assets/sound/minigun_fire.mp3 assets/sounds/m
 
 定义 `WEAPON_ASSET_URLS=Object.freeze({pistol:'/assets/models/weapons/pistol.glb',mag7:'/assets/models/weapons/mag7.glb',minigun:'/assets/models/weapons/minigun.glb'})`。`WeaponModelLoader` 使用 `GLTFLoader.loadAsync(url)`，以 id 缓存唯一模板 promise；构造器允许测试传入替换 url 或 loader。模板归一化与 mc-lite 一致：`Box3.setFromObject(scene)`、平移负中心、`rotation.y=Math.PI`、外层 group 以最大维度缩放到 1。`load(id)` 只返回 template clone；失败抛出 `weapon asset <id> failed: <url>: <message>`。`dispose()` 必须遍历所有模板，dispose geometry/material/texture 后清空 cache。
 
-- [ ] **Step 5: 实现用户手势安全的 AudioManager**
+- [x] **Step 5: 实现用户手势安全的 AudioManager**
 
 `AudioManager` 在 camera 上安装唯一 `THREE.AudioListener`；`preload()` 只接受 catalog 中四个 id 并从 `/assets/sounds/<id>.mp3` 加载。`unlock()` 检查 `listener.context.state`，调用 `resume()` 后返回是否进入 `running`。`play()` 无论 context 是否可播都先递增只读的播放请求计数；只有 buffer 已加载且 context 已 running 才创建/复用 `THREE.Audio`。不要使用定时器清理声音；使用 `source.onended` 归还实例。`dispose()` 停止 active sound、从 camera 移除 listener、清空 buffer/计数。
 
 在 README 的目录树补上 `assets/models/weapons/`、`assets/sounds/` 和 `vendor/three/addons/`，并说明三件模型为受控 GLB。
 
-- [ ] **Step 6: 验证 GREEN、资产边界和 lint**
+- [x] **Step 6: 验证 GREEN、资产边界和 lint**
 
 ```bash
 npm run validate:weapon-assets
@@ -791,7 +793,7 @@ export class TracerRenderer {
 }
 ```
 
-- [ ] **Step 1: 写失败的视图模型与对象池测试**
+- [x] **Step 1: 写失败的视图模型与对象池测试**
 
 新建 `tests/weapon-view.spec.mjs`。页面 boot 后动态导入两个尚不存在类，使用返回 `new THREE.Group()` 的 fake modelLoader，断言 pistol 挂在 camera、select arm 后移除、minigun 的 `rotation.order` 为 `YXZ`，连续 `spawn()` 33 次后 active count 为 32，最旧 tracer 被回收。
 
@@ -826,7 +828,7 @@ expect(result.tracerNodes).toBe(1);
 expect(result.disposedTracerNodes).toBe(0);
 ```
 
-- [ ] **Step 2: 运行 RED 验证**
+- [x] **Step 2: 运行 RED 验证**
 
 ```bash
 npm test -- tests/weapon-view.spec.mjs
@@ -834,19 +836,19 @@ npm test -- tests/weapon-view.spec.mjs
 
 Expected: FAIL，两个渲染模块无法导入。
 
-- [ ] **Step 3: 实现 ViewWeapon 的异步选择与动画**
+- [x] **Step 3: 实现 ViewWeapon 的异步选择与动画**
 
 `select(id)` 每次递增请求 token；`id==='arm'` 立即移除现有 node。其他 id await `modelLoader.load(id)` 后只有 token 仍匹配时才 add 到 camera，否则丢弃本次 clone。每帧将 catalog 的数组写入 position/rotation/scale；举枪使用 `drawProgress=min(1,drawProgress+dt*4)` 和 `pow(1-drawProgress,2)*1.2` 下移。`onShot(effect)` 将当前后坐设为 `effect.recoil`；`update()` 将它按 `recoil *= Math.pow(.8, dt*60)` 衰减并加到 local z。加特林建 node 前设 `rotation.order='YXZ'`；射击时用 `1-Math.pow(.9,dt*60)` 向 `25 rad/s` 插值，停火时用 `1-Math.pow(.85,dt*60)` 向 0 插值，随后 `spinRotation += spinVelocity*dt`，令 `rotation.x = baseRotationX + spinRotation`。这等价于 mc-lite 在 60Hz 的 0.9/0.85 插值口径，同时不让旋转随帧率变化。
 
 `dispose()` 递增 token、从 camera 移除 active node、清空引用；它不得 dispose `WeaponModelLoader` 的共享 geometry/material。
 
-- [ ] **Step 4: 实现 TracerRenderer 的纯派生对象池**
+- [x] **Step 4: 实现 TracerRenderer 的纯派生对象池**
 
 创建一次共享 cylinder geometry 和一个 `THREE.InstancedMesh(geometry, material, 32)`，只将这一个节点加入 scene；初始化每个 slot 的 instance matrix 为零 scale，实例颜色在 `spawn()` 时写入 `effect.tracer.color`。每条 active record 仅保存 `{slot,lifetime,end,localStart,thickness}`；空闲 slot 用数组管理。`spawn(effect)` 优先取空闲 slot，满 32 时先回收 `active[0]`，因此第 33 条必定淘汰最旧者。`update(dt,cameraBasis)` 将每条 `localStart` 用 `origin + right*x + up*y - forward*z` 重算为当前枪口起点，朝固定 `end` 写入该实例的位移/旋转/粗细矩阵；寿命到 0 时将 slot 写回零 scale 并归还。该起点在寿命内随当前相机基底移动是**保留 mc-lite 语义**：mc-lite 的 `PlayerInteraction.updateTracers()` 同样每帧以 `localStart.applyQuaternion(camera.quaternion).add(camera.position)` 重算，而非固定首次发射时的世界起点。更新后置 `instanceMatrix.needsUpdate=true` 和 `instanceColor.needsUpdate=true`。`dispose()` 从 scene 移除这一个 mesh，并 dispose 共享 geometry/material。
 
 不要把 tracer 加入 RenderWorld、BatchedMesh、Worker 或 persistence；它只是可丢弃的视觉派生数据。
 
-- [ ] **Step 5: 验证 GREEN 与资源释放**
+- [x] **Step 5: 验证 GREEN 与资源释放**
 
 ```bash
 npm test -- tests/weapon-view.spec.mjs
@@ -886,7 +888,7 @@ game.weaponDebugState() // { selectedId, cooldown, triggerHeld, shotsFired, acti
 
 `Player` 构造器新增 `editor`、`weaponRuntime` 注入；不公开 raw typed array 给控制器。`Game.dispose()` 必须调用 Player/Audio/ModelLoader 的 dispose。
 
-- [ ] **Step 1: 写失败的无 pointer-lock 集成测试**
+- [x] **Step 1: 写失败的无 pointer-lock 集成测试**
 
 新建 `tests/weapons.spec.mjs`，先调用尚不存在的 Game API。初始视线固定为 yaw/pitch 都为零的 `-Z`，故在相机前方 2 格眼高处通过 `game.editor.setBlock()` 放置石头，并把 `player.target` 固定为该格的 `{hit:true,blockPos,dist}`；以关闭/开启开关各开一枪（两枪之间等待 100ms 让 0.09s 冷却结束）。随后额外等待 1.5 秒让 MAG7 冷却结束，重放石头后再选择 MAG7；关闭开关开火仍须删除该候选。最后选择加特林并隔两个冷却周期调用两次 `fireWeaponOnce()`，验证 `shotsFired` 增长。测试同时断言第一人称模型已加载、tracer count 不超过 32、audio 播放请求增长。
 
@@ -937,7 +939,7 @@ expect(result.state.audioPlayRequests).toBeGreaterThan(0);
 
 在 `tests/interaction.spec.mjs` 把直接的 `world.setBlock()+scheduler.remeshSections()` 改为 `game.editor.setBlock()`，使既有放挖验收也走唯一编辑路径。
 
-- [ ] **Step 2: 运行 RED 验证**
+- [x] **Step 2: 运行 RED 验证**
 
 ```bash
 npm test -- tests/weapons.spec.mjs tests/interaction.spec.mjs
@@ -945,7 +947,7 @@ npm test -- tests/weapons.spec.mjs tests/interaction.spec.mjs
 
 Expected: FAIL，`Game.selectWeapon` 未定义；现有 interaction 在迁移后也会指出 `game.editor` 未定义。
 
-- [ ] **Step 3: 在 Game 中装配基础设施并迁移 Player 的世界编辑**
+- [x] **Step 3: 在 Game 中装配基础设施并迁移 Player 的世界编辑**
 
 在 `Game.start()` 创建 scheduler 后立即创建 `this.editor = new WorldEditor({world:this.world,scheduler:this.scheduler})`；创建 `WeaponModelLoader`、`AudioManager(this.camera)` 并预加载四个声音（单个失败记录到 console，不中止 `worldReady`）；创建 Player 时注入 editor 和这些运行时对象。`dispose()` 的反向顺序是 Player → AudioManager → WeaponModelLoader → WorkerPool → renderer。
 
@@ -966,7 +968,7 @@ Expected: FAIL，`Game.selectWeapon` 未定义；现有 interaction 在迁移后
 
 将 `Player.digBlock()`/`placeBlock()` 改为 `this.editor.setBlock(...)`，但保留徒手的 bedrock 拦截和 fast path。创建 controller 时注入唯一的 `onEffect: (effect) => this._applyWeaponEffect(effect)`；后者按顺序调用 `viewWeapon.onShot(effect)`、`tracerRenderer.spawn(effect)`、`audioManager.play(effect.sound,effect.volume)`，不再由 update 返回数组重复播放。每帧相机更新、DDA `target` 计算完成后，用 `_buildAim()` 创建 plain `aim`（origin、forward、right、up、target），调用 `weaponController.update(dt,aim)`、`viewWeapon.update(dt,{shooting: weaponController.debugState().triggerHeld})` 和 `tracerRenderer.update(dt,aim)`。现有高亮逻辑保持使用同一 DDA 结果。
 
-- [ ] **Step 4: 改造真实输入和公开 API**
+- [x] **Step 4: 改造真实输入和公开 API**
 
 `keydown` 的非重复 `KeyR` 调用 `void cycleWeapon()` 并 `void audio.unlock()`。必须保留现有真实鼠标入口的第一道守卫：`if (document.pointerLockElement !== this._canvas) return;`；只有守卫通过后，`mousedown` 才在该真实用户手势中调用 `void audio.unlock()`，并让左键在徒手时挖掘、持枪时 `weaponController.pointerDown(_buildAim())`。`mouseup` 左键调用 `pointerUp()`；右键始终放块。不得为了自动化移除此 pointer-lock 守卫；无头测试只使用下列公开 API。`selectWeapon(id)` 先由 controller 校验/切换 id，再 await `viewWeapon.select(id)`，非徒手时播放 `gun_load`（音量 `.4`）；`cycleWeapon()` 复用相同流程。测试 API 只委派给同一 controller，不复制玩法逻辑：
 
@@ -979,7 +981,7 @@ weaponDebugState() { return this.player.weaponDebugState(); }
 
 为 Player 的 window/canvas event listener 保存 bound function，并在 `Player.dispose()` remove，避免重启或 Playwright reload 后监听器叠加。`_buildAim()` 在每次调用时从 `camera.position`、`camera.getWorldDirection()`、camera quaternion 计算 `right/up`，并读取当时的 `player.target`；`fireWeaponOnce()` 必须调用它，不能读取上一个帧缓存的 aim，且仍遵守冷却。`weaponDebugState()` 以 controller `debugState()` 为基底合并 `tracerRenderer.activeCount`、`viewWeapon.state.loaded` 与 AudioManager 全部播放请求数。若模型仍加载，玩法控制器仍可开火、视图模型稍后显示。
 
-- [ ] **Step 5: 验证 GREEN、交互不回归和模型可见性**
+- [x] **Step 5: 验证 GREEN、交互不回归和模型可见性**
 
 ```bash
 npm test -- tests/weapons.spec.mjs tests/interaction.spec.mjs tests/persistence.spec.mjs
@@ -1025,7 +1027,7 @@ renderWorld.getSectionVersion(cx, sy, cz) // number | undefined
 两个诊断接口均为只读派生状态：不保存 blocks/meta/light，不参与调度分支，也不改变 Worker 协议；它们只让 Playwright 对“队列已收敛、过期 mesh 未写回”作直接断言。
 
 
-- [ ] **Step 1: 写失败的视距 8 连射与真实世界编辑压力测试**
+- [x] **Step 1: 写失败的视距 8 连射与真实世界编辑压力测试**
 
 新建 `tests/weapons-performance.spec.mjs`。以 `/?vd=8` 启动后，必须依次等待 `worldReady`、完整 289 column、全部 GEN/MESH/LIGHT/upload 队列清空，再沉淀 5 秒；不得直接从加载期采样。完整测试如下。它要求：本机 fps ≥90（CI ≥20）、frame p95 <16.7ms（CI <50ms）、minigun draw call 不高于徒手 +2、`activeTracers<=32`、所有队列收敛。
 
@@ -1207,7 +1209,7 @@ test('M4：200 次普通枪和 20 次 MAG7 破坏后版本与队列收敛', asyn
 });
 ```
 
-- [ ] **Step 2: 运行 RED 验证**
+- [x] **Step 2: 运行 RED 验证**
 
 ```bash
 npm test -- tests/weapons-performance.spec.mjs tests/weapons-world-edit.spec.mjs
@@ -1215,7 +1217,7 @@ npm test -- tests/weapons-performance.spec.mjs tests/weapons-world-edit.spec.mjs
 
 Expected: 在 Task 6 前因 API 缺失而失败；Task 6 完成后仍会因 `scheduler.stats()` 尚无新队列字段或 `renderWorld.getSectionVersion()` 不存在而失败。若接口齐全但性能不达标，保留真实测量结果并停止，不放宽阈值。
 
-- [ ] **Step 3: 以最小只读诊断接口转 GREEN**
+- [x] **Step 3: 以最小只读诊断接口转 GREEN**
 
 在 `Scheduler.stats()` 保留既有 `inflight`，并追加下列字段；它们只读取已有容器的 `size`/`length`：
 
@@ -1246,13 +1248,13 @@ getSectionVersion(cx, sy, cz) {
 
 重新运行 Step 2 的两个 spec。通过表示：200 次普通枪和 20 次 MAG7 的真实编辑路径在队列清空后，目标 section 已发布版本等于权威 column 版本；这覆盖 `_onMeshResult()` 与 `_processUploadQueue()` 的过期结果丢弃协议，而不是只凭代码注释声称它存在。
 
-- [ ] **Step 4: 只针对测得根因优化，并保留 M3 基线**
+- [x] **Step 4: 只针对测得根因优化，并保留 M3 基线**
 
 先记录 `before`/`after` 的 fps、p95、drawCalls、普通枪/MAG7 world-edit p95、tracer 数、scene/camera child 数和 scheduler stats。若 draw 高于 +2，检查 minigun 是否只有一个 primitive、`TracerRenderer` 是否只发布一个 InstancedMesh，禁止回退为每 tracer 一个 mesh；若 active tracer 超限或 child 数增长，修复最旧 slot 回收或不受控的模型/音频节点创建；若 light/mesh 不收敛或发布版本不等，检查 Task 2 的 `affected` 去重、`enqueueLight` 调用与既有 Scheduler 版本丢弃分支。不要为通过性能测试降低视距、减少 M3 的加载集合、修改 M3 冻结阈值或把 Worker 工作放回主线程。
 
 将 README 的运行说明补充：`npm run validate:weapon-assets`、KeyR、左键持续射击/ MAG7 单击、武器方块破坏默认关闭，以及 M4 不支持用户导入模型。
 
-- [ ] **Step 5: 验证完整 M4 门禁**
+- [x] **Step 5: 验证完整 M4 门禁**
 
 ```bash
 npm run validate:weapon-assets

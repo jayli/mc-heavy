@@ -43,7 +43,13 @@ npm run atlas        # 重新生成 assets/atlas.png + atlas.json（世界渲染
 
 一句话现状：第一阶段引擎底座（M0~M3）**全部完成并验收达标**，两个收尾补丁项
 （M3.1 背包 / M3.2 方块朝向放置交互）也已落地；此后是一串独立 bugfix 与改造
-（v1.19~v1.30）；第二阶段 **M4~M7 尚未开始**，规格与计划已成对备好。
+（v1.19~v1.31）；第二阶段 **M4 玩家武器已完成并验收**（报告
+`docs/m4-weapons-acceptance-report.md`），M5~M7 规格与计划已备好。
+
+**M4 武器操作**：`KeyR` 循环切换徒手/手枪/MAG7/加特林；持枪时左键按住持续射击
+（MAG7 单击单发），右键仍可放方块；武器方块破坏默认**关闭**（`game.setGunBlockDamage(true)`
+开启，MAG7 不受此开关限制）。三件武器模型为仓库受控 GLB（`assets/models/weapons/`），
+复制/替换后须跑 `npm run validate:weapon-assets`；M4 不支持用户导入模型。
 
 测试与计数（用例数、图标项数、atlas tile 数）**以 `npm run check:data` 输出为准**，
 不在文档硬编码 —— 同一事实的多个副本会漂移。
@@ -73,10 +79,13 @@ npm run atlas        # 重新生成 assets/atlas.png + atlas.json（世界渲染
 mc-heavy/
 ├─ index.html              # import map（本地 vendor/three）+ WebGPU 启动 gate + 准心
 ├─ vendor/three/           # three.js r185.1（three.webgpu.js / three.tsl.js / three.core.js）
+│                          #   + addons/（GLTFLoader 及 r185.1 依赖闭包，M4 武器模型加载）
 ├─ assets/                 # textures/（含 procedural/ 烘焙产物）+ atlas.png/.json
 │                          #   + icons-atlas.png/.json（背包图标，独立于世界 atlas）+ structures/
+│                          #   + models/weapons/（受控 GLB：pistol/mag7/minigun）+ sounds/（武器音效）
 ├─ tools/                  # build-atlas / bake-procedural-textures / bake-icon-atlas /
-│                          #   icon-fingerprint / check-architecture / check-data
+│                          #   icon-fingerprint / check-architecture / check-data /
+│                          #   validate-weapon-assets（受控 GLB 安全与大小验证）
 ├─ server-script/          # 静态服务（端口 8081）
 ├─ docs/                   # 设计文档 + 实施计划 + 实测报告
 ├─ tests/                  # Playwright spec

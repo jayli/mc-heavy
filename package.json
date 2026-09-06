@@ -12,7 +12,8 @@
     "lint": "eslint --no-error-on-unmatched-pattern src tools tests",
     "check:arch": "node tools/check-architecture.mjs",
     "check:data": "node tools/check-data.mjs",
-    "check": "npm run check:arch && npm run check:data && npm run lint"
+    "check": "npm run check:arch && npm run check:data && npm run lint",
+    "validate:weapon-assets": "node tools/validate-weapon-assets.mjs"
   },
   "author": "jayli",
   "repository": "git@github.com:jayli/mc-heavy.git",

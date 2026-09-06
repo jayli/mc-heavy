@@ -9,8 +9,9 @@
 ## 一句话现状
 
 第一阶段引擎底座（M0~M3）**全部完成并验收达标**，两个收尾补丁项（M3.1 背包 / M3.2 方块朝向）
-也已落地。此后是一串独立 bugfix 与改造（v1.19~v1.31）。第二阶段 **M4~M7 尚未开始**，
-规格与计划已成对备好。
+也已落地。此后是一串独立 bugfix 与改造（v1.19~v1.31）。第二阶段 **M4 玩家武器已完成并验收**
+（验收报告 `docs/m4-weapons-acceptance-report.md`），剩一个 M4 阶段 bugfix TODO——设置面板
+补「破坏方块」开关按钮（见下节）；M5~M7 规格与计划已备好，等待 M4 之后的实体运行时。
 
 ## 里程碑总表
 
@@ -22,10 +23,19 @@
 | **M3 性能达标与收尾** | 全量场景稳态 120fps / 帧预算双档（`src/core/budget.js`）/ 雨效 / HUD + 设置面板 + 随机种子新世界 / 基线脚本 + 回归门禁 / 性能报告 | ✅ 完成（2026-09-02） | `82da106` |
 | **M3.1 背包**（M3 收尾补丁项） | 创造模式无限背包 1000 槽（照搬 mc-lite `Slots.js` 语义）/ Z 键面板 / 快捷栏改读 `slots[0..4]` / `uiModal` 模态栈 + keydown 守卫 | ✅ 完成（2026-09-02） | `b19029f` |
 | **M3.2 方块朝向放置交互**（M3 收尾补丁项） | mc-lite 三分支放置朝向（门控 / 原位挖放转 90° / 类型记忆）/ 挖块记朝向 / `world.getBlockMeta()` | ✅ 完成（2026-09-03） | `c512cd3` |
-| **M4 玩家第一人称武器** | `WorldEditor` 批量编辑 / DDA hitscan / 受控 GLB 相机视图模型 / 曳光 / 音效 / 可选方块破坏 | ⬜ **可开始**（M3.2 已提交） | — |
+| **M4 玩家第一人称武器** | `WorldEditor` 批量编辑 / DDA hitscan / 受控 GLB 相机视图模型 / 曳光 / 音效 / 可选方块破坏 | ✅ 完成（2026-09-05，验收报告 `docs/m4-weapons-acceptance-report.md`） | 待提交 |
 | **M5 实体运行时** | `EntityManager` / 实体 AABB raycast / 受控渲染层 / 临时与持久实体分离 + `entities` snapshot | ⬜ 等待 M4 | — |
 | **M6 丧尸** | 默认 20 上限 / 20Hz 单条 WorkerPool `ai` RPC / 实体与体素最近命中比较 / 25·35·999 三把枪伤害 / 六部件固定 slot 渲染 | ⬜ 等待 M5 | — |
 | **M7 玩家放置丧尸巢穴** | 最高 `gold_block` 的 `blockEntity` 为持久真相 / `block-changed` 失效 / 八 offset × 六层刷怪 / 全局最多 8 个 | ⬜ 等待 M6 | — |
+
+## M4 之后的遗留 TODO（M4 阶段 bugfix）
+
+| 事项 | 状态 | 要点 |
+|---|---|---|
+| 设置面板添加「破坏方块」开关按钮（对齐 mc-lite 配置面板的「枪械破坏设置」，`UIManager.js:160` 开/关两按钮 → `canGunsDestroyBlocks` + HUD 提示） | ⬜ **TODO（下一个待办）** | mc-heavy 当前只有 API 入口 `game.setGunBlockDamage(enabled)`（M4 规格 §4.4：「M3 HUD 若已实现设置面板，可直接绑定该 API」；面板已实现但未接）。接入点：`src/ui/settings-panel.js` 照既有 `_makeRow`/按钮组模式加一行，点击调既有 API，不新增机制；默认 `false`（与 mc-lite 一致，破坏开关默认关闭） |
+
+M4 交付后的实玩反馈修正（已落地，记录在验收报告偏离表）：相机入 scene（R 切武器可见）、
+pointer-lock 拒绝捕获、曳光粗细对齐 mc-lite + 起点世界空间冻结（v1.33）、武器灯光（v1.34）。
 
 ## M3.2 之后的独立 bugfix / 改造（v1.19 ~ v1.31）
 

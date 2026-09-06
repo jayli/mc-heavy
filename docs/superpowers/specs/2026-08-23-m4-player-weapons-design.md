@@ -1,6 +1,6 @@
 # M4 玩家武器系统设计
 
-**状态：** 已确认，待实施
+**状态：** 已实施，验收报告：docs/m4-weapons-acceptance-report.md
 **定位：** 第二阶段的首个独立 Epic；不属于第一阶段 M2/M3。
 **关联：** `docs/phase-1-engine-design.md` §4.5.2、§4.5.3、§9；`docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md`。
 
@@ -37,6 +37,8 @@ M4 保留以下玩法语义：
 
 M4 有一项有意偏离：mc-lite 会把 MAG7 的候选按每批 5 块、间隔 50ms 的 `setTimeout` 延迟写入，产生由近及远的连锁破坏。M4 将全部候选在同一逻辑事务中提交 `setBlocks()`，派生网格随后经 Worker REMESH 异步收敛；因此世界破坏是原子可重建的，视觉不会保留 50ms 的多层写入动画。开火/曳光仍当帧触发，网格可见更新遵守既有上传预算，不承诺固定“一帧内”完成。
 
+另一项有意偏离是曳光起点坐标系。mc-lite 的 `PlayerInteraction.updateTracers()` 每帧以当前相机基底重算曳光起点（`localStart.applyQuaternion(camera.quaternion).add(camera.position)`），而终点在开火瞬间冻结在世界命中点——起点在相机空间、终点在世界空间的**混合坐标系**导致快速转镜头时起点被相机拖着走、终点钉死不动，两点连线偏离枪管指向，弹道看上去歪了。M4 将曳光起点也**冻结在世界空间**（开火瞬间算好的枪口世界坐标），起点与终点同为世界坐标；曳光代表子弹已飞完的真实弹道残影（寿命 0.08~0.15s），镜头移动时整条曳光纹丝不动，枪管转开是自然的，歪斜感从机制上消失。这是 hitscan 曳光的标准做法（DOOM/Quake 类），也与「曳光是可丢弃的纯视觉派生数据」的定位一致。
+
 ## 4. 架构
 
 ### 4.1 世界编辑与事件：M4-0 的唯一前置
@@ -70,6 +72,8 @@ MAG7 的纯扫描算法固定如下：从相机原点沿视线前向取 `d=1..10
 地形命中永远使用 `raycastVoxel()`。每帧保留至多一次主 DDA 结果，开火消费该结果及其 `dist`；将来实体系统提供 `EntityManager.raycast(origin, dir, maxDist)` 后，控制器只比较实体命中与体素命中的距离，取最近者。该扩展在 M6 才生效：M6 向冻结 catalog 增补 `entityDamage/entityRange`（手枪 `25/40`、加特林 `35/40`、MAG7 `999/10`），并以“近方块优先”定义遮挡；M4 本身不结算实体伤害。M4 没有 `THREE.Raycaster.intersectObjects()`，也不创建实体射线的临时兼容层。
 
 视图模型采用“单个相机子节点”而非新增地形渲染通道、InstancedMesh 或 BatchedMesh。每次只有当前一把枪存在，模型缓存只保存只读模板，装备时 clone；世界体素继续由既有三通道 BatchedMesh 独占。这避免引入渲染态与游戏态双权威，也不污染 M3 的 draw-call 基线。
+
+武器模型灯光：GLTFLoader 对 GLB 生成 `MeshPhysicalMaterial`（PBR，必须吃场景灯光），而 mc-heavy 全场景是 unlit 设计（体素 `MeshBasicNodeMaterial` 亮度烘焙在顶点 shade，ocean/rain/tracer/highlight 均不吃灯光），场景原本零灯光 → 枪体渲染为纯黑（实测探针：`lights=[]`，材质 baseColor 数据完好——建模颜色没丢在资源里，丢在渲染端没有光源）。mc-lite 的枪正常是因为其场景有灯（`Engine.js:194` AmbientLight + `Engine.js:168` DirectionalLight）。因此场景补 mc-lite 同款双灯：`AmbientLight(0xddeeff, 2.3)`（`Engine.js:194` 的 `1 × _ambientBoost=2.3`，WebGPURenderer TSL 管线间接漫射偏暗的经验补偿）+ `DirectionalLight(0xfffaf0, 3.2)` 方向 `[0,0.8,0.6]`（`Engine.js:168,161`）。手枪 `METAL` 材质 `metallicFactor` 缺省 = 1（金属 diffuse 为 0、全靠镜面反射），只给环境光金属件仍然发黑，方向光高光不可省。灯光只影响 PBR 材质（枪），unlit 材质一律不吃灯光 → 世界视觉零回归（像素 spec 验证）。平行光方向恒定、不跟随玩家——mc-lite 的光源跟随（`Game.js:556`）是为阴影投射服务，mc-heavy 不开 `castShadow`。mc-lite 的 moonLight(0.02) 与日夜风格的灯光调制不移植：mc-heavy 枪体灯光恒定，体素日夜调制走独立 uniform 体系（M2-6），互不耦合。
 
 ### 4.3 GLB 资产管线
 

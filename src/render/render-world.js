@@ -43,6 +43,12 @@ export class RenderWorld {
     this.slotMap = new Map();
     /** 当前各通道缓冲预算（扩容后随之增长；无公开 getter，自行跟踪） */
     this._capacity = {};
+    /**
+     * M4：已通过 Scheduler 版本校验后发布的 section 版本（key=`${cx},${sy},${cz}`）。
+     * 只读派生状态——不是体素副本，不参与调度分支，不改 Worker 协议；只让 Playwright
+     * 对「队列收敛后发布版本 == 权威 column 版本」作直接断言（weapons-world-edit）。
+     */
+    this._sectionVersions = new Map();
 
     for (const channel of CHANNELS) {
       const cap = (capacity && capacity[channel]) || CAPACITY[channel];
@@ -89,8 +95,11 @@ export class RenderWorld {
    * 上传/替换 section 几何（版本由调用方校验后传入）。
    * 首次 → addGeometry+addInstance+setMatrixAt；已有 → setGeometryAt（溢出走重建路径）。
    */
-  uploadSection(cx, sy, cz, channel, geomData, _version) {
+  uploadSection(cx, sy, cz, channel, geomData, version) {
     const key = slotKey(cx, sy, cz, channel);
+    // M4：记录本次发布的 section 版本（按 section 而非 channel——三个 channel 同一 version）。
+    // 在零顶点删除与正常上传前都写入，使 getSectionVersion 反映最近一次发布。
+    this._sectionVersions.set(`${cx},${sy},${cz}`, version);
     if (geomData.vertexCount === 0) {
       // 只删本通道的 slot（不影响同 section 其他通道）
       const existing = this.slotMap.get(key);
@@ -183,10 +192,19 @@ export class RenderWorld {
       this.meshes[channel].deleteGeometry(slot.geometryId);
       this.slotMap.delete(key);
     }
+    this._sectionVersions.delete(`${cx},${sy},${cz}`); // 删完三个 channel 后清版本记录
   }
 
   removeColumn(cx, cz) {
     for (let sy = 0; sy < SECTIONS_PER_COLUMN; sy++) this.removeSection(cx, sy, cz);
+  }
+
+  /**
+   * M4：已发布 section 的版本（无记录时 undefined）。只读诊断，不得被游戏逻辑读取后作写入决定。
+   * @returns {number | undefined}
+   */
+  getSectionVersion(cx, sy, cz) {
+    return this._sectionVersions.get(`${cx},${sy},${cz}`);
   }
 
   stats() {
