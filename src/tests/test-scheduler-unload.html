@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><title>scheduler unload fixture</title><link rel="icon" href="data:,"></head>
+<body>
+<script type="module">
+  // M5 Task 2 fixture：驱动 Scheduler 的两阶段 column 卸载契约，不需要真实 GEN/MESH。
+  //
+  // 为什么是独立 fixture 而不是真游戏页：两阶段卸载的正确性只在「保存 gate 期间 column 不被
+  // 同步删除」这个时序上暴露。真游戏页的 rAF 每帧都在调 scheduler.update(玩家位置)，会把
+  // pending unload 立刻 cancel 掉，断言撞上不确定的帧边界 —— 竞态断言必须落在同步可观测的
+  // 内存状态（docs/testing-policy.md §2.4）。真 IDB round-trip 那部分见 tests/entities.spec.mjs。
+  //
+  // GEN/MESH 段一律 no-op：它们与被测路径无关，开着只会产生噪音任务拖慢断言。
+  import { WorldData } from '../voxel/world-data.js';
+  import { Scheduler } from '../core/scheduler.js';
+  import { EntityManager } from '../entities/entity-manager.js';
+  import { probeDefinition } from '../entities/entity-types.js';
+  import { createRegistry } from '../voxel/block-registry.js';
+  import { ChunkColumn } from '../voxel/chunk-column.js';
+
+  const registry = createRegistry();
+  registry.register('stone', { solid: true, cullMode: 'opaque' });
+  registry.freeze();
+
+  /** Scheduler 的最小 pool 替身：本 fixture 不下发任何任务 */
+  const stubPool = { call: () => { throw new Error('fixture 不应下发 Worker 任务'); }, cancel: () => {}, broadcast: () => {} };
+
+  /**
+   * 构造一组独立 fixture（每个用例独立 → 无状态串扰）。
+   * @param {{viewDistance?: number}} [opts]
+   */
+  function make({ viewDistance = 1 } = {}) {
+    const world = new WorldData(registry);
+    const scheduler = new Scheduler({ world, pool: stubPool, registry, seed: 1, viewDistance });
+    const entities = new EntityManager();
+    entities.registerType('probe', probeDefinition);
+
+    // 预先接管 0,0 column（跳过 GEN：本 fixture 只考察卸载生命周期）
+    const column = new ChunkColumn(0, 0);
+    column.state = 'ready';
+    world.add(column);
+    // GEN 段整体 no-op：布局门控恒 false 且 ensure/dispatch 为空 → 不下发任何任务
+    scheduler.structureIndex.readyForColumn = () => false;
+    scheduler.structureIndex.ensureForColumn = () => {};
+    scheduler.structureIndex.dispatch = () => {};
+
+    /** 持久化替身：调用方可控 gate（reject / 延迟 resolve）。
+     *  saveEntities 把 `['save']` 推进共享 events —— 与 commit/cancel/will-remove 同一时间轴，
+     *  让断言能直接比对整条卸载顺序（save → will-remove → commit）。 */
+    const persistence = {
+      saveCalls: [],
+      loaded: [],
+      gate: null,
+      async saveEntities(snapshots) {
+        this.saveCalls.push(snapshots.map((s) => s.id));
+        events.push(['save']);
+        if (this.gate) await this.gate;
+      },
+      async loadEntities() { return this.loaded; },
+    };
+
+    const events = [];
+    scheduler.onColumnUnloadRequested((key) => {
+      const unload = entities.beginColumnUnload(key);
+      return {
+        ready: persistence.saveEntities(unload.snapshots),
+        commit: () => { events.push(['commit', key]); unload.commit(); },
+        cancel: () => { events.push(['cancel', key]); unload.cancel(); },
+      };
+    });
+    scheduler.onColumnWillRemove((key) => {
+      // 第三个元素钉住「广播 will-remove 时 column 是否还在」—— 顺序契约的直接观测
+      events.push(['will-remove', key, world.hasColumn(0, 0)]);
+    });
+
+    return {
+      world, scheduler, entities, persistence, events,
+      spawnProbe(id, position, persistent = false) {
+        return entities.spawn({ id, type: 'probe', persistent, state: { position } });
+      },
+      // 重新接管 0,0（模拟玩家重入后 column 重新生成）。用真实 ChunkColumn 而非手写形状副本 ——
+      // 手写 mock 会与 ChunkColumn 的真实形状漂移（docs/testing-policy.md §2.5）。
+      reAddColumn(cx = 0, cz = 0) {
+        const col = new ChunkColumn(cx, cz);
+        col.state = 'ready';
+        world.add(col);
+        return col;
+      },
+      stats: () => scheduler.stats(),
+    };
+  }
+
+  window.__FIXTURE__ = { make };
+  window.__FIXTURE_READY__ = true;
+</script>
+</body>
+</html>

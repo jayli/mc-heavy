@@ -80,9 +80,58 @@ export class Scheduler {
     this._playerCz = 0;
     /** atlas tile 元数据（Game 启动时赋值，与 broadcast 给 Worker 的同一份）——快速路径主线程 mesh 用 */
     this._atlasMeta = null;
+    // ---- M5：两阶段 column 卸载 ----
+    /**
+     * @type {Map<string, {key: string, column: import('../voxel/chunk-column.js').ChunkColumn,
+     *                       handles: Array<{ready: Promise<void>, commit: Function, cancel: Function}>,
+     *                       ready: Promise<void>, settled: boolean}>}
+     * 卸载准备中的 column。**只登记 key / Column 引用 / handle 的生命周期状态**，
+     * 不复制 blocks/meta/light、不参与游戏逻辑（M5 规格 §2 + 红线 1）——
+     * 复制体素数据就是第二份世界权威，正是 mc-lite WorldChunkPayloadRegistry 的病根。
+     */
+    this._pendingColumnUnloads = new Map();
+    /** 卸载请求监听器：返回 `{ready, commit, cancel}` handle（Game 接 EntityManager） */
+    this._unloadRequestedListeners = [];
+    /** 最终移除前的同步通知监听器（只释放派生对象，返回值不等待） */
+    this._willRemoveListeners = [];
+    /** 最近一次卸载失败的可诊断信息（`stats()` 只读暴露，不参与调度分支） */
+    this._lastUnloadError = null;
   }
 
   onColumnReady(cb) { this._columnReadyCallbacks.push(cb); }
+
+  /**
+   * 订阅「column 请求卸载」（M5 规格 §2）。
+   *
+   * listener 必须返回 `{ready, commit, cancel}`：Scheduler 用 `ready` 决定本次卸载能否最终提交，
+   * 只有它 resolve 后的**下一帧**、且 column 仍在卸载半径外，才同步调 `commit()`。
+   * listener 抛错或返回非法 handle 视为准备失败（等同 ready reject）。
+   * @param {(key: string, column: import('../voxel/chunk-column.js').ChunkColumn) =>
+   *          {ready: Promise<void>, commit: Function, cancel: Function}} listener
+   * @returns {() => void} unsubscribe
+   */
+  onColumnUnloadRequested(listener) {
+    this._unloadRequestedListeners.push(listener);
+    return () => {
+      const i = this._unloadRequestedListeners.indexOf(listener);
+      if (i >= 0) this._unloadRequestedListeners.splice(i, 1);
+    };
+  }
+
+  /**
+   * 订阅「column 即将最终移除」（M5 规格 §2）。
+   * 只在 `ready` 成功后、同步删除之前调用；**不接受 Promise**（没有异步删除竞态），
+   * listener 只负责释放 controller 等派生对象，不得保存 column 副本、不得返回异步工作。
+   * @param {(key: string, column: import('../voxel/chunk-column.js').ChunkColumn) => void} listener
+   * @returns {() => void} unsubscribe
+   */
+  onColumnWillRemove(listener) {
+    this._willRemoveListeners.push(listener);
+    return () => {
+      const i = this._willRemoveListeners.indexOf(listener);
+      if (i >= 0) this._willRemoveListeners.splice(i, 1);
+    };
+  }
 
   /** 每帧调用：目标集合 → GEN 下发 → 滞回卸载 → MESH 下发 → 上传预算 */
   update(playerX, playerZ) {
@@ -118,15 +167,8 @@ export class Scheduler {
       });
     }
 
-    // 2. 滞回卸载（半径 +2，DR-16）
-    for (const [key, col] of [...this.world.columns]) {
-      const dist = Math.max(Math.abs(col.cx - pcx), Math.abs(col.cz - pcz));
-      if (dist > R + 2) {
-        this.world.remove(key);
-        if (this.renderWorld) this.renderWorld.removeColumn(col.cx, col.cz);
-        this._cleanupColumn(col.cx, col.cz, key);
-      }
-    }
+    // 2. 滞回卸载（半径 +2，DR-16）—— M5 起改为两阶段（可取消异步准备 → 同步最终移除）
+    this._processColumnUnloads(pcx, pcz, R);
 
     // 3. MESH 段（renderWorld 存在时）
     if (this.renderWorld) {
@@ -182,6 +224,123 @@ export class Scheduler {
     if (this.renderWorld) this._handleColumnReady(column);
     this._enqueueLightIfOverhang(column);
     for (const cb of this._columnReadyCallbacks) cb(key, column);
+  }
+
+  // ==================== M5：两阶段 column 卸载 ====================
+
+  /**
+   * 滞回卸载的两阶段实现（M5 规格 §2/§3，设计文档 §4.9「卸载与重入」）。
+   *
+   * 阶段划分：
+   * ① **请求**：column 首次超出「加载半径 + 2」→ 调每个 requested listener 拿 handle，
+   *    登记 pending，**保留** world/render column 与临时实体（这段时间只做异步保存准备）；
+   * ② **提交**：所有 handle 的 `ready` 都 resolve 后的**下一帧**、且 column 仍在卸载半径外 →
+   *    依次同步广播 `onColumnWillRemove` → 各 handle `commit()` → `world.remove()` →
+   *    `renderWorld.removeColumn()` → `_cleanupColumn()`。
+   *
+   * 取消路径（两条，都必须保留一切运行时 state）：
+   * - **玩家重入**（回到 R+2 内）→ 各 handle `cancel()`、删除 pending。已完成的 IndexedDB
+   *   写入允许保留（后续状态保存会覆盖它）；
+   * - **`ready` reject**（写盘失败）→ 各 handle `cancel()`、删除 pending、记 `lastUnloadError`，
+   *   **不调 `world.remove()`**。不得静默删除 —— 静默删除会让持久实体的 snapshot 永久丢失，
+   *   且玩家看不出发生了什么。后续正常卸载周期会重试。
+   *
+   * 没有 requested listener 时（未装配实体运行时，例如 GEN-only 的 Task 4 测试）退化为
+   * 直接同步移除 —— 两阶段协议是为持久实体保存服务的，没有消费者就不该拖住卸载。
+   */
+  _processColumnUnloads(pcx, pcz, R) {
+    const limit = R + 2;
+    const distOf = (col) => Math.max(Math.abs(col.cx - pcx), Math.abs(col.cz - pcz));
+
+    // 2a. 先取消已回到卸载半径内的 pending（玩家重入：解冻持久实体、保留 column）
+    for (const [key, entry] of [...this._pendingColumnUnloads]) {
+      if (distOf(entry.column) > limit) continue;
+      this._cancelPendingUnload(key, entry);
+    }
+
+    // 2b. 超出半径的 column：发起请求 / 推进已就绪的提交
+    for (const [key, col] of [...this.world.columns]) {
+      if (distOf(col) <= limit) continue;
+
+      const entry = this._pendingColumnUnloads.get(key);
+      if (!entry) {
+        // 无消费者 → 直接同步移除（两阶段只为持久实体保存服务）
+        if (this._unloadRequestedListeners.length === 0) { this._removeColumnNow(key, col); continue; }
+        this._requestColumnUnload(key, col);
+        continue;
+      }
+      // ready 尚未 settle → 继续等（重入检查已在 2a 做过）
+      if (!entry.readyResolved || entry.failed) continue;
+      // ready 成功后的**下一帧**且仍超界 → 同步最终移除
+      this._commitColumnUnload(key, entry);
+    }
+  }
+
+  /** 发起卸载请求：调 listener 拿 handle，登记 pending，保留 column */
+  _requestColumnUnload(key, col) {
+    const handles = [];
+    let readyPromises = [];
+    for (const listener of this._unloadRequestedListeners) {
+      try {
+        const handle = listener(key, col);
+        if (!handle || typeof handle.commit !== 'function' || typeof handle.cancel !== 'function') {
+          throw new Error('listener 未返回 {ready, commit, cancel} handle');
+        }
+        handles.push(handle);
+        readyPromises.push(Promise.resolve(handle.ready));
+      } catch (err) {
+        // listener 抛错 = 准备失败：取消已拿到的 handle，不登记 pending（下帧重试）
+        for (const h of handles) this._safeCancel(h, key);
+        this._lastUnloadError = `${key}: ${err?.message || String(err)}`;
+        return;
+      }
+    }
+    const entry = { key, column: col, handles, ready: Promise.all(readyPromises), readyResolved: false, failed: false };
+    this._pendingColumnUnloads.set(key, entry);
+    // 异步 settle 只**标记状态**，不在回调里删除 column —— 删除必须发生在下一帧的同步流程里，
+    // 否则就是「把 IndexedDB Promise 塞进最终移除」（M5 规格 §3 明令禁止的异步删除竞态）。
+    entry.ready.then(() => { entry.readyResolved = true; }).catch((err) => {
+      entry.failed = true;
+      this._lastUnloadError = `${key}: ${err?.message || String(err)}`;
+      if (this._pendingColumnUnloads.get(key) === entry) this._cancelPendingUnload(key, entry);
+    });
+  }
+
+  /** 取消 pending：各 handle cancel、删除登记、保留 world/render column 与实体 */
+  _cancelPendingUnload(key, entry) {
+    for (const handle of entry.handles) this._safeCancel(handle, key);
+    this._pendingColumnUnloads.delete(key);
+  }
+
+  /** 同步最终移除：will-remove 广播 → commit → world/render/调度派生队列清理 */
+  _commitColumnUnload(key, entry) {
+    for (const listener of this._willRemoveListeners) {
+      try { listener(key, entry.column); } catch (err) {
+        // 派生对象释放失败不阻断卸载（column 数据即将消失，留着反而泄漏）
+        this._lastUnloadError = `${key}: onColumnWillRemove ${err?.message || String(err)}`;
+      }
+    }
+    for (const handle of entry.handles) {
+      try { handle.commit(); } catch (err) {
+        this._lastUnloadError = `${key}: commit ${err?.message || String(err)}`;
+      }
+    }
+    this._pendingColumnUnloads.delete(key);
+    this._removeColumnNow(key, entry.column);
+  }
+
+  /** 真正删除 column（world + render + 调度派生队列）。卸载与最终提交共用这一条路径 */
+  _removeColumnNow(key, col) {
+    this.world.remove(key);
+    if (this.renderWorld) this.renderWorld.removeColumn(col.cx, col.cz);
+    this._cleanupColumn(col.cx, col.cz, key);
+  }
+
+  /** cancel 失败只记诊断，不中断其余 handle（一个 listener 出错不能拖死整次卸载） */
+  _safeCancel(handle, key) {
+    try { handle.cancel(); } catch (err) {
+      this._lastUnloadError = `${key}: cancel ${err?.message || String(err)}`;
+    }
   }
 
   // ==================== LIGHT 段 ====================
@@ -425,6 +584,9 @@ export class Scheduler {
       sections: this._meshedSections.size,
       lightInflight: this._inflightLight.size,
       lightQueued: this._lightQueue.size,
+      // M5：两阶段卸载只读诊断（只观测 _pendingColumnUnloads / 最近错误，不驱动调度决策）
+      pendingUnloads: this._pendingColumnUnloads.size,
+      lastUnloadError: this._lastUnloadError,
     };
   }
 

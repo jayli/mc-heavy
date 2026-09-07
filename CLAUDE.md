@@ -25,7 +25,8 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
 
 一句话现状：第一阶段 **M0~M3 全部完成**并验收达标，两个收尾补丁项（M3.1 背包 / M3.2 方块朝向
 放置交互）也已落地；此后是一串独立 bugfix 与改造（v1.19~v1.35）；第二阶段 **M4 玩家武器已完成
-并验收**（含遗留 TODO「设置面板破坏方块开关」），**M5~M7 尚未开始**（规格与计划已备好，见
+并验收**（含遗留 TODO「设置面板破坏方块开关」），**M5 实体运行时已完成并验收**（验收报告
+`docs/m5-entity-runtime-acceptance-report.md`），**M6~M7 尚未开始**（规格与计划已备好，见
 「权威文档」）。
 
 **历次 bugfix / 改造的完整记录不在本文件。** 权威副本分两处：① **第一阶段独立改动**
@@ -277,20 +278,23 @@ mc-heavy/
    │               #  iso-icon.js 等轴测投影纯函数；mesher.js 导出 TEMPLATES / FACE_VERTICES /
    │               #  FACE_UVS 供图标烘焙复用——形状与 UV 的唯一权威，图标不得有第二份几何定义
    ├─ render/      # render-world.js（BatchedMesh 发布层）/ materials.js（TSL）
-   │               #  weather.js（天气状态机）/ rain.js（雨效）
+   │               #  weather.js（天气状态机）/ rain.js（雨效）/ entity-render-layer.js（M5 受控实体发布层）
+   ├─ entities/    # entity-manager.js（动态实体唯一权威 + generation + AABB raycast）
+   │               #  entity-types.js（probe 定义 + AABB slab 射线；Worker 同构，无 three）
    ├─ player/      # player.js / physics.js / raycast.js / step-lift.js
-   │               #  inventory.js（物品模型）/ orientation.js（朝向三分支纯函数）
+   │               #  inventory.js（物品模型）/ orientation.js（朝向三分支纯函数）/ weapons/*（M4）
    ├─ ui/          # coords-hud.js / hotbar.js / settings-panel.js / settings.js
    │               #  inventory.js（背包面板：DOM 方案照搬 mc-lite）/ icons.js（图标 manifest 加载）
-   ├─ save/        # persistence.js（IndexedDB edits）
+   ├─ save/        # persistence.js（IndexedDB edits + M5 entities store）
    └─ workers/     # world-worker.js（GEN/MESH/LIGHT 统一入口，池化）
 ```
 
 依赖方向单向：`voxel ← gen ← mesh ← render`，反向依赖禁止（`npm run check:arch` 静态门守）。
 `core/` 是**装配层**（`game.js` 组装全部子系统、`scheduler.js` 编排任务），依赖任何层合法。
-`voxel/`/`gen/`/`mesh/`/`workers/` 是 Worker 同构层，不得 import three；例外
-`mesh/atlas-loader.js`（主线程专用，运行时加载 atlas 纹理必然依赖 three）见
-`tools/check-architecture.mjs` 白名单。另有 `src/tests/`（浏览器内单测 + fixture）、
+`voxel/`/`gen/`/`mesh/`/`workers/`/`entities/`（M5）是 Worker 同构层，不得 import three、不得
+自建 Worker（M5 规格 §3「不新建 Worker」；`check:arch` 静态门守，Worker 创建入口唯一 =
+`core/worker-pool.js`）；例外 `mesh/atlas-loader.js`（主线程专用，运行时加载 atlas 纹理必然
+依赖 three）见 `tools/check-architecture.mjs` 白名单。另有 `src/tests/`（浏览器内单测 + fixture）、
 `src/bench/`（基准页）、`tests/`（Playwright spec）、`server-script/`（静态服务）。
 
 ## 开发命令

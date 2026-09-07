@@ -19,6 +19,9 @@ import { AudioManager } from '../render/audio-manager.js';
 import { ViewWeapon } from '../render/view-weapon.js';
 import { TracerRenderer } from '../render/tracer-renderer.js';
 import { WorldEditor } from './world-editor.js';
+import { EntityManager } from '../entities/entity-manager.js';
+import { probeDefinition } from '../entities/entity-types.js';
+import { EntityRenderLayer, createProbeRenderDef } from '../render/entity-render-layer.js';
 import { loadAtlas } from '../mesh/atlas-loader.js';
 import { findSpawnY } from '../gen/terrain.js';
 import { getCitySpawnPoint, getCityInfo } from '../gen/structures/city-layout.js';
@@ -153,6 +156,36 @@ export class Game {
     // 玩家挖放、武器破坏、未来 TNT 全部经此，不持有第二份体素真相。
     this.editor = new WorldEditor({ world: this.world, scheduler: this.scheduler });
 
+    // ---- M5：实体运行时装配 ----
+    // EntityManager 是动态实体 state 的唯一权威；column 索引/generation 全是派生缓存（红线 1）。
+    this.entities = new EntityManager();
+    this.entities.registerType('probe', probeDefinition); // M5 fixture 类型（M6 丧尸另注册）
+    // 卸载/恢复接线：
+    // ① 卸载请求 —— Scheduler 发现 column 超界时调这里，冻结持久实体 + 异步保存，
+    //    返回 {ready, commit, cancel} handle。只有 ready 成功后的下一帧才同步 commit。
+    this.scheduler.onColumnUnloadRequested((key) => {
+      const unload = this.entities.beginColumnUnload(key);
+      return {
+        ready: this.persistence.saveEntities(unload.snapshots),
+        commit: () => unload.commit(),
+        cancel: () => unload.cancel(),
+      };
+    });
+    // ② column ready —— 恢复该 column 的持久 snapshot（按 position 过滤，只恢复缺失 id）。
+    //    实体运行时不复制方块状态；方块锚定装置仍归 blockEntities。
+    this.scheduler.onColumnReady((key) => {
+      const snapshots = this.persistence.entitiesForColumn(key);
+      if (snapshots.length > 0) this.entities.restorePersistent(snapshots);
+    });
+    // Persistence 的实体 snapshot 来源（save/ 不 import entities/，注入纯函数解耦）
+    this.persistence.attachEntities(() => this.entities.serializePersistent());
+    // 预热持久 snapshot：loadEntities() 一次读库填充 entitiesCache，供 column ready 同步恢复
+    await this.persistence.loadEntities();
+    // 受控渲染层：只读 pose 发布（M5 规格 §2）。probe 节点 = 受控 THREE.Group（fixture，
+    // 未来丧尸改用实例渲染器）。layer 不回写 state、不调 setBlock、不作命中真相。
+    this.entityLayer = new EntityRenderLayer({ scene: this.scene });
+    this.entityLayer.register('probe', createProbeRenderDef());
+
     // 出生点（mc-lite 语义：优先 City 中心出生，保证出生即见城市天际线，§7 M2 验收）
     const regionLayout = await this.scheduler.structureIndex.waitForRegion(0, 0);
     const citySpawn = getCitySpawnPoint(regionLayout.city);
@@ -233,11 +266,11 @@ export class Game {
 
     window.addEventListener('resize', () => this._onResize());
     this._onResize();
-    // 存档 flush：页面隐藏/退出立即写盘（§4.8）
+    // 存档 flush：页面隐藏/退出立即写盘（§4.8）。M5 起实体 snapshot 同步 flush。
     window.addEventListener('visibilitychange', () => {
-      if (document.hidden) this.persistence.flushNow(this.world);
+      if (document.hidden) { this.persistence.flushNow(this.world); this.persistence.flushEntities(); }
     });
-    window.addEventListener('beforeunload', () => this.persistence.flushNow(this.world));
+    window.addEventListener('beforeunload', () => { this.persistence.flushNow(this.world); this.persistence.flushEntities(); });
 
     this.renderer.setAnimationLoop((nowMs) => {
       this.perf.tick(nowMs);
@@ -248,6 +281,10 @@ export class Game {
       this._lastFrameMs = nowMs;
       // 设置面板打开时跳过玩家输入/物理（世界调度继续：后台填充不受 UI 阻塞）
       if (!this.uiModal) this.player.update(dt);
+      // M5 帧序固定：player.update → entities.update → scheduler.update → entityLayer.sync → render
+      // （M5 规格 §2）。entities.update 在 scheduler 之前：实体先推进位置，scheduler 再用最新
+      // position 判定卸载/恢复，避免实体跨 column 后被旧索引漏回收。
+      this.entities.update(dt, { world: this.world });
       this.scheduler.update(this.player.physics.pos.x, this.player.physics.pos.z);
       this.persistence.scheduleFlush(this.world); // 5s 防抖写盘（有 edits 才真正写）
       this.ocean.update(this.camera, dt);
@@ -259,6 +296,9 @@ export class Game {
       this._hud.update(nowMs);
       this._coordsHud.update(nowMs);
       this._hotbar.update(this.player.hotbarIndex);
+      // M5 帧序最后一步：把实体 pose 发布成 scene 节点（scheduler 可能已卸载/恢复实体，
+      // 用最新集合 sync，节点数恒等于实体数 —— 生命周期对称）
+      this.entityLayer.sync(this.entities.entities());
       this.renderer.render(this.scene, this.camera);
       // info 在每帧 render 前被 autoReset 清零，render 后捕获才是本帧真实值
       // （HUD/测试异步读取 renderer.info 会撞上重置点，必须在此快照）
@@ -397,7 +437,13 @@ export class Game {
   async _discardEdits() {
     this.persistence.cancelPendingFlush();
     for (const [, col] of this.world.columns) col.edits.clear(); // 防卸载 flush 写回
+    // M5：持久实体同属「玩家改动」，必须一并回收 —— 否则 beforeunload → flushEntities
+    // 会把仍活着的实体写回刚清空的 entities store（与 edits 的写回竞态同构），
+    // 且换 seed 时旧世界的装置会泄漏进新世界（违反红线 2 确定性）。
+    // 顺序：先回收内存里的持久实体，再清库（与 edits「先清内存再清库」同一口径）。
+    if (this.entities) this.entities.despawnPersistent('discard');
     await this.persistence.clearAllEdits();
+    await this.persistence.clearAllEntities();
   }
 
   /**
@@ -479,6 +525,10 @@ export class Game {
     this.player?.dispose();
     this.audioManager?.dispose();
     this.weaponModelLoader?.dispose();
+    // M5：反向释放实体运行时（layer → manager → pool → renderer）。
+    // 先释放渲染层（scene 节点）再释放 manager（state 权威），与启动顺序相反。
+    this.entityLayer?.dispose();
+    this.entities?.dispose();
     this.pool.dispose();
     this.renderer.dispose();
   }

@@ -58,8 +58,11 @@ function stripComment(line) {
 /**
  * 判定同构模块用**双层**，缺一不可：
  *
- * ① **目录默认**：`src/voxel/**`、`src/gen/**`、`src/mesh/**`、`src/workers/**` 默认全部受检。
- *    按设计这四层是同构层（§3 分层图 + 红线 3/8/10），例外须进白名单。
+ * ① **目录默认**：`src/voxel/**`、`src/gen/**`、`src/mesh/**`、`src/workers/**`、
+ *    `src/entities/**` 默认全部受检。按设计这五层是同构层（§3 分层图 + 红线 3/8/10；
+ *    `src/entities/**` 是 M5 规格 §2「类型定义和 state 均没有 DOM/three 依赖」+
+ *    docs/testing-policy.md §8「M5 的 src/entities/** 不得 import three / 不得新增 Worker」），
+ *    例外须进白名单。
  *    —— 不能用精确文件列表：那样新增一个 `src/mesh/foo.js` 就绕过检查（实测已踩过）。
  * ② **自声明一致性**：任何文件（含 player/ui 等不在上述目录的）只要头部声明了
  *    「不得 import three」/「无 DOM、无 three」，就必须遵守。抓的是**自我矛盾**——
@@ -69,11 +72,19 @@ function stripComment(line) {
  * 负责运行时加载 atlas 纹理（必然依赖 three），且头部无同构声明。分层归属本应在 `render/`，
  * 但历史放在 `mesh/`。**不移动**（属架构改动，须设计文档先行），白名单注明理由。
  */
-const ISOMORPHIC_DIRS = ['src/voxel', 'src/gen', 'src/mesh', 'src/workers'];
+const ISOMORPHIC_DIRS = ['src/voxel', 'src/gen', 'src/mesh', 'src/workers', 'src/entities'];
 const THREE_EXEMPT = new Set([
   // 主线程专用：运行时加载 atlas 纹理必然依赖 three，且不被任何 worker 引用
   'src/mesh/atlas-loader.js',
 ]);
+
+/**
+ * `new Worker(...)` 的唯一合法落点。红线 3 要求重计算离开主线程，但**入口只有一个**：
+ * `worker-pool.js` 是 Worker 池的装配点（`installRpcHandler` 在 worker 侧共用本文件）。
+ * 除此之外的 `new Worker` 就是「为竞态/玩法新开专属 Worker」—— 那是 mc-lite 的病根，
+ * 也是 M5 规格 §3 明令禁止的（M6 AI 须经既有池的统一 RPC，不是专属 Worker）。
+ */
+const WORKER_EXEMPT = new Set(['src/core/worker-pool.js']);
 
 /** 文件是否自带同构声明（头部注释） */
 const ISOMORPHIC_DECLARED = /不得\s*import\s*three|无\s*DOM[、,].*无\s*three|同构.*无\s*three|无\s*three.*同构/;
@@ -98,6 +109,31 @@ function checkThreeIsolation(files) {
       if (/\b(document|window|createImageBitmap)\b/.test(code)) {
         const why = declared ? '（且头部声明了同构 → 自我矛盾）' : '';
         failures.push(`[红线 8] ${r}:${i + 1} Worker 同构模块引用 DOM API${why} —— ${code.trim()}`);
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------- 红线 3：Worker 创建入口唯一
+
+/**
+ * `new Worker(...)` 只允许出现在 WorkerPool 装配点。
+ *
+ * 为什么单独一层而不是塞进 checkThreeIsolation：同构判定是「目录默认 + 自声明」门控，
+ * 而这条规则与同构性无关 —— `src/render/**`、`src/ui/**` 里自建 Worker 同样是红线回退
+ * （绕过统一池 = 为玩法/竞态新开专属子系统，mc-lite 的病根，也是 M5 规格 §3 明令禁止的：
+ * M6 的 AI 须经既有池的统一 RPC）。故扫全部源文件。
+ */
+function checkWorkerCreation(files) {
+  for (const file of files) {
+    const r = rel(file);
+    if (WORKER_EXEMPT.has(r)) continue;
+    const lines = fs.readFileSync(file, 'utf8').split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const code = stripComment(lines[i]);
+      if (!code) continue;
+      if (/new\s+Worker\s*\(/.test(code)) {
+        failures.push(`[红线 3] ${r}:${i + 1} 自建 Worker（须经既有 WorkerPool 的统一 RPC）—— ${code.trim()}`);
       }
     }
   }
@@ -230,6 +266,7 @@ function checkPublishFallback() {
 function main() {
   const files = collectJs(SRC);
   checkThreeIsolation(files);
+  checkWorkerCreation(files);
   checkForbiddenNames(files);
   checkDependencyDirection(files);
   checkPublishFallback();

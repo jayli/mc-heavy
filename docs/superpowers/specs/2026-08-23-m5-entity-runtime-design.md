@@ -1,6 +1,6 @@
 # M5 实体运行时设计
 
-**状态：** 已修订，待实施
+**状态：** 已实施、已验收（2026-09-07；验收报告 `docs/m5-entity-runtime-acceptance-report.md`）
 **定位：** 第二阶段的动态实体底座；依赖 M4 的 `WorldEditor` 事件，但不交付炮塔、矿车、丧尸或巢穴玩法。
 **关联：** `docs/phase-1-engine-design.md` §4.5.2、§4.8、§9；后续 M6 丧尸、M7 丧尸巢穴。
 

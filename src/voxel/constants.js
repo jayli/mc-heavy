@@ -24,3 +24,16 @@ export function sectionOf(y) {
 export function columnKey(cx, cz) {
   return cx + ',' + cz;
 }
+
+/**
+ * 世界坐标 → 所属 column key（几何推导的唯一权威）。
+ *
+ * 为什么放在这里而不是各消费者自己算：实体运行时的派生 column 索引
+ * （`src/entities/entity-manager.js`）与持久 snapshot 的 column 归属
+ * （`src/save/persistence.js` 的 `entitiesForColumn`）必须用**同一个**判据 ——
+ * 两份 `Math.floor(pos/16)` 会漂移，漂移的后果是 snapshot 归到错的 column、
+ * 恢复时永远等不到（红线 1：同一事实只有一份权威）。
+ */
+export function columnKeyAt(x, z) {
+  return columnKey(Math.floor(x / COLUMN_SIZE), Math.floor(z / COLUMN_SIZE));
+}

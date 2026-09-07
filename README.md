@@ -43,8 +43,9 @@ npm run atlas        # 重新生成 assets/atlas.png + atlas.json（世界渲染
 
 一句话现状：第一阶段引擎底座（M0~M3）**全部完成并验收达标**，两个收尾补丁项
 （M3.1 背包 / M3.2 方块朝向放置交互）也已落地；此后是一串独立 bugfix 与改造
-（v1.19~v1.31）；第二阶段 **M4 玩家武器已完成并验收**（报告
-`docs/m4-weapons-acceptance-report.md`），M5~M7 规格与计划已备好。
+（v1.19~v1.35）；第二阶段 **M4 玩家武器已完成并验收**（报告
+`docs/m4-weapons-acceptance-report.md`），**M5 实体运行时已完成并验收**（报告
+`docs/m5-entity-runtime-acceptance-report.md`），M6~M7 规格与计划已备好。
 
 **M4 武器操作**：`KeyR` 循环切换徒手/手枪/MAG7/加特林；持枪时左键按住持续射击
 （MAG7 单击单发），右键仍可放方块；武器方块破坏默认**关闭**（`game.setGunBlockDamage(true)`
@@ -95,9 +96,11 @@ mc-heavy/
    ├─ gen/       # noise / terrain / structure-index / structures/*（Worker 同构，不 import three）
    ├─ mesh/      # mesher / lighting / atlas-loader / iso-icon（Worker 同构）
    ├─ render/    # render-world（BatchedMesh 发布层）/ materials（TSL）/ weather / rain
-   ├─ player/    # player / physics / raycast / step-lift / inventory / orientation
+   │             #   entity-render-layer（M5 受控实体发布层）
+   ├─ entities/  # entity-manager（动态实体唯一权威 + AABB raycast）/ entity-types（M5，无 three）
+   ├─ player/    # player / physics / raycast / step-lift / inventory / orientation / weapons
    ├─ ui/        # coords-hud / hotbar / inventory / settings-panel / settings / icons
-   ├─ save/      # persistence（IndexedDB edits）
+   ├─ save/      # persistence（IndexedDB edits + M5 entities store）
    ├─ workers/   # world-worker（GEN/MESH/LIGHT 统一入口，池化）
    ├─ bench/     # 性能基准页
    └─ tests/     # 浏览器内单元测试 + fixture
