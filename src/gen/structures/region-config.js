@@ -47,6 +47,28 @@ export const CITY_STRUCTURE_FOOTPRINT = Object.freeze({
   woodHouse: { halfX: 8, halfZ: 9, minGap: 10 },
 });
 
+/**
+ * 撒布结构占地配置（按 JSON 实测**完整包围盒**，非底层面块）。
+ *
+ * 为什么不复用 `CITY_STRUCTURE_FOOTPRINT`：那表的 `minGap` 字段是城市 placement 放置算法
+ * 专用的，撒布结构不参与 placement 配额（它们是逐点概率撒布），混进一张表会让 `minGap`
+ * 对撒布结构成为无意义的死字段。两张表语义互斥（红线 1：同一事实只有一份权威）。
+ *
+ * ⚠️ `tallWell` 的包围盒**非对称且异常大**（x 延伸到 +24）：JSON 里有一个孤立的
+ * `chest@y51` 落在 x=24。照搬数据 → 扫描范围被它撑到 ±26。勿按「观感」缩小，
+ * 缩小会丢掉那个箱子（实测踩坑：用底层 footprint 算 halfX 会漏光栅化）。
+ */
+export const SCATTER_FOOTPRINT = Object.freeze({
+  flowerBed: { halfX: 5, halfZ: 3 },      // x[-4,5] z[-2,3]
+  pavilion: { halfX: 5, halfZ: 3 },       // x[-4,5] z[-2,3]
+  tallWell: { halfX: 24, halfZ: 20 },     // x[-5,24] z[-4,20]（含 x=24 的孤立 chest@y51）
+  desertPyramid: { halfX: 12, halfZ: 12 }, // x[-12,12] z[-12,12]
+  desertVillage: { halfX: 8, halfZ: 8 },   // x[-8,8] z[-8,8]
+  uglyHouse: { halfX: 6, halfZ: 10 },      // x[-6,4] z[-4,10]
+  tank: { halfX: 12, halfZ: 8 },           // x[-12,9] z[-8,-2]
+  house: { halfX: 2, halfZ: 2 },           // 代码生成：5×5 地基 + 屋顶
+});
+
 /** City 结构生成配额配置 */
 export const CITY_STRUCTURE_CONFIGS = Object.freeze([
   { type: 'castle', count: 1, fixedCenter: true },

@@ -64,6 +64,33 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
   叶面悬空半格；只改生成格位 → 叶面贴块底仍沉水。水面下沉 0.5 后暴露水面顶面只有**半格高**，
   与陆地整格顶面差半格 —— 同一份几何无法同时贴合，故 `big_house.json` 的 3 个草地 lilypad 已移除
   （「`assets/structures/*.json` 原样复用」的唯一有意例外）。
+- **结构撒布有四条路径，前三条是 M2 欠账（v1.37 补齐）**：① 城市撒布
+  （`flowerBed`/`pavilion`/`tallWell`/城市 filler `house`）；② 城市外 `house`（代码生成，
+  非 JSON —— **草地上的房子在这里**，mc-lite `WorldWorker.js:2946`）；③ 城市外大型静态结构
+  （`desertPyramid`/`desertVillage`/`uglyHouse`/`tank`）。候选在 **region layout 层**算一次
+  （`computeScatterCandidates`，DR-13「各 GEN Worker 只做 rasterize」），`apply.js` 阶段 2.7
+  只做 AABB 裁剪光栅化。唯一权威 = `src/gen/structures/scatter.js`。
+  **四处有意偏离 mc-lite，勿照原样改回**：
+  ① `generateCodeHouse` 的材质/烟囱用 `seededRandom` 而非 mc-lite 的 `Math.random()`
+  （照搬会让同 seed 两次生成配色不同 → 违反红线 2）；
+  ② 判定函数**不带「同类已占用」参数** —— mc-lite 靠 chunk 局部运行期 Set 防重叠，
+  移植成参数会让同一坐标在不同 column 得出不同结论 → 跨 column 光栅化接缝断裂
+  （半个亭子）。取舍依据实测：mc-lite 单 chunk 内同类命中 ≥2 仅 0.75%/1.42%；
+  ③ 「避开树」半径 = **2**（mc-lite house 8/10、pavilion-tallWell 5~7）—— mc-heavy 城市树
+  **无互斥**，密度 1.39%（mc-lite 约 0.44%，高 3 倍），照搬大半径会把撒布结构**全部挡掉**
+  （实测各半径保留率：2→66~72% / 7→2~3% / 8~9→**0%**）；
+  ④ 城市外候选一律**不撒在水下**（mc-lite 无此门控，会产出水下房子）。
+- **撒布密度已刻意低于 mc-lite（勿调回去，会撞破冻结预算）**：城市撒布基值
+  `flowerBed 0.0005→0.00025`（`pavilion`/`tallWell` 按 ×6/×3 派生自动跟随），城市外大 JSON
+  `desertVillage 0.00016→0.00008` / `uglyHouse 0.00008→0.00004`。原因是两条**冻结断言**：
+  `structure-gen` 的 `genP95 < 8ms`（§4.2）—— 大 JSON 1181/719 方块是光栅化大头；
+  `m3-fullscene` 的 `gpuVertexBytes < 150MB`（§4.10）—— 花坛/亭子的花与树叶走 cutout 通道。
+  **`house` 两类都不降**（opaque + 代码生成，不吃 cutout 预算、不是 p95 大头）。
+- **cutout 扩容是离散 ×1.5 跳增，容量须留足余量**：`render-world.js _ensureCapacity` 里
+  reserved 峰值只要超过 `maxVerts` **一个顶点**就整批跳到 ×1.5（1.8M→2.7M = +27MB，且
+  粘性不回缩）。撒布把 cutout 峰值推到 1.80M，故 `CAPACITY.cutout.active` 从 450 调到
+  **550**（maxVerts→2.2M，三通道合计 148MB < 150MB，余量 22%）。往 cutout 通道加方块量
+  （新植被/新结构）时须重测峰值并重标定 —— 差一点就会触发扩容撞破内存预算。
 - **背包物品集合口径 118 项** = registry 126 − `NON_PLACEABLE_ITEMS`（4 项功能性方块）−
   `HIDDEN_FROM_INVENTORY`（4 项可放置但不进背包）。**两个集合语义互斥，勿混为一处**
   —— 把可放置方块塞进 `NON_PLACEABLE_ITEMS` 会让集合语义失真。
@@ -274,6 +301,7 @@ mc-heavy/
    ├─ core/        # game.js / scheduler.js / worker-pool.js / budget.js / perf.js / perf-hud.js
    ├─ voxel/       # constants / block-registry / chunk-column / world-data / blocks-data / faces-data
    ├─ gen/         # noise.js / terrain.js / structure-index.js / structures/*（M2 地标与空中结构）
+   │               #  scatter.js 结构撒布判定 + 代码生成 house（唯一权威；Worker 同构）
    ├─ mesh/        # mesher.js / lighting.js / atlas-loader.js（Worker 同构）
    │               #  iso-icon.js 等轴测投影纯函数；mesher.js 导出 TEMPLATES / FACE_VERTICES /
    │               #  FACE_UVS 供图标烘焙复用——形状与 UV 的唯一权威，图标不得有第二份几何定义

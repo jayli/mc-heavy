@@ -11,6 +11,7 @@ import {
 } from './landmarks.js';
 import { buildCityLayout } from './city-layout.js';
 import { computeSkyCandidates } from './sky-structures.js';
+import { computeScatterCandidates } from './scatter.js';
 
 /**
  * 计算单个 region 的确定性布局（纯函数，无缓存——缓存由调用方 StructureIndex 管）。
@@ -52,7 +53,14 @@ export function computeRegionLayout(regionX, regionZ, seed) {
   // 空中候选（M2-7）：紧凑 Int32Array，GEN 侧按 AABB 裁剪到 column
   const sky = computeSkyCandidates(regionX, regionZ, seed);
 
-  return { regionX, regionZ, pyramidRaw, pyramid, frozenMountain, snowLand, plainLand, island, city, sky };
+  // 撒布候选（M2 欠账补齐）：同为紧凑 Int32Array，GEN 侧按 AABB 裁剪到 column。
+  // 城市候选只在持有 city 布局的 region 算（见 computeScatterCandidates 的口径差异①）。
+  const scatter = computeScatterCandidates(regionX, regionZ, seed, city);
+
+  return {
+    regionX, regionZ, pyramidRaw, pyramid, frozenMountain, snowLand, plainLand,
+    island, city, sky, scatter,
+  };
 }
 
 /**

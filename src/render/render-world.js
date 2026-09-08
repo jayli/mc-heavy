@@ -8,16 +8,21 @@ import { DEBUG_FLAGS } from '../core/debug-config.js';
 const CHANNELS = ['opaque', 'cutout', 'transparent'];
 // 视距 8 容量口径（§4.4.2 v1.6；M3-1 按实测峰值重标定）：
 // instance 元数据便宜按全 slot 预留；顶点按预期活跃非空 section × 平均顶点 × 1.25。
-// maxVerts = active × avgVerts × 1.25 必须 ≥ 全量场景（城市+空岛+云层+洞穴+水面）
+// maxVerts = active × avgVerts × 1.25 必须 ≥ 全量场景（城市+空岛+云层+洞穴+水面+撒布结构）
 // 稳态 sum(reservedV)，否则加载/奔跑期触发 setGeometrySize 整批扩容（重建+拷贝 = 帧卡顿）。
-// 实测（seed 12345，视距 8，289 列稳态）：opaque reserved 2.23M / 1212 slot（avg 1843），
-// cutout reserved 1.46M / 425 slot（avg 3425），transparent reserved 12K / 90 slot。
-// 标定值给峰值 ~25% 余量（跨 seed 城市/林地密度浮动 + optimize() 回收前的瞬时高点），
-// 三通道合计 ~143MB（§4.10「~100MB 级」口径；旧值 opaque 4M 过度分配、cutout 562K 偏小
-// 导致运行时 3× 扩容，M3-1 一并修正）。
+// 实测（seed 12345，视距 8，奔跑 323 列）：opaque reserved 2.59M，cutout reserved 1.80M
+// （撒布补齐后；flowerBed/pavilion/tallWell 的花与树叶走 cutout），transparent reserved 16K。
+// 标定值给峰值 ~22% 余量（跨 seed 城市/林地密度浮动 + optimize() 回收前的瞬时高点）。
+//
+// ⚠️ cutout 扩容是**离散 ×1.5 跳增**（_ensureCapacity）：reserved 峰值只要超过 maxVerts
+// 一个顶点就整批跳到 ×1.5。撒布补齐把 cutout 峰值推到 1.80M —— 旧标定 maxVerts=1.80M
+// （450×3200×1.25）只比峰值高 0，奔跑 323 列实测峰值 1,802,230 超线 → 跳到 2.70M →
+// GPU 顶点缓冲 170MB，撞破 §4.10 的 150MB 冻结预算。故 active 450→550（maxVerts→2.20M），
+// 三通道合计 (2.85M+2.20M+0.125M)×30B = 148MB < 150MB。cutoutSlots 实测 498，active 550 覆盖。
+// 旧值 opaque 4M 过度分配、cutout 562K 偏小导致运行时 3× 扩容，M3-1 一并修正。
 const CAPACITY = {
   opaque:      { active: 1200, avgVerts: 1900 },
-  cutout:      { active: 450, avgVerts: 3200 },
+  cutout:      { active: 550, avgVerts: 3200 },  // 撒布补齐后 450→550（吸收 cutout 峰值，守 150MB）
   transparent: { active: 100, avgVerts: 1000 },
 };
 

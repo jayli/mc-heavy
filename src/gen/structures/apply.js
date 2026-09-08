@@ -13,10 +13,11 @@ import {
   getCityInfo, generateCity, getCityFinalSurfaceY,
 } from './landmarks.js';
 import { getCitySurfaceY, isPointNearCityStructure } from './city-layout.js';
-import { CITY_STRUCTURE_FOOTPRINT, ISLAND_SEA_LEVEL } from './region-config.js';
+import { CITY_STRUCTURE_FOOTPRINT, ISLAND_SEA_LEVEL, SCATTER_FOOTPRINT } from './region-config.js';
 import { preloadStructures, rasterizeStructure, GROUND_SUPPORT_TYPES } from './structure-json.js';
 import { applySkyStructures } from './sky-structures.js';
 import { generateTree, rollVegetation, rollCityTree } from './vegetation.js';
+import { SCATTER_TYPES, SCATTER_STRIDE, generateCodeHouse } from './scatter.js';
 import { SEA_Y } from '../../voxel/constants.js';
 
 /** 城市 placement 用到的 JSON 结构（GEN 携带城市布局时预载）+ 植被树 JSON */
@@ -95,6 +96,26 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
   for (const layout of layouts) {
     if (layout.island) needTypes.add('tower');
     if (layout.plainLand) needTypes.add('pyramidIsland');
+  }
+
+  // 撒布候选（阶段 2.7 光栅化用）：先收集，**据实际出现的类型惰性预载**。
+  //
+  // ⚠️ 不能无条件预载全部 7 个撒布 JSON —— 实测冷 fetch 并行 **3.1ms**（flowerBed 2.9 /
+  // uglyHouse 2.8 / tank 2.8 …），每个新 GEN Worker 的**首个任务**都要付这个代价 →
+  // `genP95` 从 6.5~7.1ms 涨到 8.5~9.2ms（+30%），撞破 §4.2 的 8ms 冻结预算。
+  // 按实际候选预载后，大多数 column 只需 0~2 个类型（撒布命中稀疏），成本回到噪声级。
+  const scatterCandidates = [];
+  for (const layout of layouts) {
+    if (!layout.scatter) continue;
+    for (const arr of [layout.scatter.cityScatter, layout.scatter.outsideScatter]) {
+      if (!arr || arr.length === 0) continue;
+      scatterCandidates.push(arr);
+      // 扫一遍 typeIndex 收集本 column 查询域实际出现的类型（廉价：只读 Int32Array）
+      for (let i = 3; i < arr.length; i += SCATTER_STRIDE) {
+        const t = SCATTER_TYPES[arr[i]];
+        if (t !== 'house') needTypes.add(t); // house 是代码生成，无 JSON
+      }
+    }
   }
   await preloadStructures([...needTypes]);
 
@@ -181,6 +202,34 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
       if (placementIntersects({ x: pl.cx, z: pl.cz }, fp.halfX, fp.halfZ, column.cx, column.cz)) {
         const h = generateHeight(pl.cx, pl.cz, seed);
         rasterizeStructure('pyramidIsland', pl.cx, h + 1, pl.cz, setBlock, column, registry, seed, true);
+      }
+    }
+  }
+
+  // ---- 阶段 2.7：撒布结构光栅化（M2 欠账补齐，flower_bed/pavilion/tall_well/house/沙漠结构）----
+  // 候选在 region layout 层算一次（computeScatterCandidates，DR-13），这里只做 AABB 裁剪
+  // 光栅化（与 pyramidIsland/tower 同模式）—— 每个候选点被所有相交 column 各自光栅化本 column
+  // 部分，接缝无缝拼接（判定是 region 级纯函数，跨 column 结论恒一致）。
+  //
+  // 层序：放在 JSON 结构之后、空中结构之前 —— 撒布结构是地面级内容，须先于空中云/岛写入，
+  // 但晚于城市 placement（mc-lite 城市后置填充在主结构之后，WorldWorker.js:1132）。
+  // 复用上面预载阶段已收集的候选数组（勿在此重新收集 —— 重复声明 `scatterCandidates`
+  // 会让整个模块 SyntaxError → 页面白屏，且重复扫一遍 layouts 是浪费）。
+  for (const arr of scatterCandidates) {
+    for (let i = 0; i < arr.length; i += SCATTER_STRIDE) {
+      const x = arr[i], y = arr[i + 1], z = arr[i + 2];
+      const type = SCATTER_TYPES[arr[i + 3]];
+      // 「远离主建筑 / 避开树 / 避开 flowerBed」等门控已在候选层（rollCityScatter）做过，
+      // 这里只做几何裁剪，不重复判定（重复门控会引入第二份判据 → 红线 1）。
+      const fp = SCATTER_FOOTPRINT[type];
+      if (!fp) continue;
+      if (!placementIntersects({ x, z }, fp.halfX, fp.halfZ, column.cx, column.cz)) continue;
+      if (type === 'house') {
+        // 代码生成小房子（城市 filler 与城市外共用同一几何）
+        generateCodeHouse(x, y, z, setBlock, seed);
+      } else {
+        rasterizeStructure(type, x, y, z, setBlock, column, registry, seed,
+          GROUND_SUPPORT_TYPES.has(type));
       }
     }
   }

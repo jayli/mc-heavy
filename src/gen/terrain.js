@@ -27,6 +27,17 @@ const SURFACE_BY_BIOME = {
 };
 
 /**
+ * biome 的地表方块名 —— `SURFACE_BY_BIOME` 的唯一权威读出口（红线 1）。
+ *
+ * 撒布门控需要按「地表是不是 grass」判定（mc-lite resolveLargeStaticStructureType），
+ * 若让消费者自己写第二份 biome→地表映射表就会漂移（漂移后果：tank/house 撒到沙地上）。
+ * @returns {string}
+ */
+export function surfaceTypeOfBiome(biome) {
+  return SURFACE_BY_BIOME[biome]?.[0] ?? 'grass';
+}
+
+/**
  * 填充整个 column（地层规则逐条移植 mc-lite WorldWorker.js:983-1015）。
  * 直接写 column.blocks（生成路径，不走 set()——不记 edits、不 bump version，
  * GEN 完成接管后由调度器统一置 version 基线）。

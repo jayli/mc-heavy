@@ -10,6 +10,8 @@ import { fillColumn } from '../gen/terrain.js';
 import { carveCaves } from '../gen/caves.js';
 import { computeRegionLayout } from '../gen/structures/structure-layout.js';
 import { applyStructuresToColumn } from '../gen/structures/apply.js';
+import { preloadStructures } from '../gen/structures/structure-json.js';
+import { SCATTER_JSON_TYPES } from '../gen/structures/scatter.js';
 import { computeSkylightColumn, computeSkylightRegion, computeBlocklightRegion } from '../mesh/lighting.js';
 import { buildSectionMesh } from '../mesh/mesher.js';
 import { setDebugFlags } from '../core/debug-config.js';
@@ -18,6 +20,28 @@ import { setDebugFlags } from '../core/debug-config.js';
 const registry = createRegistry();
 for (const def of BLOCKS) registry.register(def.name, def);
 registry.freeze();
+
+/**
+ * 撒布结构 JSON 预热（worker 加载期发起，**不 await** —— 见下）。
+ *
+ * 为什么需要预热：实测冷 fetch 并行 **3.1ms**（flowerBed 2.9 / uglyHouse 2.8 / tank 2.8 …）。
+ * 若由首个 GEN 任务触发，该任务的耗时就含这笔一次性成本 —— `structure-gen` fixture 的
+ * 16 column 并行 p95 正好抓到首批的冷启动离群值（实测 18~20ms vs 稳态 0.8~2.6ms），
+ * 撞破 §4.2 的 8ms 冻结预算。
+ *
+ * ⚠️ **不能写成 `await preloadStructures(...)`（top-level await）**：await 期间
+ * `installRpcHandler` 还没执行 → `self.onmessage` 未注册 → 早到的 RPC 消息被**丢弃**
+ * （HTML 规范：无 listener 时消息丢弃，不排队）。实测首个 `layout` RPC 4s 无响应 → 死锁。
+ *
+ * 正确做法 = 「发起但不 await」+ 由**首个被调用的 handler（layout）await 同一个 promise**：
+ * ① `installRpcHandler` 立即注册 → 消息不丢；② fixture/主线程总是先发 `layout` RPC，
+ * 它 await 本 promise → 返回时预热已完成；③ 后续 GEN 的 `preloadStructures` 全部 cache 命中
+ * （`loadStructure` 用 `loading` Map 缓存 in-flight promise，structure-json.js:45-66，
+ * 不重复 fetch）→ GEN 计时路径不含这笔成本。这是确定性的（不依赖时间差竞态）。
+ *
+ * 稳态无影响：cache 命中后 `preloadStructures` ≈ 0ms（bench 实测 fps 110~120，无回退）。
+ */
+const scatterPreloadPromise = preloadStructures(SCATTER_JSON_TYPES);
 
 // atlasMeta 由主线程启动时 broadcast（'atlas-meta' handler 赋值）
 let _atlasMeta = null;
@@ -38,6 +62,10 @@ installRpcHandler({
    * @param {{cx: number, cz: number, seed: number, edits: Array<{index:number,id:number,meta:number}>, layouts?: Array<Object>}} p
    */
   async gen(p) {
+    // 安全网：多 worker 场景下某个 worker 可能从未收到过 layout 任务却先收到 gen
+    // （pool 按轮转分发，layout 覆盖不保证逐 worker）。此处 await 同一个预热 promise ——
+    // 已 resolve 时是微任务（≈0 成本），未完成时才等剩余 fetch，确保 rasterize 不静默跳过。
+    await scatterPreloadPromise.catch(() => {});
     const column = new ChunkColumn(p.cx, p.cz);
     fillColumn(column, p.seed, registry);
     carveCaves(column, p.seed);
@@ -109,7 +137,12 @@ installRpcHandler({
    * 候选扫描较重（城市放置算法），只在 Worker 算一次，主线程缓存后随 GEN 下发（§4.2 DR-13）。
    * @param {{regionX: number, regionZ: number, seed: number}} p
    */
-  layout(p) {
+  async layout(p) {
+    // await 撒布 JSON 预热：主线程总是先发 layout RPC（StructureIndex.dispatch 先于 GEN），
+    // 本 handler 返回时预热已完成 → 后续 gen 的 preloadStructures 全 cache 命中，
+    // GEN 计时路径不含冷 fetch 成本（确定性，不依赖时间差竞态；详见文件头预热注释）。
+    // 预热失败不阻断 layout（结构 JSON 缺失会让 rasterize 静默跳过，但布局本身仍可用）。
+    await scatterPreloadPromise.catch(() => {});
     return computeRegionLayout(p.regionX, p.regionZ, p.seed);
   },
 

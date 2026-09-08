@@ -27,13 +27,27 @@ export const STRUCTURE_FILES = Object.freeze({
   tower: 'tower.json',
   birchTree: 'brich_tree.json',
   birchTreeWithSnow: 'brich_tree_with_snow.json',
+  // 撒布结构（M2 欠账补齐）。注意 JSON 文件名与 placement 类型名的拼写差异：
+  // flower_bed（下划线）/ pavilion / tall_well（下划线）/ desert_pyramid（下划线）
+  flowerBed: 'flower_bed.json',
+  pavilion: 'pavilion.json',
+  tallWell: 'tall_well.json',
+  desertPyramid: 'desert_pyramid.json',
 });
 
-/** 需要底部支撑柱补地的结构（mc-lite generateStructureWithGroundSupport 清单） */
+/**
+ * 需要底部支撑柱补地的结构（mc-lite generateStructureWithGroundSupport 清单）。
+ *
+ * ⚠️ 撒布结构里只有 `desertPyramid` / `desertVillage` / `uglyHouse` 在此清单 ——
+ * mc-lite 实测：这三个走 `generateStructureWithGroundSupport`（WorldWorker.js:3085/3097/3283），
+ * 而 `flowerBed` / `pavilion` / `tallWell` / `tank` 走 `loader.generate(...)`（:3049/3061/3072/767）
+ * **不补支撑柱**。勿按「都是撒布结构」一刀切加进来 —— 加了会让花坛/亭子多出支撑柱（实测踩坑）。
+ */
 export const GROUND_SUPPORT_TYPES = new Set([
   'castle', 'gate', 'bigHouse', 'regularHouse1', 'desertTempleTube', 'boxHouse',
   'desertVillage', 'doubleTower', 'treeTower', 'junglePyramid', 'pyramidIsland',
   'smallHouse', 'treeHouse', 'woodHouse', 'uglyHouse', 'whiteTower',
+  'desertPyramid',
 ]);
 
 const cache = new Map();   // type → {blocks: [...]}（Y 已归一化，最低点=1）

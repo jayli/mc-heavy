@@ -270,6 +270,51 @@ function checkTestRegistration() {
 }
 
 
+// ---------------------------------------------------------------- [8] 撒布结构引用完整性
+
+/**
+ * 每个撒布结构类型必须三个环节齐全，否则结构**静默消失**（无任何报错）。
+ *
+ * 链路上任一环节缺失的后果都是「方块不出现」，而**方块层面看不出差别** —— 实测删掉
+ * flowerBed 的 STRUCTURE_FILES 映射后，坐标判据的 footprint 框内仍数得到其它结构/树的方块，
+ * 浏览器内单测全绿（无效负向验证）。故这条契约只能静态断言。
+ *
+ *   ① STRUCTURE_FILES 映射 → 缺则 `rasterizeStructure` 静默 return（structure-json.js:84）
+ *   ② assets/structures/*.json 真存在 → 缺则 fetch 404 被 loadStructure 的 catch 吞成空结构
+ *   ③ SCATTER_FOOTPRINT 占地 → 缺则 AABB 相交判定跳过（apply.js `if (!fp) continue`）
+ *
+ * ② 只有本脚本能验（浏览器里 fetch 失败被吞成空结构，不报错）。
+ *
+ * 注：预载环节**无需**单独断言 —— apply.js 从候选数组的 typeIndex 直接取出类型加入
+ * `needTypes`（惰性预载），不存在「第二份预载清单」可与 SCATTER_TYPES 漂移（红线 1）。
+ */
+async function checkScatterStructureIntegrity() {
+  const { STRUCTURE_FILES } = await import('../src/gen/structures/structure-json.js');
+  const { SCATTER_TYPES } = await import('../src/gen/structures/scatter.js');
+  const { SCATTER_FOOTPRINT } = await import('../src/gen/structures/region-config.js');
+
+  // 撒布类型 = SCATTER_TYPES 去掉代码生成的 house（house 无 JSON，走 generateCodeHouse）
+  const jsonTypes = SCATTER_TYPES.filter((t) => t !== 'house');
+  const problems = [];
+
+  for (const t of jsonTypes) {
+    if (!STRUCTURE_FILES[t]) problems.push(`${t} 缺 STRUCTURE_FILES 映射（rasterize 会静默跳过）`);
+    else {
+      const file = path.join(ROOT, 'assets', 'structures', STRUCTURE_FILES[t]);
+      if (!fs.existsSync(file)) {
+        problems.push(`${t} → ${STRUCTURE_FILES[t]} 文件不存在（fetch 404 会被吞成空结构）`);
+      }
+    }
+    if (!SCATTER_FOOTPRINT[t]) problems.push(`${t} 缺 SCATTER_FOOTPRINT 占地（AABB 裁剪会跳过）`);
+  }
+
+  if (problems.length) {
+    for (const p of problems) failures.push(`[撒布结构] ${p}`);
+  } else {
+    infos.push(`[撒布结构] ${jsonTypes.length} 个 JSON 撒布类型三环节齐全（映射/文件/占地）`);
+  }
+}
+
 // ---------------------------------------------------------------- 主流程
 
 const REGISTRY = await buildDefaultRegistry();
@@ -281,6 +326,7 @@ checkIconAtlasArtifacts();
 checkIconFreshness();
 checkTestRegistration();
 checkGeometryAuthority();
+await checkScatterStructureIntegrity();
 
 console.log('[check:data] 数据契约检查');
 for (const i of infos) console.log(`  ✓ ${i}`);
