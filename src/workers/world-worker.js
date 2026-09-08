@@ -12,6 +12,7 @@ import { computeRegionLayout } from '../gen/structures/structure-layout.js';
 import { applyStructuresToColumn } from '../gen/structures/apply.js';
 import { preloadStructures } from '../gen/structures/structure-json.js';
 import { SCATTER_JSON_TYPES } from '../gen/structures/scatter.js';
+import { ZOMBIE } from '../entities/zombies/zombie-config.js'; // M6 ai 分支：纯数据，无 DOM/three
 import { computeSkylightColumn, computeSkylightRegion, computeBlocklightRegion } from '../mesh/lighting.js';
 import { buildSectionMesh } from '../mesh/mesher.js';
 import { setDebugFlags } from '../core/debug-config.js';
@@ -164,5 +165,45 @@ installRpcHandler({
   'debug-flags'(p) {
     setDebugFlags(p);
     return true;
+  },
+
+  /**
+   * AI：丧尸追逐意图（M6 规格 §2）。**在既有 message switch 增加分支，不新建 Worker**
+   * （红线 3 + M5 规格 §3：Worker 创建入口唯一 = `core/worker-pool.js`）。
+   *
+   * 输入/输出仅为可 clone 的 number/object（结构化克隆）—— **不读世界、不传局部体素 view**：
+   * 本 handler 只算朝玩家的归一化水平速度。重力/AABB 碰撞/step-up 一律由主线程物理用
+   * `world.isSolid()` 做（worker 里没有世界数据，也不该有）。
+   *
+   * 每 0.05 秒一条批量 RPC，承载全部距玩家 ≤60 格的活尸；主线程回包时逐个验 `{id,generation}`
+   * （红线 7 版本协议）。距离 >80（感知范围）输出 idle/零速度 —— 60 格是**预算门**（超出的
+   * 丧尸根本不进批次），80 格是**感知门**（进了批次但太远则不追）。
+   *
+   * @param {{playerPosition: number[], dt: number,
+   *          zombies: Array<{id: string, generation: number, position: number[], yaw: number, mode: string}>}} p
+   * @returns {{updates: Array<{id: string, generation: number, vx: number, vz: number, mode: string}>}}
+   */
+  ai(p) {
+    const [px, , pz] = p.playerPosition;
+    const updates = [];
+    for (const z of p.zombies ?? []) {
+      const [x, , z0] = z.position;
+      const dx = px - x, dz = pz - z0;
+      const dist = Math.hypot(dx, dz);
+      // 感知门外：idle + 零速度（不追）。感知门内：归一化方向 × 速度上限
+      if (dist > ZOMBIE.perceptionRange || dist < 1e-6) {
+        updates.push({ id: z.id, generation: z.generation, vx: 0, vz: 0, mode: 'idle' });
+        continue;
+      }
+      // 朝玩家的单位向量 × 追逐速度（长度恒 = speed，主线程还会再钳一次做防御）
+      updates.push({
+        id: z.id,
+        generation: z.generation,
+        vx: dx / dist * ZOMBIE.speed,
+        vz: dz / dist * ZOMBIE.speed,
+        mode: 'chasing',
+      });
+    }
+    return { updates };
   },
 });

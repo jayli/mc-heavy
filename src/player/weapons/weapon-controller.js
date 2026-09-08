@@ -36,6 +36,28 @@ export class WeaponController {
     this.shotsFired = 0;
     this.blockDamageEnabled = false; // 保留 mc-lite 的安全默认值
     this.lastEffect = null;
+    /**
+     * M6 实体查询（Game 装配时注入）。**缺省 null → 不查实体**：徒手/无丧尸场景照常开火，
+     * 向后兼容（既有 M4 测试与交互不受影响）。注入而非 import entities —— controller 是纯
+     * 逻辑层，不依赖 entities/render（依赖方向 §3）。
+     * @type {{raycast: Function, damage: Function}|null}
+     */
+    this.entityQuery = null;
+  }
+
+  /**
+   * 注入实体查询（M6 规格 §2）。`raycast` = M5 `EntityManager.raycast()`（实体命中唯一入口，
+   * 红线 6 禁止 Raycaster）；`damage` = `ZombieService.damage(id, amount, nowMs)`。
+   * Game 只把这两个函数注入，controller 不持有任何实体集合（红线 1）。
+   * @param {{raycast: (origin:number[], dir:number[], maxDist:number, predicate:Function)=>object|null,
+   *          damage: (id:string, amount:number, nowMs:number)=>object|null}} query
+   * @returns {{raycast: Function, damage: Function}}
+   */
+  setEntityQuery(query) {
+    this.entityQuery = (query && typeof query.raycast === 'function' && typeof query.damage === 'function')
+      ? query
+      : null;
+    return this.entityQuery;
   }
 
   /**
@@ -128,8 +150,61 @@ export class WeaponController {
     return [effect];
   }
 
-  /** 手枪/加特林：首个 DDA 方块阻挡并决定曳光终点；开关开启且可破坏才写世界。 */
+  /**
+   * M6 统一遮挡口径（M6 规格 §2）：**实体命中 vs DDA 方块命中的最近距离比较**。
+   *
+   * 口径三要素（每条都由测试钉住）：
+   * ① 先取 DDA 距离（无方块命中 = `Infinity`）；
+   * ② 以该枪 `entityRange` 发起 `EntityManager.raycast()` —— maxDist 裁剪让超射程的实体
+   *    根本不返回（不是「返回了再判距离」）；
+   * ③ **仅实体距离严格小于 DDA 距离时**扣血 + 发 `entity-hit`。相等距离按**方块优先** ——
+   *    保证实体不穿墙（墙正好贴在丧尸脸上时，子弹先打墙）。
+   *
+   * 返回 `null` 表示无实体命中（或实体被方块挡住）。**未注入 entityQuery 时直接返回 null**
+   * —— 徒手/无丧尸场景照常开火（向后兼容）。
+   *
+   * @param {AimSnapshot} aim @param {object} weapon
+   * @returns {null|{entityId: string, entityDamage: number, end: number[]}}
+   */
+  _queryEntityHit(aim, weapon) {
+    if (!this.entityQuery) return null;
+    const { origin, forward, target } = aim;
+    // ① DDA 距离：无命中 → Infinity（实体永远「更近」，可正常受伤）
+    const blockDist = target && target.hit ? target.dist : Infinity;
+    // ② 以该枪射程发起实体射线。predicate 只放行 zombie —— 未来炮塔弹丸/矿车等实体
+    //    不得被枪打死（它们是别的 Epic 的实体，走各自的交互路径）。
+    const hit = this.entityQuery.raycast(origin, forward, weapon.entityRange,
+      (entity) => entity.type === 'zombie');
+    if (!hit) return null;
+    // ③ 严格小于才命中（相等按方块优先）
+    if (!(hit.dist < blockDist)) return null;
+    // **时间基准必须是 `performance.now()`，不能用 `Date.now()`**（实测踩坑）：
+    // `ZombieRenderer.sync(zombies, nowMs)` 的 nowMs 来自 game.js 帧循环的
+    // `setAnimationLoop` 回调参数（= performance.now() 基准），红闪判定是
+    // `nowMs < state.flashedUntil`。实测两个基准相差约 17 亿毫秒
+    // （Date.now()=1788847988963 vs performance.now()=676.6）→ 若这里用 Date.now()，
+    // `flashedUntil` 会是个天文数字，判定恒为 true → **丧尸永久红闪、永不消退**。
+    this.entityQuery.damage(hit.id, weapon.entityDamage, performance.now());
+    const end = [
+      origin[0] + forward[0] * hit.dist,
+      origin[1] + forward[1] * hit.dist,
+      origin[2] + forward[2] * hit.dist,
+    ];
+    return { entityId: hit.id, entityDamage: weapon.entityDamage, end };
+  }
+
+  /**
+   * 手枪/加特林：首个 DDA 方块阻挡并决定曳光终点；开关开启且可破坏才写世界。
+   * M6：**实体更近时不写方块**（实体遮挡方块），且效果事件改为 `entity-hit`。
+   */
   _fireHitscan(aim, weapon) {
+    const entityHit = this._queryEntityHit(aim, weapon);
+    if (entityHit) {
+      // 实体挡在前面：不写方块世界（子弹被丧尸吃掉），曳光终点落在实体命中点
+      return this._makeEffect(weapon, aim, entityHit.end, {
+        type: 'entity-hit', entityId: entityHit.entityId, entityDamage: entityHit.entityDamage,
+      });
+    }
     const { origin, forward, target } = aim;
     let end;
     if (target && target.hit) {
@@ -157,8 +232,13 @@ export class WeaponController {
    * MAG7：无视开关，一次批量编辑提交全部可破坏候选（M4 有意偏离 mc-lite 的分批定时器）。
    * 曳光终点必须在准心轴上（见 MAG7_MISS_RANGE 注释）：3×3 体积扫描的首个候选常在准心轴
    * 之外（right/up 基底上 i,j∈{-1,0,1}），拿它当终点会让曳光斜向偏转、与枪管方向不对齐。
+   *
+   * M6：**先完成 10 格实体命中，再按 M4 已定义的单发体积扫描提交方块** —— 它不是 projectile，
+   * 也不把方块扫描改成实体射线（M6 规格 §2 的明确口径）。两步是同一发的独立动作：实体命中
+   * 与方块破坏互不阻断（命中丧尸的同时仍然炸掉周围的墙）。
    */
   _fireMag7(aim, weapon) {
+    const entityHit = this._queryEntityHit(aim, weapon);
     const changes = collectMag7Changes(aim, this.blockQuery, this.registry);
     if (changes.length > 0) this.editor.setBlocks(changes);
     // 终点距离 = 准心射线的命中距离（钳到扫描范围上限），无命中则取上限。
@@ -168,20 +248,31 @@ export class WeaponController {
     const dist = target && target.hit
       ? Math.min(target.dist, MAG7_MISS_RANGE)
       : MAG7_MISS_RANGE;
-    const end = [
+    const end = entityHit ? entityHit.end : [
       origin[0] + forward[0] * dist,
       origin[1] + forward[1] * dist,
       origin[2] + forward[2] * dist,
     ];
-    return this._makeEffect(weapon, aim, end);
+    return entityHit
+      ? this._makeEffect(weapon, aim, end, {
+        type: 'entity-hit', entityId: entityHit.entityId, entityDamage: entityHit.entityDamage,
+      })
+      : this._makeEffect(weapon, aim, end);
   }
 
-  /** 组装纯效果事件：start 按相机基底展开 localStart。 */
-  _makeEffect(weapon, aim, end) {
+  /**
+   * 组装纯效果事件：start 按相机基底展开 localStart。
+   * @param {object} weapon @param {AimSnapshot} aim @param {number[]} end
+   * @param {{type?: string, entityId?: string, entityDamage?: number}} [override]
+   *        M6 实体命中时覆盖 type 为 `entity-hit` 并带上 entityId/entityDamage。
+   *        曳光/音效/后坐/视图模型这些渲染消费字段**不变** —— 曳光终点已在调用侧改成实体命中点，
+   *        其余口径与普通射击一致（命中实体仍有曳光与枪声）。
+   */
+  _makeEffect(weapon, aim, end, override = null) {
     const { origin, forward, right, up } = aim;
     const [lsx, lsy, lsz] = weapon.localStart;
     return {
-      type: 'shot',
+      type: override?.type ?? 'shot',
       weaponId: weapon.id,
       sound: weapon.sound,
       volume: weapon.volume,
@@ -194,6 +285,8 @@ export class WeaponController {
       localStart: [...weapon.localStart],
       recoil: weapon.recoil,
       tracer: { ...weapon.tracer },
+      ...(override?.entityId !== undefined ? { entityId: override.entityId } : {}),
+      ...(override?.entityDamage !== undefined ? { entityDamage: override.entityDamage } : {}),
     };
   }
 }

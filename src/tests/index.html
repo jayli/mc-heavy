@@ -4,6 +4,22 @@
   <meta charset="UTF-8">
   <title>mc-heavy 测试</title>
   <link rel="icon" href="data:,">
+  <!--
+    import map：M6 起 `test-zombies.js` 需在浏览器内构造受控渲染器（InstancedMesh 容量/几何/矩阵
+    断言），故引入 three。其余单测全部相对路径 import、无 three 依赖 —— 加 map 对它们是 no-op。
+    被测的**同构层模块**（voxel/gen/mesh/entities/workers）仍不得 import three，
+    `npm run check:arch` 静态门守（红线 8/10）。
+  -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "/vendor/three/three.webgpu.js",
+      "three/tsl": "/vendor/three/three.tsl.js",
+      "three/webgpu": "/vendor/three/three.webgpu.js",
+      "three/addons/": "/vendor/three/addons/"
+    }
+  }
+  </script>
 </head>
 <body>
   <pre id="report"></pre>
@@ -39,6 +55,7 @@
     import './test-world-editor.js';
     import './test-weapons.js';
     import './test-entity-manager.js';
+    import './test-zombies.js';
 
     runAndExpose().then((r) => {
       document.getElementById('report').textContent =

@@ -21,6 +21,8 @@ export const WEAPONS = freeze({
     transform: { scale: [0.09, 0.09, 0.09], position: [0.3, -0.85, -0.4], rotation: [0, 0, 0] },
     muzzleOffset: [0.3, -0.82, -0.44], localStart: [0.3, -0.33, -0.98],
     tracer: { color: 0xffff00, thickness: 1, lifetime: 0.1 }, automatic: true,
+    // M6 增补（M6 规格 §2）：实体伤害与射程。手枪 25 → 四发致死（生命 100）
+    entityDamage: 25, entityRange: 40,
   },
   [WEAPON_IDS.MAG7]: {
     id: 'mag7', model: 'mag7', cooldown: 1.5, recoil: 0.15, sound: 'mag7_fire', volume: 0.2,
@@ -28,6 +30,9 @@ export const WEAPONS = freeze({
     muzzleOffset: [0.3, -0.82, -0.44], localStart: [0.55, -0.4, -1.8],
     tracer: { color: 0xff6600, thickness: 6, lifetime: 0.15 }, automatic: false,
     scan: { min: 1, max: 10, step: 0.5, halfWidth: 1, maxBlocks: 40 },
+    // M6 增补：实体射程**必须等于** `scan.max`（同一把枪的实体/方块两个射程口径不得漂移）。
+    // 999 → 一击致死；MAG7 不是 projectile，实体命中与方块扫描是同一发的两个独立步骤。
+    entityDamage: 999, entityRange: 10,
   },
   [WEAPON_IDS.MINIGUN]: {
     id: 'minigun', model: 'minigun', cooldown: 0.07, recoil: 0, sound: 'minigun_fire', volume: 0.15,
@@ -37,5 +42,7 @@ export const WEAPONS = freeze({
     muzzleOffset: [0.3, -0.82, -0.44], localStart: [0.5, -0.5, -1.8],
     tracer: { color: 0xffff00, thickness: 0.5, lifetime: 0.08 }, automatic: true,
     spin: { targetRadiansPerSecond: 25, shootingRetentionAt60Hz: 0.9, idleRetentionAt60Hz: 0.85 },
+    // M6 增补：35 → 三发致死
+    entityDamage: 35, entityRange: 40,
   },
 });

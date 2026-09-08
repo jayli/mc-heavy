@@ -22,6 +22,8 @@ import { WorldEditor } from './world-editor.js';
 import { EntityManager } from '../entities/entity-manager.js';
 import { probeDefinition } from '../entities/entity-types.js';
 import { EntityRenderLayer, createProbeRenderDef } from '../render/entity-render-layer.js';
+import { ZombieService, zombieDefinition } from '../entities/zombies/zombie-system.js';
+import { ZombieRenderer } from '../render/zombie-renderer.js';
 import { loadAtlas } from '../mesh/atlas-loader.js';
 import { findSpawnY } from '../gen/terrain.js';
 import { getCitySpawnPoint, getCityInfo } from '../gen/structures/city-layout.js';
@@ -167,7 +169,19 @@ export class Game {
       const unload = this.entities.beginColumnUnload(key);
       return {
         ready: this.persistence.saveEntities(unload.snapshots),
-        commit: () => unload.commit(),
+        // **顺序：先 ZombieService 回收，再 M5 commit**。
+        // `unload.commit()` 内部会调 `entities.despawnColumn(key)` 回收临时实体（含丧尸），
+        // 那条路径**绕过 ZombieService** → 渲染 slot 不归还（实例矩阵残留、容量被占满）。
+        // 故必须先走 `zombies.despawnColumn()`（它回收实体并归还 slot），再让 commit 收尾
+        // （此时丧尸已回收，commit 内的 despawnColumn 返回 0，无害）。
+        // 闭包延迟调用：注册时 this.zombies 尚未创建，卸载真正发生时已装配完成。
+        // 返回值 = 丧尸回收数 + commit 回收数之和（本次卸载真实回收的实体总量）。
+        // `unload.commit()` 只计持久实体 —— 单返回它会让「卸载回收了几只丧尸」不可观测
+        // （Scheduler 只 try/catch 不消费该值，故改语义安全，见 scheduler.js:324）。
+        commit: () => {
+          const zombies = this.zombies?.despawnColumn(key) ?? 0;
+          return zombies + unload.commit();
+        },
         cancel: () => unload.cancel(),
       };
     });
@@ -185,6 +199,24 @@ export class Game {
     // 未来丧尸改用实例渲染器）。layer 不回写 state、不调 setBlock、不作命中真相。
     this.entityLayer = new EntityRenderLayer({ scene: this.scene });
     this.entityLayer.register('probe', createProbeRenderDef());
+
+    // ---- M6：丧尸装配 ----
+    // ZombieService 是 M6 唯一玩法入口（M6 规格 §2）：state 权威仍在 EntityManager，
+    // ZombieService 只管玩法校验/生命/slot 分配/AI 编排，不持有第二份实体集合（红线 1）。
+    // ZombieRenderer 是六个固定容量 20 的 InstancedMesh（M6 规格 §3），**不走 EntityRenderLayer**
+    // —— layer 是 per-entity Group 语义（20+ 实体时是性能反模式，M6 规格明令禁止每尸 Group）。
+    // 两者经 onSpawn/onDespawn 钩子对称接线：slot 单一权威在 service，renderer 只接收。
+    // 构造顺序：先 renderer 后 service —— service 的钩子闭包引用 renderer，反序会让闭包
+    // 在「已创建但未赋值」的窗口里读到 undefined（运行时不炸只因闭包延迟调用，勿照直觉改回）。
+    this.zombieRenderer = new ZombieRenderer({ scene: this.scene });
+    this.zombies = new ZombieService({
+      entities: this.entities, world: this.world,
+      // M6 AI：经既有 WorkerPool 的统一 `ai` RPC（不新建 Worker，红线 3 / M5 规格 §3）
+      pool: this.pool,
+      onSpawn: (id, slot) => this.zombieRenderer.acquireSlot(id, slot),
+      onDespawn: (id) => this.zombieRenderer.releaseSlot(id),
+    });
+    this.entities.registerType('zombie', zombieDefinition);
 
     // 出生点（mc-lite 语义：优先 City 中心出生，保证出生即见城市天际线，§7 M2 验收）
     const regionLayout = await this.scheduler.structureIndex.waitForRegion(0, 0);
@@ -223,9 +255,22 @@ export class Game {
       // M3.1 模态守卫（§4.5.4）：面板打开时 Player 的 keydown 全部拦截。
       // 谓词注入而非传 Game 本身，保持 player/ 不反向依赖 core/（依赖方向 §3）
       isModal: () => this.uiModal,
+      // M6：X 键生成丧尸（调试键，对齐 mc-lite）。注入回调而非传 Game（依赖方向 §3，与 isModal 同手法）
+      onSpawnZombie: () => this.spawnZombieNearPlayer(),
     });
     this.player.spawn(this.spawnX, this.spawnY, this.spawnZ);
     this.scene.add(this.player.highlight);
+
+    // M6：把实体查询注入**同一个** M4 controller（M6 规格 §2）。只注入两个函数 ——
+    // ① `EntityManager.raycast()`：实体命中唯一入口（红线 6 禁止 Raycaster，地形仍走 DDA）；
+    // ② `ZombieService.damage()`：立即改权威 state + 置 flashedUntil。
+    // controller 不持有任何实体集合、不 import entities/render（依赖方向 §3）。
+    // 必须在 Player 构造之后调 —— weaponController 由 Player 构造期创建。
+    this.player.weaponController.setEntityQuery({
+      raycast: (origin, dir, maxDist, predicate) =>
+        this.entities.raycast(origin, dir, maxDist, predicate),
+      damage: (id, amount, nowMs) => this.zombies.damage(id, amount, nowMs),
+    });
 
     // 天气 + 雨效（M3-3）：状态机自动周期（晴 60~180s → 雨 30~90s，5s 过渡），
     // rain 效果移植 mc-lite RainEffect（world.isSolid 地面截停；267 滴分批迁移削峰）
@@ -284,6 +329,15 @@ export class Game {
       // M5 帧序固定：player.update → entities.update → scheduler.update → entityLayer.sync → render
       // （M5 规格 §2）。entities.update 在 scheduler 之前：实体先推进位置，scheduler 再用最新
       // position 判定卸载/恢复，避免实体跨 column 后被旧索引漏回收。
+      //
+      // M6 在此帧序里插入两步（M6 规格 §2）：
+      // ① `zombies.update(dt)` 在 `entities.update` **之前** —— AI 编排先把追逐意图写进
+      //    state.velocity，物理才能用本帧的意图推进。反序会让丧尸用上帧（或零）意图走一步。
+      // ② 丧尸物理在 `zombieDefinition.update` 里，由下面这行 `entities.update` 驱动
+      //    （60Hz 固定步长 accumulator 在 definition 内），**不在 ZombieService 里跑物理** ——
+      //    两处物理会让丧尸推进两遍（速度翻倍），是同一事实的两个副本（红线 1）。
+      const pp = this.player.physics.pos;
+      this.zombies.update(dt, { playerPosition: [pp.x, pp.y, pp.z] });
       this.entities.update(dt, { world: this.world });
       this.scheduler.update(this.player.physics.pos.x, this.player.physics.pos.z);
       this.persistence.scheduleFlush(this.world); // 5s 防抖写盘（有 edits 才真正写）
@@ -299,6 +353,9 @@ export class Game {
       // M5 帧序最后一步：把实体 pose 发布成 scene 节点（scheduler 可能已卸载/恢复实体，
       // 用最新集合 sync，节点数恒等于实体数 —— 生命周期对称）
       this.entityLayer.sync(this.entities.entities());
+      // M6：丧尸六部件实例发布（只读 pose → 位置/朝向 + 步态 + 200ms 红闪）。
+      // 传时间戳而非 dt —— renderer 自己算 dt 累积步态相位（mc-lite `_walkTime` 口径）。
+      this.zombieRenderer.sync(this.zombies, nowMs);
       this.renderer.render(this.scene, this.camera);
       // info 在每帧 render 前被 autoReset 清零，render 后捕获才是本帧真实值
       // （HUD/测试异步读取 renderer.info 会撞上重置点，必须在此快照）
@@ -515,6 +572,55 @@ export class Game {
   /** 只读武器调试状态（含曳光池/视图模型/音频请求计数）。 */
   weaponDebugState() { return this.player.weaponDebugState(); }
 
+  // ---- M6 调试键（X 键生成丧尸，对齐 mc-lite `Game.js:155-202`）----
+
+  /**
+   * 在玩家附近生成一只丧尸（X 键）。**调试入口，不是玩法** —— mc-lite 的 X 键同样是
+   * `[Debug]` 用途（随机角度 + 随机距离 + console.log），M6 规格 §1 明确「无昼夜自然刷怪」，
+   * 正式的生成入口是 M7 巢穴（经 `ZombieService.spawn()`）。
+   *
+   * **两处有意偏离 mc-lite**（都是 M6 验收时实测到的坑，详见验收报告 §4）：
+   * ① 向下扫判据用 `isSolid`，不是 mc-lite 的「非空气」（`getBlock !== null && !== 'air'`）。
+   *    理由：M2-7 云层 `supportsPlayer=1` 但 `solid=0`，按「非空气」会把云面当地面 →
+   *    `ZombieService.spawn` 的「脚下 solid」门控拒绝 → 生成静默失败。
+   * ② 扫描深度 64 格，不是 mc-lite 的 10 格。理由：`findSpawnY`（`gen/terrain.js:98`）从世界顶
+   *    向下扫第一个非空气方块，会把空中结构当出生点 → 随机 seed 下玩家可能在云面上（实测
+   *    y≈56），与真实地面（y≈17~26）落差约 40 格，10 格扫不到。
+   *
+   * 另：mc-lite 只试一次落点，失败就静默无输出。这里最多试 8 次不同随机落点，并把结果
+   * 返回给调用方（便于测试断言，不靠 console.log）。
+   *
+   * 随机数用 `Math.random()`（不是 seededRandom）：X 键是玩家手动触发的**调试动作**，
+   * 时机本身不可复现，且丧尸是临时实体不入存档 —— 不属红线 2 的「seed 确定性世界生成」范畴
+   * （对比 v1.37：`generateCodeHouse` 是生成期代码，必须用 seededRandom）。
+   *
+   * @returns {{spawned: string|null, position: number[]|null, attempts: number, count: number}}
+   */
+  spawnZombieNearPlayer() {
+    const p = this.player.physics.pos;
+    let attempts = 0;
+    for (let attempt = 0; attempt < 8; attempt++) {
+      attempts++;
+      // mc-lite 语义：随机角度 + 距玩家 2~10 格
+      const angle = Math.random() * Math.PI * 2;
+      const distance = Math.random() * 8 + 2;
+      const x = Math.floor(p.x + Math.cos(angle) * distance);
+      const z = Math.floor(p.z + Math.sin(angle) * distance);
+      // 向下扫真实地面（solid 判据，见上方偏离 ①/②）
+      for (let y = Math.floor(p.y); y >= Math.floor(p.y) - 64; y--) {
+        if (this.world.getBlockId(x, y, z) === 0
+          && this.world.getBlockId(x, y + 1, z) === 0
+          && this.world.isSolid(x, y - 1, z)) {
+          const id = this.zombies.spawn([x + 0.5, y, z + 0.5], { source: 'debug-key' });
+          if (id) return { spawned: id, position: [x + 0.5, y, z + 0.5], attempts, count: this.zombies.count() };
+          // 落点合法但被上限拒绝（20 只已满）→ 不再换落点重试，直接如实返回
+          return { spawned: null, position: [x + 0.5, y, z + 0.5], attempts, count: this.zombies.count() };
+        }
+      }
+    }
+    return { spawned: null, position: null, attempts, count: this.zombies.count() };
+  }
+
   dispose() {
     this.renderer.setAnimationLoop(null);
     // M3.1：背包面板在 window 上挂 keydown 监听，不清理会跨实例串扰
@@ -528,6 +634,10 @@ export class Game {
     // M5：反向释放实体运行时（layer → manager → pool → renderer）。
     // 先释放渲染层（scene 节点）再释放 manager（state 权威），与启动顺序相反。
     this.entityLayer?.dispose();
+    // M6：先回收丧尸（service 归还 slot），再释放渲染器（scene 六部件），最后 manager
+    // —— 与启动顺序相反。反序会让 manager.dispose 触发 despawn 时 renderer 已不存在。
+    this.zombies?.dispose();
+    this.zombieRenderer?.dispose();
     this.entities?.dispose();
     this.pool.dispose();
     this.renderer.dispose();

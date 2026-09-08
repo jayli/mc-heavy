@@ -33,13 +33,19 @@ export class Player {
    * @param {() => boolean} [opts.isModal] 模态谓词（M3.1）：返回 true 时 keydown 全部拦截。
    *        注入而非直接引用 Game，保持 Player 不反向依赖 core/（依赖方向 §3）
    */
-  constructor({ world, camera, scheduler, registry, canvas, editor, weaponRuntime = null, isModal = () => false }) {
+  constructor({ world, camera, scheduler, registry, canvas, editor, weaponRuntime = null, isModal = () => false, onSpawnZombie = null }) {
     this.world = world;
     this.camera = camera;
     this.scheduler = scheduler;
     this.registry = registry;
     this.editor = editor;
     this._isModal = isModal;
+    /**
+     * M6 X 键生成丧尸的回调（Game 注入 `() => this.spawnZombieNearPlayer()`）。
+     * 注入而非直接引用 Game —— 保持 Player 不反向依赖 core/（依赖方向 §3，与 `isModal` 同手法）。
+     * 缺省 null → X 键无效果（Player 单独构造时，如测试 fixture）。
+     */
+    this._onSpawnZombie = onSpawnZombie;
     // M4 武器运行时（视图模型/曳光/音频由 Game 注入；controller 随后由 Game 赋值）
     this.viewWeapon = weaponRuntime?.viewWeapon ?? null;
     this.tracerRenderer = weaponRuntime?.tracerRenderer ?? null;
@@ -112,6 +118,10 @@ export class Player {
         void this.cycleWeapon();
         if (this.audioManager) void this.audioManager.unlock();
       }
+      // M6：KeyX 生成一只丧尸（对齐 mc-lite `Game.js:155`，调试用途）。非重复事件才触发 ——
+      // 否则按住 X 会以键盘重复率（约 30Hz）连续生成，瞬间填满 20 上限。
+      // 上限校验由 `ZombieService.spawn()` 负责（满额返回 null），这里不重复判断。
+      if (e.code === 'KeyX' && !e.repeat && this._onSpawnZombie) this._onSpawnZombie();
     };
     const onKeyUp = (e) => this.keys.delete(e.code);
     // pointer lock 请求必须吞掉拒绝（mc-lite Player.js:292 同款 `.catch(() => {})`）：
@@ -239,6 +249,46 @@ export class Player {
   /** 自动化测试入口：走与键鼠完全相同的控制器路径，仍遵守冷却。@returns {object[]} */
   fireWeaponOnce() {
     return this.weaponController.fireOnce(this._buildAim());
+  }
+
+  /**
+   * 仅测试的朝向 helper（M6 plan Task 3）：把「看向某个世界点」翻译成 yaw/pitch，
+   * 并**在同一帧重新计算 DDA target**。
+   *
+   * 为什么需要它（无头环境的约束）：Playwright 无真实键鼠/pointer lock，`onMouseMove` 有
+   * `document.pointerLockElement !== this.canvas` 守卫 → 无法用真实输入转向。而无头测试
+   * 需要精确瞄准某只丧尸来验证实体伤害。
+   *
+   * **它不绕过 WeaponController，也不替换真实 pointer-lock 输入**（M6 plan Task 3 明确口径）：
+   * 只写 `this.yaw`/`this.pitch`（真实输入路径写的同一对字段），再跑一遍 `update()` 里
+   * 同款的相机姿态 → DDA 射线流程，让 `this.target` 与画面一致。之后 `fireWeaponOnce()`
+   * 走的仍是 `_buildAim()` + controller 状态机，与键鼠路径完全相同。
+   *
+   * 为什么必须重算 target：`_buildAim()` 读的是 `this.target`（上一帧的 DDA 结果）。只改
+   * yaw/pitch 不重算 → 射线方向变了但 target 还是旧的 → 命中判定用的是旧方向（实测踩坑：
+   * 手动设 yaw/pitch 后开火，实体没被命中）。
+   *
+   * @param {number[]} dir 从相机指向目标的向量（世界空间，无需归一化）
+   * @returns {{yaw: number, pitch: number, target: object|null}}
+   */
+  setTestAim(dir) {
+    const len = Math.hypot(dir[0], dir[1], dir[2]);
+    if (!(len > 0)) return null;
+    // 与 `onMouseMove` 同一约定：yaw 绕 Y 轴（atan2(-x, -z) 使 -Z 为前方）、pitch 绕 X 轴，
+    // 并钳在与真实输入相同的范围内（±(π/2 - 0.01)，防止万向锁/射线退化）
+    this.yaw = Math.atan2(-dir[0], -dir[2]);
+    this.pitch = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, Math.asin(dir[1] / len)));
+    // 同一帧重算相机姿态 + DDA target（与 update() 里的流程同款）
+    const p = this.physics.pos;
+    const camY = p.y + EYE_HEIGHT + this._stepLift.offset;
+    this.camera.position.set(p.x, camY, p.z);
+    this.camera.rotation.set(0, 0, 0);
+    this.camera.rotateY(this.yaw);
+    this.camera.rotateX(this.pitch);
+    const forward = new THREE.Vector3(0, 0, -1).applyEuler(this.camera.rotation);
+    const r = raycastVoxel(this.world, [p.x, camY, p.z], [forward.x, forward.y, forward.z], REACH);
+    this.target = r.hit ? r : null;
+    return { yaw: this.yaw, pitch: this.pitch, target: this.target };
   }
 
   /** 设置普通枪是否破坏方块（MAG7 不受限）。@param {boolean} enabled @returns {boolean} */

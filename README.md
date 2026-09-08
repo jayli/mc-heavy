@@ -45,12 +45,19 @@ npm run atlas        # 重新生成 assets/atlas.png + atlas.json（世界渲染
 （M3.1 背包 / M3.2 方块朝向放置交互）也已落地；此后是一串独立 bugfix 与改造
 （v1.19~v1.35）；第二阶段 **M4 玩家武器已完成并验收**（报告
 `docs/m4-weapons-acceptance-report.md`），**M5 实体运行时已完成并验收**（报告
-`docs/m5-entity-runtime-acceptance-report.md`），M6~M7 规格与计划已备好。
+`docs/m5-entity-runtime-acceptance-report.md`），**M6 丧尸已完成并验收**（报告
+`docs/m6-zombies-acceptance-report.md`；丧尸不攻击玩家，无 PlayerVitals），
+**M7 玩家放置丧尸巢穴尚未开始**（规格与计划已备好）。
 
 **M4 武器操作**：`KeyR` 循环切换徒手/手枪/MAG7/加特林；持枪时左键按住持续射击
 （MAG7 单击单发），右键仍可放方块；武器方块破坏默认**关闭**（`game.setGunBlockDamage(true)`
 开启，MAG7 不受此开关限制）。三件武器模型为仓库受控 GLB（`assets/models/weapons/`），
 复制/替换后须跑 `npm run validate:weapon-assets`；M4 不支持用户导入模型。
+
+**M6 丧尸**：`KeyX` 在玩家附近生成一只丧尸（**调试键**，对齐 mc-lite `Game.js:155`；随机角度
++ 距玩家 2~10 格，向下扫真实地面）。丧尸不攻击玩家（无 `PlayerVitals`），会追逐玩家
+（1.2 格/秒），可被武器命中致死（手枪 4 发 / 加特林 3 发 / MAG7 1 发），默认活动上限 20 只。
+正式的生成入口是 M7 巢穴（尚未开始），X 键仅用于实玩验证。
 
 测试与计数（用例数、图标项数、atlas tile 数）**以 `npm run check:data` 输出为准**，
 不在文档硬编码 —— 同一事实的多个副本会漂移。
@@ -96,8 +103,9 @@ mc-heavy/
    ├─ gen/       # noise / terrain / structure-index / structures/*（Worker 同构，不 import three）
    ├─ mesh/      # mesher / lighting / atlas-loader / iso-icon（Worker 同构）
    ├─ render/    # render-world（BatchedMesh 发布层）/ materials（TSL）/ weather / rain
-   │             #   entity-render-layer（M5 受控实体发布层）
+   │             #   entity-render-layer（M5 受控实体发布层）/ zombie-renderer（M6 六部件实例渲染）
    ├─ entities/  # entity-manager（动态实体唯一权威 + AABB raycast）/ entity-types（M5，无 three）
+   │             #   zombies/（M6：zombie-config 冻结数据 + zombie-system 玩法入口与 60Hz 物理）
    ├─ player/    # player / physics / raycast / step-lift / inventory / orientation / weapons
    ├─ ui/        # coords-hud / hotbar / inventory / settings-panel / settings / icons
    ├─ save/      # persistence（IndexedDB edits + M5 entities store）

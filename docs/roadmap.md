@@ -13,7 +13,10 @@
 **结构撒布**——草地/城市里的房子·花坛·亭子·高井此前完全看不到）。第二阶段 **M4 玩家武器已完成并验收**
 （验收报告 `docs/m4-weapons-acceptance-report.md`），M4 阶段遗留 TODO——设置面板「破坏方块」
 开关按钮——已落地（见下节）；**M5 实体运行时已完成并验收**（验收报告
-`docs/m5-entity-runtime-acceptance-report.md`），M6/M7 规格与计划已备好、M6 可开始。
+`docs/m5-entity-runtime-acceptance-report.md`），**M6 丧尸已完成并验收**（验收报告
+`docs/m6-zombies-acceptance-report.md`：默认 20 上限 / 20Hz 单条 WorkerPool `ai` RPC /
+25·35·999 三把枪伤害 / 六部件固定 slot 渲染；丧尸不攻击玩家，无 PlayerVitals）；
+**M7 玩家放置丧尸巢穴尚未开始**（规格与计划已备好、可开始）。
 
 ## 里程碑总表
 
@@ -27,8 +30,8 @@
 | **M3.2 方块朝向放置交互**（M3 收尾补丁项） | mc-lite 三分支放置朝向（门控 / 原位挖放转 90° / 类型记忆）/ 挖块记朝向 / `world.getBlockMeta()` | ✅ 完成（2026-09-03） | `c512cd3` |
 | **M4 玩家第一人称武器** | `WorldEditor` 批量编辑 / DDA hitscan / 受控 GLB 相机视图模型 / 曳光 / 音效 / 可选方块破坏 | ✅ 完成（2026-09-05，验收报告 `docs/m4-weapons-acceptance-report.md`） | `ed9a271` |
 | **M5 实体运行时** | `EntityManager` / 实体 AABB raycast / 受控渲染层 / 临时与持久实体分离 + `entities` snapshot | ✅ 完成（2026-09-07，验收报告 `docs/m5-entity-runtime-acceptance-report.md`） | `c9f7086` |
-| **M6 丧尸** | 默认 20 上限 / 20Hz 单条 WorkerPool `ai` RPC / 实体与体素最近命中比较 / 25·35·999 三把枪伤害 / 六部件固定 slot 渲染 | ⬜ 可开始（M5 已交付实体运行时） | — |
-| **M7 玩家放置丧尸巢穴** | 最高 `gold_block` 的 `blockEntity` 为持久真相 / `block-changed` 失效 / 八 offset × 六层刷怪 / 全局最多 8 个 | ⬜ 等待 M6 | — |
+| **M6 丧尸** | 默认 20 上限 / 20Hz 单条 WorkerPool `ai` RPC / 实体与体素最近命中比较 / 25·35·999 三把枪伤害 / 六部件固定 slot 渲染 | ✅ 完成（2026-09-08，验收报告 `docs/m6-zombies-acceptance-report.md`） | — |
+| **M7 玩家放置丧尸巢穴** | 最高 `gold_block` 的 `blockEntity` 为持久真相 / `block-changed` 失效 / 八 offset × 六层刷怪 / 全局最多 8 个 | ⬜ 可开始（M6 已交付 `ZombieService.spawn()`） | — |
 
 ## M4 之后的遗留 TODO（M4 阶段 bugfix）
 

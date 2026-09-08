@@ -1,6 +1,6 @@
 # M6 丧尸设计
 
-**状态：** 已修订，待实施
+**状态：** 已实施并验收（2026-09-08，验收报告 `docs/m6-zombies-acceptance-report.md`）
 **定位：** 第二阶段敌人垂直切片；依赖 M5 实体运行时与 M4 武器的实体射线适配点，不包含巢穴。
 **关联：** `docs/superpowers/specs/2026-08-23-m5-entity-runtime-design.md`；M7 仅通过
 `ZombieService.spawn()` 使用本 Epic。
@@ -34,8 +34,17 @@ M6 交付可被玩家武器命中、追逐玩家、死亡回收的临时丧尸�
 ## 2. 架构与契约
 
 `ZombieService` 是 M6 唯一的玩法入口；`ZombieState` 至少包含
-`{position, velocity, yaw, health, mode, generation, flashedUntil}`。攻击冷却不属于 state，因为 M6 没有
+`{position, velocity, yaw, health, mode, flashedUntil}`。攻击冷却不属于 state，因为 M6 没有
 近战攻击。
+
+**实施偏离（2026-09-08）：`generation` 不入 state。** 本规格原写「至少包含 {…, generation, …}」，
+但 generation 的唯一权威是 M5 的 Entity wrapper（`EntityManager` 不变式 ②：单调递增、despawn 后
+不重置）。复制进 state 会开**第二份版本协议真相** —— 两者漂移时无法判断哪份对，且 AI 回包校验会
+读到过期代数（违反红线 1）。故 state 不含 generation，AI 回包一律经 manager 的
+`entity.generation` 校验。已用单测钉住（`assertFalse('generation' in state)`）。
+
+另有两处瞬态物理派生量入 state（`onGround` / `_physAccum`），不入 snapshot（丧尸是临时实体，
+本就不写盘），故不算第二份权威。
 
 ```js
 zombies.spawn(position, { source }); // string | null；成功返回 id，满额/非法位置返回 null

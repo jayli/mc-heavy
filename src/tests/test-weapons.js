@@ -339,3 +339,195 @@ test('WeaponController: 效果事件为纯对象且经 onEffect 送达', () => {
   assertEqual(effect.start[1], -0.33);
   assertEqual(effect.start[2], 0.3);
 });
+
+// ---------- M6：实体伤害、最近命中与遮挡 ----------
+
+test('weapon catalog: M6 实体伤害与射程六个冻结数值', () => {
+  // M6 规格 §1 表格逐项对齐 mc-lite。这些数值是**玩法契约**（手枪四发死、加特林三发死、
+  // MAG7 一击死），改错了玩家立刻能感觉出来，但没人会主动发现 —— 故用门禁断言钉住。
+  assertEqual(WEAPONS[WEAPON_IDS.PISTOL].entityDamage, 25);
+  assertEqual(WEAPONS[WEAPON_IDS.PISTOL].entityRange, 40);
+  assertEqual(WEAPONS[WEAPON_IDS.MINIGUN].entityDamage, 35);
+  assertEqual(WEAPONS[WEAPON_IDS.MINIGUN].entityRange, 40);
+  assertEqual(WEAPONS[WEAPON_IDS.MAG7].entityDamage, 999);
+  assertEqual(WEAPONS[WEAPON_IDS.MAG7].entityRange, 10);
+  // 生命 100 口径的推论：手枪 4 发、加特林 3 发、MAG7 1 发致死
+  assertEqual(Math.ceil(100 / WEAPONS[WEAPON_IDS.PISTOL].entityDamage), 4);
+  assertEqual(Math.ceil(100 / WEAPONS[WEAPON_IDS.MINIGUN].entityDamage), 3);
+  assertEqual(Math.ceil(100 / WEAPONS[WEAPON_IDS.MAG7].entityDamage), 1);
+  // MAG7 实体射程必须等于其方块扫描上限（同一把枪的两个射程口径不得漂移）
+  assertEqual(WEAPONS[WEAPON_IDS.MAG7].entityRange, WEAPONS[WEAPON_IDS.MAG7].scan.max);
+  // 新增字段同样递归冻结（渲染层不得改写玩法目录）
+  assertTrue(Object.isFrozen(WEAPONS[WEAPON_IDS.PISTOL]));
+});
+
+/**
+ * 实体命中 fixture：可控的实体命中距离 + DDA 方块距离，记录 raycast 查询与 damage 调用。
+ *
+ * fake `raycast` **模拟 `EntityManager.raycast` 的 maxDist 裁剪语义**（dist > maxDist 返回
+ * null）—— 若 fake 不裁剪，「MAG7 10.1 格不伤害」这条断言会因 fake 总是返回命中而恒过，
+ * 测不出 controller 是否真的把 entityRange 传给了查询（testing-policy §2.5）。
+ *
+ * @param {{entityDist?: number|null, blockDist?: number, entityId?: string}} [opts]
+ */
+function makeEntityControllerFixture({ entityDist = null, blockDist = 4, entityId = 'z0' } = {}) {
+  const { registry, ids } = makeRegistryWithWeaponBlocks();
+  const editor = {
+    singleCalls: 0,
+    batchCalls: 0,
+    setBlock(change) { this.singleCalls++; this.lastChange = change; return { changes: [{}] }; },
+    setBlocks(changes) { this.batchCalls++; this.lastBatch = changes; return { changes: [{}] }; },
+  };
+  /** @type {Array<{origin:number[], dir:number[], maxDist:number, predicate:Function}>} */
+  const raycastCalls = [];
+  /** @type {Array<{id:string, amount:number, nowMs:number}>} */
+  const damageCalls = [];
+  const entityQuery = {
+    raycast(origin, dir, maxDist, predicate) {
+      raycastCalls.push({ origin, dir, maxDist, predicate });
+      if (entityDist === null) return null;
+      if (entityDist > maxDist) return null; // 模拟真实 raycast 的 maxDist 裁剪
+      return {
+        id: entityId, type: 'zombie', dist: entityDist,
+        point: [origin[0] + dir[0] * entityDist, origin[1] + dir[1] * entityDist, origin[2] + dir[2] * entityDist],
+      };
+    },
+    damage(id, amount, nowMs) {
+      damageCalls.push({ id, amount, nowMs });
+      return { dead: amount >= 100, health: Math.max(0, 100 - amount) };
+    },
+  };
+  const effects = [];
+  const aim = {
+    origin: [0, 0, 0], forward: [1, 0, 0], right: [0, 0, 1], up: [0, 1, 0],
+    target: blockDist === Infinity
+      ? { hit: false }
+      : { hit: true, blockPos: [Math.round(blockDist), 0, 0], dist: blockDist },
+  };
+  const controller = new WeaponController({
+    registry,
+    blockQuery: { getBlockId: () => ids.stone },
+    editor,
+    onEffect: (effect) => effects.push(effect),
+  });
+  controller.setEntityQuery(entityQuery);
+  controller.select('pistol');
+  return { registry, ids, controller, aim, effects, editor, raycastCalls, damageCalls };
+}
+
+test('WeaponController: 近实体优先 —— 实体比方块近时扣血并发 entity-hit', () => {
+  // 实体 dist=2 < DDA dist=4 → 实体受伤
+  const { controller, aim, raycastCalls, damageCalls, editor } =
+    makeEntityControllerFixture({ entityDist: 2, blockDist: 4 });
+  controller.setBlockDamage(true); // 开关开启：方块也可破坏（用来证明方块没被写）
+  const fired = controller.fireOnce(aim);
+  assertEqual(damageCalls.length, 1, '近实体必须扣血');
+  assertEqual(damageCalls[0].id, 'z0');
+  assertEqual(damageCalls[0].amount, WEAPONS[WEAPON_IDS.PISTOL].entityDamage);
+  assertTrue(Number.isFinite(damageCalls[0].nowMs), 'nowMs 必须是有限数（红闪判定依据）');
+  // 更近的实体挡在前面 → 方块不被写世界（实体遮挡方块）
+  assertEqual(editor.singleCalls, 0, '实体更近时不得写方块');
+  // 效果事件口径
+  assertEqual(fired.length, 1);
+  assertEqual(fired[0].type, 'entity-hit');
+  assertEqual(fired[0].entityId, 'z0');
+  assertEqual(fired[0].entityDamage, 25);
+  // 曳光终点落在实体命中点（不是方块、不是 MISS_RANGE）
+  assertEqual(fired[0].end[0], 2);
+  // 查询用该枪的 entityRange 作 maxDist，且 predicate 过滤 zombie 类型
+  assertEqual(raycastCalls.length, 1);
+  assertEqual(raycastCalls[0].maxDist, WEAPONS[WEAPON_IDS.PISTOL].entityRange);
+  assertTrue(raycastCalls[0].predicate({ type: 'zombie' }) === true);
+  assertTrue(raycastCalls[0].predicate({ type: 'probe' }) === false, 'predicate 须只放行 zombie');
+});
+
+test('WeaponController: 近方块阻挡 —— 方块比实体近时不扣血', () => {
+  // 实体 dist=5 > DDA dist=4 → 方块挡住，实体不受伤（实体不得穿墙）
+  const { controller, aim, damageCalls, editor } =
+    makeEntityControllerFixture({ entityDist: 5, blockDist: 4 });
+  controller.setBlockDamage(true);
+  controller.fireOnce(aim);
+  assertEqual(damageCalls.length, 0, '方块更近时不得扣血');
+  assertEqual(editor.singleCalls, 1, '方块命中照常写世界');
+});
+
+test('WeaponController: 距离相等按方块优先（保证实体不穿墙）', () => {
+  const { controller, aim, damageCalls, editor } =
+    makeEntityControllerFixture({ entityDist: 4, blockDist: 4 });
+  controller.setBlockDamage(true);
+  const fired = controller.fireOnce(aim);
+  assertEqual(damageCalls.length, 0, '相等距离按方块优先');
+  assertEqual(editor.singleCalls, 1);
+  assertEqual(fired[0].type, 'shot', '相等距离不发 entity-hit');
+});
+
+test('WeaponController: 无方块命中时实体仍可受伤（DDA 距离为 Infinity）', () => {
+  const { controller, aim, damageCalls } =
+    makeEntityControllerFixture({ entityDist: 3, blockDist: Infinity });
+  controller.fireOnce(aim);
+  assertEqual(damageCalls.length, 1, '无方块阻挡 → 实体受伤');
+});
+
+test('WeaponController: setEntityQuery 校验函数签名，残缺查询降级为 null', () => {
+  // **必须钉住校验分支**（自查发现的盲区）：注入「缺函数校验仍赋值」时，残缺的 query 会被
+  // 存下来，后续开火调到不存在的 `.raycast` 才崩 —— 崩点离缺陷很远，难定位。
+  // 校验让残缺注入**当场降级为 null**（等同未接线），开火照常，错误不扩散。
+  const { registry, ids } = makeRegistryWithWeaponBlocks();
+  const editor = { singleCalls: 0, setBlock() { this.singleCalls++; return { changes: [{}] }; }, setBlocks() {} };
+  const controller = new WeaponController({
+    registry, blockQuery: { getBlockId: () => ids.stone }, editor, onEffect: () => {},
+  });
+  // 残缺注入：只有 raycast 没有 damage
+  assertEqual(controller.setEntityQuery({ raycast: () => null }), null);
+  assertEqual(controller.entityQuery, null, '残缺查询须降级为 null');
+  // 只有 damage 没有 raycast
+  assertEqual(controller.setEntityQuery({ damage: () => null }), null);
+  // null / 非对象
+  assertEqual(controller.setEntityQuery(null), null);
+  assertEqual(controller.setEntityQuery('not an object'), null);
+  // 完整注入才生效
+  const full = { raycast: () => null, damage: () => null };
+  assertEqual(controller.setEntityQuery(full), full);
+  assertEqual(controller.entityQuery, full);
+});
+
+test('WeaponController: 未注入 entityQuery 时不查实体（向后兼容徒手/无丧尸场景）', () => {
+  const { registry, ids } = makeRegistryWithWeaponBlocks();
+  const editor = { singleCalls: 0, setBlock() { this.singleCalls++; return { changes: [{}] }; }, setBlocks() {} };
+  const controller = new WeaponController({
+    registry, blockQuery: { getBlockId: () => ids.stone }, editor, onEffect: () => {},
+  });
+  controller.select('pistol');
+  const aim = { origin: [0, 0, 0], forward: [1, 0, 0], right: [0, 0, 1], up: [0, 1, 0], target: { hit: false } };
+  const fired = controller.fireOnce(aim);
+  assertEqual(fired.length, 1, '未接线实体查询时仍可正常开火');
+  assertEqual(fired[0].type, 'shot');
+});
+
+test('WeaponController: MAG7 实体射程 10 —— 9.9 格一击致死，10.1 格不查询不伤害', () => {
+  // 9.9 格：命中 → 999 伤害一击致死，且仍执行其原有的一次方块批量扫描
+  const near = makeEntityControllerFixture({ entityDist: 9.9, blockDist: Infinity });
+  near.controller.select('mag7');
+  near.controller.fireOnce(near.aim);
+  assertEqual(near.damageCalls.length, 1);
+  assertEqual(near.damageCalls[0].amount, WEAPONS[WEAPON_IDS.MAG7].entityDamage);
+  assertEqual(near.editor.batchCalls, 1, 'MAG7 仍执行一次 setBlocks（不是 projectile）');
+  assertEqual(near.raycastCalls[0].maxDist, 10, 'MAG7 实体查询 maxDist 固定 10');
+  assertEqual(near.effects[0].type, 'entity-hit');
+
+  // 10.1 格：超出 entityRange → 查询裁剪掉，不伤害；方块扫描照常
+  const far = makeEntityControllerFixture({ entityDist: 10.1, blockDist: Infinity });
+  far.controller.select('mag7');
+  far.controller.fireOnce(far.aim);
+  assertEqual(far.damageCalls.length, 0, '10.1 格不得伤害');
+  assertEqual(far.editor.batchCalls, 1, '方块扫描不受实体射程影响');
+  assertEqual(far.effects[0].type, 'shot');
+});
+
+test('WeaponController: 加特林实体伤害 35，三发致死', () => {
+  const { controller, aim, damageCalls } = makeEntityControllerFixture({ entityDist: 2, blockDist: Infinity });
+  controller.select('minigun');
+  controller.fireOnce(aim);
+  assertEqual(damageCalls.length, 1);
+  assertEqual(damageCalls[0].amount, WEAPONS[WEAPON_IDS.MINIGUN].entityDamage);
+});

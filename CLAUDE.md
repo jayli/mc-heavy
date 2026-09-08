@@ -26,8 +26,9 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
 一句话现状：第一阶段 **M0~M3 全部完成**并验收达标，两个收尾补丁项（M3.1 背包 / M3.2 方块朝向
 放置交互）也已落地；此后是一串独立 bugfix 与改造（v1.19~v1.35）；第二阶段 **M4 玩家武器已完成
 并验收**（含遗留 TODO「设置面板破坏方块开关」），**M5 实体运行时已完成并验收**（验收报告
-`docs/m5-entity-runtime-acceptance-report.md`），**M6~M7 尚未开始**（规格与计划已备好，见
-「权威文档」）。
+`docs/m5-entity-runtime-acceptance-report.md`），**M6 丧尸已完成并验收**（验收报告
+`docs/m6-zombies-acceptance-report.md`；丧尸**不攻击玩家**，无 PlayerVitals/近战/掉落/自然刷怪/
+巢穴），**M7 玩家放置丧尸巢穴尚未开始**（规格与计划已备好，见「权威文档」）。
 
 **历次 bugfix / 改造的完整记录不在本文件。** 权威副本分两处：① **第一阶段独立改动**
 （v1.19~v1.31、v1.35）—— 设计文档的修订说明（每条含根因、实测数据、门禁对照）+
@@ -174,6 +175,59 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
   正确做法：落点先用廉价脚本复现优先级链扫出、再跑完整 GEN 验证方块真落地；派生量从**实际
   生成数据里读出**真实格位再算，并补前置断言钉住前提。详见
   [`docs/testing-policy.md`](docs/testing-policy.md) §2.5。
+
+### M6 丧尸沉淀的活跃约束（M7 巢穴与后续实体类 Epic 必读）
+
+- **`WorkerPool.call()` 返回 `{id, promise}` 而非 promise 本身**（`worker-pool.js:71`）。消费回包
+  必须取 `.promise`；只判 `typeof result.then === 'function'` 会走同步分支拿到那个对象
+  （无业务字段）→ 回包内容**静默丢失**。实测：AI RPC 发出 11 次、pending 归零，但丧尸 velocity
+  恒 0、mode 恒 idle（原地不动），且**纯逻辑测试全绿** —— 因为 fake pool 返回裸 promise，
+  测试与真实接线口径不一致。**写 fake pool 时必须返回 `{id, promise}` 与真实形状一致**。
+- **时间基准统一用 `performance.now()`，禁止 `Date.now()`**：两者相差约 17 亿毫秒
+  （实测 `Date.now()=1788847988963` vs `performance.now()=676.6`）。帧循环 `setAnimationLoop`
+  回调传的 `nowMs` 是 performance 基准，任何「到期时间戳」比较（红闪 `nowMs < flashedUntil`、
+  冷却、未来 buff/debuff）都必须同源，否则判定恒真 → **效果永不消退**。
+- **物理推进必须返回全新 state + 全新数组**，不可原地改写后返回同一对象。
+  `EntityManager.update()` 的跨 column 索引迁移判据是「赋值前 position vs 赋值后 position」；
+  原地改写会让 before/after 从同一份已改位置算出 → 恒相等 → **索引永不迁移 → column 卸载漏
+  回收实体**（浅拷贝也不够：position 数组引用相同仍会被污染）。开销约 1200 个小对象/秒，
+  bench 实测无回退。M7 若新增会移动的持久实体，同一坑。
+- **物理轴顺序：竖直先走再水平**（与 `player/physics.js` 同序）。step-up 依赖本步算出的
+  `onGround`；把 `onGround = false` 放在水平移动之前会让 `tryStepUp` 永远拿不到 onGround →
+  step-up 完全失效。另外**水平撞墙不得清零 velocity**（竖直必须清零防重力累积穿地抖动）——
+  AI 意图每 0.05 秒才刷新而物理跑 60Hz，清零会让实体在两次 RPC 之间彻底卡住。
+- **常驻实例池 mesh 须无活跃实例时 `visible=false`**：InstancedMesh 构造期 `count` 就是容量，
+  即使全部 slot 零 scale 仍被提交渲染 → **每个常驻 mesh 恒增 1 个 draw call**。实测 M6 六个
+  部件 mesh 让 bench 场景 ④ draw 530 → 536（恰好 +6）。同手法见 `tracer-renderer.js`。
+- **`EntityManager.onDespawn()` 是单槽覆盖语义**（`_onDespawned = fn`），M5 已把它留给 Game
+  装配渲染层回收。**第二个消费者不得再注册**（会静默覆盖前者，看不出谁生效）。M6 的 slot
+  归还因此在三条回收路径上显式做（死亡 / `despawnColumn` / `dispose`）—— 新增回收路径须同步。
+- **column 卸载回收顺序：先玩法服务、再 M5 commit**。`unload.commit()` 内部会调
+  `entities.despawnColumn()` 回收临时实体，那条路径**绕过玩法服务** → 渲染 slot 不归还。
+  Game 的 handle 里必须 `zombies.despawnColumn(key)` 先行（见 `game.js` 注释）。M7 巢穴刷怪
+  同理：任何临时实体都要在 commit 前经自己的服务回收。
+- **`findSpawnY`（`gen/terrain.js:98`）会把空中结构当出生点**：它从世界顶向下扫第一个非空气
+  方块并返回 `y+1`，而 M2-7 云层 `supportsPlayer=1` 但 `solid=0` → 随机 seed 下玩家可能出生
+  在云面上（实测 6 次试验 1 次 y=56、`belowSolid=false`）。后果：**云面上不会自然刷怪**
+  （丧尸 spawn 要求脚下 solid），且测试落点扫描须**向下扫真实地面**而非用玩家 y±4。
+  本次未改该函数（属 M1/M2 出生点口径，改动会牵动 M1 验收与既有 spec）。
+- **负向验证的盲区高发区**（M6 实测发现 15 条无效盲区，详见验收报告 §3）：① 门控落点落在
+  未加载 column → 别道门控先拒绝，被测门控不被触发；② 断言读内存值而注入改的是实例矩阵；
+  ③ fixture 显式传参覆盖了被测的默认参数 → 默认值路径无覆盖；④ fake 依赖立即完成 → 「在途」
+  类断言不触发；⑤ 测试用 dt 恰等于步长 → accumulator 恒 0；⑥ worker 代码只在真游戏页加载，
+  单测页跑不到 worker 注入；⑦ **测试输入从被测常量派生**（`micro = EPSILON / 2` → 注入把常量
+  改成 0 时输入也变 0 → 断言恒真；须用字面量 + 前提断言）。
+  **每条负向验证若「注入后仍全绿」，先怀疑断言落点而非实现**。
+- **从实例矩阵反解旋转必须用 `atan2(elements[8], elements[0])`，不能用 `Euler.setFromQuaternion`**
+  （实测踩坑）：three 的 Euler 'XYZ' 序对 Y 轴用 `asin(m13)`，而 `asin(sin θ)` 在 `|θ| > π/2`
+  时会**折叠**回 [-π/2, π/2] —— 实测 yaw=2.4805 读出 0.661。纯 Y 旋转下 `elements[0]=cos θ`、
+  `elements[8]=sin θ`，`atan2(sin, cos)` 范围无关。测试若只在 `[-π/2, π/2]` 内取值会**侥幸通过**，
+  换个方向就假失败 —— 补用例时须至少一个落在折叠区。M7 巢穴/炮塔等任何带朝向的实体同理。
+- **两层共用的判定阈值必须落在 config 单一权威**（红线 1）：丧尸的「是否在移动」阈值有两个
+  消费方 —— `zombie-system.js`（朝向派生）与 `zombie-renderer.js`（步态累积）。entities 层不得
+  反向依赖 render，故常量放 `zombie-config.js`（`ZOMBIE_MOVING_EPSILON`）两层共用。各写一份字面量
+  会漂移出「腿在摆但朝向没跟上」的撕裂状态，且**用远离阈值的输入测不出来**（实测：速度 1.2 对
+  阈值 0.001 与 0.5 都判移动）—— 须在临界值附近断言两层同时生效。
 
 ## 权威文档（动手前必读）
 
@@ -322,8 +376,11 @@ mc-heavy/
    │               #  FACE_UVS 供图标烘焙复用——形状与 UV 的唯一权威，图标不得有第二份几何定义
    ├─ render/      # render-world.js（BatchedMesh 发布层）/ materials.js（TSL）
    │               #  weather.js（天气状态机）/ rain.js（雨效）/ entity-render-layer.js（M5 受控实体发布层）
+   │               #  zombie-renderer.js（M6 六部件固定容量 InstancedMesh；无活跃丧尸时 visible=false）
    ├─ entities/    # entity-manager.js（动态实体唯一权威 + generation + AABB raycast）
    │               #  entity-types.js（probe 定义 + AABB slab 射线；Worker 同构，无 three）
+   │               #  zombies/（M6，Worker 同构无 three）：zombie-config.js（冻结玩法数据唯一权威）
+   │               #   + zombie-system.js（ZombieService 玩法入口 + zombieDefinition 含 60Hz 物理）
    ├─ player/      # player.js / physics.js / raycast.js / step-lift.js
    │               #  inventory.js（物品模型）/ orientation.js（朝向三分支纯函数）/ weapons/*（M4）
    ├─ ui/          # coords-hud.js / hotbar.js / settings-panel.js / settings.js
