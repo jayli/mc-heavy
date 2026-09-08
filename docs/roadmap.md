@@ -43,6 +43,12 @@ M4 交付后的实玩反馈修正（已落地，记录在验收报告偏离表�
 pointer-lock 拒绝捕获、曳光粗细对齐 mc-lite + 起点世界空间冻结（v1.33）、武器灯光（v1.34）、
 MAG7 曳光终点回归准心轴（v1.36，原用扫描候选当终点导致斜射——移植偏差，非有意偏离）。
 
+## M6 之后的遗留 TODO
+
+| 事项 | 状态 | 要点 |
+|---|---|---|
+| 丧尸**头部无图案**（mc-lite 头部是马赛克纹理 + 黑色眼睛，mc-heavy 当前是纯色 `0x406b30`） | ⬜ 待做（2026-09-08 记录） | mc-heavy 侧是 M6 规格 §3 只要求「配色沿 mc-lite」时的**有意省略**（验收报告 §6 偏离表 + `zombie-renderer.js:17-20` 注释），非移植偏差。**mc-lite 图案来源**：运行时 canvas 程序化绘制（无 PNG 文件）—— `ZombieInstancedRenderer.js:99-119` `TEXTURE_CONFIG`（8×8 网格 × 8px = 64² 画布 / `base=[64,107,48]` / 三种噪点色 / **`> 0.7` 才用噪点 → 实际仅 30%**，照字段名理解会把图案画反）+ `:581-666` 绘制 + `drawEyes` 眼睛在网格 (2,3) 与 (5,3)；分面靠 `:237-254` `geometry.clearGroups()` + `addGroup`（BoxGeometry 面序 `[右,左,上,下,前,后]`，**正面 = 第 5 面**用材质索引 1）+ `:262-284` 材质数组 `[withoutEyes, withEyes]`。**已有半成品**：`assets/zombie/head-{eyes,noeyes}.png`（64²，已烘好但**未入库、全仓零引用**）+ `.tmp-neg/bake-zombie-head.mjs`（算法逐行复刻，固定种子 mulberry32 守红线 2 —— mc-lite 用 `Math.random()` 每次加载图案都不同）。**待做的接线**：① 烘焙脚本移入 `tools/` 并加 `npm run` script；② head 几何 `clearGroups`/`addGroup` + 材质改数组带 `map`；③ `ZOMBIE_PART_DEFS.head.color` `0x406b30` → `0xffffff`（回归白底乘纹理色，mc-lite 六面材质 color 全是白色）；④ `game.js` 在 atlas 加载处 `await` 纹理（保持构造器同步，首帧不闪纯色）；⑤ **Tier 4 像素实测**（单测测不到 GPU 纹理求值：正面有眼睛 / 侧面顶面无 / 红闪仍染红）。**未验证的前提**：three r185 WebGPU 后端对 `InstancedMesh` + 材质数组 + `groups` 的支持 —— 不支持则须改走单纹理方案（UV 分区放眼睛）。连带影响：`test-zombies.js:440` 的 `head.color` 断言、验收报告 §6 那条偏离条目须反转、draw call 6 → 7（与丧尸数无关）。 |
+
 ## M3.2 之后的独立 bugfix / 改造（v1.19 ~ v1.38）
 
 这些不属于任何已编号里程碑，是实玩反馈驱动的独立改动。**完整记录在设计文档的修订说明**
