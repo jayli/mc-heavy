@@ -9,7 +9,7 @@
 ## 一句话现状
 
 第一阶段引擎底座（M0~M3）**全部完成并验收达标**，两个收尾补丁项（M3.1 背包 / M3.2 方块朝向）
-也已落地。此后是一串独立 bugfix 与改造（v1.19~v1.37，最新一条 v1.37 补齐了 M2 遗留的
+也已落地。此后是一串独立 bugfix 与改造（v1.19~v1.38，最新两条 v1.37/v1.38 补齐了 M2 遗留的
 **结构撒布**——草地/城市里的房子·花坛·亭子·高井此前完全看不到）。第二阶段 **M4 玩家武器已完成并验收**
 （验收报告 `docs/m4-weapons-acceptance-report.md`），M4 阶段遗留 TODO——设置面板「破坏方块」
 开关按钮——已落地（见下节）；**M5 实体运行时已完成并验收**（验收报告
@@ -40,7 +40,7 @@ M4 交付后的实玩反馈修正（已落地，记录在验收报告偏离表�
 pointer-lock 拒绝捕获、曳光粗细对齐 mc-lite + 起点世界空间冻结（v1.33）、武器灯光（v1.34）、
 MAG7 曳光终点回归准心轴（v1.36，原用扫描候选当终点导致斜射——移植偏差，非有意偏离）。
 
-## M3.2 之后的独立 bugfix / 改造（v1.19 ~ v1.37）
+## M3.2 之后的独立 bugfix / 改造（v1.19 ~ v1.38）
 
 这些不属于任何已编号里程碑，是实玩反馈驱动的独立改动。**完整记录在设计文档的修订说明**
 （每条含根因、实测数据、门禁对照）与 `docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md`
@@ -64,6 +64,7 @@ MAG7 曳光终点回归准心轴（v1.36，原用扫描候选当终点导致斜�
 
 | v1.35 | 设置面板两列布局 + 档位精简 | ✅ `49e7cce` | 用户反馈面板拥挤，且第二阶段（M5~M7）会持续加配置项。改 mc-lite 同款两列盒（`.mc-columns` / `.mc-combined` 合并盒），**行列分配按本仓库档位需要重排、不沿用 mc-lite 分配**（后续新配置优先往右列填）。档位精简三项：① 视距 UI 档位 5→3（`[8,12,16]`），但 `clampVD` 钳制范围 **2~16 不动**（架构口径，测试依赖 `vd=2`）→ 面板须容错「当前值不在档位内」，**刻意不做就近高亮**；② 音量档移出面板（默认 100%，字段仍持久化 + `?volume=` 可达）；③ 新世界 + 删除缓存共用一行。顺带修掉文案漂移：`_resetDangerArmed()` 写死旧长文案覆盖了构造时的短文案 → 抽 `CLEAR_SAVE_LABEL` 共用常量。**用户随后报告合并盒上边框缺失**（本次改动引入）：分隔线规则 `> :first-child` 通配所有子项、特异性 (1,2,0) 压过 `.mc-combined` 的 (1,1,0) → 列首合并盒上边框被置 none；改为只作用 `.mc-item` + 补四边 solid 断言 + 负向验证。单测 296 全绿 + 档位契约断言负向验证（改 `[8,12,20]` → FAIL `Expected 20, got 16`）+ DOM 几何实测（面板 818×398、两列等高 375×255、合并盒四边 solid、零文本溢出）。全量 E2E **55 passed / 1 failed** —— 失败的 `m1-acceptance` `digP95` 是已知 flaky 计时断言（2ms 贴线抖动），**交替对照**实测两侧分布重叠（HEAD 均值 1.833 vs 改动侧 1.933，各 9 样本），机制上不相关（放挖热路径零命中面板代码，spec 用 `vd=8` 在新旧档位都存在） |
 | v1.37 | 结构撒布补齐（M2 欠账） | ✅ `87cd571` | 用户报告**草地与城市里看不到房子/花坛/亭子/高井**。根因实测定位：`assets/structures/` 27 个 JSON 里 **7 个零消费**（`flower_bed`/`pavilion`/`tall_well`/`desert_pyramid` 4 个是真实 M2 欠账，`bed`/`turret`/`zombie_nest` 3 个有意预留），且 mc-lite 的**三条撒布路径完全未搬**（城市装饰物逐点撒布 / 城市外代码生成 `house` / 城市外大型静态结构）。补齐后城内 797 个撒布（house 152/pavilion 446/tallWell 77/flowerBed 122）、城外每 region 约 25 个。新增 `src/gen/structures/scatter.js`（撒布判定 + `generateCodeHouse`，Worker 同构）；候选在 **region layout 层**算一次（DR-13），`apply.js` 阶段 2.7 只做 AABB 裁剪光栅化。**四处有意偏离 mc-lite**（`Math.random`→`seededRandom` 守红线 2 / 判定不带 occupied 参数防跨 column 接缝断裂 / 避开树半径 2 而非 8~10 / 不撒水下），详见 CLAUDE.md 活跃约束。**撒布密度刻意低于 mc-lite**（城市基值减半 + 两个大 JSON 减半）以守两条冻结断言，并配合 `CAPACITY.cutout.active` 450→550（扩容是离散 ×1.5 跳增，峰值 1.80M 差 2230 顶点就跳到 170MB）。Tier 1 TDD：单测 **341 全绿** + **17 条负向验证全部确认真 FAIL**（含自查发现的 2 个无效盲区：特征方块跨结构重叠导致断言恒真、tank 门控用错参数路径未触达）+ 新增 `check:data` `[撒布结构]` 三环节契约（含磁盘文件存在性 —— 浏览器里 fetch 404 会被吞成空结构，只有门禁能抓）。`genP95` 6.8~7.7ms（6/6）/ `gpuVertexBytes` 148MB / bench 通过 fps 111~120 / 全量 E2E **66 passed**（唯一失败 = `m1-acceptance` 既有 flaky，交替对照改动侧 3/5 vs HEAD 侧 4/5，改动侧失败率更低） |
+| v1.38 | ship 沉船补齐（M2 欠账，v1.37 的延续） | ✅ 已落地未提交 | 用户追问「还有哪些 mc-lite 实体没搬」。调研后确认：JSON 结构两边都是 27 个（一致），但 `ship`（沉船，mc-lite `WorldWorker.js:988/:2987` 的**代码生成方块结构**、无 JSON）在 mc-heavy 完全没有 —— 设计文档 grep `ship`/`沉船` 零命中，是真欠账（区别于 `skyTree` 的 M2-7 有意删除，已保留）。**rover/gun_man 推迟到 M6**：它们是 GLB 模型实体（gun_man.glb 16 primitives / free_car 12），需要 mc-heavy 尚不存在的碰撞（`physics.js` 不查实体）/ 射线（未接 `EntityManager.raycast`，M6 规格 `:61` 才接）/ 破坏持久化基础设施，正是 M6 丧尸要建的同一套；现在补只能做到「看得见」。ship 是方块结构，走现有 mesher + BatchedMesh 管线，天然合批（bench 实测 draw=496 与 v1.37 持平）、有碰撞、可挖掉。门控 `h<-6` + 概率 + `safeForStructure`，实测 109 个命中（视距 8 内 3 个，最近距出生点 98 格）、**跨 column 0%**（内圈 + 占地 dx±2/dz±3 数学必然落在单 column 内）、深海无 DESERT。门控与 v1.37 陆地水下门控**方向相反**，在同一循环内用 `h` 一次计算分流。引入 `CODE_GENERATED_SCATTER_TYPES` 单一权威（红线 1：派生基准勿写成 `t !== 'house'`，否则门禁误报或结构静默消失）。Tier 1 TDD：单测 **351 全绿** + **10 条负向验证全部真 FAIL**（含自查发现的 1 个无效盲区：footprint 范围判据被海底地形污染恒真 → 改桅杆中心列判据）。`check:data` 门禁扩展到覆盖代码生成类型的占地 / bench 通过 fps 108~120 无回退 / 全量 E2E **67 passed**（这次 m1-acceptance 也通过） |
 
 ## 第二阶段依赖链
 

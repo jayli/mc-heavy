@@ -67,6 +67,7 @@ export const SCATTER_FOOTPRINT = Object.freeze({
   uglyHouse: { halfX: 6, halfZ: 10 },      // x[-6,4] z[-4,10]
   tank: { halfX: 12, halfZ: 8 },           // x[-12,9] z[-8,-2]
   house: { halfX: 2, halfZ: 2 },           // 代码生成：5×5 地基 + 屋顶
+  ship: { halfX: 2, halfZ: 3 },            // 代码生成：dx -2..2 (5) × dz -3..3 (7)
 });
 
 /** City 结构生成配额配置 */

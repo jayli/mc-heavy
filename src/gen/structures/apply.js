@@ -17,7 +17,10 @@ import { CITY_STRUCTURE_FOOTPRINT, ISLAND_SEA_LEVEL, SCATTER_FOOTPRINT } from '.
 import { preloadStructures, rasterizeStructure, GROUND_SUPPORT_TYPES } from './structure-json.js';
 import { applySkyStructures } from './sky-structures.js';
 import { generateTree, rollVegetation, rollCityTree } from './vegetation.js';
-import { SCATTER_TYPES, SCATTER_STRIDE, generateCodeHouse } from './scatter.js';
+import {
+  SCATTER_TYPES, SCATTER_STRIDE, CODE_GENERATED_SCATTER_TYPES,
+  generateCodeHouse, generateCodeShip,
+} from './scatter.js';
 import { SEA_Y } from '../../voxel/constants.js';
 
 /** 城市 placement 用到的 JSON 结构（GEN 携带城市布局时预载）+ 植被树 JSON */
@@ -27,6 +30,17 @@ const CITY_STRUCTURE_TYPES = [
   'uglyHouse', 'whiteTower', 'woodHouse', 'gate', 'tank', 'tower',
   'birchTree', 'birchTreeWithSnow',
 ];
+
+/**
+ * 代码生成撒布类型的光栅化入口（无 JSON，几何由函数直接写方块）。
+ *
+ * 统一签名 `(x, y, z, setBlock, seed)` —— `generateCodeShip` 不吃 `seed`（mc-lite 的 ship
+ * 几何不含 `Math.random`，天然确定性），多余实参被忽略，故两者可共用同一调用点。
+ */
+const CODE_GENERATORS = Object.freeze({
+  house: generateCodeHouse,
+  ship: generateCodeShip,
+});
 
 /** AABB 相交判定余量（JSON 实测占地与 footprint 表最大偏差 1 格） */
 const INTERSECT_MARGIN = 2;
@@ -110,10 +124,12 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
     for (const arr of [layout.scatter.cityScatter, layout.scatter.outsideScatter]) {
       if (!arr || arr.length === 0) continue;
       scatterCandidates.push(arr);
-      // 扫一遍 typeIndex 收集本 column 查询域实际出现的类型（廉价：只读 Int32Array）
+      // 扫一遍 typeIndex 收集本 column 查询域实际出现的类型（廉价：只读 Int32Array）。
+      // 代码生成类型（house/ship）无 JSON，跳过 —— 从 CODE_GENERATED_SCATTER_TYPES 派生，
+      // 勿写成 `t !== 'house'` 字面量（漏 ship → 白 fetch 一个不存在的 JSON）。
       for (let i = 3; i < arr.length; i += SCATTER_STRIDE) {
         const t = SCATTER_TYPES[arr[i]];
-        if (t !== 'house') needTypes.add(t); // house 是代码生成，无 JSON
+        if (!CODE_GENERATED_SCATTER_TYPES.includes(t)) needTypes.add(t);
       }
     }
   }
@@ -224,9 +240,11 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
       const fp = SCATTER_FOOTPRINT[type];
       if (!fp) continue;
       if (!placementIntersects({ x, z }, fp.halfX, fp.halfZ, column.cx, column.cz)) continue;
-      if (type === 'house') {
-        // 代码生成小房子（城市 filler 与城市外共用同一几何）
-        generateCodeHouse(x, y, z, setBlock, seed);
+      // 代码生成类型走映射表（house/ship），其余走 JSON 光栅化。
+      // 用映射表而非 if/else if 链 —— 加第三个代码生成类型时不用改分支逻辑。
+      const codeGen = CODE_GENERATORS[type];
+      if (codeGen) {
+        codeGen(x, y, z, setBlock, seed);
       } else {
         rasterizeStructure(type, x, y, z, setBlock, column, registry, seed,
           GROUND_SUPPORT_TYPES.has(type));

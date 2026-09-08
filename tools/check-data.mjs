@@ -290,11 +290,15 @@ function checkTestRegistration() {
  */
 async function checkScatterStructureIntegrity() {
   const { STRUCTURE_FILES } = await import('../src/gen/structures/structure-json.js');
-  const { SCATTER_TYPES } = await import('../src/gen/structures/scatter.js');
+  const { SCATTER_TYPES, CODE_GENERATED_SCATTER_TYPES } = await import('../src/gen/structures/scatter.js');
   const { SCATTER_FOOTPRINT } = await import('../src/gen/structures/region-config.js');
 
-  // 撒布类型 = SCATTER_TYPES 去掉代码生成的 house（house 无 JSON，走 generateCodeHouse）
-  const jsonTypes = SCATTER_TYPES.filter((t) => t !== 'house');
+  // JSON 撒布类型 = SCATTER_TYPES 去掉代码生成类型（house/ship 无 JSON，走 generateCodeXxx）。
+  // ⚠️ 派生基准必须是 CODE_GENERATED_SCATTER_TYPES，不能写成 `t !== 'house'` 字面量 ——
+  // 那样加第二个代码生成类型（ship）时本门禁会要求它有 STRUCTURE_FILES 映射 + 磁盘 JSON，
+  // 于是**误报**；反过来若某代码生成类型没被识别 → 走 rasterizeStructure → cache 未命中 →
+  // 结构静默消失（方块层面看不出差别）。
+  const jsonTypes = SCATTER_TYPES.filter((t) => !CODE_GENERATED_SCATTER_TYPES.includes(t));
   const problems = [];
 
   for (const t of jsonTypes) {
@@ -308,10 +312,17 @@ async function checkScatterStructureIntegrity() {
     if (!SCATTER_FOOTPRINT[t]) problems.push(`${t} 缺 SCATTER_FOOTPRINT 占地（AABB 裁剪会跳过）`);
   }
 
+  // 代码生成类型（house/ship）虽无 JSON，但同样需要 SCATTER_FOOTPRINT ——
+  // apply.js 的 `if (!fp) continue;` 对它们一样生效，缺占地 → 候选被静默跳过 → 结构消失。
+  for (const t of CODE_GENERATED_SCATTER_TYPES) {
+    if (!SCATTER_TYPES.includes(t)) problems.push(`${t} 不在 SCATTER_TYPES（候选层不会产出它）`);
+    if (!SCATTER_FOOTPRINT[t]) problems.push(`${t}（代码生成）缺 SCATTER_FOOTPRINT 占地（AABB 裁剪会跳过）`);
+  }
+
   if (problems.length) {
     for (const p of problems) failures.push(`[撒布结构] ${p}`);
   } else {
-    infos.push(`[撒布结构] ${jsonTypes.length} 个 JSON 撒布类型三环节齐全（映射/文件/占地）`);
+    infos.push(`[撒布结构] ${jsonTypes.length} 个 JSON 类型 + ${CODE_GENERATED_SCATTER_TYPES.length} 个代码生成类型，占地齐全`);
   }
 }
 

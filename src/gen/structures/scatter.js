@@ -59,16 +59,26 @@ export const CITY_SCATTER_CHANCE = Object.freeze({
  */
 export const OUTSIDE_SCATTER_CHANCE = Object.freeze({
   house: 0.001,             // seed+4（代码生成小房子，草地上的那个；不降）
+  ship: 0.001,              // seed+13（沉船，深海限定；不降 —— 见下）
   desertPyramid: 0.00016,   // seed+25（不降，方块少）
   desertVillage: 0.00008,   // seed+26（mc-lite 0.00016，减半以守 genP95 预算）
   uglyHouse: 0.00004,       // seed+23（mc-lite 0.00008，减半以守 genP95 预算）
   tank: 0.0001,             // seed+5（grass 地表限定；不降，占地小）
 });
 
+/**
+ * ship 的深海门控高度（mc-lite WorldWorker.js:988 `h < -6`）。
+ *
+ * 比海平面 `SEA_Y = -2` 低 4 格 → 桅杆顶（y+4）仍在水下 1~5 格，「沉船」名副其实。
+ * 这是与陆地撒布**相反**的水位门控：陆地撒布要求 `h > SEA_Y`（v1.37 的有意偏离），
+ * ship 要求 `h < -6`。两者互斥，在 `computeScatterCandidates` 里用同一个 `h` 分流。
+ */
+export const SHIP_DEEP_SEA_Y = -6;
+
 /** 撒布 seed salt（mc-lite 的 seed+N 偏移，照搬） */
 const SALT = Object.freeze({
   flowerBed: 823, houseCity: 812, pavilion: 824, tallWell: 826,
-  houseOutside: 4, desertPyramid: 25, desertVillage: 26, uglyHouse: 23, tank: 5,
+  houseOutside: 4, ship: 13, desertPyramid: 25, desertVillage: 26, uglyHouse: 23, tank: 5,
   // generateCodeHouse 的材质/烟囱（mc-lite 用 Math.random，本仓库改 seededRandom 需自备 salt）
   wallMat: 300, roofMat: 301, chimney: 302, chimneyPos: 303,
 });
@@ -280,6 +290,29 @@ export function rollOutsideScatter(wx, wz, biome, surfaceType, occupied, seed) {
   return null;
 }
 
+/**
+ * ship 沉船判定（mc-lite WorldWorker.js:988）。
+ *
+ * **与陆地撒布的关键差异（勿「补齐」门控）**：mc-lite 的 ship 门控只有
+ * `h < -6` + 概率 + `safeForStructure` —— **不看 biome、不看 occupied**。实测 109 个命中里
+ * 有 11 个（10%）带植被、分布在 4 个 biome（AZALEA/FOREST/PLAINS/SWAMP，无 DESERT ——
+ * DESERT 高度被 `h*0.5+2` 抬高，不会低于 -6），所以给它加 biome/occupied 门控会让命中数
+ * 从 109 掉到 98，且沙漠永远不会出现沉船。
+ *
+ * `safeForStructure` 由调用方（`computeScatterCandidates`）在外层循环先行判定，
+ * 本函数只负责 h + 概率两个判据 —— 保持纯函数、不重复判定（红线 1）。
+ *
+ * @param {number} wx
+ * @param {number} wz
+ * @param {number} h 地形高度（调用方已算好；ship 落点 = h + 1）
+ * @param {number} seed
+ * @returns {boolean}
+ */
+export function rollShipScatter(wx, wz, h, seed) {
+  return h < SHIP_DEEP_SEA_Y &&
+    seededRandom(wx, wz, seed + SALT.ship) < OUTSIDE_SCATTER_CHANCE.ship;
+}
+
 // ==================== region 级候选发现（与 computeSkyCandidates 同构）====================
 
 /**
@@ -288,17 +321,30 @@ export function rollOutsideScatter(wx, wz, biome, surfaceType, occupied, seed) {
  */
 export const SCATTER_TYPES = Object.freeze([
   'flowerBed', 'house', 'tallWell', 'pavilion',
-  'desertPyramid', 'desertVillage', 'uglyHouse', 'tank',
+  'desertPyramid', 'desertVillage', 'uglyHouse', 'tank', 'ship',
 ]);
 const TYPE_INDEX = Object.freeze(SCATTER_TYPES.reduce((m, t, i) => { m[t] = i; return m; }, {}));
 
 /**
- * 撒布类型里需要 fetch JSON 的子集（`house` 是代码生成的，无 JSON）。
+ * 代码生成的撒布类型（无 JSON 文件，走 `generateCodeXxx`）—— **单一权威**。
  *
- * **从 `SCATTER_TYPES` 派生，不另写一份清单** —— 手写第二份清单会漂移（红线 1），
- * 漂移后果是某类型没被预载 → cache 未命中 → `rasterizeStructure` 静默 return → 结构消失。
+ * 预载清单（`SCATTER_JSON_TYPES`）、`apply.js` 的预载循环与光栅化分支、以及 `check:data`
+ * 门禁的 `jsonTypes` 都从它派生（红线 1）。⚠️ 勿把派生基准写成「排除 house」的字面量 ——
+ * 那样加第二个代码生成类型（如 ship）时门禁会要求它有 JSON 映射 + 磁盘文件 → 误报；
+ * 反过来若某类型没被识别为代码生成 → 走 `rasterizeStructure` → cache 未命中 →
+ * **结构静默消失**（方块层面看不出差别，实测踩过同类坑）。
  */
-export const SCATTER_JSON_TYPES = Object.freeze(SCATTER_TYPES.filter((t) => t !== 'house'));
+export const CODE_GENERATED_SCATTER_TYPES = Object.freeze(['house', 'ship']);
+
+/**
+ * 撒布类型里需要 fetch JSON 的子集（代码生成的类型无 JSON）。
+ *
+ * **从 `SCATTER_TYPES` 与 `CODE_GENERATED_SCATTER_TYPES` 派生，不另写一份清单** ——
+ * 手写第二份清单会漂移（红线 1），漂移后果是某类型没被预载 → cache 未命中 →
+ * `rasterizeStructure` 静默 return → 结构消失。
+ */
+export const SCATTER_JSON_TYPES = Object.freeze(
+  SCATTER_TYPES.filter((t) => !CODE_GENERATED_SCATTER_TYPES.includes(t)));
 
 /** 候选紧凑数组 stride：[x, y, z, typeIndex] */
 export const SCATTER_STRIDE = 4;
@@ -393,18 +439,34 @@ export function computeScatterCandidates(regionX, regionZ, seed, city) {
       const grassHit =
         seededRandom(wx, wz, seed + SALT.tank) < OUTSIDE_SCATTER_CHANCE.tank ||
         seededRandom(wx, wz, seed + SALT.houseOutside) < OUTSIDE_SCATTER_CHANCE.house;
-      if (!desertHit && !grassHit) continue;
+      // ship 的深海门控与陆地撒布**相反**（要求 h < -6），故必须并入同一个预门控，
+      // 否则 ship 永远走不到 generateHeight（陆地撒布的水下门控会把它挡掉）。
+      const shipHit = seededRandom(wx, wz, seed + SALT.ship) < OUTSIDE_SCATTER_CHANCE.ship;
+      if (!shipHit && !desertHit && !grassHit) continue;
 
-      // 到这里才付昂贵代价（biome + 植被 occupied），命中率 <0.2%
+      // `h` 提前算：ship 的深海门控与陆地撒布的水下门控都需要它（只算一次，分流共用）
+      const h = generateHeight(wx, wz, seed);
+
+      // ---- 水下路径：ship 沉船（门控 h < -6，不看 biome/occupied）----
+      // shipHit 已在预门控验过概率，rollShipScatter 是判定权威（它同样验概率 + h，
+      // 概率部分幂等 → 实际只生效 h 门控）。一个点最多一个结构（与 rollOutsideScatter
+      // 的单一返回语义一致）。
+      if (shipHit && rollShipScatter(wx, wz, h, seed)) {
+        outsideOut.push(wx, h + 1, wz, TYPE_INDEX.ship);
+        continue;
+      }
+
+      // ---- 陆地路径：水下不撒（**有意偏离 mc-lite**：mc-lite 无此门控，会把房子放进水里。
+      // mc-heavy 地形水下面积大，照搬会产出大量水下房子 —— 观感明显错误）----
+      if (h <= SEA_Y) continue;
+
+      // 到这里才付昂贵代价（biome + 植被 occupied）。放在水下门控**之后**是有意的：
+      // 水下点本来就要丢弃，不该为它们算 biome/植被（实测 ship 让水下点变多，
+      // 提前算会白付代价）。陆地撒布的判定逻辑与结果不变。
       const biome = getBiome(wx, wz, seed);
       const occupied = !!rollVegetation(wx, wz, biome, seed).plant;
       const type = rollOutsideScatter(wx, wz, biome, surfaceTypeOfBiome(biome), occupied, seed);
       if (!type) continue;
-
-      const h = generateHeight(wx, wz, seed);
-      // 水下不撒（**有意偏离 mc-lite**：mc-lite 无此门控，会把房子放进水里。
-      // mc-heavy 地形水下面积大，照搬会产出大量水下房子 —— 观感明显错误）
-      if (h <= SEA_Y) continue;
       outsideOut.push(wx, h + 1, wz, TYPE_INDEX[type]);
     }
   }
@@ -479,4 +541,36 @@ export function generateCodeHouse(x, y, z, setBlock, seed) {
   // 室内家具（mc-lite :2990-2991）。solid 属性由 registry 决定，setBlock 只写方块
   setBlock(x - 1, y, z - 1, 'bookbox');
   setBlock(x + 1, y, z - 1, 'chest');
+}
+
+/**
+ * 代码生成的沉船（mc-lite WorldWorker.js:2987-2997 `generateStructure('ship')`）。
+ *
+ * 几何逐条照搬：7×5 船体（dz -3..3 × dx -2..2）→ 外围一圈双层（y+1 `wood` / y+2 `planks`）
+ * + 内部甲板（y `planks`）→ 桅杆 5 格 `wood`（y..y+4）→ 货箱 `chest` 在 (x, y+1, z+2)。
+ *
+ * **与 `generateCodeHouse` 的差异**：mc-lite 的 ship 几何**不含 `Math.random`**
+ * （house 的材质/烟囱才是随机的），故 ship 无需 seededRandom 替代 —— 天然确定性。
+ *
+ * 落点 y = h + 1（深海地表上一格）。门控 h < -6 使桅杆顶（y+4）仍在水下 1~5 格
+ * （海平面 SEA_Y = -2），是真正的「沉船」而非浮在水面的船。
+ *
+ * @param {(wx:number, y:number, wz:number, name:string, meta?:number) => void} setBlock
+ */
+export function generateCodeShip(x, y, z, setBlock) {
+  // 船体：外围一圈双层（wood/planks），内部甲板单层 planks
+  for (let dz = -3; dz <= 3; dz++) {
+    for (let dx = -2; dx <= 2; dx++) {
+      if (Math.abs(dx) === 2 || Math.abs(dz) === 3) {
+        setBlock(x + dx, y + 1, z + dz, 'wood');
+        setBlock(x + dx, y + 2, z + dz, 'planks');
+      } else {
+        setBlock(x + dx, y, z + dz, 'planks');
+      }
+    }
+  }
+  // 桅杆 5 格（mc-lite :2995）
+  for (let i = 0; i < 5; i++) setBlock(x, y + i, z, 'wood');
+  // 货箱（mc-lite :2996）
+  setBlock(x, y + 1, z + 2, 'chest');
 }

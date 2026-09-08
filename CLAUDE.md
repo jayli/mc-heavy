@@ -79,13 +79,28 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
   ③ 「避开树」半径 = **2**（mc-lite house 8/10、pavilion-tallWell 5~7）—— mc-heavy 城市树
   **无互斥**，密度 1.39%（mc-lite 约 0.44%，高 3 倍），照搬大半径会把撒布结构**全部挡掉**
   （实测各半径保留率：2→66~72% / 7→2~3% / 8~9→**0%**）；
-  ④ 城市外候选一律**不撒在水下**（mc-lite 无此门控，会产出水下房子）。
+  ④ **陆地**城市外候选一律不撒在水下（mc-lite 无此门控，会产出水下房子）。但
+  `ship` 沉船是**有意的水下结构**（门控 `h < -6`，桅杆顶仍在水下 1~5 格）—— 两类门控
+  **方向相反**，勿把水下门控挪到 ship 判定之前（实测：挪了之后 ship 永不落地）。
 - **撒布密度已刻意低于 mc-lite（勿调回去，会撞破冻结预算）**：城市撒布基值
   `flowerBed 0.0005→0.00025`（`pavilion`/`tallWell` 按 ×6/×3 派生自动跟随），城市外大 JSON
   `desertVillage 0.00016→0.00008` / `uglyHouse 0.00008→0.00004`。原因是两条**冻结断言**：
   `structure-gen` 的 `genP95 < 8ms`（§4.2）—— 大 JSON 1181/719 方块是光栅化大头；
   `m3-fullscene` 的 `gpuVertexBytes < 150MB`（§4.10）—— 花坛/亭子的花与树叶走 cutout 通道。
   **`house` 两类都不降**（opaque + 代码生成，不吃 cutout 预算、不是 p95 大头）。
+- **代码生成撒布类型的派生基准 = `CODE_GENERATED_SCATTER_TYPES`（勿写成 `t !== 'house'`）**：
+  `SCATTER_JSON_TYPES`、`apply.js` 的预载循环与 `CODE_GENERATORS` 映射表、`check:data` 门禁的
+  `jsonTypes` 全部从它派生（红线 1）。当前两项：`house` / `ship`。写成字面量排除会让加第二个
+  代码生成类型时门禁**误报**（要求它有 JSON 映射 + 磁盘文件），或该类型没被识别 → 走
+  `rasterizeStructure` → cache 未命中 → **结构静默消失**（方块层面看不出差别）。
+- **ship 沉船不看 biome/occupied（勿「补齐」门控）**：mc-lite 门控只有 `h < -6` + 概率 +
+  `safeForStructure`。实测 109 个命中里有 11 个（10%）带植被、分布在 4 个 biome
+  （AZALEA/FOREST/PLAINS/SWAMP，**无 DESERT** —— DESERT 高度被 `h*0.5+2` 抬高，不会低于 -6），
+  给它补 biome/occupied 门控会让命中数掉到 98 且沙漠永不出沉船。
+- **ship 的落地测试须用桅杆判据，不能用 footprint 范围判据**：footprint 5×7 覆盖多格、每格
+  地形高度不同（有些高到 y+3），海底 `clay`/`sand`/`end_stone` 会落进扫描范围 → 判据恒 >0
+  （实测踩坑：注入「`CODE_GENERATORS` 漏 ship」后仍全绿，无效负向验证；排除 water 也不够）。
+  正确判据 = 桅杆中心列 `(x, y..y+4, z)` 的 5 格 `wood`（门控保证地形顶 ≤ y-1，桅杆必在地形上）。
 - **cutout 扩容是离散 ×1.5 跳增，容量须留足余量**：`render-world.js _ensureCapacity` 里
   reserved 峰值只要超过 `maxVerts` **一个顶点**就整批跳到 ×1.5（1.8M→2.7M = +27MB，且
   粘性不回缩）。撒布把 cutout 峰值推到 1.80M，故 `CAPACITY.cutout.active` 从 450 调到
@@ -301,7 +316,7 @@ mc-heavy/
    ├─ core/        # game.js / scheduler.js / worker-pool.js / budget.js / perf.js / perf-hud.js
    ├─ voxel/       # constants / block-registry / chunk-column / world-data / blocks-data / faces-data
    ├─ gen/         # noise.js / terrain.js / structure-index.js / structures/*（M2 地标与空中结构）
-   │               #  scatter.js 结构撒布判定 + 代码生成 house（唯一权威；Worker 同构）
+   │               #  scatter.js 结构撒布判定 + 代码生成 house/ship（唯一权威；Worker 同构）
    ├─ mesh/        # mesher.js / lighting.js / atlas-loader.js（Worker 同构）
    │               #  iso-icon.js 等轴测投影纯函数；mesher.js 导出 TEMPLATES / FACE_VERTICES /
    │               #  FACE_UVS 供图标烘焙复用——形状与 UV 的唯一权威，图标不得有第二份几何定义

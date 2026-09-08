@@ -9,21 +9,24 @@
 // 回退后测试仍 PASS（testing-policy §2.5 陷阱②）。
 
 import { test } from './runner.js';
-import { assertEqual, assertTrue, assertFalse, assertNotNull } from './assert.js';
+import { assertEqual, assertTrue, assertFalse, assertNotNull, assertDeepEqual } from './assert.js';
 import {
   CITY_SCATTER_CHANCE, OUTSIDE_SCATTER_CHANCE,
   safeForStructure, rollCityScatter, rollOutsideScatter, generateCodeHouse, SCATTER_TYPES,
+  rollShipScatter, generateCodeShip, SHIP_DEEP_SEA_Y,
+  CODE_GENERATED_SCATTER_TYPES, SCATTER_JSON_TYPES, SCATTER_STRIDE,
 } from '../gen/structures/scatter.js';
 import { computeRegionLayout, neighborRegionKeys } from '../gen/structures/structure-layout.js';
 import { applyStructuresToColumn } from '../gen/structures/apply.js';
-import { fillColumn } from '../gen/terrain.js';
+import { fillColumn, generateHeight } from '../gen/terrain.js';
 import { carveCaves } from '../gen/caves.js';
+import { getBiome } from '../gen/noise.js';
+import { rollVegetation, rollCityTree } from '../gen/structures/vegetation.js';
 import { getCityInfo, isPointNearCityStructure } from '../gen/structures/city-layout.js';
 import { ChunkColumn } from '../voxel/chunk-column.js';
 import { createRegistry } from '../voxel/block-registry.js';
 import { BLOCKS } from '../voxel/blocks-data.js';
 import { makeColumnSetter, getCityFinalSurfaceY } from '../gen/structures/landmarks.js';
-import { rollCityTree } from '../gen/structures/vegetation.js';
 import { SCATTER_FOOTPRINT, REGION_SIZE } from '../gen/structures/region-config.js';
 import { GROUND_SUPPORT_TYPES } from '../gen/structures/structure-json.js';
 import { blockIndex, SEA_Y } from '../voxel/constants.js';
@@ -466,7 +469,7 @@ function layoutsFor(cx, cz) {
  */
 const SCATTER_Y_EXTENT = {
   flowerBed: 3, pavilion: 6, tallWell: 51, desertPyramid: 16,
-  desertVillage: 12, uglyHouse: 13, tank: 9, house: 6,
+  desertVillage: 12, uglyHouse: 13, tank: 9, house: 6, ship: 4,
 };
 
 /** 统计 column 内指定方块名的数量 */
@@ -487,16 +490,23 @@ function countBlocks(col, reg, names) {
  * @param {Object} cand 候选 {x, y, z}
  * @param {string} type 撒布类型（查 SCATTER_FOOTPRINT + SCATTER_Y_EXTENT）
  * @param {(wx:number, y:number, wz:number) => number} get 取方块 id
+ * @param {Set<number>} [ignoreIds] 不计入的方块 id —— **ship 必须传 water**：深海区落点上方
+ *   全是水（id≠0），不排除的话判据恒 >0（实测踩坑：注入「CODE_GENERATORS 漏 ship」后仍全绿，
+ *   无效负向验证）。水下区没有树（树只在陆地上），故排除 water 后剩下的 wood/planks/chest
+ *   只能是 ship 写的 —— 判据可靠。
  * @returns {number} footprint 内 y 及以上的非空气方块数
  */
-function countStructureBlocksAt(cand, type, get) {
+function countStructureBlocksAt(cand, type, get, ignoreIds) {
   const fp = SCATTER_FOOTPRINT[type];
   const extent = SCATTER_Y_EXTENT[type] || 6;
   let n = 0;
   for (let dx = -fp.halfX; dx <= fp.halfX; dx++) {
     for (let dz = -fp.halfZ; dz <= fp.halfZ; dz++) {
       for (let y = cand.y; y <= cand.y + extent; y++) {
-        if (get(cand.x + dx, y, cand.z + dz) !== 0) n++;
+        const id = get(cand.x + dx, y, cand.z + dz);
+        if (id === 0) continue;
+        if (ignoreIds && ignoreIds.has(id)) continue;
+        n++;
       }
     }
   }
@@ -709,21 +719,31 @@ test('groundSupport 契约：只有 desertPyramid/desertVillage/uglyHouse 补支
   }
 });
 
-test('城市外候选一律不在水下（有意偏离 mc-lite：mc-lite 无此门控）', () => {
+test('城市外候选：陆地类型不在水下，ship 必须在水下（两类门控相反）', () => {
   // mc-lite 的 resolveLargeStaticStructureType 不查水位，会把房子/坦克放进水里。
-  // mc-heavy 地形水下面积大，照搬会产出大量水下结构 → 观感明显错误，故加 h<=SEA_Y 门控。
-  // 断言落在实际产出的候选上（§2.5 陷阱①）。
-  let checked = 0, underwater = 0;
+  // mc-heavy 地形水下面积大，照搬会产出大量水下结构 → 观感明显错误，故陆地撒布加
+  // h<=SEA_Y 门控。**但 ship 是有意的水下结构**（门控 h < -6，桅杆顶在水下 1~5 格）——
+  // 两类门控方向相反，必须分别断言（§2.5 陷阱①：断言落在实际产出的候选上）。
+  let landChecked = 0, landUnderwater = 0;
+  let shipChecked = 0, shipUnderwater = 0;
   for (const [rx, rz] of [[0, 0], [1, 0], [0, 1], [-1, 0], [0, -1], [2, 0], [-2, 0]]) {
     const arr = computeRegionLayout(rx, rz, SEED).scatter.outsideScatter;
-    for (let i = 0; i < arr.length; i += 4) {
-      checked++;
+    for (let i = 0; i < arr.length; i += SCATTER_STRIDE) {
       // 候选 y = h+1 → 水下等价于 y <= SEA_Y+1
-      if (arr[i + 1] <= SEA_Y + 1) underwater++;
+      const underwater = arr[i + 1] <= SEA_Y + 1;
+      if (SCATTER_TYPES[arr[i + 3]] === 'ship') {
+        shipChecked++;
+        if (underwater) shipUnderwater++;
+      } else {
+        landChecked++;
+        if (underwater) landUnderwater++;
+      }
     }
   }
-  assertTrue(checked > 0, `确有城市外候选（${checked} 个），否则断言恒真`);
-  assertEqual(underwater, 0, `${checked} 个候选无一在水下`);
+  assertTrue(landChecked > 0, `确有陆地候选（${landChecked} 个），否则断言恒真`);
+  assertEqual(landUnderwater, 0, `${landChecked} 个陆地候选无一在水下`);
+  assertTrue(shipChecked > 0, `确有 ship 候选（${shipChecked} 个），否则断言恒真`);
+  assertEqual(shipUnderwater, shipChecked, `${shipChecked} 个 ship 候选全部在水下（沉船语义）`);
 });
 
 test('城市候选不按 region 裁剪 —— 跨区那部分城市装饰物仍产出', () => {
@@ -740,6 +760,208 @@ test('城市候选不按 region 裁剪 —— 跨区那部分城市装饰物仍�
   }
   assertTrue(checked > 0, `确有城市候选（${checked} 个）`);
   assertTrue(beyond > 0, `${beyond} 个候选落在 region [0,0] 之外（跨区装饰物未丢失）`);
+});
+
+// ==================== ship 沉船（M2 欠账补齐，mc-lite WorldWorker.js:988/:2987）====================
+
+/** 扫 ship 候选：复现 computeScatterCandidates 的城市外循环门控（h<-6 + 概率 + 内圈） */
+function collectShipCandidates(seed, range = 800) {
+  const out = [];
+  for (let wx = -range; wx < range; wx++) {
+    for (let wz = -range; wz < range; wz++) {
+      if (!safeForStructure(wx, wz)) continue;
+      const h = generateHeight(wx, wz, seed);
+      if (!rollShipScatter(wx, wz, h, seed)) continue;
+      out.push({ x: wx, y: h + 1, z: wz, h });
+    }
+  }
+  return out;
+}
+
+test('ship 概率口径：与 house 同为 0.001（mc-lite 口径，不降密度）', () => {
+  // 关系型断言（不硬编码数值 —— §2.5 陷阱②）。ship 不降密度的理由：opaque+cutout 方块、
+  // 数量少（109 个/全图、每 column ≤1），不吃 cutout 预算、不是 genP95 大头。
+  assertEqual(OUTSIDE_SCATTER_CHANCE.ship, OUTSIDE_SCATTER_CHANCE.house,
+    'ship 与 house 同概率（mc-lite 两者都是 0.001）');
+  assertTrue(OUTSIDE_SCATTER_CHANCE.ship > OUTSIDE_SCATTER_CHANCE.desertPyramid,
+    'ship 比沙漠结构更密');
+});
+
+test('ship 只在深海出现（h < SHIP_DEEP_SEA_Y，门控实测有效）', () => {
+  // ⚠️ 断言落在**实际命中点**上（§2.5 陷阱①）。若改成按判定函数的参数筛点，
+  // 注入「放宽门控」的缺陷不会 FAIL。
+  const hits = collectShipCandidates(SEED);
+  assertTrue(hits.length > 0, `确有 ship 命中（${hits.length} 个），否则断言恒真`);
+  let leaked = 0;
+  for (const c of hits) if (c.h >= SHIP_DEEP_SEA_Y) leaked++;
+  assertEqual(leaked, 0, `${hits.length} 个命中点全部在深海（h < ${SHIP_DEEP_SEA_Y}）`);
+  // 深海门控须严于海平面 —— 否则 ship 会出现在浅水/岸上，不是「沉船」
+  assertTrue(SHIP_DEEP_SEA_Y < SEA_Y, `SHIP_DEEP_SEA_Y(${SHIP_DEEP_SEA_Y}) 低于海平面(${SEA_Y})`);
+});
+
+test('ship 不看 biome/occupied —— 与陆地撒布不同（mc-lite 口径，勿「补齐」门控）', () => {
+  // mc-lite 的 ship 门控只有 h + 概率 + safeForStructure（WorldWorker.js:988），
+  // **不看 biome、不看 occupied**。实测 109 个命中里有 11 个（10%）带植被、分布在 4 个 biome，
+  // 所以这条断言不是恒真：若给 ship 补上 occupied/biome 门控，命中数会掉。
+  const hits = collectShipCandidates(SEED);
+  assertTrue(hits.length > 0, `确有 ship 命中（${hits.length} 个）`);
+
+  // 带植被的命中点必须保留（不看 occupied）
+  let withPlant = 0;
+  const biomes = new Set();
+  for (const c of hits) {
+    const biome = getBiome(c.x, c.z, SEED);
+    biomes.add(biome);
+    if (rollVegetation(c.x, c.z, biome, SEED).plant) withPlant++;
+  }
+  assertTrue(withPlant > 0, `${withPlant} 个 ship 命中点带植被 —— 证明不看 occupied（否则会掉到 ${hits.length - withPlant}）`);
+  assertTrue(biomes.size > 1, `ship 出现在 ${biomes.size} 个 biome（${[...biomes].join('/')}）—— 证明不看 biome`);
+
+  // 同一坐标换 biome 判定不变（biome 不是判据）
+  const probe = hits[0];
+  const sameH = probe.h;
+  const r1 = rollShipScatter(probe.x, probe.z, sameH, SEED);
+  const r2 = rollShipScatter(probe.x, probe.z, sameH, SEED + 0); // 同 seed 同 h
+  assertEqual(r1, r2, '判定只依赖 (x,z,h,seed)，不依赖 biome');
+});
+
+test('ship 判定确定性 —— 同 seed 两次一致（红线 2）', () => {
+  let mismatch = 0;
+  for (let wx = -400; wx < 400; wx += 3) {
+    for (let wz = -400; wz < 400; wz += 3) {
+      const h = generateHeight(wx, wz, SEED);
+      const a = rollShipScatter(wx, wz, h, SEED);
+      const b = rollShipScatter(wx, wz, h, SEED);
+      if (a !== b) mismatch++;
+    }
+  }
+  assertEqual(mismatch, 0, '判定完全确定');
+});
+
+test('ship 判定：浅水与陆地一律不撒（h >= SHIP_DEEP_SEA_Y）', () => {
+  let leaked = 0, checked = 0;
+  for (let wx = -300; wx < 300; wx += 2) {
+    for (let wz = -300; wz < 300; wz += 2) {
+      // 用固定高度扫，不依赖真实地形（覆盖全部高度区间）
+      for (const h of [SHIP_DEEP_SEA_Y, SHIP_DEEP_SEA_Y + 1, SEA_Y, 0, 10]) {
+        checked++;
+        if (rollShipScatter(wx, wz, h, SEED)) leaked++;
+      }
+    }
+  }
+  assertTrue(checked > 0, '确有采样点');
+  assertEqual(leaked, 0, `h >= ${SHIP_DEEP_SEA_Y} 的点一律不撒`);
+});
+
+test('generateCodeShip：桅杆 5 格 wood（y..y+4）+ chest 在 (x, y+1, z+2)', () => {
+  const reg = makeRegistry();
+  const col = new ChunkColumn(0, 0);
+  const setBlock = makeColumnSetter(col, reg);
+  const y = 5;
+  generateCodeShip(8, y, 8, setBlock);
+  const woodId = reg.idOf('wood');
+
+  // 桅杆：mc-lite WorldWorker.js:2995 `for (let i = 0; i < 5; i++) chunk.add(x, y+i, z, 'wood')`
+  for (let i = 0; i < 5; i++) {
+    assertEqual(col.blocks[blockIndex(8, y + i, 8)], woodId, `桅杆 y+${i} = wood`);
+  }
+  assertEqual(col.blocks[blockIndex(8, y + 5, 8)], 0, '桅杆只有 5 格（y+5 是空气）');
+
+  // chest：mc-lite WorldWorker.js:2996 `chunk.add(x, y + 1, z + 2, 'chest')`
+  assertEqual(col.blocks[blockIndex(8, y + 1, 10)], reg.idOf('chest'), 'chest 在 (x, y+1, z+2)');
+});
+
+test('generateCodeShip：船体外围 wood/planks 双层 + 甲板 planks', () => {
+  const reg = makeRegistry();
+  const col = new ChunkColumn(0, 0);
+  const setBlock = makeColumnSetter(col, reg);
+  const y = 5;
+  generateCodeShip(8, y, 8, setBlock);
+  const woodId = reg.idOf('wood'), planksId = reg.idOf('planks');
+
+  // 外围（|dx|===2 || |dz|===3）：y+1 = wood，y+2 = planks（mc-lite :2989-2991）
+  // 取 (dx=-2, dz=0) 与 (dx=0, dz=-3) 两个外围点验证
+  for (const [dx, dz] of [[-2, 0], [0, -3], [2, 3], [-2, -3]]) {
+    assertEqual(col.blocks[blockIndex(8 + dx, y + 1, 8 + dz)], woodId, `外围 (${dx},${dz}) y+1 = wood`);
+    assertEqual(col.blocks[blockIndex(8 + dx, y + 2, 8 + dz)], planksId, `外围 (${dx},${dz}) y+2 = planks`);
+  }
+
+  // 内部（非外围）：y = planks（甲板，mc-lite :2993）
+  // 取 (dx=-1, dz=0) —— 内部点
+  assertEqual(col.blocks[blockIndex(7, y, 8)], planksId, '甲板 y = planks');
+
+  // 占地边界：dx±2 / dz±3 之外无方块
+  assertEqual(col.blocks[blockIndex(8 + 3, y + 1, 8)], 0, 'dx=+3 越界无方块');
+  assertEqual(col.blocks[blockIndex(8, y + 1, 8 + 4)], 0, 'dz=+4 越界无方块');
+});
+
+test('generateCodeShip：确定性 —— 无 Math.random（与 generateCodeHouse 的偏离不同）', () => {
+  // mc-lite 的 ship 几何**不含 Math.random**（对比 house 的材质/烟囱随机），
+  // 故 ship 无需 seededRandom 替代 —— 但这条断言钉住「不引入随机材质」。
+  const reg = makeRegistry();
+  const a = new ChunkColumn(0, 0);
+  const b = new ChunkColumn(0, 0);
+  generateCodeShip(8, 5, 8, makeColumnSetter(a, reg));
+  generateCodeShip(8, 5, 8, makeColumnSetter(b, reg));
+  let diff = 0;
+  for (let i = 0; i < a.blocks.length; i++) if (a.blocks[i] !== b.blocks[i]) diff++;
+  assertEqual(diff, 0, '两次生成逐格一致');
+});
+
+test('契约：CODE_GENERATED_SCATTER_TYPES 是预载清单与门禁的唯一派生基准', () => {
+  // ⚠️ 这条契约防止一个真实的静默失败：ship/house 是代码生成（无 JSON），
+  // 若派生基准写成「排除 house」而不是「排除全部代码生成类型」，门禁会要求 ship 有
+  // JSON 映射 + 磁盘文件 → 误报；反之若 ship 没被识别为代码生成 → 走 rasterizeStructure
+  // → cache 未命中 → **沉船静默消失**（方块层面看不出差别，实测踩过同类坑）。
+  assertTrue(CODE_GENERATED_SCATTER_TYPES.includes('house'), 'house 是代码生成类型');
+  assertTrue(CODE_GENERATED_SCATTER_TYPES.includes('ship'), 'ship 是代码生成类型');
+  assertTrue(SCATTER_TYPES.includes('ship'), 'ship 在 SCATTER_TYPES 里');
+  assertFalse(SCATTER_JSON_TYPES.includes('ship'), 'ship 不在预载清单（无 JSON）');
+  assertFalse(SCATTER_JSON_TYPES.includes('house'), 'house 不在预载清单（无 JSON）');
+  // 派生关系：JSON 清单 = SCATTER_TYPES − 代码生成类型
+  const expected = SCATTER_TYPES.filter((t) => !CODE_GENERATED_SCATTER_TYPES.includes(t));
+  assertDeepEqual([...SCATTER_JSON_TYPES], expected, '预载清单从 SCATTER_TYPES 派生（红线 1）');
+});
+
+test('端到端：ship 真落地（真实 GEN 数据，桅杆判据）', async () => {
+  const reg = makeRegistry();
+  // 从 region layout 的候选数组里读实际 ship 落点（不靠判定函数另算 —— 那是同一份代码）
+  const ships = [];
+  for (const [rx, rz] of [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1], [2, 0], [-2, 0]]) {
+    const arr = computeRegionLayout(rx, rz, SEED).scatter.outsideScatter;
+    for (let i = 0; i < arr.length; i += SCATTER_STRIDE) {
+      if (SCATTER_TYPES[arr[i + 3]] === 'ship') ships.push({ x: arr[i], y: arr[i + 1], z: arr[i + 2] });
+    }
+  }
+  assertTrue(ships.length > 0, `region layout 产出了 ship 候选（${ships.length} 个），否则断言恒真`);
+
+  // ⚠️ **不能用 footprint 范围的坐标判据**：ship footprint 5×7 覆盖多格，每格地形高度不同
+  // （有些高到 y+3），海底的 clay/sand/end_stone 会落进扫描范围 → 判据恒 >0（实测踩坑：
+  // 注入「CODE_GENERATORS 漏 ship」后仍全绿，无效负向验证）。排除 water 也不够。
+  //
+  // 正确判据 = **桅杆中心列** `(x, y..y+4, z)` 的 5 格 wood：门控 h<-6 保证中心列地形顶
+  // ≤ y-1，桅杆必在地形之上；水下无树（树只在陆地），故这 5 格只能是 ship 写的。
+  // 若 CODE_GENERATORS 漏 ship → 走 rasterizeStructure('ship') → cache 未命中 → 桅杆 wood
+  // 缺失 → 判据正确 FAIL。chest 在 (x,y+1,z+2) 同样干净（地形不写 chest、水下无 house）。
+  const woodId = reg.idOf('wood'), chestId = reg.idOf('chest');
+  const colCache = new Map();
+  let mastOk = 0, chestOk = 0, checked = 0;
+  for (const s of ships.slice(0, 10)) {
+    const cx = Math.floor(s.x / 16), cz = Math.floor(s.z / 16);
+    const key = `${cx},${cz}`;
+    if (!colCache.has(key)) colCache.set(key, await genColumnFull(reg, cx, cz));
+    const col = colCache.get(key);
+    const get = makeGetter(col, cx, cz);
+    checked++;
+    // 桅杆：中心列 y..y+4 全 wood
+    let mast = 0;
+    for (let i = 0; i < 5; i++) if (get(s.x, s.y + i, s.z) === woodId) mast++;
+    if (mast === 5) mastOk++;
+    if (get(s.x, s.y + 1, s.z + 2) === chestId) chestOk++;
+  }
+  assertTrue(mastOk > 0, `ship 桅杆落地 ${mastOk}/${checked} 个候选点（${colCache.size} 个 column）`);
+  assertTrue(chestOk > 0, `ship 货箱落地 ${chestOk}/${checked} 个候选点`);
+  assertTrue(mastOk / checked > 0.5, `桅杆落地率 ${(mastOk / checked * 100).toFixed(0)}% > 50%`);
 });
 
 test('端到端：撒布结构确定性 —— 同 seed 两次 GEN 结果逐格一致（红线 2）', async () => {
