@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node server-script/start-server.js",
     "icons": "node tools/bake-icon-atlas.mjs",
+    "zombie": "node tools/bake-zombie-head.mjs",
     "atlas": "node tools/build-atlas.mjs",
     "test": "playwright test",
     "bench": "node src/bench/baseline.mjs",

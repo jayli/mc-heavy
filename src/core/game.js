@@ -24,6 +24,7 @@ import { probeDefinition } from '../entities/entity-types.js';
 import { EntityRenderLayer, createProbeRenderDef } from '../render/entity-render-layer.js';
 import { ZombieService, zombieDefinition } from '../entities/zombies/zombie-system.js';
 import { ZombieRenderer } from '../render/zombie-renderer.js';
+import { loadZombieHeadTexture } from '../render/zombie-head-texture.js';
 import { loadAtlas } from '../mesh/atlas-loader.js';
 import { findSpawnY } from '../gen/terrain.js';
 import { getCitySpawnPoint, getCityInfo } from '../gen/structures/city-layout.js';
@@ -99,6 +100,12 @@ export class Game {
     // atlas：纹理 + tileRect 元数据（broadcast 给 Worker 供 mesher 查 UV）
     const { texture } = await loadAtlas({ mipmap: this.blurMipmap });
     this._atlasTexture = texture; // 调试/测试引用
+    // 丧尸头部马赛克纹理：与 atlas 一并 await（保持 ZombieRenderer 构造器同步 → 首帧不闪纯色）。
+    // 加载失败不应阻断启动 —— 头部纹理只是观感，缺了退回纯色头即可（_baseColorOf 的退回路径）。
+    this._zombieHeadTexture = await loadZombieHeadTexture().catch((e) => {
+      console.warn('[game] 丧尸头部纹理加载失败，退回纯色头：', e);
+      return null;
+    });
     const atlasMeta = await (await fetch('/assets/atlas.json')).json();
     this.pool.broadcast('atlas-meta', atlasMeta);
     // 调试开关同步给 Worker（mesher 与主线程快速路径同构生效，§4.9）
@@ -208,7 +215,7 @@ export class Game {
     // 两者经 onSpawn/onDespawn 钩子对称接线：slot 单一权威在 service，renderer 只接收。
     // 构造顺序：先 renderer 后 service —— service 的钩子闭包引用 renderer，反序会让闭包
     // 在「已创建但未赋值」的窗口里读到 undefined（运行时不炸只因闭包延迟调用，勿照直觉改回）。
-    this.zombieRenderer = new ZombieRenderer({ scene: this.scene });
+    this.zombieRenderer = new ZombieRenderer({ scene: this.scene, headTexture: this._zombieHeadTexture });
     this.zombies = new ZombieService({
       entities: this.entities, world: this.world,
       // M6 AI：经既有 WorkerPool 的统一 `ai` RPC（不新建 Worker，红线 3 / M5 规格 §3）

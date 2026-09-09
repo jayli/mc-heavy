@@ -17,9 +17,14 @@ import { WORLD_MIN_Y } from '../voxel/constants.js';
 import { EntityManager } from '../entities/entity-manager.js';
 import {
   ZOMBIE, ZOMBIE_FLASH_MS, ZOMBIE_WALK_SPEED, ZOMBIE_SWING, ZOMBIE_MOVING_EPSILON,
+  ZOMBIE_SEPARATION,
 } from '../entities/zombies/zombie-config.js';
-import { ZombieService, zombieDefinition } from '../entities/zombies/zombie-system.js';
-import { ZombieRenderer, ZOMBIE_PARTS, ZOMBIE_PART_DEFS } from '../render/zombie-renderer.js';
+import {
+  ZombieService, zombieDefinition, separationForce, computeAiUpdates,
+} from '../entities/zombies/zombie-system.js';
+import {
+  ZombieRenderer, ZOMBIE_PARTS, ZOMBIE_PART_DEFS, HEAD_FRONT_VERTICES,
+} from '../render/zombie-renderer.js';
 
 /** 舍入到 1e-6：抵消 IEEE754 累加噪声，让派生量可与字面量比对（testing-policy §2.5） */
 function round6(v) { return Math.round(v * 1e6) / 1e6; }
@@ -39,9 +44,11 @@ function assertClose(actual, expected, tolerance, message = '') {
  * 其上全 air），落点条件完全由 fixture 掌控，可被测试改写（`world.setBlock`）来制造
  * 「头格被占用」等非法出生场景。
  *
- * @param {{maxActive?: number, withRenderer?: boolean}} [opts]
+ * @param {{maxActive?: number, withRenderer?: boolean, headTexture?: THREE.Texture|null}} [opts]
+ *   `headTexture`：传一个 dummy 纹理即走「head 马赛克纹理 + UV 分区」路径；默认 null =
+ *   纯色退回路径（既有测试不受影响，向后兼容）。
  */
-export function makeZombieFixture({ maxActive = ZOMBIE.maxActive, withRenderer = true } = {}) {
+export function makeZombieFixture({ maxActive = ZOMBIE.maxActive, withRenderer = true, headTexture = null } = {}) {
   const registry = createRegistry();
   registry.register('air', { solid: false, opaque: false, cullMode: 'none' });
   registry.register('stone', { solid: true, opaque: true, cullMode: 'opaque' });
@@ -64,7 +71,7 @@ export function makeZombieFixture({ maxActive = ZOMBIE.maxActive, withRenderer =
   entities.registerType('zombie', zombieDefinition);
 
   const scene = new THREE.Scene();
-  const renderer = withRenderer ? new ZombieRenderer({ scene, maxActive: ZOMBIE.maxActive }) : null;
+  const renderer = withRenderer ? new ZombieRenderer({ scene, maxActive: ZOMBIE.maxActive, headTexture }) : null;
 
   // 渲染 slot 由 service 的生命周期钩子驱动（service 是同构层，不得 import render —— 注入解耦，
   // 与 EntityManager.onDespawn 同一手法）。**slot 单一权威在 service**（它管 20 上限），
@@ -93,6 +100,191 @@ test('ZOMBIE config: 冻结数值对齐 mc-lite（上限/生命/AABB/速度/范�
   assertEqual(ZOMBIE_WALK_SPEED, 10);
   assertEqual(ZOMBIE_SWING, Math.PI / 8);
   assertTrue(Object.isFrozen(ZOMBIE));
+});
+
+test('ZOMBIE_SEPARATION: 排斥参数对齐 mc-lite（最小距离照搬 / 排斥强度换算单位）', () => {
+  // 逐项钉住 mc-lite `EnemyWorker.js:133-134` 的两个常量（`calculateSeparationForce` 内部）。
+  // 这些是**玩法数据**（Tier 2 口径：改错了立刻可见 —— 丧尸挤成一坨或互相弹开 —— 但静默
+  // 改错没人会发现），故用门禁断言而非目视。
+  //
+  // ⚠️ `minDistance: 1.2` 是 mc-lite 注释里的「略大于丧尸宽度」，**不是** `ZOMBIE.width`（0.6）
+  // 的两倍 —— mc-lite 里它是独立硬编码常量。故断言写成独立字面量：若派生成 `ZOMBIE.width * 2`，
+  // 改 AABB 宽度会连带改排斥半径，那不是同一个事实（红线 1 精神）。
+  assertEqual(ZOMBIE_SEPARATION.minDistance, 1.2);
+
+  // ⚠️ **repulsionStrength 是有意换算值，不是 mc-lite 原值**：mc-lite 是 `0.05`（格/帧单位，
+  // 它的 `predictNextPosition` 不乘 dt）。mc-heavy 物理层乘 dt → velocity 是格/秒，故须 ×60
+  // （与 `ZOMBIE.speed` 的 `0.02 格/帧 × 60 = 1.2` 同一口径）。
+  // 断言钉住**换算关系**而非孤立数值 —— 只写 `assertEqual(3.0)` 会让「忘了换算」与「换算值改了」
+  // 两种情况都看不出区别。钉住 `=== 0.05 × 60` 才能证明换算关系成立。
+  const MC_LITE_REPULSION = 0.05; // mc-lite 原值（格/帧）
+  assertEqual(ZOMBIE_SEPARATION.repulsionStrength, MC_LITE_REPULSION * 60);
+  // 前提断言：换算值确实远大于 mc-lite 原值（否则这条换算关系形同虚设）
+  assertTrue(ZOMBIE_SEPARATION.repulsionStrength > MC_LITE_REPULSION,
+    '换算后的排斥强度须大于 mc-lite 原值（格/秒 vs 格/帧）');
+  assertTrue(Object.isFrozen(ZOMBIE_SEPARATION));
+});
+
+// ---------- 实体间排斥（mc-lite EnemyWorker.js:131-155 移植） ----------
+
+/**
+ * 排斥力纯函数测试。派生量一律从**冻结常量**算出而非硬编码字面量（testing-policy §2.5）——
+ * 硬编码被测代码写入的那个值会让「常量改错但关系式仍成立」的缺陷恒过。
+ */
+test('separationForce: 两只水平重叠 → 互相推开且方向相反', () => {
+  // A 在 (0,0)，B 在 (0.5,0) → 水平距离 0.5 < minDistance 1.2 → 排斥生效
+  // dx = enemy.x - other.x：A 相对 B 是 -0.5 → forceX 为负（向 -X 推开）
+  const self = { id: 'a', position: [0, 1, 0] };
+  const others = [{ id: 'a', position: [0, 1, 0] }, { id: 'b', position: [0.5, 1, 0] }];
+  const f = separationForce(self, others);
+  assertTrue(f.x < 0, `A 须向 -X 推开（远离 B），got ${f.x}`);
+  assertTrue(Math.abs(f.z) < 1e-9, '纯水平排列不该有 Z 分量');
+  // 对称性：B 的排斥力须与 A 大小相等、方向相反
+  const fb = separationForce({ id: 'b', position: [0.5, 1, 0] }, others);
+  assertClose(fb.x, -f.x, 1e-9, '两两排斥须对称（牛顿第三定律）');
+});
+
+test('separationForce: 距离恰在 minDistance 边界 → 不排斥（< 而非 <=）', () => {
+  // mc-lite 判定 `distance < minDistance` —— 恰等于半径时**不**排斥。
+  // 边界方向反了（写成 <=）会让「刚好分开的两只」继续被推开 → 永远散不到 1.2 格。
+  //
+  // ⚠️ **输入必须用字面量 1.2，不能从 `ZOMBIE_SEPARATION.minDistance` 派生** ——
+  // 派生会让「改常量」与「改输入」同时发生 → 断言恒真（testing-policy §2.5 的恒真陷阱 ⑦：
+  // `micro = EPSILON / 2` 同款）。实测踩过：注入「`<` 改 `<=`」后本测试仍全绿，
+  // 因为输入随常量变化、且 `distance == minDistance` 时公式 `(minDistance-distance)` 本就为 0。
+  // 故用字面量 + 前提断言钉住常量确实是 1.2。
+  const self = { id: 'a', position: [0, 1, 0] };
+  const others = [self, { id: 'b', position: [1.2, 1, 0] }]; // 字面量，不派生
+  const f = separationForce(self, others);
+  assertClose(f.x, 0, 1e-9, '恰在半径边界须零排斥');
+  // 前提断言：常量确实是 1.2（否则上面的字面量输入就不在边界上，这条覆盖形同虚设）
+  assertEqual(ZOMBIE_SEPARATION.minDistance, 1.2, '前提：半径须为 1.2');
+});
+
+test('separationForce: 略小于 minDistance → 有排斥（钉住边界是严格小于）', () => {
+  // 上一条测「恰等于不排斥」，本条测「略小于有排斥」—— 两条合起来才能钉住 `<` 的边界语义。
+  // 只有上一条的话，注入「`<` 改 `<=`」测不出来（见上方踩坑记录）。
+  // 距离取 1.19（略小于 1.2）：期望 force = (1.2-1.19)/1.2 × 0.05，方向 -X。
+  const { minDistance, repulsionStrength } = ZOMBIE_SEPARATION;
+  const self = { id: 'a', position: [0, 1, 0] };
+  const others = [self, { id: 'b', position: [1.19, 1, 0] }];
+  const f = separationForce(self, others);
+  assertClose(f.x, -(minDistance - 1.19) / minDistance * repulsionStrength, 1e-12);
+  // 前提：1.19 确实落在「略小于半径」区间（否则这条也是恒真）
+  assertTrue(1.19 < ZOMBIE_SEPARATION.minDistance, '前提：1.19 须小于半径');
+});
+
+test('separationForce: 距离越近排斥力越大（线性衰减）', () => {
+  // force = (minDistance - distance) / minDistance × strength → 线性衰减。
+  // 取三个距离，断言严格单调；并逐项比对公式（从常量派生，不硬编码结果）。
+  const { minDistance, repulsionStrength } = ZOMBIE_SEPARATION;
+  const forceAt = (d) => separationForce(
+    { id: 'a', position: [0, 1, 0] },
+    [{ id: 'a', position: [0, 1, 0] }, { id: 'b', position: [d, 1, 0] }],
+  ).x;
+  const d1 = 0.2, d2 = 0.6, d3 = 1.0;
+  assertTrue(Math.abs(forceAt(d1)) > Math.abs(forceAt(d2)), '越近排斥越大（0.2 > 0.6）');
+  assertTrue(Math.abs(forceAt(d2)) > Math.abs(forceAt(d3)), '越近排斥越大（0.6 > 1.0）');
+  // 逐项比对公式：d1 的期望 = (1.2-0.2)/1.2 × 0.05，方向 -X（self 在 other 的左侧）
+  assertClose(forceAt(d1), -(minDistance - d1) / minDistance * repulsionStrength, 1e-12);
+});
+
+test('separationForce: 完全重叠（distance ≈ 0）→ 用 id 派生方向推开（tie-break）', () => {
+  // mc-lite 判定 `distance > 0.001` → 完全重叠时**跳过**不推开。这是 mc-lite 的既有行为，
+  // 但**在 mc-heavy 里会造成永久死锁**（实测踩坑）：两只同位置丧尸的追逐速度完全相同 →
+  // 永远同步移动、永不分开（实测 20 只强制同点生成后 3 秒仍 min=0、190 对全重叠）。
+  // mc-lite 不会死锁是因为它有 S 路线随机偏移角（`EnemyWorker.js:186-207` `targetOffsetAngle`，
+  // 2% 概率每帧）让丧尸不会精确同点 —— 而 mc-heavy 的 AI 是纯直线追逐，没移植那个机制。
+  //
+  // 故补 tie-break：完全重叠时用 **id 派生的确定性角度**推开。用 id 派生而非 `Math.random()`
+  // 的理由：① 可测（确定性，断言能钉住具体方向）；② 无帧间抖动（random 会让丧尸每帧换方向
+  // 抖个不停）。
+  const self = { id: 'z0', position: [5, 1, 5] };
+  const others = [self, { id: 'z1', position: [5, 1, 5] }];
+  const f = separationForce(self, others);
+  assertTrue(Number.isFinite(f.x) && Number.isFinite(f.z), '排斥力不得为 NaN');
+  // 完全重叠时排斥力必须**非零**（否则死锁），且长度 = repulsionStrength
+  const len = Math.hypot(f.x, f.z);
+  assertClose(len, ZOMBIE_SEPARATION.repulsionStrength, 1e-9, '完全重叠须有非零排斥力（解死锁）');
+});
+
+test('separationForce: 完全重叠的两只 → 方向相反（互相推开而非同向）', () => {
+  // 死锁的本质是「两只速度完全相同」→ tie-break 必须让同位置的两只朝**相反**方向走。
+  // 若两只派生出同一角度，它们仍会同步移动 → 死锁没解开。
+  const a = { id: 'z0', position: [5, 1, 5] };
+  const b = { id: 'z1', position: [5, 1, 5] };
+  const fa = separationForce(a, [a, b]);
+  const fb = separationForce(b, [a, b]);
+  assertClose(fa.x, -fb.x, 1e-9, '完全重叠的两只须朝相反方向推开（X）');
+  assertClose(fa.z, -fb.z, 1e-9, '完全重叠的两只须朝相反方向推开（Z）');
+});
+
+test('separationForce: tie-break 方向由 id 确定性派生（同 id 同方向）', () => {
+  // 钉住「确定性」：同一 id 多次调用须得到相同方向 —— 若用 Math.random() 会每帧抖。
+  const a = { id: 'z0', position: [5, 1, 5] };
+  const b = { id: 'z1', position: [5, 1, 5] };
+  const f1 = separationForce(a, [a, b]);
+  const f2 = separationForce(a, [a, b]);
+  assertClose(f1.x, f2.x, 1e-12, '同 id 多次调用须同方向（确定性）');
+  assertClose(f1.z, f2.z, 1e-12, '同 id 多次调用须同方向（确定性）');
+  // 不同 id 须有不同方向（否则所有丧尸朝同一方向走 → 仍重叠）
+  const f3 = separationForce({ id: 'z2', position: [5, 1, 5] }, [a, b]);
+  assertTrue(Math.abs(f1.x - f3.x) > 1e-9 || Math.abs(f1.z - f3.z) > 1e-9,
+    '不同 id 须派生不同方向（否则仍会重叠）');
+});
+
+test('separationForce: 不重叠（距离 > minDistance）→ 零排斥', () => {
+  const self = { id: 'a', position: [0, 1, 0] };
+  const others = [self, { id: 'b', position: [5, 1, 5] }];
+  const f = separationForce(self, others);
+  assertClose(f.x, 0, 1e-9);
+  assertClose(f.z, 0, 1e-9);
+});
+
+test('separationForce: 多个邻居的排斥力累加', () => {
+  // 三个邻居分别在不同方向 → 合力是各分量之和（mc-lite 的 `+=` 累加语义）。
+  const self = { id: 'a', position: [0, 1, 0] };
+  const others = [
+    self,
+    { id: 'b', position: [0.5, 1, 0] },   // +X 方向 → A 向 -X 推
+    { id: 'c', position: [-0.5, 1, 0] },  // -X 方向 → A 向 +X 推
+  ];
+  const f = separationForce(self, others);
+  // 对称排列 → X 分量互相抵消
+  assertClose(f.x, 0, 1e-9, '对称排列的 X 排斥须抵消');
+  // 再加一个 Z 方向邻居 → 只产生 Z 分量
+  const others2 = [...others, { id: 'd', position: [0, 1, 0.5] }];
+  const f2 = separationForce(self, others2);
+  assertTrue(f2.z < 0, 'Z 方向邻居须产生 -Z 排斥');
+});
+
+test('separationForce: 排斥力叠加进 AI 速度（worker ai 分支的口径）', () => {
+  // 钉住 mc-lite `EnemyWorker.js:218-220` 的「最终期望速度 = AI 速度 + 排斥力」。
+  // **静止丧尸也会被推开**：排斥力是无条件叠加的（不在「感知范围内」分支里），
+  // 故 aiVelocity=0 时 velocity 仍非零。这正是「已经挤在一起的静止丧尸会散开」的来源。
+  const zombies = [
+    { id: 'z0', generation: 1, position: [0, 1, 0], yaw: 0, mode: 'idle' },
+    { id: 'z1', generation: 1, position: [0.5, 1, 0], yaw: 0, mode: 'idle' },
+  ];
+  // 玩家极远 → 感知门外（perceptionRange 80）→ AI 速度为 0，只剩排斥力
+  const reply = computeAiUpdates({ playerPosition: [500, 1, 500], dt: 0.05, zombies });
+  const u0 = reply.updates.find((u) => u.id === 'z0');
+  const u1 = reply.updates.find((u) => u.id === 'z1');
+  assertTrue(Math.abs(u0.vx) > 0, '感知门外 + 重叠 → 排斥力仍让 vx 非零（静止丧尸也会被推开）');
+  assertTrue(u0.vx < 0, 'z0 须向 -X 推开');
+  assertTrue(u1.vx > 0, 'z1 须向 +X 推开');
+  assertEqual(u0.mode, 'idle', '感知门外仍须 idle（排斥力不改变 mode）');
+});
+
+test('separationForce: 排斥力不改变追逐语义（感知门内仍朝玩家）', () => {
+  // 排斥力叠加在追逐速度之上 → 丧尸仍朝玩家走，只是会绕开同伴。
+  // 断言：单只丧尸（无同伴）时 vx/vz 就是纯追逐方向（排斥力为 0，不影响既有 M6 语义）。
+  const zombies = [{ id: 'z0', generation: 1, position: [0, 1, 0], yaw: 0, mode: 'idle' }];
+  const reply = computeAiUpdates({ playerPosition: [10, 1, 0], dt: 0.05, zombies });
+  const u0 = reply.updates[0];
+  assertEqual(u0.mode, 'chasing');
+  assertClose(u0.vx, ZOMBIE.speed, 1e-9, '单只无同伴 → vx 恒为追逐速度（排斥力 0）');
+  assertClose(u0.vz, 0, 1e-9);
 });
 
 // ---------- 出生、上限、伤害 ----------
@@ -433,11 +625,12 @@ test('丧尸: 步态与朝向共用同一个移动阈值（跨层一致性，红
 test('ZombieRenderer: 六部件尺寸/偏移/旋转/配色对齐 mc-lite（防数值漂移）', () => {
   // 逐项钉住实测自 mc-lite ZombieInstancedRenderer.js:28-82 的数值。这些是**视觉数据**
   // （Tier 2 口径：改错了立刻可见，但静默改错没人会发现），故用门禁断言而非目视。
-  // head 用 0x406b30 而非 mc-lite 的 0xffffff —— 那是白底乘纹理色，本仓库不做 CanvasTexture
-  // （有意偏离，已在 zombie-renderer.js 文件头标注理由）。
+  // head.color 现在是 **0xffffff**（白底乘纹理色，mc-lite 同口径）—— 头部马赛克纹理已接线
+  // （M6 遗留 TODO 补齐），真实颜色由纹理给。曾一度用视觉色 0x406b30（无纹理时的退回），
+  // 那个值现在只在 `_baseColorOf` 的「无纹理退回路径」里，不再是定义色（见下方专测）。
   assertDeepEqual(ZOMBIE_PART_DEFS.head.size, [0.6, 0.6, 0.6]);
   assertDeepEqual(ZOMBIE_PART_DEFS.head.offset, [0, 1.8, 0]);
-  assertEqual(ZOMBIE_PART_DEFS.head.color, 0x406b30);
+  assertEqual(ZOMBIE_PART_DEFS.head.color, 0xffffff);
   assertDeepEqual(ZOMBIE_PART_DEFS.body.size, [0.55, 0.63, 0.45]);
   assertDeepEqual(ZOMBIE_PART_DEFS.body.offset, [0, 1.15, 0]);
   assertEqual(ZOMBIE_PART_DEFS.body.color, 0x037c7c);
@@ -467,6 +660,88 @@ test('ZombieRenderer: 腿几何轴心在大腿根部（mc-lite translate 语义�
   // head 不 translate（offset 是盒中心）→ 包围盒对称
   renderer.meshes.head.geometry.computeBoundingBox();
   assertClose(renderer.meshes.head.geometry.boundingBox.max.y, ZOMBIE_PART_DEFS.head.size[1] / 2, 1e-6);
+});
+
+test('ZombieRenderer: head UV 分区 —— 正面采纹理右半（有眼睛）、其余五面采左半', () => {
+  // dummy 纹理（DataTexture，无需 DOM/canvas）：只为触发「有 map」路径，内容不重要
+  const dummy = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
+  const { renderer } = makeZombieFixture({ headTexture: dummy });
+  const geo = renderer.meshes.head.geometry;
+  const uv = geo.getAttribute('uv');
+  const pos = geo.getAttribute('position'); // 用 count 遍历全部顶点（法线判据见下）
+
+  // ① **前提断言：HEAD_FRONT_VERTICES 确实是「正面（pz）」的顶点**。
+  //    必须独立于被测常量验证 —— 否则把常量改成错误索引（如 [0,1,2,3] = 右面）时，
+  //    下面的 UV 断言**仍会全绿**（它读的就是那个被改错的常量）→ 恒真陷阱
+  //    （testing-policy §2.5「测试输入从被测常量派生」）。
+  //    判据用**法线**而非 position.z：正面顶点法线恒 (0,0,+1)，而 position.z 不行 ——
+  //    棱上的顶点被多个面共享 z 值（顶/底/左/右面各有 2 个顶点也在 z=+size/2），
+  //    用它做反向判据会多出 8 个假命中（实测踩过）。
+  const normal = geo.getAttribute('normal');
+  for (const i of HEAD_FRONT_VERTICES) {
+    assertClose(normal.getX(i), 0, 1e-6, `顶点 ${i} 法线 x 须为 0`);
+    assertClose(normal.getY(i), 0, 1e-6, `顶点 ${i} 法线 y 须为 0`);
+    assertClose(normal.getZ(i), 1, 1e-6, `顶点 ${i} 须是正面（法线 z = +1）`);
+  }
+  // ② 反向前提：法线 (0,0,+1) 的顶点**恰好**是 HEAD_FRONT_VERTICES → 钉住「不多不少」
+  const frontSet = new Set(HEAD_FRONT_VERTICES);
+  const byNormal = [];
+  for (let i = 0; i < pos.count; i++) {
+    if (Math.abs(normal.getZ(i) - 1) < 1e-6 && Math.abs(normal.getX(i)) < 1e-6 && Math.abs(normal.getY(i)) < 1e-6) {
+      byNormal.push(i);
+    }
+  }
+  assertDeepEqual(byNormal.sort((a, b) => a - b), [...HEAD_FRONT_VERTICES].sort((a, b) => a - b),
+    '正面顶点须恰好是 HEAD_FRONT_VERTICES（不多不少）');
+
+  // ③ UV 分区生效：正面 u ∈ [0.5, 1]（右半有眼睛）；其余 u ∈ [0, 0.5]（左半无眼睛）。
+  //    只压 u 不动 v → 保持 8×8 马赛克比例（若压 v 会把格子压成 8×4，图案变扁）。
+  for (let i = 0; i < uv.count; i++) {
+    const u = uv.getX(i);
+    if (frontSet.has(i)) {
+      assertTrue(u >= 0.5 - 1e-6 && u <= 1 + 1e-6, `正面顶点 ${i} 的 u 须在 [0.5,1]，got ${u}`);
+    } else {
+      assertTrue(u >= -1e-6 && u <= 0.5 + 1e-6, `非正面顶点 ${i} 的 u 须在 [0,0.5]，got ${u}`);
+    }
+  }
+  // ④ v 未被改写：六面 v 仍覆盖 [0,1] 全幅（默认 BoxGeometry 值）→ 纵向没被压扁
+  let minV = Infinity, maxV = -Infinity;
+  for (let i = 0; i < uv.count; i++) { minV = Math.min(minV, uv.getY(i)); maxV = Math.max(maxV, uv.getY(i)); }
+  assertClose(minV, 0, 1e-6, 'v 最小值须为 0（未改写纵向）');
+  assertClose(maxV, 1, 1e-6, 'v 最大值须为 1（未改写纵向）');
+
+  // ⑤ head 材质确实带 map；其余五部件不带（它们不该吃头部纹理）
+  assertTrue(!!renderer.meshes.head.material.map, 'head 材质须带 map');
+  assertTrue(renderer.headHasTexture(), 'headHasTexture 须为真');
+  for (const part of ZOMBIE_PARTS) {
+    if (part === 'head') continue;
+    assertNull(renderer.meshes[part].material.map, `${part} 材质不应带 map`);
+  }
+});
+
+test('ZombieRenderer: 无纹理时 head 退回视觉色（不渲染成纯白头）', () => {
+  // 单测 fixture 默认不传纹理 → head 必须退回视觉色 0x406b30（= headPalette.base 的等价纯色）。
+  // **不能读 ZOMBIE_PART_DEFS.head.color**（那是 0xffffff 白底，退回色在 `_baseColorOf`）——
+  // 若这里改成读定义色，断言会在「退回路径失效」时仍全绿（恒真陷阱）。
+  const { renderer } = makeZombieFixture(); // 无 headTexture
+  assertFalse(renderer.headHasTexture(), '默认 fixture 不应有纹理');
+  assertNull(renderer.meshes.head.material.map, '无纹理时 head 不应带 map');
+  // instanceColor 是退回色的可观测落点（构造器初始化每个 slot 时写入）
+  const c = new THREE.Color();
+  renderer.meshes.head.getColorAt(0, c);
+  assertEqual(c.getHex(), 0x406b30, 'head 无纹理时基色须为视觉色 0x406b30');
+  // 对照：body 无纹理/有纹理都恒用定义色（不吃退回路径）
+  renderer.meshes.body.getColorAt(0, c);
+  assertEqual(c.getHex(), 0x037c7c);
+});
+
+test('ZombieRenderer: 有纹理时 head 基色为白底（避免深绿 × 深绿变暗）', () => {
+  const dummy = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
+  const { renderer } = makeZombieFixture({ headTexture: dummy });
+  const c = new THREE.Color();
+  renderer.meshes.head.getColorAt(0, c);
+  // 有 map → 白底乘纹理色。若这里读到 0x406b30，会与纹理的深绿叠加 → 头部严重变暗
+  assertEqual(c.getHex(), 0xffffff, 'head 有纹理时基色须为白底 0xffffff');
 });
 
 test('ZombieRenderer: pose 跟随实体位置与朝向（只读发布，不回写 state）', () => {

@@ -28,6 +28,33 @@ export const ZOMBIE = Object.freeze({
 export const ZOMBIE_FLASH_MS = 200;
 
 /**
+ * 实体间排斥参数（mc-lite `EnemyWorker.js:133-134` `calculateSeparationForce` 内部硬编码）。
+ *
+ * 作用：所有丧尸朝同一玩家追逐会收敛到同一点，没有排斥就叠成一坨（用户实玩报告）。
+ * 排斥力在 **AI 层**算并叠加进 velocity（mc-lite 同口径 `:218-220`），经主线程物理推进 ——
+ * 不在 manager 层直接推挤位置（那会新增一条绕过物理层的位置改写路径）。
+ *
+ * ⚠️ `minDistance: 1.2` 是 mc-lite 注释里的「略大于丧尸宽度」，**不是** `ZOMBIE.width`（0.6）
+ * 的两倍 —— mc-lite 里它是独立硬编码常量。故**不得派生**成 `ZOMBIE.width * 2`：改 AABB 宽度
+ * 会连带改排斥半径，那不是同一个事实（红线 1 精神）。
+ */
+export const ZOMBIE_SEPARATION = Object.freeze({
+  /** 最小安全距离：水平距离小于此值才产生排斥力 */
+  minDistance: 1.2,
+  /**
+   * 排斥强度：`force = (minDistance - distance) / minDistance × repulsionStrength`。
+   *
+   * ⚠️ **单位换算**：mc-lite 是 `0.05`，但那是**格/帧**单位 —— 它的 `predictNextPosition`
+   * 不乘 dt（`nextX = position.x + velocityX`，`Zombie.js:302-305`）。mc-heavy 物理层乘 dt
+   * （`moveAxis(state, world, velocity[0] * dt, ...)`）→ velocity 是**格/秒**，故须 ×60 换算
+   * （与 `ZOMBIE.speed` 的 `0.02 格/帧 × 60Hz = 1.2` 同一口径）。
+   * **不换算的后果实测**：排斥力只有追逐力的 4%（0.05/1.2），压不住收敛 → 24 只丧尸最小间距
+   * 仍降到 0.003、21 对视觉重叠（与无排斥的对照组几乎相同）。换算后降到 0.439、1 对重叠。
+   */
+  repulsionStrength: 3.0,
+});
+
+/**
  * 步态常量（mc-lite `WALK_ANIMATION`：`speed: 10` / `legSwingAngle: Math.PI / 8`）。
  *
  * 驱动口径 = **按时间累积**（mc-lite `calculateWalkAnimation`：移动中 `_walkTime += deltaTime`，

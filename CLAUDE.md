@@ -24,11 +24,13 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
 依赖链 + 后续扩展点）。本文件不复制进度表 —— 同一事实的多个副本会漂移。
 
 一句话现状：第一阶段 **M0~M3 全部完成**并验收达标，两个收尾补丁项（M3.1 背包 / M3.2 方块朝向
-放置交互）也已落地；此后是一串独立 bugfix 与改造（v1.19~v1.35）；第二阶段 **M4 玩家武器已完成
+放置交互）也已落地；此后是一串独立 bugfix 与改造（v1.19~v1.38）；第二阶段 **M4 玩家武器已完成
 并验收**（含遗留 TODO「设置面板破坏方块开关」），**M5 实体运行时已完成并验收**（验收报告
 `docs/m5-entity-runtime-acceptance-report.md`），**M6 丧尸已完成并验收**（验收报告
 `docs/m6-zombies-acceptance-report.md`；丧尸**不攻击玩家**，无 PlayerVitals/近战/掉落/自然刷怪/
-巢穴），**M7 玩家放置丧尸巢穴尚未开始**（规格与计划已备好，见「权威文档」）。
+巢穴），M6 遗留 TODO 两项**已于 2026-09-09 补齐**（头部马赛克图案 —— 原预设的材质数组方案实测
+不可行，改走单纹理 UV 分区；实体间排斥 —— M6 交付遗漏，照搬 mc-lite 的 AI 层排斥力但须换算
+单位 + 补完全重叠 tie-break），**M7 玩家放置丧尸巢穴尚未开始**（规格与计划已备好，见「权威文档」）。
 
 **历次 bugfix / 改造的完整记录不在本文件。** 权威副本分两处：① **第一阶段独立改动**
 （v1.19~v1.31、v1.35）—— 设计文档的修订说明（每条含根因、实测数据、门禁对照）+
@@ -228,6 +230,47 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
   反向依赖 render，故常量放 `zombie-config.js`（`ZOMBIE_MOVING_EPSILON`）两层共用。各写一份字面量
   会漂移出「腿在摆但朝向没跟上」的撕裂状态，且**用远离阈值的输入测不出来**（实测：速度 1.2 对
   阈值 0.001 与 0.5 都判移动）—— 须在临界值附近断言两层同时生效。
+- **移植 mc-lite 的速度/力值参数必须换算单位（格/帧 → 格/秒，×60）**：mc-lite 的
+  `predictNextPosition` **不乘 dt**（`nextX = position.x + velocityX`，`Zombie.js:302-305`）→
+  它的 velocity 是**格/帧**；mc-heavy 物理层乘 dt（`moveAxis(state, world, velocity[0]*dt, …)`）→
+  **格/秒**。`ZOMBIE.speed` 已换算（`0.02 × 60 = 1.2`），照搬其它速度类常量时同理。
+  **实测后果**：丧尸排斥强度照搬 mc-lite 的 `0.05` 后，排斥力只有追逐力的 4% → 压不住收敛
+  （24 只最小间距仍降到 0.003、21 对重叠，与无排斥对照组几乎相同）；换算成 `3.0` 后降到
+  0.439 / 1 对。**这类缺陷肉眼难辨**（丧尸照常在动，只是慢慢挤到一起），须靠 A/B 对照实测。
+- **mc-lite 的「随机偏移」机制不能只移植一半**：mc-lite 丧尸靠 S 路线随机偏移角
+  （`EnemyWorker.js:186-207` `targetOffsetAngle`，2% 概率每帧）让丧尸不会精确同点，故它的
+  排斥力可以「完全重叠时跳过」（`distance > 0.001`）。mc-heavy 的 AI 是纯直线追逐、没移植
+  S 路线 → 照搬那个跳过判定会**永久死锁**（两只同位置丧尸追逐速度完全相同 → 永远同步移动、
+  永不分开；实测 20 只强制同点生成后 3 秒仍 min=0）。**移植时须检查上游的「靠其它机制兜住」
+  的隐含前提**，不能只搬那一个函数。本仓库的补法 = id 派生确定性方向 tie-break（黄金角散列
+  + id 序定符号 → 同位置两只必然朝相反方向；用 id 派生而非 `Math.random()`：可测 + 无帧间抖动）。
+- **worker 消费共享纯函数，不得在 worker 里重写一份逻辑**：丧尸 AI 的全部逻辑抽成
+  `zombie-system.js` 的 `computeAiUpdates()`，`world-worker.js` 的 `ai` 分支只调它（红线 8）。
+  若在 worker 里重写，**浏览器内单测测不到真实接线**（单测直接调纯函数）—— 「worker 没接线」
+  是静默失效（丧尸照常追逐、照常渲染，只是叠成一坨）。同 CLAUDE.md 已记的 fake pool 盲区。
+  这类改动须补一条落在**真游戏页**的 E2E（注入「worker 不消费共享函数」→ 断言须真 FAIL）。
+- **WebGPU 后端不支持「InstancedMesh + 材质数组 + `geometry.groups`」**（实测，红线 9「WebGPU 唯一
+  后端」的连带后果）：六面恒用 `material[0]`，`groups` 与 `materialIndex` 被忽略 → 照 mc-lite 的
+  「正面单独一张纹理」写法（`ZombieInstancedRenderer.js:237-254` `clearGroups`/`addGroup` +
+  `:262-284` 材质数组）会**静默只渲染第一张**（正面看不到眼睛，不报错）。根因
+  `three.webgpu.js:34592` `getMaterial()` 直接 `return material`，不遍历 `geometry.groups`、
+  不取 `materialIndex`（WebGL 后端 `:30472` 则按 group 分次 draw → 是 WebGPU 后端**刻意不实现**，
+  非整体不支持）。**替代 = 单材质 + 单纹理 + UV 分区**：纹理双区并排（左半无图案 / 右半有图案），
+  几何的正面顶点 UV 改写到右半（`zombie-renderer.js` `applyHeadUV`）。M7 巢穴/炮塔等任何
+  「不同面不同图案」的实体同理。**多区纹理不能用上下分区**（会把 N×N 图案压成 N×(N/2) → 比例失真），
+  须横向并排。
+- **`BoxGeometry` 各面的 `buildPlane` `vdir` 符号不同**（`three.core.js:29515-29519`：正面/侧面
+  `-1`、顶面 `+1`）→ 给多个面写「世界坐标 ← 归一化 u/v」换算时**不能用同一套公式**，会在某些面
+  把 v 反向、偏一格（实测踩坑：丧尸头部 Tier 4 的顶面/侧面取样点落在格 4 而眼睛在格 3 → 注入
+  「眼睛画进左半」仍全绿，无效负向验证）。跨面取样须用**纹理坐标**作统一参数，各面按轴向换算。
+- **Tier 4 像素实测的断言阈值须匹配 `outputColorSpace`**：fixture 若用 `LinearSRGBColorSpace` 输出
+  （ao-corner fixture 口径），读到的是纹理 sRGB→linear **解码后**的值（实测 `[64,107,48]` →
+  `[13,37,8]`，三个值精确等于解码结果）→ 阈值得按 linear 写、不直觉且易错。丧尸头部 fixture 改用
+  `SRGBColorSpace`（真实游戏口径）→ 读到的值接近原始纹理参数，阈值可对着图案参数读。
+- **离线烘焙产物的过期门禁 = 输入指纹比对**（与图标同一手法）：图案参数/贴图内容进指纹，烘焙时写进
+  伴随 JSON，门禁用当前参数重算比对 → 不匹配即报「跑 npm run xxx」。漏了会让产物**静默过期**
+  （渲染旧图案，肉眼只觉得「颜色怪怪的」）。指纹逻辑放共享模块供烘焙脚本与门禁共用（红线 1：
+  两处漂移会误判）。已知盲区：改**算法**而不动参数时指纹不变 → 这类改动须靠 Tier 4 兜住。
 
 ## 权威文档（动手前必读）
 
@@ -356,15 +399,20 @@ mc-heavy/
 ├─ tools/bake-icon-atlas.mjs   # 全量背包图标离线烘焙（npm run icons）：118 项×两套尺寸
 │                              #   → assets/icons-atlas.png + icons.json（预生成 CSS 串+指纹）
 ├─ tools/icon-fingerprint.mjs  # 图标输入指纹共享模块：烘焙脚本与 check:data 同一份逻辑（红线 1）
+├─ tools/bake-zombie-head.mjs  # 丧尸头部马赛克纹理烘焙（npm run zombie）：128×64 双区并排
+│                              #   → assets/zombie/head.png + head.json（尺寸+输入指纹）
+├─ tools/zombie-head-fingerprint.mjs # 丧尸头部图案参数与指纹共享模块（同上，红线 1）
 ├─ tools/check-architecture.mjs # 静态架构门（npm run check:arch）：红线可静态检查的部分
 ├─ tools/check-data.mjs        # 数据契约门（npm run check:data）：关系型断言取代硬编码计数
 │                              #   （含图标过期指纹检查）
 ├─ assets/
-│  ├─ textures/                # 从 mc-lite 复制
+│  ├─ textures/                # 从 mc-lite 复制（被 build-atlas 递归扫描进世界 atlas）
 │  │  └─ procedural/           # 程序化贴图烘焙产物
 │  ├─ atlas.png + atlas.json   # 世界渲染 atlas 生成产物，提交入库
 │  ├─ icons-atlas.png          # 背包图标 atlas（独立于世界 atlas，1024²）
 │  ├─ icons.json               # 图标 manifest：预生成 CSS 串 + 输入指纹
+│  ├─ zombie/                  # 丧尸头部纹理（**不在 textures/ 下** —— 那里会进世界 atlas）
+│  │  └─ head.png + head.json  # 128×64 双区并排（左半无眼睛/右半有眼睛）+ 尺寸与输入指纹
 │  └─ structures/              # 从 mc-lite 复制 JSON
 └─ src/
    ├─ core/        # game.js / scheduler.js / worker-pool.js / budget.js / perf.js / perf-hud.js
@@ -376,7 +424,9 @@ mc-heavy/
    │               #  FACE_UVS 供图标烘焙复用——形状与 UV 的唯一权威，图标不得有第二份几何定义
    ├─ render/      # render-world.js（BatchedMesh 发布层）/ materials.js（TSL）
    │               #  weather.js（天气状态机）/ rain.js（雨效）/ entity-render-layer.js（M5 受控实体发布层）
-   │               #  zombie-renderer.js（M6 六部件固定容量 InstancedMesh；无活跃丧尸时 visible=false）
+   │               #  zombie-renderer.js（M6 六部件固定容量 InstancedMesh；无活跃丧尸时 visible=false；
+   │               #    head 走单纹理 UV 分区 —— 正面顶点 16-19 采纹理右半「有眼睛」，见 applyHeadUV）
+   │               #  zombie-head-texture.js（头部纹理加载，主线程专用；npm run zombie 烘焙产物）
    ├─ entities/    # entity-manager.js（动态实体唯一权威 + generation + AABB raycast）
    │               #  entity-types.js（probe 定义 + AABB slab 射线；Worker 同构，无 three）
    │               #  zombies/（M6，Worker 同构无 three）：zombie-config.js（冻结玩法数据唯一权威）
@@ -414,6 +464,9 @@ npm run bench                  # M3-5 性能基线跑图（4 场景 → docs/m3-
 npm run lint                   # eslint src tools tests
 npm run icons                  # 烘焙全量背包图标 → assets/icons-atlas.png + icons.json
                                #   改背包内方块的贴图地址或 mesher 几何后需跑，否则图标静默过期
+npm run zombie                 # 烘焙丧尸头部马赛克纹理 → assets/zombie/head.png + head.json
+                               #   改 tools/zombie-head-fingerprint.mjs 的图案参数后需跑，
+                               #   否则纹理静默过期（check:data 的 [丧尸头部] 指纹检查会抓）
 npm run atlas                  # 重新生成 assets/atlas.png + atlas.json（世界渲染 atlas）
                                #   注：新增 textures 子目录会重排已有 tile 坐标（shelf 装箱按字母序）
 ```

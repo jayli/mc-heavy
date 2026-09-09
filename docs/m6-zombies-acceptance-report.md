@@ -190,7 +190,8 @@ mc-lite 丧尸实现在 `src/actors/enemy/Zombie.js` + `ZombieInstancedRenderer.
 
 | 项 | mc-lite | mc-heavy | 理由 |
 |---|---|---|---|
-| head 配色 | `ZOMBIE_COLORS.head = 0xffffff` | `0x406b30` | 那是**白底乘纹理色**（六面材质 color 全是白色，真实颜色由马赛克 CanvasTexture 给，`headPalette.base = [64,107,48]`）。本仓库不做 CanvasTexture（M6 规格 §3 只要求「配色沿 mc-lite」），直接用其视觉色 —— 照 `0xffffff` 实现会渲染成纯白头 |
+| head 配色 | `ZOMBIE_COLORS.head = 0xffffff` | ~~`0x406b30`~~ → **`0xffffff`**（2026-09-09 反转） | 那是**白底乘纹理色**（六面材质 color 全是白色，真实颜色由马赛克纹理给，`headPalette.base = [64,107,48]`）。M6 交付时本仓库不做纹理 → 直接用其视觉色 `0x406b30`（当时的有意偏离）。**2026-09-09 补齐 M6 遗留 TODO 后已反转**：头部马赛克纹理已接线（单纹理 UV 分区，见 roadmap「M6 之后的遗留 TODO」），故回归 mc-lite 的白底口径。**有纹理时必须是白底** —— 保留 `0x406b30` 会「深绿 instanceColor × 深绿纹理」严重变暗；无纹理时（单测 fixture 不传纹理）由 `_baseColorOf` 退回该视觉色，不渲染成纯白头 |
+| head 图案分面手法 | 材质数组 `[withoutEyes, withEyes]` + `geometry.clearGroups`/`addGroup`（`:237-254` / `:262-284`） | **单材质 + 单纹理 + UV 分区**（128×64 双区并排，正面顶点 UV → 右半） | **WebGPU 后端不支持材质数组 + groups** —— 实测（红/绿两材质 + 读渲染像素）正面像素是红而非绿，即六面恒用 `material[0]`；根因 `three.webgpu.js:34592` `getMaterial()` 直接 `return material`，不遍历 `geometry.groups`、不取 `materialIndex`（WebGL 后端 `:30472` 则按 group 分次 draw → 是 WebGPU 后端刻意不实现）。故必须走 UV 分区。连带好处：draw call 仍是 6（单材质单 draw range），不是材质数组方案的 7 |
 | 材质 | `MeshLambertMaterial` | `MeshBasicMaterial`（unlit） | mc-heavy 全场景是 unlit 设计，灯光只为 PBR 武器模型标定（`game.js` 的 Ambient 2.3 / Directional 3.2 注释）。用 Lambert 会让丧尸吃到为枪标定的环境光强度 → 偏亮且随日夜灯光漂移。与 ocean/rain/tracer 同口径 |
 | 步态驱动 | `_walkTime += deltaTime`（按时间累积） | 同口径 | 实测读源确认：不是「按移动距离累积」。静止时 `_walkTime = 0` **归零而非冻结** |
 | 生命周期 | 超过 60 格仅冻结 AI | 临时实体随 column 卸载销毁；60 格仍只控制 AI 预算 | M6 规格 §1 明确的有意差异（流式世界卸载）；60 格不是销毁半径 |
@@ -198,8 +199,30 @@ mc-lite 丧尸实现在 `src/actors/enemy/Zombie.js` + `ZombieInstancedRenderer.
 | X 键向下扫深度 | 10 格 | 64 格 | `findSpawnY` 会把空中结构当出生点 → 玩家可能在云面上（实测 y≈56），与真实地面（y≈17~26）落差约 40 格，10 格扫不到。注：此偏离属「注入不可检测」（见 §3 第三条标注） |
 | X 键随机数 | `Math.random()` | 同口径 | 调试键是玩家手动触发的动作，时机本身不可复现，且丧尸是临时实体不入存档 —— 不属红线 2 的「seed 确定性世界生成」范畴（对比 v1.37：`generateCodeHouse` 是生成期代码，必须用 seededRandom） |
 | X 键失败处理 | 只试一次落点，失败静默无输出 | 最多试 8 次不同随机落点，并把结果返回给调用方 | 便于测试断言（不靠 console.log），且提高真实地形上的成功率 |
+| 排斥强度单位 | `repulsionStrength: 0.05`（**格/帧**） | `3.0`（**格/秒** = 0.05 × 60） | mc-lite 的 `predictNextPosition` **不乘 dt**（`nextX = position.x + velocityX`，`Zombie.js:302-305`）→ velocity 是格/帧；mc-heavy 物理层乘 dt（`moveAxis(…, velocity[0]*dt, …)`）→ 格/秒。与 `ZOMBIE.speed` 的 `0.02×60=1.2` 同口径。**照搬原值实测无效**：排斥力只有追逐力的 4%（0.05/1.2），压不住收敛 → 24 只最小间距仍降到 0.003、21 对重叠（与无排斥对照组几乎相同）；换算后降到 0.439 / 1 对 |
+| 完全重叠处理 | `distance > 0.001` → **跳过不推开**（无 tie-break） | **补 tie-break**：id 派生确定性方向推开 | mc-lite 的跳过判定在它那侧无害 —— 它有 S 路线随机偏移角（`EnemyWorker.js:186-207` `targetOffsetAngle`，2% 概率每帧）让丧尸不会精确同点。mc-heavy 的 AI 是**纯直线追逐**（没移植 S 路线）→ 照搬那个判定会**永久死锁**：两只同位置丧尸的追逐速度完全相同 → 永远同步移动、永不分开（实测 20 只强制同点生成后 3 秒仍 min=0、190 对全重叠）。用 id 派生方向（黄金角散列 + id 序定符号 → 同位置两只必然朝相反方向）而非 `Math.random()`：可测 + 无帧间抖动 |
 
 **照搬未偏离的关键细节**（照字段名实现会渲错）：leg 几何做了 `translate(0, -height/2, 0)`（mc-lite `:203`）→ 几何原点在大腿**根部**而非盒中心，故 offset `y=0.9` 是轴心高度、盒体向下延伸 1.0。不做 translate 则整条腿随摆动平移（像踩高跷），而不是绕髋部扫弧线 —— 这是行走动画的关键，已用包围盒断言钉住。
+
+### 实体间排斥（M6 交付后补齐，2026-09-09）
+
+M6 交付时**完全没有实体间互斥** —— `collides()` 只查方块、worker AI 从不两两比较、`spawn()`
+无位置门控 → 所有丧尸朝同一玩家收敛到同一点且无排斥，**叠成一坨看起来像一只**（用户实玩报告）。
+这不在 M6 规格 §1 的非目标清单里，属交付遗漏，2026-09-09 补齐。
+
+mc-lite 实现在 **AI 层（worker）**：`EnemyWorker.js:131-155` `calculateSeparationForce`
+（`minDistance 1.2` / `repulsionStrength 0.05`，线性衰减 × 归一化方向，O(n²) 无空间索引）
++ `:218-220` **叠加进 velocity**（`velocity = aiVelocity + separationForce`）。
+
+mc-heavy 照搬该分层：`zombie-system.js` 抽 `separationForce()` + `computeAiUpdates()` 两个
+**同构纯函数**（红线 8），`world-worker.js` 的 `ai` 分支只调 `computeAiUpdates`（不在 worker 里
+重写逻辑 —— 否则浏览器内单测测不到真实接线）。
+
+验证：单测 413 全绿（新增 12 条排斥用例）+ E2E 新增「强制同点生成后须散开」
+（实测 20 只 min 0→0.578、重叠对 190→1）+ **8 条负向验证全部真 FAIL**，含「worker 不消费共享函数」
+→ min 恒 0（正是这条 E2E 存在的理由）。自查发现 1 条无效盲区：边界测试输入从被测常量派生 →
+注入「`<` 改 `<=`」仍全绿（且 `distance == minDistance` 时 `force` 本就为 0 → 数学等价，
+不是真实缺陷）→ 改用字面量 + 前提断言，并补「略小于半径须有排斥」配对钉住边界语义。
 
 ## 7. 门禁结果
 

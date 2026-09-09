@@ -11,7 +11,9 @@
 //    校验会读到过期代数。故 state 不含 generation，AI 回包一律经 manager 校验。
 // ② **AI 意图写进 state.velocity，不另设 intent 容器**：mc-lite 也用同一个 velocity 字段
 //    驱动步态与移动。另设 intent 会让「渲染看到的移动」与「物理实际的移动」分家。
-import { ZOMBIE, ZOMBIE_FLASH_MS, ZOMBIE_MOVING_EPSILON } from './zombie-config.js';
+import {
+  ZOMBIE, ZOMBIE_FLASH_MS, ZOMBIE_MOVING_EPSILON, ZOMBIE_SEPARATION,
+} from './zombie-config.js';
 import { normalizePosition, raycastAabbSlab } from '../entity-types.js';
 
 /** 丧尸 AABB（相对 state.position 的局部偏移；position 为脚底 → min.y = 0） */
@@ -19,6 +21,107 @@ export const ZOMBIE_AABB = Object.freeze({
   min: Object.freeze([-ZOMBIE.width / 2, 0, -ZOMBIE.width / 2]),
   max: Object.freeze([ZOMBIE.width / 2, ZOMBIE.height, ZOMBIE.width / 2]),
 });
+
+/**
+ * 单只丧尸的实体间排斥力（mc-lite `EnemyWorker.js:131-155` `calculateSeparationForce` 逐行复刻）。
+ *
+ * **为什么需要**：所有丧尸朝同一玩家追逐会收敛到同一点，没有排斥就叠成一坨（用户实玩报告）。
+ *
+ * **为什么在 AI 层算、叠加进 velocity，而不是在 manager 层推挤位置**：mc-lite 就是这么做的
+ * （`:218-220` `velocity = aiVelocity + separationForce`）。推挤位置会新增一条**绕过物理层**
+ * 的位置改写路径（须额外 collides 兜底防推进方块，且要在 ZombieService 重建 state 守「新对象+
+ * 新数组」约束）。走 velocity 则方块碰撞与 step-up 天然生效，不新增权威。
+ *
+ * **静止丧尸也会被推开**：排斥力无条件叠加（不在「感知范围内」分支里），故 AI 速度为 0 时
+ * velocity 仍非零 —— 这正是「已经挤在一起的静止丧尸会散开」的来源。
+ *
+ * @param {{id: string, position: number[]}} self 当前丧尸
+ * @param {Array<{id: string, position: number[]}>} others **含 self** 的全部丧尸
+ *   （mc-lite 的 `allEnemies` 含自己，靠 `other.id === enemy.id` 跳过）
+ * @returns {{x: number, z: number}} 排斥力向量
+ */
+export function separationForce(self, others) {
+  let forceX = 0;
+  let forceZ = 0;
+  const { minDistance, repulsionStrength } = ZOMBIE_SEPARATION;
+  for (const other of others ?? []) {
+    if (other.id === self.id) continue; // 跳过自己
+    const dx = self.position[0] - other.position[0];
+    const dz = self.position[2] - other.position[2];
+    const distance = Math.sqrt(dx * dx + dz * dz);
+    if (distance < minDistance && distance > 0.001) {
+      // 距离越近排斥力越大（线性衰减）
+      const force = (minDistance - distance) / minDistance * repulsionStrength;
+      // 归一化方向 × force
+      forceX += (dx / distance) * force;
+      forceZ += (dz / distance) * force;
+    } else if (distance <= 0.001) {
+      // **tie-break（有意偏离 mc-lite，实测必需）**：mc-lite 判定 `distance > 0.001` →
+      // 完全重叠时跳过不推开。这在 mc-lite 里无害（它有 S 路线随机偏移角让丧尸不会精确同点），
+      // 但在 mc-heavy 里会**永久死锁**：两只同位置丧尸的追逐速度完全相同 → 永远同步移动、
+      // 永不分开（实测 20 只强制同点生成后 3 秒仍 min=0、190 对全重叠）。mc-heavy 的 AI 是
+      // 纯直线追逐，没移植 S 路线偏移角，故必须自己补 tie-break。
+      //
+      // 用 **id 派生的确定性方向**而非 `Math.random()`：① 可测（断言能钉住具体方向）；
+      // ② 无帧间抖动（random 会让丧尸每帧换方向抖个不停）。
+      // 方向由「排序后的 id 对」派生 + 符号由 id 序决定 → **同位置的两只必然朝相反方向**
+      // （若两只派生出同一角度，它们仍会同步移动 → 死锁没解开）。
+      const selfFirst = self.id < other.id;
+      const pairKey = selfFirst ? self.id + other.id : other.id + self.id;
+      let codeSum = 0;
+      for (let i = 0; i < pairKey.length; i++) codeSum += pairKey.charCodeAt(i);
+      // 黄金角散列：让不同 id 对的方向尽量分散（避免多只重叠时全朝同一方向）
+      const ang = codeSum * 0.6180339887498949;
+      const sign = selfFirst ? 1 : -1;
+      forceX += Math.cos(ang) * repulsionStrength * sign;
+      forceZ += Math.sin(ang) * repulsionStrength * sign;
+    }
+  }
+  return { x: forceX, z: forceZ };
+}
+
+/**
+ * 计算一批丧尸的 AI 期望速度（追逐 + 排斥力）。
+ *
+ * **同构纯函数**：worker（`world-worker.js` 的 `ai` 分支）与浏览器内单测共用同一份 ——
+ * 红线 8「主线程/Worker 同构纯函数」，也避免「测试与真实接线口径不一致」的盲区
+ * （CLAUDE.md 活跃约束：fake pool 曾让纯逻辑测试全绿而真实接线丢回包）。
+ *
+ * 追逐语义 = M6 规格 §2（感知门 `perceptionRange` 内归一化方向 × `speed`，门外 idle + 零速度）。
+ * 排斥力按 mc-lite `:218-220` 无条件叠加（门外也叠加 → 静止丧尸会散开）。
+ *
+ * @param {{playerPosition: number[], dt: number,
+ *          zombies: Array<{id: string, generation: number, position: number[], yaw: number, mode: string}>}} p
+ * @returns {{updates: Array<{id: string, generation: number, vx: number, vz: number, mode: string}>}}
+ */
+export function computeAiUpdates(p) {
+  const [px, , pz] = p.playerPosition;
+  const zombies = p.zombies ?? [];
+  const updates = [];
+  for (const z of zombies) {
+    const [x, , z0] = z.position;
+    const dx = px - x, dz = pz - z0;
+    const dist = Math.hypot(dx, dz);
+    // 基础 AI 速度：感知门外 idle + 零速度（不追）。感知门内：归一化方向 × 速度上限
+    let aiVx = 0, aiVz = 0;
+    let mode = 'idle';
+    if (dist <= ZOMBIE.perceptionRange && dist > 1e-6) {
+      aiVx = dx / dist * ZOMBIE.speed;
+      aiVz = dz / dist * ZOMBIE.speed;
+      mode = 'chasing';
+    }
+    // **最终期望速度 = AI 速度 + 排斥力**（mc-lite `:218-220` 同口径）
+    const sep = separationForce(z, zombies);
+    updates.push({
+      id: z.id,
+      generation: z.generation,
+      vx: aiVx + sep.x,
+      vz: aiVz + sep.z,
+      mode,
+    });
+  }
+  return { updates };
+}
 
 /** 新建一份合法 state（形状即 M6 规格 §2 口径，少 generation） */
 function createState({ position, velocity, yaw, health, mode, source, flashedUntil, onGround, _physAccum }) {

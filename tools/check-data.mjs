@@ -36,6 +36,11 @@ const {
 } = await import('../src/player/inventory.js');
 const { buildDefaultRegistry } = await import('../src/voxel/block-registry.js');
 const { BLOCKS } = await import('../src/voxel/blocks-data.js');
+// 丧尸头部纹理的图案参数与指纹走共享模块（红线 1：与烘焙脚本同一份逻辑）
+const {
+  HEAD_PNG, HEAD_JSON, HEAD_WIDTH, HEAD_HEIGHT, EYE_CELLS, headInputFingerprint,
+  HEAD_TEXTURE_CONFIG,
+} = await import('./zombie-head-fingerprint.mjs');
 // v1.26：图标走独立 icons-atlas（不再有 INVENTORY_ICONS 表）。指纹/清单走共享模块
 // （红线 1：与烘焙脚本同一份逻辑，两处漂移会让指纹比对得出错误结论）。
 const { iconFingerprintFor, FLAT_BLOCKS, FLAT_ICON_TILE } = await import('./icon-fingerprint.mjs');
@@ -326,6 +331,61 @@ async function checkScatterStructureIntegrity() {
   }
 }
 
+// ---------------------------------------------------------------- [9] 丧尸头部纹理契约
+
+/**
+ * 丧尸头部马赛克纹理的三个环节必须齐全，否则头部图案**静默缺失**。
+ *
+ * 失效路径与图标过期同类（v1.24 记录过「改 mesher 几何忘跑 atlas」）：纹理是**派生产物**，
+ * 权威输入是 `tools/zombie-head-fingerprint.mjs` 的图案参数。改了参数却忘跑 `npm run zombie`
+ * → 渲染旧图案（肉眼看不出「图案过期」，只觉得「颜色怪怪的」）。
+ *
+ * 三条断言：
+ *   ① PNG 存在 + 尺寸 = 128×64（双区并排）→ 缺文件时 `loadAsync` 抛错，game.js 的 catch
+ *      会退回纯色头（**静默降级**，不阻断启动 → 只有门禁能抓）
+ *   ② 黑像素数 = 眼睛格数 × mosaicSize²（**关系型**，不硬编码 128）→ 抓「眼睛画错位置/数量」
+ *   ③ 输入指纹匹配 → 抓「改了参数忘重烘」。指纹逻辑走共享模块（红线 1：与烘焙脚本同一份，
+ *      两处漂移会误判）
+ */
+function checkZombieHeadTexture() {
+  if (!fs.existsSync(HEAD_PNG)) {
+    failures.push('[丧尸头部] assets/zombie/head.png 不存在 —— 跑 npm run zombie');
+    return;
+  }
+  const png = PNG.sync.read(fs.readFileSync(HEAD_PNG));
+  if (png.width !== HEAD_WIDTH || png.height !== HEAD_HEIGHT) {
+    failures.push(`[丧尸头部] PNG ${png.width}×${png.height} 与期望 ${HEAD_WIDTH}×${HEAD_HEIGHT} 不符（烘焙到一半失败？）`);
+    return;
+  }
+
+  // ② 黑像素数（关系型：眼睛格数 × 每格像素数）
+  const expectBlack = EYE_CELLS * HEAD_TEXTURE_CONFIG.mosaicSize * HEAD_TEXTURE_CONFIG.mosaicSize;
+  let black = 0;
+  for (let i = 0; i < png.data.length; i += 4) {
+    if (png.data[i] === 0 && png.data[i + 1] === 0 && png.data[i + 2] === 0) black++;
+  }
+  if (black !== expectBlack) {
+    failures.push(`[丧尸头部] 黑像素 ${black} 个 ≠ 期望 ${expectBlack}（${EYE_CELLS} 个眼睛格 × `
+      + `${HEAD_TEXTURE_CONFIG.mosaicSize}²）—— 眼睛画错位置/数量，重跑 npm run zombie`);
+  }
+
+  // ③ 输入指纹（manifest 缺失 = 从没跑过 npm run zombie）
+  if (!fs.existsSync(HEAD_JSON)) {
+    failures.push('[丧尸头部] assets/zombie/head.json 不存在 —— 跑 npm run zombie');
+  } else {
+    const manifest = JSON.parse(fs.readFileSync(HEAD_JSON, 'utf8'));
+    const current = headInputFingerprint();
+    if (manifest.fingerprint !== current) {
+      failures.push('[丧尸头部] 图案参数已变但纹理未重烘（跑 npm run zombie）'
+        + `\n      期望 ${current}\n      实际 ${manifest.fingerprint}`);
+    }
+  }
+
+  if (!failures.some((f) => f.startsWith('[丧尸头部]'))) {
+    infos.push(`[丧尸头部] head.png ${HEAD_WIDTH}×${HEAD_HEIGHT} + ${EYE_CELLS} 个眼睛格 + 指纹匹配`);
+  }
+}
+
 // ---------------------------------------------------------------- 主流程
 
 const REGISTRY = await buildDefaultRegistry();
@@ -338,6 +398,7 @@ checkIconFreshness();
 checkTestRegistration();
 checkGeometryAuthority();
 await checkScatterStructureIntegrity();
+checkZombieHeadTexture();
 
 console.log('[check:data] 数据契约检查');
 for (const i of infos) console.log(`  ✓ ${i}`);

@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"><title>zombie head fixture</title><link rel="icon" href="data:,">
+  <style>html, body { margin: 0; }</style>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "/vendor/three/three.webgpu.js",
+      "three/tsl": "/vendor/three/three.tsl.js",
+      "three/webgpu": "/vendor/three/three.webgpu.js",
+      "three/addons/": "/vendor/three/addons/"
+    }
+  }
+  </script>
+</head>
+<body>
+<script type="module">
+  import * as THREE from 'three';
+  import { ZombieRenderer, ZOMBIE_PART_DEFS } from '../render/zombie-renderer.js';
+  import { loadZombieHeadTexture } from '../render/zombie-head-texture.js';
+
+  // Tier 4 像素实测场景（M6 遗留 TODO：丧尸头部马赛克图案）。
+  //
+  // 单只丧尸 + 隔离场景（黑背景，无地形/无光照干扰）。**渲染由 spec 驱动**：
+  // 一个相机只能看一个方向，而截图只有最后一帧 —— 多次渲染会互相覆盖（踩过）。
+  // 故 fixture 暴露 `renderView(name)`，spec 每次调用后立刻截图。
+  //
+  // 取样点由 fixture 自己投影世界点 → 屏幕像素（同 `test-ao-corner.html` 手法），
+  // spec 不硬编码像素位置。
+  //
+  // **取样点须落在眼睛格与非眼睛格内**：马赛克是 8×8 格，眼睛在网格 (2,3)/(5,3)。
+  // 正面 UV 映射到纹理右半（有眼睛），故按「格 → 面上的归一化位置」换算。
+  async function run() {
+    const renderer = new THREE.WebGPURenderer({ antialias: false });
+    renderer.setSize(400, 300);
+    document.body.appendChild(renderer.domElement);
+    await renderer.init();
+    renderer.toneMapping = THREE.NoToneMapping;
+    // **outputColorSpace 用 SRGBColorSpace（真实游戏口径，game.js 的 renderer 同款）**，
+    // 不用 ao-corner fixture 的 LinearSRGB：纹理 colorSpace=SRGBColorSpace → 采样时解码到
+    // linear，若输出也 linear 则读到的是解码后的值（实测 [64,107,48] → [13,37,8]，
+    // 精确等于 sRGB→linear 解码结果）→ 断言阈值得按 linear 写，不直觉且易错。
+    // 用 SRGB 输出则读到的值接近原始纹理参数，阈值可对着 `HEAD_TEXTURE_CONFIG` 读。
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+    const texture = await loadZombieHeadTexture();
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x000000); // 黑背景：落到背景上的取样点会是纯黑，易混淆
+    const zr = new ZombieRenderer({ scene, maxActive: 1, headTexture: texture });
+
+    // slot 0：丧尸在原点，yaw=0 → 正面朝 +z。**不经 ZombieService** —— 本 fixture 只验渲染，
+    // 玩法层不参与（直接写 pose，绕开 spawn 门控与地形依赖）
+    zr.acquireSlot('probe', 0);
+    zr._poses[0] = { walkTime: 0, swing: 0, flashing: false, position: [0, 0, 0], yaw: 0 };
+    zr._writeSlot(0, zr._poses[0]);
+
+    const def = ZOMBIE_PART_DEFS.head;
+    const headY = def.offset[1];            // 1.8
+    const half = def.size[0] / 2;           // 0.3
+    const frontZ = def.offset[2] + half;    // 正面平面 z = +0.3
+    const w = def.size[0], h = def.size[1], d = def.size[2];
+
+    // ---- 取样点用**纹理坐标**表达，再按各面轴向换算成世界坐标 ----
+    //
+    // 为什么不用「面上的归一化 u/v」直接传：三个面的 `buildPlane` **vdir 符号不同**
+    // （正面 pz `vdir=-1` / 顶面 py `vdir=+1` / 侧面 px `vdir=-1`，three.core.js:29515-29519），
+    // 同一套公式会在某些面上把 v 反向 → 取样点偏离眼睛行一格。
+    // **实测踩过**：顶面/侧面的取样点落在格 4（眼睛在格 3），注入「眼睛画进左半」仍全绿
+    // → 无效负向验证。用纹理坐标作统一参数可消除这个符号陷阱。
+    //
+    // 纹理坐标（tu ∈ [0,1] 横向、tv ∈ [0,1] 纵向；tv=1 在图像顶部，因 flipY=true）：
+    //   眼睛格 (2,3)/(5,3) 中心 → 左半 tu = 2.5/16 与 5.5/16，tv = 1 - 3.5/8 = 0.5625
+    //   （行序 3.5/8 从上往下 → tv = 1 - 行序/8）
+    const tvEye = 1 - 3.5 / 8;          // 0.5625（眼睛行中心）
+    const tvPlain = 1 - 0.5 / 8;        // 0.9375（左上角格中心，远离眼睛行）
+    // 面上的归一化 u（0..1）：经 UV 分区改写后，正面 → 右半、其余 → 左半。
+    // 眼睛格在**左半**的中心 tu = 0.15625 → 面上 u = 0.3125；在**右半**中心 tu = 0.65625
+    // → 面上 u = 0.3125。两区算出的面上 u 相同（格索引一致），故一个值通用。
+    const uEye1 = 2.5 / 8, uEye2 = 5.5 / 8, uPlain = 0.5 / 8;
+
+    // 各面「世界坐标 ← 面上归一化 u + 纹理 v」（推导自 buildPlane 的 udir/vdir）：
+    //   正面 pz（udir=+1, vdir=-1）：x = (u-0.5)w，y = headY + (tv-0.5)h
+    //   顶面 py（udir=+1, vdir=+1）：x = (u-0.5)w，z = (0.5-tv)d
+    //   侧面 px（udir=-1, vdir=-1）：z = (0.5-u)d，y = headY + (tv-0.5)h
+    const frontAt = (u, tv) => [(u - 0.5) * w, headY + (tv - 0.5) * h, frontZ];
+    const topAt = (u, tv) => [(u - 0.5) * w, headY + half, (0.5 - tv) * d];
+    const sideAt = (u, tv) => [half, headY + (tv - 0.5) * h, (0.5 - u) * d];
+
+    // 三个视角的相机。**距离取 1.0 而非 4**：fov 50 + 400×300 下，距离 4 时每个马赛克格
+    // 只有约 6px（取样点易被投影取整推到邻格）；距离 1.0 时约 34px/格，取样稳健。
+    const DIST = 1.0;
+    const mkCam = () => new THREE.PerspectiveCamera(50, 400 / 300, 0.05, 100);
+    const camFront = mkCam(); camFront.position.set(0, headY, DIST); camFront.lookAt(0, headY, 0);
+    const camTop = mkCam(); camTop.position.set(0, headY + DIST, 0.001); camTop.lookAt(0, headY, 0);
+    const camSide = mkCam(); camSide.position.set(DIST, headY, 0.001); camSide.lookAt(0, headY, 0);
+
+    const project = (camera, wx, wy, wz) => {
+      const v = new THREE.Vector3(wx, wy, wz).project(camera);
+      return {
+        x: Math.round((v.x * 0.5 + 0.5) * 400),
+        y: Math.round((-v.y * 0.5 + 0.5) * 300),
+      };
+    };
+
+    const pointsFor = (at, cam) => ({
+      eye1: project(cam, ...at(uEye1, tvEye)),
+      eye2: project(cam, ...at(uEye2, tvEye)),
+      plain: project(cam, ...at(uPlain, tvPlain)),
+    });
+
+    /** spec 调用：切到指定视角（可选开红闪）后渲染一帧，返回该视角的取样点 */
+    window.__ZH_RENDER__ = (view, { flashing = false } = {}) => {
+      zr._poses[0].flashing = flashing;
+      zr._writeSlot(0, zr._poses[0]);
+      const cam = { front: camFront, top: camTop, side: camSide }[view];
+      if (!cam) throw new Error(`unknown view: ${view}`);
+      // 渲染两帧：WebGPU 首帧可能还在编译 shader，第二帧才是稳定结果
+      renderer.render(scene, cam);
+      renderer.render(scene, cam);
+      // **三个视角都在「眼睛格的纹理位置」取样**（正面期望黑、顶面/侧面期望非黑）——
+      // 顶面/侧面若取样在别处，「眼睛被误画进左半」这类注入测不出来（见上方实测踩坑记录）。
+      const at = { front: frontAt, top: topAt, side: sideAt }[view];
+      return pointsFor(at, cam);
+    };
+
+    // 前提：渲染器确实拿到了纹理（spec 断言此值，防「纹理加载失败 → 退回纯色」静默缺失）
+    window.__ZH_INFO__ = {
+      headHasTexture: zr.headHasTexture(),
+      headHasMap: !!zr.meshes.head.material.map,
+      textureSize: [texture.image?.width, texture.image?.height],
+      // 其余五部件不得带头部纹理（它们不该吃 map）
+      otherPartsHaveMap: Object.keys(zr.meshes)
+        .filter((p) => p !== 'head' && !!zr.meshes[p].material.map),
+    };
+    window.__ZH_READY__ = true;
+  }
+  run().catch((e) => { window.__ZH_ERROR__ = String(e?.stack || e); });
+</script>
+</body>
+</html>

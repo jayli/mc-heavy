@@ -12,7 +12,9 @@ import { computeRegionLayout } from '../gen/structures/structure-layout.js';
 import { applyStructuresToColumn } from '../gen/structures/apply.js';
 import { preloadStructures } from '../gen/structures/structure-json.js';
 import { SCATTER_JSON_TYPES } from '../gen/structures/scatter.js';
-import { ZOMBIE } from '../entities/zombies/zombie-config.js'; // M6 ai 分支：纯数据，无 DOM/three
+// M6 ai 分支：全部逻辑走 `computeAiUpdates`（同构纯函数，红线 8）。
+// 它内部 import `zombie-config.js` 的冻结玩法数据，故本文件不再直接 import ZOMBIE。
+import { computeAiUpdates } from '../entities/zombies/zombie-system.js';
 import { computeSkylightColumn, computeSkylightRegion, computeBlocklightRegion } from '../mesh/lighting.js';
 import { buildSectionMesh } from '../mesh/mesher.js';
 import { setDebugFlags } from '../core/debug-config.js';
@@ -184,26 +186,9 @@ installRpcHandler({
    * @returns {{updates: Array<{id: string, generation: number, vx: number, vz: number, mode: string}>}}
    */
   ai(p) {
-    const [px, , pz] = p.playerPosition;
-    const updates = [];
-    for (const z of p.zombies ?? []) {
-      const [x, , z0] = z.position;
-      const dx = px - x, dz = pz - z0;
-      const dist = Math.hypot(dx, dz);
-      // 感知门外：idle + 零速度（不追）。感知门内：归一化方向 × 速度上限
-      if (dist > ZOMBIE.perceptionRange || dist < 1e-6) {
-        updates.push({ id: z.id, generation: z.generation, vx: 0, vz: 0, mode: 'idle' });
-        continue;
-      }
-      // 朝玩家的单位向量 × 追逐速度（长度恒 = speed，主线程还会再钳一次做防御）
-      updates.push({
-        id: z.id,
-        generation: z.generation,
-        vx: dx / dist * ZOMBIE.speed,
-        vz: dz / dist * ZOMBIE.speed,
-        mode: 'chasing',
-      });
-    }
-    return { updates };
+    // 全部逻辑走同构纯函数 `computeAiUpdates`（红线 8）—— worker 与浏览器内单测共用同一份，
+    // 避免「测试与真实接线口径不一致」的盲区（CLAUDE.md 活跃约束：fake pool 曾让纯逻辑测试
+    // 全绿而真实接线丢回包）。含追逐（感知门内归一化方向 × speed）+ 实体间排斥力叠加。
+    return computeAiUpdates(p);
   },
 });

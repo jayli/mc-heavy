@@ -772,3 +772,90 @@ test('M6：X 键生成丧尸 —— 生成/上限钳制/repeat 守卫/模态守�
     expect(d, `生成落点距玩家应在 2~10 格量级（实测 ${d.toFixed(2)}）`).toBeLessThanOrEqual(12);
   }
 });
+
+// ==================== 实体间排斥（不重叠）====================
+
+/**
+ * 丧尸不得互相重叠 —— 强制 20 只同点生成后必须散开。
+ *
+ * **为什么必须走真游戏页**：浏览器内单测直接调 `separationForce` 纯函数，测不到
+ * **worker 是否真的消费了它**。而「worker 没接线」是**静默失效**（丧尸照常追逐、照常渲染，
+ * 只是叠成一坨）—— 正是 CLAUDE.md 记过的「fake pool 让纯逻辑测试全绿而真实接线丢回包」同类盲区。
+ *
+ * **为什么用「强制同点生成」而非自然生成**：真地形的落点天然分散（实测 20 个不同落点时
+ * 最小间距 0.995、零重叠），根本没有重叠可测 → 断言恒真。强制同点才能触发排斥力路径。
+ *
+ * 实测数值（改动前 → 改动后，20 只强制同点）：最小间距 0 → 0.578；重叠对数 190 → 1。
+ * 阈值取「散开后最小间距 > 0.4」+「重叠对数 < 20」—— 都远离改动前的值（0 / 190），双向有效。
+ */
+test('M6：丧尸互斥 —— 强制同点生成后必须散开（不重叠）', async ({ page }) => {
+  test.setTimeout(180_000);
+  await page.goto('/?vd=4&seed=12345');
+  await waitWorldReady(page);
+  const result = await page.evaluate(async () => {
+    const g = window.__MC_GAME__;
+    // 找一个合法落点，**20 只全部生成在同一点** → 制造完全重叠（spawn 无位置互斥门控，允许同格多只）
+    const p = g.player.physics.pos;
+    let pos = null;
+    for (let r = 3; r <= 40 && !pos; r++) {
+      for (const [dx, dz] of [[r, 0], [-r, 0], [0, r], [0, -r]]) {
+        const x = Math.floor(p.x) + dx, z = Math.floor(p.z) + dz;
+        for (let y = Math.floor(p.y); y >= Math.floor(p.y) - 64; y--) {
+          if (g.world.getBlockId(x, y, z) === 0 && g.world.getBlockId(x, y + 1, z) === 0
+            && g.world.isSolid(x, y - 1, z)) { pos = [x + .5, y, z + .5]; break; }
+        }
+      }
+    }
+    const ids = [];
+    for (let i = 0; i < 20; i++) {
+      const id = g.zombies.spawn(pos, { source: 'separation' });
+      if (id) ids.push(id);
+    }
+    // 重叠度量：最小两两水平距离 + 视觉重叠对数（< AABB 宽度 0.6 即看起来叠在一起）。
+    // **必须用两两距离而非「位置去重数」** —— 去重数对重叠不敏感（重叠丧尸的位置差 0.001
+    // 也算「不同位置」→ 断言恒真）。
+    const overlapStats = () => {
+      const zs = [...g.entities.entities()].filter((e) => e.type === 'zombie');
+      let min = Infinity, overlappingPairs = 0;
+      for (let i = 0; i < zs.length; i++) {
+        for (let j = i + 1; j < zs.length; j++) {
+          const d = Math.hypot(
+            zs[i].state.position[0] - zs[j].state.position[0],
+            zs[i].state.position[2] - zs[j].state.position[2],
+          );
+          min = Math.min(min, d);
+          // 视觉重叠判据：水平距离 < 0.6（丧尸 AABB 宽度）即看起来叠在一起。
+          // **用字面量而非 import ZOMBIE.width** —— 它是「观感判据」不是被测常量（被测的是排斥力），
+          // 派生会让「改 AABB 宽度」连带改判据 → 断言语义漂移（testing-policy §2.5）。
+          if (d < 0.6) overlappingPairs++;
+        }
+      }
+      return { count: zs.length, min, overlappingPairs, totalPairs: zs.length * (zs.length - 1) / 2 };
+    };
+    const before = overlapStats();
+    // 等排斥力积分（AI 20Hz + 物理 60Hz）：3 秒足够散开（实测 3 秒时 min 已到 0.543）
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+    const after = overlapStats();
+    return {
+      spawned: ids.length, spawnPos: pos,
+      before: { min: +before.min.toFixed(3), overlappingPairs: before.overlappingPairs },
+      after: { min: +after.min.toFixed(3), overlappingPairs: after.overlappingPairs, count: after.count },
+      aiDebug: g.zombies.debugAiState(),
+    };
+  });
+
+  // 前提：20 只全部生成成功且初始完全重叠（否则断言测不到排斥力路径 → 恒真）
+  expect(result.spawned, '须生成 20 只').toBe(20);
+  expect(result.before.min, '初始须完全重叠（min=0）').toBe(0);
+  expect(result.before.overlappingPairs, '初始须 190 对全重叠').toBe(190);
+  // AI 确实在跑（否则「没散开」可能是 RPC 没发，而非排斥力失效 —— 归因需要这个前提）
+  expect(result.aiDebug.calls, 'AI RPC 须有调用').toBeGreaterThan(0);
+  expect(result.aiDebug.pending, 'AI 队列须收敛').toBe(0);
+
+  // **核心断言：散开了**（阈值远离改动前的 0 / 190，双向有效）
+  expect(result.after.min, `最小间距须显著散开（改动前恒 0，实测 ${result.after.min}）`)
+    .toBeGreaterThan(0.4);
+  expect(result.after.overlappingPairs, `视觉重叠对数须大幅下降（改动前 190，实测 ${result.after.overlappingPairs}）`)
+    .toBeLessThan(20);
+  expect(result.after.count, '散开过程不得丢丧尸').toBe(20);
+});
