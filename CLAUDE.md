@@ -23,23 +23,15 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
 **项目进度的唯一总览是 [`docs/roadmap.md`](docs/roadmap.md)**（里程碑总表 M0~M7 + 第二阶段
 依赖链 + 后续扩展点）。本文件不复制进度表 —— 同一事实的多个副本会漂移。
 
-一句话现状：第一阶段 **M0~M3 全部完成**并验收达标，两个收尾补丁项（M3.1 背包 / M3.2 方块朝向
-放置交互）也已落地；此后是一串独立 bugfix 与改造（v1.19~v1.38）；第二阶段 **M4 玩家武器已完成
-并验收**（含遗留 TODO「设置面板破坏方块开关」），**M5 实体运行时已完成并验收**（验收报告
-`docs/m5-entity-runtime-acceptance-report.md`），**M6 丧尸已完成并验收**（验收报告
-`docs/m6-zombies-acceptance-report.md`；丧尸**不攻击玩家**，无 PlayerVitals/近战/掉落/自然刷怪/
-巢穴），M6 遗留 TODO 两项**已于 2026-09-09 补齐**（头部马赛克图案 —— 原预设的材质数组方案实测
-不可行，改走单纹理 UV 分区；实体间排斥 —— M6 交付遗漏，照搬 mc-lite 的 AI 层排斥力但须换算
-单位 + 补完全重叠 tie-break），**M7 玩家放置丧尸巢穴尚未开始**（规格与计划已备好，见「权威文档」）。
+一句话现状：第一阶段 M0~M3 + 两个收尾补丁项已完成；第二阶段 M4~M6 已完成并验收，
+**M7 玩家放置丧尸巢穴尚未开始**（规格与计划已备好）。里程碑状态、验收报告、遗留 TODO 的
+完整清单**一律查 roadmap** —— 此处不复制（复制就会漂移）。
 
-**历次 bugfix / 改造的完整记录不在本文件。** 权威副本分两处：① **第一阶段独立改动**
-（v1.19~v1.31、v1.35）—— 设计文档的修订说明（每条含根因、实测数据、门禁对照）+
-[`docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md`](docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md)
-（v1.19~v1.21 独立章节、v1.22~v1.31 表格）+ [`docs/roadmap.md`](docs/roadmap.md) 表格；
-② **M4 交付后的实玩反馈修正**（v1.32~v1.34、v1.36）—— 验收报告
-`docs/m4-weapons-acceptance-report.md` 偏离表 + roadmap「M4 之后的遗留 TODO」段（**不进**
-设计文档修订说明，也不 bump 设计文档版本号——那是架构口径变更专用）。本文件只保留
-**会影响后续实现决策的活跃约束**（下节）—— 它们散落在历次改动中，读单个文件看不出来。
+**历次 bugfix / 改造的完整记录不在本文件。** 权威副本：**第一阶段独立改动**在设计文档修订说明 +
+`docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md`（版本区间见 roadmap 的改动表）；
+M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 的「遗留 TODO」段
+（**不进**设计文档修订说明，也不 bump 设计文档版本号 —— 那是架构口径变更专用）。
+本文件只保留**会影响后续实现决策的活跃约束**（下节）。
 
 测试现状：Playwright spec 全量 + 浏览器内单元测试全绿。**用例计数以 `npm run check:data`
 输出为准，不在文档硬编码**（同一事实的多个副本属「改动放大器」，违反红线 1 精神）。
@@ -55,60 +47,24 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
   **比对 mc-lite 几何数字时必须 +0.5 换算。**
 - **对齐上游须实测其运行时行为，不能读定义推断**：mc-lite 床材质的 `offset:[0,0.5]` /
   `rotation:-π/2` 全仓**零消费点**（死字段），照字段名实现会渲错。与「诊断 bug 不猜」同一原则。
-- **五处已知的有意偏离 mc-lite**（视觉比对时勿按其原样判定，均在 §4.3/§4.5.4 标注）：
-  ① `vine` 落格内 y∈[0,1]（mc-lite 溢出半格 y∈[0.5,1.5]）；② 吊灯 UV 按部件分区 + 绳呈单色
-  深灰（mc-lite 两几何 UV 全幅、绳吃 emissive 呈亮色）；③ 背包图标用离线烘焙等轴测投影
-  （mc-lite 是手工绘制贴图，其图标与游戏内方块颜色不一致）；④ `lilypad` 模板 y=-0.48 +
-  生成格位 `SEA_Y+1`（mc-lite 是装饰实体、原点为块中心 → 叶面 -1.98 沉水 0.98）；
-  ⑤ `getAO` 去掉对角门控（mc-lite/MC 原版 `(side1||side2)?corner:0`，两侧都开阔时对角逐格不计入
-  → 凹角东南对角格无阴影、露出「阴影的边」；去门控后对角格 AO=2，阴影连成环）。副作用是**全局**的：
-  所有「仅对角遮挡」顶点暗一档（悬浮方块斜对角、台阶斜接处），原版 MC 故意让这些不变暗。
-- **lilypad 的几何与格位是耦合的，改一处必须同时改另一处**（§4.3 标注）：只改模板 y →
-  叶面悬空半格；只改生成格位 → 叶面贴块底仍沉水。水面下沉 0.5 后暴露水面顶面只有**半格高**，
-  与陆地整格顶面差半格 —— 同一份几何无法同时贴合，故 `big_house.json` 的 3 个草地 lilypad 已移除
-  （「`assets/structures/*.json` 原样复用」的唯一有意例外）。
-- **结构撒布有四条路径，前三条是 M2 欠账（v1.37 补齐）**：① 城市撒布
-  （`flowerBed`/`pavilion`/`tallWell`/城市 filler `house`）；② 城市外 `house`（代码生成，
-  非 JSON —— **草地上的房子在这里**，mc-lite `WorldWorker.js:2946`）；③ 城市外大型静态结构
-  （`desertPyramid`/`desertVillage`/`uglyHouse`/`tank`）。候选在 **region layout 层**算一次
-  （`computeScatterCandidates`，DR-13「各 GEN Worker 只做 rasterize」），`apply.js` 阶段 2.7
-  只做 AABB 裁剪光栅化。唯一权威 = `src/gen/structures/scatter.js`。
-  **四处有意偏离 mc-lite，勿照原样改回**：
-  ① `generateCodeHouse` 的材质/烟囱用 `seededRandom` 而非 mc-lite 的 `Math.random()`
-  （照搬会让同 seed 两次生成配色不同 → 违反红线 2）；
-  ② 判定函数**不带「同类已占用」参数** —— mc-lite 靠 chunk 局部运行期 Set 防重叠，
-  移植成参数会让同一坐标在不同 column 得出不同结论 → 跨 column 光栅化接缝断裂
-  （半个亭子）。取舍依据实测：mc-lite 单 chunk 内同类命中 ≥2 仅 0.75%/1.42%；
-  ③ 「避开树」半径 = **2**（mc-lite house 8/10、pavilion-tallWell 5~7）—— mc-heavy 城市树
-  **无互斥**，密度 1.39%（mc-lite 约 0.44%，高 3 倍），照搬大半径会把撒布结构**全部挡掉**
-  （实测各半径保留率：2→66~72% / 7→2~3% / 8~9→**0%**）；
-  ④ **陆地**城市外候选一律不撒在水下（mc-lite 无此门控，会产出水下房子）。但
-  `ship` 沉船是**有意的水下结构**（门控 `h < -6`，桅杆顶仍在水下 1~5 格）—— 两类门控
-  **方向相反**，勿把水下门控挪到 ship 判定之前（实测：挪了之后 ship 永不落地）。
-- **撒布密度已刻意低于 mc-lite（勿调回去，会撞破冻结预算）**：城市撒布基值
-  `flowerBed 0.0005→0.00025`（`pavilion`/`tallWell` 按 ×6/×3 派生自动跟随），城市外大 JSON
-  `desertVillage 0.00016→0.00008` / `uglyHouse 0.00008→0.00004`。原因是两条**冻结断言**：
-  `structure-gen` 的 `genP95 < 8ms`（§4.2）—— 大 JSON 1181/719 方块是光栅化大头；
-  `m3-fullscene` 的 `gpuVertexBytes < 150MB`（§4.10）—— 花坛/亭子的花与树叶走 cutout 通道。
-  **`house` 两类都不降**（opaque + 代码生成，不吃 cutout 预算、不是 p95 大头）。
+- **五处已知的有意偏离 mc-lite**（视觉比对时勿按其原样判定）—— 完整清单与理由在设计文档
+  §4.3 / §4.5.4，索引见 roadmap「活跃约束详情」的渲染与容量段：① `vine` 落格内；② 吊灯 UV 分区 +
+  绳单色深灰；③ 背包图标离线烘焙等轴测；④ `lilypad` 模板 y=-0.48 + 格位 `SEA_Y+1`；
+  ⑤ `getAO` 去掉对角门控（副作用**全局**：所有「仅对角遮挡」顶点暗一档）。
+- **lilypad 的几何与格位是耦合的，改一处必须同时改另一处** —— 细节见 roadmap 同段。
+- **结构撒布有四条路径 + 四处有意偏离 mc-lite**（勿照原样改回）—— 实测细节见
+  [`docs/roadmap.md`](docs/roadmap.md)「活跃约束详情」的结构撒布段。唯一权威 =
+  `src/gen/structures/scatter.js`；候选在 region layout 层算一次（DR-13）。
 - **代码生成撒布类型的派生基准 = `CODE_GENERATED_SCATTER_TYPES`（勿写成 `t !== 'house'`）**：
   `SCATTER_JSON_TYPES`、`apply.js` 的预载循环与 `CODE_GENERATORS` 映射表、`check:data` 门禁的
   `jsonTypes` 全部从它派生（红线 1）。当前两项：`house` / `ship`。写成字面量排除会让加第二个
   代码生成类型时门禁**误报**（要求它有 JSON 映射 + 磁盘文件），或该类型没被识别 → 走
   `rasterizeStructure` → cache 未命中 → **结构静默消失**（方块层面看不出差别）。
-- **ship 沉船不看 biome/occupied（勿「补齐」门控）**：mc-lite 门控只有 `h < -6` + 概率 +
-  `safeForStructure`。实测 109 个命中里有 11 个（10%）带植被、分布在 4 个 biome
-  （AZALEA/FOREST/PLAINS/SWAMP，**无 DESERT** —— DESERT 高度被 `h*0.5+2` 抬高，不会低于 -6），
-  给它补 biome/occupied 门控会让命中数掉到 98 且沙漠永不出沉船。
-- **ship 的落地测试须用桅杆判据，不能用 footprint 范围判据**：footprint 5×7 覆盖多格、每格
-  地形高度不同（有些高到 y+3），海底 `clay`/`sand`/`end_stone` 会落进扫描范围 → 判据恒 >0
-  （实测踩坑：注入「`CODE_GENERATORS` 漏 ship」后仍全绿，无效负向验证；排除 water 也不够）。
-  正确判据 = 桅杆中心列 `(x, y..y+4, z)` 的 5 格 `wood`（门控保证地形顶 ≤ y-1，桅杆必在地形上）。
-- **cutout 扩容是离散 ×1.5 跳增，容量须留足余量**：`render-world.js _ensureCapacity` 里
-  reserved 峰值只要超过 `maxVerts` **一个顶点**就整批跳到 ×1.5（1.8M→2.7M = +27MB，且
-  粘性不回缩）。撒布把 cutout 峰值推到 1.80M，故 `CAPACITY.cutout.active` 从 450 调到
-  **550**（maxVerts→2.2M，三通道合计 148MB < 150MB，余量 22%）。往 cutout 通道加方块量
-  （新植被/新结构）时须重测峰值并重标定 —— 差一点就会触发扩容撞破内存预算。
+- **ship 沉船不看 biome/occupied（勿「补齐」门控）**，且**落地测试须用桅杆判据**
+  （不能用 footprint 范围判据 —— 会被海底地形污染成恒真）—— 实测细节见 roadmap 同段。
+- **cutout 扩容是离散 ×1.5 跳增，容量须留足余量**：往 cutout 通道加方块量（新植被/新结构）
+  时须重测峰值并重标定 `CAPACITY.cutout.active`（当前 550）—— 差一点就会触发扩容撞破内存
+  预算。实测数据见 roadmap 同段。
 - **背包物品集合口径 118 项** = registry 126 − `NON_PLACEABLE_ITEMS`（4 项功能性方块）−
   `HIDDEN_FROM_INVENTORY`（4 项可放置但不进背包）。**两个集合语义互斥，勿混为一处**
   —— 把可放置方块塞进 `NON_PLACEABLE_ITEMS` 会让集合语义失真。
@@ -129,11 +85,6 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
   edits + 清 IndexedDB store 与 `editsCache`）。消费者 `newWorld`（换 seed）/ `clearSave`
   （保留 seed 与设置，设置面板「删除缓存」）。**禁止只清 IndexedDB 不清内存** —— 内存 edits
   是写盘源，残留会在任何来得及提交的时机把旧改动写回刚清空的 store。
-- **时序不定的竞态只能用内存侧断言钉住，端到端断言会让缺陷静默逃逸**。实测：`beforeunload →
-  flushNow` 的 IndexedDB 事务能否提交取决于卸载快慢（多一次 evaluate 往返则提交；紧跟
-  `location.reload()` 则被中止），故重载后的 `savedColumns` **碰巧**可能读到正确值
-  （负向验证实测：注释掉清内存那步，E2E 仍全绿）。写竞态防护的测试时，断言要落在
-  **同步可观测的内存状态**上，不要只断言重载后的落库结果。
 - **面板 UI 档位与钳制范围是两套口径，勿混为一处**：`VIEW_DISTANCE_OPTIONS`（面板按钮档位，
   当前 `[8,12,16]`）只是**快捷选择子集**，`clampVD` 的钳制范围 **2~16** 才是架构口径
   （M1 测试/调试依赖 `vd=2`、既有 spec 用 `vd=4`）。故面板必须容错「当前值不在档位内」
@@ -144,13 +95,8 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
   世界操作。M5~M7 的新配置项优先往右列填（纵向余量更大），两组两按钮档位优先用合并盒共用一行。
   **音量档当前不在面板**（默认 100%），但字段仍持久化 + `?volume=` URL 可达 —— 音频接线时
   加回档位即可，不必改数据模型。
-- **破坏性按钮的常态文案只有一份**（`settings-panel.js` 的 `CLEAR_SAVE_LABEL`）：构造与
-  `_resetDangerArmed()` 复位共用同一常量。实测踩坑：复位函数写死旧长文案会覆盖构造时的短文案
-  → 面板打开后显示复位那份，构造代码形同虚设（肉眼看不出哪个是「真相」）。
-- **面板列分隔线规则只作用于 `.mc-item`，不得通配所有子项**：写 `.mc-column > :first-child`
-  会连带抹掉 `.mc-combined` 合并盒自己的装饰边框（特异性 1,2,0 压过 1,1,0 → 上边框 `none`，
-  方框缺一边；用户实玩报告，观感上只是「少一条线」，肉眼看不出是特异性冲突）。往面板加新
-  容器类型时须同步考虑这条选择器。**CSS 特异性 bug 须 `getComputedStyle` 读四边定位**
+- **面板的破坏性按钮文案与列分隔线规则各有单一口径** —— 细节见 roadmap
+  「活跃约束详情」的面板与 UI 段。其中**CSS 特异性 bug 须 `getComputedStyle` 读四边定位**
   （只有某一边缺 = 特异性覆盖的特征），不要凭观感猜。
 - **`settings-panel.js` 的 `PANEL_CSS` 是 JS 模板字面量 —— 注释里禁用反引号包裹标识符**
   （会提前终止模板字符串 → 整个模块解析失败 → **游戏页白屏加载不出来**，不是面板样式错，
@@ -158,25 +104,10 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
   （能抓解析错误）再做实测。
 - **文档同步**：新增产物或删除文件时，必须同步「目录结构清单」「开发命令清单」「现状声明」
   三类文档，历史记录段不动。文档里同一事实的多个副本会漂移（已发生三次版本号漂移）。
-- **计时类断言 flaky 时须分开按 spec 连跑拿数值分布比均值与峰值**，仅凭「全量跑失败/单独跑通过」
-  判定不够（实测有 HEAD 侧失败率反而更高的情况，只看全量跑会得出相反结论）。
-  **并发跑测试会导致计时断言系统性失败**（争抢 CPU 与端口 8081）。
-  更可靠的做法是**交替对照**（改动侧 N 次 → HEAD 侧 N 次 → 反复），消除机器负载累积带来的
-  顺序效应 —— 单侧连跑会让后跑的一侧承担更高负载。
-- **测试指纹口径须匹配改动范围**：`i += 997` 步长采样只适合「换 seed」类整片变化；
-  **单格改动必须全量求和**（实测踩坑：基线与改动侧同为 50533，断言恒真）。
-- **重载类断言的导航监听必须在触发动作之前武装**：`waitForLoadState('load')` 写在 click 之后
-  会看到「当前页已是 load 态」立即返回，随后 `READY` 在**旧页**本就为真 → 读到动作前的世界。
-  正确写法是 `const nav = page.waitForNavigation(...)` 先建 promise，再 click，再 `await nav`。
-- **给「生成类」代码写测试有两个恒真陷阱**（实测踩坑 lilypad，两处都会让缺陷静默逃逸）：
-  ① **落点只按数据条件筛** —— 「biome=SWAMP + h<SEA_Y + rand<0.08」筛出 **12 个候选点**，
-  完整 GEN 后**落地 0 个**（`pointContext` 的 city/island/pyramid/plainLand/snow/fm 六个地标
-  判定都在 water 分支**之前**，这些点全被 clay/sand 地标方块吞掉）→ 断言根本不触发的分支；
-  ② **测试里硬编码「被测代码写入的那个值」** —— 用 `SEA_Y+1` 算叶面高度，而 `SEA_Y+1` 正是
-  `apply.js` 写入的格位 → 回退格位后该测试**仍 PASS**（拿硬编码值算出关系式成立）。
-  正确做法：落点先用廉价脚本复现优先级链扫出、再跑完整 GEN 验证方块真落地；派生量从**实际
-  生成数据里读出**真实格位再算，并补前置断言钉住前提。详见
-  [`docs/testing-policy.md`](docs/testing-policy.md) §2.5。
+- **断言落点与负向验证的踩坑清单不在本文件** —— 权威副本是
+  [`docs/testing-policy.md`](docs/testing-policy.md) §2.5~§2.7（恒真陷阱 / 计时断言交替对照 /
+  导航监听武装顺序 / 指纹口径 / 竞态内存侧断言 / 负向验证九类盲区高发区）。
+  写测试前按它的判据确定本次改动属哪一级。
 
 ### M6 丧尸沉淀的活跃约束（M7 巢穴与后续实体类 Epic 必读）
 
@@ -208,18 +139,11 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
   `entities.despawnColumn()` 回收临时实体，那条路径**绕过玩法服务** → 渲染 slot 不归还。
   Game 的 handle 里必须 `zombies.despawnColumn(key)` 先行（见 `game.js` 注释）。M7 巢穴刷怪
   同理：任何临时实体都要在 commit 前经自己的服务回收。
-- **`findSpawnY`（`gen/terrain.js:98`）会把空中结构当出生点**：它从世界顶向下扫第一个非空气
-  方块并返回 `y+1`，而 M2-7 云层 `supportsPlayer=1` 但 `solid=0` → 随机 seed 下玩家可能出生
-  在云面上（实测 6 次试验 1 次 y=56、`belowSolid=false`）。后果：**云面上不会自然刷怪**
-  （丧尸 spawn 要求脚下 solid），且测试落点扫描须**向下扫真实地面**而非用玩家 y±4。
-  本次未改该函数（属 M1/M2 出生点口径，改动会牵动 M1 验收与既有 spec）。
-- **负向验证的盲区高发区**（M6 实测发现 15 条无效盲区，详见验收报告 §3）：① 门控落点落在
-  未加载 column → 别道门控先拒绝，被测门控不被触发；② 断言读内存值而注入改的是实例矩阵；
-  ③ fixture 显式传参覆盖了被测的默认参数 → 默认值路径无覆盖；④ fake 依赖立即完成 → 「在途」
-  类断言不触发；⑤ 测试用 dt 恰等于步长 → accumulator 恒 0；⑥ worker 代码只在真游戏页加载，
-  单测页跑不到 worker 注入；⑦ **测试输入从被测常量派生**（`micro = EPSILON / 2` → 注入把常量
-  改成 0 时输入也变 0 → 断言恒真；须用字面量 + 前提断言）。
-  **每条负向验证若「注入后仍全绿」，先怀疑断言落点而非实现**。
+- **`findSpawnY`（`gen/terrain.js:98`）会把空中结构当出生点**（云层 `supportsPlayer=1` 但
+  `solid=0` → 玩家可能出生在云面上）。后果：**云面上不会自然刷怪**，且测试落点扫描须
+  **向下扫真实地面**而非用玩家 y±4。实测细节见 roadmap「活跃约束详情」的出生点与刷怪段。
+- **负向验证若「注入后仍全绿」，先怀疑断言落点而非实现** —— 九类盲区高发区见
+  [`docs/testing-policy.md`](docs/testing-policy.md) §2.7（含 M6 实测的 15 条无效盲区）。
 - **从实例矩阵反解旋转必须用 `atan2(elements[8], elements[0])`，不能用 `Euler.setFromQuaternion`**
   （实测踩坑）：three 的 Euler 'XYZ' 序对 Y 轴用 `asin(m13)`，而 `asin(sin θ)` 在 `|θ| > π/2`
   时会**折叠**回 [-π/2, π/2] —— 实测 yaw=2.4805 读出 0.661。纯 Y 旋转下 `elements[0]=cos θ`、
@@ -231,19 +155,12 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
   会漂移出「腿在摆但朝向没跟上」的撕裂状态，且**用远离阈值的输入测不出来**（实测：速度 1.2 对
   阈值 0.001 与 0.5 都判移动）—— 须在临界值附近断言两层同时生效。
 - **移植 mc-lite 的速度/力值参数必须换算单位（格/帧 → 格/秒，×60）**：mc-lite 的
-  `predictNextPosition` **不乘 dt**（`nextX = position.x + velocityX`，`Zombie.js:302-305`）→
-  它的 velocity 是**格/帧**；mc-heavy 物理层乘 dt（`moveAxis(state, world, velocity[0]*dt, …)`）→
-  **格/秒**。`ZOMBIE.speed` 已换算（`0.02 × 60 = 1.2`），照搬其它速度类常量时同理。
-  **实测后果**：丧尸排斥强度照搬 mc-lite 的 `0.05` 后，排斥力只有追逐力的 4% → 压不住收敛
-  （24 只最小间距仍降到 0.003、21 对重叠，与无排斥对照组几乎相同）；换算成 `3.0` 后降到
-  0.439 / 1 对。**这类缺陷肉眼难辨**（丧尸照常在动，只是慢慢挤到一起），须靠 A/B 对照实测。
-- **mc-lite 的「随机偏移」机制不能只移植一半**：mc-lite 丧尸靠 S 路线随机偏移角
-  （`EnemyWorker.js:186-207` `targetOffsetAngle`，2% 概率每帧）让丧尸不会精确同点，故它的
-  排斥力可以「完全重叠时跳过」（`distance > 0.001`）。mc-heavy 的 AI 是纯直线追逐、没移植
-  S 路线 → 照搬那个跳过判定会**永久死锁**（两只同位置丧尸追逐速度完全相同 → 永远同步移动、
-  永不分开；实测 20 只强制同点生成后 3 秒仍 min=0）。**移植时须检查上游的「靠其它机制兜住」
-  的隐含前提**，不能只搬那一个函数。本仓库的补法 = id 派生确定性方向 tie-break（黄金角散列
-  + id 序定符号 → 同位置两只必然朝相反方向；用 id 派生而非 `Math.random()`：可测 + 无帧间抖动）。
+  `predictNextPosition` **不乘 dt** → 它的 velocity 是格/帧；mc-heavy 物理层乘 dt → 格/秒。
+  `ZOMBIE.speed` 已换算（`0.02 × 60 = 1.2`）。**这类缺陷肉眼难辨**（实体照常在动，只是行为
+  不对），须靠 A/B 对照实测。实测数据见 roadmap「活跃约束详情」的渲染与容量段。
+- **移植时须检查上游「靠其它机制兜住」的隐含前提，不能只搬那一个函数**：mc-lite 的排斥力
+  可以「完全重叠时跳过」，是因为它有 S 路线随机偏移角让丧尸不会精确同点；mc-heavy 没移植
+  S 路线 → 照搬那个判定会**永久死锁**。实测细节见 roadmap 同段。
 - **worker 消费共享纯函数，不得在 worker 里重写一份逻辑**：丧尸 AI 的全部逻辑抽成
   `zombie-system.js` 的 `computeAiUpdates()`，`world-worker.js` 的 `ai` 分支只调它（红线 8）。
   若在 worker 里重写，**浏览器内单测测不到真实接线**（单测直接调纯函数）—— 「worker 没接线」
@@ -260,13 +177,10 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
   「不同面不同图案」的实体同理。**多区纹理不能用上下分区**（会把 N×N 图案压成 N×(N/2) → 比例失真），
   须横向并排。
 - **`BoxGeometry` 各面的 `buildPlane` `vdir` 符号不同**（`three.core.js:29515-29519`：正面/侧面
-  `-1`、顶面 `+1`）→ 给多个面写「世界坐标 ← 归一化 u/v」换算时**不能用同一套公式**，会在某些面
-  把 v 反向、偏一格（实测踩坑：丧尸头部 Tier 4 的顶面/侧面取样点落在格 4 而眼睛在格 3 → 注入
-  「眼睛画进左半」仍全绿，无效负向验证）。跨面取样须用**纹理坐标**作统一参数，各面按轴向换算。
-- **Tier 4 像素实测的断言阈值须匹配 `outputColorSpace`**：fixture 若用 `LinearSRGBColorSpace` 输出
-  （ao-corner fixture 口径），读到的是纹理 sRGB→linear **解码后**的值（实测 `[64,107,48]` →
-  `[13,37,8]`，三个值精确等于解码结果）→ 阈值得按 linear 写、不直觉且易错。丧尸头部 fixture 改用
-  `SRGBColorSpace`（真实游戏口径）→ 读到的值接近原始纹理参数，阈值可对着图案参数读。
+  `-1`、顶面 `+1`）→ 跨面写「世界坐标 ← 归一化 u/v」换算**不能用同一套公式**（会在某些面把 v
+  反向、偏一格）。跨面取样须用**纹理坐标**作统一参数。踩坑记录见 testing-policy §2.7 第 9 类。
+- **Tier 4 像素实测的断言阈值须匹配 `outputColorSpace`** —— 口径与实测数据见
+  testing-policy §5.2。
 - **离线烘焙产物的过期门禁 = 输入指纹比对**（与图标同一手法）：图案参数/贴图内容进指纹，烘焙时写进
   伴随 JSON，门禁用当前参数重算比对 → 不匹配即报「跑 npm run xxx」。漏了会让产物**静默过期**
   （渲染旧图案，肉眼只觉得「颜色怪怪的」）。指纹逻辑放共享模块供烘焙脚本与门禁共用（红线 1：
@@ -278,8 +192,9 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
 
 1. [`docs/roadmap.md`](docs/roadmap.md) —— **项目进度唯一总览**（里程碑总表 M0~M7 + 第二阶段
    依赖链 + 后续扩展点接入点 + 去哪找细节）。想知道「做到哪了、下一步做什么」先看它。
-2. [`docs/phase-1-engine-design.md`](docs/phase-1-engine-design.md) —— **架构唯一权威**，
-   当前 v1.35。所有子系统边界、DR 决策、验收口径都在这里；历次口径变更见其修订说明。
+2. [`docs/phase-1-engine-design.md`](docs/phase-1-engine-design.md) —— **架构唯一权威**。
+   所有子系统边界、DR 决策、验收口径都在这里；历次口径变更见其修订说明。
+   **版本号以该文档自身首行为准，本文件不硬编码**（硬编码就是漂移源，已发生三次）。
 3. [`docs/testing-policy.md`](docs/testing-policy.md) —— **测试分级的唯一权威**（Tier 1~4 判据 +
    门禁分层 + 红线静态门规则 + 与 M4~M7 的关系）。动手前先按它的判据确定本次改动属哪一级。
 4. [`docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md`](docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md)
@@ -392,7 +307,7 @@ mc-heavy/
 ├─ vendor/three/               # three.js r185.1（three.webgpu.js / three.tsl.js / three.core.js）
 ├─ docs/
 │  ├─ roadmap.md              # 项目进度唯一总览（里程碑总表 + 依赖链 + 扩展点）
-│  ├─ phase-1-engine-design.md # 架构唯一权威（v1.35）
+│  ├─ phase-1-engine-design.md # 架构唯一权威（版本号见该文档首行）
 │  └─ testing-policy.md        # 测试分级唯一权威（Tier 1~4 判据 + 门禁分层）
 ├─ tools/build-atlas.mjs       # atlas 离线打包（npm run atlas）
 ├─ tools/bake-procedural-textures.mjs # 程序化贴图烘焙（mc-lite canvas 材质 → PNG）

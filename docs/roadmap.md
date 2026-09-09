@@ -73,8 +73,127 @@ MAG7 曳光终点回归准心轴（v1.36，原用扫描候选当终点导致斜�
 | v1.31 | AO 去掉对角门控（凹角阴影连成环） | ✅ `2462e7f` | 用户报告：方块两面都是墙角时，两条阴影各沿凹角垂直延伸，而**东南对角地面格完全不参与** → 阴影在对角处断开露出「阴影的边」。根因实测定位：`mesher.js` `getAO` 对角门控 `(side1\|\|side2)?corner:0`（mc-lite/MC 原版语义）→ 两侧开阔、仅对角遮挡的顶点恒 AO=3。隔离场景实测：对角格 `(9,0,9)` 靠 B 角 AO=3（全亮）、东/南格同位置 AO=2（有阴影），且同一空间顶点 `(9,1,9)` 在不同 quad 里 AO 不一致（2 vs 3）。修复：去门控 → 对角格 AO=2，阴影连成环。**有意偏离 mc-lite 第 ⑤ 项**，副作用全局（所有「仅对角遮挡」顶点暗一档）。Tier 1 TDD（RED `Expected 2, got 3` → GREEN 278/278）+ Tier 4 像素实测（HEAD 1.067 vs 改动侧 0.851，约 19% 差异，双向有效）+ bench `--check` 通过 |
 
 | v1.35 | 设置面板两列布局 + 档位精简 | ✅ `49e7cce` | 用户反馈面板拥挤，且第二阶段（M5~M7）会持续加配置项。改 mc-lite 同款两列盒（`.mc-columns` / `.mc-combined` 合并盒），**行列分配按本仓库档位需要重排、不沿用 mc-lite 分配**（后续新配置优先往右列填）。档位精简三项：① 视距 UI 档位 5→3（`[8,12,16]`），但 `clampVD` 钳制范围 **2~16 不动**（架构口径，测试依赖 `vd=2`）→ 面板须容错「当前值不在档位内」，**刻意不做就近高亮**；② 音量档移出面板（默认 100%，字段仍持久化 + `?volume=` 可达）；③ 新世界 + 删除缓存共用一行。顺带修掉文案漂移：`_resetDangerArmed()` 写死旧长文案覆盖了构造时的短文案 → 抽 `CLEAR_SAVE_LABEL` 共用常量。**用户随后报告合并盒上边框缺失**（本次改动引入）：分隔线规则 `> :first-child` 通配所有子项、特异性 (1,2,0) 压过 `.mc-combined` 的 (1,1,0) → 列首合并盒上边框被置 none；改为只作用 `.mc-item` + 补四边 solid 断言 + 负向验证。单测 296 全绿 + 档位契约断言负向验证（改 `[8,12,20]` → FAIL `Expected 20, got 16`）+ DOM 几何实测（面板 818×398、两列等高 375×255、合并盒四边 solid、零文本溢出）。全量 E2E **55 passed / 1 failed** —— 失败的 `m1-acceptance` `digP95` 是已知 flaky 计时断言（2ms 贴线抖动），**交替对照**实测两侧分布重叠（HEAD 均值 1.833 vs 改动侧 1.933，各 9 样本），机制上不相关（放挖热路径零命中面板代码，spec 用 `vd=8` 在新旧档位都存在） |
-| v1.37 | 结构撒布补齐（M2 欠账） | ✅ `87cd571` | 用户报告**草地与城市里看不到房子/花坛/亭子/高井**。根因实测定位：`assets/structures/` 27 个 JSON 里 **7 个零消费**（`flower_bed`/`pavilion`/`tall_well`/`desert_pyramid` 4 个是真实 M2 欠账，`bed`/`turret`/`zombie_nest` 3 个有意预留），且 mc-lite 的**三条撒布路径完全未搬**（城市装饰物逐点撒布 / 城市外代码生成 `house` / 城市外大型静态结构）。补齐后城内 797 个撒布（house 152/pavilion 446/tallWell 77/flowerBed 122）、城外每 region 约 25 个。新增 `src/gen/structures/scatter.js`（撒布判定 + `generateCodeHouse`，Worker 同构）；候选在 **region layout 层**算一次（DR-13），`apply.js` 阶段 2.7 只做 AABB 裁剪光栅化。**四处有意偏离 mc-lite**（`Math.random`→`seededRandom` 守红线 2 / 判定不带 occupied 参数防跨 column 接缝断裂 / 避开树半径 2 而非 8~10 / 不撒水下），详见 CLAUDE.md 活跃约束。**撒布密度刻意低于 mc-lite**（城市基值减半 + 两个大 JSON 减半）以守两条冻结断言，并配合 `CAPACITY.cutout.active` 450→550（扩容是离散 ×1.5 跳增，峰值 1.80M 差 2230 顶点就跳到 170MB）。Tier 1 TDD：单测 **341 全绿** + **17 条负向验证全部确认真 FAIL**（含自查发现的 2 个无效盲区：特征方块跨结构重叠导致断言恒真、tank 门控用错参数路径未触达）+ 新增 `check:data` `[撒布结构]` 三环节契约（含磁盘文件存在性 —— 浏览器里 fetch 404 会被吞成空结构，只有门禁能抓）。`genP95` 6.8~7.7ms（6/6）/ `gpuVertexBytes` 148MB / bench 通过 fps 111~120 / 全量 E2E **66 passed**（唯一失败 = `m1-acceptance` 既有 flaky，交替对照改动侧 3/5 vs HEAD 侧 4/5，改动侧失败率更低） |
+| v1.37 | 结构撒布补齐（M2 欠账） | ✅ `87cd571` | 用户报告**草地与城市里看不到房子/花坛/亭子/高井**。根因实测定位：`assets/structures/` 27 个 JSON 里 **7 个零消费**（`flower_bed`/`pavilion`/`tall_well`/`desert_pyramid` 4 个是真实 M2 欠账，`bed`/`turret`/`zombie_nest` 3 个有意预留），且 mc-lite 的**三条撒布路径完全未搬**（城市装饰物逐点撒布 / 城市外代码生成 `house` / 城市外大型静态结构）。补齐后城内 797 个撒布（house 152/pavilion 446/tallWell 77/flowerBed 122）、城外每 region 约 25 个。新增 `src/gen/structures/scatter.js`（撒布判定 + `generateCodeHouse`，Worker 同构）；候选在 **region layout 层**算一次（DR-13），`apply.js` 阶段 2.7 只做 AABB 裁剪光栅化。**四处有意偏离 mc-lite**（`Math.random`→`seededRandom` 守红线 2 / 判定不带 occupied 参数防跨 column 接缝断裂 / 避开树半径 2 而非 8~10 / 不撒水下），详见下方「活跃约束详情 · 结构撒布」。**撒布密度刻意低于 mc-lite**（城市基值减半 + 两个大 JSON 减半）以守两条冻结断言，并配合 `CAPACITY.cutout.active` 450→550（扩容是离散 ×1.5 跳增，峰值 1.80M 差 2230 顶点就跳到 170MB）。Tier 1 TDD：单测 **341 全绿** + **17 条负向验证全部确认真 FAIL**（含自查发现的 2 个无效盲区：特征方块跨结构重叠导致断言恒真、tank 门控用错参数路径未触达）+ 新增 `check:data` `[撒布结构]` 三环节契约（含磁盘文件存在性 —— 浏览器里 fetch 404 会被吞成空结构，只有门禁能抓）。`genP95` 6.8~7.7ms（6/6）/ `gpuVertexBytes` 148MB / bench 通过 fps 111~120 / 全量 E2E **66 passed**（唯一失败 = `m1-acceptance` 既有 flaky，交替对照改动侧 3/5 vs HEAD 侧 4/5，改动侧失败率更低） |
 | v1.38 | ship 沉船补齐（M2 欠账，v1.37 的延续） | ✅ `aee7072` | 用户追问「还有哪些 mc-lite 实体没搬」。调研后确认：JSON 结构两边都是 27 个（一致），但 `ship`（沉船，mc-lite `WorldWorker.js:988/:2987` 的**代码生成方块结构**、无 JSON）在 mc-heavy 完全没有 —— 设计文档 grep `ship`/`沉船` 零命中，是真欠账（区别于 `skyTree` 的 M2-7 有意删除，已保留）。**rover/gun_man 推迟到 M6**：它们是 GLB 模型实体（gun_man.glb 16 primitives / free_car 12），需要 mc-heavy 尚不存在的碰撞（`physics.js` 不查实体）/ 射线（未接 `EntityManager.raycast`，M6 规格 `:61` 才接）/ 破坏持久化基础设施，正是 M6 丧尸要建的同一套；现在补只能做到「看得见」。ship 是方块结构，走现有 mesher + BatchedMesh 管线，天然合批（bench 实测 draw=496 与 v1.37 持平）、有碰撞、可挖掉。门控 `h<-6` + 概率 + `safeForStructure`，实测 109 个命中（视距 8 内 3 个，最近距出生点 98 格）、**跨 column 0%**（内圈 + 占地 dx±2/dz±3 数学必然落在单 column 内）、深海无 DESERT。门控与 v1.37 陆地水下门控**方向相反**，在同一循环内用 `h` 一次计算分流。引入 `CODE_GENERATED_SCATTER_TYPES` 单一权威（红线 1：派生基准勿写成 `t !== 'house'`，否则门禁误报或结构静默消失）。Tier 1 TDD：单测 **351 全绿** + **10 条负向验证全部真 FAIL**（含自查发现的 1 个无效盲区：footprint 范围判据被海底地形污染恒真 → 改桅杆中心列判据）。`check:data` 门禁扩展到覆盖代码生成类型的占地 / bench 通过 fps 108~120 无回退 / 全量 E2E **67 passed**（这次 m1-acceptance 也通过） |
+
+## 活跃约束详情（历次改动沉淀的实测细节）
+
+CLAUDE.md 只保留「会影响后续实现决策的活跃约束」的**结论**，实测细节与根因叙事在这里。
+违反这些约束会引入回归或与设计文档冲突 —— 改相关代码前先查本段。
+
+> **持续生效的架构口径仍在 CLAUDE.md**（形状唯一权威、`_discardEdits` 唯一入口、
+> `WorkerPool.call` 返回形状、WebGPU 后端限制等）—— 那些不是历史记录，是实现约束，
+> 不该搬进进度文档（没人改代码前去查进度文档找约束）。本段只承接**改动沉淀的实测细节**。
+
+### 结构撒布（v1.37 / v1.38）
+
+**四条撒布路径**（前三条是 M2 欠账，v1.37 补齐）：
+
+| 路径 | 内容 |
+|---|---|
+| ① 城市撒布 | `flowerBed` / `pavilion` / `tallWell` / 城市 filler `house` |
+| ② 城市外 `house` | 代码生成、非 JSON —— **草地上的房子在这里**（mc-lite `WorldWorker.js:2946`） |
+| ③ 城市外大型静态结构 | `desertPyramid` / `desertVillage` / `uglyHouse` / `tank` |
+| ④ `ship` 沉船 | 代码生成、**有意的水下结构**（v1.38） |
+
+候选在 **region layout 层**算一次（`computeScatterCandidates`，DR-13「各 GEN Worker 只做
+rasterize」），`apply.js` 阶段 2.7 只做 AABB 裁剪光栅化。唯一权威 = `src/gen/structures/scatter.js`。
+
+**四处有意偏离 mc-lite，勿照原样改回**：
+
+① `generateCodeHouse` 的材质/烟囱用 `seededRandom` 而非 mc-lite 的 `Math.random()`
+（照搬会让同 seed 两次生成配色不同 → 违反红线 2）；
+
+② 判定函数**不带「同类已占用」参数** —— mc-lite 靠 chunk 局部运行期 Set 防重叠，
+移植成参数会让同一坐标在不同 column 得出不同结论 → 跨 column 光栅化接缝断裂（半个亭子）。
+取舍依据实测：mc-lite 单 chunk 内同类命中 ≥2 仅 0.75% / 1.42%；
+
+③ **「避开树」半径 = 2**（mc-lite house 8/10、pavilion-tallWell 5~7）—— mc-heavy 城市树
+**无互斥**，密度 1.39%（mc-lite 约 0.44%，高 3 倍），照搬大半径会把撒布结构**全部挡掉**。
+实测各半径保留率：`2→66~72%` / `7→2~3%` / `8~9→0%`；
+
+④ **陆地**城市外候选一律不撒在水下（mc-lite 无此门控，会产出水下房子）。但 `ship` 沉船是
+**有意的水下结构**（门控 `h < -6`，桅杆顶仍在水下 1~5 格）—— 两类门控**方向相反**，
+勿把水下门控挪到 ship 判定之前（实测：挪了之后 ship 永不落地）。
+
+**撒布密度刻意低于 mc-lite（勿调回去，会撞破冻结预算）**：城市撒布基值
+`flowerBed 0.0005→0.00025`（`pavilion`/`tallWell` 按 ×6/×3 派生自动跟随），城市外大 JSON
+`desertVillage 0.00016→0.00008` / `uglyHouse 0.00008→0.00004`。原因是两条**冻结断言**：
+`structure-gen` 的 `genP95 < 8ms`（设计文档 §4.2）—— 大 JSON 1181/719 方块是光栅化大头；
+`m3-fullscene` 的 `gpuVertexBytes < 150MB`（§4.10）—— 花坛/亭子的花与树叶走 cutout 通道。
+**`house` 两类都不降**（opaque + 代码生成，不吃 cutout 预算、不是 p95 大头）。
+
+**`ship` 沉船不看 biome/occupied（勿「补齐」门控）**：mc-lite 门控只有 `h < -6` + 概率 +
+`safeForStructure`。实测 109 个命中里有 11 个（10%）带植被、分布在 4 个 biome
+（AZALEA / FOREST / PLAINS / SWAMP，**无 DESERT** —— DESERT 高度被 `h*0.5+2` 抬高，
+不会低于 -6）。给它补 biome/occupied 门控会让命中数掉到 98 且沙漠永不出沉船。
+
+**`ship` 的落地测试须用桅杆判据，不能用 footprint 范围判据**：footprint 5×7 覆盖多格、
+每格地形高度不同（有些高到 y+3），海底 `clay`/`sand`/`end_stone` 会落进扫描范围 → 判据恒 >0
+（实测踩坑：注入「`CODE_GENERATORS` 漏 ship」后仍全绿，无效负向验证；排除 water 也不够）。
+正确判据 = 桅杆中心列 `(x, y..y+4, z)` 的 5 格 `wood`（门控保证地形顶 ≤ y-1，桅杆必在地形上）。
+
+### 渲染与容量（v1.37 / v1.30 / v1.31）
+
+**cutout 扩容是离散 ×1.5 跳增，容量须留足余量**：`render-world.js _ensureCapacity` 里
+reserved 峰值只要超过 `maxVerts` **一个顶点**就整批跳到 ×1.5（1.8M→2.7M = +27MB，且粘性不回缩）。
+撒布把 cutout 峰值推到 1.80M，故 `CAPACITY.cutout.active` 从 450 调到 **550**
+（maxVerts→2.2M，三通道合计 148MB < 150MB，余量 22%）。往 cutout 通道加方块量
+（新植被/新结构）时须重测峰值并重标定 —— 差一点就会触发扩容撞破内存预算。
+
+**lilypad 的几何与格位是耦合的，改一处必须同时改另一处**（v1.30）：只改模板 y → 叶面悬空半格；
+只改生成格位 → 叶面贴块底仍沉水。水面下沉 0.5 后暴露水面顶面只有**半格高**，与陆地整格顶面差
+半格 —— 同一份几何无法同时贴合，故 `big_house.json` 的 3 个草地 lilypad 已移除
+（「`assets/structures/*.json` 原样复用」的唯一有意例外）。
+
+**五处已知的有意偏离 mc-lite**（视觉比对时勿按其原样判定）：完整清单与理由在设计文档
+§4.3 / §4.5.4，此处只列索引 —— ① `vine` 落格内 y∈[0,1]；② 吊灯 UV 按部件分区 + 绳呈单色
+深灰；③ 背包图标用离线烘焙等轴测投影；④ `lilypad` 模板 y=-0.48 + 生成格位 `SEA_Y+1`；
+⑤ `getAO` 去掉对角门控（副作用**全局**：所有「仅对角遮挡」顶点暗一档 —— 悬浮方块斜对角、
+台阶斜接处，原版 MC 故意让这些不变暗）。
+
+**丧尸头部图案走单纹理 UV 分区，不是材质数组 + groups**（2026-09-09）：实测
+`three.webgpu.js:34592` `getMaterial()` 直接 `return material`，不遍历 `geometry.groups`、
+不取 `materialIndex` → 六面恒用 `material[0]`，照 mc-lite 的「正面单独一张纹理」写法会
+**静默只渲染第一张**（正面看不到眼睛，不报错）。WebGL 后端 `:30472` 则按 group 分次 draw
+→ 是 WebGPU 后端刻意不实现。替代 = 单材质 + 单纹理 + UV 分区（纹理双区并排 128×64，
+正面顶点 UV → 右半）。连带好处：draw call 仍是 6，不是材质数组方案的 7。
+图案参数实测自 mc-lite `:99-119`，注意 **`noiseProbability: 0.7` 的判定是 `> 0.7` 才用噪点
+→ 实际仅 30%**（照字段名理解会把图案画反；烘焙后实测噪点比例 32.8% 证实语义没反）。
+
+**丧尸互斥须换算单位 + 补完全重叠 tie-break**（2026-09-09）：mc-lite 的排斥力在 AI 层
+（`EnemyWorker.js:131-155`，`minDistance 1.2` / `repulsionStrength 0.05`）叠加进 velocity。
+照搬有两个实测必需的偏离：
+
+① **`repulsionStrength` 换算 ×60**（`0.05` → `3.0`）—— mc-lite 是**格/帧**单位
+（`predictNextPosition` 不乘 dt，`Zombie.js:302-305`），mc-heavy 物理层乘 dt → **格/秒**，
+与 `ZOMBIE.speed` 的 `0.02×60=1.2` 同口径。不换算实测：排斥力只有追逐力的 4% → 压不住收敛
+（24 只最小间距仍降到 0.003、21 对重叠，与无排斥对照组几乎相同）；换算后降到 0.439 / 1 对；
+
+② **补 tie-break** —— mc-lite 判定 `distance > 0.001` 完全重叠时跳过不推开，在它那侧无害
+（靠 S 路线随机偏移角 `:186-207` 让丧尸不会精确同点），但 mc-heavy 的 AI 是纯直线追逐 →
+**永久死锁**（实测 20 只强制同点生成后 3 秒仍 min=0、190 对全重叠）。补法 = id 派生确定性方向
+（黄金角散列 + id 序定符号 → 同位置两只必然朝相反方向；用 id 派生而非 `Math.random()`：
+可测 + 无帧间抖动）。
+
+### 面板与 UI（v1.35）
+
+**破坏性按钮的常态文案只有一份**（`settings-panel.js` 的 `CLEAR_SAVE_LABEL`）：构造与
+`_resetDangerArmed()` 复位共用同一常量。实测踩坑：复位函数写死旧长文案会覆盖构造时的短文案
+→ 面板打开后显示复位那份，构造代码形同虚设（肉眼看不出哪个是「真相」）。
+
+**面板列分隔线规则只作用于 `.mc-item`，不得通配所有子项**：写 `.mc-column > :first-child`
+会连带抹掉 `.mc-combined` 合并盒自己的装饰边框（特异性 1,2,0 压过 1,1,0 → 上边框 `none`，
+方框缺一边；用户实玩报告，观感上只是「少一条线」，肉眼看不出是特异性冲突）。往面板加新容器
+类型时须同步考虑这条选择器。
+
+### 出生点与刷怪（M6）
+
+**`findSpawnY`（`gen/terrain.js:98`）会把空中结构当出生点**：它从世界顶向下扫第一个非空气方块
+并返回 `y+1`，而 M2-7 云层 `supportsPlayer=1` 但 `solid=0` → 随机 seed 下玩家可能出生在云面上
+（实测 6 次试验 1 次 y=56、`belowSolid=false`）。后果：**云面上不会自然刷怪**（丧尸 spawn
+要求脚下 solid），且测试落点扫描须**向下扫真实地面**而非用玩家 y±4。
+未改该函数（属 M1/M2 出生点口径，改动会牵动 M1 验收与既有 spec）。
 
 ## 第二阶段依赖链
 
@@ -123,11 +242,12 @@ M4 玩家武器 ──▶ M5 实体运行时 ──▶ M6 丧尸 ──▶ M7 �
 
 | 想知道 | 看 |
 |---|---|
-| 架构决策、子系统边界、DR 决策、历次口径变更 | `docs/phase-1-engine-design.md`（**架构唯一权威**，v1.31；修订说明记 v1.1~v1.31） |
+| 架构决策、子系统边界、DR 决策、历次口径变更 | `docs/phase-1-engine-design.md`（**架构唯一权威**；版本号以文档自身首行为准，此处不硬编码以免漂移） |
 | 某次改动为什么这么改、实测数据、门禁对照 | 设计文档对应版本的修订说明 + `docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md` |
+| **历次改动沉淀的活跃约束实测细节**（撒布四处偏离 / cutout 标定 / ship 门控 / 丧尸互斥换算等） | 本文「活跃约束详情」段 |
 | 任务级执行清单、依赖关系、验收步骤 | `docs/superpowers/plans/`（各里程碑计划） |
-| 该不该写测试、跑哪个门禁 | `docs/testing-policy.md`（**测试分级唯一权威**） |
-| 重构红线、对标 mc-lite 的取舍、活跃约束 | `CLAUDE.md`（协作规范） |
+| 该不该写测试、跑哪个门禁、断言落点怎么避坑 | `docs/testing-policy.md`（**测试分级唯一权威**；§2.5~§2.7 是断言落点踩坑清单） |
+| 重构红线、对标 mc-lite 的取舍、**持续生效的架构口径** | `CLAUDE.md`（协作规范） |
 | 实测报告 | `docs/m0-bench-report.md` / `docs/m1-acceptance-report.md` / `docs/m2-m3-performance-report.md` / `docs/m2-seed12345-comparison.md` |
 | 性能基线当前值 | `docs/m3-baseline.md`（`npm run bench` 自动生成，勿手改） |
 | 测试用例数、图标项数等计数 | **以 `npm run check:data` 输出为准**，不在文档硬编码 |
