@@ -98,6 +98,22 @@ export class PlayerPhysics {
     return false;
   }
 
+  /**
+   * 玩家当前 AABB（M7）：尺寸派生自本文件的 `PLAYER_WIDTH`/`PLAYER_HEIGHT` 常量 ——
+   * **不得在消费方重算一遍**。巢穴放置的 player-overlap 预检必须用与碰撞检测**同一个** AABB，
+   * 否则会撕裂出「物理说没撞墙、巢穴说压住了玩家」（或反之）的不一致判定（红线 1）。
+   * `pos` 是脚底中心，故 minY=pos.y、maxY=pos.y+height。
+   * @returns {{minX:number,maxX:number,minY:number,maxY:number,minZ:number,maxZ:number}}
+   */
+  aabb() {
+    const hw = PLAYER_WIDTH / 2;
+    return {
+      minX: this.pos.x - hw, maxX: this.pos.x + hw,
+      minY: this.pos.y, maxY: this.pos.y + PLAYER_HEIGHT,
+      minZ: this.pos.z - hw, maxZ: this.pos.z + hw,
+    };
+  }
+
   jump() {
     if (this.onGround) this.vel.y = JUMP_FORCE;
     else if (this.inWater) this.vel.y = 4; // 水中上浮

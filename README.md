@@ -47,7 +47,8 @@ npm run atlas        # 重新生成 assets/atlas.png + atlas.json（世界渲染
 `docs/m4-weapons-acceptance-report.md`），**M5 实体运行时已完成并验收**（报告
 `docs/m5-entity-runtime-acceptance-report.md`），**M6 丧尸已完成并验收**（报告
 `docs/m6-zombies-acceptance-report.md`；丧尸不攻击玩家，无 PlayerVitals），
-**M7 玩家放置丧尸巢穴尚未开始**（规格与计划已备好）。
+**M7 玩家放置丧尸巢穴已完成并验收**（报告
+`docs/m7-zombie-nests-acceptance-report.md`）—— 第二阶段 Epic 链（M4→M5→M6→M7）全部交付。
 
 **M4 武器操作**：`KeyR` 循环切换徒手/手枪/MAG7/加特林；持枪时左键按住持续射击
 （MAG7 单击单发），右键仍可放方块；武器方块破坏默认**关闭**（`game.setGunBlockDamage(true)`
@@ -57,7 +58,17 @@ npm run atlas        # 重新生成 assets/atlas.png + atlas.json（世界渲染
 **M6 丧尸**：`KeyX` 在玩家附近生成一只丧尸（**调试键**，对齐 mc-lite `Game.js:155`；随机角度
 + 距玩家 2~10 格，向下扫真实地面）。丧尸不攻击玩家（无 `PlayerVitals`），会追逐玩家
 （1.2 格/秒），可被武器命中致死（手枪 4 发 / 加特林 3 发 / MAG7 1 发），默认活动上限 20 只。
-正式的生成入口是 M7 巢穴（尚未开始），X 键仅用于实玩验证。
+正式的生成入口是 M7 巢穴，X 键仅用于实玩验证。
+
+**M7 丧尸巢穴**：玩家放置的方块锚定刷怪器，全局最多 8 个，每 8 秒在八个偏移 × 六层里找首个
+合法位置刷一只丧尸。放置入口是**背包面板**：`zombie_nest_alias_block` 图标在背包里（与 mc-lite
+同口径），选中后右键 → `Player.placeBlock()` 按物品名路由到实体放置 → 一次性写入 **38 个方块**
+的整个结构 + 建立锚点（**不是放一个单格方块**）。另有受控测试 API
+`game.selectPlaceable('zombie_nest_alias_block')` 供 Playwright 编程驱动。五格 Hotbar 语义不变。
+顶端唯一的 `gold_block` 是关键方块：被徒手、武器或 TNT 批量破坏即巢穴失效
+（三者走同一编辑入口，故同义）。失效只删锚点，38 个结构方块保留（与 mc-lite 一致，
+清除结构是未来 TNT Epic 的职责）。巢穴锚点经 `blockEntities` 随 edits 落盘，
+重启与 column 卸载后自动恢复，刷怪节奏不重置。
 
 测试与计数（用例数、图标项数、atlas tile 数）**以 `npm run check:data` 输出为准**，
 不在文档硬编码 —— 同一事实的多个副本会漂移。
@@ -79,6 +90,8 @@ npm run atlas        # 重新生成 assets/atlas.png + atlas.json（世界渲染
 | docs/superpowers/plans/2026-08-19-m1-voxel-core-loop.md | M1 实施计划（已完成） |
 | docs/superpowers/{specs,plans}/2026-08-23-m2-sky-structures* | M2-7 悬浮空岛与云层（已完成） |
 | docs/m0-bench-report.md / docs/m1-acceptance-report.md / docs/m2-m3-performance-report.md | 实测与验收报告（M3-6 性能报告 = 冻结基线） |
+| docs/m4-weapons-acceptance-report.md / docs/m5-entity-runtime-acceptance-report.md / docs/m6-zombies-acceptance-report.md | 第二阶段 M4~M6 验收报告 |
+| docs/m7-zombie-nests-acceptance-report.md | M7 丧尸巢穴验收报告（含 18 条负向验证实测与交替对照） |
 | docs/m2-seed12345-comparison.md | M2 同 seed 人工比对清单 |
 
 ## 目录结构

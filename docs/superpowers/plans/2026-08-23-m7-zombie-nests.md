@@ -1,5 +1,15 @@
 # M7 玩家放置丧尸巢穴 Implementation Plan
 
+> **实施状态（2026-09-10）：** Task 1~4 的 Step 1~4 全部完成；**Step 5（提交）待用户授权后执行**。
+> 验收报告 `docs/m7-zombie-nests-acceptance-report.md`。
+> 实施中与本计划的偏差（均为实测必需，详见验收报告 §4）：
+> ① Task 3 的 `ZombieNestController` 用注入的 `onInvalidated` 回调而非直接持有 service
+>    （与本仓库 `isModal`/`onSpawnZombie`/`damage` 同一惯例，且让 controller 可独立单测）；
+> ② 计划未预见两条必须补的接线 —— `onPlaced`（放置成功即建 controller，否则新巢穴永不刷怪）
+>    与**装配时序必须在 `_waitForColumn` 之前**（否则 reload 后 controller 恒为 0）；
+> ③ Task 1 顺带修掉**两个既有/自引入缺陷**：GEN 接管不重建 `edits` Map（旧存档被覆盖丢失）、
+>    编辑热路径重复坐标换算（bench 回退 11.1% 被门禁抓到）。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 交付玩家可放置、全局至多 8 个、关键顶端方块被破坏即失效，并按 mc-lite 参数定时刷怪的丧尸巢穴。
@@ -60,7 +70,7 @@ editor.setBlocks([{ x, y, z, id, meta, blockEntity? }]);
 persistence.listBlockEntities('zombie-nest'); // Promise<Array<{columnKey,index,blockEntity}>>
 ```
 
-- [ ] **Step 1: 写入失败的重放/覆盖存档测试**
+- [x] **Step 1: 写入失败的重放/覆盖存档测试**
 
   在 `test-chunk-column.js` 增加 `restoreEdits()` 单测：预置一个普通 stone edit 和一个 `gold_block`
   anchor edit，调用后断言 `blocks/meta`、`column.edits.size===2` 和 `column.blockEntities.get(index)` 均存在，
@@ -91,12 +101,12 @@ persistence.listBlockEntities('zombie-nest'); // Promise<Array<{columnKey,index,
   `generatedColumnResult` 必须构造与 Scheduler worker 回包同形的 `blocks/meta/light` ArrayBuffer；此测试直接覆盖
   真实 `_onGenResult` 接管路径，不能仅测 `ChunkColumn` 的孤立 Map。将新文件静态 import 到 harness。
 
-- [ ] **Step 2: 验证 RED**
+- [x] **Step 2: 验证 RED**
 
   Run: `npx playwright test tests/harness.spec.mjs`
   Expected: FAIL，`restoreEdits`、blockEntity 序列化或 Scheduler 重建逻辑尚不存在。
 
-- [ ] **Step 3: 实现唯一 edits 路径**
+- [x] **Step 3: 实现唯一 edits 路径**
 
   `ChunkColumn.restoreEdits(edits)` 逐项恢复 typed `blocks/meta`、`blockEntities` 和 `edits` Map，但不 bump
   version/dirty；保留旧 `applyEdits` 仅给无状态 legacy 调用，Scheduler 改为只用 `restoreEdits(this.getEdits(key))`
@@ -110,7 +120,7 @@ persistence.listBlockEntities('zombie-nest'); // Promise<Array<{columnKey,index,
   新 id 写入后保存。所有路径返回一份 `EditReport`，事件的 `changes` 也带 `oldBlockEntity/newBlockEntity`，
   但不保存 event log。
 
-- [ ] **Step 4: 验证 GREEN 与不向 Worker 泄露对象**
+- [x] **Step 4: 验证 GREEN 与不向 Worker 泄露对象**
 
   Run: `npx playwright test tests/harness.spec.mjs && npm run lint`
   Expected: 新旧 edits、anchor 和后续 edit 在 flush/reload 后均存在，纯 entity 写不 bump version/remesh。
@@ -145,7 +155,7 @@ game.selectPlaceable(id);                           // 同上，供 Playwright �
 game.audioDebugState();                             // {playRequests:{put:number,...}}；只读测试钩子
 ```
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
   纯测试读取实际 `assets/structures/zombie_nest.json`，断言展开后恰为 38 项、唯一最高相对坐标为
   `[0,5,0]`、名称为 `gold_block`；若 JSON 有两个最高格或没有 gold，`loadNestBlueprint` 抛出
@@ -168,12 +178,12 @@ game.audioDebugState();                             // {playRequests:{put:number
   用 Player 的 DDA `prevPos` 右键路径放置；确认普通五格 hotbar index 没改变、`game.audioDebugState().playRequests.put`
   增加一次。不存在 alias 时 `selectPlaceable` 返回 false 且不写世界。
 
-- [ ] **Step 2: 验证 RED**
+- [x] **Step 2: 验证 RED**
 
   Run: `npx playwright test tests/zombie-nests.spec.mjs tests/harness.spec.mjs`
   Expected: FAIL，blueprint/service/创造模式入口或 put 音效未定义。
 
-- [ ] **Step 3: 实现预检后的一次 WorldEditor 事务**
+- [x] **Step 3: 实现预检后的一次 WorldEditor 事务**
 
   blueprint loader 用 registry `idOf()` 展开 JSON，预先验证唯一最高 `gold_block`。`ZombieNestService.place()` 先
   完成全局索引上限、world 高度/column、所有位置空闲、player AABB 和蓝图校验；任何失败在调用 editor 前
@@ -187,7 +197,7 @@ game.audioDebugState();                             // {playRequests:{put:number
   可选地交给 HUD 消息。把 mc-lite `put.mp3` 复制为 `assets/sounds/put.mp3`，在 Game 的既有 AudioManager
   preload manifest 增加 `put`。音频拒绝/加载失败只记诊断，不影响 `place()` 返回成功和 world 事务。
 
-- [ ] **Step 4: 验证 GREEN**
+- [x] **Step 4: 验证 GREEN**
 
   Run: `npx playwright test tests/zombie-nests.spec.mjs tests/harness.spec.mjs && npm run lint`
   Expected: 38 方块/唯一 anchor、八上限、零写入失败、单次成功事务、alias 不落块、原 Hotbar 不变与 put
@@ -221,7 +231,7 @@ scheduler.onColumnReady((key, column) => {});
 scheduler.onColumnWillRemove((key, column) => {});
 ```
 
-- [ ] **Step 1: 写失败的事件与出生搜索测试**
+- [x] **Step 1: 写失败的事件与出生搜索测试**
 
   用可控 clock 的 fixture 预置 anchor 并创建 controller。`controller.update(7_999)` 必须不 spawn；
   `controller.update(8_000)` 必须首先传入 `[origin.x+.5, origin.y+4, origin.z+3.5]`，即第一个正交 offset
@@ -241,12 +251,12 @@ scheduler.onColumnWillRemove((key, column) => {});
   每条都断言 `{controllers:0, anchor:null, globalCount:7}`，而不是只检查 scene。另预置 Persisted 8 anchors
   后只调 `await nests.hydrate()`，即使没有已加载 controller，第九次 `place()` 也必须返回 `limit`。
 
-- [ ] **Step 2: 验证 RED**
+- [x] **Step 2: 验证 RED**
 
   Run: `npx playwright test tests/zombie-nests.spec.mjs tests/harness.spec.mjs`
   Expected: critical 改写后 controller/anchor 仍存在、spawn 搜索层数错误，或 hydrate 只数已加载 controller。
 
-- [ ] **Step 3: 实现增量 controller 和对称加载生命周期**
+- [x] **Step 3: 实现增量 controller 和对称加载生命周期**
 
   Game 在开放放置前 `await nests.hydrate()`，建立只含 id/anchor 的派生索引。只在
   `scheduler.onColumnReady` 检查该 column 的 `blockEntities` 并创建没有同 id 的 controller；在
@@ -260,7 +270,7 @@ scheduler.onColumnWillRemove((key, column) => {});
   随后不论成功/失败均通过 `editor.setBlockEntity` 持久化同一 `nowMs`。将 M6 的 `ZombieService` mock 和真实
   service 均统一为 `string | null` 返回，不引入 `false` 或未声明的 `firstId()`。
 
-- [ ] **Step 4: 验证 GREEN 与卸载重载**
+- [x] **Step 4: 验证 GREEN 与卸载重载**
 
   Run: `npx playwright test tests/zombie-nests.spec.mjs tests/harness.spec.mjs && npm run lint`
   Expected: 三种破坏来源同义、八精确 offsets/六层、节流、满额更新时钟、未加载的八 anchor 上限和 column
@@ -282,7 +292,7 @@ scheduler.onColumnWillRemove((key, column) => {});
 - Create: `docs/m7-zombie-nests-acceptance-report.md`
 - Modify: `tests/zombie-nests.spec.mjs`, `docs/superpowers/specs/2026-08-23-m7-zombie-nests-design.md`, `docs/superpowers/plans/2026-08-23-m7-zombie-nests.md`, `docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md`, `docs/phase-1-engine-design.md`, `AGENTS.md`, `README.md`
 
-- [ ] **Step 1: 写入 reload 与压力等待逻辑**
+- [x] **Step 1: 写入 reload 与压力等待逻辑**
 
   浏览器 spec 成功放置一个巢穴、额外编辑该 column 的普通方块、`await g.persistence.flushNow(g.world)` 后 reload；
   等待 `worldReady` 与该 anchor column ready，断言普通 edit、gold anchor、blockEntity 和一个 controller 都恢复。
@@ -308,19 +318,19 @@ scheduler.onColumnWillRemove((key, column) => {});
   `lightInflight`、`lightQueued`、`uploadQueue` 逐项断言为 0。报告和测试名称都必须写“30 丧尸中档 fixture”，
   不能称默认。
 
-- [ ] **Step 2: 验证 RED**
+- [x] **Step 2: 验证 RED**
 
   Run: `npx playwright test tests/zombie-nests.spec.mjs`
   Expected: 在 `restoreEdits`/hydrate/controller 去重未完成前，reload 后旧普通 edits 或 anchor 缺失，或 controller 重复。
 
-- [ ] **Step 3: 运行完整门禁并写验收报告**
+- [x] **Step 3: 运行完整门禁并写验收报告**
 
   Run: `npm test && npm run lint && git diff --check`
   Expected: 三条命令退出 0。报告记录设备/WebGPU 后端、蓝图 38/critical、8 上限、alias/put、三种破坏、
   8 秒搜索坐标、GEN 接管存档回归、repeated reload、默认 20 和中档 30 fixture 的 fps/draw/queue/slot 数据。
   若超过 M3 冻结基线 10% 或队列/slot 未收敛，报告阻断，不修改性能阈值。
 
-- [ ] **Step 4: 回填路线图和权威入口**
+- [x] **Step 4: 回填路线图和权威入口**
 
   仅在全部门禁通过后，将 M7 规格标为已实施/验收，roadmap/设计文档/AGENTS/README 标为完成，并在后续
   功能表说明“巢穴持久锚点/控制器模式已可供炮塔等方块装置复用”。未通过则状态保持待实施并只记录原因。

@@ -1,8 +1,14 @@
 # M7 玩家放置丧尸巢穴设计
 
-**状态：** 已修订，待实施
+**状态：** ✅ 已实施并验收（2026-09-10，验收报告 `docs/m7-zombie-nests-acceptance-report.md`）
 **定位：** 第二阶段的方块锚定刷怪器；依赖 M4 `WorldEditor`、M5 实体运行时及 M6 `ZombieService`。
 **语义：** 保留 mc-lite：玩家放置、全局最多 8 个、关键顶端方块被破坏即失效。
+
+> **实施记录**：本规格 §1~§3 全部达标（逐项对照见验收报告 §2）。实施中发现并修掉
+> **5 个真实缺陷**（含 2 个自己引入的回归、1 个既有存档覆盖 bug、2 个架构/时序缺口）与
+> **2 个无效盲区**，详见验收报告 §3~§4。两处与本规格描述的有意实现差异（均实测必需）：
+> ① 失效判定除坐标覆盖外还须比对 `newId !== critical.id`（否则巢穴自己的时钟写回会杀掉自己）；
+> ② 失效走 `block-changed` 增量事件而非 mc-lite 的轮询完整性检查（规格 §1 本就要求，已落实）。
 
 ## 1. 数据权威与生命周期
 
@@ -61,10 +67,18 @@ solid。首个合法位置以 `[baseX + .5, footY, baseZ + .5]` 调用 `ZombieSe
 全局丧尸满额或无合法位置仍写回 `lastSpawnAt`，避免每帧重试。column 卸载时销毁 controller 但保留 anchor；
 再次加载后从 blockEntity 恢复，`lastSpawnAt` 不重置。
 
-当前没有背包 UI，M7 不扩展完整 Hotbar/Inventory Epic。`Player.selectPlaceable('zombie_nest_alias_block')` 是
-受控创造模式选择入口（并暴露给 `__MC_GAME__` 测试）；当该选择项右键放置时才调用 `nests.place()`，现有五格
-Hotbar 的 UI 和选择语义不变。M7 从 mc-lite 复制 `put.mp3` 至 `assets/sounds/put.mp3`，经 M4 `AudioManager`
-在成功放置后播放；AudioContext 仍由已有用户手势 resume，声音加载/播放失败只记录诊断，绝不回滚世界事务。
+~~当前没有背包 UI~~ **（本条前提已失效）**：本规格写于 2026-08-23，而 M3.1（2026-09-02）已交付
+1000 槽创造背包面板（`src/ui/inventory.js`）—— 玩家**能**从背包面板选中物品。这个过时前提导致
+交付版只接了 `selectPlaceable()` 测试 API，漏了玩家真实主路径（详见验收报告 §4.7，用户实玩发现）。
+
+**实际实现（交付后修正）**：`zombie_nest_alias_block` 留在背包集合内（与 mc-lite 同口径），
+玩家从背包面板选中图标 → 右键 → `Player.placeBlock()` **按物品名路由**到实体放置
+（对齐 mc-lite `PlayerInteraction.tryPlaceBlock()` 的 `entityRegistry.isSpecialBlock(type)` 分支），
+一次性写入整个 38 方块结构 + 建锚点。`Player.selectPlaceable('zombie_nest_alias_block')` 作为
+**受控测试 API** 保留（暴露给 `__MC_GAME__` 供 Playwright 编程驱动），两条路径共用
+`_placeSpecial()`。现有五格 Hotbar 的 UI 和选择语义不变。M7 从 mc-lite 复制 `put.mp3` 至
+`assets/sounds/put.mp3`，经 M4 `AudioManager` 在成功放置后播放；AudioContext 仍由已有用户手势
+resume，声音加载/播放失败只记录诊断，绝不回滚世界事务。
 
 M7 不实现完整 TNT Epic；验收以 `WorldEditor.setBlocks()` 的 TNT 等价批量变更验证失效事件。未来 TNT/爆炸
 只能调用该入口，无需为巢穴增加专属兼容路径。

@@ -23,9 +23,10 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
 **项目进度的唯一总览是 [`docs/roadmap.md`](docs/roadmap.md)**（里程碑总表 M0~M7 + 第二阶段
 依赖链 + 后续扩展点）。本文件不复制进度表 —— 同一事实的多个副本会漂移。
 
-一句话现状：第一阶段 M0~M3 + 两个收尾补丁项已完成；第二阶段 M4~M6 已完成并验收，
-**M7 玩家放置丧尸巢穴尚未开始**（规格与计划已备好）。里程碑状态、验收报告、遗留 TODO 的
-完整清单**一律查 roadmap** —— 此处不复制（复制就会漂移）。
+一句话现状：第一阶段 M0~M3 + 两个收尾补丁项已完成；**第二阶段 M4~M7 全部完成并验收**
+（M7 玩家放置丧尸巢穴，验收报告 `docs/m7-zombie-nests-acceptance-report.md`）——
+Epic 链 M4→M5→M6→M7 已全部交付。里程碑状态、验收报告、遗留 TODO 的完整清单
+**一律查 roadmap** —— 此处不复制（复制就会漂移）。
 
 **历次 bugfix / 改造的完整记录不在本文件。** 权威副本：**第一阶段独立改动**在设计文档修订说明 +
 `docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md`（版本区间见 roadmap 的改动表）；
@@ -186,6 +187,61 @@ M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 
   （渲染旧图案，肉眼只觉得「颜色怪怪的」）。指纹逻辑放共享模块供烘焙脚本与门禁共用（红线 1：
   两处漂移会误判）。已知盲区：改**算法**而不动参数时指纹不变 → 这类改动须靠 Tier 4 兜住。
 
+### M7 巢穴沉淀的活跃约束（炮塔/床/宝箱等方块装置 Epic 必读）
+
+- **GEN 接管必须走 `restoreEdits`，不能只搬 typed buffer**（既有 bug，M7 修掉）：
+  `Scheduler._onGenResult` 新建 column 时若留空 `column.edits`，玩家在该 column 新放一块后
+  `flushNow()` 会用「只含新编辑」的 Map 整行 `put` 覆盖该 key 的存档 → **旧 edits（含锚点）
+  静默丢失**。方块层面看不出差别（Worker 内 `applyEdits` 已把 edits 叠进 blocks/meta，渲染正确）
+  —— 丢的是持久层。分工：`restoreEdits` = 主线程有状态重放（blocks/meta + `blockEntities` +
+  `edits` 三者一起）；`applyEdits` = Worker 内无状态版本（只写 typed 数组）。
+- **编辑热路径每格的坐标换算只做一次**：`getBlockId`/`getBlockMeta`/`getBlockEntity` 各自重算
+  cx/cz/columnKey/Map.get/blockIndex —— 逐个调等于同一换算做三遍。实测后果：`bench --check`
+  阻断 `[回退 11.1%] 场景 ④ frameP95 9→10`。改用 `WorldData.readCell(x,y,z)` 一次读出三项。
+  改编辑路径前先看这个方法，**不要退化成分别调三个 getter**。
+- **玩法服务的 controller 接线必须在 `_waitForColumn` 之前**（实测踩坑，极易重犯）：
+  出生点 column 在 `_waitForColumn` 时 ready，`onColumnReady` 随之触发。若服务（`this.nests`）
+  创建在其**之后**（如武器运行时装配段），回调跑时它还是 null → 第一行直接 return →
+  reload 后 anchor 与索引都恢复了，但 controller 恒为 0（装置不工作）。对照 `this.zombies`：
+  装配在 `_waitForColumn` 之前，同样的 column ready 路径正常 —— **顺序差异是唯一原因**。
+  诊断手法：读「column.blockEntities 有锚点吗 / 索引有它吗 / controller 有它吗」三者，
+  只有 controller 缺失即时序问题（不要猜）。
+- **放置类装置须有「放置成功即建 controller」的回调**（`onPlaced`）：anchor column 此刻**已加载**，
+  `onColumnReady` 早在放置前触发过了，不会再为新锚点触发一次 → 没有这条接线则新装置永不工作
+  （方块全写对、anchor 也在、索引也登记了，肉眼看不出差别）。
+- **多格结构的放置必须走「物品名路由」，不能只接测试 API**（M7 用户实玩发现的缺陷）：
+  `zombie_nest_alias_block` 在背包集合 118 项内（与 mc-lite 同口径），玩家从背包面板选中图标后
+  右键走的是 `placeBlock()` 的**常规单格 `editor.setBlock`** 路径 → 只放出一个贴了图案的正方体。
+  修法 = 取背包槽后判 `CREATIVE_SPECIALS.has(slot.item)` → 命中则调实体放置并 `return`，
+  **不回落到单格放置**。mc-lite 同手法：`PlayerInteraction.tryPlaceBlock()` 判
+  `entityRegistry.isSpecialBlock(type)` → 交 placement handler（`:286-296`）。
+  **炮塔/矿车站等同类装置同理。** ⚠️ 测试须走**背包选中路径**而非只走测试 API
+  （M7 的 E2E 当时全绿却漏了这个缺陷，见验收报告 §3.7）。
+- **多格结构的 origin = 命中方块 `blockPos`，不是 `prevPos`**：结构最低层须落在玩家脚下的地面格上。
+  用 `prevPos`（空气格）会让结构整体上移一格悬空 —— 实测后果是 38 格里 30 格落在未清理的位置
+  → 大面积放置失败。mc-lite `generateBlocks` 的 `y + block.y - 1` 与本仓库
+  `origin.y + block.y`（origin=地面格）等价：两边最低层都落在 `地面.y + 1`。
+  **两条放置路径（API 与背包分流）的 origin 语义必须一致**，否则测试用一条、玩家用另一条会撕裂。
+- **派生 controller 的去重不能用 `controllers().size` 断言**（实测无效盲区）：它按 id 为键，
+  重复创建会**覆盖写** → size 恒为 1，注入「不去重」后 size 断言仍全绿。去重的真实价值是防
+  创建多余对象（旧对象没 `dispose` → world/zombies/editor 引用泄漏）。断言须比较**对象引用**
+  （`first === second`）+ 原对象未被 dispose。
+- **全局上限必须来自 edits store，不能来自已加载 controller 数量**：远处装置的 column 可能未加载
+  （无 controller），用 controller 数判上限会让玩家走远再回来就能无限放置。走
+  `Persistence.listBlockEntities(kind)` 的 IndexedDB cursor 扫库。⚠️ hydrate 是 `clear()+重建`：
+  调用前必须先 `flushNow()`，否则库里没锚点 → 索引被清成 0（真实重启路径本就是
+  flush → reload → hydrate）。
+- **失效判定必须比对 `newId !== critical.id`，不能只看坐标覆盖**：装置每次刷怪都用
+  `setBlockEntity` 写回时钟（`lastSpawnAt`），若判定只看「坐标覆盖关键格」，自己的时钟写回
+  就会把装置杀掉。
+- **`setBlockEntity` 必须构造新对象，不得原地改 anchor**：原地改会让 `column.blockEntities` 与
+  `column.edits` 持有的同一引用被悄悄改写（两处状态看似独立实则共享，红线 1 精神）。
+- **`bench --check` 的 frameP95 门禁会被 vsync 量子化噪声误报**（实测口径陷阱）：120Hz 锁帧下
+  frameP95 按 8.33ms 一档量子化，基线 9ms 而实测在 9.6~10.1 随机浮动 → 9→10 只差一个量子就报
+  「回退 11%」阻断。门禁阻断时先做**交替对照**（同会话内 `git stash` HEAD 与改动交错各跑 2~3 次）
+  比两侧分布，而非看单次数值。⚠️ 不带 `--check` 跑 bench 会**自动重写** `docs/m3-baseline.*`
+  —— 那是冻结基线，提交它会静默放宽门禁（p95 基准 9→9.9），诊断后须 `git checkout` 恢复。
+
 ## 权威文档（动手前必读）
 
 按顺序读完再写代码：
@@ -202,8 +258,10 @@ M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 
 5. `docs/superpowers/plans/2026-08-19-m1-voxel-core-loop.md` —— M1 实施计划（已完成，架构细节参照）。
 6. `docs/m0-bench-report.md` / `docs/m1-acceptance-report.md` / `docs/m2-m3-performance-report.md`
    （M3-6 第一阶段性能报告 = 冻结基线）—— 实测与验收报告。
-7. M4~M7 开始前分别加读 `docs/superpowers/specs/2026-08-23-m{4,5,6,7}-*.md` 与
-   `docs/superpowers/plans/2026-08-23-m{4,5,6,7}-*.md`（规格与计划已成对备好）。
+7. M4~M7 **已全部交付**。规格 `docs/superpowers/specs/2026-08-23-m{4,5,6,7}-*.md` 与计划
+   `docs/superpowers/plans/2026-08-23-m{4,5,6,7}-*.md` 仍是架构细节参照；各 Epic 的实测数据、
+   偏离表与踩坑清单看对应验收报告 `docs/m{4,5,6,7}-*-acceptance-report.md`。
+   做同类后续 Epic（炮塔/床/宝箱等方块装置）前先读 M7 报告的 §3~§4。
 
 规则：
 
@@ -328,6 +386,8 @@ mc-heavy/
 │  ├─ icons.json               # 图标 manifest：预生成 CSS 串 + 输入指纹
 │  ├─ zombie/                  # 丧尸头部纹理（**不在 textures/ 下** —— 那里会进世界 atlas）
 │  │  └─ head.png + head.json  # 128×64 双区并排（左半无眼睛/右半有眼睛）+ 尺寸与输入指纹
+│  ├─ sounds/                  # 音效（M4 四件武器音效 + M7 `put.mp3` 放置音效）
+│  │                           #   id 清单的唯一权威 = `render/audio-manager.js` 的 `SOUND_IDS`
 │  └─ structures/              # 从 mc-lite 复制 JSON
 └─ src/
    ├─ core/        # game.js / scheduler.js / worker-pool.js / budget.js / perf.js / perf-hud.js
@@ -346,6 +406,10 @@ mc-heavy/
    │               #  entity-types.js（probe 定义 + AABB slab 射线；Worker 同构，无 three）
    │               #  zombies/（M6，Worker 同构无 three）：zombie-config.js（冻结玩法数据唯一权威）
    │               #   + zombie-system.js（ZombieService 玩法入口 + zombieDefinition 含 60Hz 物理）
+   │               #  zombie-nests/（M7，Worker 同构无 three）：nest-config.js（巢穴玩法数据唯一权威）
+   │               #   + nest-blueprint.js（只读 JSON → 坐标展开 + 唯一关键格校验）
+   │               #   + zombie-nest-service.js（全局索引 / 预检 / 原子一次事务放置 / hydrate）
+   │               #   + zombie-nest-controller.js（增量失效 + 8 秒节流六层刷怪 + column 生命周期）
    ├─ player/      # player.js / physics.js / raycast.js / step-lift.js
    │               #  inventory.js（物品模型）/ orientation.js（朝向三分支纯函数）/ weapons/*（M4）
    ├─ ui/          # coords-hud.js / hotbar.js / settings-panel.js / settings.js
@@ -446,10 +510,14 @@ scheduler/physics）再加 `npm run bench -- --check`。**不要**为改一个�
 
 ## 后续功能扩展点
 
-第二阶段 M4~M7 的规格与计划已成对备好（见「权威文档」清单末条的 `m{4,5,6,7}` 规格/计划）；
-后续扩展点的引擎接入点（TNT/爆炸、炮塔弹丸、矿车轨道、创造台、灯/光源、床/宝箱/门、音频、
-存档迁移、玩家生存战斗）见 [`docs/roadmap.md`](docs/roadmap.md) 的「后续扩展点」表格。
-**新功能必须通过上述接入点实现，不得绕过 meshing/数据/事件管线另开路径。**
+第二阶段 M4~M7 **已全部交付**；后续扩展点的引擎接入点（TNT/爆炸、炮塔弹丸、矿车轨道、创造台、
+灯/光源、床/宝箱/门、音频、存档迁移、玩家生存战斗）见 [`docs/roadmap.md`](docs/roadmap.md)
+的「后续扩展点」表格。**新功能必须通过上述接入点实现，不得绕过 meshing/数据/事件管线另开路径。**
+
+M7 交付了一套可复用的**「方块锚定装置」模式**（持久真相 = 某格 blockEntity / 派生 controller
+只在 anchor column 已加载时存在 / 失效走 `block-changed` 增量事件 / 全局上限经
+`listBlockEntities` 扫库判定）—— 炮塔、床、宝箱等同类方块装置可直接套用，不必另开持久化路径。
+细节见 roadmap「M7 交付的可复用模式」段与本文件「M7 巢穴沉淀的活跃约束」段。
 
 ## 沟通与提交纪律
 

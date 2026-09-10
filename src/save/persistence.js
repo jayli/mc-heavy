@@ -93,10 +93,48 @@ export class Persistence {
     const jobs = [];
     for (const [key, col] of world.columns) {
       if (col.edits.size === 0) continue;
-      const arr = [...col.edits.entries()].map(([index, e]) => ({ index, id: e.id, meta: e.meta }));
+      // `blockEntity` 必须一起序列化（M7）：它是巢穴锚点的持久载体。
+      // 此处曾硬编码 `{index,id,meta}` → 锚点富状态被静默丢弃（重启后巢穴失效）。
+      // 无 entity 的 edit 不写该字段（保持存档紧凑，且 undefined 在 structuredClone 下会丢）。
+      const arr = [...col.edits.entries()].map(([index, e]) => {
+        const row = { index, id: e.id, meta: e.meta };
+        if (e.blockEntity !== undefined && e.blockEntity !== null) row.blockEntity = e.blockEntity;
+        return row;
+      });
       jobs.push(this.saveColumnEdits(key, arr));
     }
     await Promise.all(jobs);
+  }
+
+  /**
+   * 枚举 edits store 中所有带指定 kind 的 blockEntity（M7）。
+   *
+   * 为什么必须扫**库**而不是扫已加载 column：「全局最多 8 个巢穴」要跨 column 卸载与重启
+   * 仍有效。远处巢穴可能只存在于存档里（其 column 未加载、无 controller），
+   * 若以当前 controller 数量判断上限，玩家走远再回来就能无限放巢穴（M7 规格 §2）。
+   * 走 IndexedDB cursor 而非 `getAll()` —— 存档可能含成百上千 column 的 edits 行，
+   * 只为数几个锚点把整库读进内存没必要（M5 规格 §3「不得扫描整世界」同源原则）。
+   * @param {string} kind
+   * @returns {Promise<Array<{columnKey: string, index: number, blockEntity: Object}>>}
+   */
+  listBlockEntities(kind) {
+    return new Promise((resolve, reject) => {
+      const tx = this.db.transaction('edits', 'readonly');
+      const req = tx.objectStore('edits').openCursor();
+      const out = [];
+      req.onsuccess = () => {
+        const cursor = req.result;
+        if (!cursor) { resolve(out); return; }
+        const edits = cursor.value?.edits || [];
+        for (const edit of edits) {
+          if (edit?.blockEntity?.kind === kind) {
+            out.push({ columnKey: cursor.value.columnKey, index: edit.index, blockEntity: edit.blockEntity });
+          }
+        }
+        cursor.continue();
+      };
+      req.onerror = () => reject(req.error);
+    });
   }
 
   // ==================== M5：持久实体 snapshot ====================

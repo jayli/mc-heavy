@@ -4,7 +4,7 @@
 > **不重复内容** —— 架构决策见设计文档，历次改动记录见其修订说明，任务级执行清单见
 > `docs/superpowers/plans/`。
 
-最后更新：2026-09-09
+最后更新：2026-09-10
 
 ## 一句话现状
 
@@ -17,7 +17,9 @@
 `docs/m6-zombies-acceptance-report.md`：默认 20 上限 / 20Hz 单条 WorkerPool `ai` RPC /
 25·35·999 三把枪伤害 / 六部件固定 slot 渲染；丧尸不攻击玩家，无 PlayerVitals），
 **M6 阶段遗留 TODO 两项也已补齐**（实体间排斥 / 头部马赛克图案，见下节）；
-**M7 玩家放置丧尸巢穴尚未开始**（规格与计划已备好、可开始）。
+**M7 玩家放置丧尸巢穴已完成并验收**（验收报告
+`docs/m7-zombie-nests-acceptance-report.md`：全局最多 8 个 / 8 秒节流 / 八偏移 × 六层刷怪 /
+关键 `gold_block` 被破坏即失效）。**第二阶段 Epic 链（M4→M5→M6→M7）全部交付。**
 
 ## 里程碑总表
 
@@ -32,7 +34,7 @@
 | **M4 玩家第一人称武器** | `WorldEditor` 批量编辑 / DDA hitscan / 受控 GLB 相机视图模型 / 曳光 / 音效 / 可选方块破坏 | ✅ 完成（2026-09-05，验收报告 `docs/m4-weapons-acceptance-report.md`） | `ed9a271` |
 | **M5 实体运行时** | `EntityManager` / 实体 AABB raycast / 受控渲染层 / 临时与持久实体分离 + `entities` snapshot | ✅ 完成（2026-09-07，验收报告 `docs/m5-entity-runtime-acceptance-report.md`） | `c9f7086` |
 | **M6 丧尸** | 默认 20 上限 / 20Hz 单条 WorkerPool `ai` RPC / 实体与体素最近命中比较 / 25·35·999 三把枪伤害 / 六部件固定 slot 渲染 / X 键调试生成 | ✅ 完成（2026-09-08，验收报告 `docs/m6-zombies-acceptance-report.md`） | `afb88ad` |
-| **M7 玩家放置丧尸巢穴** | 最高 `gold_block` 的 `blockEntity` 为持久真相 / `block-changed` 失效 / 八 offset × 六层刷怪 / 全局最多 8 个 | ⬜ 可开始（M6 已交付 `ZombieService.spawn()`） | — |
+| **M7 玩家放置丧尸巢穴** | 最高 `gold_block` 的 `blockEntity` 为持久真相 / `block-changed` 失效 / 八 offset × 六层刷怪 / 全局最多 8 个 / 背包图标按物品名路由放置整个 38 方块结构 + `put` 音效 | ✅ 完成（2026-09-10，验收报告 `docs/m7-zombie-nests-acceptance-report.md`） | 待回填 |
 
 ## M4 之后的遗留 TODO（M4 阶段 bugfix）
 
@@ -196,6 +198,45 @@ reserved 峰值只要超过 `maxVerts` **一个顶点**就整批跳到 ×1.5（1
 要求脚下 solid），且测试落点扫描须**向下扫真实地面**而非用玩家 y±4。
 未改该函数（属 M1/M2 出生点口径，改动会牵动 M1 验收与既有 spec）。
 
+### 方块锚定装置与 blockEntity 持久层（M7）
+
+**GEN 接管必须走 `restoreEdits` 而非只搬 typed buffer**（既有 bug，M7 修掉）：
+`Scheduler._onGenResult` 新建 column 时若留空 `column.edits`，玩家在该 column 新放一块后
+`flushNow()` 会用「只含新编辑」的 Map 整行 `put` 覆盖该 key 的存档 → **旧 edits（含锚点）
+静默丢失**。方块层面看不出差别（Worker 内 `applyEdits` 已把 edits 叠进 blocks/meta，
+渲染正确）—— 丢的是持久层。分工：`restoreEdits` = 主线程有状态重放（重建 blocks/meta +
+`blockEntities` + `edits` 三者）；`applyEdits` = Worker 内无状态版本（只写 typed 数组）。
+
+**编辑热路径每格的坐标换算只做一次**：`getBlockId`/`getBlockMeta`/`getBlockEntity` 各自
+重算 cx/cz/columnKey/Map.get/blockIndex —— 逐个调等于同一换算做三遍。实测后果：
+`bench --check` 阻断 `[回退 11.1%] 场景 ④ frameP95 9→10`。改用 `WorldData.readCell(x,y,z)`
+一次读出三项。改编辑路径前先看这个方法，**不要退化成分别调三个 getter**。
+
+**装配时序：玩法服务的 controller 接线必须在 `_waitForColumn` 之前**（实测踩坑）：
+出生点 column 在 `_waitForColumn` 时 ready，`onColumnReady` 回调随之触发。若 `this.nests`
+创建在 `_waitForColumn` **之后**（如武器运行时装配段），回调跑时它还是 null →
+`_createNestControllers` 第一行直接 return → reload 后 anchor 与索引都恢复了（`count=1`、
+column.blockEntities 里有锚点），但 controller 恒为 0（装置不工作）。对照 `this.zombies`：
+它装配在 `_waitForColumn` 之前，故同样的 column ready 路径正常 —— **顺序差异是唯一原因**。
+诊断手法：读「column.blockEntities 有锚点吗 / 索引有它吗 / controller 有它吗」三者，
+只有 controller 缺失即时序问题（不要猜）。
+
+**派生 controller 的去重不能用 `controllers().size` 断言**（实测无效盲区）：
+`_controllers` 是按 id 为键的 Map，重复创建会**覆盖写** → size 恒为 1，注入「不去重」后
+size 断言仍全绿。去重的真实价值是防止创建多余 controller 对象（旧对象没 `dispose` →
+world/zombies/editor 引用泄漏）。故断言须比较**对象引用**（`first === second`）+
+原对象未被 dispose。
+
+**上限判定必须来自 edits store，不能来自已加载 controller 数量**（M7 规格 §2）：
+远处装置的 column 可能未加载（无 controller），用 controller 数判上限会让玩家走远再回来
+就能无限放置。走 `Persistence.listBlockEntities(kind)` 的 IndexedDB cursor 扫库。
+⚠️ hydrate 是 `clear()+重建`：调用前必须先 `flushNow()`，否则库里没有锚点 → 索引被清成 0
+（真实重启路径本就是 flush → reload → hydrate）。
+
+**失效判定必须比对 `newId !== critical.id`，不能只看坐标覆盖**：装置每次刷怪都用
+`setBlockEntity` 写回时钟（`lastSpawnAt`），若判定只看「坐标覆盖关键格」，自己的时钟写回
+就会把装置杀掉。
+
 ## 第二阶段依赖链
 
 ```
@@ -204,9 +245,14 @@ M4 玩家武器 ──▶ M5 实体运行时 ──▶ M6 丧尸 ──▶ M7 �
   + DDA hitscan）    + 实体 raycast）    + M4 武器伤害）   + M6 刷怪）
 ```
 
-四者**严格串行**（每个 Epic 依赖前一个的运行时底座）。每个 Epic 有成对的规格与计划：
+四者**严格串行**（每个 Epic 依赖前一个的运行时底座）。**四个 Epic 已全部交付并验收**
+（M4 2026-09-05 / M5 09-07 / M6 09-08 / M7 09-10）。每个 Epic 有成对的规格与计划：
 `docs/superpowers/specs/2026-08-23-m{4,5,6,7}-*-design.md` +
-`docs/superpowers/plans/2026-08-23-m{4,5,6,7}-*.md`。
+`docs/superpowers/plans/2026-08-23-m{4,5,6,7}-*.md`，实测数据与偏离表在各自的
+`docs/m{4,5,6,7}-*-acceptance-report.md`。
+
+下方「跨 Epic 的已知前置条件」是 M4 实施时记录的、当时尚未交付的前置项 —— 现已全部满足，
+保留作架构细节参照（后续同类改动仍须遵守，如放置路径不得退化为只传 id）。
 
 **跨 Epic 的已知前置条件**（实施时勿遗漏）：
 
@@ -220,7 +266,7 @@ M4 玩家武器 ──▶ M5 实体运行时 ──▶ M6 丧尸 ──▶ M7 �
 | 功能 | 引擎接入点 |
 |---|---|
 | TNT / 爆炸 | `WorldEditor.setBlocks(batch)` + REMESH + 粒子 |
-| 炮塔 / 飞行弹丸 | M5 `EntityManager` + 实体 raycast（M5 后独立 Epic） |
+| 炮塔 / 飞行弹丸 | M5 `EntityManager` + 实体 raycast + **M7 方块锚定装置模式**（见下） |
 | 矿车 / 轨道 | BlockRegistry 的 `interact` / `onStep` 钩子 |
 | 创造台 | mesher 顶点模板机制 |
 | 灯 / 光源 | emissive 属性 + blocklight flood fill（光照管线已含） |
@@ -230,6 +276,20 @@ M4 玩家武器 ──▶ M5 实体运行时 ──▶ M6 丧尸 ──▶ M7 �
 | 玩家生存战斗 | M5 `EntityManager` + 玩家状态/HUD（独立 PlayerVitals Epic） |
 
 **新功能必须通过上述接入点实现，不得绕过 meshing/数据/事件管线另开路径。**
+
+### M7 交付的可复用模式：方块锚定装置（炮塔等可直接套用）
+
+M7 建立了一套「方块锚定的持久装置」模式，未来炮塔 / 矿车站 / 创造台等同类装置可直接复用，
+不必另开持久化路径：
+
+- **持久真相 = 某格的 `blockEntity`**（经 edits diff 落盘，无需第二份 store —— 红线 1）；
+- **派生 controller 只在 anchor column 已加载时存在**：column 卸载即销毁、重载即从 blockEntity
+  恢复（`lastSpawnAt` 等运行态不重置）；
+- **失效走 `block-changed` 增量事件**：徒手 / 武器 / TNT 批量编辑共用同一编辑入口 → 失效语义
+  天然同义，无需为每种破坏方式写专属判定；
+- **全局上限经 `listBlockEntities(kind)` 扫库判定**（跨 column 卸载与重启仍有效）；
+- ⚠️ 接线时务必避开两条 M7 实测踩过的坑（详见「活跃约束详情 · 方块锚定装置」段）：
+  ① controller 接线必须在 `_waitForColumn` 之前；② 去重断言不能用 `controllers().size`。
 
 ## 验收口径
 
@@ -250,5 +310,6 @@ M4 玩家武器 ──▶ M5 实体运行时 ──▶ M6 丧尸 ──▶ M7 �
 | 该不该写测试、跑哪个门禁、断言落点怎么避坑 | `docs/testing-policy.md`（**测试分级唯一权威**；§2.5~§2.7 是断言落点踩坑清单） |
 | 重构红线、对标 mc-lite 的取舍、**持续生效的架构口径** | `CLAUDE.md`（协作规范） |
 | 实测报告 | `docs/m0-bench-report.md` / `docs/m1-acceptance-report.md` / `docs/m2-m3-performance-report.md` / `docs/m2-seed12345-comparison.md` |
+| M4~M7 验收报告（第二阶段各 Epic 实测 + 负向验证 + 偏离表） | `docs/m{4,5,6,7}-*-acceptance-report.md` |
 | 性能基线当前值 | `docs/m3-baseline.md`（`npm run bench` 自动生成，勿手改） |
 | 测试用例数、图标项数等计数 | **以 `npm run check:data` 输出为准**，不在文档硬编码 |

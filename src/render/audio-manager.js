@@ -6,8 +6,11 @@
 // 使用 source.onended 归还实例。不订阅 Worker 消息，不把解码后的音频放进存档。
 import * as THREE from 'three';
 
-/** 预加载的四个武器音效 id（与 weapon-catalog 的 sound 字段一致）。 */
-const SOUND_IDS = ['gun_load', 'gun_fire', 'mag7_fire', 'minigun_fire'];
+/**
+ * 预加载的音效 id（与 weapon-catalog 的 sound 字段一致）。
+ * M7 追加 `put` —— 玩家放置巢穴成功的音效（mc-lite `src/assets/sound/put.mp3`）。
+ */
+const SOUND_IDS = ['gun_load', 'gun_fire', 'mag7_fire', 'minigun_fire', 'put'];
 
 export class AudioManager {
   /**
@@ -28,7 +31,7 @@ export class AudioManager {
     this._unlocked = false;
   }
 
-  /** 从 /assets/sounds/<id>.mp3 加载并解码；只接受 catalog 中的四个 id。 */
+  /** 从 /assets/sounds/<id>.mp3 加载并解码；只接受 catalog（SOUND_IDS）里的 id。 */
   async preload(ids = SOUND_IDS) {
     await Promise.all(ids.map(async (id) => {
       if (!SOUND_IDS.includes(id)) return;

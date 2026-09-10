@@ -50,6 +50,69 @@ test('ChunkColumn: applyEdits 重放', () => {
   assertEqual(col.edits.size, 0, 'replay does not re-record edits');
 });
 
+test('ChunkColumn: restoreEdits 重建 blocks/meta/edits/blockEntities 且不 bump version', () => {
+  const col = new ChunkColumn(0, 0);
+  const stoneIdx = blockIndex(1, WORLD_MIN_Y + 1, 1);
+  const anchorIdx = blockIndex(2, WORLD_MIN_Y + 5, 2);
+  col.restoreEdits([
+    { index: stoneIdx, id: 5, meta: 0 },
+    { index: anchorIdx, id: 7, meta: 1, blockEntity: { kind: 'zombie-nest', id: 'nest-a' } },
+  ]);
+  assertEqual(col.get(1, WORLD_MIN_Y + 1, 1), 5);
+  assertEqual(col.get(2, WORLD_MIN_Y + 5, 2), 7);
+  assertEqual(col.meta[anchorIdx], 1);
+  assertEqual(col.edits.size, 2, 'edits Map 一并重建（flush 不得只写新编辑）');
+  assertEqual(col.blockEntities.size, 1);
+  assertEqual(col.blockEntities.get(anchorIdx).id, 'nest-a');
+  assertEqual(col.version, 0, '重放不 bump version');
+  assertEqual(col.edits.get(stoneIdx).blockEntity, undefined, '无 entity 的 edit 不带该字段');
+});
+
+test('WorldData: setBlock 默认清除该格旧 blockEntity', () => {
+  const world = new WorldData(makeRegistry());
+  world.add(new ChunkColumn(0, 0));
+  const gold = world.registry.idOf('gold_block');
+  const anchorIdx = blockIndex(2, WORLD_MIN_Y + 5, 2);
+  world.setBlock(2, WORLD_MIN_Y + 5, 2, gold, 0, { kind: 'zombie-nest', id: 'nest-a' });
+  assertEqual(world.getBlockEntity(2, WORLD_MIN_Y + 5, 2).id, 'nest-a');
+  // 底层 blockEntities Map 的 index 落点 = 局部坐标换算后的 index（防越界换算错位）
+  assertTrue(world.getColumn(0, 0).blockEntities.has(anchorIdx), 'entity 落在正确 index');
+  // 徒手挖掉关键方块：同一格改写不带 blockEntity → 旧 entity 必须消失
+  world.setBlock(2, WORLD_MIN_Y + 5, 2, 0);
+  assertEqual(world.getBlockEntity(2, WORLD_MIN_Y + 5, 2), null, '改写清除旧 entity');
+  assertEqual(world.getColumn(0, 0).blockEntities.size, 0, '底层 Map 一并清空');
+  assertEqual(world.getBlockEntity(999, 0, 999), null, '缺 column 返回 null');
+  assertEqual(world.getBlockEntity(0, WORLD_MAX_Y + 1, 0), null, 'y 越界返回 null');
+});
+
+test('WorldData: setBlock 同一 change 显式给 blockEntity 时保留替换值', () => {
+  const world = new WorldData(makeRegistry());
+  world.add(new ChunkColumn(0, 0));
+  const gold = world.registry.idOf('gold_block');
+  world.setBlock(2, WORLD_MIN_Y + 5, 2, gold, 0, { kind: 'zombie-nest', id: 'nest-a' });
+  world.setBlock(2, WORLD_MIN_Y + 5, 2, gold, 0, { kind: 'zombie-nest', id: 'nest-b', lastSpawnAt: 8000 });
+  assertEqual(world.getBlockEntity(2, WORLD_MIN_Y + 5, 2).id, 'nest-b', '替换生效');
+  assertEqual(world.getBlockEntity(2, WORLD_MIN_Y + 5, 2).lastSpawnAt, 8000);
+});
+
+test('WorldData: setBlocks 携带 blockEntity 一次事务写入', () => {
+  const world = new WorldData(makeRegistry());
+  const a = new ChunkColumn(0, 0);
+  world.add(a);
+  a.state = 'ready';
+  const gold = world.registry.idOf('gold_block');
+  const sand = world.registry.idOf('sand');
+  const r = world.setBlocks([
+    { x: 1, y: WORLD_MIN_Y + 1, z: 1, id: sand },
+    { x: 2, y: WORLD_MIN_Y + 5, z: 2, id: gold, blockEntity: { kind: 'zombie-nest', id: 'nest-a', lastSpawnAt: 0 } },
+  ]);
+  assertEqual(r.changes.length, 2);
+  assertEqual(world.getBlockEntity(2, WORLD_MIN_Y + 5, 2).id, 'nest-a');
+  assertEqual(world.getBlockEntity(1, WORLD_MIN_Y + 1, 1), null, '不带 entity 的格无 entity');
+  assertEqual(a.blockEntities.size, 1);
+  assertEqual(a.edits.get(blockIndex(2, WORLD_MIN_Y + 5, 2)).blockEntity.id, 'nest-a', 'edits 记录带 entity');
+});
+
 test('WorldData: 跨 column 读写 + 越界', () => {
   const world = new WorldData(makeRegistry());
   const a = new ChunkColumn(0, 0), b = new ChunkColumn(1, 0);

@@ -72,3 +72,28 @@ test('WorldEditor.setBlocks: 基岩目标和越界不变，单块保持 fast pat
   editor.setBlock({ x: 1, y: 1, z: 1, id: registry.idOf('stone') });
   assertEqual(calls.at(-1).opts.fastPath, true);
 });
+
+test('WorldEditor: 重复写同 id/meta 判 no-change（blockEntity 归一化不破坏既有语义）', () => {
+  const { world, registry } = makeReadyWorldWithTwoColumns();
+  const calls = [];
+  const editor = new WorldEditor({ world, scheduler: {
+    remeshSections: (affected, opts) => calls.push({ affected, opts }),
+    enqueueLight: () => {},
+  } });
+  const stone = registry.idOf('stone');
+  world.setBlock(3, 0, 3, stone, 0);
+  const col = world.getColumn(0, 0);
+  const versionBefore = col.version;
+
+  // 单块：同 id/meta 无 entity → no-change（M7 引入 blockEntity 通道后不得回归）
+  const r1 = editor.setBlock({ x: 3, y: 0, z: 3, id: stone });
+  assertDeepEqual(r1.skipped.map((s) => s.reason), ['no-change']);
+  assertEqual(r1.changes.length, 0);
+  assertEqual(col.version, versionBefore, 'no-change 不 bump version');
+
+  // 批量：同 id/meta 无 entity → no-change
+  const r2 = editor.setBlocks([{ x: 3, y: 0, z: 3, id: stone }]);
+  assertDeepEqual(r2.skipped.map((s) => s.reason), ['no-change']);
+  assertEqual(r2.changes.length, 0);
+  assertEqual(col.version, versionBefore);
+});

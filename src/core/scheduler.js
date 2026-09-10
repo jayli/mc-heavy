@@ -219,6 +219,13 @@ export class Scheduler {
     column.blocks = new Uint16Array(r.blocks);
     column.meta = new Uint8Array(r.meta);
     column.light = new Uint8Array(r.light);
+    // M7：接管时重建 edits Map 与 blockEntities（不只是 typed 数组）。
+    // Worker 内 `applyEdits` 已把 edits 叠进 blocks/meta（world-worker.js:76），故方块值正确；
+    // 但 column.edits / blockEntities 仍是空的 —— 若留空，玩家在此 column 新放一块后
+    // `Persistence.flushNow()` 会用「只含新编辑」的 Map 整行覆盖该 key 的存档 →
+    // **旧 edits（含巢穴锚点）静默丢失**。restoreEdits 与 getEdits 同源，重建这两者。
+    const edits = this.getEdits(key);
+    if (edits && edits.length) column.restoreEdits(edits);
     column.state = 'ready';
     this.world.add(column);
     if (this.renderWorld) this._handleColumnReady(column);

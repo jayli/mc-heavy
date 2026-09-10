@@ -8,6 +8,7 @@ import { createCreativeInventory } from './inventory.js';
 import { getPlacementOrientation, recordRemovedBlock } from './orientation.js';
 import { WeaponController } from './weapons/weapon-controller.js';
 import { WEAPON_IDS } from './weapons/weapon-catalog.js';
+import { NEST_ALIAS_BLOCK } from '../entities/zombie-nests/nest-config.js';
 
 const EYE_HEIGHT = 1.62;
 const REACH = 40; // mc-lite 枪的 far 语义
@@ -16,6 +17,17 @@ const REACH = 40; // mc-lite 枪的 far 语义
 const _forward = new THREE.Vector3();
 const _right = new THREE.Vector3();
 const _up = new THREE.Vector3();
+
+/**
+ * 受控创造模式专属物品（M7）：**不进 Hotbar、不进背包面板**。
+ *
+ * 为什么不复用 inventory/hotbar：M7 规格 §2 明确「现有五格 Hotbar 的 UI 和选择语义不变」——
+ * 把 alias 塞进背包集合会让 `check:data` 的物品集合关系式（118 项 = registry − 两个排除集合）
+ * 失真，且玩家会在背包面板里看到它。故它是**独立的一条选择通道**：`selectPlaceable()` 只
+ * 置一个标志位，右键时 `placeBlock()` 先查这个标志再回落到背包槽。
+ */
+// 物品名派生自 nest-config.js 的单一权威，不在此写第二份字面量（红线 1：两处会漂移）
+const CREATIVE_SPECIALS = new Set([NEST_ALIAS_BLOCK]);
 
 export class Player {
   /**
@@ -33,7 +45,7 @@ export class Player {
    * @param {() => boolean} [opts.isModal] 模态谓词（M3.1）：返回 true 时 keydown 全部拦截。
    *        注入而非直接引用 Game，保持 Player 不反向依赖 core/（依赖方向 §3）
    */
-  constructor({ world, camera, scheduler, registry, canvas, editor, weaponRuntime = null, isModal = () => false, onSpawnZombie = null }) {
+  constructor({ world, camera, scheduler, registry, canvas, editor, weaponRuntime = null, isModal = () => false, onSpawnZombie = null, nests = null }) {
     this.world = world;
     this.camera = camera;
     this.scheduler = scheduler;
@@ -46,6 +58,14 @@ export class Player {
      * 缺省 null → X 键无效果（Player 单独构造时，如测试 fixture）。
      */
     this._onSpawnZombie = onSpawnZombie;
+    /**
+     * M7 巢穴服务（Game 注入）。同样注入而非直接引用 —— `src/entities/**` 是同构层，
+     * Player 不得反向依赖它；缺省 null → alias 右键放置无效果（fixture 单独构造时）。
+     * @type {import('../entities/zombie-nests/zombie-nest-service.js').ZombieNestService|null}
+     */
+    this.nests = nests;
+    /** 当前选中的受控创造模式物品名（null = 走常规背包槽）。见 CREATIVE_SPECIALS */
+    this._selectedPlaceable = null;
     // M4 武器运行时（视图模型/曳光/音频由 Game 注入；controller 随后由 Game 赋值）
     this.viewWeapon = weaponRuntime?.viewWeapon ?? null;
     this.tracerRenderer = weaponRuntime?.tracerRenderer ?? null;
@@ -337,6 +357,19 @@ export class Player {
     this.editor.setBlock({ x, y, z, id: 0 });
   }
 
+  /**
+   * 受控创造模式选择入口（M7 规格 §2）：选中 `CREATIVE_SPECIALS` 里的物品。
+   *
+   * **不改 Hotbar index、不改背包槽、不改 HUD** —— 那五格的 UI 与选择语义保持原样。
+   * 只置一个标志位，右键时由 `placeBlock()` 先查这个标志。未知物品返回 false 且不写世界。
+   * @param {string} id @returns {boolean}
+   */
+  selectPlaceable(id) {
+    if (!CREATIVE_SPECIALS.has(id)) return false;
+    this._selectedPlaceable = id;
+    return true;
+  }
+
   placeBlock() {
     if (!this.target) return;
     const [x, y, z] = this.target.prevPos;
@@ -344,11 +377,34 @@ export class Player {
     const p = this.physics.pos;
     if (x === Math.floor(p.x) && z === Math.floor(p.z) &&
         (y === Math.floor(p.y) || y === Math.floor(p.y + 1))) return;
+    // M7：受控创造模式物品优先分流（测试 API 路径）。失败保留世界，不写任何方块。
+    // ⚠️ origin 必须用 **`blockPos`（命中方块）**，不能用 `prevPos` —— 两条放置路径
+    // （本分支与下方背包分流）的 origin 语义必须一致，否则结构会整体上移一格悬空
+    // （实测踩坑：用 prevPos 时 38 格里 30 格落在未清理的位置 → 放置大面积失败）。
+    if (this._selectedPlaceable) {
+      const hit = this.target.blockPos;
+      if (hit) this._placeSpecial(this._selectedPlaceable, [hit[0], hit[1], hit[2]]);
+      // 成功或失败都不回落到背包槽 —— 选中态期间玩家意图明确是放巢穴，不是放石头
+      return;
+    }
     // §4.5.4 M3.1：取背包选中槽的物品（selectedSlot 可 > 4，由背包面板点击选中）
     const slot = this.inventory.getSelected();
     if (!slot || slot.isEmpty()) return; // 空槽不放块
     const id = this.registry.idOf(slot.item);
     if (id === undefined) return; // 无该方块（防御：物品集合与 registry 同源，正常不触发）
+    // M7（**玩家主路径**）：按**物品名**分流到实体放置 —— 对齐 mc-lite
+    // `PlayerInteraction.tryPlaceBlock()` 的 `entityRegistry.isSpecialBlock(type)` 路由。
+    // 巢穴是 38 方块的**多格结构**，不是单格方块：从背包选中它的图标后右键，必须一次性
+    // 放置整个结构 + 建巢穴实例，**绝不能落到下面的单格 setBlock**（那会放出一个贴了
+    // 巢穴图案的正方体 —— 实玩报告的缺陷）。
+    if (CREATIVE_SPECIALS.has(slot.item)) {
+      // origin = **命中方块所在格**（`blockPos`），不是 `prevPos`：巢穴最低层要落在
+      // 玩家脚下的地面上（mc-lite `generateBlocks` 的 `y + block.y - 1` 同口径）。
+      // 用 prevPos 会让结构悬空一格（最低层落在 prevPos+1）。
+      const hit = this.target.blockPos;
+      if (hit) this._placeSpecial(slot.item, [hit[0], hit[1], hit[2]]);
+      return; // 分流后不回落到单格放置
+    }
     // M3.2：算放置朝向（三分支，不看玩家 yaw）。与 M3.1 的取物品逻辑正交叠加。
     const meta = getPlacementOrientation(x, y, z, id, this.registry.orientationModesTable,
       this.lastRemovedBlock, this.placementOrientationMemory);
@@ -360,6 +416,35 @@ export class Player {
       this.lastRemovedBlock = null;
     }
     // 创造模式不消耗：slot.count 保持 DEFAULT_INVENTORY_COUNT 不变
+  }
+
+  /**
+   * 放置受控创造模式物品（M7）。当前只有巢穴 alias。
+   *
+   * 以 `[x,y,z]`（准心指向格）为巢穴 **origin** —— 蓝图相对坐标以此为基点展开
+   * （最低层 y=origin.y+1，关键方块 y=origin.y+5）。
+   * `playerAabb` 传玩家当前 AABB：放置预检会拒绝结构压住玩家（M7 规格 §2）。
+   * 成功后播放 `put` 音效（mc-lite 同语义）—— **音频失败绝不回滚世界事务**：
+   * 声音只是反馈，世界写入已成功，回滚会让玩家看到「方块消失」（M7 规格 §2）。
+   * @param {string} id @param {[number, number, number]} origin
+   * @returns {boolean} 是否成功放置
+   */
+  _placeSpecial(id, origin) {
+    if (id !== NEST_ALIAS_BLOCK) return false;
+    if (!this.nests) return false;
+    // AABB 派生自 physics（不得在此重算尺寸 —— 否则与碰撞检测的 AABB 撕裂，红线 1）
+    const playerAabb = this.physics.aabb();
+    const result = this.nests.place({ origin, playerAabb });
+    if (!result.ok) return false;
+    if (this.audioManager) {
+      try {
+        this.audioManager.play('put', 0.6);
+      } catch (err) {
+        // 只记诊断，不回滚（见上方注释）
+        console.warn('[audio] put play failed:', err);
+      }
+    }
+    return true;
   }
 
   /** 移除 window/canvas 事件监听（重启或 Playwright reload 后不叠加）。 */

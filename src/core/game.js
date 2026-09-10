@@ -25,6 +25,9 @@ import { EntityRenderLayer, createProbeRenderDef } from '../render/entity-render
 import { ZombieService, zombieDefinition } from '../entities/zombies/zombie-system.js';
 import { ZombieRenderer } from '../render/zombie-renderer.js';
 import { loadZombieHeadTexture } from '../render/zombie-head-texture.js';
+import { loadNestBlueprint } from '../entities/zombie-nests/nest-blueprint.js';
+import { ZombieNestService } from '../entities/zombie-nests/zombie-nest-service.js';
+import { ZombieNestController } from '../entities/zombie-nests/zombie-nest-controller.js';
 import { loadAtlas } from '../mesh/atlas-loader.js';
 import { findSpawnY } from '../gen/terrain.js';
 import { getCitySpawnPoint, getCityInfo } from '../gen/structures/city-layout.js';
@@ -163,7 +166,8 @@ export class Game {
     this.scheduler._atlasMeta = atlasMeta; // 快速路径主线程 mesh 用（与 broadcast 同一份）
     // M4-0：世界编辑协调器 —— 唯一世界写入入口（remesh/light/event）。
     // 玩家挖放、武器破坏、未来 TNT 全部经此，不持有第二份体素真相。
-    this.editor = new WorldEditor({ world: this.world, scheduler: this.scheduler });
+    // M7：注入 persistence —— `setBlockEntity`（巢穴锚点纯 entity 写）靠它记入 edits 并调度落盘。
+    this.editor = new WorldEditor({ world: this.world, scheduler: this.scheduler, persistence: this.persistence });
 
     // ---- M5：实体运行时装配 ----
     // EntityManager 是动态实体 state 的唯一权威；column 索引/generation 全是派生缓存（红线 1）。
@@ -194,9 +198,18 @@ export class Game {
     });
     // ② column ready —— 恢复该 column 的持久 snapshot（按 position 过滤，只恢复缺失 id）。
     //    实体运行时不复制方块状态；方块锚定装置仍归 blockEntities。
-    this.scheduler.onColumnReady((key) => {
+    this.scheduler.onColumnReady((key, column) => {
       const snapshots = this.persistence.entitiesForColumn(key);
       if (snapshots.length > 0) this.entities.restorePersistent(snapshots);
+      // M7：为该 column 内的巢穴锚点创建 controller（闭包延迟引用 this.nests，
+      // 注册时尚未创建，column 真正 ready 时已装配完成 —— 与上方 this.zombies 同手法）。
+      this._createNestControllers(key, column);
+    });
+    // M7：column 卸载 —— 销毁 controller 但**保留 anchor 与全局索引**。
+    // 再次加载后从 blockEntity 恢复，`lastSpawnAt` 不重置（M7 规格 §2）。
+    // 与「卸载回收临时实体」相反：巢穴是方块锚定装置，不是临时实体。
+    this.scheduler.onColumnWillRemove((key) => {
+      this._destroyNestControllers(key);
     });
     // Persistence 的实体 snapshot 来源（save/ 不 import entities/，注入纯函数解耦）
     this.persistence.attachEntities(() => this.entities.serializePersistent());
@@ -224,6 +237,39 @@ export class Game {
       onDespawn: (id) => this.zombieRenderer.releaseSlot(id),
     });
     this.entities.registerType('zombie', zombieDefinition);
+
+    // ---- M7：丧尸巢穴装配 ----
+    // **装配位置必须在 `_waitForColumn`（出生点 column 加载）之前** —— 实测踩坑：
+    // 放在武器运行时装配段（晚于 `_waitForColumn`）时，出生点 column 的 `onColumnReady`
+    // 回调先跑，此刻 `this.nests` 还是 null → `_createNestControllers` 第一行直接 return →
+    // reload 后 anchor 与索引都恢复了（`count=1`、column.blockEntities 里有锚点），
+    // 但 controller 恒为 0（巢穴不刷怪）。对比 `this.zombies`：它装配在 `_waitForColumn`
+    // 之前，故同样的 column ready 路径正常工作 —— 顺序差异是唯一原因。
+    //
+    // 蓝图加载失败不得中止 worldReady（与 M4 武器模型同一容错口径）：退化为 blueprint=null，
+    // place() 一律返回 'invalid-blueprint' —— 玩家保持可玩，只是放不了巢穴。
+    let nestBlueprint = null;
+    try {
+      nestBlueprint = await loadNestBlueprint(this.registry);
+    } catch (err) {
+      console.warn('[zombie-nest] blueprint load failed:', err);
+    }
+    this.nests = new ZombieNestService({
+      world: this.world, editor: this.editor, registry: this.registry, blueprint: nestBlueprint,
+      // 放置成功 → 立刻创建 controller。**没有这条接线则新巢穴永不刷怪**：anchor column
+      // 此刻已加载，`onColumnReady` 早在放置前就触发过了，不会再为这个新锚点触发一次。
+      onPlaced: (id) => this._createNestController(id),
+    });
+    // hydrate 必须在开放放置前：建立只含 id/anchor 的派生全局索引，使「全局最多 8 个」
+    // 跨 column 卸载与重启仍有效（M7 规格 §2）。索引来源是 edits store，不是已加载 column
+    // （`listBlockEntities` 走 cursor 扫库，不依赖 `preloadEdits` 预热，故此处可调）。
+    await this.nests.hydrate(this.persistence);
+    // 失效事件订阅：**全局只订阅一次**，再把同一个 event 分派给全部 controller。
+    // 不为每个 controller 单独 subscribe —— N 个巢穴就有 N 份监听器，且销毁 controller 时
+    // 必须逐个退订，漏一个就是常驻泄漏。分派路径下 controller 增删与订阅生命周期无关。
+    this.editor.subscribe((event) => {
+      for (const controller of this.nests.controllers().values()) controller.onWorldChange(event);
+    });
 
     // 出生点（mc-lite 语义：优先 City 中心出生，保证出生即见城市天际线，§7 M2 验收）
     const regionLayout = await this.scheduler.structureIndex.waitForRegion(0, 0);
@@ -264,6 +310,9 @@ export class Game {
       isModal: () => this.uiModal,
       // M6：X 键生成丧尸（调试键，对齐 mc-lite）。注入回调而非传 Game（依赖方向 §3，与 isModal 同手法）
       onSpawnZombie: () => this.spawnZombieNearPlayer(),
+      // M7：巢穴服务注入。同样注入而非传 Game —— `src/entities/**` 是同构层，
+      // Player 不得反向依赖它（依赖方向 §3，与 isModal / onSpawnZombie 同手法）
+      nests: this.nests,
     });
     this.player.spawn(this.spawnX, this.spawnY, this.spawnZ);
     this.scene.add(this.player.highlight);
@@ -346,6 +395,10 @@ export class Game {
       const pp = this.player.physics.pos;
       this.zombies.update(dt, { playerPosition: [pp.x, pp.y, pp.z] });
       this.entities.update(dt, { world: this.world });
+      // M7：巢穴刷怪推进。放在 entities.update **之后** —— 刷怪经 ZombieService.spawn()
+      // 创建实体，须等实体运行时本帧推进完成再创建，避免新实体在创建当帧被 update 漏处理。
+      // 内部 8 秒节流（controller.update 自己判 nowMs-lastSpawnAt），故每帧调用是零成本的。
+      this._updateNestControllers(nowMs);
       this.scheduler.update(this.player.physics.pos.x, this.player.physics.pos.z);
       this.persistence.scheduleFlush(this.world); // 5s 防抖写盘（有 edits 才真正写）
       this.ocean.update(this.camera, dt);
@@ -603,6 +656,111 @@ export class Game {
    *
    * @returns {{spawned: string|null, position: number[]|null, attempts: number, count: number}}
    */
+  /**
+   * 受控创造模式选择入口（M7 规格 §2）：转发给 Player，供 Playwright 编程驱动。
+   * 不改 Hotbar/背包/HUD —— 只置 Player 的标志位。
+   * @param {string} id @returns {boolean}
+   */
+  selectPlaceable(id) {
+    return this.player.selectPlaceable(id);
+  }
+
+  /**
+   * 只读音频诊断状态（M7 规格 §2）：暴露 AudioManager 的播放请求计数。
+   * Playwright 靠它断言「成功放置后尝试播放 put」—— AudioContext 在无头环境未必可播，
+   * 故断言的是**请求计数**而非真实出声（M4 同一手法：play() 先递增计数）。
+   * @returns {{playRequests: Record<string, number>}}
+   */
+  audioDebugState() {
+    const counts = this.audioManager?.playRequests ?? new Map();
+    const out = {};
+    for (const [id, n] of counts) out[id] = n;
+    return { playRequests: out };
+  }
+
+  /**
+   * 为一个锚点创建 controller（M7）。两条调用路径共用本方法：
+   * ① `onColumnReady` —— column 加载时扫该 column 的 blockEntities 补建；
+   * ② `onPlaced` —— 玩家放置成功后立刻建（anchor column 此刻已加载，`onColumnReady`
+   *    早在放置前就触发过了 → 只有这条路径能让新巢穴开始刷怪）。
+   *
+   * **只读已加载 column 的 blockEntities**，不扫世界、不读盘 —— 全局索引在 `hydrate()` 时
+   * 已从 edits store 建好，这里只是补上派生 controller。
+   *
+   * 去重判据 = 已有同 id 的 controller 则跳过：column 重复 ready（重入竞态 / reload）时
+   * 不得创建第二个 controller，否则一个巢穴会刷怪两倍（M7 规格 §3「每个锚点只恢复一个」）。
+   *
+   * @param {string} id @param {Object|null} anchorEntity 巢穴 blockEntity；null → 从世界重读
+   */
+  _createNestController(id, anchorEntity = null) {
+    if (!this.nests || this.nests.controllers().has(id)) return; // 已有 → 不重复创建
+    let entity = anchorEntity;
+    if (!entity) {
+      const anchor = this.nests.anchorOf(id);
+      if (!anchor) return;
+      entity = this.world.getBlockEntity(anchor[0], anchor[1], anchor[2]);
+    }
+    if (!entity || entity.kind !== 'zombie-nest') return;
+    // 索引缺失（hydrate 前就 ready 的 column）：补登记，使上限判定包含它
+    if (!this.nests.hasIndex(id)) {
+      const c = entity.critical;
+      this.nests.registerAnchor(id, [c.x, c.y, c.z]);
+    }
+    const controller = new ZombieNestController({
+      world: this.world, zombies: this.zombies, editor: this.editor, anchor: entity,
+      onInvalidated: (nid) => this._invalidateNest(nid),
+    });
+    this.nests.setController(id, controller);
+  }
+
+  /**
+   * 为该 column 内的巢穴锚点创建 controller（column ready 路径）。
+   * @param {string} key @param {import('../voxel/chunk-column.js').ChunkColumn} column
+   */
+  _createNestControllers(key, column) {
+    if (!this.nests || column?.blockEntities.size === 0) return;
+    for (const entity of column.blockEntities.values()) {
+      if (entity?.kind !== 'zombie-nest') continue;
+      this._createNestController(entity.id, entity);
+    }
+  }
+
+  /**
+   * 销毁某 column 的全部巢穴 controller（column 卸载）。**保留 anchor 与全局索引** ——
+   * 巢穴是方块锚定装置，column 卸载只丢派生对象；再次加载后从 blockEntity 恢复，
+   * `lastSpawnAt` 不重置（M7 规格 §2）。
+   * @param {string} key
+   */
+  _destroyNestControllers(key) {
+    if (!this.nests) return;
+    const [cx, cz] = key.split(',').map(Number);
+    for (const [id, controller] of this.nests.controllers()) {
+      // column 归属判据用 controller 自己持有的 anchor（它就是这个 column 的锚点）——
+      // 不查 service 索引，避免伸手进私有字段（封装失效，改名即崩）。
+      const critical = controller.anchor?.critical;
+      if (!critical) continue;
+      if (Math.floor(critical.x / 16) === cx && Math.floor(critical.z / 16) === cz) {
+        controller.dispose();
+        this.nests.setController(id, null);
+      }
+    }
+  }
+
+  /** 每帧推进全部巢穴 controller（内部 8 秒节流）。 */
+  _updateNestControllers(nowMs) {
+    if (!this.nests) return;
+    for (const controller of this.nests.controllers().values()) controller.update(nowMs);
+  }
+
+  /**
+   * 巢穴失效：关键方块被破坏（徒手 / 武器 / TNT 批量编辑同语义）。
+   * 删锚点 blockEntity + 移除全局索引 + 销毁 controller —— 三者一起，不留半失效状态。
+   * @param {string} id
+   */
+  _invalidateNest(id) {
+    this.nests.destroy(id);
+  }
+
   spawnZombieNearPlayer() {
     const p = this.player.physics.pos;
     let attempts = 0;
