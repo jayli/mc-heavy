@@ -19,12 +19,22 @@ const _right = new THREE.Vector3();
 const _up = new THREE.Vector3();
 
 /**
- * 受控创造模式专属物品（M7）：**不进 Hotbar、不进背包面板**。
+ * 受控创造模式专属物品（M7）：**放置走物品名路由，不落到常规单格 `editor.setBlock`**。
  *
- * 为什么不复用 inventory/hotbar：M7 规格 §2 明确「现有五格 Hotbar 的 UI 和选择语义不变」——
- * 把 alias 塞进背包集合会让 `check:data` 的物品集合关系式（118 项 = registry − 两个排除集合）
- * 失真，且玩家会在背包面板里看到它。故它是**独立的一条选择通道**：`selectPlaceable()` 只
- * 置一个标志位，右键时 `placeBlock()` 先查这个标志再回落到背包槽。
+ * ⚠️ 这些物品**就在**背包集合 118 项内（实测：`buildItemNames()` 含 `zombie_nest_alias_block`，
+ * 槽位索引 75）。玩家从背包面板选中图标 → 右键 → 走的是常规单格放置路径，**必须在这里分流**，
+ * 否则只放出一个贴了图案的正方体而不是整个结构（M7 实测缺陷，见验收报告 §3.7）。
+ * mc-lite 同手法：`PlayerInteraction.tryPlaceBlock()` 判 `entityRegistry.isSpecialBlock(type)`
+ * → 交 placement handler。
+ *
+ * `selectPlaceable()` 是**额外的**测试/调试通道（置标志位，右键时优先查它），与背包路径并存。
+ *
+ * **加新项时的连带改动**：
+ *   1. 若该物品代表**多方块结构**，图标须走平面路径 —— 把名字加进
+ *      `tools/icon-fingerprint.mjs` 的 `FLAT_BLOCKS`（对齐 mc-lite `getCustomIconPath()` 的手工
+ *      图标表）并跑 `npm run icons`。否则背包里显示的是一个立方体等轴测图 —— 错的表达。
+ *   2. 放置 origin 用**命中方块格**（`target.blockPos`），不是 `prevPos`：结构最低层要落在
+ *      玩家脚下的地面格上。两条路径（背包分流与 `selectPlaceable`）的 origin 语义必须一致。
  */
 // 物品名派生自 nest-config.js 的单一权威，不在此写第二份字面量（红线 1：两处会漂移）
 const CREATIVE_SPECIALS = new Set([NEST_ALIAS_BLOCK]);

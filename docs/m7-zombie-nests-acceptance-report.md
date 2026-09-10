@@ -255,6 +255,69 @@ API 分支用 `target.prevPos`（空气格），而结构最低层须落在**地
   标志会让 `placeBlock` 走 API 分支而非背包分流分支 → 注入「移除背包分流」**仍全绿**
   （实测无效盲区，见 §3.7）。
 
+### 4.8 背包里的巢穴图标是立方体等轴测图（用户实玩发现，交付后修复）
+
+**现象**：背包面板里巢穴图标显示为一个立方体等轴测图，但该物品代表**整个 38 方块结构**
+（放置走 §4.7 的物品名路由，不会真的放进世界一格）→ 立方体是错的表达。用户要求对齐 mc-lite：
+直接用已有的那张示意图做占位图，**不新烘焙一张**。
+
+**mc-lite 实测口径**（读源确认）：`src/utils/ItemIconUtils.js` 的 `getCustomIconPath()` 有一张
+手工图标表，把 `zombie_nest_alias_block` → `zombie_nest_alias_block.png`、
+`turret_alias_block` → `turret.png`、`bed_alias_block` → `bed/Bed_(front_texture)_JE2_BE2.png`、
+`mine_cart` → `Invicon_Minecart.png` 一起映射，`createItemIcon()` 命中即**绕过**
+`HUD.generateIcon()` 的立方体生成。CSS 是 `global.css:46`
+`.slot img { width:32px; height:32px; image-rendering:pixelated }` → nearest 降采样。
+
+**mc-heavy 已有等价机制，不需新增任何东西**：`tools/icon-fingerprint.mjs` 的 `FLAT_BLOCKS`
+平面路径正是这个语义 —— `mine_cart` 已在清单里，注释理由「是**实体**不是方块，mesher 无其几何
+模板 → 等轴测不适用」。故只需把 `zombie_nest_alias_block` 加进 `FLAT_BLOCKS` + 跑
+`npm run icons`。运行时仍是 1 行 `icon.style.background = ICON_CSS[name]`（无新增分支），
+指纹门禁自动覆盖，`FLAT_ICON_TILE` **无需加条目**（`faces-data.js:109` 已映射同名 tile，
+且该 tile 已在 `atlas.json` → 引用完整性门禁不报）。
+
+**降采样算法的单变量对照**（同尺寸只换采样算法）：
+
+| 算法 | 40px 不透明 | 40px 色数 | 判定 |
+|---|---|---|---|
+| 单点 nearest（既有平面路径口径） | 57% | 799 | ✅ 采用 —— 与 mc-lite `pixelated` 等价，保像素风锐利 |
+| 区域平均 | 86% | 426 | ❌ 会糊（源图 250×208 → 40px 每格约 6×5 源像素） |
+
+**判据用机制而非像素统计**：像素统计区分度不够 —— HEAD 版立方体等轴测也是 63% 不透明 / 435 色
+（alias 的贴图本身就是整张示意图，立方体采样它也保留 alpha）。改用
+**「atlas 内该矩形逐像素等于源图 nearest 降采样」**：
+
+| 侧 | inventory 32px | hotbar 40px |
+|---|---|---|
+| 改动侧 | **100.0%**（1024/1024） | **100.0%**（1600/1600） |
+| HEAD 侧 | 7.6%（78/1024） | 6.5%（104/1600） |
+
+HEAD 侧只有全透明像素碰巧相同 —— 立方体不可能满足这个判据。指纹串也一眼可辨
+（`flat;t:zombie_nest_alias_block#cjctfo` vs `geom:box;quads:3;...`）。
+
+**负向验证真 FAIL**：注入「移除 `FLAT_BLOCKS` 条目」→ 指纹回到 `geom:box`、判据降到
+7.6%/6.5%。⚠️ **注入第一次没生效**：perl 模式要求 `'mine_cart', 'hanging_lamp',` 前是两个
+空格缩进，实际它接在 `'vine', 'lilypad', ` 之后 → 静默未替换，指纹仍是 `flat;`，判据仍 100%。
+这是「注入后仍全绿先怀疑落点」的**另一面**：那边是「注入生效了但断言抓不到」，这边是
+「断言没问题但注入没生效」。改用 Edit 工具（精确匹配，失败会报错）后注入才真正落地。
+已记入 `docs/testing-policy.md` §2.7。
+
+**未加门禁断言**：考虑过 `CREATIVE_SPECIALS ⊆ FLAT_BLOCKS` 的关系型断言但**否掉** ——
+它不是必然不变式。未来若有「需特殊放置逻辑但仍是单格方块」的物品（如可旋转的装置），
+它会进 `CREATIVE_SPECIALS` 而立方体图标恰恰是对的 → 断言会误报，而**门禁误报比无门禁更糟**。
+剩余失效路径属**立刻可见**（打开背包就看到图标是立方体），Tier 3 判据不需门禁。
+防重犯落在**改动入口注释**（`player.js` 的 `CREATIVE_SPECIALS` —— 做炮塔的人必先改它）
++ `CLAUDE.md` 活跃约束。
+
+**连带修正 `player.js` 一段错注释**：原写「受控创造模式专属物品：**不进 Hotbar、不进背包面板**」，
+实测 alias **就在**背包集合 118 项内（`buildItemNames()` 含它，槽位索引 75）。那个错前提正是
+§4.7 缺陷的根因 —— 验收时纠正了文档（见 §6 的 ⚠️ 段）但**代码注释没跟上**。已改为
+「放置走物品名路由，不落到常规单格 `editor.setBlock`」并补「加新项时的连带改动」清单
+（平面图标 + origin 用 `blockPos`）。
+
+**门禁**：`npm run check` 全绿（图标过期 118 项指纹匹配、形状权威 **103 等轴测 + 15 平面**、
+CSS 串 0 项变更 —— 装箱顺序未变）+ 浏览器内单测 **451 全绿** + M7 spec **10 passed**。
+改动不碰热路径（`tools/` + 注释 + 烘焙产物）→ 按门禁分层不需 `bench --check`。
+
 ## 5. 性能实测与交替对照
 
 ### 5.1 默认 20 上限稳态（`vd=8`，289 columns）
@@ -324,11 +387,14 @@ M7 未改变默认丧尸上限（仍是 20），故 M6 的默认压力验收结�
 | ⑤ 音效路径 | `put.mp3` 在 `src/assets/sound/`（**计划文档写的 `assets/sounds/put.mp3` 路径在上游不存在**） | 从 mc-lite `src/assets/sound/put.mp3` 复制为 `assets/sounds/put.mp3`，经 M4 AudioManager | 实测确认上游真实路径；音频失败只记诊断，**绝不回滚世界事务** |
 | ⑥ 放置失败时不消耗物品 | `place()` 成功后才 `inventory.remove('zombie_nest_alias_block', 1)` | 创造模式不消耗（本仓库既有口径：`slot.count` 保持 `DEFAULT_INVENTORY_COUNT`） | 创造模式背包语义（M3.1），与 mc-lite 生存模式扣减不同属有意差异 |
 
-> ⚠️ **原先此处记的第 ⑤ 条「alias 不进背包面板」是错的**（我在交付后修复 §4.7 时才发现）：
-> `zombie_nest_alias_block` **就在**背包集合 118 项内（126 registry − 8 排除，alias 未被排除），
-> 玩家从背包面板选中它 —— 与 mc-lite 一致（mc-lite 也把它注册进 entityRegistry 且放置成功后
-> `inventory.remove`）。正确口径见下方「与 mc-lite 一致」段。`bed_alias_block` 则被
-> `HIDDEN_FROM_INVENTORY` 排除，那是 v1.21 的既有口径，与 M7 无关。
+> ⚠️ **本报告原先在偏离表里有一条「alias 不进背包面板」是错的**（我在交付后修复 §4.7 时才发现，
+> 该条已删除并重新编号）：`zombie_nest_alias_block` **就在**背包集合 118 项内
+> （126 registry − 8 排除，alias 未被排除），玩家从背包面板选中它 —— 与 mc-lite 一致
+> （mc-lite 也把它注册进 entityRegistry 且放置成功后 `inventory.remove`）。
+> 正确口径见下方「与 mc-lite 一致」段。`bed_alias_block` 则被 `HIDDEN_FROM_INVENTORY`
+> 排除，那是 v1.21 的既有口径，与 M7 无关。
+> 连带后果：`player.js` 的 `CREATIVE_SPECIALS` 注释也写着「不进背包面板」（同一错前提），
+> 已在 §4.8 一并修正。
 
 ### 与 mc-lite **一致**（实测读源确认，不是偏离）
 

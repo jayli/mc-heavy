@@ -75,8 +75,16 @@ M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 
   几何后须重跑 `npm run icons`，否则图标静默过期（渲染旧形状/旧配色，肉眼看不出）；忘跑会被
   `npm run check:data` 的指纹检查抓到。改**非背包方块**的贴图无需重跑。
 - **形状与 UV 的唯一权威 = `src/mesh/mesher.js`**（`TEMPLATES` / `FACE_VERTICES` / `FACE_UVS`）。
-  图标烘焙与等轴测投影只 import，**禁止手写第二份几何定义**（红线 1）。按方块单独 hack 图标
-  做不到 —— 那会在 `TEMPLATES` 之外开第二份形状权威。
+  图标烘焙与等轴测投影只 import，**禁止手写第二份几何定义**（红线 1）。按方块单独 hack 图标的
+  **几何**做不到 —— 那会在 `TEMPLATES` 之外开第二份形状权威。
+- **多方块结构的占位物品走平面图标路径（`FLAT_BLOCKS`），不是等轴测立方体**：
+  `zombie_nest_alias_block` 在背包里代表整个 38 方块结构（放置走 `player.js` 的物品名路由），
+  立方体是错的表达 → 加进 `tools/icon-fingerprint.mjs` 的 `FLAT_BLOCKS` 并跑 `npm run icons`。
+  mc-lite 同口径：`ItemIconUtils.getCustomIconPath()` 把 `zombie_nest_alias_block` /
+  `turret_alias_block` / `bed_alias_block` / `mine_cart` 一起映射到手工图，**绕过**
+  `HUD.generateIcon()` 的立方体生成。⚠️ 该清单里它**唯一** `solid: true` —— 走平面的理由是
+  「多方块结构的占位物品」而非「非实心」，勿按「非实心」口径修正它。
+  **炮塔/床/宝箱等同类 alias 物品加进来时同理**（`player.js` 的 `CREATIVE_SPECIALS` 注释有清单）。
 - **方块放置朝向不看玩家 yaw**：三分支为门控关闭→恒 0 / 原位重建同类型→`+1 % 4` / 有类型记忆→沿用 /
   无记忆→0。真实手感是「转身不改朝向，要转 90° 就在原位挖掉再放回去」。
   **M4 Task 6 改走 `editor.setBlock(...)` 时须保留朝向分支**（不得退化为只传 id）。

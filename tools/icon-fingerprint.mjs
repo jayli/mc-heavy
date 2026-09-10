@@ -61,10 +61,18 @@ const VISIBLE_FACES = [0, 2, 4];
  *
  * `mine_cart` 走平面路径采 mc-lite 手工图标 `Invicon_Minecart`（是**实体**不是方块，
  * mesher 无其几何模板 → 等轴测不适用）。
+ *
+ * **清单里有一项 `solid: true` 的例外**（`zombie_nest_alias_block`），别按「非实心」口径
+ * 「修正」它 —— 它走平面的理由是另一类：**多方块结构的占位物品**。该物品在背包里代表
+ * 一整个 38 方块的巢穴结构（放置走 `player.js` 的物品名路由，不会真的放进世界一格），
+ * 立方体是错的表达。mc-lite 同口径：`ItemIconUtils.getCustomIconPath()` 把
+ * `zombie_nest_alias_block` / `turret_alias_block` / `bed_alias_block` / `mine_cart`
+ * 一起映射到手工图，**绕过** `HUD.generateIcon()` 的立方体生成。
  */
 export const FLAT_BLOCKS = [
   'water', 'swamp_water', 'cloud', 'flower', 'short_grass', 'allium', 'azure_bluet',
   'dead_bush', 'oxeye_daisy', 'red_mushroom', 'vine', 'lilypad', 'mine_cart', 'hanging_lamp',
+  'zombie_nest_alias_block',
 ];
 
 /** 平面路径方块名 → 手工图标 tile（其余走 faces-data 的 face 0） */
