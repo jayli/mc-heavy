@@ -842,6 +842,11 @@ _updateTntChain(nowMs) {
   for (const t of due) this.explodeTnt(t.x, t.y, t.z);
 }
 
+⚠️ **不要在到期回调里加「先验证该格仍是 TNT」的门控**（审查明确指出这是无谓偏离）：
+mc-lite 的到期回调也不重新校验（`PlayerInteraction.js:619-623` 直接 removeBlock →
+delete(key) → explode()），`explode()` 对空气坐标照样发 worker。本计划的行为与上游同构 ——
+加了门控会引入一处上游没有的偏离。
+
 setTntBlockDamage(enabled) {
   this.canTntDestroyBlocks = !!enabled;
   return this.canTntDestroyBlocks;
