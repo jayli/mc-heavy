@@ -47,7 +47,7 @@ Task 1（不可破坏权威）
 Task 2（TNT）
   src/voxel/explosion.js           computeExplosion 同构纯函数
   src/render/explosion-renderer.js 球体扩张特效
-  src/player/player.js             左键引爆路径 + ignitingTnt 去重集合
+  src/player/player.js             左键引爆路径（薄路由 → game.explodeTnt）
   src/player/weapons/weapon-controller.js  枪击引爆路径
   src/core/game.js                 canTntDestroyBlocks + 连锁队列 + 爆炸装配
   src/ui/settings-panel.js / settings.js   「TNT 破坏」开关
@@ -121,16 +121,29 @@ Task 9（验收）
 
 - [ ] **Step 1: 在设计文档 §4.1 体素数据层补 `indestructibleTable`**
 
-在 §4.1 的 typed 属性表清单里加第五张表（既有四张：solid / opaque / cull / emissive，另有
-geometry / orientationModes / supportsPlayer），写明单一权威口径与三个消费者：
+⚠️ **§4.1 里没有「typed 属性表清单」这个东西**（实测：§4.1 的「存储」段描述的是 `ChunkColumn`
+的字段 —— `blocks`/`meta`/`edits`/`blockEntities`/`light`；registry 的属性表只在散文里点名
+过 2 张，带省略号）。**不要写成「在清单里加第五张表」** —— 那会往设计文档里写进一个假前提。
+代码里实际有 **7 张表**（`block-registry.js` 实测 `Table = new Uint8Array` × 7：
+solid / opaque / cull / emissive / geometry / orientationModes / supportsPlayer），
+新增后是 8 张。正确做法：在 §4.1 的存储段**新增一小段**介绍这张表，并顺带把 8 张表的
+完整清单写出来（补上文档欠账）。要写入的内容：
 
 ```markdown
+**registry 的属性表（8 张 typed 表，主线程与 Worker 同构可用）**：`solidTable` /
+`opaqueTable` / `cullTable` / `emissiveTable` / `geometryTable` / `orientationModesTable` /
+`supportsPlayerTable` / **`indestructibleTable`（M8 新增）**。每张表由 `register(name, def)`
+从声明派生，`freeze()` 后不可变。
+
 **`indestructibleTable`（M8 新增）**：「哪些方块不可被破坏」的唯一权威。
 三个消费者全部读这张表，不得各写字面量：① `Player.digBlock()` 徒手挖块门控；
 ② `weapon-target-policy.js` 枪械可破坏判定（与 `canGunsDestroyBlocks` 开关叠加，
    其 `end_stone` 例外是**武器专属**收紧，仍留在该模块）；③ `computeExplosion()` 爆炸过滤。
-mc-lite 用 `ExplosionWorker.js:6` 的字面量数组 + `BlockData.js` 的 `isIndestructible` 字段
-两处表达同一事实（漂移会产出「TNT 炸得掉但玩家挖不掉」），本仓库收敛成一处。
+mc-lite 的表达是**分散且不重合**的：`ExplosionWorker.js:8` 的字面量数组
+`['playground_block','playground_center_block','bedrock','barrier']`，与
+`BlockData.js:244/252` 的 `isIndestructible: true` 字段 —— 后者**只标了 playground 两项**
+（bedrock/barrier 只在字面量里）。即「哪些不可破坏」在上游没有一个完整清单，
+本仓库收敛成一处权威。
 登记三项：`bedrock` / `playground_block` / `playground_center_block`。
 ```
 
@@ -175,7 +188,10 @@ roadmap 里程碑总表加 M8 行（内容 / 状态「📝 待实施」/ 关键 
 
 ⚠️ **CLAUDE.md 有一条硬编码数字的活跃约束须改写**：「背包物品集合口径 **118 项** =
 registry 126 − `NON_PLACEABLE_ITEMS`（4 项）− `HIDDEN_FROM_INVENTORY`（4 项）」。
-Task 1 把创造台两项加进 `HIDDEN_FROM_INVENTORY` 后变为 **116 项**（排除集合 4→6 项）。
+Task 1 把创造台两项加进 `HIDDEN_FROM_INVENTORY` 后变为 **116 项**。⚠️ 门禁打印的「排除 N」是
+**两个排除集合之和**（`NON_PLACEABLE_ITEMS.length + HIDDEN_FROM_INVENTORY.length`，
+`check-data.mjs:104` 实测）：当前是 `排除 8`，改后是 `排除 10`（`HIDDEN_FROM_INVENTORY`
+自身 4→6）。**不要写成「排除 6」** —— 那只算了一个集合。
 该条须同步改写，否则后续实现者按过期口径判断集合大小。
 
 同时在 CLAUDE.md 的 M7 段之后新增一段 M8 活跃约束：
@@ -381,7 +397,8 @@ Expected: PASS —— 四条新断言全绿。
 物品集合从 118 变为 116 → 图标指纹会少两项，须重烘焙：
 
 Run: `npm run icons && npm run check`
-Expected: `[物品集合] 116 项 = registry 126 − 排除 6`；图标指纹匹配；`check:arch` / `lint` 通过。
+Expected: `[物品集合] 116 项 = registry 126 − 排除 10`（实测口径：门禁打印的「排除」是两个
+排除集合之和，当前 8 → 改后 10）；图标指纹匹配；`check:arch` / `lint` 通过。
 
 ⚠️ **文档里不得硬编码 118/116**（CLAUDE.md：计数以 `npm run check:data` 输出为准）。
 
@@ -461,8 +478,8 @@ computeExplosion({ world, registry, center })
 export const EXPLOSION_DAMAGE_RADIUS = 4;  // 单一权威，game.js 与测试共用
 export const EXPLOSION_DAMAGE = 50;
 
-player.ignitingTnt;                    // Set<'x,y,z'>，引爆去重（两条路径共用）
-player.igniteTnt(x, y, z);             // boolean；去重命中返回 false
+game._ignitingTnt;                      // Set<'x,y,z'>，引爆去重（**单一权威在 game 侧**）
+player.igniteTnt(x, y, z);              // boolean；薄路由 → game.explodeTnt，去重命中返回 false
 game.explodeTnt(x, y, z);              // 唯一爆炸入口（测试 API 也走它）
 game.canTntDestroyBlocks;              // boolean，默认 false
 game.setTntBlockDamage(enabled);       // boolean
@@ -613,15 +630,9 @@ Expected: PASS —— 26 格破坏（bedrock 过滤）、连锁 1 个且延迟�
 
 - [ ] **Step 5: 接线两条引爆路径与连锁队列**
 
-`src/player/player.js` —— 构造函数新增去重集合与回调字段：
+`src/player/player.js` —— 构造函数新增回调字段（**去重集合不在 player 侧**，见下方理由）：
 
 ```js
-/**
- * 引爆去重集合（mc-lite `player.ignitingTNTs` 同手法）。两条引爆路径（左键挖块 / 枪击命中）
- * 共用它 —— 防止连锁回环把同一格引爆两次。key = 'x,y,z'。
- * @type {Set<string>}
- */
-this.ignitingTnt = new Set();
 /** M8 引爆回调（Game 注入）。Player 不反向依赖 core/（依赖方向 §3，与 onSpawnZombie 同惯例） */
 this._onIgniteTnt = opts.onIgniteTnt ?? null;
 ```
@@ -633,23 +644,28 @@ digBlock() {
   if (!this.target) return;
   const [x, y, z] = this.target.blockPos;
   const id = this.world.getBlockId(x, y, z);
-  // M8：命中 tnt → 引爆而非挖块（mc-lite `PlayerInteraction.js:1048` 同口径）
+  // M8：命中 tnt → 引爆而非挖块。⚠️ **这是新增偏离**：mc-lite **没有**「普通左键挖块命中
+  // tnt 即引爆」这条入口（它只有 ctrl+左键 `:179` 与枪击 `:1048`）。本仓库把徒手挖块也接成
+  // 引爆，是因为 mc-heavy 的左键挖块是 `digBlock()`（无 ctrl 修饰键路径）—— 记进偏离表。
   if (id === this.registry.idOf('tnt')) { this.igniteTnt(x, y, z); return; }
   if (this.registry.isIndestructible(id)) return;
   // ...（以下不变）
 }
 
 /**
- * 引爆一格 TNT（M8）。去重命中返回 false 且零世界写入。
+ * 引爆一格 TNT（M8）—— **薄路由**，去重判定在 `game.explodeTnt()` 内（单一权威）。
+ *
+ * ⚠️ **去重不放在 player 侧**：三条引爆路径（左键 / 枪击 / 连锁到期）中，后两条不经 player
+ * —— 若去重只在 player 侧，连锁路径会绕开它 → A↔B 两格相距 ≤2 的 TNT 永久互爆。
+ * mc-lite 的 `player.ignitingTNTs` 之所以够用，是因为它的四个入口全部在
+ * `PlayerInteraction` 内（`:179`/`:617`/`:1051`/`:1083`）；本仓库的连锁队列在 `Game`，
+ * 故去重必须下沉到 `Game.explodeTnt()`。
  * @param {number} x @param {number} y @param {number} z @returns {boolean}
  */
 igniteTnt(x, y, z) {
-  const bx = Math.floor(x), by = Math.floor(y), bz = Math.floor(z);
-  const key = `${bx},${by},${bz}`;
-  if (this.ignitingTnt.has(key)) return false;
-  this.ignitingTnt.add(key);
-  if (this._onIgniteTnt) this._onIgniteTnt(bx, by, bz);
-  return true;
+  if (!this._onIgniteTnt) return false;
+  // 返回值透传 game.explodeTnt 的去重结果（false = 已引爆过）
+  return this._onIgniteTnt(Math.floor(x), Math.floor(y), Math.floor(z));
 }
 ```
 
@@ -658,8 +674,8 @@ igniteTnt(x, y, z) {
 
 ```js
 // 体素命中分支内（拿到 bx/by/z 与 hitId 之后）：
-// M8：枪击命中 tnt → 引爆（mc-lite `PlayerInteraction.js:172` 是 ctrl+左键，
-// 本仓库简化为「命中即引爆」—— 有意偏离，规格 §2.2）
+// M8：枪击命中 tnt → 引爆（mc-lite `PlayerInteraction.js:1048` 是 `executeShot()` 内的
+// 枪击命中路径；`:172` 才是 ctrl+左键。本仓库简化为「命中即引爆」—— 有意偏离，规格 §2.2）
 if (hitId === this.registry.idOf('tnt')) {
   if (this.onIgniteTnt) this.onIgniteTnt(bx, by, bz);
   return;   // 不走破坏分支
@@ -688,8 +704,15 @@ activeEntities() {
 之后、`_waitForColumn` 之前）加：
 
 ```js
-/** TNT 是否破坏地形（mc-lite `Game.js` 实测默认 false：默认只伤害 + 连锁） */
+/** TNT 是否破坏地形（mc-lite `Game.js:92` 代码事实为 false：默认只伤害 + 连锁。
+ *  ⚠️ 不宣称「实测过默认开关下的爆炸行为」—— mc-lite 的 TNT 运行时目前是坏的，见下方 ⚠️） */
 this.canTntDestroyBlocks = false;
+/**
+ * 引爆去重集合（**单一权威在此**，不在 player 侧）。三条引爆路径（左键 / 枪击 / 连锁到期）
+ * 共用它 —— 防止连锁回环把同一格引爆两次（A↔B 相距 ≤2 的 TNT 会永久互爆）。
+ * @type {Set<string>}
+ */
+this._ignitingTnt = new Set();
 /** 连锁引爆队列：Array<{x,y,z,dueAt}>，dueAt 是 performance.now() 基准 */
 this._tntChain = [];
 /** 爆炸计数（只读测试钩子） */
@@ -698,35 +721,76 @@ this.explosionRenderer = new ExplosionRenderer({ scene: this.scene });
 ```
 
 Player 装配处注入回调（与 `onSpawnZombie` 同一位置）：
-`onIgniteTnt: (x, y, z) => this.explodeTnt(x, y, z),`；
-weaponController 装配处注入 `onIgniteTnt`（同函数）。
+`onIgniteTnt: (x, y, z) => this.explodeTnt(x, y, z),`（**透传返回值** —— player 的
+`igniteTnt()` 据此告诉调用方是否真的引爆了）；weaponController 装配处注入同一个函数。
+
+⚠️ **对齐 mc-lite TNT 的证据基础须如实记录**（CLAUDE.md 规矩「对齐上游须实测其运行时行为，
+不能读定义推断」在这里**无法满足**）：mc-lite 的 TNT 运行时目前是坏的 ——
+`PlayerInteraction.js:620` 与 `:686` 引用了**未声明**的 `worldAccess`（全仓只有三处
+`const worldAccess = this.player.world.worldAccessLayer;` 在 `:287`/`:327`/`:453`，
+都在各自方法内，`handleExplosionResult` 与 `explode()` 里没有，也无全局注入点）。
+ESM 是严格模式，`?.` **不保护未声明标识符**（实测：`undeclaredThing?.foo?.()` 抛
+`ReferenceError`）→ `:686` 抛错 → `:697` 的 `postMessage` 不执行 → 没有爆炸、没有伤害/粒子/音效，
+连锁也起不来。**故本任务的 TNT 数值/语义对齐是「读源码 + 推断意图」，不是实测对齐** ——
+验收报告的偏离表须显式记这一句，不要写成「实测对齐 mc-lite」。
 
 ```js
 /**
- * 引爆一格 TNT（M8 唯一爆炸入口）。两条引爆路径与连锁都经此处。
- * 顺序固定（规格 §2.2）：① 算范围 → ② 提交破坏事务 → ③ 入队连锁 →
- * ④ 伤害丧尸 → ⑤ 音效与特效。
+ * 引爆一格 TNT（M8 唯一爆炸入口）。三条路径（左键 / 枪击 / 连锁到期）都经此处。
+ *
+ * 顺序固定（规格 §2.2）：① **去重** → ② 算范围 → ③ 移除引爆格自身 → ④ 破坏事务 →
+ * ⑤ 入队连锁 → ⑥ 伤害丧尸 → ⑦ 音效与特效。
+ *
+ * ⚠️ **去重必须在本函数内**（不能只在 `player.igniteTnt` 里）：连锁队列与枪击路径都直接
+ * 调本函数，若去重只在 player 侧，A↔B 两格相距 ≤2 的 TNT 会**永久互爆**
+ * （A 炸 → 入队 B → B 到期炸 → 入队 A → …），`_tntExploded` 无界增长。
+ * mc-lite 同口径：四个引爆入口（`:179` ctrl+左键 / `:617` 连锁 / `:1051` / `:1083` 子弹命中）
+ * 全部先 `has` 再 `add`。
+ *
+ * ⚠️ **移除引爆格自身独立于破坏开关**：mc-lite `explode()` 的 `removeBlock` 只以
+ * 「该格是 tnt」为条件（`PlayerInteraction.js:683-688`），而 `canTntDestroyBlocks` 门控只包住
+ * 周围 3×3×3 的 `removeBlocksBatch`（`:608-614`）。若把自身移除塞进破坏开关内，默认关闭时
+ * 被引爆的 TNT 方块永不消失 → 连锁链永不终止（这是 mc-lite 的链能终止的原因：
+ * `:620` 先 removeBlock 再 explode）。
+ *
  * @param {number} x @param {number} y @param {number} z
+ * @returns {boolean} false = 去重命中（已引爆过），零世界写入
  */
 explodeTnt(x, y, z) {
+  // ① 去重（唯一入口 —— 三条路径共用同一集合）
+  const key = `${Math.floor(x)},${Math.floor(y)},${Math.floor(z)}`;
+  if (this._ignitingTnt.has(key)) return false;
+  this._ignitingTnt.add(key);
+
   const result = computeExplosion({ world: this.world, registry: this.registry, center: [x, y, z] });
-  // ② 破坏事务（含中心格自身 —— mc-lite 是单独 removeBlock，走同一事务更省）
-  if (this.canTntDestroyBlocks && result.destroy.length > 0) {
-    this.editor.setBlocks(result.destroy.map((c) => ({ x: c.x, y: c.y, z: c.z, id: 0 })));
+  const tntId = this.registry.idOf('tnt');
+  // ③ 移除引爆格自身（**不受破坏开关影响** —— 见上方 ⚠️）
+  if (this.world.getBlockId(result.center[0], result.center[1], result.center[2]) === tntId) {
+    this.editor.setBlock({ x: result.center[0], y: result.center[1], z: result.center[2], id: 0 });
+    this._ignitingTnt.delete(key);   // mc-lite `:687` 同口径：移除后释放去重键（该格已非 tnt）
   }
-  // ③ 入队连锁。**performance 基准 —— 禁止 Date.now()**（Global Constraints）
+  // ④ 破坏事务（周围 3×3×3，受开关门控）。⚠️ **过滤掉已在去重集合里的待爆 TNT**
+  //    （mc-lite `:610` 同手法）—— 否则连锁 TNT 会被自己的破坏事务删掉
+  if (this.canTntDestroyBlocks && result.destroy.length > 0) {
+    this.editor.setBlocks(result.destroy
+      .filter((c) => !this._ignitingTnt.has(`${c.x},${c.y},${c.z}`))
+      .map((c) => ({ x: c.x, y: c.y, z: c.z, id: 0 })));
+  }
+  // ⑤ 入队连锁。**performance 基准 —— 禁止 Date.now()**（Global Constraints）
   const now = performance.now();
   for (const t of result.chain) {
     this._tntChain.push({ x: t.x, y: t.y, z: t.z, dueAt: now + t.delayMs });
   }
-  // ④ 半径 4 格内丧尸受 50 伤害
+  // ⑥ 半径 4 格内丧尸受 50 伤害
   this._damageEntitiesInRadius(result.center, EXPLOSION_DAMAGE_RADIUS, EXPLOSION_DAMAGE, now);
-  // ⑤ 音效与特效同帧（mc-lite `World.js:1296` + `audioManager.playSound('explosion', 0.4)`）
+  // ⑦ 音效与特效同帧。音效出处 = mc-lite `PlayerInteraction.js:673`（音量 0.4）；
+  //    特效出处 = `World.js:1296 spawnExplosionParticles` 的球体扩张层（`World.js` **无音频代码**）
   this.audioManager?.play('explosion', 0.4);
   this.explosionRenderer.burst(
     [result.center[0] + 0.5, result.center[1] + 0.5, result.center[2] + 0.5], now,
   );
   this._tntExploded++;
+  return true;
 }
 
 /**
@@ -778,7 +842,7 @@ tntChainDebugState() { return { pending: this._tntChain.length, exploded: this._
 import * as THREE from 'three';
 
 const BURST_LIFE_MS = 300;       // mc-lite sphere.maxLife = 0.3
-const BURST_TARGET_SCALE = 5.0;  // mc-lite sphere.targetScale = 5.0
+const BURST_TARGET_SCALE = 5.0;  // mc-lite `World.js:1306` 运行时覆盖值（池初始化是 8.0，被覆盖）
 const _matrix = new THREE.Matrix4();
 const _zero = new THREE.Matrix4().makeScale(0, 0, 0);
 
@@ -786,9 +850,14 @@ export class ExplosionRenderer {
   constructor({ scene, maxActive = 16 }) {
     this.scene = scene;
     this.maxActive = maxActive;
-    const geometry = new THREE.SphereGeometry(0.5, 12, 10);
+    // ⚠️ 几何/材质逐项照搬 mc-lite `World.js:111-127`（池初始化值，运行时**未**被覆盖）：
+    // 半径 **1**（不是 0.5 —— 写 0.5 会让直径只有一半）、24×24 段、颜色 **0xffff00 黄**
+    // （不是橙）、`depthWrite:false` + `side: DoubleSide`（mc-lite 注释：避免深度冲突，
+    // 提升重叠球体的视觉效果）。
+    const geometry = new THREE.SphereGeometry(1, 24, 24);
     const material = new THREE.MeshBasicMaterial({
-      color: 0xff8844, transparent: true, opacity: 1, depthWrite: false,
+      color: 0xffff00, transparent: true, opacity: 0, depthWrite: false,
+      side: THREE.DoubleSide,
     });
     this.mesh = new THREE.InstancedMesh(geometry, material, maxActive);
     this.mesh.visible = false;   // 无爆炸时不提交渲染
@@ -821,11 +890,16 @@ export class ExplosionRenderer {
       const b = this._bursts[i];
       const t = (nowMs - b.startedAt) / BURST_LIFE_MS;
       if (t >= 1) { this.mesh.setMatrixAt(b.slot, _zero); this._bursts.splice(i, 1); continue; }
-      const scale = 0.1 + (BURST_TARGET_SCALE - 0.1) * t;   // mc-lite 初始 0.1
+      // 扩张与淡出照搬 mc-lite `World.js:1260-1263`：
+      // scale = 0.1 + progress × targetScale（终值 ≈ 5.1）；淡出 = pow(1 − progress, 1.5)
+      // （mc-lite 注释「指数函数实现先慢后快的透明度淡出」）—— **不是线性淡出**，
+      // 线性会让特效前半段就明显变透明，观感与 mc-lite 不一致。
+      const scale = 0.1 + t * BURST_TARGET_SCALE;
       _matrix.makeScale(scale, scale, scale);
       _matrix.setPosition(b.position[0], b.position[1], b.position[2]);
       this.mesh.setMatrixAt(b.slot, _matrix);
-      if (1 - t > maxOpacity) maxOpacity = 1 - t;
+      const opacity = Math.pow(1 - t, 1.5);
+      if (opacity > maxOpacity) maxOpacity = opacity;
     }
     this.mesh.instanceMatrix.needsUpdate = true;
     this.mesh.material.opacity = maxOpacity;
@@ -868,13 +942,38 @@ assets/sounds/`）；`src/render/audio-manager.js` 的 `SOUND_IDS` 改为
 
 - [ ] **Step 8: 写 Playwright E2E**
 
-`tests/tnt.spec.mjs`（`startGame` helper 照 `tests/zombie-nests.spec.mjs` 的既有写法）：
+`tests/tnt.spec.mjs`。⚠️ **没有 `startGame(page)` 这个 helper**（全仓 `tests/` 零命中）——
+实际写法是裸 `page.goto('/?vd=2')` + `waitWorldSettled(page)`，而 `waitWorldSettled` 由
+**每个 spec 各自定义**（`tests/zombie-nests.spec.mjs:25`，无共享 helper 模块）。
+故本 spec 须把 `waitWorldSettled` **整段复制**过来（照 zombie-nests 的实现，含其
+「sections 连续两次采样不变 + 队列归零」的判据与注释 —— 不能只判队列归零，那是瞬时状态）：
+
+```js
+import { test, expect } from 'playwright/test';
+
+/** 等世界真正稳定（判据 = sections 连续两次采样不变 + 队列归零）。
+ *  ⚠️ 不能只判队列归零 —— 那是瞬时状态，高负载下队列可能短暂归零而 column 还在加载。
+ *  整段照 `tests/zombie-nests.spec.mjs:25` 复制（含其注释与 90s timeout）。 */
+async function waitWorldSettled(page) { /* 照 zombie-nests.spec.mjs 实现 */ }
+
+/** 本 spec 的起手式（替代不存在的 startGame）：导航 + 等世界稳定 */
+async function boot(page) {
+  await page.goto('/?vd=2');
+  await waitWorldSettled(page);
+}
+```
+
+⚠️ 用 `?vd=2` 而非默认视距：M1/M3 的既有 spec 同口径，加载半径小 → 世界稳定快、
+spec 不 flaky。实测口径：加载半径 = `(vd + 2) × 16` 格（`scheduler.js:242`「加载半径 + 2」
+滞回）→ vd=2 是 **64 格**、vd=8 是 **160 格**。平台距玩家 10~64 格，故两种视距下平台
+覆盖的 column **通常都已加载**；Task 7 的「未加载视为重叠」判据是边界防护（玩家站在
+加载半径边缘时平台会部分超出），该 spec 用 `?vd=2` 即可触发到它，见 Task 7 Step 5 的负向验证 ②。
 
 ```js
 test('引爆 TNT：默认不破坏地形但伤害丧尸；开关开启后破坏地形', async ({ page }) => {
-  await startGame(page);
+  await boot(page);
   const setup = await page.evaluate(() => {
-    const g = window.game;
+    const g = window.__MC_GAME__;
     const p = g.player.physics.pos;
     const bx = Math.floor(p.x) + 3, by = Math.floor(p.y), bz = Math.floor(p.z);
     const stoneId = g.registry.idOf('stone');
@@ -890,19 +989,19 @@ test('引爆 TNT：默认不破坏地形但伤害丧尸；开关开启后破坏�
     return { bx, by, bz, zid, neighbor: [bx + 1, by, bz] };
   });
   // 默认关：地形不变
-  await page.evaluate((c) => window.game.explodeTnt(c.bx, c.by, c.bz), setup);
+  await page.evaluate((c) => window.__MC_GAME__.explodeTnt(c.bx, c.by, c.bz), setup);
   const terrainIntact = await page.evaluate((n) =>
-    window.game.world.getBlockId(n[0], n[1], n[2]) !== 0, setup.neighbor);
+    window.__MC_GAME__.world.getBlockId(n[0], n[1], n[2]) !== 0, setup.neighbor);
   expect(terrainIntact).toBe(true);
   // 丧尸掉血 100 → 50
-  const health = await page.evaluate((id) => window.game.zombies.get(id)?.state.health ?? null, setup.zid);
+  const health = await page.evaluate((id) => window.__MC_GAME__.zombies.get(id)?.state.health ?? null, setup.zid);
   expect(health).toBe(50);
   // 音效播放请求计数增加
-  const plays = await page.evaluate(() => window.game.audioDebugState().playRequests.explosion ?? 0);
+  const plays = await page.evaluate(() => window.__MC_GAME__.audioDebugState().playRequests.explosion ?? 0);
   expect(plays).toBeGreaterThanOrEqual(1);
   // 开启破坏后再炸一次 → 地形被破坏
   const destroyed = await page.evaluate((c) => {
-    const g = window.game;
+    const g = window.__MC_GAME__;
     g.setTntBlockDamage(true);
     g.editor.setBlock({ x: c.bx, y: c.by, z: c.bz, id: g.registry.idOf('tnt') });
     g.explodeTnt(c.bx, c.by, c.bz);
@@ -1492,7 +1591,7 @@ _placeSpecial(item, blockPos) {
     if (!this.turrets) return false;
     // 默认朝向 = 玩家相对炮塔的方向、取最近四方向之一（mc-lite `DIRECTIONS` 语义）
     const rotation = defaultTurretRotation(this.physics.pos, blockPos);
-    const r = this.turrets.place({ origin: blockPos, playerAabb: this._playerAabb(), rotation });
+    const r = this.turrets.place({ origin: blockPos, playerAabb: this.physics.aabb(), rotation });
     if (r.ok) this.audioManager?.play('put', 0.3);   // mc-lite `playSound('put', 0.3)`
     return r.ok;
   }
@@ -1570,26 +1669,31 @@ column 生命周期 —— 在既有 `_createNestControllers` / `_destroyNestCon
 加对称方法：
 
 ```js
-/** column ready 时为该 column 内的炮塔锚点创建 controller（照 `_createNestController` 同手法） */
-_createTurretController(id) {
+/**
+ * 创建炮塔 controller（**照 M7 的实际签名 `_createNestController(id, anchorEntity = null)`**，
+ * 不是不存在的 `_readNestAnchor`）。`anchorEntity` 可由调用方直接传入（`onPlaced` 路径此刻
+ * anchor 已知，省一次 `getBlockEntity`）；缺省则从 world 重读。
+ * @param {string} id @param {Object|null} [anchorEntity]
+ */
+_createTurretController(id, anchorEntity = null) {
   if (!this.turrets || this.turrets.controllers().has(id)) return;  // 已有 → 不重复创建
-  const anchorKey = this.turrets.anchorColumnKey(id);
-  if (!anchorKey) return;
-  const anchor = this._readTurretAnchor(id);
-  if (!anchor) return;
+  let entity = anchorEntity;
+  if (!entity) {
+    const anchor = this.turrets.anchorOf(id);
+    if (!anchor) return;
+    entity = this.world.getBlockEntity(anchor[0], anchor[1], anchor[2]);
+  }
+  if (!entity || entity.kind !== 'turret') return;
+  // 索引缺失（hydrate 前就 ready 的 column）：补登记，使上限判定包含它
+  if (!this.turrets.hasIndex(id)) {
+    const c = entity.critical;
+    this.turrets.registerAnchor(id, [c.x, c.y, c.z], entity.rotation ?? 0);
+  }
   const controller = new TurretController({
-    world: this.world, zombies: this.zombies, editor: this.editor, anchor,
+    world: this.world, zombies: this.zombies, editor: this.editor, anchor: entity,
     onInvalidated: (cid) => this._destroyTurret(cid),
   });
   this.turrets.setController(id, controller);
-}
-
-/** 从 blockEntity 重读锚点（column 已加载才有）。照 `_readNestAnchor` 同手法 */
-_readTurretAnchor(id) {
-  const anchor = this.turrets.anchorOf(id);
-  if (!anchor) return null;
-  const [x, y, z] = anchor;
-  return this.world.getBlockEntity(x, y, z);
 }
 
 _createTurretControllers(key, column) {
@@ -1659,17 +1763,17 @@ Expected: 图标指纹匹配（`turret_alias_block` 走平面路径）。
 
 ```js
 test('**背包选中路径**：选中 turret_alias_block 右键 → 放置完整 11 格结构', async ({ page }) => {
-  await startGame(page);
+  await boot(page);
   // 打开背包面板（Z 键）→ 点击 turret_alias_block 槽 → 关闭面板 → 右键
   await page.keyboard.press('KeyZ');
   await page.locator(`[data-item="${'turret_alias_block'}"]`).click();
   await page.keyboard.press('KeyZ');
   const placed = await page.evaluate(() => {
-    const g = window.game;
+    const g = window.__MC_GAME__;
     const p = g.player.physics.pos;
     // 准心朝下对准脚下地面格（模拟玩家看着地面右键）
     g.player.yaw = 0; g.player.pitch = -Math.PI / 2;
-    g.player.updateTarget();
+    g.player.setTestAim([0, -1, 0]);   // 朝下对准脚下地面（player.js:304 的既有测试 API）
     g.player.placeBlock();
     return { count: g.turrets.count(), controllers: g.turrets.controllers().size };
   });
@@ -1677,7 +1781,7 @@ test('**背包选中路径**：选中 turret_alias_block 右键 → 放置完整
   expect(placed.controllers).toBe(1);   // ⚠️ onPlaced 接线生效（否则恒 0 —— M7 实测坑）
   // 断言**不是**一个贴图案的正方体：11 格结构里 9 格 iron_ore + 2 格 obsidian
   const structure = await page.evaluate(() => {
-    const g = window.game;
+    const g = window.__MC_GAME__;
     const a = g.turrets.anchorOf('turret-1');
     const ironId = g.registry.idOf('iron_ore'), obsId = g.registry.idOf('obsidian');
     const aliasId = g.registry.idOf('turret_alias_block');
@@ -2157,7 +2261,8 @@ cp ../mc-lite/src/assets/turret/turret_pic3.jpg assets/turret/
 // `armor.json`；`check-data.mjs` 用当前参数重算比对 → 不匹配即报「跑 npm run turret」。
 // 纹理是**派生产物**，权威输入是本文件的参数。改了参数却忘跑烘焙，纹理会**静默过期**
 // （渲染旧图案，肉眼只觉得「颜色怪怪的」）—— 与图标过期同一条失效路径。
-// 参数逐项实测自 mc-lite `Turret.js` 的 `ARMOR_TEXTURES`（三张贴图 → 三个区）。
+// 参数逐项实测自 mc-lite `Turret.js:114-119` 的 `ARMOR_TEXTURES`（4 槽 3 图 —— TOP 与 BACK 都指向 pic3，
+// 故本计划的 `back: {zone:'top'}` 是对的）。
 import { PNG } from 'pngjs';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -2376,7 +2481,7 @@ export async function loadTurretArmorTexture() {
 // src/render/turret-renderer.js — M8：炮塔渲染（8 部件固定容量实例池，规格 §5.1）
 //
 // **为什么是每部件一个 InstancedMesh 而不是每炮塔 8 个 mesh**：mc-lite 每炮塔创建 8 个
-// `THREE.Mesh`（`Turret.js:262-284`）挂在两级 Object3D 上；20 炮塔 = 160 个 scene 节点 +
+// `THREE.Mesh`（`getTurretResources()` 内）挂在两级 Object3D 上；20 炮塔 = 160 个 scene 节点 +
 // 160 个 draw call。本仓库用 8 个固定容量 20 的 InstancedMesh（M6 六部件同手法），
 // 每实例矩阵 = `T(pivot) × R_y(yaw) × R_x(-pitch) × 部件局部变换`，等价 mc-lite 的层级但
 // 不产生 per-turret 节点。
@@ -2458,7 +2563,7 @@ export class TurretRenderer {
       if (useMap) applyZoneUV(geometry, ZONES.indexOf(def.zone));
       const material = new THREE.MeshBasicMaterial(useMap
         ? { color: 0xffffff, map: armorTexture }
-        : { color: def.color ?? (part === 'back' ? 0xbbbbbb : 0xcccccc) });
+        : { color: def.color ?? TURRET_TOWER_COLOR[part === 'back' ? 'DARK' : 'MAIN'] });
       const mesh = new THREE.InstancedMesh(geometry, material, maxActive);
       mesh.name = `turret:${part}`;      // 受控标识：测试与调试据此定位节点
       mesh.frustumCulled = false;
@@ -2481,7 +2586,7 @@ export class TurretRenderer {
   /**
    * 发布 pose（只读 → 8 部件矩阵）。矩阵 = `T(pivot) × R_y(yaw) × R_x(-pitch) × 部件局部变换`。
    * ⚠️ **pitch 取反**（mc-lite `pitchObject.rotation.x = -this.currentPitch`，
-   * `Turret.js:659`：three 旋转方向与 atan2 结果相反）。
+   * `Turret.js:656`：three 旋转方向与 atan2 结果相反）。
    * **差集驱动 slot**（M5 `EntityRenderLayer.sync` 同手法）：新 id 分配 slot、已有 id 更新矩阵、
    * 消失 id 归还 slot。炮塔不是 EntityManager 实体（是方块锚定装置），没有 `despawnColumn`
    * 绕过玩法服务的回收路径，故差集驱动自动覆盖全部回收场景（column 卸载 / 失效 / 放置）。
@@ -2627,7 +2732,7 @@ test('炮塔渲染：正面/侧面/顶面各区取到对应装甲贴图，炮管
 
 test('炮塔渲染：无炮塔时 8 个 mesh 全部 visible=false', async ({ page }) => {
   const visible = await page.evaluate(() =>
-    window.game.scene.children.filter((c) => c.name?.startsWith('turret:') && c.visible).length);
+    window.__MC_GAME__.scene.children.filter((c) => c.name?.startsWith('turret:') && c.visible).length);
   expect(visible).toBe(0);
 });
 
@@ -2691,9 +2796,11 @@ export const projectileDefinition;   // {create, update, raycastAabb, serialize,
 export const PROJECTILE_AABB;        // {min:[-0.15,-0.15,-0.15], max:[0.15,0.15,0.15]}
 advanceProjectile({ state, dt, world, registry, entities, nowMs });
 // → { state, alive: boolean, reason?: 'block'|'entity'|'max-distance', hitId?: string }
-judgeProjectile({ state, world, registry, entities, stepLen, nowMs, onDamage? });
-// → 'block'|'entity'|'max-distance'|null（**只判定不推进** —— Game 帧循环用这个；
-//   推进由 `projectileDefinition.update` 经 `entities.update()` 驱动，避免两处推进）
+judgeProjectile({ next, world, registry, entities, stepLen, nowMs, onDamage? });
+// → { reason: 'block'|'entity'|'max-distance'|null, hitId?: string }
+//   **只判定不推进**（纯谓词）—— Game 帧循环用这个；`next` = 本步推进后的 state。
+//   推进由 `projectileDefinition.update` 经 `entities.update()` 驱动，避免两处推进。
+//   `advanceProjectile` 是它的薄封装（推进 + 判定），仅单测用。
 
 // projectile-renderer.js
 ProjectileRenderer({ scene, maxActive? })
@@ -2745,21 +2852,26 @@ test('弹丸撞实心不透明方块即停，透明方块可穿透', () => {
 test('弹丸命中丧尸：经 EntityManager.raycast，伤害 34（三发死）', () => {
   const { world, registry, entities, zombies } = makeProjectileFixture();
   const zid = zombies.spawn([10.5, 4, 16.5], { source: 'projectile-spec' });
+  // ⚠️ **必须传 `onDamage`** —— `judgeProjectile` 里是 `if (onDamage) onDamage(...)`，
+  // 不传则伤害不发生，下面的 `health === 32` 与「第三发 despawn」断言都会失败。
+  // 用 fixture 里 zombies.damage 的同手法接线（与 game.js 的真实接线口径一致）。
+  const onDamage = (id, amount, ms) => zombies.damage(id, amount, ms);
   // **临界值附近断言**（CLAUDE.md 活跃约束：远离阈值的输入测不出换算错误）
   let r;
   for (let i = 0; i < 2; i++) {
     r = advanceProjectile({ state: makeProjectileState([10.5, 5.2, 15.5]), dt: 0.1,
-      world, registry, entities, nowMs: i * 100 });
+      world, registry, entities, nowMs: i * 100, onDamage });
     assertEqual(r.reason, 'entity');
     assertEqual(r.hitId, zid);
   }
   assertEqual(zombies.get(zid).state.health, 32);      // 100 − 34×2 = 32 → **两发不死**
   r = advanceProjectile({ state: makeProjectileState([10.5, 5.2, 15.5]), dt: 0.1,
-    world, registry, entities, nowMs: 200 });
+    world, registry, entities, nowMs: 200, onDamage });
   assertEqual(zombies.get(zid), null);                  // 第三发 32−34 ≤ 0 → despawn
 });
 
 test('弹丸飞满 50 格即消失', () => {
+  const { world, registry, entities } = makeProjectileFixture();
   const state = projectileDefinition.create({ position: [10, 5, 10], direction: [1, 0, 0],
     traveled: TURRET.projectileMaxDistance - 0.1, source: 'turret-1' });
   const r = advanceProjectile({ state, dt: 0.1, world, registry, entities, nowMs: 0 });
@@ -2853,42 +2965,67 @@ export const projectileDefinition = Object.freeze({
 });
 
 /**
- * 弹丸的一步完整判定（阻挡 + 命中 + 超距）。由 Game 每帧对每个弹丸调用。
+ * **只判定不推进**的纯谓词 —— 弹丸判定的**唯一实现**（阻挡 + 命中 + 超距）。
+ * Game 帧循环用这个（推进由 `projectileDefinition.update` 经 `entities.update()` 驱动 ——
+ * 两处推进会让弹丸速度翻倍，见 Step 4 的 ⚠️）；单测用的 `advanceProjectile` 是它的薄封装。
  *
  * 判定顺序（mc-lite `Projectile.update` 同序）：① 超距 → ② 方块阻挡（DDA）→ ③ 实体命中。
  * ⚠️ 顺序不能换：若先判实体命中，弹丸可能在「已飞超最大距离」的位置上命中丧尸。
  *
- * @param {{state: object, dt: number, world, registry, entities, nowMs: number,
+ * ⚠️ **判定线段必须是本步实际穿越的那段**：`from = 步后 position − direction×stepLen`
+ * （`direction` 已归一化，直接可算）。若只从步后位置起算，刚走过的线段永不判定 →
+ * dt 尖峰时穿墙（40 格/秒 × 0.05s = 2 格 > 1 格墙厚）。「DDA 取代 mc-lite 的双点采样」
+ * 正是本任务的核心论证，判定区间错了会让该论证失效。
+ *
+ * ⚠️ `raycastVoxel` 未命中返回 **`{hit:false}`（truthy 对象）**，不是 null →
+ * 必须判 `blockHit.hit`；写成 `if (blockHit)` 会让弹丸每次判定都立刻判「撞方块」而死。
+ *
+ * @param {{next: object, world, registry, entities, stepLen: number, nowMs: number,
  *          onDamage?: (id:string, amount:number, nowMs:number)=>void}} p
- * @returns {{state: object, alive: boolean, reason?: 'block'|'entity'|'max-distance', hitId?: string}}
+ *        `next` = 本步推进后的 state（由 `projectileDefinition.update` 或调用方给出）
+ * @returns {{reason: 'block'|'entity'|'max-distance'|null, hitId?: string}}
  */
-export function advanceProjectile({ state, dt, world, registry, entities, nowMs, onDamage = null }) {
-  const next = update({ state }, dt, { world });
+export function judgeProjectile({ next, world, registry, entities, stepLen, nowMs, onDamage = null }) {
   // ① 超距
-  if (next.traveled >= TURRET.projectileMaxDistance) {
-    return { state: next, alive: false, reason: 'max-distance' };
-  }
-  // ② 方块阻挡：DDA 遍历本步线段（起点→终点），命中「实心且不透明」即停。
-  //    红线 6：地形交互一律体素 DDA —— 调 `raycastVoxel` 并传第五参数 `isProjectileOccluding`
-  //    （与炮塔 LOS 共用同一判据，红线 1；**不写第二份 DDA**）。
-  const stepLen = TURRET.projectileSpeed * dt;
-  const blockHit = raycastVoxel(
-    world, state.position, next.direction, stepLen,
-    (id) => isProjectileOccluding(id, registry),
-  );
-  if (blockHit) return { state: next, alive: false, reason: 'block' };
+  if (next.traveled >= TURRET.projectileMaxDistance) return { reason: 'max-distance' };
+  // ② 方块阻挡：DDA 遍历 from → to（本步实际穿越的线段）。红线 6：地形交互一律体素 DDA，
+  //    遮挡判据用 `isProjectileOccluding`（与炮塔 LOS 共用 —— 红线 1，不写第二份 DDA）
+  const [dx, dy, dz] = next.direction;
+  const from = [
+    next.position[0] - dx * stepLen,
+    next.position[1] - dy * stepLen,
+    next.position[2] - dz * stepLen,
+  ];
+  const blockHit = raycastVoxel(world, from, next.direction, stepLen,
+    (id) => isProjectileOccluding(id, registry));
+  if (blockHit.hit) return { reason: 'block' };   // ⚠️ 判 `.hit`，不是判对象本身
   // ③ 实体命中：EntityManager.raycast（实体命中唯一入口，红线 6）
   if (entities) {
-    const hit = entities.raycast(state.position, next.direction, stepLen,
+    const hit = entities.raycast(from, next.direction, stepLen,
       (entity) => entity.type === 'zombie');   // 只打丧尸（不打其它弹丸/未来实体）
     if (hit) {
       // 伤害经 ZombieService.damage（M6 已实现红闪 + health ≤ 0 即 despawn，不另写伤害路径）
       if (onDamage) onDamage(hit.id, TURRET.projectileDamage, nowMs);
-      return { state: next, alive: false, reason: 'entity', hitId: hit.id };
+      return { reason: 'entity', hitId: hit.id };
     }
   }
+  return { reason: null };
+}
+
+/**
+ * `judgeProjectile` 的薄封装（推进 + 判定）—— **单测与「需要同时拿到新 state」的场景用**。
+ * ⚠️ Game 帧循环**不用**它（推进已由 `entities.update()` 驱动，见 Step 4）。
+ * @returns {{state: object, alive: boolean, reason?: 'block'|'entity'|'max-distance', hitId?: string}}
+ */
+export function advanceProjectile({ state, dt, world, registry, entities, nowMs, onDamage = null }) {
+  const next = update({ state }, dt, { world });
+  const { reason, hitId } = judgeProjectile({
+    next, world, registry, entities, stepLen: TURRET.projectileSpeed * dt, nowMs, onDamage,
+  });
+  if (reason) return { state: next, alive: false, reason, ...(hitId ? { hitId } : {}) };
   return { state: next, alive: true };
 }
+
 ```
 
 **遮挡判据的接线方式** —— `raycastVoxel` 缺省命中任何非空气非水方块，与弹丸的「实心且不
@@ -3050,42 +3187,21 @@ fireProjectile(position, direction, turretId) {
   }) !== null;
 }
 
-/** 帧循环内推进弹丸（放在 entities.update 之后 —— 先推进位置再判命中） */
-_updateProjectiles(nowMs, dt) {
-  const list = [];
-  for (const entity of this.entities.entities()) {
-    if (entity.type === 'projectile') list.push(entity);
-  }
-  if (list.length === 0) return;
-  for (const entity of list) {
-    const r = advanceProjectile({
-      state: entity.state, dt, world: this.world, registry: this.registry,
-      entities: this.entities, nowMs,
-      onDamage: (id, amount, ms) => this.zombies.damage(id, amount, ms),
-    });
-    if (!r.alive) {
-      this.entities.despawn(entity.id, r.reason);
-      // 命中丧尸时的音效（mc-lite 无命中音效，只有开火音；此处不加 —— 保持 mc-lite 口径）
-    } else {
-      // 推进已由 advanceProjectile 算出，但 state 写入要走 EntityManager 的不变式
-      // （generation 单调 + column 索引迁移）→ 用 entities.applyAsyncPose 不适用（它只改 position），
-      // 故让 definition.update 在 entities.update 里推进（见下方 ⚠️）
-    }
-  }
-}
-```
-
-⚠️ **推进不能做两遍**（红线 1：同一事实的两个副本）。`projectileDefinition.update` 已被
-`entities.update(dt, {world})` 驱动推进位置；`_updateProjectiles` **只负责判定与 despawn**，
-不得再写 state。故上面的 `advanceProjectile` 调用要拆成两个职责：
-
-```js
-// 正确接线：entities.update 推进位置（definition.update）→ 本方法只做判定
+/**
+ * 帧循环内判定弹丸（放在 `entities.update` 之后 —— 位置已推进，本方法只判定与 despawn）。
+ *
+ * ⚠️ **推进不能做两遍**（红线 1：同一事实的两个副本）。位置推进已由
+ * `projectileDefinition.update` 经 `entities.update(dt, {world})` 驱动；本方法**只调
+ * `judgeProjectile`（纯谓词）+ despawn**，不得再写 state —— 两处推进会让弹丸速度翻倍
+ * （与丧尸「两处物理会让丧尸推进两遍」同一类缺陷，见 Step 1 的负向验证 ⑤）。
+ * `judgeProjectile` 内部用 `from = position − direction×stepLen` 还原本步穿越的线段，
+ * 故即便只拿到步后位置也能判定正确区间（见 Step 3 的 ⚠️）。
+ */
 _updateProjectiles(nowMs, dt) {
   for (const entity of this.entities.entities()) {
     if (entity.type !== 'projectile') continue;
-    const reason = judgeProjectile({   // 只判定，不推进（纯谓词）
-      state: entity.state, world: this.world, registry: this.registry,
+    const { reason } = judgeProjectile({
+      next: entity.state, world: this.world, registry: this.registry,
       entities: this.entities, stepLen: TURRET.projectileSpeed * dt, nowMs,
       onDamage: (id, amount, ms) => this.zombies.damage(id, amount, ms),
     });
@@ -3093,10 +3209,6 @@ _updateProjectiles(nowMs, dt) {
   }
 }
 ```
-
-→ 实现时把 `advanceProjectile` 拆成 `judgeProjectile`（纯判定，返回 reason 或 null）与
-`projectileDefinition.update`（推进）。单测两个都测。**这是本任务最容易写错的地方** ——
-两处推进会让弹丸速度翻倍（与丧尸「两处物理会让丧尸推进两遍」同一类缺陷）。
 
 帧序接线（`entities.update` 之后、`entityLayer.sync` 之前）：
 
@@ -3135,7 +3247,7 @@ Expected: PASS —— 推进速度、DDA 阻挡（透明穿透）、实体命中
 
 ```js
 test('炮塔开火 → 弹丸飞行 → 命中丧尸掉血（三发死）', async ({ page }) => {
-  await startGame(page);
+  await boot(page);
   // 放一个炮塔 + 在它前方 10 格生成一只丧尸 → 等炮塔索敌对准开火
   // 断言：projectilesDebugState().count 曾 > 0；丧尸 health 递减 34/68/100→死
   // ⚠️ 时序：炮塔索敌 8Hz + 朝向插值 π/2 每秒 + 冷却 500ms → 从放置到首次命中约 1~2 秒，
@@ -3150,7 +3262,7 @@ test('弹丸三条回收路径都归还渲染 slot', async ({ page }) => {
 
 test('无弹丸时 projectile mesh visible=false', async ({ page }) => {
   const visible = await page.evaluate(() => {
-    const m = window.game.scene.children.find((c) => c.name === 'projectile:pool');
+    const m = window.__MC_GAME__.scene.children.find((c) => c.name === 'projectile:pool');
     return m ? m.visible : null;
   });
   expect(visible).toBe(false);
@@ -3698,13 +3810,13 @@ function checkPlaygroundContract() {
 
 ```js
 test('创造台：生成 54×54 平台 + 中心块，平台方块不可挖不可炸', async ({ page }) => {
-  await startGame(page);
-  const r = await page.evaluate(() => window.game.createPlayground());
+  await boot(page);
+  const r = await page.evaluate(() => window.__MC_GAME__.createPlayground());
   expect(r.ok).toBe(true);
   const origin = r.origin;
   // 平台格数（抽样验证：四角 + 中心）
   const blocks = await page.evaluate((o) => {
-    const g = window.game;
+    const g = window.__MC_GAME__;
     const blockId = g.registry.idOf('playground_block');
     const centerId = g.registry.idOf('playground_center_block');
     return {
@@ -3717,7 +3829,7 @@ test('创造台：生成 54×54 平台 + 中心块，平台方块不可挖不可
   expect(blocks.center).toBe(blocks.centerId);
   // 徒手挖平台方块 → 零写入（indestructible 门控）
   const digResult = await page.evaluate((o) => {
-    const g = window.game;
+    const g = window.__MC_GAME__;
     g.player.target = { blockPos: [o[0], o[1], o[2]], prevPos: [o[0], o[1] + 1, o[2]],
       normal: [0, 1, 0], dist: 2 };
     g.player.digBlock();
@@ -3790,38 +3902,58 @@ Toast({ container? })   // .show(message, durationMs?) / .hide() / .dispose()
                         // 屏幕中部短暂提示、自动淡出、**不进 uiModal 模态栈**
 ```
 
-- [ ] **Step 1: 写失败的 UI 契约测试**
+- [ ] **Step 1: 写失败的 UI 契约测试（照仓库既有手法，不给面板开测试口子）**
+
+⚠️ **`test-ui.js` 是纯函数单测**（只测 `ui/settings.js` 的 `resolveSettings`/`VIEW_DISTANCE_OPTIONS`
+与 `ui/icons.js` 的 manifest 契约），**没有** `makeSettingsPanel` 这类面板 fixture，
+`settings-panel.js` 也没有任何「测试用只读访问器」先例（公开成员只有
+`constructor`/`open`/`close`/`toggle`/`get isOpen`）。故**不要**发明
+`panel.playgroundLabel()` / `setPlaygroundActive()` 这类不存在的方法 —— 那会让 RED 永远不 GREEN。
+
+改用仓库既有手法：**把两态文案提成导出常量，断言「构造与状态切换都派生自同一常量」**
+（v1.35 的 `CLEAR_SAVE_LABEL` 就是这个套路 —— 它的失效路径正是「复位函数写死旧长文案
+覆盖构造时的短文案」）。toast 的断言落在**它自己的纯函数接口**上，不碰面板。
 
 在 `src/tests/test-ui.js` 追加：
 
 ```js
-test('创造台按钮文案单一口径：构造与状态切换共用同一常量', () => {
+test('创造台按钮文案是导出的单一口径常量（两态 + 错误映射）', () => {
   // ⚠️ v1.35 踩坑：`_resetDangerArmed()` 写死旧长文案覆盖了构造时的短文案
-  // → 面板打开后显示复位那份，构造代码形同虚设。断言 = 两种状态下的文案都来自同一常量
-  const panel = makeSettingsPanel({ playgroundActive: false });
-  assertEqual(panel.playgroundLabel(), '打开创造台');
-  panel.setPlaygroundActive(true);
-  assertEqual(panel.playgroundLabel(), '关闭创造台');
+  // → 面板打开后显示复位那份，构造代码形同虚设。
+  // 钉法 = 断言常量**已导出**且值固定 —— 实现里的构造与状态切换都必须 import 这两个常量，
+  // 不得在别处写字面量（Step 4 的实现据此写；写死字面量则本断言与实现脱钩）。
+  assertEqual(PLAYGROUND_OPEN_LABEL, '打开创造台');
+  assertEqual(PLAYGROUND_CLOSE_LABEL, '关闭创造台');
+  // 错误文案映射同样是单一口径（不散落字面量）
+  assertEqual(PLAYGROUND_ERRORS['player-in-playground'], '请离开创造台区域后再关闭');
+  assertEqual(PLAYGROUND_ERRORS['exists'], '创造台已存在');
 });
 
 test('toast 不进模态栈（提示期间玩家仍能操作世界）', () => {
-  const toast = new Toast({ container: makeFakeContainer() });
+  // toast 的断言落在它自己的纯函数接口上（不需要面板 fixture，也不需要 game 实例）。
+  // container 用一个最小的假 DOM 容器（`{ appendChild() {} }` 桩件即可 —— toast 只调它一次）。
+  const toast = new Toast({ container: { appendChild() {} } });
   toast.show('创造台已创建');
   assertEqual(toast.isModal(), false);          // 不是模态
-  assertEqual(game.uiModal, null);              // 没进 uiModal 栈（主循环不跳过 player.update）
   assertTrue(toast.isVisible());
+  // ⚠️ 「没进 uiModal 栈」这条**不在单测里断言** —— `uiModal` 是 Game 的状态，
+  // 单测没有 game 实例。它由 toast 的实现保证（`show()` 里不调 `game.pushModal`），
+  // 并在 Task 8 Step 5 的负向验证里用真游戏页兜住（注入「show 调 pushModal」→ E2E 须真 FAIL）。
 });
 
-test('创造台操作进行中锁定按钮（防重复点击）', () => {
-  // 2916 格的写入是秒级操作，重复点击会产出两个平台或半删状态
-  const panel = makeSettingsPanel({});
-  panel.setPlaygroundBusy(true);
-  assertEqual(panel.playgroundButtonDisabled(), true);
-  panel.setPlaygroundBusy(false);
-  assertEqual(panel.playgroundButtonDisabled(), false);
+test('toast 自动淡出（durationMs 后 hide）', async () => {
+  const toast = new Toast({ container: { appendChild() {} } });
+  toast.show('提示', 10);       // 极短时长便于单测
+  assertTrue(toast.isVisible());
+  await new Promise((r) => setTimeout(r, 30));
+  assertEqual(toast.isVisible(), false);   // 定时器触发 hide
 });
 ```
 
+⚠️ **防重复点击（busy 锁）不在单测里断言** —— 它是面板的 DOM 状态，单测没有面板实例。
+落在 Task 8 Step 5 的负向验证（真游戏页连续点击 → 断言只产出一个平台）。
+⚠️ **无效盲区自查**：若只断言「第一次点击成功」，注入「去掉锁」仍全绿 ——
+E2E 须断言「第二次点击在操作进行中被拒绝」（`reason === 'exists'` 或按钮 disabled）。
 - [ ] **Step 2: 验证 RED**
 
 Run: `npx playwright test tests/harness.spec.mjs`

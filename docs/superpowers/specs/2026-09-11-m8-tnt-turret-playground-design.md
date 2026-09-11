@@ -363,9 +363,11 @@ position」，原地改写会让两者恒相等 → 索引永不迁移 → colum
 → 本仓库 `solidTable && opaqueTable`），透明方块（玻璃/水/云）可穿透。该判据做成同构纯函数
 供弹丸与炮塔 LOS 共用（两个消费方，红线 1：各写一份会漂移出「看得见但打不着」的撕裂状态）。
 
-**伤害换算**：mc-lite 是 `hitCount` 计数 + `maxHits=3`（`Zombie.js:163`），mc-heavy 是
-`ZOMBIE.health=100` + 数值伤害。故 `PROJECTILE.damage = 34`（三发 102 ≥ 100，保持「三发杀死」
-语义）。命中经 `ZombieService.damage(id, 34, nowMs)` —— 红闪与 despawn 复用 M6，不另写。
+**伤害换算**：mc-lite 的丧尸有**两套血量并存** —— `hitCount`/`maxHits=3`（`Zombie.js:163`，
+炮塔 `takeHit` 走这条）与 `health=100` + `takeDamage(damage)`（`:526-536`，枪械与爆炸走这条）。
+mc-heavy 只有后者（`ZOMBIE.health=100` + 数值伤害）。故 `PROJECTILE.damage = 34`
+（三发 102 ≥ 100，保持 mc-lite 炮塔「三发杀死」语义）。命中经
+`ZombieService.damage(id, 34, nowMs)` —— 红闪与 despawn 复用 M6，不另写。
 ⚠️ 该数值落在 `turret-config.js` 单一权威，测试须在**临界值附近**断言（两发不死、三发死），
 远离阈值的输入测不出换算错误。
 
@@ -556,7 +558,7 @@ M8 引入四项新机制，须在 `docs/phase-1-engine-design.md` 落地后再�
 
 | 新机制 | 落点 | 要点 |
 |---|---|---|
-| `indestructible` 方块属性表 | §4.1 方块注册表 | 第四个 typed 属性表；三个消费者共用单一权威 |
+| `indestructible` 方块属性表 | §4.1 方块注册表 | 第 **8** 个 typed 属性表（代码里现有 7 张：solid / opaque / cull / emissive / geometry / orientationModes / supportsPlayer）；三个消费者共用单一权威。⚠️ §4.1 目前没有属性表清单（只描述 ChunkColumn 存储字段），须顺带补上完整清单 |
 | 爆炸计算（同构纯函数，主线程） | §4.5 玩家与交互（新增小节）+ 红线 3 的边界判定 | 记清「152 次查询、须与音效同帧」的取舍依据，避免后人误判为红线 3 违规 |
 | `turret` / `projectile` 两种 blockEntity kind 与实体类型 | DR-17 的 blockEntity 通道段 + §9 后续功能扩展点表 | DR-17 已写「后续炮塔/床/宝箱可直接复用此通道」—— M8 是第二个消费者，须回填实测结论。⚠️ 实体运行时**不在编号子系统里**（设计文档 §4.6 是光照与 AO；M5 的 `EntityManager` 只出现在 §9 扩展点表与 DR 记录中），落点须查实际章节，勿照本表硬写 |
 | `playground` blockEntity kind + 物品集合口径变更 | DR-17 同段 + §4.5.4 物品集合 | §1.1 的派生集合 vs mc-lite 手工列举差异 |
