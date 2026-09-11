@@ -78,8 +78,9 @@ DR-17 原文已写「后续炮塔/床/宝箱等同类装置可直接复用此通
 
 ```markdown
 > **第三批消费者由 M9 落地**：`playground`（创造台中心块 `{kind:'playground', id, origin:[x,y,z], size}`）。
-> 四个 kind（zombie-nest / turret / playground，以及 M8 的 turret）共用同一 edits 通道与
-> `Persistence.listBlockEntities(kind)` cursor 扫库判上限，未引发 schemaVersion 变更。
+> 三个 kind（zombie-nest / turret / playground）共用同一 edits 通道与
+> `Persistence.listBlockEntities(kind)` cursor 扫库判上限，未引发 schemaVersion 变更 ——
+> DR-17 当初预留的形状经三批消费者验证够用。
 ```
 
 ⚠️ **实体运行时不在编号子系统里**（设计文档 §4.6 是光照与 AO；M5 的 `EntityManager` 只出现在 §9 扩展点表与 DR 记录中），落点须查实际章节，勿照本表硬写。
@@ -88,7 +89,7 @@ DR-17 原文已写「后续炮塔/床/宝箱等同类装置可直接复用此通
 
 物品集合从 118 变为 116（创造台两项加进 `HIDDEN_FROM_INVENTORY`）。⚠️ **门禁打印的「排除 N」是两个排除集合之和**（`NON_PLACEABLE_ITEMS.length + HIDDEN_FROM_INVENTORY.length`）：当前 `排除 8` → 改后 `排除 10`（`HIDDEN_FROM_INVENTORY` 自身 4→6）。
 
-说明本仓库物品集合是**派生集合**（registry − 排除集合），而 mc-lite 是手工列举 107 项（不含 playground）—— 这是派生口径与上游手工列举的差异，须在修订说明里记一句。
+说明本仓库物品集合是**派生集合**（registry − 排除集合），而 mc-lite 是手工列举（`Game.js:206-321` 实测 107 行匹配、2 行被注释 → **有效 105 项**，不含 playground）—— 这是派生口径与上游手工列举的差异，须在修订说明里记一句。
 
 - [ ] **Step 3: 划掉 §9 扩展点表的创造台行**
 
@@ -96,13 +97,21 @@ DR-17 原文已写「后续炮塔/床/宝箱等同类装置可直接复用此通
 
 - [ ] **Step 4: bump 设计文档版本号 + 写修订说明**
 
-⚠️ 本 Epic 属**架构口径变更**（新数据通道消费者 + 物品集合口径），须进修订说明并 bump 版本号（版本号以文档自身首行为准）。
+⚠️ 本 Epic 属**架构口径变更**（新数据通道消费者 + 物品集合口径），须进修订说明并 bump 版本号（**目标版本号 = v1.40**（现 v1.35；roadmap 的独立改动表已占用 v1.36/v1.37/v1.38，故 M8 取 v1.39、M9 取 v1.40 —— 避免撞号））。
 
 - [ ] **Step 5: 同步 roadmap 与 CLAUDE.md**
 
 roadmap 里程碑总表加 M9 行（状态「📝 待实施」/ 关键 commit 留空待回填）；后续扩展点表划掉创造台行。
 
-⚠️ **CLAUDE.md 有一条硬编码数字的活跃约束须改写**：「背包物品集合口径 **118 项** = registry 126 − `NON_PLACEABLE_ITEMS`（4 项）− `HIDDEN_FROM_INVENTORY`（4 项）」。Task 1 把创造台两项加进 `HIDDEN_FROM_INVENTORY` 后变为 **116 项**（排除集合 4→6 项）。该条须同步改写，否则后续实现者按过期口径判断集合大小。
+⚠️ **CLAUDE.md 有一条硬编码数字的活跃约束须改写**：「背包物品集合口径 **118 项** = registry 126 − `NON_PLACEABLE_ITEMS`（4 项）− `HIDDEN_FROM_INVENTORY`（4 项）」。Task 1 把创造台两项加进 `HIDDEN_FROM_INVENTORY` 后变为 **116 项**。⚠️ 改写时须同时更新两个数字：物品集合 `118 → 116`、`HIDDEN_FROM_INVENTORY` 项数 `4 → 6`。**不要只写「排除集合 4→6」** —— 门禁实际打印的是**两个集合之和**（`排除 8 → 排除 10`），与「4→6」不是一个口径（上一轮 B1 的同一个坑）。该条须同步改写，否则后续实现者按过期口径判断集合大小。
+
+⚠️ **规格 §10（CLAUDE.md「文档同步」规则）还要求同步「目录结构清单 + 开发命令清单 + 现状声明」三类文档**（本任务不可漏 —— 漏了即违反 CLAUDE.md 硬规则）。M9 新增的产物须进对应清单：
+
+- **目录结构清单**（设计文档 §5）：`src/entities/playground/`（config / service）、`src/ui/toast.js`、`tests/playground.spec.mjs`；
+- **开发命令清单**：M9 无新增 npm 命令（创造台不涉及烘焙）；
+- **现状声明**：CLAUDE.md 的「一句话现状」须加上 M9（创造台已交付），roadmap 的里程碑总表 M9 行状态改「✅ 完成」+ 回填 commit hash（Task 4 做）。
+
+⚠️ **`docs/m9-playground-acceptance-report.md`** 由 Task 4 产出，也须进目录结构清单。
 
 同时新增一条 M9 活跃约束（放在 M8 段之后）：
 
@@ -135,6 +144,7 @@ git commit -m "docs(m9): 设计文档同步——playground kind / 物品集合�
 - Modify: `src/player/inventory.js`（`HIDDEN_FROM_INVENTORY` 加两项）
 - Modify: `tools/check-data.mjs`（新增 `[创造台]` 环节）
 - Modify: `src/tests/test-block-registry.js`（表契约 + 移出背包断言）
+- Modify: `src/tests/test-weapons.js`（⚠️ **翻转回改 M8 改过的三条 playground 断言**，见 Step 3）
 - Modify: `assets/icons-atlas.png`, `assets/icons.json`（`npm run icons` 产物）
 
 **Interfaces:**
@@ -184,13 +194,34 @@ Expected: FAIL —— 两项未登记 indestructible、仍在物品集合内。
 export const HIDDEN_FROM_INVENTORY = [
   'chimney', 'bed_head', 'bed_tail', 'bed_alias_block',
   // M9：创造台平台方块。**既有偏差修正** —— 本仓物品集合是派生的（registry − 排除集合），
-  // 而 mc-lite 是手工列举 107 项（实测不含这两项）。配上 indestructible 门控后，若留在背包
+  // 而 mc-lite 是手工列举（`Game.js:206-321` 实测 107 行匹配、2 行被注释 → 有效 105 项，
+  // **不含**这两项）。配上 indestructible 门控后，若留在背包
   // 会产出撕裂状态：玩家放得出来，但挖不掉、TNT 也炸不掉（只能靠关闭创造台批量删）。
   'playground_block', 'playground_center_block',
 ];
 ```
 
 ⚠️ **两项登记 indestructible 与移出背包必须同时做**（见 Step 1 断言）—— 只做一半会产出撕裂状态。
+
+⚠️ **A8：翻转回改 M8 改过的既有断言**（跨 Epic 必改项，不做则本任务 GREEN 跑不过）。
+M8 Task 1 因 playground 两项不在表里，把 `src/tests/test-weapons.js:90/91/97` 的三条断言
+改成了 `assertTrue`。M9 登记两项后它们恢复不可破坏 → **改回 `assertFalse`**：
+
+```js
+test('weapon policy: bedrock/end_stone/创造台不可破坏，水与 end_stone_bricks 可破坏', () => {
+  const { registry, ids } = makeRegistryWithWeaponBlocks();
+  assertFalse(isWeaponDestructible(ids.bedrock, registry));
+  assertFalse(isWeaponDestructible(ids.endStone, registry));
+  // M9 登记两项 → 恢复不可破坏（M8 期间曾是 assertTrue，见 M8 计划 Task 1 的 A8 说明）
+  assertFalse(isWeaponDestructible(ids.playground, registry));
+  assertFalse(isWeaponDestructible(registry.idOf('playground_center_block'), registry));
+  assertFalse(isMag7Candidate(ids.playground, registry));
+  // ...（其余断言不变）
+});
+```
+
+同时把 `src/tests/test-block-registry.js` 里 M8 钉的
+`assertEqual(registry.isIndestructible(idOf('playground_block')), false)` 改为 `assertTrue(...)`。
 
 - [ ] **Step 4: 验证 GREEN + 重烘焙图标**
 
@@ -256,7 +287,7 @@ git commit -m "feat(playground): 创造台方块登记 indestructible + 移出�
 - Consumes: Task 1 的 `registry.isIndestructible(id)`（平台方块不可破坏）；
   既有 `editor.setBlocks(changes)` / `editor.setBlockEntity({x,y,z,value})` /
   `persistence.listBlockEntities('playground')` / `world.getBlockId(x,y,z)` / `world.hasColumn(cx,cz)`
-- Produces（Task 8 依赖，签名必须一致）:
+- Produces（Task 3 依赖，签名必须一致）:
 
 ```js
 // playground-config.js
@@ -356,7 +387,7 @@ test('创造台：导入时未知方块名计 invalid 且**不写 air**', () => 
   const cx = origin[0] + 27, cz = origin[2] + 27;
   // 先在目标位置放一格 stone（若导入误写 air 会把它删掉）
   world.setBlock(cx, origin[1] + 1, cz, playground.registry.idOf('stone'));
-  const r = await playground.importModel(JSON.stringify({ blocks: [
+  const r = playground.importModel(JSON.stringify({ blocks: [   // **同步**返回（规格 §2.4）
     { x: 0, y: 1, z: 0, type: 'no_such_block', direction: 0 },   // 未知方块名
   ] }));
   assertTrue(r.ok);
@@ -697,12 +728,15 @@ export class PlaygroundService {
 `_hasOverlap` 单次 = 54×54×11 ≈ **3.2 万次** `getBlockId`，而 `_findSafeHeight` **每个 y 迭代调一次**
 （最坏从地面到世界顶约 100 次 → 320 万次）；`exportModel` = 54×54×约 90 ≈ **26 万次**。
 对照：爆炸 152 次、LOS 每帧约 5300 次 —— 这两处是本 Epic **最大的主线程开销**，
-规格 §6.1 只论证了「2916 格写入」，没覆盖它们。
-**处理方式**：① `_findSafeHeight` 改为**逐层增量扫描**（从下往上，一旦某层发现重叠即可提前
-放弃该层，不必每次重扫全 11 层）—— 把最坏 320 万次降到约 3.2 万次；② `exportModel` 只扫
-「平台上方有方块的高度区间」（先用 `findSpawnY` 式的向下扫确定实际模型顶，再只扫该区间），
-避免恒定扫到世界顶；③ 验收须实测这两个函数的耗时并记进报告（目标 < 50ms）。
-若实测仍卡顿，改走**分帧**（照 `budget.meshDispatchPerFrame` 手法）并在报告标注。
+规格 §2.1 只论证了「2916 格写入」，没覆盖它们。
+
+**本任务先照朴素实现交付**（Step 3 的代码就是朴素全扫 —— 它是正确且完整的，
+`getBlockId` 是 O(1) typed-array 读，320 万次约几十毫秒级）。⚠️ **不要在 Task 2 就改成增量版**
+（那需要额外的测试与签名，且未经实测不知道是否真的需要）。**处理方式留到 Task 4 验收**：
+① 实测 `_findSafeHeight`（最坏情况）与 `exportModel` 的耗时并记进报告（目标 < 50ms）；
+② 若实测卡顿，再决定优化 —— `_findSafeHeight` 改逐层增量扫描（一旦某层发现重叠即提前放弃，
+不必每次重扫全 11 层）、`exportModel` 只扫实际模型高度区间，或改走分帧
+（照 `budget.meshDispatchPerFrame` 手法），并在报告标注。**实测数据决定是否优化，不预先优化。**
 
 ⚠️ **`_write` 是本 Epic 最大的单次编辑量（2916 格）** —— 须实测 REMESH 收敛期的帧率与
 队列深度（bench 场景 ④「批量删 500 块」是既有对照基线，2916 格约为其 5.8 倍）。
@@ -722,7 +756,7 @@ this.playground = new PlaygroundService({
 // ⚠️ hydrate 前须先 flushNow（hydrate 是重建派生状态；库里没锚点 → 判为未激活）
 await this.playground.hydrate(this.persistence);
 
-/** 测试 API（Task 8 的 UI 按钮也调这两个） */
+/** 测试 API（Task 3 的 UI 按钮也调这两个） */
 createPlayground() {
   const p = this.player.physics.pos;
   return this.playground.create({ x: p.x, y: p.y, z: p.z });
@@ -850,7 +884,7 @@ git commit -m "feat(playground): 创造台——54×54 平台 / 锚点持久层 
 
 **Interfaces:**
 
-- Consumes: Task 7 的 `game.createPlayground()` / `game.closePlayground()` /
+- Consumes: Task 2 的 `game.createPlayground()` / `game.closePlayground()` /
   `game.playground.isActive()` / `game.playground.exportModel()` / `game.playground.importModel(jsonText)`
 - Produces:
 
@@ -895,7 +929,7 @@ test('toast 不进模态栈（提示期间玩家仍能操作世界）', () => {
   assertTrue(toast.isVisible());
   // ⚠️ 「没进 uiModal 栈」这条**不在单测里断言** —— `uiModal` 是 Game 的状态，
   // 单测没有 game 实例。它由 toast 的实现保证（`show()` 里不调 `game.pushModal`），
-  // 并在 Task 8 Step 5 的负向验证里用真游戏页兜住（注入「show 调 pushModal」→ E2E 须真 FAIL）。
+  // 并在 Task 3 Step 5 的负向验证里用真游戏页兜住（注入「show 调 pushModal」→ E2E 须真 FAIL）。
 });
 
 test('toast 自动淡出（durationMs 后 hide）', async () => {
@@ -908,13 +942,15 @@ test('toast 自动淡出（durationMs 后 hide）', async () => {
 ```
 
 ⚠️ **防重复点击（busy 锁）不在单测里断言** —— 它是面板的 DOM 状态，单测没有面板实例。
-落在 Task 8 Step 5 的负向验证（真游戏页连续点击 → 断言只产出一个平台）。
+落在 Task 3 Step 5 的负向验证（真游戏页连续点击 → 断言只产出一个平台）。
 ⚠️ **无效盲区自查**：若只断言「第一次点击成功」，注入「去掉锁」仍全绿 ——
 E2E 须断言「第二次点击在操作进行中被拒绝」（`reason === 'exists'` 或按钮 disabled）。
 - [ ] **Step 2: 验证 RED**
 
 Run: `npx playwright test tests/harness.spec.mjs`
-Expected: FAIL —— `Toast` 未定义、`playgroundLabel()` / `setPlaygroundBusy()` 不存在。
+Expected: FAIL —— `Toast` 未定义（模块不存在）；`PLAYGROUND_OPEN_LABEL` / `PLAYGROUND_CLOSE_LABEL` /
+`PLAYGROUND_ERRORS` 未导出。
+⚠️ **不要断言不存在的面板方法**（`playgroundLabel()` 等）—— Step 1 已明确断言落纯函数接口。
 
 - [ ] **Step 3: 实现 toast**
 
@@ -1158,3 +1194,58 @@ git add docs/m9-playground-acceptance-report.md docs/roadmap.md \
   docs/superpowers/plans/2026-09-11-m9-playground.md
 git commit -m "docs(m9): 验收报告与 roadmap 回填"
 ```
+---
+
+## 计划自检
+
+**规格覆盖**（规格 §1~§4 逐项 → 任务）：
+
+| 规格节 | 任务 | 状态 |
+|---|---|---|
+| §1 不可破坏两项 + 移出背包（§1.1 登记 / §1.2 成对移出 / §1.3 断言翻转） | Task 1 | ✅ 覆盖 |
+| §2 创造台服务（平台生成 / 关闭 / 重启恢复 / 导入导出） | Task 2 | ✅ 覆盖（**一处偏离**：导入未做「先清平台上方模型区」—— mc-lite `collectModelAreaBlocksToClear` 未移植，理由是清空会删掉玩家已有模型，属破坏性操作；须记进验收报告 §4） |
+| §3 创造台 UI（面板按钮 / toast） | Task 3 | ✅ 覆盖 |
+| §4 验收口径 | Task 4 | ✅ 覆盖 |
+| 设计文档同步（DR-17 / 物品集合口径 / 三类文档） | Task 0 | ✅ 覆盖 |
+
+**类型一致性**（跨任务的签名须一致）：
+
+- `registry.isIndestructible(id)` —— M8 交付，Task 1 复用 ✅
+- `PLAYGROUND`（config）—— Task 2 定义，Task 2/3 消费 ✅
+- `playground.create|close|exportModel|importModel|isActive|origin|hydrate|isPlayerInPlayground` —— Task 2 定义，Task 3 消费 ✅
+  ⚠️ `importModel` 是**同步**返回（不是 Promise）—— Task 3 的测试不得 `await` 它
+- `Toast({container})` → `.show/.hide/.isModal/.isVisible` —— Task 3 ✅
+- 跨 Epic 断言翻转：`isWeaponDestructible(playground)` 在 M8 是 `assertTrue`、M9 改回 `assertFalse`（Task 1 认领）✅
+
+**占位符扫描**：无 TBD / TODO / 「类似 Task N」/ 「添加适当的错误处理」等模式；每个代码步骤都给了完整代码块。
+
+---
+
+## 既有 API 实际签名对照表（减少执行者猜 API 的空间）
+
+本计划消费既有接口。**下表是实测核对过的真实签名/返回值** —— 正文里凡引用这些 API 处，
+以本表为准（M8 审查发现过 8 处凭印象写错的 API，都已在 M8 正文订正；本表是防再次猜错的
+速查）。执行者遇到正文与本表不一致时，**以本表为准并停下来报告**。
+
+| API | 实际签名 / 返回值 | 出处（实测） | 易错点 |
+|---|---|---|---|
+| `window.__MC_GAME__` | 全局测试钩子（不是 `window.game`） | `main.js:64` | spec 里一律用 `window.__MC_GAME__`；`window.game` 全仓零命中 |
+| spec 起手式 | `await page.goto('/?vd=2')` + `await waitWorldSettled(page)` | `zombie-nests.spec.mjs:25` | **没有 `startGame(page)`**；`waitWorldSettled` 各 spec 各自定义（无共享 helper 模块）。⚠️ 创造台在 vd=2 下会触发「未加载视为重叠」判据（平台距玩家 10~64 格 > 加载半径 64 格边界），该 spec 用 `?vd=2` 即可触发到它 |
+| `editor.setBlocks(changes)` | 返回 `{changes, affected, changedColumns, skipped}`；不带 `blockEntity` 即清除该格 entity | `world-editor.js` | close() 的「中心块 entity 自动清除」依赖此语义 |
+| `editor.setBlockEntity({x,y,z,value})` | `value=null` 删除；不 bump version、不 remesh | `world-editor.js` | 纯 entity 写 |
+| `world.hasColumn(cx, cz)` | boolean（column 是否已加载） | `world-data.js:19` | 选址预检用；未加载 column 的 `getBlockId` 返回 0（air）→ 会误判「安全」 |
+| `world.getBlockId(x,y,z)` | number（column 缺失或越上界 → 0；越下界 → bedrock） | `world-data.js:24` | 未加载 column 返回 0，不是 null |
+| `world.getBlockMeta(x,y,z)` | number（orientation） | `world-data.js` | 导出模型时读朝向 |
+| `persistence.listBlockEntities(kind)` | `Promise<Array<{columnKey,index,blockEntity}>>` | `persistence.js:120` | hydrate 用；⚠️ hydrate 前须先 `flushNow()` |
+| `registry.isIndestructible(id)` | boolean（M8 交付） | `block-registry.js` | Task 1 登记两项后自动生效于三个消费者 |
+| `registry.cullTable[id]` | number（3 = `cullMode:'none'`，不渲染） | `block-registry.js` | 导入时跳过不可渲染方块 |
+| `registry.idOf(name)` | number \| undefined（未知名字返回 undefined） | `block-registry.js` | ⚠️ 导入未知方块名 → 计 `invalid`，**不得写 0（air）** |
+| `buildItemNames(registry)` | `string[]`（registry − 两个排除集合） | `inventory.js` | Task 1 移出背包后自动少两项 |
+| 门禁 `[物品集合]` 打印 | `N 项 = registry 126 − 排除 {两集合之和}` | `check-data.mjs:104` | Task 1 后「排除 8」→「排除 10」（不是 6） |
+
+⚠️ **mc-lite 侧引用**（正文已订正的行号，执行者复核时以此为准）：
+`PlaygroundService.js` 的 `playgroundSize=54` / `requiredClearance=10` / `distance=10` /
+`isPlayerInPlayground` 的 `maxY=origin.y+20` / `findSafePlaygroundHeight` 的 `maxY=200`
+（本仓改 `WORLD_MAX_Y=96`）/ `collectModelAreaBlocksToClear`（未移植，记偏离）/
+`convertDirectionToOrientation`（`((intDir%4)+4)%4`）/ `Game.js:206-321` 手工列举 107 行
+（2 行被注释 → 有效 105 项，不含 playground）。

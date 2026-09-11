@@ -36,7 +36,7 @@
 Task 0（文档同步，无代码）
   docs/phase-1-engine-design.md    §4.1 indestructibleTable / §4.5 爆炸小节 / DR-17 回填 / §9 扩展点
   docs/roadmap.md                  里程碑总表加 M8 行
-  CLAUDE.md                        「背包物品集合口径 118 项」→ 116 项 + M8 活跃约束
+  CLAUDE.md                        M8 活跃约束（⚠️ **物品集合口径 118 项 M8 不动** —— 移交 M9）
 
 Task 1（不可破坏权威）
   src/voxel/blocks-data.js         bedrock 加 indestructible（创造台两项移交 M9）
@@ -106,7 +106,7 @@ Task 7（验收）
 
 **Interfaces:**
 
-- Consumes: 规格 §10 的四项新机制清单
+- Consumes: 规格 §8 的三项新机制清单
 - Produces: 后续任务引用设计文档时的章节号（实施中若发现章节号不符，按实际章节走并在验收报告记录）
 
 本任务是 CLAUDE.md 规则「需要新增机制/改动设计时，先更新设计文档再动代码」的落实，**无代码改动**，故不走 TDD。
@@ -168,15 +168,17 @@ DR-17 原文已写「后续炮塔/床/宝箱等同类装置可直接复用此通
 > DR-17 当初预留的形状经第二批消费者验证够用。
 ```
 
-⚠️ **三.6：roadmap 的两条接入点表述与本计划不符，须一并改写**（CLAUDE.md 明写
-「新功能必须通过上述接入点实现，不得绕过 meshing/数据/事件管线另开路径」，
-不改写会让后续读者以为本计划绕过了规定接入点）：
+⚠️ **三.6：设计文档 §9「后续功能扩展点」表的接入点表述与本计划不符，须改写**
+（CLAUDE.md 明写「新功能必须通过上述接入点实现，不得绕过 meshing/数据/事件管线另开路径」，
+不改写会让后续读者以为本计划绕过了规定接入点）。⚠️ **落点是设计文档
+`docs/phase-1-engine-design.md` §9（`:2075` TNT 行 / `:2082` 创造台行），不是 roadmap** ——
+roadmap 的对应两行已在拆分提交 `ed7abdd` 改好，勿重复改：
 
-- `| TNT / 爆炸 | WorldEditor.setBlocks(batch) + REMESH + **粒子** |` —— 本计划**不移植粒子层**
+- 设计文档 §9 的 `| TNT / 爆炸 | ... + 粒子 |` —— 本计划**不移植粒子层**
   （mc-heavy 没有 ParticleSystem，只移植 `World.js:1301-1311` 的球体扩张层）。改写为
   「`WorldEditor.setBlocks(batch)` + REMESH + 球体扩张特效（mc-heavy 无粒子系统）」。
-- `| 创造台 | **mesher 顶点模板机制** |` —— 属 **M9** 范围，本任务不动该行（M9 时改写为
-  「`WorldEditor.setBlocks` 真实方块 + `blockEntity` 锚点（M7 装置模式）」）。
+- 设计文档 §9 的 `| 创造台 | mesher 顶点模板机制 |` —— 属 **M9** 范围，本任务不动该行
+  （M9 时改写为「`WorldEditor.setBlocks` 真实方块 + `blockEntity` 锚点（M7 装置模式）」）。
 
 ⚠️ **粒子层未移植须记进偏离表**（规格 §2.4 只在散文里提了，偏离表没列）—— 视觉比对时
 mc-lite 有 2D Billboard 爆炸粒子而 mc-heavy 只有球体扩张，属可感知差异。
@@ -187,7 +189,7 @@ mc-lite 有 2D Billboard 爆炸粒子而 mc-heavy 只有球体扩张，属可感
 - [ ] **Step 4: bump 设计文档版本号 + 写修订说明**
 
 ⚠️ **本 Epic 的三项属架构口径变更**（新数据通道 / 新子系统边界），故须进修订说明并 bump
-版本号 —— 与 M4~M7 的实玩反馈修正不同（那些**不进**修订说明）。版本号以文档自身首行为准。
+版本号 —— 与 M4~M7 的实玩反馈修正不同（那些**不进**修订说明）。**目标版本号 = v1.39**（现 v1.35；roadmap 的独立改动表已占用 v1.36/v1.37/v1.38，故 M8 取 v1.39、M9 取 v1.40 —— 避免撞号）。
 
 - [ ] **Step 5: 同步 roadmap 与 CLAUDE.md**
 
@@ -198,7 +200,7 @@ roadmap 里程碑总表加 M8 行（内容 / 状态「📝 待实施」/ 关键 
 属 M9 范围（M9 时该数字变为 116、门禁打印变为「排除 10」，届时再改写）。M8 期间物品集合
 仍是 118 项。
 
-⚠️ **规格 §10 还要求同步「目录结构清单 + 开发命令清单」**（本任务不可漏）。CLAUDE.md 的
+⚠️ **规格 §8 还要求同步「目录结构清单 + 开发命令清单」**（本任务不可漏）。CLAUDE.md 的
 「文档同步」规则明写：新增产物或删除文件时，必须同步「目录结构清单」「开发命令清单」
 「现状声明」三类文档。M8 新增的产物须进对应清单：
 
@@ -207,7 +209,8 @@ roadmap 里程碑总表加 M8 行（内容 / 状态「📝 待实施」/ 关键 
   `tools/turret-armor-fingerprint.mjs`、`src/entities/turrets/`（config / blueprint / service /
   controller / system / projectile-system）、
   `src/render/{turret-armor-texture,turret-renderer,projectile-renderer,explosion-renderer}.js`、
-  `src/voxel/explosion.js`、`src/ui/toast.js`；
+  `src/voxel/explosion.js`；（⚠️ **不含 `src/ui/toast.js`** —— toast 是 M9 的交付物，
+  M8 阶段登记它会写进一个不存在的文件）
 - **开发命令清单**：`npm run turret`（烘焙炮塔装甲纹理）；
 - **现状声明**：CLAUDE.md 的「一句话现状」与 roadmap 的里程碑总表（Task 7 回填）。
 
@@ -217,7 +220,9 @@ roadmap 里程碑总表加 M8 行（内容 / 状态「📝 待实施」/ 关键 
 ### M8 TNT / 炮塔沉淀的活跃约束（后续同类装置 Epic 必读）
 
 - **「哪些方块不可破坏」的唯一权威 = registry `indestructibleTable`**：mc-lite 用
-  `ExplosionWorker.js:8` 字面量 + `BlockData.js` 的 `isIndestructible` 两处表达同一事实。
+  `ExplosionWorker.js:8` 的字面量数组（含 bedrock/barrier）与 `BlockData.js:244/252` 的
+  `isIndestructible` 字段（**只标 playground 两项**）—— 两处**分散且不重合**，上游没有
+  一个完整的「哪些不可破坏」清单。
   三个消费者（徒手挖块 / 枪械破坏 / 爆炸过滤）都读这张表，各写一份会漂移出
   「TNT 炸得掉但玩家挖不掉」的撕裂语义。
 - **炮塔/弹丸的速度类参数不需要 ×60 换算**（与 `ZOMBIE.speed` 相反）：mc-lite 的
@@ -248,6 +253,7 @@ git commit -m "docs(m8): 设计文档同步——indestructible 权威 / 爆炸�
 - Modify: `src/player/weapons/weapon-target-policy.js`（`IMMUNE_NAMES` 收敛为读表）
 - Modify: `tools/check-data.mjs`（新增 `[不可破坏]` 环节）
 - Modify: `src/tests/test-block-registry.js`
+- Modify: `src/tests/test-weapons.js`（⚠️ **既有三条 playground 断言翻转**，见 Step 3 的 A8 说明）
 
 **Interfaces:**
 
@@ -394,6 +400,36 @@ export function isWeaponDestructible(id, registry) {
 这与既有行为不同（既有是字面量排除）。⚠️ 这是 M8 的一处**行为变更**：M8 期间玩家放出的
 playground 方块可被枪械破坏（M9 登记后恢复不可破坏）。须记进验收报告偏离表，且 Task 1 的
 单测须断言 `isWeaponDestructible(playground_block) === true`（M8 期间）—— M9 时该断言改为 false。
+
+⚠️ **A8：这会立刻让既有断言真 FAIL —— 本任务必须同步改 `src/tests/test-weapons.js`**
+（否则 Step 4 的 GREEN 跑不过）。该文件 `:90/91/97` 有三条既有断言：
+
+```js
+assertFalse(isWeaponDestructible(ids.playground, registry));            // :90
+assertFalse(isWeaponDestructible(registry.idOf('playground_center_block'), registry)); // :91
+assertFalse(isMag7Candidate(ids.playground, registry));                 // :97
+```
+
+M8 收敛 `IMMUNE_NAMES` 后 playground 两项不在表里 → 这三条会变成 `true` → **既有测试 FAIL**。
+故本任务须把它们改成 `assertTrue` 并改测试名（`'weapon policy: bedrock/end_stone/创造台不可破坏...'`
+里的「创造台不可破坏」在 M8 期间不成立）：
+
+```js
+test('weapon policy: bedrock/end_stone 不可破坏；M8 期间创造台两项可破坏（M9 登记后翻转）', () => {
+  const { registry, ids } = makeRegistryWithWeaponBlocks();
+  assertFalse(isWeaponDestructible(ids.bedrock, registry));
+  assertFalse(isWeaponDestructible(ids.endStone, registry));
+  // ⚠️ M8 期间 playground 两项**不在** indestructibleTable → 枪械打得动（M9 登记后翻转回 assertFalse）
+  assertTrue(isWeaponDestructible(ids.playground, registry));
+  assertTrue(isWeaponDestructible(registry.idOf('playground_center_block'), registry));
+  assertTrue(isMag7Candidate(ids.playground, registry));
+  // ...（其余断言不变）
+});
+```
+
+⚠️ **这是跨 Epic 的「断言翻转」**：M9 Task 1 登记两项后须把这三条**改回 `assertFalse`**
+（M9 计划 Task 1 已认领该步骤）。两个阶段方向相反是同一个事实在不同状态的正确表达，
+不是矛盾 —— 但**必须由各自 Task 显式认领**，否则 M8 的 GREEN 会卡在既有测试上。
 
 - [ ] **Step 4: 验证 GREEN + 门禁**
 
@@ -2537,18 +2573,17 @@ export async function loadTurretArmorTexture() {
 //
 // ⚠️ 无活跃炮塔时 8 个 mesh 全部 `visible=false`（否则恒增 8 个 draw call）。
 import * as THREE from 'three';
-import { TURRET } from '../entities/turrets/turret-config.js';
-
-/**
- * 区序与部件定义 —— **从 `turret-config.js` 导入，不在本文件写字面量**（红线 1）。
- * ⚠️ 原先这里写 `const ZONES = ['front','side','top']` 是**第二份副本**（注释写「同源」
- * 但没有任何机制保证）：改了烘焙侧的区序而忘改这里，UV 会整体错位（渲染出错图案，
- * 肉眼只觉得「贴图怪怪的」）。提到无 three 的 `turret-config.js` 后，
- * 渲染层 / 烘焙脚本 / `check:data` 三方都从同一处派生，且门禁可断言
- * `TURRET_PART_DEFS[].zone ⊆ ARMOR_ZONES`（见 Step 6）。
- */
-import { TURRET_PARTS, TURRET_PART_DEFS, ARMOR_ZONES, TURRET_TOWER_COLOR }
-  from '../entities/turrets/turret-config.js';
+// ⚠️ 区序（`ARMOR_ZONES`）与部件定义 —— **从 `turret-config.js` 导入，不在本文件写字面量**
+// （红线 1）。⚠️ 原先这里写 `const ZONES = ['front','side','top']` 是**第二份副本**
+// （注释写「同源」但没有任何机制保证）：改了烘焙侧的区序而忘改这里，UV 会整体错位
+// （渲染出错图案，肉眼只觉得「贴图怪怪的」）。提到无 three 的 `turret-config.js` 后，
+// 渲染层 / 烘焙脚本 / `check:data` 三方都从同一处派生，且门禁可断言
+// `TURRET_PART_DEFS[].zone ⊆ ARMOR_ZONES`（见 Step 6）。
+// ⚠️ 本文件内**不得**出现裸标识符 `ZONES` —— 一律用导入的 `ARMOR_ZONES`
+// （上一版审查发现三处误用裸 `ZONES.length`/`ZONES.indexOf` → ReferenceError，已全部改用 ARMOR_ZONES）。
+import {
+  TURRET, TURRET_PARTS, TURRET_PART_DEFS, ARMOR_ZONES, TURRET_TOWER_COLOR,
+} from '../entities/turrets/turret-config.js';
 
 // ⚠️ **部件定义不在本文件**（见上方 import）—— 它们是纯数据（尺寸/位置/区归属/颜色，
 // 无 three 依赖），放在 `turret-config.js` 让渲染层 / 烘焙脚本 / `check:data` 三方共用
@@ -2569,8 +2604,8 @@ const _zero = new THREE.Matrix4().makeScale(0, 0, 0);
  */
 function applyZoneUV(geometry, zoneIndex) {
   const uv = geometry.getAttribute('uv');
-  const offset = zoneIndex / ZONES.length;
-  const span = 1 / ZONES.length;
+  const offset = zoneIndex / ARMOR_ZONES.length;
+  const span = 1 / ARMOR_ZONES.length;
   for (let i = 0; i < uv.count; i++) uv.setX(i, offset + uv.getX(i) * span);
   uv.needsUpdate = true;
 }
@@ -2595,7 +2630,7 @@ export class TurretRenderer {
                    return g; })()
         : new THREE.BoxGeometry(def.size[0], def.size[1], def.size[2]);
       const useMap = !!def.zone && !!armorTexture;
-      if (useMap) applyZoneUV(geometry, ZONES.indexOf(def.zone));
+      if (useMap) applyZoneUV(geometry, ARMOR_ZONES.indexOf(def.zone));
       const material = new THREE.MeshBasicMaterial(useMap
         ? { color: 0xffffff, map: armorTexture }
         : { color: def.color ?? TURRET_TOWER_COLOR[part === 'back' ? 'DARK' : 'MAIN'] });
@@ -3335,7 +3370,7 @@ git commit -m "feat(projectiles): 弹丸实体——DDA 阻挡 / 实体 raycast 
 
 **Interfaces:**
 
-- Consumes: Task 0~8 的全部产物
+- Consumes: Task 0~7 的全部产物
 - Produces: 验收报告（实测数据 / 偏离表 / 负向验证清单 / draw call 对照）
 
 - [ ] **Step 1: 跑全量门禁与测试**
@@ -3359,7 +3394,7 @@ Expected: 三者全绿。⚠️ 用例计数以 `npm run check:data` 输出为�
 
 - [ ] **Step 2: 汇总负向验证清单**
 
-逐条重跑 Task 1~8 标注的负向验证，确认每条都**真 FAIL**（做完须恢复源码）。
+逐条重跑 Task 1~7 标注的负向验证，确认每条都**真 FAIL**（做完须恢复源码）。
 按 `docs/testing-policy.md` §2.7 的十二类高发区自查无效盲区，特别检查：
 
 - 断言落点是否落在真实接线上（而非桩件）—— Task 2 的爆炸伤害、Task 3 的 `onPlaced`、
@@ -3443,8 +3478,9 @@ git commit -m "docs(m8): 验收报告与 roadmap 回填"
 - `isProjectileOccluding(id, registry)` —— Task 4 定义，Task 6 消费（遮挡判据共用，红线 1）✅
 - `TURRET_PARTS` / `TURRET_PART_DEFS` / `TurretRenderer.sync(poses)` —— Task 5 ✅
 - `projectileDefinition` / `advanceProjectile` / `judgeProjectile` —— Task 6 ✅
-  ⚠️ Task 6 里 `advanceProjectile` 与 `judgeProjectile` 的职责拆分须在实现时明确
-  （单测两个都测），避免「两处推进让弹丸速度翻倍」
+  ✅ Task 6 已明确：`judgeProjectile`（纯判定，返回 `{reason, hitId}`）是唯一判定实现，
+  `advanceProjectile` 是它的薄封装（推进 + 判定）仅单测用，Game 帧循环只用 `judgeProjectile`
+  （推进由 `entities.update()` 驱动）—— 避免「两处推进让弹丸速度翻倍」
 （`PLAYGROUND` / `Toast` 属 **M9** 范围，其类型一致性在 M9 计划的自检里核对。）
 
 **占位符扫描**：无 TBD / TODO / 「类似 Task N」/ 「添加适当的错误处理」等模式；

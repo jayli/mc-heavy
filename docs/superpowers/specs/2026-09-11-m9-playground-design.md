@@ -22,56 +22,62 @@ M4~M7 建立的底座重做：`WorldEditor.setBlocks()` 唯一写入口 + M7 的
 - 复用 M7 的方块锚定装置模式（roadmap「M7 交付的可复用模式」段）。
 
 ## 1. 不可破坏方块的创造台两项 + 移出背包
+**前提：`indestructibleTable` 已由 M8 交付**（M8 规格 §1，只登记 `bedrock`）。M9 **复用该表，
+不新建机制** —— 只追加创造台两项的登记，并把它们成对移出背包。
 
+### 1.1 追加两项登记
 
-mc-lite 用**两处字面量**表达同一件事：`ExplosionWorker.js:6` 的
-`INDESTRUCTIBLE_BLOCKS = ['playground_block', 'playground_center_block', 'bedrock', 'barrier']`，
-以及 `BlockData.js:244/252` 的 `isIndestructible: true` 字段（注释「不可被 TNT、机枪或玩家破坏」）。
-两处漂移会产出「TNT 炸得掉但玩家挖不掉」或反之的撕裂语义。本仓库按红线 1 收敛成**单一权威**：
+`blocks-data.js` 给两条声明加 `indestructible: true`：`playground_block` /
+`playground_center_block`。加完即自动生效于三个消费者（M8 已接线，无需改代码）：
+① `Player.digBlock()` 徒手挖块门控；② `weapon-target-policy.js` 枪械可破坏判定；
+③ `computeExplosion()` 爆炸过滤。这正是单一权威的收益。
 
-- `blocks-data.js` 每条声明新增可选字段 `indestructible: true`（缺省 false）。
-  ⚠️ **登记三项**：`bedrock` / `playground_block` / `playground_center_block`。
-  **不含 mc-lite 清单里的 `barrier`** —— 该方块在本仓 registry 里**不存在**
-  （`blocks-data.js` 实测无此条目，它对应的是 mc-lite 的 `collider` 系碰撞体方块）；
-  照搬会登记一个不存在的名字 → 门控静默失效，且 `check:data` 的名字存在性断言会报。
-  `collider`/`realistic_trunk_collider` 已在 `NON_PLACEABLE_ITEMS` 里（不可放置 → 世界内
-  不会出现玩家放的实例），**不登记进本表**：那是「不进背包」的事实，不是「不可破坏」的事实
-  （两个集合语义互斥，勿混为一处，同 CLAUDE.md 对 `NON_PLACEABLE_ITEMS` 的既有口径）；
-- `block-registry.js` 新增 `indestructibleTable`（`Uint8Array(MAX_BLOCKS)`），与既有
-  `solidTable`/`opaqueTable`/`cullTable` 同一手法，主线程与 Worker 同构可用；
-- **三个消费者全部读这张表**，不得各写字面量数组：① `Player.digBlock()` 的挖块门控；
-  ② `weapon-controller` 的可选方块破坏门控（与既有 `canGunsDestroyBlocks` 开关叠加）；
-  ③ §2 的爆炸破坏过滤。
+⚠️ **不登记 `barrier`**（mc-lite 字面量里有它）—— 该方块在本仓 registry 里**不存在**
+（对应 mc-lite 的 `collider` 系）。⚠️ **不登记 `collider`/`realistic_trunk_collider`** ——
+它们已在 `NON_PLACEABLE_ITEMS`，那是「不进背包」的事实，不是「不可破坏」的事实
+（两个集合语义互斥）。
 
-`bedrock` 已由 `WorldEditor.setBlock/setBlocks` 的 `reason:'bedrock'` 门控兜住（写不进去），
-登记进本表是**语义对齐**而非新增防护 —— 让「哪些方块不可破坏」只有一个查询入口。
-本表不改变 `blocks-data.js` 的既有字段，不新增第二份方块清单。
-
-⚠️ **测试落点**：属 Tier 1（静默的数据错误 —— 炸掉了不该炸的方块，肉眼玩不出来）。
-断言须落在**三个消费者同时生效**处：注入「`digBlock` 改回字面量清单」须真 FAIL；
-且须在临界值附近断言（`indestructible=false` 的方块必须可破坏，不能把整表当恒真判据）。
-`check:data` 新增 `[不可破坏]` 环节：表里每个名字都在 registry 内（拼错则门控静默失效）。
-
-
+### 1.2 成对移出背包（既有偏差修正）
 
 **实测发现的既有偏差**：本仓背包物品集合 = registry 126 − `NON_PLACEABLE_ITEMS`(4) −
-`HIDDEN_FROM_INVENTORY`(4) = **118 项**（派生集合），而 mc-lite 是**手工列举 107 项**
-（`Game.js:206+` 的 `inventory.add(...)`，实测 `rg -c` = 107，**不含** `playground_block` /
-`playground_center_block`）。派生口径下这两项**目前就在背包里**（未被任何排除集合排除）
+`HIDDEN_FROM_INVENTORY`(4) = **118 项**（派生集合），而 mc-lite 是**手工列举**
+（`Game.js:206-321` 实测 107 行 `inventory.add(...)` 匹配，其中 2 行被注释掉
+（`handrailB`/`cloud`）→ **有效 105 项**），且**不含** `playground_block` /
+`playground_center_block`。派生口径下这两项**目前就在背包里**（未被任何排除集合排除）
 → 玩家能从背包选中并放置平台方块。
 
-配上本节的不可破坏门控，这会产出**撕裂状态**：玩家放得出来，但挖不掉、TNT 也炸不掉
-（只能靠「关闭创造台」批量删，而关闭只删平台层矩形内的格）。故 M8 必须把这两项加进
-`HIDDEN_FROM_INVENTORY`（**不是** `NON_PLACEABLE_ITEMS` —— 它们本质能放能挖，只是不该出现在
-物品集合里，与 `chimney`/床三项同一语义）。
+配上 §1.1 的登记，这会产出**撕裂状态**：玩家放得出来，但挖不掉、TNT 也炸不掉
+（只能靠「关闭创造台」批量删）。故 M9 必须把这两项加进 `HIDDEN_FROM_INVENTORY`
+（**不是** `NON_PLACEABLE_ITEMS` —— 它们本质能放能挖，只是不该出现在物品集合里，
+与 `chimney`/床三项同一语义）。
+
+⚠️ **§1.1 与 §1.2 必须成对做**（这是 M8/M9 拆分的分界依据）：只登记不移出 → 撕裂状态；
+两项都不碰 → 无害。M8 期间属于后者。
 
 **这是一处新的有意偏离 mc-lite**（注意：设计文档 §4.3/§4.5.4 那个编号清单是**视觉比对专用**
 —— vine / 吊灯 / 图标烘焙 / lilypad / AO 五项，本项是物品集合口径偏离，**不并入那个编号序列**）：
 mc-lite 靠手工列举天然不含它们，本仓是派生集合故须显式排除。物品集合从 **118 → 116**；
-`check:data` 的 `[物品集合]` 门禁是**关系型断言**
-（registry − 排除集合，改排除集合自动跟上）故不会误报，但图标指纹检查会少两项 →
-须重跑 `npm run icons`。⚠️ 文档里不得硬编码 118/116 这两个数字（CLAUDE.md：计数以
-`npm run check:data` 输出为准）。
+`check:data` 的 `[物品集合]` 门禁是**关系型断言**（registry − 排除集合，改排除集合自动跟上）
+故不会误报，但图标指纹检查会少两项 → 须重跑 `npm run icons`。
+
+⚠️ **文档里不得硬编码 118/116**（计数以 `npm run check:data` 输出为准）。
+例外：CLAUDE.md 那条活跃约束是「现状快照」，可以带数字（M9 须改写它）。
+
+### 1.3 连带翻转的既有断言（拆分引入的必改项）
+
+⚠️ **登记两项会让既有断言真 FAIL** —— 这是 M8/M9 拆分引入的跨 Epic 影响，须由 M9 认领改写：
+
+- `src/tests/test-weapons.js:90/91/97` 的三条既有断言
+  （`assertFalse(isWeaponDestructible(playground))` /
+  `assertFalse(isWeaponDestructible(playground_center_block))` /
+  `assertFalse(isMag7Candidate(playground))`）—— **M8 期间这三条被改成 `assertTrue`**
+  （M8 只登记 bedrock，playground 不在表里 → 枪械打得动，见 M8 计划 Task 1 的偏离说明），
+  M9 登记后须**改回 `assertFalse`**；
+- `src/tests/test-block-registry.js` 里 M8 钉的
+  `assertEqual(registry.isIndestructible(idOf('playground_block')), false)` —— M9 改为
+  `assertTrue`。
+
+**M8/M9 各自的断言方向必须相反** —— 这是同一个事实在两个阶段的不同状态，不是矛盾。
 
 
 ---
@@ -153,7 +159,7 @@ mc-lite 靠遍历已加载 chunk 找 `playground_center_block`（`detectExisting
 - 操作进行中须**防重复点击**（mc-lite `isPlaygroundOperationInProgress` 锁）—— 2916 格的
   写入是秒级操作，重复点击会产出两个平台或半删状态。
 
-mc-heavy **目前没有 `showMessage`/toast 设施**（`CoordsHUD` 只显示坐标）。M8 新增一个轻量
+mc-heavy **目前没有 `showMessage`/toast 设施**（`CoordsHUD` 只显示坐标）。M9 新增一个轻量
 toast（`src/ui/toast.js`）：屏幕中部短暂提示、自动淡出、不阻塞输入、不进 `uiModal` 模态栈
 （它不是模态 —— 玩家须在提示期间仍能操作世界）。消费者 = 创造台的成功/失败提示
 （`NO_SAFE_LOCATION` / `PLAYER_IN_PLAYGROUND` / `PLAYGROUND_EXISTS` 等），后续 Epic 可复用。
