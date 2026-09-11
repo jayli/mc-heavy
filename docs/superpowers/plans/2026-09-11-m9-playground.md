@@ -105,7 +105,18 @@ roadmap 里程碑总表加 M9 行（状态「📝 待实施」/ 关键 commit �
 
 ⚠️ **CLAUDE.md 有一条硬编码数字的活跃约束须改写**：「背包物品集合口径 **118 项** = registry 126 − `NON_PLACEABLE_ITEMS`（4 项）− `HIDDEN_FROM_INVENTORY`（4 项）」。Task 1 把创造台两项加进 `HIDDEN_FROM_INVENTORY` 后变为 **116 项**。⚠️ 改写时须同时更新两个数字：物品集合 `118 → 116`、`HIDDEN_FROM_INVENTORY` 项数 `4 → 6`。**不要只写「排除集合 4→6」** —— 门禁实际打印的是**两个集合之和**（`排除 8 → 排除 10`），与「4→6」不是一个口径（上一轮 B1 的同一个坑）。该条须同步改写，否则后续实现者按过期口径判断集合大小。
 
-⚠️ **规格 §10（CLAUDE.md「文档同步」规则）还要求同步「目录结构清单 + 开发命令清单 + 现状声明」三类文档**（本任务不可漏 —— 漏了即违反 CLAUDE.md 硬规则）。M9 新增的产物须进对应清单：
+⚠️ **审查中9：CLAUDE.md 的「118」共有三处，本步骤必须全部改写**（只改一处会留下两个
+静默过期的副本 —— 正是 CLAUDE.md 自己警告的「同一事实多个副本会漂移」）：
+
+| 行 | 内容 | 改为 |
+|---|---|---|
+| `:69` | 「背包物品集合口径 **118 项** = registry 126 − `NON_PLACEABLE_ITEMS`（4 项）− `HIDDEN_FROM_INVENTORY`（4 项）」 | 物品集合 118→116、`HIDDEN_FROM_INVENTORY` 4→6（门禁打印「排除 8→10」） |
+| `:221` | 「`zombie_nest_alias_block` 在背包集合 **118 项**内」 | 118→116 |
+| `:380` | 目录树注释「全量背包图标离线烘焙（npm run icons）：**118 项**×两套尺寸」 | 118→116 |
+
+⚠️ 改完后用 `rg -n "118" CLAUDE.md` 复核 —— 应无残留（除非有别处合法引用）。
+
+⚠️ **CLAUDE.md 的「文档同步」规则还要求同步「目录结构清单 + 开发命令清单 + 现状声明」三类文档**（本任务不可漏 —— 漏了即违反 CLAUDE.md 硬规则）。M9 新增的产物须进对应清单：
 
 - **目录结构清单**（设计文档 §5）：`src/entities/playground/`（config / service）、`src/ui/toast.js`、`tests/playground.spec.mjs`；
 - **开发命令清单**：M9 无新增 npm 命令（创造台不涉及烘焙）；
@@ -145,6 +156,7 @@ git commit -m "docs(m9): 设计文档同步——playground kind / 物品集合�
 - Modify: `tools/check-data.mjs`（新增 `[创造台]` 环节）
 - Modify: `src/tests/test-block-registry.js`（表契约 + 移出背包断言）
 - Modify: `src/tests/test-weapons.js`（⚠️ **翻转回改 M8 改过的三条 playground 断言**，见 Step 3）
+- Modify: `src/tests/test-inventory.js`（⚠️ **4 处冻结断言会因物品集合 118→116 而 FAIL**，见 Step 3 的高5 说明）
 - Modify: `assets/icons-atlas.png`, `assets/icons.json`（`npm run icons` 产物）
 
 **Interfaces:**
@@ -223,6 +235,20 @@ test('weapon policy: bedrock/end_stone/创造台不可破坏，水与 end_stone_
 同时把 `src/tests/test-block-registry.js` 里 M8 钉的
 `assertEqual(registry.isIndestructible(idOf('playground_block')), false)` 改为 `assertTrue(...)`。
 
+⚠️ **审查高5：`src/tests/test-inventory.js` 有 4 处冻结断言会因物品集合 118→116 而 FAIL**
+（本任务把两项移出背包后，物品集合从 118 变 116）。这四处必须同步改写，否则本任务的 GREEN
+跑不过：
+
+| 行 | 既有断言 | 改为 |
+|---|---|---|
+| `:166` | `assertDeepEqual(HIDDEN_FROM_INVENTORY, ['chimney','bed_head','bed_tail','bed_alias_block'])` | 加上 `'playground_block','playground_center_block'` 两项 |
+| `:175` | `assertEqual(names.length, 118, '126 - 4 - 4 = 118')` | `assertEqual(names.length, 116, '126 - 4 - 6 = 116')` |
+| `:200` | `assertEqual(rest.length, 113, '118 - 5')` | `assertEqual(rest.length, 111, '116 - 5')` |
+| `:225` | `assertEqual(filled.length, 118, '物品集合全量入包')` | `assertEqual(filled.length, 116, ...)`（并核对「首个空槽 = 下标 116」的注释） |
+
+⚠️ **`:200` 那条还要核对注释里的算式**（`'118 - 5'` → `'116 - 5'`）。⚠️ 这些是 CLAUDE.md
+说的「硬编码计数的冻结断言」—— 改数字须连注释一起改，否则注释与断言漂移。
+
 - [ ] **Step 4: 验证 GREEN + 重烘焙图标**
 
 Run: `npx playwright test tests/harness.spec.mjs`
@@ -260,6 +286,17 @@ function checkPlaygroundContract() {
 ```
 
 ⚠️ **负向验证**：① 注入「移除 `HIDDEN_FROM_INVENTORY` 里的两项」→ 该环节须真 FAIL；② 注入「移除 `indestructible` 字段」→ 须真 FAIL。两条配对断言缺一不可（只测一半会漏掉撕裂状态）。
+
+⚠️ **审查 B3：必须在主流程加调用行，否则门禁永不执行**。`check-data.mjs` 的主流程
+（`:392-400`）是**逐个显式调用**（`checkItemSetRelation();` 等），不是自动发现 ——
+定义了函数但没加调用行，门禁就永远不跑。在主流程 `checkGeometryAuthority();` 之后加一行：
+
+```js
+checkPlaygroundContract();   // M9：创造台方块契约（唯一一次定义在 Task 1，Task 2 只扩展函数体）
+```
+
+⚠️ **本环节是 `[创造台]` 门禁的唯一函数定义**（Task 2 不再新建同名函数 —— 同名重复定义会让
+后一个覆盖前一个，审查 B3）。Task 2 只在该函数体内**追加**平台尺寸契约。
 
 - [ ] **Step 6: 提交（仅获授权后执行）**
 
@@ -320,7 +357,7 @@ game.playgroundDebugState();    // { active, origin }；只读测试钩子
 ```js
 test('创造台：54×54 平台 + 中心标记块，一次事务写入', () => {
   const { playground, editor } = makePlaygroundFixture();
-  const r = playground.create([10, 4, 10]);
+  const r = playground.create({ x: 10, y: 4, z: 10 });   // ⚠️ 入参是 {x,y,z}，不是数组（审查 B8）
   assertTrue(r.ok);
   assertEqual(editor.setBlocksCalls.length, 1);          // **一次**事务
   const changes = editor.setBlocksCalls[0];
@@ -334,17 +371,33 @@ test('创造台：54×54 平台 + 中心标记块，一次事务写入', () => {
   assertEqual(withEntity[0].blockEntity.size, 54);
 });
 
-test('创造台：选址顺序东侧 → 西侧，未加载 column 视为重叠', () => {
-  const { playground, world } = makePlaygroundFixture({ loadedColumns: [[0, 0]] });
-  // 东侧 column 未加载 → 视为重叠 → 尝试西侧；西侧也未加载 → not-loaded
-  const r = playground.create([10, 4, 10]);
+test('创造台：东侧 column 未加载时**继续尝试西侧**（不是立即放弃）', () => {
+  // ⚠️ **断言必须能区分「试过西侧」与「第一个候选就 return」**（审查 B1 的无效盲区）：
+  // 两侧都未加载时 reason 都是 not-loaded，区分不出 bug。故构造**东侧未加载、西侧已加载且有净空**
+  // 的场景 —— 正确实现应经西侧成功创建；若 bug 存在（东侧 return）则报 not-loaded、零写入。
+  const px = 10, py = 4, pz = 10;
+  const westX = px - PLAYGROUND.distance;   // 西侧 = 0
+  // fixture：东侧 column（cx=1）未加载，西侧 column（cx=0）已加载且平台区净空
+  const { playground, world } = makePlaygroundFixture({
+    loadedColumns: [[0, 0]],   // 只有西侧所在 column 加载
+    clearArea: { x: westX, z: pz - PLAYGROUND.size / 2, y: py },   // 西侧区域全空
+  });
+  const r = playground.create({ x: px, y: py, z: pz });   // ⚠️ 入参是 {x,y,z}，不是数组（审查 B8）
+  assertTrue(r.ok, '东侧未加载时须经西侧成功创建（若 return 而非 continue 则此处 FAIL）');
+  // 平台落在西侧（origin.x === westX），证明西侧确实被尝试过
+  assertEqual(r.origin[0], westX);
+});
+
+test('创造台：所有候选 column 都未加载 → not-loaded 且零写入', () => {
+  const { playground, world } = makePlaygroundFixture({ loadedColumns: [] });
+  const r = playground.create({ x: 10, y: 4, z: 10 });
   assertEqual(r.reason, 'not-loaded');
   assertEqual(world.getBlockId(20, 4, 10), 0);           // 零写入
 });
 
 test('创造台：玩家在平台区域内拒绝关闭', () => {
   const { playground } = makePlaygroundFixture();
-  playground.create([10, 4, 10]);
+  playground.create({ x: 10, y: 4, z: 10 })   // ⚠️ 入参是 {x,y,z}，不是数组（审查 B8）;
   const origin = playground.origin();
   // 玩家在平台内（XZ 在范围内 + Y 在 [origin.y, origin.y+20)）
   const inside = { x: origin[0] + 5, y: origin[1] + 1, z: origin[2] + 5 };
@@ -363,7 +416,7 @@ test('创造台：平台方块不可破坏（indestructible 门控生效）', ()
 
 test('创造台：导出 JSON 格式与 assets/structures/*.json 一致', () => {
   const { playground, world } = makePlaygroundFixture();
-  playground.create([10, 4, 10]);
+  playground.create({ x: 10, y: 4, z: 10 })   // ⚠️ 入参是 {x,y,z}，不是数组（审查 B8）;
   const origin = playground.origin();
   // 在平台上雕一个模型（放两格 stone 在平台上方的中心附近）
   const cx = origin[0] + 27, cz = origin[2] + 27;
@@ -377,12 +430,18 @@ test('创造台：导出 JSON 格式与 assets/structures/*.json 一致', () => 
   assertTrue(data.blocks[0].type === 'stone');
   assertTrue(Number.isFinite(data.blocks[0].x));         // 相对坐标
   assertTrue(Number.isFinite(data.blocks[0].direction));
-  assertTrue(data.metadata && data.metadata.dimensions); // mc-lite 同口径的 metadata
+  assertTrue(data.metadata && data.metadata.dimensions);
+  // ⚠️ **钉住 dimensions 的键名形状**（审查高6）：只查真值抓不到 `{x,y,z}` vs `{width,height,depth}`
+  // 的漂移 —— 必须逐键断言，与 assets/structures/*.json 的实际口径一致。
+  const dims = data.metadata.dimensions;
+  assertTrue(Number.isFinite(dims.width) && Number.isFinite(dims.height) && Number.isFinite(dims.depth),
+    'dimensions 必须是 {width,height,depth}（实测结构 JSON 口径），不是 {x,y,z}');
+  assertEqual(dims.x, undefined, '不得有 x 键（旧形状）');
 });
 
 test('创造台：导入时未知方块名计 invalid 且**不写 air**', () => {
   const { playground, world } = makePlaygroundFixture();
-  playground.create([10, 4, 10]);
+  playground.create({ x: 10, y: 4, z: 10 })   // ⚠️ 入参是 {x,y,z}，不是数组（审查 B8）;
   const origin = playground.origin();
   const cx = origin[0] + 27, cz = origin[2] + 27;
   // 先在目标位置放一格 stone（若导入误写 air 会把它删掉）
@@ -410,7 +469,7 @@ Expected: FAIL —— `PlaygroundService` 未定义。
 `src/entities/playground/playground-config.js`：
 
 ```js
-// src/entities/playground/playground-config.js — M8：创造台冻结数据（规格 §6）
+// src/entities/playground/playground-config.js — M9：创造台冻结数据（规格 §2）
 // 同构层：**无 DOM、无 three**。数值逐项实测自 mc-lite `PlaygroundService.js`。
 import { WORLD_MIN_Y, WORLD_MAX_Y } from '../../voxel/constants.js';
 
@@ -442,7 +501,7 @@ export const PLAYGROUND_CENTER_BLOCK = 'playground_center_block';
 `src/entities/playground/playground-service.js`：
 
 ```js
-// src/entities/playground/playground-service.js — M8 创造台服务（规格 §6）
+// src/entities/playground/playground-service.js — M9 创造台服务（规格 §2）
 // 同构层：不得 import three。
 //
 // **不维护 mc-lite 的 `playgroundBlocks: Set<'x,y,z'>` 副本**（红线 1：那是「平台有哪些方块」
@@ -495,16 +554,23 @@ export class PlaygroundService {
       { x: px + PLAYGROUND.distance, z: pz - half, startY: py - 20 },
       { x: px + PLAYGROUND.distance, z: pz - half, startY: py - 5 },
     ];
+    /** 是否曾有候选因 column 未加载被跳过（决定最终 reason，见循环后的 ⚠️） */
+    let sawNotLoaded = false;
     for (const c of candidates) {
       // ① column 已加载预检（整片平台覆盖的 column 都须已加载）
-      if (!this._allColumnsLoaded(c.x, c.z)) return { ok: false, reason: 'not-loaded' };
+      // ⚠️ **未加载 → `continue`（试下一个候选），不是 `return`**：东侧未加载时仍要
+      // 试西侧 / Y−20 / Y−5（规格 §2.1 的选址顺序）。用 `return` 会在第一个候选就放弃，
+      // 西侧永远不会被尝试（审查 B1）。记录是否发生过未加载，供最终 reason 判定。
+      if (!this._allColumnsLoaded(c.x, c.z)) { sawNotLoaded = true; continue; }
       // ② 从地面高度（或给定 startY）向上搜安全高度
       const startY = c.startY ?? this._findGroundLevelFromBelow(c.x, py, c.z);
       const y = this._findSafeHeight(c.x, startY, c.z);
       if (y === null) continue;   // 这个候选找不到 → 试下一个（mc-lite 同口径）
       return this._write(c.x, y, c.z);
     }
-    return { ok: false, reason: 'no-safe-location' };
+    // 全部候选失败：若曾因 column 未加载跳过 → 报 not-loaded（更准确的原因），
+    // 否则报 no-safe-location（column 都加载了但找不到净空高度）
+    return { ok: false, reason: sawNotLoaded ? 'not-loaded' : 'no-safe-location' };
   }
 
   /** 整片平台覆盖的 column 是否都已加载（未加载 → 选址判为重叠，见 create() 注释） */
@@ -575,10 +641,19 @@ export class PlaygroundService {
       }
     }
     const report = this.editor.setBlocks(changes);
-    // ⚠️ 部分写入（column 缺失被跳过）→ 回滚，绝不留下半个平台
-    if (report.skipped.length > 0) {
+    // ⚠️ **审查高7：回滚判据不能只看 `skipped.length > 0`** —— `world-data.js:185` 把
+    // **no-change 也推进 skipped**（某格已是目标值时）。2916 格里只要有一格已是
+    // `playground_block` 就会触发整批回滚，且误报成 'not-loaded'。
+    // 真正的失败只有三种：`column-missing` / `out-of-bounds` / `bedrock`（硬失败）。
+    // no-change 是**正常**的（幂等放置），不算失败。
+    const hardSkipped = report.skipped.filter((sk) =>
+      sk.reason === 'column-missing' || sk.reason === 'out-of-bounds' || sk.reason === 'bedrock');
+    if (hardSkipped.length > 0) {
+      // 部分写入（硬失败）→ 回滚，绝不留下半个平台
       this.editor.setBlocks(changes.map((c) => ({ x: c.x, y: c.y, z: c.z, id: 0 })));
-      return { ok: false, reason: 'not-loaded' };
+      // reason 按实际硬失败原因返回（不再一律 'not-loaded'）
+      const reason = hardSkipped[0].reason === 'column-missing' ? 'not-loaded' : 'no-safe-location';
+      return { ok: false, reason };
     }
     this._state = { origin: [originX, y, originZ], size };
     return { ok: true, origin: [originX, y, originZ] };
@@ -620,7 +695,13 @@ export class PlaygroundService {
     return { ok: true };
   }
 
-  /** 从存档恢复（走锚点，不遍历已加载 chunk）。⚠️ 调用前须先 `flushNow()` */
+  /**
+   * 从存档恢复（走锚点，不遍历已加载 chunk）。
+   * ⚠️ **审查低12：启动期 hydrate 前不需要 flushNow** —— M7 的 `nests.hydrate`
+   * （`game.js:266`）就没有这个前置（`listBlockEntities` 走 cursor 扫库，不依赖预热）。
+   * `flushNow` 是**测试侧 reload 前**才调用的（把内存 edits 落库，reload 后 hydrate 才读得到）。
+   * 照写「启动期 hydrate 前 flushNow」会加一段无意义的启动期 flush。
+   */
   async hydrate(persistence) {
     const anchors = await persistence.listBlockEntities(PLAYGROUND_KIND);
     this._state = null;
@@ -668,9 +749,13 @@ export class PlaygroundService {
       blocks,
       metadata: {
         created: new Date().toISOString(),
-        dimensions: blocks.length === 0 ? { x: 0, y: 0, z: 0 } : {
-          x: maxX - minX + 1, y: maxY - minY + 1, z: maxZ - minZ + 1,
-        },
+        // ⚠️ **审查高6：键名必须是 `width`/`height`/`depth`** —— 实测 27 个
+        // `assets/structures/*.json` 全部用这三个键（如 `big_house.json` →
+        // `{"width":37,"height":11,"depth":39}`）。写 `{x,y,z}` 会破坏「与结构 JSON
+        // 格式完全一致」的声明 → 导出的模型喂给结构管线时 dimensions 对不上。
+        dimensions: blocks.length === 0
+          ? { width: 0, height: 0, depth: 0 }
+          : { width: maxX - minX + 1, height: maxY - minY + 1, depth: maxZ - minZ + 1 },
       },
     }, null, 2);
     return { ok: true, json, blocks: blocks.length };
@@ -753,7 +838,8 @@ export class PlaygroundService {
 this.playground = new PlaygroundService({
   world: this.world, editor: this.editor, registry: this.registry,
 });
-// ⚠️ hydrate 前须先 flushNow（hydrate 是重建派生状态；库里没锚点 → 判为未激活）
+// ⚠️ **启动期 hydrate 不需要 flushNow**（审查低12）—— M7 的 nests.hydrate 同口径
+// （game.js:266 无此前置）。flushNow 是测试侧 reload 前调用的，见 E2E 的 reload 用例。
 await this.playground.hydrate(this.persistence);
 
 /** 测试 API（Task 3 的 UI 按钮也调这两个） */
@@ -768,38 +854,54 @@ closePlayground() {
 playgroundDebugState() { return { active: this.playground.isActive(), origin: this.playground.origin() }; }
 ```
 
-- [ ] **Step 4: 在 `tools/check-data.mjs` 新增 `[创造台]` 环节**
+- [ ] **Step 4: 在 `tools/check-data.mjs` **扩展** `[创造台]` 环节（补平台尺寸与锚点契约）**
+
+⚠️ **审查 B3：不要新建同名函数** —— `checkPlaygroundContract()` 已由 Task 1 定义并在主流程
+加了调用行。同名重复定义会让后一个**覆盖**前一个（Task 1 的「移出背包」断言静默失效）。
+本任务只在**既有函数体内追加**平台尺寸契约（`PLAYGROUND` 常量由本任务的 config 提供）：
 
 ```js
-/**
- * [创造台] 契约：平台尺寸 / 两个方块名在 registry 内 / 两者都标了 indestructible /
- * kind 与 service 同源。漏了会让「平台方块不可破坏」门控静默失效。
- */
-function checkPlaygroundContract() {
-  const names = [PLAYGROUND_BLOCK, PLAYGROUND_CENTER_BLOCK];
-  const allNames = new Set(REGISTRY.all().map((e) => e.name));
-  for (const n of names) {
-    if (!allNames.has(n)) failures.push(`[创造台] "${n}" 不在 registry 内（平台方块名拼错）`);
-    if (!REGISTRY.isIndestructible(REGISTRY.idOf(n))) {
-      failures.push(`[创造台] "${n}" 未标 indestructible（玩家/TNT 能破坏平台本体）`);
-    }
-    // ⚠️ 平台方块**不得**在背包物品集合内（Task 1 的 §1.1）—— 否则玩家放得出来但挖不掉
-    if (buildItemNames(REGISTRY).includes(n)) {
-      failures.push(`[创造台] "${n}" 在背包物品集合内（玩家能放置不可破坏的平台方块 → 撕裂状态）`);
-    }
-  }
+// 在 Task 1 定义的 checkPlaygroundContract() 函数体内、`infos.push(...)` 之前追加：
+//   （须先 import `PLAYGROUND` / `PLAYGROUND_BLOCK` / `PLAYGROUND_CENTER_BLOCK`
+//     from '../../src/entities/playground/playground-config.js'，并把 Task 1 里硬编码的
+//     `['playground_block','playground_center_block']` 换成这两个常量 —— 单一权威，红线 1）
+  // 平台尺寸契约：service 用的尺寸与 config 单一权威一致
+  if (PLAYGROUND.size !== 54) failures.push(`[创造台] PLAYGROUND.size = ${PLAYGROUND.size} ≠ 54（mc-lite 口径）`);
+  // 锚点 kind 契约（与 service 的 hydrate 同源）
+  if (PLAYGROUND_KIND !== 'playground') failures.push('[创造台] PLAYGROUND_KIND ≠ "playground"（hydrate 扫库会对不上）');
   infos.push(`[创造台] 平台 ${PLAYGROUND.size}×${PLAYGROUND.size} = ${PLAYGROUND.size ** 2} 格`);
-}
 ```
 
-⚠️ **负向验证**：① 注入「移除 `HIDDEN_FROM_INVENTORY` 里的创造台两项」→ 该环节须真 FAIL；
-② 注入「移除 `indestructible` 字段」→ 须真 FAIL。
+⚠️ **主流程调用行已由 Task 1 加好**（`checkPlaygroundContract();`），本任务**不再加第二行**
+（重复调用会让同一环节报两次）。⚠️ **负向验证**：① 注入「`PLAYGROUND.size` 改成 40」→
+平台尺寸断言须真 FAIL；② 注入「`PLAYGROUND_KIND` 改成 'create-table'」→ kind 断言须真 FAIL。
 
 - [ ] **Step 5: 写 Playwright E2E**
 
 `tests/playground.spec.mjs`：
 
 ```js
+// ⚠️ **没有共享 helper 模块** —— `boot` / `waitWorldSettled` 都是各 spec 自带的局部 helper
+// （实测：`tests/` 下无共享 .js 模块，`boot` 在 m3-1-inventory/m3-rain/m3-2-orientation
+// 各自定义）。本 spec 须把下面两个 helper **整段复制**进来（M8 计划已踩过同一个坑：
+// 「没有 startGame 这个 helper，须整段复制」）。
+// ⚠️ 不要照 `m3-1-inventory.spec.mjs:30` 的 `boot` —— 那个只 `goto + worldReady`，
+// 不含 `waitWorldSettled`，而本 spec 的 reload 用例需要完整收敛等待。照 M8 计划 Task 2
+// Step 8 的写法（两个 helper 都要）。
+import { test, expect } from 'playwright/test';
+
+/** 等世界真正稳定（判据 = sections 连续两次采样不变 + 队列归零）。
+ *  ⚠️ 不能只判队列归零 —— 那是瞬时状态，高负载下队列可能短暂归零而 column 还在加载。
+ *  整段照 `tests/zombie-nests.spec.mjs:25` 复制（含其注释与 90s timeout）。 */
+async function waitWorldSettled(page) { /* 照 zombie-nests.spec.mjs 实现 */ }
+
+/** 本 spec 的起手式：导航 + 等世界稳定。⚠️ 用 `?vd=2`（M1/M3 既有 spec 同口径）——
+ *  创造台在 vd=2 下会触发「未加载视为重叠」判据，该 spec 正好覆盖到它。 */
+async function boot(page) {
+  await page.goto('/?vd=2');
+  await waitWorldSettled(page);
+}
+
 test('创造台：生成 54×54 平台 + 中心块，平台方块不可挖不可炸', async ({ page }) => {
   await boot(page);
   const r = await page.evaluate(() => window.__MC_GAME__.createPlayground());
@@ -830,18 +932,86 @@ test('创造台：生成 54×54 平台 + 中心块，平台方块不可挖不可
 });
 
 test('创造台：reload 后从锚点恢复激活状态，全局仍最多 1 个', async ({ page }) => {
-  // 生成 → flushNow → reload → 断言 playgroundDebugState().active === true
-  // 再 create → reason === 'exists'
+  // ⚠️ **flushNow 是测试侧 reload 前调用的**（审查低12）—— 把内存 edits 落库，
+  // reload 后 hydrate 才读得到锚点。照 zombie-nests.spec.mjs 的 reload 手法。
+  await boot(page);
+  await page.evaluate(async () => {
+    const g = window.__MC_GAME__;
+    const r = g.createPlayground();
+    if (!r.ok) throw new Error(`create failed: ${r.reason}`);
+    await g.persistence.flushNow(g.world);   // 落库，供 reload 后 hydrate 读取
+  });
+  await page.reload();
+  await waitWorldSettled(page);
+  // 锚点恢复 → active === true
+  const restored = await page.evaluate(() => window.__MC_GAME__.playgroundDebugState());
+  expect(restored.active).toBe(true);
+  // 再 create → 'exists'（全局最多 1 个）
+  const second = await page.evaluate(() => window.__MC_GAME__.createPlayground());
+  expect(second.reason).toBe('exists');
 });
 
 test('创造台：导出 JSON 可被结构管线消费（格式一致）', async ({ page }) => {
-  // 生成平台 + 雕两格模型 → exportModel → JSON.parse → 断言 blocks[].{x,y,z,type,direction}
-  // 与 assets/structures/zombie_nest.json 的形状一致
+  await boot(page);
+  const result = await page.evaluate(() => {
+    const g = window.__MC_GAME__;
+    const created = g.createPlayground();
+    if (!created.ok) throw new Error(`create failed: ${created.reason}`);
+    const o = created.origin;
+    // 在平台上雕两格 stone 模型（平台上方一格）
+    const stoneId = g.registry.idOf('stone');
+    const cx = o[0] + 27, cz = o[2] + 27;
+    g.editor.setBlocks([
+      { x: cx, y: o[1] + 1, z: cz, id: stoneId },
+      { x: cx + 1, y: o[1] + 1, z: cz, id: stoneId },
+    ]);
+    const exp = g.playground.exportModel();   // 同步返回（规格 §2.4）
+    return { ok: exp.ok, json: exp.json, blocks: exp.blocks };
+  });
+  expect(result.ok).toBe(true);
+  expect(result.blocks).toBe(2);
+  const data = JSON.parse(result.json);
+  // blocks 形状与 assets/structures/zombie_nest.json 一致（相对坐标 + type + direction）
+  expect(Array.isArray(data.blocks)).toBe(true);
+  expect(data.blocks.length).toBe(2);
+  expect(data.blocks[0]).toHaveProperty('type', 'stone');
+  expect(Number.isFinite(data.blocks[0].x)).toBe(true);
+  expect(Number.isFinite(data.blocks[0].direction)).toBe(true);
+  // ⚠️ dimensions 键名必须是 width/height/depth（审查高6，实测结构 JSON 口径）
+  expect(data.metadata.dimensions).toHaveProperty('width');
+  expect(data.metadata.dimensions).toHaveProperty('height');
+  expect(data.metadata.dimensions).toHaveProperty('depth');
+  expect(data.metadata.dimensions.x).toBeUndefined();   // 不得有旧形状的 x 键
 });
 
 test('创造台：玩家在平台内时拒绝关闭', async ({ page }) => {
-  // 传送到平台上 → closePlayground → reason === 'player-in-playground'
-  // 传送出去 → close 成功 → 平台格变 air，**模型方块保留**
+  await boot(page);
+  const result = await page.evaluate(() => {
+    const g = window.__MC_GAME__;
+    const created = g.createPlayground();
+    if (!created.ok) throw new Error(`create failed: ${created.reason}`);
+    const o = created.origin;
+    // 雕一格模型（关闭后须保留 —— 只删平台层，不删模型）
+    const stoneId = g.registry.idOf('stone');
+    const cx = o[0] + 27, cz = o[2] + 27;
+    g.editor.setBlock({ x: cx, y: o[1] + 1, z: cz, id: stoneId });
+    // ① 玩家在平台内 → 拒绝关闭（把玩家传送到平台上）
+    g.player.physics.pos.set(o[0] + 5, o[1] + 1, o[2] + 5);
+    const inside = g.closePlayground();
+    // ② 玩家移出平台 → 关闭成功
+    g.player.physics.pos.set(o[0] - 20, o[1] + 1, o[2]);
+    const outside = g.closePlayground();
+    return {
+      insideReason: inside.reason,
+      outsideOk: outside.ok,
+      platformGone: g.world.getBlockId(o[0], o[1], o[2]) === 0,   // 平台层变 air
+      modelKept: g.world.getBlockId(cx, o[1] + 1, cz) === stoneId, // 模型保留
+    };
+  });
+  expect(result.insideReason).toBe('player-in-playground');
+  expect(result.outsideOk).toBe(true);
+  expect(result.platformGone).toBe(true);
+  expect(result.modelKept).toBe(true);   // ⚠️ 只删平台层，模型方块保留
 });
 ```
 
@@ -957,7 +1127,7 @@ Expected: FAIL —— `Toast` 未定义（模块不存在）；`PLAYGROUND_OPEN_
 `src/ui/toast.js`（mc-heavy 目前**没有** `showMessage`/toast 设施，本任务新增）：
 
 ```js
-// src/ui/toast.js — M8：轻量非模态提示（规格 §7）
+// src/ui/toast.js — M9：轻量非模态提示（规格 §3）
 // mc-heavy 此前没有 showMessage/toast 设施（CoordsHUD 只显示坐标）。消费者 = 创造台的
 // 成功/失败提示（NO_SAFE_LOCATION / PLAYER_IN_PLAYGROUND / EXISTS），后续 Epic 可复用。
 //
@@ -1024,7 +1194,36 @@ export class Toast {
 
 - [ ] **Step 4: 面板动作按钮**
 
-`src/ui/settings-panel.js` —— 右列新增一组（照既有 `_rowWorld()` 的同手法）：
+`src/ui/settings-panel.js` —— 右列新增一组（照既有 `_rowWorld()` 的同手法）。
+⚠️ **审查 B2：下面 4 处必须一起做，缺一处即构造期 TypeError 或功能落空**：
+① 构造函数里初始化 `_playgroundActive` / `_playgroundBusy` / `_toast` —— 既有构造存的是
+**`this.game`**（`settings-panel.js:126`），不是 `this._game`，所有调用一律用 `this.game`；
+② `_syncPlaygroundVisibility()` / `_onExport()` / `_onImport()` 必须定义（被调用但从未定义
+→ TypeError）；③ `_rowPlayground()` 必须 append 到右列（挂载点 `settings-panel.js:164-168`，
+既有 `right.appendChild(this._rowWorld())` 之后 —— 计划此前漏了这处修改）；
+④ `this._toast` 必须真的赋值，否则 `this._toast?.show(...)` 静默不显示（规格 §3 验收项落空）。
+
+**① 构造函数追加**（`constructor(root, game, settings)` 内，`this.game = game;` 之后）：
+
+```js
+    // M9：创造台面板状态 + toast 实例。⚠️ 字段名是 `this.game`（既有），不是 `this._game`
+    this._playgroundActive = game.playground?.isActive() ?? false;   // 初值取服务真实状态
+    this._playgroundBusy = false;                                    // 防重复点击锁
+    this._toast = new Toast({});   // Toast 须 import（`import { Toast } from './toast.js';`）
+```
+
+**② 挂载点修改**（`settings-panel.js:164-168` 的右列 append 序列，**此前计划漏了这处**）：
+
+```js
+    left.appendChild(this._combinedBlurGunDamage()); // 画质 + 枪械破坏共用一行
+    left.appendChild(this._rowVisualStyle());
+    right.appendChild(this._rowViewDistance());
+    right.appendChild(this._rowBudget());
+    right.appendChild(this._rowWorld());             // 新世界 + 删除缓存共用一行
+    right.appendChild(this._rowPlayground());        // M9：创造台（右列，纵向余量更大）
+```
+
+**③ 面板方法**（照既有 `_rowWorld()` 的同手法）：
 
 ```js
 /** 「创造台」按钮的两态文案。**单一口径** —— 构造与状态切换共用这两份常量，
@@ -1070,7 +1269,7 @@ async _onPlaygroundToggle() {
   this._playgroundBusy = true;
   this._playgroundBtn.disabled = true;
   try {
-    const result = this._playgroundActive ? this._game.closePlayground() : this._game.createPlayground();
+    const result = this._playgroundActive ? this.game.closePlayground() : this.game.createPlayground();
     if (result.ok) {
       this._playgroundActive = !this._playgroundActive;
       this._toast?.show(this._playgroundActive ? '创造台已创建' : '创造台已关闭');
@@ -1082,6 +1281,54 @@ async _onPlaygroundToggle() {
     this._playgroundBusy = false;
     this._playgroundBtn.disabled = false;
   }
+}
+
+/** 导出/导入按钮的可见性同步：仅创造台激活时显示（mc-lite `UIManager.js:540-564` 同手法） */
+_syncPlaygroundVisibility() {
+  // 主按钮文案随状态切换（单一口径：两态都用导出常量，不写字面量）
+  this._playgroundBtn.textContent =
+    this._playgroundActive ? PLAYGROUND_CLOSE_LABEL : PLAYGROUND_OPEN_LABEL;
+  // 导出/导入仅激活时可见（mc-lite `style.display` 同手法）
+  const vis = this._playgroundActive ? '' : 'none';
+  this._exportBtn.style.display = vis;
+  this._importBtn.style.display = vis;
+}
+
+/** 导出模型 JSON 并触发浏览器下载（mc-lite `exportModel` + `UIManager.js:425` 同手法）。
+ *  ⚠️ 规格 §2.4 要求「触发浏览器下载 model.json」—— 用 Blob + createObjectURL 实现，
+ *  不是只返回 JSON 字符串。 */
+_onExport() {
+  const result = this.game.playground.exportModel();   // **同步**返回（规格 §2.4）
+  if (!result.ok) { this._toast?.show(PLAYGROUND_ERRORS[result.reason] ?? '导出失败'); return; }
+  const blob = new Blob([result.json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'model.json';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);   // 释放（mc-lite `UIManager.js:434-441` 同手法）
+  this._toast?.show(`模型导出成功（${result.blocks} 方块）`);
+}
+
+/** 导入模型 JSON（文件上传）。⚠️ 文件读取是异步的，须在 finally 释放 busy 锁。 */
+_onImport() {
+  if (this._playgroundBusy) return;
+  this._playgroundBusy = true;
+  const input = document.createElement('input');
+  input.type = 'file'; input.accept = '.json,application/json';   // mc-lite `UIManager.js:447` 同手法
+  input.onchange = async () => {
+    try {
+      const file = input.files?.[0];
+      if (!file) return;
+      const jsonText = await file.text();
+      const result = this.game.playground.importModel(jsonText);   // **同步**返回（规格 §2.4）
+      this._toast?.show(result.ok
+        ? `导入完成：放置 ${result.placed}，跳过 ${result.skipped}，无效 ${result.invalid}`
+        : (PLAYGROUND_ERRORS[result.reason] ?? '导入失败'));
+    } finally {
+      this._playgroundBusy = false;   // ⚠️ 异步读取完成才释放锁
+    }
+  };
+  input.click();
 }
 
 /** 错误文案映射（单一口径，不散落字面量） */
@@ -1236,7 +1483,7 @@ git commit -m "docs(m9): 验收报告与 roadmap 回填"
 | `world.hasColumn(cx, cz)` | boolean（column 是否已加载） | `world-data.js:19` | 选址预检用；未加载 column 的 `getBlockId` 返回 0（air）→ 会误判「安全」 |
 | `world.getBlockId(x,y,z)` | number（column 缺失或越上界 → 0；越下界 → bedrock） | `world-data.js:24` | 未加载 column 返回 0，不是 null |
 | `world.getBlockMeta(x,y,z)` | number（orientation） | `world-data.js` | 导出模型时读朝向 |
-| `persistence.listBlockEntities(kind)` | `Promise<Array<{columnKey,index,blockEntity}>>` | `persistence.js:120` | hydrate 用；⚠️ hydrate 前须先 `flushNow()` |
+| `persistence.listBlockEntities(kind)` | `Promise<Array<{columnKey,index,blockEntity}>>` | `persistence.js:120` | hydrate 用；⚠️ **启动期 hydrate 不需要 flushNow**（M7 同口径）；flushNow 是测试侧 reload 前调用 |
 | `registry.isIndestructible(id)` | boolean（M8 交付） | `block-registry.js` | Task 1 登记两项后自动生效于三个消费者 |
 | `registry.cullTable[id]` | number（3 = `cullMode:'none'`，不渲染） | `block-registry.js` | 导入时跳过不可渲染方块 |
 | `registry.idOf(name)` | number \| undefined（未知名字返回 undefined） | `block-registry.js` | ⚠️ 导入未知方块名 → 计 `invalid`，**不得写 0（air）** |

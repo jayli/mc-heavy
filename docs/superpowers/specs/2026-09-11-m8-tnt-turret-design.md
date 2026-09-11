@@ -32,7 +32,7 @@ mc-lite 用**两处字面量**表达同一件事：`ExplosionWorker.js:6` 的
 - `block-registry.js` 新增 `indestructibleTable`（`Uint8Array(MAX_BLOCKS)`），与既有
   `solidTable`/`opaqueTable`/`cullTable` 同一手法，主线程与 Worker 同构可用；
 - **三个消费者全部读这张表**，不得各写字面量数组：① `Player.digBlock()` 的挖块门控；
-  ② `weapon-controller` 的可选方块破坏门控（与既有 `canGunsDestroyBlocks` 开关叠加）；
+  ② `weapon-controller` 的可选方块破坏门控（与既有 `settings.gunBlockDamage` 开关叠加，链路：`game.setGunBlockDamage()` → `weaponController.setBlockDamage()`）；
   ③ §2 的爆炸破坏过滤。
 
 `bedrock` 已由 `WorldEditor.setBlock/setBlocks` 的 `reason:'bedrock'` 门控兜住（写不进去），
@@ -454,7 +454,7 @@ M8 引入三项新机制，须在 `docs/phase-1-engine-design.md` 落地后再�
 |---|---|---|
 | `indestructible` 方块属性表 | §4.1 方块注册表 | 第 **8** 个 typed 属性表（代码里现有 7 张：solid / opaque / cull / emissive / geometry / orientationModes / supportsPlayer）；三个消费者共用单一权威。⚠️ §4.1 目前没有属性表清单（只描述 ChunkColumn 存储字段），须顺带补上完整清单 |
 | 爆炸计算（同构纯函数，主线程） | §4.5 玩家与交互（新增小节）+ 红线 3 的边界判定 | 记清「152 次查询、须与音效同帧」的取舍依据，避免后人误判为红线 3 违规 |
-| `turret` / `projectile` 两种 blockEntity kind 与实体类型 | DR-17 的 blockEntity 通道段 + §9 后续功能扩展点表 | DR-17 已写「后续炮塔/床/宝箱可直接复用此通道」—— M8 是第二个消费者，须回填实测结论。⚠️ 实体运行时**不在编号子系统里**（设计文档 §4.6 是光照与 AO；M5 的 `EntityManager` 只出现在 §9 扩展点表与 DR 记录中），落点须查实际章节，勿照本表硬写 |
+| `turret` / `projectile` 两种 blockEntity kind 与实体类型 | DR-17 的 blockEntity 通道段 + **设计文档 §9** 后续功能扩展点表 | DR-17 已写「后续炮塔/床/宝箱可直接复用此通道」—— M8 是第二个消费者，须回填实测结论。⚠️ 实体运行时**不在编号子系统里**（设计文档 §4.6 是光照与 AO；M5 的 `EntityManager` 只出现在**设计文档 §9** 扩展点表与 DR 记录中），落点须查实际章节，勿照本表硬写 |
 （`playground` blockEntity kind 与物品集合口径变更属 **M9** 范围，其设计文档同步在 **M9 计划 Task 0** 里做 —— M9 规格本身只有 §1~§4，无独立的设计文档同步节。）
 
 ⚠️ **不 bump 设计文档版本号的例外**：M4~M7 的实玩反馈修正按 CLAUDE.md 口径**不进**设计文档修订

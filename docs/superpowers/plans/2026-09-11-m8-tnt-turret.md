@@ -129,7 +129,7 @@ solid / opaque / cull / emissive / geometry / orientationModes / supportsPlayer�
 
 **`indestructibleTable`（M8 新增）**：「哪些方块不可被破坏」的唯一权威。
 三个消费者全部读这张表，不得各写字面量：① `Player.digBlock()` 徒手挖块门控；
-② `weapon-target-policy.js` 枪械可破坏判定（与 `canGunsDestroyBlocks` 开关叠加，
+② `weapon-target-policy.js` 枪械可破坏判定（与 `settings.gunBlockDamage` 开关叠加，链路：`game.setGunBlockDamage()` → `weaponController.setBlockDamage()`，
    其 `end_stone` 例外是**武器专属**收紧，仍留在该模块）；③ `computeExplosion()` 爆炸过滤。
 mc-lite 的表达是**分散且不重合**的：`ExplosionWorker.js:8` 的字面量数组
 `['playground_block','playground_center_block','bedrock','barrier']`，与

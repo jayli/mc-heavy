@@ -185,3 +185,16 @@ toast（`src/ui/toast.js`）：屏幕中部短暂提示、自动淡出、不阻�
   可被结构管线消费；导入时非法项计 `invalid`、不可渲染项计 `skipped`、未知方块名**不写 air**。
 - 重启后从锚点恢复创造台状态（按钮显示「关闭创造台」），全局仍最多 1 个。
 - 生成/关闭期间按钮锁定（防重复点击）；toast 提示对应结果且**不**阻塞世界操作。
+
+### 4.1 回归与门禁
+
+- `npm run check`（含 `check:arch` / `check:data`）+ `npm test`（浏览器内单测）+ 全量
+  Playwright spec 全绿。`check:data` 的 `[创造台]` 环节由 Task 1 新建、Task 2 扩展
+  （平台尺寸 + 锚点 kind 契约）。
+- `npm run bench -- --check` 无回退。⚠️ **2916 格单次编辑是本 Epic 最大的编辑量** ——
+  须实测 REMESH 收敛期的帧率与队列深度并记进验收报告；若 frameP95 回退 >10%，停下来报告
+  并考虑分帧提交（**不擅自改断言或静默放宽**）。
+- ⚠️ **无 draw call 增量**：创造台走既有体素通道（BatchedMesh），不新增任何 InstancedMesh
+  （区别于 M8 的炮塔/弹丸/爆炸特效），故无需 draw 对照表。
+- 每条新增断言都做**负向验证**（注入缺陷 → 断言须真 FAIL），并自查无效盲区
+  （`docs/testing-policy.md` §2.7 的十二类高发区）。
