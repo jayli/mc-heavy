@@ -22,6 +22,13 @@
 关键 `gold_block` 被破坏即失效），**M7 遗留 TODO 也已补齐**（背包里的巢穴图标改走平面路径 ——
 此前是立方体等轴测图，错的表达，见下节）。**第二阶段 Epic 链（M4→M5→M6→M7）全部交付。**
 
+**第三阶段已规划、待实施**：**M8 TNT 爆炸 / 炮塔弹丸**（`indestructible` 单一权威 + TNT
+引爆爆炸连锁 + 炮塔方块锚定装置与索敌 + 弹丸走 M5 临时实体命中丧尸掉血）与 **M9 创造台**
+（54×54 平台 + 锚点持久层 + 模型 JSON 导入导出）—— 规格与实施计划均已定稿并经四轮审查
+（`docs/superpowers/{specs,plans}/2026-09-11-m8-tnt-turret*` 与 `*-m9-playground*`），
+尚未开工。M9 依赖 M8 交付的 `indestructibleTable`（M8 只登记 `bedrock`，M9 追加创造台两项
+并移出背包 —— 两者必须成对做，否则产出「放得出来但挖不掉」的撕裂状态）。
+
 ## 里程碑总表
 
 | 里程碑 | 内容 | 状态 | 关键 commit |
@@ -270,6 +277,25 @@ M4 玩家武器 ──▶ M5 实体运行时 ──▶ M6 丧尸 ──▶ M7 �
 - M4 Task 6 挂 KeyR 切武器依赖 M3.1 交付的 `uiModal` keydown 守卫；
 - M4 plan Task 2 的 `getBlockMeta` 已由 M3.2 **提前交付**，改为「验证已交付 + 补断言」。
 
+## 第三阶段依赖链（M8 → M9，待实施）
+
+```
+M8 TNT 爆炸 / 炮塔弹丸 ──▶ M9 创造台（playground）
+（indestructibleTable 单一权威       （复用 M8 的 indestructibleTable，
+  + WorldEditor.setBlocks 爆炸         追加创造台两项 + 移出背包；
+  + 炮塔方块锚定装置 + M5 弹丸）        平台走 setBlocks 真实方块 + 锚点）
+```
+
+两者**串行**：M9 依赖 M8 交付的 `indestructibleTable`。⚠️ **拆分依据**：M8 只登记 `bedrock`，
+创造台两项留在 M9 —— 因为「登记 `indestructible`」与「移出背包」必须成对做，只登记不移出会
+立刻产出「玩家放得出来但挖不掉、TNT 也炸不掉」的撕裂状态（M8 期间没有创造台功能可批量删）。
+规格与计划（经四轮审查定稿）：
+`docs/superpowers/specs/2026-09-11-m8-tnt-turret-design.md` +
+`docs/superpowers/plans/2026-09-11-m8-tnt-turret.md`、
+`docs/superpowers/specs/2026-09-11-m9-playground-design.md` +
+`docs/superpowers/plans/2026-09-11-m9-playground.md`。
+设计文档目标版本号：M8 → v1.39、M9 → v1.40（v1.36~v1.38 已被独立改动表占用）。
+
 ## 后续扩展点（M7 之后，按阶段加入）
 
 | 功能 | 引擎接入点 |
@@ -290,6 +316,9 @@ M4 玩家武器 ──▶ M5 实体运行时 ──▶ M6 丧尸 ──▶ M7 �
 
 M7 建立了一套「方块锚定的持久装置」模式，未来炮塔 / 矿车站 / 创造台等同类装置可直接复用，
 不必另开持久化路径：
+
+（**M8 炮塔与 M9 创造台是这套模式的头两个具体消费者** —— M8 规格 §3 / M9 规格 §2 均按此模式
+设计，复用 `blockEntity` 锚点 + `listBlockEntities` 扫库判上限，不另开持久化路径。）
 
 - **持久真相 = 某格的 `blockEntity`**（经 edits diff 落盘，无需第二份 store —— 红线 1）；
 - **派生 controller 只在 anchor column 已加载时存在**：column 卸载即销毁、重载即从 blockEntity
