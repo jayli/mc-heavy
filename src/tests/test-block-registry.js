@@ -2,6 +2,10 @@ import { test } from './runner.js';
 import { assertEqual, assertThrows, assertTrue } from './assert.js';
 import { createRegistry } from '../voxel/block-registry.js';
 import { BLOCKS } from '../voxel/blocks-data.js';
+import { ChunkColumn } from '../voxel/chunk-column.js';
+import { WorldData } from '../voxel/world-data.js';
+import { Player } from '../player/player.js';
+import { isWeaponDestructible } from '../player/weapons/weapon-target-policy.js';
 
 test('BlockRegistry: air 恒为 ID 0', () => {
   const reg = createRegistry();
@@ -70,4 +74,98 @@ test('BlockRegistry: nameOf 反查', () => {
   const reg = createRegistry();
   for (const def of BLOCKS) reg.register(def.name, def);
   assertEqual(reg.nameOf(reg.idOf('dirt')), 'dirt');
+});
+
+// ---------- M8：indestructible 单一权威（规格 §1） ----------
+
+function makeRegistry() {
+  const reg = createRegistry();
+  for (const def of BLOCKS) reg.register(def.name, def);
+  reg.freeze();
+  return reg;
+}
+
+/**
+ * 记录调用的 fake editor（M8 Task 1）。断言必须落在 `calls` 上而非只看 world ——
+ * 「零写入」的真实判据是编辑入口没被调用（world 里方块还在只是结果，不是原因）。
+ */
+function makeRecordingEditor() {
+  return {
+    calls: [],
+    setBlock(c) { this.calls.push(c); },
+    setBlocks(cs) { this.calls.push(...cs); return { changes: cs.length }; },
+    setBlockEntity(r) { this.calls.push(r); },
+  };
+}
+
+/** Player fixture：最小 world（一个 column）+ fake canvas（构造期会绑监听）。 */
+function makePlayerFixture() {
+  const registry = makeRegistry();
+  const world = new WorldData(registry);
+  world.add(new ChunkColumn(0, 0));
+  const editor = makeRecordingEditor();
+  const canvas = {
+    addEventListener: () => {}, removeEventListener: () => {},
+    requestPointerLock: () => {},
+  };
+  const player = new Player({
+    world, registry, canvas, editor,
+    camera: { position: { x: 0, y: 0, z: 0 }, rotation: { y: 0, x: 0 } },
+    scheduler: null,
+  });
+  return { player, editor, world, registry };
+}
+
+test('indestructibleTable：bedrock 登记且可破坏方块判 false（M8 只登记一项）', () => {
+  const registry = makeRegistry();
+  // ① 表的单一权威：登记 bedrock
+  assertTrue(registry.isIndestructible(registry.idOf('bedrock')), 'bedrock 不可破坏');
+  // ② 临界值附近断言：可破坏方块必须判 false（不能把整表当恒真判据）
+  assertEqual(registry.isIndestructible(registry.idOf('stone')), false);
+  assertEqual(registry.isIndestructible(registry.idOf('tnt')), false);
+  // ③ collider 系**不**登记（「不进背包」与「不可破坏」是两个互斥集合）
+  assertEqual(registry.isIndestructible(registry.idOf('collider')), false);
+  assertEqual(registry.isIndestructible(registry.idOf('realistic_trunk_collider')), false);
+  // ④ 未知 id 防御（不存在的方块不该被当成不可破坏）
+  assertEqual(registry.isIndestructible(999), false);
+  assertEqual(registry.isIndestructible(undefined), false);
+  // ⑤ M8 不登记 playground（移交 M9）—— 钉住 M8 的范围边界
+  assertEqual(registry.isIndestructible(registry.idOf('playground_block')), false);
+  assertEqual(registry.isIndestructible(registry.idOf('playground_center_block')), false);
+  // ⑥ typed 表与查询方法同源（红线 1：两处漂移会让门禁误判）
+  assertEqual(registry.indestructibleTable[registry.idOf('bedrock')], 1);
+  assertEqual(registry.indestructibleTable[registry.idOf('stone')], 0);
+});
+
+test('digBlock 对 indestructible 方块零写入（编辑入口未被调用）', () => {
+  const { player, editor, world, registry } = makePlayerFixture();
+  const id = registry.idOf('bedrock');
+  world.setBlock(4, 1, 4, id);
+  player.target = { blockPos: [4, 1, 4], prevPos: [4, 2, 4], normal: [0, 1, 0], dist: 2 };
+  const before = editor.calls.length;
+  player.digBlock();
+  assertEqual(editor.calls.length, before, '零写入');
+  assertEqual(world.getBlockId(4, 1, 4), id, '方块还在');
+  player.dispose();
+});
+
+test('digBlock 仍可挖掉普通方块（门控不是恒真）', () => {
+  const { player, editor, world, registry } = makePlayerFixture();
+  const stone = registry.idOf('stone');
+  world.setBlock(4, 1, 4, stone);
+  player.target = { blockPos: [4, 1, 4], prevPos: [4, 2, 4], normal: [0, 1, 0], dist: 2 };
+  player.digBlock();
+  assertEqual(editor.calls.length, 1, '一次写入');
+  assertEqual(editor.calls[0].id, 0, '写成 air');
+  player.dispose();
+});
+
+test('isWeaponDestructible 读表而非字面量（end_stone 是武器专属收紧）', () => {
+  const registry = makeRegistry();
+  assertEqual(isWeaponDestructible(registry.idOf('bedrock'), registry), false);
+  assertEqual(isWeaponDestructible(registry.idOf('stone'), registry), true);
+  assertEqual(isWeaponDestructible(registry.idOf('air'), registry), false);
+  // end_stone 不在 indestructibleTable 里（武器专属），须保留排除
+  assertEqual(registry.isIndestructible(registry.idOf('end_stone')), false);
+  assertEqual(isWeaponDestructible(registry.idOf('end_stone'), registry), false);
 });

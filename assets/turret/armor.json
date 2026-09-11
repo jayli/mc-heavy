@@ -1,0 +1,11 @@
+{
+  "width": 192,
+  "height": 64,
+  "zones": [
+    "front",
+    "side",
+    "top"
+  ],
+  "zoneSize": 64,
+  "fingerprint": "front:4155348357|side:4043868220|top:3332916653|size:192x64|zones:front/side/top"
+}

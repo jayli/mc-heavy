@@ -44,6 +44,15 @@ const {
 // v1.26：图标走独立 icons-atlas（不再有 INVENTORY_ICONS 表）。指纹/清单走共享模块
 // （红线 1：与烘焙脚本同一份逻辑，两处漂移会让指纹比对得出错误结论）。
 const { iconFingerprintFor, FLAT_BLOCKS, FLAT_ICON_TILE } = await import('./icon-fingerprint.mjs');
+// 炮塔装甲纹理的参数与指纹走共享模块（红线 1：与烘焙脚本同一份逻辑）
+const {
+  ARMOR_PNG, ARMOR_JSON, ARMOR_WIDTH, ARMOR_HEIGHT, ARMOR_TEXTURE_CONFIG,
+  armorInputFingerprint, readArmorPng,
+} = await import('./turret-armor-fingerprint.mjs');
+// 渲染侧的区序与部件定义（同为同构模块，无 three）—— 门禁据此断言两侧区序一致
+const {
+  ARMOR_ZONES, TURRET_PARTS, TURRET_PART_DEFS,
+} = await import('../src/entities/turrets/turret-config.js');
 
 const atlasMeta = JSON.parse(fs.readFileSync(path.join(ROOT, 'assets', 'atlas.json'), 'utf8'));
 const tiles = new Set(Object.keys(atlasMeta.tiles));
@@ -386,12 +395,98 @@ function checkZombieHeadTexture() {
   }
 }
 
+// ---------------------------------------------------------------- [炮塔装甲] 契约（M8）
+
+/**
+ * [炮塔装甲] 契约：① 产物存在 + 尺寸正确 + 指纹匹配当前源图（静默过期防护，与丧尸头部
+ * 同口径）；② **两侧区序一致** + **部件 zone ⊆ 区序**（关系型断言 —— 渲染层与烘焙脚本
+ * 的区序漂移会让 UV 整体错位，渲染出错图案而肉眼只觉得「贴图怪怪的」）。
+ *
+ * ⚠️ **已知盲区**（照丧尸头部同口径）：改**烘焙算法**而不动源图/参数时指纹不变 →
+ * 这类改动须靠 Tier 4 像素实测兜住。
+ */
+function checkTurretArmorTexture() {
+  // ① 产物存在 + 尺寸
+  const png = readArmorPng();
+  if (!png) { failures.push('[炮塔装甲] assets/turret/armor.png 不存在 —— 跑 npm run turret'); return; }
+  if (png.width !== ARMOR_WIDTH || png.height !== ARMOR_HEIGHT) {
+    failures.push(`[炮塔装甲] PNG ${png.width}×${png.height} 与期望 ${ARMOR_WIDTH}×${ARMOR_HEIGHT} 不符`);
+  }
+  // ② 指纹（armor.json 缺失 = 从没跑过 npm run turret）
+  if (!fs.existsSync(ARMOR_JSON)) {
+    failures.push('[炮塔装甲] assets/turret/armor.json 不存在 —— 跑 npm run turret');
+  } else {
+    const meta = JSON.parse(fs.readFileSync(ARMOR_JSON, 'utf8'));
+    const current = armorInputFingerprint();
+    if (meta.fingerprint !== current) {
+      failures.push('[炮塔装甲] 指纹不匹配 —— 源贴图或区参数变了但产物未重烘焙（跑 npm run turret）'
+        + `\n      期望 ${current}\n      实际 ${meta.fingerprint}`);
+    }
+  }
+  // ③ 区序两侧一致：渲染层的 ARMOR_ZONES 与烘焙侧的 ARMOR_TEXTURE_CONFIG.zones 须逐位相同。
+  //    漂移 = 烘焙区序改了而渲染层没改（或反之）→ UV 整体错位（第二份副本的失效路径）。
+  if (ARMOR_ZONES.length !== ARMOR_TEXTURE_CONFIG.zones.length ||
+      ARMOR_ZONES.some((z, i) => z !== ARMOR_TEXTURE_CONFIG.zones[i])) {
+    failures.push(`[炮塔装甲] 区序漂移：渲染层 ${ARMOR_ZONES.join('/')} ≠ 烘焙侧 `
+      + `${ARMOR_TEXTURE_CONFIG.zones.join('/')}（改区序须两侧同步）`);
+  }
+  // ④ 部件 zone ⊆ 区序：每个装甲部件的 zone 必须是 ARMOR_ZONES 之一，否则
+  //    `applyZoneUV(geometry, ARMOR_ZONES.indexOf(zone))` 会传 -1 → UV 映射到区外。
+  for (const part of TURRET_PARTS) {
+    const zone = TURRET_PART_DEFS[part].zone;
+    if (zone !== null && !ARMOR_ZONES.includes(zone)) {
+      failures.push(`[炮塔装甲] 部件 "${part}" 的 zone="${zone}" 不在 ARMOR_ZONES 内（UV 会映射到区外）`);
+    }
+  }
+  if (!failures.some((f) => f.startsWith('[炮塔装甲]'))) {
+    infos.push(`[炮塔装甲] ${png.width}×${png.height} 三区并排（${ARMOR_ZONES.join('/')}）+ 指纹匹配 + ${TURRET_PARTS.length} 部件`);
+  }
+}
+
+// ---------------------------------------------------------------- [不可破坏] 契约（M8）
+
+/**
+ * [不可破坏] 契约：**声明侧（`blocks-data.js`）与派生侧（registry 表）双向一致**。
+ * 任一侧漂移都会让三个消费者的门控静默失效（方块名对不上 → 表里恒 0 → 方块照常被炸）。
+ *
+ * ⚠️ **实测修正了计划里的断言落点**（testing-policy §2.7「恒真陷阱」）：计划写的
+ * 「marked 的名字必须都在 registry 内」这条**在本仓架构下不可达** —— registry 是由
+ * `BLOCKS` 逐条 `register()` 构建的（`buildDefaultRegistry()`），两侧名字必然同源。
+ * 实测：把 `bedrock` 改名成 `bedrockx`，本门禁仍全绿（名字两侧同步改）→ 恒真断言。
+ * 故改为**双向**：① 声明侧每一项在表里必须是 1（漏写表 → 抓到）；
+ * ② 表里为 1 的每一项必须在声明侧（register 多标 → 抓到）。两条都实测注入过。
+ */
+function checkIndestructibleContract() {
+  const marked = BLOCKS.filter((b) => b.indestructible).map((b) => b.name);
+  if (marked.length === 0) failures.push('[不可破坏] blocks-data.js 无任何 indestructible 条目（表失效）');
+
+  // ① 声明 → 表：每项都必须在表里为 1
+  const notInTable = marked.filter((n) => !REGISTRY.isIndestructible(REGISTRY.idOf(n)));
+  if (notInTable.length) {
+    failures.push(`[不可破坏] 声明了但表里为 0：${notInTable.join(', ')}（register 未写表？）`);
+  }
+
+  // ② 表 → 声明：表里为 1 的每一项都必须有声明（register 多标会让门控误伤不该拦的方块）
+  const markedSet = new Set(marked);
+  const extraInTable = REGISTRY.all()
+    .filter((e) => REGISTRY.isIndestructible(e.id) && !markedSet.has(e.name))
+    .map((e) => e.name);
+  if (extraInTable.length) {
+    failures.push(`[不可破坏] 表里为 1 但 blocks-data.js 未声明：${extraInTable.join(', ')}`);
+  }
+
+  if (!failures.some((f) => f.startsWith('[不可破坏]'))) {
+    infos.push(`[不可破坏] ${marked.length} 项：${marked.join(', ')}（三消费者共用单一权威）`);
+  }
+}
+
 // ---------------------------------------------------------------- 主流程
 
 const REGISTRY = await buildDefaultRegistry();
 
 checkReferenceIntegrity();
 checkItemSetRelation();
+checkIndestructibleContract();
 checkIconManifestCoverage();
 checkIconAtlasArtifacts();
 checkIconFreshness();
@@ -399,6 +494,7 @@ checkTestRegistration();
 checkGeometryAuthority();
 await checkScatterStructureIntegrity();
 checkZombieHeadTexture();
+checkTurretArmorTexture();
 
 console.log('[check:data] 数据契约检查');
 for (const i of infos) console.log(`  ✓ ${i}`);

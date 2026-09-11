@@ -1,6 +1,6 @@
 # mc-heavy 第一阶段实施设计文档：游戏引擎原型
 
-> 版本：v1.35 ｜ 日期：2026-09-07 ｜ 状态：定稿（经十五轮逐条核验修订 + M3.2 实施回填 + 异形方块渲染勘误 + 背包物品集合口径 + 吊灯材质自发光 + 吊灯 UV 分区 + 背包图标表 + 等轴测图标 + 测试分级策略与静态门禁 + 全量背包图标离线烘焙 + 背包槽位点选抖动修复 + 等轴测图标遮挡修复 + 删除缓存按钮 + 沼泽睡莲水洞与沉水修复 + AO 去掉对角门控 + 设置面板两列布局与档位精简）
+> 版本：v1.39 ｜ 日期：2026-09-11 ｜ 状态：定稿（经十五轮逐条核验修订 + M3.2 实施回填 + 异形方块渲染勘误 + 背包物品集合口径 + 吊灯材质自发光 + 吊灯 UV 分区 + 背包图标表 + 等轴测图标 + 测试分级策略与静态门禁 + 全量背包图标离线烘焙 + 背包槽位点选抖动修复 + 等轴测图标遮挡修复 + 删除缓存按钮 + 沼泽睡莲水洞与沉水修复 + AO 去掉对角门控 + 设置面板两列布局与档位精简 + M8 TNT/炮塔的三项架构口径变更）
 >
 > 目标：在 mc-heavy 仓库从零重建一个功能对标 mc-lite、性能提升一个数量级的体素游戏引擎。
 > 第一阶段只做"引擎底座"：渲染、体素数据、即时地图生成、玩家交互、种子地图、存档原型。
@@ -881,6 +881,38 @@
 > 相关性（`grep` 确认放挖热路径 `world.setBlock`/`scheduler.remeshSections` 零命中面板代码，
 > spec 用 `vd=8` 在新旧档位列表中都存在 → 无钳制差异，且两列布局 DOM 节点比原来更少）。
 
+> v1.39 修订说明：**M8 TNT / 炮塔弹丸的三项架构口径变更**（2026-09-11，§4.1 / §4.5.5 /
+> DR-17 / §9）。属第三阶段第一个 Epic 的设计同步（规格
+> `docs/superpowers/specs/2026-09-11-m8-tnt-turret-design.md`）。与 M4~M7 的实玩反馈修正
+> 不同（那些**不进**修订说明），本节的三项是**新数据通道 / 新子系统边界**，故进修订说明并
+> bump 版本号。⚠️ **v1.36~v1.38 已被 roadmap 的「第一阶段独立改动」表占用**，故 M8 取
+> v1.39、M9 取 v1.40（避免撞号）。
+>
+> ① **`indestructibleTable` —— registry 的第 8 张 typed 属性表**（§4.1）。「哪些方块不可被
+> 破坏」此前散落在三个消费者各自的字面量里（徒手挖块 / 枪械破坏 / 爆炸过滤），收敛成单一
+> 权威。mc-lite 侧的证据是「分散且不重合」：`ExplosionWorker.js:8` 的字面量数组含
+> bedrock/barrier/playground 四项，而 `BlockData.js:244/252` 的 `isIndestructible: true`
+> **只标了 playground 两项** —— 上游没有一个完整清单，照搬任一处都会漏。M8 只登记
+> `bedrock`；创造台两项移交 M9（登记 indestructible 与「移出背包」必须成对做，只登记不移出
+> 会产出「放得出来但挖不掉」的撕裂状态）。顺带补齐文档欠账：§4.1 此前只在散文里点名过
+> 2 张属性表，现写出 8 张完整清单。
+>
+> ② **爆炸计算与炮塔 LOS 留在主线程 —— 红线 3 的边界判定例外**（新增 §4.5.5）。爆炸 =
+> 152 次 `getBlockId`（比 M7 放 38 格结构还轻）且须与音效/特效**同帧**；炮塔 LOS 依赖世界
+> 数据，而世界数据的唯一权威在主线程（红线 1）—— 把计算搬去 Worker 就必须把数据也搬去
+> （每 RPC 约 1.28MB、8Hz → 每秒 10MB 结构化克隆）。两者都抽成无 DOM、无 three 的同构纯
+> 函数（`check:arch` 静态门守），浏览器内单测可直接调 —— 与红线 8 的目的（可测性）一致，
+> 只是执行侧不同。归属 `src/voxel/` 而非 `src/gen/`（爆炸是体素层查询，不是生成）。
+>
+> ③ **DR-17 的 blockEntity 通道经第二批消费者验证**（DR-17 回填 + §9 扩展点表）。
+> `turret` 锚点（`{kind:'turret', id, origin, critical, rotation, lastFireAt}`）复用 M7 的
+> 装置模式（`block-changed` 增量失效 + `listBlockEntities(kind)` 扫库判上限），未引发
+> schemaVersion 变更。§9 的 TNT / 炮塔两行标为「✅ M8 实施中」，并把接入点表述改成实际
+> 路径：TNT 走 `setBlocks(batch)` + REMESH + **球体扩张特效**（mc-heavy 无粒子系统，
+> 不移植 mc-lite 的 2D Billboard 爆炸粒子 —— 属可感知偏离，已记进 M8 偏离表）；炮塔走
+> M5 `EntityManager` + 实体射线 + **M7 方块锚定装置模式**。创造台那行留给 M9（届时改写为
+> `setBlocks` 真实方块路径，不是「mesher 顶点模板机制」）。
+
 ---
 
 ## 1. 背景与目标
@@ -1093,6 +1125,28 @@ registry.register('grass_block', {
 
 - 属性全部预编译为按 ID 索引的 typed 查找表（`opaqueTable[id]`, `cullTable[id]`…），
   网格化热路径无对象属性访问、无字符串比较。mc-lite 的 BlockData.js（124 种方块）整体迁移为注册表数据。
+
+**registry 的属性表（8 张 typed 表，主线程与 Worker 同构可用）**：`solidTable` /
+`opaqueTable` / `cullTable` / `emissiveTable` / `geometryTable` / `orientationModesTable` /
+`supportsPlayerTable` / **`indestructibleTable`（M8 新增）**。每张表由 `register(name, def)`
+从声明派生，`freeze()` 后不可变。
+
+**`indestructibleTable`（M8 新增）**：「哪些方块不可被破坏」的唯一权威。
+三个消费者全部读这张表，不得各写字面量：① `Player.digBlock()` 徒手挖块门控；
+② `weapon-target-policy.js` 枪械可破坏判定（与 `settings.gunBlockDamage` 开关叠加，链路：
+`game.setGunBlockDamage()` → `weaponController.setBlockDamage()`，
+   其 `end_stone` 例外是**武器专属**收紧，仍留在该模块）；③ `computeExplosion()` 爆炸过滤。
+mc-lite 的表达是**分散且不重合**的：`ExplosionWorker.js:8` 的字面量数组
+`['playground_block','playground_center_block','bedrock','barrier']`，与
+`BlockData.js:244/252` 的 `isIndestructible: true` 字段 —— 后者**只标了 playground 两项**
+（bedrock/barrier 只在字面量里）。即「哪些不可破坏」在上游没有一个完整清单，
+本仓库收敛成一处权威。
+**M8 只登记一项：`bedrock`**（TNT 爆炸过滤需要）。`playground_block` /
+`playground_center_block` 两项移交 M9 —— 登记 indestructible 与「移出背包」必须成对做
+（只登记不移出会产出「放得出来但挖不掉」的撕裂状态），故两项一起留在 M9。
+⚠️ **不含 mc-lite 清单里的 `barrier`** —— 该方块在本仓 registry 里不存在（它对应 mc-lite 的
+`collider` 系碰撞体方块），照搬会登记一个不存在的名字 → 门控静默失效。
+
 - **查询接口**（v1.16 补记）：`idOf(name)` / `nameOf(id)` / `geometryNameOf(id)` /
   `supportsPlayer(id)`，以及 `all()` —— 按注册顺序返回 `{id, name}[]` 只读快照。
   `all()` 由 §4.5.4 背包物品集合构建消费（冷路径，一次性），**禁止**进入 meshing/物理热路径
@@ -1810,6 +1864,27 @@ mc-lite 没有面板互斥（`UIManager.js` 里背包与设置各自独立 toggl
 样式表按 `settings-panel.js` 同法注入（组件自带、`mc-` 前缀防污染、重复构造只注入一次）：
 `.slot:hover`/`.selected` 等伪类与状态类无法用 inline style 表达。
 
+**4.5.5 爆炸计算（M8）**
+
+`src/voxel/explosion.js` 的 `computeExplosion()` 是**同构纯函数**，在主线程同步执行，
+**不走 Worker**。判定依据：计算量 = 27 + 125 = **152 次 `getBlockId`**
+（3×3×3 破坏 + 5×5×5 连锁搜索），比 M7 放置 38 格结构还轻；且爆炸的方块破坏、音效、
+特效必须**同帧**发生 —— 走 Worker 要等回包，玩家会先看到方块消失再听到爆炸声。
+红线 3 禁的是「全量 meshing/AO/结构布局」这类主线程重计算，不含此类交互级查询。
+
+归属 `src/voxel/` 而非 `src/gen/`：它是纯体素层查询，不是生成；且 voxel 是分层图最底层
+（`voxel ← gen ← mesh ← render`），三个消费者（`player/`、`core/`、`entities/`）都能 import
+而不触发依赖方向门（`check-architecture.mjs` 的 §3 规则）。
+
+⚠️ **这是红线 3 的边界判定例外**（同类先例是 §4.5.3 的编辑快路径同步重建）。同类判定还有一处：
+炮塔索敌的 LOS 采样（`src/entities/turrets/turret-system.js`）同样留在主线程 ——
+LOS 必须读方块，而世界数据的唯一权威在主线程（红线 1），把计算搬去 Worker 就必须把数据
+也搬去（每 RPC 约 1.28MB、8Hz → 每秒 10MB 结构化克隆），那是更大的红线违规。
+
+破坏写入一律走 `editor.setBlocks()` 的**单次批量事务**（§4.5.3），不为爆炸另开路径。
+连锁延迟用 `center` 坐标派生的**确定性抖动**（`[500, 1100]`ms）而非 `Math.random()`
+（红线 2：同 seed 两次结果须一致）。到期判定用 `performance.now()`，禁止 `Date.now()`。
+
 ### 4.6 光照与 AO（src/mesh/lighting.js，Worker 侧）
 
 第一阶段模型（对齐 mc-lite 的视觉效果，补齐其缺失的体素光照）：
@@ -1959,15 +2034,29 @@ mc-heavy/
 │  └─ structures/              # 从 mc-lite 复制 JSON 结构
 └─ src/
    ├─ core/        # Game.js(主循环) Engine.js(渲染器/相机/天空) scheduler.js worker-pool.js perf.js
-   ├─ voxel/       # block-registry.js chunk-column.js world-data.js edits.js
+   ├─ voxel/       # block-registry.js chunk-column.js world-data.js edits.js explosion.js（M8 爆炸计算）
    ├─ gen/         # noise.js biome.js terrain.js structure-index.js structures/*.js（Worker 同构）
    ├─ mesh/        # mesher.js（Worker/主线程同构） lighting.js section-mesh.js atlas.js
    ├─ render/      # render-world.js sky.js water.js shadows.js materials.js
+   │               # M8：turret-armor-texture.js turret-renderer.js projectile-renderer.js explosion-renderer.js
    ├─ player/      # player.js physics.js raycast.js interaction.js inventory.js
    ├─ save/        # persistence.js codec.js
    ├─ ui/          # hud.js hotbar.js inventory-ui.js
    └─ workers/     # world-worker.js（GEN/MESH/LIGHT 统一入口，池化）
 ```
+
+**第二/三阶段新增的顶层产物**（§4 子系统之外的资产与工具）：
+
+- `assets/sounds/`（M4 起）+ M8 新增 `explosion.mp3` / `turret_gun_fire.mp3`（从 mc-lite 拷入）；
+- `assets/turret/`（**M8 新增**）：三张装甲源贴图（从 mc-lite `src/assets/turret/` 拷入）+
+  烘焙产物 `armor.png` / `armor.json`（伴随 JSON 存参数与指纹，供门禁比对过期）；
+- `tools/bake-turret-armor.mjs`（**M8 新增**，`npm run turret`）+ `tools/turret-armor-fingerprint.mjs`
+  （图案参数与指纹的单一权威，烘焙脚本与 `check:data` 门禁共用）；
+- `src/entities/`（M5 起）+ **M8 新增 `src/entities/turrets/`**：
+  `turret-config.js` / `turret-blueprint.js` / `turret-service.js` / `turret-controller.js` /
+  `turret-system.js`（同构纯函数索敌）/ `projectile-system.js`。
+
+⚠️ `src/ui/toast.js` 属 **M9** 交付物，M8 不登记（提前登记会在清单里写进一个不存在的文件）。
 
 与 mc-lite 的关键差异：没有 FaceCullingSystem / ChunkConsolidation / BlockScatterManager /
 GlobalInstancedMeshManager / WorldBoundsController / WorldGenerationService(预生成) /
@@ -1995,7 +2084,7 @@ AOBridge / AOWorker / 八个 Worker 文件——它们的职责被 §4 的四个
 | DR-14 | 第一阶段**不启用阳光遮挡投影**：skylight 恒 15，视觉明暗 = AO 墙角阴影 + 日夜全局调制（v1.9 产品决策）；遮挡模型（垂直 pass + 水平 BFS）与 light 任务中心权威写回机制保留，后续阶段启用 | 高度图以下衰减近似 / Minecraft 式遮挡阴影（v1.8） | 高度图衰减在洞穴/悬挑下错误；Minecraft 式遮挡阴影实玩不可接受——大悬空平台/洞穴下方超扩散距离即大片全黑 + 截断渐变环，与 mc-lite 视觉基线冲突，用户明确不要阳光投影。机制保留：5-column region 对中心列充分（15 水平最远 14 格）；写回 5 列 last-write-wins 会覆盖邻列好光（v1.8 已修，中心权威） |
 | DR-15 | 逐面网格化，不用 greedy meshing | greedy meshing | 上一版 mc-heavy（已清空）用过 greedy；逐面在 AO/编辑增量更新/UV 映射上显著更简单，三角形多 2~3× 但当前瓶颈是 draw call 而非三角形（WebGPU 下三角形吞吐充裕）；视距 16+ 若三角形成为瓶颈再评估 greedy 或 LOD |
 | DR-16 | 卸载滞回（加载半径 +2）+ 重入 LRU（短 TTL 保留体素与 GPU 缓冲） | 出圈即释放 | 玩家在加载半径边界来回走会造成 GEN/MESH/上传全链路 thrashing；滞回带 + LRU 重入零成本恢复，只多占一点显存，回头跑不卡；显存上限由 LRU 配额兜底（§4.9/§4.10） |
-| DR-17 | 权威数据源含方块实体通道：`blocks`+`meta`+`blockEntities` 稀疏 Map；light 为派生缓存非权威 | 富状态塞 meta / 用 InstancedMesh userData 暂存（mc-lite 补丁） | 宝箱库存/告示牌文字/灯开关等富状态塞不进 8bit meta；mc-lite 已有 `_saveChestStates()`（ChunkConsolidation.js:597）证明需求真实，但用 userData 暂存是补丁式实现。做成数据模型一等公民：edits 条目、持久化 schema、重放逻辑现在定形状，第一阶段只预留不实现消费者，避免后续回填引发 schemaVersion + edits 重放二次重构。light 可从 blocks+emissive 重算收敛，不得当真相来源（§4.1）。**首个消费者已由 M7 落地（2026-09-10）**：丧尸巢穴锚点（`{kind:'zombie-nest', id, origin, critical, lastSpawnAt}`）随 edits 落盘，验证了当初预留的形状够用 —— 无需 schemaVersion 变更、无需二次重构（预留收益已兑现）。后续炮塔/床/宝箱等同类装置可直接复用此通道，见 roadmap「M7 交付的可复用模式」段 |
+| DR-17 | 权威数据源含方块实体通道：`blocks`+`meta`+`blockEntities` 稀疏 Map；light 为派生缓存非权威 | 富状态塞 meta / 用 InstancedMesh userData 暂存（mc-lite 补丁） | 宝箱库存/告示牌文字/灯开关等富状态塞不进 8bit meta；mc-lite 已有 `_saveChestStates()`（ChunkConsolidation.js:597）证明需求真实，但用 userData 暂存是补丁式实现。做成数据模型一等公民：edits 条目、持久化 schema、重放逻辑现在定形状，第一阶段只预留不实现消费者，避免后续回填引发 schemaVersion + edits 重放二次重构。light 可从 blocks+emissive 重算收敛，不得当真相来源（§4.1）。**首个消费者已由 M7 落地（2026-09-10）**：丧尸巢穴锚点（`{kind:'zombie-nest', id, origin, critical, lastSpawnAt}`）随 edits 落盘，验证了当初预留的形状够用 —— 无需 schemaVersion 变更、无需二次重构（预留收益已兑现）。**第二批消费者已由 M8 落地**：炮塔锚点（`{kind:'turret', id, origin, critical, rotation, lastFireAt}`）。（`playground` kind 属 **M9** 范围，届时再回填。）两个 kind（zombie-nest / turret）共用同一 edits 通道与 `Persistence.listBlockEntities(kind)` cursor 扫库判上限，未引发 schemaVersion 变更 —— DR-17 当初预留的形状经第二批消费者验证够用。后续床/宝箱等同类装置可直接复用此通道，见 roadmap「M7 交付的可复用模式」段 |
 
 ---
 
@@ -2072,11 +2161,11 @@ AOBridge / AOWorker / 八个 Worker 文件——它们的职责被 §4 的四个
 | 功能（mc-lite 已有） | 引擎接入点 | 第一阶段预留 |
 |---|---|---|
 | M4 玩家第一人称武器 | `WorldEditor` + DDA hitscan + 相机视图模型 + 受控 GLB/Audio | 第二阶段首个 Epic；规格/计划见 `docs/superpowers/{specs,plans}/2026-08-23-m4-player-weapons-*` |
-| TNT/爆炸 | `WorldEditor.setBlocks(batch)` + REMESH + 粒子 | M4-0 批量编辑 API、事件接口 |
+| TNT/爆炸 ✅ **M8 实施中** | `WorldEditor.setBlocks(batch)` + REMESH + **球体扩张特效**（mc-heavy 无粒子系统，不移植 mc-lite 的 2D Billboard 爆炸粒子） | M4-0 批量编辑 API、事件接口；爆炸计算为同构纯函数 `src/voxel/explosion.js`（§4.5.5） |
 | M5 实体运行时 | EntityManager + 实体 raycast + 受控渲染层 + entities snapshot | 第二阶段实体底座；临时 entity 随 column 的“视距 +2”最终卸载回收，持久 entity 先可取消地冻结/保存最小 snapshot，成功后的下一帧才最终移除；规格/计划见 `docs/superpowers/{specs,plans}/2026-08-23-m5-entity-runtime*` |
 | M6 丧尸 | M5 临时 entity + WorkerPool AI + 武器距离比较 + 6 部件 InstancedMesh | 默认 20；20Hz 单 batch AI、60 格外冻结、手枪/加特林/MAG7 为 25/35/999 伤害与 40/40/10 格；不含 PlayerVitals/近战；规格/计划见 `docs/superpowers/{specs,plans}/2026-08-23-m6-zombies*` |
 | M7 玩家放置丧尸巢穴 | `WorldEditor` + blockEntities + M6 ZombieService | 最多 8 个，蓝图最高 `gold_block` 破坏即失效（alias 只作最小创造模式放置触发）；8 offset × 六层搜索，`restoreEdits()` 保持 anchor 存档；规格/计划见 `docs/superpowers/{specs,plans}/2026-08-23-m7-zombie-nests*` |
-| 炮塔/飞行弹丸 | M5 EntityManager + 实体射线 + InstancedMesh 实体渲染 | M5 后独立 Epic；不属于 M4–M7 |
+| 炮塔/飞行弹丸 ✅ **M8 实施中** | M5 EntityManager + 实体射线 + 8 部件 InstancedMesh（单材质单纹理 UV 分区）+ **M7 方块锚定装置模式** | M8 Epic；装置层（`blockEntity` 锚点 + `block-changed` 增量失效）/ AI（主线程同构纯函数，见 §4.5.5 的 LOS 判定）/ 渲染 / 弹丸四步串行 |
 | 玩家生存战斗 | M5 EntityManager + 玩家状态/HUD + 事件 | 独立 PlayerVitals Epic；定义近战、伤害、无敌、死亡与重生后才实施，不夹带入 M6 |
 | 矿车/轨道 | 方块属性（track 类型）+ 实体运动系统 | BlockRegistry 的 `interact`/`onStep` 钩子 |
 | 创造台 | 模型编辑 → 注册自定义 geometry 模板 | mesher 顶点模板机制 |

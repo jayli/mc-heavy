@@ -126,7 +126,7 @@ export const BLOCKS = [
   {"name":"polished_blackstone_bricks","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
   {"name":"oak_planks_1","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
   {"name":"acacia_planks","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
-  {"name":"bedrock","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
+  {"name":"bedrock","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box","indestructible":true},
   {"name":"polished_diorite","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
   {"name":"polished_granite","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
   {"name":"piston","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},

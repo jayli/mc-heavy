@@ -9,8 +9,12 @@ import * as THREE from 'three';
 /**
  * 预加载的音效 id（与 weapon-catalog 的 sound 字段一致）。
  * M7 追加 `put` —— 玩家放置巢穴成功的音效（mc-lite `src/assets/sound/put.mp3`）。
+ * M8 追加 `explosion` —— TNT 爆炸音效（mc-lite 同名文件，音量 0.4，
+ * 出处 `PlayerInteraction.js:673`）。
+ * M8 追加 `turret_gun_fire` —— 炮塔开火音效（mc-lite `TurretManager.js:148`，音量 0.25）。
  */
-const SOUND_IDS = ['gun_load', 'gun_fire', 'mag7_fire', 'minigun_fire', 'put'];
+const SOUND_IDS = ['gun_load', 'gun_fire', 'mag7_fire', 'minigun_fire', 'put', 'explosion',
+  'turret_gun_fire'];
 
 export class AudioManager {
   /**

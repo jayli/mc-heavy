@@ -107,7 +107,11 @@ export const FACES_DATA = {
   piston_head: 'Piston_Head',
   orange_shulker_box: 'Orange_Shulker_Box',
   zombie_nest_alias_block: 'zombie_nest_alias_block',
-  turret_alias_block: 'procedural/turret_alias_block',
+  // M8 实玩反馈修正：**直接复用 mc-lite 的手工炮塔图标** `turret.png`（字节完全一致，
+  // 已在 atlas 内）—— 不再用程序化生成的 `procedural/turret_alias_block`。
+  // mc-lite 同口径：`ItemIconUtils.getCustomIconPath()` 把 `turret_alias_block` 映射到
+  // `src/assets/textures/turret.png`（`:23`），与 `zombie_nest_alias_block` 同一手法。
+  turret_alias_block: 'turret',
   playground_block: 'procedural/playground_block',
   playground_center_block: 'procedural/playground_center_block',
   // ---- 轨道 ----

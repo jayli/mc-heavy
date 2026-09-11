@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"><title>turret render fixture</title><link rel="icon" href="data:,">
+  <style>html, body { margin: 0; }</style>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "/vendor/three/three.webgpu.js",
+      "three/tsl": "/vendor/three/three.tsl.js",
+      "three/webgpu": "/vendor/three/three.webgpu.js",
+      "three/addons/": "/vendor/three/addons/"
+    }
+  }
+  </script>
+</head>
+<body>
+<script type="module">
+  import * as THREE from 'three';
+  import { TurretRenderer } from '../render/turret-renderer.js';
+  import { loadTurretArmorTexture } from '../render/turret-armor-texture.js';
+  import { TURRET_PARTS, TURRET_PART_DEFS } from '../entities/turrets/turret-config.js';
+
+  // Tier 4 像素实测场景（M8 Task 5：炮塔装甲 UV 分区）。
+  //
+  // **为什么必须像素实测**：纹理采样在 GPU 求值，单测读不到片元输出（testing-policy §5.1）。
+  // 单测只能钉住 UV 属性数值，无法证明 GPU 真的按那个 UV 采到了对应区 —— 区序错了、
+  // 纹理没加载、map 没生效，单测全绿而渲染是错的。
+  //
+  // 单个炮塔 + 隔离场景（黑背景，无地形/光照干扰）。**渲染由 spec 驱动**（一个相机只能看
+  // 一个方向，截图只有最后一帧 —— 多次渲染会互相覆盖）。
+  //
+  // ⚠️ **取样点从实例矩阵反解，不硬编码世界坐标**：部件的局部变换（含前装甲板的
+  // `rotX: -π/8`）在矩阵里，硬编码位置会在倾斜部件上取偏（testing-policy §2.7 第 9 类：
+  // 取样点没对准被测部件 → 注入仍全绿）。
+  async function run() {
+    const renderer = new THREE.WebGPURenderer({ antialias: false });
+    renderer.setSize(400, 300);
+    document.body.appendChild(renderer.domElement);
+    await renderer.init();
+    renderer.toneMapping = THREE.NoToneMapping;
+    // outputColorSpace 用 SRGBColorSpace（真实游戏口径，game.js 的 renderer 同款）——
+    // 用 SRGB 输出则读到的值接近原始纹理参数，阈值可对着烘焙产物读（zombie-head 同款理由）。
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+    const texture = await loadTurretArmorTexture();
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x000000);   // 黑背景：落到背景的取样点会是纯黑
+    const tr = new TurretRenderer({ scene, maxActive: 1, armorTexture: texture });
+
+    // 一个炮塔在原点、yaw=0/pitch=0（正面朝 +Z）。直接写 pose —— 本 fixture 只验渲染，
+    // 玩法层不参与（绕开放置门控与地形依赖）。
+    const pose = { position: [0, 0, 0], yaw: 0, pitch: 0 };
+    tr.sync(new Map([['probe', pose]]));
+
+    // 每个部件的「被测面中心」= 部件盒的局部面中心点，经该部件的实例矩阵变换到世界。
+    // 局部面中心取自部件尺寸的一半（盒几何以原点为中心，矩阵已含平移与 rotX）。
+    const faceCenterLocal = {
+      // ⚠️ **front 取样点必须偏离中心**（实测踩坑）：根部部件（root，pos z=0.85、深 0.4 →
+      // z ∈ [0.65,1.05]）比前装甲板的 +Z 面（z=0.95）更靠前，且颜色是白色 0xeeeeee。
+      // 取中心点会被根部**遮挡** → 读到 (238,238,238) 而不是装甲贴图（注入 UV 错位仍全绿，
+      // testing-policy §2.7 第 9 类盲区）。故取 x=+0.5：在前装甲板宽度内（半宽 0.8）、
+      // 又在根部宽度外（半宽 0.3）。
+      front: [0.5, 0, TURRET_PART_DEFS.front.size[2] / 2],   // 前装甲板的 +Z 面（倾斜板，偏离中心避开根部遮挡）
+      right: [TURRET_PART_DEFS.right.size[0] / 2, 0, 0],   // 右侧板的 +X 面
+      top: [0, TURRET_PART_DEFS.top.size[1] / 2, 0],       // 顶板的 +Y 面
+      barrel: [0, 0, TURRET_PART_DEFS.barrel.length / 2],  // 炮管前端（纯色，无贴图）
+    };
+    const _m = new THREE.Matrix4();
+    const worldPointOf = (part) => {
+      tr.meshes[part].getMatrixAt(0, _m);
+      const local = faceCenterLocal[part];
+      const v = new THREE.Vector3(local[0], local[1], local[2]).applyMatrix4(_m);
+      return [v.x, v.y, v.z];
+    };
+
+    const DIST = 2.4;
+    const mkCam = () => new THREE.PerspectiveCamera(50, 400 / 300, 0.05, 100);
+    const project = (camera, wx, wy, wz) => {
+      const v = new THREE.Vector3(wx, wy, wz).project(camera);
+      return { x: Math.round((v.x * 0.5 + 0.5) * 400), y: Math.round((-v.y * 0.5 + 0.5) * 300) };
+    };
+    // 三个视角：相机沿被测面的外法线方向，看向该面中心
+    const cams = {
+      front: (() => { const p = worldPointOf('front'); const c = mkCam();
+        c.position.set(p[0], p[1], p[2] + DIST); c.lookAt(p[0], p[1], p[2]); return c; })(),
+      side: (() => { const p = worldPointOf('right'); const c = mkCam();
+        c.position.set(p[0] + DIST, p[1], p[2]); c.lookAt(p[0], p[1], p[2]); return c; })(),
+      top: (() => { const p = worldPointOf('top'); const c = mkCam();
+        c.position.set(p[0], p[1] + DIST, p[2]); c.lookAt(p[0], p[1], p[2]); return c; })(),
+    };
+    const samplePart = { front: 'front', side: 'right', top: 'top' };
+
+    /** spec 调用：切到指定视角渲染一帧，返回取样点 + 该视角的部件名 */
+    window.__TT_RENDER__ = (view) => {
+      const cam = cams[view];
+      if (!cam) throw new Error(`unknown view: ${view}`);
+      // 渲染两帧：WebGPU 首帧可能还在编译 shader，第二帧才是稳定结果
+      renderer.render(scene, cam);
+      renderer.render(scene, cam);
+      return { point: project(cam, ...worldPointOf(samplePart[view])), part: samplePart[view] };
+    };
+
+    /** 炮管视角（纯色部件对照：不带 map → 渲染为纯色而非贴图） */
+    window.__TT_RENDER_BARREL__ = () => {
+      const p = worldPointOf('barrel');
+      const c = mkCam(); c.position.set(p[0], p[1], p[2] + DIST); c.lookAt(p[0], p[1], p[2]);
+      renderer.render(scene, c);
+      renderer.render(scene, c);
+      return project(c, p[0], p[1], p[2]);
+    };
+
+    // 前提：渲染器确实拿到纹理（spec 断言此值，防「加载失败 → 退回纯色」静默缺失）
+    window.__TT_INFO__ = {
+      textureLoaded: !!texture,
+      textureSize: [texture?.image?.width, texture?.image?.height],
+      armorPartsHaveMap: TURRET_PARTS.filter((p) => !!tr.meshes[p].material.map),
+      solidPartsHaveMap: TURRET_PARTS.filter((p) => !TURRET_PART_DEFS[p].zone && !!tr.meshes[p].material.map),
+      meshNames: TURRET_PARTS.map((p) => tr.meshes[p].name),
+    };
+    /** 无炮塔时的可见性（draw call 回基线的前提断言） */
+    window.__TT_CLEAR__ = () => { tr.sync(new Map()); return TURRET_PARTS.filter((p) => tr.meshes[p].visible); };
+    window.__TT_READY__ = true;
+  }
+  run().catch((e) => { window.__TT_ERROR__ = String(e?.stack || e); });
+</script>
+</body>
+</html>

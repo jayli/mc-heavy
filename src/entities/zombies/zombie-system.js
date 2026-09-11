@@ -397,6 +397,20 @@ export class ZombieService {
   count() { return this._active; }
 
   /**
+   * 只读活动实体快照（M8 爆炸半径伤害用）。**不新建第二份实体集合**（红线 1）——
+   * 只是从 M5 EntityManager 的迭代器过滤 type。返回数组快照而非迭代器：
+   * 调用方会在遍历中调 `damage()` → 可能触发 despawn 改变底层集合（迭代器失效）。
+   * @returns {Array<import('../entity-manager.js').Entity>}
+   */
+  activeEntities() {
+    const out = [];
+    for (const entity of this.entities.entities()) {
+      if (entity.type === 'zombie') out.push(entity);
+    }
+    return out;
+  }
+
+  /**
    * 造成伤害。**立即改变权威 state** 并置 `flashedUntil = nowMs + 200`；health ≤ 0 立刻 despawn。
    * 返回值用于测试，不是效果事件的替代品（M6 规格 §2）。
    * @param {string} id @param {number} amount @param {number} nowMs

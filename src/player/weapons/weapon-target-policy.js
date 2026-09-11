@@ -1,10 +1,17 @@
 // src/player/weapons/weapon-target-policy.js — 武器专属可破坏判定（M4 规格 §4.2）
 // 无 three 的纯谓词模块；武器规则不塞入通用 BlockRegistry，用名字集合表达。
-// bedrock / end_stone / 创造台两类方块对所有枪械不可破坏；end_stone_bricks 可破坏。
-// 将创造台两类方块也排除在 MAG7 外是 M4 有意收紧的偏离（mc-lite 的 MAG7 只排
-// end_stone/bedrock）——不允许武器破坏创造台基础方块。
+// bedrock（全局「不可破坏」）与 end_stone（**武器专属**收紧）对所有枪械不可破坏；
+// end_stone_bricks 可破坏。
+//
+// M8：不可破坏判定改读 registry 单一权威（`indestructibleTable`）。此前 `IMMUNE_NAMES`
+// 字面量与 `blocks-data.js` 的 `indestructible` 字段是同一事实的两个副本 → 漂移风险。
+// ⚠️ 既有 `IMMUNE_NAMES` 含 `playground_block` / `playground_center_block`，收敛后这两项改由
+// `indestructibleTable` 提供，而它们在 **M9** 才登记进表（登记 indestructible 与「移出背包」
+// 必须成对做）。故 **M8 期间枪械仍可破坏创造台两项** —— 这是 M8 的一处行为变更，
+// 已记进 M8 验收报告偏离表，M9 登记后自动恢复不可破坏。
 
-const IMMUNE_NAMES = new Set(['bedrock', 'end_stone', 'playground_block', 'playground_center_block']);
+/** 武器专属不可破坏名单（不属于全局「不可破坏」语义，故不进 indestructibleTable） */
+const WEAPON_ONLY_IMMUNE = new Set(['end_stone']);
 
 /**
  * 枪械（手枪/加特林）可否破坏该方块。
@@ -12,8 +19,9 @@ const IMMUNE_NAMES = new Set(['bedrock', 'end_stone', 'playground_block', 'playg
  * @param {number} id @param {ReturnType<import('../../voxel/block-registry.js').createRegistry>} registry
  */
 export function isWeaponDestructible(id, registry) {
-  const name = registry.nameOf(id);
-  return name !== 'air' && !IMMUNE_NAMES.has(name);
+  if (registry.idOf('air') === id) return false;
+  if (registry.isIndestructible(id)) return false;   // bedrock（M9 追加 playground 两项）
+  return !WEAPON_ONLY_IMMUNE.has(registry.nameOf(id));
 }
 
 /**

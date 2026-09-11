@@ -2,6 +2,18 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **实施状态（2026-09-11）：** Task 0~7 全部完成；**各 Task 的提交步骤均待用户授权后执行**
+> （尚未提交）。验收报告 `docs/m8-tnt-turret-acceptance-report.md`。
+> 全量回归 108 passed、单测 499 passed、bench 无回退、check:arch/data 全绿。
+> 实施中与本计划的偏差（均为实测必需，详见验收报告 §5）：
+> ① 炮塔底座 dy=1（规格「底座 origin.y」+「origin=blockPos」+「occupied 全空气」三者矛盾，
+>    实测恒 occupied → 底座上移一格，与 mc-lite 空气格语义等价）；
+> ② TNT 连锁破坏过滤改用「已有去重键 ∪ 本批待爆项」合集（计划的过滤只查 `_ignitingTnt`
+>    恒不命中）；③ `muzzle()` pitch 符号修正（E2E 抓到弹丸往天上飞）+ 补交叉比对断言；
+> ④ `TURRET_PART_DEFS`/`ARMOR_ZONES`/`TURRET_TOWER_COLOR` 等定义补齐进 turret-config.js；
+> ⑤ 弹丸池容量提为 `TURRET.projectilePoolSize` 派生（不写死 64）；
+> ⑥ `raycastVoxel` 加 `occludes` 第五参数（共用一份 DDA）。
+
 **Goal:** 交付 TNT 引爆与爆炸、玩家放置炮塔（自动索敌 + 飞行弹丸命中丧尸掉血）两个 mc-lite 已有玩法。
 
 > **创造台已拆到 M9**（`docs/superpowers/plans/2026-09-11-m9-playground.md`）。M8 只交付 `indestructible` 表（登记 bedrock），M9 复用该表并追加创造台两项。

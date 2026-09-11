@@ -25,11 +25,18 @@ export class WeaponController {
    *          editor: import('../../core/world-editor.js').WorldEditor,
    *          onEffect?: (effect: object) => void}} deps
    */
-  constructor({ registry, blockQuery, editor, onEffect = () => {} }) {
+  constructor({ registry, blockQuery, editor, onEffect = () => {}, onIgniteTnt = null }) {
     this.registry = registry;
     this.blockQuery = blockQuery;
     this.editor = editor;
     this.onEffect = onEffect;
+    /**
+     * M8 枪击引爆回调（Game 注入）。缺省 null → 命中 TNT 不引爆也不破坏（fixture 单独构造时）。
+     * ⚠️ 引爆**不受** `blockDamageEnabled` 门控 —— mc-lite 同口径
+     * （`PlayerInteraction.js:1048-1057` 的 tnt 分支在 `canGunsDestroyBlocks` 判定之前）。
+     * @type {((x:number,y:number,z:number)=>boolean)|null}
+     */
+    this.onIgniteTnt = onIgniteTnt;
     this.selectedId = WEAPON_IDS.ARM;
     this.cooldown = 0;
     this.triggerHeld = false;
@@ -215,6 +222,13 @@ export class WeaponController {
       ];
       const [bx, by, bz] = target.blockPos;
       const hitId = this.blockQuery.getBlockId(bx, by, bz);
+      // M8：枪击命中 tnt → 引爆（mc-lite `PlayerInteraction.js:1048` 是 `executeShot()` 内的
+      // 枪击命中路径；`:172` 才是 ctrl+左键）。本仓库简化为「命中即引爆」—— 有意偏离，
+      // 规格 §2.2。去重在 `game.explodeTnt()` 内（单一权威），此处只透传。
+      if (hitId === this.registry.idOf('tnt')) {
+        if (this.onIgniteTnt) this.onIgniteTnt(bx, by, bz);
+        return this._makeEffect(weapon, aim, end);   // 不走破坏分支
+      }
       if (this.blockDamageEnabled && isWeaponDestructible(hitId, this.registry)) {
         this.editor.setBlock({ x: bx, y: by, z: bz, id: 0 });
       }

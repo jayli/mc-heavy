@@ -72,7 +72,7 @@ const VISIBLE_FACES = [0, 2, 4];
 export const FLAT_BLOCKS = [
   'water', 'swamp_water', 'cloud', 'flower', 'short_grass', 'allium', 'azure_bluet',
   'dead_bush', 'oxeye_daisy', 'red_mushroom', 'vine', 'lilypad', 'mine_cart', 'hanging_lamp',
-  'zombie_nest_alias_block',
+  'zombie_nest_alias_block', 'turret_alias_block',
 ];
 
 /** 平面路径方块名 → 手工图标 tile（其余走 faces-data 的 face 0） */

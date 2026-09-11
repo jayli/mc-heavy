@@ -6,9 +6,17 @@
  * @param {number[]} origin [x,y,z]
  * @param {number[]} dir 归一化方向 [dx,dy,dz]
  * @param {number} [maxDist=40]
+ * @param {(id: number) => boolean} [occludes] 遮挡判据（M8）：缺省 = 既有语义
+ *        「非空气且非水即命中」。弹丸传 `isProjectileOccluding`（实心且不透明才阻挡）——
+ *        玻璃/树叶/云等透明方块可穿透。
+ *        ⚠️ **加参数而非写第二份 DDA**（红线 1：同一事实的两个副本会漂移出
+ *        「炮塔看得见但弹丸打不着」）。既有三个消费者（`player.js` ×2 / `test-raycast.js`）
+ *        不传第五参数 → 行为完全不变。
  * @returns {{hit: boolean, blockPos?: number[], normal?: number[], prevPos?: number[], dist?: number}}
+ *          ⚠️ **未命中返回 `{hit:false}`（truthy 对象），不是 null** → 调用方必须判 `.hit`；
+ *          写成 `if (blockHit)` 会让每次判定都立刻判「撞方块」（M8 弹丸踩过这条）。
  */
-export function raycastVoxel(world, origin, dir, maxDist = 40) {
+export function raycastVoxel(world, origin, dir, maxDist = 40, occludes = null) {
   let [x, y, z] = origin;
   let ix = Math.floor(x), iy = Math.floor(y), iz = Math.floor(z);
   const [dx, dy, dz] = dir;
@@ -24,10 +32,12 @@ export function raycastVoxel(world, origin, dir, maxDist = 40) {
   let t = 0;
   const maxSteps = Math.ceil(maxDist * 3);
   const waterId = world.registry.idOf('water');
+  // 遮挡判据：传入则用它（弹丸的「实心且不透明才阻挡」），否则保持既有语义
+  const hitTest = occludes ? occludes : (id) => id !== 0 && id !== waterId;
 
   for (let i = 0; i < maxSteps && t <= maxDist; i++) {
     const id = world.getBlockId(ix, iy, iz);
-    if (id !== 0 && id !== waterId) {
+    if (hitTest(id)) {
       return { hit: true, blockPos: [ix, iy, iz], normal, prevPos: prev, dist: t };
     }
     prev = [ix, iy, iz];

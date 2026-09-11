@@ -20,6 +20,10 @@ function makeRegistryWithWeaponBlocks() {
     registry.register(name, {
       solid: name !== 'air' && name !== 'water',
       cullMode: name === 'water' ? 'transparent' : 'opaque',
+      // M8：bedrock 的「不可破坏」由 registry 单一权威提供（与 blocks-data.js 同口径）。
+      // 本 fixture 只登记 bedrock 一项 —— playground 两项属 **M9**（登记 indestructible 与
+      // 「移出背包」必须成对做），故此处不登记。
+      indestructible: name === 'bedrock',
     });
   }
   registry.freeze();
@@ -83,24 +87,26 @@ test('weapon catalog: 递归冻结，渲染层不得改写玩法目录', () => {
 
 // ---------- policy ----------
 
-test('weapon policy: bedrock/end_stone/创造台不可破坏，水与 end_stone_bricks 可破坏', () => {
+test('weapon policy: bedrock/end_stone 不可破坏；M8 期间创造台两项可破坏（M9 登记后翻转）', () => {
   const { registry, ids } = makeRegistryWithWeaponBlocks();
   assertFalse(isWeaponDestructible(ids.bedrock, registry));
   assertFalse(isWeaponDestructible(ids.endStone, registry));
-  assertFalse(isWeaponDestructible(ids.playground, registry));
-  assertFalse(isWeaponDestructible(registry.idOf('playground_center_block'), registry));
+  // ⚠️ M8 期间 playground 两项**不在** indestructibleTable → 枪械打得动
+  // （M9 登记进表后这两条翻转回 assertFalse；M9 计划 Task 1 已认领该步骤）。
+  assertTrue(isWeaponDestructible(ids.playground, registry));
+  assertTrue(isWeaponDestructible(registry.idOf('playground_center_block'), registry));
   assertFalse(isWeaponDestructible(ids.air, registry));
   assertTrue(isWeaponDestructible(ids.stone, registry));
   assertTrue(isWeaponDestructible(ids.water, registry));
   assertTrue(isWeaponDestructible(registry.idOf('end_stone_bricks'), registry));
-  // MAG7 候选与枪械破坏同一名单（M4 有意收紧：创造台两类方块也排除在 MAG7 外）
-  assertFalse(isMag7Candidate(ids.playground, registry));
+  // MAG7 候选与枪械破坏同一名单（M8 起创造台两项走 indestructibleTable → M9 才排除）
+  assertTrue(isMag7Candidate(ids.playground, registry));
   assertTrue(isMag7Candidate(ids.water, registry));
 });
 
 // ---------- MAG7 扫描 ----------
 
-test('MAG7: 3×3 扫描先过滤再计 40，水可删且创造台/end_stone/基岩不可删', () => {
+test('MAG7: 3×3 扫描先过滤再计 40，水可删且 end_stone/基岩不可删（M8 期间创造台可删）', () => {
   const { registry, ids } = makeRegistryWithWeaponBlocks();
   const query = {
     getBlockId: (x, y, z) => x === 3 && y === 0 && z === 0 ? ids.water
@@ -116,7 +122,9 @@ test('MAG7: 3×3 扫描先过滤再计 40，水可删且创造台/end_stone/基�
   // 免疫名单的格位不出现在变更中。注意断言必须落到具体格位而非整个 x 列：
   // 扫描截面覆盖各 x 值的 3×3 邻域，(4,-1,0) 等邻格是 stone、合法入选。
   assertFalse(changes.some((c) => c.x === 4 && c.y === 0 && c.z === 0));
-  assertFalse(changes.some((c) => c.x === 5 && c.y === 0 && c.z === 0));
+  // ⚠️ M8 期间 playground 不在 indestructibleTable → (5,0,0) 作为候选被删。
+  // M9 登记两项后本条翻转回 assertFalse（M9 计划 Task 1 已认领）。
+  assertTrue(changes.some((c) => c.x === 5 && c.y === 0 && c.z === 0));
   // 输出形状与距离组稳定排序
   for (const c of changes) assertEqual(c.meta, 0);
   for (let i = 1; i < changes.length; i++) {

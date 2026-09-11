@@ -165,6 +165,7 @@ export class SettingsPanel {
     left.appendChild(this._rowVisualStyle());
     right.appendChild(this._rowViewDistance());
     right.appendChild(this._rowBudget());
+    right.appendChild(this._rowTntDamage());        // M8：TNT 破坏开关（右列独立一行）
     right.appendChild(this._rowWorld());             // 新世界 + 删除缓存共用一行
 
     const footer = document.createElement('div');
@@ -292,6 +293,29 @@ export class SettingsPanel {
         this.settings.budgetProfile = v;
         this._save();
         this.game.budget.setProfile(v); // M3-2 手动覆盖
+      });
+  }
+
+  /**
+   * M8：「TNT 破坏」开关（mc-lite `UIManager.js` 的「TNT 破坏」两按钮档位，
+   * `game.canTntDestroyBlocks`）。mc-heavy 走 `game.setTntBlockDamage(enabled)`，默认 false
+   * （mc-lite `Game.js:92` 同口径：默认只伤害 + 连锁、不动地形）。
+   *
+   * ⚠️ **落位 = 右列独立一行（`.mc-item`），不进左列合并盒** —— 三条理由：
+   * ① 左列合并盒已容纳两组（画质 + 枪械破坏 = 4 按钮），面板总宽 770px、两列各约 375px
+   *    （v1.35 实测）→ 再塞第三组会让 6 按钮挤在 375px 内，文案被压缩或换行；
+   * ② 「两组两按钮档位优先用合并盒」的适用前提是**有两组要合并**，TNT 破坏是单组，不适用；
+   * ③ 右列纵向余量更大（CLAUDE.md「新配置往右列填」），且 TNT 破坏与「帧预算」同属运行时
+   *    即时开关，语义连贯；不触碰左列合并盒 → 避开 v1.35 的 CSS 特异性陷阱
+   *    （`.mc-column > :first-child` 会抹掉 `.mc-combined` 的装饰边框）。
+   */
+  _rowTntDamage() {
+    return this._makeRow('TNT 破坏', [false, true], ['关闭', '开启'],
+      this.settings.tntDamage,
+      (v) => {
+        this.settings.tntDamage = v;
+        this._save();
+        this.game.setTntBlockDamage(v); // 委派 game.canTntDestroyBlocks（爆炸破坏事务的门控）
       });
   }
 

@@ -22,11 +22,12 @@
 关键 `gold_block` 被破坏即失效），**M7 遗留 TODO 也已补齐**（背包里的巢穴图标改走平面路径 ——
 此前是立方体等轴测图，错的表达，见下节）。**第二阶段 Epic 链（M4→M5→M6→M7）全部交付。**
 
-**第三阶段已规划、待实施**：**M8 TNT 爆炸 / 炮塔弹丸**（`indestructible` 单一权威 + TNT
-引爆爆炸连锁 + 炮塔方块锚定装置与索敌 + 弹丸走 M5 临时实体命中丧尸掉血）与 **M9 创造台**
-（54×54 平台 + 锚点持久层 + 模型 JSON 导入导出）—— 规格与实施计划均已定稿并经四轮审查
-（`docs/superpowers/{specs,plans}/2026-09-11-m8-tnt-turret*` 与 `*-m9-playground*`），
-尚未开工。M9 依赖 M8 交付的 `indestructibleTable`（M8 只登记 `bedrock`，M9 追加创造台两项
+**第三阶段进行中**：**M8 TNT 爆炸 / 炮塔弹丸已完成并验收**（验收报告
+`docs/m8-tnt-turret-acceptance-report.md`：TNT 3×3×3 破坏 + 5×5×5 连锁 + 4 格 50 伤害 /
+炮塔方块锚定装置 20 上限 + 主线程索敌 + 8 部件实例渲染 / 弹丸走 M5 临时实体、DDA 阻挡 +
+实体 raycast 命中 + 三发 34 伤害）—— 全量回归 108 passed、bench 无回退。
+**M9 创造台待实施**（54×54 平台 + 锚点持久层 + 模型 JSON 导入导出，规格与计划已定稿并经四轮
+审查）。M9 依赖 M8 已交付的 `indestructibleTable`（M8 只登记 `bedrock`，M9 追加创造台两项
 并移出背包 —— 两者必须成对做，否则产出「放得出来但挖不掉」的撕裂状态）。
 
 ## 里程碑总表
@@ -43,7 +44,7 @@
 | **M5 实体运行时** | `EntityManager` / 实体 AABB raycast / 受控渲染层 / 临时与持久实体分离 + `entities` snapshot | ✅ 完成（2026-09-07，验收报告 `docs/m5-entity-runtime-acceptance-report.md`） | `c9f7086` |
 | **M6 丧尸** | 默认 20 上限 / 20Hz 单条 WorkerPool `ai` RPC / 实体与体素最近命中比较 / 25·35·999 三把枪伤害 / 六部件固定 slot 渲染 / X 键调试生成 | ✅ 完成（2026-09-08，验收报告 `docs/m6-zombies-acceptance-report.md`） | `afb88ad` |
 | **M7 玩家放置丧尸巢穴** | 最高 `gold_block` 的 `blockEntity` 为持久真相 / `block-changed` 失效 / 八 offset × 六层刷怪 / 全局最多 8 个 / 背包图标按物品名路由放置整个 38 方块结构 + `put` 音效 | ✅ 完成（2026-09-10，验收报告 `docs/m7-zombie-nests-acceptance-report.md`） | `e72560d` |
-| **M8 TNT 爆炸 / 炮塔弹丸** | `indestructible` 单一权威（只登记 bedrock）/ TNT 3×3×3 破坏 + 5×5×5 连锁 + 4 格 50 伤害 / 炮塔方块锚定装置（20 上限）+ 主线程索敌 + 8 部件实例渲染 / 弹丸走 M5 临时实体（DDA + 实体 raycast + 三发 34 伤害） | 📝 待实施（规格 `docs/superpowers/specs/2026-09-11-m8-tnt-turret-design.md`） | — |
+| **M8 TNT 爆炸 / 炮塔弹丸** | `indestructible` 单一权威（只登记 bedrock）/ TNT 3×3×3 破坏 + 5×5×5 连锁 + 4 格 50 伤害 / 炮塔方块锚定装置（20 上限）+ 主线程索敌 + 8 部件实例渲染 / 弹丸走 M5 临时实体（DDA + 实体 raycast + 三发 34 伤害） | ✅ 完成（2026-09-11，验收报告 `docs/m8-tnt-turret-acceptance-report.md`） | 待提交（用户授权后回填） |
 | **M9 创造台（playground）** | 54×54 平台 + 中心块 `blockEntity` 锚点 / 复用 M8 的 `indestructible` 表追加创造台两项 + 移出背包 / 模型 JSON 导入导出 / 面板动作按钮 + toast | 📝 待实施（规格 `docs/superpowers/specs/2026-09-11-m9-playground-design.md`） | — |
 
 ## M4 之后的遗留 TODO（M4 阶段 bugfix）

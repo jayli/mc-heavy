@@ -15,6 +15,8 @@ export function createRegistry() {
   const orientationModesTable = new Uint8Array(MAX_BLOCKS);
   /** 向下 Y 碰撞支撑表（M2-7）：默认 0，仅 cloud=1（可站立、非实心） */
   const supportsPlayerTable = new Uint8Array(MAX_BLOCKS);
+  /** 不可破坏表（M8）：徒手挖块 / 枪械破坏 / 爆炸过滤三个消费者共用单一权威 */
+  const indestructibleTable = new Uint8Array(MAX_BLOCKS);
   const geometryNames = []; // index → geometryType 字符串
   let count = 0;
   let frozen = false;
@@ -22,12 +24,13 @@ export function createRegistry() {
   return {
     get count() { return count; },
     solidTable, opaqueTable, cullTable, emissiveTable, geometryTable, orientationModesTable,
-    supportsPlayerTable,
+    supportsPlayerTable, indestructibleTable,
 
     /**
      * @param {string} name
      * @param {{solid?: boolean, opaque?: boolean, supportsPlayer?: boolean, cullMode?: string,
-     *          emissive?: number, geometry?: string, orientationModes?: number}} def
+     *          emissive?: number, geometry?: string, orientationModes?: number,
+     *          indestructible?: boolean}} def
      */
     register(name, def) {
       if (frozen) throw new Error('registry is frozen');
@@ -45,6 +48,7 @@ export function createRegistry() {
       if (gi === -1) { gi = geometryNames.length; geometryNames.push(def.geometry ?? 'cube'); }
       geometryTable[id] = gi;
       orientationModesTable[id] = def.orientationModes ?? 0;
+      indestructibleTable[id] = def.indestructible ? 1 : 0;
       return id;
     },
 
@@ -65,6 +69,15 @@ export function createRegistry() {
     geometryNameOf(id) { return geometryNames[geometryTable[id]]; },
     /** 向下 Y 碰撞支撑（M2-7）：仅 cloud 为 true */
     supportsPlayer(id) { return supportsPlayerTable[id] === 1; },
+    /**
+     * 该方块是否不可被破坏（M8）。未知 id 返回 false（防御：不存在的方块不该被当成不可破坏）。
+     * 三个消费者共用：`Player.digBlock()` 徒手挖块 / `weapon-target-policy.js` 枪械破坏 /
+     * `computeExplosion()` 爆炸过滤。各写一份字面量会漂移出「TNT 炸得掉但玩家挖不掉」的撕裂语义。
+     * @param {number} id @returns {boolean}
+     */
+    isIndestructible(id) {
+      return Number.isInteger(id) && id >= 0 && id < MAX_BLOCKS ? indestructibleTable[id] === 1 : false;
+    },
   };
 }
 

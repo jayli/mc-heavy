@@ -9,6 +9,7 @@ import { getPlacementOrientation, recordRemovedBlock } from './orientation.js';
 import { WeaponController } from './weapons/weapon-controller.js';
 import { WEAPON_IDS } from './weapons/weapon-catalog.js';
 import { NEST_ALIAS_BLOCK } from '../entities/zombie-nests/nest-config.js';
+import { TURRET_ALIAS_BLOCK, defaultTurretRotation } from '../entities/turrets/turret-config.js';
 
 const EYE_HEIGHT = 1.62;
 const REACH = 40; // mc-lite 枪的 far 语义
@@ -37,7 +38,7 @@ const _up = new THREE.Vector3();
  *      玩家脚下的地面格上。两条路径（背包分流与 `selectPlaceable`）的 origin 语义必须一致。
  */
 // 物品名派生自 nest-config.js 的单一权威，不在此写第二份字面量（红线 1：两处会漂移）
-const CREATIVE_SPECIALS = new Set([NEST_ALIAS_BLOCK]);
+const CREATIVE_SPECIALS = new Set([NEST_ALIAS_BLOCK, TURRET_ALIAS_BLOCK]);
 
 export class Player {
   /**
@@ -55,7 +56,7 @@ export class Player {
    * @param {() => boolean} [opts.isModal] 模态谓词（M3.1）：返回 true 时 keydown 全部拦截。
    *        注入而非直接引用 Game，保持 Player 不反向依赖 core/（依赖方向 §3）
    */
-  constructor({ world, camera, scheduler, registry, canvas, editor, weaponRuntime = null, isModal = () => false, onSpawnZombie = null, nests = null }) {
+  constructor({ world, camera, scheduler, registry, canvas, editor, weaponRuntime = null, isModal = () => false, onSpawnZombie = null, nests = null, turrets = null, onIgniteTnt = null }) {
     this.world = world;
     this.camera = camera;
     this.scheduler = scheduler;
@@ -74,6 +75,20 @@ export class Player {
      * @type {import('../entities/zombie-nests/zombie-nest-service.js').ZombieNestService|null}
      */
     this.nests = nests;
+    /**
+     * M8 炮塔服务（Game 注入）。同样注入而非直接引用 —— `src/entities/**` 是同构层，
+     * Player 不得反向依赖它；缺省 null → alias 右键放置无效果（fixture 单独构造时）。
+     * @type {import('../entities/turrets/turret-service.js').TurretService|null}
+     */
+    this.turrets = turrets;
+    /**
+     * M8 引爆回调（Game 注入）。Player 不反向依赖 core/（依赖方向 §3，与 `onSpawnZombie`
+     * 同惯例）。缺省 null → `igniteTnt()` 返回 false 且不写世界（fixture 单独构造时）。
+     * ⚠️ **去重集合不在 player 侧** —— 三条引爆路径（左键 / 枪击 / 连锁到期）中后两条不经
+     * player，若去重只在 player 侧，连锁路径会绕开它 → A↔B 相距 ≤2 的 TNT 永久互爆。
+     * @type {((x:number,y:number,z:number)=>boolean)|null}
+     */
+    this._onIgniteTnt = onIgniteTnt;
     /** 当前选中的受控创造模式物品名（null = 走常规背包槽）。见 CREATIVE_SPECIALS */
     this._selectedPlaceable = null;
     // M4 武器运行时（视图模型/曳光/音频由 Game 注入；controller 随后由 Game 赋值）
@@ -119,6 +134,10 @@ export class Player {
       blockQuery: { getBlockId: (x, y, z) => this.world.getBlockId(x, y, z) },
       editor,
       onEffect: (effect) => this._applyWeaponEffect(effect),
+      // M8：枪击命中 TNT 的引爆路由。**经本类的 `igniteTnt()` 而非直接调 game** ——
+      // 保持「去重只有一个入口」（红线 1）：左键挖块与枪击两条路径最终都落到
+      // `game.explodeTnt()`，controller 不持有任何去重集合。
+      onIgniteTnt: (x, y, z) => this.igniteTnt(x, y, z),
     });
     // 事件监听器保存 bound 引用，dispose 时移除（避免重启/Playwright reload 后监听器叠加）
     this._boundHandlers = {};
@@ -359,12 +378,36 @@ export class Player {
     if (!this.target) return;
     const [x, y, z] = this.target.blockPos;
     const id = this.world.getBlockId(x, y, z);
-    if (id === this.registry.idOf('bedrock')) return; // 基岩不可挖（徒手拦截保留；editor 也有同语义过滤）
+    // M8：命中 tnt → 引爆而非挖块。⚠️ **这是新增偏离**：mc-lite **没有**「普通左键挖块命中
+    // tnt 即引爆」这条入口（它只有 ctrl+左键 `PlayerInteraction.js:172` 与枪击 `:1048`）。
+    // 本仓库把徒手挖块也接成引爆，是因为 mc-heavy 的左键挖块是 `digBlock()`（无 ctrl 修饰键
+    // 路径）—— 记进 M8 验收报告偏离表。
+    if (id === this.registry.idOf('tnt')) { this.igniteTnt(x, y, z); return; }
+    // M8：不可破坏门控改读 registry 单一权威（此前只硬拦 bedrock 字面量）。徒手拦截保留 ——
+    // editor 的 bedrock 门控只覆盖 bedrock，故两处都要拦。M9 追加 playground 两项后，
+    // 这一行自动覆盖它们（无需改代码 —— 单一权威的收益）。
+    if (this.registry.isIndestructible(id)) return;
     // M3.2：挖前记下旧朝向（原位重放时的旋转依据）。必须在编辑之前读——
     // setBlock 会把 meta 清成 0，之后再读就丢了朝向。
     this.lastRemovedBlock = recordRemovedBlock(x, y, z, id, this.world.getBlockMeta(x, y, z));
     // M4-0：改走唯一编辑路径（remesh fast path / 事件由 WorldEditor 协调）
     this.editor.setBlock({ x, y, z, id: 0 });
+  }
+
+  /**
+   * 引爆一格 TNT（M8）—— **薄路由**，去重判定在 `game.explodeTnt()` 内（单一权威）。
+   *
+   * ⚠️ **去重不放在 player 侧**：三条引爆路径（左键 / 枪击 / 连锁到期）中，后两条不经 player
+   * —— 若去重只在 player 侧，连锁路径会绕开它 → A↔B 两格相距 ≤2 的 TNT 永久互爆。
+   * mc-lite 的 `player.ignitingTNTs` 之所以够用，是因为它的四个入口全部在
+   * `PlayerInteraction` 内（`:172`/`:617`/`:1048`/`:1083`）；本仓库的连锁队列在 `Game`，
+   * 故去重必须下沉到 `Game.explodeTnt()`。
+   * @param {number} x @param {number} y @param {number} z @returns {boolean} false = 已引爆过
+   */
+  igniteTnt(x, y, z) {
+    if (!this._onIgniteTnt) return false;
+    // 返回值透传 game.explodeTnt 的去重结果（false = 已引爆过）
+    return this._onIgniteTnt(Math.floor(x), Math.floor(y), Math.floor(z));
   }
 
   /**
@@ -440,21 +483,49 @@ export class Player {
    * @returns {boolean} 是否成功放置
    */
   _placeSpecial(id, origin) {
-    if (id !== NEST_ALIAS_BLOCK) return false;
-    if (!this.nests) return false;
-    // AABB 派生自 physics（不得在此重算尺寸 —— 否则与碰撞检测的 AABB 撕裂，红线 1）
-    const playerAabb = this.physics.aabb();
-    const result = this.nests.place({ origin, playerAabb });
-    if (!result.ok) return false;
-    if (this.audioManager) {
-      try {
-        this.audioManager.play('put', 0.6);
-      } catch (err) {
-        // 只记诊断，不回滚（见上方注释）
-        console.warn('[audio] put play failed:', err);
+    // M7：巢穴分支（既有实现不变）
+    if (id === NEST_ALIAS_BLOCK) {
+      if (!this.nests) return false;
+      // AABB 派生自 physics（不得在此重算尺寸 —— 否则与碰撞检测的 AABB 撕裂，红线 1）
+      const playerAabb = this.physics.aabb();
+      const result = this.nests.place({ origin, playerAabb });
+      if (!result.ok) return false;
+      if (this.audioManager) {
+        try {
+          this.audioManager.play('put', 0.6);
+        } catch (err) {
+          // 只记诊断，不回滚（见上方注释）
+          console.warn('[audio] put play failed:', err);
+        }
       }
+      return true;
     }
-    return true;
+    // M8：炮塔分支。**origin = 命中方块格**（调用方传的是 `target.blockPos`）——
+    // 底座最低层要落在玩家脚下的地面格上。⚠️ 用 prevPos 会让结构整体上移一格悬空
+    // （CLAUDE.md 活跃约束；M7 实测踩坑）。两条放置路径（背包分流与 selectPlaceable
+    // 测试 API）的 origin 语义必须一致。
+    if (id === TURRET_ALIAS_BLOCK) {
+      if (!this.turrets) return false;
+      // 默认朝向 = 玩家相对炮塔的方向、取最近四方向之一（mc-lite `DIRECTIONS` 语义）。
+      // 函数本体在 turret-config.js（单一权威）—— 两条放置路径共用，不得各写一份。
+      const rotation = defaultTurretRotation(this.physics.pos, origin);
+      const result = this.turrets.place({
+        origin, playerAabb: this.physics.aabb(), rotation,
+      });
+      if (!result.ok) return false;
+      if (this.audioManager) {
+        // mc-lite `TurretPlacementHandler.js:144` 的 `playSound('put', 0.3)`。
+        // ⚠️ 音量与巢穴不同（0.3 vs 0.6）—— 这是 mc-lite 的实际值，不是笔误。
+        try {
+          this.audioManager.play('put', 0.3);
+        } catch (err) {
+          // 只记诊断，不回滚（同上）
+          console.warn('[audio] put play failed:', err);
+        }
+      }
+      return true;
+    }
+    return false;
   }
 
   /** 移除 window/canvas 事件监听（重启或 Playwright reload 后不叠加）。 */

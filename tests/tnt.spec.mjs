@@ -1,0 +1,298 @@
+// tests/tnt.spec.mjs — M8 TNT 引爆/爆炸/连锁验收（规格 §2）
+//
+// Tier 1 断言落点说明：本 spec 的关键回归是「爆炸伤害半径」与「连锁去重」——
+// 两者在纯逻辑单测里都能全绿却仍可能失效（伤害漏接线 → 丧尸不掉血但方块照样消失；
+// 去重漏接线 → A↔B 永久互爆）。故断言必须落在**真游戏页的世界状态与计数**上。
+import { test, expect } from 'playwright/test';
+
+/**
+ * 等世界真正稳定。
+ *
+ * ⚠️ **不能只判队列归零** —— 那是瞬时状态。`worldReady === true` 仅表示出生点邻域就绪，
+ * 后台仍在填充 column/sections；高负载下队列可能短暂归零而 column 还在加载。
+ * 正确判据 = **sections 连续两次采样不变**（跨帧比较）+ 队列归零。
+ * ⚠️ **没有共享 helper 模块** —— `waitWorldSettled` 各 spec 各自定义
+ * （整段照 `tests/zombie-nests.spec.mjs` 复制，含其注释与 90s timeout）。
+ */
+async function waitWorldSettled(page) {
+  await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
+  await page.waitForFunction(() => {
+    const g = window.__MC_GAME__;
+    const s = g.scheduler.stats();
+    const sections = g.renderStats().sections;
+    const prev = window.__MC_STABLE_PREV__;
+    window.__MC_STABLE_PREV__ = sections;
+    return prev === sections &&
+      s.genInflight === 0 && s.meshInflight === 0 && s.meshQueued === 0 &&
+      s.pendingMesh === 0 && s.lightInflight === 0 && s.lightQueued === 0 && s.uploadQueue === 0;
+  }, null, { timeout: 90_000, polling: 500 });
+}
+
+/**
+ * 本 spec 的起手式（⚠️ **没有 `startGame(page)` 这个 helper** —— 全仓 tests/ 零命中）：
+ * 导航 + 等世界稳定。`?vd=2` 与既有 spec 同口径：加载半径小 → 世界稳定快。
+ *
+ * ⚠️ **必须钉 seed**：出生点由 region layout 派生（随 seed 变化），而本 spec 的测试场是
+ * 相对玩家位置搭的 —— 不钉 seed 会让「测试场落在什么地形上」每次不同，全量连跑时偶发
+ * FAIL（实测：单跑全绿、与 zombie-nests/turrets 连跑时第一条用例失败）。
+ */
+const URL = '/?vd=2&seed=12345';
+
+async function boot(page) {
+  await page.goto(URL);
+  await waitWorldSettled(page);
+}
+
+/**
+ * 在玩家附近搭一个 TNT 测试场：一片 stone 平台（y = by−1）+ 中心一格 tnt（y = by）。
+ *
+ * ⚠️ 平台必须铺在 **by−1** 而不是 by：`ZombieService.spawn()` 的门控是「脚格与头格必须是
+ * 空气 + 脚下必须 solid」（`zombie-system.js:362-365`）。铺在 by 会占住丧尸脚格 →
+ * `spawn()` 返回 null → 断言恒真（testing-policy §2.7：无效盲区）。
+ */
+async function setupField(page, { tntOffsets = [[0, 0]] } = {}) {
+  return page.evaluate((offsets) => {
+    const g = window.__MC_GAME__;
+    const p = g.player.physics.pos;
+    const bx = Math.floor(p.x) + 3, by = Math.floor(p.y), bz = Math.floor(p.z);
+    const stoneId = g.registry.idOf('stone');
+    const tntId = g.registry.idOf('tnt');
+    // 平台铺在 by−1（丧尸脚格 by 须为空气、脚下 by−1 须 solid）
+    for (let dx = -4; dx <= 4; dx++) {
+      for (let dz = -4; dz <= 4; dz++) {
+        g.editor.setBlock({ x: bx + dx, y: by - 1, z: bz + dz, id: stoneId });
+        // ⚠️ **必须清掉 by 与 by+1 两层**：`ZombieService.spawn()` 的门控是「脚格与头格
+        // 都必须是空气」。天然地形（草/花/台阶/结构残块）可能正好占住这两层 →
+        // `spawn()` 返回 null → 「不掉血」断言变成无效盲区（且前置自检的 `not.toBe(null)`
+        // 会偶发失败）。实测：不钉 seed 时全量连跑偶发 FAIL 正是这条。
+        g.editor.setBlock({ x: bx + dx, y: by, z: bz + dz, id: 0 });
+        g.editor.setBlock({ x: bx + dx, y: by + 1, z: bz + dz, id: 0 });
+      }
+    }
+    for (const [ox, oz] of offsets) {
+      g.editor.setBlock({ x: bx + ox, y: by, z: bz + oz, id: tntId });
+    }
+    // 半径内一只（距中心约 2.04 格）+ 半径外一只（距中心约 6 格）
+    const inner = g.zombies.spawn([bx + 2.5, by, bz + 0.5], { source: 'tnt-spec' });
+    const outer = g.zombies.spawn([bx + 6.5, by, bz + 0.5], { source: 'tnt-spec' });
+    // 半径内放一个 **非丧尸实体**（M5 probe）作对照 —— 爆炸伤害只枚举
+    // `ZombieService.activeEntities()`（slot 表是单一权威），**不扫 EntityManager 全量集合**：
+    // 那会把未来其它实体类型（弹丸/炮塔）也炸伤。⚠️ **没有这个对照，该断言是无效盲区**
+    // （testing-policy §2.7 第 1 类）：注入「改用 entities() 全量枚举」时若无 probe 在场，
+    // 断言照样全绿。
+    const probe = g.entities.spawn({
+      id: 'tnt-spec-probe', type: 'probe', persistent: false,
+      state: { position: [bx + 2.5, by, bz + 0.5] },
+    });
+    return { bx, by, bz, inner, outer, probe, neighbor: [bx + 1, by - 1, bz] };
+  }, tntOffsets);
+}
+
+test('引爆 TNT：默认不破坏地形但伤害半径内丧尸；开关开启后破坏地形', async ({ page }) => {
+  test.setTimeout(120_000);
+  await boot(page);
+  const setup = await setupField(page);
+  // ⚠️ 前置自检：两只丧尸都必须生成成功（否则「不掉血」断言是无效盲区）
+  expect(setup.inner).not.toBe(null);
+  expect(setup.outer).not.toBe(null);
+
+  // 默认关（canTntDestroyBlocks=false）：地形不变
+  await page.evaluate((c) => window.__MC_GAME__.explodeTnt(c.bx, c.by, c.bz), setup);
+  const terrainIntact = await page.evaluate((n) =>
+    window.__MC_GAME__.world.getBlockId(n[0], n[1], n[2]) !== 0, setup.neighbor);
+  expect(terrainIntact).toBe(true);
+  // 引爆格自身被移除（独立于破坏开关 —— mc-lite `PlayerInteraction.js:683-688` 同口径）
+  const centerGone = await page.evaluate((c) =>
+    window.__MC_GAME__.world.getBlockId(c.bx, c.by, c.bz) === 0, setup);
+  expect(centerGone).toBe(true);
+  // 半径内丧尸掉血 100 → 50
+  const innerHealth = await page.evaluate((id) =>
+    window.__MC_GAME__.zombies.get(id)?.health ?? null, setup.inner);
+  expect(innerHealth).toBe(50);
+  // 半径外丧尸不受影响（断言必须成对 —— 只断言「半径内掉血」会让恒真伤害全绿）
+  const outerHealth = await page.evaluate((id) =>
+    window.__MC_GAME__.zombies.get(id)?.health ?? null, setup.outer);
+  expect(outerHealth).toBe(100);
+  // 半径内的非丧尸实体不受影响（对照断言 —— 见 setupField 的 ⚠️）
+  const probeAlive = await page.evaluate(() =>
+    window.__MC_GAME__.entities.get('tnt-spec-probe') !== null);
+  expect(probeAlive).toBe(true);
+  // 音效播放请求计数增加（AudioContext 在无头环境未必可播 → 断言请求计数，M4 同手法）
+  const plays = await page.evaluate(() =>
+    window.__MC_GAME__.audioDebugState().playRequests.explosion ?? 0);
+  expect(plays).toBeGreaterThanOrEqual(1);
+
+  // 开启破坏后再炸一次 → 地形被破坏
+  const destroyed = await page.evaluate((c) => {
+    const g = window.__MC_GAME__;
+    g.setTntBlockDamage(true);
+    g.editor.setBlock({ x: c.bx, y: c.by, z: c.bz, id: g.registry.idOf('tnt') });
+    g.explodeTnt(c.bx, c.by, c.bz);
+    return g.world.getBlockId(c.neighbor[0], c.neighbor[1], c.neighbor[2]) === 0;
+  }, setup);
+  expect(destroyed).toBe(true);
+});
+
+test('连锁 TNT 依次引爆，且同格不重复引爆（去重生效）', async ({ page }) => {
+  test.setTimeout(120_000);
+  await boot(page);
+  // 两格相距 2 的 tnt → 引爆第一格 → pending 队列 1 项
+  const setup = await setupField(page, { tntOffsets: [[0, 0], [2, 0]] });
+  const ignited = await page.evaluate((c) => window.__MC_GAME__.explodeTnt(c.bx, c.by, c.bz), setup);
+  expect(ignited).toBe(true);
+  const rightAfter = await page.evaluate(() => window.__MC_GAME__.tntChainDebugState());
+  expect(rightAfter.pending).toBe(1);
+  expect(rightAfter.exploded).toBe(1);
+
+  // 等连锁到期（延迟 ∈ [500,1100]ms；轮询到 pending 归零，上限 5s）
+  await page.waitForFunction(() => window.__MC_GAME__.tntChainDebugState().pending === 0,
+    null, { timeout: 5_000, polling: 100 });
+  const after = await page.evaluate(() => window.__MC_GAME__.tntChainDebugState());
+  // ⚠️ **exploded === 2 而不是 3** —— 若去重失效，A↔B 相距 2 会永久互爆（计数无界增长）
+  expect(after.exploded).toBe(2);
+  // 两格 tnt 都已移除（连锁链终止的前提 = 引爆格自身被移除）
+  const bothGone = await page.evaluate((c) => {
+    const g = window.__MC_GAME__;
+    return g.world.getBlockId(c.bx, c.by, c.bz) === 0 &&
+      g.world.getBlockId(c.bx + 2, c.by, c.bz) === 0;
+  }, setup);
+  expect(bothGone).toBe(true);
+
+  // ⚠️ **刻意不断言「同一格再放一格 tnt 后引爆返回 false」** —— 那不是缺陷而是正确行为：
+  // `explodeTnt` 移除引爆格自身后会**释放去重键**（mc-lite `PlayerInteraction.js:687` 同口径，
+  // 该格已非 tnt），故重新放一格新 tnt 再引爆理应成功。连锁**终止**靠的是「引爆格自身被移除」
+  // （A 炸完变空气 → B 的连锁搜索找不到 A），不是靠去重键常驻。上面 `exploded === 2` 那条
+  // 才是去重的真实证明（若去重失效，A↔B 会永久互爆 → 计数无界增长）。
+});
+
+test('破坏开关开启时，爆炸事务不删掉待爆的连锁 TNT（mc-lite :610 同口径）', async ({ page }) => {
+  test.setTimeout(120_000);
+  await boot(page);
+  // 两格相距 1：既在 3×3×3 破坏范围内，也在 5×5×5 连锁范围内 → 破坏事务会碰到待爆 TNT
+  const setup = await setupField(page, { tntOffsets: [[0, 0], [1, 0]] });
+  await page.evaluate(() => window.__MC_GAME__.setTntBlockDamage(true));
+  await page.evaluate((c) => window.__MC_GAME__.explodeTnt(c.bx, c.by, c.bz), setup);
+  // 待爆的那格**仍在**（若没被过滤，它会被自己的破坏事务删掉 → 连锁静默丢失）
+  const pendingIntact = await page.evaluate((c) =>
+    window.__MC_GAME__.world.getBlockId(c.bx + 1, c.by, c.bz) !== 0, setup);
+  expect(pendingIntact).toBe(true);
+  const rightAfter = await page.evaluate(() => window.__MC_GAME__.tntChainDebugState());
+  expect(rightAfter.pending).toBe(1);
+  // 它照常到期引爆 → 总数 2
+  await page.waitForFunction(() => window.__MC_GAME__.tntChainDebugState().pending === 0,
+    null, { timeout: 5_000, polling: 100 });
+  const after = await page.evaluate(() => window.__MC_GAME__.tntChainDebugState());
+  expect(after.exploded).toBe(2);
+  // 周围普通地形确实被破坏了（开关生效 —— 证明上一条不是「破坏根本没发生」的假绿）
+  const neighborGone = await page.evaluate((c) =>
+    window.__MC_GAME__.world.getBlockId(c.bx + 1, c.by - 1, c.bz) === 0, setup);
+  expect(neighborGone).toBe(true);
+});
+
+test('背包选中路径：从背包选 tnt 右键放块，再左键挖块引爆（不是挖掉）', async ({ page }) => {
+  test.setTimeout(120_000);
+  await boot(page);
+  // ⚠️ M7 教训：只走测试 API 的 E2E 曾全绿却漏了「背包放置只放一格」缺陷（M7 验收报告 §3.7）。
+  // 故本用例走**背包选中槽**（`inventory.selectSlot` = 背包面板点击槽位的真实落点）+
+  // `player.placeBlock()` / `player.digBlock()`（与键鼠同一代码路径）。
+  const placed = await page.evaluate(() => {
+    const g = window.__MC_GAME__;
+    const p = g.player.physics.pos;
+    const bx = Math.floor(p.x) + 3, by = Math.floor(p.y), bz = Math.floor(p.z);
+    // 铺支撑（by−1），使 by 格可放块且有地面
+    g.editor.setBlock({ x: bx, y: by - 1, z: bz, id: g.registry.idOf('stone') });
+    const idx = g.player.inventory.slots.findIndex((s) => s.item === 'tnt');
+    g.player.inventory.selectSlot(idx);
+    // 右键放块：origin = prevPos（空气格），命中方块 = 脚下支撑格
+    g.player.target = { blockPos: [bx, by - 1, bz], prevPos: [bx, by, bz], normal: [0, 1, 0], dist: 2 };
+    g.player.placeBlock();
+    return { bx, by, bz, slotIndex: idx, id: g.world.getBlockId(bx, by, bz) };
+  });
+  expect(placed.slotIndex).toBeGreaterThan(4);       // tnt 不在快捷栏前 5 格
+  expect(placed.id).toBe(await page.evaluate(() => window.__MC_GAME__.registry.idOf('tnt')));
+
+  // 左键挖块命中 tnt → 引爆（**不是**把它当普通方块挖掉）
+  const dug = await page.evaluate((c) => {
+    const g = window.__MC_GAME__;
+    const before = g.tntChainDebugState().exploded;
+    g.player.target = { blockPos: [c.bx, c.by, c.bz], prevPos: [c.bx, c.by + 1, c.bz], normal: [0, 1, 0], dist: 2 };
+    g.player.digBlock();
+    return {
+      exploded: g.tntChainDebugState().exploded,
+      grew: g.tntChainDebugState().exploded > before,
+      id: g.world.getBlockId(c.bx, c.by, c.bz),
+      // 徒手挖块会记 lastRemovedBlock；引爆不该记（它不是「挖掉一个方块」）
+      remembered: g.player.lastRemovedBlock ? { ...g.player.lastRemovedBlock } : null,
+    };
+  }, placed);
+  expect(dug.grew).toBe(true);        // 真的引爆了
+  expect(dug.id).toBe(0);             // 引爆格自身被移除
+  expect(dug.remembered).toBe(null);  // 走的是引爆分支，不是挖块分支
+});
+
+test('枪击命中 TNT 引爆，且不受「枪械破坏」开关门控（mc-lite 同口径）', async ({ page }) => {
+  test.setTimeout(120_000);
+  await boot(page);
+  const setup = await setupField(page);
+  const r = await page.evaluate(async (c) => {
+    const g = window.__MC_GAME__;
+    await g.selectWeapon('pistol');
+    g.setGunBlockDamage(false);           // 枪械破坏关闭
+    const before = g.tntChainDebugState().exploded;
+    // 瞄准 tnt（朝下瞄向脚前一格）：setTestAim 会同帧重算 player.target
+    g.player.spawn(c.bx + 0.5, c.by + 2, c.bz + 0.5);
+    g.player.setTestAim([0, -1, 0]);
+    g.fireWeaponOnce();
+    return {
+      grew: g.tntChainDebugState().exploded > before,
+      id: g.world.getBlockId(c.bx, c.by, c.bz),
+    };
+  }, setup);
+  expect(r.grew).toBe(true);   // 引爆发生（mc-lite `PlayerInteraction.js:1048-1057`：tnt 分支在破坏开关之前）
+  expect(r.id).toBe(0);
+});
+
+test('设置面板：TNT 破坏开关落在右列、生效且持久化', async ({ page }) => {
+  test.setTimeout(120_000);
+  await page.goto(URL);
+  await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
+  await page.locator('#settings-btn').click();
+  await expect(page.locator('#settings-modal')).toBeVisible();
+
+  // ⚠️ 落位断言（计划 Step 7 要求）：该行必须落在**右列**（`.mc-columns` 的第二个 `.mc-column`）。
+  // 理由见 `_rowTntDamage()` 的注释 —— 左列合并盒已容纳两组 4 按钮，再塞第三组会让 6 按钮
+  // 挤在约 375px 内。断言钉住它，避免后续调整面板时被误挪到左列。
+  const inRightColumn = await page.evaluate(() => {
+    const cols = [...document.querySelectorAll('#settings-modal .mc-columns > .mc-column')];
+    if (cols.length !== 2) return false;   // 面板必须是两列盒（v1.35 布局）
+    const rows = [...cols[1].querySelectorAll('.mc-item .mc-title')].map((t) => t.textContent);
+    return rows.includes('TNT 破坏');
+  });
+  expect(inRightColumn).toBe(true);
+
+  // ⚠️ **不能用全局文本匹配点按钮** —— 「关闭/开启」文案与左列的「枪械破坏」行**重复**，
+  // 全局 `find(textContent === '开启')` 会先命中枪械破坏那行（DOM 顺序左列在前）。
+  // 故按**标题作用域**定位：先找到含「TNT 破坏」标题的行，再点它自己的按钮。
+  await page.evaluate(() => {
+    const row = [...document.querySelectorAll('#settings-modal .mc-item')]
+      .find((r) => r.querySelector('.mc-title')?.textContent === 'TNT 破坏');
+    [...row.querySelectorAll('button')].find((b) => b.textContent === '开启').click();
+  });
+  await page.waitForFunction(() => {
+    const g = window.__MC_GAME__;
+    const s = JSON.parse(localStorage.getItem('mc_heavy_settings_v1') || '{}');
+    return g.canTntDestroyBlocks === true && s.tntDamage === true;
+  }, null, { timeout: 5_000 });
+  // 关掉：两态都要可达（单态开关是常见回归）
+  await page.evaluate(() => {
+    const row = [...document.querySelectorAll('#settings-modal .mc-item')]
+      .find((r) => r.querySelector('.mc-title')?.textContent === 'TNT 破坏');
+    [...row.querySelectorAll('button')].find((b) => b.textContent === '关闭').click();
+  });
+  await page.waitForFunction(() => {
+    const g = window.__MC_GAME__;
+    const s = JSON.parse(localStorage.getItem('mc_heavy_settings_v1') || '{}');
+    return g.canTntDestroyBlocks === false && s.tntDamage === false;
+  }, null, { timeout: 5_000 });
+});
+

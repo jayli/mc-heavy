@@ -24,6 +24,7 @@ export const DEFAULT_SETTINGS = {
   visualStyle: null,  // null = 日夜循环自动（M2-6）
   budgetProfile: 'auto', // M3-2：'auto'|'high'|'low'
   gunBlockDamage: false, // M4：普通枪是否破坏方块（mc-lite 默认关闭，UIManager.js:160）
+  tntDamage: false, // M8：TNT 是否破坏地形（mc-lite `Game.js:92` 同口径默认 false —— 默认只伤害 + 连锁）
 };
 
 function clampVD(v) {
@@ -63,6 +64,7 @@ export function resolveSettings(stored, params) {
     if ('visualStyle' in stored) s.visualStyle = normStyle(stored.visualStyle);
     if (stored.budgetProfile !== undefined) s.budgetProfile = normBudget(stored.budgetProfile);
     if (typeof stored.gunBlockDamage === 'boolean') s.gunBlockDamage = stored.gunBlockDamage;
+    if (typeof stored.tntDamage === 'boolean') s.tntDamage = stored.tntDamage;
   }
   if (params) {
     if (params.has('vd')) s.viewDistance = clampVD(params.get('vd'));
@@ -71,6 +73,7 @@ export function resolveSettings(stored, params) {
     if (params.has('style')) s.visualStyle = normStyle(params.get('style'));
     if (params.has('budget')) s.budgetProfile = normBudget(params.get('budget'));
     if (params.has('guns')) s.gunBlockDamage = params.get('guns') === '1';
+    if (params.has('tntDamage')) s.tntDamage = params.get('tntDamage') === '1';
   }
   return s;
 }
