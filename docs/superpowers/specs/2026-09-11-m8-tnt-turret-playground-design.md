@@ -223,15 +223,38 @@ controller 接线必须在 `_waitForColumn` **之前**（CLAUDE.md 活跃约束�
 `entities.despawnColumn()` 会绕过玩法服务）。炮塔本身不是实体（装置 controller 不进
 EntityManager），但其弹丸是 —— 见 §5.3 的回收路径。
 
-## 4. 炮塔 AI（同构纯函数 + Worker 分支）
+## 4. 炮塔 AI（同构纯函数，主线程执行）
 
-### 4.1 为什么离开主线程
+### 4.1 为什么**留在主线程**（起草时的方案已推翻）
 
 mc-lite 在主线程每帧跑 LOS 采样（`hasLineOfSightToEnemy`：50 格范围 ÷ 0.5 步长 = 最多 100 次
 `getBlock` 调用 × 每炮塔 × 每帧），靠 `TARGET_LOS_RECHECK_INTERVAL=100ms` 降频兜住。
-mc-heavy 按红线 3 把它抽成同构纯函数 `computeTurretUpdates()`（`src/entities/turrets/turret-system.js`），
-`world-worker.js` 新增 **`turret-ai` 分支**（在既有 message switch 加分支，**不新建 Worker**
-—— DR-5 单池多任务）。
+
+**起草时打算把它搬进 Worker（`turret-ai` 分支），实测事实推翻了这个方案**。索敌必须做 LOS
+判定，而 LOS 必须读方块 —— 但 **Worker 内没有持久世界数据**：`world-worker.js:178` 明确写
+「worker 里没有世界数据，也不该有」，每个 GEN/MESH/LIGHT 任务都临时 `new WorldData(registry)`
+再 `world.add(column)` 用完即弃。三个选项的实测对比：
+
+| 选项 | 代价 | 判定 |
+|---|---|---|
+| ① LOS 留在主线程（同构纯函数） | 20 炮塔 × 8Hz × 最坏 20 丧尸 × 100 采样 = 每秒约 32 万次 **O(1) typed-array 读**，摊到每帧约 5300 次（≈0.002ms） | ✅ **采用** |
+| ② 传局部体素 view 给 Worker | 每 RPC 20 column × 64KB = **1.28MB**，8Hz → **每秒 10MB 结构化克隆**；且 M6 的 `ai` 分支明确「不传局部体素 view」 | ❌ 传输开销远超计算本身 |
+| ③ Worker 内持久化一份世界数据 | 引入**第二份体素权威** | ❌ 直接违反红线 1 |
+
+故炮塔 AI 抽成同构纯函数 `computeTurretUpdates()`（`src/entities/turrets/turret-system.js`），
+**在主线程执行**，不新增 Worker 分支。它仍是无 DOM、无 three 的纯函数（`check:arch` 守），
+故浏览器内单测可直接调 —— 与「worker 消费共享纯函数」的红线 8 目的（可测性）一致，
+只是执行侧不同。
+
+⚠️ **这是红线 3 的第二个边界判定例外**（第一个是 §2.1 的爆炸计算），须在验收报告与设计文档
+§4.5 说明理由：LOS 依赖世界数据，而世界数据的唯一权威在主线程（红线 1）—— 把计算搬去
+Worker 就必须把数据也搬去，那是更大的红线违规。红线 3 禁的是「全量 meshing/AO/结构布局」
+这类**可后台化**的重计算；LOS 不是（它的数据源不可后台化）。
+
+**成本兜底**：索敌降频到 **8Hz**（`TURRET.aiPeriodMs=125`，对齐 mc-lite 的
+`TARGET_REACQUIRE_INTERVAL=120ms`），且只对「距 pivot ≤ 检测范围」的丧尸做 LOS
+（mc-lite `findTarget` 同口径：先 `distSq` 粗筛再 LOS）。验收须实测最坏情况
+（20 炮塔 × 20 丧尸）的单帧开销并记进报告。
 
 ### 4.2 数值口径（逐项对齐 mc-lite `TURRET_CONFIG`）
 
@@ -255,24 +278,19 @@ mc-heavy 按红线 3 把它抽成同构纯函数 `computeTurretUpdates()`（`src
 **逐项核对后照搬，不做 ×60 换算**；验收时须 A/B 对照实测（这类缺陷肉眼难辨：炮塔照常转、
 弹丸照常飞，只是速度不对）。
 
-### 4.3 分工与回包形状
+### 4.3 分工
 
-Worker 只算**意图**，主线程做视觉插值（与 M6「worker 给意图、主线程推进」同构）：
+纯函数只算**意图**，controller 做视觉插值与节流：
 
-- Worker：目标选择（最近 + LOS 可见）、`targetYaw`/`targetPitch`、是否满足开火条件；
+- `computeTurretUpdates()`：目标选择（最近 + LOS 可见）、`targetYaw`/`targetPitch`；
 - 主线程：朝向平滑插值（限角速度）、开火节流、弹丸发射、渲染发布。
 
-回包形状 `{id, generation, targetYaw, targetPitch, fire}`，逐个验 `{id, generation}` 后写
-（红线 7 版本协议：迟到的回包不得改变已 despawn 的装置）。AI 周期 **8Hz**（≈125ms，对齐
+返回形状 `{updates: Array<{id, targetYaw, targetPitch}>}`（**无 `generation`** —— 不走 RPC，
+故红线 7 的版本协议不适用；同步调用不存在迟到回包）。AI 周期 **8Hz**（≈125ms，对齐
 mc-lite 的 `TARGET_REACQUIRE_INTERVAL=120ms`），批次只含「anchor column 已加载」的炮塔。
 
-⚠️ **`WorkerPool.call()` 返回 `{id, promise}` 而非 promise 本身**（CLAUDE.md 活跃约束）：
-消费回包必须取 `.promise`。写 fake pool 时必须返回 `{id, promise}` 与真实形状一致 ——
-M6 实测踩过：纯逻辑测试全绿而真实接线丢回包（炮塔恒不转向、恒不开火）。
-
-⚠️ **worker 消费共享纯函数，不得在 worker 里重写一份逻辑**（红线 8）：`turret-ai` 分支只调
-`computeTurretUpdates()`。若在 worker 里重写，浏览器内单测测不到真实接线。须补一条落在
-**真游戏页**的 E2E（注入「worker 不消费共享函数」→ 断言须真 FAIL）。
+⚠️ **`WorkerPool.call()` 返回 `{id, promise}` 那条活跃约束在本任务不适用**（不走 RPC），
+但若后续把炮塔 AI 改成 Worker 任务（例如世界数据可后台化之后），它立刻生效。
 
 ### 4.4 朝向插值与时间基准
 
@@ -509,8 +527,9 @@ toast（`src/ui/toast.js`）：屏幕中部短暂提示、自动淡出、不阻�
 - draw call 对照表须记录：炮塔 8 个部件 mesh + 弹丸池 + 爆炸球体池的增量，以及三者
   `visible=false` 时回到基线。
 - 每条新增断言都做**负向验证**（注入缺陷 → 断言须真 FAIL），并自查无效盲区
-  （`docs/testing-policy.md` §2.7 的十二类高发区）。特别地：「worker 不消费共享纯函数」
-  这类接线缺陷须有落在真游戏页的 E2E 兜住（M6 实测教训）。
+  （`docs/testing-policy.md` §2.7 的十二类高发区）。特别地：接线时序缺陷（如炮塔 controller
+  接线晚于 `_waitForColumn`）在纯逻辑测试里测不出来，须有落在真游戏页的 E2E 兜住
+  （M6/M7 实测教训）。
 
 ## 9. 任务分解
 
@@ -520,7 +539,7 @@ toast（`src/ui/toast.js`）：屏幕中部短暂提示、自动淡出、不阻�
 | 1 | `indestructible` 数据权威（registry typed 表 + 挖块/武器/TNT 三消费者接线 + §1.1 创造台方块移出背包 + 重跑 `npm run icons`） | 1 | `check` + `test` |
 | 2 | TNT 引爆与爆炸（纯函数 + 两条引爆路径 + 连锁 + 丧尸伤害 + 特效/音效 + 面板开关） | 1 | `check` + `test` + `bench --check` |
 | 3 | 炮塔装置层（config / blueprint / `TurretService` / controller / 背包放置分流 + 平面图标） | 1 | `check` + `test` + `icons` |
-| 4 | 炮塔 AI（同构纯函数 + `turret-ai` worker 分支 + 主线程朝向插值） | 1 | `check` + `test` |
+| 4 | 炮塔 AI（同构纯函数 `computeTurretUpdates` 主线程执行 + controller 朝向插值 + 开火节流） | 1 | `check` + `test` |
 | 5 | 炮塔渲染（8 部件实例池 + 装甲纹理烘焙 + 指纹门禁） | 1 + 4 | `check` + `test` + 像素实测 |
 | 6 | 弹丸实体（`projectile` 类型 + DDA + 实体 raycast + 伤害 + 实例池渲染 + 音效） | 1 | `check` + `test` |
 | 7 | 创造台服务（平台生成/关闭 + 锚点持久层 + 导入导出） | 1 | `check` + `test` + `bench --check` |
