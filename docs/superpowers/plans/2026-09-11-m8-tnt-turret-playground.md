@@ -492,7 +492,8 @@ ExplosionRenderer({ scene, maxActive })// .burst(position:[x,y,z], nowMs) / .upd
 
 新建 `src/tests/test-explosion.js`，并在 `src/tests/index.html` 静态 import 它（在
 `import './test-zombie-nests.js';` 之后追加一行 `import './test-explosion.js';`）。
-`makeWorldFixture()` 照 `test-zombie-nests.js` 的同名手法（`createRegistry()` + `new WorldData(registry)`
+`makeWorldFixture()` **需新建**（`test-zombie-nests.js` 里只有 `makeRegistry()` 与
+`makeNestFixture()`，**没有** `makeWorldFixture`）。照 `makeNestFixture` 的同手法构造（`createRegistry()` + `new WorldData(registry)`
 + 手工铺一层地面 + 预加载两个 column）。
 
 ```js
@@ -1145,7 +1146,10 @@ test('炮塔蓝图：11 格结构 + 唯一锚点在最高 obsidian', () => {
 });
 
 test('炮塔放置：第 21 个、重叠与玩家重叠均零写入', () => {
-  const { turrets, editor, playerAabb } = makeTurretFixture();
+  // ⚠️ **fixture 须预加载 column 0~15**（20 个炮塔跨 x=0..228 → cx=0..14）：
+  // place() 预检顺序是 bounds（含 hasColumn）→ occupied → player-overlap → limit，
+  // 不预加载会先返回 'bounds'，下面的 'limit'/'player-overlap' 断言根本跑不到。
+  const { turrets, editor, playerAabb } = makeTurretFixture({ loadedColumns: 16 });
   for (let i = 0; i < 20; i++) {
     assertTrue(turrets.place({ origin: [i * 12, 0, 0], playerAabb: null, rotation: 0 }).ok);
   }
@@ -2499,25 +2503,20 @@ export async function loadTurretArmorTexture() {
 import * as THREE from 'three';
 import { TURRET } from '../entities/turrets/turret-config.js';
 
-/** 区序（与 `turret-armor-fingerprint.mjs` 的 ARMOR_TEXTURE_CONFIG.zones 同源 —— 红线 1） */
-const ZONES = ['front', 'side', 'top'];
-
 /**
- * 8 个部件定义（逐项照搬 mc-lite `TURRET_CONFIG`：`TURRET_TOWER_SIZE` / `TURRET_TOWER_POS`
- * / `GUN_BARREL_SIZE` / `GUN_ROOT_SIZE` / `GUN_SIGHT_SIZE` / `GUN_POS` / `GUN_COLOR`）。
- * `zone` = null 表示该部件不用贴图（纯色：炮管/根部/瞄准器，mc-lite 也是纯色材质）。
+ * 区序与部件定义 —— **从 `turret-config.js` 导入，不在本文件写字面量**（红线 1）。
+ * ⚠️ 原先这里写 `const ZONES = ['front','side','top']` 是**第二份副本**（注释写「同源」
+ * 但没有任何机制保证）：改了烘焙侧的区序而忘改这里，UV 会整体错位（渲染出错图案，
+ * 肉眼只觉得「贴图怪怪的」）。提到无 three 的 `turret-config.js` 后，
+ * 渲染层 / 烘焙脚本 / `check:data` 三方都从同一处派生，且门禁可断言
+ * `TURRET_PART_DEFS[].zone ⊆ ARMOR_ZONES`（见 Step 6）。
  */
-export const TURRET_PART_DEFS = Object.freeze({
-  front: { size: [1.6, 1.2, 0.4], pos: [0, -0.05, 0.75], rotX: -Math.PI / 8, zone: 'front' },
-  left:  { size: [1, 1.0, 1.7],   pos: [-0.8, -0.1, -0.1], zone: 'side' },
-  right: { size: [1, 1.0, 1.7],   pos: [0.8, -0.1, -0.1],  zone: 'side' },
-  top:   { size: [1.6, 0.3, 1.5], pos: [0, 0.6, -0.2],     zone: 'top' },
-  back:  { size: [1.6, 1.2, 0.3], pos: [0, -0.2, -0.95],   zone: 'top' },   // mc-lite 顶面贴图复用为背面
-  barrel: { geo: 'cylinder', diameter: 0.3, length: 3.0, pos: [0, 0, 2.0], color: 0x222222, zone: null },
-  root:   { size: [0.6, 0.6, 0.4], pos: [0, 0, 0.85], color: 0xeeeeee, zone: null },
-  sight:  { size: [0.3, 0.3, 0.4], pos: [0, 0.5, 0.65], color: 0x3366cc, zone: null },
-});
-export const TURRET_PARTS = Object.freeze(Object.keys(TURRET_PART_DEFS));
+import { TURRET_PARTS, TURRET_PART_DEFS, ARMOR_ZONES, TURRET_TOWER_COLOR }
+  from '../entities/turrets/turret-config.js';
+
+// ⚠️ **部件定义不在本文件**（见上方 import）—— 它们是纯数据（尺寸/位置/区归属/颜色，
+// 无 three 依赖），放在 `turret-config.js` 让渲染层 / 烘焙脚本 / `check:data` 三方共用
+// 同一份权威（红线 1）。本文件只做「几何构造 + UV 改写 + 矩阵合成」。
 
 const _matrix = new THREE.Matrix4();
 const _quat = new THREE.Quaternion();
@@ -3326,7 +3325,7 @@ playground.isActive();          // boolean
 playground.origin();            // [x,y,z] | null
 playground.hydrate(persistence);// Promise<void>
 playground.exportModel();       // {ok:true, json:string, blocks:number} | {ok:false, reason:'not-active'}
-playground.importModel(jsonText); // Promise<{ok:true, placed, skipped, invalid} | {ok:false, reason}>
+playground.importModel(jsonText);   // **同步**返回 {ok:true, placed, skipped, invalid} | {ok:false, reason}
 playground.isPlayerInPlayground(playerPos);  // boolean
 
 // game.js
@@ -3746,6 +3745,17 @@ export class PlaygroundService {
   }
 }
 ```
+
+⚠️ **`_hasOverlap` 与 `exportModel` 是主线程同步的大体积扫描**（UI 按钮触发 → 可能可感知卡顿）：
+`_hasOverlap` 单次 = 54×54×11 ≈ **3.2 万次** `getBlockId`，而 `_findSafeHeight` **每个 y 迭代调一次**
+（最坏从地面到世界顶约 100 次 → 320 万次）；`exportModel` = 54×54×约 90 ≈ **26 万次**。
+对照：爆炸 152 次、LOS 每帧约 5300 次 —— 这两处是本 Epic **最大的主线程开销**，
+规格 §6.1 只论证了「2916 格写入」，没覆盖它们。
+**处理方式**：① `_findSafeHeight` 改为**逐层增量扫描**（从下往上，一旦某层发现重叠即可提前
+放弃该层，不必每次重扫全 11 层）—— 把最坏 320 万次降到约 3.2 万次；② `exportModel` 只扫
+「平台上方有方块的高度区间」（先用 `findSpawnY` 式的向下扫确定实际模型顶，再只扫该区间），
+避免恒定扫到世界顶；③ 验收须实测这两个函数的耗时并记进报告（目标 < 50ms）。
+若实测仍卡顿，改走**分帧**（照 `budget.meshDispatchPerFrame` 手法）并在报告标注。
 
 ⚠️ **`_write` 是本 Epic 最大的单次编辑量（2916 格）** —— 须实测 REMESH 收敛期的帧率与
 队列深度（bench 场景 ④「批量删 500 块」是既有对照基线，2916 格约为其 5.8 倍）。
@@ -4232,7 +4242,7 @@ git commit -m "docs(m8): 验收报告与 roadmap 回填"
 | §3 炮塔装置层（结构锚点 / 失效上限 / 公开契约 / 背包分流 / 接线时序） | Task 3 | ✅ 覆盖 |
 | §4 炮塔 AI（同构纯函数 / 数值口径 / 分工 / 朝向插值） | Task 4 | ✅ 覆盖 |
 | §5 炮塔渲染与弹丸（UV 分区 / 部件池 / 弹丸实体 / 渲染回收 / 容量标定） | Task 5 + Task 6 | ✅ 覆盖 |
-| §6 创造台服务（平台生成 / 关闭 / 重启恢复 / 导入导出） | Task 7 | ✅ 覆盖 |
+| §6 创造台服务（平台生成 / 关闭 / 重启恢复 / 导入导出） | Task 7 | ✅ 覆盖（**一处偏离**：导入未做「先清平台上方模型区」—— mc-lite `collectModelAreaBlocksToClear` 未移植，理由是清空会删掉玩家已有模型，属破坏性操作；须记进验收报告 §5） |
 | §7 创造台 UI（面板按钮 / toast） | Task 8 | ✅ 覆盖 |
 | §8 验收口径（三功能 + 回归门禁） | Task 9 | ✅ 覆盖 |
 | §9 任务分解 | 本计划 Task 0~9 | ✅ 一致 |
