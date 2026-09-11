@@ -174,6 +174,20 @@ DR-17 原文已写「后续炮塔/床/宝箱等同类装置可直接复用此通
 > DR-17 当初预留的形状经两批消费者验证够用。
 ```
 
+⚠️ **三.6：roadmap 的两条接入点表述与本计划不符，须一并改写**（CLAUDE.md 明写
+「新功能必须通过上述接入点实现，不得绕过 meshing/数据/事件管线另开路径」，
+不改写会让后续读者以为本计划绕过了规定接入点）：
+
+- `| TNT / 爆炸 | WorldEditor.setBlocks(batch) + REMESH + **粒子** |` —— 本计划**不移植粒子层**
+  （mc-heavy 没有 ParticleSystem，只移植 `World.js:1301-1311` 的球体扩张层）。改写为
+  「`WorldEditor.setBlocks(batch)` + REMESH + 球体扩张特效（mc-heavy 无粒子系统）」。
+- `| 创造台 | **mesher 顶点模板机制** |` —— 本计划走 `editor.setBlocks` 的**真实方块路径**
+  （平台是可挖可放的真实方块，不是 mesher 模板）。改写为
+  「`WorldEditor.setBlocks` 真实方块 + `blockEntity` 锚点（M7 装置模式）」。
+
+⚠️ **粒子层未移植须记进偏离表**（规格 §2.4 只在散文里提了，偏离表没列）—— 视觉比对时
+mc-lite 有 2D Billboard 爆炸粒子而 mc-heavy 只有球体扩张，属可感知差异。
+
 §9「后续功能扩展点」表把 `TNT / 爆炸`、`炮塔 / 飞行弹丸`、`创造台` 三行标为「✅ M8 已交付」。
 
 - [ ] **Step 4: bump 设计文档版本号 + 写修订说明**
@@ -193,6 +207,19 @@ Task 1 把创造台两项加进 `HIDDEN_FROM_INVENTORY` 后变为 **116 项**。
 `check-data.mjs:104` 实测）：当前是 `排除 8`，改后是 `排除 10`（`HIDDEN_FROM_INVENTORY`
 自身 4→6）。**不要写成「排除 6」** —— 那只算了一个集合。
 该条须同步改写，否则后续实现者按过期口径判断集合大小。
+
+⚠️ **规格 §10 还要求同步「目录结构清单 + 开发命令清单」**（本任务不可漏）。CLAUDE.md 的
+「文档同步」规则明写：新增产物或删除文件时，必须同步「目录结构清单」「开发命令清单」
+「现状声明」三类文档。M8 新增的产物须进对应清单：
+
+- **目录结构清单**（设计文档 §5）：`assets/turret/`（三张源贴图 + `armor.png`/`armor.json`）、
+  `assets/sounds/{explosion,turret_gun_fire}.mp3`、`tools/bake-turret-armor.mjs`、
+  `tools/turret-armor-fingerprint.mjs`、`src/entities/turrets/`（config / blueprint / service /
+  controller / system / projectile-system）、`src/entities/playground/`（config / service）、
+  `src/render/{turret-armor-texture,turret-renderer,projectile-renderer,explosion-renderer}.js`、
+  `src/voxel/explosion.js`、`src/ui/toast.js`；
+- **开发命令清单**：`npm run turret`（烘焙炮塔装甲纹理）；
+- **现状声明**：CLAUDE.md 的「一句话现状」与 roadmap 的里程碑总表（Task 9 回填）。
 
 同时在 CLAUDE.md 的 M7 段之后新增一段 M8 活跃约束：
 
@@ -217,10 +244,7 @@ Task 1 把创造台两项加进 `HIDDEN_FROM_INVENTORY` 后变为 **116 项**。
 git add docs/phase-1-engine-design.md docs/roadmap.md CLAUDE.md
 git commit -m "docs(m8): 设计文档同步——indestructible 权威 / 爆炸计算归属 / DR-17 回填"
 ```
-```bash
-git add docs/phase-1-engine-design.md docs/roadmap.md CLAUDE.md
-git commit -m "docs(m8): 设计文档同步——indestructible 权威 / 爆炸计算归属 / DR-17 回填"
-```
+
 
 ---
 
@@ -442,8 +466,6 @@ git add src/voxel/blocks-data.js src/voxel/block-registry.js src/player/player.j
   src/player/weapons/weapon-target-policy.js src/player/inventory.js \
   src/tests/test-block-registry.js tools/check-data.mjs \
   assets/icons-atlas.png assets/icons.json
-git commit -m "feat(voxel): indestructible 单一权威 + 创造台方块移出背包"
-```
 git commit -m "feat(voxel): indestructible 单一权威 + 创造台方块移出背包"
 ```
 
@@ -929,10 +951,26 @@ assets/sounds/`）；`src/render/audio-manager.js` 的 `SOUND_IDS` 改为
 `src/ui/settings.js` —— 照 `gunBlockDamage` 同手法加字段：默认 `false`、随 settings 持久化、
 `?tntDamage=` URL 可达。
 
-`src/ui/settings-panel.js` —— 加一行两按钮档位（开/关）。⚠️ 按 CLAUDE.md 活跃约束：
-**两组两按钮档位优先用合并盒共用一行**（与既有「画质 + 枪械破坏」同手法），面板新配置
-**往右列填**（纵向余量更大）。实施时选其一并在验收报告记录理由。
-点击调 `game.setTntBlockDamage(enabled)`，与既有 `setGunBlockDamage` 同接线方式。
+`src/ui/settings-panel.js` —— 加一行两按钮档位（开/关），**放右列**。
+
+⚠️ **落位决策已定（不留给执行者裁量）**：CLAUDE.md 两条活跃约束在这里看似打架 ——
+「新配置往右列填」vs「两组两按钮档位优先用合并盒共用一行」。实测现有结构后判定：
+**右列独立一行（`.mc-item`），不进左列的合并盒**。理由三条：
+
+1. 现有合并盒 `_combinedBlurGunDamage()` 在**左列**，已容纳两组（画质 + 枪械破坏 = 4 按钮）。
+   面板总宽 770px、两列各约 375px（v1.35 实测）→ 再塞第三组会让 6 按钮挤在 375px 内，
+   按钮文案会被压缩或换行（观感劣化，且属「立刻可见」的 Tier 3 缺陷）。
+2. 「两组两按钮档位优先用合并盒」这条约束的适用前提是**有两组要合并**；TNT 破坏是单组，
+   单独成行不适用该条。把它与左列既有组合并反而会**违反**「新配置往右列填」
+   （那是更具体、更新的约束，且明写右列纵向余量更大）。
+3. 右列已有 视距 / 帧预算 / 世界操作 三行，TNT 破坏作为**运行时即时**开关与「帧预算」
+   同性质，放这里语义连贯；且不触碰左列既有合并盒 → 避开 v1.35 那条 CSS 特异性陷阱
+   （`.mc-column > :first-child` 会抹掉 `.mc-combined` 的装饰边框）。
+
+实现照 `_rowBudget()` 的同手法（`_makeRow('TNT 破坏', [false, true], ['关闭', '开启'], ...)`），
+点击调 `game.setTntBlockDamage(enabled)` 并 `this._save()`（与 `setGunBlockDamage` 同接线）。
+⚠️ 须补一条断言：该行落在右列容器内（`.mc-columns` 的第二个 `.mc-column`），
+避免后续调整面板时被误挪到左列。
 
 ⚠️ **`PANEL_CSS` 是 JS 模板字面量 —— 注释里禁用反引号包裹标识符**（会提前终止模板字符串
 → 整个模块解析失败 → 游戏页**白屏**，不是面板样式错）。改完先跑 `npm run lint`。
@@ -1049,8 +1087,6 @@ git add src/voxel/explosion.js src/render/explosion-renderer.js src/player/playe
   src/entities/zombies/zombie-system.js src/core/game.js \
   src/ui/settings-panel.js src/ui/settings.js src/tests/test-explosion.js \
   src/tests/index.html tests/tnt.spec.mjs assets/sounds/explosion.mp3
-git commit -m "feat(tnt): 引爆与爆炸——3×3×3 破坏 / 5×5×5 连锁 / 4 格 50 伤害"
-```
 git commit -m "feat(tnt): 引爆与爆炸——3×3×3 破坏 / 5×5×5 连锁 / 4 格 50 伤害"
 ```
 
@@ -1582,26 +1618,50 @@ import { TURRET_ALIAS_BLOCK } from '../entities/turrets/turret-config.js';
 const CREATIVE_SPECIALS = new Set([NEST_ALIAS_BLOCK, TURRET_ALIAS_BLOCK]);
 ```
 
-构造函数 opts 加 `turrets = null`，存为 `this.turrets`。`_placeSpecial(item, blockPos)` 内加分支
-（照既有巢穴分支同手法，**成功或失败都不回落到单格放置**）：
+构造函数 opts 加 `turrets = null`，存为 `this.turrets`。⚠️ **`_placeSpecial` 的实际签名是
+`_placeSpecial(id, origin)`**（`player.js:442`，参数名是 `id`/`origin`，不是 `item`/`blockPos`），
+且既有实现是「先判 `id !== NEST_ALIAS_BLOCK` 就 return false」的单分支结构。改为按物品名分派：
 
 ```js
-_placeSpecial(item, blockPos) {
-  if (item === NEST_ALIAS_BLOCK) { /* 既有巢穴分支不变 */ }
-  // M8：炮塔。**origin = 命中方块格（blockPos）** —— 底座最低层要落在玩家脚下的地面格上。
-  // ⚠️ 用 prevPos 会让结构整体上移一格悬空（CLAUDE.md 活跃约束；M7 实测踩坑）。
-  // 两条放置路径（本分支与 selectPlaceable 测试 API）的 origin 语义必须一致。
-  if (item === TURRET_ALIAS_BLOCK) {
+_placeSpecial(id, origin) {
+  // M7：巢穴分支（既有实现不变）
+  if (id === NEST_ALIAS_BLOCK) {
+    if (!this.nests) return false;
+    // AABB 派生自 physics（不得在此重算尺寸 —— 否则与碰撞检测的 AABB 撕裂，红线 1）
+    const playerAabb = this.physics.aabb();
+    const result = this.nests.place({ origin, playerAabb });
+    if (!result.ok) return false;
+    if (this.audioManager) {
+      try { this.audioManager.play('put', 0.6); }
+      catch (err) { console.warn('[audio] put play failed:', err); }   // 只记诊断，不回滚
+    }
+    return true;
+  }
+  // M8：炮塔分支。**origin = 命中方块格**（调用方传的是 `target.blockPos`）——
+  // 底座最低层要落在玩家脚下的地面格上。⚠️ 用 prevPos 会让结构整体上移一格悬空
+  // （CLAUDE.md 活跃约束；M7 实测踩坑）。两条放置路径（背包分流与 selectPlaceable
+  // 测试 API）的 origin 语义必须一致。
+  if (id === TURRET_ALIAS_BLOCK) {
     if (!this.turrets) return false;
     // 默认朝向 = 玩家相对炮塔的方向、取最近四方向之一（mc-lite `DIRECTIONS` 语义）
-    const rotation = defaultTurretRotation(this.physics.pos, blockPos);
-    const r = this.turrets.place({ origin: blockPos, playerAabb: this.physics.aabb(), rotation });
-    if (r.ok) this.audioManager?.play('put', 0.3);   // mc-lite `playSound('put', 0.3)`
-    return r.ok;
+    const rotation = defaultTurretRotation(this.physics.pos, origin);
+    const result = this.turrets.place({
+      origin, playerAabb: this.physics.aabb(), rotation,
+    });
+    if (!result.ok) return false;
+    if (this.audioManager) {
+      // mc-lite `TurretPlacementHandler.place()` 的 `playSound('put', 0.3)`
+      try { this.audioManager.play('put', 0.3); }
+      catch (err) { console.warn('[audio] put play failed:', err); }   // 只记诊断，不回滚
+    }
+    return true;
   }
   return false;
 }
 ```
+
+⚠️ **两个分支的音效音量不同**（巢穴 0.6 / 炮塔 0.3）—— 这是 mc-lite 的实际值
+（巢穴 `ZombieNest` 放置 0.6、炮塔 `TurretPlacementHandler` 0.3），不是笔误。
 
 `defaultTurretRotation(playerPos, blockPos)` 放 `turret-config.js` 导出（单一权威，
 两条放置路径共用）：
@@ -1837,8 +1897,6 @@ git add src/entities/turrets/turret-config.js src/entities/turrets/turret-bluepr
   src/player/player.js src/core/game.js tools/icon-fingerprint.mjs \
   src/tests/test-turrets.js src/tests/index.html tests/turrets.spec.mjs \
   assets/icons-atlas.png assets/icons.json
-git commit -m "feat(turrets): 炮塔装置层——方块锚定 / 20 上限 / 背包放置分流"
-```
 git commit -m "feat(turrets): 炮塔装置层——方块锚定 / 20 上限 / 背包放置分流"
 ```
 
@@ -2200,8 +2258,6 @@ glass 误判）。
 ```bash
 git add src/entities/turrets/turret-system.js src/entities/turrets/turret-controller.js \
   src/core/game.js src/tests/test-turrets.js
-git commit -m "feat(turrets): 炮塔 AI——主线程索敌纯函数 + 朝向插值 + 开火节流"
-```
 git commit -m "feat(turrets): 炮塔 AI——主线程索敌纯函数 + 朝向插值 + 开火节流"
 ```
 
@@ -2763,8 +2819,6 @@ git add tools/turret-armor-fingerprint.mjs tools/bake-turret-armor.mjs \
   assets/turret/
 git commit -m "feat(turrets): 炮塔渲染——单纹理 UV 分区 + 8 部件实例池"
 ```
-git commit -m "feat(turrets): 炮塔渲染——单纹理 UV 分区 + 8 部件实例池"
-```
 
 ---
 
@@ -3286,8 +3340,6 @@ git add src/entities/turrets/projectile-system.js src/render/projectile-renderer
   src/entities/turrets/turret-controller.js src/player/raycast.js \
   src/render/audio-manager.js src/core/game.js src/tests/test-projectiles.js \
   src/tests/index.html tests/projectiles.spec.mjs assets/sounds/turret_gun_fire.mp3
-git commit -m "feat(projectiles): 弹丸实体——DDA 阻挡 / 实体 raycast 命中 / 三发 34 伤害"
-```
 git commit -m "feat(projectiles): 弹丸实体——DDA 阻挡 / 实体 raycast 命中 / 三发 34 伤害"
 ```
 
@@ -4271,3 +4323,41 @@ git commit -m "docs(m8): 验收报告与 roadmap 回填"
 
 **占位符扫描**：无 TBD / TODO / 「类似 Task N」/ 「添加适当的错误处理」等模式；
 每个代码步骤都给了完整代码块。
+---
+
+## 既有 API 实际签名对照表（减少执行者猜 API 的空间）
+
+本计划多处消费既有接口。**下表是实测核对过的真实签名/返回值** —— 计划正文里凡引用这些
+API 处，以本表为准（审查发现过 8 处凭印象写错的 API，都已在正文订正；本表是防再次猜错的
+速查）。执行者遇到正文与本表不一致时，**以本表为准并停下来报告**。
+
+| API | 实际签名 / 返回值 | 出处（实测） | 易错点 |
+|---|---|---|---|
+| `window.__MC_GAME__` | 全局测试钩子（不是 `window.game`） | `main.js:64` | spec 里一律用 `window.__MC_GAME__`；`window.game` 全仓零命中 |
+| spec 起手式 | `await page.goto('/?vd=2')` + `await waitWorldSettled(page)` | `zombie-nests.spec.mjs:25` | **没有 `startGame(page)`**；`waitWorldSettled` 各 spec 各自定义（无共享 helper 模块） |
+| `raycastVoxel(world, origin, dir, maxDist?, occludes?)` | 命中 `{hit:true, blockPos, normal, prevPos, dist}`；未命中 **`{hit:false}`（truthy 对象，非 null）** | `raycast.js:11,42` | 必须判 `.hit`；M8 加第五参数 `occludes`（缺省语义不变） |
+| `player.setTestAim(dir)` | 设朝向 + 同帧重算 `this.target` | `player.js:304` | **没有 `updateTarget()`**；朝下瞄准传 `[0,-1,0]` |
+| `player.physics.aabb()` | 玩家 AABB | `physics.js:108` | **没有 `_playerAabb()`**；不得在此重算尺寸（红线 1） |
+| `player._placeSpecial(id, origin)` | 参数名是 `id`/`origin`（不是 `item`/`blockPos`） | `player.js:442` | 既有是「先判 `id !== NEST_ALIAS_BLOCK` return false」单分支 |
+| `editor.setBlocks(changes)` | 返回 `{changes, affected, changedColumns, skipped}`；不带 `blockEntity` 即清除该格 entity | `world-editor.js` | 回滚与 close 的「中心块 entity 自动清除」依赖此语义 |
+| `editor.setBlock({x,y,z,id,meta?,blockEntity?}, {fastPath?})` | 返回 EditReport；bedrock 门控 `reason:'bedrock'` | `world-editor.js:39` | 单块编辑入口 |
+| `editor.setBlockEntity({x,y,z,value})` | `value=null` 删除；不 bump version、不 remesh | `world-editor.js` | 纯 entity 写 |
+| `zombies.spawn(position, {source})` | `string \| null`（满额/落点非法 → null） | `zombie-system.js:357` | 不是 `spawnZombieDebug` |
+| `zombies.damage(id, amount, nowMs)` | `{dead, health} \| null`；health ≤ 0 即 despawn | `zombie-system.js:405` | 红闪与 despawn 已实现，不另写伤害路径 |
+| `zombies.activeEntities()` | `Array<Entity>`（type==='zombie'，Task 2 新增） | 本计划 | 返回数组快照（遍历中 damage 会 despawn 改变底层集合） |
+| `entities.raycast(origin, dir, maxDist, predicate)` | `{id, type, dist, point} \| null`；predicate 收 `entity` | `entity-manager.js:277` | 实体命中唯一入口（红线 6） |
+| `entities.spawn({id,type,state,persistent})` | `Entity \| null` | `entity-manager.js:57` | 弹丸 `persistent:false` |
+| `game.audioDebugState().playRequests` | `{gun_fire: n, put: n, ...}` 只读计数 | `game.js:674` | E2E 据此断言音效播放 |
+| `game._createNestController(id, anchorEntity=null)` | M7 实际签名（内联读锚点，支持传入） | `game.js:695` | **没有 `_readNestAnchor`**；炮塔版照此签名 |
+| 门禁 `[物品集合]` 打印 | `N 项 = registry 126 − 排除 {两集合之和}` | `check-data.mjs:104` | 当前「排除 8」→ 改后「排除 10」（不是 6） |
+| `registry.solidTable` / `opaqueTable` | `Uint8Array`；`opaqueTable[id] = def.opaque ?? (cullMode==='opaque')` | `block-registry.js` | `isProjectileOccluding` = 两表都 === 1 |
+
+⚠️ **mc-lite 侧引用**（计划正文已订正的行号，执行者复核时以此为准）：
+`PlayerInteraction.js:172`=ctrl+左键 / `:1048`=枪击命中（`executeShot` 内）/ `:673`=爆炸音效 /
+`:683-688`=移除引爆格自身（在破坏开关外）/ `:617-618`=连锁去重 / `ExplosionWorker.js:8`=字面量数组 /
+`World.js:111-127`=爆炸球体池 / `:1296`=粒子（World.js 无音频）/ `Turret.js:43`=资源 /
+`:114-119`=ARMOR_TEXTURES / `:656`=pitchObject.rotation.x / `Zombie.js:163`=maxHits /
+`:526-536`=takeDamage（两套血量并存）。
+
+⚠️ **mc-lite 的 TNT 运行时目前是坏的**（`worldAccess` 未声明 → `:686` 抛 ReferenceError），
+故 TNT 对齐口径是「读源码 + 推断意图」，验收报告不得写成「实测对齐 mc-lite」。
