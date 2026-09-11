@@ -1,14 +1,16 @@
-# M8 TNT / 炮塔弹丸 / 创造台 Implementation Plan
+# M8 TNT 爆炸 / 炮塔弹丸 Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 交付 TNT 引爆与爆炸、玩家放置炮塔（自动索敌 + 飞行弹丸命中丧尸掉血）、创造台平台与模型导入导出三个 mc-lite 已有玩法。
+**Goal:** 交付 TNT 引爆与爆炸、玩家放置炮塔（自动索敌 + 飞行弹丸命中丧尸掉血）两个 mc-lite 已有玩法。
+
+> **创造台已拆到 M9**（`docs/superpowers/plans/2026-09-11-m9-playground.md`）。M8 只交付 `indestructible` 表（登记 bedrock），M9 复用该表并追加创造台两项。
 
 **Architecture:** 三者共用 M4~M7 底座 —— `WorldEditor.setBlocks()` 是唯一世界写入入口（爆炸破坏 / 炮塔结构 / 平台生成三条路径都走它）；炮塔复用 M7 的方块锚定装置模式（`blockEntity` 为持久真相 + `block-changed` 增量失效 + `listBlockEntities` 扫库判上限）；弹丸走 M5 `EntityManager` 临时实体；丧尸伤害一律经 `ZombieService.damage()`。新增一份 `indestructibleTable` typed 属性表作为「哪些方块不可破坏」的单一权威。
 
 **Tech Stack:** ES2022 ESM、JSDoc、WebGPU（three r185.1 本地 vendor）、WorkerPool RPC、IndexedDB、离线烘焙 + 指纹门禁、浏览器内单测 + Playwright。
 
-**Spec:** `docs/superpowers/specs/2026-09-11-m8-tnt-turret-playground-design.md`（**计划从规格推论，执行者两份都要读**）
+**Spec:** `docs/superpowers/specs/2026-09-11-m8-tnt-turret-design.md`（**计划从规格推论，执行者两份都要读**）
 
 ## Global Constraints
 
@@ -37,11 +39,10 @@ Task 0（文档同步，无代码）
   CLAUDE.md                        「背包物品集合口径 118 项」→ 116 项 + M8 活跃约束
 
 Task 1（不可破坏权威）
-  src/voxel/blocks-data.js         bedrock / playground_block / playground_center_block 加 indestructible
+  src/voxel/blocks-data.js         bedrock 加 indestructible（创造台两项移交 M9）
   src/voxel/block-registry.js      indestructibleTable + isIndestructible(id)
   src/player/player.js             digBlock() 改读表
   src/player/weapons/weapon-target-policy.js  IMMUNE_NAMES 收敛为读表（保留 end_stone 武器专属例外）
-  src/player/inventory.js          HIDDEN_FROM_INVENTORY 加创造台两项
   tools/check-data.mjs             新增 [不可破坏] 环节
 
 Task 2（TNT）
@@ -88,17 +89,8 @@ Task 6（弹丸）
   src/tests/test-projectiles.js    推进 / DDA 阻挡 / 实体命中 / 伤害换算单测
   tests/projectiles.spec.mjs       弹丸命中丧尸掉血 E2E
 
-Task 7（创造台服务）
-  src/entities/playground/playground-config.js / playground-service.js
-  src/core/game.js                 playground 装配 + 测试 API
-  tests/playground.spec.mjs        生成 + reload 恢复 + 导入导出 E2E
-
-Task 8（创造台 UI）
-  src/ui/toast.js                  轻量非模态提示
-  src/ui/settings-panel.js         创造台 / 导出 / 导入三个动作按钮
-
-Task 9（验收）
-  docs/m8-tnt-turret-playground-acceptance-report.md  实测数据 + 偏离表 + 负向验证清单
+Task 7（验收）
+  docs/m8-tnt-turret-acceptance-report.md  实测数据 + 偏离表 + 负向验证清单
   docs/roadmap.md                  回填 M8 commit hash
 ```
 
@@ -144,7 +136,9 @@ mc-lite 的表达是**分散且不重合**的：`ExplosionWorker.js:8` 的字面
 `BlockData.js:244/252` 的 `isIndestructible: true` 字段 —— 后者**只标了 playground 两项**
 （bedrock/barrier 只在字面量里）。即「哪些不可破坏」在上游没有一个完整清单，
 本仓库收敛成一处权威。
-登记三项：`bedrock` / `playground_block` / `playground_center_block`。
+**M8 只登记一项：`bedrock`**（TNT 爆炸过滤需要）。`playground_block` /
+`playground_center_block` 两项移交 M9 —— 登记 indestructible 与「移出背包」必须成对做
+（只登记不移出会产出「放得出来但挖不掉」的撕裂状态），故两项一起留在 M9。
 ```
 
 - [ ] **Step 2: 在 §4.5 玩家与交互新增「爆炸计算」小节**
@@ -168,10 +162,10 @@ DR-17 原文已写「后续炮塔/床/宝箱等同类装置可直接复用此通
 
 ```markdown
 > **第二批消费者已由 M8 落地**：`turret`（炮塔锚点 `{kind:'turret', id, origin, critical,
-> rotation, lastFireAt}`）与 `playground`（创造台中心块 `{kind:'playground', id, origin, size}`）。
-> 三个 kind（zombie-nest / turret / playground）共用同一 edits 通道与
+> rotation, lastFireAt}`）。（`playground` kind 属 **M9** 范围，届时再回填。）
+> 两个 kind（zombie-nest / turret）共用同一 edits 通道与
 > `Persistence.listBlockEntities(kind)` cursor 扫库判上限，未引发 schemaVersion 变更 ——
-> DR-17 当初预留的形状经两批消费者验证够用。
+> DR-17 当初预留的形状经第二批消费者验证够用。
 ```
 
 ⚠️ **三.6：roadmap 的两条接入点表述与本计划不符，须一并改写**（CLAUDE.md 明写
@@ -181,32 +175,28 @@ DR-17 原文已写「后续炮塔/床/宝箱等同类装置可直接复用此通
 - `| TNT / 爆炸 | WorldEditor.setBlocks(batch) + REMESH + **粒子** |` —— 本计划**不移植粒子层**
   （mc-heavy 没有 ParticleSystem，只移植 `World.js:1301-1311` 的球体扩张层）。改写为
   「`WorldEditor.setBlocks(batch)` + REMESH + 球体扩张特效（mc-heavy 无粒子系统）」。
-- `| 创造台 | **mesher 顶点模板机制** |` —— 本计划走 `editor.setBlocks` 的**真实方块路径**
-  （平台是可挖可放的真实方块，不是 mesher 模板）。改写为
-  「`WorldEditor.setBlocks` 真实方块 + `blockEntity` 锚点（M7 装置模式）」。
+- `| 创造台 | **mesher 顶点模板机制** |` —— 属 **M9** 范围，本任务不动该行（M9 时改写为
+  「`WorldEditor.setBlocks` 真实方块 + `blockEntity` 锚点（M7 装置模式）」）。
 
 ⚠️ **粒子层未移植须记进偏离表**（规格 §2.4 只在散文里提了，偏离表没列）—— 视觉比对时
 mc-lite 有 2D Billboard 爆炸粒子而 mc-heavy 只有球体扩张，属可感知差异。
 
-§9「后续功能扩展点」表把 `TNT / 爆炸`、`炮塔 / 飞行弹丸`、`创造台` 三行标为「✅ M8 已交付」。
+§9「后续功能扩展点」表把 `TNT / 爆炸`、`炮塔 / 飞行弹丸` 两行标为「✅ M8 已交付」
+（创造台那行留给 M9）。
 
 - [ ] **Step 4: bump 设计文档版本号 + 写修订说明**
 
-⚠️ **本 Epic 的四项属架构口径变更**（新数据通道 / 新子系统边界），故须进修订说明并 bump
+⚠️ **本 Epic 的三项属架构口径变更**（新数据通道 / 新子系统边界），故须进修订说明并 bump
 版本号 —— 与 M4~M7 的实玩反馈修正不同（那些**不进**修订说明）。版本号以文档自身首行为准。
 
 - [ ] **Step 5: 同步 roadmap 与 CLAUDE.md**
 
 roadmap 里程碑总表加 M8 行（内容 / 状态「📝 待实施」/ 关键 commit 留空待回填）；
-后续扩展点表同步标注三行已交付。
+后续扩展点表同步标注 TNT / 炮塔两行已交付（创造台留给 M9）。
 
-⚠️ **CLAUDE.md 有一条硬编码数字的活跃约束须改写**：「背包物品集合口径 **118 项** =
-registry 126 − `NON_PLACEABLE_ITEMS`（4 项）− `HIDDEN_FROM_INVENTORY`（4 项）」。
-Task 1 把创造台两项加进 `HIDDEN_FROM_INVENTORY` 后变为 **116 项**。⚠️ 门禁打印的「排除 N」是
-**两个排除集合之和**（`NON_PLACEABLE_ITEMS.length + HIDDEN_FROM_INVENTORY.length`，
-`check-data.mjs:104` 实测）：当前是 `排除 8`，改后是 `排除 10`（`HIDDEN_FROM_INVENTORY`
-自身 4→6）。**不要写成「排除 6」** —— 那只算了一个集合。
-该条须同步改写，否则后续实现者按过期口径判断集合大小。
+⚠️ **CLAUDE.md 的「背包物品集合口径 118 项」这条活跃约束 M8 不动** —— 创造台两项移出背包
+属 M9 范围（M9 时该数字变为 116、门禁打印变为「排除 10」，届时再改写）。M8 期间物品集合
+仍是 118 项。
 
 ⚠️ **规格 §10 还要求同步「目录结构清单 + 开发命令清单」**（本任务不可漏）。CLAUDE.md 的
 「文档同步」规则明写：新增产物或删除文件时，必须同步「目录结构清单」「开发命令清单」
@@ -215,19 +205,19 @@ Task 1 把创造台两项加进 `HIDDEN_FROM_INVENTORY` 后变为 **116 项**。
 - **目录结构清单**（设计文档 §5）：`assets/turret/`（三张源贴图 + `armor.png`/`armor.json`）、
   `assets/sounds/{explosion,turret_gun_fire}.mp3`、`tools/bake-turret-armor.mjs`、
   `tools/turret-armor-fingerprint.mjs`、`src/entities/turrets/`（config / blueprint / service /
-  controller / system / projectile-system）、`src/entities/playground/`（config / service）、
+  controller / system / projectile-system）、
   `src/render/{turret-armor-texture,turret-renderer,projectile-renderer,explosion-renderer}.js`、
   `src/voxel/explosion.js`、`src/ui/toast.js`；
 - **开发命令清单**：`npm run turret`（烘焙炮塔装甲纹理）；
-- **现状声明**：CLAUDE.md 的「一句话现状」与 roadmap 的里程碑总表（Task 9 回填）。
+- **现状声明**：CLAUDE.md 的「一句话现状」与 roadmap 的里程碑总表（Task 7 回填）。
 
 同时在 CLAUDE.md 的 M7 段之后新增一段 M8 活跃约束：
 
 ```markdown
-### M8 TNT / 炮塔 / 创造台沉淀的活跃约束（后续同类装置 Epic 必读）
+### M8 TNT / 炮塔沉淀的活跃约束（后续同类装置 Epic 必读）
 
 - **「哪些方块不可破坏」的唯一权威 = registry `indestructibleTable`**：mc-lite 用
-  `ExplosionWorker.js:6` 字面量 + `BlockData.js` 的 `isIndestructible` 两处表达同一事实。
+  `ExplosionWorker.js:8` 字面量 + `BlockData.js` 的 `isIndestructible` 两处表达同一事实。
   三个消费者（徒手挖块 / 枪械破坏 / 爆炸过滤）都读这张表，各写一份会漂移出
   「TNT 炸得掉但玩家挖不掉」的撕裂语义。
 - **炮塔/弹丸的速度类参数不需要 ×60 换算**（与 `ZOMBIE.speed` 相反）：mc-lite 的
@@ -248,31 +238,34 @@ git commit -m "docs(m8): 设计文档同步——indestructible 权威 / 爆炸�
 
 ---
 
-### Task 1: `indestructible` 数据权威与创造台方块移出背包
+### Task 1: `indestructible` 数据权威
 
 **Files:**
 
-- Modify: `src/voxel/blocks-data.js`（三条加字段）
-- Modify: `src/voxel/block-registry.js`（新增表 + 查询方法）
-- Modify: `src/player/player.js`（`digBlock` 门控，当前在 :358-368）
-- Modify: `src/player/weapons/weapon-target-policy.js`（`IMMUNE_NAMES` 收敛）
-- Modify: `src/player/inventory.js`（`HIDDEN_FROM_INVENTORY` 加两项）
+- Modify: `src/voxel/blocks-data.js`（`bedrock` 加 `indestructible: true`）
+- Modify: `src/voxel/block-registry.js`（新增 `indestructibleTable` + `isIndestructible(id)`）
+- Modify: `src/player/player.js`（`digBlock` 门控改读表）
+- Modify: `src/player/weapons/weapon-target-policy.js`（`IMMUNE_NAMES` 收敛为读表）
 - Modify: `tools/check-data.mjs`（新增 `[不可破坏]` 环节）
 - Modify: `src/tests/test-block-registry.js`
-- Modify: `assets/icons-atlas.png`, `assets/icons.json`（`npm run icons` 产物）
 
 **Interfaces:**
 
 - Consumes: `createRegistry().register(name, def)`（既有；`def` 新增可选字段 `indestructible`）、
   `registry.idOf(name)` / `registry.nameOf(id)` / `registry.all()`
-- Produces（后续任务依赖，签名必须一致）:
+- Produces（后续任务与 M9 依赖，签名必须一致）:
 
 ```js
 registry.indestructibleTable;          // Uint8Array(MAX_BLOCKS)，值 0/1
 registry.isIndestructible(id);         // boolean；未知 id 返回 false
-HIDDEN_FROM_INVENTORY;                 // 6 项（含 playground_block / playground_center_block）
-buildItemNames(registry);              // 既有派生函数，自动跟随排除集合（118 → 116）
 ```
+
+⚠️ **M8 只登记 `bedrock` 一项**（TNT 爆炸过滤需要）。**`playground_block` /
+`playground_center_block` 两项移交 M9** —— 理由：`indestructible` 的登记与「移出背包」
+必须成对做。M8 期间若只登记而不移出背包，会立刻产出撕裂状态（玩家在背包里选得到这两项，
+放得出来但挖不掉、TNT 也炸不掉，而 M8 没有创造台功能可批量删）。反过来两项都不登记也不移出
+（M8 现状）则无害。故两项一起留在 M9。**本任务不碰物品集合**（`HIDDEN_FROM_INVENTORY` 不动，
+物品集合仍是 118 项）。
 
 - [ ] **Step 1: 写失败的表契约与三消费者测试**
 
@@ -280,12 +273,10 @@ buildItemNames(registry);              // 既有派生函数，自动跟随排�
 `test-zombie-nests.js:24-29` 的同名 helper 定义）：
 
 ```js
-test('indestructibleTable：三项登记且可破坏方块判 false', () => {
+test('indestructibleTable：bedrock 登记且可破坏方块判 false', () => {
   const registry = makeRegistry();
-  // ① 表的单一权威：登记三项
+  // ① 表的单一权威：登记 bedrock
   assertTrue(registry.isIndestructible(registry.idOf('bedrock')));
-  assertTrue(registry.isIndestructible(registry.idOf('playground_block')));
-  assertTrue(registry.isIndestructible(registry.idOf('playground_center_block')));
   // ② **临界值附近断言**：可破坏方块必须判 false（不能把整表当恒真判据）
   assertEqual(registry.isIndestructible(registry.idOf('stone')), false);
   assertEqual(registry.isIndestructible(registry.idOf('tnt')), false);
@@ -293,11 +284,13 @@ test('indestructibleTable：三项登记且可破坏方块判 false', () => {
   assertEqual(registry.isIndestructible(registry.idOf('collider')), false);
   // ④ 未知 id 防御
   assertEqual(registry.isIndestructible(999), false);
+  // ⑤ **M8 不登记 playground**（移交 M9）—— 钉住 M8 的范围边界
+  assertEqual(registry.isIndestructible(registry.idOf('playground_block')), false);
 });
 
 test('digBlock 对 indestructible 方块零写入', () => {
   const { player, editor } = makePlayerFixture();
-  const id = player.registry.idOf('playground_block');
+  const id = player.registry.idOf('bedrock');
   player.world.setBlock(4, 1, 4, id);
   player.target = { blockPos: [4, 1, 4], prevPos: [4, 2, 4], normal: [0, 1, 0], dist: 2 };
   const before = editor.calls.length;
@@ -308,20 +301,10 @@ test('digBlock 对 indestructible 方块零写入', () => {
 
 test('isWeaponDestructible 读表而非字面量', () => {
   const registry = makeRegistry();
-  assertEqual(isWeaponDestructible(registry.idOf('playground_block'), registry), false);
+  assertEqual(isWeaponDestructible(registry.idOf('bedrock'), registry), false);
   assertEqual(isWeaponDestructible(registry.idOf('stone'), registry), true);
   // end_stone 是**武器专属**收紧（不在 indestructibleTable 里），须保留
   assertEqual(isWeaponDestructible(registry.idOf('end_stone'), registry), false);
-});
-
-test('创造台方块不在背包物品集合内', () => {
-  const registry = makeRegistry();
-  const items = buildItemNames(registry);
-  assertEqual(items.includes('playground_block'), false);
-  assertEqual(items.includes('playground_center_block'), false);
-  // 炮塔 alias 与 tnt **仍在**集合内（Task 3 的放置分流前提）
-  assertTrue(items.includes('turret_alias_block'));
-  assertTrue(items.includes('tnt'));
 });
 ```
 
@@ -333,22 +316,22 @@ setBlocks(cs) { ... }, setBlockEntity(r) { ... } }`），断言落在 `editor.ca
 - [ ] **Step 2: 验证 RED**
 
 Run: `npx playwright test tests/harness.spec.mjs`
-Expected: FAIL —— `registry.isIndestructible is not a function`；`digBlock` 仍只拦 bedrock
-（`editor.calls.length` 增加 1）；`playground_block` 仍在物品集合内。
+Expected: FAIL —— `registry.isIndestructible is not a function`；`digBlock` 仍只硬拦 bedrock
+（`editor.calls.length` 增加 1 —— 因为既有实现是硬编码 `idOf('bedrock')` 判定，改读表后行为
+等价但实现不同，故这条断言在 RED 阶段仍可能通过；真正的 RED 是 `isIndestructible` 未定义）。
 
 - [ ] **Step 3: 实现表与三消费者接线**
 
-`src/voxel/blocks-data.js` —— 给三条加字段（其余条目不动）：
+`src/voxel/blocks-data.js` —— 给 `bedrock` 加字段（其余条目不动）：
 
 ```js
 {"name":"bedrock","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box","indestructible":true},
-{"name":"playground_block","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box","indestructible":true},
-{"name":"playground_center_block","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box","indestructible":true},
 ```
 
 ⚠️ **不登记 `barrier`** —— 该方块在本仓 registry 里不存在（它对应 mc-lite 的 `collider` 系），
 照搬会登记一个不存在的名字 → 门控静默失效。`collider`/`realistic_trunk_collider` 也不登记
 （它们已在 `NON_PLACEABLE_ITEMS`，那是「不进背包」的事实，不是「不可破坏」的事实）。
+⚠️ **不登记 playground 两项**（移交 M9，见上方 ⚠️）。
 
 `src/voxel/block-registry.js` —— 在既有表旁加一张：
 
@@ -377,8 +360,13 @@ digBlock() {
   if (!this.target) return;
   const [x, y, z] = this.target.blockPos;
   const id = this.world.getBlockId(x, y, z);
+  // M8：命中 tnt → 引爆而非挖块。⚠️ **这是新增偏离**：mc-lite **没有**「普通左键挖块命中
+  // tnt 即引爆」这条入口（它只有 ctrl+左键 `:179` 与枪击 `:1048`）。本仓库把徒手挖块也接成
+  // 引爆，是因为 mc-heavy 的左键挖块是 `digBlock()`（无 ctrl 修饰键路径）—— 记进偏离表。
+  if (id === this.registry.idOf('tnt')) { this.igniteTnt(x, y, z); return; }
   // M8：不可破坏门控改读 registry 单一权威（此前只硬拦 bedrock）。徒手拦截保留 ——
-  // editor 的 bedrock 门控只覆盖 bedrock，不覆盖 playground 两项，故两处都要拦。
+  // editor 的 bedrock 门控只覆盖 bedrock，故两处都要拦。M9 追加 playground 两项后，
+  // 这一行自动覆盖它们（无需改代码 —— 单一权威的收益）。
   if (this.registry.isIndestructible(id)) return;
   // ...（以下不变：recordRemovedBlock + editor.setBlock）
 }
@@ -396,35 +384,24 @@ const WEAPON_ONLY_IMMUNE = new Set(['end_stone']);
 
 export function isWeaponDestructible(id, registry) {
   if (id === registry.idOf('air')) return false;
-  if (registry.isIndestructible(id)) return false;   // bedrock + playground 两项
+  if (registry.isIndestructible(id)) return false;   // bedrock（M9 追加 playground 两项）
   return !WEAPON_ONLY_IMMUNE.has(registry.nameOf(id));
 }
 ```
 
-`src/player/inventory.js` —— `HIDDEN_FROM_INVENTORY` 加两项（**不是** `NON_PLACEABLE_ITEMS`）：
+⚠️ **既有 `IMMUNE_NAMES` 含 `playground_block` / `playground_center_block`** —— 收敛后这两项
+改由 `indestructibleTable` 提供（M9 登记）。**M8 期间它们不在表里 → 枪械仍可破坏它们**，
+这与既有行为不同（既有是字面量排除）。⚠️ 这是 M8 的一处**行为变更**：M8 期间玩家放出的
+playground 方块可被枪械破坏（M9 登记后恢复不可破坏）。须记进验收报告偏离表，且 Task 1 的
+单测须断言 `isWeaponDestructible(playground_block) === true`（M8 期间）—— M9 时该断言改为 false。
 
-```js
-export const HIDDEN_FROM_INVENTORY = [
-  'chimney', 'bed_head', 'bed_tail', 'bed_alias_block',
-  // M8：创造台平台方块。**既有偏差修正** —— 本仓物品集合是派生的（registry − 排除集合），
-  // 而 mc-lite 是手工列举 107 项（实测不含这两项）。配上 indestructible 门控后，若留在背包
-  // 会产出撕裂状态：玩家放得出来，但挖不掉、TNT 也炸不掉（只能靠关闭创造台批量删）。
-  'playground_block', 'playground_center_block',
-];
-```
-
-- [ ] **Step 4: 验证 GREEN + 重烘焙图标**
+- [ ] **Step 4: 验证 GREEN + 门禁**
 
 Run: `npx playwright test tests/harness.spec.mjs`
-Expected: PASS —— 四条新断言全绿。
+Expected: PASS —— bedrock 登记、可破坏方块判 false、digBlock 零写入、枪械判定读表。
 
-物品集合从 118 变为 116 → 图标指纹会少两项，须重烘焙：
-
-Run: `npm run icons && npm run check`
-Expected: `[物品集合] 116 项 = registry 126 − 排除 10`（实测口径：门禁打印的「排除」是两个
-排除集合之和，当前 8 → 改后 10）；图标指纹匹配；`check:arch` / `lint` 通过。
-
-⚠️ **文档里不得硬编码 118/116**（CLAUDE.md：计数以 `npm run check:data` 输出为准）。
+Run: `npm run check`
+Expected: `check:arch` / `lint` 通过。**物品集合仍是 118 项**（本任务不动排除集合）。
 
 - [ ] **Step 5: 在 `tools/check-data.mjs` 新增 `[不可破坏]` 环节**
 
@@ -454,7 +431,7 @@ function checkIndestructibleContract() {
 ```
 
 ⚠️ **负向验证**（两条，全部须真 FAIL）：① 注入「`register()` 漏写 `indestructibleTable`」
-→ `表里 0 项 ≠ 声明 3 项`；② 在 `blocks-data.js` 临时加一条不存在的方块名标
+→ `表里 0 项 ≠ 声明 1 项`；② 在 `blocks-data.js` 临时加一条不存在的方块名标
 `indestructible` → `不在 registry 内`。
 **自查无效盲区**：若只断言 `marked.length > 0`，注入①仍全绿 —— 故必须有「表与声明数量
 一致」那条配对断言。
@@ -463,13 +440,11 @@ function checkIndestructibleContract() {
 
 ```bash
 git add src/voxel/blocks-data.js src/voxel/block-registry.js src/player/player.js \
-  src/player/weapons/weapon-target-policy.js src/player/inventory.js \
-  src/tests/test-block-registry.js tools/check-data.mjs \
-  assets/icons-atlas.png assets/icons.json
-git commit -m "feat(voxel): indestructible 单一权威 + 创造台方块移出背包"
+  src/player/weapons/weapon-target-policy.js src/tests/test-block-registry.js \
+  tools/check-data.mjs
+git commit -m "feat(voxel): indestructible 单一权威（M8 只登记 bedrock）"
 ```
 
----
 
 ### Task 2: TNT 引爆、爆炸破坏、连锁与丧尸伤害
 
@@ -3350,865 +3325,13 @@ git commit -m "feat(projectiles): 弹丸实体——DDA 阻挡 / 实体 raycast 
 
 ---
 
-### Task 7: 创造台服务（平台生成 / 关闭 / 锚点持久层 / 导入导出）
+### Task 7: 验收（全量回归 + 负向验证汇总 + 验收报告）
 
 **Files:**
 
-- Create: `src/entities/playground/playground-config.js`,
-  `src/entities/playground/playground-service.js`, `src/tests/test-playground.js`,
-  `tests/playground.spec.mjs`
-- Modify: `src/core/game.js`（装配 + 测试 API）
-- Modify: `tools/check-data.mjs`（新增 `[创造台]` 环节）
-- Modify: `src/tests/index.html`（注册新单测文件）
-
-**Interfaces:**
-
-- Consumes: Task 1 的 `registry.isIndestructible(id)`（平台方块不可破坏）；
-  既有 `editor.setBlocks(changes)` / `editor.setBlockEntity({x,y,z,value})` /
-  `persistence.listBlockEntities('playground')` / `world.getBlockId(x,y,z)` / `world.hasColumn(cx,cz)`
-- Produces（Task 8 依赖，签名必须一致）:
-
-```js
-// playground-config.js
-export const PLAYGROUND = Object.freeze({
-  size: 54, clearance: 10, distance: 10, heightSpan: 20,
-});
-export const PLAYGROUND_KIND = 'playground';
-
-// playground-service.js
-playground.create(playerPos);   // {ok:true, origin:[x,y,z]} | {ok:false, reason:'exists'|'no-safe-location'|'not-loaded'}
-playground.close(playerPos);    // {ok:true} | {ok:false, reason:'not-active'|'player-in-playground'}
-playground.isActive();          // boolean
-playground.origin();            // [x,y,z] | null
-playground.hydrate(persistence);// Promise<void>
-playground.exportModel();       // {ok:true, json:string, blocks:number} | {ok:false, reason:'not-active'}
-playground.importModel(jsonText);   // **同步**返回 {ok:true, placed, skipped, invalid} | {ok:false, reason}
-playground.isPlayerInPlayground(playerPos);  // boolean
-
-// game.js
-game.createPlayground();        // 测试 API
-game.closePlayground();         // 测试 API
-game.playgroundDebugState();    // { active, origin }；只读测试钩子
-```
-
-- [ ] **Step 1: 写失败的选址与关闭判据测试**
-
-新建 `src/tests/test-playground.js`，并在 `src/tests/index.html` 追加
-`import './test-playground.js';`：
-
-```js
-test('创造台：54×54 平台 + 中心标记块，一次事务写入', () => {
-  const { playground, editor } = makePlaygroundFixture();
-  const r = playground.create([10, 4, 10]);
-  assertTrue(r.ok);
-  assertEqual(editor.setBlocksCalls.length, 1);          // **一次**事务
-  const changes = editor.setBlocksCalls[0];
-  assertEqual(changes.length, 54 * 54);                   // 2916 格
-  const centerId = playground.registry.idOf('playground_center_block');
-  assertEqual(changes.filter((c) => c.id === centerId).length, 1);   // 恰一个中心块
-  // 中心块带锚点 blockEntity
-  const withEntity = changes.filter((c) => c.blockEntity);
-  assertEqual(withEntity.length, 1);
-  assertEqual(withEntity[0].blockEntity.kind, 'playground');
-  assertEqual(withEntity[0].blockEntity.size, 54);
-});
-
-test('创造台：选址顺序东侧 → 西侧，未加载 column 视为重叠', () => {
-  const { playground, world } = makePlaygroundFixture({ loadedColumns: [[0, 0]] });
-  // 东侧 column 未加载 → 视为重叠 → 尝试西侧；西侧也未加载 → not-loaded
-  const r = playground.create([10, 4, 10]);
-  assertEqual(r.reason, 'not-loaded');
-  assertEqual(world.getBlockId(20, 4, 10), 0);           // 零写入
-});
-
-test('创造台：玩家在平台区域内拒绝关闭', () => {
-  const { playground } = makePlaygroundFixture();
-  playground.create([10, 4, 10]);
-  const origin = playground.origin();
-  // 玩家在平台内（XZ 在范围内 + Y 在 [origin.y, origin.y+20)）
-  const inside = { x: origin[0] + 5, y: origin[1] + 1, z: origin[2] + 5 };
-  assertEqual(playground.close(inside).reason, 'player-in-playground');
-  // 平台外 → 关闭成功
-  const outside = { x: origin[0] - 20, y: origin[1] + 1, z: origin[2] };
-  assertTrue(playground.close(outside).ok);
-  assertEqual(playground.isActive(), false);
-});
-
-test('创造台：平台方块不可破坏（indestructible 门控生效）', () => {
-  const registry = makeRegistry();
-  assertTrue(registry.isIndestructible(registry.idOf('playground_block')));
-  assertTrue(registry.isIndestructible(registry.idOf('playground_center_block')));
-});
-
-test('创造台：导出 JSON 格式与 assets/structures/*.json 一致', () => {
-  const { playground, world } = makePlaygroundFixture();
-  playground.create([10, 4, 10]);
-  const origin = playground.origin();
-  // 在平台上雕一个模型（放两格 stone 在平台上方的中心附近）
-  const cx = origin[0] + 27, cz = origin[2] + 27;
-  world.setBlock(cx, origin[1] + 1, cz, playground.registry.idOf('stone'));
-  world.setBlock(cx + 1, origin[1] + 1, cz, playground.registry.idOf('stone'));
-  const r = playground.exportModel();
-  assertTrue(r.ok);
-  const data = JSON.parse(r.json);
-  assertTrue(Array.isArray(data.blocks));                // 与 structures JSON 同形状
-  assertEqual(data.blocks.length, 2);
-  assertTrue(data.blocks[0].type === 'stone');
-  assertTrue(Number.isFinite(data.blocks[0].x));         // 相对坐标
-  assertTrue(Number.isFinite(data.blocks[0].direction));
-  assertTrue(data.metadata && data.metadata.dimensions); // mc-lite 同口径的 metadata
-});
-
-test('创造台：导入时未知方块名计 invalid 且**不写 air**', () => {
-  const { playground, world } = makePlaygroundFixture();
-  playground.create([10, 4, 10]);
-  const origin = playground.origin();
-  const cx = origin[0] + 27, cz = origin[2] + 27;
-  // 先在目标位置放一格 stone（若导入误写 air 会把它删掉）
-  world.setBlock(cx, origin[1] + 1, cz, playground.registry.idOf('stone'));
-  const r = await playground.importModel(JSON.stringify({ blocks: [
-    { x: 0, y: 1, z: 0, type: 'no_such_block', direction: 0 },   // 未知方块名
-  ] }));
-  assertTrue(r.ok);
-  assertEqual(r.invalid, 1);
-  assertEqual(r.placed, 0);
-  assertEqual(world.getBlockId(cx, origin[1] + 1, cz), playground.registry.idOf('stone')); // 未被删
-});
-```
-
-⚠️ **`makePlaygroundFixture()` 须支持注入「已加载 column 集合」** —— 选址的未加载判据
-是本任务的关键分支（见 Step 3 的理由），桩件 world 若一律返回「已加载」会测不到它。
-
-- [ ] **Step 2: 验证 RED**
-
-Run: `npx playwright test tests/harness.spec.mjs`
-Expected: FAIL —— `PlaygroundService` 未定义。
-
-- [ ] **Step 3: 实现 config 与 service**
-
-`src/entities/playground/playground-config.js`：
-
-```js
-// src/entities/playground/playground-config.js — M8：创造台冻结数据（规格 §6）
-// 同构层：**无 DOM、无 three**。数值逐项实测自 mc-lite `PlaygroundService.js`。
-import { WORLD_MIN_Y, WORLD_MAX_Y } from '../../voxel/constants.js';
-
-export const PLAYGROUND = Object.freeze({
-  /** 平台边长 54 格（mc-lite `playgroundSize = 54`，2916 格） */
-  size: 54,
-  /** 平台上方净空 10 格（mc-lite `requiredClearance = 10`） */
-  clearance: 10,
-  /** 距玩家 10 格（mc-lite `distance = 10`，东侧优先、失败改西侧） */
-  distance: 10,
-  /** 玩家在平台内的 Y 跨度 20 格（mc-lite `isPlayerInPlayground` 的 `maxY = origin.y + 20`） */
-  heightSpan: 20,
-  /**
-   * ⚠️ **安全高度搜索上界 = 本仓库的 `WORLD_MAX_Y`（96），不是 mc-lite 的 200**。
-   * mc-lite 世界高度 0~255；本仓库 `-32~96`。照搬 200 会让搜索恒超出世界顶 →
-   * 永不返回安全高度（平台永远创建不出来）。
-   */
-  maxSearchY: WORLD_MAX_Y,
-  minSearchY: WORLD_MIN_Y,
-});
-
-/** blockEntity 的 kind（与 zombie-nest / turret 并列，共用 edits 通道 —— DR-17） */
-export const PLAYGROUND_KIND = 'playground';
-/** 平台方块名（中心标记块 + 其余平台格） */
-export const PLAYGROUND_BLOCK = 'playground_block';
-export const PLAYGROUND_CENTER_BLOCK = 'playground_center_block';
-```
-
-`src/entities/playground/playground-service.js`：
-
-```js
-// src/entities/playground/playground-service.js — M8 创造台服务（规格 §6）
-// 同构层：不得 import three。
-//
-// **不维护 mc-lite 的 `playgroundBlocks: Set<'x,y,z'>` 副本**（红线 1：那是「平台有哪些方块」
-// 的第二份权威，2916 个字符串键）。平台是规则的 54×54 矩形，坐标可纯计算得出 →
-// 关闭时由 `origin + size` 确定性重算枚举。
-//
-// **重启恢复走锚点而非遍历已加载 chunk**（mc-lite `detectExistingPlayground` 遍历
-// `world.chunks` → 远处未加载就扫不到）。本仓库走 M7 的 blockEntity 锚点模式：
-// 中心块的 `{kind:'playground', id, origin, size}` 随 edits 落盘，经
-// `listBlockEntities('playground')` cursor 扫库恢复。全局最多 1 个（mc-lite 单例语义），
-// 上限判定同样走扫库而非已加载状态。
-import { PLAYGROUND, PLAYGROUND_KIND, PLAYGROUND_BLOCK, PLAYGROUND_CENTER_BLOCK }
-  from './playground-config.js';
-
-export class PlaygroundService {
-  /**
-   * @param {{world, editor, registry}} deps
-   */
-  constructor({ world, editor, registry }) {
-    this.world = world; this.editor = editor; this.registry = registry;
-    /** 派生状态：`{origin:[x,y,z], size:number} | null`。**不是**方块集合副本 */
-    this._state = null;
-  }
-
-  isActive() { return this._state !== null; }
-  origin() { return this._state ? [...this._state.origin] : null; }
-
-  /**
-   * 创建平台。选址顺序照搬 mc-lite：东侧 10 格 → 西侧 → 玩家 Y−20 → 玩家 Y−5。
-   *
-   * ⚠️ **未加载 column 必须视为重叠**：mc-lite 遍历 `world.chunks` 查已加载块；本仓库
-   * `WorldData.getBlockId` 对未加载 column 返回 0（air）→ 会把未加载区域判为「安全」，
-   * 然后在写入时因 column 缺失被 setBlocks 跳过 → 产出半个平台。故选址前先确认候选区域的
-   * column 已加载（照 M7 `place()` 的 `hasColumn` 预检）。
-   * 实测：平台距玩家 10~64 格，视距 8 的加载半径 128 格 → 通常已加载；但视距 2
-   * （M1 测试口径）时部分未加载，这条判据是必需的。
-   *
-   * @param {{x:number, y:number, z:number}} playerPos
-   * @returns {{ok:true, origin:[number,number,number]} |
-   *           {ok:false, reason:'exists'|'no-safe-location'|'not-loaded'}}
-   */
-  create(playerPos) {
-    if (this._state) return { ok: false, reason: 'exists' };   // 全局最多 1 个
-    const px = Math.floor(playerPos.x), py = Math.floor(playerPos.y), pz = Math.floor(playerPos.z);
-    const half = PLAYGROUND.size / 2;
-    // 候选序列（mc-lite 同序）：东侧 → 西侧 → 东侧(玩家 Y−20) → 东侧(玩家 Y−5)
-    const candidates = [
-      { x: px + PLAYGROUND.distance, z: pz - half, startY: null },        // startY=null → 从地面高度起搜
-      { x: px - PLAYGROUND.distance, z: pz - half, startY: null },
-      { x: px + PLAYGROUND.distance, z: pz - half, startY: py - 20 },
-      { x: px + PLAYGROUND.distance, z: pz - half, startY: py - 5 },
-    ];
-    for (const c of candidates) {
-      // ① column 已加载预检（整片平台覆盖的 column 都须已加载）
-      if (!this._allColumnsLoaded(c.x, c.z)) return { ok: false, reason: 'not-loaded' };
-      // ② 从地面高度（或给定 startY）向上搜安全高度
-      const startY = c.startY ?? this._findGroundLevelFromBelow(c.x, py, c.z);
-      const y = this._findSafeHeight(c.x, startY, c.z);
-      if (y === null) continue;   // 这个候选找不到 → 试下一个（mc-lite 同口径）
-      return this._write(c.x, y, c.z);
-    }
-    return { ok: false, reason: 'no-safe-location' };
-  }
-
-  /** 整片平台覆盖的 column 是否都已加载（未加载 → 选址判为重叠，见 create() 注释） */
-  _allColumnsLoaded(originX, originZ) {
-    const size = PLAYGROUND.size;
-    const cx0 = Math.floor(originX / 16), cx1 = Math.floor((originX + size - 1) / 16);
-    const cz0 = Math.floor(originZ / 16), cz1 = Math.floor((originZ + size - 1) / 16);
-    for (let cx = cx0; cx <= cx1; cx++) {
-      for (let cz = cz0; cz <= cz1; cz++) {
-        if (!this.world.hasColumn(cx, cz)) return false;
-      }
-    }
-    return true;
-  }
-
-  /** 从给定高度向上扫第一个非空气方块（mc-lite `findGroundLevelFromBelow` 同语义） */
-  _findGroundLevelFromBelow(x, startY, z) {
-    for (let y = Math.floor(startY); y < PLAYGROUND.maxSearchY; y++) {
-      if (this.world.getBlockId(x, y, z) !== 0) return y + 1;
-    }
-    return null;
-  }
-
-  /** 向上搜第一个「平台层 + 净空区域全为空」的高度（mc-lite `findSafePlaygroundHeight`） */
-  _findSafeHeight(originX, startY, originZ) {
-    if (startY === null) return null;
-    for (let y = startY; y <= PLAYGROUND.maxSearchY; y++) {
-      if (!this._hasOverlap(originX, y, originZ)) return y;
-    }
-    return null;
-  }
-
-  /** 平台层与上方净空区域是否有非空气方块（mc-lite `hasOverlapWithWorld` 同语义） */
-  _hasOverlap(originX, y, originZ) {
-    const size = PLAYGROUND.size;
-    for (let dx = 0; dx < size; dx++) {
-      for (let dz = 0; dz < size; dz++) {
-        // 平台层 + 净空 10 格
-        for (let dy = 0; dy <= PLAYGROUND.clearance; dy++) {
-          const yy = y + dy;
-          if (yy >= PLAYGROUND.maxSearchY) return true;   // 超出世界顶视为重叠
-          if (this.world.getBlockId(originX + dx, yy, originZ + dz) !== 0) return true;
-        }
-      }
-    }
-    return false;
-  }
-
-  /** 一次事务写入 2916 格 + 中心块锚点 */
-  _write(originX, y, originZ) {
-    const size = PLAYGROUND.size;
-    const centerDx = Math.floor(size / 2), centerDz = Math.floor(size / 2);
-    const blockId = this.registry.idOf(PLAYGROUND_BLOCK);
-    const centerId = this.registry.idOf(PLAYGROUND_CENTER_BLOCK);
-    const id = `playground-1`;   // 全局最多 1 个 → 固定 id（hydrate 后同口径，不会冲突）
-    const changes = [];
-    for (let dx = 0; dx < size; dx++) {
-      for (let dz = 0; dz < size; dz++) {
-        const x = originX + dx, z = originZ + dz;
-        const isCenter = dx === centerDx && dz === centerDz;
-        const change = { x, y, z, id: isCenter ? centerId : blockId, meta: 0 };
-        if (isCenter) {
-          change.blockEntity = {
-            kind: PLAYGROUND_KIND, id, origin: [originX, y, originZ], size,
-          };
-        }
-        changes.push(change);
-      }
-    }
-    const report = this.editor.setBlocks(changes);
-    // ⚠️ 部分写入（column 缺失被跳过）→ 回滚，绝不留下半个平台
-    if (report.skipped.length > 0) {
-      this.editor.setBlocks(changes.map((c) => ({ x: c.x, y: c.y, z: c.z, id: 0 })));
-      return { ok: false, reason: 'not-loaded' };
-    }
-    this._state = { origin: [originX, y, originZ], size };
-    return { ok: true, origin: [originX, y, originZ] };
-  }
-
-  /**
-   * 玩家在平台区域内（mc-lite `isPlayerInPlayground`）：XZ 在范围内 +
-   * Y 在 `[origin.y, origin.y + heightSpan)`。
-   * @param {{x:number,y:number,z:number}} playerPos @returns {boolean}
-   */
-  isPlayerInPlayground(playerPos) {
-    if (!this._state) return false;
-    const [ox, oy, oz] = this._state.origin;
-    const size = this._state.size;
-    return playerPos.x >= ox && playerPos.x < ox + size &&
-           playerPos.z >= oz && playerPos.z < oz + size &&
-           playerPos.y >= oy && playerPos.y < oy + PLAYGROUND.heightSpan;
-  }
-
-  /**
-   * 关闭平台。玩家在区域内则拒绝（防止把玩家脚下的地面抽掉）。
-   * ⚠️ **只删平台层方块，不删玩家雕的模型**（mc-lite 同口径：`playgroundBlocks` 只含平台格）。
-   * 坐标由 `origin + size` **确定性重算**（不维护方块集合副本 —— 红线 1）。
-   * @param {{x:number,y:number,z:number}} playerPos
-   */
-  close(playerPos) {
-    if (!this._state) return { ok: false, reason: 'not-active' };
-    if (playerPos && this.isPlayerInPlayground(playerPos)) {
-      return { ok: false, reason: 'player-in-playground' };
-    }
-    const [ox, oy, oz] = this._state.origin;
-    const size = this._state.size;
-    const changes = [];
-    for (let dx = 0; dx < size; dx++) {
-      for (let dz = 0; dz < size; dz++) changes.push({ x: ox + dx, y: oy, z: oz + dz, id: 0 });
-    }
-    this.editor.setBlocks(changes);   // 一次事务（中心块的 blockEntity 随方块改写自动清除）
-    this._state = null;
-    return { ok: true };
-  }
-
-  /** 从存档恢复（走锚点，不遍历已加载 chunk）。⚠️ 调用前须先 `flushNow()` */
-  async hydrate(persistence) {
-    const anchors = await persistence.listBlockEntities(PLAYGROUND_KIND);
-    this._state = null;
-    for (const { blockEntity } of anchors) {
-      if (!blockEntity?.origin) continue;
-      this._state = { origin: [...blockEntity.origin], size: blockEntity.size ?? PLAYGROUND.size };
-      break;   // 全局最多 1 个
-    }
-  }
-
-  /**
-   * 导出模型：枚举平台上方（`origin.y+1` 起至世界顶）的非平台方块 → 相对中心坐标。
-   * 输出格式**与 `assets/structures/*.json` 完全一致**（mc-lite 同口径 → 导出的模型可直接
-   * 当结构 JSON 用）。
-   * @returns {{ok:true, json:string, blocks:number} | {ok:false, reason:'not-active'}}
-   */
-  exportModel() {
-    if (!this._state) return { ok: false, reason: 'not-active' };
-    const [ox, oy, oz] = this._state.origin;
-    const size = this._state.size;
-    const cx = ox + size / 2, cz = oz + size / 2;
-    const blockId = this.registry.idOf(PLAYGROUND_BLOCK);
-    const centerId = this.registry.idOf(PLAYGROUND_CENTER_BLOCK);
-    const blocks = [];
-    let minX = Infinity, minY = Infinity, minZ = Infinity;
-    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
-    for (let dx = 0; dx < size; dx++) {
-      for (let dz = 0; dz < size; dz++) {
-        for (let y = oy + 1; y < PLAYGROUND.maxSearchY; y++) {
-          const x = ox + dx, z = oz + dz;
-          const id = this.world.getBlockId(x, y, z);
-          if (id === 0 || id === blockId || id === centerId) continue;
-          const name = this.registry.nameOf(id);
-          blocks.push({
-            x: Math.round(x - cx), y: Math.round(y - oy), z: Math.round(z - cz),
-            type: name, direction: this.world.getBlockMeta(x, y, z),
-          });
-          if (x < minX) minX = x; if (x > maxX) maxX = x;
-          if (y < minY) minY = y; if (y > maxY) maxY = y;
-          if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
-        }
-      }
-    }
-    const json = JSON.stringify({
-      blocks,
-      metadata: {
-        created: new Date().toISOString(),
-        dimensions: blocks.length === 0 ? { x: 0, y: 0, z: 0 } : {
-          x: maxX - minX + 1, y: maxY - minY + 1, z: maxZ - minZ + 1,
-        },
-      },
-    }, null, 2);
-    return { ok: true, json, blocks: blocks.length };
-  }
-
-  /**
-   * 导入模型（mc-lite `importModelFromJson` 语义照搬）。
-   * ⚠️ **未知方块名（registry 里没有）必须计 `invalid` 并跳过，不得写 0（air）** ——
-   * 那会静默删掉玩家已有的方块。
-   * ⚠️ **Y 越界判据用本仓库的 `WORLD_MIN_Y/WORLD_MAX_Y`**（mc-lite 是 `y < 0 || y > 255`）。
-   * @param {string} jsonText
-   */
-  importModel(jsonText) {
-    if (!this._state) return { ok: false, reason: 'not-active' };
-    let data;
-    try { data = JSON.parse(jsonText); } catch { return { ok: false, reason: 'invalid-json' }; }
-    if (!data || !Array.isArray(data.blocks)) return { ok: false, reason: 'invalid-format' };
-    const [ox, oy, oz] = this._state.origin;
-    const size = this._state.size;
-    const cx = ox + size / 2, cz = oz + size / 2;
-    let placed = 0, skipped = 0, invalid = 0;
-    const pending = new Set();
-    const changes = [];
-    for (const block of data.blocks) {
-      if (!block || typeof block !== 'object') { invalid++; continue; }
-      const relX = Number(block.x), relY = Number(block.y), relZ = Number(block.z);
-      const type = typeof block.type === 'string' ? block.type.trim() : '';
-      if (!Number.isFinite(relX) || !Number.isFinite(relY) || !Number.isFinite(relZ) || !type) {
-        invalid++; continue;
-      }
-      const id = this.registry.idOf(type);
-      if (id === undefined) { invalid++; continue; }   // ⚠️ 未知方块名 → invalid，不写 air
-      const x = Math.round(cx + relX), y = Math.round(oy + relY), z = Math.round(cz + relZ);
-      if (y < PLAYGROUND.minSearchY || y >= PLAYGROUND.maxSearchY) { invalid++; continue; }
-      // cullMode:'none' 的不可渲染方块跳过（mc-lite `!props.isRendered` 同口径）
-      if (this.registry.cullTable[id] === 3) { skipped++; continue; }
-      const key = `${x},${y},${z}`;
-      if (pending.has(key)) { skipped++; continue; }   // 同坐标重复只保留首次
-      pending.add(key);
-      // direction → orientation（mc-lite `convertDirectionToOrientation`：取水平四方向）
-      const dir = Number(block.direction);
-      const meta = Number.isFinite(dir) ? ((Math.trunc(dir) % 4) + 4) % 4 : 0;
-      changes.push({ x, y, z, id, meta });
-    }
-    if (changes.length === 0) return { ok: true, placed: 0, skipped, invalid };
-    const report = this.editor.setBlocks(changes);
-    placed = report.changes.length;
-    skipped += report.skipped.length;
-    return { ok: true, placed, skipped, invalid };
-  }
-}
-```
-
-⚠️ **`_hasOverlap` 与 `exportModel` 是主线程同步的大体积扫描**（UI 按钮触发 → 可能可感知卡顿）：
-`_hasOverlap` 单次 = 54×54×11 ≈ **3.2 万次** `getBlockId`，而 `_findSafeHeight` **每个 y 迭代调一次**
-（最坏从地面到世界顶约 100 次 → 320 万次）；`exportModel` = 54×54×约 90 ≈ **26 万次**。
-对照：爆炸 152 次、LOS 每帧约 5300 次 —— 这两处是本 Epic **最大的主线程开销**，
-规格 §6.1 只论证了「2916 格写入」，没覆盖它们。
-**处理方式**：① `_findSafeHeight` 改为**逐层增量扫描**（从下往上，一旦某层发现重叠即可提前
-放弃该层，不必每次重扫全 11 层）—— 把最坏 320 万次降到约 3.2 万次；② `exportModel` 只扫
-「平台上方有方块的高度区间」（先用 `findSpawnY` 式的向下扫确定实际模型顶，再只扫该区间），
-避免恒定扫到世界顶；③ 验收须实测这两个函数的耗时并记进报告（目标 < 50ms）。
-若实测仍卡顿，改走**分帧**（照 `budget.meshDispatchPerFrame` 手法）并在报告标注。
-
-⚠️ **`_write` 是本 Epic 最大的单次编辑量（2916 格）** —— 须实测 REMESH 收敛期的帧率与
-队列深度（bench 场景 ④「批量删 500 块」是既有对照基线，2916 格约为其 5.8 倍）。
-若帧率跌破门禁，改走**分帧提交**（每帧 N 格，照 `budget.meshDispatchPerFrame` 的手法），
-并在验收报告标注。
-
-⚠️ **导入未做「先清平台上方模型区」**（mc-lite `collectModelAreaBlocksToClear`）——
-本任务先不做，因为清空会删掉玩家已有模型（破坏性操作）。若验收时发现导入与已有模型
-冲突需要清空语义，作为偏离记进验收报告并单独确认（破坏性操作须用户授权）。
-
-`src/core/game.js` 装配（紧跟 `this.turrets` 之后、`_waitForColumn` 之前）：
-
-```js
-this.playground = new PlaygroundService({
-  world: this.world, editor: this.editor, registry: this.registry,
-});
-// ⚠️ hydrate 前须先 flushNow（hydrate 是重建派生状态；库里没锚点 → 判为未激活）
-await this.playground.hydrate(this.persistence);
-
-/** 测试 API（Task 8 的 UI 按钮也调这两个） */
-createPlayground() {
-  const p = this.player.physics.pos;
-  return this.playground.create({ x: p.x, y: p.y, z: p.z });
-}
-closePlayground() {
-  const p = this.player.physics.pos;
-  return this.playground.close({ x: p.x, y: p.y, z: p.z });
-}
-playgroundDebugState() { return { active: this.playground.isActive(), origin: this.playground.origin() }; }
-```
-
-- [ ] **Step 4: 在 `tools/check-data.mjs` 新增 `[创造台]` 环节**
-
-```js
-/**
- * [创造台] 契约：平台尺寸 / 两个方块名在 registry 内 / 两者都标了 indestructible /
- * kind 与 service 同源。漏了会让「平台方块不可破坏」门控静默失效。
- */
-function checkPlaygroundContract() {
-  const names = [PLAYGROUND_BLOCK, PLAYGROUND_CENTER_BLOCK];
-  const allNames = new Set(REGISTRY.all().map((e) => e.name));
-  for (const n of names) {
-    if (!allNames.has(n)) failures.push(`[创造台] "${n}" 不在 registry 内（平台方块名拼错）`);
-    if (!REGISTRY.isIndestructible(REGISTRY.idOf(n))) {
-      failures.push(`[创造台] "${n}" 未标 indestructible（玩家/TNT 能破坏平台本体）`);
-    }
-    // ⚠️ 平台方块**不得**在背包物品集合内（Task 1 的 §1.1）—— 否则玩家放得出来但挖不掉
-    if (buildItemNames(REGISTRY).includes(n)) {
-      failures.push(`[创造台] "${n}" 在背包物品集合内（玩家能放置不可破坏的平台方块 → 撕裂状态）`);
-    }
-  }
-  infos.push(`[创造台] 平台 ${PLAYGROUND.size}×${PLAYGROUND.size} = ${PLAYGROUND.size ** 2} 格`);
-}
-```
-
-⚠️ **负向验证**：① 注入「移除 `HIDDEN_FROM_INVENTORY` 里的创造台两项」→ 该环节须真 FAIL；
-② 注入「移除 `indestructible` 字段」→ 须真 FAIL。
-
-- [ ] **Step 5: 写 Playwright E2E**
-
-`tests/playground.spec.mjs`：
-
-```js
-test('创造台：生成 54×54 平台 + 中心块，平台方块不可挖不可炸', async ({ page }) => {
-  await boot(page);
-  const r = await page.evaluate(() => window.__MC_GAME__.createPlayground());
-  expect(r.ok).toBe(true);
-  const origin = r.origin;
-  // 平台格数（抽样验证：四角 + 中心）
-  const blocks = await page.evaluate((o) => {
-    const g = window.__MC_GAME__;
-    const blockId = g.registry.idOf('playground_block');
-    const centerId = g.registry.idOf('playground_center_block');
-    return {
-      corner: g.world.getBlockId(o[0], o[1], o[2]),
-      center: g.world.getBlockId(o[0] + 27, o[1], o[2] + 27),
-      blockId, centerId,
-    };
-  }, origin);
-  expect(blocks.corner).toBe(blocks.blockId);
-  expect(blocks.center).toBe(blocks.centerId);
-  // 徒手挖平台方块 → 零写入（indestructible 门控）
-  const digResult = await page.evaluate((o) => {
-    const g = window.__MC_GAME__;
-    g.player.target = { blockPos: [o[0], o[1], o[2]], prevPos: [o[0], o[1] + 1, o[2]],
-      normal: [0, 1, 0], dist: 2 };
-    g.player.digBlock();
-    return g.world.getBlockId(o[0], o[1], o[2]);
-  }, origin);
-  expect(digResult).toBe(blocks.blockId);   // 还在
-});
-
-test('创造台：reload 后从锚点恢复激活状态，全局仍最多 1 个', async ({ page }) => {
-  // 生成 → flushNow → reload → 断言 playgroundDebugState().active === true
-  // 再 create → reason === 'exists'
-});
-
-test('创造台：导出 JSON 可被结构管线消费（格式一致）', async ({ page }) => {
-  // 生成平台 + 雕两格模型 → exportModel → JSON.parse → 断言 blocks[].{x,y,z,type,direction}
-  // 与 assets/structures/zombie_nest.json 的形状一致
-});
-
-test('创造台：玩家在平台内时拒绝关闭', async ({ page }) => {
-  // 传送到平台上 → closePlayground → reason === 'player-in-playground'
-  // 传送出去 → close 成功 → 平台格变 air，**模型方块保留**
-});
-```
-
-⚠️ **负向验证**（全部须真 FAIL）：
-① 注入「`_hasOverlap` 恒返回 false」→ 平台与地形重叠生成（须造一个有地形的场景断言重叠）；
-② 注入「`_allColumnsLoaded` 恒返回 true」→ 视距 2 时产出半个平台（须在 `?vd=2` 下测）；
-③ 注入「导入的未知方块名写 air」→ 玩家已有方块被删；
-④ 注入「关闭时连模型区一起删」→ 模型方块消失（断言保留 FAIL）；
-⑤ 注入「`maxSearchY` 改成 mc-lite 的 200」→ 搜索恒超出世界顶（平台创建不出来，
-`reason === 'no-safe-location'`）。
-
-- [ ] **Step 6: 验证 GREEN + 门禁 + bench**
-
-Run: `npm run check && npx playwright test tests/playground.spec.mjs tests/harness.spec.mjs`
-Expected: 全绿。
-
-Run: `npm run bench -- --check`
-Expected: 通过。⚠️ **2916 格单次编辑是本 Epic 最大的编辑量** —— 须实测并记进验收报告
-（帧率 / REMESH 收敛期队列深度 / upload p95）。若 frameP95 回退 >10%，停下来报告并考虑
-分帧提交，**不要擅自改断言或静默放宽**。
-
-- [ ] **Step 7: 提交（仅获授权后执行）**
-
-```bash
-git add src/entities/playground/playground-config.js src/entities/playground/playground-service.js \
-  src/core/game.js tools/check-data.mjs src/tests/test-playground.js \
-  src/tests/index.html tests/playground.spec.mjs
-git commit -m "feat(playground): 创造台——54×54 平台 / 锚点持久层 / 导入导出"
-```
-
----
-
-### Task 8: 创造台 UI（toast + 面板动作按钮）
-
-**Files:**
-
-- Create: `src/ui/toast.js`
-- Modify: `src/ui/settings-panel.js`（创造台 / 导出 / 导入三个动作按钮）
-- Modify: `src/tests/test-ui.js`（按钮文案单一口径 + toast 不进模态栈）
-
-**Interfaces:**
-
-- Consumes: Task 7 的 `game.createPlayground()` / `game.closePlayground()` /
-  `game.playground.isActive()` / `game.playground.exportModel()` / `game.playground.importModel(jsonText)`
-- Produces:
-
-```js
-Toast({ container? })   // .show(message, durationMs?) / .hide() / .dispose()
-                        // 屏幕中部短暂提示、自动淡出、**不进 uiModal 模态栈**
-```
-
-- [ ] **Step 1: 写失败的 UI 契约测试（照仓库既有手法，不给面板开测试口子）**
-
-⚠️ **`test-ui.js` 是纯函数单测**（只测 `ui/settings.js` 的 `resolveSettings`/`VIEW_DISTANCE_OPTIONS`
-与 `ui/icons.js` 的 manifest 契约），**没有** `makeSettingsPanel` 这类面板 fixture，
-`settings-panel.js` 也没有任何「测试用只读访问器」先例（公开成员只有
-`constructor`/`open`/`close`/`toggle`/`get isOpen`）。故**不要**发明
-`panel.playgroundLabel()` / `setPlaygroundActive()` 这类不存在的方法 —— 那会让 RED 永远不 GREEN。
-
-改用仓库既有手法：**把两态文案提成导出常量，断言「构造与状态切换都派生自同一常量」**
-（v1.35 的 `CLEAR_SAVE_LABEL` 就是这个套路 —— 它的失效路径正是「复位函数写死旧长文案
-覆盖构造时的短文案」）。toast 的断言落在**它自己的纯函数接口**上，不碰面板。
-
-在 `src/tests/test-ui.js` 追加：
-
-```js
-test('创造台按钮文案是导出的单一口径常量（两态 + 错误映射）', () => {
-  // ⚠️ v1.35 踩坑：`_resetDangerArmed()` 写死旧长文案覆盖了构造时的短文案
-  // → 面板打开后显示复位那份，构造代码形同虚设。
-  // 钉法 = 断言常量**已导出**且值固定 —— 实现里的构造与状态切换都必须 import 这两个常量，
-  // 不得在别处写字面量（Step 4 的实现据此写；写死字面量则本断言与实现脱钩）。
-  assertEqual(PLAYGROUND_OPEN_LABEL, '打开创造台');
-  assertEqual(PLAYGROUND_CLOSE_LABEL, '关闭创造台');
-  // 错误文案映射同样是单一口径（不散落字面量）
-  assertEqual(PLAYGROUND_ERRORS['player-in-playground'], '请离开创造台区域后再关闭');
-  assertEqual(PLAYGROUND_ERRORS['exists'], '创造台已存在');
-});
-
-test('toast 不进模态栈（提示期间玩家仍能操作世界）', () => {
-  // toast 的断言落在它自己的纯函数接口上（不需要面板 fixture，也不需要 game 实例）。
-  // container 用一个最小的假 DOM 容器（`{ appendChild() {} }` 桩件即可 —— toast 只调它一次）。
-  const toast = new Toast({ container: { appendChild() {} } });
-  toast.show('创造台已创建');
-  assertEqual(toast.isModal(), false);          // 不是模态
-  assertTrue(toast.isVisible());
-  // ⚠️ 「没进 uiModal 栈」这条**不在单测里断言** —— `uiModal` 是 Game 的状态，
-  // 单测没有 game 实例。它由 toast 的实现保证（`show()` 里不调 `game.pushModal`），
-  // 并在 Task 8 Step 5 的负向验证里用真游戏页兜住（注入「show 调 pushModal」→ E2E 须真 FAIL）。
-});
-
-test('toast 自动淡出（durationMs 后 hide）', async () => {
-  const toast = new Toast({ container: { appendChild() {} } });
-  toast.show('提示', 10);       // 极短时长便于单测
-  assertTrue(toast.isVisible());
-  await new Promise((r) => setTimeout(r, 30));
-  assertEqual(toast.isVisible(), false);   // 定时器触发 hide
-});
-```
-
-⚠️ **防重复点击（busy 锁）不在单测里断言** —— 它是面板的 DOM 状态，单测没有面板实例。
-落在 Task 8 Step 5 的负向验证（真游戏页连续点击 → 断言只产出一个平台）。
-⚠️ **无效盲区自查**：若只断言「第一次点击成功」，注入「去掉锁」仍全绿 ——
-E2E 须断言「第二次点击在操作进行中被拒绝」（`reason === 'exists'` 或按钮 disabled）。
-- [ ] **Step 2: 验证 RED**
-
-Run: `npx playwright test tests/harness.spec.mjs`
-Expected: FAIL —— `Toast` 未定义、`playgroundLabel()` / `setPlaygroundBusy()` 不存在。
-
-- [ ] **Step 3: 实现 toast**
-
-`src/ui/toast.js`（mc-heavy 目前**没有** `showMessage`/toast 设施，本任务新增）：
-
-```js
-// src/ui/toast.js — M8：轻量非模态提示（规格 §7）
-// mc-heavy 此前没有 showMessage/toast 设施（CoordsHUD 只显示坐标）。消费者 = 创造台的
-// 成功/失败提示（NO_SAFE_LOCATION / PLAYER_IN_PLAYGROUND / EXISTS），后续 Epic 可复用。
-//
-// ⚠️ **不进 `uiModal` 模态栈** —— 它不是模态：玩家须在提示期间仍能操作世界
-// （主循环的 `if (!this.uiModal)` 会跳过 player.update，进栈会让玩家在提示期间无法移动）。
-const TOAST_CSS = `
-#mc-toast {
-  position: fixed; left: 50%; top: 62%; transform: translateX(-50%);
-  padding: 8px 16px; background: rgba(0, 0, 0, 0.72); color: #fff;
-  font: 14px/1.4 monospace; border: 2px solid #555; pointer-events: none;
-  opacity: 0; transition: opacity 0.2s; z-index: 40;
-}
-#mc-toast.mc-toast-visible { opacity: 1; }
-`;
-
-export class Toast {
-  /** @param {{container?: HTMLElement}} [deps] 缺省挂 document.body */
-  constructor({ container = null } = {}) {
-    this._container = container;
-    this._el = null;
-    this._timer = null;
-    this._install();
-  }
-
-  _install() {
-    const root = this._container ?? document.body;
-    const style = document.createElement('style');
-    style.textContent = TOAST_CSS;
-    root.appendChild(style);
-    this._el = document.createElement('div');
-    this._el.id = 'mc-toast';
-    root.appendChild(this._el);
-    this._styleEl = style;
-  }
-
-  /** 显示一条提示，durationMs 后自动淡出。⚠️ 不调 `game.pushModal`（见文件头） */
-  show(message, durationMs = 2200) {
-    if (!this._el) return;
-    this._el.textContent = message;
-    this._el.classList.add('mc-toast-visible');
-    if (this._timer) clearTimeout(this._timer);
-    this._timer = setTimeout(() => this.hide(), durationMs);
-  }
-
-  hide() {
-    if (!this._el) return;
-    this._el.classList.remove('mc-toast-visible');
-    if (this._timer) { clearTimeout(this._timer); this._timer = null; }
-  }
-
-  /** 只读诊断接口（单测用） */
-  isVisible() { return !!this._el?.classList.contains('mc-toast-visible'); }
-  /** **恒 false** —— toast 不是模态（见文件头理由）。单测据此钉住不进模态栈 */
-  isModal() { return false; }
-
-  dispose() {
-    this.hide();
-    this._el?.remove();
-    this._styleEl?.remove();
-    this._el = null; this._styleEl = null;
-  }
-}
-```
-
-- [ ] **Step 4: 面板动作按钮**
-
-`src/ui/settings-panel.js` —— 右列新增一组（照既有 `_rowWorld()` 的同手法）：
-
-```js
-/** 「创造台」按钮的两态文案。**单一口径** —— 构造与状态切换共用这两份常量，
- *  不得在别处写字面量（v1.35 踩坑：复位函数写死旧长文案覆盖构造时的短文案）。 */
-const PLAYGROUND_OPEN_LABEL = '打开创造台';
-const PLAYGROUND_CLOSE_LABEL = '关闭创造台';
-const EXPORT_LABEL = '导出模型';
-const IMPORT_LABEL = '导入模型';
-
-_rowPlayground() {
-  const item = document.createElement('div');
-  item.className = 'mc-item';
-  const title = document.createElement('div');
-  title.className = 'mc-title';
-  title.textContent = '创造台';
-  item.appendChild(title);
-
-  const group = document.createElement('div');
-  group.className = 'mc-btn-group';
-  // 主按钮（两态）
-  this._playgroundBtn = document.createElement('button');
-  this._playgroundBtn.textContent = this._playgroundActive ? PLAYGROUND_CLOSE_LABEL : PLAYGROUND_OPEN_LABEL;
-  this._playgroundBtn.onclick = () => this._onPlaygroundToggle();
-  group.appendChild(this._playgroundBtn);
-  // 导出 / 导入：仅创造台激活时可见（mc-lite `UIManager.js` 同手法）
-  this._exportBtn = document.createElement('button');
-  this._exportBtn.textContent = EXPORT_LABEL;
-  this._exportBtn.onclick = () => this._onExport();
-  this._importBtn = document.createElement('button');
-  this._importBtn.textContent = IMPORT_LABEL;
-  this._importBtn.onclick = () => this._onImport();
-  group.appendChild(this._exportBtn);
-  group.appendChild(this._importBtn);
-  item.appendChild(group);
-  this._syncPlaygroundVisibility();
-  return item;
-}
-
-/** ⚠️ **防重复点击锁** —— 2916 格的写入是秒级操作，重复点击会产出两个平台或半删状态
- *  （mc-lite `isPlaygroundOperationInProgress` 同手法） */
-async _onPlaygroundToggle() {
-  if (this._playgroundBusy) return;
-  this._playgroundBusy = true;
-  this._playgroundBtn.disabled = true;
-  try {
-    const result = this._playgroundActive ? this._game.closePlayground() : this._game.createPlayground();
-    if (result.ok) {
-      this._playgroundActive = !this._playgroundActive;
-      this._toast?.show(this._playgroundActive ? '创造台已创建' : '创造台已关闭');
-    } else {
-      this._toast?.show(PLAYGROUND_ERRORS[result.reason] ?? `操作失败：${result.reason}`);
-    }
-    this._syncPlaygroundVisibility();
-  } finally {
-    this._playgroundBusy = false;
-    this._playgroundBtn.disabled = false;
-  }
-}
-
-/** 错误文案映射（单一口径，不散落字面量） */
-const PLAYGROUND_ERRORS = {
-  'exists': '创造台已存在',
-  'no-safe-location': '无法找到合适的空间，请移动位置',
-  'not-loaded': '附近区块尚未加载，请稍候重试',
-  'not-active': '创造台未激活',
-  'player-in-playground': '请离开创造台区域后再关闭',
-};
-```
-
-⚠️ 三条 CLAUDE.md 活跃约束须遵守：
-① **`PANEL_CSS` 是 JS 模板字面量 —— 注释里禁用反引号包裹标识符**（会提前终止模板字符串 →
-整个模块解析失败 → 游戏页**白屏**）。改完先跑 `npm run lint`；
-② **列分隔线规则只作用于 `.mc-item`，不得通配所有子项**（v1.35 踩坑：写
-`.mc-column > :first-child` 会连带抹掉 `.mc-combined` 合并盒自己的装饰边框）。本任务新增的
-是 `.mc-item`，须补四边 `getComputedStyle` solid 断言；
-③ **新配置往右列填**（纵向余量更大）。
-
-⚠️ **导入的文件上传 UI**：用 `<input type="file" accept=".json">`（mc-lite 同手法），
-读 `file.text()` 后调 `game.playground.importModel(jsonText)`，结果经 toast 提示
-`放置 N，跳过 N，无效 N`。⚠️ 文件读取是异步的，须在 `finally` 里释放 busy 锁。
-
-- [ ] **Step 5: 验证 GREEN + 负向验证**
-
-Run: `npm run check && npx playwright test tests/harness.spec.mjs`
-Expected: PASS —— 文案单一口径、toast 非模态、busy 锁生效。
-
-⚠️ **负向验证**（全部须真 FAIL）：① 注入「`_onPlaygroundToggle` 去掉 busy 锁」→
-连续点击产出两个平台（`count` 或 `reason==='exists'` 断言 FAIL）；② 注入「toast 调
-`game.pushModal('toast')`」→ `isModal()` / `uiModal` 断言 FAIL；③ 注入「导出/导入按钮
-在未激活时也可见」→ 可见性断言 FAIL。
-
-⚠️ **自查无效盲区**：若 busy 锁测试只断言「第一次点击成功」，注入「去掉锁」仍全绿 ——
-须断言「第二次点击在操作进行中被拒绝」。
-
-- [ ] **Step 6: 提交（仅获授权后执行）**
-
-```bash
-git add src/ui/toast.js src/ui/settings-panel.js src/tests/test-ui.js
-git commit -m "feat(playground): 创造台 UI——面板动作按钮 + 非模态 toast"
-```
-
----
-
-### Task 9: 验收（全量回归 + 负向验证汇总 + 验收报告）
-
-**Files:**
-
-- Create: `docs/m8-tnt-turret-playground-acceptance-report.md`
+- Create: `docs/m8-tnt-turret-acceptance-report.md`
 - Modify: `docs/roadmap.md`（回填 M8 commit hash + 状态改「✅ 完成」）
-- Modify: `docs/superpowers/plans/2026-09-11-m8-tnt-turret-playground.md`（实施状态 + 偏差表）
+- Modify: `docs/superpowers/plans/2026-09-11-m8-tnt-turret.md`（实施状态 + 偏差表）
 
 **Interfaces:**
 
@@ -4242,14 +3365,14 @@ Expected: 三者全绿。⚠️ 用例计数以 `npm run check:data` 输出为�
 - 断言落点是否落在真实接线上（而非桩件）—— Task 2 的爆炸伤害、Task 3 的 `onPlaced`、
   Task 6 的 `onFire` 三条接线缺陷都须有落在真游戏页的 E2E 兜住；
 - 恒真陷阱：注入后仍全绿的断言（Task 1 的 indestructible 表、Task 6 的伤害换算、
-  Task 8 的 busy 锁三处已标注配对断言）；
+  Task 5 的装甲三区取样三处已标注配对断言）；
 - 计时断言交替对照（Task 2 的连锁延迟、Task 4 的开火冷却）；
 - 像素取样点是否对准被测图案（Task 5 的三区装甲）；
 - 竞态断言落在内存侧而非重载后的落库结果（Task 3/7 的 hydrate）。
 
 - [ ] **Step 3: 写验收报告**
 
-`docs/m8-tnt-turret-playground-acceptance-report.md`，照 M4~M7 验收报告的同结构：
+`docs/m8-tnt-turret-acceptance-report.md`，照 M4~M7 验收报告的同结构：
 
 - §1 交付摘要（三个功能各自的玩法口径）
 - §2 规格逐项对照（规格 §1~§8 → 实测结果，达标/偏离/未做）
@@ -4267,22 +3390,22 @@ Expected: 三者全绿。⚠️ 用例计数以 `npm run check:data` 输出为�
 - [ ] **Step 4: 回填 roadmap 与本计划的实施状态**
 
 `docs/roadmap.md`：里程碑总表 M8 行填真实 commit hash、状态改「✅ 完成（日期）」；
-「一句话现状」段更新；后续扩展点表划掉 TNT / 炮塔 / 创造台三行；
+「一句话现状」段更新；后续扩展点表划掉 TNT / 炮塔两行（创造台留给 M9）；
 新增「M8 之后的遗留 TODO」段（若有）。
 
 本计划文件头部加实施状态块（照 M7 计划的同手法）：
 
 ```markdown
 > **实施状态（日期）：** Task 0~9 完成情况；**Step N（提交）待用户授权后执行**。
-> 验收报告 `docs/m8-tnt-turret-playground-acceptance-report.md`。
+> 验收报告 `docs/m8-tnt-turret-acceptance-report.md`。
 > 实施中与本计划的偏差（均为实测必需，详见验收报告 §5）：① ...；② ...
 ```
 
 - [ ] **Step 5: 提交（仅获授权后执行）**
 
 ```bash
-git add docs/m8-tnt-turret-playground-acceptance-report.md docs/roadmap.md \
-  docs/superpowers/plans/2026-09-11-m8-tnt-turret-playground.md
+git add docs/m8-tnt-turret-acceptance-report.md docs/roadmap.md \
+  docs/superpowers/plans/2026-09-11-m8-tnt-turret.md
 git commit -m "docs(m8): 验收报告与 roadmap 回填"
 ```
 
@@ -4290,20 +3413,20 @@ git commit -m "docs(m8): 验收报告与 roadmap 回填"
 
 ## 计划自检
 
-**规格覆盖**（规格 §1~§10 逐项 → 任务）：
+**规格覆盖**（规格 §1~§8 逐项 → 任务）：
 
 | 规格节 | 任务 | 状态 |
 |---|---|---|
-| §1 `indestructible` 数据权威 + §1.1 创造台方块移出背包 | Task 1 | ✅ 覆盖 |
+| §1 `indestructible` 数据权威（**只登记 bedrock**，创造台两项移交 M9） | Task 1 | ✅ 覆盖 |
 | §2 TNT（爆炸计算 / 两条引爆路径 / 连锁 / 破坏开关 / 伤害 / 特效音效） | Task 2 | ✅ 覆盖 |
 | §3 炮塔装置层（结构锚点 / 失效上限 / 公开契约 / 背包分流 / 接线时序） | Task 3 | ✅ 覆盖 |
 | §4 炮塔 AI（同构纯函数 / 数值口径 / 分工 / 朝向插值） | Task 4 | ✅ 覆盖 |
 | §5 炮塔渲染与弹丸（UV 分区 / 部件池 / 弹丸实体 / 渲染回收 / 容量标定） | Task 5 + Task 6 | ✅ 覆盖 |
-| §6 创造台服务（平台生成 / 关闭 / 重启恢复 / 导入导出） | Task 7 | ✅ 覆盖（**一处偏离**：导入未做「先清平台上方模型区」—— mc-lite `collectModelAreaBlocksToClear` 未移植，理由是清空会删掉玩家已有模型，属破坏性操作；须记进验收报告 §5） |
-| §7 创造台 UI（面板按钮 / toast） | Task 8 | ✅ 覆盖 |
-| §8 验收口径（三功能 + 回归门禁） | Task 9 | ✅ 覆盖 |
-| §9 任务分解 | 本计划 Task 0~9 | ✅ 一致 |
-| §10 设计文档同步 | Task 0 | ✅ 覆盖 |
+| §6 验收口径（TNT + 炮塔 + 回归门禁） | Task 7 | ✅ 覆盖 |
+| §7 任务分解 | 本计划 Task 0~7 | ✅ 一致 |
+| §8 设计文档同步 | Task 0 | ✅ 覆盖 |
+
+⚠️ **创造台（原规格 §6/§7）已拆到 M9** —— 见 `docs/superpowers/plans/2026-09-11-m9-playground.md`。
 
 **类型一致性**（跨任务的签名须一致）：
 
@@ -4322,9 +3445,7 @@ git commit -m "docs(m8): 验收报告与 roadmap 回填"
 - `projectileDefinition` / `advanceProjectile` / `judgeProjectile` —— Task 6 ✅
   ⚠️ Task 6 里 `advanceProjectile` 与 `judgeProjectile` 的职责拆分须在实现时明确
   （单测两个都测），避免「两处推进让弹丸速度翻倍」
-- `PLAYGROUND`（config）/ `playground.create|close|exportModel|importModel` ——
-  Task 7 定义，Task 8 消费 ✅
-- `Toast({container})` → `.show/.hide/.isModal/.isVisible` —— Task 8 ✅
+（`PLAYGROUND` / `Toast` 属 **M9** 范围，其类型一致性在 M9 计划的自检里核对。）
 
 **占位符扫描**：无 TBD / TODO / 「类似 Task N」/ 「添加适当的错误处理」等模式；
 每个代码步骤都给了完整代码块。

@@ -1,14 +1,17 @@
-# M8 TNT / 炮塔弹丸 / 创造台设计
+# M8 TNT 爆炸 / 炮塔弹丸设计
 
 **状态：** 📝 待实施（起草 2026-09-11）
-**定位：** 第三阶段第一个 Epic。三个功能均为 mc-lite 已有玩法，在 mc-heavy 用 M4~M7 建立的底座重做：
+**定位：** 第三阶段第一个 Epic。两个功能均为 mc-lite 已有玩法，在 mc-heavy 用 M4~M7 建立的底座重做：
 `WorldEditor` 批量编辑（M4）、`EntityManager` + 实体 raycast（M5）、`ZombieService.damage()`（M6）、
 方块锚定装置模式（M7）。
 **语义：** 保留 mc-lite 的玩法数值与手感；架构按本仓库红线重写（见各节的「有意偏离」表）。
 
-> **依赖关系**：三个功能之间无硬依赖，可并行实施。**唯一共同前置 = §1 的 `indestructible`
-> 数据权威**（TNT 的不可破坏门控与创造台平台方块的「不可被破坏」语义共用它）。建议顺序：
-> §1 → §2（TNT）→ §3~§5（炮塔三层）→ §6~§7（创造台）。
+> **依赖关系**：TNT 与炮塔之间无硬依赖。建议顺序：§1（共同前置）→ §2（TNT）→ §3~§5（炮塔三层）。
+>
+> ⚠️ **创造台已拆到 M9**（`docs/superpowers/specs/2026-09-11-m9-playground-design.md`）。
+> 拆分理由：TNT + 炮塔链（装置层 → AI → 渲染 → 弹丸）已是四个严格串行的子任务，加上创造台
+> 会让单个 Epic 过重。创造台与 TNT/炮塔无硬依赖，唯一交集是 §1 的 `indestructible` 数据权威
+> —— M8 交付该表（只登记 `bedrock`），M9 复用并追加创造台两项。
 
 ## 1. 不可破坏方块的数据权威（共同前置）
 
@@ -18,7 +21,8 @@ mc-lite 用**两处字面量**表达同一件事：`ExplosionWorker.js:6` 的
 两处漂移会产出「TNT 炸得掉但玩家挖不掉」或反之的撕裂语义。本仓库按红线 1 收敛成**单一权威**：
 
 - `blocks-data.js` 每条声明新增可选字段 `indestructible: true`（缺省 false）。
-  ⚠️ **登记三项**：`bedrock` / `playground_block` / `playground_center_block`。
+  ⚠️ **M8 只登记一项**：`bedrock`（TNT 爆炸过滤需要）。
+  **`playground_block` / `playground_center_block` 两项移交 M9** —— 理由见下方 ⚠️。
   **不含 mc-lite 清单里的 `barrier`** —— 该方块在本仓 registry 里**不存在**
   （`blocks-data.js` 实测无此条目，它对应的是 mc-lite 的 `collider` 系碰撞体方块）；
   照搬会登记一个不存在的名字 → 门控静默失效，且 `check:data` 的名字存在性断言会报。
@@ -35,31 +39,17 @@ mc-lite 用**两处字面量**表达同一件事：`ExplosionWorker.js:6` 的
 登记进本表是**语义对齐**而非新增防护 —— 让「哪些方块不可破坏」只有一个查询入口。
 本表不改变 `blocks-data.js` 的既有字段，不新增第二份方块清单。
 
+⚠️ **创造台两项为何不在 M8 登记**（移交 M9 的理由，实测分析）：
+`indestructible` 的登记与「移出背包」**必须成对做**。M8 期间若只登记 `indestructible`
+而不移出背包，会立刻产出撕裂状态 —— 玩家在背包里选得到这两项（当前未被任何排除集合排除），
+放得出来但挖不掉、TNT 也炸不掉（只能靠「关闭创造台」批量删，而 M8 没有创造台功能）。
+反过来，若两项都不登记也不移出（M8 的现状）则**无害**：玩家放得出来也挖得掉。
+故两项一起留在 M9（§1.1 的移出背包 + 登记 indestructible 同任务完成），M8 不碰。
+
 ⚠️ **测试落点**：属 Tier 1（静默的数据错误 —— 炸掉了不该炸的方块，肉眼玩不出来）。
 断言须落在**三个消费者同时生效**处：注入「`digBlock` 改回字面量清单」须真 FAIL；
 且须在临界值附近断言（`indestructible=false` 的方块必须可破坏，不能把整表当恒真判据）。
 `check:data` 新增 `[不可破坏]` 环节：表里每个名字都在 registry 内（拼错则门控静默失效）。
-
-### 1.1 创造台方块须移出背包（连带修正既有偏差）
-
-**实测发现的既有偏差**：本仓背包物品集合 = registry 126 − `NON_PLACEABLE_ITEMS`(4) −
-`HIDDEN_FROM_INVENTORY`(4) = **118 项**（派生集合），而 mc-lite 是**手工列举 107 项**
-（`Game.js:206+` 的 `inventory.add(...)`，实测 `rg -c` = 107，**不含** `playground_block` /
-`playground_center_block`）。派生口径下这两项**目前就在背包里**（未被任何排除集合排除）
-→ 玩家能从背包选中并放置平台方块。
-
-配上本节的不可破坏门控，这会产出**撕裂状态**：玩家放得出来，但挖不掉、TNT 也炸不掉
-（只能靠「关闭创造台」批量删，而关闭只删平台层矩形内的格）。故 M8 必须把这两项加进
-`HIDDEN_FROM_INVENTORY`（**不是** `NON_PLACEABLE_ITEMS` —— 它们本质能放能挖，只是不该出现在
-物品集合里，与 `chimney`/床三项同一语义）。
-
-**这是一处新的有意偏离 mc-lite**（注意：设计文档 §4.3/§4.5.4 那个编号清单是**视觉比对专用**
-—— vine / 吊灯 / 图标烘焙 / lilypad / AO 五项，本项是物品集合口径偏离，**不并入那个编号序列**）：
-mc-lite 靠手工列举天然不含它们，本仓是派生集合故须显式排除。物品集合从 **118 → 116**；
-`check:data` 的 `[物品集合]` 门禁是**关系型断言**
-（registry − 排除集合，改排除集合自动跟上）故不会误报，但图标指纹检查会少两项 →
-须重跑 `npm run icons`。⚠️ 文档里不得硬编码 118/116 这两个数字（CLAUDE.md：计数以
-`npm run check:data` 输出为准）。
 
 ## 2. TNT 引爆与爆炸
 
@@ -393,93 +383,9 @@ cutout 容量教训（差一点就会触发扩容撞破内存预算）。炮塔�
 音效：`assets/sounds/turret_gun_fire.mp3` 从 mc-lite 拷入 + 加进 `SOUND_IDS`（音量 0.25，
 mc-lite `TurretManager.handleTurretFire` 同口径）。
 
-## 6. 创造台服务
+## 6. 验收口径
 
-### 6.1 平台生成
-
-照搬 mc-lite `PlaygroundService.createPlayground()` 语义：**54×54 平台**（2916 格）+
-中心 `playground_center_block` 标记块 + 其余 `playground_block`。选址顺序照搬：
-玩家**东侧 10 格**优先（从地面高度向上搜安全高度，净空 10 格）→ 失败改**西侧** →
-仍失败用玩家 Y−20 起搜 → 最后用玩家 Y−5 起搜 → 全部失败返回 `NO_SAFE_LOCATION`。
-
-⚠️ **搜索上界改为本仓库的 `WORLD_MAX_Y=96`**（mc-lite 是 `maxY=200`，它的世界高度 0~255；
-本仓库 `-32~96`）。照搬 200 会让搜索恒超出世界顶 → 永不返回安全高度。
-
-`hasOverlapWithWorld` 判据照搬：平台层与上方净空区域必须全为空（非空气方块即视为重叠）。
-⚠️ **未加载 column 的处理**：mc-lite 遍历 `world.chunks` 查已加载块；本仓库 `WorldData`
-对未加载 column 的 `getBlockId` 返回 0（air）→ 会把未加载区域判为「安全」。故选址前须
-确认候选区域的 column 已加载（照 M7 `place()` 的 `hasColumn` 预检），未加载则视为重叠。
-
-写入走一次 `editor.setBlocks()` 事务（2916 格）。⚠️ **这是本 Epic 最大的单次编辑量** ——
-须实测 REMESH 收敛期的帧率与队列深度（bench 场景 ④「批量删 500 块」是既有对照基线，
-2916 格约为其 5.8 倍）。若帧率跌破门禁，改走**分帧提交**（每帧 N 格，照 mesh 下发预算
-`budget.meshDispatchPerFrame` 的手法），并在验收报告标注。
-
-### 6.2 关闭与方块集合
-
-mc-lite 维护 `playgroundBlocks: Set<'x,y,z'>` 副本（2916 个字符串键）用于关闭时删除。
-本仓库**不维护这份副本**（红线 1：它是「平台有哪些方块」的第二份权威）。关闭时由
-`origin + size` **确定性重算枚举** —— 平台是规则的 54×54 矩形，坐标可纯计算得出，
-不需要记录。
-
-关闭判据照搬：玩家在平台区域内（`isPlayerInPlayground`：XZ 在范围内 + Y 在
-`[origin.y, origin.y+20)`）则拒绝关闭（`PLAYER_IN_PLAYGROUND`），防止把玩家脚下的地面抽掉。
-删除走一次 `editor.setBlocks()` 事务（全部置 air）。⚠️ **只删平台层方块，不删玩家在上面
-雕的模型**（mc-lite 同口径：`playgroundBlocks` 只含平台格）。
-
-### 6.3 重启恢复
-
-mc-lite 靠遍历已加载 chunk 找 `playground_center_block`（`detectExistingPlayground`）——
-远处未加载就扫不到。本仓库走 M7 的锚点模式：中心块的 blockEntity
-`{kind:'playground', id, origin:[x,y,z], size}` 随 edits 落盘，
-`Persistence.listBlockEntities('playground')` 扫库恢复。**全局最多 1 个创造台**
-（mc-lite 的 `isPlaygroundActive` 单例语义），上限判定同样走扫库而非已加载 controller。
-
-平台方块**全部登记 `indestructible: true`**（§1）—— 玩家与 TNT 都不得破坏平台本体
-（mc-lite `BlockData.js:244/252` 同口径）。模型方块（玩家雕的）不在此列，可正常破坏。
-
-### 6.4 模型导入导出
-
-导出：枚举平台上方（`origin.y+1` 起至世界顶）的非平台方块，转成相对中心的坐标，
-输出 `{blocks: [{x,y,z,type,direction}], metadata: {created, dimensions}}` ——
-**格式与 `assets/structures/*.json` 完全一致**（mc-lite 同口径，故导出的模型可直接当
-结构 JSON 用，例如喂给 `assets/structures/` 与撒布管线）。触发浏览器下载 `model.json`。
-
-导入：解析 JSON → 校验（非法坐标/未知方块名计 `invalid`，`cullMode:'none'` 的不可渲染方块
-计 `skipped`，同坐标重复只保留首次）→ 先清平台上方模型区 → 再一次事务写入。
-`direction` → orientation 的换算照搬 mc-lite `convertDirectionToOrientation`
-（`((intDir % 4) + 4) % 4`，取水平四方向）。⚠️ **Y 越界判据用本仓库的
-`WORLD_MIN_Y/WORLD_MAX_Y`**（mc-lite 是 `y < 0 || y > 255`）。
-
-未知方块名（registry 里没有）必须计 `invalid` 并**跳过**，不得写 0（air）进去 ——
-那会静默删掉玩家已有的方块。
-
-## 7. 创造台 UI
-
-设置面板**右列**新增一组动作按钮（CLAUDE.md 活跃约束：面板新配置优先往右列填，纵向余量更大）：
-
-- 「创造台」按钮：未激活 → 生成；已激活 → 关闭。文案随状态切换（mc-lite `UIManager.js:354-364`
-  同手法）。⚠️ **文案单一口径**：构造与状态复位共用同一常量，不得写两处
-  （v1.35 踩过的坑：`_resetDangerArmed()` 写死旧长文案覆盖了构造时的短文案）；
-- 「导出模型」/「导入模型」按钮：仅创造台激活时可见（mc-lite 同手法 `style.display`）；
-- 操作进行中须**防重复点击**（mc-lite `isPlaygroundOperationInProgress` 锁）—— 2916 格的
-  写入是秒级操作，重复点击会产出两个平台或半删状态。
-
-mc-heavy **目前没有 `showMessage`/toast 设施**（`CoordsHUD` 只显示坐标）。M8 新增一个轻量
-toast（`src/ui/toast.js`）：屏幕中部短暂提示、自动淡出、不阻塞输入、不进 `uiModal` 模态栈
-（它不是模态 —— 玩家须在提示期间仍能操作世界）。消费者 = 创造台的成功/失败提示
-（`NO_SAFE_LOCATION` / `PLAYER_IN_PLAYGROUND` / `PLAYGROUND_EXISTS` 等），后续 Epic 可复用。
-
-⚠️ **`settings-panel.js` 的 `PANEL_CSS` 是 JS 模板字面量 —— 注释里禁用反引号包裹标识符**
-（会提前终止模板字符串 → 整个模块解析失败 → 游戏页白屏）。改完先跑 `npm run lint`。
-
-⚠️ **列分隔线规则只作用于 `.mc-item`，不得通配所有子项**（v1.35 踩坑：写
-`.mc-column > :first-child` 会连带抹掉 `.mc-combined` 合并盒自己的装饰边框）。
-往面板加新容器类型时须同步考虑这条选择器。
-
-## 8. 验收口径
-
-### 8.1 TNT
+### 6.1 TNT
 
 - 引爆 TNT 后 3×3×3 内的可破坏方块消失，`indestructible` 方块（含 `bedrock`）保留；
   破坏走一次批量事务，REMESH 与 light 收敛无残留脏 section。
@@ -491,7 +397,7 @@ toast（`src/ui/toast.js`）：屏幕中部短暂提示、自动淡出、不阻�
   伤害经 `ZombieService.damage()`（红闪可见）。
 - 爆炸特效与音效同帧触发；无爆炸时该 InstancedMesh `visible=false`（draw call 回到基线）。
 
-### 8.2 炮塔
+### 6.2 炮塔
 
 - 从**背包选中** `turret_alias_block` 右键 → 放置完整 11 格结构（底座 3×3 `iron_ore` +
   两格 `obsidian`）+ 建 controller + 播 `put` 音效；**不是**一个贴图案的正方体。
@@ -507,22 +413,11 @@ toast（`src/ui/toast.js`）：屏幕中部短暂提示、自动淡出、不阻�
 - 重启后每个锚点只恢复一个 controller（对象引用相等，不是 `size` 断言）；远处炮塔的 column
   未加载时上限仍生效（走远再回来不能无限放置）。
 
-### 8.3 创造台
-
-- 生成 54×54 平台（2916 格）+ 中心标记块；选址按东侧→西侧→Y−20→Y−5 顺序，找不到安全高度
-  返回 `NO_SAFE_LOCATION` 且零世界写入。
-- 平台方块不可被玩家挖、不可被 TNT 炸（`indestructible`）；玩家雕的模型方块可正常破坏。
-- 玩家在平台区域内时拒绝关闭；区域外关闭只删平台层，保留模型。
-- 导出 JSON 的格式与 `assets/structures/*.json` 一致（相对坐标 + type + direction），
-  可被结构管线消费；导入时非法项计 `invalid`、不可渲染项计 `skipped`、未知方块名**不写 air**。
-- 重启后从锚点恢复创造台状态（按钮显示「关闭创造台」），全局仍最多 1 个。
-- 生成/关闭期间按钮锁定（防重复点击）；toast 提示对应结果且**不**阻塞世界操作。
-
-### 8.4 回归与门禁
+### 6.3 回归与门禁
 
 - `npm run check`（含 `check:arch` / `check:data`）+ `npm test`（浏览器内单测）+ 全量 Playwright
-  spec 全绿。`check:data` 新增三个环节：`[不可破坏]`（表内名字都在 registry）、
-  `[炮塔装甲]`（烘焙产物存在 + 尺寸 + 指纹匹配）、`[创造台]`（平台尺寸与锚点 kind 契约）。
+  spec 全绿。`check:data` 新增两个环节：`[不可破坏]`（表内名字都在 registry）、
+  `[炮塔装甲]`（烘焙产物存在 + 尺寸 + 指纹匹配）。（`[创造台]` 环节属 M9 范围。）
 - `npm run bench -- --check` 无回退（>10% 阻断；结构类 2%）。⚠️ 不带 `--check` 会**自动重写**
   冻结基线 —— 诊断后须 `git checkout` 恢复。门禁阻断时先做**交替对照**（vsync 量子化噪声
   会让 frameP95 误报）。
@@ -533,46 +428,43 @@ toast（`src/ui/toast.js`）：屏幕中部短暂提示、自动淡出、不阻�
   接线晚于 `_waitForColumn`）在纯逻辑测试里测不出来，须有落在真游戏页的 E2E 兜住
   （M6/M7 实测教训）。
 
-## 9. 任务分解
+## 7. 任务分解
 
 | Task | 内容 | Tier | 门禁 |
 |---|---|---|---|
-| 0 | 设计文档同步（§10：新增机制先落文档再动代码） | — | — |
-| 1 | `indestructible` 数据权威（registry typed 表 + 挖块/武器/TNT 三消费者接线 + §1.1 创造台方块移出背包 + 重跑 `npm run icons`） | 1 | `check` + `test` |
+| 0 | 设计文档同步（§8：新增机制先落文档再动代码） | — | — |
+| 1 | `indestructible` 数据权威（registry typed 表 + 挖块/武器/TNT 三消费者接线）。**只登记 `bedrock`**，创造台两项移交 M9 | 1 | `check` + `test` |
 | 2 | TNT 引爆与爆炸（纯函数 + 两条引爆路径 + 连锁 + 丧尸伤害 + 特效/音效 + 面板开关） | 1 | `check` + `test` + `bench --check` |
 | 3 | 炮塔装置层（config / blueprint / `TurretService` / controller / 背包放置分流 + 平面图标） | 1 | `check` + `test` + `icons` |
 | 4 | 炮塔 AI（同构纯函数 `computeTurretUpdates` 主线程执行 + controller 朝向插值 + 开火节流） | 1 | `check` + `test` |
 | 5 | 炮塔渲染（8 部件实例池 + 装甲纹理烘焙 + 指纹门禁） | 1 + 4 | `check` + `test` + 像素实测 |
 | 6 | 弹丸实体（`projectile` 类型 + DDA + 实体 raycast + 伤害 + 实例池渲染 + 音效） | 1 | `check` + `test` |
-| 7 | 创造台服务（平台生成/关闭 + 锚点持久层 + 导入导出） | 1 | `check` + `test` + `bench --check` |
-| 8 | 创造台 UI（面板动作按钮 + toast） | 2/3 | `check` |
-| 9 | 验收（E2E 走背包选中路径 + bench 回归 + 负向验证 + draw call 对照） | — | 全量 |
+| 7 | 验收（E2E 走背包选中路径 + bench 回归 + 负向验证 + draw call 对照） | — | 全量 |
 
-Task 1 是 Task 2 与 Task 7 的共同前置。Task 3→4→5→6 严格串行（装置层 → AI → 渲染 → 弹丸），
-与 M4→M5→M6→M7 的 Epic 链同构。Task 7→8 可与炮塔链并行。
+Task 1 是 Task 2 的前置。Task 3→4→5→6 严格串行（装置层 → AI → 渲染 → 弹丸），
+与 M4→M5→M6→M7 的 Epic 链同构。TNT 链（Task 1→2）与炮塔链（Task 3→6）可并行。
+**创造台已拆到 M9**（见 `docs/superpowers/specs/2026-09-11-m9-playground-design.md`）。
 
-## 10. 设计文档同步（实施前完成）
+## 8. 设计文档同步（实施前完成）
 
 CLAUDE.md 规则：「需要新增机制/改动设计时，**先更新设计文档再动代码**，不在代码里埋计划外补丁」。
-M8 引入四项新机制，须在 `docs/phase-1-engine-design.md` 落地后再开工：
+M8 引入三项新机制，须在 `docs/phase-1-engine-design.md` 落地后再开工：
 
 | 新机制 | 落点 | 要点 |
 |---|---|---|
 | `indestructible` 方块属性表 | §4.1 方块注册表 | 第 **8** 个 typed 属性表（代码里现有 7 张：solid / opaque / cull / emissive / geometry / orientationModes / supportsPlayer）；三个消费者共用单一权威。⚠️ §4.1 目前没有属性表清单（只描述 ChunkColumn 存储字段），须顺带补上完整清单 |
 | 爆炸计算（同构纯函数，主线程） | §4.5 玩家与交互（新增小节）+ 红线 3 的边界判定 | 记清「152 次查询、须与音效同帧」的取舍依据，避免后人误判为红线 3 违规 |
 | `turret` / `projectile` 两种 blockEntity kind 与实体类型 | DR-17 的 blockEntity 通道段 + §9 后续功能扩展点表 | DR-17 已写「后续炮塔/床/宝箱可直接复用此通道」—— M8 是第二个消费者，须回填实测结论。⚠️ 实体运行时**不在编号子系统里**（设计文档 §4.6 是光照与 AO；M5 的 `EntityManager` 只出现在 §9 扩展点表与 DR 记录中），落点须查实际章节，勿照本表硬写 |
-| `playground` blockEntity kind + 物品集合口径变更 | DR-17 同段 + §4.5.4 物品集合 | §1.1 的派生集合 vs mc-lite 手工列举差异 |
+（`playground` blockEntity kind 与物品集合口径变更属 **M9** 范围，其设计文档同步在 M9 规格 §8 里做。）
 
 ⚠️ **不 bump 设计文档版本号的例外**：M4~M7 的实玩反馈修正按 CLAUDE.md 口径**不进**设计文档修订
-说明（那是架构口径变更专用）。本节的四项属**架构口径变更**（新数据通道 / 新子系统边界），
+说明（那是架构口径变更专用）。本节的三项属**架构口径变更**（新数据通道 / 新子系统边界），
 故须进修订说明并 bump 版本号。
 
 另须同步三类文档（CLAUDE.md「文档同步」规则）：新增产物（`assets/turret/armor.png` +
 伴随 JSON、`assets/sounds/{explosion,turret_gun_fire}.mp3`、三个 `tools/*.mjs` 烘焙与指纹脚本）
 进「目录结构清单」；新增命令（`npm run turret`）进「开发命令清单」；roadmap 的里程碑总表加
-M8 行 + 后续扩展点表划掉 TNT / 炮塔 / 创造台三行。
+M8 行 + 后续扩展点表划掉 TNT / 炮塔两行（创造台那行留给 M9）。
 
-⚠️ **CLAUDE.md 有一条活跃约束会被 §1.1 改掉**：「背包物品集合口径 **118 项** = registry 126 −
-`NON_PLACEABLE_ITEMS`（4 项）− `HIDDEN_FROM_INVENTORY`（4 项）」。§1.1 把创造台两项加进
-`HIDDEN_FROM_INVENTORY` 后该数字变为 116 —— 该条须同步改写（含两个排除集合的项数）。
-这是 CLAUDE.md 里**少数硬编码了数字的活跃约束**，漏改会让后续实现者按过期口径判断集合大小。
+⚠️ **CLAUDE.md 的「背包物品集合口径 118 项」这条活跃约束 M8 不动** —— 创造台两项移出背包
+属 M9 范围（M9 时该数字变为 116，届时再改写）。M8 期间物品集合仍是 118 项。
