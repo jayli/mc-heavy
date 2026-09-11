@@ -44,7 +44,7 @@
 | **M5 实体运行时** | `EntityManager` / 实体 AABB raycast / 受控渲染层 / 临时与持久实体分离 + `entities` snapshot | ✅ 完成（2026-09-07，验收报告 `docs/m5-entity-runtime-acceptance-report.md`） | `c9f7086` |
 | **M6 丧尸** | 默认 20 上限 / 20Hz 单条 WorkerPool `ai` RPC / 实体与体素最近命中比较 / 25·35·999 三把枪伤害 / 六部件固定 slot 渲染 / X 键调试生成 | ✅ 完成（2026-09-08，验收报告 `docs/m6-zombies-acceptance-report.md`） | `afb88ad` |
 | **M7 玩家放置丧尸巢穴** | 最高 `gold_block` 的 `blockEntity` 为持久真相 / `block-changed` 失效 / 八 offset × 六层刷怪 / 全局最多 8 个 / 背包图标按物品名路由放置整个 38 方块结构 + `put` 音效 | ✅ 完成（2026-09-10，验收报告 `docs/m7-zombie-nests-acceptance-report.md`） | `e72560d` |
-| **M8 TNT 爆炸 / 炮塔弹丸** | `indestructible` 单一权威（只登记 bedrock）/ TNT 3×3×3 破坏 + 5×5×5 连锁 + 4 格 50 伤害 / 炮塔方块锚定装置（20 上限）+ 主线程索敌 + 8 部件实例渲染 / 弹丸走 M5 临时实体（DDA + 实体 raycast + 三发 34 伤害） | ✅ 完成（2026-09-11，验收报告 `docs/m8-tnt-turret-acceptance-report.md`） | 待提交（用户授权后回填） |
+| **M8 TNT 爆炸 / 炮塔弹丸** | `indestructible` 单一权威（只登记 bedrock）/ TNT 3×3×3 破坏 + 5×5×5 连锁 + 4 格 50 伤害 / 炮塔方块锚定装置（20 上限）+ 主线程索敌 + 8 部件实例渲染 / 弹丸走 M5 临时实体（DDA + 实体 raycast + 三发 34 伤害） | ✅ 完成（2026-09-11，验收报告 `docs/m8-tnt-turret-acceptance-report.md`） | `1b74281` |
 | **M9 创造台（playground）** | 54×54 平台 + 中心块 `blockEntity` 锚点 / 复用 M8 的 `indestructible` 表追加创造台两项 + 移出背包 / 模型 JSON 导入导出 / 面板动作按钮 + toast | 📝 待实施（规格 `docs/superpowers/specs/2026-09-11-m9-playground-design.md`） | — |
 
 ## M4 之后的遗留 TODO（M4 阶段 bugfix）
