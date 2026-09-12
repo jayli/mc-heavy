@@ -158,22 +158,27 @@ test('NON_PLACEABLE_ITEMS = 4 个功能性方块（mc-lite 背包同样排除）
     ['air', 'collider', 'calcite', 'realistic_trunk_collider']);
 });
 
-test('HIDDEN_FROM_INVENTORY = chimney + 三个床方块（可放置但不进背包）', () => {
+test('HIDDEN_FROM_INVENTORY = chimney + 三个床方块 + 创造台两项（可放置但不进背包）', () => {
   // 这些方块都可放置（能放能挖），故**不能**归入 NON_PLACEABLE_ITEMS
   // （该集合语义是「非玩家可放置的功能性方块」）。它们属独立概念：可放置、但不进背包。
   // bed_head/bed_tail/bed_alias_block：床渲染存在未修复的镂空透视问题，靠「不入背包 →
   // 玩家选不到 → 实际不会被放置」规避（详见 mesher.js 的 TODO），本质仍可放可挖。
-  assertDeepEqual(HIDDEN_FROM_INVENTORY, ['chimney', 'bed_head', 'bed_tail', 'bed_alias_block']);
+  // playground 两项（M9）：平台方块登记 indestructible，留在背包会产出「放得出来但挖不掉」
+  // 的撕裂状态（与登记必须成对做，见 inventory.js 的注释）。
+  assertDeepEqual(HIDDEN_FROM_INVENTORY, ['chimney', 'bed_head', 'bed_tail', 'bed_alias_block',
+    'playground_block', 'playground_center_block']);
   // 与 NON_PLACEABLE_ITEMS 不得重叠（语义互斥，避免两处排除混淆）
   for (const n of HIDDEN_FROM_INVENTORY) {
     assertFalse(NON_PLACEABLE_ITEMS.includes(n), `${n} 不应同时属于 NON_PLACEABLE_ITEMS`);
   }
 });
 
-test('buildItemNames: 118 项（126 - 4 功能性 - 4 可放置但不进背包）', () => {
+test('buildItemNames: 116 项（126 - 4 功能性 - 6 可放置但不进背包）', () => {
   const names = buildItemNames(makeRegistry());
-  assertEqual(names.length, 118, '126 - 4 - 4 = 118');
-  assertEqual(new Set(names).size, 118, '无重复');
+  // ⚠️ M9：HIDDEN_FROM_INVENTORY 4 → 6（追加创造台两项）→ 物品集合 118 → 116。
+  // 这是硬编码计数的冻结断言，改数字须连算式注释一起改（否则注释与断言漂移）。
+  assertEqual(names.length, 116, '126 - 4 - 6 = 116');
+  assertEqual(new Set(names).size, 116, '无重复');
   for (const bad of NON_PLACEABLE_ITEMS) {
     assertFalse(names.includes(bad), `${bad} 不应在物品集合内`);
   }
@@ -197,7 +202,7 @@ test('buildItemNames: 前 5 项 = HOTBAR_ITEMS（快捷栏顺序冻结，§4.5.4
 test('buildItemNames: 第 6 项起按注册顺序补全且不再重复前 5 项', () => {
   const names = buildItemNames(makeRegistry());
   const rest = names.slice(5);
-  assertEqual(rest.length, 113, '118 - 5');
+  assertEqual(rest.length, 111, '116 - 5');
   const reg = makeRegistry();
   const registered = reg.all().map((e) => e.name)
     .filter((n) => !NON_PLACEABLE_ITEMS.includes(n)
@@ -222,16 +227,17 @@ test('buildItemNames: 确定性——两次构建逐项一致（红线 2：无�
 
 // --- 创造模式无限背包填充 ---
 
-test('createCreativeInventory: 118 槽全部非空且 count=DEFAULT_INVENTORY_COUNT', () => {
+test('createCreativeInventory: 116 槽全部非空且 count=DEFAULT_INVENTORY_COUNT', () => {
   const inv = createCreativeInventory(makeRegistry());
   const filled = inv.slots.filter((s) => !s.isEmpty());
-  assertEqual(filled.length, 118, '物品集合全量入包');
+  // ⚠️ M9：物品集合 118 → 116（创造台两项移出）→ 填充槽数随之变，首个空槽 = 下标 116
+  assertEqual(filled.length, 116, '物品集合全量入包');
   for (const s of filled) assertEqual(s.count, DEFAULT_INVENTORY_COUNT, `${s.item} count=1500`);
-  // 剩余槽位保持空（未来生存 Epic 的掉落/拾取可用）；首个空槽 = 下标 118
-  assertTrue(inv.slots[118].isEmpty());
+  // 剩余槽位保持空（未来生存 Epic 的掉落/拾取可用）；首个空槽 = 下标 116
+  assertTrue(inv.slots[116].isEmpty());
   assertEqual(inv.slots.length, 1000);
-  // 不入包的 4 项
-  for (const n of ['chimney', 'bed_head', 'bed_tail', 'bed_alias_block']) {
+  // 不入包的 6 项（= HIDDEN_FROM_INVENTORY 全量）
+  for (const n of HIDDEN_FROM_INVENTORY) {
     assertFalse(inv.slots.some((s) => s.item === n), `${n} 不入包`);
   }
 });

@@ -29,21 +29,32 @@ export const NON_PLACEABLE_ITEMS = ['air', 'collider', 'calcite', 'realistic_tru
  * 这些方块本质都能放能挖，只是不出现在背包物品集合里 → 玩家选不到 → 实际不会被放置。
  * 世界侧逻辑不受影响（结构生成仍可产生、`placeBlock()`/`digBlock()` 仍可作用于它们）。
  *
+ * - `playground_block`/`playground_center_block`（创造台平台，**M9 新增**）：见下方数组内注释。
+ *
  * - `chimney`（烟囱）：`solid:true` + 有 faces-data + 能放能挖，是正常可放置方块。
- *   对齐 mc-lite：其背包清单是 `Game.js:206+` 手工列举 **107 项**，`chimney` 不在其中
+ *   对齐 mc-lite：其背包清单是 `Game.js:206-321` **手工列举**，实测 107 行 `inventory.add(...)`
+ *   匹配、其中 2 行被注释掉（`handrailB` / `cloud`）→ **有效 105 项**，`chimney` 不在其中
  *   （实测核对，非推测）。
  * - `bed_head`/`bed_tail`/`bed_alias_block`（床）：**渲染存在未修复的镂空透视问题**
  *   （床侧面有一个面无贴面 → 出现透视穿帮，详见 `src/mesh/mesher.js` 的 TODO）。
  *   此处是**规避**而非修复：靠「不入背包 → 玩家选不到 → 实际不会被放置」避免暴露该问题，
  *   床的渲染本身仍待专门解决（归属床/宝箱/门多方块 Epic）。
- *   注意：mc-lite 背包清单同样不含 `bed_head`/`bed_tail`（手工列举 107 项实测核对），
+ *   注意：mc-lite 背包清单同样不含 `bed_head`/`bed_tail`（手工列举实测核对），
  *   但**含 `bed_alias_block`**——本仓库一并移除是因为它 `cullMode:'none'`（不渲染、
  *   无法出图标），放进背包只会渲染一个空槽。
  *
  * 为什么不能塞进 `NON_PLACEABLE_ITEMS`：那个集合的语义是「非玩家可放置的功能性方块」，
  * 把可放置的方块放进去会让集合语义失真（后续若有人读该集合判断「能否放置」会得出错误结论）。
  */
-export const HIDDEN_FROM_INVENTORY = ['chimney', 'bed_head', 'bed_tail', 'bed_alias_block'];
+export const HIDDEN_FROM_INVENTORY = [
+  'chimney', 'bed_head', 'bed_tail', 'bed_alias_block',
+  // M9：创造台平台方块。**既有偏差修正** —— 本仓物品集合是派生的（registry − 排除集合），
+  // 而 mc-lite 是手工列举（`Game.js:206-321` 实测 107 行匹配、其中 2 行被注释掉 → 有效 105 项，
+  // **不含**这两项）。派生口径下它们此前就在背包里 → 玩家能选中并放置平台方块。
+  // ⚠️ **与 `indestructible` 登记必须成对做**：配上不可破坏门控后，若留在背包会产出撕裂状态 ——
+  // 玩家放得出来，但挖不掉、TNT 也炸不掉（只能靠「关闭创造台」批量删）。
+  'playground_block', 'playground_center_block',
+];
 
 /**
  * 单个物品槽（mc-lite `Slot`）。
@@ -160,7 +171,8 @@ export class Inventory {
  * —— 同 seed / 不同 seed 下物品集合恒定（红线 2 不受影响：物品集合与世界生成无关）。
  *
  * @param {*} registry BlockRegistry（须已 freeze）
- * @returns {string[]} 118 项方块名（126 - 4 功能性 - 4 可放置但不进背包）
+ * @returns {string[]} 物品集合方块名 = registry − 两个排除集合（计数以
+*          `npm run check:data` 的 `[物品集合]` 输出为准，勿在此硬编码）
  */
 export function buildItemNames(registry) {
   const front = HOTBAR_ITEMS.slice(); // 前置 5 项（快捷栏）
@@ -174,7 +186,8 @@ export function buildItemNames(registry) {
 
 /**
  * 创造模式无限背包：物品集合全量入包，每格 `count = DEFAULT_INVENTORY_COUNT`。
- * 填充 118 槽，其余 882 槽留空供后续生存 Epic 的掉落/拾取使用。
+ * 填充槽数 = 物品集合大小（计数以 `npm run check:data` 为准），其余槽留空供后续生存 Epic
+* 的掉落/拾取使用。
  * @param {*} registry BlockRegistry（须已 freeze）
  * @returns {Inventory}
  */

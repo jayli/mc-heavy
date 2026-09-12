@@ -6,6 +6,7 @@ import { ChunkColumn } from '../voxel/chunk-column.js';
 import { WorldData } from '../voxel/world-data.js';
 import { Player } from '../player/player.js';
 import { isWeaponDestructible } from '../player/weapons/weapon-target-policy.js';
+import { buildItemNames } from '../player/inventory.js';
 
 test('BlockRegistry: air 恒为 ID 0', () => {
   const reg = createRegistry();
@@ -129,9 +130,9 @@ test('indestructibleTable：bedrock 登记且可破坏方块判 false（M8 只�
   // ④ 未知 id 防御（不存在的方块不该被当成不可破坏）
   assertEqual(registry.isIndestructible(999), false);
   assertEqual(registry.isIndestructible(undefined), false);
-  // ⑤ M8 不登记 playground（移交 M9）—— 钉住 M8 的范围边界
-  assertEqual(registry.isIndestructible(registry.idOf('playground_block')), false);
-  assertEqual(registry.isIndestructible(registry.idOf('playground_center_block')), false);
+  // ⑤ M9 登记创造台两项（M8 期间这两条曾是 false —— 范围边界随 Epic 推进翻转）
+  assertTrue(registry.isIndestructible(registry.idOf('playground_block')));
+  assertTrue(registry.isIndestructible(registry.idOf('playground_center_block')));
   // ⑥ typed 表与查询方法同源（红线 1：两处漂移会让门禁误判）
   assertEqual(registry.indestructibleTable[registry.idOf('bedrock')], 1);
   assertEqual(registry.indestructibleTable[registry.idOf('stone')], 0);
@@ -168,4 +169,27 @@ test('isWeaponDestructible 读表而非字面量（end_stone 是武器专属收�
   // end_stone 不在 indestructibleTable 里（武器专属），须保留排除
   assertEqual(registry.isIndestructible(registry.idOf('end_stone')), false);
   assertEqual(isWeaponDestructible(registry.idOf('end_stone'), registry), false);
+});
+
+/**
+ * M9：创造台两项「登记 indestructible」与「移出背包」必须**成对**。
+ *
+ * 只做一半的两种撕裂状态（两条配对断言缺一不可 —— testing-policy §2.7「恒真陷阱」）：
+ *   - 只登记不移出 → 玩家能从背包选中并放置平台方块，但挖不掉、TNT 也炸不掉；
+ *   - 只移出不登记 → 平台本体可被玩家/枪械/TNT 破坏（平台随时被打穿）。
+ * ③ 是临界值附近的对照断言：证明门控不是把整张表当恒真判据。
+ */
+test('创造台两项登记 indestructible 且移出背包（成对）', () => {
+  const registry = makeRegistry();
+  // ① 登记 indestructible（复用 M8 交付的表，不新建机制）
+  assertTrue(registry.isIndestructible(registry.idOf('playground_block')));
+  assertTrue(registry.isIndestructible(registry.idOf('playground_center_block')));
+  // ② 移出背包物品集合（派生集合自动跟随排除集合）
+  const items = buildItemNames(registry);
+  assertEqual(items.includes('playground_block'), false);
+  assertEqual(items.includes('playground_center_block'), false);
+  // ③ 临界值附近断言：其他方块不受影响（防止把整表/整集合当恒真判据）
+  assertEqual(items.includes('tnt'), true);
+  assertEqual(items.includes('turret_alias_block'), true);
+  assertEqual(registry.isIndestructible(registry.idOf('tnt')), false);
 });
