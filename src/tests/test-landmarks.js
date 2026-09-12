@@ -282,3 +282,88 @@ test('城市残丘清除：城内树木植根于城市地表而非残留丘顶',
   assertTrue(atNaturalH === reg.idOf('wood') || atNaturalH === 0,
     `no grass/dirt mound at naturalH (got id ${atNaturalH})`);
 });
+
+test('城市内无水体残留：地表下挖不遇到悬空水格（mc-lite 分支链语义）', async () => {
+  // mc-lite 的列循环是 elif 链 `if (inCity) → … → else if (h < wLvl)` 填水 —— 城市与填水体
+  // **互斥**，城内永不填水。mc-heavy 是两阶段：`fillColumn` 无条件填整列（含水体
+  // `(naturalH, SEA_Y]`）+ `generateCity` 覆写。覆写范围 = 地表填充 `[fillStartY, surfaceY]`
+  // + 岩石层 `[surfaceY-12, surfaceY-1]`；当 `surfaceY-12 > naturalH` 时（城市地表被压高、
+  // 自然地形是深海床）水体会落在覆写范围之外 → 残留。
+  //
+  // 实测后果：城市地表下挖 2 格露出悬空水格，顶面 -1.5 恰与水面平面同高 →
+  // 肉眼就是「在陆地上挖出一汪水」（用户报告的 bug 之一）。
+  const reg = makeRegistry();
+  const layout = computeRegionLayout(0, 0, SEED);
+  const city = layout.city;
+  // 固定复现点 (125,334)：naturalH=-14（深海床），surfaceY=5，CITY 压平 flatH=-3
+  // → 覆写下沿 coverBottomY=-7，缺口区间 [-13,-8]（6 格水体无人覆写）；无建筑干扰
+  const wx = 125, wz = 334;
+  const ci = getCityInfo(wx, wz, city);
+  assertNotNull(ci, 'point inside city');
+  const naturalH = generateHeight(wx, wz, SEED);
+  const surfaceY = getCityFinalSurfaceY(wx, wz, ci, SEED);
+  const flatH = generateHeightForBiome(wx, wz, SEED, 'CITY');
+  const fillStartY = Math.min(flatH, surfaceY);
+  const coverBottomY = Math.min(fillStartY, Math.max(surfaceY - 12, -32));
+  const gapTopY = Math.min(coverBottomY - 1, SEA_Y);
+  // fixture 前置条件：缺口确实存在（否则断言恒真 —— 测不到修复）
+  assertTrue(naturalH < SEA_Y, `fixture precondition: naturalH(${naturalH}) < SEA_Y(${SEA_Y})`);
+  assertTrue(gapTopY >= naturalH + 1,
+    `fixture precondition: 缺口区间 [${naturalH + 1},${gapTopY}] 非空（覆写下沿 ${coverBottomY}）`);
+
+  const cx = Math.floor(wx / 16), cz = Math.floor(wz / 16);
+  const col = await genColumnWithTerrain(reg, cx, cz, [layout]);
+  const lx = wx - cx * 16, lz = wz - cz * 16;
+  const waterId = reg.idOf('water');
+
+  // 缺口区间不得有水体残留
+  let waterLeft = 0;
+  for (let y = naturalH + 1; y <= gapTopY; y++) {
+    if (col.get(lx, y, lz) === waterId) waterLeft++;
+  }
+  assertEqual(waterLeft, 0,
+    `缺口区间 [${naturalH + 1},${gapTopY}] 不得有水体残留（mc-lite 城内不填水）`);
+
+  // 且不得清成 air 造出地下空洞（玩家挖下去会掉进洞里，比看到水更糟）
+  let airGap = 0;
+  for (let y = naturalH + 1; y <= gapTopY; y++) {
+    if (col.get(lx, y, lz) === 0) airGap++;
+  }
+  assertEqual(airGap, 0, '补实区间不得是 air（须是实心岩石，不留空洞）');
+
+  // 补实材料 = 城市地表材料（sand/clay），不是别的方块
+  const subNames = ['sand', 'clay'];
+  assertTrue(subNames.some((n) => reg.idOf(n) === col.get(lx, naturalH + 1, lz)),
+    `补实材料须是城市地表材料（got id ${col.get(lx, naturalH + 1, lz)}）`);
+});
+
+test('城市内无暴露水体：全城 bounds 抽样零残留（bounds 门控零误伤的前提）', async () => {
+  // 水面遮罩的城市门控（render/ocean-mask.js）在 bounds 内一律关掉水面平面。
+  // 这要求 bounds 内**确实没有水体** —— 否则门控会让真实水面消失（误伤）。
+  // 实测修复前：bounds 内残留水格 16600、暴露 56；修复后须为 0。
+  const reg = makeRegistry();
+  const layout = computeRegionLayout(0, 0, SEED);
+  const city = layout.city;
+  const waterId = reg.idOf('water');
+
+  let residual = 0, sampled = 0;
+  // bounds 半宽可达 294 → 稀疏抽样（每 5 个 column 取 1 个），覆盖核心 + 边缘
+  for (let cx = Math.floor(city.minX / 16); cx <= Math.ceil(city.maxX / 16); cx += 5) {
+    for (let cz = Math.floor(city.minZ / 16); cz <= Math.ceil(city.maxZ / 16); cz += 7) {
+      const wx0 = cx * 16, wz0 = cz * 16;
+      // 只取完全落在 bounds 内的 column（边缘 column 混入城外点会污染统计）
+      if (wx0 < city.minX || wx0 + 15 > city.maxX || wz0 < city.minZ || wz0 + 15 > city.maxZ) continue;
+      const col = await genColumnWithTerrain(reg, cx, cz, [layout]);
+      sampled++;
+      for (let lx = 0; lx < 16; lx++) {
+        for (let lz = 0; lz < 16; lz++) {
+          for (let y = SEA_Y; y >= SEA_Y - 6; y--) {
+            if (col.get(lx, y, lz) === waterId) residual++;
+          }
+        }
+      }
+    }
+  }
+  assertTrue(sampled > 0, '须有 column 被抽样（否则断言恒真）');
+  assertEqual(residual, 0, `${sampled} 个城内 column 在水面平面附近不得有水体残留`);
+});

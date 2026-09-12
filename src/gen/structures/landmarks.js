@@ -786,6 +786,7 @@ export function getCityFinalSurfaceY(wx, wz, cityInfo, seed) {
  */
 export function generateCity(wx, wz, h, cityInfo, setBlock, seed) {
   const surfaceY = getCityFinalSurfaceY(wx, wz, cityInfo, seed);
+  const naturalH = generateHeight(wx, wz, seed);
 
   const fillStartY = Math.min(h, surfaceY);
   const fillEndY = surfaceY;
@@ -815,13 +816,34 @@ export function generateCity(wx, wz, h, cityInfo, setBlock, seed) {
   }
   if (rockBaseY - 12 >= WORLD_MIN_Y) setBlock(wx, rockBaseY - 12, wz, 'end_stone');
 
+  // 补掉城市内的水体残留（mc-lite 分支链语义：`if (inCity)` 与 `else if (h < wLvl)` 填水
+  // **互斥** → 城内永不填水体方块）。mc-heavy 是两阶段：`fillColumn` 无条件填整列（含水体
+  // `(naturalH, SEA_Y]`）+ 城市覆写，覆写不到的水体会残留。
+  //
+  // 覆写范围 = 地表填充 `[fillStartY, surfaceY]` + 岩石层 `[surfaceY-12, surfaceY-1]`；
+  // 当 `surfaceY-12 > naturalH` 时（城市地表被压高、自然地形是海床），`fillColumn` 填的水
+  // 落在覆写范围之外 → 残留。实测后果：城市地表下挖 2 格露出悬空水格（顶面 -1.5 恰与
+  // 水面平面同高，肉眼就是「陆地上挖出一汪水」）。
+  //
+  // 用城市岩石材料**补实**而不是清成 air —— 清成 air 会在城市地下造出空洞，
+  // 玩家挖下去会掉进洞里（比看到水更糟）。
+  //
+  // 覆写范围（合并后）= `[coverBottomY, surfaceY]`；水体范围 = `[naturalH+1, SEA_Y]`。
+  // 未覆写的水体在 coverBottomY **之下**：`[naturalH+1, min(coverBottomY-1, SEA_Y)]`。
+  const coverBottomY = Math.min(fillStartY, Math.max(rockBaseY - 12, WORLD_MIN_Y));
+  if (naturalH < SEA_Y) {
+    const gapTopY = Math.min(coverBottomY - 1, SEA_Y);
+    for (let y = naturalH + 1; y <= gapTopY && y < WORLD_MAX_Y; y++) {
+      setBlock(wx, y, wz, subType);
+    }
+  }
+
   // 清除城市地表上方的自然地形残留（M2 收尾：残丘修复）。
   // fillColumn 按自然 biome 预填整列到 naturalH；城市覆写仅写至城市地表 surfaceY。
   // 当 naturalH > surfaceY 时，surfaceY+1..naturalH 的预填草/土/石残留为接地的自然地形丘，
   // 凸出于城市地表并包裹按城市地表放置的建筑。mc-lite 稀疏存储不预填城内自然地形故无此问题。
   // 注意：传入的 h 是 CITY 压平高度（很低），不能用作清除上界；须另取自然高度 generateHeight。
   // 本函数运行于地形整形阶段（结构/植被注入之前），此处清除不会误伤建筑或树木。
-  const naturalH = generateHeight(wx, wz, seed);
   for (let y = surfaceY + 1; y <= naturalH && y < WORLD_MAX_Y; y++) {
     setBlock(wx, y, wz, 'air');
   }

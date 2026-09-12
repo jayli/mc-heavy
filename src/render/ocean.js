@@ -3,9 +3,14 @@
 // 水面高度 = SEA_Y + 0.5（mc-lite WATER_LEVEL_OFFSET 语义）。
 import * as THREE from 'three';
 import {
-  uniform, Fn, float, vec3, sin, cos, max, pow, dot, normalize, length,
-  smoothstep, mix, positionWorld, cameraPosition, Discard,
+  uniform, Fn, float, vec3, sin, cos, max, pow, dot, normalize, length, floor,
+  smoothstep, mix, positionWorld, cameraPosition, Discard, and, select,
 } from 'three/tsl';
+import {
+  OCEAN_MASK_THRESHOLD, OCEAN_MASK_OFFSET, OCEAN_MASK_NO_CITY,
+} from './ocean-mask.js';
+import { TERRAIN_HEIGHT_PARAMS } from '../gen/terrain.js';
+import { BIOME_PARAMS } from '../gen/noise.js';
 
 export const WATER_LEVEL_OFFSET = -1.5; // SEA_Y + 0.5
 const WATER_COLOR = 0x588be4;
@@ -30,18 +35,52 @@ export function setupOcean(scene) {
   const uFogColor = uniform(new THREE.Color(WATER_FOG_COLOR));
   const uFogNear = uniform(20.0);
   const uFogFar = uniform(70.0);
+  /**
+   * 城市门控 bounds（xyzw = minX/maxX/minZ/maxZ）。
+   * 默认取 `OCEAN_MASK_NO_CITY` 哨兵（minX > maxX → 判定恒假 → 门控关闭），
+   * 未接线时不误伤任何点；`setCityBounds()` 接真实城市 bounds 后生效。
+   */
+  const uCityBounds = uniform(new THREE.Vector4(
+    OCEAN_MASK_NO_CITY.minX, OCEAN_MASK_NO_CITY.maxX,
+    OCEAN_MASK_NO_CITY.minZ, OCEAN_MASK_NO_CITY.maxZ,
+  ));
 
   const fadeStart = WATER_VISIBLE_DISTANCE - WATER_EDGE_FADE_BAND;
   const fadeEnd = WATER_VISIBLE_DISTANCE;
 
-  // 水面遮罩用的地形高度近似（与 mc-lite 着色器版噪声一致：0.08×2 + 0.02×6）
-  const getTerrainHeight = (x, z) => {
+  /**
+   * 水面遮罩用的地形高度 —— **与生成侧 `generateHeight` 同构**。
+   *
+   * ⚠️ TSL 无法调 JS 函数，只能同构实现。数值常量一律读
+   * `TERRAIN_HEIGHT_PARAMS` / `BIOME_PARAMS`（单一权威，红线 1）——
+   * 各写一份字面量会漂移出「生成侧的地形与遮罩判的不是同一套高度」的撕裂，
+   * 后果是陆地上出现假水面或真实湖泊失去水面，肉眼只觉得「水怪怪的」。
+   *
+   * 与 mc-lite 的差异：mc-lite 只用基础噪声近似（不含 biome 调整），
+   * 判据与真实地形偏差 +1.39~+6.71（DESERT/SWAMP 的调整没算进去）。
+   */
+  const P = TERRAIN_HEIGHT_PARAMS;
+  const B = BIOME_PARAMS;
+  const biomeNoise = (x, z, scale) => {
     const nx = x.add(uSeed);
     const nz = z.add(uSeed);
-    return sin(nx.mul(0.08)).mul(2.0)
-      .add(cos(nz.mul(0.08)).mul(2.0))
-      .add(sin(nx.mul(0.02)).mul(6.0))
-      .add(cos(nz.mul(0.02)).mul(6.0));
+    return sin(nx.mul(scale)).mul(2.0).add(cos(nz.mul(scale)).mul(2.0));
+  };
+  const getTerrainHeight = (x, z) => {
+    // 基础噪声（与 gen/noise.js 的 noise 同构）
+    const base = floor(biomeNoise(x, z, P.COARSE_SCALE)
+      .add(biomeNoise(x, z, P.FINE_SCALE).mul(P.FINE_WEIGHT)));
+    // biome 判定（与 gen/noise.js 的 getBiome 同构；CITY 不在这里 —— 由 bounds 门控关掉）
+    const temp = biomeNoise(x, z, B.TEMP_SCALE);
+    const humidity = biomeNoise(x.add(B.HUMIDITY_OFFSET), z.add(B.HUMIDITY_OFFSET), B.HUMIDITY_SCALE);
+    const desert = temp.lessThan(float(B.DESERT_TEMP_MAX));
+    const swamp = and(
+      and(temp.greaterThan(float(B.DESERT_TEMP_MAX)), temp.lessThan(float(B.SWAMP_TEMP_MAX))),
+      humidity.greaterThan(float(B.SWAMP_HUMIDITY_MIN)),
+    );
+    const desertH = floor(base.mul(P.DESERT_FACTOR).add(P.DESERT_OFFSET));
+    const swampH = floor(base.mul(P.SWAMP_FACTOR).add(P.SWAMP_OFFSET));
+    return select(desert, desertH, select(swamp, swampH, base));
   };
 
   const colorNode = Fn(() => {
@@ -52,27 +91,32 @@ export function setupOcean(scene) {
     // 远距离淡出裁剪
     Discard(waterFade.lessThanEqual(0.001));
 
+    // 城市门控：城市 bounds 内一律不渲染（**不看距离**，与下面的近处遮罩独立）。
+    // 理由：城市把地面压平到接近海平面（CITY_MIN_SURFACE_Y = SEA_Y+1），而水面平面在
+    // SEA_Y+0.5 → 挖 2 格洞底顶面降到 -2 就低于水面平面，玩家在陆地上挖出一汪假水。
+    // 遮罩算不出 CITY 调整（getBiome 不含 CITY，它由结构系统叠加）→ 只能靠 bounds 关掉。
+    // CPU 侧同一判据见 ocean-mask.js 的 inCityBounds。
+    const inCity = and(
+      and(pos.x.greaterThanEqual(uCityBounds.x), pos.x.lessThanEqual(uCityBounds.y)),
+      and(pos.y.greaterThanEqual(uCityBounds.z), pos.y.lessThanEqual(uCityBounds.w)),
+    );
+    Discard(inCity);
+
     // 水域遮罩：近处仅在地形低于海平面附近显示，远处全显示
+    // 阈值 = OCEAN_MASK_THRESHOLD（SEA_Y）；高度是整数 → `h < SEA_Y` ⟺ `h <= SEA_Y-1`，
+    // 正是 fillColumn 的水体方块判据（判据同源，无需 mc-lite 的 floor 余量补偿）。
+    // 五点取样（±OCEAN_MASK_OFFSET）= 水面沿海岸向内侵的纵深，让水陆边界不锯齿化。
+    const threshold = float(OCEAN_MASK_THRESHOLD);
+    const offsetVal = float(OCEAN_MASK_OFFSET);
     const h0 = getTerrainHeight(pos.x, pos.y);
-    const offsetVal = float(3.5);
     const h1 = getTerrainHeight(pos.x.add(offsetVal), pos.y);
     const h2 = getTerrainHeight(pos.x.sub(offsetVal), pos.y);
     const h3 = getTerrainHeight(pos.x, pos.y.add(offsetVal));
     const h4 = getTerrainHeight(pos.x, pos.y.sub(offsetVal));
-    const threshold = float(-0.8);
-    const nearOceanMask = max(
-      max(
-        max(
-          max(
-            float(1.0).sub(smoothstep(threshold.sub(0.01), threshold, h0)),
-            float(1.0).sub(smoothstep(threshold.sub(0.01), threshold, h1)),
-          ),
-          float(1.0).sub(smoothstep(threshold.sub(0.01), threshold, h2)),
-        ),
-        float(1.0).sub(smoothstep(threshold.sub(0.01), threshold, h3)),
-      ),
-      float(1.0).sub(smoothstep(threshold.sub(0.01), threshold, h4)),
-    );
+    // 整数高度下 smoothstep(threshold-0.01, threshold, h) 恒等于阶跃 → 直接 select，
+    // 省 5 次 GPU 调用且与 CPU 版判据一一对应
+    const step = (h) => select(h.lessThan(threshold), float(1.0), float(0.0));
+    const nearOceanMask = max(max(max(max(step(h0), step(h1)), step(h2)), step(h3)), step(h4));
     const inRangeMask = smoothstep(float(100.0), float(99.0), dist);
     const oceanMask = mix(float(1.0), nearOceanMask, inRangeMask);
     Discard(oceanMask.lessThanEqual(0.001));
@@ -138,5 +182,14 @@ export function setupOcean(scene) {
       plane.position.z = camera.position.z;
     },
     setSeed(seed) { uSeed.value = seed; },
+    /**
+     * 接城市门控 bounds（全世界唯一，`CITY_REGION = [0,0]`）。
+     * @param {{minX:number,maxX:number,minZ:number,maxZ:number}|null} city
+     *   `buildCityLayout` 结果；null 或缺字段 → 恢复哨兵（门控关闭）。
+     */
+    setCityBounds(city) {
+      const b = city && Number.isFinite(city.minX) ? city : OCEAN_MASK_NO_CITY;
+      uCityBounds.value.set(b.minX, b.maxX, b.minZ, b.maxZ);
+    },
   };
 }

@@ -60,6 +60,21 @@ M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 
   绳单色深灰；③ 背包图标离线烘焙等轴测；④ `lilypad` 模板 y=-0.48 + 格位 `SEA_Y+1`；
   ⑤ `getAO` 去掉对角门控（副作用**全局**：所有「仅对角遮挡」顶点暗一档）。
 - **lilypad 的几何与格位是耦合的，改一处必须同时改另一处** —— 细节见 roadmap 同段。
+- **水面遮罩判据的唯一权威 = `src/render/ocean-mask.js`**（阈值 + 五点纵深 + 城市 bounds
+  门控）：`ocean.js` 的 TSL 着色器是**同构实现**（TSL 无法调 JS 函数），数值常量须从
+  `gen/terrain.js` 的 `TERRAIN_HEIGHT_PARAMS` 与 `gen/noise.js` 的 `BIOME_PARAMS` 读 ——
+  各写一份字面量会漂移出「单测说该渲染、GPU 实际没渲染」的撕裂（红线 1；M6 同教训）。
+  **遮罩高度 = 真实生成高度 `generateHeight`（不是 mc-lite 的基础噪声近似）**，阈值 = `SEA_Y`
+  —— 整数高度下 `h < SEA_Y` ⟺ `h <= SEA_Y-1`，正是 `fillColumn` 的水体方块判据（判据同源，
+  不需要「floor 余量」这类补偿项）。**改水体判据/地形高度公式时须同步标定遮罩阈值**，
+  否则会漂移出「陆地上出现假水面 / 真实湖泊失去水面」。这是一处新的有意偏离 mc-lite
+  （**不并入** §4.3 / §4.5.4 那个视觉比对专用清单）—— 理由与实测数据见设计文档 §4.7。
+- **城市 bounds 门控与 `generateCity` 的水体补实是耦合的，改一处必须同时改另一处**：
+  门控「bounds 内一律不渲水面」零误伤的前提 = bounds 内确实无水体，而这靠
+  `generateCity` 补实缺口区间 `[naturalH+1, min(coverBottomY-1, SEA_Y)]` 保证。
+  ⚠️ **勿按「城内真实水方块 = 0」的旧口径写注释** —— 那只对城堡 ±16 核心区成立；
+  bounds 全域实测曾有 16600 格残留水体（其中 56 格暴露）。补实材料须用城市岩石材料，
+  **不能清成 air**（会在城市地下造出空洞，玩家挖下去掉进洞里比看到水更糟）。
 - **结构撒布有四条路径 + 四处有意偏离 mc-lite**（勿照原样改回）—— 实测细节见
   [`docs/roadmap.md`](docs/roadmap.md)「活跃约束详情」的结构撒布段。唯一权威 =
   `src/gen/structures/scatter.js`；候选在 region layout 层算一次（DR-13）。
@@ -476,6 +491,9 @@ mc-heavy/
    │               #  iso-icon.js 等轴测投影纯函数；mesher.js 导出 TEMPLATES / FACE_VERTICES /
    │               #  FACE_UVS 供图标烘焙复用——形状与 UV 的唯一权威，图标不得有第二份几何定义
    ├─ render/      # render-world.js（BatchedMesh 发布层）/ materials.js（TSL）
+   │               #  ocean.js（800×800 无限海面平面 + TSL 波纹/遮罩）/ ocean-mask.js
+   │               #    （水面遮罩判据唯一权威：阈值 + 五点纵深 + 城市 bounds 门控；
+   │               #      CPU 版供单测，ocean.js 的 TSL 版同构实现共用其数值常量）
    │               #  weather.js（天气状态机）/ rain.js（雨效）/ entity-render-layer.js（M5 受控实体发布层）
    │               #  zombie-renderer.js（M6 六部件固定容量 InstancedMesh；无活跃丧尸时 visible=false；
    │               #    head 走单纹理 UV 分区 —— 正面顶点 16-19 采纹理右半「有眼睛」，见 applyHeadUV）

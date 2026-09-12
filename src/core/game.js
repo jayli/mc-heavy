@@ -367,6 +367,10 @@ export class Game {
 
     // 出生点（mc-lite 语义：优先 City 中心出生，保证出生即见城市天际线，§7 M2 验收）
     const regionLayout = await this.scheduler.structureIndex.waitForRegion(0, 0);
+    // 水面遮罩的城市门控 bounds（城市全世界唯一，固定 region [0,0]）。
+    // 城市把地面压平到接近海平面 → 若不关掉水面平面，玩家在城市里下挖 2 格就会
+    // 挖出一汪假水（洞底顶面降到 -2，低于水面平面 -1.5）。判据见 render/ocean-mask.js。
+    this.ocean.setCityBounds(regionLayout.city);
     const citySpawn = getCitySpawnPoint(regionLayout.city);
     this.spawnX = citySpawn.x; this.spawnZ = citySpawn.z;
     if (!hadMeta) {

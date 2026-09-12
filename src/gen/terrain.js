@@ -4,12 +4,35 @@
 import { seededRandom, noise, getBiome } from './noise.js';
 import { SEA_Y, WORLD_MIN_Y, WORLD_MAX_Y, blockIndex } from '../voxel/constants.js';
 
+/**
+ * 地形高度参数（唯一权威）。
+ *
+ * ⚠️ **两个消费方**：`generateHeightForBiome`（CPU/Worker 生成侧）与 `render/ocean.js`
+ * 的水面遮罩（TSL 着色器）。着色器无法调 JS 函数，只能同构实现 —— 数值常量必须从这里读。
+ * 各写一份字面量会漂移出「生成侧的地形与水面遮罩判的不是同一套高度」的撕裂
+ * （后果：陆地上出现假水面 / 真实湖泊失去水面，肉眼只觉得「水怪怪的」）。
+ */
+export const TERRAIN_HEIGHT_PARAMS = Object.freeze({
+  /** 低频噪声 scale（地形大体轮廓） */
+  COARSE_SCALE: 0.08,
+  /** 高频噪声 scale（地形细节），权重 3 */
+  FINE_SCALE: 0.02,
+  FINE_WEIGHT: 3,
+  /** DESERT：`floor(h * 0.5 + 2)` —— 压低且更平坦 */
+  DESERT_FACTOR: 0.5, DESERT_OFFSET: 2,
+  /** SWAMP：`floor(h * 0.3 - 2)` —— 显著压低形成低洼湿地 */
+  SWAMP_FACTOR: 0.3, SWAMP_OFFSET: -2,
+  /** CITY：`floor(h * 0.25 + 1)` —— 进一步压平（M2 城市区域；着色器侧算不出，见 noise.js BIOME_PARAMS） */
+  CITY_FACTOR: 0.25, CITY_OFFSET: 1,
+});
+
 /** 指定 biome 的地形高度（biome 调整规则与 mc-lite TerrainGen.generateHeight 一致） */
 export function generateHeightForBiome(x, z, seed, biome) {
-  let h = Math.floor(noise(x, z, seed, 0.08) + noise(x, z, seed, 0.02) * 3);
-  if (biome === 'DESERT') h = Math.floor(h * 0.5 + 2);
-  if (biome === 'SWAMP') h = Math.floor(h * 0.3 - 2);
-  if (biome === 'CITY') h = Math.floor(h * 0.25 + 1); // CITY 压平（M2：城市区域）
+  const P = TERRAIN_HEIGHT_PARAMS;
+  let h = Math.floor(noise(x, z, seed, P.COARSE_SCALE) + noise(x, z, seed, P.FINE_SCALE) * P.FINE_WEIGHT);
+  if (biome === 'DESERT') h = Math.floor(h * P.DESERT_FACTOR + P.DESERT_OFFSET);
+  if (biome === 'SWAMP') h = Math.floor(h * P.SWAMP_FACTOR + P.SWAMP_OFFSET);
+  if (biome === 'CITY') h = Math.floor(h * P.CITY_FACTOR + P.CITY_OFFSET); // CITY 压平（M2：城市区域）
   return h;
 }
 
