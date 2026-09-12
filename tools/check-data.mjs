@@ -53,6 +53,10 @@ const {
 const {
   ARMOR_ZONES, TURRET_PARTS, TURRET_PART_DEFS,
 } = await import('../src/entities/turrets/turret-config.js');
+// 创造台冻结数据与锚点 kind（M9）—— 门禁据此断言 service 侧与 config 单一权威一致（红线 1）
+const {
+  PLAYGROUND, PLAYGROUND_KIND, PLAYGROUND_BLOCK, PLAYGROUND_CENTER_BLOCK,
+} = await import('../src/entities/playground/playground-config.js');
 
 const atlasMeta = JSON.parse(fs.readFileSync(path.join(ROOT, 'assets', 'atlas.json'), 'utf8'));
 const tiles = new Set(Object.keys(atlasMeta.tiles));
@@ -187,7 +191,7 @@ function checkIconAtlasArtifacts() {
  * icons.json 的指纹比对 —— 不匹配即报「跑 npm run icons」。
  *
  * 图标是**派生产物**，权威输入是 mesher 的几何 + faces-data 的贴图。失效路径（v1.24 已记录
- * 一次，范围从 9 扩到 118 项后更容易踩）：
+ * 一次，范围从 9 扩到物品集合全量后更容易踩）：
  *   - 改了 mesher 几何 / faces-data 贴图映射 → 忘跑 icons → 图标渲染旧形状/旧配色
  *   - **换了一张同名贴图 PNG**（内容变了、映射没变）→ 忘跑 icons → 图标配色过期
  * 这三条肉眼都看不出（图标照常显示，只是不对），只有指纹比对能当场拦住。
@@ -480,6 +484,53 @@ function checkIndestructibleContract() {
   }
 }
 
+// ---------------------------------------------------------------- [11] 创造台契约
+
+/**
+ * [创造台] 契约（M9）：两个平台方块名在 registry 内 + 都标了 `indestructible` +
+ * 都不在背包物品集合内。
+ *
+ * ⚠️ **三项必须同时成立**（规格 §1：登记与移出背包必须成对做）：
+ *   - 漏标 `indestructible` → 「平台本体不可被玩家/枪械/TNT 破坏」门控静默失效；
+ *   - 留在背包 → 玩家能选中并放置平台方块，而它挖不掉、TNT 也炸不掉（撕裂状态）；
+ *   - 名字拼错 → 前两条门控都作用在不存在的方块上（与「拼错的排除项静默无效」同类）。
+ * 与 [10] `[不可破坏]` 环节的关系：那边校验「声明 ↔ 表」双向一致（不关心是谁），
+ * 本环节钉住**创造台这两项本身**必须登记且必须移出背包 —— 两者不重叠。
+ */
+function checkPlaygroundContract() {
+  // ⚠️ 方块名取自 config 常量（不硬编码字面量）—— 两侧漂移会让门禁检查一个 service 不用的名字
+  const names = [PLAYGROUND_BLOCK, PLAYGROUND_CENTER_BLOCK];
+  const allNames = new Set(REGISTRY.all().map((e) => e.name));
+  const items = buildItemNames(REGISTRY);
+  for (const n of names) {
+    if (!allNames.has(n)) failures.push(`[创造台] "${n}" 不在 registry 内（平台方块名拼错）`);
+    if (!REGISTRY.isIndestructible(REGISTRY.idOf(n))) {
+      failures.push(`[创造台] "${n}" 未标 indestructible（玩家/枪械/TNT 能破坏平台本体）`);
+    }
+    if (items.includes(n)) {
+      failures.push(`[创造台] "${n}" 在背包物品集合内（玩家能放置不可破坏的平台方块 → 撕裂状态）`);
+    }
+  }
+  // 平台尺寸契约：service 写入的格数与 config 单一权威一致（mc-lite `playgroundSize=54` 口径）
+  if (PLAYGROUND.size !== 54) {
+    failures.push(`[创造台] PLAYGROUND.size = ${PLAYGROUND.size} ≠ 54（mc-lite 口径）`);
+  }
+  // 锚点 kind 契约（与 service 的 hydrate 扫库同源）：拼错则重启后恢复不到创造台
+  if (PLAYGROUND_KIND !== 'playground') {
+    failures.push('[创造台] PLAYGROUND_KIND ≠ "playground"（hydrate 扫库会对不上 → 重启后创造台消失）');
+  }
+  // 净空与高度跨度：clearance(10) 必须小于 heightSpan(20) —— 否则玩家站在自己雕的高处
+  // 就能关掉脚下平台（规格 §2.2 的 PLAYER_IN_PLAYGROUND 判据）
+  if (!(PLAYGROUND.clearance < PLAYGROUND.heightSpan)) {
+    failures.push(`[创造台] clearance(${PLAYGROUND.clearance}) ≥ heightSpan(${PLAYGROUND.heightSpan})`
+      + '（玩家站在净空区高处时关闭判据会失效）');
+  }
+  if (!failures.some((f) => f.startsWith('[创造台]'))) {
+    infos.push(`[创造台] 平台 ${PLAYGROUND.size}×${PLAYGROUND.size} = ${PLAYGROUND.size ** 2} 格`
+      + ` + ${names.length} 项已登记 indestructible 并移出背包（锚点 kind="${PLAYGROUND_KIND}"）`);
+  }
+}
+
 // ---------------------------------------------------------------- 主流程
 
 const REGISTRY = await buildDefaultRegistry();
@@ -487,6 +538,7 @@ const REGISTRY = await buildDefaultRegistry();
 checkReferenceIntegrity();
 checkItemSetRelation();
 checkIndestructibleContract();
+checkPlaygroundContract();   // M9：创造台方块契约（⚠️ 主流程是逐个显式调用，漏了本行则门禁永不执行）
 checkIconManifestCoverage();
 checkIconAtlasArtifacts();
 checkIconFreshness();

@@ -38,6 +38,7 @@ import { TurretController } from '../entities/turrets/turret-controller.js';
 import { createTurretBlueprint } from '../entities/turrets/turret-blueprint.js';
 import { computeTurretUpdates } from '../entities/turrets/turret-system.js';
 import { projectileDefinition, judgeProjectile } from '../entities/turrets/projectile-system.js';
+import { PlaygroundService } from '../entities/playground/playground-service.js';
 import { ProjectileRenderer } from '../render/projectile-renderer.js';
 import { TURRET } from '../entities/turrets/turret-config.js';
 import { loadAtlas } from '../mesh/atlas-loader.js';
@@ -317,6 +318,21 @@ export class Game {
     // 否则库里没锚点 → 索引被清成 0（真实重启路径本就是 flush → reload → hydrate）。
     await this.persistence.flushNow(this.world);
     await this.turrets.hydrate(this.persistence);
+
+    // ---- M9：创造台装配 ----
+    // 复用 M7 装置模式的**持久层半边**（blockEntity 锚点 + listBlockEntities 扫库恢复），
+    // 但**不复用 controller / 增量失效那半边** —— 创造台无运行时行为（不刷怪、不射击），
+    // 它的锚点只是「平台在哪、多大」的持久真相，关闭时由 origin+size 确定性重算枚举（红线 1：
+    // 不维护 mc-lite 的 playgroundBlocks 方块集合副本）。
+    this.playground = new PlaygroundService({
+      world: this.world, editor: this.editor, registry: this.registry,
+    });
+    // ⚠️ **启动期 hydrate 不需要 flushNow**（审查低12）—— M7 的 nests.hydrate 同口径
+    // （listBlockEntities 走 cursor 扫库，不依赖预热）。flushNow 是测试侧 reload 前调用的，
+    // 见 playground.spec.mjs 的 reload 用例。上面的 flushNow 是为 turrets.hydrate 而调，
+    // 顺带也让 playground 的锚点落了库，故此处直接 hydrate 即可。
+    await this.playground.hydrate(this.persistence);
+
     /** 索敌 accumulator（8Hz 节流；`_updateTurretControllers` 消费） */
     this._turretAiAccum = 0;
     /** 帧循环复用的 pose Map（避免每帧 `new Map()` —— 见帧循环注释） */
@@ -1162,6 +1178,27 @@ export class Game {
   /** 只读炮塔诊断状态。@returns {{count: number, controllers: number}} */
   turretsDebugState() {
     return { count: this.turrets.count(), controllers: this.turrets.controllers().size };
+  }
+
+  /**
+   * 测试 API（Task 3 的 UI 按钮也调这两个）：创建创造台。
+   * 以玩家当前位置为选址基准（东侧优先 → 西侧 → Y−20 → Y−5）。
+   * @returns {{ok:true, origin:[number,number,number]} | {ok:false, reason:string}}
+   */
+  createPlayground() {
+    const p = this.player.physics.pos;
+    return this.playground.create({ x: p.x, y: p.y, z: p.z });
+  }
+
+  /** 测试 API：关闭创造台。玩家须在平台区域外（否则拒绝，防止抽掉脚下地面）。 */
+  closePlayground() {
+    const p = this.player.physics.pos;
+    return this.playground.close({ x: p.x, y: p.y, z: p.z });
+  }
+
+  /** 只读创造台诊断状态。@returns {{active: boolean, origin: [number,number,number]|null}} */
+  playgroundDebugState() {
+    return { active: this.playground.isActive(), origin: this.playground.origin() };
   }
 
   spawnZombieNearPlayer() {
