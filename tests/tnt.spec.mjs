@@ -296,3 +296,61 @@ test('设置面板：TNT 破坏开关落在右列、生效且持久化', async (
   }, null, { timeout: 5_000 });
 });
 
+test('爆炸序列帧特效：引爆时 spawn 生效，到期后回收（真游戏页接线断言）', async ({ page }) => {
+  test.setTimeout(120_000);
+  await boot(page);
+  const setup = await setupField(page);
+
+  // ⚠️ **为什么须在真游戏页断言**（不能只靠隔离 fixture）：fixture 直接构造
+  // `ExplosionSpriteRenderer`，测不到 `game.js` 的**接线** —— 忘了调 `spawn()`、装配顺序
+  // 错（M7 活跃约束：controller 接线晚于 `onColumnReady` → 恒 0）、或 `dispose` 漏接线，
+  // fixture 全绿而真实游戏里爆炸**只有球体没有序列帧**（静默失效，肉眼只见「少了一层」）。
+  // 同 M7 教训：接线测试须从真实入口进入。
+
+  // ① 图集真的加载上了（否则整个特效静默禁用 —— 排除「加载失败 → 断言假绿」）
+  const info = await page.evaluate(() => {
+    const es = window.__MC_GAME__.explosionSprite;
+    return {
+      exists: !!es,
+      ready: es?.ready ?? false,
+      slotCount: es?.sprites().length ?? 0,
+      activeBefore: es?.activeCount() ?? -1,
+      hiddenBefore: es ? es.sprites().every((s) => !s.visible) : false,
+    };
+  });
+  expect(info.exists, 'game 须装配 explosionSprite（接线断言）').toBe(true);
+  expect(info.ready, '爆炸序列帧图集须加载成功').toBe(true);
+  expect(info.slotCount, '池容量须为 10').toBe(10);
+  expect(info.activeBefore, '引爆前活跃 slot 须为 0').toBe(0);
+  expect(info.hiddenBefore, '引爆前全部 slot 须 visible=false（draw call 基线）').toBe(true);
+
+  // ② 引爆 → 序列帧特效真的起了（`explodeTnt` 的 ⑦ 段接线）
+  await page.evaluate((c) => window.__MC_GAME__.explodeTnt(c.bx, c.by, c.bz), setup);
+  const afterBurst = await page.evaluate(() => {
+    const es = window.__MC_GAME__.explosionSprite;
+    return {
+      active: es.activeCount(),
+      visible: es.sprites().filter((s) => s.visible).length,
+      // sprite 位置须是**块中心**（块坐标 + 0.5）—— 实例原点换算基准（CLAUDE.md 活跃约束，
+      // 极易误判几何差异）。传块坐标会让特效整体偏半格。
+      pos: es.sprites().find((s) => s.visible)?.position.toArray() ?? null,
+    };
+  });
+  expect(afterBurst.active, '引爆后须有 1 个活跃序列帧特效').toBe(1);
+  expect(afterBurst.visible, '引爆后须有 1 个可见 Sprite').toBe(1);
+  expect(afterBurst.pos, '特效位置须为块中心（块坐标 + 0.5）')
+    .toEqual([setup.bx + 0.5, setup.by + 0.5, setup.bz + 0.5]);
+
+  // ③ 到期后回收（0.5s 寿命）—— 全部 slot 回到 visible=false → draw call 回基线。
+  // ⚠️ 与 M6 活跃约束 ① 同一口径：常驻特效池若空闲时仍 visible，会恒增 draw call 且
+  // 进入透明渲染列表干扰水面排序不变式。
+  await page.waitForFunction(() => window.__MC_GAME__.explosionSprite.activeCount() === 0,
+    null, { timeout: 5_000, polling: 100 });
+  const afterExpire = await page.evaluate(() => {
+    const es = window.__MC_GAME__.explosionSprite;
+    return { active: es.activeCount(), visible: es.sprites().filter((s) => s.visible).length };
+  });
+  expect(afterExpire.active, '到期后活跃 slot 须归零').toBe(0);
+  expect(afterExpire.visible, '到期后可见 Sprite 须归零').toBe(0);
+});
+

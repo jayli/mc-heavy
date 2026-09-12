@@ -19,6 +19,9 @@ import { AudioManager } from '../render/audio-manager.js';
 import { ViewWeapon } from '../render/view-weapon.js';
 import { TracerRenderer } from '../render/tracer-renderer.js';
 import { ExplosionRenderer } from '../render/explosion-renderer.js';
+import {
+  ExplosionSpriteRenderer, loadExplosionSpriteTexture,
+} from '../render/explosion-sprite.js';
 import { computeExplosion, EXPLOSION_DAMAGE_RADIUS, EXPLOSION_DAMAGE } from '../voxel/explosion.js';
 import { ZOMBIE } from '../entities/zombies/zombie-config.js';
 import { WorldEditor } from './world-editor.js';
@@ -127,6 +130,12 @@ export class Game {
     // （与丧尸头部、M4 武器模型同一容错口径）。
     this._turretArmorTexture = await loadTurretArmorTexture().catch((e) => {
       console.warn('[game] 炮塔装甲纹理加载失败，退回纯色炮塔：', e);
+      return null;
+    });
+    // 爆炸序列帧图集（500×200，5×2 = 10 帧）。同上口径：加载失败不阻断启动 ——
+    // 爆炸特效只是观感，缺了退回「只有球体扩张层」（`explosion-renderer.js`）即可。
+    this._explosionSpriteTexture = await loadExplosionSpriteTexture().catch((e) => {
+      console.warn('[game] 爆炸序列帧图集加载失败，退回只有球体扩张层：', e);
       return null;
     });
     const atlasMeta = await (await fetch('/assets/atlas.json')).json();
@@ -364,6 +373,15 @@ export class Game {
     this._tntExploded = 0;
     /** 爆炸球体特效池（独立 InstancedMesh；无活跃实例时 visible=false） */
     this.explosionRenderer = new ExplosionRenderer({ scene: this.scene });
+    /**
+     * 爆炸序列帧 billboard 池（mc-lite `ParticleSystem.spawnExplosionEffect` 层）。
+     * 与球体扩张层**同时触发** —— mc-lite `World.js:1296 spawnExplosionParticles` 就是
+     * 两层叠加（billboard 为主、球体「作为底层增强」）。空闲 slot `visible=false`
+     * → draw call 基线不变（`three.webgpu.js:62263` 首行 early return）。
+     */
+    this.explosionSprite = new ExplosionSpriteRenderer({
+      scene: this.scene, texture: this._explosionSpriteTexture,
+    });
 
     // 出生点（mc-lite 语义：优先 City 中心出生，保证出生即见城市天际线，§7 M2 验收）
     const regionLayout = await this.scheduler.structureIndex.waitForRegion(0, 0);
@@ -548,6 +566,8 @@ export class Game {
       this.turretRenderer.sync(this._turretPoses);
       // M8：爆炸球体扩张推进（0.3s 寿命；全部结束后 visible=false → draw call 回基线）
       this.explosionRenderer.update(nowMs);
+      // 爆炸序列帧 billboard 推进（0.5s 寿命；到期 slot visible=false → draw call 回基线）
+      this.explosionSprite.update(nowMs);
       this.renderer.render(this.scene, this.camera);
       // info 在每帧 render 前被 autoReset 清零，render 后捕获才是本帧真实值
       // （HUD/测试异步读取 renderer.info 会撞上重置点，必须在此快照）
@@ -824,11 +844,18 @@ export class Game {
     // ⑥ 半径 4 格内丧尸受 50 伤害
     this._damageEntitiesInRadius(result.center, EXPLOSION_DAMAGE_RADIUS, EXPLOSION_DAMAGE, now);
     // ⑦ 音效与特效同帧。音效出处 = mc-lite `PlayerInteraction.js:673`（音量 0.4）；
-    //    特效出处 = `World.js:1296 spawnExplosionParticles` 的球体扩张层（`World.js` **无音频代码**）
+    //    特效出处 = `World.js:1296 spawnExplosionParticles` —— **两层叠加**：① 序列帧
+    //    billboard（`ParticleSystem.js:177`）② 球体扩张（`World.js:1301-1311`，注释原文
+    //    「作为底层增强」）。mc-lite 就是这个顺序（billboard 先、球体后），此处照搬。
     this.audioManager?.play('explosion', 0.4);
-    this.explosionRenderer.burst(
-      [result.center[0] + 0.5, result.center[1] + 0.5, result.center[2] + 0.5], now,
-    );
+    // ⚠️ **两层共用同一坐标与同一时间戳**：坐标须 +0.5 换算成块中心（mc-heavy 模板坐标以
+    //    块底角为原点，mc-lite 特效位置是 `x+0.5,y+0.5,z+0.5`）；时间戳须 `performance.now()`
+    //    基准（M6 活跃约束，禁止 `Date.now()` —— 两者相差约 17 亿毫秒）。
+    const burstPos = [
+      result.center[0] + 0.5, result.center[1] + 0.5, result.center[2] + 0.5,
+    ];
+    this.explosionSprite.spawn(burstPos, now);
+    this.explosionRenderer.burst(burstPos, now);
     this._tntExploded++;
     return true;
   }
@@ -1251,6 +1278,7 @@ export class Game {
     this.turretRenderer?.dispose();
     this.projectileRenderer?.dispose();
     this.explosionRenderer?.dispose();
+    this.explosionSprite?.dispose();
     this.entities?.dispose();
     this.pool.dispose();
     this.renderer.dispose();

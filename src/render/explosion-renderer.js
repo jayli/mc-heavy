@@ -1,6 +1,11 @@
 // src/render/explosion-renderer.js — M8：爆炸球体扩张特效（规格 §2.4）
-// 固定 slot InstancedMesh，池满覆盖最旧。mc-heavy 没有粒子系统，只移植 mc-lite
-// `World.js:1301-1311` 的球体扩张层（寿命 0.3s / targetScale 5.0 / opacity 1→0）。
+// 固定 slot InstancedMesh，池满覆盖最旧。移植 mc-lite `World.js:1301-1311` 的球体扩张层
+// （寿命 0.3s / targetScale 5.0 / opacity 1→0）。
+//
+// ⚠️ **这只是爆炸的两层之一**：mc-lite `World.js:1296 spawnExplosionParticles` 是两层叠加 ——
+// ① 序列帧 billboard（`ParticleSystem.js:177`）② 球体扩张（本文件，注释原文「作为底层增强」）。
+// M8 当时只移植了 ②，① 由 `explosion-sprite.js` 补齐。两层在 `game.js` 的 `explodeTnt()`
+// 里同帧触发（billboard 先、球体后，mc-lite 就是这个顺序）。
 //
 // ⚠️ **有意偏离 mc-lite 的池实现**：mc-lite 是 15 个独立 `THREE.Mesh`（每个爆炸一个节点，
 // `World.js:111-127`），本仓库改成一个固定容量 InstancedMesh —— 同 M6 丧尸六部件与曳光池的

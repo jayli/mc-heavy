@@ -80,6 +80,15 @@ MAG7 曳光终点回归准心轴（v1.36，原用扫描候选当终点导致斜�
 | **`weapons-world-edit.spec.mjs` 的计时余量不足**（M9 全量回归时暴露） | 📝 待处理 | 200 次射击之间 `setTimeout(95)` vs 手枪冷却 90ms（靠帧循环累加 `dt` 递减）→ 余量 5ms < 一个 vsync 量子（8.33ms），少渲染一帧就计 199。**证据**：同一份代码单独复跑 3/3 全通过 → 间歇性。**建议**：等待改 ≥100ms 或判据改「≥199」。⚠️ M9 未改它的断言 |
 | 创造台导入的「先清模型区」语义（mc-lite `collectModelAreaBlocksToClear`） | 📝 有意未移植 | mc-lite 导入前会把玩家已有模型全删（破坏性操作，须用户授权）。当前口径：同坐标冲突时**后写入者胜出**（`setBlocks` 的 `lastByPos` 去重），不产生撕裂状态。若用户需要「导入即替换整个模型」，须单独确认后再实现 |
 | `tools/bake-procedural-textures.mjs` 的 `textures.turret_alias_block` 生成代码已无消费者 | 📝 待清理 | M8 把炮塔图标改指向 mc-lite 手工原图后遗留（低优先级） |
+| **mc-lite 的另两个序列帧特效未移植**：`pick.png`（枪击击中方块，1400×840 / 5×3=15 帧）与 `block_crash.png`（徒手破坏方块，2800×942 / 5×3=15 帧） | 📝 待补 | mc-lite `ParticleSystem` 有三个序列帧池，**爆炸那个已补齐**（`src/render/explosion-sprite.js`，见下方「已补齐的实玩反馈修正」）。序列帧基础设施已建成（图集加载 + Sprite 池 + 逐帧 offset + Tier 4 像素判据），这两个是同套东西换参数 + 换接线点（`weapon-controller` 命中路径 / `player.digBlock` 路径）。⚠️ 素材须放 `assets/effects/`（**不能**放 `assets/textures/` —— 会被 `build-atlas` 扫进世界 atlas 并重排所有 tile 坐标） |
+
+### 已补齐的实玩反馈修正（M8 / M9 之后）
+
+不 bump 设计文档版本号（CLAUDE.md 口径：版本号 bump 是架构口径变更专用）。
+
+| 事项 | 要点 |
+|---|---|
+| **爆炸序列帧特效补齐** | mc-lite `World.js:1296 spawnExplosionParticles` 是**两层叠加**：① 序列帧 billboard（`ParticleSystem.js:177`，`big_blow.png` 500×200 / 5×2=10 帧 / 0.5s / AdditiveBlending / scale 3→8 / 前 80% 全亮末 20% 淡出）② 球体扩张（`World.js:1301-1311`，注释原文「作为底层增强」）。**M8 当时只移植了 ②**（`explosion-renderer.js` 文件头如实记录了这次裁剪），实玩反馈「爆炸少了原始图分帧播放」→ 补 ①：新增 `src/render/explosion-sprite.js`（照搬 mc-lite 的 Sprite 池手法 —— Sprite 自动 billboard + 逐 sprite `visible=false` 同样还原 draw call 基线）+ `assets/effects/big_blow.png`。两层在 `game.js` 的 `explodeTnt()` 同帧触发（billboard 先、球体后，mc-lite 就是这个顺序）。**Tier 1 单测钉帧映射算术 + Tier 4 像素实测证明切帧真在生效**（`tests/explosion-sprite.spec.mjs`）+ 真游戏页接线断言（`tests/tnt.spec.mjs`）。三处负向验证均实测通过（注入 bug 后真 FAIL） |
 
 ## M3.2 之后的独立 bugfix / 改造（v1.19 ~ v1.38）
 

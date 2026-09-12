@@ -306,6 +306,24 @@ M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 
   —— 只读渲染矩阵的单测全绿，因为它验的是渲染层（对的），错的是另一套公式。断言必须落在
   **两条路径的交叉比对**上（`muzzle()` 方向 == 渲染矩阵变换出的炮口位置）。床/宝箱等后续带朝向
   的装置同理。
+- **WebGPU 后端的序列帧切帧走 `texture.offset`（不是自己算 UV）**：mc-lite `ParticleSystem`
+  的手法是逐帧改 `tex.offset`；WebGPU 后端确实消费它 —— `three.webgpu.js:13247`
+  `TextureNode.update()` 在 `matrixAutoUpdate === true` 时调 `texture.updateMatrix()`，把
+  offset/repeat 折进 `texture.matrix` 经 uniform 传 shader。**⚠️ 若这条不成立，序列帧会恒显
+  第 0 帧 —— 特效照常播、照常扩张淡出，只是图案不动，肉眼几乎看不出差别（静默失效）**，故
+  Tier 4 像素实测必须断言「不同帧采到不同区」，不能只看「特效播了」。
+  ⚠️ **`repeat` 须在 `texture.clone()` 之前设置**：clone 复制参数快照，顺序反了则每个副本的
+  repeat 丢失 → 采样整幅图集（10 帧叠在一起），观感是「一团糊」而非分帧。
+  ⚠️ **每 slot 须有独立材质 + 独立纹理副本**（共享材质会让 offset 互相覆盖 → 只有一个 slot
+  能切帧）。⚠️ `texture.clone()` **共享同一个 `Source`**（同一份 GPU 上传），只复制参数 ——
+  故 N 份 clone **不构成红线 1 的第二份权威数据**（那条约束针对逻辑体素数据）。
+  **后续补 mc-lite 的 `pick.png`（枪击击中）/ `block_crash.png`（徒手破坏）两个序列帧特效同理。**
+- **Tier 4 像素判据的阈值须对着「屏幕实测值」读，不是图集像素统计值**（实测踩坑）：屏幕取样区
+  固定大小，而 sprite 的 scale 随 progress 扩张（3→8）→ 同样大的屏幕区覆盖的**纹理区域越来越小**，
+  越靠后的帧只采到纹理正中心那一小块。实测爆炸图集：帧 0 屏幕读 242.7 而帧 7 读 **0.0**，
+  但图集像素统计帧 7 中心区是 20.4 —— 两个口径差一个数量级，按图集数字定阈值会假失败。
+  对照还须**只差一个变量**：主判据选帧 0 与帧 7（两者 opacity 恒 1，差异纯来自切帧），
+  不用末帧（它已进淡出段，会混入 opacity 这第二个变量）。
 
 ### M9 创造台沉淀的活跃约束（后续同类装置 Epic 必读）
 
@@ -481,6 +499,8 @@ mc-heavy/
 │  │  └─ head.png + head.json  # 128×64 双区并排（左半无眼睛/右半有眼睛）+ 尺寸与输入指纹
 │  ├─ sounds/                  # 音效（M4 四件武器音效 + M7 `put.mp3` 放置音效）
 │  │                           #   id 清单的唯一权威 = `render/audio-manager.js` 的 `SOUND_IDS`
+│  ├─ effects/                 # 序列帧特效图集（**不在 textures/ 下** —— 那里会进世界 atlas）
+│  │  └─ big_blow.png          # TNT 爆炸序列帧（500×200，5×2=10 帧，从 mc-lite 原样复制）
 │  └─ structures/              # 从 mc-lite 复制 JSON
 └─ src/
    ├─ core/        # game.js / scheduler.js / worker-pool.js / budget.js / perf.js / perf-hud.js

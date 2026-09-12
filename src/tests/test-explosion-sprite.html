@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"><title>explosion sprite fixture</title><link rel="icon" href="data:,">
+  <style>html, body { margin: 0; }</style>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "/vendor/three/three.webgpu.js",
+      "three/tsl": "/vendor/three/three.tsl.js",
+      "three/webgpu": "/vendor/three/three.webgpu.js",
+      "three/addons/": "/vendor/three/addons/"
+    }
+  }
+  </script>
+</head>
+<body>
+<script type="module">
+  import * as THREE from 'three';
+  import {
+    ExplosionSpriteRenderer, loadExplosionSpriteTexture, EXPLOSION_SPRITE,
+  } from '../render/explosion-sprite.js';
+
+  // Tier 4 像素实测场景（TNT 爆炸序列帧特效）。
+  //
+  // **为什么必须像素实测**：序列帧切帧靠 `texture.offset` → `TextureNode.update()` 把
+  // offset/repeat 折进 `texture.matrix` 经 uniform 传 shader（`three.webgpu.js:13247`）。
+  // 这条链在 GPU 求值，单测读不到片元输出。**若后端不消费 offset，序列帧会恒显第 0 帧 ——
+  // 爆炸照常播、照常淡出，只是图案不动，肉眼几乎看不出差别**（静默失效）。单测只能钉住
+  // offset 的算术，证明不了 GPU 真按它采样。
+  //
+  // ⚠️ **fixture 走真实的 `spawn()` / `update()` 路径**（不自算 offset）：自己算会测到
+  // fixture 而非实现（testing-policy §2.7）。用「给定 nowMs」驱动 update 来选帧 ——
+  // 与真实帧循环同一条代码路径。
+  //
+  // ⚠️ **对照只差一个变量 = 帧号**（CLAUDE.md「对照脚本只差一个变量」原则）：
+  // 主判据用帧 0 vs 帧 7 —— 两者 progress 都在前 80%（opacity 恒 1），故亮度差异**纯粹**
+  // 来自切帧。不用帧 9 作主判据：它 progress=0.95 已进淡出段（opacity 0.25），会混入
+  // 第二个变量。帧 9 另作「末帧是空帧」的补充断言。
+  async function run() {
+    const renderer = new THREE.WebGPURenderer({ antialias: false });
+    renderer.setSize(400, 300);
+    document.body.appendChild(renderer.domElement);
+    await renderer.init();
+    renderer.toneMapping = THREE.NoToneMapping;
+    // outputColorSpace 用 SRGBColorSpace（真实游戏口径，game.js 的 renderer 同款）——
+    // 读到的值接近原始纹理参数，阈值可对着图集实测值读（turret-render 同款理由）。
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+    const texture = await loadExplosionSpriteTexture();
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x000000);   // 黑背景 + additive → 读到纹理亮度本身
+    const es = new ExplosionSpriteRenderer({ scene, texture });
+
+    // Sprite 自动 billboard（恒面向相机）→ 相机放在 +Z 轴上看向原点即可，无需算朝向
+    const DIST = 6;   // scale=3 的 sprite 占约 53% 屏幕高度（≈160px），足够取样
+    const camera = new THREE.PerspectiveCamera(50, 400 / 300, 0.05, 100);
+    camera.position.set(0, 0, DIST);
+    camera.lookAt(0, 0, 0);
+
+    const W = 400, H = 300;
+    /** sprite 中心在屏幕正中（sprite 在原点、相机看向原点） */
+    const CENTER = { x: Math.round(W / 2), y: Math.round(H / 2) };
+
+    /** 起一次爆炸（固定时间戳 t0，后续用 nowMs 差值选帧） */
+    const T0 = 1000;
+    function spawnOne() {
+      // ⚠️ rotation 传 0：mc-lite `:186` 的 `Math.random() × π` 会让截图不可复现。
+      // 旋转是关于 sprite 中心的，中心取样点不受影响 → 固定它不影响判据，只消除不确定性。
+      es.spawn([0, 0, 0], T0, { rotation: 0 });
+    }
+
+    /**
+     * spec 调用：把特效推进到指定帧并渲染，返回屏幕取样点。
+     * @param {number} frame 0~9
+     * @returns {{point:{x:number,y:number},progress:number}}
+     */
+    window.__EXP_FRAME__ = (frame) => {
+      // progress 取帧中间（(frame+0.5)/10）—— 避开帧边界，浮点抖动不会跨帧
+      const progress = (frame + 0.5) / EXPLOSION_SPRITE.totalFrames;
+      // ⚠️ **每次对照只留一个 sprite**：additive 叠加会让亮度判据失真（两个 sprite 相加
+      // 会掩盖「切帧没生效」—— 两帧都恒亮）。reset() 清掉上一次残留的 offset/scale。
+      es.reset();
+      spawnOne();
+      es.update(T0 + progress * EXPLOSION_SPRITE.maxLifeMs);
+      // 渲染两帧：WebGPU 首帧可能还在编译 shader，第二帧才是稳定结果（turret fixture 同手法）
+      renderer.render(scene, camera);
+      renderer.render(scene, camera);
+      return { point: CENTER, progress };
+    };
+
+    // 前提断言的数据（spec 据此排除「加载失败 → 特效静默禁用」的假绿）
+    const sprites = es.sprites();
+    window.__EXP_INFO__ = {
+      ready: es.ready,
+      textureSize: [texture?.image?.width, texture?.image?.height],
+      repeat: texture ? [texture.repeat.x, texture.repeat.y] : null,
+      slotCount: sprites.length,
+      // 每个 slot 须有独立材质与独立纹理副本（共享材质会让 offset 互相覆盖 → 只有一个 slot 生效）
+      materialsUnique: new Set(sprites.map((s) => s.material)).size,
+      mapsUnique: new Set(sprites.map((s) => s.material.map)).size,
+      additive: sprites.every((s) => s.material.blending === THREE.AdditiveBlending),
+      allHidden: sprites.every((s) => !s.visible),
+      spriteNames: [...new Set(sprites.map((s) => s.name))],
+    };
+
+    /** 到期后全部 slot 须回到 visible=false（draw call 回基线的前提断言） */
+    window.__EXP_EXPIRE__ = () => {
+      es.reset();
+      spawnOne();
+      es.update(T0 + EXPLOSION_SPRITE.maxLifeMs + 1);   // progress > 1 → 全部到期
+      renderer.render(scene, camera);
+      return {
+        activeCount: es.activeCount(),
+        visibleSprites: es.sprites().filter((s) => s.visible).length,
+      };
+    };
+
+    window.__EXP_READY__ = true;
+  }
+  run().catch((e) => { window.__EXP_ERROR__ = String(e?.stack || e); });
+</script>
+</body>
+</html>
