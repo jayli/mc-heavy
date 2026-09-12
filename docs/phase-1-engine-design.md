@@ -1,6 +1,6 @@
 # mc-heavy 第一阶段实施设计文档：游戏引擎原型
 
-> 版本：v1.39 ｜ 日期：2026-09-11 ｜ 状态：定稿（经十五轮逐条核验修订 + M3.2 实施回填 + 异形方块渲染勘误 + 背包物品集合口径 + 吊灯材质自发光 + 吊灯 UV 分区 + 背包图标表 + 等轴测图标 + 测试分级策略与静态门禁 + 全量背包图标离线烘焙 + 背包槽位点选抖动修复 + 等轴测图标遮挡修复 + 删除缓存按钮 + 沼泽睡莲水洞与沉水修复 + AO 去掉对角门控 + 设置面板两列布局与档位精简 + M8 TNT/炮塔的三项架构口径变更）
+> 版本：v1.40 ｜ 日期：2026-09-12 ｜ 状态：定稿（经十五轮逐条核验修订 + M3.2 实施回填 + 异形方块渲染勘误 + 背包物品集合口径 + 吊灯材质自发光 + 吊灯 UV 分区 + 背包图标表 + 等轴测图标 + 测试分级策略与静态门禁 + 全量背包图标离线烘焙 + 背包槽位点选抖动修复 + 等轴测图标遮挡修复 + 删除缓存按钮 + 沼泽睡莲水洞与沉水修复 + AO 去掉对角门控 + 设置面板两列布局与档位精简 + M8 TNT/炮塔的三项架构口径变更 + M9 创造台的两项架构口径变更）
 >
 > 目标：在 mc-heavy 仓库从零重建一个功能对标 mc-lite、性能提升一个数量级的体素游戏引擎。
 > 第一阶段只做"引擎底座"：渲染、体素数据、即时地图生成、玩家交互、种子地图、存档原型。
@@ -913,6 +913,37 @@
 > M5 `EntityManager` + 实体射线 + **M7 方块锚定装置模式**。创造台那行留给 M9（届时改写为
 > `setBlocks` 真实方块路径，不是「mesher 顶点模板机制」）。
 
+> v1.40 修订说明：**M9 创造台的三项架构口径变更**（2026-09-12，§4.5.4 / §5 / DR-17 / §9）。
+> 属第三阶段第二个 Epic 的设计同步（规格
+> `docs/superpowers/specs/2026-09-11-m9-playground-design.md`）。本节两项同样是**新数据通道
+> 消费者 + 物品集合口径**变更，故进修订说明并 bump 版本号（v1.39 已被 M8 占用）。
+>
+> ① **DR-17 的 blockEntity 通道经第三批消费者验证**（DR-17 回填 + §9 扩展点表）。
+> `playground` 锚点（`{kind:'playground', id, origin, size}`）复用 M7 装置模式的**持久层
+> 半边**（`listBlockEntities(kind)` 扫库恢复 + 判上限），但**不复用 controller / 增量失效
+> 那半边** —— 创造台不刷怪、不射击、无运行时行为，它的 `blockEntity` 只是「平台在哪、多大」
+> 的持久真相（关闭时由 `origin + size` 确定性重算枚举，见本节 ③）。三个 kind
+> （zombie-nest / turret / playground）共用同一 edits 通道，未引发 schemaVersion 变更。
+> §9 的创造台那行标为「✅ M9 已交付」，并把接入点表述订正为实际路径：走
+> `WorldEditor.setBlocks` 的**真实方块**（平台是可挖可放的真实体素），
+> **不是**「mesher 顶点模板机制」（原表述是 M8 之前留下的规划语，与实际实现不符）。
+>
+> ② **物品集合口径 118 → 116**（§4.5.4）。创造台两项（`playground_block` /
+> `playground_center_block`）加进 `HIDDEN_FROM_INVENTORY`（4 → 6 项），门禁打印的
+> 「排除 N」是两个排除集合之和（8 → 10）。**这不是「新增排除项」的常规改动，而是一处既有
+> 偏差修正**：本仓物品集合是**派生集合**（registry − 排除集合），而 mc-lite 是**手工列举**
+> （`Game.js:206-321` 实测 107 行 `inventory.add(...)` 匹配，其中 2 行被注释掉
+> （`handrailB` / `cloud`）→ **有效 105 项**）且天然不含这两项。派生口径下它们此前就在背包里
+> → 玩家能从背包选中并放置平台方块；配上 M9 的 `indestructible` 登记会产出**撕裂状态**
+> （放得出来但挖不掉、TNT 也炸不掉，只能靠「关闭创造台」批量删）。故登记与移出**必须成对做**
+> —— 这也是 M8 / M9 拆分的分界依据（M8 期间两项都不碰 → 无害）。
+> 这是一处新的有意偏离 mc-lite（**不并入** §4.3 / §4.5.4 那个视觉比对专用的编号清单）。
+>
+> ③ **平台方块集合不维护副本 —— 红线 1 的具体应用**（§4.1 数据权威 / DR-17）。mc-lite 的
+> `playgroundBlocks: Set<'x,y,z'>`（2916 个字符串键）不移植：平台是规则 54×54 矩形，
+> 坐标由 `origin + size` 纯计算得出 → 关闭时枚举即可。把它记下来会引入「平台有哪些方块」的
+> 第二份权威（且与 `blocks` typed array 必然漂移 —— 玩家挖掉一格平台后方块集合就成了谎话）。
+
 ---
 
 ## 1. 背景与目标
@@ -1725,7 +1756,10 @@ Inventory(size)  // slots[]、selectedSlot、add/remove/has/getSelected/selectSl
   `DEFAULT_INVENTORY_COUNT = 1500` 是创造模式填充时**每格的 count**（mc-lite `GameConfig.js:9`）。
   本设计文档 v1.16 前的 §4.5.4 曾写「mc-lite 默认 1500 格语义」，把二者混为一谈，已勘误。
   M3.1 实际填充 122 槽（物品集合大小），其余 878 槽留空供后续生存 Epic 的掉落/拾取使用。
-  **2026-09-03 起口径变更为 118 槽**（排除 `chimney` 与床三项，见下方物品集合段落），其余 882 槽留空；
+  口径历经两次变更：**2026-09-03 → 118 槽**（排除 `chimney` 与床三项）、
+  **2026-09-12（M9）→ 116 槽**（再排除创造台两项，见下方物品集合段落），其余槽位留空。
+  ⚠️ **实际填充槽数 = 物品集合大小**，计数以 `npm run check:data` 的 `[物品集合]` 输出为准
+  （本文件不携带硬编码计数 —— 同一事实的多个副本会漂移）；
 - **创造模式不消耗**：`count` 仅为占位字段，放块/挖掘不递减，`remove()` 保留供后续生存
   Epic 使用；**UI 不渲染数量**（无限背包语义，显示 1500 是噪声）。mc-lite 显示 count，
   此处为产品决策差异，非遗漏。
@@ -1737,11 +1771,13 @@ Inventory(size)  // slots[]、selectedSlot、add/remove/has/getSelected/selectSl
   （mc-lite 同行为），放块取 `getSelected()` 的物品；
 - `Player.placeBlock()` 从 `inventory.getSelected().item` 解析方块 ID，**不再索引常量数组**。
 
-物品集合：BlockRegistry 全部条目，排除两类 →**118 项**：
+物品集合：BlockRegistry 全部条目，排除两类（**派生集合**，计数以 `npm run check:data` 的
+`[物品集合]` 输出为准；2026-09-12 起为 **116 项** = registry 126 − 排除 10）：
 - `air`、`collider`、`calcite`、`realistic_trunk_collider`（**非玩家可放置的功能性方块**；
   mc-lite 背包同样排除这 4 项）；
-- `chimney`、`bed_head`、`bed_tail`、`bed_alias_block`（**可放置但不进背包**，2026-09-03 新增
-  排除，归 `HIDDEN_FROM_INVENTORY` 常量）——
+- `chimney`、`bed_head`、`bed_tail`、`bed_alias_block`、`playground_block`、
+  `playground_center_block`（**可放置但不进背包**，归 `HIDDEN_FROM_INVENTORY` 常量，共 6 项；
+  前四项 2026-09-03 新增，后两项 **M9 新增**）——
   - `chimney`（烟囱）：`solid:true` + 有 `faces-data` + 能放能挖，是正常可放置方块。对齐依据：
     mc-lite 背包清单是 `Game.js:206+` **手工列举 107 项**，实测核对 `chimney` 不在其中（非推测）。
   - `bed_head`/`bed_tail`/`bed_alias_block`（床）：**床渲染存在未修复的镂空透视问题**
@@ -1783,7 +1819,10 @@ icon.style.background = manifest.hotbar[name];   // 1 行
 实测背包实心 104 项里 17 项是多面不同贴图（`grass` 顶绿侧土、`chest`/`tnt` 顶侧不同），
 旧的单面采样会让 `grass` 顶面渲成土色。
 
-**覆盖范围（118 项全量）**：等轴测 104 项 + 平面 14 项。平面清单
+**覆盖范围（物品集合全量，2026-09-12 起 = 等轴测 100 项 + 平面 16 项）**：⚠️ 计数以
+`npm run check:data` 的 `[物品集合]` 与 `[图标]` 输出为准（历史漂移记录：v1.26 成文时是
+「118 = 等轴测 104 + 平面 14」，M7/M8 加两个 alias 方块与 M9 移出创造台两项后为
+「116 = 100 + 16」）。平面清单
 （`tools/icon-fingerprint.mjs` 的 `FLAT_BLOCKS`，用户指定口径）= `water`/`swamp_water`/`cloud`/
 `flower`/`short_grass`/`allium`/`azure_bluet`/`dead_bush`/`oxeye_daisy`/`red_mushroom`/`vine`/
 `lilypad`/`mine_cart`/`hanging_lamp` —— 等轴测立方体对植被/水/云不合适（植被贴图有透明像素，
@@ -1804,6 +1843,11 @@ mesher 无其几何模板 → 等轴测不适用）。
 > `playground_block`/`playground_center_block`；反向差集 1 项 `gold`（mc-heavy 无此方块）。
 > **本次只按指令排除 chimney + 床三项**，其余差异项未动——若要全面对齐 mc-lite 的 107 项清单，
 > 需单独决策（`sky_*` 是本仓库独有的 M2-7 内容，不宜简单删除）。
+>
+> **2026-09-12（M9）更新**：上表差集里的 `playground_block` / `playground_center_block`
+> **已对齐 mc-lite**（加进 `HIDDEN_FROM_INVENTORY`，见 v1.40 修订说明 ②）；其余差异项仍未动。
+> ⚠️ 该段引用的 mc-lite 侧计数须实测复核（`Game.js:206-321` 实测 107 行匹配、其中 2 行被
+> 注释掉 → **有效 105 项**）；此处保留历史原文不追改。
 
 **物品顺序（冻结）**：`slots[0..4]` = `stone`、`dirt`、`grass`、`sand`、`cobblestone`
 （即 M3-4 既有 `HOTBAR_ITEMS`，保持快捷栏默认观感与既有测试断言不变），
@@ -2041,7 +2085,7 @@ mc-heavy/
    │               # M8：turret-armor-texture.js turret-renderer.js projectile-renderer.js explosion-renderer.js
    ├─ player/      # player.js physics.js raycast.js interaction.js inventory.js
    ├─ save/        # persistence.js codec.js
-   ├─ ui/          # hud.js hotbar.js inventory-ui.js
+   ├─ ui/          # hud.js hotbar.js inventory-ui.js toast.js（M9 非模态提示）
    └─ workers/     # world-worker.js（GEN/MESH/LIGHT 统一入口，池化）
 ```
 
@@ -2054,9 +2098,15 @@ mc-heavy/
   （图案参数与指纹的单一权威，烘焙脚本与 `check:data` 门禁共用）；
 - `src/entities/`（M5 起）+ **M8 新增 `src/entities/turrets/`**：
   `turret-config.js` / `turret-blueprint.js` / `turret-service.js` / `turret-controller.js` /
-  `turret-system.js`（同构纯函数索敌）/ `projectile-system.js`。
-
-⚠️ `src/ui/toast.js` 属 **M9** 交付物，M8 不登记（提前登记会在清单里写进一个不存在的文件）。
+  `turret-system.js`（同构纯函数索敌）/ `projectile-system.js`；
+- **M9 新增 `src/entities/playground/`**：`playground-config.js`（冻结数值）/
+  `playground-service.js`（平台生成 / 关闭 / 锚点持久层 / 导入导出）；
+- **M9 新增 `src/ui/toast.js`**：轻量非模态提示（不进 `uiModal` 模态栈 —— 提示期间玩家仍须能
+  操作世界）。首个消费者是创造台的成功/失败提示，后续 Epic 可复用；
+- **M9 新增测试产物**：`src/tests/test-playground.js`（浏览器内单测）+
+  `tests/playground.spec.mjs`（E2E）；
+- **M9 新增验收报告** `docs/m9-playground-acceptance-report.md`（与 M4~M8 同结构：
+  实测数据 / 偏离表 / 负向验证清单）。
 
 与 mc-lite 的关键差异：没有 FaceCullingSystem / ChunkConsolidation / BlockScatterManager /
 GlobalInstancedMeshManager / WorldBoundsController / WorldGenerationService(预生成) /
@@ -2084,7 +2134,7 @@ AOBridge / AOWorker / 八个 Worker 文件——它们的职责被 §4 的四个
 | DR-14 | 第一阶段**不启用阳光遮挡投影**：skylight 恒 15，视觉明暗 = AO 墙角阴影 + 日夜全局调制（v1.9 产品决策）；遮挡模型（垂直 pass + 水平 BFS）与 light 任务中心权威写回机制保留，后续阶段启用 | 高度图以下衰减近似 / Minecraft 式遮挡阴影（v1.8） | 高度图衰减在洞穴/悬挑下错误；Minecraft 式遮挡阴影实玩不可接受——大悬空平台/洞穴下方超扩散距离即大片全黑 + 截断渐变环，与 mc-lite 视觉基线冲突，用户明确不要阳光投影。机制保留：5-column region 对中心列充分（15 水平最远 14 格）；写回 5 列 last-write-wins 会覆盖邻列好光（v1.8 已修，中心权威） |
 | DR-15 | 逐面网格化，不用 greedy meshing | greedy meshing | 上一版 mc-heavy（已清空）用过 greedy；逐面在 AO/编辑增量更新/UV 映射上显著更简单，三角形多 2~3× 但当前瓶颈是 draw call 而非三角形（WebGPU 下三角形吞吐充裕）；视距 16+ 若三角形成为瓶颈再评估 greedy 或 LOD |
 | DR-16 | 卸载滞回（加载半径 +2）+ 重入 LRU（短 TTL 保留体素与 GPU 缓冲） | 出圈即释放 | 玩家在加载半径边界来回走会造成 GEN/MESH/上传全链路 thrashing；滞回带 + LRU 重入零成本恢复，只多占一点显存，回头跑不卡；显存上限由 LRU 配额兜底（§4.9/§4.10） |
-| DR-17 | 权威数据源含方块实体通道：`blocks`+`meta`+`blockEntities` 稀疏 Map；light 为派生缓存非权威 | 富状态塞 meta / 用 InstancedMesh userData 暂存（mc-lite 补丁） | 宝箱库存/告示牌文字/灯开关等富状态塞不进 8bit meta；mc-lite 已有 `_saveChestStates()`（ChunkConsolidation.js:597）证明需求真实，但用 userData 暂存是补丁式实现。做成数据模型一等公民：edits 条目、持久化 schema、重放逻辑现在定形状，第一阶段只预留不实现消费者，避免后续回填引发 schemaVersion + edits 重放二次重构。light 可从 blocks+emissive 重算收敛，不得当真相来源（§4.1）。**首个消费者已由 M7 落地（2026-09-10）**：丧尸巢穴锚点（`{kind:'zombie-nest', id, origin, critical, lastSpawnAt}`）随 edits 落盘，验证了当初预留的形状够用 —— 无需 schemaVersion 变更、无需二次重构（预留收益已兑现）。**第二批消费者已由 M8 落地**：炮塔锚点（`{kind:'turret', id, origin, critical, rotation, lastFireAt}`）。（`playground` kind 属 **M9** 范围，届时再回填。）两个 kind（zombie-nest / turret）共用同一 edits 通道与 `Persistence.listBlockEntities(kind)` cursor 扫库判上限，未引发 schemaVersion 变更 —— DR-17 当初预留的形状经第二批消费者验证够用。后续床/宝箱等同类装置可直接复用此通道，见 roadmap「M7 交付的可复用模式」段 |
+| DR-17 | 权威数据源含方块实体通道：`blocks`+`meta`+`blockEntities` 稀疏 Map；light 为派生缓存非权威 | 富状态塞 meta / 用 InstancedMesh userData 暂存（mc-lite 补丁） | 宝箱库存/告示牌文字/灯开关等富状态塞不进 8bit meta；mc-lite 已有 `_saveChestStates()`（ChunkConsolidation.js:597）证明需求真实，但用 userData 暂存是补丁式实现。做成数据模型一等公民：edits 条目、持久化 schema、重放逻辑现在定形状，第一阶段只预留不实现消费者，避免后续回填引发 schemaVersion + edits 重放二次重构。light 可从 blocks+emissive 重算收敛，不得当真相来源（§4.1）。**首个消费者已由 M7 落地（2026-09-10）**：丧尸巢穴锚点（`{kind:'zombie-nest', id, origin, critical, lastSpawnAt}`）随 edits 落盘，验证了当初预留的形状够用 —— 无需 schemaVersion 变更、无需二次重构（预留收益已兑现）。**第二批消费者已由 M8 落地**：炮塔锚点（`{kind:'turret', id, origin, critical, rotation, lastFireAt}`）。**第三批消费者已由 M9 落地（2026-09-12）**：创造台锚点（`{kind:'playground', id, origin, size}`）—— 它只用该通道的**持久层半边**（`listBlockEntities(kind)` 扫库恢复 + 判上限），不复用 controller / 增量失效那半边（创造台无运行时行为，见 v1.40 修订说明 ①）。三个 kind（zombie-nest / turret / playground）共用同一 edits 通道与 `Persistence.listBlockEntities(kind)` cursor 扫库判上限，未引发 schemaVersion 变更 —— DR-17 当初预留的形状经第三批消费者验证够用。后续床/宝箱等同类装置可直接复用此通道，见 roadmap「M7 交付的可复用模式」段 |
 
 ---
 
@@ -2168,7 +2218,7 @@ AOBridge / AOWorker / 八个 Worker 文件——它们的职责被 §4 的四个
 | 炮塔/飞行弹丸 ✅ **M8 实施中** | M5 EntityManager + 实体射线 + 8 部件 InstancedMesh（单材质单纹理 UV 分区）+ **M7 方块锚定装置模式** | M8 Epic；装置层（`blockEntity` 锚点 + `block-changed` 增量失效）/ AI（主线程同构纯函数，见 §4.5.5 的 LOS 判定）/ 渲染 / 弹丸四步串行 |
 | 玩家生存战斗 | M5 EntityManager + 玩家状态/HUD + 事件 | 独立 PlayerVitals Epic；定义近战、伤害、无敌、死亡与重生后才实施，不夹带入 M6 |
 | 矿车/轨道 | 方块属性（track 类型）+ 实体运动系统 | BlockRegistry 的 `interact`/`onStep` 钩子 |
-| 创造台 | 模型编辑 → 注册自定义 geometry 模板 | mesher 顶点模板机制 |
+| 创造台 ✅ **M9 已交付** | `WorldEditor.setBlocks` **真实方块**（54×54 平台）+ `blockEntity` 锚点（M7 装置模式的持久层半边）+ 模型 JSON 导入导出 + 面板动作按钮与 toast | 平台方块登记 `indestructible` 并移出背包（v1.40 修订说明 ②）；**不维护方块集合副本**（红线 1，v1.40 ③）。⚠️ 原「mesher 顶点模板机制」是 M8 前的规划语，与实际实现不符 —— 平台是可挖可放的真实体素 |
 | 灯/光源 | emissive 属性 + blocklight flood fill | 光照管线已含 |
 | 床/宝箱/门 | 多方块结构 + 朝向 + 交互钩子 + 富状态（库存/文字） | meta/orientation 位、`blockEntities` 通道（§4.1）、交互事件 |
 | 存档迁移 | save/codec 版本字段 | schemaVersion 机制 |

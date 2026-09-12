@@ -21,13 +21,14 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
 ## 当前进度
 
 **项目进度的唯一总览是 [`docs/roadmap.md`](docs/roadmap.md)**（里程碑总表 M0~M9 + 第二阶段
-依赖链 + **第三阶段依赖链（M8→M9，待实施）** + 后续扩展点）。本文件不复制进度表 ——
+依赖链 + 第三阶段依赖链（M8→M9）+ 后续扩展点）。本文件不复制进度表 ——
 同一事实的多个副本会漂移。
 
 一句话现状：第一阶段 M0~M3 + 两个收尾补丁项已完成；**第二阶段 M4~M7 全部完成并验收**
 （M7 玩家放置丧尸巢穴，验收报告 `docs/m7-zombie-nests-acceptance-report.md`）——
-Epic 链 M4→M5→M6→M7 已全部交付。**第三阶段 M8（TNT 爆炸 / 炮塔弹丸）→ M9（创造台）
-已规划、规格与计划定稿（经四轮审查），尚未开工。** 里程碑状态、验收报告、遗留 TODO 的
+Epic 链 M4→M5→M6→M7 已全部交付。**第三阶段 M8（TNT 爆炸 / 炮塔弹丸）与 M9（创造台）
+均已完成并验收**（验收报告 `docs/m8-tnt-turret-acceptance-report.md` /
+`docs/m9-playground-acceptance-report.md`）。里程碑状态、验收报告、遗留 TODO 的
 完整清单**一律查 roadmap** —— 此处不复制（复制就会漂移）。
 
 **历次 bugfix / 改造的完整记录不在本文件。** 权威副本：**第一阶段独立改动**在设计文档修订说明 +
@@ -38,7 +39,11 @@ M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 
 
 测试现状：Playwright spec 全量 + 浏览器内单元测试全绿。**用例计数以 `npm run check:data`
 输出为准，不在文档硬编码**（同一事实的多个副本属「改动放大器」，违反红线 1 精神）。
-`m1-acceptance` 计时断言在高负载下偶发贴线 flaky（16.7±1e-6 / 2.1ms），单独复跑通过。
+⚠️ **三条计时型 spec 在高负载下偶发贴线 flaky，单独复跑通过**（不改断言、不放宽阈值）：
+`m1-acceptance`（放挖 p95，16.7±1e-6 / 2.1ms）、`m3-rain`（截图差分）、
+`weapons-world-edit`（200 次射击计数 —— 等待 95ms vs 冷却 90ms，余量 5ms < 一个 vsync 量子
+8.33ms，少渲染一帧就计 199）。同类根因还有 bench 场景 ④ 的 frameP95 门禁（9↔10 量子边界）
+—— 门禁阻断时先做**交替对照**，不要看单次数值。
 
 ### 活跃约束（历次改动沉淀，会影响后续实现决策）
 
@@ -68,9 +73,13 @@ M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 
 - **cutout 扩容是离散 ×1.5 跳增，容量须留足余量**：往 cutout 通道加方块量（新植被/新结构）
   时须重测峰值并重标定 `CAPACITY.cutout.active`（当前 550）—— 差一点就会触发扩容撞破内存
   预算。实测数据见 roadmap 同段。
-- **背包物品集合口径 118 项** = registry 126 − `NON_PLACEABLE_ITEMS`（4 项功能性方块）−
-  `HIDDEN_FROM_INVENTORY`（4 项可放置但不进背包）。**两个集合语义互斥，勿混为一处**
+- **背包物品集合口径 116 项** = registry 126 − `NON_PLACEABLE_ITEMS`（4 项功能性方块）−
+  `HIDDEN_FROM_INVENTORY`（6 项可放置但不进背包：chimney + 床三项 + **M9 创造台两项**）。
+  ⚠️ 门禁 `[物品集合]` 打印的「排除 N」是**两个集合之和**（当前 `排除 10`），与
+  「`HIDDEN_FROM_INVENTORY` 6 项」不是一个口径，勿混写。**两个集合语义互斥，勿混为一处**
   —— 把可放置方块塞进 `NON_PLACEABLE_ITEMS` 会让集合语义失真。
+  ⚠️ 本条是「现状快照」（可带数字）；**其余文档与代码注释一律不硬编码计数**，以
+  `npm run check:data` 的 `[物品集合]` 输出为准（M9 已把代码注释里 8 处硬编码计数改掉）。
 - **床渲染镂空问题未修**（床侧面一个面无贴面 → 透视穿帮）。当前靠「不入背包 → 玩家选不到 →
   实际不会被放置」**规避而非修复**；TODO 标注在 `src/mesh/mesher.js`，归属床/宝箱/门多方块 Epic。
 - **背包图标是离线烘焙产物**（`assets/icons-atlas.png`）。改**背包内方块**的贴图地址或 mesher
@@ -220,7 +229,8 @@ M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 
   `onColumnReady` 早在放置前触发过了，不会再为新锚点触发一次 → 没有这条接线则新装置永不工作
   （方块全写对、anchor 也在、索引也登记了，肉眼看不出差别）。
 - **多格结构的放置必须走「物品名路由」，不能只接测试 API**（M7 用户实玩发现的缺陷）：
-  `zombie_nest_alias_block` 在背包集合 118 项内（与 mc-lite 同口径），玩家从背包面板选中图标后
+  `zombie_nest_alias_block` 在背包物品集合内（计数以 `npm run check:data` 为准；与 mc-lite 同口径），
+  玩家从背包面板选中图标后
   右键走的是 `placeBlock()` 的**常规单格 `editor.setBlock`** 路径 → 只放出一个贴了图案的正方体。
   修法 = 取背包槽后判 `CREATIVE_SPECIALS.has(slot.item)` → 命中则调实体放置并 `return`，
   **不回落到单格放置**。mc-lite 同手法：`PlayerInteraction.tryPlaceBlock()` 判
@@ -281,6 +291,30 @@ M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 
   —— 只读渲染矩阵的单测全绿，因为它验的是渲染层（对的），错的是另一套公式。断言必须落在
   **两条路径的交叉比对**上（`muzzle()` 方向 == 渲染矩阵变换出的炮口位置）。床/宝箱等后续带朝向
   的装置同理。
+
+### M9 创造台沉淀的活跃约束（后续同类装置 Epic 必读）
+
+- **创造台不维护「平台有哪些方块」的副本**（红线 1）：mc-lite 的 `playgroundBlocks: Set<'x,y,z'>`
+  （2916 个字符串键）不移植。平台是规则 54×54 矩形，坐标由 `origin + size` 确定性重算 →
+  关闭时枚举即可。把它记下来会引入第二份权威，且与 `blocks` typed array 必然漂移
+  （玩家挖掉一格平台后，方块集合就成了谎话）。
+- **创造台只用装置模式的「持久层半边」，不用 controller / 增量失效那半边**：它无运行时行为
+  （不刷怪、不射击），`blockEntity` 只是「平台在哪、多大」的持久真相。⚠️ **后续「无行为的
+  方块装置」**（如纯装饰结构）**同理** —— 别照 M7/M8 给它建 controller，那是无谓复杂度。
+- **创造台方块登记 `indestructible` 且移出背包，两者必须成对**：只登记不移出会产出
+  「玩家放得出来但挖不掉、TNT 也炸不掉」的撕裂状态（M8/M9 拆分的分界依据）。
+  `check:data` 的 `[创造台]` 环节钉住三项同时成立（名字在 registry / 标 indestructible / 不在背包）。
+- **平台方块的不可破坏门控是「零代码改动生效」**：`indestructibleTable` 的三个消费者
+  （徒手挖块 / 枪械破坏 / 爆炸过滤）都读同一张表 → M9 只改了 `blocks-data.js` 两行声明，
+  三处门控自动覆盖（M8 交付该表时的收益兑现）。**后续加新的不可破坏方块同理** ——
+  只改声明，不要在消费者侧补字面量。
+- **`_hasOverlap` / `exportModel` 是主线程大体积扫描，但实测不构成卡顿**（M9 实测：
+  `_findSafeHeight` 最坏 28.3ms / `exportModel` 2500 格 5.9ms / `create()` 全流程 26.7ms）——
+  `getBlockId` 是 O(1) typed-array 读，326 万次也只 28ms。**故按计划不做增量优化**
+  （「实测数据决定是否优化，不预先优化」）。⚠️ 后续同类扫描先实测再决定，别预先优化。
+- **2916 格单次 `setBlocks` 事务 2 帧即收敛、队列零积压**（M9 实测 `meshQueued`/`pendingMesh`
+  峰值均 0）→ **无需分帧提交**。bench 场景 ④「批量删 500 块」是既有对照基线，2916 格约为其
+  5.8 倍仍无积压。⚠️ 后续更大的批量编辑先实测收敛再决定是否分帧。
 
 ## 权威文档（动手前必读）
 
@@ -407,10 +441,13 @@ mc-heavy/
 ├─ docs/
 │  ├─ roadmap.md              # 项目进度唯一总览（里程碑总表 + 依赖链 + 扩展点）
 │  ├─ phase-1-engine-design.md # 架构唯一权威（版本号见该文档首行）
-│  └─ testing-policy.md        # 测试分级唯一权威（Tier 1~4 判据 + 门禁分层）
+│  ├─ testing-policy.md        # 测试分级唯一权威（Tier 1~4 判据 + 门禁分层）
+│  ├─ m{0,1,2-m3,4,5,6,7}-*-report.md    # 第一阶段里程碑实测与验收报告（m3-* = 冻结性能基线）
+│  └─ m{4,5,6,7,8-tnt-turret,9-playground}-*-acceptance-report.md
+│                              # 各 Epic 验收报告（实测数据 / 偏离表 / 负向验证清单 / 操作失误）
 ├─ tools/build-atlas.mjs       # atlas 离线打包（npm run atlas）
 ├─ tools/bake-procedural-textures.mjs # 程序化贴图烘焙（mc-lite canvas 材质 → PNG）
-├─ tools/bake-icon-atlas.mjs   # 全量背包图标离线烘焙（npm run icons）：118 项×两套尺寸
+├─ tools/bake-icon-atlas.mjs   # 全量背包图标离线烘焙（npm run icons）：物品集合全量×两套尺寸
 │                              #   → assets/icons-atlas.png + icons.json（预生成 CSS 串+指纹）
 ├─ tools/icon-fingerprint.mjs  # 图标输入指纹共享模块：烘焙脚本与 check:data 同一份逻辑（红线 1）
 ├─ tools/bake-zombie-head.mjs  # 丧尸头部马赛克纹理烘焙（npm run zombie）：128×64 双区并排
