@@ -15,10 +15,34 @@
 import {
   VIEW_DISTANCE_OPTIONS, VISUAL_STYLE_OPTIONS, saveStoredSettings,
 } from './settings.js';
+import { Toast } from './toast.js';
 
 const STYLE_ID = 'mc-settings-style';
 /** 「删除缓存」按钮的常态文案。复位与构造必须共用同一份 —— 写两处会漂移（红线 1 精神） */
 const CLEAR_SAVE_LABEL = '删除缓存';
+
+/**
+ * M9：创造台按钮的**两态文案单一口径**（导出供 `src/tests/test-ui.js` 钉死）。
+ * 构造与状态切换都必须用这两个常量 —— v1.35 踩过同一个坑（`_resetDangerArmed()` 写死旧长文案
+ * 覆盖了构造时的短文案，构造代码形同虚设）。mc-lite `UIManager.js:354-364` 同手法。
+ */
+export const PLAYGROUND_OPEN_LABEL = '打开创造台';
+export const PLAYGROUND_CLOSE_LABEL = '关闭创造台';
+/** 导出 / 导入按钮文案 */
+const EXPORT_LABEL = '导出模型';
+const IMPORT_LABEL = '导入模型';
+
+/**
+ * M9：创造台操作的错误文案映射（单一口径，不散落字面量）。
+ * key = `PlaygroundService` 返回的 reason；未命中的 reason 回落「操作失败：{reason}」。
+ */
+export const PLAYGROUND_ERRORS = {
+  exists: '创造台已存在',
+  'no-safe-location': '无法找到合适的空间，请移动位置',
+  'not-loaded': '附近区块尚未加载，请稍候重试',
+  'not-active': '创造台未激活',
+  'player-in-playground': '请离开创造台区域后再关闭',
+};
 
 /**
  * mc-lite global.css 设置弹窗相关规则的移植（选择器加 mc- 前缀避免污染宿主页面）。
@@ -128,6 +152,16 @@ export class SettingsPanel {
     this.root = root;
     ensureStyle();
 
+    // M9：创造台面板状态 + toast 实例。⚠️ 字段名是 **this.game**（既有构造存的），不是
+    // this._game —— 所有调用一律用 this.game。
+    // 初值取服务真实状态（reload 后创造台可能已从锚点恢复 → 按钮须显示「关闭创造台」）。
+    this._playgroundActive = game.playground?.isActive() ?? false;
+    /** 防重复点击锁（mc-lite isPlaygroundOperationInProgress 同手法）：2916 格写入是秒级操作，
+     *  重复点击会产出两个平台或半删状态 */
+    this._playgroundBusy = false;
+    /** toast 实例（⚠️ 必须真的赋值，否则 this._toast?.show(...) 静默不显示 → 规格 §3 验收项落空） */
+    this._toast = new Toast({});
+
     // ⚙ 按钮（mc-lite #settings-btn：常驻右上、hover 提亮；坐标 HUD 下方避让）
     this.btn = document.createElement('div');
     this.btn.id = 'settings-btn';
@@ -166,6 +200,7 @@ export class SettingsPanel {
     right.appendChild(this._rowViewDistance());
     right.appendChild(this._rowBudget());
     right.appendChild(this._rowTntDamage());        // M8：TNT 破坏开关（右列独立一行）
+    right.appendChild(this._rowPlayground());        // M9：创造台（右列，纵向余量更大）
     right.appendChild(this._rowWorld());             // 新世界 + 删除缓存共用一行
 
     const footer = document.createElement('div');
@@ -371,6 +406,131 @@ export class SettingsPanel {
     return row;
   }
 
+  /**
+   * M9：「创造台」组 —— 主按钮（打开/关闭，两态）+ 导出/导入（仅激活时可见）。
+   *
+   * ⚠️ 落位 = 右列独立一行（.mc-item，CLAUDE.md「新配置往右列填」）。不进左列合并盒 ——
+   * 与 _rowTntDamage 同一理由：创造台是单组三按钮，不满足「两组两按钮档位优先用合并盒」的前提，
+   * 且触碰左列合并盒会撞 v1.35 的 CSS 特异性陷阱。
+   *
+   * ⚠️ **三处必须一起做**（缺一处即构造期 TypeError 或功能落空）：
+   * ① 主按钮 onclick → _onPlaygroundToggle；② 导出/导入 onclick → _onExport/_onImport
+   * （都必须定义，被调用但从未定义会 TypeError）；③ 末尾调 _syncPlaygroundVisibility
+   * 设初始可见性（构造时 _playgroundActive 可能已是 true —— reload 恢复的场景）。
+   */
+  _rowPlayground() {
+    const row = document.createElement('div');
+    row.className = 'mc-item';
+    const t = document.createElement('span');
+    t.className = 'mc-title';
+    t.textContent = '创造台';
+    row.appendChild(t);
+
+    const group = document.createElement('div');
+    group.className = 'mc-btn-group';
+    row.appendChild(group);
+
+    // 主按钮（两态）：文案取导出常量（单一口径）
+    this._playgroundBtn = document.createElement('button');
+    this._playgroundBtn.id = 'btn-playground';
+    this._playgroundBtn.addEventListener('click', () => this._onPlaygroundToggle());
+    group.appendChild(this._playgroundBtn);
+
+    // 导出 / 导入：仅创造台激活时可见（mc-lite style.display 同手法）
+    this._exportBtn = document.createElement('button');
+    this._exportBtn.id = 'btn-playground-export';
+    this._exportBtn.textContent = EXPORT_LABEL;
+    this._exportBtn.addEventListener('click', () => this._onExport());
+    group.appendChild(this._exportBtn);
+
+    this._importBtn = document.createElement('button');
+    this._importBtn.id = 'btn-playground-import';
+    this._importBtn.textContent = IMPORT_LABEL;
+    this._importBtn.addEventListener('click', () => this._onImport());
+    group.appendChild(this._importBtn);
+
+    this._syncPlaygroundVisibility();   // 初始可见性（构造时可能已激活）
+    return row;
+  }
+
+  /** 主按钮文案随状态切换 + 导出/导入可见性同步（两态文案都用导出常量，不写字面量） */
+  _syncPlaygroundVisibility() {
+    this._playgroundBtn.textContent =
+      this._playgroundActive ? PLAYGROUND_CLOSE_LABEL : PLAYGROUND_OPEN_LABEL;
+    const vis = this._playgroundActive ? '' : 'none';
+    this._exportBtn.style.display = vis;
+    this._importBtn.style.display = vis;
+  }
+
+  /**
+   * 「创造台」主按钮：未激活 → 生成；已激活 → 关闭。
+   * ⚠️ **防重复点击锁**（mc-lite isPlaygroundOperationInProgress 同手法）：2916 格写入是
+   * 秒级操作，重复点击会产出两个平台或半删状态。busy 期间 disabled 且直接 return。
+   */
+  _onPlaygroundToggle() {
+    if (this._playgroundBusy) return;
+    this._playgroundBusy = true;
+    this._playgroundBtn.disabled = true;
+    try {
+      const result = this._playgroundActive ? this.game.closePlayground() : this.game.createPlayground();
+      if (result.ok) {
+        this._playgroundActive = !this._playgroundActive;
+        this._toast?.show(this._playgroundActive ? '创造台已创建' : '创造台已关闭');
+      } else {
+        this._toast?.show(PLAYGROUND_ERRORS[result.reason] ?? `操作失败：${result.reason}`);
+      }
+    } finally {
+      this._playgroundBusy = false;
+      this._playgroundBtn.disabled = false;
+      this._syncPlaygroundVisibility();
+    }
+  }
+
+  /** 导出模型 JSON 并触发浏览器下载（mc-lite exportModel + Blob/createObjectURL 同手法） */
+  _onExport() {
+    const result = this.game.playground.exportModel();   // **同步**返回（规格 §2.4）
+    if (!result.ok) { this._toast?.show(PLAYGROUND_ERRORS[result.reason] ?? '导出失败'); return; }
+    const blob = new Blob([result.json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'model.json';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);   // 释放（mc-lite 同手法）
+    this._toast?.show(`模型导出成功（${result.blocks} 方块）`);
+  }
+
+  /** 导入模型 JSON（文件上传）。⚠️ 文件读取是异步的，须在 finally 释放 busy 锁 */
+  _onImport() {
+    if (this._playgroundBusy) return;
+    this._playgroundBusy = true;
+    const input = document.createElement('input');
+    input.type = 'file'; input.accept = '.json,application/json';   // mc-lite 同手法
+    input.onchange = async () => {
+      try {
+        const file = input.files?.[0];
+        if (!file) return;
+        const jsonText = await file.text();
+        const result = this.game.playground.importModel(jsonText);   // **同步**返回（规格 §2.4）
+        this._toast?.show(result.ok
+          ? `导入完成：放置 ${result.placed}，跳过 ${result.skipped}，无效 ${result.invalid}`
+          : (PLAYGROUND_ERRORS[result.reason] ?? '导入失败'));
+      } finally {
+        this._playgroundBusy = false;   // ⚠️ 异步读取完成才释放锁
+      }
+    };
+    input.click();
+  }
+
+  /**
+   * 打开面板时把创造台按钮状态同步到服务的真实状态。
+   * ⚠️ **不得依赖构造期的初值** —— 面板可能在创造台创建之后才第一次打开（构造时还没创建），
+   * 也可能在别处（测试 API / reload）被改动过。文案仍取导出常量（单一口径，不写字面量）。
+   */
+  _syncPlaygroundState() {
+    this._playgroundActive = this.game.playground?.isActive() ?? false;
+    this._syncPlaygroundVisibility();
+  }
+
   /** 复位破坏性按钮的确认态（打开面板时调用，避免上次未完成的 armed 态残留） */
   _resetDangerArmed() {
     const b = this._clearBtn;
@@ -384,6 +544,7 @@ export class SettingsPanel {
   open() {
     this.el.style.display = 'flex';
     this._resetDangerArmed(); // 破坏性按钮复位，避免上次残留的 armed 态被误触
+    this._syncPlaygroundState(); // M9：创造台按钮状态同步到服务真实状态
     this.game.pushModal('settings'); // M3.1 模态栈（§4.5.4）：原 uiModal=true 会与背包互踩
     this.game.player?.keys.clear(); // 打开瞬间清空按键，防 WASD 粘滞
     if (document.pointerLockElement) document.exitPointerLock();

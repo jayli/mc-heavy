@@ -15,6 +15,13 @@ import { test } from './runner.js';
 import { assertEqual, assertTrue, assertFalse } from './assert.js';
 import { DEFAULT_SETTINGS, resolveSettings, VIEW_DISTANCE_OPTIONS, VIEW_DISTANCE_MIN, VIEW_DISTANCE_MAX } from '../ui/settings.js';
 import { loadIconManifest, iconCss } from '../ui/icons.js';
+// M9：创造台面板的两态文案常量与错误映射是**导出的单一口径**（见下方用例说明）。
+// settings-panel.js 只 import 纯函数模块（settings.js），无 three/无 DOM 顶层副作用 →
+// 可在本单测文件里 import（与 icons.js 同口径）。
+import {
+  PLAYGROUND_OPEN_LABEL, PLAYGROUND_CLOSE_LABEL, PLAYGROUND_ERRORS,
+} from '../ui/settings-panel.js';
+import { Toast } from '../ui/toast.js';
 
 test('settings: 默认值（vd=8 / blur=off / volume=1 / 风格自动）', () => {
   assertEqual(DEFAULT_SETTINGS.viewDistance, 8);
@@ -152,4 +159,59 @@ test('icons: 异形方块图标与其母方块不同（撞脸回归防线）', a
     assertFalse(iconCss(m, 'inventory', a) === iconCss(m, 'inventory', b),
       `${desc} 的图标必须不同（撞脸 = 丢失辨识度）`);
   }
+});
+
+// ---------------------------------------------------------------- M9：创造台面板文案与 toast
+
+/**
+ * 创造台按钮文案是**导出的单一口径常量**（两态 + 错误映射）。
+ *
+ * ⚠️ v1.35 踩坑：`_resetDangerArmed()` 写死旧长文案覆盖了构造时的短文案 → 面板打开后
+ * 显示复位那份，构造代码形同虚设。钉法 = 断言常量**已导出**且值固定 —— 实现里的构造与
+ * 状态切换都必须 import 这两个常量，不得在别处写字面量（写死字面量则本断言与实现脱钩）。
+ *
+ * ⚠️ 这里**不断言面板 DOM**（`playgroundLabel()` 这类方法不存在 —— 断言不存在的方法会让
+ * RED 永远不 GREEN）。面板的 DOM 状态（busy 锁 / 按钮可见性）由 E2E 兜住。
+ */
+test('创造台按钮文案是导出的单一口径常量（两态 + 错误映射）', () => {
+  assertEqual(PLAYGROUND_OPEN_LABEL, '打开创造台');
+  assertEqual(PLAYGROUND_CLOSE_LABEL, '关闭创造台');
+  assertFalse(PLAYGROUND_OPEN_LABEL === PLAYGROUND_CLOSE_LABEL, '两态文案必须可区分');
+  // 错误文案映射同样是单一口径（不散落字面量）：每个 reason 都有文案，且不重复
+  for (const reason of ['exists', 'no-safe-location', 'not-loaded', 'not-active',
+    'player-in-playground']) {
+    assertTrue(typeof PLAYGROUND_ERRORS[reason] === 'string' && PLAYGROUND_ERRORS[reason].length > 0,
+      `${reason} 必须有提示文案（否则玩家只看到裸 reason）`);
+  }
+  assertEqual(PLAYGROUND_ERRORS['player-in-playground'], '请离开创造台区域后再关闭');
+  assertEqual(PLAYGROUND_ERRORS.exists, '创造台已存在');
+});
+
+/**
+ * toast **不进模态栈**（提示期间玩家仍能操作世界）。
+ *
+ * 断言落在 toast 自己的接口上（不需要面板 fixture，也不需要 game 实例）。
+ * ⚠️ 「没进 game.uiModal 栈」这条不在单测里断言 —— uiModal 是 Game 的状态，单测没有 game
+ * 实例。它由 toast 的实现保证（show() 不调 game.pushModal），并在 playground E2E 里兜住。
+ */
+test('toast 不进模态栈且提示期间可见（非模态契约）', () => {
+  const toast = new Toast({ container: { appendChild() {} } });   // 最小桩件容器
+  toast.show('创造台已创建');
+  assertEqual(toast.isModal(), false, 'toast 不是模态');
+  assertTrue(toast.isVisible());
+  assertEqual(toast.message(), '创造台已创建', '文案来自调用方（面板用单一口径映射）');
+  toast.dispose();
+});
+
+test('toast 自动淡出（durationMs 后 hide）且重复调用后一条胜出', async () => {
+  const toast = new Toast({ container: { appendChild() {} } });
+  toast.show('提示', 10);       // 极短时长便于单测
+  assertTrue(toast.isVisible());
+  // 重复调用：覆盖文案 + **重置定时器**（后一条胜出，不排队）。
+  // ⚠️ 第二次也必须传短时长 —— 缺省是 2200ms，不传则 40ms 后仍可见（不是实现缺陷，是断言写错）。
+  toast.show('第二条', 10);
+  assertEqual(toast.message(), '第二条');
+  await new Promise((r) => setTimeout(r, 40));
+  assertEqual(toast.isVisible(), false, '定时器触发 hide');
+  toast.dispose();
 });
