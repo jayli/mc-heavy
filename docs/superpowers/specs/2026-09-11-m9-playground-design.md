@@ -1,6 +1,6 @@
 # M9 创造台（playground）设计
 
-**状态：** 📝 待实施（从 M8 拆出，2026-09-11）
+**状态：** ✅ 已交付（2026-09-12，从 M8 拆出；验收报告 `docs/m9-playground-acceptance-report.md`）
 **定位：** 第三阶段第二个 Epic。mc-lite 的创造台（`PlaygroundService.js`）在 mc-heavy 用
 M4~M7 建立的底座重做：`WorldEditor.setBlocks()` 唯一写入口 + M7 的方块锚定装置模式
 （`blockEntity` 持久真相 + `listBlockEntities` 扫库判上限）。

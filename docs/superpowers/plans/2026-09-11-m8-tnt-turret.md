@@ -2,8 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-> **实施状态（2026-09-11）：** Task 0~7 全部完成；**各 Task 的提交步骤均待用户授权后执行**
-> （尚未提交）。验收报告 `docs/m8-tnt-turret-acceptance-report.md`。
+> **实施状态（2026-09-11）：** Task 0~7 全部完成并已提交（`1b74281`）。
+> 验收报告 `docs/m8-tnt-turret-acceptance-report.md`。
 > 全量回归 108 passed、单测 499 passed、bench 无回退、check:arch/data 全绿。
 > 实施中与本计划的偏差（均为实测必需，详见验收报告 §5）：
 > ① 炮塔底座 dy=1（规格「底座 origin.y」+「origin=blockPos」+「occupied 全空气」三者矛盾，

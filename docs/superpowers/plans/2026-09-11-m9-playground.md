@@ -1,5 +1,21 @@
 # M9 创造台（playground）Implementation Plan
 
+> **实施状态（2026-09-12）：** Task 0~4 全部完成；**各 Task 的提交步骤均待用户授权后执行**
+> （尚未提交）。验收报告 `docs/m9-playground-acceptance-report.md`。
+> 全量回归 114 passed（2 条既有计时型 flaky 单独复跑通过）、浏览器内单测 526 全绿、
+> `check:arch` / `check:data` 全绿（`[物品集合] 116 项 = 排除 10`、`[创造台]` 环节生效）；
+> bench 场景 ④ 的 frameP95 门禁经**交错对照**证明与 M9 无关（HEAD 侧同样阻断）。
+>
+> 实施中与本计划的偏差（均为实测必需，详见验收报告 §4）：
+> ① `_findGroundLevelFromBelow` 按 mc-lite 的**向下扫**实现（计划正文写成向上扫，与上游相反）；
+> ② `physics.pos` 无 `.set()` → E2E 改用 `player.spawn()`（计划的 API 对照表漏了这条）；
+> ③ 计划未列的 `test-inventory-ui.js` 与 `test-weapons.js` MAG7 用例也有冻结断言会被打挂；
+> ④ E2E 视距分配改为「成功路径 vd=4 / not-loaded 路径 vd=2」（实测平台跨约 20 个 column，
+>    vd=2 不足以覆盖 → 直接 not-loaded，与计划假定相反）；
+> ⑤ Toast 样式注入改为幂等（防 fixture 页多次构造产生重复 id）；
+> ⑥ `importModel` 的 skipped 只计硬失败（计划写法会把 no-change 计进去，误导用户）；
+> ⑦ 代码注释里 8 处硬编码 118 改为指向 `npm run check:data` 输出（CLAUDE.md 文档同步规则）。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 交付 mc-lite 的创造台：54×54 平坦平台（玩家可在上面雕模型）+ 中心标记块锚点持久层 + 模型 JSON 导入导出 + 设置面板动作按钮与 toast 提示。

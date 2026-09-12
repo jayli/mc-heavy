@@ -4,7 +4,7 @@
 > **不重复内容** —— 架构决策见设计文档，历次改动记录见其修订说明，任务级执行清单见
 > `docs/superpowers/plans/`。
 
-最后更新：2026-09-11
+最后更新：2026-09-12
 
 ## 一句话现状
 
@@ -22,13 +22,15 @@
 关键 `gold_block` 被破坏即失效），**M7 遗留 TODO 也已补齐**（背包里的巢穴图标改走平面路径 ——
 此前是立方体等轴测图，错的表达，见下节）。**第二阶段 Epic 链（M4→M5→M6→M7）全部交付。**
 
-**第三阶段进行中**：**M8 TNT 爆炸 / 炮塔弹丸已完成并验收**（验收报告
+**第三阶段 M8 → M9 全部完成并验收**：**M8 TNT 爆炸 / 炮塔弹丸**（验收报告
 `docs/m8-tnt-turret-acceptance-report.md`：TNT 3×3×3 破坏 + 5×5×5 连锁 + 4 格 50 伤害 /
 炮塔方块锚定装置 20 上限 + 主线程索敌 + 8 部件实例渲染 / 弹丸走 M5 临时实体、DDA 阻挡 +
-实体 raycast 命中 + 三发 34 伤害）—— 全量回归 108 passed、bench 无回退。
-**M9 创造台待实施**（54×54 平台 + 锚点持久层 + 模型 JSON 导入导出，规格与计划已定稿并经四轮
-审查）。M9 依赖 M8 已交付的 `indestructibleTable`（M8 只登记 `bedrock`，M9 追加创造台两项
-并移出背包 —— 两者必须成对做，否则产出「放得出来但挖不掉」的撕裂状态）。
+实体 raycast 命中 + 三发 34 伤害）；**M9 创造台**（验收报告
+`docs/m9-playground-acceptance-report.md`：54×54 平台 2916 格一次事务写入（2 帧收敛）/
+中心块 `blockEntity` 锚点重启恢复 / 平台方块 `indestructible` + 移出背包（物品集合 118→116）/
+模型 JSON 导入导出格式与 `assets/structures/*.json` 一致 / 面板动作按钮 + 本仓首个非模态
+toast）。M9 依赖 M8 交付的 `indestructibleTable` —— 登记两项与移出背包**成对做**，
+避免「放得出来但挖不掉」的撕裂状态。
 
 ## 里程碑总表
 
@@ -45,7 +47,7 @@
 | **M6 丧尸** | 默认 20 上限 / 20Hz 单条 WorkerPool `ai` RPC / 实体与体素最近命中比较 / 25·35·999 三把枪伤害 / 六部件固定 slot 渲染 / X 键调试生成 | ✅ 完成（2026-09-08，验收报告 `docs/m6-zombies-acceptance-report.md`） | `afb88ad` |
 | **M7 玩家放置丧尸巢穴** | 最高 `gold_block` 的 `blockEntity` 为持久真相 / `block-changed` 失效 / 八 offset × 六层刷怪 / 全局最多 8 个 / 背包图标按物品名路由放置整个 38 方块结构 + `put` 音效 | ✅ 完成（2026-09-10，验收报告 `docs/m7-zombie-nests-acceptance-report.md`） | `e72560d` |
 | **M8 TNT 爆炸 / 炮塔弹丸** | `indestructible` 单一权威（只登记 bedrock）/ TNT 3×3×3 破坏 + 5×5×5 连锁 + 4 格 50 伤害 / 炮塔方块锚定装置（20 上限）+ 主线程索敌 + 8 部件实例渲染 / 弹丸走 M5 临时实体（DDA + 实体 raycast + 三发 34 伤害） | ✅ 完成（2026-09-11，验收报告 `docs/m8-tnt-turret-acceptance-report.md`） | `1b74281` |
-| **M9 创造台（playground）** | 54×54 平台 + 中心块 `blockEntity` 锚点 / 复用 M8 的 `indestructible` 表追加创造台两项 + 移出背包 / 模型 JSON 导入导出 / 面板动作按钮 + toast | 📝 待实施（规格 `docs/superpowers/specs/2026-09-11-m9-playground-design.md`） | — |
+| **M9 创造台（playground）** | 54×54 平台 + 中心块 `blockEntity` 锚点 / 复用 M8 的 `indestructible` 表追加创造台两项 + 移出背包 / 模型 JSON 导入导出 / 面板动作按钮 + toast | ✅ 完成（2026-09-12，验收报告 `docs/m9-playground-acceptance-report.md`） | `aa6cabb` 登记 / `db31ef8` 服务 / `57ca13f` UI |
 
 ## M4 之后的遗留 TODO（M4 阶段 bugfix）
 
@@ -69,6 +71,15 @@ MAG7 曳光终点回归准心轴（v1.36，原用扫描候选当终点导致斜�
 | 事项 | 状态 | 要点 |
 |---|---|---|
 | 背包里的巢穴图标是**立方体等轴测图**（错的表达 —— 该物品代表整个 38 方块结构，不是一个方块） | ✅ 完成（2026-09-10） | **不新增烘焙脚本、不新增运行时分支**：mc-heavy 的图标烘焙**已有平面路径**（`tools/icon-fingerprint.mjs` 的 `FLAT_BLOCKS`，`mine_cart` 已在此），语义与 mc-lite 的 `ItemIconUtils.getCustomIconPath()` 手工图标表**完全一致** —— 都是「绕过立方体生成、直接用手工图」。故只需把 `zombie_nest_alias_block` 加进 `FLAT_BLOCKS` + 跑 `npm run icons`：运行时仍是 1 行 `icon.style.background = ICON_CSS[name]`，指纹门禁自动覆盖，`FLAT_ICON_TILE` 无需加条目（`faces-data.js:109` 已映射同名 tile 且该 tile 在 atlas 内 → 引用完整性门禁不报）。**mc-lite 实测口径**：`getCustomIconPath()` 把 `zombie_nest_alias_block` / `turret_alias_block` / `bed_alias_block` / `mine_cart` 一起映射到手工图，`global.css:46` `.slot img { width:32px; height:32px; image-rendering:pixelated }` → nearest 降采样。**降采样算法单变量对照**（同尺寸只换算法）：单点 nearest 40px 得 57% 不透明 / 799 色（= 源图 74.7% 透明占比的等比结果，保像素风锐利，与 mc-lite `pixelated` 等价）；区域平均得 86% / 426 色（会糊 → 未采用）。**判据用机制而非像素统计**：像素统计区分度不够（HEAD 版立方体也是 63% 不透明 / 435 色 —— alias 的贴图本身就是整张示意图，立方体等轴测采样它也保留 alpha）→ 改用「atlas 内该矩形**逐像素等于源图 nearest 降采样**」：改动侧 **100.0%**（1024/1024 与 1600/1600），HEAD 侧 **7.6% / 6.5%**（只有全透明像素碰巧相同）。**负向验证真 FAIL**：注入「移除 `FLAT_BLOCKS` 条目」→ 指纹回到 `geom:box`、判据降到 7.6%/6.5%。⚠️ **注入第一次没生效**（perl 模式要求 `'mine_cart', 'hanging_lamp',` 前有缩进，实际它接在 `'vine', 'lilypad', ` 后 → 未匹配，指纹仍是 `flat;`）—— 这正是「注入后仍全绿先怀疑落点」的**另一面**：先确认注入真的改了源码，否则「全绿」是假信号。**未加门禁断言**（`CREATIVE_SPECIALS ⊆ FLAT_BLOCKS` 不是必然不变式：未来若有「需特殊放置逻辑但仍是单格方块」的物品，立方体图标恰恰是对的 → 断言会误报，而门禁误报比无门禁更糟）；剩余失效路径属**立刻可见**（打开背包就看到），Tier 3 判据不需门禁。防重犯落在**改动入口注释**（`player.js` 的 `CREATIVE_SPECIALS` —— 做炮塔的人必先改它）+ CLAUDE.md 活跃约束。**连带修正 `player.js` 一段错注释**：原写「不进 Hotbar、不进背包面板」，实测 alias **就在**背包集合 118 项内（槽位索引 75）—— 那个错前提正是 M7「背包放置只放一格」缺陷的根因（验收报告 §3.7 纠正了文档，代码注释没跟上）。验证：`npm run check` 全绿（图标过期 118 项指纹匹配、形状权威 103 等轴测 + 15 平面）+ 浏览器内单测 **451 全绿** + M7 spec **10 passed**；改动不碰热路径（`tools/` + 注释 + 烘焙产物）→ 按门禁分层不需 bench。 |
+
+## M8 / M9 之后的遗留 TODO
+
+| 事项 | 状态 | 要点 |
+|---|---|---|
+| **bench 场景 ④ 的 frameP95 门禁在 vsync 量子边界上随机翻转**（M8 与 M9 都遇到） | 📝 待处理 | 交错对照实测：M9 期间 HEAD 侧同样阻断（10 / 10 / 10.2），两侧分布完全重叠 → 与任何具体改动无关。根因：120Hz 锁帧下 p95 按 8.33ms 一档量子化，基线 9ms 而实测在 9.6~10.2 随机浮动 → 9→10 只差一个量子就报「回退 11%」。**建议**：把该场景的 p95 阈值改成「按量子档容忍」，或把门禁判据改成交替对照（而非单次数值）。⚠️ M8/M9 均**未改断言、未放宽阈值、未重写基线** |
+| **`weapons-world-edit.spec.mjs` 的计时余量不足**（M9 全量回归时暴露） | 📝 待处理 | 200 次射击之间 `setTimeout(95)` vs 手枪冷却 90ms（靠帧循环累加 `dt` 递减）→ 余量 5ms < 一个 vsync 量子（8.33ms），少渲染一帧就计 199。**证据**：同一份代码单独复跑 3/3 全通过 → 间歇性。**建议**：等待改 ≥100ms 或判据改「≥199」。⚠️ M9 未改它的断言 |
+| 创造台导入的「先清模型区」语义（mc-lite `collectModelAreaBlocksToClear`） | 📝 有意未移植 | mc-lite 导入前会把玩家已有模型全删（破坏性操作，须用户授权）。当前口径：同坐标冲突时**后写入者胜出**（`setBlocks` 的 `lastByPos` 去重），不产生撕裂状态。若用户需要「导入即替换整个模型」，须单独确认后再实现 |
+| `tools/bake-procedural-textures.mjs` 的 `textures.turret_alias_block` 生成代码已无消费者 | 📝 待清理 | M8 把炮塔图标改指向 mc-lite 手工原图后遗留（低优先级） |
 
 ## M3.2 之后的独立 bugfix / 改造（v1.19 ~ v1.38）
 
@@ -278,7 +289,7 @@ M4 玩家武器 ──▶ M5 实体运行时 ──▶ M6 丧尸 ──▶ M7 �
 - M4 Task 6 挂 KeyR 切武器依赖 M3.1 交付的 `uiModal` keydown 守卫；
 - M4 plan Task 2 的 `getBlockMeta` 已由 M3.2 **提前交付**，改为「验证已交付 + 补断言」。
 
-## 第三阶段依赖链（M8 → M9，待实施）
+## 第三阶段依赖链（M8 → M9，已完成）
 
 ```
 M8 TNT 爆炸 / 炮塔弹丸 ──▶ M9 创造台（playground）
@@ -287,7 +298,7 @@ M8 TNT 爆炸 / 炮塔弹丸 ──▶ M9 创造台（playground）
   + 炮塔方块锚定装置 + M5 弹丸）        平台走 setBlocks 真实方块 + 锚点）
 ```
 
-两者**串行**：M9 依赖 M8 交付的 `indestructibleTable`。⚠️ **拆分依据**：M8 只登记 `bedrock`，
+两者**串行且均已完成**：M9 依赖 M8 交付的 `indestructibleTable`。⚠️ **拆分依据**：M8 只登记 `bedrock`，
 创造台两项留在 M9 —— 因为「登记 `indestructible`」与「移出背包」必须成对做，只登记不移出会
 立刻产出「玩家放得出来但挖不掉、TNT 也炸不掉」的撕裂状态（M8 期间没有创造台功能可批量删）。
 规格与计划（经四轮审查定稿）：
@@ -304,7 +315,7 @@ M8 TNT 爆炸 / 炮塔弹丸 ──▶ M9 创造台（playground）
 | TNT / 爆炸 | `WorldEditor.setBlocks(batch)` + REMESH + 球体扩张特效（无粒子系统）—— **M8 已规划** |
 | 炮塔 / 飞行弹丸 | M5 `EntityManager` + 实体 raycast + **M7 方块锚定装置模式**（见下）—— **M8 已规划** |
 | 矿车 / 轨道 | BlockRegistry 的 `interact` / `onStep` 钩子 |
-| 创造台 | `WorldEditor.setBlocks` 真实方块 + `blockEntity` 锚点（M7 装置模式）—— **M9 已规划** |
+| 创造台 ✅ | `WorldEditor.setBlocks` 真实方块 + `blockEntity` 锚点（M7 装置模式的持久层半边）—— **M9 已交付** |
 | 灯 / 光源 | emissive 属性 + blocklight flood fill（光照管线已含） |
 | 床 / 宝箱 / 门 | 多方块结构 + meta/orientation 位 + `blockEntities` 通道 + 交互事件 |
 | 音频 | AudioManager + `block-changed` / 交互事件总线 |
@@ -350,5 +361,6 @@ M7 建立了一套「方块锚定的持久装置」模式，未来炮塔 / 矿�
 | 重构红线、对标 mc-lite 的取舍、**持续生效的架构口径** | `CLAUDE.md`（协作规范） |
 | 实测报告 | `docs/m0-bench-report.md` / `docs/m1-acceptance-report.md` / `docs/m2-m3-performance-report.md` / `docs/m2-seed12345-comparison.md` |
 | M4~M7 验收报告（第二阶段各 Epic 实测 + 负向验证 + 偏离表） | `docs/m{4,5,6,7}-*-acceptance-report.md` |
+| M8 / M9 验收报告（第三阶段各 Epic 实测 + 负向验证 + 偏离表 + 操作失误记录） | `docs/m8-tnt-turret-acceptance-report.md` / `docs/m9-playground-acceptance-report.md` |
 | 性能基线当前值 | `docs/m3-baseline.md`（`npm run bench` 自动生成，勿手改） |
 | 测试用例数、图标项数等计数 | **以 `npm run check:data` 输出为准**，不在文档硬编码 |
