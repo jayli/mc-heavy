@@ -47,7 +47,7 @@ const PANEL_CSS = `
   width: 770px; min-height: 250px; border-radius: 4px;   /* mc-lite #settings-content 同宽 */
   box-shadow: 5px 5px 0 #000;
   display: flex; flex-direction: column; text-align: center;
-  max-height: 80vh; overflow: auto;
+  max-height: 84vh; overflow: auto;
 }
 #settings-modal h2 {
   margin: 0 0 12px; text-align: left; font-size: 18px; font-weight: bold; color: #333;
