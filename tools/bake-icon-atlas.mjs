@@ -10,7 +10,8 @@
 //
 // **独立 atlas 而非入世界 atlas**：消除 v1.24 记录的副作用（新增 textures 子目录会按字母序
 // 重排已有 tile 坐标 —— `build-atlas.mjs` 的 shelf 装箱），且 UI 不必加载 2048² 世界 atlas
-// 只为裁一个 40px 图标。容量实测：1024² 对 236 张（118 项 × 两套尺寸）占用 ~29%。
+// 只为裁一个 40px 图标。容量实测：1024² 对物品集合全量 × 两套尺寸占用 ~29%
+// （条数以 `npm run check:data` 的 `[物品集合]` 为准，勿在此硬编码）。
 //
 // **形状与 UV 的唯一权威 = `src/mesh/mesher.js`**（红线 1）：
 //   - 异形方块 → `TEMPLATES[geometry]`
@@ -142,7 +143,7 @@ const byName = new Map(BLOCKS.map((b) => [b.name, b]));
 const missingDef = items.filter((n) => !byName.has(n));
 if (missingDef.length) throw new Error(`背包项不在 BLOCKS 中：${missingDef.join(', ')}`);
 
-// 收集全部待烘条目（118 项 × 两套尺寸 = 236 张）
+// 收集全部待烘条目（物品集合全量 × 两套尺寸）
 const entries = [];
 for (const sizeKey of Object.keys(SIZES)) {
   const size = SIZES[sizeKey];

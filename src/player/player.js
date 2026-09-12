@@ -22,7 +22,8 @@ const _up = new THREE.Vector3();
 /**
  * 受控创造模式专属物品（M7）：**放置走物品名路由，不落到常规单格 `editor.setBlock`**。
  *
- * ⚠️ 这些物品**就在**背包集合 118 项内（实测：`buildItemNames()` 含 `zombie_nest_alias_block`，
+ * ⚠️ 这些物品**就在**背包物品集合内（计数以 `npm run check:data` 的 `[物品集合]` 为准；实测
+ * `buildItemNames()` 含 `zombie_nest_alias_block`，
  * 槽位索引 75）。玩家从背包面板选中图标 → 右键 → 走的是常规单格放置路径，**必须在这里分流**，
  * 否则只放出一个贴了图案的正方体而不是整个结构（M7 实测缺陷，见验收报告 §3.7）。
  * mc-lite 同手法：`PlayerInteraction.tryPlaceBlock()` 判 `entityRegistry.isSpecialBlock(type)`

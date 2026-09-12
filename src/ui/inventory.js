@@ -181,7 +181,7 @@ export class InventoryPanel {
       const icon = document.createElement('div');
       icon.className = 'mc-icon';
       // v1.26：读预生成的 CSS 串（裁剪参数由烘焙脚本离线算好）。无条目的物品留空图标、
-      // 仍可点击选中——正常不触发（背包 118 项全部有图标，`npm run check:data` 钉死此不变式），
+      // 仍可点击选中——正常不触发（物品集合全量都有图标，`npm run check:data` 钉死此不变式），
       // 该降级分支仅为「新增方块忘跑 npm run icons」兜底。
       const css = this.icons?.[slot.item];
       if (css) icon.style.background = css;
