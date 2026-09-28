@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run *)",
+      "Bash(npm test *)",
+      "Read(//Users/bachi/jaylli/mc-lite/src/ui/**)",
+      "Read(//Users/bachi/jaylli/mc-lite/src/**)"
+    ]
+  }
+}
