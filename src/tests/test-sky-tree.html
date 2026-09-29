@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"><title>sky tree visual fixture</title><link rel="icon" href="data:,">
+  <style>html, body { margin: 0; }</style>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "/vendor/three/three.webgpu.js",
+      "three/tsl": "/vendor/three/three.tsl.js",
+      "three/webgpu": "/vendor/three/three.webgpu.js",
+      "three/addons/": "/vendor/three/addons/"
+    }
+  }
+  </script>
+</head>
+<body>
+<script type="module">
+  // Tier 4 像素实测 fixture：一棵天空树 + 树后一面已知颜色的墙。
+  // 判据（spec §6.5）：① 树冠覆盖区的屏幕像素 == sky_leaves 颜色（不含墙色混合成分）
+  // → 证明 opaque 通道不混合、深度写入生效；② 与 cutout 对照（?mode=cutout）RGB 基本相同
+  // → 证明「改通道视觉零变化」。
+  // ⚠️ 单变量对照：两侧只差 sky_leaves 的 cullMode，其余（相机/光照/场景/墙色）完全一致。
+  import * as THREE from 'three';
+  import { RenderWorld } from '../render/render-world.js';
+  import { buildSectionMesh } from '../mesh/mesher.js';
+  import { computeSkylightColumn } from '../mesh/lighting.js';
+  import { WorldData } from '../voxel/world-data.js';
+  import { ChunkColumn } from '../voxel/chunk-column.js';
+  import { createRegistry } from '../voxel/block-registry.js';
+  import { BLOCKS } from '../voxel/blocks-data.js';
+  import { blockIndex, sectionOf } from '../voxel/constants.js';
+  import { loadAtlas } from '../mesh/atlas-loader.js';
+  import { generateTree } from '../gen/structures/vegetation.js';
+
+  async function run() {
+    const mode = new URLSearchParams(location.search).get('mode') || 'opaque';
+    // 单变量：只有 sky_leaves 的 cullMode 随 mode 变，其余声明原样
+    const reg = createRegistry();
+    for (const def of BLOCKS) {
+      reg.register(def.name, def.name === 'sky_leaves' && mode === 'cutout'
+        ? { ...def, cullMode: 'cutout' } : def);
+    }
+    reg.freeze();
+    window.__SKYTREE_MODE__ = mode;
+    window.__SKYTREE_CULL__ = reg.cullTable[reg.idOf('sky_leaves')];
+
+    const renderer = new THREE.WebGPURenderer({ antialias: false });
+    renderer.setSize(640, 480);
+    document.body.appendChild(renderer.domElement);
+    await renderer.init();
+
+    const { texture } = await loadAtlas();
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x87ceeb); // 天空蓝，与墙色/叶色都易区分
+    const rw = new RenderWorld({ scene, atlasTexture: texture, viewDistance: 2 });
+
+    const world = new WorldData(reg);
+    const col = new ChunkColumn(0, 0);
+    // 场景：y=0 一层 sky_grass 地面（树基点在其上）
+    for (let lx = 0; lx < 16; lx++) for (let lz = 0; lz < 16; lz++) {
+      col.blocks[blockIndex(lx, 0, lz)] = reg.idOf('sky_grass');
+    }
+    // 树后一面**纯蓝墙**（glass_block 走 transparent，会混色 → 须纯色 opaque）。
+    // ⚠️ 不用 brief 原稿的 blue_planks（Blue_Wood_Planks 深蓝 [26,35,103]，B=103 < 叶 B=180，
+    // 会让断言②「canopyA[2] < wall[2]」失效）；playground_center_block 是均匀蓝
+    // [74,144,226]（B=226 > 180，与叶色曼哈顿距离 266），满足「墙色与叶色距离足够大」。
+    // 放在 z=12、x=4..12、y=1..6：从相机看正好在树冠之后
+    for (let lx = 4; lx <= 12; lx++) for (let y = 1; y <= 6; y++) {
+      col.blocks[blockIndex(lx, y, 12)] = reg.idOf('playground_center_block');
+    }
+    // 一棵天空树：基点 (8, 1, 8) → 树干 y=1..4、树冠 y=3..5，x/z ∈ 6..10
+    generateTree(8, 1, 8, (x, y, z, name) => {
+      if (x < 0 || x > 15 || y < 0 || y > 15 || z < 0 || z > 15) return;
+      col.blocks[blockIndex(x, y, z)] = reg.idOf(name);
+    }, 12345, 'skyTree');
+    world.add(col);
+    computeSkylightColumn(col, reg); // 全露天 sky=15 → 隔离光照变量（同 test-ao.html 手法）
+
+    const atlasMeta = await (await fetch('/assets/atlas.json')).json();
+    const sy = sectionOf(1);
+    const view = world.getSectionView(0, sy, 0);
+    const meshData = buildSectionMesh(view, reg, atlasMeta, 0, sy, 0);
+    for (const ch of ['opaque', 'cutout', 'transparent']) {
+      if (meshData[ch] && meshData[ch].vertexCount > 0) rw.uploadSection(0, sy, 0, ch, meshData[ch], 1);
+    }
+    window.__SKYTREE_VERTS__ = {
+      opaque: meshData.opaque.vertexCount,
+      cutout: meshData.cutout.vertexCount,
+      transparent: meshData.transparent.vertexCount,
+    };
+
+    // 相机：从 -z 方向平视树冠中心（树冠在 x/z=6..10、y=3..5 → 中心 (8.5, 4, 8.5)）
+    const camera = new THREE.PerspectiveCamera(50, 640 / 480, 0.1, 100);
+    camera.up.set(0, 1, 0);
+    camera.position.set(8.5, 4, -6);
+    camera.lookAt(8.5, 4, 10);
+    renderer.toneMapping = THREE.NoToneMapping;
+    // SRGBColorSpace（真实游戏口径，game.js 的 renderer 同款；testing-policy §5.2）：
+    // 阈值须对着 atlas 的 sRGB 值 [255,105,180] 读 —— Linear 下读到解码后的暗值会失真。
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    for (let i = 0; i < 5; i++) renderer.render(scene, camera);
+    window.__SKYTREE_READY__ = true;
+  }
+  run().catch((e) => { window.__SKYTREE_ERROR__ = String(e && e.stack || e); });
+</script>
+</body>
+</html>

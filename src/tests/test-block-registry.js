@@ -193,3 +193,38 @@ test('创造台两项登记 indestructible 且移出背包（成对）', () => {
   assertEqual(items.includes('turret_alias_block'), true);
   assertEqual(registry.isIndestructible(registry.idOf('tnt')), false);
 });
+
+// ---------- 天空树（方案 C）：sky_leaves 通道归属契约 ----------
+
+test('BlockRegistry: sky_leaves 走 opaque 通道（方案 C，spec §2.6）', () => {
+  const reg = createRegistry();
+  for (const def of BLOCKS) reg.register(def.name, def);
+  reg.freeze();
+  const id = reg.idOf('sky_leaves');
+  assertTrue(id > 0, 'sky_leaves registered');
+  // cullTable: 0=opaque 1=cutout 2=transparent 3=none（block-registry.js CULL_MODES）
+  assertEqual(reg.cullTable[id], 0, 'sky_leaves → opaque 通道');
+  // opaqueTable=1 是叶-叶面剔除（mesher.js:464）与 AO/光照/炮塔 LOS 连带效应的来源
+  assertEqual(reg.opaqueTable[id], 1, 'sky_leaves opaqueTable=1');
+  assertEqual(reg.solidTable[id], 1, 'sky_leaves solid（未改动）');
+});
+
+test('BlockRegistry: 其余 7 个树叶族仍走 cutout（防过度修正）', () => {
+  const reg = createRegistry();
+  for (const def of BLOCKS) reg.register(def.name, def);
+  reg.freeze();
+  // ⚠️ 反向断言：方案 C 只改 sky_leaves 一项。若有人顺手把全部树叶改成 opaque，
+  // 这条会 FAIL —— mc-lite 那 7 项的材质确实是 alphaTest（真镂空，atlas 实测
+  // leaves 中心 alpha=0.231 < 0.3 → discard），走 cutout 是正确的。
+  const CUTOUT_LEAVES = [
+    'leaves', 'azalea_leaves', 'yellow_leaves', 'realistic_oak_leaves',
+    'realistic_yellow_leaves', 'swamp_leaves', 'snow_leaves',
+  ];
+  assertEqual(CUTOUT_LEAVES.length, 7, '计数：8 个树叶族 − sky_leaves');
+  for (const name of CUTOUT_LEAVES) {
+    const id = reg.idOf(name);
+    assertTrue(id > 0, `${name} registered`);
+    assertEqual(reg.cullTable[id], 1, `${name} 仍 cutout`);
+    assertEqual(reg.opaqueTable[id], 0, `${name} opaqueTable=0`);
+  }
+});

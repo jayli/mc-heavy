@@ -78,7 +78,14 @@
     const blocks0 = new Uint16Array(r0.blocks);
     check('no layouts → plain terrain (no sand stack)', blocks0[blockIndex(lx, h + 10, lz)] !== sandId);
 
-    // 3. GEN 预算：含结构注入的 16 column 并行，p95 < 8ms（§4.2 预算，冻结断言口径）
+    // 3. GEN 预算：含结构注入的 16 column 并行，p95 < 10ms（原 8ms，2026-09-29 用户裁决放宽；
+    //    同日密度减半后实测已回到 8ms 内，用户裁决**保留 10ms 作余量**）。
+    //    历史：天空树密度 SKY_TREE_CHANCE=0.1 时，本 fixture 的 4×4 测量域是空岛密集区
+    //    （3 个空岛 / 圆内 563 顶层格 → ≈56 棵天空树），genP95 实测撞线 8.5~8.8ms。
+    //    密度减半为 0.05 后该域树数 ≈28，genP95 实测回落到 7.6~7.8ms（回到原 8ms 预算内）；
+    //    但本门是单样本 p95（无平均、无舍入），高负载下会贴线抖动，故按用户裁决保留 10ms
+    //    余量而非收回 8ms。口径：设计文档 §4.2 的 8ms 档是「无大结构」口径，含结构属 25ms 档，
+    //    故 10ms 相对 §4.2 原文是保守值（纯地形门 test-worker-gen.html 仍守 8ms，未放宽）。
     const times = [];
     for (let i = 0; i < 4; i++) {
       const batch = [];
@@ -92,7 +99,7 @@
     }
     times.sort((a, b) => a - b);
     results.genP95 = times[Math.floor(times.length * 0.95)];
-    check('gen with structures p95 < 8ms', results.genP95 < 8);
+    check('gen with structures p95 < 10ms', results.genP95 < 10);
 
     // 4. Scheduler 全链路：布局门控 → GEN 下发 → 出生点 column 含金字塔方块
     const world = new WorldData(reg);

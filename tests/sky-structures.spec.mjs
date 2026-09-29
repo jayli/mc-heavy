@@ -1,6 +1,6 @@
 // tests/sky-structures.spec.mjs — M2-7 空中结构真实世界验收（设计文档 §4.2/§7）
 // 口径：视距 8 全量加载 + 队列收敛后，数据级验证空岛/云层的确定性内容
-// （逐格形状、无 chest/天空树、岛体覆盖云），截图确认岛与云可见，
+// （逐格形状、无 chest、天空树已回补、岛体覆盖云），截图确认岛与云可见，
 // 记录并断言 M3 冻结 fps/p95/draw 口径（本机硬门、CI 宽松门）。
 import { test, expect } from 'playwright/test';
 import { PNG } from 'pngjs';
@@ -81,7 +81,7 @@ test('M2-7 验收：空岛与云层确定性内容 + 可视 + 性能门（视距
   // 传送触发流式加载/卸载，性能采样前再次等待全队列收敛（真稳态）
   await page.waitForFunction(queueConverged, null, { timeout: 120_000 });
 
-  // ---- 数据级：岛体逐格形状 + 无 chest/天空树 + 岛体覆盖云 + 云层存在 ----
+  // ---- 数据级：岛体逐格形状 + 无 chest + 天空树存在 + 岛体覆盖云 + 云层存在 ----
   const check = await page.evaluate((isl) => {
     const g = window.__MC_GAME__;
     const { idOf } = g.registry;
@@ -100,11 +100,28 @@ test('M2-7 验收：空岛与云层确定性内容 + 可视 + 性能门（视距
         if (isl.bottomY + y === 55 && id === cloudId) cloudInside++;
       }
     }
-    // 岛顶无 chest / 天空树（不迁移语义）
-    let forbidden = 0;
+    // 岛顶无 chest（宝箱仍不迁移，spec §1）；天空树已回补 → sky_wood/sky_leaves 须存在。
+    // ⚠️ 两个断言的扫描区**都是** topY+1 的 dx,dz ∈ -2..2 —— 拆 forbidden 时只把
+    // sky_wood/sky_leaves 移出，不改 chest 的扫描区（否则 chest 断言失去意义）。
+    const topY1 = isl.bottomY + isl.height + 1;
+    let forbidden = 0, treeWood = 0, treeLeaves = 0, trunkOnGrass = 0, trunkTotal = 0;
     for (let dx = -2; dx <= 2; dx++) for (let dz = -2; dz <= 2; dz++) {
-      const id = g.world.getBlockId(isl.centerX + dx, isl.bottomY + isl.height + 1, isl.centerZ + dz);
-      if (id === chest || id === skyWood || id === skyLeaves) forbidden++;
+      const id = g.world.getBlockId(isl.centerX + dx, topY1, isl.centerZ + dz);
+      if (id === chest) forbidden++;
+      if (id === skyWood) {
+        treeWood++;
+        trunkTotal++;
+        // 树干底格正下方必须是岛顶层 sky_grass（树长在岛上，不悬空）
+        if (g.world.getBlockId(isl.centerX + dx, topY1 - 1, isl.centerZ + dz) === skyGrass) trunkOnGrass++;
+      }
+      if (id === skyLeaves) treeLeaves++;
+    }
+    // 树冠可能高出 topY+1（树冠在 y+2..y+4）→ 单独扫岛顶上方 6 格数树冠
+    let canopy = 0;
+    for (let dy = 1; dy <= 6; dy++) {
+      for (let dx = -4; dx <= 4; dx++) for (let dz = -4; dz <= 4; dz++) {
+        if (g.world.getBlockId(isl.centerX + dx, topY1 + dy, isl.centerZ + dz) === skyLeaves) canopy++;
+      }
     }
     // 已加载世界的云层内容（Y=55 单云 + Y=35 云簇）
     let singleCloud = 0, clusterCloud = 0;
@@ -114,13 +131,20 @@ test('M2-7 验收：空岛与云层确定性内容 + 可视 + 性能门（视距
         if (col.get(lx, 35, lz) === cloudId) clusterCloud++;
       }
     }
-    return { matched, expected, bad, forbidden, cloudInside, singleCloud, clusterCloud };
+    return { matched, expected, bad, forbidden, cloudInside, singleCloud, clusterCloud,
+             treeWood, treeLeaves, canopy, trunkOnGrass, trunkTotal };
   }, island);
   expect(check.expected).toBeGreaterThan(50);
   expect(check.bad).toBe(0);                 // 岛体逐格一致（含岛内无残留 cloud）
   expect(check.matched).toBe(check.expected);
   expect(check.cloudInside).toBe(0);         // 与 Y=55 相交处岛体覆盖云
-  expect(check.forbidden).toBe(0);           // 无 chest/天空树
+  expect(check.forbidden).toBe(0);           // 无 chest（宝箱仍不迁移）
+  // 天空树已回补（spec §2）。断言用 > 0 而非具体数（不同岛半径/高度不同，硬编码会脆）；
+  // 逐格位置由浏览器内单测钉住（test-sky-structures.js 的忠实模拟比对）。
+  // 实测（seed=12345，选中的最近岛 radius=5）：treeWood=2、canopy=165 —— 余量小但确定通过（详下警告）。
+  expect(check.treeWood).toBeGreaterThan(0);
+  expect(check.canopy).toBeGreaterThan(0);
+  expect(check.trunkOnGrass).toBe(check.trunkTotal); // 每根树干都长在 sky_grass 上
   expect(check.singleCloud).toBeGreaterThan(0);
   expect(check.clusterCloud).toBeGreaterThan(0);
 

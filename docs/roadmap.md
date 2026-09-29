@@ -4,13 +4,14 @@
 > **不重复内容** —— 架构决策见设计文档，历次改动记录见其修订说明，任务级执行清单见
 > `docs/superpowers/plans/`。
 
-最后更新：2026-09-12
+最后更新：2026-09-29
 
 ## 一句话现状
 
 第一阶段引擎底座（M0~M3）**全部完成并验收达标**，两个收尾补丁项（M3.1 背包 / M3.2 方块朝向）
-也已落地。此后是一串独立 bugfix 与改造（v1.19~v1.38，最新两条 v1.37/v1.38 补齐了 M2 遗留的
-**结构撒布**——草地/城市里的房子·花坛·亭子·高井此前完全看不到）。第二阶段 **M4 玩家武器已完成并验收**
+也已落地。此后是一串独立 bugfix 与改造（v1.19~v1.42，v1.37/v1.38 补齐了 M2 遗留的
+**结构撒布**——草地/城市里的房子·花坛·亭子·高井此前完全看不到；最新一条 **v1.42** 回补了
+M2-7 有意删除的**空岛天空树**并修正 `sky_leaves` 的渲染通道声明）。第二阶段 **M4 玩家武器已完成并验收**
 （验收报告 `docs/m4-weapons-acceptance-report.md`），M4 阶段遗留 TODO——设置面板「破坏方块」
 开关按钮——已落地（见下节）；**M5 实体运行时已完成并验收**（验收报告
 `docs/m5-entity-runtime-acceptance-report.md`），**M6 丧尸已完成并验收**（验收报告
@@ -90,7 +91,7 @@ MAG7 曳光终点回归准心轴（v1.36，原用扫描候选当终点导致斜�
 |---|---|
 | **爆炸序列帧特效补齐** | mc-lite `World.js:1296 spawnExplosionParticles` 是**两层叠加**：① 序列帧 billboard（`ParticleSystem.js:177`，`big_blow.png` 500×200 / 5×2=10 帧 / 0.5s / AdditiveBlending / scale 3→8 / 前 80% 全亮末 20% 淡出）② 球体扩张（`World.js:1301-1311`，注释原文「作为底层增强」）。**M8 当时只移植了 ②**（`explosion-renderer.js` 文件头如实记录了这次裁剪），实玩反馈「爆炸少了原始图分帧播放」→ 补 ①：新增 `src/render/explosion-sprite.js`（照搬 mc-lite 的 Sprite 池手法 —— Sprite 自动 billboard + 逐 sprite `visible=false` 同样还原 draw call 基线）+ `assets/effects/big_blow.png`。两层在 `game.js` 的 `explodeTnt()` 同帧触发（billboard 先、球体后，mc-lite 就是这个顺序）。**Tier 1 单测钉帧映射算术 + Tier 4 像素实测证明切帧真在生效**（`tests/explosion-sprite.spec.mjs`）+ 真游戏页接线断言（`tests/tnt.spec.mjs`）。三处负向验证均实测通过（注入 bug 后真 FAIL） |
 
-## M3.2 之后的独立 bugfix / 改造（v1.19 ~ v1.38）
+## M3.2 之后的独立 bugfix / 改造（v1.19 ~ v1.42）
 
 这些不属于任何已编号里程碑，是实玩反馈驱动的独立改动。**完整记录在设计文档的修订说明**
 （每条含根因、实测数据、门禁对照）与 `docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md`
@@ -115,6 +116,7 @@ MAG7 曳光终点回归准心轴（v1.36，原用扫描候选当终点导致斜�
 | v1.35 | 设置面板两列布局 + 档位精简 | ✅ `49e7cce` | 用户反馈面板拥挤，且第二阶段（M5~M7）会持续加配置项。改 mc-lite 同款两列盒（`.mc-columns` / `.mc-combined` 合并盒），**行列分配按本仓库档位需要重排、不沿用 mc-lite 分配**（后续新配置优先往右列填）。档位精简三项：① 视距 UI 档位 5→3（`[8,12,16]`），但 `clampVD` 钳制范围 **2~16 不动**（架构口径，测试依赖 `vd=2`）→ 面板须容错「当前值不在档位内」，**刻意不做就近高亮**；② 音量档移出面板（默认 100%，字段仍持久化 + `?volume=` 可达）；③ 新世界 + 删除缓存共用一行。顺带修掉文案漂移：`_resetDangerArmed()` 写死旧长文案覆盖了构造时的短文案 → 抽 `CLEAR_SAVE_LABEL` 共用常量。**用户随后报告合并盒上边框缺失**（本次改动引入）：分隔线规则 `> :first-child` 通配所有子项、特异性 (1,2,0) 压过 `.mc-combined` 的 (1,1,0) → 列首合并盒上边框被置 none；改为只作用 `.mc-item` + 补四边 solid 断言 + 负向验证。单测 296 全绿 + 档位契约断言负向验证（改 `[8,12,20]` → FAIL `Expected 20, got 16`）+ DOM 几何实测（面板 818×398、两列等高 375×255、合并盒四边 solid、零文本溢出）。全量 E2E **55 passed / 1 failed** —— 失败的 `m1-acceptance` `digP95` 是已知 flaky 计时断言（2ms 贴线抖动），**交替对照**实测两侧分布重叠（HEAD 均值 1.833 vs 改动侧 1.933，各 9 样本），机制上不相关（放挖热路径零命中面板代码，spec 用 `vd=8` 在新旧档位都存在） |
 | v1.37 | 结构撒布补齐（M2 欠账） | ✅ `87cd571` | 用户报告**草地与城市里看不到房子/花坛/亭子/高井**。根因实测定位：`assets/structures/` 27 个 JSON 里 **7 个零消费**（`flower_bed`/`pavilion`/`tall_well`/`desert_pyramid` 4 个是真实 M2 欠账，`bed`/`turret`/`zombie_nest` 3 个有意预留），且 mc-lite 的**三条撒布路径完全未搬**（城市装饰物逐点撒布 / 城市外代码生成 `house` / 城市外大型静态结构）。补齐后城内 797 个撒布（house 152/pavilion 446/tallWell 77/flowerBed 122）、城外每 region 约 25 个。新增 `src/gen/structures/scatter.js`（撒布判定 + `generateCodeHouse`，Worker 同构）；候选在 **region layout 层**算一次（DR-13），`apply.js` 阶段 2.7 只做 AABB 裁剪光栅化。**四处有意偏离 mc-lite**（`Math.random`→`seededRandom` 守红线 2 / 判定不带 occupied 参数防跨 column 接缝断裂 / 避开树半径 2 而非 8~10 / 不撒水下），详见下方「活跃约束详情 · 结构撒布」。**撒布密度刻意低于 mc-lite**（城市基值减半 + 两个大 JSON 减半）以守两条冻结断言，并配合 `CAPACITY.cutout.active` 450→550（扩容是离散 ×1.5 跳增，峰值 1.80M 差 2230 顶点就跳到 170MB）。Tier 1 TDD：单测 **341 全绿** + **17 条负向验证全部确认真 FAIL**（含自查发现的 2 个无效盲区：特征方块跨结构重叠导致断言恒真、tank 门控用错参数路径未触达）+ 新增 `check:data` `[撒布结构]` 三环节契约（含磁盘文件存在性 —— 浏览器里 fetch 404 会被吞成空结构，只有门禁能抓）。`genP95` 6.8~7.7ms（6/6）/ `gpuVertexBytes` 148MB / bench 通过 fps 111~120 / 全量 E2E **66 passed**（唯一失败 = `m1-acceptance` 既有 flaky，交替对照改动侧 3/5 vs HEAD 侧 4/5，改动侧失败率更低） |
 | v1.38 | ship 沉船补齐（M2 欠账，v1.37 的延续） | ✅ `aee7072` | 用户追问「还有哪些 mc-lite 实体没搬」。调研后确认：JSON 结构两边都是 27 个（一致），但 `ship`（沉船，mc-lite `WorldWorker.js:988/:2987` 的**代码生成方块结构**、无 JSON）在 mc-heavy 完全没有 —— 设计文档 grep `ship`/`沉船` 零命中，是真欠账（区别于 `skyTree` 的 M2-7 有意删除，已保留）。**rover/gun_man 推迟到 M6**：它们是 GLB 模型实体（gun_man.glb 16 primitives / free_car 12），需要 mc-heavy 尚不存在的碰撞（`physics.js` 不查实体）/ 射线（未接 `EntityManager.raycast`，M6 规格 `:61` 才接）/ 破坏持久化基础设施，正是 M6 丧尸要建的同一套；现在补只能做到「看得见」。ship 是方块结构，走现有 mesher + BatchedMesh 管线，天然合批（bench 实测 draw=496 与 v1.37 持平）、有碰撞、可挖掉。门控 `h<-6` + 概率 + `safeForStructure`，实测 109 个命中（视距 8 内 3 个，最近距出生点 98 格）、**跨 column 0%**（内圈 + 占地 dx±2/dz±3 数学必然落在单 column 内）、深海无 DESERT。门控与 v1.37 陆地水下门控**方向相反**，在同一循环内用 `h` 一次计算分流。引入 `CODE_GENERATED_SCATTER_TYPES` 单一权威（红线 1：派生基准勿写成 `t !== 'house'`，否则门禁误报或结构静默消失）。Tier 1 TDD：单测 **351 全绿** + **10 条负向验证全部真 FAIL**（含自查发现的 1 个无效盲区：footprint 范围判据被海底地形污染恒真 → 改桅杆中心列判据）。`check:data` 门禁扩展到覆盖代码生成类型的占地 / bench 通过 fps 108~120 无回退 / 全量 E2E **67 passed**（这次 m1-acceptance 也通过） |
+| v1.42 | 天空树回补 + `sky_leaves` 通道修正 | ✅ **待提交**（本次 run 未提交，等用户验证后提交） | 用户报告**空岛之上没有树**（mc-lite 有）。勘查发现两部分：① **天空树是 M2-7 有意删除项**（设计文档 v1.14「按产品范围删除空岛宝箱与天空树」），但零件全部就位（方块注册 / 程序化贴图 / atlas tile / 背包图标 / `generateTree(...,'skyTree')` 完整算法，**零调用点**）→ 只差接线；② **`sky_leaves` 的 `cullMode:"cutout"` 是 M2-7 移植偏差** —— 转换规则按「名字含 leaves」归类（`blocks-data.js:6`），而 mc-lite 材质是 `mkMat('#FF69B4', 0.9)` = `transparent + opacity`、**无 `alphaTest`** → 不是镂空。atlas 实测印证：tile 中心 `[255,105,180,230]`，cutout 通道 `alphaTest=0.3` 且无 `transparent` → alpha 0.902 全保留不混合，**自 M2-7 起实际渲染就是不透明纯粉**（那个 0.9 从未被消费）。落地：`sky-structures.js` 新增 `writeSkyTrees()` + `islandLayerRadius()`（岛层半径单一权威，红线 1）+ `SKY_TREE_CHANCE`/`SKY_TREE_SALT` 导出常量，追加进既有层序（云→岛体→树）；`blocks-data.js` 一行 `cullMode` cutout→opaque。**salt 取 113 而非 59**（程序化扫描发现云簇 frontier 的 `seed+58+step` 在 `size∈[30,50]` 下实际占用 **58..107 连续区间**，注释只写「seed+58」会误导）；**AABB 门控比岛体宽 2 格**（树冠外扩 ±2，否则跨界树冠在相邻 column 断裂缺角、而岛体看起来完全正常 → 难归因）。四方案实测对比后用户选定 **C（opaque + opaqueTable=1）**：总面数 735,576→**700,064**（−4.8%，叶-叶相邻面开始互剔）、三通道容量**全守住**、`gpuVertexBytes` **148.06MiB**（< §4.10 的 150MiB，余量 1.94MiB） → **不动 `CAPACITY`、不放宽 §4.10**（容量全部守住，**不是靠降密度换来的**）。⚠️ **密度另有一次用户指令的减半**：`SKY_TREE_CHANCE` 交付后按用户指令由 mc-lite 的 **0.1 减半为 0.05**（2026-09-29，**有意偏离 mc-lite**，与容量无关；观感从「连绵叶团」变「疏朗树木」，实测每岛 10→4 棵、opaque 顶点 −29,236、draw −5）。⚠️ **占用百分比用实测数，不照抄 spec §4.3 的勘查估算 79/55/41**（口径不对号）：稳态（289 列队列全收敛）opaque **82.9%** / cutout **72.3%** / transparent **10.6%**；冲刺峰值（12s 奔跑、250ms 采样）**93.8% / 81.9% / 11.2%**；三通道 `_capacity.*.maxVertexCount` 全部等于标定值（**零扩容**）。cutout 的高占用是 **HEAD 既有状态**（撒布补齐 `87cd571` 后花/树叶进 cutout），本次把 `sky_leaves` **移出** cutout 反而使其降低；transparent 的 41% 是**冲刺态**数字（水面大量暴露），不是 289 列稳态数字。⚠️ opaque 冲刺峰值余量已收窄到 6.2%，后续往 opaque 加量前须重测。**性能（实测）**：全场景 GEN p95 **1.534ms**（HEAD 1.206ms，+0.33ms，未撞线）/ MESH **+0.4%**（交替对照）/ **draw call +15**（bench 场景④ MOD 545 vs HEAD 530 —— WebGPU 后端对 BatchedMesh 每个可见 geometry slot 各发一次 draw，`three.webgpu.js:85531`；spec §4.3 勘查期写的「draw call +0」是按「合批进既有 3 通道」推断，**已被实测证伪**；该值不在门禁 LOWER_IS_BETTER 集合内，不阻断）。⚠️ **一处冻结断言经用户裁决放宽**：`structure-gen` fixture 的「含结构 genP95」门实测撞线 **8.5~8.8ms**（4 次单独复跑分布极窄 → 非负载噪声），机制 = 该 fixture 的 4×4 测量域是**空岛密集区**（3 个空岛 / 圆内 563 顶层格 → 密度 0.1 时约 56 棵树集中进这 16 个 column 的 GEN 计时路径），+0.33ms 的全场景平均增量在岛密区被放大到约 +1ms。**用户 2026-09-29 裁决放宽 8ms → 10ms**（只改 `test-structure-gen.html` 的含结构门；`test-worker-gen.html` 的**无结构**门逐字未改仍守 8ms）。档位口径澄清：设计文档 §4.2 原文「单 column GEN（**无大结构**）目标 < 8ms；含城市结构切片 < 25ms」—— 8ms 档本就是「无大结构」口径，含结构属 25ms 档，故 **10ms 相对 §4.2 原文是保守值**。放宽后 3/3 通过（探针实测 8.20~8.40ms）。⚠️ **同日密度减半（0.1→0.05）后该域树数 ≈28，genP95 实测回落到 7.6~7.8ms（已回到原 8ms 预算内）；用户裁决保留 10ms 作余量而不收回 8ms**（本门是单样本 p95、无平均无舍入，7.6~7.8 对 8ms 只剩 2.5% 余量 → 高负载下会贴线抖动）。**故 10ms 现在的性质是「保守余量」而非「撞线所需」**；若树密度或 GEN 成本再涨须**重新实测**而非再次静默放宽。**三项有意偏离 mc-lite**（`sky_leaves` 开始遮挡 AO / 阻断 blocklight / 阻挡炮塔 LOS —— mc-lite 因 `isTransparent=true` 三者皆不；已登记为 CLAUDE.md 视觉比对偏离清单第 ⑥ 项）。⚠️ **勘查期两个自身错误已记入 spec §9**：只读 mc-heavy 声明就推断 mc-lite 材质语义（违反既有约束「对齐上游须实测其运行时行为」，是用户凭观感质疑才发现）；用 vd=10（加载半径 `R+2`）论证 cutout 撞破，而 CAPACITY 是「视距 8 容量口径」（HEAD 在 vd=10 下 opaque 本就 111% → 属奔跑态瞬时扩容的正常设计）。Tier 1 TDD：浏览器内单测**全绿**（计数以 harness 输出为准）+ **7 条有效负向验证逐条实测确认真 FAIL**（spec §6.3：Task 4 门控 radius+2→radius → `missing=12` / Task 5 未接线 → E2E `treeWood`→0 而**单测全绿**（盲区实证）/ Task 8 半径-1 → `baseAir` 3/5 处为 air / CHANCE=0 → 单测+E2E 双侧 / cutout 回退 → **三处冗余断言全部命中**（registry + mesher + Tier 4）/ 全部树叶族改 opaque → 「leaves 仍 cutout」反向断言 / salt 写字面量 → 5/5 处为 air）；另有 1 条「层序倒置」注入经实测确认**不是真实失效模式**（几何不重叠 + 注入点也够不到被测路径）→ 已从清单移除，不为凑负向验证而编造无效注入。+ 新增 Tier 4 像素实测（不透明性 `wallDist=266` + cutout 单变量对照 `channelDelta=0`）+ E2E 接线负向验证（单测测不到「没接线」）。全量 E2E **120 用例 / 117 passed / 3 failed** → 三处处置：① `structure-gen` genP95 = 上述用户裁决（已修，3/3 通过）；② `m1-acceptance` placeP95 在 2ms 边界振荡（1.7~2.1，`--repeat-each=3` → 1 failed/5 passed）= **既有 flaky**（CLAUDE.md 在列）；③ `sky-structures` frameMs.p95 16.9 vs 16.75 = **vsync 量子贴线**（单独复跑 3/3 通过：16.7/16.6/16.7）。三处均**未改断言、未放宽阈值**（除①的用户裁决）。`turrets` 6/6、`projectiles` 4/4 全通过 —— §2.6.3 第 4 项连带效应（`sky_leaves` 阻挡炮塔 LOS）**未在既有 E2E 体现**（两者都钉地面 `vd=2&seed=12345`，树在高空空岛）。⚠️ **评审发现并修正了两处「断言描述想象中的世界」的缺陷**（[`docs/superpowers/reviews/2026-09-20-sky-tree-review.md`](superpowers/reviews/2026-09-20-sky-tree-review.md)）：① 「每棵树 4 格树干」断言必然 FAIL（实测 21.4% 树干被后写树叶覆盖，因 `makeColumnSetter` 无占用格守卫 → 与 mc-lite 偏离）→ 改用忠实写入顺序模拟逐格比对；② 跨 column 用例的取模选点判据在负坐标下恒真（`%` 是取余）→ 改按真实足迹判跨度（实测修正后注入 radius → missing=901 → 真 FAIL）。两条都沉淀为 CLAUDE.md 活跃约束 + `testing-policy.md` §2.6 的第 ⑤/⑥ 条。 |
 
 ## 活跃约束详情（历次改动沉淀的实测细节）
 
@@ -173,7 +175,7 @@ rasterize」），`apply.js` 阶段 2.7 只做 AABB 裁剪光栅化。唯一权�
 （实测踩坑：注入「`CODE_GENERATORS` 漏 ship」后仍全绿，无效负向验证；排除 water 也不够）。
 正确判据 = 桅杆中心列 `(x, y..y+4, z)` 的 5 格 `wood`（门控保证地形顶 ≤ y-1，桅杆必在地形上）。
 
-### 渲染与容量（v1.37 / v1.30 / v1.31）
+### 渲染与容量（v1.42 / v1.37 / v1.30 / v1.31）
 
 **cutout 扩容是离散 ×1.5 跳增，容量须留足余量**：`render-world.js _ensureCapacity` 里
 reserved 峰值只要超过 `maxVerts` **一个顶点**就整批跳到 ×1.5（1.8M→2.7M = +27MB，且粘性不回缩）。
@@ -186,11 +188,14 @@ reserved 峰值只要超过 `maxVerts` **一个顶点**就整批跳到 ×1.5（1
 半格 —— 同一份几何无法同时贴合，故 `big_house.json` 的 3 个草地 lilypad 已移除
 （「`assets/structures/*.json` 原样复用」的唯一有意例外）。
 
-**五处已知的有意偏离 mc-lite**（视觉比对时勿按其原样判定）：完整清单与理由在设计文档
+**六处已知的有意偏离 mc-lite**（视觉比对时勿按其原样判定）：①~⑤ 的完整清单与理由在设计文档
 §4.3 / §4.5.4，此处只列索引 —— ① `vine` 落格内 y∈[0,1]；② 吊灯 UV 按部件分区 + 绳呈单色
 深灰；③ 背包图标用离线烘焙等轴测投影；④ `lilypad` 模板 y=-0.48 + 生成格位 `SEA_Y+1`；
 ⑤ `getAO` 去掉对角门控（副作用**全局**：所有「仅对角遮挡」顶点暗一档 —— 悬浮方块斜对角、
-台阶斜接处，原版 MC 故意让这些不变暗）。
+台阶斜接处，原版 MC 故意让这些不变暗）。⑥ **不在设计文档那两节** —— 理由在独立 spec
+[`2026-09-20-sky-tree-design.md`](superpowers/specs/2026-09-20-sky-tree-design.md) §2.6.3：
+`sky_leaves` 遮挡 AO / 阻断 blocklight / 阻挡炮塔 LOS（mc-lite 因 `isTransparent=true` 三者皆不），
+是 v1.42 方案 C（`opaqueTable=1`）的连带效应。
 
 **丧尸头部图案走单纹理 UV 分区，不是材质数组 + groups**（2026-09-09）：实测
 `three.webgpu.js:34592` `getMaterial()` 直接 `return material`，不遍历 `geometry.groups`、
@@ -215,6 +220,85 @@ reserved 峰值只要超过 `maxVerts` **一个顶点**就整批跳到 ×1.5（1
 **永久死锁**（实测 20 只强制同点生成后 3 秒仍 min=0、190 对全重叠）。补法 = id 派生确定性方向
 （黄金角散列 + id 序定符号 → 同位置两只必然朝相反方向；用 id 派生而非 `Math.random()`：
 可测 + 无帧间抖动）。
+
+**天空树 / `sky_leaves` 通道（v1.42）**：
+
+- **判断方块的渲染语义必须同时读 mc-lite 的 `MaterialManager` 注册（材质层）与 `BlockData`
+  （数据层），不能只看 mc-heavy 的 `cullMode`** —— 后者是前者的**转换产物**，而转换规则
+  （`blocks-data.js:6`「名字含 leaves → cutout」）本身可能有偏差。`cullMode`（渲染通道）与
+  `isTransparent`（面剔除语义）是**两套口径**（M2 勘误已记）。实测踩坑：`sky_leaves` 被
+  判定为镂空材质并据此做了一整节容量分析，实际 mc-lite 是 `mkMat(...,0.9)` 无 `alphaTest`
+  → 是用户凭观感质疑（「我记得有点半透明效果」）才发现。**同 CLAUDE.md 既有约束
+  「对齐上游须实测其运行时行为，不能读定义推断」。**
+- **`sky_leaves` 的贴图 alpha 0.9 不被消费，保留不改**：opaque 通道材质 `transparent=false`
+  → 不做 alpha 混合。改成 255 视觉完全相同，但会改变 tile 像素 → 触发 atlas 重打包 +
+  图标指纹变化 + 重跑 `npm run atlas`/`npm run icons`，**收益为零**。
+  `bake-procedural-textures.mjs:139` 已加注释说明，勿「顺手修正」。
+- **改 `cullMode` 不需要重跑 `npm run icons`**：图标指纹只含 `geometry` + tile 地址 +
+  tile 像素 hash（`tools/icon-fingerprint.mjs:118-134`），**不含 `cullMode`**；
+  `iso-icon.js` 也不读 `opaqueTable`/`cullTable`（纯几何投影，无面剔除）。
+- **cutout 与 cutout 之间不互相剔除**（`mesher.js:464` 判据是 `opaqueTable[neighborId]===1`，
+  cutout 方块的 `opaqueTable=0`；`:465` 的同类剔除只对 `cullMode>=2` 或 `SAME_TYPE_CULL`
+  （仅 `cloud`）生效）。实测：两格相邻 `sky_leaves`（cutout 时）= 48 顶点（6 面/格，零剔除），
+  纯 3×3×3 叶团 = 648 顶点（162 面，**一面不剔**）；同体积实心 `stone` = 216 顶点（54 面）。
+  **即 cutout 每格成本是 opaque 实心团的约 3 倍** —— 往 cutout 加方块量前须先算这笔账。
+- **`opaqueTable=1` 会带来三项连带效应**（不止面剔除）：AO 遮挡（`mesher.js:436-438,500-502`）、
+  blocklight 阻断（`lighting.js:165`）、炮塔 LOS / 弹丸阻挡（`turret-system.js:31`）。
+  改任何方块的 `cullMode` 到 opaque 前须评估这三项。**若只要面剔除不要连带效应**，
+  用 `cloud` 的手法：`cullMode:"opaque"` + `opaque:false`（→ `opaqueTable=0`）+
+  `mesher.js:288` 的 `SAME_TYPE_CULL` 加该方块名（spec 的方案 E）。
+  ⚠️ **方案 E 治不了 GEN 侧成本** —— GEN 阶段根本不读 `cullMode`，故它对 `writeSkyTrees`
+  的生成耗时零影响（v1.42 实测确认，spec §5.3 的回退选项因此不含「治 genP95」）。
+- **BatchedMesh 的 draw call 不是「每通道 1 次」**：WebGPU 后端对**每个可见 geometry slot
+  各发一次 draw**（`three.webgpu.js:85531`）。实测 v1.42 天空树让 bench 场景 ④ 的 draw
+  530 → **545（+15）** —— 树新增可见 opaque slot 即增 draw。⚠️ 勘查期按「合批进既有 3 通道」
+  推断「draw call +0」，**已被实测证伪**：往通道里加新几何前不要假设 draw 不变。
+- **`vegetation.js` 的 `surrounded` 生成期跳过在 opaque 叶块下是「反向悲观化」，但刻意不修**
+  （v1.42 实测，spec §2.5.2）：被六邻树块包围的叶格 —— **写入**时自己 6 面全被剔 +
+  邻居朝它的面也被剔 = **0 面**；**跳过（留 air）**时 6 个邻居各朝 air 出 1 面 = **6 面**。
+  即 `opaqueTable=1` 后跳过反而**多**出 6 面/格（cutout 下方向相反，跳过是真优化）。
+  实测规模：region[-1,1]² 的 7379 棵树净增 32,430 面（**+2.8%** 树面数）。
+  **换算到验收口径（vd=8）只值约 780 面 ≈ 3.1K 顶点 = 总面数的 0.11%**，而修它须动
+  Worker 同构层的共享函数（**地面树也走它**）+ 改变既有地面树方块数据 + 重跑全部勘定实测
+  → **收益与代价不成比例，按「实测数据决定是否优化」取甲（零改动）**。
+  ⚠️ 后人看到这条**不要当成漏掉的优化顺手补上**；若将来 opaque 通道逼近容量临界，
+  另开任务做乙方案（条件化跳过：仅当叶块 `opaqueTable === 0` 时才跳）。
+  ⚠️ **测试侧不得抄一份树叶判定**：模拟必须直接调真实 `generateTree`（红线 8 同源要求），
+  否则将来改 `vegetation.js` 时测试会静默漂移出假失败。
+- **结构写入无占用格守卫（后写胜），与 mc-lite 偏离 —— 既有的全局偏离，v1.42 实测量化**：
+  `makeColumnSetter`（`landmarks.js:268-278`）**无条件覆盖**目标格，而 mc-lite 的
+  `fakeChunk.add`（`WorldWorker.js:532-538` / `:1508-1518`）**有守卫**（该格已有非空气方块则
+  `return`，先写胜）。实测后果：天空树的树干格被邻树树冠覆盖成 `sky_leaves`，
+  **覆盖率随密度变**（region [-2,2]² 实测 1300 岛：密度 `SKY_TREE_CHANCE=0.05`（当前）时
+  **13.2%**（40228 树干格中 5309 被覆盖）；密度 0.1（mc-lite 口径）时 **21.4%**
+  —— spec §2.5.1 的原始实测）。⚠️ **引用该百分比须注明密度口径**。⚠️ 这**不是天空树任务引入的**（地面树/所有结构路径走同一个
+  `makeColumnSetter`），**本次不修**（加守卫会改变全部结构路径的行为与既有世界内容 →
+  视觉比对基准变化）。但**写结构类断言时不得假设「每个结构都完整」**（用忠实写入顺序模拟，
+  spec §6.2 第 4 条）。若将来要对齐 mc-lite，需单独开 Epic 评估影响面。
+  ⚠️ 该项**不进上面那个「六处偏离」清单** —— 那个清单是**视觉比对专用**，而占用格守卫是
+  **结构写入语义**的全局偏离（影响全部结构路径，不只空岛、不只视觉）。
+
+### seededRandom 的 salt 分配（v1.42）
+
+**salt 占用不能按注释里的字面基值判断** —— 带 `+ step` / `+ k` / `+ y` 偏移的调用点实际占用的是
+**区间**。新增随机量前须**程序化扫描**（展开所有派生区间），不能 grep 字面量。
+
+| 来源 | 字面 | 实际占用区间 |
+|---|---|---|
+| `sky-structures.js` 云簇 frontier | `seed + 58 + step`，`step < size`，`size = 30 + floor(r*21)` | **58..107** |
+| `terrain.js:100` 地层 | `seed + 100 + k`，`k = 2..12` | **102..112** |
+| `landmarks.js:239` 岩石类型 | `seed + 302 + y`，`y ∈ [-32, 96)` | **270..397** |
+| `landmarks.js:252` | `seed + 303 + k`，`k = 1..11` | 304..314 |
+| `vegetation.js` treeRand | `seed + salt`，salt ∈ {401..407}；调用处再 `+ ly*7` | 401..407（+ 派生） |
+
+实测（seed=12345，展开全部派生区间）：`1..500` 内共 **234 个已占用 salt**，连续空闲带为
+`6..9`、`27..49`、`113..199`（87 个）、`202..269`（68 个）、`398..400`、`408..500`（93 个）。
+天空树取 **113**（紧跟空中结构族：岛 50..57 / 云簇 58..107）。
+
+⚠️ **实测踩坑**：`sky-structures.js` 的注释写「frontier 每一步 `seed+58` 加步号」，
+容易读成「云簇只占用 58」→ 顺手取 59。**59 已被占用**（在 58..107 内）。
+若真用了 59，树的位置判定会与云簇形状游走共用同一随机流 → 两者相关（不是崩溃，
+是**静默的确定性污染**，且单测全绿 —— 因为两侧都用同一个错 salt）。
 
 ### 面板与 UI（v1.35）
 
@@ -364,7 +448,7 @@ M7 建立了一套「方块锚定的持久装置」模式，未来炮塔 / 矿�
 |---|---|
 | 架构决策、子系统边界、DR 决策、历次口径变更 | `docs/phase-1-engine-design.md`（**架构唯一权威**；版本号以文档自身首行为准，此处不硬编码以免漂移） |
 | 某次改动为什么这么改、实测数据、门禁对照 | 设计文档对应版本的修订说明 + `docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md` |
-| **历次改动沉淀的活跃约束实测细节**（撒布四处偏离 / cutout 标定 / ship 门控 / 丧尸互斥换算等） | 本文「活跃约束详情」段 |
+| **历次改动沉淀的活跃约束实测细节**（撒布四处偏离 / cutout 标定 / ship 门控 / 丧尸互斥换算 / 天空树与 `sky_leaves` 通道 / seededRandom 的 salt 分配等） | 本文「活跃约束详情」段 |
 | 任务级执行清单、依赖关系、验收步骤 | `docs/superpowers/plans/`（各里程碑计划） |
 | 该不该写测试、跑哪个门禁、断言落点怎么避坑 | `docs/testing-policy.md`（**测试分级唯一权威**；§2.5~§2.7 是断言落点踩坑清单） |
 | 重构红线、对标 mc-lite 的取舍、**持续生效的架构口径** | `CLAUDE.md`（协作规范） |

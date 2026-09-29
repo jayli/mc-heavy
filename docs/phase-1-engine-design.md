@@ -1,6 +1,6 @@
 # mc-heavy 第一阶段实施设计文档：游戏引擎原型
 
-> 版本：v1.41 ｜ 日期：2026-09-12 ｜ 状态：定稿（经十五轮逐条核验修订 + M3.2 实施回填 + 异形方块渲染勘误 + 背包物品集合口径 + 吊灯材质自发光 + 吊灯 UV 分区 + 背包图标表 + 等轴测图标 + 测试分级策略与静态门禁 + 全量背包图标离线烘焙 + 背包槽位点选抖动修复 + 等轴测图标遮挡修复 + 删除缓存按钮 + 沼泽睡莲水洞与沉水修复 + AO 去掉对角门控 + 设置面板两列布局与档位精简 + M8 TNT/炮塔的三项架构口径变更 + M9 创造台的两项架构口径变更 + 水面遮罩判据的两项架构口径变更）
+> 版本：v1.42 ｜ 日期：2026-09-29 ｜ 状态：定稿（经十五轮逐条核验修订 + M3.2 实施回填 + 异形方块渲染勘误 + 背包物品集合口径 + 吊灯材质自发光 + 吊灯 UV 分区 + 背包图标表 + 等轴测图标 + 测试分级策略与静态门禁 + 全量背包图标离线烘焙 + 背包槽位点选抖动修复 + 等轴测图标遮挡修复 + 删除缓存按钮 + 沼泽睡莲水洞与沉水修复 + AO 去掉对角门控 + 设置面板两列布局与档位精简 + M8 TNT/炮塔的三项架构口径变更 + M9 创造台的两项架构口径变更 + 水面遮罩判据的两项架构口径变更 + 天空树回补与 sky_leaves 通道修正）
 >
 > 目标：在 mc-heavy 仓库从零重建一个功能对标 mc-lite、性能提升一个数量级的体素游戏引擎。
 > 第一阶段只做"引擎底座"：渲染、体素数据、即时地图生成、玩家交互、种子地图、存档原型。
@@ -962,6 +962,64 @@
 > `fillColumn` 无条件填整列 + `generateCity` 覆写，覆写不到的水体残留。这是①的城市 bounds
 > 门控能「零误伤」的前提（bounds 内确实无水体）。⚠️ 勿按「城内真实水方块 = 0」的旧口径写注释
 > —— 那只对城堡 ±16 核心区成立，bounds 全域曾有 16600 格残留（其中 56 格暴露）。
+>
+> v1.42 修订说明：**天空树回补 + `sky_leaves` 通道修正**（2026-09-20 起草 / 2026-09-29 实施，
+> §4.1 / §4.2）。由用户实玩报告触发（「空岛之上没有树」，mc-lite 有）。
+>
+> ① **部分反转 v1.14**：M2-7 按当时产品范围删除的「空岛宝箱与天空树」中，**天空树回补**
+> （mc-lite `Island.js:44-50` 的顶层逐格 10%；⚠️ **本仓取其一半 5%** —— 用户 2026-09-29 指令
+> 「生成密度减少到原来的一半」，故 `SKY_TREE_CHANCE = 0.05` 是**有意偏离 mc-lite**，
+> 观感从 mc-lite 的「连绵叶团」变为「疏朗树木」）；**宝箱仍不迁移**。实现为
+> `sky-structures.js` 的 `writeSkyTrees()`，追加进既有固定层序（云 → 岛体 → 树），
+> 树基点 `topY+1` 与岛体几何不重叠。salt 取 **113**（程序化扫描确认空闲；**不能用 59** ——
+> 云簇 frontier 的 `seed+58+step` 在 `size ∈ [30,50]` 下实际占用 **58..107 连续区间**）。
+> 岛层半径抽出单一权威 `islandLayerRadius()`（红线 1）；候选 AABB 门控比岛体**宽 2 格**
+> （树冠外扩 ±2，否则跨界树冠在相邻 column 断裂缺角、而岛体看起来完全正常 → 难归因）。
+>
+> ② **§4.1 cullMode 勘误段补记 `sky_leaves`**：`sky_leaves` 由 `cutout` 改 `opaque`。根因是 M2-7
+> 按「名字含 leaves」归类（`blocks-data.js:6` 的转换规则），而 mc-lite 的材质是
+> `mkMat('#FF69B4', 0.9)` = `transparent + opacity`，**无 `alphaTest`** → 不是镂空。
+> 且 cutout 通道 `alphaTest=0.3` 且无 `transparent` → 贴图 alpha 0.902 全保留不混合，
+> **实际渲染自 M2-7 起就是不透明纯粉**（atlas tile 中心实测 `[255,105,180,230]`），
+> 故改 opaque **视觉零变化**，只让声明与实际一致。收益：`opaqueTable[sky_leaves]` 0→1
+> 使 `mesher.js:464` 的通用面剔除对叶-叶相邻面生效 → 总面数 735,576→700,064（−4.8%）。
+> 代价（三项有意偏离 mc-lite，详见 spec §2.6.3）：`sky_leaves` 开始遮挡 AO
+> （mc-lite `AOUtils.js:376` 的 `isOccluding = !isTransparent` → 不遮挡）、阻断 blocklight、
+> 阻挡炮塔 LOS / 弹丸（mc-lite `Turret.js:565` 同判据 → 不阻挡）。
+>
+> ③ **容量口径不变**：三通道 `CAPACITY` 与 §4.10 的 150MiB 预算**均不放宽**（实测三通道
+> `_capacity.*.maxVertexCount` 全部等于标定值 = 零扩容；`gpuVertexBytes` **148.06MiB** < 150MiB，
+> 余量 1.94MiB）。⚠️ **占用百分比口径**（vd=8 / seed=12345，实测数，非勘查期估算）：
+> 稳态（289 列队列全收敛）opaque **82.9%** / cutout **72.3%** / transparent **10.6%**；
+> 冲刺峰值（12s 奔跑、250ms 采样）opaque **93.8%** / cutout **81.9%** / transparent **11.2%**。
+> 其中 cutout 的高占用是 **HEAD 既有状态**（撒布补齐 `87cd571` 后花/树叶进 cutout），本次把
+> `sky_leaves` **移出** cutout 反而使其降低；transparent 的 41%（spec §4.3 勘查值）是**冲刺态**
+> 水面大量暴露的数字，不是 289 列稳态数字。⚠️ opaque 冲刺峰值余量已收窄到 6.2%，
+> 后续往 opaque 通道加量前须重测。
+>
+> ④ **性能实测（含一处冻结断言的用户裁决放宽）**：全场景 GEN p95 **1.534ms**（HEAD 1.206ms，
+> **+0.33ms**，远低于 §4.2 预算 → 未撞线）；MESH **+0.4%**（交替对照，vd=6/169 列各 5 轮取中位）。
+> ⚠️ **`structure-gen` fixture 的「含结构 genP95」门曾撞线，密度减半后已回落**：
+> 密度 0.1 时实测 **8.5~8.8ms**（4 次单独复跑分布极窄 → 非负载噪声），机制 = 该 fixture 的测量域是
+> **空岛密集区**（region `(-4,-4)` 金字塔 column 周围 4×4 column 内实测 3 个空岛、圆内 563 顶层格
+> → 约 56 棵树集中进这 16 个 column 的 GEN 计时路径），树密度远高于全场景平均 → +0.33ms 的
+> 平均增量在岛密区被放大到约 +1ms（基线 7.7 → 实测 8.5~8.8）。**用户 2026-09-29 裁决放宽该冻结
+> 断言 8ms → 10ms**（只改 `test-structure-gen.html` 的含结构门；`test-worker-gen.html` 的**无结构**门
+> 逐字未改，仍守 8ms）。§4.2 档位口径澄清：本文 §4.2 原文「单 column GEN（**无大结构**）目标 < 8ms；
+> 含城市结构切片 < 25ms」—— 8ms 档本就是「无大结构」口径，而该 fixture 的 GEN 调用**携带 `layouts`**
+> （含结构注入）属 25ms 档，故 **10ms 相对 §4.2 原文是保守值**。
+> ⚠️ **同日密度减半（0.1→0.05）后该域树数 ≈28，genP95 实测回落到 7.6~7.8ms（已回到原 8ms 预算内）**。
+> 用户裁决**保留 10ms 作余量**而不收回 8ms —— 理由：本门是**单样本 p95**（无平均、无舍入），
+> 7.6~7.8 对 8ms 只剩 2.5% 余量，高负载下会贴线抖动。**故 10ms 现在的性质是「保守余量」
+> 而非「撞线所需」** —— 后人读到这条不要以为当前密度仍在撞线。若天空树密度或 GEN 成本再涨，
+> 该门须**重新实测**而非再次静默放宽。
+> 另 **draw call 不是 +0**：bench 场景 ④ 实测 MOD **545** vs HEAD **530**（**+15**）——
+> WebGPU 后端对 BatchedMesh 的**每个可见 geometry slot 各发一次 draw**
+> （`three.webgpu.js:85531`），天空树新增可见 opaque slot 即增 draw。spec §4.3 勘查期写的
+> 「draw call +0」是**按「合批进既有 3 通道」推断**，已被实测证伪（该值不在门禁
+> LOWER_IS_BETTER 集合内，不阻断）。
+>
+> 规格 `docs/superpowers/specs/2026-09-20-sky-tree-design.md`（§10 有完整实施结果回填）。
 
 ---
 
@@ -1208,6 +1266,11 @@ mc-lite 的表达是**分散且不重合**的：`ExplosionWorker.js:8` 的字面
   L 形台阶自身面片无深度互遮，凹角透视穿帮。已修正：上述方块改 cutout（alphaTest 0.3 对
   全不透明贴图无副作用、深度写入恢复）；剔除语义由 `opaqueTable` 独立承担，不受影响。
   真混合通道仅留 water/swamp_water/cloud/glass_block/glass_blink。
+  ⚠️ **补记（v1.42）**：`sky_leaves` 同属本勘误族 —— M2-7 按「名字含 leaves」归为 cutout，
+  但 mc-lite 材质是 `mkMat('#FF69B4', 0.9)` = `transparent + opacity`、**无 `alphaTest`** → 不是镂空；
+  且 cutout 通道 `alphaTest=0.3` 且无 `transparent` → alpha 0.902 全保留不混合，实际渲染本就是
+  不透明纯粉 → v1.42 改为 `opaque`（声明与实际一致）。详见
+  `docs/superpowers/specs/2026-09-20-sky-tree-design.md` §2.6。
 
 **读路径 API**（物理/射线/meshing 共用）
 
@@ -1272,11 +1335,15 @@ GEN 任务(cx, cz, seed, edits)
   因为加载半径 ≥ 视距 + 生成提前量（§4.9 调度保证），结构永远在玩家看见之前就绪。
 - **空中结构（M2-7）**：悬浮空岛和连通云簇的候选按其来源 chunk 的 `(cx, cz, seed)`
   纯 hash 在 region layout 中一次计算；`StructureIndex.query(cx, cz)` 仍查询本 region 与相邻 8 个
-  region，再按候选 AABB 与当前 column 相交性过滤。岛体/云簇只把落入当前 column 的体素写入
+  region，再按候选 AABB 与当前 column 相交性过滤。岛体/云簇/**天空树**只把落入当前 column 的体素写入
   `blocks`，不存结构中心、不创建 entity、不发跨 column 补刷。原 mc-lite 的 `Math.random` 连通云
   游走改为同一 hash 序列，确保任意加载顺序结果一致。Y=55 的单云层直接由 `(wx,wz,seed)`
   噪声生成；Y=35 的连通云簇由 region layout 候选驱动；`cloud` 的“可站立”由 BlockRegistry `supportsPlayer` 表驱动，仍为 non-solid、
   transparent、非遮光方块。
+  天空树（v1.42 回补）在岛体之后写：顶层每个岛格按 `seededRandom(wx,wz,seed+113) < 0.05`
+  独立判定（⚠️ **有意偏离 mc-lite 的 0.1**，用户指令减半，单一权威 = `SKY_TREE_CHANCE`），
+  命中则以 `(wx, topY+1, wz)` 为基点调 `generateTree(..., 'skyTree')`。
+  候选 AABB 门控比岛体宽 2 格（树冠外扩 ±2），否则跨界树冠会在相邻 column 断裂。
 
 **生成性能预算**：
 - 单 column GEN（无大结构）目标 < 8ms（Worker 时间）；含城市结构切片 < 25ms。

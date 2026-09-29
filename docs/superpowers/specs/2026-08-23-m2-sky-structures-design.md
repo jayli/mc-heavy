@@ -4,6 +4,11 @@
 **定位：** 第一阶段 M2 的追加任务；必须在 M2 关闭及 M3 性能冻结前完成。<br>
 **关联：** `docs/phase-1-engine-design.md` §4.2、§7、§8；`docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md`。
 
+> ⚠️ **部分被反转（2026-09-20）**：本文 §1「明确不包含：天空树」与 §4 验收第 3 条
+> 「空岛…不含 `sky_wood`、`sky_leaves`」已由
+> [`2026-09-20-sky-tree-design.md`](2026-09-20-sky-tree-design.md) 反转 ——
+> 天空树按产品范围回补（宝箱仍不迁移）。**本文正文作为历史决策记录保留不改。**
+
 ## 1. 目标与范围
 
 迁移 mc-lite `src/world/entities/Island.js` 与 `Cloud.js` 的可见世界语义：悬浮空岛、噪声单云层和连通云簇。输出仍是主线程 `ChunkColumn.blocks` 的确定性生成结果，网格、光照与碰撞均继续是派生数据。

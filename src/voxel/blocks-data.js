@@ -3,7 +3,8 @@
 //       src/core/LightSourceManager.js（LIGHT_CONFIGS，4 个发光方块 → emissive: 15）
 // 转换日期：2026-08-19。转换规则见 docs/superpowers/plans/2026-08-19-m0-engine-skeleton.md Task 5：
 //   isSolid → solid；isTransparent && !isRendered → cullMode 'none'；
-//   geometryType ∈ {flower,vine,lilypad,cactus} 或名字含 leaves → 'cutout'（8 个树叶族）；
+//   geometryType ∈ {flower,vine,lilypad,cactus} 或名字含 leaves → 'cutout'（8 个树叶族，
+//   其中 sky_leaves 已于天空树 Epic 改回 'opaque' —— mc-lite 材质无 alphaTest，见该行注释）；
 //   其余 isTransparent → 'transparent'；其余 → 'opaque'。
 //   orientationEnabled → orientationModes 4/0；geometryType → geometry 原样保留。
 // M2 勘误（cullMode 语义）：cullMode 是渲染通道选择，须对齐 mc-lite 的**材质**透明度
@@ -32,7 +33,14 @@ export const BLOCKS = [
   {"name":"azalea_leaves","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"box"},
   {"name":"azalea_flowers","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"box"},
   {"name":"yellow_leaves","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"box"},
-  {"name":"sky_leaves","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"box"},
+  // 通道勘误（方案 C，spec §2.6）：mc-lite 材质是 mkMat('#FF69B4', 0.9) =
+  // transparent+opacity，**无 alphaTest** → 不是镂空。原 'cutout' 是 M2-7 按
+  // 「名字含 leaves」归类的偏差；cutout 通道 alphaTest=0.3 且无 transparent →
+  // 贴图 alpha 0.902 全保留不混合，实际渲染本就是**不透明纯粉**（atlas 实测印证）。
+  // 改 opaque 后叶-叶相邻面开始互剔（mesher.js:464 判据 opaqueTable[neighbor]===1），
+  // 面数 735,576→700,064；连带效应（AO 遮挡 / blocklight 阻断 / 炮塔 LOS 阻挡）
+  // 见 spec §2.6.3，均为有意偏离 mc-lite。
+  {"name":"sky_leaves","solid":true,"cullMode":"opaque","orientationModes":4,"geometry":"box"},
   {"name":"realistic_oak_leaves","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"box"},
   {"name":"realistic_yellow_leaves","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"box"},
   {"name":"flower","solid":false,"cullMode":"cutout","orientationModes":4,"geometry":"flower"},

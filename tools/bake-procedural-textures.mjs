@@ -136,7 +136,11 @@ textures.sky_wood = bakeMat('#DDA0DD', 9);
 textures.sky_stone = bakeMat('#DDDDDD', 18);
 textures.sky_grass = bakeMat('#88CCFF', 19);
 
-// 天空树叶（mkMat 0.9 不透明度）
+// 天空树叶（mc-lite mkMat('#FF69B4', 0.9)）。⚠️ 这个 0.9 alpha **不被消费**：
+// sky_leaves 走 opaque 通道（blocks-data.js 该行注释），材质 transparent=false →
+// 不做 alpha 混合，0.902 直接当不透明渲染。保留 230 只为记录 mc-lite 原值；
+// 改成 255 视觉完全相同，但会改变 tile 像素 → 触发 atlas 重打包 + 图标指纹变化，
+// 故刻意不改（最小改动）。
 textures.sky_leaves = bakeMat('#FF69B4', 10);
 {
   const buf = textures.sky_leaves;
