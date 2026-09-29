@@ -4,7 +4,7 @@
 > **不重复内容** —— 架构决策见设计文档，历次改动记录见其修订说明，任务级执行清单见
 > `docs/superpowers/plans/`。
 
-最后更新：2026-09-29
+最后更新：2026-09-30
 
 ## 一句话现状
 
@@ -89,6 +89,7 @@ MAG7 曳光终点回归准心轴（v1.36，原用扫描候选当终点导致斜�
 
 | 事项 | 要点 |
 |---|---|
+| **悬空宝箱删除 + 烟囱下方透明面修复**（2026-09-30） | 两个用户报告的 bug 同批修。① **悬空宝箱**：根因 = `tall_well.json` 的孤立 `chest@(24,51,20)`（mc-lite 上游数据异常，井体本身只到 y=16）—— 它在 y=51 完全悬空，每个 tallWell 候选都渲染一个 → 「天空中好多悬空宝箱」。实测复现（fetch stub + 真实 GEN，seed=12345）：候选 `(40,7,-53)` 在 `(64,57,-33)` 产出 chest、下方 `air/cloud/air`。修法 = 删 JSON 条目（315→314 块，属数据勘误，同 big_house 删 lilypad）；**footprint 24/20 刻意保留不收缩**：收缩到真实包围盒 5/4 会缩小 `isFirstInFootprint` 抑制范围 → 井密度 70→103（+47% 实测），增加 cutout 压力且改变用户当前看到的世界。防回归 = `check:data` 新增 `[结构 JSON]` 孤立块契约（负向验证：HEAD 原始文件命中 1 个、修复后 0）+ `test-scatter.js` 的 `SCATTER_Y_EXTENT.tallWell` 51→16。② **烟囱下方透明面**：根因 = registry 按 `cullMode === 'opaque'` 推 `opaqueTable`，而 cullMode 是**渲染通道**语义、opaqueTable 是**面剔除**语义（两套口径）→ chimney 因材质不透明进了 opaque 通道，连带被误判成「占满整格、可剔除邻居面」→ mesher 剔掉烟囱下方屋顶块的顶面。实测本仓库全部非 box 几何方块的 opaqueTable 都是 0，chimney 与 bed_head/bed_tail 是唯二漏网。修法 = cloud 同款手法：`blocks-data.js` chimney 行加显式 `"opaque":false`（opaqueTable=0，cullMode 仍 opaque）。连带效应（均为修正）：chimney 不再遮挡 AO / 阻断 blocklight / 挡炮塔 LOS —— 细圆柱本就不该完全遮光。bed_head/bed_tail 同类漏网**暂不修**（已从背包移除、实际不会被放置）。验证：新增 Tier 1 mesher 用例（RED 29 面 → GREEN 30 面，对照组 stone+stone 仍 10 面）+ `check` 全绿 + 浏览器内单测全绿 |
 | **爆炸序列帧特效补齐** | mc-lite `World.js:1296 spawnExplosionParticles` 是**两层叠加**：① 序列帧 billboard（`ParticleSystem.js:177`，`big_blow.png` 500×200 / 5×2=10 帧 / 0.5s / AdditiveBlending / scale 3→8 / 前 80% 全亮末 20% 淡出）② 球体扩张（`World.js:1301-1311`，注释原文「作为底层增强」）。**M8 当时只移植了 ②**（`explosion-renderer.js` 文件头如实记录了这次裁剪），实玩反馈「爆炸少了原始图分帧播放」→ 补 ①：新增 `src/render/explosion-sprite.js`（照搬 mc-lite 的 Sprite 池手法 —— Sprite 自动 billboard + 逐 sprite `visible=false` 同样还原 draw call 基线）+ `assets/effects/big_blow.png`。两层在 `game.js` 的 `explodeTnt()` 同帧触发（billboard 先、球体后，mc-lite 就是这个顺序）。**Tier 1 单测钉帧映射算术 + Tier 4 像素实测证明切帧真在生效**（`tests/explosion-sprite.spec.mjs`）+ 真游戏页接线断言（`tests/tnt.spec.mjs`）。三处负向验证均实测通过（注入 bug 后真 FAIL） |
 
 ## M3.2 之后的独立 bugfix / 改造（v1.19 ~ v1.42）

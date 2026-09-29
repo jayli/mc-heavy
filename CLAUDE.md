@@ -152,6 +152,16 @@ M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 
   **只要 ① 不要 ②③④ 时用 `cloud` 的手法**：`cullMode:"opaque"` + `opaque:false` +
   `mesher.js:288` 的 `SAME_TYPE_CULL` 加名字。⚠️ 该手法**治不了 GEN 侧成本** —— GEN 阶段
   根本不读 `cullMode`（v1.42 实测确认，spec §5.3 的回退选项因此不含「治 genP95」）。
+- **反向情形（四项全不要）= 只加 `"opaque":false`，不动 `SAME_TYPE_CULL`**：`chimney`
+  （2026-09-30 修）是第二个实例 —— 它因材质不透明被转换规则归进 opaque 通道，连带被误判成
+  「占满整格、可剔除邻居面」→ **mesher 剔掉烟囱下方屋顶块的顶面**（用户报告「烟囱底部接触的
+  方块面是透明的」）。几何上它是 r=0.15 的细圆柱，本就不占满整格。⚠️ **与 cloud 的区别**：
+  cloud 要同类互剔（云簇内部不出面）故须加 `SAME_TYPE_CULL`；chimney 不需要（两个相邻烟囱
+  各自都是细柱，互不遮挡）→ **只加 `opaque:false`，加进 `SAME_TYPE_CULL` 是错的**。
+  ⚠️ 实测本仓库**全部非 box 几何方块的 opaqueTable 都是 0**（cutout 通道），唯二漏网是
+  `chimney`（已修）与 `bed_head`/`bed_tail`（half_block，**暂不修** —— 已从背包移除、
+  实际不会被放置，属既有规避策略）。⚠️ 加新的非 box 几何方块时须显式声明 `"opaque":false`，
+  否则转换规则会按 cullMode 误推 opaqueTable=1（同类 bug 会重犯）。
 - **`seededRandom` 的 salt 占用须程序化扫描，不能 grep 字面量** —— 带 `+ step`/`+ k`/`+ y`
   偏移的调用点占用的是**区间**（云簇 frontier 的「`seed+58`」实际占 **58..107**，
   `landmarks` 的「`seed+302+y`」实际占 **270..397**）。用错 salt 是**静默的确定性污染**
@@ -494,8 +504,10 @@ M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 
 
 - `src/constants/BlockData.js` → `src/voxel/blocks-data.js`（124 方块声明，转换规则见计划 Task 5）；
 - `src/assets/textures/` → `assets/textures/`（122 张：116 顶层 + `bed/` 6 张，文件名原样保留）；
-- `src/world/structures/*.json` → `assets/structures/`（原样复用；**唯一例外**是 `big_house.json`
-  删了 3 个草地 lilypad，理由见设计文档 §4.3 lilypad 段）；
+- `src/world/structures/*.json` → `assets/structures/`（原样复用；**两处有意例外**：`big_house.json`
+  删了 3 个草地 lilypad（理由见设计文档 §4.3 lilypad 段）；`tall_well.json` 删了 1 个孤立
+  `chest@(24,51,20)`（mc-lite 上游数据异常，井体只到 y=16 → 该宝箱在 y=51 完全悬空，
+  用户报告「天空中好多悬空宝箱」，2026-09-30 修））；
 - `src/workers/maps/*`（CityMap/Pyramid/FrozenMountain/SnowLand/IslandMap/RegionCenterUtils）
   → `src/gen/structures/*`（**算法照搬，接口改为 `Structure.rasterize(aabb)`，按 chunk 裁剪**）；
 - `AOUtils`（四角 AO）、`OrientationUtils`（朝向 0-3）、`MathUtils`（seededRandom/noise/biome）算法；

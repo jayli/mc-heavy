@@ -468,7 +468,9 @@ function layoutsFor(cx, cz) {
  * 充分证据，且每个候选点的断言互相独立。
  */
 const SCATTER_Y_EXTENT = {
-  flowerBed: 3, pavilion: 6, tallWell: 51, desertPyramid: 16,
+  // tallWell 曾是 51（2026-09-30 前）：JSON 里那个孤立 chest@(24,51,20) 把扫描范围撑到 y+51。
+  // chest 已删（悬空数据异常），井体最高 normalized y=16 → 写入最高格 = cand.y+15，extent 取 16。
+  flowerBed: 3, pavilion: 6, tallWell: 16, desertPyramid: 16,
   desertVillage: 12, uglyHouse: 13, tank: 9, house: 6, ship: 4,
 };
 

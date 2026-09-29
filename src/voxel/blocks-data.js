@@ -58,7 +58,25 @@ export const BLOCKS = [
   {"name":"handrailB","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"handrailB"},
   {"name":"vertical_pillar","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"vertical_pillar"},
   {"name":"horizontal_pillar","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"horizontal_pillar"},
-  {"name":"chimney","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"chimney"},
+  // 剔除语义勘误（2026-09-30）：显式 `opaque:false` → opaqueTable=0（不剔除邻居面），
+  // cullMode 仍 'opaque'（留在 opaque 通道，材质不透明 mkMat('#7f5b37') 无 alphaTest）。
+  //
+  // **根因是转换规则漏网**：registry 按 `cullMode === 'opaque'` 推 opaqueTable，而
+  // cullMode 是**渲染通道**语义、opaqueTable 是**面剔除**语义（两套口径，见文件头 M2 勘误）。
+  // 实测本仓库**全部非 box 几何的方块 opaqueTable 都是 0**（flower/vine/台阶/柱子/吊灯…
+  // 因为它们 cullMode 都是 cutout）—— 唯二的例外是 chimney 与 bed_head/bed_tail：
+  // 它们因材质不透明被归进 opaque 通道，连带被误判成「占满整格、可剔除邻居面」。
+  //
+  // 后果（用户报告）：mesher 剔掉烟囱下方屋顶块的顶面 → 「烟囱底部接触的方块面是透明的」。
+  // 几何上 chimney 是 r=0.15 的细圆柱（`prismQuads`，y∈[-0.5,1.5]），本就不占满整格，
+  // 拿它当遮挡体去剔邻居面在任何口径下都错。mc-lite 侧是实例级渲染
+  // （`CylinderGeometry(0.15,0.15,2,8)`，ChunkConsolidation.js:98），根本没有面剔除这一步。
+  //
+  // 修法 = cloud 同款手法（cullMode 与 opaque 解耦）。连带效应：不再遮挡 AO /
+  // 不阻断 blocklight（lighting.js 读 opaqueTable）/ 不挡炮塔 LOS（turret-system.js:31）——
+  // 细圆柱本来就不该完全遮光挡视线，这三项都是修正而非回退。
+  // ⚠️ bed_head/bed_tail（half_block）是同类漏网，但已从背包移除、实际不会被放置，暂不修。
+  {"name":"chimney","solid":true,"opaque":false,"cullMode":"opaque","orientationModes":0,"geometry":"chimney"},
   {"name":"swamp_leaves","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"box"},
   {"name":"snow_leaves","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"box"},
   {"name":"calcite","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},

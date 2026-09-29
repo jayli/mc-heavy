@@ -54,14 +54,23 @@ export const CITY_STRUCTURE_FOOTPRINT = Object.freeze({
  * 专用的，撒布结构不参与 placement 配额（它们是逐点概率撒布），混进一张表会让 `minGap`
  * 对撒布结构成为无意义的死字段。两张表语义互斥（红线 1：同一事实只有一份权威）。
  *
- * ⚠️ `tallWell` 的包围盒**非对称且异常大**（x 延伸到 +24）：JSON 里有一个孤立的
- * `chest@y51` 落在 x=24。照搬数据 → 扫描范围被它撑到 ±26。勿按「观感」缩小，
- * 缩小会丢掉那个箱子（实测踩坑：用底层 footprint 算 halfX 会漏光栅化）。
+ * ⚠️ 本表有**两个消费方**，改值前两边都要评估：
+ *   ① `apply.js:240` 的 AABB 裁剪（决定哪些 column 会光栅化该候选）；
+ *   ② `scatter.js` 的 `isFirstInFootprint`（同类型候选互斥抑制范围 → **直接影响密度**）。
+ *
+ * ⚠️ `tallWell` 的 **24/20 是历史遗留的抑制范围，不是真实包围盒**（表头「按 JSON 实测
+ * 完整包围盒」的唯一例外）：2026-09-30 前 JSON 里有一个孤立的 `chest@(24,51,20)` 把包围盒
+ * 撑到 x[-5,24] z[-4,20]（mc-lite 上游数据异常，井体本身只到 y=16、x[-5,3] z[-4,4]）。
+ * 那个宝箱在 y=51 完全悬空 → 用户报告「天空中好多悬空宝箱」，已从 JSON 删除（数据勘误，
+ * 同 big_house 删 lilypad）。**删 chest 后刻意保留 24/20 不收缩**：收缩到真实包围盒 5/4
+ * 会缩小 ② 的抑制范围 → 井密度 70→103（+47%，seed=12345 实测），增加 cutout 通道压力
+ * （roadmap 警告 cutout 峰值 81.9% 已近预算，扩容是离散 ×1.5 跳增），且沙箱阻止浏览器
+ * bench 无法实测验证。保留 24/20 维持用户当前看到的井密度，仅浪费少量 AABB 裁剪计算。
  */
 export const SCATTER_FOOTPRINT = Object.freeze({
   flowerBed: { halfX: 5, halfZ: 3 },      // x[-4,5] z[-2,3]
   pavilion: { halfX: 5, halfZ: 3 },       // x[-4,5] z[-2,3]
-  tallWell: { halfX: 24, halfZ: 20 },     // x[-5,24] z[-4,20]（含 x=24 的孤立 chest@y51）
+  tallWell: { halfX: 24, halfZ: 20 },     // 历史遗留抑制范围（孤立 chest 已删，见上注释）
   desertPyramid: { halfX: 12, halfZ: 12 }, // x[-12,12] z[-12,12]
   desertVillage: { halfX: 8, halfZ: 8 },   // x[-8,8] z[-8,8]
   uglyHouse: { halfX: 6, halfZ: 10 },      // x[-6,4] z[-4,10]

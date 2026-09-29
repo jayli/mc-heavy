@@ -2197,13 +2197,6 @@
       "z": 3,
       "type": "leaves",
       "direction": 0
-    },
-    {
-      "x": 24,
-      "y": 51,
-      "z": 20,
-      "type": "chest",
-      "direction": 0
     }
   ],
   "metadata": {

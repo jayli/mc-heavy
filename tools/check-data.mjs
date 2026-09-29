@@ -344,6 +344,50 @@ async function checkScatterStructureIntegrity() {
   }
 }
 
+// ---------------------------------------------------------------- [结构 JSON] 孤立块契约
+
+/**
+ * 结构 JSON 里不得有「孤立列块」：某 (x,z) 列只有一个块，且它比结构次高块高出 5 格以上。
+ *
+ * 背景（2026-09-30 修复）：tall_well.json 曾有一个孤立的 `chest@(24,51,20)`（mc-lite 上游
+ * 数据异常，井体本身只到 y=16）—— 它在 y=51 完全悬空，每个 tallWell 候选都渲染一个
+ * → 用户报告「天空中好多悬空宝箱」。光栅化是逐块无条件写入，不会校验支撑，
+ * 只有本门禁能抓。
+ *
+ * 判据选「孤立列 + 远超次高」而非「逐块查支撑」：JSON 结构里大量块靠**结构自身**的
+ * 横向连接支撑（树冠/挑台/桥梁，实测 27 个 JSON 里逐块查支撑会误报几百个），
+ * 而「独占一列且孤零零高出次高 5 格以上」的块在任何结构语义下都是数据异常。
+ * 负向验证：本规则在修复前的 tall_well.json 上命中 1 个（正是那个 chest），修复后 0。
+ */
+function checkStructureJsonOrphans() {
+  const dir = path.join(ROOT, 'assets', 'structures');
+  const problems = [];
+  let files = 0;
+  for (const f of fs.readdirSync(dir).filter((n) => n.endsWith('.json'))) {
+    files++;
+    const data = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
+    const blocks = data.blocks || [];
+    if (!blocks.length) continue;
+    const colCount = new Map();
+    for (const b of blocks) {
+      const key = `${b.x},${b.z}`;
+      colCount.set(key, (colCount.get(key) || 0) + 1);
+    }
+    const ys = blocks.map((b) => b.y).sort((a, b) => a - b);
+    const secondMaxY = ys.length > 1 ? ys[ys.length - 2] : ys[0];
+    for (const b of blocks) {
+      if (colCount.get(`${b.x},${b.z}`) === 1 && b.y > secondMaxY + 5) {
+        problems.push(`${f}: 孤立块 ${b.type}@(${b.x},${b.y},${b.z}) 比次高块(y=${secondMaxY}) 高出 ${b.y - secondMaxY} 格，疑似悬空数据异常`);
+      }
+    }
+  }
+  if (problems.length) {
+    for (const p of problems) failures.push(`[结构 JSON] ${p}`);
+  } else {
+    infos.push(`[结构 JSON] ${files} 个结构无孤立悬空块（tall_well 悬空宝箱回归防线）`);
+  }
+}
+
 // ---------------------------------------------------------------- [9] 丧尸头部纹理契约
 
 /**
@@ -545,6 +589,7 @@ checkIconFreshness();
 checkTestRegistration();
 checkGeometryAuthority();
 await checkScatterStructureIntegrity();
+checkStructureJsonOrphans();   // 2026-09-30：tall_well 悬空宝箱回归防线（⚠️ 漏了本行则门禁永不执行）
 checkZombieHeadTexture();
 checkTurretArmorTexture();
 

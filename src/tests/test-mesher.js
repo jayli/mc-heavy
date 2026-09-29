@@ -438,7 +438,7 @@ test('mesher: chimney 不受 uvRegion/quad 级 em 影响（可选字段默认走
   // prismQuads**（与吊灯绳共用 helper），是「共用函数未被破坏」的理想防线。
   const reg = makeRegistry();
   const result = meshSingle(reg, 'chimney');
-  const packed = result.opaque.packed; // chimney cullMode=opaque（blocks-data.js:53）
+  const packed = result.opaque.packed; // chimney cullMode=opaque（仍在 opaque 通道）
   assertTrue(result.opaque.vertexCount > 0, 'chimney 在 opaque 通道');
   for (let i = 0; i < result.opaque.vertexCount; i++) {
     assertEqual((packed[i] & EMISSIVE_BIT) ? 1 : 0, 0, `chimney vert${i} bit13 不置位`);
@@ -452,6 +452,37 @@ test('mesher: chimney 不受 uvRegion/quad 级 em 影响（可选字段默认走
   }
   assertEqual(Math.round(minU), 0, 'chimney UV 起点仍为 0（全幅）');
   assertEqual(Math.round(maxU), 1, 'chimney UV 终点仍为 1（全幅）');
+});
+
+test('mesher: chimney 不剔除邻居面——下方屋顶顶面保持可见（2026-09-30 修复）', () => {
+  // 用户报告：小房子烟囱底部接触的方块面是透明的（屋顶顶面出现洞）。
+  // 根因：registry 按 `cullMode === 'opaque'` 推 opaqueTable，而 cullMode 是**渲染通道**
+  // 语义、opaqueTable 是**面剔除**语义（两套口径）→ chimney 因材质不透明进了 opaque 通道，
+  // 连带被误判成「占满整格、可剔除邻居面」。实测本仓库全部非 box 几何方块的 opaqueTable
+  // 都是 0（cutout 通道），chimney 与 bed_head/bed_tail 是唯二漏网。
+  // mc-lite 侧是实例级渲染（CylinderGeometry，ChunkConsolidation.js:98），根本没有面剔除。
+  // 修法 = cloud 同款手法：cullMode:"opaque"（留在 opaque 通道）+ 显式 "opaque":false。
+  const reg = makeRegistry();
+  const world = new WorldData(reg);
+  const col = new ChunkColumn(0, 0);
+  const y = WORLD_MIN_Y + 5;
+  col.blocks[blockIndex(8, y, 8)] = reg.idOf('stone');       // 屋顶块
+  col.blocks[blockIndex(8, y + 1, 8)] = reg.idOf('chimney'); // 烟囱在其上
+  world.add(col);
+  const view = world.getSectionView(0, 0, 0);
+  const result = buildSectionMesh(view, reg, atlasMeta, 0, 0, 0);
+  // stone 6 面全保留（chimney 不剔除邻居面）+ chimney 模板 24 quad → (6+24)×4 顶点
+  assertEqual(result.opaque.vertexCount, 30 * 4,
+    'stone 六面全保留（顶面不被 chimney 剔除）+ chimney 24 quad');
+  // 对照组：上方换成实心 opaque 块（stone）时共享面应正常剔除 → 10 面
+  // （钉住「修复没有把面剔除整体关掉」）
+  const world2 = new WorldData(reg);
+  const col2 = new ChunkColumn(0, 0);
+  col2.blocks[blockIndex(8, y, 8)] = reg.idOf('stone');
+  col2.blocks[blockIndex(8, y + 1, 8)] = reg.idOf('stone');
+  world2.add(col2);
+  const r2 = buildSectionMesh(world2.getSectionView(0, 0, 0), reg, atlasMeta, 0, 0, 0);
+  assertEqual(r2.opaque.vertexCount, 10 * 4, '对照：两个实心 opaque 块共享面正常剔除');
 });
 
 test('mesher: glowstone 不置 bit13（有 blocklight 源但无材质自发光——两个集合不同）', () => {

@@ -1271,6 +1271,18 @@ mc-lite 的表达是**分散且不重合**的：`ExplosionWorker.js:8` 的字面
   且 cutout 通道 `alphaTest=0.3` 且无 `transparent` → alpha 0.902 全保留不混合，实际渲染本就是
   不透明纯粉 → v1.42 改为 `opaque`（声明与实际一致）。详见
   `docs/superpowers/specs/2026-09-20-sky-tree-design.md` §2.6。
+  ⚠️ **补记（2026-09-30，同族反方向实例）**：`chimney` 是「两套口径被混同」的**另一个方向** ——
+  sky_leaves 错在**通道**（该 opaque 却归 cutout），chimney 错在**剔除语义**：registry 按
+  `cullMode === 'opaque'` 推 `opaqueTable`（`block-registry.js:43`），于是它因材质不透明进了
+  opaque 通道，**连带**被误判成「占满整格、可剔除邻居面」→ mesher 剔掉烟囱下方屋顶块的顶面
+  （用户报告「烟囱底部接触的方块面是透明的」）。实测本仓库**全部非 box 几何方块的
+  `opaqueTable` 都是 0**（它们 cullMode 都是 cutout），唯二漏网是 `chimney` 与
+  `bed_head`/`bed_tail`（half_block）。修法 = `cloud` 同款手法（cullMode 与 opaque 解耦）：
+  显式 `"opaque":false`，cullMode 仍 `opaque`。⚠️ **与 cloud 的区别**：cloud 要同类互剔
+  （云簇内部不出面）故须加 `SAME_TYPE_CULL`；chimney 不需要（两个相邻烟囱各自都是细柱，
+  互不遮挡）→ 只加 `opaque:false`。⚠️ **后续加非 box 几何方块须显式声明 `"opaque":false`**，
+  否则转换规则会按 cullMode 误推 `opaqueTable=1`（同类 bug 重犯）。连带效应（均为修正）：
+  chimney 不再遮挡 AO / 阻断 blocklight / 挡炮塔 LOS —— r=0.15 的细圆柱本就不该完全遮光挡视线。
 
 **读路径 API**（物理/射线/meshing 共用）
 
@@ -1509,7 +1521,8 @@ half_block（床，1×0.5×1）、hanging_lamp（绳 8 段棱柱 r=0.015 + 灯�
   - **`big_house.json` 的 3 个草地 lilypad 已移除**（`x=-16/-14/-12, y=2, z=-13`）：其下方是 `grass`，
     顶面 y=2.00 是**整格高**，而水面/台阶顶面是**半格高**，两者差半格 → 同一份几何无法同时贴合，
     保留会让睡莲沉进草地 0.48。睡莲是水生植物，长在草地上本身是 mc-lite 数据怪异。
-    这是**对「`assets/structures/*.json` 原样复用」约定的有意例外**（仅此一处，理由如上）。
+    这是**对「`assets/structures/*.json` 原样复用」约定的有意例外**之一（另一处是
+    `tall_well.json` 删孤立悬空 chest，见 2026-09-30 修复记录）。
 - **面 UV 口径 = three.js BoxGeometry buildPlane**（vendor/three r185.1 源码核验）：
   +X: u=1-z,v=y；-X: u=z,v=y；+Y: u=x,v=1-z；-Y: u=x,v=z；+Z: u=x,v=y；-Z: u=1-x,v=y。
   与 mc-lite InstancedMesh 一致（历史 bug：±X 用统一 UV → 东西面贴图旋转 90°，已修）。
@@ -2367,7 +2380,7 @@ AOBridge / AOWorker / 八个 Worker 文件——它们的职责被 §4 的四个
 | workers/maps/*（CityMap/Pyramid/…） | src/gen/structures/*（光栅化接口改造） |
 | world/entities/Island.js / Cloud.js | M2-7 `src/gen/structures/sky-structures.js`（确定性 rasterize，非 entity） |
 | structure-index/* | src/gen/structure-index.js（整体移植） |
-| structures/*.json | assets/structures/（原样复用；唯一例外 `big_house.json` 删 3 个草地 lilypad，见 §4.3） |
+| structures/*.json | assets/structures/（原样复用；两处有意例外：`big_house.json` 删 3 个草地 lilypad（见 §4.3）、`tall_well.json` 删 1 个孤立悬空 chest（2026-09-30）） |
 | BlockData.js | src/voxel/block-registry.js（数据化重写） |
 | AOUtils.js | src/mesh/mesher.js 内联（算法照搬） |
 | OrientationUtils.js | src/voxel/meta.js + mesher 旋转模板 |
