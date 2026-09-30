@@ -241,9 +241,53 @@ export class EntityManager {
       if (!next) continue;
       const before = columnKeyOfPosition(entity.state.position);
       entity.state = next;
-      const after = columnKeyOfPosition(next.position);
-      if (before !== after) { this._unindexColumn(entity, before); this._indexColumn(entity, after); }
+      this._migrateColumn(entity, before);
     }
+  }
+
+  /**
+   * 派生 column 索引迁移（`update` / `applyAsyncPose` 两处共用）。
+   * ⚠️ `reindexColumn` **不用本方法** —— 它的 beforeKey 来自 `_byColumn` 反查（索引里当前记的 key），
+   * 而本方法的 beforeKey 来自「赋值前的 position」，两者语义不同。
+   * @param {Entity} entity @param {string} beforeKey 赋值前的 column key
+   */
+  _migrateColumn(entity, beforeKey) {
+    const after = columnKeyOfPosition(entity.state.position);
+    if (beforeKey !== after) { this._unindexColumn(entity, beforeKey); this._indexColumn(entity, after); }
+  }
+
+  /**
+   * 按实体**当前** state.position 重算派生 column 索引（跨 column 时迁移）。
+   *
+   * **为什么需要公开**：`EntityManager.update()` 只在 `definition.update` 返回新 state 时迁移索引。
+   * 但玩法服务有时会在 update 循环**之外**改 state.position —— 矿车的 `applyDeferred()`
+   * 把相向碰撞的车回弹到 `lastTrack`（可跨 column 边界），那条路径绕过 update →
+   * 索引永久停在旧 column（且**不自愈**：车已 idle 不再动，下一帧 before===after 不触发迁移）。
+   * 后果：旧 column 卸载时 `beginColumnUnload` 会命中这辆实际已离开的车 → 冻结 + snapshot +
+   * despawn 它，而它真正所在的 column 可能仍加载 → **车在玩家眼前消失**。
+   *
+   * ⚠️ 与 `applyAsyncPose` 的区别：那个是「消费异步 worker 回包」（有 generation 门控、只写
+   * position）；本方法是**同步、无 generation 校验**的索引校准 —— 调用方（玩法服务）在同一帧内
+   * 持有实体并刚写完 state，不存在迟到回包问题。
+   *
+   * ⚠️ beforeKey 必须是**索引里当前记的 key**（从 `_byColumn` 反查），不是从 position 重算的
+   * key —— 后者会让 before===after 恒成立、永不迁移。
+   * @param {string} id @returns {boolean} false = 未知 id
+   */
+  reindexColumn(id) {
+    const entity = this._entities.get(id);
+    if (!entity) return false;
+    const after = columnKeyOfPosition(entity.state.position);
+    // 反查 id 当前挂在哪个 key 下（_byColumn 是 key → Set<id>）
+    for (const [key, set] of this._byColumn) {
+      if (set.has(id)) {
+        if (key !== after) { this._unindexColumn(entity, key); this._indexColumn(entity, after); }
+        return true;
+      }
+    }
+    // 不在索引里（理论不可达，spawn 时必建索引）→ 直接建
+    this._indexColumn(entity, after);
+    return true;
   }
 
   /**
@@ -261,8 +305,7 @@ export class EntityManager {
     if (!next) return false; // 非法 position 的回包同样丢弃，不污染 state
     const before = columnKeyOfPosition(entity.state.position);
     entity.state = next;
-    const after = columnKeyOfPosition(next.position);
-    if (before !== after) { this._unindexColumn(entity, before); this._indexColumn(entity, after); }
+    this._migrateColumn(entity, before);
     return true;
   }
 

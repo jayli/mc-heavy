@@ -10,6 +10,7 @@ import { WeaponController } from './weapons/weapon-controller.js';
 import { WEAPON_IDS } from './weapons/weapon-catalog.js';
 import { NEST_ALIAS_BLOCK } from '../entities/zombie-nests/nest-config.js';
 import { TURRET_ALIAS_BLOCK, defaultTurretRotation } from '../entities/turrets/turret-config.js';
+import { MINECART_ITEM, MINECART_TYPE, MINECART } from '../entities/minecarts/minecart-config.js';
 
 const EYE_HEIGHT = 1.62;
 const REACH = 40; // mc-lite 枪的 far 语义
@@ -35,11 +36,14 @@ const _up = new THREE.Vector3();
  *   1. 若该物品代表**多方块结构**，图标须走平面路径 —— 把名字加进
  *      `tools/icon-fingerprint.mjs` 的 `FLAT_BLOCKS`（对齐 mc-lite `getCustomIconPath()` 的手工
  *      图标表）并跑 `npm run icons`。否则背包里显示的是一个立方体等轴测图 —— 错的表达。
- *   2. 放置 origin 用**命中方块格**（`target.blockPos`），不是 `prevPos`：结构最低层要落在
- *      玩家脚下的地面格上。两条路径（背包分流与 `selectPlaceable`）的 origin 语义必须一致。
+ *   2. 放置 origin 按**物品类型**区分：多格结构（巢穴/炮塔）用**命中方块格**
+ *      （`target.blockPos`）—— 结构最低层要落在玩家脚下的地面格上；单格实体（矿车）用
+ *      `target.prevPos`（命中面的相邻空气格）。两条路径（背包分流与 `selectPlaceable`）
+ *      的 origin 语义必须一致。
  */
-// 物品名派生自 nest-config.js 的单一权威，不在此写第二份字面量（红线 1：两处会漂移）
-const CREATIVE_SPECIALS = new Set([NEST_ALIAS_BLOCK, TURRET_ALIAS_BLOCK]);
+// 物品名派生自 nest-config.js / turret-config.js / minecart-config.js 的单一权威，
+// 不在此写第二份字面量（红线 1：两处会漂移）
+const CREATIVE_SPECIALS = new Set([NEST_ALIAS_BLOCK, TURRET_ALIAS_BLOCK, MINECART_ITEM]);
 
 export class Player {
   /**
@@ -57,7 +61,7 @@ export class Player {
    * @param {() => boolean} [opts.isModal] 模态谓词（M3.1）：返回 true 时 keydown 全部拦截。
    *        注入而非直接引用 Game，保持 Player 不反向依赖 core/（依赖方向 §3）
    */
-  constructor({ world, camera, scheduler, registry, canvas, editor, weaponRuntime = null, isModal = () => false, onSpawnZombie = null, nests = null, turrets = null, onIgniteTnt = null }) {
+  constructor({ world, camera, scheduler, registry, canvas, editor, weaponRuntime = null, isModal = () => false, onSpawnZombie = null, nests = null, turrets = null, minecarts = null, onIgniteTnt = null }) {
     this.world = world;
     this.camera = camera;
     this.scheduler = scheduler;
@@ -82,6 +86,17 @@ export class Player {
      * @type {import('../entities/turrets/turret-service.js').TurretService|null}
      */
     this.turrets = turrets;
+    /**
+     * 矿车服务（Game 注入）。同 nests/turrets 手法 —— `src/entities/**` 是同构层，
+     * Player 不得反向依赖它；缺省 null → 矿车交互无效果（fixture 单独构造时）。
+     * @type {import('../entities/minecarts/minecart-system.js').MinecartService|null}
+     */
+    this.minecarts = minecarts;
+    /** 乘坐状态（mc-lite Player.js 同字段语义） */
+    this.ridingMinecartId = null;
+    this._lastRidePos = null;          // 上帧车位（跟随增量基准）
+    this._remountCooldown = 0;         // 下车后禁止自动重绑（秒）
+    this._spaceReleased = true;        // 空格边沿检测（防按住连续下车/重绑）
     /**
      * M8 引爆回调（Game 注入）。Player 不反向依赖 core/（依赖方向 §3，与 `onSpawnZombie`
      * 同惯例）。缺省 null → `igniteTnt()` 返回 false 且不写世界（fixture 单独构造时）。
@@ -192,8 +207,9 @@ export class Player {
       if (e.button === 0) {
         if (this.audioManager) void this.audioManager.unlock();
         // 徒手左键挖掘；持枪左键按下式射击（手枪/加特林按住连射，MAG7 单发）
-        if (this.weaponController.debugState().selectedId === WEAPON_IDS.ARM) this.digBlock();
-        else this.weaponController.pointerDown(this._buildAim());
+        if (this.weaponController.debugState().selectedId === WEAPON_IDS.ARM) {
+          this.digBlock({ ctrl: e.ctrlKey, shift: e.shiftKey });
+        } else this.weaponController.pointerDown(this._buildAim());
       }
       if (e.button === 2) this.placeBlock(); // 右键始终放块
     };
@@ -214,12 +230,20 @@ export class Player {
 
   /** 60Hz 定步长累加器（渲染帧率与物理解耦，§4.5.1） */
   update(dt) {
+    // ---- 矿车乘坐（mc-lite updateMinecartRiding 语义）----
+    // 必须在物理步之前跑：跟随读上帧车位（mc-lite 同序）。
+    this._updateMinecartRiding(dt);
     this._acc += dt;
     const step = 1 / 60;
     let n = 0;
+    // ⚠️ 乘坐期间跳过自主移动与重力：`_applyInput` 会把玩家从车上推走，
+    // `physics.step` 的重力会把玩家从车顶拉下去（位置已由 _updateMinecartRiding 锁定）。
+    const riding = !!this.ridingMinecartId;
     while (this._acc >= step && n < 5) {
-      this._applyInput();
-      this.physics.step(step);
+      if (!riding) {
+        this._applyInput();
+        this.physics.step(step);
+      }
       this._acc -= step; n++;
     }
     // 消费本帧 step-up 抬升：物理已瞬时到位，相机从旧高度 ease-out 追平
@@ -249,6 +273,123 @@ export class Player {
     this.weaponController.update(dt, aim);
     if (this.viewWeapon) this.viewWeapon.update(dt, { shooting: this.weaponController.debugState().triggerHeld });
     if (this.tracerRenderer) this.tracerRenderer.update(dt, aim);
+  }
+
+  /**
+   * 矿车乘坐（设计文档 §4.4）。在物理步之前跑 —— 跟随读上帧车位（mc-lite 同序）。
+   * 绑定：站在车顶 ±容差内且不在重绑冷却；跟随：按车位移增量推玩家（y 锁车顶）；
+   * 下车：空格（起跳 + 重绑冷却）或水平偏离超阈值。
+   * @param {number} dt 秒
+   */
+  _updateMinecartRiding(dt) {
+    if (!this.minecarts) return;
+    if (this._remountCooldown > 0) this._remountCooldown -= dt;
+    // 空格边沿状态复位。**必须放在函数顶部（两个分支之前）** —— 乘坐分支末尾有
+    // `return`，若复位只写在未绑定分支里，一旦绑定成功 `_spaceReleased` 就永远回不到
+    // true → **空格下车彻底失效**（实测确认：按住空格上车 → 松开 → 再按，状态机卡在
+    // false，永不下车）。边沿触发的正确语义 = 「先松开再按才能下车」，两个分支都要复位。
+    if (!this.keys.has('Space')) this._spaceReleased = true;
+    const p = this.physics.pos;
+
+    if (this.ridingMinecartId) {
+      const entity = this.minecarts.entities.get(this.ridingMinecartId);
+      // 车已消失（拾取/爆炸/卸载）→ 立即解绑
+      if (!entity || entity.type !== MINECART_TYPE) {
+        this.ridingMinecartId = null;
+        this._lastRidePos = null;
+        return;
+      }
+      const [cx, cy, cz] = entity.state.position;
+      // 跟随增量（mc-lite：dx/dz = 车位 − 上帧车位）。
+      // ⚠️ **分轴障碍检测**（设计文档 §4.4）：各轴单独试探，被挡的那一轴不推进 ——
+      // 否则车穿过低矮隧道会把玩家 AABB 埋进实心块，下车后 `_moveAxis` 二分收敛到
+      // 零位移 → 玩家卡死。y 仍锁车顶（车顶净空由矿车移动的 ⑥/⑦ 分支保证：
+      // 前方玩家头顶无空间则停车，有空间则抬玩家）。
+      // ⚠️ **排除自己乘坐的这辆车**：mc-lite `checkAABBExcludeMinecart` 把其他矿车也当障碍；
+      // 本仓库 `collidesAt` 只查方块（矿车不是方块）→ 天然不会把自己乘坐的车当障碍。
+      // 「其他矿车当障碍」那一层**不做**（controller 裁定）：矿车-矿车碰撞已由
+      // `planMinecartStep` 的相向/追尾逻辑处理（两车都停）→ 玩家跟随自然停下 ——
+      // 记入偏离表（Task 8 写文档）。
+      // 跟随段**无条件应用**车位增量（对齐 mc-lite `Player.js:568-609`）。
+      // ⚠️ **不得在此处加任何位移阈值钳制**：模态期的基线冻结由 `syncRideBaseline()`
+      // （Game 在 `player.update` 被门控时每帧调用）负责刷平；而相向碰撞回弹是
+      // **合法单帧位移**（实测 1.9986 格，`lastTrack` 整格回弹），钳制会把它削减到
+      // 偏离阈值 0.6 以上 → **同帧把乘客甩下车**（实测复现）。
+      if (this._lastRidePos) {
+        const dx = cx - this._lastRidePos[0];
+        const dz = cz - this._lastRidePos[2];
+        const topY = cy + MINECART.rideHeight;
+        if (dx !== 0 && !this.physics.collidesAt(p.x + dx, topY, p.z)) p.x += dx;
+        if (dz !== 0 && !this.physics.collidesAt(p.x, topY, p.z + dz)) p.z += dz;
+      }
+      p.y = cy + MINECART.rideHeight;
+      this.physics.vel.y = 0;
+      this._lastRidePos = [cx, cy, cz];
+      // 水平偏离超阈值 → 自动下车。⚠️ **从车中心（`position + 0.5`）量是有意偏离 mc-lite**：
+      // mc-lite 从块角量（`|player.x − minecart.position.x|`）而绑定判据是
+      // `getMinecartAt(floor(player.x), …)` → 玩家站在车的**远半格**（如 cx+0.7）时
+      // deviation=0.7 > 0.6 → **人还在车上就被自动下车**。本仓库从车中心量（与渲染原点
+      // 换算同源）：cx+0.7 时 deviation=0.2 → 保持乘坐；走到 cx+1.2（真离车）时 0.7 > 0.6
+      // → 下车。符合设计文档 §4.4 的意图（「水平偏离车中心 > 0.6」）—— 记入偏离表。
+      if (Math.abs(p.x - (cx + 0.5)) > MINECART.dismountDeviation
+          || Math.abs(p.z - (cz + 0.5)) > MINECART.dismountDeviation) {
+        this.ridingMinecartId = null;
+        this._lastRidePos = null;
+        // ⚠️ 解绑后必须 return —— 否则同帧按空格会再触发一次 dismountJump + 重绑冷却
+        // （空格分支不重新检查 ridingMinecartId）。
+        return;
+      }
+      // 空格下车（边沿触发）
+      if (this.keys.has('Space') && this._spaceReleased) {
+        this._spaceReleased = false;
+        this.physics.dismountJump();   // 下车起跳（常量单一权威在 physics.js，不得写 10.0 字面量）
+        this.ridingMinecartId = null;
+        this._lastRidePos = null;
+        this._remountCooldown = MINECART.remountCooldown;
+      }
+      return;
+    }
+
+    // 未绑定：检测脚下是否有车（重绑冷却内不绑）
+    if (this._remountCooldown <= 0) {
+      const car = this.minecarts.ridingCarFor([p.x, p.y, p.z]);
+      if (car) {
+        this.ridingMinecartId = car.id;
+        this._lastRidePos = [...car.state.position];
+        // ⚠️ 绑定时强制「空格未释放」—— 玩家跳上车时通常还按着空格，若此时
+        // `_spaceReleased` 仍为 true，第一个乘坐帧就会触发下车（立即被弹下）。
+        // 边沿触发的正确语义：要求先松开空格再按才能下车（复位在函数顶部）。
+        this._spaceReleased = false;
+      }
+    }
+  }
+
+  /**
+   * 模态期刷新乘坐基线（`game.js` 在 `player.update` 被 `!uiModal` 门控时每帧调用）。
+   *
+   * 为什么需要：模态开着时 `player.update` 被跳过（→ 本类的 `_updateMinecartRiding` 不跑，
+   * 而 `_lastRidePos` 冻结），但 `game.js` 的 `entities.update` **不受门控** → 矿车继续移动。
+   * 不刷基线的话，解除模态那一帧的跟随增量 = 模态期**全部累积位移**（实测 6.02 格），
+   * 且该增量在偏离检查**之前**应用 → 玩家瞬移到车的位置（可穿墙）。每帧把基线刷成车位，
+   * 解除模态那帧的增量退化为**至多一帧车位移**（实测 0.0164 格）；车已走远时由
+   * `_updateMinecartRiding` 既有的偏离检查自然下车。
+   *
+   * **这是模态侧唯一的同步点** —— 模态期不得改调 `_updateMinecartRiding`（那会连带执行
+   * 空格下车 / 自动重绑 / 相机同步，爆炸半径更大）。
+   *
+   * 只写 `_lastRidePos`：不移动玩家、不碰 y、不碰 `ridingMinecartId`。
+   */
+  syncRideBaseline() {
+    if (!this.minecarts) return;
+    if (!this.ridingMinecartId) return;
+    const entity = this.minecarts.entities.get(this.ridingMinecartId);
+    // 车已消失（拾取/爆炸/卸载）→ 清基线，但**不**解绑（解绑是 `_updateMinecartRiding` 的职责，
+    // 且模态期没有跟随逻辑需要它）。基线为 null 时跟随段整段跳过，不会用陈旧车位算增量。
+    if (!entity || entity.type !== MINECART_TYPE) {
+      this._lastRidePos = null;
+      return;
+    }
+    this._lastRidePos = [...entity.state.position];
   }
 
   /**
@@ -375,7 +516,51 @@ export class Player {
     if (this.keys.has('Space')) this.physics.jump();
   }
 
-  digBlock() {
+  /**
+   * 矿车交互射线（拾取/激活共用）。**实体命中唯一入口 = EntityManager.raycast**
+   * （红线 6），与 DDA 方块命中做最近距离比较（M6 统一遮挡口径）：
+   * 实体更近才命中 —— 矿车在墙后点不到。
+   * ⚠️ 射程 = `MINECART.interactRange`（15 格，mc-lite 同值），**不是** DDA 的 REACH=40。
+   * @returns {{id: string, dist: number}|null}
+   */
+  _raycastMinecart() {
+    if (!this.minecarts) return null;
+    // 射线从相机沿视线（与 _buildAim 同源口径）
+    const pos = this.camera.position;
+    const dir = new THREE.Vector3(0, 0, -1).applyEuler(this.camera.rotation);
+    const entities = this.minecarts.entities;
+    const hit = entities.raycast([pos.x, pos.y, pos.z], [dir.x, dir.y, dir.z],
+      MINECART.interactRange, (entity) => entity.type === MINECART_TYPE);
+    if (!hit) return null;
+    // 方块遮挡：DDA 命中更近 → 矿车被挡住
+    if (this.target && this.target.hit && !(hit.dist < this.target.dist)) return null;
+    return hit;
+  }
+
+  /**
+   * 挖块（徒手左键）。`mods` 由 `onMouseDown` 传入修饰键快照 —— 矿车交互分流需要
+   * ctrl（激活）/ shift（后退）。缺省 `{}` → 不触发任何矿车分支（fixture / 测试 API 直接调）。
+   * @param {{ctrl?: boolean, shift?: boolean}} [mods]
+   */
+  digBlock(mods = {}) {
+    // 矿车交互优先（mc-lite：左键先判矿车再挖块）。ctrl+左键 = 激活；徒手左键 = 拾取。
+    if (mods.ctrl || this.minecarts) {
+      const hit = this._raycastMinecart();
+      if (hit) {
+        if (mods.ctrl) {
+          this.minecarts.activate(hit.id, !!mods.shift);   // shift → 后退
+        } else {
+          this.minecarts.pickUp(hit.id);
+        }
+        return;
+      }
+      // ⚠️ **ctrl+左键未命中矿车时不得 `return`** —— 要继续走下面的既有挖块逻辑（含 TNT 引爆分支）。
+      // 理由：mc-heavy 的 TNT 引爆已在 `digBlock()` 内（M8 交付：徒手左键命中 tnt 即引爆），
+      // 若 ctrl 分支提前 return 会让「ctrl+左键点 TNT」不再引爆 —— 而当前（未改前）ctrl+左键
+      // 本来就会引爆（mods 根本没被检查）→ 那是功能回退。
+      // mc-lite 同口径：`PlayerInteraction.js` 的 ctrl 分支先试矿车、**再试 TNT**、最后才 return。
+      // 本仓库把 TNT 交给既有 digBlock 逻辑即可（不在此重写 TNT 分支）。
+    }
     if (!this.target) return;
     const [x, y, z] = this.target.blockPos;
     const id = this.world.getBlockId(x, y, z);
@@ -437,7 +622,15 @@ export class Player {
     // （实测踩坑：用 prevPos 时 38 格里 30 格落在未清理的位置 → 放置大面积失败）。
     if (this._selectedPlaceable) {
       const hit = this.target.blockPos;
-      if (hit) this._placeSpecial(this._selectedPlaceable, [hit[0], hit[1], hit[2]]);
+      if (hit) {
+        // 矿车是单格实体 → origin 用 prevPos（命中面的相邻空气格）；
+        // 多格结构（巢穴/炮塔）→ blockPos（结构最低层落在命中格）。
+        // ⚠️ 两条放置路径（本分支与背包分流）的 origin 语义必须一致。
+        // ⚠️ prevPos 可能为 null（射线起点就在方块内的极端情况）—— 判空后再调。
+        const origin = this._selectedPlaceable === MINECART_ITEM
+          ? this.target.prevPos : hit;
+        if (origin) this._placeSpecial(this._selectedPlaceable, [origin[0], origin[1], origin[2]]);
+      }
       // 成功或失败都不回落到背包槽 —— 选中态期间玩家意图明确是放巢穴，不是放石头
       return;
     }
@@ -452,11 +645,17 @@ export class Player {
     // 放置整个结构 + 建巢穴实例，**绝不能落到下面的单格 setBlock**（那会放出一个贴了
     // 巢穴图案的正方体 —— 实玩报告的缺陷）。
     if (CREATIVE_SPECIALS.has(slot.item)) {
-      // origin = **命中方块所在格**（`blockPos`），不是 `prevPos`：巢穴最低层要落在
-      // 玩家脚下的地面上（mc-lite `generateBlocks` 的 `y + block.y - 1` 同口径）。
-      // 用 prevPos 会让结构悬空一格（最低层落在 prevPos+1）。
+      // 多格结构（巢穴/炮塔）：origin = **命中方块所在格**（`blockPos`），不是 `prevPos`：
+      // 结构最低层要落在玩家脚下的地面上（mc-lite `generateBlocks` 的 `y + block.y - 1`
+      // 同口径）。用 prevPos 会让结构悬空一格（最低层落在 prevPos+1）。
+      // 矿车是单格实体 → origin 用 prevPos（命中面的相邻空气格，设计文档 §4.1）。
+      // ⚠️ 两条放置路径（本分支与 selectPlaceable 测试 API）的 origin 语义必须一致。
       const hit = this.target.blockPos;
-      if (hit) this._placeSpecial(slot.item, [hit[0], hit[1], hit[2]]);
+      if (hit) {
+        // ⚠️ prevPos 可能为 null（射线起点就在方块内的极端情况）—— 判空后再调。
+        const origin = slot.item === MINECART_ITEM ? this.target.prevPos : hit;
+        if (origin) this._placeSpecial(slot.item, [origin[0], origin[1], origin[2]]);
+      }
       return; // 分流后不回落到单格放置
     }
     // M3.2：算放置朝向（三分支，不看玩家 yaw）。与 M3.1 的取物品逻辑正交叠加。
@@ -522,6 +721,23 @@ export class Player {
         } catch (err) {
           // 只记诊断，不回滚（同上）
           console.warn('[audio] put play failed:', err);
+        }
+      }
+      return true;
+    }
+    // 矿车分支。⚠️ **origin 语义与巢穴/炮塔不同**：矿车是**单格实体**，放在
+    // `target.prevPos`（命中面的相邻空气格）—— 玩家准心对着铁轨顶面时 prevPos 正是
+    // 铁轨上方的空气格（设计文档 §4.1）。调用方传入的 origin 由 placeBlock 决定：
+    // 见 `placeBlock()` 的 origin 分流（矿车用 prevPos，其余用 blockPos）。
+    if (id === MINECART_ITEM) {
+      if (!this.minecarts) return false;
+      const result = this.minecarts.place({ cell: origin });
+      if (!result.ok) return false;
+      if (this.audioManager) {
+        try {
+          this.audioManager.play('put', 0.3);   // mc-lite MinecartPlacementHandler 同音量
+        } catch (err) {
+          console.warn('[audio] put play failed:', err);   // 只记诊断，不回滚
         }
       }
       return true;

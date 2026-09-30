@@ -426,6 +426,93 @@ M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 
   峰值均 0）→ **无需分帧提交**。bench 场景 ④「批量删 500 块」是既有对照基线，2916 格约为其
   5.8 倍仍无积压。⚠️ 后续更大的批量编辑先实测收敛再决定是否分帧。
 
+### 矿车沉淀的活跃约束（后续可移动持久实体 / 同类装置 Epic 必读）
+
+- **跨车（跨实体）的同帧协调必须读「帧前快照」，不得读实时 state**：`EntityManager.update`
+  里 `entity.state = next` 立即生效 → 同帧后跑的实体会看到前一辆已改的结果 → 行为**依赖遍历
+  顺序**（实测 `[a,b]` ❌ / `[b,a]` ✅）。矿车的 `carsView()` / `carAtRound()` 都从 `beginFrame()`
+  捕获的 `_frameView` 返回，故 `beginFrame()` **必须在 `entities.update` 之前**。
+  ⚠️ **回落路径是陷阱**：`carAtRound` 若回落实时 state（或回落到 floor 基的 `carAt`），
+  顺序依赖会**静默复活**且单测（单一插入顺序）抓不到 —— 须显式断言两种遍历顺序结果一致。
+- **对他车的写入一律进 `deferred` 队列，`applyDeferred()` 必须在 `entities.update` 之后**
+  （mc-lite 是单管理器循环直接改对象，本仓库的 definition 逐实体跑且要求返回全新 state）。
+  放进 definition 里直接改 = 在遍历中改被遍历集合。
+- **玩法服务在 `EntityManager.update` 之外改 `state.position` 时，必须显式调 `reindexColumn(id)`**
+  —— 否则派生 column 索引永久停在旧 column（且**不自愈**：实体停住后 before===after 不触发迁移）
+  → 旧 column 卸载会误回收实际已离开的实体（实体在玩家眼前消失）。矿车相向碰撞回弹
+  `lastTrack` 可跨 column → 踩到；丧尸没踩到是因为它的 damage/setIntent 不改 position
+  （物理在 definition.update 内跑）。`reindexColumn` 是 M5 `EntityManager` 为此新增的公开方法。
+- **判据基准必须同源（round vs floor 混用会造出死锁）**：矿车的「前方格」用 `round(position)`，
+  则相邻判定 / 索引查询也必须用 round。⚠️ **mc-lite 自身就是混用的**
+  （`MinecartMovementSystem.js:479` round vs `MinecartCollisionSystem.js:55` floor）→
+  **mc-lite 自己有相向碰撞死锁**（实测核实源码）。本仓库统一 round 是**有意偏离 mc-lite**
+  （对齐其**意图**「相向 → 两车都停」而非其 bug）。
+- **偶数间距对称接近时 round 格距从 2 直接跳到 0、永不等于 1** → 「查前方一格」会漏
+  （两车互相穿过）。修法 = `frontX` 查不到时**回查本车当前 round 格**，且**仅反向运动车**
+  视同相向（同向 `continue`，否则误伤同向列车）。mc-lite 不踩此坑是因为它 isHeadOn 与索引
+  同为 floor 基（距离 2→1→0 渐变，=1 时被捕获）。
+- **位置索引每帧 `syncIndex()` 全量重建**（floor 基 `_index` + round 基 `_roundIndex` 两份
+  同时建）—— 增量要在 definition 里回调 service，把同构层与玩法入口耦合成环。50 车 × 每帧
+  一次可忽略。
+- **铁轨在车下方一格（`trackY = carY − 1`）是全部轨道判据的口径**，`hasTrackAt` 本身**不做**
+  这层换算（mc-lite 同口径）—— 调用方漏减 1 会让「有没有轨」恒假 → 车放得下但永不激活。
+- **矿车是单格实体，放置 origin 用 `prevPos`**（命中面的相邻空气格），与多格结构
+  （巢穴/炮塔用 `blockPos`）**相反**。⚠️ 两条放置路径（`selectPlaceable` 与背包分流）的
+  origin 语义必须一致，且 `prevPos` 可能为 null（射线起点就在方块内）→ 判空后再调。
+- **乘坐的水平偏离判定要 +0.5 换算**（车中心 = `position + 0.5`，实例原点约束）——
+  mc-lite 从**块角**量（`|player.x − minecart.position.x|`）而绑定判据是
+  `getMinecartAt(floor(player.x), …)` → 玩家站在车的**远半格**（如 cx+0.7）时
+  deviation=0.7 > 阈值 0.6 → **人还在车上就被自动下车**。本仓库从车中心量：cx+0.7 时
+  deviation=0.2 → 保持乘坐；走到 cx+1.2（真离车）时 0.7 > 0.6 → 下车。
+  符合设计文档 §4.4 的意图（「水平偏离车中心 > 0.6」）—— 有意偏离 mc-lite 的字面行为。
+- **乘坐跟随必须分轴做障碍检测**（dx / dz 各自 `physics.collidesAt` 试探，被挡不推进）——
+  对应 mc-lite `updateMinecartRiding` 的 `checkAABBExcludeMinecart`。**不做则玩家会被埋进
+  实心块**：跟随只写 `p.x/p.z` 且乘坐期物理步被跳过 → 车穿低矮隧道把 1.8 高的玩家 AABB
+  埋进天花板 → 下车后每次 `_moveAxis` 都碰撞、二分收敛到零位移 → **玩家卡死**
+  （实测隧道用例 embeddedFrames=651 → 修后 0）。「其他矿车当障碍」那层**不做**
+  （矿车-矿车碰撞已由 `planMinecartStep` 的相向/追尾逻辑处理）。
+- **空格下车是边沿触发，复位必须写在两个分支之前**（`_updateMinecartRiding` 函数顶部）：
+  绑定成功时置 `_spaceReleased = false`（否则玩家跳上车时还按着空格 → 第一个乘坐帧就被弹下），
+  但**若复位只写在未绑定分支**，一旦绑定成功就永远回不到 true → 空格下车彻底失效
+  （状态机模拟实证；实施者修正了 controller 给的修法）。
+- **M5 持久层原本没有「删除单个持久实体」的 API** —— `saveEntities` 是 upsert-only，唯一删除是
+  整库 `clearAllEntities()`。矿车是**第一个可被单独销毁的持久实体**（炮塔/巢穴走 blockEntity
+  edits store；弹丸/丧尸是临时实体）→ 首次暴露该缺口。后果（实测复现）：已销毁实体的
+  snapshot 永久留在 store → ① 全局上限把死实体计入（50 次放/拾后**永久放不出车**，
+  世界里一辆都没有却返回 `limit`）；② reload 复活。修法 = `Persistence.deleteEntity(id)`。
+  **后续任何「可单独销毁的持久实体」同理**：`despawn` 必须配对 `deleteEntity`，否则静默泄漏存档行。
+- **fake 必须建模真实对象的副作用，不能只是形状一致**（比 M6 的 fake WorkerPool 盲区更进一层）：
+  假 `flushEntities` 写成 no-op（真实版会 upsert 进 `entitiesCache`）→ `count()===0` 断言**恒真**，
+  漏掉上面那条上限泄漏。形状对了、副作用没建模，照样是盲区。
+- **definition 的 context 契约形状必须与接线一致**（实测踩坑，单测全绿而真游戏页每帧抛错）：
+  `planMinecartStep` 的契约是 `player: {position:[x,y,z]} | null`，而 game.js 一度传**裸数组**
+  → `player.position` 为 undefined → 解构抛 TypeError → 帧循环中断 → **车永远停在起点**。
+  ⚠️ 为什么单测漏掉：idle 车在步骤 ① 早退不读 player，且没有任何单测驱动 `definition.update`
+  带真实 player context → 只有车**真的移动并跨中心**时才暴露。故须补一条「definition 层带真实
+  player context」的单测钉住契约（`{position}` 形状 + `pendingPlayerLift` 生效）。
+- **车斗纹理是运行时 canvas 生成 → 无指纹门禁**（用户选定「照 mc-lite 原样、不做离线烘焙」）：
+  算法改动（渐变色 / 噪点数 / 拉丝间距）会静默生效，靠 Tier 4 像素实测兜底
+  （`tests/minecart-render.spec.mjs`）。若改离线烘焙须同步补指纹门禁（手法见
+  `tools/zombie-head-fingerprint.mjs`）。
+- **矿车材质用 `MeshBasicMaterial`（unlit），mc-lite 的 `metalness`/`roughness` 是死字段**：
+  mc-heavy 全场景 unlit 设计，灯光只为 PBR 武器模型而设（`zombie-renderer.js:32` 同口径：
+  用受光材质会让实体吃到为枪标定的 2.3 环境光 → 偏亮且随日夜灯光漂移）。两个字段保留在
+  `minecart-config.js` **仅作 mc-lite 出处记录**（与「床材质的 offset/rotation 是死字段」同类事实）。
+- **矿车 `position` 是占据格坐标（块底角原点）→ AABB 是 `[0, width]` 而非 `[±width/2]`**：
+  玩家/丧尸的 position 是「脚底**中心**」→ 盒相对中心对称（`PROBE_AABB` ±0.3）。
+  **两种 position 语义不得混用**（混用会让命中盒偏半格 → 点不到车）。渲染层另有 `+0.5`
+  的块中心换算，不影响命中盒。
+- **`MINECART.speed = 2.0` 格/秒，不做 ×60 换算**（与 `ZOMBIE.speed` 相反）：mc-lite
+  `MinecartMovementSystem.update` 的位移乘 `deltaTime` → 已是格/秒。**照搬前须逐项核对是否乘 dt**。
+- **交互射程 15 格（`MINECART.interactRange`）与体素 DDA 的 `REACH = 40` 不是一个口径** ——
+  实体交互更近，超出 15 格点不到车。拾取与激活共用本常量（红线 1）。
+- **命中走 `EntityManager.raycast()`（实体 AABB slab），不得对 InstancedMesh 做
+  `THREE.Raycaster.intersectObjects`**（红线 6）。遮挡口径可比性已核实：两侧距离同源同单位
+  （raycast 归一化 dir → slab t 是世界距离；DDA 返回 `dist:t`；`camera.position` 正是 DDA 起点）。
+- **放置不消耗物品、拾取不回背包**（创造模式口径，有意偏离 mc-lite 的生存模式语义）。
+- **reload 恢复后车继续原方向**（`movementState` 进 snapshot），mc-lite 恢复后停成 IDLE ——
+  有意偏离（玩家重启前正在开的车不该自己停下）。
+
 ## 权威文档（动手前必读）
 
 按顺序读完再写代码：
@@ -597,6 +684,8 @@ mc-heavy/
    │               #  zombie-renderer.js（M6 六部件固定容量 InstancedMesh；无活跃丧尸时 visible=false；
    │               #    head 走单纹理 UV 分区 —— 正面顶点 16-19 采纹理右半「有眼睛」，见 applyHeadUV）
    │               #  zombie-head-texture.js（头部纹理加载，主线程专用；npm run zombie 烘焙产物）
+   │               #  minecart-renderer.js（矿车 2 个 InstancedMesh：车斗 + 4 轮；零实例时
+   │               #    visible=false；车斗纹理运行时 canvas 生成 → 无指纹门禁，靠 Tier 4 兜底）
    ├─ entities/    # entity-manager.js（动态实体唯一权威 + generation + AABB raycast）
    │               #  entity-types.js（probe 定义 + AABB slab 射线；Worker 同构，无 three）
    │               #  zombies/（M6，Worker 同构无 three）：zombie-config.js（冻结玩法数据唯一权威）
@@ -605,6 +694,9 @@ mc-heavy/
    │               #   + nest-blueprint.js（只读 JSON → 坐标展开 + 唯一关键格校验）
    │               #   + zombie-nest-service.js（全局索引 / 预检 / 原子一次事务放置 / hydrate）
    │               #   + zombie-nest-controller.js（增量失效 + 8 秒节流六层刷怪 + column 生命周期）
+   │               #  minecarts/（矿车 Epic，Worker 同构无 three）：minecart-config.js（冻结玩法
+   │               #   数据与几何尺寸唯一权威）+ minecart-system.js（移动/转弯/碰撞/连挂同构
+   │               #   纯函数 + MinecartService 玩法入口 + minecartDefinition 持久实体）
    ├─ player/      # player.js / physics.js / raycast.js / step-lift.js
    │               #  inventory.js（物品模型）/ orientation.js（朝向三分支纯函数）/ weapons/*（M4）
    ├─ ui/          # coords-hud.js / hotbar.js / settings-panel.js / settings.js
@@ -705,10 +797,12 @@ scheduler/physics）再加 `npm run bench -- --check`。**不要**为改一个�
 
 ## 后续功能扩展点
 
-第二阶段 M4~M7 **已全部交付**；**TNT/爆炸、炮塔弹丸、创造台三项已由第三阶段 M8/M9 规划**
-（规格与计划定稿，待实施）。其余后续扩展点的引擎接入点（矿车轨道、灯/光源、床/宝箱/门、
-音频、存档迁移、玩家生存战斗）见 [`docs/roadmap.md`](docs/roadmap.md) 的「后续扩展点」表格。
-**新功能必须通过上述接入点实现，不得绕过 meshing/数据/事件管线另开路径。**
+第二阶段 M4~M7 与第三阶段 M8~M9 **已全部交付**，矿车 Epic 也已交付。
+**哪些扩展点已交付 / 待做，以及每项的引擎接入点，一律查
+[`docs/roadmap.md`](docs/roadmap.md) 的「后续扩展点」表格**（本文件不复制那份清单 ——
+同一事实的多个副本会漂移，已发生过：矿车交付后本段仍把它列为未交付扩展点）。
+待做的扩展点包括灯/光源、床/宝箱/门、音频、存档迁移、玩家生存战斗等。
+**新功能必须通过 roadmap 表里的接入点实现，不得绕过 meshing/数据/事件管线另开路径。**
 
 M7 交付了一套可复用的**「方块锚定装置」模式**（持久真相 = 某格 blockEntity / 派生 controller
 只在 anchor column 已加载时存在 / 失效走 `block-changed` 增量事件 / 全局上限经

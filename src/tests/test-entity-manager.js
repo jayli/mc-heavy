@@ -196,3 +196,22 @@ test('EntityManager: 冻结的持久实体在 update 期间不被推进（state 
   assertEqual(ticks, before + 1, '解冻后恢复推进');
   assertTrue(mover.frozen === false);
 });
+
+test('EntityManager: reindexColumn 按当前 position 校准派生索引（update 循环外的写入）', () => {
+  const m = makeProbeManager();
+  const e = m.spawn({ id: 'jumper', type: 'probe', state: { position: [0, 0, 0] } });
+  // 负向钉住「不自愈」：手动把 position 改到另一 column 但不调 reindexColumn →
+  // 索引永久停在旧 key（下一帧 before===after 不触发迁移 —— 矿车 applyDeferred 回弹的坑）
+  e.state = { position: [40, 0, 0] };
+  assertEqual([...m.entitiesInColumn('2,0')].length, 0, '不调 reindexColumn → 新 column 不收容');
+  assertEqual([...m.entitiesInColumn('0,0')].length, 1, '不调 reindexColumn → 旧 column 仍残留（陈旧）');
+  // 未知 id → false
+  assertFalse(m.reindexColumn('never'), '未知 id → false');
+  // 调 reindexColumn → 索引迁移到新 column
+  assertTrue(m.reindexColumn('jumper'));
+  assertEqual([...m.entitiesInColumn('0,0')].length, 0, '旧 column 索引须清');
+  assertEqual([...m.entitiesInColumn('2,0')].length, 1, '新 column 索引须建');
+  // 幂等：同位置再调一次不产生重复条目
+  assertTrue(m.reindexColumn('jumper'));
+  assertEqual([...m.entitiesInColumn('2,0')].length, 1);
+});

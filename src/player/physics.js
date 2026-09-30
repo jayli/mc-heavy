@@ -99,6 +99,30 @@ export class PlayerPhysics {
   }
 
   /**
+   * 指定位置的玩家 AABB 是否与实心方块重叠（乘坐跟随的分轴障碍检测用）。
+   * ⚠️ 与 `_collides()` 同判据（`world.isSolid` + PLAYER_WIDTH/PLAYER_HEIGHT），但
+   * **不读 `this.pos`** —— 乘坐跟随要「先试探再决定写不写」，不能先改 pos 再回滚。
+   * 设计文档 §4.4：「分轴，各轴单独做障碍检测」。
+   * @param {number} x @param {number} y @param {number} z 候选脚底中心
+   * @returns {boolean}
+   */
+  collidesAt(x, y, z) {
+    const w = this.world;
+    const hw = PLAYER_WIDTH / 2;
+    const x0 = Math.floor(x - hw), x1 = Math.floor(x + hw);
+    const y0 = Math.floor(y), y1 = Math.floor(y + PLAYER_HEIGHT - EPSILON);
+    const z0 = Math.floor(z - hw), z1 = Math.floor(z + hw);
+    for (let bx = x0; bx <= x1; bx++) {
+      for (let by = y0; by <= y1; by++) {
+        for (let bz = z0; bz <= z1; bz++) {
+          if (w.isSolid(bx, by, bz)) return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /**
    * 玩家当前 AABB（M7）：尺寸派生自本文件的 `PLAYER_WIDTH`/`PLAYER_HEIGHT` 常量 ——
    * **不得在消费方重算一遍**。巢穴放置的 player-overlap 预检必须用与碰撞检测**同一个** AABB，
    * 否则会撕裂出「物理说没撞墙、巢穴说压住了玩家」（或反之）的不一致判定（红线 1）。
@@ -117,6 +141,17 @@ export class PlayerPhysics {
   jump() {
     if (this.onGround) this.vel.y = JUMP_FORCE;
     else if (this.inWater) this.vel.y = 4; // 水中上浮
+  }
+
+  /**
+   * 下车起跳（矿车乘坐用）。**与 `jump()` 的区别：不判 `onGround`** ——
+   * 乘坐期间玩家被锁在车顶高度、`onGround` 恒为 false（物理步被跳过），
+   * 走 `jump()` 会因 `if (this.onGround)` 门控而**完全无效**（空格下车静默失效）。
+   * 常量单一权威：`JUMP_FORCE` 是本模块私有，故起跳逻辑放这里而不是让
+   * `player.js` 写 `vel.y = 10.0` 字面量（红线 1）。
+   */
+  dismountJump() {
+    this.vel.y = JUMP_FORCE;
   }
 
   /** 按输入方向设置水平速度（调用方传入朝向旋转后的 inputX/inputZ ∈ [-1,1]） */

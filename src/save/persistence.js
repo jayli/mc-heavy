@@ -224,6 +224,26 @@ export class Persistence {
     await this.saveEntities(this._entitiesSerializer());
   }
 
+  /**
+   * 删除单个持久 snapshot（矿车拾取/销毁用）。
+   * **M5 持久层首个单删 API**：矿车是第一个可被单独销毁的持久实体（炮塔/巢穴走 blockEntity
+   * edits store；弹丸/丧尸是临时实体）→ M5 从未需要单删。缺它会让已销毁实体的 snapshot
+   * 永久留在 store —— ① `count()` 把死车计入全局上限（50 次放/拾后永久放不出车）；
+   * ② reload 时 `entitiesForColumn` 把死车恢复出来。
+   * ⚠️ 与 `saveEntities` 的 upsert 语义互补：put 负责写、delete 负责删，两者共同维护
+   * store 与内存的一致性。
+   * @param {string} id @returns {Promise<void>}
+   */
+  deleteEntity(id) {
+    this.entitiesCache.delete(id);
+    return new Promise((resolve, reject) => {
+      const tx = this.db.transaction('entities', 'readwrite');
+      tx.objectStore('entities').delete(id);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
   /** 清空全部持久 snapshot（新世界 / 删除缓存：旧世界的装置不得带入） */
   clearAllEntities() {
     this.entitiesCache.clear();

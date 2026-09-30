@@ -44,6 +44,9 @@ import { projectileDefinition, judgeProjectile } from '../entities/turrets/proje
 import { PlaygroundService } from '../entities/playground/playground-service.js';
 import { ProjectileRenderer } from '../render/projectile-renderer.js';
 import { TURRET } from '../entities/turrets/turret-config.js';
+import { MinecartService, minecartDefinition } from '../entities/minecarts/minecart-system.js';
+import { MINECART_TYPE, MINECART } from '../entities/minecarts/minecart-config.js';
+import { MinecartRenderer } from '../render/minecart-renderer.js';
 import { loadAtlas } from '../mesh/atlas-loader.js';
 import { findSpawnY } from '../gen/terrain.js';
 import { getCitySpawnPoint, getCityInfo } from '../gen/structures/city-layout.js';
@@ -220,7 +223,10 @@ export class Game {
         // （Scheduler 只 try/catch 不消费该值，故改语义安全，见 scheduler.js:324）。
         commit: () => {
           const zombies = this.zombies?.despawnColumn(key) ?? 0;
-          return zombies + unload.commit();
+          const n = zombies + unload.commit();
+          // 矿车：commit 回收了该 column 的持久矿车 → 重建位置索引（清掉已回收车的条目）
+          if (this.minecarts) this.minecarts.syncIndex();
+          return n;
         },
         cancel: () => unload.cancel(),
       };
@@ -230,6 +236,9 @@ export class Game {
     this.scheduler.onColumnReady((key, column) => {
       const snapshots = this.persistence.entitiesForColumn(key);
       if (snapshots.length > 0) this.entities.restorePersistent(snapshots);
+      // 矿车：恢复持久实体后立即重建位置索引（否则本帧 place() 的 occupied 检查读不到
+      // 刚恢复的车 → 同格双重放置；syncIndex 是 O(车数) 全量重建，50 辆规模无感）
+      if (this.minecarts && snapshots.length > 0) this.minecarts.syncIndex();
       // M7：为该 column 内的巢穴锚点创建 controller（闭包延迟引用 this.nests，
       // 注册时尚未创建，column 真正 ready 时已装配完成 —— 与上方 this.zombies 同手法）。
       this._createNestControllers(key, column);
@@ -284,6 +293,22 @@ export class Game {
       onDespawn: (id) => this.zombieRenderer.releaseSlot(id),
     });
     this.entities.registerType('zombie', zombieDefinition);
+
+    // ---- 矿车装配 ----
+    // 矿车是 M5 持久实体（设计文档 §2.2）：白拿 entities store 写盘 / column 两阶段卸载 /
+    // `_discardEdits` 清档。service 装配位置无 `_waitForColumn` 时序约束（矿车没有
+    // onColumnReady 回调依赖 —— 恢复走既有的 `restorePersistent`），但为与 M6~M8 的
+    // 装配段保持一致仍放在此处。
+    this.minecarts = new MinecartService({
+      entities: this.entities, world: this.world, registry: this.registry,
+      persistence: this.persistence,
+    });
+    this.entities.registerType(MINECART_TYPE, minecartDefinition);
+    // 恢复已加载 column 的矿车后校准位置索引（column ready 的 restorePersistent 先于
+    // service 首帧 syncIndex；此处立即建一次，避免放置预检读到空索引的窗口）
+    this.minecarts.syncIndex();
+    // 渲染层：2 个 InstancedMesh（车斗 + 4 轮），零实例时 visible=false
+    this.minecartRenderer = new MinecartRenderer({ scene: this.scene });
 
     // ---- M7：丧尸巢穴装配 ----
     // **装配位置必须在 `_waitForColumn`（出生点 column 加载）之前** —— 实测踩坑：
@@ -432,6 +457,9 @@ export class Game {
       // M8：炮塔服务注入（同手法）。`CREATIVE_SPECIALS` 已含 `turret_alias_block`，
       // 背包选中它右键时 `placeBlock()` 会分流到 `_placeSpecial()` 的这个分支。
       turrets: this.turrets,
+      // 矿车服务注入（同手法）。`CREATIVE_SPECIALS` 已含 `mine_cart`，背包选中它右键时
+      // `placeBlock()` 会分流到 `_placeSpecial()` 的矿车分支（origin = prevPos，单格实体）。
+      minecarts: this.minecarts,
       // M8：TNT 引爆路由。**透传返回值** —— player 的 `igniteTnt()` 据此告诉调用方是否
       // 真的引爆了（false = 去重命中）。左键挖块与枪击命中两条路径都经此函数落到
       // `explodeTnt()`（去重集合的单一权威在本类，见其注释）。
@@ -507,6 +535,13 @@ export class Game {
       this._lastFrameMs = nowMs;
       // 设置面板打开时跳过玩家输入/物理（世界调度继续：后台填充不受 UI 阻塞）
       if (!this.uiModal) this.player.update(dt);
+      // 模态期 `player.update` 被跳过而下面 `entities.update` 照跑 → 矿车继续移动
+      // （乘坐基线 `_lastRidePos` 会冻结）。每帧把乘坐基线刷成车位：解除模态那帧的跟随
+      // 增量退化为**至多一帧车位移**（实测 0.0164 格 ≈ 2.0/120），而非全部累积位移
+      // （实测 6.02 格）；车已走远时由 `_updateMinecartRiding` 既有的偏离检查自然下车。
+      // ⚠️ **不要**改成模态期调 `_updateMinecartRiding` —— 那会让面板开着时也执行
+      // 空格下车/自动重绑/相机同步，爆炸半径更大。
+      else this.player.syncRideBaseline();
       // M5 帧序固定：player.update → entities.update → scheduler.update → entityLayer.sync → render
       // （M5 规格 §2）。entities.update 在 scheduler 之前：实体先推进位置，scheduler 再用最新
       // position 判定卸载/恢复，避免实体跨 column 后被旧索引漏回收。
@@ -518,8 +553,29 @@ export class Game {
       //    （60Hz 固定步长 accumulator 在 definition 内），**不在 ZombieService 里跑物理** ——
       //    两处物理会让丧尸推进两遍（速度翻倍），是同一事实的两个副本（红线 1）。
       const pp = this.player.physics.pos;
+      // 矿车帧序：beginFrame 清瞬态（reservations/deferred/抬玩家意图）—— 必须在
+      // entities.update 之前（mc-lite 的 frameReservations 同生命周期）
+      this.minecarts.beginFrame();
       this.zombies.update(dt, { playerPosition: [pp.x, pp.y, pp.z] });
-      this.entities.update(dt, { world: this.world });
+      // 矿车 context：minecarts = service（跨车协调），player = 玩家位置（抬起判定）。
+      // ⚠️ player 传**位置快照**而非 Player 对象 —— entities/ 是同构层，不得依赖 player/
+      // ⚠️ **形状必须是 `{position:[x,y,z]}` 对象，不是裸数组** —— `resolvePlayerBlocking`
+      // 读 `player.position`（mc-lite `checkPlayerCollision` 的入参形状）。传裸数组会让它
+      // 解构 undefined → 每帧抛 TypeError → 帧循环中断 → **车永远停在起点**（实测：
+      // idle 车在步骤①早退不读 player，故只有车真移动时才暴露；单测传对象/null 全绿）。
+      // ⚠️ **复用上一行已有的 `pp`** —— 重复 `const pp` 会是 SyntaxError（同一块作用域）。
+      this.entities.update(dt, {
+        world: this.world, registry: this.registry,
+        minecarts: this.minecarts, player: { position: [pp.x, pp.y, pp.z] },
+      });
+      // 跨车写入统一生效 + 位置索引同步（设计文档 §3.4：必须在 entities.update 之后）
+      this.minecarts.applyDeferred();
+      this.minecarts.syncIndex();
+      // 抬玩家：矿车把玩家顶到车顶（mc-lite checkPlayerCollision 的落地动作）
+      if (this.minecarts.pendingPlayerLift !== null) {
+        this.player.physics.pos.y = this.minecarts.pendingPlayerLift;
+        this.player.physics.vel.y = 0;
+      }
       // M8 Task 6：弹丸判定（**只判定 + despawn，不再推进** —— 见 _updateProjectiles 的 ⚠️）
       this._updateProjectiles(nowMs, dt);
       // M7：巢穴刷怪推进。放在 entities.update **之后** —— 刷怪经 ZombieService.spawn()
@@ -552,6 +608,8 @@ export class Game {
       // M6：丧尸六部件实例发布（只读 pose → 位置/朝向 + 步态 + 200ms 红闪）。
       // 传时间戳而非 dt —— renderer 自己算 dt 累积步态相位（mc-lite `_walkTime` 口径）。
       this.zombieRenderer.sync(this.zombies, nowMs);
+      // 矿车 pose 发布（差集驱动 slot；只读 state）
+      this.minecartRenderer.sync(this.entities.entities());
       // M8：炮塔 pose 发布（pivot 世界坐标 + Task 4 插值出的当前 yaw/pitch）。
       // ⚠️ **复用模块级 Map**（`clear()` + 重填）而不是每帧 `new Map()` —— 每帧新建是分配
       // （20 炮塔 × 60fps = 每秒 1200 个 Map 对象 + 2400 个 pose 对象）。
@@ -843,6 +901,8 @@ export class Game {
     }
     // ⑥ 半径 4 格内丧尸受 50 伤害
     this._damageEntitiesInRadius(result.center, EXPLOSION_DAMAGE_RADIUS, EXPLOSION_DAMAGE, now);
+    // ⑥b 半径内矿车摧毁（mc-lite 爆炸段语义；不掉落物品）
+    if (this.minecarts) this.minecarts.destroyInRadius(result.center, MINECART.explosionRadius);
     // ⑦ 音效与特效同帧。音效出处 = mc-lite `PlayerInteraction.js:673`（音量 0.4）；
     //    特效出处 = `World.js:1296 spawnExplosionParticles` —— **两层叠加**：① 序列帧
     //    billboard（`ParticleSystem.js:177`）② 球体扩张（`World.js:1301-1311`，注释原文
@@ -1274,6 +1334,9 @@ export class Game {
     // —— 与启动顺序相反。反序会让 manager.dispose 触发 despawn 时 renderer 已不存在。
     this.zombies?.dispose();
     this.zombieRenderer?.dispose();
+    // 矿车：service 回收实体后释放渲染器（与启动顺序相反）
+    this.minecarts?.dispose();
+    this.minecartRenderer?.dispose();
     // M8：炮塔渲染层 + 爆炸特效池（Game 装配的独立 scene 节点，不经 player.dispose 释放）
     this.turretRenderer?.dispose();
     this.projectileRenderer?.dispose();

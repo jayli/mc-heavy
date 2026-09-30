@@ -57,6 +57,10 @@ const {
 const {
   PLAYGROUND, PLAYGROUND_KIND, PLAYGROUND_BLOCK, PLAYGROUND_CENTER_BLOCK,
 } = await import('../src/entities/playground/playground-config.js');
+// 矿车冻结数据 —— 门禁据此断言铁轨类型集合与 config 单一权威一致（红线 1）
+const {
+  MINECART_ITEM, TRACK_BLOCK_TYPES,
+} = await import('../src/entities/minecarts/minecart-config.js');
 
 const atlasMeta = JSON.parse(fs.readFileSync(path.join(ROOT, 'assets', 'atlas.json'), 'utf8'));
 const tiles = new Set(Object.keys(atlasMeta.tiles));
@@ -575,6 +579,34 @@ function checkPlaygroundContract() {
   }
 }
 
+// ---------------------------------------------------------------- [12] 矿车契约
+
+/**
+ * [矿车] 契约：
+ * ① `mine_cart` 在背包物品集合内（可放置玩法物品，不得被移出）；
+ * ② `TRACK_BLOCK_TYPES` 两项都在 registry 内且在背包内（玩家要能铺轨）；
+ * ③ 铁轨类型集合的单一权威 = config（本门禁 import config 比对，防两处漂移）。
+ *
+ * ⚠️ 与 [11] `[创造台]` 环节方向相反：创造台两项**必须不在**背包（放得出来挖不掉 →
+ * 撕裂状态），矿车与铁轨**必须在**背包（拿不到就玩不了）—— 两者不重叠。
+ * 名字拼错的后果是**静默的**：`isTrackBlock` 查不到 id → 移动系统的 `hasTrackAt`
+ * 恒 false → 车放得出来但激活即拒（`alignToTrack` 返回 null），肉眼只见「车不动」。
+ */
+function checkMinecartContract() {
+  const items = buildItemNames(REGISTRY);
+  if (!items.includes(MINECART_ITEM)) {
+    failures.push(`[矿车] "${MINECART_ITEM}" 不在背包物品集合内（玩家无法拿到矿车）`);
+  }
+  const allNames = new Set(REGISTRY.all().map((e) => e.name));
+  for (const name of TRACK_BLOCK_TYPES) {
+    if (!allNames.has(name)) failures.push(`[矿车] 铁轨 "${name}" 不在 registry 内（拼错）`);
+    if (!items.includes(name)) failures.push(`[矿车] 铁轨 "${name}" 不在背包内（玩家无法铺轨）`);
+  }
+  if (!failures.some((f) => f.startsWith('[矿车]'))) {
+    infos.push(`[矿车] ${MINECART_ITEM} 在背包 + 铁轨 ${TRACK_BLOCK_TYPES.join('/')} 可放置`);
+  }
+}
+
 // ---------------------------------------------------------------- 主流程
 
 const REGISTRY = await buildDefaultRegistry();
@@ -583,6 +615,7 @@ checkReferenceIntegrity();
 checkItemSetRelation();
 checkIndestructibleContract();
 checkPlaygroundContract();   // M9：创造台方块契约（⚠️ 主流程是逐个显式调用，漏了本行则门禁永不执行）
+checkMinecartContract();     // 矿车：mine_cart 与铁轨必须在背包（⚠️ 漏了本行则门禁永不执行）
 checkIconManifestCoverage();
 checkIconAtlasArtifacts();
 checkIconFreshness();
