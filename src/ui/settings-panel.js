@@ -29,10 +29,15 @@ const CLEAR_SAVE_LABEL = '删除缓存';
 export const PLAYGROUND_OPEN_LABEL = '打开创造台';
 export const PLAYGROUND_CLOSE_LABEL = '关闭创造台';
 /**
- * M9 创造台行的标题。该行现在同时管「创造台」与「进度导入导出」两件事 → 标题须同时
- * 覆盖两者（v1.43）。导出供 `src/tests/test-ui.js` 钉死，构造与断言共用一份口径。
+ * M9 创造台行的标题（v1.43 起该行只管创造台本身 —— 进度管理已拆为下方独立一行）。
+ * 导出供 `src/tests/test-ui.js` 钉死，构造与断言共用一份口径。
  */
-export const PLAYGROUND_ROW_TITLE = '创造台和进度管理';
+export const PLAYGROUND_ROW_TITLE = '创造台';
+/**
+ * v1.43：进度管理行的标题。与创造台**分成两行**（用户要求，2026-09-30）—— 两者功能域不同：
+ * 创造台管平台与模型，进度管整个世界的存档。导出供单测钉死（单一口径）。
+ */
+export const PROGRESS_ROW_TITLE = '进度管理';
 /** 导出 / 导入模型按钮文案（创造台模型，与下行的**进度包**是两个不同粒度） */
 const EXPORT_LABEL = '导出模型';
 const IMPORT_LABEL = '导入模型';
@@ -136,18 +141,11 @@ const PANEL_CSS = `
 }
 #settings-modal .mc-combined-col:first-child { border-right: 1px solid #888; padding-left: 0; }
 #settings-modal .mc-combined-col:last-child { padding-right: 0; }
-/* 创造台和进度管理：两行按钮盒（v1.43）。
-   第一行 = 创造台主按钮（**变窄**，见下）+ 两个进度按钮、常驻可见；
-   第二行 = 导出/导入模型（只在创造台激活时可见）。
-   为何分两行：面板每列约 351px（v1.35 实测），5 个按钮挤一行时每个只剩约 64px，
-   而「打开创造台」5 个汉字约 68px 会被挤到换行（「打开创造／台」）。 */
+/* 创造台：单行按钮盒（v1.43，用户要求 2026-09-30）。
+   未激活 = 「打开创造台」独占整行（flex:1 满行）；激活后同行的「导出模型 / 导入模型」
+   转为可见，三个按钮由 flex:1 平分该行（不再为模型另辟一行、也不再把主按钮变窄）。
+   进度导入导出**不在此行** —— 它是下方独立的「进度管理」行（功能域不同）。 */
 #settings-modal .mc-playground { display: flex; flex-direction: column; gap: 8px; }
-/* 进度按钮常驻，故第一行不能整行随创造台状态隐藏 —— 隐藏的只是模型那一行（行内按钮 display） */
-#settings-modal .mc-playground .mc-btn-group { display: flex; gap: 8px; width: 100%; }
-/* 「打开创造台」变窄：基线 #settings-modal button 是 flex:1（等宽铺满，.mc-footer
-   的「确定」按钮也靠它）→ 此处只在面板主按钮的作用域内覆写，不动基线。
-   88px 足够容纳 5 个汉字（约 68px）+ 两侧 padding；余下约 247px 由两个进度按钮平分。 */
-#settings-modal button.mc-narrow { flex: 0 0 88px; }
 /* 世界操作：两个破坏性/不可逆按钮共用一行 + 一行小字说明（省版面） */
 #settings-modal .mc-world { display: flex; flex-direction: column; gap: 8px; }
 #settings-modal .mc-hint { font-size: 11px; color: #555; font-weight: bold; text-align: left; }
@@ -236,6 +234,7 @@ export class SettingsPanel {
     right.appendChild(this._rowBudget());
     right.appendChild(this._rowTntDamage());        // M8：TNT 破坏开关（右列独立一行）
     right.appendChild(this._rowPlayground());        // M9：创造台（右列，纵向余量更大）
+    right.appendChild(this._rowProgress());          // v1.43：进度管理（独立一行，与创造台分开）
     right.appendChild(this._rowWorld());             // 新世界 + 删除缓存共用一行
 
     const footer = document.createElement('div');
@@ -442,19 +441,18 @@ export class SettingsPanel {
   }
 
   /**
-   * M9 / v1.43：「创造台和进度管理」组 —— 两行按钮盒。
+   * v1.43：创造台行 —— **单行**按钮盒（用户要求 2026-09-30）。
    *
-   * 第一行：主按钮（打开/关闭，**变窄**，`.mc-narrow`）+ 导入进度 + 导出进度（常驻可见）。
-   * 第二行：导出模型 / 导入模型（仅当创造台激活时可见）。
+   * 未激活：只有「打开创造台」，凭基线 `#settings-modal button { flex: 1 }` **独占整行**。
+   * 已激活：「导出模型 / 导入模型」转为可见 → 三个按钮 flex:1 平分该行。
    *
-   * ⚠️ 落位 = 右列独立一行（.mc-item，CLAUDE.md「新配置往右列填」）。不进左列合并盒 ——
-   * 与 _rowTntDamage 同一理由：不满足「两组两按钮档位优先用合并盒」的前提，
-   * 且触碰左列合并盒会撞 v1.35 的 CSS 特异性陷阱。
+   * ⚠️ 模型两个按钮**必须与主按钮同处一个 `.mc-btn-group`**，不得另起一行也不得给主按钮
+   * 变窄 —— 这正是用户明确要求的形态（「挤占原来打开创造台按钮的长度」）。
    *
    * ⚠️ **三处必须一起做**（缺一处即构造期 TypeError 或功能落空）：
-   * ① 主按钮 onclick → _onPlaygroundToggle；② 导出/导入 onclick → _onExport/_onImport、
-   * 进度两个 → _onExportProgress/_onImportProgress（都必须定义，被调用但从未定义会 TypeError）；
-   * ③ 末尾调 _syncPlaygroundVisibility 设初始可见性（构造时 _playgroundActive 可能已是 true）。
+   * ① 主按钮 onclick → _onPlaygroundToggle；② 导出/导入 onclick → _onExport/_onImport
+   * （都必须定义，被调用但从未定义会 TypeError）；③ 末尾调 _syncPlaygroundVisibility
+   * 设初始可见性（构造时 _playgroundActive 可能已是 true —— reload 恢复的场景）。
    */
   _rowPlayground() {
     const row = document.createElement('div');
@@ -464,49 +462,65 @@ export class SettingsPanel {
     t.textContent = PLAYGROUND_ROW_TITLE;
     row.appendChild(t);
 
-    // ---- 第一行：创造台主按钮（窄）+ 进度导入导出（常驻） ----
-    const line1 = document.createElement('div');
-    line1.className = 'mc-btn-group mc-playground-primary';
-    row.appendChild(line1);
+    const group = document.createElement('div');
+    group.className = 'mc-btn-group mc-playground-buttons';
+    row.appendChild(group);
 
     // 主按钮（两态）：文案取导出常量（单一口径）
     this._playgroundBtn = document.createElement('button');
     this._playgroundBtn.id = 'btn-playground';
-    this._playgroundBtn.className = 'mc-narrow';
     this._playgroundBtn.addEventListener('click', () => this._onPlaygroundToggle());
-    line1.appendChild(this._playgroundBtn);
+    group.appendChild(this._playgroundBtn);
 
-    // 进度导入 / 导出：**常驻**（与创造台是否激活无关 —— 它管的是整个世界的存档）
-    this._progressImportBtn = document.createElement('button');
-    this._progressImportBtn.id = 'btn-progress-import';
-    this._progressImportBtn.textContent = PROGRESS_IMPORT_LABEL;
-    this._progressImportBtn.addEventListener('click', () => this._onImportProgress());
-    line1.appendChild(this._progressImportBtn);
-
-    this._progressExportBtn = document.createElement('button');
-    this._progressExportBtn.id = 'btn-progress-export';
-    this._progressExportBtn.textContent = PROGRESS_EXPORT_LABEL;
-    this._progressExportBtn.addEventListener('click', () => this._onExportProgress());
-    line1.appendChild(this._progressExportBtn);
-
-    // ---- 第二行：模型导出/导入（仅创造台激活时可见） ----
-    const line2 = document.createElement('div');
-    line2.className = 'mc-btn-group mc-playground-models';
-    row.appendChild(line2);
-
+    // 导出 / 导入模型：仅创造台激活时可见（mc-lite style.display 同手法），与主按钮同一行
     this._exportBtn = document.createElement('button');
     this._exportBtn.id = 'btn-playground-export';
     this._exportBtn.textContent = EXPORT_LABEL;
     this._exportBtn.addEventListener('click', () => this._onExport());
-    line2.appendChild(this._exportBtn);
+    group.appendChild(this._exportBtn);
 
     this._importBtn = document.createElement('button');
     this._importBtn.id = 'btn-playground-import';
     this._importBtn.textContent = IMPORT_LABEL;
     this._importBtn.addEventListener('click', () => this._onImport());
-    line2.appendChild(this._importBtn);
+    group.appendChild(this._importBtn);
 
     this._syncPlaygroundVisibility();   // 初始可见性（构造时可能已激活）
+    return row;
+  }
+
+  /**
+   * v1.43：进度管理行 —— 导入 / 导出进度（整世界存档）。
+   *
+   * **与创造台分开的独立一行**（用户要求，2026-09-30）：创造台管平台与模型，进度管整个世界的
+   * 存档，两者功能域不同。两个按钮**常驻可见**（与创造台是否激活无关）。
+   *
+   * ⚠️ 两个按钮必须都在 `_onImportProgress`/`_onExportProgress` 上绑定（未定义即 TypeError）。
+   */
+  _rowProgress() {
+    const row = document.createElement('div');
+    row.className = 'mc-item mc-progress';
+    const t = document.createElement('span');
+    t.className = 'mc-title';
+    t.textContent = PROGRESS_ROW_TITLE;
+    row.appendChild(t);
+
+    const group = document.createElement('div');
+    group.className = 'mc-btn-group mc-progress-buttons';
+    row.appendChild(group);
+
+    this._progressImportBtn = document.createElement('button');
+    this._progressImportBtn.id = 'btn-progress-import';
+    this._progressImportBtn.textContent = PROGRESS_IMPORT_LABEL;
+    this._progressImportBtn.addEventListener('click', () => this._onImportProgress());
+    group.appendChild(this._progressImportBtn);
+
+    this._progressExportBtn = document.createElement('button');
+    this._progressExportBtn.id = 'btn-progress-export';
+    this._progressExportBtn.textContent = PROGRESS_EXPORT_LABEL;
+    this._progressExportBtn.addEventListener('click', () => this._onExportProgress());
+    group.appendChild(this._progressExportBtn);
+
     return row;
   }
 

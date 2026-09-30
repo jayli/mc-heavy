@@ -218,7 +218,7 @@ test('进度导入/导出：busy 锁拒绝并发点击（异步文件读取期�
   expect(result.after).toBe(result.before);
 });
 
-test('面板布局：创造台行两行按钮、主按钮变窄、进度按钮常驻、模型按钮仅激活时可见', async ({ page }) => {
+test('面板布局：创造台与进度管理分成两行；模型按钮挤进创造台同一行、关闭后主按钮恢复满行', async ({ page }) => {
   test.setTimeout(180_000);
   await boot(page);
   await page.locator('#settings-btn').click();
@@ -226,67 +226,92 @@ test('面板布局：创造台行两行按钮、主按钮变窄、进度按钮�
 
   const layout = await page.evaluate(() => {
     const panel = window.__MC_GAME__.settingsPanel;
-    const row = document.getElementById('btn-playground').closest('.mc-item');
-    const line1 = document.getElementById('btn-playground').parentElement;
-    const line2 = document.getElementById('btn-playground-export').parentElement;
+    const main = document.getElementById('btn-playground');
+    const pgRow = main.closest('.mc-item');
+    const progressRow = document.getElementById('btn-progress-import').closest('.mc-item');
+    const group = main.parentElement;
     const box = (el) => { const r = el.getBoundingClientRect(); return { w: Math.round(r.width), h: Math.round(r.height) }; };
     const vis = (el) => getComputedStyle(el).display !== 'none';
     const out = {
-      title: row.querySelector('.mc-title').textContent,
-      line1: line1.className, line2: line2.className,
-      sameLine: line1 === line2,
-      line1Top: line1.getBoundingClientRect().top,
-      line2Top: line2.getBoundingClientRect().top,
-      main: box(document.getElementById('btn-playground')),
+      pgTitle: pgRow.querySelector('.mc-title').textContent,
+      progressTitle: progressRow.querySelector('.mc-title').textContent,
+      // 两行是两个不同的 .mc-item 盒子（若合并成一行两者会相等）
+      rowsAreDistinct: pgRow !== progressRow,
+      progressRowBelow: progressRow.getBoundingClientRect().top
+        > pgRow.getBoundingClientRect().bottom,
+      // 模型按钮与主按钮**同一个按钮组**（用户要求「挤在一行」，不再另辟一行）
+      modelSameGroup: document.getElementById('btn-playground-export').parentElement === group
+        && document.getElementById('btn-playground-import').parentElement === group,
+      groupWidth: Math.round(group.getBoundingClientRect().width),
+      mainLabel: main.textContent,
+      main: box(main),
+      // 未激活：主按钮独占整行（基线 flex:1）
       progressImport: box(document.getElementById('btn-progress-import')),
       progressExport: box(document.getElementById('btn-progress-export')),
-      modelExport: box(document.getElementById('btn-playground-export')),
-      modelImport: box(document.getElementById('btn-playground-import')),
-      mainLabel: document.getElementById('btn-playground').textContent,
-      progressVisibleBefore: vis(document.getElementById('btn-progress-import'))
+      progressVisible: vis(document.getElementById('btn-progress-import'))
         && vis(document.getElementById('btn-progress-export')),
       modelsVisibleBefore: vis(document.getElementById('btn-playground-export')),
-      // 主按钮文案不得换行（5 个汉字 + 88px 变窄是本次改动的风险点）
-      mainScrollW: document.getElementById('btn-playground').scrollWidth,
-      mainClientW: document.getElementById('btn-playground').clientWidth,
-      // 面板总宽口径（回归防线：面板固定 770px 内容盒）
+      modelExport: box(document.getElementById('btn-playground-export')),
+      mainScrollW: main.scrollWidth,
+      mainClientW: main.clientWidth,
       panelWidth: Math.round(document.querySelector('#settings-modal .mc-content').getBoundingClientRect().width),
     };
-    // 激活创造台 → 模型两个按钮转为可见。
-    // ⚠️ 模型按钮的**几何必须在变可见之后量** —— `display:none` 的元素 `getBoundingClientRect()`
-    // 恒返回宽 0，用激活前量的值断言会假失败（实测踩坑：断言 `>150` 收到 0）。
+    // 激活创造台 → 模型两个按钮转为可见，与主按钮**同行**平分该行
     panel._onPlaygroundToggle();
-    out.mainLabelAfter = document.getElementById('btn-playground').textContent;
+    out.mainLabelAfter = main.textContent;
     out.modelsVisibleAfter = vis(document.getElementById('btn-playground-export'));
+    out.mainAfter = box(main);
     out.modelExportAfter = box(document.getElementById('btn-playground-export'));
     out.modelImportAfter = box(document.getElementById('btn-playground-import'));
-    out.line2HeightAfter = Math.round(line2.getBoundingClientRect().height);
-    out.line1HeightAfter = Math.round(line1.getBoundingClientRect().height);
-    out.line2TopAfter = line2.getBoundingClientRect().top;
-    out.line1TopAfter = line1.getBoundingClientRect().top;
+    // 三按钮必须同一行：三者的 top 与 height 一致（错行会让 top 相差一个按钮高度）
+    const tops = [main, document.getElementById('btn-playground-export'),
+      document.getElementById('btn-playground-import')].map((el) => Math.round(el.getBoundingClientRect().top));
+    out.sameTopAfter = tops[0] === tops[1] && tops[1] === tops[2];
+    out.noWrapScroll = main.scrollWidth <= main.clientWidth;
     // 收尾：把玩家挪出平台再关闭（避免残留状态影响后续用例）
     const o = window.__MC_GAME__.playground.origin();
     if (o) window.__MC_GAME__.player.spawn(o[0] - 20, o[1] + 1, o[2]);
     panel._syncPlaygroundState();
     panel._onPlaygroundToggle();
+    // 再次关闭后：模型按钮消失、主按钮**恢复满行**（用户要求）
+    out.mainLabelAfterClose = main.textContent;
+    out.modelsVisibleAfterClose = vis(document.getElementById('btn-playground-export'));
+    out.mainAfterClose = box(main);
     return out;
   });
 
-  expect(layout.title).toBe('创造台和进度管理');
-  expect(layout.sameLine).toBe(false);                 // 两行：主按钮+进度 / 模型
-  expect(layout.line2TopAfter).toBeGreaterThan(layout.line1TopAfter);
-  expect(layout.line2HeightAfter).toBeGreaterThan(0);   // 第二行确实占位（不是零高盒）
-  expect(layout.main.w).toBeLessThan(100);             // 主按钮变窄（基线 flex:1 时会约 351px）
-  expect(layout.progressImport.w).toBeGreaterThan(100); // 进度按钮分到余量
-  expect(layout.progressExport.w).toBeGreaterThan(100);
+  expect(layout.pgTitle).toBe('创造台');
+  expect(layout.progressTitle).toBe('进度管理');
+  expect(layout.rowsAreDistinct).toBe(true);        // 两行分开（不再是一行合并盒）
+  expect(layout.progressRowBelow).toBe(true);       // 进度管理在创造台**下方**
+  expect(layout.modelSameGroup).toBe(true);         // 模型按钮与主按钮同一行（挤在一行）
   expect(layout.mainLabel).toBe('打开创造台');
-  expect(layout.mainLabelAfter).toBe('关闭创造台');
   expect(layout.mainScrollW).toBeLessThanOrEqual(layout.mainClientW); // 文案不换行
-  expect(layout.progressVisibleBefore).toBe(true);      // 进度按钮常驻（与创造台状态无关）
-  expect(layout.modelsVisibleBefore).toBe(false);       // 模型按钮仍只在激活时可见
-  expect(layout.modelExport.w).toBe(0);                 // 隐藏时确实零宽（可见性判据的另一半）
+  // 未激活：主按钮独占整行（若错留 88px 变窄，这里会失败）
+  expect(layout.main.w).toBeGreaterThanOrEqual(layout.groupWidth - 1);
+  expect(layout.main.w).toBeGreaterThan(300);
+  expect(layout.progressVisible).toBe(true);        // 进度按钮常驻（与创造台状态无关）
+  expect(layout.progressImport.w).toBeGreaterThan(100);  // 两个进度按钮平分独立一行
+  expect(layout.progressExport.w).toBeGreaterThan(100);
+  expect(layout.panelWidth).toBe(818);              // 面板宽度未变（770 内容盒 + 2×20 padding + 2×4 border）
+  // 隐藏时确实零宽（可见性判据的另一半）
+  expect(layout.modelsVisibleBefore).toBe(false);
+  expect(layout.modelExport.w).toBe(0);
+  // 激活：三按钮同行且各自变窄（由 flex:1 平分，主按钮不再独占）
+  expect(layout.mainLabelAfter).toBe('关闭创造台');
   expect(layout.modelsVisibleAfter).toBe(true);
-  expect(layout.modelExportAfter.w).toBeGreaterThan(150);  // 模型行两个按钮平分整行
-  expect(layout.modelImportAfter.w).toBeGreaterThan(150);
-  expect(layout.panelWidth).toBe(818);                  // 面板宽度未变（770 内容盒 + 2×20 padding + 2×4 border）
+  expect(layout.sameTopAfter).toBe(true);
+  expect(layout.noWrapScroll).toBe(true);
+  expect(layout.mainAfter.w).toBeLessThan(200);     // 不再是满行
+  expect(layout.mainAfter.w).toBeGreaterThan(80);   // 但容得下 5 个汉字
+  expect(layout.modelExportAfter.w).toBeGreaterThan(80);
+  expect(layout.modelImportAfter.w).toBeGreaterThan(80);
+  // 三个按钮平分该行（各差 ≤2px）
+  const w = [layout.mainAfter.w, layout.modelExportAfter.w, layout.modelImportAfter.w];
+  expect(Math.max(...w) - Math.min(...w)).toBeLessThanOrEqual(2);
+  // 关闭后：模型按钮消失、主按钮**恢复满行**
+  expect(layout.mainLabelAfterClose).toBe('打开创造台');
+  expect(layout.modelsVisibleAfterClose).toBe(false);
+  expect(layout.mainAfterClose.w).toBeGreaterThanOrEqual(layout.groupWidth - 1);
+  expect(Math.abs(layout.mainAfterClose.w - layout.main.w)).toBeLessThanOrEqual(1);
 });

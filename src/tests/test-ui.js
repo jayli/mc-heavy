@@ -20,7 +20,7 @@ import { loadIconManifest, iconCss } from '../ui/icons.js';
 // 可在本单测文件里 import（与 icons.js 同口径）。
 import {
   PLAYGROUND_OPEN_LABEL, PLAYGROUND_CLOSE_LABEL, PLAYGROUND_ERRORS,
-  PLAYGROUND_ROW_TITLE, PROGRESS_EXPORT_LABEL, PROGRESS_IMPORT_LABEL, PROGRESS_ERRORS,
+  PLAYGROUND_ROW_TITLE, PROGRESS_ROW_TITLE, PROGRESS_EXPORT_LABEL, PROGRESS_IMPORT_LABEL, PROGRESS_ERRORS,
 } from '../ui/settings-panel.js';
 import { Toast } from '../ui/toast.js';
 
@@ -189,16 +189,21 @@ test('创造台按钮文案是导出的单一口径常量（两态 + 错误映�
 });
 
 /**
- * v1.43：创造台行的标题与进度按钮文案。
+ * v1.43：创造台行与进度管理行的标题、进度按钮文案。
  *
- * 该行现在管「创造台 + 进度导入导出」两件事 → 标题必须同时覆盖两者（否则玩家看不出
- * 进度按钮属于哪个功能域）。进度两个文案同样是导出的单一口径常量，构造与断言共用一份
- * —— 与 `PLAYGROUND_OPEN_LABEL` 同一手法（写死字面量则本断言与实现脱钩）。
+ * **两行是分开的**（用户要求，2026-09-30）：创造台管平台与模型，进度管整个世界的存档 ——
+ * 标题各自覆盖自己的功能域，两个标题必须可区分（否则玩家看不出进度按钮属于哪个域）。
+ * 进度两个文案同样是导出的单一口径常量，构造与断言共用一份 —— 与 `PLAYGROUND_OPEN_LABEL`
+ * 同一手法（写死字面量则本断言与实现脱钩）。
  *
  * ⚠️ 与上一条一样**不断言面板 DOM** —— 面板的布局与可见性由 E2E 兜住。
  */
-test('创造台行标题与进度按钮文案是导出的单一口径常量', () => {
-  assertEqual(PLAYGROUND_ROW_TITLE, '创造台和进度管理');
+test('创造台行/进度管理行标题与进度按钮文案是导出的单一口径常量', () => {
+  assertEqual(PLAYGROUND_ROW_TITLE, '创造台');
+  assertEqual(PROGRESS_ROW_TITLE, '进度管理');
+  assertFalse(PLAYGROUND_ROW_TITLE === PROGRESS_ROW_TITLE, '两行标题必须可区分');
+  // 标题不得再出现合并写法（v1.43 前的「创造台和进度管理」已按用户要求拆开）
+  assertFalse(PLAYGROUND_ROW_TITLE.includes('进度'), '创造台行标题不得再混入进度');
   assertEqual(PROGRESS_IMPORT_LABEL, '导入进度');
   assertEqual(PROGRESS_EXPORT_LABEL, '导出进度');
   assertFalse(PROGRESS_IMPORT_LABEL === PROGRESS_EXPORT_LABEL, '两个按钮文案必须可区分');
