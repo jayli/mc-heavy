@@ -106,6 +106,34 @@ export class Persistence {
     await Promise.all(jobs);
   }
 
+  // ==================== 进度导入导出（设置面板） ====================
+
+  /**
+   * 枚举 edits store 中**全部** column 的改动（进度导出用）。
+   *
+   * 与 `listBlockEntities` 的区别：那个按 `kind` 过滤只要数个锚点，本方法要完整稀疏层 ——
+   * 二者共用「cursor 扫库而非 getAll」的手法（存档可能含成百上千 column 的 edits 行，
+   * 但进度导出本就要全量，故此处逐行收集而不做过滤）。
+   * @returns {Promise<Array<{columnKey: string, edits: Array<Object>}>>}
+   */
+  listEdits() {
+    return new Promise((resolve, reject) => {
+      const tx = this.db.transaction('edits', 'readonly');
+      const req = tx.objectStore('edits').openCursor();
+      const out = [];
+      req.onsuccess = () => {
+        const cursor = req.result;
+        if (!cursor) { resolve(out); return; }
+        const value = cursor.value;
+        if (value?.columnKey && Array.isArray(value.edits)) {
+          out.push({ columnKey: value.columnKey, edits: value.edits });
+        }
+        cursor.continue();
+      };
+      req.onerror = () => reject(req.error);
+    });
+  }
+
   /**
    * 枚举 edits store 中所有带指定 kind 的 blockEntity（M7）。
    *

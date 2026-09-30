@@ -20,6 +20,7 @@ import { loadIconManifest, iconCss } from '../ui/icons.js';
 // 可在本单测文件里 import（与 icons.js 同口径）。
 import {
   PLAYGROUND_OPEN_LABEL, PLAYGROUND_CLOSE_LABEL, PLAYGROUND_ERRORS,
+  PLAYGROUND_ROW_TITLE, PROGRESS_EXPORT_LABEL, PROGRESS_IMPORT_LABEL, PROGRESS_ERRORS,
 } from '../ui/settings-panel.js';
 import { Toast } from '../ui/toast.js';
 
@@ -185,6 +186,29 @@ test('创造台按钮文案是导出的单一口径常量（两态 + 错误映�
   }
   assertEqual(PLAYGROUND_ERRORS['player-in-playground'], '请离开创造台区域后再关闭');
   assertEqual(PLAYGROUND_ERRORS.exists, '创造台已存在');
+});
+
+/**
+ * v1.43：创造台行的标题与进度按钮文案。
+ *
+ * 该行现在管「创造台 + 进度导入导出」两件事 → 标题必须同时覆盖两者（否则玩家看不出
+ * 进度按钮属于哪个功能域）。进度两个文案同样是导出的单一口径常量，构造与断言共用一份
+ * —— 与 `PLAYGROUND_OPEN_LABEL` 同一手法（写死字面量则本断言与实现脱钩）。
+ *
+ * ⚠️ 与上一条一样**不断言面板 DOM** —— 面板的布局与可见性由 E2E 兜住。
+ */
+test('创造台行标题与进度按钮文案是导出的单一口径常量', () => {
+  assertEqual(PLAYGROUND_ROW_TITLE, '创造台和进度管理');
+  assertEqual(PROGRESS_IMPORT_LABEL, '导入进度');
+  assertEqual(PROGRESS_EXPORT_LABEL, '导出进度');
+  assertFalse(PROGRESS_IMPORT_LABEL === PROGRESS_EXPORT_LABEL, '两个按钮文案必须可区分');
+  // 进度错误文案映射：`save/progress-codec.js` 的每个失败 reason 都要有玩家可读文案
+  // （否则导入坏文件时玩家只看到裸 reason）。reason 清单与 codec 的失败分支同源。
+  for (const reason of ['invalid-json', 'invalid-format', 'unsupported-version', 'invalid-seed']) {
+    assertTrue(typeof PROGRESS_ERRORS[reason] === 'string' && PROGRESS_ERRORS[reason].length > 0,
+      `进度导入的 ${reason} 必须有提示文案`);
+  }
+  assertEqual(PROGRESS_ERRORS['invalid-format'], '这不是 mc-heavy 的进度文件');
 });
 
 /**

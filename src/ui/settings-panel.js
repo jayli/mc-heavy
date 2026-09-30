@@ -28,9 +28,17 @@ const CLEAR_SAVE_LABEL = '删除缓存';
  */
 export const PLAYGROUND_OPEN_LABEL = '打开创造台';
 export const PLAYGROUND_CLOSE_LABEL = '关闭创造台';
-/** 导出 / 导入按钮文案 */
+/**
+ * M9 创造台行的标题。该行现在同时管「创造台」与「进度导入导出」两件事 → 标题须同时
+ * 覆盖两者（v1.43）。导出供 `src/tests/test-ui.js` 钉死，构造与断言共用一份口径。
+ */
+export const PLAYGROUND_ROW_TITLE = '创造台和进度管理';
+/** 导出 / 导入模型按钮文案（创造台模型，与下行的**进度包**是两个不同粒度） */
 const EXPORT_LABEL = '导出模型';
 const IMPORT_LABEL = '导入模型';
+/** 导出 / 导入**进度**（整世界存档）按钮文案。导出供单测钉死（单一口径） */
+export const PROGRESS_EXPORT_LABEL = '导出进度';
+export const PROGRESS_IMPORT_LABEL = '导入进度';
 
 /**
  * M9：创造台操作的错误文案映射（单一口径，不散落字面量）。
@@ -42,6 +50,18 @@ export const PLAYGROUND_ERRORS = {
   'not-loaded': '附近区块尚未加载，请稍候重试',
   'not-active': '创造台未激活',
   'player-in-playground': '请离开创造台区域后再关闭',
+};
+
+/**
+ * 进度导入 / 导出的错误文案映射（单一口径）。
+ * key = `Game.importProgress` 返回的 reason（来自 `save/progress-codec.js` 的分类，
+ * 不在此处重新分类 —— 两处分类会漂移出「同一个坏文件在不同入口报不同原因」）。
+ */
+export const PROGRESS_ERRORS = {
+  'invalid-json': '文件不是合法的 JSON',
+  'invalid-format': '这不是 mc-heavy 的进度文件',
+  'unsupported-version': '进度文件版本过新，请更新代码后再导入',
+  'invalid-seed': '进度文件缺少有效的世界种子',
 };
 
 /**
@@ -116,6 +136,18 @@ const PANEL_CSS = `
 }
 #settings-modal .mc-combined-col:first-child { border-right: 1px solid #888; padding-left: 0; }
 #settings-modal .mc-combined-col:last-child { padding-right: 0; }
+/* 创造台和进度管理：两行按钮盒（v1.43）。
+   第一行 = 创造台主按钮（**变窄**，见下）+ 两个进度按钮、常驻可见；
+   第二行 = 导出/导入模型（只在创造台激活时可见）。
+   为何分两行：面板每列约 351px（v1.35 实测），5 个按钮挤一行时每个只剩约 64px，
+   而「打开创造台」5 个汉字约 68px 会被挤到换行（「打开创造／台」）。 */
+#settings-modal .mc-playground { display: flex; flex-direction: column; gap: 8px; }
+/* 进度按钮常驻，故第一行不能整行随创造台状态隐藏 —— 隐藏的只是模型那一行（行内按钮 display） */
+#settings-modal .mc-playground .mc-btn-group { display: flex; gap: 8px; width: 100%; }
+/* 「打开创造台」变窄：基线 #settings-modal button 是 flex:1（等宽铺满，.mc-footer
+   的「确定」按钮也靠它）→ 此处只在面板主按钮的作用域内覆写，不动基线。
+   88px 足够容纳 5 个汉字（约 68px）+ 两侧 padding；余下约 247px 由两个进度按钮平分。 */
+#settings-modal button.mc-narrow { flex: 0 0 88px; }
 /* 世界操作：两个破坏性/不可逆按钮共用一行 + 一行小字说明（省版面） */
 #settings-modal .mc-world { display: flex; flex-direction: column; gap: 8px; }
 #settings-modal .mc-hint { font-size: 11px; color: #555; font-weight: bold; text-align: left; }
@@ -159,6 +191,9 @@ export class SettingsPanel {
     /** 防重复点击锁（mc-lite isPlaygroundOperationInProgress 同手法）：2916 格写入是秒级操作，
      *  重复点击会产出两个平台或半删状态 */
     this._playgroundBusy = false;
+    /** 进度导入/导出的防重复锁。**故意与 _playgroundBusy 分开**：导入进度要读文件 + 写整库，
+     *  共用一把锁会让模型导入/导出被进度操作吞掉（反之亦然） */
+    this._progressBusy = false;
     /** toast 实例（⚠️ 必须真的赋值，否则 this._toast?.show(...) 静默不显示 → 规格 §3 验收项落空） */
     this._toast = new Toast({});
 
@@ -407,47 +442,69 @@ export class SettingsPanel {
   }
 
   /**
-   * M9：「创造台」组 —— 主按钮（打开/关闭，两态）+ 导出/导入（仅激活时可见）。
+   * M9 / v1.43：「创造台和进度管理」组 —— 两行按钮盒。
+   *
+   * 第一行：主按钮（打开/关闭，**变窄**，`.mc-narrow`）+ 导入进度 + 导出进度（常驻可见）。
+   * 第二行：导出模型 / 导入模型（仅当创造台激活时可见）。
    *
    * ⚠️ 落位 = 右列独立一行（.mc-item，CLAUDE.md「新配置往右列填」）。不进左列合并盒 ——
-   * 与 _rowTntDamage 同一理由：创造台是单组三按钮，不满足「两组两按钮档位优先用合并盒」的前提，
+   * 与 _rowTntDamage 同一理由：不满足「两组两按钮档位优先用合并盒」的前提，
    * 且触碰左列合并盒会撞 v1.35 的 CSS 特异性陷阱。
    *
    * ⚠️ **三处必须一起做**（缺一处即构造期 TypeError 或功能落空）：
-   * ① 主按钮 onclick → _onPlaygroundToggle；② 导出/导入 onclick → _onExport/_onImport
-   * （都必须定义，被调用但从未定义会 TypeError）；③ 末尾调 _syncPlaygroundVisibility
-   * 设初始可见性（构造时 _playgroundActive 可能已是 true —— reload 恢复的场景）。
+   * ① 主按钮 onclick → _onPlaygroundToggle；② 导出/导入 onclick → _onExport/_onImport、
+   * 进度两个 → _onExportProgress/_onImportProgress（都必须定义，被调用但从未定义会 TypeError）；
+   * ③ 末尾调 _syncPlaygroundVisibility 设初始可见性（构造时 _playgroundActive 可能已是 true）。
    */
   _rowPlayground() {
     const row = document.createElement('div');
-    row.className = 'mc-item';
+    row.className = 'mc-item mc-playground';
     const t = document.createElement('span');
     t.className = 'mc-title';
-    t.textContent = '创造台';
+    t.textContent = PLAYGROUND_ROW_TITLE;
     row.appendChild(t);
 
-    const group = document.createElement('div');
-    group.className = 'mc-btn-group';
-    row.appendChild(group);
+    // ---- 第一行：创造台主按钮（窄）+ 进度导入导出（常驻） ----
+    const line1 = document.createElement('div');
+    line1.className = 'mc-btn-group mc-playground-primary';
+    row.appendChild(line1);
 
     // 主按钮（两态）：文案取导出常量（单一口径）
     this._playgroundBtn = document.createElement('button');
     this._playgroundBtn.id = 'btn-playground';
+    this._playgroundBtn.className = 'mc-narrow';
     this._playgroundBtn.addEventListener('click', () => this._onPlaygroundToggle());
-    group.appendChild(this._playgroundBtn);
+    line1.appendChild(this._playgroundBtn);
 
-    // 导出 / 导入：仅创造台激活时可见（mc-lite style.display 同手法）
+    // 进度导入 / 导出：**常驻**（与创造台是否激活无关 —— 它管的是整个世界的存档）
+    this._progressImportBtn = document.createElement('button');
+    this._progressImportBtn.id = 'btn-progress-import';
+    this._progressImportBtn.textContent = PROGRESS_IMPORT_LABEL;
+    this._progressImportBtn.addEventListener('click', () => this._onImportProgress());
+    line1.appendChild(this._progressImportBtn);
+
+    this._progressExportBtn = document.createElement('button');
+    this._progressExportBtn.id = 'btn-progress-export';
+    this._progressExportBtn.textContent = PROGRESS_EXPORT_LABEL;
+    this._progressExportBtn.addEventListener('click', () => this._onExportProgress());
+    line1.appendChild(this._progressExportBtn);
+
+    // ---- 第二行：模型导出/导入（仅创造台激活时可见） ----
+    const line2 = document.createElement('div');
+    line2.className = 'mc-btn-group mc-playground-models';
+    row.appendChild(line2);
+
     this._exportBtn = document.createElement('button');
     this._exportBtn.id = 'btn-playground-export';
     this._exportBtn.textContent = EXPORT_LABEL;
     this._exportBtn.addEventListener('click', () => this._onExport());
-    group.appendChild(this._exportBtn);
+    line2.appendChild(this._exportBtn);
 
     this._importBtn = document.createElement('button');
     this._importBtn.id = 'btn-playground-import';
     this._importBtn.textContent = IMPORT_LABEL;
     this._importBtn.addEventListener('click', () => this._onImport());
-    group.appendChild(this._importBtn);
+    line2.appendChild(this._importBtn);
 
     this._syncPlaygroundVisibility();   // 初始可见性（构造时可能已激活）
     return row;
@@ -516,6 +573,78 @@ export class SettingsPanel {
           : (PLAYGROUND_ERRORS[result.reason] ?? '导入失败'));
       } finally {
         this._playgroundBusy = false;   // ⚠️ 异步读取完成才释放锁
+      }
+    };
+    input.click();
+  }
+
+  /**
+   * 导出进度：把当前世界存档（seed + 全部改动 + 持久实体）写成一个 JSON 文件下载。
+   *
+   * 与「导出模型」（只导创造台平台上的模型）**不是一个粒度**：本方法导的是**整世界进度**，
+   * 与创造台是否存在无关，故按钮常驻可见。
+   * busy 期间禁用 —— 导出要先 `flushNow` 落库，重复点击会并发写盘与造多个下载。
+   * ⚠️ **不得与「×模型」共用 busy 锁**（同一个 _playgroundBusy），否则模型导入/导出的
+   * 文件读取会与进度导出互相吞掉对方的操作。两种操作各用自己的锁，代价极小。
+   */
+  async _onExportProgress() {
+    if (this._progressBusy) return;
+    this._progressBusy = true;
+    this._progressExportBtn.disabled = true;
+
+    try {
+      const result = await this.game.exportProgress();
+      if (!result.ok) {
+        this._toast?.show(`导出失败：${result.reason ?? '未知错误'}`);
+        return;
+      }
+      const blob = new Blob([result.json], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = result.filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      this._toast?.show(`进度已导出（${result.cells} 方块，${result.columns} 区块）`);
+    } catch (err) {
+      console.error('[progress] 导出失败', err);
+      this._toast?.show(`导出失败：${err.message}`);
+    } finally {
+      this._progressBusy = false;
+      this._progressExportBtn.disabled = false;
+    }
+  }
+
+  /**
+   * 导入进度：选一个 JSON 文件 → 覆盖当前世界（清空当前改动 + 写入包内容 + 重载）。
+   *
+   * ⚠️ 文件读取是异步的，busy 锁必须在 finally 释放（与 _onImport 同一坑）。
+   * ⚠️ 成功后 `importProgress` 内部会 `location.reload()`，此处不应当依赖 reload 之后的任何状态。
+   */
+  _onImportProgress() {
+    if (this._progressBusy) return;
+    this._progressBusy = true;
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json,application/json';
+    input.onchange = async () => {
+      try {
+        const file = input.files?.[0];
+        if (!file) return;
+        const jsonText = await file.text();
+        const result = await this.game.importProgress(jsonText);
+        if (result.ok) {
+          this._toast?.show(`进度已导入（seed ${result.seed}，${result.cells} 方块）—— 正在重载`);
+        } else {
+          this._toast?.show(PROGRESS_ERRORS[result.reason] ?? `导入失败：${result.reason}`);
+        }
+      } catch (err) {
+        console.error('[progress] 导入失败', err);
+        this._toast?.show(`导入失败：${err.message}`);
+      } finally {
+        this._progressBusy = false;   // 异步读取完成才释放锁
       }
     };
     input.click();

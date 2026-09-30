@@ -59,6 +59,7 @@ import { InventoryPanel } from '../ui/inventory.js';
 import { loadIconManifest } from '../ui/icons.js';
 import { getBiome } from '../gen/noise.js';
 import { loadStoredSettings, resolveSettings } from '../ui/settings.js';
+import { encodeProgress, decodeProgress } from '../save/progress-codec.js';
 
 /** 随机世界 seed（M3-4 新世界）：24bit 正整数，避开 0（noise 退化）与负值 */
 export function randomSeed() {
@@ -771,6 +772,83 @@ export class Game {
     if (this.entities) this.entities.despawnPersistent('discard');
     await this.persistence.clearAllEdits();
     await this.persistence.clearAllEntities();
+  }
+
+  /**
+   * 导出进度：把当前世界的完整存档（seed + 全部玩家改动 + 持久实体）编码成 JSON 文本。
+   *
+   * ⚠️ **必须先 `flushNow(world)`** —— 内存 edits 才是真相（5s 防抖写盘到期前，刚放下的
+   * 方块还没进 `edits` store）。不先落库就会导出一份「5 秒前的旧进度」，而导出侧看不出任何异常
+   * （文件照样生成、格式照样合法），只有导入后才发现在丢方块。
+   *
+   * ⚠️ 导出期间**不暂停玩家编辑** —— 逐格复制而非快照：`listEdits`/`serializePersistent` 都是
+   * 同步或单事务的纯读，产出的包内部自洽（实体取的是同一时刻的序列化结果）。
+   *
+   * 不导出逐格地形（红线 2：地形由 seed 确定性重算）、不导出玩家位置（消费它需改出生点逻辑，
+   * 与 `meta.spawn` 语义冲突），详见设计文档 §4.8 的「进度包」段。
+   * @returns {Promise<{ok:true, json:string, columns:number, cells:number, entities:number,
+   *                     seed:number, filename:string}>}
+   */
+  async exportProgress() {
+    await this.persistence.flushNow(this.world);   // 先落库，见上
+    const columns = await this.persistence.listEdits();
+    // 持久实体：以 cache（含已卸载 column 的 snapshot）为底，用**当前活着**的实体覆盖同 id
+    // —— cache 里可能是该实体早先的旧状态（矿车开走前写的），活着的那份才是最新真相。
+    const entitiesById = new Map();
+    for (const snapshot of this.persistence.entitiesCache.values()) {
+      entitiesById.set(snapshot.id, snapshot);
+    }
+    if (this.entities) {
+      for (const snapshot of this.entities.serializePersistent()) entitiesById.set(snapshot.id, snapshot);
+    }
+    const entities = [...entitiesById.values()];
+    const json = encodeProgress({
+      seed: this.seed, spawn: [this.spawnX, this.spawnZ], columns, entities,
+    }, this.registry);
+    let cells = 0;
+    for (const column of columns) cells += column.edits.length;
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    return {
+      ok: true, json, columns: columns.length, cells, entities: entities.length, seed: this.seed,
+      filename: `mc-heavy-progress-${this.seed}-${stamp}.json`,
+    };
+  }
+
+  /**
+   * 导入进度：**覆盖式**恢复一份进度包（清空当前全部改动 → 写入包里的 seed/改动 → 重载）。
+   *
+   * 三步顺序与 `newWorld` / `clearSave` 完全一致，中间那步复用 `_discardEdits()`（**唯一丢弃
+   * 入口**：取消在途防抖 flush + 清内存 edits + 清两个 store）—— 不另写一份「清旧世界」的逻辑，
+   * 否则内存 edits 的写回竞态会在两条路径里各修一次（红线 1 精神，v1.29 已记录该教训）。
+   *
+   * ⚠️ **解码失败时零世界写入**（`decodeProgress` 的失败分支不带 edits/entities）—— 坏文件
+   * 不该把玩家现有进度清掉一半。
+   *
+   * ⚠️ **非原子**：IndexedDB 写失败只中止并返回 reason，世界会停在「已清空」状态；此时再导入
+   * 一次即可恢复（导入是幂等的：先清后写）。不引入临时 store 交换 —— 那需要 DB 版本升级，
+   * 成本远超收益（设计文档 §4.8 已登记）。
+   *
+   * @param {string} jsonText @returns {Promise<{ok:true, seed:number, columns:number,
+   *   cells:number, entities:number, invalid:number, skipped:number} | {ok:false, reason:string}>}
+   */
+  async importProgress(jsonText) {
+    const decoded = decodeProgress(jsonText, this.registry);
+    if (!decoded.ok) return decoded;   // 零写入
+    await this._discardEdits();
+    // spawn 非法（null）→ 保留既有 meta.spawn：写 null 进存档会让下次启动读到非法出生点
+    const spawn = decoded.spawn ?? [this.spawnX, this.spawnZ];
+    await this.persistence.saveMeta({ seed: decoded.seed, spawn, savedAt: Date.now() });
+    let cells = 0;
+    for (const column of decoded.edits) {
+      await this.persistence.saveColumnEdits(column.columnKey, column.edits);
+      cells += column.edits.length;
+    }
+    await this.persistence.saveEntities(decoded.entities);
+    location.reload();
+    return {
+      ok: true, seed: decoded.seed, columns: decoded.edits.length, cells,
+      entities: decoded.entities.length, invalid: decoded.invalid, skipped: decoded.skipped,
+    };
   }
 
   /**

@@ -701,7 +701,9 @@ mc-heavy/
    │               #  inventory.js（物品模型）/ orientation.js（朝向三分支纯函数）/ weapons/*（M4）
    ├─ ui/          # coords-hud.js / hotbar.js / settings-panel.js / settings.js
    │               #  inventory.js（背包面板：DOM 方案照搬 mc-lite）/ icons.js（图标 manifest 加载）
-   ├─ save/        # persistence.js（IndexedDB edits + M5 entities store）
+   ├─ save/        # persistence.js（IndexedDB edits + M5 entities store）/ progress-codec.js
+   │               #  （v1.43 进度包编解码纯函数：`mc-heavy-progress` v1 = seed + edits + entities；
+   │               #    导出/导入的坐标换算与坏条目分类在此，面板只做文件 I/O）
    └─ workers/     # world-worker.js（GEN/MESH/LIGHT 统一入口，池化）
 ```
 

@@ -16,6 +16,21 @@ export function blockIndex(lx, y, lz) {
   return lx + lz * COLUMN_SIZE + (y - WORLD_MIN_Y) * COLUMN_SIZE * COLUMN_SIZE;
 }
 
+/**
+ * `blockIndex` 的逆：typed array 索引 → `{lx, y, lz}`。
+ *
+ * 为什么与 `blockIndex` 放在一起：进度包导出/导入要把坐标与索引互相换算，**编码与其逆写两处
+ * 就会漂移**（一处用错列宽 → 方块整体错位，方块层面完全看不出来是哪里的问题）。
+ * 调用方须保证 index 来自合法坐标（本函数不做范围校验）。
+ */
+export function decodeBlockIndex(index) {
+  const perLayer = COLUMN_SIZE * COLUMN_SIZE; // 256 = 一层的格数
+  const lz = Math.floor(index / COLUMN_SIZE) % COLUMN_SIZE;
+  const lx = index % COLUMN_SIZE;
+  const y = Math.floor(index / perLayer) + WORLD_MIN_Y;
+  return { lx, y, lz };
+}
+
 /** 世界 y → section 序号（0..7）；越界调用方自行处理 */
 export function sectionOf(y) {
   return (y - WORLD_MIN_Y) >> 4;
