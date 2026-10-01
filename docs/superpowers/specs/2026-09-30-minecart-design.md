@@ -32,8 +32,10 @@ src/render/minecart-renderer.js  # 2 个 InstancedMesh（车斗 + 4 轮），照
 ```
 
 改动既有文件：`src/core/game.js`（装配 + 帧序 + 爆炸摧毁）、`src/player/player.js`
-（放置路由 + 拾取/激活分流 + 乘坐）、`src/player/physics.js`（乘坐期障碍检测排除自身车，
-若需要）。
+（放置路由 + 拾取/激活分流 + 乘坐）、`src/player/physics.js`（`_collides` 把矿车占据格
+视为实心 —— 2026-10-01 修订：原文写「乘坐期障碍检测排除自身车，若需要」，实测该需求
+不存在：乘坐期障碍检测走 `collidesAt`（仅方块），不经 `_collides`，故无需排除任何车）。
+详见 §4.4。
 
 ### 1.2 权威与派生（红线 1）
 
@@ -220,8 +222,16 @@ mc-lite 是单管理器循环直接改对象；mc-heavy 的 `EntityManager.updat
   水平碰撞 → 既有 `_tryStepUp` 抬到 `carY+1` → 与车顶 `carY+0.9` 差 0.1，被下面的
   绑定容差 0.3 吸收 → 自动绑定。**不需要新机制**：step-up 与绑定判据都是既有的，
   缺的只是「车格是实心」这一条。
+  ⚠️ **落点 `carY+1` 与 mc-lite 一致，不是偏离**（实测核实，2026-10-01）：mc-lite
+  `tryStepUp` 虽有矿车专用分支（`Physics.js:241-248`，抬到 `carY+0.9`），但其查询坐标是
+  `feetY = floor(player.y − 0.01)` —— 走进车场景玩家脚底 y=2.0 → `feetY=1` ≠ `carY=2`
+  → **专用分支 MISS**，mc-lite 同样走通用循环抬到 `carY+1`（逐行复刻上游
+  `tryStepUp`+`isSolid`+`checkAABB` 实测确认）。唯一差异在「下车后仍在车顶」场景，
+  见 §6 偏离 ⑧。
   ⚠️ **不需要「排除自己坐的车」**：`_collides` 只在非乘坐时被调（乘坐期 `physics.step`
   整段跳过），而 `ridingMinecartId` 非 null 时必然在乘坐 → 没有需要排除的车。
+  ⚠️ **连带效应**：`_tryStepUp` 内部的 `this._collides()`（「目标位站得住吗」判据）现在
+  也把矿车格算作实心 —— 这是本改动的必然结果（同一判据不得有两份），已写进其 JSDoc。
 - **自动绑定**：未绑定时查脚下格（`floor(pos.x), floor(pos.y−0.1), floor(pos.z)`）
   的车；车存在、不在 0.25s 重绑冷却内、且 `|playerY − (车Y+0.9)| < 0.3` → 绑定。
   ⚠️ **绑定帧不锁 y**：绑定发生在未绑定分支，「y 锁车顶」在已绑定分支（下一帧才跑）
@@ -231,7 +241,8 @@ mc-lite 是单管理器循环直接改对象；mc-heavy 的 `EntityManager.updat
   排除自己乘坐的这辆车），y 锁 `车Y + 0.9`；记录 lastMinecartPosition。
 - **乘坐期间**：跳过自主移动输入与重力段（mc-lite 同分支）。
 - **空格下车**：起跳（jumpForce）+ 解绑 + 0.25s 重绑冷却（防空格下车立即重绑）。
-- **自动下车**：水平偏离车中心 > 0.6 格。
+- **自动下车**：水平偏离 > 0.6 格。⚠️ **偏离基准是本仓库口径（车中心 `position+0.5`），
+  不是 mc-lite 的**（它从车格角量）—— 见 §6 偏离 ⑨。
 - **两个碰撞查询的分工（载荷性区分，勿合并）**：
   - `_collides`（非乘坐：自主移动 / step-up）= 方块 **+ 矿车格**（上面那条）；
   - `collidesAt`（乘坐跟随的分轴障碍检测）= **仅方块**，矿车不当障碍。
@@ -280,6 +291,8 @@ mc-lite 是单管理器循环直接改对象；mc-heavy 的 `EntityManager.updat
 | 5 | 车斗纹理无指纹门禁 | 运行时 canvas 生成（用户选择），Tier 4 兜底 |
 | 6 | 跨车写入排队统一生效（mc-lite 直接改对象） | mc-heavy「update 返回全新 state」不变式 |
 | 7 | 乘坐跟随的障碍检测**不把其他矿车当障碍**（mc-lite `checkAABBExcludeMinecart` 把其他车当障碍，只排除自己坐的那辆） | 车-车碰撞已由 `planMinecartStep` 的相向/追尾逻辑处理（两车都停）→ 跟随自然停下。若把车加进 `collidesAt`，乘客擦到另一辆车会被「挡停 → 偏离 > 0.6 → 自动下车」甩下车（矿车 Epic 既有裁定，2026-10-01 补登记） |
+| 8 | `_tryStepUp` **无矿车专用分支**（mc-lite `Physics.js:241-248` 有：命中则抬到 `carY+0.9`）。仅在「玩家已在车顶（脚底 `carY+0.9`）且未绑定」时产生差异：mc-lite 专用分支 HIT → 抬升量 0；本仓库走通用路径 → 抬到 `carY+1`，抬升 0.1 触发一次相机缓动（`stepLiftAccum`）。**走进车的主路径两侧落点相同**（都是 `carY+1`，上游专用分支因 `feetY=carY−1` 而 MISS，实测确认） | 该场景 = 空格下车后 0.25s 重绑冷却期内站在车顶水平移动，而 `dismountJump`（初速 10）已把玩家弹离车顶 → 实际几乎不触发。补专用分支要改 `_tryStepUp` 语义 + 新增测试，收益不抵成本（YAGNI，2026-10-01 用户裁定）。实测数据见验收报告 |
+| 9 | 自动下车的偏离基准 = **车中心**（`position + 0.5`）；mc-lite 从**车格角**量（`Player.js:603`，`minecart.position` 是格角而 `player.position` 是脚底中心） | mc-lite 口径下玩家站在车的**远半格**（如 `cx+0.7`）时 deviation=0.7 > 0.6 → **人还在车上就被自动下车**（上游缺陷）。本仓库从车中心量：`cx+0.7` 时 deviation=0.2 → 保持乘坐；走到 `cx+1.2`（真离车）时 0.7 > 0.6 → 下车。符合 §4.4 意图（矿车 Epic 既有裁定，代码注释与 CLAUDE.md 已登记，2026-10-01 补进本表） |
 
 ## 7. 测试分层（testing-policy 判据）
 

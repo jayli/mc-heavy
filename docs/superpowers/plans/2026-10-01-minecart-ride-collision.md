@@ -2,8 +2,10 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
-> ⚠️ **本文档是回填式计划**（2026-10-01 实施完成后补写）：实施与验证步骤已执行完毕，
-> 实测值已回填；**各 Task 末尾的 commit 步骤尚未执行**（仓库纪律：提交须等用户明确指令）。
+> ⚠️ **本文档是实施记录，不是计划**（2026-10-01 实施完成后补写，issue #3 审核后定性）：
+> 实施与验证步骤已全部执行，实测值已回填；commit 步骤已执行（`f59699d` / `2c0e23b` /
+> `0d03c04`，已推送）。保留计划格式是为了让后续同类改动有参照；矿车 Epic 的汇总
+> 实测数据 / 偏离表 / 负向验证清单见 `docs/minecart-acceptance-report.md`。
 
 **Goal:** 玩家走进矿车时自动站上并绑定乘坐（不穿模），矿车移动时带着玩家走——对齐 mc-lite 行为。
 
@@ -65,7 +67,15 @@ fixture `makeMinecartWorld()`：真 `MinecartService` + 真 `EntityManager`（�
 Run: `npx playwright test tests/harness.spec.mjs`（浏览器内单测的唯一入口；当时用临时脚本
 过滤只看 physics 用例，已删）
 Expected: 用例 1 FAIL（`clipped=true`，穿模）、用例 3 FAIL（`ridingCarFor` 返回 null）、用例 2 PASS（对照）
-Actual: ✅ 与预期一致（627 total, 2 failed, 625 passed）
+Actual: ✅ 与预期一致。RED 失败用例名清单（使 RED 可复核，issue #3 C6）：
+  - FAIL `physics: 矿车占据格对玩家是实心 —— 走进车不穿模，被抬到车顶（mc-lite isSolid 同口径）`
+    （失败原因：`站在车格内时脚底不得低于车顶（穿模）: Expected false, got true`）
+  - FAIL `physics: 踩上矿车后 ridingCarFor 命中（step-up 落点与绑定容差 0.3 咬合）`
+    （失败原因：`站在车格上方应可绑定乘坐，y=2: Expected value to not be null or undefined`）
+  - PASS `physics: 未注入 minecarts 时矿车格不挡人（对照 —— 证明上一条不是恒真）`
+  全量计数不在文档硬编码（CLAUDE.md 口径）：当时为全量 627 条中仅上述 2 条新用例失败。
+  事后负向验证（issue #3 审核复刻）：撤销修复后用例 1/3 真 FAIL、`clippedFrames=8`，
+  用例 2 仍 PASS → RED 记录可信。
 
 - [x] **Step 3: 实现 `_collides` 矿车格判定**
 
@@ -78,10 +88,10 @@ if (this.minecarts && this.minecarts.carAt(x, y, z)) return true;
 - [x] **Step 4: 跑测试验证 GREEN**
 
 Run: 同 Step 2
-Expected: 627/627 全绿
-Actual: ✅ 627 passed, 0 failed
+Expected: 全量全绿（计数以 harness 输出为准，不在文档硬编码 —— CLAUDE.md 口径）
+Actual: ✅ 全绿（当时 627 条，0 failed）
 
-- [ ] **Step 5: Commit**（待用户指令）
+- [x] **Step 5: Commit**（已执行：`f59699d`，已推送）
 
 ```bash
 git add src/player/physics.js src/tests/test-physics.js
@@ -132,7 +142,7 @@ Actual: 首次跑 10/11——新 E2E 的第三条断言失败（`playerY=20` vs 
 Run: 同上（含既有 10 条用例）
 Actual: ✅ 11/11
 
-- [ ] **Step 5: Commit**（待用户指令）
+- [x] **Step 5: Commit**（已执行：`2c0e23b`，已推送）
 
 ```bash
 git add src/player/player.js tests/minecarts.spec.mjs
@@ -169,7 +179,7 @@ Actual: ✅ 通过（无显著回退）。4 场景 fps/p95/draw 均在基线范�
 1. `_collides`（非乘坐）= 方块 + 矿车格；`collidesAt`（乘坐跟随）= 仅方块。分工是载荷性的，勿合并。
 2. 绑定帧不锁 y（mc-lite 同序）——测试须多跑一帧再断言。
 
-- [ ] **Step 6: Commit**（待用户指令）
+- [x] **Step 6: Commit**（已执行：`0d03c04`，已推送）
 
 ```bash
 git add docs/superpowers/specs/2026-09-30-minecart-design.md CLAUDE.md docs/superpowers/plans/2026-10-01-minecart-ride-collision.md
@@ -181,10 +191,15 @@ git commit -m "docs: 矿车乘坐碰撞修复——设计文档 §4.4/§6 修订
 ## Review Focus
 
 1. **玩家在自己脚下格放车**（实测 2026-10-01，node 隔离复现）：车格变实心后——
-   - 静止不动：玩家留在车格内 y=2（与车体重叠）。mc-lite 同行为（其 `applyPushOut`
-     单步 0.1 推不出整格障碍，同样等水平移动才解决）；
+   - 静止不动：玩家留在车格内 y=2（与车体重叠）。mc-lite 同行为：两侧都没有
+     「静止时把人推出车格」的机制（本仓库根本没有 pushOut；mc-lite 的 `applyPushOut`
+     是六向 0.1 试探且只在 `isMoving || isStuck` 时调，推不出整格障碍）——
+     静止时停在车格内是重力步二分回退收敛回原处的结果；
    - 第一帧水平输入：`_moveAxis` 碰撞 → `_tryStepUp` 立即抬到 y=3.000（车顶+0.1）
      → `ridingCarFor` HIT → 下一帧绑定乘坐。全程零帧穿模、无卡死。
+     mc-lite 同路径同落点：其 `tryStepUp` 的矿车专用分支在走进车场景因
+     `feetY = floor(y−0.01) = carY−1` 而 MISS，同样走通用循环抬到 `carY+1`
+     （逐行复刻上游实测确认，issue #3 A1/A2 核实）。
 2. **两辆车相邻时乘客擦到另一辆** → `collidesAt` 仅方块 → 不会被甩下车（偏离 ⑦ 的设计意图）。若未来把矿车加进 `collidesAt`，此行为会变。
 3. **矿车被 TNT 炸毁时玩家正在乘坐** → `_updateMinecartRiding` 的已绑定分支检测 `entity` 消失 → 立即解绑。既有逻辑，本次未改。
 4. **bench 热路径开销** → `_collides` 每格多一次 `carAt`（Map.get + 字符串拼接）。bench 通过，无显著回退。若未来矿车数量大增（>50），可考虑优化 `cellKey` 分配。

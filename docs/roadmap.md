@@ -33,11 +33,13 @@ M2-7 有意删除的**空岛天空树**并修正 `sky_leaves` 的渲染通道声
 toast）。M9 依赖 M8 交付的 `indestructibleTable` —— 登记两项与移出背包**成对做**，
 避免「放得出来但挖不掉」的撕裂状态。
 
-**矿车 Epic 已完成**（2026-09-30）：`mine_cart` 从「背包里一个什么都不做的平面图标」做成
+**矿车 Epic 已完成**（2026-09-30，乘坐碰撞修复 2026-10-01）：`mine_cart` 从「背包里一个什么都不做的平面图标」做成
 完整可玩实体 —— M5 持久实体（`minecartDefinition`）+ `MinecartService`（放置 / 拾取 /
 激活 / 连挂列车）/ 移动·转弯·碰撞·连挂同构纯函数 / 2 个 InstancedMesh 渲染（车斗 + 4 轮）/
 玩家 ctrl 激活 · 左键拾取 · 站上乘坐 · 空格下车 / TNT 爆炸摧毁。行为语义对齐 mc-lite，
 架构走 M5 实体运行时（不复活 mc-lite 的 ShadowStore/Dispatcher 补丁架构）。
+2026-10-01 补「玩家走进车自动站上」（`_collides` 矿车格实心，issue #3 审核后补全偏离登记），
+验收报告 `docs/minecart-acceptance-report.md`。
 
 ## 里程碑总表
 
@@ -55,7 +57,7 @@ toast）。M9 依赖 M8 交付的 `indestructibleTable` —— 登记两项与�
 | **M7 玩家放置丧尸巢穴** | 最高 `gold_block` 的 `blockEntity` 为持久真相 / `block-changed` 失效 / 八 offset × 六层刷怪 / 全局最多 8 个 / 背包图标按物品名路由放置整个 38 方块结构 + `put` 音效 | ✅ 完成（2026-09-10，验收报告 `docs/m7-zombie-nests-acceptance-report.md`） | `e72560d` |
 | **M8 TNT 爆炸 / 炮塔弹丸** | `indestructible` 单一权威（只登记 bedrock）/ TNT 3×3×3 破坏 + 5×5×5 连锁 + 4 格 50 伤害 / 炮塔方块锚定装置（20 上限）+ 主线程索敌 + 8 部件实例渲染 / 弹丸走 M5 临时实体（DDA + 实体 raycast + 三发 34 伤害） | ✅ 完成（2026-09-11，验收报告 `docs/m8-tnt-turret-acceptance-report.md`） | `1b74281` |
 | **M9 创造台（playground）** | 54×54 平台 + 中心块 `blockEntity` 锚点 / 复用 M8 的 `indestructible` 表追加创造台两项 + 移出背包 / 模型 JSON 导入导出 / 面板动作按钮 + toast | ✅ 完成（2026-09-12，验收报告 `docs/m9-playground-acceptance-report.md`） | `aa6cabb` 登记 / `db31ef8` 服务 / `57ca13f` UI |
-| **矿车 Epic** | M5 持久实体（`minecartDefinition`）+ `MinecartService`（放置 / 拾取 / 激活 / 连挂）/ 移动·转弯·碰撞·连挂同构纯函数（统一 round 判据 + 帧前快照 + deferred 跨车写入）/ 2 个 InstancedMesh 渲染（车斗 canvas 纹理 + 4 轮）/ 玩家乘坐（分轴障碍检测）/ TNT 爆炸摧毁 / `Persistence.deleteEntity`（首个可单独销毁的持久实体） | ✅ 完成（2026-09-30，设计文档 `docs/superpowers/specs/2026-09-30-minecart-design.md` + 计划 `docs/superpowers/plans/2026-09-30-minecart.md`） | 待提交（零 commit 模式） |
+| **矿车 Epic** | M5 持久实体（`minecartDefinition`）+ `MinecartService`（放置 / 拾取 / 激活 / 连挂）/ 移动·转弯·碰撞·连挂同构纯函数（统一 round 判据 + 帧前快照 + deferred 跨车写入）/ 2 个 InstancedMesh 渲染（车斗 canvas 纹理 + 4 轮）/ 玩家乘坐（分轴障碍检测）/ TNT 爆炸摧毁 / `Persistence.deleteEntity`（首个可单独销毁的持久实体）；2026-10-01 补乘坐碰撞（走进车自动站上） | ✅ 完成（2026-09-30，验收报告 `docs/minecart-acceptance-report.md`） | `3410713` Epic / `f59699d`+`2c0e23b`+`0d03c04` 乘坐碰撞修复 |
 
 ## M4 之后的遗留 TODO（M4 阶段 bugfix）
 
@@ -483,6 +485,6 @@ M7 建立了一套「方块锚定的持久装置」模式，未来炮塔 / 矿�
 | 实测报告 | `docs/m0-bench-report.md` / `docs/m1-acceptance-report.md` / `docs/m2-m3-performance-report.md` / `docs/m2-seed12345-comparison.md` |
 | M4~M7 验收报告（第二阶段各 Epic 实测 + 负向验证 + 偏离表） | `docs/m{4,5,6,7}-*-acceptance-report.md` |
 | M8 / M9 验收报告（第三阶段各 Epic 实测 + 负向验证 + 偏离表 + 操作失误记录） | `docs/m8-tnt-turret-acceptance-report.md` / `docs/m9-playground-acceptance-report.md` |
-| 矿车 Epic 的设计与任务级清单（含偏离 mc-lite 清单，§6 预登记） | `docs/superpowers/specs/2026-09-30-minecart-design.md` + `docs/superpowers/plans/2026-09-30-minecart.md` |
+| 矿车 Epic 的设计与任务级清单（含偏离 mc-lite 清单，§6）+ 验收报告（实测 / 偏离 / 负向验证 / 踩坑） | `docs/superpowers/specs/2026-09-30-minecart-design.md` + `docs/superpowers/plans/2026-09-30-minecart.md` + `docs/minecart-acceptance-report.md` |
 | 性能基线当前值 | `docs/m3-baseline.md`（`npm run bench` 自动生成，勿手改） |
 | 测试用例数、图标项数等计数 | **以 `npm run check:data` 输出为准**，不在文档硬编码 |

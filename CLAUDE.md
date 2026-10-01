@@ -28,7 +28,9 @@ mc-heavy 是一个**从零重写**的 Minecraft 风格体素游戏引擎。功�
 （M7 玩家放置丧尸巢穴，验收报告 `docs/m7-zombie-nests-acceptance-report.md`）——
 Epic 链 M4→M5→M6→M7 已全部交付。**第三阶段 M8（TNT 爆炸 / 炮塔弹丸）与 M9（创造台）
 均已完成并验收**（验收报告 `docs/m8-tnt-turret-acceptance-report.md` /
-`docs/m9-playground-acceptance-report.md`）。里程碑状态、验收报告、遗留 TODO 的
+`docs/m9-playground-acceptance-report.md`）。**M9 之后的矿车 Epic 也已交付**
+（验收报告 `docs/minecart-acceptance-report.md`，2026-10-01 补写 —— Epic 交付时漏写，
+由 issue #3 审核指出）。里程碑状态、验收报告、遗留 TODO 的
 完整清单**一律查 roadmap** —— 此处不复制（复制就会漂移）。
 
 **历次 bugfix / 改造的完整记录不在本文件。** 权威副本：**第一阶段独立改动**在设计文档修订说明 +
@@ -551,6 +553,11 @@ M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 
    `docs/superpowers/plans/2026-08-23-m{4,5,6,7}-*.md` 仍是架构细节参照；各 Epic 的实测数据、
    偏离表与踩坑清单看对应验收报告 `docs/m{4,5,6,7}-*-acceptance-report.md`。
    做同类后续 Epic（炮塔/床/宝箱等方块装置）前先读 M7 报告的 §3~§4。
+8. **矿车 Epic 已交付**（M9 之后）。规格 `docs/superpowers/specs/2026-09-30-minecart-design.md`
+   + 主计划 `docs/superpowers/plans/2026-09-30-minecart.md` + 验收报告
+   `docs/minecart-acceptance-report.md`（实测数据 / 9 条偏离表 / 负向验证清单 / 11 条操作失误）。
+   乘坐碰撞修复的实施记录 = `docs/superpowers/plans/2026-10-01-minecart-ride-collision.md`。
+   做**可移动持久实体**类 Epic 前先读矿车报告的 §4（偏离表）与 §8（操作失误）。
 
 规则：
 
@@ -659,8 +666,10 @@ mc-heavy/
 │  ├─ phase-1-engine-design.md # 架构唯一权威（版本号见该文档首行）
 │  ├─ testing-policy.md        # 测试分级唯一权威（Tier 1~4 判据 + 门禁分层）
 │  ├─ m{0,1,2-m3,4,5,6,7}-*-report.md    # 第一阶段里程碑实测与验收报告（m3-* = 冻结性能基线）
-│  └─ m{4,5,6,7,8-tnt-turret,9-playground}-*-acceptance-report.md
-│                              # 各 Epic 验收报告（实测数据 / 偏离表 / 负向验证清单 / 操作失误）
+│  ├─ m{4,5,6,7,8-tnt-turret,9-playground}-*-acceptance-report.md
+│  │                            # 各 Epic 验收报告（实测数据 / 偏离表 / 负向验证清单 / 操作失误）
+│  └─ minecart-acceptance-report.md      # 矿车 Epic 验收报告（2026-10-01 补写；不匹配上面的
+│                              # m{...}-* 命名模式 —— 矿车不是 M 编号里程碑，是 M9 之后的独立 Epic）
 ├─ tools/build-atlas.mjs       # atlas 离线打包（npm run atlas）
 ├─ tools/bake-procedural-textures.mjs # 程序化贴图烘焙（mc-lite canvas 材质 → PNG）
 ├─ tools/bake-icon-atlas.mjs   # 全量背包图标离线烘焙（npm run icons）：物品集合全量×两套尺寸
