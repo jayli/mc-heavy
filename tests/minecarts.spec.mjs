@@ -289,6 +289,66 @@ test('爆炸摧毁：TNT 半径内的矿车被移除', async ({ page }) => {
   expect(r.count).toBe(0);
 });
 
+test('乘坐：玩家从轨道上走进静止矿车 → 自动站上并绑定（不穿模，不 teleport）', async ({ page }) => {
+  await boot(page);
+  const spot = await layTrackNearPlayer(page, 8);
+  expect(spot).not.toBeNull();
+  const r = await page.evaluate(async ({ cell }) => {
+    const g = window.__MC_GAME__;
+    const { ok, id } = g.minecarts.place({ cell });
+    if (!ok) return { skipped: true, reason: `place-failed:${id ?? ''}` };
+    // 把玩家放到车前 3 格的**轨面上**（脚底 y = 车顶格 y），朝 +X 走。
+    // ⚠️ 不 teleport 到车顶 —— 那正是既有用例绕过「走上去」这一步而漏掉本缺陷的原因
+    // （M7 教训：测试须走玩家主路径）。
+    const p = g.player.physics.pos;
+    p.x = cell[0] - 3 + 0.5;
+    p.y = cell[1];
+    p.z = cell[2] + 0.5;
+    g.player.physics.vel.y = 0;
+    g.player.yaw = -Math.PI / 2;   // `_applyInput` 下 yaw=-π/2 → move(1, 0) = +X
+    g.player.keys.add('KeyW');
+    // 3 格 / 8 格每秒 ≈ 0.4s；给 4s 余量（含 step-up 与绑定帧）
+    const t0 = performance.now();
+    let boundAt = null;
+    let clippedFrames = 0;
+    while (performance.now() - t0 < 4000) {
+      await new Promise((rr) => requestAnimationFrame(rr));
+      const q = g.player.physics.pos;
+      // 穿模判据：脚底格与车格重叠（XZ）且脚底低于车顶
+      const car = g.entities.get(id);
+      if (car) {
+        const [cx, cy, cz] = car.state.position;
+        const sameCellXZ = Math.floor(q.x) === Math.floor(cx) && Math.floor(q.z) === Math.floor(cz);
+        if (sameCellXZ && q.y < cy + 0.9 - 0.05) clippedFrames++;
+      }
+      if (boundAt === null && g.player.ridingMinecartId === id) boundAt = performance.now() - t0;
+      if (boundAt !== null) break;
+    }
+    // ⚠️ 绑定帧**不**锁 y：绑定发生在 `_updateMinecartRiding` 的未绑定分支，而
+    // 「y 锁车顶」在已绑定分支（下一帧才跑）—— mc-lite 同序同行为。故绑定后多跑几帧
+    // 再读 y，否则读到的是 step-up 落点 carY+1（实测 20 vs 车顶 19.9，差 0.1）。
+    for (let i = 0; i < 5; i++) await new Promise((rr) => requestAnimationFrame(rr));
+    g.player.keys.delete('KeyW');
+    const car = g.entities.get(id);
+    return {
+      skipped: false,
+      bound: g.player.ridingMinecartId === id,
+      boundAt,
+      clippedFrames,
+      playerY: g.player.physics.pos.y,
+      carTopY: car ? car.state.position[1] + 0.9 : null,
+    };
+  }, spot);
+  if (r.skipped) test.skip(true, `无法建立场景：${r.reason}`);
+  console.log('[walk-onto-cart] 实测值:', JSON.stringify(r));
+  // 核心断言：走进车后自动绑定乘坐（mc-lite 同行为）
+  expect(r.bound).toBe(true);
+  // 全程零帧穿模（脚底与车体重叠）
+  expect(r.clippedFrames).toBe(0);
+  // 绑定后玩家脚底锁在车顶（不是轨面）
+  expect(Math.abs(r.playerY - r.carTopY)).toBeLessThan(0.01);
+});
+
 test('乘坐穿低矮隧道：障碍检测阻止玩家被埋进实心块', async ({ page }) => {
   await boot(page);
   // ⚠️ **几何必须这样搭**（controller 实测核实）：车Y = groundY+2，玩家脚底 = 车Y+0.9，

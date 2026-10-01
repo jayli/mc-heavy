@@ -114,6 +114,9 @@ export class Player {
     /** @type {WeaponController | null} */
     this.weaponController = null;
     this.physics = new PlayerPhysics(world);
+    // 矿车占据格对玩家是实心（mc-lite `Physics.isSolid` 同口径）：注入 service 而非让
+    // physics import entities/（依赖方向 §3）。缺省 null → 矿车格不挡人（fixture 单独构造时）。
+    this.physics.minecarts = minecarts;
     this._stepLift = new StepLift(); // 上台阶相机缓动（物理瞬时，视觉 ease-out）
     this.yaw = 0; this.pitch = 0;
     this.keys = new Set();
