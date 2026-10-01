@@ -574,7 +574,7 @@ M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 
    做同类后续 Epic（炮塔/床/宝箱等方块装置）前先读 M7 报告的 §3~§4。
 8. **矿车 Epic 已交付**（M9 之后）。规格 `docs/superpowers/specs/2026-09-30-minecart-design.md`
    + 主计划 `docs/superpowers/plans/2026-09-30-minecart.md` + 验收报告
-   `docs/minecart-acceptance-report.md`（实测数据 / 9 条偏离表 / 负向验证清单 / 11 条操作失误）。
+   `docs/minecart-acceptance-report.md`（实测数据 / 偏离表 / 负向验证清单 / 操作失误）。
    乘坐碰撞修复的实施记录 = `docs/superpowers/plans/2026-10-01-minecart-ride-collision.md`。
    做**可移动持久实体**类 Epic 前先读矿车报告的 §4（偏离表）与 §8（操作失误）。
 

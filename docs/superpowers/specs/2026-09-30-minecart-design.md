@@ -220,8 +220,9 @@ mc-lite 是单管理器循环直接改对象；mc-heavy 的 `EntityManager.updat
 - **走上车（2026-10-01 补）**：`PlayerPhysics._collides` 把**矿车占据格视为实心**
   （mc-lite `Physics.isSolid` 的 MinecartManager 分支同口径，cell-based）。玩家走进车 →
   水平碰撞 → 既有 `_tryStepUp` 抬到 `carY+1` → 与车顶 `carY+0.9` 差 0.1，被下面的
-  绑定容差 0.3 吸收 → 自动绑定。**不需要新机制**：step-up 与绑定判据都是既有的，
-  缺的只是「车格是实心」这一条。
+  绑定容差 0.3 吸收 → 自动绑定。**场景 A 不需要新机制**：step-up 与绑定判据都是既有的，
+  缺的只是「车格是实心」这一条。⚠️ 但**场景 B（车撞静止玩家）需要新机制** ——
+  见下面「自动绑定」的 ② 分支与 §6 偏离 ⑩。
   ⚠️ **落点 `carY+1` 与 mc-lite 一致，不是偏离**（实测核实，2026-10-01）：mc-lite
   `tryStepUp` 虽有矿车专用分支（`Physics.js:241-248`，抬到 `carY+0.9`），但其查询坐标是
   `feetY = floor(player.y − 0.01)` —— 走进车场景玩家脚底 y=2.0 → `feetY=1` ≠ `carY=2`
@@ -307,6 +308,7 @@ mc-lite 是单管理器循环直接改对象；mc-heavy 的 `EntityManager.updat
 | 7 | 乘坐跟随的障碍检测**不把其他矿车当障碍**（mc-lite `checkAABBExcludeMinecart` 把其他车当障碍，只排除自己坐的那辆） | 车-车碰撞已由 `planMinecartStep` 的相向/追尾逻辑处理（两车都停）→ 跟随自然停下。若把车加进 `collidesAt`，乘客擦到另一辆车会被「挡停 → 偏离 > 0.6 → 自动下车」甩下车（矿车 Epic 既有裁定，2026-10-01 补登记） |
 | 8 | `_tryStepUp` **无矿车专用分支**（mc-lite `Physics.js:241-248` 有：命中则抬到 `carY+0.9`）。仅在「玩家已在车顶（脚底 `carY+0.9`）且未绑定」时产生差异：mc-lite 专用分支 HIT → 抬升量 0；本仓库走通用路径 → 抬到 `carY+1`，抬升 0.1 触发一次相机缓动（`stepLiftAccum`）。**走进车的主路径两侧落点相同**（都是 `carY+1`，上游专用分支因 `feetY=carY−1` 而 MISS，实测确认） | 该场景 = 空格下车后 0.25s 重绑冷却期内站在车顶水平移动，而 `dismountJump`（初速 10）已把玩家弹离车顶 → 实际几乎不触发。补专用分支要改 `_tryStepUp` 语义 + 新增测试，收益不抵成本（YAGNI，2026-10-01 用户裁定）。实测数据见验收报告 |
 | 9 | 自动下车的偏离基准 = **车中心**（`position + 0.5`）；mc-lite 从**车格角**量（`Player.js:603`，`minecart.position` 是格角而 `player.position` 是脚底中心） | mc-lite 口径下玩家站在车的**远半格**（如 `cx+0.7`）时 deviation=0.7 > 0.6 → **人还在车上就被自动下车**（上游缺陷）。本仓库从车中心量：`cx+0.7` 时 deviation=0.2 → 保持乘坐；走到 `cx+1.2`（真离车）时 0.7 > 0.6 → 下车。符合 §4.4 意图（矿车 Epic 既有裁定，代码注释与 CLAUDE.md 已登记，2026-10-01 补进本表） |
+| 10 | `ridingCarFor` 多一个「嵌在车体内」fallback 分支（mc-lite 无此分支） | **机制差异导致的必需偏离**（2026-10-01 场景 B 修复）：mc-lite 靠重力段「向下扫描找支撑面 `gy`，`if (position.y < gy) position.y = gy`」把玩家**顶上车**（其 `isSolid` 含矿车格）；本仓库重力是 `_moveAxis` 向下 + 碰撞二分回退，**只阻止下落、不上抬** → 车撞静止玩家时玩家被抬一次又被重力拉回，`ridingCarFor` 原口径（查 `carY−1`）恒不命中 → 永不绑定。实测 `clippedFrames` 60→2（验收报告 §3.2b）。不移植上游重力段（那是 mc-lite 的扫描式重力，与本仓库 AABB 积分式重力是两套架构，红线 12） |
 
 ## 7. 测试分层（testing-policy 判据）
 
