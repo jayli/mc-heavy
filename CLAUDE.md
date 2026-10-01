@@ -471,6 +471,23 @@ M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 
   埋进天花板 → 下车后每次 `_moveAxis` 都碰撞、二分收敛到零位移 → **玩家卡死**
   （实测隧道用例 embeddedFrames=651 → 修后 0）。「其他矿车当障碍」那层**不做**
   （矿车-矿车碰撞已由 `planMinecartStep` 的相向/追尾逻辑处理）。
+- **两个碰撞查询的分工是载荷性的，勿合并**（2026-10-01 修「玩家与矿车穿模」沉淀）：
+  `_collides`（非乘坐：自主移动 / step-up）= 方块 **+ 矿车占据格**；`collidesAt`
+  （乘坐跟随的分轴障碍检测）= **仅方块**。mc-lite 靠 `Physics.isSolid` 把矿车格当实心
+  （cell-based，查 `minecartManager.getMinecartAt`）→ 玩家走进车被挡 + 既有 `tryStepUp`
+  抬到 `carY+1`（与车顶 `carY+0.9` 差 0.1，被绑定容差 0.3 吸收）→ 自动绑定乘坐。
+  本仓库同口径：`PlayerPhysics.minecarts` 由 Player 构造时注入（physics 不 import
+  entities/，依赖方向 §3），`_collides` 的格子循环加一句 `carAt(x,y,z)`。
+  ⚠️ **不需要「排除自己坐的车」**：`_collides` 只在非乘坐时被调（乘坐期 `physics.step`
+  整段跳过），而 `ridingMinecartId` 非 null 时必然在乘坐 → 没有需要排除的车。
+  ⚠️ **矿车格只能加进 `_collides`，不能加进 `collidesAt`** —— 后者加了会让乘客擦到
+  另一辆车就被「挡停 → 偏离 > 0.6 → 自动下车」甩下车（上一条的裁定）。
+  ⚠️ **绑定帧不锁 y**：绑定在未绑定分支发生，「y 锁车顶」在已绑定分支（下一帧才跑）
+  —— mc-lite 同序。测试在检测到绑定的当帧读 y 会读到 step-up 落点 `carY+1`
+  （实测 20 vs 车顶 19.9）→ 须多跑一帧再断言。
+  ⚠️ 既有 E2E 用例是**把玩家 teleport 到车顶**再断言跟随，绕过了「走上去」这一步 →
+  全绿却漏了穿模缺陷（同 M7「只测 API 漏玩家主路径」）。补的用例必须**从轨道上走进车**
+  （`tests/minecarts.spec.mjs` 的「走进静止矿车」）。
 - **空格下车是边沿触发，复位必须写在两个分支之前**（`_updateMinecartRiding` 函数顶部）：
   绑定成功时置 `_spaceReleased = false`（否则玩家跳上车时还按着空格 → 第一个乘坐帧就被弹下），
   但**若复位只写在未绑定分支**，一旦绑定成功就永远回不到 true → 空格下车彻底失效

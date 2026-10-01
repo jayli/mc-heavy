@@ -215,17 +215,31 @@ mc-lite 是单管理器循环直接改对象；mc-heavy 的 `EntityManager.updat
 ### 4.4 乘坐（mc-lite `updateMinecartRiding` 语义）
 
 在 `player.update` 内（自主移动之前）：
+- **走上车（2026-10-01 补）**：`PlayerPhysics._collides` 把**矿车占据格视为实心**
+  （mc-lite `Physics.isSolid` 的 MinecartManager 分支同口径，cell-based）。玩家走进车 →
+  水平碰撞 → 既有 `_tryStepUp` 抬到 `carY+1` → 与车顶 `carY+0.9` 差 0.1，被下面的
+  绑定容差 0.3 吸收 → 自动绑定。**不需要新机制**：step-up 与绑定判据都是既有的，
+  缺的只是「车格是实心」这一条。
+  ⚠️ **不需要「排除自己坐的车」**：`_collides` 只在非乘坐时被调（乘坐期 `physics.step`
+  整段跳过），而 `ridingMinecartId` 非 null 时必然在乘坐 → 没有需要排除的车。
 - **自动绑定**：未绑定时查脚下格（`floor(pos.x), floor(pos.y−0.1), floor(pos.z)`）
   的车；车存在、不在 0.25s 重绑冷却内、且 `|playerY − (车Y+0.9)| < 0.3` → 绑定。
+  ⚠️ **绑定帧不锁 y**：绑定发生在未绑定分支，「y 锁车顶」在已绑定分支（下一帧才跑）
+  —— mc-lite 同序同行为。测试若在检测到绑定的当帧读 y，读到的是 step-up 落点
+  `carY+1`（实测 20 vs 车顶 19.9），须多跑一帧再断言。
 - **跟随**：绑定后按车位移增量推玩家（分轴，各轴单独做障碍检测 —— 障碍判定
   排除自己乘坐的这辆车），y 锁 `车Y + 0.9`；记录 lastMinecartPosition。
 - **乘坐期间**：跳过自主移动输入与重力段（mc-lite 同分支）。
 - **空格下车**：起跳（jumpForce）+ 解绑 + 0.25s 重绑冷却（防空格下车立即重绑）。
 - **自动下车**：水平偏离车中心 > 0.6 格。
-- 障碍检测需要「排除指定车」的 AABB 查询：mc-lite 在 `checkAABBExcludeMinecart`
-  里把**其他矿车也当障碍**。mc-heavy 的 `PlayerPhysics._collides` 只查方块 ——
-  乘坐期障碍检测用 minecart service 的位置索引补一层车-车判定（同构纯函数，
-  不动 `_collides` 主路径）。
+- **两个碰撞查询的分工（载荷性区分，勿合并）**：
+  - `_collides`（非乘坐：自主移动 / step-up）= 方块 **+ 矿车格**（上面那条）；
+  - `collidesAt`（乘坐跟随的分轴障碍检测）= **仅方块**，矿车不当障碍。
+  mc-lite 在 `checkAABBExcludeMinecart` 里把**其他矿车也当障碍**（只排除自己坐的那辆）。
+  本仓库乘坐跟随**不做**这层：矿车-矿车碰撞已由 `planMinecartStep` 的相向/追尾逻辑处理
+  （两车都停）→ 玩家跟随自然停下。⚠️ 若把矿车加进 `collidesAt`，乘客擦到另一辆车就会
+  被「挡停 → 偏离 > 0.6 → 自动下车」甩下车。见 §6 偏离 ⑦。
+  （原文写「不动 `_collides` 主路径」—— 2026-10-01 已证伪：走上车正是靠改 `_collides`。）
 
 ### 4.5 爆炸摧毁
 
@@ -265,6 +279,7 @@ mc-lite 是单管理器循环直接改对象；mc-heavy 的 `EntityManager.updat
 | 4 | column 卸载恢复后车继续原方向（mc-lite 停成 IDLE） | M5 冻结语义已保证写盘一致性，停走是 mc-lite 的补丁 |
 | 5 | 车斗纹理无指纹门禁 | 运行时 canvas 生成（用户选择），Tier 4 兜底 |
 | 6 | 跨车写入排队统一生效（mc-lite 直接改对象） | mc-heavy「update 返回全新 state」不变式 |
+| 7 | 乘坐跟随的障碍检测**不把其他矿车当障碍**（mc-lite `checkAABBExcludeMinecart` 把其他车当障碍，只排除自己坐的那辆） | 车-车碰撞已由 `planMinecartStep` 的相向/追尾逻辑处理（两车都停）→ 跟随自然停下。若把车加进 `collidesAt`，乘客擦到另一辆车会被「挡停 → 偏离 > 0.6 → 自动下车」甩下车（矿车 Epic 既有裁定，2026-10-01 补登记） |
 
 ## 7. 测试分层（testing-policy 判据）
 
