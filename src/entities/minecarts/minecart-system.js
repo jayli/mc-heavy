@@ -854,18 +854,40 @@ export class MinecartService {
   }
 
   /**
-   * 乘坐候选：玩家脚下格是否有车，且玩家脚底在车顶 ±容差内（mc-lite `updateMinecartRiding`）。
+   * 乘坐候选（mc-lite `updateMinecartRiding` 的绑定判据 + 一条本仓库必需的 fallback）。
+   *
+   * **两个分支，顺序不得颠倒**：
+   * ① **站在车顶**（mc-lite 原口径）：脚下格 `floor(y − 0.1)` 有车且 `|y − 车顶| < 0.3`。
+   * ② **嵌在车体内**（脚底格 == 车格）：车开到玩家所在格时命中。
+   *
+   * ⚠️ **为什么需要 ②**（实测 2026-10-01，车撞静止玩家场景）：车在**前一格**跨轨道中心时
+   * 经 `resolvePlayerBlocking` 把玩家抬到 `carY+0.9`，但玩家脚下那格**当时还没车** →
+   * 重力把玩家拉回轨面（`carY`）。等车走到玩家格时：`resolvePlayerBlocking` 只检查**前方格**
+   * （玩家已不在前方）→ 不再抬；而 ① 查 `floor(carY − 0.1) = carY−1` ≠ 车格 `carY`
+   * → **恒不命中** → 永不绑定 → 车从玩家身上开过去（实测 `clippedFrames=60`）。
+   * ② 命中后由既有跟随分支下一帧把 y 锁到 `carY+0.9` → 玩家被抬上车。
+   *
+   * ⚠️ **① 的容差判定失败必须 fall through 到 ②，不得直接 `return null`** ——
+   * 玩家脚底在车体中部（如 `carY+0.5`）时 ① 会查到车但容差外，若直接 return 则 ② 永不执行。
+   *
+   * ⚠️ **② 不需要头顶净空检查**：车能开到玩家格 = `resolvePlayerBlocking` 已在**前一格**
+   * 检查过净空（无净空则车停）；且玩家无法自己走进「车格内 + 头顶无净空」——
+   * 车格对玩家实心（`physics._collides`）→ 水平移动触发 `_tryStepUp`，其内部有净空检查。
+   *
    * @param {[number,number,number]} playerPos 玩家脚底
    * @returns {{id:string, state:object}|null}
    */
   ridingCarFor(playerPos) {
     const [px, py, pz] = playerPos;
-    // mc-lite：`feetY = floor(position.y - 0.1)`
-    const c = this.carAt(Math.floor(px), Math.floor(py - 0.1), Math.floor(pz));
-    if (!c) return null;
-    const topY = c.state.position[1] + MINECART.rideHeight;
-    if (Math.abs(py - topY) >= MINECART.rideBindTolerance) return null;
-    return c;
+    const cellX = Math.floor(px), cellZ = Math.floor(pz);
+    // ① mc-lite：`feetY = floor(position.y - 0.1)` + 车顶容差
+    const c = this.carAt(cellX, Math.floor(py - 0.1), cellZ);
+    if (c) {
+      const topY = c.state.position[1] + MINECART.rideHeight;
+      if (Math.abs(py - topY) < MINECART.rideBindTolerance) return c;
+    }
+    // ② 嵌在车体内：脚底格 == 车格（车撞静止玩家；见上方 ⚠️）
+    return this.carAt(cellX, Math.floor(py), cellZ);
   }
 
   /** 确定性 id（红线 2：不用 Math.random）。取已加载 + cache 的最大后缀 +1。 */

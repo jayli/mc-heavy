@@ -822,6 +822,18 @@ test('service.ridingCarFor: 站在车顶才返回（绑定容差 0.3）', () => 
   assertNull(f.service.ridingCarFor([8.5, 11.9, 8.5]), '水平不在车上 → 不命中');
 });
 
+test('service.ridingCarFor: 玩家嵌在车体内（脚底格 == 车格）也返回（车撞静止玩家场景）', () => {
+  const f = makeServiceFixture();
+  layTrack(f.world, f.registry, 0, 10, 4, 1, 0, 12);
+  f.service.place({ cell: [4, 11, 4] });
+  // 车在 cell y=11，车顶 = 11.9。玩家嵌在车体内：脚底 y ∈ [11, 11.9)
+  assertNotNull(f.service.ridingCarFor([4.5, 11.0, 4.5]), '脚底在车格底面 → 命中');
+  assertNotNull(f.service.ridingCarFor([4.5, 11.5, 4.5]), '脚底在车体中部（容差外但嵌入）→ 命中');
+  // 负向：车在邻格不误绑
+  assertNull(f.service.ridingCarFor([5.5, 11.0, 4.5]), '车在邻格 → 不命中');
+  assertNull(f.service.ridingCarFor([4.5, 12.5, 4.5]), '脚底在车格上方一格 → 不命中');
+});
+
 test('service: 相向回弹跨 column 后 EntityManager 派生索引随之迁移（reindexColumn）', () => {
   // ⚠️ 回归用例：`applyDeferred` 在 EntityManager.update 循环**之外**写 position
   // （相向回弹 lastTrack 可跨 column 边界），绕过 update 的 before/after 索引迁移 →

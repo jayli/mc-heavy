@@ -349,6 +349,65 @@ test('乘坐：玩家从轨道上走进静止矿车 → 自动站上并绑定（
   expect(Math.abs(r.playerY - r.carTopY)).toBeLessThan(0.01);
 });
 
+test('乘坐：玩家静止站着，矿车开过来撞 → 自动被抬上车并绑定（不穿模）', async ({ page }) => {
+  await boot(page);
+  const spot = await layTrackNearPlayer(page, 10);
+  expect(spot).not.toBeNull();
+  const r = await page.evaluate(async ({ cell }) => {
+    const g = window.__MC_GAME__;
+    const { ok, id } = g.minecarts.place({ cell });
+    if (!ok) return { skipped: true, reason: `place-failed:${id ?? ''}` };
+    g.minecarts.activate(id, false);
+    // 玩家静止站在车前方 3 格的轨面上，**不按任何键**（纯「车撞上来」）。
+    // ⚠️ 脚底 y = 车占据格 y（轨面），与「走进静止车」用例同口径。
+    const p = g.player.physics.pos;
+    p.x = cell[0] + 3 + 0.5;
+    p.y = cell[1];
+    p.z = cell[2] + 0.5;
+    g.player.physics.vel.y = 0;
+    g.player.keys.clear();
+    const playerCellX = Math.floor(p.x);
+    const t0 = performance.now();
+    let boundAt = null;
+    let clippedFrames = 0;
+    while (performance.now() - t0 < 6000) {
+      await new Promise((rr) => requestAnimationFrame(rr));
+      const q = g.player.physics.pos;
+      const car = g.entities.get(id);
+      if (!car) continue;
+      const [cx, cy, cz] = car.state.position;
+      // 穿模判据：车与玩家同格（XZ）且玩家脚底低于车顶
+      if (Math.floor(q.x) === Math.floor(cx) && Math.floor(q.z) === Math.floor(cz)
+          && q.y < cy + 0.9 - 0.05) clippedFrames++;
+      if (boundAt === null && g.player.ridingMinecartId === id) boundAt = performance.now() - t0;
+      // 车已走过玩家格 → 结束（无论是否绑定）
+      if (Math.floor(cx) > playerCellX + 1) break;
+    }
+    // 绑定帧不锁 y（mc-lite 同序）→ 多跑几帧再读
+    for (let i = 0; i < 5; i++) await new Promise((rr) => requestAnimationFrame(rr));
+    const car = g.entities.get(id);
+    return {
+      skipped: false,
+      bound: g.player.ridingMinecartId === id,
+      boundAt: boundAt === null ? null : Math.round(boundAt),
+      clippedFrames,
+      playerY: g.player.physics.pos.y,
+      carTopY: car ? car.state.position[1] + 0.9 : null,
+    };
+  }, spot);
+  if (r.skipped) test.skip(true, `无法建立场景：${r.reason}`);
+  console.log('[cart-hits-idle-player] 实测值:', JSON.stringify(r));
+  // 核心断言：车撞上来后玩家被抬上车并绑定
+  expect(r.bound).toBe(true);
+  // 绑定后玩家脚底锁在车顶
+  expect(Math.abs(r.playerY - r.carTopY)).toBeLessThan(0.01);
+  // 穿模帧数极少。⚠️ **阈值刻意不贴实测值**：实测 2 帧是帧序结构性决定的
+  // （车入格帧 + 绑定帧不锁 y），但贴线断言在高负载下会 flaky（同 CLAUDE.md 记的
+  // `weapons-world-edit` 5ms 余量教训）。取 5：与修复前实测 **60 帧** 仍差一个数量级
+  // → 注入回退必 FAIL，同时留出负载余量。
+  expect(r.clippedFrames).toBeLessThanOrEqual(5);
+});
+
 test('乘坐穿低矮隧道：障碍检测阻止玩家被埋进实心块', async ({ page }) => {
   await boot(page);
   // ⚠️ **几何必须这样搭**（controller 实测核实）：车Y = groundY+2，玩家脚底 = 车Y+0.9，
