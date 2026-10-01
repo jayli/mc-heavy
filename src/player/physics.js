@@ -16,6 +16,18 @@ export class PlayerPhysics {
     this.inWater = false;
     // 本帧 step-up 累积抬升量（供相机视觉缓动消费；物理位置本身瞬时到位）
     this.stepLiftAccum = 0;
+    /**
+     * 矿车服务（Player 构造时注入，同 `minecarts` 参数手法 —— physics 不 import entities/）。
+     * 非 null 时 `_collides` 把矿车占据格视为实心（mc-lite `Physics.isSolid` 的
+     * MinecartManager 分支同口径）—— 玩家走进车被挡 + 既有 `_tryStepUp` 抬上 →
+     * 脚底落 carY+1，与车顶 carY+0.9 差 0.1，被 `ridingCarFor` 容差 0.3 吸收 → 绑定乘坐。
+     * ⚠️ **不需要「排除自己坐的车」**：`_collides` 只在非乘坐时被调（乘坐期
+     * `physics.step` 整段跳过，见 player.js），而 `ridingMinecartId` 非 null 时
+     * 必然在乘坐 → 没有需要排除的车。乘坐跟随的障碍检测走 `collidesAt`（仅方块，
+     * 矿车 Epic 既有口径），不经本字段。
+     * @type {import('../entities/minecarts/minecart-system.js').MinecartService|null}
+     */
+    this.minecarts = null;
   }
 
   /** 单步积分（调用方按 60Hz 定步长驱动） */
@@ -94,6 +106,9 @@ export class PlayerPhysics {
     for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) for (let z = z0; z <= z1; z++) {
       if (w.isSolid(x, y, z)) return true;
       if (includeSupportsPlayer && w.supportsPlayer(x, y, z)) return true;
+      // 矿车占据格视为实心（mc-lite `Physics.isSolid` 的 MinecartManager 分支）。
+      // cell-based 与 mc-lite 同口径；车高 0.9 与整格 1.0 的 0.1 差由乘坐绑定容差吸收。
+      if (this.minecarts && this.minecarts.carAt(x, y, z)) return true;
     }
     return false;
   }

@@ -1,11 +1,14 @@
 import { test } from './runner.js';
-import { assertTrue } from './assert.js';
+import { assertTrue, assertFalse, assertNotNull } from './assert.js';
 import { PlayerPhysics } from '../player/physics.js';
 import { WorldData } from '../voxel/world-data.js';
 import { ChunkColumn } from '../voxel/chunk-column.js';
 import { createRegistry } from '../voxel/block-registry.js';
 import { BLOCKS } from '../voxel/blocks-data.js';
 import { WORLD_MIN_Y, blockIndex } from '../voxel/constants.js';
+import { EntityManager } from '../entities/entity-manager.js';
+import { MINECART_TYPE } from '../entities/minecarts/minecart-config.js';
+import { MinecartService, minecartDefinition } from '../entities/minecarts/minecart-system.js';
 
 function makeWorld() {
   const reg = createRegistry();
@@ -178,6 +181,80 @@ test('physics: 云上对 solid 台阶仍走 _tryStepUp（M2-7）', () => {
   for (let i = 0; i < 50; i++) { p.move(1, 0); p.step(1 / 60); }
   assertTrue(p.pos.x > 10, `moved past step face, x=${p.pos.x}`);
   assertTrue(p.pos.y > 11.9, `step-up from cloud onto stone, y=${p.pos.y}`);
+});
+
+/**
+ * 矿车 fixture：**真 MinecartService + 真 EntityManager**（不用 fake）。
+ * ⚠️ 用真 service 是有意的 —— `_collides` 消费的是 `carAt(x,y,z)` 的 floor 基格查询，
+ * 手写 fake 会让「格换算口径」这个正是被测的东西变成断言恒真（CLAUDE.md「fake 必须建模
+ * 真实对象的副作用，不能只是形状一致」）。
+ * 布局：stone 地面 y=0 → 铁轨 y=1（solid，玩家踩在其顶面 = 脚底 y=2）→ 矿车占据格 y=2。
+ * ⚠️ 铁轨铺满 x=2..14（不是只铺车附近）：玩家 8 格/秒，走满用例会越过轨尾掉落 →
+ * 「对照用例 y 停在轨面」会因错误原因失败（断言描述想象中的世界，testing-policy §2.6 ⑤）。
+ */
+function makeMinecartWorld() {
+  const { world, reg } = makeWorld();
+  for (let x = 2; x <= 14; x++) world.setBlock(x, 1, 4, reg.idOf('sand_train_track'), 0);
+  const entities = new EntityManager();
+  entities.registerType(MINECART_TYPE, minecartDefinition);
+  const service = new MinecartService({ entities, world, registry: reg });
+  const placed = service.place({ cell: [6, 2, 4] });
+  assertTrue(placed.ok, `fixture 放车须成功，got ${placed.reason}`);
+  service.syncIndex();
+  return { world, reg, service, carCell: [6, 2, 4] };
+}
+
+test('physics: 矿车占据格对玩家是实心 —— 走进车不穿模，被抬到车顶（mc-lite isSolid 同口径）', () => {
+  const { world, service, carCell } = makeMinecartWorld();
+  const p = new PlayerPhysics(world);
+  p.minecarts = service;
+  p.pos = { x: 3.5, y: 2, z: 4.5 };
+  for (let i = 0; i < 10; i++) p.step(1 / 60);   // 先落到轨面
+  // 逐帧走向车；记录「脚底格 == 车格」的每一帧 y —— 穿模的判据就是这些帧里 y 仍停在轨面。
+  // ⚠️ 走到车格就停（不按固定帧数）：穿过车格后玩家会掉回轨面，末尾断言会因错误原因失败。
+  let overCar = 0;
+  let clipped = false;
+  let frames = 0;
+  while (frames < 60) {
+    p.move(1, 0);
+    p.step(1 / 60);
+    frames++;
+    if (Math.floor(p.pos.x) === carCell[0] && Math.floor(p.pos.z) === carCell[2]) {
+      overCar++;
+      if (p.pos.y < carCell[1] + 0.9 - 0.05) clipped = true;   // 低于车顶 = 与车体重叠
+      break;
+    }
+  }
+  assertTrue(overCar > 0, '玩家确实走到了车所在格（否则用例没考察到东西）');
+  assertFalse(clipped, '站在车格内时脚底不得低于车顶（穿模）');
+  assertTrue(p.pos.y > carCell[1] + 0.8, `在车格上时被抬到车顶之上，y=${p.pos.y}`);
+});
+
+test('physics: 未注入 minecarts 时矿车格不挡人（对照 —— 证明上一条不是恒真）', () => {
+  const { world, carCell } = makeMinecartWorld();
+  const p = new PlayerPhysics(world);   // 不注入 service
+  p.pos = { x: 3.5, y: 2, z: 4.5 };
+  for (let i = 0; i < 10; i++) p.step(1 / 60);
+  for (let i = 0; i < 60; i++) { p.move(1, 0); p.step(1 / 60); }
+  assertTrue(p.pos.x > carCell[0] + 1.5, `无车碰撞时径直穿过，x=${p.pos.x}`);
+  assertTrue(Math.abs(p.pos.y - 2) < 0.01, `且始终停在轨面（未被抬起），y=${p.pos.y}`);
+});
+
+test('physics: 踩上矿车后 ridingCarFor 命中（step-up 落点与绑定容差 0.3 咬合）', () => {
+  const { world, service, carCell } = makeMinecartWorld();
+  const p = new PlayerPhysics(world);
+  p.minecarts = service;
+  p.pos = { x: 4.5, y: 2, z: 4.5 };
+  for (let i = 0; i < 10; i++) p.step(1 / 60);
+  // 走到车格就停（不按固定帧数 —— 否则玩家会走过车，判据变成「车后面那格有没有车」）
+  let frames = 0;
+  while (Math.floor(p.pos.x) !== carCell[0] && frames < 60) {
+    p.move(1, 0); p.step(1 / 60); frames++;
+  }
+  assertTrue(Math.floor(p.pos.x) === carCell[0], `应已走到车格，x=${p.pos.x}`);
+  // step-up 把脚底抬到 carY+1 = 3，而车顶是 carY+0.9 = 2.9 → 差 0.1，须被容差 0.3 吸收
+  const car = service.ridingCarFor([p.pos.x, p.pos.y, p.pos.z]);
+  assertNotNull(car, `站在车格上方应可绑定乘坐，y=${p.pos.y}`);
 });
 
 test('WorldData.supportsPlayer: 坐标查询（M2-7）', () => {
