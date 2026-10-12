@@ -57,7 +57,11 @@ mc-lite `Engine.js`（WebGL 后端）：
 ### 2.3 技术可行性（r185.1 已核实）
 
 - WebGPU 后端有完整 `ShadowNode` 支持；TSL 导出 `shadow(light, shadow?)` 节点函数
-  （`three.webgpu.js:45536`）与 `PCFSoftShadowFilter`（`three.tsl.js:29`）；
+  （`three.webgpu.js:45536`）—— ⚠️ **第二参数是 `LightShadow` 实例（可选，缺省 = `light.shadow`），
+  不是 filter 函数**：PCF 滤波由 `renderer.shadowMap.type` 经 `_shadowFilterLib`
+  （`three.webgpu.js:44806`）自动映射（`PCFSoftShadowMap=2` → `PCFSoftShadowFilter`），
+  故调用写 `shadow(sunLight)` 即可；`setupShadowFilter` 返回 `Node<float>`（0=影内 1=影外），
+  与 `mix(float(1), …)` 类型匹配；`PCFSoftShadowFilter` 仍从 `three.tsl.js:29` 导出但**本方案不直接引用**；
 - `BatchedMesh extends Mesh`（`three.core.js:26137`）→ `castShadow`/`receiveShadow` 可用；
   `perObjectFrustumCulled` 默认 true → 阴影 pass 用 shadow camera 逐 instance 剔除
   （`three.core.js:27495-27555`），只画玩家附近 section，不是全部 289 列；
