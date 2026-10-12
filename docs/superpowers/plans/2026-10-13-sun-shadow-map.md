@@ -148,7 +148,7 @@ git commit -m "feat(render): 日夜风格加太阳方向（mc-lite 三组原值�
 
 **Interfaces:**
 - Consumes: 无（本任务不接调度，`needsUpdate` 常驻 true 或 autoUpdate 临时 true 供实测）
-- Produces: `createVoxelMaterials(atlasTexture, sunLight)` 返回 `dayNight: {uSkyDim, uBlockBoost, uShadowStrength}`；`game.sunLight`（供 E2E 与后续任务）；`RenderWorld` 构造参数加 `sunLight`
+- Produces: `createVoxelMaterials(atlasTexture, sunLight = null)` 返回 `dayNight: {uSkyDim, uBlockBoost, uShadowStrength}`（`uShadowStrength` 恒存在，供 DayNight 写入）；`sunLight` 为 null 时 colorNode **不乘 shadowFactor**（保持原 `texColor.rgb × vShade`）—— 5 个测试 fixture 直接构造 RenderWorld、2 处直接调 createVoxelMaterials，均不传 sunLight，须不受影响；`game.sunLight`（供 E2E 与后续任务）；`RenderWorld` 构造参数加 `sunLight = null`
 
 ⚠️ **本任务是 spec §8 的风险闸门**：若像素实测证明阴影不出现（BatchedMesh/packed 属性不兼容），**停下来报告**，不要自行改道（回退选项在 spec §8，须用户决策）。
 
@@ -158,7 +158,7 @@ git commit -m "feat(render): 日夜风格加太阳方向（mc-lite 三组原值�
 
 用例 1「接线」：`renderer.shadowMap.enabled === true`、`shadowMap.type === THREE.PCFSoftShadowMap` 值、`sunLight.castShadow === true`、`sunLight.shadow.mapSize` 256×256、阴影相机 ±30/0.1/250、bias 三值、`renderWorld.meshes.opaque.castShadow === true`、cutout 同、transparent `=== false`、三通道 `receiveShadow === true`、**`viewWeapon` 的枪模型 `castShadow === false`**（Review Focus 5：视图模型不投影）。
 
-用例 2「Tier 4 有影」：固定 noon 风格（`game.setVisualStyle('noon')`）→ 在玩家前方平地用 `game.editor`（或 world API）**实测找一个可靠落点**放 3 格高 stone 柱 → 等 remesh 收敛 → 相机对准柱子 → 截图 → 柱影区（沿光方向 `(0,-0.8,-0.6)` 的水平投影侧 = 柱的 **-Z 侧**）亮度 < 同距离开阔区亮度。
+用例 2「Tier 4 有影」：起页 `/?seed=12345&vd=4&style=noon`（固定正午，`settings.js:73` 既有 ?style 支持）→ 用 `g.editor.setBlock({x,y,z, id: g.registry.idOf('stone')})`（照 `tnt.spec.mjs:203` 既有手法）在玩家前方平地放 3 格高 stone 柱（落点先实测打印地形高度确定）→ 等 remesh 收敛 → 相机对准柱子（`g.player.physics.pos` 定位 + yaw 转向，照 `sky-structures.spec.mjs:63` 手法）→ 截图 → 柱影区（noon 方向 `(0,-0.8,-0.6)` 的水平投影侧 = 柱的 **-Z 侧**）亮度 < 同距离开阔区亮度。
 ⚠️ **先跑打印实测值再定阈值**（CLAUDE.md 口径）：先写「只打印两区亮度」的探针跑一遍，确认差异量级后再写断言（差异须留 >20% 余量，不贴线）。
 
 - [ ] **Step 2: 跑 E2E 验证 RED**
@@ -171,7 +171,7 @@ Expected: 用例 1 FAIL（shadowMap.enabled false 等）、用例 2 FAIL（无�
 
 `render-world.js`：构造参数加 `sunLight`，传给 `createVoxelMaterials(atlasTexture, sunLight)`；三通道建好后：`meshes.opaque.castShadow = meshes.cutout.castShadow = true`、三通道 `receiveShadow = true`。
 
-`materials.js`：import 加 `shadow, mix`（`three/tsl`）；`createVoxelMaterials(atlasTexture, sunLight)`；`const uShadowStrength = uniform(1.0);` `const shadowFactor = mix(float(1), shadow(sunLight), uShadowStrength);`；`rgb` 的亮度项改 `mul(texColor.rgb, mul(vShade, shadowFactor))`（emissive 加项保持在阴影相乘之后）；返回 `dayNight` 加 `uShadowStrength`。
+`materials.js`：import 加 `shadow, mix`（`three/tsl`）；`createVoxelMaterials(atlasTexture, sunLight = null)`；`const uShadowStrength = uniform(1.0);`（恒创建，供 DayNight 写入）；`sunLight` 非 null 时 `const shadowFactor = mix(float(1), shadow(sunLight), uShadowStrength);`，亮度项改 `mul(texColor.rgb, mul(vShade, shadowFactor))`；null 时保持原 `mul(texColor.rgb, vShade)`（fixture 路径零变化）；emissive 加项保持在阴影相乘之后；返回 `dayNight` 加 `uShadowStrength`。
 
 - [ ] **Step 4: 跑 E2E 验证 GREEN + 全量回归**
 
