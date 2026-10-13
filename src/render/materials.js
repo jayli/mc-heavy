@@ -11,6 +11,7 @@ import {
   texture, attribute, float, vec3, vec4, mul, add, max,
   rangeFogFactor, uniform, fog,
   varying, vertexStage,
+  shadow, mix,
 } from 'three/tsl';
 
 // ---- 顶点阶段 shade（light × AO），float varying 传片元 ----
@@ -43,21 +44,46 @@ const vEmissive = varying(vertexStage(float(packed.shiftRight(13).bitAnd(1))), '
 const EMISSIVE_COLOR = vec3(0xFF / 255, 0xE4 / 255, 0xB5 / 255); // '#FFE4B5'（暖黄色）
 const EMISSIVE_INTENSITY = 0.8; // mc-lite emissiveIntensity
 
+// ---- 太阳阴影（shadow map 接收，§4.4.4）----
+// uShadowStrength = 日夜联动的阴影浓度（白天 1.0 / 夜里随 uSkyDim 淡出，DR-6）。
+// 恒创建（模块顶层单例，与 uSkyDim/uBlockBoost 同口径），供 DayNight 写入；
+// 即使 sunLight 为 null（fixture 路径）句柄也存在，消费方判句柄存在再写。
+const uShadowStrength = uniform(1.0);
+
 /**
  * 创建三通道体素材质。
  * @param {THREE.Texture} atlasTexture
- * @returns {{opaque: THREE.MeshBasicNodeMaterial, cutout: THREE.MeshBasicNodeMaterial, transparent: THREE.MeshBasicNodeMaterial}}
+ * @param {THREE.DirectionalLight} [sunLight] 太阳灯（传 null 时不乘 shadowFactor，保持原路径）
+ * @returns {{opaque: THREE.MeshBasicNodeMaterial, cutout: THREE.MeshBasicNodeMaterial, transparent: THREE.MeshBasicNodeMaterial, dayNight: Object}}
  */
-export function createVoxelMaterials(atlasTexture) {
+export function createVoxelMaterials(atlasTexture, sunLight = null) {
+  // 阴影因子：sunLight 非 null 时 = mix(1, shadow(sunLight), uShadowStrength)。
+  // shadow() 返回 0（影内）~1（影外）；uShadowStrength 缩放浓度（日夜联动）。
+  // ⚠️ shadow() 第二参数是 LightShadow 实例（可选，缺省 = light.shadow），**不是** filter
+  // 函数 —— PCF 滤波由 renderer.shadowMap.type 自动映射（PCFSoftShadowMap → PCFSoftShadowFilter）。
+  // 误传 filter 函数会让 setupRenderTarget 读 shadow.mapSize 崩溃。故只传单参数。
+  const shadowFactor = sunLight
+    ? mix(float(1), shadow(sunLight), uShadowStrength)
+    : null;
+
   const makeMaterial = ({ alphaTest = 0, transparent = false, side = THREE.FrontSide, emissive = false }) => {
     const mat = new THREE.MeshBasicNodeMaterial();
     const uvNode = attribute('uv', 'vec2');
     const texColor = texture(atlasTexture, uvNode);
     // emissive 只挂在需要的通道（hanging_lamp 走 cutout）：opaque 是最大通道，
     // 给它加一个恒为 0 的加项会白付一次逐像素 mul+add。
-    const rgb = emissive
-      ? add(mul(texColor.rgb, vShade), mul(EMISSIVE_COLOR, EMISSIVE_INTENSITY).mul(vEmissive))
-      : mul(texColor.rgb, vShade);
+    // 亮度项 = texColor.rgb × vShade × shadowFactor（阴影相乘在 emissive 加项之前）。
+    let rgb;
+    if (emissive) {
+      const base = shadowFactor
+        ? mul(mul(texColor.rgb, vShade), shadowFactor)
+        : mul(texColor.rgb, vShade);
+      rgb = add(base, mul(EMISSIVE_COLOR, EMISSIVE_INTENSITY).mul(vEmissive));
+    } else {
+      rgb = shadowFactor
+        ? mul(mul(texColor.rgb, vShade), shadowFactor)
+        : mul(texColor.rgb, vShade);
+    }
     mat.colorNode = vec4(rgb, texColor.a);
     if (alphaTest > 0) { mat.alphaTest = alphaTest; }
     if (transparent) { mat.transparent = true; mat.depthWrite = false; }
@@ -73,7 +99,7 @@ export function createVoxelMaterials(atlasTexture) {
     // emissive: true —— hanging_lamp 的材质自发光走本通道（§4.3 bit13）。
     cutout: makeMaterial({ alphaTest: 0.3, side: THREE.FrontSide, emissive: true }),
     transparent: makeMaterial({ transparent: true }),
-    dayNight: { uSkyDim, uBlockBoost },
+    dayNight: { uSkyDim, uBlockBoost, uShadowStrength },
   };
 }
 

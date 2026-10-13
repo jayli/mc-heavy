@@ -34,11 +34,12 @@ export class RenderWorld {
    * @param {THREE.Scene} opts.scene
    * @param {THREE.Texture} opts.atlasTexture
    * @param {number} [opts.viewDistance]
+   * @param {THREE.DirectionalLight} [opts.sunLight] 太阳灯（传入则三通道材质接收阴影；null 保持原路径）
    * @param {Object} [opts.capacity] 测试注入口：按通道覆盖 CAPACITY（{channel: {active, avgVerts}}）
    */
-  constructor({ scene, atlasTexture, viewDistance = 8, capacity }) {
+  constructor({ scene, atlasTexture, viewDistance = 8, sunLight = null, capacity }) {
     this.scene = scene;
-    const materials = createVoxelMaterials(atlasTexture);
+    const materials = createVoxelMaterials(atlasTexture, sunLight);
     this.materials = materials;
     const maxInstances = Math.ceil((2 * viewDistance + 1) ** 2 * SECTIONS_PER_COLUMN * 1.2);
     /** @type {Object<string, THREE.BatchedMesh>} */
@@ -61,6 +62,14 @@ export class RenderWorld {
       const maxIdx = maxVerts * 1.5;
       const bm = new THREE.BatchedMesh(maxInstances, maxVerts, maxIdx, materials[channel]);
       bm.frustumCulled = false; // 整体不剔除，per-instance 剔除由 perObjectFrustumCulled 负责
+      // 阴影投射/接收（§4.4.4 DR-2 通道粗粒度）：opaque + cutout 投射，transparent（水/玻璃）
+      // 不投射；三通道都接收。BatchedMesh extends Mesh → castShadow/receiveShadow 直接可用，
+      // perObjectFrustumCulled 默认 true → 阴影 pass 用 shadow camera 逐 instance 剔除。
+      // ⚠️ 只在 sunLight 非 null 时打开：无阴影接线时开 castShadow 会白付一次阴影 pass。
+      if (sunLight) {
+        bm.castShadow = channel !== 'transparent';
+        bm.receiveShadow = true;
+      }
       this._initAttributeLayout(bm);
       scene.add(bm);
       this.meshes[channel] = bm;

@@ -99,6 +99,10 @@ export class DayNight {
     this.hour = startHour;
     this.onSunDirection = onSunDirection;
     this._styleOverride = null;
+    // 阴影总开关标志（Game.setShadowsEnabled 写入）：_apply 每次日夜推进都写
+    // uShadowStrength，必须遵守该标志 —— 否则「关阴影」会在正常日夜循环的下一帧
+    // 被覆写回 skyDim（静默失效；override 风格下 update() early-return 测不出来）。
+    this.shadowEnabled = true;
     this._apply(paramsAtHour(this.hour));
   }
 
@@ -139,8 +143,9 @@ export class DayNight {
     this.voxelUniforms.uBlockBoost.value = p.blockBoost;
     // 阴影强度随天空亮度联动（天黑阴影自然消失）。句柄由 createVoxelMaterials 提供，
     // 未提供时跳过 —— 避免真实材质尚未接线时构造抛错（消费点：materials.js 的 colorNode）。
+    // ⚠️ 遵守 shadowEnabled 标志：关闭时写 0 而非 skyDim（见构造器注释的静默失效）。
     const uShadowStrength = this.voxelUniforms.uShadowStrength;
-    if (uShadowStrength) uShadowStrength.value = p.skyDim;
+    if (uShadowStrength) uShadowStrength.value = this.shadowEnabled ? p.skyDim : 0;
     // setStyle 传的是风格原值、paramsAtHour 已归一化 → 此处统一归一化，两条路径口径一致
     if (this.onSunDirection) this.onSunDirection(normalizeDirection(p.sunDirection));
   }

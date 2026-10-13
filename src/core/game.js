@@ -12,6 +12,7 @@ import { RenderWorld } from '../render/render-world.js';
 import { setupFog } from '../render/materials.js';
 import { setupOcean } from '../render/ocean.js';
 import { DayNight } from '../render/daynight.js';
+import { ShadowScheduler } from '../render/shadow-manager.js';
 import { RainEffect } from '../render/rain.js';
 import { WeatherState } from '../render/weather.js';
 import { WeaponModelLoader } from '../render/weapon-model-loader.js';
@@ -156,15 +157,60 @@ export class Game {
     // 经验补偿）；DirectionalLight(0xfffaf0, 3.2) 方向 [0,0.8,0.6]（Engine.js:168,161）——
     // 手枪 METAL 材质 metallicFactor=1（金属 diffuse 为 0、全靠镜面反射），只有环境光金属件
     // 仍然发黑，方向光高光不可省。灯光只影响 PBR 材质（枪），unlit 材质一律不吃灯光 →
-    // 世界视觉零回归。方向恒定不跟随玩家：mc-lite 的光源跟随（Game.js:556）是为阴影投射
-    // 服务，mc-heavy 不开 castShadow；月光与日夜灯光调制不移植（体素日夜走独立 uniform 体系）。
+    // 世界视觉零回归。月光与日夜灯光调制不移植（体素日夜走独立 uniform 体系）。
     this.scene.add(new THREE.AmbientLight(0xddeeff, 2.3));
-    const weaponSun = new THREE.DirectionalLight(0xfffaf0, 3.2);
-    weaponSun.position.set(0, 0.8, 0.6); // 光源在太阳方向 → 照射方向 = -[0,0.8,0.6]（mc-lite 口径）
-    this.scene.add(weaponSun);
+    // 太阳灯（原 weaponSun，DR-3 复用为阴影投射灯，不新建第二盏）：方向/色/强度本就是
+    // mc-lite 太阳口径（noon 值），兼作枪 PBR 高光的方向光。阴影相机参数照抄 mc-lite
+    // Engine.js:30-34,168-182（DR-4）。光源跟随玩家（mc-lite Game.js:556）由
+    // `_updateSunPosition()` 在帧循环驱动（Fix Round 2 提前进 Task 3：阴影相机 ±30 必须
+    // 覆盖玩家所在几何，否则阴影系统对可见世界完全无效）；按需刷新（DR-5）由
+    // `this.shadowScheduler` 在帧循环 tick 驱动（Fix Round 4 接线）。
+    const sunLight = new THREE.DirectionalLight(0xfffaf0, 3.2);
+    // 初始位置 = 太阳方向（构造期玩家尚未创建；第一帧帧循环的 distSq 检查必 >25
+    // → `_updateSunPosition()` 立即把光源定位到玩家处，无需在 start() 额外调一次）。
+    sunLight.position.set(0, 0.8, 0.6); // 光源在太阳方向 → 照射方向 = -[0,0.8,0.6]（mc-lite 口径）
+    sunLight.castShadow = true;
+    sunLight.shadow.mapSize.set(256, 256);
+    sunLight.shadow.camera.left = -30;
+    sunLight.shadow.camera.right = 30;
+    sunLight.shadow.camera.top = 30;
+    sunLight.shadow.camera.bottom = -30;
+    sunLight.shadow.camera.near = 0.1;
+    sunLight.shadow.camera.far = 250;
+    // VSM 不吃 bias / normalBias（DR-4b：depth-compare 档位全坏，用户拍板改 VSM），
+    // mc-lite 的 bias 0.00008 / normalBias 0.048 不移植；radius + blurSamples 是 VSM 的
+    // 软化参数（radius 默认 1 / blurSamples 默认 8，three.core.js LightShadow），
+    // radius=4 / blurSamples=8 为 Task 3 闸门实测出影值。
+    sunLight.shadow.radius = 4;
+    sunLight.shadow.blurSamples = 8;
+    // DR-5 按需刷新：autoUpdate=false 关掉每帧重渲，只在 ShadowScheduler.tick() 放行时置
+    // `shadow.needsUpdate = true`。⚠️ 这不是可选优化而是硬约束：VSM 下 receiveShadow 对象
+    // 也进阴影 pass，每帧重渲会把 render-terrain 的冻结断言 drawCalls<100 从 53 打到 428。
+    sunLight.shadow.autoUpdate = false;
+    // 刷新节流器（mc-lite `World.requestShadowMapUpdate` 的 200ms 最小间隔同构）。
+    // 三个请求源：① editor 订阅（世界编辑）② 帧循环移动阈值（光源重定位）
+    // ③ DayNight 的 onSunDirection（日夜方向变化）。
+    this.shadowScheduler = new ShadowScheduler();
+    // target 必须入场景，否则其 matrixWorld 不更新 → 阴影相机朝向错。
+    this.scene.add(sunLight.target);
+    this.scene.add(sunLight);
+    this.sunLight = sunLight;
+    // 光源跟随节流快照（玩家位置；mc-lite Game.js:537 口径：移动超 5 格才重新定位）。
+    // 初始 (0,0,0)：出生点距原点必 >5 格 → 第一帧即自动定位。
+    this._lastShadowPos = { x: 0, y: 0, z: 0 };
+    // shadowMap.enabled 是硬门控（three.webgpu.js:43563）：不开则 castShadow 被忽略。
+    // type = VSMShadowMap（DR-4b，用户拍板）：r185.1 WebGPU 后端的 depth-compare 阴影路径
+    // （PCFSoft/PCF/Basic）有 GPUValidationError bug（ShadowDepthTexture 同 scope 内
+    // RenderAttachment 与 TextureBinding 冲突 → CommandBuffer 失效、画面全黑），VSM 走
+    // depthTexture.compareFunction = null（three.webgpu.js:45074）绕开 comparison-sampler，
+    // 是唯一实测出影的档位。代价见 spec DR-4b（light-bleeding / 多 2 个模糊 pass /
+    // receiveShadow 对象也进阴影 pass）。
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = THREE.VSMShadowMap;
     const fogUniforms = setupFog(this.scene, this.viewDistance);
     this.ocean = setupOcean(this.scene);
-    this.renderWorld = new RenderWorld({ scene: this.scene, atlasTexture: texture, viewDistance: this.viewDistance });
+    // ⚠️ 灯光创建必须在 RenderWorld 之前：材质的 shadow() 节点在构建时固定 light 引用。
+    this.renderWorld = new RenderWorld({ scene: this.scene, atlasTexture: texture, viewDistance: this.viewDistance, sunLight });
     // 日夜循环（M2-6）：正午起步（与 M1 视觉口径一致），1200s 一天
     this.dayNight = new DayNight({
       scene: this.scene,
@@ -172,6 +218,24 @@ export class Game {
       voxelUniforms: this.renderWorld.materials.dayNight,
       baseFogNear: this.viewDistance * 16 * 0.75,
       baseFogFar: (this.viewDistance + 2) * 16 * 0.95,
+      // 太阳方向变化 → 光源重定位 + 请求阴影刷新（DR-5 第三个请求源）。方向本身由
+      // `_updateSunPosition()` 从 `dayNight.params.sunDirection` 读（唯一权威，红线 1：
+      // 回调里不写字面量方向，也不用 dir 参数）。
+      // ⚠️ **必须判 `this.player`**：本构造调用会立即触发一次 `_apply` → 回调，而
+      // `this.player` 在 start() 后半段才创建 → 不判空启动即抛 TypeError。
+      // ⚠️ **`request()` 必须判 `castShadow`（阴影总开关）**：日夜循环模式下
+      // `DayNight.update()` 每帧调 `_apply` → 本回调每帧触发。不门控则「用户已关阴影」
+      // 时系统仍每 200ms 重渲一次阴影贴图（VSM 下 receiveShadow 对象也进阴影 pass
+      // → drawCalls 53→273）—— 语义上就是错的：关阴影必须是零开销关闭。
+      // 实测（200 次采样，口径同 render-terrain:48）：门控前 ≥100 占比 6~8%，门控后 0%。
+      // ⚠️ **`_updateSunPosition()` 不门控**：DirectionalLight 对着色只生效「方向」
+      // （= position − target），而本方法保持该方向恒等于当前太阳方向 → 枪的 PBR 高光
+      // 需它跟随日夜（与阴影开关无关）；它只改阴影相机的居中点，不门控不会产生重渲。
+      onSunDirection: () => {
+        if (!this.player) return;
+        this._updateSunPosition();
+        if (this.sunLight.castShadow) this.shadowScheduler.request();
+      },
     });
 
     // 存档：打开 IndexedDB、恢复 seed（edits 预热在出生点确定后，§4.8）
@@ -201,6 +265,9 @@ export class Game {
     // 玩家挖放、武器破坏、未来 TNT 全部经此，不持有第二份体素真相。
     // M7：注入 persistence —— `setBlockEntity`（巢穴锚点纯 entity 写）靠它记入 edits 并调度落盘。
     this.editor = new WorldEditor({ world: this.world, scheduler: this.scheduler, persistence: this.persistence });
+    // DR-5 按需刷新的第一个请求源：世界编辑（block-changed 唯一入口 → 放/挖/枪械破坏/
+    // TNT/炮塔全覆盖）。`request()` 只置挂起标志，真正刷新由帧循环 tick 按 200ms 节流放行。
+    this.editor.subscribe(() => this.shadowScheduler.request());
 
     // ---- M5：实体运行时装配 ----
     // EntityManager 是动态实体 state 的唯一权威；column 索引/generation 全是派生缓存（红线 1）。
@@ -429,6 +496,9 @@ export class Game {
     }
     this.scheduler.update(this.spawnX, this.spawnZ);
     await this._waitForColumn(Math.floor(this.spawnX / 16), Math.floor(this.spawnZ / 16), 10000);
+    // 首次阴影渲染：autoUpdate=false 下 map 是空的，不置 needsUpdate 则第一帧无影
+    // （后续刷新由 shadowScheduler 按需放行）。
+    this.sunLight.shadow.needsUpdate = true;
     this.spawnY = findSpawnY(this.world, this.spawnX, this.spawnZ);
     // M4：武器渲染/音频运行时（只在主线程；不进 Worker/体素 meshing 管线）。
     // 模型加载失败只记录 console，不中止 worldReady——玩家保持徒手可玩。
@@ -590,6 +660,22 @@ export class Game {
       // M8：连锁引爆推进。放在巢穴之后、scheduler 之前 —— 爆炸写世界经 editor，
       // scheduler 本帧才能把受影响 column 送进 REMESH/light 队列。
       this._updateTntChain(nowMs);
+      // 光源跟随（mc-lite Game.js:537 口径）：玩家移动超 5 格（distSq > 25）才重新定位
+      // 光源/target —— 阴影相机 ±30 覆盖 60 格直径，5 格滞后内几何仍全覆盖，省掉每帧
+      // target.updateMatrixWorld 的开销。重定位后必须 request()：autoUpdate=false 下
+      // 阴影相机换了位置但不刷新，map 里仍是旧位置的深度（影子会钉在原地）。
+      // ⚠️ request() 同样判 castShadow（与 onSunDirection 同一不变式：阴影关闭时
+      // 不产生任何刷新请求）；`_updateSunPosition()` 不门控（理由见构造处注释）。
+      {
+        const dx = pp.x - this._lastShadowPos.x;
+        const dy = pp.y - this._lastShadowPos.y;
+        const dz = pp.z - this._lastShadowPos.z;
+        if (dx * dx + dy * dy + dz * dz > 25) {
+          this._updateSunPosition();
+          if (this.sunLight.castShadow) this.shadowScheduler.request();
+          this._lastShadowPos = { x: pp.x, y: pp.y, z: pp.z };
+        }
+      }
       this.scheduler.update(this.player.physics.pos.x, this.player.physics.pos.z);
       this.persistence.scheduleFlush(this.world); // 5s 防抖写盘（有 edits 才真正写）
       this.ocean.update(this.camera, dt);
@@ -627,6 +713,9 @@ export class Game {
       this.explosionRenderer.update(nowMs);
       // 爆炸序列帧 billboard 推进（0.5s 寿命；到期 slot visible=false → draw call 回基线）
       this.explosionSprite.update(nowMs);
+      // DR-5 按需刷新：节流放行时才置 needsUpdate（必须在 render 之前 —— ShadowNode 的
+      // updateBefore 在本帧渲染前读它）。tick 内部已消费 pending 并记录时刻。
+      if (this.shadowScheduler.tick(nowMs)) this.sunLight.shadow.needsUpdate = true;
       this.renderer.render(this.scene, this.camera);
       // info 在每帧 render 前被 autoReset 清零，render 后捕获才是本帧真实值
       // （HUD/测试异步读取 renderer.info 会撞上重置点，必须在此快照）
@@ -681,6 +770,39 @@ export class Game {
   perfSnapshot() { return this.perf.snapshot(); }
   /** 切换视觉风格（'morning'/'noon'/'night'，null 恢复日夜循环；M2-6，M3 设置面板接入） */
   setVisualStyle(key) { this.dayNight.setStyle(key); }
+
+  /**
+   * 光源跟随玩家（mc-lite Game.js:556-558 口径）：光源放在「玩家位置 + 太阳方向 × 60」，
+   * target 指向玩家 → 阴影相机（±30）始终覆盖玩家周围可见几何。
+   * ⚠️ 太阳方向从 `dayNight.params.sunDirection` 取（唯一权威，日夜风格/循环切换自动跟随；
+   * 红线 1：不得在此写字面量方向）。偏移 60 = mc-lite Game.js:558 原值。
+   */
+  _updateSunPosition() {
+    if (!this.player) return; // 防御：帧循环里 player 必然已建，判空成本为零
+    const p = this.player.physics.pos;
+    const dir = this.dayNight.params.sunDirection; // 已归一化（DayNight.get params）
+    this.sunLight.position.set(p.x + dir[0] * 60, p.y + dir[1] * 60, p.z + dir[2] * 60);
+    this.sunLight.target.position.set(p.x, p.y, p.z);
+  }
+
+  /**
+   * 阴影总开关（E2E / 视觉测试隔离用；Task 5 设置面板将复用）。
+   * 三步缺一不可：① castShadow 门控投射；② uShadowStrength 置 0 —— 只改 castShadow 时
+   * shadow() 节点仍在 node graph 里（VSM 下 receiveShadow 对象也进阴影 pass），材质侧须
+   * 同步归零；③ needsUpdate 强制下一次阴影 pass 重渲（否则 map 里仍是旧影）。
+   * ⚠️ 同时设 `dayNight.shadowEnabled` 标志：DayNight._apply 每次日夜推进都写
+   * uShadowStrength，不遵守标志的话「关闭」会在正常日夜循环的下一帧被覆写回 skyDim
+   * —— 静默失效（override 风格的测试路径 update() early-return，测不出来）。
+   */
+  setShadowsEnabled(enabled) {
+    this.dayNight.shadowEnabled = enabled;
+    this.sunLight.castShadow = enabled;
+    this.renderWorld.materials.dayNight.uShadowStrength.value = enabled ? this.dayNight.params.skyDim : 0;
+    if (enabled) this.sunLight.shadow.needsUpdate = true;
+  }
+
+  /** 阴影是否开启（E2E 断言用） */
+  get shadowsEnabled() { return this.sunLight.castShadow; }
 
   /** 玩家位置的 biome 名（M3-4 坐标 HUD；CITY 布局边界优先，否则 getBiome 纯函数） */
   biomeAt(x, z) {
