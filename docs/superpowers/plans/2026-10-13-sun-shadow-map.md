@@ -312,7 +312,7 @@ Expected: 无 >10% 回退。⚠️ 不带 `--check` 会重写冻结基线；若�
 4. `uShadowStrength` 不随 skyDim（固定 1）→ 夜里阴影全浓度（Task 2 用例 5 FAIL）
 5. **去掉 `_updateSunPosition()` 的帧循环调用**（光源不跟随）→ Task 3 的「光源跟随」E2E 用例 FAIL。⚠️ 这条是根因 A 的防回归：闸门用例 2 自己手动摆光源，**删掉跟随它仍全绿** → 静默失效，必须靠这条专钉
 6. **去掉 DayNight 的 `shadowEnabled` 标志**（`_apply` 无条件写 `p.skyDim`）→ Task 3 的「关阴影后日夜循环不覆写」用例 FAIL。⚠️ 这条钉的是 Ruling (g) 的静默失效面：`daynight-visual` 走 override 模式（`update()` early-return）**测不出**，只有真实日夜循环才暴露
-7. **交换消费端门控的操作数顺序**（`tick() && castShadow` → `castShadow && tick()`）→ sun-shadow 用例 6（冻结断言 `off.sawTrue === 0`）确定性 FAIL（tick 被短路 → `_pending` 永不被消费 → 采样恒 true）。⚠️ 这条钉的是 Ruling (i) 补全的**载荷性顺序**（Task 5 实测：B 顺序 5/5 FAIL / A' 顺序 5/5 PASS）；同时 m3-2-orientation 的 draw 尖峰类会复活（关阴影 + 放/挖块 → 阴影 pass 照渲）
+7. **交换消费端门控的操作数顺序**（`tick() && castShadow` → `castShadow && tick()`）→ sun-shadow 用例 6（冻结断言 `off.sawTrue === 0`）确定性 FAIL（tick 被短路 → `_pending` 永不被消费 → 采样恒 true）。⚠️ 这条钉的是 Ruling (i) 补全的**载荷性顺序**（Task 5 实测：B 顺序 5/5 FAIL / A' 顺序 5/5 PASS）。⚠️ **勘误（Task 6b-2 实测）**：交换顺序**不会**让 m3-2-orientation 的 draw 尖峰复活 —— 交换后 `needsUpdate` 恒 false（探针 0/8）→ 阴影 pass 根本不触发 → draw 恒 168 → m3-2-orientation 全绿是**正确行为**而非盲区。会产生 402 尖峰的是「**去掉** castShadow 门控」那种形态（与「**交换**顺序」是两种不同注入），见 task-6b2-report.md
 
 每条注入确认 FAIL 后 `git checkout` 还原，清单记入验收报告
 
