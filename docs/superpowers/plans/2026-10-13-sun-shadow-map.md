@@ -138,13 +138,21 @@ git commit -m "feat(render): 日夜风格加太阳方向（mc-lite 三组原值�
 
 ---
 
-### Task 3: 最小阴影接线（风险闸门：WebGPU × BatchedMesh 实测）
+### Task 3: 最小阴影接线（风险闸门）+ 光源跟随 + setShadowsEnabled
+
+> ⚠️ **2026-10-13 实测后范围扩大（Ruling e/f/g，详见 ledger）**：
+> - **闸门结论**：spec §8 预测的「WebGPU × BatchedMesh 兼容性」风险**被证伪** —— 真实根因是 three.js r185.1 WebGPU 后端 depth-compare 阴影路径 bug（最小独立场景同样复现）。**用户拍板改用 VSMShadowMap**（唯一实测可用档位，spec DR-4b）。
+> - **光源跟随提前进本任务**（Ruling f）：光源不跟随玩家则阴影相机 ±30 覆盖不到出生点 (283,22,117) → 接线本质上是坏的（probe12 实证）。原计划划给 Task 4，实测证明必须提前。
+> - **`setShadowsEnabled` + DayNight `shadowEnabled` 标志提前进本任务**（Ruling g）：修 `daynight-visual` 回归的必需 API（用户拍板「隔离变量」：量 |morning-noon| 前关阴影，断言与阈值逐字不动）。
+> - **像素判据改俯视几何**（Ruling d）：侧视采样两区不在同一表面（被 perf HUD 半透明黑底 + 视角相关亮度分裂污染）→ 改俯视相机 + 高空均匀 stone 平台 + 隐藏全部 HUD。
 
 **Files:**
 - Modify: `src/render/materials.js`（`createVoxelMaterials` 签名 + colorNode）
 - Modify: `src/render/render-world.js`（透传 sunLight + cast/receive）
-- Modify: `src/core/game.js`（sunLight 阴影相机配置 + shadowMap 开关）
-- Test: `tests/sun-shadow.spec.mjs`（先写接线断言 + 像素 RED）
+- Modify: `src/core/game.js`（sunLight 阴影相机配置 **VSM 口径** + shadowMap 开关 + **光源跟随 `_updateSunPosition()`** + **`setShadowsEnabled`**）
+- Modify: `src/render/daynight.js`（**`shadowEnabled` 标志**，`_apply` 写 `uShadowStrength` 时遵守）
+- Modify: `tests/daynight-visual.spec.mjs`（**量 |morning-noon| 前隔离阴影**，断言与阈值不动）
+- Test: `tests/sun-shadow.spec.mjs`（接线断言 + 俯视像素判据 + 光源跟随 + 关阴影不被日夜循环覆写）
 
 **Interfaces:**
 - Consumes: 无（本任务不接调度，`needsUpdate` 常驻 true 或 autoUpdate 临时 true 供实测）
@@ -188,14 +196,19 @@ git commit -m "feat(render): 太阳阴影最小接线——shadow map 投射 + �
 
 ### Task 4: 按需刷新接线（编辑 / 移动 / 日夜方向）
 
+> ⚠️ **2026-10-13 边界变更（Ruling f/g，Task 3 闸门实测后）**：
+> - **光源跟随（`_updateSunPosition()` + 移动阈值 distSq>25）已提前到 Task 3** —— 光源不覆盖场景的接线本质上是坏接线（阴影相机 ±30 覆盖不到出生点 (283,22,117)），任何渲染测试都无意义。Task 4 **不再实现跟随**，只在已有的跟随调用点旁**加 `request()`**（跟随已每帧定位，Task 4 让它走按需刷新而非 autoUpdate）。
+> - **`setShadowsEnabled` + DayNight `shadowEnabled` 标志已提前到 Task 3**（Ruling g：修 daynight-visual 回归的必需 API）。
+> - Task 4 的**净剩职责** = ShadowScheduler 接线：`editor.subscribe` → `request()`；帧循环 `tick(nowMs)` → `needsUpdate`；`sunLight.shadow.autoUpdate` 从 `true` 切 `false`；`onSunDirection` 回调发刷新请求（方向变化时）。
+
 **Files:**
-- Modify: `src/core/game.js`（调度接线 + 帧循环）
+- Modify: `src/core/game.js`（调度接线 + 帧循环；跟随已在 Task 3）
 - Modify: `src/render/daynight.js`（DayNight 构造接 `onSunDirection`，仅 game.js 侧传参）
 - Test: `tests/sun-shadow.spec.mjs`（加用例）
 
 **Interfaces:**
-- Consumes: Task 1 `ShadowScheduler`、Task 2 `onSunDirection` 回调、Task 3 `game.sunLight`
-- Produces: `game.shadowScheduler`；帧循环语义：`tick(nowMs)===true` → `sunLight.shadow.needsUpdate = true`
+- Consumes: Task 1 `ShadowScheduler`、Task 2 `onSunDirection` 回调、Task 3 `game.sunLight` + `_updateSunPosition()`（已存在，Task 4 在其调用点旁加 `request()`）
+- Produces: `game.shadowScheduler`；帧循环语义：`tick(nowMs)===true` → `sunLight.shadow.needsUpdate = true`；`sunLight.shadow.autoUpdate` 切 `false`
 
 - [ ] **Step 1: 写失败测试**
 
@@ -237,32 +250,32 @@ git commit -m "feat(render): 阴影按需刷新——编辑订阅 + 移动 5 格
 
 ---
 
-### Task 5: 开关 setShadowsEnabled（默认开）
+### Task 5: 开关的 URL 入口 + 构造选项（setShadowsEnabled 本体已在 Task 3）
+
+> ⚠️ **2026-10-13 边界变更（Ruling g）**：`setShadowsEnabled(enabled)` + `shadowsEnabled` getter + DayNight `shadowEnabled` 标志**已提前到 Task 3**（修 daynight-visual 回归的必需 API）。Task 5 净剩 = 把开关接到**启动入口**（URL 参数 + 构造选项默认值）+ 补「重新开启恢复阴影」用例。
 
 **Files:**
-- Modify: `src/core/game.js`
+- Modify: `src/core/game.js`（构造选项 `shadows` 默认值 + start 里按选项调 `setShadowsEnabled`）
 - Modify: `src/main.js`（`?shadows=0` URL 参数 → 构造选项，照 `?weather=` 既有调试入口模式）
 - Test: `tests/sun-shadow.spec.mjs`
 
 **Interfaces:**
-- Consumes: Task 3 `uShadowStrength` 句柄（`renderWorld.materials.dayNight.uShadowStrength`）、Task 4 调度器
-- Produces: `Game` 构造选项 `shadows = true`；`Game.setShadowsEnabled(enabled: boolean)`；`Game.shadowsEnabled` getter（E2E 断言用）
+- Consumes: Task 3 `setShadowsEnabled` / `shadowsEnabled` getter / `uShadowStrength` 句柄、Task 4 调度器
+- Produces: `Game` 构造选项 `shadows = true`（默认开）；`?shadows=0` URL 入口
 
 - [ ] **Step 1: 写失败测试**
 
-`sun-shadow.spec.mjs` 新增：
-1. 「默认开启」：`game.shadowsEnabled === true`
-2. 「关闭后视觉无影（Tier 4）」：开/关两种状态各截图同一场景（ noon、同一相机位），柱影区与开阔区亮度差：开启 >20%、关闭 <5%（阈值先实测打印标定）
-3. 「构造选项可关（URL 入口）」：`/?seed=12345&vd=4&shadows=0` 起页 → `game.shadowsEnabled === false` 且像素无影（复用用例 2 判据）
-4. 「重新开启后阴影恢复」：关→开→`needsUpdate === true` 且像素差异恢复
+`sun-shadow.spec.mjs` 新增（Task 3 已覆盖「默认开启」「关闭后无影」「关阴影后日夜循环不覆写」三条，本任务只补 URL 入口与恢复）：
+1. 「构造选项可关（URL 入口）」：`/?seed=12345&vd=2&style=noon&shadows=0` 起页 → `game.shadowsEnabled === false` 且像素无影（复用 Task 3 用例 2 的俯视平台判据，阈值按 Task 3 VSM 实测值）
+2. 「重新开启后阴影恢复」：关→开→`needsUpdate === true` 且像素差异恢复（影区比值回到 <0.85）
 
 - [ ] **Step 2: 跑测试验证 RED**
 
-Expected: FAIL（方法不存在）
+Expected: FAIL（`?shadows=0` 未被 main.js 消费 → `shadowsEnabled` 仍 true）
 
 - [ ] **Step 3: 实现**
 
-`setShadowsEnabled(enabled)`：`sunLight.castShadow = enabled`；`uShadowStrength.value = enabled ? this.dayNight.params.skyDim : 0`；enabled 时 `shadow.needsUpdate = true`。构造选项 `shadows`（默认 true）：false 时 start 里调 `setShadowsEnabled(false)`。`main.js`：`params.get('shadows') === '0'` → `shadows: false` 传入构造。
+`game.js` 构造选项加 `shadows = true`；`start()` 里 `if (!shadows) this.setShadowsEnabled(false)`（在 sunLight 与 dayNight 都就绪后）。`main.js`：`params.get('shadows') === '0'` → `shadows: false` 传入 `new Game({...})`（照 `?weather=` / `?seed=` 既有 URL 参数模式，settings.js 注释里补 `shadows` 键说明）。
 
 - [ ] **Step 4: 跑测试验证 GREEN + 回归**
 
@@ -270,7 +283,7 @@ Expected: FAIL（方法不存在）
 
 ```bash
 git add src/core/game.js src/main.js tests/sun-shadow.spec.mjs
-git commit -m "feat(render): 阴影代码级开关 setShadowsEnabled（默认开，不进设置面板）"
+git commit -m "feat(render): 阴影开关的 URL 入口 ?shadows=0 + 构造选项（默认开，不进设置面板）"
 ```
 
 ---
@@ -287,14 +300,18 @@ Expected: 全绿；若计时型 spec 贴线（m1-acceptance / weapons-world-edit
 - [ ] **Step 2: bench 回归门禁**
 
 Run: `npm run bench -- --check`
-Expected: 无 >10% 回退。⚠️ 不带 `--check` 会重写冻结基线；若误跑须 `git checkout docs/m3-baseline.*`。若 frameP95 量子贴线阻断 → 交替对照判定
+Expected: 无 >10% 回退。⚠️ 不带 `--check` 会重写冻结基线；若误跑须 `git checkout docs/m3-baseline.*`。若 frameP95 量子贴线阻断 → 交替对照判定。
+⚠️ **VSM 的 bench 风险高于原估算**（DR-4b 代价 ③）：VSM 比 PCFSoft 多 2 个模糊 render target（垂直/水平 pass），且 **VSM 下 `receiveShadow` 的对象也进阴影 pass**（`three.webgpu.js:44682`）→ 三通道全进 pass（不只 cast 的两个）。若回退超 10%，按 spec §8 优先调小阴影相机（±30 → ±20）或降刷新频率，**而非关功能**；仍超则停下来报告（不擅自放宽门禁）。
 
 - [ ] **Step 3: 负向验证（注入后真 FAIL，逐条记录后还原）**
 
-1. 去掉 `editor.subscribe` 接线 → 放块后 needsUpdate 不再被置起（Task 4 用例 2 FAIL）
+1. 去掉 `editor.subscribe` 接线 → 放块后 needsUpdate 不再被置起（Task 4 用例 FAIL）
 2. `ShadowScheduler.tick` 去掉节流判定（恒 true）→ 移动中每帧刷新（实测帧时下降或 needsUpdate 每帧 true 的可观测口径 FAIL）
 3. `materials.js` 去掉 `shadowFactor` 相乘 → Tier 4 无影（Task 3 用例 2 FAIL）
 4. `uShadowStrength` 不随 skyDim（固定 1）→ 夜里阴影全浓度（Task 2 用例 5 FAIL）
+5. **去掉 `_updateSunPosition()` 的帧循环调用**（光源不跟随）→ Task 3 的「光源跟随」E2E 用例 FAIL。⚠️ 这条是根因 A 的防回归：闸门用例 2 自己手动摆光源，**删掉跟随它仍全绿** → 静默失效，必须靠这条专钉
+6. **去掉 DayNight 的 `shadowEnabled` 标志**（`_apply` 无条件写 `p.skyDim`）→ Task 3 的「关阴影后日夜循环不覆写」用例 FAIL。⚠️ 这条钉的是 Ruling (g) 的静默失效面：`daynight-visual` 走 override 模式（`update()` early-return）**测不出**，只有真实日夜循环才暴露
+
 每条注入确认 FAIL 后 `git checkout` 还原，清单记入验收报告
 
 - [ ] **Step 4: 无 commit**（纯验证；结果进 Task 7 的验收记录）

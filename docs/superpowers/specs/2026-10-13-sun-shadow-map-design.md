@@ -80,6 +80,7 @@ mc-lite `Engine.js`（WebGL 后端）：
 | DR-3 | 复用 `weaponSun` 为太阳灯（改名 `sunLight`），不新建第二盏 | 它的方向/色/强度本就是 mc-lite 太阳口径（noon 值）；新建灯会让枪 PBR 模型被双倍照亮 |
 | DR-3b | 太阳方向随日夜风格变化（对齐 mc-lite）：`VISUAL_STYLES` 加 `sunDirection` 三组值，关键帧插值里逐分量 lerp + normalize | 用户选定。mc-lite 是风格切换离散变化；mc-heavy 日夜是连续关键帧插值，方向向量逐分量插值是自然扩展。方向变化也触发阴影刷新（走同一 200ms 节流，日夜循环中最高 5Hz） |
 | DR-4 | 参数照抄 mc-lite：mapSize 256 / 阴影相机 ±30 / near 0.1 / far 250 / bias 0.00008 / normalBias 0.048 / radius 2.6 | 设计文档 §4.4.4 原写「贴图 2048 / 覆盖视距 60%」是规划期估算，mc-lite 实测口径（小相机近处阴影更清晰）更优。实施时修订 §4.4.4（v1.44） |
+| **DR-4b**（2026-10-13 闸门实测后新增，用户拍板） | **阴影档位改用 `VSMShadowMap`，不用 mc-lite 的 PCFSoftShadowMap** | **three.js r185.1 WebGPU 后端的 depth-compare 阴影路径是坏的**（Task 3 闸门实测）：`GPUValidationError: [Texture "ShadowDepthTexture"] usage (TextureBinding\|RenderAttachment) includes writable usage and another usage in the same synchronization scope` → CommandBuffer 作废 → 画面全黑。**在只有 plain `Mesh`、零游戏代码的最小独立场景里同样复现** → 与 BatchedMesh / packed 属性 / per-instance 剔除无关（spec §8 原预测的风险被证伪）。PCFSoft(2)/PCF(1)/Basic(0) 三种 depth-compare 档位全坏；**VSM(3) 有影 + 0 错误**，因为 `three.webgpu.js:45074` 显式 `depthTexture.compareFunction = null`（"VSM does not use textureSampleCompare()"）绕开了 comparison-sampler 路径。DR-5 的按需刷新**不能**绕开（错误发生在同一 encoder 内，与刷新频率无关）。属 three.js 已知问题类（#33048 / #34081 / #34053 / #33898）。**代价**：① VSM 不吃 `bias`/`normalBias`，改吃 `radius` + `blurSamples`（实测 radius=4 / blurSamples=8 出影）；② VSM 固有 light-bleeding 漏光伪影；③ 多 2 个模糊 render target（垂直/水平 pass）→ GPU 成本上升，须重跑 bench 门禁；④ **VSM 下 `receiveShadow` 的对象也进阴影 pass**（`three.webgpu.js:44682` 判据 `castShadow === true \|\| (receiveShadow && shadowType === VSMShadowMap)`）→ 三通道全进 pass（含 transparent 水/玻璃），不只 cast 的两个 |
 | DR-5 | 节流用 `light.shadow.autoUpdate=false` + `needsUpdate`（WebGPU per-light 口径） | 实测 `ShadowNode.updateBefore` 的判定路径；mc-lite 的 `renderer.shadowMap.autoUpdate` 是 WebGL 口径，在 WebGPU 后端不生效 |
 | DR-6 | 阴影浓度随日夜：新 uniform `uShadowStrength` = `skyDim` | 白天 1.0 全浓度；夜里全世界已压暗到 25%（`uSkyDim`），阴影浓度随之淡出。一行接线，不引入新参数 |
 | DR-7 | 代码级开关（构造选项 + `setShadowsEnabled`），默认开，不进设置面板 | 用户决定 |
@@ -219,13 +220,15 @@ PBR 材质自动接收阴影（mc-lite 武器 `receiveShadow = true` 同效果�
 
 ## 8. 风险与回退
 
-- **最大未知数**：WebGPU 阴影 pass 对 BatchedMesh（自定义 `packed` 属性布局 +
-  per-instance 剔除）的兼容性，r185.1 无现成验证 → **实施 Task 1 先做最小接线实测**
-  （一盏灯 + 一个方块 + shadow() 节点，读像素验证有影），不通则停下来重新评估
-  （回退选项：castShadowNode 路线 / 放弃 shadow map 改回 skylight 遮挡讨论）；
+- ~~**最大未知数**：WebGPU 阴影 pass 对 BatchedMesh（自定义 `packed` 属性布局 +
+  per-instance 剔除）的兼容性~~ → **2026-10-13 Task 3 闸门实测已回答：与 BatchedMesh 无关**。
+  真实风险是 three.js r185.1 WebGPU 后端的 depth-compare 阴影路径 bug（见 DR-4b），
+  在最小独立场景（plain Mesh、零游戏代码）同样复现。**已裁定改用 VSM 绕开**（用户拍板）。
 - 树叶实心投影（§4.2 ⚠️）：若观感不可接受，升级为方案 B（castShadowNode + alphaTest），
-  本期不做；
+  本期不做。⚠️ **但 `castShadowNode` 对 DR-4b 的 bug 大概率无效** —— 它改的是投射侧/接收侧
+  的 filter 节点，而 bug 在阴影 map 的 render pass 本身（实施者分析，未实测验证）。
 - 性能回退超 10%：优先调小阴影相机（±30 → ±20）或降刷新频率，而非关功能。
+  ⚠️ VSM 比 PCFSoft 多 2 个模糊 pass（DR-4b 代价 ③），bench 回退风险高于原估算。
 
 ## 9. 与 mc-lite 的偏离（有意）
 
@@ -236,6 +239,7 @@ PBR 材质自动接收阴影（mc-lite 武器 `receiveShadow = true` 同效果�
 | ③ | 阴影浓度随日夜淡出（`uShadowStrength = skyDim`） | mc-lite 无此联动（其阴影夜里也全浓度，但夜里整体压暗看不出来）；本方案显式联动更干净 |
 | ④ | 实体不投射不接收（本期） | 范围控制，接线点预留 |
 | ⑤ | 太阳方向随日夜**连续插值**（mc-lite 是风格切换离散变化） | mc-heavy 日夜是连续关键帧插值（`daynight.js`），方向向量逐分量插值 + normalize 是自然扩展；离散切换会在风格边界产生阴影方向跳变 |
+| ⑥ | **阴影档位用 VSM 而非 mc-lite 的 PCFSoft**（DR-4b） | three.js r185.1 WebGPU 后端的 depth-compare 阴影路径有 bug（最小场景同样复现），VSM 是唯一实测可用的档位。代价：VSM 固有 light-bleeding 漏光伪影 + 多 2 个模糊 pass + 不吃 bias/normalBias（改吃 radius/blurSamples）。用户 2026-10-13 拍板接受 |
 
 ## 10. 设计文档同步（实施时做，v1.43 → v1.44）
 
