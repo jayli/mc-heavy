@@ -295,7 +295,8 @@ git commit -m "feat(render): 阴影开关的 URL 入口 ?shadows=0 + 构造选�
 - [ ] **Step 1: 全量 E2E**
 
 Run: `npm test`
-Expected: 全绿；若计时型 spec 贴线（m1-acceptance / weapons-world-edit / m3-rain 已知 flaky）→ 按 CLAUDE.md 做**交替对照**（MOD/BASE 交错各 2~3 轮），不单看数值
+Expected: 全绿；若计时型 spec 贴线（m1-acceptance / weapons-world-edit / m3-rain 已知 flaky）→ 按 CLAUDE.md 做**交替对照**（MOD/BASE 交错各 2~3 轮），不单看数值。
+⚠️ **`m3-2-orientation:281` 的 `meshInflight === 0` 是 HEAD 既有独立 flake**（与阴影无关，裁定 (ii) 不修）：实测频率 HEAD 2/30、Task 5 改后 2/30、A' 门控后 7/30（3.5×，小样本可能是噪声但值得观察）。若全量回归中该断言 FAIL，**先做交替对照判定是否与阴影改动相关**，不单看数值；确认为既有 flake 则如实记录，不修。
 
 - [ ] **Step 2: bench 回归门禁**
 
@@ -311,6 +312,7 @@ Expected: 无 >10% 回退。⚠️ 不带 `--check` 会重写冻结基线；若�
 4. `uShadowStrength` 不随 skyDim（固定 1）→ 夜里阴影全浓度（Task 2 用例 5 FAIL）
 5. **去掉 `_updateSunPosition()` 的帧循环调用**（光源不跟随）→ Task 3 的「光源跟随」E2E 用例 FAIL。⚠️ 这条是根因 A 的防回归：闸门用例 2 自己手动摆光源，**删掉跟随它仍全绿** → 静默失效，必须靠这条专钉
 6. **去掉 DayNight 的 `shadowEnabled` 标志**（`_apply` 无条件写 `p.skyDim`）→ Task 3 的「关阴影后日夜循环不覆写」用例 FAIL。⚠️ 这条钉的是 Ruling (g) 的静默失效面：`daynight-visual` 走 override 模式（`update()` early-return）**测不出**，只有真实日夜循环才暴露
+7. **交换消费端门控的操作数顺序**（`tick() && castShadow` → `castShadow && tick()`）→ sun-shadow 用例 6（冻结断言 `off.sawTrue === 0`）确定性 FAIL（tick 被短路 → `_pending` 永不被消费 → 采样恒 true）。⚠️ 这条钉的是 Ruling (i) 补全的**载荷性顺序**（Task 5 实测：B 顺序 5/5 FAIL / A' 顺序 5/5 PASS）；同时 m3-2-orientation 的 draw 尖峰类会复活（关阴影 + 放/挖块 → 阴影 pass 照渲）
 
 每条注入确认 FAIL 后 `git checkout` 还原，清单记入验收报告
 
