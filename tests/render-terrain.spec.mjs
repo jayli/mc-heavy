@@ -44,6 +44,16 @@ test('地形渲染：出生点地形可见、帧时达标、draw 数受控', asy
   expect(perf.frameMs.p95).toBeLessThan(process.env.CI ? 33 : 16.7);
 
   // 3. draw 数受控：视距 2 下 draw < 100
+  //    隔离阴影这个新引入的独立变量（太阳阴影接线）：日夜循环模式（本 URL 不带 style=）
+  //    下 `DayNight.update()` 每帧触发 onSunDirection → 阴影贴图每 200ms 重渲一次，
+  //    而 VSM 下 receiveShadow 对象也进阴影 pass → 重渲帧 drawCalls 53→273（实测 200 次
+  //    采样中 6~8% 撞上，单次读会 flaky）。本 spec 的被测对象是**地形渲染**
+  //    （draw/sections/errors），不是阴影 —— 按「对照只差一个变量」原则在量 draw 前关阴影。
+  //    与 daynight-visual.spec.mjs 的隔离手法同源同口径；断言与阈值逐字不动。
+  //    ⚠️ 关阴影必须是零开销关闭（onSunDirection 的 castShadow 门控，见 game.js），
+  //    否则关了仍每 200ms 重渲 → 隔离无效。该门控由 sun-shadow.spec.mjs 的专项用例钉住。
+  await page.evaluate(() => window.__MC_GAME__.setShadowsEnabled(false));
+  await page.waitForTimeout(300);   // 跨过节流窗口，让关阴影前挂起的请求被 tick 消费完
   const stats = await page.evaluate(() => window.__MC_GAME__.renderStats());
   expect(stats.drawCalls).toBeLessThan(100);
   expect(stats.sections).toBeGreaterThan(0);

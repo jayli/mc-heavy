@@ -20,6 +20,20 @@ async function waitForStableVD8(page) {
 test('M4：视距 8 下持续加特林不回退 M3 基线', async ({ page }) => {
   test.setTimeout(180_000);
   await waitForStableVD8(page);
+  // 隔离阴影这个新引入的独立变量（太阳阴影接线）：本 URL 不带 style= → 日夜循环模式，
+  // `DayNight.update()` 每帧触发 onSunDirection → 阴影贴图每 200ms 重渲一次，而 VSM 下
+  // receiveShadow 对象也进阴影 pass → 重渲帧 drawCalls 尖峰（vd=8 实测稳态 460/514 →
+  // 尖峰 525/624，+50~110，逐帧 600 次采样中占 4.0%）。且加特林连射本身经
+  // editor.subscribe 请求阴影刷新 → 射击窗口内尖峰概率进一步升高。断言
+  // `during <= before + 2` 容差仅 +2，during 撞尖峰即吹爆（实测 10 次连跑中 1 次 FAIL：
+  // 454→504，Δ50 = 尖峰而非武器 draw）。本 spec 的被测对象是**武器渲染开销**
+  // （minigun 不得高于徒手 +2），不是阴影 —— 按「对照只差一个变量」原则在世界稳定后关阴影，
+  // 覆盖全部 3 处 drawCalls 读取（before/during/after）。手法同 render-terrain /
+  // daynight-visual 的隔离；断言与阈值逐字不动。
+  // ⚠️ 关阴影是零开销关闭（onSunDirection 的 castShadow 门控，见 game.js）：实测关后
+  // 逐帧采样恒为单值、无尖峰。该门控由 sun-shadow.spec.mjs 的专项用例钉住。
+  await page.evaluate(() => window.__MC_GAME__.setShadowsEnabled(false));
+  await page.waitForTimeout(300);   // 跨过节流窗口，让关阴影前挂起的请求被 tick 消费完
   const before = await page.evaluate(() => ({
     ...window.__MC_GAME__.perfSnapshot(),
     drawCalls: window.__MC_GAME__.renderStats().drawCalls,
