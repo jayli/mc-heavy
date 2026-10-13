@@ -677,6 +677,11 @@ export class Game {
       // 光源/target —— 阴影相机 ±30 覆盖 60 格直径，5 格滞后内几何仍全覆盖，省掉每帧
       // target.updateMatrixWorld 的开销。重定位后必须 request()：autoUpdate=false 下
       // 阴影相机换了位置但不刷新，map 里仍是旧位置的深度（影子会钉在原地）。
+      // ⚠️ 本块**不是唯一的重定位路径**：`onSunDirection` 回调（日夜方向变化时，构造处
+      // :238）同样调 `_updateSunPosition()`。两条路径幂等（同读 `dayNight.params.sunDirection`
+      // + 当场玩家位置 → 同结果）；但回调路径不刷 `_lastShadowPos`，故方向变化帧的阈值检查
+      // 会基于旧快照多触发一次重定位 —— 幂等，且 request() 被 200ms 节流吸收
+      // （重复请求只置同一个 `_pending`，量的是「有没有请求」而非请求次数）。
       // ⚠️ request() 同样判 castShadow（与 onSunDirection 同一不变式：阴影关闭时
       // 不产生任何刷新请求）；`_updateSunPosition()` 不门控（理由见构造处注释）。
       {
@@ -812,7 +817,9 @@ export class Game {
   }
 
   /**
-   * 阴影总开关（E2E / 视觉测试隔离用；Task 5 设置面板将复用）。
+   * 阴影总开关（代码级开关，DR-7：**不进设置面板**，默认开）。
+   * 两个入口：① 构造选项 `shadows`（`?shadows=0` URL 参数，main.js 解析后传入）② 本方法。
+   * 消费方是 E2E / 视觉测试的隔离（关阴影消掉 drawCalls 尖峰，量 drawCalls 的 spec 须先关）。
    * 三步缺一不可：① castShadow 门控投射；② uShadowStrength 置 0 —— 只改 castShadow 时
    * shadow() 节点仍在 node graph 里（VSM 下 receiveShadow 对象也进阴影 pass），材质侧须
    * 同步归零；③ needsUpdate 强制下一次阴影 pass 重渲（否则 map 里仍是旧影）。
