@@ -30,7 +30,8 @@ Epic 链 M4→M5→M6→M7 已全部交付。**第三阶段 M8（TNT 爆炸 / �
 均已完成并验收**（验收报告 `docs/m8-tnt-turret-acceptance-report.md` /
 `docs/m9-playground-acceptance-report.md`）。**M9 之后的矿车 Epic 也已交付**
 （验收报告 `docs/minecart-acceptance-report.md`，2026-10-01 补写 —— Epic 交付时漏写，
-由 issue #3 审核指出）。里程碑状态、验收报告、遗留 TODO 的
+由 issue #3 审核指出）。**矿车之后的太阳阴影（shadow map）也已落地**（独立改动，进度与实测数据
+查 roadmap）。里程碑状态、验收报告、遗留 TODO 的
 完整清单**一律查 roadmap** —— 此处不复制（复制就会漂移）。
 
 **历次 bugfix / 改造的完整记录不在本文件。** 权威副本：**第一阶段独立改动**在设计文档修订说明 +
@@ -551,6 +552,67 @@ M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 
 - **reload 恢复后车继续原方向**（`movementState` 进 snapshot），mc-lite 恢复后停成 IDLE ——
   有意偏离（玩家重启前正在开的车不该自己停下）。
 
+### 太阳阴影沉淀的活跃约束（后续渲染/光照类 Epic 必读）
+
+- **three.js r185.1 WebGPU 后端的 depth-compare 阴影路径是坏的，只能用 VSM**：PCFSoft/PCF/Basic
+  三档全部 `GPUValidationError`（ShadowDepthTexture 同 scope 内 RenderAttachment 与 TextureBinding
+  冲突）→ CommandBuffer 作废、画面全黑；**最小独立场景（plain Mesh、零游戏代码）同样复现** →
+  与 BatchedMesh / packed 属性无关。VSM 因 `depthTexture.compareFunction = null`
+  （`three.webgpu.js:45074`）绕开 comparison-sampler 而可用。**升级 three 前须重测**（若上游修了
+  可换回 PCFSoft 对齐 mc-lite）；`castShadowNode` 路线对该 bug 大概率无效（bug 在阴影 map 的
+  render pass 本身而非 filter 节点 —— 实施者分析，未实测）。VSM 不吃 bias/normalBias，软化参数
+  是 radius + blurSamples；固有 light-bleeding 漏光伪影（用户已知悉接受）。
+- **WebGPU 的阴影节流是 per-light 口径**：`light.shadow.autoUpdate` / `light.shadow.needsUpdate`
+  （`ShadowNode.updateBefore` 判定），**不是** mc-lite WebGL 的 `renderer.shadowMap.autoUpdate` ——
+  后者在本后端不生效。`renderer.shadowMap.enabled = true` 仍是硬门控（否则 castShadow 被忽略）。
+- **VSM 下 receiveShadow 的对象也进阴影 pass**（`three.webgpu.js:44682`）→ 三通道全进（不只 cast
+  的两个）。后果：**重渲帧 drawCalls 尖峰**（vd=2 +220 / vd=8 +110），稳态零增量（按需刷新生效时
+  稳态 drawCalls 与无阴影逐位相同）。→ **任何量 drawCalls 的 spec，若被测对象不是阴影，须先
+  `setShadowsEnabled(false)` 隔离**（断言与阈值逐字不动，改的是被测 setup）。已隔离 5 份：
+  render-terrain / daynight-visual / weapons-performance / zombies / m3-2-orientation。
+- **消费端门控的操作数顺序是载荷性的**：`if (this.shadowScheduler.tick(nowMs) &&
+  this.sunLight.castShadow)`（game.js 帧循环）—— **勿交换两侧**：`castShadow` 在前会让 `tick()`
+  被短路完全不跑 → `_pending` 永不被消费 → 打破 sun-shadow 用例 6 的观测口径（冻结断言
+  `off.sawTrue === 0`，实测交换后 5/5 FAIL）。⚠️ 交换顺序**不会**让 draw 尖峰复活（交换后
+  needsUpdate 恒 false → 阴影 pass 根本不触发）；会产生尖峰的是「**去掉** castShadow 门控」那种
+  形态 —— 两种注入后果不同，勿混。
+- **「关阴影 = 零开销」需三处协同，缺一处即静默失效**：① `sunLight.castShadow = false`（停阴影 pass）
+  ② `uShadowStrength = 0`（视觉零影响）③ **DayNight 的 `shadowEnabled` 标志**（否则日夜循环每帧
+  `_apply` 把 uShadowStrength 写回 skyDim → 关闭被静默覆写）。⚠️ ③ 的失效面 `daynight-visual`
+  **测不出**（它走 override 模式 `update()` early-return），只有真实日夜循环才暴露。另有**请求源
+  门控**：`editor.subscribe` / 移动阈值 / `onSunDirection` 三处的 `request()` 都要判 castShadow；
+  消费端门控（上一条）是**单点权威兜底**，源侧门控是纵深防御 —— 只靠源侧则每加一个请求源都要补一次，
+  漏一个就复发（本次缺陷成因正是 editor.subscribe 与消费端双双漏门控）。
+- **光源必须跟随玩家**（`_updateSunPosition()`，移动超 5 格重定位）：阴影相机只有 ±30，不跟随则
+  覆盖不到玩家周围的可见几何 → **阴影系统对整个可见世界静默失效**（Tier 4 闸门用例自己手动摆光源，
+  测不出来，须靠「光源跟随」专用例钉住）。太阳方向从 `dayNight.params.sunDirection` 读（唯一权威，
+  红线 1：不写字面量方向）。
+- **太阳方向随日夜连续插值**（有意偏离 mc-lite 的风格切换离散变化）：`VISUAL_STYLES` 存 mc-lite 三组
+  原值、`paramsAtHour` 返回归一化值、`_apply` 调回调前统一归一化 —— **归一化必须收在 `_apply`**
+  （`setStyle` 传的是原值，night 长 0.9952 非单位长度；只在一处归一化会让两条路径的光源偏移不一致）。
+- **阴影让 morning 与 noon 的整屏平均亮度趋同**（物理正确：低太阳角 → 长影 → 抵消 skyDim 亮度差）→
+  撞 M2 冻结断言 `|morning-noon| > 0.01`。**用户裁定 = 隔离变量**（daynight-visual 量前调
+  `setShadowsEnabled(false)`，断言与阈值逐字不动）。⚠️ 关键推论：**阴影本身就会让该断言收敛**
+  （与 DR-6 浓度联动无关）→ 改 DR-6 也救不了，后续同类冲突只能隔离或重标。
+- **Tier 4 像素判据两条踩坑**：① **perf HUD 的半透明黑底**（`perf-hud.js` `position:fixed` +
+  `rgba(0,0,0,.55)`）会压暗屏幕左上象限 → 亮度采样必须**隐藏全部 HUD**（`#hud-root > *` +
+  `#crosshair` + `#settings-btn`），否则暗区跟着屏幕走而非世界走（实测曾误判为渲染缺陷）；
+  ② **不能直写 uniform 做像素判据**：`start()` 的首次 `needsUpdate` 早于关阴影 → 残留 shadow map
+  **永久驻留**，强制 `uShadowStrength=1` 会把残留 map 采样回来 → 恒 FAIL。修法 = 同帧 A/B 比值 +
+  **正向对照**（先开阴影断言有影证明判据有效，再关阴影断言无影）+ sanity floors（防黑屏恒真）。
+- **构造顺序与 null 分支**：`sunLight` 必须先于 `RenderWorld` 创建（材质的 `shadow()` 节点在构建时
+  固定 light 引用）；`createVoxelMaterials(atlasTexture, sunLight = null)` 的 **null 分支必须保持
+  原路径**（5 个 fixture 不传 sunLight：`test-render-world` / `test-lamp-compare` /
+  `test-sky-tree` / `test-ao-corner` / `test-ao`）。
+- **阴影 pass 不消费 alphaTest** → 树冠投影是实心立方轮廓（Minecraft 原版同款）。若观感不可接受，
+  升级为 `castShadowNode` + alphaTest（但对上面那条 depth-compare bug 大概率无效）。
+- **实体不投射不接收**（本期范围外）：后续给实体加阴影 = InstancedMesh 开 castShadow + 材质乘
+  `shadow()` 节点同手法（实体材质是 unlit MeshBasicMaterial，接收阴影同样需乘 shadow 节点）。
+- **日夜循环下 5Hz 阴影重渲是正确行为**（太阳方向连续变），稳态帧时实测无影响；若后续 bench 显示
+  VSM 成本成问题再考虑降频。⚠️ 另：`m3-2-orientation.spec.mjs:283` 的 `meshInflight === 0` 是 HEAD 既有
+  独立 flake（与阴影无关，未修；实测频率 HEAD 2/30、门控后 7/30，小样本可能是噪声但值得观察）→
+  全量回归若该断言 FAIL，先做交替对照判定。
+
 ## 权威文档（动手前必读）
 
 按顺序读完再写代码：
@@ -577,6 +639,10 @@ M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 
    `docs/minecart-acceptance-report.md`（实测数据 / 偏离表 / 负向验证清单 / 操作失误）。
    乘坐碰撞修复的实施记录 = `docs/superpowers/plans/2026-10-01-minecart-ride-collision.md`。
    做**可移动持久实体**类 Epic 前先读矿车报告的 §4（偏离表）与 §8（操作失误）。
+9. **太阳阴影（shadow map）已落地**（独立改动 v1.44）。规格
+   `docs/superpowers/specs/2026-10-13-sun-shadow-map-design.md`（DR-1~DR-8 + DR-4b + §9 六条偏离）
+   + 计划 `docs/superpowers/plans/2026-10-13-sun-shadow-map.md`。做**渲染/光照类** Epic 前先读
+   本文件「太阳阴影沉淀的活跃约束」小节与设计文档 v1.44 修订说明。
 
 规则：
 
@@ -726,6 +792,8 @@ mc-heavy/
    │               #    （水面遮罩判据唯一权威：阈值 + 五点纵深 + 城市 bounds 门控；
    │               #      CPU 版供单测，ocean.js 的 TSL 版同构实现共用其数值常量）
    │               #  weather.js（天气状态机）/ rain.js（雨效）/ entity-render-layer.js（M5 受控实体发布层）
+   │               #  shadow-manager.js（太阳阴影刷新节流 ShadowScheduler：200ms 最小间隔 + pending
+   │               #    补刷，纯逻辑无 three；消费端 game.js 帧循环 tick + per-light needsUpdate）
    │               #  zombie-renderer.js（M6 六部件固定容量 InstancedMesh；无活跃丧尸时 visible=false；
    │               #    head 走单纹理 UV 分区 —— 正面顶点 16-19 采纹理右半「有眼睛」，见 applyHeadUV）
    │               #  zombie-head-texture.js（头部纹理加载，主线程专用；npm run zombie 烘焙产物）
