@@ -49,6 +49,10 @@ async function boot() {
   const seedParam = params.get('seed');
   const seed = seedParam !== null && Number.isFinite(Number(seedParam)) && Number(seedParam) > 0
     ? Math.floor(Number(seedParam)) : null;
+  // ?shadows=0 代码级开关的 URL 入口（DR-7：默认开。只有 '0' 关——缺省/其它值都是默认开，
+  // 与 ?guns/?tntDamage 的 `=== '1'` 反向口径一致：默认开则显式值与默认值相反）。
+  // 不进设置面板（DR-7），故不过 resolveSettings，直接作构造选项传入。
+  const shadows = params.get('shadows') !== '0';
   const game = new Game({
     canvas: document.getElementById('app-canvas'),
     registry, seed,
@@ -57,6 +61,7 @@ async function boot() {
     blurMipmap: settings.blur,
     budgetProfile: settings.budgetProfile,
     startWeather,
+    shadows,
     settings,
   });
   await game.start();

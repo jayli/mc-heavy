@@ -50,6 +50,98 @@ const lum = (c) => (c.r + c.g + c.b) / 3;
  */
 const URL = '/?vd=2&seed=12345&style=noon&weather=clear';
 
+/**
+ * `?shadows=0` 起页（Task 5 URL 入口）：除 shadows 外与 URL 逐键相同 —— 地形/风格/天气
+ * 口径一致，唯一变量是阴影开关（「对照只差一个变量」）。
+ */
+const SHADOWS_OFF_URL = '/?vd=2&seed=12345&style=noon&weather=clear&shadows=0';
+
+/**
+ * 搭 Tier 4 俯视平台（用例 2/3/4 共用 setup；几何与判据说明见用例 2 顶部注释）。
+ * 清平台上空 ±14 → ±14 全 stone 平台 → 3 格石柱 → 手动摆光源 → 冻结玩家 → 隐藏 HUD →
+ * 近垂直俯视相机。返回平台中心的世界坐标 (ox, oz)。
+ *
+ * ⚠️ **光源为什么仍需手动摆**（Task 4 已交付光源跟随，Ruling f）：跟随把阴影相机居中到
+ * **玩家**（±30 覆盖），而被测平台在玩家头顶约 58 格（P=80 vs 出生点 y≈22）→ 平台整体在
+ * 阴影相机视锥外。手动定位只是把被测物挪进阴影相机覆盖范围，**不是补机制缺位**；采样时
+ * 的光源方向仍读真实接线 `dayNight.params.sunDirection`（无字面量方向）。
+ */
+async function setupShadowPlatform(page, P) {
+  const { ox, oz } = await page.evaluate((P) => {
+    const g = window.__MC_GAME__;
+    const ox = Math.floor(g.player.physics.pos.x), oz = Math.floor(g.player.physics.pos.z);
+    const stone = g.registry.idOf('stone');
+    // 清平台上空 ±14（y=81..95）：云/空岛/建筑全部清掉 → 取样区只剩平台顶面与天空
+    for (let y = P + 1; y <= 95; y++) {
+      for (let dx = -14; dx <= 14; dx++) for (let dz = -14; dz <= 14; dz++) {
+        const x = ox + dx, z = oz + dz;
+        if (g.world.getBlockId(x, y, z) !== 0) g.editor.setBlock({ x, y, z, id: 0 });
+      }
+    }
+    // 全 stone 平台（同一材质 → 同一贴图 tile，消除材质差异这个变量）
+    for (let dx = -14; dx <= 14; dx++) for (let dz = -14; dz <= 14; dz++) {
+      g.editor.setBlock({ x: ox + dx, y: P, z: oz + dz, id: stone });
+    }
+    // 3 格高石柱立平台中央
+    for (let dy = 1; dy <= 3; dy++) g.editor.setBlock({ x: ox, y: P + dy, z: oz, id: stone });
+    // 光源摆到被测物上方（理由见本函数 JSDoc；noon 归一化方向 (0,0.8,0.6) 来自 dayNight）
+    if (g.sunLight) {
+      const dir = g.dayNight.params.sunDirection;
+      g.sunLight.position.set(ox + 0.5 + dir[0] * 60, P + dir[1] * 60, oz + 0.5 + dir[2] * 60);
+      g.sunLight.target.position.set(ox + 0.5, P, oz + 0.5);
+      g.sunLight.target.updateMatrixWorld();
+    }
+    // 冻结玩家（pushModal → 帧循环跳过 player.update → 相机不会被物理挪走）
+    g.pushModal('tier4-shadow');
+    // ⚠️ 隐藏**全部** HUD 覆盖物（见用例 2 顶部注释：perf HUD 半透明黑底会造假暗区）
+    for (const el of document.querySelectorAll('#hud-root > *, #crosshair, #settings-btn')) {
+      el.style.display = 'none';
+    }
+    // 近垂直俯视（+X 偏 3 格避免 lookAt 的 up 退化；该姿态已实测平台均匀 spread=0）
+    g.camera.up.set(0, 1, 0);
+    g.camera.position.set(ox + 3, P + 22, oz + 0.5);
+    g.camera.lookAt(ox + 0.5, P + 1, oz + 0.5);
+    g.camera.updateMatrixWorld();
+    g.camera.updateProjectionMatrix();
+    return { ox, oz };
+  }, P);
+  await waitWorldSettled(page);   // 等清场 + 立柱的 remesh 收敛
+  await page.waitForTimeout(1500);
+  return { ox, oz };
+}
+
+/**
+ * 读区 A（影区）/ 区 B（开阔区）亮度。
+ * @param {number|null} strength 数字 → 直写 `uShadowStrength` 并等待渲染（用例 2 的
+ *   自校准手法：同一相机同一几何，0↔1 的唯一变量是 shadowFactor）；null → **不碰** uniform，
+ *   读 `setShadowsEnabled` 决定的实际状态（用例 3/4 的被测对象就是那个开关本身，
+ *   直写 uniform 会绕过它 → 测不到开关接线）。
+ */
+async function measureRegions(page, sampleWorld, strength) {
+  if (strength !== null) {
+    await page.evaluate((s) => {
+      const u = window.__MC_GAME__.renderWorld.materials.dayNight.uShadowStrength;
+      // 接线前句柄不存在 → 跳过（RED 落在亮度断言而非抛错）
+      if (u) u.value = s;
+    }, strength);
+  }
+  await page.waitForTimeout(900);
+  /** 世界点 → 屏幕像素（renderer.render 每帧更新 matrixWorldInverse） */
+  const px = await page.evaluate((pts) => {
+    const g = window.__MC_GAME__;
+    const out = {};
+    for (const [k, p] of Object.entries(pts)) {
+      const v = new g.camera.position.constructor(p[0], p[1], p[2]);
+      v.project(g.camera);
+      out[k] = { x: Math.round((v.x * 0.5 + 0.5) * window.innerWidth),
+                 y: Math.round((-v.y * 0.5 + 0.5) * window.innerHeight), z: v.z };
+    }
+    return out;
+  }, sampleWorld);
+  const png = PNG.sync.read(await page.screenshot());
+  return { A: lum(regionRGB(png, px.A.x, px.A.y, 5)), B: lum(regionRGB(png, px.B.x, px.B.y, 5)), px };
+}
+
 test('接线：shadowMap 开关 + sunLight 阴影相机 + 三通道 cast/receive + uShadowStrength 句柄', async ({ page }) => {
   test.setTimeout(120_000);
   await page.goto(URL);
@@ -164,85 +256,17 @@ test('Tier 4 有影：俯视均匀平台上石柱影子落在 -Z 侧，且开阔
   await page.goto(URL);
   await waitWorldSettled(page);
 
-  // ---- 搭隔离场景：高空平台 → 清上空 → 3 格石柱 → 俯视相机 → 光源挪到被测物上方 ----
+  // ---- 搭隔离场景（几何与理由见 setupShadowPlatform 的 JSDoc）----
   const P = 80;   // 平台高度（云层 y=55 之上、WORLD_MAX_Y=96 之下）
-  const setup = await page.evaluate((P) => {
-    const g = window.__MC_GAME__;
-    const ox = Math.floor(g.player.physics.pos.x), oz = Math.floor(g.player.physics.pos.z);
-    const stone = g.registry.idOf('stone');
-    // 清平台上空 ±14（y=81..95）：云/空岛/建筑全部清掉 → 取样区只剩平台顶面与天空
-    for (let y = P + 1; y <= 95; y++) {
-      for (let dx = -14; dx <= 14; dx++) for (let dz = -14; dz <= 14; dz++) {
-        const x = ox + dx, z = oz + dz;
-        if (g.world.getBlockId(x, y, z) !== 0) g.editor.setBlock({ x, y, z, id: 0 });
-      }
-    }
-    // 全 stone 平台（同一材质 → 同一贴图 tile，消除材质差异这个变量）
-    for (let dx = -14; dx <= 14; dx++) for (let dz = -14; dz <= 14; dz++) {
-      g.editor.setBlock({ x: ox + dx, y: P, z: oz + dz, id: stone });
-    }
-    // 3 格高石柱立平台中央
-    for (let dy = 1; dy <= 3; dy++) g.editor.setBlock({ x: ox, y: P + dy, z: oz, id: stone });
-    // 光源挪到被测物上方：Task 3 尚未接光源跟随（Task 4 的职责），而出生点 (283,117)
-    // 远在原点阴影相机 ±30 覆盖外 → 测试内手动定位，否则闸门测不到任何东西。
-    // ⚠️ 接线前 g.sunLight 不存在 → 判空守卫，让 RED 落在「亮度无差异」而非抛错。
-    if (g.sunLight) {
-      const dir = g.dayNight.params.sunDirection;   // noon 归一化方向 (0,0.8,0.6)
-      g.sunLight.position.set(ox + 0.5 + dir[0] * 60, P + dir[1] * 60, oz + 0.5 + dir[2] * 60);
-      g.sunLight.target.position.set(ox + 0.5, P, oz + 0.5);
-      g.sunLight.target.updateMatrixWorld();
-    }
-    // 冻结玩家（pushModal → 帧循环跳过 player.update → 相机不会被物理挪走）
-    g.pushModal('tier4-shadow');
-    // ⚠️ 隐藏**全部** HUD 覆盖物（见本用例顶部注释：perf HUD 半透明黑底会造假暗区）
-    for (const el of document.querySelectorAll('#hud-root > *, #crosshair, #settings-btn')) {
-      el.style.display = 'none';
-    }
-    // 近垂直俯视（+X 偏 3 格避免 lookAt 的 up 退化；该姿态已实测平台均匀 spread=0）
-    g.camera.up.set(0, 1, 0);
-    g.camera.position.set(ox + 3, P + 22, oz + 0.5);
-    g.camera.lookAt(ox + 0.5, P + 1, oz + 0.5);
-    g.camera.updateMatrixWorld();
-    g.camera.updateProjectionMatrix();
-    return { ox, oz, hasSunLight: !!g.sunLight };
-  }, P);
+  const { ox, oz } = await setupShadowPlatform(page, P);
 
-  await waitWorldSettled(page);   // 等清场 + 立柱的 remesh 收敛
-  await page.waitForTimeout(1500);
-
-  const { ox, oz } = setup;
   // 区 A = 影区：柱 -Z 侧 1.5 格（影子水平投影 2.25 格 → 该处整格在影内；与柱隔半格以上，
   // 不受柱脚 AO 影响）。区 B = 开阔区：柱 +Z 侧 3 格（远在影外，同平台同材质）。
   const sampleWorld = { A: [ox + 0.5, P + 1.02, oz - 1], B: [ox + 0.5, P + 1.02, oz + 3] };
 
-  /** 世界点 → 屏幕像素（renderer.render 每帧更新 matrixWorldInverse） */
-  const project = () => page.evaluate((pts) => {
-    const g = window.__MC_GAME__;
-    const out = {};
-    for (const [k, p] of Object.entries(pts)) {
-      const v = new g.camera.position.constructor(p[0], p[1], p[2]);
-      v.project(g.camera);
-      out[k] = { x: Math.round((v.x * 0.5 + 0.5) * window.innerWidth),
-                 y: Math.round((-v.y * 0.5 + 0.5) * window.innerHeight), z: v.z };
-    }
-    return out;
-  }, sampleWorld);
-
-  /** 设 uShadowStrength 并读两区亮度（同一相机、同一帧几何 → 唯一变量是 shadowFactor） */
-  const measure = async (strength) => {
-    await page.evaluate((s) => {
-      const u = window.__MC_GAME__.renderWorld.materials.dayNight.uShadowStrength;
-      // 接线前句柄不存在 → 跳过（RED 落在亮度断言而非抛错）
-      if (u) u.value = s;
-    }, strength);
-    await page.waitForTimeout(900);
-    const px = await project();
-    const png = PNG.sync.read(await page.screenshot());
-    return { A: lum(regionRGB(png, px.A.x, px.A.y, 5)), B: lum(regionRGB(png, px.B.x, px.B.y, 5)), px };
-  };
-
-  const off = await measure(0);   // 基线：无阴影贡献
-  const on = await measure(1);    // 全浓度阴影
+  // 两个方向都直写 uShadowStrength 自校准（只差 shadowFactor 一个变量）
+  const off = await measureRegions(page, sampleWorld, 0);   // 基线：无阴影贡献
+  const on = await measureRegions(page, sampleWorld, 1);    // 全浓度阴影
   console.log('SUN-SHADOW TIER4:', JSON.stringify({
     baseline: { A: +off.A.toFixed(1), B: +off.B.toFixed(1) },
     shadowed: { A: +on.A.toFixed(1), B: +on.B.toFixed(1) },
@@ -263,6 +287,10 @@ test('Tier 4 有影：俯视均匀平台上石柱影子落在 -Z 侧，且开阔
   expect(on.B / off.B,
     `开阔区（柱 +Z 侧）不得被影响：baseline=${off.B.toFixed(1)} shadowed=${on.B.toFixed(1)}`)
     .toBeGreaterThan(0.95);
+
+  // popModal 与 setupShadowPlatform 的 pushModal 配对（PLAYWRIGHT 每 test 独立 page，
+  // 无实际泄漏 —— 纯一致性；同文件用例 6 的成对手法）。
+  await page.evaluate(() => window.__MC_GAME__.popModal('tier4-shadow'));
 });
 
 /**
@@ -484,4 +512,142 @@ test('阴影关闭后日夜循环不再请求刷新（onSunDirection 的 castSha
   expect(r.off.sawTrue,
     `关阴影后不得再产生任何刷新请求（castShadow 门控）：观测到 ${r.off.sawTrue}/${r.off.n} 次 pending`)
     .toBe(0);
+});
+
+
+/**
+ * `?shadows=0` URL 入口（Task 5）：起页即关 —— URL → main.js → 构造选项 → start() 的
+ * `setShadowsEnabled(false)` 整条链接线。
+ *
+ * 两级判据：① 接线（`shadowsEnabled` getter + 三处状态）② **像素**（俯视平台上影区与开阔区
+ * 的亮度比 —— 有影 ≈0.67 / 无影 ≈1.00）。
+ *
+ * ⚠️ **像素判据为什么不能照搬用例 2 的「直写 uShadowStrength=1 → 影区变暗」**（实测证伪，
+ * 见 `.superpowers/sdd/2026-10-13-sun-shadow-map/task-5-report.md` 的 probe）：强制 uniform=1
+ * 时本用例实测影区**照样暗到 0.670**，即它会**恒 FAIL**（零假阴性，但零真阴性 —— 一个恒
+ * 失败的用例等于没有判据）。根因：start() 的首次 `needsUpdate = true` 早于
+ * `setShadowsEnabled(false)`，map 里已烘好带柱深度的数据；关阴影后无人再置 needsUpdate，
+ * 这份 map 就**永久驻留**，而 `shadow()` 节点只读 `uShadowStrength` → 强制置 1 就把残留
+ * map 采样回来。故本用例的像素判据必须**不碰 uniform**，读开关本身的真实效果。
+ *
+ * 像素判据 = **同一次截图内**影区 A / 开阔区 B 的比值（一个变量都没引入，不需要「两帧对照」）：
+ *   - 关（本用例）：A/B ≈ 0.992（实测基线 134.4 / 135.6 —— stone 顶面中央受柱脚 AO 微暗）
+ *   - 开：A/B ≈ 0.670（实测阴影值 90.8 / 135.6）
+ * 阈值取 **0.85**（与用例 2 同阈同口径，VSM 实测两侧余量均 >20%）。
+ * ⚠️ 正向对照必须同屏存在：第一次读在**开阴影**下断言 A/B < 0.85（证明本相机与取样点真的
+ * 看得到影子），再关掉断言 A/B > 0.85。缺了正向对照，「比值 > 0.85」可能因**根本没渲出影子**
+ * 而恒真（无效盲区）。
+ */
+test('构造选项可关（URL 入口 ?shadows=0）：getter 为 false 且像素无影', async ({ page }) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize({ width: 640, height: 480 });
+  await page.goto(SHADOWS_OFF_URL);
+  await waitWorldSettled(page);
+
+  // ① 接线：URL → main.js → 构造选项 → start() 内的 setShadowsEnabled(false)
+  const st = await page.evaluate(() => {
+    const g = window.__MC_GAME__;
+    return {
+      getter: g.shadowsEnabled,
+      castShadow: g.sunLight.castShadow,
+      flag: g.dayNight.shadowEnabled,
+      uStrength: g.renderWorld.materials.dayNight.uShadowStrength.value,
+    };
+  });
+  expect(st.getter, '?shadows=0 起页后 game.shadowsEnabled 须为 false').toBe(false);
+  expect(st.castShadow, 'sunLight.castShadow 须为 false（停阴影 pass）').toBe(false);
+  expect(st.flag, 'dayNight.shadowEnabled 须为 false（否则日夜循环会覆写回 skyDim）').toBe(false);
+  expect(st.uStrength, 'uShadowStrength 须为 0（视觉零影响）').toBe(0);
+
+  // ② 像素：不碰 uniform，读开关的真实效果
+  const P = 80;
+  const { ox, oz } = await setupShadowPlatform(page, P);
+  const sampleWorld = { A: [ox + 0.5, P + 1.02, oz - 1], B: [ox + 0.5, P + 1.02, oz + 3] };
+  const shot = async (label) => {
+    const r = await measureRegions(page, sampleWorld, null);
+    console.log(`SUN-SHADOW URL ${label}:`, JSON.stringify({
+      A: +r.A.toFixed(1), B: +r.B.toFixed(1), ratioAB: +(r.A / r.B).toFixed(3), px: r.px,
+    }));
+    return r;
+  };
+
+  // 正向对照：开阴影 → 影子必须出现在本相机视野内（否则下面的「无影」断言恒真）
+  await page.evaluate(() => window.__MC_GAME__.setShadowsEnabled(true));
+  const on = await shot('ON (control)');
+  // 被测组：关阴影 → 影区恢复到与开阔区同亮度
+  await page.evaluate(() => window.__MC_GAME__.setShadowsEnabled(false));
+  const off = await shot('OFF (url entry)');
+
+  // sanity：两区都须正常照亮（否则测的是黑屏，比值断言恒真 = 无效盲区）
+  expect(off.A, `影区须正常照亮：${off.A.toFixed(1)}`).toBeGreaterThan(40);
+  expect(off.B, `开阔区须正常照亮：${off.B.toFixed(1)}`).toBeGreaterThan(40);
+  // 正向对照：本判据真的看得到影子（VSM 实测 0.670，阈值同用例 2）
+  expect(on.A / on.B,
+    `对照：开阴影时影区须显著暗于开阔区（证明判据有效）：A=${on.A.toFixed(1)} B=${on.B.toFixed(1)}`)
+    .toBeLessThan(0.85);
+  // 被测组：关阴影后影区与开阔区同亮度（无影实测 0.992）
+  expect(off.A / off.B,
+    `?shadows=0 起页后影区须无影（A/B > 0.85，实测 0.992）：A=${off.A.toFixed(1)} B=${off.B.toFixed(1)}`)
+    .toBeGreaterThan(0.85);
+
+  await page.evaluate(() => window.__MC_GAME__.popModal('tier4-shadow'));
+});
+
+/**
+ * 重新开启后阴影恢复（Task 5）：`setShadowsEnabled(true)` 须置 `needsUpdate = true`
+ * 且像素差异真的回来。
+ *
+ * 只断言 `needsUpdate` 不够 —— 它只证明「请求了重渲」，证不了重渲出的 map 真的被采样到
+ * （DR-5 是 autoUpdate=false：不置 needsUpdate 则重开也永远沿用旧 map —— 上面用例已实测
+ * 到「残留 map 会一直被采样」这一半，本条钉的是另一半「重开能让 map 跟上当前世界」）。
+ * 像素判据沿用 A/B 比值（同屏对照，无需碰 uniform）：开 ≈0.670 / 关 ≈0.992，阈值 0.85。
+ */
+test('重新开启后阴影恢复：needsUpdate 置位且像素差异回来', async ({ page }) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize({ width: 640, height: 480 });
+  await page.goto(URL);   // 默认开
+  await waitWorldSettled(page);
+
+  const P = 80;
+  const { ox, oz } = await setupShadowPlatform(page, P);
+  const sampleWorld = { A: [ox + 0.5, P + 1.02, oz - 1], B: [ox + 0.5, P + 1.02, oz + 3] };
+
+  // 基线：关阴影 → 无影参考
+  await page.evaluate(() => window.__MC_GAME__.setShadowsEnabled(false));
+  const off = await measureRegions(page, sampleWorld, null);
+  // 再开回来：needsUpdate 必须在**同一次 evaluate 内同步读**（渲染帧会把它清掉 ——
+  // 重置点在渲染后，异步读会读到 false 假阴性）
+  const on = await page.evaluate(() => {
+    const g = window.__MC_GAME__;
+    g.setShadowsEnabled(true);
+    return {
+      needsUpdate: g.sunLight.shadow.needsUpdate,
+      castShadow: g.sunLight.castShadow,
+      getter: g.shadowsEnabled,
+      uStrength: g.renderWorld.materials.dayNight.uShadowStrength.value,
+      skyDim: g.dayNight.params.skyDim,
+    };
+  });
+  expect(on.needsUpdate, '重新开启须置 sunLight.shadow.needsUpdate = true（DR-5 autoUpdate=false）').toBe(true);
+  expect(on.castShadow).toBe(true);
+  expect(on.getter).toBe(true);
+  expect(on.uStrength, '浓度须恢复为当前 skyDim（noon=1）').toBeCloseTo(on.skyDim, 6);
+  // 等 needsUpdate 被帧循环消费 → map 重渲完整
+  const back = await measureRegions(page, sampleWorld, null);
+  console.log('SUN-SHADOW RE-ENABLE TIER4:', JSON.stringify({
+    off: { A: +off.A.toFixed(1), B: +off.B.toFixed(1) },
+    on: { A: +back.A.toFixed(1), B: +back.B.toFixed(1) },
+    ratioAB_off: +(off.A / off.B).toFixed(3), ratioAB_on: +(back.A / back.B).toFixed(3), px: back.px,
+  }));
+
+  // sanity + 正向对照：关闭态两区同亮，开启态影区显著变暗（阈值同用例 2 的 0.85）
+  expect(off.A, `关阴影时影区须正常照亮：${off.A.toFixed(1)}`).toBeGreaterThan(40);
+  expect(off.A / off.B,
+    `关阴影时须无影（A/B > 0.85，实测 0.992）：A=${off.A.toFixed(1)} B=${off.B.toFixed(1)}`)
+    .toBeGreaterThan(0.85);
+  expect(back.A / back.B,
+    `重新开启后影区须显著变暗（A/B < 0.85，实测 0.670）：A=${back.A.toFixed(1)} B=${back.B.toFixed(1)}`)
+    .toBeLessThan(0.85);
+
+  await page.evaluate(() => window.__MC_GAME__.popModal('tier4-shadow'));
 });

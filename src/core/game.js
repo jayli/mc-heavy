@@ -78,10 +78,14 @@ export class Game {
    * @param {boolean} [opts.blurMipmap] blur 档位（§4.4.1）：atlas 开 mipmap 消远处莫尔纹
    * @param {'auto'|'high'|'low'} [opts.budgetProfile] 帧预算档位覆盖（M3-2；默认 auto）
    * @param {'rain'|'clear'|null} [opts.startWeather] 启动即强制天气（M3-3 调试/测试；null 自动周期）
+   * @param {boolean} [opts.shadows] 太阳阴影总开关（DR-7，默认 true）。false = 启动即关
+   *   （停阴影 pass + uShadowStrength=0）—— `?shadows=0` URL 入口（main.js）与测试隔离都走这里；
+   *   运行时切换用 `setShadowsEnabled()`（本选项只在 start() 消费一次）。
    * @param {Object} [opts.settings] 生效设置（main.js resolveSettings 结果；缺省 start() 内自行合并）
    */
-  constructor({ canvas, registry, seed = null, viewDistance = 8, hudRoot, blurMipmap = false, budgetProfile = 'auto', startWeather = null, settings = null }) {
+  constructor({ canvas, registry, seed = null, viewDistance = 8, hudRoot, blurMipmap = false, budgetProfile = 'auto', startWeather = null, shadows = true, settings = null }) {
     this._settings = settings;
+    this._shadowsOption = shadows;
     this.registry = registry;
     this.seed = seed; // null → start() 中无存档时 randomSeed()（有存档恒读存档）
     this.viewDistance = viewDistance;
@@ -267,7 +271,10 @@ export class Game {
     this.editor = new WorldEditor({ world: this.world, scheduler: this.scheduler, persistence: this.persistence });
     // DR-5 按需刷新的第一个请求源：世界编辑（block-changed 唯一入口 → 放/挖/枪械破坏/
     // TNT/炮塔全覆盖）。`request()` 只置挂起标志，真正刷新由帧循环 tick 按 200ms 节流放行。
-    this.editor.subscribe(() => this.shadowScheduler.request());
+    // ⚠️ **同样判 `castShadow`**（与 onSunDirection / 移动阈值同一不变式）：本回调曾漏门控，
+    // 而消费端当时也未门控 → 关阴影后每次放/挖仍刷阴影（实测 drawCalls 168→402）。
+    // 消费端已补**单点权威兜底**（帧循环处），此处门控是纵深防御 + 不变式文档化。
+    this.editor.subscribe(() => { if (this.sunLight.castShadow) this.shadowScheduler.request(); });
 
     // ---- M5：实体运行时装配 ----
     // EntityManager 是动态实体 state 的唯一权威；column 索引/generation 全是派生缓存（红线 1）。
@@ -587,6 +594,12 @@ export class Game {
     if (this.settings.gunBlockDamage) this.setGunBlockDamage(true);
     // 启动应用 TNT 破坏开关（M8：默认 false 已是 `canTntDestroyBlocks` 初值，仅 true 时需调）
     if (this.settings.tntDamage) this.setTntBlockDamage(true);
+    // 启动应用阴影开关（DR-7；默认开，仅关时需调）。**必须在 sunLight 与 dayNight 都就绪后**
+    // —— `setShadowsEnabled` 同时写三处：renderWorld 材质的 uShadowStrength、sunLight.castShadow、
+    // dayNight.shadowEnabled；本行已是 start() 尾部（三者早已创建）。
+    // ⚠️ 此处默认开（不无条件调用）：`setShadowsEnabled(true)` 会置 `needsUpdate = true`，
+    // 而「默认开」路径的重渲早已由 start() 中段的首次 needsUpdate 覆盖。
+    if (!this._shadowsOption) this.setShadowsEnabled(false);
     this.worldReady = true;
 
     window.addEventListener('resize', () => this._onResize());
@@ -715,7 +728,20 @@ export class Game {
       this.explosionSprite.update(nowMs);
       // DR-5 按需刷新：节流放行时才置 needsUpdate（必须在 render 之前 —— ShadowNode 的
       // updateBefore 在本帧渲染前读它）。tick 内部已消费 pending 并记录时刻。
-      if (this.shadowScheduler.tick(nowMs)) this.sunLight.shadow.needsUpdate = true;
+      // ⚠️ **`tick()` 必须在前、`castShadow` 在后**，两侧顺序是**载荷性的，勿交换**：
+      //   · `tick()` 在前：关阴影期间 pending 仍被正常消费（不残留）—— sun-shadow.spec 用例 6 的
+      //     观测口径就是「窗口内采样 `_pending` 恒 false」，残留 true 会使它确定性 FAIL（实测）。
+      //   · `castShadow` 在后：关阴影时不置 needsUpdate（**零开销**）。
+      // 这是「关阴影 = 零开销」的**单点权威兜底**（Ruling (i) 补全）。三个请求源
+      // （editor.subscribe / 帧循环移动阈值 / onSunDirection）各自的门控是纵深防御，但漏一个就复发
+      // —— 且实测确实漏过：editor.subscribe（:274）与本消费端曾**双双无门控** → 关阴影后每次
+      // 放/挖仍触发阴影 pass（vd=4 实测 drawCalls 168→402，每轮 +3 render = renderShadow + 2×vsmPass）。
+      // 门控放在**成本真正发生的那一点**（置 needsUpdate），对现有与未来所有请求源一次生效。
+      // 交换写法的实测后果：`castShadow && tick()` → tick 被短路完全不跑 → `_pending` 永久残留 →
+      // 用例 6 观测到 46/46、47/47 次 pending（5/5 FAIL）。
+      if (this.shadowScheduler.tick(nowMs) && this.sunLight.castShadow) {
+        this.sunLight.shadow.needsUpdate = true;
+      }
       this.renderer.render(this.scene, this.camera);
       // info 在每帧 render 前被 autoReset 清零，render 后捕获才是本帧真实值
       // （HUD/测试异步读取 renderer.info 会撞上重置点，必须在此快照）
