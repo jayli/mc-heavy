@@ -188,17 +188,23 @@ test('接线：shadowMap 开关 + sunLight 阴影相机 + 三通道 cast/receive
   expect(s.mapSize).toEqual([256, 256]);
   expect(s.cam).toEqual({ left: -30, right: 30, top: 30, bottom: -30, near: 0.1, far: 250 });
   // VSM 口径（DR-4b）：不吃 bias/normalBias（mc-lite 的 0.00008 / 0.048 不移植），
-  // 软化参数是 radius + blurSamples（实测出影值 4 / 8）。
-  expect(s.radius).toBeCloseTo(4, 6);
+  // 软化参数是 radius + blurSamples。**radius = 2.6 是 mc-lite 原值**（Engine.js:182）：
+  // 分支原用 4 是「阴影乘在最终颜色上（影区纯黑）」时代的补偿值，改成「只衰减 skylight
+  // 项 + 地板」后 radius=4 反而把阴影冲淡（实测谷底比值 0.852 vs r=2.6 的 0.726）。
+  expect(s.radius).toBeCloseTo(2.6, 6);
   expect(s.blurSamples).toBe(8);
   expect(s.targetInScene, 'sunLight.target 须加入场景（否则 matrixWorld 不更新）').toBe(true);
-  // DR-2 通道粗粒度：opaque + cutout 投射，transparent 不投射；三通道都接收
+  // DR-2 通道粗粒度：opaque + cutout 投射，transparent（水/玻璃）**既不投射也不接收**。
+  // ⚠️ transparentRecv 必须是 false：VSM 档位的阴影 pass 判据是 `castShadow ||
+  // (receiveShadow && VSM)`（three.webgpu.js:44682）—— receive=true 会把水/玻璃几何渲进
+  // 阴影深度图 → 照样投影；且材质的 shadow() 节点不受 receiveShadow 门控（只门控灯光
+  // 管线，three.webgpu.js:46101）→ 水面照样被压暗。mc-lite 对 water/glass 也是双 false。
   expect(s.opaqueCast).toBe(true);
   expect(s.cutoutCast).toBe(true);
   expect(s.transparentCast).toBe(false);
   expect(s.opaqueRecv).toBe(true);
   expect(s.cutoutRecv).toBe(true);
-  expect(s.transparentRecv).toBe(true);
+  expect(s.transparentRecv).toBe(false);
   expect(s.hasShadowStrength, 'dayNight.uShadowStrength 句柄须恒存在').toBe(true);
   expect(s.shadowStrengthValue, 'noon 时 uShadowStrength 须为 1（skyDim=1，Task 2 写入生效）').toBe(1);
 
@@ -247,7 +253,22 @@ test('接线：shadowMap 开关 + sunLight 阴影相机 + 三通道 cast/receive
  *     `GPUValidationError: [Texture "ShadowDepthTexture"] usage (TextureBinding|RenderAttachment)
  *     includes writable usage and another usage in the same synchronization scope` → 整个
  *     CommandBuffer 失效。**闸门失败 → 用户拍板改 VSM（DR-4b）。**
- * 阈值取 0.85（暗 ≥15%）：VSM 实测 0.675，余量 (0.85-0.675)/0.675 ≈ 26% > 20%（不贴线）。
+ *
+ * ⚠️ **上面的 0.675 是「阴影乘在最终颜色上」时代的数值，已作废**（用户实玩报告「阴影部分
+ * 黑乎乎一片」）。旧判据只有上界 `< 0.85`，而**纯黑（0.675）也满足「比基线暗」** →
+ * 该断言**结构上就抓不到这个缺陷**（负向验证实测：把 SHADOW_FLOOR 改回 0 后 ratioA=0.122
+ * —— 影区几乎纯黑 —— 本用例仍全绿）。故现在用**双侧**判据钉住地板：
+ *   上界 0.85（阴影真的存在）+ **下界 0.5（影区不得归零）**。
+ *
+ * 实测数据（2026-10-14 地板修复后，radius=2.6 / SHADOW_FLOOR=0.5）：
+ *   - baseline（strength=0）：A=134.4 / B=135.6
+ *   - shadowed（strength=1）：A=**98.9** / B=135.6
+ *   - **ratioA = 0.735 / ratioB = 1.000**，0 个 GPU 错误
+ *   - 负向对照（SHADOW_FLOOR=0，即旧的乘到纯黑行为）：**ratioA = 0.122**
+ *   - 0.735 与 mc-lite 的理论影区亮度 0.71（ambient 2.3/(2.3+sun 3.2×NdotL 0.8)=0.4733 线性
+ *     → sRGB 0.71）几乎重合 → 地板值 0.5 对齐上游观感。
+ * 阈值：上界 0.85（实测 0.735，余量 13.6%）；**下界 0.5**（实测 0.735 余量 32%，
+ * 而破坏态 0.122 在阈值下方 4× → 两侧都不贴线，且能真实区分修好/改坏）。
  * 区 B 阈值取 0.95：影外像素理论上比值恒 1.0（实测恰为 1.000），留 5% 吸收截图噪声。
  */
 test('Tier 4 有影：俯视均匀平台上石柱影子落在 -Z 侧，且开阔区不受影响', async ({ page }) => {
@@ -278,10 +299,18 @@ test('Tier 4 有影：俯视均匀平台上石柱影子落在 -Z 侧，且开阔
   expect(off.A, `影区基线须正常照亮：${off.A.toFixed(1)}`).toBeGreaterThan(40);
   expect(off.B, `开阔区基线须正常照亮：${off.B.toFixed(1)}`).toBeGreaterThan(40);
 
-  // ① 影区须显著变暗（阈值 0.85 = 暗 ≥15%；VSM 实测 0.675，余量 26%）
+  // ① 影区须显著变暗（上界 0.85 = 暗 ≥15%；实测 0.735）
   expect(on.A / off.A,
     `影区（柱 -Z 侧）须显著暗于自身基线：baseline=${off.A.toFixed(1)} shadowed=${on.A.toFixed(1)}`)
     .toBeLessThan(0.85);
+  // ①b **影区不得归零（下界 0.5）** —— 这条才是「黑乎乎一片」的真正判据。
+  // 只有上界时，把阴影乘在最终颜色上（影区 ×0 → 纯黑）也能全绿：负向验证实测
+  // SHADOW_FLOOR=0 时 ratioA=0.122（几乎纯黑）而旧断言仍 PASS。
+  // 地板语义：阴影只衰减 skylight 项且最低保留 SHADOW_FLOOR（对齐 mc-lite 的环境光填充：
+  // 它的阴影只拿走方向光贡献，AmbientLight(2.3) 不受影响 → 影区是「暗一档」而非全黑）。
+  expect(on.A / off.A,
+    `影区不得归零（阴影只衰减 skylight 项 + 地板 SHADOW_FLOOR）：baseline=${off.A.toFixed(1)} shadowed=${on.A.toFixed(1)} ratio=${(on.A / off.A).toFixed(3)}`)
+    .toBeGreaterThan(0.5);
   // ② 开阔区须几乎不变 —— 这条抓住「全屏压暗/黑屏」的失败形态
   //    （PCFSoft 下整个接收面归零，区 B 比值 = 0 → 本断言 FAIL）
   expect(on.B / off.B,
@@ -532,8 +561,9 @@ test('阴影关闭后日夜循环不再请求刷新（onSunDirection 的 castSha
  *
  * 像素判据 = **同一次截图内**影区 A / 开阔区 B 的比值（一个变量都没引入，不需要「两帧对照」）：
  *   - 关（本用例）：A/B ≈ 0.992（实测基线 134.4 / 135.6 —— stone 顶面中央受柱脚 AO 微暗）
- *   - 开：A/B ≈ 0.670（实测阴影值 90.8 / 135.6）
- * 阈值取 **0.85**（与用例 2 同阈同口径，VSM 实测两侧余量均 >20%）。
+ *   - 开：A/B ≈ **0.729**（实测阴影值 98.9 / 135.6；地板修复后口径，旧值 0.670 已作废）
+ * 阈值取 **0.85**（与用例 2 同阈同口径）；正向对照同时钉**下界 0.5**（同用例 2 的①b：
+ * 只有上界时「影区纯黑」也能全绿，抓不到地板失效）。
  * ⚠️ 正向对照必须同屏存在：第一次读在**开阴影**下断言 A/B < 0.85（证明本相机与取样点真的
  * 看得到影子），再关掉断言 A/B > 0.85。缺了正向对照，「比值 > 0.85」可能因**根本没渲出影子**
  * 而恒真（无效盲区）。
@@ -581,10 +611,13 @@ test('构造选项可关（URL 入口 ?shadows=0）：getter 为 false 且像素
   // sanity：两区都须正常照亮（否则测的是黑屏，比值断言恒真 = 无效盲区）
   expect(off.A, `影区须正常照亮：${off.A.toFixed(1)}`).toBeGreaterThan(40);
   expect(off.B, `开阔区须正常照亮：${off.B.toFixed(1)}`).toBeGreaterThan(40);
-  // 正向对照：本判据真的看得到影子（VSM 实测 0.670，阈值同用例 2）
+  // 正向对照：本判据真的看得到影子（实测 0.729，阈值同用例 2）+ 不得归零（下界同用例 2 的①b）
   expect(on.A / on.B,
     `对照：开阴影时影区须显著暗于开阔区（证明判据有效）：A=${on.A.toFixed(1)} B=${on.B.toFixed(1)}`)
     .toBeLessThan(0.85);
+  expect(on.A / on.B,
+    `对照：开阴影时影区不得归零（地板 SHADOW_FLOOR 生效）：A=${on.A.toFixed(1)} B=${on.B.toFixed(1)}`)
+    .toBeGreaterThan(0.5);
   // 被测组：关阴影后影区与开阔区同亮度（无影实测 0.992）
   expect(off.A / off.B,
     `?shadows=0 起页后影区须无影（A/B > 0.85，实测 0.992）：A=${off.A.toFixed(1)} B=${off.B.toFixed(1)}`)
@@ -600,7 +633,8 @@ test('构造选项可关（URL 入口 ?shadows=0）：getter 为 false 且像素
  * 只断言 `needsUpdate` 不够 —— 它只证明「请求了重渲」，证不了重渲出的 map 真的被采样到
  * （DR-5 是 autoUpdate=false：不置 needsUpdate 则重开也永远沿用旧 map —— 上面用例已实测
  * 到「残留 map 会一直被采样」这一半，本条钉的是另一半「重开能让 map 跟上当前世界」）。
- * 像素判据沿用 A/B 比值（同屏对照，无需碰 uniform）：开 ≈0.670 / 关 ≈0.992，阈值 0.85。
+ * 像素判据沿用 A/B 比值（同屏对照，无需碰 uniform）：开 ≈**0.729** / 关 ≈0.992，阈值 0.85
+ * （地板修复后口径；旧值 0.670 已作废）+ 下界 0.5（同用例 2 的①b）。
  */
 test('重新开启后阴影恢复：needsUpdate 置位且像素差异回来', async ({ page }) => {
   test.setTimeout(180_000);
@@ -646,8 +680,178 @@ test('重新开启后阴影恢复：needsUpdate 置位且像素差异回来', as
     `关阴影时须无影（A/B > 0.85，实测 0.992）：A=${off.A.toFixed(1)} B=${off.B.toFixed(1)}`)
     .toBeGreaterThan(0.85);
   expect(back.A / back.B,
-    `重新开启后影区须显著变暗（A/B < 0.85，实测 0.670）：A=${back.A.toFixed(1)} B=${back.B.toFixed(1)}`)
+    `重新开启后影区须显著变暗（A/B < 0.85，实测 0.729）：A=${back.A.toFixed(1)} B=${back.B.toFixed(1)}`)
     .toBeLessThan(0.85);
+  // 下界（同用例 2 的①b）：重开后影区不得归零 —— 地板 SHADOW_FLOOR 生效
+  expect(back.A / back.B,
+    `重新开启后影区不得归零（地板 SHADOW_FLOOR 生效）：A=${back.A.toFixed(1)} B=${back.B.toFixed(1)}`)
+    .toBeGreaterThan(0.5);
 
   await page.evaluate(() => window.__MC_GAME__.popModal('tier4-shadow'));
+});
+
+/**
+ * 用例 9（Tier 4）：**阴影刷新不得让阴影视锥外的几何整帧消失**（远端闪烁回归门）。
+ *
+ * 被测缺陷（three r185.1 上游）：BatchedMesh 的主 pass 与阴影 pass **共用一份** multi-draw
+ * 列表（`_multiDrawStarts/_multiDrawCounts/_multiDrawCount/_indirectTexture`）。帧内顺序：
+ * 主 `onBeforeRender(主相机)` 建列表 → 阴影 pass `onBeforeShadow` → `onBeforeRender(阴影相机)`
+ * **覆写同一列表**（只剩 ±30 视锥内的 instance）→ 主 `backend.draw` 读到被覆写的列表
+ * → 阴影视锥外的几何该帧不绘制 → 透出天空。修法 = `render-world.js _installShadowListGuard`
+ * （阴影 pass 前快照、后恢复）。
+ *
+ * **几何口径**：平台铺在 y=80（玩家被挪到平台上 → 阴影相机居中于此），采样点沿 -Z 排到
+ * 56~90 格 —— 全部在阴影相机 ±30 视锥**外**、但在主相机视锥**内**（正是缺陷的触发区）。
+ * 每 200ms 强制一次 `shadow.needsUpdate`（与真实日夜循环的刷新节奏同量级），逐帧读像素。
+ *
+ * **实测口径**（探针 P22/P23，200 帧 / 9 次强制刷新）：
+ *   · 修法在位：5 个采样点 sd=0、range=0、jumps=0（逐帧逐位相同）
+ *   · 去掉修法：sd=11.05~11.71、range=53~56、jumps=18，且亮帧值恒为 **192**
+ *     == noon 天空亮度 (135+206+235)/3 → 证明该帧几何确实消失而非「变亮」
+ * 阈值取 jumps ≤ 3 / sd < 2 / range < 3：与破坏态（18 / 11 / 53）差一个数量级，不贴线。
+ *
+ * ⚠️ 本用例用 `drawImage` 逐帧读 canvas（`page.screenshot()` 太慢，抓不到单帧闪烁）——
+ * 实测本环境 WebGPU swapchain canvas 可被 2D drawImage 读取（读到真实亮度值，非 0）。
+ */
+test('阴影刷新不得让视锥外几何整帧消失（远端闪烁回归门）', async ({ page }) => {
+  test.setTimeout(300_000);
+  await page.setViewportSize({ width: 800, height: 600 });
+  // vd=8：采样点最远 90 格，须真的加载出几何（vd=2 下平台不加载 → 采样恒为天空，用例失效）
+  await page.goto('/?vd=8&seed=12345&weather=clear');
+  await waitWorldSettled(page);
+
+  const PY = 80;
+  const DISTANCES = [56, 60, 70, 80, 90];
+
+  // 铺平台：清上空 → 全 stone 平台（同材质同高度，消除材质差异变量）→ 每 10 格一根 3 格石柱
+  await page.evaluate((PY) => {
+    const g = window.__MC_GAME__;
+    const p = g.player.physics.pos;
+    const ox = Math.floor(p.x), oz = Math.floor(p.z);
+    const stone = g.registry.idOf('stone');
+    for (let y = PY + 1; y <= PY + 20; y++)
+      for (let dx = -8; dx <= 8; dx++) for (let dz = -110; dz <= 8; dz++)
+        if (g.world.getBlockId(ox + dx, y, oz + dz) !== 0) g.editor.setBlock({ x: ox + dx, y, z: oz + dz, id: 0 });
+    for (let dx = -8; dx <= 8; dx++) for (let dz = -110; dz <= 8; dz++)
+      g.editor.setBlock({ x: ox + dx, y: PY, z: oz + dz, id: stone });
+    for (let dz = -10; dz >= -100; dz -= 10)
+      for (let dy = 1; dy <= 3; dy++) g.editor.setBlock({ x: ox, y: PY + dy, z: oz + dz, id: stone });
+  }, PY);
+  await waitWorldSettled(page);
+
+  // 相机/光源/采样点就位（冻结太阳方向 → 唯一变化源是强制刷新，隔离变量）
+  const meta = await page.evaluate(({ PY, DISTANCES }) => {
+    const g = window.__MC_GAME__;
+    const p = g.player.physics.pos;
+    const ox = Math.floor(p.x), oz = Math.floor(p.z);
+    g.dayNight.setStyle('noon');
+    // 玩家挪到平台上 → 光源跟随把阴影相机居中到平台（采样点因此落在 ±30 视锥外）
+    p.x = ox + 0.5; p.y = PY + 1; p.z = oz + 0.5;
+    g._lastShadowPos = { x: p.x, y: p.y, z: p.z };
+    g._updateSunPosition();
+    g.pushModal('tier4-flicker');
+    for (const el of document.querySelectorAll('#hud-root > *, #crosshair, #settings-btn')) el.style.display = 'none';
+    g.camera.up.set(0, 1, 0);
+    g.camera.position.set(ox + 0.5, PY + 46, oz + 4);
+    g.camera.lookAt(ox + 0.5, PY + 1, oz - 60);
+    g.camera.updateMatrixWorld();
+    g.camera.updateProjectionMatrix();
+    const project = (w) => {
+      const v = new g.camera.position.constructor(w[0], w[1], w[2]);
+      v.project(g.camera);
+      return { x: Math.round((v.x * 0.5 + 0.5) * window.innerWidth), y: Math.round((-v.y * 0.5 + 0.5) * window.innerHeight) };
+    };
+    // 采样点须在阴影相机视锥外（缺陷触发区）—— 用 three 真实 shadow.matrix 判定，不靠距离估算
+    const V = g.camera.position.constructor;
+    const screen = DISTANCES.map((d) => {
+      const w = [ox + 3.5, PY + 1.02, oz - d + 0.5];
+      const sv = new V(w[0], w[1], w[2]).applyMatrix4(g.sunLight.shadow.matrix);
+      const inShadowFrustum = sv.x >= 0 && sv.x <= 1 && sv.y >= 0 && sv.y <= 1 && sv.z <= 1;
+      return { d, inShadowFrustum, ...project(w) };
+    });
+    // 守卫接线检查：投影通道的 onBeforeShadow 须已被覆写（不是 Object3D 的空实现）
+    const guarded = [];
+    g.scene.traverse((o) => {
+      if (o.isBatchedMesh && o.castShadow) guarded.push(o.onBeforeShadow !== o.constructor.prototype.onBeforeShadow);
+    });
+    return { screen, guarded };
+  }, { PY, DISTANCES });
+
+  // 前提断言：采样点确实全部在阴影视锥外（否则本用例测不到缺陷区，恒真）
+  expect(meta.screen.every((s) => s.inShadowFrustum === false),
+    `采样点须全部落在阴影相机视锥外（缺陷触发区）：${JSON.stringify(meta.screen.map((s) => [s.d, s.inShadowFrustum]))}`)
+    .toBe(true);
+  expect(meta.guarded.length, '须有投影通道的 BatchedMesh').toBeGreaterThan(0);
+  expect(meta.guarded.every(Boolean),
+    `投影通道须装 multi-draw 列表守卫（render-world.js _installShadowListGuard）：${JSON.stringify(meta.guarded)}`)
+    .toBe(true);
+
+  await page.evaluate((m) => { window.__MC_FLICKER_PTS__ = m.screen; }, meta);
+  await waitWorldSettled(page);
+  await page.waitForTimeout(3000);
+
+  // 逐帧采样 + 每 200ms 强制一次阴影刷新
+  const r = await page.evaluate(() => {
+    const g = window.__MC_GAME__;
+    const src = g.renderer.domElement;
+    const pts = window.__MC_FLICKER_PTS__;
+    const cv = document.createElement('canvas');
+    cv.width = 8; cv.height = 8;
+    const ctx = cv.getContext('2d', { willReadFrequently: true });
+    const read = (p) => {
+      if (!p || p.x < 4 || p.y < 4 || p.x >= src.width - 4 || p.y >= src.height - 4) return null;
+      ctx.drawImage(src, p.x - 4, p.y - 4, 8, 8, 0, 0, 8, 8);
+      const d = ctx.getImageData(0, 0, 8, 8).data;
+      let s = 0;
+      for (let i = 0; i < d.length; i += 4) s += (d[i] + d[i + 1] + d[i + 2]) / 3;
+      return s / (d.length / 4);
+    };
+    const nFrames = 200;
+    const series = pts.map(() => []);
+    let n = 0, forced = 0, lastForce = -1e9;
+    return new Promise((resolve) => {
+      const tick = () => {
+        const now = performance.now();
+        if (now - lastForce >= 200) { g.sunLight.shadow.needsUpdate = true; lastForce = now; forced++; }
+        for (let i = 0; i < pts.length; i++) {
+          const v = read(pts[i]);
+          if (v !== null) series[i].push(v);
+        }
+        if (++n < nFrames) requestAnimationFrame(tick);
+        else {
+          const out = pts.map((p, i) => {
+            const a = series[i];
+            if (!a.length) return { d: p.d, n: 0 };
+            const mean = a.reduce((s, v) => s + v, 0) / a.length;
+            const sd = Math.sqrt(a.reduce((s, v) => s + (v - mean) * (v - mean), 0) / a.length);
+            let jumps = 0;
+            for (let k = 1; k < a.length; k++) if (Math.abs(a[k] - a[k - 1]) > 1.5) jumps++;
+            return { d: p.d, n: a.length, mean: +mean.toFixed(1), sd: +sd.toFixed(2), range: +(Math.max(...a) - Math.min(...a)).toFixed(1), jumps };
+          });
+          resolve({ forced, out });
+        }
+      };
+      requestAnimationFrame(tick);
+    });
+  });
+
+  console.log('SUN-SHADOW FAR-FLICKER:', JSON.stringify(r));
+
+  // sanity floor：采样点须真的读到几何（不是天空/黑屏）—— 否则「零变化」是恒真
+  const sampled = r.out.filter((o) => o.n > 0);
+  expect(sampled.length, '至少须有一个采样点入画').toBeGreaterThan(0);
+  for (const o of sampled) {
+    expect(o.mean, `d=${o.d} 须读到平台几何而非天空（天空≈192）`).toBeLessThan(170);
+    expect(o.mean, `d=${o.d} 须非黑屏`).toBeGreaterThan(40);
+  }
+  // 刷新确实发生了（否则本用例没测到东西）
+  expect(r.forced, '扫描期内须真的强制刷新过阴影').toBeGreaterThan(3);
+  // 主判据：视锥外几何在刷新帧不得消失
+  for (const o of sampled) {
+    expect(o.jumps, `d=${o.d} 不得出现单帧亮度跳变（破坏态实测 18 次）：${JSON.stringify(o)}`).toBeLessThanOrEqual(3);
+    expect(o.sd, `d=${o.d} 亮度须逐帧稳定（破坏态实测 sd≈11）：${JSON.stringify(o)}`).toBeLessThan(2);
+    expect(o.range, `d=${o.d} 亮度极差须小（破坏态实测 53~56 = 透出天空）：${JSON.stringify(o)}`).toBeLessThan(3);
+  }
+
+  await page.evaluate(() => window.__MC_GAME__.popModal('tier4-flicker'));
 });

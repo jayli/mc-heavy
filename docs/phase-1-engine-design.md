@@ -1,6 +1,6 @@
 # mc-heavy 第一阶段实施设计文档：游戏引擎原型
 
-> 版本：v1.44 ｜ 日期：2026-10-13 ｜ 状态：定稿（经十五轮逐条核验修订 + M3.2 实施回填 + 异形方块渲染勘误 + 背包物品集合口径 + 吊灯材质自发光 + 吊灯 UV 分区 + 背包图标表 + 等轴测图标 + 测试分级策略与静态门禁 + 全量背包图标离线烘焙 + 背包槽位点选抖动修复 + 等轴测图标遮挡修复 + 删除缓存按钮 + 沼泽睡莲水洞与沉水修复 + AO 去掉对角门控 + 设置面板两列布局与档位精简 + M8 TNT/炮塔的三项架构口径变更 + M9 创造台的两项架构口径变更 + 水面遮罩判据的两项架构口径变更 + 天空树回补与 sky_leaves 通道修正 + 进度包导入导出 + 太阳阴影 shadow map）
+> 版本：v1.45 ｜ 日期：2026-10-14 ｜ 状态：定稿（经十五轮逐条核验修订 + M3.2 实施回填 + 异形方块渲染勘误 + 背包物品集合口径 + 吊灯材质自发光 + 吊灯 UV 分区 + 背包图标表 + 等轴测图标 + 测试分级策略与静态门禁 + 全量背包图标离线烘焙 + 背包槽位点选抖动修复 + 等轴测图标遮挡修复 + 删除缓存按钮 + 沼泽睡莲水洞与沉水修复 + AO 去掉对角门控 + 设置面板两列布局与档位精简 + M8 TNT/炮塔的三项架构口径变更 + M9 创造台的两项架构口径变更 + 水面遮罩判据的两项架构口径变更 + 天空树回补与 sky_leaves 通道修正 + 进度包导入导出 + 太阳阴影 shadow map + 阴影混合模型对齐 mc-lite）
 >
 > 目标：在 mc-heavy 仓库从零重建一个功能对标 mc-lite、性能提升一个数量级的体素游戏引擎。
 > 第一阶段只做"引擎底座"：渲染、体素数据、即时地图生成、玩家交互、种子地图、存档原型。
@@ -1193,6 +1193,49 @@
 > （接线 / Tier 4 有影 / 光源跟随 / 关阴影不被日夜覆写 / 按需刷新 / 门控 / URL 入口 / 重开恢复）。
 > 验收实测数据（Tier 4 亮度比 / drawCalls / 帧时 / 全量 E2E / bench 交替对照 / 负向验证）见 roadmap
 > 独立改动表的 v1.44 行。
+>
+> v1.45 修订说明：**太阳阴影「黑乎乎一片」修复 —— 混合模型对齐 mc-lite + 逐方块投射排除**
+> （2026-10-14，§4.4.4）。用户实玩报告「阴影的部分都是黑乎乎的一片」，对照 mc-lite 定位到
+> **两个独立缺陷**（都不是参数调得不好，是模型错）。规格
+> `docs/superpowers/specs/2026-10-13-sun-shadow-map-design.md` 的 DR-2 / DR-4 相应条目已作废。
+>
+> ① **阴影因子被乘在最终颜色上 → 影区亮度归零（根因）**。v1.44 的实现是
+> `rgb = texColor.rgb × vShade × shadowFactor`，而 `shadow()` 在影区返回 0 → **整个 rgb 归零**。
+> mc-lite 的体素材质是受光的 `MeshStandardNodeMaterial`（`MaterialManager.js:268`），three 的阴影
+> **只乘在方向光贡献上**，而 `AmbientLight(0xddeeff, 2.3)`（`Engine.js:194`）**不参与阴影** →
+> 影区仍被环境光完整照亮。mc-heavy 是 unlit 管线，`vShade` 里烘焙的 skylight 就是它唯一的「环境光」，
+> 这一乘把它也乘没了 —— **这是两边观感差异的直接来源**。修法见 §4.4.4「接收靠 TSL 节点手动相乘」段
+> （sky/block 分开传片元 + 只衰减 sky 项 + `SHADOW_FLOOR=0.5` 地板 + 两层 mix 嵌套顺序载荷性）。
+> ② **cloud 等 13 种方块被通道级粗粒度误投影**。v1.44 的 DR-2 判断「cloud 在高空、投影可接受」
+> **与 mc-lite 实际口径不符**：mc-lite 明确把 cloud 排除在投影外（`BlockData.isShadowEnabled:false`，
+> 实测解析其 124 键 = 102 项投影 / 20 项不投影）。mc-heavy 的 cloud 在 **opaque 通道**
+> （`blocks-data.js`，M2-7 为修侧面混叠从 transparent 挪过去的）→ 通道级 `castShadow` 让云全部投影，
+> 而 Y=35/55 的云簇完全在阴影相机 far=250 视锥内 → **地面出现大面积移动云影黑斑**。
+> 修法 = 逐方块排除（`shadowCast:false` → `shadowCastTable` → packed bit14 → `maskShadowNode`），
+> 见 §4.4.4「投射是通道级 + 逐方块排除两层」段。
+> ③ **`radius` 从 4 修回 mc-lite 原值 2.6**：4 是缺陷 ① 时代的补偿值（阴影纯黑须糊开才不刺眼），
+> 修好 ① 后 radius=4 反而把阴影冲淡（实测谷底比值 0.852 vs r=2.6 的 0.726，半影宽度两者同为 4/8 点）。
+> ④ **transparent 通道改为 cast + receive 双 false**（v1.44 是 cast=false / receive=true）：
+> VSM 下 `receiveShadow` 的对象也进阴影 pass（`:44682`）→ 水/玻璃**照样投影**；且材质的 `shadow()`
+> 节点不受 `receiveShadow` 门控（该标志只门控灯光管线，`:46101`）→ 水面照样被压暗。mc-lite 对
+> water/glass 也是双 false。连带：transparent 通道的材质**不挂 shadow 因子**（`receivesShadow:false`）。
+> ⑤ **测试口径缺陷（比实现缺陷更值得记）**：v1.44 的 Tier 4 判据只有上界 `ratioA < 0.85`
+> （「影区须比基线暗」），而**纯黑（实测 0.675）也满足这个断言** → 该用例结构上就抓不到缺陷 ①。
+> 负向验证实测：把 `SHADOW_FLOOR` 改回 0（= 旧的乘到纯黑行为）后 `ratioA = 0.122`（影区几乎纯黑），
+> 而旧断言**仍全绿**。故 v1.45 补**下界 `> 0.5`**（实测修好 0.735 / 破坏态 0.122，两侧都不贴线）。
+> 同 `testing-policy.md` §2.7「负向验证盲区」与 CLAUDE.md「写断言前必须先在真实数据上跑一次」。
+>
+> 实测数据（2026-10-14，同一平台/同一相机，只改被测变量）：
+> - 影区比值 `ratioA`：**0.675（v1.44 纯黑）→ 0.735（v1.45 地板 0.5 + radius 2.6）**；
+>   开阔区 `ratioB` 恒 1.000（阴影是局部的，不是全屏压暗）；关阴影 A/B = 0.992（零视觉影响）。
+> - 0.735 与 mc-lite 理论影区亮度 **0.71** 几乎重合（ambient 2.3/(2.3+sun 3.2×NdotL 0.8)=0.4733
+>   线性 → sRGB 0.71）→ 地板值与 radius 都对齐上游观感，不是凑数。
+> - cloud 投影验证：cloud 柱逐点扫描比值**恒 1.000**（dz0/dz1 读到 209/226 = 云柱自身，明亮且不投影），
+>   对照 stone 柱同点位 0.852（radius=4 时）/ 0.726（radius=2.6 时）。
+> - radius 扫描（只改 radius）：r=1 → 0.724 / r=2 → 0.724 / **r=2.6 → 0.726** / r=3 → 0.769 /
+>   r=4 → 0.852 / r=4+bs16 → 0.826；半影宽度 r=2.6 与 r=4 同为 4/8 点（边缘不更硬）；0 个 GPU 错误。
+> - 浏览器内单测 645/645 全绿（含新增 6 条：registry `shadowCastTable` 双向一致 / 13 项排除清单 /
+>   未知 id 防御 / mesher bit14 三向）。
 
 ---
 
@@ -1917,7 +1960,7 @@ half_block（床，1×0.5×1）、hanging_lamp（绳 8 段棱柱 r=0.015 + 灯�
 - 移植 mc-lite Engine 的三套视觉风格（morning/overcast/night）、TSL 天空盒、色调映射与色相偏移。
 - 雾距与视距联动配置（mc-lite 硬编码 FOG_NEAR=30/FAR=70，新引擎按 `renderDistance × 16` 推导）。
 
-**4.4.4 阴影**（v1.44 实测口径，2026-10-13 落地。原规划期估算「贴图 2048 / shadow camera 覆盖半径 =
+**4.4.4 阴影**（v1.45 实测口径，2026-10-13 落地 / 2026-10-14 混合模型修正。原规划期估算「贴图 2048 / shadow camera 覆盖半径 =
 视距的 60% / 投射接收由 BlockRegistry 属性驱动白名单」三项**全部作废**，理由见 v1.44 修订说明）
 
 - **太阳灯 = 复用给枪 PBR 用的那盏 `DirectionalLight`**（`game.js` 的 `sunLight`，原 `weaponSun`），
@@ -1928,16 +1971,48 @@ half_block（床，1×0.5×1）、hanging_lamp（绳 8 段棱柱 r=0.015 + 灯�
   才重定位。
 - **档位 = `VSMShadowMap`，不是 mc-lite 的 `PCFSoftShadowMap`** —— three.js r185.1 WebGPU 后端的
   depth-compare 阴影路径（Basic/PCF/PCFSoft）有 `GPUValidationError` bug，最小独立场景同样复现
-  （v1.44 修订说明 ①）。VSM 不吃 `bias`/`normalBias`，软化参数是 `radius 4` + `blurSamples 8`。
-  ⚠️ 升级 three 前须重测该 bug 是否已修。
-- **投射是通道级，不是 BlockRegistry 逐方块白名单**：`opaque` + `cutout` 两个 BatchedMesh 通道
-  `castShadow = true`，`transparent`（水/玻璃）不投射；三通道全部 `receiveShadow = true`。
-  ⚠️ VSM 下 `receiveShadow` 的对象**也进**阴影 pass（`three.webgpu.js:44682`）→ 实际三通道全进。
-  逐方块投射需改 mesher（packed 位 + `castShadowNode` 逐顶点 discard），是纯额外 GPU 开销而收益
-  （花草不投影）肉眼不可辨 → 不做（DR-2）。
-- **接收靠 TSL 节点手动相乘**：体素材质是 unlit `MeshBasicNodeMaterial`（不吃灯光），故在 colorNode 里乘
-  `mix(float(1), shadow(sunLight), uShadowStrength)`；自发光加项（packed bit13 吊灯）在阴影相乘**之后**
-  （灯在影里照样亮）。`createVoxelMaterials(atlasTexture, sunLight = null)` 的 **null 分支必须保持原路径**
+  （v1.44 修订说明 ①）。VSM 不吃 `bias`/`normalBias`，软化参数是 **`radius 2.6`（mc-lite 原值）+
+  `blurSamples 8`**。⚠️ 升级 three 前须重测该 bug 是否已修。
+  ⚠️ **radius 曾误用 4**（v1.45 修回 2.6）：4 是「阴影乘在最终颜色上（影区纯黑）」时代的补偿值 ——
+  那时须把阴影糊开才不致于全黑；改成「只衰减 skylight 项 + 地板」后 radius=4 反而把阴影冲淡
+  （实测谷底比值 0.852 vs r=2.6 的 0.726，而半影宽度两者同为 4/8 点）。**0.726 与 mc-lite 的理论
+  影区亮度 0.71 几乎重合**（ambient 2.3/(2.3+sun 3.2×NdotL 0.8)=0.4733 线性 → sRGB 0.71）。
+- **投射是「通道级 + 逐方块排除」两层**（v1.45 修订，原 DR-2 的「纯通道级」已作废）：
+  `opaque` + `cutout` 通道 `castShadow = true`，`transparent`（水/玻璃）**cast + receive 双 false**。
+  ⚠️ **transparent 必须 receive 也为 false**：VSM 下阴影 pass 判据是 `castShadow ||
+  (receiveShadow && VSM)`（`three.webgpu.js:44682`）→ receive=true 会把水/玻璃几何渲进阴影深度图
+  （**照样投影**）；且材质的 `shadow()` 节点**不受 `receiveShadow` 门控**（该标志只门控 three 的
+  灯光管线，`three.webgpu.js:46101`）→ 水面照样被压暗。mc-lite 对 water/glass 也是双 false
+  （`GlobalInstancedMeshManager.js:76-84`）。
+  **逐方块排除走 `maskShadowNode`**（不是原 DR-2 预估的 `castShadowNode`）：声明侧
+  `blocks-data.js` 的 `shadowCast:false` → `registry.shadowCastTable` → mesher 写 **packed bit14** →
+  `materials.js` 的 `mat.maskShadowNode = noShadowCastBit.equal(0)` 在**阴影 pass** 逐片元 discard。
+  ⚠️ `maskShadowNode` 只被阴影 pass 消费（`_getShadowNodes`，`three.webgpu.js:62528/62573`），
+  主 pass 的 `setupDiffuseColor` 只读 `maskNode` → **这些方块在主渲染里照常显示，只是不写阴影深度**。
+  ⚠️ `castShadowNode` 不适用：它要求 `shadowMap.transmitted === true`（`:62546` 警告），
+  而 `maskShadowNode` 无此要求。
+  排除清单 = mc-lite `BlockData.isShadowEnabled:false` 的 20 项中**落在 opaque/cutout 通道的 13 项**
+  （cloud / 7 种花草菇 / vine / lilypad / 创造台两项 / hanging_lamp）；其余 7 项在 mc-heavy 走
+  cullMode 'none'/'transparent' 或不是方块 → 通道级已排除。**cloud 是必须项**（Y=35/55 在阴影相机
+  far=250 视锥内 → 地面出现大面积移动云影黑斑；实测修复后 cloud 柱投影比值恒 1.000）。
+- **接收靠 TSL 节点手动相乘，且阴影只衰减 skylight 项**（v1.45 修订 —— 这是「阴影黑乎乎一片」的根因修复）：
+  体素材质是 unlit `MeshBasicNodeMaterial`（不吃灯光），故在 colorNode 里手动乘阴影因子。
+  **混合模型必须对齐 mc-lite**：mc-lite 的体素材质是受光的 `MeshStandardNodeMaterial`
+  （`MaterialManager.js:268`），three 的阴影**只乘在方向光贡献上**，而 `AmbientLight(0xddeeff, 2.3)`
+  （`Engine.js:194`）**不参与阴影** → 影区仍被环境光完整照亮，观感是「暗一档」而非全黑。
+  mc-heavy 的 unlit 管线里 `vShade` 烘焙的 skylight 就是它唯一的「环境光」，**把阴影因子乘在最终
+  颜色上等于把这份环境光也乘没了**（影区 ×0 → 纯黑）。故：
+  - **sky / block 两项分开传片元**（`vSkyShade` / `vBlockShade`；`max(sky,block)×ao ≡
+    max(sky×ao, block×ao)`，ao≥0 → 拆分无损），片元只把阴影因子乘进 sky 项再取 max
+    → **火把照亮的洞穴/室内不会被太阳阴影压暗**（mc-lite 无 blocklight 故无此问题，但语义上
+    太阳阴影本就不该影响点光源照明）；
+  - **影区地板 `SHADOW_FLOOR = 0.5`**（`materials.js` 导出常量）：由 mc-lite 的影区亮度推导
+    （ambient/(ambient+sun·NdotL) = 2.3/(2.3+3.2×0.8) = **0.4733** 顶面 ~ 0.55 侧面，取 0.5）。
+  - **两层 mix 的嵌套顺序是载荷性的**：`mix(1, mix(FLOOR, 1, shadow()), strength)` —— 内层给地板、
+    外层调浓度。⚠️ 写成单层 `mix(FLOOR, 1, shadow() × strength)` 是错的：strength=0 时 mix 取左端
+    = FLOOR → **关掉阴影反而把全世界压到 50% 亮度**，「关阴影 = 零视觉影响」的不变式静默失效。
+  - 自发光加项（packed bit13 吊灯）在阴影相乘**之后**（灯在影里照样亮）。
+  `createVoxelMaterials(atlasTexture, sunLight = null)` 的 **null 分支必须保持原路径**
   （5 个 fixture 不传 sunLight：`test-render-world` / `test-lamp-compare` / `test-sky-tree` /
   `test-ao-corner` / `test-ao`）。⚠️ **灯光必须先于 `RenderWorld` 创建** ——
   `shadow()` 节点在材质构建时固定 light 引用。

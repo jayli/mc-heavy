@@ -565,11 +565,19 @@ M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 
 - **WebGPU 的阴影节流是 per-light 口径**：`light.shadow.autoUpdate` / `light.shadow.needsUpdate`
   （`ShadowNode.updateBefore` 判定），**不是** mc-lite WebGL 的 `renderer.shadowMap.autoUpdate` ——
   后者在本后端不生效。`renderer.shadowMap.enabled = true` 仍是硬门控（否则 castShadow 被忽略）。
-- **VSM 下 receiveShadow 的对象也进阴影 pass**（`three.webgpu.js:44682`）→ 三通道全进（不只 cast
-  的两个）。后果：**重渲帧 drawCalls 尖峰**（vd=2 +220 / vd=8 +110），稳态零增量（按需刷新生效时
+- **VSM 下 receiveShadow 的对象也进阴影 pass**（`three.webgpu.js:44682` 判据 `castShadow ||
+  (receiveShadow && VSM)`）→ opaque + cutout 两通道全进（v1.45 起 transparent 已改双 false，
+  见下条）。后果：**重渲帧 drawCalls 尖峰**（vd=2 +220 / vd=8 +110），稳态零增量（按需刷新生效时
   稳态 drawCalls 与无阴影逐位相同）。→ **任何量 drawCalls 的 spec，若被测对象不是阴影，须先
   `setShadowsEnabled(false)` 隔离**（断言与阈值逐字不动，改的是被测 setup）。已隔离 5 份：
   render-terrain / daynight-visual / weapons-performance / zombies / m3-2-orientation。
+- **transparent（水/玻璃）必须 cast + receive 双 false，只关 castShadow 不够**（v1.45）：
+  VSM 下 `receiveShadow=true` 会把水/玻璃几何**渲进阴影深度图 → 照样投影**（上一条的判据）；
+  且材质的 `shadow()` 节点**不受 `receiveShadow` 门控** —— 那个标志只门控 three 的**灯光管线**
+  （`three.webgpu.js:46101` `if (builder.object.receiveShadow) setupShadow()`），而本仓体素材质是
+  unlit + colorNode 里**显式**引用 `shadow(sunLight)` → 水面照样被压暗。故需**两侧同时做**：
+  `render-world.js` 双 false + `materials.js` 的 `receivesShadow:false`（该通道材质不挂阴影因子）。
+  mc-lite 对 water/glass 也是双 false（`GlobalInstancedMeshManager.js:76-84`）。
 - **消费端门控的操作数顺序是载荷性的**：`if (this.shadowScheduler.tick(nowMs) &&
   this.sunLight.castShadow)`（game.js 帧循环）—— **勿交换两侧**：`castShadow` 在前会让 `tick()`
   被短路完全不跑 → `_pending` 永不被消费 → 打破 sun-shadow 用例 6 的观测口径（冻结断言
@@ -612,6 +620,74 @@ M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 
   VSM 成本成问题再考虑降频。⚠️ 另：`m3-2-orientation.spec.mjs:283` 的 `meshInflight === 0` 是 HEAD 既有
   独立 flake（与阴影无关，未修；实测频率 HEAD 2/30、门控后 7/30，小样本可能是噪声但值得观察）→
   全量回归若该断言 FAIL，先做交替对照判定。
+- **BatchedMesh 的主 pass 与阴影 pass 共用一份 multi-draw 列表 → 每次阴影刷新会让阴影视锥外的
+  几何整帧消失（远端闪烁），必须装守卫**（v1.46 修，用户实玩报告「远端闪烁」）：three r185.1 的
+  `BatchedMesh.onBeforeRender()` 把逐 instance 剔除结果写进**实例字段**
+  （`_multiDrawStarts`/`_multiDrawCounts`/`_multiDrawCount`/`_indirectTexture`，`three.core.js:27504-27634`），
+  而 `onBeforeShadow()` 直接转调 `onBeforeRender(null, **阴影相机**)`（`:27636`）。一帧内真实顺序
+  （钩子实测）：① 主 `onBeforeRender(主相机)` 建列表=453 → ② 阴影 pass `onBeforeShadow` **覆写同一列表**
+  =142（只剩 ±30 阴影视锥内的 instance）→ ③ 主 `backend.draw` 读 `_multiDrawCount`（`three.webgpu.js:85522`）
+  读到 142 → 主视锥内、阴影视锥外的几何该帧不绘制 → 透出天空。只在 `needsRefresh` 帧发生
+  → 表现为「每次刷新一帧亮闪」。修法 = `render-world.js _installShadowListGuard`：`onBeforeShadow`
+  入口快照主 pass 列表、`onAfterShadow` 出口恢复（+ 重置 `_indirectTexture.needsUpdate` 让 GPU 重传）。
+  **实测证据**（探针 P17/P18/P19/P22/P23，平台 + 强制 5Hz 刷新 + 逐帧读像素）：亮闪次数==刷新次数
+  （9 刷新→9 亮闪）且**只**在阴影视锥外采样点出现（视锥内 sd=0）；亮闪值恒 **192** == noon 天空亮度
+  (135+206+235)/3 → 证明几何确实消失而非变亮；修法后远端 sd=0/jumps=0，drawCalls 与基线**逐位相同**
+  （vd=8 实测 630）。回归门 = `sun-shadow.spec.mjs` 用例 9（负向验证：去守卫后 jumps=18/sd≈11/range≈54
+  真 FAIL，与阈值 ≤3/<2/<3 差一个数量级）。
+  ⚠️ **不能用 `perObjectFrustumCulled = false` 修**（更短的一行）：那会同时关掉**主 pass** 的逐 instance
+  剔除 → drawCalls vd2 48→183、vd8 467→1785（实测 3.8×），撞破 `render-terrain` 冻结断言 `drawCalls<100`。
+  ⚠️ **为什么 mc-lite 没有这个问题**：mc-lite 地形走 `InstancedMesh`（`GlobalInstancedMeshManager.js:56` /
+  `ChunkGenerator.js:177,228`），它**没有**逐 instance multi-draw 列表（`onBeforeShadow` 是 Object3D 空实现
+  `three.core.js:12151`）→ 阴影 pass 无从覆写主 pass 绘制状态。本仓按红线 5 用 BatchedMesh 通道级合批
+  才暴露该上游缺陷。**后续任何「BatchedMesh + 阴影/多 pass 渲染」同理**（第二个投影 pass、反射 pass 等）。
+  ⚠️ 本项**不进「六处偏离」清单**（那是视觉比对专用），是 three 上游缺陷 + 红线 5 选型的连带后果。
+
+### 阴影混合模型沉淀的活跃约束（v1.45，后续任何「unlit 材质 + 手动乘阴影/光照因子」必读）
+
+- **unlit 材质接阴影时，阴影因子绝不能乘在最终颜色上**（v1.45 修的根因，用户实玩报告
+  「阴影的部分都是黑乎乎的一片」）：`shadow()` 节点在影区返回 0 → `rgb × 0` = **纯黑**。
+  mc-lite 自然的原因是它的体素材质是**受光的** `MeshStandardNodeMaterial`
+  （`MaterialManager.js:268`），three 的阴影**只乘在方向光贡献上**，而 `AmbientLight(0xddeeff, 2.3)`
+  （`Engine.js:194`）**不参与阴影** → 影区仍被环境光完整照亮，观感是「暗一档」而非全黑。
+  mc-heavy 是 unlit 管线，`vShade` 里烘焙的 skylight 就是它唯一的「环境光」，乘在最终颜色上
+  等于把这份环境光也乘没了。**修法 = 只衰减 skylight 项 + 给地板**：sky/block 两项分开传片元
+  （`vSkyShade`/`vBlockShade`；`max(sky,block)×ao ≡ max(sky×ao, block×ao)`，ao≥0 → 拆分无损），
+  片元只把阴影因子乘进 sky 项再取 max → **火把照亮的洞穴/室内不会被太阳阴影压暗**
+  （mc-lite 无 blocklight 故无此问题，但语义上太阳阴影本就不该影响点光源照明）。
+- **影区地板值要从上游的光照强度推导，不要拍脑袋**：`SHADOW_FLOOR = 0.5`（`materials.js` 导出）
+  = mc-lite 的 `ambient/(ambient + sun·NdotL)` = `2.3/(2.3 + 3.2×0.8)` = **0.4733**（顶面）
+  ~ 0.55（侧面）。实测修好后影区比值 **0.735**，与 mc-lite 的理论影区亮度 **0.71**
+  （0.4733 线性 → sRGB 0.71）几乎重合 → 地板值对齐上游观感，不是凑数。
+- **两层 mix 的嵌套顺序是载荷性的**：`mix(1, mix(FLOOR, 1, shadow()), strength)` —— 内层给地板、
+  外层调浓度。⚠️ 写成单层 `mix(FLOOR, 1, shadow() × strength)` 是错的：strength=0（关阴影/夜里）时
+  mix 取**左端 = FLOOR** → **关掉阴影反而把全世界压到 50% 亮度**，且「关阴影 = 零视觉影响」的
+  不变式静默失效（spec 用例 7/8 的 `A/B > 0.85` 断言会 FAIL）。
+- **逐方块排除投影走 `maskShadowNode`，不是 `castShadowNode`**：后者要求
+  `shadowMap.transmitted === true`（`three.webgpu.js:62546` 会 warn），前者无此要求。
+  `maskShadowNode` **只被阴影 pass 消费**（`_getShadowNodes`，`:62528/62573`），主 pass 的
+  `setupDiffuseColor` 只读 `maskNode`（`:21595`）→ **这些方块在主渲染里照常显示，只是不写阴影深度**。
+  链路：`blocks-data.js` 的 `shadowCast:false` → `registry.shadowCastTable` → mesher 写
+  **packed bit14** → `mat.maskShadowNode = noShadowCastBit.equal(0)`。
+  ⚠️ bit14 是 packed 里第一个超过 bit13（自发光）的位，Uint32 容量充足（现用 bit0-14）。
+- **排除清单的唯一权威 = mc-lite `BlockData.isShadowEnabled:false`**（实测解析其 124 键 =
+  **102 项投影 / 20 项不投影**）。那 20 项里在 mc-heavy 走 cullMode 'none'/'transparent' 或不是方块的
+  （air/collider/water/swamp_water/realistic_trunk_collider/bed_alias_block/mine_cart）**通道级已排除**，
+  故只需给落在 opaque/cutout 通道的 **13 项**声明 `shadowCast:false`：cloud / 7 种花草菇 /
+  vine / lilypad / 创造台两项 / hanging_lamp。⚠️ **cloud 是必须项**：它在 mc-heavy 是 **opaque 通道**
+  （M2-7 为修侧面混叠从 transparent 挪过去的）→ 通道级 castShadow 让云全部投影，而 Y=35/55 的云簇
+  完全在阴影相机 far=250 视锥内 → **地面出现大面积移动云影黑斑**。实测修复后 cloud 柱逐点扫描
+  比值**恒 1.000**（对照 stone 柱 0.726）。
+- **`shadow.radius` 用 mc-lite 原值 2.6，不是 4**：原 4 是「阴影乘在最终颜色上（影区纯黑）」时代的
+  **补偿值**（那时须把阴影糊开才不致于全黑）；改成「只衰减 skylight + 地板」后 radius=4 反而把阴影
+  **冲淡**（实测谷底比值 0.852 vs r=2.6 的 0.726，而半影宽度两者同为 4/8 点 → 边缘不更硬）。
+  ⚠️ **移植上游参数时须检查它是否在补偿另一个缺陷** —— 上游缺陷修好后，补偿值会变成新缺陷。
+- **「影区须比基线暗」这类单侧断言抓不到「影区纯黑」**（v1.45 的测试口径缺陷，比实现缺陷更值得记）：
+  v1.44 的 Tier 4 判据只有上界 `ratioA < 0.85`，而**纯黑（实测 0.675）也满足「比基线暗」** →
+  该用例结构上就拓不到混合模型错误。负向验证实测：把 `SHADOW_FLOOR` 改回 0（= 旧的乘到纯黑行为）后
+  `ratioA = 0.122`（影区几乎纯黑）而旧断言**仍全绿**。故须补**下界 `> 0.5`**（实测修好 0.735 /
+  破坏态 0.122，两侧都不贴线且能真实区分修好/改坏）。同 `testing-policy.md` §2.7「负向验证盲区」：
+  **写「变暗/变亮」类像素断言时必须同时钉上下界**，只钉一侧等于没钉。
 
 ## 权威文档（动手前必读）
 

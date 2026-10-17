@@ -17,6 +17,14 @@ export function createRegistry() {
   const supportsPlayerTable = new Uint8Array(MAX_BLOCKS);
   /** 不可破坏表（M8）：徒手挖块 / 枪械破坏 / 爆炸过滤三个消费者共用单一权威 */
   const indestructibleTable = new Uint8Array(MAX_BLOCKS);
+  /**
+   * 太阳阴影投射表（§4.4.4）：默认 1（投影），仅声明 `shadowCast:false` 的方块为 0。
+   * 唯一消费方是 mesher（写 packed bit14）→ materials.js 的 `maskShadowNode` 在阴影 pass
+   * 逐片元 discard。对齐 mc-lite `BlockData.isShadowEnabled:false` 的 20 项白名单口径
+   * （其中 air/collider/water/swamp_water/realistic_trunk_collider/bed_alias_block/mine_cart
+   * 在 mc-heavy 走 cullMode 'none'/'transparent' 或不是方块 → 通道级已排除，无需声明）。
+   */
+  const shadowCastTable = new Uint8Array(MAX_BLOCKS);
   const geometryNames = []; // index → geometryType 字符串
   let count = 0;
   let frozen = false;
@@ -24,13 +32,13 @@ export function createRegistry() {
   return {
     get count() { return count; },
     solidTable, opaqueTable, cullTable, emissiveTable, geometryTable, orientationModesTable,
-    supportsPlayerTable, indestructibleTable,
+    supportsPlayerTable, indestructibleTable, shadowCastTable,
 
     /**
      * @param {string} name
      * @param {{solid?: boolean, opaque?: boolean, supportsPlayer?: boolean, cullMode?: string,
      *          emissive?: number, geometry?: string, orientationModes?: number,
-     *          indestructible?: boolean}} def
+     *          indestructible?: boolean, shadowCast?: boolean}} def
      */
     register(name, def) {
       if (frozen) throw new Error('registry is frozen');
@@ -49,6 +57,7 @@ export function createRegistry() {
       geometryTable[id] = gi;
       orientationModesTable[id] = def.orientationModes ?? 0;
       indestructibleTable[id] = def.indestructible ? 1 : 0;
+      shadowCastTable[id] = (def.shadowCast ?? true) ? 1 : 0;
       return id;
     },
 
@@ -77,6 +86,15 @@ export function createRegistry() {
      */
     isIndestructible(id) {
       return Number.isInteger(id) && id >= 0 && id < MAX_BLOCKS ? indestructibleTable[id] === 1 : false;
+    },
+    /**
+     * 该方块是否向太阳阴影贴图投射（§4.4.4）。未知 id 返回 false（防御：不认识的方块
+     * 不该投影）。消费方只有 mesher 一处，但走表而非在 mesher 里写字面量名单 ——
+     * 与 `indestructibleTable` 同一手法（红线 1：声明侧单一权威）。
+     * @param {number} id @returns {boolean}
+     */
+    castsShadow(id) {
+      return Number.isInteger(id) && id >= 0 && id < MAX_BLOCKS ? shadowCastTable[id] === 1 : false;
     },
   };
 }

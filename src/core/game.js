@@ -183,9 +183,16 @@ export class Game {
     sunLight.shadow.camera.far = 250;
     // VSM 不吃 bias / normalBias（DR-4b：depth-compare 档位全坏，用户拍板改 VSM），
     // mc-lite 的 bias 0.00008 / normalBias 0.048 不移植；radius + blurSamples 是 VSM 的
-    // 软化参数（radius 默认 1 / blurSamples 默认 8，three.core.js LightShadow），
-    // radius=4 / blurSamples=8 为 Task 3 闸门实测出影值。
-    sunLight.shadow.radius = 4;
+    // 软化参数（radius 默认 1 / blurSamples 默认 8，three.core.js LightShadow）。
+    // ⚠️ **radius 用 mc-lite 原值 2.6，不是 4**：原 4 是「阴影因子乘在最终颜色上」
+    // （影区 ×0 纯黑）时代的补偿值 —— 那时需要把阴影糊开才不致于全黑。改成
+    // 「只衰减 skylight 项 + 地板 SHADOW_FLOOR」后，radius=4 反而把阴影冲淡到
+    // 谷底比值 0.852（地板 0.5 根本达不到）。实测扫描（同一平台/同一相机，只改 radius）：
+    //   r=1 → 0.724 / r=2 → 0.724 / **r=2.6 → 0.726** / r=3 → 0.769 / r=4 → 0.852，
+    //   半影宽度 r=2.6 与 r=4 同为 4/8 点（边缘不更硬）。
+    // 0.726 与 mc-lite 的理论影区亮度 0.71（ambient 2.3 / (2.3 + sun 3.2×NdotL 0.8) = 0.4733
+    // 线性 → sRGB 0.71）几乎重合 → radius=2.6 既对齐上游又让地板真正生效。
+    sunLight.shadow.radius = 2.6;
     sunLight.shadow.blurSamples = 8;
     // DR-5 按需刷新：autoUpdate=false 关掉每帧重渲，只在 ShadowScheduler.tick() 放行时置
     // `shadow.needsUpdate = true`。⚠️ 这不是可选优化而是硬约束：VSM 下 receiveShadow 对象

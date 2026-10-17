@@ -296,6 +296,13 @@ const SAME_TYPE_CULL = new Set(['cloud']);
 // 但只有 hanging_lamp 有材质自发光——两个集合不同，不能用 emissiveTable 判断。
 const EMISSIVE_MATERIALS = new Set(['hanging_lamp']);
 
+// 太阳阴影不投射标记（§4.4.4 packed bit14）：与 bit13 自发光同一手法（逐方块常量、
+// 走 typed 表而非字面量名单）。权威 = `registry.shadowCastTable`（声明侧 `blocks-data.js`
+// 的 `shadowCast:false`，对齐 mc-lite `BlockData.isShadowEnabled:false`）。
+// 消费方 = `materials.js` 的 `maskShadowNode`（阴影 pass 逐片元 discard，主 pass 不受影响）。
+// ⚠️ bit14 是 packed 里第一个超过 bit13 的位；Uint32 容量充足（现用 bit0-14）。
+const SHADOW_CAST_BIT = 1 << 14;
+
 // 床 UV 变换（2026-09-03 勘误：原口径照 mc-lite 字段名实现了「取上半 + 顶面旋转」，
 // 但实测 mc-lite 的 offset/rotation 是死字段，故此处按**实际行为**而非字段定义实现）。
 // 床侧面只取贴图下半：mc-lite 定义 `repeat:[1,0.5]` + `offset:[0,0.5]`，但 `offset` 全仓
@@ -351,6 +358,7 @@ export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
   const { data, light, meta } = view;
   const cullTable = registry.cullTable;
   const opaqueTable = registry.opaqueTable;
+  const shadowCastTable = registry.shadowCastTable;
   const nameOf = registry.nameOf.bind(registry);
   const tiles = atlasMeta.tiles || atlasMeta;
 
@@ -384,6 +392,8 @@ export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
         // 材质自发光标记（§4.3 bit13）：逐方块算一次作为**默认值**，模板 quad 可用
         // 可选字段 `em` 逐 quad 覆盖（v1.22：吊灯「绳不发光、灯体发光」）。
         const blockEmissiveBit = EMISSIVE_MATERIALS.has(blockName) ? (1 << 13) : 0;
+        // 阴影不投射标记（§4.4.4 bit14）：逐方块算一次，两条发射路径（模板/立方体）共用。
+        const noShadowCastBit = shadowCastTable[id] === 1 ? 0 : SHADOW_CAST_BIT;
 
         // 非立方体几何（§4.3 顶点模板）：不做面剔除（mc-lite 实例级渲染同口径）；
         // 光照读自身格（模板面在格内，无"邻居格"语义）；AO 按顶点推导。
@@ -437,7 +447,7 @@ export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
               const s2 = opaqueTable[data[viewIdx(vx + s2o[0], vy + s2o[1], vz + s2o[2])]] === 1 ? 1 : 0;
               const co_ = opaqueTable[data[viewIdx(vx + co[0], vy + co[1], vz + co[2])]] === 1 ? 1 : 0;
               const ao = q.ds ? 3 : getAO(s1, s2, co_); // 植被 cross 开阔 AO=3（原口径）
-              packeds.push(selfLight | (ao << 8) | (worldFace << 10) | emissiveBit);
+              packeds.push(selfLight | (ao << 8) | (worldFace << 10) | emissiveBit | noShadowCastBit);
             }
             pushQuad(ch, positions, uvs, packeds, q.ds);
             emitted++;
@@ -501,7 +511,7 @@ export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
             const s2 = opaqueTable[data[viewIdx(vx + s2o[0], vy + s2o[1], vz + s2o[2])]] === 1 ? 1 : 0;
             const co_ = opaqueTable[data[viewIdx(vx + co[0], vy + co[1], vz + co[2])]] === 1 ? 1 : 0;
             const ao = getAO(s1, s2, co_);
-            packeds.push(faceLight | (ao << 8) | (worldFace << 10) | blockEmissiveBit);
+            packeds.push(faceLight | (ao << 8) | (worldFace << 10) | blockEmissiveBit | noShadowCastBit);
           }
           pushQuad(ch, positions, uvs, packeds, doubleSide);
         }

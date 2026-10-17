@@ -1,8 +1,17 @@
 # 太阳阴影（shadow map）设计文档
 
-> 日期：2026-10-13 ｜ 状态：待用户审阅
+> 日期：2026-10-13 ｜ 状态：**部分作废（v1.45，2026-10-14）** —— 用户实玩报告「阴影的部分都是黑乎乎的一片」，
+> 对照 mc-lite 定位到两个独立缺陷（混合模型错误 + cloud 等 13 块误投影），修复口径见设计文档
+> `docs/phase-1-engine-design.md` **v1.45 修订说明**与 §4.4.4 重写段。本规格中以下条目**已作废，
+> 勿据此重新实现**：① §4.3 的 `rgb = texColor × vShade × shadowFactor`（阴影乘在最终颜色上 →
+> 影区纯黑，根因）；② DR-2 的「纯通道级投射 + cloud 投影可接受」（cloud 在 opaque 通道且在阴影相机
+> 视锥内 → 地面大面积云影黑斑；mc-lite 明确不投影 cloud）；③ DR-4 的 `radius=4`（是缺陷①时代的
+> 补偿值，修好后反而冲淡阴影，已改回 mc-lite 原值 2.6）；④ transparent 通道 `receiveShadow=true`
+> （VSM 下照样投影且水面照样被压暗，已改双 false）。其余条目（VSM 档位 / per-light 节流 /
+> 光源跟随 / 日夜方向插值 / 代码级开关）仍有效。
+>
 > 上游对齐：mc-lite `src/core/Engine.js`（shadow map 配置）+ `src/world/World.js:227`（按需刷新节流）
-> 设计文档影响：`docs/phase-1-engine-design.md` §4.4.4（实施时修订，v1.43 → v1.44）
+> 设计文档影响：`docs/phase-1-engine-design.md` §4.4.4（实施时修订，v1.43 → v1.44；混合模型修正 v1.44 → v1.45）
 
 ## 1. 背景与目标
 

@@ -63,18 +63,94 @@ export class RenderWorld {
       const bm = new THREE.BatchedMesh(maxInstances, maxVerts, maxIdx, materials[channel]);
       bm.frustumCulled = false; // 整体不剔除，per-instance 剔除由 perObjectFrustumCulled 负责
       // 阴影投射/接收（§4.4.4 DR-2 通道粗粒度）：opaque + cutout 投射，transparent（水/玻璃）
-      // 不投射；三通道都接收。BatchedMesh extends Mesh → castShadow/receiveShadow 直接可用，
+      // **既不投射也不接收**。BatchedMesh extends Mesh → castShadow/receiveShadow 直接可用，
       // perObjectFrustumCulled 默认 true → 阴影 pass 用 shadow camera 逐 instance 剔除。
       // ⚠️ 只在 sunLight 非 null 时打开：无阴影接线时开 castShadow 会白付一次阴影 pass。
+      // ⚠️ **transparent 必须 receiveShadow=false（不只 castShadow=false）**：VSM 档位的阴影
+      // pass 判据是 `castShadow || (receiveShadow && VSM)`（three.webgpu.js:44682）—— receive
+      // 为 true 会把水/玻璃几何**渲进阴影深度图 → 照样投影**（DR-4b 选 VSM 的连带后果）。
+      // mc-lite 对 water/glass 也是 cast+receive 双 false（GlobalInstancedMeshManager.js:76-84），
+      // 此处对齐：transparent 通道完全不参与阴影。
       if (sunLight) {
-        bm.castShadow = channel !== 'transparent';
-        bm.receiveShadow = true;
+        const isTransparent = channel === 'transparent';
+        bm.castShadow = !isTransparent;
+        bm.receiveShadow = !isTransparent;
+        // ⚠️ 投影通道必须装「multi-draw 列表守卫」—— 否则每次阴影刷新会让**远端几何整帧消失**
+        // （肉眼是远处一闪一闪透出天空）。根因与实测见 _installShadowListGuard 的 JSDoc。
+        if (bm.castShadow) this._installShadowListGuard(bm);
       }
       this._initAttributeLayout(bm);
       scene.add(bm);
       this.meshes[channel] = bm;
       this._capacity[channel] = { maxVertexCount: maxVerts, maxIndexCount: maxIdx };
     }
+  }
+
+  /**
+   * 给投影通道的 BatchedMesh 装「阴影 pass 前后快照/恢复 multi-draw 列表」守卫。
+   *
+   * **根因（three r185.1 的 BatchedMesh 与阴影 pass 共用一份可变状态）**：
+   * 主 pass 与阴影 pass 都调 `BatchedMesh.onBeforeRender()`，而它把剔除结果写进**同一组实例字段**
+   * （`_multiDrawStarts` / `_multiDrawCounts` / `_multiDrawCount` / `_indirectTexture`，
+   * three.core.js:27504-27634）。一帧内的真实顺序（钩子实测，探针 P19）：
+   *   ① 主 `renderObject` → `onBeforeRender(主相机)` → 列表 = 453（主视锥内的 instance）
+   *   ② `_nodes.updateBefore` → ShadowNode → 阴影 pass → `onBeforeShadow()`
+   *      → `onBeforeRender(null, **阴影相机**)`（three.core.js:27636）→ **覆写同一列表 = 142**
+   *      （只剩阴影相机 ±30 视锥内的 instance）
+   *   ③ 回到主 `renderObject` → `backend.draw` 读 `_multiDrawCount`（three.webgpu.js:85522）
+   *      → 读到 **142** → 主视锥内、但阴影视锥外的几何**整帧不绘制** → 透出天空
+   * 只在 `needsRefresh` 为真的帧发生（② 仅在阴影刷新时跑）→ 表现为「每次刷新一帧亮闪」。
+   *
+   * **实测证据**（探针 P17/P18/P22，平台 + 强制 5Hz 刷新 + 逐帧读像素）：
+   *   · 亮闪次数 == 刷新次数（9 次刷新 → 9 帧亮闪），且**只**出现在阴影相机视锥外的采样点
+   *     （视锥内 sd=0）；亮闪值 192 == noon 天空亮度 (135+206+235)/3 → 该帧几何确实消失
+   *   · 修法生效：远端逐帧亮度恒定（sd=0），且 drawCalls 与基线**逐位相同**（vd=8 实测 630）
+   *
+   * **为什么不用 `perObjectFrustumCulled = false`**（更短的一行）：那会同时关掉**主 pass** 的
+   * 逐 instance 剔除 → drawCalls vd2 48→183、vd8 467→1785（实测 3.8×），撞破 render-terrain
+   * 的冻结断言 `drawCalls < 100`。本守卫只隔离两个 pass 的状态，主 pass 剔除与 draw 数不变。
+   *
+   * **为什么 mc-lite 没有这个问题**：mc-lite 的地形走 `InstancedMesh`
+   * （GlobalInstancedMeshManager.js:56 / ChunkGenerator.js:177,228），它**没有**逐 instance 的
+   * multi-draw 列表（`onBeforeShadow` 是 Object3D 的空实现，three.core.js:12151）→ 阴影 pass
+   * 无从覆写主 pass 的绘制状态。本仓库按红线 5 用 BatchedMesh 通道级合批，才暴露该上游缺陷。
+   *
+   * 快照缓冲复用（不每次 slice 新分配）：5Hz × 2 通道 × ~450 项，避免热路径 GC 压力。
+   * @param {THREE.BatchedMesh} bm 投影通道的 BatchedMesh
+   */
+  _installShadowListGuard(bm) {
+    const origBeforeShadow = bm.onBeforeShadow;
+    const origAfterShadow = bm.onAfterShadow;
+    // 复用缓冲：容量按当前 _multiDrawStarts 长度（= maxInstanceCount）；扩容后按需重建。
+    let saved = null;
+    bm.onBeforeShadow = function (...args) {
+      const n = this._multiDrawCount;
+      const starts = this._multiDrawStarts;
+      const counts = this._multiDrawCounts;
+      const indirect = this._indirectTexture.image.data;
+      if (!saved || saved.starts.length < starts.length) {
+        saved = { n: 0, starts: new Int32Array(starts.length), counts: new Int32Array(counts.length), indirect: new Uint32Array(indirect.length) };
+      }
+      saved.n = n;
+      saved.starts.set(starts.subarray(0, n));
+      saved.counts.set(counts.subarray(0, n));
+      saved.indirect.set(indirect.subarray(0, n));
+      return origBeforeShadow.apply(this, args);
+    };
+    bm.onAfterShadow = function (...args) {
+      const r = origAfterShadow.apply(this, args);
+      if (saved) {
+        // 恢复主 pass ① 建好的列表，使 ③ 的 backend.draw 读到主视锥的剔除结果
+        this._multiDrawCount = saved.n;
+        this._multiDrawStarts.set(saved.starts.subarray(0, saved.n));
+        this._multiDrawCounts.set(saved.counts.subarray(0, saved.n));
+        this._indirectTexture.image.data.set(saved.indirect.subarray(0, saved.n));
+        // 阴影 pass 末尾已置 needsUpdate（three.core.js:27630）；CPU 侧数据被我们改回，
+        // 须再置一次让 GPU 重新上传（否则 shader 读到的 indirect 索引仍是阴影 pass 的）。
+        this._indirectTexture.needsUpdate = true;
+      }
+      return r;
+    };
   }
 
   /**
