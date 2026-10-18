@@ -616,8 +616,16 @@ M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 
   升级为 `castShadowNode` + alphaTest（但对上面那条 depth-compare bug 大概率无效）。
 - **实体不投射不接收**（本期范围外）：后续给实体加阴影 = InstancedMesh 开 castShadow + 材质乘
   `shadow()` 节点同手法（实体材质是 unlit MeshBasicMaterial，接收阴影同样需乘 shadow 节点）。
-- **日夜循环下 5Hz 阴影重渲是正确行为**（太阳方向连续变），稳态帧时实测无影响；若后续 bench 显示
-  VSM 成本成问题再考虑降频。⚠️ 另：`m3-2-orientation.spec.mjs:283` 的 `meshInflight === 0` 是 HEAD 既有
+- **日夜循环下的阴影刷新频率口径（v1.47 改）**：刷新请求有三个源 —— 世界编辑 / 玩家移动超 5 格 /
+  太阳方向变化。前两个是事件驱动（不变）；**第三个 v1.47 起加了角度阈值门控**
+  （`SUN_DIR_GATE_DEG=0.5°`，太阳 0.3°/秒 → 约 **0.6Hz**，此前是每帧 120 次/秒重定位）。
+  所有请求仍经 `ShadowScheduler` 的 200ms 节流 → 实际重渲上限 5Hz。
+  ⚠️ **200ms 这个值不要改**（实测单次刷新成本与频率无关：强制 100/200/400/800/1600ms 下刷新帧中位
+  8.74/8.74/8.82/9.04/9.12ms → 降频不让刷新变便宜，只增加阴影覆盖滞后）。
+  ⚠️ **量阴影成本不能用聚合 p95**：5Hz 刷新帧只占 4.2%（30/722），刚好落在 600 帧窗口的 p95
+  阈值**之下** → 聚合 p95 抓不到尖峰（「用聚合指标回答分组问题」）。须按「该帧是否刷新」分组统计
+  （实测：稳态帧 8.3ms 与关阴影 8.33ms 逐位相同，刷新帧 9.0ms，摊平 ≈ 0.03ms/帧）。
+  ⚠️ 另：`m3-2-orientation.spec.mjs:283` 的 `meshInflight === 0` 是 HEAD 既有
   独立 flake（与阴影无关，未修；实测频率 HEAD 2/30、门控后 7/30，小样本可能是噪声但值得观察）→
   全量回归若该断言 FAIL，先做交替对照判定。
 - **BatchedMesh 的主 pass 与阴影 pass 共用一份 multi-draw 列表 → 每次阴影刷新会让阴影视锥外的
@@ -642,6 +650,49 @@ M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 
   `three.core.js:12151`）→ 阴影 pass 无从覆写主 pass 绘制状态。本仓按红线 5 用 BatchedMesh 通道级合批
   才暴露该上游缺陷。**后续任何「BatchedMesh + 阴影/多 pass 渲染」同理**（第二个投影 pass、反射 pass 等）。
   ⚠️ 本项**不进「六处偏离」清单**（那是视觉比对专用），是 three 上游缺陷 + 红线 5 选型的连带后果。
+- **阴影相机必须做纹素对齐（texel snapping），否则影子边缘随玩家移动抖动**（v1.47 修，用户实玩报告
+  「阴影随着玩家的移动会微微晃动，幅度不大但还是能察觉」）：阴影相机 ±30 / 贴图 256² → 每纹素
+  ≈ 0.234 格；相机连续跟随玩家时，世界点在贴图上的 UV **分数部分**连续变 → 双线性滤波结果变
+  → 同一世界点的阴影值抖动（shimmer），幅度最多半纹素 ≈ 0.1 格。修法 = `shadow-manager.js`
+  的纯函数 `texelSnapOffset(center, sunDir, texelSize)`，`game.js _updateSunPosition()` 把相机中心
+  吸附到纹素边界（相机基由 sunDir 构造，与 three `lookAt` 同口径：zAxis=sunDir、
+  xAxis=normalize(cross(worldUp,zAxis))、yAxis=cross(zAxis,xAxis)）。
+  ⚠️ **载荷性：偏移必须同时加到 `position` 与 `target`** —— 两者之差平行于相机 Z 轴，加同一向量
+  方向严格不变；**只加一侧会改「position − target」→ 枪的 PBR 高光漂移**（那个方向就是太阳方向，
+  也是 `_updateSunPosition()` 刻意不受 `castShadow` 门控的原因）。断言落在两条路径的交叉比对上
+  （`normalize(position − target)` 逐分量 == `dayNight.params.sunDirection`，容差 1e-9）。
+  ⚠️ `texelSize` 从 `(camera.right − camera.left) / mapSize.width` **读配置**，不写字面量（红线 1）。
+  ⚠️ 退化保护：`sunDir` 平行 worldUp 时 cross 为零向量 → 返回 `[0,0,0]`（不对齐、不产 NaN）；
+  `texelSize ≤ 0` 同理。本仓三组 `VISUAL_STYLES.sunDirection` 的 y 分量均 < 1，不会走到，但纯函数须自守。
+  **实测**（探针 P25 + Tier 4 用例 10，固定世界点 + 分数纹素步长 0.05 格 × 12 步 + 每步强制刷新）：
+  对齐 ON 亮度恒 112.63（spread **0.00**）、纹素相位恒 0.6（spread 0.00）；对齐 OFF 亮度
+  118.77↔123.79（spread **5.02**）、相位 spread 0.93。阈值 spread ≤ 1.0（差 5×，不贴线）。
+  ⚠️ **sanity floor 不能用「相位在变」**：对齐生效时相位**恒定**正是被测不变式 —— 拿它做下界会让
+  修好的代码反而 FAIL。改用「阴影相机 target 的世界位移 > 0.2 格」证明玩家真的动了。
+  ⚠️ **Tier 4 逐帧读像素必须在 rAF 回调内**：WebGPU swapchain canvas 在 rAF 外 `drawImage` 读到
+  **黑屏**（探针 P25 首版踩坑：整条亮度剖面全 0，一度误判为「平台上没阴影」）。
+  ⚠️ **有意偏离 mc-lite**：它无连续日夜循环（`sunDirection` 只在点风格按钮时变）且光源只在移动超
+  5 格时重定位 → 无此抖动，故无此机制。
+- **`onSunDirection` 的角度阈值门控不得加到移动阈值路径上**（v1.47）：两条重定位路径语义不同 ——
+  `onSunDirection`（日夜方向变化）加门控是对的（太阳每帧只转 0.0025°，256² 贴图上不可见，
+  门控前每帧重定位 120 次/秒）；
+  而帧循环的移动阈值路径（`distSq > 25`）**加了会「走 5 格后影子钉在原地」**（玩家移动必须让
+  阴影相机跟上）。实测门控效果：`cycleSeconds=60`（太阳 6°/秒）下 `_updateSunPosition()` 调用
+  **11 次/秒**（理论 6 ÷ 0.5 = 12）；阈值归零时 **120 次/秒**（每帧，= 门控前）。
+  ⚠️ **门控比较必须用 `onSunDirection(dir)` 的入参，不得读 `dayNight.params`** —— `get params()`
+  走 `paramsAtHour()` → `lerpParams()` + `normalizeDirection()`，**每次调用新分配 2 个小对象**。
+  初版门控自己读 `params` 做比较 → 被门控掉的帧仍每帧分配，白做了一半（入参是 DayNight 已算好的
+  同值，零额外分配）。⚠️ 本门控消除的是「**重定位路径上**的额外 params 读取」（门控前每帧 2 次：
+  门控自己 1 次 + `_updateSunPosition()` 1 次 → 门控后约 0.6Hz 各 1 次）；`DayNight._apply` 自身的
+  每帧分配（`paramsAtHour` + 末尾 `normalizeDirection`）**不在本门控范围内**，属日夜循环固有成本，
+  本次未动（勿写成「消除了每帧分配」）。
+  ⚠️ **观测口径必须是 `_updateSunPosition()` 调用次数，不是刷新次数** —— 200ms 节流在下游，
+  会把「每帧重定位」与「0.6Hz 重定位」的刷新次数都压到 ~5/s → 刷新次数测不出门控。
+  ⚠️ **测这条门控须把 hour 设进插值段**（如 7.5）：启动默认 hour=12 落在 `KEYFRAMES` 的
+  **noon 平台段**（[9,noon]~[17,noon]），该段 `sunDirection` **恒定** → 无论怎么加速日夜循环
+  门控都永不放行（实测 `cycleSeconds=60` 仍 0/47 假阴性）。同 P14/P15 探针踩过的同一个坑。
+  ⚠️ 两个门控是**串联关系**（方向门控 → castShadow 门控 → 200ms 节流），测下游必须让上游放行，
+  否则断言恒真（既有的「关阴影不请求刷新」用例因此须同时设 hour=7.5 + cycleSeconds=60）。
 
 ### 阴影混合模型沉淀的活跃约束（v1.45，后续任何「unlit 材质 + 手动乘阴影/光照因子」必读）
 

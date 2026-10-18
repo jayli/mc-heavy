@@ -343,22 +343,45 @@ test('光源跟随玩家：teleport +6 格后 sunLight/target 跟到新位置', 
     const g = window.__MC_GAME__;
     const p = g.player.physics.pos;
     const dir = g.dayNight.params.sunDirection;
+    const cam = g.sunLight.shadow.camera;
     return {
       px: p.x, py: p.y, pz: p.z, dir,
+      // 纹素尺寸从实际配置读（红线 1：不写字面量）—— v1.47 纹素对齐后 target 与玩家
+      // 最多差半纹素对角，故容差由它推导而非硬编码
+      texelSize: (cam.right - cam.left) / g.sunLight.shadow.mapSize.width,
       light: [g.sunLight.position.x, g.sunLight.position.y, g.sunLight.position.z],
       target: [g.sunLight.target.position.x, g.sunLight.target.position.y, g.sunLight.target.position.z],
     };
   });
   const close = (a, b, tol) => Math.abs(a - b) <= tol;
-  expect(close(before.target[0], before.px, 0.1) &&
-         close(before.target[1], before.py, 0.1) &&
-         close(before.target[2], before.pz, 0.1),
-    `启动后 target 须已定位到玩家（第一帧 distSq>25 自动触发）：target=${JSON.stringify(before.target)} player=(${before.px.toFixed(1)},${before.py.toFixed(1)},${before.pz.toFixed(1)})`)
+  // v1.47 纹素对齐（texel snapping）后 target = 玩家 + 吸附偏移，偏移幅度上界 = 半纹素对角
+  // `0.5 × texelSize × √2`（实测 0.166）。⚠️ 旧容差 0.1 是「target 恰等于玩家」时代的值，
+  // 对齐后实测偏移 0.109 已超它 → 假失败。改为从配置推导 + 余量，不是「放宽断言」而是
+  // 行为变了导致几何口径变了（见 .pi/plans/2026-10-17-shadow-texel-snap-sun-gate.md §4.4）。
+  const snapTol = 0.5 * before.texelSize * Math.SQRT2 + 0.02;
+  expect(close(before.target[0], before.px, snapTol) &&
+         close(before.target[1], before.py, snapTol) &&
+         close(before.target[2], before.pz, snapTol),
+    `启动后 target 须已定位到玩家附近（容差 = 半纹素对角 ${snapTol.toFixed(3)}）：target=${JSON.stringify(before.target)} player=(${before.px.toFixed(1)},${before.py.toFixed(1)},${before.pz.toFixed(1)})`)
     .toBe(true);
-  expect(close(before.light[0], before.px + before.dir[0] * 60, 0.1) &&
-         close(before.light[1], before.py + before.dir[1] * 60, 0.1) &&
-         close(before.light[2], before.pz + before.dir[2] * 60, 0.1),
-    `光源须在「玩家 + 太阳方向×60」：light=${JSON.stringify(before.light)}`)
+  // ⚠️ **方向不变式**（比位置容差更载荷）：纹素对齐只能平移光源，不得改「position − target」
+  // 的方向 —— 那个方向就是枪 PBR 高光依赖的太阳方向（game.js `_updateSunPosition` 注释）。
+  // 只加偏移到一侧（position 或 target）会让本断言 FAIL。
+  {
+    const d = [before.light[0] - before.target[0], before.light[1] - before.target[1], before.light[2] - before.target[2]];
+    const len = Math.hypot(...d);
+    const nd = d.map((v) => v / len);
+    expect(Math.abs(len - 60), `position−target 长度须仍为 60（mc-lite 偏移原值）：${len.toFixed(4)}`).toBeLessThan(1e-6);
+    for (let i = 0; i < 3; i++) {
+      expect(Math.abs(nd[i] - before.dir[i]),
+        `光照方向须严格等于太阳方向（纹素对齐不得扰动 → 枪 PBR 高光不漂移）：分量${i} 实测 ${nd[i].toFixed(6)} vs 期望 ${before.dir[i].toFixed(6)}`)
+        .toBeLessThan(1e-9);
+    }
+  }
+  expect(close(before.light[0], before.px + before.dir[0] * 60, snapTol) &&
+         close(before.light[1], before.py + before.dir[1] * 60, snapTol) &&
+         close(before.light[2], before.pz + before.dir[2] * 60, snapTol),
+    `光源须在「玩家 + 太阳方向×60」附近（同纹素对齐容差）：light=${JSON.stringify(before.light)}`)
     .toBe(true);
 
   // teleport +6 格（>5 格阈值必触发）；pushModal 冻结玩家物理，位置不会被帧循环挪走
@@ -377,16 +400,26 @@ test('光源跟随玩家：teleport +6 格后 sunLight/target 跟到新位置', 
       target: [g.sunLight.target.position.x, g.sunLight.target.position.y, g.sunLight.target.position.z],
     };
   });
-  expect(close(after.target[0], moved.x, 0.1) &&
-         close(after.target[1], moved.y, 0.1) &&
-         close(after.target[2], moved.z, 0.1),
-    `teleport +6 格后 target 须跟到新位置：target=${JSON.stringify(after.target)} player=(${moved.x.toFixed(1)},${moved.y.toFixed(1)},${moved.z.toFixed(1)})`)
+  expect(close(after.target[0], moved.x, snapTol) &&
+         close(after.target[1], moved.y, snapTol) &&
+         close(after.target[2], moved.z, snapTol),
+    `teleport +6 格后 target 须跟到新位置（容差 = 半纹素对角 ${snapTol.toFixed(3)}）：target=${JSON.stringify(after.target)} player=(${moved.x.toFixed(1)},${moved.y.toFixed(1)},${moved.z.toFixed(1)})`)
     .toBe(true);
-  expect(close(after.light[0], moved.x + before.dir[0] * 60, 0.1) &&
-         close(after.light[1], moved.y + before.dir[1] * 60, 0.1) &&
-         close(after.light[2], moved.z + before.dir[2] * 60, 0.1),
-    `teleport 后光源须保持「玩家 + 太阳方向×60」：light=${JSON.stringify(after.light)}`)
+  expect(close(after.light[0], moved.x + before.dir[0] * 60, snapTol) &&
+         close(after.light[1], moved.y + before.dir[1] * 60, snapTol) &&
+         close(after.light[2], moved.z + before.dir[2] * 60, snapTol),
+    `teleport 后光源须保持「玩家 + 太阳方向×60」（同纹素对齐容差）：light=${JSON.stringify(after.light)}`)
     .toBe(true);
+  // teleport 后方向不变式仍须成立（重定位路径不得因移动而改方向）
+  {
+    const d = [after.light[0] - after.target[0], after.light[1] - after.target[1], after.light[2] - after.target[2]];
+    const len = Math.hypot(...d);
+    for (let i = 0; i < 3; i++) {
+      expect(Math.abs(d[i] / len - before.dir[i]),
+        `teleport 后光照方向须仍等于太阳方向：分量${i} 实测 ${(d[i] / len).toFixed(6)} vs 期望 ${before.dir[i].toFixed(6)}`)
+        .toBeLessThan(1e-9);
+    }
+  }
 });
 
 /**
@@ -493,9 +526,15 @@ test('按需刷新：autoUpdate 已关、调度器在位、放块同步触发刷
  * early-return → 回调根本不会每帧触发 → 断言恒真（无效盲区）。本文件顶部的 `URL`
  * 带 `style=noon`，故本用例单独用 CYCLE_URL。
  *
- * 断言用**窗口内多次采样**而非单次读：阴影开启时 request 每帧发生而 tick 每 200ms
+ * 断言用**窗口内多次采样**而非单次读：阴影开启时 request 发生而 tick 每 200ms
  * 消费一次 → 单次读 `_pending` 可能恰好落在消费后的 false 上（假阴性）。对照组
  * （阴影开）必须观测到 pending 为真 —— 否则被测组的「恒 false」是无效断言。
+ *
+ * ⚠️ v1.47 后 `onSunDirection` 多了**太阳方向角度阈值门控**（`SUN_DIR_GATE_DEG=0.5°`）：
+ * 默认 1200s/天下太阳 0.3°/秒，跨过阈值需 1.67s > 采样窗口 → 对照组会假阴性（实测 0/47）。
+ * 故本用例把 `cycleSeconds` 加速到 60（太阳 6°/秒 → 约 83ms 跨一次阈值），让方向门控在
+ * 窗口内频繁放行，从而隔离出被测的 castShadow 门控。**两个门控是串联关系**，测下游必须
+ * 让上游放行（否则恒真）。方向门控本身由专项用例钉住（见本文件「日夜循环下方向门控」用例）。
  */
 const CYCLE_URL = '/?vd=2&seed=12345&weather=clear';
 
@@ -510,6 +549,14 @@ test('阴影关闭后日夜循环不再请求刷新（onSunDirection 的 castSha
     // 冻结玩家物理（消除移动请求源）；本用例不做任何编辑（消除 editor 请求源）
     // → 剩下的唯一请求源就是 onSunDirection，正是被测对象。
     g.pushModal('shadow-gate-test');
+    // v1.47：onSunDirection 新增**太阳方向角度阈值门控**（SUN_DIR_GATE_DEG=0.5°）。两个叠加的
+    // 假阴性陷阱：① 默认 1200s/天 → 太阳 0.3°/秒，跨 0.5° 需 1.67s > 采样窗口；② 更隐蔽的是
+    // **启动 hour=12 落在 noon 平台段**（KEYFRAMES [9,noon]~[17,noon]），该段 sunDirection
+    // 恒定 → 无论怎么加速日夜循环方向都不变 → 门控永不放行（实测 cycleSeconds=60 仍 0/47）。
+    // 修法：把 hour 设进**插值段**（7.5 = morning→noon 之间，实测 1.4°/0.1h）+ 加速循环到
+    // 60s/天（0.1h = 0.25s → 5.6°/秒 → 约 89ms 跨一次阈值）。仍是真实日夜循环路径（非 override）。
+    g.dayNight.setTime(7.5);
+    g.dayNight.cycleSeconds = 60;
     /** 窗口内每 10ms 采一次 `_pending`，统计观测到 true 的次数 */
     const sample = async (ms) => {
       let sawTrue = 0, n = 0;
@@ -521,12 +568,12 @@ test('阴影关闭后日夜循环不再请求刷新（onSunDirection 的 castSha
       }
       return { sawTrue, n };
     };
-    const out = { cycleMode: g.dayNight._styleOverride === null };
-    // 对照组：阴影开 + 日夜循环 → 回调每帧 request，窗口内必观测到 pending
+    const out = { cycleMode: g.dayNight._styleOverride === null, cycleSeconds: g.dayNight.cycleSeconds, hour: g.dayNight.hour };
+    // 对照组：阴影开 + 日夜循环（方向门控频繁放行）→ 窗口内必观测到 pending
     g.setShadowsEnabled(true);
     await sleep(300);
     out.on = await sample(500);
-    // 被测组：关阴影 → 门控生效，窗口内 pending 恒 false
+    // 被测组：关阴影 → castShadow 门控生效，窗口内 pending 恒 false
     g.setShadowsEnabled(false);
     await sleep(300);   // 让关阴影前挂起的请求被 tick 消费（跨 200ms 节流窗口）
     out.off = await sample(500);
@@ -535,12 +582,72 @@ test('阴影关闭后日夜循环不再请求刷新（onSunDirection 的 castSha
   });
 
   expect(r.cycleMode, '本用例必须在日夜循环模式下跑（override 风格测不到该缺陷）').toBe(true);
+  expect(r.cycleSeconds, '须已加速日夜循环以让太阳方向门控在窗口内放行').toBe(60);
+  expect(r.hour, 'hour 须落在太阳方向插值段（noon 平台段方向恒定 → 门控永不放行）').toBeCloseTo(7.5, 0);
   expect(r.on.sawTrue,
     `对照组：阴影开启时日夜循环须持续请求刷新（否则被测组断言无效）：${r.on.sawTrue}/${r.on.n}`)
     .toBeGreaterThan(0);
   expect(r.off.sawTrue,
     `关阴影后不得再产生任何刷新请求（castShadow 门控）：观测到 ${r.off.sawTrue}/${r.off.n} 次 pending`)
     .toBe(0);
+});
+
+/**
+ * v1.47 太阳方向角度阈值门控（`SUN_DIR_GATE_DEG`）：日夜循环下不再每帧重定位光源。
+ *
+ * 钉的是真实浪费（不只为测试）：门控前 `onSunDirection` 每帧触发 → `_updateSunPosition()`
+ * 120 次/秒，而太阳每帧只转 0.0025°（256² 贴图上不可见）；且每帧 `paramsAtHour()` 新分配
+ * 2~3 个小对象（GC 压力源）。门控后约 0.6Hz。
+ *
+ * **观测口径 = `_updateSunPosition()` 调用次数**，不是刷新次数：200ms 节流在下游，会把
+ * 「每帧重定位」与「0.6Hz 重定位」的刷新次数都压到 ~5/s → 刷新次数测不出门控。而
+ * `_updateSunPosition()` 是门控的直接下游（每次放行必调一次），能隔离出门控本身。
+ *
+ * 隔离变量：冻结玩家（pushModal → 帧循环跳过 player.update → 移动阈值路径不触发）+ 不做
+ * 编辑 → 唯一的重定位源就是 onSunDirection，正是被测对象。把 hour 设进插值段（7.5）+
+ * cycleSeconds=60（太阳 6°/秒）→ 门控理论放行频率 = 6°/秒 ÷ 0.5° = **12 次/秒**；
+ * 若无门控则每帧一次 = ~120 次/秒。1 秒窗口断言落在 [4, 40]（与无门控的 ~120 差 3×，
+ 与门控理论值 12 两侧都不贴线）。
+ */
+test('日夜循环下太阳方向门控：光源重定位频率从每帧降到阈值放行频率', async ({ page }) => {
+  test.setTimeout(120_000);
+  await page.goto(CYCLE_URL);
+  await waitWorldSettled(page);
+
+  const r = await page.evaluate(async () => {
+    const g = window.__MC_GAME__;
+    const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+    g.pushModal('dir-gate-test');          // 冻结玩家 → 移动阈值路径不触发
+    g.dayNight.setTime(7.5);               // 插值段（noon 平台段方向恒定 → 门控永不放行）
+    g.dayNight.cycleSeconds = 60;          // 太阳 6°/秒 → 门控理论放行 12 次/秒
+    // 包一层计数（保留原逻辑）
+    let calls = 0;
+    const orig = g._updateSunPosition.bind(g);
+    g._updateSunPosition = function (...args) { calls++; return orig(...args); };
+    await sleep(200);                      // 让计数从稳定态开始（跳过启动瞬态）
+    calls = 0;
+    await sleep(1000);                     // 1 秒观测窗口
+    const count = calls;
+    g._updateSunPosition = orig;
+    g.popModal('dir-gate-test');
+    return {
+      count,
+      cycleMode: g.dayNight._styleOverride === null,
+      cycleSeconds: g.dayNight.cycleSeconds,
+      gateDeg: (await import('/src/render/shadow-manager.js')).SUN_DIR_GATE_DEG,
+    };
+  });
+
+  expect(r.cycleMode, '本用例必须在日夜循环模式下跑').toBe(true);
+  expect(r.cycleSeconds, '须已加速日夜循环').toBe(60);
+  expect(r.gateDeg, '门控阈值须为单一权威常量').toBe(0.5);
+  // 理论放行频率 = 6°/秒 ÷ 0.5° = 12 次/秒；无门控则 ~120 次/秒（每帧）
+  expect(r.count,
+    `1 秒内光源重定位次数须落在门控放行频率附近（理论 12，无门控 ~120）：实测 ${r.count}`)
+    .toBeGreaterThanOrEqual(4);
+  expect(r.count,
+    `1 秒内光源重定位次数须远低于每帧（无门控 ~120）：实测 ${r.count}`)
+    .toBeLessThanOrEqual(40);
 });
 
 
@@ -854,4 +961,148 @@ test('阴影刷新不得让视锥外几何整帧消失（远端闪烁回归门�
   }
 
   await page.evaluate(() => window.__MC_GAME__.popModal('tier4-flicker'));
+});
+
+/**
+ * 用例 10（Tier 4）：**纹素对齐消除「阴影随玩家移动微微晃动」**（v1.47 回归门）。
+ *
+ * 机制：阴影相机 ±30 / 贴图 256² → 每纹素 ≈ 0.234 格。相机连续跟随玩家时，世界点在
+ * 贴图上的 UV 分数部分连续变 → 双线性滤波结果变 → 同一世界点的阴影值抖动（shimmer）。
+ * `texelSnapOffset` 把相机中心吸附到纹素边界后，相机只按整纹素步进 → UV 分数部分恒定
+ * → 同一世界点的阴影值恒定。
+ *
+ * **判据**：固定渲染相机 + 固定世界采样点（影子边缘），把玩家按**分数纹素**步长（0.05 格
+ * ≈ 0.21 纹素，沿 X 与影子方向垂直 → 不改影子真实位置）推进，每步 `_updateSunPosition()`
+ * + 强制刷新，读该点亮度序列 → 断言跨全部步长恒定。
+ *
+ * **实测口径**（探针 P25，12 步）：
+ *   · 对齐 ON：亮度恒 112.63（spread **0.00**）、纹素相位恒 0.6（spread 0.00）
+ *   · 对齐 OFF：亮度 118.77↔123.79（spread **5.02**）、相位 0.013~0.947（spread 0.93）
+ * 阈值取 spread ≤ 1.0：与破坏态 5.02 差 5×，不贴线。
+ *
+ * ⚠️ **必须在 rAF 回调内读 canvas**：WebGPU swapchain canvas 在 rAF 外 drawImage 读到黑屏
+ * （探针 P25 首版踩坑：全部读到 0）。本仓 Tier 4 逐帧读像素一律走 rAF 内采样。
+ */
+test('纹素对齐：固定世界点在分数纹素步长移动下亮度恒定（消除晃动）', async ({ page }) => {
+  test.setTimeout(300_000);
+  await page.setViewportSize({ width: 800, height: 600 });
+  await page.goto(URL);
+  await waitWorldSettled(page);
+
+  const P = 80;
+  const { ox, oz } = await setupShadowPlatform(page, P);
+
+  // ⚠️ 必须先把玩家挪到平台上：`_updateSunPosition()` 把阴影相机居中到**玩家**，
+  // 而 setupShadowPlatform 不挪玩家（玩家仍在出生点 y≈22）→ 不挪的话 P=80 平台在
+  // 阴影相机 ±30 覆盖外 → 平台上无阴影（探针实测：亮度 142.7 ≈ 受光区，sanity ② FAIL）。
+  await page.evaluate(({ P, ox, oz }) => {
+    const g = window.__MC_GAME__;
+    const p = g.player.physics.pos;
+    p.x = ox + 0.5; p.y = P + 1; p.z = oz + 0.5;
+    g._lastShadowPos = { x: p.x, y: p.y, z: p.z };
+    g._updateSunPosition();
+    g.sunLight.shadow.needsUpdate = true;
+  }, { P, ox, oz });
+  await page.waitForTimeout(400); // 让刷新落地
+
+  const r = await page.evaluate(({ P, ox, oz }) => {
+    const g = window.__MC_GAME__;
+    const src = g.renderer.domElement;
+    const cv = document.createElement('canvas');
+    cv.width = 4; cv.height = 4;
+    const ctx = cv.getContext('2d', { willReadFrequently: true });
+    // 固定世界点 → 屏幕像素（渲染相机已被 setupShadowPlatform 冻结，pushModal 阻止跟随）
+    const project = (wx, wz) => {
+      const v = new g.camera.position.constructor(wx, P + 1.02, wz);
+      v.project(g.camera);
+      return [Math.round((v.x * 0.5 + 0.5) * window.innerWidth), Math.round((-v.y * 0.5 + 0.5) * window.innerHeight)];
+    };
+    const readAt = ([sx, sy]) => {
+      if (sx < 2 || sy < 2 || sx >= src.width - 2 || sy >= src.height - 2) return null;
+      ctx.drawImage(src, sx - 2, sy - 2, 4, 4, 0, 0, 4, 4);
+      const d = ctx.getImageData(0, 0, 4, 4).data;
+      let s = 0;
+      for (let i = 0; i < d.length; i += 4) s += (d[i] + d[i + 1] + d[i + 2]) / 3;
+      return s / (d.length / 4);
+    };
+    const shadowPx = project(ox + 0.5, oz - 2.0);   // 影子边缘（noon 方向影子落 -Z 侧）
+    const litPx = project(ox + 0.5, oz + 3.0);       // 开阔受光区（sanity 参照）
+    const p = g.player.physics.pos;
+    const baseX = p.x;   // 玩家已在平台上（上方 setup），baseX = ox+0.5
+    const STEP = 0.05;   // 分数纹素步长（0.05 格 ≈ 0.21 纹素）
+    const STEPS = 12;
+    const seq = [], phases = [], litSeq = [], targets = [];
+    return new Promise((resolve) => {
+      let i = 0;
+      const tick = () => {
+        // 沿 X 移动玩家（与影子方向垂直 → 不改影子真实位置，只改采样网格相位）
+        p.x = baseX + i * STEP;
+        g._lastShadowPos = { x: p.x, y: p.y, z: p.z };
+        g._updateSunPosition();
+        g.sunLight.shadow.needsUpdate = true;
+        // 等两帧让刷新落地 + matrixWorld 经渲染更新（避免读到上一帧的陈旧光源矩阵），
+        // 再在 rAF 内读亮度与相位（swapchain 在 rAF 外读是黑屏）
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          const sh = g.sunLight.shadow;
+          sh.updateMatrices(g.sunLight);
+          const c = new g.camera.position.constructor(ox + 0.5, P + 1.02, oz - 2.0).applyMatrix4(sh.matrix);
+          phases.push(+(((c.x * 256) % 1 + 1) % 1).toFixed(4));
+          targets.push(+g.sunLight.target.position.x.toFixed(4));
+          const sv = readAt(shadowPx), lv = readAt(litPx);
+          if (sv !== null) seq.push(+sv.toFixed(2));
+          if (lv !== null) litSeq.push(+lv.toFixed(2));
+          if (++i < STEPS) requestAnimationFrame(tick);
+          else {
+            const spread = (a) => a.length ? Math.max(...a) - Math.min(...a) : -1;
+            resolve({
+              seq, litSeq, phases, targets,
+              shadowSpread: +spread(seq).toFixed(2),
+              litSpread: +spread(litSeq).toFixed(2),
+              phaseSpread: +spread(phases).toFixed(3),
+              targetTravel: +spread(targets).toFixed(4),
+              shadowPx, litPx,
+            });
+          }
+        }));
+      };
+      requestAnimationFrame(tick);
+    });
+  }, { P, ox, oz });
+
+  console.log('SUN-SHADOW TEXEL-SNAP:', JSON.stringify({
+    shadowSpread: r.shadowSpread, litSpread: r.litSpread, phaseSpread: r.phaseSpread,
+    targetTravel: r.targetTravel, seq: r.seq, phases: r.phases,
+  }));
+
+  // sanity floor ①：采样点须真的读到几何（不是天空/黑屏）—— 否则「零变化」是恒真
+  expect(r.seq.length, '影子边缘采样点须入画').toBeGreaterThan(0);
+  expect(r.litSeq.length, '受光区参照点须入画').toBeGreaterThan(0);
+  const shadowMean = r.seq.reduce((a, b) => a + b, 0) / r.seq.length;
+  const litMean = r.litSeq.reduce((a, b) => a + b, 0) / r.litSeq.length;
+  expect(shadowMean, `影子边缘须读到几何而非天空（天空≈192）：${shadowMean.toFixed(1)}`).toBeLessThan(170);
+  expect(shadowMean, `影子边缘须非黑屏：${shadowMean.toFixed(1)}`).toBeGreaterThan(40);
+  // sanity floor ②：采样点须真的在影区（比受光区显著暗）—— 否则「恒定」可能只是没阴影
+  expect(shadowMean, `影子边缘须比受光区显著暗（证明在影区）：shadow=${shadowMean.toFixed(1)} lit=${litMean.toFixed(1)}`)
+    .toBeLessThan(litMean * 0.95);
+  // sanity floor ③：阴影相机须真的移动了（玩家动了 + `_updateSunPosition()` 跑了）——
+  // 否则「亮度恒定」是因为什么都没做。12 步 × 0.05 格 = 0.6 格 ≈ 2.6 纹素 → 至少走 1 纹素。
+  // ⚠️ 不能用「相位在变」做 sanity：对齐生效时相位**恒定**正是被测不变式（探针 P25 实测
+  // ON 相位 spread 0.00 / OFF 0.93）—— 拿它做下界会让修好的代码反而 FAIL。
+  expect(r.targetTravel,
+    `阴影相机须真的随玩家移动（否则用例没测到东西）：target 位移 ${r.targetTravel}，targets=${JSON.stringify(r.targets)}`)
+    .toBeGreaterThan(0.2);
+
+  // 主判据：固定世界点在分数纹素步长移动下亮度恒定（对齐生效）
+  expect(r.shadowSpread,
+    `纹素对齐后影子边缘亮度须跨全部步长恒定（破坏态实测 spread 5.02）：seq=${JSON.stringify(r.seq)}`)
+    .toBeLessThanOrEqual(1.0);
+  // 纹素相位恒定（对齐的直接不变式：相机只按整纹素步进 → UV 小数部分不变）
+  expect(r.phaseSpread,
+    `纹素对齐后采样相位须恒定（破坏态实测 spread 0.93）：phases=${JSON.stringify(r.phases)}`)
+    .toBeLessThan(0.05);
+  // 对照：受光区本来就应恒定（不在影区，无相位依赖）—— 证明读法本身不引入噪声
+  expect(r.litSpread, `受光区参照点须恒定（读法无噪声）：litSeq=${JSON.stringify(r.litSeq)}`)
+    .toBeLessThanOrEqual(1.0);
+
+  await page.evaluate(() => window.__MC_GAME__.popModal('tier4-shadow'));
 });

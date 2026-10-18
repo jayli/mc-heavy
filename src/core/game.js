@@ -12,7 +12,7 @@ import { RenderWorld } from '../render/render-world.js';
 import { setupFog } from '../render/materials.js';
 import { setupOcean } from '../render/ocean.js';
 import { DayNight } from '../render/daynight.js';
-import { ShadowScheduler } from '../render/shadow-manager.js';
+import { ShadowScheduler, SUN_DIR_GATE_DEG, sunDirectionChanged, texelSnapOffset } from '../render/shadow-manager.js';
 import { RainEffect } from '../render/rain.js';
 import { WeatherState } from '../render/weather.js';
 import { WeaponModelLoader } from '../render/weapon-model-loader.js';
@@ -209,6 +209,9 @@ export class Game {
     // 光源跟随节流快照（玩家位置；mc-lite Game.js:537 口径：移动超 5 格才重新定位）。
     // 初始 (0,0,0)：出生点距原点必 >5 格 → 第一帧即自动定位。
     this._lastShadowPos = { x: 0, y: 0, z: 0 };
+    // v1.47：太阳方向门控快照（onSunDirection 的角度阈值比较用）。初始 null → 首次恒通过
+    // （启动即定位）。由 `_updateSunPosition()` 统一维护（两条重定位路径口径一致）。
+    this._lastSunDir = null;
     // shadowMap.enabled 是硬门控（three.webgpu.js:43563）：不开则 castShadow 被忽略。
     // type = VSMShadowMap（DR-4b，用户拍板）：r185.1 WebGPU 后端的 depth-compare 阴影路径
     // （PCFSoft/PCF/Basic）有 GPUValidationError bug（ShadowDepthTexture 同 scope 内
@@ -229,9 +232,17 @@ export class Game {
       voxelUniforms: this.renderWorld.materials.dayNight,
       baseFogNear: this.viewDistance * 16 * 0.75,
       baseFogFar: (this.viewDistance + 2) * 16 * 0.95,
-      // 太阳方向变化 → 光源重定位 + 请求阴影刷新（DR-5 第三个请求源）。方向本身由
+      // 太阳方向变化 → 光源重定位 + 请求阴影刷新（DR-5 第三个请求源）。**用于定位的**方向由
       // `_updateSunPosition()` 从 `dayNight.params.sunDirection` 读（唯一权威，红线 1：
-      // 回调里不写字面量方向，也不用 dir 参数）。
+      // 回调里不写字面量方向）。
+      // ⚠️ **门控比较用 `dir` 入参，定位仍读 `params`** —— 两者同值（DayNight 传的就是刚 apply
+      // 的 `normalizeDirection(p.sunDirection)`），但 `get params()` 会走 `paramsAtHour()` →
+      // `lerpParams()` + `normalizeDirection()`，**每次调用新分配 2 个小对象**。初版门控自己读
+      // `params` 做比较 → 被门控掉的帧仍每帧分配，白做了一半。入参是 DayNight 已经算好的值，
+      // 零额外分配。⚠️ 本门控消除的是「重定位路径上的额外 params 读取」（门控前每帧 2 次：
+      // 门控自己 1 次 + `_updateSunPosition()` 1 次 → 门控后约 0.6Hz 各 1 次）；
+      // `DayNight._apply` 自身的每帧分配（`paramsAtHour` + 末尾 `normalizeDirection`）不在本门控
+      // 范围内，属日夜循环固有成本，本次不动。
       // ⚠️ **必须判 `this.player`**：本构造调用会立即触发一次 `_apply` → 回调，而
       // `this.player` 在 start() 后半段才创建 → 不判空启动即抛 TypeError。
       // ⚠️ **`request()` 必须判 `castShadow`（阴影总开关）**：日夜循环模式下
@@ -242,8 +253,15 @@ export class Game {
       // ⚠️ **`_updateSunPosition()` 不门控**：DirectionalLight 对着色只生效「方向」
       // （= position − target），而本方法保持该方向恒等于当前太阳方向 → 枪的 PBR 高光
       // 需它跟随日夜（与阴影开关无关）；它只改阴影相机的居中点，不门控不会产生重渲。
-      onSunDirection: () => {
+      onSunDirection: (dir) => {
         if (!this.player) return;
+        // v1.47 角度阈值门控：日夜循环下太阳每帧只转 0.0025°（256² 贴图上不可见），
+        // 门控前每帧重定位 120 次/秒且每帧 `paramsAtHour()` 新分配 2~3 个小对象（GC 压力源）；
+        // 门控后约 0.6Hz（SUN_DIR_GATE_DEG=0.5°，太阳 0.3°/秒）。noon 平台段（hour 9~17）
+        // 方向恒定 → 该时段零方向驱动刷新。
+        // ⚠️ 门控**只加在这条路径**，不得加到帧循环的移动阈值路径（玩家移动必须让阴影
+        // 相机跟上，加了会「走 5 格后影子钉在原地」）。
+        if (!sunDirectionChanged(this._lastSunDir, dir, SUN_DIR_GATE_DEG)) return;
         this._updateSunPosition();
         if (this.sunLight.castShadow) this.shadowScheduler.request();
       },
@@ -814,13 +832,25 @@ export class Game {
    * target 指向玩家 → 阴影相机（±30）始终覆盖玩家周围可见几何。
    * ⚠️ 太阳方向从 `dayNight.params.sunDirection` 取（唯一权威，日夜风格/循环切换自动跟随；
    * 红线 1：不得在此写字面量方向）。偏移 60 = mc-lite Game.js:558 原值。
+   *
+   * v1.47 纹素对齐（texel snapping，有意偏离 mc-lite —— 它无连续日夜循环且无此机制）：
+   * 阴影相机 ±30 / 贴图 256² → 每纹素 ≈ 0.234 格；相机连续跟随玩家时世界相对纹素网格
+   * 错位分数纹素 → 影子边缘随移动抖动（用户实玩可察觉）。把相机中心吸附到纹素边界后
+   * 网格只按整纹素步进 → 影子稳定。texelSize 从实际配置读（红线 1：不写字面量）。
+   * ⚠️ **载荷性**：偏移必须**同时**加到 position 与 target —— 两者之差平行于相机 Z 轴，
+   * 加同一向量方向严格不变；只加一个会改「position − target」→ 枪 PBR 高光漂移。
+   * 故本方法不受 `castShadow` 门控（关阴影时枪的高光仍须跟随日夜，见构造处注释）。
    */
   _updateSunPosition() {
     if (!this.player) return; // 防御：帧循环里 player 必然已建，判空成本为零
     const p = this.player.physics.pos;
     const dir = this.dayNight.params.sunDirection; // 已归一化（DayNight.get params）
-    this.sunLight.position.set(p.x + dir[0] * 60, p.y + dir[1] * 60, p.z + dir[2] * 60);
-    this.sunLight.target.position.set(p.x, p.y, p.z);
+    this._lastSunDir = dir; // 两条重定位路径统一维护门控快照（口径一致）
+    const cam = this.sunLight.shadow.camera;
+    const texelSize = (cam.right - cam.left) / this.sunLight.shadow.mapSize.width;
+    const off = texelSnapOffset([p.x, p.y, p.z], dir, texelSize);
+    this.sunLight.position.set(p.x + off[0] + dir[0] * 60, p.y + off[1] + dir[1] * 60, p.z + off[2] + dir[2] * 60);
+    this.sunLight.target.position.set(p.x + off[0], p.y + off[1], p.z + off[2]);
   }
 
   /**
