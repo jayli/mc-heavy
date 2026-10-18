@@ -1,6 +1,6 @@
 # mc-heavy 第一阶段实施设计文档：游戏引擎原型
 
-> 版本：v1.43 ｜ 日期：2026-09-30 ｜ 状态：定稿（经十五轮逐条核验修订 + M3.2 实施回填 + 异形方块渲染勘误 + 背包物品集合口径 + 吊灯材质自发光 + 吊灯 UV 分区 + 背包图标表 + 等轴测图标 + 测试分级策略与静态门禁 + 全量背包图标离线烘焙 + 背包槽位点选抖动修复 + 等轴测图标遮挡修复 + 删除缓存按钮 + 沼泽睡莲水洞与沉水修复 + AO 去掉对角门控 + 设置面板两列布局与档位精简 + M8 TNT/炮塔的三项架构口径变更 + M9 创造台的两项架构口径变更 + 水面遮罩判据的两项架构口径变更 + 天空树回补与 sky_leaves 通道修正 + 进度包导入导出）
+> 版本：v1.47 ｜ 日期：2026-10-17 ｜ 状态：定稿（经十五轮逐条核验修订 + M3.2 实施回填 + 异形方块渲染勘误 + 背包物品集合口径 + 吊灯材质自发光 + 吊灯 UV 分区 + 背包图标表 + 等轴测图标 + 测试分级策略与静态门禁 + 全量背包图标离线烘焙 + 背包槽位点选抖动修复 + 等轴测图标遮挡修复 + 删除缓存按钮 + 沼泽睡莲水洞与沉水修复 + AO 去掉对角门控 + 设置面板两列布局与档位精简 + M8 TNT/炮塔的三项架构口径变更 + M9 创造台的两项架构口径变更 + 水面遮罩判据的两项架构口径变更 + 天空树回补与 sky_leaves 通道修正 + 进度包导入导出 + 太阳阴影 shadow map + 阴影混合模型对齐 mc-lite + 阴影纹素对齐与太阳方向门控）
 >
 > 目标：在 mc-heavy 仓库从零重建一个功能对标 mc-lite、性能提升一个数量级的体素游戏引擎。
 > 第一阶段只做"引擎底座"：渲染、体素数据、即时地图生成、玩家交互、种子地图、存档原型。
@@ -1088,6 +1088,199 @@
 > 无本次新代码）→ 不是 v1.43 引入。详见 roadmap 遗留 TODO（含修法方向）。因此本任务的 E2E
 > **刻意不断言「换 seed 后包里的方块出现在世界里」** —— 那会被该缺陷干扰；世界写入路径的验证
 > 改由「导出含刚放入内存的方块」+ codec 往返单测承担。
+>
+> v1.44 修订说明：**太阳阴影 shadow map 落地 —— §4.4.4 的规划期估算全部改为实测口径**
+> （2026-10-13，§4.4.4 / DR-14）。§4.4.4 原文（「贴图 2048 / shadow camera 覆盖半径 = 视距的 60% /
+> 投射接收由 BlockRegistry 属性驱动」）是**规划期估算，从未实现**；本次落地后三项全部与原文不同，
+> 且每一项的差异都是实测或架构决定的，不是偏好。规格
+> `docs/superpowers/specs/2026-10-13-sun-shadow-map-design.md`（DR-1~DR-8 + DR-4b + §9 六条偏离），
+> 任务级实测记录见 `.superpowers/sdd/2026-10-13-sun-shadow-map/task-{3,5,6b1,6b2}-report.md`。
+>
+> ① **档位改用 `VSMShadowMap`，不用 mc-lite 的 `PCFSoftShadowMap` —— three.js r185.1 WebGPU 后端的
+> depth-compare 阴影路径是坏的**（本次最重要的发现，闸门实测）。错误原文：
+> `GPUValidationError: [Texture "ShadowDepthTexture"] usage (TextureBinding|RenderAttachment) includes
+> writable usage and another usage in the same synchronization scope` → 整个 CommandBuffer 作废 →
+> **画面全黑**。**在只有 plain `Mesh`、零游戏代码的最小独立场景里同样复现** → 与 BatchedMesh /
+> 自定义 `packed` 属性布局 / per-instance 剔除**无关**（spec §8 原把这列为「最大未知数」，已被证伪）。
+> Basic(0) / PCF(1) / PCFSoft(2) 三种 depth-compare 档位全坏；**VSM(3) 有影 + 0 错误**，因为
+> `three.webgpu.js:45074` 显式 `depthTexture.compareFunction = null`（"VSM does not use
+> textureSampleCompare()"）绕开了 comparison-sampler 路径 —— bug 精确定位在该路径。
+> DR-5 的按需刷新**不能**绕开（错误发生在同一 encoder 内，与刷新频率无关）。属 three.js 已知问题类
+> （#33048 / #34081 / #34053 / #33898）。**代价四项**：VSM 不吃 `bias`/`normalBias`（改吃 `radius 4` +
+> `blurSamples 8`，实测出影值）/ 固有 light-bleeding 漏光伪影（用户已知悉接受）/ 多 2 个模糊 render
+> target（垂直+水平 pass）/ **`receiveShadow` 的对象也进阴影 pass**（见 ②）。⚠️ **升级 three 前须重测
+> 这条**：若上游修了 comparison-sampler 路径，可换回 PCFSoft 对齐 mc-lite。spec §8 的另一条回退选项
+> `castShadowNode` 对本 bug **大概率无效**（它改的是 filter 节点，bug 在阴影 map 的 render pass 本身 ——
+> 实施者分析，**未实测验证**）。
+>
+> ② **投射是通道级（opaque + cutout cast / transparent 不 cast / 三通道全 receive），不是原文的
+> 「BlockRegistry 属性驱动白名单」**。mc-heavy 是 BatchedMesh 通道级合批（红线 5），逐方块投射需改
+> mesher（packed 位 + `castShadowNode` 逐顶点 discard）= 纯额外 GPU 开销，而收益（花草不投影）肉眼
+> 不可辨 → 不做（DR-2，用户确认接受）。⚠️ **VSM 下 `receiveShadow` 的对象也进阴影 pass**
+> （`three.webgpu.js:44682` 判据 `castShadow === true || (receiveShadow && shadowType === VSMShadowMap)`）
+> → 三通道全进，不只 cast 的两个。**后果是重渲帧的 drawCalls 尖峰**（vd=2 实测 53→273 即 +220；
+> vd=8 实测 514→624 即 +110），故 **DR-5 的按需刷新不是可选优化而是硬约束**（稳态 drawCalls 实测值
+> 见 roadmap v1.44 行）。连带测试口径：**任何量 drawCalls 的 spec，若被测对象不是阴影，
+> 须先 `setShadowsEnabled(false)` 隔离**（已隔离 5 份：render-terrain / daynight-visual /
+> weapons-performance / zombies / m3-2-orientation；断言与阈值逐字未动，改的是被测 setup）。
+>
+> ③ **节流口径是 per-light，不是 mc-lite 的 renderer 级**：WebGPU 后端经 `light.shadow.autoUpdate` /
+> `light.shadow.needsUpdate` 判定（`ShadowNode.updateBefore`），mc-lite WebGL 的
+> `renderer.shadowMap.autoUpdate` 写法**在本后端不生效**；`renderer.shadowMap.enabled = true` 仍是硬门控
+> （不开则 `castShadow` 被忽略，`three.webgpu.js:43563`）。三个请求源（世界编辑 `block-changed` /
+> 玩家移动超 5 格 / 日夜太阳方向变化）→ `ShadowScheduler` 200ms 节流 → 帧循环 `tick()` 放行。
+> ⚠️ **消费端门控的操作数顺序是载荷性的**：`if (this.shadowScheduler.tick(nowMs) &&
+> this.sunLight.castShadow)` —— **勿交换两侧**。`castShadow` 在前会让 `tick()` 被短路完全不跑 →
+> `_pending` 永不被消费 → 打破 sun-shadow 用例 6 的观测口径（冻结断言 `off.sawTrue === 0`，实测交换后
+> 5/5 FAIL、现顺序 5/5 PASS）。⚠️ 交换顺序**不会**让 draw 尖峰复活（交换后 `needsUpdate` 恒 false →
+> 阴影 pass 根本不触发，实测 `needsUpdate` 0/8、draw 恒 168）；会产生尖峰的是「**去掉** `castShadow`
+> 门控」那种形态（实测 drawCalls 168→402）—— 两种注入的后果不同，勿混。
+>
+> ④ **「关阴影 = 零开销」需三处协同，缺一处即静默失效**：(1) `sunLight.castShadow = false`（停阴影
+> pass）(2) `uShadowStrength = 0`（视觉零影响 —— `shadow()` 节点仍在 node graph 里）(3) **DayNight 的
+> `shadowEnabled` 标志**（否则日夜循环每帧 `_apply` 把 `uShadowStrength` 写回 `skyDim` → 关闭被静默
+> 覆写）。⚠️ (3) 的失效面 `daynight-visual` spec **测不出**（它走 override 模式，`update()` early-return），
+> 只有真实日夜循环才暴露。另有**请求源门控**：`editor.subscribe` / 移动阈值 / `onSunDirection` 三处的
+> `request()` 都要判 `castShadow`（否则关阴影后仍每 200ms 重渲，实测尖峰帧占比 6.5%）；③ 的**消费端
+> 门控是单点权威兜底**，源侧门控是纵深防御 —— 只靠源侧则每加一个请求源都要补一次，漏一个就复发
+> （本次缺陷的成因正是 `editor.subscribe` 与消费端双双漏门控）。
+>
+> ⑤ **太阳方向随日夜连续插值**（有意偏离 mc-lite 的离散风格切换，spec §9 偏离⑤）：mc-lite 是风格切换时
+> 离散变化，mc-heavy 的日夜是连续关键帧插值 → 方向逐分量 lerp + normalize。`VISUAL_STYLES` 存 mc-lite
+> 三组**原值**（morning `[0.18,0.45,0.88]` / noon `[0,0.8,0.6]` / night `[0.08,0.25,0.96]`），
+> `paramsAtHour` 返回归一化值，`_apply` 调 `onSunDirection` 回调前统一归一化 —— **归一化必须收在 `_apply`**
+> 而非只在 `paramsAtHour`：`setStyle`（设置面板切风格）传的是原值，night 长 0.9952 非单位长度，两条路径
+> 不归一化会让「太阳方向 × 60」的光源偏移在两条路径下不一致。方向本身由 `_updateSunPosition()` 从
+> `dayNight.params.sunDirection` 读（唯一权威，红线 1：不写字面量方向）。
+>
+> ⑥ **阴影让 morning 与 noon 的整屏平均亮度趋同 —— 物理正确，但撞 M2 的冻结断言**。机制：morning 的
+> 太阳方向比 noon 更低 → 影子更长 → 屏幕上被影覆盖的地形更多 → 抵消掉 `skyDim 1.0 vs 0.8` 的亮度差。
+> 实测（光源就位后）`|morning-noon|`：HEAD 无阴影 0.0340 / 阴影不参与 0.0300 / 恒全浓度 0.0107（余量仅
+> 7%，贴线）/ DR-6 现状（`uShadowStrength = skyDim`）**0.0044**（断言阈值 0.01 → FAIL）。
+> ⚠️ **关键推论：阴影本身就会让该断言收敛**（0.0300 → 0.0107），与 DR-6 无关 → 改 DR-6 也救不了，
+> 只能隔离或重标。**用户 2026-10-13 裁定 = 隔离变量**：`daynight-visual` 量 `|morning-noon|` 前调
+> `setShadowsEnabled(false)`，**断言与阈值 0.01 逐字不动**（改的是被测 setup —— 该 spec 的被测对象是
+> 日夜风格系统，阴影是新引入的独立变量，正是「对照只差一个变量」原则）。
+>
+> ⑦ **Tier 4 像素判据的两条踩坑**（判据本身无效，不是实现有 bug）：
+> **(a) 侧视采样两区不在同一表面** —— 无阴影接线、无柱、y=80 全 stone 平台（skylight 恒 15）下亮度仍硬
+> 分裂 2×（−Z≈138 / +Z≈61），边界恰在相机自身 Z 平面；镜像相机 → 明暗侧随相机翻转（阴影不可能跟随
+> 相机）。**根因 = perf HUD 的半透明黑底**（`perf-hud.js` 的 `position:fixed;top:8px;left:8px;
+> background:rgba(0,0,0,.55)`）压暗屏幕左上象限 → 暗区跟着**屏幕**走而非世界走。修法 = 俯视相机 +
+> 高空均匀平台 + **隐藏全部 HUD**（`#hud-root > *` + `#crosshair` + `#settings-btn`），实测隐藏后 25 点
+> 全 156.0、spread 0.0。**(b) 不能直写 uniform 做像素判据** —— 强制 `uShadowStrength = 1` 时影区照样暗到
+> 0.670 → 用例恒 FAIL。根因：`start()` 的首次 `needsUpdate = true` 早于 `setShadowsEnabled(false)`，
+> map 里已烘好带柱深度的数据；关阴影后无人再置 `needsUpdate`，这份 map **永久驻留**，而 `shadow()` 节点
+> 只读 uniform → 强制置 1 就把残留 map 采样回来。修法 = 同帧 A/B 比值 + **正向对照**（先开阴影断言
+> A/B < 0.85 证明判据有效，再关阴影断言 A/B > 0.85）+ sanity floors（两区 > 40 防黑屏恒真）。
+>
+> ⑧ **与 v1.9 / DR-14 是两条独立路线，本决策不推翻 DR-14**：DR-14 撤销的是「体素 skylight 遮挡投影」
+> （悬挑/洞穴下大片全黑 + 截断渐变环，用户明确否决），skylight 恒 15 口径**不变**（§4.6 未动）；
+> shadow map 是纯渲染层的表面投影，视觉问题不同。DR-14 保留的遮挡模型与 light 任务写回机制**仍不启用**。
+>
+> ⑨ **开关是代码级、不进设置面板**（DR-7，用户决定）：构造选项 `shadows`（默认 true）+ `?shadows=0`
+> URL 入口 + `Game.setShadowsEnabled()` / `shadowsEnabled` getter，不持久化。
+>
+> ⑩ **本期范围外（接线点已预留）**：实体（丧尸/矿车/炮塔/弹丸）不投射不接收 —— 后续加只需给对应
+> InstancedMesh 开 `castShadow` + 材质乘 `shadow()` 节点（实体材质同为 unlit，接收也需手动相乘），
+> 与体素同手法。阴影 pass **不消费 alphaTest** → 树冠投影是实心立方轮廓（Minecraft 原版同款表现）；
+> 若观感不可接受，升级为 `castShadowNode` + alphaTest（但对 ① 的 bug 大概率无效）。
+> 日夜循环下 5Hz 重渲是**正确行为**（太阳方向连续变），稳态帧时实测无影响；若后续 bench 显示 VSM 成本
+> 成问题再考虑降频。
+>
+> 测试：`src/tests/test-shadow-manager.js`（节流纯函数，Tier 1）+ `src/tests/test-daynight.js`
+> （方向插值连续性 / 归一化 / `uShadowStrength` 联动，Tier 1）+ `tests/sun-shadow.spec.mjs`
+> （接线 / Tier 4 有影 / 光源跟随 / 关阴影不被日夜覆写 / 按需刷新 / 门控 / URL 入口 / 重开恢复）。
+> 验收实测数据（Tier 4 亮度比 / drawCalls / 帧时 / 全量 E2E / bench 交替对照 / 负向验证）见 roadmap
+> 独立改动表的 v1.44 行。
+>
+> v1.45 修订说明：**太阳阴影「黑乎乎一片」修复 —— 混合模型对齐 mc-lite + 逐方块投射排除**
+> （2026-10-14，§4.4.4）。用户实玩报告「阴影的部分都是黑乎乎的一片」，对照 mc-lite 定位到
+> **两个独立缺陷**（都不是参数调得不好，是模型错）。规格
+> `docs/superpowers/specs/2026-10-13-sun-shadow-map-design.md` 的 DR-2 / DR-4 相应条目已作废。
+>
+> ① **阴影因子被乘在最终颜色上 → 影区亮度归零（根因）**。v1.44 的实现是
+> `rgb = texColor.rgb × vShade × shadowFactor`，而 `shadow()` 在影区返回 0 → **整个 rgb 归零**。
+> mc-lite 的体素材质是受光的 `MeshStandardNodeMaterial`（`MaterialManager.js:268`），three 的阴影
+> **只乘在方向光贡献上**，而 `AmbientLight(0xddeeff, 2.3)`（`Engine.js:194`）**不参与阴影** →
+> 影区仍被环境光完整照亮。mc-heavy 是 unlit 管线，`vShade` 里烘焙的 skylight 就是它唯一的「环境光」，
+> 这一乘把它也乘没了 —— **这是两边观感差异的直接来源**。修法见 §4.4.4「接收靠 TSL 节点手动相乘」段
+> （sky/block 分开传片元 + 只衰减 sky 项 + `SHADOW_FLOOR=0.5` 地板 + 两层 mix 嵌套顺序载荷性）。
+> ② **cloud 等 13 种方块被通道级粗粒度误投影**。v1.44 的 DR-2 判断「cloud 在高空、投影可接受」
+> **与 mc-lite 实际口径不符**：mc-lite 明确把 cloud 排除在投影外（`BlockData.isShadowEnabled:false`，
+> 实测解析其 124 键 = 102 项投影 / 20 项不投影）。mc-heavy 的 cloud 在 **opaque 通道**
+> （`blocks-data.js`，M2-7 为修侧面混叠从 transparent 挪过去的）→ 通道级 `castShadow` 让云全部投影，
+> 而 Y=35/55 的云簇完全在阴影相机 far=250 视锥内 → **地面出现大面积移动云影黑斑**。
+> 修法 = 逐方块排除（`shadowCast:false` → `shadowCastTable` → packed bit14 → `maskShadowNode`），
+> 见 §4.4.4「投射是通道级 + 逐方块排除两层」段。
+> ③ **`radius` 从 4 修回 mc-lite 原值 2.6**：4 是缺陷 ① 时代的补偿值（阴影纯黑须糊开才不刺眼），
+> 修好 ① 后 radius=4 反而把阴影冲淡（实测谷底比值 0.852 vs r=2.6 的 0.726，半影宽度两者同为 4/8 点）。
+> ④ **transparent 通道改为 cast + receive 双 false**（v1.44 是 cast=false / receive=true）：
+> VSM 下 `receiveShadow` 的对象也进阴影 pass（`:44682`）→ 水/玻璃**照样投影**；且材质的 `shadow()`
+> 节点不受 `receiveShadow` 门控（该标志只门控灯光管线，`:46101`）→ 水面照样被压暗。mc-lite 对
+> water/glass 也是双 false。连带：transparent 通道的材质**不挂 shadow 因子**（`receivesShadow:false`）。
+> ⑤ **测试口径缺陷（比实现缺陷更值得记）**：v1.44 的 Tier 4 判据只有上界 `ratioA < 0.85`
+> （「影区须比基线暗」），而**纯黑（实测 0.675）也满足这个断言** → 该用例结构上就抓不到缺陷 ①。
+> 负向验证实测：把 `SHADOW_FLOOR` 改回 0（= 旧的乘到纯黑行为）后 `ratioA = 0.122`（影区几乎纯黑），
+> 而旧断言**仍全绿**。故 v1.45 补**下界 `> 0.5`**（实测修好 0.735 / 破坏态 0.122，两侧都不贴线）。
+> 同 `testing-policy.md` §2.7「负向验证盲区」与 CLAUDE.md「写断言前必须先在真实数据上跑一次」。
+>
+> 实测数据（2026-10-14，同一平台/同一相机，只改被测变量）：
+> - 影区比值 `ratioA`：**0.675（v1.44 纯黑）→ 0.735（v1.45 地板 0.5 + radius 2.6）**；
+>   开阔区 `ratioB` 恒 1.000（阴影是局部的，不是全屏压暗）；关阴影 A/B = 0.992（零视觉影响）。
+> - 0.735 与 mc-lite 理论影区亮度 **0.71** 几乎重合（ambient 2.3/(2.3+sun 3.2×NdotL 0.8)=0.4733
+>   线性 → sRGB 0.71）→ 地板值与 radius 都对齐上游观感，不是凑数。
+> - cloud 投影验证：cloud 柱逐点扫描比值**恒 1.000**（dz0/dz1 读到 209/226 = 云柱自身，明亮且不投影），
+>   对照 stone 柱同点位 0.852（radius=4 时）/ 0.726（radius=2.6 时）。
+> - radius 扫描（只改 radius）：r=1 → 0.724 / r=2 → 0.724 / **r=2.6 → 0.726** / r=3 → 0.769 /
+>   r=4 → 0.852 / r=4+bs16 → 0.826；半影宽度 r=2.6 与 r=4 同为 4/8 点（边缘不更硬）；0 个 GPU 错误。
+> - 浏览器内单测 645/645 全绿（含新增 6 条：registry `shadowCastTable` 双向一致 / 13 项排除清单 /
+>   未知 id 防御 / mesher bit14 三向）。
+>
+> v1.46 修订说明（实玩修正，不改架构口径，故不 bump 版本号，仅在此补记）：**远端闪烁修复**
+> —— three r185.1 的 BatchedMesh 主 pass 与阴影 pass 共用一份 multi-draw 列表，阴影 pass 覆写后
+> 主 pass 读到被 ±30 视锥裁剪过的列表 → 视锥外几何每次刷新一帧消失（透出天空）。修法 =
+> `render-world.js _installShadowListGuard`（快照/恢复）。详见 roadmap v1.46 行与 CLAUDE.md 活跃约束。
+>
+> v1.47 修订说明：**阴影「随移动微微晃动」修复 —— 纹素对齐 + 太阳方向角度阈值门控**
+> （2026-10-17，§4.4.4）。用户实玩报告「阴影随着玩家的移动会微微晃动，幅度不大但能察觉」，
+> 并质疑「200ms 刷新频率是否过高、对性能影响有点大」。排查结论：
+>
+> ① **晃动的根因是纹素量化，不是太阳方向在变**。阴影相机 ±30 / 贴图 256² → 每纹素 ≈ 0.234 格；
+> 相机连续跟随玩家时，世界点相对纹素网格每次重渲错位一个**分数**纹素 → 所有影子边缘跳动最多
+> 半纹素 ≈ 0.1 格（与「幅度不大但能察觉」吻合）。太阳方向每帧只转 0.0025°，不是主因。
+> ② **200ms 的性能前提不成立，故不改 200ms**。探针实测（vd=8，逐帧按「是否刷新」分组）：
+> 稳态帧中位 8.3ms（与关阴影的 8.33ms 逐位相同 → 常驻成本为零），刷新帧中位 9.0ms，刷新帧只占
+> 4.2%（30/722），摊平 ≈ 0.03ms/帧，fps 恒 120。且强制 100/200/400/800/1600ms 对照显示
+> **单次刷新成本与频率无关**（8.74/8.74/8.82/9.04/9.12ms）→ 降频不会让每次刷新变便宜，只是让它
+> 更少发生，还会引入阴影覆盖滞后。⚠️ 既有验收用 p95（600 帧窗口）：5Hz 刷新帧只占 4.2%，
+> 刚好落在 p95 阈值**之下** → 聚合 p95 抓不到刷新尖峰（「用聚合指标回答分组问题」的口径错误）。
+> ③ **修法 = 纹素对齐（texel snapping）**：`shadow-manager.js` 新增纯函数 `texelSnapOffset`，
+> `_updateSunPosition()` 把相机中心吸附到纹素边界（偏移同时加到 position 与 target → 方向严格不变）。
+> ④ **顺带修真实浪费 = 太阳方向角度阈值门控**：`onSunDirection` 加 `sunDirectionChanged`
+> （`SUN_DIR_GATE_DEG=0.5°`）→ 日夜循环下的光源重定位从每帧 120 次/秒降到约 0.6Hz。
+> 附带消除**重定位路径上**的额外 `params` 读取（门控前每帧 2 次：门控自己 1 次 +
+> `_updateSunPosition()` 1 次；`get params()` 每次调用新分配 2 个小对象）。
+> ⚠️ **门控比较用回调入参 `dir`，不得读 `dayNight.params`**（入参是 DayNight 已算好的同值，
+> 零额外分配；初版门控自己读 params → 被门控掉的帧仍每帧分配，白做一半）。
+> ⚠️ `DayNight._apply` 自身的每帧分配（`paramsAtHour` + 末尾 `normalizeDirection`）
+> **不在本门控范围内**，属日夜循环固有成本，本次未动。
+> 门控**只加在 onSunDirection 路径**，不加到移动阈值路径（玩家移动必须让阴影相机跟上）。
+>
+> 两项都是**有意偏离 mc-lite**（它无连续日夜循环，光源只在移动超 5 格时重定位，无纹素对齐）。
+>
+> 实测数据（2026-10-17，同一平台/同一相机，只改被测变量）：
+> - 纹素对齐 Tier 4（固定世界点 + 分数纹素步长 0.05 格 × 12 步 + 每步强制刷新）：
+>   对齐 ON 亮度恒 112.63（spread **0.00**）、纹素相位恒 0.6（spread 0.00）；
+>   对齐 OFF 亮度 118.77↔123.79（spread **5.02**）、相位 0.013~0.947（spread 0.93）。
+>   阈值取 spread ≤ 1.0（与破坏态 5.02 差 5×，不贴线）。
+> - 方向门控：cycleSeconds=60（太阳 6°/秒）下 `_updateSunPosition()` 调用 **11 次/秒**
+>   （理论 6°/秒 ÷ 0.5° = 12）；阈值归零时 **120 次/秒**（每帧，= 门控前）。
+> - 浏览器内单测 656/656 全绿（含新增 11 条：sunDirectionChanged 首次/同向/临界/大跳变，
+>   texelSnapOffset 网格对齐/方向不变/幂等/幅度/退化/非法 texelSize/双基）。
+> - sun-shadow.spec 11/11 全绿（含新增 2 条：纹素对齐 Tier 4 回归门 + 方向门控频率；改 1 条：
+>   光源跟随容差从硬编码 0.1 改为从配置推导的半纹素对角 0.166 —— 行为变了导致几何口径变了，
+>   非「放宽断言」）。
 
 ---
 
@@ -1812,10 +2005,97 @@ half_block（床，1×0.5×1）、hanging_lamp（绳 8 段棱柱 r=0.015 + 灯�
 - 移植 mc-lite Engine 的三套视觉风格（morning/overcast/night）、TSL 天空盒、色调映射与色相偏移。
 - 雾距与视距联动配置（mc-lite 硬编码 FOG_NEAR=30/FAR=70，新引擎按 `renderDistance × 16` 推导）。
 
-**4.4.4 阴影**
-- 主方向光 + 跟随玩家的阴影相机（沿用 mc-lite 的 requestShadowMapUpdate 按需刷新思路），
-  shadow camera 覆盖半径 = 视距的 60%，贴图 2048。
-- 投射/接收由 BlockRegistry 属性驱动（实心不透明投射，玻璃/花草不投射），白名单逻辑与 mc-lite 对齐。
+**4.4.4 阴影**（v1.47 实测口径，2026-10-13 落地 / 2026-10-14 混合模型修正 / 2026-10-17 纹素对齐 + 方向门控。原规划期估算「贴图 2048 / shadow camera 覆盖半径 =
+视距的 60% / 投射接收由 BlockRegistry 属性驱动白名单」三项**全部作废**，理由见 v1.44 修订说明）
+
+- **太阳灯 = 复用给枪 PBR 用的那盏 `DirectionalLight`**（`game.js` 的 `sunLight`，原 `weaponSun`），
+  不新建第二盏（新建会让枪模型被双倍照亮）。阴影相机正交 `±30` / `near 0.1` / `far 250` /
+  `mapSize 256`（mc-lite `Engine.js:30-34,168-182` 实测口径 —— 小相机近处阴影更清晰，比原文的
+  「2048 贴图 + 视距 60% 覆盖」更优）。跟随玩家：`position = player + sunDirection × 60`、
+  `target = player`（mc-lite `Game.js:556-558`），移动超 5 格（`distSq > 25`，mc-lite `Game.js:537`）
+  才重定位。
+  ⚠️ **v1.47 纹素对齐（texel snapping，有意偏离 mc-lite）**：上述 `position`/`target` 都再叠加一个
+  世界空间偏移 `texelSnapOffset(player, sunDir, texelSize)`（`shadow-manager.js` 纯函数），把阴影相机
+  中心吸附到贴图像素边界。根因：相机 ±30 / 贴图 256² → 每纹素 ≈ 0.234 格，相机连续跟随玩家时
+  世界点相对纹素网格错位分数纹素 → 影子边缘随移动抖动（shimmer，用户实玩可察觉）。
+  **载荷性**：偏移必须**同时**加到 position 与 target —— 两者之差平行于相机 Z 轴，加同一向量
+  方向严格不变；只加一侧会改「position − target」→ 枪 PBR 高光漂移。`texelSize` 从
+  `(camera.right − camera.left) / mapSize.width` 读（红线 1：不写字面量）。mc-lite 无连续日夜循环
+  且光源只在移动超 5 格时重定位 → 无此抖动，故无此机制。
+  ⚠️ **v1.47 太阳方向角度阈值门控（有意偏离 mc-lite）**：日夜循环下 `DayNight.update()` 每帧
+  `_apply` → `onSunDirection` 每帧触发，而太阳每帧只转 0.0025°（256² 贴图上不可见）→ 门控前每帧
+  重定位 120 次/秒。`onSunDirection` 加 `sunDirectionChanged(lastDir, dir, SUN_DIR_GATE_DEG=0.5°)`
+  门控 → 约 0.6Hz（太阳 0.3°/秒）。附带消除重定位路径上的额外 `params` 读取（`get params()`
+  每次调用新分配 2 个小对象；门控比较用回调入参 `dir` 而非 `params`，零额外分配）。
+  ⚠️ **门控只加在 `onSunDirection` 这条路径，不得加到帧循环的移动阈值路径**（玩家移动必须让
+  阴影相机跟上，加了会「走 5 格后影子钉在原地」）。mc-lite 无连续日夜循环 → 无此门控需求。
+- **档位 = `VSMShadowMap`，不是 mc-lite 的 `PCFSoftShadowMap`** —— three.js r185.1 WebGPU 后端的
+  depth-compare 阴影路径（Basic/PCF/PCFSoft）有 `GPUValidationError` bug，最小独立场景同样复现
+  （v1.44 修订说明 ①）。VSM 不吃 `bias`/`normalBias`，软化参数是 **`radius 2.6`（mc-lite 原值）+
+  `blurSamples 8`**。⚠️ 升级 three 前须重测该 bug 是否已修。
+  ⚠️ **radius 曾误用 4**（v1.45 修回 2.6）：4 是「阴影乘在最终颜色上（影区纯黑）」时代的补偿值 ——
+  那时须把阴影糊开才不致于全黑；改成「只衰减 skylight 项 + 地板」后 radius=4 反而把阴影冲淡
+  （实测谷底比值 0.852 vs r=2.6 的 0.726，而半影宽度两者同为 4/8 点）。**0.726 与 mc-lite 的理论
+  影区亮度 0.71 几乎重合**（ambient 2.3/(2.3+sun 3.2×NdotL 0.8)=0.4733 线性 → sRGB 0.71）。
+- **投射是「通道级 + 逐方块排除」两层**（v1.45 修订，原 DR-2 的「纯通道级」已作废）：
+  `opaque` + `cutout` 通道 `castShadow = true`，`transparent`（水/玻璃）**cast + receive 双 false**。
+  ⚠️ **transparent 必须 receive 也为 false**：VSM 下阴影 pass 判据是 `castShadow ||
+  (receiveShadow && VSM)`（`three.webgpu.js:44682`）→ receive=true 会把水/玻璃几何渲进阴影深度图
+  （**照样投影**）；且材质的 `shadow()` 节点**不受 `receiveShadow` 门控**（该标志只门控 three 的
+  灯光管线，`three.webgpu.js:46101`）→ 水面照样被压暗。mc-lite 对 water/glass 也是双 false
+  （`GlobalInstancedMeshManager.js:76-84`）。
+  **逐方块排除走 `maskShadowNode`**（不是原 DR-2 预估的 `castShadowNode`）：声明侧
+  `blocks-data.js` 的 `shadowCast:false` → `registry.shadowCastTable` → mesher 写 **packed bit14** →
+  `materials.js` 的 `mat.maskShadowNode = noShadowCastBit.equal(0)` 在**阴影 pass** 逐片元 discard。
+  ⚠️ `maskShadowNode` 只被阴影 pass 消费（`_getShadowNodes`，`three.webgpu.js:62528/62573`），
+  主 pass 的 `setupDiffuseColor` 只读 `maskNode` → **这些方块在主渲染里照常显示，只是不写阴影深度**。
+  ⚠️ `castShadowNode` 不适用：它要求 `shadowMap.transmitted === true`（`:62546` 警告），
+  而 `maskShadowNode` 无此要求。
+  排除清单 = mc-lite `BlockData.isShadowEnabled:false` 的 20 项中**落在 opaque/cutout 通道的 13 项**
+  （cloud / 7 种花草菇 / vine / lilypad / 创造台两项 / hanging_lamp）；其余 7 项在 mc-heavy 走
+  cullMode 'none'/'transparent' 或不是方块 → 通道级已排除。**cloud 是必须项**（Y=35/55 在阴影相机
+  far=250 视锥内 → 地面出现大面积移动云影黑斑；实测修复后 cloud 柱投影比值恒 1.000）。
+- **接收靠 TSL 节点手动相乘，且阴影只衰减 skylight 项**（v1.45 修订 —— 这是「阴影黑乎乎一片」的根因修复）：
+  体素材质是 unlit `MeshBasicNodeMaterial`（不吃灯光），故在 colorNode 里手动乘阴影因子。
+  **混合模型必须对齐 mc-lite**：mc-lite 的体素材质是受光的 `MeshStandardNodeMaterial`
+  （`MaterialManager.js:268`），three 的阴影**只乘在方向光贡献上**，而 `AmbientLight(0xddeeff, 2.3)`
+  （`Engine.js:194`）**不参与阴影** → 影区仍被环境光完整照亮，观感是「暗一档」而非全黑。
+  mc-heavy 的 unlit 管线里 `vShade` 烘焙的 skylight 就是它唯一的「环境光」，**把阴影因子乘在最终
+  颜色上等于把这份环境光也乘没了**（影区 ×0 → 纯黑）。故：
+  - **sky / block 两项分开传片元**（`vSkyShade` / `vBlockShade`；`max(sky,block)×ao ≡
+    max(sky×ao, block×ao)`，ao≥0 → 拆分无损），片元只把阴影因子乘进 sky 项再取 max
+    → **火把照亮的洞穴/室内不会被太阳阴影压暗**（mc-lite 无 blocklight 故无此问题，但语义上
+    太阳阴影本就不该影响点光源照明）；
+  - **影区地板 `SHADOW_FLOOR = 0.5`**（`materials.js` 导出常量）：由 mc-lite 的影区亮度推导
+    （ambient/(ambient+sun·NdotL) = 2.3/(2.3+3.2×0.8) = **0.4733** 顶面 ~ 0.55 侧面，取 0.5）。
+  - **两层 mix 的嵌套顺序是载荷性的**：`mix(1, mix(FLOOR, 1, shadow()), strength)` —— 内层给地板、
+    外层调浓度。⚠️ 写成单层 `mix(FLOOR, 1, shadow() × strength)` 是错的：strength=0 时 mix 取左端
+    = FLOOR → **关掉阴影反而把全世界压到 50% 亮度**，「关阴影 = 零视觉影响」的不变式静默失效。
+  - 自发光加项（packed bit13 吊灯）在阴影相乘**之后**（灯在影里照样亮）。
+  `createVoxelMaterials(atlasTexture, sunLight = null)` 的 **null 分支必须保持原路径**
+  （5 个 fixture 不传 sunLight：`test-render-world` / `test-lamp-compare` / `test-sky-tree` /
+  `test-ao-corner` / `test-ao`）。⚠️ **灯光必须先于 `RenderWorld` 创建** ——
+  `shadow()` 节点在材质构建时固定 light 引用。
+- **刷新是 per-light 按需**：`light.shadow.autoUpdate = false` + 三个请求源（世界编辑 `block-changed` /
+  玩家移动超 5 格 / 日夜太阳方向变化）→ `ShadowScheduler` 200ms 节流（mc-lite
+  `World.requestShadowMapUpdate` 同构）→ 帧循环 `tick()` 放行才置 `needsUpdate`（必须在 render 之前 ——
+  `ShadowNode.updateBefore` 在本帧渲染前读它）。⚠️ 这**不是可选优化而是硬约束**：VSM 下每帧重渲会把
+  稳态 drawCalls 从 53 打到 428。⚠️ 消费端门控 `tick() && castShadow` 的**操作数顺序是载荷性的**
+  （v1.44 修订说明 ③）。
+- **阴影浓度随日夜淡出**：`uShadowStrength = skyDim`（白天 1.0 / 夜里 0.25，DR-6）。
+- **太阳方向随日夜连续插值**（有意偏离 mc-lite 的离散风格切换）：`VISUAL_STYLES` 存 mc-lite 三组原值
+  （morning `[0.18,0.45,0.88]` / noon `[0,0.8,0.6]` / night `[0.08,0.25,0.96]`），关键帧逐分量 lerp 后
+  normalize（归一化收在 `_apply`，全路径一致）。
+- **开关是代码级**（构造选项 `shadows` 默认 true + `?shadows=0` URL 入口 + `Game.setShadowsEnabled()`），
+  不进设置面板、不持久化（DR-7）。⚠️ 关闭须**三处协同**（`castShadow` / `uShadowStrength` / DayNight 的
+  `shadowEnabled` 标志），缺一处即静默失效（v1.44 修订说明 ④）。
+- **与 v1.9 / DR-14 是两条独立路线**：DR-14 撤销的是「体素 skylight 遮挡投影」（skylight 恒 15 口径
+  **不变**，§4.6 未动），shadow map 是纯渲染层的表面投影，两者视觉问题不同（前者是体素内部大片全黑 +
+  截断渐变环，后者是地表影子）。本决策**不推翻** DR-14，其保留的遮挡模型仍不启用。
+- **实体不投射不接收**（本期范围外，DR-8）：后续给实体加阴影 = 对应 InstancedMesh 开 `castShadow` +
+  材质乘 `shadow()` 节点（实体材质同为 unlit，接收也需手动相乘），与体素同手法。
+- ⚠️ 阴影 pass **不消费 alphaTest** → 树冠投影是实心立方轮廓（Minecraft 原版同款表现）。若观感不可接受，
+  升级为 `castShadowNode` + alphaTest（但对上面那条 depth-compare bug 大概率无效）。
 
 **4.4.5 LOD 预留（第一阶段只留接口，不实现）**
 - `MeshingRequest` 带 `lod` 字段；RenderTree 按 `(cx,cz)` 聚合，
@@ -2341,7 +2621,7 @@ AOBridge / AOWorker / 八个 Worker 文件——它们的职责被 §4 的四个
 | DR-11 | 渲染发布粒度：section 重建、BatchedMesh 通道级合批（默认，M1 实测确认；fallback 为 column 3-group） | 每 section 独立 Mesh / column 3-group 为默认 | v1.6 纠正 v1.3 的核心口径：r185.1 **WebGPU 后端对 BatchedMesh 不走 multi-draw**（WebGPUBackend.js:1806-1824 JS 循环逐可见 instance 发 drawIndexed；renderMultiDraw 只在 WebGL 后端），故 draw 数量与候选 A 同量级（数百 vs 固定 867），选型理由是**单命令成本低一个量级**（循环内共享同一 pipeline/bind group/顶点缓冲、命令间零状态切换、空 section 零命令）+ 剔除/排序/增量更新官方内置。geometry+instance 两层结构（漏 instance 层不渲染）；构造函数只接受单 Material（BatchedMesh 无 groups，传材质数组零 render item）；`reservedVertexCount`/`setGeometryAt` 覆盖 slot 打包，单 slot 溢出走 deleteGeometry→addGeometry→addInstance（`setGeometrySize` 是整批重建/收缩会 throw，非单 slot 扩容）；per-instance 视锥剔除与 `sortObjects` 运行时排序内置。section 独立 Mesh 视距 8 上限约 3600 draw 不可接受；column 3-group（固定 ~867，`_projectObject` 不看 group.count）仅作实测不达标时的 fallback。three.js WebGPU 每 draw CPU 开销不低于 WebGL，draw call 必须一级管控；material 数组逐 group 发 draw（Renderer.js:3149-3158 已核验），fallback 必须 channel-major 3-group 布局 |
 | DR-12 | 跨 region 结构：邻区索引查询（本 region + 8 邻区） | 地标加硬 margin 禁止跨界 | 地标中心偏移 100~400 + 半尺寸 40~80 必然跨 400 格 region 边界；硬 margin 会改变与 lite 的世界布局、破坏同 seed 对比；邻区布局同 seed 确定性重算，成本由布局广播（DR-13）兜住 |
 | DR-13 | 结构布局单 Worker 算一次、主线程转发广播 | 每 Worker 各持 LRU 缓存 / 主线程直接计算 | City 候选扫描很重：N Worker 重复跑会成为冷启动/进城新卡点，放主线程会卡帧；布局体积小且确定性，单点计算 + 广播成本可忽略；GEN 任务依赖布局就绪（最多 9 份邻区布局） |
-| DR-14 | 第一阶段**不启用阳光遮挡投影**：skylight 恒 15，视觉明暗 = AO 墙角阴影 + 日夜全局调制（v1.9 产品决策）；遮挡模型（垂直 pass + 水平 BFS）与 light 任务中心权威写回机制保留，后续阶段启用 | 高度图以下衰减近似 / Minecraft 式遮挡阴影（v1.8） | 高度图衰减在洞穴/悬挑下错误；Minecraft 式遮挡阴影实玩不可接受——大悬空平台/洞穴下方超扩散距离即大片全黑 + 截断渐变环，与 mc-lite 视觉基线冲突，用户明确不要阳光投影。机制保留：5-column region 对中心列充分（15 水平最远 14 格）；写回 5 列 last-write-wins 会覆盖邻列好光（v1.8 已修，中心权威） |
+| DR-14 | 第一阶段**不启用阳光遮挡投影**：skylight 恒 15，视觉明暗 = AO 墙角阴影 + 日夜全局调制（v1.9 产品决策）；遮挡模型（垂直 pass + 水平 BFS）与 light 任务中心权威写回机制保留，后续阶段启用。⚠️ **v1.44 落地的太阳阴影 shadow map（§4.4.4）是另一条独立路线**（纯渲染层表面投影，不进体素光照数据），**不启用**本条保留的 skylight 遮挡模型，skylight 恒 15 口径不变 | 高度图以下衰减近似 / Minecraft 式遮挡阴影（v1.8） | 高度图衰减在洞穴/悬挑下错误；Minecraft 式遮挡阴影实玩不可接受——大悬空平台/洞穴下方超扩散距离即大片全黑 + 截断渐变环，与 mc-lite 视觉基线冲突，用户明确不要阳光投影。机制保留：5-column region 对中心列充分（15 水平最远 14 格）；写回 5 列 last-write-wins 会覆盖邻列好光（v1.8 已修，中心权威） |
 | DR-15 | 逐面网格化，不用 greedy meshing | greedy meshing | 上一版 mc-heavy（已清空）用过 greedy；逐面在 AO/编辑增量更新/UV 映射上显著更简单，三角形多 2~3× 但当前瓶颈是 draw call 而非三角形（WebGPU 下三角形吞吐充裕）；视距 16+ 若三角形成为瓶颈再评估 greedy 或 LOD |
 | DR-16 | 卸载滞回（加载半径 +2）+ 重入 LRU（短 TTL 保留体素与 GPU 缓冲） | 出圈即释放 | 玩家在加载半径边界来回走会造成 GEN/MESH/上传全链路 thrashing；滞回带 + LRU 重入零成本恢复，只多占一点显存，回头跑不卡；显存上限由 LRU 配额兜底（§4.9/§4.10） |
 | DR-17 | 权威数据源含方块实体通道：`blocks`+`meta`+`blockEntities` 稀疏 Map；light 为派生缓存非权威 | 富状态塞 meta / 用 InstancedMesh userData 暂存（mc-lite 补丁） | 宝箱库存/告示牌文字/灯开关等富状态塞不进 8bit meta；mc-lite 已有 `_saveChestStates()`（ChunkConsolidation.js:597）证明需求真实，但用 userData 暂存是补丁式实现。做成数据模型一等公民：edits 条目、持久化 schema、重放逻辑现在定形状，第一阶段只预留不实现消费者，避免后续回填引发 schemaVersion + edits 重放二次重构。light 可从 blocks+emissive 重算收敛，不得当真相来源（§4.1）。**首个消费者已由 M7 落地（2026-09-10）**：丧尸巢穴锚点（`{kind:'zombie-nest', id, origin, critical, lastSpawnAt}`）随 edits 落盘，验证了当初预留的形状够用 —— 无需 schemaVersion 变更、无需二次重构（预留收益已兑现）。**第二批消费者已由 M8 落地**：炮塔锚点（`{kind:'turret', id, origin, critical, rotation, lastFireAt}`）。**第三批消费者已由 M9 落地（2026-09-12）**：创造台锚点（`{kind:'playground', id, origin, size}`）—— 它只用该通道的**持久层半边**（`listBlockEntities(kind)` 扫库恢复 + 判上限），不复用 controller / 增量失效那半边（创造台无运行时行为，见 v1.40 修订说明 ①）。三个 kind（zombie-nest / turret / playground）共用同一 edits 通道与 `Persistence.listBlockEntities(kind)` cursor 扫库判上限，未引发 schemaVersion 变更 —— DR-17 当初预留的形状经第三批消费者验证够用。后续床/宝箱等同类装置可直接复用此通道，见 roadmap「M7 交付的可复用模式」段 |

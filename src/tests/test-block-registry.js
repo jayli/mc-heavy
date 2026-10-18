@@ -228,3 +228,54 @@ test('BlockRegistry: 其余 7 个树叶族仍走 cutout（防过度修正）', (
     assertEqual(reg.opaqueTable[id], 0, `${name} opaqueTable=0`);
   }
 });
+
+// ---------- 太阳阴影投射表（§4.4.4）：对齐 mc-lite isShadowEnabled:false ----------
+
+/**
+ * mc-lite `BlockData.isShadowEnabled:false` 的 20 项（实测解析上游数据得出）。
+ * 其中在 mc-heavy 走 cullMode 'none'/'transparent' 或不是方块的，通道级已排除投影，
+ * 无需声明 shadowCast；**落在 opaque/cutout 通道的 13 项才需显式声明**。
+ * 本测试钉住「声明侧 ↔ 派生表」双向一致（同 indestructible 的手法）。
+ */
+/**
+ * 钉住 `register()` 真的写了 shadowCastTable 且**默认值是 1（投影）**。
+ * ⚠️ 本用例不是「声明 ↔ 表双向一致」（那是恒真陷阱：registry 由 BLOCKS 逐条 register 构建，
+ * 两侧名字必然同源 —— 同 check-data 的 [不可破坏] 环节已记录的教训）。它钉的是真实失效面：
+ * 若 `register()` 漏写 `shadowCastTable[id] = ...`，Uint8Array 默认全 0 → **每个方块都被标成
+ * 不投影** → 阴影系统静默失效（而声明侧看不出任何异常）。故必须验证「未声明者 = 1」。
+ */
+test('BlockRegistry: shadowCastTable 默认 1（漏写 register 会让全部方块不投影）', () => {
+  const reg = makeRegistry();
+  for (const def of BLOCKS) {
+    const id = reg.idOf(def.name);
+    const expect = def.shadowCast === false ? 0 : 1; // 默认 1（投影）
+    assertEqual(reg.shadowCastTable[id], expect, `${def.name} shadowCastTable=${expect}`);
+    assertEqual(reg.castsShadow(id), expect === 1, `${def.name} castsShadow()`);
+  }
+  // 临界对照：未声明 shadowCast 的方块必须是 1（不是 Uint8Array 默认的 0）
+  assertEqual(reg.shadowCastTable[reg.idOf('stone')], 1, 'stone 未声明 → 默认投影');
+});
+
+test('BlockRegistry: cloud/花草/藤/灯/创造台不投影（mc-lite isShadowEnabled:false 口径）', () => {
+  const reg = makeRegistry();
+  // 落在 opaque/cutout 通道、mc-lite 不投影、故 mc-heavy 须声明 shadowCast:false 的 13 项
+  const NO_CAST = [
+    'cloud', 'flower', 'short_grass', 'allium', 'azure_bluet', 'dead_bush',
+    'oxeye_daisy', 'red_mushroom', 'vine', 'lilypad',
+    'playground_block', 'playground_center_block', 'hanging_lamp',
+  ];
+  for (const name of NO_CAST) {
+    assertEqual(reg.castsShadow(reg.idOf(name)), false, `${name} 不投影`);
+  }
+  // 临界对照：地形/树/建筑主体仍投影（防止把整表当恒假判据）
+  for (const name of ['stone', 'grass', 'dirt', 'wood', 'leaves', 'sky_leaves', 'bricks']) {
+    assertEqual(reg.castsShadow(reg.idOf(name)), true, `${name} 仍投影`);
+  }
+});
+
+test('BlockRegistry: castsShadow 对未知 id 返回 false（防御）', () => {
+  const reg = makeRegistry();
+  assertEqual(reg.castsShadow(-1), false);
+  assertEqual(reg.castsShadow(9999), false);
+  assertEqual(reg.castsShadow(1.5), false);
+});

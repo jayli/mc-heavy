@@ -532,6 +532,62 @@ function checkIndestructibleContract() {
   }
 }
 
+// ---------------------------------------------------------------- [阴影投射] 契约（v1.45）
+
+/**
+ * [阴影投射] 契约：`shadowCast:false` 的排除集合必须**恰好等于** mc-lite
+ * `BlockData.isShadowEnabled:false` 中落在 opaque/cutout 通道的 13 项。
+ *
+ * ⚠️ **不校验「声明 ↔ registry 表」双向一致**（同 [不可破坏] 的恒真陷阱：registry 由
+ * BLOCKS 逐条 register 构建，两侧名字必然同源，那条断言不可达）。本环节钉的是**排除集合
+ * 本身**必须对齐 mc-lite 上游口径：
+ *   - 漏标（如 cloud）→ 该方块重新投影 → 地面大面积云影黑斑（v1.45 修的缺陷复发）；
+ *   - 多标（如误标 stone）→ 地形主体不投影 → 阴影系统静默失效。
+ * 13 项清单的推导见 CLAUDE.md「阴影混合模型沉淀的活跃约束」段（mc-lite 124 键实测解析
+ * = 102 投影 / 20 不投影，其中 7 项在 mc-heavy 走 cullMode 'none'/'transparent' 或不是方块
+ * → 通道级已排除，故只声明 13 项）。
+ */
+function checkShadowCastContract() {
+  // mc-lite isShadowEnabled:false 中落在 opaque/cutout 通道的 13 项（唯一权威清单）
+  const EXPECTED_NO_CAST = new Set([
+    'cloud', 'flower', 'short_grass', 'allium', 'azure_bluet', 'dead_bush',
+    'oxeye_daisy', 'red_mushroom', 'vine', 'lilypad',
+    'playground_block', 'playground_center_block', 'hanging_lamp',
+  ]);
+
+  // ① 声明侧：shadowCast:false 的集合必须恰好等于期望清单
+  const declared = BLOCKS.filter((b) => b.shadowCast === false).map((b) => b.name);
+  const declaredSet = new Set(declared);
+  const missing = [...EXPECTED_NO_CAST].filter((n) => !declaredSet.has(n));
+  const extra = declared.filter((n) => !EXPECTED_NO_CAST.has(n));
+  if (missing.length) {
+    failures.push(`[阴影投射] 应标 shadowCast:false 但未声明（会重新投影）：${missing.join(', ')}`);
+  }
+  if (extra.length) {
+    failures.push(`[阴影投射] 多标了 shadowCast:false（不在 mc-lite 排除清单，会导致地形不投影）：${extra.join(', ')}`);
+  }
+
+  // ② 派生侧：期望清单里每项在 registry 表里必须是 0（castsShadow=false）
+  for (const n of EXPECTED_NO_CAST) {
+    const id = REGISTRY.idOf(n);
+    if (id === undefined) { failures.push(`[阴影投射] 期望清单里的方块不存在：${n}`); continue; }
+    if (REGISTRY.castsShadow(id)) {
+      failures.push(`[阴影投射] ${n} 声明了 shadowCast:false 但 registry.castsShadow 仍为 true（表未写入）`);
+    }
+  }
+
+  // ③ 临界对照：地形主体必须仍投影（防止把整表当恒假判据）
+  for (const n of ['stone', 'grass', 'dirt', 'wood', 'leaves']) {
+    if (!REGISTRY.castsShadow(REGISTRY.idOf(n))) {
+      failures.push(`[阴影投射] 地形主体 ${n} 不应投影（castsShadow 误为 false）`);
+    }
+  }
+
+  if (!failures.some((f) => f.startsWith('[阴影投射]'))) {
+    infos.push(`[阴影投射] ${declared.length} 项不投影（对齐 mc-lite isShadowEnabled:false 口径）：${declared.join(', ')}`);
+  }
+}
+
 // ---------------------------------------------------------------- [11] 创造台契约
 
 /**
@@ -614,6 +670,7 @@ const REGISTRY = await buildDefaultRegistry();
 checkReferenceIntegrity();
 checkItemSetRelation();
 checkIndestructibleContract();
+checkShadowCastContract();   // v1.45：阴影投射排除集合契约（⚠️ 主流程是逐个显式调用，漏了本行则门禁永不执行）
 checkPlaygroundContract();   // M9：创造台方块契约（⚠️ 主流程是逐个显式调用，漏了本行则门禁永不执行）
 checkMinecartContract();     // 矿车：mine_cart 与铁轨必须在背包（⚠️ 漏了本行则门禁永不执行）
 checkIconManifestCoverage();

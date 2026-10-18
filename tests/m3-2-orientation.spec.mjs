@@ -224,6 +224,19 @@ test('M3.2：旋转后 section 重建无报错、draw 受控', async ({ page }) 
     return prev === sections &&
       s.inflight === 0 && s.meshInflight === 0 && s.uploadQueue === 0;
   }, null, { timeout: 60_000, polling: 500 });
+  // 隔离阴影这个新引入的独立变量（太阳阴影接线）：本 spec 的 URL 不带 style= → 日夜循环
+  // 模式下 `DayNight.update()` 每帧触发 onSunDirection；而本用例体内 8 次放/挖经
+  // `editor.subscribe` 主动请求阴影刷新 → 有影刷新窗口内 drawCalls 尖峰（vd=4 实测
+  // 168→402，每轮 +3 render = renderShadow + 2×vsmPass）。下面两条 draw 断言容差仅 +2
+  // （`<= 2`），尖峰落任一侧即吹爆。本 spec 的被测对象是**方块朝向**（§4.3），不是阴影
+  // —— 按「对照只差一个变量」原则在量 draw 前关阴影，覆盖 before / draws / after 全部三处读取。
+  // 手法同 render-terrain / weapons-performance / daynight-visual / zombies 的隔离；
+  // 断言与阈值逐字不动。
+  // ⚠️ 「关阴影 = 零开销」由**消费端门控**保证（`game.js` 帧循环 `tick() && castShadow`，
+  // 单点权威 + 三个请求源各自的纵深防御，Ruling (i) 补全）—— 实测关后 shadow pass 0 次、
+  // 8 次采样恒 168。该门控由 sun-shadow.spec.mjs 的专项用例钉住。
+  await page.evaluate(() => window.__MC_GAME__.setShadowsEnabled(false));
+  await page.waitForTimeout(300);   // 跨过节流窗口，让关阴影前挂起的请求被 tick 消费完
   const before = await page.evaluate(() => {
     const g = window.__MC_GAME__;
     return { draw: g.renderStats().drawCalls, sections: g.renderStats().sections };

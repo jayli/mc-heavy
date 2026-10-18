@@ -7,6 +7,12 @@
 //   其中 sky_leaves 已于天空树 Epic 改回 'opaque' —— mc-lite 材质无 alphaTest，见该行注释）；
 //   其余 isTransparent → 'transparent'；其余 → 'opaque'。
 //   orientationEnabled → orientationModes 4/0；geometryType → geometry 原样保留。
+// 阴影勘误（§4.4.4）：`shadowCast:false` 对齐 mc-lite `BlockData.isShadowEnabled:false`
+// （实测解析其 124 键：102 项投影 / 20 项不投影）。mc-lite 那 20 项里 air/collider/water/
+// swamp_water/realistic_trunk_collider 在 mc-heavy 走 cullMode 'none'/'transparent'（通道级
+// 已排除投影），bed_alias_block/mine_cart 不是方块 → **只需给落在 opaque/cutout 通道的 13 项
+// 声明本字段**。消费方：registry.shadowCastTable → mesher 写 packed bit14 → materials.js
+// 的 `maskShadowNode` 在阴影 pass 逐片元 discard（主 pass 不受影响）。
 // M2 勘误（cullMode 语义）：cullMode 是渲染通道选择，须对齐 mc-lite 的**材质**透明度
 // （MaterialManager 注册），而非 BlockData.isTransparent（面剔除语义）。12 个不透明材质
 // 方块（4 台阶 + 3 栏杆 + 2 柱子 + chest + azalea_flowers + hanging_lamp）由
@@ -21,7 +27,7 @@ export const BLOCKS = [
   {"name":"swamp_water","solid":false,"cullMode":"transparent","orientationModes":4,"geometry":"box"},
   // M2-7 通道勘误（§4.1 口径）：mc-lite 云材质 mkMat('#FFFFFF',1) opacity=1 不透明；
   // 原 'transparent' 通道 depthWrite=false 使云块侧面混叠成方格缝。opaqueTable 仍 0（不遮光）。
-  {"name":"cloud","solid":false,"supportsPlayer":true,"cullMode":"opaque","orientationModes":4,"geometry":"box"},
+  {"name":"cloud","solid":false,"supportsPlayer":true,"cullMode":"opaque","orientationModes":4,"geometry":"box","shadowCast":false},
   {"name":"glass_block","solid":true,"cullMode":"transparent","orientationModes":4,"geometry":"box"},
   {"name":"glass_blink","solid":true,"cullMode":"transparent","orientationModes":4,"geometry":"box"},
   {"name":"leaves","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"box"},
@@ -43,15 +49,15 @@ export const BLOCKS = [
   {"name":"sky_leaves","solid":true,"cullMode":"opaque","orientationModes":4,"geometry":"box"},
   {"name":"realistic_oak_leaves","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"box"},
   {"name":"realistic_yellow_leaves","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"box"},
-  {"name":"flower","solid":false,"cullMode":"cutout","orientationModes":4,"geometry":"flower"},
-  {"name":"short_grass","solid":false,"cullMode":"cutout","orientationModes":4,"geometry":"flower"},
-  {"name":"allium","solid":false,"cullMode":"cutout","orientationModes":4,"geometry":"flower"},
-  {"name":"azure_bluet","solid":false,"cullMode":"cutout","orientationModes":4,"geometry":"flower"},
-  {"name":"dead_bush","solid":false,"cullMode":"cutout","orientationModes":4,"geometry":"flower"},
-  {"name":"oxeye_daisy","solid":false,"cullMode":"cutout","orientationModes":4,"geometry":"flower"},
-  {"name":"red_mushroom","solid":false,"cullMode":"cutout","orientationModes":4,"geometry":"flower"},
-  {"name":"vine","solid":false,"cullMode":"cutout","orientationModes":4,"geometry":"vine"},
-  {"name":"lilypad","solid":false,"cullMode":"cutout","orientationModes":4,"geometry":"lilypad"},
+  {"name":"flower","solid":false,"cullMode":"cutout","orientationModes":4,"geometry":"flower","shadowCast":false},
+  {"name":"short_grass","solid":false,"cullMode":"cutout","orientationModes":4,"geometry":"flower","shadowCast":false},
+  {"name":"allium","solid":false,"cullMode":"cutout","orientationModes":4,"geometry":"flower","shadowCast":false},
+  {"name":"azure_bluet","solid":false,"cullMode":"cutout","orientationModes":4,"geometry":"flower","shadowCast":false},
+  {"name":"dead_bush","solid":false,"cullMode":"cutout","orientationModes":4,"geometry":"flower","shadowCast":false},
+  {"name":"oxeye_daisy","solid":false,"cullMode":"cutout","orientationModes":4,"geometry":"flower","shadowCast":false},
+  {"name":"red_mushroom","solid":false,"cullMode":"cutout","orientationModes":4,"geometry":"flower","shadowCast":false},
+  {"name":"vine","solid":false,"cullMode":"cutout","orientationModes":4,"geometry":"vine","shadowCast":false},
+  {"name":"lilypad","solid":false,"cullMode":"cutout","orientationModes":4,"geometry":"lilypad","shadowCast":false},
   {"name":"cactus","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"cactus"},
   {"name":"handrail","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"handrail"},
   {"name":"handrailA","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"handrailA"},
@@ -87,8 +93,8 @@ export const BLOCKS = [
   {"name":"moss","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
   {"name":"chest","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"box"},
   {"name":"realistic_trunk_collider","solid":true,"cullMode":"none","orientationModes":4,"geometry":"box"},
-  {"name":"playground_block","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box","indestructible":true},
-  {"name":"playground_center_block","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box","indestructible":true},
+  {"name":"playground_block","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box","indestructible":true,"shadowCast":false},
+  {"name":"playground_center_block","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box","indestructible":true,"shadowCast":false},
   {"name":"sand","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
   {"name":"stone","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
   {"name":"stone_diorite","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
@@ -165,7 +171,7 @@ export const BLOCKS = [
   {"name":"sand_train_track","solid":true,"cullMode":"opaque","orientationModes":4,"geometry":"box"},
   {"name":"sand_train_track_corner","solid":true,"cullMode":"opaque","orientationModes":4,"geometry":"box"},
   {"name":"mine_cart","solid":false,"cullMode":"none","orientationModes":0,"geometry":"box"},
-  {"name":"hanging_lamp","solid":false,"cullMode":"cutout","emissive":15,"orientationModes":0,"geometry":"hanging_lamp"},
+  {"name":"hanging_lamp","solid":false,"cullMode":"cutout","emissive":15,"orientationModes":0,"geometry":"hanging_lamp","shadowCast":false},
   // M2-7 空岛岛体（mc-lite Island.js：sky_stone 岛身 + sky_grass 顶层）
   {"name":"sky_stone","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
   {"name":"sky_grass","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},

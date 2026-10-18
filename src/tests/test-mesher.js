@@ -524,6 +524,55 @@ test('mesher: bit13 不污染既有位段（light bit0-7 / AO bit8-9 / face bit1
   }
 });
 
+// packed bit14 = 太阳阴影不投射标记（§4.4.4，对齐 mc-lite isShadowEnabled:false）
+const NO_SHADOW_CAST_BIT = (1 << 14);
+
+test('mesher: cloud 置 bit14（不投影），stone 不置（投影）', () => {
+  const reg = makeRegistry();
+  const cloud = meshSingle(reg, 'cloud');
+  assertTrue(cloud.opaque.vertexCount > 0, 'cloud 在 opaque 通道');
+  for (let i = 0; i < cloud.opaque.vertexCount; i++) {
+    assertEqual((cloud.opaque.packed[i] & NO_SHADOW_CAST_BIT) ? 1 : 0, 1, `cloud vert${i} bit14 置位`);
+  }
+  const stone = meshSingle(reg, 'stone');
+  for (let i = 0; i < stone.opaque.vertexCount; i++) {
+    assertEqual((stone.opaque.packed[i] & NO_SHADOW_CAST_BIT) ? 1 : 0, 0, `stone vert${i} bit14 不置位`);
+  }
+});
+
+test('mesher: 全部 shadowCast:false 方块置 bit14，其余方块不置（与 registry 表双向一致）', () => {
+  const reg = makeRegistry();
+  // 逐方块验证：声明侧（blocks-data 的 shadowCast:false）↔ 派生侧（mesher 写的 bit14）一致。
+  // 只验在渲染通道内的方块（cullMode none 无顶点可验）。
+  for (const def of BLOCKS) {
+    if (def.cullMode === 'none') continue;
+    const result = meshSingle(reg, def.name);
+    const ch = result[def.cullMode];
+    assertTrue(ch.vertexCount > 0, `${def.name} 在 ${def.cullMode} 通道有顶点`);
+    const expectBit = def.shadowCast === false ? 1 : 0;
+    for (let i = 0; i < ch.vertexCount; i++) {
+      assertEqual((ch.packed[i] & NO_SHADOW_CAST_BIT) ? 1 : 0, expectBit,
+        `${def.name} vert${i} bit14 应为 ${expectBit}`);
+    }
+  }
+});
+
+test('mesher: bit14 不污染既有位段（light/AO/face/emissive 各位段独立）', () => {
+  const reg = makeRegistry();
+  const result = meshSingle(reg, 'hanging_lamp'); // 同时有 bit13（灯体）与 bit14（不投影）
+  const packed = result.cutout.packed;
+  for (let i = 0; i < result.cutout.vertexCount; i++) {
+    const faceIdx = (packed[i] >> 10) & 0x7;
+    assertTrue(faceIdx <= 5, `face 索引 ${faceIdx} 应在 0-5`);
+    assertTrue((packed[i] & 0xFF) > 0, 'light 位未被污染');
+    // bit13（emissive）与 bit14（noShadowCast）独立：灯体顶点两位都置，绳顶点只置 bit14
+    const em = (packed[i] >> 13) & 1;
+    const ns = (packed[i] >> 14) & 1;
+    assertEqual(ns, 1, `hanging_lamp vert${i} bit14 置位`);
+    assertTrue(em === 0 || em === 1, `bit13 独立可读（vert${i} em=${em}）`);
+  }
+});
+
 test('mesher: bed_head 半高块 + null 面剔除（4 面渲染）', () => {
   const reg = makeRegistry();
   const result = meshSingle(reg, 'bed_head');

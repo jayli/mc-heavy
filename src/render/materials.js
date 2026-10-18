@@ -11,10 +11,12 @@ import {
   texture, attribute, float, vec3, vec4, mul, add, max,
   rangeFogFactor, uniform, fog,
   varying, vertexStage,
+  shadow, mix,
 } from 'three/tsl';
 
 // ---- 顶点阶段 shade（light × AO），float varying 传片元 ----
-// packed 属性解包：bit0-7 light（sky<<4|block），bit8-9 AO，bit13 材质自发光标记（§4.3）
+// packed 属性解包：bit0-7 light（sky<<4|block），bit8-9 AO，bit10-12 世界面索引，
+// bit13 材质自发光标记（§4.3），bit14 阴影不投射标记（§4.4.4，v1.45）
 const packed = attribute('packed', 'uint');
 const lightByte = packed.bitAnd(0xFF);
 // 日夜调制（M2-6）：uSkyDim 黑夜压暗 skylight，uBlockBoost 黑夜相对增强 blocklight
@@ -22,12 +24,21 @@ const uSkyDim = uniform(1.0);
 const uBlockBoost = uniform(1.0);
 const sky = float(lightByte.shiftRight(4)).div(15).mul(uSkyDim);
 const block = float(lightByte.bitAnd(0xF)).div(15).mul(uBlockBoost);
-const brightness = max(sky, block);
 const ao = float(packed.shiftRight(8).bitAnd(3));
 // AO 曲线（mc-lite AONodeSystem.js:129 口径）：ao=3（开阔）→1.0，ao=0（墙角）→0.1
 const aoFactor = float(1).sub(float(3).sub(ao).div(3).mul(0.9));
-// 逐顶点最终亮度 = light × AO（Minecraft 原版即逐顶点算最终亮度再插值），float varying
-const vShade = varying(vertexStage(mul(brightness, aoFactor)), 'vShade');
+// 太阳阴影只衰减 skylight 项，不碰 blocklight（对齐 mc-lite 的混合模型：它的阴影只拿走
+// 方向光贡献，AmbientLight(2.3) 不受影响 → 影区是「暗一档」而非全黑）。故 sky/block 分开
+// 传片元（max(sky,block)×ao ≡ max(sky×ao, block×ao)，ao≥0 → 拆分无损）；片元只把阴影因子
+// 乘进 sky 项再取 max。**火把照亮的洞穴/室内不会被太阳阴影压暗**。
+// ⚠️ 拆分把 `max` 的求值点从**顶点**移到了**片元**（旧：顶点算 max(sky,block)×ao 后插值一个
+// varying；新：两个项各自插值后片元取 max）。两者只在「同一三角形内 sky/block 的胜者发生切换」
+// 时有差（新写法更平滑：对两个连续场逐片元取 max，而非插值一个逐顶点的 max）。
+// 实际影响面极小：skylight 恒 15（DR-14）而 blocklight 稀疏，胜者很少在 quad 内切换；
+// 且 AO fixture（skylight=15 / blocklight=0）下 block 项恒 0 → 两写法**逐位等价**。
+// 多付一个 float varying（vSkyShade + vBlockShade 取代 vShade）。
+const vSkyShade = varying(vertexStage(mul(sky, aoFactor)), 'vSkyShade');
+const vBlockShade = varying(vertexStage(mul(block, aoFactor)), 'vBlockShade');
 
 // ---- 材质自发光（§4.3 bit13，v1.21）----
 // 对齐 mc-lite `MeshStandardNodeMaterial` 的 emissive：实测 mc-lite **只有 hanging_lamp**
@@ -37,28 +48,80 @@ const vShade = varying(vertexStage(mul(brightness, aoFactor)), 'vShade');
 // 这里是材质自身发亮。四个发光方块都有 blocklight 源，但只有 hanging_lamp 有材质自发光。
 //
 // 语义：three `MeshStandardMaterial` 的 emissive 是**独立加项**——不乘贴图色、不受光照/AO 影响，
-// 直接加在 diffuse 之上（黑夜中灯依然发亮）。故加在 `× vShade` 之后。
+// 直接加在 diffuse 之上（黑夜中灯依然发亮）。故加在 `× shade` 之后。
 // 标记是逐顶点常量（同一 quad 4 顶点同值），走 vertexStage float varying 即可，无需渐变。
 const vEmissive = varying(vertexStage(float(packed.shiftRight(13).bitAnd(1))), 'vEmissive');
 const EMISSIVE_COLOR = vec3(0xFF / 255, 0xE4 / 255, 0xB5 / 255); // '#FFE4B5'（暖黄色）
 const EMISSIVE_INTENSITY = 0.8; // mc-lite emissiveIntensity
 
+// ---- 太阳阴影（shadow map 接收，§4.4.4）----
+// uShadowStrength = 日夜联动的阴影浓度（白天 1.0 / 夜里随 uSkyDim 淡出，DR-6）。
+// 恒创建（模块顶层单例，与 uSkyDim/uBlockBoost 同口径），供 DayNight 写入；
+// 即使 sunLight 为 null（fixture 路径）句柄也存在，消费方判句柄存在再写。
+const uShadowStrength = uniform(1.0);
+
+/**
+ * 影区地板亮度（占 skylight 项的比例）。**对齐 mc-lite 的影区观感推导**：mc-lite 阴影只
+ * 移除方向光贡献，环境光保留 → 影区亮度 ≈ ambient/(ambient+sun·NdotL) ≈
+ * 2.3/(2.3+3.2×0.8) ≈ 0.47（顶面）~ 0.55（侧面），取 0.5。
+ * ⚠️ 旧实现把阴影因子乘在**最终颜色**上（影区 ×0 → 纯黑），是「黑乎乎一片」的根因。
+ */
+export const SHADOW_FLOOR = 0.5;
+
+// 阴影不投射标记（packed bit14，mesher 从 registry.shadowCastTable 写入）：在**阴影 pass**
+// 逐片元 discard（mc-lite `isShadowEnabled:false` 的 cloud/花草/藤/灯等不投影）。
+// ⚠️ `maskShadowNode` 只被阴影 pass 消费（three.webgpu.js `_getShadowNodes`），主 pass 的
+// `setupDiffuseColor` 只读 `maskNode` → 这些方块在主渲染里照常显示，只是不写阴影深度。
+const noShadowCastBit = float(packed.shiftRight(14).bitAnd(1));
+
 /**
  * 创建三通道体素材质。
  * @param {THREE.Texture} atlasTexture
- * @returns {{opaque: THREE.MeshBasicNodeMaterial, cutout: THREE.MeshBasicNodeMaterial, transparent: THREE.MeshBasicNodeMaterial}}
+ * @param {THREE.DirectionalLight} [sunLight] 太阳灯（传 null 时不乘 shadowFactor，保持原路径）
+ * @returns {{opaque: THREE.MeshBasicNodeMaterial, cutout: THREE.MeshBasicNodeMaterial, transparent: THREE.MeshBasicNodeMaterial, dayNight: Object}}
  */
-export function createVoxelMaterials(atlasTexture) {
-  const makeMaterial = ({ alphaTest = 0, transparent = false, side = THREE.FrontSide, emissive = false }) => {
+export function createVoxelMaterials(atlasTexture, sunLight = null) {
+  // 阴影因子（两层 mix，**嵌套顺序是载荷性的，勿交换**）：
+  //   内层 `mix(FLOOR, 1, shadow())` = 带地板的阴影：影外 1 / 影内 FLOOR（不再归零）；
+  //   外层 `mix(1, 内层, uShadowStrength)` = 浓度调制：strength=0（关阴影/夜里）→ **恒 1 零影响**。
+  // ⚠️ 写成单层 `mix(FLOOR, 1, shadow() × strength)` 是错的：strength=0 时 mix 取左端 = FLOOR
+  // → **关掉阴影反而把全世界压到 50% 亮度**，且「关阴影 = 零视觉影响」的不变式静默失效
+  // （spec 用例 7/8 的 A/B>0.85 断言会 FAIL）。
+  // ⚠️ shadow() 第二参数是 LightShadow 实例（可选，缺省 = light.shadow），**不是** filter
+  // 函数 —— PCF 滤波由 renderer.shadowMap.type 自动映射（PCFSoftShadowMap → PCFSoftShadowFilter）。
+  // 误传 filter 函数会让 setupRenderTarget 读 shadow.mapSize 崩溃。故只传单参数。
+  const shadowFactor = sunLight
+    ? mix(float(1), mix(float(SHADOW_FLOOR), float(1), shadow(sunLight)), uShadowStrength)
+    : null;
+
+  // 最终亮度 = max(sky×阴影因子, block)：阴影只乘 skylight 项（见 vSkyShade 注释）。
+  // sunLight 为 null（fixture）时 max(sky, block) 与旧 vShade 逐位等价。
+  const shadeLit = shadowFactor
+    ? max(mul(vSkyShade, shadowFactor), vBlockShade)
+    : max(vSkyShade, vBlockShade);
+  // 不接收阴影的通道（transparent = 水/玻璃）用无阴影亮度。
+  // ⚠️ **不能只靠 `receiveShadow=false`**：那个标志只门控 three 的**灯光管线**
+  // （three.webgpu.js:46101 `if (builder.object.receiveShadow) setupShadow()`），而本材质是
+  // unlit + colorNode 里**显式**引用 `shadow(sunLight)` 节点 → 该节点不受 receiveShadow 门控，
+  // 水面照样被压暗。mc-lite 对 water/glass 是 cast+receive 双 false（GlobalInstancedMeshManager.js:76-84），
+  // 此处对齐：transparent 通道完全不参与阴影（不投影也不被压暗）。
+  const shadeUnlit = max(vSkyShade, vBlockShade);
+
+  const makeMaterial = ({ alphaTest = 0, transparent = false, side = THREE.FrontSide, emissive = false, receivesShadow = true }) => {
     const mat = new THREE.MeshBasicNodeMaterial();
     const uvNode = attribute('uv', 'vec2');
     const texColor = texture(atlasTexture, uvNode);
+    const shade = receivesShadow ? shadeLit : shadeUnlit;
     // emissive 只挂在需要的通道（hanging_lamp 走 cutout）：opaque 是最大通道，
     // 给它加一个恒为 0 的加项会白付一次逐像素 mul+add。
+    // 亮度项 = texColor.rgb × shade；自发光加项在阴影相乘之后（灯在影区照样亮）。
     const rgb = emissive
-      ? add(mul(texColor.rgb, vShade), mul(EMISSIVE_COLOR, EMISSIVE_INTENSITY).mul(vEmissive))
-      : mul(texColor.rgb, vShade);
+      ? add(mul(texColor.rgb, shade), mul(EMISSIVE_COLOR, EMISSIVE_INTENSITY).mul(vEmissive))
+      : mul(texColor.rgb, shade);
     mat.colorNode = vec4(rgb, texColor.a);
+    // 阴影 pass 逐片元排除不投影方块（bit14=1 → discard）。只在有阴影接线且本通道参与
+    // 阴影时挂，fixture / transparent 路径不白付一次位运算。
+    if (sunLight && receivesShadow) mat.maskShadowNode = noShadowCastBit.equal(0);
     if (alphaTest > 0) { mat.alphaTest = alphaTest; }
     if (transparent) { mat.transparent = true; mat.depthWrite = false; }
     mat.side = side;
@@ -72,8 +135,8 @@ export function createVoxelMaterials(atlasTexture) {
     // （realistic_oak_leaves）由 mesher 双向绕线复刻双面可见，保持单材质单通道。
     // emissive: true —— hanging_lamp 的材质自发光走本通道（§4.3 bit13）。
     cutout: makeMaterial({ alphaTest: 0.3, side: THREE.FrontSide, emissive: true }),
-    transparent: makeMaterial({ transparent: true }),
-    dayNight: { uSkyDim, uBlockBoost },
+    transparent: makeMaterial({ transparent: true, receivesShadow: false }),
+    dayNight: { uSkyDim, uBlockBoost, uShadowStrength },
   };
 }
 

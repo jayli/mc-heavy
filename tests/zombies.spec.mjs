@@ -542,6 +542,18 @@ test('M6：默认 20 只丧尸压力验收 —— slot/scheduler 收敛、无泄
   test.setTimeout(180_000);
   await waitWorldStable(page);
   await installHelpers(page);
+  // 隔离阴影这个新引入的独立变量（太阳阴影接线）：本 URL 不带 style= → 日夜循环模式，
+  // `DayNight.update()` 每帧触发 onSunDirection → 阴影贴图每 200ms 重渲一次，而 VSM 下
+  // receiveShadow 对象也进阴影 pass → 重渲帧 drawCalls 尖峰（vd=8 实测 514→624，+110，
+  // 逐帧 600 次采样中占 4.0%，异常帧间隔中位 206ms = 节流周期）。本用例的 draw 断言是
+  // **精确 ==6**，且 baseline 与 render 在同一次 evaluate 内相隔 ~200ms 读 → 尖峰落在任一侧
+  // 即吹爆（实测 8 次连跑中 2 次 FAIL：Received 106 / 102 ≈ 6 + 尖峰）。本用例的被测对象是
+  // **丧尸渲染的合批收益**（六部件恰好 +6 draw），不是阴影 —— 按「对照只差一个变量」原则
+  // 在量 draw 前关阴影。手法同 render-terrain / daynight-visual 的隔离；断言与阈值逐字不动。
+  // ⚠️ 关阴影是零开销关闭（onSunDirection 的 castShadow 门控，见 game.js）：实测关后
+  // 逐帧 300 次采样恒为单值、无尖峰。该门控由 sun-shadow.spec.mjs 的专项用例钉住。
+  await page.evaluate(() => window.__MC_GAME__.setShadowsEnabled(false));
+  await page.waitForTimeout(300);   // 跨过节流窗口，让关阴影前挂起的请求被 tick 消费完
   const result = await page.evaluate(async () => {
     const g = window.__MC_GAME__;
     const pp = g.player.physics.pos; // 玩家位置（诊断数据用）
