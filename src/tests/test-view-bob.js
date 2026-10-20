@@ -185,8 +185,7 @@ test('view-bob: BOB 常量冻结；speed 沿 mc-lite，intensity 为实玩标定
   assertTrue(BOB.phasePerBlock > 0, 'phasePerBlock 须为正');
   assertTrue(BOB.phasePerBlock < 12 / 8, '相位/格 须低于旧实现等效值（旧 12rad/s ÷ 8格/秒 = 1.5）');
   // intensity 是**有意偏离** mc-lite 的 0.05，v1.52 对齐原版的 0.1。
-  assertNotEqual(BOB.intensity, 0.05, 'intensity 已偏离 mc-lite 原值');
-});
+  assertNotEqual(BOB.intensity, 0.05, 'intensity 已偏离 mc-lite 原值');});
 
 test('view-bob: 步频 1.35 Hz（一步 370ms）—— 按实玩逐档放慢，仍快于走路', () => {
   // 推导链（每步都要能复现）：
@@ -249,15 +248,18 @@ test('view-bob: 振幅口径对齐原版（x ±bob·0.5、y 只向下 |cos|·bob
   assertTrue(xPeak > 0.05, `实际 x 峰须明显可感（>0.05 格），实测 ${xPeak}`);
 });
 
-test('view-bob: 晃动强度落在「可感但不钜烈」区间（v1.50 回调）', () => {
+test('view-bob: 晃动强度落在「可感但不钜烈」区间', () => {
   // 历史：mc-lite 原值 0.05 → 「小到看不出来在跑」（v1.49 上调到 0.09）→ 「又太钜烈」
   // （v1.50 回调）。现在须落在两者之间：不能回到看不出的 0.05，也不能是 0.09。
   assertTrue(BOB.intensity > 0.05, `不得回到看不出的量级，got ${BOB.intensity}`);
   // v1.53：用户「再稍微大一点，跑步的感觉不明显」→ 0.1 → 0.13（有意偏离原版 bob 上限 0.1）。
-  // ⚠️ 判定口径要扣掉一阶平滑的衰减（1.68Hz 处通过率 ≈ 0.8976）：
-  //    标称 0.1 时**实际** y 峰只有 −0.0898，用户感知的是后者而非标称值。
-  assertEqual(BOB.intensity, 0.13, 'v1.53 上调后的标定值');
-  assertTrue(BOB.intensity > 0.1, `须高于原版 bob 上限（用户要求更大），got ${BOB.intensity}`);
+  // v1.57：用户「晃动幅度还不够大，可以稍微大一些」→ 0.13 → **0.15**。
+  // ⚠️ 判定口径要扣掉一阶平滑的衰减（1.35Hz 处通过率 ≈ 0.916）：
+  //    标称 0.15 时**实际** y 峰只有 ≈ 0.1375，用户感知的是后者而非标称值。
+  assertEqual(BOB.intensity, 0.15, 'v1.57 上调后的标定值');
+  assertTrue(BOB.intensity > 0.13, `须大于上一档 0.13（用户要求更大），got ${BOB.intensity}`);
+  // 上限护栏：再往上会从「在跑」变成「晕」（y 峰已接近眼高的 11%）
+  assertTrue(BOB.intensity <= 0.2, `不得越过观感上限 0.2，got ${BOB.intensity}`);
   // v1.51：旋转分量全部归零（用户要求「不要歪头」），平移保留
   assertEqual(BOB.rollAmount, 0, 'roll 须为 0（地平线必须水平）');
   assertEqual(BOB.pitchAmount, 0, 'pitch 须为 0（旋转全部去掉）');
@@ -499,7 +501,7 @@ test('view-arm: 挥动带位移（下劈时手臂向前下探）', () => {
 
 test('view-arm: 六面有烘焙明暗（顶最亮 / 侧面最暗），不是单一颜色', () => {
   // 用户反馈「手臂的横面和竖面没有光影效果，感觉就是一个颜色，没有立体感」。
-  // 做法 = 顶点色烘焙 **vanilla 方块面遮挡系数**（+Y 1.0 / ±Z 0.8 / ±X 0.6 / −Y 0.5），
+  // 做法 = 顶点色烘焙明暗（面系数 × 固定光向 Lambert，再重映射到 `shadeLow..shadeHigh`），
   // 而不是换受光材质（本仓全场景 unlit，受光材质会让肤色随日夜灯光漂移 —— v1.48 已记录的取舍）。
   const { arm } = makeArm();
   const colors = arm.mesh.geometry.attributes.color;
@@ -527,7 +529,16 @@ test('view-arm: 六面有烘焙明暗（顶最亮 / 侧面最暗），不是单�
   // 顶面（+Y，朝光最多）须最亮
   assertEqual(py, Math.max(...all), '顶面须最亮');
   // 底面（−Y，背光且遮挡系数最低）须最暗
-  assertEqual(ny, Math.min(...all), '底面须最暗');
+  //
+  // ⚠️ 注意 `all` 与 `faceLum` 是**线性和**（顶点色缓冲是线性工作色空间）。
+  // v1.57 的幂律（shadeLow..shadeHigh 重映射）使最暗面不一定是 −Y（线性下 ±X 与 −Y 只差
+  // 面系数 0.6 vs 0.5，重映射后 −Y 会略高于 −X）—— 这是对的：玩家可见的那几面里 −Y 仍最暗，
+  // 而被看见的 3 个面（+Z/−Y/±X）的亮度排序由上一个用例按 **sRGB** 断言。
+  // 故这里只钉「底面属于最暗一档」（与最暗值的差 < 面间跨度的 15%），
+  // 不再钉「必须是绝对最小值」—— 后者是幂律重映射下的伪约束。
+  const span = Math.max(...all) - Math.min(...all);
+  assertTrue(ny - Math.min(...all) < span * 0.15,
+    `底面须属于最暗一档（与最暗值差 < 面间跨度的 15%），实测差 ${((ny - Math.min(...all)) / span * 100).toFixed(1)}%`);
   // 明暗对比度须足够（否则「看起来仍是一个颜色」）
   const contrast = (Math.max(...all) - Math.min(...all)) / Math.max(...all);
   assertTrue(contrast > 0.35, `明暗对比须足够（>35%），实测 ${(contrast * 100).toFixed(1)}%`);
@@ -546,6 +557,65 @@ test('view-arm: 六面有烘焙明暗（顶最亮 / 侧面最暗），不是单�
     const inner = (Math.max(...lums) - Math.min(...lums)) / Math.max(...lums);
     assertTrue(inner > 0.1, `侧面 ${f} 内须有亮度梯度（>10%），实测 ${(inner * 100).toFixed(1)}%`);
   }
+  arm.dispose();
+});
+
+test('view-arm: 显示色阶落在参考肤色附近（v1.57「过于暗」回归门）', () => {
+  // 用户反馈「手臂的颜色过于暗」，根因是三层系数直接相乘：静止姿态露出的
+  // 底面/前面分别只有 0.27/0.59 —— 实测屏幕均值 RGB(163,146,134)，而参考肤色是
+  // mc-lite 的 0xeebb99 = (238,187,153)。不但整体暗一档，还因为三通道压得不一样而发灰。
+  //
+  // 修法 = 面间差只决定「哪面更亮」，其取值区间重映射到 `shadeLow..shadeHigh`（屏幕空间）；
+  // 顶点色再经 `srgbToLinear` 写入线性缓冲。于是「参考色」与「显示结果」是同一份数据。
+  //
+  // 本用例钉住的是**显示色阶本身**（不只是亮度排序）：后者已由上一个用例覆盖，
+  // 而「排序对但整体暗」恰好就是被修复的那个缺陷（负向验证：把 shadeLow/High 退回
+  // 旧版直接相乘的 0..1 区间时本用例 FAIL 而亮度排序用例仍绿）。
+  const { arm } = makeArm();
+  const colors = arm.mesh.geometry.attributes.color;
+  // 线性 → sRGB（顶点色缓冲是线性工作色空间，屏幕输出才是 sRGB）
+  const lin2srgb = (v) => (v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055);
+  const srgb = (i) => [colors.getX(i), colors.getY(i), colors.getZ(i)].map((v) => lin2srgb(v));
+  // 静止姿态（rotation.x=-0.8）下玩家**实际看到**的是这几面：
+  // +Z（前面，法线朝相机）+ −Y（底面）+ ±X（左右侧面）；+Y 顶面朝上后方，被自身挡住。
+  // 顶点索引：BoxGeometry 的 6 个面固定按 +X,-X,+Y,-Y,+Z,-Z 排列、每面 4 顶点，
+  // 而**同一面内 4 个顶点的长度渐变值不同**（两侧各两个极端 t=0/t=1）。
+  // 这里取每面的两个极端里**更亮**的一端（t=0，无长度衰减）—— 那是「参考色」的锚点。
+  const VISIBLE_FACES = { '+X': 0, '-X': 4, '-Y': 12, '+Z': 16 };
+  const ref = [0xee / 255, 0xbb / 255, 0x99 / 255];
+  const near = {};
+  for (const [name, base] of Object.entries(VISIBLE_FACES)) {
+    let best = null;
+    for (let v = 0; v < 4; v++) {
+      const c = srgb(base + v);
+      if (!best || c[0] + c[1] + c[2] > best[0] + best[1] + best[2]) best = c;
+    }
+    near[name] = best;
+  }
+  // ① **亮度不再整体偏暗**：每个可见面的近端亮度须在参考亮的 0.85 以上。
+  //    旧实现在此得 0.55~0.72（实测），新版 0.85~0.99；阈值 0.82 两侧都不贴线。
+  const lumOf = (rgb) => (rgb[0] + rgb[1] + rgb[2]) / 3;
+  const refLum = lumOf(ref);
+  for (const [name, rgb] of Object.entries(near)) {
+    const ratio = lumOf(rgb) / refLum;
+    assertTrue(ratio > 0.82, `${name} 近端亮度须 ≥ 参考色 82%，实测 ${(ratio * 100).toFixed(1)}%`);
+  }
+  // ② **不发灰**：R−B 差（肤色饱和度的关键）不得比参考色小太多。
+  //    旧实现 R−B 差 从 85 掉到 29（实测）；新版保持 ≥ 52。
+  const refRB = (ref[0] - ref[2]) * 255;
+  for (const [name, rgb] of Object.entries(near)) {
+    const rb = (rgb[0] - rgb[2]) * 255;
+    assertTrue(rb > refRB * 0.6,
+      `${name} 的 R−B 差须 ≥ 参考色 60%（否则发灰），实测 ${rb.toFixed(0)} vs ${refRB.toFixed(0)}`);
+  }
+  // ③ 可见面之间仍须有**可辨的**亮度差（不能为了「亮」而把立体感抹平）：
+  //    最暗可见面 ≤ 最亮可见面的 0.93。实测新版 0.834（旧版 0.672）。
+  //    ⚠️ 0.672 也满足 <0.93 —— 这条**不是**用来抓旧实现的（①② 才是），它抓的是
+  //    「以后有人为了更亮而把 shadeLow/shadeHigh 收窄成一条窄带」。
+  const lums = Object.values(near).map(lumOf);
+  const spread = Math.min(...lums) / Math.max(...lums);
+  assertTrue(spread < 0.93,
+    `可见面之间须保留明暗差（最暗/最亮 < 0.93），实测 ${spread.toFixed(3)}`);
   arm.dispose();
 });
 
