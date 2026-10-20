@@ -18,6 +18,8 @@ import { WeatherState } from '../render/weather.js';
 import { WeaponModelLoader } from '../render/weapon-model-loader.js';
 import { AudioManager } from '../render/audio-manager.js';
 import { ViewWeapon } from '../render/view-weapon.js';
+import { ViewArm } from '../render/view-arm.js';
+import { WEAPON_IDS } from '../player/weapons/weapon-catalog.js';
 import { TracerRenderer } from '../render/tracer-renderer.js';
 import { ExplosionRenderer } from '../render/explosion-renderer.js';
 import {
@@ -538,6 +540,11 @@ export class Game {
     this.audioManager = new AudioManager(this.camera);
     this.audioManager.preload().catch((err) => console.warn('[audio] preload failed:', err));
     this.viewWeapon = new ViewWeapon({ camera: this.camera, modelLoader: this.weaponModelLoader });
+    // 第一人称手臂（徒手可见 + 挖/放挥动）：与 viewWeapon 互斥，同一时刻只显其一。
+    // 挂 camera 下 = 只增 1 个 draw call（一个 Mesh）。徒手是默认武器（controller 初值 arm），
+    // 故这里就置为可见（对齐 mc-lite：进入游戏即能看到手臂）。
+    this.viewArm = new ViewArm({ camera: this.camera });
+    this.viewArm.setWeapon(WEAPON_IDS.ARM);
     this.tracerRenderer = new TracerRenderer({ scene: this.scene });
     // 玩家出生（第一人称，眼高由 Player 管）
     this.player = new Player({
@@ -546,6 +553,7 @@ export class Game {
       editor: this.editor,
       weaponRuntime: {
         viewWeapon: this.viewWeapon,
+        viewArm: this.viewArm,
         tracerRenderer: this.tracerRenderer,
         audioManager: this.audioManager,
       },

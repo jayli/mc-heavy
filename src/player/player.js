@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { raycastVoxel } from './raycast.js';
 import { PlayerPhysics } from './physics.js';
 import { StepLift } from './step-lift.js';
+import { ViewBob } from './view-bob.js';
 import { HOTBAR_ITEMS as HOTBAR } from './hotbar-items.js';
 import { createCreativeInventory } from './inventory.js';
 import { getPlacementOrientation, recordRemovedBlock } from './orientation.js';
@@ -113,6 +114,17 @@ export class Player {
     this.audioManager = weaponRuntime?.audioManager ?? null;
     /** @type {WeaponController | null} */
     this.weaponController = null;
+    /**
+     * 第一人称手臂（徒手可见 + 挖/放挥动）。由 Game 注入，同 `viewWeapon` 手法。
+     * 缺省 null → 无手臂（fixture 单独构造时）。
+     * @type {import('../render/view-arm.js').ViewArm | null}
+     */
+    this.viewArm = weaponRuntime?.viewArm ?? null;
+    /**
+     * 跑动视角晃动（纯逻辑，无 three —— 见 view-bob.js 文件头）。
+     * 自己构造而非注入：它不依赖任何渲染资源，且 fixture 也需要它（物理一旦走动就晃）。
+     */
+    this.viewBob = new ViewBob();
     this.physics = new PlayerPhysics(world);
     // 矿车占据格对玩家是实心（mc-lite `Physics.isSolid` 同口径）：注入 service 而非让
     // physics import entities/（依赖方向 §3）。缺省 null → 矿车格不挡人（fixture 单独构造时）。
@@ -244,8 +256,26 @@ export class Player {
     const riding = !!this.ridingMinecartId;
     while (this._acc >= step && n < 5) {
       if (!riding) {
+        const bx = this.physics.pos.x;
+        const bz = this.physics.pos.z;
         this._applyInput();
+        // 意图水平速度：必须在 `physics.step()` 之前读 —— step 末尾会把 vel.x/vel.z 清零
+        // （无惯性手感）。该值是 `physics.move()` 刚写进去的 SPEED×输入，即「本步想走多快」。
+        const inputSpeed = Math.hypot(this.physics.vel.x, this.physics.vel.z);
         this.physics.step(step);
+        // 视角晃动**按物理步推进**（不是每渲染帧）——
+        // 物理是 60Hz 定步长 + accumulator，120Hz 渲染下隔帧才走一步。若按渲染帧推进，
+        // 没走物理的那些帧位移为 0 → 判据判「没在动」→ 相位每帧归零 → 永不稳定晃动。
+        // 按步推进后相位严格是 12 rad/s（= speed×60），与渲染帧率无关。
+        this.viewBob.update(step, {
+          dx: this.physics.pos.x - bx,
+          dz: this.physics.pos.z - bz,
+          inputSpeed,
+          jumping: !this.physics.onGround,
+        });
+      } else {
+        // 乘坐期物理不跑（位置由矿车锁定）→ 无自主位移，晃动自然衰减到 0
+        this.viewBob.update(step, { dx: 0, dz: 0, inputSpeed: 0 });
       }
       this._acc -= step; n++;
     }
@@ -255,16 +285,29 @@ export class Player {
       this.physics.stepLiftAccum = 0;
     }
     this._stepLift.update(dt);
-    // 相机同步（眼高 1.62 + 台阶缓动偏移）
+    // 相机同步（眼高 1.62 + 台阶缓动偏移 + 跑动晃动）
+    // ⚠️ 晃动**融进这一次全量 set**，不得改成 `camera.position.x += bob`：
+    // 那样上一帧的偏移会被下一帧当基线继承，逐渐累积漂移（本方法每帧都会重写位置，
+    // 全量 set 天然幂等）。
     const p = this.physics.pos;
-    const camY = p.y + EYE_HEIGHT + this._stepLift.offset;
-    this.camera.position.set(p.x, camY, p.z);
+    const bob = this.viewBob.offset;
+    const camY = p.y + EYE_HEIGHT + this._stepLift.offset + bob.y;
+    this.camera.position.set(p.x + bob.x, camY, p.z);
     this.camera.rotation.set(0, 0, 0);
     this.camera.rotateY(this.yaw);
     this.camera.rotateX(this.pitch);
-    // 每帧 1 次主射线（§4.5.2）；原点用相机视觉位置，交互与画面一致
+    // 跑动旋转分量（v1.49）：在相机基准姿态**之后**叠加，否则会被前面的
+    // `rotation.set(0,0,0)` 清掉。
+    // ⚠️ **必须叠加在已构造好的 yaw/pitch 之后（局部轴）**，不得先把 roll 加进 `this.yaw` ——
+    // 那会把视角的“水平方向”一起转，玩家会撞向侧面（roll 是**镜头歪头**，不是转头）。
+    // pitch 用 `rotateX`（局部轴，与 `rotateX(this.pitch)` 同轴），roll 用 `rotateZ`。
+    // 幅度由 `viewBob` 自己按 amount 缩放 → 静止时严格为 0，不会残留歪头。
+    this.camera.rotateX(this.viewBob.pitch);
+    this.camera.rotateZ(this.viewBob.roll);
+    // 每帧 1 次主射线（§4.5.2）；原点用相机视觉位置（含晃动偏移），交互与画面一致
     const dir = new THREE.Vector3(0, 0, -1).applyEuler(this.camera.rotation);
-    const r = raycastVoxel(this.world, [p.x, camY, p.z], [dir.x, dir.y, dir.z], REACH);
+    const cp = this.camera.position;
+    const r = raycastVoxel(this.world, [cp.x, cp.y, cp.z], [dir.x, dir.y, dir.z], REACH);
     this.target = r.hit ? r : null;
     if (this.target) {
       this._highlight.visible = true;
@@ -275,6 +318,7 @@ export class Player {
     const aim = this._buildAim();
     this.weaponController.update(dt, aim);
     if (this.viewWeapon) this.viewWeapon.update(dt, { shooting: this.weaponController.debugState().triggerHeld });
+    if (this.viewArm) this.viewArm.update(dt);
     if (this.tracerRenderer) this.tracerRenderer.update(dt, aim);
   }
 
@@ -430,6 +474,8 @@ export class Player {
   async selectWeapon(id) {
     if (!this.weaponController.select(id)) return this.weaponController.debugState().selectedId;
     if (this.viewWeapon) await this.viewWeapon.select(id);
+    // 手臂与持枪视图模型互斥：arm 时显示手臂，其余隐藏（mc-lite `updateArm` 同口径）
+    if (this.viewArm) this.viewArm.setWeapon(id);
     if (id !== WEAPON_IDS.ARM && this.audioManager) this.audioManager.play('gun_load', 0.4);
     return this.weaponController.debugState().selectedId;
   }
@@ -546,6 +592,16 @@ export class Player {
    * @param {{ctrl?: boolean, shift?: boolean}} [mods]
    */
   digBlock(mods = {}) {
+    // 手臂挥动（v1.50 口径，对齐 mc-lite）：**只要玩家试图挖掘就挥手，不管有没有成功**。
+    // mc-lite 的 `PlayerInteraction.js` 无条件 `this.swing()`——命中路径 `:199-200`
+    // （`removeBlock(hit, true); this.swing();`）与**未命中**的 `else` 分支 `:207`
+    // （`} else { this.swing(); }`）都挥。
+    // ⚠️ **必须放在所有早退分支之前**（矿车命中 / 无 target / TNT 引爆 / 不可破坏）：
+    // 放在 `setBlock` 旁边时，上面任何一个 `return` 都会让挥动静默消失（v1.49 就是这样）。
+    // 这不是纯视觉细节 —— 挖掘是**按住连续点**，无反馈会让玩家以为卡住了。
+    // 代价：越肩挖空气也会挥手，但这正是原版行为。
+    if (this.viewArm) this.viewArm.swing();
+
     // 矿车交互优先（mc-lite：左键先判矿车再挖块）。ctrl+左键 = 激活；徒手左键 = 拾取。
     if (mods.ctrl || this.minecarts) {
       const hit = this._raycastMinecart();
@@ -581,6 +637,7 @@ export class Player {
     this.lastRemovedBlock = recordRemovedBlock(x, y, z, id, this.world.getBlockMeta(x, y, z));
     // M4-0：改走唯一编辑路径（remesh fast path / 事件由 WorldEditor 协调）
     this.editor.setBlock({ x, y, z, id: 0 });
+    // ⚠️ 挥手**不在这里** —— 已提到函数顶部（v1.50：试图挖就挥手，与是否成功无关）。
   }
 
   /**
@@ -632,7 +689,7 @@ export class Player {
         // ⚠️ prevPos 可能为 null（射线起点就在方块内的极端情况）—— 判空后再调。
         const origin = this._selectedPlaceable === MINECART_ITEM
           ? this.target.prevPos : hit;
-        if (origin) this._placeSpecial(this._selectedPlaceable, [origin[0], origin[1], origin[2]]);
+        if (origin) this._placeSpecialSwing(this._selectedPlaceable, [origin[0], origin[1], origin[2]]);
       }
       // 成功或失败都不回落到背包槽 —— 选中态期间玩家意图明确是放巢穴，不是放石头
       return;
@@ -657,7 +714,7 @@ export class Player {
       if (hit) {
         // ⚠️ prevPos 可能为 null（射线起点就在方块内的极端情况）—— 判空后再调。
         const origin = slot.item === MINECART_ITEM ? this.target.prevPos : hit;
-        if (origin) this._placeSpecial(slot.item, [origin[0], origin[1], origin[2]]);
+        if (origin) this._placeSpecialSwing(slot.item, [origin[0], origin[1], origin[2]]);
       }
       return; // 分流后不回落到单格放置
     }
@@ -670,6 +727,8 @@ export class Player {
       // 放置成功后清除挖块记忆（§4.3 定稿口径：mc-lite 是算完朝向即无条件清空，
       // 本仓库改为成功后清空——放置失败时保留记忆，避免记忆跨次放置串用）
       this.lastRemovedBlock = null;
+      // 手臂挥动（mc-lite `PlayerInteraction.js:143` 同语义：放置成功才 `swing()`）
+      if (this.viewArm) this.viewArm.swing();
     }
     // 创造模式不消耗：slot.count 保持 DEFAULT_INVENTORY_COUNT 不变
   }
@@ -685,6 +744,19 @@ export class Player {
    * @param {string} id @param {[number, number, number]} origin
    * @returns {boolean} 是否成功放置
    */
+  /**
+   * `_placeSpecial` 的包装：**成功才挥手**（与单格放置同语义）。
+   * 两条放置路径（背包分流与 `selectPlaceable` 测试 API）都经此处，不得各自写一份 ——
+   * 否则其中一条会静默没有动画（M7 实测过同类「两条路径一测一用」的撕裂）。
+   * @param {string} id @param {[number, number, number]} origin
+   * @returns {boolean}
+   */
+  _placeSpecialSwing(id, origin) {
+    const ok = this._placeSpecial(id, origin);
+    if (ok && this.viewArm) this.viewArm.swing();
+    return ok;
+  }
+
   _placeSpecial(id, origin) {
     // M7：巢穴分支（既有实现不变）
     if (id === NEST_ALIAS_BLOCK) {
@@ -762,6 +834,7 @@ export class Player {
       this._boundHandlers = {};
     }
     if (this.viewWeapon) this.viewWeapon.dispose();
+    if (this.viewArm) this.viewArm.dispose();
     if (this.tracerRenderer) this.tracerRenderer.dispose();
   }
 
