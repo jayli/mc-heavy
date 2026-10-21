@@ -490,6 +490,11 @@ export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
 
           // 面亮度读"面朝向的邻居（空气）格"光照，不是方块自身格——
           // opaque 方块自身格 skylight=0（top-down 光遇 opaque 停止），读自身会全黑。
+          // ⚠️ **这里读哪些格 = light 变化时哪些 section 要重 mesh 的唯一依据**：当前依赖集合 =
+          // section 自身 16³ + 六个面外各 1 格厚的 halo（上面模板方块读自身格，也在其中）。
+          // `lighting.js` 的 `lightDirtyMasks` 镜像了这条规则（scheduler 写回 light 后据此置脏）；
+          // 若改采样范围（例如平滑光照采顶点周围/对角格），必须同步扩大它 ——
+          // `test-lighting.js` 的「与 mesher 交叉比对」两条用例会在那时变红。
           const faceLight = light[viewIdx(nx, ny, nz)];
           const positions = [];
           const uvs = [];

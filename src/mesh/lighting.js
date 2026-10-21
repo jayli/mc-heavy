@@ -8,7 +8,9 @@
 // 编辑快路径仍用垂直单列（recomputeSkylightAt，O(128)，守 2ms 编辑预算）。
 // blocklight：删除光源不做增量降光，全 column 区域重算兜底（§4.6 第一阶段口径）。
 // Worker 同构：本文件不得 import three。
-import { WORLD_MIN_Y, WORLD_MAX_Y, WORLD_HEIGHT, blockIndex } from '../voxel/constants.js';
+import {
+  WORLD_MIN_Y, WORLD_MAX_Y, WORLD_HEIGHT, SECTIONS_PER_COLUMN, BLOCKS_PER_SECTION, blockIndex,
+} from '../voxel/constants.js';
 
 /**
  * 区域重算的 column 偏移集合 = **3×3**（中心 + 4 正交 + 4 对角）。
@@ -31,6 +33,59 @@ export const LIGHT_REGION_OFFSETS = Object.freeze([
   Object.freeze([-1, 0]), Object.freeze([0, 0]), Object.freeze([1, 0]),
   Object.freeze([-1, 1]), Object.freeze([0, 1]), Object.freeze([1, 1]),
 ]);
+
+/**
+ * 一列 light 数组前后差异 → **需要重 mesh 的 section 掩码**（纯函数，Worker 同构）。
+ *
+ * 依赖推导（权威 = mesher 的 light 采样规则，见 `mesher.js` 的 `faceLight`）：
+ * section S 的网格读 light 的格子 = **S 自身 16³ + 六个面外各 1 格厚的 halo**
+ *   · 立方体的面读「面朝向的邻格」（opaque 方块自身格 skylight 为 0，读自身会全黑）；
+ *   · 模板方块（吊灯/植被…）读**自身格**；
+ *   · halo 的**棱/角**格只被 AO 读 blocks，**不读 light** —— 所以对角列/对角 section 不依赖。
+ * 反过来，格 (lx,ly,lz) 的 light 变化需要通知：
+ *   · 它所在的 section（self[sy]）；
+ *   · ly===0 → 下方 section（它最上层方块的顶面读这一格）；ly===15 → 上方 section；
+ *   · lx===0 → 西邻列同 sy（xm）；lx===15 → 东邻列（xp）；lz===0/15 → 北/南邻列（zm/zp）。
+ *
+ * ⚠️ 2026-10-21 修「灯光有边界」「删灯后被照亮的面不变暗」的根因就在这里：上一版只给
+ * 「light 字节真变了」的**同 sy** section 置脏，漏了 Y 方向（地表恰好在 section 最上层 —— 如
+ * y=-1 的沙滩 —— 时，顶面读的是上一 section 最底层那格，那格变了地面却没人通知重 mesh），
+ * 同时对 8 个邻列一律按同 sy 置脏（含根本不依赖本列 light 的对角列）。
+ *
+ * ⚠️ **与 mesher 是一对耦合的约定，改一处必须同时看另一处**：若 mesher 将来改成平滑光照
+ * （采顶点周围 4 格 / 对角格），依赖集合会变大，本函数必须同步扩大。`test-lighting.js` 的
+ * 「与 mesher 交叉比对」两条用例（pocket 世界逐项相等 + 随机世界实测 ⊆ 预测）会在那时变红。
+ *
+ * @param {Uint8Array} prev 本列旧 light
+ * @param {Uint8Array} next 本列新 light（同长度）
+ * @returns {{self: Uint8Array, xm: Uint8Array, xp: Uint8Array, zm: Uint8Array, zp: Uint8Array}}
+ *   各掩码长度 SECTIONS_PER_COLUMN，1 = 该 section 需重 mesh；
+ *   self = 本列，xm/xp = cx−1/cx+1 列，zm/zp = cz−1/cz+1 列（只有 4 个**正交**邻列）。
+ */
+export function lightDirtyMasks(prev, next) {
+  const self = new Uint8Array(SECTIONS_PER_COLUMN);
+  const xm = new Uint8Array(SECTIONS_PER_COLUMN);
+  const xp = new Uint8Array(SECTIONS_PER_COLUMN);
+  const zm = new Uint8Array(SECTIONS_PER_COLUMN);
+  const zp = new Uint8Array(SECTIONS_PER_COLUMN);
+  const last = SECTIONS_PER_COLUMN - 1;
+  for (let sy = 0; sy <= last; sy++) {
+    const base = sy * BLOCKS_PER_SECTION;
+    const end = base + BLOCKS_PER_SECTION;
+    for (let i = base; i < end; i++) {
+      if (prev[i] === next[i]) continue;
+      self[sy] = 1;
+      // blockIndex = lx + lz*16 + (y - WORLD_MIN_Y)*256；section 高 16 且 WORLD_MIN_Y 是 16 的倍数，
+      // 故 section 内的 ly = (i >> 8) & 15
+      const lx = i & 15, lz = (i >> 4) & 15, ly = (i >> 8) & 15;
+      if (ly === 0) { if (sy > 0) self[sy - 1] = 1; }
+      else if (ly === 15) { if (sy < last) self[sy + 1] = 1; }
+      if (lx === 0) xm[sy] = 1; else if (lx === 15) xp[sy] = 1;
+      if (lz === 0) zm[sy] = 1; else if (lz === 15) zp[sy] = 1;
+    }
+  }
+  return { self, xm, xp, zm, zp };
+}
 
 /**
  * skylight：第一阶段不启用阳光遮挡（v1.9），全列恒 15。

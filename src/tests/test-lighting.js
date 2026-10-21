@@ -1,9 +1,14 @@
 import { test } from './runner.js';
-import { assertEqual } from './assert.js';
-import { computeSkylightColumn, computeSkylightRegion, computeBlocklightRegion, recomputeLight } from '../mesh/lighting.js';
+import { assertEqual, assertTrue } from './assert.js';
+import {
+  computeSkylightColumn, computeSkylightRegion, computeBlocklightRegion, recomputeLight, lightDirtyMasks,
+} from '../mesh/lighting.js';
+import { buildSectionMesh } from '../mesh/mesher.js';
 import { ChunkColumn } from '../voxel/chunk-column.js';
 import { WorldData } from '../voxel/world-data.js';
-import { WORLD_MIN_Y, WORLD_MAX_Y, blockIndex } from '../voxel/constants.js';
+import {
+  WORLD_MIN_Y, WORLD_MAX_Y, BLOCKS_PER_COLUMN, SECTIONS_PER_COLUMN, blockIndex,
+} from '../voxel/constants.js';
 import { createRegistry } from '../voxel/block-registry.js';
 import { BLOCKS } from '../voxel/blocks-data.js';
 
@@ -307,4 +312,193 @@ test('blocklight region: 隔一列（offset 2）必须仍为 0（防过度修复
   far.blocks[blockIndex(15, 50, 8)] = reg.idOf('glowstone');
   computeBlocklightRegion(world, 0, 0, reg);
   assertEqual(blk(center, 15, 50, 8), 0, 'a column 2 away is beyond the 14-block reach');
+});
+
+// ---------------------------------------------------------------------------
+// 光照变化 → 脏 section 传播（2026-10-21 第二次修「灯光有边界」+「删灯后被照亮的面不变暗」）
+//
+// 根因：mesher 对 section S 的 light 依赖 = **S 自身 16³ + 六个面外各 1 格厚的 halo**
+// （faceLight 读面外邻居格；模板方块读自身格；棱/角 halo 格只读 blocks 算 AO，不读 light）。
+// 上一版 `_onLightResult` 只给「light 字节真变了」的**同 sy** section 置脏，漏了两类依赖者：
+//   ① Y 方向：地表恰好在 section 最上层（如 y=-1）时，顶面读的是上一个 section 最底层那格 ——
+//      那格 light 变了，地面所在的 section 却没人通知它重 mesh（实测 seed=6503358 的沙滩 sy=1）；
+//   ② X/Z 方向：邻列只在边界层（lx/lz ∈ {0,15}）读本列的格，而旧实现对 3×3 的 8 个邻列
+//      一律按「同 sy」置脏（含对角列 —— 它们根本不读本列的 light）。
+// 用户可见症状：放灯后一部分地面不亮（边界 = column 边界）；删灯后被照亮的面不变暗。
+//
+// 本节四类用例各钉一侧：
+//   A. 纯函数的精确掩码（边界层 / 世界上下界 / 棱角 / 无变化）；
+//   B. **与 mesher 的交叉比对**（pocket 世界：预测集合必须与实测变化集合逐项相等）——
+//      判据落在「mesher 真的读了哪些格」上，而不是落在函数自己的假设上；
+//   C. 随机稀疏世界的安全方向（实测变化 ⊆ 预测），将来 mesher 若改成平滑光照（采对角格）会在这里立刻红。
+// ---------------------------------------------------------------------------
+
+const EMPTY_ATLAS = {}; // mesher 对缺失 tile 回退 DEFAULT_TILE；本节只关心 packed 里的光照位
+
+/** 在 prev 的拷贝上把若干格的 blocklight 改成 9，返回 [prev, next] */
+function lightPair(cells) {
+  const prev = new Uint8Array(BLOCKS_PER_COLUMN);
+  const next = prev.slice();
+  for (const [lx, y, lz] of cells) next[blockIndex(lx, y, lz)] = 9;
+  return [prev, next];
+}
+const lit = (arr) => [...arr].map((v, i) => (v ? i : -1)).filter((i) => i >= 0);
+
+test('lightDirtyMasks: light 一字节没变 → 一个 section 也不置脏', () => {
+  const prev = new Uint8Array(BLOCKS_PER_COLUMN);
+  const m = lightDirtyMasks(prev, prev.slice());
+  for (const k of ['self', 'xm', 'xp', 'zm', 'zp']) assertEqual(lit(m[k]).length, 0, `${k} 必须全零`);
+});
+
+test('lightDirtyMasks: section 内部的格（非边界层）→ 只有它自己所在的 section', () => {
+  // sy=3 ⇒ y ∈ [16,31]；y=24 → ly=8
+  const m = lightDirtyMasks(...lightPair([[8, 24, 8]]));
+  assertEqual(lit(m.self).join(), '3', 'self');
+  for (const k of ['xm', 'xp', 'zm', 'zp']) assertEqual(lit(m[k]).length, 0, `${k} 必须全零（格不在 x/z 边界层）`);
+});
+
+test('lightDirtyMasks: section 最底层（ly=0）→ 自己 + **下方** section（它的顶面读这一格）', () => {
+  const m = lightDirtyMasks(...lightPair([[8, 16, 8]])); // y=16 → sy=3, ly=0
+  assertEqual(lit(m.self).join(), '2,3', 'self 必须含 sy-1（地表在下方 section 最上层的场景）');
+});
+
+test('lightDirtyMasks: section 最上层（ly=15）→ 自己 + **上方** section（它的底面读这一格）', () => {
+  const m = lightDirtyMasks(...lightPair([[8, 31, 8]])); // y=31 → sy=3, ly=15
+  assertEqual(lit(m.self).join(), '3,4', 'self 必须含 sy+1（天花板在上方 section 最底层的场景）');
+});
+
+test('lightDirtyMasks: 世界最底层/最顶层不越界（sy=0 的 ly=0、sy=7 的 ly=15）', () => {
+  const bottom = lightDirtyMasks(...lightPair([[8, WORLD_MIN_Y, 8]]));
+  assertEqual(lit(bottom.self).join(), '0', '世界最底格只影响 sy=0（没有 sy=-1）');
+  const top = lightDirtyMasks(...lightPair([[8, WORLD_MAX_Y - 1, 8]]));
+  assertEqual(lit(top.self).join(), String(SECTIONS_PER_COLUMN - 1), '世界最顶格只影响最后一个 section');
+  assertEqual(bottom.self.length, SECTIONS_PER_COLUMN, '掩码长度恒为 SECTIONS_PER_COLUMN');
+});
+
+test('lightDirtyMasks: x/z 边界层 → 对应**正交**邻列的同 sy（四个方向各钉一个）', () => {
+  const cases = [['xm', [0, 24, 8]], ['xp', [15, 24, 8]], ['zm', [8, 24, 0]], ['zp', [8, 24, 15]]];
+  for (const [key, cell] of cases) {
+    const m = lightDirtyMasks(...lightPair([cell]));
+    assertEqual(lit(m[key]).join(), '3', `${key} 必须含 sy=3（cell ${cell}）`);
+    assertEqual(lit(m.self).join(), '3', `self 仍然只有 sy=3（${key}）`);
+    for (const other of ['xm', 'xp', 'zm', 'zp'].filter((k) => k !== key)) {
+      assertEqual(lit(m[other]).length, 0, `${other} 不得被 ${key} 方向的边界格带上`);
+    }
+  }
+});
+
+test('lightDirtyMasks: 棱角格（lx=0,lz=15,ly=15）→ self{sy,sy+1} + xm + zp，**没有对角列**', () => {
+  const m = lightDirtyMasks(...lightPair([[0, 31, 15]])); // sy=3, ly=15
+  assertEqual(lit(m.self).join(), '3,4');
+  assertEqual(lit(m.xm).join(), '3');
+  assertEqual(lit(m.zp).join(), '3');
+  assertEqual(lit(m.xp).length, 0);
+  assertEqual(lit(m.zm).length, 0);
+  // API 本身就没有「对角列」这一概念：对角列的 mesh 不读本列的 light（faceLight 只读面外**正交**邻格）
+  assertEqual(Object.keys(m).sort().join(), 'self,xm,xp,zm,zp');
+});
+
+/** 把掩码换成「相对 (dcx,dcz,sy)」键集合，便于与 mesher 实测变化集合逐项比较 */
+function maskKeys(m) {
+  const out = new Set();
+  const add = (arr, dcx, dcz) => arr.forEach((v, sy) => { if (v) out.add(`${dcx},${dcz},${sy}`); });
+  add(m.self, 0, 0); add(m.xm, -1, 0); add(m.xp, 1, 0); add(m.zm, 0, -1); add(m.zp, 0, 1);
+  return out;
+}
+
+/** 3×3 列 × sy ∈ [sy0, sy1] 各 section 现算一遍 mesh → 三通道 packed 拷贝（精确比较，不用哈希） */
+function meshSigs(world, sy0, sy1) {
+  const sigs = new Map();
+  for (let dcx = -1; dcx <= 1; dcx++) for (let dcz = -1; dcz <= 1; dcz++) {
+    for (let sy = sy0; sy <= sy1; sy++) {
+      const r = buildSectionMesh(world.getSectionView(dcx, sy, dcz), world.registry, EMPTY_ATLAS, dcx, sy, dcz);
+      sigs.set(`${dcx},${dcz},${sy}`, [r.opaque.packed.slice(), r.cutout.packed.slice(), r.transparent.packed.slice()]);
+    }
+  }
+  return sigs;
+}
+function sigChanged(a, b) {
+  for (let ch = 0; ch < 3; ch++) {
+    if (a[ch].length !== b[ch].length) return true;
+    for (let i = 0; i < a[ch].length; i++) if (a[ch][i] !== b[ch][i]) return true;
+  }
+  return false;
+}
+function changedKeys(base, now) {
+  const out = new Set();
+  for (const [k, sig] of now) if (sigChanged(base.get(k), sig)) out.add(k);
+  return out;
+}
+const setAt = (world, wx, y, wz, id) => {
+  const cx = Math.floor(wx / 16), cz = Math.floor(wz / 16);
+  world.getColumn(cx, cz).blocks[blockIndex(wx - cx * 16, y, wz - cz * 16)] = id;
+};
+const NEIGHBOR6 = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+
+test('lightDirtyMasks 与 mesher 交叉比对：pocket 世界里「预测集合 == 实测变化集合」（逐格逐项）', () => {
+  const reg = makeRegistry();
+  const world = gridWorld(reg, 1);
+  const stone = reg.idOf('stone');
+  const center = world.getColumn(0, 0);
+  const SY = 3, y0 = WORLD_MIN_Y + SY * 16; // y ∈ [16, 31]
+  // pocket = 一格空气 + 六个面邻格全是 stone：六块 stone 各有一个面朝向这格空气，
+  // 于是「这格 light 变了」恰好让**六块 stone 各自所在的 section** 的 mesh 变化 —— 实测依赖集合
+  // 就是这六个邻格各自属于哪个 section/列，不依赖任何关于 mesher 的先验假设。
+  const cells = [];
+  for (const lx of [0, 8, 15]) for (const ly of [0, 8, 15]) for (const lz of [0, 8, 15]) cells.push([lx, y0 + ly, lz]);
+  for (const [lx, y, lz] of cells) for (const [dx, dy, dz] of NEIGHBOR6) setAt(world, lx + dx, y + dy, lz + dz, stone);
+  const base = meshSigs(world, SY - 1, SY + 1);
+  let boundarySections = 0;
+  for (const [lx, y, lz] of cells) {
+    const idx = blockIndex(lx, y, lz);
+    const prev = center.light.slice();
+    center.light[idx] = 9;
+    const actual = changedKeys(base, meshSigs(world, SY - 1, SY + 1));
+    const predicted = maskKeys(lightDirtyMasks(prev, center.light));
+    center.light[idx] = 0;
+    const tag = `cell(${lx},${y},${lz})`;
+    assertEqual([...actual].sort().join('|'), [...predicted].sort().join('|'),
+      `${tag}：mesher 实测变化的 section 集合必须与 lightDirtyMasks 预测完全一致`);
+    if (actual.size > 1) boundarySections++;
+  }
+  // sanity floor：pocket 世界确实让边界格触发了跨 section/跨列的变化（否则上面的逐项相等是空转）
+  assertTrue(boundarySections >= 18, `边界 pocket 必须引起跨 section 变化（实际 ${boundarySections}/27）`);
+  // 具体物理含义钉死：棱角格 (0, y0+15, 15) 的六块邻 stone 分属 self{3,4} + xm{3} + zp{3}
+  const corner = [0, y0 + 15, 15];
+  const idx = blockIndex(...corner);
+  const prev = center.light.slice();
+  center.light[idx] = 9;
+  const actual = [...changedKeys(base, meshSigs(world, SY - 1, SY + 1))].sort().join('|');
+  center.light[idx] = 0;
+  void prev;
+  assertEqual(actual, ['-1,0,3', '0,0,3', '0,0,4', '0,1,3'].join('|'), '棱角格的实测依赖集合');
+});
+
+test('lightDirtyMasks 覆盖 mesher 对 light 的全部依赖（随机稀疏世界：实测变化 ⊆ 预测）', () => {
+  const reg = makeRegistry();
+  const world = gridWorld(reg, 1);
+  const stone = reg.idOf('stone');
+  const center = world.getColumn(0, 0);
+  const SY = 3, y0 = WORLD_MIN_Y + SY * 16;
+  // 确定性 PRNG（失败要可复现）：y ∈ [8, 56] 内约 25% 的格是 stone，覆盖 sy=2..4 且边界层上大量面暴露
+  let s = 20261021;
+  const rnd = () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; };
+  for (let wx = -16; wx < 32; wx++) for (let wz = -16; wz < 32; wz++) {
+    for (let y = 8; y <= 56; y++) if (rnd() < 0.25) setAt(world, wx, y, wz, stone);
+  }
+  const base = meshSigs(world, SY - 1, SY + 1);
+  let anyChange = 0;
+  for (const lx of [0, 8, 15]) for (const ly of [0, 8, 15]) for (const lz of [0, 8, 15]) {
+    const y = y0 + ly, idx = blockIndex(lx, y, lz);
+    const prev = center.light.slice();
+    center.light[idx] = 9;
+    const actual = changedKeys(base, meshSigs(world, SY - 1, SY + 1));
+    const predicted = maskKeys(lightDirtyMasks(prev, center.light));
+    center.light[idx] = 0;
+    for (const k of actual) {
+      assertTrue(predicted.has(k), `cell(${lx},${y},${lz})：mesher 里 section ${k} 的网格变了，但 lightDirtyMasks 没有预测到它`);
+    }
+    anyChange += actual.size;
+  }
+  assertTrue(anyChange > 0, `随机世界里 light 变化必须引起一些 mesh 变化（实际 ${anyChange}，0 = 测试空转）`);
 });

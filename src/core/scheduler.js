@@ -1,9 +1,9 @@
 // src/core/scheduler.js — 世界流式调度（§4.9）
 // GEN 段（Task 4）+ MESH 段（Task 6：脏 section → Worker 网格化 → 上传预算）。
 import { ChunkColumn } from '../voxel/chunk-column.js';
-import { columnKey, SECTIONS_PER_COLUMN, BLOCKS_PER_SECTION } from '../voxel/constants.js';
+import { columnKey, SECTIONS_PER_COLUMN } from '../voxel/constants.js';
 import { buildSectionMesh } from '../mesh/mesher.js';
-import { LIGHT_REGION_OFFSETS } from '../mesh/lighting.js';
+import { LIGHT_REGION_OFFSETS, lightDirtyMasks } from '../mesh/lighting.js';
 import { StructureIndex } from '../gen/structure-index.js';
 import { BudgetConfig } from './budget.js';
 
@@ -409,7 +409,8 @@ export class Scheduler {
       const key = columnKey(ncx, ncz);
       const col = this.world.getColumn(ncx, ncz);
       if (!col || col.state !== 'ready') continue;
-      if (this._inflightLight.has(key)) continue; // 在途：结果回来后由脏标记再触发
+      // 在途：不重复下发。回包时 `_onLightResult` 的输入校验（版本 + 输入集合）会发现输入已变并重新入队
+      if (this._inflightLight.has(key)) continue;
       this._lightQueue.add(key);
     }
   }
@@ -465,17 +466,23 @@ export class Scheduler {
    *  （偶现全黑面 + 截断渐变环根因）。邻列只参与计算不写回，仅置脏重 mesh
    *  （边界脸采样中心列 light，需收敛）。
    *
-   * 校验两层（缺一不可）：
+   * 校验三层（缺一不可，都是「task 手里的输入已不是当前输入」→ 丢弃并重新入队）：
    *  ① **中心列**版本（旧有）：在途期间玩家编辑过 → 丢弃并重新入队，
    *     否则旧 light 会覆盖 setBlock 快路径已重算的垂直单列新值。
    *  ② **region 全部输入列**版本（2026-10-21 新增）：邻列 block 变了也要丢 —— 它们的
    *     version 不会因为「别列放了灯」而变，但它们的 blocks 已经变了（放的灯就在里面），
    *     旧 task 回包用的是旧 blocks → 写回去就是一次静默回退。
    *     实测现象面：灯光跨列时不收敛（需要再放一块才“好”）。
+   *  ③ **输入集合**（2026-10-21 第二次修）：在途期间 3×3 里新到达的就绪列不在 `inputs` 里，版本比对
+   *     看不见它；而它到达时的 `enqueueLight` 又因本 column「在途」被跳过 → 永远缺它的光。
    *
-   * 脏标记只打**真正变了**的 section：邻列只有在「中心列该 sy 确实变了」时置脏
-   * （邻列的 −X/−Z 面 faceLight 采的正是中心列的格）。旧实现「9 列 × 8 section 无条件全脏」
-   * 在入队范围扩到 3×3 后会把 mesh churn 放大 9 倍。
+   * 脏标记打的是 **mesher 的 light 依赖者**，既不是「9 列 × 8 section 无条件全脏」（入队扩到 3×3
+   * 后会把 mesh churn 放大 9 倍），也不是「light 字节变了的同 sy」（2026-10-21 第二次修的根因）：
+   * mesher 的 faceLight 读的是面外邻格，所以格 (lx,ly,lz) 变化要通知 ① 它所在 section，
+   * ② ly 在 section 最上/最下层时的上/下相邻 section，③ 边界层（lx/lz ∈ {0,15}）时的 4 个**正交**
+   * 邻列同 sy。对角列不读本列 light。推导与 mesher 耦合见 `lighting.js` 的 `lightDirtyMasks`。
+   * 实测症状：地表在 section 最上层（y=-1 沙滩）时，放灯后地面不亮 / 删灯后被照亮的面不变暗
+   * —— **light 数据是对的，网格是旧的**。
    */
   _onLightResult(key, r) {
     const inflight = this._inflightLight.get(key);
@@ -491,6 +498,14 @@ export class Scheduler {
         if (!col || col.state !== 'ready') { this.enqueueLight(ccx, ccz); return; }
         if (col.version !== version) { this.enqueueLight(ccx, ccz); return; }
       }
+      // ③ 输入**集合**也要一致：task 在途期间 3×3 里新到达了一个就绪列（可能带灯），它的 blocks 不在这次
+      //    计算里，版本比对又看不见它（派发时根本没有它）。而新列到达时的 `enqueueLight` 恰好因这个 column
+      //    「在途」而跳过了它 —— 不在这里补，这个 column 就永远缺一盏灯的光（column 边界处的光截断）。
+      for (const [dx, dz] of LIGHT_REGION_OFFSETS) {
+        if (inputs.has(columnKey(ccx + dx, ccz + dz))) continue;
+        const ncol = this.world.getColumn(ccx + dx, ccz + dz);
+        if (ncol && ncol.state === 'ready') { this.enqueueLight(ccx, ccz); return; }
+      }
     }
 
     const center = this.world.getColumn(ccx, ccz);
@@ -502,25 +517,22 @@ export class Scheduler {
       return;
     }
     const next = new Uint8Array(r.light);
-    const prev = center.light;
-    // 逐 section 比对：只把真正变了的 sy 置脏。返回「本列哪些 sy 变了」供邻列判定。
-    const changed = [];
-    for (let sy = 0; sy < SECTIONS_PER_COLUMN; sy++) {
-      const base = sy * BLOCKS_PER_SECTION;
-      const end = base + BLOCKS_PER_SECTION;
-      let same = true;
-      for (let i = base; i < end; i++) { if (prev[i] !== next[i]) { same = false; break; } }
-      if (!same) changed.push(sy);
-    }
+    // 脏 section = **mesher 的 light 依赖者**，不是「light 字节变了的 section」（见 lightDirtyMasks 的推导）：
+    // 本列含 Y 方向相邻 section（地表在 section 最上层时，地面读的是上一 section 最底层的格），
+    // 邻列只含 4 个正交邻列且只在边界层变化时才置脏（对角列不读本列 light）。
+    const masks = lightDirtyMasks(center.light, next);
     center.light.set(next);
-    for (const sy of changed) center.markDirty(sy);
-    // 邻列：只在本列同 sy 变了时置脏（邻列的 −X/−Z 面 faceLight 采中心列的格）
-    for (const [dx, dz] of LIGHT_REGION_OFFSETS) {
-      if (dx === 0 && dz === 0) continue;
-      const ncol = this.world.getColumn(ccx + dx, ccz + dz);
-      if (!ncol || ncol.state !== 'ready') continue;
-      for (const sy of changed) ncol.markDirty(sy);
-    }
+    this._markDirtyByMask(center, masks.self);
+    this._markDirtyByMask(this.world.getColumn(ccx - 1, ccz), masks.xm);
+    this._markDirtyByMask(this.world.getColumn(ccx + 1, ccz), masks.xp);
+    this._markDirtyByMask(this.world.getColumn(ccx, ccz - 1), masks.zm);
+    this._markDirtyByMask(this.world.getColumn(ccx, ccz + 1), masks.zp);
+  }
+
+  /** 按掩码给（已就绪的）column 置脏 section；column 不存在/未就绪 → 忽略 */
+  _markDirtyByMask(col, mask) {
+    if (!col || col.state !== 'ready') return;
+    for (let sy = 0; sy < SECTIONS_PER_COLUMN; sy++) if (mask[sy]) col.markDirty(sy);
   }
 
   // ==================== MESH 段 ====================
@@ -592,8 +604,21 @@ export class Scheduler {
   _onMeshResult(skey, r) {
     this._inflightMesh.delete(skey);
     const col = this.world.getColumn(r.cx, r.cz);
-    if (!col || col.version !== r.version) return; // 过期结果丢弃（§4.9）
+    if (!col) return; // 已卸载：无处可发
+    if (col.version !== r.version) {
+      // 过期结果丢弃（§4.9）—— 但**丢弃的是结果，不是这份工作**：该 section 的脏标记在派发前就被
+      // `takeDirty` 消费了，不重新置脏就再没有东西会要求它重 mesh，旧网格会永久残留
+      // （2026-10-21 实测：light 写回把地面 section 置脏 → mesh 在途 → 同 column 任一编辑 version++
+      // → 结果被丢 → 数据对、画面旧，3/3 复现）。与 `_onLightResult` 的「丢弃并重新入队」同一语义。
+      this._redispatchDropped(col, r.sy);
+      return;
+    }
     this._uploadQueue.push({ cx: r.cx, sy: r.sy, cz: r.cz, channels: r.channels, version: r.version, stats: r.stats });
+  }
+
+  /** 被版本协议丢弃的 mesh 结果：重新置脏，下一帧 `takeDirty` 会以最新版本重新派发 */
+  _redispatchDropped(col, sy) {
+    col.markDirty(sy);
   }
 
   /** 上传预算：每帧 ≤budget.meshUploadBudgetMs（120Hz=3 / 60Hz=6），
@@ -603,7 +628,11 @@ export class Scheduler {
     while (this._uploadQueue.length && performance.now() - t0 < this.budget.meshUploadBudgetMs) {
       const item = this._uploadQueue.shift();
       const col = this.world.getColumn(item.cx, item.cz);
-      if (!col || col.version !== item.version) continue; // 卸载/已变更：丢弃
+      if (!col) continue; // 已卸载：丢弃
+      if (col.version !== item.version) { // 排队等预算期间已变更：丢弃并重发（理由同 `_onMeshResult`）
+        this._redispatchDropped(col, item.sy);
+        continue;
+      }
       for (const channel of CHANNELS) {
         this.renderWorld.uploadSection(item.cx, item.sy, item.cz, channel, unpackGeom(item.channels[channel]), item.version);
       }
