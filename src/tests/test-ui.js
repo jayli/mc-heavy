@@ -72,6 +72,21 @@ test('settings: 视距 UI 档位全部落在钳制范围内，且默认值在档
     `默认视距 ${DEFAULT_SETTINGS.viewDistance} 是面板档位之一（否则面板无高亮）`);
 });
 
+/**
+ * v1.63：背景音乐开关（两按钮档位，默认开）。
+ * 钉的是三道入口（默认 / 存储 / URL）都通 —— 漏任何一道的表现都是「开关看起来能点，
+ * 但下次开游戏回到默认」（静默回到开，玩家会以为自己的关闭没被记住）。
+ */
+test('settings: bgm 默认开，存储与 ?bgm= 均可覆盖', () => {
+  assertEqual(DEFAULT_SETTINGS.bgm, true, '默认开（mc-lite 进游戏即播）');
+  assertEqual(resolveSettings(null, new URLSearchParams('')).bgm, true);
+  assertEqual(resolveSettings({ bgm: false }, new URLSearchParams('')).bgm, false, '存储关生效');
+  assertEqual(resolveSettings({ bgm: false }, new URLSearchParams('bgm=1')).bgm, true, 'URL 优先于存储');
+  assertEqual(resolveSettings({ bgm: true }, new URLSearchParams('bgm=0')).bgm, false);
+  // 非布尔脏值不得把开关带成真/假（undefined 被 `if` 挡掉，字符串被类型判断挡掉）
+  assertEqual(resolveSettings({ bgm: 'yes' }, new URLSearchParams('')).bgm, true, '脏值回落默认');
+});
+
 test('settings: volume 钳制 [0,1]（无面板档位，默认 100%）', () => {
   assertEqual(resolveSettings({ volume: 5 }, new URLSearchParams('')).volume, 1);
   assertEqual(resolveSettings({ volume: -1 }, new URLSearchParams('')).volume, 0);

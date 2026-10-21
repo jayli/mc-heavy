@@ -231,6 +231,7 @@ export class SettingsPanel {
     left.appendChild(this._combinedBlurGunDamage()); // 画质 + 枪械破坏共用一行
     left.appendChild(this._rowVisualStyle());
     left.appendChild(this._rowFogColor());           // v1.59：雾色融入天空（紧接环境风格，同属观感）
+    left.appendChild(this._rowMusic());              // v1.63：背景音乐（与雾色同属「氛围」）
     right.appendChild(this._rowViewDistance());
     right.appendChild(this._rowBudget());
     right.appendChild(this._rowTntDamage());        // M8：TNT 破坏开关（右列独立一行）
@@ -385,6 +386,31 @@ export class SettingsPanel {
       }
     }
     return row;
+  }
+
+  /**
+   * v1.63：「背景音乐」开关（mc-lite `Player.js:296` 的 `playBGM('bgm', 0.15)`，循环单曲）。
+   *
+   * ⚠️ **落位 = 左列（雾色下方），不是右列** —— 与 CLAUDE.md「新配置往右列填」的表面口径相反，
+   * 因为那条约束的**适用前提已经变了**：它当初的理由是「左列被两组合并盒 + 四档风格撑高，
+   * 右列余量更大」。现在右列已堆到六行（视距/帧预算/TNT/创造台/进度/世界）、是**决定面板
+   * 高度的那一列**，左列只剩三行。实测把本行加在右列：面板 653px、内容 706px > 可视 645px
+   * → 出现纵向滚动，「世界」行被裁到折线以下；放在左列则面板高度不变（左列 231→300，
+   * 仍远低于右列 571）。判断依据是该约束的**意图**（不抬高面板），不是它的字面。
+   *
+   * ⚠️ **不置灰**（与雾色相反）：本开关即使 preload 失败 / 无音频设备也能点 —— 它只记意图，
+   * 解码完成与用户手势到位后自动起播。按「异步条件未就绪就置灰」得等到 4MB 解码完才能
+   * 解除，反而是永久错的初始态。
+   * 默认开（面板首次打开即高亮「开启」）；关闭立即停播，重开继续。
+   */
+  _rowMusic() {
+    return this._makeRow('背景音乐', [false, true], ['关闭', '开启'],
+      this.settings.bgm,
+      (v) => {
+        this.settings.bgm = v;
+        this._save();
+        this.game.setMusicEnabled(v); // 开启后靠 preload/unlock 两个条件自动起播
+      });
   }
 
   _rowBudget() {

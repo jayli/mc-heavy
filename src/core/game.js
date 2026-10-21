@@ -561,7 +561,12 @@ export class Game {
     // M4：武器渲染/音频运行时（只在主线程；不进 Worker/体素 meshing 管线）。
     // 模型加载失败只记录 console，不中止 worldReady——玩家保持徒手可玩。
     this.weaponModelLoader = new WeaponModelLoader();
-    this.audioManager = new AudioManager(this.camera);
+    // v1.63：背景音乐开关来自生效设置。`this.settings` 的赋值在 start() 尾部（:646），
+    // 此处读不到 —— 故照既有手法直接解析一次（Game 构造参数里的 settings 优先）。
+    this.audioManager = new AudioManager(this.camera, {
+      bgmEnabled: (this._settings
+        || resolveSettings(loadStoredSettings(), new URLSearchParams(location.search))).bgm,
+    });
     this.audioManager.preload().catch((err) => console.warn('[audio] preload failed:', err));
     this.viewWeapon = new ViewWeapon({ camera: this.camera, modelLoader: this.weaponModelLoader });
     // 第一人称手臂（徒手可见 + 挖/放挥动）：与 viewWeapon 互斥，同一时刻只显其一。
@@ -956,6 +961,23 @@ export class Game {
 
   /** 雾色模式是否实际开启（E2E 断言用） */
   get fogColorEnabled() { return (this.fog?.uFogColorMix?.value ?? 0) > 0.5; }
+
+  /**
+   * v1.63：背景音乐开关（设置面板「背景音乐」行与 `?bgm=0|1` 的落点）。
+   *
+   * ⚠️ **开关与「真的在出声」是两件事**：开启后还需 buffer 解码完（`preload()` 异步，4MB）
+   * 且 AudioContext 已被用户手势恢复（`Player` 的 canvas 点击 → `unlock()`）。两者任意一个
+   * 未到，音乐只是「待播」—— 消费者不得把 `musicEnabled === true` 当成「已经响了」。
+   * 无法出声时本方法**不抛错也不谎报**：返回实际播放状态（与 `setFogColorEnabled` 同口径）。
+   *
+   * @param {boolean} enabled @returns {boolean} 当前是否真的在播
+   */
+  setMusicEnabled(enabled) {
+    return this.audioManager?.setMusicEnabled(enabled) ?? false;
+  }
+
+  /** 背景音乐开关意图（面板/测试读设置口径，不判断是否已出声） */
+  get musicEnabled() { return this.audioManager?.musicEnabled ?? false; }
 
   /** 玩家位置的 biome 名（M3-4 坐标 HUD；CITY 布局边界优先，否则 getBiome 纯函数） */
   biomeAt(x, z) {

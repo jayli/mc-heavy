@@ -152,11 +152,17 @@ M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 
   （M1 测试/调试依赖 `vd=2`、既有 spec 用 `vd=4`）。故面板必须容错「当前值不在档位内」
   （URL/旧存档带来 `vd=4` → 无按钮高亮）；**刻意不做「就近高亮」** —— 那会让按钮宣称一个
   非生效值。契约断言在 `src/tests/test-ui.js`（档位须落在钳制范围内 + 默认值在档位中）。
-- **设置面板新配置往右列填**：面板是两列盒（`.mc-columns` + `.mc-combined` 合并盒，mc-lite 同款
-  手法但分配按本仓库档位重排）。左列 = 画质+枪械破坏合并盒 / 环境风格；右列 = 视距 / 帧预算 /
-  世界操作。M5~M7 的新配置项优先往右列填（纵向余量更大），两组两按钮档位优先用合并盒共用一行。
-  **音量档当前不在面板**（默认 100%），但字段仍持久化 + `?volume=` URL 可达 —— 音频接线时
-  加回档位即可，不必改数据模型。
+- **设置面板新配置先量当前两列高度再选列，不要机械往右列填**：面板是两列盒
+  （`.mc-columns` + `.mc-combined` 合并盒，mc-lite 同款手法但分配按本仓库档位重排）。
+  历史上右列余量大（左列曾被两组合并盒 + 四档风格撑高），故出过「新配置往右列填」的口径；
+  **v1.63 实测该前提已反转**：右列已有六行（视距/帧预算/TNT 破坏/创造台/进度/世界）且是
+  **决定面板高度的那一列**，左列只剩三行。把「背景音乐」加进右列后：面板 653px、内容 706px
+  > 可视 645px → 出现纵向滚动条、「世界」行被裁；改放左列则面板高度不变、零文本溢出。
+  **判据 = 不抬高面板高度的那一列**（先读两列 `getBoundingClientRect().height`，量法见
+  roadmap「活跃约束详情」），而不是哪一列名字上「余量更大」。两组两按钮档位仍优先用合并盒共用一行。
+  **音量档当前不在面板**（默认 100%），但字段仍持久化 + `?volume=` URL 可达 —— 背景音乐
+  （v1.63）用的是**独立的**开关、音量固定 mc-lite 原值 0.15，**不消费** `volume`；将来把音量档
+  加回面板时不必改数据模型。
 - **面板的破坏性按钮文案与列分隔线规则各有单一口径** —— 细节见 roadmap
   「活跃约束详情」的面板与 UI 段。其中**CSS 特异性 bug 须 `getComputedStyle` 读四边定位**
   （只有某一边缺 = 特异性覆盖的特征），不要凭观感猜。
@@ -704,6 +710,32 @@ M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 
 - **reload 恢复后车继续原方向**（`movementState` 进 snapshot），mc-lite 恢复后停成 IDLE ——
   有意偏离（玩家重启前正在开的车不该自己停下）。
 
+### 背景音乐沉淀的活跃约束（v1.63，后续音频/音乐类改动必读）
+
+- **效果音与背景音乐是两份清单（`SOUND_IDS` / `BGM_ID`），不得合并**：语义不同 —— 效果音是
+  「事件触发、播完即止」，音乐是「循环、可开关」。混进去会让 `play(id)` 也可能播 254 秒循环音乐，
+  且 `preload()` 的语义不再单一。`preload()` 默认参数包含两者，但白名单分开判。
+- **起播是三个条件的对齐，不是某一个事件**：玩家意图（开关）/ buffer 已解码 / context 已 running。
+  生产真实顺序是「先点一下（手势到位）→ 几秒后 4MB 才解码完」，所以 **`preload()` 末尾与
+  `unlock()` 末尾各自都要调一次 `_syncMusic()`**。只写一处 = 另一半路径永远没声音，且**无任何报错**
+  （设置面板显示「开启」、按钮高亮、就是没声音）。
+- **`unlock()` 的唯一入口是 `Player` 的 canvas `onClick`**：mc-lite 挂的是 `document` 的 click，
+  本仓既有 `onClick`（requestPointerLock 那个）就是同义的入口 —— **不得再挂一个全局监听**（会重复解锁）。
+- **`bgmEnabled` 必须在 `start()` 里直接用 `this._settings || resolveSettings(...)` 解析**：
+  `AudioManager` 构造在 `start()` 中段（:564），而 `this.settings` 的赋值在 `start()` **尾部**（:646）
+  —— 读 `this.settings.bgm` 会抛 `Cannot read properties of undefined`，整个游戏白屏（实测）。
+- **单测里不得 `AudioManager.dispose()`**：three 的 `AudioListener` 拿的是**全局单例** context
+  （`three.core.js:50786` / `:49994` 的 `_context` 缓存），`dispose()` 的 `context.close()` 会把它
+  关死 → 后续用例全报 `Cannot suspend a closed AudioContext`（实测一失败带倒三条）。单测收尾只拆
+  listener、停音乐，不关 context。
+- **写 BGM/音频类 E2E 前先确认两条环境事实**（两条都能让「全绿」变成无效盲区，已实测）：
+  ① **Playwright 默认 `--autoplay-policy=no-user-gesture-required`**，新建 AudioContext 一上来就是
+  `running` → 「手势未到」在生产里不会自发出现，用例必须主动 `ctx.suspend()` 造出来；
+  ② **localhost 上 4MB mp3 可能几十毫秒就解码完** → 「先手势、后解码」这个真实顺序测不到，
+  「preload 不补起播」的注入会**漏过**。修法 = `page.route` 把 mp3 推迟 1.5s 确定性造出该顺序。
+- **`bgm.mp3` 是 4.0MB / 254 秒 / 128kbps（从 mc-lite 原样复制未重编码）**，进首屏预载队列
+  —— 以后再加长音频前先想一下首屏流量。
+
 ### 第一人称手臂与跑动视角晃动沉淀的活跃约束（后续相机/第一人称观感类改动必读）
 
 - **视角晃动必须按物理步推进，不能按渲染帧**：`player.update()` 里的物理是 60Hz 定步长 +
@@ -1170,8 +1202,10 @@ mc-heavy/
 │  │                           #   night-src/ 存 mc-lite skyBox1 原图（烘焙输入，勿当渲染资源）
 │  ├─ zombie/                  # 丧尸头部纹理（**不在 textures/ 下** —— 那里会进世界 atlas）
 │  │  └─ head.png + head.json  # 128×64 双区并排（左半无眼睛/右半有眼睛）+ 尺寸与输入指纹
-│  ├─ sounds/                  # 音效（M4 四件武器音效 + M7 `put.mp3` 放置音效）
-│  │                           #   id 清单的唯一权威 = `render/audio-manager.js` 的 `SOUND_IDS`
+│  ├─ sounds/                  # 音效（M4 四件武器音效 + M7 `put.mp3` + M8 `explosion`/`turret_gun_fire`）
+│  │                           #   + v1.63 `bgm.mp3`（4.0MB / 254 秒循环背景音乐，从 mc-lite 原样复制）
+│  │                           #   效果音 id 清单的唯一权威 = `render/audio-manager.js` 的 `SOUND_IDS`；
+│  │                           #   背景音乐走独立的 `BGM_ID`（语义不同，不得混进 SOUND_IDS）
 │  ├─ effects/                 # 序列帧特效图集（**不在 textures/ 下** —— 那里会进世界 atlas）
 │  │  └─ big_blow.png          # TNT 爆炸序列帧（500×200，5×2=10 帧，从 mc-lite 原样复制）
 │  ├─ sky/                     # 天空盒立方图（v1.58；**不在 textures/ 下**，不走世界 atlas）

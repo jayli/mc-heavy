@@ -209,7 +209,13 @@ export class Player {
     // SecurityError: "Pointer lock cannot be acquired immediately after the user has
     // exited the lock."——不吞掉就是控制台未捕获错误（用户会误判为游戏坏了）。
     // 本次点击放弃锁定即可，下次点击自然成功。
-    const onClick = () => this.canvas.requestPointerLock().catch(() => {});
+    const onClick = () => {
+      this.canvas.requestPointerLock().catch(() => {});
+      // v1.63：首次点击即起播背景音乐（mc-lite `Player.js:292-298` 同口径 ——
+      // 浏览器自动播放策略要求 AudioContext 必须在**用户手势内**恢复，故起播时机只能是点击。
+      // 不另挂 document 级 click 监听：这里的 onClick 就是那个入口，再挂一个会重复解锁。
+      if (this.audioManager) void this.audioManager.unlock();
+    };
     const onMouseMove = (e) => {
       if (document.pointerLockElement !== this.canvas) return;
       this.yaw -= e.movementX * 0.002;
