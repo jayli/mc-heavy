@@ -24,7 +24,13 @@ export const VISUAL_STYLES = {
     moonDirection: [-0.25, 0.5, -0.82], moonVisible: false, moonSize: 18,
   },
   night: {
-    sky: 0x050b1e, fogColor: 0x050b1e, fogScale: 4.0, skyDim: 0.25, blockBoost: 1.2,
+    // ⚠️ **`fogScale` 已从 mc-lite 的 4.0 改为 1.0**（v1.61，用户拍板）：4.0 会把雾距
+    // 拉到 `(vd+2)*16*0.95*4`（vd=8 时 **608 格**），而世界径向只加载约 160 格 →
+    // **视野内没有任何方块到达雾区** → 雾完全不可见，「雾色融入天空」在夜里无物可染
+    // （实测开关切换的像素变化 **0.0%**，而把雾距改回正午口径后是 4.0% / 最大 184）。
+    // mc-lite 用 4.0 是因为它的夜景需要把雾推到看不见来模拟“远处漆黑”，本仓有夜空
+    // 贴图与星点，不需要这个代偿。雾色与天色一致时，远景观感反而更自然。
+    sky: 0x050b1e, fogColor: 0x050b1e, fogScale: 1.0, skyDim: 0.25, blockBoost: 1.2,
     sunDirection: [0.08, 0.25, 0.96],
     moonDirection: [-0.32, 0.58, -0.75], moonVisible: true, moonSize: 34,
   },

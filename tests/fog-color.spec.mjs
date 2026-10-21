@@ -77,10 +77,10 @@ const shot = async (page) => PNG.sync.read(await page.screenshot());
  * 正确做法是只停 `physics.step`，相机仍由 `player.update()` 跟随新位置。
  * ⚠️ 出生点在城市（城堡围栏）——直接在那里测雾带会被墙挡住。往外挪 400 格到开阔地。
  */
-async function pinView(page) {
-  await page.evaluate(() => {
+async function pinView(page, style = 'noon') {
+  await page.evaluate((style) => {
     const g = window.__MC_GAME__;
-    g.setVisualStyle('noon');           // 冻结日夜 → 太阳方向恒定（消掉 N·L 漂移）
+    g.setVisualStyle(style);            // 冻结日夜 → 太阳方向恒定（消掉 N·L 漂移）
     g.setShadowsEnabled(false);         // 阴影刷新会让亮度抖动
     g.player.physics.step = () => {};   // 停物理：相机不被重力拉走，但仍跟随 pos
     const px = Math.floor(g.player.physics.pos.x), pz = Math.floor(g.player.physics.pos.z);
@@ -92,7 +92,7 @@ async function pinView(page) {
     for (const el of document.querySelectorAll('#hud-root > *, #crosshair, #settings-btn')) {
       el.style.display = 'none';
     }
-  });
+  }, style);
   await page.waitForTimeout(2200);      // 等新位置的 column 加载完成（否则看到的是空洞）
 }
 
@@ -242,6 +242,75 @@ test('雾色开关关闭时逐位回到固定雾色（v1.58 行为不变式）',
     on: on.far.map((v) => +v.toFixed(1)),
     back: back.far.map((v) => +v.toFixed(1)),
   }));
+});
+
+test('夜间雾色同样生效（防「夜里雾距过远 → 无物可染」回归）', async ({ page }) => {
+  test.setTimeout(240_000);
+  await page.goto('/?vd=8&seed=12345&weather=clear');
+  await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
+  await pinView(page, 'night');   // 冻结到黑夜
+
+  // ⚠️ **这条用例钉的是一个真实回归**（v1.61 修）：mc-lite 的 night 风格 `fogScale = 4.0`
+  // 会把雾距拉到 `(vd+2)*16*0.95*4`（vd=8 时 **608 格**），而世界径向只加载约 160 格 →
+  // **视野内没有任何方块到达雾区** → 雾完全不参与渲染 → 「雾色融入天空」在夜里无物可染，
+  // 开关切换的像素变化实测 **0.0%**（白天是 4.1%）。用户实玩报告「从白天切换成黑夜模式后，
+  // 远方的雾色和天空盒的颜色渐变嵌入就没有了」。
+  // 修法 = 把 night 的 `fogScale` 改为与白天一致的 1.0。
+  //
+  // 判据必须落在**「夜里雾真的存在」**上，而不是只看「开关有没有改变像素」：
+  // 后者在雾距过远时恰好是 0，但若哪天雾距正常、而开关本身坏了，也会是 0 —— 两者
+  // 无法区分。故先断言**雾色 uniform 已生效（mix=1）**，再断言像素真的变了。
+  const state = await page.evaluate(() => {
+    const g = window.__MC_GAME__;
+    return {
+      fogNear: g.fog.fogNear.value,
+      fogFar: g.fog.fogFar.value,
+      nightBlend: g.sky?.uNightBlend?.value,
+    };
+  });
+  // ① 雾距必须落在世界加载半径之内（否则雾永远不可见）—— 这条直接钉住根因
+  const loadRadius = 8 * 16 + 2 * 16; // (viewDistance+2)*16 ≈ 160
+  expect(state.fogFar,
+    `夜间 fogFar=${state.fogFar} 超过世界加载半径 ~${loadRadius} → 雾永远不可见（回归！）`)
+    .toBeLessThan(loadRadius);
+  expect(state.nightBlend, '机位应处于夜晚（uNightBlend=1）').toBeGreaterThan(0.9);
+
+  // ② 开关打开 → 远景必须变化（且幅度与白天同量级）
+  const baseline = bands(await shot(page));
+  await page.evaluate(() => window.__MC_GAME__.setFogColorEnabled(true));
+  await page.waitForTimeout(800);
+  const on = bands(await shot(page));
+  const mix = await page.evaluate(() => window.__MC_GAME__.fog.uFogColorMix.value);
+  expect(mix, '夜间开关须真的置位（否则像素不变是「没开」而非「雾距过远」）').toBe(1);
+
+  // 天空区必须逐位不变（雾不能污染天空）
+  for (let i = 0; i < 3; i++) {
+    expect(on.sky[i], `夜间开启雾色后天空区通道 ${i} 不得变化`).toBe(baseline.sky[i]);
+  }
+
+  // 远景必须移动 —— 夜间天空地平线色 [~20,42,71] 与固定雾色 0x050b1e=[5,11,30] 差 15~41 级，
+  // 实测整屏 4.0% 像素变化、最大三通道和差 184。阈值取 3（远低于实测 41 的通道差，
+  // 且高于同状态噪声底 0）。
+  const farDelta = [0, 1, 2].map((i) => Math.abs(on.far[i] - baseline.far[i]));
+  console.log('FOG-COLOR-NIGHT: ' + JSON.stringify({
+    fogFar: state.fogFar,
+    off: baseline.far.map((v) => +v.toFixed(1)),
+    on: on.far.map((v) => +v.toFixed(1)),
+    farDelta: farDelta.map((v) => +v.toFixed(1)),
+  }));
+  expect(Math.max(...farDelta),
+    `夜间开启雾色后远景几乎没变（最大通道差 ${Math.max(...farDelta).toFixed(1)}）`
+    + ' —— 雾距过远导致无物可染的典型症状').toBeGreaterThan(3);
+
+  // ③ 关回去必须逐位还原（与白天同一条不变式）
+  await page.evaluate(() => window.__MC_GAME__.setFogColorEnabled(false));
+  await page.waitForTimeout(600);
+  const back = bands(await shot(page));
+  for (const k of ['sky', 'far', 'near']) {
+    for (let i = 0; i < 3; i++) {
+      expect(back[k][i], `夜间关回去后 ${k} 通道 ${i} 必须逐位还原`).toBe(baseline[k][i]);
+    }
+  }
 });
 
 test('?skybox=0 时雾色开关静默保持关闭（没有立方图可采样）', async ({ page }) => {
