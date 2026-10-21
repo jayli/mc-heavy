@@ -12,11 +12,13 @@ import {
   rangeFogFactor, uniform, fog,
   varying, vertexStage,
   shadow, mix, dot, select, clamp,
+  cubeTexture, positionWorld, cameraPosition, normalize, length,
 } from 'three/tsl';
 
 import {
   SHADOW_FLOOR, SUN_AMBIENT, SUN_INTENSITY, FACE_NORMALS, NOON_SUN_DIR,
 } from './sun-shade.js';
+import { FOG_SKY_Y_FLOOR_EPS } from './fog-sky-direction.js';
 
 // ---- 顶点阶段 shade（light × AO），float varying 传片元 ----
 // packed 属性解包：bit0-7 light（sky<<4|block），bit8-9 AO，bit10-12 世界面索引，
@@ -192,14 +194,66 @@ export function createVoxelMaterials(atlasTexture, sunLight = null) {
 
 /** 场景雾（与视距联动，§4.4.3 简化版：M1 固定雾距，M2 接日夜）
  *  r185.1 语义：`fog(color, factor)` 返回 vec4 混合节点，
- *  factor = rangeFogFactor(near, far)（0=无雾 1=全雾），赋给 scene.fogNode 即生效。 */
-export function setupFog(scene, viewDistance) {
+ *  factor = rangeFogFactor(near, far)（0=无雾 1=全雾），赋给 scene.fogNode 即生效。
+ *
+ *  v1.59 新增「雾色融入天空」：`fog()` 的 **color 参数本就是任意节点**
+ *  （`three.webgpu.js:42069` 实现为 `vec4(factor.mix(output.rgb, color.toVec3()), output.a)`），
+ *  所以把「固定色」换成「按视线方向采样天空盒」**不需要额外渲染通道、不加 pass**。
+ *
+ *  为什么必须按方向采样而不是取单一色：天空盒是照片，天顶/地平线/各水平方向的亮度
+ *  差很多（实测白天雾带 [188,202,229] vs 固定 0x87ceeb [134,205,234]，R 通道差 54）。
+ *  远景方块染成单一色后与身后的云对不上，就成了「贴在天空前的一排色板」。
+ *
+ *  ⚠️ **开关用 `mix()` 插值，不写 `if` 分支**：`uFogColorMix = 0` 时必须**逐位**回到
+ *  v1.58 行为（固定 0x87ceeb）。写 if 会出两条代码路径，未测的那条静默劣化。
+ *  ⚠️ `uSkyDayCube` / `uSkyNightCube` 为 null（天空盒未装配/加载失败/`?skybox=0`）时
+ *  退回纯固定色 —— 没有立方图就无从采样，不能用未绑定 uniform 采样（会读全黑）。
+ *
+ * @param {THREE.Scene} scene
+ * @param {number} viewDistance
+ * @param {{uNightBlend: Object, dayCube: THREE.CubeTexture, nightCube: THREE.CubeTexture}|null} [sky]
+ *   `setupSky()` 的返回值（天空盒未启用时传 null）
+ */
+export function setupFog(scene, viewDistance, sky = null) {
   // 雾距与相机 far / 世界加载半径联动（避免边缘 pop-in）：
   // 世界加载半径 = (viewDistance+2)*16（滞回 +2），雾在加载边缘前完成（0.95 系数），
   // 相机 far 覆盖对角线（1.5 > sqrt2）。近景（< 0.75*vd*16）保持清晰。
   const fogNear = uniform(viewDistance * 16 * 0.75);
   const fogFar = uniform((viewDistance + 2) * 16 * 0.95);
   const fogColor = uniform(new THREE.Color(0x87ceeb));
-  scene.fogNode = fog(fogColor, rangeFogFactor(fogNear, fogFar));
-  return { fogNear, fogFar, fogColor };
+  // 雾色模式开关（面板「雾色」）：0 = 固定色（默认，v1.58 行为），1 = 融入天空
+  const uFogColorMix = uniform(0.0);
+
+  let colorNode = fogColor;
+  if (sky) {
+    // 视线方向 = 片元世界位置 − 相机位置（与 ocean.js:148 的距离计算同源，均已核实片元可用）。
+    //
+    // ⚠️ **俯角（y ≤ 0）一律归到地平线带，只看方位角** —— 与 Tier 1 测的纯函数
+    // `fog-sky-direction.js` 同构（红线 1：不得各写一份钳制规则）。
+    // 直接用完整视线方向会让俯视时采样到立方图的天底那半张（实测 [97,125,186] vs
+    // 地平线 [207,216,232]）→ 雾色反向变暗（实测 G −17 / B −12）。
+    // ε 从 `fog-sky-direction.js` import（着色器侧写第二份字面量会漂移）。
+    const dir = normalize(positionWorld.sub(cameraPosition));
+    // ① y：俯角/水平（y ≤ 0）取 ε（贴地平线）；仰视保留原值。
+    const sy = select(dir.y.greaterThan(0.0), dir.y, float(FOG_SKY_Y_FLOOR_EPS));
+    // ② 水平分量：保留原值（方位角差异是本功能的价值）；垂直俯视时水平分量为零向量，
+    //    取 +x 作确定性兼就（不能返回天顶 —— 实测会让俯视雾色反向变暗）。
+    const horizLen = length(vec3(dir.x, 0.0, dir.z));
+    const degenerate = horizLen.lessThanEqual(FOG_SKY_Y_FLOOR_EPS);
+    const hx = select(degenerate, 1.0, dir.x);
+    const hz = select(degenerate, 0.0, dir.z);
+    const skyDir = normalize(vec3(hx, sy, hz));
+    // 采样两套立方图后按同一个 uNightBlend 交叉淡入 —— **与场景背景共用该 uniform**，
+    // 故雾色与天空永远同步（各写一份混合因子会漂移出「雾是白天色、天是夜幕色」的撕裂）。
+    // ⚠️ `cubeTexture()` **不传 uvNode** → 用默认的方向采样映射（CubeReflectionMapping）。
+    // 天空背景那边不传 uvNode 是为了让 three 注入 backgroundRotation；雾这边**没有**
+    // backgroundRotation 的语义（雾不带天空旋转），传自定义方向是正确的。
+    const daySample = cubeTexture(sky.dayCube, skyDir);
+    const nightSample = cubeTexture(sky.nightCube, skyDir);
+    const skyColor = mix(daySample.rgb, nightSample.rgb, sky.uNightBlend);
+    colorNode = mix(fogColor, skyColor, uFogColorMix);
+  }
+
+  scene.fogNode = fog(colorNode, rangeFogFactor(fogNear, fogFar));
+  return { fogNear, fogFar, fogColor, uFogColorMix };
 }

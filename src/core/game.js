@@ -228,11 +228,9 @@ export class Game {
     // receiveShadow 对象也进阴影 pass）。
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.VSMShadowMap;
-    const fogUniforms = setupFog(this.scene, this.viewDistance);
-    this.ocean = setupOcean(this.scene);
-    // ⚠️ 灯光创建必须在 RenderWorld 之前：材质的 shadow() 节点在构建时固定 light 引用。
-    this.renderWorld = new RenderWorld({ scene: this.scene, atlasTexture: texture, viewDistance: this.viewDistance, sunLight });
-    // 天空盒（v1.58）：在 DayNight 之前装配 —— uNightBlend 句柄要传给 DayNight。
+    // 天空盒（v1.58）**必须先于 setupFog**：v1.59 的「雾色融入天空」要在雾节点里
+    // 采样同一份立方图 —— 雾色与背景天空共用一个 uNightBlend，否则会漂移出
+    // 「雾是白天色、天是夜幕色」的撕裂。
     // 加载失败不阻断启动（与丧尸头部/炮塔装甲纹理同一容错口径）：退回既有纯色背景。
     // ⚠️ 失败时必须把 `scene.background` 恢复成 Color：setupSky 成功路径会把它置 null
     // （让 DayNight 的纯色路径自动跳过）；半途失败不留这个 null。
@@ -246,6 +244,11 @@ export class Game {
         this.scene.background = new THREE.Color(0x87ceeb);
       }
     }
+    const fogUniforms = setupFog(this.scene, this.viewDistance, this.sky);
+    this.fog = fogUniforms; // v1.59：雾色模式开关的 uniform 句柄（setFogColorEnabled）
+    this.ocean = setupOcean(this.scene);
+    // ⚠️ 灯光创建必须在 RenderWorld 之前：材质的 shadow() 节点在构建时固定 light 引用。
+    this.renderWorld = new RenderWorld({ scene: this.scene, atlasTexture: texture, viewDistance: this.viewDistance, sunLight });
     // 日夜循环（M2-6）：正午起步（与 M1 视觉口径一致），1200s 一天
     this.dayNight = new DayNight({
       scene: this.scene,
@@ -654,6 +657,9 @@ export class Game {
     // ⚠️ 此处默认开（不无条件调用）：`setShadowsEnabled(true)` 会置 `needsUpdate = true`，
     // 而「默认开」路径的重渲早已由 start() 中段的首次 needsUpdate 覆盖。
     if (!this._shadowsOption) this.setShadowsEnabled(false);
+    // 启动应用雾色模式（v1.59，默认关）。与上面两条同一口径：默认值已是初值，仅启用时需调。
+    // ⚠️ 必须在 sky 就绪之后（此处已是 start() 尾部）；`?skybox=0` 时 sky 为 null → 静默保持关。
+    if (this.settings.fogColor) this.setFogColorEnabled(true);
     this.worldReady = true;
 
     window.addEventListener('resize', () => this._onResize());
@@ -924,6 +930,32 @@ export class Game {
 
   /** 阴影是否开启（E2E 断言用） */
   get shadowsEnabled() { return this.sunLight.castShadow; }
+
+  /**
+   * 雾色模式开关（v1.59：雾色融入天空 vs 固定 0x87ceeb）。
+   *
+   * 消费方 = 设置面板「雾色」行（默认关）与 `?fog=1` URL 入口。
+   * 开关走材质 uniform 的 `mix()` 插值（不是代码分支）→ 关闭时 **逐位** 回到 v1.58 行为。
+   *
+   * ⚠️ **开启条件是 `this.sky` 存在**：`setupFog()` 只在传入 sky 时构建天空采样节点。
+   * 天空盒未启用（`?skybox=0`）、加载失败、或启动时「雾色」已开但 sky 为 null —— 三者都
+   * 无法采样（没有立方图），此时 `uFogColorMix` 恒为 0，不得谎报开启状态。
+   * 返回实际生效值（调用方 UI 可能据此提示，与 `setTntBlockDamage` 同口径）。
+   *
+   * @param {boolean} enabled
+   * @returns {boolean} 实际生效值
+   */
+  setFogColorEnabled(enabled) {
+    const u = this.fog?.uFogColorMix;
+    if (!u) return false;
+    // 没有天空盒就没有天空色可融入 —— 静默保持关闭（不写 1，否则采样未绑定立方图 → 全黑雾）
+    const effective = !!enabled && this.sky !== null;
+    u.value = effective ? 1 : 0;
+    return effective;
+  }
+
+  /** 雾色模式是否实际开启（E2E 断言用） */
+  get fogColorEnabled() { return (this.fog?.uFogColorMix?.value ?? 0) > 0.5; }
 
   /** 玩家位置的 biome 名（M3-4 坐标 HUD；CITY 布局边界优先，否则 getBiome 纯函数） */
   biomeAt(x, z) {

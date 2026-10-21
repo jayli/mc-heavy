@@ -25,6 +25,7 @@ export const DEFAULT_SETTINGS = {
   budgetProfile: 'auto', // M3-2：'auto'|'high'|'low'
   gunBlockDamage: false, // M4：普通枪是否破坏方块（mc-lite 默认关闭，UIManager.js:160）
   tntDamage: false, // M8：TNT 是否破坏地形（mc-lite `Game.js:92` 同口径默认 false —— 默认只伤害 + 连锁）
+  fogColor: false, // v1.59：雾色融入天空（默认关 = 固定 0x87ceeb，与 v1.58 逐位相同）
 };
 
 function clampVD(v) {
@@ -49,7 +50,7 @@ function normBudget(v) {
 
 /**
  * 合并生效设置：URL 参数 > 存储值 > 默认值。
- * URL 支持的键：vd / blur(0|1) / volume / style / budget / guns(0|1) / tntDamage(0|1)（main.js 既有的
+ * URL 支持的键：vd / blur(0|1) / volume / style / budget / guns(0|1) / tntDamage(0|1) / fog(0|1)（main.js 既有的
  * ?vd、?blur 语义保持不变，这里统一收口）。
  * 另有**不在此处收口**的 URL 开关（不走持久化，main.js 直传构造选项，见其解析处）：
  *   ?stats / ?log（DEBUG_FLAGS）、?weather（启动天气）、?seed（复现）、
@@ -68,6 +69,7 @@ export function resolveSettings(stored, params) {
     if (stored.budgetProfile !== undefined) s.budgetProfile = normBudget(stored.budgetProfile);
     if (typeof stored.gunBlockDamage === 'boolean') s.gunBlockDamage = stored.gunBlockDamage;
     if (typeof stored.tntDamage === 'boolean') s.tntDamage = stored.tntDamage;
+    if (typeof stored.fogColor === 'boolean') s.fogColor = stored.fogColor;
   }
   if (params) {
     if (params.has('vd')) s.viewDistance = clampVD(params.get('vd'));
@@ -77,6 +79,7 @@ export function resolveSettings(stored, params) {
     if (params.has('budget')) s.budgetProfile = normBudget(params.get('budget'));
     if (params.has('guns')) s.gunBlockDamage = params.get('guns') === '1';
     if (params.has('tntDamage')) s.tntDamage = params.get('tntDamage') === '1';
+    if (params.has('fog')) s.fogColor = params.get('fog') === '1';
   }
   return s;
 }

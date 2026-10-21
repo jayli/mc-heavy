@@ -230,6 +230,7 @@ export class SettingsPanel {
 
     left.appendChild(this._combinedBlurGunDamage()); // 画质 + 枪械破坏共用一行
     left.appendChild(this._rowVisualStyle());
+    left.appendChild(this._rowFogColor());           // v1.59：雾色融入天空（紧接环境风格，同属观感）
     right.appendChild(this._rowViewDistance());
     right.appendChild(this._rowBudget());
     right.appendChild(this._rowTntDamage());        // M8：TNT 破坏开关（右列独立一行）
@@ -353,6 +354,37 @@ export class SettingsPanel {
         this._save();
         this.game.setVisualStyle(v); // null = 恢复日夜循环（M2-6）
       });
+  }
+
+  /**
+   * v1.59：「雾色」开关 —— 雾色不再是固定 0x87ceeb，而是沿视线方向采样天空盒。
+   *
+   * 默认**关**（与 `?shadows=0` / `?skybox=0` 同口径：默认值 = v1.58 旧行为，显式开才生效）。
+   * 落位 = **左列，「环境风格」下面一行**（用户 2026-10-21 指定）。理由：两者同属「画面观感」，
+   * 跟随环境风格自然。⚠️ **不改「自动」按钮**：它同时是 `daynight.setStyle(null)`（恢复日夜
+   * 循环）的唯一 UI 入口，且被 `sun-shadow.spec` / `daynight-visual.spec` 的
+   * `setVisualStyle(null)` 用例依赖 —— 替掉它会让日夜循环失去入口。
+   *
+   * ⚠️ **不制造「无效开关」**：`?skybox=0` 或天空盒加载失败时没有立方图可采样，
+   * `setFogColorEnabled()` 会返回 false。那种情况下整组按钮**置灰禁用**并给 title 说明，
+   * 否则玩家按下去看不到任何变化，会误以为功能坏了。
+   * ⚠️ 判据用 `game.sky`（运行时真实状态）而不是 `?skybox` URL 参数 —— 加载失败也走降级路径。
+   */
+  _rowFogColor() {
+    const row = this._makeRow('雾色', [false, true], ['关闭', '开启'],
+      this.settings.fogColor,
+      (v) => {
+        this.settings.fogColor = v;
+        this._save();
+        this.game.setFogColorEnabled(v); // 开启需天空盒；无天空盒时静默保持关
+      });
+    if (!this.game.sky) {
+      for (const b of row.querySelectorAll('button')) {
+        b.disabled = true;
+        b.title = '需要开启天空盒';
+      }
+    }
+    return row;
   }
 
   _rowBudget() {
