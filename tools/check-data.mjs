@@ -62,6 +62,7 @@ const {
   MINECART_ITEM, TRACK_BLOCK_TYPES,
 } = await import('../src/entities/minecarts/minecart-config.js');
 
+const SKYBOX = await import('../src/render/sky-config.js');
 const atlasMeta = JSON.parse(fs.readFileSync(path.join(ROOT, 'assets', 'atlas.json'), 'utf8'));
 const tiles = new Set(Object.keys(atlasMeta.tiles));
 
@@ -663,6 +664,34 @@ function checkMinecartContract() {
   }
 }
 
+// ---------------------------------------------------------------- [14] 天空盒资源
+
+/**
+ * [天空盒] 契约：清单是唯一权威（`src/render/sky-config.js`），两套 × 六面必须都在磁盘上。
+ *
+ * 缺一张的后果是**静默的**：`CubeTextureLoader` 把缺失面的 onError 吞掉 → 用空白面填
+ * → 天空出现一块纯黑/纯灰，不报错、不阻断启动（与结构 JSON 缺失被吞成空结构同类）。
+ * 故只能静态断言 —— 浏览器里跑得起来不代表资源齐全。
+ *
+ * ⚠️ 主流程是逐个显式调用 —— 漏了本行则门禁永不执行（本仓已因此出过两次事故）。
+ */
+function checkSkyboxAssets() {
+  const { SKY_FACE_FILES, SKY_SETS } = SKYBOX;
+  let missing = 0;
+  for (const [name, dir] of Object.entries(SKY_SETS)) {
+    for (const face of SKY_FACE_FILES) {
+      const rel = path.posix.join(dir, face);
+      if (!fs.existsSync(path.join(ROOT, rel))) {
+        failures.push(`[天空盒] ${name} 缺面：${rel}`);
+        missing++;
+      }
+    }
+  }
+  if (!missing) {
+    infos.push(`[天空盒] ${Object.keys(SKY_SETS).length} 套 × ${SKY_FACE_FILES.length} 面完整（${SKY_SETS.day} / ${SKY_SETS.night}）`);
+  }
+}
+
 // ---------------------------------------------------------------- 主流程
 
 const REGISTRY = await buildDefaultRegistry();
@@ -682,6 +711,7 @@ await checkScatterStructureIntegrity();
 checkStructureJsonOrphans();   // 2026-09-30：tall_well 悬空宝箱回归防线（⚠️ 漏了本行则门禁永不执行）
 checkZombieHeadTexture();
 checkTurretArmorTexture();
+checkSkyboxAssets();         // v1.58：天空盒立方图完整性（⚠️ 漏了本行则门禁永不执行）
 
 console.log('[check:data] 数据契约检查');
 for (const i of infos) console.log(`  ✓ ${i}`);

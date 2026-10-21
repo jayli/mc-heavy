@@ -54,6 +54,13 @@
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x87ceeb); // 天空蓝，与墙色/叶色都易区分
     const rw = new RenderWorld({ scene, atlasTexture: texture, viewDistance: 2 });
+    // ⚠️ **关闭太阳方向光（v1.58）**：本 fixture 的判据是「树冠屏幕像素 == atlas 叶色」的
+    // **绝对色**（ratioA > 0.8）。方向光上线后树冠侧面亮度从 1.0 变成 0.5（noon 太阳 y=0.8，
+    // 侧面 dot=0 → 仅得环境地板 0.5）→ 实测 ratioA 从 1.000 跌到 **0**，测的就不再是
+    // 「opaque 不混合」而是「侧面有多暗」。
+    // 本 fixture 的被测对象是**通道（cullMode）**，方向光是无关变量 → 按 testing-policy 的
+    // 「只改被测 setup、断言逐字不动」口径隔离它。E2E 的断言与阈值未改。
+    rw.materials.dayNight.uSunStrength.value = 0;
 
     const world = new WorldData(reg);
     const col = new ChunkColumn(0, 0);

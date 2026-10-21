@@ -12,9 +12,22 @@ export const VISUAL_STYLE_KEYS = { MORNING: 'morning', NOON: 'noon', NIGHT: 'nig
  * paramsAtHour 与 _apply 在消费前归一化（见 normalizeDirection），调用方不得用原值做长度换算。
  */
 export const VISUAL_STYLES = {
-  morning: { sky: 0xb7c6f7, fogColor: 0xb7c6f7, fogScale: 1.0, skyDim: 0.8, blockBoost: 1.0, sunDirection: [0.18, 0.45, 0.88] },
-  noon: { sky: 0x87ceeb, fogColor: 0x87ceeb, fogScale: 1.0, skyDim: 1.0, blockBoost: 1.0, sunDirection: [0, 0.8, 0.6] },
-  night: { sky: 0x050b1e, fogColor: 0x050b1e, fogScale: 4.0, skyDim: 0.25, blockBoost: 1.2, sunDirection: [0.08, 0.25, 0.96] },
+  morning: {
+    sky: 0xb7c6f7, fogColor: 0xb7c6f7, fogScale: 1.0, skyDim: 0.8, blockBoost: 1.0,
+    sunDirection: [0.18, 0.45, 0.88],
+    // 月亮方向 / 可见性 / 尺寸：mc-lite Engine.js:75,109,111 原值（未归一化，消费前统一归一化）
+    moonDirection: [-0.38, 0.45, -0.81], moonVisible: false, moonSize: 20,
+  },
+  noon: {
+    sky: 0x87ceeb, fogColor: 0x87ceeb, fogScale: 1.0, skyDim: 1.0, blockBoost: 1.0,
+    sunDirection: [0, 0.8, 0.6],
+    moonDirection: [-0.25, 0.5, -0.82], moonVisible: false, moonSize: 18,
+  },
+  night: {
+    sky: 0x050b1e, fogColor: 0x050b1e, fogScale: 4.0, skyDim: 0.25, blockBoost: 1.2,
+    sunDirection: [0.08, 0.25, 0.96],
+    moonDirection: [-0.32, 0.58, -0.75], moonVisible: true, moonSize: 34,
+  },
 };
 
 // 日夜关键帧（小时 → 风格参数线性插值）：夜→晨→午→晨(暖)→夜
@@ -45,6 +58,7 @@ function normalizeDirection(v) {
 
 function lerpParams(a, b, t) {
   const ad = a.sunDirection, bd = b.sunDirection;
+  const am = a.moonDirection, bm = b.moonDirection;
   return {
     sky: lerpHex(a.sky, b.sky, t),
     fogColor: lerpHex(a.fogColor, b.fogColor, t),
@@ -56,6 +70,16 @@ function lerpParams(a, b, t) {
       ad[1] + (bd[1] - ad[1]) * t,
       ad[2] + (bd[2] - ad[2]) * t,
     ],
+    moonDirection: [
+      am[0] + (bm[0] - am[0]) * t,
+      am[1] + (bm[1] - am[1]) * t,
+      am[2] + (bm[2] - am[2]) * t,
+    ],
+    // 月亮可见性/尺寸不插值：它们是“这一风格要不要画月亮”的开关语义，取插值段右端的值。
+    // （t<1 时取左端会让天亮前一刻仍在画月亮，而天空已亮——观感就是“白天有月亮”。
+    //  取右端则与“黎明已亮”同步：早晨段直接关掉。）
+    moonVisible: t > 0 ? b.moonVisible : a.moonVisible,
+    moonSize: a.moonSize + (b.moonSize - a.moonSize) * t,
   };
 }
 
@@ -74,7 +98,25 @@ export function paramsAtHour(hour) {
   }
   if (!p) p = lerpParams(VISUAL_STYLES.noon, VISUAL_STYLES.noon, 0);
   p.sunDirection = normalizeDirection(p.sunDirection);
+  p.moonDirection = normalizeDirection(p.moonDirection);
   return p;
+}
+
+/**
+ * 夜间程度 0..1 —— 天空盒双图交叉淡入因子（v1.58）。
+ *
+ * **从既有 `skyDim` 派生，不新增权威**（红线 1）：正午 skyDim=1 → 0（全白天云图）；
+ * skyDim 降到 night 的 0.25 → 1（全星空）。于是「天空变暗」与「星空浮现」天然同步，
+ * 随关键帧插值**连续变化**，没有硬切换跳帧。
+ *
+ * 端点与中间值：noon 0 / morning 0.267 / night 1。
+ * @param {{skyDim: number}} params paramsAtHour 或 VISUAL_STYLES 的结果
+ */
+export function nightBlendOf(params) {
+  const nightDim = VISUAL_STYLES.night.skyDim;
+  const raw = (1 - params.skyDim) / (1 - nightDim);
+  // 钳制：skyDim 越界（未来新增风格 >1 或 <night）不得让混合因子溢出成负或 >1
+  return Math.min(1, Math.max(0, raw));
 }
 
 export class DayNight {
@@ -82,17 +124,20 @@ export class DayNight {
    * @param {Object} opts
    * @param {Object} opts.scene three Scene（background 为 Color 实例）
    * @param {{fogNear: Object, fogFar: Object, fogColor: Object}} opts.fog setupFog 返回的 uniform 句柄
-   * @param {{uSkyDim: Object, uBlockBoost: Object, uShadowStrength?: Object}} opts.voxelUniforms 体素材质日夜 uniform
-   *   （uShadowStrength 句柄由 createVoxelMaterials 提供、本类消费；句柄缺失时跳过写入）
+   * @param {{uSkyDim: Object, uBlockBoost: Object, uShadowStrength?: Object, uSunDirection?: Object}} opts.voxelUniforms 体素材质日夜 uniform
+   *   （uShadowStrength / uSunDirection 句柄由 createVoxelMaterials 提供、本类消费；句柄缺失时跳过写入）
+   * @param {{uNightBlend?: {value: number}} | null} [opts.skyUniforms] 天空盒 uniform 句柄
+   *   （`setupSky` 提供；`?skybox=0` 或加载失败时为 null —— 本类必须容错）
    * @param {number} [opts.baseFogNear] @param {number} [opts.baseFogFar] 视距基准雾距（fogScale 乘算）
    * @param {number} [opts.cycleSeconds] 一天时长（秒），默认 1200
    * @param {number} [opts.startHour] 初始小时，默认 12（正午，与 M1 视觉口径一致）
    * @param {(dir: [number, number, number]) => void} [opts.onSunDirection] 太阳方向变化回调（已归一化）
    */
-  constructor({ scene, fog, voxelUniforms, baseFogNear, baseFogFar, cycleSeconds = 1200, startHour = 12, onSunDirection = null }) {
+  constructor({ scene, fog, voxelUniforms, skyUniforms = null, baseFogNear, baseFogFar, cycleSeconds = 1200, startHour = 12, onSunDirection = null }) {
     this.scene = scene;
     this.fog = fog;
     this.voxelUniforms = voxelUniforms;
+    this.skyUniforms = skyUniforms;
     this.baseFogNear = baseFogNear;
     this.baseFogFar = baseFogFar;
     this.cycleSeconds = cycleSeconds;
@@ -118,11 +163,12 @@ export class DayNight {
     if (!this._styleOverride) this._apply(paramsAtHour(hour));
   }
 
-  /** 当前生效参数（测试断言用）；sunDirection 与 paramsAtHour 同口径（已归一化） */
+  /** 当前生效参数（测试断言用）；sunDirection / moonDirection 与 paramsAtHour 同口径（已归一化） */
   get params() {
     if (!this._styleOverride) return paramsAtHour(this.hour);
     const p = { ...VISUAL_STYLES[this._styleOverride] };
     p.sunDirection = normalizeDirection(p.sunDirection);
+    p.moonDirection = normalizeDirection(p.moonDirection);
     return p;
   }
 
@@ -146,7 +192,19 @@ export class DayNight {
     // ⚠️ 遵守 shadowEnabled 标志：关闭时写 0 而非 skyDim（见构造器注释的静默失效）。
     const uShadowStrength = this.voxelUniforms.uShadowStrength;
     if (uShadowStrength) uShadowStrength.value = this.shadowEnabled ? p.skyDim : 0;
-    // setStyle 传的是风格原值、paramsAtHour 已归一化 → 此处统一归一化，两条路径口径一致
-    if (this.onSunDirection) this.onSunDirection(normalizeDirection(p.sunDirection));
+    // setStyle 传的是风格原值、paramsAtHour 已归一化 → 此处统一归一化，两条路径口径一致。
+    // ⚠️ 归一化只算一次并**复用**同一个值：本函数在日夜循环下每帧跑，再来一遍就白付两次分配
+    // 并且两处公式会各自漂移（红线 1 精神）。`_apply` 是所有写入路径的唯一收口点。
+    const sunDir = normalizeDirection(p.sunDirection);
+    // 太阳方向写给体素材质的 N·L 方向光（v1.58）。句柄由 createVoxelMaterials 提供；
+    // fixture / 尚未接线时缺失 → 跳过（与 uShadowStrength 同一容错口径）。
+    const uSunDirection = this.voxelUniforms.uSunDirection;
+    if (uSunDirection && uSunDirection.value && typeof uSunDirection.value.set === 'function') {
+      uSunDirection.value.set(sunDir[0], sunDir[1], sunDir[2]);
+    }
+    // 天空盒双图交叉淡入因子（v1.58）：由既有 skyDim 派生，句柄由 setupSky 提供。
+    const uNightBlend = this.skyUniforms && this.skyUniforms.uNightBlend;
+    if (uNightBlend) uNightBlend.value = nightBlendOf(p);
+    if (this.onSunDirection) this.onSunDirection(sunDir);
   }
 }

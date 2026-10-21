@@ -39,7 +39,9 @@ Epic 链 M4→M5→M6→M7 已全部交付。**第三阶段 M8（TNT 爆炸 / �
 振幅按原版口径（x=sin·bob·0.5、y 只向下）；**v1.53** 按实玩反馈把幅度上调到 0.13；
 **v1.54** 把步频放慢到 1.5Hz，**v1.55** 再降一档到 1.35Hz（每步 370ms，已接近「在跑」下界）；
 **v1.56** 给手臂加了烘焙面明暗（保持 unlit），**v1.57** 修掉「手臂颜色过于暗」（明暗系数直接
-乘基色会把肤色压到 0.20~0.48 → 改为「参考色锚定」重映射 + sRGB→线性）并把晃动幅度提到 0.15。
+乘基色会把肤色压到 0.20~0.48 → 改为「参考色锚定」重映射 + sRGB→线性）并把晃动幅度提到 0.15；
+**v1.58** 给体素材质接了**太阳 N·L 方向光**（修掉「光影平淡」的根因：unlit 下方块六面亮度
+完全相同），并搬入 mc-lite 的**天空盒**（白天云图 / 夜空星空双立方图交叉淡入）+ 日轮月轮。
 进度与实测数据一律查 roadmap。里程碑状态、验收报告、遗留 TODO 的
 完整清单**一律查 roadmap** —— 此处不复制（复制就会漂移）。
 
@@ -413,6 +415,56 @@ M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 
   但图集像素统计帧 7 中心区是 20.4 —— 两个口径差一个数量级，按图集数字定阈值会假失败。
   对照还须**只差一个变量**：主判据选帧 0 与帧 7（两者 opacity 恒 1，差异纯来自切帧），
   不用末帧（它已进淡出段，会混入 opacity 这第二个变量）。
+
+### 太阳方向光与天空盒沉淀的活跃约束（v1.58，后续光照/天空/日夜类改动必读）
+
+- **「光影平淡」的根因是管线缺一层，不是风格参数**：体素材质是 unlit，顶点 shade 只有
+  `max(skylight, blocklight) × ao`，户外 skylight 恒 15（DR-14）→ **一个方块六面亮度完全相同**。
+  改 `VISUAL_STYLES` 的 `skyDim`/`blockBoost` 这类全局乘数**永远调不出**「迎光面亮、背光面暗」。
+  朝向差异只能来自读取 packed bit10-12 的面法线（mesher 早已写入，v1.58 才首次有消费点）。
+- **`SUN_INTENSITY` 必须从 `VISUAL_STYLES.noon.sunDirection` 派生，不得写字面量**：取值
+  `(1 − SUN_AMBIENT)/noonSunY = 0.625` 是让 **`SUN_AMBIENT + SUN_INTENSITY×noonSunY ≡ 1.0`**
+  成立的唯一值，即「正午顶面亮度 = 改动前」。⚠️ **改任何风格的太阳方向后必须重算它**，否则这条
+  零回归不变式静默失效（表现只是「地面整体变亮/变暗一档」，没有任何断言之外的异常）。
+  同理 `SUN_AMBIENT ≡ SHADOW_FLOOR`（两个身份同一语义，各写一份会让「背光面」与「影区」亮度撕裂）。
+- **阴影只能乘在太阳项上，不得再乘整个 `vSkyShade`**：两边各乘一遍会让正午顶面在影区变成
+  `0.5 + 0.625×0.8×0.5 = 0.75`（应为 0.5）→ 阴影变淡 50%，`sun-shadow.spec` 的冻结比值 0.735 崩。
+  写法是把 `shadowFactor` 重标定成 `shadowKill = clamp((sf − FLOOR)/(1 − FLOOR), 0, 1)` 再只乘太阳项。
+- **`uSunStrength = 0` 必须让 `sunTerm ≡ 1`（逐位回到无方向光的现状）**，不是退化成 `SUN_AMBIENT`
+  —— 否则关掉方向光会把顶面从 1.0 压到 0.5、全场景暗一半。公式是 `mix(1, full, strength)`，
+  方向不能反。Tier 4 的 A/B 自校准与 fixture 隔离都靠这个不变式。
+- **`sunDot` 必须在顶点阶段算成 float varying**：片元读 packed 会被 `three.webgpu.js:65404`
+  对 int 类型强制 `flat` 插值 → 色块（同 AO/light 的既有教训）。面法线六选一用 `select` 链
+  （GLSL 无便携的动态常量数组索引）。
+- **`sunTerm` 只能乘 skylight 项，不得乘 blocklight**；**transparent 通道不接太阳**
+  （海面已有自己的 Blinn-Phong 高光）。前者保证「火把在洞穴里照样亮」，与阴影只衰减 skylight 同一道理。
+- **Tier 4 的亮度比值是 sRGB 口径，不是线性口径**：线性 0.875/0.500 = 1.750，过 sRGB 传递函数后
+  0.9429/0.7354 = **1.282**；叠上贴图基色的非线性，理论值域 **1.286~1.347**。按线性值定阈值会
+  假失败（实测 1.313，我第一版按 1.75 写就把正确实现判成 FAIL）。同坑见 `test-view-bob.js`。
+- **`cubeTexture(tex)` 做背景时不得自己传 uvNode**：要留空让 three 从上下文注入
+  `backgroundRotation.mul(normalWorldGeometry)`（`three.webgpu.js:48924-48928`）。自己传方向会绕开
+  它的 x 轴取反约定 → **天空左右镜像，肉眼极难察觉**。
+  核验手法（已用过，可复用）：把 `scene.backgroundNode` 临时换成 `scene.background = cubeTexture`
+  （three 默认路径）截同一帧，**逐像素 diff 必须为 0**。
+- **混合因子从既有 `skyDim` 派生（`nightBlendOf()`），不要新增一份「夜有多深」的权威**：
+  两个数字会漂移出「天空已黑但星星没出来」的撕裂。同理 `moonDirection` 与 `sunDirection`
+  **必须走同一个 `normalizeDirection`、同一个归一化点**（`_apply` 只算一次并复用）。
+- **不做 `backgroundBlurriness`**（夜 0.28）：它会让 three 走 `pmremTexture` 路径（`:55805` 判 `> 0`），
+  需预滤波立方图 render target，与手工 `backgroundNode` 冲突。它本是 mc-lite **离散切风格**
+  的补偿值，交叉淡入下星空该是清晰的 —— **移植上游参数前先确认它是否在补偿另一个缺陷**。
+- **天空盒让「纯色天空」判据失效，四条 spec 已 pin `?skybox=0`**：`render-terrain` /
+  `city-visual` / `sky-structures` / `m3-rain` 都用「像素落在 `0x87ceeb ±30` 内 = 天空」。
+  实测天空盒上线后**天空区 99.4% 的像素**被误判成地形（`city` 0.881 → 0.938）→ 下界断言
+  `> 0.05` 近乎恒真。同类：**绝对色类判据**（`test-sky-tree.html` 的 `ratioA`）在方向光下
+  从 1.000 跌到 0 → 该 fixture 设 `uSunStrength = 0` 隔离。
+  ⚠️ **加照片天空后再写「数地形像素 / 比绝对色」的断言，必须显式决定要不要 pin `?skybox=0`**
+  —— 不 pin 的下场不是 FAIL（能看见），而是**判据失去判别力**（更坏）。
+- **日轮/月轮的距离要与相机 far 联动、尺寸同比缩放**：mc-lite 固定 150 单位 + 固定尺寸是
+  因为它视距固定；本仓视距 2~16 可变，照抄会在大视距下过小、在小视距下被推出远裁面（月亮消失）。
+  三套风格的 `sunVisible` 原值全 false（`skyBox4` 贴图自带太阳光晕，再画一个变两个太阳）——**字段保留，勿「清理」**。
+- **天空盒是 `scene.backgroundNode` + `scene.background = null` 双设**：three 的
+  `getBackgroundNode()` 优先读 backgroundNode（`:55681`），而 `DayNight._apply` 的纯色路径判
+  `scene.background && .set` → 置 null 正好让它自动跳过。降级路径必须把 background 恢复成 Color。
 
 ### M9 创造台沉淀的活跃约束（后续同类装置 Epic 必读）
 
@@ -1026,6 +1078,10 @@ mc-heavy/
 │  │                           #   id 清单的唯一权威 = `render/audio-manager.js` 的 `SOUND_IDS`
 │  ├─ effects/                 # 序列帧特效图集（**不在 textures/ 下** —— 那里会进世界 atlas）
 │  │  └─ big_blow.png          # TNT 爆炸序列帧（500×200，5×2=10 帧，从 mc-lite 原样复制）
+│  ├─ sky/                     # 天空盒立方图（v1.58；**不在 textures/ 下**，不走世界 atlas）
+│  │  ├─ day/                  # 白天云层：6 面 × 1024²（mc-lite skyBox4，912K，原样复制未重编码）
+│  │  └─ night/                # 夜空星空：6 面 × 1024²（mc-lite skyBox1，5.1M）
+│  │                           #   清单唯一权威 = `render/sky-config.js`（check:data 的 [天空盒] 环节）
 │  └─ structures/              # 从 mc-lite 复制 JSON
 └─ src/
    ├─ core/        # game.js / scheduler.js / worker-pool.js / budget.js / perf.js / perf-hud.js
@@ -1036,6 +1092,11 @@ mc-heavy/
    │               #  iso-icon.js 等轴测投影纯函数；mesher.js 导出 TEMPLATES / FACE_VERTICES /
    │               #  FACE_UVS 供图标烘焙复用——形状与 UV 的唯一权威，图标不得有第二份几何定义
    ├─ render/      # render-world.js（BatchedMesh 发布层）/ materials.js（TSL）
+   │               #  sun-shade.js（v1.58 太阳方向光的**标定常数与纯函数**，three-free：
+   │               #    SUN_AMBIENT / SUN_INTENSITY / FACE_NORMALS / sunTermFor；Tier 1 单测
+   │               #    与 materials.js 的 TSL 必须共用同一份常数）
+   │               #  sky.js（v1.58 天空盒双立方图交叉淡入 + 日轮/月轮）/ sky-config.js
+   │               #    （立方图清单唯一权威，three-free，供 check:data 的 [天空盒] 环节）
    │               #  ocean.js（800×800 无限海面平面 + TSL 波纹/遮罩）/ ocean-mask.js
    │               #    （水面遮罩判据唯一权威：阈值 + 五点纵深 + 城市 bounds 门控；
    │               #      CPU 版供单测，ocean.js 的 TSL 版同构实现共用其数值常量）

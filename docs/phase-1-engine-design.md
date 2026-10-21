@@ -1,6 +1,6 @@
 # mc-heavy 第一阶段实施设计文档：游戏引擎原型
 
-> 版本：v1.57 ｜ 日期：2026-10-18 ｜ 状态：定稿（经十五轮逐条核验修订 + M3.2 实施回填 + 异形方块渲染勘误 + 背包物品集合口径 + 吊灯材质自发光 + 吊灯 UV 分区 + 背包图标表 + 等轴测图标 + 测试分级策略与静态门禁 + 全量背包图标离线烘焙 + 背包槽位点选抖动修复 + 等轴测图标遮挡修复 + 删除缓存按钮 + 沼泽睡莲水洞与沉水修复 + AO 去掉对角门控 + 设置面板两列布局与档位精简 + M8 TNT/炮塔的三项架构口径变更 + M9 创造台的两项架构口径变更 + 水面遮罩判据的两项架构口径变更 + 天空树回补与 sky_leaves 通道修正 + 进度包导入导出 + 太阳阴影 shadow map + 阴影混合模型对齐 mc-lite + 阴影纹素对齐与太阳方向门控 + 第一人称手臂与跑动视角晃动 + 晃动幅度上调与手臂挥动对齐原版 + 晃动回调与挖掘挥手时机 + 相机零旋转 + 晃动改距离驱动 + 晃动幅度上调至 0.13 + 步频放慢至 1.5Hz → 1.35Hz + 手臂烘焙面明暗 + 手臂配色对齐 mc-lite 与晃动幅度上调至 0.15）
+> 版本：v1.58 ｜ 日期：2026-10-20 ｜ 状态：定稿（经十五轮逐条核验修订 + M3.2 实施回填 + 异形方块渲染勘误 + 背包物品集合口径 + 吊灯材质自发光 + 吊灯 UV 分区 + 背包图标表 + 等轴测图标 + 测试分级策略与静态门禁 + 全量背包图标离线烘焙 + 背包槽位点选抖动修复 + 等轴测图标遮挡修复 + 删除缓存按钮 + 沼泽睡莲水洞与沉水修复 + AO 去掉对角门控 + 设置面板两列布局与档位精简 + M8 TNT/炮塔的三项架构口径变更 + M9 创造台的两项架构口径变更 + 水面遮罩判据的两项架构口径变更 + 天空树回补与 sky_leaves 通道修正 + 进度包导入导出 + 太阳阴影 shadow map + 阴影混合模型对齐 mc-lite + 阴影纹素对齐与太阳方向门控 + 第一人称手臂与跑动视角晃动 + 晃动幅度上调与手臂挥动对齐原版 + 晃动回调与挖掘挥手时机 + 相机零旋转 + 晃动改距离驱动 + 晃动幅度上调至 0.13 + 步频放慢至 1.5Hz → 1.35Hz + 手臂烘焙面明暗 + 手臂配色对齐 mc-lite 与晃动幅度上调至 0.15 + 太阳 N·L 方向光与 mc-lite 天空盒）
 >
 > 目标：在 mc-heavy 仓库从零重建一个功能对标 mc-lite、性能提升一个数量级的体素游戏引擎。
 > 第一阶段只做"引擎底座"：渲染、体素数据、即时地图生成、玩家交互、种子地图、存档原型。
@@ -1627,6 +1627,63 @@
 > · 回归：`npm run check` 0 error；weapon-view / interaction / render-terrain 全绿。
 
 
+> v1.58 修订说明：**体素材质接太阳 N·L 方向光 + mc-lite 天空盒**（2026-10-20，§4.4.3）。
+> 用户实玩反馈：「目前的光影效果还是有点平淡，比如太阳光照到的表面要更亮一些，光的背面要更暗一些」，
+> 并补充「mc-lite 的天空盒还有天空的贴图，你也照搬过来」。四项选型由用户拍板：
+> ① **真实 N·L 方向光**（而非固定六面亮度表）② 天空盒**双图交叉淡入**（而非按小时硬切）
+> ③ 日轮/月轮**一起搬** ④ **不移植** ACES / exposure / CSS 色彩分级。
+>
+> **根因不在日夜参数**：体素材质是 unlit，顶点 shade 只有 `max(skylight, blocklight) × ao`，
+> 户外 skylight 恒 15（DR-14）→ **一个方块六面亮度完全相同**；三种风格只改 `skyDim` 这类
+> 全局乘数，怎么调都不会出现朝向差异。而 mesher 早已把世界面索引写进 packed bit10-12，
+> **渲染侧至今零消费点** —— 通道是通的，缺的只是着色器里那一步。
+>
+> **① 方向光的标定是两个推导值，不是拍的**：`SUN_AMBIENT ≡ SHADOW_FLOOR = 0.5`（同一语义）；
+> `SUN_INTENSITY = (1 − 0.5) / noonSunY = 0.625` —— 这是让
+> **`SUN_AMBIENT + SUN_INTENSITY × noonSunY ≡ 1.0`** 成立的唯一取值，即**正午顶面亮度恒等于
+> 改动前的 1.0**。实测（`tests/sun-directional.spec.mjs`，`uSunStrength` 0↔1 自校准）：
+> 顶面像素 **138.9 → 138.9（逐位不变）**，而墙面 +Z/−Z 从 **120.9/119.9（比 1.008）** 变为
+> **113.4/86.4（比 1.313）** —— 朝向差异真的出现了，地面观感零回归。
+> `SUN_INTENSITY` **从 `VISUAL_STYLES.noon.sunDirection` 派生**而非写字面量：改风格太阳方向时
+> 强度自动跟上，否则「顶面 = 1.0」这条不变式会静默失效。
+>
+> **② 阴影与方向光必须合成，不能各乘一遍**（这是本改动最容易错的一处）：旧实现把
+> `shadowFactor` 直接乘在 `vSkyShade` 上；若把 `SUN_INTENSITY × N·L` 再乘一次它，正午顶面在
+> 影区会变成 `0.5 + 0.625×0.8×0.5 = 0.75`（应为 0.5）→ 阴影变淡 50%。
+> 修法 = 先把 `shadowFactor` 重标定到「太阳被拿走的比例」`shadowKill`，**只乘太阳项**。
+> 实测 **`sun-shadow.spec` 的冻结比值 ratioA 仍为 0.735，与改动前逐位相同**。
+>
+> **③ 天空盒**：两套立方图（`skyBox4` 白天云 912K / `skyBox1` 星空 5.1M）原样复制到
+> `assets/sky/{day,night}/`，`scene.backgroundNode = mix(day, night, uNightBlend)`。
+> 混合因子**从既有 `skyDim` 派生**（`nightBlendOf()`，正午 0 / 晨 0.267 / 黄昏 0.274 / 夜 1），
+> 不新增权威。**朝向风险用严格等价对照排除**：自定义 `backgroundNode` 路径 vs three 默认
+> `scene.background = cubeTexture` 路径 **逐像素相同（diff = 0 / 172800）**。
+> `skyBox2`（日落）**不搬** —— mc-lite 自身零引用。
+> 有意偏离 mc-lite 两条：不做 `backgroundBlurriness`（它走 pmrem 路径，与手工 backgroundNode
+> 冲突；且本是离散切风格的补偿值）；天空随连续日夜插值而非硬切。
+>
+> **④ 日轮/月轮**：canvas 径向渐变（同 `Engine.js:429-495`），位置 = 相机 + 方向 ×
+> `camera.far×0.55`、尺寸同比缩放（mc-lite 固定 150 单位 + 固定尺寸，照抄会在小视距下把
+> sprite 推出远裁面）。三套风格的 `sunVisible` 原值全是 false（贴图自带光晕）。
+>
+> **⑤ 不移植**（用户否决）：ACES tone mapping / 每风格 exposure / CSS 色彩分级。
+>
+> 验证：
+> · 浏览器内单测 **702/702**（新增 `test-sun-shade.js` 8 条 + `test-daynight.js` 4 条夜间混合/月亮方向）。
+> · 新增 Tier 4 两条：`sun-directional.spec`（迎光/背光/零回归三组判据）、
+>   `skybox.spec`（贴图在渲染/日夜混合/月轮可见性 + `?skybox=0` 对照）。
+> · 负向验证真 FAIL：`nightBlendOf` 漏除法（2 条单测）/ 双图混合写死 0（天空盒用例）。
+> · `sun-shadow.spec` 11/11、`ao-visual` / `ao-corner-visual` / `render-world` / `weapon-view` 全绿。
+> · **⚠️ 观测口径隔离（断言与阈值逐字未动，只改被测 setup）**：四份 spec pin `?skybox=0`
+>   （`render-terrain` / `city-visual` / `sky-structures` / `m3-rain` —— 实测天空区 **99.4%** 的
+>   像素被「±30 内等于 0x87ceeb」判据误判成地形，下界断言近乎恒真）；
+>   `test-sky-tree.html` 设 `uSunStrength = 0`（绝对叶色判据 ratioA 从 1.000 跌到 **0**，
+>   该 fixture 测的是通道语义而非光照）。
+> · `m1-acceptance` 放挖 p95 贴线为**已有 flaky**：交替对照 HEAD vs 改动各 3 轮，
+>   两侧 p95 中位同为 **2.00**、编辑耗时中位同为 **0.80ms** → 非本次回归（阈值未动）。
+> · `npm run check` 0 error。
+
+
 ---
 
 ## 1. 背景与目标
@@ -2346,9 +2403,85 @@ half_block（床，1×0.5×1）、hanging_lamp（绳 8 段棱柱 r=0.015 + 灯�
 - `RenderSectionPool`（缓冲/geometry 复用）只省 CPU 分配与 GC，**不省显存**；
   显存控制靠滞回卸载 + 重入 LRU（§4.9/§4.10）。
 
-**4.4.3 天空/雾/日夜**
-- 移植 mc-lite Engine 的三套视觉风格（morning/overcast/night）、TSL 天空盒、色调映射与色相偏移。
-- 雾距与视距联动配置（mc-lite 硬编码 FOG_NEAR=30/FAR=70，新引擎按 `renderDistance × 16` 推导）。
+**4.4.3 天空/雾/日夜**（v1.58 实测口径，2026-10-20：**体素方向光 + 天空盒** 落地）
+
+- 三套视觉风格（morning / noon / night）移植 mc-lite `Engine.js` 的 `visualStyles` 参数（`skyDim` /
+  `blockBoost` / `sunDirection` / 雾色与雾距系数）；`paramsAtHour()` 按关键帧线性插值。
+- **雾距与视距联动**（mc-lite 硬编码 `FOG_NEAR=30` / `FAR=70`，本仓按 `renderDistance × 16` 推导）。
+- **太阳方向光（N·L）—— 本仓的核心光影层次**：
+  根因：体素材质是 unlit，顶点 shade 只有 `max(skylight, blocklight) × ao`；户外 skylight 恒 15
+  （DR-14）→ **一个方块六面亮度完全相同**，不存在任何朝向差异。三种风格只改 `skyDim` 这类
+  **全局乘数**，怎么调都不会出现「迎光面亮、背光面暗」。而 `mesher` 早已把世界面索引写进
+  packed bit10-12（§4.3），此前**零消费点** —— 通道是通的，缺的只是着色器里那一步。
+
+  公式（`materials.js`，标定常数与 CPU 参考实现的唯一权威 = `sun-shade.js`）：
+  ```
+  sunDot     = max(dot(faceNormal, uSunDirection), 0)          // 顶点阶段，float varying
+  shadowKill = clamp((shadowFactor − SHADOW_FLOOR)/(1 − SHADOW_FLOOR), 0, 1)
+  sunTerm    = mix(1, SUN_AMBIENT + SUN_INTENSITY × sunDot × shadowKill, uSunStrength)
+  shade      = max(vSkyShade × sunTerm, vBlockShade)
+  ```
+  标定（**两个常数都是推导值，不是拍脑袋**）：`SUN_AMBIENT ≡ SHADOW_FLOOR = 0.5`（同一语义：
+  太阳被拿走后剩下的环境光）；`SUN_INTENSITY = (1 − SUN_AMBIENT) / noonSunY = 0.5/0.8 = 0.625`
+  —— 这是让 **`SUN_AMBIENT + SUN_INTENSITY × noonSunY ≡ 1.0`** 成立的唯一取值，即
+  **正午顶面亮度恒等于改动前的 1.0**（零回归不变式；实测 `uSunStrength` 0↔1 时顶面像素
+  138.9 → 138.9）。落地：顶面 1.000 / +Z 0.875 / ±X 0.725 / −Z、−X 0.500。
+
+  ⚠️ **`sunDot` 必须在顶点阶段算**（同 AO/light 的道理）：片元读 packed 会被
+  `three.webgpu.js:65404` 对 int 类型强制 `flat` 插值 → 色块。面法线六选一走 `select` 链
+  （GLSL 无便携的动态常量数组索引；结果逐顶点常量，编译期可折叠）。
+  ⚠️ **阴影只乘在太阳项上，不得再乘 `vSkyShade`**：两边各乘一遍会让正午顶面在影区变成
+  `0.5 + 0.625×0.8×0.5 = 0.75`（应为 0.5）→ 阴影变淡 50%，`sun-shadow.spec` 的冻结比值 0.735 崩。
+  改后实测 **ratioA 仍为 0.735，与改动前逐位相同**（被测点是顶面：受光 1.0 / 影区 0.5）。
+  ⚠️ **`sunTerm` 只能乘 skylight，不得乘 blocklight**（火把在洞穴里照样亮，与阴影同一道理）。
+  ⚠️ **transparent 通道不接太阳**（海面已有自己的 Blinn-Phong 高光，见 §4.7）。
+  ⚠️ **fixture 路径（`createVoxelMaterials(tex)` 不传 sunLight）不得崩**：`shadowKill` 退化为 1。
+
+  **Tier 4 阈值口径**：像素比值是 **sRGB 口径，不是线性口径**。线性 shade 比值 0.875/0.500 =
+  1.750，但过 sRGB 传递函数后是 0.9429/0.7354 = **1.282**；再算上贴图基色（不同基色的 sRGB
+  曲线非线性不同），理论值域 **1.286（亮贴图）~1.347（暗贴图）**，实测 1.313（stone 基色
+  ≈0.1 线性）。断言区间取 [1.20, 1.45]，围绕理论值域而非实测值。
+  （同类坑见 `test-view-bob.js` 的「屏幕读数须按 sRGB 断」。）
+
+- **天空盒（v1.58）**：两套立方图 —— 白天云层（mc-lite `skyBox4`，912K）与夜空星空
+  （`skyBox1`，5.1M），原样复制到 `assets/sky/{day,night}/`、未重编码；清单唯一权威 =
+  `src/render/sky-config.js`（node 可 import，供 `check:data` 的 `[天空盒]` 环节断言 12 张齐全）。
+  ⚠️ `skyBox2`（日落）**不搬** —— mc-lite 自身零引用。
+  装配：`scene.backgroundNode = mix(cubeTexture(day), cubeTexture(night), uNightBlend)`。
+  ⚠️ **`cubeTexture(tex)` 不传 uvNode** —— 让 three 从上下文注入
+  `backgroundRotation.mul(normalWorldGeometry)`（`three.webgpu.js:48924-48928` →
+  `CubeTextureNode.setupUV` 走 `builder.context.getUV`）。自己传方向会绕开它的 x 轴取反约定
+  → **天空左右镜像**（肉眼很难察觉）。
+  **实测核验（严格等价对照）**：自定义 `backgroundNode` 路径与 three 默认的
+  `scene.background = cubeTexture` 路径**逐像素相同**（480×360 全图 diff = **0 / 172800**）
+  → 采样朝向已被正确复用，不存在镜像。
+  **混合因子从既有 `skyDim` 派生，不新增权威**：`nightBlendOf()` =
+  `clamp((1 − skyDim)/(1 − nightSkyDim), 0, 1)` → 正午 0 / 晨 0.267 / 黄昏（19h）0.274 / 夜 1，
+  随关键帧插值**连续变化**（无硬切换跳帧）。写入点是 `DayNight._apply`（与 `uSkyDim` 同一处），
+  故 `setStyle` 与日夜循环两条路径口径一致。
+  ⚠️ **有意偏离 mc-lite ①**：不做 `backgroundBlurriness`（夜 0.28）。它会让 three 走
+  `pmremTexture` 路径（`:55805` 判 `> 0`），需预滤波立方图 render target，与手工
+  `backgroundNode` 冲突；且那本是 mc-lite **离散切风格**的补偿值，交叉淡入下星空该是清晰的。
+  ⚠️ **有意偏离 mc-lite ②**：天空随连续日夜插值，而非点风格按钮时硬切换（与本仓日夜模型一致，
+  同 v1.44 的太阳方向）。
+  **日轮/月轮**：canvas 径向渐变生成（同 `Engine.js:429-495` 的绘制参数），位置 =
+  `相机位置 + 方向 × (camera.far × 0.55)`、尺寸同比缩放（`size × dist/150`）——
+  mc-lite 固定 150 单位 + 固定尺寸，照抄会在小视距下把 sprite 推出远裁面（月亮消失）。
+  ⚠️ 三套风格的 `sunVisible` 原值**全是 false**：`skyBox4` 贴图自带太阳光晕，再画一个会变成
+  两个太阳（mc-lite 同口径）。改一个字段即可打开。
+  ⚠️ 位置刷新只在**既有重定位节奏**（移动 >5 格 / 太阳方向过 0.5° 门控），不得每帧调。
+  **降级**：加载失败 → `console.warn` + 退回纯色（不阻断启动，同丧尸头部/炮塔装甲纹理口径）；
+  `?skybox=0` → 完全不加载、退回纯色（观测口径与 v1.57 逐位相同）。
+
+- **不移植**（用户明确否决）：ACES tone mapping / 每风格 `toneMappingExposure` /
+  canvas CSS 饱和度·对比度·亮度分级。
+
+> ⚠️ **照片天空会让「纯色天空」判据失效**：`render-terrain` / `city-visual` /
+> `sky-structures` 用「像素落在 `0x87ceeb ±30` 内 = 天空」来数地形占比。天空盒上线后实测
+> **天空区 99.4% 的像素**被误判成地形（`city` nonSkyRatio 0.881 → 0.938），下界断言
+> `> 0.05` 近乎恒真。故四条 spec（含 `m3-rain` 的白雨滴压在白云上）pin `?skybox=0`，
+> **断言与阈值逐字不动**。同理 `test-sky-tree.html` 的绝对叶色判据（`ratioA`）在方向光下
+> 从 1.000 跌到 **0** → 该 fixture 内设 `uSunStrength = 0`（它测的是通道语义，不是光照）。
 
 **4.4.4 阴影**（v1.47 实测口径，2026-10-13 落地 / 2026-10-14 混合模型修正 / 2026-10-17 纹素对齐 + 方向门控。原规划期估算「贴图 2048 / shadow camera 覆盖半径 =
 视距的 60% / 投射接收由 BlockRegistry 属性驱动白名单」三项**全部作废**，理由见 v1.44 修订说明）
@@ -3064,7 +3197,15 @@ mc-heavy/
 - **M9 新增测试产物**：`src/tests/test-playground.js`（浏览器内单测）+
   `tests/playground.spec.mjs`（E2E）；
 - **M9 新增验收报告** `docs/m9-playground-acceptance-report.md`（与 M4~M8 同结构：
-  实测数据 / 偏离表 / 负向验证清单）。
+  实测数据 / 偏离表 / 负向验证清单）；
+- **v1.58 新增 `assets/sky/{day,night}/`**：天空盒双立方图（各 6 面 × 1024²，从 mc-lite
+  `skyBox4` / `skyBox1` 原样拷入、未重编码）。**不在 `assets/textures/` 下**（那里会进世界 atlas）；
+  清单唯一权威 = `src/render/sky-config.js`（three-free，供 `check:data` 的 `[天空盒]` 环节）；
+- **v1.58 新增 `src/render/` 三文件**：`sun-shade.js`（太阳方向光的标定常数与纯函数，
+  **three-free**：Tier 1 单测与 `materials.js` 的 TSL 必须共用同一份常数）/ `sky.js`
+  （天空盒双图交叉淡入 + 日轮月轮）/ `sky-config.js`（立方图清单）；
+- **v1.58 新增测试产物**：`src/tests/test-sun-shade.js`（浏览器内单测）+
+  `tests/sun-directional.spec.mjs` / `tests/skybox.spec.mjs`（Tier 4 像素实测）。
 
 与 mc-lite 的关键差异：没有 FaceCullingSystem / ChunkConsolidation / BlockScatterManager /
 GlobalInstancedMeshManager / WorldBoundsController / WorldGenerationService(预生成) /

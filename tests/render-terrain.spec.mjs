@@ -21,7 +21,11 @@ test('地形渲染：出生点地形可见、帧时达标、draw 数受控', asy
   // 视距 2（测试配置，draw 上限断言对应此口径）。
   // ?seed=12345 固定世界：draw<100 / fps>115 是 M1 在该 seed 世界标定的冻结基线；
   // M3-4 起默认 seed 随机，不钉 seed 会随世界密度浮动破坏可复现性（?seed= 复现入口）。
-  await page.goto('/?vd=2&seed=12345');
+  // ⚠️ `skybox=0`（v1.58）：本 spec 用「像素落在 0x87ceeb ±30 内 = 天空」来数地形占比。
+  // 天空盒上线后天空是一张照片 —— 实测**天空区 99.4% 的像素**会被误判成地形
+  // → nonSkyRatio 从 0.881 涨到 0.938，下界断言 `> 0.05` 近乎恒真（判据失效）。
+  // 按 testing-policy 的「只改被测 setup、断言与阈值逐字不动」口径 pin 纯色天空。
+  await page.goto('/?vd=2&seed=12345&skybox=0');
   await page.waitForFunction(() => window.__MC_BOOT__?.rendererReady === true, null, { timeout: 30_000 });
   // 等世界就绪（Game 暴露 __MC_GAME__ 状态）
   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 60_000 });

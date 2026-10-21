@@ -23,7 +23,10 @@ function diffPixels(a, b) {
 
 /** 启动并等世界就绪 + 天气稳态（intensity 到目标值） */
 async function boot(page, weather) {
-  await page.goto(`/?vd=8&weather=${weather}&seed=12345`);
+  // ⚠️ `skybox=0`（v1.58）：本 spec 用「雨天 vs 晴天」截图差分数白雨滴。天空盒上线后
+  // 天空是白云照片 → 白色雨滴压在白云上像素差被淹没（差分噪声上升、信号没变）→
+  // 判据变弱。按 testing-policy 的「只改被测 setup」口径 pin 纯色天空。
+  await page.goto(`/?vd=8&weather=${weather}&seed=12345&skybox=0`);
   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
   const target = weather === 'rain' ? 1 : 0;
   await page.waitForFunction(

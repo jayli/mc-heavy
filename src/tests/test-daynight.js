@@ -141,3 +141,63 @@ test('DayNight：onSunDirection 回调收到归一化方向', () => {
   assertEqual(n[1], 0.25, 'night 原值 y 未被改写');
   assertEqual(n[2], 0.96, 'night 原值 z 未被改写');
 });
+
+// —— 夜间混合与月亮方向（v1.58 天空盒）——
+
+test('nightBlendOf：正午 0 / 深夜 1 / 晨居中且单调', async () => {
+  const { nightBlendOf } = await import('../render/daynight.js');
+  const noon = nightBlendOf(paramsAtHour(12));
+  const night = nightBlendOf(paramsAtHour(0));
+  const morning = nightBlendOf(paramsAtHour(7));
+  assertEqual(noon, 0, '正午 = 0（全白天云图）');
+  assertTrue(Math.abs(night - 1) < 1e-12, `深夜 = 1（全星空），实测 ${night}`);
+  assertTrue(morning > 0 && morning < 1, `晨须居中，实测 ${morning}`);
+  // 单调：6→12 应单调不增
+  let prev = nightBlendOf(paramsAtHour(6));
+  for (let h = 6.25; h <= 12; h += 0.25) {
+    const cur = nightBlendOf(paramsAtHour(h));
+    assertTrue(cur <= prev + 1e-12, `6→12 须单调不增：h=${h} ${prev}->${cur}`);
+    prev = cur;
+  }
+});
+
+test('nightBlendOf：钳制在 [0,1]（skyDim 越界不得溢出）', async () => {
+  const { nightBlendOf } = await import('../render/daynight.js');
+  assertEqual(nightBlendOf({ skyDim: 2 }), 0, 'skyDim > 1 夹到 0');
+  assertEqual(nightBlendOf({ skyDim: -1 }), 1, 'skyDim < night 夹到 1');
+});
+
+test('三风格 moonDirection 是 mc-lite 原值，且插值后仍是单位向量', () => {
+  const m = VISUAL_STYLES[VISUAL_STYLE_KEYS.MORNING].moonDirection;
+  const n = VISUAL_STYLES[VISUAL_STYLE_KEYS.NOON].moonDirection;
+  const k = VISUAL_STYLES[VISUAL_STYLE_KEYS.NIGHT].moonDirection;
+  assertEqual(m.join(','), '-0.38,0.45,-0.81');
+  assertEqual(n.join(','), '-0.25,0.5,-0.82');
+  assertEqual(k.join(','), '-0.32,0.58,-0.75');
+  for (const h of [0, 4, 7.5, 12, 18.5, 23]) {
+    const d = paramsAtHour(h).moonDirection;
+    const len = Math.sqrt(d[0] ** 2 + d[1] ** 2 + d[2] ** 2);
+    assertTrue(Math.abs(len - 1) < 1e-6, `h=${h}: |len-1| = ${Math.abs(len - 1)}`);
+  }
+});
+
+test('DayNight：写 uSunDirection 与 uNightBlend（句柄缺失时不抛错）', () => {
+  const seen = { sun: null };
+  const voxelUniforms = {
+    uSkyDim: { value: 0 }, uBlockBoost: { value: 0 }, uShadowStrength: { value: 0 },
+    uSunDirection: { value: { set(x, y, z) { seen.sun = [x, y, z]; } } },
+  };
+  const skyUniforms = { uNightBlend: { value: -1 } };
+  const dayNight = new DayNight({
+    scene: {},
+    fog: { fogColor: { value: { set() {} } }, fogNear: { value: 0 }, fogFar: { value: 0 } },
+    voxelUniforms, skyUniforms,
+  });
+  dayNight.setTime(12);
+  assertVecClose(seen.sun, normalize([0, 0.8, 0.6]), 1e-9, 'setTime(12) 写入的太阳方向');
+  assertEqual(skyUniforms.uNightBlend.value, 0, '正午 nightBlend = 0');
+  dayNight.setTime(0);
+  assertTrue(Math.abs(skyUniforms.uNightBlend.value - 1) < 1e-12, '深夜 nightBlend = 1');
+  // 不带 skyUniforms 构造不得抛错（既有调用方）
+  makeDayNightStub();
+});

@@ -11,8 +11,12 @@ import {
   texture, attribute, float, vec3, vec4, mul, add, max,
   rangeFogFactor, uniform, fog,
   varying, vertexStage,
-  shadow, mix,
+  shadow, mix, dot, select, clamp,
 } from 'three/tsl';
+
+import {
+  SHADOW_FLOOR, SUN_AMBIENT, SUN_INTENSITY, FACE_NORMALS, NOON_SUN_DIR,
+} from './sun-shade.js';
 
 // ---- 顶点阶段 shade（light × AO），float varying 传片元 ----
 // packed 属性解包：bit0-7 light（sky<<4|block），bit8-9 AO，bit10-12 世界面索引，
@@ -60,18 +64,43 @@ const EMISSIVE_INTENSITY = 0.8; // mc-lite emissiveIntensity
 // 即使 sunLight 为 null（fixture 路径）句柄也存在，消费方判句柄存在再写。
 const uShadowStrength = uniform(1.0);
 
+// ---- 太阳方向光（N·L，v1.58）----
+// 根因回顾：本材质是 unlit，顶点 shade 只有 `max(skylight, blocklight) × ao`。户外 skylight
+// 恒 15（DR-14）→ **一个方块六面亮度完全相同**，不存在任何朝向差异（「光影平淡」的根因）。
+// 三种视觉风格只改 skyDim/blockBoost 这类**全局乘数**，怎么调都没有朝向差异。
+//
+// 数据来源：面法线走 packed bit10-12 —— mesher 早已写入（§4.3），此前**零消费点**。
+// ⚠️ 必须在**顶点阶段**算成 float varying：片元直接读 packed 会被 three.webgpu.js:65404
+// 对 int 类型强制 `flat` 插值（每个三角形一个常量 → 色块）。
+const uSunDirection = uniform(new THREE.Vector3(NOON_SUN_DIR[0], NOON_SUN_DIR[1], NOON_SUN_DIR[2]));
 /**
- * 影区地板亮度（占 skylight 项的比例）。**对齐 mc-lite 的影区观感推导**：mc-lite 阴影只
- * 移除方向光贡献，环境光保留 → 影区亮度 ≈ ambient/(ambient+sun·NdotL) ≈
- * 2.3/(2.3+3.2×0.8) ≈ 0.47（顶面）~ 0.55（侧面），取 0.5。
- * ⚠️ 旧实现把阴影因子乘在**最终颜色**上（影区 ×0 → 纯黑），是「黑乎乎一片」的根因。
+ * 太阳方向光强度开关：0 = 关闭（sunTerm ≡ 1，**逐位回到** v1.57 的现状）/ 1 = 满强度。
+ * Tier 4 像素判据用它做「只差一个变量」的 A/B；也是将来设置面板开关的接入点。
  */
-export const SHADOW_FLOOR = 0.5;
+const uSunStrength = uniform(1.0);
 
-// 阴影不投射标记（packed bit14，mesher 从 registry.shadowCastTable 写入）：在**阴影 pass**
-// 逐片元 discard（mc-lite `isShadowEnabled:false` 的 cloud/花草/藤/灯等不投影）。
-// ⚠️ `maskShadowNode` 只被阴影 pass 消费（three.webgpu.js `_getShadowNodes`），主 pass 的
-// `setupDiffuseColor` 只读 `maskNode` → 这些方块在主渲染里照常显示，只是不写阴影深度。
+// 面法线解码：packed bit10-12 = 世界面索引 0..5（与 FACE_NORMALS 同序）。
+// 六选一用 `select` 链而不是查表数组（GLSL 无动态索引常量数组的便携写法；只有 5 次 select，
+// 且结果**逐顶点常量** → 编译期可折叠成一次常量）。
+const worldFaceIndex = packed.shiftRight(10).bitAnd(7);
+const FACE_NORMAL_NODES = FACE_NORMALS.map((n) => vec3(n[0], n[1], n[2]));
+const faceNormalNode = FACE_NORMAL_NODES
+  .slice(1)
+  .reduce((acc, n, i) => select(worldFaceIndex.equal(i + 1), n, acc), FACE_NORMAL_NODES[0]);
+// 太阳项的点积（顶点阶段，float varying）。
+const vSunDot = varying(
+  vertexStage(max(dot(faceNormalNode, uSunDirection), 0)), 'vSunDot');
+
+/**
+ * 阴影不投射标记（packed bit14，mesher 从 registry.shadowCastTable 写入）：在**阴影 pass**
+ * 逐片元 discard（mc-lite `isShadowEnabled:false` 的 cloud/花草/藤/灯等不投影）。
+ * ⚠️ `maskShadowNode` 只被阴影 pass 消费（three.webgpu.js `_getShadowNodes`），主 pass 的
+ * `setupDiffuseColor` 只读 `maskNode` → 这些方块在主渲染里照常显示，只是不写阴影深度。
+ *
+ * 注：`SHADOW_FLOOR`（0.5）的推导与完整注释见 `sun-shade.js`（v1.58 起它是那里导出的常量，
+ * 同时充当太阳项的环境地板 `SUN_AMBIENT`）。本文件 import 后继续用作阴影地板 —— 两个值
+ * 必须恒等，否则「背光面」与「影区」的亮度会撕裂。
+ */
 const noShadowCastBit = float(packed.shiftRight(14).bitAnd(1));
 
 /**
@@ -94,11 +123,32 @@ export function createVoxelMaterials(atlasTexture, sunLight = null) {
     ? mix(float(1), mix(float(SHADOW_FLOOR), float(1), shadow(sunLight)), uShadowStrength)
     : null;
 
-  // 最终亮度 = max(sky×阴影因子, block)：阴影只乘 skylight 项（见 vSkyShade 注释）。
-  // sunLight 为 null（fixture）时 max(sky, block) 与旧 vShade 逐位等价。
-  const shadeLit = shadowFactor
-    ? max(mul(vSkyShade, shadowFactor), vBlockShade)
-    : max(vSkyShade, vBlockShade);
+  // 最终亮度 = max(sky × 太阳项, block)。
+  //
+  // ---- 太阳项（v1.58）----
+  // `sunTerm = mix(1, SUN_AMBIENT + SUN_INTENSITY × N·L × shadowKill, uSunStrength)`
+  //
+  // ⚠️ **阴影只作用在太阳项上**，不再直接乘 `vSkyShade`。若两边各乘一遍，正午顶面在影区会
+  // 变成 0.5 + 0.625×0.8×0.5 = 0.75（应为 0.5）→ 阴影变淡 50%，`sun-shadow.spec` 的冻结
+  // 比值 0.735 崩。故先把 shadowFactor 重标定到「太阳被拿走的比例」：
+  //   shadowFactor = SHADOW_FLOOR（影区 0.5）→ shadowKill = 0 → sunTerm = 阿地板 0.5（同旧）
+  //   shadowFactor = 1（受光）       → shadowKill = 1 → sunTerm = 1.0（同旧）
+  //   uShadowStrength = 0（关阴影）   → shadowFactor = 1 → shadowKill = 1 → 满强度太阳
+  // 无太阳灯（fixture 路径）时 shadowFactor 为 null → shadowKill 固定 1。
+  //
+  // ⚠️ sunTerm **只能**乘在 skylight 项上，不得乘 blocklight：火把照亮的洞穴/室内要照样亮
+  // （与阴影只衰减 skylight 项同一道理）。
+  // ⚠️ transparent 通道（水/玻璃）**不接**太阳：海面已有自己的 Blinn-Phong 高光（ocean.js），
+  // 而且那个通道恰好是零回归的安全垫。
+  const shadowKill = shadowFactor
+    ? clamp(float(1).sub(float(1).sub(shadowFactor).div(1 - SHADOW_FLOOR)), 0, 1)
+    : float(1);
+  const sunTermFull = float(SUN_AMBIENT).add(
+    mul(float(SUN_INTENSITY), mul(vSunDot, shadowKill)),
+  );
+  const sunTerm = mix(float(1), sunTermFull, uSunStrength);
+
+  const shadeLit = max(mul(vSkyShade, sunTerm), vBlockShade);
   // 不接收阴影的通道（transparent = 水/玻璃）用无阴影亮度。
   // ⚠️ **不能只靠 `receiveShadow=false`**：那个标志只门控 three 的**灯光管线**
   // （three.webgpu.js:46101 `if (builder.object.receiveShadow) setupShadow()`），而本材质是
@@ -136,7 +186,7 @@ export function createVoxelMaterials(atlasTexture, sunLight = null) {
     // emissive: true —— hanging_lamp 的材质自发光走本通道（§4.3 bit13）。
     cutout: makeMaterial({ alphaTest: 0.3, side: THREE.FrontSide, emissive: true }),
     transparent: makeMaterial({ transparent: true, receivesShadow: false }),
-    dayNight: { uSkyDim, uBlockBoost, uShadowStrength },
+    dayNight: { uSkyDim, uBlockBoost, uShadowStrength, uSunDirection, uSunStrength },
   };
 }
 

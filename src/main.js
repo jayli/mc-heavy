@@ -52,6 +52,10 @@ async function boot() {
   // ?shadows=0 代码级开关的 URL 入口（DR-7：默认开。只有 '0' 关——缺省/其它值都是默认开，
   // 与 ?guns/?tntDamage 的 `=== '1'` 反向口径一致：默认开则显式值与默认值相反）。
   // 不进设置面板（DR-7），故不过 resolveSettings，直接作构造选项传入。
+  // ?skybox=0 关闭天空盒（v1.58；退回纯色天空 —— 观测口径与 v1.57 逐位相同，既有 Tier 4
+  // spec 的隔离入口）。与 ?shadows=0 同一反向口径：默认开则只有 '0' 关。
+  // 不进设置面板，故不过 resolveSettings，直接作构造选项传入。
+  const skybox = params.get('skybox') !== '0';
   const shadows = params.get('shadows') !== '0';
   const game = new Game({
     canvas: document.getElementById('app-canvas'),
@@ -62,6 +66,7 @@ async function boot() {
     budgetProfile: settings.budgetProfile,
     startWeather,
     shadows,
+    skybox,
     settings,
   });
   await game.start();

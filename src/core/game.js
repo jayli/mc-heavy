@@ -11,6 +11,7 @@ import { DEBUG_FLAGS } from './debug-config.js';
 import { RenderWorld } from '../render/render-world.js';
 import { setupFog } from '../render/materials.js';
 import { setupOcean } from '../render/ocean.js';
+import { setupSky, placeCelestial } from '../render/sky.js';
 import { DayNight } from '../render/daynight.js';
 import { ShadowScheduler, SUN_DIR_GATE_DEG, sunDirectionChanged, texelSnapOffset } from '../render/shadow-manager.js';
 import { RainEffect } from '../render/rain.js';
@@ -84,10 +85,14 @@ export class Game {
    *   （停阴影 pass + uShadowStrength=0）—— `?shadows=0` URL 入口（main.js）与测试隔离都走这里；
    *   运行时切换用 `setShadowsEnabled()`（本选项只在 start() 消费一次）。
    * @param {Object} [opts.settings] 生效设置（main.js resolveSettings 结果；缺省 start() 内自行合并）
+   * @param {boolean} [opts.skybox] 天空盒开关（v1.58，默认 true）。false = 完全不加载、退回纯色天空
+   *   （`?skybox=0` URL 入口）——既有 Tier 4 spec 用「±30 内等于 0x87ceeb」判纯色天空来数地形
+   *   像素，照片天空会让那个判据失去意义，故它们 pin 该开关。
    */
-  constructor({ canvas, registry, seed = null, viewDistance = 8, hudRoot, blurMipmap = false, budgetProfile = 'auto', startWeather = null, shadows = true, settings = null }) {
+  constructor({ canvas, registry, seed = null, viewDistance = 8, hudRoot, blurMipmap = false, budgetProfile = 'auto', startWeather = null, shadows = true, skybox = true, settings = null }) {
     this._settings = settings;
     this._shadowsOption = shadows;
+    this._skyboxOption = skybox;
     this.registry = registry;
     this.seed = seed; // null → start() 中无存档时 randomSeed()（有存档恒读存档）
     this.viewDistance = viewDistance;
@@ -227,11 +232,26 @@ export class Game {
     this.ocean = setupOcean(this.scene);
     // ⚠️ 灯光创建必须在 RenderWorld 之前：材质的 shadow() 节点在构建时固定 light 引用。
     this.renderWorld = new RenderWorld({ scene: this.scene, atlasTexture: texture, viewDistance: this.viewDistance, sunLight });
+    // 天空盒（v1.58）：在 DayNight 之前装配 —— uNightBlend 句柄要传给 DayNight。
+    // 加载失败不阻断启动（与丧尸头部/炮塔装甲纹理同一容错口径）：退回既有纯色背景。
+    // ⚠️ 失败时必须把 `scene.background` 恢复成 Color：setupSky 成功路径会把它置 null
+    // （让 DayNight 的纯色路径自动跳过）；半途失败不留这个 null。
+    this.sky = null;
+    if (this._skyboxOption) {
+      try {
+        this.sky = await setupSky(this.scene);
+      } catch (e) {
+        console.warn('[game] 天空盒加载失败，退回纯色天空：', e);
+        this.scene.backgroundNode = null;
+        this.scene.background = new THREE.Color(0x87ceeb);
+      }
+    }
     // 日夜循环（M2-6）：正午起步（与 M1 视觉口径一致），1200s 一天
     this.dayNight = new DayNight({
       scene: this.scene,
       fog: fogUniforms,
       voxelUniforms: this.renderWorld.materials.dayNight,
+      skyUniforms: this.sky ? { uNightBlend: this.sky.uNightBlend } : null,
       baseFogNear: this.viewDistance * 16 * 0.75,
       baseFogFar: (this.viewDistance + 2) * 16 * 0.95,
       // 太阳方向变化 → 光源重定位 + 请求阴影刷新（DR-5 第三个请求源）。**用于定位的**方向由
@@ -265,6 +285,7 @@ export class Game {
         // 相机跟上，加了会「走 5 格后影子钉在原地」）。
         if (!sunDirectionChanged(this._lastSunDir, dir, SUN_DIR_GATE_DEG)) return;
         this._updateSunPosition();
+        this._updateCelestial(); // 日轮/月轮跟看太阳方向（与光源同一节奏，不每帧）
         if (this.sunLight.castShadow) this.shadowScheduler.request();
       },
     });
@@ -723,6 +744,7 @@ export class Game {
         const dz = pp.z - this._lastShadowPos.z;
         if (dx * dx + dy * dy + dz * dz > 25) {
           this._updateSunPosition();
+          this._updateCelestial();
           if (this.sunLight.castShadow) this.shadowScheduler.request();
           this._lastShadowPos = { x: pp.x, y: pp.y, z: pp.z };
         }
@@ -859,6 +881,27 @@ export class Game {
     const off = texelSnapOffset([p.x, p.y, p.z], dir, texelSize);
     this.sunLight.position.set(p.x + off[0] + dir[0] * 60, p.y + off[1] + dir[1] * 60, p.z + off[2] + dir[2] * 60);
     this.sunLight.target.position.set(p.x + off[0], p.y + off[1], p.z + off[2]);
+  }
+
+  /**
+   * 日轮/月轮跟随（v1.58）。位置跟随相机（而非玩家）—— sprite 在相机附近漂浮，
+   * 相机因 StepLift/视角晃动产生的微小位移用玩家位置跟不上，会看到 sprite 相对视野漂移。
+   *
+   * ⚠️ **不得每帧调**：调用点是 `_updateSunPosition()` 的两个触发点（移动超 5 格 /
+   * 太阳方向过 0.5° 门控）。每帧调等于白付两次 `dayNight.params`（它每次新分配 2 个小对象）
+   * ——与 SUN_DIR_GATE_DEG 门控要消除的就是同一笔派开销。
+   *
+   * ⚠️ 可见性来自 `dayNight.params.moonVisible`（风格数据）：三套风格里**太阳全是 false**
+   * —— `skyBox4` 贴图本身烘焙了太阳光晕，再画一个会变成两个太阳（mc-lite 同口径，
+   * 它的 sunVisible 也全是 false）。改一个字段就能打开。
+   */
+  _updateCelestial() {
+    if (!this.sky || !this.player) return; // ?skybox=0 / 加载失败 → 无 sprite 可跟
+    const p = this.dayNight.params;
+    placeCelestial(this.sky.sunSprite, this.camera, p.sunDirection, 28);
+    placeCelestial(this.sky.moonSprite, this.camera, p.moonDirection, p.moonSize);
+    this.sky.sunSprite.visible = p.sunVisible === true;
+    this.sky.moonSprite.visible = p.moonVisible === true;
   }
 
   /**
