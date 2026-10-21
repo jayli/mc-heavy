@@ -8,12 +8,11 @@
   <style>
     html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
     #app-canvas { display: block; width: 100%; height: 100%; }
-    /* 准心（mc-lite #crosshair 同规格：20×20 白色十字，difference 混合，不拦截输入） */
-    #crosshair {
-      position: absolute; top: 50%; left: 50%; width: 20px; height: 20px;
-      background: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20"><path d="M10 0v20M0 10h20" stroke="white" stroke-width="2" style="mix-blend-mode:difference;"/></svg>') no-repeat center;
-      transform: translate(-50%, -50%); pointer-events: none; z-index: 10;
-    }
+    /*
+     * 准心由 `src/ui/crosshair.js` 在运行时创建并挂到 body 下（v1.64）：
+     * 它需要按准心背后的画面亮度在白色/黑色之间切色（固定白在雪地/白墙上会消失）。
+     * 结构、样式与采样逻辑的唯一权威在那个模块，这里不再保留 DOM 占位。
+     */
     #webgpu-error {
       display: none; position: fixed; inset: 0; z-index: 100;
       background: #1a1a2e; color: #eee;
@@ -35,7 +34,6 @@
 </head>
 <body>
   <canvas id="app-canvas"></canvas>
-  <div id="crosshair"></div>
   <div id="webgpu-error">
     <div>
       <h2>无法启动渲染</h2>

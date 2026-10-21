@@ -57,6 +57,7 @@ import { getCitySpawnPoint, getCityInfo } from '../gen/structures/city-layout.js
 import { Player } from '../player/player.js';
 import { Persistence } from '../save/persistence.js';
 import { CoordsHUD } from '../ui/coords-hud.js';
+import { Crosshair } from '../ui/crosshair.js';
 import { SettingsPanel } from '../ui/settings-panel.js';
 import { createHotbar } from '../ui/hotbar.js';
 import { InventoryPanel } from '../ui/inventory.js';
@@ -633,6 +634,9 @@ export class Game {
       DEBUG_FLAGS.worldStats ? () => this.worldStats() : null);
     // M3-4 HUD：坐标+biome、快捷栏（atlas tile CSS 裁剪）、设置面板
     this._coordsHud = new CoordsHUD(this._hudRoot, this);
+    // 准心配色自适应（v1.64）：按准心背后画面亮度在白色/黑色间切 —— 固定白在雪地/白墙上消失。
+    // 挂在 `_hudRoot` 下（与其他 HUD 同层），但**独立于 HUD 的显示/隐藏**：它是准心不是 HUD。
+    this.crosshair = new Crosshair(document.body, this);
     // v1.26：图标走预生成的 CSS 串（`npm run icons` → assets/icons.json）。
     // 两套尺寸档：hotbar=40px / inventory=32px —— 按显示尺寸烘焙，运行时零缩放。
     // 取代此前的 atlasTiles/atlasSize/tileOfName/atlasUrl 四个参数 + 运行时裁剪数学。
@@ -814,6 +818,9 @@ export class Game {
         this.sunLight.shadow.needsUpdate = true;
       }
       this.renderer.render(this.scene, this.camera);
+      // 准心配色（v1.64）：**必须在 render 之后** —— WebGPU canvas 在 render 前不可读
+      // （实测读到恒为 0，会让准心永远判为暗背景而恒白）。内部 100ms 节流 + 迟滞。
+      this.crosshair.update(nowMs);
       // info 在每帧 render 前被 autoReset 清零，render 后捕获才是本帧真实值
       // （HUD/测试异步读取 renderer.info 会撞上重置点，必须在此快照）
       this._lastRenderInfo = {
