@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"><title>block hit fx fixture</title><link rel="icon" href="data:,">
+  <style>html, body { margin: 0; }</style>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "/vendor/three/three.webgpu.js",
+      "three/tsl": "/vendor/three/three.tsl.js",
+      "three/webgpu": "/vendor/three/three.webgpu.js",
+      "three/addons/": "/vendor/three/addons/"
+    }
+  }
+  </script>
+</head>
+<body>
+<script type="module">
+  import * as THREE from 'three';
+  import { loadAtlas } from '../mesh/atlas-loader.js';
+  import { createAtlasColorResolver } from '../render/block-color.js';
+  import { BlockHitFxRenderer, IMPACT_FX } from '../render/block-hit-fx.js';
+
+  // Tier 4 像素实测场景（枪击方块命中特效）。
+  //
+  // **为什么必须像素实测**：碎块颜色是 `InstancedMesh.instanceColor`（逐实例顶点属性）、
+  // 白闪是 Mesh 材质的 `opacity`（GPU 求值），单测只能钉住算术。**若 instanceColor 没生效，
+  // 碎块会全部渲染成材质白** —— 特效照常播、照常飞散，只是与方块材质无关，肉眼几乎看不出
+  // 「这是 bug 而不是设计」。
+  //
+  // ⚠️ **碎块取样的时刻必须落在「白闪已结束、碎块仍在」的窗口**（实测踩到的坑）：
+  // 白闪是整格 1.02 见方的白立方，比碎块大两个数量级，会把碎块像素整个盖在同一个亮区里 →
+  // 破坏开/关两种状态读到**完全相同**的亮像素数（旧的面闪时代实测都是 9409）。
+  // 白闪 150ms、碎块 620ms → 取 300ms，画面里只剩碎块，判据才有分辨力。
+  async function run() {
+    const renderer = new THREE.WebGPURenderer({ antialias: false });
+    renderer.setSize(480, 360);
+    document.body.appendChild(renderer.domElement);
+    await renderer.init();
+    renderer.toneMapping = THREE.NoToneMapping;
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+    const { texture } = await loadAtlas({ mipmap: false });
+    const atlasMeta = await (await fetch('/assets/atlas.json')).json();
+    const colorResolver = createAtlasColorResolver({ texture, atlasMeta });
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x000000);   // 黑底：特效是画面里唯一的亮源
+
+    const fx = new BlockHitFxRenderer({
+      scene, colorResolver,
+      blockNameOf: (name) => name,
+    });
+
+    const camera = new THREE.PerspectiveCamera(50, 480 / 360, 0.05, 100);
+    camera.position.set(0, 0, 3.4);
+    camera.lookAt(0, 0, 0);
+
+    const W = 480;
+    const H = 360;
+    const CENTER = { x: Math.round(W / 2), y: Math.round(H / 2) };
+
+    const T0 = 1000;
+
+    function hit(blockName, normal, opts = {}) {
+      /** @type {object} */
+      const impact = {
+        blockPos: opts.blockPos ?? [-1, -1, -1],   // 块中心 = 原点
+        normal,
+        blockId: blockName,
+        destroyed: opts.destroyed ?? true,
+        radius: opts.radius,
+      };
+      // MAG7 白闪波浪：逐格错开启动（默认给一格，与“单点命中”一致）
+      if (opts.stagger) impact.stagger = opts.stagger;
+      fx.spawnFromEffect({ weaponId: opts.weaponId ?? 'pistol', impacts: [impact] }, opts.now ?? T0);
+    }
+
+    /** 渲染两帧（WebGPU 首帧可能还在编译 shader）后返回取样点 */
+    function present() {
+      renderer.render(scene, camera);
+      renderer.render(scene, camera);
+      return { point: CENTER };
+    }
+
+    /**
+     * 单次命中并推进到 `ageMs`（真实 `spawnFromEffect` + `update` 路径，不自算碎块位置）。
+     * @param {string} blockName @param {number[]} normal @param {number} ageMs
+     * @param {{destroyed?: boolean, weaponId?: string, append?: boolean}} [opts]
+     *        `append=true` 保留上一发（用于连射热度）：此时 `ageMs` 是相对本次命中。
+     */
+    window.__FX_HIT__ = (blockName, normal, ageMs, opts = {}) => {
+      if (!opts.append) fx.reset();
+      const now = T0 + (opts.nowOffset ?? 0);
+      hit(blockName, normal, { ...opts, now });
+      fx.update(now + ageMs);
+      present();
+      return { point: CENTER };
+    };
+
+    /**
+     * 连射序列：每次命中在前一次的 `gapMs` 之后，命中后立刻渲染（不推进到寿命末）。
+     * 返回逐发的活跃碎块数 —— 热度累积的**真实路径**判据。
+     * @param {string} weaponId @param {number} shots @param {number} gapMs
+     */
+    window.__FX_SEQUENCE__ = (weaponId, shots, gapMs) => {
+      fx.reset();
+      const counts = [];
+      const heats = [];
+      for (let i = 0; i < shots; i++) {
+        const now = T0 + i * gapMs;
+        hit('stone', [0, 1, 0], { weaponId, now });
+        fx.update(now + 1);
+        counts.push(fx.activeDebrisCount);
+        heats.push(Number(fx.heat.toFixed(3)));
+      }
+      present();
+      return { counts, heats };
+    };
+
+    /**
+     * MAG7 白闪波浪：一次命中给出 `cells` 个格（模拟一次 3×3×N 扫描的全部被毁格），
+     * 然后按时间轴采样「可见白闪数」。
+     *
+     * @param {number} cells 格数（4×4 阵列逐层向 -z 后退）@param {number[]} agesMs 采样时刻表
+     * @returns {{visible: number[], staggerMs: number, cells: number}}
+     */
+    window.__FX_WAVE__ = (cells, agesMs) => {
+      fx.reset();
+      const stagger = [];
+      for (let i = 0; i < cells; i++) {
+        const col = i % 4;
+        const row = Math.floor(i / 4) % 4;
+        const depth = Math.floor(i / 16);
+        stagger.push({ blockPos: [-2 + col, -2 + row, -3 - depth] });
+      }
+      hit('stone', [0, 0, 1], { weaponId: 'mag7', stagger, now: T0 });
+      const visible = [];
+      const started = [];
+      const seen = new Set();
+      for (const age of agesMs) {
+        fx.update(T0 + age);
+        present();
+        visible.push(fx.flashMeshes().filter((m) => m.visible).length);
+        // 「已启动格数」= 累计波浪进度（与白闪寿命无关）。
+        // ⚠️ 不能直接数 `flashStarts()`：slot 消退后会被清空，那是「仍活跃」不是「已启动」。
+        for (const start of fx.flashStarts()) {
+          if (Number.isFinite(start) && start <= T0 + age) seen.add(start);
+        }
+        started.push(seen.size);
+      }
+      return { visible, started, staggerMs: IMPACT_FX.whiteFlash.staggerMs, cells };
+    };
+
+    window.__FX_STATS__ = () => ({
+      activeDebris: fx.activeDebrisCount,
+      heat: Number(fx.heat.toFixed(3)),
+      visibleFlashes: fx.flashMeshes().filter((m) => m.visible).length,
+      flashNames: [...new Set(fx.flashMeshes().map((m) => m.name))],
+      flashSlots: fx.flashMeshes().length,
+      debrisVisible: fx.debrisMesh.visible,
+      // 前提断言：碎块实例色确实是逐实例的（不是共享一份材质色）
+      hasInstanceColor: !!fx.debrisMesh.instanceColor,
+      debrisCapacity: IMPACT_FX.debris.maxActive,
+      whiteFlashTotalMs: IMPACT_FX.whiteFlash.totalMs,
+      whiteFlashStaggerMs: IMPACT_FX.whiteFlash.staggerMs,
+      debrisLifeMs: IMPACT_FX.debris.lifeMs,
+    });
+
+    // 先渲染一帧空场景：否则首次截图会读到 canvas 的初始白底（实测 n=172800 全白）
+    present();
+    window.__FX_READY__ = true;
+  }
+  run().catch((e) => { window.__FX_ERROR__ = String(e?.stack || e); });
+</script>
+</body>
+</html>

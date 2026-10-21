@@ -126,10 +126,16 @@ test('MAG7: 3×3 扫描先过滤再计 40，水可删且 end_stone/基岩/创造
   // ⚠️ **M9 翻转**：playground 已登记进 indestructibleTable → (5,0,0) 不作为候选被删
   // （M8 期间本条曾是 assertTrue —— 平台本体可被 MAG7 打掉是撕裂状态）。
   assertFalse(changes.some((c) => c.x === 5 && c.y === 0 && c.z === 0));
-  // 输出形状与距离组稳定排序
+  // 输出形状与**由命中点向外**的排序
   for (const c of changes) assertEqual(c.meta, 0);
+  // ⚠️ v1.67 改：排序键从「距离组」改为**到命中点的真实几何距离**。
+  // 距离组 `floor((d-1)/2)` 是沿**视线**的采样距离，同组内 3×3 截面的九格彼此距离差很大
+  // （实测相邻两项 1.732 → 1.414，反而变近了）—— 白闪波浪直接沿用它时观感是
+  // 「先向外扩散一小圈又收回来」。破坏行为不受影响（只依赖哪些格被删，不依赖次序）。
+  // 无 target 时基准点退回相机原点。
   for (let i = 1; i < changes.length; i++) {
-    assertTrue(changes[i].group >= changes[i - 1].group);
+    assertTrue(changes[i].centerDist >= changes[i - 1].centerDist - 1e-9,
+      `须按到命中点的距离非递减：第 ${i} 项 ${changes[i].centerDist} < 前一项 ${changes[i - 1].centerDist}`);
   }
 });
 
@@ -539,4 +545,151 @@ test('WeaponController: 加特林实体伤害 35，三发致死', () => {
   controller.fireOnce(aim);
   assertEqual(damageCalls.length, 1);
   assertEqual(damageCalls[0].amount, WEAPONS[WEAPON_IDS.MINIGUN].entityDamage);
+});
+
+// ---------- 命中特效的 effect 契约（枪击方块消失特效 v1.64） ----------
+//
+// controller 只负责**报告发生了什么**（纯数据），渲染在 `render/block-hit-fx.js`。
+// 这三条钉住「谁触发了效果、命中面从哪来、破坏关闭时怎么区分」。
+
+test('impact: 手枪命中方块时事件带 impacts（命中面、方块 id、未破坏）', () => {
+  const { registry, ids } = makeRegistryWithWeaponBlocks();
+  const editor = { setBlock() { return { changes: [] }; }, setBlocks() { return { changes: [] }; } };
+  const controller = new WeaponController({
+    registry, blockQuery: { getBlockId: () => ids.stone }, editor, onEffect: () => {},
+  });
+  controller.select('pistol');
+  controller.setBlockDamage(false);   // 默认档：方块不消失
+  const aim = {
+    origin: [0, 0, 0], forward: [1, 0, 0], right: [0, 0, 1], up: [0, 1, 0],
+    // normal 是命中面法线：DDA 沿 +x 打到 (2,0,0) 的 -x 面 → 法线 [-1,0,0]
+    target: { hit: true, blockPos: [2, 0, 0], normal: [-1, 0, 0], dist: 2 },
+  };
+  const effect = controller.fireOnce(aim)[0];
+  assertEqual(effect.impacts.length, 1);
+  const impact = effect.impacts[0];
+  assertEqual(impact.blockPos.join(','), '2,0,0');
+  assertEqual(impact.normal.join(','), '-1,0,0');
+  assertEqual(impact.blockId, ids.stone);
+  // 破坏关闭 → destroyed=false（渲染层据此只出白闪 + 少量粉尘，不出整簇碎块）
+  assertFalse(impact.destroyed);
+});
+
+test('impact: 破坏开启时 destroyed=true，且 id 为被删方块（不是 air）', () => {
+  const { controller, aim } = makeControllerFixture();
+  controller.select('pistol');
+  controller.setBlockDamage(true);
+  const effect = controller.fireOnce(aim)[0];
+  assertEqual(effect.impacts.length, 1);
+  assertTrue(effect.impacts[0].destroyed, '真删了方块须报告 destroyed=true');
+  // ⚠️ 必须是**删除前**读到的 id —— 写成删除后再读会恒为 air，碎块颜色会变成石头默认色
+  // （静默：特效照常播，只是颜色与方块无关）。
+  assertEqual(effect.impacts[0].blockId, controller.registry.idOf('stone'));
+});
+
+test('impact: 打不动的方块（end_stone）不报告 destroyed', () => {
+  const { registry, ids } = makeRegistryWithWeaponBlocks();
+  const editor = { setBlock() { return { changes: [] }; }, setBlocks() { return { changes: [] }; } };
+  const controller = new WeaponController({
+    registry, blockQuery: { getBlockId: () => ids.endStone }, editor, onEffect: () => {},
+  });
+  controller.select('pistol');
+  controller.setBlockDamage(true);
+  const effect = controller.fireOnce({
+    origin: [0, 0, 0], forward: [1, 0, 0], right: [0, 0, 1], up: [0, 1, 0],
+    target: { hit: true, blockPos: [4, 0, 0], normal: [-1, 0, 0], dist: 4 },
+  })[0];
+  assertEqual(effect.impacts.length, 1);
+  assertFalse(effect.impacts[0].destroyed);
+});
+
+test('impact: 未命中任何方块时不产出 impacts（空气射击不得凭空出特效）', () => {
+  const { controller, aim } = makeControllerFixture();
+  controller.select('pistol');
+  const effect = controller.fireOnce({ ...aim, target: { hit: false } })[0];
+  assertEqual(effect.impacts.length, 0);
+});
+
+test('impact: 命中实体（未碰方块）时不产出 impacts', () => {
+  const near = makeEntityControllerFixture({ entityDist: 2, blockDist: Infinity });
+  near.controller.select('pistol');
+  const effect = near.controller.fireOnce(near.aim)[0];
+  assertEqual(effect.type, 'entity-hit');
+  assertEqual(effect.impacts.length, 0, '打丧尸不出方块碎裂特效');
+});
+
+test('impact: MAG7 的白闪波浪覆盖**全部被毁格**，按命中点由近到远排序', () => {
+  const { registry, ids } = makeRegistryWithWeaponBlocks();
+  const editor = {
+    setBlock() { return { changes: [] }; },
+    setBlocks(changes) { this.lastBatch = changes; return { changes }; },
+  };
+  const controller = new WeaponController({
+    registry, blockQuery: { getBlockId: () => ids.stone }, editor, onEffect: () => {},
+  });
+  controller.select('mag7');
+  const effect = controller.fireOnce({
+    origin: [0, 0, 0], forward: [1, 0, 0], right: [0, 0, 1], up: [0, 1, 0],
+    target: { hit: true, blockPos: [2, 0, 0], normal: [-1, 0, 0], dist: 2 },
+  })[0];
+  // 一次 MAG7 仍是**一个** impact（一个命中点），但带上全部被毁格的波浪列表。
+  // 用户 2026-10-23：「所有伴随着消失的方块都做白闪后消失」——只报一格就是旧行为。
+  assertEqual(effect.impacts.length, 1);
+  const impact = effect.impacts[0];
+  assertTrue(impact.destroyed, 'MAG7 无视开关，必破坏');
+  // 波浪必须覆盖**全量**被扫描到的格子，不是其中一格。
+  // 负向锚点：写成 `stagger: [changes[0]]` → 下面第一条 FAIL（实得 1 格）。
+  assertTrue(impact.stagger.length > 1,
+    `白闪波浪须覆盖全部被毁格，实得 ${impact.stagger.length} 格`);
+  assertEqual(impact.stagger.length, editor.lastBatch.length,
+    '波浪格数须等于实际提交删除的格数');
+  // 顺序 = 由命中点向外（`collectMag7Changes` 已按距离组排好，直接沿用）。
+  // 判据落在**到准心命中格的距离**上：单调不减。
+  const dists = impact.stagger.map((entry) => Math.hypot(
+    entry.blockPos[0] - 2, entry.blockPos[1] - 0, entry.blockPos[2] - 0));
+  for (let i = 1; i < dists.length; i++) {
+    assertTrue(dists[i] >= dists[i - 1] - 1e-9,
+      `白闪扩散须由近到远：第 ${i} 格 ${dists[i].toFixed(3)} < 前一个 ${dists[i - 1].toFixed(3)}`);
+  }
+  // 首格就是主命中点（`blockPos` 与波浪首项同源，不得各算一套）
+  assertEqual(impact.stagger[0].blockPos.join(','), impact.blockPos.join(','));
+});
+
+test('impact: 徒手不产出 impacts（特效只接三种枪）', () => {
+  const { controller, aim } = makeControllerFixture();
+  assertEqual(controller.selectedId, 'arm');
+  assertEqual(controller.fireOnce(aim).length, 0);
+});
+
+test('impact: MAG7 命中格的颜色源是删除前的方块 id（不是删除后的 air）', () => {
+  const { registry, ids } = makeRegistryWithWeaponBlocks();
+  // 删完再回查时这一格已经是 air —— 用可变查询模拟真实世界写入
+  const world = new Map();
+  const editor = {
+    setBlock() { return { changes: [] }; },
+    setBlocks(changes) {
+      for (const c of changes) world.set(`${c.x},${c.y},${c.z}`, ids.air);
+      return { changes };
+    },
+  };
+  const controller = new WeaponController({
+    registry,
+    blockQuery: {
+      getBlockId(x, y, z) {
+        const key = `${x},${y},${z}`;
+        return world.has(key) ? world.get(key) : ids.stone;
+      },
+    },
+    editor,
+    onEffect: () => {},
+  });
+  controller.select('mag7');
+  const effect = controller.fireOnce({
+    origin: [0, 0, 0], forward: [1, 0, 0], right: [0, 0, 1], up: [0, 1, 0],
+    target: { hit: true, blockPos: [2, 0, 0], normal: [-1, 0, 0], dist: 2 },
+  })[0];
+  assertEqual(effect.impacts.length, 1);
+  // 负向锚点：命中特效若回查（而非用扫描器记下的 sourceId），这里会是 0（air）
+  assertEqual(effect.impacts[0].blockId, ids.stone, '须是删除前的方块 id');
+  assertEqual(world.get('2,0,0'), ids.air, '世界确实已被删（前提校验）');
 });

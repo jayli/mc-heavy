@@ -203,6 +203,9 @@ export class WeaponController {
   /**
    * 手枪/加特林：首个 DDA 方块阻挡并决定曳光终点；开关开启且可破坏才写世界。
    * M6：**实体更近时不写方块**（实体遮挡方块），且效果事件改为 `entity-hit`。
+   *
+   * v1.64：命中方块时在事件里带一条 `impacts` 记录（位置/命中面/方块 id/是否真被破坏）。
+   * 这只是**报告**，不产生任何渲染对象 —— 白闪/碎块由 `render/block-hit-fx.js` 消费。
    */
   _fireHitscan(aim, weapon) {
     const entityHit = this._queryEntityHit(aim, weapon);
@@ -214,6 +217,7 @@ export class WeaponController {
     }
     const { origin, forward, target } = aim;
     let end;
+    let impacts = [];
     if (target && target.hit) {
       end = [
         origin[0] + forward[0] * target.dist,
@@ -229,9 +233,16 @@ export class WeaponController {
         if (this.onIgniteTnt) this.onIgniteTnt(bx, by, bz);
         return this._makeEffect(weapon, aim, end);   // 不走破坏分支
       }
-      if (this.blockDamageEnabled && isWeaponDestructible(hitId, this.registry)) {
-        this.editor.setBlock({ x: bx, y: by, z: bz, id: 0 });
-      }
+      const destroyed = this.blockDamageEnabled && isWeaponDestructible(hitId, this.registry);
+      if (destroyed) this.editor.setBlock({ x: bx, y: by, z: bz, id: 0 });
+      // ⚠️ `blockId` 必须是**写入删除之前**读到的值：删完再读会恒为 air（0），
+      // 白闪/碎块会退化成默认色 —— 特效照样播，只是与方块材质无关（静默失效）。
+      impacts = [{
+        blockPos: [bx, by, bz],
+        normal: target.normal ?? null,
+        blockId: hitId,
+        destroyed,
+      }];
     } else {
       end = [
         origin[0] + forward[0] * MISS_RANGE,
@@ -239,7 +250,7 @@ export class WeaponController {
         origin[2] + forward[2] * MISS_RANGE,
       ];
     }
-    return this._makeEffect(weapon, aim, end);
+    return this._makeEffect(weapon, aim, end, { impacts });
   }
 
   /**
@@ -267,18 +278,42 @@ export class WeaponController {
       origin[1] + forward[1] * dist,
       origin[2] + forward[2] * dist,
     ];
+    // v1.67：一次 MAG7 仍然只是**一个** impact（一个命中点），但带上 `stagger` 波浪列表
+    // —— 全部被毁格的块位置，顺序直接沿用 `collectMag7Changes` 已排好的「由近到远」
+    // → 渲染层按同一次序错开启动时刻，就是「由命中点向外扩散」。
+    // 用户 2026-10-23：「所有伴随着消失的方块都做白闪后消失……用 600ms 的时间依次让
+    // 应该消失的方块白闪后消失」。
+    //
+    // ⚠️ 扩散时长不在事件里传递：唯一权威是渲染层的 `IMPACT_FX.whiteFlash.staggerMs`
+    // （控制器不 import render，依赖方向 §3；再写一份字面量就是红线 1 的第二份权威）。
+    const impacts = [];
+    if (changes.length > 0) {
+      impacts.push({
+        // 首格 = 最靠近命中点的格 —— 单点特效（碎块等）用它。
+        blockPos: [changes[0].x, changes[0].y, changes[0].z],
+        normal: target?.normal ?? null,
+        blockId: changes[0].sourceId,
+        destroyed: true,        // MAG7 无视开关，进入 changes 即已提交删除
+        radius: MAG7_MISS_RANGE,
+        // 波浪：每一格各自的块位置（白闪逐格亮起），顺序 = 由近到远。
+        stagger: changes.map((c) => ({ blockPos: [c.x, c.y, c.z] })),
+      });
+    }
     return entityHit
       ? this._makeEffect(weapon, aim, end, {
         type: 'entity-hit', entityId: entityHit.entityId, entityDamage: entityHit.entityDamage,
+        impacts,
       })
-      : this._makeEffect(weapon, aim, end);
+      : this._makeEffect(weapon, aim, end, { impacts });
   }
 
   /**
    * 组装纯效果事件：start 按相机基底展开 localStart。
    * @param {object} weapon @param {AimSnapshot} aim @param {number[]} end
-   * @param {{type?: string, entityId?: string, entityDamage?: number}} [override]
+   * @param {{type?: string, entityId?: string, entityDamage?: number, impacts?: object[]}} [override]
    *        M6 实体命中时覆盖 type 为 `entity-hit` 并带上 entityId/entityDamage。
+   *        v1.64 追加 `impacts`（命中特效的纯数据，见 `_fireHitscan`/`_fireMag7`）—— 缺省空数组，
+   *        让渲染层的消费点不必判 undefined。
    *        曳光/音效/后坐/视图模型这些渲染消费字段**不变** —— 曳光终点已在调用侧改成实体命中点，
    *        其余口径与普通射击一致（命中实体仍有曳光与枪声）。
    */
@@ -299,6 +334,7 @@ export class WeaponController {
       localStart: [...weapon.localStart],
       recoil: weapon.recoil,
       tracer: { ...weapon.tracer },
+      impacts: override?.impacts ?? [],
       ...(override?.entityId !== undefined ? { entityId: override.entityId } : {}),
       ...(override?.entityDamage !== undefined ? { entityDamage: override.entityDamage } : {}),
     };
@@ -307,5 +343,6 @@ export class WeaponController {
 
 /**
  * @typedef {{origin: number[], forward: number[], right: number[], up: number[],
- *            target: ({hit: boolean, blockPos?: number[], dist?: number} | null)}} AimSnapshot
+ *            target: ({hit: boolean, blockPos?: number[], normal?: number[]|null,
+ *                      dist?: number} | null)}} AimSnapshot
  */

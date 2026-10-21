@@ -23,6 +23,8 @@ import { ViewArm } from '../render/view-arm.js';
 import { WEAPON_IDS } from '../player/weapons/weapon-catalog.js';
 import { TracerRenderer } from '../render/tracer-renderer.js';
 import { ExplosionRenderer } from '../render/explosion-renderer.js';
+import { BlockHitFxRenderer } from '../render/block-hit-fx.js';
+import { createAtlasColorResolver } from '../render/block-color.js';
 import {
   ExplosionSpriteRenderer, loadExplosionSpriteTexture,
 } from '../render/explosion-sprite.js';
@@ -535,6 +537,33 @@ export class Game {
       scene: this.scene, texture: this._explosionSpriteTexture,
     });
 
+    /**
+     * v1.64：枪击方块命中的特效（白闪 / 碎块）。
+     *
+     * 与 mc-lite 的 `pick.png` / `block_crash.png` 通用序列帧**刻意不同**：碎块颜色取自
+     * **该方块命中那一面**的真实 atlas 像素（``block-color.js``）—— 打石头出灰、
+     * 打草出绿，不需要任何新美术资源，也没有离线烘焙产物要维护。
+     *
+     * v1.67 按实玩反馈收敛：去掉球形闪光与面闪灭（改成品白闪：命中格整格变白后消失），
+     * 并去掉 MAG7 的碎块散落与冲击波环。
+     *
+     * 容错：`colorResolver` 构造失败（取不到 atlas 像素）时退化成中性灰，不阻断启动。
+     */
+    let blockColorResolver = null;
+    try {
+      blockColorResolver = createAtlasColorResolver({
+        texture: this._atlasTexture, atlasMeta: await (await fetch('/assets/atlas.json')).json(),
+      });
+    } catch (e) {
+      console.warn('[game] 命中特效取色失败，退回中性灰：', e);
+    }
+    this.blockHitFx = new BlockHitFxRenderer({
+      scene: this.scene,
+      colorResolver: blockColorResolver,
+      // 方块名来自 registry —— 「块 id → 名字」的唯一权威（红线 1）
+      blockNameOf: (id) => this.registry.nameOf(id),
+    });
+
     // 出生点（mc-lite 语义：优先 City 中心出生，保证出生即见城市天际线，§7 M2 验收）
     const regionLayout = await this.scheduler.structureIndex.waitForRegion(0, 0);
     // 水面遮罩的城市门控 bounds（城市全世界唯一，固定 region [0,0]）。
@@ -586,6 +615,7 @@ export class Game {
         viewArm: this.viewArm,
         tracerRenderer: this.tracerRenderer,
         audioManager: this.audioManager,
+        blockHitFx: this.blockHitFx,
       },
       // M3.1 模态守卫（§4.5.4）：面板打开时 Player 的 keydown 全部拦截。
       // 谓词注入而非传 Game 本身，保持 player/ 不反向依赖 core/（依赖方向 §3）
@@ -801,6 +831,8 @@ export class Game {
       this.explosionRenderer.update(nowMs);
       // 爆炸序列帧 billboard 推进（0.5s 寿命；到期 slot visible=false → draw call 回基线）
       this.explosionSprite.update(nowMs);
+      // 枪击方块命中特效推进（碎块抛物线/自旋、白闪的保持与淡出）
+      this.blockHitFx.update(nowMs);
       // DR-5 按需刷新：节流放行时才置 needsUpdate（必须在 render 之前 —— ShadowNode 的
       // updateBefore 在本帧渲染前读它）。tick 内部已消费 pending 并记录时刻。
       // ⚠️ **`tick()` 必须在前、`castShadow` 在后**，两侧顺序是**载荷性的，勿交换**：
@@ -1724,6 +1756,7 @@ export class Game {
     this.projectileRenderer?.dispose();
     this.explosionRenderer?.dispose();
     this.explosionSprite?.dispose();
+    this.blockHitFx?.dispose();
     this.entities?.dispose();
     this.pool.dispose();
     this.renderer.dispose();

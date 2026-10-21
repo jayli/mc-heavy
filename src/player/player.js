@@ -56,7 +56,8 @@ export class Player {
    * @param {HTMLCanvasElement} opts.canvas - pointer lock 目标（M3.1 起公开为 `player.canvas`，
    *        面板关闭时 lock 回此处；mc-lite 锁 document.body，本仓库必须锁 canvas）
    * @param {import('../core/world-editor.js').WorldEditor} opts.editor 唯一世界写入入口（M4-0）
-   * @param {{viewWeapon?: object, tracerRenderer?: object, audioManager?: object}} [opts.weaponRuntime]
+   * @param {{viewWeapon?: object, tracerRenderer?: object, audioManager?: object,
+   *          blockHitFx?: object}} [opts.weaponRuntime]
    *        M4 武器渲染/音频运行时（Game 注入）。weaponController 由 Game 在 Player 创建后注入
    *        （onEffect 需委派回 player，避免循环引用）
    * @param {() => boolean} [opts.isModal] 模态谓词（M3.1）：返回 true 时 keydown 全部拦截。
@@ -112,6 +113,8 @@ export class Player {
     this.viewWeapon = weaponRuntime?.viewWeapon ?? null;
     this.tracerRenderer = weaponRuntime?.tracerRenderer ?? null;
     this.audioManager = weaponRuntime?.audioManager ?? null;
+    /** 命中方块的特效渲染器（v1.64，Game 装配后注入；fixture 里可为 null） */
+    this.blockHitFx = weaponRuntime?.blockHitFx ?? null;
     /** @type {WeaponController | null} */
     this.weaponController = null;
     /**
@@ -461,15 +464,22 @@ export class Player {
       forward: [_forward.x, _forward.y, _forward.z],
       right: [_right.x, _right.y, _right.z],
       up: [_up.x, _up.y, _up.z],
-      target: this.target ? { hit: true, blockPos: this.target.blockPos, dist: this.target.dist } : null,
+      // v1.64：`normal` = 命中面法线（`raycastVoxel` 已经算好了，此前被丢掉）。
+      // 命中特效靠它把碎块朝被打的那一面外推、并选出正确的面贴图/平均色。
+      target: this.target
+        ? { hit: true, blockPos: this.target.blockPos, normal: this.target.normal, dist: this.target.dist }
+        : null,
     };
   }
 
-  /** 效果事件统一出口：视图模型后坐 → 曳光 → 音效（顺序固定，M4 规格 §4.2）。 */
+  /** 效果事件统一出口：视图模型后坐 → 曳光 → 音效 → 命中特效（顺序固定，M4 规格 §4.2）。 */
   _applyWeaponEffect(effect) {
     if (this.viewWeapon) this.viewWeapon.onShot(effect);
     if (this.tracerRenderer) this.tracerRenderer.spawn(effect);
     if (this.audioManager) this.audioManager.play(effect.sound, effect.volume);
+    // v1.64：方块被击碎/击中的特效（白闪 + 碎块；MAG7 只有白闪）。
+    // 纯视觉，池满丢最旧，不回头影响玩法状态。
+    if (this.blockHitFx) this.blockHitFx.spawnFromEffect(effect, performance.now());
   }
 
   /**
