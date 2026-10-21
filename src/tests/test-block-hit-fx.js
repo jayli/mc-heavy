@@ -190,7 +190,8 @@ test('debris spin: 自旋角随时间线性增长（到期前不为常数）', (
 
 test('white flash stagger: 多格白闪按索引在 staggerMs 内均匀铺开（不周一时刻出现）', () => {
   // 用户 2026-10-23：「每个方块消失过程中设定一个定时器，不要同一时刻消失，
-  // 比如用 600ms 的时间依次让应该消失的方块白闪后消失」。
+  // 比如用 600ms 的时间依次让应该消失的方块白闪后消失」—— 该时长后被实玩反馈下调为 150ms。
+  // 本条测纯函数算术（参数注入），波浪用哪个时长由配置决定。
   const times = staggerTimes(40, 600, 1000);
   assertEqual(times.length, 40);
   assertEqual(times[0], 1000, '第一个必须在命中瞬间出现（否则命中感失真）');
@@ -204,6 +205,20 @@ test('white flash stagger: 多格白闪按索引在 staggerMs 内均匀铺开（
   for (let i = 2; i < times.length; i++) {
     assertTrue(Math.abs(times[i] - times[i - 1] - gap) < 1e-9, '间隔须均匀');
   }
+});
+
+test('white flash stagger: 配置值为 150ms（用户 2026-10-23 由 600ms 下调，嫌太慢）', () => {
+  // ⚠️ 这是**实玩标定值**，不是推导值：600ms 的波浪被用户判为「太慢」→ 150ms。
+  // 负向锚点：改回 600 会让 Tier 4 的波浪用例（以及本条）FAIL。
+  assertEqual(IMPACT_FX.whiteFlash.staggerMs, 150);
+  // 波浪总跨度（最后一格完全消失）= staggerMs + totalMs。150 + 150 = 300ms，
+  // 必须短于一次 MAG7 装填间隔（cooldown 1.5s），否则连发时波浪会叠在一起。
+  assertTrue(IMPACT_FX.whiteFlash.staggerMs + IMPACT_FX.whiteFlash.totalMs < 1500,
+    '波浪全跨度须短于 MAG7 冷却');
+  // 与单格白闪寿命同量级：40 格摊开后每格仅隔 ~3.8ms → 观感是「一大片同时变白、边缘略有先后」
+  const gapPerCell = IMPACT_FX.whiteFlash.staggerMs / 39;
+  assertTrue(gapPerCell > 0 && gapPerCell < IMPACT_FX.whiteFlash.totalMs,
+    `每格间隔 ${gapPerCell.toFixed(2)}ms 须短于单格白闪寿命`);
 });
 
 test('white flash stagger: 边界 —— 0/1 格、staggerMs=0 都不产 NaN', () => {

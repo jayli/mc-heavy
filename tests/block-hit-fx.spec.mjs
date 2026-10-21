@@ -173,54 +173,58 @@ test('命中特效：MAG7 只出白闪，不出碎块（碎块散落已按用户
 
 test('命中特效 Tier 4：MAG7 白闪波浪逐个亮起（不是同一时刻全部出现）', async ({ page }) => {
   const stats = await bootFixture(page);
-  expect(stats.whiteFlashStaggerMs, '扩散时长须为 600ms（用户指定）').toBe(600);
+  expect(stats.whiteFlashStaggerMs, '扩散时长须为 150ms（用户 2026-10-23 由 600ms 下调）').toBe(150);
   expect(stats.flashSlots, '白闪池须装得下一次 MAG7 的全部格').toBeGreaterThanOrEqual(40);
 
-  // 40 格 = MAG7 扫描上限（4×4 阵列逐层向 -z 后退）。采样时间轴铺满整个 600ms 波浪。
+  // 40 格 = MAG7 扫描上限（4×4 阵列逐层向 -z 后退）。采样时间轴铺满整个 150ms 波浪。
   //
-  // ⚠️ 判据必须用「**已启动格数**」而不是「可见白闪数」（实测枚坑）：
-  // 白闪寿命只有 150ms、40 格摊在 600ms（每格间隔 15.4ms）→ 任何时刻最多约 10 格并存
-  // （实测峰值就是 10）。拿可见数当进度时，它是一条「进入 − 消退」的平台曲线
-  // （实测 `1,9,10,10,9,4`），毫无单调性，定阈值只能拍脑袋。
+  // ⚠️ 判据必须用「**已启动格数**」而不是「可见白闪数」（实测枚坑）：后者是
+  // 「进入 − 消退」的净流水（实测剖面 `1,9,10,10,9,4`），毫无单调性。
+  // ⚠️ 150ms 波浪下 40 格每格仅隔 3.8ms（120Hz 下约 2 格/帧）→ 采样步长必须细于它，
+  // 否则「已启动格数」会跳大步（旧 600ms 口径下 10ms 步长够用，这里仍够，但相位要重算）。
   const wave = await page.evaluate(() =>
-    window.__FX_WAVE__(40, [0, 150, 300, 450, 599, 700]));
-  const [t0, , , , , t700] = wave.visible;
+    window.__FX_WAVE__(40, [0, 75, 150, 400, 700]));
+  const [t0, , , , t700] = wave.visible;
 
   // ① 最关键的一条（用户抱怨的就是这个）：命中瞬间**不是**全部 40 格同时亮。
   //    负向锚点：去掉 `staggerTimes`（全部 `now`）→ 这里就是 40 → 真 FAIL。
   expect(t0, `t=0 不得全部亮起：${wave.visible}`).toBeLessThanOrEqual(3);
   expect(t0, `t=0 至少要有一格亮（否则打击感滞后）：${wave.visible}`).toBeGreaterThanOrEqual(1);
-  // ② 扩散进度：已启动格数随时间递增到满额（「逐个亮起」的直接证据）
+  // ② 扩散进度：已启动格数随时间递增到满额（「逐个亮起」的直接证据）。
+  //    ⚠️ 采样窗必须覆盖「波浪结尾 + 末格淡出」= staggerMs(150) + totalMs(150) = 300ms，
+  //    否则末格还在淡出段（实测只采到 200ms 时尾部还残留 26 个）。
   const prog = await page.evaluate(() => {
     const ages = [];
-    for (let t = 0; t <= 780; t += 10) ages.push(t);
+    for (let t = 0; t <= 320; t += 2) ages.push(t);
     const r = window.__FX_WAVE__(40, ages);
     return { ages, started: r.started, visible: r.visible };
   });
   const s0 = prog.started[0];
-  const s300 = prog.started[Math.round(300 / 10)];
-  const sEnd = prog.started[Math.round(700 / 10)];
+  // 150ms 中途（= 波浪中点 75ms）应已启动约一半；边界给宽（±12 格），只钉「真的在推进」
+  const sMid = prog.started[Math.round(75 / 2)];
+  const sEnd = prog.started[Math.round(160 / 2)];
   expect(s0, `t=0 已启动格数：${prog.started.slice(0, 4)}`).toBeLessThanOrEqual(2);
-  expect(s300, `300ms 时已启动须过一成：${s300}/40`).toBeGreaterThan(4);
-  expect(s300, `300ms 时须尚未全部启动：${s300}/40`).toBeLessThan(36);
-  expect(sEnd, `700ms 时 40 格须已全部启动：${sEnd}`).toBe(40);
+  expect(sMid, `75ms（波浪中点）须已启动相当一部分：${sMid}/40`).toBeGreaterThan(9);
+  expect(sMid, `75ms 时须尚未全部启动：${sMid}/40`).toBeLessThan(37);
+  expect(sEnd, `160ms 时 40 格须已全部启动：${sEnd}`).toBe(40);
   // 已启动格数单调不减（波浪不会倒流）
   for (let i = 1; i < prog.started.length; i++) {
     expect(prog.started[i] >= prog.started[i - 1],
       `已启动格数须单调不减：${prog.started[i - 1]} → ${prog.started[i]}`).toBe(true);
   }
-  // ③ 同时刻启动的格数极少（不是一批一批、更不是全量）
+  // ③ 同时刻启动的格数极少（不是一批一批、更不是全量）。
+  //    2ms 采样粒度下 40 格 / 150ms ≈ 0.53 格/ms → 每采样点最多 2 格。
   let maxJump = 0;
   for (let i = 1; i < prog.started.length; i++) maxJump = Math.max(maxJump, prog.started[i] - prog.started[i - 1]);
-  expect(maxJump, `每 10ms 至多启动几格：实测 ${maxJump}`).toBeLessThanOrEqual(3);
-  // ④ 可见数峰值出现在命中之后（不在第 0 帧；负向锚点：全部同时启动时峰值就在第 0 个采样点）
+  expect(maxJump, `每 2ms 至多启动几格：实测 ${maxJump}`).toBeLessThanOrEqual(3);
+  // ④ 可见数峰值须不在第 0 个采样点（不是全程同步亮；负向锚点：全部同时启动时峰值就在 t=0）
   const peak = Math.max(...prog.visible);
   const peakIndex = prog.visible.indexOf(peak);
-  expect(peakIndex * 10, `峰值须出现在命中之后：第 ${peakIndex} 个采样点`).toBeGreaterThan(60);
+  expect(peakIndex * 2, `峰值须在命中之后：第 ${peakIndex} 个采样点（步长 2ms）`).toBeGreaterThan(0);
   // ⑤ 波浪结束后必须归零（白闪不会永远驻留；负向锚点：不过期 → 残留 40）
   expect(Math.min(...prog.visible.slice(-10)),
-    `780ms 附近须已全部消退：尾部 ${prog.visible.slice(-10)}`).toBe(0);
-  expect(t700).toBeGreaterThan(0);
+    `320ms 末段须已全部消退：尾部 ${prog.visible.slice(-10)}`).toBe(0);
+  expect(t700).toBe(0);
 });
 
 test('命中特效：加特林连射累积热度，碎块逐发变多（真实路径）', async ({ page }) => {
