@@ -692,6 +692,44 @@ function checkSkyboxAssets() {
   }
 }
 
+/**
+ * [夜空] 契约（v1.60）：夜空贴图是**烘焙产物**，必须与当前烘焙参数一致。
+ *
+ * 为什么需要：夜空六面已不是 mc-lite 原图，而是由 `tools/bake-night-sky.mjs` 在**方向空间**
+ * 加权重采样生成的结果（原图六面各自独立生成，12 条边平均 RMS 落差 **41.09** → 游戏里能看到
+ * 笔直暗线；烘焙后 **1.89**，与白天基准同量级）。
+ *
+ * 与图标/丧尸头部同一条失效路径：改了 `tools/night-sky-fingerprint.mjs` 的参数却忘跑
+ * `npm run nightsky` → 贴图**静默过期**（仍渲染旧图案，肉眼看不出）。指纹是精确判定。
+ *
+ * ⚠️ **不用颜色/接缝做门禁**：node 侧没有 JPEG 解码器（只有 pngjs），读不了 .jpg 像素。
+ * 接缝本身由 `tests/night-sky-seam.spec.mjs` 在浏览器里实测（那里能解码）。
+ * ⚠️ 主流程是逐个显式调用 —— 漏了本行则门禁永不执行（本仓已因此出过两次事故）。
+ */
+async function checkNightSkyFreshness() {
+  const { NIGHT_SKY_FINGERPRINT_JSON, nightSkyFingerprint } = await import('./night-sky-fingerprint.mjs');
+  const jsonPath = path.join(ROOT, NIGHT_SKY_FINGERPRINT_JSON);
+  if (!fs.existsSync(jsonPath)) {
+    failures.push(`[夜空] 缺指纹文件 ${NIGHT_SKY_FINGERPRINT_JSON}（跑 npm run nightsky）`);
+    return;
+  }
+  let meta;
+  try {
+    meta = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+  } catch {
+    failures.push(`[夜空] ${NIGHT_SKY_FINGERPRINT_JSON} 不是合法 JSON（重跑 npm run nightsky）`);
+    return;
+  }
+  const expected = nightSkyFingerprint();
+  if (meta.fingerprint !== expected) {
+    failures.push(
+      `[夜空] 贴图已过期：指纹不匹配（烘焙时 "${meta.fingerprint}" vs 当前 "${expected}"）→ 跑 npm run nightsky`,
+    );
+    return;
+  }
+  infos.push('[夜空] 烘焙指纹匹配（无缝立方图当前）');
+}
+
 // ---------------------------------------------------------------- 主流程
 
 const REGISTRY = await buildDefaultRegistry();
@@ -712,6 +750,7 @@ checkStructureJsonOrphans();   // 2026-09-30：tall_well 悬空宝箱回归防�
 checkZombieHeadTexture();
 checkTurretArmorTexture();
 checkSkyboxAssets();         // v1.58：天空盒立方图完整性（⚠️ 漏了本行则门禁永不执行）
+await checkNightSkyFreshness(); // v1.60：夜空烘焙产物指纹（⚠️ 漏了本行则门禁永不执行）
 
 console.log('[check:data] 数据契约检查');
 for (const i of infos) console.log(`  ✓ ${i}`);

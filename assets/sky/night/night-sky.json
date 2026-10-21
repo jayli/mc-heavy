@@ -1,0 +1,13 @@
+{
+ "size": 1024,
+ "faces": [
+  "posx.jpg",
+  "negx.jpg",
+  "posy.jpg",
+  "negy.jpg",
+  "posz.jpg",
+  "negz.jpg"
+ ],
+ "source": "mc-lite:src/assets/skyBox1 → 方向空间加权重采样",
+ "fingerprint": "size:1024;src:skyBox1;pad:0.35;pw:1.6;q:0.92"
+}
