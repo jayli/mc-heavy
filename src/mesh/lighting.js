@@ -11,6 +11,28 @@
 import { WORLD_MIN_Y, WORLD_MAX_Y, WORLD_HEIGHT, blockIndex } from '../voxel/constants.js';
 
 /**
+ * 区域重算的 column 偏移集合 = **3×3**（中心 + 4 正交 + 4 对角）。
+ *
+ * 为什么不是「中心 + 4 正交」的 5 列（2026-10-21 修掉的实玩 bug「灯光有边界」）：
+ * 光强度 15、每格 -1 → 最远照亮 **14 格**；column 边长 16。于是一个 column 的光能影响到的
+ * 邻居只有：
+ *   · 正交邻居：最近格距本列边缘 **1 格** → 必须参与；
+ *   · **对角邻居：最近格距本列边缘 2 格 → 同样必须参与**（旧实现漏掉了这 4 列）；
+ *   · 隔一列（offset ≥2）：最近格距 17 格 > 14 → 永远贡献 0，参与只是白算。
+ * 实测（全量 BFS 作真值，200 组随机世界）：plus-5 的最大误差 **10 级 / 982 格错**，3×3 = 0。
+ *
+ * ⚠️ 这个常量是 blocklight **和** skylight 共用的口径 —— 后者第一阶段恒 15、水平 BFS 是
+ * no-op 才没暴露同一个漏洞，后续启用阳光遮挡时会立刻犯同样的错。
+ * ⚠️ 与写回协议配对（见 scheduler `_onLightResult`）：3×3 只对**中心列**精确，偏移 ±1 的
+ * 邻列拿到的是截断结果，因此只能参与计算、不能写回。
+ */
+export const LIGHT_REGION_OFFSETS = Object.freeze([
+  Object.freeze([-1, -1]), Object.freeze([0, -1]), Object.freeze([1, -1]),
+  Object.freeze([-1, 0]), Object.freeze([0, 0]), Object.freeze([1, 0]),
+  Object.freeze([-1, 1]), Object.freeze([0, 1]), Object.freeze([1, 1]),
+]);
+
+/**
  * skylight：第一阶段不启用阳光遮挡（v1.9），全列恒 15。
  * 只写 column.light 高 4 位（保留低 4 位 blocklight）。
  * 遮挡模型（垂直落下遇 opaque 停）代码保留在 computeSkylightColumnOccluded，
@@ -53,16 +75,16 @@ export function recomputeSkylightAt(column, lx, lz, _registry) {
  * skylight 区域重算（Minecraft 模型）：
  * ① 垂直 pass：region 每列从顶向下传 15，遇 opaque 停（该格及其下 0）。
  * ② 水平 BFS：所有 skylight>1 的格子向 6 邻居扩散 level-1，opaque 阻挡。
- * region = 中心 column + 4 正交邻居（与 blocklight region 一致）；邻居缺失 → 截断。
+ * region = `LIGHT_REGION_OFFSETS`（3×3，与 blocklight 同一口径，推导见该常量）；邻居缺失 → 截断。
  * 只写高 4 位（保留 blocklight 低 4 位）。
  * 第一阶段（v1.9）skylight 恒 15、无遮挡：垂直 pass 写满 15，BFS 无扩散空间，
  * 本函数等价 no-op——机制保留，后续阶段启用阳光阴影时生效。
  *
- * 边界截断自洽性：skylight=15 的格子水平最远影响 14 格（15-d≥1），2 个 column 以外
- * 的亮格到中心 column 边缘已 ≥32 格，贡献为 0——5-column region 对中心列是充分的。
+ * 区域充分性的论证与 blocklight 同源：光水平最远影响 14 格，对角邻居最近格距本列边缘
+ * 2 格（必须在区域内），隔一列已 ≥17 格（贡献为 0）。
  */
 export function computeSkylightRegion(world, cx, cz, registry) {
-  const offsets = [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]];
+  const offsets = LIGHT_REGION_OFFSETS;
   const cols = [];
   for (const [dx, dz] of offsets) {
     const col = world.getColumn(cx + dx, cz + dz);
@@ -109,11 +131,11 @@ export function computeSkylightRegion(world, cx, cz, registry) {
 
 /**
  * blocklight：region 内所有 emissive 源 flood fill（强度 -1/格，opaque 阻挡）。
- * region = 中心 column + 4 正交邻居（光泄漏过界，§4.6）；邻居缺失则截断。
+ * region = `LIGHT_REGION_OFFSETS`（3×3，见该常量注释里的推导）；邻居缺失则截断。
  * 先清零 region 内低 4 位，再 BFS。
  */
 export function computeBlocklightRegion(world, cx, cz, registry) {
-  const offsets = [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]];
+  const offsets = LIGHT_REGION_OFFSETS;
   const cols = [];
   for (const [dx, dz] of offsets) {
     const col = world.getColumn(cx + dx, cz + dz);
@@ -179,7 +201,8 @@ export function recomputeLight(world, cx, cz, registry) {
   computeSkylightRegion(world, cx, cz, registry);
   computeBlocklightRegion(world, cx, cz, registry);
   const keys = new Set([`${cx},${cz}`]);
-  for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+  for (const [dx, dz] of LIGHT_REGION_OFFSETS) {
+    if (dx === 0 && dz === 0) continue;
     if (world.getColumn(cx + dx, cz + dz)) keys.add(`${cx + dx},${cz + dz}`);
   }
   return [...keys];

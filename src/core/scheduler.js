@@ -1,8 +1,9 @@
 // src/core/scheduler.js — 世界流式调度（§4.9）
 // GEN 段（Task 4）+ MESH 段（Task 6：脏 section → Worker 网格化 → 上传预算）。
 import { ChunkColumn } from '../voxel/chunk-column.js';
-import { columnKey, SECTIONS_PER_COLUMN } from '../voxel/constants.js';
+import { columnKey, SECTIONS_PER_COLUMN, BLOCKS_PER_SECTION } from '../voxel/constants.js';
 import { buildSectionMesh } from '../mesh/mesher.js';
+import { LIGHT_REGION_OFFSETS } from '../mesh/lighting.js';
 import { StructureIndex } from '../gen/structure-index.js';
 import { BudgetConfig } from './budget.js';
 
@@ -353,10 +354,16 @@ export class Scheduler {
   // ==================== LIGHT 段 ====================
 
   /**
-   * 阴影检测：column 内存在"空气格但垂直 skylight=0"（上方被遮挡）才需要水平扩散。
-   * 第一阶段（v1.9）不启用阳光投影、skylight 恒 15 → 恒不触发，light 任务仅由编辑触发；
-   * 检测保留：后续阶段启用遮挡模型时自动恢复 GEN 就绪即触发扩散收敛。
-   * 判据 = 存在 blocks==0 且 (light>>4)==0 的格。O(32768) 扫描，GEN 就绪时一次。
+   * 阴影检测（两件事合并在一起，都以「这一列的光照输入变了」为语义 —— 见 enqueueLight）：
+   *
+   * ① 悬挑扩散（第一阶段 v1.9 恒不触发）：column 内存在「空气格但垂直 skylight=0」才需要水平扩散。
+   *    判据 = 存在 blocks==0 且 (light>>4)==0 的格。O(32768) 扫描，GEN 就绪时一次。
+   * ② **区域内有 emissive 源**（2026-10-21 新增，修「灯光有边界」的第二半）：
+   *    GEN 只对本 column 算 blocklight（截断），跨列光必须靠以各列为中心的 light 任务收敛。
+   *    新列到达时若它的 3×3 区域内存在发光方块，就要把区域入队 —— 否则玩家「走远再回来」
+   *    会看到一个刚生成的光源又是「光停在 column 边界上」（实测现有存档里 43 个发光方块，
+   *    跨列邻居格 126/134 是 0）。
+   *    成本：9 × 32768 格扫 emissiveTable，实测 **0.286ms**，首次命中即退出；无光列零成本。
    */
   _enqueueLightIfOverhang(column) {
     const blocks = column.blocks;
@@ -367,18 +374,47 @@ export class Scheduler {
         return;
       }
     }
+    if (this._regionHasEmissive(column.cx, column.cz)) this.enqueueLight(column.cx, column.cz);
   }
 
-  /** 请求异步重算 (cx,cz) 的区域光照（去重；column 未就绪忽略） */
+  /** 3×3 区域内（已就绪的列）是否存在发光方块。首次命中即退出。 */
+  _regionHasEmissive(cx, cz) {
+    const emissive = this.registry.emissiveTable;
+    for (const [dx, dz] of LIGHT_REGION_OFFSETS) {
+      const col = this.world.getColumn(cx + dx, cz + dz);
+      if (!col || col.state !== 'ready') continue;
+      const blocks = col.blocks;
+      for (let i = 0; i < blocks.length; i++) {
+        if (emissive[blocks[i]] > 0) return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * 请求「(cx,cz) 这一列的光照输入变了」→ 入队 **3×3 区域**（区域内已就绪的列）。
+   *
+   * ⚠️ **入队范围 ≠ 写回范围，这是不对称且载荷性的**（2026-10-21 修「灯光有边界」的根因之一）：
+   * 写回只写**中心列**（3×3 只对中心列精确，邻列拿到的是截断结果 —— 见 `_onLightResult`），
+   * 但入队必须覆盖 3×3 —— 因为「光照输入变了」对区域里每一列都是真的：灯放在 A 列，
+   * 它的 ✓ 形光锥会进入**每一个**邻居列的角落，而邻居列原本的 light 是 GEN 时的单列截断值。
+   * 旧实现只入队编辑所在列 → 灯的邻居列永远没有自己的 task → 永远是 0。
+   *
+   * 只入**已就绪**的列：未加载的列入了只会堆在 `_lightQueue` 里等（或永远等不到），
+   * 它们由 `_enqueueLightIfOverhang` 的 emissive 扫描在 GEN 到达时补入。
+   */
   enqueueLight(cx, cz) {
-    const key = columnKey(cx, cz);
-    const col = this.world.getColumn(cx, cz);
-    if (!col || col.state !== 'ready') return;
-    if (this._inflightLight.has(key)) return; // 在途：结果回来后由脏标记再触发
-    this._lightQueue.add(key);
+    for (const [dx, dz] of LIGHT_REGION_OFFSETS) {
+      const ncx = cx + dx, ncz = cz + dz;
+      const key = columnKey(ncx, ncz);
+      const col = this.world.getColumn(ncx, ncz);
+      if (!col || col.state !== 'ready') continue;
+      if (this._inflightLight.has(key)) continue; // 在途：结果回来后由脏标记再触发
+      this._lightQueue.add(key);
+    }
   }
 
-  /** 每帧下发 ≤N 个 light 任务：中心 column + 4 正交邻居的 blocks 副本送 Worker */
+  /** 每帧下发 ≤N 个 light 任务：发中心 column + 3×3 区域邻居的 blocks 副本送 Worker */
   _processLightQueue() {
     let dispatched = 0;
     for (const key of [...this._lightQueue]) {
@@ -386,10 +422,10 @@ export class Scheduler {
       const [cx, cz] = key.split(',').map(Number);
       const col = this.world.getColumn(cx, cz);
       if (!col || col.state !== 'ready' || this._inflightLight.has(key)) continue;
-      // halo 前置（与 MESH 同口径，§4.3）：半径内 4 正交邻居须 ready，否则保留
-      // 队列下帧重试——避免邻居未就绪时区域截断、边界阴影不收敛。
+      // halo 前置（与 MESH 同口径，§4.3）：半径内 3×3 邻居须 ready，否则保留
+      // 队列下帧重试——避免邻居未就绪时区域截断、边界光照不收敛。
       let neighborsReady = true;
-      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      for (const [dx, dz] of LIGHT_REGION_OFFSETS) {
         const ncx = cx + dx, ncz = cz + dz;
         const dist = Math.max(Math.abs(ncx - this._playerCx), Math.abs(ncz - this._playerCz));
         if (dist <= this.viewDistance) {
@@ -400,7 +436,7 @@ export class Scheduler {
       if (!neighborsReady) continue;
       this._lightQueue.delete(key);
       const columns = [];
-      for (const [dx, dz] of [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      for (const [dx, dz] of LIGHT_REGION_OFFSETS) {
         const ncol = this.world.getColumn(cx + dx, cz + dz);
         if (!ncol || ncol.state !== 'ready') continue;
         // 拷贝 blocks（不能 transfer 主线程活跃数据）
@@ -409,7 +445,11 @@ export class Scheduler {
       const { id: callId, promise } = this.pool.call('light', { cx, cz, columns }, {
         transfer: columns.map((c) => c.blocks),
       });
-      this._inflightLight.set(key, { callId });
+      // 记下本次输入各列的 (key → version)：回包写回前要校验「区域输入是否仍在途的是同一批」
+      // （红线 7：版本协议而非 epoch/防抖）。
+      const inputs = new Map();
+      for (const c of columns) inputs.set(columnKey(c.cx, c.cz), c.version);
+      this._inflightLight.set(key, { callId, inputs });
       promise.then((r) => this._onLightResult(key, r)).catch(() => {
         this._inflightLight.delete(key); // 失败：下帧由脏标记/邻居到达重试
       });
@@ -418,24 +458,68 @@ export class Scheduler {
   }
 
   /** LIGHT 结果：中心 column 权威写回（v1.8 修订，设计文档 §4.6/DR-14）。
-   *  每列 light 只由以它为中心的 task 写回——5-column region 对中心列充分
-   *  （15 的光水平最远影响 14 格 < 16），而邻列若被写回会遭 last-write-wins：
-   *  后到的 task 其 region 可能不含该列的光源（房屋东窗/萤石在 region 外），
-   *  先清零再用不完整光源重算 → 覆盖已收敛的好光（偶现全黑面 + 截断渐变环根因）。
-   *  邻列只参与计算不写回，仅置脏重 mesh（边界脸采样中心列 light，需收敛）。
-   *  版本不匹配（在途期间玩家编辑过）：丢弃并重新入队收敛，
-   *  否则旧 light 会覆盖 setBlock 快路径已重算的垂直单列新值。 */
+   *  每列 light 只由以它为中心的 task 写回 —— 3×3 region 对中心列充分
+   *  （15 的光水平最远影响 14 格 < 16，对角邻居最近格距本列边缘 2 格也在区域内），
+   *  而邻列若被写回会遭 last-write-wins：后到的 task 其 region 可能不含该列的光源
+   *  （房屋东窗/萤石在 region 外），先清零再用不完整光源重算 → 覆盖已收敛的好光
+   *  （偶现全黑面 + 截断渐变环根因）。邻列只参与计算不写回，仅置脏重 mesh
+   *  （边界脸采样中心列 light，需收敛）。
+   *
+   * 校验两层（缺一不可）：
+   *  ① **中心列**版本（旧有）：在途期间玩家编辑过 → 丢弃并重新入队，
+   *     否则旧 light 会覆盖 setBlock 快路径已重算的垂直单列新值。
+   *  ② **region 全部输入列**版本（2026-10-21 新增）：邻列 block 变了也要丢 —— 它们的
+   *     version 不会因为「别列放了灯」而变，但它们的 blocks 已经变了（放的灯就在里面），
+   *     旧 task 回包用的是旧 blocks → 写回去就是一次静默回退。
+   *     实测现象面：灯光跨列时不收敛（需要再放一块才“好”）。
+   *
+   * 脏标记只打**真正变了**的 section：邻列只有在「中心列该 sy 确实变了」时置脏
+   * （邻列的 −X/−Z 面 faceLight 采的正是中心列的格）。旧实现「9 列 × 8 section 无条件全脏」
+   * 在入队范围扩到 3×3 后会把 mesh churn 放大 9 倍。
+   */
   _onLightResult(key, r) {
+    const inflight = this._inflightLight.get(key);
     this._inflightLight.delete(key);
     const [ccx, ccz] = key.split(',').map(Number);
-    for (const res of r.results) {
-      const col = this.world.getColumn(res.cx, res.cz);
-      if (!col || col.state !== 'ready') continue; // 已卸载：丢弃
-      if (res.cx === ccx && res.cz === ccz) {
-        if (col.version !== res.version) { this.enqueueLight(res.cx, res.cz); continue; }
-        col.light.set(new Uint8Array(res.light));
+
+    // ② region 输入校验：回包里记录的输入版本 vs 当前实际版本（任一不符即整体丢弃）
+    const inputs = inflight?.inputs;
+    if (inputs) {
+      for (const [nr, version] of inputs) {
+        const [x, z] = nr.split(',').map(Number);
+        const col = this.world.getColumn(x, z);
+        if (!col || col.state !== 'ready') { this.enqueueLight(ccx, ccz); return; }
+        if (col.version !== version) { this.enqueueLight(ccx, ccz); return; }
       }
-      for (let sy = 0; sy < SECTIONS_PER_COLUMN; sy++) col.markDirty(sy);
+    }
+
+    const center = this.world.getColumn(ccx, ccz);
+    if (!center || center.state !== 'ready') return; // 已卸载：丢弃
+    if (!r.light) { this.enqueueLight(ccx, ccz); return; } // 调用方漏送中心列：重试
+    // ① 中心列版本（与 inputs 里的条目重复，但 task 可能来自不记 inputs 的旧路径/fixture）
+    if (r.version !== undefined && center.version !== r.version) {
+      this.enqueueLight(ccx, ccz);
+      return;
+    }
+    const next = new Uint8Array(r.light);
+    const prev = center.light;
+    // 逐 section 比对：只把真正变了的 sy 置脏。返回「本列哪些 sy 变了」供邻列判定。
+    const changed = [];
+    for (let sy = 0; sy < SECTIONS_PER_COLUMN; sy++) {
+      const base = sy * BLOCKS_PER_SECTION;
+      const end = base + BLOCKS_PER_SECTION;
+      let same = true;
+      for (let i = base; i < end; i++) { if (prev[i] !== next[i]) { same = false; break; } }
+      if (!same) changed.push(sy);
+    }
+    center.light.set(next);
+    for (const sy of changed) center.markDirty(sy);
+    // 邻列：只在本列同 sy 变了时置脏（邻列的 −X/−Z 面 faceLight 采中心列的格）
+    for (const [dx, dz] of LIGHT_REGION_OFFSETS) {
+      if (dx === 0 && dz === 0) continue;
+      const ncol = this.world.getColumn(ccx + dx, ccz + dz);
+      if (!ncol || ncol.state !== 'ready') continue;
+      for (const sy of changed) ncol.markDirty(sy);
     }
   }
 

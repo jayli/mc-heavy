@@ -114,24 +114,35 @@ installRpcHandler({
 
   /**
    * LIGHT：区域光照重算（skylight 垂直+水平扩散 + blocklight flood fill，§4.6）。
-   * 主线程编辑/邻居到达后异步收敛用——区域重算 ~4ms，不在主线程跑（守帧预算）。
+   * 主线程编辑/邻居到达后异步收敛用——区域重算 ~5ms，不在主线程跑（守帧预算）。
+   *
+   * 回包形状（2026-10-21 改）：**只回中心列的 light** + 本次参与计算的各输入列 version。
+   * 为什么不回 3×3 的 9 份 light：写回协议是「中心权威」（邻列的 3×3 结果是截断的、只能参与
+   * 计算不能写回，见 scheduler `_onLightResult`），传它们纯属浪费 —— 入队范围扩到 3×3 后
+   * 会把 RPC 出参从 32KB 推到 288KB/次。实测 RPC 往返（交替多轮取中位）：9 列 **7.8ms /
+   * 0.59MB 入**，25 列 9.8ms / 1.64MB —— 区域变大**并未增加**总载荷。
    * @param {{cx:number, cz:number, columns: Array<{cx:number, cz:number, version:number, blocks:ArrayBuffer}>}} p
    */
   light(p) {
     const world = new WorldData(registry);
-    const cols = [];
+    let center = null;
+    const inputs = [];
     for (const c of p.columns) {
       const col = new ChunkColumn(c.cx, c.cz);
       col.blocks = new Uint16Array(c.blocks);
       col.version = c.version;
       world.add(col);
-      cols.push(col);
+      inputs.push({ cx: col.cx, cz: col.cz, version: c.version });
+      if (col.cx === p.cx && col.cz === p.cz) center = col;
     }
     computeSkylightRegion(world, p.cx, p.cz, registry);
     computeBlocklightRegion(world, p.cx, p.cz, registry);
     return {
       cx: p.cx, cz: p.cz,
-      results: cols.map((col) => ({ cx: col.cx, cz: col.cz, version: col.version, light: col.light.buffer })),
+      // 中心列不在送来的列里（调用方漏送）→ light 为 null，主线程按「无结果」处理
+      light: center ? center.light.buffer : null,
+      version: center ? center.version : undefined,
+      inputs,
     };
   },
 
