@@ -47,7 +47,11 @@ Epic 链 M4→M5→M6→M7 已全部交付。**第三阶段 M8（TNT 爆炸 / �
 **v1.60** 重做了**夜空天空盒**（mc-lite `skyBox1` 六面各自独立生成 → 12 条共享边平均 RMS 落差
 41.09 而白天只有 1.90 → 天空被笔直暗线切成方块感；改为方向空间加权重采样重烘焙，接缝 1.865）。
 **v1.61** 修了**夜间雾色失效**（night 风格 `fogScale=4.0` 把雾距推到 608 格 > 世界加载半径 160 →
-夜里无物可染；统一为 1.0）。
+夜里无物可染；统一为 1.0）。**v1.62** 把**曳光寿命缩到 mc-lite 的 1/4**（奔跑连射不再攒火线残影），
+**v1.63** 接入**背景音乐**（`bgm.mp3` 循环 + 面板开关），**v1.64 / v1.65** 连修两次
+**光照跨 column 边界**（blocklight 区域改 3×3 / 脏 section 按 mesher 的 light 依赖传播），
+**v1.66 / v1.67** 把枪击命中特效改为**整格白闪 + 按命中面 atlas 取色的碎块**（MAG7 全格白闪波浪）。
+另有一项未按版本号登记的改动：**准心按背景亮度自适应配色**（`src/ui/crosshair.js`）。
 进度与实测数据一律查 roadmap。里程碑状态、验收报告、遗留 TODO 的
 完整清单**一律查 roadmap** —— 此处不复制（复制就会漂移）。
 
@@ -170,6 +174,14 @@ M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 
   （会提前终止模板字符串 → 整个模块解析失败 → **游戏页白屏加载不出来**，不是面板样式错，
   是整个页面挂；实测一度误判为「服务端口有问题」）。改完 `src/**/*.js` 先跑 `npm run lint`
   （能抓解析错误）再做实测。
+- **WebGPU canvas 的像素回读必须在 `renderer.render()` 之后**（准心自适应配色时实测）：帧循环里
+  `render()` **之前** `drawImage` + `getImageData` 读到恒为 **0**、之后才是正确值 → 任何「按画面
+  亮度/颜色决策」的 HUD 逻辑都会永远判成暗背景。缺陷形态是「准心恒白」，不报错、不抛异常。故
+  `Crosshair` 拆成 `sample()`（Game 在 `render()` 后调）与 `update()`（只消费上次采样结果），
+  并按 `SAMPLE_INTERVAL_MS = 100` 节流 —— 单次回读实测 **~1.1ms**（GPU 回读），不能每帧做。
+  阈值口径是「**默认白，只在白到看不见时才转黑**」（220 / 回差 200），**不是按亮度中点二选一**
+  —— 后者会让石头地这类中灰常见画面「乱变色」。准心由模块运行时创建并挂 `body` 下，`index.html`
+  里**已无静态准心**；切色只改 `color`（`background: currentColor`），不碰布局。
 - **判断方块渲染语义必须读 mc-lite 的 `MaterialManager`（材质层）+ `BlockData`（数据层），
   不能只看 mc-heavy 的 `cullMode`** —— 后者是前者的转换产物，转换规则
   （`blocks-data.js:6`「名字含 leaves → cutout」）本身可能有偏差。`cullMode`（渲染通道）与
@@ -313,7 +325,9 @@ M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 
   非整体不支持）。**替代 = 单材质 + 单纹理 + UV 分区**：纹理双区并排（左半无图案 / 右半有图案），
   几何的正面顶点 UV 改写到右半（`zombie-renderer.js` `applyHeadUV`）。M7 巢穴/炮塔等任何
   「不同面不同图案」的实体同理。**多区纹理不能用上下分区**（会把 N×N 图案压成 N×(N/2) → 比例失真），
-  须横向并排。
+  须横向并排。M8 炮塔落地为 `npm run turret`（`assets/turret/armor.png` 192×64 三区横向并排 +
+  `armor.json` 指纹，源图是同目录 `turret_pic1/2/3`），`check:data` 的 `[炮塔装甲]` 环节守过期 ——
+  改参数或源图后不重烘会**渲染旧装甲**，方块与逻辑层面都看不出差别。
 - **`BoxGeometry` 各面的 `buildPlane` `vdir` 符号不同**（`three.core.js:29515-29519`：正面/侧面
   `-1`、顶面 `+1`）→ 跨面写「世界坐标 ← 归一化 u/v」换算**不能用同一套公式**（会在某些面把 v
   反向、偏一格）。跨面取样须用**纹理坐标**作统一参数。踩坑记录见 testing-policy §2.7 第 9 类。
@@ -1268,7 +1282,8 @@ M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 
 
 ```
 mc-heavy/
-├─ index.html                  # import map（本地 vendor/three）+ WebGPU 启动 gate + 准心
+├─ index.html                  # import map（本地 vendor/three）+ WebGPU 启动 gate（准心已移到
+│                              #   src/ui/crosshair.js 运行时创建）
 ├─ vendor/three/               # three.js r185.1（three.webgpu.js / three.tsl.js / three.core.js）
 ├─ docs/
 │  ├─ roadmap.md              # 项目进度唯一总览（里程碑总表 + 依赖链 + 扩展点）
@@ -1290,6 +1305,10 @@ mc-heavy/
 ├─ tools/bake-zombie-head.mjs  # 丧尸头部马赛克纹理烘焙（npm run zombie）：128×64 双区并排
 │                              #   → assets/zombie/head.png + head.json（尺寸+输入指纹）
 ├─ tools/zombie-head-fingerprint.mjs # 丧尸头部图案参数与指纹共享模块（同上，红线 1）
+├─ tools/bake-turret-armor.mjs # 炮塔装甲纹理烘焙（npm run turret）：三张源图 → 192×64 三区并排
+│                              #   → assets/turret/armor.png + armor.json（尺寸+输入指纹）
+├─ tools/turret-armor-fingerprint.mjs # 装甲图案参数与指纹共享模块（同上，红线 1）
+├─ tools/validate-weapon-assets.mjs   # 受控 GLB 静态校验（npm run validate:weapon-assets）
 ├─ tools/check-architecture.mjs # 静态架构门（npm run check:arch）：红线可静态检查的部分
 ├─ tools/check-data.mjs        # 数据契约门（npm run check:data）：关系型断言取代硬编码计数
 │                              #   （含图标过期指纹检查）
@@ -1313,6 +1332,9 @@ mc-heavy/
 │  │  ├─ day/                  # 白天云层：6 面 × 1024²（mc-lite skyBox4，912K，原样复制未重编码）
 │  │  └─ night/                # 夜空星空：6 面 × 1024²（mc-lite skyBox1，5.1M）
 │  │                           #   清单唯一权威 = `render/sky-config.js`（check:data 的 [天空盒] 环节）
+│  ├─ models/weapons/          # M4 受控 GLB（pistol / mag7 / minigun）—— 替换后跑 validate:weapon-assets
+│  ├─ turret/                  # 炮塔装甲烘焙产物（armor.png + armor.json）；turret_pic1/2/3 是
+│  │                           #   mc-lite 源图（烘焙输入，勿当渲染资源）
 │  └─ structures/              # 从 mc-lite 复制 JSON
 └─ src/
    ├─ core/        # game.js / scheduler.js / worker-pool.js / budget.js / perf.js / perf-hud.js
@@ -1344,6 +1366,13 @@ mc-heavy/
    │               #  view-arm.js（第一人称手臂：单个 unlit Mesh 挂 camera 下，与 view-weapon.js
    │               #    互斥显示；徒手可见 + 挖/放挥动。**挥动用原版双曲线** sin(√p·π) 快出主劈
    │               #    + sin(p²·π) 滞后甩腕（v1.49，取代 mc-lite 的对称单曲线））
+   │               #  turret-renderer.js / turret-armor-texture.js（炮塔 8 部件实例 + 单纹理 UV 分区）
+   │               #  projectile-renderer.js（弹丸）/ tracer-renderer.js（曳光，起终点冻结在世界空间）
+   │               #  explosion-renderer.js（球体扩张）+ explosion-sprite.js（序列帧 billboard）
+   │               #    —— 两层叠加才是 mc-lite 的爆炸表现，只做一层会「少一半」
+   │               #  block-hit-fx.js + block-color.js（枪击命中：整格白闪 + 按命中面 atlas 取色的碎块）
+   │               #  weapon-model-loader.js（受控 GLB 加载，只在主线程）/ audio-manager.js
+   │               #    （效果音 SOUND_IDS + 背景音乐 BGM_ID 两份清单，不得合并）
    ├─ entities/    # entity-manager.js（动态实体唯一权威 + generation + AABB raycast）
    │               #  entity-types.js（probe 定义 + AABB slab 射线；Worker 同构，无 three）
    │               #  zombies/（M6，Worker 同构无 three）：zombie-config.js（冻结玩法数据唯一权威）
@@ -1355,12 +1384,21 @@ mc-heavy/
    │               #  minecarts/（矿车 Epic，Worker 同构无 three）：minecart-config.js（冻结玩法
    │               #   数据与几何尺寸唯一权威）+ minecart-system.js（移动/转弯/碰撞/连挂同构
    │               #   纯函数 + MinecartService 玩法入口 + minecartDefinition 持久实体）
+   │               #  turrets/（M8，方块锚定装置，同构无 three）：turret-config.js（玩法数值唯一权威）
+   │               #   + turret-blueprint.js（11 格展开；**BASE_DY=1** —— 底座坐在地面格之上，
+   │               #     与巢穴共用 `target.blockPos` 口径，pivot 与 mc-lite 逐位等价）
+   │               #   + turret-service.js（上限 + 预检 + 原子放置 + hydrate）/ turret-controller.js
+   │               #     （增量失效 + 运行态时钟 + 朝向插值）/ turret-system.js（主线程索敌 + LOS）
+   │               #   + projectile-system.js（弹丸临时实体：DDA 阻挡 + 实体 raycast 命中）
+   │               #  playground/（M9）：playground-config.js（54×54 平台参数）+ playground-service.js
+   │               #    （blockEntity = 平台唯一持久真相；**无 controller** —— 它没有运行时行为）
    ├─ player/      # player.js / physics.js / raycast.js / step-lift.js
    │               #  view-bob.js（跑动视角晃动：**纯函数无 three/无 DOM**，与 step-lift.js 同手法
    │               #    供单测直接驱动；判据 = 移动 + 全速 + 不跳跃。v1.49 起含相机 roll/pitch）
    │               #  inventory.js（物品模型）/ orientation.js（朝向三分支纯函数）/ weapons/*（M4）
-   ├─ ui/          # coords-hud.js / hotbar.js / settings-panel.js / settings.js
+   ├─ ui/          # coords-hud.js / hotbar.js / settings-panel.js / settings.js / toast.js
    │               #  inventory.js（背包面板：DOM 方案照搬 mc-lite）/ icons.js（图标 manifest 加载）
+   │               #  crosshair.js（运行时创建准心；按背景亮度切白/黑，采样必须在 render() 之后）
    ├─ save/        # persistence.js（IndexedDB edits + M5 entities store）/ progress-codec.js
    │               #  （v1.43 进度包编解码纯函数：`mc-heavy-progress` v1 = seed + edits + entities；
    │               #    导出/导入的坐标换算与坏条目分类在此，面板只做文件 I/O）
@@ -1386,6 +1424,8 @@ npm run check:arch             # 静态架构门（Tier 1，285ms）：12 条重
 npm run check:data             # 数据契约门（Tier 2，277ms）：关系型断言取代硬编码计数
                                #   引用完整性/物品集合关系式/图标同步/测试注册完整性
 npm test                       # Playwright 全部验收（tests/*.spec.mjs）
+                               #   自带 webServer（复用/自启 8081）+ workers:1 串行 → 不用先手动
+                               #   `npm start`；并行跑其他 CPU 任务会让计时型断言 flaky
 npx playwright test tests/<name>.spec.mjs   # 跑单个 spec（计时断言 flaky 时须单独连跑）
 npm run bench                  # M3-5 性能基线跑图（4 场景 → docs/m3-baseline.{md,json}）
                                #   加 -- --check 为回归门禁（回退 >10% 阻断，退出码 1）
@@ -1393,12 +1433,17 @@ npm run lint                   # eslint src tools tests
 npm run icons                  # 烘焙全量背包图标 → assets/icons-atlas.png + icons.json
                                #   改背包内方块的贴图地址或 mesher 几何后需跑，否则图标静默过期
 npm run zombie                 # 烘焙丧尸头部马赛克纹理 → assets/zombie/head.png + head.json
+                               #   改 tools/zombie-head-fingerprint.mjs 图案参数后需跑，
+                               #   否则纹理静默过期（check:data 的 [丧尸头部] 指纹检查会抓）
+npm run turret                 # 烘焙炮塔装甲 → assets/turret/armor.png + armor.json（三区并排）
+                               #   改 tools/turret-armor-fingerprint.mjs 或源图后需跑，
+                               #   否则装甲静默过期（check:data 的 [炮塔装甲] 指纹检查会抓）
 npm run nightsky               # 烘焙无缝夜空立方图 → assets/sky/night/*.jpg + night-sky.json
                                #   改 tools/night-sky-fingerprint.mjs 参数后需跑，否则贴图静默过期
-                               #   改 tools/zombie-head-fingerprint.mjs 的图案参数后需跑，
-                               #   否则纹理静默过期（check:data 的 [丧尸头部] 指纹检查会抓）
 npm run atlas                  # 重新生成 assets/atlas.png + atlas.json（世界渲染 atlas）
                                #   注：新增 textures 子目录会重排已有 tile 坐标（shelf 装箱按字母序）
+npm run validate:weapon-assets # 受控 GLB 静态校验（glTF magic/JSON chunk/体积上限/无外链与扩展）
+                               #   替换 assets/models/weapons/ 下的模型后必跑，失败退出码 1
 ```
 
 **门禁分层**（何时跑什么，详见 [`docs/testing-policy.md`](docs/testing-policy.md) §6）：
@@ -1414,7 +1459,9 @@ scheduler/physics）再加 `npm run bench -- --check`。**不要**为改一个�
   用例在 `suites[].tests[]` 里，须 `flatMap` 展开）；
 - 性能基准页：`http://localhost:8081/src/bench/webgpu-publish.html`（暴露 `window.__BENCH__`）；
 - 游戏入口暴露 `window.__MC_GAME__`（world/player/scheduler/registry + perfSnapshot/renderStats），
-  Playwright 交互测试经此编程驱动（无头环境无真实键鼠/pointer lock）。
+  Playwright 交互测试经此编程驱动（无头环境无真实键鼠/pointer lock）；
+- 诊断用的一次性探针 spec 放 `tests/tmp-*.spec.mjs`（`.gitignore` 已忽略该前缀与
+  `pi-session-*.html`），不要提交。
 
 ## 测试工作流（分级 TDD）
 
@@ -1478,6 +1525,9 @@ M7 交付了一套可复用的**「方块锚定装置」模式**（持久真相 
 - 全部使用中文；解释设计取舍时引用设计文档章节号；
 - 改动前说清楚「为什么」，改动后附验证证据（命令输出、帧时、draw call 数），不凭感觉宣称通过；
 - 提交必须等用户明确指令，提交信息用 Conventional Commits。
+- **`origin` 配了双 push**：`git push origin <分支>` 串行推 GitHub 与内部 GitLab
+  （`git@gitlab.alibaba-inc.com:bachi/mc-heavy.git`），**任一失败整体报错、而另一个可能已推成功**
+  → 重跑即可，不要改 remote 配置绕开；fetch/pull 只走 GitHub。
 - 诊断 bug 不猜：先在真实游戏/隔离环境复现、读实际数据（light 值/扫描线/队列状态）定位根因，
   再动手修。光照类 bug 尤其如此（垂直/扩散/快慢路径多，凭印象改会引入回归）。
 - **写对照脚本做诊断时，对照侧与被测代码必须只差那一个要考察的变量** —— 两侧共用同一个错误假设
