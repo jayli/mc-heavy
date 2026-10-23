@@ -62,8 +62,18 @@ const HEAD_BASE = {
     '海岸(10,40)→东': { cutout: 57.1, transparent: 114.3 },
   },
 };
-/** 每个视域里巨树方块数的下界（实测的 ~1/3；防「没生成树 → 预算天然过」的恒真） */
-const GIANT_FLOOR = { '(18,27)': 5000, '(-20,10)': 20000, '(30,10)': 1000, '(-25,-5)': 20000, '(10,40)': 10000 };
+/**
+ * 巨树方块的**总量**下界（防「没生成树 → 预算天然过」的恒真）。
+ *
+ * ⚠️ 口径从「每个视域各自下界」改成「5 个视域合计下界」（2026-10-24 区域门控）。
+ * 原因：`patchChance` 让 beach/banyan 只有 1/3 / 1/2 的粗格长树，于是某些视域会**合理地一棵巨树都没有**
+ * —— 实测 seed 12345：(18,27) 与 (30,10) 的巨树方块从 7235 / 1741 直接变成 **0**（落在被跳过的粗格里）。
+ * 那不是缺陷，正是用户要的「不是每个海滩旁都有」。若还按视域各自下界，要么恒不成立（用旧值），
+ * 要么必须写 0（等于没有对照）—— 两者都错。改成合计口径后仍能抓住「树根本没生成」这种真回归。
+ * 实测（seed 12345）：(18,27) 0 / (-20,10) 23,089 / (30,10) 0 / (-25,-5) 8,846 / (10,40) 4,910
+ * → 合计 **36,845**，下界取 ~2/3 = 20,000。
+ */
+const GIANT_TOTAL_FLOOR = 20000;
 const OPAQUE_MAX = 90;
 const TOL = 1.0;
 /** 总顶点容差（比例）：实测 A/B 逐位相同，1% 容差足以吸收采样噪声又远小于任何真实回归 */
@@ -140,12 +150,13 @@ test('预算门：5 个固定视域（静态）—— 总顶点不比 HEAD 更�
   await openGame(page);
   expect(await capacities(page), INIT_MSG).toEqual(INIT);
   const report = [];
+  let giantTotal = 0;
   for (const [name, [cx, cz]] of Object.entries({ '(18,27)': [18, 27], '(-20,10)': [-20, 10], '(30,10)': [30, 10], '(-25,-5)': [-25, -5], '(10,40)': [10, 40] })) {
     const x = cx * 16 + 8, z = cz * 16 + 8;
     await teleport(page, x, z); await settle(page, x, z);
     const pct = await snapshot(page); const giants = await giantCount(page); const total = await totalVerts(page);
+    giantTotal += giants;
     report.push(`${name} opaque ${pct.opaque}% cutout ${pct.cutout}% transp ${pct.transparent}% 总顶点 ${total.toLocaleString()} 巨树方块 ${giants}`);
-    expect(giants, `${name} 视域里有足够多的巨树方块（对照，防恒真）`).toBeGreaterThanOrEqual(GIANT_FLOOR[name]);
     // 【主判据】总顶点 ≤ HEAD 同视域总顶点（+1% 容差）。与通道归属无关，是本次改动的核心不变式。
     expect(total, `${name} 总顶点不比 HEAD 更糟`).toBeLessThanOrEqual(HEAD_BASE.views[name].total * (1 + TOL_PCT));
     expect(pct.opaque, `${name} opaque`).toBeLessThanOrEqual(OPAQUE_MAX);
@@ -156,6 +167,10 @@ test('预算门：5 个固定视域（静态）—— 总顶点不比 HEAD 更�
     expect(pct.transparent, `${name} transparent 不比 HEAD 更糟`).toBeLessThanOrEqual(HEAD_BASE.views[name].transparent + TOL);
   }
   console.log('BUDGET VIEWS:\n  ' + report.join('\n  '));
+  // 对照（防恒真）：单视域已不再要求有树（`patchChance` 会让某些视域合理地零巨树），
+  // 改成 5 个视域**合计**必须够多 —— 「树根本没生成」这种真回归仍会被抓到。
+  expect(giantTotal, '5 个视域的巨树方块合计下界（对照，防「没生成树 → 预算天然过」的恒真）')
+    .toBeGreaterThanOrEqual(GIANT_TOTAL_FLOOR);
   expect(await opaqueCapacity(page), 'opaque 通道未发生扩容').toBe(INIT.opaque);
 });
 

@@ -65,20 +65,70 @@ test('巨树落地（三条路径）：森林/海边/榕树带视域里出现各
     'A 森林：高橡/白桦/雪松的叶').toBeGreaterThan(2000);
   expect(forest.per.giant_oak_log, 'A 森林：树干').toBeGreaterThan(50);
 
+  // B 海边：同理，**不能钉死一个固定坐标**。区域门控（`patchChance=1/3`）让「(10,40) 这个视域」
+  // 恰好落在被跳过的粗格里时一棵椰树都没有（实测该坐标从 11,208 方块降到 4,910，但仍过阈值；
+  // 真正的风险是换 seed/换视域后归零）。改为取一个**真的产出了 beach 候选**的粗格中心飞过去。
   await flyTo(page, 10 * 16 + 8, 40 * 16 + 8);
-  const coast = await countGiants(page);
-  expect(coast.per.giant_cherry_leaves + coast.per.giant_palm_leaves, 'B 海边：樱花/椰子叶').toBeGreaterThan(1000);
+  let coast = await countGiants(page);
+  let coastOk = coast.per.giant_cherry_leaves + coast.per.giant_palm_leaves > 1000;
+  if (!coastOk) {
+    // 兵底：从已加载 layout 里找一个 beach 候选真的存在的点（候选已含区域门控）
+    const spot = await page.evaluate(() => {
+      const g = window.__MC_GAME__;
+      for (const l of g.scheduler.structureIndex._layouts.values()) {
+        const a = l.giantTrees && l.giantTrees.beach;
+        if (a && a.length) return { x: a[0], z: a[2] };
+      }
+      return null;
+    });
+    expect(spot, '已加载 layout 里有 beach 候选（区域门控后仍有海滩长树）').not.toBeNull();
+    await flyTo(page, spot.x, spot.z);
+    coast = await countGiants(page);
+    coastOk = coast.per.giant_cherry_leaves + coast.per.giant_palm_leaves > 1000;
+  }
+  expect(coastOk, `B 海边：樱花/椰子叶（首选址实测 ${coast.per.giant_cherry_leaves + coast.per.giant_palm_leaves}）`).toBe(true);
 
-  // 榕树带：取离出生点最近的若干 banyan 候选，传送过去，该视域里必须出现榕树的叶或红树干
-  const spots = await page.evaluate(() => {
-    const g = window.__MC_GAME__; const out = [];
-    for (const l of g.scheduler.structureIndex._layouts.values()) {
+  // 榕树带：取离出生点最近的若干 banyan 候选，传送过去，该视域里必须出现榕树的叶或红树干。
+  //
+  // ⚠️ **必须用真实落位判据筛候选，不能只看「最近」**（2026-10-23 密度减半时踩到）：出生点在城市中心，
+  // 离它最近的 banyan 候选全在城**南边界外侧几格**（z ≈ -160~-180），而这些树的 AABB 直径 13~17
+  // → 九点中有落在城市 bounds（z ≥ -166）内的 → 被 `pointContext` 拒绝、根本不落地。
+  // BASE 口径（8/6）下视域里恰好还有一棵更远的能过判据的树（(243,-179)）撑着断言，密度减半后那棵也没了
+  // → 实测 0，断言真 FAIL。故这里改为：先把候选按 **真实的 `giantAllowedAtFor` + 排除盒** 过一道，
+  // 只保留真能落地的点再飞过去 —— 判据描述真实世界，不描述想象中的世界（testing-policy §2.6 ⑤）。
+  const spots = await page.evaluate(async () => {
+    const g = window.__MC_GAME__;
+    const applyMod = await import('/src/gen/structures/apply.js');
+    const gi = await import('/src/gen/structures/giant-trees.js');
+    const idx = g.scheduler.structureIndex;
+    const seed = 12345;
+    const treeData = await (await fetch('/assets/giant-trees/trees.json')).json();
+    const families = {};
+    for (const [fam, list] of Object.entries(treeData.trees)) {
+      families[fam] = list.map((v) => ({ ...v, cells: Uint8Array.from(v.blocks) }));
+    }
+    let cityLayout = null;
+    for (const l of idx._layouts.values()) if (l.city) cityLayout = l.city;
+
+    const out = [];
+    for (const l of idx._layouts.values()) {
       const a = l.giantTrees && l.giantTrees.banyan; if (!a) continue;
-      for (let i = 0; i < a.length; i += 5) out.push({ x: a[i], z: a[i + 2], d: Math.hypot(a[i] - g.spawnX, a[i + 2] - g.spawnZ) });
+      for (let i = 0; i < a.length; i += 5) {
+        const wx = a[i], wz = a[i + 2];
+        const cx = Math.floor(wx / 16), cz = Math.floor(wz / 16);
+        const layouts = idx.layoutsForColumn(cx, cz);
+        const win = { minX: cx * 16, maxX: cx * 16 + 15, minZ: cz * 16, maxZ: cz * 16 + 15 };
+        const boxes = gi.collectExclusionBoxes(layouts, win, 3);
+        const allowed = applyMod.giantAllowedAtFor(layouts, cityLayout, seed);
+        const trees = gi.collectGiantTrees(layouts, seed, families, win, 3).filter((t) => t.wx === wx && t.wz === wz);
+        if (trees.length === 0) continue;
+        if (!gi.isGiantTreeAllowed(trees[0], allowed, boxes)) continue;
+        out.push({ x: wx, z: wz, d: Math.hypot(wx - g.spawnX, wz - g.spawnZ) });
+      }
     }
     return out.sort((p, q) => p.d - q.d).slice(0, 3);
   });
-  expect(spots.length, '已加载的 layout 里有榕树候选').toBeGreaterThan(0);
+  expect(spots.length, '已加载的 layout 里有**能真正落地**的榕树候选').toBeGreaterThan(0);
   let banyanBlocks = 0;
   for (const s of spots) {
     await flyTo(page, s.x, s.z);

@@ -11,6 +11,7 @@ import { assertEqual, assertTrue, assertFalse, assertDeepEqual } from './assert.
 import {
   GIANT_FAMILY_ORDER, GIANT_STRIDE, GIANT_TREE_PATHS, isNearWater, isBiomeEdge, giantTreeRotation,
   computeGiantTreeCandidates, loadGiantTrees, rotateCell, rotatedFootprint, treeBox,
+  PATCH_CELL, PATCH_SALT,
 } from '../gen/structures/giant-trees.js';
 import { generateHeight } from '../gen/terrain.js';
 import { getBiome } from '../gen/noise.js';
@@ -196,15 +197,138 @@ test('chance 是有效的密度旋钮（原设计的 forestChance 在贪心下�
   assertTrue(half > full * 0.35 && half < full * 0.65, `chance=0.5 → 约一半：${half} / ${full}`);
 });
 
-test('候选密度下界（防谓词写崩变恒空）：A ≥ 91、B ≥ 385、C ≥ 266（均为实测的 2/3）', () => {
-  // 实测（交付值：A spacing=32、B spacing=12、C spacing=8）：137 / 578 / 399
+test('候选密度下界（防谓词写崩变恒空）：A ≥ 91、B ≥ 134、C ≥ 34（均为实测的 2/3）', () => {
+  // 实测（交付值：A spacing=32 / patchChance=1、B spacing=12 / patchChance=1/3、C spacing=17 / patchChance=1/2）：
+  // 137 / 201 / 51
   // （3×3 region 块，含城区 region(0,0) 内部、apply 层尚未排除的点）。
-  // 下界统一取实测的 **2/3**，不是更宽松的 1/4 —— 两条路径的密度都会被反复调
-  // （A 14→20→32、B 8→6 → 12→8），若下界离实测太远，调稀后断言仍绿但已失去判别力。
-  // ⚠️ 重新调任一条路径的 spacing/jitter 后，须按新实测值重算本处三个下界（保持 2/3 口径）。
+  // 下界统一取实测的 **2/3**，不是更宽松的 1/4 —— 三条路径的密度都会被反复调
+  // （A 14→20→32、B 8/6 → 12/8、C 8/6 → 12/8 → 17/11），若下界离实测太远，调稀后断言仍绿但已失去判别力。
+  // ⚠️ 重新调任一条路径的 spacing/jitter **或 patchChance** 后，须按新实测值重算本处三个下界（保持 2/3 口径）。
   assertTrue(blockCandidates('forest').length >= 91, 'A 候选下界');
-  assertTrue(blockCandidates('beach').length >= 385, 'B 候选下界');
-  assertTrue(blockCandidates('banyan').length >= 266, 'C 候选下界');
+  assertTrue(blockCandidates('beach').length >= 134, 'B 候选下界');
+  assertTrue(blockCandidates('banyan').length >= 34, 'C 候选下界');
+});
+
+// ---------------------------------------------------------------- 区域门控（2026-10-24）
+//
+// 用户要「平均 3 个海滩里有 1 个有巨树矩阵」「平均 2 个榕树带里有 1 个」，**且密度维持照旧**。
+// 因为 beach 候选在几何上连成一条 1187×1187 的连续带（连通聚类实测：阈值 64 以上只剩 1 簇），
+// 「一个海滩」没有客观边界 → 用粗格（PATCH_CELL）整格抽签实现「整段有树 / 整段没有」。
+//
+// 这四条用例钉住的是**区域门控本身**，不是密度：
+//   ① 确定性（红线 2）  ② 通过率≈patchChance  ③ 同粗格同进退（成片，不是斑点）  ④ forest 不受影响
+
+test('区域门控：确定性 —— 同 seed 两次调用逐元素相等（红线 2）', () => {
+  for (const [rx, rz] of [[0, 0], [-1, 0], [1, 1]]) {
+    for (const k of ['beach', 'banyan']) {
+      const a = computeGiantTreeCandidates(rx, rz, SEED)[k];
+      const b = computeGiantTreeCandidates(rx, rz, SEED)[k];
+      assertEqual(a.length, b.length, `${k} (${rx},${rz}) 长度一致`);
+      for (let i = 0; i < a.length; i++) assertEqual(a[i], b[i], `${k} (${rx},${rz}) [${i}]`);
+    }
+  }
+});
+
+test('区域门控：粗格覆盖率 ≈ patchChance（beach 1/3、banyan 1/2；防「门控恒开/恒关」）', () => {
+  // 口径 = **粗格**覆盖率（不是树的覆盖率）：用户说的是「多少个海滩有树」，单位就是粗格。
+  // 实测（seed 12345，cell=128）：beach 0.333（精确命中 1/3）、banyan 0.429。区间留足余量，不贴线。
+  const CELL = PATCH_CELL;
+  const cov = (key) => {
+    const all = new Set(), hit = new Set();
+    for (const [rx, rz] of [[-1, 0], [0, 0], [1, 0], [0, -1], [0, 1], [-1, -1], [1, 1]]) {
+      const arr = computeGiantTreeCandidates(rx, rz, SEED)[key];
+      for (let i = 0; i < arr.length; i += GIANT_STRIDE) {
+        const k = `${Math.floor(arr[i] / CELL)},${Math.floor(arr[i + 2] / CELL)}`;
+        hit.add(k);
+      }
+    }
+    // 分母 = 不加门控时**应当**有候选的粗格集（用 patchChance=1 的覆写路径算）
+    const noGate = GIANT_TREE_PATHS.map((q) => ({ ...q, patchChance: 1 }));
+    for (const [rx, rz] of [[-1, 0], [0, 0], [1, 0], [0, -1], [0, 1], [-1, -1], [1, 1]]) {
+      const arr = computeGiantTreeCandidates(rx, rz, SEED, noGate)[key];
+      for (let i = 0; i < arr.length; i += GIANT_STRIDE) all.add(`${Math.floor(arr[i] / CELL)},${Math.floor(arr[i + 2] / CELL)}`);
+    }
+    return hit.size / all.size;
+  };
+  const beach = cov('beach');
+  assertTrue(beach > 0.2 && beach < 0.5, `beach 粗格覆盖率 ${beach.toFixed(3)} 应在 (0.2, 0.5)（目标 1/3）`);
+  const banyan = cov('banyan');
+  assertTrue(banyan > 0.3 && banyan < 0.7, `banyan 粗格覆盖率 ${banyan.toFixed(3)} 应在 (0.3, 0.7)（目标 1/2）`);
+  assertTrue(Math.abs(beach - 1 / 3) < 0.12, `beach 覆盖率应接近 1/3（实测差 ${Math.abs(beach - 1 / 3).toFixed(3)}）`);
+});
+
+test('区域门控：同粗格同进退 —— 整段有树/整段没有（防「按候选点哈希」的斑点式回归）', () => {
+  // 这是「成片 vs 斑点」的唯一判据：粗格内要么全部候选都在，要么一个都不在。
+  // 负向验证：把门控改成按 (wx, wz) 哈希 → 本用例必 FAIL。
+  const CELL = PATCH_CELL;
+  const noGate = GIANT_TREE_PATHS.map((q) => ({ ...q, patchChance: 1 }));
+  const regions = [[-1, 0], [0, 0], [1, 0], [0, -1], [0, 1], [-1, -1], [1, 1]];
+  for (const key of ['beach', 'banyan']) {
+    // 每个粗格：(无门控候选数, 有门控候选数)
+    const cells = new Map();
+    const add = (arr, isGated) => {
+      for (let i = 0; i < arr.length; i += GIANT_STRIDE) {
+        const k = `${Math.floor(arr[i] / CELL)},${Math.floor(arr[i + 2] / CELL)}`;
+        if (!cells.has(k)) cells.set(k, { full: 0, kept: 0 });
+        const c = cells.get(k);
+        if (isGated) c.kept++; else c.full++;
+      }
+    };
+    for (const [rx, rz] of regions) {
+      add(computeGiantTreeCandidates(rx, rz, SEED, noGate)[key], false);
+      add(computeGiantTreeCandidates(rx, rz, SEED)[key], true);
+    }
+    let partial = 0, covered = 0, empty = 0;
+    for (const c of cells.values()) {
+      if (c.kept === c.full) covered++; else if (c.kept === 0) empty++; else partial++;
+    }
+    assertEqual(partial, 0, `${key}：没有任何粗格是「部分保留」的（实得 ${partial} 个）—— 粗格只能整体通过或整体跳过`);
+    assertTrue(covered > 0, `${key}：至少有一个粗格通过（否则门控恒关）`);
+    assertTrue(empty > 0, `${key}：至少有一个粗格被跳过（否则门控恒开）`);
+  }
+});
+
+test('区域门控：实现 == 「粗格哈希」的定义（手工用 PATCH_CELL/PATCH_SALT 复算，逐元素比对）', () => {
+  // 不只断言「成片」，还钉住门控**具体是哪个哈希**：把候选按 patchChance=1 全量取出来，
+  // 再用 seededRandom(floor(wx/CELL), floor(wz/CELL), seed+PATCH_SALT) < patchChance 手工筛，
+  // 结果必须与实现逐元素相同。这一条防止「换成另一个碰巧也成片的实现」静默通过。
+  const seededRandom = (x, z, s) => { const v = Math.sin(x * 12.9898 + z * 78.233 + s) * 43758.5453123; return v - Math.floor(v); };
+  const noGate = GIANT_TREE_PATHS.map((q) => ({ ...q, patchChance: 1 }));
+  const regions = [[-1, 0], [0, 0], [1, 0], [0, -1], [0, 1], [-1, -1], [1, 1]];
+  for (const key of ['beach', 'banyan']) {
+    const p = GIANT_TREE_PATHS.find((q) => q.key === key).patchChance;
+    assertTrue(p < 1, `${key} 的 patchChance 应 < 1（实测 ${p}）`);
+    let expect = 0, actual = 0;
+    for (const [rx, rz] of regions) {
+      const all = computeGiantTreeCandidates(rx, rz, SEED, noGate)[key];
+      const got = computeGiantTreeCandidates(rx, rz, SEED)[key];
+      const hand = [];
+      for (let i = 0; i < all.length; i += GIANT_STRIDE) {
+        if (seededRandom(Math.floor(all[i] / PATCH_CELL), Math.floor(all[i + 2] / PATCH_CELL), SEED + PATCH_SALT) < p) {
+          hand.push(all[i], all[i + 1], all[i + 2], all[i + 3], all[i + 4]);
+        }
+      }
+      assertEqual(got.length, hand.length, `${key} (${rx},${rz}) 长度与手工复算一致`);
+      for (let i = 0; i < hand.length; i++) assertEqual(got[i], hand[i], `${key} (${rx},${rz}) [${i}] 与手工复算一致`);
+      expect += hand.length / GIANT_STRIDE;
+      actual += got.length / GIANT_STRIDE;
+    }
+    assertEqual(actual, expect, `${key} 总数与手工复算一致`);
+    assertTrue(actual > 0, `${key} 门控后仍有候选（防手工复算与实现双双恒空）`);
+  }
+});
+
+test('区域门控：forest 不受影响（patchChance=1，候选数与不加门控时逐位相同）', () => {
+  // 用户只要求海滩/榕树带；森林里应当处处都长（既有行为不变）。
+  const noGate = GIANT_TREE_PATHS.map((q) => ({ ...q, patchChance: 1 }));
+  const regions = [[-1, 0], [0, 0], [1, 0], [0, -1], [0, 1]];
+  let gated = 0, raw = 0;
+  for (const [rx, rz] of regions) {
+    gated += computeGiantTreeCandidates(rx, rz, SEED).forest.length / GIANT_STRIDE;
+    raw += computeGiantTreeCandidates(rx, rz, SEED, noGate).forest.length / GIANT_STRIDE;
+  }
+  assertEqual(gated, raw, `forest 候选数不因区域门控变化：${gated} vs ${raw}`);
+  assertTrue(gated > 0, `forest 确有候选（防恒空导致的恒真）`);
 });
 
 test('候选发现耗时：单 region 三路径 < 8ms（原逐点扫描法 14~20ms；网格抖动实测 ~1ms）', () => {

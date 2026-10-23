@@ -37,13 +37,14 @@ v1.1 把这些修订落成可执行形态，并满足两条硬要求：
 - **8 个方块**（前缀 `giant_`，全部 `geometry:"box"`、`orientationModes:0`、`solid:true`、`cullMode:"opaque"`）：`giant_oak_log` `giant_mangrove_log` `giant_oak_leaves` `giant_birch_leaves` `giant_spruce_leaves` `giant_cherry_leaves` `giant_palm_leaves` `giant_banyan_leaves`。**树叶 opaque 且投影**（用户裁决）：不写 `shadowCast:false`，不写 `opaque:false`；全部加入 `HIDDEN_FROM_INVENTORY`（不是 `NON_PLACEABLE_ITEMS`）。
 - **三条路径参数**（单一权威 = `GIANT_TREE_PATHS`，spec §1.1）：
 
-  | 路径 | salt | spacing / jitter | chance | 谓词 | 族（各 50%） |
+  | 路径 | salt | spacing / jitter | patchChance | 谓词 | 族（各 50%） |
   |---|---|---|---|---|---|
   | A 森林 | 911 | 32 / 8 | 1 | `FOREST` 且 `h > SEA_Y` | tallOak · snowSpruce |
-  | B 海边 | 921 | 12 / 8 | 1 | 陆上且距水 ≤ 24（4 轴向、步长 4） | cherry · palm |
-  | C 榕树带 | 931 | 8 / 6 | 1 | 陆上且 `PLAINS`/`DESERT` 交界（4 轴向 ±32 跨 biome） | banyanLeafy · banyanBare |
+  | B 海边 | 921 | 12 / 8 | 1 / 3 | 陆上且距水 ≤ 24（4 轴向、步长 4） | cherry · palm |
+  | C 榕树带 | 931 | 17 / 11 | 1 / 2 | 陆上且 `PLAINS`/`DESERT` 交界（4 轴向 ±32 跨 biome） | banyanLeafy · banyanBare |
 
-  旋转 salt = 941。`seededRandom` 返回 [0,1) 浮点：取整一律 `Math.floor(r * 4)`，**禁止 `& 3`**（恒为 0）。
+  旋转 salt = 941，**区域门控 salt = 956**（`PATCH_SALT`，粗格边长 `PATCH_CELL = 128`）。
+  `seededRandom` 返回 [0,1) 浮点：取整一律 `Math.floor(r * 4)`，**禁止 `& 3`**（恒为 0）。
 - **锚点** = 变体 `gy=0` 层的树干格中离几何中心最近者（不是几何中心，实测偏移最大 2 格）；光栅化时锚点对齐候选点 `(wx, wz)`。
 - **候选数组 stride = 5**：`[wx, wy, wz, familyIdx, variantHash]`；`palette[0]` 恒为树干。
 - **不得修改** `mesher.js` / `materials.js` / `scheduler.js`；`render-world.js` **只改 `CAPACITY.opaque` 一行与其注释**（用户裁决，Task 3）。
@@ -1474,8 +1475,8 @@ test('chance 是有效的密度旋钮（原设计的 forestChance 在贪心下�
   assertTrue(half > full * 0.35 && half < full * 0.65, `chance=0.5 → 约一半：${half} / ${full}`);
 });
 
-test('候选密度下界（防谓词写崩变恒空）：A ≥ 91、B ≥ 385、C ≥ 266（均为实测的 2/3）', () => {
-  // 实测（交付值：A spacing=32、B spacing=12、C spacing=8）：137 / 578 / 399
+test('候选密度下界（防谓词写崩变恒空）：A ≥ 91、B ≥ 134、C ≥ 34（均为实测的 2/3）', () => {
+  // 实测（交付值：A spacing=32、B spacing=12、C spacing=17；patchChance A 1 / B 1/3 / C 1/2）：137 / 201 / 51
   // （3×3 region 块，含城区 region(0,0) 内部、apply 层尚未排除的点）。
   // 下界统一取实测的 **2/3**，不是更宽松的 1/4 —— 两条路径的密度都会被反复调
   // （A 14→20→32、B 8→6 → 12→8），若下界离实测太远，调稀后断言仍绿但已失去判别力。
@@ -1577,8 +1578,8 @@ export function isBiomeEdge(wx, wz, seed, band) {
  *   chance = 每格出点概率（密度旋钮；原设计的 forestChance 在贪心下几乎无效，这里真正线性控制密度）；
  *   families = 该路径可选的两个族（GIANT_FAMILY_ORDER 下标，各 50%）。
  *   **spacing 是最小树距，不是树宽**：A 森林树 AABB ≤ 12，spacing 32 → 互不相交；B/C 的樱花/榕树 AABB 达 17，
- *   spacing 8（C=14）→ 冠幅互相重叠成片（设计意图「成片樱花+椰林」），树干不重叠。
- *   实测密度（7 个 region，每个 eligible 格）：A 1/1523、B 1/397、C 1/200（A spacing 14→20→32、B 8/6→12/8 后）。
+ *   spacing 12（C=20）→ 冠幅仍会互相重叠成片（设计意图「成片樱花+椰林」），树干不重叠。
+ *   实测密度（7 个 region，每个 eligible 格）：A 1/1523、B 1/397、C 1/783（A spacing 14→20→32、B 8/6→12/8、C 8/6→12/8→17/11 后）。
  *   salt 占 9xx 空闲带（静态扫描确认 src 下无 900~999 的 salt）：+0 出点 / +1 x 抖动 / +2 z 抖动 / +3 族 / +4 变体。
  *   eligible(wx, wz, seed) → 地表高度 h（满足）| null（不满足）。
  */

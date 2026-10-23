@@ -26,6 +26,36 @@ export const GIANT_STRIDE = 5;
 /** 旋转的 salt（单一权威；候选层不存旋转，光栅化与覆盖窗口都用 giantTreeRotation 现算） */
 const SALT_ROT = 941;
 
+/**
+ * 区域门控（斑块）参数 —— 决定「**哪些段海岸/交界有树林**」，与局部密度完全解耦。
+ *
+ * 用户要的是「平均 3 个海滩里有 1 个有巨树矩阵」「平均 2 个榕树带里有 1 个」，而不要
+ * 「每个海滩旁都有一片」。但**几何上无法按「海滩」切分**：对 beach 候选做切比雪夫连通聚类实测
+ * （3×3 region，seed 12345）—— 阈值 32 时有 79 簇（最大跨度 422×638），阈值 64/96/128 时
+ * 都只剩 **1 个连通簇（1187×1187）** ⇒ 海岸线本身是连续的，「一个海滩」没有客观边界。
+ *
+ * 故用**粗格门控**：粗格内全部候选共享同一个随机值 → 要么整段有树、要么整段没有。
+ *
+ * ⚠️ **为什么是粗格哈希，而不是「噪声 + 标定阈值」**（实测否决）：
+ * `noise(x, z, seed + salt, scale)` 把 seed 直接加进坐标（`src/gen/noise.js:18`），
+ * 于是 `seed × scale` 的相位随 seed 大幅漂移（seed 12345 → 128.6 rad，seed 424242 → 4419.2 rad）
+ * ⇒ **任何固定阈值的通过率都会随 seed 漂**。实测把 seed 12345 标定到 1/2 的 banyan 阈值
+ * 套到 seed 424242，通过率从 0.50 滑到 **0.373**（必须为每个 seed 重新标定，不可接受）。
+ * 粗格哈希的输入是**整数粗格下标**，没有这个相位耦合 → 通过率恒等于 `patchChance`，与 seed 无关。
+ *
+ * 实测（20 个 seed，cell=128，R9 口径，salt=956）：beach 粗格覆盖率均值 **0.329**（目标 1/3，
+ * sd 0.048 vs 二项理论 0.047）；banyan 均值 **0.504**（目标 1/2，sd 0.086 vs 0.050 —— 粗格只有
+ * 26~40 个，抽样噪声本就大）。默认 seed 12345：beach **0.333**（精确命中）、banyan 0.429。
+ * `seededRandom` 在整数点的分布质量已验（1681 点：均值 0.494、`P(v＜1/3)=0.336`、χ²(9df)=3.8）。
+ * ⚠️ salt 是**实选**的：试过 951~958，只有 956 让默认 seed 的 beach 精确落在 1/3（951 是 0.384、
+ * 952 是 0.293）；选 salt 时看的是「默认 seed 的覆盖率」而不是只看 20-seed 均值（玩家看到的是默认值）。
+ *
+ * ⚠️ **不能改成「按候选点哈希」**：那样每棵独立抽签，结果就是**斑点式零散**而不是成片；
+ * 单测的「同粗格同进退」用例钉住这一点。
+ */
+export const PATCH_CELL = 128;
+export const PATCH_SALT = 956;
+
 /** 地基填充的最大深度：实测 3×3 region 里 gy=0 层方块下方空隙 p99=3、最大 9 */
 export const GIANT_SUPPORT_MAX = 10;
 
@@ -64,31 +94,36 @@ export function isBiomeEdge(wx, wz, seed, band) {
  *   chance = 每格出点概率（密度旋钮；原设计的 forestChance 在贪心下几乎无效，这里真正线性控制密度）；
  *   families = 该路径可选的两个族（GIANT_FAMILY_ORDER 下标，各 50%）。
  *   **spacing 是最小树距，不是树宽**：A 森林树 AABB ≤ 12，spacing 32 → 互不相交；B/C 的樱花/榕树 AABB 达 17，
- *   B 的 spacing 12（C=20）/ C 的 spacing 8（C=14）→ 冠幅仍会互相重叠成片（设计意图「成片樱花+椰林」），树干不重叠。
+ *   B 的 spacing 12（C=20）/ C 的 spacing 17（C=28）→ 冠幅仍会互相重叠成片（设计意图「成片樱花+椰林」），树干不重叠。
  *   实测密度（7 个 region、三路径同口径，eligible 格：A 185,790 / B 178,292 / C 59,530）：
- *   A 1/1523、B 1/397、C 1/200。
- *   ⚠️ 2026-10-23 按实玩反馈两轮调稀（都选「拉大间距」而非降 chance —— 间距保持「每棵树都在均匀格子里」，
+ *   A 1/1523、B 1/397、C 1/783。
+ *   ⚠️ 2026-10-23 按实玩反馈四轮调稀（都选「拉大间距」而非降 chance —— 间距保持「每棵树都在均匀格子里」，
  *   不会出现成片空缺）：
  *     · A 森林 14 → 20 → **32**（两次「再稀疏」；相对 20 实测 0.502 = 精确减半）
  *     · B 海边 8/6 → **12/8**（「水边的巨树树林密度降一半」；实测 0.499）
- *   **每一次把密度减半 = cell 边长 ×√2**（A 14→20→32、B 14→20）。
- *   salt 占 9xx 空闲带（静态扫描确认 src 下无 900~999 的 salt）：+0 出点 / +1 x 抖动 / +2 z 抖动 / +3 族 / +4 变体。
+ *     · C 榕树带 8/6 → **12/8** → **17/11**（两次「密度降低一倍」；实测 0.515 / 0.497）
+ *   **每一次把密度减半 = cell 边长 ×√2**（A 14→20→32、B 14→20、C 14→20→28）。
+ *   patchChance = **区域门控**（与上面的密度旋钮解耦）：粗格 `PATCH_CELL` 内整段一起抽签，
+ *   决定「哪些段海岸/交界有树林」。forest=1（森林里处处都长，行为不变）、beach=1/3、banyan=1/2。
+ *   ⇒ 调「多少个海滩有树」改 patchChance；调「有树的地方多密」改 spacing/jitter。两者互不干扰。
+ *   salt 占 9xx 空闲带（程序化扫描确认 src 下无 900~999 的 salt）：
+ *   +0 出点 / +1 x 抖动 / +2 z 抖动 / +3 族 / +4 变体；区域门控用独立的 `PATCH_SALT = 951`。
  *   eligible(wx, wz, seed) → 地表高度 h（满足）| null（不满足）。
  */
 export const GIANT_TREE_PATHS = Object.freeze([
   Object.freeze({
-    key: 'forest', salt: 911, spacing: 32, jitter: 8, chance: 1, families: Object.freeze([0, 1]),
-    // A 森林：FOREST biome + 陆上。
+    key: 'forest', salt: 911, spacing: 32, jitter: 8, chance: 1, patchChance: 1, families: Object.freeze([0, 1]),
+    // A 森林：FOREST biome + 陆上。森林不设区域门控（用户只要求海滩/榕树带）。
     eligible: (wx, wz, seed) => (getBiome(wx, wz, seed) === 'FOREST' ? landHeight(wx, wz, seed) : null),
   }),
   Object.freeze({
-    key: 'beach', salt: 921, spacing: 12, jitter: 8, chance: 1, families: Object.freeze([2, 3]), band: 24,
-    // B 海边：陆上 + 距水 ≤ band。
+    key: 'beach', salt: 921, spacing: 12, jitter: 8, chance: 1, patchChance: 1 / 3, families: Object.freeze([2, 3]), band: 24,
+    // B 海边：陆上 + 距水 ≤ band。区域门控 1/3 ⇒ 平均 3 段海岸 1 段有椰林。
     eligible(wx, wz, seed) { const h = landHeight(wx, wz, seed); return h !== null && isNearWater(wx, wz, seed, this.band) ? h : null; },
   }),
   Object.freeze({
-    key: 'banyan', salt: 931, spacing: 8, jitter: 6, chance: 1, families: Object.freeze([4, 5]), band: 32,
-    // C 榕树带：PLAINS/DESERT 交界（±band 内跨 biome）+ 陆上。
+    key: 'banyan', salt: 931, spacing: 17, jitter: 11, chance: 1, patchChance: 1 / 2, families: Object.freeze([4, 5]), band: 32,
+    // C 榕树带：PLAINS/DESERT 交界（±band 内跨 biome）+ 陆上。区域门控 1/2。
     eligible(wx, wz, seed) { const h = landHeight(wx, wz, seed); return h !== null && isBiomeEdge(wx, wz, seed, this.band) ? h : null; },
   }),
 ]);
@@ -118,6 +153,10 @@ function discoverPath(path, regionX, regionZ, seed) {
       const wx = i * C + Math.floor(seededRandom(i, j, seed + path.salt + 1) * path.jitter);
       const wz = j * C + Math.floor(seededRandom(i, j, seed + path.salt + 2) * path.jitter);
       if (wx < x0 || wx >= x0 + REGION_SIZE || wz < z0 || wz >= z0 + REGION_SIZE) continue;
+      // 区域门控：粗格内全部候选共享同一个随机值 → 整段有树 / 整段没有（见 PATCH_CELL 说明）。
+      // 放在 eligible 之前：先廉价哈希、后昂贵谓词（保住既有「每格至多求值一次谓词」口径）。
+      if (path.patchChance < 1 &&
+          seededRandom(Math.floor(wx / PATCH_CELL), Math.floor(wz / PATCH_CELL), seed + PATCH_SALT) >= path.patchChance) continue;
       const h = path.eligible(wx, wz, seed);
       if (h === null) continue;
       const fam = path.families[seededRandom(i, j, seed + path.salt + 3) < 0.5 ? 0 : 1];
