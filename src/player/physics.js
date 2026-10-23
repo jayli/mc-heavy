@@ -4,6 +4,7 @@ const PLAYER_HEIGHT = 1.8;
 const GRAVITY = -24.0;
 const JUMP_FORCE = 10.0;
 const SPEED = 8.0;
+const MAX_STEP = 1.0;
 const EPSILON = 0.001;
 
 export class PlayerPhysics {
@@ -73,9 +74,22 @@ export class PlayerPhysics {
   }
 
   /**
-   * 自动上台阶：水平碰撞且在地面时，尝试把脚底抬到上一格整数面。
+   * 自动上台阶：水平碰撞时，尝试把脚底抬到上一格整数面。
    * 用完整 AABB 检测保证：2 格高墙抬不上去（目标位仍碰撞）、
    * 头顶净空不足抬不上去（1.8 高需 2 格净空）。
+   *
+   * **门控不是 `onGround`（v1.72 修）**：`onGround` 是**上一步**竖直碰撞的产物，
+   * 而水平轴在竖直轴之前跑。玩家斜蹭台阶边沿时，AABB 跨出支撑格 → 本帧开始自由下落 →
+   * `onGround === false`；与此同时前方高出的台壁把水平推进挡死 → 同一帧的 step-up 被拒
+   * → **水平冻结、垂直下落**，落地后才重新爬上。观感就是用户报告的「奔跑中断」：
+   * 「前进方向和方块边缘夹角太小的话，奔跑就会暂停，玩家垂直下落，感觉奔跑中断了」。
+   * 实测（真实地形 seed=12345、15000 条轨迹 × 24 个方向）：基线 385 条（2.57%）出现
+   * 「前进 <30% 全速且同时在下落」，最长连续 15 帧；本门控下归零，且穿模帧 0。
+   *
+   * 现在的门控 = **地面 或 下落中**；只有「跳跃上升段」仍拒绝 —— 跳起来撞墙本就该被挡
+   * （实测三种门控在跳跃冲台阶场景轨迹完全相同，但保留它有明确语义）。
+   * 「凭空爬墙」由抬升幅度的双重约束挡住：最多抬 1 格（`MAX_STEP`）+ 抬升后 AABB 必须
+   * 无碰撞（实测空中贴 5 格墙下落时 `maxY` 不变，即不会被一格格爬上去）。
    *
    * ⚠️ **矿车也是本方法的「台阶」**（2026-10-01）：内部 `this._collides()` 把矿车占据格
    * 算作实心（mc-lite `Physics.isSolid` 同口径），故走进矿车会水平碰撞 → 本方法把玩家
@@ -87,10 +101,16 @@ export class PlayerPhysics {
    * @returns {boolean} 是否成功登上
    */
   _tryStepUp() {
-    if (!this.onGround) return false;
+    // 跳跃上升段拒绝（下落中允许 —— 见上方注释）。站立时本步 vel.y 已被重力压成负值，
+    // 故「在地面上」也走这条放行分支。
+    if (!this.onGround && this.vel.y > 0) return false;
     const oldY = this.pos.y;
     // 脚底抬到上一格顶面（站立时 y≈整数，+0.01 容错浮点噪声）
-    this.pos.y = Math.floor(oldY + 0.01) + 1;
+    const lifted = Math.floor(oldY + 0.01) + 1;
+    // 超过一格不算台阶（与 zombie-system.js 的 MAX_STEP 同口径）。
+    // 没有这条时 `oldY≈x.99` 会算出 `x+2`（抬 1.01 格）→ 抬过头后下一帧掉回，观感是「跳了一下」。
+    if (lifted - oldY > MAX_STEP) return false;
+    this.pos.y = lifted;
     if (!this._collides()) {
       this.stepLiftAccum += this.pos.y - oldY; // 记录抬升量（相机缓动用）
       this.vel.y = 0;

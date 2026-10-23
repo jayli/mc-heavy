@@ -1,5 +1,5 @@
 import { test } from './runner.js';
-import { assertTrue, assertFalse, assertNotNull } from './assert.js';
+import { assertTrue, assertFalse, assertNotNull, assertEqual } from './assert.js';
 import { PlayerPhysics } from '../player/physics.js';
 import { WorldData } from '../voxel/world-data.js';
 import { ChunkColumn } from '../voxel/chunk-column.js';
@@ -9,6 +9,9 @@ import { WORLD_MIN_Y, blockIndex } from '../voxel/constants.js';
 import { EntityManager } from '../entities/entity-manager.js';
 import { MINECART_TYPE } from '../entities/minecarts/minecart-config.js';
 import { MinecartService, minecartDefinition } from '../entities/minecarts/minecart-system.js';
+
+/** 浮点容差（与 physics.js 的 EPSILON 同值；测试侧独立写一份会漂移，故只在这里声明一次） */
+const EPS = 0.001;
 
 function makeWorld() {
   const reg = createRegistry();
@@ -255,6 +258,89 @@ test('physics: 踩上矿车后 ridingCarFor 命中（step-up 落点与绑定容�
   // step-up 把脚底抬到 carY+1 = 3，而车顶是 carY+0.9 = 2.9 → 差 0.1，须被容差 0.3 吸收
   const car = service.ridingCarFor([p.pos.x, p.pos.y, p.pos.z]);
   assertNotNull(car, `站在车格上方应可绑定乘坐，y=${p.pos.y}`);
+});
+
+test('physics: 斜蹭台阶边沿时前进不中断（onGround 抖动不得冻结水平推进）', () => {
+  // 缺陷根因（实测定位，v1.72）：`_tryStepUp` 曾用 `onGround` 当门控，而 `onGround` 是
+  // **上一步**竖直碰撞的产物，而水平轴在竖直轴之前跑。玩家斜蹭台阶边沿时，AABB 跨出
+  // 支撑格 → 本帧开始自由下落 → `onGround=false`；与此同时前方高出的台壁把水平推进
+  // 挡死 → 同一帧的 step-up 被门控拒绝 → **水平冻结、垂直下落**，落地后才重新爬上 ——
+  // 观感就是用户报告的「奔跑中断」。
+  //
+  // 最小复现几何（程序化筛出来的，与真实地形同构）：**每格沿对角线升 1 格的斜阶梯**
+  // `顶面 = 5 + clamp(x+z, 0, 3)`，玩家沿对角方向斜切（8°）向上跑。实测旧门控下前
+  // 6 帧连续「前进<30% 且在下落」，新门控下 0 帧；真实地形 seed=12345 上 15000 条
+  // 轨迹中 385 条（2.57%）中招、最长 15 帧。
+  const { world, reg } = makeWorld();
+  // 跨 column 的斜面：用 world.setBlock（(0,0) column 只有 16×16，斜面会越过边界）
+  for (let x = -8; x < 12; x++) for (let z = -8; z < 12; z++) {
+    const top = 5 + Math.max(0, Math.min(3, x + z));
+    for (let y = 0; y < top; y++) world.setBlock(x, y, z, reg.idOf('stone'), 0);
+  }
+  const p = new PlayerPhysics(world);
+  p.pos = { x: 0.5, y: 6, z: 0.5 };
+  for (let i = 0; i < 10; i++) p.step(1 / 60);
+  const a = 8 * Math.PI / 180;
+  const ux = Math.cos(a), uz = Math.sin(a);
+  const full = 8 / 60;
+  let stalls = 0;
+  for (let i = 0; i < 40; i++) {
+    const bx = p.pos.x, bz = p.pos.z, by = p.pos.y;
+    p.move(ux, uz);
+    p.step(1 / 60);
+    const fwd = ((p.pos.x - bx) * ux + (p.pos.z - bz) * uz) / full;
+    if (fwd < 0.3 && p.pos.y < by - EPS) stalls++;
+  }
+  assertEqual(stalls, 0, '不得出现「前进中断 + 下落」帧');
+  assertTrue(p.pos.y > 7, `应已爬上斜阶梯，y=${p.pos.y}`);
+});
+
+test('physics: 普通 1 格台阶可登、2 格高墙不可登（v1.72 门控放宽后的护栏）', () => {
+  // 两个场景各自建一份物理实例（间隔开：同一份世界里台阶会叠成可登的连续级）
+  // ① 1 格台阶（x>=10 铺 y=1，比地面顶面 y=1 高一格）
+  {
+    const { world, reg } = makeWorld();
+    const col = world.getColumn(0, 0);
+    for (let lx = 10; lx < 16; lx++) for (let lz = 0; lz < 16; lz++) {
+      col.blocks[blockIndex(lx, 1, lz)] = reg.idOf('stone');
+    }
+    const p = new PlayerPhysics(world);
+    p.pos = { x: 8.5, y: 1, z: 8.5 };
+    for (let i = 0; i < 10; i++) p.step(1 / 60);
+    for (let i = 0; i < 40; i++) { p.move(1, 0); p.step(1 / 60); }
+    assertTrue(p.pos.y > 1.9, `1 格台阶应可登上，y=${p.pos.y}`);
+    assertTrue(p.pos.x > 10, `应越过台阶面，x=${p.pos.x}`);
+  }
+  // ② 2 格高墙（x>=13 同时铺 y=1 与 y=2 → 顶面 y=3，比地面顶面高两格）
+  {
+    const { world, reg } = makeWorld();
+    const col = world.getColumn(0, 0);
+    for (let lx = 13; lx < 16; lx++) for (let lz = 0; lz < 16; lz++) {
+      col.blocks[blockIndex(lx, 1, lz)] = reg.idOf('stone');
+      col.blocks[blockIndex(lx, 2, lz)] = reg.idOf('stone');
+    }
+    const p = new PlayerPhysics(world);
+    p.pos = { x: 8.5, y: 1, z: 8.5 };
+    for (let i = 0; i < 10; i++) p.step(1 / 60);
+    for (let i = 0; i < 40; i++) { p.move(1, 0); p.step(1 / 60); }
+    assertTrue(p.pos.x < 12.7, `2 格高墙应挡住，x=${p.pos.x}`);
+    assertTrue(Math.abs(p.pos.y - 1) < 0.05, `应仍在地面，y=${p.pos.y}`);
+  }
+});
+
+test('physics: 真腾空下落时贴墙不得被 step-up 抬升（放宽门控的负向护栏）', () => {
+  // 门控从 `onGround` 放宽到「地面 或 下落中」后，**真正悬空**时仍必须被拒绝，否则
+  // 玩家在空中贴墙就能一格一格往上爬。约束靠抬升幅度：最多 1 格 + 抬完 AABB 必须无碰撞。
+  const { world, reg } = makeWorld();
+  const col = world.getColumn(0, 0);
+  for (let lx = 10; lx < 16; lx++) for (let lz = 0; lz < 16; lz++) {
+    for (let y = 1; y <= 5; y++) col.blocks[blockIndex(lx, y, lz)] = reg.idOf('stone');
+  }
+  const p = new PlayerPhysics(world);
+  p.pos = { x: 9.6, y: 9, z: 8.5 };
+  let maxY = 0;
+  for (let i = 0; i < 200; i++) { p.move(1, 0); p.step(1 / 60); maxY = Math.max(maxY, p.pos.y); }
+  assertTrue(maxY <= 9.001, `空中贴墙不得被抬升，最高 y=${maxY}`);
 });
 
 test('WorldData.supportsPlayer: 坐标查询（M2-7）', () => {

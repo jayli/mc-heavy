@@ -195,12 +195,16 @@ function moveAxis(state, world, delta, axis, keys, zeroVelocityOnHit) {
 }
 
 /**
- * 自动上台阶：水平碰撞且在地面时，把脚底抬到上一格整数面。
+ * 自动上台阶：水平碰撞时，把脚底抬到上一格整数面。
  * 用完整 AABB 检测保证 2 格高墙抬不上去（目标位仍碰撞）、头顶净空不足抬不上去
  * （1.8 高需 2 格净空）—— 与 player/physics.js `_tryStepUp` 同一判据。
+ *
+ * **门控不是 `onGround`（v1.72，与 player/physics.js 同步改）**：只在「跳跃上升段」拒绝，
+ * 下落中允许 —— 否则丧尸斜蹭台阶边沿时会先失去支撑（`onGround=false`）再被前方台壁挡死，
+ * 表现为彻底卡住。根因与实测数据见 `player/physics.js` 的 `_tryStepUp` 注释。
  */
 function tryStepUp(state, world) {
-  if (!state.onGround) return false;
+  if (!state.onGround && state.velocity[1] > 0) return false;
   const oldY = state.position[1];
   const lifted = Math.floor(oldY + 0.01) + 1;
   if (lifted - oldY > MAX_STEP) return false; // 超过一格台阶不登（mc-lite MAX_STEP 语义）
