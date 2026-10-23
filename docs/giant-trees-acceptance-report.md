@@ -64,7 +64,7 @@
 **结论**：opaque 峰值 **82.1% < 90%**（A 森林 spacing 14→20→32 后 **76.4%**），**零 opaque 扩容**；cutout 只降不升（(-20,10) 128.1 → 53.9）；
 transparent 与 HEAD **逐位相同**（巨树不碰水）。HEAD 自己在密林视域本就越线，故验收口径是「相对 HEAD 不恶化」。
 
-`m3-fullscene` 实测：`gpuVertexBytes = 198,000,000`（= 188.83 MiB），`gpuActiveBytes ≈ 133,144,308`，
+`m3-fullscene` 实测：`gpuVertexBytes = 204,000,000`（= 194.55 MiB；巨树叶改 cutout 通道后 cutout 2.2M→2.4M），`gpuActiveBytes ≈ 133,144,308`，
 上限已由 150 → **200 MiB**（用户裁决）。
 
 ### 2.4 genP95（Worker 预热的价值）
@@ -95,7 +95,7 @@ draw call 增量的机制是 three r185.1 WebGPU 对 BatchedMesh **每个可见 
 | 浏览器内单测 | 779 | **810**（+31：`test-giant-trees` 15 / `-column` 8 / `-gen` 8） |
 | Playwright | 184（62 文件） | **190**（64 文件，+6：`giant-trees` 2 / `giant-tree-budget` 4） |
 | `check:arch` | 绿 | 绿 |
-| `check:data` | 绿 | 绿（新增 `[巨树] 28 变体 / 8 方块（叶子 opaque 且投影）/ 指纹匹配 / 贴图 6 张`） |
+| `check:data` | 绿 | 绿（新增 `[巨树] 28 变体 / 8 方块（叶子 cutout 镂空 + opaqueTable=1 保剔除 + 投影）/ 指纹匹配 / 贴图 6 张`） |
 
 ### 2.7 覆盖损失（设计意图，不是缺陷）
 

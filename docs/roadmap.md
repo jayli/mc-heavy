@@ -146,7 +146,7 @@ mc-lite 用 InstancedMesh 无此问题。修法 = `render-world.js _installShado
 **v1.68 巨树景观**（用户裁决：opaque 通道容量 ×1.5 / 巨树叶投影 / `.schem` 入库 / 已有存档接受）：素材包 `40AssortedTreesPack.schem`
 入库并离线烘焙成 28 个原版景观树变体（1/2 比例，16,954 格），按森林 / 海边 / 草地沙漠交界三条路径落位，城市·地标·撒布结构·JSON
 结构占地让路，与旧森林树互斥。region 层候选 = 全局对齐网格 + 内缩抖动（间距由构造保证，≈1.1 ms/region）。**opaque 通道容量
-2.85M → 4.275M，§4.10 的 150MiB 冻结预算有意上调到 188.83 MiB**；真实页面 reserved 口径最高 82.1%（A 森林两次调稀到 spacing 32 后 76.4%；零 opaque 扩容），
+2.85M → 4.275M，§4.10 的 150MiB 冻结预算有意上调到 194.55 MiB（原 188.83；v1.69 巨树叶改 cutout 通道后 cutout 2.2M→2.4M）**；真实页面 reserved 口径最高 82.1%（A 森林两次调稀到 spacing 32 后 76.4%；零 opaque 扩容），
 cutout / transparent 相对 HEAD 不恶化；bench draw call 场景 ① +16 / ④ +41。浏览器内单测 779→810，Playwright 184→190。
 规格 `docs/superpowers/specs/2026-10-23-giant-trees-design.md`（v1.1），验收报告 `docs/giant-trees-acceptance-report.md`。
 

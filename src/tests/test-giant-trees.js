@@ -16,6 +16,10 @@ import { generateHeight } from '../gen/terrain.js';
 import { getBiome } from '../gen/noise.js';
 import { REGION_SIZE } from '../gen/structures/region-config.js';
 import { SEA_Y } from '../voxel/constants.js';
+import { createRegistry } from '../voxel/block-registry.js';
+import { BLOCKS } from '../voxel/blocks-data.js';
+import { FACES_DATA } from '../voxel/faces-data.js';
+import { buildSectionMesh } from '../mesh/mesher.js';
 
 const SEED = 12345;
 
@@ -208,4 +212,90 @@ test('候选发现耗时：单 region 三路径 < 8ms（原逐点扫描法 14~20
   let best = Infinity;
   for (let i = 0; i < 3; i++) { const t0 = performance.now(); computeGiantTreeCandidates(1, 1, SEED); best = Math.min(best, performance.now() - t0); }
   assertTrue(best < 8, `候选发现 ${best.toFixed(2)}ms < 8ms`);
+});
+
+// ---------------------------------------------------------------- 树叶渲染通道契约（2026-10-23）
+
+/** 6 个巨树叶方块名（声明侧权威 = blocks-data.js） */
+const LEAF_NAMES = BLOCKS.filter((b) => b.name.startsWith('giant_') && b.name.endsWith('_leaves')).map((b) => b.name);
+
+/** 建一个只含「小片叶团 + 一根树干」的 18³ halo 视图（与 Worker 内 buildSectionMesh 同口径） */
+function leafClusterView(leafId, logId) {
+  const data = new Uint16Array(18 * 18 * 18);
+  const light = new Uint8Array(18 * 18 * 18);
+  const meta = new Uint8Array(18 * 18 * 18);
+  const vi = (x, y, z) => x + z * 18 + y * 324;
+  for (let y = 4; y < 12; y++) for (let x = 5; x < 13; x++) for (let z = 5; z < 13; z++) data[vi(x, y, z)] = leafId;
+  for (let y = 1; y < 5; y++) data[vi(8, y, 8)] = logId;
+  light.fill(0xff);
+  return { data, light, meta, missing: false };
+}
+
+/** 真实 atlas 的 tiles（mesher 需要 tile 的 u0/v0/u1/v1）；在系统里只能从已有实例取，故从 atlas 文件读不可行 → 用派生假 atlas */
+function fakeAtlas() {
+  // mesher 只需要 tiles[name] 存在且带 u0/v0/u1/v1；同一组 UV 即可（本用例不验证 UV）
+  const t = { u0: 0, v0: 0, u1: 1, v1: 1 };
+  const tiles = {};
+  for (const b of BLOCKS) {
+    const v = FACES_DATA[b.name];
+    if (!v) continue;
+    for (const name of (Array.isArray(v) ? v : [v])) if (name) tiles[name] = t;
+  }
+  return { tiles };
+}
+
+test('巨树叶渲染通道：cullMode=cutout（镂空 alpha 生效）且 opaqueTable=1（叶-叶共享面仍互剔）', () => {
+  // 钉住两套口径的**成对**关系（缺一不可）：
+  //   · cullMode=opaque → opaque 通道 alphaTest=0 → 镂空 alpha 被忽略，叶面变不透光的实心块；
+  //   · 漏写 opaque:true → opaqueTable=0 → 叶-叶共享面不再互剔，实测顶点数 ×7.78。
+  // 两者都是**静默**失败（不报错、不抛异常，只是观感/容量错），故必须靠断言钉。
+  assertEqual(LEAF_NAMES.length, 6, `巨树叶方块数：${LEAF_NAMES.join(', ')}`);
+  const reg = createRegistry();
+  for (const def of BLOCKS) reg.register(def.name, def);
+  reg.freeze();
+  for (const n of LEAF_NAMES) {
+    const def = BLOCKS.find((b) => b.name === n);
+    assertEqual(def.cullMode, 'cutout', `"${n}" 必须是 cutout（opaque 通道 alphaTest=0 → 镂空失效）`);
+    assertFalse(def.opaque === false, `"${n}" 不得写 opaque:false`);
+    const id = reg.idOf(n);
+    assertEqual(reg.opaqueTable[id], 1, `"${n}" 的 opaqueTable 必须为 1（漏写 opaque:true 则叶-叶共享面不互剔，顶点 ×7.78）`);
+    assertTrue(reg.castsShadow(id), `"${n}" 必须投影`);
+  }
+});
+
+test('巨树叶顶点守卫：cutout + opaqueTable=1 的总顶点**接近纯 opaque 口径**（防「顺手」删 opaque:true）', () => {
+  // 实测（真实 atlas + 8³ 叶团 + 一根树干）：
+  //   纯 opaque + opaqueTable=1  → 总 1584
+  //   现行（cutout + opaque:1）  → 总 1584（零增长，只是分布从 opaque 转到 cutout）
+  //   cutout + opaqueTable=0     → 总 12316（×7.78）
+  //
+  // ⚠️ 断言设计踩过的坑（负向验证实测）：最初写「cutout 口径 == 临时拨回纯 opaque 口径」，
+  // 但注入「删 opaque:true」后**两条路径都是 opaqueTable=0** → 总数仍相等 → 用例仍绿（盲区）。
+  // 修法 = 对照侧显式写死 opaqueTable=1（不依赖被测声明），被测侧用真实声明值。
+  // 这样声明写错时两侧不等，断言才真 FAIL。
+  const reg = createRegistry();
+  for (const def of BLOCKS) reg.register(def.name, def);
+  reg.freeze();
+  const leafId = reg.idOf('giant_oak_leaves');
+  const logId = reg.idOf('giant_oak_log');
+  const atlas = fakeAtlas();
+
+  const total = (r) => r.opaque.positions.length / 3 + r.cutout.positions.length / 3 + r.transparent.positions.length / 3;
+
+  // 被测：真实声明（cutout 口径）
+  const now = total(buildSectionMesh(leafClusterView(leafId, logId), reg, atlas, 0, 0, 0));
+
+  // 对照：强制 cullTable=0 **且 opaqueTable=1**（不信任被测声明）
+  const savedCull = reg.cullTable[leafId];
+  const savedOpaque = reg.opaqueTable[leafId];
+  reg.cullTable[leafId] = 0;
+  reg.opaqueTable[leafId] = 1;
+  const base = total(buildSectionMesh(leafClusterView(leafId, logId), reg, atlas, 0, 0, 0));
+  reg.cullTable[leafId] = savedCull;
+  reg.opaqueTable[leafId] = savedOpaque;
+
+  assertTrue(base > 0, '对照组应产生顶点（防两侧都是 0 的恒真）');
+  assertEqual(now, base, `cutout 口径总顶点 ${now} 应等于「强制 opaqueTable=1」口径 ${base}（差 ${now - base}）—— 不等即说明声明漏了 opaque:true`);
+  // 防阦值：无论如何不得接近不剔除口径（×7.78 → ~12k）
+  assertTrue(now < base * 1.5, `总顶点 ${now} 不得接近不剔除口径（×7.78 → ~12k）`);
 });

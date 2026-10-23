@@ -736,8 +736,10 @@ async function checkNightSkyFreshness() {
  * [巨树] 契约：8 个 `giant_*` 方块声明、烘焙产物（trees.json）、贴图三者必须互相对得上。
  *
  * 钉的失效路径（每条都实测注入过，见 plan Task 8 Step 3）：
- *   ① 树叶误改回 cutout / 误写 opaque:false → 叶-叶共享面不再互剔，密林视域通道占用翻数倍；
- *   ② 树叶误写 shadowCast:false → 与同为 opaque 叶的 sky_leaves / 既有 leaves 口径不一致
+ *   ① 树叶通道或剔除语义写错 → 两种错法各自静默：cullMode 改回 opaque 则 alphaTest=0、
+ *      **镂空 alpha 被忽略**（叶面变成不透光的实心块，不报错）；漏写 opaque:true 则
+ *      opaqueTable 变 0 → 叶-叶共享面不再互剔，实测同一片 8³ 叶团顶点 1584 → **12316（×7.78）**；
+ *   ② 树叶误写 shadowCast:false → 与既有 leaves 口径不一致
  *      （用户裁决：巨树叶**投影**；`[阴影投射]` 的 13 项清单也不含任何树叶）；
  *   ③ palette 里出现未注册的名字 → makeColumnSetter 对未注册名**静默跳过** → 该方块变 air，肉眼只觉得「树有洞」；
  *   ④ 声明了却没人用的 giant_*（死方块）/ 在用却没声明（同 ③）；
@@ -791,15 +793,17 @@ async function checkGiantTrees() {
   }
   for (const n of declared) if (!used.has(n)) fail(`声明了 ${n} 但没有任何变体使用（死方块）`);
 
-  // ⑤ 树叶：opaque + 不得 opaque:false + 必须投影（不写 shadowCast:false）
+  // ⑤ 树叶：cutout 通道（镂空）+ opaqueTable=1（面剔除）+ 必须投影
+  //    ⚠️ 两套口径缺一不可：cullMode 选渲染通道（决定 alphaTest → 镂空与否），
+  //    opaque 决定 opaqueTable（面剔除 / AO / blocklight / 炮塔 LOS）。
   for (const n of declared.filter((x) => x.endsWith('_leaves'))) {
     const def = BLOCKS.find((b) => b.name === n);
     const id = REGISTRY.idOf(n);
-    if (def.cullMode !== 'opaque') fail(`"${n}" 的 cullMode=${def.cullMode}，必须是 opaque（cutout 会让密林视域通道占用翻数倍）`);
-    if (def.opaque === false) fail(`"${n}" 显式 opaque:false，叶-叶共享面不再互剔`);
-    if (def.shadowCast === false) fail(`"${n}" 写了 shadowCast:false，巨树叶须投影（与 sky_leaves / leaves 同口径）`);
+    if (def.cullMode !== 'cutout') fail(`"${n}" 的 cullMode=${def.cullMode}，必须是 cutout（opaque 通道 alphaTest=0 → 镂空 alpha 被忽略，叶面变实心块）`);
+    if (def.opaque === false) fail(`"${n}" 显式 opaque:false，叶-叶共享面不再互剔（实测顶点 ×7.78）`);
+    if (def.shadowCast === false) fail(`"${n}" 写了 shadowCast:false，巨树叶须投影（与 leaves 同口径）`);
     if (id !== undefined && !REGISTRY.castsShadow(id)) fail(`"${n}" 的 registry.castsShadow 为 false`);
-    if (id !== undefined && REGISTRY.opaqueTable[id] !== 1) fail(`"${n}" 的 opaqueTable 不是 1`);
+    if (id !== undefined && REGISTRY.opaqueTable[id] !== 1) fail(`"${n}" 的 opaqueTable 不是 1（漏写 opaque:true → 叶-叶共享面不再互剔，顶点 ×7.78）`);
   }
 
   // ⑥ 全部不进背包
@@ -828,7 +832,7 @@ async function checkGiantTrees() {
   }
 
   if (failures.length === before) {
-    infos.push(`[巨树] ${variantCount} 变体 / ${declared.length} 方块（叶子 opaque 且投影）/ 指纹匹配 / 贴图 ${giantTiles.size} 张`);
+    infos.push(`[巨树] ${variantCount} 变体 / ${declared.length} 方块（叶子 cutout 镂空 + opaqueTable=1 保剔除 + 投影）/ 指纹匹配 / 贴图 ${giantTiles.size} 张`);
   }
 }
 

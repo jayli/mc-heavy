@@ -24,11 +24,19 @@ const CHANNELS = ['opaque', 'cutout', 'transparent'];
 // ⚠️ 巨树景观（用户裁决 2026-10-23，接受 opaque ×1.5）：opaque active 1200→1800（maxVerts 2.85M→4.275M）。
 // 验收口径是 reserved（= 1.25 × 已用顶点）相对**初始**容量：终版参数实测 reserved 峰值 82.1%（森林冲刺，相对 4.275M，
 // 零 opaque 扩容）；折算到 2.85M 为 (-20,10) 视域 105%、冲刺 123% → 必然 ×1.5 扩容，故抬容量而非压树量。
-// 三通道合计 (4.275M+2.20M+0.125M)×30B = 188.83 MiB（§4.10 的 150MiB 冻结预算由此有意上调，见设计文档 §4.10）。
-// cutout / transparent 不变：HEAD 在密林视域本就越线（cutout 128%），巨树只把旧森林树（cutout）替换成 opaque 叶，cutout 只降不升。
+//
+// ⚠️ 巨树叶改走 cutout 通道（用户裁决 2026-10-23）：叶子从 opaque 搬到 cutout（拿到 alphaTest 镂空）。
+// **总顶点逐位守恒**（A/B 实测 5 个视域 3,478,025 / 4,810,025 / 3,831,985 / 3,233,170 / 3,192,705
+// 改动前后完全相同）—— 纯通道搬运，零额外顶点。但两通道容量基数不同（opaque 4.275M vs cutout 2.2M，
+// 差 1.94 倍）→ 同一批顶点搬过去后百分比被放大：(-20,10) 从 opaque 62.6%/cutout 91.2% 变成
+// opaque 57.6%/cutout **100.9%**（2,220,795 > 2,200,000，差 20,795）→ 会触发一次扩容。
+// 故 cutout active 550→600（maxVerts 2.20M→2.40M），该视域降到 92.5%，零扩容。
+// ⚠️ 上表「cutout 只降不升」的口径**因叶子改通道而失效**，勿再引用。
+// 三通道合计 (4.275M+2.40M+0.125M)×30B = 194.55 MiB（仍在 m3-fullscene 的 200 MiB 上限内；
+// §4.10 的 150MiB 冻结预算已于巨树 Epic 有意上调）。
 const CAPACITY = {
   opaque:      { active: 1800, avgVerts: 1900 },  // 巨树景观 1200→1800（用户裁决：opaque ×1.5，2.85M→4.275M）
-  cutout:      { active: 550, avgVerts: 3200 },  // 撒布补齐后 450→550（吸收 cutout 峰值，守 150MB）
+  cutout:      { active: 600, avgVerts: 3200 },  // 巨树叶改 cutout 通道后 550→600（2.20M→2.40M，吸收 (-20,10) 的 2,220,795）
   transparent: { active: 100, avgVerts: 1000 },
 };
 

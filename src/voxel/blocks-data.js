@@ -177,18 +177,26 @@ export const BLOCKS = [
   {"name":"sky_grass","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
   // ---- 巨树景观（Giant Trees Epic）----
   // 全部 geometry:"box"、orientationModes:0 —— 无新几何模板（mesher 零改动）。
-  // ⚠️ 树叶必须 cullMode:"opaque"（叶-叶共享面互剔，mesher.js 判据 opaqueTable[neighbor]===1：
-  //    实测单棵从 cutout 通道的 ~10k 顶点降到 opaque 通道的 ~5k）；走 cutout 会让密林视域 cutout
-  //    通道占用翻数倍。⚠️ 树叶**投影**（不写 shadowCast:false）：与同为 opaque 叶的 sky_leaves、
-  //    以及既有 leaves 同口径；`[阴影投射]` 门禁的 13 项清单也要求 leaves 仍须投影。
-  //    不要写 opaque:false（会让叶-叶共享面不再互剔）。
+  // ⚠️ 树叶口径（2026-10-23 修订）：**cullMode:"cutout" + 显式 "opaque":true**。
+  //    · 为什么是 cutout：opaque 通道的材质 alphaTest=0（materials.js 只有 cutout 挂 alphaTest 0.3）
+  //      → 贴图的镂空 alpha 被完全忽略，树叶渲染成完全不透光的实心块（用户实玩反馈）。
+  //    · 为什么还要 opaque:true：cutout 通道本身配 opaqueTable=0（看 leaves 方块），见下。
+  //    两者是**两套口径**：cullMode 选渲染通道（决定 alphaTest / 镂空），
+  //    opaque 决定 opaqueTable（面剔除/AO/blocklight/炮塔 LOS）。**必须同时写，缺一不可**。
+  // ⚠️ opaqueTable 必须为 1（即不得写 opaque:false）：mesher.js 判据 opaqueTable[neighbor]===1
+  //    决定叶-叶共享面互剔。实测同一片 8³ 叶团（18³ halo，真实 atlas）的总顶点：
+  //      opaque + opaqueTable=1         → 1584
+  //      cutout + opaqueTable=1（本行）  → 1584（**零增长**，只是分布从 opaque 转到 cutout）
+  //      cutout + opaqueTable=0         → 12316（**×7.78**，密林视域会撞破 cutout 容量）
+  // ⚠️ 树叶**投影**（不写 shadowCast:false）：cutout 通道 castShadow=true；与既有 leaves 同口径；
+  //    `[阴影投射]` 门禁的 13 项清单也要求 leaves 仍须投影。
   // ⚠️ palette[0] 恒为树干（tools/giant-trees-fingerprint.mjs 的 FAMILY_PALETTES）。
   {"name":"giant_oak_log","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
   {"name":"giant_mangrove_log","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
-  {"name":"giant_oak_leaves","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
-  {"name":"giant_birch_leaves","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
-  {"name":"giant_spruce_leaves","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
-  {"name":"giant_cherry_leaves","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
-  {"name":"giant_palm_leaves","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
-  {"name":"giant_banyan_leaves","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
+  {"name":"giant_oak_leaves","solid":true,"cullMode":"cutout","opaque":true,"orientationModes":0,"geometry":"box"},
+  {"name":"giant_birch_leaves","solid":true,"cullMode":"cutout","opaque":true,"orientationModes":0,"geometry":"box"},
+  {"name":"giant_spruce_leaves","solid":true,"cullMode":"cutout","opaque":true,"orientationModes":0,"geometry":"box"},
+  {"name":"giant_cherry_leaves","solid":true,"cullMode":"cutout","opaque":true,"orientationModes":0,"geometry":"box"},
+  {"name":"giant_palm_leaves","solid":true,"cullMode":"cutout","opaque":true,"orientationModes":0,"geometry":"box"},
+  {"name":"giant_banyan_leaves","solid":true,"cullMode":"cutout","opaque":true,"orientationModes":0,"geometry":"box"},
 ];

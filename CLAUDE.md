@@ -53,7 +53,7 @@ Epic 链 M4→M5→M6→M7 已全部交付。**第三阶段 M8（TNT 爆炸 / �
 **v1.66 / v1.67** 把枪击命中特效改为**整格白闪 + 按命中面 atlas 取色的碎块**（MAG7 全格白闪波浪）。
 **v1.68** 引入**巨树景观**（素材 `40AssortedTreesPack.schem` 入库 → 28 个原版景观树变体按 1/2 比例，
 森林 / 海边 / 草地沙漠交界三条落位路径，城市·地标·撒布结构让路，与旧森林树互斥；**opaque 通道容量 ×1.5**，
-§4.10 预算 148.06 → 188.83 MiB；验收报告 `docs/giant-trees-acceptance-report.md`）。
+§4.10 预算 148.06 → 194.55 MiB（v1.69 巨树叶改 cutout 后 cutout 2.2M→2.4M；原 188.83）；验收报告 `docs/giant-trees-acceptance-report.md`）。
 另有一项未按版本号登记的改动：**准心按背景亮度自适应配色**（`src/ui/crosshair.js`）。
 进度与实测数据一律查 roadmap。里程碑状态、验收报告、遗留 TODO 的
 完整清单**一律查 roadmap** —— 此处不复制（复制就会漂移）。
@@ -838,7 +838,8 @@ M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 
   `reservedV`。**HEAD 本身在密林视域已越线**（cutout 128.1% / 森林冲刺 145.4%），所以「任何视域都不扩容」
   对 HEAD 就不成立，验收写成「相对 HEAD 不恶化」。**出生点在城市中心，三个方向冲 96 格都出不了城**
   ——冲刺测试要从森林 / 海岸起步。
-- **`CAPACITY.opaque.active = 1800`（4.275M）是用户裁决的有意上调**（§4.10 的冻结预算 148.06 → 188.83 MiB，
+- **`CAPACITY.opaque.active = 1800`（4.275M）是用户裁决的有意上调**（§4.10 的冻结预算 148.06 → 194.55 MiB，
+  其中 v1.69 巨树叶改 cutout 通道使 cutout 2.2M→2.4M，opaque 那次是 148.06→188.83；
   `m3-fullscene` 上限 200 MiB）。⚠️ **「容量 == 标定值」断言单看末尾会被掩盖**：`2.85M × 1.5` 恰好 = `4.275M`，
   容量被改回 1200 时页面会扩容到同一个数 → 预算门**开局**就断言初始容量（负向验证实测：只在末尾断言时注入后全绿）。
 - **候选 = 全局对齐网格 + 内缩抖动，不是「逐点扫描 + 贪心」**：cell 边长 `spacing + jitter`，点落在 cell 内
@@ -861,12 +862,25 @@ M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 
   下标小者胜）、地块索引 = `(minZ, minX)` 升序、分类表显式（未知源方块名 throw）。改任一条会让总格数落到
   [16000, 18000] 区间外或族标志校验 throw。`.schem` **入库**（烘焙输入，不是渲染资源）；改分类表 / 参数 /
   `.schem` 后必须 `npm run gianttrees`，`check:data` 的 `[巨树]` 指纹会抓。
-- **贴图：opaque 通道忽略 alpha → 孔洞处直接露出 RGB**。重着色必须重算**全部**像素的 RGB（含 `alpha=0`），
-  `[巨树]` 门禁钉「无近黑像素」。暂存 / 备用贴图不能放进 `assets/textures/`（`build-atlas` 递归扫描 +
-  `atlas.spec` 断言 tile 数 ≡ PNG 数）。
-- **巨树叶与 `sky_leaves` 同属 `opaqueTable=1` 的实例**（邻居面互剔 + AO 遮挡 + blocklight 阻断 + 炮塔 LOS 阻挡）。
-  **树叶投影**（用户裁决）：不写 `shadowCast:false`（`[阴影投射]` 的 13 项清单要求 `leaves` 必须投影，v1.0 的
-  写法会让 `check:data` 即红）、不写 `opaque:false`。
+- **贴图：巨树叶走 cutout 通道（`alphaTest=0.3`）→ 13 个全透明 + 67 个半透明像素被剔除**，只留 176/256 实心像素。
+  重着色仍须重算**全部**像素的 RGB（与既有树叶同口径，防任何通道回退时露黑点），`[巨树]` 门禁钉「无近黑像素」。
+  暂存 / 备用贴图不能放进 `assets/textures/`（`build-atlas` 递归扫描 + `atlas.spec` 断言 tile 数 ≡ PNG 数）。
+- **巨树叶口径 = `cullMode:"cutout"` + 显式 `"opaque":true`**（2026-10-23 修订，两套口径缺一不可）：
+  `cullMode` 选渲染通道（决定 `alphaTest` → 镂空与否），`opaque` 决定 `opaqueTable`（面剔除 / AO /
+  blocklight / 炮塔 LOS）。**opaque 通道的 `alphaTest=0`**，所以 `cullMode:"opaque"` 会让镂空 alpha
+  被完全忽略、叶面渲染成不透光的实心块（用户实玩反馈的「表面完全不透光」就是这个）。
+  实测同一片 8³ 叶团总顶点：纯 opaque 1584 / **cutout + opaqueTable=1 → 1584（零增长）** /
+  cutout + opaqueTable=0 → **12316（×7.78）**。故漏写 `opaque:true` 是静默的容量灾难。
+  `[巨树]` 门禁与 `test-giant-trees.js` 的「顶点守卫」双向钉死这两种错法。
+  ⚠️ 该方块与 `sky_leaves` 同属 `opaqueTable=1` 的实例（邻居面互剔 + AO 遮挡 + blocklight 阻断 + 炮塔 LOS 阻挡），
+  **但通道不同**（`sky_leaves` 是 opaque 通道）。
+  **树叶投影**（用户裁决）：不写 `shadowCast:false`（`[阴影投射]` 的 13 项清单要求 `leaves` 必须投影）、
+  不写 `opaque:false`。cutout 通道 `castShadow=true`，投影不受影响。
+- **预算门的主判据是「总顶点」而非逐通道百分比**（2026-10-23）：巨树叶换通道那次改动
+  总顶点**逐位守恒**（5 视域实测 3,478,025 / 4,810,025 / 3,831,985 / 3,233,170 / 3,192,705 前后相同），
+  但两通道容量基数不同（opaque 4.275M vs cutout 2.4M），同一批顶点搬过去百分比被放大 → 逐通道判据会误报。
+  故 `giant-tree-budget.spec.mjs` 以总顶点为主判据、逐通道只留「不得扩容」与「transparent 不比 HEAD 糟」。
+  ⚠️ **此类「换通道」改动一律先做 A/B 总顶点守恒验证**，不要被百分比差误导（实测曾误判为「超线 6.7 点」）。
 - **draw call 有增量**：three r185.1 WebGPU 对 BatchedMesh 每个可见 geometry slot 各发一次 draw；实测 bench
   场景 ① +16 / ④ +41（545 → 586）。往通道里加大量新几何前别假设 draw 不变。
 - **已有存档里的森林会长出巨树**（用户接受，未 bump DB 版本）；玩家的 edits 照常覆盖在生成结果之上。
