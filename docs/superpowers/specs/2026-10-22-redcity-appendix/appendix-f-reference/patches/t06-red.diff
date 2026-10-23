@@ -1,0 +1,10 @@
+--- a/src/tests/index.html
++++ b/src/tests/index.html
+@@ -78,6 +78,7 @@
+     import './test-redcity-layout.js';
+     import './test-redcity-surface.js';
+     import './test-redcity-dispatch.js';
++    import './test-redcity-apply.js';
+ 
+     runAndExpose().then((r) => {
+       document.getElementById('report').textContent =

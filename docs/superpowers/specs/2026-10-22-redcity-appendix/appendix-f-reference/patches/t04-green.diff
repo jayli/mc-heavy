@@ -1,0 +1,61 @@
+--- a/src/gen/structures/landmarks.js
++++ b/src/gen/structures/landmarks.js
+@@ -10,7 +10,7 @@
+   FROZEN_MOUNTAIN_STEEP_AXIS, FROZEN_MOUNTAIN_STEEP_FACTOR, FROZEN_MOUNTAIN_HEIGHT_FACTOR,
+   ISLAND_SHAPE_NOISE_SCALE, ISLAND_EDGE_NOISE_SCALE,
+   SNOW_LAND_CENTER_BOOST_RADIUS, CITY_TRANSITION_SIZE, CITY_TERRACE_WIDTH,
+-  ISLAND_SEA_LEVEL,
++  ISLAND_SEA_LEVEL, CITY_STRUCTURE_FOOTPRINT,
+ } from './region-config.js';
+ import { seededRandom, getBiome } from '../noise.js';
+ import { generateHeight, generateHeightForBiome } from '../terrain.js';
+@@ -885,3 +885,29 @@
+ export function islandSurfaceY(wx, wz, islandInfo, seed) {
+   return isInIsland(wx, wz, islandInfo, seed) ? ISLAND_SEA_LEVEL : null;
+ }
++
++// ==================== 地标外包范围（RedCity 吞并判定的唯一权威）====================
++
++/**
++ * 地标「实际外包范围」的半宽（以地标中心为原点的矩形 ±halfX / ±halfZ）。
++ *
++ * 取值 = 各 `getXxxInfo` 判定所用的**同一组常量**（`floor(SIZE/2) + TRANSITION`），再并入该地标在阶段 2
++ * 光栅化的 JSON 结构占地（`CITY_STRUCTURE_FOOTPRINT`）——地标 = 地形 + 它的 JSON 结构，吞并必须两者一起算：
++ *  - island：地形 ±25（`getIslandInfo` 入口 AABB；`apply.js` 里的 `dist < 39` 因此永远不可达，勿据此取 39）∪ 塔 ±(4,5) → ±25；
++ *  - plainLand：地形 ±15 ∪ `pyramidIsland` 结构 ±(17,20)（pyramid_island.json 实际 x[-16,17] z[-20,18]）→ (17,20)。
++ * 不得在 redcity 模块里另写这些数字（红线 1）；`test-redcity-surface.js` 用暴力扫描钉「info 非空 ⇒ 在范围内」防漂移。
++ * @param {'pyramid'|'frozenMountain'|'snowLand'|'island'|'plainLand'} kind
++ * @returns {{halfX:number, halfZ:number}|null}
++ */
++export function landmarkHalfExtent(kind) {
++  const total = (size, transition) => Math.floor(size / 2) + transition;
++  const union = (half, fp) => ({ halfX: Math.max(half, fp.halfX), halfZ: Math.max(half, fp.halfZ) });
++  switch (kind) {
++    case 'pyramid': { const h = total(PYRAMID_SIZE, TRANSITION_SIZE.PYRAMID); return { halfX: h, halfZ: h }; }
++    case 'frozenMountain': { const h = total(FROZEN_MOUNTAIN_SIZE, TRANSITION_SIZE.FROZEN_MOUNTAIN); return { halfX: h, halfZ: h }; }
++    case 'snowLand': { const h = total(SNOW_LAND_SIZE, TRANSITION_SIZE.SNOW_LAND); return { halfX: h, halfZ: h }; }
++    case 'island': return union(total(ISLAND_SIZE, TRANSITION_SIZE.ISLAND), CITY_STRUCTURE_FOOTPRINT.tower);
++    case 'plainLand': return union(Math.floor(PLAIN_LAND_SIZE / 2), CITY_STRUCTURE_FOOTPRINT.pyramidIsland);
++    default: return null;
++  }
++}
+--- a/src/gen/terrain.js
++++ b/src/gen/terrain.js
+@@ -57,7 +57,16 @@
+  * @returns {string}
+  */
+ export function surfaceTypeOfBiome(biome) {
+-  return SURFACE_BY_BIOME[biome]?.[0] ?? 'grass';
++  return surfaceBlocksOfBiome(biome)[0];
++}
++
++/**
++ * biome 的 [表层, 次表层] 方块名 —— `SURFACE_BY_BIOME` 的唯一读出口（红线 1）。
++ * RedCity 过渡环重塑地表时按它写表层/次表层，让环带与外侧自然地形同色（勿另写第二份映射）。
++ * @returns {[string, string]}
++ */
++export function surfaceBlocksOfBiome(biome) {
++  return SURFACE_BY_BIOME[biome] ?? ['grass', 'dirt'];
+ }
+ 
+ /**

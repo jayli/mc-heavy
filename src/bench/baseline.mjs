@@ -76,7 +76,9 @@ async function bootGame(browser, { vd = VD, weather } = {}) {
   const page = await ctx.newPage();
   const errors = [];
   page.on('pageerror', (e) => errors.push(String(e)));
-  let url = `${BASE}/?vd=${vd}&seed=${SEED}`;
+  // RedCity 起默认出生在 RedCity；冻结基线（docs/m3-baseline.*）是在 City 出生点量的，场景 ②③ 的语义也绑定城市，
+  // 故 pin spawn=city。场景 ①④ 是显式传送到 (620,-100) / (850,-100)，不受出生点影响。
+  let url = `${BASE}/?vd=${vd}&seed=${SEED}&spawn=city`;
   if (weather) url += `&weather=${weather}`;
   await page.goto(url);
   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });

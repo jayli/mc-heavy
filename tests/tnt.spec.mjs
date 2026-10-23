@@ -36,7 +36,8 @@ async function waitWorldSettled(page) {
  * 相对玩家位置搭的 —— 不钉 seed 会让「测试场落在什么地形上」每次不同，全量连跑时偶发
  * FAIL（实测：单跑全绿、与 zombie-nests/turrets 连跑时第一条用例失败）。
  */
-const URL = '/?vd=2&seed=12345';
+// RedCity 起默认出生在 RedCity；炮塔/丧尸/TNT 的场景搭建依赖 City 周边地形，pin spawn=city（RedCity spec §14.8）
+const URL = '/?vd=2&seed=12345&spawn=city';
 
 async function boot(page) {
   await page.goto(URL);

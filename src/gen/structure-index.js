@@ -4,6 +4,9 @@
 
 import { neighborRegionKeys } from './structures/structure-layout.js';
 
+/** 全局布局 key：City / RedCity 的持有者 region(0,0)（CITY_REGION 语义） */
+const GLOBAL_LAYOUT_KEY = '0,0';
+
 /** 每帧布局任务下发预算（region(0,0) 含城市布局 ~12ms，限制在途避免阻塞 GEN/MESH 队列） */
 const LAYOUT_DISPATCH_PER_FRAME = 4;
 
@@ -25,17 +28,30 @@ export class StructureIndex {
     this._pendingKeys = new Set();
   }
 
-  /** column 的 GEN 门控：查询域内全部 region 布局就绪才放行（§4.2 依赖规则） */
+  /**
+   * 一个 column 的 GEN 需要的 region 布局 key：3×3 查询域 + 全局 (0,0)。
+   * (0,0) 持有全世界唯一的 City / RedCity 布局，RedCity 不走 3×3 查询域（影响域越界 60/80 个 seed）。
+   */
+  _requiredKeys(cx, cz) {
+    const keys = neighborRegionKeys(cx, cz);
+    if (!keys.includes(GLOBAL_LAYOUT_KEY)) keys.push(GLOBAL_LAYOUT_KEY);
+    return keys;
+  }
+
+  /** column 的 GEN 门控：查询域 + 全局 (0,0) 布局就绪才放行（§4.2 依赖规则）。否则早到的 column 会永久缺 RedCity */
   readyForColumn(cx, cz) {
-    for (const key of neighborRegionKeys(cx, cz)) {
+    for (const key of this._requiredKeys(cx, cz)) {
       if (!this._layouts.has(key)) return false;
     }
     return true;
   }
 
+  /** 全世界唯一的 RedCity 布局（region(0,0) 持有；未就绪 → null）。随每个 gen 任务全局下发，见 spec §13.3.2 */
+  redCity() { return this._layouts.get(GLOBAL_LAYOUT_KEY)?.redCity ?? null; }
+
   /** 把 column 查询域内缺失的 region 布局加入请求队列（去重；调度器每帧 drain） */
   ensureForColumn(cx, cz, prio = 0) {
-    for (const key of neighborRegionKeys(cx, cz)) {
+    for (const key of this._requiredKeys(cx, cz)) {
       if (this._layouts.has(key) || this._inflight.has(key) || this._pendingKeys.has(key)) continue;
       const [regionX, regionZ] = key.split(',').map(Number);
       this._pending.push({ key, regionX, regionZ, prio });

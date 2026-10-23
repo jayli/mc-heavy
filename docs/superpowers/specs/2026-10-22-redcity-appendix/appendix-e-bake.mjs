@@ -1,3 +1,4 @@
+// ⚠️ v1.2：本附录是**算法的独立可复现参考**；落地形态见 `appendix-f-reference/tools/bake-redcity.mjs + tools/redcity-fingerprint.mjs`（计划以后者为准）。 落地版把 `REDCITY_DY_MAX_BUDGET` / `REDCITY_BASE_Y_MAX` 移到 `region-config.js`（`tools/` 单向 import `src/`），`groundFloor` 改 import `REDCITY_GROUND_FLOOR`，并导出 `bakeFromSchematic()`。
 // 附录 E：烘焙主流程与输入指纹
 //
 // 实施时本文件的内容要落到：
@@ -44,6 +45,10 @@ export const REDCITY_SCHEM = path.join(ROOT, 'assets', 'redcity', 'src', 'Sakura
  *   - `borderKeep` 8：距矩形边缘 8 格内的连通体不刚性（边缘地面必须收敛到 0，见 I2）。
  *
  * **改任何一个都必须重跑 `npm run redcity`**，否则产物静默过期（`check:data` 的指纹环节会抓）。
+ *
+ * ⚠️ **`groundFloor` 在这里是字面量副本**（本附录为保证自检自洽才留着）。实施时它**必须改为**
+ * `import { REDCITY_GROUND_FLOOR } from '../src/gen/structures/region-config.js'`（纯数据模块，tools 可 import）——
+ * 两份字面量会漂移出「布局层按 -5 算下限、烘焙按别的值烘」的撕裂（红线 1）。
  */
 export const REDCITY_BAKE_PARAMS = Object.freeze({
   relief: 0.34,
@@ -101,24 +106,34 @@ export function redcityInputFingerprint({ params, spawnParams, skin, mappingRule
  * ⚠️ **`WORLD_MAX_Y = 96` 是独占上界**（合法 y 最大 95），故预算必须满足
  * `REDCITY_BASE_Y_MAX + REDCITY_DY_MAX_BUDGET <= 95`，**不是 < 96 就算对**。
  * 实测当前产物 `dyMax = 80` → 在 `baseY ≤ 7` 时余量 ≥ 8 格。
+ *
+ * ⚠️ **归属层**：本文件顶层 `import node:fs`，是 **Node-only** 模块；而布局层（`redcity-layout.js`，Worker 同构）与浏览器单测
+ * 都要读这两个常量，不能 import 本文件（浏览器解析不了 `node:fs`，运行时也不得反向依赖 `tools/`）。
+ * 实施时 `REDCITY_DY_MAX_BUDGET` / `REDCITY_BASE_Y_MAX` **定义在 `src/gen/structures/region-config.js`**，
+ * 本文件与 `check:data` 从那里 import。这里的副本只为让附录自检独立可跑。
  */
 export const REDCITY_DY_MAX_BUDGET = 87;
 
 /**
  * 布局期 `baseY` 的假定上界（与 `REDCITY_DY_MAX_BUDGET` 配对：8 + 87 = 95 = WORLD_MAX_Y - 1）。
  *
- * 实测 1500 seed 的 `baseY` 最大为 5，取 8 留余量。**布局期（Task 3）必须断言
- * `baseY <= REDCITY_BASE_Y_MAX`** —— 否则本文件的烘焙期断言失去前提（两半合起来才是完整 I4）。
+ * 实测 1500 seed 的 `baseY` 最大为 5（599、1491 两个 seed 为 5，其余 1498 个为 4），取 8 留余量。
+ * **布局层必须保证 `baseY <= REDCITY_BASE_Y_MAX`**（`buildRedCityLayout` 里 `Math.min` 钳制，**不是抛错**——
+ * 抛错会让极端 seed 的 GEN 整体失败）—— 否则本文件的烘焙期断言失去前提（两半合起来才是完整 I4）。
  */
 export const REDCITY_BASE_Y_MAX = 8;
 
 /**
- * 不变量断言（spec §13.4.2 / §13.4.4）。任一不成立即抛错 —— **烘焙不得产出违约产物**。
+ * 不变量断言（spec §13.4.2 / §14.2）。任一不成立即抛错 —— **烘焙不得产出违约产物**。
+ *
+ * 口径一览（spec §14.2）：I1 / I2 / I3 / I4（烘焙半）/ **I5 严格**（刚性分量内部保形，=0）/ **I5′**（接触占比 <0.1%）。
+ * **没有 I6**：旧版 I6「建筑 footprint 内 ground 极差 ≤ 1」与本算法矛盾（算法不压平地面，只统一平移量），
+ * 实测 125 个刚性分量里 104 个违反，已由 spec §14.2 作废。勿再把它加回来。
  *
  * @param {Object} bake `bakeRedCityCore` 的返回
  * @param {Object} opt
  * @param {number} opt.worldMaxY `WORLD_MAX_Y`（96）
- * @param {number} opt.contactBreakRatioMax I5 的占比上限（0.001 = 0.1%）
+ * @param {number} opt.contactBreakRatioMax I5′ 的占比上限（0.001 = 0.1%）
  */
 export function assertInvariants(bake, { worldMaxY = 96, contactBreakRatioMax = 0.001 } = {}) {
   const s = bake.stats;
@@ -140,12 +155,19 @@ export function assertInvariants(bake, { worldMaxY = 96, contactBreakRatioMax = 
   if (REDCITY_BASE_Y_MAX + REDCITY_DY_MAX_BUDGET > worldMaxY - 1) {
     fail.push(`I4 常量自相矛盾：BASE_Y_MAX(${REDCITY_BASE_Y_MAX}) + DY_MAX_BUDGET(${REDCITY_DY_MAX_BUDGET}) = ${REDCITY_BASE_Y_MAX + REDCITY_DY_MAX_BUDGET} > WORLD_MAX_Y-1(${worldMaxY - 1})`);
   }
-  // I5 建筑体内相邻块相对高差保持（刚性平移的验收口径 = 占比，不是绝对 0）
+  // I5（严格）：同一刚性分量内任意相邻块，烘焙后 yRel 差 == 源 y 差。by-construction 恒为 0，
+  //    守的是发射路径——「逐列压缩/剪切」的退化实现会让它 > 0（注入实验：504）。
+  //    ⚠️ 旧 I5 只数「竖向接触」，对逐列剪切**完全无感**（同列块共用同一 S，竖向邻居永不破坏；
+  //    注入逐列平移后 contactBreaks 反而从 84 变成 0）——所以单靠 I5′ 钉不住「别退化成逐列」。
+  const intra = bake.checks ? bake.checks.intraCompBreaks : 0;
+  if (!bake.checks) fail.push('I5 缺 bake.checks.intraCompBreaks（bakeRedCityCore 返回形状不符）');
+  else if (intra !== 0) fail.push(`I5 刚性分量内部保形被破坏 ${intra} 处（疑似退化成逐列平移）`);
+  // I5′ 接触占比：块与其正下方保留块的平移量不一致占比（验收口径 = 占比，不是绝对 0）
   //    实测 84 / 151,392 = 0.055%：都发生在连通体 footprint 边缘（涂色地面与分量 S 交界处），
   //    是刚性平移的固有产物，不是缺陷。
   const ratio = s.verticalContacts ? s.contactBreaks / s.verticalContacts : 0;
   if (ratio > contactBreakRatioMax) {
-    fail.push(`I5 相邻块平移不一致 ${s.contactBreaks}/${s.verticalContacts} = ${(ratio * 100).toFixed(3)}% > ${(contactBreakRatioMax * 100).toFixed(1)}%`);
+    fail.push(`I5′ 竖向接触平移不一致 ${s.contactBreaks}/${s.verticalContacts} = ${(ratio * 100).toFixed(3)}% > ${(contactBreakRatioMax * 100).toFixed(1)}%`);
   }
   if (fail.length) throw new Error(`redcity: 烘焙不变量违约\n  - ${fail.join('\n  - ')}`);
   return {
@@ -241,12 +263,12 @@ if (process.argv[1] && process.argv[1].endsWith('appendix-e-bake.mjs')) {
   });
 
   console.log(`烘焙 ${(Date.now() - t0)} ms`);
-  console.log(`不变量 I1=${inv.i1} I2=${inv.i2} I3=${inv.i3} I4 dyMax=${inv.i4DyMax}/预算${inv.i4Budget} I5=${(inv.i5Ratio * 100).toFixed(3)}%`);
+  console.log(`不变量 I1=${inv.i1} I2=${inv.i2} I3=${inv.i3} I4 dyMax=${inv.i4DyMax}/预算${inv.i4Budget} I5=0(严格) I5′=${(inv.i5Ratio * 100).toFixed(3)}%`);
   console.log(`映射覆盖：未覆盖 ${cov.uncovered} 块（${(cov.uncoveredRatio * 100).toFixed(2)}%），块数≥50 未映射 ${cov.bigUncovered.length} 项`);
   console.log(`产物 ${doc.width}×${doc.length}，${bake.ents.length} 块，palette ${doc.palette.length} 项`);
   console.log(`spawn ox=${spawn.ox} oz=${spawn.oz} dy=${spawn.dy}（距中心 ${spawn.d.toFixed(2)} 格）`);
   console.log(`指纹 ${fingerprint.slice(0, 16)}`);
-  console.log('✓ 不变量 I1–I5 与映射覆盖均通过（任一违约会在上方抛错并 exit 非 0）');
+  console.log('✓ 不变量 I1–I5/I5′ 与映射覆盖均通过（任一违约会在上方抛错并 exit 非 0）');
 
   if (process.env.WRITE) {
     fs.mkdirSync(path.dirname(REDCITY_JSON), { recursive: true });
@@ -258,6 +280,8 @@ if (process.argv[1] && process.argv[1].endsWith('appendix-e-bake.mjs')) {
       invariants: inv,
       coverage: { uncovered: cov.uncovered, uncoveredRatio: cov.uncoveredRatio, bigUncovered: cov.bigUncovered },
       fingerprint,
+      // bakedAt 仅为已入库产物的历史字段；实施时 tools/bake-redcity.mjs **不再写它**（其它四个烘焙产物无时间戳，
+      // 时间戳让每次重烘都产生无意义 diff，也让「重烘应字节一致」的校验失去意义）。
       bakedAt: new Date().toISOString(),
     };
     fs.writeFileSync(REDCITY_JSON, JSON.stringify(out));

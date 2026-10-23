@@ -57,7 +57,16 @@ const SURFACE_BY_BIOME = {
  * @returns {string}
  */
 export function surfaceTypeOfBiome(biome) {
-  return SURFACE_BY_BIOME[biome]?.[0] ?? 'grass';
+  return surfaceBlocksOfBiome(biome)[0];
+}
+
+/**
+ * biome 的 [表层, 次表层] 方块名 —— `SURFACE_BY_BIOME` 的唯一读出口（红线 1）。
+ * RedCity 过渡环重塑地表时按它写表层/次表层，让环带与外侧自然地形同色（勿另写第二份映射）。
+ * @returns {[string, string]}
+ */
+export function surfaceBlocksOfBiome(biome) {
+  return SURFACE_BY_BIOME[biome] ?? ['grass', 'dirt'];
 }
 
 /**

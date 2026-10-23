@@ -1,0 +1,11 @@
+--- a/src/tests/index.html
++++ b/src/tests/index.html
+@@ -73,6 +73,8 @@
+     // 枪击命中特效（v1.66 落地 / v1.67 收敛为白闪 + 碎块）
+     import './test-block-hit-fx.js';
+     import './test-block-color.js';
++    // RedCity（v1.68）
++    import './test-redcity-data.js';
+ 
+     runAndExpose().then((r) => {
+       document.getElementById('report').textContent =

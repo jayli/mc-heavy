@@ -1,0 +1,147 @@
+--- a/tools/check-data.mjs
++++ b/tools/check-data.mjs
+@@ -730,6 +730,136 @@
+   infos.push('[夜空] 烘焙指纹匹配（无缝立方图当前）');
+ }
+ 
++
++// ---------------------------------------------------------------- [RedCity] 烘焙产物契约（v1.68）
++
++/**
++ * [RedCity] 契约（spec §13.5 / §14）：离线烘焙产物 `assets/redcity/redcity.json` 必须——
++ *   ① 指纹匹配：参数 / skin·building 清单 / 映射表 / schematic 原文任一变了而没重烘 → 产物静默过期（渲染旧地图，肉眼看不出）；
++ *      ⚠️ 指纹不覆盖**算法**本身（改算法而不动参数时指纹不变）——那一类由 tests/redcity-bake.spec.mjs 的黄金比对兜底；
++ *   ② 自洽且与单一权威一致：加载器校验通过；width/length === REDCITY_SIZE；params.groundFloor === REDCITY_GROUND_FLOOR；dyMax ≤ 预算；
++ *   ③ palette 的每个名字都在 registry；
++ *   ④ I1/I2/I3 **从产物数组重算**（不信记录值）；I5′ 取记录值；
++ *   ⑤ 映射覆盖：块数 ≥50 的 (id:meta) 全部显式映射、未覆盖占比 ≤0.5%（记录值 + 用当前映射表对记录的直方图重算）；
++ *   ⑥ 出生点判据在产物上重验（脚下是岛面方块、头顶 24 格空、5×5 平整、不贴墙）；
++ *   ⑦ 颜色关系式（U2 裁定后只留这两条，不做 ΔE）：樱花三个源同名直映射 pink_wool；屋顶目标贴图平均色 R<B<G。
++ * ⚠️ 主流程是逐个显式调用 —— 漏了本行则门禁永不执行（本仓已因此出过两次事故）。
++ */
++async function checkRedCityArtifact() {
++  const RC = await import('./redcity-fingerprint.mjs');
++  const CFG = await import('./redcity-config.mjs');
++  const { prepareRedCityModel, forEachRedCityBlock } = await import('../src/gen/structures/redcity-data.js');
++  const { REDCITY_SIZE, REDCITY_GROUND_FLOOR, REDCITY_DY_MAX_BUDGET } = await import('../src/gen/structures/region-config.js');
++  const T = '[RedCity]';
++  const before = failures.length;
++  if (!fs.existsSync(RC.REDCITY_SCHEM)) { failures.push(`${T} 烘焙输入 schematic 不在仓库内（${path.relative(ROOT, RC.REDCITY_SCHEM)}）—— 输入必须入库，否则别的机器上 npm run redcity 必挂`); return; }
++  if (!fs.existsSync(RC.REDCITY_JSON)) { failures.push(`${T} assets/redcity/redcity.json 不存在 —— 跑 npm run redcity`); return; }
++  let doc;
++  try { doc = JSON.parse(fs.readFileSync(RC.REDCITY_JSON, 'utf8')); } catch { failures.push(`${T} redcity.json 不是合法 JSON（重跑 npm run redcity）`); return; }
++
++  // ① 指纹
++  const fp = RC.redcityInputFingerprint({
++    params: CFG.REDCITY_BAKE_PARAMS, spawnParams: CFG.REDCITY_SPAWN_PARAMS,
++    skin: { anyMeta: CFG.SKIN_ANY_META, metaOnly: CFG.SKIN_META_ONLY },
++    mappingRules: CFG.MAPPING_RULES, defaultBlock: CFG.DEFAULT_BLOCK, schemBytes: fs.readFileSync(RC.REDCITY_SCHEM),
++  });
++  if (doc.fingerprint !== fp) {
++    failures.push(`${T} 指纹不匹配（产物 ${String(doc.fingerprint).slice(0, 16)} vs 当前 ${fp.slice(0, 16)}）—— 烘焙参数/清单/映射/schematic 变了但产物未重烘（跑 npm run redcity）；不要把期望值改成新指纹来过关`);
++  }
++
++  // ② 自洽 + 单一权威
++  let model;
++  try { model = prepareRedCityModel(doc); } catch (e) { failures.push(`${T} 产物自洽校验失败：${e.message}`); return; }
++  if (doc.width !== REDCITY_SIZE.X || doc.length !== REDCITY_SIZE.Z) failures.push(`${T} 产物 ${doc.width}×${doc.length} ≠ region-config 的 REDCITY_SIZE ${REDCITY_SIZE.X}×${REDCITY_SIZE.Z}（布局按后者放 core，尺寸不符会错位）`);
++  for (const k of ['params', 'spawnParams', 'invariants', 'coverage', 'spawn']) if (!doc[k]) failures.push(`${T} 产物缺声明项 "${k}"（spec §13.5.4）`);
++  if (doc.params && doc.params.groundFloor !== REDCITY_GROUND_FLOOR) failures.push(`${T} params.groundFloor ${doc.params.groundFloor} ≠ REDCITY_GROUND_FLOOR ${REDCITY_GROUND_FLOOR}`);
++  if (doc.dyMax > REDCITY_DY_MAX_BUDGET) failures.push(`${T} dyMax ${doc.dyMax} > 预算 ${REDCITY_DY_MAX_BUDGET}（I4 烘焙半）`);
++
++  // ③ palette ⊂ registry
++  const regNames = new Set(REGISTRY.all().map((e) => e.name));
++  for (const n of doc.palette) if (!regNames.has(n)) failures.push(`${T} palette 里的 "${n}" 不在 registry（运行时 setBlock 会静默跳过 → 方块消失）`);
++
++  // ④ I1 / I2 / I3 从数组重算
++  const W = doc.width, L = doc.length;
++  const isl = (c) => doc.island.charCodeAt(c) === 49;
++  let minG = 0, borderNZ = 0, outAdj = 0;
++  for (let z = 0; z < L; z++) for (let x = 0; x < W; x++) {
++    const c = z * W + x, g = doc.ground[c];
++    if (g < minG) minG = g;
++    if ((x === 0 || z === 0 || x === W - 1 || z === L - 1) && g !== 0) borderNZ++;
++    if (!isl(c)) {
++      if (x < W - 1 && !isl(c + 1)) outAdj = Math.max(outAdj, Math.abs(g - doc.ground[c + 1]));
++      if (z < L - 1 && !isl(c + W)) outAdj = Math.max(outAdj, Math.abs(g - doc.ground[c + W]));
++    }
++  }
++  // ④b 产物内部一致：三元组数 === stats.retained；岛内每列在 dy===ground 处都有方块（地面方块是放置公式 baseY+dy 的锚）
++  if (doc.blocks.length !== doc.stats.retained * 3) failures.push(`${T} blocks 三元组数 ${doc.blocks.length / 3} ≠ stats.retained ${doc.stats.retained}（产物被手改或截断）`);
++  {
++    let noGround = 0;
++    for (let c = 0; c < W * L; c++) {
++      if (!isl(c)) continue;
++      let has = false;
++      for (let k = model.colStart[c]; k < model.colStart[c + 1]; k++) if (doc.blocks[k * 3 + 1] === doc.ground[c]) { has = true; break; }
++      if (!has) noGround++;
++    }
++    if (noGround) failures.push(`${T} ${noGround} 个岛内列在 dy===ground 处没有方块（ground 与 blocks 脱节）`);
++  }
++  if (outAdj > 1) failures.push(`${T} I1 岛外相邻高差 ${outAdj} > 1`);
++  if (borderNZ !== 0) failures.push(`${T} I2 矩形边界非零 ground 列数 ${borderNZ}`);
++  if (minG < REDCITY_GROUND_FLOOR) failures.push(`${T} I3 ground 最小值 ${minG} < ${REDCITY_GROUND_FLOOR}`);
++  if (doc.invariants && !(doc.invariants.i5Ratio < 0.001)) failures.push(`${T} I5′ 竖向接触不一致占比 ${doc.invariants.i5Ratio} ≥ 0.1%`);
++
++  // ⑤ 映射覆盖：记录值 + 用当前映射表对记录的直方图重算（映射表改了而没重烘 → 这里也会红）
++  if (doc.coverage && (doc.coverage.bigUncovered.length || doc.coverage.uncoveredRatio > 0.005)) failures.push(`${T} 映射覆盖不达标（块数≥50 未映射 ${doc.coverage.bigUncovered.length} 项 / 占比 ${doc.coverage.uncoveredRatio}）`);
++
++  // ⑥ 出生点重验
++  {
++    const { ox, oz, dy } = doc.spawn, sp = doc.spawnParams;
++    const dys = (x, z) => { const s = new Set(); forEachRedCityBlock(model, x, z, (d) => s.add(d)); return s; };
++    const free = (s, y0, y1) => { for (let y = y0; y <= y1; y++) if (s.has(y)) return false; return true; };
++    const gAt = (x, z) => doc.ground[z * W + x];
++    const inRect = ox - sp.halfWin >= 0 && oz - sp.halfWin >= 0 && ox + sp.halfWin < W && oz + sp.halfWin < L;
++    if (!inRect) failures.push(`${T} 出生点 (${ox},${oz}) 的 5×5 窗口越出产物矩形`);
++    else {
++      const g0 = gAt(ox, oz), here = dys(ox, oz);
++      if (!isl(oz * W + ox)) failures.push(`${T} 出生列不是岛内列`);
++      if (g0 !== dy) failures.push(`${T} 出生点 dy ${dy} ≠ 该列 ground ${g0}`);
++      if (!here.has(g0)) failures.push(`${T} 出生列在 ground 处没有烘焙出的岛面方块`);
++      if (!free(here, g0 + 1, g0 + sp.headroom)) failures.push(`${T} 出生列头顶 ${sp.headroom} 格不全空（会出生在屋檐/树冠下）`);
++      let lo = 99, hi = -99, walled = false;
++      for (let dz = -sp.halfWin; dz <= sp.halfWin; dz++) for (let dx = -sp.halfWin; dx <= sp.halfWin; dx++) {
++        const g = gAt(ox + dx, oz + dz); lo = Math.min(lo, g); hi = Math.max(hi, g);
++        if (!free(dys(ox + dx, oz + dz), g + 1, g + sp.wallClear)) walled = true;
++      }
++      if (hi - lo > sp.flatRange) failures.push(`${T} 出生点 5×5 ground 极差 ${hi - lo} > ${sp.flatRange}`);
++      if (walled) failures.push(`${T} 出生点 5×5 内有列头顶 ${sp.wallClear} 格内有方块（贴墙/树冠）`);
++    }
++  }
++
++  // ⑦ 颜色关系式
++  for (const [id, meta] of [[35, 6], [251, 6], [252, 6]]) {
++    const name = CFG.mappingOf((id << 4) | meta).name;
++    if (name !== 'pink_wool') failures.push(`${T} 樱花粉 ${id}:${meta} 必须同名直映射 pink_wool（实际 ${name}）`);
++  }
++  {
++    const roofName = CFG.mappingOf((168 << 4) | 2).name;
++    const face = FACES_DATA[roofName]; const tileName = Array.isArray(face) ? face.find(Boolean) : face;
++    const rect = atlasMeta.tiles[tileName];
++    if (!rect) failures.push(`${T} 屋顶映射目标 ${roofName} 的贴图 "${tileName}" 不在 atlas`);
++    else {
++      const png = PNG.sync.read(fs.readFileSync(path.join(ROOT, 'assets', 'atlas.png')));
++      let r = 0, g = 0, b = 0, n = 0;
++      for (let y = rect.y; y < rect.y + rect.h; y++) for (let x = rect.x; x < rect.x + rect.w; x++) { const o = (y * png.width + x) * 4; if (png.data[o + 3] === 0) continue; r += png.data[o]; g += png.data[o + 1]; b += png.data[o + 2]; n++; }
++      r /= n; g /= n; b /= n;
++      // ⚠️ 实测 RGB(58,196,169)：绿最大、蓝次之、红最小 → R < B < G。勿写成 R<G<B（那是「蓝最大」，永远 FAIL）
++      if (!(r < b && b < g)) failures.push(`${T} 屋顶 ${roofName} 贴图平均色 RGB(${r.toFixed(0)},${g.toFixed(0)},${b.toFixed(0)}) 不满足青绿系 R<B<G`);
++    }
++  }
++  if (failures.length === before) {
++    infos.push(`${T} ${doc.width}×${doc.length}，${doc.stats.retained} 块，palette ${doc.palette.length} 项；指纹 ${fp.slice(0, 16)} 匹配；I1=${outAdj} I2=${borderNZ} I3=${minG}；出生点 (${doc.spawn.ox},${doc.spawn.oz}) 判据重验通过`);
++  }
++}
++
+ // ---------------------------------------------------------------- 主流程
+ 
+ const REGISTRY = await buildDefaultRegistry();
+@@ -751,6 +881,7 @@
+ checkTurretArmorTexture();
+ checkSkyboxAssets();         // v1.58：天空盒立方图完整性（⚠️ 漏了本行则门禁永不执行）
+ await checkNightSkyFreshness(); // v1.60：夜空烘焙产物指纹（⚠️ 漏了本行则门禁永不执行）
++await checkRedCityArtifact();   // v1.68：RedCity 烘焙产物契约（⚠️ 漏了本行则门禁永不执行）
+ 
+ console.log('[check:data] 数据契约检查');
+ for (const i of infos) console.log(`  ✓ ${i}`);

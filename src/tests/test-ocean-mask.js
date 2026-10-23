@@ -19,6 +19,7 @@ import {
 } from '../render/ocean-mask.js';
 import { generateHeight, TERRAIN_HEIGHT_PARAMS } from '../gen/terrain.js';
 import { buildCityLayout } from '../gen/structures/city-layout.js';
+import { buildRedCityLayout } from '../gen/structures/redcity-layout.js';
 import { getBiome, noise } from '../gen/noise.js';
 import { SEA_Y } from '../voxel/constants.js';
 
@@ -263,3 +264,65 @@ test('遮罩高度的 biome 调整参数落在单一权威（着色器同构实�
     assertTrue(swampChecked > 0, `seed=${seed} 须有 SWAMP 采样点（否则断言是恒真陷阱）`);
   }
 });
+
+// ---- RedCity 门控（范围 = influence，含过渡环；与 City 门控同一理由、同一不等式）----
+
+/** RedCity 的 influence 及其外 80 格带，步长 6 的采样格（覆盖内外两侧，≈ 4 千点） */
+function redCitySamples(seed) {
+  const city = buildCityLayout(seed);
+  const rc = buildRedCityLayout(seed, city);
+  const inf = rc.influence;
+  const pts = [];
+  for (let x = inf.minX - 80; x <= inf.maxX + 80; x += 6) {
+    for (let z = inf.minZ - 80; z <= inf.maxZ + 80; z += 6) {
+      pts.push({ x, z, inside: x >= inf.minX && x <= inf.maxX && z >= inf.minZ && z <= inf.maxZ });
+    }
+  }
+  return { cityBounds: cityBoundsOf(seed), inf, pts };
+}
+
+test('RedCity 门控：influence 内一律不渲染水面（前置：关掉门控时这些点确有水面 —— 测的是门控不是阈值）', () => {
+  // 〔实测〕6 个 seed，influence 内 2744 个采样点里无门控时有水面 765~1203 个（≈33~44%）：
+  // core 全深度实心、ring 的水域已补实成陆地 → 区域内下挖到 y<-1.5 会挖出陆地上的假水。
+  // ⚠️ 前置断言 wet > 300 必要：没有它，「全部熄灭」在一个本来就没有水面的 seed 上恒真。
+  for (const seed of [12345, 1, 777]) {
+    const { cityBounds, inf, pts } = redCitySamples(seed);
+    let wet = 0, gated = 0;
+    for (const p of pts) {
+      if (!p.inside || !isOceanMasked(p.x, p.z, seed, cityBounds)) continue;
+      wet++;
+      if (isOceanMasked(p.x, p.z, seed, cityBounds, inf) === false) gated++;
+    }
+    assertTrue(wet > 300, `seed=${seed} 前置：influence 内关门控时应有大量水面点（实测 ${wet}）`);
+    assertEqual(gated, wet, `seed=${seed} 开 RedCity 门控后 influence 内的水面点必须全部熄灭`);
+  }
+});
+
+test('RedCity 门控只作用于 influence 内：外侧真实水域照常渲染（不误伤）', () => {
+  // 〔实测〕influence 外 80 格带里有水面的点 499~1697 个，开门控后一个都不少。
+  for (const seed of [12345, 1, 777]) {
+    const { cityBounds, inf, pts } = redCitySamples(seed);
+    let wetOut = 0, kept = 0;
+    for (const p of pts) {
+      if (p.inside || !isOceanMasked(p.x, p.z, seed, cityBounds)) continue;
+      wetOut++;
+      if (isOceanMasked(p.x, p.z, seed, cityBounds, inf) === true) kept++;
+    }
+    assertTrue(wetOut > 300, `seed=${seed} 前置：influence 外应有水面点（实测 ${wetOut}）`);
+    assertEqual(kept, wetOut, `seed=${seed} influence 外的水面点开门控后必须一个不少`);
+  }
+});
+
+test('RedCity 门控：第 5 参缺省 = 关闭（既有调用方行为不变）', () => {
+  const seed = 12345;
+  const { cityBounds, inf, pts } = redCitySamples(seed);
+  let diff = 0;
+  for (const p of pts) {
+    if (isOceanMasked(p.x, p.z, seed, cityBounds) !== isOceanMasked(p.x, p.z, seed, cityBounds, undefined)) diff++;
+  }
+  assertEqual(diff, 0, '不传第 5 参与显式 undefined 结果一致');
+  // 门控边界闭区间：influence 四角本身也被门控（与 inCityBounds 同一不等式）
+  assertTrue(isOceanMasked(inf.minX, inf.minZ, seed, cityBounds, inf) === false, '左上角点在 influence 内');
+  assertTrue(isOceanMasked(inf.maxX, inf.maxZ, seed, cityBounds, inf) === false, '右下角点在 influence 内');
+});
+

@@ -1,0 +1,32 @@
+--- a/src/gen/structures/region-config.js
++++ b/src/gen/structures/region-config.js
+@@ -206,3 +206,29 @@
+ export const SNOW_LAND_CENTER_BOOST_RADIUS = 15;
+ export const SNOW_LAND_NOISE_SCALE_1 = 0.08;
+ export const SNOW_LAND_NOISE_SCALE_2 = 0.15;
++
++// ==================== RedCity（spec §13 / §14，v1.68）====================
++// 常量唯一权威 = 本文件（红线 1）：烘焙脚本（tools/）与 check:data 从这里 import，产物记录其值并由 check:data 比对。
++
++/** 烘焙包围盒（= 模型内容的水平尺寸；redcity.json 的 width/length 必须等于它） */
++export const REDCITY_SIZE = Object.freeze({ X: 250, Z: 289 });
++/** 过渡环宽度 W */
++export const REDCITY_TRANSITION = 24;
++/** core 与 City bounds 之间的间隙。= W：过渡环恰好填满，与 City 自己的内缘过渡（32 格）首尾相接、互不叠加 */
++export const REDCITY_GAP = 24;
++/** 岛最低处的地面下限（相对 baseY）。同时是烘焙钳制值与 baseY 的下限推导：baseY >= SEA_Y + 1 - 本值 */
++export const REDCITY_GROUND_FLOOR = -5;
++/** core 全深度实心填充材料（与 City 的 clay 基底同族） */
++export const REDCITY_FILL_BLOCK = 'clay';
++/** 布局期 baseY 上界（钳制，不抛错）。与 REDCITY_DY_MAX_BUDGET 配对：8 + 87 = 95 = WORLD_MAX_Y - 1 */
++export const REDCITY_BASE_Y_MAX = 8;
++/** 烘焙期 dyMax 预算（相对 baseY 的最高行号）。实测当前产物 dyMax = 80 */
++export const REDCITY_DY_MAX_BUDGET = 87;
++/**
++ * 树冠最大水平半径（唯一权威）。apply.js 阶段 3 的扫描外扩 EXT 与 RedCity 的植被避让距离都取它——
++ * 实测 generateTree 各型 ≤3（swamp 的 |dx|+|dz|≤3.5 取到 3，其余 2），桦树 JSON ±2。
++ * `test-redcity-vegetation.js` 用 generateTree 实测钉「最大半径 ≤ 本值」；加更大的树型必须先改这里。
++ */
++export const TREE_CANOPY_RADIUS = 3;
++/** 植被避让距离：core ⊕ 本值。= 树冠最大半径：根在 d>=4 的树，树冠最近也只到 d=1，永不进 core */
++export const REDCITY_VEG_CLEARANCE = TREE_CANOPY_RADIUS;

@@ -1,8 +1,10 @@
+// ⚠️ v1.2：本附录是**算法的独立可复现参考**；落地形态见 `appendix-f-reference/tools/redcity-bake-core.mjs`（计划以后者为准）。
 // 附录 C：烘焙核心（纯函数）
 //
-// 来源：RedCity 评审会话的参考实现 `ref-core.mjs`（166 行），已验证可复现：
+// 来源：RedCity 评审会话的参考实现（评审会话临时目录，不入库），已验证可复现：
 //   retained 244647 / dy -6..80 / groundMin -5 / groundMax 43 /
-//   borderNonZero 0 / outsideAdjMax 1 / contactBreaks 0 / spawn ox=138 oz=141 dy=-3
+//   borderNonZero 0 / outsideAdjMax 1 / contactBreaks 84（0.055%）/ intraCompBreaks 0 /
+//   spawn ox=138 oz=141 dy=-3
 //
 // 实施时本文件的内容要落到 `tools/redcity-bake-core.mjs`。附录保留它是为了：
 // ① 计划文档可引用而不必内联；② 评审者能直接跑 `node appendix-c-bake-core.mjs` 复现上述数字。
@@ -11,7 +13,11 @@
 //   步骤 1 外部空气洪泛（air 与 barrier 可穿、玻璃不可穿）→ §13.5.4 第 2 条
 //   步骤 2 逐列地面 = 外部可达的最低 skin 表面 → §13.5.4 第 2 条
 //   步骤 4 保留 = 地面往下 K 层 + 地面以上全部 → §13.5.4 第 3 条
-//   步骤 5/6 建筑连通体刚性平移 → §13.4.4（I5/I6）
+//   步骤 5/6 建筑连通体刚性平移 → §13.4.4（I5 严格 / I5′ 占比；I6 已删除，口径见 spec §14.2）
+//     ⚠️ 本算法**不压平建筑脚下的地面**：刚性分量只是「整体用同一个平移量 S_C」，
+//     footprint⊕pad 内地面保持**源模型的起伏 1:1**（ground′ = g − sMed + S_C，g 仍是逐列的）。
+//     故旧版 I6「footprint 内 ground 极差 ≤ 1」不成立（实测 125 个刚性分量里 104 个违反，
+//     极差中位 8、最大 40）——已被 spec §14.2 删除（不替换为断言），勿再断言它。
 //   步骤 7 岛外地面外推（每 decay 格降 1）+ Lipschitz 收敛 → §13.4.2（I1/I2）
 //   步骤 8 同格冲突去重（刚性块优先）→ 保证产物无重复格
 //
@@ -209,7 +215,7 @@ export function bakeRedCityCore(schematic, cfg) {
         }
       }
     }
-    if (C.S < low) C.S = low;                                // 平台化不得低于地面下限
+    if (C.S < low) C.S = low;                                // 平移量不得使任一涂色岛列的 ground′ 低于地面下限（保 I3）
     for (const n of cells) if (!painted[n]) { painted[n] = 1; S[n] = C.S; }
   }
 
@@ -294,6 +300,24 @@ export function bakeRedCityCore(schematic, cfg) {
     vc++;
     if (sb !== below) vcBad++;
   }
+  // 严格 I5：同一刚性分量内任意相邻块（+x / +z / +y 三个方向各算一次），烘焙后 yRel 差必须等于源 y 差。
+  // 按**实际落盘的条目**（cellOwner）核对，而不是按分量定义核对——否则「逐列平移」的退化实现
+  // （building 块误用 S[c]）也会因为定义上同属一个分量而通过。by-construction 恒为 0，
+  // 它守的是发射路径：任何让同分量块用了不同平移量的改动都会让它 > 0。
+  let intraBreaks = 0;
+  const yRelOf = new Map();
+  for (const o of cellOwner.values()) if (compOf.has(o.i)) yRelOf.set(o.i, o.y);
+  for (const [i, yr] of yRelOf) {
+    const C = compOf.get(i);
+    for (const d of [1, W, WL]) {                                 // +x / +z / +y（idx = (y*L+z)*W+x）
+      const j = i + d;
+      if (compOf.get(j) !== C) continue;                          // 非同一分量（含 j 不是建筑块）
+      const yj = yRelOf.get(j);
+      if (yj === undefined) continue;                             // 邻块在去重中落选
+      const srcDy = d === WL ? 1 : 0;                             // 源 y 差：+y 邻居为 1，其余为 0
+      if (yj - yr !== srcDy) intraBreaks++;
+    }
+  }
   let minG = 0, maxG = 0;
   for (let c = 0; c < NC; c++) {
     if (ground[c] < minG) minG = ground[c];
@@ -317,6 +341,7 @@ export function bakeRedCityCore(schematic, cfg) {
   return {
     width: RW, length: RZ, bounds: { minX, maxX, minZ, maxZ }, sMed,
     ground, island, ents, dyMin, dyMax,
+    checks: { intraCompBreaks: intraBreaks },                    // 不进 stats / 不落盘（产物 JSON 的 stats 形状不变）
     stats: {
       terrainColumns: gs.length, comps: comps.length, rigid: rigidN, nearBorder: borderSkipped,
       smallComps: smallN, retained: ents.length, droppedUnder, conflicts,
@@ -401,6 +426,7 @@ if (process.argv[1] && process.argv[1].endsWith('appendix-c-bake-core.mjs')) {
   const sp = pickSpawn(r);
   console.log('ms', Date.now() - t0);
   console.log('stats', JSON.stringify(r.stats));
+  console.log('checks', JSON.stringify(r.checks));
   console.log('dy', r.dyMin, r.dyMax, ' size', r.width, 'x', r.length);
   console.log('spawn', JSON.stringify(sp));
   // 期望值（评审会话实测，参数改动后会变 —— 不匹配时先确认 params 没被改）
@@ -412,6 +438,8 @@ if (process.argv[1] && process.argv[1].endsWith('appendix-c-bake-core.mjs')) {
   for (const [k, v] of Object.entries(expect)) {
     if (r.stats[k] !== v) { console.log(`✗ ${k}: 实测 ${r.stats[k]} ≠ 期望 ${v}`); ok = false; }
   }
+  // 严格 I5（刚性分量内部保形）必须恒为 0；取代已作废的 I6
+  if (r.checks.intraCompBreaks !== 0) { console.log(`✗ intraCompBreaks: 实测 ${r.checks.intraCompBreaks} ≠ 期望 0`); ok = false; }
   if (sp.ox !== 138 || sp.oz !== 141 || sp.dy !== -3) { console.log(`✗ spawn: 实测 ${sp.ox},${sp.oz},${sp.dy} ≠ 期望 138,141,-3`); ok = false; }
   console.log(ok ? '✓ 全部期望值复现' : '✗ 有偏差（见上）');
 }

@@ -1,0 +1,10 @@
+--- a/src/tests/index.html
++++ b/src/tests/index.html
+@@ -76,6 +76,7 @@
+     // RedCity（v1.68）
+     import './test-redcity-data.js';
+     import './test-redcity-layout.js';
++    import './test-redcity-surface.js';
+ 
+     runAndExpose().then((r) => {
+       document.getElementById('report').textContent =

@@ -1,6 +1,7 @@
+// ⚠️ v1.2：本附录是**算法的独立可复现参考**；落地形态见 `appendix-f-reference/tools/redcity-schematic.mjs`（计划以后者为准）。
 // 附录 A：schematic 读取（最小 NBT 读取器）
 //
-// 来源：RedCity 评审会话的参考实现 `schem.mjs`，已验证可复现烘焙数字。
+// 来源：RedCity 评审会话的参考实现（评审会话临时目录，不入库），已验证可复现烘焙数字。
 // 只依赖 node 内置模块（fs / zlib），不引入 NBT 三方库 —— 与仓库「无新增依赖」口径一致。
 //
 // 输入：WorldEdit schematic（Minecraft 1.12.2，`DataVersion 1343`，gzip 压缩 NBT）。

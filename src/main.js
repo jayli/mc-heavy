@@ -10,6 +10,7 @@ function showError(detail) {
   if (detail) document.getElementById('webgpu-error-detail').textContent = detail;
   document.getElementById('webgpu-error').style.display = 'flex';
 }
+function hideError() { document.getElementById('webgpu-error').style.display = 'none'; }
 
 async function boot() {
   // WebGPU 仅在安全上下文暴露（http://localhost 与 HTTPS）；
@@ -57,6 +58,9 @@ async function boot() {
   // 不进设置面板，故不过 resolveSettings，直接作构造选项传入。
   const skybox = params.get('skybox') !== '0';
   const shadows = params.get('shadows') !== '0';
+  // ?spawn=city 退回 City 中心出生（RedCity 起默认出生在 RedCity）。调试/测试入口，不进设置面板；
+  // 语义绑定 City 环境的 spec 与 bench 用它 pin 住原环境（与 ?skybox=0 / ?shadows=0 同类）。
+  const spawn = params.get('spawn') === 'city' ? 'city' : 'redcity';
   const game = new Game({
     canvas: document.getElementById('app-canvas'),
     registry, seed,
@@ -68,8 +72,12 @@ async function boot() {
     shadows,
     skybox,
     settings,
+    spawn,
+    // 存档升级被旧版本标签页阻塞时，页面会卡在「等待升级」——必须告诉玩家，否则表现为白屏无提示
+    onPersistenceBlocked: () => showError('存档升级需要关闭其他 mc-heavy 标签页，关闭后会自动继续。'),
   });
   await game.start();
+  hideError();
   window.__MC_BOOT__.rendererReady = true;
   window.__MC_GAME__ = game; // 测试钩子
 }

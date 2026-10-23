@@ -160,8 +160,10 @@ export class Scheduler {
         continue;
       }
       const layouts = this.structureIndex.layoutsForColumn(cx, cz);
+      // RedCity 全局下发（不在 3×3 查询域里）：readyForColumn 已保证 region(0,0) 就绪，此处必非 null
+      const redCity = this.structureIndex.redCity();
       const edits = this.getEdits(key);
-      const { id: callId, promise } = this.pool.call('gen', { cx, cz, seed: this.seed, edits, layouts });
+      const { id: callId, promise } = this.pool.call('gen', { cx, cz, seed: this.seed, edits, layouts, redCity });
       this._inflightGen.set(key, { callId });
       promise.then((r) => this._onGenResult(key, r)).catch(() => {
         this._inflightGen.delete(key); // 失败/取消：下帧重试

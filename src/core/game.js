@@ -56,6 +56,8 @@ import { MinecartRenderer } from '../render/minecart-renderer.js';
 import { loadAtlas } from '../mesh/atlas-loader.js';
 import { findSpawnY } from '../gen/terrain.js';
 import { getCitySpawnPoint, getCityInfo } from '../gen/structures/city-layout.js';
+import { getRedCitySpawnPoint, scanDownForSpawn } from '../gen/structures/redcity-layout.js';
+import { prepareRedCityModel, setRedCityData } from '../gen/structures/redcity-data.js';
 import { Player } from '../player/player.js';
 import { Persistence } from '../save/persistence.js';
 import { CoordsHUD } from '../ui/coords-hud.js';
@@ -91,8 +93,13 @@ export class Game {
    * @param {boolean} [opts.skybox] 天空盒开关（v1.58，默认 true）。false = 完全不加载、退回纯色天空
    *   （`?skybox=0` URL 入口）——既有 Tier 4 spec 用「±30 内等于 0x87ceeb」判纯色天空来数地形
    *   像素，照片天空会让那个判据失去意义，故它们 pin 该开关。
+   * @param {'redcity'|'city'} [opts.spawn] 出生点（RedCity 起默认 'redcity'；`?spawn=city` 退回 City 中心——
+   *   为那些语义绑定 City 环境的 spec / bench 保留稳定入口，**不进设置面板**）
+   * @param {(() => void)|null} [opts.onPersistenceBlocked] 存档升级被其他标签页阻塞时的提示回调（main.js 展示覆盖层）
    */
-  constructor({ canvas, registry, seed = null, viewDistance = 8, hudRoot, blurMipmap = false, budgetProfile = 'auto', startWeather = null, shadows = true, skybox = true, settings = null }) {
+  constructor({ canvas, registry, seed = null, viewDistance = 8, hudRoot, blurMipmap = false, budgetProfile = 'auto', startWeather = null, shadows = true, skybox = true, settings = null, spawn = 'redcity', onPersistenceBlocked = null }) {
+    this._spawnOption = spawn;
+    this._onPersistenceBlocked = onPersistenceBlocked;
     this._settings = settings;
     this._shadowsOption = shadows;
     this._skyboxOption = skybox;
@@ -159,6 +166,18 @@ export class Game {
     });
     const atlasMeta = await (await fetch('/assets/atlas.json')).json();
     this.pool.broadcast('atlas-meta', atlasMeta);
+    // RedCity 产物：主线程 fetch 一次 → 自己 parse（出生点要用）→ broadcast 文本给全部 Worker
+    // （主线程与 Worker 走同一条 JSON.parse + prepareRedCityModel，红线 8；传文本不传对象——73 万个数字 clone 14 份更贵）。
+    // ⚠️ 必须在任何 gen 之前（postMessage 保序 → 后续 gen 一定拿得到）。失败 = 启动失败（loud）：
+    // 缺了它 RedCity 的位置会静默变成一片平地，是最难发现的失效形态。
+    {
+      const res = await fetch('/assets/redcity/redcity.json');
+      if (!res.ok) throw new Error(`redcity.json 加载失败：HTTP ${res.status}`);
+      const redCityText = await res.text();
+      this.redCityModel = prepareRedCityModel(JSON.parse(redCityText));
+      setRedCityData(this.redCityModel);
+      this.pool.broadcast('redcity-data', { text: redCityText });
+    }
     // 调试开关同步给 Worker（mesher 与主线程快速路径同构生效，§4.9）
     this.pool.broadcast('debug-flags', { ...DEBUG_FLAGS });
 
@@ -300,7 +319,7 @@ export class Game {
     // M3-4：有存档读存档；无存档时——opts.seed 显式指定（?seed= 调试入口）则用之，
     // 否则随机生成（roadmap「新世界」语义；随机 seed 保证每次新档地形不同）。
     this.persistence = new Persistence();
-    await this.persistence.open();
+    await this.persistence.open({ onBlocked: this._onPersistenceBlocked || undefined });
     const meta = await this.persistence.loadMeta();
     const hadMeta = !!(meta && meta.seed !== undefined);
     if (hadMeta) this.seed = meta.seed;
@@ -570,8 +589,13 @@ export class Game {
     // 城市把地面压平到接近海平面 → 若不关掉水面平面，玩家在城市里下挖 2 格就会
     // 挖出一汪假水（洞底顶面降到 -2，低于水面平面 -1.5）。判据见 render/ocean-mask.js。
     this.ocean.setCityBounds(regionLayout.city);
-    const citySpawn = getCitySpawnPoint(regionLayout.city);
-    this.spawnX = citySpawn.x; this.spawnZ = citySpawn.z;
+    // RedCity 的水面门控取 influence（含过渡环）：区域内水域已补实成陆地，下挖不该挖出假水
+    this.ocean.setRedCityBounds(regionLayout.redCity);
+    // 出生点：默认 RedCity（烘焙选定的严格判据位置）；?spawn=city 退回 City 中心
+    const redCitySpawn = (this._spawnOption === 'redcity' && regionLayout.redCity)
+      ? getRedCitySpawnPoint(regionLayout.redCity, this.redCityModel) : null;
+    if (redCitySpawn) { this.spawnX = redCitySpawn.x; this.spawnZ = redCitySpawn.z; }
+    else { const citySpawn = getCitySpawnPoint(regionLayout.city); this.spawnX = citySpawn.x; this.spawnZ = citySpawn.z; }
     if (!hadMeta) {
       await this.persistence.saveMeta({ seed: this.seed, spawn: [this.spawnX, this.spawnZ], savedAt: Date.now() });
     }
@@ -587,7 +611,11 @@ export class Game {
     // 首次阴影渲染：autoUpdate=false 下 map 是空的，不置 needsUpdate 则第一帧无影
     // （后续刷新由 shadowScheduler 按需放行）。
     this.sunLight.shadow.needsUpdate = true;
-    this.spawnY = findSpawnY(this.world, this.spawnX, this.spawnZ);
+    // RedCity 世界**不得**用 findSpawnY（从世界顶向下找首个非空气，会落在塔顶/树冠）：从烘焙点上方 24 格向下扫首个
+    // 「脚下 solid 且其上两格空气」，容忍玩家日后在出生点上方建造。扫不到（数据异常）→ 退回提示 y。
+    this.spawnY = redCitySpawn
+      ? (scanDownForSpawn((x, y, z) => this.world.getBlockId(x, y, z), this.spawnX, redCitySpawn.y + 24, this.spawnZ) ?? redCitySpawn.y)
+      : findSpawnY(this.world, this.spawnX, this.spawnZ);
     // M4：武器渲染/音频运行时（只在主线程；不进 Worker/体素 meshing 管线）。
     // 模型加载失败只记录 console，不中止 worldReady——玩家保持徒手可玩。
     this.weaponModelLoader = new WeaponModelLoader();

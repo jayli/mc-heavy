@@ -36,7 +36,8 @@ async function waitWorldSettled(page) {
  * `_waitForColumn` 之后」的注入**时抓到时抓不到** —— 实测踩过：同一注入第一次全绿、
  * 第二次真 FAIL，唯一变量就是落点落在出生点 column 内还是外。
  */
-const URL = '/?vd=2&seed=12345';
+// RedCity 起默认出生在 RedCity；炮塔/丧尸/TNT 的场景搭建依赖 City 周边地形，pin spawn=city（RedCity spec §14.8）
+const URL = '/?vd=2&seed=12345&spawn=city';
 
 async function boot(page) {
   await page.goto(URL);

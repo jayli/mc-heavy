@@ -1,0 +1,168 @@
+--- a/src/bench/baseline.mjs
++++ b/src/bench/baseline.mjs
+@@ -76,7 +76,9 @@
+   const page = await ctx.newPage();
+   const errors = [];
+   page.on('pageerror', (e) => errors.push(String(e)));
+-  let url = `${BASE}/?vd=${vd}&seed=${SEED}`;
++  // RedCity 起默认出生在 RedCity；冻结基线（docs/m3-baseline.*）是在 City 出生点量的，场景 ②③ 的语义也绑定城市，
++  // 故 pin spawn=city。场景 ①④ 是显式传送到 (620,-100) / (850,-100)，不受出生点影响。
++  let url = `${BASE}/?vd=${vd}&seed=${SEED}&spawn=city`;
+   if (weather) url += `&weather=${weather}`;
+   await page.goto(url);
+   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
+--- a/tests/city-visual.spec.mjs
++++ b/tests/city-visual.spec.mjs
+@@ -19,7 +19,8 @@
+   // ⚠️ `skybox=0`（v1.58）：本 spec 用「像素落在 0x87ceeb ±30 内 = 天空」来数非天空占比。
+   // 天空盒上线后天空是照片 → 天空像素被误判成地形，下界断言近乎恒真（判据失效）。
+   // 按 testing-policy 的「只改被测 setup、断言与阈值逐字不动」口径 pin 纯色天空。
+-  await page.goto('/?vd=8&seed=12345&skybox=0');
++  // RedCity 起默认出生在 RedCity；本用例语义绑定 City 环境，pin spawn=city（RedCity spec §14.8）
++  await page.goto('/?vd=8&seed=12345&skybox=0&spawn=city');
+   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
+   // 视距内 column 大部分就绪（城市建筑随 GEN 落地）
+   await page.waitForFunction(() => window.__MC_GAME__.world.columns.size >= 200, null, { timeout: 60_000 });
+--- a/tests/crosshair.spec.mjs
++++ b/tests/crosshair.spec.mjs
+@@ -81,7 +81,8 @@
+ 
+ test('准心配色：默认白，仅极亮背景转黑，且不显粗', async ({ page }) => {
+   test.setTimeout(180_000);
+-  await page.goto('/?vd=4&weather=clear');
++  // RedCity 起默认出生在 RedCity；本用例语义绑定 City 环境，pin spawn=city（RedCity spec §14.8）
++  await page.goto('/?vd=4&weather=clear&spawn=city');
+   await page.waitForFunction(() => window.__MC_BOOT__?.rendererReady === true, null, { timeout: 60_000 });
+   await page.waitForSelector('#crosshair', { timeout: 10_000 });
+   await page.waitForTimeout(1500);
+--- a/tests/light-house.spec.mjs
++++ b/tests/light-house.spec.mjs
+@@ -5,7 +5,8 @@
+ // 清零覆盖邻列已收敛的好光 → 房屋内偶现大片全黑面 + 黑核周围截断渐变环（实玩 bug）。
+ test('房屋内 glowstone 邻域光照收敛（非全黑）', async ({ page }) => {
+   test.setTimeout(180_000);
+-  await page.goto('/?seed=12345');
++  // RedCity 起默认出生在 RedCity；本用例语义绑定 City 环境，pin spawn=city（RedCity spec §14.8）
++  await page.goto('/?seed=12345&spawn=city');
+   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 60_000 });
+   await page.waitForFunction(() => {
+     const s = window.__MC_GAME__.scheduler;
+--- a/tests/light-structures.spec.mjs
++++ b/tests/light-structures.spec.mjs
+@@ -14,7 +14,8 @@
+ // 只对**沿途畅通**的方向断言 —— 否则断言描述的是想象中的世界（testing-policy §2.6）。
+ test('结构性光源的 blocklight 跨 column 扩散（GEN 收敛）', async ({ page }) => {
+   test.setTimeout(240_000);
+-  await page.goto('/?vd=4&seed=12345&style=noon&weather=clear');
++  // RedCity 起默认出生在 RedCity；本用例语义绑定 City 环境，pin spawn=city（RedCity spec §14.8）
++  await page.goto('/?vd=4&seed=12345&style=noon&weather=clear&spawn=city');
+   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
+   await page.waitForFunction(() => {
+     const s = window.__MC_GAME__.scheduler.stats();
+--- a/tests/m1-acceptance.spec.mjs
++++ b/tests/m1-acceptance.spec.mjs
+@@ -3,7 +3,8 @@
+ // §8 基线场景 ①：平原冲刺（视距 8）——自动驱动玩家沿直线奔跑 10s，采帧时分布
+ test('M1 验收：平原冲刺视距 8 帧时达标（120fps 预算）', async ({ page }) => {
+   test.setTimeout(180_000);
+-  await page.goto('/?vd=8&seed=12345');
++  // RedCity 起默认出生在 RedCity；本用例语义绑定 City 环境，pin spawn=city（RedCity spec §14.8）
++  await page.goto('/?vd=8&seed=12345&spawn=city');
+   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
+   // 等视距内 column 大部分就绪（后台填充，§4.2 冷启动口径）
+   await page.waitForFunction(() => window.__MC_GAME__.world.columns.size >= 250, null, { timeout: 60_000 });
+@@ -39,7 +40,8 @@
+ // §8 基线场景 ③：连续放/挖 200 块——发布层确认门（§4.4.2 M1 决策门）
+ test('M1 验收：放挖压力 p95 帧时（BatchedMesh 确认门）', async ({ page }) => {
+   test.setTimeout(180_000);
+-  await page.goto('/?vd=8&seed=12345');
++  // RedCity 起默认出生在 RedCity；本用例语义绑定 City 环境，pin spawn=city（RedCity spec §14.8）
++  await page.goto('/?vd=8&seed=12345&spawn=city');
+   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
+   // 稳态计量口径：视距 8 全 289 列就绪 + 5s 沉淀后再放挖。
+   // （M2-2 起出生在城市，城市填充比平原慢；250 列时后台填充与编辑帧争抢，
+--- a/tests/m3-hud.spec.mjs
++++ b/tests/m3-hud.spec.mjs
+@@ -10,7 +10,8 @@
+ 
+ test('M3-4：HUD 元素可见（坐标/快捷栏/设置按钮/perf 面板）', async ({ page }) => {
+   test.setTimeout(180_000);
+-  await page.goto('/?vd=4');
++  // RedCity 起默认出生在 RedCity；本用例断言出生点 biome = CITY，pin spawn=city（RedCity spec §14.8）
++  await page.goto('/?vd=4&spawn=city');
+   await page.waitForFunction(READY, null, { timeout: 90_000 });
+ 
+   // 坐标 HUD：xyz + biome + seed 行
+--- a/tests/projectiles.spec.mjs
++++ b/tests/projectiles.spec.mjs
+@@ -23,7 +23,8 @@
+ }
+ 
+ /** 钉 seed（地形确定性 —— 同 turrets.spec.mjs 的理由）。 */
+-const URL = '/?vd=2&seed=12345';
++// RedCity 起默认出生在 RedCity；炮塔/丧尸/TNT 的场景搭建依赖 City 周边地形，pin spawn=city（RedCity spec §14.8）
++const URL = '/?vd=2&seed=12345&spawn=city';
+ 
+ async function boot(page) {
+   await page.goto(URL);
+--- a/tests/sky-structures.spec.mjs
++++ b/tests/sky-structures.spec.mjs
+@@ -23,7 +23,8 @@
+   // ⚠️ `skybox=0`（v1.58）：本 spec 用「像素落在 0x87ceeb ±30 内 = 天空」来数非天空占比。
+   // 天空盒上线后天空是照片 → 天空像素被误判成地形，下界断言近乎恒真（判据失效）。
+   // 按 testing-policy 的「只改被测 setup、断言与阈值逐字不动」口径 pin 纯色天空。
+-  await page.goto('/?vd=8&seed=12345&skybox=0');
++  // RedCity 起默认出生在 RedCity；本用例语义绑定 City 环境，pin spawn=city（RedCity spec §14.8）
++  await page.goto('/?vd=8&seed=12345&skybox=0&spawn=city');
+   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
+   // 视距 8 全 289 列就绪
+   await page.waitForFunction(() => window.__MC_GAME__.world.columns.size >= 289, null, { timeout: 120_000 });
+--- a/tests/tnt.spec.mjs
++++ b/tests/tnt.spec.mjs
+@@ -36,7 +36,8 @@
+  * 相对玩家位置搭的 —— 不钉 seed 会让「测试场落在什么地形上」每次不同，全量连跑时偶发
+  * FAIL（实测：单跑全绿、与 zombie-nests/turrets 连跑时第一条用例失败）。
+  */
+-const URL = '/?vd=2&seed=12345';
++// RedCity 起默认出生在 RedCity；炮塔/丧尸/TNT 的场景搭建依赖 City 周边地形，pin spawn=city（RedCity spec §14.8）
++const URL = '/?vd=2&seed=12345&spawn=city';
+ 
+ async function boot(page) {
+   await page.goto(URL);
+--- a/tests/turrets.spec.mjs
++++ b/tests/turrets.spec.mjs
+@@ -36,7 +36,8 @@
+  * `_waitForColumn` 之后」的注入**时抓到时抓不到** —— 实测踩过：同一注入第一次全绿、
+  * 第二次真 FAIL，唯一变量就是落点落在出生点 column 内还是外。
+  */
+-const URL = '/?vd=2&seed=12345';
++// RedCity 起默认出生在 RedCity；炮塔/丧尸/TNT 的场景搭建依赖 City 周边地形，pin spawn=city（RedCity spec §14.8）
++const URL = '/?vd=2&seed=12345&spawn=city';
+ 
+ async function boot(page) {
+   await page.goto(URL);
+--- a/tests/weapons-world-edit.spec.mjs
++++ b/tests/weapons-world-edit.spec.mjs
+@@ -8,7 +8,8 @@
+ //   - 无悬挂曳光、scene/camera child 不增长（WebGPU renderer.info 非稳定对象计数口径，故用 child 数）
+ 
+ async function waitForStableVD8(page) {
+-  await page.goto('/?vd=8');
++  // RedCity 起默认出生在 RedCity；本用例语义绑定 City 环境，pin spawn=city（RedCity spec §14.8）
++  await page.goto('/?vd=8&spawn=city');
+   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
+   await page.waitForFunction(() => window.__MC_GAME__.world.columns.size >= 289, null, { timeout: 90_000 });
+   await page.waitForFunction(() => {
+--- a/tests/zombies.spec.mjs
++++ b/tests/zombies.spec.mjs
+@@ -802,7 +802,9 @@ test('M6：X 键生成丧尸 —— 生成/上限钳制/repeat 守卫/模态守
+  */
+ test('M6：丧尸互斥 —— 强制同点生成后必须散开（不重叠）', async ({ page }) => {
+   test.setTimeout(180_000);
+-  await page.goto('/?vd=4&seed=12345');
++  // RedCity 起默认出生在 RedCity；本用例量的是排斥力在开阔平地上的收敛（3 s 后最小间距 > 0.4）。RedCity 出生点周围障碍多，
++  // 同一探针 6 轮交替对照最小间距 0.36~0.50（City 出生点 0.53~0.60），贴着 0.4 阈值 → pin spawn=city（RedCity spec §14.8）
++  await page.goto('/?vd=4&seed=12345&spawn=city');
+   await waitWorldReady(page);
+   const result = await page.evaluate(async () => {
+     const g = window.__MC_GAME__;

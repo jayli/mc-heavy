@@ -802,7 +802,9 @@ test('M6：X 键生成丧尸 —— 生成/上限钳制/repeat 守卫/模态守�
  */
 test('M6：丧尸互斥 —— 强制同点生成后必须散开（不重叠）', async ({ page }) => {
   test.setTimeout(180_000);
-  await page.goto('/?vd=4&seed=12345');
+  // RedCity 起默认出生在 RedCity；本用例量的是排斥力在开阔平地上的收敛（3 s 后最小间距 > 0.4）。RedCity 出生点周围障碍多，
+  // 同一探针 6 轮交替对照最小间距 0.36~0.50（City 出生点 0.53~0.60），贴着 0.4 阈值 → pin spawn=city（RedCity spec §14.8）
+  await page.goto('/?vd=4&seed=12345&spawn=city');
   await waitWorldReady(page);
   const result = await page.evaluate(async () => {
     const g = window.__MC_GAME__;

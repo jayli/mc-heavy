@@ -52,6 +52,9 @@ Epic 链 M4→M5→M6→M7 已全部交付。**第三阶段 M8（TNT 爆炸 / �
 **光照跨 column 边界**（blocklight 区域改 3×3 / 脏 section 按 mesher 的 light 依赖传播），
 **v1.66 / v1.67** 把枪击命中特效改为**整格白闪 + 按命中面 atlas 取色的碎块**（MAG7 全格白闪波浪）。
 另有一项未按版本号登记的改动：**准心按背景亮度自适应配色**（`src/ui/crosshair.js`）。
+**RedCity Epic（v1.68）已交付**：Sakura Spawn schematic 离线烘焙成 City 东侧的静态地标（`redCity` 全局下发 / 整体吞并邻区地标 / 过渡环），
+默认出生点迁到 RedCity 中心（`?spawn=city` 退回 City），IndexedDB 升到 v3（弃旧档），GPU 顶点缓冲冻结预算 148.06 → 195.55 MiB（U1′-a）；
+验收报告 `docs/redcity-acceptance-report.md`。
 进度与实测数据一律查 roadmap。里程碑状态、验收报告、遗留 TODO 的
 完整清单**一律查 roadmap** —— 此处不复制（复制就会漂移）。
 
@@ -1151,6 +1154,23 @@ M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 
   破坏态 0.122，两侧都不贴线且能真实区分修好/改坏）。同 `testing-policy.md` §2.7「负向验证盲区」：
   **写「变暗/变亮」类像素断言时必须同时钉上下界**，只钉一侧等于没钉。
 
+### RedCity 沉淀的活跃约束（后续地标 / 离线烘焙产物 / 出生点类 Epic 必读）
+
+- **RedCity 是静态地标，不是装置**：离线烘焙产物 `assets/redcity/redcity.json`（扁平 `[col, dy, pal]` 三元组 JSON）+ 输入指纹门禁（`check:data` 的 `[RedCity]`）；GEN 阶段 2.9 写入，无 controller、无 blockEntity。改 `tools/redcity-config.mjs`（清单/映射/参数）或 schematic 后须 `npm run redcity`。⚠️ 指纹**不覆盖算法**——改算法而不动参数时靠 `tests/redcity-bake.spec.mjs` 的黄金比对兜底。
+- **`redCity` 不走 3×3 查询域**：影响域越过 x=799 的 seed 占 60/80，走 `layouts` 会把 RedCity 静默截成直边。`StructureIndex._requiredKeys = 3×3 ∪ {(0,0)}`，`layoutsForColumn` 仍只含 3×3，`redCity()` 随每个 `gen` 任务全局下发。
+- **`dy` 是相对 `baseY` 的行号**：世界 y = `baseY + dy`，**不是** `baseY + ground + dy`（会抬高最多 43 格顶穿世界顶）；`ground` 只用于阶段 1 填充 / ring / 出生点。
+- **整体吞并 = 地形 + JSON 结构 + 植被上下文**三处都当地标不存在；`landmarkHalfExtent(kind)` 是外包范围唯一权威（海岛 25、平原岛 (17,20)，**不是** 39 / 15）；`erasedFlags` 每次调用只算一次。漏掉植被上下文 → 被吞并的冰山处长悬空雪桦树。
+- **植被避让距离 = `TREE_CANOPY_RADIUS`**（3），与阶段 3 扫描外扩 `EXT` 同源；加更大树型必须先改它。
+- **过渡环** `s = clamp(baseY, e−m, e+m)`（`e = max(自然, SEA_Y+1)`，`m = floor((24−d)/3)`），可证明 `|Δs| ≤ |Δe|+1`；水域一律转陆地且**用 clay 补实、不得清成 air**。
+- **烘焙不变量**：严格 I5（同一刚性分量内部保形，恒 0）+ I5′（竖向接触不一致占比 < 0.1%）；**I6 已删除**。旧 I5 对逐列剪切完全无感——别只断言 `contactBreaks`。
+- **常量归位**：`REDCITY_*` 全在 `region-config.js`；`tools/` 可 import `src/`，反向禁止。烘焙核心测试是 **Node-only Playwright spec**——浏览器 import 不了 `tools/*.mjs`（静态服务器对 `.mjs` 回 octet-stream）。
+- **三种异常语义**：产物**未注入**→降级（core 平地，warn 一次，不抛）；**尺寸不符**→抛错；**fetch 失败**→`Game.start()` 抛错（loud）。
+- **出生点**：`x/z` 取方块中心（+0.5）；`scanDownForSpawn` 返回脚所在 y；不用 `findSpawnY`。`?spawn=city` 退回 City 中心（不进面板），语义绑定 City 的 spec 与 `bench` 用它 pin。
+- **DB v3（D7）**：升级清空 `meta/edits/entities`，`localStorage` 不动。清库必须 `req.transaction` + `contains` 守卫；写错的真实失败形态是 **`open()` AbortError reject**（不是挂起）；`onblocked` 必须接 UI，否则才是无报错白屏。
+- **GPU 预算 U1′**：opaque 4.275M / cutout 2.2M / transparent 0.36M，195.55 MiB；`tests/redcity-budget.spec.mjs` 钉「稳态与无碰撞飞越峰值 ≤95%、零扩容」。⚠️ 量预算用**无碰撞飞越**（真实 W 键奔跑会被塔挡住）；cutout 余量只有 7.4%（自然森林驱动，R10）。
+- **放挖 p95（R15，用户裁定选 A 接受）**：RedCity 出生点单块放/挖 p95 2.4~2.7 ms > 冻结的 2 ms（City 1.6~1.8，因出生点周围 section 更密）。冻结口径仍由 `m1-acceptance` / `weapons-world-edit` 守、已 pin `spawn=city`，**不放宽断言**；RedCity 口径另立 `tests/redcity-edit-perf.spec.mjs`（阈值 3.5 ms，测量代码与 `m1-acceptance` 逐行同构，改一处须同步另一处）。⚠️ `world.setBlock` 不做 no-op 检测，「改动了世界」要对比写入前后的方块 id，别看返回值。
+- **写 RedCity 类断言前先量真实数据**：Worker 接线用例第一版断言「出生列方块数 > 10」，实测出生列只有 2 块（出生点要求头顶 24 格空）。
+
 ## 权威文档（动手前必读）
 
 按顺序读完再写代码：
@@ -1292,8 +1312,9 @@ mc-heavy/
 │  ├─ m{0,1,2-m3,4,5,6,7}-*-report.md    # 第一阶段里程碑实测与验收报告（m3-* = 冻结性能基线）
 │  ├─ m{4,5,6,7,8-tnt-turret,9-playground}-*-acceptance-report.md
 │  │                            # 各 Epic 验收报告（实测数据 / 偏离表 / 负向验证清单 / 操作失误）
-│  └─ minecart-acceptance-report.md      # 矿车 Epic 验收报告（2026-10-01 补写；不匹配上面的
-│                              # m{...}-* 命名模式 —— 矿车不是 M 编号里程碑，是 M9 之后的独立 Epic）
+│  ├─ minecart-acceptance-report.md      # 矿车 Epic 验收报告（2026-10-01 补写；不匹配上面的
+│  │                           # m{...}-* 命名模式 —— 矿车不是 M 编号里程碑，是 M9 之后的独立 Epic）
+│  └─ redcity-acceptance-report.md       # RedCity Epic 验收报告（同样是 M9 之后的独立 Epic）
 ├─ tools/build-atlas.mjs       # atlas 离线打包（npm run atlas）
 ├─ tools/bake-procedural-textures.mjs # 程序化贴图烘焙（mc-lite canvas 材质 → PNG）
 ├─ tools/bake-icon-atlas.mjs   # 全量背包图标离线烘焙（npm run icons）：物品集合全量×两套尺寸
@@ -1308,6 +1329,9 @@ mc-heavy/
 ├─ tools/bake-turret-armor.mjs # 炮塔装甲纹理烘焙（npm run turret）：三张源图 → 192×64 三区并排
 │                              #   → assets/turret/armor.png + armor.json（尺寸+输入指纹）
 ├─ tools/turret-armor-fingerprint.mjs # 装甲图案参数与指纹共享模块（同上，红线 1）
+├─ tools/bake-redcity.mjs      # RedCity 离线烘焙主流程（npm run redcity）：schematic → assets/redcity/redcity.json
+├─ tools/redcity-{config,schematic,bake-core,fingerprint}.mjs # 烘焙参数/清单/映射（唯一权威）· NBT 读取 ·
+│                              #   烘焙核心纯函数 · 输入指纹与不变量断言（烘焙脚本与 check:data 共用，红线 1）
 ├─ tools/validate-weapon-assets.mjs   # 受控 GLB 静态校验（npm run validate:weapon-assets）
 ├─ tools/check-architecture.mjs # 静态架构门（npm run check:arch）：红线可静态检查的部分
 ├─ tools/check-data.mjs        # 数据契约门（npm run check:data）：关系型断言取代硬编码计数
@@ -1320,6 +1344,8 @@ mc-heavy/
 │  ├─ icons.json               # 图标 manifest：预生成 CSS 串 + 输入指纹
 │  ├─ sky/                     # 天空盒立方图：day/ = mc-lite skyBox4 原图；night/ = 烘焙产物
 │  │                           #   night-src/ 存 mc-lite skyBox1 原图（烘焙输入，勿当渲染资源）
+│  ├─ redcity/                 # RedCity 烘焙产物 redcity.json（扁平 [col,dy,pal] 三元组 + 输入指纹，2.85 MiB）
+│  │                           #   src/SakuraSpawn.schematic 是烘焙输入（808 KB），不是渲染资源
 │  ├─ zombie/                  # 丧尸头部纹理（**不在 textures/ 下** —— 那里会进世界 atlas）
 │  │  └─ head.png + head.json  # 128×64 双区并排（左半无眼睛/右半有眼睛）+ 尺寸与输入指纹
 │  ├─ sounds/                  # 音效（M4 四件武器音效 + M7 `put.mp3` + M8 `explosion`/`turret_gun_fire`）
@@ -1341,6 +1367,8 @@ mc-heavy/
    ├─ voxel/       # constants / block-registry / chunk-column / world-data / blocks-data / faces-data
    ├─ gen/         # noise.js / terrain.js / structure-index.js / structures/*（M2 地标与空中结构）
    │               #  scatter.js 结构撒布判定 + 代码生成 house/ship（唯一权威；Worker 同构）
+   │               #  redcity-{data,layout,surface}.js（RedCity，Worker 同构无 three）：产物形状与加载器 /
+   │               #    落点·baseY·influence·出生点纯函数 / 过渡环公式·列整形·吞并判定；REDCITY_* 常量全在 region-config.js
    ├─ mesh/        # mesher.js / lighting.js / atlas-loader.js（Worker 同构）
    │               #  iso-icon.js 等轴测投影纯函数；mesher.js 导出 TEMPLATES / FACE_VERTICES /
    │               #  FACE_UVS 供图标烘焙复用——形状与 UV 的唯一权威，图标不得有第二份几何定义
@@ -1438,6 +1466,8 @@ npm run zombie                 # 烘焙丧尸头部马赛克纹理 → assets/zo
 npm run turret                 # 烘焙炮塔装甲 → assets/turret/armor.png + armor.json（三区并排）
                                #   改 tools/turret-armor-fingerprint.mjs 或源图后需跑，
                                #   否则装甲静默过期（check:data 的 [炮塔装甲] 指纹检查会抓）
+npm run redcity                # 烘焙 RedCity → assets/redcity/redcity.json（输入 assets/redcity/src/*.schematic）
+                               #   改 tools/redcity-config.mjs 或 schematic 后需跑，否则 check:data 的 [RedCity] 指纹检查会抓
 npm run nightsky               # 烘焙无缝夜空立方图 → assets/sky/night/*.jpg + night-sky.json
                                #   改 tools/night-sky-fingerprint.mjs 参数后需跑，否则贴图静默过期
 npm run atlas                  # 重新生成 assets/atlas.png + atlas.json（世界渲染 atlas）

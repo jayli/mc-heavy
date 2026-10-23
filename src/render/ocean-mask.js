@@ -68,11 +68,15 @@ export function inCityBounds(x, z, cityBounds) {
  * 该点是否渲染水面平面（CPU 版判据；GPU 版见 `ocean.js` 的 `oceanMask`）。
  * @param {number} x @param {number} z @param {number} seed
  * @param {{minX:number,maxX:number,minZ:number,maxZ:number}} [cityBounds]
+ * @param {{minX:number,maxX:number,minZ:number,maxZ:number}} [redCityBounds] RedCity 的 influence（缺省 = 门控关闭）
  * @returns {boolean}
  */
-export function isOceanMasked(x, z, seed, cityBounds = OCEAN_MASK_NO_CITY) {
+export function isOceanMasked(x, z, seed, cityBounds = OCEAN_MASK_NO_CITY, redCityBounds = OCEAN_MASK_NO_CITY) {
   // 城市门控优先：城市是被压平的陆地，一律不渲染（与阈值无关）
   if (inCityBounds(x, z, cityBounds)) return false;
+  // RedCity 门控（范围 = influence，含过渡环）：core 全深度实心、ring 水域已补实成陆地，
+  // 区域内下挖到 y<-1.5 会挖出陆地上的假水——与 City 同一理由。GPU 版见 ocean.js 的第二个 bounds uniform。
+  if (inCityBounds(x, z, redCityBounds)) return false;
   const off = OCEAN_MASK_OFFSET;
   return maskTerrainHeight(x, z, seed) < OCEAN_MASK_THRESHOLD
     || maskTerrainHeight(x + off, z, seed) < OCEAN_MASK_THRESHOLD

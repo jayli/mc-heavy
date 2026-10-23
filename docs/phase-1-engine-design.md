@@ -1,7 +1,25 @@
 # mc-heavy 第一阶段实施设计文档：游戏引擎原型
 
-> 版本：v1.65 ｜ 日期：2026-10-21 ｜ 状态：定稿（经十五轮逐条核验修订 + M3.2 实施回填 + 异形方块渲染勘误 + 背包物品集合口径 + 吊灯材质自发光 + 吊灯 UV 分区 + 背包图标表 + 等轴测图标 + 测试分级策略与静态门禁 + 全量背包图标离线烘焙 + 背包槽位点选抖动修复 + 等轴测图标遮挡修复 + 删除缓存按钮 + 沼泽睡莲水洞与沉水修复 + AO 去掉对角门控 + 设置面板两列布局与档位精简 + M8 TNT/炮塔的三项架构口径变更 + M9 创造台的两项架构口径变更 + 水面遮罩判据的两项架构口径变更 + 天空树回补与 sky_leaves 通道修正 + 进度包导入导出 + 太阳阴影 shadow map + 阴影混合模型对齐 mc-lite + 阴影纹素对齐与太阳方向门控 + 第一人称手臂与跑动视角晃动 + 晃动幅度上调与手臂挥动对齐原版 + 晃动回调与挖掘挥手时机 + 相机零旋转 + 晃动改距离驱动 + 晃动幅度上调至 0.13 + 步频放慢至 1.5Hz → 1.35Hz + 手臂烘焙面明暗 + 手臂配色对齐 mc-lite 与晃动幅度上调至 0.15 + 太阳 N·L 方向光与 mc-lite 天空盒 + 雾色融入天空 + 夜空天空盒无缝重烘焙 + 夜间雾距统一 + 背景音乐与面板开关 + 光照区域语义修正（blocklight 3×3） + 光照变化的脏 section 传播修正（mesh 依赖集合 / 丢弃重发 / 输入集合校验））
+> 版本：v1.68 ｜ 日期：2026-10-23 ｜ 状态：定稿（经十五轮逐条核验修订 + M3.2 实施回填 + 异形方块渲染勘误 + 背包物品集合口径 + 吊灯材质自发光 + 吊灯 UV 分区 + 背包图标表 + 等轴测图标 + 测试分级策略与静态门禁 + 全量背包图标离线烘焙 + 背包槽位点选抖动修复 + 等轴测图标遮挡修复 + 删除缓存按钮 + 沼泽睡莲水洞与沉水修复 + AO 去掉对角门控 + 设置面板两列布局与档位精简 + M8 TNT/炮塔的三项架构口径变更 + M9 创造台的两项架构口径变更 + 水面遮罩判据的两项架构口径变更 + 天空树回补与 sky_leaves 通道修正 + 进度包导入导出 + 太阳阴影 shadow map + 阴影混合模型对齐 mc-lite + 阴影纹素对齐与太阳方向门控 + 第一人称手臂与跑动视角晃动 + 晃动幅度上调与手臂挥动对齐原版 + 晃动回调与挖掘挥手时机 + 相机零旋转 + 晃动改距离驱动 + 晃动幅度上调至 0.13 + 步频放慢至 1.5Hz → 1.35Hz + 手臂烘焙面明暗 + 手臂配色对齐 mc-lite 与晃动幅度上调至 0.15 + 太阳 N·L 方向光与 mc-lite 天空盒 + 雾色融入天空 + 夜空天空盒无缝重烘焙 + 夜间雾距统一 + 背景音乐与面板开关 + 光照区域语义修正（blocklight 3×3） + 光照变化的脏 section 传播修正（mesh 依赖集合 / 丢弃重发 / 输入集合校验） + RedCity 地标（固定 City 东侧 / 离线烘焙产物 / 全局下发 / 整体吞并邻区地标）+ GPU 顶点缓冲预算 U1′）
 >
+> v1.68 修订说明：**RedCity 地标的三项架构口径变更**（2026-10-23，§4.2 / §4.8 / §4.10 / §5；权威规格 `docs/superpowers/specs/2026-10-22-redcity-design.md` §14，
+> 实施计划 `docs/superpowers/plans/2026-10-22-redcity.md`）。RedCity = 把 Sakura Spawn schematic 离线烘焙成 City 东侧的静态地标，并把默认出生点迁到它的中心。
+> ① **新数据通道：`redCity` 全局下发**。RedCity 固定在 City 东侧（`core.minX = city.maxX + 1 + 24`），其布局（`core / influence / baseY / size`）是 `(seed)` 的确定性纯函数，
+> **不走 3×3 region 查询域**，而是随**每个** `gen` 任务全局下发——实测 80 个 seed 里 60 个的影响域越过 x=799（3×3 域东界），走 `layouts` 会把 RedCity 静默截成直边。
+> `StructureIndex._requiredKeys = 3×3 ∪ {(0,0)}`（GEN 门控额外要求 region(0,0) 就绪），`layoutsForColumn` 仍只含 3×3；`Scheduler` 在放行后取 `redCity()` 塞进 `gen` payload（约 200 B）。
+> ② **新地标类（静态、无 controller）**。离线烘焙产物 `assets/redcity/redcity.json`（扁平 `[col, dy, pal]` 三元组，世界 y = `baseY + dy`）+ 输入指纹门禁（`check:data` 的 `[RedCity]`，
+> `npm run redcity` 重烘），GEN 阶段 2.9 光栅化写入。**整体吞并**与影响域（`influence = core ⊕ 24`）相交的邻区地标——地形、JSON 结构、植被上下文三处都当它不存在；
+> 过渡环台阶式钳制 `s = clamp(baseY, e−m, e+m)`（`e = max(自然高度, SEA_Y+1)`，`m = floor((24−d)/3)`，可证明 `|Δs| ≤ |Δe|+1`），水域一律转陆地并用 clay 补实（不得清成 air）；
+> 植被避让距离 = `TREE_CANOPY_RADIUS`（3）；水面遮罩（`ocean-mask.js`）加 RedCity 影响域门控（第 5 参，缺省关闭）。
+> ③ **`CAPACITY` 冻结值变更（U1′-a，用户 2026-10-23 确认）**：opaque `active 1200 → 1800`（2.85M → 4.275M）、transparent `avgVerts 1000 → 2880`（0.125M → 0.36M）、cutout 不变（2.2M）；
+> `gpuVertexBytes` **148.06 → 195.55 MiB**。依据 = 真实页面实测（规格 §14.7）：方案 A（3.705M / 0.30M）在真实页面里 opaque 稳态 90.3%、12 s 无碰撞飞越 106.6% 触发 ×1.5 扩容；
+> U1′ 容量下 4 个 seed × 6 路线的飞越峰值 ≤ 92.6%，零扩容。**本条明确取代 v1.42 修订说明「③ 容量口径不变」里的「`gpuVertexBytes` 148.06MiB < 150MiB、三通道 `CAPACITY` 均不放宽」**；
+> `m3-fullscene` 的 150 MiB 断言随之有意变更为 196 MiB。
+> ④ **存档**：IndexedDB `DB_VERSION` 2 → 3，升级清空 `meta / edits / entities`（用户裁定弃旧档，D7；`localStorage` 设置不动）；`onblocked` 接到 `main.js` 覆盖层。
+> ⑤ **出生点**：默认迁到 RedCity 中心（`?spawn=city` 退回 City 中心，调试入口，不进设置面板）；语义绑定 City 的既有 spec 与 `bench` 用 `&spawn=city` pin。
+> **R15（用户裁定接受）**：RedCity 出生点单块放/挖 p95 2.4~2.7 ms > 冻结的 2 ms（出生点周围 section 更密；City 1.6~1.8）——冻结口径仍 pin 在 City、**不放宽**，另立 RedCity 口径观测用例（3.5 ms）。
+> 与 mc-lite 的关系：RedCity 是本仓新增内容，无上游对应；吞并语义参照 City 但细化为整体吞并（规格 §13.3.3 / §14.4）。
+
 > v1.65 修订说明：**光照变化的脏 section 传播修正**（v1.64 之后用户复测：「还是没有彻底修复，灯光还是有
 > 明显的边界」+「把灯删除后，刚才被照亮的方块面不变暗」）。真游戏页对照（只差一个变量逐层缩小）实测：
 > **light 数据层已完全正确**（整图参考 BFS 对比 0 个格子不一致，光确实越过了边界），问题在**派生的网格层**
@@ -2202,6 +2220,13 @@ GEN 任务(cx, cz, seed, edits)
   命中则以 `(wx, topY+1, wz)` 为基点调 `generateTree(..., 'skyTree')`。
   候选 AABB 门控比岛体宽 2 格（树冠外扩 ±2），否则跨界树冠会在相邻 column 断裂。
 
+- **RedCity（v1.68）**：离线烘焙的静态地标（`assets/redcity/redcity.json`，规格 `docs/superpowers/specs/2026-10-22-redcity-design.md` §13 / §14），固定落在 City 东侧
+  （`core.minX = city.maxX + 1 + 24`），**不走 3×3 region 查询域**——`redCity` 布局随每个 `gen` 任务全局下发（见 v1.68 修订说明 ①）。GEN 顺序：阶段 1 先整形地形（core 全深度 clay 实心
+  并清掉自然残丘 / 过渡环台阶钳制），**整体吞并**相交地标（地形 + JSON 结构 + 植被上下文），阶段 2.9（空中结构之后、植被之前）光栅化烘焙内容，阶段 3 植被按
+  「core ⊕ 3 不长、环带其余按实际地表落点」避让。**`dy` 语义**：产物里的 `dy` 是相对 `baseY` 的行号（地面方块恰在 `dy === ground[col]`），世界 y = `baseY + dy`，
+  **不是** `baseY + ground + dy`；`baseY` 钳制在 [4, 8]，`baseY_max + dyMax < WORLD_MAX_Y`（I4）。无 controller、无 blockEntity——玩家改动照旧走 edits diff。
+  产物未注入 → 降级为 `baseY` 平地并 warn 一次；尺寸与布局不符 → 抛错；主线程 fetch 失败 → `Game.start()` 抛错（loud）。
+
 **生成性能预算**：
 - 单 column GEN（无大结构）目标 < 8ms（Worker 时间）；含城市结构切片 < 25ms。
 - Worker 池并行（默认 `hardwareConcurrency - 1`，下限 3），按"距玩家切比雪夫距离 + 视线方向加权"排序。
@@ -3285,6 +3310,9 @@ IndexedDB（沿用 mc-lite DB 名/版本约定）
   ——`newWorld`（换 seed + 写回 meta）/ `clearSave`（**保留 seed 与设置**，设置面板「删除缓存」）/
   `importProgress`（v1.43，覆盖式导入前先清空当前改动）。
   内存 edits 那步必要但风险窗口窄（卸载事务能否提交时序不定），详见 v1.29 修订说明。
+- **DB v3（v1.68，D7）**：RedCity 落地后世界内容变了（东侧地标被吞并、RedCity 新增），旧 edits 与新地形对不上，用户裁定弃旧档重新生成地形：`DB_VERSION` 2 → 3，
+  `onupgradeneeded` 对旧版本（`oldVersion ∈ {1, 2}`）把 `meta / edits / entities` 逐个 `req.transaction.objectStore(name).clear()`（`contains` 守卫，**先清后建**），
+  `localStorage` 设置不动；`open({ onBlocked })` 把「存档升级被旧标签页阻塞」接到 `main.js` 的覆盖层。清库写错的真实失败形态是 `open()` 以 AbortError reject（不是挂起）。
 - mc-lite 老存档迁移：提供一次性迁移脚本（第二阶段），读旧 region 记录提取 blockData diff。
 - **M5 持久实体与流式卸载**：column 首次超出“加载半径 + 2”时，Scheduler 创建可取消的 pending
   unload；`EntityManager` 冻结该 column 的持久实体并把最小 snapshot 写入 `entities`。这段时间 world、
@@ -3351,9 +3379,10 @@ IndexedDB（沿用 mc-lite DB 名/版本约定）
 | 项 | 估算 | 说明 |
 |---|---|---|
 | 体素数据（CPU） | ~37 MB | 289 column × 128KB（blocks Uint16Array 64KB + meta/light 各 32KB；保留 Uint16 为 >255 方块留余量） |
-| GPU 顶点缓冲 | **~100 MB 级（大头）** | 活跃 section 平均几十~几百 KB，城市区更重；视距 16 会到数百 MB |
+| GPU 顶点缓冲 | **195.55 MiB（冻结预算，v1.68 / U1′-a）** | 三通道 `maxVerts` = opaque 4,275,000 + cutout 2,200,000 + transparent 360,000，合计 × 30 B = 205,050,000 B；视距 8 基线下 **RedCity 出生点是最重场景**（稳态 opaque 78.2% / cutout 25.2% / transparent 70.1%，无碰撞飞越峰值 ≤ 92.6%，零扩容）；视距 16 会到数百 MB |
 | atlas 纹理 | ~22 MB | 2048² RGBA + mipmap 链 |
 
+- v1.68 之前这一行是规划期的「~100 MB 级」估算（v1.42 起实测冻结为 148.06 MiB，且「均不放宽」）；**v1.68 把冻结预算改为 195.55 MiB 并明确取代 v1.42 的 148.06 MiB 口径**（RedCity 出生点是新的最重场景，实测依据见规格 §14.7）。
 - GPU 顶点缓冲是内存大头，且随视距近似平方增长。**显存控制靠滞回卸载 + LRU 兜底**
   （§4.9：出圈 +2 滞回带延迟卸载，重入 LRU 短 TTL 保留缓冲，LRU 满则真正释放），
   不靠池化——`RenderSectionPool` 只省 CPU 分配与 GC，**不省显存**。
@@ -3414,6 +3443,12 @@ mc-heavy/
   （天空盒双图交叉淡入 + 日轮月轮）/ `sky-config.js`（立方图清单）；
 - **v1.58 新增测试产物**：`src/tests/test-sun-shade.js`（浏览器内单测）+
   `tests/sun-directional.spec.mjs` / `tests/skybox.spec.mjs`（Tier 4 像素实测）。
+
+- **v1.68 新增 RedCity 产物与工具**：`assets/redcity/`（`src/SakuraSpawn.schematic` 是烘焙输入、勿当渲染资源；`redcity.json` 是产物，带输入指纹）；
+  `tools/{bake-redcity,redcity-config,redcity-schematic,redcity-bake-core,redcity-fingerprint}.mjs`（`npm run redcity`；配置与指纹逻辑由烘焙脚本与 `check:data` 共用，红线 1）；
+  `src/gen/structures/redcity-{data,layout,surface}.js`（Worker 同构，无 three；`REDCITY_*` 常量全部在 `region-config.js`，`tools/` 单向 import `src/`）；
+- **v1.68 新增测试产物**：`src/tests/test-redcity-{data,layout,surface,dispatch,apply,vegetation,gen-full}.js`（浏览器内单测）+
+  `tests/redcity-{bake,e2e,budget,edit-perf,visual}.spec.mjs`（烘焙核心为 Node-only spec；其余为真实页面 Tier 4）。
 
 与 mc-lite 的关键差异：没有 FaceCullingSystem / ChunkConsolidation / BlockScatterManager /
 GlobalInstancedMeshManager / WorldBoundsController / WorldGenerationService(预生成) /

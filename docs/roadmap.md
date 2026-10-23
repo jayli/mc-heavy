@@ -72,6 +72,8 @@ toast）。M9 依赖 M8 交付的 `indestructibleTable` —— 登记两项与�
 2026-10-01 补「玩家走进车自动站上」（`_collides` 矿车格实心，issue #3 审核后补全偏离登记），
 验收报告 `docs/minecart-acceptance-report.md`。
 
+**RedCity Epic 已完成**（2026-10-23）：把 Sakura Spawn schematic（250×289，24.5 万块）离线烘焙成 City 东侧的静态地标，并把默认出生点迁到它的中心。架构全走既有管线——`redCity` 布局是 `(seed)` 的确定性纯函数，**不走 3×3 查询域**而是随每个 `gen` 任务全局下发（80 个 seed 里 60 个的影响域越过 x=799）；GEN 阶段 1 整形地形（core 全深度 clay + 过渡环台阶钳制，可证明 `|Δs| ≤ |Δe|+1`）并**整体吞并**相交的邻区地标（地形 + JSON 结构 + 植被上下文），阶段 2.9 光栅化烘焙内容（世界 y = `baseY + dy`），阶段 3 植被避让 core⊕3。水面遮罩加影响域门控；IndexedDB 升到 v3（用户裁定弃旧档）；`CAPACITY` 冻结预算 148.06 → **195.55 MiB**（U1′-a：方案 A 在真实页面里 opaque 稳态 90.3%、飞越 106.6% 触发扩容，故改提）。**R15**：RedCity 出生点单块放/挖 p95 2.4~2.7 ms > 冻结的 2 ms，用户裁定接受——冻结口径 pin 在 City（12 个既有 spec + bench 加 `&spawn=city`），RedCity 口径另立观测门（`tests/redcity-edit-perf.spec.mjs`，3.5 ms）。**R11**（模型授权）用户已确认 ok。细节见规格 `docs/superpowers/specs/2026-10-22-redcity-design.md` §14 与验收报告 `docs/redcity-acceptance-report.md`。
+
 **太阳阴影（shadow map）已落地**（2026-10-13，独立改动 v1.44；**2026-10-14 v1.45 修复了实玩报告的
 「阴影黑乎乎一片」；2026-10-16 v1.46 修复了「远端闪烁」；2026-10-17 v1.47 修复了「随移动微微晃动」**）：太阳把地形/树/建筑的影子投到地面与方块表面 —— 设计文档 §4.4.4 规划了但从未
 实现的项。闸门实测发现 **three.js r185.1 WebGPU 后端的 depth-compare 阴影路径是坏的**（最小独立场景
@@ -160,6 +162,7 @@ mc-lite 用 InstancedMesh 无此问题。修法 = `render-world.js _installShado
 | **M8 TNT 爆炸 / 炮塔弹丸** | `indestructible` 单一权威（只登记 bedrock）/ TNT 3×3×3 破坏 + 5×5×5 连锁 + 4 格 50 伤害 / 炮塔方块锚定装置（20 上限）+ 主线程索敌 + 8 部件实例渲染 / 弹丸走 M5 临时实体（DDA + 实体 raycast + 三发 34 伤害） | ✅ 完成（2026-09-11，验收报告 `docs/m8-tnt-turret-acceptance-report.md`） | `1b74281` |
 | **M9 创造台（playground）** | 54×54 平台 + 中心块 `blockEntity` 锚点 / 复用 M8 的 `indestructible` 表追加创造台两项 + 移出背包 / 模型 JSON 导入导出 / 面板动作按钮 + toast | ✅ 完成（2026-09-12，验收报告 `docs/m9-playground-acceptance-report.md`） | `aa6cabb` 登记 / `db31ef8` 服务 / `57ca13f` UI |
 | **矿车 Epic** | M5 持久实体（`minecartDefinition`）+ `MinecartService`（放置 / 拾取 / 激活 / 连挂）/ 移动·转弯·碰撞·连挂同构纯函数（统一 round 判据 + 帧前快照 + deferred 跨车写入）/ 2 个 InstancedMesh 渲染（车斗 canvas 纹理 + 4 轮）/ 玩家乘坐（分轴障碍检测）/ TNT 爆炸摧毁 / `Persistence.deleteEntity`（首个可单独销毁的持久实体）；2026-10-01 补乘坐碰撞（走进车自动站上） | ✅ 完成（2026-09-30，验收报告 `docs/minecart-acceptance-report.md`） | `3410713` Epic / `f59699d`+`2c0e23b`+`0d03c04` 乘坐碰撞修复 |
+| **RedCity Epic**（独立 Epic，v1.68） | 离线烘焙 Sakura Spawn（250×289）→ City 东侧静态地标 / `redCity` 全局下发（不走 3×3 域）/ 整体吞并邻区地标（地形 + JSON 结构 + 植被上下文）/ 过渡环 / 出生点迁入 / DB v3 弃旧档 / GPU 预算 U1′-a（148.06 → 195.55 MiB） | ✅ 完成（2026-10-23，验收报告 `docs/redcity-acceptance-report.md`） | 待提交（用户授权后填） |
 
 ## M4 之后的遗留 TODO（M4 阶段 bugfix）
 
@@ -530,6 +533,20 @@ world/zombies/editor 引用泄漏）。故断言须比较**对象引用**（`fir
 `setBlockEntity` 写回时钟（`lastSpawnAt`），若判定只看「坐标覆盖关键格」，自己的时钟写回
 就会把装置杀掉。
 
+### RedCity（v1.68）
+
+- **实玩/实测标定值**（改它们必须重跑 `npm run redcity`，否则 `check:data` 的 `[RedCity]` 指纹检查会抓）：烘焙参数 `K=2`（地面往下只留 2 层）、`relief=0.34`、`decay=2`、`pad=1`、`minComp=30`、`borderKeep=8`
+  （`tools/redcity-config.mjs` 的 `REDCITY_BAKE_PARAMS`）；`REDCITY_GROUND_FLOOR=-5`、`REDCITY_GAP=24`、`REDCITY_TRANSITION=24`（`region-config.js`）。⚠️ 指纹**不覆盖算法**——改算法而不动参数时指纹不变，靠 `tests/redcity-bake.spec.mjs` 的黄金比对兜底。
+- **U1′ 实测表**（真实页面，vd=8，`reservedV = ceil(vertexCount × 1.25)`；规格 §14.7）：稳态（U1′ 容量）opaque 78.2% / cutout 25.2% / transparent 70.1%；无碰撞飞越峰值（4 个 seed × 6 路线取最大）opaque 92.4% / cutout **92.6%**（seed 12345 东南角，自然森林驱动，R10）/ transparent 83.1%（seed 777，R9）；
+  方案 A 容量下 opaque 飞越 106.6% 触发 ×1.5 扩容（GPU 177.53 → 230.5 MiB）。预算 spec 钉「≤95% + 零扩容」，量法用**无碰撞飞越**（真实 W 键奔跑会被塔挡住，峰值 = 稳态，测不到任何东西）。
+- **pin 清单（12 个既有 spec + bench）**：RedCity 默认出生后语义绑定 City 的用例统一 `&spawn=city`：`city-visual` / `m3-hud` / `light-house` / `light-structures` / `crosshair`（配色用例）/ `projectiles` / `tnt` / `turrets` / `sky-structures` / `m1-acceptance` / `weapons-world-edit` / `zombies`（仅「丧尸互斥」用例：同源探针交替对照 City 出生点中位 0.574 vs RedCity 0.416，贴着 0.4 阈值 = 系统性下移）；`bench` 的 `bootGame` 同样 pin。判别依据是**实测红了才 pin**。
+- **R15（用户裁定选 A 接受）**：RedCity 出生点单块放/挖 p95 2.4~2.7 ms > 冻结的 2 ms（City 1.6~1.8；拆分计时 `setBlock` 0.1 ms 不变、`remeshSections` 快速路径 1.7→2.4 ms，出生点周围 section 更密）。冻结口径 pin 在 City、不放宽；RedCity 口径 = `tests/redcity-edit-perf.spec.mjs`（3.5 ms）。
+  ⚠️ `world.setBlock` 不做 no-op 检测，「改动了世界」的计数要对比写入前后的方块 id（testing-policy §2.7 第 16 类）。
+- **bench 走廊与 RedCity（R13）**：场景 ①④ 显式传送到 `(620,-100)` / `(850,-100)`，走廊 `z=-100` 距影响域北缘（`z=-51`）只有 49 格，RedCity 北部约 90 格落在 vd=8 加载半径内——**场景变了但仍在门内**；冻结基线不重标（重标 = 放宽冻结口径，须用户批准）。帧 p95 在 9↔10 的 vsync 量子边界上摆动（场景 ④ 门限仅 9.9），阻断时按交替对照处理。
+- **吞并代价（R1）**：80 个 seed 累计被吞并的地标：冰山 91 / 金字塔 80 / 雪原 63 / 海岛 19 / 平原岛 4——几乎每个世界东侧的金字塔与冰山都会消失（设计如此，用户在选址时选了吞并）。
+- **既有缺陷（本期不修，建议另立项）**：出生点移出 City 后，City 周边（约 400 格外）的玩家改动重启后不持久（规格 §13.6.3，Tier 1，改 GEN 下发协议/时序）；撒布对 City bounds 没有过滤（R6，RedCity 的过滤自写，不替 City 补）。
+- **R11 模型授权**：`SakuraSpawn.schematic`（ArtillexStudios，808 KB）已入库 `assets/redcity/src/`，用户确认 ok（2026-10-23）。
+
 ## 第二阶段依赖链
 
 ```
@@ -628,6 +645,7 @@ M7 建立了一套「方块锚定的持久装置」模式，未来炮塔 / 矿�
 | M4~M7 验收报告（第二阶段各 Epic 实测 + 负向验证 + 偏离表） | `docs/m{4,5,6,7}-*-acceptance-report.md` |
 | M8 / M9 验收报告（第三阶段各 Epic 实测 + 负向验证 + 偏离表 + 操作失误记录） | `docs/m8-tnt-turret-acceptance-report.md` / `docs/m9-playground-acceptance-report.md` |
 | 矿车 Epic 的设计与任务级清单（含偏离 mc-lite 清单，§6）+ 验收报告（实测 / 偏离 / 负向验证 / 踩坑） | `docs/superpowers/specs/2026-09-30-minecart-design.md` + `docs/superpowers/plans/2026-09-30-minecart.md` + `docs/minecart-acceptance-report.md` |
+| RedCity Epic 的设计（**§14 为权威**，§13 为 v1.1，§1~§12 为 v1.0 调研）+ 实施计划 + 参考实现（新文件 + 补丁，冻结快照）+ 验收报告 | `docs/superpowers/specs/2026-10-22-redcity-design.md` + `docs/superpowers/plans/2026-10-22-redcity.md` + `docs/superpowers/specs/2026-10-22-redcity-appendix/appendix-f-reference/` + `docs/redcity-acceptance-report.md` |
 | 太阳阴影（shadow map，独立改动 v1.44）的设计决策（DR-1~DR-8 + DR-4b）与六条偏离 mc-lite 清单 + 任务级实测记录 | `docs/superpowers/specs/2026-10-13-sun-shadow-map-design.md` + `docs/superpowers/plans/2026-10-13-sun-shadow-map.md` + `.superpowers/sdd/2026-10-13-sun-shadow-map/`（task 报告与 ledger） |
 | 太阳 N·L 方向光与天空盒（独立改动 v1.58）的设计决策、标定推导、三处有意偏离 mc-lite、以及观测口径隔离清单 | `docs/superpowers/specs/2026-10-20-sun-shading-and-skybox-design.md` + `docs/superpowers/plans/2026-10-20-sun-shading-and-skybox.md` |
 | 雾色融入天空（独立改动 v1.59）的方向换算规则、开关设计、负向验证盲区（为什么必须有俯视机位用例） | `src/render/fog-sky-direction.js` 的模块注释 + `tests/fog-color.spec.mjs` 头注释 + 设计文档 v1.59 修订说明 |
