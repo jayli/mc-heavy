@@ -45,12 +45,6 @@ export function setupOcean(scene) {
     OCEAN_MASK_NO_CITY.minZ, OCEAN_MASK_NO_CITY.maxZ,
   ));
 
-  /** RedCity 门控 bounds（= influence，含过渡环）。默认哨兵 = 关闭；`setRedCityBounds()` 接真实值后生效 */
-  const uRedCityBounds = uniform(new THREE.Vector4(
-    OCEAN_MASK_NO_CITY.minX, OCEAN_MASK_NO_CITY.maxX,
-    OCEAN_MASK_NO_CITY.minZ, OCEAN_MASK_NO_CITY.maxZ,
-  ));
-
   const fadeStart = WATER_VISIBLE_DISTANCE - WATER_EDGE_FADE_BAND;
   const fadeEnd = WATER_VISIBLE_DISTANCE;
 
@@ -107,13 +101,6 @@ export function setupOcean(scene) {
       and(pos.y.greaterThanEqual(uCityBounds.z), pos.y.lessThanEqual(uCityBounds.w)),
     );
     Discard(inCity);
-    // RedCity 门控：influence 内一律不渲染（core 全深度实心、ring 水域已补实成陆地，区域内下挖到 y<-1.5 会挖出陆地上的假水——
-    // 与 City 同一理由）。CPU 侧同一判据见 ocean-mask.js（复用 inCityBounds 的同一不等式）。
-    const inRedCity = and(
-      and(pos.x.greaterThanEqual(uRedCityBounds.x), pos.x.lessThanEqual(uRedCityBounds.y)),
-      and(pos.y.greaterThanEqual(uRedCityBounds.z), pos.y.lessThanEqual(uRedCityBounds.w)),
-    );
-    Discard(inRedCity);
 
     // 水域遮罩：近处仅在地形低于海平面附近显示，远处全显示
     // 阈值 = OCEAN_MASK_THRESHOLD（SEA_Y）；高度是整数 → `h < SEA_Y` ⟺ `h <= SEA_Y-1`，
@@ -203,16 +190,6 @@ export function setupOcean(scene) {
     setCityBounds(city) {
       const b = city && Number.isFinite(city.minX) ? city : OCEAN_MASK_NO_CITY;
       uCityBounds.value.set(b.minX, b.maxX, b.minZ, b.maxZ);
-    },
-    /**
-     * 接 RedCity 门控 bounds（全世界唯一）。
-     * @param {{influence:{minX:number,maxX:number,minZ:number,maxZ:number}}|null} redCity `buildRedCityLayout` 结果；
-     *   null 或缺字段 → 恢复哨兵（门控关闭）。取 influence（含过渡环）而不是 core。
-     */
-    setRedCityBounds(redCity) {
-      const inf = redCity && redCity.influence;
-      const b = inf && Number.isFinite(inf.minX) ? inf : OCEAN_MASK_NO_CITY;
-      uRedCityBounds.value.set(b.minX, b.maxX, b.minZ, b.maxZ);
     },
   };
 }

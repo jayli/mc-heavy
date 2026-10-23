@@ -8,8 +8,7 @@ import { test, expect } from 'playwright/test';
 //   - 无悬挂曳光、scene/camera child 不增长（WebGPU renderer.info 非稳定对象计数口径，故用 child 数）
 
 async function waitForStableVD8(page) {
-  // RedCity 起默认出生在 RedCity；本用例语义绑定 City 环境，pin spawn=city（RedCity spec §14.8）
-  await page.goto('/?vd=8&spawn=city');
+  await page.goto('/?vd=8');
   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
   await page.waitForFunction(() => window.__MC_GAME__.world.columns.size >= 289, null, { timeout: 90_000 });
   await page.waitForFunction(() => {

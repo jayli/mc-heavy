@@ -81,8 +81,7 @@ async function traceLuminance(page) {
 
 test('准心配色：默认白，仅极亮背景转黑，且不显粗', async ({ page }) => {
   test.setTimeout(180_000);
-  // RedCity 起默认出生在 RedCity；本用例语义绑定 City 环境，pin spawn=city（RedCity spec §14.8）
-  await page.goto('/?vd=4&weather=clear&spawn=city');
+  await page.goto('/?vd=4&weather=clear');
   await page.waitForFunction(() => window.__MC_BOOT__?.rendererReady === true, null, { timeout: 60_000 });
   await page.waitForSelector('#crosshair', { timeout: 10_000 });
   await page.waitForTimeout(1500);

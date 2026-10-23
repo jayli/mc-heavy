@@ -1,17 +1,12 @@
 # RedCity 设计文档：把 Sakura Spawn 模型落成 City 东侧的樱花圣地
 
-> 版本：**v1.3**（2026-10-23 实玩反馈修订，见 §15；v1.2 为实施计划审阅修订）｜ 状态：**v1.2 已落地验收；§15 的 v1.3 修订已定设计、待实施**
-> v1.0 → v1.1：评审发现 + 用户决策 D5~D8 + 原型实测，落在 **§13**。
-> v1.1 → v1.2：把实施计划逐条对照仓库真实代码，并在一个**影子工作树**里按计划实际走通一遍（含全量回归与负向验证）后的订正，
-> 全部落在 **§14**。结论一句话：**方案 A 的 GPU 容量在真实页面里不够（§14.7），其余是接线/构造/测试口径的订正，设计方向不变。**
+> 版本：**v1.1**（2026-10-22 评审后修订）｜ 状态：**修订完成；待确认 U1（GPU 顶点缓冲预算，§13.10）后可进入实施计划**
+> v1.0 → v1.1：评审发现 + 用户决策 D5~D7 + 原型实测，全部落在 **§13**。
 >
-> **优先级规则（先读这条）**：**§15 > §14 > §13 > §1~§12**。§1~§12 是 v1.0 的调研与原方案，**保留供追溯**；
-> §13 是 v1.1 口径，其中被 §14 订正的条目都有 `⚠️ v1.2` 标记。
+> **优先级规则（先读这条）**：§1~§12 是 v1.0 的调研与原方案，**保留供追溯**；凡与 §13 冲突，**以 §13 为准**。
 > 以下条目已被取代，**勿据此实现**：§4.2 落点与冲突回退、§4.3/§6.3/§6.4 地形衔接与基底填充、§5.3 色距口径、
-> §5.4 玻璃映射、§6.1 保留规则字面写法、§7 全部预算数字、§8 出生点与存档兼容、§10.1 第 2/4/6/9 条、§12 实施顺序；
-> **v1.2 新增**：§13.4.4 的「脚下平台化 / I6」、§13.7.5 的方案 A 容量与 §13.7.7 的「冲刺 ≤100%」口径、
-> §13.3.3 的地标外包估算数字（海岛 39 / 平原岛 15）、§13.11 的实施顺序。
-> 各处均有 `⚠️ v1.1` / `⚠️ v1.2` 标记指向对应小节。
+> §5.4 玻璃映射、§6.1 保留规则字面写法、§7 全部预算数字、§8 出生点与存档兼容、§10.1 第 2/4/6/9 条、§12 实施顺序。
+> 各处均有 `⚠️ v1.1` 标记指向 §13 的对应小节。
 > 输入模型：`/Users/bachi/ttt/Sakura Spawn - ArtillexStudios/SakuraSpawn.schematic`
 > （WorldEdit schematic，Minecraft 1.12.2，`DataVersion 1343`）
 
@@ -154,7 +149,7 @@ RedCity 紧贴 City 东界（x = city.maxX + 6）时，两者核心区中心距�
 ### 4.1 数据流（复用既有管线，不新增持久化路径）
 
 > ⚠️ v1.1：下图的「阶段 2.8」位置与「随 layouts 下发」作废。核心区的地面在阶段 1 整形、内容在阶段 2.9（空中结构之后）写入；
-> `redCity` 随**每个** GEN 任务全局下发；产物是 `redcity.json`（D8），由主线程 fetch 一次后把原文 broadcast 给 Worker。见 §13.3 / §14.5。
+> `redCity` 随**每个** GEN 任务全局下发；`redcity.bin` 由主线程 broadcast 给 Worker。见 §13.3。
 
 ```
 schematic ──(离线烘焙 tools/bake-redcity.mjs)──> assets/redcity/redcity.bin
@@ -676,7 +671,7 @@ this.spawnZ = redCitySpawn?.z ?? citySpawn.z;
 
 | ID | 裁定 | 落地口径 |
 |---|---|---|
-| **U1** | **批准方案 A** | `CAPACITY`：opaque 2.85M → **3.705M**、transparent 0.125M → **0.30M**、cutout 不变；GPU 顶点缓冲 148.06 → **177.53 MiB**（+19.9%）。Task 9 解除门禁，正常执行。**⚠️ v1.2：方案 A 的容量在真实页面里不够，作废；改提 U1′（待确认），见 §14.7** |
+| **U1** | **批准方案 A** | `CAPACITY`：opaque 2.85M → **3.705M**、transparent 0.125M → **0.30M**、cutout 不变；GPU 顶点缓冲 148.06 → **177.53 MiB**（+19.9%）。Task 9 解除门禁，正常执行 |
 | **U2** | **接受偏亮青绿屋顶** | `168:2` → `oxidized_cut_copper`（不新增深青绿贴图）。⚠️ 这意味着**不做**真实 1.12 色值校准（§13.5.3 的「需要用户提供 jar」那条作废）；颜色门禁只保留关系式断言（**R<B<G**，实测 RGB(58,196,169)），不做 ΔE 阈值 |
 | **U3** | **粉色玻璃也用 `glass_block`** | `95:6` → `glass_block`（**不**换成 `pink_wool`）。映射表因此**不需要** `95:6` 的 meta 特例，通配 `[95,'*']` 已覆盖。实测影响见 §13.5.1 |
 
@@ -733,7 +728,6 @@ influence = core ⊕ REDCITY_TRANSITION     // 影响域：地形整形 / 吞并
 - `readyForColumn` / `ensureForColumn` 额外要求 region(0,0) 布局就绪（启动路径本来就先 `waitForRegion(0,0)`，`game.js:568`）。
   否则会出现「早到的 column 不带 RedCity 生成」的永久不一致。
 - 不把 region(0,0) 的整个布局塞进每个任务：它含 City 撒布 `Int32Array`，structured clone 开销不值。
-- ⚠️ v1.2 实现口径：`StructureIndex._requiredKeys(cx, cz) = neighborRegionKeys(cx, cz) ∪ {'0,0'}`，`readyForColumn` / `ensureForColumn` 都经它；`layoutsForColumn` **仍只含 3×3 域**——`(0,0)` 不随 `layouts` 下发，只走 `redCity()` 全局下发。`Scheduler` 在 `readyForColumn` 放行后取 `redCity()`（此时必非 null；未放行的 column 不下发任务，所以不存在「塞 null 的 gen」）。
 
 #### 13.3.3 吞并规则与避让清单
 
@@ -747,12 +741,9 @@ influence = core ⊕ REDCITY_TRANSITION     // 影响域：地形整形 / 吞并
 landmarkErased(kind, center, redCity) = AABB(center ± FOOTPRINT[kind]) ∩ redCity.influence ≠ ∅
 ```
 
-`FOOTPRINT` 必须取各 `getXxxInfo` 判定的**实际外包范围**，从 `landmarks.js` 导出（`landmarkHalfExtent(kind)`），不得在 redcity 模块里另写字面量（红线 1）。
-评审估算用 `SIZE/2 + TRANSITION`（pyramid 28 / frozenMountain 48 / snowLand 28 / island 25 / plainLand 15）。
-~~海岛沙环可达 39 格（`apply.js:167` 的 `dist < 39`），估算偏小，以判定函数为准。~~
-**⚠️ v1.2 订正（本段 v1.1 写错了方向）**：`dist < 39` **不可达**——`getIslandInfo` 的入口 AABB 只有 ±25，海岛真值就是 **25**，不是 39；
-反而是平原岛估算 15 **偏小**：地标 = 地形 + 它的 JSON 结构，平原金字塔岛的结构占地 (17, 20) 大于地形 ±15。
-正确口径、暴力扫描证据与 R1 吞并代价表的复核见 §14.4。
+`FOOTPRINT` 必须取各 `getXxxInfo` 判定的**实际外包范围**，从 `landmarks.js` / `region-config.js` 导出常量，不得在 redcity 模块里另写字面量（红线 1）。
+评审估算用 `SIZE/2 + TRANSITION`（pyramid 28 / frozenMountain 48 / snowLand 28 / island 25 / plainLand 15）；
+海岛沙环可达 39 格（`apply.js:167` 的 `dist < 39`），估算偏小，以判定函数为准。
 
 | 位置 | 现状 | v1.1 处理 |
 |---|---|---|
@@ -766,15 +757,10 @@ landmarkErased(kind, center, redCity) = AABB(center ± FOOTPRINT[kind]) ∩ redC
 | 水面遮罩 | 仅 City bounds 门控 | `ocean-mask.js` 增 `inRedCityBounds`（范围 = `influence`，覆盖过渡环）；`ocean.js` 增第二个 bounds uniform；`Game.start` 在 `setCityBounds` 旁接 `setRedCityBounds`。理由同 City：区域内下挖到 y<-1.5 会挖出陆地上的假水 |
 | 出生点 | `getCitySpawnPoint` | §13.6 |
 
-⚠️ v1.2：**被吞并地标的植被上下文必须同样当它不存在**。`pointContext` 若仍按「地标存在」判定，被吞并的冰山/雪原区域会判成 `snow/fm`，
-在已变成自然地形的地面上长出**悬空的雪桦树**（树基按冰山表面高度落点）。被吞并标志每次 `applyStructuresToColumn` 调用**只算一次**，
-阶段 1 / 阶段 2 / 阶段 3 共用同一份。植被避让距离 `REDCITY_VEG_CLEARANCE = TREE_CANOPY_RADIUS = 3`（树冠最大水平半径，唯一权威 = `region-config.js`；
-`apply.js` 阶段 3 的扫描外扩 `EXT` 同源）——不是「恰好等于 EXT」的巧合，是同一件事。见 §14.4。
-
 #### 13.3.4 Worker 数据下发
 
-`redcity.json`（D8）由主线程启动时 fetch 一次，`pool.broadcast('redcity-data', { text })`（传 JSON **文本**；与 `atlas-meta` 同手法，`game.js:161` / `world-worker.js:164`），
-Worker 内 `JSON.parse` + `prepareRedCityModel` 后模块级缓存。**不走** `structure-json.js` 的懒 fetch：`apply.js:115-120` 的注释记录过冷 fetch 令 genP95 +30%，而出生点就在 RedCity，
+`redcity.bin` 由主线程启动时 fetch 一次，`pool.broadcast('redcity-data', buffer)`（与 `atlas-meta` 同手法，`game.js:161` / `world-worker.js:164`），
+Worker 内模块级缓存解析。**不走** `structure-json.js` 的懒 fetch：`apply.js:115-120` 的注释记录过冷 fetch 令 genP95 +30%，而出生点就在 RedCity，
 每个 Worker 的首个 GEN 都会踩到。`postMessage` 保序，broadcast 必先于后续 `gen`。主线程路径（单测 / 快速路径）经 `setRedCityData()` 注入。
 
 ### 13.4 地表与地形衔接（取代 §4.3 / §6.2–§6.4）
@@ -788,9 +774,7 @@ baseY   = max( median{ e(p) : p ∈ core 外圈一格, 步长 4 },     // ≈1,1
 ```
 
 - 写入 `redCity.baseY`。`REDCITY_GROUND_FLOOR = -5` 同时是烘焙钳制值与此处下限（单一权威在 `region-config.js`）：保证岛最低处是干地。
-- ⚠️ v1.2：`baseY` 另有**上界** `REDCITY_BASE_Y_MAX = 8`，**钳制不抛错**（抛错会让极端 seed 的 GEN 整体失败）。与烘焙期 `REDCITY_DY_MAX_BUDGET = 87` 配对：
-  `8 + 87 = 95 = WORLD_MAX_Y − 1`（`WORLD_MAX_Y = 96` 是独占上界）。〔实测〕seed 1–1500：1498 个为 4，2 个为 5（599、1491）。
-- 〔实测〕seed 1–80、`W=24`：边界一圈台阶>2 的占比 **中位 0% / p90 2.9% / 最差 4.0%**，最大台阶中位 1、最大 4，超过 5% 的 seed 数 **0/80**（⚠️ v1.2：用落地的 `ringSurfaceY` + 真实 `generateHeight` 重测，最差 **3.88%**，同样 0/80 超 5%，见 §14.3）。
+- 〔实测〕seed 1–80、`W=24`：边界一圈台阶>2 的占比 **中位 0% / p90 2.9% / 最差 4.0%**，最大台阶中位 1、最大 4，超过 5% 的 seed 数 **0/80**。
   对照 `GROUND_FLOOR=-12`（baseY≥11，按环可消化 8 格估算）时中位约 54%——所以下限必须是 -5。
 - 〔实测〕岛列 ground（相对 baseY）分位数 p1/p5/p25/p50/p75/p95/p99 = -5/-3/-2/0/2/6/15；`< -5` 的只占 **0.6%**，钳制几乎不改变观感。
   被钳列的整列内容（壳 + 上方内容）整体上移 `floor - ground`，避免壳与上方内容脱节。
@@ -808,12 +792,7 @@ baseY   = max( median{ e(p) : p ∈ core 外圈一格, 步长 4 },     // ≈1,1
 | I1 | 岛外相邻格 `abs(Δground) ≤ 1` | 岛外无断崖 |
 | I2 | 矩形边界一圈 `ground == 0` | 核心边缘高度恒为 `baseY`，过渡环只需处理 `baseY` 与自然地形之差 |
 | I3 | 岛内 `ground ≥ GROUND_FLOOR` | 岛最低处是干地 |
-| I4 | `baseY_max + dyMax < WORLD_MAX_Y` | 内容不被世界顶截断（〔实测〕baseY∈{0,4,8} 时最高方块 y=56–72；`baseY ≤ 16`（噪声上限），最高方块 y ≈ baseY + 56~64 ≤ 80，余量 ≥16）。**拆两半**：烘焙期 `dyMax ≤ 87`；布局期 `baseY ≤ 8` 且 `baseY + dyMax < 96`（§13.5.5） |
-| I5 | 同一刚性分量内任意相邻块：烘焙后 `yRel` 差 == 源 `y` 差（**严格，恒 0**） | 守「别退化成逐列剪切」的发射路径。⚠️ v1.2 新增，见下 |
-| I5′ | 竖向接触（块与其正下方保留块）平移不一致占比 `< 0.1%` | 刚性平移的固有边缘产物；〔实测〕84 / 151,392 = **0.055%** |
-
-⚠️ v1.2：**旧 I5（只数竖向接触）对逐列剪切完全无感**——同列块共用同一平移量 S，竖向邻居永不破坏；注入「逐列平移」缺陷后 `contactBreaks` 反而从 84 变成 0。
-所以拆成**严格 I5**（数同一刚性分量内部全部 6 邻接对，注入实验 504 处）+ **占比 I5′**（保留旧口径，守边缘质量）。**I6 已删除**，见 §13.4.4。
+| I4 | `baseY_max + dyMax < WORLD_MAX_Y` | 内容不被世界顶截断（〔实测〕baseY∈{0,4,8} 时最高方块 y=56–72；`baseY ≤ 16`（噪声上限），最高方块 y ≈ baseY + 56~64 ≤ 80，余量 ≥16） |
 
 `RELIEF = 0.34` 保留为**观感参数**（进指纹）。〔原型〕它对预算几乎无影响：RELIEF 0.2/0.25/0.34/0.5 下 opaque 占比 108/108/108/109%；地面再做 3×3 平滑两遍也只省 9%。
 所以它不是预算旋钮，调它只为观感。
@@ -822,7 +801,6 @@ baseY   = max( median{ e(p) : p ∈ core 外圈一格, 步长 4 },     // ≈1,1
 
 - **core**（阶段 1 完成，先于撒布/空中结构）：整列 `y ∈ [WORLD_MIN_Y+1, ground]` 实心填 `REDCITY_FILL_BLOCK = 'clay'`；`y > ground` 一路清空到 `WORLD_MAX_Y-1`
   （挖方：自然树、残丘、水体都清掉；云/空岛在其后写入，不受影响）。City 的 `generateCity` 同样「填 + 清残丘 + 水体补实」（`landmarks.js:806-849`）。
-  ⚠️ v1.2：实现只清到 `max(自然高度, SEA_Y)`（其上在阶段 1 时本来就是空气——自然树由阶段 3 生成，已被 `pointContext` 的 core 避让挡掉），不必一路清到世界顶；见 §14.3。
 - **ring**（与 `getCityFinalSurfaceY` 同构的台阶式钳制，**独立实现**，不带 `nearbyLandmark` 与 `CITY_MIN_SURFACE_Y` 耦合）：
 
 ```js
@@ -831,20 +809,16 @@ natural  = e(wx, wz)                          // 已按 SEA_Y+1 下限：水域�
 maxDelta = floor((W - d) / 3)                 // 外缘 0（= 自然），向内每 3 格多允许 1 格高差
 surfaceY = natural + clamp(baseY - natural, -maxDelta, +maxDelta)
 ```
-  ~~ring 的岩石基底用 12 层（不需要全深度）~~；`naturalH < SEA_Y` 的水体按 `generateCity` 手法用 `clay` **补实**（不得清成 air，否则地下出空洞）。
-  **⚠️ v1.2：ring 的构造细则以 §14.3 为准**——填方从自然地表一路填到 `s−2`（不是「12 层基底」），`s−1` 写次表层、`s` 写表层，表层/次表层取该点 biome；挖方清到 `max(自然, SEA_Y)`。
+  ring 的岩石基底用 12 层（不需要全深度）；`naturalH < SEA_Y` 的水体按 `generateCity` 手法用 `clay` **补实**（不得清成 air，否则地下出空洞）。
 - 水域一律变陆地。ring 外缘接湖时会在 `SEA_Y+1` 与湖床之间形成一道岸壁——与 City 现状一致，接受（§13.10 R4）。
 
-#### 13.4.4 建筑刚性平移（取代逐列压缩；**⚠️ v1.2：删除「脚下平台化」与 I6**）
+#### 13.4.4 建筑刚性平移与脚下平台化（取代逐列压缩）
 
-- 把「地面之上的内容」按 6 邻接连通体分组（建筑清单 `isBuildingMat`；块数 `< minComp = 30` 或贴包围盒边 `borderKeep = 8` 以内的**不刚性**），
-  每个连通体取**一个**平移量 `S_C`（继承它脚下逐列目标平移 `S` 场，涂色范围 = footprint ⊕ `pad = 1`），**整体刚性平移**；不得逐列平移（会把垂直墙面剪切成台阶）。
-  〔实测〕134 个连通体里 125 个刚性、9 个贴边、1,237 个小件不刚性。
-- ~~连通体 footprint（外扩 1 格）内的 ground 取参考高度（平台化）~~ **v1.2 作废**：烘焙**不压平建筑脚下的地面**——footprint ⊕ pad 内地面保持源模型的起伏 1:1
-  （`ground′ = g − sMed + S_C`，`g` 仍是逐列的），只是整体用同一个平移量。〔实测〕旧 **I6**「footprint 内 ground 极差 ≤ 1」在 125 个刚性分量里有 **104 个违反**
-  （极差中位 8、最大 **40**）——它描述的是一个没有被实现、也不该被实现的算法：平台化会把塔座周围的岩丘铲平，改变模型造型。**I6 删除**，由 I5 / I5′ 取代（§13.4.2 表、§14.2）。
+- 把「地面之上的内容」按连通体（6 邻接）分组，每个连通体取一个**参考地面高度**（其最低接地点处的 ground），**整体刚性平移**；不得逐列平移（会把垂直墙面剪切成台阶）。
+- 连通体 footprint（外扩 1 格）内的 ground 取参考高度（平台化）：保证建筑脚下平整，并消除壳与建筑的脱节。
 - 〔实测〕5 座有效样本的塔座周围地面（1–4 格环带）p5–p95 起伏为 8、12、13、21、23 格 → 逐列压缩会让建筑内部产生 5–15 格的相对错位。
-- 〔原型〕预算数字用的是逐列压缩（保守）；刚性平移让玻璃/墙面保持完整（transparent 略升）。**以真实实现的真实页面实测为准**（§14.7）。
+- 验收不变量：**I5** 建筑体内任意相邻方块对的相对高差与源模型一致；**I6** 建筑体 footprint 内 ground 极差 ≤ 1。
+- 〔原型〕预算数字用的是逐列压缩（保守）；平台化会减少地面台阶面（opaque 略降），刚性平移让玻璃/墙面保持完整（transparent 略升）。以真实实现重测为准（§13.7）。
 
 #### 13.4.5 core 内全深度实心（不留洞穴）
 
@@ -854,7 +828,7 @@ GEN 侧可对 core 列跳过 `carveCaves`（可选优化）。
 
 #### 13.4.6 R4 的可量化验收（取代「目视平缓」）
 
-(a) 核心边缘一圈对自然地表台阶>2 的占比 ≤ 5%（seed 1–80 扫描；〔实测〕最差 4.0%，v1.2 落地实现重测 3.88%）；(b) ring 内相邻格高差 ≤ 1；(c) 岛外 ground 相邻差 ≤ 1（I1）。
+(a) 核心边缘一圈对自然地表台阶>2 的占比 ≤ 5%（seed 1–80 扫描；〔实测〕最差 4.0%）；(b) ring 内相邻格高差 ≤ 1；(c) 岛外 ground 相邻差 ≤ 1（I1）。
 不以截图目视验收（本仓库约束：截图的 `Read` 不渲染成图像）。
 
 ### 13.5 材质映射与烘焙定义（取代 §5.2–§5.4，修订 §6.1）
@@ -989,16 +963,14 @@ GEN 侧可对 core 列跳过 `carveCaves`（可选优化）。
 最大 = **5**（仅 2 个 seed > 4；下限 `SEA_Y+1-GROUND_FLOOR = 4` 几乎总是生效），当前产物
 `dyMax = 80` → 余量 ≥ 8 格。
 
-**I5′ 的验收口径是占比而非绝对 0**：实测 `contactBreaks = 84 / verticalContacts = 151,392`
+**I5 的验收口径是占比而非绝对 0**：实测 `contactBreaks = 84 / verticalContacts = 151,392`
 = **0.055%**，都发生在连通体 footprint 边缘（涂色地面与分量 S 的交界处），是刚性平移的固有产物。
-门禁取 `< 0.1%`。⚠️ v1.2：另有**严格 I5**（同一刚性分量内部保形，恒 0），两者缺一不可，理由见 §13.4.2 表后注与 §14.2。
+门禁取 `< 0.1%`。
 
 **参考实现已入库**（本节的每个数字都可复现）：
 `docs/superpowers/specs/2026-10-22-redcity-appendix/appendix-{a,b,c,d,e}-*.mjs`
 —— A = schematic/NBT 读取，B = skin 清单与映射表，C = 烘焙核心与出生点，D = JSON 产物与加载器，
 E = 主流程与指纹。每个文件末尾带自检，`node appendix-X.mjs` 即可复现上述数字。
-⚠️ v1.2：另有 `appendix-f-reference/`（**落地形态**的全部新文件 + 对既有文件的补丁 + 测试，在影子工作树里跑通并做过负向验证，见 §14.11）；
-A–E 是算法的独立可复现参考，F 是它们在仓库里的最终样子（常量归位到 `region-config.js`、导入路径改仓库风格）。**实施以 F 为准，A–E 用于对数字。**
 schematic 副本入库于 `assets/redcity/src/SakuraSpawn.schematic`（808 KB，小于已入库的
 `assets/sky/night-src/` 5.1 MB）—— 烘焙输入必须在仓库内，否则 `npm run redcity` 在别的机器上必挂。
 
@@ -1009,10 +981,9 @@ schematic 副本入库于 `assets/redcity/src/SakuraSpawn.schematic`（808 KB，
 - 判据（〔实测〕在真实模型数据上跑过）：① 外部可达的地面格；② 其上 **24 格全空**（不被屋檐/树冠遮盖）；③ 5×5 范围内 ground 极差 ≤ 1；④ 取距模型中心最近者。
 - 〔实测〕满足者共 **105** 个；半径 16 格内 **0** 个、32 格内 17 个；最近为模型坐标 (197,203)（RedCity 局部 `ox=146, oz=137`），距中心 22.6 格，地面 y=84，材质 `159:8`。
   v1.0 的 (178,211) 是 `168:2` 屋顶块的顶面（该列自上而下第一个方块），「上方 2 格空气」的弱判据选中了它。
-- 写入 `redcity.json`：`spawn: { ox, oz, dy }`（相对 core 原点与 `baseY`；`dy` 是相对 `baseY` 的行号，不是相对该列地面）。
-  运行时 `getRedCitySpawnPoint(redCity, model) → { x, y, z }`：⚠️ v1.2 `x/z` 取烘焙列的**方块中心**（`+0.5`），`y = baseY + dy + 1` 只是扫描起点的下界提示，真正站立位由下面的向下扫描决定。
+- 写入 `redcity.json`：`spawn: { ox, oz, dy }`（相对 core 原点与 `baseY`）。运行时 `getRedCitySpawnPoint(redCity) → { x, y, z }`。
 - `Game` 不对 RedCity 世界调用 `findSpawnY`（从世界顶向下找首个非空气，会落在塔顶/树冠，既有约束已记录），改为：
-  **从 `y+24` 向下扫首个「脚下 solid 且其上两格空气」的格**（`scanDownForSpawn`，返回脚所在的 y）——容忍玩家日后在出生点上方建造，且不会被上方结构遮蔽（烘焙保证其上 24 格全空）。扫不到（数据异常）→ 退回 `getRedCitySpawnPoint().y`，不抛错。
+  **从 `y+24` 向下扫首个「脚下 solid 且其上两格空气」的格，+1**——容忍玩家日后在出生点上方建造，且不会被上方结构遮蔽（烘焙保证其上 24 格全空）。
 - 所有世界（含 `?seed=` 指定）一律在 RedCity 出生。全深度实心（§13.4.5）使出生点不再依赖自然地形（v1.0 在 seed=12345 的中心处有「壳底到自然地表缺口 15 格 > FILL_MAX」的问题）。
 
 #### 13.6.2 存档（D7）：IndexedDB 升级清库
@@ -1021,10 +992,7 @@ schematic 副本入库于 `assets/redcity/src/SakuraSpawn.schematic`（808 KB，
   （`req.transaction.objectStore(name).clear()`），其余保持「不存在时创建」的幂等写法。
 - 效果：老用户首次加载 `loadMeta()` 返回 null → 走现有 `!hadMeta` 分支（随机 seed，或 `?seed=`），等价于全新世界。`localStorage` 设置（视距/画质/音量/风格…）不动。
 - 不新增 `genVersion` 字段、不做每次加载的校验（YAGNI）；以后再有「丢弃旧档」的生成变更，再 bump 一次 `DB_VERSION`。
-- 处理 `onblocked`：旧版本标签页未关闭时升级会阻塞，`open({ onBlocked })` 里加 `req.onblocked`。⚠️ v1.2：`Game` 把回调接到 `main.js` 的覆盖层（"存档升级需要关闭其他 mc-heavy 标签页，关闭后会自动继续"），`game.start()` 成功后自动撤掉覆盖层——否则玩家看到的是**无报错的白屏**。
-- ⚠️ v1.2 订正（实测，v1.1/计划里的说法写错了失败形态）：清库的两个典型错误写法**不会**「卡成白屏无报错」，而是 **`open()` 以 AbortError reject**（被调用方吞掉才像卡住）：
-  ① 用 `this.db.transaction(...)`（升级回调里 `this.db` 还是 null）→ 抛 TypeError → versionchange 事务中止；② `req.transaction.objectStore('entities')` 对不存在的 store 抛 NotFoundError（v1 库）。
-  正确写法 = `req.transaction` + `db.objectStoreNames.contains(name)` 守卫，**先清后建**。E2E 用例（`tests/redcity-e2e.spec.mjs`）分别注入两种错误写法，均真 FAIL。
+- 处理 `onblocked`：旧版本标签页未关闭时升级会阻塞，`open()` 里加 `req.onblocked` → 提示「请关闭其他标签页」。
 - 旧进度包（`mc-heavy-progress` v1）仍可导入；落在 RedCity 影响域内的 edits 会叠加在新内容上（可能产生残留方块），本期不处理（`progress-codec` 不改）。
 - `meta.spawn` 保持「只写不读」（现状）；v1.0 §8.3 作废。
 
@@ -1075,7 +1043,7 @@ D2（1:1）+ D5（吞并）+ D6（玻璃）叠加，RedCity 中心窗口稳态�
 
 | 方案 | opaque `maxVerts` | transparent `maxVerts` | 顶点缓冲合计 | 状态 |
 |---|---|---|---|---|
-| **A（已批准）** | 2.85M → **3.705M** | 0.125M → **0.30M** | 148.06 → **177.53 MiB（+19.9%）** | ~~✅ 采纳~~ **❌ v1.2：真实页面实测不足，作废 → U1′（§14.7）** |
+| **A（已批准）** | 2.85M → **3.705M** | 0.125M → **0.30M** | 148.06 → **177.53 MiB（+19.9%）** | ✅ 采纳 |
 | B | 不变 | 不变 | 150 MiB | 缩小 RedCity 到线性约 0.8 —— 与 D2 冲突，未采纳 |
 | C | 自动扩容到 4.28M（×1.5） | ×1.5 = 0.19M | ≈190.6 MiB | 未采纳（越线时 `setGeometrySize` 整批重建拷贝，加载期卡顿） |
 
@@ -1094,12 +1062,6 @@ const CAPACITY = {
 占新容量 300K 的 **87%**（原估算 0.21M = 70%）。仍在预算内，但余量只剩 13%；
 冲刺放大 ×1.13 ≈ 295K 也 < 300K。**后续给 RedCity 加 water/glass 前必须重测**。
 
-> **⚠️ v1.2：本节的方案 A 容量与上面的 A/B 实测数字都不能作为实施依据。** 方案 A 的数字来自「RedCity 中心 17×17 列窗口」的 Node 侧 A/B 实测，
-> 而真实页面里方案 A 的 opaque 稳态就已 **90.3%**（reserved 3,344,190；稳态同为 289 列，**不是**「加载集合更大」——Node 侧低估 ~19% 的来源本次未逐项分解，结论只依赖真实页面实测）；
-> 12 s 无碰撞飞越峰值 **106.6%（seed 12345）→ 触发 ×1.5 扩容**（opaque 3.705M → 5.5575M，GPU 顶点缓冲 177.53 → **230.5 MiB**，且 `setGeometrySize` 整批重建拷贝有加载期卡顿）；
-> 真实 W 键奔跑 12 s 峰值 98.9%（无扩容但贴线）。transparent 在 seed=777 上更是 **99.7%**。
-> 实施用 §14.7 的 U1′（opaque 4.275M / transparent 0.36M / cutout 不变，195.55 MiB）——**用户已确认 U1′-a（2026-10-23）**。
-
 ⚠️ **这是对「冻结值」的变更**：设计文档 v1.42 写明 `gpuVertexBytes` 148.06 MiB < 150 MiB 且「均不放宽」。
 采纳 A 必须**先更新设计文档 §4.10 与修订说明，再改 `CAPACITY`**（本仓库规则：设计先于代码）。
 Task 9 已解除门禁，正常执行。
@@ -1116,9 +1078,6 @@ Task 9 已解除门禁，正常执行。
 真实页面、vd=8、seed=12345、站在 RedCity 出生点：① 稳态（289 列队列收敛）三通道 `reservedV` 占**新** `maxVerts` ≤ 95%；
 ② 12 s 冲刺峰值 ≤ 100%，且 `_capacity.*.maxVertexCount` 全部等于标定值（**零扩容**，v1.42 同款断言）；③ `gpuVertexBytes` ≤ 新预算。
 **不再用「相对 +10%」**——v1.0 的基线本身被未屏蔽植被污染。另在 Node 侧对 3 个 seed 扫描作趋势参考（不阻断）。
-**⚠️ v1.2 修订（口径 + 阻断范围）**：② 的上限改为 **≤ 95%**（= 零扩容的 100% 硬线 − 5% 标定余量；「容量须留足余量」是既有活跃约束）；「冲刺」改为**无碰撞飞越**
-（悬停 y=70、8 格/秒直线推进 12 s——真实 W 键奔跑会被塔/树挡住，实测 ±x 方向 4 格就停，峰值 = 稳态，测不到任何东西）；
-并且**多 seed 不再只是趋势参考**：transparent 的最坏情形出现在 seed=777 而不是 12345，所以 seed=777 的最坏路线也进阻断用例（`tests/redcity-budget.spec.mjs`，§14.7 / §14.8）。
 
 ### 13.8 测试计划修订（取代 §10 相关条目）
 
@@ -1158,20 +1117,15 @@ Task 9 已解除门禁，正常执行。
 | 文件 | 改动 |
 |---|---|
 | `src/save/persistence.js` | `DB_VERSION` 3 + `onupgradeneeded` 清库 + `onblocked` |
-| `src/core/game.js` | 出生点（RedCity）、`setRedCityBounds`、启动 fetch `redcity.json` + broadcast；`?spawn=city` 选项；`onPersistenceBlocked` 回调 |
+| `src/core/game.js` | 出生点（RedCity）、`setRedCityBounds`、启动 fetch `redcity.bin` + broadcast |
 | `src/core/scheduler.js` | `gen` payload 增 `redCity` |
 | `src/gen/structure-index.js` | `redCity()`；`readyForColumn` / `ensureForColumn` 含 region(0,0) |
 | `src/workers/world-worker.js` | `'redcity-data'` handler；`gen` 传参 |
 | `src/gen/structures/apply.js` | 阶段 1 分支 / 阶段 2.9 / 撒布过滤 / `pointContext` / 函数签名 |
 | `src/gen/structures/region-config.js` | `REDCITY_*` 常量（含 `GROUND_FLOOR`、`FILL_BLOCK`） |
 | `src/render/ocean-mask.js` + `src/render/ocean.js` | 第二个 bounds 门控（CPU 判据 + TSL uniform 同构） |
-| `src/render/render-world.js` | `CAPACITY` 重标定（**U1′-a，用户已确认**，§14.7） |
-| `src/main.js` | ⚠️ v1.2 新增：`?spawn=city` URL 入口；存档升级被阻塞时的覆盖层提示 |
-| `src/gen/structures/landmarks.js` | ⚠️ v1.2 新增：`landmarkHalfExtent(kind)`（地标外包范围唯一权威，吞并判定从它读） |
-| `src/gen/terrain.js` | ⚠️ v1.2 新增：`surfaceBlocksOfBiome(biome)`（`SURFACE_BY_BIOME` 的唯一读出口，ring 重塑地表用） |
-| `src/bench/baseline.mjs` | ⚠️ v1.2 新增：`bootGame` 带 `&spawn=city` pin（见 §14.8） |
-| `tests/*.spec.mjs`（既有若干） | ⚠️ v1.2 新增：语义绑定 City 环境的 spec 加 `spawn=city` pin（清单见 §14.8） |
-| `docs/phase-1-engine-design.md` | §4.10 预算 + 修订说明（**先于代码**；v1.2 起并入「Task 0」） |
+| `src/render/render-world.js` | `CAPACITY` 重标定（待 U1） |
+| `docs/phase-1-engine-design.md` | §4.10 预算 + 修订说明（**先于代码**） |
 | `docs/roadmap.md` / `CLAUDE.md`（= `AGENTS.md`） | 里程碑行 + 活跃约束 |
 
 ### 13.10 风险与已裁定项
@@ -1218,564 +1172,3 @@ Task 9 已解除门禁，正常执行。
 - **与 v1.0 复现性相关的两条纪律**：① 对照实验只差一个变量（评审自己的首版玻璃实测漏了周围遮挡体：467K vs 公平口径 406K；
   随后又因没模拟「地面以下丢弃 + 实心填充」，把玻璃成本高估了约 2.7 倍：406K vs 设计口径 ~150K，均已更正）；
   ② 凡「N 个 seed 实测」的结论，用项目真实函数在 ≥50 个 seed 上复跑，并检查测试环境是否漏了邻区布局、洞穴、植被。
-
----
-
-## 14. v1.2 实施计划审阅修订（2026-10-22）
-
-> 本节是 v1.2 的**权威口径**：冲突以本节为准（**§14 > §13 > §1~§12**）。数字标注同 §13：**〔实测〕** = 直接读 schematic / 项目真实函数 / 真实页面得到，可复现；
-> **〔已裁定〕** = 原先需要用户拍板、2026-10-23 已裁定的项（U1′ / R11 / R15，见 §14.7 与 §14.9）。
->
-> **起因**：实施计划（`docs/superpowers/plans/2026-10-22-redcity.md`）写完后，逐条对照仓库**真实代码**审阅，并在一个**影子工作树**里按计划实际走通一遍
-> （含浏览器内单测、Node 烘焙 spec、真实页面 E2E / 像素 / 预算 spec、全量回归与负向验证）。发现 §13 与计划里若干**说法与现实不符**——绝大多数是接线/构造/测试口径，
-> 设计方向（D1–D8）不变；唯一需要用户重新拍板的是 **U1′（§14.7）**。复现方法与局限见 §14.11。
-
-### 14.1 订正总表
-
-| # | v1.1 / 计划的说法 | 实测发现 | 落到 |
-|---|---|---|---|
-| C1 | 方案 A（opaque 3.705M / transparent 0.30M）足够，U1 已批准 | **真实页面不够**：opaque 稳态 90.3%；12 s 无碰撞飞越峰值 106.6%（seed 12345）→ 触发 ×1.5 扩容（GPU 177.53 → 230.5 MiB）；W 键奔跑峰值 98.9%；transparent 在 seed=777 上 99.7% | §14.7 |
-| C2 | I6「建筑 footprint 内 ground 极差 ≤ 1」+ 脚下平台化 | 与算法矛盾：125 个刚性分量里 **104 个违反**（极差中位 8、最大 40）。旧 I5（只数竖向接触）对逐列剪切**完全无感** | §14.2 |
-| C3 | 海岛外包 39、平原岛外包 15 | 海岛真值 **25**（`dist<39` 不可达）；平原岛 **(17, 20)**（地标 = 地形 ∪ JSON 结构）。R1 吞并代价表用真值复核**无误** | §14.4 |
-| C4 | 吞并 = 阶段 1/2 跳过 | 还必须让 `pointContext`（植被）当它不存在，否则被吞并的冰山/雪原处长出**悬空雪桦树**（60 seed 里 46 个出现） | §14.4 |
-| C5 | ring「12 层岩石基底 + 台阶钳制」 | 欠规格：填方/挖方/水域转陆地/表层取 biome 都没定义。给出构造与可证明的高差界 | §14.3 |
-| C6 | `redCity` 经 `layoutsForColumn` / `computeRegionLayout` 就够 | 必须 `_requiredKeys = 3×3 ∪ {(0,0)}` + `redCity()` 全局下发；`layouts` 里**不放** (0,0) | §14.5 |
-| C7 | 产物缺失时降级 | 三种情形语义不同：**未注入→降级（warn 一次）；尺寸不符→抛错；fetch 失败→启动失败（loud）** | §14.5 |
-| C8 | 出生点 `x/z` 取整数格、`scanDown` 返回 y+1 | `x/z` 取方块中心（+0.5）；`scanDownForSpawn` 返回**脚所在 y**；扫不到退回提示 y；不用 `findSpawnY` | §14.5 |
-| C9 | 清库写错会「白屏无报错」 | 实测是 `open()` 以 **AbortError reject**；`onblocked` 必须接到 UI（覆盖层），否则才是无报错白屏 | §14.5 |
-| C10 | 隐含依赖 >5 处再加 `?spawn=city` | 全量回归实测**远超 5 处**，直接加；默认 RedCity，`?spawn=city` 供 pin | §14.8 |
-| C11 | `REDCITY_DY_MAX_BUDGET` / `BASE_Y_MAX` 放 `tools/redcity-fingerprint.mjs` | `src/` 不能 import `tools/`——布局期半 I4 读不到。**常量全部归位 `region-config.js`**，tools 单向 import src | §14.6 |
-| C12 | 烘焙核心用浏览器内单测（`src/tests/test-redcity-bake.js`） | 静态服务器不给 `.mjs` 正确 MIME，浏览器**根本 import 不了** `tools/*.mjs`；且单测页缺任一 import 即整页中止。改 **Node-only Playwright spec** | §14.8 |
-| C13 | `check:data` 6~8 条断言 | 补出 8 条产物自洽断言 + `prepareRedCityModel` 的 5 类校验；篡改产物 / 配置漂移的负向验证 16 项（配置漂移 3 + 产物篡改 13）全部真 FAIL | §14.6 |
-| C14 | 对照实验「影响域外逐位相同」 | 撒布候选最大半宽 24 → 对照带宽须 **≥ 32 格**，否则被丢弃的撒布候选造成伪差异 | §14.4 |
-| C15 | 预算 spec「冲刺 ≤100%」+ W 键奔跑 | W 键奔跑会被塔挡住（±x 方向 4 格就停）；且 100% 贴线。改**无碰撞飞越 + ≤95% + 多 seed** | §14.7 |
-| C16 | bench 场景不含 RedCity | 走廊 z=-100 在影响域北缘外 **49 格**，但 RedCity 北部 ~90 格落在 vd=8 加载半径内 → **场景变了** | §14.8 / R13 |
-| C17 | 每个任务结束 commit | 与仓库「提交必须等用户明确指令」冲突：计划里的 Commit 步骤**仅在用户授权后执行** | 计划 |
-| C18 | 冻结口径「单块放/挖 p95 < 2 ms」在新出生点依然成立 | **不成立**：RedCity 出生点实测 2.4~2.5 ms（City 1.6~1.8）；未 pin 的 `bench` 场景 ③ `fastRemeshP95` 1.1→1.7（+54.5%）阻断。冻结口径 pin 在 City，**不放宽断言** | §14.9 R15 |
-
-### 14.2 烘焙不变量（取代 §13.4.2 的表与 §13.4.4 的 I5/I6）
-
-| ID | 不变量 | 门禁位置 | 〔实测〕 |
-|---|---|---|---|
-| I1 | 岛外相邻格 `abs(Δground) ≤ 1` | 烘焙断言 + `check:data` 从数组重算 | 1 |
-| I2 | 矩形边界一圈 `ground == 0` | 同上 | 0 列非零 |
-| I3 | 岛内 `ground ≥ GROUND_FLOOR (-5)` | 同上 | -5 |
-| I4 | `baseY_max + dyMax < WORLD_MAX_Y`，**拆两半**：烘焙期 `dyMax ≤ 87`；布局期 `baseY ≤ 8` 且 `baseY + dyMax < 96` | 烘焙断言 / 布局单测 / `check:data` | dyMax = 80 |
-| **I5（严格）** | 同一刚性分量内任意 6 邻接对：烘焙后 `yRel` 差 == 源 `y` 差 | 烘焙断言（`bake.checks.intraCompBreaks`） | 0（注入逐列平移 → 504） |
-| **I5′（占比）** | 竖向接触（块与其正下方保留块）平移不一致占比 `< 0.1%` | 烘焙断言 + `check:data` | 84 / 151,392 = 0.055% |
-| ~~I6~~ | ~~建筑 footprint 内 ground 极差 ≤ 1~~ | **删除，不替换为断言** | 125 个分量里 104 个违反，极差中位 8、最大 40 |
-
-**为什么拆 I5**：旧 I5 只数「竖向接触」，而同一列的块共用同一个平移量 S，竖向邻居**永远不会被破坏**——把烘焙改成逐列平移后，`contactBreaks` 反而从 84 变成 0
-（旧门禁在缺陷出现时读数「更好看」）。严格 I5 数的是**同一刚性分量内部的全部相邻对**，逐列剪切必然让它 > 0。
-
-**为什么删 I6**：它要求建筑脚下的地面被压平，但烘焙算法（C）**不压平**——footprint ⊕ pad 内地面保持源模型起伏 1:1，只是整个分量用同一个平移量。
-压平会把塔座周围的岩丘铲掉，改变模型造型；而「建筑内部不变形」这个真正想保护的性质，已经由 I5 / I5′ 完整覆盖。
-
-**可见后果（R12）**：塔座周围的岩丘按源模型 1:1 保留（极差中位 8、最大 40 格）——玩家看到「宝塔立在山石上」，与源模型一致；出生点不受影响（出生点判据要求 5×5 内 ground 极差 ≤ 1）。
-
-### 14.3 过渡环构造与地表公式（取代 §13.4.3 的 ring 描述）
-
-对 ring 内一点（到 core 的切比雪夫距离 `d ∈ 1..24`，自然高度 `n = generateHeight`）：
-
-```
-e  = max(n, SEA_Y + 1)                         // 有效自然高度：水域按海平面+1 计（水一律变陆地）
-m  = floor((24 − d) / 3)                       // ringMaxDelta：外缘 0，向内每 3 格多允许 1 格高差
-s  = clamp(baseY, e − m, e + m)                // 环上地表（等价于 e + clamp(baseY − e, −m, +m)）
-```
-
-- **构造**（`shapeRedCityRing`，直接写 `column.blocks/meta`，不走逐格 `setBlock` 闭包）：
-  - `s > n`（填方，含水域转陆地）：`(n, s−2]` 填 `clay`（**覆盖原水体，不得清成 air**——否则地下出空洞，玩家挖下去会掉进洞里）；`s−1` 写次表层；`s` 写表层。
-  - `s < n`（挖方）：`(s, max(n, SEA_Y)]` 清成 air；`s` 写表层；`s−1` 写次表层。
-  - `s == n`：不动（保留自然表层）。
-  - 表层/次表层 = 该点 **biome** 的 `[surface, subsurface]`（`terrain.js` 的 `surfaceBlocksOfBiome`，`SURFACE_BY_BIOME` 的唯一读出口）——环带与外侧自然地形同色。
-  - 因 `s ≥ SEA_Y + 1` 恒成立，`s` 以上不会残留水。
-- **core 列**（`shapeRedCityCore`）：`[WORLD_MIN_Y+1, ground]` 全深度填 `clay`（不留洞穴、不留水）；`(ground, max(n, SEA_Y)]` 清空（自然树/残丘/水体）。
-- **可证明的高差界**：clamp 对两端点 1-Lipschitz，`m` 相邻差 ≤ 1 ⇒ 相邻两格 **`|Δs| ≤ |Δe| + 1`**——环只会在自然地形的高差上**至多多加 1**。
-  〔实测〕20 个 seed：`|Δs| > 1` 的占比 ≤ 2%（最差 0.69%）；seed 1–80：core 边缘一圈对自然地表台阶 > 2 的占比最差 **3.88%**（≤ 5%）。
-- 外缘（`d = 24`）`m = 0` ⇒ `s = e`，与外侧自然地形恒等（含水域按 `SEA_Y+1` 计的岸壁，与 City 现状一致，接受，R4）。
-
-### 14.4 吞并范围（取代 §13.3.3 的 FOOTPRINT 估算）
-
-**吞并 = 整个地标不存在**：地形整形 + 它的 JSON 结构 + **植被上下文**三处都当它不存在。被吞并标志每次 `applyStructuresToColumn` 调用**只算一次**（`erasedFlags`），阶段 1 / 2 / 3 共用同一份。
-
-**外包范围唯一权威 = `landmarks.js` 的 `landmarkHalfExtent(kind)`**，取各 `getXxxInfo` 判定所用的同一组常量（`floor(SIZE/2) + TRANSITION`），再并入该地标在阶段 2 光栅化的 JSON 结构占地：
-
-| 地标 | 地形半宽 | JSON 结构占地 | `landmarkHalfExtent` | v1.1 / 计划的说法 |
-|---|---|---|---|---|
-| pyramid | 28 | — | 28 | 28 ✓ |
-| frozenMountain | 48 | — | 48 | 48 ✓ |
-| snowLand | 28 | — | 28 | 28 ✓ |
-| island | **25**（`getIslandInfo` 入口 AABB） | 塔 (4, 5) | **25** | ~~39~~（`dist<39` 不可达） |
-| plainLand | 15 | 平原金字塔岛 (17, 20) | **(17, 20)** | ~~15~~（漏了结构占地） |
-
-- 测试用**暴力扫描**钉死「`getXxxInfo` 非空 ⇒ 点在 `landmarkHalfExtent` 内」（防漂移），而不是复述常量。
-- **R1 吞并代价表**（冰山 91 / 金字塔 80 / 雪原 63 / 海岛 19 / 平原岛 4，80 seed 累计）用真值复核**无误**（表里的「海岛 19」本来就是按真值 25 计的，**不是**按 39 算的，表无需订正）。
-- **植被上下文**：被吞并的冰山/雪原若仍按 `snow`/`fm` 判上下文，树基点取地标高度公式 ⇒ 地形已是自然地形，树**悬空**。〔实测〕60 个 seed 里 46 个出现，190 棵雪桦树 149 棵悬空（最高 24 格）。
-- **植被避让距离** `REDCITY_VEG_CLEARANCE = TREE_CANOPY_RADIUS = 3`（唯一权威 = `region-config.js`）：`apply.js` 阶段 3 的扫描外扩 `EXT` 与避让距离**同源**（不是「恰好相等」）；
-  树冠最大水平半径用 `generateTree` 实测钉（swamp 的 `|dx|+|dz|≤3.5` 取到 3，其余 2，桦树 JSON ±2），加更大树型必须先改这个常量。根在 `d ≥ 4` 的树冠最近只到 `d = 1`，永不进 core。
-- **撒布过滤**：候选 footprint 与 `influence` 相交 ⇒ 整体丢弃（连影响域外的那一部分也不生成）。现状对 City bounds 也没有这层过滤（R6），RedCity 自写，不替 City 补。
-  **对照实验带宽 ≥ 32 格**（最大撒布半宽 24 + 8 格余量），带宽 24 会因为被丢弃的撒布候选造成伪差异。
-
-### 14.5 接线、降级语义与存档（取代 §13.3.4 / §13.6 的接线描述）
-
-- **全局下发**：`StructureIndex._requiredKeys(cx,cz) = neighborRegionKeys ∪ {'0,0'}`，`readyForColumn` / `ensureForColumn` 都经它；`layoutsForColumn` 仍只含 3×3 域；
-  `Scheduler` 在放行后取 `redCity()` 塞进 `gen` payload（约 200 B）；`world-worker` 的 `gen` 传给 `applyStructuresToColumn(..., redCity ?? null)`。
-- **产物下发顺序**：`Game.start()` 里 `atlas-meta` broadcast 之后、任何 `gen` 之前：`fetch('/assets/redcity/redcity.json')` → `res.ok` 检查 → 主线程 `JSON.parse + prepareRedCityModel + setRedCityData` →
-  `pool.broadcast('redcity-data', { text })`。`postMessage` 保序，后续 `gen` 必拿得到。Worker 的 handler 走**同一条** parse + prepare（红线 8）。
-- **三种异常语义**（不是一种）：① **产物未注入**（`getRedCityData() === null`）→ 降级：core 退化为 `baseY` 平地、不写内容、**不抛错**，首次命中 `console.warn` 一次（「静默变平地」是最难发现的失效形态）；
-  ② **产物尺寸与布局不符** → **抛错**（不会静默错位放置）；③ **fetch 失败 / 非 2xx** → `Game.start()` 抛错 = **启动失败**（loud）。
-- **出生点**：`getRedCitySpawnPoint(redCity, model) → { x, y, z }`，`x/z = core.minX + spawn.ox + 0.5`（方块中心），`y = baseY + spawn.dy + 1`（**仅作扫描起点**）；
-  `scanDownForSpawn(getId, x, yTop, z)` 从 `y+24` 向下扫首个「脚下 solid 且其上两格空气」，返回**脚所在 y**；扫不到 → 退回起点 `y`。**不用 `findSpawnY`**。
-  `?spawn=city` → 退回 City 中心（`Game` 构造选项 `spawn: 'redcity'|'city'`，`main.js` 解析 URL；**不进设置面板**，与 `?skybox=0` / `?shadows=0` 同类调试入口）。
-- **水面门控**：`ocean-mask.js` 的 `isOceanMasked(x, z, seed, cityBounds, redCityBounds)` 第 5 参缺省 = 关闭；`ocean.js` 加第二个 bounds uniform + `setRedCityBounds(redCity)`（取 `influence`，缺字段恢复哨兵）；
-  两端用**同一个不等式**（红线 1）。〔实测〕6 个 seed，influence 内关门控时有 765~1203 / 2744 个采样点会渲染水面（≈33~44%），开门控后全部熄灭，外侧不受影响。
-- **存档（D7）**：`DB_VERSION = 3`；`onupgradeneeded(e)` 在 `e.oldVersion ∈ {1, 2}` 时 `req.transaction.objectStore(name).clear()`（`contains` 守卫，**先清后建**）；
-  `open({ onBlocked })` 的回调由 `Game` 接到 `main.js` 覆盖层，`start()` 成功后撤掉。两种清库错误写法的**真实失败形态是 AbortError reject**（§13.6.2），不是挂起。
-
-### 14.6 烘焙产物契约与门禁
-
-**常量归位（C11）**：`REDCITY_SIZE / TRANSITION / GAP / GROUND_FLOOR / FILL_BLOCK / BASE_Y_MAX / DY_MAX_BUDGET / TREE_CANOPY_RADIUS / VEG_CLEARANCE` **全部在 `region-config.js`**；
-`tools/` 单向 import `src/`（`check:arch` 只禁反向）。烘焙参数（`relief/K/decay/pad/minComp/borderKeep`）与 skin/映射清单留在 `tools/redcity-config.mjs`，进指纹。
-
-**`prepareRedCityModel` 的运行时校验**（Worker 与主线程同一入口；坏产物一律抛错）：format / version / `ground` 与 `island` 长度 / `blocks` 非三元组整数倍 /
-**`col` ∈ [0, N) 整数**（越界写 `Uint32Array` 会被**静默丢弃**）/ **`dy` ∈ [dyMin, dyMax] 整数** / **palette 下标 ∈ [0, palette.length)** / **`(col, dy)` 严格升序**（同时保证列索引前缀和成立与同格不重复）。
-
-**`check:data` 的 `[RedCity]` 环节**：① 指纹重算比对（schematic 原文 + 参数 + 清单 + 映射）；② `prepareRedCityModel` 自洽；③ 产物尺寸 === `REDCITY_SIZE`、`groundFloor` === `REDCITY_GROUND_FLOOR`、`dyMax ≤ 预算`；
-④ palette ⊂ registry；⑤ I1/I2/I3 **从数组重算**；I5′ 占比；⑥ `blocks` 三元组数 === `stats.retained`；⑦ **岛内每列在 `dy === ground` 处都有方块**；⑧ 映射覆盖；⑨ 出生点判据重验（5×5 窗口、头顶 24 格空、贴墙/树冠排除）；
-⑩ 颜色关系式：`35:6/251:6/252:6` → `pink_wool`；屋顶贴图平均色 **R < B < G**。
-
-**产物篡改 / 配置漂移的负向验证**（影子工作树实测，全部真 FAIL）：屋顶映射目标改 `stone_bricks`（指纹 + 颜色双红）/ `REDCITY_SIZE.X` 与产物不符 / 樱花粉不再直映射 / 边界 `ground` 非零（I1+I2）/ 出生点 `dy` 被改 /
-palette 含 registry 外名字 / 岛外内部格 `ground=9`（I1）/ 相邻不同列三元组交换（列序乱）/ 同列 `dy` 降序 / 同格重复 / 少一个三元组 / palette 下标 99 与 -1 / 岛内列 `ground` 与 blocks 脱节 / `col` 越界 / `dy` 超 `dyMax`（共 16 项：配置漂移 3 + 产物篡改 13）。
-⚠️ 其中 4 项（同列 dy 降序、palette 越界、三元组丢失、ground 与方块脱节）在第一版门禁里**漏过**——是负向验证本身发现的盲区，加固后才全红。
-
-### 14.7 预算：U1′（**〔已裁定：U1′-a，2026-10-23〕**，取代 §13.7.5 / §13.7.7）
-
-**为什么方案 A 不够**：方案 A 的数字来自 Node 侧「RedCity 中心 17×17 列窗口」的 A/B 实测（opaque reserved 2,712,730）；真实页面稳态同为 289 列，但 reserved 已是 3,344,190（+23%）——
-Node 侧低估的来源本次未逐项分解，所以**容量必须以真实页面实测为准**（这也是预算门禁做成真实页面 spec 的原因）。
-真实页面实测（vd=8，出生点稳态，`reservedV = ceil(vertexCount × 1.25)` 对 `maxVertexCount`）：
-
-| 通道 | 方案 A 容量 | U1′ 容量 | 稳态 reserved | 占方案 A | 占 U1′ |
-|---|---|---|---|---|---|
-| opaque | 3,705,000 | **4,275,000** | 3,344,190 | **90.3%** | 78.2% |
-| cutout | 2,200,000 | 2,200,000（不变） | 553,630 | 25.2% | 25.2% |
-| transparent | 300,000 | **360,000** | 252,465 | 84.2% | 70.1% |
-
-**为什么要涨——不是「方块总数陡增」，而是顶点在三个通道间的构成变了**（2026-10-23 补测；真实页面，seed=12345，vd=8，289 列窗口，City 出生点 vs RedCity 出生点，同一份统计脚本）：
-
-| 窗口内 | City 出生点 | RedCity 出生点 | 变化 |
-|---|---|---|---|
-| 非空气方块 | 2,725,461 | 3,179,449 | +45 万（+17%） |
-| 暴露方块（列内至少一个邻格不挡面） | 895,145 | 1,059,912 | +16 万（+18%） |
-| 预留顶点 · opaque | 2,326,550 | 3,344,190 | **+44%** |
-| 预留顶点 · cutout | 1,590,220 | 553,630 | **−65%** |
-| 预留顶点 · transparent | 13,290 | 252,465 | **×19** |
-| 预留顶点合计 | 3,930,060 | 4,150,285 | **+5.6%** |
-
-- 方块数只多了**十万量级、约 17%**（RedCity 建筑本身 244,647 块）；出生点的顶点**总量只涨约 6%**。
-- 但 `CAPACITY` 是**三个通道各自一块固定容量**的预分配缓冲：RedCity 把顶点从 cutout（植被）挪到了 opaque（楼阁、地面、粉羊毛树冠 3 万块）和 transparent（5.6 万块玻璃）——旧容量 opaque 2.85M 在出生点就已不够（需求 3.34M，117%），transparent 125K 更是 202%。按 ×1.5 的扩容兜底规则推算，引擎会在运行时把 opaque 整批扩到 4.275M，**恰好就是 U1′ 预先开的大小**——预开是把这次整批重分配挪到启动期，并让预算门禁能钉死上限。
-- 容量要覆盖**每个通道各自的最坏位置**，而三个通道的峰值出现在不同地点（opaque 在 RedCity 本体、cutout 在东南角自然森林、transparent 在 seed=777 的东缘水域），所以容量≈各通道峰值之和（3.95M + 2.04M + 0.30M ≈ 6.28M，U1′ 总容量 6.835M 是它的 92%），而不是「出生点总量」。cutout 虽然在出生点只用了 25%，但森林飞越峰值 92.6%，不能缩。
-- `gpuVertexBytes` 是**已分配容量**而非占用：出生点预留顶点 × 30 B，City 约 112 MiB（占旧 148.06 MiB 的 76%）→ RedCity 约 119 MiB（占新 195.55 MiB 的 61%）。占用只涨约 6 MiB，分配涨了约 47 MiB。
-- **架构没有变化**：仍是 BatchedMesh 通道级合批、同一顶点格式（30 B/顶点），只改了 `CAPACITY` 里 `opaque.active` 1200→1800、`transparent.avgVerts` 1000→2880 两个常数。
-
-方案 A 容量下（真实页面，12 s）：W 键奔跑 opaque 峰值 98.9%（+z 方向，无扩容但贴线）；无碰撞飞越（seed 12345）峰值 **106.6% → `_capacity.opaque.maxVertexCount` 变化 = 触发 ×1.5 扩容**（3.705M → 5.5575M，顶点缓冲 177.53 → 230.5 MiB）。
-
-**无碰撞飞越峰值**（悬停 y=70、8 格/秒直线 12 s，6 条路线取最大，U1′ 容量，**零扩容**）：
-
-| seed | opaque | cutout | transparent | 最坏路线 |
-|---|---|---|---|---|
-| 12345 | 3,948,035（92.4%） | 2,036,265（**92.6%**） | 257,890（71.6%） | opaque R5 西北→对角；cutout R6 东南角 |
-| 777 | 3,909,820（91.5%） | 1,578,365（71.7%） | 299,135（**83.1%**；占旧 300K = **99.7%**） | transparent R3 东缘中点 |
-| 31337 | 3,942,490（92.2%） | 1,332,875（60.6%） | 283,845（78.8%） | — |
-| 99999 | 3,939,940（92.2%） | 1,204,820（54.8%） | 272,495（75.7%） | — |
-
-opaque 在各 seed 间几乎恒定（3.91~3.95M，由 RedCity 本体决定）；transparent 随 RedCity 周边的自然水域浮动；cutout 随周边森林浮动。
-
-**候选与推荐**（GPU 顶点缓冲 = Σ`maxVerts` × 30 B；冻结基线 148.06 MiB）：
-
-| 选项 | opaque | cutout | transparent | GPU | 最坏余量（opaque / cutout / transparent） |
-|---|---|---|---|---|---|
-| A（已批准，**作废**） | 3.705M | 2.20M | 0.30M | 177.53 MiB | **−6.6%（超）** / 7.4% / 0.3% |
-| **U1′-a（推荐）** | **4.275M**（`active 1800`） | 2.20M | **0.36M**（`avgVerts 2880`） | **195.55 MiB**（+32.1%） | 7.6% / 7.4% / 16.9% |
-| U1′-b | 4.275M | 2.40M（`active 600`） | 0.36M | 201.27 MiB | 7.6% / 15.2% / 16.9% |
-
-推荐 U1′-a：cutout 的 92.6% 出现在 seed=12345 东南角，是**自然森林**驱动而非 RedCity 特有（其余 3 个 seed 55~72%），改 cutout 超出本 Epic 的范围；
-门禁取「≤ 95%」，余量被侵蚀时门禁会先红，届时再升 cutout（U1′-b，+5.7 MiB）并重新过用户。`CAPACITY` 拆分（已验算 `active × avgVerts × 1.25`）：
-
-```js
-const CAPACITY = {
-  opaque:      { active: 1800, avgVerts: 1900 },  // maxVerts = 4,275,000
-  cutout:      { active: 550,  avgVerts: 3200 },  // maxVerts = 2,200,000（不变）
-  transparent: { active: 100,  avgVerts: 2880 },  // maxVerts = 360,000
-};
-// 顶点缓冲合计 = (4,275,000 + 2,200,000 + 360,000) × 30 B = 205,050,000 B = 195.55 MiB
-```
-
-**验收门禁（取代 §13.7.7）**：真实页面、vd=8，`tests/redcity-budget.spec.mjs`：① 出生点稳态三通道 ≤ 95%；② 无碰撞飞越峰值三通道 ≤ 95% 且 `_capacity.*.maxVertexCount` 全程不变（seed 12345 的 R5/R6 + **seed 777 的 R3**）；
-③ `gpuVertexBytes ≤ 195.55 MiB` 且等于容量之和。负向验证：容量回退到方案 A → ②真 FAIL；transparent 回退 300K → seed 777 用例真 FAIL（99.7% > 95%）；cutout 擅自加到 2.4M → ③真 FAIL。
-
-⚠️ **这是对「冻结值」的变更**：设计文档 v1.42 写明 `gpuVertexBytes` 148.06 MiB < 150 MiB 且「均不放宽」。采纳 U1′ 必须**先更新设计文档（计划的 Task 0）再改 `CAPACITY`**；
-既有 `m3-fullscene.spec.mjs` 的 150 MiB 断言**按设计会红**，须在同一次变更里改成新预算（这是有意变更，不是静默放宽）。
-
-### 14.8 测试与回归策略（取代 §13.8 的落点描述）
-
-- **烘焙核心**（`tools/*.mjs`）的 Tier 1 测试 = **Node-only Playwright spec**（`tests/redcity-bake.spec.mjs`，12 条，合成小模型秒级 + 1 条真实模型黄金比对）。
-  浏览器内单测页拿不到 `tools/*.mjs`（静态服务器对 `.mjs` 回 `application/octet-stream`，ES module 加载被浏览器拒绝），且缺任一 import 整页中止。
-  单文件可跑：`npx playwright test tests/redcity-bake.spec.mjs`。
-- **运行时模块**（`src/gen/**`）的 Tier 1 测试 = 浏览器内单测（`src/tests/test-redcity-{data,layout,surface,dispatch,apply,vegetation,gen-full}.js` + 对既有 `test-structure-layout.js` / `test-ocean-mask.js` 的补充）。
-  **Task 6 与 Task 7 的测试按「是否依赖阶段 3」切开**：依赖植被阶段的五条（core 纯度、core 边缘、ring 构造、吞并 ≡ 不存在、对照实验）归 Task 7 的 `test-redcity-gen-full.js`，Task 6 只含不依赖阶段 3 的用例；
-  `shapeRedCityCore/Ring` 这两个列整形函数本身在 Task 4 就有直接的合成列单测（填 / 挖 / 水域补实 / `s==n` 不动 / 越界保护），不必等到 GEN 接线。
-- **Tier 4**（真实页面）：`tests/redcity-e2e.spec.mjs`（9 条：出生点 / **Worker 接线：断言主线程 `world` 里的方块，不是内存模型** / 全局下发 x>799 / `?spawn=city` / **产物 fetch 失败 = 启动失败（loud）** / DB 升级 ×4 含 `onblocked`）、
-  `tests/redcity-visual.spec.mjs`（屋顶 R<B<G / 樱花粉 / 玻璃通透 A/B / 水面门控 A/B，**每条都带同机位对照**）、`tests/redcity-budget.spec.mjs`（§14.7）、`tests/redcity-edit-perf.spec.mjs`（R15 选项 A：RedCity 口径的单块放/挖 p95 < 3.5 ms，测量代码与 `m1-acceptance` 逐行同构）。
-  像素判据一律 pin `?skybox=0` + noon + 关阴影 + 隐藏 HUD + 冻结物理（`player.physics.step = () => {}`；**不用 `pushModal`**——它阻断玩家更新、相机不跟随）。
-- **写断言前先量真实数据**：Worker 接线用例第一版断言「出生列方块数 > 10」，实测出生列只有 2 块（出生点要求头顶 24 格空，故只有 K=2 层岛面）；改成「出生列 ≥1 块 + 另挑 3 根 ≥20 块的高柱」。
-- **既有 spec 的 pin（装配后、pin 之前的全量回归实测）**：RedCity 默认出生后，**未加任何 pin** 时 15 条用例红（均为既有 spec），分三类（外加下面④，它是 pin 之后的最终全量里才冒出来的）：
-  ① **11 个 spec（13 条用例；`projectiles` 一个 spec 就有 3 条）因出生点迁移而语义失效**——`city-visual`（断言出生点 = 城堡）、`m3-hud`（断言 biome = CITY）、`light-house` / `light-structures`（在出生点附近找房屋 / 结构光源）、
-  `crosshair` 配色用例（按出生点画面取样）、`projectiles` / `tnt` / `turrets`（炮塔 / 丧尸 / TNT 的场景搭建依赖 City 周边开阔地形）、`sky-structures`（性能门 `p95 < 16.75`，实测 17.1）、
-  `m1-acceptance` / `weapons-world-edit`（冻结放挖 p95 口径，见 R15）→ 统一给 `page.goto` 的 URL 加 `&spawn=city`，并在上一行写注释；
-  ② `m3-fullscene` 的 150 MiB 断言随 `CAPACITY` **有意变更**（改为 196 MiB，U1′ 的 195.55 MiB）；**不 pin**——默认出生在 RedCity 正是新的最重场景，稳态帧率 / 队列 / 内存预算都应在它上面成立（实测通过）；
-  ③ `worker-gen`（`gen p95 < 8ms`）在全量串行末段偶发，单独复跑 3 s 通过（既有的计时型 flaky，非 RedCity 引入）；
-  ④ **第 12 个：`zombies` 的互斥用例**——pin 之后的**最终全量回归**才冒出来：`after.min` 实测 0.397，阈值 `> 0.4` 贴线红。它量的是排斥力在**开阔平地**上的收敛（20 只丧尸同点生成、等 3 s）。交替对照用**同源探针**（逐字复制该用例的场景，只去掉断言、打印 `after`）在干净 HEAD（City 出生点）与回放树（RedCity 出生点）上各跑 6 轮：City 出生点 `min` = 0.574 / 0.586 / 0.526 / 0.570 / 0.575 / 0.600（中位 0.574），RedCity 出生点 = 0.420 / 0.410 / 0.412 / 0.424 / 0.361 / 0.496（中位 0.416，且 6 轮里 1 轮低于 0.4）——**是出生点环境造成的系统性下移（RedCity 出生点周围障碍多），不是噪声**，故同样 pin `spawn=city`（只改 `page.goto`，断言与阈值逐字不动）。
-  pin 之后这些全部转绿。这 12 个的判别依据是**实测红了才 pin**，而不是预先猜——其余启动游戏的 spec 在 RedCity 出生点照常通过（它们也因此同时回归了 RedCity 出生场景）。
-  **用例计数口径**：干净的 `git archive HEAD` 导出 = **182 条 / 61 个 spec 文件**；加 RedCity 新增 30 条（`redcity-bake` 12 + `redcity-e2e` 9 + `redcity-budget` 4 + `redcity-visual` 4 + `redcity-edit-perf` 1）= **212 条 / 66 个文件**（回放时是 211 条 / 65 个文件，`redcity-edit-perf` 是 R15 裁定之后补入的）。⚠️ 工作区里被 `.gitignore` 忽略的 `tests/tmp-*` 探针 spec 会让本地 `npx playwright test --list` 多出若干条（本机 +3 → 185），数用例数前先排除。
-- **`bench`**：未 pin 时 `--check` 阻断 `③ 连续放/挖 200 块 · fastRemeshP95：1.1 → 1.7（+54.5%）`；`bootGame` 加 `&spawn=city` 后 `--check` 通过
-  （①②③④ fps 120、draw 500 / 559 / 559 / 545；帧 p95 三次独立实测落在 9.0~10.0——正是 9↔10 的 vsync 量子边界。冻结基线各场景 p95 为 9.2 / 9.2 / 16.7 / 9，门限 = 基线 × 1.1，**场景 ④ 的门限只有 9.9**，后两次实测都是 9.9（**贴线通过**），场景 ① 有一次实测 10.0（门限 10.12）。这正是 CLAUDE.md 已记的 frameP95 量子化噪声，门禁阻断时按交替对照处理，不看单次数值）。场景 ①④ 是显式传送到 `(620,-100)` / `(850,-100)`，不受出生点影响，但走廊 `z=-100` 距影响域北缘（`z=-51`）只有 49 格，
-  RedCity 北部 ~90 格落在 vd=8 加载半径内——**场景变了但仍在门内**（R13）。**冻结基线 `docs/m3-baseline.*` 不重标**（重标 = 放宽冻结口径，须用户批准）。
-
-### 14.9 新增风险（接 §13.10 的 R9）
-
-| ID | 项 | 状态 |
-|---|---|---|
-| **R10** | cutout 余量只有 7.4%（seed 12345 东南角 92.6%） | 自然森林驱动，非 RedCity 特有；门禁 ≤95% 先红；升 cutout 需重新过用户（U1′-b） |
-| **R11** | **模型授权**：`SakuraSpawn.schematic`（ArtillexStudios）已入库 `assets/redcity/src/`（808 KB），仓库有 GitHub + 内部 GitLab 双 push | **〔已裁定 2026-10-23〕用户确认 ok**（可再分发 / 可 push）；验收报告与 roadmap 记一笔即可 |
-| **R12** | 塔座周围岩丘 1:1 保留（极差中位 8、最大 40） | 与源模型一致，接受；出生点 5×5 平整不受影响（§14.2） |
-| **R13** | `bench` 走廊（z=-100）距影响域北缘 49 格，但 RedCity 北部 ~90 格落在 vd=8 加载半径内 → 场景变了，冻结基线与新场景不严格同构 | 已 pin `spawn=city` 且 `--check` 通过；下次重标冻结基线时一并评估（本期不重标） |
-| **R14** | 既有计时型 spec 在全量回归里偶发贴线（`m1-acceptance` / `m3-rain` / `weapons-world-edit` / `worker-gen` / `bench` 两条门禁 / `m3-2-orientation:283` 的 `meshInflight===0`） | 沿用 CLAUDE.md 的「交替对照」纪律；不改断言、不放宽阈值。**实测一例**：最终全量回归里 `m3-2-orientation:283` 红了 1 次（`meshInflight` 1≠0），隔离交替对照（同一用例，干净 HEAD vs RedCity 出生点）H 0/40、R 2/40，差异不显著（Fisher 精确检验 p≈0.49）→ 按 CLAUDE.md 已记的 HEAD 既有 flake 处理，**不 pin**。**另一例**：第二次最终全量里 `weapons-world-edit`（`pistolEffects` 199≠200）红 1 次，单独交替复跑回放树 2/2 通过、**干净 HEAD 1/2 红**（同为 199）→ HEAD 既有 flake。反例 = `zombies` 互斥用例：同样交替对照却是**系统性下移**（中位 0.574→0.416），故 pin（§14.8 ④）。**判据：交替对照看分布，不看单次红/绿** |
-| **R15** | **单块放/挖 p95 在 RedCity 出生点 2.4~2.5 ms，超过冻结的 2 ms**（§4.3 快速路径硬约束；City 出生点 1.6~1.8）。3/3 次复现；拆分计时 `setBlock` 0.1 ms 不变，`remeshSections` 快速路径 1.7→2.4 ms，受影响 section 数相同（均值 1.3）——出生点周围 section 更密。RedCity core 内另抽 7 处 0.7~3.1 ms | **〔已裁定 2026-10-23：选 A 接受〕** 冻结口径已 pin 在 City，**未放宽任何断言**；另立 RedCity 口径的观测用例 `tests/redcity-edit-perf.spec.mjs`（阈值 **3.5 ms**，用户选 A 即同意该建议数字；测量代码与 `m1-acceptance` 逐行同构；5 次重复实测 `placeP95` 2.4~2.5、`digP95` 2.4~2.7；5 项负向验证全部真 FAIL，其中一项暴露并修掉了「`world.setBlock` 不做 no-op 检测、返回值不能当改动判据」的盲区）。B（优化 mesher 快速路径）未选；将来若要做是独立 Epic（Tier 1），届时应删掉本观测用例并去掉两个 pin |
-
-### 14.10 实施顺序（取代 §13.11；与计划 Task 编号一一对应）
-
-0. **Task 0 设计先行**：`docs/phase-1-engine-design.md` 修订说明（v1.68）+ §4.2 RedCity 段 + §4.10 GPU 预算行；**U1′ 已由用户确认（U1′-a）**。
-1. **Task 1** 常量归位（`region-config.js`）+ 产物形状与加载器（`redcity-data.js`）——烘焙脚本要 import 它，所以先于烘焙。
-2. **Task 2** 烘焙脚本 + 指纹 + 不变量（严格 I5 / I5′）+ 出生点判据 + Node-only spec。
-3. **Task 3** `redcity-layout`（落点 + `baseY` + `influence` + 出生点纯函数）。
-4. **Task 4** `redcity-surface`（环公式 + 列整形 + 吞并判定）+ `landmarkHalfExtent` + `surfaceBlocksOfBiome`。
-5. **Task 5** 全局下发（`structure-layout` / `structure-index` / `scheduler` / `world-worker` handler）。
-6. **Task 6** `apply.js` 阶段 1 整形 + 整体吞并（地形与 JSON 结构）+ 撒布过滤 + 阶段 2.9（**不碰 `pointContext`**）。
-7. **Task 7** `pointContext`：被吞并地标的植被上下文 + core⊕3 避让 + ring 落点（及依赖阶段 3 的五条测试）。
-8. **Task 8** `CAPACITY`（U1′）+ `m3-fullscene` 预算断言——**先于装配**：容量只是缓冲更大，不改玩法；这样出生点一迁移，预算与既有 spec 当场都是绿的。
-9. **Task 9** 装配（`game.js` / `main.js` / 水面门控 / `persistence.js` DB v3）+ 既有 spec 与 `bench` 的 `spawn=city` pin + E2E + 预算门禁 spec。
-10. **Task 10** `check:data` `[RedCity]` + 文档（roadmap / CLAUDE.md）。
-11. **Task 11** Tier 4 像素实测 + 全量回归 + `bench` + 验收报告。
-
-### 14.11 复现方法与局限
-
-- **方法**：在仓库副本（影子工作树）里按计划实现全部改动，用真实函数 / 真实页面复测；每个 Tier 1 断言都做了负向验证，**按 Task 计 83 项、全部真 FAIL**（T1 3 / T2 11 / T3 4 / T4 8 / T5 3 / T6 7 / T7 7 / T8 1 / T9 19 / T10 16 / T11 4；其中 T9 的 19 项 = E2E 10 + 预算 3 + 水面门控单测 1 + 编辑耗时观测 5，T10 的 16 项 = 配置漂移 3 + 产物篡改 13）。每项注入前先断言锚点恰好匹配 1 处、注入后读回确认落地、验证后还原。
-  影子工作树的落地形态入库为 `docs/superpowers/specs/2026-10-22-redcity-appendix/appendix-f-reference/`（新文件 + 测试 + spec，**冻结快照**，落地后以 `src/` 为准）。
-- **局限**：① 预算数字来自本机（macOS ARM / Metal）单机多 seed 抽样（4 个 seed × 6 路线），不是全 seed 覆盖；② 像素阈值对着本机 GPU 的实测值标定，Linux CI 的 SwiftShader 可能需要重标；
-  ③ 全量回归里的计时型 spec 仍遵循既有「交替对照」纪律；④ 版权问题（R11）不是技术问题，未验证。
-
-### 14.12 落地结果（2026-10-23，真实仓库）
-
-按计划 Task 0~11 在真实仓库落地（`appendix-f-reference` 的新文件 `cp` + 补丁 `git apply`，**未提交**）：
-
-- **验证**：单测总数 779 → 822；Node-only 烘焙 spec 12 passed；E2E 9 / 预算 4 / 编辑耗时观测 1 / 像素 4 全部通过；最终全量回归 **212 passed / 0 failed**（14.0 min）；`bench --check` 通过；`npm run check` 退出码 0。
-  真实仓库里被 RedCity 改动或新增的 54 个非文档文件与模拟树**逐字节相同**；真实仓库重做了 Task 8 / 10 / 11 的负向验证共 21 项，其余沿用模拟树（共 83 项）。
-- **R15 观测用例**：`tests/redcity-edit-perf.spec.mjs` 实测 `placeP95` / `digP95` 2.4~2.7 ms（门限 3.5 ms）；5 项负向验证全部真 FAIL，其中一项暴露「`world.setBlock` 不做 no-op 检测、返回值不能当改动判据」的盲区（testing-policy §2.7 第 16 类）。
-- **与 §14.1~§14.11 的差异**：只有两处——pin 清单从 11 个变成 12 个（最终全量里补了 `zombies` 互斥用例，§14.8 ④），以及单测标题统一去掉了旧版计划的 `T1/T2/T3/T5/T6/T8` 前缀。
-- 验收报告：`docs/redcity-acceptance-report.md`。
-
----
-
-## 15. v1.3 实玩反馈修订：地表可跑动性 / 台基高度 / 玻璃数量（2026-10-23）
-
-> 状态：**设计已定，待实施**。本节的优先级高于 §13 / §14。
-
-### 15.1 用户反馈（原话拆条）
-
-1. 地表方块太过凹凸不平，想要**平缓高度**，不要碎石嶙峋；要么高耸出一座山，要么就是缓坡，
-   **地形起伏边界要线性清晰**；
-2. 中间房屋的**高台不要抬这么高**，玩家上不去、还要自己造楼梯；
-3. 高耸入云的**尖塔保留**，关键是地面不要碎石嶙峋（跑动时全是上上下下的障碍）；
-4. **玻璃方块可以少一些**。
-
-### 15.2 根因实测（2026-10-23，`loadSchematic` + `bakeRedCityCore` 重跑，seed 无关）
-
-用源 schematic 重跑烘焙并插桩中间态，得到的**根因不是源模型，而是烘焙算法**：
-
-| # | 观测 | 实测值 | 结论 |
-|---|---|---|---|
-| G1 | 岛内相邻列 \|Δground\| > 1 的比例 | **16.9%**（>3 格 10.8%，最大 35） | 满地 1~3 格碎台阶，跑动感就是被这些打断的 |
-| G2 | **建筑 footprint 边界**的 \|Δground\| | p25 5 / **p50 17** / p90 29 / max 35 | 台基边缘是竖直石墙 → 玩家爬不上去（对应反馈 2） |
-| G3 | footprint **内部** \|Δground\|>1 | 24.8%（>3 格 16.6%） | 台基面上也一样崎岖 |
-| G4 | 最大刚性分量 footprint | **2,913 列**（连通的是地砖/铺装，不只是房子） | 一整片地面被搬成高台 |
-| G5 | 玻璃占全部保留块 | 46,787 / 244,647 = **19.1%** | 对应反馈 4 |
-| G6 | 玻璃「有 ≥2 个实心邻接」的比例 | **3.6%**（1,668 / 46,787） | 96.4% 是无框玻璃壳/网 |
-| G7 | 最大单个玻璃连通体 | **18,089 块**（bbox 58×32×78）；≥1000 块的 11 个共 104,752 块 | 巨型穹顶/玻璃网，观感是「一片玻璃海」 |
-
-机制定位在 `tools/redcity-bake-core.mjs` 步骤 6~7：刚性分量的 footprint ⊕ pad 被「涂色」后，
-涂色列的 ground **直接取 `gY - sMed + C.S`**（1:1 保留源岛面起伏，**绕过了 `relief` 压缩**），
-而涂色区外是压缩过的场 → 交界处必然断崖。这就是 G1/G2/G3 的共同来源。
-
-### 15.3 用户裁定参数（2026-10-23）
-
-| 项 | 裁定 | 理由 |
-|---|---|---|
-| 岛内相邻 \|Δ地面\| 上限 | **2 格** | 允许局部 2 格（要跳），但禁止 >2；1 格台阶由 `MAX_STEP=1.0` 直接走上去 |
-| 中央台地 | **压平台基，缓坡接上** | 台面与相邻街道高差 ≤2，玩家从出生点一路走过去就能进房 |
-| 玻璃 | **只留窗框玻璃** | 只保留有 ≥2 个实心邻接的玻璃；整片无框玻璃壳/网全部删除 |
-| 地形骨架 | **保留骨架，抹平细节** | 外围低平缓坡 + 中央逐渐抬升；大形态与源模型一致 |
-
-### 15.4 方案（原型已实测，`.tmp-proto7.mjs`）
-
-**核心分离原则**：把「街道地形」「建筑刚性」「基座填充」三层各自独立求解，而不是像旧算法那样
-用一个涂色场把三者揉在一起。
-
-1. **街道地形**：`T = clamp(round((gY - sMed) × relief), groundFloor, ∞)`，然后对**非 footprint 列**
-   做全域 Lipschitz 平滑，上限 = `REDCITY_MAX_STEP (=2)`；岛外列之间保持 ≤1，矩形边界列恒 0（I2 不变）。
-2. **建筑刚性**：每个刚性分量单一 `S_C`，`S_C = ringMed(street) − baseRel(median)`。
-   **§14.2 的严格 I5 保持不变**：分量内部任意相邻块烘焙后 yRel 差 == 源 y 差（实测 0 破坏）。
-3. **台面高程**：footprint 列地面 = `ringMed`（= 与周边街道齐平），**不再保留源岛面的 1:1 起伏**。
-   这一步是 G2 的直接修法：台基边缘从「竖直石墙」变成「与街道同高的平面」。
-4. **基座填充**：`ground+1 .. 建筑底面-1` 填 `clay`，**上限 `MAX_FILL = 12` 格**。
-   超过上限的列判定为拱洞/挑檐 → **保持通透**（spec §2.4 明确要求保留拱洞）。
-5. **全域再平滑**：对含台面列的完整地面场再做一次 Lipschitz ≤2 → 台面↔街道的高差摊成缓坡。
-   尺寸级代价见 §15.5 的实测。
-6. **玻璃窗框判据**：`solidNeighbors(glass) ≥ REDCITY_GLASS_FRAME_MIN (=2)` 且在**输出空间**统计
-   （删除前的世界，因为删一半后邻接会变）；不满足即删除。
-
-**薄构件 vs 厚构件**：`thickness = maxY − minY + 1 ≤ REDCITY_THIN_MAX (=3)` 的连通体（铺装/地砖/玻璃网）
-走**逐列跟随地面**（形变 ≤ 2 格，看不见）；更厚的走刚性。实测厚 85 / 薄 49 个分量。
-
-### 15.5 原型实测结果（`LIMIT=2 MAXFILL=12 GF=2 THIN=3`）
-
-全部取自**同一份终稿原型**（`LIMIT=2 BASETOL=3 THIN=3 GF=2 MAXFILL=12 LIFT=0`，一次运行）：
-
-| 指标 | 旧产物 | 新方案 | 判定 |
-|---|---|---|---|
-| 岛内相邻 \|Δ地面\|**>2** | **10.8%**（max 35） | **0.0%**（max 2） | 达标（四次原型运行均为 0.0%/max 2） |
-| 岛内相邻 \|Δ地面\|>1 | 16.9% | 7~8%（随 BASETOL 微动） | 改善 |
-| 台面↔街道台阶 | p50 17 / max 35 | **p50 1 / p90 2 / max 2** | 对应反馈 2 |
-| 刚性分量内部保形破坏 | 0 | **0** | 不回归 |
-| 地表高差 | 48 | **24**（min −5 / p50 0 / p90 3 / max 19） | 保留骨架 |
-| 出生点 ±8 地面极差 | 34 | **5** | 出生即平地 |
-| 刚性建筑「被埋」比例 | **0%**（源基准） | 18.8% | 见 R18 |
-| 基座填土 | — | 3,506 块 | 拱洞列 0 被误填 |
-| 玻璃块数 | 46,787 | **2,588**（−94.5%） | 对应反馈 4 |
-| 保留块数 | 244,647 | **187,027**（−23.6%） | 需重测 GPU 预算（R19） |
-| dy 范围 | −6..80 | **−6..80** | 不变（玻璃删完后） |
-| spawn | (138,141) | (137,141) | 位置基本不变 |
-
-**关于 `dyMin`（原 R16，已实测解除）**：初版原型读到 `dyMin = −58`，追查后发现它**全部来自被删除的
-巨型玻璃壳**（源块在 y=61~105 的高空玻璃网，被逐列压到低地）——玻璃过滤（§15.4 步骤 6）跑完后
-`dyMin` 回到 **−6**，与原产物一致，世界 y 范围 −2..84（`baseY=4`）。**`REDCITY_GROUND_FLOOR` 与
-`REDCITY_DY_MAX_BUDGET` 都不需要改**。
-
-**关于「被埋」（原 R18，已用分量再拆分解决）**：连通体若把多栋房子 + 地砖连成一片（最大一个跨
-2,913 列、底面自身起伏 44 格），对整片做单一刚性平移必然「一部分被埋、一部分悬空」。修法 =
-**分量再拆分**：底面列高度跨度 > `REDCITY_BASE_TOL`（=3）的连通体，按「列底面高度 ±TOL 的连通性」
-再切成子分量，每个子分量各自求 `S_C`。实测被埋从 30.3% → **18.8%**，`baseRange` 分布
-p50 0 / p90 4 / max 6（拆分前 p50 4 / p90 17 / max 44）。被埋的仍是底层石砌/地砖，
-观感为「基座埋进地里」。
-
-⚠️ **分量再拆分时 `members` 必须按子 footprint 过滤**（实施时踩到的一次真实缺陷）：直接把父分量的
-完整 `members` 挂给每个子分量，会让同一个块被多个子分量各写一次 → 严重错位。改动处的实际形态是
-`subMembers = C.members.filter(i => gset.has(cidx(x, z)))`。
-
-### 15.6 新常量（唯一权威 = `src/gen/structures/region-config.js`）
-
-| 常量 | 提议值 | 消费者 |
-|---|---|---|
-| `REDCITY_MAX_STEP` | 2 | 烘焙 `smooth()`；`check:data` 重算校验 |
-| `REDCITY_THIN_MAX` | 3 | 烘焙「薄/厚构件」分类 |
-| `REDCITY_GLASS_FRAME_MIN` | 2 | 烘焙玻璃过滤；`check:data` 的 `[RedCity]` 环节 |
-| `REDCITY_MAX_FILL` | 12 | 基座填充上限（拱洞保护） |
-| `REDCITY_BASE_TOL` | 3 | 连通体按底面高度再拆分的容差 |
-
-`REDCITY_BAKE_PARAMS` 追加这五项进**指纹**（`tools/redcity-fingerprint.mjs` 的
-`redcityInputFingerprint` 已把整个 params 对象哈希进去，改值即触发过期门禁）。
-
-### 15.7 风险（R16 已解除）
-
-- **R17**：玻璃删到 4,630 块后，`redcity-visual.spec.mjs` 的「玻璃通透」用例要找的
-  「3×3 外露玻璃面板」可能不再存在 → 该用例的候选扫描可能返回 null。实施时须先跑一次扫描确认。
-- **R18**：建筑「被埋 18.8%」是刚性平移 + 台面压平的固有产物（源基准是 0%）。被埋的是底层
-  石砌/地砖，观感为「基座埋进地里」而非「房子陷进去」——**须在实施后用 Tier 4 像素/目视确认**，
-  若观感不可接受，备选是给台面加固定抬升（原型已参数化：`LIFT=1/2` 实测被埋 30.5%/30.2%
-  ——**注意抬升反而让被埋变多**，故默认 `LIFT=0`）。
-- **R19**：`redcity-budget.spec.mjs` 的冻结预算（opaque 4.275M / cutout 2.2M）需重测；
-  保留块 −8.5% 但地形压平会改变面剔除率，**不能按块数比例推断**。
-
-### 15.8 实施结果（2026-10-23）
-
-按 §15.4 落地，实际改动 8 个文件（+产物重烘）。**四条用户反馈全部有实测证据**：
-
-| 反馈 | 判据 | 改前 | 改后 | 证据 |
-|---|---|---|---|---|
-| ① 地表碎石嶙峋 | 岛内相邻列 \|Δground\|>2 | 10.8%（max 35） | **0.0%（max 2）** | `redcity-bake.spec` 用例 13 + `check:data` ④c |
-| ② 中央台基爬不上 | 台面↔街道台阶 | p50 17 / max 35 | **p50 1 / max 2** | 实玩实测：出生点四向各走 40 格，maxStep 1~2 |
-| ③ 尖塔保留 | 地表总高差 | 48 | **24**（min −5 / max 19） | 用例 13 的声榜下界 `> 10` |
-| ④ 玻璃过多 | 玻璃块数 | 46,787（19.1%） | **2,583（−94.5%）** | `check:data` ④d + 用例 14 |
-
-**实施中发现的三个真实缺陷（均已修）**：
-
-1. **无条件把矩形边界列 `ground` 置 0 会掩盖 I2 违约**：新平滑器初版每轮把边界列清零，
-   连 `island[c]=1` 的岛列也清 → 造出「island 说有岛面、ground 说高度 0」的语义撕裂
-   （水面门控与出生点扫描都会读错），且让 I2 的负向用例**恒真**（实测反例 `borderNonZero`
-   从 36 变成 0）。修法 = 只钉**非岛列**，岛面贴边交回 I2 报错。
-2. **地面补齐必须在玻璃过滤之后**：过滤会删掉「整列只有玻璃」的列，那时它们才真正变空。
-   放在过滤前会补出一批随后又被删的格子（实测：补了仍缺 236 列，`check:data` 抓到的正是它）。
-   修法 = 移到过滤之后，按最终地面补一格 `clay`。
-3. **`glassKept`/`glassDropped` 与 I5′ 的度量口径**：I5′ 初版把「刚性建筑 ↔ 逐列铺装」的竖向接触
-   也算进分母 → 恒报 3.645%。实测几何完好（同列 112,291 对源块全部仍相邻，孤立块 25,542 <
-   源模型的 29,915），故口径订正为「只统计同一平移族的接触」，分类计数留在 `checks.dbgContact`。
-
-**Tier 4 用例的连带订正（`tests/redcity-visual.spec.mjs`）**：玻璃删剩窗框后，
-**3×3 连续玻璃面板已不存在**（实测 3×3 全玻璃 0 个、2×2 0 个、2×1 274 个、1×1 3,120 个）
-→ 用例降为 2×1 面板，阈值与噪声底**逐字不动**（不因面板变小而放宽）。
-
-⚠️ **该用例还顺带暴露了一个既有缺陷（v1.68 遗留）**：原写法设
-`physics.pos.y = c.y + 0.5`，而 `physics.pos` 是**脚底**、相机在 `+1.62` → 相机实际比玻璃中心高
-1.62 格。3×3 面板够大时勉强遮住，换成 2×1 后实测 `Δ = 0.0,0.0,0.0`（画面中心根本没有玻璃）。
-修法 = `pos.y = c.y + 0.5 - 1.62`，修后 `Δ = −127.4,−48.7,−70.1`。
-
-**验证证据**：`npm run check` 退出码 0（RedCity 环节全绿，0 error）；
-`redcity-bake.spec` **14/14**（含 3 条新增 §15 用例）；
-`redcity-e2e` / `redcity-budget` / `redcity-edit-perf` **14/14**（GPU 预算**无需改动**即通过 ——
-R19 解除：保留块 −22%，但地形压平提升了面剔除率，净效果在 195.55 MiB 内）；
-`redcity-visual` **4/4**；浏览器内单测 **822 passed / 0 failed**；`bench --check` 通过（无显著回退）。
-
----
-
-## 16. v1.4 实玩反馈修订：删除悬空孤立方块（2026-10-23）
-
-### 16.1 用户反馈
-
-「空中有大量的悬空方块，悬空的方块都去掉，就是周围都不接触其他方块的方块，就都删掉」。
-
-### 16.2 用户裁定
-
-| 项 | 裁定 | 理由 |
-|---|---|---|
-| 判据 | **六邻接全空**（26 邻接不用） | 最保守：只清真正「孤零零悬着」的，靠棱/角相接的保留 |
-| 樱花树冠碎片 | **照删，不特殊处理** | 不区分材质，一律按几何判定 |
-
-### 16.3 实测（改前）
-
-| 观测 | 值 |
-|---|---|
-| 六邻接全空的方块 | **3,760 / 191,740 = 1.96%** |
-| 其中悬空（高于该列地面 3 格以上） | 3,607（悬在 11 格以上的 3,154） |
-| 按材质 | `pink_wool` 2,283 + `leaves` 301 最多，其余是木构件/铜屋顶/石头 |
-| 是否删玻璃的次生后果 | **不是** —— 玻璃全保留时仍有 3,888 个（源模型自带）；只有 198 个是玻璃删除造成的孤儿 |
-| 级联效应 | **无** —— 删第 1 轮 3,760，第 2 轮 0 |
-
-### 16.4 实现（`tools/redcity-bake-core.mjs` 步骤 11c）
-
-开关 = `REDCITY_DROP_ISOLATED`（`region-config.js`，布尔语义常量，进指纹）。
-
-两处口径是载荷性的：
-1. **必须在玻璃过滤之后、地面补齐之前跑**：在玻璃过滤前跑，删玻璃会造出新的孤儿；在地面补齐后跑，会把刚补的地面方块当孤立块删掉。
-2. **保留不动点循环**（限 8 轮）：实测只删一轮就到不动点，但改后续参数时可能出现级联，迭代成本可忽略。
-
-### 16.5 结果
-
-| 指标 | 改前 | 改后 |
-|---|---|---|
-| 悬空孤立块 | 3,607 | **0** |
-| 产物总块数 | 191,740 | **188,029**（净减 3,711） |
-| `stats.isolatedDropped` | — | 3,761 |
-
-⚠️ **`isolatedDropped`（3,761）比净减（3,711）多 50**：过滤当时删了 3,761 个，随后「地面补齐」又把其中 **50 个位于 `y === ground[c]` 的列唯一块**补了回来
-——那是玩家脚下的行走面锚点，不得为空。产物里因此有 50 个「地面鳍点」（孤立但恰在地面高度），
-`check:data` ④e 对它们设上限 200、对**悬空**孤立块要求严格为 0。
-
-### 16.6 验证
-
-- `check:data` 新增 **④e**：从产物数组重算，悬空孤立块必须为 0、地面鳍点 ≤200。**负向验证**：把
-  `REDCITY_DROP_ISOLATED` 改为 `false` 重烘 → 报「3,710 个悬空方块的六邻接全空」+「孤立方块 3,760 个」，
-  真实 FAIL；还原后恢复全绿。
-- `tests/redcity-bake.spec.mjs` 新增两条：正例（悬空孤立块 = 0）+ **负向用例**（关掉开关后必须重新出现）。
-- 既有用例 2「保留规则」**被本次改动暴露为不严谨**：它在测 K=2 保留规则时顺手放了一块 y=8 的悬空叶子，
-  正是新过滤器要删的东西。改法是给叶子加立柱让它连着地面（**意图不变**），不是放宽断言。
-- 回归：`redcity-bake` 16/16、`redcity-e2e`/`budget`/`edit-perf`/`visual` 18/18、`npm run check` 退出码 0。
-
-### 16.7 边界（本次不做）
-
-游戏世界扫描发现 RedCity core 范围内仍有 26 个「六邻接全空」方块，**全部是 `sky_leaves`**
-—— 它们属于**自然地形的天空树系统**（v1.42 `sky_structures`），由 `applySkyStructures` 写入，
-不经过 RedCity 烘焙产物。本次改动只作用于 RedCity 产物，天空树的悬空叶子**未动**。
-若要一并清理，应另开改动在 `sky-structures` 侧评估（它有自己的生成语义与测试）。
-
----
-
-## 17. v1.5：清掉天空树的悬空叶子（2026-10-23）
-
-### 17.1 背景
-
-§16 清完 RedCity 产物后，游戏世界扫描发现 core 内仍有 26 个「六邻接全空」方块，**全部是 `sky_leaves`**
-—— 属于自然地形天空树（`sky-structures.js` 的 `writeSkyTrees`），不经过 RedCity 烘焙产物。
-用户裁定：一并清掉。
-
-### 17.2 实测（改前）
-
-| 观测 | 值 |
-|---|---|
-| `sky_leaves` 总数（视距 8 扫描） | 6,549 |
-| 其中六邻接全空 | **37**（0.56%） |
-| 其中落在 column 边界（lx/lz ∈ {0,15}） | 9 |
-| 全世界孤立块 | 38（37 `sky_leaves` + 1 普通 `leaves`） |
-
-### 17.3 三条被实测否掉的路线（重要，勿重走）
-
-**① 树内剔除（在 `generateTree` 里逐树判）** —— 会误删：
-
-| 指标 | 值 |
-|---|---|
-| 树内孤立叶 1,493 ／ 世界级真孤叶 | **716** |
-| 其中「其实靠邻树树冠相连」 | **649** → 会被误删 |
-| 会漏删（世界孤立但树内有邻居） | 81 |
-| 还会制造级联新孤叶 | 91 |
-
-根因：叶子成团生成，但**树与树的树冠会互相搭接**，单树视角看不到。
-
-**② 逐 column 判** —— GEN 是逐 column 独立生成的，单 column 看不到邻柱；实测 37 个里有 **9 个在柱边界**，
-会被误判。
-
-**③ 整个 region 一次性算 + 按 region 缓存** —— 正确但**性能不合格**：整 region 算实测 **13.4 ms/次**，
-把 `structure-gen` 的冻结门禁 `genP95 < 10ms` 从基线 **8.3 ms** 撞到 **18.8 ms**（真实回退，非 flaky）。
-按 `skyCandidates` 数组做缓存键更糟（4×4 个相邻 column 产生 4 个不同键 → 25 ms）。
-
-### 17.4 采用的方案：局部计算
-
-**核心洞察**：孤叶判定只需要该叶子**六邻接范围内**的天空树方块（局部性）。而树只长在岛的顶层圆盘上、
-树冠再外扩 2 格、叶子邻接再外扩 1 格 → 一个 column 的结论**只依赖水平距离 ≤ r+6 的岛**。
-
-`computeColumnTrees(skyCandidates, seed, cx, cz)`：取这些岛的候选子集 → `computeSkyTreeBlocks`
-→ `dropIsolatedSkyLeaves` → 只写落在本 column 的格。
-
-**正确性实测**：region(0,0) 的 **111 个有树 column，局部 vs 全量逐格比较 = 零不一致**。
-**性能**：**0.31 ms/列**（全 region 13.4 ms），`genP95` 回到 **8.7 ms**（基线 8.3 ms）。
-
-另两处配套优化：
-- 坐标键从 `"x,y,z"` 字符串改为**数值键**（`cellKey`），`dropIsolatedSkyLeaves` 从 5.83 → **1.19 ms**；
-  邻接偏移预先算成数值键增量（`DELTA`），与 `cellKey` 的编码公式严格对应。
-- `computeSkyCandidates` 的返回值加上 `regionX/regionZ`：缓存键要用它，**不要从 `skyIslands[0]` 反推**
-  （那个反推在「该 region 没有任何岛」时无定义；实测 121 个 region / 200 个 seed 都没遇到，但那是运气）。
-
-### 17.5 结果
-
-| 指标 | 改前 | 改后 |
-|---|---|---|
-| 孤立 `sky_leaves` | 37 | **0** |
-| `sky_leaves` 总数 | 6,549 | 6,511（只删 38 片，无误伤） |
-| 全世界孤立块 | 38 | **1**（剩下的 `leaves` 在 y=7 贴地，是地形植被的普通树叶，不在本次范围） |
-| `genP95` | 8.3 ms（基线） | **8.7 ms** |
-
-### 17.6 验证
-
-`sky-structures` / `sky-tree-visual` / `structure-gen` / `light-structures` 4/4 全绿
-（`structure-gen` 的冻结门禁 `genP95 < 10ms` **未改动**）；
-`npm run check` 退出码 0；`bench --check` 无回退。
-
-⚠️ 按用户要求**本次未新增测试**。既有 `structure-gen` 的 `genP95` 门与 `sky-structures` 的
-确定性用例本身就是这个改动的回归防线（前者守性能、后者守跨 column 一致性）。

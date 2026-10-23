@@ -1,7 +1,6 @@
-// ⚠️ v1.2：本附录是**算法的独立可复现参考**；落地形态见 `appendix-f-reference/tools/redcity-config.mjs`（计划以后者为准）。 落地版把 `groundFloor` 改为 import `REDCITY_GROUND_FLOOR`，并并入 `isEmpty` / `REDCITY_BAKE_PARAMS` / `REDCITY_SPAWN_PARAMS`。
 // 附录 B：材质映射与分类清单
 //
-// 来源：RedCity 评审会话的参考实现（评审会话临时目录，不入库）的映射表与 `isSkin` / `isBuildingMat`，
+// 来源：RedCity 评审会话的参考实现 `map-final.mjs` + `bake3.mjs` 的 `isSkin` / `isBuildingMat`，
 // 已验证可复现烘焙数字（retained 244647 / dy -6..80 / spawn ox=138 oz=141 dy=-3）。
 //
 // 实施时本文件的内容要落到 `tools/redcity-config.mjs`（唯一权威，烘焙脚本与 `check:data` 共用）。
@@ -89,7 +88,7 @@ export const MAPPING_RULES = Object.freeze([
   [4, '*', 'cobblestone'], [48, '*', 'mossy_stone'], [88, '*', 'netherrack'], [80, '*', 'snow_block'],
   [9, '*', 'water'], [8, '*', 'water'],
   // 建筑主体
-  [168, '*', 'oxidized_cut_copper'],   // 宝塔屋顶（U2 已裁定：接受偏亮青绿；不新增贴图、不做真实 1.12 色值校准）
+  [168, '*', 'oxidized_cut_copper'],   // 宝塔屋顶（U2：偏亮青绿，待真实 1.12 色值校准）
   [98, '*', 'stone_bricks'], [99, '*', 'bricks'],
   [17, '*', 'wood'], [162, '*', 'dark_oak'], [18, '*', 'leaves'],
   ...[5, 125, 126, 53, 134, 164, 63, 64].map((i) => [i, '*', 'planks']),

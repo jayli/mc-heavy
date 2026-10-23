@@ -23,8 +23,7 @@ async function waitWorldSettled(page) {
 }
 
 /** 钉 seed（地形确定性 —— 同 turrets.spec.mjs 的理由）。 */
-// RedCity 起默认出生在 RedCity；炮塔/丧尸/TNT 的场景搭建依赖 City 周边地形，pin spawn=city（RedCity spec §14.8）
-const URL = '/?vd=2&seed=12345&spawn=city';
+const URL = '/?vd=2&seed=12345';
 
 async function boot(page) {
   await page.goto(URL);

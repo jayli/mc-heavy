@@ -1,4 +1,3 @@
-// ⚠️ v1.2：本附录是**算法的独立可复现参考**；落地形态见 `appendix-f-reference/src/gen/structures/redcity-data.js`（计划以后者为准）。 落地版比本附录多 3 类校验（`col` 越界 / `dy` 越界 / palette 下标越界），并把「按 col 升序」加强为「(col, dy) 严格升序」；以落地版为准。
 // 附录 D：JSON 产物格式与加载器
 //
 // 用户裁定（2026-10-22）：产物用 **JSON**，不用自定义二进制。理由：
@@ -35,7 +34,7 @@ export const REDCITY_JSON_FORMAT = 1;
  *   width, length,            // 250 × 289（core 尺寸，= REDCITY_SIZE）
  *   dyMin, dyMax,             // 内容相对地面的行号域（-6 .. 80）
  *   spawn: { ox, oz, dy },    // 出生点（相对 core 原点与 baseY）
- *   palette: string[],        // 方块名表（实测 28 项 = 实际出现的目标方块；映射规则的目标共 29 种），blocks 里存下标
+ *   palette: string[],        // 方块名表（实测 29 项），blocks 里存下标
  *   ground: number[],         // 每列地面高度（相对 baseY，Int8 范围 -5..43）
  *   island: string,           // 每列是否岛内，'0'/'1' 串（比数组省 3 倍体积）
  *   blocks: number[],         // 扁平三元组 [col, dy, pal]，按 (col, dy) 升序

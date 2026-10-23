@@ -92,9 +92,7 @@ test('M3-1：全量场景稳态帧率 + 队列不积压 + 内存预算', async (
   const mem = await page.evaluate(() => window.__MC_GAME__.memoryStats());
   console.log('M3-1 MEM:', JSON.stringify(mem));
   expect(mem.voxelBytes).toBeLessThan(45 * 1024 * 1024);   // 289×128KB≈37MB + 滞回带余量
-  // U1′（RedCity，设计文档 v1.68 §4.10）：冻结预算 148.06 → 195.55 MiB（opaque 4.275M + cutout 2.2M + transparent 0.36M）× 30 B。
-  // 本用例不 pin spawn=city：默认出生在 RedCity 正是新的最重场景，稳态帧率 / 队列 / 内存预算都应在它上面成立。
-  expect(mem.gpuVertexBytes).toBeLessThan(196 * 1024 * 1024);
+  expect(mem.gpuVertexBytes).toBeLessThan(150 * 1024 * 1024); // ~100MB 级 + 扩容兜底余量
   if (!process.env.CI) {
     // jsHeapSizeLimit 仅 Chromium 暴露；CI 上 SwiftShader 内存形态不同，只在本机参考
     expect(mem.jsHeapUsedBytes ?? 0).toBeLessThan(1024 * 1024 * 1024);

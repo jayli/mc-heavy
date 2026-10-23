@@ -19,8 +19,7 @@ test('M2 验收：出生在城市中心，可见城市天际线（§7 M2 口径�
   // ⚠️ `skybox=0`（v1.58）：本 spec 用「像素落在 0x87ceeb ±30 内 = 天空」来数非天空占比。
   // 天空盒上线后天空是照片 → 天空像素被误判成地形，下界断言近乎恒真（判据失效）。
   // 按 testing-policy 的「只改被测 setup、断言与阈值逐字不动」口径 pin 纯色天空。
-  // RedCity 起默认出生在 RedCity；本用例语义绑定 City 环境，pin spawn=city（RedCity spec §14.8）
-  await page.goto('/?vd=8&seed=12345&skybox=0&spawn=city');
+  await page.goto('/?vd=8&seed=12345&skybox=0');
   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
   // 视距内 column 大部分就绪（城市建筑随 GEN 落地）
   await page.waitForFunction(() => window.__MC_GAME__.world.columns.size >= 200, null, { timeout: 60_000 });

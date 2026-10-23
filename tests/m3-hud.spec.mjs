@@ -10,8 +10,7 @@ const READY = () => window.__MC_GAME__?.worldReady === true;
 
 test('M3-4：HUD 元素可见（坐标/快捷栏/设置按钮/perf 面板）', async ({ page }) => {
   test.setTimeout(180_000);
-  // RedCity 起默认出生在 RedCity；本用例断言出生点 biome = CITY，pin spawn=city（RedCity spec §14.8）
-  await page.goto('/?vd=4&spawn=city');
+  await page.goto('/?vd=4');
   await page.waitForFunction(READY, null, { timeout: 90_000 });
 
   // 坐标 HUD：xyz + biome + seed 行

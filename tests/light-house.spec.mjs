@@ -5,8 +5,7 @@ import { test, expect } from 'playwright/test';
 // 清零覆盖邻列已收敛的好光 → 房屋内偶现大片全黑面 + 黑核周围截断渐变环（实玩 bug）。
 test('房屋内 glowstone 邻域光照收敛（非全黑）', async ({ page }) => {
   test.setTimeout(180_000);
-  // RedCity 起默认出生在 RedCity；本用例语义绑定 City 环境，pin spawn=city（RedCity spec §14.8）
-  await page.goto('/?seed=12345&spawn=city');
+  await page.goto('/?seed=12345');
   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 60_000 });
   await page.waitForFunction(() => {
     const s = window.__MC_GAME__.scheduler;

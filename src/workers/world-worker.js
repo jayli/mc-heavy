@@ -10,7 +10,6 @@ import { fillColumn } from '../gen/terrain.js';
 import { carveCaves } from '../gen/caves.js';
 import { computeRegionLayout } from '../gen/structures/structure-layout.js';
 import { applyStructuresToColumn } from '../gen/structures/apply.js';
-import { setRedCityData, prepareRedCityModel } from '../gen/structures/redcity-data.js';
 import { preloadStructures } from '../gen/structures/structure-json.js';
 import { SCATTER_JSON_TYPES } from '../gen/structures/scatter.js';
 // M6 ai 分支：全部逻辑走 `computeAiUpdates`（同构纯函数，红线 8）。
@@ -73,7 +72,7 @@ installRpcHandler({
     const column = new ChunkColumn(p.cx, p.cz);
     fillColumn(column, p.seed, registry);
     carveCaves(column, p.seed);
-    await applyStructuresToColumn(column, p.seed, registry, p.layouts, p.redCity ?? null);
+    await applyStructuresToColumn(column, p.seed, registry, p.layouts);
     if (p.edits && p.edits.length) column.applyEdits(p.edits);
     computeSkylightColumn(column, registry);
     // blocklight：GEN 时邻柱多半未就绪，只算本 column（截断）；
@@ -168,17 +167,6 @@ installRpcHandler({
    */
   'atlas-meta'(p) {
     _atlasMeta = p;
-    return true;
-  },
-
-  /**
-   * redcity-data：主线程启动时 broadcast 一次（`{ text }` = redcity.json 原文）。与 atlas-meta 同手法（id=0 的回包被 pool 忽略）。
-   * 传文本而非已解析对象：主线程与 Worker 走同一条 JSON.parse + prepareRedCityModel（红线 8 同构），
-   * 且 73 万个数字 structured clone 14 份比传字符串贵。postMessage 保序 → 必先于后续 gen。
-   * @param {{text: string}|null} p
-   */
-  'redcity-data'(p) {
-    setRedCityData(p && p.text ? prepareRedCityModel(JSON.parse(p.text)) : null);
     return true;
   },
 

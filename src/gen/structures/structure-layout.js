@@ -10,7 +10,6 @@ import {
   getIslandCenterInRegion, isIslandValid, isPlainLandValid,
 } from './landmarks.js';
 import { buildCityLayout } from './city-layout.js';
-import { buildRedCityLayout } from './redcity-layout.js';
 import { computeSkyCandidates } from './sky-structures.js';
 import { computeScatterCandidates } from './scatter.js';
 
@@ -51,10 +50,6 @@ export function computeRegionLayout(regionX, regionZ, seed) {
   // City 全世界唯一，固定在 region [0,0]（mc-lite CITY_REGION 语义）
   const city = (regionX === CITY_REGION.X && regionZ === CITY_REGION.Z) ? buildCityLayout(seed) : null;
 
-  // RedCity 与 City 同口径：全世界唯一，挂在持有 city 的 region(0,0)；其余 region 为 null。
-  // ⚠️ 它**不走** 3×3 查询域下发（影响域越界 60/80 个 seed）：StructureIndex.redCity() 取出后随每个 GEN 任务全局下发。
-  const redCity = city ? buildRedCityLayout(seed, city) : null;
-
   // 空中候选（M2-7）：紧凑 Int32Array，GEN 侧按 AABB 裁剪到 column
   const sky = computeSkyCandidates(regionX, regionZ, seed);
 
@@ -64,7 +59,7 @@ export function computeRegionLayout(regionX, regionZ, seed) {
 
   return {
     regionX, regionZ, pyramidRaw, pyramid, frozenMountain, snowLand, plainLand,
-    island, city, redCity, sky, scatter,
+    island, city, sky, scatter,
   };
 }
 

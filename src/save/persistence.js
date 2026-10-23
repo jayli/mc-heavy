@@ -8,10 +8,7 @@ const DB_NAME = 'mc_heavy_saves';
 // M5：v1 → v2 新增 `entities` object store（持久实体 snapshot）。
 // 升级路径只「不存在时创建」（`onupgradeneeded` 的幂等写法），旧库的 meta/edits 原样保留 ——
 // 老存档不会因升级丢失（M5 规格 §3）。
-// v3（RedCity，spec §13.6.2 / D7）：世界生成逻辑变了（东侧 RedCity 吞并地标、重塑地形）→ 旧档里的 edits 叠在新世界上会错位，
-// 且出生点迁到 RedCity 后旧存档的 spawn 也无意义。用户裁定「旧存档不要了」→ 升级时清空 meta/edits/entities，等价于全新世界。
-// 以后再有「丢弃旧档」的生成变更，再 bump 一次（并把 `e.oldVersion <= 2` 的上界跟着改）。
-const DB_VERSION = 3;
+const DB_VERSION = 2;
 
 export class Persistence {
   constructor() {
@@ -28,23 +25,11 @@ export class Persistence {
     this._flushTimer = null;
   }
 
-  /**
-   * @param {{onBlocked?: () => void}} [opts] 旧版本标签页未关闭时升级会被阻塞（`onblocked`）：默认只 console.warn，
-   *   Game 传入回调把「请关闭其他 mc-heavy 标签页」展示给玩家（否则表现为白屏卡死、无任何提示）。
-   */
-  open({ onBlocked } = {}) {
+  open() {
     return new Promise((resolve, reject) => {
       const req = indexedDB.open(DB_NAME, DB_VERSION);
-      req.onupgradeneeded = (e) => {
+      req.onupgradeneeded = () => {
         const db = req.result;
-        // ⚠️ 两个必错的坑：① 清库必须用 `req.transaction`（versionchange 事务）——此时 `this.db` 还是 null
-        // （只在 onsuccess 里赋值），写成 `this.db.transaction` 会在开库回调内抛错，被吞成「open 永不 resolve」→ 白屏无报错；
-        // ② `objectStore(name)` 对不存在的 store 抛 NotFoundError（v1 库升级时 entities 还没建）→ 必须先 contains 守卫，**先清后建**。
-        if (e.oldVersion >= 1 && e.oldVersion <= 2) {
-          for (const name of ['meta', 'edits', 'entities']) {
-            if (db.objectStoreNames.contains(name)) req.transaction.objectStore(name).clear();
-          }
-        }
         if (!db.objectStoreNames.contains('meta')) db.createObjectStore('meta', { keyPath: 'key' });
         if (!db.objectStoreNames.contains('edits')) db.createObjectStore('edits', { keyPath: 'columnKey' });
         // M5：只在不存在时创建（幂等 —— 旧库升级到 v2 时 meta/edits 已在，不得重建）
@@ -52,10 +37,6 @@ export class Persistence {
       };
       req.onsuccess = () => { this.db = req.result; resolve(); };
       req.onerror = () => reject(req.error);
-      req.onblocked = () => {
-        if (onBlocked) onBlocked();
-        else console.warn('[persistence] 存档升级被其他标签页阻塞：请关闭其他 mc-heavy 页面，关闭后会自动继续');
-      };
     });
   }
 

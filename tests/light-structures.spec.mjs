@@ -14,8 +14,7 @@ import { test, expect } from 'playwright/test';
 // 只对**沿途畅通**的方向断言 —— 否则断言描述的是想象中的世界（testing-policy §2.6）。
 test('结构性光源的 blocklight 跨 column 扩散（GEN 收敛）', async ({ page }) => {
   test.setTimeout(240_000);
-  // RedCity 起默认出生在 RedCity；本用例语义绑定 City 环境，pin spawn=city（RedCity spec §14.8）
-  await page.goto('/?vd=4&seed=12345&style=noon&weather=clear&spawn=city');
+  await page.goto('/?vd=4&seed=12345&style=noon&weather=clear');
   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
   await page.waitForFunction(() => {
     const s = window.__MC_GAME__.scheduler.stats();
