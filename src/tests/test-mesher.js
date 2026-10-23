@@ -104,6 +104,81 @@ test('mesher: cutout 方块（leaves）→ cutout 通道', () => {
   assertEqual(result.opaque.vertexCount, 0);
 });
 
+// ---------------------------------------------------------------- 镂空遮挡体（v1.70）
+//
+// 「镂空遮挡体」= cutout 通道 + opaqueTable=1 的方块（当前 = 13 个树叶族）。
+// 它的贴图有孔洞（alphaTest 0.3 逐片元 discard），所以它**不能**当作实心遮挡体去剔除
+// 邻居方块朝向它的那一面 —— 否则玩家透过孔洞会看到背后的空气（用户报告「能看穿背后的方块」）。
+// 代价 = 每条「实心方块 ↔ 镂空遮挡体」接触面 +1 个面；镂空体自身朝实心方块的那一面照旧不画
+// （避免 z-fighting，且它本就不透明到能看见）。
+
+test('mesher: 石头贴着树叶 → 石头朝树叶的那一面**必须出块**（否则透过叶孔看穿）', () => {
+  const reg = makeRegistry();
+  const stoneId = reg.idOf('stone'), leafId = reg.idOf('leaves');
+  const world = new WorldData(reg);
+  const col = new ChunkColumn(0, 0);
+  const y = WORLD_MIN_Y + 5;
+  // 左右各一块石头，中间是树叶：石头朝叶的 2 面必须保留
+  col.blocks[blockIndex(7, y, 8)] = stoneId;
+  col.blocks[blockIndex(8, y, 8)] = leafId;
+  col.blocks[blockIndex(9, y, 8)] = stoneId;
+  world.add(col);
+  const view = world.getSectionView(0, 0, 0);
+  const result = buildSectionMesh(view, reg, atlasMeta, 0, 0, 0);
+  // 石(6) + 石(6) = 12 面全部保留（朝叶的那面不再被剔）；叶 6 面减去朝石头的 2 面 = 4 面。
+  // 修前：石头朝叶的 2 面也被剔 → 10 面 = 40 顶点（用户可见的穿帮）
+  assertEqual(result.opaque.vertexCount, 12 * 4, `石头贴树叶：两块石头各 6 面全保留（含朝叶的 1 面）`);
+  assertEqual(result.cutout.vertexCount, 4 * 4, `树叶自身朝石头的 2 面仍须剔除（避免 z-fighting）`);
+});
+
+test('mesher: 树叶贴树叶 → 共享面照旧互剔（1×2×1 叶柱 = 10 面）', () => {
+  // 防「把镂空遮挡体整类降成 opaqueTable=0」这种改法：那会让**叶-叶**共享面也不剔，
+  // 实测同一片 8³ 叶团顶点 1584 → 12316（×7.78）。
+  const reg = makeRegistry();
+  const leafId = reg.idOf('leaves');
+  const world = new WorldData(reg);
+  const col = new ChunkColumn(0, 0);
+  const y = WORLD_MIN_Y + 5;
+  col.blocks[blockIndex(8, y, 8)] = leafId;
+  col.blocks[blockIndex(9, y, 8)] = leafId;
+  world.add(col);
+  const view = world.getSectionView(0, 0, 0);
+  const result = buildSectionMesh(view, reg, atlasMeta, 0, 0, 0);
+  assertEqual(result.cutout.vertexCount, 10 * 4, '两片相邻树叶：10 面（共享面仍在剔除）');
+  assertEqual(result.opaque.vertexCount, 0, '树叶不进 opaque 通道');
+});
+
+test('mesher: 石头贴石头 → 照旧剔除（镂空体判据不得波及普通实心方块）', () => {
+  const reg = makeRegistry();
+  const stoneId = reg.idOf('stone');
+  const world = new WorldData(reg);
+  const col = new ChunkColumn(0, 0);
+  const y = WORLD_MIN_Y + 5;
+  col.blocks[blockIndex(8, y, 8)] = stoneId;
+  col.blocks[blockIndex(9, y, 8)] = stoneId;
+  world.add(col);
+  const view = world.getSectionView(0, 0, 0);
+  const result = buildSectionMesh(view, reg, atlasMeta, 0, 0, 0);
+  assertEqual(result.opaque.vertexCount, 10 * 4, '两块石头：10 面（既有行为不变）');
+});
+
+test('mesher: azalea_flowers 与 azalea_leaves 面剔除口径一致（都必须是镂空遮挡体）', () => {
+  // v1.70 一并修掉的历史漏网：azalea_flowers 是唯一漏写 opaque:true 的树叶族
+  // （gen 里与 azalea_leaves 混生成花），opaqueTable=0 → 它自己的叶-叶共享面不剔，
+  // 实测同一片叶团 11292 顶点 vs 树叶 3352（贵 3.4 倍）。
+  const reg = makeRegistry();
+  const flowerId = reg.idOf('azalea_flowers'), leafId = reg.idOf('azalea_leaves');
+  const world = new WorldData(reg);
+  const col = new ChunkColumn(0, 0);
+  const y = WORLD_MIN_Y + 5;
+  col.blocks[blockIndex(8, y, 8)] = flowerId;
+  col.blocks[blockIndex(9, y, 8)] = leafId;
+  world.add(col);
+  const view = world.getSectionView(0, 0, 0);
+  const result = buildSectionMesh(view, reg, atlasMeta, 0, 0, 0);
+  assertEqual(result.cutout.vertexCount, 10 * 4, 'azalea_flowers 与 azalea_leaves 相邻：10 面（共享面剔除）');
+});
+
 test('mesher: transparent 方块（glass）→ transparent 通道', () => {
   const reg = makeRegistry();
   const world = makeWorldWithBlock(reg, 8, WORLD_MIN_Y + 5, 8, reg.idOf('glass_block'));

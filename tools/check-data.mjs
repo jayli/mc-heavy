@@ -942,6 +942,65 @@ async function checkLeafTextures() {
   }
 }
 
+// ---------------------------------------------------------------- [树叶剔除] 契约（v1.70）
+
+/**
+ * [树叶剔除] 契约：**每个带镂空的方块都必须是镂空遮挡体**，不是镂空的不得混进来。
+ *
+ * 背景（2026-10-23 用户报告）：普通树叶改成透明后，
+ * 「方块紧挨着的背后的不透明实心方块的面是看不到的」→ 透过叶孔可以看穿背后的内容。
+ * 根因 = mesher 的面剔除只看 `opaqueTable[neighbor] === 1`，而树叶的 `opaqueTable` 是 1
+ * （它是叶-叶共享面互剔的收益来源）→ 实心方块朝叶的那一面被剔掉。
+ * 修法 = `hollowOccluderTable`（由 cullMode=cutout + opaqueTable=1 **派生**），
+ * 命中时**不剔**邻居方块朝向它的那一面。
+ *
+ * 钉的失效路径（均为**静默**失败 —— 不报错，只是画面穿帮或顶点暴涨）：
+ *   ① 新增镂空方块却漏写 `opaque:true` → 它不是镂空遮挡体 → 自己叶-叶共享面不剔，顶点 ×3.4
+ *      （`azalea_flowers` 的历史漏网，v1.70 一并修掉）；
+ *   ② 把 `hollowOccluderTable` 改成字面量名单 → 新方块不在名单里 → 又看穿背后（红线 1）；
+ *   ③ `hollowOccluderTable` 退化成「所有 opaque 方块」→ 全世界不再互剔，顶点灾难。
+ */
+function checkLeafCullingContract() {
+  const before = failures.length;
+  const fail = (m) => failures.push(`[树叶剔除] ${m}`);
+
+  // ① 带镂空的方块（geometry=box + 有孔洞贴图的那一族）必须全部是镂空遮挡体。
+  //    用「已登记的树叶族」作判据：它们按名字约定集中（`*_leaves` + azalea_flowers）——
+  const LEAF_FAMILY = BLOCKS.filter((b) => b.name.endsWith('_leaves') || b.name === 'azalea_flowers').map((b) => b.name);
+  const EXPECT_LEAF_FAMILY_SIZE = 14; // 7 普通树叶（含 azalea_leaves）+ 6 巨树叶 + azalea_flowers
+  if (LEAF_FAMILY.length !== EXPECT_LEAF_FAMILY_SIZE) {
+    fail(`树叶族方块数 ${LEAF_FAMILY.length} ≠ ${EXPECT_LEAF_FAMILY_SIZE}（新增/删除树叶族时须同步本门禁与 blocks-data 注释）：${LEAF_FAMILY.join(', ')}`);
+  }
+  for (const n of LEAF_FAMILY) {
+    const def = BLOCKS.find((b) => b.name === n);
+    const id = REGISTRY.idOf(n);
+    if (id === undefined) { fail(`"${n}" 不在 registry 内`); continue; }
+    // sky_leaves 例外：它走 opaque 通道（材质无 alphaTest）→ 无孔洞，不是镂空遮挡体
+    if (n === 'sky_leaves') {
+      if (REGISTRY.hollowOccluderTable[id] !== 0) fail('sky_leaves 走 opaque 通道，不应是镂空遮挡体');
+      continue;
+    }
+    if (def.cullMode !== 'cutout') { fail(`"${n}" 的 cullMode=${def.cullMode}（必须是 cutout 才有镂空）`); continue; }
+    if (REGISTRY.opaqueTable[id] !== 1) { fail(`"${n}" 的 opaqueTable=0（漏写 opaque:true → 自己叶-叶共享面不剔，顶点 ×3.4）`); continue; }
+    if (REGISTRY.hollowOccluderTable[id] !== 1) {
+      fail(`"${n}" 的 hollowOccluderTable=0（表未写入 —— 邻居方块朝它的面会被剔除 → 透过叶孔看穿背后）`);
+    }
+  }
+
+  // ② 临界对照：普通实心方块**不得**是镂空遮挡体（否则全世界不再互剔，顶点灾难）
+  for (const n of ['stone', 'wood', 'dirt', 'grass', 'glass_block', 'water', 'cloud']) {
+    const id = REGISTRY.idOf(n);
+    if (id !== undefined && REGISTRY.hollowOccluderTable[id] !== 0) {
+      fail(`"${n}" 不是镂空方块，被误判为镂空遮挡体（会让它与邻居的面全部保留，顶点暴涨）`);
+    }
+  }
+
+  if (failures.length === before) {
+    const n = LEAF_FAMILY.filter((x) => x !== 'sky_leaves').length;
+    infos.push(`[树叶剔除] ${n} 个镂空遮挡体（实心方块朝树叶的面不再剔）+ sky_leaves 例外（opaque 通道，无镂空）`);
+  }
+}
+
 // ---------------------------------------------------------------- 主流程
 
 const REGISTRY = await buildDefaultRegistry();
@@ -965,6 +1024,7 @@ checkTurretArmorTexture();
 checkSkyboxAssets();         // v1.58：天空盒立方图完整性（⚠️ 漏了本行则门禁永不执行）
 await checkNightSkyFreshness(); // v1.60：夜空烘焙产物指纹（⚠️ 漏了本行则门禁永不执行）
 await checkGiantTrees();     // 巨树景观：方块/烘焙产物/贴图三方契约（⚠️ 漏了本行则门禁永不执行）
+checkLeafCullingContract();  // v1.70：镂空遮挡体派生表与树叶族声明的一致性（⚠️ 漏了本行则门禁永不执行）
 
 console.log('[check:data] 数据契约检查');
 for (const i of infos) console.log(`  ✓ ${i}`);

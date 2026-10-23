@@ -358,6 +358,7 @@ export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
   const { data, light, meta } = view;
   const cullTable = registry.cullTable;
   const opaqueTable = registry.opaqueTable;
+  const hollowOccluderTable = registry.hollowOccluderTable;
   const shadowCastTable = registry.shadowCastTable;
   const nameOf = registry.nameOf.bind(registry);
   const tiles = atlasMeta.tiles || atlasMeta;
@@ -470,8 +471,17 @@ export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
           const nx = vx + dx, ny = vy + dy, nz = vz + dz;
           const neighborId = data[viewIdx(nx, ny, nz)];
 
-          // 面剔除：邻居 opaque 则剔除；同类型相邻剔除（世界面判定）
-          if (opaqueTable[neighborId] === 1) { if (collect) culledFaces++; continue; }
+          // 面剔除：邻居 opaque 则剔除；同类型相邻剔除（世界面判定）。
+          //
+          // **镂空遮挡体例外（v1.70）**：镂空体（cutout + opaqueTable=1 = 13 个树叶族）的贴图有孔洞
+          // （alphaTest 逐片元 discard），它不足以当实心遮挡体 —— 拿它剔除本方块朝向它的那一面，
+          // 玩家就会透过叶孔看到背后的空气。故只有「本方块是实心体、邻居是镂空体」这一对
+          // **不剔本方块的面**；镂空体自身朝实心方块的面照旧剔（避免 z-fighting，且它本就
+          // 不透明到能看见）。叶-叶共享面仍互剔（双方都是镂空体 → 照旧剔），所以“叶团内部
+          // 不外发面”的收益完整保留（实测单棵普通树 3068→664 顶点）。
+          // 代价 = 每条「实心↔镂空体」接触面 +1 面（实测树冠内 +0.1%、坐在地面的树冠 +9.1%、
+          // 粗树干被叶包 +13.2%、叶贴墙面 +22.8%）。
+          if (opaqueTable[neighborId] === 1 && !(hollowOccluderTable[neighborId] === 1 && hollowOccluderTable[id] === 0)) { if (collect) culledFaces++; continue; }
           if (neighborId === id && (cullMode >= 2 || SAME_TYPE_CULL.has(blockName))) { if (collect) culledFaces++; continue; } // water/glass 同类相邻、cloud
 
           const tileName = getFaceTile(blockName, modelFace); // 模型面：贴图随方块转

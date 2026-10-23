@@ -38,6 +38,10 @@ export const BLOCKS = [
   //   ③ 炮塔 LOS / 弹丸阻挡 —— **这项改变了玩法**：树叶现在会挡住炮塔视线、弹丸被树叶拦截
   //      （mc-lite 口径是「实心且不透明」，树叶可穿透）。巨树叶自 Epic 起已是这个语义。
   //   四个消费方共用 opaqueTable，故无需改任何消费者代码。
+  // ⚠️ **v1.70 新增反方向规则**（mesher 面剔除）：镂空体（本组）不再能当邻居面剔除的遮挡依据——
+  //   `hollowOccluderTable` 由 cutout + opaqueTable=1 派生，命中时**不剔**邻居方块朝向它的那一面
+  //   （否则玩家透过叶孔看穿背后的空气）。代价 = 每条「实心↔树叶」接触面 +1 面。
+  //   叶-叶共享面不受影响（双方都是镂空体，走 cullMode/SAME_TYPE_CULL 分支）。
   {"name":"leaves","solid":true,"cullMode":"cutout","opaque":true,"orientationModes":4,"geometry":"box"},
   {"name":"birch_log","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
   {"name":"wood","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
@@ -45,7 +49,7 @@ export const BLOCKS = [
   {"name":"sky_wood","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
   {"name":"azalea_log","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
   {"name":"azalea_leaves","solid":true,"cullMode":"cutout","opaque":true,"orientationModes":4,"geometry":"box"},
-  {"name":"azalea_flowers","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"box"},
+  {"name":"azalea_flowers","solid":true,"cullMode":"cutout","opaque":true,"orientationModes":4,"geometry":"box"},
   {"name":"yellow_leaves","solid":true,"cullMode":"cutout","opaque":true,"orientationModes":4,"geometry":"box"},
   // 通道勘误（方案 C，spec §2.6）：mc-lite 材质是 mkMat('#FF69B4', 0.9) =
   // transparent+opacity，**无 alphaTest** → 不是镂空。原 'cutout' 是 M2-7 按

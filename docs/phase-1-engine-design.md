@@ -2173,6 +2173,18 @@ mc-lite 的表达是**分散且不重合**的：`ExplosionWorker.js:8` 的字面
   否则转换规则会按 cullMode 误推 `opaqueTable=1`（同类 bug 重犯）。连带效应（均为修正）：
   chimney 不再遮挡 AO / 阻断 blocklight / 挡炮塔 LOS —— r=0.15 的细圆柱本就不该完全遮光挡视线。
 
+- **镂空遮挡体表 `hollowOccluderTable`（v1.70，派生表，非声明字段）**：
+  `hollowOccluderTable[id] = (cullMode === 'cutout' && opaqueTable[id] === 1)` —— 当前 13 个树叶族。
+  语义 = 「贴图有孔洞（alphaTest 逐片元 discard），所以不能被当作实心遮挡体」的方块。
+  唯一消费方 = mesher 的面剔除：**邻居是镂空体、而本方块不是**时，不剔本方块朝向邻居的那一面
+  （否则玩家透过叶孔看到背后的空气）。镂空体自身朝实心方块的面照旧剔（避免 z-fighting）；
+  叶-叶共享面照旧互剔（双方都是镂空体）。
+  ⚠️ **派生而非声明**（红线 1）：不新增「哪些是树叶」名单，新增镂空方块时只要声明
+  `cullMode:'cutout'` + `opaque:true` 就自动落入本表；反过来，任何被误归的实心方块都会让
+  全部方块的面不再互剔（顶点灾难），故 `check:data` 的 `[树叶剔除]` 双向钉住两侧。
+  ⚠️ 与 `chimney` 的 `opaque:false`（cloud 手法）**不同**：chimney 是「完全不剔除任何邻居面」；
+  镂空体是「只退一半」—— 它仍剔除自己朝实心块的面，只是要求对方保留朝向它的面。
+
 **读路径 API**（物理/射线/meshing 共用）
 
 ```js

@@ -25,6 +25,15 @@ export function createRegistry() {
    * 在 mc-heavy 走 cullMode 'none'/'transparent' 或不是方块 → 通道级已排除，无需声明）。
    */
   const shadowCastTable = new Uint8Array(MAX_BLOCKS);
+  /**
+   * 镂空遮挡体表（v1.70）：cutout 通道 + opaqueTable=1 的方块 = 贴图有孔洞却参与邻居面剔除。
+   * 当前 13 个树叶族。**不是新声明字段**：完全由 `cullMode` 与 `opaque` 派生（红线 1：
+   * 声明侧仍是唯一权威，不新增一份“哪些是树叶”名单）。
+   * 消费方只有 mesher 的面剔除：邻居是镂空体时**不剔**本方块朝向它的那一面。
+   * 理由：镂空体贴图有孔洞（alphaTest 逐片元 discard），拿它当实心遮挡体会让玩家透过孔洞
+   * 看到背后的空气（用户报告）；代价 = 每条「实心↔镂空体」接触面 +1 面。
+   */
+  const hollowOccluderTable = new Uint8Array(MAX_BLOCKS);
   const geometryNames = []; // index → geometryType 字符串
   let count = 0;
   let frozen = false;
@@ -32,7 +41,7 @@ export function createRegistry() {
   return {
     get count() { return count; },
     solidTable, opaqueTable, cullTable, emissiveTable, geometryTable, orientationModesTable,
-    supportsPlayerTable, indestructibleTable, shadowCastTable,
+    supportsPlayerTable, indestructibleTable, shadowCastTable, hollowOccluderTable,
 
     /**
      * @param {string} name
@@ -49,6 +58,10 @@ export function createRegistry() {
       idToName[id] = name;
       solidTable[id] = def.solid ? 1 : 0;
       opaqueTable[id] = (def.opaque ?? (def.cullMode === 'opaque')) ? 1 : 0;
+      // 镂空遮挡体：cutout 通道（拿到 alphaTest，贴图孔洞生效）+ 参与邻居面剔除。
+      // 派生而非声明：任何“镂空但对 opaqueTable 贡献了 1”的方块自动落入本表，
+      // 不会出现「新加一个镂空方块却忘了登记 → 又看穿背后」的静默回归。
+      hollowOccluderTable[id] = (def.cullMode === 'cutout' && opaqueTable[id] === 1) ? 1 : 0;
       supportsPlayerTable[id] = def.supportsPlayer ? 1 : 0;
       cullTable[id] = CULL_MODES[def.cullMode ?? 'opaque'];
       emissiveTable[id] = def.emissive ?? 0;
