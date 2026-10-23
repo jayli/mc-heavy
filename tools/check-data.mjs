@@ -816,6 +816,18 @@ async function checkGiantTrees() {
     if (!v) { fail(`"${n}" 没有 faces-data 映射`); continue; }
     for (const t of (Array.isArray(v) ? v : [v])) if (t && t.startsWith('procedural/giant_')) giantTiles.add(t);
   }
+  // ⑦a 树叶**必须有自己的 procedural 贴图**，不得复用普通方块的 tile。
+  // 理由：孔洞密度是巨树专属的观感旋钮（比普通树叶更密）；共用 `leaves` tile 就改不了它
+  // （改了会把普通树叶一起改掉）。这是「巨树叶必须独立烘焙」的契约。
+  for (const n of declared.filter((x) => x.endsWith('_leaves'))) {
+    const v = FACES_DATA[n];
+    const arr = Array.isArray(v) ? v : [v];
+    for (const t of arr) {
+      if (t && !t.startsWith('procedural/giant_')) {
+        fail(`"${n}" 的贴图 tile "${t}" 不是 procedural/giant_*（复用普通方块贴图 → 无法单独调孔洞密度，且改它会连普通树叶一起变）`);
+      }
+    }
+  }
   for (const t of giantTiles) {
     const file = path.join(ROOT, 'assets', 'textures', `${t}.png`);
     if (!fs.existsSync(file)) { fail(`贴图缺失 ${t}.png（跑 node tools/bake-giant-textures.mjs）`); continue; }
@@ -823,7 +835,26 @@ async function checkGiantTrees() {
     if (png.width !== 16 || png.height !== 16) fail(`${t}.png 尺寸 ${png.width}×${png.height} ≠ 16×16`);
     for (let i = 0; i < png.width * png.height; i++) {
       const o = i * 4;
-      if (0.2126 * png.data[o] + 0.7152 * png.data[o + 1] + 0.0722 * png.data[o + 2] < 40) { fail(`${t}.png 像素 ${i} 近黑（opaque 通道忽略 alpha，孔洞处会露出黑点）`); break; }
+      if (0.2126 * png.data[o] + 0.7152 * png.data[o + 1] + 0.0722 * png.data[o + 2] < 40) { fail(`${t}.png 像素 ${i} 近黑`); break; }
+    }
+  }
+
+  // ⑦b 树叶（不是树干）的孔洞率必须落在巨树专属区间内。
+  // 钉的失效路径：误把 `holeRatio` 删掉 / 烘成了源图的 31% → 观感倒退到「太稀」（本次需求的起因）。
+  // 区间取 5%~25%：实测交付值 38/256 = 14.8%，源图未压缩为 31%、完全无孔洞为 0%。
+  // ⚠️ 只有**树叶**受这个区间约束（树干无镂空概念，孔洞数恒 0）。
+  let leafHoleNote = '';
+  for (const t of [...giantTiles].filter((x) => x.endsWith('_leaves'))) {
+    const file = path.join(ROOT, 'assets', 'textures', `${t}.png`);
+    if (!fs.existsSync(file)) continue;
+    const png = PNG.sync.read(fs.readFileSync(file));
+    let holes = 0;
+    const total = png.width * png.height;
+    for (let i = 0; i < total; i++) if (png.data[i * 4 + 3] < 77) holes++;   // alphaTest 0.3 判据
+    const ratio = holes / total;
+    leafHoleNote = `${(ratio * 100).toFixed(1)}%`;
+    if (ratio < 0.05 || ratio > 0.25) {
+      fail(`${t}.png 孔洞率 ${(ratio * 100).toFixed(1)}%（应 5%~25%）—— 太小像实心色板、太接近源图 31% 就回到「叶冠太稀」`);
     }
   }
   const procDir = path.join(ROOT, 'assets', 'textures', 'procedural');
@@ -832,7 +863,82 @@ async function checkGiantTrees() {
   }
 
   if (failures.length === before) {
-    infos.push(`[巨树] ${variantCount} 变体 / ${declared.length} 方块（叶子 cutout 镂空 + opaqueTable=1 保剔除 + 投影）/ 指纹匹配 / 贴图 ${giantTiles.size} 张`);
+    infos.push(`[巨树] ${variantCount} 变体 / ${declared.length} 方块（叶子 cutout 镂空 + opaqueTable=1 保剔除 + 投影）/ 指纹匹配 / 贴图 ${giantTiles.size} 张 / 孔洞率 ${leafHoleNote}`);
+  }
+}
+
+// ---------------------------------------------------------------- [树叶贴图] 契约（2026-10-23）
+
+/**
+ * [树叶贴图] 契约：**全部树叶族**的贴图必须是 `procedural/leaf_*`（除 `sky_leaves`）
+ * 且孔洞率落在与巨树一致的区间内。
+ *
+ * 背景（2026-10-23 用户裁定）：普通树叶的口径对齐巨树 —— `cutout` + `opaqueTable=1`，
+ * 且「贴图的镂空密度改得跟巨树一样，让树叶看起来密一些」。
+ * 源图孔洞率 23%~**77.6%**（`oak_leaves_branch_medium` 叶面只剩 22.4%）→ 压到 14.8%~15.0%。
+ *
+ * 钉的失效路径：
+ *   ① 把 faces-data 改回源 tile（`leaves` / `leaves_yellow` …）→ 孔洞率倒退，观感变稀（本次需求起因）；
+ *   ② 删掉/漏跑 `npm run leaftextures` → 产物静默过期或缺失；
+ *   ③ 孔洞率烘错（改成 0.31 → 白做；改成 0.01 → 像实心色板）。
+ *
+ * ⚠️ `sky_leaves` **例外**：它走 opaque 通道（mc-lite 材质无 alphaTest），本就无镂空 → 不在本契约内。
+ */
+async function checkLeafTextures() {
+  const holes = await import('./leaf-holes.mjs');
+  const { LEAF_TEXTURES } = await import('./bake-leaf-textures.mjs');
+  const before = failures.length;
+  const fail = (m) => failures.push(`[树叶贴图] ${m}`);
+
+  // ① 烘焙表里的每一项：产物必须存在、尺寸与源图一致、孔洞率在区间内
+  for (const t of LEAF_TEXTURES) {
+    const srcPath = path.join(ROOT, 'assets', 'textures', `${t.src}.png`);
+    const dstPath = path.join(ROOT, 'assets', 'textures', 'procedural', `${t.out}.png`);
+    if (!fs.existsSync(srcPath)) { fail(`源图缺失 ${t.src}.png（入库素材丢失 = 仓库损坏）`); continue; }
+    if (!fs.existsSync(dstPath)) { fail(`产物缺失 procedural/${t.out}.png（跑 npm run leaftextures）`); continue; }
+    const src = PNG.sync.read(fs.readFileSync(srcPath));
+    const png = PNG.sync.read(fs.readFileSync(dstPath));
+    if (png.width !== src.width || png.height !== src.height) {
+      fail(`procedural/${t.out}.png 尺寸 ${png.width}×${png.height} ≠ 源图 ${src.width}×${src.height}`);
+    }
+    const st = holes.leafHoleStats(png);
+    if (st.ratio < holes.LEAF_HOLE_RATIO_MIN || st.ratio > holes.LEAF_HOLE_RATIO_MAX) {
+      fail(`procedural/${t.out}.png 孔洞率 ${(st.ratio * 100).toFixed(1)}%（应 ${holes.LEAF_HOLE_RATIO_MIN * 100}%~${holes.LEAF_HOLE_RATIO_MAX * 100}%）—— 太小像实心色板、太接近源图就回到「叶冠太稀」`);
+    }
+    // ② RGB 必须与源图逐字节相同（本脚本只应改 alpha；改颜色是另一个需求）
+    for (let i = 0; i < png.data.length; i += 4) {
+      if (png.data[i] !== src.data[i] || png.data[i + 1] !== src.data[i + 1] || png.data[i + 2] !== src.data[i + 2]) {
+        fail(`procedural/${t.out}.png 的 RGB 与源图不一致（像素 ${i / 4}）—— 孔洞压缩只应改 alpha`);
+        break;
+      }
+    }
+  }
+
+  // ③ 每个树叶族（除 sky_leaves）的 faces-data 都必须指向 procedural/leaf_*
+  const LEAF_NAMES = ['leaves', 'azalea_leaves', 'yellow_leaves', 'realistic_oak_leaves',
+    'realistic_yellow_leaves', 'swamp_leaves', 'snow_leaves'];
+  for (const n of LEAF_NAMES) {
+    const v = FACES_DATA[n];
+    if (!v) { fail(`"${n}" 没有 faces-data 映射`); continue; }
+    for (const tile of (Array.isArray(v) ? v : [v])) {
+      // 排除非树叶 tile（雪块顶面 Snow_top 是雪，不是叶）
+      if (tile === 'Snow_top') continue;
+      if (!tile || !tile.startsWith('procedural/leaf_')) {
+        fail(`"${n}" 的 tile "${tile}" 不是 procedural/leaf_*（未做孔洞压缩 → 叶冠太稀）`);
+      }
+    }
+  }
+
+  // ④ procedural/leaf_* 不得有孤儿（烘焙表里没列、却被文件系统里有）
+  const want = new Set(LEAF_TEXTURES.map((t) => `procedural/${t.out}`));
+  const procDir = path.join(ROOT, 'assets', 'textures', 'procedural');
+  for (const f of fs.readdirSync(procDir).filter((x) => x.startsWith('leaf_') && x.endsWith('.png'))) {
+    const tile = `procedural/${f.replace(/\.png$/, '')}`;
+    if (!want.has(tile)) fail(`孤儿贴图 ${tile}（不在 LEAF_TEXTURES 烘焙表里）`);
+  }
+
+  if (failures.length === before) {
+    infos.push(`[树叶贴图] ${LEAF_TEXTURES.length} 张孔洞压缩产物 / 孔洞率 ${(holes.LEAF_HOLE_RATIO * 100).toFixed(1)}% / RGB 与源图逐字节相同`);
   }
 }
 
@@ -846,6 +952,7 @@ checkIndestructibleContract();
 checkShadowCastContract();   // v1.45：阴影投射排除集合契约（⚠️ 主流程是逐个显式调用，漏了本行则门禁永不执行）
 checkPlaygroundContract();   // M9：创造台方块契约（⚠️ 主流程是逐个显式调用，漏了本行则门禁永不执行）
 checkMinecartContract();     // 矿车：mine_cart 与铁轨必须在背包（⚠️ 漏了本行则门禁永不执行）
+await checkLeafTextures();   // 2026-10-23：全部树叶的孔洞压缩产物（⚠️ 漏了本行则门禁永不执行）
 checkIconManifestCoverage();
 checkIconAtlasArtifacts();
 checkIconFreshness();

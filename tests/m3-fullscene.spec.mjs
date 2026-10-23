@@ -90,13 +90,12 @@ test('M3-1：全量场景稳态帧率 + 队列不积压 + 内存预算', async (
 
   // 内存预算（§4.10）：体素 CPU ~37MB、GPU 顶点缓冲 ~100MB 级（1.5× 余量红线）
   // ⚠️ 巨树景观（用户裁决 2026-10-23，接受 opaque ×1.5）：CAPACITY.opaque 2.85M→4.275M，
-  //    三通道静态 gpuVertexBytes 148.06MiB → 194.55MiB（= (4.275M+2.4M+0.125M)×30B，实测 204,000,000B）。
-  //    （巨树 Epic 时为 188.83MiB = cutout 2.2M；v1.69 巨树叶改 cutout 通道后 2.2M→2.4M。）
-  //    上限 150→200MiB = 194.55MiB + ~5MiB 的扩容兜底余量（一次 transparent 扩容 ≈ +1.8MiB）。
+  //    三通道静态 gpuVertexBytes 148.06MiB → 188.83MiB（= (4.275M+2.2M+0.125M)×30B，实测 198,000,000B）。
+  //    上限 150→200MiB = 188.83MiB + ~11MiB 的扩容兜底余量（一次 transparent 扩容 ≈ +1.8MiB）。
   const mem = await page.evaluate(() => window.__MC_GAME__.memoryStats());
   console.log('M3-1 MEM:', JSON.stringify(mem));
   expect(mem.voxelBytes).toBeLessThan(45 * 1024 * 1024);   // 289×128KB≈37MB + 滞回带余量
-  expect(mem.gpuVertexBytes).toBeLessThan(200 * 1024 * 1024); // 巨树景观后 194.55MiB 静态 + 扩容兜底余量
+  expect(mem.gpuVertexBytes).toBeLessThan(200 * 1024 * 1024); // 巨树景观后 188.83MiB 静态 + 扩容兜底余量
   if (!process.env.CI) {
     // jsHeapSizeLimit 仅 Chromium 暴露；CI 上 SwiftShader 内存形态不同，只在本机参考
     expect(mem.jsHeapUsedBytes ?? 0).toBeLessThan(1024 * 1024 * 1024);

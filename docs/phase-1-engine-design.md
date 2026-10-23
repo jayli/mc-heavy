@@ -2,7 +2,7 @@
 
 > 版本：v1.69 ｜ 日期：2026-10-23 ｜ 状态：定稿（经十五轮逐条核验修订 + M3.2 实施回填 + 异形方块渲染勘误 + 背包物品集合口径 + 吊灯材质自发光 + 吊灯 UV 分区 + 背包图标表 + 等轴测图标 + 测试分级策略与静态门禁 + 全量背包图标离线烘焙 + 背包槽位点选抖动修复 + 等轴测图标遮挡修复 + 删除缓存按钮 + 沼泽睡莲水洞与沉水修复 + AO 去掉对角门控 + 设置面板两列布局与档位精简 + M8 TNT/炮塔的三项架构口径变更 + M9 创造台的两项架构口径变更 + 水面遮罩判据的两项架构口径变更 + 天空树回补与 sky_leaves 通道修正 + 进度包导入导出 + 太阳阴影 shadow map + 阴影混合模型对齐 mc-lite + 阴影纹素对齐与太阳方向门控 + 第一人称手臂与跑动视角晃动 + 晃动幅度上调与手臂挥动对齐原版 + 晃动回调与挖掘挥手时机 + 相机零旋转 + 晃动改距离驱动 + 晃动幅度上调至 0.13 + 步频放慢至 1.5Hz → 1.35Hz + 手臂烘焙面明暗 + 手臂配色对齐 mc-lite 与晃动幅度上调至 0.15 + 太阳 N·L 方向光与 mc-lite 天空盒 + 雾色融入天空 + 夜空天空盒无缝重烘焙 + 夜间雾距统一 + 背景音乐与面板开关 + 光照区域语义修正（blocklight 3×3） + 光照变化的脏 section 传播修正（mesh 依赖集合 / 丢弃重发 / 输入集合校验） + 巨树景观与 opaque 容量 ×1.5 + 巨树叶改 cutout 通道（镂空渲染）与 cutout 容量 2.4M）
 >
-> v1.69 修订说明：**巨树叶由 opaque 通道改走 cutout 通道（用户裁决 2026-10-23），cutout 容量 2.20M→2.40M**。
+> v1.69 修订说明：**巨树叶由 opaque 通道改走 cutout 通道（用户裁决 2026-10-23）；随后全部树叶 opaqueTable=1，cutout 容量回退 2.20M**。
 > 起因：用户实玩反馈「巨树树叶都不镂空、表面完全不透光」。**贴图本身早就是镂空的**（与 `leaves.png` 逐像素同构：
 > 13 个 a=0 + 67 个半透明 + 176 个实心），根因是 `cullMode:"opaque"` → opaque 通道材质 `alphaTest=0` → alpha 被完全忽略。
 > 修法 = `cullMode:"cutout"`（拿到 `alphaTest 0.3`）+ **显式 `"opaque":true`**（保住 `opaqueTable=1`）。
@@ -17,15 +17,17 @@
 > 逐通道判据会误报（实测曾误判为「(-25,-5) 超线 6.7 点」，实际该视域总量分毫未变）。
 > 故 `tests/giant-tree-budget.spec.mjs` 的主判据改为 **总顶点**（与通道归属无关），逐通道只留
 > 「cutout 不得扩容」「transparent 不比 HEAD 更糟」「opaque ≤ 90%」。
-> `CAPACITY.cutout.active` 550→600（2.20M→2.40M）：(-20,10) 视域的 cutout 实测 2,220,795 > 2,200,000，
-> 抬后降至 92.5% 零扩容；三通道静态合计 **194.55 MiB**（仍 < `m3-fullscene` 的 200 MiB 上限）。
+> `CAPACITY.cutout.active` 曾因巨树叶改道抬到 600（2.40M），**同日又回退为 550（2.20M）** ——
+> 因为用户随即裁定「**普通树叶的 opaqueTable 也设为 1**」：全部 14 个树叶族都变成叶-叶共享面互剔，
+> cutout 占用大幅下降（5 视域实测峰值 35.1% → 回退后 38.3% = 842,400 顶点，零扩容）。
+> 三通道静态合计回到 **188.83 MiB**（(4.275M+2.20M+0.125M)×30B）。
 > 原文「巨树只把旧森林树的 cutout 叶替换成 opaque 叶，cutout 只降不升」**因本次换道失效**，作废。
 > 门禁与单测同步：`[巨树]` ⑤ 改为「必须是 cutout 且 opaqueTable=1」双向钉死；
 > `test-giant-trees.js` 新增 2 条（通道契约 + 顶点守卫，前者防通道错、后者防漏写 `opaque:true`）。
 > ⚠️ 顶点守卫的初始写法有盲区（对照侧也读被测声明 → 两条路径都不剔除 → 仍相等 → 注入后仍绿），
 > 负向验证拓出后改为对照侧**强制写死 `opaqueTable=1`**，注入实测得 `12316 vs 1584（差 10732）`真红。
 >
-> v1.68 修订说明：**巨树景观 Epic —— opaque 通道容量 ×1.5，§4.10 的 150MiB 冻结预算有意上调到 188.83 MiB（v1.69 再调到 194.55 MiB，见上节）**
+> v1.68 修订说明：**巨树景观 Epic —— opaque 通道容量 ×1.5，§4.10 的 150MiB 冻结预算有意上调到 188.83 MiB（v1.69 中途曾到 194.55 MiB，最终回退 188.83，见上节）**
 > （用户裁决 2026-10-23；规格 `docs/superpowers/specs/2026-10-23-giant-trees-design.md` v1.1 §0.2 / DR-10 / DR-17）。
 > 引入 28 个原版景观树变体（森林 / 海边 / 草地沙漠交界三条落位路径；树叶 `opaque` 且投影 —— **v1.69 起改为 cutout 通道，仍 `opaqueTable=1` 且投影**）。opaque 叶使 opaque 通道
 > 在密林视域的 reserved 占用抬高：终版参数在原容量 2.85M 下折算 (-20,10) 视域 105%、森林冲刺 123%（→ 必然 ×1.5 扩容），
@@ -35,8 +37,8 @@
 > （cutout 128.1%、森林冲刺 cutout 145.4% / transparent 140.8%，会触发 ×1.5 扩容），所以验收口径写成「真实页面 reserved：
 > opaque ≤ 90% 且零扩容；cutout / transparent 相对 HEAD 不恶化」，而不是「任何视域都不扩容」。
 > 变更点：`CAPACITY.opaque.active` 1200→1800（maxVerts 2.85M→**4.275M**）；三通道静态顶点缓冲
-> `(4.275M+2.40M+0.125M)×30B = 204,000,000 B = 194.55 MiB`（原 148.06 MiB；cutout 2.20M→2.40M 见修订说明；`memoryStats().gpuVertexBytes` 实测同值）；
-> `tests/m3-fullscene.spec.mjs` 的 `gpuVertexBytes` 上限 150→200 MiB（194.55 + 一次 transparent 扩容的兜底余量）。
+> `(4.275M+2.20M+0.125M)×30B = 198,000,000 B = 188.83 MiB`（原 148.06 MiB；`memoryStats().gpuVertexBytes` 实测同值）；
+> `tests/m3-fullscene.spec.mjs` 的 `gpuVertexBytes` 上限 150→200 MiB（188.83 + 一次 transparent 扩容的兜底余量）。
 > ⚠️ 原文「cutout / transparent 容量不变（cutout 只降不升）」**已被 v1.69 作废** —— 见下节：巨树叶由 opaque 改走 cutout。
 > 新增模块（Worker 同构）：`src/gen/structures/giant-trees.js`（region 层「全局对齐网格 + 内缩抖动」候选 +
 > column 层合并邻域候选 / 排除 / 光栅化 / 地基 / 覆盖窗口）；离线烘焙 `npm run gianttrees` / `npm run gianttextures`；
@@ -3402,7 +3404,7 @@ IndexedDB（沿用 mc-lite DB 名/版本约定）
 - 视距 16 前必须先做 §4.4.5 的 LOD（外圈粗模），否则显存与 draw call 双双失控。
 - edits 稀疏层常驻内存（卸载 column 时序列化进 IndexedDB 后可释放），典型 KB 级/column。
 - **（v1.68）静态分配口径与验收口径**：三通道 `BatchedMesh` 顶点缓冲是**静态预分配**（`CAPACITY`，见 `render-world.js`
-  注释），与上表「活跃 section」口径不同。巨树景观后静态分配 **194.55 MiB**（opaque 4.275M + cutout 2.40M +
+  注释），与上表「活跃 section」口径不同。巨树景观后静态分配 **188.83 MiB**（opaque 4.275M + cutout 2.20M +
   transparent 0.125M，×30B；原 148.06 MiB），实测活跃 `gpuActiveBytes` ≈ 127 MiB；M3-1 的「1.5× 余量红线」断言相应
   放宽到 200 MiB。**扩容是黏性的离散 ×1.5 跳增**（`_ensureCapacity`），验收一律读 reserved 相对**初始**容量，
   不读当前 `maxVertexCount`。

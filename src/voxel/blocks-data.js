@@ -30,15 +30,23 @@ export const BLOCKS = [
   {"name":"cloud","solid":false,"supportsPlayer":true,"cullMode":"opaque","orientationModes":4,"geometry":"box","shadowCast":false},
   {"name":"glass_block","solid":true,"cullMode":"transparent","orientationModes":4,"geometry":"box"},
   {"name":"glass_blink","solid":true,"cullMode":"transparent","orientationModes":4,"geometry":"box"},
-  {"name":"leaves","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"box"},
+  // ---- 树叶类：全部 `cutout` 通道 + `opaque:true`（2026-10-23 用户裁定，对齐巨树叶）----
+  // `cutout` = 拿到 alphaTest 0.3（镂空生效）；`opaque:true` = opaqueTable 1（叶-叶共享面互剔）。
+  // 实测单棵普通树（树干 + 5³ 叶团）总顶点 3068 → **664（−78.4%）**。
+  // ⚠️ `opaqueTable=1` 的其余三项后果是**用户明确接受的有意变更**：
+  //   ① AO 遮挡（树叶让邻居方块变暗）② blocklight 阻断（火把光透不过树冠）
+  //   ③ 炮塔 LOS / 弹丸阻挡 —— **这项改变了玩法**：树叶现在会挡住炮塔视线、弹丸被树叶拦截
+  //      （mc-lite 口径是「实心且不透明」，树叶可穿透）。巨树叶自 Epic 起已是这个语义。
+  //   四个消费方共用 opaqueTable，故无需改任何消费者代码。
+  {"name":"leaves","solid":true,"cullMode":"cutout","opaque":true,"orientationModes":4,"geometry":"box"},
   {"name":"birch_log","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
   {"name":"wood","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
   {"name":"dark_oak","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
   {"name":"sky_wood","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
   {"name":"azalea_log","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
-  {"name":"azalea_leaves","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"box"},
+  {"name":"azalea_leaves","solid":true,"cullMode":"cutout","opaque":true,"orientationModes":4,"geometry":"box"},
   {"name":"azalea_flowers","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"box"},
-  {"name":"yellow_leaves","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"box"},
+  {"name":"yellow_leaves","solid":true,"cullMode":"cutout","opaque":true,"orientationModes":4,"geometry":"box"},
   // 通道勘误（方案 C，spec §2.6）：mc-lite 材质是 mkMat('#FF69B4', 0.9) =
   // transparent+opacity，**无 alphaTest** → 不是镂空。原 'cutout' 是 M2-7 按
   // 「名字含 leaves」归类的偏差；cutout 通道 alphaTest=0.3 且无 transparent →
@@ -47,8 +55,8 @@ export const BLOCKS = [
   // 面数 735,576→700,064；连带效应（AO 遮挡 / blocklight 阻断 / 炮塔 LOS 阻挡）
   // 见 spec §2.6.3，均为有意偏离 mc-lite。
   {"name":"sky_leaves","solid":true,"cullMode":"opaque","orientationModes":4,"geometry":"box"},
-  {"name":"realistic_oak_leaves","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"box"},
-  {"name":"realistic_yellow_leaves","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"box"},
+  {"name":"realistic_oak_leaves","solid":true,"cullMode":"cutout","opaque":true,"orientationModes":4,"geometry":"box"},
+  {"name":"realistic_yellow_leaves","solid":true,"cullMode":"cutout","opaque":true,"orientationModes":4,"geometry":"box"},
   {"name":"flower","solid":false,"cullMode":"cutout","orientationModes":4,"geometry":"flower","shadowCast":false},
   {"name":"short_grass","solid":false,"cullMode":"cutout","orientationModes":4,"geometry":"flower","shadowCast":false},
   {"name":"allium","solid":false,"cullMode":"cutout","orientationModes":4,"geometry":"flower","shadowCast":false},
@@ -83,8 +91,8 @@ export const BLOCKS = [
   // 细圆柱本来就不该完全遮光挡视线，这三项都是修正而非回退。
   // ⚠️ bed_head/bed_tail（half_block）是同类漏网，但已从背包移除、实际不会被放置，暂不修。
   {"name":"chimney","solid":true,"opaque":false,"cullMode":"opaque","orientationModes":0,"geometry":"chimney"},
-  {"name":"swamp_leaves","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"box"},
-  {"name":"snow_leaves","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"box"},
+  {"name":"swamp_leaves","solid":true,"cullMode":"cutout","opaque":true,"orientationModes":4,"geometry":"box"},
+  {"name":"snow_leaves","solid":true,"cullMode":"cutout","opaque":true,"orientationModes":4,"geometry":"box"},
   {"name":"calcite","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
   {"name":"end_stone","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
   {"name":"iron","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},

@@ -53,7 +53,7 @@ Epic 链 M4→M5→M6→M7 已全部交付。**第三阶段 M8（TNT 爆炸 / �
 **v1.66 / v1.67** 把枪击命中特效改为**整格白闪 + 按命中面 atlas 取色的碎块**（MAG7 全格白闪波浪）。
 **v1.68** 引入**巨树景观**（素材 `40AssortedTreesPack.schem` 入库 → 28 个原版景观树变体按 1/2 比例，
 森林 / 海边 / 草地沙漠交界三条落位路径，城市·地标·撒布结构让路，与旧森林树互斥；**opaque 通道容量 ×1.5**，
-§4.10 预算 148.06 → 194.55 MiB（v1.69 巨树叶改 cutout 后 cutout 2.2M→2.4M；原 188.83）；验收报告 `docs/giant-trees-acceptance-report.md`）。
+§4.10 预算 148.06 → **188.83 MiB**（v1.69 期间曾到 194.55，全部树叶 opaqueTable=1 后回退）；验收报告 `docs/giant-trees-acceptance-report.md`）。
 另有一项未按版本号登记的改动：**准心按背景亮度自适应配色**（`src/ui/crosshair.js`）。
 进度与实测数据一律查 roadmap。里程碑状态、验收报告、遗留 TODO 的
 完整清单**一律查 roadmap** —— 此处不复制（复制就会漂移）。
@@ -838,7 +838,7 @@ M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 
   `reservedV`。**HEAD 本身在密林视域已越线**（cutout 128.1% / 森林冲刺 145.4%），所以「任何视域都不扩容」
   对 HEAD 就不成立，验收写成「相对 HEAD 不恶化」。**出生点在城市中心，三个方向冲 96 格都出不了城**
   ——冲刺测试要从森林 / 海岸起步。
-- **`CAPACITY.opaque.active = 1800`（4.275M）是用户裁决的有意上调**（§4.10 的冻结预算 148.06 → 194.55 MiB，
+- **`CAPACITY.opaque.active = 1800`（4.275M）是用户裁决的有意上调**（§4.10 的冻结预算 148.06 → 188.83 MiB，
   其中 v1.69 巨树叶改 cutout 通道使 cutout 2.2M→2.4M，opaque 那次是 148.06→188.83；
   `m3-fullscene` 上限 200 MiB）。⚠️ **「容量 == 标定值」断言单看末尾会被掩盖**：`2.85M × 1.5` 恰好 = `4.275M`，
   容量被改回 1200 时页面会扩容到同一个数 → 预算门**开局**就断言初始容量（负向验证实测：只在末尾断言时注入后全绿）。
@@ -862,24 +862,61 @@ M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 
   下标小者胜）、地块索引 = `(minZ, minX)` 升序、分类表显式（未知源方块名 throw）。改任一条会让总格数落到
   [16000, 18000] 区间外或族标志校验 throw。`.schem` **入库**（烘焙输入，不是渲染资源）；改分类表 / 参数 /
   `.schem` 后必须 `npm run gianttrees`，`check:data` 的 `[巨树]` 指纹会抓。
-- **贴图：巨树叶走 cutout 通道（`alphaTest=0.3`）→ 13 个全透明 + 67 个半透明像素被剔除**，只留 176/256 实心像素。
+- **贴图（2026-10-23 二次调整）：巨树叶有独立的 16×16 贴图 + 更密的孔洞图案（孔洞率 31%→14.8%）。**
+  背景：巨树叶走 cutout 后，源图原样的孔洞密度在巨树上是「太稀」——普通树叶因树小、背景天然近而不易察觉，
+  巨树冠巨大且 `opaqueTable=1` 不画叶背内面，孔洞后面往往是空的。用户要求「单独做一张更密的镂空图，
+  几何完全不变」。做法 = 从源图**已被 alphaTest 剔除的那批像素**里按低差异序列（R2）取前 N 个作孔洞，
+  其余 alpha 抬到 255 —— 几何/顶点数零变化，只改贴图。
+  ⚠️ **`giant_oak_leaves` 不得复用普通树叶的 `leaves` tile**（原实现复用）：共用一张图就改不了孔洞密度
+  （改了会把普通树叶一起改），`[巨树]` 门禁已钉住「树叶的 tile 必须是 `procedural/giant_*`」。
+  ⚠️ **孔洞压缩必须用低差异序列，不能按 alpha 升序取**：实测「alpha 最小优先」会把孔洞聚成一块
+  （前 8 个全落左上角），观感是「边上缺一块」而非「疏密有致」。
+  ⚠️ 门禁同时钉孔洞率区间（5%~25%，交付值 14.8%）：删掉 `holeRatio` 或烘成源图的 31% 都会真红。
+  `alphaTest 0.3` 按新贴图剔掉 38/256 像素，叶面覆盖率 68.8% → **85.2%**。
+  ⚠️ **基色削顶取舍（2026-10-23 用户裁定：鲜艳度优先）**：`c947169` 曾为「零削顶」把每通道封顶在
+  `floor(255/1.086)=234`，实测后果是 cherry 的 R 需要 269 → 贴图均值 R 从 236 掉到 **205（−13%）**，
+  用户反馈「粉叶变暗、不如原来鲜艳」→ **cherry 基色 R 改回 255**（`base:[255,148,206]`）。
+  代价 = 最亮那档 20 个像素 R 削顶（占 218 可见像素的 9%），换来整体鲜艳度（实测均值 R 225）。
+  ⚠️ 再往上提高不了多少：`base_R=270` 时均值才 233，但削顶 101 个像素（46%）→ 叶面明显变平，不划算。
+  ⚠️ **这 7 张贴图的终态曾在 `c947169` 后长期落后于脚本参数**（那次只写 staging、提交信息明写「待验证后
+  再替换终态贴图」但未执行）→ 任何「脚本改了贴图却没重跑烘焙」的状态都会静默停留在旧观感。
+  排查手法：用脚本重烘一张与仓库里的图比 sha256，不一致即说明终态落后。
   重着色仍须重算**全部**像素的 RGB（与既有树叶同口径，防任何通道回退时露黑点），`[巨树]` 门禁钉「无近黑像素」。
   暂存 / 备用贴图不能放进 `assets/textures/`（`build-atlas` 递归扫描 + `atlas.spec` 断言 tile 数 ≡ PNG 数）。
-- **巨树叶口径 = `cullMode:"cutout"` + 显式 `"opaque":true`**（2026-10-23 修订，两套口径缺一不可）：
+- **全部 14 个树叶族的贴图孔洞率统一压到 14.8%~15.0%**（2026-10-23，`npm run leaftextures`）：
+  普通树叶源图的孔洞率是 23%~**77.6%**（`oak_leaves_branch_medium` 叶面只剩 22.4%）→ 全部压到与巨树一致
+  （叶面覆盖 85%）。**只改 alpha、RGB 逐字节保留**（源图是入库素材不能原地改），产物落
+  `assets/textures/procedural/leaf_<name>.png`，`faces-data.js` 指向它。
+  孔洞压缩逻辑 = `tools/leaf-holes.mjs`（**巨树与普通树叶两个烘焙脚本共用这一份**，红线 1）。
+  ⚠️ `procedural/sky_leaves` 例外：它走 opaque 通道、本就无镂空，不压缩。
+  ⚠️ 改贴图地址后**必须跑 `npm run icons`** —— 树叶在背包里，图标指纹会抓到过期（实测漏跑即红）。
+  ⚠️ `[树叶贴图]` 门禁钉三件事：产物必须是 `procedural/leaf_*`、孔洞率 5%~25%、**RGB 与源图逐字节相同**
+  （防有人在做孔洞压缩时顺手改了颜色）。
+- **全部 14 个树叶族的口径 = `cullMode:"cutout"` + 显式 `"opaque":true`**（2026-10-23 两轮用户裁定）：
+  第一轮把 6 个巨树叶改道（镂空生效），第二轮把 **7 个普通树叶**也改成 `opaqueTable=1`（`sky_leaves` 早已是）。
   `cullMode` 选渲染通道（决定 `alphaTest` → 镂空与否），`opaque` 决定 `opaqueTable`（面剔除 / AO /
   blocklight / 炮塔 LOS）。**opaque 通道的 `alphaTest=0`**，所以 `cullMode:"opaque"` 会让镂空 alpha
   被完全忽略、叶面渲染成不透光的实心块（用户实玩反馈的「表面完全不透光」就是这个）。
-  实测同一片 8³ 叶团总顶点：纯 opaque 1584 / **cutout + opaqueTable=1 → 1584（零增长）** /
+  实测面剔除收益（单棵普通树，树干 + 5³ 叶团）：**3068 → 664 顶点（−78.4%）**；
+  巨树叶同一片 8³ 叶团：纯 opaque 1584 / **cutout + opaqueTable=1 → 1584（零增长）** /
   cutout + opaqueTable=0 → **12316（×7.78）**。故漏写 `opaque:true` 是静默的容量灾难。
-  `[巨树]` 门禁与 `test-giant-trees.js` 的「顶点守卫」双向钉死这两种错法。
-  ⚠️ 该方块与 `sky_leaves` 同属 `opaqueTable=1` 的实例（邻居面互剔 + AO 遮挡 + blocklight 阻断 + 炮塔 LOS 阻挡），
-  **但通道不同**（`sky_leaves` 是 opaque 通道）。
+  ⚠️ **`opaqueTable=1` 的四项后果都是用户明确接受的**：① 面剔除（收益）② AO 遮挡
+  ③ blocklight 阻断（火把光透不过树冠）④ **炮塔 LOS / 弹丸阻挡 —— 这项改变了玩法**：
+  树叶现在会挡住炮塔视线、弹丸被树叶拦截（mc-lite 口径是「实心且不透明」，树叶可穿透）。
+  四个消费方共用 `opaqueTable`，故无需改任何消费者代码；
+  但 `test-turrets.js` / `test-projectiles.js` 里「leaves 不阻挡」的断言已按新语义翻转。
+  ⚠️ `sky_leaves` 例外：它走 **opaque 通道**（mc-lite 材质是无 alphaTest 的纯粉，方案 C），**不写** `opaque:true`。
   **树叶投影**（用户裁决）：不写 `shadowCast:false`（`[阴影投射]` 的 13 项清单要求 `leaves` 必须投影）、
   不写 `opaque:false`。cutout 通道 `castShadow=true`，投影不受影响。
+  ⚠️ **回改了树叶的 `opaque` 后必须重测预算**：全部树叶 `opaqueTable=1` 使 5 视域总顶点降 18%、
+  cutout 峰值 35.1%，`CAPACITY.cutout` 因此从 600 回退为 **550**（2.2M，静态回到 188.83 MiB）。
+  若把任何一片退回 `opaqueTable=0`，先重测峰值再动容量。
 - **预算门的主判据是「总顶点」而非逐通道百分比**（2026-10-23）：巨树叶换通道那次改动
   总顶点**逐位守恒**（5 视域实测 3,478,025 / 4,810,025 / 3,831,985 / 3,233,170 / 3,192,705 前后相同），
-  但两通道容量基数不同（opaque 4.275M vs cutout 2.4M），同一批顶点搬过去百分比被放大 → 逐通道判据会误报。
+  但两通道容量基数不同（opaque 4.275M vs cutout 2.2M），同一批顶点搬过去百分比被放大 → 逐通道判据会误报。
   故 `giant-tree-budget.spec.mjs` 以总顶点为主判据、逐通道只留「不得扩容」与「transparent 不比 HEAD 糟」。
+  ⚠️ 第二轮（全部树叶 `opaqueTable=1`）让总顶点降 18%，基线已**重标为新实测值**（3,391,700 等）；
+  基线重标不是放宽 —— 新值比旧值低，任何回升都会真红。
   ⚠️ **此类「换通道」改动一律先做 A/B 总顶点守恒验证**，不要被百分比差误导（实测曾误判为「超线 6.7 点」）。
 - **draw call 有增量**：three r185.1 WebGPU 对 BatchedMesh 每个可见 geometry slot 各发一次 draw；实测 bench
   场景 ① +16 / ④ +41（545 → 586）。往通道里加大量新几何前别假设 draw 不变。
@@ -1371,7 +1408,11 @@ mc-heavy/
 ├─ tools/bake-giant-trees.mjs  # 巨树烘焙（npm run gianttrees）：入库 .schem → 28 变体 2×2×2 降采样
 │                              #   → assets/giant-trees/trees.json + trees.meta.json（尺寸+输入指纹）
 ├─ tools/giant-trees-fingerprint.mjs # 巨树烘焙参数（族表/调色板/分类表/族标志）与指纹共享模块（同上，红线 1）
-├─ tools/bake-giant-textures.mjs # 6 张巨树贴图烘焙（npm run gianttextures）：沿用 leaves.png / log_big_oak.png
+├─ tools/bake-giant-textures.mjs # 7 张巨树贴图烘焙（npm run gianttextures）：leaves_original / log_big_oak
+│                              #   + 树叶孔洞压缩（holeRatio 0.15，低差异序列选孔）
+├─ tools/bake-leaf-textures.mjs # 普通树叶孔洞压缩烘焙（npm run leaftextures）：5 张源图 → procedural/leaf_*
+│                              #   只改 alpha、RGB 逐字节保留；孔洞率与巨树一致（14.8%~15.0%）
+├─ tools/leaf-holes.mjs        # 孔洞压缩共享模块（红线 1）：巨树与普通树叶两个烘焙脚本 + check:data 共用
 │                              #   图案只换色 → assets/textures/procedural/giant_*.png
 ├─ tools/validate-weapon-assets.mjs   # 受控 GLB 静态校验（npm run validate:weapon-assets）
 ├─ tools/check-architecture.mjs # 静态架构门（npm run check:arch）：红线可静态检查的部分
@@ -1510,8 +1551,10 @@ npm run turret                 # 烘焙炮塔装甲 → assets/turret/armor.png 
 npm run gianttrees             # 烘焙巨树变体 → assets/giant-trees/trees.json + trees.meta.json（28 个变体）
                                #   改 .schem / tools/giant-trees-fingerprint.mjs（分类表、族表、调色板、
                                #   降采样参数）后需跑，否则产物静默过期（check:data 的 [巨树] 指纹检查会抓）
-npm run gianttextures          # 烘焙 6 张巨树贴图 → assets/textures/procedural/giant_*.png
-                               #   （沿用 leaves.png / log_big_oak.png 图案只换色；改基色 / CONTRAST 后需跑，再跑 atlas）
+npm run gianttextures          # 烘焙 7 张巨树贴图 → assets/textures/procedural/giant_*.png
+                               #   （leaves_original / log_big_oak 图案 + 孔洞压缩 holeRatio 0.15；改基色/孔洞率后需跑，再跑 atlas）
+npm run leaftextures           # 烘焙 5 张普通树叶孔洞压缩 → assets/textures/procedural/leaf_*.png
+                               #   只改 alpha、RGB 逐字节保留；改孔洞率后需跑，再跑 atlas + icons（树叶在背包里）
 npm run nightsky               # 烘焙无缝夜空立方图 → assets/sky/night/*.jpg + night-sky.json
                                #   改 tools/night-sky-fingerprint.mjs 参数后需跑，否则贴图静默过期
 npm run atlas                  # 重新生成 assets/atlas.png + atlas.json（世界渲染 atlas）

@@ -117,12 +117,14 @@ test('弹丸撞实心不透明方块即停，透明方块可穿透', () => {
     dt: 0.1, world, registry, entities, nowMs: 0,
   });
   assertTrue(r2.alive, 'glass_block 可穿透');
-  // leaves（实心但 cutout）也可穿透
+  // leaves（2026-10-23 起 opaqueTable=1）→ **现在会被截停**（用户裁定：树叶挡弹丸）
   world.setBlock(10, 5, 14, registry.idOf('leaves'));
-  assertTrue(advanceProjectile({
+  const rLeaf = advanceProjectile({
     state: makeProjectileState([10.5, 5.5, 10.5], [0, 0, 1]),
     dt: 0.1, world, registry, entities, nowMs: 0,
-  }).alive, 'leaves 可穿透');
+  });
+  assertEqual(rLeaf.alive, false, 'leaves 截停弹丸（opaqueTable=1）');
+  assertEqual(rLeaf.reason, 'block');
 });
 
 test('弹丸判定线段还原本步穿越：dt 尖峰时不穿墙（DDA 取代双点采样）', () => {

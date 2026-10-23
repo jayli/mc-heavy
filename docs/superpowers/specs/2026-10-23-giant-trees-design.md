@@ -31,7 +31,7 @@ v1.1 是在 `git archive HEAD`（`218f836`）的**隔离副本里按 v1.0 + 旧�
 | 15 | 单格植物 | 「树下长草合理，不跳过」 | 覆盖区内**目标格已被占用（非空气）则不写**；空气格照常生成 | 植物写在 `h+1` = 巨树 `gy=0` 层：31 格/256 个 column 被顶掉，含 23 格树干（单树干的树因此悬空） |
 | 16 | 悬空树干 | 无 | `gy=0` 树干格下方悬空 1~10 格补同种树干（地基） | 22% 的树基部悬空 ≥1 格，最高 9；项目已有 `GROUND_SUPPORT_TYPES` 同一语义 |
 | 17 | Worker 预热 | `applyStructuresToColumn` 里 `await loadGiantTrees()` | + Worker 模块加载期预热，`layout` / `gen` 入口 await 同一个 promise | `structure-gen` genP95（门 10ms）：HEAD 8.1~9.8 / 无预热 11.6~14.0 / 预热 8.4~10.0 |
-| 18 | 贴图 | `assets/textures/giant/` 8 张（含无人引用的 `giant/oak_log`） | `assets/textures/procedural/giant_*.png` **6 张**；`giant_oak_log` / `giant_oak_leaves` 复用既有 tile；脚本入库；**粉叶已预烘焙备用**（§3.6.2） | `atlas.spec` 只数 `.` / `procedural` / `inventory-icons` / `bed` 四个目录；`giant/oak_log.png` 无人引用 = 孤儿 tile |
+| 18 | 贴图 | `assets/textures/giant/` 8 张（含无人引用的 `giant/oak_log`） | `assets/textures/procedural/giant_*.png` **7 张**；`giant_oak_log` 复用既有 tile（`log_big_oak`），6 个树叶全部独立烘焙（`giant_oak_leaves` 原复用 `leaves`，2026-10-23 起独立以便单独调孔洞密度）；脚本入库；**粉叶已预烘焙备用**（§3.6.2） | `atlas.spec` 只数 `.` / `procedural` / `inventory-icons` / `bed` 四个目录；`giant/oak_log.png` 无人引用 = 孤儿 tile |
 | 19 | 对既有测试的影响 | 未提 | **有意同步**：4 条硬编码计数/清单单测、`m3-fullscene` 的 150 → 200 MiB；既有 `pyramid` / `pyramidIsland` / `island tower` 用例**不得改动** | 影子树真跑：`registry 126→134`、`HIDDEN 6→14`、`orientation 86→94`、`gpuVertexBytes 198,000,000` |
 | 20 | 若干不实/过期声明 | 见右 | 纠正：① 贴图色值「从 schematic 实测」（`.schem` 只存方块名，不含颜色）→ 艺术基色；② genP95 门 8ms → **10ms**（v1.42 起的用户裁决）；③ 删除对不存在的 memory `prefer-simplest-format-over-custom-binary` 的引用；④ 「cutout 回退是唯一会撞破 150MB 的路径」不成立（HEAD 自己就越线） | 逐条核实 |
 
@@ -352,12 +352,21 @@ cell (i, j) 出点  ⇔ seededRandom(i, j, seed+salt)   < chance
 |---|---|---|
 | `giant_oak_log` | 高橡/白桦/雪松/樱花/椰子的树干 | `['log_big_oak','log_big_oak','log_big_oak_top','log_big_oak_top','log_big_oak','log_big_oak']`（**复用既有 tile**） |
 | `giant_mangrove_log` | 榕树干 | `procedural/giant_mangrove_log`（单 tile） |
-| `giant_oak_leaves` | 高橡叶 | **`leaves`（复用既有 tile）** |
+| `giant_oak_leaves` | 高橡叶 | `procedural/giant_oak_leaves`（**2026-10-23 起独立烘焙**；原为复用 `leaves` tile，独立后才能单独调孔洞密度） |
 | `giant_birch_leaves` | 白桦叶 | `procedural/giant_birch_leaves` |
 | `giant_spruce_leaves` | 雪松叶（含雪块/雪层） | `procedural/giant_spruce_leaves` |
 | `giant_cherry_leaves` | 樱花叶（含粉混凝土/羊毛/海绵） | `procedural/giant_cherry_leaves` |
 | `giant_palm_leaves` | 椰子叶 | `procedural/giant_palm_leaves` |
 | `giant_banyan_leaves` | 榕树叶 | `procedural/giant_banyan_leaves` |
+
+**孔洞密度（2026-10-23）**：6 个树叶的贴图从源图 31% 孔洞率压缩到 **14.8%（38/256）**，叶面覆盖率 68.8% → 85.2%。
+做法 = 从源图「已被 `alphaTest 0.3` 剔除」的那批像素（80 个）里按**低差异序列（R2）**取前 38 个作孔洞，
+其余 alpha 抬到 255 —— **几何与顶点数零变化**，纯贴图调整。动机：巨树叶改走 cutout 后，源图原样的孔洞密度
+在巨树冠上观感「太稀」（普通树叶因树小且背景近而不易察觉；巨树冠巨大且 `opaqueTable=1` 不画叶背内面，
+孔洞后面往往是空的）。试过 0.03（8 个，几乎无孔、像实心色板）与 0.08（20 个，太零散），选 0.15。
+⚠️ **不能按 alpha 升序取孔**：实测会把孔洞聚成一块（前 8 个全在左上角），必须用低差异序列铺开（14/16 行）。
+⚠️ 两个门禁钉住：① 树叶的 tile 必须是 `procedural/giant_*`（不得复用普通方块贴图）；
+② 孔洞率落在 5%~25%（删掉 `holeRatio` 或烘回源图 31% 都会红）。
 
 - **树叶 `opaque` + 投影（用户裁决）**：`opaque` 让叶-叶共享面互剔（`mesher.js` 判据 `opaqueTable[neighbor]===1`），单棵树顶点远少于 cutout；**投影**与同为 opaque 叶的 `sky_leaves`、既有 `leaves` 同口径，`[阴影投射]` 门禁（`EXPECTED_NO_CAST` 恰 13 项，且「临界对照」要求 `leaves` 必须投影）因此**不需要改**。不要写 `opaque:false`（叶-叶不再互剔）、不要写 `shadowCast:false`（v1.0 的写法会让 Task 2 末尾 `check:data` 红，且其「对齐 mc-lite 树叶口径」的理由与事实相反）。
 - **`opaqueTable=1` 的四项后果**（CLAUDE.md 既有约束）：邻居面剔除（收益）、AO 遮挡、blocklight 阻断、炮塔 LOS / 弹丸阻挡。巨树叶与 `sky_leaves` 同属这一族：巨树冠会遮挡 AO 与 blocklight、会挡炮塔视线。这是本 Epic 的**第七处**与 mc-lite 行为的差异（mc-lite 无这些树，所以它是「新内容的既有口径」，不进「六处偏离」那个视觉比对清单）。

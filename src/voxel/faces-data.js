@@ -34,14 +34,18 @@ export const FACES_DATA = {
   glass_block: 'Glass',
   glass_blink: 'glass_blink',
   // ---- 树叶族（mc-lite 全 FrontSide + alphaTest，realistic_oak 例外 DoubleSide）----
-  leaves: 'leaves',
-  azalea_leaves: 'azalea_leaves',
+  // ⚠️ 2026-10-23（用户裁定）：本仓全部树叶 **cutout 通道 + opaqueTable=1**，且贴图孔洞率统一压到
+  // 14.8%（与巨树叶一致，让叶面更密）。5 张源图的孔洞率原本是 23%~**77.6%**，压完后叶面覆盖
+  // 统一到 85%。**孔洞压缩产物在 procedural/leaf_*，源图不动**（`npm run leaftextures` 烘焙）。
+  // ⚠️ `procedural/sky_leaves` 例外：它走 opaque 通道（材质本就无 alphaTest）→ 不压缩、不在此列。
+  leaves: 'procedural/leaf_leaves',
+  azalea_leaves: 'procedural/leaf_azalea_leaves',
   azalea_flowers: 'flowering_azalea_leaves',
-  yellow_leaves: 'leaves_yellow',
-  realistic_oak_leaves: 'oak_leaves_branch_medium',
-  realistic_yellow_leaves: 'leaves_yellow',
-  swamp_leaves: 'leaves', // mc-lite 未注册材质（死方块）；按 leaves 渲染兜底
-  snow_leaves: ['leaves_with_snow', 'leaves_with_snow', 'Snow_top', 'leaves', 'leaves_with_snow', 'leaves_with_snow'],
+  yellow_leaves: 'procedural/leaf_leaves_yellow',
+  realistic_oak_leaves: 'procedural/leaf_oak_leaves_branch_medium',
+  realistic_yellow_leaves: 'procedural/leaf_leaves_yellow',
+  swamp_leaves: 'procedural/leaf_leaves', // mc-lite 未注册材质（死方块）；按 leaves 渲染兜底
+  snow_leaves: ['procedural/leaf_leaves_with_snow', 'procedural/leaf_leaves_with_snow', 'Snow_top', 'procedural/leaf_leaves', 'procedural/leaf_leaves_with_snow', 'procedural/leaf_leaves_with_snow'],
   // ---- 原木/木板 ----
   wood: ['log_big_oak', 'log_big_oak', 'log_big_oak_top', 'log_big_oak_top', 'log_big_oak', 'log_big_oak'],
   dark_oak: 'Stripped_Dark_Oak_Log_(texture)_JE1',
@@ -145,11 +149,14 @@ export const FACES_DATA = {
   bed_head: ['bed/Bed_(top_side_texture)_JE2_BE2', 'bed/Bed_(top_side_texture)_JE2_BE2', 'bed/Bed_(top_texture)_JE1_BE1', null, 'bed/Bed_(back_texture)_JE2_BE2', null],
   bed_tail: ['bed/Bed_(bottom_side_texture)_JE2_BE2', 'bed/Bed_(bottom_side_texture)_JE2_BE2', 'bed/Bed_(bottom_texture)_JE1_BE1', null, null, 'bed/Bed_(front_texture)_JE2_BE2'],
   // ---- 巨树景观（Giant Trees Epic）----
-  // giant_oak_log / giant_oak_leaves 复用既有 tile（log_big_oak 与 leaves）；其余 6 张由
-  // tools/bake-giant-textures.mjs 烘焙到 assets/textures/procedural/。
+  // giant_oak_log 复用既有 tile（log_big_oak）；其余 7 张由 tools/bake-giant-textures.mjs
+  // 烘焙到 assets/textures/procedural/。
+  // ⚠️ giant_oak_leaves **不再复用** 普通树叶的 `leaves` tile（2026-10-23 改）：两者必须分开，
+  //    否则无法给巨树单独做「更密的孔洞图案」（用户需求：巨树冠更茂盛）。共用一张图时
+  //    改它会把普通树叶一起改掉。
   giant_oak_log: ['log_big_oak', 'log_big_oak', 'log_big_oak_top', 'log_big_oak_top', 'log_big_oak', 'log_big_oak'],
   giant_mangrove_log: 'procedural/giant_mangrove_log',
-  giant_oak_leaves: 'leaves',
+  giant_oak_leaves: 'procedural/giant_oak_leaves',
   giant_birch_leaves: 'procedural/giant_birch_leaves',
   giant_spruce_leaves: 'procedural/giant_spruce_leaves',
   giant_cherry_leaves: 'procedural/giant_cherry_leaves',

@@ -355,9 +355,9 @@ test('hasLineOfSight：实心不透明方块阻挡，透明方块不阻挡', () 
   // `glass`**（实测 blocks-data.js）—— 对照样本须用真实存在的方块名，否则 idOf 返回 undefined。
   world.setBlock(10, 5, 12, registry.idOf('glass_block'));
   assertTrue(hasLineOfSight({ world, registry, from, to }), 'glass_block 不阻挡');
-  // 换成 leaves（实心但 cutout → opaqueTable=0）→ 不阻挡
+  // 换成 leaves（2026-10-23 起 opaqueTable=1）→ **现在阻挡**（用户裁定：树叶挡炮塔与弹丸）
   world.setBlock(10, 5, 12, registry.idOf('leaves'));
-  assertTrue(hasLineOfSight({ world, registry, from, to }), 'leaves 不阻挡');
+  assertEqual(hasLineOfSight({ world, registry, from, to }), false, 'leaves 阻挡（opaqueTable=1）');
   // 换成 water（非实心）→ 不阻挡
   world.setBlock(10, 5, 12, registry.idOf('water'));
   assertTrue(hasLineOfSight({ world, registry, from, to }), 'water 不阻挡');
@@ -367,7 +367,8 @@ test('isProjectileOccluding：solid && opaque 才阻挡（LOS 与弹丸共用判
   const registry = makeRegistry();
   assertTrue(isProjectileOccluding(registry.idOf('stone'), registry));   // 实心不透明
   assertEqual(isProjectileOccluding(registry.idOf('glass_block'), registry), false);  // 实心但透明
-  assertEqual(isProjectileOccluding(registry.idOf('leaves'), registry), false);       // 实心但 cutout
+  // 2026-10-23 口径变更：树叶 opaqueTable=1 → **现在阻挡**（用户裁定，与巨树叶一致）
+  assertEqual(isProjectileOccluding(registry.idOf('leaves'), registry), true);        // 实心且不透明（opaqueTable=1）
   assertEqual(isProjectileOccluding(registry.idOf('water'), registry), false);        // 非实心
   assertEqual(isProjectileOccluding(registry.idOf('air'), registry), false);
   assertEqual(isProjectileOccluding(registry.idOf('obsidian'), registry), true);

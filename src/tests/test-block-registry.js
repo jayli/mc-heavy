@@ -209,23 +209,29 @@ test('BlockRegistry: sky_leaves 走 opaque 通道（方案 C，spec §2.6）', (
   assertEqual(reg.solidTable[id], 1, 'sky_leaves solid（未改动）');
 });
 
-test('BlockRegistry: 其余 7 个树叶族仍走 cutout（防过度修正）', () => {
+test('BlockRegistry: 全部 8 个树叶族都是 cutout 通道 + opaqueTable=1（2026-10-23 用户裁定）', () => {
   const reg = createRegistry();
   for (const def of BLOCKS) reg.register(def.name, def);
   reg.freeze();
-  // ⚠️ 反向断言：方案 C 只改 sky_leaves 一项。若有人顺手把全部树叶改成 opaque，
-  // 这条会 FAIL —— mc-lite 那 7 项的材质确实是 alphaTest（真镂空，atlas 实测
-  // leaves 中心 alpha=0.231 < 0.3 → discard），走 cutout 是正确的。
-  const CUTOUT_LEAVES = [
+  // 口径变更历史（写清楚免得后人反推错）：
+  //   · v1.42 方案 C 只把 sky_leaves 改成 opaque（因为 mc-lite 的材质是无 alphaTest 的纯粉）
+  //   · 2026-10-23 用户裁定：**所有树叶**都要镂空（cutout）+ 叶-叶共享面互剔（opaqueTable=1）
+  //     → 普通树叶也不再是 opaqueTable=0。实测单棵普通树（树干 + 5³ 叶团）顶点 3068 → 664（−78.4%）。
+  //     ⚠️ 连带后果是用户明确接受的：AO 遮挡 / blocklight 阻断 / **炮塔 LOS 与弹丸阻挡**。
+  // 这条现在钉的是「两套口径同时成立」：通道必须是 cutout（镂空不能丢），
+  // 剔除语义必须是 1（否则顶点 ×8，同巨树叶的教训）。
+  const ALL_LEAVES = [
     'leaves', 'azalea_leaves', 'yellow_leaves', 'realistic_oak_leaves',
-    'realistic_yellow_leaves', 'swamp_leaves', 'snow_leaves',
+    'realistic_yellow_leaves', 'swamp_leaves', 'snow_leaves', 'sky_leaves',
   ];
-  assertEqual(CUTOUT_LEAVES.length, 7, '计数：8 个树叶族 − sky_leaves');
-  for (const name of CUTOUT_LEAVES) {
+  assertEqual(ALL_LEAVES.length, 8, '8 个树叶族');
+  for (const name of ALL_LEAVES) {
     const id = reg.idOf(name);
     assertTrue(id > 0, `${name} registered`);
-    assertEqual(reg.cullTable[id], 1, `${name} 仍 cutout`);
-    assertEqual(reg.opaqueTable[id], 0, `${name} opaqueTable=0`);
+    // sky_leaves 的材质是 mc-lite 的无 alphaTest 纯粉 → 仍走 opaque 通道（方案 C，勿改）
+    const expectedChannel = name === 'sky_leaves' ? 0 : 1;
+    assertEqual(reg.cullTable[id], expectedChannel, `${name} 通道=${expectedChannel === 0 ? 'opaque' : 'cutout'}`);
+    assertEqual(reg.opaqueTable[id], 1, `${name} opaqueTable=1（叶-叶共享面互剔）`);
   }
 });
 
