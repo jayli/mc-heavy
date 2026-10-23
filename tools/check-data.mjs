@@ -730,6 +730,108 @@ async function checkNightSkyFreshness() {
   infos.push('[夜空] 烘焙指纹匹配（无缝立方图当前）');
 }
 
+// ---------------------------------------------------------------- [巨树] 契约（Giant Trees Epic）
+
+/**
+ * [巨树] 契约：8 个 `giant_*` 方块声明、烘焙产物（trees.json）、贴图三者必须互相对得上。
+ *
+ * 钉的失效路径（每条都实测注入过，见 plan Task 8 Step 3）：
+ *   ① 树叶误改回 cutout / 误写 opaque:false → 叶-叶共享面不再互剔，密林视域通道占用翻数倍；
+ *   ② 树叶误写 shadowCast:false → 与同为 opaque 叶的 sky_leaves / 既有 leaves 口径不一致
+ *      （用户裁决：巨树叶**投影**；`[阴影投射]` 的 13 项清单也不含任何树叶）；
+ *   ③ palette 里出现未注册的名字 → makeColumnSetter 对未注册名**静默跳过** → 该方块变 air，肉眼只觉得「树有洞」；
+ *   ④ 声明了却没人用的 giant_*（死方块）/ 在用却没声明（同 ③）；
+ *   ⑤ 8 个方块没进 HIDDEN_FROM_INVENTORY → 玩家能在背包里选中并放出一块孤零零的树干；
+ *   ⑥ 烘焙输入（.schem）或映射表改了却没重烘焙 → 产物静默过期；
+ *   ⑦ 贴图缺失/尺寸错/出现近黑像素（opaque 通道忽略 alpha，孔洞处直接露出 RGB → 黑点）。
+ * ⚠️ 主流程是逐个显式调用 —— 漏了本行则门禁永不执行（本仓已因此出过两次事故）。
+ */
+async function checkGiantTrees() {
+  const fp = await import('./giant-trees-fingerprint.mjs');
+  const before = failures.length;
+  const fail = (m) => failures.push(`[巨树] ${m}`);
+
+  // ① 烘焙输入（入库）与产物
+  if (!fs.existsSync(fp.SCHEM_PATH)) fail(`烘焙输入缺失 ${path.relative(ROOT, fp.SCHEM_PATH)}（.schem 入库，缺失 = 仓库损坏）`);
+  if (!fs.existsSync(fp.TREES_JSON) || !fs.existsSync(fp.TREES_META)) {
+    fail('缺 assets/giant-trees/trees.json 或 trees.meta.json（跑 npm run gianttrees）');
+    return;
+  }
+  let meta, trees;
+  try {
+    meta = JSON.parse(fs.readFileSync(fp.TREES_META, 'utf8'));
+    trees = JSON.parse(fs.readFileSync(fp.TREES_JSON, 'utf8')).trees;
+  } catch { fail('trees.json / trees.meta.json 不是合法 JSON（重跑 npm run gianttrees）'); return; }
+
+  // ② 指纹（入库 .schem 内容 + 全部烘焙参数）
+  const cur = fp.giantTreesInputFingerprint();
+  if (meta.fingerprints?.input !== cur.input) {
+    fail(`产物已过期：指纹不匹配（烘焙时 "${meta.fingerprints?.input}" vs 当前 "${cur.input}"）→ 跑 npm run gianttrees`);
+  }
+
+  // ③ 变体数与调色板
+  let variantCount = 0;
+  for (const [family, pads] of Object.entries(fp.TREE_FAMILIES)) {
+    const list = trees[family] || [];
+    if (list.length !== pads.length) fail(`族 ${family} 变体数 ${list.length} ≠ TREE_FAMILIES 的 ${pads.length}`);
+    for (const v of list) {
+      variantCount++;
+      if (JSON.stringify(v.palette) !== JSON.stringify(fp.FAMILY_PALETTES[family])) fail(`族 ${family} 的 palette 与 FAMILY_PALETTES 不一致（trees.json 被手改？）`);
+    }
+  }
+  for (const f of Object.keys(trees)) if (!(f in fp.TREE_FAMILIES)) fail(`trees.json 含未知族 "${f}"`);
+
+  // ④ palette ↔ giant_* 声明双向闭包；palette 全部在 registry
+  const used = new Set();
+  for (const list of Object.values(trees)) for (const v of list) for (const n of v.palette) used.add(n);
+  const declared = BLOCKS.filter((b) => b.name.startsWith('giant_')).map((b) => b.name);
+  for (const n of used) {
+    if (REGISTRY.idOf(n) === undefined) fail(`palette 含未注册方块 "${n}"（makeColumnSetter 静默跳过 → 该格变 air）`);
+    else if (!declared.includes(n)) fail(`在用的 palette 名 "${n}" 不是 giant_* 声明`);
+  }
+  for (const n of declared) if (!used.has(n)) fail(`声明了 ${n} 但没有任何变体使用（死方块）`);
+
+  // ⑤ 树叶：opaque + 不得 opaque:false + 必须投影（不写 shadowCast:false）
+  for (const n of declared.filter((x) => x.endsWith('_leaves'))) {
+    const def = BLOCKS.find((b) => b.name === n);
+    const id = REGISTRY.idOf(n);
+    if (def.cullMode !== 'opaque') fail(`"${n}" 的 cullMode=${def.cullMode}，必须是 opaque（cutout 会让密林视域通道占用翻数倍）`);
+    if (def.opaque === false) fail(`"${n}" 显式 opaque:false，叶-叶共享面不再互剔`);
+    if (def.shadowCast === false) fail(`"${n}" 写了 shadowCast:false，巨树叶须投影（与 sky_leaves / leaves 同口径）`);
+    if (id !== undefined && !REGISTRY.castsShadow(id)) fail(`"${n}" 的 registry.castsShadow 为 false`);
+    if (id !== undefined && REGISTRY.opaqueTable[id] !== 1) fail(`"${n}" 的 opaqueTable 不是 1`);
+  }
+
+  // ⑥ 全部不进背包
+  for (const n of declared) if (!HIDDEN_FROM_INVENTORY.includes(n)) fail(`"${n}" 不在 HIDDEN_FROM_INVENTORY（玩家能放出孤零零的树干/树叶）`);
+
+  // ⑦ 贴图：faces-data 里 procedural/giant_* 的 tile 必须有 16×16 PNG、无近黑像素；且目录里没有无人引用的 giant_* 孤儿
+  const giantTiles = new Set();
+  for (const n of declared) {
+    const v = FACES_DATA[n];
+    if (!v) { fail(`"${n}" 没有 faces-data 映射`); continue; }
+    for (const t of (Array.isArray(v) ? v : [v])) if (t && t.startsWith('procedural/giant_')) giantTiles.add(t);
+  }
+  for (const t of giantTiles) {
+    const file = path.join(ROOT, 'assets', 'textures', `${t}.png`);
+    if (!fs.existsSync(file)) { fail(`贴图缺失 ${t}.png（跑 node tools/bake-giant-textures.mjs）`); continue; }
+    const png = PNG.sync.read(fs.readFileSync(file));
+    if (png.width !== 16 || png.height !== 16) fail(`${t}.png 尺寸 ${png.width}×${png.height} ≠ 16×16`);
+    for (let i = 0; i < png.width * png.height; i++) {
+      const o = i * 4;
+      if (0.2126 * png.data[o] + 0.7152 * png.data[o + 1] + 0.0722 * png.data[o + 2] < 40) { fail(`${t}.png 像素 ${i} 近黑（opaque 通道忽略 alpha，孔洞处会露出黑点）`); break; }
+    }
+  }
+  const procDir = path.join(ROOT, 'assets', 'textures', 'procedural');
+  for (const f of fs.readdirSync(procDir).filter((x) => x.startsWith('giant_') && x.endsWith('.png'))) {
+    if (!giantTiles.has(`procedural/${f.replace(/\.png$/, '')}`)) fail(`孤儿贴图 procedural/${f}（没有任何 giant_* 方块引用）`);
+  }
+
+  if (failures.length === before) {
+    infos.push(`[巨树] ${variantCount} 变体 / ${declared.length} 方块（叶子 opaque 且投影）/ 指纹匹配 / 贴图 ${giantTiles.size} 张`);
+  }
+}
+
 // ---------------------------------------------------------------- 主流程
 
 const REGISTRY = await buildDefaultRegistry();
@@ -751,6 +853,7 @@ checkZombieHeadTexture();
 checkTurretArmorTexture();
 checkSkyboxAssets();         // v1.58：天空盒立方图完整性（⚠️ 漏了本行则门禁永不执行）
 await checkNightSkyFreshness(); // v1.60：夜空烘焙产物指纹（⚠️ 漏了本行则门禁永不执行）
+await checkGiantTrees();     // 巨树景观：方块/烘焙产物/贴图三方契约（⚠️ 漏了本行则门禁永不执行）
 
 console.log('[check:data] 数据契约检查');
 for (const i of infos) console.log(`  ✓ ${i}`);

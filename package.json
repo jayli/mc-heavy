@@ -9,6 +9,8 @@
     "zombie": "node tools/bake-zombie-head.mjs",
     "nightsky": "node tools/bake-night-sky.mjs",
     "turret": "node tools/bake-turret-armor.mjs",
+    "gianttrees": "node tools/bake-giant-trees.mjs",
+    "gianttextures": "node tools/bake-giant-textures.mjs",
     "atlas": "node tools/build-atlas.mjs",
     "test": "playwright test",
     "bench": "node src/bench/baseline.mjs",

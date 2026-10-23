@@ -21,7 +21,8 @@ import {
   SCATTER_TYPES, SCATTER_STRIDE, CODE_GENERATED_SCATTER_TYPES,
   generateCodeHouse, generateCodeShip,
 } from './scatter.js';
-import { SEA_Y } from '../../voxel/constants.js';
+import { SEA_Y, blockIndex } from '../../voxel/constants.js';
+import { applyGiantTrees, loadGiantTrees } from './giant-trees.js';
 
 /** 城市 placement 用到的 JSON 结构（GEN 携带城市布局时预载）+ 植被树 JSON */
 const CITY_STRUCTURE_TYPES = [
@@ -41,6 +42,12 @@ const CODE_GENERATORS = Object.freeze({
   house: generateCodeHouse,
   ship: generateCodeShip,
 });
+
+/**
+ * 植被扫描外扩（树冠半径 ≤ 3）。阶段 3 的扫描窗口与阶段 2.8 巨树的「旧植被覆盖窗口」共用这一个值
+ * （单一权威：两处各写一份会漂移出「旧树冠游离在巨树边缘」的缺陷）。
+ */
+const VEGETATION_EXT = 3;
 
 /** AABB 相交判定余量（JSON 实测占地与 footprint 表最大偏差 1 格） */
 const INTERSECT_MARGIN = 2;
@@ -91,6 +98,19 @@ function pointContext(wx, wz, layouts, cityLayout, seed) {
 }
 
 /**
+ * 巨树的「允许落位」判定（阶段 2.8 用；导出供单测复用同一份判据 —— 红线 1）：
+ * 只允许 pointContext 为 normal / water 的点（water = 树冠悬在水面上）。其余 = 城市 / 金字塔 / 平地岛 /
+ * 海岛 / 雪原 / 冰封山（kind 为 city/none/island/snow/fm），树让路。
+ * @returns {(wx:number, wz:number) => boolean}
+ */
+export function giantAllowedAtFor(layouts, cityLayout, seed) {
+  return (wx, wz) => {
+    const kind = pointContext(wx, wz, layouts, cityLayout, seed).kind;
+    return kind === 'normal' || kind === 'water';
+  };
+}
+
+/**
  * 将布局覆盖本 column 的结构方块裁剪写入 column（生成路径：不记 edits、不 bump version）。
  * 异步：城市布局需预载建筑 JSON（Worker 内 fetch + 模块缓存）。
  * @param {import('../../voxel/chunk-column.js').ChunkColumn} column
@@ -134,6 +154,10 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
     }
   }
   await preloadStructures([...needTypes]);
+  // 巨树变体加载。Worker 里已在模块加载期预热（world-worker.js 的 giantPreloadPromise，layout 入口 await），
+  // 这里命中缓存 ≈ 0ms；⚠️ 不预热的话每个 Worker 的首个 GEN 要付 fetch+解析（实测使 structure-gen 的
+  // genP95 从 ~9ms 涨到 ~12ms，撞破 10ms 门）。fetch 失败不阻断 GEN（空 families → 本列无巨树）。
+  await loadGiantTrees();
 
   // ---- 阶段 1：地形整形（mc-lite 列循环 elif 链）----
   for (let lx = 0; lx < 16; lx++) {
@@ -252,6 +276,14 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
     }
   }
 
+  // ---- 阶段 2.8：巨树景观（Giant Trees Epic）----
+  // 候选在 region 层算好（computeGiantTreeCandidates），这里：合并邻域候选 → 排除（地标/撒布/城市）→ 光栅化 →
+  // 返回覆盖窗口供阶段 3 抑制旧植被。排除只允许 pointContext 为 normal/water 的点（water = 树冠悬在水面上）。
+  const giant = applyGiantTrees(column, layouts, seed, registry, {
+    ext: VEGETATION_EXT,
+    allowedAt: giantAllowedAtFor(layouts, cityLayout, seed),
+  });
+
   // ---- 阶段 2.5：空中结构（M2-7：Y=55 单云 + 空岛，层序先云后岛；mc-lite 空中内容后写）----
   const skyCandidates = layouts.map((l) => l.sky).filter(Boolean);
   if (skyCandidates.length > 0) {
@@ -261,13 +293,15 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
   // ---- 阶段 3：植被（M2-3，mc-lite 各分支植被规则）----
   // 树冠半径 ≤3：扫描扩展 3 格，树在基点光栅化（setBlock 自动裁剪到本 column）；
   // 单格植物只在本 column 内的点写入。
-  const EXT = 3;
+  const EXT = VEGETATION_EXT;
   const minX = column.cx * 16, maxX = column.cx * 16 + 15;
   const minZ = column.cz * 16, maxZ = column.cz * 16 + 15;
   for (let wx = minX - EXT; wx <= maxX + EXT; wx++) {
     for (let wz = minZ - EXT; wz <= maxZ + EXT; wz++) {
       const inColumn = wx >= minX && wx <= maxX && wz >= minZ && wz <= maxZ;
       const ctx = pointContext(wx, wz, layouts, cityLayout, seed);
+      // 巨树覆盖区内的旧植被树不再生成（替换语义）。覆盖窗口含 column 外 EXT 格带：带内旧树的树冠会写进本 column。
+      const inGiant = giant.covers(wx, wz);
 
       if (inColumn && ctx.kind === 'water' && ctx.biome === 'SWAMP' && seededRandom(wx, wz, seed + 12) < 0.08) {
         // 睡莲放在水面格的**上一格**（SEA_Y+1，原本是空气），不是 SEA_Y：
@@ -284,7 +318,12 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
       let baseY = null;
       if (ctx.kind === 'normal') {
         const roll = rollVegetation(wx, wz, ctx.biome, seed);
-        if (inColumn && roll.plant) setBlock(wx, ctx.h + 1, wz, roll.plant);
+        // 单格植物：覆盖区内若目标格已被巨树方块占用（树干底格/贴地叶）则不覆盖 —— 否则单树干的树
+        // 会被一朵花顶掉唯一的底格而悬空。目标格是空气则照常生成（树下长草合理）。
+        if (inColumn && roll.plant &&
+            !(inGiant && column.blocks[blockIndex(wx - minX, ctx.h + 1, wz - minZ)] !== 0)) {
+          setBlock(wx, ctx.h + 1, wz, roll.plant);
+        }
         if (roll.tree) { tree = roll.tree; baseY = ctx.h + 1; }
       } else if (ctx.kind === 'city') {
         if (!isPointNearCityStructure(wx, wz, cityLayout, 2)) {
@@ -315,7 +354,7 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
         }
       }
 
-      if (tree) {
+      if (tree && !inGiant) {
         if (tree.type === 'birchTree') {
           rasterizeStructure('birchTree', wx, baseY, wz, setBlock, column, registry, seed, false);
         } else if (tree.type === 'birchTreeWithSnow') {

@@ -131,10 +131,10 @@ test('DEFAULT_INVENTORY_COUNT = 1500（对齐 mc-lite GameConfig）', () => {
 
 // --- BlockRegistry.all()：遍历接口（§4.1 v1.16 补记，冷路径专用） ---
 
-test('registry.all(): 按注册顺序返回 126 条 {id,name}，与 idOf/nameOf 一致', () => {
+test('registry.all(): 按注册顺序返回 134 条 {id,name}，与 idOf/nameOf 一致', () => {
   const reg = makeRegistry();
   const all = reg.all();
-  assertEqual(all.length, 126);
+  assertEqual(all.length, 134);  // 126 + 巨树景观 8 个 giant_*
   assertEqual(all[0].name, 'air', '注册序首项 = air（ID 0）');
   assertEqual(all[0].id, 0);
   for (const e of all) {
@@ -158,26 +158,30 @@ test('NON_PLACEABLE_ITEMS = 4 个功能性方块（mc-lite 背包同样排除）
     ['air', 'collider', 'calcite', 'realistic_trunk_collider']);
 });
 
-test('HIDDEN_FROM_INVENTORY = chimney + 三个床方块 + 创造台两项（可放置但不进背包）', () => {
+test('HIDDEN_FROM_INVENTORY = chimney + 三个床方块 + 创造台两项 + 巨树 8 项（可放置但不进背包）', () => {
   // 这些方块都可放置（能放能挖），故**不能**归入 NON_PLACEABLE_ITEMS
   // （该集合语义是「非玩家可放置的功能性方块」）。它们属独立概念：可放置、但不进背包。
   // bed_head/bed_tail/bed_alias_block：床渲染存在未修复的镂空透视问题，靠「不入背包 →
   // 玩家选不到 → 实际不会被放置」规避（详见 mesher.js 的 TODO），本质仍可放可挖。
   // playground 两项（M9）：平台方块登记 indestructible，留在背包会产出「放得出来但挖不掉」
   // 的撕裂状态（与登记必须成对做，见 inventory.js 的注释）。
+  // 巨树 8 项（giant_*）：生成期地形装饰，放出来只是「没有下文的一块树干/树叶」。
   assertDeepEqual(HIDDEN_FROM_INVENTORY, ['chimney', 'bed_head', 'bed_tail', 'bed_alias_block',
-    'playground_block', 'playground_center_block']);
+    'playground_block', 'playground_center_block',
+    'giant_oak_log', 'giant_mangrove_log', 'giant_oak_leaves', 'giant_birch_leaves',
+    'giant_spruce_leaves', 'giant_cherry_leaves', 'giant_palm_leaves', 'giant_banyan_leaves']);
   // 与 NON_PLACEABLE_ITEMS 不得重叠（语义互斥，避免两处排除混淆）
   for (const n of HIDDEN_FROM_INVENTORY) {
     assertFalse(NON_PLACEABLE_ITEMS.includes(n), `${n} 不应同时属于 NON_PLACEABLE_ITEMS`);
   }
 });
 
-test('buildItemNames: 116 项（126 - 4 功能性 - 6 可放置但不进背包）', () => {
+test('buildItemNames: 116 项（134 - 4 功能性 - 14 可放置但不进背包）', () => {
   const names = buildItemNames(makeRegistry());
   // ⚠️ M9：HIDDEN_FROM_INVENTORY 4 → 6（追加创造台两项）→ 物品集合 118 → 116。
+  // 巨树景观：registry 126 → 134、HIDDEN 6 → 14（8 个 giant_* 全部不进背包）→ 仍是 116。
   // 这是硬编码计数的冻结断言，改数字须连算式注释一起改（否则注释与断言漂移）。
-  assertEqual(names.length, 116, '126 - 4 - 6 = 116');
+  assertEqual(names.length, 116, '134 - 4 - 14 = 116');
   assertEqual(new Set(names).size, 116, '无重复');
   for (const bad of NON_PLACEABLE_ITEMS) {
     assertFalse(names.includes(bad), `${bad} 不应在物品集合内`);

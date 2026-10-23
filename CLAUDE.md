@@ -51,6 +51,9 @@ Epic 链 M4→M5→M6→M7 已全部交付。**第三阶段 M8（TNT 爆炸 / �
 **v1.63** 接入**背景音乐**（`bgm.mp3` 循环 + 面板开关），**v1.64 / v1.65** 连修两次
 **光照跨 column 边界**（blocklight 区域改 3×3 / 脏 section 按 mesher 的 light 依赖传播），
 **v1.66 / v1.67** 把枪击命中特效改为**整格白闪 + 按命中面 atlas 取色的碎块**（MAG7 全格白闪波浪）。
+**v1.68** 引入**巨树景观**（素材 `40AssortedTreesPack.schem` 入库 → 28 个原版景观树变体按 1/2 比例，
+森林 / 海边 / 草地沙漠交界三条落位路径，城市·地标·撒布结构让路，与旧森林树互斥；**opaque 通道容量 ×1.5**，
+§4.10 预算 148.06 → 188.83 MiB；验收报告 `docs/giant-trees-acceptance-report.md`）。
 另有一项未按版本号登记的改动：**准心按背景亮度自适应配色**（`src/ui/crosshair.js`）。
 进度与实测数据一律查 roadmap。里程碑状态、验收报告、遗留 TODO 的
 完整清单**一律查 roadmap** —— 此处不复制（复制就会漂移）。
@@ -119,10 +122,10 @@ M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 
 - **cutout 扩容是离散 ×1.5 跳增，容量须留足余量**：往 cutout 通道加方块量（新植被/新结构）
   时须重测峰值并重标定 `CAPACITY.cutout.active`（当前 550）—— 差一点就会触发扩容撞破内存
   预算。实测数据见 roadmap 同段。
-- **背包物品集合口径 116 项** = registry 126 − `NON_PLACEABLE_ITEMS`（4 项功能性方块）−
-  `HIDDEN_FROM_INVENTORY`（6 项可放置但不进背包：chimney + 床三项 + **M9 创造台两项**）。
-  ⚠️ 门禁 `[物品集合]` 打印的「排除 N」是**两个集合之和**（当前 `排除 10`），与
-  「`HIDDEN_FROM_INVENTORY` 6 项」不是一个口径，勿混写。**两个集合语义互斥，勿混为一处**
+- **背包物品集合口径 116 项** = registry 134 − `NON_PLACEABLE_ITEMS`（4 项功能性方块）−
+  `HIDDEN_FROM_INVENTORY`（14 项可放置但不进背包：chimney + 床三项 + **M9 创造台两项** + **巨树景观 8 项 `giant_*`**）。
+  ⚠️ 门禁 `[物品集合]` 打印的「排除 N」是**两个集合之和**（当前 `排除 18`），与
+  「`HIDDEN_FROM_INVENTORY` 14 项」不是一个口径，勿混写。**两个集合语义互斥，勿混为一处**
   —— 把可放置方块塞进 `NON_PLACEABLE_ITEMS` 会让集合语义失真。
   ⚠️ 本条是「现状快照」（可带数字）；**其余文档与代码注释一律不硬编码计数**，以
   `npm run check:data` 的 `[物品集合]` 输出为准（M9 已把代码注释里 8 处硬编码计数改掉）。
@@ -825,6 +828,49 @@ M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 
 - **reload 恢复后车继续原方向**（`movementState` 进 snapshot），mc-lite 恢复后停成 IDLE ——
   有意偏离（玩家重启前正在开的车不该自己停下）。
 
+### 巨树景观沉淀的活跃约束（v1.68，后续地形装饰 / 结构撒布 / 通道容量类改动必读）
+
+细节与实测数据见 roadmap「活跃约束详情 · 巨树景观」与验收报告 `docs/giant-trees-acceptance-report.md`。
+
+- **通道容量的判据是 reserved（= 1.25 × 已用顶点，`render-world.js:204`）相对初始容量常量，不是已用占比**：
+  Node 侧「注入树 + 真 mesher」的已用占比比真实页面系统性低 1.20~1.24 倍（巨树 v1.0 规格就因此把「最坏 93%」
+  当成了 ≤100%，×1.25 实为 116%）。任何 Node 侧估算先 ×1.25；最终数字一律在真实页面读 `renderWorld` 的
+  `reservedV`。**HEAD 本身在密林视域已越线**（cutout 128.1% / 森林冲刺 145.4%），所以「任何视域都不扩容」
+  对 HEAD 就不成立，验收写成「相对 HEAD 不恶化」。**出生点在城市中心，三个方向冲 96 格都出不了城**
+  ——冲刺测试要从森林 / 海岸起步。
+- **`CAPACITY.opaque.active = 1800`（4.275M）是用户裁决的有意上调**（§4.10 的冻结预算 148.06 → 188.83 MiB，
+  `m3-fullscene` 上限 200 MiB）。⚠️ **「容量 == 标定值」断言单看末尾会被掩盖**：`2.85M × 1.5` 恰好 = `4.275M`，
+  容量被改回 1200 时页面会扩容到同一个数 → 预算门**开局**就断言初始容量（负向验证实测：只在末尾断言时注入后全绿）。
+- **候选 = 全局对齐网格 + 内缩抖动，不是「逐点扫描 + 贪心」**：cell 边长 `spacing + jitter`，点落在 cell 内
+  `[0, jitter)²` ⇒ 相邻点切比雪夫距离 ≥ spacing + 1 由构造保证，跨 region 无缝。`chance` 是线性密度旋钮。
+  改 `spacing/jitter` 须同步 `GIANT_TREE_PATHS`、设计文档与单测的间距断言。
+- **`layouts` 是 3×3 邻域数组：合并候选必须拼接 + 规范排序，禁止覆盖赋值**（覆盖赋值 → 区域内 99.7% 的 column
+  没有树，而用合成场景的集成测试会全绿）。排序键 `(路径序, wx, wz)` 使「后写胜」与 layouts 下发顺序无关。
+- **让路在 apply 层，不在候选层**：`pointContext` 只允许 `normal` / `water`，外加撒布结构 / 平地金字塔岛 /
+  海岛塔的外包盒。⚠️ 只靠 `pointContext` 不够：平地沙台 ±15 < `pyramid_island.json` 占地 34×39（既有
+  `pyramidIsland` 用例是它的回归门，**不得改动**）。排除判定只依赖树本身与邻域 layouts，对覆盖该树的任一 column 一致。
+- **旧植被互斥是「可证明」的**：覆盖区 = AABB ⊕ `VEGETATION_EXT`，窗口 = column ⊕ `VEGETATION_EXT`；
+  `VEGETATION_EXT = 3` 与阶段 3 植被扫描外扩是**同一个常量**。单格植物只在「目标格已非空气」时不写（不是一律
+  不生成）；悬空的树干底格补地基（≤10 格）。
+- **Worker 预热不能省，也不能写成 top-level await**：`giantPreloadPromise` 模块加载期发起、不 await，
+  `layout` / `gen` 入口 await 同一个 promise。不预热则 `structure-gen` 的含结构 genP95 7.6~8.2 → 9.4~10.0
+  （负载下 11.6~14.0，撞 10ms 门）。
+- **`seededRandom` 返回 [0,1) 浮点：取整用 `Math.floor(r * 4)`，禁止 `& 3`**（恒为 0）。巨树占 salt
+  911~935 / 941（9xx 段此前空闲；用程序化扫描复核，不能只 grep 字面量）。
+- **烘焙的三个写死约定**：降采样规则（空气 / 展示台 / 被丢弃的装饰件不参与投票，≥1 个可映射方块即保留，同票
+  下标小者胜）、地块索引 = `(minZ, minX)` 升序、分类表显式（未知源方块名 throw）。改任一条会让总格数落到
+  [16000, 18000] 区间外或族标志校验 throw。`.schem` **入库**（烘焙输入，不是渲染资源）；改分类表 / 参数 /
+  `.schem` 后必须 `npm run gianttrees`，`check:data` 的 `[巨树]` 指纹会抓。
+- **贴图：opaque 通道忽略 alpha → 孔洞处直接露出 RGB**。重着色必须重算**全部**像素的 RGB（含 `alpha=0`），
+  `[巨树]` 门禁钉「无近黑像素」。暂存 / 备用贴图不能放进 `assets/textures/`（`build-atlas` 递归扫描 +
+  `atlas.spec` 断言 tile 数 ≡ PNG 数）。
+- **巨树叶与 `sky_leaves` 同属 `opaqueTable=1` 的实例**（邻居面互剔 + AO 遮挡 + blocklight 阻断 + 炮塔 LOS 阻挡）。
+  **树叶投影**（用户裁决）：不写 `shadowCast:false`（`[阴影投射]` 的 13 项清单要求 `leaves` 必须投影，v1.0 的
+  写法会让 `check:data` 即红）、不写 `opaque:false`。
+- **draw call 有增量**：three r185.1 WebGPU 对 BatchedMesh 每个可见 geometry slot 各发一次 draw；实测 bench
+  场景 ① +16 / ④ +41（545 → 586）。往通道里加大量新几何前别假设 draw 不变。
+- **已有存档里的森林会长出巨树**（用户接受，未 bump DB 版本）；玩家的 edits 照常覆盖在生成结果之上。
+
 ### 背景音乐沉淀的活跃约束（v1.63，后续音频/音乐类改动必读）
 
 - **效果音与背景音乐是两份清单（`SOUND_IDS` / `BGM_ID`），不得合并**：语义不同 —— 效果音是
@@ -1308,6 +1354,11 @@ mc-heavy/
 ├─ tools/bake-turret-armor.mjs # 炮塔装甲纹理烘焙（npm run turret）：三张源图 → 192×64 三区并排
 │                              #   → assets/turret/armor.png + armor.json（尺寸+输入指纹）
 ├─ tools/turret-armor-fingerprint.mjs # 装甲图案参数与指纹共享模块（同上，红线 1）
+├─ tools/bake-giant-trees.mjs  # 巨树烘焙（npm run gianttrees）：入库 .schem → 28 变体 2×2×2 降采样
+│                              #   → assets/giant-trees/trees.json + trees.meta.json（尺寸+输入指纹）
+├─ tools/giant-trees-fingerprint.mjs # 巨树烘焙参数（族表/调色板/分类表/族标志）与指纹共享模块（同上，红线 1）
+├─ tools/bake-giant-textures.mjs # 6 张巨树贴图烘焙（npm run gianttextures）：沿用 leaves.png / log_big_oak.png
+│                              #   图案只换色 → assets/textures/procedural/giant_*.png
 ├─ tools/validate-weapon-assets.mjs   # 受控 GLB 静态校验（npm run validate:weapon-assets）
 ├─ tools/check-architecture.mjs # 静态架构门（npm run check:arch）：红线可静态检查的部分
 ├─ tools/check-data.mjs        # 数据契约门（npm run check:data）：关系型断言取代硬编码计数
@@ -1335,12 +1386,16 @@ mc-heavy/
 │  ├─ models/weapons/          # M4 受控 GLB（pistol / mag7 / minigun）—— 替换后跑 validate:weapon-assets
 │  ├─ turret/                  # 炮塔装甲烘焙产物（armor.png + armor.json）；turret_pic1/2/3 是
 │  │                           #   mc-lite 源图（烘焙输入，勿当渲染资源）
+│  ├─ giant-trees/             # 巨树景观（v1.68）：src/40AssortedTreesPack.schem（烘焙输入，入库，**非渲染资源**）
+│  │                           #   + trees.json / trees.meta.json（烘焙产物）
 │  └─ structures/              # 从 mc-lite 复制 JSON
 └─ src/
    ├─ core/        # game.js / scheduler.js / worker-pool.js / budget.js / perf.js / perf-hud.js
    ├─ voxel/       # constants / block-registry / chunk-column / world-data / blocks-data / faces-data
    ├─ gen/         # noise.js / terrain.js / structure-index.js / structures/*（M2 地标与空中结构）
    │               #  scatter.js 结构撒布判定 + 代码生成 house/ship（唯一权威；Worker 同构）
+   │               #  giant-trees.js 巨树景观：region 层候选（全局对齐网格 + 内缩抖动）+ column 层光栅化
+   │               #    （合并邻域候选 / 排除 / 地基 / 覆盖窗口；Worker 同构）
    ├─ mesh/        # mesher.js / lighting.js / atlas-loader.js（Worker 同构）
    │               #  iso-icon.js 等轴测投影纯函数；mesher.js 导出 TEMPLATES / FACE_VERTICES /
    │               #  FACE_UVS 供图标烘焙复用——形状与 UV 的唯一权威，图标不得有第二份几何定义
@@ -1438,6 +1493,11 @@ npm run zombie                 # 烘焙丧尸头部马赛克纹理 → assets/zo
 npm run turret                 # 烘焙炮塔装甲 → assets/turret/armor.png + armor.json（三区并排）
                                #   改 tools/turret-armor-fingerprint.mjs 或源图后需跑，
                                #   否则装甲静默过期（check:data 的 [炮塔装甲] 指纹检查会抓）
+npm run gianttrees             # 烘焙巨树变体 → assets/giant-trees/trees.json + trees.meta.json（28 个变体）
+                               #   改 .schem / tools/giant-trees-fingerprint.mjs（分类表、族表、调色板、
+                               #   降采样参数）后需跑，否则产物静默过期（check:data 的 [巨树] 指纹检查会抓）
+npm run gianttextures          # 烘焙 6 张巨树贴图 → assets/textures/procedural/giant_*.png
+                               #   （沿用 leaves.png / log_big_oak.png 图案只换色；改基色 / CONTRAST 后需跑，再跑 atlas）
 npm run nightsky               # 烘焙无缝夜空立方图 → assets/sky/night/*.jpg + night-sky.json
                                #   改 tools/night-sky-fingerprint.mjs 参数后需跑，否则贴图静默过期
 npm run atlas                  # 重新生成 assets/atlas.png + atlas.json（世界渲染 atlas）

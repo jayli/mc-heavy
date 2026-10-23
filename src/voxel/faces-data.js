@@ -144,6 +144,17 @@ export const FACES_DATA = {
   // ---- 床（half_block 模板；UV 变换见 mesher BED_UV；null 面不渲染）----
   bed_head: ['bed/Bed_(top_side_texture)_JE2_BE2', 'bed/Bed_(top_side_texture)_JE2_BE2', 'bed/Bed_(top_texture)_JE1_BE1', null, 'bed/Bed_(back_texture)_JE2_BE2', null],
   bed_tail: ['bed/Bed_(bottom_side_texture)_JE2_BE2', 'bed/Bed_(bottom_side_texture)_JE2_BE2', 'bed/Bed_(bottom_texture)_JE1_BE1', null, null, 'bed/Bed_(front_texture)_JE2_BE2'],
+  // ---- 巨树景观（Giant Trees Epic）----
+  // giant_oak_log / giant_oak_leaves 复用既有 tile（log_big_oak 与 leaves）；其余 6 张由
+  // tools/bake-giant-textures.mjs 烘焙到 assets/textures/procedural/。
+  giant_oak_log: ['log_big_oak', 'log_big_oak', 'log_big_oak_top', 'log_big_oak_top', 'log_big_oak', 'log_big_oak'],
+  giant_mangrove_log: 'procedural/giant_mangrove_log',
+  giant_oak_leaves: 'leaves',
+  giant_birch_leaves: 'procedural/giant_birch_leaves',
+  giant_spruce_leaves: 'procedural/giant_spruce_leaves',
+  giant_cherry_leaves: 'procedural/giant_cherry_leaves',
+  giant_palm_leaves: 'procedural/giant_palm_leaves',
+  giant_banyan_leaves: 'procedural/giant_banyan_leaves',
 };
 
 /**

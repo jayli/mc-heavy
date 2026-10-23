@@ -20,8 +20,14 @@ const CHANNELS = ['opaque', 'cutout', 'transparent'];
 // GPU 顶点缓冲 170MB，撞破 §4.10 的 150MB 冻结预算。故 active 450→550（maxVerts→2.20M），
 // 三通道合计 (2.85M+2.20M+0.125M)×30B = 148MB < 150MB。cutoutSlots 实测 498，active 550 覆盖。
 // 旧值 opaque 4M 过度分配、cutout 562K 偏小导致运行时 3× 扩容，M3-1 一并修正。
+//
+// ⚠️ 巨树景观（用户裁决 2026-10-23，接受 opaque ×1.5）：opaque active 1200→1800（maxVerts 2.85M→4.275M）。
+// 验收口径是 reserved（= 1.25 × 已用顶点）相对**初始**容量：终版参数实测 reserved 峰值 82.1%（森林冲刺，相对 4.275M，
+// 零 opaque 扩容）；折算到 2.85M 为 (-20,10) 视域 105%、冲刺 123% → 必然 ×1.5 扩容，故抬容量而非压树量。
+// 三通道合计 (4.275M+2.20M+0.125M)×30B = 188.83 MiB（§4.10 的 150MiB 冻结预算由此有意上调，见设计文档 §4.10）。
+// cutout / transparent 不变：HEAD 在密林视域本就越线（cutout 128%），巨树只把旧森林树（cutout）替换成 opaque 叶，cutout 只降不升。
 const CAPACITY = {
-  opaque:      { active: 1200, avgVerts: 1900 },
+  opaque:      { active: 1800, avgVerts: 1900 },  // 巨树景观 1200→1800（用户裁决：opaque ×1.5，2.85M→4.275M）
   cutout:      { active: 550, avgVerts: 3200 },  // 撒布补齐后 450→550（吸收 cutout 峰值，守 150MB）
   transparent: { active: 100, avgVerts: 1000 },
 };

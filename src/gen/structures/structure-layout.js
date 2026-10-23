@@ -12,6 +12,7 @@ import {
 import { buildCityLayout } from './city-layout.js';
 import { computeSkyCandidates } from './sky-structures.js';
 import { computeScatterCandidates } from './scatter.js';
+import { computeGiantTreeCandidates } from './giant-trees.js';
 
 /**
  * 计算单个 region 的确定性布局（纯函数，无缓存——缓存由调用方 StructureIndex 管）。
@@ -24,7 +25,9 @@ import { computeScatterCandidates } from './scatter.js';
  *   plainLand: ({cx:number, cz:number, baseHeight:number}|null),
  *   island: ({cx:number, cz:number}|null),
  *   city: (Object|null),
- *   sky: {skyIslands: Int32Array, cloudClusters: Int32Array}
+ *   sky: {skyIslands: Int32Array, cloudClusters: Int32Array},
+ *   scatter: {cityScatter: Int32Array, outsideScatter: Int32Array},
+ *   giantTrees: {forest: Int32Array, beach: Int32Array, banyan: Int32Array}
  * }}
  */
 export function computeRegionLayout(regionX, regionZ, seed) {
@@ -57,9 +60,13 @@ export function computeRegionLayout(regionX, regionZ, seed) {
   // 城市候选只在持有 city 布局的 region 算（见 computeScatterCandidates 的口径差异①）。
   const scatter = computeScatterCandidates(regionX, regionZ, seed, city);
 
+  // 巨树候选（Giant Trees Epic）：全局对齐网格抖动，与 region 邻居无关（不需要 city）；
+  // 城市/地标/撒布的排除在 GEN 侧（apply.js 阶段 2.8）用邻域 layouts 判定。
+  const giantTrees = computeGiantTreeCandidates(regionX, regionZ, seed);
+
   return {
     regionX, regionZ, pyramidRaw, pyramid, frozenMountain, snowLand, plainLand,
-    island, city, sky, scatter,
+    island, city, sky, scatter, giantTrees,
   };
 }
 

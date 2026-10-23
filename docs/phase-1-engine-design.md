@@ -1,6 +1,25 @@
 # mc-heavy 第一阶段实施设计文档：游戏引擎原型
 
-> 版本：v1.65 ｜ 日期：2026-10-21 ｜ 状态：定稿（经十五轮逐条核验修订 + M3.2 实施回填 + 异形方块渲染勘误 + 背包物品集合口径 + 吊灯材质自发光 + 吊灯 UV 分区 + 背包图标表 + 等轴测图标 + 测试分级策略与静态门禁 + 全量背包图标离线烘焙 + 背包槽位点选抖动修复 + 等轴测图标遮挡修复 + 删除缓存按钮 + 沼泽睡莲水洞与沉水修复 + AO 去掉对角门控 + 设置面板两列布局与档位精简 + M8 TNT/炮塔的三项架构口径变更 + M9 创造台的两项架构口径变更 + 水面遮罩判据的两项架构口径变更 + 天空树回补与 sky_leaves 通道修正 + 进度包导入导出 + 太阳阴影 shadow map + 阴影混合模型对齐 mc-lite + 阴影纹素对齐与太阳方向门控 + 第一人称手臂与跑动视角晃动 + 晃动幅度上调与手臂挥动对齐原版 + 晃动回调与挖掘挥手时机 + 相机零旋转 + 晃动改距离驱动 + 晃动幅度上调至 0.13 + 步频放慢至 1.5Hz → 1.35Hz + 手臂烘焙面明暗 + 手臂配色对齐 mc-lite 与晃动幅度上调至 0.15 + 太阳 N·L 方向光与 mc-lite 天空盒 + 雾色融入天空 + 夜空天空盒无缝重烘焙 + 夜间雾距统一 + 背景音乐与面板开关 + 光照区域语义修正（blocklight 3×3） + 光照变化的脏 section 传播修正（mesh 依赖集合 / 丢弃重发 / 输入集合校验））
+> 版本：v1.68 ｜ 日期：2026-10-23 ｜ 状态：定稿（经十五轮逐条核验修订 + M3.2 实施回填 + 异形方块渲染勘误 + 背包物品集合口径 + 吊灯材质自发光 + 吊灯 UV 分区 + 背包图标表 + 等轴测图标 + 测试分级策略与静态门禁 + 全量背包图标离线烘焙 + 背包槽位点选抖动修复 + 等轴测图标遮挡修复 + 删除缓存按钮 + 沼泽睡莲水洞与沉水修复 + AO 去掉对角门控 + 设置面板两列布局与档位精简 + M8 TNT/炮塔的三项架构口径变更 + M9 创造台的两项架构口径变更 + 水面遮罩判据的两项架构口径变更 + 天空树回补与 sky_leaves 通道修正 + 进度包导入导出 + 太阳阴影 shadow map + 阴影混合模型对齐 mc-lite + 阴影纹素对齐与太阳方向门控 + 第一人称手臂与跑动视角晃动 + 晃动幅度上调与手臂挥动对齐原版 + 晃动回调与挖掘挥手时机 + 相机零旋转 + 晃动改距离驱动 + 晃动幅度上调至 0.13 + 步频放慢至 1.5Hz → 1.35Hz + 手臂烘焙面明暗 + 手臂配色对齐 mc-lite 与晃动幅度上调至 0.15 + 太阳 N·L 方向光与 mc-lite 天空盒 + 雾色融入天空 + 夜空天空盒无缝重烘焙 + 夜间雾距统一 + 背景音乐与面板开关 + 光照区域语义修正（blocklight 3×3） + 光照变化的脏 section 传播修正（mesh 依赖集合 / 丢弃重发 / 输入集合校验） + 巨树景观与 opaque 容量 ×1.5）
+>
+> v1.68 修订说明：**巨树景观 Epic —— opaque 通道容量 ×1.5，§4.10 的 150MiB 冻结预算有意上调到 188.83 MiB**
+> （用户裁决 2026-10-23；规格 `docs/superpowers/specs/2026-10-23-giant-trees-design.md` v1.1 §0.2 / DR-10 / DR-17）。
+> 引入 28 个原版景观树变体（森林 / 海边 / 草地沙漠交界三条落位路径；树叶 `opaque` 且投影）。opaque 叶使 opaque 通道
+> 在密林视域的 reserved 占用抬高：终版参数在原容量 2.85M 下折算 (-20,10) 视域 105%、森林冲刺 123%（→ 必然 ×1.5 扩容），
+> 抬到 4.275M 后最高 82.1%（零 opaque 扩容）。
+> ⚠️ **口径修正**：容量判据是 **reserved**（= 1.25 × 已用顶点，`render-world.js:204`）相对**初始**容量常量，不是已用占比
+> （Node 侧「注入树 + 真 mesher」得到的已用占比比真实页面系统性低 1.20~1.24 倍）；HEAD 自己在密林视域就越线
+> （cutout 128.1%、森林冲刺 cutout 145.4% / transparent 140.8%，会触发 ×1.5 扩容），所以验收口径写成「真实页面 reserved：
+> opaque ≤ 90% 且零扩容；cutout / transparent 相对 HEAD 不恶化」，而不是「任何视域都不扩容」。
+> 变更点：`CAPACITY.opaque.active` 1200→1800（maxVerts 2.85M→**4.275M**）；三通道静态顶点缓冲
+> `(4.275M+2.20M+0.125M)×30B = 198,000,000 B = 188.83 MiB`（原 148.06 MiB；`memoryStats().gpuVertexBytes` 实测同值）；
+> `tests/m3-fullscene.spec.mjs` 的 `gpuVertexBytes` 上限 150→200 MiB（188.83 + 一次 transparent 扩容的兜底余量）。
+> cutout / transparent 容量不变（巨树只把旧森林树的 cutout 叶替换成 opaque 叶，cutout 只降不升）。
+> 新增模块（Worker 同构）：`src/gen/structures/giant-trees.js`（region 层「全局对齐网格 + 内缩抖动」候选 +
+> column 层合并邻域候选 / 排除 / 光栅化 / 地基 / 覆盖窗口）；离线烘焙 `npm run gianttrees` / `npm run gianttextures`；
+> 新门禁 `check:data` 的 `[巨树]`。已有存档里的森林会长出巨树（用户接受，不 bump DB 版本）。
+> `bench --check` 的 `STRUCTURAL` 分支恒为 false（GPU 预算不会被它拦下），故由 `m3-fullscene` 与 `giant-tree-budget` 守。
+>
 >
 > v1.65 修订说明：**光照变化的脏 section 传播修正**（v1.64 之后用户复测：「还是没有彻底修复，灯光还是有
 > 明显的边界」+「把灯删除后，刚才被照亮的方块面不变暗」）。真游戏页对照（只差一个变量逐层缩小）实测：
@@ -3359,6 +3378,11 @@ IndexedDB（沿用 mc-lite DB 名/版本约定）
   不靠池化——`RenderSectionPool` 只省 CPU 分配与 GC，**不省显存**。
 - 视距 16 前必须先做 §4.4.5 的 LOD（外圈粗模），否则显存与 draw call 双双失控。
 - edits 稀疏层常驻内存（卸载 column 时序列化进 IndexedDB 后可释放），典型 KB 级/column。
+- **（v1.68）静态分配口径与验收口径**：三通道 `BatchedMesh` 顶点缓冲是**静态预分配**（`CAPACITY`，见 `render-world.js`
+  注释），与上表「活跃 section」口径不同。巨树景观后静态分配 **188.83 MiB**（opaque 4.275M + cutout 2.20M +
+  transparent 0.125M，×30B；原 148.06 MiB），实测活跃 `gpuActiveBytes` ≈ 127 MiB；M3-1 的「1.5× 余量红线」断言相应
+  放宽到 200 MiB。**扩容是黏性的离散 ×1.5 跳增**（`_ensureCapacity`），验收一律读 reserved 相对**初始**容量，
+  不读当前 `maxVertexCount`。
 
 ---
 
@@ -3414,6 +3438,14 @@ mc-heavy/
   （天空盒双图交叉淡入 + 日轮月轮）/ `sky-config.js`（立方图清单）；
 - **v1.58 新增测试产物**：`src/tests/test-sun-shade.js`（浏览器内单测）+
   `tests/sun-directional.spec.mjs` / `tests/skybox.spec.mjs`（Tier 4 像素实测）。
+- **巨树景观新增 `assets/giant-trees/`**：`src/40AssortedTreesPack.schem`（烘焙输入，入库，与 `assets/sky/night-src/` 同口径：
+  **不是渲染资源**）+ 烘焙产物 `trees.json` / `trees.meta.json`（28 变体 + 尺寸与输入指纹）；`tools/bake-giant-trees.mjs`
+  （`npm run gianttrees`）+ `tools/giant-trees-fingerprint.mjs`（参数与指纹单一权威，烘焙脚本与 `check:data` 共用）+
+  `tools/bake-giant-textures.mjs`（`npm run gianttextures`，6 张贴图 → `assets/textures/procedural/giant_*.png`，
+  沿用现有镂空叶图案只换色）；
+- **巨树景观新增 `src/gen/structures/giant-trees.js`**（Worker 同构，无 three）：region 层候选 + column 层光栅化；
+  测试产物 `src/tests/test-giant-trees{,-column,-gen}.js`（浏览器内单测 31 条）+ `tests/giant-trees.spec.mjs` /
+  `tests/giant-tree-budget.spec.mjs`（Tier 4）。
 
 与 mc-lite 的关键差异：没有 FaceCullingSystem / ChunkConsolidation / BlockScatterManager /
 GlobalInstancedMeshManager / WorldBoundsController / WorldGenerationService(预生成) /

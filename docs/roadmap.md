@@ -4,7 +4,7 @@
 > **不重复内容** —— 架构决策见设计文档，历次改动记录见其修订说明，任务级执行清单见
 > `docs/superpowers/plans/`。
 
-最后更新：2026-10-17
+最后更新：2026-10-23
 
 ## 一句话现状
 
@@ -143,6 +143,13 @@ mc-lite 用 InstancedMesh 无此问题。修法 = `render-world.js _installShado
 面板**左列环境风格下方**新增「雾色」开关，**默认关**（关闭逐位回到 v1.58）。实测平视 ΔR +5.0 / 俯视 +9.2，
 天空与近景逐位不变。详见独立改动表 v1.59 行。
 
+**v1.68 巨树景观**（用户裁决：opaque 通道容量 ×1.5 / 巨树叶投影 / `.schem` 入库 / 已有存档接受）：素材包 `40AssortedTreesPack.schem`
+入库并离线烘焙成 28 个原版景观树变体（1/2 比例，16,954 格），按森林 / 海边 / 草地沙漠交界三条路径落位，城市·地标·撒布结构·JSON
+结构占地让路，与旧森林树互斥。region 层候选 = 全局对齐网格 + 内缩抖动（间距由构造保证，≈1.1 ms/region）。**opaque 通道容量
+2.85M → 4.275M，§4.10 的 150MiB 冻结预算有意上调到 188.83 MiB**；真实页面 reserved 口径最高 82.1%（零 opaque 扩容），
+cutout / transparent 相对 HEAD 不恶化；bench draw call 场景 ① +16 / ④ +41。浏览器内单测 779→810，Playwright 184→190。
+规格 `docs/superpowers/specs/2026-10-23-giant-trees-design.md`（v1.1），验收报告 `docs/giant-trees-acceptance-report.md`。
+
 ## 里程碑总表
 
 | 里程碑 | 内容 | 状态 | 关键 commit |
@@ -205,7 +212,7 @@ MAG7 曳光终点回归准心轴（v1.36，原用扫描候选当终点导致斜�
 | **悬空宝箱删除 + 烟囱下方透明面修复**（2026-09-30） | 两个用户报告的 bug 同批修。① **悬空宝箱**：根因 = `tall_well.json` 的孤立 `chest@(24,51,20)`（mc-lite 上游数据异常，井体本身只到 y=16）—— 它在 y=51 完全悬空，每个 tallWell 候选都渲染一个 → 「天空中好多悬空宝箱」。实测复现（fetch stub + 真实 GEN，seed=12345）：候选 `(40,7,-53)` 在 `(64,57,-33)` 产出 chest、下方 `air/cloud/air`。修法 = 删 JSON 条目（315→314 块，属数据勘误，同 big_house 删 lilypad）；**footprint 24/20 刻意保留不收缩**：收缩到真实包围盒 5/4 会缩小 `isFirstInFootprint` 抑制范围 → 井密度 70→103（+47% 实测），增加 cutout 压力且改变用户当前看到的世界。防回归 = `check:data` 新增 `[结构 JSON]` 孤立块契约（负向验证：HEAD 原始文件命中 1 个、修复后 0）+ `test-scatter.js` 的 `SCATTER_Y_EXTENT.tallWell` 51→16。② **烟囱下方透明面**：根因 = registry 按 `cullMode === 'opaque'` 推 `opaqueTable`，而 cullMode 是**渲染通道**语义、opaqueTable 是**面剔除**语义（两套口径）→ chimney 因材质不透明进了 opaque 通道，连带被误判成「占满整格、可剔除邻居面」→ mesher 剔掉烟囱下方屋顶块的顶面。实测本仓库全部非 box 几何方块的 opaqueTable 都是 0，chimney 与 bed_head/bed_tail 是唯二漏网。修法 = cloud 同款手法：`blocks-data.js` chimney 行加显式 `"opaque":false`（opaqueTable=0，cullMode 仍 opaque）。连带效应（均为修正）：chimney 不再遮挡 AO / 阻断 blocklight / 挡炮塔 LOS —— 细圆柱本就不该完全遮光。bed_head/bed_tail 同类漏网**暂不修**（已从背包移除、实际不会被放置）。验证：新增 Tier 1 mesher 用例（RED 29 面 → GREEN 30 面，对照组 stone+stone 仍 10 面）+ `check` 全绿 + 浏览器内单测全绿 |
 | **爆炸序列帧特效补齐** | mc-lite `World.js:1296 spawnExplosionParticles` 是**两层叠加**：① 序列帧 billboard（`ParticleSystem.js:177`，`big_blow.png` 500×200 / 5×2=10 帧 / 0.5s / AdditiveBlending / scale 3→8 / 前 80% 全亮末 20% 淡出）② 球体扩张（`World.js:1301-1311`，注释原文「作为底层增强」）。**M8 当时只移植了 ②**（`explosion-renderer.js` 文件头如实记录了这次裁剪），实玩反馈「爆炸少了原始图分帧播放」→ 补 ①：新增 `src/render/explosion-sprite.js`（照搬 mc-lite 的 Sprite 池手法 —— Sprite 自动 billboard + 逐 sprite `visible=false` 同样还原 draw call 基线）+ `assets/effects/big_blow.png`。两层在 `game.js` 的 `explodeTnt()` 同帧触发（billboard 先、球体后，mc-lite 就是这个顺序）。**Tier 1 单测钉帧映射算术 + Tier 4 像素实测证明切帧真在生效**（`tests/explosion-sprite.spec.mjs`）+ 真游戏页接线断言（`tests/tnt.spec.mjs`）。三处负向验证均实测通过（注入 bug 后真 FAIL） |
 
-## M3.2 之后的独立 bugfix / 改造（v1.19 ~ v1.63）
+## M3.2 之后的独立 bugfix / 改造（v1.19 ~ v1.68）
 
 这些不属于任何已编号里程碑，是实玩反馈驱动的独立改动。**完整记录在设计文档的修订说明**
 （每条含根因、实测数据、门禁对照）与 `docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md`
@@ -256,6 +263,7 @@ MAG7 曳光终点回归准心轴（v1.36，原用扫描候选当终点导致斜�
 | v1.65 | 光照变化的脏 section 传播修正（「灯光有边界」第二次修 + 「删灯后不变暗」） | ✅ 已完成 | v1.64 之后用户复测：「还是没有彻底修复，灯光还是有明显的边界」（截图 `灯光有边界2.png`，坐标 278.5/160.0 站在 z=160 的 column 边界上）+「把灯删除后，刚才被照亮的方块面不变暗」。**真游戏页三层对照（只差一个变量逐层缩小）**：① 数据层——整图参考 BFS（不做区域截断）vs 每列 `light`：**0 个格子不一致**，光确实越过了边界；② 网格层——拦截 `renderWorld.uploadSection` 记录实际上传的 packed，对照 `buildSectionMesh(当前数据)`：**6 个 section 过期**，全是 `sy=1`（沙滩 y=-1 所在 section 的最上层）；③ 画面层——夜景截图：放灯后沙地没被照亮，强制重建后才亮，删灯后沙地仍亮。**结论：数据是对的，网格是旧的**（所以 v1.64 的 E2E 只断言 `column.light` 全绿却没挡住）。**三处独立缺口**：① v1.64 引入的「只给 light 字节真变了的同 sy 置脏」漏了 mesher 的真实依赖——section S 读 S 自身 16³ + 六个面外 1 格厚的 halo 的 light，地表在 section 最上层时顶面读的是 `sy+1` 最底层那格，那格变了地面没人通知；同时对 8 个邻列一律按同 sy 置脏（含根本不依赖的对角列）。修法：纯函数 `lightDirtyMasks(prev,next)`（`lighting.js`），本列含上下相邻 section、邻列只含 4 个正交列且只在 lx/lz∈{0,15} 时置脏；② **在途 mesh 回包因同 column `version++` 被丢弃后无人重发**（脏标记在派发前已被 `takeDirty` 消费）→ 数据对画面旧，**偶现**；真游戏页确定性构造 3/3 复现，`_onMeshResult` 与 `_processUploadQueue` 两处丢弃点改为 `_redispatchDropped`（丢弃的是结果不是工作，与 `_onLightResult` 的「丢弃并重新入队」同一语义）；③ light 回包只校验输入列版本、不校验输入列**集合**：在途期间 3×3 里新到达的就绪列不在 `inputs` 里，而它到达时的 `enqueueLight` 因本列「在途」被跳过 → 永远缺它的光。补第三层校验。**验证**：单测新增 19 条（纯函数与 mesher 交叉比对 9 条，含 pocket 世界「预测集合 == mesher 实测变化集合」逐项相等 + 随机稀疏世界 ⊆ 预测；写回协议与丢弃重发 10 条，含两个丢弃点、输入集合、对角列不得置脏、内部变化不波及邻列），722 → 741 全绿；E2E 新增 `tests/light-mesh-sync.spec.mjs` 2 条（夹具 = 顶面 y=79 的整片石头地面，与地形/seed 无关；断言落在「上传网格 == 现算网格」上；竞态用例在 `scheduler.update` 接缝处挂钩子确定性构造）。**负向验证三处各自撤销全部真 FAIL**：撤销 Y 方向传播（E2E 两条红、7 条单测红，且复现了 `darkAgain=14` 即删灯后仍亮）；撤销丢弃重发（竞态 E2E 红、Y 方向 E2E 仍绿 —— 两条相互独立）；撤销输入集合校验（单测红，实际队列 `0,-1\|1,-1\|1,0\|0,1\|1,1` 唯独缺中心列）。修复后同一批复现脚本：放灯/删灯后过期 section 6→0；快速连放连删 16 轮（40/8/0ms 间隔）0 不一致；边走边加载 4 次 × 648 section 0 不一致；放灯→存盘→刷新后画面与强制重建的画面**逐像素相同**。`lightDirtyMasks` 每次 0.02~0.04ms。详见设计文档 v1.65 修订说明、`.pi/plans/2026-10-21-light-mesh-sync-fix.md` 与 CLAUDE.md「blocklight 区域语义沉淀」。 |
 
 | v1.67 | 枪击命中特效收敛为两层 + MAG7 全格白闪波浪 | ✅ 已完成 | v1.66 交付后用户两轮实玩反馈。**第一轮**：「散弹枪 MAG7 的击碎效果不好，把碎片散落效果和光晕扩散效果给去掉」「手枪和机枪的击碎方块的效果很好，但是闪光效果不好，闪光效果不要用一个球形闪光球了，直接让被击中的方块变成白色闪一下，然后消失，同时伴随着你已经实现好了的碎片散落的效果」。**第二轮**（本次）：「Mag7 击中的方块的特效，现在是中心的一个方块做白闪，改成所有伴随着消失的方块都做白闪后消失。为了确保更好的效果，每个方块消失过程中设定一个定时器，不要同一时刻消失，比如用 600ms 的时间依次让应该消失的方块白闪后消失，模拟一个有扩散过程的击中效果」（第三轮实玩后追加「太慢，改为 150ms」，即 `whiteFlash.staggerMs` = 150）。**用户三条拍板**：MAG7 保留「白方块闪一下」（与手枪同一套反馈，差异只剩玩法上的 3×3 范围破坏）；面闪灭去掉（白闪取代它，两套闪并存只会互相打架）；白闪形态 = 整格白立方。第二轮追加两条：世界**立即**删除（不延后，碰撞/射线/存档即时生效，零玩法风险）；扩散顺序 = **由命中点向外**。**改动**：`IMPACT_PROFILES.mag7` 的 `debrisCount`/`dustCount` 归零、`size`/`speed`/`spin` 删掉（死字段），全部 profile 的 `ring`/`ringRadius`/`flashScale`/`flashLifeMs`/`flashColor` 删除；`IMPACT_FX.flash`/`faceFlash`/`shockwave` 三组参数删除，新增 `whiteFlash = {holdMs:55, totalMs:150, staggerMs:150, maxActive:48}`；新增纯函数 `blockCenter`（白闪落块心）、`whiteFlashOpacityAt`（前 55ms 恒 1 → 线性淡出）、`staggerTimes`（多格在 `staggerMs` 内均匀铺开的时刻表，当前 150ms）；`_fireMag7` 从「只报最近一格」改为「一个 impact + 全量 `stagger` 波浪列表」；渲染器把白闪重建为**逐 slot 独立材质的白立方 Mesh 池**，未到时刻的 slot 先挂起（`opacity=0`/`visible=false`）由 `update()` 按 `startAt` 放行；`game.js` 撤掉只给面闪用的 `tileRect`/`atlasTexture` 接线。**四个载荷性细节**：① 白闪必须是**块心**不是命中面（贴命中面会半个方块偏移、只发白半边）；② 白闪走 NormalBlending —— 命中格此时往往是空气洞，加法混合叠到天空上会烧成白团（v1.66 实测结论）；③ 同格白闪去重（150ms 内再次命中重启该 slot）：两个完全重合的半透明白立方深度相等 → 闪烁/z-fighting；④ **不能用 `setTimeout` 做错开** —— 定时器与渲染帧不同源且页面隐藏时被节流，故用「排队 + `update()` 比对 `startAt`」，与所有池的到期判定同一时间基准。**排序键踩坑（实测推翻既有口径）**：`collectMag7Changes` 原按距离组 `group = floor((d-1)/2)` 排序，但那是**沿视线**的采样距离分组，同组内 3×3 截面九格彼此距离差很大 → 白闪波浪实测相邻两项 1.732 → 1.414（反而变近），观感是「先向外扩散一小圈又收回来」。改为按**到命中点的真实几何距离**（新字段 `centerDist`）排序。破坏行为不受影响（只依赖哪些格被删，不依赖次序）。**验证**：单测 779/779 全绿（`test-block-hit-fx.js` 新增 `staggerTimes` 3 条 + 池容量 1 条 + 配置值 150ms 1 条；`test-weapons.js` 改写波浪覆盖全量格 + 真实距离单调两条）。Tier 4 新增「MAG7 白闪波浪逐个亮起」1 条，判据用**已启动格数**而非可见白闪数 —— 后者是「进入−消退」净流水（实测剖面 `1,9,10,10,9,4`），寿命 150ms ÷ 40 格摊 600ms（间隔 15.4ms）→ 任何时刻最多约 10 格并存（理论值与实测峰值都是 10）；换成 150ms 波浪后间隔 3.8ms → 约 39 格并存（几乎全亮）→ **可见数阈值随时长立刻失效**，故判据只能落在「已启动格数」上。另：波浪采样窗须覆盖 `staggerMs + totalMs`（150+150=300ms），只采到 200ms 时末格仍在淡出段（实测尾部残留 26 个）。**负向验证两处注入全部真 FAIL**：`staggerTimes` 全部返回 `now`（＝用户抱怨的「同一时刻全消失」）→ `t=0 不得全部亮起：40`；控制器只报一格 → `白闪波浪须覆盖全部被毁格，实得 1 格`。真游戏页端到端（10 层厚墙 = 90 格，MAG7 上限 40，600ms 口径实测）：`waveCells=40`、`deletedImmediately=40`（世界**同帧**全删，不是延后）、白闪可见数 t=16ms 为 2 → 中段稳定 10（= 寿命/间隔）→ t=900ms 归零。下调到 150ms 后波浪更密（间隔 3.8ms），**负向验证**把 `staggerMs` 改回 600 会让 Tier 4 该用例真 FAIL（`扩散时长须为 150ms`）。`weapons-world-edit`（200 次手枪 + 20 次 MAG7，版本与队列收敛）照常通过。 **⚠️ 操作失误记录**：负向验证期间对 `weapon-controller.js` 用了 `git checkout <file>` 撤销注入，把用户**上一轮尚未提交**的 v1.64 `impacts` 接线一并回退（该文件当时含未提交工作）。已按 diff 重建并核验（778 全绿 + 44 行插入与丢失前一致）。之后的注入改为一律 `cp` 备份再 `cp` 还原，不再对含未提交改动的文件用 `git checkout`。 |
+| v1.68 | 巨树景观（28 变体 × 三条落位路径） | ✅ 已完成 | 素材 `40AssortedTreesPack.schem`（入库）→ 离线烘焙（2×2×2 降采样规则写死 / 24 个源方块名显式分类 / 地块索引 (minZ,minX) / 族标志反向校验）→ 28 个变体；`giant-trees.js`：region 层候选 = 全局对齐网格 + 内缩抖动，column 层合并 3×3 邻域候选（拼接 + 规范排序）→ 排除（城市 / 地标 / 撒布 / JSON 占地）→ 光栅化 + 地基 → 覆盖窗口抑制旧森林树。8 个 `giant_*` 方块（树叶 opaque 且投影、不进背包），6 张贴图沿用 `leaves.png` 图案只换色。**opaque 容量 ×1.5（用户裁决）**：2.85M→4.275M，GPU 静态 148.06→188.83 MiB。真实页面 reserved：5 视域 + 3 冲刺最高 opaque 82.1%、零 opaque 扩容；cutout 只降不升（(-20,10) 128.1→53.9）；draw call ①+16 / ④+41。规格 `docs/superpowers/specs/2026-10-23-giant-trees-design.md`，计划 `docs/superpowers/plans/2026-10-23-giant-trees.md`，验收报告 `docs/giant-trees-acceptance-report.md`。 |
 ## 活跃约束详情（历次改动沉淀的实测细节）
 
 CLAUDE.md 只保留「会影响后续实现决策的活跃约束」的**结论**，实测细节与根因叙事在这里。
@@ -529,6 +537,15 @@ world/zombies/editor 引用泄漏）。故断言须比较**对象引用**（`fir
 **失效判定必须比对 `newId !== critical.id`，不能只看坐标覆盖**：装置每次刷怪都用
 `setBlockEntity` 写回时钟（`lastSpawnAt`），若判定只看「坐标覆盖关键格」，自己的时钟写回
 就会把装置杀掉。
+
+### 巨树景观（v1.68）
+
+- **容量口径**：reserved = 1.25 × 已用顶点（`render-world.js:204`），相对**初始**容量常量；Node 侧「注入树 + 真 mesher」的已用占比比真实页面低 1.20~1.24 倍。HEAD 基线（初始容量 2.85M / 2.2M / 0.125M，reserved%）：出生点 81.6 / 72.3 / 10.6；(18,27) 82.3 / 48.4 / 36.8；(-20,10) 87.6 / **128.1** / **100.3**；(30,10) 79.1 / 70.8 / 11.2；(-25,-5) 84.6 / 21.2 / 49.0；(10,40) 83.0 / 30.1 / 85.8；森林冲刺→西 99.9 / 129.3 / 128.7、→南 103.1 / **145.4** / 140.8；海岸冲刺→东 98.4 / 57.1 / 114.3。
+- **终版读数**（4.275M）：(18,27) 58.0 / 45.9 / 36.8；(-20,10) 70.2 / 53.9 / 100.3；(30,10) 53.8 / 69.9 / 11.2；(-25,-5) 69.6 / 12.2 / 49.0；(10,40) 61.6 / 17.2 / 85.8；冲刺 79.6 / 82.1 / 72.6（opaque）。transparent 与 HEAD **逐位相同**（巨树不碰水）。
+- **候选算法对比**（7 个 region）：原贪心 14~20 ms/region、跨 region 边界间距违规 64 对；网格抖动 ≈1.1 ms/region、违规 0。密度（每 eligible 格）A 1/464 · B 1/199 · C 1/207。
+- **覆盖损失**：含巨树的 109 个 column 样本里，巨树期望格 43,672 个、98.40% 落地，1.60%（700 格）被后写者覆盖——绝大多数是相邻巨树（B/C 冠幅重叠成片是设计意图），云仅 5 格；树干格 0.89% 被邻树叶覆盖。`makeColumnSetter` 无占用格守卫（后写胜）是全局既有行为，规范排序保证确定性。
+- **预热数据**：安静系统 genP95 HEAD 7.6~8.2 / 有预热 7.5~8.1 / 无预热 9.4~10.0（一次撞 10ms 门）；负载下 8.1~9.8 / 8.4~10.0 / 11.6~14.0。
+- **atlas**：147 → 153 tile，既有 32 个 tile 坐标被重排；图标产物逐字节不变（8 个新方块全部隐藏）。
 
 ## 第二阶段依赖链
 

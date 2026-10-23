@@ -12,6 +12,7 @@ import { computeRegionLayout } from '../gen/structures/structure-layout.js';
 import { applyStructuresToColumn } from '../gen/structures/apply.js';
 import { preloadStructures } from '../gen/structures/structure-json.js';
 import { SCATTER_JSON_TYPES } from '../gen/structures/scatter.js';
+import { loadGiantTrees } from '../gen/structures/giant-trees.js';
 // M6 ai 分支：全部逻辑走 `computeAiUpdates`（同构纯函数，红线 8）。
 // 它内部 import `zombie-config.js` 的冻结玩法数据，故本文件不再直接 import ZOMBIE。
 import { computeAiUpdates } from '../entities/zombies/zombie-system.js';
@@ -46,6 +47,12 @@ registry.freeze();
  */
 const scatterPreloadPromise = preloadStructures(SCATTER_JSON_TYPES);
 
+/**
+ * 巨树变体预热（同手法：发起但不 await；layout 与 gen 入口 await 同一个 promise）。
+ * 实测不预热时每个 Worker 首个 GEN 要付 fetch+解析，`structure-gen` fixture 的 genP95 从 ~9ms 涨到 ~12ms。
+ */
+const giantPreloadPromise = loadGiantTrees();
+
 // atlasMeta 由主线程启动时 broadcast（'atlas-meta' handler 赋值）
 let _atlasMeta = null;
 
@@ -69,6 +76,7 @@ installRpcHandler({
     // （pool 按轮转分发，layout 覆盖不保证逐 worker）。此处 await 同一个预热 promise ——
     // 已 resolve 时是微任务（≈0 成本），未完成时才等剩余 fetch，确保 rasterize 不静默跳过。
     await scatterPreloadPromise.catch(() => {});
+    await giantPreloadPromise.catch(() => {});
     const column = new ChunkColumn(p.cx, p.cz);
     fillColumn(column, p.seed, registry);
     carveCaves(column, p.seed);
@@ -157,6 +165,7 @@ installRpcHandler({
     // GEN 计时路径不含冷 fetch 成本（确定性，不依赖时间差竞态；详见文件头预热注释）。
     // 预热失败不阻断 layout（结构 JSON 缺失会让 rasterize 静默跳过，但布局本身仍可用）。
     await scatterPreloadPromise.catch(() => {});
+    await giantPreloadPromise.catch(() => {});
     return computeRegionLayout(p.regionX, p.regionZ, p.seed);
   },
 

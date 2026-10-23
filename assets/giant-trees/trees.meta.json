@@ -1,0 +1,18 @@
+{
+  "scale": 2,
+  "variantCount": 28,
+  "families": {
+    "tallOak": 8,
+    "snowSpruce": 4,
+    "cherry": 4,
+    "palm": 4,
+    "banyanLeafy": 4,
+    "banyanBare": 4
+  },
+  "totalBlocks": 16954,
+  "fingerprints": {
+    "input": "217e215b0538262b:223838c7cfec01d6",
+    "schemSha256": "217e215b0538262ba89dae354e33511eec2db9e3e264e45165956294c9293aa8",
+    "paramsSha256": "223838c7cfec01d6c4836cd3c77bdce6f8590d7ca34b3d08c0472881c060dca3"
+  }
+}

@@ -175,4 +175,20 @@ export const BLOCKS = [
   // M2-7 空岛岛体（mc-lite Island.js：sky_stone 岛身 + sky_grass 顶层）
   {"name":"sky_stone","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
   {"name":"sky_grass","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
+  // ---- 巨树景观（Giant Trees Epic）----
+  // 全部 geometry:"box"、orientationModes:0 —— 无新几何模板（mesher 零改动）。
+  // ⚠️ 树叶必须 cullMode:"opaque"（叶-叶共享面互剔，mesher.js 判据 opaqueTable[neighbor]===1：
+  //    实测单棵从 cutout 通道的 ~10k 顶点降到 opaque 通道的 ~5k）；走 cutout 会让密林视域 cutout
+  //    通道占用翻数倍。⚠️ 树叶**投影**（不写 shadowCast:false）：与同为 opaque 叶的 sky_leaves、
+  //    以及既有 leaves 同口径；`[阴影投射]` 门禁的 13 项清单也要求 leaves 仍须投影。
+  //    不要写 opaque:false（会让叶-叶共享面不再互剔）。
+  // ⚠️ palette[0] 恒为树干（tools/giant-trees-fingerprint.mjs 的 FAMILY_PALETTES）。
+  {"name":"giant_oak_log","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
+  {"name":"giant_mangrove_log","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
+  {"name":"giant_oak_leaves","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
+  {"name":"giant_birch_leaves","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
+  {"name":"giant_spruce_leaves","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
+  {"name":"giant_cherry_leaves","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
+  {"name":"giant_palm_leaves","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
+  {"name":"giant_banyan_leaves","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
 ];
