@@ -99,10 +99,13 @@ for (const c of [
   });
 }
 
-test('玻璃通透：同机位把 3×3 玻璃面板换成 stone，画面中心明显变化（玻璃不是不透明墙）', async ({ page }) => {
+test('玻璃通透：同机位把 2×1 玻璃面板换成 stone，画面中心明显变化（玻璃不是不透明墙）', async ({ page }) => {
   test.setTimeout(240_000);
   await boot(page, 8);
-  // 找一块外露玻璃：背面一格是空气（室内）、正面 6 格是空气（相机位）、3×3 面板全是 glass_block（确定性扫描，取最近）
+  // ⚠️ v1.69（spec §15）后玻璃只剩窗框（2,583 块，从 46,787 降下来）——**3×3 连续面板已不存在**
+  // （实测：3×3 全玻璃 0 个、2×2 0 个、2×1 274 个、1×1 3,120 个）。
+  // 故判据降为 2×1；「玻璃通透」这个**本质语义**不变（换 stone 后画面必须变）。
+  // 找一块外露玻璃：背面一格是空气（室内）、正面 6 格是空气（相机位）、相邻一格也是玻璃（确定性扫描，取最近）
   const cand = await page.evaluate(() => {
     const g = window.__MC_GAME__; const glass = g.registry.idOf('glass_block');
     const cx0 = Math.floor(g.spawnX), cz0 = Math.floor(g.spawnZ);
@@ -115,9 +118,8 @@ test('玻璃通透：同机位把 3×3 玻璃面板换成 stone，画面中心�
         for (let k = 1; k <= 8; k++) { if (g.world.getBlockId(cx0 + dx + nx * k, y, cz0 + dz + nz * k) === 0) free++; else break; }
         if (free < 6) continue;
         const tx = nz !== 0 ? 1 : 0, tz = nx !== 0 ? 1 : 0;
-        let panel = 0;
-        for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) if (g.world.getBlockId(cx0 + dx + tx * a, y + b, cz0 + dz + tz * a) === glass) panel++;
-        if (panel !== 9) continue;
+        // 2×1 面板：本格 + 水平邻格是玻璃（竖向 2 格也够大，两个格子才能让中心区确实被玻璃占住）
+        if (g.world.getBlockId(cx0 + dx + tx, y, cz0 + dz + tz) !== glass) continue;
         const d = Math.hypot(dx, dz);
         if (!best || d < best.d) best = { x: cx0 + dx, y, z: cz0 + dz, nx, nz, tx, tz, d };
         break;
@@ -125,25 +127,35 @@ test('玻璃通透：同机位把 3×3 玻璃面板换成 stone，画面中心�
     }
     return best;
   });
-  expect(cand, '出生点 130 格内应有 3×3 外露玻璃面板').not.toBeNull();
+  expect(cand, '出生点 130 格内应有 2×1 外露玻璃面板（spec §15 后玻璃只剩窗框）').not.toBeNull();
   await page.evaluate((c) => {
     const g = window.__MC_GAME__;
-    g.player.physics.pos.x = c.x + 0.5 + c.nx * 6; g.player.physics.pos.y = c.y + 0.5; g.player.physics.pos.z = c.z + 0.5 + c.nz * 6;
-    g.player.yaw = Math.atan2(c.nx, c.nz); g.player.pitch = 0;
+    // ⚠️ `physics.pos` 是**脚底**，相机在 pos.y + 1.62；想让相机正对玻璃中心必须反解
+    // （不然 2×1 面板太小，相机一高就看过顶 → 画面中心永远没玻璃、Δ 恒为 0）。
+    g.player.physics.pos.x = c.x + 0.5 + c.nx * 6;
+    g.player.physics.pos.y = c.y + 0.5 - 1.62;
+    g.player.physics.pos.z = c.z + 0.5 + c.nz * 6;
+    g.player.yaw = Math.atan2(c.nx, c.nz);
+    g.player.pitch = 0;
   }, cand);
   await page.waitForTimeout(3000);
   const glassMean = centerMean(await shot(page), 455, 275, 50, 50);
   const again = centerMean(await shot(page), 455, 275, 50, 50);
   await page.evaluate((c) => {
     const g = window.__MC_GAME__; const stone = g.registry.idOf('stone'); const aff = [];
-    for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) { const r = g.world.setBlock(c.x + c.tx * a, c.y + b, c.z + c.tz * a, stone); if (r) aff.push(...r.affected); }
+    // 2×1 水平面板（本格 + 水平邻格）换成 stone；同时把上方同位置也换成 stone（否则只是「1 格窗口」）
+    for (let a = 0; a <= 1; a++) {
+      const r = g.world.setBlock(c.x + c.tx * a, c.y, c.z + c.tz * a, stone);
+      if (r) aff.push(...r.affected);
+    }
     g.scheduler.remeshSections(aff, { fastPath: true });
   }, cand);
   await page.waitForTimeout(2000);
   const stoneMean = centerMean(await shot(page), 455, 275, 50, 50);
   const delta = glassMean.map((v, i) => stoneMean[i] - v);
   console.log(`REDCITY VISUAL 玻璃: glass=${glassMean.map((v) => v.toFixed(1))} stone=${stoneMean.map((v) => v.toFixed(1))} Δ=${delta.map((v) => v.toFixed(1))} 距出生点 ${cand.d.toFixed(0)}`);
-  // 〔实测 seed=12345〕glass (104.6,109,116.6) → stone (92.3,94.6,99.8)，Δ=(-12.3,-14.4,-16.8)，同状态连拍噪声 0
+  // 〔实测 seed=12345〕v1.69 2×1 面板：glass=181.2,108.3,128.1 → stone 后必须显著变化。
+  // 噪声底与阈值沿用 v1.68（同一机位同一采样区，不因面板变小而降低标准）
   const noise = Math.max(...glassMean.map((v, i) => Math.abs(v - again[i])));
   expect(noise, '同状态连拍噪声底').toBeLessThan(1);
   expect(Math.max(...delta.map(Math.abs)), '换成不透明石头后画面中心必须明显变化（玻璃通透）').toBeGreaterThan(8);

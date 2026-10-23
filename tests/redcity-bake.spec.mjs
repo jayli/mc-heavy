@@ -14,7 +14,7 @@ import fs from 'node:fs';
 const core = await import('../tools/redcity-bake-core.mjs');
 const cfg = await import('../tools/redcity-config.mjs');
 const fp = await import('../tools/redcity-fingerprint.mjs');
-const { REDCITY_BASE_Y_MAX, REDCITY_DY_MAX_BUDGET, REDCITY_GROUND_FLOOR } = await import('../src/gen/structures/region-config.js');
+const { REDCITY_BASE_Y_MAX, REDCITY_DY_MAX_BUDGET, REDCITY_GROUND_FLOOR, REDCITY_MAX_STEP, REDCITY_GLASS_FRAME_MIN, REDCITY_FILL_BLOCK } = await import('../src/gen/structures/region-config.js');
 
 /** 合成网格：索引 (y*L+z)*W+x，格值 = (id<<4)|meta */
 function makeGrid(W, H, L) {
@@ -31,6 +31,7 @@ function makeGrid(W, H, L) {
 const SMALL = { ...cfg.REDCITY_BAKE_PARAMS, minComp: 4, borderKeep: 2 };
 const bake = (g, params = SMALL) => core.bakeRedCityCore(g, {
   isEmpty: cfg.isEmpty, isSkin: cfg.isSkin, isBuilding: cfg.isBuildingMat, nameOf: (k) => cfg.mappingOf(k).name, params,
+  fillBlock: REDCITY_FILL_BLOCK, glassBlock: 'glass_block',
 });
 const CLAY = 82, PLANKS = 5, LEAVES = 18, GLASS = 20, STONE = 1;
 const colEntries = (b, ox, oz, minX, minZ) => b.ents.filter((e) => e.c === (oz - minZ) * b.width + (ox - minX)).map((e) => e.y).sort((a, c) => a - c);
@@ -49,8 +50,12 @@ test('保留规则：地面往下只留 K=2 层，地面以上全部保留', () 
   const b = bake(g);
   expect(b.ents.length).toBe(2 * 10 * 10);                                       // 每列恰 2 个（y=4,5）
   expect(b.stats.groundMin).toBe(0); expect(b.stats.groundMax).toBe(0);          // 全岛同高 → ground′ 恒 0
-  g.set(5, 8, 5, LEAVES);                                                        // 地面之上的悬空叶子
-  expect(bake(g).ents.length).toBe(2 * 10 * 10 + 1);
+  // ⚠️ 地面以上的块必须**连着地面**（y=5 → 6 → 7 → 8），否则会被孤立块过滤（spec §15.9）删掉。
+  // v1.69 时这里只放一块 y=8 的悬空叶子，v1.70 的过滤器把它删了 —— 不是过滤器坏了，
+  // 而是旧写法在测「保留规则」的同时顺手造了一个孤立块。改成立柱 + 顶叶，意图不变。
+  g.set(5, 6, 5, PLANKS); g.set(5, 7, 5, PLANKS);
+  g.set(5, 8, 5, LEAVES);                                                        // 地面之上、但连着立柱的叶子
+  expect(bake(g).ents.length).toBe(2 * 10 * 10 + 3);
 });
 
 test('I3 ground 下限 + 压缩：高低两半的地台，低半被钳到 GROUND_FLOOR', () => {
@@ -168,11 +173,131 @@ test('真实模型黄金比对：烘焙统计 = 评审实测值；重烘结果�
   const { bakeFromSchematic } = await import('../tools/bake-redcity.mjs');
   const { REDCITY_JSON } = fp;
   const { doc, bake: b, invariants } = bakeFromSchematic();
-  expect(b.stats).toMatchObject({ terrainColumns: 38636, comps: 134, rigid: 125, nearBorder: 9, retained: 244647, conflicts: 202, groundMin: -5, groundMax: 43, borderNonZero: 0, outsideAdjMax: 1, contactBreaks: 84 });
+  // 〔实测〕v1.69（spec §15）重烘：191,740 块 / ground −5..19 / maxIslandStep 2 / 玻璃 2,583。
+  // 〔实测〕v1.70（spec §15.9）再减 3,711 → **188,029 块**（删掉 3,711 个孤立方块）。
+  // 与 v1.68 的 244,647 块 · groundMax 43 · rigid 125 不同 —— 差异是 §15 的设计目标，不是回归：
+  //   retained ↓ 因为删掉了 91,455 块无框玻璃 + 3,711 块孤立方块；groundMax 43→19 因为台面压平 + Lipschitz 平滑；
+  //   rigid 125→317 因为分量按列底面高度再拆分（每个子分量各自求平移量）。
+  expect(b.stats).toMatchObject({
+    terrainColumns: 38636, comps: 1106, rigid: 317, nearBorder: 35, retained: 188029, conflicts: 12604,
+    groundMin: -5, groundMax: 19, borderNonZero: 0, outsideAdjMax: 1, contactBreaks: 0,
+    maxIslandStep: 2, baseFill: 3621, archCols: 0, glassKept: 2583, glassDropped: 91455,
+    isolatedDropped: 3761,
+  });
   expect(b.checks.intraCompBreaks).toBe(0);
   expect(invariants.i5Ratio).toBeLessThan(0.001);
+  // spec §15 的验收硬指标（用户四条反馈的直接判据）
+  expect(b.stats.maxIslandStep).toBeLessThanOrEqual(REDCITY_MAX_STEP);
+  expect(REDCITY_MAX_STEP).toBe(2);
   const committed = JSON.parse(fs.readFileSync(REDCITY_JSON, 'utf8'));
   for (const k of ['format', 'version', 'width', 'length', 'dyMin', 'dyMax', 'spawn', 'palette', 'ground', 'island', 'blocks', 'stats', 'fingerprint']) {
     expect(JSON.stringify(doc[k]), `产物字段 ${k} 与重烘不一致——改了算法/参数/映射却没重烘入库？`).toBe(JSON.stringify(committed[k]));
   }
+});
+
+test('spec §15 地表可跑动：岛内相邻列高差 ≤ REDCITY_MAX_STEP；重烘确定性', async () => {
+  test.setTimeout(60_000);
+  const { bakeFromSchematic } = await import('../tools/bake-redcity.mjs');
+  const { bake: b } = bakeFromSchematic();
+  const { width: W, length: L, ground: G, island: I } = b;
+  const isl = (c) => I[c] === 1;
+  let worst = 0, pairs = 0;
+  for (let z = 0; z < L; z++) {
+    for (let x = 0; x < W; x++) {
+      const c = z * W + x;
+      if (!isl(c)) continue;
+      for (const [dx, dz] of [[1, 0], [0, 1]]) {
+        const nx = x + dx, nz = z + dz;
+        if (nx >= W || nz >= L) continue;
+        const n = nz * W + nx;
+        if (!isl(n)) continue;
+        pairs++;
+        worst = Math.max(worst, Math.abs(G[n] - G[c]));
+      }
+    }
+  }
+  expect(pairs).toBeGreaterThan(50_000);               // 防「全图变空 → 循环不执行 → 恒真」
+  expect(worst).toBeLessThanOrEqual(REDCITY_MAX_STEP);
+  // 声榜：不光不能大，也不能全平（全平就丢了「保留骨架」，用户明确要求保留）
+  let lo = 99, hi = -99;
+  for (let c = 0; c < W * L; c++) if (isl(c)) { lo = Math.min(lo, G[c]); hi = Math.max(hi, G[c]); }
+  expect(hi - lo).toBeGreaterThan(10);                 // 〔实测〕24（旧产物 48）
+});
+
+test('spec §15 玻璃窗框：每块保留的玻璃都有 ≥REDCITY_GLASS_FRAME_MIN 个实心邻接', async () => {
+  test.setTimeout(60_000);
+  const { bakeFromSchematic } = await import('../tools/bake-redcity.mjs');
+  const { bake: b } = bakeFromSchematic();
+  const { width: W, length: L, ents } = b;
+  const at = new Map();
+  for (const e of ents) at.set(e.c * 4096 + (e.y + 2048), e.name);
+  let glass = 0, unframed = 0;
+  for (const e of ents) {
+    if (e.name !== 'glass_block') continue;
+    glass++;
+    const ox = e.c % W, oz = (e.c / W) | 0;
+    let solid = 0;
+    for (const [dx, dy, dz] of [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]) {
+      const nx = ox + dx, nz = oz + dz;
+      if (nx < 0 || nz < 0 || nx >= W || nz >= L) continue;
+      const nm = at.get((nz * W + nx) * 4096 + (e.y + dy + 2048));
+      if (nm !== undefined && nm !== 'glass_block') solid++;
+    }
+    if (solid < REDCITY_GLASS_FRAME_MIN) unframed++;
+  }
+  expect(glass).toBeGreaterThan(500);                  // 防「全删 → 循环不执行 → 恒真」
+  expect(unframed).toBe(0);
+});
+
+/** 统计产物里「六邻接全空」的方块（返回总数与其中悬空的 = 不在 y===ground 上的） */
+function isolatedCounts(b) {
+  const { width: W, length: L, ents, ground: G } = b;
+  const at = new Set();
+  for (const e of ents) at.add(e.c * 4096 + (e.y + 2048));
+  let total = 0, air = 0;
+  for (const e of ents) {
+    const ox = e.c % W, oz = (e.c / W) | 0;
+    let touching = 0;
+    for (const [dx, dy, dz] of [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]) {
+      const nx = ox + dx, nz = oz + dz;
+      if (nx < 0 || nz < 0 || nx >= W || nz >= L) continue;
+      if (at.has((nz * W + nx) * 4096 + (e.y + dy + 2048))) { touching++; break; }
+    }
+    if (touching) continue;
+    total++;
+    if (e.y !== G[e.c]) air++;
+  }
+  return { total, air };
+}
+
+test('spec §15.9 孤立方块：六邻接全空的方块被删；悬空孤立块 = 0（地面鳍点允许）', async () => {
+  test.setTimeout(60_000);
+  const { bakeFromSchematic } = await import('../tools/bake-redcity.mjs');
+  const { bake: b } = bakeFromSchematic();
+  const r = isolatedCounts(b);
+  // 悬空的孤立块 = 用户看到的「空中碎块」，必须一个不剩
+  expect(r.air).toBe(0);
+  // 地面鳍点（y === ground 且该列只有它）是「地面补齐」写的行走面锚点，允许存在但必须很少
+  expect(r.total).toBeLessThanOrEqual(200);
+  expect(b.stats.isolatedDropped).toBeGreaterThan(3000);   // 证实过滤真的跑了
+});
+
+test('spec §15.9 负向：关掉 dropIsolated 后孤立块必须重新出现（断言不是恒真）', async () => {
+  test.setTimeout(60_000);
+  const { bakeFromSchematic } = await import('../tools/bake-redcity.mjs');
+  const { bake: on } = bakeFromSchematic();
+  // 用同一份真实模型、只把开关关掉
+  const { loadSchematic } = await import('../tools/redcity-schematic.mjs');
+  const sch = loadSchematic(fp.REDCITY_SCHEM);
+  const off = core.bakeRedCityCore(sch, {
+    isEmpty: cfg.isEmpty, isSkin: cfg.isSkin, isBuilding: cfg.isBuildingMat, nameOf: (k) => cfg.mappingOf(k).name,
+    params: { ...cfg.REDCITY_BAKE_PARAMS, dropIsolated: false },
+    fillBlock: REDCITY_FILL_BLOCK, glassBlock: 'glass_block',
+  });
+  const offR = isolatedCounts(off), onR = isolatedCounts(on);
+  // 〔实测〕关掉后悬空孤立块 3,710、总数 3,760；开着时悬空 0、总数 50（地面鳍点）
+  expect(offR.air).toBeGreaterThan(3000);
+  expect(offR.total).toBeGreaterThan(onR.total + 3000);
+  // 净减必须为正且与 stats 对得上（isolatedDropped 记的是过滤当时删的，比净减多 50 个地面鳍点）
+  expect(off.ents.length - on.ents.length).toBeGreaterThan(3000);
 });

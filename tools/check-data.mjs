@@ -743,13 +743,15 @@ async function checkNightSkyFreshness() {
  *   ⑤ 映射覆盖：块数 ≥50 的 (id:meta) 全部显式映射、未覆盖占比 ≤0.5%（记录值 + 用当前映射表对记录的直方图重算）；
  *   ⑥ 出生点判据在产物上重验（脚下是岛面方块、头顶 24 格空、5×5 平整、不贴墙）；
  *   ⑦ 颜色关系式（U2 裁定后只留这两条，不做 ΔE）：樱花三个源同名直映射 pink_wool；屋顶目标贴图平均色 R<B<G。
+ *   ⑧ spec §15 / §15.9（v1.69/v1.70）**从产物数组重算**的两条地表契约：岛内相邻高差 ≤ REDCITY_MAX_STEP；
+ *      玻璃全部有 ≥REDCITY_GLASS_FRAME_MIN 个实心邻接；悬空的六邻接全空方块 = 0。
  * ⚠️ 主流程是逐个显式调用 —— 漏了本行则门禁永不执行（本仓已因此出过两次事故）。
  */
 async function checkRedCityArtifact() {
   const RC = await import('./redcity-fingerprint.mjs');
   const CFG = await import('./redcity-config.mjs');
   const { prepareRedCityModel, forEachRedCityBlock } = await import('../src/gen/structures/redcity-data.js');
-  const { REDCITY_SIZE, REDCITY_GROUND_FLOOR, REDCITY_DY_MAX_BUDGET } = await import('../src/gen/structures/region-config.js');
+  const { REDCITY_SIZE, REDCITY_GROUND_FLOOR, REDCITY_DY_MAX_BUDGET, REDCITY_MAX_STEP, REDCITY_GLASS_FRAME_MIN } = await import('../src/gen/structures/region-config.js');
   const T = '[RedCity]';
   const before = failures.length;
   if (!fs.existsSync(RC.REDCITY_SCHEM)) { failures.push(`${T} 烘焙输入 schematic 不在仓库内（${path.relative(ROOT, RC.REDCITY_SCHEM)}）—— 输入必须入库，否则别的机器上 npm run redcity 必挂`); return; }
@@ -809,6 +811,91 @@ async function checkRedCityArtifact() {
   if (minG < REDCITY_GROUND_FLOOR) failures.push(`${T} I3 ground 最小值 ${minG} < ${REDCITY_GROUND_FLOOR}`);
   if (doc.invariants && !(doc.invariants.i5Ratio < 0.001)) failures.push(`${T} I5′ 竖向接触不一致占比 ${doc.invariants.i5Ratio} ≥ 0.1%`);
 
+  // ④c spec §15（v1.69）地表可跑动性：岛内相邻列高差 ≤ REDCITY_MAX_STEP
+  // 这是用户实玩反馈「跑动时全是上上下下的障碍」的直接验收判据，必须**从产物数组重算**。
+  {
+    let maxStep = 0;
+    for (let z = 0; z < L; z++) {
+      for (let x = 0; x < W; x++) {
+        const c = z * W + x;
+        if (!isl(c)) continue;
+        if (x < W - 1 && isl(c + 1)) maxStep = Math.max(maxStep, Math.abs(doc.ground[c + 1] - doc.ground[c]));
+        if (z < L - 1 && isl(c + W)) maxStep = Math.max(maxStep, Math.abs(doc.ground[c + W] - doc.ground[c]));
+      }
+    }
+    if (maxStep > REDCITY_MAX_STEP) {
+      failures.push(`${T} 岛内相邻列高差 ${maxStep} > REDCITY_MAX_STEP ${REDCITY_MAX_STEP}（跑动会被台阶打断，spec §15）`);
+    }
+  }
+
+  // ④d spec §15 玻璃窗框：每块玻璃必须至少 REDCITY_GLASS_FRAME_MIN 个实心（非玻璃）六邻接。
+  // 从产物重算，不信记录值 —— 这条守的是「删玻璃那一步真的跑了」。
+  {
+    const GLASS = 'glass_block';
+    const at = new Map();
+    for (let c = 0; c < W * L; c++) {
+      for (let k = model.colStart[c]; k < model.colStart[c + 1]; k++) {
+        const i = k * 3;
+        at.set(c * 4096 + (doc.blocks[i + 1] + 2048), doc.palette[doc.blocks[i + 2]]);
+      }
+    }
+    let glassN = 0, unframed = 0;
+    for (let c = 0; c < W * L; c++) {
+      const ox = c % W, oz = (c / W) | 0;
+      for (let k = model.colStart[c]; k < model.colStart[c + 1]; k++) {
+        const i = k * 3, y = doc.blocks[i + 1];
+        if (doc.palette[doc.blocks[i + 2]] !== GLASS) continue;
+        glassN++;
+        let solid = 0;
+        for (const [dx, dy, dz] of [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]) {
+          const nx = ox + dx, nz = oz + dz;
+          if (nx < 0 || nz < 0 || nx >= W || nz >= L) continue;
+          const nm = at.get((nz * W + nx) * 4096 + (y + dy + 2048));
+          if (nm !== undefined && nm !== GLASS) solid++;
+        }
+        if (solid < REDCITY_GLASS_FRAME_MIN) unframed++;
+      }
+    }
+    if (unframed) {
+      failures.push(`${T} ${unframed} 块玻璃没有 ≥${REDCITY_GLASS_FRAME_MIN} 个实心邻接（无框玻璃壳/网应被删除，spec §15）`);
+    }
+    if (!glassN) failures.push(`${T} 产物里一块玻璃都没有（窗框应被保留，全删说明过滤写反了）`);
+  }
+
+  // ④e spec §15.9（v1.70）孤立方块：除「地面鳍点」外，不得存在六邻接全空的方块。
+  // 用户实玩反馈「空中有大量的悬空方块」。地面鳍点（y === ground 且该列只有它）是允许的 ——
+  // 那是「地面补齐」写出的行走面锚点，删了地表就凭空虚空一格。
+  {
+    const at = new Map();
+    for (let c = 0; c < W * L; c++) {
+      for (let k = model.colStart[c]; k < model.colStart[c + 1]; k++) {
+        const i = k * 3;
+        at.set(c * 4096 + (doc.blocks[i + 1] + 2048), doc.palette[doc.blocks[i + 2]]);
+      }
+    }
+    let isolated = 0, isolatedAir = 0;
+    for (let c = 0; c < W * L; c++) {
+      const ox = c % W, oz = (c / W) | 0;
+      for (let k = model.colStart[c]; k < model.colStart[c + 1]; k++) {
+        const i = k * 3, y = doc.blocks[i + 1];
+        let touching = 0;
+        for (const [dx, dy, dz] of [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]]) {
+          const nx = ox + dx, nz = oz + dz;
+          if (nx < 0 || nz < 0 || nx >= W || nz >= L) continue;
+          if (at.has((nz * W + nx) * 4096 + (y + dy + 2048))) { touching++; break; }
+        }
+        if (touching) continue;
+        isolated++;
+        if (y !== doc.ground[c]) isolatedAir++;      // 非地面鳍点的孤立块 = 悬空肿块，必须为 0
+      }
+    }
+    if (isolatedAir) {
+      failures.push(`${T} ${isolatedAir} 个悬空方块的六邻接全空（应被 REDCITY_DROP_ISOLATED 删掉，spec §15.9）`);
+    }
+    // 地面鳍点只能少量（实测 50 个 = 地面被平滑抬高后无方块可依的列）
+    if (isolated > 200) failures.push(`${T} 孤立方块 ${isolated} 个（地面鳍点不应超过 200）`);
+  }
+
   // ⑤ 映射覆盖：记录值 + 用当前映射表对记录的直方图重算（映射表改了而没重烘 → 这里也会红）
   if (doc.coverage && (doc.coverage.bigUncovered.length || doc.coverage.uncoveredRatio > 0.005)) failures.push(`${T} 映射覆盖不达标（块数≥50 未映射 ${doc.coverage.bigUncovered.length} 项 / 占比 ${doc.coverage.uncoveredRatio}）`);
 
@@ -857,8 +944,7 @@ async function checkRedCityArtifact() {
   }
   if (failures.length === before) {
     infos.push(`${T} ${doc.width}×${doc.length}，${doc.stats.retained} 块，palette ${doc.palette.length} 项；指纹 ${fp.slice(0, 16)} 匹配；I1=${outAdj} I2=${borderNZ} I3=${minG}；出生点 (${doc.spawn.ox},${doc.spawn.oz}) 判据重验通过`);
-  }
-}
+  }}
 
 // ---------------------------------------------------------------- 主流程
 

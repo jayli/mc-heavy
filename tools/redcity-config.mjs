@@ -8,7 +8,10 @@
 //   - 其余      = 既非 skin 也非 building（如 barrier）→ 丢弃
 // 一个 (id,meta) 可以同时是 skin 与 building 吗？不可以：`isSkin` 与 `isBuildingMat` 的清单实测无交集
 // （`tests/redcity-bake.spec.mjs` 的「skin 与 building 无交集」用例守着）。若将来加材质，先跑它。
-import { REDCITY_GROUND_FLOOR } from '../src/gen/structures/region-config.js';
+import {
+  REDCITY_GROUND_FLOOR, REDCITY_MAX_STEP, REDCITY_THIN_MAX, REDCITY_BASE_TOL,
+  REDCITY_GLASS_FRAME_MIN, REDCITY_MAX_FILL, REDCITY_DROP_ISOLATED,
+} from '../src/gen/structures/region-config.js';
 
 // ==================== skin 清单（spec §13.5.4 第 1 条：显式列表，不得隐式「其余」）====================
 
@@ -134,6 +137,10 @@ export const isEmpty = (key) => (key >> 4) === 0 || (key >> 4) === 166;
  *   - `minComp` 30：小于 30 块的建筑连通体不做刚性平移（碎片不值得）。
  *   - `borderKeep` 8：距矩形边缘 8 格内的连通体不刚性（边缘地面必须收敛到 0，见 I2）。
  *
+ * ✅ **v1.69/v1.70（spec §15 / §15.9）新增的六项不在这里写字面量**：`maxStep` / `thinMax` / `baseTol` /
+ * `glassFrameMin` / `maxFill` / `dropIsolated` 是**用户裁定 + 原型实测标定**的结构性参数，
+ * 唯一权威是 `region-config.js`（与 groundFloor 同理）；本对象只**引用**它们，让它们一并进指纹。
+ *
  * **改任何一个都必须重跑 `npm run redcity`**，否则产物静默过期（`check:data` 的指纹环节会抓）。
  *
  * `groundFloor` 不在这里另写字面量：唯一权威是 `region-config.js` 的 `REDCITY_GROUND_FLOOR`（两份字面量会漂移出
@@ -147,6 +154,13 @@ export const REDCITY_BAKE_PARAMS = Object.freeze({
   pad: 1,
   minComp: 30,
   borderKeep: 8,
+  // ---- spec §15（v1.69）----
+  maxStep: REDCITY_MAX_STEP,
+  thinMax: REDCITY_THIN_MAX,
+  baseTol: REDCITY_BASE_TOL,
+  glassFrameMin: REDCITY_GLASS_FRAME_MIN,
+  maxFill: REDCITY_MAX_FILL,
+  dropIsolated: REDCITY_DROP_ISOLATED,
 });
 
 /** 出生点判据参数（spec §13.6.1） */

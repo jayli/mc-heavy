@@ -11,14 +11,20 @@ import { loadSchematic } from './redcity-schematic.mjs';
 import {
   isEmpty, isSkin, isBuildingMat, mappingOf, SKIN_ANY_META, SKIN_META_ONLY, MAPPING_RULES, DEFAULT_BLOCK,
   REDCITY_BAKE_PARAMS, REDCITY_SPAWN_PARAMS,
-} from './redcity-config.mjs';
-import { bakeRedCityCore, pickSpawn } from './redcity-bake-core.mjs';
+} from './redcity-config.mjs';import { bakeRedCityCore, pickSpawn } from './redcity-bake-core.mjs';
 import {
   assertInvariants, computeMappingCoverage, assertMappingCoverage, redcityInputFingerprint,
   REDCITY_JSON, REDCITY_SCHEM,
 } from './redcity-fingerprint.mjs';
 import { encodeRedCityJson } from '../src/gen/structures/redcity-data.js';
-import { REDCITY_SIZE } from '../src/gen/structures/region-config.js';
+import { REDCITY_SIZE, REDCITY_FILL_BLOCK } from '../src/gen/structures/region-config.js';
+
+/**
+ * 玻璃在 mc-heavy registry 里的方块名。
+ * ⚠️ 必须与 `MAPPING_RULES` 里玻璃那几行一致（`95:*` / `20:*` / `102:*` / `160:*` → 本值）；
+ * `check:data` 的 `[RedCity]` 环节有一条关系式守着（「窗框判据用的名字必须在 palette 里」）。
+ */
+export const GLASS_BLOCK = 'glass_block';
 
 /**
  * 烘焙并断言（不写盘）。Node 侧回归 spec 与 `check:data` 复用它——「重烘结果必须与入库产物一致」的比对就靠它。
@@ -28,6 +34,7 @@ export function bakeFromSchematic(schemPath = REDCITY_SCHEM) {
   const sch = loadSchematic(schemPath);
   const bake = bakeRedCityCore(sch, {
     isEmpty, isSkin, isBuilding: isBuildingMat, nameOf: (key) => mappingOf(key).name, params: REDCITY_BAKE_PARAMS,
+    fillBlock: REDCITY_FILL_BLOCK, glassBlock: GLASS_BLOCK,
   });
   if (bake.width !== REDCITY_SIZE.X || bake.length !== REDCITY_SIZE.Z) {
     throw new Error(`redcity: 烘焙包围盒 ${bake.width}×${bake.length} ≠ region-config 的 REDCITY_SIZE ${REDCITY_SIZE.X}×${REDCITY_SIZE.Z}`);
