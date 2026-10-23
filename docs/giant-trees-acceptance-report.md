@@ -42,7 +42,7 @@
 |---|---|---|
 | 耗时 | 14~20 ms/region | **≈1.1 ms/region** |
 | 跨 region 边界间距违规 | **64 对** | **0** |
-| 密度（每 eligible 格） | — | A 1/464 · B 1/199 · C 1/207 |
+| 密度（每 eligible 格） | — | A **1/1523**（spacing 32，交付值；14→1/464、20→1/586）· B 1/199 · C 1/207 |
 
 ### 2.3 真实页面通道占用（reserved%）
 
@@ -61,7 +61,7 @@
 | 冲刺 森林→南 | — | 103.1 / **145.4** / 140.8 | **82.1** / 60.3 / — |
 | 冲刺 海岸→东 | — | 98.4 / 57.1 / 114.3 | **72.6** / 25.9 / — |
 
-**结论**：opaque 峰值 **82.1% < 90%**，**零 opaque 扩容**；cutout 只降不升（(-20,10) 128.1 → 53.9）；
+**结论**：opaque 峰值 **82.1% < 90%**（A 森林 spacing 14→20→32 后 **76.4%**），**零 opaque 扩容**；cutout 只降不升（(-20,10) 128.1 → 53.9）；
 transparent 与 HEAD **逐位相同**（巨树不碰水）。HEAD 自己在密林视域本就越线，故验收口径是「相对 HEAD 不恶化」。
 
 `m3-fullscene` 实测：`gpuVertexBytes = 198,000,000`（= 188.83 MiB），`gpuActiveBytes ≈ 133,144,308`，
@@ -186,7 +186,7 @@ draw call 增量的机制是 three r185.1 WebGPU 对 BatchedMesh **每个可见 
 
 测试证明不了「好不好看」，这三个留给你：
 
-1. **密度**：`GIANT_TREE_PATHS` 的 `chance` / `spacing` / `jitter`（A 14/8 · B 8/6 · C 8/6，
+1. **密度**：`GIANT_TREE_PATHS` 的 `chance` / `spacing` / `jitter`（**A 32/8** · B 8/6 · C 8/6，
    当前 `chance=1` 即「每个 eligible 网格点都长」）。改这三个不需要重烘焙。
 2. **叶色**：`tools/bake-giant-textures.mjs` 的 `TEXTURES[].base` 与 `CONTRAST`（0.6）。
    改后需 `npm run gianttextures && npm run atlas`。

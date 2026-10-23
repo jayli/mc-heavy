@@ -39,7 +39,7 @@ v1.1 把这些修订落成可执行形态，并满足两条硬要求：
 
   | 路径 | salt | spacing / jitter | chance | 谓词 | 族（各 50%） |
   |---|---|---|---|---|---|
-  | A 森林 | 911 | 14 / 8 | 1 | `FOREST` 且 `h > SEA_Y` | tallOak · snowSpruce |
+  | A 森林 | 911 | 32 / 8 | 1 | `FOREST` 且 `h > SEA_Y` | tallOak · snowSpruce |
   | B 海边 | 921 | 8 / 6 | 1 | 陆上且距水 ≤ 24（4 轴向、步长 4） | cherry · palm |
   | C 榕树带 | 931 | 8 / 6 | 1 | 陆上且 `PLAINS`/`DESERT` 交界（4 轴向 ±32 跨 biome） | banyanLeafy · banyanBare |
 
@@ -1474,11 +1474,14 @@ test('chance 是有效的密度旋钮（原设计的 forestChance 在贪心下�
   assertTrue(half > full * 0.35 && half < full * 0.65, `chance=0.5 → 约一半：${half} / ${full}`);
 });
 
-test('候选密度下界（防谓词写崩变恒空）：3×3 region 内 A ≥ 100、B ≥ 300、C ≥ 80', () => {
-  // 实测 446 / 1158 / 399（含城区 region(0,0) 内未被 apply 层排除的点）；下界取 ~1/4
-  assertTrue(blockCandidates('forest').length >= 100, 'A 候选下界');
-  assertTrue(blockCandidates('beach').length >= 300, 'B 候选下界');
-  assertTrue(blockCandidates('banyan').length >= 80, 'C 候选下界');
+test('候选密度下界（防谓词写崩变恒空）：A ≥ 91、B ≥ 772、C ≥ 266（均为实测的 2/3）', () => {
+  // 实测（A spacing=32，交付值）：137 / 1158 / 399（含城区 region(0,0) 内部、apply 层尚未排除的点）。
+  // 下界统一取实测的 **2/3**，不是更宽松的 1/4 —— A 的密度会被反复调（14→20→32），
+  // 若下界离实测太远，调稀后断言仍绿但已失去判别力（谓词写成恒空也照过）。
+  // ⚠️ 重新调 A 的 spacing/jitter 后，须按新实测值重算本处三个下界（保持 2/3 口径）。
+  assertTrue(blockCandidates('forest').length >= 91, 'A 候选下界');
+  assertTrue(blockCandidates('beach').length >= 772, 'B 候选下界');
+  assertTrue(blockCandidates('banyan').length >= 266, 'C 候选下界');
 });
 
 test('候选发现耗时：单 region 三路径 < 8ms（原逐点扫描法 14~20ms；网格抖动实测 ~1ms）', () => {
@@ -1572,15 +1575,15 @@ export function isBiomeEdge(wx, wz, seed, band) {
  *   ⇒ 相邻格的点切比雪夫距离 ≥ spacing + 1（构造性保证，不需要贪心/排序/跨 region 协调）。
  *   chance = 每格出点概率（密度旋钮；原设计的 forestChance 在贪心下几乎无效，这里真正线性控制密度）；
  *   families = 该路径可选的两个族（GIANT_FAMILY_ORDER 下标，各 50%）。
- *   **spacing 是最小树距，不是树宽**：A 森林树 AABB ≤ 12，spacing 14 → 互不相交；B/C 的樱花/榕树 AABB 达 17，
+ *   **spacing 是最小树距，不是树宽**：A 森林树 AABB ≤ 12，spacing 32 → 互不相交；B/C 的樱花/榕树 AABB 达 17，
  *   spacing 8（C=14）→ 冠幅互相重叠成片（设计意图「成片樱花+椰林」），树干不重叠。
- *   实测密度（7 个 region，每个 eligible 格）：A 1/464、B 1/199、C 1/207 —— 约为原贪心设计的 80% / 88% / 108%。
+ *   实测密度（7 个 region，每个 eligible 格）：A 1/1523、B 1/199、C 1/207（A 的 spacing 14→20→32 后）。
  *   salt 占 9xx 空闲带（静态扫描确认 src 下无 900~999 的 salt）：+0 出点 / +1 x 抖动 / +2 z 抖动 / +3 族 / +4 变体。
  *   eligible(wx, wz, seed) → 地表高度 h（满足）| null（不满足）。
  */
 export const GIANT_TREE_PATHS = Object.freeze([
   Object.freeze({
-    key: 'forest', salt: 911, spacing: 14, jitter: 8, chance: 1, families: Object.freeze([0, 1]),
+    key: 'forest', salt: 911, spacing: 32, jitter: 8, chance: 1, families: Object.freeze([0, 1]),
     // A 森林：FOREST biome + 陆上。
     eligible: (wx, wz, seed) => (getBiome(wx, wz, seed) === 'FOREST' ? landHeight(wx, wz, seed) : null),
   }),

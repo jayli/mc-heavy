@@ -192,11 +192,14 @@ test('chance 是有效的密度旋钮（原设计的 forestChance 在贪心下�
   assertTrue(half > full * 0.35 && half < full * 0.65, `chance=0.5 → 约一半：${half} / ${full}`);
 });
 
-test('候选密度下界（防谓词写崩变恒空）：3×3 region 内 A ≥ 100、B ≥ 300、C ≥ 80', () => {
-  // 实测 446 / 1158 / 399（含城区 region(0,0) 内未被 apply 层排除的点）；下界取 ~1/4
-  assertTrue(blockCandidates('forest').length >= 100, 'A 候选下界');
-  assertTrue(blockCandidates('beach').length >= 300, 'B 候选下界');
-  assertTrue(blockCandidates('banyan').length >= 80, 'C 候选下界');
+test('候选密度下界（防谓词写崩变恒空）：A ≥ 91、B ≥ 772、C ≥ 266（均为实测的 2/3）', () => {
+  // 实测（A spacing=32，交付值）：137 / 1158 / 399（含城区 region(0,0) 内部、apply 层尚未排除的点）。
+  // 下界统一取实测的 **2/3**，不是更宽松的 1/4 —— A 的密度会被反复调（14→20→32），
+  // 若下界离实测太远，调稀后断言仍绿但已失去判别力（谓词写成恒空也照过）。
+  // ⚠️ 重新调 A 的 spacing/jitter 后，须按新实测值重算本处三个下界（保持 2/3 口径）。
+  assertTrue(blockCandidates('forest').length >= 91, 'A 候选下界');
+  assertTrue(blockCandidates('beach').length >= 772, 'B 候选下界');
+  assertTrue(blockCandidates('banyan').length >= 266, 'C 候选下界');
 });
 
 test('候选发现耗时：单 region 三路径 < 8ms（原逐点扫描法 14~20ms；网格抖动实测 ~1ms）', () => {
