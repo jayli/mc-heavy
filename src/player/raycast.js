@@ -12,11 +12,18 @@
  *        ⚠️ **加参数而非写第二份 DDA**（红线 1：同一事实的两个副本会漂移出
  *        「炮塔看得见但弹丸打不着」）。既有三个消费者（`player.js` ×2 / `test-raycast.js`）
  *        不传第五参数 → 行为完全不变。
- * @returns {{hit: boolean, blockPos?: number[], normal?: number[], prevPos?: number[], dist?: number}}
+ * @param {(x: number, y: number, z: number, t: number) => boolean} [onCell]
+ *        逐格访问回调（未命中时的放置兜底，`place-ray.js`）：按 DDA 顺序对**每一格**调一次
+ *        （含起点格），返回 true = 立刻中止遍历并返回 `{hit:false, aborted:true}`。
+ *        ⚠️ 与 `occludes` 的分工：`occludes` 只回「这一格算不算命中」，回调能看**坐标**
+ *        与**距离**，故「找最近的可贴格」这类需要看邻居的用途只能走它。
+ *        ⚠️ 缺省 null 时每格只多一次 `!== null` 比较（热路径：玩家每帧 1 次 + 弹丸每步 1 次）。
+ * @returns {{hit: boolean, blockPos?: number[], normal?: number[], prevPos?: number[], dist?: number,
+ *            aborted?: boolean}}
  *          ⚠️ **未命中返回 `{hit:false}`（truthy 对象），不是 null** → 调用方必须判 `.hit`；
  *          写成 `if (blockHit)` 会让每次判定都立刻判「撞方块」（M8 弹丸踩过这条）。
  */
-export function raycastVoxel(world, origin, dir, maxDist = 40, occludes = null) {
+export function raycastVoxel(world, origin, dir, maxDist = 40, occludes = null, onCell = null) {
   let [x, y, z] = origin;
   let ix = Math.floor(x), iy = Math.floor(y), iz = Math.floor(z);
   const [dx, dy, dz] = dir;
@@ -36,6 +43,7 @@ export function raycastVoxel(world, origin, dir, maxDist = 40, occludes = null) 
   const hitTest = occludes ? occludes : (id) => id !== 0 && id !== waterId;
 
   for (let i = 0; i < maxSteps && t <= maxDist; i++) {
+    if (onCell !== null && onCell(ix, iy, iz, t)) return { hit: false, aborted: true };
     const id = world.getBlockId(ix, iy, iz);
     if (hitTest(id)) {
       return { hit: true, blockPos: [ix, iy, iz], normal, prevPos: prev, dist: t };

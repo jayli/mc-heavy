@@ -1,6 +1,7 @@
 // src/player/player.js — 输入/视角/交互编排（§4.5）
 import * as THREE from 'three';
 import { raycastVoxel } from './raycast.js';
+import { findPlaceCell } from './place-ray.js';
 import { PlayerPhysics } from './physics.js';
 import { StepLift } from './step-lift.js';
 import { ViewBob } from './view-bob.js';
@@ -686,12 +687,12 @@ export class Player {
   }
 
   placeBlock() {
-    if (!this.target) return;
+    // 裁决（v1.70）：兜底**只在完全未命中时**生效（mc-lite 的 `doSkyPlace` 同理 ——
+    // 它只在「命中距离 ≥ 15」时接管，即主射线没有可用命中）。
+    // ⚠️ 「命中但放不下」（`prevPos` 被玩家 AABB 占住）**刻意不走兜底**：那属于
+// 「目标明确但不可放置」，回落到射线找别处会把方块放到玩家没对准的地方。
+    if (!this.target) { this._placeByRayFallback(); return; }
     const [x, y, z] = this.target.prevPos;
-    // 不与玩家自身 AABB 重叠
-    const p = this.physics.pos;
-    if (x === Math.floor(p.x) && z === Math.floor(p.z) &&
-        (y === Math.floor(p.y) || y === Math.floor(p.y + 1))) return;
     // M7：受控创造模式物品优先分流（测试 API 路径）。失败保留世界，不写任何方块。
     // ⚠️ origin 必须用 **`blockPos`（命中方块）**，不能用 `prevPos` —— 两条放置路径
     // （本分支与下方背包分流）的 origin 语义必须一致，否则结构会整体上移一格悬空
@@ -734,19 +735,71 @@ export class Player {
       }
       return; // 分流后不回落到单格放置
     }
+    this._placeSingle(x, y, z, id);
+  }
+
+  /**
+   * 沿视线找最近可贴格并放置（v1.70 兜底）。**只在主射线完全未命中时被调用**。
+   *
+   * 场景（用户报告）：玩家站在一块方块上朝下看，只能看到脚底方块的顶面，看不到它的
+   * 水平侧面 —— 想把方块接续放在它东侧时，准心对准那侧的空位，主射线打空（`target`
+   * 为 null）→ 以前右键完全无反应。
+   *
+   * 对齐 mc-lite `PlayerInteraction.js:781-806` 的 `doSkyPlace()`，判据与射程见
+   * `place-ray.js`（纯函数，Tier 1 单测 `test-place-ray.js`）。
+   *
+   * ⚠️ **特殊物品（巢穴/炮塔/矿车）不走兜底**：它们的 origin 语义依赖**命中格**
+   *（多格结构用 `blockPos`、矿车用 `prevPos`），未命中时没有合法 origin —— 强行用
+   * 兜底格会让 38 格结构落在半空。保持「未命中即静默不动作」的现状。
+   * @returns {boolean} 是否真的放下了一块
+   */
+  _placeByRayFallback() {
+    // 选中态（`selectPlaceable` 测试 API）与背包里的特殊物品都不兜底（见上方注释）
+    if (this._selectedPlaceable) return false;
+    const slot = this.inventory.getSelected();
+    if (!slot || slot.isEmpty()) return false;
+    if (CREATIVE_SPECIALS.has(slot.item)) return false;
+    const id = this.registry.idOf(slot.item);
+    if (id === undefined) return false;
+    const cp = this.camera.position;
+    this.camera.getWorldDirection(_forward);
+    const found = findPlaceCell(this.world, [cp.x, cp.y, cp.z],
+      [_forward.x, _forward.y, _forward.z]);
+    if (!found.hit) return false;
+    const [x, y, z] = found.placeCell;
+    return this._placeSingle(x, y, z, id);
+  }
+
+  /**
+   * 单格放置的唯一写入路径（v1.70 抽出）：AABB 守卫 → 朝向三分支 → `editor.setBlock`
+   * → 成功清记忆并挥动。
+   *
+   * **两个调用方**：`placeBlock()` 的命中路径（origin = `target.prevPos`）与
+   * `_placeByRayFallback()` 的兜底路径（origin = 沿视线找到的格）。两处共用这一份，
+   * 否则会出现「一条路径有 AABB 守卫/朝向/挥动，另一条静默没有」的撕裂
+   * （M7 曾因两条放置路径不一致踩过同类坑，见 CLAUDE.md 活跃约束）。
+   * @param {number} x @param {number} y @param {number} z 放置格
+   * @param {number} id 方块 id
+   * @returns {boolean} 是否真的放下了一块
+   */
+  _placeSingle(x, y, z, id) {
+    // 不与玩家自身 AABB 重叠
+    const p = this.physics.pos;
+    if (x === Math.floor(p.x) && z === Math.floor(p.z) &&
+        (y === Math.floor(p.y) || y === Math.floor(p.y + 1))) return false;
     // M3.2：算放置朝向（三分支，不看玩家 yaw）。与 M3.1 的取物品逻辑正交叠加。
     const meta = getPlacementOrientation(x, y, z, id, this.registry.orientationModesTable,
       this.lastRemovedBlock, this.placementOrientationMemory);
     // M4-0：改走唯一编辑路径。朝向作为 meta 传入——不得退化为只传 id（M3.2 语义）。
     const report = this.editor.setBlock({ x, y, z, id, meta });
-    if (report.changes.length > 0) {
-      // 放置成功后清除挖块记忆（§4.3 定稿口径：mc-lite 是算完朝向即无条件清空，
-      // 本仓库改为成功后清空——放置失败时保留记忆，避免记忆跨次放置串用）
-      this.lastRemovedBlock = null;
-      // 手臂挥动（mc-lite `PlayerInteraction.js:143` 同语义：放置成功才 `swing()`）
-      if (this.viewArm) this.viewArm.swing();
-    }
+    if (report.changes.length === 0) return false;
+    // 放置成功后清除挖块记忆（§4.3 定稿口径：mc-lite 是算完朝向即无条件清空，
+    // 本仓库改为成功后清空——放置失败时保留记忆，避免记忆跨次放置串用）
+    this.lastRemovedBlock = null;
+    // 手臂挥动（mc-lite `PlayerInteraction.js:143` 同语义：放置成功才 `swing()`）
+    if (this.viewArm) this.viewArm.swing();
     // 创造模式不消耗：slot.count 保持 DEFAULT_INVENTORY_COUNT 不变
+    return true;
   }
 
   /**
