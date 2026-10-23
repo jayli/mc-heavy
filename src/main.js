@@ -76,5 +76,21 @@ async function boot() {
 
 boot().catch((err) => {
   window.__MC_BOOT__.error = String(err);
+  // 启动失败的原因不只有 WebGPU —— 存档库/网络/模型加载都可能在这里抛。静态遮罩的
+  // 默认文案只适合「拿不到 adapter」那一种，直接用会把别的原因显示成「浏览器不支持
+  // WebGPU」（实测：IndexedDB 的 VersionError 被误报成浏览器版本过低，玩家照提示换浏览器
+  // 而完全无效）。故把已知的非 WebGPU 类失败改成准确提示。
+  const name = err && err.name ? String(err.name) : '';
+  const known = {
+    VersionError: '存档库版本与当前代码不一致，且重建失败：请关闭其他 mc-heavy 标签页后重试。',
+    QuotaExceededError: '浏览器存储空间不足，无法写入存档：请清理磁盘空间或站点数据后重试。',
+  };
+  const hint = known[name]
+    || (window.__MC_BOOT__.webgpu ? `初始化失败：${err}` : null);
+  if (hint) {
+    // 已拿到 WebGPU adapter 时，渲染能力不是原因 → 换掉那条「请使用最新版 Chrome」的提示
+    const note = document.getElementById('webgpu-error-note');
+    if (note) note.textContent = hint;
+  }
   showError('启动失败：' + err);
 });

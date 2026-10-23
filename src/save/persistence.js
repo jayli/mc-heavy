@@ -25,7 +25,28 @@ export class Persistence {
     this._flushTimer = null;
   }
 
+  /**
+   * 打开存档库。
+   *
+   * **库版本高于本代码声明时自愈重建**：IndexedDB 不允许 `open` 一个低于现有版本的库
+   * （抛 `VersionError`），而浏览器里的库版本是**跨分支残留的持久状态** —— git 切分支/
+   * 回撤都改不到它。实测成因（2026-10）：RedCity 分支把版本提到 3 并按 D7 清库，切回
+   * 未含 RedCity 的分支（声明 2）后每次启动都 VersionError；`main.js` 的 `boot().catch`
+   * 把它显示成通用的「浏览器不支持 WebGPU」→ 表现为白屏 + 误导提示（`webgpu:true`）。
+   *
+   * 自愈语义 = 删库重建（等价于全新世界）：版本更高的库必然由**别的代码版本**写过，
+   * 其 edits/meta 对当前世界生成逻辑没有意义（RedCity 那次正是「世界生成变了→旧档作废」）。
+   * 这条只在前置版本真的更高时触发，正常 v2 存档库重开**不会**被清（`db-version-heal.spec`
+   * 第二个用例钉住「不误伤」）。
+   */
   open() {
+    return this._openAtVersion(true);
+  }
+
+  /**
+   * @param {boolean} allowHeal 版本高于期望时是否删库重建（内部递归时传 false，只重试一次）
+   */
+  _openAtVersion(allowHeal) {
     return new Promise((resolve, reject) => {
       const req = indexedDB.open(DB_NAME, DB_VERSION);
       req.onupgradeneeded = () => {
@@ -36,7 +57,38 @@ export class Persistence {
         if (!db.objectStoreNames.contains('entities')) db.createObjectStore('entities', { keyPath: 'id' });
       };
       req.onsuccess = () => { this.db = req.result; resolve(); };
+      req.onerror = (e) => {
+        const err = req.error;
+        // 版本更高的残留库：删掉重建一次。`e.preventDefault()` 不必要 —— 我们主动 reject
+        // 后由下一轮 open 接管，事件本身不会再冒到 window。
+        if (allowHeal && err && err.name === 'VersionError') {
+          this._deleteDatabase().then(
+            () => this._openAtVersion(false).then(resolve, reject),
+            reject,
+          );
+          return;
+        }
+        reject(err);
+      };
+    });
+  }
+
+  /**
+   * 删除整个存档库（仅供 `_openAtVersion` 的自愈路径使用）。
+   * 必须正确处理 `onblocked`：其他标签页还开着旧库时删除会被阻塞，此时不能挂起 ——
+   * 直接 reject 让启动失败并给出明确错误，比静默白屏好。
+   */
+  _deleteDatabase() {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.deleteDatabase(DB_NAME);
+      req.onsuccess = () => {
+        console.warn(`[persistence] 存档库版本高于当前代码（期望 v${DB_VERSION}），已删除重建（旧存档作废）`);
+        resolve();
+      };
       req.onerror = () => reject(req.error);
+      req.onblocked = () => reject(new Error(
+        '存档库需要重建，但被其他 mc-heavy 标签页占用：请关闭该页面的其他标签后重新打开',
+      ));
     });
   }
 
