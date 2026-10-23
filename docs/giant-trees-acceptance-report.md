@@ -42,7 +42,7 @@
 |---|---|---|
 | 耗时 | 14~20 ms/region | **≈1.1 ms/region** |
 | 跨 region 边界间距违规 | **64 对** | **0** |
-| 密度（每 eligible 格） | — | A **1/1523**（spacing 32，交付值；14→1/464、20→1/586）· B 1/199 · C 1/207 |
+| 密度（每 eligible 格） | — | A **1/1523**（spacing 32；14→1/464、20→1/586）· B **1/397**（12/8；初版 8/6 为 1/199）· C 1/200 |
 
 ### 2.3 真实页面通道占用（reserved%）
 
@@ -186,7 +186,7 @@ draw call 增量的机制是 three r185.1 WebGPU 对 BatchedMesh **每个可见 
 
 测试证明不了「好不好看」，这三个留给你：
 
-1. **密度**：`GIANT_TREE_PATHS` 的 `chance` / `spacing` / `jitter`（**A 32/8** · B 8/6 · C 8/6，
+1. **密度**：`GIANT_TREE_PATHS` 的 `chance` / `spacing` / `jitter`（**A 32/8** · **B 12/8** · C 8/6，
    当前 `chance=1` 即「每个 eligible 网格点都长」）。改这三个不需要重烘焙。
 2. **叶色**：`tools/bake-giant-textures.mjs` 的 `TEXTURES[].base` 与 `CONTRAST`（0.6）。
    改后需 `npm run gianttextures && npm run atlas`。

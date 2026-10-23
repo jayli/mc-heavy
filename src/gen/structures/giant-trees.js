@@ -64,11 +64,14 @@ export function isBiomeEdge(wx, wz, seed, band) {
  *   chance = 每格出点概率（密度旋钮；原设计的 forestChance 在贪心下几乎无效，这里真正线性控制密度）；
  *   families = 该路径可选的两个族（GIANT_FAMILY_ORDER 下标，各 50%）。
  *   **spacing 是最小树距，不是树宽**：A 森林树 AABB ≤ 12，spacing 32 → 互不相交；B/C 的樱花/榕树 AABB 达 17，
- *   spacing 8（C=14）→ 冠幅互相重叠成片（设计意图「成片樱花+椰林」），树干不重叠。
- *   实测密度（7 个 region、森林 eligible 185,790 格，三路径同口径）：A 1/1523、B 1/199、C 1/207。
- *   ⚠️ A 的 spacing 于 2026-10-23 由 14 调为 20、再调为 32（用户实玩反馈「森林想更稀疏」两次，
- *   选「拉大间距」而非降 chance—— 间距能保持「每棵树都在均匀格子里」，不会出现成片空缺）。
- *   每一次把密度减半 = cell 边长 ×√2：14（1/464）→20（1/765）→32（1/1523，相对 20 实测 0.502）。
+ *   B 的 spacing 12（C=20）/ C 的 spacing 8（C=14）→ 冠幅仍会互相重叠成片（设计意图「成片樱花+椰林」），树干不重叠。
+ *   实测密度（7 个 region、三路径同口径，eligible 格：A 185,790 / B 178,292 / C 59,530）：
+ *   A 1/1523、B 1/397、C 1/200。
+ *   ⚠️ 2026-10-23 按实玩反馈两轮调稀（都选「拉大间距」而非降 chance —— 间距保持「每棵树都在均匀格子里」，
+ *   不会出现成片空缺）：
+ *     · A 森林 14 → 20 → **32**（两次「再稀疏」；相对 20 实测 0.502 = 精确减半）
+ *     · B 海边 8/6 → **12/8**（「水边的巨树树林密度降一半」；实测 0.499）
+ *   **每一次把密度减半 = cell 边长 ×√2**（A 14→20→32、B 14→20）。
  *   salt 占 9xx 空闲带（静态扫描确认 src 下无 900~999 的 salt）：+0 出点 / +1 x 抖动 / +2 z 抖动 / +3 族 / +4 变体。
  *   eligible(wx, wz, seed) → 地表高度 h（满足）| null（不满足）。
  */
@@ -79,7 +82,7 @@ export const GIANT_TREE_PATHS = Object.freeze([
     eligible: (wx, wz, seed) => (getBiome(wx, wz, seed) === 'FOREST' ? landHeight(wx, wz, seed) : null),
   }),
   Object.freeze({
-    key: 'beach', salt: 921, spacing: 8, jitter: 6, chance: 1, families: Object.freeze([2, 3]), band: 24,
+    key: 'beach', salt: 921, spacing: 12, jitter: 8, chance: 1, families: Object.freeze([2, 3]), band: 24,
     // B 海边：陆上 + 距水 ≤ band。
     eligible(wx, wz, seed) { const h = landHeight(wx, wz, seed); return h !== null && isNearWater(wx, wz, seed, this.band) ? h : null; },
   }),
