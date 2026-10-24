@@ -19,7 +19,7 @@ import { applySkyStructures } from './sky-structures.js';
 import { generateTree, rollVegetation, rollCityTree } from './vegetation.js';
 import {
   SCATTER_TYPES, SCATTER_STRIDE, CODE_GENERATED_SCATTER_TYPES,
-  generateCodeHouse, generateCodeShip,
+  generateCodeHouse, generateCodeShip, inCityBounds,
 } from './scatter.js';
 import { SEA_Y, blockIndex } from '../../voxel/constants.js';
 import { applyGiantTrees, loadGiantTrees } from './giant-trees.js';
@@ -139,11 +139,14 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
   // `genP95` 从 6.5~7.1ms 涨到 8.5~9.2ms（+30%），撞破 §4.2 的 8ms 冻结预算。
   // 按实际候选预载后，大多数 column 只需 0~2 个类型（撒布命中稀疏），成本回到噪声级。
   const scatterCandidates = [];
+  /** 城市撒布数组（与 outsideScatter 区分：城市自撒的不做城市 bounds 剔除） */
+  const cityScatterArrs = new Set();
   for (const layout of layouts) {
     if (!layout.scatter) continue;
     for (const arr of [layout.scatter.cityScatter, layout.scatter.outsideScatter]) {
       if (!arr || arr.length === 0) continue;
       scatterCandidates.push(arr);
+      if (arr === layout.scatter.cityScatter) cityScatterArrs.add(arr);
       // 扫一遍 typeIndex 收集本 column 查询域实际出现的类型（廉价：只读 Int32Array）。
       // 代码生成类型（house/ship）无 JSON，跳过 —— 从 CODE_GENERATED_SCATTER_TYPES 派生，
       // 勿写成 `t !== 'house'` 字面量（漏 ship → 白 fetch 一个不存在的 JSON）。
@@ -261,6 +264,16 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
       const type = SCATTER_TYPES[arr[i + 3]];
       // 「远离主建筑 / 避开树 / 避开 flowerBed」等门控已在候选层（rollCityScatter）做过，
       // 这里只做几何裁剪，不重复判定（重复门控会引入第二份判据 → 红线 1）。
+      //
+      // ⚠️ **唯一例外：城市 bounds 内的「城市外撒布」必须在这里跳过**（同一判据
+      // `inCityBounds`，不是第二份：候选层只能过滤**持有 city 布局的 region [0,0]**，
+      // 而城市 bounds 可跨 region（实测 seed=12345 bounds=[0,566]×[-166,400]），
+      // 落在 region [1,0] 扫描范围内那部分只有 apply.js 能判 —— 它拿得到 cityLayout）。
+      // 不跳过的后果：城市外的落点用自然地形高度、而城内地面已被 generateCity 整形
+      // → 房子飘在空中（实测悬空率 37%~90%，最高 15 格）。上游 mc-lite 是
+      // `if (inCity) {...} else {城市外撒布}` 互斥（WorldWorker.js:793 / :1084-1086）。
+      // 城市自己的撒布（cityScatter）不受影响。
+      if (cityLayout && !cityScatterArrs.has(arr) && inCityBounds(x, z, cityLayout)) continue;
       const fp = SCATTER_FOOTPRINT[type];
       if (!fp) continue;
       if (!placementIntersects({ x, z }, fp.halfX, fp.halfZ, column.cx, column.cz)) continue;

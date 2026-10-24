@@ -15,6 +15,7 @@ import {
   safeForStructure, rollCityScatter, rollOutsideScatter, generateCodeHouse, SCATTER_TYPES,
   rollShipScatter, generateCodeShip, SHIP_DEEP_SEA_Y,
   CODE_GENERATED_SCATTER_TYPES, SCATTER_JSON_TYPES, SCATTER_STRIDE,
+  HOUSE_MAX_SURFACE_SPAN,
 } from '../gen/structures/scatter.js';
 import { computeRegionLayout, neighborRegionKeys } from '../gen/structures/structure-layout.js';
 import { applyStructuresToColumn } from '../gen/structures/apply.js';
@@ -439,20 +440,20 @@ test('generateCodeHouse：材质随 seed 变化（wallMat/roofMat 不是常量�
 // 断言一律从**实际生成的方块数据**读出，不硬编码「被测代码写入的那个值」（§2.5 陷阱②）。
 
 /** 跑完整 GEN（fillColumn + caves + applyStructures），与 Worker 的真实路径一致 */
-async function genColumnFull(reg, cx, cz) {
+async function genColumnFull(reg, cx, cz, seed = SEED) {
   const col = new ChunkColumn(cx, cz);
-  fillColumn(col, SEED, reg);
-  carveCaves(col, SEED, reg);
-  await applyStructuresToColumn(col, SEED, reg, layoutsFor(cx, cz));
+  fillColumn(col, seed, reg);
+  carveCaves(col, seed, reg);
+  await applyStructuresToColumn(col, seed, reg, layoutsFor(cx, cz, seed));
   return col;
 }
 
 /** 城市布局（region [0,0]）+ 其 3×3 邻域布局，与 StructureIndex 下发的查询域一致 */
-function layoutsFor(cx, cz) {
+function layoutsFor(cx, cz, seed = SEED) {
   const out = [];
   for (const key of neighborRegionKeys(cx, cz)) {
     const [rx, rz] = key.split(',').map(Number);
-    out.push(computeRegionLayout(rx, rz, SEED));
+    out.push(computeRegionLayout(rx, rz, seed));
   }
   return out;
 }
@@ -937,6 +938,15 @@ test('端到端：ship 真落地（真实 GEN 数据，桅杆判据）', async (
   }
   assertTrue(ships.length > 0, `region layout 产出了 ship 候选（${ships.length} 个），否则断言恒真`);
 
+  // ⚠️ **取样必须按生产口径过滤城市 bounds 内的船**：城市外撒布在城市内一律不落地
+  // （上游 `if (inCity)/else` 互斥，见阶段 2.7 的注释）。实测 seed 12345 的 60 个 ship
+  // 候选中有 7 个落在城内 —— 那些**本来就不会、也不应该**落地（下面验证的是「船真的
+  // 建成」，不是「船没落地」）；不过滤会让落地率被拉低 50%+ → 假失败（实测踩坑）。
+  const city = computeRegionLayout(0, 0, SEED).city;
+  const shipsOutsideCity = ships.filter((s) => !inCityBounds(s.x, s.z, city));
+  assertTrue(shipsOutsideCity.length >= 10,
+    `城外 ship 候选 ${shipsOutsideCity.length} 个（共 ${ships.length}，城内的由②的口径排除）`);
+
   // ⚠️ **不能用 footprint 范围的坐标判据**：ship footprint 5×7 覆盖多格，每格地形高度不同
   // （有些高到 y+3），海底的 clay/sand/end_stone 会落进扫描范围 → 判据恒 >0（实测踩坑：
   // 注入「CODE_GENERATORS 漏 ship」后仍全绿，无效负向验证）。排除 water 也不够。
@@ -948,7 +958,7 @@ test('端到端：ship 真落地（真实 GEN 数据，桅杆判据）', async (
   const woodId = reg.idOf('wood'), chestId = reg.idOf('chest');
   const colCache = new Map();
   let mastOk = 0, chestOk = 0, checked = 0;
-  for (const s of ships.slice(0, 10)) {
+  for (const s of shipsOutsideCity.slice(0, 10)) {
     const cx = Math.floor(s.x / 16), cz = Math.floor(s.z / 16);
     const key = `${cx},${cz}`;
     if (!colCache.has(key)) colCache.set(key, await genColumnFull(reg, cx, cz));
@@ -977,4 +987,263 @@ test('端到端：撒布结构确定性 —— 同 seed 两次 GEN 结果逐格�
   let diff = 0;
   for (let i = 0; i < colA.blocks.length; i++) if (colA.blocks[i] !== colB.blocks[i]) diff++;
   assertEqual(diff, 0, '两次 GEN 逐格一致');
+});
+
+// ==================== 城市 house 落位：底部必须着地（用户报告「房子飘在空中」）====================
+//
+// 两个独立成因（实测 5 seed，均为「撒布结构」层落地起就有、非近期引入）：
+//   ① 城市外撒布（seed+4 house 等）**从不排除城市 bounds** —— scatter.js 的注释承诺
+//      「由 apply.js 在城市 bounds 过滤」，但 apply.js 阶段 2.7 从未实现 → 落点 y 用自然
+//      地形高度、落点却在小地表被压平/抬高的城市里 → 悬空（实测悬空率 37%~90%，最高 15 格）。
+//      mc-lite 是 `if (inCity) { ... } else { 城市外撒布 }` **互斥**（WorldWorker.js:793
+//      / :1084-1086），本仓库移植时两路都跑了 —— 偏离根因。
+//   ② 城市 filler house 只在**中心点**取城市地表高度，而城市地表在 5×5 占地内有 1~2 格起伏
+//      → 四周低一格的地基悬空（实测悬空率 0~3%，最高 5 格）。
+//
+// 修法（均在候选层，单点权威）：
+//   ① `computeScatterCandidates` 的城市外循环先剔除「候选点在城市 bounds 内」的点。
+//   ② house 落位改为 5×5 占地**最低**城市地表 + 1，并加两个门控：占地必须全在城内、
+//      占地内地表高差 ≤ HOUSE_MAX_SURFACE_SPAN（否则落哪都一半悬空一半埋没）。
+
+/** 城市外循环应排除的城市 bounds 判据（与 scatter.js 的实现同源，测试侧不另写一份） */
+function inCityBounds(wx, wz, city) {
+  return wx >= city.minX && wx <= city.maxX && wz >= city.minZ && wz <= city.maxZ;
+}
+
+test('城市外撒布：城市 bounds 内的候选一律不落地（① 的根因，5 seed）', async () => {
+  // 断言落在**真实 GEN 结果**上而非候选数组：城市 bounds 可跨 region
+  // （seed=12345 bounds=[0,566]×[-166,400]，与 region [1,0] 相交），只有 apply.js 拿得到
+  // cityLayout —— 那里是过滤的唯一权威（拿不到 city 的 region 候选在那里被判）。
+  //
+  // 判据 = **差分**：把「城市 bounds 内的城市外候选」从 layout 里剔掉再跑一遍 GEN，
+  // 两边方块必须**逐格相同** —— 即「过滤生效」等价于「这些候选根本没被生成」。
+  //
+  // 为什么不用「特征方块」判据：实测 uglyHouse 的方块**全部与其它城市结构共享**
+  // （dark_planks 是城市 house 的屋顶材质，82/152 个 house 用它；vertical_pillar /
+  // handrailA / cobble*_step 也被 big_house/pavilion/white_tower 等用）→ 「数到该方块」
+  // 会把别的结构的方块算进来，判据失真（实测踩坑：uglyHouse 注入后仍全绿）。
+  // 差分判据不依赖任何方块类型，也不可能被污染。
+  const reg = makeRegistry();
+
+  for (const seed of [SEED, 424242, 777, 20260820, 31337]) {
+    const city = computeRegionLayout(0, 0, seed).city;
+    assertNotNull(city, `seed ${seed} 有城市布局`);
+
+    // 收集本 column 查询域会用到的 layouts；同时造一份「城内城市外候选已剔除」的副本
+    const layouts = layoutsFor(0, 0, seed);
+    let dropped = 0;
+    const filtered = layouts.map((l) => {
+      if (!l.scatter) return l;
+      const keep = [];
+      const arr = l.scatter.outsideScatter;
+      for (let i = 0; i < arr.length; i += SCATTER_STRIDE) {
+        if (inCityBounds(arr[i], arr[i + 2], city)) { dropped++; continue; }
+        keep.push(arr[i], arr[i + 1], arr[i + 2], arr[i + 3]);
+      }
+      return { ...l, scatter: { ...l.scatter, outsideScatter: Int32Array.from(keep) } };
+    });
+    assertTrue(dropped > 0,
+      `seed ${seed} 确有无过滤时会落地的城内候选（${dropped} 个），否则差分判据恒真`);
+
+    // 差分需要覆盖这些候选所在的 column（它们可能不止一个 column）
+    const colsToCheck = new Set(['0,0']);
+    for (const l of layouts) {
+      const arr = l.scatter && l.scatter.outsideScatter;
+      if (!arr) continue;
+      for (let i = 0; i < arr.length; i += SCATTER_STRIDE) {
+        if (!inCityBounds(arr[i], arr[i + 2], city)) continue;
+        const cx = Math.floor(arr[i] / 16), cz = Math.floor(arr[i + 2] / 16);
+        const key = `${cx},${cz}`;
+        if (colsToCheck.size < 12) colsToCheck.add(key);
+      }
+    }
+
+    for (const key of colsToCheck) {
+      const [cx, cz] = key.split(',').map(Number);
+      const colReal = new ChunkColumn(cx, cz);
+      fillColumn(colReal, seed, reg);
+      carveCaves(colReal, seed, reg);
+      await applyStructuresToColumn(colReal, seed, reg, layouts);
+
+      const colRef = new ChunkColumn(cx, cz);
+      fillColumn(colRef, seed, reg);
+      carveCaves(colRef, seed, reg);
+      await applyStructuresToColumn(colRef, seed, reg, filtered);
+
+      let diff = 0, firstDiff = null;
+      for (let i = 0; i < colReal.blocks.length; i++) {
+        if (colReal.blocks[i] === colRef.blocks[i]) continue;
+        diff++;
+        if (!firstDiff) {
+          const y = (i % 1024) + (-32); // blockIndex(x,y,z) = (y+32)*256 + z*16 + x → 先取余再拆
+          firstDiff = `idx=${i} 实际=${reg.nameOf(colReal.blocks[i])} 期望=${reg.nameOf(colRef.blocks[i])} (idx%1024=${i % 1024} → y≈${y})`;
+        }
+      }
+      assertEqual(diff, 0,
+        `seed ${seed} column(${cx},${cz}): 应用层的城市 bounds 过滤没有生效 —— `
+        + `与「城内候选不存在」的参考世界差 ${diff} 格（${firstDiff}）。`
+        + `差异来自城内城市外结构：它们用自然地形高度定 y，而城内地面已被 generateCity 整形 → 悬空或埋入。`);
+    }
+  }
+});
+
+test('城市 filler house 落位：y = 5×5 占地最低城市地表 + 1（② 的根因）', () => {
+  // 断言落在**真实候选数组**上：对每个 house 候选，重新算它的占地面最低城市地表，
+  // 比较候选 y。修复前 y = 中心点地表 + 1，占地面起伏时比最低值高 1~4 格 → 真 FAIL。
+  for (const seed of [SEED, 424242, 777, 20260820, 31337]) {
+    const city = computeRegionLayout(0, 0, seed).city;
+    const arr = computeRegionLayout(0, 0, seed).scatter.cityScatter;
+    const fp = SCATTER_FOOTPRINT.house;
+    let checked = 0, mismatch = 0;
+    const samples = [];
+    for (let i = 0; i < arr.length; i += SCATTER_STRIDE) {
+      if (SCATTER_TYPES[arr[i + 3]] !== 'house') continue;
+      const x = arr[i], y = arr[i + 1], z = arr[i + 2];
+      let lowest = Infinity;
+      for (let dx = -fp.halfX; dx <= fp.halfX; dx++) {
+        for (let dz = -fp.halfZ; dz <= fp.halfZ; dz++) {
+          const info = getCityInfo(x + dx, z + dz, city);
+          if (!info) continue;   // 出界格由下一个用例负责（本该已被剔除）
+          lowest = Math.min(lowest, getCityFinalSurfaceY(x + dx, z + dz, info, seed));
+        }
+      }
+      if (lowest === Infinity) continue;
+      checked++;
+      if (y !== lowest + 1) {
+        mismatch++;
+        if (samples.length < 4) samples.push(`(${x},${z}) y=${y} 应为 ${lowest + 1}`);
+      }
+    }
+    assertTrue(checked > 0, `seed ${seed} 确有城市 house 候选（${checked} 个）`);
+    assertEqual(mismatch, 0,
+      `seed ${seed}: ${checked} 个 house 候选中 ${mismatch} 个落位不是「占地最低地表 + 1」—— ${samples.join(' ')}`);
+  }
+});
+
+test('城市 filler house 门控：占地必须全在城内、且占地内地表高差 ≤ 阈值', () => {
+  // 两个门控是「取最低地表」的必要条件（实测缺一不可）：
+  //  · 占地出界 → 出界那格地面是自然地形（可高 15 格）→ 按最低城市地表落位会把房子埋掉
+  //  · 高差过大 → 过渡带陡台阶，落哪都一半悬空一半埋没
+  // 修复前两个门控都不存在 → 真 FAIL（5 seed 共 12~16 个违规候选）。
+  let outOfBounds = 0, tooSteep = 0, checked = 0;
+  const samples = [];
+  for (const seed of [SEED, 424242, 777, 20260820, 31337]) {
+    const city = computeRegionLayout(0, 0, seed).city;
+    const arr = computeRegionLayout(0, 0, seed).scatter.cityScatter;
+    const fp = SCATTER_FOOTPRINT.house;
+    for (let i = 0; i < arr.length; i += SCATTER_STRIDE) {
+      if (SCATTER_TYPES[arr[i + 3]] !== 'house') continue;
+      const x = arr[i], z = arr[i + 2];
+      checked++;
+      let minY = Infinity, maxY = -Infinity, outside = 0;
+      for (let dx = -fp.halfX; dx <= fp.halfX; dx++) {
+        for (let dz = -fp.halfZ; dz <= fp.halfZ; dz++) {
+          const info = getCityInfo(x + dx, z + dz, city);
+          if (!info) { outside++; continue; }
+          const f = getCityFinalSurfaceY(x + dx, z + dz, info, seed);
+          minY = Math.min(minY, f); maxY = Math.max(maxY, f);
+        }
+      }
+      if (outside > 0) {
+        outOfBounds++;
+        if (samples.length < 6) samples.push(`出界 seed=${seed} (${x},${z}) outside=${outside}`);
+        continue;
+      }
+      const span = maxY - minY;
+      if (span > HOUSE_MAX_SURFACE_SPAN) {
+        tooSteep++;
+        if (samples.length < 6) samples.push(`陡 seed=${seed} (${x},${z}) span=${span}`);
+      }
+    }
+  }
+  assertTrue(checked > 0, `确有城市 house 候选（${checked} 个）`);
+  assertEqual(outOfBounds, 0, `${checked} 个候选中 ${outOfBounds} 个占地伸出城市 bounds —— ${samples.join(' ')}`);
+  assertEqual(tooSteep, 0, `${checked} 个候选中 ${tooSteep} 个占地内地表高差 > ${HOUSE_MAX_SURFACE_SPAN} —— ${samples.join(' ')}`);
+});
+
+test('端到端：城市 bounds 内的 house 地基正下方必须实心（用户报告的症状）', async () => {
+  // ⚠️ 这是**唯一能证明用户症状消失**的断言，且它是唯一覆盖两个成因交点的用例：
+  // 只断言候选数组的形状（上面三条）无法证明方块真的落在地面上 —— 中间还有
+  // footprint 裁剪 / 层序 / 覆盖等链路。
+  //
+  // 判据：位于城市 bounds 内的 house，其 5×5 地基格（y-1 层 stone）的**正下方一格必须非空气**。
+  // 修复前实测 12345 有 12 个 house 悬空（最大 9 格）→ 真 FAIL。
+  //
+  // ⚠️ **必须抽样**（不是懒）：全量扫描 5 seed 需 ~800 个 column 的完整 GEN，
+  // 实测单条用例 **42.8s** → 把 `harness.spec.mjs` 的 30s 窗口整体撑破（自己把门禁变成恒红）。
+  // 抽样也**不能拍脑袋取前 N** —— 那可能一个高风险位置都没采到。这里按
+  // 「旧口径（中心点地表）会造成多大悬空」**降序**取前 `E2E_SAMPLE` 个：
+  // 差值 > 0 的位置正是修复前真悬空的地方，所以**修复前这批样本必然全 FAIL**，
+  // 判别力由抽样口径保证、不靠运气。全量覆盖由上面「落位 = 占地最低地表 + 1」那条用例
+  // 负责（5 seed 全部 house，纯函数、0.4s）。
+  const E2E_SAMPLE = 12;
+  const SEEDS_E2E = [SEED, 20260820];   // 12345 = 默认 seed；20260820 = 修复前悬空最深的（15 格）
+  const reg = makeRegistry();
+  const stoneId = reg.idOf('stone');
+
+  for (const seed of SEEDS_E2E) {
+    const layout = computeRegionLayout(0, 0, seed);
+    const city = layout.city;
+    const fp = SCATTER_FOOTPRINT.house;
+    const houses = [];
+    // ⚠️ **只取城市自己的撒布（cityScatter）**：城市外撒布（outsideScatter）落在城内的
+    // 候选**本就不应该落地**（上游互斥，本次修复的正是这个）—— 把它们算进「应当落地」
+    // 会把修复本身判成缺陷（实测踩坑：house@363,0,56 就是被正确过滤掉的一条，
+    // 但它跑进了抽样 → 「地基 stone 一格都没落到本 column」假 FAIL）。
+    const arr = layout.scatter.cityScatter;
+    for (let i = 0; i < arr.length; i += SCATTER_STRIDE) {
+      if (SCATTER_TYPES[arr[i + 3]] !== 'house') continue;
+      const x = arr[i], y = arr[i + 1], z = arr[i + 2];
+      if (!inCityBounds(x, z, city)) continue;
+      // 旧口径（中心点地表）相对新落位（占地最低 + 1）会多悬空几格 = 该位置的悬空风险
+      const centerInfo = getCityInfo(x, z, city);
+      let lowest = Infinity;
+      for (let dx = -fp.halfX; dx <= fp.halfX; dx++) {
+        for (let dz = -fp.halfZ; dz <= fp.halfZ; dz++) {
+          const info = getCityInfo(x + dx, z + dz, city);
+          if (info) lowest = Math.min(lowest, getCityFinalSurfaceY(x + dx, z + dz, info, seed));
+        }
+      }
+      const risk = (!centerInfo || lowest === Infinity)
+        ? 0
+        : (getCityFinalSurfaceY(x, z, centerInfo, seed) + 1) - (lowest + 1);
+      houses.push({ src: 'city', x, y, z, risk });
+    }
+    assertTrue(houses.length > 0, `seed ${seed} 城市内确有 house（${houses.length} 个），否则断言恒真`);
+
+    houses.sort((a, b) => b.risk - a.risk);
+    const sample = houses.slice(0, E2E_SAMPLE);
+    const riskyInSample = sample.filter((h) => h.risk > 0).length;
+    assertTrue(riskyInSample > 0,
+      `seed ${seed} 抽样 ${sample.length} 个里有 ${riskyInSample} 个是旧口径会悬空的位置`
+      + `（否则抽样口径失效，本用例会变成恒绿）`);
+
+    const colCache = new Map();
+    const floating = [];
+    for (const h of sample) {
+      const cx = Math.floor(h.x / 16), cz = Math.floor(h.z / 16);
+      const key = `${cx},${cz}`;
+      if (!colCache.has(key)) colCache.set(key, await genColumnFull(reg, cx, cz, seed));
+      const col = colCache.get(key);
+      const get = makeGetter(col, cx, cz);
+      let worst = 0, worstCell = null, baseCells = 0;
+      for (let dx = -2; dx <= 2; dx++) {
+        for (let dz = -2; dz <= 2; dz++) {
+          const wx = h.x + dx, wz = h.z + dz;
+          if (get(wx, h.y - 1, wz) !== stoneId) continue;   // 只判本 column 写的地基格
+          baseCells++;
+          if (get(wx, h.y - 2, wz) !== 0) continue;         // 地基下方是实心 → 没问题
+          // 悬空：向下数空气格，直到遇到实心或出世界
+          let gap = 0;
+          for (let y = h.y - 2; y > -32 && get(wx, y, wz) === 0; y--) gap++;
+          if (gap > worst) { worst = gap; worstCell = `(${wx},${wz}) 下方 ${gap} 格空气`; }
+        }
+      }
+      assertTrue(baseCells > 0,
+        `seed ${seed} house@${h.x},${h.y},${h.z} 的地基 stone 一格都没落到本 column（结构未落地）`);
+      if (worst > 0) floating.push(`${h.src}@${h.x},${h.y},${h.z} ${worstCell}（risk=${h.risk}）`);
+    }
+    assertEqual(floating.length, 0,
+      `seed ${seed}: 抽样 ${sample.length} 个城内 house 中 ${floating.length} 个底部悬空 ——${floating.slice(0, 6).join(' / ')}`);
+  }
 });

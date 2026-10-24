@@ -75,6 +75,17 @@ export const OUTSIDE_SCATTER_CHANCE = Object.freeze({
  */
 export const SHIP_DEEP_SEA_Y = -6;
 
+/**
+ * 城市 filler house 的占地面高差上限（格）。
+ *
+ * house 的落位取 5×5 占地**最低**城市地表（保证不悬空，代价是向高的一侧微埋）。
+ * 但城市过渡带是**台阶式**的：占地内高差可以到 15 格（台阶每格 -1，累加）——
+ * 那种位置落哪里都会一半悬空、一半埋没，应当**不撒**。
+ * 实测 5 seed 的占地面高差：中位 0 / p90 = 1 / p99 = 3 / 最大 15；取 3 时剔除 0~2 个/seed，
+ * 最大残留埋深 ≤ 3 格（略陷，远好于飘空）。
+ */
+export const HOUSE_MAX_SURFACE_SPAN = 3;
+
 /** 撒布 seed salt（mc-lite 的 seed+N 偏移，照搬） */
 const SALT = Object.freeze({
   flowerBed: 823, houseCity: 812, pavilion: 824, tallWell: 826,
@@ -127,6 +138,56 @@ export function safeForStructure(wx, wz) {
 }
 
 /**
+ * 点是否在城市 bounds 内（mc-lite 的 `inCity` 判据）。
+ *
+ * 城市内外的**地形高度口径不同**：城内是 `generateCity` 整形后的地表
+ * （`getCityFinalSurfaceY`，中心被压平、过渡带被抬升），城外是自然地形高度
+ * （`generateHeight`）。拿城外的口径给城内落点，就会算出「房子飘在空中」
+ * （实测悬空 37%~90%，最高 15 格）。
+ *
+ * 上游 mc-lite 的列循环是 `if (inCity) { 城市分支 } else { 城市外撒布 }` **互斥**
+ * （WorldWorker.js:793 / :1084-1086），所以它天然不会出现这种错配。本仓库移植时
+ * 城市外撒布是独立的候选层、两路都跑，必须显式排除 —— 这就是本函数的存在理由。
+ */
+export function inCityBounds(wx, wz, city) {
+  return wx >= city.minX && wx <= city.maxX && wz >= city.minZ && wz <= city.maxZ;
+}
+
+/**
+ * 城市 filler house 的落位高度（`y`，地基格 = `y - 1`）。
+ *
+ * = 5×5 占地内**最低**城市地表 + 1。取最低而不是中心点，是因为城市地表在 5×5 占地内
+ * 有 1~2 格起伏（过渡带台阶）：按中心落位时四周低一格的地基就悬空 1 格（用户报告的症状）。
+ * 取最低的代价是向高的一侧微埋（实测最坏 3 格）—— 埋一点远好过飘起来。
+ *
+ * 两个前置门控，命中任一则返回 `null`（这个位置放不了房子）：
+ *  - **占地必须全在城市 bounds 内**：出界那格的地面是自然地形（可高实测 15 格），
+ *    按城内最低地表落位会把房子埋进去。
+ *  - **占地内地表高差 ≤ `HOUSE_MAX_SURFACE_SPAN`**：高差更大是过渡带陡台阶，
+ *    落哪里都会一半悬空、一半埋没。
+ *
+ * @param {Object} cityInfo `getCityInfo` 结果（spread 了 city，含 minX/maxX/minZ/maxZ）
+ * @returns {number|null}
+ */
+export function houseAnchorY(wx, wz, cityInfo, seed) {
+  // 用**候选点的** cityInfo 拿边界（getCityInfo 已 spread 了 city 的 bounds 字段），
+  // 占地内逐格重新取 info：靠边时部分格子会在 bounds 外（getCityInfo 返回 null）。
+  const fp = SCATTER_FOOTPRINT.house;
+  let lowest = Infinity, highest = -Infinity;
+  for (let dx = -fp.halfX; dx <= fp.halfX; dx++) {
+    for (let dz = -fp.halfZ; dz <= fp.halfZ; dz++) {
+      const info = getCityInfo(wx + dx, wz + dz, cityInfo);
+      if (!info) return null;                       // 占地出界
+      const surfaceY = getCityFinalSurfaceY(wx + dx, wz + dz, info, seed);
+      if (surfaceY < lowest) lowest = surfaceY;
+      if (surfaceY > highest) highest = surfaceY;
+    }
+  }
+  if (highest - lowest > HOUSE_MAX_SURFACE_SPAN) return null;   // 陡台阶
+  return lowest + 1;
+}
+
+/**
  * 城市撒布判定（mc-lite 城市分支 :881/:892 + 后置填充 :1132/:1136 的合并纯函数）。
  *
  * 返回**优先级最高的单个类型**：mc-lite 四条判定各自独立、理论上一个点可同时命中多个，
@@ -176,7 +237,11 @@ export function rollCityScatter(wx, wz, cityInfo, surfaceY, seed) {
   if (seededRandom(wx, wz, seed + SALT.houseCity) < CITY_SCATTER_CHANCE.house &&
       !isPointNearCityStructure(wx, wz, cityInfo, 4) &&
       !nearCityTree(wx, wz, seed, TREE_GATE_RADIUS_SMALL, TREE_GATE_RADIUS_LARGE)) {
-    return { type: 'house', x: wx, y, z: wz };
+    const anchorY = houseAnchorY(wx, wz, cityInfo, seed);
+    // `null` = 占地伸出城市 bounds 或占地内地表高差过大 → 这个位置放不了房子。
+    // **不回落到 surfaceY**（那正是悬空的来源）；返回 null 让候选不产出，与其它类型的
+    // 门控未通过同语义（一个点最多一个结构）。
+    if (anchorY !== null) return { type: 'house', x: wx, y: anchorY, z: wz };
   }
 
   // tallWell：mc-lite :1132（后置填充先跑 tallWell）—— 候选点来自 cityCoreCandidates
@@ -395,9 +460,13 @@ function isFirstInFootprint(wx, wz, type, city, seed) {
  * 机制自然投递给需要的 column（region [1,0] 的 column 查询域含 [0,0]；region [2,0] 不含
  * 但城市 x 上界 566 < 800，本就无候选）。若按 region 裁剪，跨区那部分城市装饰物会永久丢失。
  *
- * **② 城市外候选不做城市排除**：其它 region 的 layout 拿不到 city bounds（`buildCityLayout`
- * 约 12ms，每 region 重算太贵）。故城市外候选照常算，由 `apply.js` 在光栅化时按实际
- * city bounds 过滤（apply.js 持有 cityLayout）。语义等价，只是多算了会被丢弃的候选。
+ * **② 城市外候选不在这里做城市排除**：只有持有 city 的 region [0,0] 拿得到 city bounds，
+ * 而城市 bounds 可跨 region（实测 seed=12345 bounds=[0,566]×[-166,400]，maxX 566 已落入
+ * region [1,0]）—— 那里落入城内的候选在这里判不了。故**唯一权威在 apply.js 阶段 2.7**
+ * （它拿得到 cityLayout，且只对它生效）：那里用同一个 `inCityBounds` 剔除。
+ * 不剔除的后果：城市外的落点用自然地形高度、而城内地面已被 generateCity 整形 → 房子飘在
+ * 空中（实测悬空率 37%~90%，最高 15 格，用户报告的症状）。上游 mc-lite 是
+ * `if (inCity) {...} else {城市外撒布}` **互斥**（WorldWorker.js:793 / :1084-1086）。
  */
 export function computeScatterCandidates(regionX, regionZ, seed, city) {
   const cityOut = [];
