@@ -17,8 +17,7 @@ import {
 
 import {
   SHADOW_FLOOR, SUN_AMBIENT, SUN_INTENSITY, FACE_NORMALS, NOON_SUN_DIR,
-} from './sun-shade.js';
-import { HEMI_GROUND } from './hemi-shade.js';
+} from './sun-shade.js';import { HEMI_GROUND } from './hemi-shade.js';
 import { FOG_SKY_Y_FLOOR_EPS } from './fog-sky-direction.js';
 
 // ---- 顶点阶段 shade（light × AO），float varying 传片元 ----
@@ -94,6 +93,17 @@ const faceNormalNode = FACE_NORMAL_NODES
 const vSunDot = varying(
   vertexStage(max(dot(faceNormalNode, uSunDirection), 0)), 'vSunDot');
 
+// ---- 色温（v1.71，傍晚）----
+// 根因：v1.70 之前太阳项是**纯标量**，`sunColor`/`ambientColor` 这类色相信息根本进不到着色器
+// —— 于是「暖橙直射光 + 冷蓝紫环境光」这种傍晚观感在架构上不可表达（只能整体调曝光/天空色）。
+// 公式（与 `sun-shade.js` 的 `sunTermRGBFor` 同源，红线 1）：
+//   full_c    = SUN_AMBIENT × ambientColor_c + SUN_INTENSITY × N·L × shadowKill × sunColor_c
+//   sunTerm_c = mix(1, full_c, uSunStrength)
+// ⚠️ **环境项吃环境色、直射项吃直射色** —— 若两者都用直射色，阴影里也会变暖，就没了「暖光冷影」。
+// ⚠️ uniform 初值全为 1：中性色时公式**逐位等于** v1.70 的标量版（其余三风格零回归）。
+const uSunColor = uniform(new THREE.Vector3(1, 1, 1));
+const uAmbientColor = uniform(new THREE.Vector3(1, 1, 1));
+
 // ---- 半球环境光（v1.70）----
 // 真实世界里天空来的环境光比地面反射的亮得多。本仓此前所有面吃同一个 skylight（户外恒 15，
 // DR-14）→ 一个方块的顶面与底面完全一样亮，这是「一个色块、没立体感」的来源之一。
@@ -142,13 +152,13 @@ export function createVoxelMaterials(atlasTexture, sunLight = null) {
 
   // 最终亮度 = max(sky × 太阳项, block)。
   //
-  // ---- 太阳项（v1.58）----
-  // `sunTerm = mix(1, SUN_AMBIENT + SUN_INTENSITY × N·L × shadowKill, uSunStrength)`
+  // ---- 太阳项（v1.58，v1.71 加色温）----
+  // `sunTerm_c = mix(1, SUN_AMBIENT × ambientColor_c + SUN_INTENSITY × N·L × shadowKill × sunColor_c, uSunStrength)`
   //
   // ⚠️ **阴影只作用在太阳项上**，不再直接乘 `vSkyShade`。若两边各乘一遍，正午顶面在影区会
-  // 变成 0.5 + 0.625×0.8×0.5 = 0.75（应为 0.5）→ 阴影变淡 50%，`sun-shadow.spec` 的冻结
-  // 比值 0.735 崩。故先把 shadowFactor 重标定到「太阳被拿走的比例」：
-  //   shadowFactor = SHADOW_FLOOR（影区 0.5）→ shadowKill = 0 → sunTerm = 阿地板 0.5（同旧）
+  // 变成 `0.5 + 0.625×0.8×0.5 = 0.75`（应为 0.5）→ 阴影变淡 50%。
+  // 故先把 shadowFactor 重标定到「太阳被拿走的比例」：
+  //   shadowFactor = SHADOW_FLOOR（影区）→ shadowKill = 0 → sunTerm = 地板（同旧）
   //   shadowFactor = 1（受光）       → shadowKill = 1 → sunTerm = 1.0（同旧）
   //   uShadowStrength = 0（关阴影）   → shadowFactor = 1 → shadowKill = 1 → 满强度太阳
   // 无太阳灯（fixture 路径）时 shadowFactor 为 null → shadowKill 固定 1。
@@ -160,9 +170,9 @@ export function createVoxelMaterials(atlasTexture, sunLight = null) {
   const shadowKill = shadowFactor
     ? clamp(float(1).sub(float(1).sub(shadowFactor).div(1 - SHADOW_FLOOR)), 0, 1)
     : float(1);
-  const sunTermFull = float(SUN_AMBIENT).add(
-    mul(float(SUN_INTENSITY), mul(vSunDot, shadowKill)),
-  );
+  // 逐通道：直接项×直射色、环境项×环境色（见上方同名字段的注释）
+  const sunTermFull = mul(uSunColor, float(SUN_INTENSITY).mul(mul(vSunDot, shadowKill)))
+    .add(mul(uAmbientColor, float(SUN_AMBIENT)));
   const sunTerm = mix(float(1), sunTermFull, uSunStrength);
 
   const shadeLit = max(mul(mul(vSkyShade, hemiFactor), sunTerm), vBlockShade);
@@ -203,7 +213,7 @@ export function createVoxelMaterials(atlasTexture, sunLight = null) {
     // emissive: true —— hanging_lamp 的材质自发光走本通道（§4.3 bit13）。
     cutout: makeMaterial({ alphaTest: 0.3, side: THREE.FrontSide, emissive: true }),
     transparent: makeMaterial({ transparent: true, receivesShadow: false }),
-    dayNight: { uSkyDim, uBlockBoost, uShadowStrength, uSunDirection, uSunStrength, uHemiGround },
+    dayNight: { uSkyDim, uBlockBoost, uShadowStrength, uSunDirection, uSunStrength, uHemiGround, uSunColor, uAmbientColor },
   };
 }
 
@@ -226,7 +236,8 @@ export function createVoxelMaterials(atlasTexture, sunLight = null) {
  *
  * @param {THREE.Scene} scene
  * @param {number} viewDistance
- * @param {{uNightBlend: Object, dayCube: THREE.CubeTexture, nightCube: THREE.CubeTexture}|null} [sky]
+ * @param {{uNightBlend: Object, uDuskBlend: Object, dayCube: THREE.CubeTexture,
+ *   nightCube: THREE.CubeTexture, duskCube: THREE.CubeTexture}|null} [sky]
  *   `setupSky()` 的返回值（天空盒未启用时传 null）
  */
 export function setupFog(scene, viewDistance, sky = null) {
@@ -265,7 +276,13 @@ export function setupFog(scene, viewDistance, sky = null) {
     // backgroundRotation 的语义（雾不带天空旋转），传自定义方向是正确的。
     const daySample = cubeTexture(sky.dayCube, skyDir);
     const nightSample = cubeTexture(sky.nightCube, skyDir);
-    const skyColor = mix(daySample.rgb, nightSample.rgb, sky.uNightBlend);
+    const dayNight = mix(daySample.rgb, nightSample.rgb, sky.uNightBlend);
+    // 三层混合（v1.71）：黄昏那层同样叠在最上层，与 `sky.js` 的 backgroundNode **同嵌套顺序**。
+    // 不做这层的话，傍晚开着「雾色」时雾采样的是**白天/夜空**的贴图 → 远处方块染成蓝白色，
+    // 与背后的暖色天空完全对不上（而这正是雾色功能存在的意义）。
+    // ⚠️ 与背景共用同一个 `uDuskBlend` uniform 实例（与 uNightBlend 同一口径）。
+    const duskSample = cubeTexture(sky.duskCube, skyDir);
+    const skyColor = mix(dayNight, duskSample.rgb, sky.uDuskBlend);
     colorNode = mix(fogColor, skyColor, uFogColorMix);
   }
 

@@ -12,7 +12,7 @@ import { RenderWorld } from '../render/render-world.js';
 import { setupFog } from '../render/materials.js';
 import { setupOcean } from '../render/ocean.js';
 import { setupSky, placeCelestial } from '../render/sky.js';
-import { DayNight } from '../render/daynight.js';
+import { DayNight, SUN_LIGHT_BASE_HEX, SUN_LIGHT_BASE_RGB } from '../render/daynight.js';
 import { ShadowScheduler, SUN_DIR_GATE_DEG, sunDirectionChanged, texelSnapOffset } from '../render/shadow-manager.js';
 import { RainEffect } from '../render/rain.js';
 import { WeatherState } from '../render/weather.js';
@@ -185,7 +185,10 @@ export class Game {
     // `_updateSunPosition()` 在帧循环驱动（Fix Round 2 提前进 Task 3：阴影相机 ±30 必须
     // 覆盖玩家所在几何，否则阴影系统对可见世界完全无效）；按需刷新（DR-5）由
     // `this.shadowScheduler` 在帧循环 tick 驱动（Fix Round 4 接线）。
-    const sunLight = new THREE.DirectionalLight(0xfffaf0, 3.2);
+    const sunLight = new THREE.DirectionalLight(SUN_LIGHT_BASE_HEX, 3.2);
+    // 基准色只有一个权威（`daynight.js` 的 `SUN_LIGHT_BASE_RGB` / `_HEX`，从同一值派生）。
+    // 色温由 DayNight._apply 按风格乘算回写（中性风格乘 1 → 逐位等于这个原色）。
+    sunLight.color.setRGB(SUN_LIGHT_BASE_RGB[0], SUN_LIGHT_BASE_RGB[1], SUN_LIGHT_BASE_RGB[2]);
     // 初始位置 = 太阳方向（构造期玩家尚未创建；第一帧帧循环的 distSq 检查必 >25
     // → `_updateSunPosition()` 立即把光源定位到玩家处，无需在 start() 额外调一次）。
     sunLight.position.set(0, 0.8, 0.6); // 光源在太阳方向 → 照射方向 = -[0,0.8,0.6]（mc-lite 口径）
@@ -283,11 +286,16 @@ export class Game {
       scene: this.scene,
       fog: fogUniforms,
       voxelUniforms: this.renderWorld.materials.dayNight,
-      skyUniforms: this.sky ? { uNightBlend: this.sky.uNightBlend } : null,
+      skyUniforms: this.sky
+        ? { uNightBlend: this.sky.uNightBlend, uDuskBlend: this.sky.uDuskBlend }
+        : null,
       baseFogNear: this.viewDistance * 16 * 0.75,
       baseFogFar: (this.viewDistance + 2) * 16 * 0.95,
       // ACES 曝光写入目标（v1.70）：DayNight._apply 是唯一收口点（setStyle 与日夜循环共用）。
       renderer: this.renderer,
+      // 色温（v1.71）：太阳灯的颜色也由 _apply 按风格重算 —— 它是枪 PBR 高光的源，
+      // 不接的话傍晚里枪身高光仍是中性白，与暖橙直射光打架。
+      sunLight,
       // 太阳方向变化 → 光源重定位 + 请求阴影刷新（DR-5 第三个请求源）。**用于定位的**方向由
       // `_updateSunPosition()` 从 `dayNight.params.sunDirection` 读（唯一权威，红线 1：
       // 回调里不写字面量方向）。

@@ -14,8 +14,12 @@ export const VIEW_DISTANCE_OPTIONS = [8, 12, 16];
  */
 export const VIEW_DISTANCE_MIN = 2;
 export const VIEW_DISTANCE_MAX = 16;
-/** 视觉风格选项（M2-6 VISUAL_STYLE_KEYS + null=日夜循环自动） */
-export const VISUAL_STYLE_OPTIONS = [null, 'morning', 'noon', 'night'];
+/**
+ * 视觉风格选项（M2-6 VISUAL_STYLE_KEYS + null=日夜循环自动）。
+ * v1.71：`dusk`（傍晚）插在 `noon` 右边（用户指定）。⚠️ `null` 必须留在首位 ——
+ * 它是「自动（日夜循环）」的唯一 UI 入口。
+ */
+export const VISUAL_STYLE_OPTIONS = [null, 'morning', 'noon', 'dusk', 'night'];
 
 export const DEFAULT_SETTINGS = {
   viewDistance: 8,

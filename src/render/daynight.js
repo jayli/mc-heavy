@@ -4,12 +4,40 @@
 // 黑夜：uSkyDim 压暗 skylight + uBlockBoost 相对增强 blocklight（§7 M2-6 口径）。
 // 不依赖 three（颜色用整数 hex 手工插值；.set(hex) 由调用方 Color/uniform 接受）。
 
-export const VISUAL_STYLE_KEYS = { MORNING: 'morning', NOON: 'noon', NIGHT: 'night' };
+export const VISUAL_STYLE_KEYS = { MORNING: 'morning', NOON: 'noon', DUSK: 'dusk', NIGHT: 'night' };
+
+/** 中性色温（相对乘数，全 1 = 不改变颜色）；与 `sun-shade.js` 的 `NEUTRAL_LIGHT_COLOR` 同语义。 */
+const NEUTRAL_COLOR = Object.freeze([1, 1, 1]);
 
 /**
- * 三种视觉风格（mc-lite morning/overcast/night 参数映射；fog 距与 mc-heavy 视距口径适配）
- * sunDirection 为 **mc-lite Engine.js:74/99/122 原值（未归一化）** —— 唯一权威是这里；
- * paramsAtHour 与 _apply 在消费前归一化（见 normalizeDirection），调用方不得用原值做长度换算。
+ * 太阳方向光（`DirectionalLight`）的**基准颜色** —— 唯一权威，`game.js` 建灯与
+ * `_apply` 按色温重算都从这里取（两处各写一份字面量会漂移出「白天灯色对、傍晚灯色不跟」）。
+ *
+ * 来源 = mc-lite `Engine.js:168` 的 `0xfffaf0`（本仓自 M4 用至今）。
+ * 色温乘数全 1 时乘出来逐位等于原基准色 → 其余三风格零回归。
+ */
+export const SUN_LIGHT_BASE_RGB = Object.freeze([0xff / 255, 0xfa / 255, 0xf0 / 255]);
+
+/**
+ * 同一基准色的整数 hex 形式 —— `new THREE.DirectionalLight(color, intensity)` **只接受
+ * 一个颜色参数**（多传的分量会被当成 intensity），所以建灯时用这个 hex。
+ * 与上面的 RGB 数组从**同一个原值**派生（两边一起改时单测钉住逐位相等）。
+ */
+export const SUN_LIGHT_BASE_HEX = (0xff << 16) | (0xfa << 8) | 0xf0;
+
+/**
+ * 四种视觉风格（morning / noon / dusk / night；既有三种移植 mc-lite `Engine.js` 的参数，
+ * dusk 是 v1.71 新增、由 mc-lite `skyBox2`（日落）贴图反推标定出来）。
+ * sunDirection 为 **mc-lite Engine.js:74/99/122 原值（未归一化）**（dusk 除外 —— 它没有上游值）；
+ * 唯一权威是这里；paramsAtHour 与 _apply 在消费前归一化（见 normalizeDirection），
+ * 调用方不得用原值做长度换算。
+ *
+ * ⚠️ **`duskBlend` 是「天空盒要不要用黄昏那套」的开关**：只有 dusk 是 1、其余全是 0。
+ * 自动日夜循环的关键帧只引用 morning/noon/night（见 `KEYFRAMES`）→ 循环里 duskBlend 恒为 0
+ * （「傍晚」是纯手动风格，不会混进循环）。这是本次改动最重要的不变式，单测钉死。
+ *
+ * ⚠️ **`sunColor` / `ambientColor` 是色温乘数（均值 ≈1），不是绝对颜色**：只改色相、
+ * 不改总曝光。三种既有风格全是 `[1,1,1]` → 材质着色**逐位回到** v1.70。
  */
 export const VISUAL_STYLES = {
   morning: {
@@ -25,6 +53,8 @@ export const VISUAL_STYLES = {
     toneMappingExposure: 1.0,
     // 月亮方向 / 可见性 / 尺寸：mc-lite Engine.js:75,109,111 原值（未归一化，消费前统一归一化）
     moonDirection: [-0.38, 0.45, -0.81], moonVisible: false, moonSize: 20,
+    // 色温中性 + 不用黄昏天空盒（零回归锚点：着色器逐位回到 v1.70）
+    sunColor: NEUTRAL_COLOR, ambientColor: NEUTRAL_COLOR, duskBlend: 0,
   },
   noon: {
     sky: 0x87ceeb, fogColor: 0x87ceeb, fogScale: 1.0, skyDim: 1.0, blockBoost: 1.0,
@@ -37,6 +67,51 @@ export const VISUAL_STYLES = {
     // `shadow.radius` 同教训）。
     toneMappingExposure: 1.0,
     moonDirection: [-0.25, 0.5, -0.82], moonVisible: false, moonSize: 18,
+    sunColor: NEUTRAL_COLOR, ambientColor: NEUTRAL_COLOR, duskBlend: 0,
+  },
+  /**
+   * 傍晚（v1.71）—— 天空盒 = mc-lite `skyBox2`（日落）。
+   *
+   * 参数不是拍脑袋，而是**从那张贴图反推**（Tier 4 探针实测；探针先拿 day 贴图自校准：
+   * 已知正午 N·L 方向是 azim 0°/elev 47°，探针也能测出来 → 口径成立）：
+   *   · 贴图里的太阳在 **azim ≈ +44°、elev ≈ 5.5°**
+   *     （three 的背景采样对 x 轴镜像：落盘在 negx 右边缘 + posz 左边缘 → 渲染到 +X/+Z 象限）
+   *   · 地平线带暖灰 `0x94857b`、天顶灰蓝紫 `0x676b7f`、暖云峰 `(249,224,136)`
+   *   · 整立方图亮度只有白天天空盒的 **0.643**
+   *   · 12 条共享边接缝 RMS 0.59 / 面内噪声底 0.33 → 比值 1.80（白天基准 1.765）⇒ 本身无缝
+   *
+   * 两个标定取舍（用户 2026-10-24 拍板）：
+   * ① **太阳仰角抬到 12°**（贴图是 5.5°）。5.5° 时地面只剩一半亮度、8 格树投影 83 格，赶路时
+   *    地面偏暗；12° 是「可辨认的傍晚」：影子仍很长（8 格树 ≈ 37 格），而方位角**不动**
+   *    （地平线那轮暖日仍在贴图里的位置）。
+   * ② **色温分开给**（新增两个 uniform）：直射暖橙、环境冷蓝紫（对应灰蓝天顶）。两者都是
+   *    均值 ≈1 的**相对乘数** → 只换色相，不改总曝光。
+   *
+   * `skyDim 0.78` / `toneMappingExposure 1.20`：实测口径（sRGB + ACES，基色 0.5 中间灰，同机位）：
+   *   迎光面 `209,198,188`（lum 199.6 / R−B **+21**）、顶面 `169,163,167`（lum 164.6）
+   *   影面 `129,135,153`（lum 135.0 / R−B **−24**）
+   *   → 相对正午：顶面亮度 **0.80**、影面 **0.93**（傍晚该暗一档但地面仍可辨认）
+   * 标定口径：`skyDim` 控「地面亮度」、`toneMappingExposure` 控「ACES 暗部不要死黑」，
+   * 两者都调会双重生效 —— 先定 skyDim（亮度档位）再补曝光（暗部可读性）。
+   */
+  dusk: {
+    // sky/fogColor：天空盒**加载失败**时的降级纯色。sky = 贴图天顶与地平线的中间调；
+    // fogColor 取偏暖的地平线色（远处方块该淡入那轮落日附近的天色）。
+    sky: 0x8890a6, fogColor: 0xa8897a, fogScale: 1.0, skyDim: 0.78, blockBoost: 1.15,
+    // 显式指定夜空混合 = 0：傍晚的天空由 dusk 立方图接管，不该再叠星空
+    // （不写的话 nightBlendOf 会从 skyDim 0.78 倒算出 0.293 → 天空混入 30% 星空，实测拉冷）。
+    nightBlend: 0,
+    // elev 12° / azim +44°（见上）；写法与既有风格一致（未归一化，消费前统一归一化）
+    sunDirection: [0.665, 0.208, 0.688],
+    // ACES 曝光 1.20：v1.70 给 night 1.6 是因为 ACES 在低亮度区压缩最陡；傍晚远比夜亮，
+    // 只需补到「暗部不死黑」（实测影面 lum 135 vs 正午 145）。
+    toneMappingExposure: 1.20,
+    // 贴图里没有月亮（落日前后天边不该有月亮）→ 与 morning/noon 同口径不画
+    moonDirection: [-0.32, 0.5, -0.8], moonVisible: false, moonSize: 22,
+    // 色温：直射暖橙（R 1.50 / G 1.02 / B 0.58，均值 1.033）、环境冷蓝紫（均值 0.997）
+    sunColor: Object.freeze([1.50, 1.02, 0.58]),
+    ambientColor: Object.freeze([0.86, 0.93, 1.20]),
+    duskBlend: 1,
   },
   night: {
     // ⚠️ **`fogScale` 已从 mc-lite 的 4.0 改为 1.0**（v1.61，用户拍板）：4.0 会把雾距
@@ -58,6 +133,7 @@ export const VISUAL_STYLES = {
     // mc-lite 用 0.95 是为了压暗，本仓用更高曝光达到「压暗暗部、保住亮部」的同一个**意图**。
     toneMappingExposure: 1.6,
     moonDirection: [-0.32, 0.58, -0.75], moonVisible: true, moonSize: 34,
+    sunColor: NEUTRAL_COLOR, ambientColor: NEUTRAL_COLOR, duskBlend: 0,
   },
 };
 
@@ -90,6 +166,8 @@ function normalizeDirection(v) {
 function lerpParams(a, b, t) {
   const ad = a.sunDirection, bd = b.sunDirection;
   const am = a.moonDirection, bm = b.moonDirection;
+  // 色温与黄昏混合因子是 RGB/标量，同样线性插值。既有风格双方都是中性值 → 插值结果逐位不变。
+  const ac = a.sunColor, bc = b.sunColor, aa = a.ambientColor, ba = b.ambientColor;
   return {
     sky: lerpHex(a.sky, b.sky, t),
     fogColor: lerpHex(a.fogColor, b.fogColor, t),
@@ -98,6 +176,24 @@ function lerpParams(a, b, t) {
     blockBoost: a.blockBoost + (b.blockBoost - a.blockBoost) * t,
     // ACES 曝光与其它标量同等对待（线性插值）—— 缺了这一行会让风格切换时曝光二态跳变。
     toneMappingExposure: a.toneMappingExposure + (b.toneMappingExposure - a.toneMappingExposure) * t,
+    // 色温（v1.71）：**始终返回新数组**，绝不把 VISUAL_STYLES 的权威数组暴露给调用方。
+    sunColor: [
+      ac[0] + (bc[0] - ac[0]) * t,
+      ac[1] + (bc[1] - ac[1]) * t,
+      ac[2] + (bc[2] - ac[2]) * t,
+    ],
+    ambientColor: [
+      aa[0] + (ba[0] - aa[0]) * t,
+      aa[1] + (ba[1] - aa[1]) * t,
+      aa[2] + (ba[2] - aa[2]) * t,
+    ],
+    // 黄昏天空盒混合因子（v1.71）：两风格都是 0（自动循环从不引用 dusk）→ 结果恒 0。
+    duskBlend: (a.duskBlend || 0) + ((b.duskBlend || 0) - (a.duskBlend || 0)) * t,
+    // 显式夜空混合（可选）：只在**两端都显式给了值**时才插值；否则交给 nightBlendOf 派生。
+    // 用 undefined 作为「未指定」信号，不写 0（0 是合法显式值，两者语义不同）。
+    nightBlend: (typeof a.nightBlend === 'number' && typeof b.nightBlend === 'number')
+      ? a.nightBlend + (b.nightBlend - a.nightBlend) * t
+      : undefined,
     sunDirection: [
       ad[0] + (bd[0] - ad[0]) * t,
       ad[1] + (bd[1] - ad[1]) * t,
@@ -143,9 +239,20 @@ export function paramsAtHour(hour) {
  * 随关键帧插值**连续变化**，没有硬切换跳帧。
  *
  * 端点与中间值：noon 0 / morning 0.267 / night 1。
- * @param {{skyDim: number}} params paramsAtHour 或 VISUAL_STYLES 的结果
+ *
+ * ⚠️ **手动风格必须显式指定夜空混合，不能靠 skyDim 倒算**（v1.71 实测踩坑）：
+ * dusk 的 skyDim 是 0.78（为了地面可辨认），按公式会倒算出 **0.293** → 傍晚的天空被
+ * 混进 30% 星空贴图，实测天空暖度从应当的暖灰被拉到 **R−B = −14**（仍偏冷）。
+ * 语义上也不对：傍晚既不是白天也不是夜，它的天空由 **dusk 立方图**接管，不该再叠星空。
+ * 所以风格数据可显式给 `nightBlend`；缺省（undefined）才回落到 skyDim 派生。
+ *
+ * @param {{skyDim: number, nightBlend?: number}} params paramsAtHour 或 VISUAL_STYLES 的结果
  */
 export function nightBlendOf(params) {
+  // 显式值优先（手动风格用）：0 也是合法显式值，故判 typeof 而非真值
+  if (typeof params.nightBlend === 'number') {
+    return Math.min(1, Math.max(0, params.nightBlend));
+  }
   const nightDim = VISUAL_STYLES.night.skyDim;
   const raw = (1 - params.skyDim) / (1 - nightDim);
   // 钳制：skyDim 越界（未来新增风格 >1 或 <night）不得让混合因子溢出成负或 >1
@@ -167,14 +274,18 @@ export class DayNight {
    * @param {{toneMappingExposure: number}|null} [opts.renderer] 渲染器（只消费 `toneMappingExposure`
    *   属性）。**仅消费这一个字段**，所以 stub 传 `{ set toneMappingExposure(v){} }` 即可测；
    *   缺省 null（未装配 / 单测）→ 跳过写入。
+   * @param {{color: {setRGB: Function}}|null} [opts.sunLight] 太阳方向光（只消费 `color.setRGB`）。
+   *   色温（v1.71）必须同时写到灯上：它是枪 PBR 高光的源，否则傍晚里枪身高光仍是中性白。
+   *   缺省 null（单测 / fixture）→ 跳过。
    * @param {(dir: [number, number, number]) => void} [opts.onSunDirection] 太阳方向变化回调（已归一化）
    */
-  constructor({ scene, fog, voxelUniforms, skyUniforms = null, baseFogNear, baseFogFar, cycleSeconds = 1200, startHour = 12, renderer = null, onSunDirection = null }) {
+  constructor({ scene, fog, voxelUniforms, skyUniforms = null, baseFogNear, baseFogFar, cycleSeconds = 1200, startHour = 12, renderer = null, sunLight = null, onSunDirection = null }) {
     this.scene = scene;
     this.fog = fog;
     this.voxelUniforms = voxelUniforms;
     this.skyUniforms = skyUniforms;
     this.renderer = renderer;
+    this.sunLight = sunLight;
     this.baseFogNear = baseFogNear;
     this.baseFogFar = baseFogFar;
     this.cycleSeconds = cycleSeconds;
@@ -206,6 +317,10 @@ export class DayNight {
     const p = { ...VISUAL_STYLES[this._styleOverride] };
     p.sunDirection = normalizeDirection(p.sunDirection);
     p.moonDirection = normalizeDirection(p.moonDirection);
+    // 色温必须是**新数组**：`{ ...VISUAL_STYLES[key] }` 是浅拷贝，数组字段仍指向权威原值。
+    // 不拷贝的话任何调用方 `params.sunColor[0] = x` 会直接改掉风格数据（红线 1）。
+    p.sunColor = [...p.sunColor];
+    p.ambientColor = [...p.ambientColor];
     return p;
   }
 
@@ -248,6 +363,37 @@ export class DayNight {
     // 天空盒双图交叉淡入因子（v1.58）：由既有 skyDim 派生，句柄由 setupSky 提供。
     const uNightBlend = this.skyUniforms && this.skyUniforms.uNightBlend;
     if (uNightBlend) uNightBlend.value = nightBlendOf(p);
+    // 黄昏天空盒混合因子（v1.71）：第三层天空（dusk 立方图）。只有 `setStyle('dusk')` 时是 1，
+    // 自动循环与其余三风格恒 0 → 天空**逐位**回到 v1.70 的双图交叉淡入。
+    const uDuskBlend = this.skyUniforms && this.skyUniforms.uDuskBlend;
+    if (uDuskBlend) uDuskBlend.value = p.duskBlend || 0;
+    // 色温（v1.71）：直射光 / 环境光两路乘数写给体素材质。
+    // 句柄缺失（fixture / 尚未接线）时跳过 —— 与 uShadowStrength / uSunDirection 同一容错口径。
+    // ⚠️ **用 `.value.set(x,y,z)` 而不是 `.setRGB()`**：这两个句柄都是 `uniform(new THREE.Vector3())`
+    // → `.value` 是 **Vector3**（有 `set`，**没有** `setRGB` —— 那是 Color 的方法）。
+    // 实测踩坑：写 `.setRGB()` 在真实页面 start() 里抛「uSunColor.value.setRGB is not a function」
+    // → **整个游戏页白屏**（不是局部样式错）；而纯逻辑单测用的是 stub，写成什么方法都能过 ⇒
+    // 这类接线错误只能靠「真游戏页能启动」的 E2E 拓。
+    // ⚠️ 中性色（全 1）时写入后公式**逐位等于** v1.70（见 sun-shade.js 的不变式单测）。
+    const uSunColor = this.voxelUniforms.uSunColor;
+    if (uSunColor && uSunColor.value && typeof uSunColor.value.set === 'function') {
+      uSunColor.value.set(p.sunColor[0], p.sunColor[1], p.sunColor[2]);
+    }
+    const uAmbientColor = this.voxelUniforms.uAmbientColor;
+    if (uAmbientColor && uAmbientColor.value && typeof uAmbientColor.value.set === 'function') {
+      uAmbientColor.value.set(p.ambientColor[0], p.ambientColor[1], p.ambientColor[2]);
+    }
+    // 太阳灯（枪的 PBR 高光 + 阴影投射灯）的颜色也要跟随色温，否则傍晚里枪身的高光仍是
+    // 中性白，与暖橙直射光打架。**基准色是既有常量**（不在这里写第二份字面量）。
+    // 中性色温（全 1）时乘出来逐位等于原基准色 → 其余三风格零回归。
+    const sunLight = this.sunLight;
+    if (sunLight && sunLight.color && typeof sunLight.color.setRGB === 'function') {
+      sunLight.color.setRGB(
+        SUN_LIGHT_BASE_RGB[0] * p.sunColor[0],
+        SUN_LIGHT_BASE_RGB[1] * p.sunColor[1],
+        SUN_LIGHT_BASE_RGB[2] * p.sunColor[2],
+      );
+    }
     if (this.onSunDirection) this.onSunDirection(sunDir);
   }
 }

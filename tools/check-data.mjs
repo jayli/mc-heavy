@@ -688,7 +688,8 @@ function checkSkyboxAssets() {
     }
   }
   if (!missing) {
-    infos.push(`[天空盒] ${Object.keys(SKY_SETS).length} 套 × ${SKY_FACE_FILES.length} 面完整（${SKY_SETS.day} / ${SKY_SETS.night}）`);
+    // 路径从清单派生（不写字面量）：v1.71 加第三套 dusk 时，这里曾只列两套 → 信息行与实际不符。
+    infos.push(`[天空盒] ${Object.keys(SKY_SETS).length} 套 × ${SKY_FACE_FILES.length} 面完整（${Object.values(SKY_SETS).join(' / ')}）`);
   }
 }
 

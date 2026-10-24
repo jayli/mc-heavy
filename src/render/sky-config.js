@@ -2,9 +2,10 @@
 //
 // 为什么单独成模块：`tools/check-data.mjs`（node）要 import 它做资源完整性门禁，
 // 而 `sky.js` 要用同一份清单去 `CubeTextureLoader`（红线 1：清单只有一份权威）。
-// 资源来源 = mc-lite `src/assets/skyBox4`（白天云）/ `skyBox1`（夜空星空），原样复制、未重编码。
-//
-// ⚠️ `skyBox2`（日落，356K）**不搬** —— mc-lite 自身零引用（`grep -rn skyBox2 src/` 只有目录本身）。
+// 资源来源 = mc-lite `src/assets/skyBox4`（白天云）/ `skyBox1`（夜空星空）/ `skyBox2`（日落），
+// 均原样复制、未重编码。
+// ⚠️ `skyBox2` 曾经因「mc-lite 自身零引用」而不搬（`grep -rn skyBox2 src/` 只有目录本身）；
+// v1.71 用户明确要求用它做「傍晚」风格 → 该判断已作废，现在它是一等资源。
 
 /** CubeTextureLoader 的固定面序（+X, −X, +Y, −Y, +Z, −Z）。顺序是载荷性的，勿调整。 */
 export const SKY_FACE_FILES = Object.freeze([
@@ -14,8 +15,18 @@ export const SKY_FACE_FILES = Object.freeze([
 /** 天空盒根目录（相对站点根；静态服务器不剥离 assets 前缀）。 */
 export const SKY_DIR = 'assets/sky';
 
-/** 两套立方图：day = 白天云层（mc-lite skyBox4），night = 星空（mc-lite skyBox1）。 */
+/**
+ * 两/三套立方图：day = 白天云层（mc-lite skyBox4）、night = 星空（mc-lite skyBox1）、
+ * dusk = 日落（mc-lite skyBox2，v1.71 启用）。
+ *
+ * ⚠️ `dusk` 是**手动风格专用**：`DayNight` 用独立的 `uDuskBlend` 把它叠在最上层，
+ * 自动日夜循环全程 `uDuskBlend = 0`（否则日夜会在某个时段突然变出日落贴图）。
+ *
+ * 接缝已实测（Tier 4 口径，同 `tests/night-sky-seam.spec.mjs`）：12 条共享边 RMS 均值 0.59 /
+ * 面内噪声底 0.33 → 比值 **1.80**，与用户认可的白天基准 1.765 同量级 ⇒ 无需重烘焙。
+ */
 export const SKY_SETS = Object.freeze({
   day: `${SKY_DIR}/day`,
   night: `${SKY_DIR}/night`,
+  dusk: `${SKY_DIR}/dusk`,
 });

@@ -347,8 +347,15 @@ export class SettingsPanel {
     return this._makeCombined([this._groupBlur(), this._groupGunDamage()]);
   }
 
+  /**
+   * 环境风格：自动 / 早晨 / 正午 / 傍晚 / 黑夜（v1.71 新增傍晚，用户指定放在正午右边）。
+   *
+   * ⚠️ 文案顺序必须与 `VISUAL_STYLE_OPTIONS` **逐项对齐**（`_makeGroup` 按下标取值）；
+   * 单测钉的是「傍晚下标 = 正午下标 + 1」这条关系，加档位时不必改断言。
+   * ⚠️ **不改「自动」按钮**：它同时是 `daynight.setStyle(null)`（恢复日夜循环）的唯一 UI 入口。
+   */
   _rowVisualStyle() {
-    return this._makeRow('环境风格', VISUAL_STYLE_OPTIONS, ['自动', '早晨', '正午', '黑夜'],
+    return this._makeRow('环境风格', VISUAL_STYLE_OPTIONS, ['自动', '早晨', '正午', '傍晚', '黑夜'],
       this.settings.visualStyle,
       (v) => {
         this.settings.visualStyle = v;

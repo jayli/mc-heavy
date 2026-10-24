@@ -13,7 +13,10 @@
 // 的图标契约检查（背包每项都有图标 + 图标未过期）。
 import { test } from './runner.js';
 import { assertEqual, assertTrue, assertFalse } from './assert.js';
-import { DEFAULT_SETTINGS, resolveSettings, VIEW_DISTANCE_OPTIONS, VIEW_DISTANCE_MIN, VIEW_DISTANCE_MAX } from '../ui/settings.js';
+import {
+  DEFAULT_SETTINGS, resolveSettings, VIEW_DISTANCE_OPTIONS, VIEW_DISTANCE_MIN, VIEW_DISTANCE_MAX,
+  VISUAL_STYLE_OPTIONS,
+} from '../ui/settings.js';
 import { loadIconManifest, iconCss } from '../ui/icons.js';
 // M9：创造台面板的两态文案常量与错误映射是**导出的单一口径**（见下方用例说明）。
 // settings-panel.js 只 import 纯函数模块（settings.js），无 three/无 DOM 顶层副作用 →
@@ -97,6 +100,25 @@ test('settings: visualStyle 只接受合法键', () => {
   assertEqual(resolveSettings({ visualStyle: 'night' }, new URLSearchParams('')).visualStyle, 'night');
   assertEqual(resolveSettings({ visualStyle: 'bogus' }, new URLSearchParams('')).visualStyle, null);
   assertEqual(resolveSettings(null, new URLSearchParams('style=morning')).visualStyle, 'morning');
+});
+
+test('settings: dusk 是合法风格键，且档位顺序里紧挨在正午右边（v1.71）', () => {
+  assertEqual(resolveSettings({ visualStyle: 'dusk' }, new URLSearchParams('')).visualStyle, 'dusk');
+  assertEqual(resolveSettings(null, new URLSearchParams('style=dusk')).visualStyle, 'dusk');
+  // 落位：正午右边 —— 断言的是**顺序关系**（不是下标），加档位时不必改这条
+  const idxNoon = VISUAL_STYLE_OPTIONS.indexOf('noon');
+  assertTrue(idxNoon >= 0, '档位里必须有「正午」');
+  assertEqual(VISUAL_STYLE_OPTIONS[idxNoon + 1], 'dusk', '「傍晚」必须紧挨在「正午」右边');
+  assertEqual(VISUAL_STYLE_OPTIONS[0], null, '「自动」仍在首位（日夜循环的唯一 UI 入口）');
+});
+
+test('settings: 每个风格档位都在 VISUAL_STYLES 里有对应数据（档位与引擎数据不得漂移）', async () => {
+  const { VISUAL_STYLES } = await import('../render/daynight.js');
+  for (const v of VISUAL_STYLE_OPTIONS) {
+    if (v === null) continue;
+    assertTrue(Object.prototype.hasOwnProperty.call(VISUAL_STYLES, v),
+      `档位 "${v}" 在 VISUAL_STYLES 里没有对应数据（点了会抛 undefined 解引用）`);
+  }
 });
 
 // --- v1.26：图标 manifest 契约 ---
