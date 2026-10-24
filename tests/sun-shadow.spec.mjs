@@ -185,8 +185,8 @@ test('接线：shadowMap 开关 + sunLight 阴影相机 + 三通道 cast/receive
   expect(s.enabled, 'renderer.shadowMap.enabled 是硬门控').toBe(true);
   expect(s.type, 'shadowMap.type 须为 VSMShadowMap（DR-4b）').toBe(VSM_SHADOW_MAP);
   expect(s.castShadow).toBe(true);
-  expect(s.mapSize).toEqual([256, 256]);
-  expect(s.cam).toEqual({ left: -30, right: 30, top: 30, bottom: -30, near: 0.1, far: 250 });
+  expect(s.mapSize).toEqual([1024, 1024]);
+  expect(s.cam).toEqual({ left: -48, right: 48, top: 48, bottom: -48, near: 0.1, far: 300 });
   // VSM 口径（DR-4b）：不吃 bias/normalBias（mc-lite 的 0.00008 / 0.048 不移植），
   // 软化参数是 radius + blurSamples。**radius = 2.6 是 mc-lite 原值**（Engine.js:182）：
   // 分支原用 4 是「阴影乘在最终颜色上（影区纯黑）」时代的补偿值，改成「只衰减 skylight
@@ -267,8 +267,14 @@ test('接线：shadowMap 开关 + sunLight 阴影相机 + 三通道 cast/receive
  *   - 负向对照（SHADOW_FLOOR=0，即旧的乘到纯黑行为）：**ratioA = 0.122**
  *   - 0.735 与 mc-lite 的理论影区亮度 0.71（ambient 2.3/(2.3+sun 3.2×NdotL 0.8)=0.4733 线性
  *     → sRGB 0.71）几乎重合 → 地板值 0.5 对齐上游观感。
- * 阈值：上界 0.85（实测 0.735，余量 13.6%）；**下界 0.5**（实测 0.735 余量 32%，
- * 而破坏态 0.122 在阈值下方 4× → 两侧都不贴线，且能真实区分修好/改坏）。
+ *
+ * 实测数据（**v1.70**：地板 0.38 + ACES 色调映射 exposure 1.0 + 阴影 ±48/1024²）：
+ *   - baseline（strength=0）：A=147.7 / B=148.9
+ *   - shadowed（strength=1）：A=**81.1** / B=148.9
+ *   - **ratioA = 0.549 / ratioB = 1.000**
+ *   - 影区更暗是**有意结果**：地板从 0.5 改 0.38（用户拍板加深暗部），且 ACES 对暗端压缩更强。
+ * 阈值（v1.70 重标）：上界 **0.72**（实测 0.549，余量 23.8%）；下界 **0.40**（实测 0.549，余量 27%，
+ * 而破坏态 0.122 在阈值下方 3.3× → 两侧都不贴线，且能真实区分修好/改坏）。
  * 区 B 阈值取 0.95：影外像素理论上比值恒 1.0（实测恰为 1.000），留 5% 吸收截图噪声。
  */
 test('Tier 4 有影：俯视均匀平台上石柱影子落在 -Z 侧，且开阔区不受影响', async ({ page }) => {
@@ -299,18 +305,18 @@ test('Tier 4 有影：俯视均匀平台上石柱影子落在 -Z 侧，且开阔
   expect(off.A, `影区基线须正常照亮：${off.A.toFixed(1)}`).toBeGreaterThan(40);
   expect(off.B, `开阔区基线须正常照亮：${off.B.toFixed(1)}`).toBeGreaterThan(40);
 
-  // ① 影区须显著变暗（上界 0.85 = 暗 ≥15%；实测 0.735）
+  // ① 影区须显著变暗（上界 0.72 = 暗 ≥28%；v1.70 实测 0.549）
   expect(on.A / off.A,
     `影区（柱 -Z 侧）须显著暗于自身基线：baseline=${off.A.toFixed(1)} shadowed=${on.A.toFixed(1)}`)
-    .toBeLessThan(0.85);
-  // ①b **影区不得归零（下界 0.5）** —— 这条才是「黑乎乎一片」的真正判据。
+    .toBeLessThan(0.72);
+  // ①b **影区不得归零（下界 0.40）** —— 这条才是「黑乎乎一片」的真正判据。
   // 只有上界时，把阴影乘在最终颜色上（影区 ×0 → 纯黑）也能全绿：负向验证实测
   // SHADOW_FLOOR=0 时 ratioA=0.122（几乎纯黑）而旧断言仍 PASS。
   // 地板语义：阴影只衰减 skylight 项且最低保留 SHADOW_FLOOR（对齐 mc-lite 的环境光填充：
   // 它的阴影只拿走方向光贡献，AmbientLight(2.3) 不受影响 → 影区是「暗一档」而非全黑）。
   expect(on.A / off.A,
     `影区不得归零（阴影只衰减 skylight 项 + 地板 SHADOW_FLOOR）：baseline=${off.A.toFixed(1)} shadowed=${on.A.toFixed(1)} ratio=${(on.A / off.A).toFixed(3)}`)
-    .toBeGreaterThan(0.5);
+    .toBeGreaterThan(0.40);
   // ② 开阔区须几乎不变 —— 这条抓住「全屏压暗/黑屏」的失败形态
   //    （PCFSoft 下整个接收面归零，区 B 比值 = 0 → 本断言 FAIL）
   expect(on.B / off.B,
@@ -828,7 +834,13 @@ test('阴影刷新不得让视锥外几何整帧消失（远端闪烁回归门�
   await waitWorldSettled(page);
 
   const PY = 80;
-  const DISTANCES = [56, 60, 70, 80, 90];
+  // 采样距离：必须全部落在阴影视锥**外**（缺陷触发区），且该处地面可被看到。
+  //
+  // ⚠️ **v1.70 重算（阴影相机 ±30 → ±48）**：旧集合 [56, 60, 70, 80, 90] 里 56/60 现在离
+  // 视锥边缘太近 —— 实测它们即使在守卫失效时也只有 sd 0.53 / 0.94（而 70/80/90 是 3.98 / 7.81 / 7.95、
+  // jumps=18 与刷新次数严格相等）→ 那两个点的 range 来自**地形噪声**，不是闪烁。
+  // 丢弃它们、把有效区间保持为「明显超出视锥」的距离，判据阈值一字不改。
+  const DISTANCES = [70, 80, 90, 100];
 
   // 铺平台：清上空 → 全 stone 平台（同材质同高度，消除材质差异变量）→ 每 10 格一根 3 格石柱
   await page.evaluate((PY) => {
@@ -1029,8 +1041,18 @@ test('纹素对齐：固定世界点在分数纹素步长移动下亮度恒定�
     const litPx = project(ox + 0.5, oz + 3.0);       // 开阔受光区（sanity 参照）
     const p = g.player.physics.pos;
     const baseX = p.x;   // 玩家已在平台上（上方 setup），baseX = ox+0.5
-    const STEP = 0.05;   // 分数纹素步长（0.05 格 ≈ 0.21 纹素）
-    const STEPS = 12;
+    // ⚠️ **纹素尺寸必须从配置读，不得写字面量**（红线 1）。旧版硬编码 256 是
+    // v1.70 之前 mapSize 恒为 256² 时代的写法 —— 改 1024² 后相位按旧尺度算就会得到
+    // 只取 0/0.25/0.5/0.75 四个离散值的假相位（实测 phaseSpread 0.75 而亮度 spread 恰为 0）。
+    const MAP_W = g.sunLight.shadow.mapSize.width;
+    const TEXEL = (g.sunLight.shadow.camera.right - g.sunLight.shadow.camera.left) / MAP_W;
+    // 步长按纹素口径取 1/5 纹素 × 12 步 ≈ 2.4 纹素（与旧版的 0.05 格≈0.21 纹素 × 12 ≈ 2.6 同量级
+    // → 跨越至少 1 个整纹素，保证能观测到「吸附后相位恒定」）。
+    // ⚠️ sanity floor ③ 要求 `targetTravel > 0.2` 格（证明相机真的动了）。纹素从 0.234 变
+    // 0.094 后，1/5 纹素 × 12 步只有 0.225 格（实测 0.1875 —— 因为吸附把它量化到整纹素）→
+    // 贴近 0.2 门槛。步数改成 24 步（≈ 4.8 纹素 ≈ 0.45 格）留足余量，不碰判据阈值。
+    const STEP = TEXEL / 5;
+    const STEPS = 24;
     const seq = [], phases = [], litSeq = [], targets = [];
     return new Promise((resolve) => {
       let i = 0;
@@ -1046,7 +1068,7 @@ test('纹素对齐：固定世界点在分数纹素步长移动下亮度恒定�
           const sh = g.sunLight.shadow;
           sh.updateMatrices(g.sunLight);
           const c = new g.camera.position.constructor(ox + 0.5, P + 1.02, oz - 2.0).applyMatrix4(sh.matrix);
-          phases.push(+(((c.x * 256) % 1 + 1) % 1).toFixed(4));
+          phases.push(+(((c.x * MAP_W) % 1 + 1) % 1).toFixed(4));
           targets.push(+g.sunLight.target.position.x.toFixed(4));
           const sv = readAt(shadowPx), lv = readAt(litPx);
           if (sv !== null) seq.push(+sv.toFixed(2));

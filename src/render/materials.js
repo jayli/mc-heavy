@@ -18,6 +18,7 @@ import {
 import {
   SHADOW_FLOOR, SUN_AMBIENT, SUN_INTENSITY, FACE_NORMALS, NOON_SUN_DIR,
 } from './sun-shade.js';
+import { HEMI_GROUND } from './hemi-shade.js';
 import { FOG_SKY_Y_FLOOR_EPS } from './fog-sky-direction.js';
 
 // ---- 顶点阶段 shade（light × AO），float varying 传片元 ----
@@ -93,6 +94,20 @@ const faceNormalNode = FACE_NORMAL_NODES
 const vSunDot = varying(
   vertexStage(max(dot(faceNormalNode, uSunDirection), 0)), 'vSunDot');
 
+// ---- 半球环境光（v1.70）----
+// 真实世界里天空来的环境光比地面反射的亮得多。本仓此前所有面吃同一个 skylight（户外恒 15，
+// DR-14）→ 一个方块的顶面与底面完全一样亮，这是「一个色块、没立体感」的来源之一。
+// 这里给 skylight 项乘一个只依赖面法线 y 的因子：朝上 1.0（**与现状逐位相同**，零回归锚点）、
+// 朝下 uHemiGround、四侧面 (ground+1)/2。
+//
+// ⚠️ **只乘 skylight 项，不乘 blocklight**：火把照亮的洞穴底面不该变暗（与太阳项同一口径）。
+// ⚠️ **与太阳无关**：它是环境光的方向性，`uSunStrength = 0` 时**仍然生效**。接进太阳项
+// 会让「关掉方向光 → 半球差异一起消失」且夜间朝下面不暗（用户可见的语义错误）。
+// ⚠️ uniform 初值 = HEMI_GROUND（常量唯一权威在 hemi-shade.js，此处不写字面量）；
+// 取 1.0 时因子恒等 1 → **逐位回到 v1.69**，可作 A/B 隔离。
+const uHemiGround = uniform(HEMI_GROUND);
+const hemiFactor = mix(uHemiGround, float(1.0), mul(faceNormalNode.y, 0.5).add(0.5));
+
 /**
  * 阴影不投射标记（packed bit14，mesher 从 registry.shadowCastTable 写入）：在**阴影 pass**
  * 逐片元 discard（mc-lite `isShadowEnabled:false` 的 cloud/花草/藤/灯等不投影）。
@@ -150,14 +165,14 @@ export function createVoxelMaterials(atlasTexture, sunLight = null) {
   );
   const sunTerm = mix(float(1), sunTermFull, uSunStrength);
 
-  const shadeLit = max(mul(vSkyShade, sunTerm), vBlockShade);
+  const shadeLit = max(mul(mul(vSkyShade, hemiFactor), sunTerm), vBlockShade);
   // 不接收阴影的通道（transparent = 水/玻璃）用无阴影亮度。
   // ⚠️ **不能只靠 `receiveShadow=false`**：那个标志只门控 three 的**灯光管线**
   // （three.webgpu.js:46101 `if (builder.object.receiveShadow) setupShadow()`），而本材质是
   // unlit + colorNode 里**显式**引用 `shadow(sunLight)` 节点 → 该节点不受 receiveShadow 门控，
   // 水面照样被压暗。mc-lite 对 water/glass 是 cast+receive 双 false（GlobalInstancedMeshManager.js:76-84），
   // 此处对齐：transparent 通道完全不参与阴影（不投影也不被压暗）。
-  const shadeUnlit = max(vSkyShade, vBlockShade);
+  const shadeUnlit = max(mul(vSkyShade, hemiFactor), vBlockShade);
 
   const makeMaterial = ({ alphaTest = 0, transparent = false, side = THREE.FrontSide, emissive = false, receivesShadow = true }) => {
     const mat = new THREE.MeshBasicNodeMaterial();
@@ -188,7 +203,7 @@ export function createVoxelMaterials(atlasTexture, sunLight = null) {
     // emissive: true —— hanging_lamp 的材质自发光走本通道（§4.3 bit13）。
     cutout: makeMaterial({ alphaTest: 0.3, side: THREE.FrontSide, emissive: true }),
     transparent: makeMaterial({ transparent: true, receivesShadow: false }),
-    dayNight: { uSkyDim, uBlockBoost, uShadowStrength, uSunDirection, uSunStrength },
+    dayNight: { uSkyDim, uBlockBoost, uShadowStrength, uSunDirection, uSunStrength, uHemiGround },
   };
 }
 

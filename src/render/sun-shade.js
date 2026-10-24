@@ -13,14 +13,22 @@
 import { VISUAL_STYLES } from './daynight.js';
 
 /**
- * 影区 / 背光面的环境地板。对齐 mc-lite 的观感推导：它的阴影只移除方向光贡献，
- * `AmbientLight(0xddeeff, 2.3)` 不受影响 → 影区亮度 ≈ ambient/(ambient + sun·NdotL)
- * ≈ 2.3/(2.3 + 3.2×0.8) = 0.4733（顶面）~ 0.55（侧面），取 0.5。
+ * 影区 / 背光面的环境地板。同时是太阳项的环境地板（见 `SUN_AMBIENT`）。
  *
- * 两个身份：① 阴影的地板（materials.js 的混合模型，v1.45）；② 太阳项的环境地板（v1.58）。
- * 它们必须相等 —— 否则「背光面」与「影区」的亮度会撕裂（同一句语义出现两个数值）。
+ * **取值 0.38（v1.70，用户拍板的实测标定值）**。
+ *
+ * 历史：v1.58 取 0.5，依据是 mc-lite 的 `ambient/(ambient + sun·NdotL)`
+ * = 2.3/(2.3 + 3.2×0.8) = 0.4733 → 四舍五入 0.5。但那个推导回答的是「mc-lite 的影区
+ * 有多亮」，而不是「本仓该有多亮」—— mc-lite 的材质是受光的 `MeshStandardNodeMaterial`，
+ * 而本仓是 unlit 管线，两边暗部基准不同（同 v1.45 的 `shadow.radius` 教训）。
+ *
+ * 0.38 的实测依据（960×540，`style=noon`，真实世界，16 组扫描）：
+ *   · 暗部 p5：52（地板 0.5）→ **29**（地板 0.38）→ 22（地板 0.28，已发闷）
+ *   · 对比跨度 p95−p5：163 → **183**
+ *   · 迎光/背光比：1.302 → **1.46**
+ * 0.28 的暗部更黑但影区内都会发闷，0.38 是「拉开动态范围」与「暗部不死黑」的交点。
  */
-export const SHADOW_FLOOR = 0.5;
+export const SHADOW_FLOOR = 0.38;
 
 /** 太阳项的环境地板 —— **恒等于 SHADOW_FLOOR**（同一语义，见上）。 */
 export const SUN_AMBIENT = SHADOW_FLOOR;
@@ -51,9 +59,11 @@ export const NOON_SUN_Y = NOON_SUN_DIR[1];
 /**
  * 太阳强度。取 `(1 − SUN_AMBIENT) / NOON_SUN_Y` 是**唯一**能让
  * `SUN_AMBIENT + SUN_INTENSITY × noonSunY ≡ 1.0` 成立的取值 —— 也就是
- * **正午顶面亮度恒等于 v1.57 的 1.0**（零回归不变式，落地观感只有侧面朝向变化）。
+ * **正午顶面亮度恒等于 v1.57 的 1.0**（零回归不变式，本项改动只动背光面与影区）。
  *
- * 落地值（noon，strength=1，无阴影）：顶面 1.000 / +Z 0.875 / ±X 0.725 / −Z、−X 0.500。
+ * 落地值（地板 0.38 → 强度 0.775；noon，strength=1，无阴影）：
+ * 顶面 1.000（**不变**）/ +Z 0.845 / ±X 0.380 / −Z、−X 0.380。
+ * 对比度（顶面/背光面）**2.63×**（v1.58 的 0.5 地板时代是 2.0×）。
  */
 export const SUN_INTENSITY = (1 - SUN_AMBIENT) / NOON_SUN_Y;
 

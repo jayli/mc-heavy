@@ -112,6 +112,12 @@ export class Game {
     this.budget = new BudgetConfig({ profile: budgetProfile });
     this.pool = new WorkerPool({ workerUrl: '/src/workers/world-worker.js' });
     this.renderer = new THREE.WebGPURenderer({ canvas, antialias: true });
+    // ACES 色调映射（v1.70）：高光柔和滚落、不再被 sRGB 传递函数削平成白块。
+    // 实测整屏高光削顶（luma>=250）**0.44% → 0%**，对比跳度 p95−p5 **163 → 183**。
+    // 曝光值（每风格不同）由 DayNight._apply 按风格/日夜写入（唯一收口点）。
+    // ⚠️ v1.58 的 spec §7 曾以「用户否决」为由**不移植** ACES —— v1.70 用户重新拍板，
+    // 那个否决**已作废**。本仓是 unlit 管线，故不需要 mc-lite 的每风格 CSS 色彩分级。
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.scene = new THREE.Scene();
     // far 覆盖加载半径对角线（滞回 +2 圈 × 16 × sqrt2 余量），与 setupFog 口径一致
     this.camera = new THREE.PerspectiveCamera(70, 1, 0.1, (viewDistance + 2) * 16 * 1.5);
@@ -184,22 +190,42 @@ export class Game {
     // → `_updateSunPosition()` 立即把光源定位到玩家处，无需在 start() 额外调一次）。
     sunLight.position.set(0, 0.8, 0.6); // 光源在太阳方向 → 照射方向 = -[0,0.8,0.6]（mc-lite 口径）
     sunLight.castShadow = true;
-    sunLight.shadow.mapSize.set(256, 256);
-    sunLight.shadow.camera.left = -30;
-    sunLight.shadow.camera.right = 30;
-    sunLight.shadow.camera.top = 30;
-    sunLight.shadow.camera.bottom = -30;
+    // 阴影相机覆盖与贴图分辨率（v1.70）。
+    //
+    // **为什么扩大**：±30 只覆盖 60 格，而树影、建筑影、地形起伏大多在覆盖区外 → 实测
+    // 真实场景里开/关阴影的整屏差异只有 **1.19% 像素**（最大 27/255）—— 影子几乎看不见。
+    // 改 ±48（覆盖 96 格）+ 1024² 后，同样的对照升到 **3.21% 像素**（2.7×）。
+    //
+    // **纹素反而更清晰**：纹素 = 覆盖宽 / 贴图宽 → 60/256 = 0.234 格 → 96/1024 = **0.094 格**
+    // （清晰 2.5×）。`_updateSunPosition()` 的 texel snapping 从 `(right−left)/mapSize` 读配置，
+    // 故这里改完它自动跟随，**无需同步改任何字面量**（红线 1）。
+    //
+    // **成本**：renderer.render 提交时间实测 256² → 1024² 的刷新帧 0.2 → **1.3ms**、稳态帧
+    // 0.1 → 0.2ms。刷新被 ShadowScheduler 节流到 200ms（5Hz 上限）→ 摊到每帧约 0.05ms，
+    // 在 8.3ms 帧预算里可忽略。
+    // far=300：光源距玩家 60 格、覆盖对角约 68 格 → 需覆盖到光源另一侧，300 留足余量
+    // （阴影相机 ±48 之后 250 已偏紧）。
+    sunLight.shadow.mapSize.set(1024, 1024);
+    sunLight.shadow.camera.left = -48;
+    sunLight.shadow.camera.right = 48;
+    sunLight.shadow.camera.top = 48;
+    sunLight.shadow.camera.bottom = -48;
     sunLight.shadow.camera.near = 0.1;
-    sunLight.shadow.camera.far = 250;
-    // VSM 不吃 bias / normalBias（DR-4b：depth-compare 档位全坏，用户拍板改 VSM），
-    // mc-lite 的 bias 0.00008 / normalBias 0.048 不移植；radius + blurSamples 是 VSM 的
+    sunLight.shadow.camera.far = 300;
     // 软化参数（radius 默认 1 / blurSamples 默认 8，three.core.js LightShadow）。
+    // mc-lite 的 bias 0.00008 / normalBias 0.048 不移植；radius + blurSamples 是 VSM 的
+    // 软化参数。
     // ⚠️ **radius 用 mc-lite 原值 2.6，不是 4**：原 4 是「阴影因子乘在最终颜色上」
     // （影区 ×0 纯黑）时代的补偿值 —— 那时需要把阴影糊开才不致于全黑。改成
     // 「只衰减 skylight 项 + 地板 SHADOW_FLOOR」后，radius=4 反而把阴影冲淡到
     // 谷底比值 0.852（地板 0.5 根本达不到）。实测扫描（同一平台/同一相机，只改 radius）：
     //   r=1 → 0.724 / r=2 → 0.724 / **r=2.6 → 0.726** / r=3 → 0.769 / r=4 → 0.852，
     //   半影宽度 r=2.6 与 r=4 同为 4/8 点（边缘不更硬）。
+    // ⚠️ **v1.70 贴图 256²→1024² 后 radius 仍保持 2.6（用户拍板）**：VSM 的 radius 是
+    // **纹素**单位，纹素从 0.234 变 0.094 格 → 同样的 2.6 只相当于原来的 ~1 纹素，
+    // **半影宽度窄 2.5×、影子明显变硬**。这**不是回归而是有意结果**（用户要「真实感」
+    // 而非「柔和」，硬一点的影子更像日光）。若将来实玩觉得生硬，处置是**按比例升到 ~6.5**
+    // 的单次标定，**不得把覆盖改回去**。
     // 0.726 与 mc-lite 的理论影区亮度 0.71（ambient 2.3 / (2.3 + sun 3.2×NdotL 0.8) = 0.4733
     // 线性 → sRGB 0.71）几乎重合 → radius=2.6 既对齐上游又让地板真正生效。
     sunLight.shadow.radius = 2.6;
@@ -260,6 +286,8 @@ export class Game {
       skyUniforms: this.sky ? { uNightBlend: this.sky.uNightBlend } : null,
       baseFogNear: this.viewDistance * 16 * 0.75,
       baseFogFar: (this.viewDistance + 2) * 16 * 0.95,
+      // ACES 曝光写入目标（v1.70）：DayNight._apply 是唯一收口点（setStyle 与日夜循环共用）。
+      renderer: this.renderer,
       // 太阳方向变化 → 光源重定位 + 请求阴影刷新（DR-5 第三个请求源）。**用于定位的**方向由
       // `_updateSunPosition()` 从 `dayNight.params.sunDirection` 读（唯一权威，红线 1：
       // 回调里不写字面量方向）。

@@ -9,12 +9,12 @@ const NOON = paramsAtHour(12).sunDirection;
 
 test('sun-shade: SUN_AMBIENT 恒等于 SHADOW_FLOOR（同一语义：太阳被拿走后的环境地板）', () => {
   assertEqual(SUN_AMBIENT, SHADOW_FLOOR, '两个常数必须相等，否则影区与背光面亮度撕裂');
-  assertEqual(SHADOW_FLOOR, 0.5, 'SHADOW_FLOOR 是 mc-lite 2.3/(2.3+3.2*0.8)=0.4733 → sRGB 0.71 的标定产物');
+  assertEqual(SHADOW_FLOOR, 0.38, 'v1.70：用户选定 0.38 加深暗部（实测暗部 p5 45→28、迎光/背光比 1.30→1.46）');
 });
 
 test('sun-shade: SUN_INTENSITY 由正午太阳方向派生（不是字面量）', () => {
   assertTrue(Math.abs(NOON[1] - 0.8) < 1e-12, `正午太阳方向归一化后 y 应为 0.8，实测 ${NOON[1]}`);
-  assertTrue(Math.abs(SUN_INTENSITY - 0.625) < 1e-12, `派生值应为 0.5/0.8=0.625，实测 ${SUN_INTENSITY}`);
+  assertTrue(Math.abs(SUN_INTENSITY - 0.775) < 1e-12, `派生值应为 (1-0.38)/0.8=0.775，实测 ${SUN_INTENSITY}`);
 });
 
 test('sun-shade: 正午 +Y 面 sunTerm 恒等于 1.0（零回归不变式）', () => {
@@ -30,11 +30,11 @@ test('sun-shade: strength=0 时所有面恒等于 1.0（关掉即逐位回到现
 
 test('sun-shade: 正午六面亮度排序 —— 顶面 > 迎光侧 > 背光侧', () => {
   const v = [0, 1, 2, 3, 4, 5].map((i) => sunTermFor(i, NOON, 1, 1));
-  // 期望：+Y 1.0 / +Z 0.875 / ±X 0.5 / -Y 0.5 / -Z 0.5
+  // 期望（地板 0.38、强度 0.775）：+Y 1.0 / +Z 0.845 / ±X、-Y 0.38 / -Z 0.38
   assertTrue(v[2] > v[4], `顶面(${v[2]}) 须亮于 +Z 面(${v[4]})`);
   assertTrue(v[4] > v[5], `+Z 迎光面(${v[4]}) 须亮于 -Z 背光面(${v[5]})`);
-  assertTrue(Math.abs(v[0] - 0.5) < 1e-12, `+X 面${v[0]}（太阳 x 分量为 0 → 恒 ambient）`);
-  assertTrue(Math.abs(v[4] - 0.875) < 1e-12, `+Z 面应为 0.875，实测 ${v[4]}`);
+  assertTrue(Math.abs(v[0] - 0.38) < 1e-12, `+X 面${v[0]}（太阳 x 分量为 0 → 恒 ambient=0.38）`);
+  assertTrue(Math.abs(v[4] - 0.845) < 1e-12, `+Z 面应为 0.38+0.775×0.6=0.845，实测 ${v[4]}`);
 });
 
 test('sun-shade: 阴影把太阳只从太阳项里拿走（影区顶面回到 SHADOW_FLOOR）', () => {

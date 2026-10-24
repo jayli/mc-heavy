@@ -13,12 +13,15 @@ import { PNG } from 'pngjs';
  *   ② 打开后迎光面显著更亮（noon 太阳 z=+0.6 → +Z 面迎光）；
  *   ③ 顶面（+Y）亮度**不随开关变化** —— 零回归不变式。
  *
- * ⚠️ **②的阈值是 sRGB 口径，不是线性口径**（本仓 `outputColorSpace = sRGB`）：
- *   shade 的线性值 +Z 0.875 / −Z 0.500（线性比 1.750），但写入屏幕要过 sRGB 传递函数
- *   → 0.9429 / 0.7354，比值 1.282；再算上贴图基色（不同基色的 sRGB 曲线非线性不同），
- *   理论值域为 **1.286（亮贴图）~1.347（暗贴图）**，实测 1.313（stone 贴图基色 ≈0.1 线性）。
- *   区间取 **[1.20, 1.45]**：围绕理论值域，不是围绕实测值（两侧余量均 >8%）。
- *   这条坑与 `tests/test-view-bob.js` 的「屏幕读数须按 sRGB 断」同源。
+ * ⚠️ **②的阈值是 sRGB 口径，且已含 ACES 与 0.38 地板（v1.70 重标）**——
+ *   v1.58 记的「理论值域 1.286~1.347」是 **0.5 地板 + 无色调映射**时代的数，已作废。
+ *   现在的链路是 `shade = 地板0.38 + 强度0.775×NdotL` → **ACES(exposure 1.0)** → sRGB：
+ *   · 不含色调映射时线性比 = 0.845/0.38 = 2.224 → sRGB 约 1.44（实测不带 ACES 为 1.486）
+ *   · ACES 对**暗端压缩更强**（暗部落在线性段、亮部先进肩部）→ 比值被推高到 **1.847**
+ *   · 理论值域随贴图基色变化（基色线性 0.08 → 2.24；0.25 → 1.83；1.0 → 1.37），
+ *     stone 落在 0.10~0.15 一段 → 理论 1.85~1.99，与实测 1.847 吻合
+ *   区间取 **[1.20, 2.05]**：下界钉「真有朝向差异」，上界钉「对比度不失控」（实测余量 10.7%）。
+ *   同坑见 `tests/test-view-bob.js` 的「屏幕读数须按 sRGB 断」。
  *
  * ⚠️ 只钉上界（或只钉下界）都是无效盲区：把 sunTerm 乘在**整个 shade**上（而非只乘太阳项）
  * 会让背光面也变暗 → 比值反而更大，单侧上界抓不到「背光面被压到地板以下」的缺陷；
@@ -117,7 +120,11 @@ test('方向光：迎光面更亮、背光面更暗；关闭时两面等亮（�
     litOff: +litOff.toFixed(1), darkOff: +darkOff.toFixed(1),
     litOn: +litOn.toFixed(1), darkOn: +darkOn.toFixed(1),
     ratioOff: +(litOff / darkOff).toFixed(3), ratioOn: +(litOn / darkOn).toFixed(3),
-    topRatio: +(litOn / litOff).toFixed(3),
+    // ⚠️ 字段名叫 litOnVsOff（**不是** topRatio）：它量的是迎光墙面的「开/关比」。
+    // 正午 +Z 墙面的 sunTerm = 0.845 < 1.0（关闭时）→ **本字段应 < 1**，这是正确行为
+    // （模型的意图是「侧面变暗、顶面不变」，零回归不变式只作用于顶面，见下方 ③）。
+    // 顶面的开/关比在下方 ③ 单独量并打印为 `SUN-DIRECTIONAL TOP`（实测 1.000）。
+    litOnVsOff: +(litOn / litOff).toFixed(3),
   }));
 
   // sanity floor：四个读数都须读到墙面几何而非黑屏/天空
@@ -131,12 +138,12 @@ test('方向光：迎光面更亮、背光面更暗；关闭时两面等亮（�
   expect(litOff / darkOff, `关闭方向光时 +Z/−Z 两面须等亮（读法无偏）：${litOff.toFixed(1)} vs ${darkOff.toFixed(1)}`)
     .toBeLessThan(1.05);
 
-  // ② 打开后迎光面显著更亮（理论 sRGB 值域 1.286~1.347，实测 1.313）。双侧：
+  // ② 打开后迎光面显著更亮（含 ACES 与 0.38 地板：理论 1.85~1.99，实测 1.847）。双侧：
   //    下界钉「真的有朝向差异」，上界钉「对比度不失控」。
-  expect(litOn / darkOn, `迎光面须显著更亮（sRGB 理论 ~1.31）：lit=${litOn.toFixed(1)} dark=${darkOn.toFixed(1)}`)
+  expect(litOn / darkOn, `迎光面须显著更亮（sRGB 理论 ~1.85）：lit=${litOn.toFixed(1)} dark=${darkOn.toFixed(1)}`)
     .toBeGreaterThan(1.2);
-  expect(litOn / darkOn, `对比度不得失控（sRGB 理论 ~1.31）：lit=${litOn.toFixed(1)} dark=${darkOn.toFixed(1)}`)
-    .toBeLessThan(1.45);
+  expect(litOn / darkOn, `对比度不得失控（sRGB 理论 ~1.85）：lit=${litOn.toFixed(1)} dark=${darkOn.toFixed(1)}`)
+    .toBeLessThan(2.05);
 
   // ③ 零回归不变式：顶面（+Y，dot=0.8）亮度不随开关变化 ——
   //    SUN_INTENSITY 被标定成「正午顶面 sunTerm ≡ 1.0」而不是任意值，就是为了这一条。

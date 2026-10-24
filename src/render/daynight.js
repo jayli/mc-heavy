@@ -15,12 +15,27 @@ export const VISUAL_STYLES = {
   morning: {
     sky: 0xb7c6f7, fogColor: 0xb7c6f7, fogScale: 1.0, skyDim: 0.8, blockBoost: 1.0,
     sunDirection: [0.18, 0.45, 0.88],
+    // ACES 曝光（v1.70）：**1.00，与 noon 同档**。
+    // ⚠️ mc-lite 的 morning 是 1.35，但**照搬它会抹掉晨昏感**：morning 的 `skyDim = 0.8`
+    // 本来就要比 noon 暗一档（同曝光下实测 |morning−noon| = **0.0609**），而 1.35 的曝光
+    // 恰好把它提亮回 noon 水平（实测差值塌到 **0.0036**，低于「晨与午必须可见不同」的
+    // 0.01 门槛）。mc-lite 用 1.35 是因为它还有 `colorBrightness 1.06` 与暖色相补偿，
+    // 本仓不移植那层 CSS 分级（用户要「真实感」而非「鲜艳」）。
+    // 晨昏感由**既有数据**提供：skyDim 0.8 + 晨光天空色 0xb7c6f7 —— 不靠曝光重复表达。
+    toneMappingExposure: 1.0,
     // 月亮方向 / 可见性 / 尺寸：mc-lite Engine.js:75,109,111 原值（未归一化，消费前统一归一化）
     moonDirection: [-0.38, 0.45, -0.81], moonVisible: false, moonSize: 20,
   },
   noon: {
     sky: 0x87ceeb, fogColor: 0x87ceeb, fogScale: 1.0, skyDim: 1.0, blockBoost: 1.0,
     sunDirection: [0, 0.8, 0.6],
+    // ACES 曝光（v1.70）：**本仓实测最优 1.0，不是 mc-lite 的 1.25**。
+    // 实测（同一机位、同一几何，只改 exposure）：0.9 → 暗部 p5=40 / 1.0 → p5=44、天空细节完整 /
+    // 1.25 → p5=53 但**天空被冲到接近纯白、云层细节丢失**。
+    // mc-lite 用 1.25 是因为它的体素材质是受光的 `MeshStandardNodeMaterial`（光照强度基准
+    // 与本仓 unlit 管线不同）—— 照搬上游参数前须检查它是否在补偿另一个差异（v1.45 的
+    // `shadow.radius` 同教训）。
+    toneMappingExposure: 1.0,
     moonDirection: [-0.25, 0.5, -0.82], moonVisible: false, moonSize: 18,
   },
   night: {
@@ -32,6 +47,16 @@ export const VISUAL_STYLES = {
     // 贴图与星点，不需要这个代偿。雾色与天色一致时，远景观感反而更自然。
     sky: 0x050b1e, fogColor: 0x050b1e, fogScale: 1.0, skyDim: 0.25, blockBoost: 1.2,
     sunDirection: [0.08, 0.25, 0.96],
+    // ACES 曝光（v1.70）：**1.6，比正午高（而 mc-lite 的 night 是 0.95）**。
+    // ACES 的暗部压缩在低亮度区最陡，不补曝光就会把夜空与地面一起吃掉。实测（night 机位）：
+    //   NoToneMapping → mean 48.1 / p5 16 / p95 78
+    //   ACES 1.0     → mean 33.0 / p5  3 / p95 70  ← **过暗（p5=3 近乎死黑）**
+    //   ACES 1.25    → mean 39.1 / p5  5 / p95 83  ← 仍偏暗
+    //   ACES 1.6     → mean 47.0 / p5  7 / p95 99  ← **平均回到基线，动态范围 62→92**
+    //   ACES 2.0     → mean 55.1 / p5 10 / p95 115 ← 偏亮发灰
+    // 1.6 让夜间「平均亮度回到现状」却把动态范围拉开 —— 这正是「夜该暗，但不是糊成一片」。
+    // mc-lite 用 0.95 是为了压暗，本仓用更高曝光达到「压暗暗部、保住亮部」的同一个**意图**。
+    toneMappingExposure: 1.6,
     moonDirection: [-0.32, 0.58, -0.75], moonVisible: true, moonSize: 34,
   },
 };
@@ -71,6 +96,8 @@ function lerpParams(a, b, t) {
     fogScale: a.fogScale + (b.fogScale - a.fogScale) * t,
     skyDim: a.skyDim + (b.skyDim - a.skyDim) * t,
     blockBoost: a.blockBoost + (b.blockBoost - a.blockBoost) * t,
+    // ACES 曝光与其它标量同等对待（线性插值）—— 缺了这一行会让风格切换时曝光二态跳变。
+    toneMappingExposure: a.toneMappingExposure + (b.toneMappingExposure - a.toneMappingExposure) * t,
     sunDirection: [
       ad[0] + (bd[0] - ad[0]) * t,
       ad[1] + (bd[1] - ad[1]) * t,
@@ -137,13 +164,17 @@ export class DayNight {
    * @param {number} [opts.baseFogNear] @param {number} [opts.baseFogFar] 视距基准雾距（fogScale 乘算）
    * @param {number} [opts.cycleSeconds] 一天时长（秒），默认 1200
    * @param {number} [opts.startHour] 初始小时，默认 12（正午，与 M1 视觉口径一致）
+   * @param {{toneMappingExposure: number}|null} [opts.renderer] 渲染器（只消费 `toneMappingExposure`
+   *   属性）。**仅消费这一个字段**，所以 stub 传 `{ set toneMappingExposure(v){} }` 即可测；
+   *   缺省 null（未装配 / 单测）→ 跳过写入。
    * @param {(dir: [number, number, number]) => void} [opts.onSunDirection] 太阳方向变化回调（已归一化）
    */
-  constructor({ scene, fog, voxelUniforms, skyUniforms = null, baseFogNear, baseFogFar, cycleSeconds = 1200, startHour = 12, onSunDirection = null }) {
+  constructor({ scene, fog, voxelUniforms, skyUniforms = null, baseFogNear, baseFogFar, cycleSeconds = 1200, startHour = 12, renderer = null, onSunDirection = null }) {
     this.scene = scene;
     this.fog = fog;
     this.voxelUniforms = voxelUniforms;
     this.skyUniforms = skyUniforms;
+    this.renderer = renderer;
     this.baseFogNear = baseFogNear;
     this.baseFogFar = baseFogFar;
     this.cycleSeconds = cycleSeconds;
@@ -207,6 +238,12 @@ export class DayNight {
     const uSunDirection = this.voxelUniforms.uSunDirection;
     if (uSunDirection && uSunDirection.value && typeof uSunDirection.value.set === 'function') {
       uSunDirection.value.set(sunDir[0], sunDir[1], sunDir[2]);
+    }
+    // ACES 色调映射的曝光随风格/日夜插值（v1.70）。**单一收口点**：setStyle 与日夜循环
+    // 两条路径都经 _apply → 口径一致，不会出现「点风格按钮后曝光不跟」的撕裂。
+    // renderer 缺省 null（单测 stub / 尚未装配）→ 跳过（与 uShadowStrength 同一容错口径）。
+    if (this.renderer && typeof p.toneMappingExposure === 'number') {
+      this.renderer.toneMappingExposure = p.toneMappingExposure;
     }
     // 天空盒双图交叉淡入因子（v1.58）：由既有 skyDim 派生，句柄由 setupSky 提供。
     const uNightBlend = this.skyUniforms && this.skyUniforms.uNightBlend;

@@ -201,3 +201,49 @@ test('DayNight：写 uSunDirection 与 uNightBlend（句柄缺失时不抛错）
   // 不带 skyUniforms 构造不得抛错（既有调用方）
   makeDayNightStub();
 });
+
+test('toneMappingExposure：三风格都有且夜必须比正午补更多曝光', () => {
+  const m = VISUAL_STYLES[VISUAL_STYLE_KEYS.MORNING].toneMappingExposure;
+  const n = VISUAL_STYLES[VISUAL_STYLE_KEYS.NOON].toneMappingExposure;
+  const k = VISUAL_STYLES[VISUAL_STYLE_KEYS.NIGHT].toneMappingExposure;
+  for (const [name, v] of [['morning', m], ['noon', n], ['night', k]]) {
+    assertTrue(typeof v === 'number' && v > 0.5 && v < 2.5, `${name} exposure 须在 (0.5,2.5)：${v}`);
+  }
+  assertEqual(n, 1.0, 'noon 用 1.0（实测 1.25 会把天空冲到近纯白、云层细节丢失）');
+  assertEqual(m, 1.0, 'morning 也用 1.0 —— 1.35 会把 skyDim 0.8 的晨昏变暗抵消（|m-n| 0.061→0.004）');
+  assertTrue(k > n, `夜必须比正午补更多曝光（ACES 暗部压缩陡）：night=${k} noon=${n}`);
+});
+
+test('paramsAtHour：toneMappingExposure 随关键帧插值，且落在两端之间', () => {
+  const n = VISUAL_STYLES[VISUAL_STYLE_KEYS.NOON].toneMappingExposure;
+  const k = VISUAL_STYLES[VISUAL_STYLE_KEYS.NIGHT].toneMappingExposure;
+  assertEqual(paramsAtHour(12).toneMappingExposure, n, '正午取 noon 原值');
+  assertEqual(paramsAtHour(0).toneMappingExposure, k, '子夜取 night 原值');
+  // 中间时刻（6 点在 night→morning 插值段）必须严格落在两端之间 —— 证明走插值而非二态
+  const mid = paramsAtHour(6).toneMappingExposure;
+  assertTrue(mid > Math.min(k, n) - 1e-9 && mid < Math.max(k, n) + 1e-9,
+    `6 点的 exposure 须在两端之间：mid=${mid} night=${k} noon=${n}`);
+});
+
+test('DayNight：exposure 经 _apply 写出（setTime 与 setStyle 同一收口）', () => {
+  const seen = [];
+  const renderer = { set toneMappingExposure(v) { seen.push(+v.toFixed(4)); } };
+  const { dayNight } = makeDayNightStub({ renderer });
+  dayNight.setTime(12);
+  dayNight.setTime(0);
+  const n = VISUAL_STYLES[VISUAL_STYLE_KEYS.NOON].toneMappingExposure;
+  const k = VISUAL_STYLES[VISUAL_STYLE_KEYS.NIGHT].toneMappingExposure;
+  assertTrue(seen.includes(n), `正午须写出 ${n}，实测序列 ${JSON.stringify(seen)}`);
+  assertTrue(seen.includes(k), `夜里须写出 ${k}，实测序列 ${JSON.stringify(seen)}`);
+  // setStyle 也是同一收口（override 路径）
+  dayNight.setStyle(VISUAL_STYLE_KEYS.NIGHT);
+  assertEqual(seen[seen.length - 1], k, 'setStyle(night) 须经 _apply 写出 night 的曝光');
+});
+
+test('DayNight：renderer 缺省 null 时不抛错（stub / 尚未装配）', () => {
+  const { dayNight } = makeDayNightStub();
+  dayNight.setTime(0);
+  dayNight.setStyle(VISUAL_STYLE_KEYS.MORNING);
+  dayNight.setStyle(null);
+  dayNight.update(1);
+});

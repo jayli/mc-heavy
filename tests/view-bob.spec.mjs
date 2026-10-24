@@ -432,8 +432,17 @@ test('手臂有立体感：像素亮度分布须铺开（不是单一颜色）',
   //    拉在两个峰之间（实测只有 6.3%），而真实面间差是 155 vs 115 ≈ 26%。
   expect(result.secondPeakShare, `须有第二个亮度峰（面间差异），实测 ${(result.secondPeakShare * 100).toFixed(1)}%`)
     .toBeGreaterThan(0.1);
-  expect(result.peakSeparation, `两个亮度峰须相距 > 15%，实测 ${(result.peakSeparation * 100).toFixed(1)}%`)
-    .toBeGreaterThan(0.15);
+  // ④ 面间峰距。
+  // ⚠️ **v1.70 由 15% 重标为 11%**（用户裁定「重标阈值」）：v1.70 接入 ACES 色调映射后，
+  // 高光肩部压缩会**缩小面间差** —— 实测（只差 toneMapping 一个变量）
+  //   NoToneMapping：峰 200 vs 160 → 峰距 **15.7%**（旧阈值 15 恰好能过）
+  //   ACES        ：峰 205 vs 175 → 峰距 **11.8%**（spec 口径）/ **14.6%**（本用例口径，除 p95）
+  // 根因是 ACES 曲线本身（亮面被推向肩部、暗面仍在近线性段），**不是手臂变平了**：
+  // 同一次实测里亮度桶仍 14 个、最大单色占比 52.4%（阈值 65%）、第二峰占比 13.6%（阈值 10%）
+  // 全部宽松通过 —— 只有峰距贴线。新阈值 11% 相对本口径实测 14.6% 留 24.7% 余量，
+  // 而「去掉 Lambert 项 / 六面系数」的破坏态仍会真 FAIL。
+  expect(result.peakSeparation, `两个亮度峰须相距 > 11%（v1.70 ACES 口径），实测 ${(result.peakSeparation * 100).toFixed(1)}%`)
+    .toBeGreaterThan(0.11);
 });
 
 test('手臂不投影（castShadow=false），且只给 camera 增 1 个节点', async ({ page }) => {
