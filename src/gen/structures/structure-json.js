@@ -33,6 +33,8 @@ export const STRUCTURE_FILES = Object.freeze({
   pavilion: 'pavilion.json',
   tallWell: 'tall_well.json',
   desertPyramid: 'desert_pyramid.json',
+  // Cloudland 高台（桌山景观）：palette + 扁平数组格式，见上 loadStructure 的两形状归一化
+  cloudlandMesaSmall: 'cloudland_mesa_small.json',
 });
 
 /**
@@ -60,10 +62,24 @@ export function loadStructure(type) {
     loading.set(type, fetch(`/assets/structures/${STRUCTURE_FILES[type]}`)
       .then((r) => r.json())
       .then((data) => {
+        // 两种产物形状（`structure-json.js` 同时认两神）：
+        //  ① 旧：{blocks:[{x,y,z,type,direction}]} —— mc-lite 移植的 18 个 JSON
+        //  ② 新：{palette:[name...], blocks:[x,y,z,paletteIndex, ...]} —— 万格级结构。
+        //     10712 格逐字写对象约 500KB，palette 索引压缩后 106KB。
+        let raw;
+        if (Array.isArray(data.palette) && Array.isArray(data.blocks)) {
+          raw = [];
+          for (let i = 0; i < data.blocks.length; i += 4) {
+            raw.push({
+              x: data.blocks[i], y: data.blocks[i + 1], z: data.blocks[i + 2],
+              type: data.palette[data.blocks[i + 3]], direction: 0,
+            });
+          }
+        } else raw = data.blocks;
         let minY = Infinity;
-        for (const b of data.blocks) if (b.y < minY) minY = b.y;
+        for (const b of raw) if (b.y < minY) minY = b.y;
         const normalized = {
-          blocks: data.blocks.map((b) => ({
+          blocks: raw.map((b) => ({
             x: b.x, y: b.y - minY + 1, z: b.z,
             type: b.type, direction: b.direction !== undefined ? b.direction : 0,
           })),
