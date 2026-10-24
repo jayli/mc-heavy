@@ -23,6 +23,7 @@ import {
 } from './scatter.js';
 import { SEA_Y, blockIndex } from '../../voxel/constants.js';
 import { applyGiantTrees, loadGiantTrees } from './giant-trees.js';
+import { MESA_UNION_HALF } from './mesa.js';
 
 /** 城市 placement 用到的 JSON 结构（GEN 携带城市布局时预载）+ 植被树 JSON */
 const CITY_STRUCTURE_TYPES = [
@@ -104,7 +105,13 @@ function pointContext(wx, wz, layouts, cityLayout, seed) {
  * @returns {(wx:number, wz:number) => boolean}
  */
 export function giantAllowedAtFor(layouts, cityLayout, seed) {
+  // 高台让路：巨树不得长进高台占地（高台是固定地标，巨树是可避让的植被）。
+  // 与阶段 2.75 的光栅化用同一个 MESA_UNION_HALF（红线 1：两处各写一份会漂移出「树冠插进台面」）。
+  const mesa = layouts.map((l) => l.mesa).find(Boolean) || null;
   return (wx, wz) => {
+    if (mesa &&
+        Math.abs(wx - mesa.wx) <= MESA_UNION_HALF + 1 &&
+        Math.abs(wz - mesa.wz) <= MESA_UNION_HALF + 1) return false;
     const kind = pointContext(wx, wz, layouts, cityLayout, seed).kind;
     return kind === 'normal' || kind === 'water';
   };
@@ -156,6 +163,10 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
       }
     }
   }
+  // 高台：只在锚点存在时需要。命中才预载（同撒布结构的惰性预载理由：
+  // 无条件预载会让每个新 Worker 的首个 GEN 多付一次冷 fetch）。
+  const mesaAnchor = layouts.map((l) => l.mesa).find(Boolean) || null;
+  if (mesaAnchor) needTypes.add('cloudlandMesaSmall');
   await preloadStructures([...needTypes]);
   // 巨树变体加载。Worker 里已在模块加载期预热（world-worker.js 的 giantPreloadPromise，layout 入口 await），
   // 这里命中缓存 ≈ 0ms；⚠️ 不预热的话每个 Worker 的首个 GEN 要付 fetch+解析（实测使 structure-gen 的
@@ -287,6 +298,25 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
           GROUND_SUPPORT_TYPES.has(type));
       }
     }
+  }
+
+  // ---- 阶段 2.75：Cloudland 高台（桌山景观）----
+  // 层序理由：撒布结构（2.7）是地面级小内容，先写；高台是地面级固定景观，在其上（后写胜）；
+  // 巨树（2.8）有 allowedAt 判据可避让，故高台先于巨树。
+  //
+  // 让路必须在**这里**判而不能在候选层：城市 bounds 可跨 region（实测 seed=12345
+  // bounds x∈[0,566]），只有持有 city 的 region [0,0] 拿得到 cityLayout —— 与 v1.74
+  // 修「City 里 house 悬空」的判据落点完全同源（见 scatter.js 的口径差异②）。
+  // `pointContext().kind !== 'normal'` 一次性排除：城市 / 金字塔 / 平地 / 雪原 / 冰封山 /
+  // 海岛（island/snow/fm/none/city/water 六类），只允许纯自然陆地。
+  for (const layout of layouts) {
+    const anchor = layout.mesa;
+    if (!anchor) continue;
+    if (pointContext(anchor.wx, anchor.wz, layouts, cityLayout, seed).kind !== 'normal') continue;
+    if (!placementIntersects({ x: anchor.wx, z: anchor.wz }, MESA_UNION_HALF, MESA_UNION_HALF, column.cx, column.cz)) continue;
+    // 不补 groundSupport：基座判据已保证「基座全程高于海平面」，补柱会在沙漠里凭空插一根 15 格宽的石柱
+    rasterizeStructure('cloudlandMesaSmall', anchor.wx, anchor.floorY + 1, anchor.wz,
+      setBlock, column, registry, seed, false);
   }
 
   // ---- 阶段 2.8：巨树景观（Giant Trees Epic）----

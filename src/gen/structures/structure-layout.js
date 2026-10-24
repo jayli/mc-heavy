@@ -13,6 +13,7 @@ import { buildCityLayout } from './city-layout.js';
 import { computeSkyCandidates } from './sky-structures.js';
 import { computeScatterCandidates } from './scatter.js';
 import { computeGiantTreeCandidates } from './giant-trees.js';
+import { computeMesaAnchor } from './mesa.js';
 
 /**
  * 计算单个 region 的确定性布局（纯函数，无缓存——缓存由调用方 StructureIndex 管）。
@@ -27,7 +28,8 @@ import { computeGiantTreeCandidates } from './giant-trees.js';
  *   city: (Object|null),
  *   sky: {skyIslands: Int32Array, cloudClusters: Int32Array},
  *   scatter: {cityScatter: Int32Array, outsideScatter: Int32Array},
- *   giantTrees: {forest: Int32Array, beach: Int32Array, banyan: Int32Array}
+ *   giantTrees: {forest: Int32Array, beach: Int32Array, banyan: Int32Array},
+ *   mesa: ({wx:number, wz:number, floorY:number}|null)
  * }}
  */
 export function computeRegionLayout(regionX, regionZ, seed) {
@@ -64,9 +66,14 @@ export function computeRegionLayout(regionX, regionZ, seed) {
   // 城市/地标/撒布的排除在 GEN 侧（apply.js 阶段 2.8）用邻域 layouts 判定。
   const giantTrees = computeGiantTreeCandidates(regionX, regionZ, seed);
 
+  // 高台（Cloudland Epic）：每 region 至多一个沙漠平地锚点。
+  // 纯函数、无异步依赖（基座判据用 15×15 常量矩形，不读烘焙产物 —— 候选层不能 fetch，见 mesa.js 头注）。
+  // 城市/地标让路在 GEN 侧阶段 2.75 判（城市 bounds 可跨 region，候选层只能过滤一半）。
+  const mesa = computeMesaAnchor(regionX, regionZ, seed);
+
   return {
     regionX, regionZ, pyramidRaw, pyramid, frozenMountain, snowLand, plainLand,
-    island, city, sky, scatter, giantTrees,
+    island, city, sky, scatter, giantTrees, mesa,
   };
 }
 
