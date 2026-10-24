@@ -731,6 +731,101 @@ async function checkNightSkyFreshness() {
   infos.push('[夜空] 烘焙指纹匹配（无缝立方图当前）');
 }
 
+// ---------------------------------------------------------------- [高台] 契约（Cloudland Epic）
+
+/**
+ * [高台] 契约：烘焙输入 / 产物 metrics / 方块映射表 / 渲染通道 / 背包口径五者互相对得上。
+ *
+ * 为什么这些必须自动化（每一条都对应一种「肉眼看不出来」的失效）：
+ *   ① 指纹不匹配 → 改了映射表却没重烘 → 世界渲染的是旧配色，方块层面看不出差别
+ *   ② palette 含未注册方块 → `makeColumnSetter` 对未注册名字**静默 return**（landmarks.js:274）
+ *      → 那一格变 air → 高台内部出现空洞，而 TYPE 层面完全正常
+ *   ③ 不是 opaque 通道 → cutout/transparent 的每格顶点成本约 opaque 的 3 倍
+ *      → 1 万格方块撞破 §4.10 的容量预算（且是**静默**的：只是某天开游戏掉帧）
+ *   ④ 进了背包物品集合 → 玩家能从背包里取出一块「台身方块」单独放下
+ */
+async function checkCloudlandMesa() {
+  const fp = await import('./cloudland-mesa-fingerprint.mjs');
+  const fail = (m) => failures.push(`[高台] ${m}`);
+
+  // ① 烘焙输入实测存在（缺失 = 仓库损坏，与巨树 .schem 入库同口径）
+  if (!fs.existsSync(fp.SCHEM_PATH)) {
+    fail(`烘焙输入缺失 ${path.relative(ROOT, fp.SCHEM_PATH)}（.schem 入库，缺失 = 仓库损坏）`);
+    return;
+  }
+  if (!fs.existsSync(fp.MESA_JSON) || !fs.existsSync(fp.MESA_META)) {
+    fail('缺 assets/structures/cloudland_mesa_small.json 或 .meta.json（跑 npm run mesa）');
+    return;
+  }
+  let meta, json;
+  try {
+    meta = JSON.parse(fs.readFileSync(fp.MESA_META, 'utf8'));
+    json = JSON.parse(fs.readFileSync(fp.MESA_JSON, 'utf8'));
+  } catch { fail('产物不是合法 JSON（重跑 npm run mesa）'); return; }
+
+  // ② 指纹：改了 BLOCK_MAP / MESA_METRICS / MESA_ORIGIN / .schem 却没重烘
+  const cur = fp.cloudlandMesaInputFingerprint();
+  if (meta.fingerprints?.input !== cur.input) {
+    fail(`产物已过期：指纹不匹配（烘焙时 "${meta.fingerprints?.input}" vs 当前 "${cur.input}"）→ 跑 npm run mesa`);
+  }
+
+  // ③ metrics：方块数 / bbox / 基座列数（与 MESA_METRICS 单一权威比对）
+  const M = fp.MESA_METRICS;
+  const n = json.blocks.length / 4;
+  if (n !== M.blocks) fail(`方块数 ${n} ≠ MESA_METRICS.blocks ${M.blocks}`);
+  let mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity, mnz = Infinity, mxz = -Infinity;
+  const baseCols = new Set();
+  for (let i = 0; i < json.blocks.length; i += 4) {
+    const x = json.blocks[i], y = json.blocks[i + 1], z = json.blocks[i + 2];
+    mnx = Math.min(mnx, x); mxx = Math.max(mxx, x);
+    mny = Math.min(mny, y); mxy = Math.max(mxy, y);
+    mnz = Math.min(mnz, z); mxz = Math.max(mxz, z);
+    if (y === 1) baseCols.add(`${x},${z}`);
+  }
+  if (mxx - mnx + 1 !== M.width) fail(`宽 ${mxx - mnx + 1} ≠ ${M.width}`);
+  if (mxy - mny + 1 !== M.height) fail(`高 ${mxy - mny + 1} ≠ ${M.height}`);
+  if (mxz - mnz + 1 !== M.depth) fail(`深 ${mxz - mnz + 1} ≠ ${M.depth}`);
+  if (mny !== 1) fail(`最低点 y=${mny} ≠ 1（归一化约定：rasterizeStructure 按 y-1 落位）`);
+  if (baseCols.size !== M.baseCells) fail(`基座列数 ${baseCols.size} ≠ ${M.baseCells}（底层被改动？）`);
+
+  // ④ palette：全部在 registry + 全部 opaque 通道 + opaqueTable=1
+  const palette = Array.isArray(json.palette) ? json.palette : [];
+  if (palette.length === 0) fail('产物缺 palette（旧格式产物？重跑 npm run mesa）');
+  for (const name of palette) {
+    const id = REGISTRY.idOf(name);
+    if (id === undefined) {
+      fail(`palette 含未注册方块 "${name}"（makeColumnSetter 静默跳过 → 高台出现空洞）`);
+      continue;
+    }
+    if (REGISTRY.cullTable[id] !== 0) {
+      fail(`palette 方块 "${name}" 不是 opaque 通道（cutout/transparent 每格顶点约 opaque 的 3 倍 → 撞容量预算）`);
+    }
+    if (REGISTRY.opaqueTable[id] !== 1) {
+      fail(`palette 方块 "${name}" 的 opaqueTable≠1（面剔除失效 → 顶点暴涨）`);
+    }
+  }
+
+  // ⑤ 「高台不进背包」的正确读法（勿写成「palette 方块不在背包物品集合」）
+  //
+  // 高台复用**通用方块**（stone / deepslate / moss / stone_bricks …）。这些方块**必须**留在背包里：
+  // 玩家挖下台身的一块后应该能拿起、再放到别处 —— 那是正常的体素玩法。把它们塞进
+  // HIDDEN_FROM_INVENTORY 会适得其反（用户挖下来的方块没了）。
+  //
+  // 真正的契约是：**没有「整座高台」的占位物品**（对比 zombie_nest_alias_block / turret_alias_block
+  // 那种“一个物品代表整个多方块结构”的 alias 物品）。高台是纯生成期地形，不需要任何物品。
+  // 因此本环节只钉一件事：高台自己的产物名不得被当成可放置物品（防有人日后给它加 alias 物品却不登记）。
+  const mesaLikeAlias = ['cloudland_mesa_small', 'cloudland_mesa', 'mesa_alias_block'];
+  for (const alias of mesaLikeAlias) {
+    if (REGISTRY.idOf(alias) !== undefined) {
+      fail(`registry 里出现了高台 alias 方块 "${alias}"（高台是生成期地形，不应有占位物品；若确实要加，须同时补 icon-fingerprint 的 FLAT_BLOCKS）`);
+    }
+  }
+
+  if (n === M.blocks && baseCols.size === M.baseCells && palette.length > 0) {
+    infos.push(`[高台] ${n} 格 / ${mxx - mnx + 1}×${mxy - mny + 1}×${mxz - mnz + 1} / 基座 ${baseCols.size} 列 / ${palette.length} 种方块（全 opaque）/ 指纹匹配`);
+  }
+}
+
 // ---------------------------------------------------------------- [巨树] 契约（Giant Trees Epic）
 
 /**
@@ -1025,6 +1120,7 @@ checkTurretArmorTexture();
 checkSkyboxAssets();         // v1.58：天空盒立方图完整性（⚠️ 漏了本行则门禁永不执行）
 await checkNightSkyFreshness(); // v1.60：夜空烘焙产物指纹（⚠️ 漏了本行则门禁永不执行）
 await checkGiantTrees();     // 巨树景观：方块/烘焙产物/贴图三方契约（⚠️ 漏了本行则门禁永不执行）
+await checkCloudlandMesa();  // 高台：烘焙产物/映射表/通道/背包契约（⚠️ 漏了本行则门禁永不执行）
 checkLeafCullingContract();  // v1.70：镂空遮挡体派生表与树叶族声明的一致性（⚠️ 漏了本行则门禁永不执行）
 
 console.log('[check:data] 数据契约检查');
