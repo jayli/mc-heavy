@@ -23,8 +23,8 @@ import { ChunkColumn } from '../voxel/chunk-column.js';
 import { blockIndex } from '../voxel/constants.js';
 
 const SEED = 12345;
-/** 合法落位的对照 region（避开城市；实测锚点距各地标中心 ≥100 格） */
-const RX = 1, RZ = 1;
+/** 合法落位的对照 region（去重后实测离出生点最近的锚点，距离 385 格） */
+const RX = -1, RZ = -1;
 
 test('高台接线：computeRegionLayout 的 mesa 字段与 computeMesaAnchor 一致', () => {
   for (const [rx, rz] of [[0, 0], [1, 0], [1, 1]]) {
@@ -81,15 +81,19 @@ test('高台接线：真实 GEN 跨 column 汇总写出 ≥95% 的高台方块�
     `跨 column 汇总应写出 ≥95% 的高台方块（实际 ${matched}/10712，其中空气 ${air} 格 —— 空气多说明 y 或光栅化错）`);
 });
 
-test('高台接线：城市 bounds 内的锚点被整片丢弃（region(0,0) 实测命中城市）', async () => {
-  const anchor = computeMesaAnchor(0, 0, SEED);
-  assertTrue(anchor !== null, '前提：region(0,0) 有锚点（它的锚点整体落在城内）');
+test('高台接线：城市 bounds 内的锚点被整片丢弃（注入城内锚点，测让路分支）', async () => {
+  // ⚠️ **不能用「真实 region(0,0) 的锚点」做样本**：间距去重（MESA_MIN_SPACING=384）上线后，
+  // region(0,0)/(0,-1) 这两个「局部候选在城内」的 region 都被邻居让位 → computeMesaAnchor 返回 null
+  // → 让路分支根本不会被走到，断言变成恒真。故改成**注入**一个城内锚点直接测 apply 的分支。
   const layout = computeRegionLayout(0, 0, SEED);
   assertTrue(layout.city !== null, 'region(0,0) 有城市');
-  // 实测确认这个锚点确实在城内（否则本条测的不是让路逻辑）
-  assertTrue(anchor.wx >= layout.city.minX && anchor.wx <= layout.city.maxX &&
-             anchor.wz >= layout.city.minZ && anchor.wz <= layout.city.maxZ,
-    'region(0,0) 的锚点必须落在城市 bounds 内（实测如此；若变了须重选对照 region）');
+  // 城市 bounds 中心（一定在城内，且远离边界）
+  const anchor = {
+    wx: Math.floor((layout.city.minX + layout.city.maxX) / 2),
+    wz: Math.floor((layout.city.minZ + layout.city.maxZ) / 2),
+    floorY: 1,
+  };
+  const injected = { ...layout, mesa: anchor };
 
   const reg = await buildDefaultRegistry();
   const data = await loadStructure('cloudlandMesaSmall');
@@ -97,7 +101,7 @@ test('高台接线：城市 bounds 内的锚点被整片丢弃（region(0,0) 实
 
   const cx = Math.floor(anchor.wx / 16), cz = Math.floor(anchor.wz / 16);
   const column = new ChunkColumn(cx, cz);
-  await applyStructuresToColumn(column, SEED, reg, [layout]);
+  await applyStructuresToColumn(column, SEED, reg, [injected]);
 
   // 判据落在「台顶层」：y = floorY + 43 是高台独有的高度，城市建筑不会恰好铺满这一层。
   let topLayer = 0;

@@ -12,7 +12,8 @@
 import { test } from './runner.js';
 import { assertEqual, assertTrue, assertFalse } from './assert.js';
 import {
-  computeMesaAnchor, MESA_BASE_RECT_HALF, MESA_UNION_HALF, MESA_TOP_REL_Y, MESA_SALT,
+  computeMesaAnchor, clearMesaAnchorCache, MESA_BASE_RECT_HALF, MESA_UNION_HALF, MESA_TOP_REL_Y,
+  MESA_SALT, MESA_MIN_SPACING,
 } from '../gen/structures/mesa.js';
 import { getBiome } from '../gen/noise.js';
 import { generateHeight } from '../gen/terrain.js';
@@ -128,6 +129,81 @@ test('高台落点：常量之间自洽（基座矩形 ⊂ 并集外接框 ⊂ r
   assertTrue(MESA_BASE_RECT_HALF < MESA_UNION_HALF,
     `基座半宽 ${MESA_BASE_RECT_HALF} 必须小于并集半宽 ${MESA_UNION_HALF}`);
   assertEqual(MESA_TOP_REL_Y, 42, '台顶最高位是产物实测的 rel-y 42（改产物须同步）');
+});
+
+// ======================================================================== 一块沙漠一个高台（用户硬要求）
+
+test('一块沙漠只有一个高台：任意两个高台之间的切比雪夫距离 >= MESA_MIN_SPACING', () => {
+  clearMesaAnchorCache();
+  const list = [];
+  for (let rx = -6; rx <= 6; rx++) for (let rz = -6; rz <= 6; rz++) {
+    const a = computeMesaAnchor(rx, rz, SEED);
+    if (a) list.push({ ...a, rx, rz });
+  }
+  assertTrue(list.length > 20, `应有足够多高台做判据（实际 ${list.length}）`);
+  for (let i = 0; i < list.length; i++) for (let j = i + 1; j < list.length; j++) {
+    const d = Math.max(Math.abs(list[i].wx - list[j].wx), Math.abs(list[i].wz - list[j].wz));
+    assertTrue(d >= MESA_MIN_SPACING,
+      `高台 (${list[i].wx},${list[i].wz})r(${list[i].rx},${list[i].rz}) 与 `
+      + `(${list[j].wx},${list[j].wz})r(${list[j].rx},${list[j].rz}) 距离 ${d} < ${MESA_MIN_SPACING}`);
+  }
+});
+
+test('一块沙漠只有一个高台：按真实沙漠连通块归属，每块至多 1 个高台', () => {
+  // 从每个锚点出发 BFS 它所在的沙漠连通块（8 格步长、4 邻接），用「块内字典序最小的格」作块 id。
+  // ⚠️ 不能用 `Math.floor(wx/STEP)` 直接取粗格：负坐标在 JS 里是截断而非向下取整（AGENTS.md 的坐标陷阱）。
+  clearMesaAnchorCache();
+  const STEP = 8, LIMIT = 4000;
+  const isDesert = (k) => { const [x, z] = k.split(',').map(Number); return getBiome(x, z, SEED) === 'DESERT'; };
+  const blockKey = (wx, wz) => `${Math.floor(wx / STEP) * STEP},${Math.floor(wz / STEP) * STEP}`;
+
+  const list = [];
+  for (let rx = -6; rx <= 6; rx++) for (let rz = -6; rz <= 6; rz++) {
+    const a = computeMesaAnchor(rx, rz, SEED);
+    if (a) list.push(a);
+  }
+  const byBlock = new Map();
+  for (const a of list) {
+    const start = blockKey(a.wx, a.wz);
+    if (!isDesert(start)) continue; // 锚点本身不在沙漠采样点上（8 格步长边界）→ 跳过归属判定
+    const seen = new Set([start]); const q = [start];
+    while (q.length && seen.size < LIMIT) {
+      const cur = q.shift();
+      const [cx, cz] = cur.split(',').map(Number);
+      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nk = `${cx + dx * STEP},${cz + dz * STEP}`;
+        if (!seen.has(nk) && isDesert(nk)) { seen.add(nk); q.push(nk); }
+      }
+    }
+    const id = [...seen].sort()[0];
+    if (!byBlock.has(id)) byBlock.set(id, []);
+    byBlock.get(id).push(a);
+  }
+  assertTrue(byBlock.size > 5, `应能归属到多个沙漠块（实际 ${byBlock.size}）`);
+  for (const [id, arr] of byBlock) {
+    assertEqual(arr.length, 1,
+      `沙漠块 ${id} 里有 ${arr.length} 个高台：${arr.map((a) => `(${a.wx},${a.wz})`).join(' ')}`);
+  }
+});
+
+test('一块沙漠只有一个高台：去重是单向的（不互相让位导致整块没高台）', () => {
+  // 相邻两个 region 各自看得到对方时，若互相让位 → 双双放弃 → 那块沙漠一个高台都没有。
+  // 判据：至少一半的「有候选」region 能留下（实测 48/121 = 40%；宽松下界 25%）。
+  clearMesaAnchorCache();
+  let withAnchor = 0, regions = 0;
+  for (let rx = -5; rx <= 5; rx++) for (let rz = -5; rz <= 5; rz++) {
+    regions++;
+    if (computeMesaAnchor(rx, rz, SEED)) withAnchor++;
+  }
+  assertTrue(withAnchor >= regions * 0.25,
+    `留下的高台不能太少（实测 ~40%）；实际 ${withAnchor}/${regions} = ${(withAnchor / regions * 100).toFixed(0)}%`);
+});
+
+test('一块沙漠只有一个高台：阈值必须大于沙漠块最大跨度（参数自洽）', () => {
+  // 实测沙漠连通块最大跨度 368 格（8 格粒度，±1200，seed 12345）。
+  // 阈值 <= 368 时同一块沙漠里仍可能塞下两个 → 参数失效。
+  assertTrue(MESA_MIN_SPACING > 368,
+    `MESA_MIN_SPACING=${MESA_MIN_SPACING} 必须 > 368（实测沙漠块最大跨度）`);
 });
 
 // ======================================================================== 烘焙产物契约
