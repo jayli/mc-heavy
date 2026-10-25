@@ -62,40 +62,49 @@ export const MESA_METRICS = Object.freeze({
  *
  * ⚠️ value 必须是 registry 里**已注册**的名字，且**全部走 opaque 通道** —— cutout/transparent
  * 会让 1 万格方块的三通道容量预算失控（`check:data` 的 `[高台]` 环节钉住这条）。
+ *
+ * ⚠️ **不得映射到砖块族或木族**（v1.77 用户裁定：「不要用砖块，都改用不同颜色的石头方块……
+ * 看起来高台要更像天然形成的，而不是人工打造的」）。砖纹（`*_bricks`）与木板会直接读成
+ * 人造砌筑 → 整座台子失去天然感。`check:data` 的 `[高台]` 环节与 `test-mesa.js` 都钉住这条。
+ *
+ * **色阶设计**：天然岩层在明度 44~237 之间取 8 档，去掉原方案里的
+ * `mud_bricks`(暖红 42% 饱和) / `nether_bricks_1`(深红) / `tuff_bricks`(砖纹) /
+ * `stone_bricks`(砖纹) / `polished_blackstone_bricks`(砖纹) / `acacia_planks`+`wood`(木)。
+ * `moss`（台顶苔藓层）按用户要求**不动**。
  */
 export const BLOCK_MAP = Object.freeze({
-  // ---- 深色底座（y 1-10） ----
-  mud: 'mud_bricks',
-  coal_block: 'polished_blackstone_bricks',
-  // ---- 台身主体（y 11-30） ----
-  tuff: 'tuff_bricks',
-  gray_concrete_powder: 'calcite',
-  light_gray_concrete_powder: 'calcite',
-  white_concrete_powder: 'calcite',
-  gray_concrete: 'smooth_stone_1',
-  light_gray_concrete: 'smooth_stone',
-  // ---- 横带（y 21-40） ----
-  cracked_stone_bricks: 'stone_bricks',
-  stone_bricks: 'stone_bricks',
-  chiseled_nether_bricks: 'nether_bricks_1',
-  cracked_nether_bricks: 'nether_bricks',
-  nether_bricks: 'nether_bricks',
-  gray_wool: 'stone',
-  // ---- 台顶苔藓层（y 41-42） ----
+  // ---- 深色底座（y 1-10）：深板岩族不再用「砖」，改纯岩石 ----
+  mud: 'clay',                       // 天然黏土（161,166,179 冷灰蓝），取代红砖 mud_bricks
+  coal_block: 'polished_deepslate',   // 深色致密岩（71,71,71），取代黑砖
+  // ---- 台身主体（y 11-30）：最大两块改成原石 ----
+  tuff: 'stone',                     // 原石（136,136,137）—— 2574 格，最大一块
+  gray_concrete_powder: 'stone_diorite',      // 闪长岩（189,188,189 浅灰），取代灰泥 calcite
+  light_gray_concrete_powder: 'stone_diorite',
+  white_concrete_powder: 'calcite',           // 灰阶极值（calcite 无图标，不属背包，仅作填充）
+  gray_concrete: 'smooth_stone_1',   // 平滑石（156,156,156）
+  light_gray_concrete: 'smooth_stone',  // 平滑石（164,164,164）
+  // ---- 横带（y 21-40）：砖纹全部换掉 ----
+  cracked_stone_bricks: 'cobblestone',  // 鹅卵石（125,125,125 天然碎裂感）
+  stone_bricks: 'cobblestone',
+  chiseled_nether_bricks: 'deepslate',   // 深板岩（120,120,145 冷灰），取代深红砖
+  cracked_nether_bricks: 'deepslate',
+  nether_bricks: 'deepslate',
+  gray_wool: 'stone',                // 原石（773 格灰羊毛 → 石头）
+  // ---- 台顶苔藓层（y 41-42）：**用户明确要求不动** ----
   moss_block: 'moss',
   green_terracotta: 'moss',
-  green_concrete: 'mossy_stone',
+  green_concrete: 'mossy_stone',     // 苔石（104,110,93）
   lime_terracotta: 'moss',
   green_wool: 'moss',
-  // ---- 木质（原设计里的攀爬架/装饰） ----
-  acacia_wood: 'acacia_planks',
-  oak_wood: 'wood',
-  birch_wood: 'birch_log',
-  // ---- 陶土族 ----
+  // ---- 原本的木质装饰：去掉木头 → 苔石 ----
+  acacia_wood: 'mossy_stone',
+  oak_wood: 'mossy_stone',
+  birch_wood: 'mossy_stone',
+  // ---- 陶土族：保留天然黏土/浅灰 ----
   cyan_terracotta: 'clay',
   blue_terracotta: 'clay',
   light_gray_terracotta: 'light_gray_cloth',
-  // ---- 深板岩族（整族归并到 3 个目标） ----
+  // ---- 深板岩族（整族归并到 2 个天然岩石目标） ----
   deepslate: 'deepslate',
   cobbled_deepslate: 'deepslate',
   deepslate_tiles: 'deepslate',
@@ -106,7 +115,7 @@ export const BLOCK_MAP = Object.freeze({
   polished_deepslate: 'polished_deepslate',
   deepslate_coal_ore: 'deepslate',
   deepslate_copper_ore: 'deepslate',
-  deepslate_iron_ore: 'iron_ore',
+  deepslate_iron_ore: 'iron_ore',    // 铁矿（100,93,87）—— 天然矿脉点缀
   // ---- 混凝土族 ----
   black_concrete: 'deepslate',
   black_concrete_powder: 'deepslate',

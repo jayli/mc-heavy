@@ -821,8 +821,26 @@ async function checkCloudlandMesa() {
     }
   }
 
-  if (n === M.blocks && baseCols.size === M.baseCells && palette.length > 0) {
-    infos.push(`[高台] ${n} 格 / ${mxx - mnx + 1}×${mxy - mny + 1}×${mxz - mnz + 1} / 基座 ${baseCols.size} 列 / ${palette.length} 种方块（全 opaque）/ 指纹匹配`);
+  // ⑥ 不得含砖块族 / 木族（v1.77 用户裁定：「不要用砖块，都改用不同颜色的石头方块……
+  // 看起来高台要更像天然形成的，而不是人工打造的」）
+  //
+  // ⚠️ 判据用**名字模式**而非硬编码清单：加新源方块时只需映射到非砖非木方块即可，
+  // 不用同步改门禁（红线 1：不留第二份权威清单）。与 `test-mesa.js` 的同名用例同口径。
+  const brickish = palette.filter((name) => /brick/i.test(name));
+  if (brickish.length > 0) {
+    fail(`palette 含砖块族方块（${brickish.join(', ')}）—— 用户要求天然岩层，砖纹读成人工砌筑`);
+  }
+  const woody = palette.filter((name) => /log|wood|plank|acacia|oak|birch/i.test(name));
+  if (woody.length > 0) {
+    fail(`palette 含木族方块（${woody.join(', ')}）—— 用户要求天然岩层，木头读成人工建造`);
+  }
+
+  // ⚠️ 成功行的条件必须涵盖**本函数全部判据**，否则失败时仍会打印一条 ✓
+  // （实测踩到：注入 tuff→tuff_bricks 后同时出现「✗ 含砖块族」与「✓ …无砖无木」两条，
+  //   读者很容易只看 ✓）。把所有失败计数一并纳入（含上面的砖/木两条）。
+  const failed = brickish.length > 0 || woody.length > 0;
+  if (!failed && n === M.blocks && baseCols.size === M.baseCells && palette.length > 0) {
+    infos.push(`[高台] ${n} 格 / ${mxx - mnx + 1}×${mxy - mny + 1}×${mxz - mnz + 1} / 基座 ${baseCols.size} 列 / ${palette.length} 种方块（全 opaque、无砖无木）/ 指纹匹配`);
   }
 }
 

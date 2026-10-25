@@ -6,15 +6,15 @@
   "depth": 21,
   "blocks": 10712,
   "baseCells": 164,
-  "paletteSize": 16,
+  "paletteSize": 11,
   "origin": {
     "cx": 9,
     "cz": 11
   },
   "fingerprints": {
-    "input": "7fd49511c524c8f4:73fb6ba9b3d3ca6a",
+    "input": "7fd49511c524c8f4:bbd400a4a77f079d",
     "schemSha256": "7fd49511c524c8f4888afae266c0628d56f960affcbdea8befd4ac815b1211c2",
-    "paramsSha256": "73fb6ba9b3d3ca6a8bb9f1103dc1cfa12fdb73968d339fd37a9b8f98187d6005"
+    "paramsSha256": "bbd400a4a77f079dd3b7d75ae09015753989f9637229df351701a1370b9b6cc4"
   },
   "sourceBounds": {
     "x0": 275,

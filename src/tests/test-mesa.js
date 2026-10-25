@@ -266,3 +266,26 @@ test('高台产物：全部方块走 opaque 通道且 opaqueTable=1（cutout 会
     assertEqual(reg.opaqueTable[id], 1, `"${t}" 的 opaqueTable 必须是 1（否则面剔除失效 → 顶点暴涨）`);
   }
 });
+
+test('高台产物：不得含砖块族 / 木族（v1.77 用户裁定 —— 要天然岩层而非人工砌筑）', async () => {
+  // 用户原话：「不要用砖块，都改用不同颜色的石头方块……看起来高台要更像天然形成的，
+  // 而不是人工打造的」。第一版 palette 里 61.4% 是 `*_bricks`（6573/10712 格），
+  // 其中 `mud_bricks`(暖红 42% 饱和) + `nether_bricks_1`(深红) 就是用户说的「红色砖块」，
+  // `tuff_bricks` + `stone_bricks` + `polished_blackstone_bricks` 是「灰色砖块」。
+  //
+  // ⚠️ 判据用**名字模式**而非硬编码方块清单：将来加新源方块时只需它在映射表里指向
+  // 非砖非木方块即可，不用同步改本测试（红线 1：不留第二份权威清单）。
+  const { loadStructure } = await import('../gen/structures/structure-json.js');
+  const data = await loadStructure('cloudlandMesaSmall');
+  const types = new Set(data.blocks.map((b) => b.type));
+
+  const bricks = [...types].filter((t) => /brick/i.test(t));
+  assertEqual(bricks.length, 0, `不得含砖块族，实际：${bricks.join(', ')}`);
+
+  const woods = [...types].filter((t) => /log|wood|plank|acacia|oak|birch/i.test(t));
+  assertEqual(woods.length, 0, `不得含木族，实际：${woods.join(', ')}`);
+
+  // 反向对照：本仓确实还有这些名字 —— 否则「不含」可能只是因为根本没有它们
+  // （若某天这些方块被删，本测试会先在这里红，而不是静默变成恒真）。
+  assertTrue(data.blocks.length === 10712, '方块总数不变（只换材料，不动几何）');
+});

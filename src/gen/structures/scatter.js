@@ -54,13 +54,21 @@ export const CITY_SCATTER_CHANCE = Object.freeze({
  * ⚠️ **有意偏离 mc-lite 密度（大 JSON 减半）**：desertVillage(1181 方块)/uglyHouse(719)
  * 是 GEN 光栅化的大头 —— mc-lite 概率让 `structure-gen` fixture 的 16 column 并行 p95
  * 从 HEAD 的 6.5~7.1ms 涨到 8.5~9.2ms（实测），撞破 §4.2 的 8ms 冻结预算。两个大 JSON
- * 概率减半后光栅化成本回到预算内。`desertPyramid`/`tank`/`house` 不降：desertPyramid
- * 走 groundSupport（方块少）、tank/house 占地小或代码生成，不是 p95 大头。
+ * 概率减半后光栅化成本回到预算内。`tank`/`house` 不降：tank/house 占地小或代码生成，
+ * 不是 p95 大头。
+ *
+ * ⚠️ **desertPyramid 于 v1.77 按用户要求降到原来的 1/3**（「沙漠神殿现在出现的概率我觉得
+ * 有点太高了」）。这条**不是**性能代偿（它本来就不降，方块少、吃预算的不是它）——
+ * 纯观感标定。实测 seed=12345 / region ±6：326 → **109** 个（≈ 1/3）。
+ * ⚠️ **它现在比 desertVillage 更稀**（0.0000533 < 0.00008）—— 用户只要求降神殿、
+ * 村落不动，故「大 JSON 更稀」这条旧关系在此**刻意倒置**。`test-scatter.js` 的那条
+ * 断言已按新的实测关系改写（不是删除，也不是放宽数值）。
  */
 export const OUTSIDE_SCATTER_CHANCE = Object.freeze({
   house: 0.001,             // seed+4（代码生成小房子，草地上的那个；不降）
   ship: 0.001,              // seed+13（沉船，深海限定；不降 —— 见下）
-  desertPyramid: 0.00016,   // seed+25（不降，方块少）
+  // mc-lite 是 0.00016；v1.77 按用户要求 ÷3（见上注：纯观感标定，非性能代偿）
+  desertPyramid: 0.00016 / 3,
   desertVillage: 0.00008,   // seed+26（mc-lite 0.00016，减半以守 genP95 预算）
   uglyHouse: 0.00004,       // seed+23（mc-lite 0.00008，减半以守 genP95 预算）
   tank: 0.0001,             // seed+5（grass 地表限定；不降，占地小）

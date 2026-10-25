@@ -103,17 +103,35 @@ test('城市撒布概率口径：pavilion = flowerBed×6，tallWell = flowerBed�
 
 test('城市外撒布概率口径：大 JSON 已减半（有意偏离 mc-lite，守 genP95 预算）', () => {
   // mc-lite WorldWorker.js:142-143 是 desertPyramid = desertVillage = 0.00016。
-  // 本仓库**有意打破**该关系：desertVillage(1181 方块)/uglyHouse(719) 是 GEN 光栅化大头，
-  // mc-lite 概率会让 structure-gen 的 p95 撞破 8ms 冻结预算，故两者减半、desertPyramid 不动
-  // （它走 groundSupport，方块少，不是 p95 大头）。钉住「大 JSON 比 desertPyramid 更稀」这条
-  // 新关系式（关系型断言，不硬编码数值 —— §2.5 陷阱②）。
-  assertTrue(OUTSIDE_SCATTER_CHANCE.desertVillage < OUTSIDE_SCATTER_CHANCE.desertPyramid,
-    'desertVillage 已减半 → 比 desertPyramid 更稀（有意偏离）');
+  // 本仓库**有意打破**该等式：desertVillage(1181 方块)/uglyHouse(719) 是 GEN 光栅化大头，
+  // mc-lite 概率会让 structure-gen 的 p95 撞破 8ms 冻结预算，故两者减半
+  // （desertPyramid 当时不降 —— 它走 groundSupport，方块少，不是 p95 大头）。
+  // 钉住「大 JSON 更稀」这条关系式（关系型断言，不硬编码数值 —— §2.5 陷阱②）。
   assertTrue(OUTSIDE_SCATTER_CHANCE.uglyHouse < OUTSIDE_SCATTER_CHANCE.desertVillage,
     'uglyHouse 比 desertVillage 更稀');
-  // house 不降（代码生成、不吃预算）：仍是城市外撒布里最密的
-  assertTrue(OUTSIDE_SCATTER_CHANCE.house > OUTSIDE_SCATTER_CHANCE.desertPyramid,
-    'house 概率最高（不降，草地上的房子保持可见）');
+
+  // v1.77：desertPyramid 按用户要求降到原来的 1/3（「沙漠神殿出现概率有点太高了」）。
+  // ⚠️ 这不是性能代偿：它本来就不降。断言用「×3 还原回 mc-lite 原值」的口径钉住
+  // 「÷3」这个**关系**，而不是硬编码 0.0000533 —— 将来改阈值时这条继续成立。
+  assertTrue(Math.abs(OUTSIDE_SCATTER_CHANCE.desertPyramid * 3 - 0.00016) < 1e-12,
+    'desertPyramid = mc-lite 原值 ÷ 3（用户要求的观感标定）');
+
+  // ⚠️ **旧关系在此刻意倒置**：原断言是「desertVillage < desertPyramid」（大 JSON 更稀）。
+  // pyramid ÷3 后它反而比 village 更稀了 —— 这是用户明确选择的（只降神殿、村落不动）。
+  // 这里把倒置后的实际关系钉住，防止有人「顺手改回」成旧口径而无人察觉。
+  assertTrue(OUTSIDE_SCATTER_CHANCE.desertPyramid < OUTSIDE_SCATTER_CHANCE.desertVillage,
+    'desertPyramid 已 ÷3 → 现在比 desertVillage 更稀（v1.77 的有意倒置）');
+
+  // house/tank 不降（代码生成 / 占地小，不吃预算）
+  assertTrue(OUTSIDE_SCATTER_CHANCE.house > OUTSIDE_SCATTER_CHANCE.tank,
+    'house 比 tank 密');
+  assertTrue(OUTSIDE_SCATTER_CHANCE.tank > OUTSIDE_SCATTER_CHANCE.desertVillage,
+    'tank 比沙漠村落密');
+  // house 仍是城市外撒布里最密的（草地上的房子保持可见）
+  for (const [k, v] of Object.entries(OUTSIDE_SCATTER_CHANCE)) {
+    if (k === 'house' || k === 'ship') continue; // ship 同为 0.001（深海限定，与陆地不争地）
+    assertTrue(OUTSIDE_SCATTER_CHANCE.house >= v, `house 概率最高（至少不低于 ${k}）`);
+  }
 });
 
 // ==================== 确定性（红线 2）====================
