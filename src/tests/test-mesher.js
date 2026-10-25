@@ -315,6 +315,245 @@ test('mesher: AO 仅对角遮挡顶点 AO=2（去门控，阴影连成环）', (
   }
 });
 
+// ---- 台阶亚体素 AO（八分区占用模型）----
+//
+// 背景：台阶是 `cullMode:"cutout"` 且未声明 `opaque` → `opaqueTable=0`。而 AO 的遮挡判据
+// 只读 `opaqueTable`，于是台阶**既拿不到自己的凹角阴影**（旧口径只采整格邻居，
+// 台阶的 0.5 高度面不在采样范围内），**也投不出阴影给邻居**（邻居同样只认 `opaqueTable`）。
+// 实测 HEAD 下孤立台阶 48 个顶点几乎全是 AO=3。
+//
+// 修法 = 把「这个采样点被遮挡吗」的判据从「整格是否 opaque」换成「采样点所在的 1/2 子格
+// 是否被该方块占据」。采样点 = 顶点 + 0.25×(法线 + 切向1 + 切向2)：0.25 令采样点的每个
+// 分量恒落在 0.25/0.75/1.25（子格中心），永不落在八分区边界 → 无取整歧义。
+//
+// **纳入范围只有台阶族**（planks_step / cobblestone_step / cobblestone_step_updown 三种几何，
+// 共 5 个方块）。半砖（half_block）与装饰几何（仙人掌/栏杆/花）**不纳入**，逐位保持原样 ——
+// 它们的「暗部」没有明确物理意义，纳入只会产生无意义暗块。
+
+// 世界坐标助手：把「台阶在 (8,y0,8) + 若干邻居」搭成一个 section
+function meshStepWorld(reg, cells) {
+  const world = new WorldData(reg);
+  const col = new ChunkColumn(0, 0);
+  for (const [x, y, z, name, meta = 0] of cells) {
+    const idx = blockIndex(x, y, z);
+    col.blocks[idx] = reg.idOf(name);
+    col.meta[idx] = meta;
+  }
+  world.add(col);
+  computeSkylightColumn(col, reg);
+  return buildSectionMesh(world.getSectionView(0, 0, 0), reg, atlasMeta, 0, 0, 0);
+}
+
+/** 收集某个世界面的全部 AO（按顶点位置索引，便于按坐标断言） */
+function aosOfFace(channelData, face) {
+  const out = [];
+  const { positions, packed } = channelData;
+  for (let i = 0; i < channelData.vertexCount; i++) {
+    if (((packed[i] >> 10) & 0x7) !== face) continue;
+    out.push({
+      x: positions[i * 3], y: positions[i * 3 + 1], z: positions[i * 3 + 2],
+      ao: (packed[i] >> 8) & 0x3,
+    });
+  }
+  return out;
+}
+
+/** 按 quad 分组（pushQuad 每个 quad 恰好发射 4 个连续顶点），只留指定世界面的 quad。
+ *  相邻方块的同名面在空间上共享边，纯按坐标过滤会串到隔壁 quad —— 故必须按 quad 分组。 */
+function quadsOfFace(channelData, face) {
+  const out = [];
+  const { positions, packed, vertexCount } = channelData;
+  for (let base = 0; base + 4 <= vertexCount; base += 4) {
+    if (((packed[base] >> 10) & 0x7) !== face) continue;
+    const verts = [];
+    for (let k = 0; k < 4; k++) {
+      const i = base + k;
+      verts.push({
+        x: positions[i * 3], y: positions[i * 3 + 1], z: positions[i * 3 + 2],
+        ao: (packed[i] >> 8) & 0x3,
+      });
+    }
+    out.push(verts);
+  }
+  return out;
+}
+
+test('mesher: 台阶自身的凹角出 AO 梯度（踏面/竖面，跨 orient 一致）', () => {
+  const reg = makeRegistry();
+  const y0 = WORLD_MIN_Y + 5;
+  const ly = y0 - WORLD_MIN_Y; // section 局部 y
+  // ⚠️ **倒置台阶（cobblestone_step_updown）不在本用例里**：它的几何是「上半全幅 +
+  // 下半 +X 半幅」，两块体在 x=1.0 处**同高相接**、外侧是空的 —— 没有凹角，孤立时
+  // 本来就不该有梯度（实测四角全 AO=3）。它的「衔接」行为由下面两条用例覆盖。
+  for (const [name, geom] of [
+    ['planks_step', 'planks_step'],
+    ['cobblestone_step', 'cobblestone_step'],
+    ['sand_step', 'planks_step'],
+    ['stone_diorite_step', 'cobblestone_step'],
+  ]) {
+    assertTrue(reg.geometryNameOf(reg.idOf(name)) === geom, `${name} 走 ${geom} 几何`);
+    const result = meshStepWorld(reg, [[8, y0, 8, name]]);
+    const quads = result.cutout;
+    // 前置：台阶走 cutout 通道且 48 顶点（12 quad）
+    assertEqual(quads.vertexCount, 48, `${name} = 12 quad`);
+    // 孤立台阶的凹角在**竖面底边**（竖面与踏面交界），不在踏面上 ——
+    // 踏面是水平面，四个顶点都是「开阔」（上方空气），本来就该全是 AO=3。
+    // 竖面：正置台阶是 x=0.5 处高 0.5 的竖面；倒置台阶是 x=1.0 处下半段的竖面。
+    const riserX = name === 'cobblestone_step_updown' ? 1 : 0.5;
+    const riser = quadsOfFace(quads, 0).filter((q) =>
+      q.every((v) => Math.abs(v.x - (8 + riserX)) < 1e-6))[0];
+    assertTrue(!!riser, `${name} 有竖面 quad`);
+    // 竖面底边（y 最小那侧）被本格下半层遮挡 → 比顶边暗；顶边上方是空气 → AO=3
+    const yMin = Math.min(...riser.map((v) => v.y));
+    const yMax = Math.max(...riser.map((v) => v.y));
+    const bottom = riser.filter((v) => Math.abs(v.y - yMin) < 1e-6).map((v) => v.ao);
+    const top = riser.filter((v) => Math.abs(v.y - yMax) < 1e-6).map((v) => v.ao);
+    assertEqual(bottom.length, 2, `${name} 竖面底边 2 顶点`);
+    assertEqual(top.length, 2, `${name} 竖面顶边 2 顶点`);
+    assertTrue(Math.max(...bottom) < Math.min(...top),
+      `${name} 竖面底边（凹角）应比顶边暗：bottom=${JSON.stringify(bottom)} top=${JSON.stringify(top)}`);
+  }
+});
+
+test('mesher: 台阶给紧邻的实心方块投 AO（衔接）', () => {
+  const reg = makeRegistry();
+  const y0 = WORLD_MIN_Y + 5;
+  // 台阶在 (8,y0,8)，实心地板在 (7,y0-1,8) 与 (8,y0-1,8)；(7,y0-1,8) 的 +Y 面靠台阶那两角
+  // 应当比另外两角暗 —— 这正是「台阶与实心方块 AO 衔接」的载荷性判据。
+  const result = meshStepWorld(reg, [
+    [8, y0, 8, 'planks_step'],
+    [7, y0 - 1, 8, 'stone'],
+    [8, y0 - 1, 8, 'stone'],
+  ], y0);
+  const lyFloorTop = y0 - 1 - WORLD_MIN_Y + 1; // 地板顶面局部 y
+  // 地板 (7,y0-1,8) 的 +Y quad：顶点 x∈{7,8}、z∈{8,9}、y=lyFloorTop
+  const quads = quadsOfFace(result.opaque, 2).filter((q) =>
+    q.every((v) => Math.abs(v.y - lyFloorTop) < 1e-6)
+    && Math.abs(Math.min(...q.map((v) => v.x)) - 7) < 1e-6
+    && Math.abs(Math.max(...q.map((v) => v.x)) - 8) < 1e-6
+    && Math.abs(Math.min(...q.map((v) => v.z)) - 8) < 1e-6);
+  assertEqual(quads.length, 1, '地板 (7,y0-1,8) 顶面恰好 1 个 quad');
+  const faceVerts = quads[0];
+  // x=1 侧（x≈8）紧贴台阶 → 应暗；x=0 侧（x≈7）开阔 → 应亮
+  const nearStep = faceVerts.filter((v) => v.x > 7.5).map((v) => v.ao);
+  const awayStep = faceVerts.filter((v) => v.x < 7.5).map((v) => v.ao);
+  assertEqual(nearStep.length, 2, '两个顶点紧贴台阶');
+  assertEqual(awayStep.length, 2, '两个顶点远离台阶');
+  assertTrue(Math.max(...nearStep) < Math.min(...awayStep),
+    `紧贴台阶的顶点应比开阔顶点暗：near=${JSON.stringify(nearStep)} away=${JSON.stringify(awayStep)}`);
+});
+
+test('mesher: 台阶 AO 随 orientation 旋转（四向对称）', () => {
+  const reg = makeRegistry();
+  const y0 = WORLD_MIN_Y + 5;
+  const ly = y0 - WORLD_MIN_Y;
+  // 凹角 = 竖面底边。竖面的世界朝向随 orient 转：orient 0 竖面朝 +X、o=1 朝 -Z、
+  // o=2 朝 -X、o=3 朝 +Z（与 FACE_ROT 同一映射）。四向的「底边比顶边暗」都该成立。
+  const FACE_ROT = [[0, 1, 2, 3, 4, 5], [5, 4, 2, 3, 0, 1], [1, 0, 2, 3, 5, 4], [4, 5, 2, 3, 1, 0]];
+  const riserFace = FACE_ROT[0][0]; // 模型 +X 面的世界朝向（o=0 时即 +X）
+  for (const orient of [0, 1, 2, 3]) {
+    const worldFace = FACE_ROT[orient][0]; // 模型 +X 面（正置台阶的竖面）旋转后的世界面
+    const r = meshStepWorld(reg, [[8, y0, 8, 'planks_step', orient]]);
+    const quads = quadsOfFace(r.cutout, worldFace);
+    assertTrue(quads.length > 0, `orient=${orient} 有朝 ${worldFace} 的 quad`);
+    // 体积高侧（上半柱）在模型 -X；其竖面是朝「模型 +X」那一面，x 恒 0.5 的那个 quad
+    const riser = quads.find((q) => q.every((v) => Math.abs(v.x - (8 + 0.5)) < 1e-6))
+      || quads.find((q) => q.every((v) => Math.abs(v.y - (ly + 0.5)) < 1e-6 || Math.abs(v.y - (ly + 1)) < 1e-6));
+    assertTrue(!!riser, `orient=${orient} 找到竖面 quad`);
+    const yMin = Math.min(...riser.map((v) => v.y));
+    const yMax = Math.max(...riser.map((v) => v.y));
+    if (Math.abs(yMax - yMin) < 1e-6) continue; // 非竖面（水平面）跳过
+    const bottom = riser.filter((v) => Math.abs(v.y - yMin) < 1e-6).map((v) => v.ao);
+    const top = riser.filter((v) => Math.abs(v.y - yMax) < 1e-6).map((v) => v.ao);
+    assertTrue(Math.max(...bottom) < Math.min(...top),
+      `orient=${orient} 竖面底边应比顶边暗：bottom=${JSON.stringify(bottom)} top=${JSON.stringify(top)}`);
+  }
+  assertTrue(riserFace === 0, '模型 +X 面在 orient=0 时就是世界 +X');
+});
+
+test('mesher: 倒置台阶参与遮挡（它没有凹角，但仍是亚体素实体）', () => {
+  const reg = makeRegistry();
+  const y0 = WORLD_MIN_Y + 5;
+  // 倒置台阶 = 上半全幅 + 下半 +X 半幅。它自身没有凹角（上面那条用例已说明），
+  // 但它**占据了下半格的一部分** → 与它相邻的整格方块的 AO 必须能看见它。
+  // 场景：(8,y0,8) 倒置台阶，其 +X 侧 (9,y0,8) 是石墙；石墙 -X 面的下半段应当变暗。
+  // 倒置台阶的下半 +X 半幅在 x∈[0.5,1]、y∈[0,0.5]。
+  const wallAOs = (neighbor) => {
+    const cells = [[9, y0, 8, 'stone']];
+    if (neighbor) cells.push([8, y0, 8, neighbor]);
+    const r = meshStepWorld(reg, cells);
+    const q = quadsOfFace(r.opaque, 1).find((qq) => qq.every((v) => Math.abs(v.x - 9) < 1e-6));
+    assertTrue(!!q, `石墙朝 -X 的面存在（neighbor=${neighbor}）`);
+    return q.map((v) => v.ao);
+  };
+  const withStep = wallAOs('cobblestone_step_updown');
+  const noStep = wallAOs(null);
+  // 对照：无台阶时整面全 3；有倒置台阶时至少一个顶点变暗。
+  assertTrue(noStep.every((a) => a === 3), `无台阶时石墙 -X 面全 AO=3，实测 ${JSON.stringify(noStep)}`);
+  assertTrue(Math.min(...withStep) < 3,
+    `倒置台阶的实心部分应给石墙投 AO，实测 ${JSON.stringify(withStep)}`);
+});
+
+test('mesher: 台阶 AO 不波及整格世界与未纳入的形状（零回归）', () => {
+  const reg = makeRegistry();
+  const y0 = WORLD_MIN_Y + 5;
+  // ① 整格世界：一片地板 + 凸起 + 一层树叶（镂空遮挡体）→ 全部顶点 AO 必须等于
+  //    「整格口径」手算值。这里用对照法：把这些方块换成同形状的「整格」邻居组合不现实，
+  //    故改钉「已知的墙角/开阔取值」：开阔面恒 3、单侧遮挡恒 2、双墙恒 0。
+  const cells = [];
+  for (let x = 2; x < 12; x++) for (let z = 2; z < 12; z++) cells.push([x, y0, z, 'stone']);
+  cells.push([5, y0 + 1, 5, 'stone']);
+  const r = meshStepWorld(reg, cells);
+  // 平坦地板（远离 (5,y0+1,5) 墙角块）的顶面恒 AO=3。墙角块那一圈会因遮挡变暗，
+  // 那是既有口径（含「去对角门控」的副作用），不属于本次改动范围 —— 故只取远离它的格子。
+  const lyTop = y0 - WORLD_MIN_Y + 1;
+  const tops = aosOfFace(r.opaque, 2).filter((v) =>
+    Math.abs(v.y - lyTop) < 1e-6
+    && (v.x < 4 - 1e-6 || v.x > 6 + 1e-6 || v.z < 4 - 1e-6 || v.z > 6 + 1e-6));
+  assertTrue(tops.length > 0, '平坦地板顶面存在');
+  for (const v of tops) assertEqual(v.ao, 3, `平坦地板顶面 AO=3，实测 (${v.x},${v.y},${v.z})`);
+
+  // ② 未纳入的形状（半砖/装饰几何）**自身不产生亚体素遮挡**。
+  //    注意区分两件事：它们仍然会被邻居（含台阶）遮挡 —— 那是「衔接」的正确行为，
+  //    与「自己被纳入亚体素 AO」是两回事。故判据落在「孤立半砖的角没有梯度」上：
+  //    孤立半砖没有邻居，四个踏面顶点必须全为 3（与 HEAD 逐位相同）。
+  const slab = meshStepWorld(reg, [[8, y0, 8, 'sand_slab']]);
+  const slabTop = aosOfFace(slab.cutout, 2);
+  assertEqual(slabTop.length, 4, 'sand_slab 踏面 4 顶点');
+  for (const v of slabTop) assertEqual(v.ao, 3, '孤立半砖不纳入亚体素 AO（踏面保持 AO=3）');
+  // ③ **纳入集合的边界**：石墙旁放什么，决定石墙 -X 面是否变暗。
+  //    这是最有判别力的一条 —— 台阶族（含倒置）→ 墙变暗；半砖 → 墙保持全亮。
+  //    （漏了它就抓不到「误把 half_block 加进 STEP_BOXES」这类回归：实测注入后
+  //      孤立半砖用例仍全绿，因为半砖踏面本来就没有梯度。）
+  const wallAOs = (neighbor) => {
+    const cells = [[9, y0, 8, 'stone']];
+    if (neighbor) cells.push([8, y0, 8, neighbor]);
+    const r = meshStepWorld(reg, cells);
+    const q = quadsOfFace(r.opaque, 1).find((qq) => qq.every((v) => Math.abs(v.x - 9) < 1e-6));
+    assertTrue(!!q, `石墙 -X 面存在（neighbor=${neighbor}）`);
+    return q.map((v) => v.ao);
+  };
+  const expectDarker = (n) => {
+    const ao = wallAOs(n);
+    assertTrue(ao.every((a) => a < 3), `${n} 是亚体素实体 → 石墙应变暗，实测 ${JSON.stringify(ao)}`);
+  };
+  const expectBright = (n) => {
+    const ao = wallAOs(n);
+    assertTrue(ao.every((a) => a === 3), `${n} 不在纳入集合 → 石墙应保持全亮，实测 ${JSON.stringify(ao)}`);
+  };
+  expectBright('sand_slab');
+  expectBright('cactus'); // 装饰几何同理不纳入
+  expectDarker('planks_step');
+  expectDarker('cobblestone_step_updown');
+
+  // 反向确认：把它换成台阶，同样的孤立场景必须出现梯度（证明 ② 的判据有判别力）
+  const step = meshStepWorld(reg, [[8, y0, 8, 'planks_step']]);
+  const stepRiser = quadsOfFace(step.cutout, 0).find((q) => q.every((v) => Math.abs(v.x - (8 + 0.5)) < 1e-6));
+  assertTrue(!!stepRiser, '孤立台阶有竖面');
+  const stepAos = stepRiser.map((v) => v.ao);
+  assertTrue(new Set(stepAos).size > 1, `孤立台阶竖面应有梯度，实测 ${JSON.stringify(stepAos)}`);
+});
+
 test('mesher: worldStats 开 → 返回面剔除统计', () => {
   setDebugFlags({ worldStats: true });
   const reg = makeRegistry();

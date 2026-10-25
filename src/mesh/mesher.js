@@ -84,7 +84,7 @@ const FACE_ROT = [
   [4, 5, 2, 3, 1, 0],
 ];
 
-function getAO(side1, side2, corner) {
+function getAO(side1, side2, corner, front = 0) {
   // 四角 AO。**有意偏离 mc-lite**（§4.3 第 ⑤ 项）：mc-lite AOUtils.getAOValue 有对角
   // 门控 `(side1||side2)?corner:0`（Minecraft 原版语义——对角方块物理上不太遮挡该顶点），
   // 本仓库去掉该门控，让「仅对角遮挡」也计入 AO。
@@ -98,35 +98,84 @@ function getAO(side1, side2, corner) {
   // 副作用：所有「两侧开阔、仅对角遮挡」的顶点都会暗一档（悬浮方块斜对角、台阶斜接处等），
   // 原版 Minecraft 故意让这些不变暗。实测副作用范围有限（多数对角遮挡都伴随至少一侧遮挡）。
   // 断言见 src/tests/test-mesher.js「AO 仅对角遮挡顶点 AO=2」。
+  //
+  // `front` = 第 4 样本（法线正对格的亚体素占用）。整格方块恒传 0 → 上式逐位不变；
+  // 只有台阶这类「不参与面剔除、却占半格」的方块会让它非零，用于让邻居看见它的实体。
   if (side1 && side2) return 0; // 两侧都遮挡 → 0（最暗，与 mc-lite 同）
-  return 3 - (side1 + side2 + (corner ? 1 : 0));
+  return 3 - (side1 + side2 + (corner ? 1 : 0) + (front ? 1 : 0));
 }
 
 /**
- * 从顶点坐标推导 AO 邻居（不查表——mc-lite AOUtils 的偏移表绑定其自身顶点序，
- * 直接搬会错位；此处按"顶点相对面法线的两个切向 ± 方向"推导，与顶点序无关）。
- * 切向 ± 侧按四舍五入到最近格角（>=0.5 → +1）：单位立方体顶点（0/1）行为不变，
- * 子格模板顶点（台阶/栏杆等 0.25/0.875…）取最近格角，与 mc-lite 整格 AO 口径一致。
- * @param {number} face 面索引 0-5
- * @param {number[]} v 顶点局部坐标 [fx,fy,fz]
- * @returns {number[][]} [side1Offset, side2Offset, cornerOffset]（各 3 分量）
+ * AO 探针：把该顶点所在面的 4 个遮挡采样值写进 `out` = [s1, s2, corner, front]。
+ *
+ * 遮挡判据 = 「采样点所在的 1/2 子格是否被占据」（取代整格二值的 `opaqueTable`）。
+ * 这样台阶这类「只占半格」的方块既能拿到自己的凹角阴影，也能把阴影投给邻居。
+ *
+ * 采样点 = 顶点 + 0.25 × (法线 + 切向1 + 切向2)。0.25 是载荷性的：顶点分量在
+ * {0, 0.5, 1} 时，采样点每个分量恒落在 ±0.25 / 0.75 / 1.25 —— 恰好是子格中心或
+ * 「子格中心的镜像」，永不落在 1/2 边界上，因此不存在「点落在边界该算哪边」的歧义。
+ *
+ * **零回归的关键**：整格面（顶点 ∈ {0,1}）经上式得到的落格与旧口径（整格 3 邻居采样）
+ * **完全一致**（逐项实测），而 opaque 方块的八分区掩码恒为 0xFF（八个子格全占）→
+ * 纯实心世界里新旧口径逐位相同。台阶等亚体素方块才有差异。
+ *
+ * ⚠️ 采样范围仍是「面外 1 格 + 两个切向邻格 + 正对格」，全部落在 section 的 1 格 halo 内，
+ * 故 `lighting.js` 的 `lightDirtyMasks` 依赖集合不变（那对耦合约定只跟 light 采样有关）。
+ *
+ * @param {Uint16Array} data section halo 视图
+ * @param {Uint8Array|null} meta
+ * @param {number} vx @param {number} vy @param {number} vz 发射格的 halo 视图坐标
+ * @param {number} face 世界面 0-5
+ * @param {number[]} v 顶点格内坐标（已按 orient 旋转）
+ * @param {number[]|null} bmin @param {number[]|null} bmax 该 quad 的 bbox（整格面传 null）
+ * @param {Uint8Array} occTable id*4+orient → 八分区掩码（opaque 方块为 0xFF）
+ * @param {number[]} out 长度 ≥4 的复用缓冲（热路径不逐顶点分配）
+ * @returns {number[]} 同一个 `out`
  */
-function aoOffsetsFor(face, v) {
-  const n = FACE_DIRS[face]; // 面法线（±1 单轴）
-  // 两个切向轴 = 非法线的轴
-  const axes = [0, 1, 2].filter((a) => n[a] === 0);
-  const offs = [];
-  for (const a of axes) {
-    const o = [n[0], n[1], n[2]];
-    o[a] = v[a] >= 0.5 ? 1 : -1; // 顶点在该切向的 ± 侧
-    offs.push(o);
+function aoProbes(data, meta, vx, vy, vz, face, v, bmin, bmax, occTable, out) {
+  const n = FACE_DIRS[face];
+  // 法线轴 na（±X → 0，±Y → 1，±Z → 2）；切向 = 另外两个轴（升序）
+  const na = n[0] !== 0 ? 0 : n[1] !== 0 ? 1 : 2;
+  const t1 = na === 0 ? 1 : 0;
+  const t2 = na === 2 ? 1 : 2;
+  // 切向 ± ：整格面按 0.5（= 面中心），亚体素面按该 quad 的 bbox 中点。
+  // 两者对整格面给出相同结果，故 bmin/bmax 为 null 时走更快的 0.5。
+  const e1 = (bmin ? v[t1] >= (bmin[t1] + bmax[t1]) * 0.5 : v[t1] >= 0.5) ? 1 : -1;
+  const e2 = (bmin ? v[t2] >= (bmin[t2] + bmax[t2]) * 0.5 : v[t2] >= 0.5) ? 1 : -1;
+  // 三次采样。每个采样点 = v + 0.25*(n + ±e1·ê_t1 + ±e2·ê_t2)。
+  // 用「切向轴单位向量的那一分量」把 e1/e2 折进逐轴增量，避免三次数组构造。
+  const d1x = t1 === 0 ? e1 : 0, d1y = t1 === 1 ? e1 : 0, d1z = t1 === 2 ? e1 : 0;
+  const d2x = t2 === 0 ? e2 : 0, d2y = t2 === 1 ? e2 : 0, d2z = t2 === 2 ? e2 : 0;
+  for (let k = 0; k < 3; k++) {
+    // k=0 → 只用 +e1（side1）；k=1 → 只用 +e2（side2）；k=2 → 两者都用（corner）
+    const u1 = k === 1 ? -1 : 1;
+    const u2 = k === 0 ? -1 : 1;
+    const px = v[0] + 0.25 * (n[0] + u1 * d1x + u2 * d2x);
+    const py = v[1] + 0.25 * (n[1] + u1 * d1y + u2 * d2y);
+    const pz = v[2] + 0.25 * (n[2] + u1 * d1z + u2 * d2z);
+    const gx = Math.floor(px), gy = Math.floor(py), gz = Math.floor(pz);
+    const oct = (px - gx >= 0.5 ? 1 : 0) | (py - gy >= 0.5 ? 2 : 0) | (pz - gz >= 0.5 ? 4 : 0);
+    const vi = viewIdx(vx + gx, vy + gy, vz + gz);
+    const orient = meta ? (meta[vi] & 3) : 0;
+    out[k] = (occTable[data[vi] * 4 + orient] >> oct) & 1;
   }
-  const corner = [
-    offs[0][0] + offs[1][0] - n[0],
-    offs[0][1] + offs[1][1] - n[1],
-    offs[0][2] + offs[1][2] - n[2],
-  ];
-  return [offs[0], offs[1], corner];
+  // 第 4 样本：**法线正对格**本身的亚体素占用（只在下半格/上半格这类方块上非零）。
+  // 为什么需要它：经典 3 样本的前提是「法线正对的邻格是空气」（否则该面会被面剔除）。
+  // 台阶 `opaqueTable=0` → 邻居朝它的面**不会被剔除** → 这个前提被打破，而 3 样本
+  // 只从邻格再往切向斜偏，永远采不到邻格本体 → 台阶给邻居的「衔接阴影」会漏。
+  // 整格方块不受影响：正对格若 opaque 则面早已被剔除，走不到这里；即使走到，
+  // 取的是「正对格中心那个子格」，对 0xFF 恒为 1 —— 但为守住零回归，显式跳过非亚体素格。
+  {
+    const vi = viewIdx(vx + n[0], vy + n[1], vz + n[2]);
+    const orient = meta ? (meta[vi] & 3) : 0;
+    const m = occTable[data[vi] * 4 + orient];
+    if (m === 0 || m === 0xff) out[3] = 0;
+    else {
+      const oct = (n[0] < 0 ? 1 : 0) | (n[1] < 0 ? 2 : 0) | (n[2] < 0 ? 4 : 0);
+      out[3] = (m >> oct) & 1;
+    }
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -181,16 +230,91 @@ function prismQuads(cx, cz, r, y0, y1, segs = 8) {
   return quads;
 }
 
-// 台阶 L 形（mc-lite geoPlanksStep：下半全幅 + 左上 1/4 柱）
-const STEP_QUADS = [
-  ...boxQuads(0, 0, 0, 1, 0.5, 1),
-  ...boxQuads(0, 0.5, 0, 0.5, 1, 1),
-];
-// 上下颠倒台阶（geoCobblestoneStepUpdown：上半全幅 + 右下 1/4 柱）
-const STEP_UPDOWN_QUADS = [
-  ...boxQuads(0, 0.5, 0, 1, 1, 1),
-  ...boxQuads(0.5, 0, 0, 1, 0.5, 1),
-];
+// ---------------------------------------------------------------------------
+// 台阶族：盒列表 → quad + 八分区占用掩码（一份声明喂两个消费者，红线 1）
+//
+// **为什么台阶需要「八分区掩码」**：台阶是 `cullMode:"cutout"` 且未声明 `opaque`
+// （`blocks-data.js`）→ `opaqueTable=0`，而 AO 的遮挡判据只读 `opaqueTable`。后果是台阶
+// **既拿不到自己的凹角阴影**（旧口径只采整格邻居，台阶的 0.5 高度面不在采样范围
+// 内），**也投不出阴影给邻居**。实测 HEAD 下孤立台阶 48 个顶点几乎全是 AO=3。
+//
+// 修法 = 把「这个采样点被遮挡吗」从「整格是否 opaque」换成「采样点所在的 1/2 子格是否被
+// 该方块占据」。掩码 8 位，bit i 表示子格 (i&1, (i>>1)&1, (i>>2)&1) 被占据。
+//
+// **纳入范围只有台阶族**（下方 STEP_BOXES 的三项几何）。半砖（half_block）与装饰几何
+// （仙人掌/栏杆/花等）**不纳入**，逐位保持原样 —— 它们的「暗部」没有明确物理意义。
+// ---------------------------------------------------------------------------
+const STEP_BOXES = {
+  // 下半全幅 + 上半 -X 半幅（mc-lite geoPlanksStep）
+  planks_step: [[0, 0, 0, 1, 0.5, 1], [0, 0.5, 0, 0.5, 1, 1]],
+  cobblestone_step: [[0, 0, 0, 1, 0.5, 1], [0, 0.5, 0, 0.5, 1, 1]],
+  // 上半全幅 + 下半 +X 半幅（mc-lite geoCobblestoneStepUpdown）
+  cobblestone_step_updown: [[0, 0.5, 0, 1, 1, 1], [0.5, 0, 0, 1, 0.5, 1]],
+};
+
+/** 盒列表 → 2×2×2 八分区占用掩码（取每格中心点是否落在任一盒内） */
+function octantMaskOf(boxes) {
+  let mask = 0;
+  for (let i = 0; i < 8; i++) {
+    const cx = (i & 1) ? 0.75 : 0.25;
+    const cy = (i & 2) ? 0.75 : 0.25;
+    const cz = (i & 4) ? 0.75 : 0.25;
+    for (const [x0, y0, z0, x1, y1, z1] of boxes) {
+      if (cx >= x0 && cx <= x1 && cy >= y0 && cy <= y1 && cz >= z0 && cz <= z1) { mask |= 1 << i; break; }
+    }
+  }
+  return mask;
+}
+
+/** 八分区位按 90° 步长绕 Y 轴旋转（与 rotateOffset 同一变换：o=1: (dx,dy,dz)→(dz,dy,-dx)） */
+function rotateOctantBit(i, o) {
+  const dx = (i & 1) ? 1 : -1;
+  const dy = (i & 2) ? 1 : -1;
+  const dz = (i & 4) ? 1 : -1;
+  let rx = dx, rz = dz;
+  if (o === 1) { rx = dz; rz = -dx; } else if (o === 2) { rx = -dx; rz = -dz; } else if (o === 3) { rx = -dz; rz = dx; }
+  return (rx > 0 ? 1 : 0) | (dy > 0 ? 2 : 0) | (rz > 0 ? 4 : 0);
+}
+
+// 纳入亚体素 AO 的几何（= STEP_BOXES 的键）。**半砖与装饰几何刻意不在其中**：它们的
+// 「暗部」没有明确物理意义（实测纳入仙人掌/栏杆会产生无意义暗块），逐位保持原样。
+const SUBVOXEL_AO_GEOMS = new Set(Object.keys(STEP_BOXES));
+
+/** 几何名 → [mask(orient 0..3)]；每格方块按自身 `meta & 3` 取一项 */
+const STEP_MASKS = {};
+for (const [geom, boxes] of Object.entries(STEP_BOXES)) {
+  const m0 = octantMaskOf(boxes);
+  STEP_MASKS[geom] = [0, 1, 2, 3].map((o) => {
+    let out = 0;
+    for (let i = 0; i < 8; i++) if ((m0 >> i) & 1) out |= 1 << rotateOctantBit(i, o);
+    return out;
+  });
+}
+
+const stepQuadsOf = (geom) => STEP_BOXES[geom].flatMap(([x0, y0, z0, x1, y1, z1]) => boxQuads(x0, y0, z0, x1, y1, z1));
+
+/**
+ * 八分区占用表：`id * 4 + orient` → 8 位掩码。opaque 方块恒 0xFF（整格，与旧口径等价），
+ * 台阶族取 `STEP_MASKS`，其余方块 0（不参与亚体素 AO）。
+ * 按 registry 缓存一次（registry 冻结后不变）—— 不进入逐 section 的热路径。
+ */
+const OCC_TABLE_CACHE = new WeakMap();
+function octantOccupancyOf(registry) {
+  let table = OCC_TABLE_CACHE.get(registry);
+  if (table) return table;
+  table = new Uint8Array(512 * 4);
+  for (let id = 0; id < registry.count; id++) {
+    const opaque = registry.opaqueTable[id] === 1;
+    const masks = opaque ? null : STEP_MASKS[registry.geometryNameOf(id)];
+    for (let o = 0; o < 4; o++) {
+      table[id * 4 + o] = opaque ? 0xff : (masks ? masks[o] : 0);
+    }
+  }
+  OCC_TABLE_CACHE.set(registry, table);
+  return table;
+}
+
+const STEP_QUADS = stepQuadsOf('planks_step');
 
 // 吊灯 UV 分区常量（§4.3 v1.22，有意偏离 mc-lite）：把绳与灯体的 UV 限制到贴图各自的
 // 图案区，令「绳呈单色深灰、灯体发光暖黄、灯体四个面不含绳图案」。
@@ -253,8 +377,8 @@ export const TEMPLATES = {
   vertical_pillar: boxQuads(0.35, 0, 0.35, 0.65, 1, 0.65),
   horizontal_pillar: boxQuads(0, 0.35, 0.35, 1, 0.65, 0.65),
   planks_step: STEP_QUADS,
-  cobblestone_step: STEP_QUADS,
-  cobblestone_step_updown: STEP_UPDOWN_QUADS,
+  cobblestone_step: stepQuadsOf('cobblestone_step'),
+  cobblestone_step_updown: stepQuadsOf('cobblestone_step_updown'),
   // 半高块（床）：1×0.5×1 底贴块底（geoHalfBlock）
   half_block: boxQuads(0, 0, 0, 1, 0.5, 1),
   // 吊灯：细绳八段棱柱 + 灯体 0.3³（几何逐格复刻 geoHangingLamp，坐标未变）
@@ -362,6 +486,7 @@ export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
   const shadowCastTable = registry.shadowCastTable;
   const nameOf = registry.nameOf.bind(registry);
   const tiles = atlasMeta.tiles || atlasMeta;
+  const occTable = octantOccupancyOf(registry);
 
   const channels = {
     opaque: { pos: [], uv: [], packed: [], idx: [] },
@@ -375,6 +500,8 @@ export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
   // 开关关闭时热循环跳过计数（collect 恒 false，分支预测稳定，零额外开销）。
   const collect = DEBUG_FLAGS.worldStats;
   let blocks = 0, candidateFaces = 0, faces = 0, culledFaces = 0;
+  // aoProbes 的输出缓冲（逐顶点复用，避免每顶点分配一个 4 元数组 —— mesher 热路径）
+  const AO_OUT = [0, 0, 0, 0];
 
   for (let ly = 0; ly < SECTION_SIZE; ly++) {
     for (let lz = 0; lz < SECTION_SIZE; lz++) {
@@ -430,9 +557,25 @@ export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
             // quad 级自发光覆盖（§4.3 v1.22）：`em` 未声明 → 方块级默认；声明了 → 逐 quad 定值。
             // 吊灯用它令「绳不发光、灯体发光」。逐 quad 算一次，供该 quad 4 顶点复用。
             const emissiveBit = q.em === undefined ? blockEmissiveBit : (q.em ? (1 << 13) : 0);
+            // 台阶族走亚体素 AO（八分区占用 + 面中心切向）；其余模板方块保持整格口径。
+            const subvoxelAO = SUBVOXEL_AO_GEOMS.has(geom) && !q.ds;
             const positions = [];
             const uvs = [];
             const packeds = [];
+            // 台阶族需要该 quad 的 bbox 来定切向 ±（整格面退化成 v>=0.5，与旧口径逐位相同）
+            let bmin = null, bmax = null;
+            if (subvoxelAO) {
+              bmin = [Infinity, Infinity, Infinity];
+              bmax = [-Infinity, -Infinity, -Infinity];
+              for (let k = 0; k < 4; k++) {
+                const [qx, qy, qz] = q.v[k];
+                const r = orient === 0 ? [qx, qy, qz] : rotateVertex(qx, qy, qz, orient);
+                for (let a = 0; a < 3; a++) {
+                  if (r[a] < bmin[a]) bmin[a] = r[a];
+                  if (r[a] > bmax[a]) bmax[a] = r[a];
+                }
+              }
+            }
             for (let vi = 0; vi < 4; vi++) {
               const [qx, qy, qz] = q.v[vi];
               const [rx, ry, rz] = orient === 0 ? [qx, qy, qz] : rotateVertex(qx, qy, qz, orient);
@@ -442,12 +585,18 @@ export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
               const [ru, rv] = q.uvRegion ? remapRegion(cu, cv, q.uvRegion) : [cu, cv];
               const [uu, vv] = transformUV(blockName, q.face, ru, rv);
               uvs.push([tile.u0 + (tile.u1 - tile.u0) * uu, tile.v0 + (tile.v1 - tile.v0) * vv]);
-              // AO 按世界面 + 旋转后顶点（遮挡是世界空间语义）
-              const [s1o, s2o, co] = aoOffsetsFor(worldFace, [rx, ry, rz]);
-              const s1 = opaqueTable[data[viewIdx(vx + s1o[0], vy + s1o[1], vz + s1o[2])]] === 1 ? 1 : 0;
-              const s2 = opaqueTable[data[viewIdx(vx + s2o[0], vy + s2o[1], vz + s2o[2])]] === 1 ? 1 : 0;
-              const co_ = opaqueTable[data[viewIdx(vx + co[0], vy + co[1], vz + co[2])]] === 1 ? 1 : 0;
-              const ao = q.ds ? 3 : getAO(s1, s2, co_); // 植被 cross 开阔 AO=3（原口径）
+              // AO 按世界面 + 旋转后顶点（遮挡是世界空间语义）。
+              // 台阶族（subvoxelAO）传 quad 的 bbox，让切向 ± 按面内位置判定；
+              // 其余模板方块传 null（退化成 0.5，与旧口径逐位相同）。
+              // 植被 cross 是无厚度的双面 quad，保持开阔 AO=3（原口径）。
+              let ao;
+              if (q.ds) {
+                ao = 3;
+              } else {
+                aoProbes(data, meta, vx, vy, vz, worldFace,
+                  [rx, ry, rz], subvoxelAO ? bmin : null, subvoxelAO ? bmax : null, occTable, AO_OUT);
+                ao = getAO(AO_OUT[0], AO_OUT[1], AO_OUT[2], AO_OUT[3]);
+              }
               packeds.push(selfLight | (ao << 8) | (worldFace << 10) | emissiveBit | noShadowCastBit);
             }
             pushQuad(ch, positions, uvs, packeds, q.ds);
@@ -520,12 +669,13 @@ export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
               tu0 + (tu1 - tu0) * uu,
               tv0 + (tv1 - tv0) * vv,
             ]);
-            // AO：世界面 + 旋转后顶点（遮挡是世界空间语义）
-            const [s1o, s2o, co] = aoOffsetsFor(worldFace, [rx, ry, rz]);
-            const s1 = opaqueTable[data[viewIdx(vx + s1o[0], vy + s1o[1], vz + s1o[2])]] === 1 ? 1 : 0;
-            const s2 = opaqueTable[data[viewIdx(vx + s2o[0], vy + s2o[1], vz + s2o[2])]] === 1 ? 1 : 0;
-            const co_ = opaqueTable[data[viewIdx(vx + co[0], vy + co[1], vz + co[2])]] === 1 ? 1 : 0;
-            const ao = getAO(s1, s2, co_);
+            // AO：世界面 + 旋转后顶点（遮挡是世界空间语义）。
+            // 走探针口径（八分区占用）而非整格 opaqueTable —— 整格邻居的掩码恒 0xFF，
+            // 落格与旧口径逐项一致，故实心世界零回归；台阶这类亚体素方块才产生差异。
+            // ⚠️ 采样范围仍是「面外 1 格 + 两个切向邻格」（与旧口径同一集合），
+            // 所以 `lighting.js` 的 `lightDirtyMasks` 依赖集合不变。
+            aoProbes(data, meta, vx, vy, vz, worldFace, [rx, ry, rz], null, null, occTable, AO_OUT);
+            const ao = getAO(AO_OUT[0], AO_OUT[1], AO_OUT[2], AO_OUT[3]);
             packeds.push(faceLight | (ao << 8) | (worldFace << 10) | blockEmissiveBit | noShadowCastBit);
           }
           pushQuad(ch, positions, uvs, packeds, doubleSide);
