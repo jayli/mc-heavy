@@ -90,6 +90,63 @@ test('settings: bgm 默认开，存储与 ?bgm= 均可覆盖', () => {
   assertEqual(resolveSettings({ bgm: 'yes' }, new URLSearchParams('')).bgm, true, '脏值回落默认');
 });
 
+/**
+ * v1.59 交付时雾色默认关（「默认值 = 旧行为」），用户 2026-10-25 裁定改为**默认开**
+ * （「游戏启动的时候默认就开启『雾色』按钮」）。
+ * 钉三道入口都通：漏任何一道的表现都是「面板高亮对了，但进去远景还是固定色」。
+ * ⚠️ **关闭**的路径必须仍然完整 —— 默认翻转不得把开关做成只能开不能关。
+ */
+test('settings: fogColor 默认开，存储与 ?fog= 均可覆盖', () => {
+  assertEqual(DEFAULT_SETTINGS.fogColor, true, '默认开（用户 2026-10-25 裁定）');
+  assertEqual(resolveSettings(null, new URLSearchParams('')).fogColor, true);
+  // ⚠️ 存储里必须带当前版本号才被采信 —— 旧存档的 false 会被迁移掉（见下方用例）。
+  const v = DEFAULT_SETTINGS.settingsVersion;
+  assertEqual(resolveSettings({ settingsVersion: v, fogColor: false }, new URLSearchParams('')).fogColor,
+    false, '当前版本的存储关生效（玩家真的选了关）');
+  assertEqual(resolveSettings({ settingsVersion: v, fogColor: false }, new URLSearchParams('fog=1')).fogColor,
+    true, 'URL 优先于存储');
+  assertEqual(resolveSettings({ settingsVersion: v, fogColor: true }, new URLSearchParams('fog=0')).fogColor, false);
+  assertEqual(resolveSettings({ settingsVersion: v, fogColor: 'yes' }, new URLSearchParams('')).fogColor,
+    true, '脏值回落默认');
+});
+
+/**
+ * 旧存档迁移（用户 2026-10-25 裁定：旧存档也迁移成开）。
+ *
+ * 为什么必须有这层：面板**任何一次**点击都会把整个设置对象落盘，所以旧存档里的
+ * `fogColor: false` 绝大多数不是「玩家特意关的」，而是「默认值是关时顺带写下的假值」。
+ * 不迁移的话，本次默认值翻转对**所有用过面板的人**都不生效 —— 偏偏那正是需求的对象。
+ *
+ * 钉三件事：① 无版本号 / 旧版本号的 false 被丢弃 → 回落到开；② 迁移后写上新版本号
+ * （否则每次启动都重跑一次迁移，玩家真点「关闭」后会被反复翻回开）；③ 迁移只针对
+ * `fogColor`，**其它字段不得被触碰**（泛化迁移会静默改掉玩家别的设置）。
+ */
+test('settings: 旧存档的 fogColor=false 被迁移成默认开（其它字段不动）', () => {
+  // 无版本号的老存档（v1.59 ~ v1.77 期间落盘的）
+  const legacy = { viewDistance: 4, blur: true, fogColor: false, bgm: false };
+  const s = resolveSettings(legacy, new URLSearchParams(''));
+  assertEqual(s.fogColor, true, '旧存档的 false 不可信 → 迁移成开');
+  assertEqual(s.viewDistance, 4, '其它字段不得被迁移触碰（视距）');
+  assertEqual(s.blur, true, '其它字段不得被迁移触碰（画质）');
+  assertEqual(s.bgm, false, '其它字段不得被迁移触碰（背景音乐）');
+  assertEqual(legacy.settingsVersion, DEFAULT_SETTINGS.settingsVersion,
+    '迁移后必须写上新版本号（否则玩家真点「关闭」会被反复翻回开）');
+  assertTrue(!('fogColor' in legacy), '被丢弃的旧值不得残留在存储对象里');
+
+  // 已迁移过（当前版本号）+ 玩家真的点了「关闭」→ 必须尊重
+  const current = { settingsVersion: DEFAULT_SETTINGS.settingsVersion, fogColor: false };
+  assertEqual(resolveSettings(current, new URLSearchParams('')).fogColor, false,
+    '当前版本里玩家确实选的关必须被尊重');
+
+  // 旧存档里 fogColor 是 true（玩家曾经手动开过）—— 迁移不必动它，结果本就是开
+  const legacyOn = { fogColor: true };
+  assertEqual(resolveSettings(legacyOn, new URLSearchParams('')).fogColor, true);
+
+  // URL 仍然优先于一切（含迁移后的值）
+  assertEqual(resolveSettings({ fogColor: false }, new URLSearchParams('fog=0')).fogColor, false);
+  assertEqual(resolveSettings({ fogColor: false }, new URLSearchParams('fog=1')).fogColor, true);
+});
+
 test('settings: volume 钳制 [0,1]（无面板档位，默认 100%）', () => {
   assertEqual(resolveSettings({ volume: 5 }, new URLSearchParams('')).volume, 1);
   assertEqual(resolveSettings({ volume: -1 }, new URLSearchParams('')).volume, 0);

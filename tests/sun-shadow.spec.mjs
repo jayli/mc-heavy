@@ -830,7 +830,11 @@ test('阴影刷新不得让视锥外几何整帧消失（远端闪烁回归门�
   test.setTimeout(300_000);
   await page.setViewportSize({ width: 800, height: 600 });
   // vd=8：采样点最远 90 格，须真的加载出几何（vd=2 下平台不加载 → 采样恒为天空，用例失效）
-  await page.goto('/?vd=8&seed=12345&weather=clear');
+  // ⚠️ `&fog=0` 是**观测口径隔离**（断言与阈值逐字未动）：雾色默认开（v1.78）后，远处平台
+  // 的雾色不再是固定 0x87ceeb → 采样亮度整体抬高（实测 d=100 从 ≤170 涨到 170.6，贴到
+  // 下方 sanity floor「须读到几何而非天空 <170」的边界）。本用例测的是 BatchedMesh 的
+  // shadow multi-draw 守卫，与被测变量无关，故钉住雾色以保读数可比。
+  await page.goto('/?vd=8&seed=12345&weather=clear&fog=0');
   await waitWorldSettled(page);
 
   const PY = 80;

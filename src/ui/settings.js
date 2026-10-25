@@ -22,6 +22,11 @@ export const VIEW_DISTANCE_MAX = 16;
 export const VISUAL_STYLE_OPTIONS = [null, 'morning', 'noon', 'dusk', 'night'];
 
 export const DEFAULT_SETTINGS = {
+  // 设置结构版本（不是存档 DB 版本）。每次「语义变更且旧值不可信」时 +1，并在
+  // `migrateStored()` 里写一步迁移。当前：
+  //   v2 = 雾色默认关 → 开（v1.78）。旧存档里的 `fogColor: false` 大多是「默认值是关时顺带
+  //   落盘的假值」，而不是玩家特意关的 —— 存储层无法区分两者（见 migrateStored 注释）。
+  settingsVersion: 2,
   viewDistance: 8,
   blur: false,        // §4.4.1：默认像素风（Nearest）；true = mipmap+aniso 消远处莫尔纹
   volume: 1,          // 第一阶段无音频消费方，面板接线 + 持久化先行（§9 扩展点）
@@ -29,7 +34,11 @@ export const DEFAULT_SETTINGS = {
   budgetProfile: 'auto', // M3-2：'auto'|'high'|'low'
   gunBlockDamage: false, // M4：普通枪是否破坏方块（mc-lite 默认关闭，UIManager.js:160）
   tntDamage: false, // M8：TNT 是否破坏地形（mc-lite `Game.js:92` 同口径默认 false —— 默认只伤害 + 连锁）
-  fogColor: false, // v1.59：雾色融入天空（默认关 = 固定 0x87ceeb，与 v1.58 逐位相同）
+  // 雾色融入天空：默认开（用户 2026-10-25 裁定「游戏启动的时候默认就开启『雾色』按钮」）。
+  // v1.59 交付时默认关是「默认值 = 旧行为」的口径（与 ?shadows=0 同源），实玩后改为默认开 ——
+  // 天空盒一开，固定 0x87ceeb 的远景就与照片天空对不上（实测 R 差 54），融入天空才是正常观感。
+  // 关掉的路径仍在：面板「关闭」按钮 + `?fog=0`（关闭逐位回到 v1.58 的固定色）。
+  fogColor: true,
   bgm: true, // v1.63：背景音乐（默认开 = mc-lite 进游戏即播；音量固定 BGM_VOLUME 0.15，不接 volume 档）
 };
 
@@ -54,6 +63,34 @@ function normBudget(v) {
 }
 
 /**
+ * 旧存档迁移（就地修改 stored，返回同一对象）。
+ *
+ * 目前只有一步：**`fogColor` 默认关 → 开（v1.78）**。
+ * ⚠️ **旧存档里的 `fogColor: false` 不能当作「玩家特意关的」**：面板每次点任一开关都会把
+ * **整个设置对象** `JSON.stringify` 落盘（`saveStoredSettings(this.settings)`），所以哪怕玩家
+ * 从没碰过「雾色」这一行，只要点过一次别的开关，旧存档里就带着 `false`。若尊重它，默认值翻转
+ * 对**老玩家完全无效**（而这正是本次需求的对象）。故对**没有 `settingsVersion` 标记**的旧存档
+ * 直接丢弃 `fogColor` 字段（随后回落新默认值开）。
+ * 代价：曾**特意**关掉雾色的玩家也会被翻回开 —— 存储层分不出这两类，用户已裁定接受
+ * （2026-10-25），他们只需再点一次「关闭」（下一次保存会写上新版本号，不再迁移）。
+ *
+ * ⚠️ 迁移写在**反序列化之后、merge 之前**，而不是在读取处加 `??`：保证 `resolveSettings` 的
+ * 优先级不变（URL > 存储 > 默认），任何存档里真实存在的新版字段含义也不变。
+ * @param {Object|null} stored
+ * @returns {Object|null} 迁移后的对象（原地修改，也可能返回 null）
+ */
+export function migrateStored(stored) {
+  if (!stored || typeof stored !== 'object') return stored;
+  const v = Number(stored.settingsVersion);
+  if (!Number.isFinite(v) || v < 2) {
+    // v1 及更早（含完全没有版本号的老存档）：fogColor 的 false 不可信，丢弃以待回落新默认
+    if (stored.fogColor === false) delete stored.fogColor;
+    stored.settingsVersion = DEFAULT_SETTINGS.settingsVersion;
+  }
+  return stored;
+}
+
+/**
  * 合并生效设置：URL 参数 > 存储值 > 默认值。
  * URL 支持的键：vd / blur(0|1) / volume / style / budget / guns(0|1) / tntDamage(0|1) / fog(0|1) / bgm(0|1)（main.js 既有的
  * ?vd、?blur 语义保持不变，这里统一收口）。
@@ -66,6 +103,9 @@ function normBudget(v) {
  */
 export function resolveSettings(stored, params) {
   const s = { ...DEFAULT_SETTINGS };
+  // 旧存档迁移（在合并之前；不改优先级语义）。就地改传入对象 → 下次 `saveStoredSettings` 会把
+  // 新版本号写回，迁移只跑一次。
+  migrateStored(stored);
   if (stored && typeof stored === 'object') {
     if (stored.viewDistance !== undefined) s.viewDistance = clampVD(stored.viewDistance);
     if (typeof stored.blur === 'boolean') s.blur = stored.blur;

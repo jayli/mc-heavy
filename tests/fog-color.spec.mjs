@@ -96,12 +96,20 @@ async function pinView(page, style = 'noon') {
   await page.waitForTimeout(2200);      // 等新位置的 column 加载完成（否则看到的是空洞）
 }
 
+/**
+ * 起点必须是**关闭**态（下面是「开 → 关」对照）。用户 2026-10-25 裁定默认开，
+ * 故显式传 `?fog=0` 回到起点，而不是依赖默认值 —— 本用例的断言不依赖默认值怎么变。
+ */
 test('雾色融入天空：远景向地平线天色移动，天空与近景逐位不变', async ({ page }) => {
   test.setTimeout(180_000);
   // 不传 &style：pinView 里 setVisualStyle 需要走真实日夜循环路径才能冻结
-  await page.goto('/?vd=8&seed=12345&weather=clear');
+  await page.goto('/?vd=8&seed=12345&weather=clear&fog=0');
   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
   await pinView(page);
+
+  // 起点确认（否则下面的「开」可能与一个本来就开着的画面做对照 → ΔR≈0 假失败）
+  expect(await page.evaluate(() => window.__MC_GAME__.fogColorEnabled),
+    '`?fog=0` 必须让开关落在关闭态').toBe(false);
 
   // ---- 噪声底：同状态连拍两张，差异必须为 0（否则下面的阈值不可信）----
   const a = bands(await shot(page));
@@ -190,7 +198,7 @@ async function pinLookDown(page) {
 
 test('俯视时雾色仍向地平线天色移动（防「采样到天底」回归）', async ({ page }) => {
   test.setTimeout(180_000);
-  await page.goto('/?vd=8&seed=12345&weather=clear');
+  await page.goto('/?vd=8&seed=12345&weather=clear&fog=0');
   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
   await pinLookDown(page);
 
@@ -214,7 +222,7 @@ test('俯视时雾色仍向地平线天色移动（防「采样到天底」回�
 
 test('雾色开关关闭时逐位回到固定雾色（v1.58 行为不变式）', async ({ page }) => {
   test.setTimeout(180_000);
-  await page.goto('/?vd=8&seed=12345&weather=clear');
+  await page.goto('/?vd=8&seed=12345&weather=clear&fog=0');
   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
   await pinView(page);
 
@@ -246,7 +254,7 @@ test('雾色开关关闭时逐位回到固定雾色（v1.58 行为不变式）',
 
 test('夜间雾色同样生效（防「夜里雾距过远 → 无物可染」回归）', async ({ page }) => {
   test.setTimeout(240_000);
-  await page.goto('/?vd=8&seed=12345&weather=clear');
+  await page.goto('/?vd=8&seed=12345&weather=clear&fog=0');
   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
   await pinView(page, 'night');   // 冻结到黑夜
 
@@ -313,8 +321,39 @@ test('夜间雾色同样生效（防「夜里雾距过远 → 无物可染」回
   }
 });
 
+test('启动默认开启雾色（用户 2026-10-25 裁定）', async ({ page }) => {
+  test.setTimeout(180_000);
+  // 不传 ?fog —— 钉的正是「默认值本身」
+  await page.goto('/?vd=8&seed=12345&weather=clear');
+  await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
+
+  const r = await page.evaluate(() => ({
+    setting: window.__MC_GAME__.settings.fogColor,
+    mix: window.__MC_GAME__.fog.uFogColorMix.value,
+    enabled: window.__MC_GAME__.fogColorEnabled,
+    hasSky: window.__MC_GAME__.sky !== null,
+  }));
+  expect(r.hasSky, '这条用例需要天空盒（否则开关本就该被静默关掉）').toBe(true);
+  expect(r.setting, '设置默认值须为开').toBe(true);
+  expect(r.mix, '材质 uniform 须在启动时就被写成 1（不是靠面板点击才生效）').toBe(1);
+  expect(r.enabled, '启动后 fogColorEnabled 须为 true').toBe(true);
+
+  // 面板高亮必须同步（默认开启但面板显示「关闭」会静默撕裂）
+  await page.evaluate(() => document.getElementById('settings-btn').click());
+  await page.waitForTimeout(300);
+  const row = page.locator('#settings-modal .mc-item', { hasText: '雾色' });
+  await expect(row.locator('button.active')).toHaveText('开启');
+
+  // `?fog=0` 仍可关闭（默认翻转不得把入口锁死）
+  await page.goto('/?vd=8&seed=12345&weather=clear&fog=0');
+  await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
+  expect(await page.evaluate(() => window.__MC_GAME__.fogColorEnabled),
+    '`?fog=0` 必须仍能关闭').toBe(false);
+});
+
 test('?skybox=0 时雾色开关静默保持关闭（没有立方图可采样）', async ({ page }) => {
   test.setTimeout(180_000);
+  // 不传 ?fog：默认「开」也必须在没有天空盒时静默退回关闭（不得谎报生效）
   await page.goto('/?vd=8&seed=12345&skybox=0');
   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
 
@@ -322,12 +361,16 @@ test('?skybox=0 时雾色开关静默保持关闭（没有立方图可采样）'
     const g = window.__MC_GAME__;
     return {
       sky: g.sky,
+      setting: g.settings.fogColor,            // 意图是开（默认值）
+      bootMix: g.fog.uFogColorMix.value,       // 但启动时没有立方图 → 必须保持 0
       effective: g.setFogColorEnabled(true),   // 没有天空盒 → 不得谎报生效
       mix: g.fog.uFogColorMix.value,
       enabled: g.fogColorEnabled,
     };
   });
   expect(r.sky, '?skybox=0 时不该有天空盒句柄').toBe(null);
+  expect(r.setting, '默认值仍是开（意图与生效是两件事）').toBe(true);
+  expect(r.bootMix, '启动时无立方图 → uFogColorMix 必须已被压回 0').toBe(0);
   expect(r.effective, '没有立方图时必须返回 false（不得谎报生效）').toBe(false);
   expect(r.mix, 'uFogColorMix 必须保持 0（未绑定立方图采样会读全黑）').toBe(0);
   expect(r.enabled).toBe(false);
@@ -365,7 +408,11 @@ test('面板「雾色」行落在左列环境风格下方，且无天空盒时�
   await expect(btns).toHaveCount(2);
   await expect(btns.nth(0)).toBeEnabled();
 
-  // 打开后 active 落在「开启」上，且引擎侧真的生效
+  // 默认开 → 「开启」已是 active；点「关闭」必须真的关掉，再点「开启」恢复
+  await expect(row.locator('button.active')).toHaveText('开启');
+  await btns.nth(0).click();
+  await page.waitForTimeout(200);
+  expect(await page.evaluate(() => window.__MC_GAME__.fogColorEnabled), '点「关闭」须真的关闭').toBe(false);
   await btns.nth(1).click();
   await page.waitForTimeout(200);
   expect(await page.evaluate(() => window.__MC_GAME__.fogColorEnabled)).toBe(true);

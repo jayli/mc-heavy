@@ -732,9 +732,11 @@ export class Game {
     // ⚠️ 此处默认开（不无条件调用）：`setShadowsEnabled(true)` 会置 `needsUpdate = true`，
     // 而「默认开」路径的重渲早已由 start() 中段的首次 needsUpdate 覆盖。
     if (!this._shadowsOption) this.setShadowsEnabled(false);
-    // 启动应用雾色模式（v1.59，默认关）。与上面两条同一口径：默认值已是初值，仅启用时需调。
+    // 启动应用雾色模式（默认**开**，用户 2026-10-25 裁定）。
     // ⚠️ 必须在 sky 就绪之后（此处已是 start() 尾部）；`?skybox=0` 时 sky 为 null → 静默保持关。
-    if (this.settings.fogColor) this.setFogColorEnabled(true);
+    // 两条都要显式走：材质初值 `uFogColorMix` 恒 0（= 关闭，`materials.js` 的 mix 左端），
+    // 所以「关」也不是空操作 —— 落到这里才把 uniform 写成 0，与设置面板点击同一路径。
+    this.setFogColorEnabled(this.settings.fogColor);
     this.worldReady = true;
 
     window.addEventListener('resize', () => this._onResize());
@@ -1014,7 +1016,7 @@ export class Game {
   /**
    * 雾色模式开关（v1.59：雾色融入天空 vs 固定 0x87ceeb）。
    *
-   * 消费方 = 设置面板「雾色」行（默认关）与 `?fog=1` URL 入口。
+   * 消费方 = 设置面板「雾色」行（默认**开**）与 `?fog=0|1` URL 入口。
    * 开关走材质 uniform 的 `mix()` 插值（不是代码分支）→ 关闭时 **逐位** 回到 v1.58 行为。
    *
    * ⚠️ **开启条件是 `this.sky` 存在**：`setupFog()` 只在传入 sky 时构建天空采样节点。
