@@ -23,8 +23,12 @@ export const FACES_DATA = {
   bedrock: 'Bedrock',
   end_stone: 'End_Stone',
   // ---- 水/天空 ----
-  water: 'water',
-  swamp_water: 'swamp_water',
+  // 水方块贴图走烘焙产物（`npm run water`）：源图是高饱和紫蓝 `47/102/211`，与海面平面
+  // （`ocean.js`，浅海蓝）差 85 → 海岸线上表现为「亮紫蓝水带浮在浅蓝水面上」。
+  // 烘焙只做通道平移（保留 24 种色阶），把均值拉到 `95/140/168`，差距降到 17。
+  // ⚠️ 改 `ocean.js` 的水面配色后必须重算 `WATER_TARGET_MEAN` 并重跑 `npm run water` + `npm run atlas`。
+  water: 'procedural/water',
+  swamp_water: 'procedural/swamp_water',
   cloud: 'procedural/cloud',
   sky_wood: 'procedural/sky_wood',
   sky_leaves: 'procedural/sky_leaves',

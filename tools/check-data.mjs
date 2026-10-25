@@ -981,6 +981,77 @@ async function checkGiantTrees() {
   }
 }
 
+
+// ---------------------------------------------------------------- [水体贴图] 契约（v1.84）
+
+/**
+ * [水体贴图] 契约：`water` / `swamp_water` 的 faces-data tile 必须指向烘焙产物
+ * （`procedural/*`），且产物的 RGB 均值必须落在 `WATER_TARGET_MEAN` 附近。
+ *
+ * 背景（2026-10-26 用户第三轮反馈）：「水方块的颜色（水面波纹区覆盖不到的地方）和这个
+ * 水面的颜色差异稍微有点大，尽量让二者接近一些」。根因是**两套独立颜色源**：
+ *   ① 海面平面 = `ocean.js` 的 `WATER_COLOR`（着色器）；
+ *   ② 水方块 = `assets/textures/water.png`（源图是高饱和紫蓝 `47/102/211`）。
+ * 源图渲染后实测 `59/100/190`，而平面是 `92/133/164` → 逐通道差 **85**，海岸线上表现为
+ * 「亮紫蓝水带浮在浅蓝水面上」。烘焙产物把均值拉到 `95/140/168` → 差距降到 **17**。
+ *
+ * 钉的失效路径：
+ *   ① `faces-data` 改回源 tile（`water`）→ 观感倒退（本次需求起因）；
+ *   ② 忘了跑 `npm run water` / 改了目标均值没重烘 → 指纹不符；
+ *   ③ 产物均值偏离目标（手改 PNG 或烘错偏移）→ 与海面平面又分家；
+ *   ④ **alpha 掉回源图的 175**（v1.85 用户：「远看几乎呈透明色，能清楚看到海底」）→
+ *      体素水只有 68.6% 不透明，水下地形透上来 31%。这个失效是**静默的**：颜色全对、
+ *      门禁全绿，只是远看能看见海底 —— 所以必须单独钉 alpha。
+ * ⚠️ 本门禁**不**检查与 `ocean.js` 的运行时一致性（那需要渲染），但两者是靠
+ * `WATER_TARGET_MEAN` 的注释绑定在一起的 —— **改水面配色时必须重算那组数**。
+ */
+async function checkWaterTextures() {
+  const params = await import('./water-texture-fingerprint.mjs');
+  const before = failures.length;
+  const fail = (m) => failures.push(`[水体贴图] ${m}`);
+  const facesSrc = fs.readFileSync(path.join(ROOT, 'src', 'voxel', 'faces-data.js'), 'utf8');
+
+  for (const [name, tile] of Object.entries(params.WATER_TEX_OUT)) {
+    if (!facesSrc.includes(`${name}: '${tile}'`)) {
+      fail(`faces-data 的 ${name} 必须指向 '${tile}'（当前不是烘焙产物 → 与海面平面色差 85）`);
+      continue;
+    }
+    const dst = path.join(ROOT, 'assets', 'textures', 'procedural', `${name}.png`);
+    if (!fs.existsSync(dst)) { fail(`产物缺失 procedural/${name}.png（跑 npm run water）`); continue; }
+    const png = PNG.sync.read(fs.readFileSync(dst));
+    const sum = [0, 0, 0];
+    const n = png.width * png.height;
+    for (let i = 0; i < n; i++) {
+      const o = i << 2;
+      sum[0] += png.data[o]; sum[1] += png.data[o + 1]; sum[2] += png.data[o + 2];
+    }
+    const mean = sum.map((v) => v / n);
+    const target = params.WATER_TARGET_MEAN[name];
+    const dev = mean.map((v, i) => Math.abs(v - target[i]));
+    // 通道平移是逐像素同偏移，均值必然精确落点；容差 2 只吸收取整
+    if (Math.max(...dev) > 2) {
+      fail(`${name} 产物均值 ${mean.map((v) => v.toFixed(0)).join('/')} 偏离目标 `
+        + `${target.join('/')}（差 ${dev.map((v) => v.toFixed(1)).join('/')}，跑 npm run water）`);
+    }
+    // ④ alpha：盖住海底（见上方失效路径 ④）。原先算 alpha 是为了「与海面平面对齐」，
+    // 该缺口 2026-10-26 用户第四轮反馈「远看几乎呈透明色、能清楚看到海底」时补齐。
+    const wantAlpha = params.WATER_TARGET_ALPHA[name];
+    if (wantAlpha != null) {
+      const a = png.data[3]; // 产物是均匀 alpha（通道平移不改 alpha）
+      if (Math.abs(a - wantAlpha) > 1) {
+        fail(`${name} 产物 alpha=${a}，应为 ${wantAlpha}（太低会让海底透上来 → 远看发虚，跑 npm run water）`);
+      }
+    }
+  }
+
+  if (failures.length === before) {
+    infos.push(`[水体贴图] ${Object.keys(params.WATER_TEX_OUT).length} 张烘焙产物 / `
+      + `均值对齐 ${Object.entries(params.WATER_TARGET_MEAN).map(([k, v]) => `${k} ${v.join('/')}`).join(', ')} / `
+      + `alpha ${Object.entries(params.WATER_TARGET_ALPHA).map(([k, v]) => `${k} ${v ?? '源图'}`).join(', ')} / `
+      + `指纹 ${params.waterTextureFingerprint().slice(0, 8)}`);
+  }
+}
+
 // ---------------------------------------------------------------- [树叶贴图] 契约（2026-10-23）
 
 /**
@@ -1126,6 +1197,7 @@ checkShadowCastContract();   // v1.45：阴影投射排除集合契约（⚠️ 
 checkPlaygroundContract();   // M9：创造台方块契约（⚠️ 主流程是逐个显式调用，漏了本行则门禁永不执行）
 checkMinecartContract();     // 矿车：mine_cart 与铁轨必须在背包（⚠️ 漏了本行则门禁永不执行）
 await checkLeafTextures();   // 2026-10-23：全部树叶的孔洞压缩产物（⚠️ 漏了本行则门禁永不执行）
+await checkWaterTextures();  // v1.84：水体贴图与海面平面的配色对齐（⚠️ 漏了本行则门禁永不执行）
 checkIconManifestCoverage();
 checkIconAtlasArtifacts();
 checkIconFreshness();

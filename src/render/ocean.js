@@ -13,11 +13,77 @@ import { TERRAIN_HEIGHT_PARAMS } from '../gen/terrain.js';
 import { BIOME_PARAMS } from '../gen/noise.js';
 
 export const WATER_LEVEL_OFFSET = -1.5; // SEA_Y + 0.5
-const WATER_COLOR = 0x588be4;
-const WATER_OPACITY = 0.7;
+/**
+ * 水面基色。**有意偏离 mc-lite 的 `0x588be4`**（2026-10-26 用户实玩反馈：
+ * 「海水的波纹的颜色有点泛白，改成大海应有的深色……稍微颜色深一些，灰一些」）。
+ *
+ * 泛白的根因是**基色 + 纯白高光加法叠加**：基色 0x588be4 在线性空间已是
+ * [0.098, 0.258, 0.776]，高光按 `white × k` 加在它之上，ACES 在亮端压缩 → 平坦水面
+ * （也就是画面里占面积最大的那层）实测众数峰 **170/189/220（luma 187）**，看上去就是一块粉白。
+ * 两处一起改：基色往**灰蓝**压深、高光改**乘法混色**（只占基色→白之间的剩余量，天然有界）。
+ *
+ * 实测（noon / ACES exp=1.0 / 海岸机位，水区众数峰）：
+ * | | 基色屏幕值 | 水面屏幕色 | luma |
+ * |---|---|---|---|
+ * | mc-lite `0x588be4` + 白高光 | 98/167/224 | `170/189/220` | 187 |
+ * | v1.82 `0x707f89`（灰蓝） | 133/153/165 | `132/149/178` | 148 |
+ * | v1.83 `0x0c342f`（深青绿，过暗发脏） | 8/61/50 | `69/98/107` | 92 |
+ * | v1.84 `0x2a5f85`（海蓝，B−G 33） | `42/95/133` | `92/133/164` | 127 |
+ * | **v1.85 `0x22598a`（更深一档的海蓝）** | **`32/85/129`** | **`76/122/166`** | **115** |
+ *
+ * v1.85（用户第四轮）「水波纹的颜色也稍微变蓝一些」：v1.84 的 B−G 是 33，仍偏青；
+ * 基色调向蓝（R 降、B 升）→ B−G 升到 **44**，与体素水（`100/137/168`）的色相一致。
+ *
+ * ⚠️ **基色屏幕值 ≠ 水区实测值**：后者还含高光、雾与下层体素水的叠加。选色不能只看 hex，
+ * 换算口径是 sRGB → 线性 → ACES → sRGB（同 `sun-shade.js` 的 `srgbEncode` / `acesFilmic`）。
+ *
+ * **色相演进（三轮实玩反馈定下来）**：
+ * - v1.82：用户「泛白，要深一些、灰一些」→ 压亮度的方向对，但只做了「去饱和」，偏灰。
+ * - v1.83：用户给了参照图 `/Users/bachi/ttt/bug/海.png`（实测海区 `67/107/124`，G−R **+40**）
+ *   → 认定「真实海面是青绿」→ 改深青绿 `0x0c342f`，实测 G−R 31、B−G 11。
+ * - v1.84：用户「又太暗了，显得水很脏，稍微再蓝一些亮一些，显得干净」。像素数据支持这个判断：
+ *   v1.83 的 `69/98/107` **luma 只有 92**、**R 只有 69**（色度已足但亮度不够）
+ *   → 观感是「发脏的浊水」。改成 **`0x2a5f85`（luma 127，偏蓝）**。
+ *   ⚠️ **三条反馈不矛盾**：v1.82/83 要的是「不要白」，v1.84 要的是「不要脏」——
+ *   **亮度与饱和度是两个自由度**，泛白的反义词不是发暗。参照图本身是一张**阴天**照片
+ *   （海区 luma 仅 100），而游戏里是正午晴天，直接取其亮度就会脏。
+ *   **可信的锚点只有色相（B ≥ G > R、G−R 为正），亮度得按本仓光照单独标定。**
+ */
+const WATER_COLOR = 0x22598a;
+/**
+ * 高光颜色（v1.84：偏青绿 → **偏海蓝**）。
+ * 纯白/偏红的高光会把水面压成灰白（v1.82 的泛白就是这么来的）；B 最高、R 最低，
+ * 叠上去仍是「深蓝海面被太阳照亮」，而不是「什么颜色的水面上盖一层白」。
+ */
+const WATER_HIGHLIGHT_COLOR = [0.70, 0.86, 1.00];
+/**
+ * 高光总权重上限：`(diffuse + scatter + spec + fresnel×0.1)` 的整体缩放。
+ * mc-lite 原值口径下该和约 0.20（平静水面）~1.3（太阳高光斑），×0.55 后约
+ * 0.11 / 0.72。前者给「波纹可见但不发白」的基底，后者仍保留成片的高光斑。
+ */
+const WATER_HIGHLIGHT_GAIN = 0.42;
+/**
+ * 水面不透明度（v1.83：0.7 → 0.92，v1.84 维持）。
+ * 这是「改基色仍泛白」的**第二个根因**：海面平面是半透明的，底下还有一层
+ * **体素水方块**（v1.84 之前实测 `59/100/190`，高饱和紫蓝）。
+ * 0.7 时 30% 的体素水直接透上来，把颜色往紫蓝拉并抬亮一档。
+ * 实测（同一基色/高光，只改这个数）：0.70 → 近处 `86/111/146`；0.82 → `76/103/130`；
+ * **0.92 → `67/95/112`**。
+ * ⚠️ 不能再往上推太多：海面本来是半透明水面，接近 1.0 会变成一层塑料板。
+ * v1.84 起体素水贴图已重烘（`npm run water`，均值 47/102/211 → 95/140/168）→ 两侧观感已接近，
+ * 0.92 是「压住渗色」与「保留半透明水面」的交点。
+ */
+const WATER_OPACITY = 0.92;
 const WATER_VISIBLE_DISTANCE = 80;
 const WATER_EDGE_FADE_BAND = 15;
-const WATER_FOG_COLOR = 0xa7d1e2;
+/**
+ * 远距离雾色（v1.84 再调）。
+ * `fogNear=20 / fogFar=70` → 远处海面几乎全是这个颜色，所以它就是「远处那片海」的观感。
+ * 五个版本的屏幕值：mc-lite `0xa7d1e2` → `192/217/223`（白）；v1.82 `0x8aacbe` → `166/196/207`（仍偏亮）；
+ * v1.83 `0x556e7e` → `93/131/152`（对得上参照图，但那图是阴天）；v1.84 `0x7aa4c4`；
+ * 现行 `0x6b9cc0` → 与 v1.85 的深蓝水面同色系 —— 远景不再比近景暗一档（那正是「脏」的来源之一）。
+ */
+const WATER_FOG_COLOR = 0x6b9cc0;
 
 /**
  * 创建海面并挂到场景。
@@ -142,8 +208,16 @@ export function setupOcean(scene) {
     const scatter = max(float(0.0), normal.y).mul(0.08).mul(detailMask);
     const fresnel = pow(float(1.0).sub(max(dot(vec3(0, 1, 0), viewDir), 0.0)), 3.0);
 
-    const highlightColor = vec3(0.95, 0.98, 1.0);
-    const finalColor = uColor.add(highlightColor.mul(diffuse.add(scatter).add(spec).add(fresnel.mul(0.1))));
+    // 高光合成：**乘进「基色 → 白」的剩余量，而不是加到基色之上**。
+    // 加法在亮端会越界（基色 B 已 0.776，加 0.2 就到 0.98），ACES 压缩后几乎全白；
+    // 乘法混色 `base + (1−base)×t` 天然有界（t=1 才到纯白），t 小时只提亮一点点，
+    // 波纹因此「显出形状」而不「发白」。实测平坦水面的众数峰由此从 170/189/220 落到
+    // 132/149/178（见 WATER_COLOR 的表）。
+    const highlight = vec3(WATER_HIGHLIGHT_COLOR[0], WATER_HIGHLIGHT_COLOR[1], WATER_HIGHLIGHT_COLOR[2]);
+    const glow = diffuse.add(scatter).add(spec).add(fresnel.mul(0.1))
+      .mul(WATER_HIGHLIGHT_GAIN)
+      .min(1.0);
+    const finalColor = uColor.add(highlight.mul(glow).mul(vec3(1.0, 1.0, 1.0).sub(uColor)));
 
     const depth = length(cameraPosition.sub(positionWorld));
     const fogFactor = smoothstep(uFogNear, uFogFar, depth);
