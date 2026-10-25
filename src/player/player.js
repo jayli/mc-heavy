@@ -17,6 +17,12 @@ import { MINECART_ITEM, MINECART_TYPE, MINECART } from '../entities/minecarts/mi
 const EYE_HEIGHT = 1.62;
 const REACH = 40; // mc-lite 枪的 far 语义
 
+/**
+ * 方向键（v1.80）：与 WASD 等价地驱动移动，故 keydown 里需吞掉默认行为。
+ * 只列四个移动键 —— 不要泛化成「所有 Arrow*」（没意义），也不要扩到 F5/F12 这类浏览器快捷键。
+ */
+const ARROW_CODES = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
+
 // _buildAim 复用的临时向量（避免每帧分配）
 const _forward = new THREE.Vector3();
 const _right = new THREE.Vector3();
@@ -191,6 +197,9 @@ export class Player {
       // 但 keys 残留会在关闭后粘滞）并改选中格。M4 在此挂 KeyR 切武器，
       // 无守卫则面板开着按 R 会切武器并播 gun_load 音效。
       if (this._isModal()) { this.keys.clear(); return; }
+      // 方向键也参与移动（v1.80）→ 需吞掉默认行为（滚动页面 / 触发聚焦元素）。
+      // 只对方向键 preventDefault，不影响 F5 / F12 等浏览器快捷键。
+      if (ARROW_CODES.has(e.code)) e.preventDefault();
       this.keys.add(e.code);
       if (e.code.startsWith('Digit')) {
         const n = Number(e.code.slice(5)) - 1;
@@ -573,13 +582,18 @@ export class Player {
   }
 
   _applyInput() {
-    const fwd = (this.keys.has('KeyW') ? 1 : 0) - (this.keys.has('KeyS') ? 1 : 0);
-    const strafe = (this.keys.has('KeyD') ? 1 : 0) - (this.keys.has('KeyA') ? 1 : 0);
+    // 方向控制：WASD 与**方向键**等价（用户 v1.80 要求「asdw 可以控制方向之外，
+    // 让键盘的方向键也可以控制方向」）。两套键共用同一判定 → 同时按不叠加（取 1 不取 2）。
+    const k = this.keys;
+    const fwd = (k.has('KeyW') || k.has('ArrowUp') ? 1 : 0) -
+                (k.has('KeyS') || k.has('ArrowDown') ? 1 : 0);
+    const strafe = (k.has('KeyD') || k.has('ArrowRight') ? 1 : 0) -
+                   (k.has('KeyA') || k.has('ArrowLeft') ? 1 : 0);
     if (fwd || strafe) {
       const sin = Math.sin(this.yaw), cos = Math.cos(this.yaw);
       this.physics.move(-sin * fwd + cos * strafe, -cos * fwd - sin * strafe);
     }
-    if (this.keys.has('Space')) this.physics.jump();
+    if (k.has('Space')) this.physics.jump();
   }
 
   /**

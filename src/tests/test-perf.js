@@ -67,6 +67,116 @@ test('PerfHUD: statsLog 开 → 2s 节奏 console.log 世界数据', () => {
   assertTrue(String(logs[0][0]).includes('blocks=100'), 'log line has exact numbers');
 });
 
+/**
+ * 折叠/展开（用户要求：右上角 `[-]` 收起、`[+]` 展开，收起后只留 fps 那一行）。
+ *
+ * 钉的不变式：① 首行 fps 与按钮在折叠后仍在（它不能被一起收掉 —— 收起的意义是留视野，
+ * 不是隐藏 fps）；② 折叠区的行确实让出去了（max-height 归 0，而不是仅视觉透明）；
+ * ③ 启动态恒为展开且按钮文案与状态一致（含 `aria-expanded`，读屏与自测都靠它）。
+ * 不断言动画时长/缓动 —— 那是观感，肉眼可判。
+ */
+test('PerfHUD: 折叠只留首行、展开恢复全部行，启动态恒展开', () => {
+  setDebugFlags({ worldStats: true, statsLog: false });
+  const container = document.createElement('div');
+  const hud = new PerfHUD(new PerfMonitor(), container, () => makeFakeStats());
+  hud.update(250); // 首帧刷一次，body 才有多行内容
+
+  assertEqual(hud._collapsed, false, '启动态必须展开（收起状态不持久化）');
+  assertEqual(hud.btn.textContent, '[-]', '展开态按钮显示 [-]');
+  assertEqual(hud.btn.getAttribute('aria-expanded'), 'true');
+  assertTrue(hud.bodyEl.textContent.includes('frame p50'), '展开态折叠区有帧时分位行');
+
+  hud.setCollapsed(true);
+  assertEqual(hud._collapsed, true);
+  assertEqual(hud.btn.textContent, '[+]', '收起态按钮显示 [+]');
+  assertEqual(hud.btn.getAttribute('aria-expanded'), 'false');
+  assertEqual(hud.bodyEl.style.maxHeight, '0px', '折叠区必须真正让出高度（不是仅透明）');
+  // 操作说明也是折叠区的一部分（用户裁定「随面板一起折叠」）——
+  // 只折 bodyEl 会让它收起后仍占一大块高度，与「只留 fps 行」的需求相反。
+  assertEqual(hud.helpEl.style.maxHeight, '0px', '操作说明同步折叠');
+  // 首行内容与折叠区分属两个节点 —— 收起后 fps 仍在
+  assertTrue(hud.fpsEl.textContent.startsWith('fps '), `收起后首行仍显示 fps=${hud.fpsEl.textContent}`);
+  assertTrue(!hud.headEl.textContent.includes('frame p50'), '首行不得混入折叠区内容');
+  assertTrue(!hud.headEl.textContent.includes('操作：'), '首行不得混入操作说明');
+
+  hud.setCollapsed(false);
+  assertEqual(hud.btn.textContent, '[-]', '再次展开按钮回到 [-]');
+  assertTrue(hud.bodyEl.style.maxHeight.endsWith('px'), '展开从实测像素起步（不能从 none 起过渡）');
+  assertTrue(hud.helpEl.style.maxHeight.endsWith('px'), '操作说明展开同样从实测像素起步');
+  // ⚠️ 两个节点都必须有 `transitionend` 收尾（实测漏过 helpEl 一次）：
+  // 只给 bodyEl 写收尾时 helpEl 会永久停在像素值 → 将来文案变长就被裁掉，
+  // 而且那个缺陷**在 jsdom 式单测里看不见**（没有真实过渡事件），只能靠真实浏览器。
+  // 这里直接派发 transitionend 事件，把「两个节点都挂了收尾」变成一条可断言的契约。
+  for (const el of [hud.bodyEl, hud.helpEl]) {
+    el.dispatchEvent(new Event('transitionend', { bubbles: false }));
+    void el; // propertyName 不是 max-height → 不该被误触发
+  }
+  assertTrue(hud.bodyEl.style.maxHeight.endsWith('px'), '非 max-height 的 transitionend 不得改状态');
+  // 真实过渡结束时 DOM 事件带 propertyName；这里模拟一次
+  for (const el of [hud.bodyEl, hud.helpEl]) {
+    const ev = new Event('transitionend', { bubbles: false });
+    ev.propertyName = 'max-height';
+    el.dispatchEvent(ev);
+  }
+  assertEqual(hud.bodyEl.style.maxHeight, 'none', '展开收尾：bodyEl 置回 none');
+  assertEqual(hud.helpEl.style.maxHeight, 'none', '展开收尾：helpEl 也必须置回 none（漏过就是缺陷）');
+
+  setDebugFlags({ statsLog: true }); // 还原默认（开发调试期全开）
+});
+
+/**
+ * 固定宽度 + 操作说明（用户 v1.80 两项要求）。
+ *
+ * 钉三件事：① 面板宽度是显式固定值（不靠内容自然宽度）—— 用户报告「宽度随内容长短一直变」；
+ * ② `n=` 字段右对齐到 3 位 —— 这是行宽**结构上**不再随计数位数跳变的前提（否则
+ * 计数从 9 涨到 10 就换一档）；③ 操作说明三行原文在面板内且不在 body 的 250ms 重写路径里
+ * （静态文案不该被每帧重写）。
+ * 不在这里断言具体像素宽 —— 那是观感值，定宽常量的注释里有实测依据。
+ */
+test('PerfHUD: 面板宽度固定 + 操作说明三行入面板', () => {
+  setDebugFlags({ worldStats: true, statsLog: false });
+  const container = document.createElement('div');
+  const hud = new PerfHUD(new PerfMonitor(), container, () => makeFakeStats());
+  hud.update(250);
+
+  assertTrue(hud.el.style.width.endsWith('px'), `面板宽度必须显式固定，实际=${hud.el.style.width}`);
+  assertEqual(hud.el.style.boxSizing, 'border-box', 'border-box：宽度含 padding，否则内容区被 padding 挤窄');
+
+  // 操作说明：三行原文、在 el 内、不在 bodyEl 内
+  assertTrue(hud.helpEl.textContent.includes('操作：a←s↓d→w↑ | Space：跳'));
+  assertTrue(hud.helpEl.textContent.includes('Z：背包 | X：生成丧尸 | R：换枪'));
+  assertTrue(hud.helpEl.textContent.includes('Ctrl+鼠标左键：点燃TNT，矿车启动'));
+  assertEqual(hud.helpEl.parentElement, hud.el, '操作说明在面板内');
+  assertTrue(!hud.bodyEl.textContent.includes('操作：'), '操作说明不得搭进 250ms 重写的 bodyEl');
+
+  // 操作说明上方的横线：长度必须与统计区上方那条**逐字相同**（用户 v1.80 明确要求）。
+  // 两处各写一份字面量会漂移出长短不一 —— 故两处共用同一个 SEP 常量，这条断言钉住它。
+  const helpLines = hud.helpEl.textContent.split('\n');
+  const statLines = hud.bodyEl.textContent.split('\n');
+  const helpSep = helpLines[0];
+  const statSep = statLines.find((l) => l.startsWith('─'));
+  assertTrue(/^─+$/.test(helpSep), `操作说明首行必须是横线，实际=${JSON.stringify(helpSep)}`);
+  assertEqual(helpSep, statSep, '两条横线必须等长（逐字相同）');
+
+  // n= 右对齐：1 位数与 3 位数的**行宽必须相同**（只差前导空格）——
+  // 不右对齐时计数从 9 涨到 10 整行宽就跳一档，那是「宽度一直变」的直接来源之一。
+  const mon = hud.monitor;
+  mon.mark('alpha', 1);
+  hud._lastUpdate = 0;
+  hud.update(1000);
+  const line1 = hud.bodyEl.textContent.split('\n').find((l) => l.startsWith('alpha n='));
+  assertTrue(/^alpha n=  1 avg /.test(line1), `n 一位数须补到 3 位（两个前导空格）：${line1}`);
+  const width1 = line1.length;
+  for (let i = 0; i < 100; i++) mon.mark('alpha', 1); // 计数到 101 → 三位数
+  hud._lastUpdate = 0;
+  hud.update(2000);
+  const line3 = hud.bodyEl.textContent.split('\n').find((l) => l.startsWith('alpha n='));
+  assertTrue(/^alpha n=101 avg /.test(line3), `n 三位数：${line3}`);
+  assertEqual(line3.length, width1, '1 位数与 3 位数的行宽必须相等（定宽右对齐）');
+
+  setDebugFlags({ statsLog: true });
+});
+
 test('PerfHUD: statsLog 关 → 不输出控制台日志（HUD 仍渲染）', () => {
   setDebugFlags({ worldStats: true, statsLog: false });
   const container = document.createElement('div');
