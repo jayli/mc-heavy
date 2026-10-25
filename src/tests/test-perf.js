@@ -125,15 +125,17 @@ test('PerfHUD: 折叠只留首行、展开恢复全部行，启动态恒展开',
 });
 
 /**
- * 固定宽度 + 操作说明（用户 v1.80 两项要求）。
+ * 固定宽度 + 操作说明（用户 v1.80 两项要求；v1.81 新增飞行键位行）。
  *
- * 钉三件事：① 面板宽度是显式固定值（不靠内容自然宽度）—— 用户报告「宽度随内容长短一直变」；
+ * 钉四件事：① 面板宽度是显式固定值（不靠内容自然宽度）—— 用户报告「宽度随内容长短一直变」；
  * ② `n=` 字段右对齐到 3 位 —— 这是行宽**结构上**不再随计数位数跳变的前提（否则
- * 计数从 9 涨到 10 就换一档）；③ 操作说明三行原文在面板内且不在 body 的 250ms 重写路径里
- * （静态文案不该被每帧重写）。
- * 不在这里断言具体像素宽 —— 那是观感值，定宽常量的注释里有实测依据。
+ * 计数从 9 涨到 10 就换一档）；③ 操作说明四行原文在面板内且不在 body 的 250ms 重写路径里
+ * （静态文案不该被每帧重写）；④ 飞行键位存在。
+ * 不在这里断言具体像素宽 —— 那是观感值，定宽常量的注释里有实测依据；真页面的溢出判定
+ * 在 `tests/player-flight.spec.mjs` 的 E5（
+ * `scrollWidth ≤ clientWidth`）。
  */
-test('PerfHUD: 面板宽度固定 + 操作说明三行入面板', () => {
+test('PerfHUD: 面板宽度固定 + 操作说明四行入面板', () => {
   setDebugFlags({ worldStats: true, statsLog: false });
   const container = document.createElement('div');
   const hud = new PerfHUD(new PerfMonitor(), container, () => makeFakeStats());
@@ -146,6 +148,9 @@ test('PerfHUD: 面板宽度固定 + 操作说明三行入面板', () => {
   assertTrue(hud.helpEl.textContent.includes('操作：a←s↓d→w↑ | Space：跳'));
   assertTrue(hud.helpEl.textContent.includes('Z：背包 | X：生成丧尸 | R：换枪'));
   assertTrue(hud.helpEl.textContent.includes('Ctrl+鼠标左键：点燃TNT，矿车启动'));
+  assertTrue(hud.helpEl.textContent.includes('F：飞行开关'), '飞行开关的键位须出现在操作说明里');
+  assertTrue(hud.helpEl.textContent.includes('Space：升') && hud.helpEl.textContent.includes('Shift：降'),
+    '飞行中的升降键位须出现在操作说明里');
   assertEqual(hud.helpEl.parentElement, hud.el, '操作说明在面板内');
   assertTrue(!hud.bodyEl.textContent.includes('操作：'), '操作说明不得搭进 250ms 重写的 bodyEl');
 

@@ -32,6 +32,7 @@ const SEP = '──────────';
  */
 const HELP_LINES = [
   '操作：a←s↓d→w↑ | Space：跳',
+  'F：飞行开关 | 飞行中 Space：升 / Shift：降',
   'Z：背包 | X：生成丧尸 | R：换枪',
   'Ctrl+鼠标左键：点燃TNT，矿车启动',
 ];

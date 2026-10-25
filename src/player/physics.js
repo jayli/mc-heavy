@@ -4,6 +4,19 @@ const PLAYER_HEIGHT = 1.8;
 const GRAVITY = -24.0;
 const JUMP_FORCE = 10.0;
 const SPEED = 8.0;
+/**
+ * 飞行水平速度倍率（用户裁定 2026-10-25：走路 2 倍，不设 Ctrl 加速档）。
+ * 原版创造飞行是走路的 2.5×，但本仓 `SPEED = 8` 已是原版疾跑（5.612）的 1.43 倍，
+ * 照抄 2.5× 会到 20 格/秒 —— 故按「倍率」口径取 2（= 16 格/秒）。
+ * 导出供测试读同一份权威（红线 1：测试与实现不得各写一份字面量）。
+ */
+export const FLY_SPEED_MULT = 2;
+/**
+ * 飞行垂直速度（格/秒，空格升 / Shift 降）。
+ * ⚠️ **这是初值不是推导值**（原版无公开稳定数值可引）：8 ≈ 水平飞行速度的一半。
+ * 实玩后若觉得爬升太慢/太快，只改这一个数 —— 与 `BOB.intensity` 同一标定口径。
+ */
+export const FLY_VERTICAL_SPEED = 8;
 const MAX_STEP = 1.0;
 const EPSILON = 0.001;
 
@@ -15,6 +28,11 @@ export class PlayerPhysics {
     this.vel = { x: 0, y: 0, z: 0 };
     this.onGround = false;
     this.inWater = false;
+    /**
+     * 飞行态（spec §4.1：**唯一权威在本类**，`Player` 不复制一份）。`true` 时 `step()` 走
+     * `_stepFlying()`（零重力 + 恒定垂直速度），并且飞行中 `onGround` 恒为 false。
+     */
+    this.flying = false;
     // 本帧 step-up 累积抬升量（供相机视觉缓动消费；物理位置本身瞬时到位）
     this.stepLiftAccum = 0;
     /**
@@ -31,8 +49,27 @@ export class PlayerPhysics {
     this.minecarts = null;
   }
 
+  /** 开/关飞行（边沿由调用方保证 —— `player.js` 的 `!e.repeat`）。同时清零竖直速度： */
+  toggleFlight() {
+    this.flying = !this.flying;
+    // 清零是载荷性的：不清的话「下坠中按 F」会保留 −24 的竖直速度继续掉、
+    // 「起跳上升段按 F」会保留 +10 继续窜。起飞/降落都从静止竖直速度开始（悬停）。
+    this.vel.y = 0;
+  }
+
+  /**
+   * 飞行垂直输入：`dir` = +1 升 / -1 降 / 0 悬停。非飞行态 no-op（地面态的空格仍走 `jump()`）。
+   * 每步重设 `vel.y`（无惯性，与 `move()` 每步重设水平速度同一手感口径）。
+   * @param {number} dir
+   */
+  moveVertical(dir) {
+    if (!this.flying) return;
+    this.vel.y = dir * FLY_VERTICAL_SPEED;
+  }
+
   /** 单步积分（调用方按 60Hz 定步长驱动） */
   step(dt) {
+    if (this.flying) { this._stepFlying(dt); return; }
     const w = this.world;
     this.inWater = w.getBlockId(Math.floor(this.pos.x), Math.floor(this.pos.y + 0.5), Math.floor(this.pos.z)) === w.registry.idOf('water');
     const gravity = this.inWater ? GRAVITY * 0.4 : GRAVITY;
@@ -45,6 +82,27 @@ export class PlayerPhysics {
     this.onGround = false;
     this._moveAxis(this.vel.y * dt, 1);
     // 水平速度由 move() 每步重设，此处衰减为 0（无惯性，mc-lite 手感）
+    this.vel.x = 0; this.vel.z = 0;
+  }
+
+  /**
+   * 飞行物理（spec §4.3）。与地面路径共用 `_moveAxis` 的分轴碰撞与二分回退 ——
+   * 区别只有「零重力 + 竖直速度由输入直接给」。
+   *
+   * ⚠️ **`onGround` 必须在移动前清零**：`onGround` 只由 `_moveAxis` 在向下碰撞时置 true，
+   * 所以「清零 → 移动 → 判 onGround」恰好等价于「本步向下且触地」。不清零时，
+   * 贴地悬停（竖直步长 0 → `_moveAxis` 直接 return）会带着上一步的 `true` 进来 →
+   * **悬停被立即踢出飞行**（实测形态：按 F 在地面悬停一帧就掉回地面）。
+   * 同一个 `onGround === false` 还是「飞行时不晃」的判据来源（`player.js` 传 `jumping: !onGround`）。
+   * @param {number} dt 秒
+   */
+  _stepFlying(dt) {
+    this._moveAxis(this.vel.x * dt, 0);
+    this._moveAxis(this.vel.z * dt, 2);
+    this.onGround = false;
+    this._moveAxis(this.vel.y * dt, 1);
+    // 向下触地 → 退出飞行（Java 口径）。向上顶到天花板不会置 onGround（只把 vel.y 归零）→ 仍在飞。
+    if (this.onGround) { this.flying = false; this.vel.y = 0; }
     this.vel.x = 0; this.vel.z = 0;
   }
 
@@ -101,6 +159,8 @@ export class PlayerPhysics {
    * @returns {boolean} 是否成功登上
    */
   _tryStepUp() {
+    // 飞行时没有「自动上台阶」的概念（原版飞行撞到方块边缘就是停住）。
+    if (this.flying) return false;
     // 跳跃上升段拒绝（下落中允许 —— 见上方注释）。站立时本步 vel.y 已被重力压成负值，
     // 故「在地面上」也走这条放行分支。
     if (!this.onGround && this.vel.y > 0) return false;
@@ -182,6 +242,7 @@ export class PlayerPhysics {
   }
 
   jump() {
+    if (this.flying) return;   // 飞行中空格归 moveVertical(+1) 管（双保险，player.js 侧也已分流）
     if (this.onGround) this.vel.y = JUMP_FORCE;
     else if (this.inWater) this.vel.y = 4; // 水中上浮
   }
@@ -202,7 +263,7 @@ export class PlayerPhysics {
     let ix = inputX, iz = inputZ;
     const len = Math.hypot(ix, iz);
     if (len > 1) { ix /= len; iz /= len; }
-    const speed = SPEED * (this.inWater ? 0.6 : 1);
+    const speed = this.flying ? SPEED * FLY_SPEED_MULT : SPEED * (this.inWater ? 0.6 : 1);
     this.vel.x = ix * speed;
     this.vel.z = iz * speed;
   }

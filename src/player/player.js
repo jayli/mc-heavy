@@ -215,6 +215,14 @@ export class Player {
       // 否则按住 X 会以键盘重复率（约 30Hz）连续生成，瞬间填满 20 上限。
       // 上限校验由 `ZombieService.spawn()` 负责（满额返回 null），这里不重复判断。
       if (e.code === 'KeyX' && !e.repeat && this._onSpawnZombie) this._onSpawnZombie();
+      // 飞行开关（spec 2026-10-25 §4.4）：单击 F，**非重复事件**才触发 ——
+      // 按住 F 时键盘重复率约 30Hz，不判 `e.repeat` 会让飞行状态疯狂抖动。
+      // 不 preventDefault：F 不是浏览器功能键（与 ARROW_CODES 只拦方向键的口径一致）。
+      // 乘坐矿车期间忽略：物理步在乘坐期整段跳过，`flying` 在车里既无法生效也永远清不掉，
+      // 所以干脆不让这个输入生效（spec §4.5.1）。⚠️ 不声称「因此消除了所有
+      // 视觉在车上、状态说在飞」的并存态 —— 碰撞绑定那条路径仍可造出它，
+      // 而 spec 本身裁定「进车不解除飞行、下车继续飞」是可接受行为。
+      if (e.code === 'KeyF' && !e.repeat && !this.ridingMinecartId) this.physics.toggleFlight();
     };
     const onKeyUp = (e) => this.keys.delete(e.code);
     // pointer lock 请求必须吞掉拒绝（mc-lite Player.js:292 同款 `.catch(() => {})`）：
@@ -593,7 +601,14 @@ export class Player {
       const sin = Math.sin(this.yaw), cos = Math.cos(this.yaw);
       this.physics.move(-sin * fwd + cos * strafe, -cos * fwd - sin * strafe);
     }
-    if (k.has('Space')) this.physics.jump();
+    // 飞行态：空格/Shift 是垂直输入（原版口径），不是跳跃/潜行。
+    // 升降同按时取差 → 0 = 悬停（原版同口径，不是「两个动作互相取消」）。
+    // ⚠️ 非飞行态的分支必须保留原样：地面上的空格仍是 `jump()`，Shift 在键位层面不产生任何位移。
+    if (this.physics.flying) {
+      const up = k.has('Space') ? 1 : 0;
+      const down = (k.has('ShiftLeft') || k.has('ShiftRight')) ? 1 : 0;
+      this.physics.moveVertical(up - down);
+    } else if (k.has('Space')) this.physics.jump();
   }
 
   /**

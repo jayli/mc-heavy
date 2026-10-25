@@ -1,6 +1,6 @@
 import { test } from './runner.js';
 import { assertTrue, assertFalse, assertNotNull, assertEqual } from './assert.js';
-import { PlayerPhysics } from '../player/physics.js';
+import { PlayerPhysics, FLY_SPEED_MULT, FLY_VERTICAL_SPEED } from '../player/physics.js';
 import { WorldData } from '../voxel/world-data.js';
 import { ChunkColumn } from '../voxel/chunk-column.js';
 import { createRegistry } from '../voxel/block-registry.js';
@@ -350,4 +350,122 @@ test('WorldData.supportsPlayer: 坐标查询（M2-7）', () => {
   assertTrue(world.supportsPlayer(8, 10, 8), 'cloud supports');
   assertTrue(!world.supportsPlayer(8, 0, 8), 'stone does not');
   assertTrue(!world.supportsPlayer(8, 20, 8), 'air does not');
+});
+
+// ---- 飞行（spec 2026-10-25-player-flight-design.md §4.3）----
+
+test('flight: 悬停不掉落（零重力），且 toggleFlight 清零竖直速度', () => {
+  const { world } = makeWorld();
+  const p = new PlayerPhysics(world);
+  p.pos = { x: 8, y: 20, z: 8 };
+  // 先让它掉一会儿，模拟「下坠中按 F」—— toggleFlight 必须吃掉这份速度
+  p.step(1 / 60);
+  assertTrue(p.vel.y < 0, `前提：须处于下坠，vel.y=${p.vel.y}`);
+  p.toggleFlight();
+  assertTrue(p.flying, 'toggleFlight 后处于飞行态');
+  assertEqual(p.vel.y, 0, 'toggleFlight 必须清零竖直速度（否则按 F 后仍在加速下坠）');
+  const y0 = p.pos.y;
+  for (let i = 0; i < 60; i++) { p.moveVertical(0); p.step(1 / 60); }
+  assertTrue(Math.abs(p.pos.y - y0) < 1e-9, `悬停 60 步高度须不变，y0=${y0} y=${p.pos.y}`);
+});
+
+test('flight: 空格上升 / Shift 下降的速度等于 FLY_VERTICAL_SPEED', () => {
+  const { world } = makeWorld();
+  const p = new PlayerPhysics(world);
+  p.pos = { x: 8, y: 20, z: 8 };
+  p.toggleFlight();
+  const y0 = p.pos.y;
+  for (let i = 0; i < 60; i++) { p.moveVertical(1); p.step(1 / 60); }
+  const up = p.pos.y - y0;
+  assertTrue(Math.abs(up - FLY_VERTICAL_SPEED) < FLY_VERTICAL_SPEED * 0.05,
+    `上升 1 秒的距离须 ≈ ${FLY_VERTICAL_SPEED} 格（实测 ${up}）`);
+  const y1 = p.pos.y;
+  for (let i = 0; i < 60; i++) { p.moveVertical(-1); p.step(1 / 60); }
+  const down = y1 - p.pos.y;
+  assertTrue(Math.abs(down - FLY_VERTICAL_SPEED) < FLY_VERTICAL_SPEED * 0.05,
+    `下降 1 秒的距离须 ≈ ${FLY_VERTICAL_SPEED} 格（实测 ${down}）`);
+});
+
+test('flight: 下降触地退出飞行（Java 口径），落地后不再飞', () => {
+  const { world } = makeWorld();       // y=0 一层石头地面，站立脚底 y=1
+  const p = new PlayerPhysics(world);
+  p.pos = { x: 8, y: 6, z: 8 };
+  p.toggleFlight();
+  for (let i = 0; i < 120 && p.flying; i++) { p.moveVertical(-1); p.step(1 / 60); }
+  assertFalse(p.flying, '一直下降必须触地退出飞行');
+  assertTrue(p.onGround, '退出时确实在地面上');
+  assertTrue(Math.abs(p.pos.y - 1) < 0.02, `停在石面 y=1，实测 ${p.pos.y}`);
+});
+
+test('flight: 贴地悬停不误退出（onGround 每步清零的护栏）', () => {
+  const { world } = makeWorld();
+  const p = new PlayerPhysics(world);
+  p.pos = { x: 8, y: 1, z: 8 };
+  for (let i = 0; i < 10; i++) p.step(1 / 60);   // 先落地 → onGround = true
+  assertTrue(p.onGround, '前提：须已站在地面上');
+  p.toggleFlight();
+  for (let i = 0; i < 60; i++) { p.moveVertical(0); p.step(1 / 60); }
+  assertTrue(p.flying, '贴地悬停不得被踢出飞行');
+  assertFalse(p.onGround, '飞行态 onGround 必须恒 false（同时是「飞行不晃」的判据来源）');
+});
+
+test('flight: 水平速度恰为走路的 2 倍（不比走路慢）', () => {
+  const { world } = makeWorld();
+  const walk = new PlayerPhysics(world);
+  walk.pos = { x: 2, y: 1, z: 8 };
+  for (let i = 0; i < 10; i++) walk.step(1 / 60);
+  const wx = walk.pos.x;
+  for (let i = 0; i < 12; i++) { walk.move(1, 0); walk.step(1 / 60); }
+  const walkDist = walk.pos.x - wx;
+
+  const fly = new PlayerPhysics(world);
+  fly.pos = { x: 2, y: 40, z: 8 };
+  fly.toggleFlight();
+  const fx = fly.pos.x;
+  for (let i = 0; i < 12; i++) { fly.move(1, 0); fly.step(1 / 60); }
+  const flyDist = fly.pos.x - fx;
+
+  assertTrue(walkDist > 0.5, `前提：走路须真的前进，实测 ${walkDist}`);
+  const ratio = flyDist / walkDist;
+  assertTrue(Math.abs(ratio - FLY_SPEED_MULT) < 0.02, `飞行/走路速度比须 = ${FLY_SPEED_MULT}，实测 ${ratio}`);
+});
+
+test('flight: 飞行时不自动上台阶（撞 1 格台阶被挡住）', () => {
+  const { world, reg } = makeWorld();
+  const col = world.getColumn(0, 0);
+  for (let x = 10; x <= 15; x++) for (let lz = 0; lz < 16; lz++) {
+    col.blocks[blockIndex(x, 1, lz)] = reg.idOf('stone');
+  }
+  const p = new PlayerPhysics(world);
+  p.pos = { x: 8, y: 1, z: 8 };        // 与台阶同高（台面 y=2）
+  p.toggleFlight();
+  for (let i = 0; i < 60; i++) { p.move(1, 0); p.step(1 / 60); }
+  assertTrue(p.pos.x < 10, `飞行时不得被抬上台阶，x=${p.pos.x}`);
+  assertTrue(Math.abs(p.pos.y - 1) < 1e-6, `高度不变，y=${p.pos.y}`);
+});
+
+test('flight: 关闭飞行后恢复重力（自由落体）', () => {
+  const { world } = makeWorld();
+  const p = new PlayerPhysics(world);
+  p.pos = { x: 8, y: 10, z: 8 };
+  p.toggleFlight();
+  for (let i = 0; i < 30; i++) { p.moveVertical(0); p.step(1 / 60); }
+  assertTrue(Math.abs(p.pos.y - 10) < 1e-9, '飞行时悬停在 y=10');
+  p.toggleFlight();
+  assertFalse(p.flying, '再次 toggle 退出飞行');
+  for (let i = 0; i < 180; i++) p.step(1 / 60);
+  assertTrue(p.onGround, '退出飞行后必须落地');
+  assertTrue(Math.abs(p.pos.y - 1) < 0.02, `落在石面 y=1，实测 ${p.pos.y}`);
+});
+
+test('flight: 顶到天花板不退出飞行（撞头 ≠ 落地）', () => {
+  const { world, reg } = makeWorld();
+  const col = world.getColumn(0, 0);
+  for (let lz = 0; lz < 16; lz++) col.blocks[blockIndex(8, 6, lz)] = reg.idOf('stone');
+  const p = new PlayerPhysics(world);
+  p.pos = { x: 8, y: 3, z: 8 };
+  p.toggleFlight();
+  for (let i = 0; i < 120; i++) { p.moveVertical(1); p.step(1 / 60); }
+  assertTrue(p.flying, '顶到天花板仍须保持飞行态');
+  assertTrue(p.pos.y < 6 - 1.7, `被天花板挡住（脚底 + 1.8 ≤ 6），y=${p.pos.y}`);
 });

@@ -14,6 +14,7 @@
 import { test } from './runner.js';
 import { assertTrue, assertEqual } from './assert.js';
 import { Player } from '../player/player.js';
+import { FLY_VERTICAL_SPEED } from '../player/physics.js';
 import { WorldData } from '../voxel/world-data.js';
 import { ChunkColumn } from '../voxel/chunk-column.js';
 import { createRegistry } from '../voxel/block-registry.js';
@@ -122,5 +123,107 @@ test('模态期间方向键不写进 keys（与 WASD 同一守卫）', () => {
   assertTrue(player.keys.has('ArrowUp'), '关闭模态后方向键正常写入');
   releaseKey('ArrowUp');
   assertEqual(player.keys.has('ArrowUp'), false, 'keyup 清除');
+  player.dispose();
+});
+
+// ---- 飞行键位（spec 2026-10-25-player-flight-design.md §4.4）----
+
+test('flight: F 真实 keydown 切换飞行、再按一次切回，且不 preventDefault', () => {
+  const { player } = makeFixture();
+  assertEqual(pressKey('KeyF'), false, 'KeyF 不得 preventDefault（F 不是浏览器功能键）');
+  releaseKey('KeyF');
+  assertEqual(player.physics.flying, true, '第一次按 F 起飞');
+  pressKey('KeyF');
+  releaseKey('KeyF');
+  assertEqual(player.physics.flying, false, '第二次按 F 退出飞行');
+  player.dispose();
+});
+
+test('flight: 按住 F 不连发（repeat 事件被忽略）', () => {
+  const { player } = makeFixture();
+  const ev = new KeyboardEvent('keydown', { code: 'KeyF', repeat: true, cancelable: true, bubbles: true });
+  window.dispatchEvent(ev);
+  assertEqual(player.physics.flying, false, 'repeat 事件不得触发切换（否则按住 F 会疯狂抖动）');
+  player.dispose();
+});
+
+test('flight: 模态期间 F 不切换', () => {
+  const { player } = makeFixture();
+  player._isModal = () => true;
+  pressKey('KeyF');
+  releaseKey('KeyF');
+  assertEqual(player.physics.flying, false, '模态守卫须覆盖 F');
+  player.dispose();
+});
+
+test('flight: 飞行时空格走垂直上升而不是跳跃', () => {
+  const { player } = makeFixture();
+  player.physics.toggleFlight();
+  player.keys.clear();
+  player.keys.add('Space');
+  player._applyInput();
+  assertEqual(player.physics.vel.y, FLY_VERTICAL_SPEED, '飞行中空格 → 恒定上升速度');
+  assertTrue(player.physics.vel.y !== 10, '不得复用 JUMP_FORCE');
+  player.dispose();
+});
+
+test('flight: Shift 下降、左右 Shift 等价、升降同按=悬停', () => {
+  const { player } = makeFixture();
+  player.physics.toggleFlight();
+  player.keys.clear();
+  player.keys.add('ShiftLeft');
+  player._applyInput();
+  assertEqual(player.physics.vel.y, -FLY_VERTICAL_SPEED, 'ShiftLeft 下降');
+  player.keys.clear();
+  player.keys.add('ShiftRight');
+  player._applyInput();
+  assertEqual(player.physics.vel.y, -FLY_VERTICAL_SPEED, 'ShiftRight 与左 Shift 等价');
+  player.keys.clear();
+  player.keys.add('Space');
+  player.keys.add('ShiftLeft');
+  player._applyInput();
+  assertEqual(player.physics.vel.y, 0, '升降同按 = 悬停（不是互相取消成两个动作）');
+  player.dispose();
+});
+
+test('flight: 不飞行时 Shift 不产生任何竖直速度（飞行分支不漏到地面态）', () => {
+  const { player } = makeFixture();
+  player.keys.clear();
+  player.keys.add('ShiftLeft');
+  player._applyInput();
+  assertEqual(player.physics.vel.y, 0, '地面态按 Shift 不得产生上升/下降速度');
+  player.dispose();
+});
+
+test('flight: 坐在矿车里按 F 不切换（物理步在乘坐期被跳过）', () => {
+  const { player } = makeFixture();
+  // 用假的乘坐 id 即可：本用例只验证 player.js 的门控，不驱动矿车物理。
+  player.ridingMinecartId = 'car-1';
+  pressKey('KeyF');
+  releaseKey('KeyF');
+  assertEqual(player.physics.flying, false, '乘坐期 F 必须无效');
+  player.ridingMinecartId = null;
+  pressKey('KeyF');
+  releaseKey('KeyF');
+  assertEqual(player.physics.flying, true, '下车后 F 恢复');
+  player.dispose();
+});
+
+test('flight: 飞行态按住 Shift 时，左键矿车交互的 shift 修饰键不污染垂直输入', () => {
+  // 这条钉的是「两条通道互不干扰」的结构不变量（Review Focus 3）：
+  //   - 飞行高度走 `keys` 集合（ShiftLeft → moveVertical(-1)）
+  //   - 矿车「后退激活」走鼠标事件的 `e.shiftKey` → digBlock({ shift: true })
+  // 两者无交集。若将来有人为了「消除冲突」在 digBlock 里加飞行门控，
+  // 或把 Shift 的读取从 keys 改成鼠标修饰键，这条会红。
+  const { player } = makeFixture();
+  player.physics.toggleFlight();
+  player.keys.clear();
+  player.keys.add('ShiftLeft');
+  player._applyInput();
+  assertEqual(player.physics.vel.y, -FLY_VERTICAL_SPEED, '前提：飞行 + Shift 时为下降速度');
+  // fixture 的 target 为 null → digBlock 挥动后早退，不会写世界；这里只要求「不抛异常且不改变垂直输入」
+  player.digBlock({ shift: true });
+  assertEqual(player.physics.vel.y, -FLY_VERTICAL_SPEED, '矿车交互通道的 shiftKey 不得改写飞行垂直速度');
+  assertEqual(player.physics.flying, true, '挖块/交互不得意外退出飞行');
   player.dispose();
 });
