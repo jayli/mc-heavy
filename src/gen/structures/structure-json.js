@@ -35,6 +35,8 @@ export const STRUCTURE_FILES = Object.freeze({
   desertPyramid: 'desert_pyramid.json',
   // Cloudland 高台（桌山景观）：palette + 扁平数组格式，见上 loadStructure 的两形状归一化
   cloudlandMesaSmall: 'cloudland_mesa_small.json',
+  // 巨型金字塔（Giant Pyramid Epic）：palette + 扁平数组格式（同 cloudlandMesaSmall）
+  giantPyramid: 'giant_pyramid.json',
 });
 
 /**
@@ -62,17 +64,29 @@ export function loadStructure(type) {
     loading.set(type, fetch(`/assets/structures/${STRUCTURE_FILES[type]}`)
       .then((r) => r.json())
       .then((data) => {
-        // 两种产物形状（`structure-json.js` 同时认两神）：
+        // 三种产物形状（`structure-json.js` 同时认）：
         //  ① 旧：{blocks:[{x,y,z,type,direction}]} —— mc-lite 移植的 18 个 JSON
         //  ② 新：{palette:[name...], blocks:[x,y,z,paletteIndex, ...]} —— 万格级结构。
         //     10712 格逐字写对象约 500KB，palette 索引压缩后 106KB。
+        //  ③ **带朝向的 palette 格式**：`{palette, stride: 5, blocks: [x,y,z,paletteIndex,direction, ...]}`
+        //     —— 需要逐格朝向的结构（巨型金字塔的台阶）。
+        //     ⚠️ **为什么必须有这种格式**：② 的路里 `direction` 被硬编码为 0，
+        //     任何「同一种方块要 4 个朝向」的结构（台阶/楼梯）在 ② 下**静默丢掉朝向** ——
+        //     世界里全部按 orient=0 渲染（巨型金字塔的 1219 个台阶曾因此全朝东）。
+        //     用 stride 显式声明，不在 ② 上「猜」是否有第 5 项（两种格式的 blocks 长度差 25%，
+        //     靠长度推导会在一格 0 格的结构上歧义）。
+        const stride = Number.isInteger(data.stride) ? data.stride : 4;
         let raw;
         if (Array.isArray(data.palette) && Array.isArray(data.blocks)) {
+          if (stride !== 4 && stride !== 5) {
+            throw new Error(`structure "${type}": stride=${stride} 不支持（只允许 4 = 无朝向 / 5 = 带朝向）`);
+          }
           raw = [];
-          for (let i = 0; i < data.blocks.length; i += 4) {
+          for (let i = 0; i < data.blocks.length; i += stride) {
             raw.push({
               x: data.blocks[i], y: data.blocks[i + 1], z: data.blocks[i + 2],
-              type: data.palette[data.blocks[i + 3]], direction: 0,
+              type: data.palette[data.blocks[i + 3]],
+              direction: stride === 5 ? data.blocks[i + 4] : 0,
             });
           }
         } else raw = data.blocks;

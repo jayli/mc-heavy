@@ -14,6 +14,7 @@ import { computeSkyCandidates } from './sky-structures.js';
 import { computeScatterCandidates } from './scatter.js';
 import { computeGiantTreeCandidates } from './giant-trees.js';
 import { computeMesaAnchor } from './mesa.js';
+import { computeGiantPyramidAnchor } from './giant-pyramid.js';
 
 /**
  * 计算单个 region 的确定性布局（纯函数，无缓存——缓存由调用方 StructureIndex 管）。
@@ -29,7 +30,8 @@ import { computeMesaAnchor } from './mesa.js';
  *   sky: {skyIslands: Int32Array, cloudClusters: Int32Array},
  *   scatter: {cityScatter: Int32Array, outsideScatter: Int32Array},
  *   giantTrees: {forest: Int32Array, beach: Int32Array, banyan: Int32Array},
- *   mesa: ({wx:number, wz:number, floorY:number}|null)
+ *   mesa: ({wx:number, wz:number, floorY:number}|null),
+ *   giantPyramid: ({wx:number, wz:number, floorY:number}|null)
  * }}
  */
 export function computeRegionLayout(regionX, regionZ, seed) {
@@ -71,9 +73,14 @@ export function computeRegionLayout(regionX, regionZ, seed) {
   // 城市/地标让路在 GEN 侧阶段 2.75 判（城市 bounds 可跨 region，候选层只能过滤一半）。
   const mesa = computeMesaAnchor(regionX, regionZ, seed);
 
+  // 巨型金字塔（Giant Pyramid Epic）：region 级候选，与高台同构。
+  // 城市/地标/空岛/高台的排除都已在候选层（`giant-pyramid.js` 拿得到 `getCityBoundsForSeed`
+  // 与 `computeRegionLocalAnchor`）；撒布结构的剔除在 GEN 侧阶段 2.7（那里拿得到布局）。
+  const giantPyramid = computeGiantPyramidAnchor(regionX, regionZ, seed);
+
   return {
     regionX, regionZ, pyramidRaw, pyramid, frozenMountain, snowLand, plainLand,
-    island, city, sky, scatter, giantTrees, mesa,
+    island, city, sky, scatter, giantTrees, mesa, giantPyramid,
   };
 }
 

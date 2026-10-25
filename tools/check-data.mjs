@@ -920,8 +920,18 @@ async function checkGiantTrees() {
     if (id !== undefined && REGISTRY.opaqueTable[id] !== 1) fail(`"${n}" 的 opaqueTable 不是 1（漏写 opaque:true → 叶-叶共享面不再互剔，顶点 ×7.78）`);
   }
 
-  // ⑥ 全部不进背包
-  for (const n of declared) if (!HIDDEN_FROM_INVENTORY.includes(n)) fail(`"${n}" 不在 HIDDEN_FROM_INVENTORY（玩家能放出孤零零的树干/树叶）`);
+  // ⑥ **必须在背包里**（2026-10-25 用户裁定，口径已反转）
+  //
+  // 历史：这条原本是「全部不进背包」，理由是「玩家能放出孤零零的树干/树叶」。
+  // 用户 2026-10-25 明确要求「巨树烘焙的几个新的树叶方块也放到背包里」——
+  // 那本来就是代玩家做决定：巨树方块是 `solid:true` + 有 faces-data 的普通可放置方块，
+  // 玩家完全可以把它们当深色大方块盖东西。
+  // ⚠️ **方向已反转，勿按旧口径改回**：现在“不在背包”才是缺陷（会与 `buildItemNames` 派生的
+  // 物品集合不一致，而图标 manifest 是双向一致校验，一旦不同步会同时红两个门）。
+  for (const n of declared) {
+    if (HIDDEN_FROM_INVENTORY.includes(n)) fail(`"${n}" 在 HIDDEN_FROM_INVENTORY 里 —— 用户 2026-10-25 要求巨树方块进背包`);
+    if (!buildItemNames(REGISTRY).includes(n)) fail(`"${n}" 不在物品集合（buildItemNames 派生自 registry − 排除集合）`);
+  }
 
   // ⑦ 贴图：faces-data 里 procedural/giant_* 的 tile 必须有 16×16 PNG、无近黑像素；且目录里没有无人引用的 giant_* 孤儿
   const giantTiles = new Set();
@@ -1127,6 +1137,131 @@ async function checkLeafTextures() {
   }
 }
 
+// ---------------------------------------------------------------- [巨型金字塔] 契约（Giant Pyramid Epic）
+
+/**
+ * [巨型金字塔] 契约：烘焙输入 / 产物 metrics / 方块映射 / 渲染通道五者互相对得上。
+ *
+ * 钉的失效路径（**每条都是静默的**）：
+ *   ① 指纹不匹配 → 改了 BLOCK_MAP / FACING_TO_ORIENT / PYRAMID_METRICS / .litematic 却没重烘
+ *      → 世界里是旧塔形，方块层面看不出差别
+ *   ② palette 含未注册方块 → `makeColumnSetter` 对未注册名字**静默 return**（landmarks.js:274）
+ *      → 那一格变 air → 塔身上出现洞
+ *   ③ 峰值降到全整格 → 台阶被退化成 sand，迷宫变实心塔（观感完全不同）
+ *   ④ 底层不满铺 → 塔基悬空（2401 列少一列就露缝）
+ *   ⑤ palette 跑进 transparent 通道 → 每格顶点成本翻倍
+ *   ⑥ 含砖/木族 → 与人造建筑混淆（与高台同口径的名字模式判据）
+ * ⚠️ 主流程是逐个显式调用 —— 漏了本行则门禁永不执行（本仓已因此出过两次事故）。
+ */
+async function checkGiantPyramid() {
+  const fp = await import('./giant-pyramid-fingerprint.mjs');
+  const before = failures.length;
+  const fail = (m) => failures.push(`[巨型金字塔] ${m}`);
+
+  // ① 烘焙输入（入库）与产物存在性
+  if (!fs.existsSync(fp.LITEMATIC_PATH)) {
+    fail(`烘焙输入缺失 ${path.relative(ROOT, fp.LITEMATIC_PATH)}（.litematic 入库，缺失 = 仓库损坏）`);
+    return;
+  }
+  if (!fs.existsSync(fp.PYRAMID_JSON) || !fs.existsSync(fp.PYRAMID_META)) {
+    fail('缺 assets/structures/giant_pyramid.json 或 .meta.json（跑 npm run pyramid）');
+    return;
+  }
+  let meta, json;
+  try {
+    meta = JSON.parse(fs.readFileSync(fp.PYRAMID_META, 'utf8'));
+    json = JSON.parse(fs.readFileSync(fp.PYRAMID_JSON, 'utf8'));
+  } catch { fail('产物不是合法 JSON（重跑 npm run pyramid）'); return; }
+
+  // ② 指纹：改了参数或素材却没重烘
+  const cur = fp.giantPyramidInputFingerprint();
+  if (meta.fingerprints?.input !== cur.input) {
+    fail(`产物已过期：指纹不匹配（烘焙时 "${meta.fingerprints?.input}" vs 当前 "${cur.input}"）→ 跑 npm run pyramid`);
+  }
+
+  // ③ metrics：格数 / 三个目标方块的格数 / bbox
+  const M = fp.PYRAMID_METRICS;
+  // ⚠️ **stride 必验**：只写 4 项（丢 direction）会让 1219 个台阶静默全朝东 ——
+  // 而错的是「朝向」不是「格数」，格数判据完全拓不到。故这里先钉 stride，再按它遍历。
+  const STRIDE = Number.isInteger(json.stride) ? json.stride : 4;
+  if (STRIDE !== 5) {
+    fail(`产物 stride=${STRIDE} ≠ 5 —— 台阶朝向（direction）没写进产物 → 世界上所有台阶会全朝 orient=0`);
+  }
+  const n = json.blocks.length / STRIDE;
+  if (n !== M.blocks) fail(`方块数 ${n} ≠ PYRAMID_METRICS.blocks ${M.blocks}`);
+  const byType = new Map();
+  const orientationHist = new Map();   // sand_step 的 orient 分布（四向均匀 = 方向对了）
+  for (let i = 3; i < json.blocks.length; i += STRIDE) {
+    const t = json.palette[json.blocks[i]];
+    byType.set(t, (byType.get(t) || 0) + 1);
+    if (t === 'sand_step') {
+      const d = json.blocks[i + 1];
+      orientationHist.set(d, (orientationHist.get(d) || 0) + 1);
+    }
+  }
+  for (const [name, want] of [['sand', M.sandCells], ['sand_step', M.stepCells], ['sand_slab', M.slabCells]]) {
+    const got = byType.get(name) || 0;
+    if (got !== want) fail(`"${name}" 格数 ${got} ≠ PYRAMID_METRICS ${want}`);
+  }
+  // 台阶朝向必须四向都有（否则说明映射退化成单一朝向 —— 砖一块全朝东的塔）
+  if (orientationHist.size !== 4) {
+    fail(`sand_step 的 orient 只出现 ${orientationHist.size} 种（${[...orientationHist.keys()].sort().join(',')}）—— 四个朝向都要有（坡面方向不同）`);
+  } else {
+    const counts = [...orientationHist.values()].sort((a, b) => a - b);
+    // 实测四向 305/303/305/306（几乎均匀）；门取「最多不超过最少 1.5 倍」
+    if (counts[3] > counts[0] * 1.5) {
+      fail(`sand_step 朝向分布偏差过大（${JSON.stringify(Object.fromEntries([...orientationHist].sort()))}）—— 四坡面对称应接近均匀`);
+    }
+  }
+
+  let mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity, mnz = Infinity, mxz = -Infinity;
+  const baseCols = new Set();
+  for (let i = 0; i < json.blocks.length; i += STRIDE) {
+    const x = json.blocks[i], y = json.blocks[i + 1], z = json.blocks[i + 2];
+    if (x < mnx) mnx = x; if (x > mxx) mxx = x;
+    if (y < mny) mny = y; if (y > mxy) mxy = y;
+    if (z < mnz) mnz = z; if (z > mxz) mxz = z;
+    if (y === 1) baseCols.add(`${x},${z}`);
+  }
+  if (mxx - mnx + 1 !== M.width) fail(`宽 ${mxx - mnx + 1} ≠ ${M.width}`);
+  if (mxy - mny + 1 !== M.height) fail(`高 ${mxy - mny + 1} ≠ ${M.height}`);
+  if (mxz - mnz + 1 !== M.depth) fail(`深 ${mxz - mnz + 1} ≠ ${M.depth}`);
+  if (mny !== 1) fail(`最低点 y=${mny} ≠ 1（归一化约定：rasterizeStructure 按 b.y 落位）`);
+  // 底层满铺：少一列就有悬空缝
+  if (baseCols.size !== M.baseCells) fail(`基座列数 ${baseCols.size} ≠ ${M.baseCells}（底层被改动？）`);
+  // 台阶不得退化成全整格（守住“迷宫”这个设计意图）
+  const stepCells = byType.get('sand_step') || 0;
+  if (stepCells < 1000) fail(`sand_step 只有 ${stepCells} 格（必须 ≥1000，实测 1219）—— 台阶被退化成整格会让迷宫变成实心塔`);
+
+  // ④ palette：全部注册 + 通道限制 + 无砖无木
+  const palette = Array.isArray(json.palette) ? json.palette : [];
+  if (palette.length === 0) fail('产物缺 palette（重跑 npm run pyramid）');
+  for (const name of palette) {
+    const id = REGISTRY.idOf(name);
+    if (id === undefined) {
+      fail(`palette 含未注册方块 "${name}"（makeColumnSetter 静默跳过 → 塔身出现洞）`);
+      continue;
+    }
+    if (REGISTRY.cullTable[id] === 2) {
+      fail(`palette 方块 "${name}" 跑进 transparent 通道（每格顶点成本翻倍）`);
+    }
+  }
+  const brickish = palette.filter((name) => /brick/i.test(name));
+  if (brickish.length > 0) fail(`palette 含砖块族（${brickish.join(', ')}）—— 用户要求沙子系`);
+  const woody = palette.filter((name) => /log|wood|plank|acacia|oak|birch/i.test(name));
+  if (woody.length > 0) fail(`palette 含木族（${woody.join(', ')}）—— 用户要求沙子系`);
+
+  // ⚠️ 成功行的条件必须涵盖**本函数全部判据**，否则失败时仍会打印一条 ✓
+  // （实测踩到：`[高台]` 曾同时出现「✗ 含砖块族」与「✓ …无砖无木」两条，读者只看 ✓ 就会误判）。
+  if (failures.length === before) {
+    // 成功行报告 stride 与四向分布（从产物本身算，不读 meta —— meta 与产物可能不一致）
+    const dist = [0, 1, 2, 3].map((o) => orientationHist.get(o) || 0);
+    infos.push(`[巨型金字塔] ${n} 格 / ${mxx - mnx + 1}×${mxy - mny + 1}×${mxz - mnz + 1} / 基座 ${baseCols.size} 列 / ` +
+      `${palette.length} 种（sand ${byType.get('sand')} + step ${stepCells} + slab ${byType.get('sand_slab')}）/ ` +
+      `stride ${STRIDE} + 台阶四向 ${dist.join('/')} / 无砖无木 / 指纹匹配`);
+  }
+}
+
 // ---------------------------------------------------------------- [树叶剔除] 契约（v1.70）
 
 /**
@@ -1211,6 +1346,7 @@ checkSkyboxAssets();         // v1.58：天空盒立方图完整性（⚠️ 漏
 await checkNightSkyFreshness(); // v1.60：夜空烘焙产物指纹（⚠️ 漏了本行则门禁永不执行）
 await checkGiantTrees();     // 巨树景观：方块/烘焙产物/贴图三方契约（⚠️ 漏了本行则门禁永不执行）
 await checkCloudlandMesa();  // 高台：烘焙产物/映射表/通道/背包契约（⚠️ 漏了本行则门禁永不执行）
+await checkGiantPyramid();   // 巨型金字塔：烘焙产物/映射表/通道契约（⚠️ 漏了本行则门禁永不执行）
 checkLeafCullingContract();  // v1.70：镂空遮挡体派生表与树叶族声明的一致性（⚠️ 漏了本行则门禁永不执行）
 
 console.log('[check:data] 数据契约检查');

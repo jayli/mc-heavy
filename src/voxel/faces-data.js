@@ -13,6 +13,11 @@ export const FACES_DATA = {
   stone: ['stone', 'stone', 'stone_andesite', 'stone_andesite', 'stone', 'stone'],
   stone_diorite: 'stone_diorite',
   sand: ['sand_side', 'sand_side', 'sand', 'sand', 'sand_side', 'sand_side'],
+  // 巨型金字塔（Giant Pyramid Epic）：台阶与半砖**复用既有 sand tile，零新增贴图**。
+  // 面序 0:+X 1:-X 2:+Y 3:-Y 4:+Z 5:-Z；顶/底用 `sand`（正面纹理），四侧用 `sand_side`——
+  // 与上面的 sand 方块同口径（否则台阶侧面的砂粒方向与主体不一致，贴面时会看出接缝）。
+  sand_step: ['sand_side', 'sand_side', 'sand', 'sand', 'sand_side', 'sand_side'],
+  sand_slab: ['sand_side', 'sand_side', 'sand', 'sand', 'sand_side', 'sand_side'],
   moss: ['dirt_podzol_side', 'dirt_podzol_side', 'moss_block', 'moss_block', 'dirt_podzol_side', 'dirt_podzol_side'],
   swamp_grass: ['Mossy_Cobblestone_side', 'Mossy_Cobblestone_side', 'procedural/swamp_grass_top', 'procedural/swamp_grass_top', 'Mossy_Cobblestone_side', 'Mossy_Cobblestone_side'],
   snow: 'Snow_top',

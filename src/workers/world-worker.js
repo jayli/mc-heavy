@@ -10,6 +10,7 @@ import { fillColumn } from '../gen/terrain.js';
 import { carveCaves } from '../gen/caves.js';
 import { computeRegionLayout } from '../gen/structures/structure-layout.js';
 import { applyStructuresToColumn } from '../gen/structures/apply.js';
+import { getCityBoundsForSeed } from '../gen/structures/city-layout.js';
 import { preloadStructures } from '../gen/structures/structure-json.js';
 import { SCATTER_JSON_TYPES } from '../gen/structures/scatter.js';
 import { loadGiantTrees } from '../gen/structures/giant-trees.js';
@@ -166,6 +167,11 @@ installRpcHandler({
     // 预热失败不阻断 layout（结构 JSON 缺失会让 rasterize 静默跳过，但布局本身仍可用）。
     await scatterPreloadPromise.catch(() => {});
     await giantPreloadPromise.catch(() => {});
+    // 预热城市 bounds 缓存：`buildCityLayout` 实测 10~12ms，绝不能落进首个 GEN 的计时
+    // 路径（`structure-gen` fixture 的 genP95 门是 10ms）。`layout` 入口是唯一保证
+    // 「先于 GEN、且本 Worker 一定会走到」的位置（与上面两个预载 promise 同处）。
+    // 巨型金字塔的候选层读这个缓存判断「占地是否在城市内」。
+    getCityBoundsForSeed(p.seed);
     return computeRegionLayout(p.regionX, p.regionZ, p.seed);
   },
 

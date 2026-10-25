@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "sourceBlocks": 17966,
+  "regionName": "Small Pyramid Maze",
+  "width": 49,
+  "height": 24,
+  "depth": 49,
+  "blocks": 16207,
+  "sandCells": 14987,
+  "stepCells": 1219,
+  "slabCells": 1,
+  "baseCells": 2401,
+  "paletteSize": 3,
+  "stepOrientationCounts": {
+    "sand_step:0": 305,
+    "sand_step:1": 303,
+    "sand_step:2": 305,
+    "sand_step:3": 306
+  },
+  "origin": {
+    "cx": 24,
+    "cz": 24
+  },
+  "fingerprints": {
+    "input": "557af216e5c37787:da8ae953d79022c0",
+    "litematicSha256": "557af216e5c377870159bae6a2693757799e877a838ac5a3aae2a54e4e821dca",
+    "paramsSha256": "da8ae953d79022c0e796032a5d9af3c9f96073d5f546d9507c2b2cb7c5b89a8c"
+  }
+}

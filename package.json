@@ -11,6 +11,7 @@
     "turret": "node tools/bake-turret-armor.mjs",
     "gianttrees": "node tools/bake-giant-trees.mjs",
     "mesa": "node tools/bake-cloudland-mesa.mjs",
+    "pyramid": "node tools/bake-giant-pyramid.mjs",
     "gianttextures": "node tools/bake-giant-textures.mjs",
     "leaftextures": "node tools/bake-leaf-textures.mjs",
     "atlas": "node tools/build-atlas.mjs",

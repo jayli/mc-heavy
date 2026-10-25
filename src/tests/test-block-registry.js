@@ -14,13 +14,13 @@ test('BlockRegistry: air 恒为 ID 0', () => {
   assertEqual(reg.idOf('air'), 0);
 });
 
-test('BlockRegistry: 134 方块全部注册且 ID 唯一', () => {
+test('BlockRegistry: 136 方块全部注册且 ID 唯一', () => {
   const reg = createRegistry();
   for (const def of BLOCKS) reg.register(def.name, def);
-  assertEqual(reg.count, 134);  // 126 + 巨树景观 8 个 giant_*
+  assertEqual(reg.count, 136);  // 126 + 巨树景观 8 个 giant_* + 巨型金字塔 2 个 sand_step/sand_slab
   const ids = new Set();
   for (const def of BLOCKS) ids.add(reg.idOf(def.name));
-  assertEqual(ids.size, 134);
+  assertEqual(ids.size, 136);
 });
 
 test('BlockRegistry: sky_stone/sky_grass 注册且 solid+opaque（M2-7 空岛）', () => {
@@ -284,4 +284,59 @@ test('BlockRegistry: castsShadow 对未知 id 返回 false（防御）', () => {
   assertEqual(reg.castsShadow(-1), false);
   assertEqual(reg.castsShadow(9999), false);
   assertEqual(reg.castsShadow(1.5), false);
+});
+
+// ==================== 巨型金字塔（Giant Pyramid Epic）的两个新方块 ====================
+//
+// 钉的是「非 box 几何方块被误判成占满整格」这一类缺陷：`cullMode` 选渲染通道（决定
+// alphaTest → 镂空与否），`opaque` 决定 `opaqueTable`（面剔除 / AO / blocklight / 炮塔 LOS）。
+// 两者不是一个东西 —— 写成 `cullMode:"opaque"` 会让台阶的 alpha 被忽略、且 mesher 会剔掉
+// 邻居方块朝向台阶的那一面（塔身上出现洞）。
+
+test('巨型金字塔方块：sand_step / sand_slab 走 cutout + 显式 opaque:false（非 box 几何必须声明）', () => {
+  const reg = makeRegistry();
+  const byName = new Map(BLOCKS.map((b) => [b.name, b]));
+  const cases = [['sand_step', 'planks_step', 4], ['sand_slab', 'half_block', 0]];
+  for (const [name, geom, orientModes] of cases) {
+    const def = byName.get(name);
+    assertTrue(def !== undefined, `${name} 必须在 blocks-data.js 里声明`);
+    assertEqual(def.cullMode, 'cutout', `${name} 走 cutout 通道`);
+    assertEqual(def.opaque, false, `${name} 必须**显式** opaque:false（AGENTS.md：非 box 几何须显式声明）`);
+    assertEqual(def.geometry, geom, `${name} 复用既有几何模板 ${geom}（禁止第二份几何定义）`);
+    assertEqual(def.orientationModes, orientModes, `${name} 的 orientationModes`);
+    const id = reg.idOf(name);
+    assertEqual(reg.cullTable[id], 1, `${name} cullTable == 1 (cutout)`);
+    assertEqual(reg.opaqueTable[id], 0, `${name} opaqueTable == 0（否则 mesher 剔邻居面 → 塔身出现洞）`);
+    assertEqual(reg.solidTable[id], 1, `${name} 必须是实心（玩家要能站上去）`);
+  }
+});
+
+test('巨型金字塔方块：几何模板真实存在（防几何名拼错 → 静默 fallback 立方体）', async () => {
+  const { TEMPLATES } = await import('../mesh/mesher.js');
+  for (const geom of ['planks_step', 'half_block']) {
+    assertTrue(Array.isArray(TEMPLATES[geom]) && TEMPLATES[geom].length > 0,
+      `TEMPLATES["${geom}"] 必须存在（拼错会让方块静默渲成立方体）`);
+  }
+  // 临界对照：台阶模板是 L 形（12 quad = 2 个 box），半砖是 6 quad（1 个 box）
+  assertEqual(TEMPLATES.planks_step.length, 12, 'planks_step = 2 个箱体的 12 个 quad');
+  assertEqual(TEMPLATES.half_block.length, 6, 'half_block = 1 个箱体的 6 个 quad');
+});
+
+test('巨型金字塔方块：faces-data 六面齐全且指向既有 sand tile（零新增贴图）', async () => {
+  const { FACES_DATA, getFaceTile } = await import('../voxel/faces-data.js');
+  for (const name of ['sand_step', 'sand_slab']) {
+    const entry = FACES_DATA[name];
+    assertTrue(Array.isArray(entry), `${name} 的 faces-data 必须是六面数组`);
+    assertEqual(entry.length, 6, `${name} 必须有 6 个面`);
+    for (let f = 0; f < 6; f++) {
+      const tile = getFaceTile(name, f);
+      assertTrue(typeof tile === 'string' && tile.length > 0, `${name} 面 ${f} 有 tile 名（实际 ${tile}）`);
+      // 复用既有 sand / sand_side，不得引入新贴图文件
+      assertTrue(tile === 'sand' || tile === 'sand_side', `${name} 面 ${f} 用既有 sand tile（实际 ${tile}）`);
+    }
+  }
+  // 顶/底面用 sand（正面纹理），四侧用 sand_side —— 与 sand 方块同口径
+  assertEqual(getFaceTile('sand_step', 2), 'sand', 'top = sand');
+  assertEqual(getFaceTile('sand_step', 3), 'sand', 'bottom = sand');
+  assertEqual(getFaceTile('sand_step', 0), 'sand_side', 'side = sand_side');
 });

@@ -692,6 +692,7 @@ M8 TNT 爆炸 / 炮塔弹丸 ──▶ M9 创造台（playground）
 | 炮塔 / 飞行弹丸 | M5 `EntityManager` + 实体 raycast + **M7 方块锚定装置模式**（见下）—— **M8 已规划** |
 | 矿车 / 轨道 ✅ | **已交付**（2026-09-30）—— 实际走了 M5 实体运行时（`minecartDefinition` 持久实体 + `MinecartService` + InstancedMesh 渲染 + `EntityManager.raycast` 命中），**不是**表里原写的 `interact` / `onStep` 钩子（这两个钩子始终未实现，矿车交互走玩家输入分流 + 实体 raycast） |
 | 创造台 ✅ | `WorldEditor.setBlocks` 真实方块 + `blockEntity` 锚点（M7 装置模式的持久层半边）—— **M9 已交付** |
+| 巨型金字塔 ✅ | **已交付**（2026-10-25）—— region 级落点候选（`src/gen/structures/giant-pyramid.js`，与 `mesa.js` 同构）+ 离线烘焙 palette JSON + `apply.js` 阶段 2.76 光栅化。**不是**撒布类型（不走 `SCATTER_TYPES`）：49×49 占地需要间距护栏。验收报告 `docs/giant-pyramid-acceptance-report.md` |
 | 灯 / 光源 | emissive 属性 + blocklight flood fill（光照管线已含）。⚠️ **太阳方向光已落地（v1.58）**（`materials.js` 的 N·L 太阳项 + 天空盒），但那是**全局太阳**、不是点光源：光源 Epic 仍须走 blocklight flood fill，两者不重叠 |
 | 床 / 宝箱 / 门 | 多方块结构 + meta/orientation 位 + `blockEntities` 通道 + 交互事件 |
 | 音频 | AudioManager + `block-changed` / 交互事件总线。⚠️ **背景音乐已落地（v1.63）**，但它只是循环通道 + 面板开关，不涉及事件总线；挖掘/脚步/环境音等仍需挂事件，与它不重叠 |

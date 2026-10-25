@@ -450,8 +450,7 @@ function clampPlacementsToBounds(placements, bounds) {
  * 构建城市布局（mc-lite buildCityLayout；确定性，可在任意 Worker 复现）。
  * 返回纯对象（无 Map），可直接 postMessage。
  */
-export function buildCityLayout(seed) {
-  const { cx: cityCx, cz: cityCz } = getCityCenter(seed);
+export function buildCityLayout(seed) {  const { cx: cityCx, cz: cityCz } = getCityCenter(seed);
   const baseHeight = estimateCityBaseHeight(cityCx, cityCz, seed);
 
   const state = { cityCx, cityCz, placements: [] };
@@ -492,11 +491,41 @@ export function buildCityLayout(seed) {
   };
 }
 
+/** 城市 bounds 快照缓存（键 = seed；只存派生的四字段，不存 layout 本身） */
+let _cityBoundsCache = null;
+
+/**
+ * 城市 bounds 的派生只读快照（巨型金字塔候选层排除城市用）。
+ *
+ * **为什么要这一个函数**：城市 bounds 实测（seed 12345）为 x∈[0,566] × z∈[-166,400]，
+ * **横跨 4 个 region**，而 `city` 布局只存在于 region [0,0] 的 layout 里 —— 其余 region 的
+ * 候选层拿不到它。实测城市面积里 **20.7% 是 DESERT**，且存在 504 个「49×49 全沙漠」的城内
+ * 落点（不是理论风险）。候选层若只判「自己的 layout 有没有 city」，那三个 region 的锚点会
+ * 落在城内。
+ *
+ * **为什么不能猜一个保守常量**：实测 bounds 半宽 **283** 已远超 `CITY_SIZE_MAX / 2 = 112`
+ * （`expandBoundsIfNeeded` 有不受 `CITY_SIZE_MAX` 钳制的增长路径），猜常量必定错。
+ *
+ * ⚠️ 只缓存**派生出的 bounds 快照**（`Object.freeze`），不缓存 layout 本身 —— 后者是可变
+ * 对象（`computeRegionLayout` 会 spread/改写），缓存它会改变别名语义。
+ * ⚠️ `buildCityLayout` 实测 10~12ms：必须由每个 Worker 在 `layout` 入口预热
+ * （`world-worker.js`），不能落进 GEN 计时路径。
+ *
+ * @param {number} seed
+ * @returns {{minX:number, maxX:number, minZ:number, maxZ:number}}
+ */
+export function getCityBoundsForSeed(seed) {
+  if (_cityBoundsCache && _cityBoundsCache.seed === seed) return _cityBoundsCache.bounds;
+  const city = buildCityLayout(seed);
+  const bounds = Object.freeze({ minX: city.minX, maxX: city.maxX, minZ: city.minZ, maxZ: city.maxZ });
+  _cityBoundsCache = { seed, bounds };
+  return bounds;
+}
+
 /**
  * 城市点位信息（mc-lite getCityInfo）：越界 null，附边缘距离/过渡因子。
  * @param {Object} city buildCityLayout 结果
- */
-export function getCityInfo(wx, wz, city) {
+ */export function getCityInfo(wx, wz, city) {
   if (wx < city.minX || wx > city.maxX || wz < city.minZ || wz > city.maxZ) return null;
   const edgeDistance = Math.min(wx - city.minX, city.maxX - wx, wz - city.minZ, city.maxZ - wz);
   const transitionFactor = edgeDistance >= CITY_TRANSITION_SIZE

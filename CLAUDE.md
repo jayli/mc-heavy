@@ -1806,6 +1806,9 @@ mc-heavy/
 │  │                           #   产物走 assets/structures/cloudland_mesa_small.json（palette + 扁平数组）
 │  ├─ giant-trees/             # 巨树景观（v1.68）：src/40AssortedTreesPack.schem（烘焙输入，入库，**非渲染资源**）
 │  │                           #   + trees.json / trees.meta.json（烘焙产物）
+│  ├─ giant-pyramid/           # 巨型金字塔（Giant Pyramid Epic）：src/small_pyramid_maze.litematic
+│  │                           #   （烘焙输入，入库，**非渲染资源**）→ 产物走
+│  │                           #   assets/structures/giant_pyramid.json（palette + 扁平数组）
 │  └─ structures/              # 从 mc-lite 复制 JSON
 └─ src/
    ├─ core/        # game.js / scheduler.js / worker-pool.js / budget.js / perf.js / perf-hud.js
@@ -1917,6 +1920,11 @@ npm run turret                 # 烘焙炮塔装甲 → assets/turret/armor.png 
 npm run mesa                   # 烘焙 Cloudland 高台 → assets/structures/cloudland_mesa_small.json
                                #   改 tools/cloudland-mesa-fingerprint.mjs 的 BLOCK_MAP 或 .schem 后需跑，
                                #   否则产物静默过期（check:data 的 [高台] 指纹检查会抓）
+npm run pyramid                # 烘焙巨型金字塔 → assets/structures/giant_pyramid.json + .meta.json
+                               #   改 tools/giant-pyramid-fingerprint.mjs（BLOCK_MAP / FACING_TO_ORIENT /
+                               #   PYRAMID_METRICS）或 .litematic 后需跑，否则产物静默过期
+                               #   （check:data 的 [巨型金字塔] 指纹检查会抓）
+                               #   另有 `-- --census`（源方块普查）/ `-- --census-orient`（校验台阶朝向映射）
 npm run gianttrees             # 烘焙巨树变体 → assets/giant-trees/trees.json + trees.meta.json（28 个变体）
                                #   改 .schem / tools/giant-trees-fingerprint.mjs（分类表、族表、调色板、
                                #   降采样参数）后需跑，否则产物静默过期（check:data 的 [巨树] 指纹检查会抓）
@@ -2019,3 +2027,125 @@ M7 交付了一套可复用的**「方块锚定装置」模式**（持久真相 
 - **写对照脚本做诊断时，对照侧与被测代码必须只差那一个要考察的变量** —— 两侧共用同一个错误假设
   会让对照恒等（得出「两者一致」的假结论），像素集合/统计口径不一致会得出机制上不可能的数值。
   出现机制上不可能的数值时先怀疑脚本本身。
+
+### 巨型金字塔沉淀的活跃约束（2026-10-25，后续大型结构 / 沙漠内容 / 结构落点类改动必读）
+
+设计文档 `docs/superpowers/specs/2026-10-25-giant-pyramid-design.md` + 计划
+`docs/superpowers/plans/2026-10-25-giant-pyramid.md`。素材 = 用户提供的
+`Small Pyramid Maze.litematic`（入库 `assets/giant-pyramid/src/`）。
+
+- **litematic ≠ .schem，位打包口径完全不同（不能复用 `.schem` 的代码路径）**：`.schem` 是 **varint 流**；
+  litematic 是**定宽位数组**（`BlockStates: LongArray`，每格 `bits` 位）。三个必须实测确认的口径
+  （读 `tools/litematic-reader.mjs` 头注）：
+  - **位打包跨 long 连续**：一格的 bits 可跨越 long 边界。实测「每 long 塞 floor(64/bits) 个、不跨边界」
+    的解出 **60025 格乱码**，跨边界读法解出 **17966 == `Metadata.TotalBlocks`**（精确相等）。
+  - **索引序 = `(y*sz + z)*sx + x`**（用「y=0 层是满铺 49×49 地板」核实）。
+  - **尺寸取 `Metadata.EnclosingSize`**：`Regions.<name>.Size` 在本素材里是**负数**。
+  - ⚠️ 读者**保留 barrier 下标不过滤**：过滤是烘焙脚本的职责（`BLOCK_MAP` 映射到空串）。
+    读者若提前过滤，「非 0 格数 == TotalBlocks」这条唯一校验就永远成立、失去判别力。
+
+- **`FACING_TO_ORIENT` 必须用真实 mesher 实测，不能从任何模块的定义推**：`src/player/orientation.js`
+  管的是「放置时方块朝向玩家 yaw」，与 `TEMPLATES.planks_step` 的高侧在哪**无关**（实测确认）。
+  正确手法 = 给一个 `planks_step` 方块分别设 orient 0~3，读 `buildSectionMesh` 发射顶点里
+  「y ≥ 0.5 那半部」的 bbox。实测：**orient 0/1/2/3 的高侧分别在 -X / +Z / +X / -Z**。
+  素材里直台阶的 `facing` **= 高侧方向**（实测 1173 格：facing 方向朝塔心 **100%**，
+  facing 反方向同层有实心 100%）。校验入口：`npm run pyramid -- --census-orient`。
+  ⚠️ 该校验脚本的方向判据必须用 **bbox 跨度**（哪一轴只有半格），不能用中心点比较
+  —— 中心点在「高侧 x 半格 + z 满幅」时会被 z 的中心 0.5 抢走（实测 orient=0 误判为 south）。
+
+- **三处有意偏离素材**（勿「补齐」）：
+  ① 转角台阶（63 格，`outer_left/right`）→ **直台阶近似**：本仓 `TEMPLATES` 只有 L 形直台阶，
+     新造转角几何要自己定义形状（属「按 Minecraft 定义推断」）。观感差异 = 路口内侧缺 0.5³ 的角。
+  ② `barrier` 1759 格 → 空气：本仓无对应方块；实测**没有一格**「若当空气会构成可站立通道」
+     （0/1759）⇒ 丢弃不改变可走性。
+  ③ `smooth_sandstone*` → `sand` / `sand_step` / `sand_slab`（用户要求「用沙子方块构建」）。
+
+- **占地四条判据 + 两条构造性保证**（每条都对应一种「静默产出一个看起来正常的错误金字塔」）：
+  占地 49×49 **全 DESERT biome** / **全 `generateHeight > SEA_Y`** / **占地内地表高差 ≤ 4** /
+  **完整落在本 region 内（内缩 25）**。`floorY` = 占地内**最低**地表（取 min，绝不取中心点）。
+  塔基最底层是**满铺 49×49 实心（2401 格）**⇒ 不存在「整体悬空」，只需约束高差。
+  ⚠️ **占地全检必须逐格（`FOOTPRINT_STEP = 1`）**：曾用 step=2 省成本（0.207ms → 0.055ms/候选），
+  实测 388 个沙漠样本里 **1 个**「逐格 span=5 但 step2 span=4」（起伏落在未采样的奇偶格）
+  → 判据放过一个高差 5 的位置。0.15ms/候选可忽略，**正确性优先**。
+
+- **「一块沙漠一座」的唯一护栏是 `PYRAMID_MIN_SPACING = 384`，不是「每 region 一处」**：
+  实测沙漠连通块（8 格粒度）最大 bbox 跨度 **368 格**（跨 5 个 seed 稳定）⇒ 阈值 >368 即保证块内至多 1 座。
+  region 是 400×400 **矩形网格**而沙漠是**不规则块**，一块沙漠常横跨 2~4 个 region（与高台同一坑）。
+
+- **密度是「间距 × 概率门」两个独立旋钮，别互相倒推**：间距保证「至多 1 座」的上界；
+  `PYRAMID_CHANCE = 0.56` 把「有锚点的沙漠」再抽掉一部分 → 「每 2 块沙漠 1 座」。
+  ⚠️ **标定与断言都必须用 ±3200 的测量窗**：窗越小边界效应越强（锚点在窗内、去重邻居在窗外
+  → 看起来「该让位却没让」）。实测同一 gate：±1600 得 0.363、±3200 得 **0.501**。
+  分母是**沙漠连通块数**，不是 region 数（一个 region 可能只有 5% 是沙漠）。
+  ⚠️ `0.56` 而非初稿的 0.53：逐格全检（见上条）筛掉更多锚点后同 gate 下密度下降，重标定。
+
+- **概率门必须放在邻域去重之后，且去重时比较「未过门」的邻居**：若门在去重之前，
+  「本该让位的邻居因为自己被门掉而不参与比较」→ 两个锚点可能贴在一起。实现：
+  `cachedLocal` 存未过门的局部锚点（供去重），门只作用在返回值上。
+
+- **高台排除必须在候选层，不能只靠 apply 层**（实测真缺陷）：只在 apply 阶段 2.76 判时，
+  实测 seed 12345 ±6 里 **27 个 region 两者都有、其中 5 个（19%）占地重叠** → apply 会正确丢弃，
+  但后果是「金字塔静默消失 + `pointContext` 已抑制植被却长不出塔 = 一片空地」。
+  候选层用 `computeRegionLocalAnchor`（本 region 的**局部**高台，不触发它的 384 间距去重，
+  比最终高台更保守、方向安全）。apply 层判据**保留**作纵深防御。实测重叠 5 → **0**。
+
+- **城市排除要靠 `getCityBoundsForSeed()`，不能猜保守常量**：城市 bounds 实测
+  x∈[0,566] × z∈[-166,400] 横跨 4 个 region，而 `city` 布局只在 region [0,0]。城市面积
+  **20.7% 是 DESERT**，实测存在 **504 个**「49×49 全沙漠」的城内落点。bounds 半宽实测 **283**
+  已远超 `CITY_SIZE_MAX/2 = 112`（`expandBoundsIfNeeded` 有不受钳制的增长路径）⇒ 猜常量必错。
+  `buildCityLayout` 实测 10~12ms，故**必须在每个 Worker 的 `layout` 入口预热**（不能落进 GEN 计时路径）。
+
+- **`pointContext()` 加一条 `giantPyramid → kind:'none'` 分支，一次性覆盖五个下游消费者**
+  （高台让路 / 巨树 allowedAt / 城市树 / 普通树 / 单格植物与睡莲）——**不要为每一处各写一份判据**。
+  撒布结构的剔除走 `inGiantPyramidFootprint()`（与 `inCityBounds` 同手法：唯一权威在 apply 层，
+  因为候选层只能过滤持有 city 布局的那个 region）。
+
+- **两个新方块只加声明、零新增几何与贴图**：`sand_step` 用 `geometry: "planks_step"`、
+  `sand_slab` 用 `"half_block"`（既有 `TEMPLATES`），贴图复用 `sand` / `sand_side` 六面数组。
+  两者均 `cullMode:"cutout"` + **显式 `opaque:false`**（AGENTS.md 既有约束：非 box 几何必须显式声明，
+  否则将来有人把 `cullMode` 改成 opaque 就会静默误推 `opaqueTable=1` → mesher 剔邻居面 → 塔身出现洞）。
+  两者都进背包（玩家挖下来能拿起）⇒ 改贴图/几何后须跑 `npm run icons`。
+
+- **顶点预算：逐 section 实测远高于「手算整座」，两者差 43%**：手算（整座当一个世界，面剔除跨
+  section 生效）opaque 45570 / cutout 73500；**真 mesher 逐 section 量**（相邻 section **不互相剔除**，
+  实测跨 20 个 section）opaque **65080** / cutout **73170**。**预算一律用逐 section 真值**。
+  实测真游戏页：金字塔占地内 occupied 占初始容量 opaque **2.89%** / cutout **3.48%**，**三通道零扩容**。
+
+- **Tier 4 的「塔基不悬空」判据必须是「塔基格是沙系」，不是「向下 N 格有实心」**（实测）：
+  把 apply 的 `floorY + 1` 改成 `floorY + 6`（塔上移 5 格）后，
+  「向下 6 格内有实心」= 0/2401、**完全无判别力**（塔仍在地表附近，下方总有地形）；
+  「正下方 1 格实心」= 0/2401 同样无效；**「塔基格是沙系」= 459/2401 命中**。
+  判据必须看「塔基格本身是什么方块」，不是「塔底下有没有东西」。
+
+- **Tier 4 的「迷宫连通」判据不能只写可达率**（实测）：本仓塔是**每层向内收 2 格的阶梯锥形**，
+  任何「填实某一层」的注入都能从外侧绕过去 —— 实测填实相对层 5..14（含头部空间）→ 可达率仍 0.985；
+  填实 1..20 → 反而变 1.0。而「可站立格数」也挡不住缺失（断开映射后 2400 → 2401，沙漠地表本身能站人）。
+  **有效判据 = 沙系方块数**：断开 `STRUCTURE_FILES` 后 **16524 → 4037**。
+  故该用例同时钉 5 项：`sandFamily > 12000` / `cells > 1500` / `perLevelMax > 200` / `levels > 15` / `ratio ≥ 0.95`。
+
+- **台阶朝向必须写进产物（`stride: 5`）—— 这是 2026-10-25 修掉的一个静默画面缺陷**：
+  产物原本写 `[x, y, z, paletteIndex]` 4 项，而 `loadStructure` 对 palette 格式把 `direction`
+  **硬编码为 0** ⇒ 1219 个台阶全部按 `orient=0` 渲染（格数/尺寸/指纹全对，只有四个坡面的台阶凹口全朝东）。
+  修法 = 产物改用 `{stride: 5, blocks: [x,y,z,paletteIndex,direction, ...]}`，
+  `loadStructure` 按 `stride` 决定是否有第 5 项（**不靠长度猜**：两种格式长度只差 25%，猜法有歧义）。
+  ⚠️ `check:data` 的 `[巨型金字塔]` 环节已钉两件事：`stride === 5`、**台阶 orient 四向都出现且分布接近均匀**
+  （实测 305/303/305/306）。只钉格数完全抓不到这个缺陷。
+
+- **台阶朝向的语义链必须三步都实测，不能推**：
+  ① **真实 mesher**：`orient` 0/1/2/3 → **凹口**朝 **东/北/西/南**
+     （orient=0 上半部在 x[0,0.5] → 空缺在东；orient=1 上半部 z[0.5,1] → 空缺在北；
+       orient=2 上半部 x[0.5,1] → 空缺在西；orient=3 上半部 z[0,0.5] → 空缺在南）。
+     校验入口 `npm run pyramid -- --census-orient`（判据必须用 **bbox 跨度**：哪一轴只有半格，
+     不能用中心点比较 —— 中心点在「高侧 x 半格 + z 满幅」时会被 z 的中心 0.5 抢走，实测 orient=0 误判）。
+  ② **素材的 `facing` = 高侧**（凹口在反方向）。证据：北坡区（z<20）台阶 facing 分布
+     `{south:287, east:95, west:92}` —— 若 facing 是凹口方向，北坡台阶该是 `north`；
+     实测是 `south`（指向塔内），而北坡凹口朝北（塔外，实测 296/296 = 100%）。
+  ③ ⇒ `facing=X → 凹口=反X → orient = {east:0, north:1, west:2, south:3}[反X]`
+     ⇒ `FACING_TO_ORIENT = {west:0, south:1, east:2, north:3}`（**不是恒等**；恒等会让凹口朝塔内，全反）。
+  端到端实测（真游戏页）：北/南坡凹口朝外 **100%**、东/西坡 **97%**（余下是转角台阶归到相邻坡面的
+  分类边界，属正常）。四坡面「凹口朝外」正是用户 2026-10-25 要的效果。
+  ⚠️ **不要试图把阶段 2.76 的 `stride` 改回 4 省体积** —— 省 4.6KB，代价是塔的四面台阶全错。
+
+- **`npm run pyramid` 不跑则产物静默过期**（渲染旧塔形，方块层面看不出）→ `check:data` 的
+  `[巨型金字塔]` 环节用指纹抓（覆盖 `.litematic` 内容 + `BLOCK_MAP` + `FACING_TO_ORIENT` + `PYRAMID_METRICS`）。
+  已知盲区：只改**烘焙算法**而不动参数时指纹不变 → 靠 Tier 1 产物契约 + Tier 4 兜住。

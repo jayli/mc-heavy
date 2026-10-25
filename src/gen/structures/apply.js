@@ -24,6 +24,7 @@ import {
 import { SEA_Y, blockIndex } from '../../voxel/constants.js';
 import { applyGiantTrees, loadGiantTrees } from './giant-trees.js';
 import { MESA_UNION_HALF } from './mesa.js';
+import { PYRAMID_HALF, inGiantPyramidFootprint } from './giant-pyramid.js';
 
 /** 城市 placement 用到的 JSON 结构（GEN 携带城市布局时预载）+ 植被树 JSON */
 const CITY_STRUCTURE_TYPES = [
@@ -69,6 +70,23 @@ function pointContext(wx, wz, layouts, cityLayout, seed) {
   if (cityInfo) {
     // 残丘已清除（generateCity 清 surfaceY+1..naturalH），树直接植根城市地表。
     return { kind: 'city', surfaceY: getCityFinalSurfaceY(wx, wz, cityInfo, seed) };
+  }
+  // 巨型金字塔占地：让路给塔。
+  //
+  // `kind: 'none'` 一个分支就同时覆盖五个下游消费者（**不要为每一处各写一份判据**）：
+  //   ① 阶段 2.75 高台的让路（它判 `kind !== 'normal'`）
+  //   ② 阶段 2.8 巨树的 `allowedAt`（只允许 normal/water）
+  //   ③ 阶段 3 的城市树 / 普通树 / 巨树覆盖窗口
+  //   ④ 阶段 3 的单格植物与睡莲（`inColumn` 分支都按 kind 分流）
+  //   ⑤ 将来的新植被路径
+  // 放在 city 之后（保持「城市优先级最高」的既有语义）；金字塔占地不可能在城市内
+  // （候选层已用 getCityBoundsForSeed 排除），两个分支互斥。
+  for (const layout of layouts) {
+    const gp = layout.giantPyramid;
+    if (!gp) continue;
+    if (Math.abs(wx - gp.wx) <= PYRAMID_HALF && Math.abs(wz - gp.wz) <= PYRAMID_HALF) {
+      return { kind: 'none' };
+    }
   }
   for (const layout of layouts) {
     if (getPyramidInfo(wx, wz, layout.pyramid)) return { kind: 'none' };
@@ -167,6 +185,8 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
   // 无条件预载会让每个新 Worker 的首个 GEN 多付一次冷 fetch）。
   const mesaAnchor = layouts.map((l) => l.mesa).find(Boolean) || null;
   if (mesaAnchor) needTypes.add('cloudlandMesaSmall');
+  // 巨型金字塔：同理只在锚点存在时预载
+  if (layouts.some((l) => l.giantPyramid)) needTypes.add('giantPyramid');
   await preloadStructures([...needTypes]);
   // 巨树变体加载。Worker 里已在模块加载期预热（world-worker.js 的 giantPreloadPromise，layout 入口 await），
   // 这里命中缓存 ≈ 0ms；⚠️ 不预热的话每个 Worker 的首个 GEN 要付 fetch+解析（实测使 structure-gen 的
@@ -269,6 +289,9 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
   // 但晚于城市 placement（mc-lite 城市后置填充在主结构之后，WorldWorker.js:1132）。
   // 复用上面预载阶段已收集的候选数组（勿在此重新收集 —— 重复声明 `scatterCandidates`
   // 会让整个模块 SyntaxError → 页面白屏，且重复扫一遍 layouts 是浪费）。
+  //
+  // 巨型金字塔锚点列表（阶段 2.7 的撒布剔除用）：只算一次，不每个候选重算
+  const giantAnchors = layouts.map((l) => l.giantPyramid);
   for (const arr of scatterCandidates) {
     for (let i = 0; i < arr.length; i += SCATTER_STRIDE) {
       const x = arr[i], y = arr[i + 1], z = arr[i + 2];
@@ -285,6 +308,11 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
       // `if (inCity) {...} else {城市外撒布}` 互斥（WorldWorker.js:793 / :1084-1086）。
       // 城市自己的撒布（cityScatter）不受影响。
       if (cityLayout && !cityScatterArrs.has(arr) && inCityBounds(x, z, cityLayout)) continue;
+      // 巨型金字塔占地内的撒布候选一律不落地（用户裁定：巨型金字塔不与任何撒布结构重合）。
+      // 判据函数在 `giant-pyramid.js`（与 `inCityBounds` 同手法：单一权威，不在此另写一份）。
+      // 不剔除的后果：24 格高的小沙漠神殿会长在塔身内部（从外面看像塔上多出一块）；
+      // 且因为金字塔在阶段 2.76 **后写胜**，被埋的神殿方块会被塔身覆盖掉一半，剩下的露在空里。
+      if (inGiantPyramidFootprint(x, z, giantAnchors)) continue;
       const fp = SCATTER_FOOTPRINT[type];
       if (!fp) continue;
       if (!placementIntersects({ x, z }, fp.halfX, fp.halfZ, column.cx, column.cz)) continue;
@@ -316,6 +344,31 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
     if (!placementIntersects({ x: anchor.wx, z: anchor.wz }, MESA_UNION_HALF, MESA_UNION_HALF, column.cx, column.cz)) continue;
     // 不补 groundSupport：基座判据已保证「基座全程高于海平面」，补柱会在沙漠里凭空插一根 15 格宽的石柱
     rasterizeStructure('cloudlandMesaSmall', anchor.wx, anchor.floorY + 1, anchor.wz,
+      setBlock, column, registry, seed, false);
+  }
+
+  // ---- 阶段 2.76：巨型金字塔（Giant Pyramid Epic）----
+  // 层序理由：撒布结构（2.7）与高台（2.75）都是地面级内容，先写；金字塔是 24 格高的大型结构，
+  // 在其上（后写胜）；巨树（2.8）有 allowedAt 判据可避让（`pointContext` 已对金字塔占地返回
+  // `kind:'none'`），故金字塔先于巨树。
+  //
+  // 让路已在候选层做过（城市 / 地标 / 空岛 / 高台），这里只做两项**纵深防御**：
+  //   ① 城市 bounds —— 候选层用的是 `getCityBoundsForSeed` 的同一份数据，理论上不会命中，
+  //      但城市 bounds 可跨 region（实测 4 个），这里用 cityLayout 再判一次零成本；
+  //   ② 高台 —— **只在同一 region** 可能相交（内缩量保证相邻 region 不相交，见 spec DR-7），
+  //      候选层已排除，这里再判一次防“将来有人改内缩量”。
+  for (const layout of layouts) {
+    const anchor = layout.giantPyramid;
+    if (!anchor) continue;
+    if (layout.mesa &&
+        Math.abs(anchor.wx - layout.mesa.wx) <= PYRAMID_HALF + MESA_UNION_HALF &&
+        Math.abs(anchor.wz - layout.mesa.wz) <= PYRAMID_HALF + MESA_UNION_HALF) continue;
+    if (cityLayout &&
+        anchor.wx + PYRAMID_HALF >= cityLayout.minX && anchor.wx - PYRAMID_HALF <= cityLayout.maxX &&
+        anchor.wz + PYRAMID_HALF >= cityLayout.minZ && anchor.wz - PYRAMID_HALF <= cityLayout.maxZ) continue;
+    if (!placementIntersects({ x: anchor.wx, z: anchor.wz }, PYRAMID_HALF, PYRAMID_HALF, column.cx, column.cz)) continue;
+    // 不补 groundSupport：底层是满铺 49×49 实心（2401 格），补柱会在沙漠里插 2401 根沙柱
+    rasterizeStructure('giantPyramid', anchor.wx, anchor.floorY + 1, anchor.wz,
       setBlock, column, registry, seed, false);
   }
 

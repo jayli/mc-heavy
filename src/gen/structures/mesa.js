@@ -154,25 +154,49 @@ const LANDMARK_CLEARANCE = Object.freeze({
   plainLand: PLAIN_LAND_SIZE / 2,
 });
 
-/** 地标中心与半径（一个 region 只需算一次） */
-function landmarkCircles(regionX, regionZ, seed) {
+/**
+ * 本 region 的地标圆（半径 = 核心 + 过渡带），**供多个候选层共用**。
+ *
+ * 抽出来的理由：巨型金字塔的候选层需要**同一批地标圆**做排除。不抽出来就会有第三份副本
+ * （`landmarkCircles` 里已经有一条注释写着「没有 `getSnowLandCenterInRegion` 导出，
+ * 这里复现那两行」—— 那就是第二份）。
+ *
+ * ⚠️ **雪原刻意不在这里**：它只在 mesa 的让路判据里用，且它的中心函数没有导出。
+ * ⚠️ **每次调用必须返回新数组**：`landmarkCircles` 会往它里面 push 雪原项。
+ *    不要改成模块级缓存数组（会让第一次调用后雪原项被永久污染）。
+ *
+ * @param {number} regionX @param {number} regionZ @param {number} seed
+ * @returns {Array<{cx:number, cz:number, r:number}>}
+ */
+export function regionLandmarkCenters(regionX, regionZ, seed) {
   const circles = [];
   const push = (c, r) => { if (c) circles.push({ cx: c.cx, cz: c.cz, r }); };
 
   push(getPyramidCenterInRegion(regionX, regionZ, seed), LANDMARK_CLEARANCE.pyramid);
   push(getFrozenMountainCenterInRegion(regionX, regionZ, seed), LANDMARK_CLEARANCE.frozenMountain);
 
-  // 雪原：与 structure-layout.js 同一推导（未 clamp 的原始中心 + 偏移）——
-  // 没有 `getSnowLandCenterInRegion` 导出，这里复现那两行（若 layout 改了须同步）。
-  const raw = getRegionSeededCenter(regionX, regionZ, seed);
-  push({ cx: raw.centerX + LANDMARK_OFFSET.SNOW_LAND_X, cz: raw.centerZ + LANDMARK_OFFSET.SNOW_LAND_Z },
-    LANDMARK_CLEARANCE.snowLand);
-
   // 平地与海岛是**条件地标**（isXxxValid 为假时 layout 里它们是 null）—— 这里同样只排除有效的
   const plain = getPlainLandCenterInRegion(regionX, regionZ, seed);
   if (isPlainLandValid(plain.cx, plain.cz, seed)) push(plain, LANDMARK_CLEARANCE.plainLand);
   const isl = getIslandCenterInRegion(regionX, regionZ, seed);
   if (isIslandValid(isl.islandCx, isl.islandCz, seed)) push({ cx: isl.islandCx, cz: isl.islandCz }, LANDMARK_CLEARANCE.island);
+
+  return circles;
+}
+
+/** 地标中心与半径（一个 region 只需算一次）—— 只含**非雪原**的四项 */
+function landmarkCircles(regionX, regionZ, seed) {
+  const circles = regionLandmarkCenters(regionX, regionZ, seed);
+
+  // 雪原：与 structure-layout.js 同一推导（未 clamp 的原始中心 + 偏移）——
+  // 没有 `getSnowLandCenterInRegion` 导出，这里复现那两行（若 layout 改了须同步）。
+  // ⚠️ 雪原**只在 mesa 用**，故不进 `regionLandmarkCenters`（金字塔不需要它）。
+  const raw = getRegionSeededCenter(regionX, regionZ, seed);
+  circles.push({
+    cx: raw.centerX + LANDMARK_OFFSET.SNOW_LAND_X,
+    cz: raw.centerZ + LANDMARK_OFFSET.SNOW_LAND_Z,
+    r: LANDMARK_CLEARANCE.snowLand,
+  });
 
   return circles;
 }

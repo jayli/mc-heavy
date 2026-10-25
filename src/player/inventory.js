@@ -54,10 +54,10 @@ export const HIDDEN_FROM_INVENTORY = [
   // ⚠️ **与 `indestructible` 登记必须成对做**：配上不可破坏门控后，若留在背包会产出撕裂状态 ——
   // 玩家放得出来，但挖不掉、TNT 也炸不掉（只能靠「关闭创造台」批量删）。
   'playground_block', 'playground_center_block',
-  // 巨树景观：生成期地形装饰（8 个 giant_*）。**可放置但不进背包**（与 chimney 同类）——玩家放出来的
-  // 只会是「一块没有下文的树干/树叶」；挖掉倒是可以。不要塞进 NON_PLACEABLE_ITEMS（语义互斥）。
-  'giant_oak_log', 'giant_mangrove_log', 'giant_oak_leaves', 'giant_birch_leaves',
-  'giant_spruce_leaves', 'giant_cherry_leaves', 'giant_palm_leaves', 'giant_banyan_leaves',
+  // 巨树景观的 8 个 `giant_*` **不在此清单**（2026-10-25 用户裁定进背包）。
+  // 历史：它们曾在这里（理由是「生成期地形装饰 → 玩家放出来只会是一块没有下文的树干」），
+  // 但那是代玩家做决定 —— 玩家完全可以把巨树方块当“深色大方块”盖东西。
+  // 它们本来就 `solid:true` + 有 faces-data，放/挖均正常；移出后已重跑 `npm run icons`。
 ];
 
 /**

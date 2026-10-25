@@ -108,6 +108,14 @@ export const BLOCKS = [
   {"name":"playground_block","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box","indestructible":true,"shadowCast":false},
   {"name":"playground_center_block","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box","indestructible":true,"shadowCast":false},
   {"name":"sand","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
+  // 巨型金字塔（Giant Pyramid Epic）：沙子系台阶/半砖。**几何零新增** —— 复用既有
+  // `planks_step`（L 形 2 箱体）/ `half_block`（1 箱体）模板，形状与 UV 的唯一权威仍在 mesher.js。
+  // ⚠️ 必须**显式** `opaque:false`：cutout 通道的默认推导已是 0，但 AGENTS.md 要求非 box 几何
+  // 显式声明 —— 否则将来有人把 cullMode 改成 opaque 就会静默误推 opaqueTable=1
+  // → mesher 剔掉邻居方块朝向台阶的那一面 → 塔身出现洞。
+  // ⚠️ 两者都进背包（玩家挖下来能拿起），故改贴图或几何后须跑 `npm run icons`。
+  {"name":"sand_step","solid":true,"cullMode":"cutout","opaque":false,"orientationModes":4,"geometry":"planks_step"},
+  {"name":"sand_slab","solid":true,"cullMode":"cutout","opaque":false,"orientationModes":0,"geometry":"half_block"},
   {"name":"stone","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
   {"name":"stone_diorite","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
   {"name":"mossy_stone","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
