@@ -913,6 +913,53 @@ M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 
 - **reload 恢复后车继续原方向**（`movementState` 进 snapshot），mc-lite 恢复后停成 IDLE ——
   有意偏离（玩家重启前正在开的车不该自己停下）。
 
+### Cloudland 高台沉淀的活跃约束（v1.76，后续地形景观 / 结构撒布 / 多格结构类改动必读）
+
+- **「一块沙漠一个」的唯一护栏是间距阈值 `MESA_MIN_SPACING=384`，不是「每 region 一个」**：
+  region 是 400×400 的**矩形网格**，而沙漠是**不规则块** —— 一块沙漠常横跨 2~4 个 region，
+  「每 region 一个」会让一块沙漠里出现 2~4 个高台（实测 ±6 region 内 163 个高台里 **150 个**有
+  <400 格邻居，**最近一对仅隔 32 格**，用户明确否掉）。实测沙漠连通块（8 格粒度、±1200）
+  最大跨度 **368 格** ⇒ 阈值只要 >368 就能保证块内只有一个。**调小这个数前先重测跨度**。
+- **邻域去重必须单向（只跟字典序更小的 region 比），不能互相让位**：互相让位会让相邻两个
+  region 各自看到对方、**双双放弃** → 那块沙漠一个高台都没有（与需求相反）。单向比较保证
+  至少一个能留下，且跨 region 结果一致（纯函数、无共享状态）。
+- **地标排除必须在候选层，不能只靠 apply 层的 `pointContext` 让路**（实测踩到的真缺陷）：
+  `region(1,-1)` 的锚点曾落在距冰封山中心 **11 格**处 → apply 正确丢弃，但后果是
+  ① 那个 region 的高台**静默消失**；② 间距去重基于了错误的落点集合（一个不存在的高台把邻居挤掉）。
+  故 `mesa.js` 用 `LANDMARK_CLEARANCE`（核心 + 过渡带）在候选选择时就跳过地标占地；
+  apply 层的 `pointContext` 判据**保留**作纵深防御（城市 bounds 跨 region 那种情况候选层判不了）。
+- **`floorY` 取基座各列地表的 `min`，不是中心点高度**：取 min 保证**任何一列基座都不悬空**
+  （取中心点会让低洼侧露出空隙，实测 8% 的候选有 4~8 格空隙）。代价是占地内高处地形被台体
+  埋没 ≤span 格（实测 span p50=1 / p95=3 / max=4）—— **宁可埋没不悬空**，别为了「贴地」
+  去补 `GROUND_SUPPORT_TYPES` 的支撑柱（会在沙漠里凭空插一根 15 格宽的石柱）。
+- **基座判据用 15×15 常量矩形，不读烘焙产物的 164 格掩码**：候选发现跑在 region layout 层
+  （Worker 内、**不能 fetch**，DR-13）。实测两版 **16/16 锚点逐个一致**，矩形更快且 floorY
+  只会更低（更安全）。产物的 164 格真实掩码只用于光栅化后的断言。
+- **源模型是桌山（蘑菇形）—— 判据必须落在基座而不是并集外接框**：`Landscape/9` 基座仅 15×15
+  （164 格）、中部收腰、顶部 17×17 更宽。20×21 并集里有 85 格（20%）在基座上**没有方块**，
+  拿它做平整度/沙漠门控会误杀合法落点。
+- **映射表是单一权威（`tools/cloudland-mesa-fingerprint.mjs` 的 `BLOCK_MAP`）**，烘焙脚本与
+  `check:data` 的 `[高台]` 环节都从它 import。未知源方块烘焙时 **throw** —— 因为
+  `makeColumnSetter` 对未注册名字是**静默 return**（`landmarks.js:274`），那格变 air，
+  **方块层面完全看不出是映射错了**。
+- **palette 必须全部走 opaque 通道**（`[高台]` 门钉住 `cullTable===0 && opaqueTable===1`）：
+  改成 cutout/transparent 会让 1 万格方块每格顶点成本约 ×3 → 撞 §4.10 容量预算，且是**静默**的
+  （只表现为某天掉帧）。第一版实测 opaque reservedV **14.6%~17.8%**、三通道零扩容。
+- **高台方块的背包口径：它们本来就该在背包里**（`stone`/`deepslate`/`moss` 等通用方块，
+  玩家挖下一块就该能拿起再放）。别把它们塞进 `HIDDEN_FROM_INVENTORY` —— 那会让用户挖下来的
+  方块消失。真正的契约是「**没有整座高台的 alias 占位物品**」（对比 `zombie_nest_alias_block`）。
+- **`npm run mesa` 不跑则产物静默过期**（渲染旧配色，肉眼只觉得「颜色怪怪的」）→
+  `check:data` 的 `[高台]` 指纹环节会抓。指纹覆盖 `.schem` 内容 + `BLOCK_MAP` +
+  `MESA_METRICS` + `MESA_ORIGIN` + `SOURCE_COMPONENT_BLOCKS`。已知盲区：只改**烘焙算法**
+  而不动参数时指纹不变 → 靠单测/Tier 4 兜住。
+- **Tier 4 判「高台真的长出来了」不能用量高度差**（实测负向验证盲区）：初版写「台顶比周边
+  地表高 ≥25 格」，而该处方圆 50 格内本来就有 35 格高的地形 → **注掉光栅化后判据仍然成立**
+  （差 28）。改成「台顶层 `y=floorY+43` 命中的 palette 方块数 ≥ 产物顶层格数 ×0.9」
+  （实测 216 = 产物全量；注掉光栅化后 hits=0 真 FAIL）。
+- **素材的 `.bp` 文件不含方块数据**：它是 NBT 元数据（含 `BlockCount`）+ 内嵌 96×96 PNG
+  缩略图。几何只能从 `.schem` 取，靠 26 连通分量的格数与 `BlockCount` **精确唯一匹配**来
+  对应「哪个蓝图是哪块几何」。⚠️ 剔除 y=0 地板层再做连通分量，否则 38 个结构会连成一片。
+
 ### 巨树景观沉淀的活跃约束（v1.68，后续地形装饰 / 结构撒布 / 通道容量类改动必读）
 
 细节与实测数据见 roadmap「活跃约束详情 · 巨树景观」与验收报告 `docs/giant-trees-acceptance-report.md`。
@@ -1549,6 +1596,11 @@ mc-heavy/
 ├─ tools/bake-turret-armor.mjs # 炮塔装甲纹理烘焙（npm run turret）：三张源图 → 192×64 三区并排
 │                              #   → assets/turret/armor.png + armor.json（尺寸+输入指纹）
 ├─ tools/turret-armor-fingerprint.mjs # 装甲图案参数与指纹共享模块（同上，红线 1）
+├─ tools/nbt-reader.mjs        # 最小 NBT 读取器（tag 1~12），巨树与高台两个烘焙脚本共用（红线 1）
+├─ tools/bake-cloudland-mesa.mjs # 高台烘焙（npm run mesa）：.schem → 26 连通分量 → 按 BlockCount
+│                              #   唯一匹配 Landscape/9 → 映射表 → palette 扁平数组 JSON
+├─ tools/cloudland-mesa-fingerprint.mjs # 高台映射表 BLOCK_MAP / MESA_METRICS / MESA_ORIGIN / 指纹
+│                              #   共享模块（烘焙脚本与 check:data 的 [高台] 环节共用，红线 1）
 ├─ tools/bake-giant-trees.mjs  # 巨树烘焙（npm run gianttrees）：入库 .schem → 28 变体 2×2×2 降采样
 │                              #   → assets/giant-trees/trees.json + trees.meta.json（尺寸+输入指纹）
 ├─ tools/giant-trees-fingerprint.mjs # 巨树烘焙参数（族表/调色板/分类表/族标志）与指纹共享模块（同上，红线 1）
@@ -1587,6 +1639,8 @@ mc-heavy/
 │  ├─ models/weapons/          # M4 受控 GLB（pistol / mag7 / minigun）—— 替换后跑 validate:weapon-assets
 │  ├─ turret/                  # 炮塔装甲烘焙产物（armor.png + armor.json）；turret_pic1/2/3 是
 │  │                           #   mc-lite 源图（烘焙输入，勿当渲染资源）
+│  ├─ cloudland/                # Cloudland 高台（v1.76）：src/cloudlandassets_1.20.schem（烘焙输入，入库，**非渲染资源**）
+│  │                           #   产物走 assets/structures/cloudland_mesa_small.json（palette + 扁平数组）
 │  ├─ giant-trees/             # 巨树景观（v1.68）：src/40AssortedTreesPack.schem（烘焙输入，入库，**非渲染资源**）
 │  │                           #   + trees.json / trees.meta.json（烘焙产物）
 │  └─ structures/              # 从 mc-lite 复制 JSON
@@ -1597,6 +1651,9 @@ mc-heavy/
    │               #  scatter.js 结构撒布判定 + 代码生成 house/ship（唯一权威；Worker 同构）
    │               #  giant-trees.js 巨树景观：region 层候选（全局对齐网格 + 内缩抖动）+ column 层光栅化
    │               #    （合并邻域候选 / 排除 / 地基 / 覆盖窗口；Worker 同构）
+   │               #  mesa.js Cloudland 高台落点（v1.76）：每块沙漠至多 1 个。判据 = 基座 15×15
+   │               #    全沙漠 + 全高于海平面 + 不穿空岛 + 不压地标；MESA_MIN_SPACING=384
+   │               #    邻域单向去重（实测沙漠连通块最大跨度 368）+ LRU 缓存
    ├─ mesh/        # mesher.js / lighting.js / atlas-loader.js（Worker 同构）
    │               #  iso-icon.js 等轴测投影纯函数；mesher.js 导出 TEMPLATES / FACE_VERTICES /
    │               #  FACE_UVS 供图标烘焙复用——形状与 UV 的唯一权威，图标不得有第二份几何定义
@@ -1694,6 +1751,9 @@ npm run zombie                 # 烘焙丧尸头部马赛克纹理 → assets/zo
 npm run turret                 # 烘焙炮塔装甲 → assets/turret/armor.png + armor.json（三区并排）
                                #   改 tools/turret-armor-fingerprint.mjs 或源图后需跑，
                                #   否则装甲静默过期（check:data 的 [炮塔装甲] 指纹检查会抓）
+npm run mesa                   # 烘焙 Cloudland 高台 → assets/structures/cloudland_mesa_small.json
+                               #   改 tools/cloudland-mesa-fingerprint.mjs 的 BLOCK_MAP 或 .schem 后需跑，
+                               #   否则产物静默过期（check:data 的 [高台] 指纹检查会抓）
 npm run gianttrees             # 烘焙巨树变体 → assets/giant-trees/trees.json + trees.meta.json（28 个变体）
                                #   改 .schem / tools/giant-trees-fingerprint.mjs（分类表、族表、调色板、
                                #   降采样参数）后需跑，否则产物静默过期（check:data 的 [巨树] 指纹检查会抓）
