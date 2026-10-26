@@ -31,7 +31,9 @@ export const KIT_META = path.join(KIT_JSON_DIR, 'cloudland_kit.meta.json');
  *
  * ⚠️ key 必须与 `.schem` palette 里的实际名字**逐字一致**（`minecraft:` 前缀与 `[axis=y]`
  * 之类的属性后缀在解析时已剥掉）。核对方式：`node tools/bake-cloudland-kit.mjs --census`
- * 会打印现场全部源名与各自格数，并与本表逐个比对；烘焙前还有一道 88/88 全量覆盖断言。
+ * 会打印现场全部源名与各自格数，并与本表逐个比对；烘焙前还有一道 **73/73 去重源名**的
+ * 全量覆盖断言（palette 88 条条目 —— `purple_stained_glass_pane` 独占 18 种 blockstate，
+ * 剥掉前缀/属性后是 73 个去重名字）。
  *
  * ⚠️ value 必须是 registry 里**已注册**的名字（`src/voxel/blocks-data.js`），
  * 且**除 `glass_block` 外全部走 opaque 通道** —— cutout/transparent 会让十万级方块的三通道

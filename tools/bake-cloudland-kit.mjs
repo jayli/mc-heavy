@@ -70,7 +70,25 @@ function loadSchematic() {
     blocks[n++] = v;
   }
   if (n !== W * H * L) throw new Error(`Data 长度 ${n} ≠ ${W}×${H}×${L}`);
-  return { W, H, L, pal, blocks, paletteEntryCount: Object.keys(paletteSrc).length };
+  const s = { W, H, L, pal, blocks, paletteEntryCount: Object.keys(paletteSrc).length };
+  assertIndexZeroIsAir(s);
+  return s;
+}
+
+/**
+ * palette 索引 0 必须是 `air`。
+ *
+ * ⚠️ 这不是格式化洁癖：`connectedComponents()` 把 `blocks[i] !== 0` **直接**当「实心」用
+ * （`solid` 就是索引真值），而那个假设成立的全部依据就是本条。素材被换成「索引 0 不是
+ * 空气」的那天，整层空气会被当实心 → 38 个分量并成一个巨型分量 → **35 个产物被就地覆盖**，
+ * 而脚本只会打印一条「与固化值不一致」的警告、照常写盘（静默）。故硬断言、且越早越好。
+ * @param {{pal: string[]}} s
+ */
+function assertIndexZeroIsAir(s) {
+  if (s.pal[0] !== 'air') {
+    throw new Error(`palette 索引 0 是 "${s.pal[0]}" 而不是 air —— 连通分量把索引 0 当空气，`
+      + '继续跑会把整层空气当实心（38 个分量并成 1 个）并覆盖全部产物；请确认素材格式');
+  }
 }
 
 // ---------------------------------------------------------------- 连通分量（26 邻接）
@@ -241,7 +259,7 @@ function census() {
  * ①「四族并集必须 100% 映射」与 ② 烘焙循环里的逐格 throw，两者都是硬失败。
  */
 const NON_CONSUMED_NAMES = Object.freeze({
-  air: { kind: 'air', why: 'palette 索引 0；连通分量只对非空气格做（`solid` 是索引真值判据）' },
+  air: { kind: 'air', why: '索引 0 已被 `assertIndexZeroIsAir` 断言为 air（连通分量把索引 0 当空气）' },
   dark_oak_planks: { kind: 'y0', why: '只在 y=0 地板层，y=0 已整层剔除（见文件头）' },
   polished_granite: { kind: 'y0', why: '只在 y=0 地板层，同上' },
   glass: { kind: 'dropped', why: '只在拱洞族的丢弃碎屑里（格数 < 600 的分量不烘）' },
@@ -294,6 +312,10 @@ function assertFullPaletteCoverage(s, groups, droppedArch) {
   for (const comp of droppedArch) for (const n of paletteNamesOf(s, comp)) droppedNames.add(n);
   for (const [name, entry] of Object.entries(NON_CONSUMED_NAMES)) {
     const above = aboveGround.get(name) ?? 0;
+    // `air` 的契约是「索引 0 是空气」。`loadSchematic` 已查过一次（尽早失败），
+    // 这里重查一遍是为了让**白名单表自己能独立失败** —— 将来若有别的入口构造 s
+    // （如测试直接拼对象）而不经过 `loadSchematic`，这张表依旧是有效闸门。
+    if (entry.kind === 'air') assertIndexZeroIsAir(s);
     if (entry.kind === 'y0' && above !== 0) {
       throw new Error(`白名单声称 "${name}" 只在 y=0 地板层，实测 y≥1 有 ${above} 格 —— 它会被烤进产物却没映射`);
     }
@@ -367,6 +389,10 @@ function bake() {
       }
 
       const file = path.join(KIT_JSON_DIR, `${base}.json`);
+      // 台顶材质自检（用户 2026-10-26 裁定：moss → grass）。
+      // 放在写盘**之前**而不是整个 bake() 末尾：放末尾的话产物已落地，
+      // 「忘了改四个 moss 源名」这类回归会留下 11 个坏产物再抛错（下一次任务读到旧文件）。
+      if (family === 'tarn') assertTarnTopIsGrass(base, palette);
       fs.writeFileSync(file, JSON.stringify({ version: 1, palette, blocks }));
       metrics[base] = { width: W, height: H, depth: D, blocks: n };
       variants[family].push(base);
@@ -410,6 +436,25 @@ function bake() {
   fs.writeFileSync(KIT_META, `${JSON.stringify(meta, null, 2)}\n`);
   console.log(`指纹 ${fp.input}`);
   console.log(`meta → ${path.relative(process.cwd(), KIT_META)}`);
+}
+
+/**
+ * 台顶材质断言：11 个高台产物的 palette 必须含 `grass`、不得含 `moss`。
+ *
+ * 用户 2026-10-26 裁定「高台顶部的方块原来是 moss，现在换成 grass」。四个源名
+ * （`moss_block` / `green_terracotta` / `green_wool` / `lime_terracotta`）共 22,926 格，
+ * 漏改时方块层面完全看不出错 —— 只有名字级断言能抓。
+ * @param {string} base 产物基名
+ * @param {string[]} palette 该产物的 palette
+ */
+function assertTarnTopIsGrass(base, palette) {
+  if (palette.includes('moss')) {
+    throw new Error(`${base} 的 palette 还含 moss —— moss_block / green_terracotta / `
+      + 'green_wool / lime_terracotta 四个源名的映射没改成 grass');
+  }
+  if (!palette.includes('grass')) {
+    throw new Error(`${base} 的 palette 不含 grass —— 台顶没映射到 grass（检查 BLOCK_MAP 的四个苔藓源名）`);
+  }
 }
 
 /** 当前固化值是否与本次烘焙一致（首次烘焙时固化值是空表 → 返回 false） */
