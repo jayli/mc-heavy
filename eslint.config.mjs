@@ -210,8 +210,10 @@ export default [
   },
   {
     // 方块数据 / 面映射：方块名作为对象键（stone_diorite、glass_block 等），
-    // camelcase 规则会命中对象键，需豁免（与 mc-lite 方块命名保持一致）
-    files: ['src/voxel/blocks-data.js', 'src/voxel/faces-data.js', 'src/tests/test-mesher.js'],
+    // camelcase 规则会命中对象键，需豁免（与 mc-lite 方块命名保持一致）。
+    // cloudland-kit-data.js 同理：KIT_METRICS 的键是产物基名（cloudland_tarn_01）
+    files: ['src/voxel/blocks-data.js', 'src/voxel/faces-data.js', 'src/tests/test-mesher.js',
+      'src/gen/structures/cloudland-kit-data.js'],
     rules: {
       'camelcase': 'off',
     },
