@@ -9,6 +9,9 @@
 import { seededRandom } from '../noise.js';
 import { REGION_SIZE, CITY_REGION } from './region-config.js';
 import { KIT_METRICS, KIT_VARIANTS } from './cloudland-kit-data.js';
+// `SEA_Y` 只依赖 `voxel/constants.js`（无 three、无 DOM），Worker 同构层可直接 import。
+// 先例：`gen/structures/giant-trees.js:18` 同一个 import。
+import { SEA_Y } from '../../voxel/constants.js';
 
 // ==================== 地带尺度 ====================
 
@@ -45,8 +48,12 @@ export const TARN_ZONE_CHANCE = 1 / 3;
  * ⚠️ **这是几何常量而不是地形常量**，所以放在本文件而不是 `tarn-terrain.js`
  * （后者依赖前者，放那边会成环）。Task 4 的整形、Task 5 的高台 y、Task 6 的水面平面
  * 全部读同一个值 —— 各写一份会漂移出「水漫过台地」或「台地浮在水面上」。
+ *
+ * ⚠️ **必须从 `SEA_Y` 派生，不得写字面量 2**：写成字面量后单测里的
+ * `assertEqual(TARN_PLATEAU_Y, SEA_Y + 4)` 才真的能抓到「台地高度漂了」——
+ * 若两边同源（断言 `lay.plateauY === TARN_PLATEAU_Y`），改常量时断言跟着变，恒真。
  */
-export const TARN_PLATEAU_Y = 2;
+export const TARN_PLATEAU_Y = SEA_Y + 4;
 
 /**
  * 巨型云的最低 y（Task 5 要 import）。
@@ -189,14 +196,32 @@ export function aabbGap(a, b) {
  * 每缝偏移取 `(rand − 0.5)·2·jitterMax` 后**减去均值**，保证 Σ缝角守恒
  * （否则 8 个缝整体偏一点，最后一座会绕回第一座撞上）。
  *
- * ## 安全性的真正保证（比 300 抽样更强；**这是设计论证，不是单测断言**）
- * 环上相邻角差 `d_i = occ_i/2 + gapAngle + occ_{i+1}/2 + jit_i` —— **只有 `jit_i` 影响
- * 第 i 对**。故「最坏情况」= 单个 `jit_i = −jitterMax` 且其余 +jitterMax/7（零和）。
- * 实施期实测该对抗上界在 jitterMax 处是 **4.357 ≥ 4** ⇒ 任何逐 region 采样器都安全，
- * 不依赖抽样序列碰巧落在 300 个样本里。
- * ⚠️ 单测钉不到它：`jitterMax` 是本模块私有量，为它加导出会为了测试而扩 API。
- * 单测实际覆盖的是「真实采样器在跨 region / 跨 seed 下都 ≥ TARN_GAP」
- * （`test-tarn-zone.js` 的「跨 region / 跨 seed 都满足间距」用例）。
+ * ## 安全性的论证边界（**§实际可达域只有 3.841 < 4，以实测为准**）
+ *
+ * ❌ **曾经写过的过强结论（已作废，勿恢复）**：「最坏情况 = 单个 `jit_i = −jitterMax`
+ * 且其余 `+jitterMax/7` ⇒ 任何零和向量都安全（4.357 ≥ 4）」。
+ * 错在：`−1×jm + 7×(jm/7)` 这只是 **±jitterMax 盒 ∩ 零和** 的极值，而
+ * `zeroSum()` 输出的是 `raw − mean`，`raw ∈ [−jm, +jm]` ⇒ 单值可达 **±1.75×jm**
+ * （7×`+jm` + 1×`−jm` ⇒ mean = 0.75jm ⇒ 该值 = −1.75jm），**不受盒约束**。
+ *
+ * ✅ **实测可达域（实施期实测，seed 12345、jitterMax = 0.6846°）**：
+ * | 向量族 | 最坏相邻间距 |
+ * |---|---|
+ * | `1×(+jm)` + `7×(−jm)` → 归一化后单值 −1.198° | **3.841** ❌ < 4 |
+ * | `2×(+jm)` + `6×(−jm)` | 4.013 ✅ |
+ * | `3×(+jm)` + `5×(−jm)` | 4.185 ✅ |
+ * | `4×(+jm)` + `4×(−jm)`（= 盒内极值 4.357 的反向等价形）| 4.357 ✅ |
+ * | **真实逐 region 采样器 30 万 region** | **min 4.031**，<4 比率 **0.0000%** |
+ * | 均匀随机可达向量 30 万 | min 3.886，<4 比率 0.0013% |
+ *
+ * ⇒ **真正成立的说法**：`TARN_GAP = 4` 对当前这个采样器是**实测成立**的（30 万 region 零违反，
+ * 最坏 4.031 距阀值 0.031），但在**可达域的数学极端上并不成立**（最坏 3.841）。
+ * 「任何零和向量都安全」是错的；正确的是「本采样器实测安全」。
+ *
+ * ⚠️ **所以改采样器时必须重跑这组实测**（单测对应「跨 region / 跨 seed 都满足间距」
+ * 与「任意两座高台都不重叠」两条用例，各扫 5 seed × 81 region），**不能拿任何解析上界作担保**。若将来要那类硬保证，得把 `JITTER_SAFETY_RATIO` 降到
+ * ~0.45 使可达极端也 ≥ 4，或改 `zeroSum` 为盒内投影（`raw − clamp(mean)`，
+ * 以轻微不守恒换盒约束）—— 两条都未做，属刻意选择。
  */
 const jitterMaxCache = new Map();
 const JITTER_SAMPLE_COUNT = 300;
@@ -313,8 +338,10 @@ function tarnRegionJitter(regionX, regionZ, seed, count) {
   const jitterMax = tarnJitterMax(seed);
   // regionKey 把 (regionX, regionZ) 折成一维，喂给 seededRandom 的 x 槽。
   // ⚠️ 这会碰撞：`(rx, rz)` 与 `(rx + 17, rz − 31)` 得到同一个 key。
-  // **碰撞无害**：碰撞只意味着两个 region 共享同一组抖动，而抖动正确性由
-  // `tarnJitterMax` 的对抗上界保证（任何零和向量都 ≥ TARN_GAP），不依赖各 region 互不相同。
+  // **碰撞无害**：碰撞只意味着两个 region 共享同一组抖动。安全性的依据是
+  // 「本采样器实测 30 万 region 最小间距 4.031 ≥ TARN_GAP」（见 `tarnJitterMax` 注释），
+  // 与 region 是否互不相同无关。
+  // ❌ 勿写成「碰撞无害是因为任何零和向量都安全」—— 那个结论已被实测推翻。
   const regionKey = regionX * 31 + regionZ * 17;
   const raw = [];
   for (let i = 0; i < count; i++) {
@@ -333,6 +360,10 @@ function tarnRegionJitter(regionX, regionZ, seed, count) {
  * 而最宽拱洞 19 格 —— 差 14 格，塞不进去。这是 spec 的一条修正（原设计那么写，几何不成立）。
  *
  * 实测（5 等角位、无抖动）：最近角 **111.66** > 池半径 90、最远角 **138.94** < 地带半径 160。
+ *
+ * ⚠️ **本任务内无外部消费方**：`computeTarnZone()` 直接引用它，但 Task 5（apply 阶段 2.4
+ * 光栅化）会把 `decos[].ring` 写进 `TARN_ARCH_RING_RADIUS` 的语义里。导出是为 Task 5/Task 8
+ * （`check:data` 门禁）预留 —— 与 `TARN_SPIRE_RING_RADIUS` 同口径。
  */
 export const TARN_ARCH_RING_RADIUS = 125;
 
@@ -343,6 +374,7 @@ export const TARN_ARCH_RING_RADIUS = 125;
  * 而实测内环 12 时 7 个紫晶柱**互相重叠 3 对**（最小距 **−1.86**）。
  * 20 是穷举实测的安全值（互距 3.57、vs 高台 +4.8）。
  * ⚠️ **上界是 24**（26 起 vs 高台 −1.20 撞上），调大前必须重跑 spec DR-8 那张表。
+ * ⚠️ **本任务内无外部消费方**（同 `TARN_ARCH_RING_RADIUS`）：导出是为 Task 5/Task 8 预留。
  */
 export const TARN_SPIRE_RING_RADIUS = 20;
 

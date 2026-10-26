@@ -14,6 +14,10 @@ import {
 } from '../gen/structures/tarn-zone.js';
 import { KIT_VARIANTS, KIT_METRICS } from '../gen/structures/cloudland-kit-data.js';
 import { REGION_SIZE, CITY_REGION } from '../gen/structures/region-config.js';
+// ⚠️ `SEA_Y` 无 three / 无 DOM，浏览器可用（`giant-trees.js:18` 同先例）。
+// 这是 `plateauY` 断言**具备判别力**的前提：断言必须拿一个与 `TARN_PLATEAU_Y` **不同源**的
+// 参照值，否则两边一起改、用例恒真。
+import { SEA_Y } from '../voxel/constants.js';
 
 const SEED = 12345;
 
@@ -211,16 +215,31 @@ test('地带布局：12 个装饰件全在（5 拱洞 + 7 紫晶柱）且在正�
   const spires = lay.decos.filter((d) => d.kind === 'spire');
   assertEqual(arches.length, 5, '拱洞数');
   assertEqual(spires.length, 7, '紫晶柱数');
-  // 拱洞在**池外台地**（池半径之外、地带圆之内）
+  // 拱洞在**池外台地**（池半径之外、地带圆之内）。
+  // ⚠️ **必须逐角算**（spec DR-8）：轴对齐矩形离池心的最近点是四角之一（不是边中点），
+  //    只判 `a.ring > poolRadius` 是常数比较（125 > 90 恒真），拓不到「落台地区间外」这类缺陷。
   for (const a of arches) {
-    assertTrue(a.ring > lay.poolRadius, `拱洞 ${a.variant} 必须在池外（ring ${a.ring} <= ${lay.poolRadius}）`);
-    const maxHalf = Math.max(a.halfX, a.halfZ);
-    assertTrue(a.ring + maxHalf <= TARN_ZONE_RADIUS,
-      `拱洞 ${a.variant} 压出地带边缘（${(a.ring + maxHalf).toFixed(1)} > ${TARN_ZONE_RADIUS}）`);
+    const acx = a.ring * Math.cos(a.ang), acz = a.ring * Math.sin(a.ang);
+    let nearCorner = Infinity, farCorner = 0;
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+      const r = Math.hypot(acx + sx * a.halfX, acz + sz * a.halfZ);
+      nearCorner = Math.min(nearCorner, r);
+      farCorner = Math.max(farCorner, r);
+    }
+    assertTrue(nearCorner > lay.poolRadius,
+      `拱洞 ${a.variant} 最近角 ${nearCorner.toFixed(2)} 压进水池（必须 > ${lay.poolRadius}）`);
+    assertTrue(farCorner < TARN_ZONE_RADIUS,
+      `拱洞 ${a.variant} 最远角 ${farCorner.toFixed(2)} 压出地带边缘（必须 < ${TARN_ZONE_RADIUS}）`);
   }
-  // 紫晶柱在**池内**
+  // 紫晶柱在**池内**（同样逐角：最远角必须还在池半径内）
   for (const sp of spires) {
-    assertTrue(sp.ring < lay.poolRadius, `紫晶柱 ${sp.variant} 必须在池内（ring ${sp.ring} >= ${lay.poolRadius}）`);
+    const scx = sp.ring * Math.cos(sp.ang), scz = sp.ring * Math.sin(sp.ang);
+    let farCorner = 0;
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+      farCorner = Math.max(farCorner, Math.hypot(scx + sx * sp.halfX, scz + sz * sp.halfZ));
+    }
+    assertTrue(farCorner < lay.poolRadius,
+      `紫晶柱 ${sp.variant} 最远角 ${farCorner.toFixed(2)} 出池（必须 < ${lay.poolRadius}）`);
   }
 });
 
@@ -281,8 +300,12 @@ test('地带布局：plateauY / 半径 / 中心与常量一致', () => {
   assertEqual(lay.cx, c.cx, 'cx');
   assertEqual(lay.cz, c.cz, 'cz');
   assertEqual(lay.poolRadius, TARN_POOL_RADIUS, 'poolRadius');
-  // ⚠️ plateauY 由本函数定义（几何常量，Task 4/5/6 全读它）
-  assertEqual(lay.plateauY, TARN_PLATEAU_Y, 'plateauY = SEA_Y + 4 = 2');
+  // ⚠️ **必须拿 `SEA_Y + 4` 作参照，不能写 `assertEqual(lay.plateauY, TARN_PLATEAU_Y)`**：
+  //    两边同源（`TARN_PLATEAU_Y` 是 `computeTarnZone` 的直接输入）→ 改常量时断言跟着变，
+  //    恒真。而 Task 4/5/6 会读到一个错的高度，形态是「水漫过台地」或「台地浮在水面上」，
+  //    **方块层面看不出那是高度常量错了**。
+  assertEqual(TARN_PLATEAU_Y, SEA_Y + 4, 'TARN_PLATEAU_Y 必须 = SEA_Y + 4');
+  assertEqual(lay.plateauY, SEA_Y + 4, 'layout.plateauY 必须 = SEA_Y + 4');
   assertEqual(lay.plateauRadius, TARN_ZONE_RADIUS, 'plateauRadius = 地带半径');
 });
 
@@ -293,29 +316,61 @@ test('地带布局：确定性 —— 同一 (region, seed) 两次调用逐值�
   assertEqual(JSON.stringify(a), JSON.stringify(b), '布局必须是纯函数');
 });
 
-test('地带布局：抖动真的在起作用（不是全零，否则退化成机械等距）', () => {
-  const { rx, rz } = findTarnRegion(SEED);
-  const lay = computeTarnZone(rx, rz, SEED);
-  // 相邻角差（含缝角）应当**不完全相同** —— 无抖动时它们会逐位相等
-  const deltas = [];
-  for (let i = 0; i < lay.tarns.length; i++) {
-    const a = lay.tarns[i].ang, b = lay.tarns[(i + 1) % lay.tarns.length].ang;
-    deltas.push(((b - a) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI));
+test('地带布局：抖动真的在起作用（跨 seed / 跨 region 的角布置不同）', () => {
+  // ❌ **旧版断言是空断言（已被评审拓出，勿恢复）**：
+  //    旧版算 8 个相邻角差后断言 `new Set(...).size >= 7`。但 8 座的 `occ` 本来就全都不同
+  //    （48.89/40.34/36.16/36.16/24.89/20.86/17.85/12.87°）+ 15.25° 缝角 ⇒ 无抖动时相邻角差
+  //    就是 8 个互不相同的值（59.86/53.50/51.41/45.77/38.12/34.60/30.61/46.12°）。实测
+  //    `uniq.size = 8` **恒成立** ⇒ 注入 `JITTER_SAFETY_RATIO=0`（全零抖动）时它仍然 pass。
+  //
+  // ✅ 现行判据：**跨 seed / 跨 region 的角布置必须不同** —— 零抖动时两次调用会逐位相同。
+  //    实测：正常态跨 3 seed 最大偏差 **2.508e-2 rad**；注入 `RATIO=0` 时**精确为 0**。
+  //
+  // ⚠️ 取样坐标必须属于**三个 seed 的交集**（否则 `computeTarnZone` 返回 null）。
+  //    实测 seed {12345, 424242, 777} 的地带交集里包含 region(4,4)。
+  const SHARED_REGION = { rx: 4, rz: 4 };
+  const SEED_LIST = [SEED, 424242, 777];
+  for (const s of SEED_LIST) {
+    assertTrue(isTarnZone(SHARED_REGION.rx, SHARED_REGION.rz, s),
+      `region(${SHARED_REGION.rx},${SHARED_REGION.rz}) 在 seed ${s} 下不是地带 —— 取样坐标失效，须重新标定`);
   }
-  // 8 座的高台半宽不同，占角不同 ⇒ 角差不该全等；抖动再拉开一点。
-  // 严格的「抖动非零」判据落在 jitterMax > 0 与 computeTarnZone 的跨 region 差异上。
-  const uniq = new Set(deltas.map((d) => d.toFixed(9)));
-  assertTrue(uniq.size >= 7, `相邻角差只有 ${uniq.size} 种取值 —— 布局可能退化成机械等距`);
+
+  const anglesFor = (rx, rz, seed) => computeTarnZone(rx, rz, seed).tarns.map((t) => t.ang);
+  const base = anglesFor(SHARED_REGION.rx, SHARED_REGION.rz, SEED);
+
+  let crossSeed = 0;
+  for (const seed of SEED_LIST.slice(1)) {
+    const other = anglesFor(SHARED_REGION.rx, SHARED_REGION.rz, seed);
+    for (let i = 0; i < base.length; i++) {
+      crossSeed = Math.max(crossSeed, Math.abs(base[i] - other[i]));
+    }
+  }
+  assertTrue(crossSeed > 1e-9,
+    `跨 3 个 seed 的角布置完全相同（最大偏差 ${crossSeed}）—— 抖动没在起作用`);
+
+  // 同 seed 下的另一个地带 region（实测 seed 12345 的地带包含 (-6,-2)）
+  const otherRegion = anglesFor(-6, -2, SEED);
+  let crossRegion = 0;
+  for (let i = 0; i < base.length; i++) {
+    crossRegion = Math.max(crossRegion, Math.abs(base[i] - otherRegion[i]));
+  }
+  assertTrue(crossRegion > 1e-9,
+    `跨 2 个 region 的角布置完全相同（最大偏差 ${crossRegion}）—— 抖动没在起作用`);
 });
 
 test('地带布局：不同 region 的抖动不同（逐 region 抽签，不是全局固定）', () => {
   const regions = [];
-  for (let rx = -6; rx <= 6; rx++) for (let rz = -6; rz <= 6; rz++) {
-    const lay = computeTarnZone(rx, rz, SEED);
-    if (lay) regions.push(lay);
-    if (regions.length >= 4) break;
+  // ⚠️ 必须用 **labeled break**：旧版 `break` 只跳出内层 `rz` 循环，实际会收集到 ~56 个 zone
+  //    （而非 4 个）。虽然「至少 4 个」的下界断言仍能过，但用例实际扫的样本量与意图不符。
+  outer:
+  for (let rx = -6; rx <= 6; rx++) {
+    for (let rz = -6; rz <= 6; rz++) {
+      const lay = computeTarnZone(rx, rz, SEED);
+      if (lay) regions.push(lay);
+      if (regions.length >= 4) break outer;
+    }
   }
-  assertTrue(regions.length >= 4, '至少要找到 4 个地带 region');
+  assertEqual(regions.length, 4, '恰好收集 4 个地带 region（labeled break 生效）');
   const sigs = new Set(regions.map((l) => l.tarns.map((t) => t.ang.toFixed(9)).join(',')));
-  assertTrue(sigs.size >= 3, `4 个地带的角布置只有 ${sigs.size} 种 —— 抖动没有按 region 变化`);
+  assertEqual(sigs.size, 4, `4 个地带的角布置只有 ${sigs.size} 种 —— 抖动没有按 region 变化`);
 });
