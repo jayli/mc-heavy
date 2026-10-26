@@ -1,5 +1,6 @@
 // src/mesh/atlas-loader.js — atlas 运行时加载（设计文档 §4.4.1）
 import * as THREE from 'three';
+import { resourceUrl } from '../core/resource-url.js';
 
 /**
  * @param {{mipmap?: boolean}} [opts] blur 档位（§4.4.1）：mipmap=true 时远处三线性
@@ -8,9 +9,11 @@ import * as THREE from 'three';
  */
 export async function loadAtlas({ mipmap = false } = {}) {
   const [meta, texture] = await Promise.all([
-    // 绝对路径：fixture 页在 /src/tests/ 下，相对路径会解析成 /src/tests/assets/* → 404
-    fetch('/assets/atlas.json').then((r) => r.json()),
-    new THREE.TextureLoader().loadAsync('/assets/atlas.png'),
+    // 部署路径无关（v1.87）：`resourceUrl` 相对本仓模块的 import.meta.url 解析，
+    // 根路径与子路径部署都对。旧写法是根绝对路径 `'/assets/atlas.json'` —— fixture 页
+    // 在 /src/tests/ 下时躲开了「相对文档基址」的坑，但仓库挂子路径部署时会 404。
+    fetch(resourceUrl('assets/atlas.json')).then((r) => r.json()),
+    new THREE.TextureLoader().loadAsync(resourceUrl('assets/atlas.png')),
   ]);
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.magFilter = THREE.NearestFilter; // 近处恒像素风

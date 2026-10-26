@@ -261,6 +261,61 @@ function checkPublishFallback() {
   }
 }
 
+// ---------------------------------------------------------------- 资源 URL：禁止站点根绝对路径
+
+/**
+ * `src/**` 里的资源 URL 必须是部署路径无关的（v1.87）。
+ *
+ * **缺陷形态**：`fetch('/assets/atlas.json')` / `new Worker('/src/workers/world-worker.js')` /
+ * `"three": "/vendor/..."` —— 开头的 `/` 表示 **origin 根**，与文档所在路径无关。
+ * 仓库挂在子路径下（`http://host/mc-heavy/`）时全部请求解析到上一级 → 404，
+ * 游戏页卡在错误遮罩上。实测修复前：`/src/workers/world-worker.js` ×多次、
+ * `/assets/atlas.png`、`/assets/atlas.json` 全 404，`window.__MC_GAME__` 不存在。
+ *
+ * **为什么必须静态门禁**：这个缺陷只在「别人用子路径部署」时暴露，本机开发服务器恒为根路径
+ * （`http://localhost:8081/`）→ 根路径与正确写法**逐字节等价**，所有 E2E/单测全绿。
+ * 一旦靠人肉记规矩，下次新加一个资源加载点就会静默复发。
+ *
+ * 判据 = **非注释代码行**里出现 `'/assets/`、`"/assets/`、`'/src/`、`"/src/`、`'/vendor/`、`"/vendor/`。
+ * 注释里的路径（出处引用、踩坑记录）不受影响 —— `stripComment` 已剥掉。
+ *
+ * ⚠️ **不扫 `tests/*.spec.mjs`**：Playwright 侧固定打 repo 根（`baseURL: http://localhost:8081`），
+ * `page.goto('/')` 在那里是正确写法。
+ */
+const ROOT_ABSOLUTE_PATH = /(['"`])\/(assets|src|vendor)\//;
+
+/** 组装类根绝对路径字符串（`${ROOT}/assets/...`）不匹配上面的判据，故另守一条。 */
+const ROOT_ABSOLUTE_JOIN = /(['"`])\/(assets|src|vendor)['"`]/;
+
+function checkResourceUrls() {
+  const targets = [];
+  (function walk(dir) {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(p);
+      else if (entry.name.endsWith('.js') || entry.name.endsWith('.html')) {
+        // resource-url.js 自身要剥前导斜杠，注释里必然会提到这些路径串；它没有调用点。
+        if (path.relative(ROOT, p) === 'src/core/resource-url.js') continue;
+        targets.push(p);
+      }
+    }
+  })(SRC);
+
+  for (const file of targets) {
+    const r = rel(file);
+    const lines = fs.readFileSync(file, 'utf8').split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const code = stripComment(lines[i]);
+      if (!code) continue;
+      if (ROOT_ABSOLUTE_PATH.test(code) || ROOT_ABSOLUTE_JOIN.test(code)) {
+        failures.push(
+          `[资源 URL] ${r}:${i + 1} 站点根绝对路径（子路径部署下 404）—— ${code.trim()}`,
+        );
+      }
+    }
+  }
+}
+
 // ---------------------------------------------------------------- 报告
 
 function main() {
@@ -270,6 +325,7 @@ function main() {
   checkForbiddenNames(files);
   checkDependencyDirection(files);
   checkPublishFallback();
+  checkResourceUrls();
 
   console.log(`[check:arch] 扫描 ${files.length} 个源文件`);
   if (warns.length) {

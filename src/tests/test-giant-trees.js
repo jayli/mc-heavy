@@ -8,6 +8,7 @@
 // ⚠️ 写断言前先在真实数据上跑一次、打印实际值（testing-policy §2.6 ⑤）：本文件的下界/区间都取自实测的 1/4 量级。
 import { test } from './runner.js';
 import { assertEqual, assertTrue, assertFalse, assertDeepEqual } from './assert.js';
+import { resourceUrl } from '../core/resource-url.js';
 import {
   GIANT_FAMILY_ORDER, GIANT_STRIDE, GIANT_TREE_PATHS, isNearWater, isBiomeEdge, giantTreeRotation,
   computeGiantTreeCandidates, loadGiantTrees, rotateCell, rotatedFootprint, treeBox,
@@ -38,7 +39,7 @@ function blockCandidates(pathKey, regions = [-1, 0, 1]) {
 
 test('巨树加载：28 个变体、族数与烘焙元数据一致、palette[0] 是树干、锚点是 gy=0 的树干格、无重复坐标', async () => {
   const { families } = await loadGiantTrees();
-  const meta = await (await fetch('/assets/giant-trees/trees.meta.json')).json();
+  const meta = await (await fetch(resourceUrl('assets/giant-trees/trees.meta.json'))).json();
   let total = 0;
   for (const f of GIANT_FAMILY_ORDER) assertTrue(f in families, `族序里的 ${f} 在 trees.json 里`);
   assertEqual(Object.keys(families).length, GIANT_FAMILY_ORDER.length, '族序与 trees.json 的族一一对应');

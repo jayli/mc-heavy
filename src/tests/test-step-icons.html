@@ -17,8 +17,9 @@
 <h2>台阶背包图标：现状（普通方块贴图）vs mc-lite 专用图标</h2>
 <div id="out"></div>
 <script type="module">
-const atlasJson = await (await fetch('/assets/atlas.json')).json();
-const ATLAS = '/assets/atlas.png';
+import { resourceUrl } from '../core/resource-url.js';
+const atlasJson = await (await fetch(resourceUrl('assets/atlas.json'))).json();
+const ATLAS = resourceUrl('assets/atlas.png');
 const SIZE = atlasJson.size;
 
 const CASES = [

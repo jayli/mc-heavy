@@ -30,6 +30,7 @@
 // `tools/check-architecture.mjs` 的 `ISOMORPHIC_DIRS` 里 → 天然不受同构检查，无需白名单；
 // 同 `zombie-head-texture.js` 的理由）。
 import * as THREE from 'three';
+import { resourceUrl } from '../core/resource-url.js';
 
 /**
  * 序列帧冻结参数（mc-lite `ParticleSystem.js:27-37 / 113-119 / 177-188`）。
@@ -90,9 +91,10 @@ export function explosionFrameOpacity(progress) {
  * @returns {Promise<THREE.Texture>} 500×200 图集（5×2 = 10 帧）
  */
 export async function loadExplosionSpriteTexture() {
-  // 绝对路径：fixture 页在 /src/tests/ 下，相对路径会解析成 /src/tests/assets/* → 404
-  // （与 atlas-loader.js / zombie-head-texture.js 同一踩坑记录）
-  const texture = await new THREE.TextureLoader().loadAsync('/assets/effects/big_blow.png');
+  // 部署路径无关（v1.87）：旧写法是根绝对路径 `/assets/effects/big_blow.png`
+  // （与 atlas-loader.js / zombie-head-texture.js 同一踩坑记录：根路径能躲开
+  // 「相对文档基址」的坑，但仓库挂子路径部署时会 404）。
+  const texture = await new THREE.TextureLoader().loadAsync(resourceUrl('assets/effects/big_blow.png'));
   texture.colorSpace = THREE.SRGBColorSpace;
   // 像素风图集：nearest 采样保持硬边（mc-lite `:67-68` 同口径）；不开 mipmap（同 zombie 头）
   texture.magFilter = THREE.NearestFilter;

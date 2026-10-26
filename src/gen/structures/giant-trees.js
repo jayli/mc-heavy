@@ -16,6 +16,7 @@ import { makeColumnSetter } from './landmarks.js';
 import { REGION_SIZE, SCATTER_FOOTPRINT, CITY_STRUCTURE_FOOTPRINT } from './region-config.js';
 import { SCATTER_TYPES, SCATTER_STRIDE } from './scatter.js';
 import { SEA_Y } from '../../voxel/constants.js';
+import { resourceUrl } from '../../core/resource-url.js';
 
 /** 族序（候选里存下标；绝不依赖对象 key 顺序）。与 tools/giant-trees-fingerprint.mjs 的 TREE_FAMILIES 同名同序。 */
 export const GIANT_FAMILY_ORDER = Object.freeze(['tallOak', 'snowSpruce', 'cherry', 'palm', 'banyanLeafy', 'banyanBare']);
@@ -192,7 +193,9 @@ let loading = null;
 export function loadGiantTrees() {
   if (cache) return Promise.resolve(cache);
   if (!loading) {
-    loading = fetch('/assets/giant-trees/trees.json').then((r) => r.json()).then((data) => {
+    // 部署路径无关（v1.87）：旧写法是根绝对路径，仓库挂子路径部署时
+    // Worker 内 fetch 404 → 所有巨树静默消失（方块层面看不出差别）。
+    loading = fetch(resourceUrl('assets/giant-trees/trees.json')).then((r) => r.json()).then((data) => {
       const families = {};
       for (const [fam, list] of Object.entries(data.trees)) {
         families[fam] = list.map((v) => ({

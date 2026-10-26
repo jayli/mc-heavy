@@ -5,10 +5,10 @@
   <script type="importmap">
   {
     "imports": {
-      "three": "/vendor/three/three.webgpu.js",
-      "three/tsl": "/vendor/three/three.tsl.js",
-      "three/webgpu": "/vendor/three/three.webgpu.js",
-      "three/addons/": "/vendor/three/addons/"
+      "three": "../../vendor/three/three.webgpu.js",
+      "three/tsl": "../../vendor/three/three.tsl.js",
+      "three/webgpu": "../../vendor/three/three.webgpu.js",
+      "three/addons/": "../../vendor/three/addons/"
     }
   }
   </script>
@@ -25,6 +25,7 @@
   import { BLOCKS } from '../voxel/blocks-data.js';
   import { WORLD_MIN_Y, blockIndex } from '../voxel/constants.js';
   import { loadAtlas } from '../mesh/atlas-loader.js';
+  import { resourceUrl } from '../core/resource-url.js';
 
   async function run() {
     const results = { passed: 0, failed: 0, errors: [] };
@@ -56,7 +57,7 @@
     }
     world.add(col);
     const view = world.getSectionView(0, 1, 0);
-    const atlasMeta = await (await fetch('/assets/atlas.json')).json();
+    const atlasMeta = await (await fetch(resourceUrl('assets/atlas.json'))).json();
     const meshData = buildSectionMesh(view, reg, atlasMeta, 0, 1, 0);
     rw.uploadSection(0, 1, 0, 'opaque', meshData.opaque, 1);
     check('section uploaded', rw.stats().sections === 1);

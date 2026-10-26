@@ -4,6 +4,7 @@
 // （浏览器内 canvas 读像素，单测环境无 atlas.png）。
 import { test } from './runner.js';
 import { assertEqual, assertTrue, assertFalse } from './assert.js';
+import { resourceUrl } from '../core/resource-url.js';
 // FACE_VERTICES/FACE_UVS 是形状与 UV 的**唯一权威**（v1.26 导出）——单测逐顶点比对
 // cubeQuads 是否与之一致，防止 iso-icon.js 出现第二份立方体/UV 定义（红线 1）。
 import { TEMPLATES, FACE_VERTICES, FACE_UVS } from '../mesh/mesher.js';
@@ -163,7 +164,7 @@ const ICON_BLOCKS = [
  */
 let iconMeta = null;
 async function iconMetaLoad() {
-  if (!iconMeta) iconMeta = await (await fetch('/assets/icons.json')).json();
+  if (!iconMeta) iconMeta = await (await fetch(resourceUrl('assets/icons.json'))).json();
   return iconMeta;
 }
 /** 从图标 atlas 裁某方块矩形 → canvas ImageData（size × size RGBA） */
@@ -173,7 +174,7 @@ async function iconPixels(name) {
   const m = css.match(/(-?\d+)px (-?\d+)px \/ /); // background-position: -Xpx -Ypx
   const ox = -+m[1], oy = -+m[2];
   const bmp = await createImageBitmap(
-    await (await fetch('/assets/icons-atlas.png')).blob());
+    await (await fetch(resourceUrl('assets/icons-atlas.png'))).blob());
   const size = 40; // hotbar 档烘焙尺寸（与 bake-icon-atlas.mjs 的 SIZES.hotbar 一致）
   const cv = document.createElement('canvas');
   cv.width = size; cv.height = size;

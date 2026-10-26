@@ -3,11 +3,13 @@
 // 加载失败返回 null → 渲染层退回纯色（单测 fixture 不需纹理也能跑；
 // 玩家侧也只是「炮塔没有装甲贴图」而非崩溃，与 M4 武器模型同一容错口径）。
 import * as THREE from 'three';
+import { resourceUrl } from '../core/resource-url.js';
 
 /** @returns {Promise<THREE.Texture|null>} */
 export async function loadTurretArmorTexture() {
   try {
-    const texture = await new THREE.TextureLoader().loadAsync('/assets/turret/armor.png');
+    // 部署路径无关（v1.87）：旧写法是根绝对路径 `/assets/turret/armor.png`
+    const texture = await new THREE.TextureLoader().loadAsync(resourceUrl('assets/turret/armor.png'));
     texture.magFilter = THREE.NearestFilter;   // mc-lite `NearestFilter` 同口径（保像素风）
     texture.minFilter = THREE.NearestFilter;
     texture.generateMipmaps = false;

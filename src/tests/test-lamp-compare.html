@@ -6,10 +6,10 @@
   <script type="importmap">
   {
     "imports": {
-      "three": "/vendor/three/three.webgpu.js",
-      "three/tsl": "/vendor/three/three.tsl.js",
-      "three/webgpu": "/vendor/three/three.webgpu.js",
-      "three/addons/": "/vendor/three/addons/"
+      "three": "../../vendor/three/three.webgpu.js",
+      "three/tsl": "../../vendor/three/three.tsl.js",
+      "three/webgpu": "../../vendor/three/three.webgpu.js",
+      "three/addons/": "../../vendor/three/addons/"
     }
   }
   </script>
@@ -21,6 +21,7 @@
   import { createRegistry } from '../voxel/block-registry.js';
   import { BLOCKS } from '../voxel/blocks-data.js';
   import { loadAtlas } from '../mesh/atlas-loader.js';
+  import { resourceUrl } from '../core/resource-url.js';
 
   // =========================================================================
   // 吊灯两侧对照（手动调试页，未注册进 src/tests/index.html 与 Playwright 套件）
@@ -79,7 +80,7 @@
     for (const def of BLOCKS) reg.register(def.name, def);
     reg.freeze();
     const { texture } = await loadAtlas();
-    const atlasMeta = await (await fetch('/assets/atlas.json')).json();
+    const atlasMeta = await (await fetch(resourceUrl('assets/atlas.json'))).json();
 
     // 造一个 1 方块 section：中心放 hanging_lamp
     const id = reg.idOf('hanging_lamp');

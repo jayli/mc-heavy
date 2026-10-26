@@ -6,10 +6,10 @@
   <script type="importmap">
   {
     "imports": {
-      "three": "/vendor/three/three.webgpu.js",
-      "three/tsl": "/vendor/three/three.tsl.js",
-      "three/webgpu": "/vendor/three/three.webgpu.js",
-      "three/addons/": "/vendor/three/addons/"
+      "three": "../../vendor/three/three.webgpu.js",
+      "three/tsl": "../../vendor/three/three.tsl.js",
+      "three/webgpu": "../../vendor/three/three.webgpu.js",
+      "three/addons/": "../../vendor/three/addons/"
     }
   }
   </script>
@@ -31,6 +31,7 @@
   import { BLOCKS } from '../voxel/blocks-data.js';
   import { blockIndex, sectionOf } from '../voxel/constants.js';
   import { loadAtlas } from '../mesh/atlas-loader.js';
+  import { resourceUrl } from '../core/resource-url.js';
   import { generateTree } from '../gen/structures/vegetation.js';
 
   async function run() {
@@ -84,7 +85,7 @@
     world.add(col);
     computeSkylightColumn(col, reg); // 全露天 sky=15 → 隔离光照变量（同 test-ao.html 手法）
 
-    const atlasMeta = await (await fetch('/assets/atlas.json')).json();
+    const atlasMeta = await (await fetch(resourceUrl('assets/atlas.json'))).json();
     const sy = sectionOf(1);
     const view = world.getSectionView(0, sy, 0);
     const meshData = buildSectionMesh(view, reg, atlasMeta, 0, sy, 0);

@@ -1,5 +1,6 @@
 import { test } from './runner.js';
 import { assertTrue, assertNotNull } from './assert.js';
+import { resourceUrl } from '../core/resource-url.js';
 import { computeRegionLayout, neighborRegionKeys } from '../gen/structures/structure-layout.js';
 import { applyStructuresToColumn } from '../gen/structures/apply.js';
 import { ChunkColumn } from '../voxel/chunk-column.js';
@@ -66,7 +67,7 @@ function findIsland() {
  *   海岛塔允许少量树冠覆盖（mc-lite towerExclusionRadius=5 原语义），取 0.9 口径。
  */
 async function assertStructureSpan(reg, file, centerX, centerY, centerZ, label, minMatchRate) {
-  const data = await (await fetch(`/assets/structures/${file}`)).json();
+  const data = await (await fetch(resourceUrl(`assets/structures/${file}`))).json();
   let minY = Infinity;
   for (const b of data.blocks) if (b.y < minY) minY = b.y;
 

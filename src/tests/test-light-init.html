@@ -4,6 +4,7 @@
 <body>
 <script type="module">
   import { WorkerPool } from '../core/worker-pool.js';
+  import { resourceUrl } from '../core/resource-url.js';
   import { WorldData } from '../voxel/world-data.js';
   import { Scheduler } from '../core/scheduler.js';
   import { createRegistry } from '../voxel/block-registry.js';
@@ -30,7 +31,7 @@
     }
     const getEdits = (key) => (key === '0,0' ? edits : []);
 
-    const pool = new WorkerPool({ workerUrl: '/src/workers/world-worker.js', size: 2 });
+    const pool = new WorkerPool({ workerUrl: resourceUrl('src/workers/world-worker.js'), size: 2 });
     await pool.ready;
     const world = new WorldData(reg);
     const sched = new Scheduler({ world, pool, registry: reg, seed: 12345, viewDistance: 2, getEdits });

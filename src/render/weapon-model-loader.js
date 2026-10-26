@@ -4,12 +4,18 @@
 // 加载失败报出可识别的武器 id 与资源 URL，让玩家保持徒手可玩。
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { resourceUrl } from '../core/resource-url.js';
 
-/** 仓库受控的三件 glTF 2.0 .glb；禁止用户文件、外链、Draco/KTX2。 */
+/**
+ * 仓库受控的三件 glTF 2.0 .glb；禁止用户文件、外链、Draco/KTX2。
+ *
+ * v1.87：路径由 `resourceUrl()` 派生（旧写法是站点根绝对路径 `/assets/models/...`，
+ * 仓库挂子路径部署时 404 → 枪模型全部加载失败、退回徒手）。
+ */
 export const WEAPON_ASSET_URLS = Object.freeze({
-  pistol: '/assets/models/weapons/pistol.glb',
-  mag7: '/assets/models/weapons/mag7.glb',
-  minigun: '/assets/models/weapons/minigun.glb',
+  pistol: resourceUrl('assets/models/weapons/pistol.glb'),
+  mag7: resourceUrl('assets/models/weapons/mag7.glb'),
+  minigun: resourceUrl('assets/models/weapons/minigun.glb'),
 });
 
 export class WeaponModelLoader {

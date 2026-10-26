@@ -8,6 +8,7 @@ import { PerfMonitor } from './perf.js';
 import { PerfHUD } from './perf-hud.js';
 import { BudgetConfig } from './budget.js';
 import { DEBUG_FLAGS } from './debug-config.js';
+import { resourceUrl } from './resource-url.js';
 import { RenderWorld } from '../render/render-world.js';
 import { setupFog } from '../render/materials.js';
 import { setupOcean } from '../render/ocean.js';
@@ -110,7 +111,9 @@ export class Game {
     this.perf = new PerfMonitor();
     /** 帧预算双档标定（M3-2）：Scheduler 上传/下发预算从这里读，主循环喂帧间隔 */
     this.budget = new BudgetConfig({ profile: budgetProfile });
-    this.pool = new WorkerPool({ workerUrl: '/src/workers/world-worker.js' });
+    // Worker 入口地址是站点根绝对路径时，仓库挂子路径部署会 404 → Worker 池全部起不来
+    // （v1.87 实测：`/mc-heavy/` 下 8 个 worker 全部 ERR_FAILED）。走 resourceUrl 部署无关解析。
+    this.pool = new WorkerPool({ workerUrl: resourceUrl('src/workers/world-worker.js') });
     this.renderer = new THREE.WebGPURenderer({ canvas, antialias: true });
     // ACES 色调映射（v1.70）：高光柔和滚落、不再被 sRGB 传递函数削平成白块。
     // 实测整屏高光削顶（luma>=250）**0.44% → 0%**，对比跳度 p95−p5 **163 → 183**。
@@ -163,7 +166,7 @@ export class Game {
       console.warn('[game] 爆炸序列帧图集加载失败，退回只有球体扩张层：', e);
       return null;
     });
-    const atlasMeta = await (await fetch('/assets/atlas.json')).json();
+    const atlasMeta = await (await fetch(resourceUrl('assets/atlas.json'))).json();
     this.pool.broadcast('atlas-meta', atlasMeta);
     // 调试开关同步给 Worker（mesher 与主线程快速路径同构生效，§4.9）
     this.pool.broadcast('debug-flags', { ...DEBUG_FLAGS });
@@ -588,7 +591,7 @@ export class Game {
     let blockColorResolver = null;
     try {
       blockColorResolver = createAtlasColorResolver({
-        texture: this._atlasTexture, atlasMeta: await (await fetch('/assets/atlas.json')).json(),
+        texture: this._atlasTexture, atlasMeta: await (await fetch(resourceUrl('assets/atlas.json'))).json(),
       });
     } catch (e) {
       console.warn('[game] 命中特效取色失败，退回中性灰：', e);

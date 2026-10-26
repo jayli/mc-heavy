@@ -4,6 +4,7 @@
 // Worker 同构：本文件不得 import three。
 import { generateHeight } from '../terrain.js';
 import { WORLD_MIN_Y, WORLD_MAX_Y, blockIndex } from '../../voxel/constants.js';
+import { resourceUrl } from '../../core/resource-url.js';
 
 /** placement 类型 → JSON 文件名（mc-lite structureLoaders 映射） */
 export const STRUCTURE_FILES = Object.freeze({
@@ -61,7 +62,9 @@ const loading = new Map(); // type → Promise
 export function loadStructure(type) {
   if (cache.has(type)) return Promise.resolve(cache.get(type));
   if (!loading.has(type)) {
-    loading.set(type, fetch(`/assets/structures/${STRUCTURE_FILES[type]}`)
+    // 部署路径无关（v1.87）：旧写法是根绝对路径 `/assets/structures/...`，
+    // 仓库挂子路径部署时 Worker 内 fetch 全部 404（结构静默变空）。
+    loading.set(type, fetch(resourceUrl(`assets/structures/${STRUCTURE_FILES[type]}`))
       .then((r) => r.json())
       .then((data) => {
         // 三种产物形状（`structure-json.js` 同时认）：

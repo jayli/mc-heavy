@@ -8,14 +8,15 @@
 // `tools/zombie-head-fingerprint.mjs`。纹理是双区并排 128×64：左半无眼睛 / 右半有眼睛 ——
 // 分面靠 **head 几何的 UV 分区**（`zombie-renderer.js`），不是材质数组。
 import * as THREE from 'three';
+import { resourceUrl } from '../core/resource-url.js';
 
 /**
  * @returns {Promise<THREE.Texture>} 128×64 双区纹理（左半无眼睛 / 右半有眼睛）
  */
 export async function loadZombieHeadTexture() {
-  // 绝对路径：fixture 页在 /src/tests/ 下，相对路径会解析成 /src/tests/assets/* → 404
-  // （与 atlas-loader.js 同一踩坑记录）
-  const texture = await new THREE.TextureLoader().loadAsync('/assets/zombie/head.png');
+  // 部署路径无关（v1.87）：旧写法是根绝对路径 `/assets/zombie/head.png`，
+  // fixture 页不再需要靠根路径躲「相对文档基址」的坑；仓库挂子路径部署也不 404。
+  const texture = await new THREE.TextureLoader().loadAsync(resourceUrl('assets/zombie/head.png'));
   texture.colorSpace = THREE.SRGBColorSpace; // mc-lite `createMosaicTexture` 同口径
   // 马赛克是像素风图案：nearest 采样保持硬边（mc-lite 同口径）。不开 mipmap ——
   // 丧尸只有 0.6 格大且总在近处，远处看不见，开了反而模糊马赛克边界

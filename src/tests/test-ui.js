@@ -13,6 +13,7 @@
 // 的图标契约检查（背包每项都有图标 + 图标未过期）。
 import { test } from './runner.js';
 import { assertEqual, assertTrue, assertFalse } from './assert.js';
+import { resourceUrl } from '../core/resource-url.js';
 import {
   DEFAULT_SETTINGS, resolveSettings, VIEW_DISTANCE_OPTIONS, VIEW_DISTANCE_MIN, VIEW_DISTANCE_MAX,
   VISUAL_STYLE_OPTIONS,
@@ -204,9 +205,12 @@ test('icons: CSS 串是完整 background 简写（含 url/位置/尺寸/no-repea
   const m = await loadIconManifest();
   const css = iconCss(m, 'hotbar', 'stone');
   assertTrue(css.startsWith('url('), '串以 url() 开头');
-  // **url 必须是绝对路径**：manifest 写相对名，而 background 的 url() 相对文档基址解析——
-  // 页面在 /src/tests/index.html 时相对名会去找 /src/tests/icons-atlas.png（404）。
-  assertTrue(css.includes("/assets/icons-atlas.png"), `url 已修正为绝对路径，实得 ${css}`);
+  // **url 必须是部署路径无关的绝对地址**：manifest 写相对名，而 background 的 url()
+  // 相对文档基址解析 —— fixture 页在 /src/tests/ 下时相对名会去找
+  // /src/tests/icons-atlas.png（404）。v1.87 起换成 resourceUrl() 的产物：
+  // 断言比原来的字面量 `${'/assets/icons-atlas.png'}` 强一级 —— 它验的是「解析到了
+  // 当前部署路径下的地址」，子路径部署时会期望带前缀的值（旧断言在那种部署下永远 FAIL）。
+  assertTrue(css.includes(resourceUrl('assets/icons-atlas.png')), `url 已修正为部署路径无关的绝对地址，实得 ${css}`);
   assertTrue(/-?\d+px -?\d+px \/ \d+px \d+px/.test(css), '含 background-position / background-size');
   assertTrue(css.includes('no-repeat'), '含 no-repeat（防图标平铺）');
 });
@@ -228,7 +232,7 @@ test('icons: 缺失方块返回 undefined（调用方降级为无图标，不抛
 test('icons: 图标 atlas 真实可加载且尺寸与 manifest 一致', async () => {
   const m = await loadIconManifest();
   const img = new Image();
-  img.src = '/assets/icons-atlas.png';
+  img.src = resourceUrl('assets/icons-atlas.png');
   await img.decode(); // 解码失败会抛 → 证明文件存在且是合法 PNG
   assertEqual(img.width, m.size, `atlas 宽 = manifest.size (${m.size})`);
   assertEqual(img.height, m.size, 'atlas 是正方形');

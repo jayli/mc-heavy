@@ -1,5 +1,6 @@
 import { test } from './runner.js';
 import { assertEqual, assertTrue, assertNull } from './assert.js';
+import { resourceUrl } from '../core/resource-url.js';
 import { buildSectionMesh } from '../mesh/mesher.js';
 import { computeSkylightColumn } from '../mesh/lighting.js';
 import { WorldData } from '../voxel/world-data.js';
@@ -957,7 +958,7 @@ test('mesher: bed_head 顶面 UV 不旋转（mc-lite rotation 字段无消费点
 });
 
 test('faces-data: 全部可渲染方块的 tile 均存在于 atlas', async () => {
-  const meta = await fetch('/assets/atlas.json').then((r) => r.json());
+  const meta = await fetch(resourceUrl('assets/atlas.json')).then((r) => r.json());
   for (const def of BLOCKS) {
     if (def.cullMode === 'none') continue; // 不渲染方块无贴图需求
     for (let f = 0; f < 6; f++) {

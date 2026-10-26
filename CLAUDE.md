@@ -77,6 +77,10 @@ v1.81 新增飞行那行后由三行变四行），
 台阶因此既有自己的凹角梯度，也能把阴影投给紧邻的实心方块；纯实心世界**逐位零回归**
 （5 视域 opaque/cutout 全 0 差异，AO 视觉 spec 读数与 HEAD 逐位相同），且实心世界反而
 快 7~24%（探针输出复用数组）。细节见设计文档 §4.3「台阶的亚体素 AO」。
+**v1.87** 修了**仓库挂子路径部署时游戏页加载不出来**（用户报告）：根因是 `src/**` 里 15 处资源
+引用写成**站点根绝对路径**（`/assets/...`、`/src/workers/world-worker.js`、`/vendor/...`），
+而开头的 `/` 是 origin 根。新增唯一权威 `src/core/resource-url.js`（相对 `import.meta.url` 解析）
++ `check:arch` 静态禁根绝对路径字面量。细节与实测数据见下文「资源 URL 沉淀的活跃约束」。
 另有一项未按版本号登记的改动：**准心按背景亮度自适应配色**（`src/ui/crosshair.js`）。
 进度与实测数据一律查 roadmap。里程碑状态、验收报告、遗留 TODO 的
 完整清单**一律查 roadmap** —— 此处不复制（复制就会漂移）。
@@ -1296,6 +1300,38 @@ M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 
 - **`bgm.mp3` 是 4.0MB / 254 秒 / 128kbps（从 mc-lite 原样复制未重编码）**，进首屏预载队列
   —— 以后再加长音频前先想一下首屏流量。
 
+### 资源 URL 沉淀的活跃约束（v1.87，后续新增资源加载点必读）
+
+- **资源路径只能走 `resourceUrl()`，不得写站点根绝对路径**：`fetch('/assets/atlas.json')` /
+  `new Worker('/src/workers/world-worker.js')` / `"three": "/vendor/..."` 里开头的 `/` 是
+  **origin 根**（不是仓库根），与文档所在路径无关 → 仓库挂子路径部署（`http://host/mc-heavy/`）
+  时全部解析到上一级 → 全 404，游戏页停在错误遮罩上。**实测**（`/mc-heavy/` 下）：
+  `/src/workers/world-worker.js` ×多次（Worker 池全起不来）+ `/assets/atlas.png` +
+  `/assets/atlas.json` 全 404，`window.__MC_GAME__` 不存在。
+  - **权威 = `src/core/resource-url.js` 的 `resourceUrl(仓库相对路径)`**（红线 1）：它相对
+    **本模块自己的** `import.meta.url` 取仓库根，与部署前缀、文档位置、主线程或 Worker 全都无关。
+    `resourceUrlFrom(moduleUrl, relPath)` 是注入基址的纯函数版（供单测验子路径语义）。
+  - ⚠️ **为什么不改成纯相对路径**：相对路径按**文档基址**解析 —— fixture 页在 `/src/tests/` 下
+    会去找 `/src/tests/assets/*`（实测 `relativeResolve` = `.../src/tests/assets/sky/day/posx.jpg`）。
+    **这正是本仓当初改成根绝对路径的原因**，回退会重犯一类旧坑。
+  - ⚠️ **为什么不做运行时前缀探测**：要区分主线程 / Worker / 文档基址，而 **Worker 里没有 `document`**。
+  - ⚠️ **`src/render/sky-config.js` 的 `SKY_DIR = 'assets/sky'` 保持仓库相对字符串不变** ——
+    它被 node 侧 `check:data` 的 `[天空盒]` 环节用 `path.join(ROOT, ...)` 消费，改成 URL 会打断门禁；
+    URL 转换只发生在消费端（`sky.js` 的 `loadCube` 里包一层 `resourceUrl(dir)`）。
+    同类：任何「被 node 工具 import 的路径常量」都不要就地改成 URL。
+  - ⚠️ **HTML 的 import map 不受 `resourceUrl` 管**（它是声明式 JSON，无法调函数）→
+    所有 `src/tests/*.html` 与 `src/bench/*.html` 必须写 **`../../vendor/...`**（它们恒比仓库根深 2 层）；
+    `index.html` 写 `./vendor/...`。import map 的值按**文档基址**解析。
+  - **静态门禁 = `npm run check:arch` 的 `[资源 URL]`**：`src/**` 非注释代码行出现
+    `'/assets/`、`'/src/`、`'/vendor/` 即违规（挂掉式，**零白名单**）。⚠️ 它只查**字面量**，
+    查不到「用了 `resourceUrl` 却忘写 import」—— 实测三个 fixture 页就是这么坏的
+    （`ReferenceError` 让整页用例不跑，被 `structure-gen.spec` 抓到）→ 改完仍须跑
+    `npm run test`（浏览器单测/fixture spec）。
+  - ⚠️ **不要靠「本机能开」判断这个缺陷**：开发服务器恒为根路径（`http://localhost:8081/`），
+    根路径与正确写法**逐字节等价** → 全部 E2E/单测都能全绿而缺陷仍在。
+    要验就起一个把仓库挂在子路径的临时静态服务器（做法：任意 HTTP server 把 `/mc-heavy/`
+    映射到仓库根，用一条 `tests/tmp-*.spec.mjs` 探针断言「0 个 4xx/5xx + `worldReady`」）。
+
 ### 玩家飞行沉淀的活跃约束（v1.81，后续移动/输入/物理类改动必读）
 
 - **飞行状态唯一权威 = `PlayerPhysics.flying`**（`src/player/physics.js`），`Player` 不复制一份 ——
@@ -1837,6 +1873,9 @@ mc-heavy/
 │  └─ structures/              # 从 mc-lite 复制 JSON
 └─ src/
    ├─ core/        # game.js / scheduler.js / worker-pool.js / budget.js / perf.js / perf-hud.js
+   │              #  resource-url.js（v1.87：资源 URL 的**唯一权威**。`resourceUrl(仓库相对路径)`
+   │              #    相对本模块的 import.meta.url 解析 → 与部署前缀/文档位置/主线程或 Worker
+   │              #    全都无关；无 three 无 DOM，同构层可 import）
    ├─ voxel/       # constants / block-registry / chunk-column / world-data / blocks-data / faces-data
    ├─ gen/         # noise.js / terrain.js / structure-index.js / structures/*（M2 地标与空中结构）
    │               #  scatter.js 结构撒布判定 + 代码生成 house/ship（唯一权威；Worker 同构）

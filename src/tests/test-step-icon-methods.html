@@ -21,8 +21,9 @@
 </p>
 <div id="out"></div>
 <script type="module">
-const atlasJson = await (await fetch('/assets/atlas.json')).json();
-const ATLAS_URL = '/assets/atlas.png';
+import { resourceUrl } from '../core/resource-url.js';
+const atlasJson = await (await fetch(resourceUrl('assets/atlas.json'))).json();
+const ATLAS_URL = resourceUrl('assets/atlas.png');
 const SIZE = atlasJson.size;
 
 const atlasImg = new Image();

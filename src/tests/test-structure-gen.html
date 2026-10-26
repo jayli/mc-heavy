@@ -3,6 +3,7 @@
 <body>
 <script type="module">
   import { WorkerPool } from '../core/worker-pool.js';
+  import { resourceUrl } from '../core/resource-url.js';
   import { WorldData } from '../voxel/world-data.js';
   import { Scheduler } from '../core/scheduler.js';
   import { createRegistry } from '../voxel/block-registry.js';
@@ -48,7 +49,7 @@
     for (const def of BLOCKS) reg.register(def.name, def);
     reg.freeze();
     const SEED = 12345;
-    const pool = new WorkerPool({ workerUrl: '/src/workers/world-worker.js', size: 2 });
+    const pool = new WorkerPool({ workerUrl: resourceUrl('src/workers/world-worker.js'), size: 2 });
     await pool.ready;
 
     // 2. GEN 注入结构：携带 layouts 的 GEN 在金字塔中心产出 sand 顶层

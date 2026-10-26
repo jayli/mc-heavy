@@ -4,8 +4,11 @@
 // 写入由 ZombieNestService 经一次 WorldEditor.setBlocks 事务完成。这里只做坐标/id 展开与校验，
 // 不持有体素数据、不复制第二份方块真相（红线 1）。
 import { WORLD_MIN_Y, WORLD_MAX_Y } from '../../voxel/constants.js';
+import { resourceUrl } from '../../core/resource-url.js';
 
-const BLUEPRINT_URL = '/assets/structures/zombie_nest.json';
+// 部署路径无关（v1.87）：旧写法是根绝对路径 `/assets/structures/zombie_nest.json`，
+// 仓库挂子路径部署时蓝图 404 → 巢穴全部报 invalid-blueprint。
+const BLUEPRINT_URL = resourceUrl('assets/structures/zombie_nest.json');
 /** 关键方块名：mc-lite 巢穴顶端唯一的 gold_block（被破坏即巢穴失效）。 */
 const CRITICAL_BLOCK = 'gold_block';
 

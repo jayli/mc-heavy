@@ -16,10 +16,19 @@
 // 形状与配色的权威仍在 `src/mesh/mesher.js`（烘焙脚本 import 其几何，红线 1）；
 // 本文件只是读取产物，不含任何几何/贴图逻辑。
 
-/** manifest 的 URL（绝对路径：页面可能在 `/src/tests/index.html`，相对路径会解析错） */
-const MANIFEST_URL = '/assets/icons.json';
-/** 图标 atlas 的绝对路径（同上理由） */
-const ATLAS_URL = '/assets/icons-atlas.png';
+import { resourceUrl } from '../core/resource-url.js';
+
+/** manifest 的 URL（部署路径无关，v1.87：旧写法是根绝对路径 `/assets/icons.json`，
+ *  在仓库挂子路径部署时 404） */
+const MANIFEST_URL = resourceUrl('assets/icons.json');
+/**
+ * 图标 atlas 的 URL（同上）。
+ *
+ * **烘焙产物写相对名 + 运行时替换**：`background` 的 `url()` 按**文档/样式表基址**解析，
+ * 所以产物里的相对名（`REL_TOKEN`）必须替换掉。替换目标由 `resourceUrl()` 派生 →
+ * 仓库挂子路径部署时也落在正确位置（v1.87：此前写死 `/assets/icons-atlas.png`）。
+ */
+const ATLAS_URL = resourceUrl('assets/icons-atlas.png');
 
 /** manifest 里的相对名占位符（烘焙产物写相对名，不绑死部署路径） */
 const REL_TOKEN = "url('icons-atlas.png')";
@@ -31,8 +40,8 @@ let _cache = null;
  * 加载图标 manifest。
  *
  * **必须把相对名换成绝对路径**：`background` 的 url() 相对于**文档基址**解析 ——
- * 页面在 `/src/tests/index.html` 时 `url('icons-atlas.png')` 会去找
- * `/src/tests/icons-atlas.png`（404），实际文件在 `/assets/icons-atlas.png`。
+ * fixture 页在 `/src/tests/index.html` 时 `url('icons-atlas.png')` 会去找
+ * `/src/tests/icons-atlas.png`（404），实际文件在仓库根的 `assets/` 下。
  * 离线产物保持相对名是为了「产物不绑死部署路径」，路径修正在运行时做一次。
  *
  * @returns {Promise<{size:number, hotbar:Object<string,string>, inventory:Object<string,string>}>}

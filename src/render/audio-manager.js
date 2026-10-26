@@ -5,6 +5,16 @@
 // 只有 buffer 已加载且 context 已 running 才创建/复用 THREE.Audio；不用定时器清理，
 // 使用 source.onended 归还实例。不订阅 Worker 消息，不把解码后的音频放进存档。
 import * as THREE from 'three';
+import { resourceUrl } from '../core/resource-url.js';
+
+/**
+ * 音频目录（仓库相对路径 → 绝对 URL）。
+ *
+ * v1.87：旧写法是站点根绝对路径 `/assets/sounds/${id}.mp3` —— 仓库挂子路径部署时全部 404
+ * （音效与背景音乐都静默无声，控制台只有 warn）。转换放在唯一消费点 `preload()` 内，
+ * 不改 `_decodeFromUrl` 的无状态语义。
+ */
+const SOUND_DIR = resourceUrl('assets/sounds');
 
 /**
  * 预加载的音效 id（与 weapon-catalog 的 sound 字段一致）。
@@ -56,7 +66,7 @@ export class AudioManager {
   }
 
   /**
-   * 从 /assets/sounds/<id>.mp3 加载并解码；只接受 catalog（SOUND_IDS + BGM_ID）里的 id。
+   * 从 `assets/sounds/<id>.mp3` 加载并解码；只接受 catalog（SOUND_IDS + BGM_ID）里的 id。
    * BGM 一并预载（4MB / 254 秒，与效果音同一解码路径）；解码完会尝试起播一次 ——
    * 若此时玩家手势（`unlock`）还没到，由 `unlock()` 补上另一半条件。
    */
@@ -66,7 +76,7 @@ export class AudioManager {
       try {
         const buffer = this._loadBuffer
           ? await this._loadBuffer(id)
-          : await this._decodeFromUrl(`/assets/sounds/${id}.mp3`);
+          : await this._decodeFromUrl(`${SOUND_DIR}/${id}.mp3`);
         this._buffers.set(id, buffer);
       } catch (err) {
         console.warn(`[audio] preload ${id} failed:`, err);

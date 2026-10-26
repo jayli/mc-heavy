@@ -16,17 +16,22 @@
 import * as THREE from 'three';
 import { cubeTexture, mix, uniform } from 'three/tsl';
 import { SKY_FACE_FILES, SKY_SETS } from './sky-config.js';
+import { resourceUrl } from '../core/resource-url.js';
 
 /**
  * 单个立方图的加载（Promise 化）。
  * `CubeTextureLoader.load` 的 `onError` 是唯一失败信号 —— 不 reject 的话缺失面会被静默
  * 填成空白（天空出现一块纯灰，控制台无异常、不阻断启动）。
- * @param {string} dir 目录（相对站点根，不带尾斜杠）
+ *
+ * ⚠️ `dir` 是**仓库相对路径**（如 `assets/sky/day`，来自 `sky-config.js`）；
+ * `setPath` 按**文档基址**解析相对串 —— fixture 页在 `/src/tests/` 下时会去找
+ * `/src/tests/assets/sky/...`。故必须先过 `resourceUrl()` 变成绝对 URL（v1.87）。
+ * @param {string} dir 仓库相对目录（不带尾斜杠）
  * @returns {Promise<THREE.CubeTexture>}
  */
 function loadCube(dir) {
   return new Promise((resolve, reject) => {
-    new THREE.CubeTextureLoader().setPath(`${dir}/`).load(
+    new THREE.CubeTextureLoader().setPath(`${resourceUrl(dir)}/`).load(
       [...SKY_FACE_FILES],
       (tex) => {
         // 采样参数照 mc-lite `Engine.js:515-522` 的 configureSkyboxTexture。
