@@ -32,11 +32,15 @@ test('settings: 默认值（vd=8 / blur=off / volume=1 / 风格自动）', () =>
   assertEqual(DEFAULT_SETTINGS.visualStyle, null);
 });
 
-test('settings: chunkPace 默认 0（不限）、URL 可调、钳制到 0~16', () => {
-  // 观感旋钮（每帧最多发布几个 section），不是性能旋钮 —— 见 budget.js 的说明。
-  // 默认 0 = 不牺牲加载时长（一波内全部发布）。
-  assertEqual(DEFAULT_SETTINGS.chunkPace, 0);
-  assertEqual(resolveSettings(null, new URLSearchParams('')).chunkPace, 0);
+test('settings: chunkPace 默认 8、URL 可调、钳制到 0~16', () => {
+  // 观感旋钮（每帧最多发布几个 section），不是性能旋钮 —— 帧时与 fps 与取值无关。
+  // 默认 8（用户 2026-10-27 裁定）：既铺开又不追不上加载速度。
+  assertEqual(DEFAULT_SETTINGS.chunkPace, 8);
+  assertEqual(resolveSettings(null, new URLSearchParams('')).chunkPace, 8);
+  // 旧存档里**没有**这个字段（v1.90 才新增）→ 自然回落新默认，不需要 settingsVersion 迁移
+  assertEqual(resolveSettings({ viewDistance: 4, fogColor: false }, new URLSearchParams('')).chunkPace, 8);
+  // 显式 0 仍然有效（= 不限，一波全出）
+  assertEqual(resolveSettings(null, new URLSearchParams('chunkpace=0')).chunkPace, 0);
   assertEqual(resolveSettings(null, new URLSearchParams('chunkpace=2')).chunkPace, 2);
   assertEqual(resolveSettings({ chunkPace: 4 }, new URLSearchParams('')).chunkPace, 4);
   // URL 覆盖存储

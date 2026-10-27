@@ -93,7 +93,7 @@ export class Game {
    *   （`?skybox=0` URL 入口）——既有 Tier 4 spec 用「±30 内等于 0x87ceeb」判纯色天空来数地形
    *   像素，照片天空会让那个判据失去意义，故它们 pin 该开关。
    */
-  constructor({ canvas, registry, seed = null, viewDistance = 8, hudRoot, blurMipmap = false, budgetProfile = 'auto', chunkPace = 0, startWeather = null, shadows = true, skybox = true, settings = null }) {
+  constructor({ canvas, registry, seed = null, viewDistance = 8, hudRoot, blurMipmap = false, budgetProfile = 'auto', chunkPace = 8, startWeather = null, shadows = true, skybox = true, settings = null }) {
     this._settings = settings;
     this._shadowsOption = shadows;
     this._skyboxOption = skybox;
