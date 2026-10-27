@@ -24,6 +24,17 @@ import { getRegionSeededCenter } from '../gen/structures/region-center.js';
 // 这是 `plateauY` 断言**具备判别力**的前提：断言必须拿一个与 `TARN_PLATEAU_Y` **不同源**的
 // 参照值，否则两边一起改、用例恒真。
 import { SEA_Y } from '../voxel/constants.js';
+// 接线用例（Task 3b）：layout 压制与零回归。对照侧直接调用候选函数 —— 与 layout 内部
+// **同一份实现**，所以那些断言钉的是「layout 有没有把它传下去 / 有没有多压一层」。
+import { computeRegionLayout, neighborRegionKeys } from '../gen/structures/structure-layout.js';
+import { computeMesaAnchor } from '../gen/structures/mesa.js';
+import { computeGiantPyramidAnchor } from '../gen/structures/giant-pyramid.js';
+import { computeSkyCandidates } from '../gen/structures/sky-structures.js';
+// apply 阶段 1 跳过门的接线用例：真实 GEN 路径（与 Worker 同源）
+import { applyStructuresToColumn } from '../gen/structures/apply.js';
+import { ChunkColumn } from '../voxel/chunk-column.js';
+import { createRegistry } from '../voxel/block-registry.js';
+import { BLOCKS } from '../voxel/blocks-data.js';
 
 const SEED = 12345;
 
@@ -549,4 +560,148 @@ test('雪原让路：同一 seed 同一 region 两次调用结果相同', () => 
         `region(${rx},${rz}) 判定必须确定`);
     }
   }
+});
+
+// ==================== 接线（Task 3b）：layout 压制 / 空岛清空 / 撒布与巨树 / 零回归 ====================
+//
+// 钉的是「纯函数全绿但世界里两套内容叠在一起」这一类缺陷（M7 的教训：只测纯函数会漏接线）：
+//   · `computeRegionLayout` 不把 `tarn` 传下去 → 地带与金字塔/高台/撒布同时长在同一片地上
+//   · 空岛没清空 → 浮岛插进水池；云簇被误清空 → 巨型云之间的原有云消失（两片云差异要能区分）
+//   · 非地带 region 的字段被顺手改坏 → 零回归失效（全世界地标漂移，静默）
+
+/**
+ * `computeRegionLayout` 里被地带整条压制的字段（雪原**不在其列**，它有独立的分析式让路判据）。
+ *
+ * ⚠️ 这张清单就是判据本身：把 `snowLand` 加进来会让 6 处既有消费方（直接解引用
+ * `.snowLand.cx`）在**运行时**抛 TypeError —— 负向验证实测（见 task-3b 报告）。
+ */
+const TARN_SUPPRESSED_FIELDS = [
+  'pyramid', 'frozenMountain', 'plainLand', 'island', 'city', 'giantPyramid', 'mesa',
+];
+
+test('地带接线：地带 region 的全部地标字段被压缩为 null（雪原例外）', () => {
+  const { rx, rz } = findTarnRegion(SEED);
+  const lay = computeRegionLayout(rx, rz, SEED);
+  assertTrue(lay.tarn !== null && lay.tarn !== undefined,
+    `地带 region(${rx},${rz}) 的 layout 必须带 tarn 布局`);
+  for (const field of TARN_SUPPRESSED_FIELDS) {
+    assertEqual(lay[field], null, `地带 region(${rx},${rz}) 的 ${field} 必须被压制为 null`);
+  }
+  // 雪原字段**必须保留**：压制粒度是「这座雪原是否压进某个地带圆」，不是「本 region 是不是地带」。
+  // 置 null 会让 test-structure-layout / test-landmarks / test-giant-trees-gen 直接解引用崩溃。
+  assertTrue(lay.snowLand && typeof lay.snowLand.cx === 'number' && typeof lay.snowLand.cz === 'number',
+    '地带 region 的 snowLand 字段必须保留（它有独立判据 snowLandSuppressedByTarn）');
+  // `pyramidRaw` 保留：它是「未压制的地标偏移基准」，既有用例（test-structure-layout）拿它验证
+  // 「雪原中心 = 原始中心 + 偏移」的配置关系。
+  assertTrue(lay.pyramidRaw && typeof lay.pyramidRaw.cx === 'number',
+    'pyramidRaw 必须保留（未压制，供地标偏移关系用例对比）');
+});
+
+test('地带接线：地带里空岛清空（225→0）但云簇保留（710>0）', () => {
+  // ⚠️ 两个断言缺一不可，且下界有判别力：
+  //    · 只钉「skyIslands 为空」会被「整份 sky 被清掉」蒙过（写错成 tarn ? null : …）
+  //    · 只钉「cloudClusters 非空」会被「忘了清空岛」蒙过
+  //    实测 region(-6,-2)：未压制时 skyIslands 225 / cloudClusters 710，压制后 0 / 710。
+  const { rx, rz } = findTarnRegion(SEED);
+  const lay = computeRegionLayout(rx, rz, SEED);
+  assertTrue(lay.sky && lay.sky.skyIslands instanceof Int32Array, 'layout.sky.skyIslands 必须是 Int32Array');
+  assertEqual(lay.sky.skyIslands.length, 0, `地带 region(${rx},${rz}) 的 skyIslands 必须清空`);
+  assertTrue(lay.sky.cloudClusters.length > 0,
+    `地带 region(${rx},${rz}) 的 cloudClusters 必须保留（实测 710，巨型云要避开它们）`);
+});
+
+test('地带接线：地带里撒布候选与巨树候选全空', () => {
+  const { rx, rz } = findTarnRegion(SEED);
+  const lay = computeRegionLayout(rx, rz, SEED);
+  // 撒布：两条路径都要空（只清 outsideScatter 会让城市撒布仍插进台地）
+  assertEqual(lay.scatter.cityScatter.length, 0, `地带 region(${rx},${rz}) 的 cityScatter 必须清空`);
+  assertEqual(lay.scatter.outsideScatter.length, 0,
+    `地带 region(${rx},${rz}) 的 outsideScatter 必须清空（未压制时实测 128）`);
+  // 巨树：三条路径都要空
+  for (const path of ['forest', 'beach', 'banyan']) {
+    assertEqual(lay.giantTrees[path].length, 0, `地带 region(${rx},${rz}) 的 giantTrees.${path} 必须清空`);
+  }
+});
+
+test('地带接线：非地带且雪原未让路的 region 逐字段零回归（压制不得漏到别处）', () => {
+  // ⚠️ 口径必须**双向收窄**：
+  //    ① 跳过 `isTarnZone` 的 region（那些**应当**被压制）
+  //    ② 跳过 `snowLandSuppressedByTarn` 的 region（那些的雪原在 apply 阶段被跳过，
+  //       但 `layout.snowLand` 字段本身**照旧有值** —— 本条只钉字段级零回归，不看 apply）
+  //    若不收窄，断言「pyramid 非空」在地带 region 上必然 FAIL。
+  let checked = 0;
+  for (let rx = -4; rx <= 4; rx++) {
+    for (let rz = -4; rz <= 4; rz++) {
+      if (isTarnZone(rx, rz, SEED)) continue;
+      if (snowLandSuppressedByTarn(rx, rz, SEED)) continue;
+      const lay = computeRegionLayout(rx, rz, SEED);
+      assertEqual(lay.tarn, null, `非地带 region(${rx},${rz}) 的 tarn 必须是 null`);
+      // 对照侧：直接调用候选函数（与 layout 内部**同一份**实现，所以这条钉的是「layout
+      // 有没有把它传下去 / 有没有多压一层」，不是候选函数本身算得对不对 —— 后者由各自的
+      // test-mesa / test-giant-pyramid / test-scatter 等文件钉住）。
+      const direct = {
+        mesa: computeMesaAnchor(rx, rz, SEED),
+        giantPyramid: computeGiantPyramidAnchor(rx, rz, SEED),
+      };
+      for (const field of ['mesa', 'giantPyramid']) {
+        assertEqual(JSON.stringify(lay[field]), JSON.stringify(direct[field]),
+          `region(${rx},${rz}) 的 ${field} 必须与候选函数逐字段相同（零回归）`);
+      }
+      const sky = computeSkyCandidates(rx, rz, SEED);
+      assertEqual(lay.sky.skyIslands.length, sky.skyIslands.length,
+        `region(${rx},${rz}) 的 skyIslands 不得被删减（零回归）`);
+      assertEqual(lay.sky.cloudClusters.length, sky.cloudClusters.length,
+        `region(${rx},${rz}) 的 cloudClusters 不得被删减（零回归）`);
+      checked++;
+    }
+  }
+  // 判别力下界：±4 的 81 个 region 里地带 ~1/3、雪原让路少数 ⇒ 实际样本数应远大于 0
+  assertTrue(checked >= 30, `零回归的样本数 ${checked} 太少（±4 网眼里应 ≥30）—— 取样口径被改窄了`);
+});
+
+// ==================== 接线（Task 3b）：apply 阶段 1 的雪原跳过门 ====================
+//
+// 钉的是「layout 压制全绿但世界里雪原照旧长在地带圆里」这一类缺陷（M7 教训：只测纯函数漏接线）。
+// 判据落在**真实 applyStructuresToColumn 写出的世界方块**上，不是纯函数返回值。
+
+/** 建一个只有 BLOCKS 的 registry（与 test-vegetation / test-structure-json 同手法） */
+function buildRegistry() {
+  const reg = createRegistry();
+  for (const def of BLOCKS) reg.register(def.name, def);
+  reg.freeze();
+  return reg;
+}
+
+test('地带接线：被让路的雪原真的不落地（apply 阶段 1 跳过门），未被让路的照旧长', async () => {
+  // 取样点（seed 12345 实测）：
+  //   (-6,0) 让路 → 雪原中心 column 内 snow_grass 实测 0
+  //   (-4,-1) 不让路 → 同一判据实测 256（满 column）
+  const reg = buildRegistry();
+  const snowIds = new Set(['snow_grass', 'snow'].map((n) => reg.idOf(n)));
+  const countSnowAtSnowCenter = async (rx, rz) => {
+    const lay = computeRegionLayout(rx, rz, SEED);
+    const cx = Math.floor(lay.snowLand.cx / 16), cz = Math.floor(lay.snowLand.cz / 16);
+    const col = new ChunkColumn(cx, cz);
+    const layouts = [];
+    for (const key of neighborRegionKeys(cx, cz)) {
+      const [nrx, nrz] = key.split(',').map(Number);
+      layouts.push(computeRegionLayout(nrx, nrz, SEED));
+    }
+    await applyStructuresToColumn(col, SEED, reg, layouts);
+    let n = 0;
+    for (let i = 0; i < col.blocks.length; i++) if (snowIds.has(col.blocks[i])) n++;
+    return { n, cx, cz };
+  };
+
+  const suppressed = await countSnowAtSnowCenter(-6, 0);
+  assertTrue(snowLandSuppressedByTarn(-6, 0, SEED),
+    'region(-6,0) 的雪原必须被让路（实测 TRUE）—— 取样点失效须重新标定');
+  assertEqual(suppressed.n, 0,
+    `region(-6,0) 的雪原已被让路，雪原中心 column(${suppressed.cx},${suppressed.cz}) 不得有积雪方块（实测 0）`);
+
+  const kept = await countSnowAtSnowCenter(-4, -1);
+  assertFalse(snowLandSuppressedByTarn(-4, -1, SEED),
+    'region(-4,-1) 的雪原不该被让路（实测 FALSE）—— 取样点失效须重新标定');
+  assertTrue(kept.n > 200,
+    `region(-4,-1) 的雪原照旧生成，雪原中心 column(${kept.cx},${kept.cz}) 应满 column（实测 256，得 ${kept.n}）`);
 });

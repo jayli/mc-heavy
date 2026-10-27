@@ -8,6 +8,7 @@ import { createRegistry } from '../voxel/block-registry.js';
 import { BLOCKS } from '../voxel/blocks-data.js';
 import { blockIndex } from '../voxel/constants.js';
 import { generateHeight } from '../gen/terrain.js';
+import { isTarnZone } from '../gen/structures/tarn-zone.js';
 import { ISLAND_SEA_LEVEL } from '../gen/structures/region-config.js';
 
 const SEED = 12345;
@@ -39,6 +40,8 @@ function findPlainLand() {
   const city = computeRegionLayout(0, 0, SEED).city;
   for (let rx = -4; rx <= 4; rx++) {
     for (let rz = -4; rz <= 4; rz++) {
+      // 高台地带 region 的地标全被压制（`plainLand` 恒 null），跳过以免「首个匹配」落到地带里
+      if (isTarnZone(rx, rz, SEED)) continue;
       const l = computeRegionLayout(rx, rz, SEED);
       if (!l.plainLand) continue;
       const { cx, cz } = l.plainLand;
@@ -53,6 +56,7 @@ function findPlainLand() {
 function findIsland() {
   for (let rx = -4; rx <= 4; rx++) {
     for (let rz = -4; rz <= 4; rz++) {
+      if (isTarnZone(rx, rz, SEED)) continue;
       const l = computeRegionLayout(rx, rz, SEED);
       if (l.island) return l.island;
     }

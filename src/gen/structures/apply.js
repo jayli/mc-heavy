@@ -25,6 +25,7 @@ import { SEA_Y, blockIndex } from '../../voxel/constants.js';
 import { applyGiantTrees, loadGiantTrees } from './giant-trees.js';
 import { MESA_UNION_HALF } from './mesa.js';
 import { PYRAMID_HALF, inGiantPyramidFootprint } from './giant-pyramid.js';
+import { TARN_ZONE_RADIUS, snowLandSuppressedByTarn } from './tarn-zone.js';
 
 /** 城市 placement 用到的 JSON 结构（GEN 携带城市布局时预载）+ 植被树 JSON */
 const CITY_STRUCTURE_TYPES = [
@@ -63,13 +64,25 @@ function placementIntersects(p, halfX, halfZ, cx, cz) {
 
 /**
  * 植被上下文（mc-lite 列循环各分支的植被挂载点）：
- * kind = city / island / snow / fm / normal / water / none（金字塔/平地不挂植被）。
+ * kind = city / tarn / island / snow / fm / normal / water / none（金字塔/平地不挂植被）。
  */
 function pointContext(wx, wz, layouts, cityLayout, seed) {
   const cityInfo = cityLayout && getCityInfo(wx, wz, cityLayout);
   if (cityInfo) {
     // 残丘已清除（generateCity 清 surfaceY+1..naturalH），树直接植根城市地表。
     return { kind: 'city', surfaceY: getCityFinalSurfaceY(wx, wz, cityInfo, seed) };
+  }
+  // 高台地带占地：整片让路（`kind: 'tarn'`，与巨型金字塔的 `kind: 'none'` 同手法 ——
+  // 一个分支同时覆盖五个下游消费者：阶段 2.75 高台让路 / 阶段 2.8 巨树 allowedAt /
+  // 阶段 3 的城市树·普通树·单格植物）。
+  //
+  // ⚠️ **必须在 snowLand 判定之前**：地带是地基级内容，压在地带圆内的雪原本来就不该生成
+  // （apply 阶段 1 另有 `snowLandSuppressedByTarn` 跳过门，这里是把它的**植被**一并压掉）。
+  // 放在 city 之后：城市优先级最高（且 CITY_REGION 恒非地带，两者互斥）。
+  for (const layout of layouts) {
+    const tarn = layout.tarn;
+    if (!tarn) continue;
+    if (Math.hypot(wx - tarn.cx, wz - tarn.cz) < TARN_ZONE_RADIUS) return { kind: 'tarn' };
   }
   // 巨型金字塔占地：让路给塔。
   //
@@ -147,6 +160,14 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
   if (!layouts || layouts.length === 0) return;
   const setBlock = makeColumnSetter(column, registry);
 
+  // 雪原让路（spec DR-6）：某个 region 的雪原若压进任一邻域「高台地带」的圆 → 该雪原整座不生成。
+  //
+  // 判定是**纯 region 级**的，与 column / 点无关 → 在 column 的 16×16 循环之前按 layout 算一次
+  // （逐点调用等于同一换算做 256 × layouts 遍）。
+  // ⚠️ 入参是 **region 坐标**（`layout.regionX/regionZ`），不是 `column.cx/cz` —— 后者是
+  // column 坐标（16 格一格），两者差 25 倍。
+  const snowSuppressed = layouts.map((l) => snowLandSuppressedByTarn(l.regionX, l.regionZ, seed));
+
   const cityLayout = layouts.find((l) => l.city)?.city || null;
   // 预载清单按布局内容确定：城市建筑 / 海岛中心塔 / 平地金字塔岛 / 植被树
   // （跨 column 光栅化要求凡查询域内出现对应地标即载入，否则 rasterize 静默跳过）
@@ -211,8 +232,9 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
       }
 
       let handled = false;
-      for (const layout of layouts) {
+      for (let li = 0; li < layouts.length; li++) {
         if (handled) break;
+        const layout = layouts[li];
         const pyInfo = getPyramidInfo(wx, wz, layout.pyramid);
         if (pyInfo) { generatePyramid(wx, wz, h, pyInfo, setBlock, seed); handled = true; break; }
 
@@ -235,8 +257,12 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
           if (plainInfo) { generatePlainLand(wx, wz, h, plainInfo, setBlock); handled = true; break; }
         }
 
-        const slInfo = getSnowLandInfo(wx, wz, layout.snowLand, seed);
-        if (slInfo) { generateSnowLand(wx, wz, h, slInfo, setBlock, seed); handled = true; break; }
+        // 雪原：被邻域地带压进圆内时整座跳过（`snowSuppressed[li]`），否则照旧。
+        // 跳过的形态必须是「当作这里没有雪原」而不是「continue 整列」—— 后面的冰封山仍要判。
+        if (!snowSuppressed[li]) {
+          const slInfo = getSnowLandInfo(wx, wz, layout.snowLand, seed);
+          if (slInfo) { generateSnowLand(wx, wz, h, slInfo, setBlock, seed); handled = true; break; }
+        }
 
         const fmInfo = getFrozenMountainInfo(wx, wz, layout.frozenMountain, seed);
         if (fmInfo) { generateFrozenMountain(wx, wz, h, fmInfo, setBlock, seed); handled = true; break; }

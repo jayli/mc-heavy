@@ -166,10 +166,17 @@ export function isPlainLandValid(cx, cz, seed) {
 
 /**
  * 金字塔点位信息（mc-lite Pyramid.getPyramidInfo，中心由布局给定）。
- * @param {{cx: number, cz: number}} pyramid 布局中的金字塔中心
+ *
+ * ⚠️ **`pyramid` 为 null 时返回 null（`null` 是合法输入，不是错误）**：
+ * 高台地带（`src/gen/structures/tarn-zone.js`）把地带 region 的 `layout.pyramid` 整条压成 null，
+ * 而 `apply.js` 的 `pointContext` 会遍历**查询域内全部** layouts（地带 region 也在里面）
+ * ⇒ 无守卫时每列 GEN 都抛 TypeError，整页崩。与 `getSnowLandInfo`（`2d42133`）同一手法：
+ * 在权威处自守，省得每个调用点各写一遍 `&&`（红线 1）。
+ * @param {{cx: number, cz: number}|null} pyramid 布局中的金字塔中心
  * @returns {Object|null}
  */
 export function getPyramidInfo(wx, wz, pyramid) {
+  if (!pyramid) return null;
   const halfSize = Math.floor(PYRAMID_SIZE / 2);
   const transitionSize = TRANSITION_SIZE.PYRAMID;
   const totalHalfSize = halfSize + transitionSize;
@@ -386,9 +393,14 @@ function mountainNoise(x, z, seed, scale) {
 
 /**
  * 冰封山峰点位信息（mc-lite getFrozenMountainInfo 全量移植，中心由布局给定）。
- * @param {{cx: number, cz: number}} fm
+ *
+ * ⚠️ **`fm` 为 null 时返回 null** —— 与 `getPyramidInfo` / `getSnowLandInfo` 同一手法：
+ * 高台地带把地带 region 的 `layout.frozenMountain` 压成 null，而 `pointContext` 遍历全部
+ * 查询域 layouts。
+ * @param {{cx: number, cz: number}|null} fm
  */
 export function getFrozenMountainInfo(wx, wz, fm, seed) {
+  if (!fm) return null;
   const halfSize = Math.floor(FROZEN_MOUNTAIN_SIZE / 2);
   const transitionSize = TRANSITION_SIZE.FROZEN_MOUNTAIN;
   const steepAxisFactor = FROZEN_MOUNTAIN_STEEP_FACTOR;
@@ -556,9 +568,12 @@ export function generateFrozenMountain(wx, wz, h, fmInfo, setBlock, seed) {
 
 /**
  * 海岛点位信息（mc-lite getIslandInfo；海洋有效性已在布局期判定）。
- * @param {{cx: number, cz: number}} island
+ *
+ * ⚠️ **`island` 为 null 时返回 null**（与 `getPyramidInfo` 同手法）：高台地带会压制它。
+ * @param {{cx: number, cz: number}|null} island
  */
 export function getIslandInfo(wx, wz, island, seed) {
+  if (!island) return null;
   void seed;
   const halfSize = Math.floor(ISLAND_SIZE / 2);
   const totalHalfSize = halfSize + TRANSITION_SIZE.ISLAND;
@@ -627,8 +642,13 @@ export function generateIslandSandRing(wx, wz, islandInfo, setBlock) {
 
 // ==================== 平地 ====================
 
-/** 平地点位信息（mc-lite getPlainLandInfo；biome/baseHeight 已在布局期判定） */
+/**
+ * 平地点位信息（mc-lite getPlainLandInfo；biome/baseHeight 已在布局期判定）。
+ *
+ * ⚠️ **`plainLand` 为 null 时返回 null**（与 `getPyramidInfo` 同手法）：高台地带会压制它。
+ */
 export function getPlainLandInfo(wx, wz, plainLand) {
+  if (!plainLand) return null;
   const halfSize = Math.floor(PLAIN_LAND_SIZE / 2);
   const dx = Math.abs(wx - plainLand.cx);
   const dz = Math.abs(wz - plainLand.cz);

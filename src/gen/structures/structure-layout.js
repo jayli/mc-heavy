@@ -15,6 +15,7 @@ import { computeScatterCandidates } from './scatter.js';
 import { computeGiantTreeCandidates } from './giant-trees.js';
 import { computeMesaAnchor } from './mesa.js';
 import { computeGiantPyramidAnchor } from './giant-pyramid.js';
+import { isTarnZone, computeTarnZone } from './tarn-zone.js';
 
 /**
  * 计算单个 region 的确定性布局（纯函数，无缓存——缓存由调用方 StructureIndex 管）。
@@ -31,56 +32,89 @@ import { computeGiantPyramidAnchor } from './giant-pyramid.js';
  *   scatter: {cityScatter: Int32Array, outsideScatter: Int32Array},
  *   giantTrees: {forest: Int32Array, beach: Int32Array, banyan: Int32Array},
  *   mesa: ({wx:number, wz:number, floorY:number}|null),
- *   giantPyramid: ({wx:number, wz:number, floorY:number}|null)
+ *   giantPyramid: ({wx:number, wz:number, floorY:number}|null),
+ *   tarn: (import('./tarn-zone.js').TarnLayout|null)
  * }}
  */
 export function computeRegionLayout(regionX, regionZ, seed) {
+  // 高台地带（Cloudland Tarn Zone，spec DR-1/DR-2）：region 级判定 + 布局，算一次复用。
+  // 地带是「地基级」内容 —— 它整形整个 region 的地表（台地 + 水池 + 巨型云），
+  // 与其他地标互斥，故把这些地标整条压成 null（雪原例外，见下方 snowLand 注释）。
+  const tarn = isTarnZone(regionX, regionZ, seed) ? computeTarnZone(regionX, regionZ, seed) : null;
+
   const raw = getRegionSeededCenter(regionX, regionZ, seed);
   const pyramidRaw = { cx: raw.centerX, cz: raw.centerZ };
-  const pyramid = getPyramidCenterInRegion(regionX, regionZ, seed);
-  const frozenMountain = getFrozenMountainCenterInRegion(regionX, regionZ, seed);
+  // ⚠️ 压制一律写成 `tarn ? null : <原表达式>`，**保留原表达式的求值位置与顺序** ——
+  // 原值仍会被算出来（多花几次纯函数调用），换来的是零回归：非地带 region 的每个字段
+  // 与 v1.x 逐位相同，不需要重新标定任何既有断言。
+  const pyramid = tarn ? null : getPyramidCenterInRegion(regionX, regionZ, seed);
+  const frozenMountain = tarn ? null : getFrozenMountainCenterInRegion(regionX, regionZ, seed);
 
-  // snowLand 与 mc-lite 一致：未 clamp 的原始中心 + 偏移（可跨 region，由邻区查询吸收）
+  // snowLand 与 mc-lite 一致：未 clamp 的原始中心 + 偏移（可跨 region，由邻区查询吸收）。
+  //
+  // ⚠️ **地带 region 的 snowLand 字段仍然保留（不置 null）** —— 它与其它地标不同：
+  // 雪原可以跨 region 溢出，压制粒度是「这座雪原是否压进某个地带圆」而不是「本 region
+  // 是不是地带」。那个判定在 `snowLandSuppressedByTarn()`（tarn-zone.js），由 apply.js
+  // 阶段 1 的跳过门消费。若在此处置 null，会连带打断 6 处消费方（test-structure-layout /
+  // test-landmarks / test-giant-trees-gen / structure-gen.html 等直接解引用 `.snowLand.cx`）。
   const snowLand = {
     cx: raw.centerX + LANDMARK_OFFSET.SNOW_LAND_X,
     cz: raw.centerZ + LANDMARK_OFFSET.SNOW_LAND_Z,
   };
 
   const plainLandCenter = getPlainLandCenterInRegion(regionX, regionZ, seed);
-  const plainLand = isPlainLandValid(plainLandCenter.cx, plainLandCenter.cz, seed)
+  const plainLandRaw = isPlainLandValid(plainLandCenter.cx, plainLandCenter.cz, seed)
     ? { ...plainLandCenter, baseHeight: estimatePlainLandBaseHeight(plainLandCenter.cx, plainLandCenter.cz, seed) }
     : null;
+  const plainLand = tarn ? null : plainLandRaw;
 
   const { islandCx, islandCz } = getIslandCenterInRegion(regionX, regionZ, seed);
-  const island = isIslandValid(islandCx, islandCz, seed) ? { cx: islandCx, cz: islandCz } : null;
+  const islandRaw = isIslandValid(islandCx, islandCz, seed) ? { cx: islandCx, cz: islandCz } : null;
+  const island = tarn ? null : islandRaw;
 
-  // City 全世界唯一，固定在 region [0,0]（mc-lite CITY_REGION 语义）
+  // City 全世界唯一，固定在 region [0,0]（mc-lite CITY_REGION 语义）。
+  // `isTarnZone` 对 CITY_REGION 恒 false（tarn-zone.js），故这里 `tarn` 恒 null、城市永不被压制 ——
+  // 那条守卫留在这里只是让「压制」这一侧的判据不必知道城市的特例（单一权威仍在 isTarnZone）。
   const city = (regionX === CITY_REGION.X && regionZ === CITY_REGION.Z) ? buildCityLayout(seed) : null;
 
-  // 空中候选（M2-7）：紧凑 Int32Array，GEN 侧按 AABB 裁剪到 column
-  const sky = computeSkyCandidates(regionX, regionZ, seed);
+  // 空中候选（M2-7）：紧凑 Int32Array，GEN 侧按 AABB 裁剪到 column。
+  // ⚠️ **必须无条件调用一次**（`skyFull`），不能写成 `tarn ? 空 : computeSkyCandidates(...)` ——
+  // 后者在地带 region 会跳过计算，而 `cloudClusters` 在地带里**仍要保留**（巨型云要避开
+  // 原有云簇，且既有云簇的形状/位置在非地带里也是同一份确定性候选）。只调一次也让「清空
+  // skyIslands」不必付第二遍计算成本。
+  const skyFull = computeSkyCandidates(regionX, regionZ, seed);
+  // 地带里清空空岛（池面上不能插浮岛），云簇保留。
+  const sky = tarn ? { skyIslands: new Int32Array(0), cloudClusters: skyFull.cloudClusters } : skyFull;
 
   // 撒布候选（M2 欠账补齐）：同为紧凑 Int32Array，GEN 侧按 AABB 裁剪到 column。
   // 城市候选只在持有 city 布局的 region 算（见 computeScatterCandidates 的口径差异①）。
-  const scatter = computeScatterCandidates(regionX, regionZ, seed, city);
+  const scatterRaw = computeScatterCandidates(regionX, regionZ, seed, city);
+  // 地带里不留撒布结构（house / ship / flower_bed …）：台地与水池要干净。
+  const scatter = tarn
+    ? { cityScatter: new Int32Array(0), outsideScatter: new Int32Array(0) }
+    : scatterRaw;
 
   // 巨树候选（Giant Trees Epic）：全局对齐网格抖动，与 region 邻居无关（不需要 city）；
   // 城市/地标/撒布的排除在 GEN 侧（apply.js 阶段 2.8）用邻域 layouts 判定。
-  const giantTrees = computeGiantTreeCandidates(regionX, regionZ, seed);
+  const giantTreesRaw = computeGiantTreeCandidates(regionX, regionZ, seed);
+  // 地带里没有旧植被（台地/水池要干净），故三条路径全空。
+  const giantTrees = tarn
+    ? { forest: new Int32Array(0), beach: new Int32Array(0), banyan: new Int32Array(0) }
+    : giantTreesRaw;
 
   // 高台（Cloudland Epic）：每 region 至多一个沙漠平地锚点。
   // 纯函数、无异步依赖（基座判据用 15×15 常量矩形，不读烘焙产物 —— 候选层不能 fetch，见 mesa.js 头注）。
   // 城市/地标让路在 GEN 侧阶段 2.75 判（城市 bounds 可跨 region，候选层只能过滤一半）。
-  const mesa = computeMesaAnchor(regionX, regionZ, seed);
+  const mesa = tarn ? null : computeMesaAnchor(regionX, regionZ, seed);
 
   // 巨型金字塔（Giant Pyramid Epic）：region 级候选，与高台同构。
   // 城市/地标/空岛/高台的排除都已在候选层（`giant-pyramid.js` 拿得到 `getCityBoundsForSeed`
   // 与 `computeRegionLocalAnchor`）；撒布结构的剔除在 GEN 侧阶段 2.7（那里拿得到布局）。
-  const giantPyramid = computeGiantPyramidAnchor(regionX, regionZ, seed);
+  const giantPyramid = tarn ? null : computeGiantPyramidAnchor(regionX, regionZ, seed);
 
   return {
     regionX, regionZ, pyramidRaw, pyramid, frozenMountain, snowLand, plainLand,
-    island, city, sky, scatter, giantTrees, mesa, giantPyramid,
+    island, city, sky, scatter, giantTrees, mesa, giantPyramid, tarn,
   };
 }
 

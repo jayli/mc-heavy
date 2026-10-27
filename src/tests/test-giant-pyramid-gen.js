@@ -9,6 +9,7 @@
 import { test } from './runner.js';
 import { assertEqual, assertTrue } from './assert.js';
 import { computeRegionLayout, neighborRegionKeys } from '../gen/structures/structure-layout.js';
+import { isTarnZone } from '../gen/structures/tarn-zone.js';
 import { applyStructuresToColumn } from '../gen/structures/apply.js';
 import { loadStructure } from '../gen/structures/structure-json.js';
 import { buildDefaultRegistry } from '../voxel/block-registry.js';
@@ -24,6 +25,9 @@ const SEED = 12345;
 export function findRegionWithAnchor() {
   for (let rx = -3; rx <= 3; rx++) {
     for (let rz = -3; rz <= 3; rz++) {
+      // 高台地带 region 的 `giantPyramid` 被整条压制为 null（地带是地基级内容）→ 跳过，
+      // 否则这条搜索会拿一个「永远不是锚点」的 region 当取样点。
+      if (isTarnZone(rx, rz, SEED)) continue;
       const l = computeRegionLayout(rx, rz, SEED);
       if (l.giantPyramid) return l;
     }

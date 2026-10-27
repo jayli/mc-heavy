@@ -354,17 +354,46 @@ test('巨型金字塔间距：阈值必然大于沙漠连通块最大跨度（�
 // 算得再对，若 `computeRegionLayout` 不把它传给 GEN，或 `pointContext` 不认它的占地，
 // 世界里就是「有参数没金字塔」/「植被不长了但塔也没长」。
 
+import { isTarnZone } from '../gen/structures/tarn-zone.js';
+
 test('巨型金字塔接线：computeRegionLayout 的 giantPyramid 字段与直接调用一致', async () => {
   const { computeRegionLayout } = await import('../gen/structures/structure-layout.js');
   for (const [rx, rz] of [[0, 1], [1, -1], [-2, -2], [3, 3]]) {
     const layout = computeRegionLayout(rx, rz, SEED);
     const direct = computeGiantPyramidAnchor(rx, rz, SEED);
     assertTrue('giantPyramid' in layout, `region(${rx},${rz}) layout 必须有 giantPyramid 字段`);
+    // 高台地带 region：layout 侧被**有意**压制为 null，而直接调用仍有值 —— 两者不一致是设计行为，
+    // 不是接线断了。这条口径由下一条用例（「地带压制优先于巨型金字塔」）单独钉住。
+    if (isTarnZone(rx, rz, SEED)) {
+      assertEqual(layout.giantPyramid, null, `地带 region(${rx},${rz}) 必须被压制`);
+      continue;
+    }
     if (direct === null) { assertEqual(layout.giantPyramid, null, `region(${rx},${rz})`); continue; }
     assertEqual(layout.giantPyramid.wx, direct.wx, `region(${rx},${rz}) wx`);
     assertEqual(layout.giantPyramid.wz, direct.wz, `region(${rx},${rz}) wz`);
     assertEqual(layout.giantPyramid.floorY, direct.floorY, `region(${rx},${rz}) floorY`);
   }
+});
+
+// 比「跳过地带 region」更有判别力：若有人把 layout 侧的压制删掉（或反过来把候选层也置 null），
+// 只跳过就什么都测不到，而这条会真 FAIL。
+test('巨型金字塔接线：地带 region 的 layout.giantPyramid 是 null，而候选函数仍有值', async () => {
+  const { computeRegionLayout } = await import('../gen/structures/structure-layout.js');
+  // 找一个「本地是地带、且候选函数依然产出锚点」的 region（seed 12345 实测 (-2,-2)，floorY=4）
+  let hit = null;
+  for (let rx = -6; rx <= 6 && !hit; rx++) {
+    for (let rz = -6; rz <= 6 && !hit; rz++) {
+      if (!isTarnZone(rx, rz, SEED)) continue;
+      if (computeGiantPyramidAnchor(rx, rz, SEED) !== null) hit = { rx, rz };
+    }
+  }
+  assertTrue(hit !== null, '必须找到「地带 region 且候选有锚点」的取样点 —— 否则本用例恒真');
+  const direct = computeGiantPyramidAnchor(hit.rx, hit.rz, SEED);
+  assertTrue(direct !== null, `region(${hit.rx},${hit.rz}) 的候选函数必须有锚点（实测 floorY=${direct && direct.floorY}）`);
+  assertEqual(computeRegionLayout(hit.rx, hit.rz, SEED).giantPyramid, null,
+    `地带 region(${hit.rx},${hit.rz}) 的 layout.giantPyramid 必须被压制为 null（地带是地基级内容，塔会让路）`);
+  assertEqual(computeRegionLayout(hit.rx, hit.rz, SEED).tarn !== null, true,
+    `region(${hit.rx},${hit.rz}) 的 layout.tarn 必须是布局对象（地带判定与压制同源）`);
 });
 
 test('巨型金字塔接线：pointContext 在锚点占地内返回 kind=none（抑制植被/巨树）', async () => {
