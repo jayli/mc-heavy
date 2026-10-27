@@ -25,9 +25,9 @@ import { SEA_Y, blockIndex } from '../../voxel/constants.js';
 import { applyGiantTrees, loadGiantTrees } from './giant-trees.js';
 import { MESA_UNION_HALF } from './mesa.js';
 import { PYRAMID_HALF, inGiantPyramidFootprint } from './giant-pyramid.js';
-import { TARN_ZONE_RADIUS, snowLandSuppressedByTarn } from './tarn-zone.js';
+import { TARN_ZONE_RADIUS, snowLandSuppressedByTarn, TARN_CLOUD_MIN_Y } from './tarn-zone.js';
 import { fillTarnPlateau } from './tarn-terrain.js';
-import { KIT_VARIANTS } from './cloudland-kit-data.js';
+import { KIT_VARIANTS, KIT_METRICS } from './cloudland-kit-data.js';
 
 /** 城市 placement 用到的 JSON 结构（GEN 携带城市布局时预载）+ 植被树 JSON */
 const CITY_STRUCTURE_TYPES = [
@@ -324,6 +324,22 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
       if (!placementIntersects({ x: wx, z: wz }, d.halfX, d.halfZ, column.cx, column.cz)) continue;
       const dy = d.kind === 'arch' ? tarnLayout.plateauY + 1 : tarnLayout.plateauY;
       rasterizeStructure(d.variant, wx, dy, wz, setBlock, column, registry, seed, false);
+    }
+
+    // 4 朵巨型云（用户要求「原有云朵可以渲染」的额外一层 —— 与 `sky.cloudClusters` 的
+    // 既有小云簇**并存**，不是替代）。
+    //
+    // ⚠️ y = `TARN_CLOUD_MIN_Y`（= 54），不是 `plateauY`：云是空中结构，不是台地附属物。
+    // ⚠️ 半宽从 `KIT_METRICS` 读，**不要写 30 之类的字面量** —— 每个变体尺寸不同
+    //    （实测 21×16×20 ~ 60×38×60），写死会让大云在部分 column 被误判不相交 → 缺半边
+    //    且静默（方块层面看不出是裁剪判据写错了）。
+    for (const cloud of tarnLayout.clouds) {
+      const wx = Math.round(tarnLayout.cx + cloud.ring * Math.cos(cloud.ang));
+      const wz = Math.round(tarnLayout.cz + cloud.ring * Math.sin(cloud.ang));
+      const m = KIT_METRICS[cloud.variant];
+      if (!m) continue;
+      if (!placementIntersects({ x: wx, z: wz }, m.width / 2, m.depth / 2, column.cx, column.cz)) continue;
+      rasterizeStructure(cloud.variant, wx, TARN_CLOUD_MIN_Y, wz, setBlock, column, registry, seed, false);
     }
   }
 
