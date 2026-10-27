@@ -282,9 +282,18 @@ export function makeColumnSetter(column, registry) {
 
 /**
  * 雪原点位信息（mc-lite SnowLand.getSnowLandInfo，中心由布局给定）。
- * @param {{cx: number, cz: number}} snowLand
+ *
+ * ⚠️ **`snowLand` 为 null 时返回 null（`null` 是合法输入，不是错误）**：
+ * 高台地带（`src/gen/structures/tarn-zone.js`）会压制地带 region 的雪原生成，
+ * 但**不把 `layout.snowLand` 置 null**（它有 6 处既有消费方）；让路落在调用方
+ * （`apply.js` 阶段 1 跳过 `generateSnowLand`）。这里的守卫是纵深防御：
+ * 万一将来有人真的传 null 进来，应当是「没有雪原」而不是抛 TypeError 整页崩。
+ * 同文件里的 `getPlainLandInfo` / `getFrozenMountainInfo` 的调用方都自带 `&&` 守卫，
+ * 本函数在权威处自守，省得每个调用点各写一遍（红线 1）。
+ * @param {{cx: number, cz: number}|null} snowLand
  */
 export function getSnowLandInfo(wx, wz, snowLand, seed) {
+  if (!snowLand) return null;
   const halfSize = Math.floor(SNOW_LAND_SIZE / 2);
   const transitionSize = TRANSITION_SIZE.SNOW_LAND;
   const totalHalfSize = halfSize + transitionSize;
