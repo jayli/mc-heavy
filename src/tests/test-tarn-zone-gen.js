@@ -97,7 +97,13 @@ test('地带接线：地带上空不出现空岛方块', async () => {
   const { rx, rz } = findTarnRegion();
   const lay = tarnLayoutOf(rx, rz);
   const reg = await buildDefaultRegistry();
-  const skyIds = new Set([reg.idOf('sky_stone'), reg.idOf('sky_grass')]);
+  // ⚠️ **v1.95 起不能只按方块名判「空岛」**：巨型云的 `debris` 已换成 `sky_stone`
+  // （用户 2026-10-29：「巨型云朵里的 debris 方块都换成 sky_stone 方块」）——
+  // 云就在地带上空，按 `sky_stone` 一刀切会把它误判成「地带里长了空岛」。
+  // 判据改为「空岛**专属**方块」：`sky_grass` 只在空岛上出现，云不用它。
+  // （空岛的地表是 `sky_grass`，`sky_stone` 是它的石材 —— 两者只在空岛共存；
+  //  而 `sky_stone` 单独出现在云里。故用 `sky_grass` 当空岛存在的判据。）
+  const skyIds = new Set([reg.idOf('sky_grass')]);
   const layouts = [computeRegionLayout(rx, rz, SEED)];
   const ccx = Math.floor(lay.cx / 16), ccz = Math.floor(lay.cz / 16);
   const rCols = Math.ceil(lay.plateauRadius / 16) + 1;
@@ -110,7 +116,7 @@ test('地带接线：地带上空不出现空岛方块', async () => {
       for (let i = 0; i < col.blocks.length; i++) if (skyIds.has(col.blocks[i])) hits++;
     }
   }
-  assertEqual(hits, 0, '地带上空不得有空岛方块');
+  assertEqual(hits, 0, '地带上空不得有空岛方块（按 sky_grass 判 —— sky_stone 云也在用）');
 });
 
 test('地带接线：8 座高台真的写进了世界（不是只有 layout）', async () => {

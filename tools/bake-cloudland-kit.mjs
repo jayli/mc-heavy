@@ -327,6 +327,65 @@ function assertFullPaletteCoverage(s, groups, droppedArch) {
 
 // ---------------------------------------------------------------- 烘焙
 
+/**
+ * 「腰部以上裸露的石头」要换成 `cloud` 的源材料集合。
+ *
+ * 用户 2026-10-29：「云的腰部以上**裸露的石头方块**都换成云朵方块（cloud），
+ * **雪方块和 sky_stone 方块还保持不变**」。
+ *
+ * - `stone` / `marble` / `stone_diorite` / `smooth_stone` / `smooth_stone_1` / `calcite`
+ *   = 岩石类（视觉上是「石头」）
+ * - **不含** `snow`（用户明说保持不变）
+ * - **不含** `sky_stone`（用户明说保持不变；它是云族的专用石材）
+ * - **不含** `deepslate`（它整朵云都换 clay，见 `CLOUD_TO_CLAY`）
+ * - **不含** `light_gray_cloth`（v1.94 的浅灰布，属装饰件不是「裸露岩石」）
+ * - **不含** `clay`（同上：它是被换进来的目标，再换成 cloud 会让 deepslate 那批消失）
+ */
+const CLOUD_STONE_ABOVE_WAIST = new Set([
+  'stone', 'marble', 'stone_diorite', 'smooth_stone', 'smooth_stone_1', 'calcite',
+]);
+
+/**
+ * 巨型云的材料改写（用户 2026-10-29）。
+ *
+ * ## 两条规则
+ *
+ * | 条件 | 结果 |
+ * |---|---|
+ * | 源材料是 `deepslate` | → `clay`（**整朵云**，不看高度） |
+ * | 源材料是 `debris`（v1.95：碎石，源方块 `gravel`） | → `sky_stone`（**整朵云**，不看高度） |
+ * | 源材料是岩石类 **且** `by > waistY` | → `cloud`（腰部以上裸露的石头） |
+ * | `snow` / `sky_stone` | **保持不变**（用户明确要求） |
+ * | 其余 | 原样 |
+ *
+ * ## 「裸露」的判据
+ *
+ * 就是 `by > waistY`（腰部以上）。**不是**「四周有空气」那种表面判据 ——
+ * 云朵是实心蘑菇形体，内部格在游戏里根本看不见；按表面判据会把内部
+ * 岩石留在那里，观感是「云里埋着一块块石头」（玩家挖进去才看得见）。
+ * 用户说的「裸露」= 「腰部以上看得见的那些」，按高度一刀切正是这个意思。
+ *
+ * ⚠️ **只作用于 `giantCloud` 族**（调用点按 `family` 分流）：
+ * `deepslate` 同时是高台主体的主材（17.1%），全局改写会毁掉高台。
+ *
+ * ⚠️ **`debris` 走这里而不是改 `BLOCK_MAP` 的 `gravel → debris` 那条映射**：
+ * 实测 `debris` 当前只出现在云族（12 个产物 / 638 格，tarn/arch/spire 全 0），
+ * 改映射表在效果上等价；但映射表是**四族共用**的，将来别族用到 `gravel` 时
+ * 会跟着变成 `sky_stone` —— 而 `sky_stone` 是云族的专用石材（`solid=true`、
+ * 属「天空」语义），落在地面族上不合语义。放在族内分流里就不会有这个问题。
+ *
+ * @param {string} name 映射后的目标方块名
+ * @param {number} by 归一化层高（最低层 = 1）
+ * @param {number} waistY 该朵云的腰线层（最宽层）
+ * @returns {string}
+ */
+function restyleCloud(name, by, waistY) {
+  if (name === 'deepslate') return 'clay';
+  if (name === 'debris') return 'sky_stone';   // v1.95：整朵云，不看高度
+  if (by > waistY && CLOUD_STONE_ABOVE_WAIST.has(name)) return 'cloud';
+  return name;
+}
+
 function bake() {
   const { s, groups, droppedArch } = classify();
   console.log(`高台 ${groups.tarn.length} 个 / 拱洞 ${groups.arch.length} 个 / `
@@ -351,6 +410,10 @@ function bake() {
       const paletteIndex = new Map();
       const blocks = [];
       let mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity, mnz = Infinity, mxz = -Infinity;
+      // 巨型云的材料改写需要**先知道腰线**（最宽层），所以先收集行、后统一过 `restyleCloud`。
+      // 其余三族走原路径（`cloudWaistY = -1` 时 `restyleCloud` 恒等返回）。
+      const isCloud = family === 'giantCloud';
+      const rows = isCloud ? [] : null;
       for (const c of comp.cells) {
         const y = Math.floor(c / (s.W * s.L));
         const r = c - y * s.W * s.L;
@@ -360,10 +423,11 @@ function bake() {
         const target = BLOCK_MAP[srcName];
         // 未知源方块必须 throw（静默跳过会让那格变 air，方块层面看不出是映射错了）
         if (!target) throw new Error(`${base}：源方块 "${srcName}" 不在 BLOCK_MAP 里 —— 补映射后重跑`);
-        let pi = paletteIndex.get(target);
-        if (pi === undefined) { pi = palette.length; palette.push(target); paletteIndex.set(target, pi); }
         // y 相对最低层后 +1（既有结构 JSON 的约定：最低点归一化为 y=1）
         const by = y - comp.y0 + 1;
+        if (isCloud) { rows.push({ bx: x - OX, by, bz: z - OZ, name: target }); continue; }
+        let pi = paletteIndex.get(target);
+        if (pi === undefined) { pi = palette.length; palette.push(target); paletteIndex.set(target, pi); }
         blocks.push(x - OX, by, z - OZ, pi);
         if (x - OX < mnx) mnx = x - OX;
         if (x - OX > mxx) mxx = x - OX;
@@ -371,6 +435,31 @@ function bake() {
         if (by > mxy) mxy = by;
         if (z - OZ < mnz) mnz = z - OZ;
         if (z - OZ > mxz) mxz = z - OZ;
+      }
+
+      if (isCloud) {
+        // 腰线 = 该朵云**最宽的那一层**（蘑菇伞的下沿）。用户 2026-10-29 裁定：
+        // 「腰线用最宽层，石头换成 cloud」。
+        // 同面积时取**较低**的那层（`>=` 只在更宽时更新，故首次出现的最大层胜出）——
+        // 小云（高 6）腰部以下只剩基础一两层，取低层不会把整朵云判成「腰部以上」。
+        const widthAt = new Map();
+        for (const row of rows) widthAt.set(row.by, (widthAt.get(row.by) ?? 0) + 1);
+        let waistY = 1, waistW = -1;
+        for (const [y, n] of [...widthAt].sort((a, b) => a[0] - b[0])) {
+          if (n > waistW) { waistW = n; waistY = y; }
+        }
+        for (const row of rows) {
+          const target = restyleCloud(row.name, row.by, waistY);
+          let pi = paletteIndex.get(target);
+          if (pi === undefined) { pi = palette.length; palette.push(target); paletteIndex.set(target, pi); }
+          blocks.push(row.bx, row.by, row.bz, pi);
+          if (row.bx < mnx) mnx = row.bx;
+          if (row.bx > mxx) mxx = row.bx;
+          if (row.by < mny) mny = row.by;
+          if (row.by > mxy) mxy = row.by;
+          if (row.bz < mnz) mnz = row.bz;
+          if (row.bz > mxz) mxz = row.bz;
+        }
       }
 
       const n = blocks.length / 4;

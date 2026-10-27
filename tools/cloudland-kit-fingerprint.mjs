@@ -79,15 +79,20 @@ export const BLOCK_MAP = Object.freeze({
   green_terracotta: 'grass',           // 733 格
   green_wool: 'grass',                 // 26 格
   lime_terracotta: 'grass',            // 22 格
-  green_concrete: 'mossy_stone',       // 428 格。苔石（104,110,93）—— 压在 grass 层下的深一档绿
-  // ---- 原本的木质装饰：去掉木头 → 苔石 ----
+  green_concrete: 'light_gray_cloth',   // 428 格。v1.94 前是苔石（104,110,93）
+  // ---- 原本的木质装饰：去掉木头 → 浅灰布（v1.94: 原为苔石） ----
   // ⚠️ 木族映射**必须**落在非木目标上：`check:data` 用 `/log|wood|plank|birch/i` 判 palette，
   // 映射成 `oak_planks` / `dark_oak_planks` 会当场红（且 v1.77 明确要求「像天然形成」）。
-  acacia_wood: 'mossy_stone',          // 5,589 格（tarn 3,656 + cloud 1,933）
-  oak_wood: 'mossy_stone',             // 84 格（tarn 1 + cloud 83）
-  birch_wood: 'mossy_stone',           // 453 格（全在 cloud）
-  stripped_dark_oak_wood: 'mossy_stone', // 5 格（仅 tarn_01/tarn_03）。剥皮深色橡木 → 苔石
-  oak_planks: 'mossy_stone',           // 2 格（仅 tarn_01/tarn_03）。⚠️ registry 里有 `oak_planks`
+  //
+  // ⚠️ **v1.94（用户 2026-10-29）：「高台里的 mossy 方块和 iron_ore 方块都换成 light_gray_cloth」**
+  // —— 改的是**映射目标**，不是只改产物 palette：`mossy_stone` / `iron_ore` 在这张表里是
+  // 7 个源方块的落点（绿混凝土 + 5 个木族 + 深板岩铁矿），只改 palette 会漏掉这些
+  // （实测：调色板里 mossy_stone 4,092 格，但由它承接的源方块共 6,133 格）。
+  acacia_wood: 'light_gray_cloth',          // 5,589 格（tarn 3,656 + cloud 1,933）
+  oak_wood: 'light_gray_cloth',             // 84 格（tarn 1 + cloud 83）
+  birch_wood: 'light_gray_cloth',           // 453 格（全在 cloud）
+  stripped_dark_oak_wood: 'light_gray_cloth', // 5 格（仅 tarn_01/tarn_03）。剥皮深色橡木 → 苔石
+  oak_planks: 'light_gray_cloth',           // 2 格（仅 tarn_01/tarn_03）。⚠️ registry 里有 `oak_planks`
                                        // 但**不可用作映射目标**（木族，门禁会红 + 观感是人造砌筑）
   // ---- 陶土族：保留天然黏土/浅灰 ----
   cyan_terracotta: 'clay',             // 3,092 格
@@ -109,7 +114,7 @@ export const BLOCK_MAP = Object.freeze({
   polished_deepslate: 'polished_deepslate', // 600 格
   deepslate_coal_ore: 'deepslate',     // 797 格
   deepslate_copper_ore: 'deepslate',   // 3,660 格（tarn 2,682 + cloud 978）
-  deepslate_iron_ore: 'iron_ore',      // 1,415 格。铁矿（100,93,87）—— 天然矿脉点缀
+  deepslate_iron_ore: 'light_gray_cloth', // 1,415 格。v1.94 前是铁矿（100,93,87）—— 天然矿脉点缀
   // ---- 混凝土族 ----
   black_concrete: 'deepslate',         // 742 格
   black_concrete_powder: 'deepslate',  // 893 格

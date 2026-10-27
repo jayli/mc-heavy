@@ -194,7 +194,10 @@ test.describe('高台地带景观', () => {
       // 平台层的台地材质覆盖率（地带内 vs 圆外）
       // ⚠️ v1.91：台地材质变成冰/雪/黏土/草/石五种（不再是纯草石），
       //    判据得跟着改 —— 不然「台地整形生效」的赋值率会因材质换代跌到 31% 假失败。
-      const PLATFORM_MATERIALS = new Set(['ice', 'snow', 'clay', 'grass', 'stone']);
+      // ⚠️ **v1.94 起草顶是 `snow_grass` 不是 `grass`**（用户 2026-10-29：「所有顶部的草方块
+      //    都换成 snow_grass」）→ 不加进集合，台地赋值率会从 84% 跌到 70%（实测）。
+      //    `light_gray_cloth` 是 v1.94 的浅色石（草斑带里的成片浅灰石），同属台地地表。
+      const PLATFORM_MATERIALS = new Set(['ice', 'snow', 'clay', 'grass', 'snow_grass', 'stone', 'light_gray_cloth']);
       const platformCoverage = (radMin, radMax) => {
         let total = 0, paved = 0;
         for (let i = 0; i < 64; i++) {
@@ -293,8 +296,12 @@ test.describe('高台地带景观', () => {
     expect(snowFrac, `雪环 snow 占比 ${JSON.stringify(surface.snow)}`).toBeGreaterThan(0.25);
     expect(snowFrac, `雪环 snow 占比 ${(snowFrac * 100).toFixed(0)}% —— 不是「松散」，是实心环`)
       .toBeLessThan(0.98);
-    // ③ 草斑带：grass / stone / clay 三种都出现
-    expect(surface.plot.grass ?? 0, `草斑带 ${JSON.stringify(surface.plot)}`).toBeGreaterThan(0.1);
+    // ③ 草斑带：snow_grass / stone / clay 三种都出现
+    // ⚠️ **v1.94 起草顶一律是 `snow_grass` 不是 `grass`**（用户 2026-10-29：「高台地带的
+    //    所有顶部的草方块都换成 snow_grass……不再让雪方块和草方块交替」）。
+    //    本用例的采样是「逐列找露天顶层」→ 草地方格已被覆成 snow_grass，
+    //    旧断言找 `grass` 恒 0（实测草斑带 snow_grass 34.4% / grass 0%）。
+    expect(surface.plot.snow_grass ?? 0, `草斑带 ${JSON.stringify(surface.plot)}`).toBeGreaterThan(0.1);
     expect(surface.plot.clay ?? 0, `草斑带 ${JSON.stringify(surface.plot)}`).toBeGreaterThan(0.1);
     // ④ 缓坡：整片 clay
     // ⚠️ **先排除「覆盖在缓坡上但不是地表材质」的方块**（实测两类）：
@@ -438,7 +445,8 @@ test.describe('高台地带景观', () => {
           const x = cx + dx, z = cz + dz;
           samples++;
           const y2 = nm(g.world.getBlockId(x, 2, z));
-          if (y2 === 'grass' || y2 === 'stone') grassAtPlateau++;
+          // ⚠️ v1.94：草顶已换成 snow_grass（用户裁定），仍算「台地层材质」
+          if (y2 === 'grass' || y2 === 'snow_grass' || y2 === 'stone') grassAtPlateau++;
           for (let y = 54; y <= 94; y += 8) {
             if (g.world.getBlockId(x, y, z) !== 0) skyCells++;
           }
@@ -452,6 +460,58 @@ test.describe('高台地带景观', () => {
     expect(stats.grassAtPlateau, `非地带 region(${normal.rx},${normal.rz}) 在 y=2 有 ${stats.grassAtPlateau}/${stats.samples} 个草石格 —— 地带漏到了外面`)
       .toBeLessThan(stats.samples * 0.5);
     expect(stats.samples).toBeGreaterThan(500);
+    await unpin(page);
+  });
+
+  test('地带草地上真的长出了 short_grass 与 azure_bluet（v1.93）', async ({ page }) => {
+    // ⚠️ **必须查真实方块，不能只调 `tarnPlantAt`** —— 纯函数单测已经覆盖了概率与判据，
+    // 这里要钉的是**接线**（`apply.js` 阶段 3 的 tarn 分支有没有真的 setBlock）。
+    // 只测纯函数的话，「分支写了但从没被调到」这类缺陷全绿通过（M7「只测 API 漏玩家主路径」同类）。
+    await openGame(page);                 // 先把页面导航到游戏页（import 的绝对路径依赖 origin）
+    const tarn = await flyToTarn(page);   // 已含「是地带」自检 + 视距/加载半径处理
+
+    const stats = await page.evaluate(async ({ cx, cz, seed }) => {
+      const g = window.__MC_GAME__;
+      const m = await import('/src/gen/structures/tarn-zone.js');
+      const t = await import('/src/gen/structures/tarn-terrain.js');
+      const found = m.findNearestTarnZone(cx, cz, seed);
+      const lay = m.computeTarnZone(found.regionX, found.regionZ, seed);
+      const name = (id) => { try { return g.registry.nameOf(id); } catch { return String(id); } };
+
+      let grassCells = 0, sg = 0, az = 0, bad = 0;
+      // 草斑带：半径 72~114 之间
+      for (let dx = -110; dx <= 110; dx += 2) {
+        for (let dz = -110; dz <= 110; dz += 2) {
+          const x = lay.cx + dx, z = lay.cz + dz;
+          const d = Math.hypot(dx, dz);
+          if (d < 75 || d > 110) continue;
+          // 只统计「草地」列：地表那格是 grass 的
+          // ⚠️ v1.94：地表草已是 `snow_grass`（草顶统一覆雪草）
+          const surf = name(g.world.getBlockId(x, lay.plateauY, z));
+          if (surf !== 'snow_grass' && surf !== 'grass') continue;
+          grassCells++;
+          const above = name(g.world.getBlockId(x, lay.plateauY + 1, z));
+          if (above === 'short_grass') sg++;
+          else if (above === 'azure_bluet') az++;
+          else if (above !== 'air') bad++;   // 草上方被别的东西占了（高台/装饰件）
+        }
+      }
+      return { grassCells, sg, az, bad };
+    }, { cx: tarn.cx, cz: tarn.cz, seed: SEED });
+
+    // 采样下限（防「一片空白也算通过」）
+    expect(stats.grassCells, '草斑带里必须采到足够多的草地列').toBeGreaterThan(800);
+    // 两种植物都真的长出来了
+    expect(stats.sg, `short_grass 只有 ${stats.sg} 株（草地上 ${stats.grassCells} 列）`).toBeGreaterThan(20);
+    expect(stats.az, `azure_bluet 只有 ${stats.az} 株`).toBeGreaterThan(5);
+    // 密度对齐 PLAINS：short_grass ≈5%、azure_bluet ≈1.67%。
+    // ⚠️ 这里的采样步长是 2（不是逐格），且只取 75~110 的环带 —— 抽样误差比单测大，
+    //    阈值放宽到 [2%, 9%] / [0.3%, 4%]，只要能区分「没长」与「长太多」即可。
+    const sgRate = stats.sg / stats.grassCells, azRate = stats.az / stats.grassCells;
+    expect(sgRate).toBeGreaterThan(0.02);
+    expect(sgRate).toBeLessThan(0.09);
+    expect(azRate).toBeGreaterThan(0.003);
+    expect(azRate).toBeLessThan(0.04);
     await unpin(page);
   });
 });
