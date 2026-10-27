@@ -31,6 +31,8 @@
 // 修完后 bounds 内零暴露水体 → 门控零误伤。
 import { SEA_Y } from '../voxel/constants.js';
 import { generateHeight } from '../gen/terrain.js';
+import { REGION_SIZE } from '../gen/structures/region-config.js';
+import { isTarnZone, computeTarnZone, TARN_POOL_RADIUS } from '../gen/structures/tarn-zone.js';
 
 /** 遮罩阈值（= SEA_Y；等价于水体方块判据 `h <= SEA_Y-1`，推导见文件头注释） */
 export const OCEAN_MASK_THRESHOLD = SEA_Y;
@@ -62,6 +64,48 @@ export function inCityBounds(x, z, cityBounds) {
   if (!cityBounds) return false;
   return x >= cityBounds.minX && x <= cityBounds.maxX
     && z >= cityBounds.minZ && z <= cityBounds.maxZ;
+}
+
+/**
+ * 世界坐标 → {"本点所在地带水池", null}（CPU 侧判据；GPU 侧同构实现见 `ocean.js` 的 `inTarnPool`）。
+ *
+ * 这是「池面在哪些地方渲染」的**唯一权威**（红线 1）：
+ *   · `ocean.js` 的 TSL 着色器是同构实现（TSL 调不了 JS 函数），数值常量必须从本模块与
+ *     `tarn-zone.js` 读，**不得在着色器里另写一份**；
+ *   · `game.js` 的帧循环用它算 uniform（按玩家移动阈值节流）；
+ *   · 单测（`test-tarn-water.js`）直接验它。
+ *
+ * ⚠️ **判据是按 region 而不是按距离**：先由世界坐标反推 region，再问 `isTarnZone`。
+ * 这样「走出去再回来」与「首次到达」得到同一个答案（不依赖缓存/遍历顺序）。
+ *
+ * ⚠️ **`waterY` 是体素水**那一层**的 y**（= `plateauY`），不是水面平面的 y。
+ * 水面平面在 `waterY + 0.5`（与 `ocean.js` 的 `WATER_LEVEL_OFFSET` 同口径）——
+ * 两者差 0.5 是载荷性的：`mesher.js` 的水面经 `WATER_SURFACE_SINK = 0.5` 下沉后
+ * 顶面正好在 `waterY + 0.5`，平面贴上去才不露出一条缝。
+ *
+ * @param {number} x @param {number} z @param {number} seed
+ * @returns {{cx:number, cz:number, radius:number, waterY:number}|null}
+ */
+export function tarnPoolAt(x, z, seed) {
+  const rx = Math.floor(x / REGION_SIZE);
+  const rz = Math.floor(z / REGION_SIZE);
+  if (!isTarnZone(rx, rz, seed)) return null;
+  const lay = computeTarnZone(rx, rz, seed);       // `plateauY` 的唯一来源（几何常量）
+  if (!lay) return null;
+  // waterY = 体素水那一层的 y；水面平面在 waterY + 0.5
+  return { cx: lay.cx, cz: lay.cz, radius: TARN_POOL_RADIUS, waterY: lay.plateauY };
+}
+
+/**
+ * 该点是否落在地带水池圆内（`ocean.js` 的 GPU 侧用同一判据）。
+ * @param {number} x @param {number} z @param {number} seed
+ * @returns {boolean}
+ */
+export function isPointInTarnPool(x, z, seed) {
+  const pool = tarnPoolAt(x, z, seed);
+  if (!pool) return false;
+  const dx = x - pool.cx, dz = z - pool.cz;
+  return dx * dx + dz * dz <= pool.radius * pool.radius;
 }
 
 /**

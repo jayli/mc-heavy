@@ -212,8 +212,8 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
   if (layouts.some((l) => l.giantPyramid)) needTypes.add('giantPyramid');
   // 高台地带：35 个产物。惰性预载 —— 只有地带 region 才拉（1/3 的 region）。
   // 从 KIT_VARIANTS 派生而不是手写清单（红线 1）。
-  const tarnLayoutForPreload = layouts.map((l) => l.tarn).find(Boolean) || null;
-  if (tarnLayoutForPreload) {
+  // ⚠️ 用 `some` 而不是 `find(Boolean)` —— 只要邻域里**有任何一个**地带就需要这 35 个文件。
+  if (layouts.some((l) => l.tarn)) {
     for (const base of [
       ...KIT_VARIANTS.tarn, ...KIT_VARIANTS.arch,
       ...KIT_VARIANTS.spire, ...KIT_VARIANTS.giantCloud,
@@ -293,8 +293,14 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
   //     而产物已把最低点归一化为 b.y = 1）；
   //   · 故 `y = plateauY` ⇒ 台基最低层正好落在水那一层、坐在池底上（台体占掉它自己的水格）。
   //   传 `plateauY + 1` 会让整座高台**悬在水面上方一格**（区块层面看不出，只是台子浮在水上）。
-  const tarnLayout = layouts.map((l) => l.tarn).find(Boolean) || null;
-  if (tarnLayout) {
+  // ⚠️ **必须遍历全部 tarn layout，不能只取第一个**：3×3 邻域里可能同时有**两个**地带
+  // （地带半径 160、region 边长 400，相邻两个 region 各自中奖是常见的 —— 实测
+  // seed 12345 的 column(-188,-113) 邻域里同时有 (-9,-6) 与 (-8,-5) 两个）。
+  // 写成 `layouts.map(l => l.tarn).find(Boolean)` 会只取字典序第一个，
+  // 而它可能完全不覆盖本 column ⇒ **台地整形静默不生效**（池心 y=2 是空气不是水，
+  // 方块层面看不出是取错了 layout），且纯函数单测全绿。
+  const tarnLayouts = layouts.map((l) => l.tarn).filter(Boolean);
+  for (const tarnLayout of tarnLayouts) {
     fillTarnPlateau(column, tarnLayout, seed, registry);
 
     // 8 座高台（`TARN_KEPT_TARN_IDS`；烘焙有 11 个产物，运行时只用 8 座）

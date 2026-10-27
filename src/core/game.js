@@ -12,6 +12,7 @@ import { resourceUrl } from './resource-url.js';
 import { RenderWorld } from '../render/render-world.js';
 import { setupFog } from '../render/materials.js';
 import { setupOcean } from '../render/ocean.js';
+import { tarnPoolAt } from '../render/ocean-mask.js';
 import { setupSky, placeCelestial } from '../render/sky.js';
 import { DayNight, SUN_LIGHT_BASE_HEX, SUN_LIGHT_BASE_RGB } from '../render/daynight.js';
 import { ShadowScheduler, SUN_DIR_GATE_DEG, sunDirectionChanged, texelSnapOffset } from '../render/shadow-manager.js';
@@ -350,6 +351,9 @@ export class Game {
       await this.persistence.saveMeta({ seed: this.seed, spawn: [8, 8], savedAt: Date.now() });
     }
     this.ocean.setSeed(this.seed);
+    // 高台地带池面：初始接一次（玩家可能直接出生在地带附近）。
+    // 之后由帧循环按移动阈值刷新 —— 照 `_updateSunPosition()` 的同一手法（不每帧调）。
+    this._tarnPoolAnchor = null;
 
     this.scheduler = new Scheduler({
       world: this.world, pool: this.pool, registry: this.registry,
@@ -836,6 +840,20 @@ export class Game {
         }
       }
       this.scheduler.update(this.player.physics.pos.x, this.player.physics.pos.z);
+      // 高台地带池面：按**玩家移动阈值**刷新 uniform（不每帧调 —— `tarnPoolAt()` 会算
+      // region 坐标 + `isTarnZone` 哈希，每帧调是白烧预算）。
+      // 阈值 5 格与阴影重定位同尺度；池半径 90，远小于「跨 region」的尺度，不会漏。
+      // ⚠️ 与 `_lastShadowPos` **分开的锚点**：那个被阴影门控（`castShadow` 关时不刷新），
+      // 共用一个会让「关阴影后池面永不更新」变成静默缺陷。
+      {
+        const tp = this._tarnPoolAnchor;
+        const ddx = pp.x - (tp ? tp.x : Infinity);
+        const ddz = pp.z - (tp ? tp.z : Infinity);
+        if (!tp || ddx * ddx + ddz * ddz > 25) {
+          this.ocean.setTarnPool(tarnPoolAt(pp.x, pp.z, this.seed));
+          this._tarnPoolAnchor = { x: pp.x, z: pp.z };
+        }
+      }
       this.persistence.scheduleFlush(this.world); // 5s 防抖写盘（有 edits 才真正写）
       this.ocean.update(this.camera, dt);
       this.dayNight.update(dt);
