@@ -417,7 +417,86 @@ M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 
   断言先跑真实数据 / 等价论证须双侧实测）/ 负向验证盲区高发区）。
   写测试前按它的判据确定本次改动属哪一级。
 
-### 放置兜底沉淀的活跃约束（v1.72，后续交互/放置类改动必读）
+### 高台地带沉淀的活跃约束（后续地形景观 / 结构撒布 / 区域级布局类改动必读）
+
+设计文档 [`docs/superpowers/specs/2026-10-26-cloudland-tarn-zone-design.md`](docs/superpowers/specs/2026-10-26-cloudland-tarn-zone-design.md)
+（DR-1~DR-14）+ 计划 `docs/superpowers/plans/2026-10-26-cloudland-tarn-zone.md`。
+它取代了原「每块沙漠一个孤立高台」系统（`mesa.js` 已删除）。
+
+- **地带判定的唯一权威 = `isTarnZone(regionX, regionZ, seed)`**（`src/gen/structures/tarn-zone.js`）。
+  候选层、`apply.js` 让路、雪原让路、`pointContext`、巨树 `allowedAt`、海面遮罩全部调它。
+  ⚠️ **加新消费者时 import 它，不要自己写一份 `seededRandom(rx,rz,seed+1020) < 1/3`** ——
+  两份判据漂移会让「有的系统当地带、有的不当」，形态是台地上长树、水池里插空岛。
+  `CITY_REGION (0,0)` **恒 false**（城市是全世界唯一，变成地带就彻底消失）。
+- **`TARN_ZONE_RADIUS(160) + 2 ≤ REGION_SIZE/2(200)` 这条不等式必须永远成立**：
+  地带中心固定在 region 中心，半径 160 ⇒ 距边界 40 格。越界就意味着地带半边**永久消失**
+  （相邻 region 不为它算候选）。
+- **高台/拱洞/紫晶柱全部轴对齐摆放，不旋转**（`rasterizeStructure` 签名不动）。
+  ⚠️ **不要再提「加 4 向旋转让高台朝心」** —— 已被实测否决：档位公式 `(w≤d)?0:1`
+  只依赖素材 w/d、与环上角度 θ 无关，做不到「短边沿径向」（L3 四角伸出池外 4.44 格）。
+  轴对齐的固有代价是**真实间距只有 ~5 格**（所以 `TARN_GAP` 从 10 降到 4）。
+- **`TARN_RING_RADIUS = 58` 是实测标定值，不是公式**：它是「定稿 8 座四角全部落池内」的
+  上限（59 起 L3 出池、60 已实测越界）。**改池半径或改保留组合 → 必须重新穷举标定**，
+  不要写成 `TARN_POOL_RADIUS − max(half) − 4` 这类闭式（轴对齐下最远角与 θ 有关，没有闭式解）。
+- **「四角最远」必须逐角算**：`max over (sx,sz)∈{±1}² of hypot(ring·cosθ + sx·halfX, ring·sinθ + sz·halfZ)`。
+  不能只看 `ring + min(halfX, halfZ)`（那是矩形**边的中点**，实测 L3 差 **8.9 格** —— 88.88 vs 80.0）
+  ⇒ 少算这一项会让高台伸出池外而断言全绿。
+- **间距口径 = 轴对齐 AABB 真实最短距离**（`aabbGap`，唯一实现），`TARN_GAP = 4`。
+  ⚠️ 原值 10 是**旋转假设**下的净空隙口径，轴对齐下几何上达不到（真实间距 ~5 格）。
+  ⚠️ **抖动上限 `jitterMax` 由「AABB 真实间距仍 ≥ `TARN_GAP`」二分求出（× 0.8），不许写死**；
+  更不能写 `缝角/2`（实测 7.62° 会让相邻高台**直接重叠**，距离 −4.17）。
+  ⚠️ 安全性论证的**边界**：`zeroSum()` 输出 `raw − mean`，单值可达 **±1.75×jitterMax**
+  （不受 ±jm 盒约束）⇒ 可达域数学极端上间距会是 **3.841 < 4**。当前采样器实测安全
+  （24,274 region / 194,192 对，最小 4.0086、破线 0 对），但**改采样器必须重跑实测**，
+  不能拿解析上界担保。
+- **紫晶柱内环 = 20（实测标定，上界 24）**：原公式 `max(12, ringR − max(half) − 30)` 在
+  ringR=58 下算出 12，而 7 个紫晶柱在内环 12 上**互相重叠 3 对**（最小距 −1.86）。
+  26 起撞高台（vs 高台 −1.20）⇒ 调大前必须重跑 spec DR-8 那张表。
+- **拱洞与高台/紫晶柱的 y 口径不同**：拱洞在**池外台地**（地表已占 `plateauY`）→ 最低层落
+  `plateauY + 1`；高台与紫晶柱在**池内** → 最低层落 `plateauY`（坐在池底 `plateauY − 1` 上）。
+  传错会把拱洞最底下一层**埋进台地地表**（方块层面看不出，只是拱洞矮一格）。
+  另：`rasterizeStructure(type,x,y,z,…)` 把**最低那层写成 y**（内部 `y + b.y − 1`，产物已归一化
+  b.y=1）⇒ 高台传 `plateauY + 1` 会让整座**悬在水面上方一格**。
+- **`plateauY` 由 `computeTarnZone()` 定义**（= `SEA_Y + 4` = 2），Task 4 整形 / Task 5 高台 y /
+  Task 6 水面平面全读同一个值。它的断言必须拿 `SEA_Y + 4` 作参照 ——
+  `assertEqual(lay.plateauY, TARN_PLATEAU_Y)` 两边同源，改常量时恒真（出过这个盲区）。
+- **池面的 CPU 判据（`ocean-mask.js` 的 `tarnPoolAt`）与 GPU 判据（`ocean.js` 的 `uTarnPool`）
+  必须同源**（TSL 无法调 JS 函数，只能同构实现；数值常量从 `tarn-zone.js` 读）。
+- **`positionNode` 只能输出局部坐标**：`three.webgpu.js:21575` 是
+  `positionLocal.assign(subBuild(this.positionNode))`，之后还会乘 `modelWorldMatrix` ——
+  返回世界坐标会**双重变换**（平面跑到 2×camera.position 处）。判断「在不在池内」用
+  `modelWorldMatrix.mul(positionLocal).xz`（**不是 `objectWorldMatrix`**，那是实例化用的，
+  在普通 Mesh 上 `.mul` 直接抛 TypeError → 整页白屏）。
+  平面 `rotation.x = -π/2` ⇒ **抬升量加在局部 z 上**（不是 y，那是法线方向）。
+- **`PlaneGeometry(800,800)` 默认只有 1×1 分段 = 4 个顶点**：`positionNode` 是顶点级位移，
+  4 个角无论怎么抬都无法在距角 400 格的池心形成局部凸起（实测抬 +50 格差异仍为 0.0）。
+  已改为 **64×64**（4225 顶点，顶点间距 12.5 格）。**往平面加顶点级效果前先看分段数**。
+  抬升判据还须比池圆大一圈（+32 格）：顶点级抬升 vs 片元级 `Discard` 半径不同，
+  同半径会让池边水面斜降出一圈塌陷。
+- **transparent 容量的判据是 reserved（= 1.25 × 已用顶点）相对初始容量常量，不是已用占比**。
+  实测峰值 **114,525 / 125,000 = 91.6%**（解析估算只有 78.6%，差因是 mesher 实际发面数
+  受池边缘与台地交界影响）⇒ **这 8.4% 余量是实打实的上限，再往 transparent 加内容前
+  必须重跑容量探针**（真游戏页转 2 圈、每 6 帧统计 `Σ slot.reservedV`，取峰值）。
+- **35 个产物必须惰性预载**（只在 `isTarnZone` 为真时拉），否则每个新 Worker 的首个 GEN
+  多付 35 次冷 fetch。实测惰性预载下 genP95 中位 **8.30ms** < 10ms 门。
+- **雪原让路有两处，缺一不可**：`snowLandSuppressedByTarn()`（apply 阶段 1 跳过生成）+
+  `pointContext` 的 `kind:'tarn'`（植被/树/植物）。
+  ⚠️ **`layout.snowLand` 字段必须保留中心坐标**（6 处既有消费方直接解引用 `.cx`），
+  置 `null` 会让 28 条既有用例抛 TypeError。
+  ⚠️ 判据用**方形 AABB 到圆的真实最短距离**，不是 `hypot(中心距) < 28+160`（把方形当圆，
+  漏掉角部擦入的 3 个 region，其中 **2 个是地带 region 自己**）。
+  ⚠️ **不加「本地是地带就无条件让路」特判**：37 个地带 region 只有 5 个的雪原压进自己的圆，
+  其余 32 个距离 168~337 格 —— 加特判会白删 32 座雪原。
+- **高台顶面是 `grass` 不是 `moss`**（用户 2026-10-26 裁定），`check:data` 的 `[高台地带]` 钉住。
+- **`KIT_VARIANTS`/`KIT_METRICS` 住在 `src/gen/structures/cloudland-kit-data.js`（零 node 依赖）**，
+  `tools/cloudland-kit-fingerprint.mjs` re-export 它。
+  ⚠️ **`src/**` 与浏览器单测绝不能 import 后者** —— 它依赖 `node:fs`，浏览器无法解析 `node:` 协议
+  → 整个模块不加载 → **测试全不跑 / Worker 起不来 / 游戏白屏**，而 `check:arch` 抓不到
+  这类运行时解析失败。
+- **`regionLandmarkCenters` 住在 `landmark-circles.js`**（已从删除的 `mesa.js` 搬出）：
+  `giant-pyramid.js` 是它剩下的唯一消费方。⚠️ 删 `mesa.js` 时必须先搬，否则金字塔 import
+  不存在的模块 → Worker 起不来 → 白屏。
+
 
 - **`placeBlock()` 有两条路，不是一条**：主射线命中 → `target.prevPos`（`_placeSingle`）；
   **完全未命中** → `_placeByRayFallback()` 沿视线找最近可贴格（`place-ray.js`，15 格）。
@@ -1086,9 +1165,11 @@ M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 
 - **源模型是桌山（蘑菇形）—— 判据必须落在基座而不是并集外接框**：`Landscape/9` 基座仅 15×15
   （164 格）、中部收腰、顶部 17×17 更宽。20×21 并集里有 85 格（20%）在基座上**没有方块**，
   拿它做平整度/沙漠门控会误杀合法落点。
-- **映射表是单一权威（`tools/cloudland-mesa-fingerprint.mjs` 的 `BLOCK_MAP`）**，烘焙脚本与
-  `check:data` 的 `[高台]` 环节都从它 import。未知源方块烘焙时 **throw** —— 因为
-  `makeColumnSetter` 对未注册名字是**静默 return**（`landmarks.js:274`），那格变 air，
+- **[已作废 v1.88] 映射表是单一权威（`tools/cloudland-mesa-fingerprint.mjs` 的 `BLOCK_MAP`）**
+  —— ⚠️ **该文件与整个沙漠孤立高台系统已删除**，现为 `tools/cloudland-kit-fingerprint.mjs`
+  （四族 35 产物，同名手法）。下面两条**关于 `makeColumnSetter` 静默 return 的教训仍适用**：
+  烘焙脚本与 `check:data` 都从同一份映射表 import；未知源方块烘焙时 **throw** —— 因为
+  `makeColumnSetter` 对未注册名字是**静默 return**（`landmarks.js`），那格变 air，
   **方块层面完全看不出是映射错了**。
 - **palette 必须全部走 opaque 通道**（`[高台]` 门钉住 `cullTable===0 && opaqueTable===1`）：
   改成 cutout/transparent 会让 1 万格方块每格顶点成本约 ×3 → 撞 §4.10 容量预算，且是**静默**的
@@ -1109,10 +1190,13 @@ M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 
 - **`check:data` 加新判据时，务必把它并入「成功行」的打印条件**（实测踩到）：`[高台]` 的成功行
   原本只判 `palette.length > 0`，新增「无砖无木」判据后，注入砖块时**同时**打印了「✗ 含砖块族」
   与「✓ …无砖无木」—— 读者只看 ✓ 就会误判为通过。形态为「门禁报了错但屏幕上仍有绿色 ✓」。
-- **`npm run mesa` 不跑则产物静默过期**（渲染旧配色，肉眼只觉得「颜色怪怪的」）→
-  `check:data` 的 `[高台]` 指纹环节会抓。指纹覆盖 `.schem` 内容 + `BLOCK_MAP` +
-  `MESA_METRICS` + `MESA_ORIGIN` + `SOURCE_COMPONENT_BLOCKS`。已知盲区：只改**烘焙算法**
-  而不动参数时指纹不变 → 靠单测/Tier 4 兜住。
+- **[已作废 v1.80] 原「`npm run mesa` 不跑则产物静默过期」—— 沙漠孤立高台系统已整体删除**，
+  由「高台地带」取代。同性质的当前约束见上文「高台地带沉淀的活跃约束」里的
+  「35 个产物必须惰性预载」与 `npm run tarn`。
+  ⚠️ 那条**关于指纹门禁的一般性教训仍适用**：指纹覆盖 `.schem` 内容 + 映射表 + 尺寸/原点常量；
+  **已知盲区：只改烘焙算法而不动参数时指纹不变** → 靠单测/Tier 4 兜住。
+  ⚠️ 那条**关于「成功行必须涵盖全部判据」的教训也仍适用**（新门的实现已按此写：
+  `failures.every(f => !f.startsWith('[高台地带]'))` + 各局部条件合并判断）。
 - **Tier 4 判「高台真的长出来了」不能用量高度差**（实测负向验证盲区）：初版写「台顶比周边
   地表高 ≥25 格」，而该处方圆 50 格内本来就有 35 格高的地形 → **注掉光栅化后判据仍然成立**
   （差 28）。改成「台顶层 `y=floorY+43` 命中的 palette 方块数 ≥ 产物顶层格数 ×0.9」
@@ -1821,10 +1905,12 @@ mc-heavy/
 │                              #   → assets/turret/armor.png + armor.json（尺寸+输入指纹）
 ├─ tools/turret-armor-fingerprint.mjs # 装甲图案参数与指纹共享模块（同上，红线 1）
 ├─ tools/nbt-reader.mjs        # 最小 NBT 读取器（tag 1~12），巨树与高台两个烘焙脚本共用（红线 1）
-├─ tools/bake-cloudland-mesa.mjs # 高台烘焙（npm run mesa）：.schem → 26 连通分量 → 按 BlockCount
-│                              #   唯一匹配 Landscape/9 → 映射表 → palette 扁平数组 JSON
-├─ tools/cloudland-mesa-fingerprint.mjs # 高台映射表 BLOCK_MAP / MESA_METRICS / MESA_ORIGIN / 指纹
-│                              #   共享模块（烘焙脚本与 check:data 的 [高台] 环节共用，红线 1）
+├─ tools/bake-cloudland-kit.mjs # Cloudland 套件四族烘焙（npm run tarn）：.schem → 26 连通分量
+│                              #   → 按 palette 判族（**不按 .bp 目录名**）→ 35 个 JSON
+│                              #   （11 高台 + 5 拱洞 + 7 紫晶柱 + 12 巨型云，402,624 格）
+├─ tools/cloudland-kit-fingerprint.mjs # 套件映射表 BLOCK_MAP（71 条）/ 指纹 / 白名单
+│                              #   共享模块（烘焙脚本与 check:data 的 [高台地带] 共用，红线 1）；
+│                              #   re-export src/gen/structures/cloudland-kit-data.js 的纯数据
 ├─ tools/bake-giant-trees.mjs  # 巨树烘焙（npm run gianttrees）：入库 .schem → 28 变体 2×2×2 降采样
 │                              #   → assets/giant-trees/trees.json + trees.meta.json（尺寸+输入指纹）
 ├─ tools/giant-trees-fingerprint.mjs # 巨树烘焙参数（族表/调色板/分类表/族标志）与指纹共享模块（同上，红线 1）
@@ -1981,9 +2067,11 @@ npm run zombie                 # 烘焙丧尸头部马赛克纹理 → assets/zo
 npm run turret                 # 烘焙炮塔装甲 → assets/turret/armor.png + armor.json（三区并排）
                                #   改 tools/turret-armor-fingerprint.mjs 或源图后需跑，
                                #   否则装甲静默过期（check:data 的 [炮塔装甲] 指纹检查会抓）
-npm run mesa                   # 烘焙 Cloudland 高台 → assets/structures/cloudland_mesa_small.json
-                               #   改 tools/cloudland-mesa-fingerprint.mjs 的 BLOCK_MAP 或 .schem 后需跑，
-                               #   否则产物静默过期（check:data 的 [高台] 指纹检查会抓）
+npm run tarn                   # 烘焙 Cloudland 套件四族（11 高台 + 5 拱洞 + 7 紫晶柱 + 12 巨型云）
+                               #   → assets/structures/cloudland_{tarn,arch,spire,giant_cloud}_NN.json
+                               #   + cloudland_kit.meta.json（指纹）。改 tools/cloudland-kit-fingerprint.mjs
+                               #   或 .schem 后需跑，否则产物静默过期（check:data 的 [高台地带] 指纹会抓）
+                               #   另有 `-- --census`（四族普查 + 源方块覆盖自检）
 npm run pyramid                # 烘焙巨型金字塔 → assets/structures/giant_pyramid.json + .meta.json
                                #   改 tools/giant-pyramid-fingerprint.mjs（BLOCK_MAP / FACING_TO_ORIENT /
                                #   PYRAMID_METRICS）或 .litematic 后需跑，否则产物静默过期
