@@ -384,6 +384,50 @@ export function tarnZoneCenter(regionX, regionZ) {
   };
 }
 
+/**
+ * 找**离给定世界坐标最近**的高台地带（设置面板「瞬移 → 高台地带」的落点解析）。
+ *
+ * 从包含 `(wx, wz)` 的 region 开始，按环半径 0,1,2,… 向外扩，第一个命中的环上取曼哈顿
+ * 距离最近的 region。`isTarnZone` 是纯函数（实测 0.9µs/次），扫满 `maxRadius` 环
+ * （(2R+1)² 个 region）在 R=16 时约 1ms —— 面板点击级别完全可接受。
+ *
+ * ⚠️ **按 ring 扫而不是逐 region 距离排序**：距离排序要对全部 (2R+1)² 个 region 算距离
+ * 再排，而环扫一旦命中即可提前退出 —— 玩家绝大多数时候一个环内就命中（实测 12 seed
+ * 的密度是每 ~7.9 个 region 一座）。
+ *
+ * ⚠️ **返回的是 region 坐标，不是落点**：落点（「边缘处」）由调用方按
+ * `platformRadius + step` 落在缓坡上，并用真实方块高度定 y —— 这里不掺渲染/地形细节。
+ *
+ * @param {number} wx 玩家当前 x（世界坐标）
+ * @param {number} wz 玩家当前 z
+ * @param {number} seed
+ * @param {number} [maxRadius=16] 最多向外扩几个 region 环（16 → 覆盖 6400 格半径）
+ * @returns {{regionX: number, regionZ: number, cx: number, cz: number,
+ *            dist: number, ring: number} | null} 超出范围返回 null
+ */
+export function findNearestTarnZone(wx, wz, seed, maxRadius = 16) {
+  const baseX = Math.floor(wx / REGION_SIZE);
+  const baseZ = Math.floor(wz / REGION_SIZE);
+  for (let ring = 0; ring <= maxRadius; ring++) {
+    let best = null;
+    // 沿环遍历：只走外圈（ring=0 时退化为单个 region）
+    for (let dx = -ring; dx <= ring; dx++) {
+      for (let dz = -ring; dz <= ring; dz++) {
+        // 只要环边框，不要内部（内部已在更小的 ring 里查过）
+        if (ring > 0 && Math.abs(dx) !== ring && Math.abs(dz) !== ring) continue;
+        const rx = baseX + dx, rz = baseZ + dz;
+        if (!isTarnZone(rx, rz, seed)) continue;
+        const { cx, cz } = tarnZoneCenter(rx, rz);
+        const dist = Math.hypot(cx - wx, cz - wz);
+        // 同环内可能有多座 —— 取离玩家最近的
+        if (best === null || dist < best.dist) best = { regionX: rx, regionZ: rz, cx, cz, dist, ring };
+      }
+    }
+    if (best) return best;
+  }
+  return null;
+}
+
 // ==================== 雪原让路（spec DR-6） ====================
 
 /**

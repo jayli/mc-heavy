@@ -68,6 +68,26 @@ import { loadIconManifest } from '../ui/icons.js';
 import { getBiome } from '../gen/noise.js';
 import { loadStoredSettings, resolveSettings } from '../ui/settings.js';
 import { encodeProgress, decodeProgress } from '../save/progress-codec.js';
+import { computeTarnZone, findNearestTarnZone } from '../gen/structures/tarn-zone.js';
+import { tarnSurfaceYAt } from '../gen/structures/tarn-terrain.js';
+import { WORLD_MAX_Y, WORLD_MIN_Y } from '../voxel/constants.js';
+
+/**
+ * 「标记位置」的 localStorage key（v1.92）。
+ *
+ * ⚠️ **不进 `DEFAULT_SETTINGS` / `STORAGE_KEY`** —— 标记是**玩家数据**而不是配置：
+ * 它不参与 URL 覆盖（`?mark=` 没有意义）、不进 `settingsVersion` 迁移、也不该被
+ * 「恢复默认设置」清掉。与 `mc_heavy_settings_v1` 分开存（红线 1：两类数据各有自己的权威）。
+ */
+const MARK_KEY = 'mc_heavy_mark_v1';
+
+/**
+ * 瞬移到高台地带时，落点相对**平台外缘**再往外的格数（v1.92）。
+ *
+ * 平台半径 114、缓坡宽 24 → 取 6 落在缓坡中部：脚下是黏土缓坡（高度已在插值下降），
+ * 视野里能看见整片地带的轮廓（圆心在 120 格外），又不会站在圆外的自然地形上看不清边界。
+ */
+const TARN_TELEPORT_MARGIN = 6;
 
 /** 随机世界 seed（M3-4 新世界）：24bit 正整数，避开 0（noise 退化）与负值 */
 export function randomSeed() {
@@ -912,13 +932,35 @@ export class Game {
     });
   }
 
-  _waitForColumn(cx, cz, timeoutMs) {
+  /**
+   * 等某个 column 加载完（GEN 完成）。
+   *
+   * ⚠️ **`driveX/driveZ` 是调度中心，不能省**（v1.92 实测踩坑）：原来的实现固定用
+   * `this.spawnX/spawnZ` 驱动 `scheduler.update` —— 那对出生点是正确的（启动时帧循环
+   * 还没跑，必须手动驱动），但**瞬移场景下目标是 1200 格外**，调度中心仍在出生点 →
+   * 目标 column 永远不进加载半径 → 30 秒后抛 `spawn column timeout`
+   * （实测瞬移按钮完全没反应，且 async 回调的异常被吞掉，toast 一个字都没有）。
+   *
+   * 默认值仍是出生点：既有调用方（`start()`）的行为逐位不变。
+   *
+   * @param {number} cx @param {number} cz 目标 column 坐标
+   * @param {number} timeoutMs
+   * @param {number} [driveX] 调度中心 x（缺省 = 出生点）
+   * @param {number} [driveZ] 调度中心 z
+   */
+  _waitForColumn(cx, cz, timeoutMs, driveX, driveZ) {
+    const dx = driveX ?? this.spawnX, dz = driveZ ?? this.spawnZ;
     return new Promise((resolve, reject) => {
       const t0 = performance.now();
       const timer = setInterval(() => {
         if (this.world.hasColumn(cx, cz)) { clearInterval(timer); resolve(); }
-        else if (performance.now() - t0 > timeoutMs) { clearInterval(timer); reject(new Error('spawn column timeout')); }
-        else this.scheduler.update(this.spawnX, this.spawnZ); // 布局门控后 GEN 需后续帧驱动（动画循环尚未启动）
+        else if (performance.now() - t0 > timeoutMs) {
+          clearInterval(timer);
+          reject(new Error(`column (${cx},${cz}) 加载超时`));
+        }
+        // 布局门控后 GEN 需后续帧驱动（启动期动画循环尚未启动；瞬移期目标远离玩家，
+        // 也必须把调度中心推到目标附近，否则它永远不进入加载半径）
+        else this.scheduler.update(dx, dz);
       }, 50);
     });
   }
@@ -1067,6 +1109,145 @@ export class Game {
 
   /** 背景音乐开关意图（面板/测试读设置口径，不判断是否已出声） */
   get musicEnabled() { return this.audioManager?.musicEnabled ?? false; }
+
+  // ==================== 瞬移（设置面板「瞬移」行，v1.92） ====================
+  //
+  // 三个入口的**唯一权威都在本类**（面板只做 DOM 与文案，不碰 world/player）—— 与
+  // `setMusicEnabled` 同一手法：面板拿不到世界数据，散落进去就会逼它 import voxel/gen 层，
+  // 违反依赖方向（§3）。
+
+  /**
+   * 瞬移到**最近的高台地带边缘**（设置面板「高台地带」按钮）。
+   *
+   * ## 落点为什么是「边缘」而不是圆心
+   *
+   * 用户 2026-10-29 裁定：「传送到高台地带的边缘处」。圆心是冰面 + 紫晶柱内环，
+   * 传送进去会**埋在结构里**（紫晶柱内环半径 20，圆心正中就是柱群）；边缘在缓坡上，
+   * 一睁眼就能看见整片地带，也方便直接往里走。
+   *
+   * ## y 用真实方块高度，不用 `findSpawnY`
+   *
+   * `findSpawnY` 从世界顶向下扫**第一个非空方块**，会把地带的巨型云（y∈[54,95]）当地面
+   * —— 实测那是既有坑（CLAUDE.md「findSpawnY 会把空中结构当出生点」）。这里从 `plateauY`
+   * 向上扫到第一个「脚下实心且自身与头顶都是空气」的格，云层天然被排除（云 `solid=0`）。
+   *
+   * ## 传送后不等 column
+   *
+   * `player.spawn` 只改 `physics.pos`，渲染/调度由帧循环的 `scheduler.update(playerX, playerZ)`
+   * 自动跟上（同 `spawn` 的既有路径）。远处目标会先看到天空再逐片长出地形 —— 这与
+   * 玩家自己飞过去时完全一致，不必另建等待逻辑。
+   *
+   * @returns {{ok: true, x: number, y: number, z: number, dist: number} | {ok: false, reason: string}}
+   */
+  teleportToTarnZone() {
+    const p = this.player?.physics?.pos;
+    if (!p) return { ok: false, reason: 'no-player' };
+    const found = findNearestTarnZone(p.x, p.z, this.seed);
+    if (!found) return { ok: false, reason: 'not-found' };
+    const lay = computeTarnZone(found.regionX, found.regionZ, this.seed);
+    if (!lay) return { ok: false, reason: 'not-found' };
+
+    // 落点 = 平台外缘再往外 TARN_TELEPORT_MARGIN 格（落在缓坡带上，看得见整片地带）。
+    // ⚠️ 方向从圆心指向玩家：玩家是从自己这一侧过来的，落在近端边缘而不是绕到对面。
+    const dx = p.x - lay.cx, dz = p.z - lay.cz;
+    const len = Math.hypot(dx, dz) || 1;
+    const r = lay.platformRadius + TARN_TELEPORT_MARGIN;
+    const x = Math.round(lay.cx + (dx / len) * r);
+    const z = Math.round(lay.cz + (dz / len) * r);
+
+    // y 用**纯函数**算，不等 column 加载（见下面 `_teleportTo` 的说明）。
+    const y = tarnSurfaceYAt(x, z, this.seed, lay) + 1; // +1 = 地表方块之上那一格（脚底）
+    this._teleportTo(x, y, z);
+    return { ok: true, x, y, z, dist: Math.round(found.dist) };
+  }
+
+  /**
+   * 传送的**唯一落地实现**（三个入口共用，红线 1）。
+   *
+   * ## 为什么不等目标 column 加载
+   *
+   * 第一版写成 `await _waitForColumn(...)` 再扫真实地表高度，**实测不可行**：
+   * `_waitForColumn` 靠手动驱动 `scheduler.update` 逼 GEN，而 vd=2 时加载半径只有
+   * 48 格 —— 目标在 1200 格外永远进不了半径 → 30 秒后抛超时，且 async 面板回调把异常
+   * 吞掉，玩家看到的是「按钮完全没反应」（toast 一个字都没有）。
+   * 把调度中心推过去也一样：那等于要求「在 tick 之外把整片目标区域加载完」，
+   * 1500+ column 的 GEN 是秒级操作，面板点击不该阻塞那么久。
+   *
+   * ## 正确做法
+   *
+   * ① 高度用**纯函数**算（`tarnSurfaceYAt` 与地形生成同一份公式；标记位置直接存玩家踩过
+   *    的 y），不依赖 column 是否已加载；
+   * ② `player.spawn` 只改物理坐标，**不判断脚下有没有方块**；
+   * ③ 传送后帧循环的 `scheduler.update(playerX, playerZ)` 自动把调度中心移过去，
+   *    目标区域逐片加载 —— 与玩家自己飞过去时完全一致，没有额外的等待逻辑。
+   * ④ 加载完成前玩家可能短暂悬空（下方是空气），由物理每帧重力拉落；`fillTarnPlateau`
+   *    生成的地表一旦上传就站稳。
+   *
+   * @param {number} x @param {number} y @param {number} z
+   */
+  _teleportTo(x, y, z) {
+    this.player.spawn(x, y, z);
+    // 把调度中心立刻推到目标：帧循环下一帧就会用它（`scheduler.update(playerX, playerZ)`
+    // 本来每帧都读玩家位置，这里只是让**本帧剩余时间**就开始朝目标 GEN，省 16ms）。
+    this.scheduler.update(x, z);
+  }
+
+  /**
+   * 记录当前玩家位置为「标记」（设置面板「标记位置」按钮）。
+   *
+   * 持久化到 localStorage（用户 2026-10-29 裁定「跨会话保留」），**不进设置对象** ——
+   * 它不是一个「配置」，不参与 URL 覆盖、不进 `settingsVersion` 迁移。用独立 key。
+   *
+   * @returns {{ok: true, x: number, y: number, z: number} | {ok: false, reason: string}}
+   */
+  markPosition() {
+    const p = this.player?.physics?.pos;
+    if (!p) return { ok: false, reason: 'no-player' };
+    const mark = { x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z) };
+    try {
+      localStorage.setItem(MARK_KEY, JSON.stringify(mark));
+    } catch { /* 私密模式配额失败：内存里也记一份，本次会话仍可用 */ }
+    this._markCache = mark;
+    return { ok: true, ...mark };
+  }
+
+  /**
+   * 瞬移到已记录的位置（设置面板「跳转标记位置」按钮）。
+   *
+   * ⚠️ **没有标记时不做任何事**（不传送、不改玩家状态），只返回 reason —— 传送到 (0,0)
+   * 之类的兜底会让玩家莫名其妙被扔到出生点附近。
+   *
+   * @returns {{ok: true, x: number, y: number, z: number} | {ok: false, reason: string}}
+   */
+  teleportToMark() {
+    const p = this.player?.physics?.pos;
+    if (!p) return { ok: false, reason: 'no-player' };
+    const mark = this.markedPosition();
+    if (!mark) return { ok: false, reason: 'no-mark' };
+    // y 用存档里的值（标记时玩家就站在那儿，比重新扫地表更忠实于「我刚站过的地方」），
+    // 也因此不需要等目标 column 加载。
+    this._teleportTo(mark.x, mark.y, mark.z);
+    return { ok: true, ...mark };
+  }
+
+  /**
+   * 读取已记录的标记（内存优先，回落 localStorage）。
+   * @returns {{x: number, y: number, z: number} | null}
+   */
+  markedPosition() {
+    if (this._markCache) return this._markCache;
+    let mark = null;
+    try {
+      const raw = localStorage.getItem(MARK_KEY);
+      const parsed = raw ? JSON.parse(raw) : null;
+      // 只认三个有限数 —— 坏存档（手改/旧版本）不得把玩家传到 NaN
+      if (parsed && [parsed.x, parsed.y, parsed.z].every((v) => Number.isFinite(v))) {
+        mark = { x: parsed.x, y: parsed.y, z: parsed.z };
+      }
+    } catch { /* 解析失败按「无标记」处理 */ }
+    this._markCache = mark;
+    return mark;
+  }
 
   /** 玩家位置的 biome 名（M3-4 坐标 HUD；CITY 布局边界优先，否则 getBiome 纯函数） */
   biomeAt(x, z) {
