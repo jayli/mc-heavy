@@ -14,10 +14,7 @@
 import { test } from './runner.js';
 import { assertEqual, assertTrue, assertFalse } from './assert.js';
 import { resourceUrl } from '../core/resource-url.js';
-import {
-  DEFAULT_SETTINGS, resolveSettings, VIEW_DISTANCE_OPTIONS, VIEW_DISTANCE_MIN, VIEW_DISTANCE_MAX,
-  VISUAL_STYLE_OPTIONS,
-} from '../ui/settings.js';
+import { DEFAULT_SETTINGS, resolveSettings, VIEW_DISTANCE_OPTIONS, VIEW_DISTANCE_MIN, VIEW_DISTANCE_MAX, VISUAL_STYLE_OPTIONS, CHUNK_PACE_MIN, CHUNK_PACE_MAX } from '../ui/settings.js';
 import { loadIconManifest, iconCss } from '../ui/icons.js';
 // M9：创造台面板的两态文案常量与错误映射是**导出的单一口径**（见下方用例说明）。
 // settings-panel.js 只 import 纯函数模块（settings.js），无 three/无 DOM 顶层副作用 →
@@ -33,6 +30,23 @@ test('settings: 默认值（vd=8 / blur=off / volume=1 / 风格自动）', () =>
   assertEqual(DEFAULT_SETTINGS.blur, false);
   assertEqual(DEFAULT_SETTINGS.volume, 1);
   assertEqual(DEFAULT_SETTINGS.visualStyle, null);
+});
+
+test('settings: chunkPace 默认 0（不限）、URL 可调、钳制到 0~16', () => {
+  // 观感旋钮（每帧最多发布几个 section），不是性能旋钮 —— 见 budget.js 的说明。
+  // 默认 0 = 不牺牲加载时长（一波内全部发布）。
+  assertEqual(DEFAULT_SETTINGS.chunkPace, 0);
+  assertEqual(resolveSettings(null, new URLSearchParams('')).chunkPace, 0);
+  assertEqual(resolveSettings(null, new URLSearchParams('chunkpace=2')).chunkPace, 2);
+  assertEqual(resolveSettings({ chunkPace: 4 }, new URLSearchParams('')).chunkPace, 4);
+  // URL 覆盖存储
+  assertEqual(resolveSettings({ chunkPace: 4 }, new URLSearchParams('chunkpace=8')).chunkPace, 8);
+  // 钳制：负数/超大/非法 一律回落到边界或默认
+  assertEqual(resolveSettings(null, new URLSearchParams('chunkpace=-5')).chunkPace, CHUNK_PACE_MIN);
+  assertEqual(resolveSettings(null, new URLSearchParams('chunkpace=999')).chunkPace, CHUNK_PACE_MAX);
+  assertEqual(resolveSettings(null, new URLSearchParams('chunkpace=abc')).chunkPace, DEFAULT_SETTINGS.chunkPace);
+  // 小数取整
+  assertEqual(resolveSettings(null, new URLSearchParams('chunkpace=3.7')).chunkPace, 4);
 });
 
 test('settings: resolveSettings 优先级 URL > 存储 > 默认', () => {

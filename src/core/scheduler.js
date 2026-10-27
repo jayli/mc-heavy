@@ -625,14 +625,25 @@ export class Scheduler {
    *  从队列取 section 调 renderWorld.uploadSection */
   _processUploadQueue() {
     const t0 = performance.now();
-    while (this._uploadQueue.length && performance.now() - t0 < this.budget.meshUploadBudgetMs) {
+    // `meshUploadPerFrameLimit`（0 = 不限，只受 3ms 时间预算约束）：控制**视觉铺开节奏**。
+    // 默认 0 = 一波内全部发布（帧时不受影响）；调小则地形逐格长出来，代价是加载总时长变长
+    // （实测 2/帧 时飞完 600 帧仍剩 698 个 section 待发布）。见 budget.js 的 BUDGET_PROFILES 注释。
+    let uploaded = 0;
+    const lim = this.budget.meshUploadPerFrameLimit ?? 0;
+    // ⚠️ 循环条件里**不能**只写 `uploaded < lim`：头部堆满「column 已卸载」的
+    // 陈旧项时，每帧仅有的 1 个配额会被它们瞬间吃光，真正要上传的项永远轮不到
+    // （实测 `?chunkpace=1` 时 slots 恒 0、队列只涨不消 4408→4380，而时间预算版
+    // 不会暴露 —— 3ms 内能扫掉几千个无效项）。故无效项在下面 continue 时**退还配额**。
+    while (this._uploadQueue.length && performance.now() - t0 < this.budget.meshUploadBudgetMs
+           && (lim <= 0 || uploaded < lim)) {
       const item = this._uploadQueue.shift();
       const col = this.world.getColumn(item.cx, item.cz);
-      if (!col) continue; // 已卸载：丢弃
+      if (!col) continue; // 已卸载：丢弃（不计入配额，见上）
       if (col.version !== item.version) { // 排队等预算期间已变更：丢弃并重发（理由同 `_onMeshResult`）
         this._redispatchDropped(col, item.sy);
-        continue;
+        continue; // 同样不计入配额
       }
+      uploaded++;
       for (const channel of CHANNELS) {
         this.renderWorld.uploadSection(item.cx, item.sy, item.cz, channel, unpackGeom(item.channels[channel]), item.version);
       }

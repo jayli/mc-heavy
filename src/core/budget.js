@@ -50,6 +50,16 @@ export class BudgetConfig {
     this.resolved = profile !== 'auto' ? profile : (hint || 'pending');
     /** @type {number[]|null} 帧间隔样本（判档后释放） */
     this._samples = this.resolved === 'pending' ? { n: 0, fast: 0 } : null;
+    /** 每帧最多**上传**（发布到 BatchedMesh）的 section 数；0 = 不限。
+     *  与 `meshDispatchPerFrame`（每帧下发 mesh 任务给 Worker）是两件事，别混。
+     *
+     *  ⚠️ 这是**观感旋钮，不是性能旋钮**（2026-10-27 实测）：默认 0 时一波 5 帧就把
+     *  816 个 section 全部发布 → 玩家看到「一大片同时冒出来」；限到 2 时每 100ms 只出现
+     *  约 26 个 section，地形像「一格一格长出来」。**两者帧时完全一样**
+     *  （p95 9.1~9.2 / 稳定 120fps），因为上传耗时本来就不是尖峰来源（实测 p95 ≤0.2ms）。
+     *  代价（实测 600 帧飞行后停下）：0 → 队列清空；2 → 剩 698 个 section 未发布。
+     *  故默认 0（不牺牲加载时长），需要「错开出现」观感时用 `?chunkpace=N` 调低。 */
+    this.meshUploadPerFrameLimit = 0;
     this._apply();
   }
 
@@ -57,6 +67,9 @@ export class BudgetConfig {
     const p = BUDGET_PROFILES[this.resolved === 'pending' ? 'high' : this.resolved];
     this.meshUploadBudgetMs = p.meshUploadBudgetMs;
     this.meshDispatchPerFrame = p.meshDispatchPerFrame;
+    // ⚠️ `meshUploadPerFrameLimit` **刻意不在这里赋值** —— 它不是刷新率档位标定值，
+    // 而是玩家可调的观感旋钮（`settings.chunkPace` → Game 构造时写入）。写成 profile
+    // 字段会被 `_apply()` 在首次判档时覆写回默认值（实测：?chunkpace=4 完全不生效）。
   }
 
   /** 设置面板/URL 手动覆盖（M3-4 接线）；'auto' 恢复自动判定（重新测量） */

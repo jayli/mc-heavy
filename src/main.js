@@ -64,6 +64,7 @@ async function boot() {
     hudRoot: document.getElementById('hud-root'),
     blurMipmap: settings.blur,
     budgetProfile: settings.budgetProfile,
+    chunkPace: settings.chunkPace,
     startWeather,
     shadows,
     skybox,

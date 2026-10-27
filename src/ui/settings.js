@@ -40,7 +40,16 @@ export const DEFAULT_SETTINGS = {
   // 关掉的路径仍在：面板「关闭」按钮 + `?fog=0`（关闭逐位回到 v1.58 的固定色）。
   fogColor: true,
   bgm: true, // v1.63：背景音乐（默认开 = mc-lite 进游戏即播；音量固定 BGM_VOLUME 0.15，不接 volume 档）
+  // 区块铺开节奏：每帧最多发布几个 section（0 = 不限）。**观感旋钮，不是性能旋钮** ——
+  // 2026-10-27 实测两者帧时完全相同（p95 9.1~9.2 / 120fps），因为上传耗时本来就不是
+  // 尖峰来源（p95 ≤0.2ms）。0 时一波 5 帧内 816 个 section 一起出现（「一大片同时冒出」）；
+  // 2 时每 100ms 只出现约 26 个（地形逐格长出来），代价是飞过之后仍需数秒补齐。
+  chunkPace: 0,
 };
+
+/** 每帧上传 section 数的合法范围（0 = 不限；上限取 16 —— 再大即等同不限） */
+export const CHUNK_PACE_MIN = 0;
+export const CHUNK_PACE_MAX = 16;
 
 function clampVD(v) {
   const n = Number(v);
@@ -60,6 +69,12 @@ function normStyle(v) {
 
 function normBudget(v) {
   return (v === 'high' || v === 'low') ? v : 'auto';
+}
+
+function clampChunkPace(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return DEFAULT_SETTINGS.chunkPace;
+  return Math.max(CHUNK_PACE_MIN, Math.min(CHUNK_PACE_MAX, Math.round(n)));
 }
 
 /**
@@ -116,6 +131,7 @@ export function resolveSettings(stored, params) {
     if (typeof stored.tntDamage === 'boolean') s.tntDamage = stored.tntDamage;
     if (typeof stored.fogColor === 'boolean') s.fogColor = stored.fogColor;
     if (typeof stored.bgm === 'boolean') s.bgm = stored.bgm;
+    if (stored.chunkPace !== undefined) s.chunkPace = clampChunkPace(stored.chunkPace);
   }
   if (params) {
     if (params.has('vd')) s.viewDistance = clampVD(params.get('vd'));
@@ -127,6 +143,7 @@ export function resolveSettings(stored, params) {
     if (params.has('tntDamage')) s.tntDamage = params.get('tntDamage') === '1';
     if (params.has('fog')) s.fogColor = params.get('fog') === '1';
     if (params.has('bgm')) s.bgm = params.get('bgm') === '1';
+    if (params.has('chunkpace')) s.chunkPace = clampChunkPace(params.get('chunkpace'));
   }
   return s;
 }

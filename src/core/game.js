@@ -93,7 +93,7 @@ export class Game {
    *   （`?skybox=0` URL 入口）——既有 Tier 4 spec 用「±30 内等于 0x87ceeb」判纯色天空来数地形
    *   像素，照片天空会让那个判据失去意义，故它们 pin 该开关。
    */
-  constructor({ canvas, registry, seed = null, viewDistance = 8, hudRoot, blurMipmap = false, budgetProfile = 'auto', startWeather = null, shadows = true, skybox = true, settings = null }) {
+  constructor({ canvas, registry, seed = null, viewDistance = 8, hudRoot, blurMipmap = false, budgetProfile = 'auto', chunkPace = 0, startWeather = null, shadows = true, skybox = true, settings = null }) {
     this._settings = settings;
     this._shadowsOption = shadows;
     this._skyboxOption = skybox;
@@ -111,6 +111,9 @@ export class Game {
     this.perf = new PerfMonitor();
     /** 帧预算双档标定（M3-2）：Scheduler 上传/下发预算从这里读，主循环喂帧间隔 */
     this.budget = new BudgetConfig({ profile: budgetProfile });
+    // 区块铺开节奏（观感旋钮，不是性能旋钮）：每帧最多发布 N 个 section。
+    // ⚠️ 必须在这里写而不是等 `this.settings`（那是 start() 尾部才赋值的，见 bgm 的同款教训）。
+    this.budget.meshUploadPerFrameLimit = chunkPace;
     // Worker 入口地址是站点根绝对路径时，仓库挂子路径部署会 404 → Worker 池全部起不来
     // （v1.87 实测：`/mc-heavy/` 下 8 个 worker 全部 ERR_FAILED）。走 resourceUrl 部署无关解析。
     this.pool = new WorkerPool({ workerUrl: resourceUrl('src/workers/world-worker.js') });
