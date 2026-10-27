@@ -844,6 +844,127 @@ async function checkCloudlandMesa() {
   }
 }
 
+// ---------------------------------------------------------------- [高台地带] 契约（Cloudland Tarn Zone）
+
+/**
+ * [高台地带] 契约：烘焙输入 / 35 个产物 / 映射表 / 渲染通道 / 台顶材质五者互相对得上。
+ *
+ * 为什么这些必须自动化（每一条都对应一种【肉眼看不出来】的失效）：
+ *   ① 指纹不匹配 → 改了映射表却没重烘 → 世界渲染的是旧配色
+ *   ② palette 含未注册方块 → `makeColumnSetter` 静默 return → 那格变 air（台身出现空洞）
+ *   ③ palette 跑进 cutout/transparent → 每格顶点成本约 ×3 → 撞 §4.10 容量预算
+ *   ④ 台顶不是 grass 而是 moss → 用户明确要的改动肉眼像没做
+ *   ⑤ 少了一个变体 → 对应那座高台静默不出现（`rasterizeStructure` 拿到空 blocks 直接 return）
+ */
+async function checkCloudlandTarnZone() {
+  const fp = await import('./cloudland-kit-fingerprint.mjs');
+  const fail = (m) => failures.push(`[高台地带] ${m}`);
+
+  if (!fs.existsSync(fp.SCHEM_PATH)) {
+    fail('缺烘焙输入 assets/cloudland/src/cloudlandassets_1.20.schem（应与仓库同存）');
+    return;
+  }
+
+  // ① 指纹：烘焙时写进伴随 meta，门禁重算比对（防「改了映射表没重烘」）
+  if (!fs.existsSync(fp.KIT_META)) {
+    fail('缺 assets/structures/cloudland_kit.meta.json（跑 npm run tarn）');
+    return;
+  }
+  const cur = fp.cloudlandKitInputFingerprint();
+  let kitMeta;
+  try { kitMeta = JSON.parse(fs.readFileSync(fp.KIT_META, 'utf8')); }
+  catch { fail('cloudland_kit.meta.json 不是合法 JSON（重跑 npm run tarn）'); return; }
+  if (kitMeta.fingerprints?.input !== cur.input) {
+    fail(`产物已过期：指纹不匹配（烘焙时 "${kitMeta.fingerprints?.input}" vs 当前 "${cur.input}"）→ 跑 npm run tarn`);
+  }
+
+  // ② 变体数量契约（少一个 → 那座高台静默不出现）
+  const FAMILY_EXPECT = { tarn: 11, arch: 5, spire: 7, giantCloud: 12 };
+  for (const [fam, want] of Object.entries(FAMILY_EXPECT)) {
+    const got = fp.KIT_VARIANTS[fam].length;
+    if (got !== want) fail(`${fam} 变体 ${got} ≠ ${want}`);
+  }
+
+  const allVariants = [
+    ...fp.KIT_VARIANTS.tarn.map((v) => ['tarn', v]),
+    ...fp.KIT_VARIANTS.arch.map((v) => ['arch', v]),
+    ...fp.KIT_VARIANTS.spire.map((v) => ['spire', v]),
+    ...fp.KIT_VARIANTS.giantCloud.map((v) => ['giantCloud', v]),
+  ];
+
+  // ③ 35 个产物：存在 / 格数 / bbox / 最低点归一化 / palette 合法性与通道
+  let checkedVariants = 0;
+  const brickishAll = [];
+  const woodyAll = [];
+  const mossInTarn = [];
+  for (const [family, base] of allVariants) {
+    const p = path.join(fp.KIT_JSON_DIR, `${base}.json`);
+    if (!fs.existsSync(p)) { fail(`缺产物 ${base}.json（跑 npm run tarn）`); continue; }
+    let json;
+    try { json = JSON.parse(fs.readFileSync(p, 'utf8')); } catch { fail(`${base}.json 不是合法 JSON`); continue; }
+    if (!Array.isArray(json.palette) || !Array.isArray(json.blocks) || json.blocks.length % 4 !== 0) {
+      fail(`${base}.json 格式错（应为 {version, palette[], blocks[x,y,z,pi,...]}）`); continue;
+    }
+    const n = json.blocks.length / 4;
+    const M = fp.KIT_METRICS[base];
+    if (!M) { fail(`KIT_METRICS 缺 ${base} 的条目`); continue; }
+    if (n !== M.blocks) fail(`${base} 格数 ${n} ≠ KIT_METRICS.blocks ${M.blocks}`);
+
+    // bbox + 最低点归一化
+    let mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity, mnz = Infinity, mxz = -Infinity;
+    for (let i = 0; i < json.blocks.length; i += 4) {
+      const x = json.blocks[i], y = json.blocks[i + 1], z = json.blocks[i + 2];
+      if (x < mnx) mnx = x; if (x > mxx) mxx = x;
+      if (y < mny) mny = y; if (y > mxy) mxy = y;
+      if (z < mnz) mnz = z; if (z > mxz) mxz = z;
+    }
+    if (mxx - mnx + 1 !== M.width) fail(`${base} 宽 ${mxx - mnx + 1} ≠ ${M.width}`);
+    if (mxy - mny + 1 !== M.height) fail(`${base} 高 ${mxy - mny + 1} ≠ ${M.height}`);
+    if (mxz - mnz + 1 !== M.depth) fail(`${base} 深 ${mxz - mnz + 1} ≠ ${M.depth}`);
+    if (mny !== 1) fail(`${base} 最低点 y=${mny} ≠ 1（归一化失败）`);
+
+    // palette：全部在 registry + 通道判据（glass_block 是唯一合法的 transparent 例外）
+    for (const name of json.palette) {
+      const id = REGISTRY.idOf(name);
+      if (id === undefined) { fail(`${base} 含未注册方块 "${name}"（那格会变成 air）`); continue; }
+      if (name === 'glass_block') continue;
+      if (REGISTRY.cullTable[id] !== 0) fail(`${base} 的 "${name}" 不在 opaque 通道（顶点成本约 ×3）`);
+    }
+    // 紫晶柱的 transparent 格数上界（超过说明映射改宽了，撞容量）
+    if (family === 'spire') {
+      let glass = 0;
+      for (let i = 0; i < json.blocks.length; i += 4) {
+        if (json.palette[json.blocks[i + 3]] === 'glass_block') glass++;
+      }
+      if (glass > 200) fail(`${base} 的 glass_block ${glass} 格 > 200（spec 已按 ≤200 标定容量）`);
+    }
+    brickishAll.push(...json.palette.filter((x) => /brick/i.test(x)));
+    woodyAll.push(...json.palette.filter((x) => /log|wood|plank|acacia|oak|birch/i.test(x)).map((x) => `${base}:${x}`));
+    if (family === 'tarn' && json.palette.includes('moss')) mossInTarn.push(base);
+    checkedVariants++;
+  }
+
+  // ④ 无砖块族 / 无木族（v1.77 用户裁定的名字模式判据，不硬编码清单）
+  const brickish = [...new Set(brickishAll)];
+  if (brickish.length > 0) fail(`palette 含砖块族：${brickish.join(', ')}`);
+  const woody = [...new Set(woodyAll)];
+  if (woody.length > 0) fail(`palette 含木族：${woody.join(', ')}`);
+
+  // ⑤ 台顶必须是 grass 不是 moss（用户裁定；漏改时 11 个产物的台顶仍是苔藓）
+  if (mossInTarn.length > 0) {
+    fail(`这些高台的 palette 里还有 moss（台顶必须是 grass）：${mossInTarn.join(', ')}`);
+  }
+
+  // ⚠️ **成功行的条件必须涵盖本函数全部判据**，否则失败时仍会打印一条 ✓
+  // （既有教训：`[高台]` 曾同时出现「✗ 含砖块族」与「✓ …无砖无木」，读者只看 ✓ 就误判）。
+  const ok = failures.every((f) => !f.startsWith('[高台地带]'))
+    && brickish.length === 0 && woody.length === 0 && mossInTarn.length === 0
+    && checkedVariants === allVariants.length;
+  if (ok) {
+    infos.push(`[高台地带] ${checkedVariants} 个产物（11 高台 + 5 拱洞 + 7 紫晶柱 + 12 巨型云）/ 台顶全 grass / 无砖无木 / 指纹匹配`);
+  }
+}
+
 // ---------------------------------------------------------------- [巨树] 契约（Giant Trees Epic）
 
 /**
@@ -1346,6 +1467,7 @@ checkSkyboxAssets();         // v1.58：天空盒立方图完整性（⚠️ 漏
 await checkNightSkyFreshness(); // v1.60：夜空烘焙产物指纹（⚠️ 漏了本行则门禁永不执行）
 await checkGiantTrees();     // 巨树景观：方块/烘焙产物/贴图三方契约（⚠️ 漏了本行则门禁永不执行）
 await checkCloudlandMesa();  // 高台：烘焙产物/映射表/通道/背包契约（⚠️ 漏了本行则门禁永不执行）
+await checkCloudlandTarnZone(); // 高台地带：35 产物/映射表/通道/台顶材质契约（⚠️ 漏了本行则门禁永不执行）
 await checkGiantPyramid();   // 巨型金字塔：烘焙产物/映射表/通道契约（⚠️ 漏了本行则门禁永不执行）
 checkLeafCullingContract();  // v1.70：镂空遮挡体派生表与树叶族声明的一致性（⚠️ 漏了本行则门禁永不执行）
 
