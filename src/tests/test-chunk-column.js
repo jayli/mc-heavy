@@ -184,6 +184,23 @@ test('WorldData: getSectionView 拼接 halo', () => {
   assertEqual(view.data[17 + 9 * 18 + 6 * 324], 12);
 });
 
+test('WorldData: getSectionView 的 column 查找次数 = 3×3（不得逐格查 5832 次）', () => {
+  // 性能回归护栏：18³ halo 只触及 3×3 个 column，但朴素写法每格都拼 `${cx},${cz}` 再 Map.get
+  // → 5832 次字符串拼接 + Map 查找。实测单次 0.23ms，而 mesh 派发上限 64/帧 → 14.7ms/帧，
+  // 正是「飞行/奔跑时远处方块批量加载一顿一顿」的尖峰来源（2026-10-27 定位）。
+  // ⚠️ 用**结构断言**（查找次数）而非计时：计时受负载抖动，且优化后单次 ~0.03ms 难稳定区分。
+  const world = new WorldData(makeRegistry());
+  for (let cx = -1; cx <= 1; cx++) for (let cz = -1; cz <= 1; cz++) world.add(new ChunkColumn(cx, cz));
+  let gets = 0;
+  const realGet = world.columns.get.bind(world.columns);
+  world.columns.get = (k) => { gets++; return realGet(k); };
+  world.getSectionView(0, 0, 0);
+  world.columns.get = realGet;
+  assertTrue(gets <= 9,
+    `getSectionView 对 columns 的查找次数应 ≤ 9（3×3 列各一次），实际 ${gets} —— `
+    + `逐格查找会让每帧派发 64 个 section 时累计 ~14.7ms`);
+});
+
 test('WorldData: getSectionView 缺邻居 → missing=true', () => {
   const world = new WorldData(makeRegistry());
   world.add(new ChunkColumn(0, 0));
