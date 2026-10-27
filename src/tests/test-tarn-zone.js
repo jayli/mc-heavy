@@ -9,7 +9,7 @@ import { test } from './runner.js';
 import { assertEqual, assertTrue, assertFalse } from './assert.js';
 import {
   isTarnZone, hasTarnEligibility, tarnZoneCenter, computeTarnZone, aabbGap, snowLandSuppressedByTarn,
-  circleRectGap,
+  circleRectGap, findNearestTarnZone,
   TARN_ZONE_RADIUS, TARN_PLATFORM_RADIUS, TARN_SLOPE_WIDTH, TARN_ZONE_CHANCE, TARN_DESERT_CAP,
   TARN_HOST_BIOMES, TARN_GAP, TARN_KEPT_TARN_IDS, TARN_ARCH_RING_RADIUS, TARN_SPIRE_RING_RADIUS,
   TARN_PLATEAU_Y,
@@ -73,6 +73,55 @@ test('地带中心 = region 中心', () => {
     assertEqual(c.cx, rx * REGION_SIZE + REGION_SIZE / 2, 'cx');
     assertEqual(c.cz, rz * REGION_SIZE + REGION_SIZE / 2, 'cz');
   }
+});
+
+test('瞬移落点解析：findNearestTarnZone 返回真正最近的那座（v1.92）', () => {
+  // 设置面板「瞬移 → 高台地带」的落点解析。判据不是「找到一个」，而是
+  // **「返回的确实是最近的」** —— 只断言非 null 的话，把环扫写成「返回第一个命中」
+  // （不比较同环内距）或「反向遍历」都会通过。
+  let checked = 0;
+  for (const seed of [12345, 4, 7, 999]) {
+    for (const [wx, wz] of [[0, 0], [3000, -3000], [-8000, 5000]]) {
+      const found = findNearestTarnZone(wx, wz, seed);
+      assertTrue(found !== null, `seed ${seed} @(${wx},${wz}) 应在 maxRadius=16 内找到地带`);
+
+      // 穷举参考：同一个 maxRadius 范围内的**全部**地带，取真实最近
+      const baseX = Math.floor(wx / REGION_SIZE), baseZ = Math.floor(wz / REGION_SIZE);
+      let bestDist = Infinity;
+      for (let dx = -16; dx <= 16; dx++) {
+        for (let dz = -16; dz <= 16; dz++) {
+          if (!isTarnZone(baseX + dx, baseZ + dz, seed)) continue;
+          const c = tarnZoneCenter(baseX + dx, baseZ + dz);
+          bestDist = Math.min(bestDist, Math.hypot(c.cx - wx, c.cz - wz));
+        }
+      }
+      // 环扫会**提前退出**（找到就停），所以它返回的距离必须等于穷举最小值 ——
+      // 差一丁点都说明它没查到最近的那个环。
+      assertTrue(Math.abs(found.dist - bestDist) < 1e-9,
+        `seed ${seed} @(${wx},${wz})：环扫返回距离 ${found.dist.toFixed(1)}`
+        + ` 但穷举最近是 ${bestDist.toFixed(1)}（提前退出时机不对）`);
+      // 返回的 region 必须真的是地带
+      assertTrue(isTarnZone(found.regionX, found.regionZ, seed), '返回的 region 必须是地带');
+      // cx/cz 必须与 tarnZoneCenter 同源（不得自己算一份）
+      const c = tarnZoneCenter(found.regionX, found.regionZ);
+      assertEqual(found.cx, c.cx);
+      assertEqual(found.cz, c.cz);
+      checked++;
+    }
+  }
+  assertEqual(checked, 12);
+});
+
+test('瞬移落点解析：maxRadius 不够时返回 null（不越界乱找）', () => {
+  // 出生点附近一个环内未必有地带 —— 用 maxRadius=0 把搜索锁在「只查玩家所在 region」，
+  // 那里绝大多数情况下不是地带。两个分支都必须能出现，否则本用例无判别力。
+  let hit = 0, miss = 0;
+  for (let i = 0; i < 40; i++) {
+    const r = findNearestTarnZone(i * 400, i * 400, 12345, 0);
+    if (r) { hit++; assertEqual(r.ring, 0, 'maxRadius=0 只允许 ring=0'); } else miss++;
+  }
+  assertTrue(miss > 30, `maxRadius=0 应绝大多数落空（实测落空 ${miss}/40）`);
+  assertTrue(hit > 0, `maxRadius=0 也应有命中（实测 ${hit}/40）—— 否则两个分支只测到一个`);
 });
 
 test('地带半径不越 region 边界（否则半边永久消失）', () => {
