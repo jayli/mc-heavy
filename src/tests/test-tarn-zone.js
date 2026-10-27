@@ -8,12 +8,18 @@
 import { test } from './runner.js';
 import { assertEqual, assertTrue, assertFalse } from './assert.js';
 import {
-  isTarnZone, tarnZoneCenter, computeTarnZone, aabbGap,
+  isTarnZone, tarnZoneCenter, computeTarnZone, aabbGap, snowLandSuppressedByTarn,
   TARN_ZONE_RADIUS, TARN_POOL_RADIUS, TARN_ZONE_CHANCE, TARN_GAP, TARN_KEPT_TARN_IDS,
   TARN_PLATEAU_Y,
 } from '../gen/structures/tarn-zone.js';
 import { KIT_VARIANTS, KIT_METRICS } from '../gen/structures/cloudland-kit-data.js';
-import { REGION_SIZE, CITY_REGION } from '../gen/structures/region-config.js';
+import {
+  REGION_SIZE, CITY_REGION, SNOW_LAND_SIZE, TRANSITION_SIZE, LANDMARK_OFFSET,
+} from '../gen/structures/region-config.js';
+// ⚠️ 雪原中心必须与 `structure-layout.js` 同一推导（原始中心 + 偏移，未 clamp）。
+// 交叉验证用例要「不同源」，指的是**几何算法**不同源；中心点的推导必须同源，
+// 否则测的就不是同一个雪原。
+import { getRegionSeededCenter } from '../gen/structures/region-center.js';
 // ⚠️ `SEA_Y` 无 three / 无 DOM，浏览器可用（`giant-trees.js:18` 同先例）。
 // 这是 `plateauY` 断言**具备判别力**的前提：断言必须拿一个与 `TARN_PLATEAU_Y` **不同源**的
 // 参照值，否则两边一起改、用例恒真。
@@ -373,4 +379,174 @@ test('地带布局：不同 region 的抖动不同（逐 region 抽签，不是�
   assertEqual(regions.length, 4, '恰好收集 4 个地带 region（labeled break 生效）');
   const sigs = new Set(regions.map((l) => l.tarns.map((t) => t.ang.toFixed(9)).join(',')));
   assertEqual(sigs.size, 4, `4 个地带的角布置只有 ${sigs.size} 种 —— 抖动没有按 region 变化`);
+});
+
+// ==================== 雪原让路判据（DR-6） ====================
+//
+// 钉的是「地带边上的雪原该消失却没消失」这类缺陷 —— 形态是**静默**的：地带附近照样
+// 长出一座完整雪原，方块层面看不出异常，只能靠断言拓。
+//
+// ⚠️ 判据的唯一口径是 spec DR-6 原文「该 region 的雪原圆若与**任一**邻域地带的圆相交」。
+// **没有**「本地是地带 region 就无条件让路」这一条 —— 实测 37 个地带 region 里只有
+// 5 个的雪原真的压进自己的地带圆，其余 32 个距离 168~337 格（雪原中心 = 原始中心 +
+// 偏移(160,0)，而地带中心 = region 中心 ⇒ X 分量恒差 `offsetX − 40` ≥ 60）。
+// 加那条特判会白删 32 座雪原，且与 DR-6 不符 ⇒ 下面有一条**反向**用例专门钉住它。
+
+/** 雪原在**占地上**的半宽（与 `getSnowLandInfo` 同一口径：核心 + 过渡带）。 */
+const SNOW_HALF = Math.floor(SNOW_LAND_SIZE / 2) + TRANSITION_SIZE.SNOW_LAND;
+
+/** 雪原中心（与 `structure-layout.js` 同一推导：原始中心 + 偏移，**未 clamp**）。 */
+function snowCenterOf(rx, rz) {
+  const raw = getRegionSeededCenter(rx, rz, SEED);
+  return {
+    cx: raw.centerX + LANDMARK_OFFSET.SNOW_LAND_X,
+    cz: raw.centerZ + LANDMARK_OFFSET.SNOW_LAND_Z,
+  };
+}
+
+/**
+ * **交叉验证用的独立算法**：在雪原方形内逐格采样，任一点落进任一邻域地带圆即判「被波及」。
+ *
+ * ⚠️ **刻意与实现不同源**：实现是「方形到圆的解析最短距离」，这里是「枚举方形内的点」。
+ * 两边同一个公式就是恒真断言 —— 实测「把方形当圆」的近似口径能被这条用例抓出 3 个 region
+ * 分歧，而任何同源写法都抓不到。
+ *
+ * `step` 决定精度：半宽 28、地带圆心总在整点半坐标处 ⇒ 步长 4 整除 28 时采样网格必含
+ * 最近点，实测 ±6 的 169 个 region 上与解析解**逐个一致**（0 分歧）。
+ */
+function snowSuppressedBySampling(rx, rz, step) {
+  const s = snowCenterOf(rx, rz);
+  const max = Math.floor(SNOW_HALF / step) * step;
+  for (let dx = -3; dx <= 3; dx++) {
+    for (let dz = -3; dz <= 3; dz++) {
+      if (!isTarnZone(rx + dx, rz + dz, SEED)) continue;
+      const c = tarnZoneCenter(rx + dx, rz + dz);
+      for (let px = -max; px <= max; px += step) {
+        for (let pz = -max; pz <= max; pz += step) {
+          if (Math.hypot(s.cx + px - c.cx, s.cz + pz - c.cz) < TARN_ZONE_RADIUS) return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+test('雪原让路：判定与「方形内逐格采样」在 ±6 的 169 个 region 上逐个一致', () => {
+  let suppressed = 0;
+  const diffs = [];
+  for (let rx = -6; rx <= 6; rx++) {
+    for (let rz = -6; rz <= 6; rz++) {
+      const analytic = snowLandSuppressedByTarn(rx, rz, SEED);
+      const sampled = snowSuppressedBySampling(rx, rz, 4);
+      if (analytic) suppressed++;
+      if (analytic !== sampled) diffs.push(`(${rx},${rz}) 解析=${analytic} 采样=${sampled}`);
+    }
+  }
+  assertEqual(diffs.length, 0, `解析解与逐格采样不一致：${diffs.join(' / ')}`);
+  // 实测精确口径 28/169；近似口径 25/169 —— 两者都在下界之上，故这条**挡不住**口径退化
+  // （抓口径的是下面三条：分歧 region、自己压进自己、反向钉）。它只防「判据恒 false」。
+  assertTrue(suppressed >= 20, `被让路的雪原只有 ${suppressed}/169，判据可能已退化`);
+});
+
+// 实测（seed 12345、±6）：**5 个**地带 region 的雪原方形真的压进**自己**的地带圆。
+// 全部落在 regionX = -6 那一列（该列 `offsetX` 最小 ⇒ 雪原离地带圆心最近）。
+const SELF_OVERLAP_ZONE_REGIONS = [
+  // [regionX, regionZ, 方形到圆的最短距离（实测，格）]
+  [-6, 0, 136],
+  [-6, 2, 135],
+  [-6, 3, 135],
+  [-6, 4, 141],
+  [-6, -2, 150],
+];
+
+/** 本 region 自己的雪原方形与本 region 自己的地带圆是否相交（只算自己，不算邻域）。 */
+function ownSnowOverlapsOwnZone(rx, rz) {
+  const s = snowCenterOf(rx, rz);
+  const c = tarnZoneCenter(rx, rz);
+  const dx = Math.max(0, Math.abs(s.cx - c.cx) - SNOW_HALF);
+  const dz = Math.max(0, Math.abs(s.cz - c.cz) - SNOW_HALF);
+  return Math.hypot(dx, dz) < TARN_ZONE_RADIUS;
+}
+
+test('雪原让路：地带 region 自己的雪原压进自己的地带圆时必须让路', () => {
+  for (const [rx, rz, gap] of SELF_OVERLAP_ZONE_REGIONS) {
+    assertTrue(isTarnZone(rx, rz, SEED),
+      `region(${rx},${rz}) 不是地带 —— 这条用例的取样已失效，须重新标定`);
+    const s = snowCenterOf(rx, rz);
+    const c = tarnZoneCenter(rx, rz);
+    const dx = Math.max(0, Math.abs(s.cx - c.cx) - SNOW_HALF);
+    const dz = Math.max(0, Math.abs(s.cz - c.cz) - SNOW_HALF);
+    const actual = Math.hypot(dx, dz);
+    assertTrue(Math.abs(actual - gap) < 2,
+      `region(${rx},${rz}) 的方形到圆距离 ${actual.toFixed(1)} 与实测 ${gap} 不符 —— 几何或常量已变`);
+    assertTrue(snowLandSuppressedByTarn(rx, rz, SEED),
+      `region(${rx},${rz}) 自己的雪原压进地带圆 ${gap} 格，必须让路`);
+  }
+});
+
+test('雪原让路：本地是地带 region 但雪原在圆外时**不**让路（防「无条件让路」复辟）', () => {
+  // ⚠️ spec DR-6 的判据是「雪原圆与任一邻域地带圆**相交**」，不是「本地是地带就让路」。
+  // 实测 37 个地带 region 里只有 11 个被让路，其中 5 个是与自己的地带圆相交，另外 6 个
+  // 是被**邻域**地带波及（如 (0,-6) 被 (1,-6) 压到 156 格）。剩下的 26 个保留 ——
+  // 最接近的那个 (-5,-1) 中心距最近地带圆心 **203.4** 格，远在 160 的圆外。
+  // 若将来有人加了 `if (isTarnZone(...)) return true;` 特判，三条断言全都会红。
+  let zoneCount = 0;
+  let dropped = 0;
+  let kept = 0;
+  let ownOverlap = 0;
+  for (let rx = -6; rx <= 6; rx++) {
+    for (let rz = -6; rz <= 6; rz++) {
+      if (!isTarnZone(rx, rz, SEED)) continue;
+      zoneCount++;
+      if (ownSnowOverlapsOwnZone(rx, rz)) ownOverlap++;
+      if (snowLandSuppressedByTarn(rx, rz, SEED)) dropped++;
+      else kept++;
+    }
+  }
+  assertEqual(zoneCount, 37, '±6 窗口的地带 region 数变了 —— 须重新标定');
+  assertEqual(ownOverlap, SELF_OVERLAP_ZONE_REGIONS.length,
+    `与自己的地带圆相交的地带 region 数变了（${ownOverlap}）—— 须重新标定`);
+  // ⚠️ 让路数 **大于** 自己相交数：多出来的是被邻域地带波及的（实测 11 = 5 + 6）
+  assertEqual(dropped, 11, `让路的地带 region 数变了（${dropped}/37）—— 判据被改过，须重新标定`);
+  assertEqual(kept, 26, `保留的地带 region 数变了（${kept}/37）—— 判据被改过，须重新标定`);
+  // 圆外最近的那一个：(-5,-1) 中心距最近地带圆心 203.4 格。它必须保留。
+  assertFalse(snowLandSuppressedByTarn(-5, -1, SEED),
+    'region(-5,-1) 的雪原离最近地带圆心 203.4 格，不该让路 —— 判据被改成了「本地是地带就让路」？');
+});
+
+test('雪原让路：钉住「方形到圆」与「把方形当圆」分歧的 region（裁定 A 的判别力）', () => {
+  // ⚠️ 这 3 个是两种口径**唯一**分歧的地方（实测 seed 12345、±6）。
+  //    三个都是雪原**角部**擦进地带圆：中心距 188~194 已经超过 28 + 160 = 188。
+  //    近似口径 `hypot(中心距) < SNOW_HALF + TARN_ZONE_RADIUS` 会把它们全判 false，其中
+  //    (-6,-2) 与 (0,-6) **自己就是地带 region** ⇒ 地带里留下整座雪原。
+  const CORNER_CASES = [
+    { rx: -6, rz: -2, via: [-6, -2], gap: 150 }, // 与自己的地带圆相交
+    { rx: -4, rz: 0, via: [-3, 0], gap: 156 }, // 被西侧邻 region 的地带波及
+    { rx: 0, rz: -6, via: [1, -6], gap: 156 }, // 被东侧邻 region 的地带波及
+  ];
+  for (const { rx, rz, via, gap } of CORNER_CASES) {
+    assertTrue(isTarnZone(via[0], via[1], SEED),
+      `region(${via[0]},${via[1]}) 不是地带 —— 这条用例的取样已失效，须重新标定`);
+    const s = snowCenterOf(rx, rz);
+    const c = tarnZoneCenter(via[0], via[1]);
+    const dx = Math.max(0, Math.abs(s.cx - c.cx) - SNOW_HALF);
+    const dz = Math.max(0, Math.abs(s.cz - c.cz) - SNOW_HALF);
+    const actual = Math.hypot(dx, dz);
+    assertTrue(Math.abs(actual - gap) < 2,
+      `region(${rx},${rz}) → 地带(${via[0]},${via[1]}) 的距离 ${actual.toFixed(1)} 与实测 ${gap} 不符`);
+    // 先钉「这确实是角部擦入」：中心距必须 ≥ 188，否则近似口径也能覆盖，用例失去意义
+    assertTrue(Math.hypot(s.cx - c.cx, s.cz - c.cz) >= SNOW_HALF + TARN_ZONE_RADIUS,
+      `region(${rx},${rz}) 的中心距小于 ${SNOW_HALF + TARN_ZONE_RADIUS} —— 它就不是「角部擦入」了`);
+    assertTrue(snowLandSuppressedByTarn(rx, rz, SEED),
+      `region(${rx},${rz}) 的雪原角部压进地带圆 ${gap} 格，必须让路`);
+  }
+});
+
+test('雪原让路：同一 seed 同一 region 两次调用结果相同', () => {
+  for (let rx = -6; rx <= 6; rx += 3) {
+    for (let rz = -6; rz <= 6; rz += 3) {
+      assertEqual(snowLandSuppressedByTarn(rx, rz, SEED), snowLandSuppressedByTarn(rx, rz, SEED),
+        `region(${rx},${rz}) 判定必须确定`);
+    }
+  }
 });

@@ -7,7 +7,8 @@
 //
 // Worker 同构：不得 import three、不得自建 Worker、**不得 fetch**（候选在 layout 层算一次，DR-13）。
 import { seededRandom } from '../noise.js';
-import { REGION_SIZE, CITY_REGION } from './region-config.js';
+import { REGION_SIZE, CITY_REGION, SNOW_LAND_SIZE, TRANSITION_SIZE, LANDMARK_OFFSET } from './region-config.js';
+import { getRegionSeededCenter } from './region-center.js';
 import { KIT_METRICS, KIT_VARIANTS } from './cloudland-kit-data.js';
 // `SEA_Y` 只依赖 `voxel/constants.js`（无 three、无 DOM），Worker 同构层可直接 import。
 // 先例：`gen/structures/giant-trees.js:18` 同一个 import。
@@ -136,6 +137,78 @@ export function tarnZoneCenter(regionX, regionZ) {
     cx: regionX * REGION_SIZE + REGION_SIZE / 2,
     cz: regionZ * REGION_SIZE + REGION_SIZE / 2,
   };
+}
+
+// ==================== 雪原让路（spec DR-6） ====================
+
+/**
+ * 雪原占地的半宽（切比雪夫方形）= 核心半宽 + 过渡带。
+ *
+ * ⚠️ 必须从 `SNOW_LAND_SIZE` / `TRANSITION_SIZE` 派生，不得写字面量 28 —— 与
+ * `landmarks.js` 的 `getSnowLandInfo` 同一口径（那里也是 `floor(SIZE/2) + TRANSITION`）。
+ * 两处各写一份字面量，改雪原尺寸时会漂移出「让路按旧方形算、渲染按新方形」的撕裂。
+ */
+const SNOW_HALF_EXTENT = Math.floor(SNOW_LAND_SIZE / 2) + TRANSITION_SIZE.SNOW_LAND;
+
+/**
+ * 雪原让路的邻域半径（region）。
+ *
+ * 地带半径 160、region 边长 400 ⇒ 只有紧邻 region 的地带圆才可能伸进本 region 的雪原，
+ * ±3 是安全上界（实测 ±1/±2/±3 命中数完全相同：28/169）。取 3 而非 1 是为将来改半径
+ * 或改 region 尺寸留余量 —— 那时不必回头改这个循环。
+ */
+const SNOW_SUPPRESS_NEIGHBORHOOD = 3;
+
+/**
+ * 本 region 的雪原是否被「高台地带」让路波及（spec DR-6）。
+ *
+ * 判据原文：「该 region 的雪原圆若与**任一**邻域地带的圆相交 → 跳过 `generateSnowLand`」。
+ *
+ * ## 几何是「方形到圆」而不是「圆心距」
+ * 雪原在 `landmarks.js` 的 `getSnowLandInfo` 里是**切比雪夫方形**（±28），不是圆。
+ * 所以要算方形到圆的**真实最短距离**：
+ *
+ * ```
+ * dx = max(0, |snowCx − tarnCx| − half)
+ * dz = max(0, |snowCz − tarnCz| − half)
+ * 相交 ⟺ hypot(dx, dz) < TARN_ZONE_RADIUS
+ * ```
+ *
+ * ❌ **不要写成 `hypot(中心距) < half + TARN_ZONE_RADIUS`** —— 那是把方形当圆，
+ * 会用内切圆半径 28 代替真实的对角伸展 28√2 ≈ 39.6，漏掉**角部擦入**。
+ * 实测（seed 12345、±6 的 169 个 region）：近似口径 25 命中 / 精确口径 28 命中，
+ * 漏掉的 3 个中心距都已是 188~194（> 188 阈值），而它们的角部只隔地带圆 150~156 格。
+ *
+ * ## 没有「本地是地带 region 就无条件让路」这一条
+ * 雪原中心 = `seededCenter + 偏移(160, 0)`，而地带中心 = region 中心 ⇒ X 分量恒差
+ * `offsetX − 40`（`offsetX` ∈ [100, 400) ⇒ ≥ 60）。所以多数地带 region 的自己的雪原
+ * 离自己的地带圆 168~337 格、根本没压进水池 —— 加特判会白删它们，且与 DR-6 的
+ * 「相交」判据不符。实测 37 个地带 region 里只有 **5** 个的雪原真的压进自己的圆。
+ *
+ * ## 实测覆盖率（seed 12345）
+ * ±6 → **28/169 = 0.166**；±20 → 293/1681 = 0.174。spec DR-6 写的「约 24%（41 个）」
+ * 与任何实测口径都不符，待回填。
+ *
+ * @param {number} regionX @param {number} regionZ @param {number} seed
+ * @returns {boolean}
+ */
+export function snowLandSuppressedByTarn(regionX, regionZ, seed) {
+  // 与 `structure-layout.js` 同一推导：未 clamp 的原始中心 + 偏移（雪原可跨 region）
+  const raw = getRegionSeededCenter(regionX, regionZ, seed);
+  const snowCx = raw.centerX + LANDMARK_OFFSET.SNOW_LAND_X;
+  const snowCz = raw.centerZ + LANDMARK_OFFSET.SNOW_LAND_Z;
+
+  const n = SNOW_SUPPRESS_NEIGHBORHOOD;
+  for (let dx = -n; dx <= n; dx++) {
+    for (let dz = -n; dz <= n; dz++) {
+      if (!isTarnZone(regionX + dx, regionZ + dz, seed)) continue;
+      const { cx, cz } = tarnZoneCenter(regionX + dx, regionZ + dz);
+      const gapX = Math.max(0, Math.abs(snowCx - cx) - SNOW_HALF_EXTENT);
+      const gapZ = Math.max(0, Math.abs(snowCz - cz) - SNOW_HALF_EXTENT);
+      if (Math.hypot(gapX, gapZ) < TARN_ZONE_RADIUS) return true;
+    }
+  }
+  return false;
 }
 
 // ==================== 轴对齐几何工具 ====================
