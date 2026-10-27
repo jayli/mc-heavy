@@ -10,7 +10,6 @@
     "nightsky": "node tools/bake-night-sky.mjs",
     "turret": "node tools/bake-turret-armor.mjs",
     "gianttrees": "node tools/bake-giant-trees.mjs",
-    "mesa": "node tools/bake-cloudland-mesa.mjs",
     "tarn": "node tools/bake-cloudland-kit.mjs",
     "pyramid": "node tools/bake-giant-pyramid.mjs",
     "gianttextures": "node tools/bake-giant-textures.mjs",

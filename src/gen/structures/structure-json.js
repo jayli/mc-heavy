@@ -39,9 +39,7 @@ const BASE_STRUCTURE_FILES = {
   pavilion: 'pavilion.json',
   tallWell: 'tall_well.json',
   desertPyramid: 'desert_pyramid.json',
-  // Cloudland 高台（桌山景观）：palette + 扁平数组格式，见上 loadStructure 的两形状归一化
-  cloudlandMesaSmall: 'cloudland_mesa_small.json',
-  // 巨型金字塔（Giant Pyramid Epic）：palette + 扁平数组格式（同 cloudlandMesaSmall）
+  // 巨型金字塔（Giant Pyramid Epic）：palette + 扁平数组格式（同高台地带的 35 个产物）
   giantPyramid: 'giant_pyramid.json',
 };
 

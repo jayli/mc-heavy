@@ -32,7 +32,6 @@ import {
   getPlainLandCenterInRegion, getIslandCenterInRegion,
   isPlainLandValid, isIslandValid,
 } from '../gen/structures/landmarks.js';
-import { computeMesaAnchor } from '../gen/structures/mesa.js';
 import { computeGiantPyramidAnchor } from '../gen/structures/giant-pyramid.js';
 import { computeSkyCandidates } from '../gen/structures/sky-structures.js';
 // apply 阶段 1 跳过门的接线用例：真实 GEN 路径（与 Worker 同源）
@@ -610,7 +609,6 @@ test('地带接线：地带 region 的全部地标字段被压缩为 null（雪�
       return isIslandValid(i.islandCx, i.islandCz, SEED) ? i : null;
     },
     giantPyramid: (rx, rz) => computeGiantPyramidAnchor(rx, rz, SEED),
-    mesa: (rx, rz) => computeMesaAnchor(rx, rz, SEED),
   };
 
   let tarnRegions = 0;
@@ -695,7 +693,6 @@ test('地带接线：非地带且雪原未让路的 region 逐字段零回归（
       // 有没有把它传下去 / 有没有多压一层」，不是候选函数本身算得对不对 —— 后者由各自的
       // test-mesa / test-giant-pyramid / test-scatter 等文件钉住）。
       const direct = {
-        mesa: computeMesaAnchor(rx, rz, SEED),
         giantPyramid: computeGiantPyramidAnchor(rx, rz, SEED),
         // `pyramid` / `frozenMountain` 是**被 `tarn ? null : …` 直接改写的那两个字段**
         // （structure-layout.js:50-51），所以它们是零回归语料里判别力最强的 ——
@@ -703,7 +700,7 @@ test('地带接线：非地带且雪原未让路的 region 逐字段零回归（
         pyramid: getPyramidCenterInRegion(rx, rz, SEED),
         frozenMountain: getFrozenMountainCenterInRegion(rx, rz, SEED),
       };
-      for (const field of ['mesa', 'giantPyramid', 'pyramid', 'frozenMountain']) {
+      for (const field of ['giantPyramid', 'pyramid', 'frozenMountain']) {
         assertEqual(JSON.stringify(lay[field]), JSON.stringify(direct[field]),
           `region(${rx},${rz}) 的 ${field} 必须与候选函数逐字段相同（零回归）`);
       }

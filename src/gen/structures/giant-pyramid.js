@@ -22,7 +22,9 @@ import { SEA_Y } from '../../voxel/constants.js';
 import { computeSkyCandidates } from './sky-structures.js';
 // mesa 与 `regionLandmarkCenters` 是**单向依赖**（实测：mesa.js 只被 structure-layout / apply
 // import，它自己不 import 本模块 —— 不成环）。
-import { regionLandmarkCenters, computeRegionLocalAnchor, MESA_UNION_HALF } from './mesa.js';
+// ⚠️ v1.80（高台地带 Epic）删除了沙漠孤立高台系统，`regionLandmarkCenters` 已搬到
+// `landmark-circles.js`（本模块是它剩下的唯一消费方）。
+import { regionLandmarkCenters } from './landmark-circles.js';
 import { getCityBoundsForSeed } from './city-layout.js';
 import { REGION_SIZE } from './region-config.js';
 
@@ -249,8 +251,6 @@ export function computeRegionLocalGiantPyramid(regionX, regionZ, seed) {
   const sky = computeSkyCandidates(regionX, regionZ, seed).skyIslands;
   const circles = regionLandmarkCenters(regionX, regionZ, seed);
   const city = getCityBoundsForSeed(seed);
-  // 本 region 的局部高台（不触发 384 间距去重 —— 那需要邻域，候选层不该算）
-  const mesa = computeRegionLocalAnchor(regionX, regionZ, seed);
 
   // ④ 就近命中即停
   for (const i of order) {
@@ -280,9 +280,6 @@ export function computeRegionLocalGiantPyramid(regionX, regionZ, seed) {
     if (overlapsLandmark(circles, wx, wz)) continue;
     if (skyConflicts(sky, wx, wz, minH)) continue;
 
-    // 判据 ⑥：高台占地（见 computeRegionLocalGiantPyramid 的 JSDoc）
-    if (mesa && Math.abs(wx - mesa.wx) <= hw + MESA_UNION_HALF &&
-        Math.abs(wz - mesa.wz) <= hw + MESA_UNION_HALF) continue;
 
     // ⑥ region 内缩由扫描窗构造性保证（扫描点本身就内缩了）
     return { wx, wz, floorY: minH };

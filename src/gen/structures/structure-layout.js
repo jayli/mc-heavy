@@ -13,7 +13,6 @@ import { buildCityLayout } from './city-layout.js';
 import { computeSkyCandidates } from './sky-structures.js';
 import { computeScatterCandidates } from './scatter.js';
 import { computeGiantTreeCandidates } from './giant-trees.js';
-import { computeMesaAnchor } from './mesa.js';
 import { computeGiantPyramidAnchor } from './giant-pyramid.js';
 import { isTarnZone, computeTarnZone } from './tarn-zone.js';
 
@@ -31,7 +30,6 @@ import { isTarnZone, computeTarnZone } from './tarn-zone.js';
  *   sky: {skyIslands: Int32Array, cloudClusters: Int32Array},
  *   scatter: {cityScatter: Int32Array, outsideScatter: Int32Array},
  *   giantTrees: {forest: Int32Array, beach: Int32Array, banyan: Int32Array},
- *   mesa: ({wx:number, wz:number, floorY:number}|null),
  *   giantPyramid: ({wx:number, wz:number, floorY:number}|null),
  *   tarn: (import('./tarn-zone.js').TarnLayout|null)
  * }}
@@ -102,10 +100,7 @@ export function computeRegionLayout(regionX, regionZ, seed) {
     ? { forest: new Int32Array(0), beach: new Int32Array(0), banyan: new Int32Array(0) }
     : giantTreesRaw;
 
-  // 高台（Cloudland Epic）：每 region 至多一个沙漠平地锚点。
-  // 纯函数、无异步依赖（基座判据用 15×15 常量矩形，不读烘焙产物 —— 候选层不能 fetch，见 mesa.js 头注）。
-  // 城市/地标让路在 GEN 侧阶段 2.75 判（城市 bounds 可跨 region，候选层只能过滤一半）。
-  const mesa = tarn ? null : computeMesaAnchor(regionX, regionZ, seed);
+  // ⚠️ v1.80：沙漠孤立高台系统已整体删除（DR-11，由「高台地带」取代），`mesa` 字段不再存在。
 
   // 巨型金字塔（Giant Pyramid Epic）：region 级候选，与高台同构。
   // 城市/地标/空岛/高台的排除都已在候选层（`giant-pyramid.js` 拿得到 `getCityBoundsForSeed`
@@ -114,7 +109,7 @@ export function computeRegionLayout(regionX, regionZ, seed) {
 
   return {
     regionX, regionZ, pyramidRaw, pyramid, frozenMountain, snowLand, plainLand,
-    island, city, sky, scatter, giantTrees, mesa, giantPyramid, tarn,
+    island, city, sky, scatter, giantTrees, giantPyramid, tarn,
   };
 }
 

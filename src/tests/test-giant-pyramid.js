@@ -145,58 +145,6 @@ test('巨型金字塔落点：锚点不在任何城市 bounds 内（5 seed）', 
   }
 });
 
-test('巨型金字塔落点：与同 region 的高台占地不相交（实测 139/162 region 会被高台吞掉 → 排除必需）', async () => {
-  const { computeRegionLocalAnchor, MESA_UNION_HALF } = await import('../gen/structures/mesa.js');
-
-  // ⚠️ 鉴别力前置：**必须先证明高台排除真的在起作用** —— 否则下面的「不相交」可因
-  // 「金字塔本来就不在高台附近」而恒真。
-  // 可靠判据 = 「高台占地内存在**全沙漠且全高于海平面**的合法候选中心」：
-  // 那类点若无排除就会被选中（其余判据都过）→ 实测 162 个有高台的 region 里 **139 个**如此。
-  // （不可用「局部锚点与高台重叠」作前置：排除上线后它们已不再重叠，那会变成恒假。）
-  const reach = PYRAMID_HALF + MESA_UNION_HALF;
-  let withMesa = 0, mesaEatsCandidate = 0;
-  for (let rx = -6; rx <= 6; rx++) for (let rz = -6; rz <= 6; rz++) {
-    const m = computeRegionLocalAnchor(rx, rz, SEED);
-    if (!m) continue;
-    withMesa++;
-    let found = false;
-    for (let dz = -reach; dz <= reach && !found; dz += 12) {
-      for (let dx = -reach; dx <= reach; dx += 12) {
-        const wx = m.wx + dx, wz = m.wz + dz;
-        if (wx < rx * 400 + PYRAMID_INSET || wx >= (rx + 1) * 400 - PYRAMID_INSET) continue;
-        if (wz < rz * 400 + PYRAMID_INSET || wz >= (rz + 1) * 400 - PYRAMID_INSET) continue;
-        if (getBiome(wx, wz, SEED) !== 'DESERT') continue;
-        let ok = true;
-        for (let z2 = -PYRAMID_HALF; z2 <= PYRAMID_HALF && ok; z2++) {
-          for (let x2 = -PYRAMID_HALF; x2 <= PYRAMID_HALF; x2++) {
-            if (getBiome(wx + x2, wz + z2, SEED) !== 'DESERT') { ok = false; break; }
-            if (generateHeight(wx + x2, wz + z2, SEED) <= SEA_Y) { ok = false; break; }
-          }
-        }
-        if (ok) found = true;
-      }
-    }
-    if (found) mesaEatsCandidate++;
-  }
-  assertTrue(withMesa > 100, `应有足够多的高台样本（实测 162，实际 ${withMesa}）`);
-  assertTrue(mesaEatsCandidate > 50,
-    `高台占地内必须有合法金字塔候选（实测 139）—— 否则本用例失去判别力（实际 ${mesaEatsCandidate}）`);
-
-  // 主断言：**最终**锚点（已经过高台排除）与同 region 高台必不相交
-  let both = 0, checked = 0;
-  for (let rx = -6; rx <= 6; rx++) for (let rz = -6; rz <= 6; rz++) {
-    const a = computeGiantPyramidAnchor(rx, rz, SEED);
-    const mesa = computeRegionLocalAnchor(rx, rz, SEED);
-    if (a) checked++;
-    if (!a || !mesa) continue;
-    both++;
-    const overlap = Math.abs(a.wx - mesa.wx) <= reach && Math.abs(a.wz - mesa.wz) <= reach;
-    assertFalse(overlap, `region(${rx},${rz}) 金字塔 (${a.wx},${a.wz}) 与高台 (${mesa.wx},${mesa.wz}) 占地相交`);
-  }
-  assertTrue(checked > 20, `应有足够多的锚点（实测 34，实际 ${checked}）`);
-  assertTrue(both > 20, `应有足够多「两者都有」的 region（实测 34，实际 ${both}）`);
-});
-
 test('巨型金字塔常量：塔顶必须落在云层与空岛之下（改常量即红）', async () => {
   const { CLOUD_CLUSTER_Y } = await import('../gen/structures/sky-structures.js');
   // 沙漠地表实测 max = 9（spec §2，±1200 采样）—— 这里现场重扫一遍，不写字面量
@@ -226,18 +174,6 @@ test('巨型金字塔常量：内缩量足以容纳占地（改常量即红）',
   assertEqual(PYRAMID_INSET, PYRAMID_HALF + 1, 'PYRAMID_INSET = PYRAMID_HALF + 1（留 1 格余量）');
   assertTrue(PYRAMID_INSET >= PYRAMID_HALF, '内缩不得小于半宽（否则占地会越界）');
   assertTrue(PYRAMID_INSET + PYRAMID_HALF < 200, '占地不超过半个 region');
-});
-
-test('巨型金字塔常量：与高台的最近可能间距大于两者占地半径之和（相邻 region 不冲突）', async () => {
-  const { MESA_UNION_HALF } = await import('../gen/structures/mesa.js');
-  // 推导（spec DR-7）：相邻 region 下两边最近可能距离 = PYRAMID_INSET + MESA_INSET
-  //   不冲突条件 = PYRAMID_INSET + MESA_INSET > PYRAMID_HALF + MESA_UNION_HALF
-  // ⚠️ MESA_INSET 未导出，用 mesa.js 的定义 `MESA_UNION_HALF + 2` 当场算（不写第二份字面量）
-  const mesaInset = MESA_UNION_HALF + 2;
-  const minAdjacentGap = mesaInset + PYRAMID_INSET;
-  const needed = PYRAMID_HALF + MESA_UNION_HALF;
-  assertTrue(minAdjacentGap > needed,
-    `相邻 region 的最小可能间距 ${minAdjacentGap} 必须 > 两者占地半径之和 ${needed}（实测 38 > 35）`);
 });
 
 test('巨型金字塔密度：跨 8 seed 平均「每 2 块沙漠 1 座」（关系式，实测 0.50）', async () => {

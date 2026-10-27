@@ -23,7 +23,6 @@ import {
 } from './scatter.js';
 import { SEA_Y, blockIndex } from '../../voxel/constants.js';
 import { applyGiantTrees, loadGiantTrees } from './giant-trees.js';
-import { MESA_UNION_HALF } from './mesa.js';
 import { PYRAMID_HALF, inGiantPyramidFootprint } from './giant-pyramid.js';
 import { TARN_ZONE_RADIUS, snowLandSuppressedByTarn, TARN_CLOUD_MIN_Y } from './tarn-zone.js';
 import { fillTarnPlateau } from './tarn-terrain.js';
@@ -138,13 +137,9 @@ function pointContext(wx, wz, layouts, cityLayout, seed) {
  * @returns {(wx:number, wz:number) => boolean}
  */
 export function giantAllowedAtFor(layouts, cityLayout, seed) {
-  // 高台让路：巨树不得长进高台占地（高台是固定地标，巨树是可避让的植被）。
-  // 与阶段 2.75 的光栅化用同一个 MESA_UNION_HALF（红线 1：两处各写一份会漂移出「树冠插进台面」）。
-  const mesa = layouts.map((l) => l.mesa).find(Boolean) || null;
+  // ⚠️ v1.80：沙漠孤立高台已删除，不再有「巨树给高台让路」这一段。
+  // 高台地带的占地让路走 `pointContext` 的 `kind:'tarn'`（一个分支覆盖全部下游消费者）。
   return (wx, wz) => {
-    if (mesa &&
-        Math.abs(wx - mesa.wx) <= MESA_UNION_HALF + 1 &&
-        Math.abs(wz - mesa.wz) <= MESA_UNION_HALF + 1) return false;
     const kind = pointContext(wx, wz, layouts, cityLayout, seed).kind;
     return kind === 'normal' || kind === 'water';
   };
@@ -206,8 +201,6 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
   }
   // 高台：只在锚点存在时需要。命中才预载（同撒布结构的惰性预载理由：
   // 无条件预载会让每个新 Worker 的首个 GEN 多付一次冷 fetch）。
-  const mesaAnchor = layouts.map((l) => l.mesa).find(Boolean) || null;
-  if (mesaAnchor) needTypes.add('cloudlandMesaSmall');
   // 巨型金字塔：同理只在锚点存在时预载
   if (layouts.some((l) => l.giantPyramid)) needTypes.add('giantPyramid');
   // 高台地带：35 个产物。惰性预载 —— 只有地带 region 才拉（1/3 的 region）。
@@ -436,15 +429,6 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
   // 修「City 里 house 悬空」的判据落点完全同源（见 scatter.js 的口径差异②）。
   // `pointContext().kind !== 'normal'` 一次性排除：城市 / 金字塔 / 平地 / 雪原 / 冰封山 /
   // 海岛（island/snow/fm/none/city/water 六类），只允许纯自然陆地。
-  for (const layout of layouts) {
-    const anchor = layout.mesa;
-    if (!anchor) continue;
-    if (pointContext(anchor.wx, anchor.wz, layouts, cityLayout, seed).kind !== 'normal') continue;
-    if (!placementIntersects({ x: anchor.wx, z: anchor.wz }, MESA_UNION_HALF, MESA_UNION_HALF, column.cx, column.cz)) continue;
-    // 不补 groundSupport：基座判据已保证「基座全程高于海平面」，补柱会在沙漠里凭空插一根 15 格宽的石柱
-    rasterizeStructure('cloudlandMesaSmall', anchor.wx, anchor.floorY + 1, anchor.wz,
-      setBlock, column, registry, seed, false);
-  }
 
   // ---- 阶段 2.76：巨型金字塔（Giant Pyramid Epic）----
   // 层序理由：撒布结构（2.7）与高台（2.75）都是地面级内容，先写；金字塔是 24 格高的大型结构，
@@ -459,9 +443,6 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
   for (const layout of layouts) {
     const anchor = layout.giantPyramid;
     if (!anchor) continue;
-    if (layout.mesa &&
-        Math.abs(anchor.wx - layout.mesa.wx) <= PYRAMID_HALF + MESA_UNION_HALF &&
-        Math.abs(anchor.wz - layout.mesa.wz) <= PYRAMID_HALF + MESA_UNION_HALF) continue;
     if (cityLayout &&
         anchor.wx + PYRAMID_HALF >= cityLayout.minX && anchor.wx - PYRAMID_HALF <= cityLayout.maxX &&
         anchor.wz + PYRAMID_HALF >= cityLayout.minZ && anchor.wz - PYRAMID_HALF <= cityLayout.maxZ) continue;
