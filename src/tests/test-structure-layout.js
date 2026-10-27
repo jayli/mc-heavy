@@ -22,6 +22,12 @@ function findFreePyramidLayout(seed) {
       if (rx === 0 && rz === 0) continue;
       const l = computeRegionLayout(rx, rz, seed);
       const py = l.pyramid;
+      // ⚠️ **必须先判 null**：高台地带（Task 3）把地带 region 的 `layout.pyramid` 压成 null，
+      // 而本函数是在扫「第一个可用的金字塔 region」⇒ 扫到地带 region 时 `py` 就是 null。
+      // 不加这条，只有「地带 region 恰好排在第一个可用金字塔之前」时才会抛 TypeError
+      // —— 当前 seed 下 (-4,-4) 恰好不是地带 region 所以没崩，但这是运气，
+      // 改 `TARN_ZONE_CHANCE` 或换 seed 就会踩到。
+      if (!py) continue;
       const out = py.cx + 28 < city.minX || py.cx - 28 > city.maxX ||
                   py.cz + 28 < city.minZ || py.cz - 28 > city.maxZ;
       if (out) return l;

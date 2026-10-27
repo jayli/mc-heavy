@@ -27,6 +27,11 @@ import { SEA_Y } from '../voxel/constants.js';
 // 接线用例（Task 3b）：layout 压制与零回归。对照侧直接调用候选函数 —— 与 layout 内部
 // **同一份实现**，所以那些断言钉的是「layout 有没有把它传下去 / 有没有多压一层」。
 import { computeRegionLayout, neighborRegionKeys } from '../gen/structures/structure-layout.js';
+import {
+  getPyramidCenterInRegion, getFrozenMountainCenterInRegion,
+  getPlainLandCenterInRegion, getIslandCenterInRegion,
+  isPlainLandValid, isIslandValid,
+} from '../gen/structures/landmarks.js';
 import { computeMesaAnchor } from '../gen/structures/mesa.js';
 import { computeGiantPyramidAnchor } from '../gen/structures/giant-pyramid.js';
 import { computeSkyCandidates } from '../gen/structures/sky-structures.js';
@@ -574,26 +579,76 @@ test('雪原让路：同一 seed 同一 region 两次调用结果相同', () => 
  *
  * ⚠️ 这张清单就是判据本身：把 `snowLand` 加进来会让 6 处既有消费方（直接解引用
  * `.snowLand.cx`）在**运行时**抛 TypeError —— 负向验证实测（见 task-3b 报告）。
+ *
+ * 需要压制的字段全集（文档性清单，不参与断言）：
+ *   `pyramid` / `frozenMountain` / `plainLand` / `island` / `city` / `giantPyramid` / `mesa`
+ * 实际断言在各字段的**压制前探测函数**上（见下方 `FIELD_PROBE`）—— 只对「压制前有值」的
+ * 字段断言 null，否则断言没有判别力。`city` 刻意不在 `FIELD_PROBE` 里：它只存在于
+ * region(0,0)，而那是 `CITY_REGION`，早已被排除出地带判定（`isTarnZone(0,0,*) ≡ false`），
+ * 任何地带 region 的 `layout.city` 都是 null —— 把它写进断言就是恒真。
  */
-const TARN_SUPPRESSED_FIELDS = [
-  'pyramid', 'frozenMountain', 'plainLand', 'island', 'city', 'giantPyramid', 'mesa',
-];
 
 test('地带接线：地带 region 的全部地标字段被压缩为 null（雪原例外）', () => {
-  const { rx, rz } = findTarnRegion(SEED);
-  const lay = computeRegionLayout(rx, rz, SEED);
-  assertTrue(lay.tarn !== null && lay.tarn !== undefined,
-    `地带 region(${rx},${rz}) 的 layout 必须带 tarn 布局`);
-  for (const field of TARN_SUPPRESSED_FIELDS) {
-    assertEqual(lay[field], null, `地带 region(${rx},${rz}) 的 ${field} 必须被压制为 null`);
+  // ⚠️ **不能只在 findTarnRegion 那一个 region 上断言 7 个字段全 null**（那是个空断言形态）：
+  // 实测 region(-6,-2) 在**压制前**就只有 pyramid / frozenMountain 有值，其余 5 个字段
+  // （plainLand / island / giantPyramid / mesa / city）**本来就是 null** ⇒ 删掉压制代码
+  // 那些断言也照样绿。`city` 更是恒真：它只存在于 region(0,0)，而那是 CITY_REGION，
+  // 早已被排除出地带判定（`isTarnZone(0,0,*) ≡ false`）。
+  //
+  // 现在的口径：**全扫 ±6 的每个地带 region**，对每个字段先算「压制前本来有没有值」——
+  // 有值的那些才断言 layout 里是 null。末尾再断言「至少命中 N 个有值→null 的对照」，
+  // 否则取样口径被改窄后这条用例会静默失去判别力。
+  const FIELD_PROBE = {
+    pyramid: (rx, rz) => getPyramidCenterInRegion(rx, rz, SEED),
+    frozenMountain: (rx, rz) => getFrozenMountainCenterInRegion(rx, rz, SEED),
+    plainLand: (rx, rz) => {
+      const p = getPlainLandCenterInRegion(rx, rz, SEED);
+      return isPlainLandValid(p.cx, p.cz, SEED) ? p : null;
+    },
+    island: (rx, rz) => {
+      const i = getIslandCenterInRegion(rx, rz, SEED);
+      return isIslandValid(i.islandCx, i.islandCz, SEED) ? i : null;
+    },
+    giantPyramid: (rx, rz) => computeGiantPyramidAnchor(rx, rz, SEED),
+    mesa: (rx, rz) => computeMesaAnchor(rx, rz, SEED),
+  };
+
+  let tarnRegions = 0;
+  const proven = new Map();   // 字段 → 「压制前有值 → layout 为 null」的命中次数
+  let checked = 0;
+  for (let rx = -6; rx <= 6; rx++) {
+    for (let rz = -6; rz <= 6; rz++) {
+      if (!isTarnZone(rx, rz, SEED)) continue;
+      tarnRegions++;
+      const lay = computeRegionLayout(rx, rz, SEED);
+      assertTrue(lay.tarn !== null && lay.tarn !== undefined,
+        `地带 region(${rx},${rz}) 的 layout 必须带 tarn 布局`);
+      for (const [field, probe] of Object.entries(FIELD_PROBE)) {
+        if (probe(rx, rz) === null) continue;          // 压制前就没有 ⇒ 这条测不出东西
+        checked++;
+        assertEqual(lay[field], null,
+          `地带 region(${rx},${rz}) 的 ${field} 压制前有值，必须被压成 null`);
+        proven.set(field, (proven.get(field) || 0) + 1);
+      }
+    }
   }
-  // 雪原字段**必须保留**：压制粒度是「这座雪原是否压进某个地带圆」，不是「本 region 是不是地带」。
-  // 置 null 会让 test-structure-layout / test-landmarks / test-giant-trees-gen 直接解引用崩溃。
-  assertTrue(lay.snowLand && typeof lay.snowLand.cx === 'number' && typeof lay.snowLand.cz === 'number',
+  assertTrue(tarnRegions >= 20, `±6 内地带 region 只有 ${tarnRegions} 个 —— 取样口径被改窄了`);
+  // 判别力下界：实测 pyramid/frozenMountain 在多数地带 region 上有值；
+  // 若将来某个字段的压制被删掉，`proven` 里该字段会缺项 ⇒ 下面的断言会红。
+  assertTrue(checked >= 40,
+    `「压制前有值→layout 为 null」的对照只有 ${checked} 条（应 ≥40）—— 断言可能退化成空壳`);
+  assertTrue((proven.get('pyramid') || 0) >= 20,
+    `pyramid 的有判别力对照只有 ${proven.get('pyramid') || 0} 条（应 ≥20）`);
+  assertTrue((proven.get('frozenMountain') || 0) >= 10,
+    `frozenMountain 的有判别力对照只有 ${proven.get('frozenMountain') || 0} 条（应 ≥10）`);
+
+  // `snowLand` 与 `pyramidRaw` 必须保留：在任一个地带 region 上验一次即可
+  // （它们的语义是「字段常驻」，不是「压制到 null」）。
+  const first = findTarnRegion(SEED);
+  const lay0 = computeRegionLayout(first.rx, first.rz, SEED);
+  assertTrue(lay0.snowLand && typeof lay0.snowLand.cx === 'number',
     '地带 region 的 snowLand 字段必须保留（它有独立判据 snowLandSuppressedByTarn）');
-  // `pyramidRaw` 保留：它是「未压制的地标偏移基准」，既有用例（test-structure-layout）拿它验证
-  // 「雪原中心 = 原始中心 + 偏移」的配置关系。
-  assertTrue(lay.pyramidRaw && typeof lay.pyramidRaw.cx === 'number',
+  assertTrue(lay0.pyramidRaw && typeof lay0.pyramidRaw.cx === 'number',
     'pyramidRaw 必须保留（未压制，供地标偏移关系用例对比）');
 });
 

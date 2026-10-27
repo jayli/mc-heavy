@@ -165,11 +165,14 @@ test('真实 GEN：金字塔 / 平地岛 / 海岛 / 雪原 / 冰封山的地标�
   const inst = { pyramid: [], island: [], plainLand: [], snowLand: [], frozenMountain: [] };
   for (let rx = -6; rx <= 6; rx++) for (let rz = -6; rz <= 6; rz++) {
     const l = layoutOf(rx, rz);
-    if (!inst.pyramid.length) inst.pyramid.push({ l, c: [l.pyramid.cx, l.pyramid.cz], r: 60 });
+    // ⚠️ **必须判 null**：高台地带（Task 3）把地带 region 的 `pyramid` / `frozenMountain`
+    // 压成 null。当前 seed 下扫到的第一个 region(-6,-6) 恰好不是地带 region 所以没崩，
+    // 但改 `TARN_ZONE_CHANCE` / 换 seed 就会踩到。`snowLand` 不用判（字段常驻）。
+    if (!inst.pyramid.length && l.pyramid) inst.pyramid.push({ l, c: [l.pyramid.cx, l.pyramid.cz], r: 60 });
     if (l.island) inst.island.push({ l, c: [l.island.cx, l.island.cz], r: 60 });
     if (l.plainLand) inst.plainLand.push({ l, c: [l.plainLand.cx, l.plainLand.cz], r: 30 });
     if (!inst.snowLand.length) inst.snowLand.push({ l, c: [l.snowLand.cx, l.snowLand.cz], r: 60 });
-    if (!inst.frozenMountain.length) inst.frozenMountain.push({ l, c: [l.frozenMountain.cx, l.frozenMountain.cz], r: 110 });
+    if (!inst.frozenMountain.length && l.frozenMountain) inst.frozenMountain.push({ l, c: [l.frozenMountain.cx, l.frozenMountain.cz], r: 110 });
   }
   const kinds = ['pyramid', 'island', 'plainLand', 'snowLand', 'frozenMountain'];
   const families = (await loadGiantTrees()).families;
