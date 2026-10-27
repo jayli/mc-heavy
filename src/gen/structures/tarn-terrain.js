@@ -10,7 +10,7 @@
 // Worker 同构：本文件不得 import three、不得 fetch、不得自建 Worker。
 // 生成路径：不记 edits、不 bump version（与 `fillColumn` 同口径）。
 
-import { noise } from '../noise.js';
+import { noise, seededRandom } from '../noise.js';
 import { blockIndex, WORLD_MIN_Y, WORLD_MAX_Y, SEA_Y } from '../../voxel/constants.js';
 import { TERRAIN_HEIGHT_PARAMS, generateHeight } from '../terrain.js';
 import { TARN_SLOPE_WIDTH, TARN_ICE_RADIUS, TARN_SNOW_RADIUS } from './tarn-zone.js';
@@ -399,6 +399,76 @@ function slopeNaturalHeight(wx, wz, seed) {
  */
 const SLOPE_SMOOTH_RADIUS = 8;
 
+// ==================== 地带草地的单格植被（v1.93） ====================
+
+/**
+ * `short_grass` 的盐。**用程序化扫描确认空闲**（`seed + N` 的区间占用要一起算，
+ * grep 字面量会漏）：1020~1031 已被 tarn 系列占满（`TARN_ZONE_SALT` … `TARN_STONE_SALT`），
+ * 1032 起是大段空闲带，故取 1032。
+ */
+const TARN_GRASS_SALT = 1032;
+/** `azure_bluet` 的盐。与上面同一段空闲带，取相邻的 1033。 */
+const TARN_FLOWER_SALT = 1033;
+
+/**
+ * 地带草地上是否长一株单格植物（v1.93，用户 2026-10-29：「高台地图的草地上随机生成
+ * 一些 short_grass 和 azure 花」）。
+ *
+ * ## 只在 `grass` 上长
+ *
+ * 判据直接调 `tarnSurfaceBlock()` —— **不另写一套「哪里有草」的判据**（红线 1）。
+ * 地带的冰 / 雪环 / 黏土 / 缓坡上一株都不长，正是用户要的「草地上」。
+ *
+ * ## 密度 = 普通 PLAINS 同口径
+ *
+ * 用户裁定「按照 PLAINS 同密度做」。`vegetation.js` 的 PLAINS 分支是：
+ * `short_grass` 5%、花档 5%（10%~5% 区间）且在花档内 1/3 是 `azure_bluet`
+ * → 草的 5% + azure_bluet 约 1.67%，与这里逐值对齐。
+ * ⚠️ 两份概率各自独立计算（不用嵌套区间），是为了让「草」与「花」互不挤占 ——
+ * PLAINS 的花档其实挤掉了 5% 的草抽签，但那是上游的实现细节，观感上等价于独立抽样。
+ *
+ * @param {number} wx @param {number} wz @param {number} seed
+ * @param {{cx:number, cz:number, platformRadius:number, plateauRadius:number}} layout
+ * @returns {'short_grass'|'azure_bluet'|null}
+ */
+export function tarnPlantAt(wx, wz, seed, layout) {
+  const { cx, cz, platformRadius, plateauRadius } = layout;
+  if (tarnSurfaceBlock(wx, wz, seed, cx, cz, platformRadius, plateauRadius) !== 'grass') return null;
+  if (seededRandom(wx, wz, seed + TARN_GRASS_SALT) < TARN_GRASS_CHANCE) return 'short_grass';
+  if (seededRandom(wx, wz, seed + TARN_FLOWER_SALT) < TARN_FLOWER_CHANCE) return 'azure_bluet';
+  return null;
+}
+
+/** `short_grass` 的逐格概率（= PLAINS 的 0.05，见 `tarnPlantAt`）。 */
+const TARN_GRASS_CHANCE = 0.05;
+/** `azure_bluet` 的逐格概率（= PLAINS 花档 0.05 × 花档内 1/3 ≈ 0.0167）。 */
+const TARN_FLOWER_CHANCE = 0.05 / 3;
+
+/**
+ * 地带内任意点的**地表高度**（纯函数，v1.92）。
+ *
+ * 与 `fillTarpPlateau` 的 `targetY` 公式**同一份**（平台恒 `plateauY`；缓坡从 `plateauY`
+ * 线性插值到平滑后的自然高度；圆外返回自然高度）。有了它，瞬移可以在**目标 column
+ * 尚未加载**时就算出正确落脚高度 —— 不必等 GEN（实测：vd=2 时加载半径只有 48 格，
+ * 传送 1200 格外的地带永远等不到 `_waitForColumn`，超时 30s 且 async 异常被吞，
+ * 按钮看起来完全没反应）。
+ *
+ * ⚠️ **必须与 `fillTarnPlateau` 用同一个 `slopeNaturalHeight`**，不得各写一份插值 ——
+ * 两份漂移会让「瞬移落点的高度」与「真实地表」差几格，表现是玩家悬空或埋进土里。
+ *
+ * @param {number} wx @param {number} wz @param {number} seed
+ * @param {{cx:number, cz:number, platformRadius:number, plateauRadius:number, plateauY:number}} layout
+ * @returns {number} 该列地表的 y（方块所在的那一格）
+ */
+export function tarnSurfaceYAt(wx, wz, seed, layout) {
+  const { cx, cz, platformRadius, plateauRadius, plateauY } = layout;
+  const d = Math.hypot(wx - cx, wz - cz);
+  if (d > plateauRadius) return generateHeight(wx, wz, seed);
+  if (d <= platformRadius) return plateauY;
+  const t = (d - platformRadius) / (plateauRadius - platformRadius);
+  return Math.round(plateauY * (1 - t) + slopeNaturalHeight(wx, wz, seed) * t);
+}
+
 /**
  * 雪盖能触及的最高 y。
  *
@@ -408,23 +478,36 @@ const SLOPE_SMOOTH_RADIUS = 8;
 const TARN_SNOW_CAP_MAX_Y = 50;
 
 /**
- * 高台顶层的雪盖（v1.91，用户 2026-10-28 裁定）。
+ * 高台顶层的覆写（v1.91 雪盖 + **v1.94 顶部草换 snow_grass**）。
  *
- * 把雪环带内、**已经长出来的结构**的**露天顶层**换成 `snow`。
+ * 逐列**从上限向下**找「本格非空且上方一格是空气」的最高那一格（= 该列真正的露天顶层），
+ * 按两级处理：
+ *
+ * | 顶层是 | 条件 | 换成 |
+ * |---|---|---|
+ * | `grass` | **不限半径**（整个地带圆内） | `snow_grass` |
+ * | 其他（石头/深板岩/黏土…） | 在雪环带内 | `snow` |
+ *
+ * ## 为什么草顶不看半径（v1.94 用户裁定）
+ *
+ * 用户 2026-10-29：「高台地带的**所有**顶部的草方块都换成 snow_grass，统一都渲染成这个
+ * 方块，**不再让雪方块和草方块交替**」。旧实现的草顶按雪环带判 → 高台顶部是「雪/草交错」的
+ * 斑驳感。现在草顶一律 `snow_grass`，腰部（非草顶且落在雪环带）照旧覆 `snow`。
+ *
+ * ⚠️ **两级必须按这个顺序判**（先判 grass）：反过来的话，雪环带内的草顶会被判成「其他」
+ * 覆成 `snow`，于是草顶又变成雪草交替 —— 正是用户要消除的形态。
  *
  * ## 为什么必须在光栅化之后调
  * `fillTarnPlateau` 跑的时候高台还没长出来，那里只能看到台地地表。
  *
- * ## 判据
- * 逐列从 `plateauY` 向上找「本格非空且上方一格是空气」的那一格（= 露天顶层）。
- * 只换满足两个条件的：
- * 1. 该列在雪环带内（`TARN_ICE_RADIUS < d < TARN_SNOW_RADIUS`，含 ±`BAND_WOBBLE` 滲透）
- * 2. 顶层方块不是 `snow` 自己（幂等，避免重复写）
+ * ⚠️ **只换顶层一格，不往下挖**：写成「从 plateauY 到露天层全部换」会让高台变成一根
+ * 同色柱子；只换顶层 = 「高处积了一层」的自然观感，也保住建筑的墙面/楼层。
  *
- * ⚠️ **只换顶层一格，不往下挖**：写成「从 plateauY 到露天层全部换雪」会让高台
- * 变成一根雪柱子；只换顶层 = 「高处积下一层雪」的自然观感，也保住建筑的墙面/楼层。
+ * ⚠️ **扫描方向必须是「从上往下」（v1.95 实测修复）**：从 `plateauY` 往上扫时，
+ * 台地平台层本身就满足「实心 + 上方空气」→ 每列都在平台层 `break`，高台本体的顶
+ * 一格都换不到（实测 tarn_04 残留 **428 格 grass**、全部 8 座合计 **659 格**）。
  *
- * ⚠️ **上限算到 `TARN_SNOW_CAP_MAX_Y`**：巨型云在 y=54~95，不能被当成「地表」而盖雪。
+ * ⚠️ **上限算到 `TARN_SNOW_CAP_MAX_Y`**：巨型云在 y=54~95，不能被当成「地表」而盖。
  *
  * @param {import('../../voxel/chunk-column.js').ChunkColumn} column
  * @param {import('./tarn-zone.js').TarnLayout} layout
@@ -448,21 +531,34 @@ export function tarnSnowCap(column, layout, seed, registry, setBlock) {
       const d = Math.hypot(dx, dz);
       // ⚠️ 边界也用同一条扰动噪声（与 `tarnSurfaceBlock` 的滲透带同源），
       //    否则雪盖会在雪环外缘形成一条完美圆弧，与下方松散的雪地脱节。
+      // 雪环带判据**只用于「非草顶」那一级**（草顶不限半径，见函数注释）。
       const wobble = noise(wx, wz, seed + TARN_BAND_WOBBLE_SALT, TARN_BAND_WOBBLE_SCALE) * BAND_WOBBLE;
       // ⚠️ 冰/雪边界必须与 `tarnSurfaceBlock` **同源**（`tarnIceWobbleAt`，
       //    幅度 ICE_WOBBLE 而非 BAND_WOBBLE）—— 两份漂移会让高台顶的雪盖
       //    与地面的雪环错开几格，接缝处露出一个「雪盖悬在冰面上」的台阶。
       const iceWobble = tarnIceWobbleAt(wx, wz, seed);
-      if (d <= TARN_ICE_RADIUS + iceWobble - TARN_BLEND_WIDTH / 2) continue;   // 纯冰区不盖雪
-      if (d >= TARN_SNOW_RADIUS + BAND_WOBBLE + wobble) continue;              // 草斑区不盖雪
+      const inSnowRing = d > TARN_ICE_RADIUS + iceWobble - TARN_BLEND_WIDTH / 2
+        && d < TARN_SNOW_RADIUS + BAND_WOBBLE + wobble;
 
       const lx = wx - colMinX, lz = wz - colMinZ;
-      // 从 plateauY 向上找露天顶层（上方是空气）；上限到雪盖上限，避开巨型云
-      for (let y = plateauY; y <= TARN_SNOW_CAP_MAX_Y; y++) {
+      // 从**上往下**找该 column 最高的那个「露天顶层」，不是从下往上找第一个。
+      //
+      // ⚠️ **方向是载荷性的（v1.95 实测修复）**：原实现从 `plateauY` 向上扫，遇到第一个
+      //    「本格非空 + 上方是空气」就 `break` —— 而台地平台层（y = plateauY）本身就是
+      //    「实心 + 上方空气」，于是**每一列都在平台层就跳出**，高台本体（y 30~46）的
+      //    顶部草一格都没被换。表现就是用户看到的「只换了一个高台」。
+      //    正确做法：从上限往下扫，第一个非空格就是该列真正最高的露天顶层。
+      for (let y = TARN_SNOW_CAP_MAX_Y; y >= plateauY; y--) {
         const id = column.blocks[blockIndex(lx, y, lz)];
-        if (id === 0) continue;                                   // 空 → 还没到地表
+        if (id === 0) continue;                                        // 空 → 还没到该列最高格
         if (column.blocks[blockIndex(lx, y + 1, lz)] !== 0) continue;  // 上方还有 → 不是顶层
-        if (registry.nameOf(id) !== 'snow') setBlock(wx, y, wz, 'snow');
+        const name = registry.nameOf(id);
+        // ⚠️ **先判 grass**（不限半径）：见函数注释「两级必须按这个顺序判」。
+        if (name === 'grass') {
+          setBlock(wx, y, wz, 'snow_grass');
+        } else if (inSnowRing && name !== 'snow' && name !== 'snow_grass') {
+          setBlock(wx, y, wz, 'snow');
+        }
         break;
       }
     }

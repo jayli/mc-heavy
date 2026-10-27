@@ -9,7 +9,7 @@
 import { test } from './runner.js';
 import { assertEqual, assertTrue } from './assert.js';
 import { computeTarnZone, isTarnZone, TARN_SLOPE_WIDTH as TARN_ZONE_SLOPE_WIDTH, TARN_ICE_RADIUS, TARN_SNOW_RADIUS } from '../gen/structures/tarn-zone.js';
-import { fillTarnPlateau, tarnSurfaceBlock, TARN_TERRAIN_SALT, TARN_SLOPE_WIDTH, TARN_BLEND_WIDTH, tarnIceBoundaryAt, blobNoise } from '../gen/structures/tarn-terrain.js';
+import { fillTarnPlateau, tarnSnowCap, tarnSurfaceBlock, tarnPlantAt, TARN_TERRAIN_SALT, TARN_SLOPE_WIDTH, TARN_BLEND_WIDTH, tarnIceBoundaryAt, blobNoise } from '../gen/structures/tarn-terrain.js';
 import { buildDefaultRegistry } from '../voxel/block-registry.js';
 import { ChunkColumn } from '../voxel/chunk-column.js';
 import { blockIndex } from '../voxel/constants.js';
@@ -240,6 +240,145 @@ test('台地：冰与雪**互相侵入对方地界**（不是一条夹在中间�
 //
 // ⇒ 可靠判据只能是「源码里用的是哪个函数」，那是静态门禁的职责（`check:data` 的 `[台地材质]`）。
 //    该门禁已做负向验证：把 `blobNoise(` 换成 `noise(` 时真 FAIL。
+
+test('台地：雪盖扫描方向必须自上而下（否则高台本体的顶一格都换不到）', async () => {
+  // ⚠️ **v1.95 实测修复的真缺陷**（用户报告「你怎么只给我换了一个高台的顶部方块」）：
+  //    `tarnSnowCap` 原本从 `plateauY` 向**上**扫，遇到第一个「本格非空 + 上方空气」就 break。
+  //    而台地平台层（y = plateauY）本身就满足这个判据 → **每一列都在平台层就跳出**，
+  //    高台本体（y 30~46）的顶部草一格都没被换。实测全部 8 座高台残留 659 格 `grass`
+  //    （tarn_04 单独就 428 格）。
+  //
+  // 本用例钉的是**扫描方向**：造一个「平台层有草 + 高处还有一层草」的 column，
+  // 雪盖后**高处那层**必须是 snow_grass（平台层也是，但关键在高处那层）。
+  const { rx, rz } = findTarnRegion();
+  const lay = computeTarnZone(rx, rz, SEED);
+  const reg = await buildDefaultRegistry();
+
+  // 选一个在雪环带外的点（那里只有 grass 分支会动作，不会被 `snow` 干扰判断）
+  const ang = 0.3, d = 100;
+  const wx = Math.round(lay.cx + Math.cos(ang) * d);
+  const wz = Math.round(lay.cz + Math.sin(ang) * d);
+  const cx = Math.floor(wx / 16), cz = Math.floor(wz / 16);
+  const lx = wx - cx * 16, lz = wz - cz * 16;
+
+  const col = new ChunkColumn(cx, cz);
+  // 平台层（plateauY）放草 —— 旧实现扫到这里就 break
+  col.blocks[blockIndex(lx, lay.plateauY, lz)] = reg.idOf('grass');
+  // 高处再放一层草（模拟高台本体的顶）—— 新实现必须能到这一层
+  const highY = lay.plateauY + 40;
+  col.blocks[blockIndex(lx, highY, lz)] = reg.idOf('grass');
+
+  tarnSnowCap(col, lay, SEED, reg, (bx, by, bz, name) => {
+    col.blocks[blockIndex(bx - cx * 16, by, bz - cz * 16)] = reg.idOf(name);
+  });
+
+  const highName = reg.nameOf(col.blocks[blockIndex(lx, highY, lz)]);
+  assertEqual(highName, 'snow_grass',
+    `高处（y=${highY}）的草顶没被换成 snow_grass —— 扫描方向写成了自下而上`
+    + `（会在平台层 y=${lay.plateauY} 就 break）`);
+});
+
+test('台地：高台顶部的草一律变 snow_grass（不再与雪方块交替）', async () => {
+  // ⚠️ **用户 2026-10-29**：「高台地带的**所有**顶部的草方块都换成 snow_grass，统一都渲染成
+  //    这个方块，**不再让雪方块和草方块交替**了。高台腰部的雪方块还照旧」。
+  //
+  // 旧实现：`tarnSnowCap` 只按「雪环带内 → 顶层换 snow」一条规则。
+  // 后果：高台顶部（草）在雪环带内被覆成 snow、带外仍是 grass → **雪草交错的斑驳感**，
+  // 正是用户要消除的形态。
+  //
+  // 现实现两级（顺序载荷性）：
+  //   ① 顶层是 grass  → snow_grass（**不限半径**）
+  //   ② 顶层是其他    → 在雪环带内才覆 snow（腰部照旧）
+  const { rx, rz } = findTarnRegion();
+  const lay = computeTarnZone(rx, rz, SEED);
+  const reg = await buildDefaultRegistry();
+  const plateauY = lay.plateauY;
+
+  /** 造一个只含一格的合成 column，跑 tarnSnowCap，返回结果方块名 */
+  const capAt = (wx, wz, topName) => {
+    const cx = Math.floor(wx / 16), cz = Math.floor(wz / 16);
+    const col = new ChunkColumn(cx, cz);
+    const lx = wx - cx * 16, lz = wz - cz * 16;
+    col.blocks[blockIndex(lx, plateauY, lz)] = reg.idOf(topName);
+    tarnSnowCap(col, lay, SEED, reg, (bx, by, bz, name) => {
+      col.blocks[blockIndex(bx - cx * 16, by, bz - cz * 16)] = reg.idOf(name);
+    });
+    return reg.nameOf(col.blocks[blockIndex(lx, plateauY, lz)]);
+  };
+
+  // 三个采样点：雪环带内(58) / 冰区内(20) / 草斑区(90)
+  const pts = [58, 20, 90].map((d, i) => {
+    const ang = 0.3 + i * 1.1;
+    return { d, x: Math.round(lay.cx + Math.cos(ang) * d), z: Math.round(lay.cz + Math.sin(ang) * d) };
+  });
+
+  for (const p of pts) {
+    // ① 草顶 → 一律 snow_grass（**三个半径都要成立**，尤其雪环带内——旧实现在这里变 snow）
+    assertEqual(capAt(p.x, p.z, 'grass'), 'snow_grass',
+      `d=${p.d} 的草顶必须是 snow_grass（旧实现会变 snow → 雪草交替）`);
+    // ② 非草顶（石头）→ 雪环带内才是 snow，其余半径不动
+    const stoneTop = capAt(p.x, p.z, 'stone');
+    if (p.d === 58) {
+      assertEqual(stoneTop, 'snow', `d=${p.d} 的石头顶应覆 snow（腰部照旧）`);
+    }
+    // ③ 已经被覆过的不重复写（幂等）
+    assertEqual(capAt(p.x, p.z, 'snow_grass'), 'snow_grass', 'snow_grass 不应被改成别的');
+  }
+});
+
+test('台地：草地上长 short_grass 与 azure_bluet，密度对齐 PLAINS', async () => {
+  // ⚠️ **用户 2026-10-29**：「高台地图的草地上随机生成一些 short_grass 和 azure 花」，
+  //    并裁定「按照 PLAINS 同密度做」。
+  //
+  // PLAINS 的目标密度（`vegetation.js` 的 PLAINS 分支）：
+  //   short_grass 5%；花档 5% 且档内 1/3 是 azure_bluet ≈ 1.67%。
+  //
+  // ⚠️ **判据必须按「草地上的占比」算，不能用「整个地带圆里的占比」** ——
+  //    草地只占地带圆的一小部分（实测 12.6%），按整圆算会得到 0.64% 这种数字，
+  //    然后误以为「密度太低」，实际是分母错了（实测踩坑）。
+  const { rx, rz } = findTarnRegion();
+  const lay = computeTarnZone(rx, rz, SEED);
+  const { cx, cz, platformRadius: flatR, plateauRadius: R } = lay;
+
+  let grass = 0, sg = 0, az = 0, offGrass = 0;
+  for (let dx = -R; dx <= R; dx++) for (let dz = -R; dz <= R; dz++) {
+    const wx = cx + dx, wz = cz + dz;
+    const p = tarnPlantAt(wx, wz, SEED, lay);
+    if (tarnSurfaceBlock(wx, wz, SEED, cx, cz, flatR, R) === 'grass') {
+      grass++;
+      if (p === 'short_grass') sg++;
+      else if (p === 'azure_bluet') az++;
+    } else if (p !== null) offGrass++;
+  }
+
+  assertTrue(grass > 5000, `草地上采样太少（${grass}）—— 本用例无判别力`);
+  const sgRate = sg / grass, azRate = az / grass;
+  // ① 两种植物都要真的出现
+  assertTrue(sg > 100, `short_grass 只有 ${sg} 株`);
+  assertTrue(az > 30, `azure_bluet 只有 ${az} 株`);
+  // ② 密度对齐 PLAINS（5% / 1.67%），容差 ±1.5 个百分点
+  //    ⚠️ 不能钉太死：抽样格数有限，且两块噪声在草地上并非均匀分布。
+  assertTrue(Math.abs(sgRate - 0.05) < 0.015,
+    `short_grass 占草地 ${(sgRate * 100).toFixed(2)}%（PLAINS 目标 5%）`);
+  assertTrue(Math.abs(azRate - 0.05 / 3) < 0.012,
+    `azure_bluet 占草地 ${(azRate * 100).toFixed(2)}%（PLAINS 目标 1.67%）`);
+  // ③ **非草地上一株都不长**（冰/雪/黏土/缓坡）—— 用户说的是「草地上」
+  assertEqual(offGrass, 0, '冰/雪/黏土/缓坡上不得长植被');
+});
+
+test('台地：草地的植被是确定性的（同 seed 两次调用逐点相同）', () => {
+  const { rx, rz } = findTarnRegion();
+  const lay = computeTarnZone(rx, rz, SEED);
+  let diff = 0;
+  for (let dx = 70; dx < 110; dx += 1) {
+    for (let dz = -20; dz < 20; dz += 1) {
+      const a = tarnPlantAt(lay.cx + dx, lay.cz + dz, SEED, lay);
+      const b = tarnPlantAt(lay.cx + dx, lay.cz + dz, SEED, lay);
+      if (a !== b) diff++;
+    }
+  }
+  assertEqual(diff, 0, '两次调用必须逐点相同（确定性红线 2）');
+});
 
 test('台地：草斑带里浅色石 light_gray_cloth 成片出现（与 stone 弯曲相交）', async () => {
   // ⚠️ **用户 2026-10-29**：「地表的石头方块一部分替换成连成片的 light_stone，

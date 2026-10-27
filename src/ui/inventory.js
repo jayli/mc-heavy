@@ -21,7 +21,12 @@ const MODAL_OWNER = 'inventory';
 const ICON_SIZE = 32;
 
 /** mc-lite global.css 背包相关规则的移植（选择器加 mc- 前缀避免污染宿主页面） */
-const PANEL_CSS = `
+/**
+ * 背包面板的样式表文本。**导出供单测读契约**（浮层的 `pointer-events:none` 是载荷性的，
+ * 见 `#inventory-tooltip` 那段注释）—— 让测试构造整个面板去触发 `ensureStyle()` 再读
+ * `<style>` 会引入 game 桩件与 body 副作用，读导出常量是等价且更干净的路径。
+ */
+export const PANEL_CSS = `
 /* z-index 80 > 设置面板的 70：两个模态可共存于栈中（§4.5.4 模态栈），
    后开的背包必须在视觉上层，否则设置面板开着时按 Z 打开的是一个被完全盖住的背包。
    Escape 关最上层（背包）后回落到设置面板，符合菜单分层直觉。 */
@@ -69,6 +74,17 @@ const PANEL_CSS = `
   text-shadow: 1px 1px 0 #000; pointer-events: none;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+/* hover 浮层：显示方块**完整**名字（槽位里的 10px 小字被 ellipsis 裁掉，
+   长的如 polished_blackstone_bricks 根本看不全）。
+   ⚠️ pointer-events:none 是必须的 —— 否则浮层会挡在光标下方拦截 mousemove，
+   触发 mouseleave → 隐藏 → 再 mouseenter 的循环闪烁。 */
+#inventory-tooltip {
+  position: fixed; z-index: 60; pointer-events: none;
+  padding: 4px 8px; background: rgba(0, 0, 0, 0.88); color: #fff;
+  border: 2px solid #555; font: 13px/1.3 monospace;
+  white-space: nowrap; display: none;
+}
+#inventory-tooltip.mc-visible { display: block; }
 `;
 
 /** 注入背包样式表（幂等：重复构造只注入一次，与 settings-panel 同法） */
@@ -117,6 +133,12 @@ export class InventoryPanel {
     // 二者不重复：Player 的 keydown 有 uiModal 守卫，打开时被拦截）
     this._onKeyDown = (e) => this._handleKey(e);
     window.addEventListener('keydown', this._onKeyDown);
+
+    // hover 浮层（**单个共享实例**，不是每个槽位一个 —— 126 个槽各带一个绝对定位浮层
+    // 会让 DOM 节点数翻倍。挂在 body 下、position:fixed 跟着光标走）。
+    this.tooltip = document.createElement('div');
+    this.tooltip.id = 'inventory-tooltip';
+    document.body.appendChild(this.tooltip);
   }
 
   /** 打开态判据（display 口径，与设置面板一致） */
@@ -131,8 +153,49 @@ export class InventoryPanel {
     this.render();
   }
 
+  /**
+   * 显示 hover 浮层（用户 2026-10-29）。文案 = 方块 id **原样**
+   * （用户裁定：「方块本来叫什么名字，就显示什么名字，比如 polished_blackstone_bricks」），
+   * 不做下划线转空格、不翻译 —— 仓库里没有「显示名」映射表，新增一份就要跟着
+   * `blocks-data.js` 维护，是第二个会漂移的权威。
+   * @param {string} name @param {MouseEvent} e
+   */
+  _showTooltip(name, e) {
+    if (!this.tooltip) return;
+    this.tooltip.textContent = name;
+    this.tooltip.classList.add('mc-visible');
+    this._moveTooltip(e);
+  }
+
+  /**
+   * 浮层跟随光标（右下偏移 14/18，避免挡住光标与槽位）。
+   * ⚠️ 贴到窗口右/下边缘时翻转方向 —— 否则长名字（26 字符）会超出视口被裁掉。
+   * @param {MouseEvent} e
+   */
+  _moveTooltip(e) {
+    if (!this.tooltip || !this.tooltip.classList.contains('mc-visible')) return;
+    const pad = 14;
+    // 先落位再看尺寸（display:none → block 后才有 offsetWidth）
+    this.tooltip.style.left = `${e.clientX + pad}px`;
+    this.tooltip.style.top = `${e.clientY + pad}px`;
+    const w = this.tooltip.offsetWidth, h = this.tooltip.offsetHeight;
+    if (e.clientX + pad + w > window.innerWidth) {
+      this.tooltip.style.left = `${Math.max(0, e.clientX - pad - w)}px`;
+    }
+    if (e.clientY + pad + h > window.innerHeight) {
+      this.tooltip.style.top = `${Math.max(0, e.clientY - pad - h)}px`;
+    }
+  }
+
+  _hideTooltip() {
+    this.tooltip?.classList.remove('mc-visible');
+  }
+
   close() {
     if (!this.isOpen) return; // 关态 close 无副作用（不误清他人门控）
+    // ⚠️ 必须隐藏浮层：背包关掉后光标还停在那儿，浮层是 position:fixed 挂在 body 上的
+    // 单例 → 不隐藏就会留下一个跟着鼠标跑的框。
+    this._hideTooltip();
     this.el.style.display = 'none';
     this.game.popModal(MODAL_OWNER); // 只移除自己的 owner
     // pointer lock 恢复到 canvas（§4.5.4：mc-lite 锁 body，本仓库必须锁 canvas）。
@@ -195,6 +258,12 @@ export class InventoryPanel {
         inv.selectSlot(idx); // 可越出快捷栏 5 格
         this.render();
       });
+      // hover 显示完整名字（用户 2026-10-29：「鼠标移动到某个方块上的时候，hover 住的时候
+      // 要在鼠标旁边显示 hover 的方块的名字全称」，并裁定「就原样显示方块本来叫什么名字」，
+      // 例如 `polished_blackstone_bricks` —— 不做翻译或美化）。
+      div.addEventListener('mouseenter', (e) => this._showTooltip(slot.item, e));
+      div.addEventListener('mousemove', (e) => this._moveTooltip(e));
+      div.addEventListener('mouseleave', () => this._hideTooltip());
       div.append(name, icon);
       this.grid.appendChild(div);
     });
@@ -204,6 +273,9 @@ export class InventoryPanel {
   dispose() {
     window.removeEventListener('keydown', this._onKeyDown);
     if (this.isOpen) this.game.popModal(MODAL_OWNER);
+    // 浮层挂在 body 下（不在 this.el 里）→ 必须单独摘掉，否则换实例后残留
+    this.tooltip?.remove();
+    this.tooltip = null;
     this.el.remove();
   }
 }

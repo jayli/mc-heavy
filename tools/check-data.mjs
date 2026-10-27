@@ -784,6 +784,15 @@ async function checkCloudlandTarnZone() {
   const brickishAll = [];
   const woodyAll = [];
   const mossInTarn = [];
+  // v1.94：高台族不许再出现 mossy_stone / iron_ore（用户 2026-10-29：
+  // 「高台里的 mossy 方块和 iron_ore 方块都换成 light_gray_cloth」）。
+  // ⚠️ 判据放在 **palette** 而不是 BLOCK_MAP：palette 是产物的实际内容 ——
+  //    改 BLOCK_MAP 却忘跑 `npm run tarn` 时 palette 仍是旧的，这条会红（抓静默过期）。
+  const forbiddenInTarn = [];
+  // v1.94：巨型云的材料改写（用户 2026-10-29）—— deepslate 整朵换 clay、
+  // 腰线以上裸露岩石换 cloud、snow/sky_stone 不变。判据落在**产物内容**上，
+  // 改 bake 脚本却忘跑 `npm run tarn` 时会红。
+  const cloudRestyleBad = [];
   for (const [family, base] of allVariants) {
     const p = path.join(fp.KIT_JSON_DIR, `${base}.json`);
     if (!fs.existsSync(p)) { fail(`缺产物 ${base}.json（跑 npm run tarn）`); continue; }
@@ -823,6 +832,35 @@ async function checkCloudlandTarnZone() {
     brickishAll.push(...json.palette.filter((x) => /brick/i.test(x)));
     woodyAll.push(...json.palette.filter((x) => /log|wood|plank|acacia|oak|birch/i.test(x)).map((x) => `${base}:${x}`));
     if (family === 'tarn' && json.palette.includes('moss')) mossInTarn.push(base);
+     if (family === 'tarn') {
+       for (const bad of ['mossy_stone', 'iron_ore']) {
+         if (json.palette.includes(bad)) forbiddenInTarn.push(`${base}:${bad}`);
+       }
+     }
+     if (family === 'giantCloud') {
+       // deepslate 必须整朵消失（换成 clay）
+       if (json.palette.includes('deepslate')) cloudRestyleBad.push(`${base}:deepslate`);
+       // v1.95：debris 必须整朵消失（换成 sky_stone）
+       if (json.palette.includes('debris')) cloudRestyleBad.push(`${base}:debris`);
+       // snow / sky_stone 必须仍在（用户明说保持不变）—— 若被换成 cloud 说明规则写错了
+       const st = json.stride ?? 4;
+       const widthAt = new Map();
+       const rows = [];
+       for (let i = 0; i < json.blocks.length; i += st) {
+         const y = json.blocks[i + 1];
+         rows.push([y, json.blocks[i + st - 1]]);
+         widthAt.set(y, (widthAt.get(y) ?? 0) + 1);
+       }
+       let waistY = 1, waistW = -1;
+       for (const [y, n] of [...widthAt].sort((a, b) => a[0] - b[0])) if (n > waistW) { waistW = n; waistY = y; }
+       const ROCK = new Set(['stone', 'marble', 'stone_diorite', 'smooth_stone', 'smooth_stone_1', 'calcite']);
+       let above = 0;
+       for (const [y, pi] of rows) {
+         if (y <= waistY) continue;
+         if (ROCK.has(json.palette[pi])) above++;
+       }
+       if (above > 0) cloudRestyleBad.push(`${base}:腰线上残留岩石 ${above} 格`);
+     }
     checkedVariants++;
   }
 
@@ -836,6 +874,14 @@ async function checkCloudlandTarnZone() {
   if (mossInTarn.length > 0) {
     fail(`这些高台的 palette 里还有 moss（台顶必须是 grass）：${mossInTarn.join(', ')}`);
   }
+  // v1.94：高台里不许有 mossy_stone / iron_ore（应已换成 light_gray_cloth）
+  if (forbiddenInTarn.length > 0) {
+    fail(`这些高台的 palette 里还有 mossy_stone/iron_ore（应换成 light_gray_cloth）：${forbiddenInTarn.join(', ')}`);
+  }
+  // v1.94：巨型云材料改写不成立
+  if (cloudRestyleBad.length > 0) {
+    fail(`巨型云材料改写不成立（deepslate→clay / debris→sky_stone / 腰线上岩石→cloud）：${cloudRestyleBad.join(', ')}`);
+  }
 
   // ⑥ 出现口径与几何的自洽（v1.90）—— 这一组不依赖烘焙产物，钄的是**代码常量**之间的关系
   //    （改一个而忘改另一个时，产物指纹完全不变，上面 ①~⑤ 全部恒绿）。
@@ -847,6 +893,7 @@ async function checkCloudlandTarnZone() {
   // （既有教训：`[高台]` 曾同时出现「✗ 含砖块族」与「✓ …无砖无木」，读者只看 ✓ 就误判）。
   const ok = failures.every((f) => !f.startsWith('[高台地带]'))
     && brickish.length === 0 && woody.length === 0 && mossInTarn.length === 0
+     && forbiddenInTarn.length === 0 && cloudRestyleBad.length === 0
     && checkedVariants === allVariants.length;
   if (ok) {
     infos.push(`[高台地带] ${checkedVariants} 个产物（11 高台 + 5 拱洞 + 7 紫晶柱 + 12 巨型云）/ 台顶全 grass / 无砖无木 / 指纹匹配 / 出现口径与几何自洽`);

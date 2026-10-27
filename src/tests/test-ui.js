@@ -22,8 +22,10 @@ import { loadIconManifest, iconCss } from '../ui/icons.js';
 import {
   PLAYGROUND_OPEN_LABEL, PLAYGROUND_CLOSE_LABEL, PLAYGROUND_ERRORS,
   PLAYGROUND_ROW_TITLE, PROGRESS_ROW_TITLE, PROGRESS_EXPORT_LABEL, PROGRESS_IMPORT_LABEL, PROGRESS_ERRORS,
+  TELEPORT_ROW_TITLE, TELEPORT_TARN_LABEL, TELEPORT_MARK_LABEL, TELEPORT_GO_LABEL,
 } from '../ui/settings-panel.js';
 import { Toast } from '../ui/toast.js';
+import { PANEL_CSS as INVENTORY_PANEL_CSS } from '../ui/inventory.js';
 
 test('settings: 默认值（vd=8 / blur=off / volume=1 / 风格自动）', () => {
   assertEqual(DEFAULT_SETTINGS.viewDistance, 8);
@@ -314,6 +316,39 @@ test('创造台按钮文案是导出的单一口径常量（两态 + 错误映�
  *
  * ⚠️ 与上一条一样**不断言面板 DOM** —— 面板的布局与可见性由 E2E 兜住。
  */
+test('背包 hover 浮层：显示方块 id 原样，且不拦截鼠标事件', () => {
+  // 用户 2026-10-29：「按 z 换出的背包面板里，鼠标移动到某个方块上的时候，hover 住的时候
+  // 要在鼠标旁边显示 hover 的方块的名字全称」，并裁定「就原样显示方块本来叫什么名字，
+  // 比如 polished_blackstone_bricks」—— 不做下划线转空格、不翻译、不加显示名映射表。
+  //
+  // ⚠️ 这里只能测**样式契约**。交互行为（浮层出现/跟随/消失）由 E2E 兜住 —— 单测没有真实鼠标。
+  const css = INVENTORY_PANEL_CSS;
+  const i = css.indexOf('#inventory-tooltip');
+  assertTrue(i >= 0, 'CSS 里必须有 #inventory-tooltip');
+  const rule = css.slice(i, css.indexOf('}', i));
+  // ⚠️ pointer-events:none 是**载荷性的**：浮层挡在光标下面会拦截 mousemove →
+  // 触发 mouseleave → 隐藏 → 再 mouseenter 的循环闪烁。
+  assertTrue(/pointer-events:\s*none/.test(rule),
+    '#inventory-tooltip 必须 pointer-events:none（否则浮层会闪烁）');
+  // 默认隐藏，靠 .mc-visible 类切换（不是 display 常开）
+  assertTrue(rule.includes('display: none') || rule.includes('display:none'),
+    '浮层默认必须隐藏');
+  assertTrue(css.includes('#inventory-tooltip.mc-visible'), '浮层须用 .mc-visible 类控制显示');
+});
+
+test('瞬移行的标题与三个按钮文案是导出的单一口径常量（v1.92）', () => {
+  // 用户 2026-10-29：「在背景音乐下面增加一排按钮……这个区域的功能就是瞬移」，
+  // 三个按钮依次是「高台地带」「标记位置」「跳转标记位置」。
+  assertEqual(TELEPORT_ROW_TITLE, '瞬移');
+  assertEqual(TELEPORT_TARN_LABEL, '高台地带');
+  assertEqual(TELEPORT_MARK_LABEL, '标记位置');
+  assertEqual(TELEPORT_GO_LABEL, '跳转标记位置');
+  // 三个按钮必须互相可区分 —— 否则玩家分不出「标记」与「跳转标记」哪一个是记录
+  const all = [TELEPORT_TARN_LABEL, TELEPORT_MARK_LABEL, TELEPORT_GO_LABEL];
+  assertEqual(new Set(all).size, 3, '三个瞬移按钮文案不得重复');
+  assertFalse(TELEPORT_ROW_TITLE === PROGRESS_ROW_TITLE, '瞬移行不得与进度管理行撞名');
+});
+
 test('创造台行/进度管理行标题与进度按钮文案是导出的单一口径常量', () => {
   assertEqual(PLAYGROUND_ROW_TITLE, '创造台');
   assertEqual(PROGRESS_ROW_TITLE, '进度管理');

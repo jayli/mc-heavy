@@ -25,7 +25,7 @@ import { SEA_Y, blockIndex } from '../../voxel/constants.js';
 import { applyGiantTrees, loadGiantTrees } from './giant-trees.js';
 import { PYRAMID_HALF, inGiantPyramidFootprint } from './giant-pyramid.js';
 import { TARN_ZONE_RADIUS, snowLandSuppressedByTarn, TARN_CLOUD_MIN_Y } from './tarn-zone.js';
-import { fillTarnPlateau, tarnSnowCap } from './tarn-terrain.js';
+import { fillTarnPlateau, tarnSnowCap, tarnPlantAt } from './tarn-terrain.js';
 import { KIT_VARIANTS, KIT_METRICS } from './cloudland-kit-data.js';
 
 /** 城市 placement 用到的 JSON 结构（GEN 携带城市布局时预载）+ 植被树 JSON */
@@ -83,7 +83,12 @@ function pointContext(wx, wz, layouts, cityLayout, seed) {
   for (const layout of layouts) {
     const tarn = layout.tarn;
     if (!tarn) continue;
-    if (Math.hypot(wx - tarn.cx, wz - tarn.cz) < TARN_ZONE_RADIUS) return { kind: 'tarn' };
+    if (Math.hypot(wx - tarn.cx, wz - tarn.cz) < TARN_ZONE_RADIUS) {
+      // `tarn` 带着 layout 一并返回：阶段 3 的草地植被要用它调 `tarnSurfaceBlock`
+      // （判「这一格是不是草地」的唯一权威）。不带的话调用方只能自己 import
+      // tarn-zone 再算一遍半径 —— 那就是第二份几何判据（红线 1）。
+      return { kind: 'tarn', tarn };
+    }
   }
   // 巨型金字塔占地：让路给塔。
   //
@@ -517,6 +522,15 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
           const roll = rollCityTree(wx, wz, seed);
           if (roll.tree) { tree = roll.tree; baseY = ctx.surfaceY + 1; }
         }
+      } else if (inColumn && ctx.kind === 'tarn') {
+        // 地带草地的单格植被（v1.93，用户：「高台地图的草地上随机生成一些 short_grass
+        // 和 azure 花」）。判据与密度全在 `tarnPlantAt` 里（纯函数，单测直接驱动）：
+        // 只有 `tarnSurfaceBlock === 'grass'` 的格会长，密度对齐普通 PLAINS。
+        //
+        // ⚠️ 只在 `inColumn` 时写，且**不做巨树覆盖检查** —— `pointContext` 的 tarn 分支
+        // 让巨树的 `allowedAt` 判 false，地带里根本不会有巨树。
+        const plant = tarnPlantAt(wx, wz, seed, ctx.tarn);
+        if (plant) setBlock(wx, ctx.tarn.plateauY + 1, wz, plant);
       } else if (ctx.kind === 'snow') {
         if (ctx.core && !ctx.belowSea && seededRandom(wx, wz, seed + 10) < 0.002) {
           tree = { type: 'birchTreeWithSnow' }; baseY = ctx.surfaceY + 1;
