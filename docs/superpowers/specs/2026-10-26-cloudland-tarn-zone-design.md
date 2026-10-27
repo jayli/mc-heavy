@@ -1,6 +1,7 @@
 # 高台地带（Cloudland Tarn Zone）设计
 
-状态：待评审（第四轮审阅修订完成：方案 1 轴对齐 + ringR=58 + TARN_GAP=4）
+状态：**已实施（2026-10-27）** —— 11 个任务全部交付，11 个 commit（`b797ea1`..`580c277`）。
+实施期实测回填已并入本文（DR-7 容量表、DR-6 让路比例、DR-10 云高度、§7 产物体积）。
 日期：2026-10-26
 素材：`/Users/bachi/Downloads/CLOUDLAND`（`schematic/cloudlandassets_1.20.schem` 已入库为
 `assets/cloudland/src/cloudlandassets_1.20.schem`）
