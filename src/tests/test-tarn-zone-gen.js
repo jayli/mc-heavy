@@ -88,8 +88,9 @@ test('地带接线：台地那一层同时出现 grass 与 stone（草石镶嵌�
     else if (id === stoneId) hasStone = true;
   });
   assertTrue(hasGrass, '台地层必须有 grass');
-  assertTrue(hasWater, '水池那层必须有 water');
   assertTrue(hasStone, '台地层必须有 stone（草石镶嵌两种都要出现）');
+  // ⚠️ v1.89：中央水池已删除，地带内不得出现任何水（用户 2026-10-27 裁定）
+  assertTrue(!hasWater, '台地层不得出现 water（v1.89 起地带完全无水）');
 });
 
 test('地带接线：地带上空不出现空岛方块', async () => {
@@ -140,8 +141,7 @@ test('地带接线：高台基座贴地（不悬在水面上方）', async () =>
   const { rx, rz } = findTarnRegion();
   const lay = tarnLayoutOf(rx, rz);
   const reg = await buildDefaultRegistry();
-  const waterId = reg.idOf('water');
-  // 每座高台中心柱的「最低非空气格」必须 <= plateauY（落在水层或更低），
+  // 每座高台中心柱的「最低非空气格」必须 = plateauY（坐在台地地表上），
   // 否则整座悬空 —— 传 plateauY+1 的形态就是最低格 = plateauY+1。
   for (const t of lay.tarns) {
     const wx = Math.round(lay.cx + t.ring * Math.cos(t.ang));
@@ -154,10 +154,10 @@ test('地带接线：高台基座贴地（不悬在水面上方）', async () =>
     for (let y = -30; y <= 90; y++) {
       const id = col.blocks[blockIndex(wx - cx * 16, y, wz - cz * 16)];
       // 台地整形已经填了 plateauY 以下，所以只看 plateauY 及以上的第一格
-      if (y >= lay.plateauY && id !== 0 && id !== waterId) { bottom = y; break; }
+      if (y >= lay.plateauY && id !== 0) { bottom = y; break; }
     }
     assertEqual(bottom, lay.plateauY,
-      `高台 ${t.variant} 的最低非水格应在 plateauY(${lay.plateauY})，实际 ${bottom} —— 传成 plateauY+1 就会悬空一格`);
+      `高台 ${t.variant} 的最低格应在 plateauY(${lay.plateauY})，实际 ${bottom} —— 传成 plateauY+1 就会悬空一格`);
   }
 });
 

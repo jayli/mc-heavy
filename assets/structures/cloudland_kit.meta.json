@@ -265,9 +265,9 @@
   },
   "totalBlocks": 402624,
   "fingerprints": {
-    "input": "7fd49511c524c8f4:00036f62f8f092ef",
+    "input": "7fd49511c524c8f4:1bd20616439b2733",
     "schemSha256": "7fd49511c524c8f4888afae266c0628d56f960affcbdea8befd4ac815b1211c2",
-    "paramsSha256": "00036f62f8f092eff9689ec81d5947a249dd8b8886b85e800a6c5ba45bfb37fb"
+    "paramsSha256": "1bd20616439b2733b7cd941d1eda12c331990d193d284f396a9c89bda88d4e4c"
   },
   "paletteEntryCount": 88
 }

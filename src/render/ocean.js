@@ -3,8 +3,8 @@
 // 水面高度 = SEA_Y + 0.5（mc-lite WATER_LEVEL_OFFSET 语义）。
 import * as THREE from 'three';
 import {
-  uniform, Fn, float, vec3, vec2, sin, cos, max, pow, dot, normalize, length, floor,
-  smoothstep, mix, positionWorld, positionLocal, modelWorldMatrix, cameraPosition, Discard, and, select,
+  uniform, Fn, float, vec3, sin, cos, max, pow, dot, normalize, length, floor,
+  smoothstep, mix, positionWorld, cameraPosition, Discard, and, select,
 } from 'three/tsl';
 import {
   OCEAN_MASK_THRESHOLD, OCEAN_MASK_OFFSET, OCEAN_MASK_NO_CITY,
@@ -86,39 +86,12 @@ const WATER_EDGE_FADE_BAND = 15;
 const WATER_FOG_COLOR = 0x6b9cc0;
 
 /**
- * 海面平面的网格分段数（每边）。
- *
- * ⚠️ **不能用默认的 1**（那就是 `PlaneGeometry(800,800)` 的 4 个顶点）：高台地带的水池靠
- * `positionNode` 在**顶点阶段**把池内顶点抬到 `waterY + 0.5`，而 4 个角点无论怎么抬
- * 都无法在距角 400 格的池心形成局部凸起 —— 实测把抬升量调到 **+50 格**，池心画面差异
- * **0.0**；把整个平面 `visible=false`，差异仍是 **0.0**（平面在那儿根本没顶点铺到）。
- *
- * 64 分段 ⇒ 顶点间距 `800/64 = 12.5` 格、65×65 = 4225 顶点。
- * 池半径 90 ⇒ 池内约 14×14 个顶点，足以形成平整的池面。
- * 顶点数从 4 → 4225 对帧时的影响已实测（见 Task 6 报告）。
- */
-const WATER_PLANE_SEGMENTS = 64;
-
-/**
- * 池面抬升的**几何余量**（格）。
- *
- * ⚠️ **抬升判据必须比池圆大一圈，不能就用 `uTarnPool.z`**：抬升是顶点级的、而渲染是
- * 片元级的（`colorNode` 里的 `Discard` 用的是精确的 `uTarnPool.z`）。若两者同半径，
- * 池边缘那一圈三角形的顶点一半落在池外（不抬）⇒ 插值出的水面会从 2.5 斜降向 −1.5，
- * 观感是「池边水面塔下去一圈」。
- *
- * 取「一个三角形对角线」量级：`12.5 × √2 ≈ 17.7`，再留余量 → 32。
- * 多抬的那些格全在 Discard 圆外，看不见。
- */
-const WATER_TARN_LIFT_MARGIN = 32;
-
-/**
  * 创建海面并挂到场景。
  * @param {THREE.Scene} scene
  * @returns {{update: (camera: THREE.Camera, dt: number) => void, plane: THREE.Mesh}}
  */
 export function setupOcean(scene) {
-  const waterGeo = new THREE.PlaneGeometry(800, 800, WATER_PLANE_SEGMENTS, WATER_PLANE_SEGMENTS);
+  const waterGeo = new THREE.PlaneGeometry(800, 800);
 
   const uTime = uniform(0.0);
   const uColor = uniform(new THREE.Color(WATER_COLOR));
@@ -137,18 +110,6 @@ export function setupOcean(scene) {
     OCEAN_MASK_NO_CITY.minX, OCEAN_MASK_NO_CITY.maxX,
     OCEAN_MASK_NO_CITY.minZ, OCEAN_MASK_NO_CITY.maxZ,
   ));
-  /**
-   * 高台地带水池门控（xyzw = cx / cz / radius / waterSurfaceY）。
-   *
-   * 默认 `w = -1`（哨兵）→ `w > 0` 恒假 → 门控关闭（零回归）。
-   * `setTarnPool()` 接真实池后生效。
-   *
-   * ⚠️ 与城市门控的方向**相反**：城市是「bounds 内一律不渲」，水池是「圆内一律渲」。
-   * 两者互斥（地带 region 不可能在城市内 —— `CITY_REGION` 被排除出地带判定），
-   * 但顺序仍按「城市先、水池后」写，避免将来判据漂移。
-   * 数值常量从 `ocean-mask.js` / `tarn-zone.js` 派生，**不在这里另写一份**（红线 1）。
-   */
-  const uTarnPool = uniform(new THREE.Vector4(0, 0, 0, -1));
 
   const fadeStart = WATER_VISIBLE_DISTANCE - WATER_EDGE_FADE_BAND;
   const fadeEnd = WATER_VISIBLE_DISTANCE;
@@ -207,15 +168,6 @@ export function setupOcean(scene) {
     );
     Discard(inCity);
 
-    // 高台地带水池：池圆内一律渲染水面、池外靠下面的既有无域遮罩。
-    // 这是城市门控的**反向**（城市是 bounds 内一律不渲）。两者互斥（地带 region
-    // 不可能在城市内 —— CITY_REGION 被排除出地带判定），但顺序仍按「城市先、水池后」。
-    // 数值来自 `ocean-mask.js` 的 `tarnPoolAt()`（同一判据的 CPU 版）。
-    const inTarnPool = and(
-      uTarnPool.w.greaterThan(0.0),
-      length(pos.sub(vec2(uTarnPool.x, uTarnPool.y))).lessThanEqual(uTarnPool.z),
-    );
-
     // 水域遮罩：近处仅在地形低于海平面附近显示，远处全显示
     // 阈值 = OCEAN_MASK_THRESHOLD（SEA_Y）；高度是整数 → `h < SEA_Y` ⟺ `h <= SEA_Y-1`，
     // 正是 fillColumn 的水体方块判据（判据同源，无需 mc-lite 的 floor 余量补偿）。
@@ -232,8 +184,7 @@ export function setupOcean(scene) {
     const step = (h) => select(h.lessThan(threshold), float(1.0), float(0.0));
     const nearOceanMask = max(max(max(max(step(h0), step(h1)), step(h2)), step(h3)), step(h4));
     const inRangeMask = smoothstep(float(100.0), float(99.0), dist);
-    // 池内恒 1（不看距离与地形高度），池外退回既有逻辑 ⇒ 零回归。
-    const oceanMask = max(inTarnPool, mix(float(0.0), nearOceanMask, inRangeMask));
+    const oceanMask = mix(float(1.0), nearOceanMask, inRangeMask);
     Discard(oceanMask.lessThanEqual(0.001));
 
     // LOD：远距离减少波纹计算
@@ -284,50 +235,6 @@ export function setupOcean(scene) {
   waterMaterial.colorNode = colorNode;
   waterMaterial.opacityNode = opacityNode;
 
-  // ── 池面抬升（A3）──
-  //
-  // 为什么需要：平面是 800×800 跟相机跑的一片，y 写死在 `WATER_LEVEL_OFFSET`（−1.5）；
-  // 而水池水面在 `plateauY + 0.5 = 2.5`。不抬升的话池面永远被池底挡住 ——
-  // 「池圆内渲染」的门控加了也什么都看不到。
-  //
-  // ⚠️ **`positionNode` 必须返回局部坐标**（致命 3）：three 在 `three.webgpu.js:21575`
-  //    做的是 `positionLocal.assign(subBuild(this.positionNode))`，之后还会再乘一次
-  //    `modelWorldMatrix`。返回世界坐标会双重变换 → 平面跑到 2×camera.position 处。
-  //    所以「在不在池内」用 `objectWorldMatrix.mul(positionLocal).xz` 算世界 xz，
-  //    但返回的仍是局部坐标。
-  //
-  // ⚠️ **平面 `rotation.x = -π/2` ⇒ 局部 +Z 映射到世界 +Y**，抬升必须加在**局部 z** 上。
-  //    加在局部 y 上是平面的法线方向（旋转后指向世界 −Z），会把平面推远。
-  //    抬升量 = 目标世界高度 − `WATER_LEVEL_OFFSET` = 2.5 − (−1.5) = 4.0。
-  //
-  // ⚠️ **池外顶点必须留在 −1.5**（`select` 的 else 分支为 0），否则整片海面被抬到 2.5，
-  //    全世界陆地都被一层水盖住。
-  //
-  // ⚠️ `worldPos` 定义在 `Fn()` **外部**且只算一次 —— 节点图惰求值，写进闭包里会逐顶点重建。
-  // **用 `modelWorldMatrix.mul(positionLocal)` 而不是 `objectWorldMatrix`**：
-  // three 自己的 `positionWorld`（`three.webgpu.js:15072`）就是
-  // `modelWorldMatrix.mul(positionLocal).xyz`；`objectWorldMatrix` 是实例化用的节点，
-  // 在普通 Mesh 上取到的值不可靠（实测：`objectWorldMatrix.mul` 直接抛
-  // `TypeError: objectWorldMatrix.mul is not a function` → 整页白屏）。
-  const worldPos = modelWorldMatrix.mul(positionLocal);
-  waterMaterial.positionNode = Fn(() => {
-    // ⚠️ **几何抬升用「池半径 + 余量」，渲染丢弃用精确池半径**（两者刻意不同）：
-    //    抬升是顶点级的、而 `Discard` 是片元级的。若两者同半径，池边缘那一圈三角形的
-    //    顶点一半在池外（不抬）⇒ 插值出的水面会从 2.5 斜降向 −1.5，
-    //    观感是「池边水面塔下去一圈」。多抬的那些格全在 Discard 圆外，看不见。
-    const inPool = and(
-      uTarnPool.w.greaterThan(0.0),
-      length(worldPos.xz.sub(vec2(uTarnPool.x, uTarnPool.y)))
-        .lessThanEqual(uTarnPool.z.add(float(WATER_TARN_LIFT_MARGIN))),
-    );
-    // 局部 z 偏移 = 目标世界高度 − WATER_LEVEL_OFFSET（常量，不随相机漂）
-    const lift = uTarnPool.w.sub(float(WATER_LEVEL_OFFSET));
-    return vec3(
-      positionLocal.x,
-      positionLocal.y,
-      positionLocal.z.add(select(inPool, lift, float(0.0))),
-    );
-  })();
   waterMaterial.transparent = true;
   waterMaterial.depthWrite = false;
   waterMaterial.side = THREE.DoubleSide;
@@ -350,19 +257,6 @@ export function setupOcean(scene) {
       plane.position.z = camera.position.z;
     },
     setSeed(seed) { uSeed.value = seed; },
-    /**
-     * 接高台地带的水池（全世界最多一个在渲染范围内；`tarnPoolAt()` 的结果）。
-     *
-     * @param {{cx:number,cz:number,radius:number,waterY:number}|null} pool
-     *   `null` → 恢复哨兵 `(0,0,0,-1)`（`w > 0` 恒假 → 门控关闭 + 平面不抬升）。
-     *   ⚠️ `uniform(Vector4).value` 是 `Vector4`，只有 `set(x,y,z,w)` ——
-     *   没有 `setRGB` 之类（那是 `Color` 的方法，写错会在 `start()` 里抛错 → 整页白屏）。
-     */
-    setTarnPool(pool) {
-      if (!pool) { uTarnPool.value.set(0, 0, 0, -1); return; }
-      // w 存的是**水面平面的世界高度**（= waterY + 0.5），positionNode 用它算 lift。
-      uTarnPool.value.set(pool.cx, pool.cz, pool.radius, pool.waterY + 0.5);
-    },
     /**
      * 接城市门控 bounds（全世界唯一，`CITY_REGION = [0,0]`）。
      * @param {{minX:number,maxX:number,minZ:number,maxZ:number}|null} city

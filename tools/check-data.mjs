@@ -814,16 +814,11 @@ async function checkCloudlandTarnZone() {
     for (const name of json.palette) {
       const id = REGISTRY.idOf(name);
       if (id === undefined) { fail(`${base} 含未注册方块 "${name}"（那格会变成 air）`); continue; }
-      if (name === 'glass_block') continue;
+      // ⚠️ **v1.89 起没有任何例外**：原本紫晶柱的 `purple_stained_glass_pane → glass_block`
+      // （180 格 transparent）已按用户 2026-10-27 裁定改为 opaque 的 `amethyst` ——
+      // 「把高台地图里所有方块中的玻璃透明方块都去掉，换成实心方块……全都是不透明的实心方块」。
+      // 高台地带因此与 transparent 通道**完全无关**。
       if (REGISTRY.cullTable[id] !== 0) fail(`${base} 的 "${name}" 不在 opaque 通道（顶点成本约 ×3）`);
-    }
-    // 紫晶柱的 transparent 格数上界（超过说明映射改宽了，撞容量）
-    if (family === 'spire') {
-      let glass = 0;
-      for (let i = 0; i < json.blocks.length; i += 4) {
-        if (json.palette[json.blocks[i + 3]] === 'glass_block') glass++;
-      }
-      if (glass > 200) fail(`${base} 的 glass_block ${glass} 格 > 200（spec 已按 ≤200 标定容量）`);
     }
     brickishAll.push(...json.palette.filter((x) => /brick/i.test(x)));
     woodyAll.push(...json.palette.filter((x) => /log|wood|plank|acacia|oak|birch/i.test(x)).map((x) => `${base}:${x}`));

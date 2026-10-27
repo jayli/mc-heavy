@@ -117,21 +117,31 @@ async function readPixels(page, rect) {
 }
 
 test.describe('高台地带景观', () => {
-  test('池心分层：池底实心 / 1 层水 / 之上空气', async ({ page }) => {
+  test('地带平台：中心是实心地表，完全没有水（v1.89 去掉中央水池）', async ({ page }) => {
     await openGame(page);
     const c = await flyToTarn(page);
     const layers = await page.evaluate(({ cx, cz, plateauY }) => {
       const g = window.__MC_GAME__;
       const nm = (id) => { try { return g.registry.nameOf(id); } catch { return String(id); } };
-      return {
-        below: nm(g.world.getBlockId(cx, plateauY - 1, cz)),
-        water: nm(g.world.getBlockId(cx, plateauY, cz)),
-        above: nm(g.world.getBlockId(cx, plateauY + 1, cz)),
-      };
+      const out = {};
+      for (const dy of [-1, 0, 1]) out['y' + (plateauY + dy)] = nm(g.world.getBlockId(cx, plateauY + dy, cz));
+      // 再扫一遍平台内是否有任何水（体素水 + 沼泽水）
+      const waters = new Set(['water', 'swamp_water']);
+      let waterCells = 0;
+      for (let dx = -60; dx <= 60; dx += 4) {
+        for (let dz = -60; dz <= 60; dz += 4) {
+          for (let y = plateauY - 30; y <= plateauY + 2; y++) {
+            if (waters.has(nm(g.world.getBlockId(cx + dx, y, cz + dz)))) waterCells++;
+          }
+        }
+      }
+      return { ...out, waterCells };
     }, { cx: c.cx, cz: c.cz, plateauY: c.lay.plateauY });
-    expect(layers.water, `池心 y=${c.lay.plateauY} 必须是 water（台地整形没生效？）`).toBe('water');
-    expect(layers.above, '水面之上必须是空气（否则是水柱）').toBe('air');
-    expect(['stone', 'sand', 'deepslate'], `池底必须是实心岩（实际 ${layers.below}）`).toContain(layers.below);
+    const surface = layers['y' + c.lay.plateauY];
+    expect(['grass', 'stone'], `平台中心 y=${c.lay.plateauY} 应是草/石（实际 ${surface}）`).toContain(surface);
+    expect(layers['y' + (c.lay.plateauY + 1)], '平台地表之上必须是空气').toBe('air');
+    // ⚠️ v1.89 的核心断言：地带内一格水都没有
+    expect(layers.waterCells, '地带内出现水格 —— v1.89 起地带必须完全无水（否则占 transparent 通道）').toBe(0);
     await unpin(page);
   });
 
@@ -220,68 +230,6 @@ test.describe('高台地带景观', () => {
     await unpin(page);
   });
 
-  test('池面可见：俯视池心是水色而不是池底', async ({ page }) => {
-    await openGame(page);
-    const c = await flyToTarn(page);
-    await freezeAndHideHud(page);
-    // 悬在池心正上方俯视
-    await teleport(page, c.cx, c.cz, c.lay.plateauY + 18);
-    await page.waitForTimeout(1200);
-    const center = await readPixels(page, { x: 0.35, y: 0.35, w: 0.3, h: 0.3 });
-    // 水色判据：B 显著高于 R（沿用 water-visual.spec 的「水体像素」定义方向）
-    expect(center.b, `池心俯视应当是水色（R=${center.r.toFixed(0)} G=${center.g.toFixed(0)} B=${center.b.toFixed(0)}），实际偏暖 —— 可能看到了池底`).toBeGreaterThan(center.r + 12);
-    await unpin(page);
-  });
-
-  test('池面平面真的在渲染：水区有波纹动画（体素水是静态的）', async ({ page }) => {
-    // ⚠️ **上一条用例测不出海面平面**（负向验证实测：把 `tarnPoolAt` 改成恒返 null
-    //    之后它照样绿）—— 因为体素水本身就是水色，平面在不在都一样。
-    //
-    // 本条的判别力来自一个**只有平面才有的性质**：`ocean.js` 的 TSL 有波浪动画
-    // （`sin(pos.x·1.5 + uTime·5.5)` 等），而体素水是静态贴图。
-    // ⇒ 连续两帧的水区像素必须发生变化；平面没渲染时变化率恒为 0。
-    //
-    // 手法同 `water-visual.spec` 的「测高光是否还在不能用众数峰 luma，要用连续两帧的变化占比」。
-    await openGame(page);
-    const c = await flyToTarn(page);
-    await freezeAndHideHud(page);
-    await teleport(page, c.cx, c.cz, c.lay.plateauY + 18);
-    await page.waitForTimeout(1200);
-
-    const changeRatio = await page.evaluate(() => new Promise((resolve) => {
-      const cv = document.querySelector('canvas');
-      const grab = () => {
-        const off = document.createElement('canvas');
-        off.width = cv.width; off.height = cv.height;
-        const ctx = off.getContext('2d');
-        ctx.drawImage(cv, 0, 0);
-        // 取画面中心的方形区（池面就在那儿）
-        const W = Math.floor(cv.width * 0.3), H = Math.floor(cv.height * 0.3);
-        return ctx.getImageData(
-          Math.floor((cv.width - W) / 2), Math.floor((cv.height - H) / 2), W, H,
-        ).data;
-      };
-      requestAnimationFrame(() => {
-        const a = grab();
-        setTimeout(() => {
-          requestAnimationFrame(() => {
-            const b = grab();
-            let diff = 0, n = 0;
-            for (let i = 0; i < a.length; i += 4) {
-              n++;
-              if (Math.abs(a[i] - b[i]) > 2 || Math.abs(a[i + 1] - b[i + 1]) > 2 || Math.abs(a[i + 2] - b[i + 2]) > 2) diff++;
-            }
-            resolve(diff / n);
-          });
-        }, 220);
-      });
-    }));
-    expect(changeRatio, `连续两帧的水区变化占比 ${(changeRatio * 100).toFixed(1)}% 太低 —— 海面平面没渲染（只剩静态体素水）`).toBeGreaterThan(0.05);
-    await unpin(page);
-  });
-});
-
-test.describe('高台地带零回归', () => {
   test('非地带 region 不出现地带特征（池水/台地草石/巨型云都不在那儿）', async ({ page }) => {
     await openGame(page);
     // 找一个非地带 region 的中心

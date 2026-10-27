@@ -36,8 +36,10 @@ export const KIT_META = path.join(KIT_JSON_DIR, 'cloudland_kit.meta.json');
  * 剥掉前缀/属性后是 73 个去重名字）。
  *
  * ⚠️ value 必须是 registry 里**已注册**的名字（`src/voxel/blocks-data.js`），
- * 且**除 `glass_block` 外全部走 opaque 通道** —— cutout/transparent 会让十万级方块的三通道
- * 容量预算失控（`check:data` 的 `[高台地带]` 环节钉住这条）。`glass_block` 是紫晶柱的
+  * 且**全部走 opaque 通道** —— cutout/transparent 会让十万级方块的三通道容量预算失控
+  * （`check:data` 的 `[高台地带]` 环节钉住这条）。
+  * ⚠️ **v1.89 起没有任何例外**：原本紫晶柱的 `purple_stained_glass_pane → glass_block`
+  * （180 格 transparent）已按用户裁定改为 opaque 的 `amethyst`。
  * 紫晶部分（180 格），是唯一有意例外（设计文档 §4.4 第 5 条）。
  *
  * ⚠️ **不得映射到砖块族（`*bricks`）或木族（`*wood` / `*planks` / `*log`）**
@@ -141,8 +143,12 @@ export const BLOCK_MAP = Object.freeze({
   // ================================================================ 紫晶柱族（spire，紫晶 + 石英）
   // 7 个分量（436 / 381 / 345 / 298 / 134 / 79 / 21 格），合计 1,694 格。
   light_blue_terracotta: 'block_of_quartz',   // 326 格。柱子主体（「石英巨柱」）
-  purple_stained_glass_pane: 'glass_block',   // 180 格。**唯一走 transparent 的映射**
-                                              // （spec §4.4 第 5 条的例外；容量已计入 DR-7 的 98,235）
+   purple_stained_glass_pane: 'amethyst',      // 180 格。⚠️ **v1.89 改用 opaque 实心方块**
+                                               // 用户 2026-10-27 裁定：「把高台地图里所有方块中的
+                                               // 玻璃透明方块都去掉，换成实心方块……全都是不透明
+                                               // 的实心方块」—— 排除一切可能影响性能的因素。
+                                               // 映射到 `amethyst`（紫水晶，opaque，与同族
+                                               // `chorus_plant → amethyst` 同色系）。
   chorus_plant: 'amethyst',                   // 12 格。紫晶柱顶端
   purple_concrete: 'block_of_quartz',         // 5 格
   purple_concrete_powder: 'block_of_quartz',  // 38 格

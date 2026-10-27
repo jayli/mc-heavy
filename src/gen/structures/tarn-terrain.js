@@ -12,7 +12,7 @@
 
 import { noise } from '../noise.js';
 import { blockIndex, WORLD_MIN_Y, WORLD_MAX_Y } from '../../voxel/constants.js';
-import { TERRAIN_HEIGHT_PARAMS } from '../terrain.js';
+import { TERRAIN_HEIGHT_PARAMS, generateHeight } from '../terrain.js';
 
 /**
  * 台地整形的噪声 salt。
@@ -33,6 +33,19 @@ export const TARN_TERRAIN_SALT = 1022;
  * 更大（如 0.02）会整片只有一种方块。
  */
 const SURFACE_SCALE = TERRAIN_HEIGHT_PARAMS.COARSE_SCALE;
+
+/**
+ * 平台边缘的缓坡宽度（格）。
+ *
+ * 平台半径 = `plateauRadius - TARN_SLOPE_WIDTH`；从这个半径往外，地表高度在
+ * `TARN_SLOPE_WIDTH` 格内线性过渡到自然地形高度。
+ *
+ * ⚠️ **v1.89 引入**（用户 2026-10-27 裁定：「完全就用普通的平缓的地形来接续高台地形
+ * 旁边的地图，只要能接续上即可，坡度缓和一些」）。取 40 格 ⇒ 从 `plateauY`(=2) 过渡到
+ * 常见自然高度（~10）的坡度约 8°，玩家跑上去不会被挡住（`MAX_STEP = 1.0`，
+ * 40 格摊 8 格高差 = 每格 0.2，天然可走）。
+ */
+export const TARN_SLOPE_WIDTH = 40;
 
 /**
  * 台地地表方块：草石镶嵌的**唯一权威**（单测直接用，不复制一份判据 —— 红线 1）。
@@ -69,9 +82,14 @@ export function tarnSurfaceBlock(wx, wz, seed) {
 export function fillTarnPlateau(column, layout, seed, registry) {
   const { cx, cz, poolRadius, plateauRadius, plateauY } = layout;
   const stoneId = registry.idOf('stone');
-  const waterId = registry.idOf('water');
   const grassId = registry.idOf('grass');
-  const idCache = new Map([['stone', stoneId], ['water', waterId], ['grass', grassId]]);
+  // 干掉的两种水体（v1.89）：填实时要一并替换成石头
+  const waterId = registry.idOf('water');
+  const swampWaterId = registry.idOf('swamp_water');
+  const idCache = new Map([['stone', stoneId], ['grass', grassId]]);
+  // 内圈平台半径 = 地带半径 − 坡宽。v1.89 起池内也是平台（无水），
+  // 故平台半径只由坡宽决定，不再看 poolRadius。
+  const flatR = plateauRadius - TARN_SLOPE_WIDTH;
   const idOfName = (name) => {
     if (idCache.has(name)) return idCache.get(name);
     const id = registry.idOf(name);
@@ -87,7 +105,6 @@ export function fillTarnPlateau(column, layout, seed, registry) {
   const z1 = Math.min(colMinZ + 15, Math.floor(cz + plateauRadius));
   if (x0 > x1 || z0 > z1) return;
 
-  const poolR2 = poolRadius * poolRadius;
   const platR2 = plateauRadius * plateauRadius;
 
   for (let wx = x0; wx <= x1; wx++) {
@@ -98,33 +115,43 @@ export function fillTarnPlateau(column, layout, seed, registry) {
       if (d2 > platR2) continue;                    // 圆外：不动
 
       const lx = wx - colMinX, lz = wz - colMinZ;
-      const inPool = d2 <= poolR2;
 
-      // ── 1. 削平：plateauY 以上一律清空（含池内与台地） ──
-      for (let y = plateauY + 1; y < WORLD_MAX_Y; y++) {
+      // ── 目标高度：内圈平台恒定 plateauY，外圈 TARN_SLOPE_WIDTH 内平滑过渡到自然地形 ──
+      // ⚠️ **v1.89 去掉中央水池**（用户 2026-10-27 裁定：「把高台所在的中央水面去掉，
+      //    完全就用普通的平缓的地形来接续高台地形旁边的地图，只要能接续上即可，
+      //    坡度缓和一些」）。现在池内也是平台，整片地带是一块平顶高原，
+      //    边缘用 `TARN_SLOPE_WIDTH` 宽的缓坡接回自然地形 —— 不再有 `water` 方块，
+      //    因此 transparent 通道与高台地带**完全无关**。
+      const d = Math.sqrt(d2);
+      let targetY;
+      if (d <= flatR) {
+        targetY = plateauY;
+      } else {
+        // 从 flatR 到 plateauRadius 线性插值到自然高度（缓坡）
+        const t = (d - flatR) / (plateauRadius - flatR);
+        const naturalY = generateHeight(wx, wz, seed);
+        targetY = Math.round(plateauY * (1 - t) + naturalY * t);
+      }
+
+      // ── 1. 削平：targetY 以上一律清空（含原山体） ──
+      for (let y = targetY + 1; y < WORLD_MAX_Y; y++) {
         const idx = blockIndex(lx, y, lz);
         if (column.blocks[idx] !== 0) column.blocks[idx] = 0;
       }
 
-      // ── 2. 池内：池底下沉一格 + 一层水 ──
-      if (inPool) {
-        const bottomY = plateauY - 1;
-        column.blocks[blockIndex(lx, bottomY, lz)] = stoneId;
-        // 池底之下填实（防止玩家从池底掉进原地下水/空气腔）
-        for (let y = WORLD_MIN_Y + 1; y < bottomY; y++) {
-          const idx = blockIndex(lx, y, lz);
-          if (column.blocks[idx] === 0) column.blocks[idx] = stoneId;
-        }
-        column.blocks[blockIndex(lx, plateauY, lz)] = waterId;
-        continue;
-      }
+      // ── 2. 地表：平台用草石镶嵌，坡面用 stone（与自然地形同材质，接缝不突兀） ──
+      const surfaceName = d <= flatR ? tarnSurfaceBlock(wx, wz, seed) : 'stone';
+      column.blocks[blockIndex(lx, targetY, lz)] = idOfName(surfaceName);
 
-      // ── 3. 池外台地：地表 plateauY + 向下填实 ──
-      const surfaceName = tarnSurfaceBlock(wx, wz, seed);
-      column.blocks[blockIndex(lx, plateauY, lz)] = idOfName(surfaceName);
-      for (let y = WORLD_MIN_Y + 1; y < plateauY; y++) {
+      // ── 3. 向下填实（防止玩家从地表掉进原地下水/空气腔） ──
+      // ⚠️ **v1.89：地下水也要换成石头**（用户 2026-10-27 裁定「确保这次新增的高台地形……
+      // 其他不应该有任何差异」+「高台所在的水面完全去掉」）。清掉 `water`/`swamp_water` 是
+      // 让地带**彻底不含透明方块**的最后一步 —— 不填的话自然地形原有的地下水体留在原地，
+      // 既占 transparent 通道，也让「地带有水」这个断言无法成立。
+      for (let y = WORLD_MIN_Y + 1; y < targetY; y++) {
         const idx = blockIndex(lx, y, lz);
-        if (column.blocks[idx] === 0) column.blocks[idx] = stoneId;
+        const cur = column.blocks[idx];
+        if (cur === 0 || cur === waterId || cur === swampWaterId) column.blocks[idx] = stoneId;
       }
     }
   }
