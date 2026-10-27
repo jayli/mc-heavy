@@ -8,8 +8,8 @@
 // `test-giant-trees-gen.js:51`）。真实生成路径就是 `fillColumn` → `fillTarnPlateau` → 结构光栅化。
 import { test } from './runner.js';
 import { assertEqual, assertTrue } from './assert.js';
-import { computeTarnZone, isTarnZone, TARN_SLOPE_WIDTH as TARN_ZONE_SLOPE_WIDTH } from '../gen/structures/tarn-zone.js';
-import { fillTarnPlateau, tarnSurfaceBlock, TARN_TERRAIN_SALT, TARN_SLOPE_WIDTH } from '../gen/structures/tarn-terrain.js';
+import { computeTarnZone, isTarnZone, TARN_SLOPE_WIDTH as TARN_ZONE_SLOPE_WIDTH, TARN_ICE_RADIUS, TARN_SNOW_RADIUS } from '../gen/structures/tarn-zone.js';
+import { fillTarnPlateau, tarnSurfaceBlock, TARN_TERRAIN_SALT, TARN_SLOPE_WIDTH, TARN_BLEND_WIDTH, tarnIceBoundaryAt, blobNoise } from '../gen/structures/tarn-terrain.js';
 import { buildDefaultRegistry } from '../voxel/block-registry.js';
 import { ChunkColumn } from '../voxel/chunk-column.js';
 import { blockIndex } from '../voxel/constants.js';
@@ -33,44 +33,238 @@ async function shapedColumn(lay, wx, wz, reg) {
   return { col, lx: wx - cx * 16, lz: wz - cz * 16 };
 }
 
-test('台地：同一坐标两次调用表面方块相同（确定性）', () => {
-  for (const [wx, wz] of [[100, 100], [-40, 77], [0, 0]]) {
-    assertEqual(tarnSurfaceBlock(wx, wz, SEED), tarnSurfaceBlock(wx, wz, SEED), `(${wx},${wz}) 稳定`);
+test('台地：同一坐标两次调用表面方块相同（确定性）', async () => {
+  const { rx, rz } = findTarnRegion();
+  const lay = computeTarnZone(rx, rz, SEED);
+  for (const [dx, dz] of [[0, 0], [30, 20], [-40, 77], [60, 60], [100, 10]]) {
+    const wx = lay.cx + dx, wz = lay.cz + dz;
+    const a = tarnSurfaceBlock(wx, wz, SEED, lay.cx, lay.cz, lay.platformRadius, lay.plateauRadius);
+    const b = tarnSurfaceBlock(wx, wz, SEED, lay.cx, lay.cz, lay.platformRadius, lay.plateauRadius);
+    assertEqual(a, b, `(${wx},${wz}) 稳定`);
   }
 });
 
 test('台地：TARN_TERRAIN_SALT 已导出且在空闲带内', () => {
-  // salt 占用是**区间**口径（带 `+ step` 的调用点），不能只 grep 字面量。
-  // 已占用：1-58 / 100 / 113 / 200-201 / 301-303 / 311-314 / 800-805 /
-  //         911-958 / 950 / 960-961 / 999 / 1020-1024（本设计的五个）。
-  // 这条钉住 1022 确实被导出且落在本设计占用的连续段内 —— 改 salt 而忘了同步
-  // 注释或与其它系统撞车时，至少这里能看见。
   assertEqual(TARN_TERRAIN_SALT, 1022, 'TARN_TERRAIN_SALT 必须与 tarn-zone.js 的分配一致');
 });
 
-test('台地：草石镶嵌两种方块都出现（不是清一色）', () => {
-  const kinds = new Set();
-  for (let wz = -150; wz <= 150; wz += 3) for (let wx = -150; wx <= 150; wx += 3) {
-    kinds.add(tarnSurfaceBlock(wx, wz, SEED));
+/**
+ * 按半径带统计地表材质占比（唯一取样口径 —— 各用例共用，不各写一份循环）。
+ * @returns {{byBand: Record<string, Record<string, number>>, total: number}}
+ */
+function surfaceBandStats(lay) {
+  const { cx, cz, platformRadius: flatR, plateauRadius: R } = lay;
+  const bands = [
+    ['ice', 0, TARN_ICE_RADIUS],
+    ['snow', TARN_ICE_RADIUS, TARN_SNOW_RADIUS],
+    ['plot', TARN_SNOW_RADIUS, flatR],
+    ['slope', flatR, R],
+  ];
+  const byBand = {};
+  let total = 0;
+  for (const [name, lo, hi] of bands) {
+    const cnt = {};
+    let n = 0;
+    const lim = Math.ceil(hi);
+    for (let dx = -lim; dx <= lim; dx++) for (let dz = -lim; dz <= lim; dz++) {
+      const d = Math.hypot(dx, dz);
+      if (d < lo || d >= hi) continue;
+      const m = tarnSurfaceBlock(cx + dx, cz + dz, SEED, cx, cz, flatR, R);
+      cnt[m] = (cnt[m] ?? 0) + 1;
+      n++;
+    }
+    // 转成占比
+    const frac = {};
+    for (const [k, v] of Object.entries(cnt)) frac[k] = v / n;
+    byBand[name] = frac;
+    total += n;
   }
-  assertEqual(kinds.size, 2, `镶嵌必须产生 2 种方块，实际 ${[...kinds].join(',')}`);
+  return { byBand, total };
+}
+
+test('台地：四带材质分布（冰 / 雪环 / 草斑+黏土 / 黏土缓坡）', async () => {
+  // ⚠️ 用户 2026-10-28 设计：中心冰、往外一圈松散的雪环、再往外黏土基底 + 成片草斑、
+  //    最外缓坡整片 clay 接续外围地形。
+  // 实测（seed 12345 第一座地带）：雪环 64.8% snow / 草斑带 47.1% grass + 18.3% stone
+  //   + 27.7% clay / 缓坡 100% clay。
+  const { rx, rz } = findTarnRegion();
+  const lay = computeTarnZone(rx, rz, SEED);
+  const { byBand } = surfaceBandStats(lay);
+
+  // ① 冰带：主体必须是 ice（`d < ICE_R` 的采样里有 11% 被雪环的向内渗透带吃掉，属设计）
+  // ⚠️ 下界 0.78（不是 0.9）：冰/雪边界的**齿**（`ICE_TOOTH`=20）会把雪推进冰区几格，
+  //    实测冰带纯度 84.2%。这条数被齿深度直接决定，改齿前先看 `ICE_TOOTH` 的标定表。
+  assertTrue((byBand.ice.ice ?? 0) >= 0.78,
+    `冰带内 ice 只占 ${((byBand.ice.ice ?? 0) * 100).toFixed(1)}%（应 ≥78%）`);
+
+  // ② 雪环：松散 —— 既要有雪，也不能是实心一环
+  // ⚠️ **区间必须宽到覆盖「不同地带」的实际波动**：环内占空比由 `TARN_SNOW_FILL` 的
+  //    噪声相位决定，而相位随地带中心坐标变 —— 实测 5 个 seed × 各自第一座地带：
+  //    62.2%~83.2%（中位 63.6%）。拿单座地带标定的窄区间会在别的 seed 上假失败
+  //    （实测就在 ±6 窗口的 seed 12345 地带（中心 -2200,-600）读到 83.2%）。
+  //    判据只钉「不是 100% 实心环」与「不是几乎没有雪」这两条语义。
+  const snowFrac = byBand.snow.snow ?? 0;
+  assertTrue(snowFrac >= 0.45 && snowFrac <= 0.92,
+    `雪环内 snow 占 ${(snowFrac * 100).toFixed(1)}%（应在 45%~92%，即「松散但认得出是环」）`);
+
+  // ③ 草斑带：clay 是基底但 grass/stone 斑块必须出现（成片连通，不是零散点）
+  const plot = byBand.plot;
+  assertTrue((plot.grass ?? 0) >= 0.2, `草斑带 grass 只占 ${((plot.grass ?? 0) * 100).toFixed(1)}%（应 ≥20%）`);
+  assertTrue((plot.stone ?? 0) >= 0.05, `草斑带 stone 只占 ${((plot.stone ?? 0) * 100).toFixed(1)}%（应 ≥5%）`);
+  assertTrue((plot.clay ?? 0) >= 0.15, `草斑带 clay 只占 ${((plot.clay ?? 0) * 100).toFixed(1)}%（应 ≥15% —— 它是基底）`);
+
+  // ④ 缓坡：整片 clay（接续外围地形）
+  assertEqual(Math.round((byBand.slope.clay ?? 0) * 100), 100,
+    `缓坡带必须 100% clay，实际 ${JSON.stringify(byBand.slope)}`);
 });
 
-test('台地：草石镶嵌是「成片」不是逐格斑点', () => {
-  // 逐格随机会让相邻格 50% 概率翻转 ⇒ 同行横向变化率 ~50%。
-  // 成片（低频噪声）应当显著低于这个值。实测门槛取 0.35（远离 0.5 也远离 0）。
-  let flips = 0, total = 0;
-  for (let wz = -150; wz <= 150; wz += 7) {
-    let prev = null;
-    for (let wx = -150; wx <= 150; wx++) {
-      const k = tarnSurfaceBlock(wx, wz, SEED);
-      if (prev !== null) { total++; if (k !== prev) flips++; }
-      prev = k;
-    }
+test('台地：冰/雪之间有 5~7 格的融合带（冰比例随距离平滑下降）', async () => {
+  // ⚠️ **用户 2026-10-28 第二轮要求**：「冰与雪之间要有一个 5~7 格的融合带，让雪过渡到冰」。
+  //
+  // ⚠️ **分桶按「相对带齿边界的距离」**（融合带就是贴着实际边界的那 6 格）。
+  //    另一条用例（「互相侵入」）才用固定基准圆 44 当参照 —— 两者量的是不同的事：
+  //    · 本条 = 「贴着边界的过渡带内部是否渐变」
+  //    · 那条 = 「方块有没有越过基准圆侵入对方深处」
+  const { rx, rz } = findTarnRegion();
+  const lay = computeTarnZone(rx, rz, SEED);
+  const { cx, cz, platformRadius: flatR, plateauRadius: R } = lay;
+  const half = TARN_BLEND_WIDTH / 2;
+
+  // 桶 0..5 覆盖 [44-half, 44+half)
+  const buckets = Array.from({ length: 6 }, () => ({ ice: 0, n: 0 }));
+  for (let dx = -80; dx <= 80; dx++) for (let dz = -80; dz <= 80; dz++) {
+    const wx = cx + dx, wz = cz + dz;
+    const d = Math.hypot(dx, dz);
+    // ⚠️ **用带齿的实际边界分桶**（`tarnIceBoundaryAt`），不是固定基准圆。
+    //    融合带是「贴着实际边界的那 6 格」—— 用固定圆分桶会把齿尖与齿根混进同一桶，
+    //    实测首末差被压到 27 点（正确实现反被判 FAIL）。
+    //    「互相侵入」由另一条用例单独钉（它才该用固定基准圆）。
+    const b = tarnIceBoundaryAt(wx, wz, SEED);
+    if (d < b - half || d >= b + half) continue;
+    const t = (d - (b - half)) / TARN_BLEND_WIDTH;
+    const bi = Math.min(5, Math.floor(t * 6));
+    const m = tarnSurfaceBlock(wx, wz, SEED, cx, cz, flatR, R);
+    buckets[bi].n++;
+    if (m === 'ice') buckets[bi].ice++;
   }
-  const rate = flips / total;
-  assertTrue(rate < 0.35,
-    `横向变化率 ${(rate * 100).toFixed(1)}% 太高 —— 镶嵌退化成逐格花屏（应 <35%）`);
+
+  const total = buckets.reduce((s, b) => s + b.n, 0);
+  assertTrue(total > 500, `融合带采样太少（${total}）—— 本用例无判别力`);
+  for (const [i, b] of buckets.entries()) {
+    assertTrue(b.n > 30, `融合带桶 ${i} 样本太少（${b.n}）`);
+  }
+
+  const ratio = buckets.map((b) => b.ice / b.n);
+  const pct = ratio.map((r) => (r * 100).toFixed(0)).join('% → ') + '%';
+
+  // ① 首末桶必须有显著差距（径向剖面确实在变）
+  assertTrue(ratio[0] - ratio[5] > 0.3,
+    `融合带首末桶差距 ${((ratio[0] - ratio[5]) * 100).toFixed(0)} 点（${pct}）—— 几乎没有渐变`);
+  // ② 线性回归斜率必须为负（整体趋势下降）
+  // ⚠️ **不要求逐桶单调**：齿会让相邻桶小幅反弹（实测 61→54→48→53→52→42 有两处 +5）。
+  //    强行逐桶单调会把正确实现判 FAIL（实测过）。
+  const xs = ratio.map((_, i) => i);
+  const mx = xs.reduce((a, b) => a + b, 0) / xs.length;
+  const my = ratio.reduce((a, b) => a + b, 0) / ratio.length;
+  let num = 0, den = 0;
+  for (let i = 0; i < xs.length; i++) {
+    num += (xs[i] - mx) * (ratio[i] - my);
+    den += (xs[i] - mx) ** 2;
+  }
+  const slope = num / den;
+  assertTrue(slope < -0.06,
+    `融合带趋势斜率 ${slope.toFixed(3)} 不够负（${pct}）—— 冰比例没有随距离稳定下降`);
+  // ③ 中段必须是混合态（不能是两条窄纯色带直接相接）
+  const mid = (ratio[2] + ratio[3]) / 2;
+  assertTrue(mid > 0.2 && mid < 0.8,
+    `融合带中段冰比例 ${(mid * 100).toFixed(0)}% 不是混合态（${pct}）`);
+});
+
+test('台地：融合带宽度在 5~7 格（用户裁定）', () => {
+  // ⚠️ 宽度本身也要钉住：融合带太窄就退回硬边界，太宽就把冰区吃光。
+  assertTrue(TARN_BLEND_WIDTH >= 5 && TARN_BLEND_WIDTH <= 7,
+    `融合带宽度 ${TARN_BLEND_WIDTH} 格不在用户裁定的 5~7 格范围内`);
+});
+
+test('台地：冰与雪**互相侵入对方地界**（不是一条夹在中间的中性带）', async () => {
+  // ⚠️ **用户 2026-10-29 报告：「过渡带的意思是，他们之间的方块有一小部分侵入对方的地界」**。
+  //
+  // 上一版把融合带做成「一条夹在 b±3 之间的带，带内冰比例渐变」—— 这**不满足**要求：
+  // 实测基准圆内侧 38 格内雪占 0.0%、外侧 50~72 格内冰占 0.0%（带外一刀切干净）。
+  // 用户看到的就是「冰到雪直接跳、中间是一条干净的过渡线」。
+  //
+  // ✅ 正确判据 = **越过基准圆 44 去看两边深处有没有对方的方块**。
+  // ⚠️ **不能用 `TARN_ICE_RADIUS + tarnIceWobbleAt()` 当参照**：边界本身带扰动后，
+  //    「按扰动边界分纯区」会把侵入量恒算成 0（实测踩过）。必须用**固定的基准圆**。
+  const { rx, rz } = findTarnRegion();
+  const lay = computeTarnZone(rx, rz, SEED);
+  const { cx, cz, platformRadius: flatR, plateauRadius: R } = lay;
+
+  let iceZone = 0, iceZoneSnow = 0, snowZone = 0, snowZoneIce = 0;
+  for (let dx = -80; dx <= 80; dx++) for (let dz = -80; dz <= 80; dz++) {
+    const wx = cx + dx, wz = cz + dz;
+    const d = Math.hypot(dx, dz);
+    if (d > flatR) continue;
+    const m = tarnSurfaceBlock(wx, wz, SEED, cx, cz, flatR, R);
+    // 基准圆内侧 8 格以为「冰区深处」，外侧 8 格以外到雪环内为「雪区深处」
+    // ⚠️ 参照带取 ±14（齿幅度 20 的一半 ≈ 10，再加 4 格余量）——
+    //    取太近会落在齿的过渡区，取太远又会被雪环外缘的扰动影响。
+    if (d < TARN_ICE_RADIUS - 14) { iceZone++; if (m === 'snow') iceZoneSnow++; }
+    else if (d > TARN_ICE_RADIUS + 14 && d < TARN_SNOW_RADIUS) { snowZone++; if (m === 'ice') snowZoneIce++; }
+  }
+  assertTrue(iceZone > 1000 && snowZone > 1000, `采样太少（冰区 ${iceZone} / 雪区 ${snowZone}）`);
+  const snowIntoIce = iceZoneSnow / iceZone;
+  const iceIntoSnow = snowZoneIce / snowZone;
+
+  // 两侧都要有侵入：各至少 2%（约 1/50 的格），且不能多到把对方吃掉（≤ 25%）
+  assertTrue(snowIntoIce >= 0.02,
+    `冰区深处的雪只占 ${(snowIntoIce * 100).toFixed(1)}% —— 雪没有侵入冰区（过渡带只夹在中间，没有双向渗透）`);
+  assertTrue(iceIntoSnow >= 0.02,
+    `雪区深处的冰只占 ${(iceIntoSnow * 100).toFixed(1)}% —— 冰没有侵入雪区`);
+  assertTrue(snowIntoIce <= 0.25, `冰区深处的雪占 ${(snowIntoIce * 100).toFixed(1)}% —— 太多，冰区被吃掉了`);
+  assertTrue(iceIntoSnow <= 0.25, `雪区深处的冰占 ${(iceIntoSnow * 100).toFixed(1)}% —— 太多，雪区被吃掉了`);
+});
+
+// ⚠️ **「草斑边界必须用 blobNoise（不可分离噪声）」这条在本文件里测不可靠，已移到
+// `npm run check:data` 的 `[台地材质]` 静态门禁。**
+//
+// 原因（五版判据全部试过，都抓不住注入）：
+//   ① 「最长水平/垂直同色段」—— 可分离噪声的等值线是**斜线**，垂直段只 2 格。
+//   ② 「边界梯度是否轴向」—— 方向反了（blobNoise 反而更高）。
+//   ③ 「逐行第一个边界的二阶差分（曲率）」—— 注入可分离噪声后曲率 **2.71**，
+//      比正确实现 **1.23** 还高（斜线族的边界位置逐行跳变）⇒ 无判别力。
+//   ④ 「梯度方向向量长度」—— 都被 0.12~0.16，区分不了。
+//   ⑤ 「可分离性方差」—— 用**连续值**时差 31 个数量级（12.8 vs 1.6e-29），
+//      但 `tarnSurfaceBlock` 只暴露**布尔**掩码，阈值化后两者变成 0.67 vs 0.24，
+//      区分度不足以做可靠断言。
+//
+// ⇒ 可靠判据只能是「源码里用的是哪个函数」，那是静态门禁的职责（`check:data` 的 `[台地材质]`）。
+//    该门禁已做负向验证：把 `blobNoise(` 换成 `noise(` 时真 FAIL。
+
+test('台地：草斑带里浅色石 light_gray_cloth 成片出现（与 stone 弯曲相交）', async () => {
+  // ⚠️ **用户 2026-10-29**：「地表的石头方块一部分替换成连成片的 light_stone，
+  //    浅颜色的石头方块。他们之间的边界也不要是直线形状，也要是弯曲的相交」。
+  //    「light_stone」= **`light_gray_cloth`**（用户后续指名）。
+  //    实测贴图灰度均值 163（stone 125 / smooth_stone_1 156 / stone_diorite 188）。
+  const { rx, rz } = findTarnRegion();
+  const lay = computeTarnZone(rx, rz, SEED);
+  const { cx, cz, platformRadius: flatR, plateauRadius: R } = lay;
+
+  let light = 0, stone = 0;
+  for (let dx = -R; dx <= R; dx++) for (let dz = -R; dz <= R; dz++) {
+    const d = Math.hypot(dx, dz);
+    if (d < TARN_SNOW_RADIUS || d >= flatR) continue;
+    const m = tarnSurfaceBlock(cx + dx, cz + dz, SEED, cx, cz, flatR, R);
+    if (m === 'light_gray_cloth') light++;
+    else if (m === 'stone') stone++;
+  }
+  assertTrue(light > 200, `草斑带里 light_gray_cloth 只有 ${light} 格（应成片出现）`);
+  assertTrue(stone > 200, `草斑带里 stone 只有 ${stone} 格`);
+  // 「连成片」：两种各自都要占石头总量的一定份额（不是零星点缀）
+  const total = light + stone;
+  assertTrue(light / total > 0.15,
+    `light_gray_cloth 只占浅/深石头的 ${(light / total * 100).toFixed(0)}%（应 ≥15% 才是「成片」）`);
+  assertTrue(stone / total > 0.15, `stone 只占 ${(stone / total * 100).toFixed(0)}%`);
 });
 
 test('台地：缓坡宽度与 tarn-zone 同源（两边不得各写一份）', () => {
@@ -112,22 +306,26 @@ test('台地：高度恒定（台地范围内地表高差 = 0）', async () => {
     `台地各采样点地表必须全等于 plateauY(${lay.plateauY})，实际 ${[...heights].join(',')}`);
 });
 
-test('台地：地带上完全没有水（v1.89 去掉中央水池）', async () => {
-  // ⚠️ **用户 2026-10-27 裁定**：「把高台所在的中央水面去掉，完全就用普通的平缓的地形来接续
-  // 高台地形旁边的地图」。这不只是观感 —— 体素水占 transparent 通道，去掉它让高台地带与
-  // transparent **完全无关**（池面平面、`setTarnPool`、`tarnPoolAt` 一并删除）。
+test('台地：平台内无水，缓坡洼地会回填水（v1.91 修正口径）', async () => {
+  // ⚠️ **口径在 v1.91 改了**（用户 2026-10-28 报告水 bug 后）：
+  //
+  // - **平台内**（d ≤ `platformRadius`）：地表恒为 `plateauY`（= SEA_Y+4 > SEA_Y）
+  //   ⇒ 本就不可能有水，断言「全部无水」仍然成立且有意义（砦 v1.89 去掉中央水池）。
+  // - **缓坡带**（`platformRadius < d ≤ plateauRadius`）：地表要线性过渡到自然地形，
+  //   而周边地形有相当比例的洼地在海平面以下（实测 36.7% 的缓坡采样点自然高度 < SEA_Y）
+  //   ⇒ **那里回填水是正确的**（与外围地图的水体连续），不能断言「整个圆无水」。
+  //   旧断言把采样点放到 `plateauRadius - 4`（= 134，已在缓坡带上），
+  //   回填后它会真 FAIL —— 那是旧断言错了，不是实现错了。
   const { rx, rz } = findTarnRegion();
   const lay = computeTarnZone(rx, rz, SEED);
   const reg = await buildDefaultRegistry();
   const waterId = reg.idOf('water');
   const waterLike = new Set([waterId, reg.idOf('swamp_water')].filter((x) => x !== undefined));
   let waterCells = 0, checked = 0;
-  // 扫地带圆内的多个采样点，逐 y 数水格。
-  // ⚠️ 半径序列必须全部 < `lay.plateauRadius`（s1.90 = 138）：写 130 已在缓坡带上，
-  //    而缓坡带也在整形的范围内，所以仍然是合法采样点；旧序列里的 130 保留。
   for (let a = 0; a < 24; a++) {
     const ang = (a / 24) * Math.PI * 2;
-    for (const r of [0, 20, 45, 70, 100, lay.platformRadius - 4, lay.plateauRadius - 4]) {
+    // 只采平台内（半径全部 < platformRadius）
+    for (const r of [0, 20, 45, 70, 100, lay.platformRadius - 4]) {
       const wx = Math.round(lay.cx + r * Math.cos(ang));
       const wz = Math.round(lay.cz + r * Math.sin(ang));
       const { col, lx, lz } = await shapedColumn(lay, wx, wz, reg);
@@ -138,7 +336,7 @@ test('台地：地带上完全没有水（v1.89 去掉中央水池）', async ()
     }
   }
   assertTrue(checked > 100, `采样点太少（${checked}）—— 本用例无判别力`);
-  assertEqual(waterCells, 0, `地带圆内出现 ${waterCells} 格水（v1.89 起地带必须完全无水）`);
+  assertEqual(waterCells, 0, `平台内出现 ${waterCells} 格水（v1.89 起平台必须完全无水）`);
 });
 
 test('台地：边缘缓坡接续自然地形（缓坡带内逐格高差 ≤ 1）', async () => {
@@ -232,6 +430,71 @@ test('台地：台地外的格不被整形（圆外零影响）', async () => {
   assertTrue(insideCount > 0 && insideCount < 256,
     `该边缘 column 必须部分在圆内部分在圆外（实测圆内 ${insideCount}/256），否则本用例无判别力`);
   assertEqual(outsideChanged, 0, `圆外格被整形了 ${outsideChanged} 处（应为 0）`);
+});
+
+test('台地：整形后地表低于海平面的列必须回填水（v1.91 修 bug）', async () => {
+  // ⚠️ **这是用户 2026-10-28 报告的缺陷**：「高台地带和外围地图接壤的部分，如果有共享的水池，
+  //    则原有的水方块并未在高台地带延伸过来的水下区域填充水方块」。
+  //
+  // 根因：`fillTarnPlateau` 的削平循环把 `targetY` 以上全写成 0（含原有水体），
+  // 而随后的「向下填实」**只写 stone、从不写 water** —— 于是缓坡带里 `targetY < SEA_Y`
+  // 的列就变成了「低于海平面的干坑」（周边原有的水被清掉且没补回来）。
+  // 实测 seed 12345 的一座地带：圆内 **3251 列**成干坑、原有的 **148012** 格水全被清掉。
+  //
+  // 判据 = 「地表低于海平面的列，从地表之上到 SEA_Y 必须全是水」（与 `fillColumn`
+  // 的水面填充同口径：`(h, SEA_Y]`）。
+  const { rx, rz } = findTarnRegion();
+  const lay = computeTarnZone(rx, rz, SEED);
+  const reg = await buildDefaultRegistry();
+  const waterId = reg.idOf('water');
+  const { SEA_Y } = await import('../voxel/constants.js');
+
+  let pitCols = 0, filledOk = 0, failed = 0;
+  const examples = [];
+  const R = lay.plateauRadius;
+  const minCx = Math.floor((lay.cx - R) / 16), maxCx = Math.floor((lay.cx + R) / 16);
+  const minCz = Math.floor((lay.cz - R) / 16), maxCz = Math.floor((lay.cz + R) / 16);
+  for (let cx = minCx; cx <= maxCx; cx++) for (let cz = minCz; cz <= maxCz; cz++) {
+    const col = new ChunkColumn(cx, cz);
+    fillColumn(col, SEED, reg);
+    fillTarnPlateau(col, lay, SEED, reg);
+    for (let lx = 0; lx < 16; lx++) for (let lz = 0; lz < 16; lz++) {
+      const wx = cx * 16 + lx, wz = cz * 16 + lz;
+      if (Math.hypot(wx - lay.cx, wz - lay.cz) > R) continue;
+      let top = null;
+      for (let y = 95; y >= -31; y--) {
+        if (col.blocks[blockIndex(lx, y, lz)] !== 0) { top = y; break; }
+      }
+      if (top === null) continue;
+      // ⚠️ **修后「地表低于海平面」的列会是 0**：水已经被填到 SEA_Y，
+      //    所以 `top`（顶层非空方块的 y）就是 SEA_Y 的水面。
+      //    判据因此要改成「地表（去掉水后的陆地顶）低于 SEA_Y 的列，水上那一段必须是水」——
+      //    否则修好了反而测不出东西（旧写法在修后变成恒真空断言，实测报了 0 个洼地）。
+      // 先找陆地顶（跳过水）
+      let landTop = null;
+      for (let y = top; y >= -31; y--) {
+        const b = col.blocks[blockIndex(lx, y, lz)];
+        if (b !== 0 && b !== waterId) { landTop = y; break; }
+      }
+      if (landTop === null || landTop >= SEA_Y) continue;   // 只看陆地顶低于海平面的洼地
+      pitCols++;
+      let ok = true;
+      for (let y = landTop + 1; y <= SEA_Y; y++) {
+        if (col.blocks[blockIndex(lx, y, lz)] !== waterId) { ok = false; break; }
+      }
+      if (ok) filledOk++;
+      else {
+        failed++;
+        if (examples.length < 5) examples.push(`(${wx},${wz}) landTop=${landTop} top=${top}`);
+      }
+    }
+  }
+  // 先确认用例真的有判别力：地带里必须存在低于海平面的洼地
+  assertTrue(pitCols > 100,
+    `地带内低于海平面的列只有 ${pitCols} 个 —— 本用例无判别力（地形变了？）`);
+  assertEqual(failed, 0,
+    `${pitCols} 个洼地列里有 ${failed} 列没回填水（应为 0）：${examples.join(' ')}`);
+  assertEqual(filledOk, pitCols, '所有低于海平面的列都必须填满水');
 });
 
 test('台地：高于 plateauY 的原山体被削平（不是「台地长在山里」）', async () => {

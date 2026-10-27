@@ -148,7 +148,8 @@ test.describe('高台地带景观', () => {
       return { ...out, waterCells };
     }, { cx: c.cx, cz: c.cz, plateauY: c.lay.plateauY });
     const surface = layers['y' + c.lay.plateauY];
-    expect(['grass', 'stone'], `平台中心 y=${c.lay.plateauY} 应是草/石（实际 ${surface}）`).toContain(surface);
+    // ⚠️ v1.91 起中心是冰带（用户 2026-10-28 设计），不再是草石镶嵌
+    expect(['ice', 'snow'], `平台中心 y=${c.lay.plateauY} 应是冰/雪（实际 ${surface}）`).toContain(surface);
     expect(layers['y' + (c.lay.plateauY + 1)], '平台地表之上必须是空气').toBe('air');
     // ⚠️ v1.89 的核心断言：地带内一格水都没有
     expect(layers.waterCells, '地带内出现水格 —— v1.89 起地带必须完全无水（否则占 transparent 通道）').toBe(0);
@@ -190,7 +191,10 @@ test.describe('高台地带景观', () => {
         vals.sort((a, b) => a - b);
         return { median: vals.length ? vals[Math.floor(vals.length / 2)] : null, n: vals.length };
       };
-      // 平台层的草/石覆盖率（地带内 vs 圆外）
+      // 平台层的台地材质覆盖率（地带内 vs 圆外）
+      // ⚠️ v1.91：台地材质变成冰/雪/黏土/草/石五种（不再是纯草石），
+      //    判据得跟着改 —— 不然「台地整形生效」的赋值率会因材质换代跌到 31% 假失败。
+      const PLATFORM_MATERIALS = new Set(['ice', 'snow', 'clay', 'grass', 'stone']);
       const platformCoverage = (radMin, radMax) => {
         let total = 0, paved = 0;
         for (let i = 0; i < 64; i++) {
@@ -200,7 +204,8 @@ test.describe('高台地带景观', () => {
           const z = Math.round(cz + rad * Math.sin(ang));
           total++;
           const n = nm(g.world.getBlockId(x, plateauY, z));
-          if (n === 'grass' || n === 'stone') paved++;
+          // v1.91：台地材质是 ice/snow/clay/grass/stone 五种之一（不再是纯草石）
+          if (PLATFORM_MATERIALS.has(n)) paved++;
         }
         return { total, paved, rate: total ? paved / total : 0 };
       };
@@ -238,33 +243,109 @@ test.describe('高台地带景观', () => {
     await unpin(page);
   });
 
-  test('台地层是草石镶嵌（两种都出现，且不是清一色）', async ({ page }) => {
+  test('台地层是四带材质（冰 / 雪 / 草斑+黏土 / 黏土缓坡）', async ({ page }) => {
     await openGame(page);
     const c = await flyToTarn(page);
     const surface = await page.evaluate(({ cx, cz, lay }) => {
       const g = window.__MC_GAME__;
       const nm = (id) => { try { return g.registry.nameOf(id); } catch { return String(id); } };
-      const counts = {};
-      // 平台环带：从平台边缘内缩取样（缓坡带不是草石镶嵌，是 stone）
-      const flat = lay.platformRadius;
-      for (let a = 0; a < 48; a++) {
-        const ang = (a / 48) * Math.PI * 2;
-        for (const r of [flat * 0.3, flat * 0.5, flat * 0.7, flat * 0.9, flat - 2]) {
-          const x = Math.round(cx + r * Math.cos(ang));
-          const z = Math.round(cz + r * Math.sin(ang));
-          const n = nm(g.world.getBlockId(x, lay.plateauY, z));
-          counts[n] = (counts[n] || 0) + 1;
+      // 按半径带分开统计 ---— 关键：不能全部混在一起数，否则「冰区 100% ice」与
+      //「缓坡 100% clay」会互相抵消成一个看不出问题的分布。
+      const bands = [
+        ['ice', 0, 44], ['snow', 44, 72], ['plot', 72, lay.platformRadius],
+        ['slope', lay.platformRadius, lay.plateauRadius],
+      ];
+      const out = {};
+      for (const [name, lo, hi] of bands) {
+        const counts = {};
+        let n = 0;
+        // 环形采样：每个带取 48 方位 × 带内均匀的 4 个半径
+        for (let a = 0; a < 48; a++) {
+          const ang = (a / 48) * Math.PI * 2;
+          for (let k = 0; k < 4; k++) {
+            const r = lo + (hi - lo) * (k + 0.5) / 4;
+            const x = Math.round(cx + r * Math.cos(ang));
+            const z = Math.round(cz + r * Math.sin(ang));
+            // ⚠️ **必须逐列找地表，不能读固定的 `plateauY` 层**：缓坡带的地表高度
+            //    从 plateauY 线性降到自然高度（实测最低到 -6），那里 `plateauY` 层是空气。
+            //    读固定层会把缓坡全数成空气（实测 51.6% air）→「缓坡不是整片 clay」假失败。
+            let top = null;
+            for (let y = lay.plateauY + 40; y >= lay.plateauY - 20; y--) {
+              if (g.world.getBlockId(x, y, z) !== 0) { top = y; break; }
+            }
+            if (top === null) continue;
+            const nmv = nm(g.world.getBlockId(x, top, z));
+            counts[nmv] = (counts[nmv] || 0) + 1;
+            n++;
+          }
         }
+        const frac = {};
+        for (const [k, v] of Object.entries(counts)) frac[k] = v / n;
+        out[name] = frac;
       }
-      return counts;
+      return out;
     }, { cx: c.cx, cz: c.cz, lay: c.lay });
 
-    expect(surface.grass, `台地层必须有 grass（实际 ${JSON.stringify(surface)}）`).toBeGreaterThan(0);
-    expect(surface.stone, `台地层必须有 stone（实际 ${JSON.stringify(surface)}）`).toBeGreaterThan(0);
-    // 不是清一色：两种都要有相当比例（各自 ≥10%，避免「只有一两格」蒙混）
-    const total = Object.values(surface).reduce((s, v) => s + v, 0);
-    expect(surface.grass / total).toBeGreaterThan(0.10);
-    expect(surface.stone / total).toBeGreaterThan(0.10);
+    // ① 冰带：主体是 ice
+    expect(surface.ice.ice ?? 0, `冰带 ice 占比 ${JSON.stringify(surface.ice)}`).toBeGreaterThan(0.5);
+    // ② 雪环：有雪但不是实心一环（松散）
+    const snowFrac = surface.snow.snow ?? 0;
+    expect(snowFrac, `雪环 snow 占比 ${JSON.stringify(surface.snow)}`).toBeGreaterThan(0.25);
+    expect(snowFrac, `雪环 snow 占比 ${(snowFrac * 100).toFixed(0)}% —— 不是「松散」，是实心环`)
+      .toBeLessThan(0.98);
+    // ③ 草斑带：grass / stone / clay 三种都出现
+    expect(surface.plot.grass ?? 0, `草斑带 ${JSON.stringify(surface.plot)}`).toBeGreaterThan(0.1);
+    expect(surface.plot.clay ?? 0, `草斑带 ${JSON.stringify(surface.plot)}`).toBeGreaterThan(0.1);
+    // ④ 缓坡：整片 clay
+    // ⚠️ **先排除「覆盖在缓坡上但不是地表材质」的方块**（实测两类）：
+    //    ① `water` ~10% —— 洼地回水（v1.91 修的那个 bug 的正确行为）；扫描到水面就采到水。
+    //    ② `cloud` ~6% —— 巨型云在 y≥54，`topAt` 从高往低扫会先碰到云。
+    //    这两者都不是「地表材质错了」的证据，计入 clay 占比会让修好的实现假失败。
+    const SLOPE_NON_SURFACE = new Set(['water', 'swamp_water', 'cloud']);
+    const slopeSolid = Object.entries(surface.slope)
+      .filter(([k]) => !SLOPE_NON_SURFACE.has(k))
+      .reduce((acc, [, v]) => acc + v, 0);
+    const slopeClay = slopeSolid > 0 ? (surface.slope.clay ?? 0) / slopeSolid : 0;
+    expect(slopeClay, `缓坡固体材质 ${JSON.stringify(surface.slope)} —— clay 占 ${(slopeClay * 100).toFixed(0)}%`)
+      .toBeGreaterThan(0.9);
+    await unpin(page);
+  });
+
+  test('洼地有水：地带边缘的水体与外围地图连续（v1.91 修 bug）', async ({ page }) => {
+    await openGame(page);
+    const c = await flyToTarn(page);
+    // ⚠️ **用户 2026-10-28 报告的缺陷**：「高台地带和外围地图接壤的部分，如果有共享的水池，
+    //    则原有的水方块并未在高台地带延伸过来的水下区域填充水方块」。
+    // 这里从**世界侧**验：地带圆内所有「陆地顶低于海平面」的列，从陆地顶到 SEA_Y 必须是水。
+    const r = await page.evaluate(({ cx, cz, lay, SEA_Y }) => {
+      const g = window.__MC_GAME__;
+      const waterId = g.registry.idOf('water');
+      let pit = 0, dry = 0;
+      const dryEx = [];
+      const R = lay.plateauRadius;
+      for (let dx = -R; dx <= R; dx += 2) for (let dz = -R; dz <= R; dz += 2) {
+        if (Math.hypot(dx, dz) > R) continue;
+        const x = cx + dx, z = cz + dz;
+        // 找陆地顶（跳过水）
+        let landTop = null;
+        for (let y = lay.plateauY; y >= SEA_Y - 24; y--) {
+          const id = g.world.getBlockId(x, y, z);
+          if (id !== 0 && id !== waterId) { landTop = y; break; }
+        }
+        if (landTop === null || landTop >= SEA_Y) continue;
+        pit++;
+        let ok = true;
+        for (let y = landTop + 1; y <= SEA_Y; y++) {
+          if (g.world.getBlockId(x, y, z) !== waterId) { ok = false; break; }
+        }
+        if (!ok) { dry++; if (dryEx.length < 5) dryEx.push(`(${x},${z}) landTop=${landTop}`); }
+      }
+      return { pit, dry, dryEx };
+    }, { cx: c.cx, cz: c.cz, lay: c.lay, SEA_Y: -2 });
+
+    // 先确认用例有判别力：地带边缘必须真的存在低于海平面的洼地
+    expect(r.pit, `地带内低于海平面的列只有 ${r.pit} 个 —— 本用例无判别力`).toBeGreaterThan(10);
+    expect(r.dry, `${r.pit} 个洼地里有 ${r.dry} 个没水：${r.dryEx.join(' ')}`).toBe(0);
     await unpin(page);
   });
 

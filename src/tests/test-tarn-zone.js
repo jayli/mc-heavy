@@ -129,11 +129,18 @@ test('出现口径：合格集合上的命中率 ≈ 1/5（62 seed 实测均值 
     `合格集命中率 ${rate.toFixed(3)} 偏离 1/5（${hit}/${elig}）—— 实测 chance=1/3 时是 0.333、1/10 时是 0.10`);
 });
 
-test('出现口径：地带是稀有图（每 12~40 个 region 才一座）', () => {
-  // 实测 7 seed：每 13.6~23.1 region 一座（旧口径是每 3.4）。
-  // 带宽取 [12, 40]：下界防「变回每 3 个一座」与「chance 改成 1/3」（实测 8.4~12.0），
-  // 上界防「稀到走半天找不到」（chance 1/10 实测 26~45，会被上界抓住一部分；
-  // 精确判据在上一条命中率用例）。
+test('出现口径：地带是稀有图（每 6~14 个 region 才一座）', () => {
+  // 实测 8 seed：**每 7.4~7.7 region 一座**（seed 12345 是 8.3）。
+  //
+  // ⚠️ **带宽演变**（每次都是用户观感裁定后的重标，不是放宽）：
+  // | 版本 | 口径 | 实测密度 |
+  // |---|---|---|
+  // | v1.89 | 纯哈希 1/3 | 每 3.4 |
+  // | v1.90 | 1/5 + 只有 PLAINS + 圆周挨沙漠 | 每 13.6~23.1 |
+  // | **v1.92（现行）** | 1/5 + PLAINS+FOREST+AZALEA + 260 格内有沙漠 | **每 7.4~8.3** |
+  //
+  // 带宽 [6, 14]：下界防「变回每 3 个一座」（实测 3.0~3.2），
+  // 上界防「退回只有 PLAINS」（实测 13.6~23.1 会被抓住）。
   for (const seed of [12345, 4, 7]) {
     let hits = 0, total = 0;
     for (let rx = -12; rx <= 12; rx++) for (let rz = -12; rz <= 12; rz++) {
@@ -141,12 +148,12 @@ test('出现口径：地带是稀有图（每 12~40 个 region 才一座）', ()
       if (isTarnZone(rx, rz, seed)) hits++;
     }
     const per = total / Math.max(1, hits);
-    assertTrue(per >= 12 && per <= 40,
-      `seed ${seed}: 每 ${per.toFixed(1)} region 一座地带（实测区间 13.6~23.1，允许 12~40）`);
+    assertTrue(per >= 6 && per <= 14,
+      `seed ${seed}: 每 ${per.toFixed(1)} region 一座地带（实测区间 7.4~8.3，允许 6~14）`);
   }
 });
 
-test('出现口径：地带中心 biome 必须是「草地」（用户裁定只有 PLAINS）', () => {
+test('出现口径：地带中心 biome 必须是「草地」（PLAINS / FOREST / AZALEA）', () => {
   let total = 0;
   for (const seed of [12345, 4, 7]) {
     for (let rx = -10; rx <= 10; rx++) for (let rz = -10; rz <= 10; rz++) {

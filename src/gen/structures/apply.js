@@ -25,7 +25,7 @@ import { SEA_Y, blockIndex } from '../../voxel/constants.js';
 import { applyGiantTrees, loadGiantTrees } from './giant-trees.js';
 import { PYRAMID_HALF, inGiantPyramidFootprint } from './giant-pyramid.js';
 import { TARN_ZONE_RADIUS, snowLandSuppressedByTarn, TARN_CLOUD_MIN_Y } from './tarn-zone.js';
-import { fillTarnPlateau } from './tarn-terrain.js';
+import { fillTarnPlateau, tarnSnowCap } from './tarn-terrain.js';
 import { KIT_VARIANTS, KIT_METRICS } from './cloudland-kit-data.js';
 
 /** 城市 placement 用到的 JSON 结构（GEN 携带城市布局时预载）+ 植被树 JSON */
@@ -318,6 +318,17 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
       const dy = d.kind === 'arch' ? tarnLayout.plateauY + 1 : tarnLayout.plateauY;
       rasterizeStructure(d.variant, wx, dy, wz, setBlock, column, registry, seed, false);
     }
+
+    // 3. 高台顶层换雪（v1.91，用户 2026-10-28 裁定：「一圈高台的位置用雪方块铺设……
+    //    高台顶层也换雪」）。
+    //
+    // ⚠️ **必须在光栅化之后做**，不能在 `fillTarnPlateau` 里做 —— 那时高台还没长出来。
+    // ⚠️ **只换「露天顶层那一格」**：用「向上第一格是空气」判据逐列找地表。
+    //    写成「从 y=plateauY 到天上全部换」会把高台内部的楼层/墙面也换掉（那就不再是建筑了）。
+    // ⚠️ **只在雪环带内换**（`TARN_ICE_RADIUS` 到 `TARN_SNOW_RADIUS` 的温度带）：
+    //    高台环半径 58 落在带内（44~72），而紫晶柱内环 20 在冰区、拱洞环 96 在草斑区 ——
+    //    如果全圆无条件换雪，会把冰区地面和草斑地面也变成雪。
+    tarnSnowCap(column, tarnLayout, seed, registry, setBlock);
 
     // 4 朵巨型云（用户要求「原有云朵可以渲染」的额外一层 —— 与 `sky.cloudClusters` 的
     // 既有小云簇**并存**，不是替代）。

@@ -100,12 +100,48 @@ export const TARN_ZONE_CHANCE = 1 / 5;
 export const TARN_DESERT_CAP = 0.25;
 
 /**
- * 「草地地形」biome 集合 —— 用户 2026-10-28 裁定**只有 PLAINS**。
+ * 「草地地形」biome 集合。
  *
- * ⚠️ 不要扩成 FOREST / AZALEA / SWAMP：用户明确答「只有 PLAINS」。扩展会顶掉森林与湿地，
- * 且密度会翻倍（实测 ±12 窗口：只有 PLAINS 时 248 个候选中心，加 FOREST 后 412）。
+ * ⚠️ **用户 2026-10-28 两轮裁定**：先答「只有 PLAINS」，实玩后报「再也碰不到高台地带」，
+ * 再改为**放宽到 PLAINS + FOREST + AZALEA**。SWAMP 仍排除（湿地有它自己的观感）。
+ *
+ * 实测（±12 = 625 region，6 seed 均值）资格命中率：
+ * | biome 集合 | 资格 | ×1/5 后密度 |
+ * |---|---|---|
+ * | 只有 PLAINS | 32.9% | 每 15.2 region 一座 |
+ * | **+FOREST+AZALEA（现行）** | **66.0%** | **每 7.6 一座** |
+ * | +SWAMP | 66.4% | 每 7.5 一座（几乎无增益，故不加） |
+ *
+ * ⚠️ **放宽 biome 是提密度的唯一有效途径**：实测「挨沙漠」那条判据对 PLAINS
+ * 完全不起作用（去掉它资格仍是 33.7%）—— 因为「沙漠占比 ≤25%」已经把邻近沙漠的
+ * PLAINS 全排掉了，两条判据高度重叠。所以想变密只能放宽 biome。
  */
-export const TARN_HOST_BIOMES = Object.freeze(['PLAINS']);
+export const TARN_HOST_BIOMES = Object.freeze(['PLAINS', 'FOREST', 'AZALEA']);
+
+/**
+ * 地表材质分区（v1.91 重做，用户 2026-10-28 设计）。
+ *
+ * 从圆心往外四带（半径均为格）：
+ *
+ * | 带 | 半径 | 材质 |
+ * |---|---|---|
+ * | 冰 | `0 ~ TARN_ICE_RADIUS`(44) | `ice` |
+ * | 雪环 | `TARN_ICE_RADIUS ~ TARN_SNOW_RADIUS`(72) | `snow`，按噪声成≈环宽连续起伏的环带 |
+ * | 草斑 + 黏土 | `TARN_SNOW_RADIUS ~ platformRadius`(114) | `clay` 基底 + 成片连通的 `grass`/`stone` 斑块 |
+ * | 黏土缓坡 | `platformRadius ~ plateauRadius`(138) | 整片 `clay`，接续外围地形 |
+ *
+ * ⚠️ **四带的边界位置住在本文件（而不是 `tarn-terrain.js`）**：
+ * ① 它们是「地带的形状」而不是「整形实现」，与半径/坡宽同口径；
+ * ② `tarn-terrain.js` 从 `tarn-zone.js` import 常量，而反之会成环（同 `TARN_SLOPE_WIDTH` 的理由）；
+ * ③ 将来 `isTarnZone` / 水面遮罩若要接「平台内无水、缓坡有水」的门控，读的就是同一份。
+ *
+ * ⚠️ **不能改回 `tarnSurfaceBlock` 里写死数字**：那样「带边界」会变成渲染实现细节，
+ * 单测就没法在不跑网格的前提下断言「冰带确实到 44 为止」。
+ */
+export const TARN_ICE_RADIUS = 44;
+
+/** 雪环外缘半径（格）。冰带以外、草斑带以内。 */
+export const TARN_SNOW_RADIUS = 72;
 
 /**
  * 圆心到城市 bounds 的最小净距（格）—— 取 `CITY_TRANSITION_SIZE`（红线 1：不另写 32）。
@@ -230,14 +266,43 @@ function coreDesertFraction(cx, cz, seed, platformRadius) {
  * @returns {boolean}
  */
 function rimTouchesDesert(cx, cz, seed) {
-  for (let i = 0; i < 16; i++) {
-    const ang = i * Math.PI / 8;
-    const wx = Math.round(cx + TARN_ZONE_RADIUS * Math.cos(ang));
-    const wz = Math.round(cz + TARN_ZONE_RADIUS * Math.sin(ang));
-    if (getBiome(wx, wz, seed) === 'DESERT') return true;
+  // ⚠️ **采样范围在 v1.92 从「圆周 16 方位」放宽到「260 格环形区」**（用户 2026-10-28
+  //    第三轮：「每 3 个 region 一座」→ 实测圆周判据×1/5 只能到每 15 座，太稀）。
+  //    现在扫的是「地带圆外 40 格到 260 格」这个环形带里的任意一点是不是沙漠。
+  //    实测（PLAINS+FOREST+AZALEA）资格命中率 42.7% → 66.0%（×1/5 → 每 7.6 个一座）。
+  //    ⚠️ 对**只有 PLAINS** 时这条放宽完全没有效果（33.7% 不变）—— 因为
+  //    「沙漠占比 ≤25%」已经排掉了邻近沙漠的 PLAINS，两条判据重叠。
+  for (let dx = -TARN_DESERT_NEAR; dx <= TARN_DESERT_NEAR; dx += DESERT_SCAN_STEP) {
+    for (let dz = -TARN_DESERT_NEAR; dz <= TARN_DESERT_NEAR; dz += DESERT_SCAN_STEP) {
+      const d = Math.hypot(dx, dz);
+      // 只看地带圆外缘以外（圆内会被整形覆盖，与「外围有沙漠」无关）
+      if (d < TARN_ZONE_RADIUS - 40) continue;
+      if (getBiome(cx + dx, cz + dz, seed) === 'DESERT') return true;
+    }
   }
   return false;
 }
+
+/**
+ * 「附近有沙漠」的搜索半径（格）。
+ *
+ * ⚠️ **实测标定值**：260 格是「资格命中率停止增长」的拐点（±12 = 625 region，6 seed）——
+ * 200 格 59.3% / 260 格 65.8% / 320 格 66.0%。取 260 既拿到全部增益，又不白扫。
+ *
+ * ⚠️ **必须 ≥ `TARN_ZONE_RADIUS + 40`**：小于它时环形带为空 → 判据恒假 → **一座地带都没有**。
+ */
+const TARN_DESERT_NEAR = 260;
+
+/**
+ * 沙漠搜索的采样步长（格）。
+ *
+ * ⚠️ 取 20 是为控制成本：`(2*260/20)² ≈ 676` 次采样，但**环形带内只有约 480 次**
+ * 会真正调 `getBiome`（每 3 步有 1 步被 `d < R-40` 跳过）。
+ *
+ * ⚠️ **步长是「采样密度」而不是「精度」**：biome 由噪声决定，波长量级上千米，
+ * 20 格的步长不会漏掉一整块沙漠（实测步长 8 与 20 的资格命中率分别为 66.0% / 66.0%）。
+ */
+const DESERT_SCAN_STEP = 20;
 
 /**
  * 该 region 是否**有资格**长一座高台地带（判据 ③④⑤⑥，**不含** 1/5 抽签）。

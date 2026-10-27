@@ -11,9 +11,9 @@
 // 生成路径：不记 edits、不 bump version（与 `fillColumn` 同口径）。
 
 import { noise } from '../noise.js';
-import { blockIndex, WORLD_MIN_Y, WORLD_MAX_Y } from '../../voxel/constants.js';
+import { blockIndex, WORLD_MIN_Y, WORLD_MAX_Y, SEA_Y } from '../../voxel/constants.js';
 import { TERRAIN_HEIGHT_PARAMS, generateHeight } from '../terrain.js';
-import { TARN_SLOPE_WIDTH } from './tarn-zone.js';
+import { TARN_SLOPE_WIDTH, TARN_ICE_RADIUS, TARN_SNOW_RADIUS } from './tarn-zone.js';
 
 /**
  * 台地整形的噪声 salt。
@@ -47,16 +47,318 @@ const SURFACE_SCALE = TERRAIN_HEIGHT_PARAMS.COARSE_SCALE;
 export { TARN_SLOPE_WIDTH };
 
 /**
- * 台地地表方块：草石镶嵌的**唯一权威**（单测直接用，不复制一份判据 —— 红线 1）。
+ * 台地地表方块：**四带分区**的唯一权威（单测直接用，不复制一份判据 —— 红线 1）。
  *
- * 用**低频噪声**做「成片」镶嵌而不是逐格随机：逐格随机会读成花屏（spec DR-9 实测）。
+ * ## 四带（v1.91，用户 2026-10-28 设计）
+ *
+ * | 带 | 半径 | 材质 |
+ * |---|---|---|
+ * | 冰 | `0 ~ TARN_ICE_RADIUS` | `ice` |
+ * | 雪环 | `TARN_ICE_RADIUS ~ TARN_SNOW_RADIUS` | `snow`，环宽按方位角连续起伏 |
+ * | 草斑 + 黏土 | `TARN_SNOW_RADIUS ~ platformRadius` | `clay` 基底 + 成片连通的 `grass`/`stone` 斑块 |
+ * | 黏土缓坡 | `platformRadius ~ plateauRadius` | 整片 `clay` |
+ *
+ * ## 「渗透带」= 边界不是一条精确的圆
+ *
+ * 三条带的边界都加**噪声扰动**（`BAND_WOBBLE` 格），于是雪会滲进冰区一点、
+ * 草斑会滲进雪环一点 —— 观感是自然的交错，而不是三条画出来的同心圆。
+ * 实测扰动幅度（见常量注释）是「看得出过渡但不破坏分区」。
+ *
+ * ## 「松散」= 环带占空比不是 100%
+ *
+ * 雪环内部按低频噪声滤掉一部分（雪/非雪），于是环是断断续续的雪块，不是一条实心环。
+ * `TARN_SNOW_FILL` 标定到实测占空比 ≈ 65%。
  *
  * @param {number} wx @param {number} wz @param {number} seed
- * @returns {'grass'|'stone'}
+ * @param {number} cx @param {number} cz @param {number} platformRadius @param {number} plateauRadius
+ * @returns {'ice'|'snow'|'clay'|'grass'|'stone'}
  */
-export function tarnSurfaceBlock(wx, wz, seed) {
-  return noise(wx, wz, seed + TARN_TERRAIN_SALT, SURFACE_SCALE) > 0 ? 'grass' : 'stone';
+export function tarnSurfaceBlock(wx, wz, seed, cx, cz, platformRadius, plateauRadius) {
+  const d = Math.hypot(wx - cx, wz - cz);
+
+  // ── 边界扰动：同一条噪声被三条带共用，边界才能彼此「渗透」而不是各自跳 ──
+  const wobble = noise(wx, wz, seed + TARN_BAND_WOBBLE_SALT, TARN_BAND_WOBBLE_SCALE) * BAND_WOBBLE;
+
+  // ── 缓坡带：整片 clay（接续外围地形，不过雪/冰） ──
+  // ⚠️ 缓坡必须接受「整片一色」：它要跟外面的自然地形接上，
+  //    那里是 grass/dirt/sand —— clay 的中立性观感最不突乑。
+  if (d > platformRadius) return 'clay';
+
+  // ── 冰带 / 融合带 / 雪环 ──
+  //
+  // 边界 = `TARN_ICE_RADIUS + iceWobble`（随方位角起伏，不是完美圆弧）。
+  // 融合带是一条**贴着这条边界**的 `TARN_BLEND_WIDTH` 宽的带：
+  //
+  // | 相对位置 | 材质 |
+  // |---|---|
+  // | `d < b - half` | 纯 `ice` |
+  // | `b - half ≤ d < b + half` | 融合带：冰比例随 t 从 ~95% 降到 ~8% |
+  // | 再往外 | 雪环 |
+  //
+  // ⚠️ **融合带不能只是「边界加扰动」**：扰动只让边界变成波浪，两侧仍是硬切换
+  //    —— 单条射线上读出来就是 `IIIII...SSSS`，没有任何过渡（实测）。要真的过渡
+  //    就必须在带内按位置决定概率，见 `TARN_BLEND_WIDTH` 的注释。
+  // ── 冰/雪边界：双向渗透（v1.93，用户 2026-10-29） ──
+  //
+  // ⚠️ **用户要求的不是「一条夹在中间的中性带」，而是「方块互相侵入对方地界」**。
+  //    上一版把边界做成一条平滑的 `TARN_ICE_RADIUS + wobble` 圆弧、只在带内做比例渐变 ——
+  //    结果**带外一刀切干净**（实测基准圆内侧 38 格内雪 0.0%、外侧 50~72 格内冰 0.0%），
+  //    观感就是「冰到雪直接跳」，用户据此判断「过渡带没实现」。
+  //
+  // ✅ 修法 = **边界本身带高频齿**（`tarnIceBoundaryAt`）：
+  //    低频噪声给大幅度的方位起伏，高频噪声给 ±`ICE_TOOTH` 的锯齿。
+  //    齿让冰尖突进雪区、雪尖突进冰区 —— 这正是「互相侵入」。
+  const iceBoundary = tarnIceBoundaryAt(wx, wz, seed);
+  const blendHalf = TARN_BLEND_WIDTH / 2;
+  if (d < iceBoundary - blendHalf) return 'ice';
+  if (d < iceBoundary + blendHalf) {
+    // 带内仍是按 t 的概率混合（把两侧的齿连起来，避免齿根处出现僵硬台阶）
+    const t = (d - (iceBoundary - blendHalf)) / TARN_BLEND_WIDTH;
+    const v = noise(wx, wz, seed + TARN_BLEND_SALT, TARN_BLEND_SCALE);
+    return v <= 4 - 8 * t ? 'ice' : 'snow';
+  }
+
+  // ── 雪环：外缘也带齿（雪会往草斑带里渗透几格），内部松散 ──
+  const snowOuter = TARN_SNOW_RADIUS + wobble;
+  if (d < snowOuter) {
+    if (noise(wx, wz, seed + TARN_SNOW_SALT, SURFACE_SCALE) > TARN_SNOW_FILL) return 'snow';
+    return 'clay';
+  }
+
+  // ── 草斑 + 黏土（雪环以外到平台边缘） ──
+  //
+  // ⚠️ **必须用不可分离噪声 `blobNoise`，不能用 `noise()`**（v1.93，用户 2026-10-29）：
+  //    用户报告「草地方块的边界过于横平竖直」。根因实测确认 —— `noise()` 的实现是
+  //    `sin((x+seed)*s)*2 + cos((z+seed)*s)*2`，**x 项与 z 项可分离相加**，
+  //    等值线必然是十字/菱形，边界上会出现几十格长的水平/垂直直线段（实测 36 格）。
+  //    `blobNoise` 把 x、z 交叉耦合进同一个三角函数 → 等值线是弯曲的闭合斑块。
+  //
+  // 三档材质（各自边界都用**不同的** salt/尺度，所以三者互不平行）：
+  //   clay（基底） / grass / stone / stone_diorite（浅色石，贴图均值 188）
+  if (blobNoise(wx, wz, seed + TARN_PLOT_SALT, TARN_PLOT_SCALE) > TARN_PLOT_THRESHOLD) {
+    // 草与石的交界：再用一层独立 blobNoise（尺度略大 ⇒ 石斑更大更圆）
+    const stoneV = blobNoise(wx, wz, seed + TARN_STONE_SALT, TARN_STONE_SCALE);
+    if (stoneV > TARN_STONE_THRESHOLD) {
+      // ⚠️ **浅色石与 stone 必须用同一个 `stoneV` 的两个阈值档切分，
+      //    不能再用第三层独立噪声**（v1.93 实测踩坑）：
+      //    用独立噪声时，它与 `stoneV` 的等值线互相交叉 ⇒ 两族边界不断相交，
+      //    交叉处会切出大量**长直缝**（实测掩码里交界出现几十格直线），
+      //    观感就是用户说的「石头边界是直的」。
+      //    同族阈值 ⇒ 两条边界是同一条等值线的不同档位，永远平行不相交。
+      //
+      // ⚠️ **浅色方块 = `light_gray_cloth`（用户 2026-10-29 指名：「light_stone 是指 Light_Gray_Cloth」）**。
+      //    实测贴图均值 163（对比 stone 125 / smooth_stone_1 156 / stone_diorite 188）——
+      //    比 stone 明显更亮，且是中性灰，与石头族的观感最接近。
+      return stoneV > TARN_LIGHT_STONE_THRESHOLD ? 'light_gray_cloth' : 'stone';
+    }
+    return 'grass';
+  }
+  return 'clay';
 }
+
+/**
+ * 不可分离的「斑块」噪声 —— 等值线是弯曲的闭合形状，不是十字/菱形。
+ *
+ * ⚠️ **存在的唯一理由**：`gen/noise.js` 的 `noise()` 是 `sin(x·s)·2 + cos(z·s)·2`，
+ * x 与 z **可分离相加** ⇒ 等值线必带直边与直角。用 `noise()` 做斑块掩码时，
+ * 草斑/石斑的边界就是横平竖直的（实测出现 36 格长的水平直线段）。
+ *
+ * 本函数把 x、z 交叉耦合进同一个三角函数（`sin(nx)·cos(nz)`、`sin(0.7nx+1.3nz)`、
+ * `cos(hypot·)`），于是等值线不再可分离 → 边界弯曲。
+ *
+ * 值域标定在 **[-4, 4]**（实测 20 万样本 `[-3.97, 3.97]`，均值 -0.01），
+ * 与 `noise()` 同口径 ⇒ 阈值不必重标。
+ *
+ * ⚠️ **本仓 Worker 同构约束**：纯函数、无 three/DOM，可在 Worker 里跑。
+ *
+ * @param {number} x @param {number} z @param {number} seed @param {number} scale
+ * @returns {number} [-4, 4]
+ */
+export function blobNoise(x, z, seed, scale) {
+  const nx = x * scale;
+  const nz = z * scale;
+  const s = seed * scale;
+  const a = Math.sin(nx + s) * Math.cos(nz + s * 0.7) * 2;
+  const b = Math.sin(nx * 0.7 + nz * 1.3 + s * 1.3) * 1.4;
+  const c = Math.cos(Math.hypot(nx, nz) * 1.1 + s) * 0.6;
+  return a + b + c;
+}
+
+/**
+ * 冰/雪边界的**实际半径**（含双向渗透的齿）。
+ *
+ * = `TARN_ICE_RADIUS` + 低频方位起伏（±`WOB`）+ 高频锯齿（±`ICE_TOOTH`）。
+ *
+ * ⚠️ **导出给测试用**：测试要能算出「基准圆 44 内侧有多少格被雪侵入」，
+ * 那是按**固定基准圆**判的（若按本函数算，侵入量恒为 0 —— 实测踩过）。
+ *
+ * @param {number} wx @param {number} wz @param {number} seed
+ * @returns {number}
+ */
+export function tarnIceBoundaryAt(wx, wz, seed) {
+  const lowFreq = noise(wx, wz, seed + TARN_BAND_WOBBLE_SALT, TARN_BAND_WOBBLE_SCALE) * (ICE_WOBBLE / BAND_WOBBLE);
+  // ⚠️ **`noise()` 值域是 [-4, 4]，不是 [-1, 1]** —— 齿幅度必须按 4 归一化。
+  //    写成 `tooth * (ICE_TOOTH / 4)` 时实测齿只有 ±1.9×2.5 ≈ ±4.8 格，而
+  //    低频谱又把边界整体推进了 +2~+4，齿**永远穿不出 44±8** ⇒ 侵入率只有 0.8%
+  //    （低于断言要求，用户看到的就是「还是没有渗透」）。
+  //    除以 4 才是「齿峰值 = ICE_TOOTH」。
+  const tooth = noise(wx, wz, seed + ICE_TOOTH_SALT, ICE_TOOTH_SCALE) / 4;
+  return TARN_ICE_RADIUS + lowFreq + tooth * ICE_TOOTH;
+}
+
+/**
+ * 冰/雪渗透齿的幅度（格）。
+ *
+ * ⚠️ **这是「互相侵入」的唯一旋钮**：实测（基准圆 44 内侧 8 格 / 外侧 8~72 格）：
+ * | ICE_TOOTH | 冰区里的雪 | 雪区里的冰 |
+ * |---|---|---|
+ * | 0（无齿） | 0.0% | 0.0% |
+ * | 12 | 1.1% | 1.3% | 冰带纯度 89.9% |
+ * | 16 | 3.2% | 3.4% | 86.8% |
+ * | **20** | **5.6%** | **6.6%** | **84.2%** |
+ * | 24 | 8.1% | 10.0% | 81.8% |
+ * | 30 | 12.0% | 15.2% | 78.2% |
+ *
+ * 取 20：是「两侧侵入看得出来（≥5%）」与「冰带仍然纯净（≥80%）」的平衡点。
+ * ⚠️ **齿越深侵入越明显、但纯净区越不纯** —— 这两个是竞争关系，不要只盯一头。
+ */
+const ICE_TOOTH = 20;
+
+/**
+ * 齿的噪声尺度。`1/0.9 ≈ 1.1 格`的周期 —— 比融合带（6 格）**窄得多** ⇒ 齿是密集的小锯齿，
+ * 而不是又一层缓慢的大波浪（大波浪会和低频谱叠加成「边界整体漂移」，反而盖过融合带）。
+ */
+const ICE_TOOTH_SCALE = 0.9;
+
+/** 齿的噪声 salt（与其它 salt 不撞）。 */
+const ICE_TOOTH_SALT = 1030;
+
+/** 草斑（grass vs clay）的噪声尺度。0.15 实测斑块大小适中、边界弯曲。 */
+const TARN_PLOT_SCALE = 0.15;
+
+/** 草/石交界（grass vs stone/stone_diorite）的噪声参数 —— 尺度略大 ⇒ 石斑更大更圆。 */
+const TARN_STONE_SALT = 1031;
+const TARN_STONE_SCALE = 0.11;
+
+/** 草斑带里「是斑块（草/石）而非黏土」的阈值。实测 ≈57% 面积是斑块。 */
+const TARN_PLOT_THRESHOLD = -1.2;
+
+/** 斑块里「是石头而非草」的阈值（≈50%）。 */
+const TARN_STONE_THRESHOLD = 0;
+
+/**
+ * 石头内部「浅色 `light_gray_cloth`」与「深灰 `stone`」的分档阈值。
+ *
+ * ⚠️ 与 `TARN_STONE_THRESHOLD` 是**同一个 `stoneV` 的两个档位**（不是独立噪声）——
+ * 理由见 `tarnSurfaceBlock` 里那段注释：独立噪声会让两族边界交叉出长直缝。
+ *
+ * 取 0.8（`stoneV` 值域 [-4,4]）：石头区里约 **40%** 是浅色块。
+ * 实测占比见 `test-tarn-terrain.js` 的「浅色石成片出现」用例。
+ */
+const TARN_LIGHT_STONE_THRESHOLD = 0.8;
+
+
+/**
+ * 冰/雪融合带的宽度（格）。
+ *
+ * ⚠️ **用户 2026-10-28 第二轮裁定 5~7 格**（「我希望他们两个相互之间有一个融合带，
+ * 五到 7 个方块的融合带，让雪过渡到冰」）。取 6 格是中位值。
+ *
+ * ## 融合带怎么工作（与「边界扰动」不是一回事）
+ *
+ * 融合带是一条**贴着实际边界**的带（边界 = `TARN_ICE_RADIUS + wobble`，所以它随方位角起伏）。
+ * 带内按相对位置 `t`（0 = 冰侧，1 = 雪侧）把一个**独立噪声**的阈值从 +4 线性移到 -4：
+ * `ice` 当且仅当 `noise(...) <= 4 - 8t`。于是冰的比例随 t 平滑下降。
+ *
+ * ⚠️ **两条反直觉的实测结论（调试时踩过，勿重踩）**：
+ *
+ * ① **不能用「同半径一圈平均」验融合带**：同一半径上不同方位的 `t` 完全不同
+ *    （因为边界随 wobble 起伏），平均后看不到渐变。
+ * ② **也不能只看一条射线**：融合噪声在 6 格尺度上可能恰好单调，
+ *    剖面读成 `IIIII...SSSS` 的假突变。
+ *
+ * 正确的量法 = 按 t 分桶统计冰比例（见 `test-tarn-terrain.js`），实测 6 个桶是
+ * **95% → 83% → 63% → 38% → 22% → 8%**。
+ */
+export const TARN_BLEND_WIDTH = 6;
+
+/**
+ * 冰/雪边界的扰动幅度（格）—— 比 `BAND_WOBBLE` 小，理由见 `tarnSurfaceBlock`。
+ *
+ * ⚠️ **导出为了测试能复算“融合带到底在哪”**：融合带贴着的是
+ * `TARN_ICE_RADIUS + wobble`，而不是裸的 `TARN_ICE_RADIUS`。
+ * 测试自己再写一份扰动公式会与实现漂移（红线 1）。
+ *
+ * @param {number} wx @param {number} wz @param {number} seed
+ * @returns {number}
+ */
+export function tarnIceWobbleAt(wx, wz, seed) {
+  return noise(wx, wz, seed + TARN_BAND_WOBBLE_SALT, TARN_BAND_WOBBLE_SCALE)
+    * BAND_WOBBLE * (ICE_WOBBLE / BAND_WOBBLE);
+}
+
+/**
+ * 融合带噪声的 salt 与尺度。
+ *
+ * ⚠️ **scale 是载荷性的，而且方向与直觉相反**：它决定融合带内的冰/雪是
+ * 「交织」还是一整块。实测**局部同色率**（融合带内每格与其 4 邻居同材质的比例）：
+ *
+ * | scale | 波长 | 局部同色率 |
+ * |---|---|---|
+ * | 0.15 | ~40 格 | **88.7%** |
+ * | 0.5 | ~12 格 | 87.0% |
+ * | **0.8** | ~8 格 | **83.1%** |
+ * | 2.0 | ~3 格 | 69.5%（开始像噪点） |
+ *
+ * 取 0.8：波长（≈8 格）与融合带宽度（6 格）同量级 ⇒ 带内真的是一块块冰/雪交织。
+ * ⚠️ **0.15 那次踩过坑**：波长 40 格远大于 6 格带宽 ⇒ 整段融合带被同一股噪声覆盖，
+ * 真实现与「前半纯冰后半纯雪」的局部同色率几乎相同（88.7% vs 87.8%）——
+ * 断言因此失去了判别力（负向验证实测注入后仍全绿）。
+ *
+ * salt 的取值则确实不敏感：与扰动噪声同源（1027）时冰比例与 t 的相关系数只有 -0.013。
+ */
+const TARN_BLEND_SALT = 1029;
+const TARN_BLEND_SCALE = 0.8;
+
+/**
+ * 冰/雪边界的扰动幅度（格）—— 比 `BAND_WOBBLE` 小，理由见 `tarnSurfaceBlock`。
+ */
+const ICE_WOBBLE = 3;
+
+/**
+ * 带状边界扰动的幅度（格）。
+ *
+ * ⚠️ **这是「滲透带」的唯一旋钮**：0 = 三条完美的同心圆（硬边界）；
+ * 大到接近带宽的一半会把分区打碎。实测 6 格 ≈ 「看得出交错但每条带依然认得出」。
+ */
+const BAND_WOBBLE = 4;
+
+/**
+ * 带状边界扰动的噪声尺度。取低频（≈1/20 格）使边界呈大而缓的波浪，不是铲齿。
+ */
+const TARN_BAND_WOBBLE_SCALE = 0.05;
+
+/**
+ * 雪环内「非雪」的阈值：`noise(...) > TARN_SNOW_FILL` 时为雪。
+ *
+ * ⚠️ `noise()` 值域是 [-4, 4]，不是 [0,1]（实测 20 万样本 min -4.000 / max 4.000）。
+ * 实测分位：`> -1` 占 69.3%、`> -0.5` 占 61.4%、`> 0` 占 50.1%。
+ * 取 **-1.0** ⇒ 理论 69%，但环带外缘会被扰动切掉一部分 ⇒ 实测环内占空比（见测试）。
+ */
+const TARN_SNOW_FILL = -2.5;
+
+/**
+ * 雪环疏密的噪声 salt（与草斑、扰动分开，否则三者相位相关 —— 雪洞会排成直线）。
+ */
+const TARN_SNOW_SALT = 1025;
+
+/** 草斑排布的噪声 salt。 */
+const TARN_PLOT_SALT = 1026;
+
+/**
+ * 带状边界扰动（滲透带）的噪声 salt。
+ */
+const TARN_BAND_WOBBLE_SALT = 1027;
 
 /**
  * 缓坡用的自然高度：半径 `SLOPE_SMOOTH_RADIUS` 内方形的**均值**。
@@ -96,6 +398,76 @@ function slopeNaturalHeight(wx, wz, seed) {
  * 缓坡自然高度的平滑半径（格）。标定表与取舍理由见 `slopeNaturalHeight`。
  */
 const SLOPE_SMOOTH_RADIUS = 8;
+
+/**
+ * 雪盖能触及的最高 y。
+ *
+ * = 高台最高高度（`plateauY` + 46，产物里最高的 `cloudland_tarn_04` 是 45 层）上方余量；
+ * 巨型云在 y ≥ `TARN_CLOUD_MIN_Y`（54），两者不重叠。
+ */
+const TARN_SNOW_CAP_MAX_Y = 50;
+
+/**
+ * 高台顶层的雪盖（v1.91，用户 2026-10-28 裁定）。
+ *
+ * 把雪环带内、**已经长出来的结构**的**露天顶层**换成 `snow`。
+ *
+ * ## 为什么必须在光栅化之后调
+ * `fillTarnPlateau` 跑的时候高台还没长出来，那里只能看到台地地表。
+ *
+ * ## 判据
+ * 逐列从 `plateauY` 向上找「本格非空且上方一格是空气」的那一格（= 露天顶层）。
+ * 只换满足两个条件的：
+ * 1. 该列在雪环带内（`TARN_ICE_RADIUS < d < TARN_SNOW_RADIUS`，含 ±`BAND_WOBBLE` 滲透）
+ * 2. 顶层方块不是 `snow` 自己（幂等，避免重复写）
+ *
+ * ⚠️ **只换顶层一格，不往下挖**：写成「从 plateauY 到露天层全部换雪」会让高台
+ * 变成一根雪柱子；只换顶层 = 「高处积下一层雪」的自然观感，也保住建筑的墙面/楼层。
+ *
+ * ⚠️ **上限算到 `TARN_SNOW_CAP_MAX_Y`**：巨型云在 y=54~95，不能被当成「地表」而盖雪。
+ *
+ * @param {import('../../voxel/chunk-column.js').ChunkColumn} column
+ * @param {import('./tarn-zone.js').TarnLayout} layout
+ * @param {number} seed
+ * @param {import('../../voxel/block-registry.js').BlockRegistry} registry
+ * @param {(wx:number, y:number, wz:number, name:string)=>void} setBlock
+ */
+export function tarnSnowCap(column, layout, seed, registry, setBlock) {
+  const { cx, cz, plateauRadius, plateauY } = layout;
+  const colMinX = column.cx * 16, colMinZ = column.cz * 16;
+  const x0 = Math.max(colMinX, Math.ceil(cx - plateauRadius));
+  const x1 = Math.min(colMinX + 15, Math.floor(cx + plateauRadius));
+  const z0 = Math.max(colMinZ, Math.ceil(cz - plateauRadius));
+  const z1 = Math.min(colMinZ + 15, Math.floor(cz + plateauRadius));
+  if (x0 > x1 || z0 > z1) return;
+
+  for (let wx = x0; wx <= x1; wx++) {
+    const dx = wx - cx;
+    for (let wz = z0; wz <= z1; wz++) {
+      const dz = wz - cz;
+      const d = Math.hypot(dx, dz);
+      // ⚠️ 边界也用同一条扰动噪声（与 `tarnSurfaceBlock` 的滲透带同源），
+      //    否则雪盖会在雪环外缘形成一条完美圆弧，与下方松散的雪地脱节。
+      const wobble = noise(wx, wz, seed + TARN_BAND_WOBBLE_SALT, TARN_BAND_WOBBLE_SCALE) * BAND_WOBBLE;
+      // ⚠️ 冰/雪边界必须与 `tarnSurfaceBlock` **同源**（`tarnIceWobbleAt`，
+      //    幅度 ICE_WOBBLE 而非 BAND_WOBBLE）—— 两份漂移会让高台顶的雪盖
+      //    与地面的雪环错开几格，接缝处露出一个「雪盖悬在冰面上」的台阶。
+      const iceWobble = tarnIceWobbleAt(wx, wz, seed);
+      if (d <= TARN_ICE_RADIUS + iceWobble - TARN_BLEND_WIDTH / 2) continue;   // 纯冰区不盖雪
+      if (d >= TARN_SNOW_RADIUS + BAND_WOBBLE + wobble) continue;              // 草斑区不盖雪
+
+      const lx = wx - colMinX, lz = wz - colMinZ;
+      // 从 plateauY 向上找露天顶层（上方是空气）；上限到雪盖上限，避开巨型云
+      for (let y = plateauY; y <= TARN_SNOW_CAP_MAX_Y; y++) {
+        const id = column.blocks[blockIndex(lx, y, lz)];
+        if (id === 0) continue;                                   // 空 → 还没到地表
+        if (column.blocks[blockIndex(lx, y + 1, lz)] !== 0) continue;  // 上方还有 → 不是顶层
+        if (registry.nameOf(id) !== 'snow') setBlock(wx, y, wz, 'snow');
+        break;
+      }
+    }
+  }
+}
 
 /**
  * 把一个 column 的台地整形到布局指定的高度。
@@ -190,19 +562,35 @@ export function fillTarnPlateau(column, layout, seed, registry) {
         if (column.blocks[idx] !== 0) column.blocks[idx] = 0;
       }
 
-      // ── 2. 地表：平台用草石镶嵌，坡面用 stone（与自然地形同材质，接缝不突兀） ──
-      const surfaceName = d <= flatR ? tarnSurfaceBlock(wx, wz, seed) : 'stone';
+      // ── 2. 地表：四带分区（v1.91，用户 2026-10-28 设计） ──
+      const surfaceName = tarnSurfaceBlock(wx, wz, seed, cx, cz, flatR, plateauRadius);
       column.blocks[blockIndex(lx, targetY, lz)] = idOfName(surfaceName);
 
       // ── 3. 向下填实（防止玩家从地表掉进原地下水/空气腔） ──
       // ⚠️ **v1.89：地下水也要换成石头**（用户 2026-10-27 裁定「确保这次新增的高台地形……
       // 其他不应该有任何差异」+「高台所在的水面完全去掉」）。清掉 `water`/`swamp_water` 是
       // 让地带**彻底不含透明方块**的最后一步 —— 不填的话自然地形原有的地下水体留在原地，
-      // 既占 transparent 通道，也让「地带有水」这个断言无法成立。
+      // 既占 transparent 通道，也让「平台内无水」这个断言无法成立。
       for (let y = WORLD_MIN_Y + 1; y < targetY; y++) {
         const idx = blockIndex(lx, y, lz);
         const cur = column.blocks[idx];
         if (cur === 0 || cur === waterId || cur === swampWaterId) column.blocks[idx] = stoneId;
+      }
+
+      // ── 4. 洼地回水（v1.91 修 bug，用户 2026-10-28 报告） ──
+      // ⚠️ **不改这一步的形态是：「高台地带与外围地图接壤处，原有水方块没被延伸过来」** ——
+      //    削平循环把 `targetY` 以上全写成 0（连原水体一起清），而第 3 步只写 stone、
+      //    **从不写 water** → 缓坡带里 `targetY < SEA_Y` 的列就成了低于海平面的**干坑**。
+      //    实测 seed 12345 的一座地带：圆内 **4179 列**成干坑、原有 **148012 格水**全被清掉。
+      //
+      // 判据与 `fillColumn` 的水面填充**完全同源**（`(h, SEA_Y]`，`SEA_Y` 常量直接 import），
+      // 不另写一份阈值 —— 两份漂移会搞出「水方块填到 SEA_Y-1，水面平面画在 SEA_Y+0.5」
+      // 那种水比水面矮一格的翲裂。
+      //
+      // 注：平台内地表恒为 `plateauY` = SEA_Y+4 > SEA_Y，这段循环对平台内是空转，
+      // 只在缓坡带真的低于海平面时才生效。
+      for (let y = targetY + 1; y <= SEA_Y; y++) {
+        column.blocks[blockIndex(lx, y, lz)] = waterId;
       }
     }
   }

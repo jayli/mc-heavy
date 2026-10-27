@@ -840,6 +840,8 @@ async function checkCloudlandTarnZone() {
   // ⑥ 出现口径与几何的自洽（v1.90）—— 这一组不依赖烘焙产物，钄的是**代码常量**之间的关系
   //    （改一个而忘改另一个时，产物指纹完全不变，上面 ①~⑤ 全部恒绿）。
   await checkTarnPlacementRules(fail);
+  // ⑦ 斑块边界必须用不可分离噪声（v1.93）—— 缺陷在方块层面看不出来，只能静态钉
+  checkTarnBlobNoise();
 
   // ⚠️ **成功行的条件必须涵盖本函数全部判据**，否则失败时仍会打印一条 ✓
   // （既有教训：`[高台]` 曾同时出现「✗ 含砖块族」与「✓ …无砖无木」，读者只看 ✓ 就误判）。
@@ -848,6 +850,43 @@ async function checkCloudlandTarnZone() {
     && checkedVariants === allVariants.length;
   if (ok) {
     infos.push(`[高台地带] ${checkedVariants} 个产物（11 高台 + 5 拱洞 + 7 紫晶柱 + 12 巨型云）/ 台顶全 grass / 无砖无木 / 指纹匹配 / 出现口径与几何自洽`);
+  }
+}
+
+/**
+ * [台地材质] 斑块边界必须用**不可分离噪声**（v1.93）。
+ *
+ * **缺陷形态**：`gen/noise.js` 的 `noise()` 是 `sin((x+seed)·s)·2 + cos((z+seed)·s)·2`
+ * —— x 项与 z 项**可分离相加**，等值线必然是直线族（斜线/十字）。
+ * 用它做草斑/石斑的掩码时，边界是一条条直尺切出来的斜线，
+ * 用户报告「草地方块的边界过于横平竖直」（2026-10-29）。
+ *
+ * **为什么必须静态门禁**：这个缺陷**在方块层面完全看不出来** ——
+ * 草、石、黏土的种类与占比都对，只有「边界是直的」这一条观感不对。
+ * 而且浏览器单测的曲率类度量**不可靠**（实测：注入可分离噪声后曲率反而更高，
+ * 因为斜线族的边界位置逐行跳变）。可分离性是该缺陷的**充要特征**，但
+ * 布尔掩码阈值化后会破坏它（实测方差 0.67 vs 0.24，区分度不够），
+ * 只有**看源码用的是哪个函数**才能可靠判定。
+ *
+ * 判据 = `tarnSurfaceBlock` 函数体内出现 `blobNoise(` 调用，且草斑那一层
+ * **不得**直接调用可分离的 `noise(` 做掩码。
+ */
+function checkTarnBlobNoise() {
+  const p = path.join(ROOT, 'src/gen/structures/tarn-terrain.js');
+  const src = fs.readFileSync(p, 'utf8');
+  const start = src.indexOf('export function tarnSurfaceBlock');
+  if (start < 0) {
+    failures.push('[台地材质] 找不到 tarnSurfaceBlock（源码结构变了，本门禁失效）');
+    return;
+  }
+  const end = src.indexOf('\n}', start);
+  const body = src.slice(start, end);
+  if (!body.includes('blobNoise(')) {
+    failures.push('[台地材质] tarnSurfaceBlock 没有用 blobNoise —— 草斑/石斑边界会变成直线族');
+  }
+  // 草斑那一层若退回可分离的 `noise(`，边界立刻变直
+  if (/TARN_PLOT_SALT,\s*TARN_PLOT_SCALE\s*\)/.test(body) && /noise\(wx, wz, seed \+ TARN_PLOT_SALT/.test(body)) {
+    failures.push('[台地材质] 草斑掩码用了可分离的 noise()（边界会是直线，应用 blobNoise）');
   }
 }
 
@@ -918,8 +957,9 @@ async function checkTarnPlacementRules(fail) {
   } else {
     fail('扫不到任何一个地带 region —— 出现口径可能被改成了永不命中');
   }
-  // ⑥ 密度不跑飞（实测 7 seed：每 13.6~23.1 region 一座；带宽 12~40）
-  //    ⚠️ 下界 12 能抓住「chance 改成 1/3」（实测 8.4~12.0）与「变回每 3 个一座」。
+  // ⑥ 密度不跑飞（v1.92 实测 8 seed：每 7.4~8.3 region 一座；带宽 6~14）
+  //    ⚠️ 下界 6 抓住「变回每 3 个一座」（实测 3.0~3.2）；
+  //       上界 14 抓住「退回只有 PLAINS」（实测 13.6~23.1）。
   for (const seed of [12345, 4, 7]) {
     let hits = 0, total = 0;
     for (let rx = -12; rx <= 12; rx++) for (let rz = -12; rz <= 12; rz++) {
@@ -927,8 +967,36 @@ async function checkTarnPlacementRules(fail) {
       if (tz.isTarnZone(rx, rz, seed)) hits++;
     }
     const per = total / Math.max(1, hits);
-    if (!(per >= 12 && per <= 40)) {
-      fail(`seed ${seed} 每 ${per.toFixed(1)} region 一座地带（实测区间 13.6~23.1，允许 12~40）`);
+    if (!(per >= 6 && per <= 14)) {
+      fail(`seed ${seed} 每 ${per.toFixed(1)} region 一座地带（实测区间 7.4~8.3，允许 6~14）`);
+    }
+  }
+
+  // ⑦ 材质分区的骨架（v1.91，用户 2026-10-28 设计）
+  //
+  // ⚠️ **这一组钄的是「常量之间能自洽」**（改一个而忘改另一个时，方块与产物层面都看不出）：
+  //    冰带 < 雪环 < 草斑区界 < 平台 < 地带，且四个方块名在 registry 里都真实存在。
+  //    分区占比与渗透带的行为由浏览器单测（`test-tarn-terrain.js`）验，那里能真跑整形。
+  const layout2 = findLayout(tz);
+  if (layout2) {
+    const { TARN_ICE_RADIUS, TARN_SNOW_RADIUS } = tz;
+    if (!(TARN_ICE_RADIUS > 0 && TARN_ICE_RADIUS < TARN_SNOW_RADIUS)) {
+      fail(`材质带半径顺序不对：冰 ${TARN_ICE_RADIUS} ≮ 雪环 ${TARN_SNOW_RADIUS}`);
+    }
+    if (!(TARN_SNOW_RADIUS < layout2.platformRadius)) {
+      fail(`雪环外缘 ${TARN_SNOW_RADIUS} ≥ 平台半径 ${layout2.platformRadius} —— 草斑带被挤成负宽度`);
+    }
+    // 四个材质方块必须都在 registry 里（不在的话 `makeColumnSetter` 会静默 return → 那格变 air）
+    for (const n of ['ice', 'snow', 'clay', 'grass', 'stone']) {
+      if (REGISTRY.idOf(n) === undefined) fail(`材质分区的方块 "${n}" 未注册（会静默变 air）`);
+    }
+    // 材质方块必须全部走 opaque 通道（cutout/transparent 会让 1 万格方块顶点 ×3 → 撞预算）
+    // ⚠️ `registry` 没暴露 `cullModeOf`，直接用 `cullTable`（0 = opaque，见 `CULL_MODES`）。
+    for (const n of ['ice', 'snow', 'clay']) {
+      const id = REGISTRY.idOf(n);
+      if (id !== undefined && REGISTRY.cullTable[id] !== 0) {
+        fail(`材质方块 "${n}" 不在 opaque 通道（cullTable=${REGISTRY.cullTable[id]}）—— 顶点预算会炸`);
+      }
     }
   }
 }
@@ -937,8 +1005,11 @@ async function checkTarnPlacementRules(fail) {
 function findLayout(tz) {
   for (const seed of [12345, 4, 7]) {
     for (let rx = -8; rx <= 8; rx++) for (let rz = -8; rz <= 8; rz++) {
-      const lay = tz.computeTarnZone(rx, rz, seed);
-      if (lay) return lay;
+      // ⚠️ **必须先判 `isTarnZone`**：`computeTarnZone` 对**任何** region 都返回布局
+      //    （它只做几何计算，不做「是不是地带」的判定）—— 直接用它会让下面的几何判据
+      //    检到一个根本不存在的地带（观感上「门禁绿着但什么都没验」）。
+      if (!tz.isTarnZone(rx, rz, seed)) continue;
+      return tz.computeTarnZone(rx, rz, seed);
     }
   }
   return null;
