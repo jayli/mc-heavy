@@ -15,15 +15,18 @@ import { test, expect } from 'playwright/test';
 
 const SEED = 12345;
 /**
- * 本 seed 的地带 region（由探针实测确定，**不是想象的坐标**）。
+ * 本 seed 的最近地带 region（由探针实测确定，**不是想象的坐标**）。
  *
- * ⚠️ 不能填 (0,0)：那是 `CITY_REGION`，`isTarnZone(0,0,*) ≡ false`，
- * 忘换会「安静地测错地方」。下面的 `findTarn` 会反查并断言它真的地带。
+ * ⚠️ **不能填 (0,0)**：那是 `CITY_REGION`，`isTarnZone(0,0,*) ≡ false`。
+ * ⚠️ **s1.90 换过夹具**：旧值 `(0,-2)` 在旧口径（纯哈希 1/3）下是地带，但新口径下
+ * （1/5 × PLAINS × 邻沙 × 沙漠占比 ≤ 25%）它不合格（核心沙漠占比 0.379）—— 忘换会
+ * 使 `flyToTarn` 的自检断言真红（那正是它存在的意义：安静地测错地方比失败更糟）。
+ * 下面的 `findTarn` 会反查并断言它真的地带。
  */
-const TARN_REGION = { rx: 0, rz: -2 };
+const TARN_REGION = { rx: -4, rz: -1 };
 
 /** 地带中心的实测坐标（探针输出，用于断言「找对了地方」） */
-const TARN_CENTER = { cx: 200, cz: -600 };
+const TARN_CENTER = { cx: -1400, cz: -200 };
 const PLATEAU_Y = 2;
 
 const queueConverged = () => {
@@ -71,7 +74,7 @@ async function freezeAndHideHud(page) {
 
 /** 打开游戏并等到队列收敛 */
 async function openGame(page) {
-  await page.goto(`/?vd=8&seed=${SEED}`);
+  await page.goto(`/?vd=16&seed=${SEED}`);
   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 120_000 });
   await page.waitForFunction(queueConverged, null, { timeout: 180_000 });
 }
@@ -92,7 +95,14 @@ async function flyToTarn(page) {
   expect(c.center.cz).toBe(TARN_CENTER.cz);
 
   await teleport(page, c.center.cx, c.center.cz, c.lay.plateauY + 25);
-  await settle(page, c.center.cx, c.center.cz);
+  // ⚠️ **加载半径必须覆盖整个地带圆**：v1.90 缩外形后地带半径 138，「地带外形」那条用例
+  //    要探到半径 + 8 = 146 格，而 `settle` 默认只等 6 个 column（96 格）→ 超出的
+  //    `topAt` 读到 null（未加载）。
+  //    ⚠️ **视距必须同步抬到 16**：vd=8 时世界径向只加载 (8+2)*16 = 160 格，
+  //    而探针在 146 格处已经贴到边缘（实测会卡在 settle 5 分钟超时）。
+  //    vd=16 → 径向 288 格，余量充足。
+  const needCols = Math.ceil((c.lay.plateauRadius + 8) / 16) + 1;
+  await settle(page, c.center.cx, c.center.cz, needCols);
   await page.waitForTimeout(800);
   return { ...c.center, lay: c.lay };
 }
@@ -145,6 +155,89 @@ test.describe('高台地带景观', () => {
     await unpin(page);
   });
 
+  test('地带外形：平台外真的开始降坡，且地带外的地表不是被削平的', async ({ page }) => {
+    await openGame(page);
+    const c = await flyToTarn(page);
+    // ⚠️ **不能用「地表高度 == generateHeight」判圆外零影响**（实测踩坑）：
+    //    圆外照旧会生成树/巨树/结构，地表可能比自然地形高几十格（实测 52 vs -3）——
+    //    那与「地带有没有整形那里」无关。
+    //
+    // ✅ 用两个不受植被影响的事实：
+    //    ① **缓坡真的存在**：从平台边缘向内、向外各取一圈的**中位数**地表高度，
+    //       内圈应贴近 plateauY（平台），外圈应显著低于/远离 plateauY（已降坡）。
+    //       ⚠️ 平台内立着 8 座高台（最高 46 格），所以内圈不能用均值，必须用中位数，
+    //       且只要求「≥ plateauY − 2」（高台只会把中位数抬高，不会拉低）。
+    //    ② **地带圆外一格都没被削平**：在那里的列上，`y = plateauY` 处不应出现
+    //       「被强制铺成草/石平台」的迹象。实测地带内 `plateauY` 层的草/石覆盖率接近
+    //       全满，而圆外在同层的草/石覆盖率极低（地被自然环境决定）。
+    //       用「覆盖率 < 50%」作判据 —— 若缓坡/平台扩到圆外，那里会被铺满。
+    const r = await page.evaluate(async ({ cx, cz, plateauY, platformRadius, zoneRadius }) => {
+      const g = window.__MC_GAME__;
+      const nm = (id) => { try { return g.registry.nameOf(id); } catch { return String(id); } };
+      const topAt = (x, z) => {
+        for (let y = 90; y >= -30; y--) if (g.world.getBlockId(x, y, z) !== 0) return y;
+        return null;
+      };
+      const ringTop = (rad) => {
+        const vals = [];
+        for (let i = 0; i < 48; i++) {
+          const ang = i * 2 * Math.PI / 48;
+          const x = Math.round(cx + rad * Math.cos(ang));
+          const z = Math.round(cz + rad * Math.sin(ang));
+          const top = topAt(x, z);
+          if (top !== null) vals.push(top);
+        }
+        vals.sort((a, b) => a - b);
+        return { median: vals.length ? vals[Math.floor(vals.length / 2)] : null, n: vals.length };
+      };
+      // 平台层的草/石覆盖率（地带内 vs 圆外）
+      const platformCoverage = (radMin, radMax) => {
+        let total = 0, paved = 0;
+        for (let i = 0; i < 64; i++) {
+          const ang = i * 2 * Math.PI / 64;
+          const rad = radMin + (radMax - radMin) * ((i % 4) / 3);
+          const x = Math.round(cx + rad * Math.cos(ang));
+          const z = Math.round(cz + rad * Math.sin(ang));
+          total++;
+          const n = nm(g.world.getBlockId(x, plateauY, z));
+          if (n === 'grass' || n === 'stone') paved++;
+        }
+        return { total, paved, rate: total ? paved / total : 0 };
+      };
+      return {
+        inner: ringTop(Math.round(platformRadius * 0.55)),
+        outer: ringTop(zoneRadius),
+        insideCoverage: platformCoverage(Math.round(platformRadius * 0.4), Math.round(platformRadius * 0.8)),
+        // 圆外一圈（半径 + 6 ~ + 22）：那里**不该**被铺成 plateauY 的草石平台
+        outsideCoverage: platformCoverage(zoneRadius + 6, zoneRadius + 22),
+      };
+    }, {
+      cx: c.cx, cz: c.cz, plateauY: c.lay.plateauY,
+      platformRadius: c.lay.platformRadius, zoneRadius: c.lay.plateauRadius,
+    });
+
+    // ① 平台内圈必须抬到 plateauY 附近（≥ plateauY − 2；高台只会更高）
+    expect(r.inner.median, '平台内圈必须有地表').not.toBeNull();
+    expect(r.inner.median, `平台内圈中位数 ${r.inner.median} 低于 plateauY=${c.lay.plateauY} —— 平台没抬高`)
+      .toBeGreaterThanOrEqual(c.lay.plateauY - 2);
+    // ② 地带圆内 plateauY 层基本铺满
+    // ⚠️ 下界实测 **84%**（不是 100%）：采样环上有几处正落在高台/紫晶柱的方块上
+    //    （那里 plateauY 层是结构方块而不是 grass/stone）。取 0.75 留足余量，
+    //    同时仍能把「整形完全没生效」（圆外那种 <10% 的量级）抓出来。
+    expect(r.insideCoverage.rate,
+      `地带内 plateauY 层草石覆盖率只有 ${(r.insideCoverage.rate * 100).toFixed(0)}%（应 ≥75%）—— 台地整形没生效`)
+      .toBeGreaterThanOrEqual(0.75);
+    // ③ 地带圆外同层几乎不铺（< 50%）—— 这是「外形真的只有那么大」的直接证据
+    expect(r.outsideCoverage.rate,
+      `地带圆外 plateauY 层草石覆盖率 ${(r.outsideCoverage.rate * 100).toFixed(0)}% —— 地带外形扩到了圆外`)
+      .toBeLessThan(0.5);
+    // ④ 常量本身必须还是收缩后的值（用户 2026-10-28 裁定）—— 用字面量，不拿字段自比
+    expect(c.lay.platformRadius, '平台半径（= 地带半径 − 缓坡宽度）').toBe(114);
+    expect(c.lay.slopeWidth, '缓坡宽度').toBe(24);
+    expect(c.lay.platformRadius + c.lay.slopeWidth, '三者必须自洽').toBe(c.lay.plateauRadius);
+    await unpin(page);
+  });
+
   test('台地层是草石镶嵌（两种都出现，且不是清一色）', async ({ page }) => {
     await openGame(page);
     const c = await flyToTarn(page);
@@ -152,10 +245,11 @@ test.describe('高台地带景观', () => {
       const g = window.__MC_GAME__;
       const nm = (id) => { try { return g.registry.nameOf(id); } catch { return String(id); } };
       const counts = {};
-      // 台地环带：池外、地带内
+      // 平台环带：从平台边缘内缩取样（缓坡带不是草石镶嵌，是 stone）
+      const flat = lay.platformRadius;
       for (let a = 0; a < 48; a++) {
         const ang = (a / 48) * Math.PI * 2;
-        for (const r of [lay.poolRadius + 6, lay.poolRadius + 20, lay.poolRadius + 40, lay.plateauRadius - 6]) {
+        for (const r of [flat * 0.3, flat * 0.5, flat * 0.7, flat * 0.9, flat - 2]) {
           const x = Math.round(cx + r * Math.cos(ang));
           const z = Math.round(cz + r * Math.sin(ang));
           const n = nm(g.world.getBlockId(x, lay.plateauY, z));
@@ -230,45 +324,52 @@ test.describe('高台地带景观', () => {
     await unpin(page);
   });
 
-  test('非地带 region 不出现地带特征（池水/台地草石/巨型云都不在那儿）', async ({ page }) => {
+  test('非地带 region 不出现地带特征（台地草石/巨型云都不在那儿）', async ({ page }) => {
     await openGame(page);
-    // 找一个非地带 region 的中心
+    // 找一个非地带 region 的中心 —— **必须挑一个「合格但没抽中」的**，不能随便找个非地带：
+    // 旧写法拿第一个非地带 region（常常是森林/沙漠中心），那里本来就无台地，
+    // 判据恒真（测不出「地带漏到外面」）。
     const normal = await page.evaluate(async ({ seed }) => {
-      const { isTarnZone, tarnZoneCenter } = await import('/src/gen/structures/tarn-zone.js');
-      for (let rx = -6; rx <= 6; rx++) for (let rz = -6; rz <= 6; rz++) {
+      const { isTarnZone, hasTarnEligibility, tarnZoneCenter } = await import('/src/gen/structures/tarn-zone.js');
+      for (let rx = -12; rx <= 12; rx++) for (let rz = -12; rz <= 12; rz++) {
         if (rx === 0 && rz === 0) continue;              // 城市
-        if (!isTarnZone(rx, rz, seed)) return { ...tarnZoneCenter(rx, rz), rx, rz };
+        // 合格但没抽中 = 最容易「漏成地带」的那一类
+        if (!hasTarnEligibility(rx, rz, seed)) continue;
+        if (isTarnZone(rx, rz, seed)) continue;
+        return { ...tarnZoneCenter(rx, rz), rx, rz };
       }
       return null;
     }, { seed: SEED });
-    expect(normal, '必须存在非地带 region').not.toBeNull();
+    expect(normal, '必须存在「合格但没抽中」的 region').not.toBeNull();
 
     await teleport(page, normal.cx, normal.cz, 80);
     await settle(page, normal.cx, normal.cz);
     const stats = await page.evaluate(({ cx, cz }) => {
       const g = window.__MC_GAME__;
       const nm = (id) => { try { return g.registry.nameOf(id); } catch { return String(id); } };
-      // 在 region 中心 ±160 内统计：水格数 / 台地层草石 / 高空非空
-      let water = 0, grassAt2 = 0, stoneAt2 = 0, skyCells = 0, samples = 0;
+      // 在 region 中心 ±150 内统计：台地层草石 / 高空非空
+      // ⚠️ s1.90 去掉了「水格」判据：地带已经没有水池，而且 y=2 的水格判据在
+      //     新口径下对「非地带 region」也几乎恒为 0（它们本来就是陆地）。
+      //     改为钉「platformRadius 尺度上的整片台地」—— 那是地带独有的形态。
+      let grassAtPlateau = 0, skyCells = 0, samples = 0;
       for (let dx = -150; dx <= 150; dx += 10) {
         for (let dz = -150; dz <= 150; dz += 10) {
           const x = cx + dx, z = cz + dz;
           samples++;
           const y2 = nm(g.world.getBlockId(x, 2, z));
-          if (y2 === 'water') water++;
-          if (y2 === 'grass') grassAt2++;
-          if (y2 === 'stone') stoneAt2++;
+          if (y2 === 'grass' || y2 === 'stone') grassAtPlateau++;
           for (let y = 54; y <= 94; y += 8) {
             if (g.world.getBlockId(x, y, z) !== 0) skyCells++;
           }
         }
       }
-      return { water, grassAt2, stoneAt2, skyCells, samples };
+      return { grassAtPlateau, skyCells, samples };
     }, { cx: normal.cx, cz: normal.cz });
 
-    // 非地带 region 不该有「整片 y=2 的水池 + 草石台地」
-    expect(stats.water, `非地带 region(${normal.rx},${normal.cz}) 在 y=2 出现 ${stats.water} 个水格 —— 地带漏到了外面`).toBeLessThan(20);
-    // 云层照旧（用户要求原有云照常渲染），所以 skyCells 不设 0，但要求有值
+    // 非地带 region 不该有「整片 y=2 的台地」：实测地带的平台是 plateauY=2 整片草/石，
+    // 而普通 region 的 y=2 绝大多数是 air 或水。阈值取 samples × 0.5（台地会接近 0.785）。
+    expect(stats.grassAtPlateau, `非地带 region(${normal.rx},${normal.rz}) 在 y=2 有 ${stats.grassAtPlateau}/${stats.samples} 个草石格 —— 地带漏到了外面`)
+      .toBeLessThan(stats.samples * 0.5);
     expect(stats.samples).toBeGreaterThan(500);
     await unpin(page);
   });

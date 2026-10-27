@@ -837,14 +837,111 @@ async function checkCloudlandTarnZone() {
     fail(`这些高台的 palette 里还有 moss（台顶必须是 grass）：${mossInTarn.join(', ')}`);
   }
 
+  // ⑥ 出现口径与几何的自洽（v1.90）—— 这一组不依赖烘焙产物，钄的是**代码常量**之间的关系
+  //    （改一个而忘改另一个时，产物指纹完全不变，上面 ①~⑤ 全部恒绿）。
+  await checkTarnPlacementRules(fail);
+
   // ⚠️ **成功行的条件必须涵盖本函数全部判据**，否则失败时仍会打印一条 ✓
   // （既有教训：`[高台]` 曾同时出现「✗ 含砖块族」与「✓ …无砖无木」，读者只看 ✓ 就误判）。
   const ok = failures.every((f) => !f.startsWith('[高台地带]'))
     && brickish.length === 0 && woody.length === 0 && mossInTarn.length === 0
     && checkedVariants === allVariants.length;
   if (ok) {
-    infos.push(`[高台地带] ${checkedVariants} 个产物（11 高台 + 5 拱洞 + 7 紫晶柱 + 12 巨型云）/ 台顶全 grass / 无砖无木 / 指纹匹配`);
+    infos.push(`[高台地带] ${checkedVariants} 个产物（11 高台 + 5 拱洞 + 7 紫晶柱 + 12 巨型云）/ 台顶全 grass / 无砖无木 / 指纹匹配 / 出现口径与几何自洽`);
   }
+}
+
+/**
+ * [高台地带] 的出现口径与几何自洽（v1.90，不依赖烘焙产物）。
+ *
+ * 钉五件在**方块与产物层面都看不出来**的失效：
+ *   ① 地带圆与 City bounds 重叠 —— 用户报告的现象。改造前实测 8 个 seed 里 6 个有重叠（最深 112 格）。
+ *   ② 地带圆越 region 边界 —— 地带半边永久消失（相邻 region 不为它算候选）。
+ *   ③ 缓坡宽度与平台半径漂移 —— 形态是「平台比地带还大」或「缓坡宽度对不上」。
+ *   ④ 装饰件外延超出平台 —— 坐座落在缓坡上，缓坡地形被它的底座穿。
+ *   ⑤ 地带密度跑飞 —— 变成「到处都是」或「走半天找不到」。（旧版：每 3.4 region 一座）
+ *
+ * @param {(msg: string) => void} fail
+ */
+async function checkTarnPlacementRules(fail) {
+  const tz = await import('../src/gen/structures/tarn-zone.js');
+  const { REGION_SIZE, CITY_REGION } = await import('../src/gen/structures/region-config.js');
+  const { getCityBoundsForSeed } = await import('../src/gen/structures/city-layout.js');
+
+  // ① 地带圆不越 region 边界（不靠数值巧合，靠不等式）
+  if (tz.TARN_ZONE_RADIUS + 2 > REGION_SIZE / 2) {
+    fail(`地带半径 ${tz.TARN_ZONE_RADIUS} + 2 > region 半宽 ${REGION_SIZE / 2} —— 地带半边会永久消失`);
+  }
+  // ② 三者自洽
+  if (tz.TARN_PLATFORM_RADIUS + tz.TARN_SLOPE_WIDTH !== tz.TARN_ZONE_RADIUS) {
+    fail(`平台半径 ${tz.TARN_PLATFORM_RADIUS} + 缓坡 ${tz.TARN_SLOPE_WIDTH} ≠ 地带半径 ${tz.TARN_ZONE_RADIUS}`);
+  }
+
+  // ③ 地带永不与 City 重叠。
+  //
+  // ⚠️ **seed 集合必须足够大**：去掉城市判据后，单个 seed 的 ±10 窗口里**平均只有 1.07 个**
+  //    重叠（实测 seed 1..300：只有 **15%** 的 seed 会出现重叠）。拿 3~4 个 seed 做门禁时
+  //    那条判据 **恒绿**（实测 12 个通用 seed 里只有 seed 888 命中 1 个）→ 门禁形同虚设。
+  //    所以这里固定扫 **seed 1..40 × ±8**（实测 ~300ms，命中 150~200 个地带，
+  //    “去掉判据”时会出现多个重叠）。
+  let overlapped = 0;
+  const firstOverlaps = [];
+  for (let seed = 1; seed <= 40; seed++) {
+    const city = getCityBoundsForSeed(seed);
+    for (let rx = -8; rx <= 8; rx++) for (let rz = -8; rz <= 8; rz++) {
+      if (!tz.isTarnZone(rx, rz, seed)) continue;
+      const { cx, cz } = tz.tarnZoneCenter(rx, rz);
+      if (tz.circleRectGap(cx, cz, tz.TARN_ZONE_RADIUS, city) <= 0) {
+        overlapped++;
+        if (firstOverlaps.length < 5) firstOverlaps.push(`seed${seed}(${rx},${rz})`);
+      }
+    }
+  }
+  if (overlapped > 0) {
+    fail(`${overlapped} 个地带圆与 City bounds 重叠（用户明确要求：不得重叠）：${firstOverlaps.join(' ')}`);
+  }
+  // ④ CITY_REGION 恒不是地带（城市是全世界唯一）
+  for (let seed = 1; seed <= 40; seed++) {
+    if (tz.isTarnZone(CITY_REGION.X, CITY_REGION.Z, seed)) fail(`seed ${seed} 的 CITY_REGION 掷到了地带`);
+  }
+  // ⑤ 装饰件与高台的四角外延 ≤ 平台半径（否则坐座坐落在缓坡上）
+  const reach = (v, ring, ang) => Math.max(...[-1, 1].flatMap((sx) => [-1, 1].map((sz) => Math.hypot(
+    ring * Math.cos(ang) + sx * v.halfX, ring * Math.sin(ang) + sz * v.halfZ))));
+  const layout = findLayout(tz);
+  if (layout) {
+    for (const t of [...layout.tarns, ...layout.decos]) {
+      const r = reach(t, t.ring, t.ang);
+      if (r > layout.platformRadius) {
+        fail(`${t.variant} 四角最远 ${r.toFixed(1)} 超出平台半径 ${layout.platformRadius}（坐座会落在缓坡上）`);
+      }
+    }
+  } else {
+    fail('扫不到任何一个地带 region —— 出现口径可能被改成了永不命中');
+  }
+  // ⑥ 密度不跑飞（实测 7 seed：每 13.6~23.1 region 一座；带宽 12~40）
+  //    ⚠️ 下界 12 能抓住「chance 改成 1/3」（实测 8.4~12.0）与「变回每 3 个一座」。
+  for (const seed of [12345, 4, 7]) {
+    let hits = 0, total = 0;
+    for (let rx = -12; rx <= 12; rx++) for (let rz = -12; rz <= 12; rz++) {
+      total++;
+      if (tz.isTarnZone(rx, rz, seed)) hits++;
+    }
+    const per = total / Math.max(1, hits);
+    if (!(per >= 12 && per <= 40)) {
+      fail(`seed ${seed} 每 ${per.toFixed(1)} region 一座地带（实测区间 13.6~23.1，允许 12~40）`);
+    }
+  }
+}
+
+/** 扫一个确实存在的地带布局（供上面那条几何判据用） */
+function findLayout(tz) {
+  for (const seed of [12345, 4, 7]) {
+    for (let rx = -8; rx <= 8; rx++) for (let rz = -8; rz <= 8; rz++) {
+      const lay = tz.computeTarnZone(rx, rz, seed);
+      if (lay) return lay;
+    }
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------- [巨树] 契约（Giant Trees Epic）

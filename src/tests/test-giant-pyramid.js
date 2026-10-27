@@ -315,15 +315,17 @@ test('巨型金字塔接线：computeRegionLayout 的 giantPyramid 字段与直�
 // 只跳过就什么都测不到，而这条会真 FAIL。
 test('巨型金字塔接线：地带 region 的 layout.giantPyramid 是 null，而候选函数仍有值', async () => {
   const { computeRegionLayout } = await import('../gen/structures/structure-layout.js');
-  // 找一个「本地是地带、且候选函数依然产出锚点」的 region（seed 12345 实测 (-2,-2)，floorY=4）
+  // 找一个「本地是地带、且候选函数依然产出锚点」的 region。
+  // ⚠️ **扫 ±12 而不是 ±6**（v1.90）：高台地带改为「稀有草地替换」后，±6 窗口里
+  //    同时满足「是地带」+「候选有锚点」的 region 变成零个（实测 8 个 seed 的 ±12 只有 60 个样本）。
   let hit = null;
-  for (let rx = -6; rx <= 6 && !hit; rx++) {
-    for (let rz = -6; rz <= 6 && !hit; rz++) {
+  for (let rx = -12; rx <= 12 && !hit; rx++) {
+    for (let rz = -12; rz <= 12 && !hit; rz++) {
       if (!isTarnZone(rx, rz, SEED)) continue;
       if (computeGiantPyramidAnchor(rx, rz, SEED) !== null) hit = { rx, rz };
     }
   }
-  assertTrue(hit !== null, '必须找到「地带 region 且候选有锚点」的取样点 —— 否则本用例恒真');
+  assertTrue(hit !== null, '必须找到「地带 region 且候选有锚点」的取样点（±12）—— 否则本用例恒真');
   const direct = computeGiantPyramidAnchor(hit.rx, hit.rz, SEED);
   assertTrue(direct !== null, `region(${hit.rx},${hit.rz}) 的候选函数必须有锚点（实测 floorY=${direct && direct.floorY}）`);
   assertEqual(computeRegionLayout(hit.rx, hit.rz, SEED).giantPyramid, null,

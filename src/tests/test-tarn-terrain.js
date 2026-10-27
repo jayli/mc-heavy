@@ -8,7 +8,7 @@
 // `test-giant-trees-gen.js:51`）。真实生成路径就是 `fillColumn` → `fillTarnPlateau` → 结构光栅化。
 import { test } from './runner.js';
 import { assertEqual, assertTrue } from './assert.js';
-import { computeTarnZone, isTarnZone } from '../gen/structures/tarn-zone.js';
+import { computeTarnZone, isTarnZone, TARN_SLOPE_WIDTH as TARN_ZONE_SLOPE_WIDTH } from '../gen/structures/tarn-zone.js';
 import { fillTarnPlateau, tarnSurfaceBlock, TARN_TERRAIN_SALT, TARN_SLOPE_WIDTH } from '../gen/structures/tarn-terrain.js';
 import { buildDefaultRegistry } from '../voxel/block-registry.js';
 import { ChunkColumn } from '../voxel/chunk-column.js';
@@ -73,14 +73,28 @@ test('台地：草石镶嵌是「成片」不是逐格斑点', () => {
     `横向变化率 ${(rate * 100).toFixed(1)}% 太高 —— 镶嵌退化成逐格花屏（应 <35%）`);
 });
 
+test('台地：缓坡宽度与 tarn-zone 同源（两边不得各写一份）', () => {
+  // ⚠️ 这条钉的是**红线 1**：`tarn-terrain.js` 从 `tarn-zone.js` import 坡宽（而不是自己写），
+  // 因为 `isTarnZone` 的「核心沙漠占比」判据要采到平台边缘（= `TARN_ZONE_RADIUS - 坡宽`），
+  // 两份漂移后同一个 region 会「判定时按 24 采样、整形时按 40 削坡」，抽中的地方一半是沙漠。
+  assertEqual(TARN_SLOPE_WIDTH, TARN_ZONE_SLOPE_WIDTH, '两个模块导出的坡宽必须一致');
+  const { rx, rz } = findTarnRegion();
+  const lay = computeTarnZone(rx, rz, SEED);
+  assertEqual(lay.slopeWidth, TARN_SLOPE_WIDTH, 'layout.slopeWidth 必须等于坡宽常量');
+  assertEqual(lay.platformRadius + lay.slopeWidth, lay.plateauRadius,
+    '平台半径 + 坡宽 必须等于地带半径');
+});
+
 test('台地：高度恒定（台地范围内地表高差 = 0）', async () => {
   const { rx, rz } = findTarnRegion();
   const lay = computeTarnZone(rx, rz, SEED);
   const reg = await buildDefaultRegistry();
   const heights = new Set();
-  // ⚠️ v1.89：地带现在 = 内圈平台 + 外圈 `TARN_SLOPE_WIDTH` 缓坡（过渡到自然地形）。
-  // 「高度恒定」只对**平台内**成立 ⇒ 采样半径必须收在 `plateauRadius - TARN_SLOPE_WIDTH` 之内。
-  const flatR = lay.plateauRadius - TARN_SLOPE_WIDTH;
+  // ⚠️ v1.89：地带现在 = 内圈平台 + 外圈缓坡（过渡到自然地形）。
+  // 「高度恒定」只对**平台内**成立 ⇒ 采样半径必须收在 `lay.platformRadius` 之内。
+  // ⚠️ s1.90：不再从 `plateauRadius - TARN_SLOPE_WIDTH` 推导 —— 那个式子要求两个常量
+  //    与 layout 字段三方对齐，其中一个（`poolRadius`）已删；直接用 layout 字段（单一权威）。
+  const flatR = lay.platformRadius;
   for (let a = 0; a < 32; a++) {
     const ang = (a / 32) * Math.PI * 2;
     for (const r of [0, flatR * 0.25, flatR * 0.5, flatR * 0.75, flatR - 2]) {
@@ -108,10 +122,12 @@ test('台地：地带上完全没有水（v1.89 去掉中央水池）', async ()
   const waterId = reg.idOf('water');
   const waterLike = new Set([waterId, reg.idOf('swamp_water')].filter((x) => x !== undefined));
   let waterCells = 0, checked = 0;
-  // 扫地带圆内的多个采样点（含池心与台地环带），逐 y 数水格
+  // 扫地带圆内的多个采样点，逐 y 数水格。
+  // ⚠️ 半径序列必须全部 < `lay.plateauRadius`（s1.90 = 138）：写 130 已在缓坡带上，
+  //    而缓坡带也在整形的范围内，所以仍然是合法采样点；旧序列里的 130 保留。
   for (let a = 0; a < 24; a++) {
     const ang = (a / 24) * Math.PI * 2;
-    for (const r of [0, 20, 45, 70, 100, 130, lay.plateauRadius - 4]) {
+    for (const r of [0, 20, 45, 70, 100, lay.platformRadius - 4, lay.plateauRadius - 4]) {
       const wx = Math.round(lay.cx + r * Math.cos(ang));
       const wz = Math.round(lay.cz + r * Math.sin(ang));
       const { col, lx, lz } = await shapedColumn(lay, wx, wz, reg);
@@ -125,21 +141,29 @@ test('台地：地带上完全没有水（v1.89 去掉中央水池）', async ()
   assertEqual(waterCells, 0, `地带圆内出现 ${waterCells} 格水（v1.89 起地带必须完全无水）`);
 });
 
-test('台地：边缘缓坡接续自然地形（坡面最陡处不超过 MAX_STEP）', async () => {
-  // 平台半径 = plateauRadius - TARN_SLOPE_WIDTH；往外 TARN_SLOPE_WIDTH 格内线性过渡。
-  // 判据落在「相邻列的高度差 ≤ 1」（玩家 MAX_STEP = 1.0，差 > 1 就走不上去）。
+test('台地：边缘缓坡接续自然地形（缓坡带内逐格高差 ≤ 1）', async () => {
+  // 平台半径 = `lay.platformRadius`；往外 `lay.slopeWidth` 格内线性过渡到自然地形。
+  // 判据落在「缓坡带**内部**相邻列的高度差 ≤ 1」（玩家 MAX_STEP = 1.0）。
+  //
+  // ⚠️⚠️ **采样必须止于 `plateauRadius`，不能跨出去**（v1.90 实测踩坑）：
+  //    地带圆外一律不整形，而自然地形本身在圆边缘可能有任意落差（实测 seed 12345 的一个
+  //    地带圆边缘从 y=−13 直接跳到 y=−2，跳 11 格）。跨边界采样会把那一下算进「坡面」，
+  //    得到的数字对「缓坡是否可走」毫无意义 —— 那是自然地形，不是缓坡。
+  // ⚠️ 采样窗口按 `lay.platformRadius` / `lay.slopeWidth` 定长（旧版写死 60 格，
+  //    缓坡缩到 24 后起点已钻进平台内，会把平坦平台的 0 高差也算进统计）。
   const { rx, rz } = findTarnRegion();
   const lay = computeTarnZone(rx, rz, SEED);
   const reg = await buildDefaultRegistry();
   let maxJump = 0, samples = 0;
-  // 沿 8 个方向从平台边缘走到地带边缘，逐格看高差
-  for (let a = 0; a < 8; a++) {
-    const ang = (a / 8) * Math.PI * 2;
+  const from = lay.platformRadius - 4;              // 平台内 4 格起步（确保起点是平的）
+  for (let a = 0; a < 24; a++) {
+    const ang = (a / 24) * Math.PI * 2;
     const cos = Math.cos(ang), sin = Math.sin(ang);
     let prevY = null;
-    for (let r = lay.plateauRadius - 60; r <= lay.plateauRadius + 2; r += 2) {
+    for (let r = from; r <= lay.plateauRadius; r += 1) {
       const wx = Math.round(lay.cx + r * cos);
       const wz = Math.round(lay.cz + r * sin);
+      // ⚠️ 逐格判半径：`Math.round` 会把点推到圆外，那一格不是缓坡。
       if (Math.hypot(wx - lay.cx, wz - lay.cz) > lay.plateauRadius) break;
       const { col, lx, lz } = await shapedColumn(lay, wx, wz, reg);
       let top = null;
@@ -147,15 +171,16 @@ test('台地：边缘缓坡接续自然地形（坡面最陡处不超过 MAX_STE
         if (col.blocks[blockIndex(lx, y, lz)] !== 0) { top = y; break; }
       }
       if (top !== null && prevY !== null) {
-        // 采样步长 2 格 ⇒ 相邻采样的高差允许 2（即每格 ≤1）
         maxJump = Math.max(maxJump, Math.abs(top - prevY));
         samples++;
       }
       if (top !== null) prevY = top;
     }
   }
-  assertTrue(samples > 20, `坡面采样点太少（${samples}）`);
-  assertTrue(maxJump <= 2, `坡面最陡处相邻 2 格高差 ${maxJump} > 2 —— 玩家会被挡住（MAX_STEP=1）`);
+  assertTrue(samples > 200, `坡面采样点太少（${samples}）`);
+  // 实测（seed 12345 在 ±6 的第一个地带）：缓坡带内逐格最大高差 = 1（完全可走）。
+  // ⚠️ 上界不能用 2 或更大：`MAX_STEP = 1.0`，差 2 就是走不上去。
+  assertTrue(maxJump <= 1, `缓坡带内逐格最大高差 ${maxJump} > 1 —— 玩家会被挡住（MAX_STEP=1）`);
 });
 
 
@@ -167,10 +192,24 @@ test('台地：台地外的格不被整形（圆外零影响）', async () => {
   const { rx, rz } = findTarnRegion();
   const lay = computeTarnZone(rx, rz, SEED);
   const reg = await buildDefaultRegistry();
-  // 地带圆边缘（半径附近）的 column：列内既有圆内格也有圆外格
-  const wx = Math.round(lay.cx + lay.plateauRadius - 4);
-  const wz = lay.cz;
-  const cx = Math.floor(wx / 16), cz = Math.floor(wz / 16);
+  // 地带圆边缘（半径附近）的 column：列内既有圆内格也有圆外格。
+  // ⚠️ **v1.90 从「半径 − 4 的单个点」改为实时筛**：旧写法假设那个点所在的 column
+  //    恰好被圆切开 —— 而那依赖地带半径与圆心的具体字节，实测新半径（138）下它整列都在圆内。
+  //    现在扫圆心周围的 column，取第一个「0 < 圆内格 < 256」的（实测有 66 个可选）。
+  let edge = null;
+  for (let dcx = -12; dcx <= 12 && !edge; dcx++) {
+    for (let dcz = -12; dcz <= 12 && !edge; dcz++) {
+      const tcx = Math.floor(lay.cx / 16) + dcx, tcz = Math.floor(lay.cz / 16) + dcz;
+      let inside = 0;
+      for (let lx = 0; lx < 16; lx++) for (let lz = 0; lz < 16; lz++) {
+        const px = tcx * 16 + lx, pz = tcz * 16 + lz;
+        if (Math.hypot(px - lay.cx, pz - lay.cz) <= lay.plateauRadius) inside++;
+      }
+      if (inside > 0 && inside < 256) edge = { cx: tcx, cz: tcz };
+    }
+  }
+  assertTrue(edge !== null, '找不到「部分在圆内、部分在圆外」的 column —— 木地半径或列尺寸变了，须重新标定');
+  const cx = edge.cx, cz = edge.cz;
   const before = new ChunkColumn(cx, cz);
   fillColumn(before, SEED, reg);
   const after = new ChunkColumn(cx, cz);
@@ -200,10 +239,13 @@ test('台地：高于 plateauY 的原山体被削平（不是「台地长在山�
   const lay = computeTarnZone(rx, rz, SEED);
   const reg = await buildDefaultRegistry();
   // 找一个自然地形明显高于 plateauY 的采样点（这样「没削山」才有可观测差异）
+  // ⚠️ s1.90：基准从 `poolRadius`（已删）改为 `platformRadius`。采样点必须落在**缓坡带上**
+  //    （平台内是恒平的，看不到「原山体」）—— 缓坡带 = `(platformRadius, plateauRadius]`，
+  //    取带内两个位置，且都在圆内（圆外不动，本用例就无判别力）。
   let found = null;
   for (let a = 0; a < 16 && !found; a++) {
     const ang = (a / 16) * Math.PI * 2;
-    for (const r of [lay.poolRadius + 8, lay.poolRadius + 24]) {
+    for (const r of [lay.platformRadius + 6, lay.platformRadius + 14]) {
       const wx = Math.round(lay.cx + r * Math.cos(ang));
       const wz = Math.round(lay.cz + r * Math.sin(ang));
       const cx = Math.floor(wx / 16), cz = Math.floor(wz / 16);
@@ -219,9 +261,18 @@ test('台地：高于 plateauY 的原山体被削平（不是「台地长在山�
   assertTrue(found !== null,
     '必须存在「自然地形高于 plateauY」的台地采样点，否则本用例没有判别力');
   const { col, lx, lz } = await shapedColumn(lay, found.wx, found.wz, reg);
-  // 整形后该列 plateauY 之上不得有方块
-  for (let y = lay.plateauY + 1; y <= 90; y++) {
-    assertEqual(col.blocks[blockIndex(lx, y, lz)], 0,
-      `原山体（自然顶 y=${found.top}）在 plateauY+${y - lay.plateauY} 处未被削平`);
+  // 整形后该列的目标高度之上不得有方块。
+  // ⚠️ **s1.90：采样点在缓坡带上，目标高度不再是 `plateauY`**（那里是插值到自然高度的过渡值），
+  //    所以判据用「该列整形后的地表 = 什么」，而不是硬拿 `plateauY` 比 ——
+  //    否则缓坡带上的正确定形反而会被判 FAIL。真正要钉的是「原山体被削掉」。
+  let shapedTop = null;
+  for (let y = 90; y >= -30; y--) {
+    if (col.blocks[blockIndex(lx, y, lz)] !== 0) { shapedTop = y; break; }
+  }
+  assertTrue(shapedTop !== null, '整形后该列必须有地表');
+  assertTrue(shapedTop < found.top,
+    `原山体（自然顶 y=${found.top}）没有被削平（整形后顶仍是 y=${shapedTop}）`);
+  for (let y = shapedTop + 1; y <= 90; y++) {
+    assertEqual(col.blocks[blockIndex(lx, y, lz)], 0, `整形后顶面之上还有方块（y=${y}）`);
   }
 });

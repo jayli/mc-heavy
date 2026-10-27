@@ -13,6 +13,7 @@
 import { noise } from '../noise.js';
 import { blockIndex, WORLD_MIN_Y, WORLD_MAX_Y } from '../../voxel/constants.js';
 import { TERRAIN_HEIGHT_PARAMS, generateHeight } from '../terrain.js';
+import { TARN_SLOPE_WIDTH } from './tarn-zone.js';
 
 /**
  * 台地整形的噪声 salt。
@@ -35,17 +36,15 @@ export const TARN_TERRAIN_SALT = 1022;
 const SURFACE_SCALE = TERRAIN_HEIGHT_PARAMS.COARSE_SCALE;
 
 /**
- * 平台边缘的缓坡宽度（格）。
+ * 平台边缘的缓坡宽度（格）—— **唯一权威在 `tarn-zone.js`**，这里 re-export。
  *
- * 平台半径 = `plateauRadius - TARN_SLOPE_WIDTH`；从这个半径往外，地表高度在
- * `TARN_SLOPE_WIDTH` 格内线性过渡到自然地形高度。
- *
- * ⚠️ **v1.89 引入**（用户 2026-10-27 裁定：「完全就用普通的平缓的地形来接续高台地形
- * 旁边的地图，只要能接续上即可，坡度缓和一些」）。取 40 格 ⇒ 从 `plateauY`(=2) 过渡到
- * 常见自然高度（~10）的坡度约 8°，玩家跑上去不会被挡住（`MAX_STEP = 1.0`，
- * 40 格摊 8 格高差 = 每格 0.2，天然可走）。
+ * ⚠️ **必须从那里 import，不得在本文件再写一份**：`isTarnZone` 的「核心沙漠占比」判据要采到
+ * 平台边缘（= `TARN_ZONE_RADIUS - 缓坡宽度`），判定是 `(regionX, regionZ, seed)` 的纯函数 ——
+ * 两份坡宽漂移后，同一个 region 会「判定时按 24 采样、整形时按 40 削坡」。
+ * 反过来放本文件也不行：`tarn-zone.js` 不能 import 本文件（本文件 import 它的 `generateHeight`
+ * 链路），会成环。故权威在 `tarn-zone.js`，本文件只做消费 + 转出（供测试 import）。
  */
-export const TARN_SLOPE_WIDTH = 40;
+export { TARN_SLOPE_WIDTH };
 
 /**
  * 台地地表方块：草石镶嵌的**唯一权威**（单测直接用，不复制一份判据 —— 红线 1）。
@@ -60,17 +59,60 @@ export function tarnSurfaceBlock(wx, wz, seed) {
 }
 
 /**
+ * 缓坡用的自然高度：半径 `SLOPE_SMOOTH_RADIUS` 内方形的**均值**。
+ *
+ * ⚠️ **不能直接用本格的 `generateHeight`**（v1.90 实测）：自然地形存在陡坡（实测某处
+ * 1→8 格一跳），线性插值会把它**放大成断崖** —— 坡宽 24 时出现 **6~7 格**台阶，
+ * 玩家被挡住（`MAX_STEP = 1.0`）；旧坡宽 40 时只有 2 格，所以这个问题在缩缓坡后才暴露。
+ *
+ * ⚠️ **聚合方式必须是均值，不能用最小值**（实测对比）：
+ * | 平滑半径 | 无平滑 | 最小值聚合 | **均值聚合** |
+ * |---|---|---|---|
+ * | 2 | 7 格 | 6 格 | **2 格** |
+ * | 4 | 7 格 | 4 格 | **2 格** |
+ * | **8** | 7 格 | 8 格 | **1 格（>1 占比 0.000%）** |
+ * 最小值聚合会把坡面系统性压低（陡坡下方取到最低点），反而在陡坡上方造成更大的落差。
+ *
+ * ⚠️ **半径 8 的代价可以接受**：坡面与原地形的平均偏差 **1.28 格**、最大 8 格（那几个点在
+ * 陡坡正下方）—— 观感上是「缓坡略矮于周边地形」，而不是断崖。旧坡宽 40 格时同类偏差也差不多。
+ * 半径再大（10）会把偏差抬到 1.30 且最大高差回升到 2，没有收益。
+ *
+ * @param {number} wx @param {number} wz @param {number} seed
+ * @returns {number}
+ */
+function slopeNaturalHeight(wx, wz, seed) {
+  let sum = 0;
+  let n = 0;
+  for (let dx = -SLOPE_SMOOTH_RADIUS; dx <= SLOPE_SMOOTH_RADIUS; dx++) {
+    for (let dz = -SLOPE_SMOOTH_RADIUS; dz <= SLOPE_SMOOTH_RADIUS; dz++) {
+      sum += generateHeight(wx + dx, wz + dz, seed);
+      n++;
+    }
+  }
+  return sum / n;
+}
+
+/**
+ * 缓坡自然高度的平滑半径（格）。标定表与取舍理由见 `slopeNaturalHeight`。
+ */
+const SLOPE_SMOOTH_RADIUS = 8;
+
+/**
  * 把一个 column 的台地整形到布局指定的高度。
  *
- * 三条分支（`plateauY` 是台地地表高度，池内低一格）：
+ * 三条分支（`plateauY` 是台地地表高度）：
  *
  * | 距离 | 内容 |
  * |---|---|
- * | `<= poolRadius` | 池底 = `plateauY - 1`（**下沉一格**，`stone`）；`plateauY` 那层填 `water`；之上清空 |
- * | `(poolRadius, plateauRadius]` | 地表 = `plateauY`，材质 `tarnSurfaceBlock`；之下 `stone`；之上清空 |
+ * | `<= platformRadius` | 地表 = `plateauY`，材质 `tarnSurfaceBlock`（草石镶嵌）；之下 `stone`；之上清空 |
+ * | `(platformRadius, plateauRadius]` | 缓坡：地表高度从 `plateauY` 线性插值到自然地形，材质 `stone` |
  * | 圆外 | **不动** |
  *
- * ⚠️ **高于 `plateauY` 的格必须显式写 0**：`fillColumn` 已按自然地形填过整个 column，
+ * ⚠️ **s1.89 起没有中央水池了**（用户 2026-10-27 裁定）：整片地带是平顶高原 + 外圈缓坡，
+ * 自然地形原有的地下水体也一并填成石头 —— 地带内**一格水都没有**，
+ * 所以它与 transparent 通道完全无关。
+ *
+ * ⚠️ **高于目标高度的格必须显式写 0**：`fillColumn` 已按自然地形填过整个 column，
  * 不清掉就会在台地上方留下原来的山体 —— 观感是「台地长在山里」，而且方块层面
  * 完全看不出是整形漏了（地形本来就在那）。负向验证靠「高于 plateauY 的原山体被削平」那条用例钉住。
  *
@@ -80,16 +122,16 @@ export function tarnSurfaceBlock(wx, wz, seed) {
  * @param {import('../../voxel/block-registry.js').BlockRegistry} registry
  */
 export function fillTarnPlateau(column, layout, seed, registry) {
-  const { cx, cz, poolRadius, plateauRadius, plateauY } = layout;
+  const { cx, cz, platformRadius, plateauRadius, plateauY } = layout;
   const stoneId = registry.idOf('stone');
   const grassId = registry.idOf('grass');
   // 干掉的两种水体（v1.89）：填实时要一并替换成石头
   const waterId = registry.idOf('water');
   const swampWaterId = registry.idOf('swamp_water');
   const idCache = new Map([['stone', stoneId], ['grass', grassId]]);
-  // 内圈平台半径 = 地带半径 − 坡宽。v1.89 起池内也是平台（无水），
-  // 故平台半径只由坡宽决定，不再看 poolRadius。
-  const flatR = plateauRadius - TARN_SLOPE_WIDTH;
+  // 内圈平台半径 = `layout.platformRadius`（= 地带半径 − 缓坡宽度，由 `tarn-zone.js` 派生）；
+  // s1.90 起不再有 `poolRadius` 这个字段（s1.89 删了水池后它已经是死字段）。
+  const flatR = platformRadius;
   const idOfName = (name) => {
     if (idCache.has(name)) return idCache.get(name);
     const id = registry.idOf(name);
@@ -116,20 +158,29 @@ export function fillTarnPlateau(column, layout, seed, registry) {
 
       const lx = wx - colMinX, lz = wz - colMinZ;
 
-      // ── 目标高度：内圈平台恒定 plateauY，外圈 TARN_SLOPE_WIDTH 内平滑过渡到自然地形 ──
+      // ── 目标高度：内圈平台恒定 plateauY，缓坡带内线性过渡到自然地形 ──
       // ⚠️ **v1.89 去掉中央水池**（用户 2026-10-27 裁定：「把高台所在的中央水面去掉，
       //    完全就用普通的平缓的地形来接续高台地形旁边的地图，只要能接续上即可，
-      //    坡度缓和一些」）。现在池内也是平台，整片地带是一块平顶高原，
-      //    边缘用 `TARN_SLOPE_WIDTH` 宽的缓坡接回自然地形 —— 不再有 `water` 方块，
+      //    坡度缓和一些」）。整片地带是一块平顶高原，边缘用 `TARN_SLOPE_WIDTH`
+      //    （现 24 格）宽的缓坡接回自然地形 —— 不再有 `water` 方块，
       //    因此 transparent 通道与高台地带**完全无关**。
+      // ⚠️ **改缓坡宽度前先重测「走不上去的列」占比**（实测表在
+      //    `tarn-zone.js` 的 `TARN_PLATFORM_RADIUS` 注释里）：24 格→ 0.32%，20 格就开始变拥。
       const d = Math.sqrt(d2);
       let targetY;
       if (d <= flatR) {
         targetY = plateauY;
       } else {
-        // 从 flatR 到 plateauRadius 线性插值到自然高度（缓坡）
+        // 从 flatR 到 plateauRadius 线性插值到自然高度（缓坡）。
+        //
+        // ⚠️ **自然高度必须先做邻域平滑**（v1.90 实测修复）：直接用本格的
+        //    `generateHeight` 时，自然地形的陡坡会被插值**放大成断崖** ——
+        //    实测 seed 12345 的 region(-6,-2) 在某方向上自然高度从 1 直接跳到 8（海床陡坡），
+        //    插值到 t≈0.83 处就是 6 格的台阶（旧坡宽 40 时只有 2 格，缩到 24 后变 6）。
+        //    玩家会被那一级挡住（MAX_STEP = 1.0）。
+        //    平滑方式 = 半径 8 的**均值**（不是最小值），标定表见 `slopeNaturalHeight`。
         const t = (d - flatR) / (plateauRadius - flatR);
-        const naturalY = generateHeight(wx, wz, seed);
+        const naturalY = slopeNaturalHeight(wx, wz, seed);
         targetY = Math.round(plateauY * (1 - t) + naturalY * t);
       }
 

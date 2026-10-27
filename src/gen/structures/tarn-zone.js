@@ -6,9 +6,12 @@
 //   apply.js 阶段 2.4    按布局光栅化到 column
 //
 // Worker 同构：不得 import three、不得自建 Worker、**不得 fetch**（候选在 layout 层算一次，DR-13）。
-import { seededRandom } from '../noise.js';
-import { REGION_SIZE, CITY_REGION, SNOW_LAND_SIZE, TRANSITION_SIZE, LANDMARK_OFFSET } from './region-config.js';
+import { seededRandom, getBiome } from '../noise.js';
+import {
+  REGION_SIZE, CITY_REGION, CITY_TRANSITION_SIZE, SNOW_LAND_SIZE, TRANSITION_SIZE, LANDMARK_OFFSET,
+} from './region-config.js';
 import { getRegionSeededCenter } from './region-center.js';
+import { getCityBoundsForSeed } from './city-layout.js';
 import { KIT_METRICS, KIT_VARIANTS } from './cloudland-kit-data.js';
 // `SEA_Y` 只依赖 `voxel/constants.js`（无 three、无 DOM），Worker 同构层可直接 import。
 // 先例：`gen/structures/giant-trees.js:18` 同一个 import。
@@ -16,10 +19,45 @@ import { SEA_Y } from '../../voxel/constants.js';
 
 // ==================== 地带尺度 ====================
 
-/** 地带半径（圆）：池半径 90 + 岸带 70。改它必须先看 DR-4 的不等式。 */
-export const TARN_ZONE_RADIUS = 160;
-/** 水池半径（直径 180）。spec DR-5f/DR-7：128 会超容量 151%，90 只占 ~78%（定稿组合）。 */
-export const TARN_POOL_RADIUS = 90;
+/**
+ * 地带半径（圆）：平台 114 + 缓坡 24。
+ *
+ * ⚠️ **必须满足 `TARN_ZONE_RADIUS + 2 <= REGION_SIZE / 2`**（实测 138 + 2 = 140 ≤ 200）：
+ * 地带圆心固定在 region 中心，圆越界就意味着地带半边**永久消失**（相邻 region 不为它算候选）。
+ *
+ * ⚠️ **v1.90 从 160 收到 138**（用户 2026-10-28 裁定「核心高台区域外围的缓坡地带有点太大，
+ * 可以适当缩小一些」）：面积降到原来的 74%，缓坡占面积比从 44% → 32%。
+ * 缓坡 24 格的依据 = 让「走不上去的列」占比 0.32%，与自然地形本身 0.19% 同一量级
+ * （再缩到 20 格会升到 0.41%，16 格升到 0.48%）。
+ */
+export const TARN_ZONE_RADIUS = 138;
+
+/**
+ * 平台半径（地形恒定为 `plateauY` 的内圈）= 地带半径 − 缓坡宽度。
+ *
+ * ⚠️ **缓坡宽度住在本文件**（而不是 `tarn-terrain.js`）：`isTarnZone` 的「核心沙漠占比」
+ * 判据要采到平台边缘，而它是 `(regionX, regionZ, seed)` 的**纯函数** —— 若把坡宽当参数传进去，
+ * 两个调用点传不同值就会得到不同的地带判定（红线 1 正是要防这个）。
+ * `tarn-terrain.js` 反过来 import 它，方向单一不会成环。
+ */
+export const TARN_SLOPE_WIDTH = 24;
+
+/**
+ * 平台半径（唯一权威）= `TARN_ZONE_RADIUS - TARN_SLOPE_WIDTH` = 114。
+ *
+ * 从这个半径往外，地表在 `TARN_SLOPE_WIDTH` 格内线性过渡到自然地形高度。
+ * 实测依据（改坡宽前必看）：
+ *
+ * | 坡宽 | 地带半径 | 「走不上去」的列占比（对比自然地形本身 0.19%） |
+ * |---|---|---|
+ * | 40（v1.89） | 160 | 0.20% |
+ * | **24**（现行） | 138 | **0.32%** |
+ * | 20 | 133 | 0.41% |
+ * | 16 | 129 | 0.48% |
+ *
+ * ⇒ 24 是「缩外形」与「缓坡仍可走上去」之间的实测平衡点（`MAX_STEP = 1.0`，玩家跑步直接上）。
+ */
+export const TARN_PLATFORM_RADIUS = TARN_ZONE_RADIUS - TARN_SLOPE_WIDTH;
 
 /**
  * 高台环半径（轴对齐摆放，spec DR-7 方案 1）。
@@ -40,8 +78,44 @@ export const TARN_RING_RADIUS = 58;
  */
 export const TARN_GAP = 4;
 
-/** 地带出现概率（每 ~3 个 region 一处，用户裁定）。 */
-export const TARN_ZONE_CHANCE = 1 / 3;
+/**
+ * 地带出现概率：**合格草地里的五取一**（用户 2026-10-28 裁定）。
+ *
+ * ⚠️ **它作用在「通过全部资格判据」的 region 上，不是作用在全部 region 上**。
+ * 合格集合 = 中心 PLAINS + 圆周挨沙漠 + 核心沙漠占比 ≤ `TARN_DESERT_CAP` + 不撞城市。
+ * 实测（62 个 seed 的 ±12 窗口）合格集上命中率均值 **0.1963**（期望 0.20），
+ * p10 = 0.160 / p90 = 0.229，94% 的 seed 落在 ±0.05 内。
+ *
+ * 最终密度（7 seed 实测）= 每 **13.6~23.1** 个 region 一座。改这个数只动密度、不牵动几何。
+ */
+export const TARN_ZONE_CHANCE = 1 / 5;
+
+/**
+ * 核心平台允许的沙漠占比上限（`TARN_ZONE_CHANCE` 之外的第二道观感门）。
+ *
+ * ⚠️ **这个数不是可选的**：合格 region 的核心沙漠占比分布是 p50 = 0.083、p90 = 0.28、
+ * p95 = 0.37、max = 0.44（5 seed 实测）—— 没有它，抽中的地点有 **15%** 的核心平台一半以上是
+ * 沙漠，观感是「高台盖在沙漠上」。25% 恰好切在 p90 与 p95 之间。
+ */
+export const TARN_DESERT_CAP = 0.25;
+
+/**
+ * 「草地地形」biome 集合 —— 用户 2026-10-28 裁定**只有 PLAINS**。
+ *
+ * ⚠️ 不要扩成 FOREST / AZALEA / SWAMP：用户明确答「只有 PLAINS」。扩展会顶掉森林与湿地，
+ * 且密度会翻倍（实测 ±12 窗口：只有 PLAINS 时 248 个候选中心，加 FOREST 后 412）。
+ */
+export const TARN_HOST_BIOMES = Object.freeze(['PLAINS']);
+
+/**
+ * 圆心到城市 bounds 的最小净距（格）—— 取 `CITY_TRANSITION_SIZE`（红线 1：不另写 32）。
+ *
+ * ⚠️ **城市排除必须在候选层，不能只靠 apply 层**（与巨型金字塔踩过的坑同源）：
+ * 只在 apply 判时，被丢弃的地区会**静默变空地**（植被/巨树已按 `kind:'tarn'` 让路却长不出台地）。
+ * 实测（改造前）8 个 seed 里 **6 个有地带撞城市**，最深 **112 格**（seed 12345 的 region(1,-1)）——
+ * 地带的平顶高原直接压在城市地面上。
+ */
+const TARN_CITY_CLEARANCE = CITY_TRANSITION_SIZE;
 
 /**
  * 台地高度（= `SEA_Y + 4`）。
@@ -105,29 +179,135 @@ export const TARN_CLOUD_SALT = 1024;
 // ==================== 地带判定 ====================
 
 /**
+ * 地带圆到某个矩形的最短距离（格，重叠为负）—— **唯一实现**，供消费方与断言共用。
+ *
+ * 城市之外的消费方也可用（例如门禁校验「地带圆不碰城市」）。
+ * @param {number} cx @param {number} cz @param {number} radius
+ * @param {{minX:number,maxX:number,minZ:number,maxZ:number}} rect
+ * @returns {number}
+ */
+export function circleRectGap(cx, cz, radius, rect) {
+  const dx = Math.max(0, rect.minX - cx, cx - rect.maxX);
+  const dz = Math.max(0, rect.minZ - cz, cz - rect.maxZ);
+  return Math.hypot(dx, dz) - radius;
+}
+
+/**
+ * 核心平台内的沙漠占比（`0`~`1`）。
+ *
+ * 采样 = 圆心 1 点 + 6 圈 × 24 方位点（共 145 点，半径均匀铺到平台边缘）。
+ * ⚠️ **必须采到平台边缘**（最后一圈 r = `tarnPlatformRadius`）：只采圆心附近会把
+ * 「圆心是草地、半个平台是沙漠」的位置判成合格 —— 那正是 cap 要挡的形态。
+ * @param {number} cx @param {number} cz @param {number} seed @param {number} platformRadius
+ * @returns {number}
+ */
+function coreDesertFraction(cx, cz, seed, platformRadius) {
+  let total = 0;
+  let desert = 0;
+  for (let ring = 0; ring <= 6; ring++) {
+    const r = platformRadius * ring / 6;
+    const count = ring === 0 ? 1 : 24;
+    for (let i = 0; i < count; i++) {
+      // 每圈错开半格角度，避免所有圈采在同一条射线上（那会把星形分布采样成一条线）
+      const ang = i * 2 * Math.PI / count + ring * 0.37;
+      const wx = Math.round(cx + r * Math.cos(ang));
+      const wz = Math.round(cz + r * Math.sin(ang));
+      if (getBiome(wx, wz, seed) === 'DESERT') desert++;
+      total++;
+    }
+  }
+  return desert / total;
+}
+
+/**
+ * 地带圆周（`TARN_ZONE_RADIUS` 处）是否碰到沙漠 —— 即「这块草地挨着沙漠」。
+ *
+ * 16 方位采样。⚠️ 实测这条判据在 PLAINS region 上通过率 **99.6%**（248 个 PLAINS 里 247 个
+ * 邻沙）—— biome 是连续噪声、沙漠成片，草地几乎总在某处贴着沙漠。**所以它几乎不筛**，
+ * 真正决定密度的是 `TARN_ZONE_CHANCE` 与 `TARN_DESERT_CAP`。保留它是因为它是用户需求
+ * 「挨着沙漠地带」的**语义表达**：将来若 biome 参数变化让草地不再普遍邻沙，判据自动生效。
+ * @param {number} cx @param {number} cz @param {number} seed
+ * @returns {boolean}
+ */
+function rimTouchesDesert(cx, cz, seed) {
+  for (let i = 0; i < 16; i++) {
+    const ang = i * Math.PI / 8;
+    const wx = Math.round(cx + TARN_ZONE_RADIUS * Math.cos(ang));
+    const wz = Math.round(cz + TARN_ZONE_RADIUS * Math.sin(ang));
+    if (getBiome(wx, wz, seed) === 'DESERT') return true;
+  }
+  return false;
+}
+
+/**
+ * 该 region 是否**有资格**长一座高台地带（判据 ③④⑤⑥，**不含** 1/5 抽签）。
+ *
+ * ⚠️ **拆出来只为可测**：单测要能断言「1/5 作用在合格集合上」而不是「作用在全部 region 上」——
+ * 若测试自己再写一份资格判据副本，两份漂移后那个断言就失去判别力（红线 1）。
+ * `isTarnZone` = `hasTarnEligibility() && 抽签`，两者共用同一份资格实现。
+ *
+ * ⚠️ **外部消费方一律用 `isTarnZone`，不得直接调本函数** —— 后者不含抽签，拿它当
+ * 「是不是地带」会造成「世界上每块合格草地都是地带」。
+ *
+ * @param {number} regionX @param {number} regionZ @param {number} seed
+ * @returns {boolean}
+ */
+export function hasTarnEligibility(regionX, regionZ, seed) {
+  const { cx, cz } = tarnZoneCenter(regionX, regionZ);
+  // ③ 永不与 City 重叠（含过渡带余量）
+  if (circleRectGap(cx, cz, TARN_ZONE_RADIUS + TARN_CITY_CLEARANCE, getCityBoundsForSeed(seed)) <= 0) {
+    return false;
+  }
+  // ④ 「草地地形」
+  if (!TARN_HOST_BIOMES.includes(getBiome(cx, cz, seed))) return false;
+  // ⑤ 「挨着沙漠地带」
+  if (!rimTouchesDesert(cx, cz, seed)) return false;
+  // ⑥ 别把沙漠整块吃掉（否则高台盖在沙漠上）
+  return coreDesertFraction(cx, cz, seed, TARN_PLATFORM_RADIUS) <= TARN_DESERT_CAP;
+}
+
+/**
  * 该 region 是否为高台地带。
  *
  * ⚠️ **这是地带的唯一判定入口**（红线 1，spec DR-2）：候选层、`apply.js` 的让路、
  * 雪原让路、`pointContext`、巨树 `allowedAt`、海面遮罩全部调它，不得各写一份
- * `seededRandom(rx, rz, seed + 1020) < 1/3` —— 两份判据漂移会让「有的系统当地带、
- * 有的不当」，形态是台地上长树、水池里插空岛这类撕裂。
+ * 判据副本 —— 两份漂移会让「有的系统当地带、有的不当」，形态是台地上长树、
+ * 水池里插空岛这类撕裂。
  *
- * 用**粗格哈希**而不是噪声 + 阈值（巨树 v1.71 实测沉淀）：`noise()` 把 seed 加进坐标，
- * 相位随 seed 漂移 → 固定阈值跨 seed 不稳；而整数 region 下标的哈希通过率恒等于
- * `TARN_ZONE_CHANCE` 且与 seed 无关。
+ * ## 判据链（v1.90 重写：从「纯哈希 1/3」改为「稀有草地替换」）
  *
- * ⚠️ **CITY_REGION 恒 false**：城市固定 region [0,0] 且全世界唯一，被随机吃掉是不可接受的。
+ * | # | 判据 | 挡掉的量（实测 seed 12345 ±12，625 region） |
+ * |---|---|---|
+ * | ① | `CITY_REGION` 恒 false | 1 |
+ * | ② | `seededRandom(...) < 1/5` | 80% |
+ * | ③ | 圆 + 32 格余量不碰城市 bounds | 6 个 seed 里 6 个曾有重叠 |
+ * | ④ | 圆心 biome ∈ `TARN_HOST_BIOMES`（只有 PLAINS） | 377 |
+ * | ⑤ | 圆周 16 方位碰到沙漠（「挨着沙漠」） | 1~4 |
+ * | ⑥ | 核心平台沙漠占比 ≤ `TARN_DESERT_CAP` | 25（在 ②④ 之后） |
+ *
+ * ⚠️ **② 必须排在最前**：判据 ③④⑤⑥ 要采 ~177 次 `getBiome`（实测 0.35 µs/次），
+ * 而 ② 是单次 `seededRandom`。先抽签让 80% 的 region 在 1 次哈希内返回 ——
+ * 这是 `snowLandSuppressedByTarn` 每 column 调 49 次也不影响 genP95 的前提
+ * （配合那里的几何前置，实测 0.007 ms/column）。
+ *
+ * ⚠️ **③ 的余量用的是 `CITY_TRANSITION_SIZE`**：城市边缘 32 格是缓坡过渡带，
+ * 地带贴着它会把城市的过渡地形削平。
+ *
+ * ⚠️ **用哈希而不是噪声 + 阈值**（巨树 v1.71 实测沉淀）：`noise()` 把 seed 加进坐标，
+ * 相位随 seed 漂移 → 固定阈值跨 seed 不稳；而整数 region 下标的哈希通过率与 seed 无关。
  *
  * @param {number} regionX @param {number} regionZ @param {number} seed
  * @returns {boolean}
  */
 export function isTarnZone(regionX, regionZ, seed) {
   if (regionX === CITY_REGION.X && regionZ === CITY_REGION.Z) return false;
-  return seededRandom(regionX, regionZ, seed + TARN_ZONE_SALT) < TARN_ZONE_CHANCE;
+  // ② 廉价门：先挡掉 80%（判据 ③④⑤⑥ 共需 ~177 次 getBiome）
+  if (seededRandom(regionX, regionZ, seed + TARN_ZONE_SALT) >= TARN_ZONE_CHANCE) return false;
+  return hasTarnEligibility(regionX, regionZ, seed);
 }
 
 /**
- * 地带中心 = region 中心（spec DR-3：偏移搜索在多数 seed 下找不到半径 160 的位置）。
+ * 地带中心 = region 中心（spec DR-3：偏移搜索在多数 seed 下找不到能同时满足「草地 + 邻沙」的位置）。
  *
  * @param {number} regionX @param {number} regionZ
  * @returns {{cx: number, cz: number}}
@@ -153,8 +333,8 @@ const SNOW_HALF_EXTENT = Math.floor(SNOW_LAND_SIZE / 2) + TRANSITION_SIZE.SNOW_L
 /**
  * 雪原让路的邻域半径（region）。
  *
- * 地带半径 160、region 边长 400 ⇒ 只有紧邻 region 的地带圆才可能伸进本 region 的雪原，
- * ±3 是安全上界（实测 ±1/±2/±3 命中数完全相同：28/169）。取 3 而非 1 是为将来改半径
+ * 地带半径 138、region 边长 400 ⇒ 只有紧邻 region 的地带圆才可能伸进本 region 的雪原，
+ * ±3 是安全上界（实测 ±1/±2/±3 命中数完全相同）。取 3 而非 1 是为将来改半径
  * 或改 region 尺寸留余量 —— 那时不必回头改这个循环。
  */
 const SNOW_SUPPRESS_NEIGHBORHOOD = 3;
@@ -185,27 +365,32 @@ const SNOW_SUPPRESS_NEIGHBORHOOD = 3;
  * 离自己的地带圆 168~337 格、根本没压进水池 —— 加特判会白删它们，且与 DR-6 的
  * 「相交」判据不符。实测 37 个地带 region 里只有 **5** 个的雪原真的压进自己的圆。
  *
- * ## 实测覆盖率（seed 12345）
- * ±6 → **28/169 = 0.166**；±20 → 293/1681 = 0.174。spec DR-6 写的「约 24%（41 个）」
- * 与任何实测口径都不符，待回填。
+ * ## 实测覆盖率（v1.90 后的新口径，1/5 × PLAINS × 邻沙 × cap25%）
+ * 3 个 seed × 169 region 实测命中 **11** 个（旧口径是 28 个）；
+ * 几何剪枝后 `isTarnZone` 只被调 **0.40%~1.36%** 的候选。
  *
  * @param {number} regionX @param {number} regionZ @param {number} seed
  * @returns {boolean}
  */
 export function snowLandSuppressedByTarn(regionX, regionZ, seed) {
-  // 与 `structure-layout.js` 同一推导：未 clamp 的原始中心 + 偏移（雪原可跨 region）
+  // 与 `structure-layout.js` 同一推导：未 clamp 的原始中心 + 偏移（雪原可跳 region）
   const raw = getRegionSeededCenter(regionX, regionZ, seed);
   const snowCx = raw.centerX + LANDMARK_OFFSET.SNOW_LAND_X;
   const snowCz = raw.centerZ + LANDMARK_OFFSET.SNOW_LAND_Z;
 
+  // ⚠️ **几何判定必须先于 `isTarnZone`**（v1.90）：旧实现先判「是不是地带」再算距离，
+  // 而 v1.90 的 `isTarnZone` 从 0.018 µs 涨到 0.35 µs（要采 ~177 次 getBiome）。
+  // 未剪枝时本函数每 column 会调它 49 次（实测 0.134 ms/column，进 GEN 计时路径）。
+  // 反过来先算纯几何（零 biome 采样）后，实测只调 0.4%~1.4% 的候选 ⇒ **0.007 ms/column**（快 19 倍）。
+  // 两步合起来恰好等价于「圆与方形相交」，所以重排不改变任何结果（只是少算 98.6% 的无用哈希）。
   const n = SNOW_SUPPRESS_NEIGHBORHOOD;
   for (let dx = -n; dx <= n; dx++) {
     for (let dz = -n; dz <= n; dz++) {
-      if (!isTarnZone(regionX + dx, regionZ + dz, seed)) continue;
       const { cx, cz } = tarnZoneCenter(regionX + dx, regionZ + dz);
       const gapX = Math.max(0, Math.abs(snowCx - cx) - SNOW_HALF_EXTENT);
       const gapZ = Math.max(0, Math.abs(snowCz - cz) - SNOW_HALF_EXTENT);
-      if (Math.hypot(gapX, gapZ) < TARN_ZONE_RADIUS) return true;
+      if (Math.hypot(gapX, gapZ) >= TARN_ZONE_RADIUS) continue;   // 几何上不可能相交
+      if (isTarnZone(regionX + dx, regionZ + dz, seed)) return true;
     }
   }
   return false;
@@ -426,19 +611,23 @@ function tarnRegionJitter(regionX, regionZ, seed, count) {
 // ==================== 装饰件落位（spec DR-8） ====================
 
 /**
- * 拱洞所在的**池外台地**中线半径（spec DR-8）。
+ * 拱洞所在的**平台边缘环**半径（spec DR-8）。
  *
- * 台地环带是 90~160（宽 70 格），中线 125 让最宽拱洞（19×36）两侧各留 ~30 格。
- * ⚠️ **不要把拱洞塞进高台之间的缝里**：定稿组合的相邻高台真实间距只有 5.05 格，
- * 而最宽拱洞 19 格 —— 差 14 格，塞不进去。这是 spec 的一条修正（原设计那么写，几何不成立）。
+ * ⚠️ **v1.90 从 125 改到 96**：125 + 拱洞最大半对角（19×36 → 13.8）= 外延 **138.7**，
+ * 已超出平台半径（旧 120，现 114）→ 拱洞落在**缓坡上**，缓坡地形会被拱洞的底坐穿。
+ * 96 时实测最坏外延 **110.0** < 平台 114（留 4 格余量），且与高台环（R=58）的
+ * AABB 最小间距 **5.59** ≥ `TARN_GAP`（4）。
  *
- * 实测（5 等角位、无抖动）：最近角 **111.66** > 池半径 90、最远角 **138.94** < 地带半径 160。
- *
- * ⚠️ **本任务内无外部消费方**：`computeTarnZone()` 直接引用它，但 Task 5（apply 阶段 2.4
- * 光栅化）会把 `decos[].ring` 写进 `TARN_ARCH_RING_RADIUS` 的语义里。导出是为 Task 5/Task 8
- * （`check:data` 门禁）预留 —— 与 `TARN_SPIRE_RING_RADIUS` 同口径。
+ * ⚠️ 实测边界（改前必重跑 `test-tarn-zone.js` 的装饰件用例）：
+ * | 拱洞环 | 四角最远 | vs 高台 |
+ * |---|---|---|
+ * | 92 | 106.0 ✅ | **1.78 ❌** |
+ * | 94 | 108.0 ✅ | **3.69 ❌** |
+ * | **96** | **110.0 ✅** | **5.59 ✅** |
+ * | 98 | 112.0 ✅ | 7.49 ✅ |
+ * ⇒ 96 是「全在平台内」与「vs 高台 ≥ 4」同时成立的**最小**环半径。
  */
-export const TARN_ARCH_RING_RADIUS = 125;
+export const TARN_ARCH_RING_RADIUS = 96;
 
 /**
  * 紫晶柱所在的**池内**内环半径（spec DR-8）。
@@ -518,12 +707,17 @@ function tarnPlaceClouds(regionX, regionZ, seed) {
 /**
  * @typedef {{
  *   cx: number, cz: number,
- *   poolRadius: number, plateauRadius: number, plateauY: number,
+ *   plateauRadius: number, platformRadius: number, slopeWidth: number, plateauY: number,
  *   tarns: Array<{variant: string, ang: number, ring: number, halfX: number, halfZ: number}>,
  *   decos: Array<{variant: string, kind: 'arch'|'spire', ang: number, ring: number,
  *                 halfX: number, halfZ: number}>,
  *   clouds: Array<{variant: string, ang: number, ring: number}>
  * }} TarnLayout
+ *
+ * ⚠️ **`poolRadius` 已在 v1.90 删除**（v1.89 去掉中央水池后它已经没有语义，是死字段）。
+ * 现在三个半径的分工：`plateauRadius` = 地带圆外缘（地形整形的扫掠上界）／
+ * `platformRadius` = 恒平的内圈／`slopeWidth` = 两者间那条缓坡的宽度。
+ * 三者始终保持 `plateauRadius === platformRadius + slopeWidth`。
  */
 
 /**
@@ -548,8 +742,12 @@ export function computeTarnZone(regionX, regionZ, seed) {
   return {
     cx,
     cz,
-    poolRadius: TARN_POOL_RADIUS,
+    // plateauRadius = 地带圆半径（整片地带的**最外缘**，含缓坡）
     plateauRadius: TARN_ZONE_RADIUS,
+    // platformRadius = 地形恒为 plateauY 的内圈（缓坡从这里开始）
+    platformRadius: TARN_PLATFORM_RADIUS,
+    // slopeWidth = 缓坡宽度（= plateauRadius − platformRadius）
+    slopeWidth: TARN_SLOPE_WIDTH,
     plateauY: TARN_PLATEAU_Y,
     tarns: placed,
     decos,

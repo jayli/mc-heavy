@@ -8,10 +8,14 @@
 import { test } from './runner.js';
 import { assertEqual, assertTrue, assertFalse } from './assert.js';
 import {
-  isTarnZone, tarnZoneCenter, computeTarnZone, aabbGap, snowLandSuppressedByTarn,
-  TARN_ZONE_RADIUS, TARN_POOL_RADIUS, TARN_ZONE_CHANCE, TARN_GAP, TARN_KEPT_TARN_IDS,
+  isTarnZone, hasTarnEligibility, tarnZoneCenter, computeTarnZone, aabbGap, snowLandSuppressedByTarn,
+  circleRectGap,
+  TARN_ZONE_RADIUS, TARN_PLATFORM_RADIUS, TARN_SLOPE_WIDTH, TARN_ZONE_CHANCE, TARN_DESERT_CAP,
+  TARN_HOST_BIOMES, TARN_GAP, TARN_KEPT_TARN_IDS, TARN_ARCH_RING_RADIUS, TARN_SPIRE_RING_RADIUS,
   TARN_PLATEAU_Y,
 } from '../gen/structures/tarn-zone.js';
+import { getBiome } from '../gen/noise.js';
+import { getCityBoundsForSeed } from '../gen/structures/city-layout.js';
 import { KIT_VARIANTS, KIT_METRICS } from '../gen/structures/cloudland-kit-data.js';
 import {
   REGION_SIZE, CITY_REGION, SNOW_LAND_SIZE, TRANSITION_SIZE, LANDMARK_OFFSET,
@@ -55,41 +59,13 @@ test('地带判定：CITY_REGION 永远不是地带（城市是全世界唯一�
   }
 });
 
-// ⚠️ **为什么用 ±20 窗口而不是 ±6**（实测裁定，2026-10-26）：
-//    密度判据是「粗格哈希通过率 ≈ 1/3」。n 个独立样本下 ratio 的标准差 σ = √(p(1−p)/n)：
-//      ±6 窗口 → n = 169 → σ = 0.0363 ⇒ 0.05 容差只等于 **1.38σ**，**理论误报率 16.2%**；
-//      ±20 窗口 → n = 1681 → σ = 0.0115 ⇒ 0.05 容差 = **4.35σ**，误报率 ≈ 0。
-//    实测佐证：±6 下 204 个 seed 里有若干超出 0.05（seed 12345 实测 **0.2189**，偏差 0.1144
-//    = 3.15σ），而 ±20 下 **204/204 全部 < 0.05**（最大偏差 0.0347）。
-//    ⇒ ±6 的 0.05 容差是个**统计上无效的判据**（正确实现也有 16% 概率误报），精确判据用 ±20。
-//    ⚠️ 判别力没有损失（实测）：chance 误写成 0.25 → ±20 偏差 0.1025；0.3 → 0.0525；0.5 → 0.1467，
-//       三档都远超 0.05；±6 同口径分别是 0.1499 / 0.1262 / 0.0631（0.5 那一档反而更弱）。
-//    ±6 另留一条**宽松带**只防「密度完全跑飞」（chance 写成 0 或 1 这类），不做精确判据。
-test('地带判定：密度落在 1/3 附近（±20 窗口，4.35σ）', () => {
-  let hits = 0, total = 0;
-  for (let rx = -20; rx <= 20; rx++) for (let rz = -20; rz <= 20; rz++) {
-    total++;
-    if (isTarnZone(rx, rz, SEED)) hits++;
-  }
-  const ratio = hits / total;
-  assertTrue(Math.abs(ratio - TARN_ZONE_CHANCE) < 0.05,
-    `密度 ${ratio.toFixed(3)} 应接近 ${TARN_ZONE_CHANCE.toFixed(3)}（${hits}/${total}）`);
-});
-
-// ⚠️ 宽松带 **实测标定**，不是拍脑袋：±6 窗口（n=169）在 204 个 seed 上的 ratio 实测区间是
-//    **[0.2189, 0.4260]**（均值 0.3307）。带宽取 [0.15, 0.52] ⇒ 两端各留 ~0.07/0.09 余量，
-//    能包住实测全域，同时 chance 一旦被写成 0.25（实测 ratio 0.1834）或 0.5（0.3964）时
-//    **这一条可能放过** —— 那是刻意的：精确判据在 ±20 那条，这一条只防「完全跑飞」。
-test('地带判定：±6 窗口的密度落在宽松带内（防「完全跑飞」）', () => {
-  let hits = 0, total = 0;
-  for (let rx = -6; rx <= 6; rx++) for (let rz = -6; rz <= 6; rz++) {
-    total++;
-    if (isTarnZone(rx, rz, SEED)) hits++;
-  }
-  const ratio = hits / total;
-  assertTrue(ratio >= 0.15 && ratio <= 0.52,
-    `±6 密度 ${ratio.toFixed(3)} 超出宽松带 [0.15, 0.52]（${hits}/${total}）—— 判定可能完全跑飞`);
-});
+// ⚠️ **v1.90 删除了两条旧密度用例**（「密度落在 1/3 附近」与「±6 宽松带」）：
+// 它们测的是 `isTarnZone` 在**全部 region** 上的通过率 ≈ 1/3，而那正是被本次改造换掉的语义 ——
+// 现在 `isTarnZone` = 「合格集合 × 1/5」，全域密度还乘上「这块草地合不合格」（实测 ~1/3），
+// 于是全域通过率大约是 0.05（实测 ±20 = 0.050、±6 = 0.036），两条旧用例**必然 FAIL**。
+// 它们的结论已不成立 —— 保留旧判据只调容差，会把「抽签确实生效」测成噪声。
+// 替代判据在下方「v1.90：稀有草地替换的出现口径」那组（合格集命中率 / 每 N region 一座 /
+// 中心 biome / 不撞城 / 沙漠占比）。
 
 test('地带中心 = region 中心', () => {
   for (const [rx, rz] of [[1, 0], [-2, 3]]) {
@@ -102,7 +78,136 @@ test('地带中心 = region 中心', () => {
 test('地带半径不越 region 边界（否则半边永久消失）', () => {
   assertTrue(TARN_ZONE_RADIUS + 2 <= REGION_SIZE / 2,
     `TARN_ZONE_RADIUS(${TARN_ZONE_RADIUS}) + 2 必须 <= ${REGION_SIZE / 2}`);
-  assertTrue(TARN_POOL_RADIUS < TARN_ZONE_RADIUS, '水池必须在地带圆内');
+});
+
+// ==================== v1.90：稀有草地替换的出现口径 ====================
+
+/**
+ * 合格集合（中心 PLAINS + 邻沙 + 不撞城 + 沙漠占比 ≤ cap），**直接调生产实现**。
+ * ⚠️ 不得在测试里重写一份资格判据 —— 那会让「1/5 作用在合格集合上」这条断言恒真（红线 1）。
+ */
+function eligibilityOf(rx, rz, seed) {
+  if (rx === CITY_REGION.X && rz === CITY_REGION.Z) return false;
+  return hasTarnEligibility(rx, rz, seed);
+}
+
+test('出现口径：地带必然落在合格集合里（1/5 是「合格集里的五取一」）', () => {
+  // ⚠️ 判别力：若 chance 被误作用在「全部 region」上（即去掉资格判据），
+  //    必然出现「是地带但不合格」的样本，本用例真 FAIL。
+  let bad = 0;
+  for (const seed of [12345, 4, 7]) {
+    for (let rx = -10; rx <= 10; rx++) for (let rz = -10; rz <= 10; rz++) {
+      if (isTarnZone(rx, rz, seed) && !eligibilityOf(rx, rz, seed)) bad++;
+    }
+  }
+  assertEqual(bad, 0, `出现 ${bad} 个「是地带但不合格」的 region（1/5 没作用在合格集合上）`);
+});
+
+test('出现口径：TARN_ZONE_CHANCE 必须真的是 1/5（用户需求：「五块草地才有一个」）', () => {
+  // ⚠️ **必须用字面量 1/5，不能拿 `TARN_ZONE_CHANCE` 自比** —— 下面那条命中率用例若
+  //    比较的是 `TARN_ZONE_CHANCE` 本体，改常量时断言跟着变、**恒真**（实测注入 1/3 后
+  //    旧写法仍全绿）。用户说的是「五块草地才有一个」，那是个**绝对需求**，不是可调旋钮。
+  assertEqual(TARN_ZONE_CHANCE, 1 / 5, '地带出现概率（用户 2026-10-28 裁定：合格草地五取一）');
+});
+
+test('出现口径：合格集合上的命中率 ≈ 1/5（62 seed 实测均值 0.1963）', () => {
+  // ⚠️ **样本量必须够**：合格集实测 189~222 个/seed（±12 窗口），n≈208 时
+  //    σ = √(0.2·0.8/208) = 0.0277 —— 所以容差取 0.10（3.6σ），单一 seed 才不会被噪声误报。
+  //    ±12 窗口实测 62 个 seed 的区间是 [0.1298, 0.2796]、94% 落在 ±0.05 内。
+  // ⚠️ **基准用字面量 1/5，不用 `TARN_ZONE_CHANCE`**（否则改常量时断言恒真，
+  //    实测注入 1/3 → 实测率 0.333，|0.333 − 0.333| = 0 < 0.10 照样全绿）。
+  const EXPECTED = 1 / 5;
+  let elig = 0, hit = 0;
+  for (let rx = -12; rx <= 12; rx++) for (let rz = -12; rz <= 12; rz++) {
+    if (!eligibilityOf(rx, rz, SEED)) continue;
+    elig++;
+    if (isTarnZone(rx, rz, SEED)) hit++;
+  }
+  assertTrue(elig > 150, `合格 region 数 ${elig} 太少 —— 地带判据可能过严，本用例失去判别力`);
+  const rate = hit / elig;
+  assertTrue(Math.abs(rate - EXPECTED) < 0.10,
+    `合格集命中率 ${rate.toFixed(3)} 偏离 1/5（${hit}/${elig}）—— 实测 chance=1/3 时是 0.333、1/10 时是 0.10`);
+});
+
+test('出现口径：地带是稀有图（每 12~40 个 region 才一座）', () => {
+  // 实测 7 seed：每 13.6~23.1 region 一座（旧口径是每 3.4）。
+  // 带宽取 [12, 40]：下界防「变回每 3 个一座」与「chance 改成 1/3」（实测 8.4~12.0），
+  // 上界防「稀到走半天找不到」（chance 1/10 实测 26~45，会被上界抓住一部分；
+  // 精确判据在上一条命中率用例）。
+  for (const seed of [12345, 4, 7]) {
+    let hits = 0, total = 0;
+    for (let rx = -12; rx <= 12; rx++) for (let rz = -12; rz <= 12; rz++) {
+      total++;
+      if (isTarnZone(rx, rz, seed)) hits++;
+    }
+    const per = total / Math.max(1, hits);
+    assertTrue(per >= 12 && per <= 40,
+      `seed ${seed}: 每 ${per.toFixed(1)} region 一座地带（实测区间 13.6~23.1，允许 12~40）`);
+  }
+});
+
+test('出现口径：地带中心 biome 必须是「草地」（用户裁定只有 PLAINS）', () => {
+  let total = 0;
+  for (const seed of [12345, 4, 7]) {
+    for (let rx = -10; rx <= 10; rx++) for (let rz = -10; rz <= 10; rz++) {
+      if (!isTarnZone(rx, rz, seed)) continue;
+      total++;
+      const { cx, cz } = tarnZoneCenter(rx, rz);
+      assertTrue(TARN_HOST_BIOMES.includes(getBiome(cx, cz, seed)),
+        `region(${rx},${rz}) seed ${seed} 的中心 biome 不在 ${JSON.stringify(TARN_HOST_BIOMES)} 里`);
+    }
+  }
+  assertTrue(total > 20, `样本只有 ${total} 个地带，本用例没有判别力`);
+});
+
+test('出现口径：地带圆永不与 City bounds 重叠（含 32 格过渡带余量）', () => {
+  // ⚠️ 改造前实测：8 个 seed 里 **6 个有地带撞城市**，最深 112 格（seed 12345 的 region(1,-1)）。
+  //    判据用 `circleRectGap`（圆到矩形真实距离），不能写「圆心到 bounds 中心」——
+  //    城市 bounds 实测半宽 283，远超 CITY_SIZE_MAX/2，拿中心距判会漏掉贴着边角的情形。
+  for (const seed of [12345, 4, 7, 2, 99, 424242]) {
+    const city = getCityBoundsForSeed(seed);
+    for (let rx = -12; rx <= 12; rx++) for (let rz = -12; rz <= 12; rz++) {
+      if (!isTarnZone(rx, rz, seed)) continue;
+      const { cx, cz } = tarnZoneCenter(rx, rz);
+      const gap = circleRectGap(cx, cz, TARN_ZONE_RADIUS, city);
+      assertTrue(gap > 0,
+        `seed ${seed} region(${rx},${rz}) 的地带圆压进城市 ${(-gap).toFixed(0)} 格`);
+    }
+  }
+});
+
+test('出现口径：核心平台的沙漠占比不超过 TARN_DESERT_CAP', () => {
+  // 这条门防的是「高台盖在沙漠上」：没有它，抽中的地点有 15% 的平台一半以上是沙漠
+  // （实测分布 p50=0.083 / p90=0.28 / p95=0.37 / max=0.44）。
+  let checked = 0;
+  for (const seed of [12345, 4, 7]) {
+    for (let rx = -10; rx <= 10; rx++) for (let rz = -10; rz <= 10; rz++) {
+      if (!isTarnZone(rx, rz, seed)) continue;
+      const { cx, cz } = tarnZoneCenter(rx, rz);
+      let n = 0, desert = 0;
+      // 采样口径与 `coreDesertFraction` 同构（圆心 + 6 圈 × 24 方位）
+      for (let ring = 0; ring <= 6; ring++) {
+        const r = TARN_PLATFORM_RADIUS * ring / 6;
+        const count = ring === 0 ? 1 : 24;
+        for (let i = 0; i < count; i++) {
+          const ang = i * 2 * Math.PI / count + ring * 0.37;
+          if (getBiome(Math.round(cx + r * Math.cos(ang)), Math.round(cz + r * Math.sin(ang)), seed) === 'DESERT') desert++;
+          n++;
+        }
+      }
+      checked++;
+      assertTrue(desert / n <= TARN_DESERT_CAP + 1e-9,
+        `region(${rx},${rz}) 核心沙漠占比 ${(desert / n).toFixed(3)} > cap ${TARN_DESERT_CAP}`);
+    }
+  }
+  assertTrue(checked > 20, `样本只有 ${checked} 个地带，本用例没有判别力`);
+});
+
+test('几何：平台半径 + 缓坡宽度 === 地带半径（三者不许漂移）', () => {
+  assertEqual(TARN_PLATFORM_RADIUS + TARN_SLOPE_WIDTH, TARN_ZONE_RADIUS,
+    'platformRadius + slopeWidth 必须等于 zoneRadius');
+  // 现行值（改它就要重测「缓坡走不上去的列占比」，实测表在代码注释里）
+  assertEqual(TARN_SLOPE_WIDTH, 24, '缓坡宽度（用户 2026-10-28 裁定缩到 24）');
 });
 
 test('保留的高台组合是 8 个不同的产物基名', () => {
@@ -143,7 +248,7 @@ test('地带布局：非地带 region 返回 null', () => {
   assertEqual(computeTarnZone(found.rx, found.rz, SEED), null, '非地带必须返回 null');
 });
 
-test('地带布局：每座高台的四角落在水池内（轴对齐，逐角算）', () => {
+test('地带布局：每座高台的四角落在平台内（轴对齐，逐角算）', () => {
   const { rx, rz } = findTarnRegion(SEED);
   const lay = computeTarnZone(rx, rz, SEED);
   for (const t of lay.tarns) {
@@ -151,14 +256,16 @@ test('地带布局：每座高台的四角落在水池内（轴对齐，逐角�
     //    两个常见错误口径：
     //    · ring + halfX + halfZ —— 把两个半宽相加，每座多算 10~34 格；
     //    · ring + min(halfX, halfZ) —— 那是边中点，实测 L3 角比边中点远 8.9 格
-    //      （88.88 vs 80.0），会让高台伸出池外而断言全绿。
+    //      （88.88 vs 80.0），会让高台伸出平台而断言全绿。
     const cx = t.ring * Math.cos(t.ang), cz = t.ring * Math.sin(t.ang);
     let maxReach = 0;
     for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
       maxReach = Math.max(maxReach, Math.hypot(cx + sx * t.halfX, cz + sz * t.halfZ));
     }
-    assertTrue(maxReach <= lay.poolRadius,
-      `${t.variant} 四角最远 ${maxReach.toFixed(1)} > 池半径 ${lay.poolRadius}`);
+    // ⚠️ **s1.89 起没有水池了，基准是 `platformRadius`（恒平的内圈）** ——
+    // 高台底座必须在平地上；落到缓坡上会半边悬空（缓坡高低不平）。
+    assertTrue(maxReach <= lay.platformRadius,
+      `${t.variant} 四角最远 ${maxReach.toFixed(1)} > 平台半径 ${lay.platformRadius}`);
   }
 });
 
@@ -229,39 +336,40 @@ test('地带布局：跨 region / 跨 seed 都满足间距（抖动是逐 region
   }
 });
 
-test('地带布局：12 个装饰件全在（5 拱洞 + 7 紫晶柱）且在正确区域', () => {
+test('地带布局：12 个装饰件全在（5 拱洞 + 7 紫晶柱）且全落在平台内', () => {
   const { rx, rz } = findTarnRegion(SEED);
   const lay = computeTarnZone(rx, rz, SEED);
   const arches = lay.decos.filter((d) => d.kind === 'arch');
   const spires = lay.decos.filter((d) => d.kind === 'spire');
   assertEqual(arches.length, 5, '拱洞数');
   assertEqual(spires.length, 7, '紫晶柱数');
-  // 拱洞在**池外台地**（池半径之外、地带圆之内）。
-  // ⚠️ **必须逐角算**（spec DR-8）：轴对齐矩形离池心的最近点是四角之一（不是边中点），
-  //    只判 `a.ring > poolRadius` 是常数比较（125 > 90 恒真），拓不到「落台地区间外」这类缺陷。
-  for (const a of arches) {
-    const acx = a.ring * Math.cos(a.ang), acz = a.ring * Math.sin(a.ang);
-    let nearCorner = Infinity, farCorner = 0;
+  // ⚠️ **s1.90 起拱洞与紫晶柱的判据统一为「四角最远 ≤ platformRadius」**：
+  //    旧口径是「拱洞在池外（> poolRadius）、紫晶柱在池内（< poolRadius）」，
+  //    但 s1.89 删了水池后 `poolRadius` 已经不存在，且两类结构真正的约束是
+  //    「底座必须落在恒平的平台上」—— 落到缓坡上会半边悬空（缓坡高低不平）。
+  // ⚠️ **必须逐角算**：轴对齐矩形离圆心的最远点是四角之一（不是边中点），
+  //    只判 `a.ring <= platformRadius` 是常数比较，拓不到「结构伸出平台」这类缺陷。
+  //    改环半径前先看实测表（`TARN_ARCH_RING_RADIUS` 的注释）：
+  //    拱洞环 94 时四角 108 仍在平台内，但与高台的 AABB 间距掉到 3.69 < 4，会被下一条用例抓住。
+  for (const d of [...arches, ...spires]) {
+    const dcx = d.ring * Math.cos(d.ang), dcz = d.ring * Math.sin(d.ang);
+    let farCorner = 0, nearCorner = Infinity;
     for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
-      const r = Math.hypot(acx + sx * a.halfX, acz + sz * a.halfZ);
-      nearCorner = Math.min(nearCorner, r);
+      const r = Math.hypot(dcx + sx * d.halfX, dcz + sz * d.halfZ);
       farCorner = Math.max(farCorner, r);
+      nearCorner = Math.min(nearCorner, r);
     }
-    assertTrue(nearCorner > lay.poolRadius,
-      `拱洞 ${a.variant} 最近角 ${nearCorner.toFixed(2)} 压进水池（必须 > ${lay.poolRadius}）`);
-    assertTrue(farCorner < TARN_ZONE_RADIUS,
-      `拱洞 ${a.variant} 最远角 ${farCorner.toFixed(2)} 压出地带边缘（必须 < ${TARN_ZONE_RADIUS}）`);
+    assertTrue(farCorner <= lay.platformRadius,
+      `${d.kind}/${d.variant} 四角最远 ${farCorner.toFixed(2)} 超出平台半径 ${lay.platformRadius}`);
+    // 判别力兜底：如果结构完全包住了圆心（nearCorner === 0），它是不能被摆上环的
+    assertTrue(nearCorner > 0, `${d.kind}/${d.variant} 盖住了地带中心`);
   }
-  // 紫晶柱在**池内**（同样逐角：最远角必须还在池半径内）
-  for (const sp of spires) {
-    const scx = sp.ring * Math.cos(sp.ang), scz = sp.ring * Math.sin(sp.ang);
-    let farCorner = 0;
-    for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
-      farCorner = Math.max(farCorner, Math.hypot(scx + sx * sp.halfX, scz + sz * sp.halfZ));
-    }
-    assertTrue(farCorner < lay.poolRadius,
-      `紫晶柱 ${sp.variant} 最远角 ${farCorner.toFixed(2)} 出池（必须 < ${lay.poolRadius}）`);
-  }
+  // ⚠️ 拱洞环半径是实测标定值（不是公式）：96 是「全在平台内」与「vs 高台 ≥ TARN_GAP」
+  //    同时成立的最小值。只判 `TARN_ARCH_RING_RADIUS < TARN_ZONE_RADIUS` 是常数比较，没有判别力。
+  assertTrue(TARN_ARCH_RING_RADIUS > TARN_SPIRE_RING_RADIUS,
+    '拱洞在紫晶柱外侧（两者不要互换）');
+  assertTrue(TARN_ARCH_RING_RADIUS < TARN_PLATFORM_RADIUS,
+    `拱洞环 ${TARN_ARCH_RING_RADIUS} 必须在平台内（< ${TARN_PLATFORM_RADIUS}）`);
 });
 
 test('地带布局：装饰件不与任何高台/彼此重叠（轴对齐 AABB）', () => {
@@ -320,14 +428,21 @@ test('地带布局：plateauY / 半径 / 中心与常量一致', () => {
   const c = tarnZoneCenter(rx, rz);
   assertEqual(lay.cx, c.cx, 'cx');
   assertEqual(lay.cz, c.cz, 'cz');
-  assertEqual(lay.poolRadius, TARN_POOL_RADIUS, 'poolRadius');
+  // ⚠️ **s1.90：`poolRadius` 已删除**（s1.89 去掉水池后它就是死字段）。现在三个半径是
+  //    `plateauRadius`（地带圆外缘）/ `platformRadius`（恒平内圈）/ `slopeWidth`（两者之间）。
+  assertFalse('poolRadius' in lay, 'poolRadius 已在 v1.90 删除（水池不存在了）');
+  assertEqual(lay.plateauRadius, TARN_ZONE_RADIUS, 'plateauRadius = 地带半径');
+  assertEqual(lay.platformRadius, TARN_PLATFORM_RADIUS, 'platformRadius = 派生常量');
+  assertEqual(lay.slopeWidth, TARN_SLOPE_WIDTH, 'slopeWidth = 派生常量');
+  // 三者必须自洽（改任一个而忘了另两个会漂移出「缓坡宽度对不上」）
+  assertEqual(lay.platformRadius + lay.slopeWidth, lay.plateauRadius,
+    '平台半径 + 缓坡宽度 必须等于地带半径');
   // ⚠️ **必须拿 `SEA_Y + 4` 作参照，不能写 `assertEqual(lay.plateauY, TARN_PLATEAU_Y)`**：
   //    两边同源（`TARN_PLATEAU_Y` 是 `computeTarnZone` 的直接输入）→ 改常量时断言跟着变，
-  //    恒真。而 Task 4/5/6 会读到一个错的高度，形态是「水漫过台地」或「台地浮在水面上」，
+  //    恒真。而 Task 4/5/6 会读到一个错的高度，形态是「台地浮起／矮一格」，
   //    **方块层面看不出那是高度常量错了**。
   assertEqual(TARN_PLATEAU_Y, SEA_Y + 4, 'TARN_PLATEAU_Y 必须 = SEA_Y + 4');
   assertEqual(lay.plateauY, SEA_Y + 4, 'layout.plateauY 必须 = SEA_Y + 4');
-  assertEqual(lay.plateauRadius, TARN_ZONE_RADIUS, 'plateauRadius = 地带半径');
 });
 
 test('地带布局：确定性 —— 同一 (region, seed) 两次调用逐值相同', () => {
@@ -348,13 +463,19 @@ test('地带布局：抖动真的在起作用（跨 seed / 跨 region 的角布�
   //    实测：正常态跨 3 seed 最大偏差 **2.508e-2 rad**；注入 `RATIO=0` 时**精确为 0**。
   //
   // ⚠️ 取样坐标必须属于**三个 seed 的交集**（否则 `computeTarnZone` 返回 null）。
-  //    实测 seed {12345, 424242, 777} 的地带交集里包含 region(4,4)。
-  const SHARED_REGION = { rx: 4, rz: 4 };
-  const SEED_LIST = [SEED, 424242, 777];
-  for (const s of SEED_LIST) {
-    assertTrue(isTarnZone(SHARED_REGION.rx, SHARED_REGION.rz, s),
-      `region(${SHARED_REGION.rx},${SHARED_REGION.rz}) 在 seed ${s} 下不是地带 —— 取样坐标失效，须重新标定`);
+  //    **v1.90 重新标定**：稀有化后三个 seed 的交集变稀，旧值 region(4,4) 已不再成立。
+  //    实测 seed {12345, 4, 7} 的交集里有 region(-10,3) 与 (8,-1)；仍程序化找，
+  //    避免下次改判定时又失效。
+  const SEED_LIST = [SEED, 4, 7];
+  let SHARED_REGION = null;
+  for (let rx = -14; rx <= 14 && !SHARED_REGION; rx++) {
+    for (let rz = -14; rz <= 14 && !SHARED_REGION; rz++) {
+      if (rx === 0 && rz === 0) continue;
+      if (SEED_LIST.every((s) => isTarnZone(rx, rz, s))) SHARED_REGION = { rx, rz };
+    }
   }
+  assertTrue(SHARED_REGION !== null,
+    `±14 窗口找不到 ${JSON.stringify(SEED_LIST)} 共享的地带 region —— 判定可能过严，本用例无法进行`);
 
   const anglesFor = (rx, rz, seed) => computeTarnZone(rx, rz, seed).tarns.map((t) => t.ang);
   const base = anglesFor(SHARED_REGION.rx, SHARED_REGION.rz, SEED);
@@ -369,11 +490,19 @@ test('地带布局：抖动真的在起作用（跨 seed / 跨 region 的角布�
   assertTrue(crossSeed > 1e-9,
     `跨 3 个 seed 的角布置完全相同（最大偏差 ${crossSeed}）—— 抖动没在起作用`);
 
-  // 同 seed 下的另一个地带 region（实测 seed 12345 的地带包含 (-6,-2)）
-  const otherRegion = anglesFor(-6, -2, SEED);
+  // 同 seed 下的另一个地带 region（程序化找，不硬编码）
+  let otherRegionAngles = null;
+  for (let rx = -8; rx <= 8 && !otherRegionAngles; rx++) {
+    for (let rz = -8; rz <= 8 && !otherRegionAngles; rz++) {
+      if (rx === SHARED_REGION.rx && rz === SHARED_REGION.rz) continue;
+      if (!isTarnZone(rx, rz, SEED)) continue;
+      otherRegionAngles = anglesFor(rx, rz, SEED);
+    }
+  }
+  assertTrue(otherRegionAngles !== null, '±8 窗口只有一个地带 region —— 跨 region 对比无法进行');
   let crossRegion = 0;
   for (let i = 0; i < base.length; i++) {
-    crossRegion = Math.max(crossRegion, Math.abs(base[i] - otherRegion[i]));
+    crossRegion = Math.max(crossRegion, Math.abs(base[i] - otherRegionAngles[i]));
   }
   assertTrue(crossRegion > 1e-9,
     `跨 2 个 region 的角布置完全相同（最大偏差 ${crossRegion}）—— 抖动没在起作用`);
@@ -410,9 +539,21 @@ test('地带布局：不同 region 的抖动不同（逐 region 抽签，不是�
 /** 雪原在**占地上**的半宽（与 `getSnowLandInfo` 同一口径：核心 + 过渡带）。 */
 const SNOW_HALF = Math.floor(SNOW_LAND_SIZE / 2) + TRANSITION_SIZE.SNOW_LAND;
 
+/**
+ * 雪原让路用例的**取样 seed**。
+ *
+ * ⚠️ **为什么不用 `SEED`（12345）**：v1.90 把地带改为「稀有草地替换」后，seed 12345 的
+ * ±6 窗口里只有 6 个地带，**没有任何一个**的雪原压进自己的圆 ⇒「自己压进自己」那类用例
+ * 在它上面**零样本**，只能降级成无判别力的恒真断言。实测扫 seed 1..60：
+ * seed 4 的 ±6 有 13 个地带、其中 **5 个**自己雪原压进自己圆（gap 81~137）—— 样本最充分。
+ *
+ * ⚠️ 改地带半径 / 雪原尺寸 / region 尺寸后这份标定全部失效，须用下面的程序化查重新标。
+ */
+const SNOW_SEED = 4;
+
 /** 雪原中心（与 `structure-layout.js` 同一推导：原始中心 + 偏移，**未 clamp**）。 */
-function snowCenterOf(rx, rz) {
-  const raw = getRegionSeededCenter(rx, rz, SEED);
+function snowCenterOf(rx, rz, seed = SEED) {
+  const raw = getRegionSeededCenter(rx, rz, seed);
   return {
     cx: raw.centerX + LANDMARK_OFFSET.SNOW_LAND_X,
     cz: raw.centerZ + LANDMARK_OFFSET.SNOW_LAND_Z,
@@ -429,12 +570,12 @@ function snowCenterOf(rx, rz) {
  * `step` 决定精度：半宽 28、地带圆心总在整点半坐标处 ⇒ 步长 4 整除 28 时采样网格必含
  * 最近点，实测 ±6 的 169 个 region 上与解析解**逐个一致**（0 分歧）。
  */
-function snowSuppressedBySampling(rx, rz, step) {
-  const s = snowCenterOf(rx, rz);
+function snowSuppressedBySampling(rx, rz, step, seed = SEED) {
+  const s = snowCenterOf(rx, rz, seed);
   const max = Math.floor(SNOW_HALF / step) * step;
   for (let dx = -3; dx <= 3; dx++) {
     for (let dz = -3; dz <= 3; dz++) {
-      if (!isTarnZone(rx + dx, rz + dz, SEED)) continue;
+      if (!isTarnZone(rx + dx, rz + dz, seed)) continue;
       const c = tarnZoneCenter(rx + dx, rz + dz);
       for (let px = -max; px <= max; px += step) {
         for (let pz = -max; pz <= max; pz += step) {
@@ -446,87 +587,103 @@ function snowSuppressedBySampling(rx, rz, step) {
   return false;
 }
 
-test('雪原让路：判定与「方形内逐格采样」在 ±6 的 169 个 region 上逐个一致', () => {
+test('雪原让路：判定与「方形内逐格采样」在 ±6 的 169 个 region 上逐个一致（两个 seed）', () => {
+  // ⚠️ **两个 seed 都要跑**：单个 seed 的「被让路」样本可能为 0（seed 12345 现在就是 0），
+  // 那样解析侧与采样侧都是 false，逐个一致是**恒真**的（空断言）。两个 seed 合并后
+  // 实测有 5~10 个 true 样本，下界断言才有意义。
   let suppressed = 0;
   const diffs = [];
-  for (let rx = -6; rx <= 6; rx++) {
-    for (let rz = -6; rz <= 6; rz++) {
-      const analytic = snowLandSuppressedByTarn(rx, rz, SEED);
-      const sampled = snowSuppressedBySampling(rx, rz, 4);
-      if (analytic) suppressed++;
-      if (analytic !== sampled) diffs.push(`(${rx},${rz}) 解析=${analytic} 采样=${sampled}`);
+  for (const seed of [SEED, SNOW_SEED]) {
+    for (let rx = -6; rx <= 6; rx++) {
+      for (let rz = -6; rz <= 6; rz++) {
+        const analytic = snowLandSuppressedByTarn(rx, rz, seed);
+        const sampled = snowSuppressedBySampling(rx, rz, 4, seed);
+        if (analytic) suppressed++;
+        if (analytic !== sampled) diffs.push(`seed${seed}(${rx},${rz}) 解析=${analytic} 采样=${sampled}`);
+      }
     }
   }
   assertEqual(diffs.length, 0, `解析解与逐格采样不一致：${diffs.join(' / ')}`);
-  // 实测精确口径 28/169；近似口径 25/169 —— 两者都在下界之上，故这条**挡不住**口径退化
-  // （抓口径的是下面三条：分歧 region、自己压进自己、反向钉）。它只防「判据恒 false」。
-  assertTrue(suppressed >= 20, `被让路的雪原只有 ${suppressed}/169，判据可能已退化`);
+  // 实测（seed 12345 + 4 合并）精确口径 5 个 true；下界 3 只防「判据恒 false」。
+  // 抓口径退化的是下面三条（分歧 region、自己压进自己、反向钉）。
+  assertTrue(suppressed >= 3, `被让路的雪原只有 ${suppressed}/338，判据可能已退化`);
 });
 
-// 实测（seed 12345、±6）：**5 个**地带 region 的雪原方形真的压进**自己**的地带圆。
-// 全部落在 regionX = -6 那一列（该列 `offsetX` 最小 ⇒ 雪原离地带圆心最近）。
-const SELF_OVERLAP_ZONE_REGIONS = [
-  // [regionX, regionZ, 方形到圆的最短距离（实测，格）]
-  [-6, 0, 136],
-  [-6, 2, 135],
-  [-6, 3, 135],
-  [-6, 4, 141],
-  [-6, -2, 150],
-];
+// ⚠️ **v1.90 改为程序化查，不再硬编码坐标**：旧表是 5 个写死的 region（全在 regionX = -6 那一列），
+// 而 v1.90 把地带改成「稀有草地替换」后那一列已不再是地带 —— 硬编码的取样必然失效。
+// 现在的口径：在 `SNOW_SEED` 的 ±6 窗口里**实时**找出「地带 region 且自己的雪原压进自己圆」的那些。
+// 实测 seed 4 有 5 个（gap 81~137）。
+function selfOverlapZoneRegions(seed) {
+  const out = [];
+  for (let rx = -6; rx <= 6; rx++) {
+    for (let rz = -6; rz <= 6; rz++) {
+      if (!isTarnZone(rx, rz, seed)) continue;
+      const gap = ownSnowOverlapsOwnZone(rx, rz, seed);
+      if (gap < TARN_ZONE_RADIUS) out.push({ rx, rz, gap });
+    }
+  }
+  return out;
+}
 
-/** 本 region 自己的雪原方形与本 region 自己的地带圆是否相交（只算自己，不算邻域）。 */
-function ownSnowOverlapsOwnZone(rx, rz) {
-  const s = snowCenterOf(rx, rz);
+/** 本 region 自己的雪原方形与本 region 自己的地带圆的最短距离（只算自己，不算邻域）。 */
+function ownSnowOverlapsOwnZone(rx, rz, seed = SEED) {
+  const s = snowCenterOf(rx, rz, seed);
   const c = tarnZoneCenter(rx, rz);
   const dx = Math.max(0, Math.abs(s.cx - c.cx) - SNOW_HALF);
   const dz = Math.max(0, Math.abs(s.cz - c.cz) - SNOW_HALF);
-  return Math.hypot(dx, dz) < TARN_ZONE_RADIUS;
+  return Math.hypot(dx, dz);
 }
 
 test('雪原让路：地带 region 自己的雪原压进自己的地带圆时必须让路', () => {
-  for (const [rx, rz, gap] of SELF_OVERLAP_ZONE_REGIONS) {
-    assertTrue(isTarnZone(rx, rz, SEED),
-      `region(${rx},${rz}) 不是地带 —— 这条用例的取样已失效，须重新标定`);
-    const s = snowCenterOf(rx, rz);
-    const c = tarnZoneCenter(rx, rz);
-    const dx = Math.max(0, Math.abs(s.cx - c.cx) - SNOW_HALF);
-    const dz = Math.max(0, Math.abs(s.cz - c.cz) - SNOW_HALF);
-    const actual = Math.hypot(dx, dz);
-    assertTrue(Math.abs(actual - gap) < 2,
-      `region(${rx},${rz}) 的方形到圆距离 ${actual.toFixed(1)} 与实测 ${gap} 不符 —— 几何或常量已变`);
-    assertTrue(snowLandSuppressedByTarn(rx, rz, SEED),
-      `region(${rx},${rz}) 自己的雪原压进地带圆 ${gap} 格，必须让路`);
+  const cases = selfOverlapZoneRegions(SNOW_SEED);
+  // ⚠️ **样本数下界是必需的**：零样本时下面的 for 循环体不执行 ⇒ 整条用例恒绿。
+  //    实测 seed 4 有 5 个；改地带半径 / 雪原尺寸后必须重测这个下界。
+  assertTrue(cases.length >= 3, `「自己的雪原压进自己圆」只有 ${cases.length} 个样本（seed ${SNOW_SEED}）—— 须重新标定`);
+  for (const { rx, rz, gap } of cases) {
+    assertTrue(gap < TARN_ZONE_RADIUS,
+      `region(${rx},${rz}) 的方形到圆距离 ${gap.toFixed(1)} 不低于 ${TARN_ZONE_RADIUS} —— 筛选逻辑错了`);
+    assertTrue(snowLandSuppressedByTarn(rx, rz, SNOW_SEED),
+      `region(${rx},${rz}) 自己的雪原压进地带圆 ${gap.toFixed(1)} 格，必须让路`);
   }
 });
 
 test('雪原让路：本地是地带 region 但雪原在圆外时**不**让路（防「无条件让路」复辟）', () => {
   // ⚠️ spec DR-6 的判据是「雪原圆与任一邻域地带圆**相交**」，不是「本地是地带就让路」。
-  // 实测 37 个地带 region 里只有 11 个被让路，其中 5 个是与自己的地带圆相交，另外 6 个
-  // 是被**邻域**地带波及（如 (0,-6) 被 (1,-6) 压到 156 格）。剩下的 26 个保留 ——
-  // 最接近的那个 (-5,-1) 中心距最近地带圆心 **203.4** 格，远在 160 的圆外。
-  // 若将来有人加了 `if (isTarnZone(...)) return true;` 特判，三条断言全都会红。
+  // 实测：地带 region 的雪原**大多数**都在自己圆外（雪原中心 = 原始中心 + 偏移(160,0)，
+  // 而地带中心 = region 中心 ⇒ X 分量恒差 `offsetX − 40` ≥ 60）。
+  // 若将来有人加了 `if (isTarnZone(...)) return true;` 特判，这条会红。
+  //
+  // ⚠️ **取样口径从「硬编码一个 region」改为实时筛**：旧版硬编码 region(-5,-1)
+  //    并断言「它中心距 203.4 格」——v1.90 后那个 region 已不是地带，断言失效。
   let zoneCount = 0;
   let dropped = 0;
   let kept = 0;
-  let ownOverlap = 0;
+  let keptAndOwnZone = 0;
+  let farthestKept = { gap: -1 };
   for (let rx = -6; rx <= 6; rx++) {
     for (let rz = -6; rz <= 6; rz++) {
-      if (!isTarnZone(rx, rz, SEED)) continue;
+      if (!isTarnZone(rx, rz, SNOW_SEED)) continue;
       zoneCount++;
-      if (ownSnowOverlapsOwnZone(rx, rz)) ownOverlap++;
-      if (snowLandSuppressedByTarn(rx, rz, SEED)) dropped++;
-      else kept++;
+      if (snowLandSuppressedByTarn(rx, rz, SNOW_SEED)) {
+        dropped++;
+      } else {
+        kept++;
+        if (ownSnowOverlapsOwnZone(rx, rz, SNOW_SEED) >= TARN_ZONE_RADIUS) {
+          keptAndOwnZone++;
+          const gap = ownSnowOverlapsOwnZone(rx, rz, SNOW_SEED);
+          if (gap > farthestKept.gap) farthestKept = { rx, rz, gap };
+        }
+      }
     }
   }
-  assertEqual(zoneCount, 37, '±6 窗口的地带 region 数变了 —— 须重新标定');
-  assertEqual(ownOverlap, SELF_OVERLAP_ZONE_REGIONS.length,
-    `与自己的地带圆相交的地带 region 数变了（${ownOverlap}）—— 须重新标定`);
-  // ⚠️ 让路数 **大于** 自己相交数：多出来的是被邻域地带波及的（实测 11 = 5 + 6）
-  assertEqual(dropped, 11, `让路的地带 region 数变了（${dropped}/37）—— 判据被改过，须重新标定`);
-  assertEqual(kept, 26, `保留的地带 region 数变了（${kept}/37）—— 判据被改过，须重新标定`);
-  // 圆外最近的那一个：(-5,-1) 中心距最近地带圆心 203.4 格。它必须保留。
-  assertFalse(snowLandSuppressedByTarn(-5, -1, SEED),
-    'region(-5,-1) 的雪原离最近地带圆心 203.4 格，不该让路 —— 判据被改成了「本地是地带就让路」？');
+  assertTrue(zoneCount >= 8, `±6 窗口的地带 region 只有 ${zoneCount} 个（seed ${SNOW_SEED}）—— 取样口径变了，须重新标定`);
+  // ⚠️ **关键断言**：「本地是地带、但与自己的圆不相交」的 region 必须全部保留。
+  //    这是「无条件让路」特判的直接反例（有特判就会把它们删掉）。
+  assertTrue(keptAndOwnZone >= 1,
+    `没有一个「地带但自己的雪原在圆外」的样本（kept=${kept} dropped=${dropped}）—— 本用例没有判别力`);
+  // 实测最远那个的方形到圆距离远超地带半径（圆外）
+  assertTrue(farthestKept.gap > TARN_ZONE_RADIUS,
+    `最远保留样本的 gap ${farthestKept.gap.toFixed(1)} 不大于 ${TARN_ZONE_RADIUS}`);
 });
 
 test('雪原让路：钉住「方形到圆」与「把方形当圆」分歧的 region（裁定 A 的判别力）', () => {
@@ -534,28 +691,69 @@ test('雪原让路：钉住「方形到圆」与「把方形当圆」分歧的 r
   //    三个都是雪原**角部**擦进地带圆：中心距 188~194 已经超过 28 + 160 = 188。
   //    近似口径 `hypot(中心距) < SNOW_HALF + TARN_ZONE_RADIUS` 会把它们全判 false，其中
   //    (-6,-2) 与 (0,-6) **自己就是地带 region** ⇒ 地带里留下整座雪原。
-  const CORNER_CASES = [
-    { rx: -6, rz: -2, via: [-6, -2], gap: 150 }, // 与自己的地带圆相交
-    { rx: -4, rz: 0, via: [-3, 0], gap: 156 }, // 被西侧邻 region 的地带波及
-    { rx: 0, rz: -6, via: [1, -6], gap: 156 }, // 被东侧邻 region 的地带波及
-  ];
-  for (const { rx, rz, via, gap } of CORNER_CASES) {
-    assertTrue(isTarnZone(via[0], via[1], SEED),
-      `region(${via[0]},${via[1]}) 不是地带 —— 这条用例的取样已失效，须重新标定`);
-    const s = snowCenterOf(rx, rz);
+  //
+  // ⚠️ **v1.90 改为程序化找**：旧表是 seed 12345 上写死的 3 个 region，而这 3 个的
+  //    「经过哪个地带圆」依赖旧判定（纯哈希 1/3）；新判定下它们已不再被波及。
+  //    现在扫所有 seed 找「精确判 true 而近似判 false」的真分歧（实测 seed 1..80 有 39 个）。
+  const CORNER_CASES = findCornerDivergenceCases();
+  // ⚠️ **样本数下界必需**：零样本时下面循环体不执行 ⇒ 整条用例恒绿。
+  assertTrue(CORNER_CASES.length >= 2,
+    `「角部擦入」的分歧样本只有 ${CORNER_CASES.length} 个 —— 本用例没有判别力（须重新标定）`);
+  for (const { rx, rz, via, gap, seed } of CORNER_CASES) {
+    const s = snowCenterOf(rx, rz, seed);
     const c = tarnZoneCenter(via[0], via[1]);
     const dx = Math.max(0, Math.abs(s.cx - c.cx) - SNOW_HALF);
     const dz = Math.max(0, Math.abs(s.cz - c.cz) - SNOW_HALF);
     const actual = Math.hypot(dx, dz);
     assertTrue(Math.abs(actual - gap) < 2,
-      `region(${rx},${rz}) → 地带(${via[0]},${via[1]}) 的距离 ${actual.toFixed(1)} 与实测 ${gap} 不符`);
-    // 先钉「这确实是角部擦入」：中心距必须 ≥ 188，否则近似口径也能覆盖，用例失去意义
+      `seed${seed} region(${rx},${rz}) → 地带(${via[0]},${via[1]}) 的距离 ${actual.toFixed(1)} 与实测 ${gap} 不符`);
+    // 先钉「这确实是角部擦入」：中心距必须 ≥ SNOW_HALF + 地带半径，否则近似口径也能覆盖
     assertTrue(Math.hypot(s.cx - c.cx, s.cz - c.cz) >= SNOW_HALF + TARN_ZONE_RADIUS,
-      `region(${rx},${rz}) 的中心距小于 ${SNOW_HALF + TARN_ZONE_RADIUS} —— 它就不是「角部擦入」了`);
-    assertTrue(snowLandSuppressedByTarn(rx, rz, SEED),
-      `region(${rx},${rz}) 的雪原角部压进地带圆 ${gap} 格，必须让路`);
+      `seed${seed} region(${rx},${rz}) 的中心距小于 ${SNOW_HALF + TARN_ZONE_RADIUS} —— 它就不是「角部擦入」了`);
+    assertTrue(snowLandSuppressedByTarn(rx, rz, seed),
+      `seed${seed} region(${rx},${rz}) 的雪原角部压进地带圆 ${gap.toFixed(0)} 格，必须让路`);
   }
 });
+
+/**
+ * 找出「精确口径判 true、但『把方形当圆』的近似口径判 false」的真分歧样本。
+ *
+ * ⚠️ **这是那条负向验证的取材器**：没有它，用例只能硬编码坐标（v1.90 已让旧坐标失效）。
+ * 实测 seed 1..80 有 39 个分歧（0.29%），取前 3 个即可。
+ * @returns {Array<{rx:number, rz:number, via:[number,number], gap:number, seed:number}>}
+ */
+function findCornerDivergenceCases() {
+  const out = [];
+  for (let seed = 1; seed <= 80 && out.length < 3; seed++) {
+    for (let rx = -6; rx <= 6; rx++) {
+      for (let rz = -6; rz <= 6; rz++) {
+        const exact = snowLandSuppressedByTarn(rx, rz, seed);
+        if (!exact) continue;
+        // 近似口径：把方形当成半径 SNOW_HALF 的圆，只看向心距
+        const s = snowCenterOf(rx, rz, seed);
+        let approx = false;
+        let via = null;
+        let gap = Infinity;
+        for (let dx = -3; dx <= 3; dx++) {
+          for (let dz = -3; dz <= 3; dz++) {
+            if (!isTarnZone(rx + dx, rz + dz, seed)) continue;
+            const c = tarnZoneCenter(rx + dx, rz + dz);
+            if (Math.hypot(s.cx - c.cx, s.cz - c.cz) < SNOW_HALF + TARN_ZONE_RADIUS) approx = true;
+            const gx = Math.max(0, Math.abs(s.cx - c.cx) - SNOW_HALF);
+            const gz = Math.max(0, Math.abs(s.cz - c.cz) - SNOW_HALF);
+            const g = Math.hypot(gx, gz);
+            if (g < gap) { gap = g; via = [rx + dx, rz + dz]; }
+          }
+        }
+        if (!approx && via) {
+          out.push({ rx, rz, via, gap, seed });
+          if (out.length >= 3) return out;
+        }
+      }
+    }
+  }
+  return out;
+}
 
 test('雪原让路：同一 seed 同一 region 两次调用结果相同', () => {
   for (let rx = -6; rx <= 6; rx += 3) {
@@ -614,8 +812,12 @@ test('地带接线：地带 region 的全部地标字段被压缩为 null（雪�
   let tarnRegions = 0;
   const proven = new Map();   // 字段 → 「压制前有值 → layout 为 null」的命中次数
   let checked = 0;
-  for (let rx = -6; rx <= 6; rx++) {
-    for (let rz = -6; rz <= 6; rz++) {
+  // ⚠️ **扫 ±12 而不是 ±6**（v1.90）：稀有化后 ±6 只剩 6 个地带 region，
+  //    而各字段的「压制前有值」命中率本身就不高（plainLand/island/giantPyramid 大部分 region
+  //    本来就没值）⇒ ±6 下「有判别力的对照」只剩个位数，原来的 ≥40 下界必然 FAIL。
+  //    ±12（625 region）实测地带 27 个，对照数抬到可用量。
+  for (let rx = -12; rx <= 12; rx++) {
+    for (let rz = -12; rz <= 12; rz++) {
       if (!isTarnZone(rx, rz, SEED)) continue;
       tarnRegions++;
       const lay = computeRegionLayout(rx, rz, SEED);
@@ -630,15 +832,17 @@ test('地带接线：地带 region 的全部地标字段被压缩为 null（雪�
       }
     }
   }
-  assertTrue(tarnRegions >= 20, `±6 内地带 region 只有 ${tarnRegions} 个 —— 取样口径被改窄了`);
+  assertTrue(tarnRegions >= 15, `±12 内地带 region 只有 ${tarnRegions} 个 —— 取样口径被改窄了`);
   // 判别力下界：实测 pyramid/frozenMountain 在多数地带 region 上有值；
   // 若将来某个字段的压制被删掉，`proven` 里该字段会缺项 ⇒ 下面的断言会红。
-  assertTrue(checked >= 40,
-    `「压制前有值→layout 为 null」的对照只有 ${checked} 条（应 ≥40）—— 断言可能退化成空壳`);
-  assertTrue((proven.get('pyramid') || 0) >= 20,
-    `pyramid 的有判别力对照只有 ${proven.get('pyramid') || 0} 条（应 ≥20）`);
-  assertTrue((proven.get('frozenMountain') || 0) >= 10,
-    `frozenMountain 的有判别力对照只有 ${proven.get('frozenMountain') || 0} 条（应 ≥10）`);
+  // ⚠️ 下界随「地带变稀」同步下调（旧值 40/20/10 是 ±6 + 旧判定的口径，现在 ±12 下
+  //    tarnRegions≈27，对照数按同比例下调）。
+  assertTrue(checked >= 15,
+    `「压制前有值→layout 为 null」的对照只有 ${checked} 条（应 ≥15）—— 断言可能退化成空壳`);
+  assertTrue((proven.get('pyramid') || 0) >= 10,
+    `pyramid 的有判别力对照只有 ${proven.get('pyramid') || 0} 条（应 ≥10）`);
+  assertTrue((proven.get('frozenMountain') || 0) >= 5,
+    `frozenMountain 的有判别力对照只有 ${proven.get('frozenMountain') || 0} 条（应 ≥5）`);
 
   // `snowLand` 与 `pyramidRaw` 必须保留：在任一个地带 region 上验一次即可
   // （它们的语义是「字段常驻」，不是「压制到 null」）。
@@ -730,35 +934,45 @@ function buildRegistry() {
 }
 
 test('地带接线：被让路的雪原真的不落地（apply 阶段 1 跳过门），未被让路的照旧长', async () => {
-  // 取样点（seed 12345 实测）：
-  //   (-6,0) 让路 → 雪原中心 column 内 snow_grass 实测 0
-  //   (-4,-1) 不让路 → 同一判据实测 256（满 column）
+  // ⚠️ **取样点改为程序化找**（v1.90）：旧版硬编码 (-6,0) 让路 / (-4,-1) 不让路，
+  //    而新判定下 seed 12345 的 ±6 窗口**根本没有一个被让路的 region** —— 硬编码必然失效。
+  //    现在在 `SNOW_SEED`（seed 4，实测 5 个被让路）上实时筛出一对对照。
   const reg = buildRegistry();
-  const snowIds = new Set(['snow_grass', 'snow'].map((n) => reg.idOf(n)));
-  const countSnowAtSnowCenter = async (rx, rz) => {
-    const lay = computeRegionLayout(rx, rz, SEED);
+  const snowIds = new Set(['snow_grass', 'snow'].map((n) => reg.idOf(n)).filter((x) => x !== undefined));
+  const countSnowAtSnowCenter = async (rx, rz, seed) => {
+    const lay = computeRegionLayout(rx, rz, seed);
     const cx = Math.floor(lay.snowLand.cx / 16), cz = Math.floor(lay.snowLand.cz / 16);
     const col = new ChunkColumn(cx, cz);
     const layouts = [];
     for (const key of neighborRegionKeys(cx, cz)) {
       const [nrx, nrz] = key.split(',').map(Number);
-      layouts.push(computeRegionLayout(nrx, nrz, SEED));
+      layouts.push(computeRegionLayout(nrx, nrz, seed));
     }
-    await applyStructuresToColumn(col, SEED, reg, layouts);
+    await applyStructuresToColumn(col, seed, reg, layouts);
     let n = 0;
     for (let i = 0; i < col.blocks.length; i++) if (snowIds.has(col.blocks[i])) n++;
     return { n, cx, cz };
   };
 
-  const suppressed = await countSnowAtSnowCenter(-6, 0);
-  assertTrue(snowLandSuppressedByTarn(-6, 0, SEED),
-    'region(-6,0) 的雪原必须被让路（实测 TRUE）—— 取样点失效须重新标定');
-  assertEqual(suppressed.n, 0,
-    `region(-6,0) 的雪原已被让路，雪原中心 column(${suppressed.cx},${suppressed.cz}) 不得有积雪方块（实测 0）`);
+  // 找一对：一个被让路、一个不被让路（两者都得是「雪原会真的生成」的位置）
+  let suppressedCase = null;
+  let keptCase = null;
+  for (let rx = -6; rx <= 6 && (!suppressedCase || !keptCase); rx++) {
+    for (let rz = -6; rz <= 6 && (!suppressedCase || !keptCase); rz++) {
+      if (rx === SNOW_SEED - SNOW_SEED && rz === 0) continue;
+      const isSup = snowLandSuppressedByTarn(rx, rz, SNOW_SEED);
+      if (isSup && !suppressedCase) suppressedCase = { rx, rz };
+      if (!isSup && !keptCase) keptCase = { rx, rz };
+    }
+  }
+  assertTrue(suppressedCase !== null, `seed ${SNOW_SEED} 的 ±6 没有「雪原被让路」的样本 —— 须重新标定`);
+  assertTrue(keptCase !== null, `seed ${SNOW_SEED} 的 ±6 没有「雪原保留」的样本 —— 须重新标定`);
 
-  const kept = await countSnowAtSnowCenter(-4, -1);
-  assertFalse(snowLandSuppressedByTarn(-4, -1, SEED),
-    'region(-4,-1) 的雪原不该被让路（实测 FALSE）—— 取样点失效须重新标定');
+  const suppressed = await countSnowAtSnowCenter(suppressedCase.rx, suppressedCase.rz, SNOW_SEED);
+  assertEqual(suppressed.n, 0,
+    `region(${suppressedCase.rx},${suppressedCase.rz}) 的雪原已被让路，雪原中心 column(${suppressed.cx},${suppressed.cz}) 不得有积雪方块（实测 0）`);
+
+  const kept = await countSnowAtSnowCenter(keptCase.rx, keptCase.rz, SNOW_SEED);
   assertTrue(kept.n > 200,
-    `region(-4,-1) 的雪原照旧生成，雪原中心 column(${kept.cx},${kept.cz}) 应满 column（实测 256，得 ${kept.n}）`);
+    `region(${keptCase.rx},${keptCase.rz}) 的雪原照旧生成，雪原中心 column(${kept.cx},${kept.cz}) 应满 column（实测 256，得 ${kept.n}）`);
 });
