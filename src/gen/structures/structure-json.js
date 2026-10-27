@@ -5,9 +5,14 @@
 import { generateHeight } from '../terrain.js';
 import { WORLD_MIN_Y, WORLD_MAX_Y, blockIndex } from '../../voxel/constants.js';
 import { resourceUrl } from '../../core/resource-url.js';
+// 高台地带的 35 个产物基名（纯数据、零 node 依赖 —— 浏览器/Worker 都能 import）。
+// ⚠️ **不要 import `tools/cloudland-kit-fingerprint.mjs`**：它依赖 `node:fs`，在浏览器/Worker
+// 里解析会失败 → 整个模块不加载 → **Worker 起不来 → 游戏白屏**（B1 教训，`check:arch` 抓不到
+// 这类运行时解析失败）。映射表与指纹留在 `tools/` 侧，纯数据在 `src/gen/structures/` 侧。
+import { KIT_VARIANTS } from './cloudland-kit-data.js';
 
 /** placement 类型 → JSON 文件名（mc-lite structureLoaders 映射） */
-export const STRUCTURE_FILES = Object.freeze({
+const BASE_STRUCTURE_FILES = {
   castle: 'castle.json',
   bigHouse: 'big_house.json',
   regularHouse1: 'regular_house_1.json',
@@ -38,7 +43,20 @@ export const STRUCTURE_FILES = Object.freeze({
   cloudlandMesaSmall: 'cloudland_mesa_small.json',
   // 巨型金字塔（Giant Pyramid Epic）：palette + 扁平数组格式（同 cloudlandMesaSmall）
   giantPyramid: 'giant_pyramid.json',
-});
+};
+
+// 高台地带（Cloudland Tarn Zone）：11 座高台 + 5 拱洞 + 7 紫晶柱 + 12 巨型云 = 35 个产物。
+// ⚠️ **不要手写这 35 行清单** —— 从 `KIT_VARIANTS` 派生（红线 1：加第 12 座高台时不用改两处，
+// 漏一行会让那个变体静默不出现：`rasterizeStructure` 拿到空 blocks 直接 return，
+// 方块层面完全看不出是漏了映射）。
+for (const base of [
+  ...KIT_VARIANTS.tarn, ...KIT_VARIANTS.arch,
+  ...KIT_VARIANTS.spire, ...KIT_VARIANTS.giantCloud,
+]) {
+  BASE_STRUCTURE_FILES[base] = `${base}.json`;
+}
+
+export const STRUCTURE_FILES = Object.freeze(BASE_STRUCTURE_FILES);
 
 /**
  * 需要底部支撑柱补地的结构（mc-lite generateStructureWithGroundSupport 清单）。

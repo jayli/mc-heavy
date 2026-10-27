@@ -26,6 +26,8 @@ import { applyGiantTrees, loadGiantTrees } from './giant-trees.js';
 import { MESA_UNION_HALF } from './mesa.js';
 import { PYRAMID_HALF, inGiantPyramidFootprint } from './giant-pyramid.js';
 import { TARN_ZONE_RADIUS, snowLandSuppressedByTarn } from './tarn-zone.js';
+import { fillTarnPlateau } from './tarn-terrain.js';
+import { KIT_VARIANTS } from './cloudland-kit-data.js';
 
 /** 城市 placement 用到的 JSON 结构（GEN 携带城市布局时预载）+ 植被树 JSON */
 const CITY_STRUCTURE_TYPES = [
@@ -208,6 +210,15 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
   if (mesaAnchor) needTypes.add('cloudlandMesaSmall');
   // 巨型金字塔：同理只在锚点存在时预载
   if (layouts.some((l) => l.giantPyramid)) needTypes.add('giantPyramid');
+  // 高台地带：35 个产物。惰性预载 —— 只有地带 region 才拉（1/3 的 region）。
+  // 从 KIT_VARIANTS 派生而不是手写清单（红线 1）。
+  const tarnLayoutForPreload = layouts.map((l) => l.tarn).find(Boolean) || null;
+  if (tarnLayoutForPreload) {
+    for (const base of [
+      ...KIT_VARIANTS.tarn, ...KIT_VARIANTS.arch,
+      ...KIT_VARIANTS.spire, ...KIT_VARIANTS.giantCloud,
+    ]) needTypes.add(base);
+  }
   await preloadStructures([...needTypes]);
   // 巨树变体加载。Worker 里已在模块加载期预热（world-worker.js 的 giantPreloadPromise，layout 入口 await），
   // 这里命中缓存 ≈ 0ms；⚠️ 不预热的话每个 Worker 的首个 GEN 要付 fetch+解析（实测使 structure-gen 的
@@ -267,6 +278,46 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
         const fmInfo = getFrozenMountainInfo(wx, wz, layout.frozenMountain, seed);
         if (fmInfo) { generateFrozenMountain(wx, wz, h, fmInfo, setBlock, seed); handled = true; break; }
       }
+    }
+  }
+
+  // ---- 阶段 2.4：高台地带（Cloudland Tarn Zone）----
+  //
+  // 层序理由：台地整形必须在阶段 1 的 `fillColumn` 之后（它覆盖原始地层），
+  // 而高台与装饰件在台地之后写（后写胜）。城市结构不该写进地带（地带已在 layout 层
+  // 压制了 `city`，所以下面的阶段 2 对地带 region 是空转）。
+  //
+  // ⚠️ **y 参数是 `plateauY`，不是 `plateauY + 1`**（易错一格）：
+  //   · 池底实心在 `plateauY - 1`、水在 `plateauY`；
+  //   · `rasterizeStructure(type, x, y, z, …)` 把**最低那层写成 y**（内部是 `y + b.y - 1`，
+  //     而产物已把最低点归一化为 b.y = 1）；
+  //   · 故 `y = plateauY` ⇒ 台基最低层正好落在水那一层、坐在池底上（台体占掉它自己的水格）。
+  //   传 `plateauY + 1` 会让整座高台**悬在水面上方一格**（区块层面看不出，只是台子浮在水上）。
+  const tarnLayout = layouts.map((l) => l.tarn).find(Boolean) || null;
+  if (tarnLayout) {
+    fillTarnPlateau(column, tarnLayout, seed, registry);
+
+    // 8 座高台（`TARN_KEPT_TARN_IDS`；烘焙有 11 个产物，运行时只用 8 座）
+    for (const t of tarnLayout.tarns) {
+      const wx = Math.round(tarnLayout.cx + t.ring * Math.cos(t.ang));
+      const wz = Math.round(tarnLayout.cz + t.ring * Math.sin(t.ang));
+      // ⚠️ 轴对齐摆放下 AABB 半宽就是 `halfX` / `halfZ` 本身（spec DR-7 方案 1，不旋转）。
+      //    不要写成 `halfX + halfZ`（那是旋转假设下的保守投影，轴对齐下会把裁剪框撑大一倍）。
+      if (!placementIntersects({ x: wx, z: wz }, t.halfX, t.halfZ, column.cx, column.cz)) continue;
+      // `rasterizeStructure` 签名不动（无 orientation 参数）—— 方案 1 不新增旋转机制。
+      rasterizeStructure(t.variant, wx, tarnLayout.plateauY, wz, setBlock, column, registry, seed, false);
+    }
+
+    // 12 个装饰件：⚠️ **拱洞与紫晶柱的 y 口径不同**（DR-8 把拱洞移到了池外台地）：
+    //   · 紫晶柱在**池内** → 最低层落在 `plateauY`（= 水那一层），坐在池底 `plateauY - 1` 上；
+    //   · 拱洞在**池外台地** → 台地地表方块就在 `plateauY`，故最低层要落在 `plateauY + 1`
+    //     （坐在地表之上）。传 `plateauY` 会把拱洞最底下一层**埋进台地地表**。
+    for (const d of tarnLayout.decos) {
+      const wx = Math.round(tarnLayout.cx + d.ring * Math.cos(d.ang));
+      const wz = Math.round(tarnLayout.cz + d.ring * Math.sin(d.ang));
+      if (!placementIntersects({ x: wx, z: wz }, d.halfX, d.halfZ, column.cx, column.cz)) continue;
+      const dy = d.kind === 'arch' ? tarnLayout.plateauY + 1 : tarnLayout.plateauY;
+      rasterizeStructure(d.variant, wx, dy, wz, setBlock, column, registry, seed, false);
     }
   }
 
