@@ -20,6 +20,10 @@
         if (rx === 0 && rz === 0) continue;
         const l = computeRegionLayout(rx, rz, seed);
         const py = l.pyramid;
+        // ⚠️ **必须先判 null**：高台地带把地带 region 的 `layout.pyramid` 压成 null，
+        // 而本函数在扫「第一个可用金字塔 region」⇒ 扫到地带 region 时 `py` 就是 null。
+        // 当前 seed 下 (-4,-4) 首个命中就 return（非地带）所以没崩，但这是运气。
+        if (!py) continue;
         const outOfCity = py.cx + 28 < city.minX || py.cx - 28 > city.maxX ||
                           py.cz + 28 < city.minZ || py.cz - 28 > city.maxZ;
         if (!outOfCity) continue;

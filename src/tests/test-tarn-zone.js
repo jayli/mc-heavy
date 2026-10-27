@@ -697,8 +697,13 @@ test('地带接线：非地带且雪原未让路的 region 逐字段零回归（
       const direct = {
         mesa: computeMesaAnchor(rx, rz, SEED),
         giantPyramid: computeGiantPyramidAnchor(rx, rz, SEED),
+        // `pyramid` / `frozenMountain` 是**被 `tarn ? null : …` 直接改写的那两个字段**
+        // （structure-layout.js:50-51），所以它们是零回归语料里判别力最强的 ——
+        // 漏掉它们只比 mesa / giantPyramid 意义有限（那两项在本区大多是 null）。
+        pyramid: getPyramidCenterInRegion(rx, rz, SEED),
+        frozenMountain: getFrozenMountainCenterInRegion(rx, rz, SEED),
       };
-      for (const field of ['mesa', 'giantPyramid']) {
+      for (const field of ['mesa', 'giantPyramid', 'pyramid', 'frozenMountain']) {
         assertEqual(JSON.stringify(lay[field]), JSON.stringify(direct[field]),
           `region(${rx},${rz}) 的 ${field} 必须与候选函数逐字段相同（零回归）`);
       }

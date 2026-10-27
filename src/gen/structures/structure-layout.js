@@ -22,8 +22,8 @@ import { isTarnZone, computeTarnZone } from './tarn-zone.js';
  * @returns {{
  *   regionX: number, regionZ: number,
  *   pyramidRaw: {centerX:number, centerZ:number},
- *   pyramid: {cx:number, cz:number},
- *   frozenMountain: {cx:number, cz:number},
+ *   pyramid: ({cx:number, cz:number}|null),
+ *   frozenMountain: ({cx:number, cz:number}|null),
  *   snowLand: {cx:number, cz:number},
  *   plainLand: ({cx:number, cz:number, baseHeight:number}|null),
  *   island: ({cx:number, cz:number}|null),
