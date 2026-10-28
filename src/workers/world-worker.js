@@ -14,6 +14,7 @@ import { getCityBoundsForSeed } from '../gen/structures/city-layout.js';
 import { preloadStructures } from '../gen/structures/structure-json.js';
 import { SCATTER_JSON_TYPES } from '../gen/structures/scatter.js';
 import { loadGiantTrees } from '../gen/structures/giant-trees.js';
+import { loadAzaleaTrees } from '../gen/structures/azalea-trees.js';
 // M6 ai 分支：全部逻辑走 `computeAiUpdates`（同构纯函数，红线 8）。
 // 它内部 import `zombie-config.js` 的冻结玩法数据，故本文件不再直接 import ZOMBIE。
 import { computeAiUpdates } from '../entities/zombies/zombie-system.js';
@@ -54,6 +55,13 @@ const scatterPreloadPromise = preloadStructures(SCATTER_JSON_TYPES);
  */
 const giantPreloadPromise = loadGiantTrees();
 
+/**
+ * 杜鹃树变体预热（同手法：发起但不 await；layout 与 gen 入口 await 同一个 promise）。
+ * ⚠️ 不预热的话每个新 Worker 的首个 GEN 要多付一次冷 fetch+解析 —— 与巨树同一条理由
+ * （实测使 structure-gen 的 genP95 从 ~9ms 涨到 ~12ms，撞破 10ms 门）。
+ */
+const azaleaPreloadPromise = loadAzaleaTrees();
+
 // atlasMeta 由主线程启动时 broadcast（'atlas-meta' handler 赋值）
 let _atlasMeta = null;
 
@@ -78,6 +86,7 @@ installRpcHandler({
     // 已 resolve 时是微任务（≈0 成本），未完成时才等剩余 fetch，确保 rasterize 不静默跳过。
     await scatterPreloadPromise.catch(() => {});
     await giantPreloadPromise.catch(() => {});
+    await azaleaPreloadPromise.catch(() => {});
     const column = new ChunkColumn(p.cx, p.cz);
     fillColumn(column, p.seed, registry);
     carveCaves(column, p.seed);
@@ -167,6 +176,7 @@ installRpcHandler({
     // 预热失败不阻断 layout（结构 JSON 缺失会让 rasterize 静默跳过，但布局本身仍可用）。
     await scatterPreloadPromise.catch(() => {});
     await giantPreloadPromise.catch(() => {});
+    await azaleaPreloadPromise.catch(() => {});
     // 预热城市 bounds 缓存：`buildCityLayout` 实测 10~12ms，绝不能落进首个 GEN 的计时
     // 路径（`structure-gen` fixture 的 genP95 门是 10ms）。`layout` 入口是唯一保证
     // 「先于 GEN、且本 Worker 一定会走到」的位置（与上面两个预载 promise 同处）。

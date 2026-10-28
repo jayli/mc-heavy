@@ -34,7 +34,18 @@ export const BIOME_PARAMS = Object.freeze({
   /** humidity 的采样偏移（`noise(x+1000, z+1000)`，与 temp 去相关） */
   HUMIDITY_OFFSET: 1000,
   FOREST_TEMP_MIN: 1.2,
-  AZALEA_TEMP_MIN: 0.6,
+  /**
+   * AZALEA 的温度下限。
+   *
+   * ⚠️ **0.6 → 0.35 是有意调整**（2026-10-28 用户：「杜鹃花树的地图范围可以适当扩大一些，
+   * 比如扩大 50%」）。实测 AZALEA 占陆地采样 4.6% → **6.7%（×1.46）**；只吃 PLAINS
+   * （39.1% → 37.0%），FOREST / DESERT / SWAMP 的判定阈值与结果逐位不变 —— 因为 AZALEA
+   * 的分支在 `temp > AZALEA_TEMP_MIN && temp <= FOREST_TEMP_MIN` 区间内、且只与 PLAINS 相邻。
+   * ⚠️ **不能改 `AZALEA_HUMIDITY_MIN`**：那条会把 AZALEA 塞进 SWAMP 的湿度带（实测 SWAMP 3.6% 不变，
+   * 但 AZALEA 地块形状变成细长条带）；改温度下限的版图更像自然分布。
+   * 改这个值须同步重测：AZALEA 面积占比、以及 `test-azalea-trees*` 的候选数下界。
+   */
+  AZALEA_TEMP_MIN: 0.35,
   AZALEA_HUMIDITY_MIN: 0,
   /** DESERT：`temp < DESERT_TEMP_MAX` */
   DESERT_TEMP_MAX: -1.5,

@@ -18,7 +18,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { PNG } from 'pngjs'; // 读 icons-atlas.png 校验尺寸（ESM：不能用 require）
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -1539,6 +1539,129 @@ function checkLeafCullingContract() {
   }
 }
 
+
+// ---------------------------------------------------------------- [杜鹃树] 契约（Azalea Trees Epic）
+
+/**
+ * [杜鹃树] 契约：烘焙产物（trees.json）+ 方块声明 + 运行时常量三方必须对得上。
+ *
+ * 钉的失效路径（每条都实测注入过，见本 Epic 的负向验证记录）：
+ *   ① 烘焙输入（.schem）或映射表改了却没重烘焙 → 产物静默过期（渲染旧树形，方块层面完全看不出）；
+ *   ② palette 里出现未注册方块名 → `makeColumnSetter` 对未注册名**静默跳过** → 该格变 air
+ *      （树上有洞，肉眼只觉得「形状怪怪的」）；
+ *   ③ 叶子槽从 `LEAF` 哨兵变成具体方块 → 花的位置被素材作死，与用户裁定的「30% 概率相间」冲突；
+ *   ④ 树干槽不是 `azalea_log` → 用户裁定的替换目标被改（观感与旧杜鹃树脱节）；
+ *   ⑤ 10 档尺寸/格数与实测不符 → 切分或映射被改动（相邻地台的叶子被算进 bbox 是最常见的一种）；
+ *   ⑥ 运行时 `AZALEA_VARIANT_COUNT` 与产物档数不一致 → 候选里的档位下标越界、
+ *      永远只能落前几档（世界里只有一种尺寸的树）。
+ *
+ * ⚠️ **成功行的条件必须涵盖本函数全部判据**，否则失败时仍会打印一条 ✓
+ *    （本仓已发生过：`[高台]` 判据只看 palette.length，注入砖块时同时打印「✗ 含砖块」与「✓」）。
+ */
+async function checkAzaleaTrees() {
+  const fp = await import('./azalea-trees-fingerprint.mjs');
+  const before = failures.length;
+  const fail = (m) => failures.push(`[杜鹃树] ${m}`);
+
+  // ① 烘焙输入（入库）与产物
+  if (!fs.existsSync(fp.SCHEM_PATH)) {
+    fail(`烘焙输入缺失 ${path.relative(ROOT, fp.SCHEM_PATH)}（.schem 入库，缺失 = 仓库损坏）`);
+    return;
+  }
+  if (!fs.existsSync(fp.TREES_JSON) || !fs.existsSync(fp.TREES_META)) {
+    fail('缺 assets/azalea-trees/trees.json 或 trees.meta.json（跑 npm run azaleatrees）');
+    return;
+  }
+  let meta, trees;
+  try {
+    meta = JSON.parse(fs.readFileSync(fp.TREES_META, 'utf8'));
+    trees = JSON.parse(fs.readFileSync(fp.TREES_JSON, 'utf8')).trees;
+  } catch { fail('trees.json / trees.meta.json 不是合法 JSON（重跑 npm run azaleatrees）'); return; }
+
+  // ② 指纹（入库 .schem 内容 + 全部烘焙参数）
+  const cur = fp.azaleaTreesInputFingerprint();
+  if (meta.fingerprints?.input !== cur.input) {
+    fail(`产物已过期：指纹不匹配（烘焙时 "${meta.fingerprints?.input}" vs 当前 "${cur.input}"）→ 跑 npm run azaleatrees`);
+  }
+
+  // ③ 档数 / 叶子槽 / 每档尺寸与格数
+  if (!Array.isArray(trees)) { fail('trees.json 的 trees 不是数组'); return; }
+  if (trees.length !== fp.VARIANT_COUNT) fail(`档数 ${trees.length} ≠ VARIANT_COUNT ${fp.VARIANT_COUNT}（跑 npm run azaleatrees）`);
+  if (meta.variantCount !== trees.length) fail(`meta.variantCount ${meta.variantCount} ≠ 产物档数 ${trees.length}`);
+  if (meta.leafSlot !== fp.LEAF_SLOT) fail(`meta.leafSlot "${meta.leafSlot}" ≠ "${fp.LEAF_SLOT}"（叶子须走哨兵槽，运行时才按 30% 掷花）`);
+
+  let total = 0;
+  trees.forEach((v, i) => {
+    const exp = fp.SIZE_EXPECTATIONS[i];
+    if (!exp) { fail(`第 ${i} 档没有对应的 SIZE_EXPECTATIONS（档数被改动？）`); return; }
+    if (v.w !== exp.w || v.d !== exp.d || v.h !== exp.h) {
+      fail(`第 ${i} 档尺寸 ${v.w}×${v.d}×${v.h} ≠ 实测 ${exp.w}×${exp.d}×${exp.h}（切分/映射被改动，或按整行而非按地台裁剪）`);
+    }
+    const n = v.blocks.length / 4;
+    if (n !== exp.cells) fail(`第 ${i} 档格数 ${n} ≠ 实测 ${exp.cells}`);
+    total += n;
+
+    // ④ palette 契约：树干 = azalea_log、叶子槽 = LEAF 哨兵、二者都在 registry
+    if (JSON.stringify(v.palette) !== JSON.stringify(fp.PALETTE)) {
+      fail(`第 ${i} 档 palette ${JSON.stringify(v.palette)} ≠ ${JSON.stringify(fp.PALETTE)}（trees.json 被手改？）`);
+    }
+    if (v.palette[0] !== 'azalea_log') fail(`第 ${i} 档 palette[0] "${v.palette[0]}" ≠ azalea_log（用户裁定的树干替换目标）`);
+    if (v.palette[1] !== fp.LEAF_SLOT) fail(`第 ${i} 档 palette[1] "${v.palette[1]}" ≠ "${fp.LEAF_SLOT}"（叶子必须走哨兵槽，否则花位被素材作死）`);
+    if (REGISTRY.idOf('azalea_log') === undefined) fail('azalea_log 不在 registry（makeColumnSetter 会静默跳过 → 树干变 air）');
+
+    // ⑤ 锚点必须在 bbox 内且落在某个 y=0 树干格上（光栅化按它对齐候选点）
+    if (!Array.isArray(v.anchor) || v.anchor[0] < 0 || v.anchor[0] >= v.w || v.anchor[1] < 0 || v.anchor[1] >= v.d) {
+      fail(`第 ${i} 档锚点 ${JSON.stringify(v.anchor)} 越界（w=${v.w} d=${v.d}）`);
+    }
+  });
+  if (total < fp.TOTAL_BLOCKS_RANGE[0] || total > fp.TOTAL_BLOCKS_RANGE[1]) {
+    fail(`10 档共 ${total} 格，不在实测区间 [${fp.TOTAL_BLOCKS_RANGE}]（映射表/切分被改动？）`);
+  }
+
+  // ⑥ 运行时常量与产物一致（src 侧不能自己写死一个不同的档数）
+  const mod = await import(pathToFileURL(path.join(ROOT, 'src/gen/structures/azalea-trees.js')).href);
+  if (mod.AZALEA_VARIANT_COUNT !== trees.length) {
+    fail(`src 的 AZALEA_VARIANT_COUNT=${mod.AZALEA_VARIANT_COUNT} ≠ 产物档数 ${trees.length}（候选档位下标会越界）`);
+  }
+  if (mod.AZALEA_FLOWER_CHANCE !== 0.3) {
+    fail(`AZALEA_FLOWER_CHANCE=${mod.AZALEA_FLOWER_CHANCE} ≠ 0.3（用户 2026-10-28 裁定：沿用旧杜鹃树的 30%）`);
+  }
+  // 树干间距判据（v2.0）：常量与判据本身都要在
+  if (mod.AZALEA_TRUNK_CLEARANCE !== 6) {
+    fail(`AZALEA_TRUNK_CLEARANCE=${mod.AZALEA_TRUNK_CLEARANCE} ≠ 6（用户 2026-10-28 裁定：树干间距 ≥6 格）`);
+  }
+  if (typeof mod.acceptAzaleaTrunks !== 'function' || typeof mod.collectOtherTrunks !== 'function') {
+    fail('缺 acceptAzaleaTrunks / collectOtherTrunks（树干间距判据的接线入口）');
+  }
+  // 密度 C=13（spacing 8 + jitter 5）
+  if (mod.AZALEA_TREE_PATH.spacing !== 8 || mod.AZALEA_TREE_PATH.jitter !== 5) {
+    fail(`AZALEA_TREE_PATH spacing/jitter = ${mod.AZALEA_TREE_PATH.spacing}/${mod.AZALEA_TREE_PATH.jitter} ≠ 8/5（C=13）`);
+  }
+  // AZALEA biome 面积（v2.0 用户要求扩大 50%：4.6% → ≈6.7%）
+  const noiseMod = await import(pathToFileURL(path.join(ROOT, 'src/gen/noise.js')).href);
+  let azN = 0, tot = 0;
+  for (let x = -600; x <= 600; x += 4) {
+    for (let z = -600; z <= 600; z += 4) { tot++; if (noiseMod.getBiome(x, z, 12345) === 'AZALEA') azN++; }
+  }
+  const azFrac = azN / tot;
+  if (azFrac < 0.06 || azFrac > 0.075) {
+    fail(`AZALEA 面积占比 ${(azFrac * 100).toFixed(1)}% 不在 [6.0%, 7.5%]（v2.0 定标 6.66%；改 AZALEA_TEMP_MIN 后须重测）`);
+  }
+  // 旧树必须已停用（否则新大树与旧小树叠在一起）
+  const veg = await import(pathToFileURL(path.join(ROOT, 'src/gen/structures/vegetation.js')).href);
+  let oldTreeHits = 0;
+  for (let wx = -400; wx <= 400; wx += 11) {
+    for (let wz = -400; wz <= 400; wz += 11) {
+      if (veg.rollVegetation(wx, wz, 'AZALEA', 12345).tree) oldTreeHits++;
+    }
+  }
+  if (oldTreeHits > 0) fail(`rollVegetation 的 AZALEA 分支仍在返回旧小树（${oldTreeHits} 次命中）—— 会与新树叠在一起`);
+
+  if (failures.length === before) {
+    infos.push(`[杜鹃树] ${trees.length} 档（${meta.sizes.join(' ')}）共 ${total} 格，树干 azalea_log、叶子 LEAF 哨兵按 30% 掷花、指纹匹配、旧小树已停用；间距 ≥${mod.AZALEA_TRUNK_CLEARANCE} 格、密度 C=${mod.AZALEA_TREE_PATH.spacing + mod.AZALEA_TREE_PATH.jitter}、AZALEA 面积 ${(azFrac * 100).toFixed(1)}%`);
+  }
+}
+
 // ---------------------------------------------------------------- 主流程
 
 const REGISTRY = await buildDefaultRegistry();
@@ -1563,6 +1686,7 @@ checkTurretArmorTexture();
 checkSkyboxAssets();         // v1.58：天空盒立方图完整性（⚠️ 漏了本行则门禁永不执行）
 await checkNightSkyFreshness(); // v1.60：夜空烘焙产物指纹（⚠️ 漏了本行则门禁永不执行）
 await checkGiantTrees();     // 巨树景观：方块/烘焙产物/贴图三方契约（⚠️ 漏了本行则门禁永不执行）
+await checkAzaleaTrees();    // 杜鹃树：烘焙产物/方块声明/运行时常量三方契约（⚠️ 漏了本行则门禁永不执行）
 await checkCloudlandTarnZone(); // 高台地带：35 产物/映射表/通道/台顶材质契约（⚠️ 漏了本行则门禁永不执行）
 await checkGiantPyramid();   // 巨型金字塔：烘焙产物/映射表/通道契约（⚠️ 漏了本行则门禁永不执行）
 checkLeafCullingContract();  // v1.70：镂空遮挡体派生表与树叶族声明的一致性（⚠️ 漏了本行则门禁永不执行）

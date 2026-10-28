@@ -13,6 +13,7 @@ import { buildCityLayout } from './city-layout.js';
 import { computeSkyCandidates } from './sky-structures.js';
 import { computeScatterCandidates } from './scatter.js';
 import { computeGiantTreeCandidates } from './giant-trees.js';
+import { computeAzaleaTreeCandidates } from './azalea-trees.js';
 import { computeGiantPyramidAnchor } from './giant-pyramid.js';
 import { isTarnZone, computeTarnZone } from './tarn-zone.js';
 
@@ -30,6 +31,7 @@ import { isTarnZone, computeTarnZone } from './tarn-zone.js';
  *   sky: {skyIslands: Int32Array, cloudClusters: Int32Array},
  *   scatter: {cityScatter: Int32Array, outsideScatter: Int32Array},
  *   giantTrees: {forest: Int32Array, beach: Int32Array, banyan: Int32Array},
+ *   azaleaTrees: Int32Array,
  *   giantPyramid: ({wx:number, wz:number, floorY:number}|null),
  *   tarn: (import('./tarn-zone.js').TarnLayout|null)
  * }}
@@ -100,6 +102,10 @@ export function computeRegionLayout(regionX, regionZ, seed) {
     ? { forest: new Int32Array(0), beach: new Int32Array(0), banyan: new Int32Array(0) }
     : giantTreesRaw;
 
+  // 杜鹃树（Azalea Trees Epic）：单条路径，全局对齐网格抖动，与 region 邻居无关。
+  // 地带里清空（台地/水池要干净，与 giantTrees 同口径）。
+  const azaleaTrees = tarn ? new Int32Array(0) : computeAzaleaTreeCandidates(regionX, regionZ, seed);
+
   // ⚠️ v1.80：沙漠孤立高台系统已整体删除（DR-11，由「高台地带」取代），`mesa` 字段不再存在。
 
   // 巨型金字塔（Giant Pyramid Epic）：region 级候选，与高台同构。
@@ -109,7 +115,7 @@ export function computeRegionLayout(regionX, regionZ, seed) {
 
   return {
     regionX, regionZ, pyramidRaw, pyramid, frozenMountain, snowLand, plainLand,
-    island, city, sky, scatter, giantTrees, giantPyramid, tarn,
+    island, city, sky, scatter, giantTrees, azaleaTrees, giantPyramid, tarn,
   };
 }
 

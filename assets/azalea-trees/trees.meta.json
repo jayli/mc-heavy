@@ -1,0 +1,23 @@
+{
+  "scale": 1,
+  "variantCount": 10,
+  "totalBlocks": 7468,
+  "leafSlot": "LEAF",
+  "sizes": [
+    "8x9x12",
+    "9x10x13",
+    "10x11x17",
+    "12x12x22",
+    "12x12x21",
+    "13x12x25",
+    "11x12x26",
+    "12x11x27",
+    "13x11x28",
+    "13x13x29"
+  ],
+  "fingerprints": {
+    "input": "a8472cd9cfe39c4a:fb20e167a7f8981f",
+    "schemSha256": "a8472cd9cfe39c4a702ff2458f1bf46b433fe496d2ca1a5348667d26426e6615",
+    "paramsSha256": "fb20e167a7f8981fafcd19b2e7997b4c147e2a385a7b04c37107f247ccefa3fd"
+  }
+}

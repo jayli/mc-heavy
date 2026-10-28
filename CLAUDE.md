@@ -1346,6 +1346,89 @@ M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 
   缩略图。几何只能从 `.schem` 取，靠 26 连通分量的格数与 `BlockCount` **精确唯一匹配**来
   对应「哪个蓝图是哪块几何」。⚠️ 剔除 y=0 地板层再做连通分量，否则 38 个结构会连成一片。
 
+### 杜鹃树沉淀的活跃约束（v1.99，后续「用 .schem 造型替换程序化植被」类改动必读）
+
+设计/实测细节见 roadmap 的 v1.99 行。素材入库 `assets/azalea-trees/src/asset_oak.schem`。
+
+- **素材的 5 行是同一套几何、只有方块类型不同**（实测同尺寸跨行的「树干+叶」坐标集合
+  `symDiff = 0`，唯第 3 行 moss 主题因装饰覆盖少 19~129 格叶）。故「行」是**主题**维度、
+  「列」才是尺寸维度。**选「从小到大各一个造型」= 取同一行的 10 个 pad**，不是从 50 个里挑。
+  杜鹃主题 = **行 2（z 29..41）**。
+- **尺寸必须按 pad 裁剪后测**：树叶会溢出 13×13 地台边缘，按整行/整格取 bbox 会把**相邻地台**
+  的树叶算进来 —— 实测 #8/#9 分别从 13/13 虚增到 **27/41** 宽（+14 / +28 格）。这会让
+  `SIZE_EXPECTATIONS` 的验收区间彻底失去意义。
+- **绿叶是「一个哨兵槽」而不是三种叶**：烘焙把 `oak_leaves`/`azalea_leaves`/`flowering_azalea_leaves`
+  全部映射到 `palette[1] = 'LEAF'`，光栅化时按 **30% 概率**逐格掷 `azalea_leaves` / `azalea_flowers`。
+  **不要在烘焙阶段区分花叶** —— 那样花的位置就被素材作死了，与用户 2026-10-28 裁定的
+  「沿用旧杜鹃树的 30% 概率」冲突。
+- **花叶判据必须是世界坐标的纯函数**（`azaleaFlowerAt(wx,wy,wz,seed)`），不得用局部下标 /
+  循环计数器 —— 同一棵树必然跨 column，用局部量会让两半算出不同的花位。
+  ⚠️ **但 `wx % 16` 这类「世界坐标的纯函数」不是缺陷**（跨 column 天然一致）；真正会撕裂的是
+  **以 column 原点为基准**的量。写这类断言时不能只做「把世界坐标重新组装后调两次」——
+  实测那样注入 `wx % 16` 仍全绿（**无效盲区**，因为两条路径是同一个表达式）。
+  有效判据 = 「同一棵树被两个相邻 column 分别光栅化后，拼起来的花位集合 == 一次性光栅化同一棵树」。
+- **档位顺序是按高度排的，不是按体积/宽度**（实测高 12,13,17,22,21,25,26,27,28,29 —— 唯一回折是
+  #3→#4 22→21）：所以**「高单调」「格数单调」「宽单调」三条断言都会假失败**
+  （格数 #5→#6 是 1034→806，宽是 13→11）。真实不变式 = 「首档三维都最小、末档都最大 +
+  10 档尺寸两两不同 + 最大/最小格数比 > 5（实测 1352/223）」。
+- **`AZALEA_VARIANT_COUNT` 是 src 侧常量，必须与产物档数一致**（`check:data` 的 `[杜鹃树]` 钉住）：
+  候选里的档位下标由它取模，两者不一致会让世界里只剩前几档（**静默**，方块层面看不出）。
+- **旧的代码生成小树必须停用**（`rollVegetation` 的 AZALEA 分支返回空）：新旧同时落位会变成
+  「一棵新大树 + 一坨旧小树」叠在树冠里。判据写在 `test-azalea-trees-gen.js`。
+- **页面层不能断言「花叶比 ≈30%」**：既有 8 个 JSON 结构本身就用 `azalea_leaves`/`azalea_flowers`
+  作装饰（`jungle_pyramid` 61+27 / `ugly_house` 30+2 / `wood_house` 20+14 …合计 ≈200 格），
+  实测页面口径 **33.9%** vs 纯函数 **29.4%**（逐格复算 mism 282/2716 全部来自这些结构）。
+  比例判据只留在纯函数层，页面层只断言「两种叶都存在」。
+- **不做 `SAME_TYPE_CULL` / 不碰材质声明**：`azalea_leaves`/`azalea_flowers` 已是
+  `cutout + opaque:true`（v1.70 镂空遮挡体语义），新树沿用，零材质层改动。
+- **密度旋钮与巨树同口径**（拉大 `spacing` 而非降 `chance`）：当前 `spacing 8 / jitter 5`（C=13，v2.0）——
+  实测 3×3 region 内接受 103 棵、最密视域接受 **36 棵**、cutout 顶点 ≈ 114K（初始容量 5.2%，零扩容）。
+  **旧树的「逐格 4.5% 独立抽签」不能沿用**：旧树冠幅 5×5 重叠只是灌木丛，新造型冠幅 8~13 会叠成
+  一整块不透光的叶子山。**密度减半 = cell 边长 ×√2**（C 16 → 13 是 ×0.81 = 密度 ×1.51）。
+
+### 杜鹃树干间距（v2.0，后续「树与树打架」类改动必读）
+
+用户 2026-10-28：「杜鹃花树容易跟其他树相交混合……树叶也可以相交但是树干和其他树的树干还是要尽量
+隔开一个适当的距离」。**判据只让杜鹃树避让，不改其他树的生成**（用户明确「其他树不管」）。
+
+- **判据落在「树干列集合」上，不是锚点**：素材各档 y=0 层树干有 1~6 列、相对锚点最多偏 **±2 格**。
+  只用锚点会漏判 —— 实测锚点距 6.71「通过」的那棵树，某个树干列实际只离空岛树干 **5.39 格**。
+  巨树更极端：树干 1~19 列、相对锚点最多偏 **±5 格**（cherry 17×17 变体）。唯一实现
+  `trunkColumnsOf()`；巨树侧 `giantTrunkColumns()` 用「四朝向并集」保守覆盖。
+- **跨 column 协调必须用「与 column 无关的固定候选全集」**：v2.0 第一版按 column 各自贪心，
+  两棵分属相邻 column 的树各自「第一名」都通过 → 合起来只隔 **1 格**（实测 `selfMin=1`，判据形同虚设）。
+  现做法 = 取本 column 3×3 邻域 region 的**全部**杜鹃候选，按 `(wx, wz)` 规范顺序贪心
+  （`acceptAzaleaTrunks`），任何 column 算出同一份 accepted 集合，本列只挑落在我身上的。
+- **`TrunkGrid` 的 cell 边长必须 ≥ 查询半径，且负坐标不得漏判**（实测真 bug）：原写法
+  「cell 边长 = clearance、扫 ±1 个 cell」时，查询 (0,0) 与邻点 (-6.5,0) —— 后者落在
+  `floor(-6.5/6) = -2` 号 cell，±1 只扫到 -1 → 返回 Infinity（真实距离 6.5，本该拦下）。
+  **只在负坐标出现**，而本仓世界负坐标是常态。现为 cell 边长 = 2×clearance + 按 `ceil(r/size)` 算扫描圈数。
+- **「其他树」只有两类来源，且都必须是纯函数可预测的**：空岛树基点
+  （`seededRandom(wx,wz,seed+SKY_TREE_SALT) < SKY_TREE_CHANCE`）+ 巨树候选锚点。
+  **普通树为 0 处**（AZALEA biome 里 `rollVegetation` 的树分支恒空）。
+  ⚠️ **不能靠探 column**：阶段 2.85（杜鹃树）跑在阶段 2.5（空岛）与阶段 3（普通树）**之前** ——
+  那时 `sky_wood` / `wood` 一个都还没写进 column。这是判据必须放在候选层的直接原因。
+- **`getGiantTreesSync()` 在页面主线程恒 null**（巨树数据只在 Worker 里加载）：故 `apply.js`
+  必须把 `giantData: getGiantTreesSync()` 显式传进 `applyAzaleaTrees` 的 ctx。靠被测函数自取会让
+  判据**静默退化到锚点兜底**（不报错，只是「间距没生效」）。诊断时踩过。
+- **锚点判据与树冠判据必须分开**（`azaleaAllowedAtFor` vs `azaleaCrownAllowedAtFor`）：
+  锚点要求 AZALEA biome 陆地；**树冠九点只要求「不被地标占住」**，不要求 AZALEA ——
+  树冠伸到 biome 边界外是自然现象。用同一个严格判据判九点，实测 234 个候选只剩 **71 个**
+  （拒 70%）、视域内只有 **8 棵**（面积估算应有 29 棵），密林完全落空。
+- **Tier 4 抓不到间距判据**（AZALEA 地块内部本来就没有其他树干基部，注入 `clearance=0` 后页面用例
+  仍全绿 = 无效盲区）。**有效验证在 `test-azalea-trees.js` 的合成用例**：必须有一条
+  「锚点距恰好 6.00 通过、但某树干列 5.10 超距 → 应拒」的场景，它才能区分「按锚点」与「按树干列」。
+  ⚠️ 用测量的**高度带必须限定 y ≤ 24**（树干基部）：用全高度会得到虚假冲突 ——
+  实测诊断时把巨树 y>24 的段算成「另一棵树长在这里」，误报 360 处。
+
+### AZALEA biome 面积（v2.0）
+
+用户 2026-10-28：「杜鹃花树的地图范围可以适当扩大一些，比如扩大 50%」。
+实现 = **降温度下限 `AZALEA_TEMP_MIN` 0.6 → 0.35**（`src/gen/noise.js`），实测面积 4.6% → **6.66%（×1.45）**，
+只吃 PLAINS（39.1% → 37.0%），FOREST / DESERT / SWAMP 逐位不变。
+⚠️ **不要改 `AZALEA_HUMIDITY_MIN`**：效果几乎一样（×1.50）但版图变成细长条带，不如温度版像自然分布。
+`check:data` 的 `[杜鹃树]` 钉住面积区间 [6.0%, 7.5%] —— **改 `AZALEA_TEMP_MIN` 后须重测并同步区间**。
+
 ### 巨树景观沉淀的活跃约束（v1.68，后续地形装饰 / 结构撒布 / 通道容量类改动必读）
 
 细节与实测数据见 roadmap「活跃约束详情 · 巨树景观」与验收报告 `docs/giant-trees-acceptance-report.md`。
@@ -2052,6 +2135,10 @@ mc-heavy/
 ├─ tools/cloudland-kit-fingerprint.mjs # 套件映射表 BLOCK_MAP（71 条）/ 指纹 / 白名单
 │                              #   共享模块（烘焙脚本与 check:data 的 [高台地带] 共用，红线 1）；
 │                              #   re-export src/gen/structures/cloudland-kit-data.js 的纯数据
+├─ tools/bake-azalea-trees.mjs # 杜鹃树烘焙（npm run azaleatrees）：入库 .schem → 按灰线网格切 50 个地台
+│                              #   → 取杜鹃主题行（行 2）的 10 档 → **1:1 原生尺度**（不降采样）→ 三种叶并进
+│                              #   `LEAF` 哨兵槽 + 树干 → azalea_log → 10 个变体 JSON（7468 格）
+├─ tools/azalea-trees-fingerprint.mjs # 杜鹃树 SOURCE_MAP / PALETTE / SIZE_EXPECTATIONS / 指纹共享模块（同上，红线 1）
 ├─ tools/bake-giant-trees.mjs  # 巨树烘焙（npm run gianttrees）：入库 .schem → 28 变体 2×2×2 降采样
 │                              #   → assets/giant-trees/trees.json + trees.meta.json（尺寸+输入指纹）
 ├─ tools/giant-trees-fingerprint.mjs # 巨树烘焙参数（族表/调色板/分类表/族标志）与指纹共享模块（同上，红线 1）
@@ -2092,6 +2179,8 @@ mc-heavy/
 │  │                           #   mc-lite 源图（烘焙输入，勿当渲染资源）
 │  ├─ cloudland/                # Cloudland 高台（v1.76）：src/cloudlandassets_1.20.schem（烘焙输入，入库，**非渲染资源**）
 │  │                           #   产物走 assets/structures/cloudland_mesa_small.json（palette + 扁平数组）
+│  ├─ azalea-trees/            # 杜鹃树（v1.99）：src/asset_oak.schem（烘焙输入，入库，**非渲染资源**）
+│  │                           #   + trees.json / trees.meta.json（10 档造型，1:1 原生）
 │  ├─ giant-trees/             # 巨树景观（v1.68）：src/40AssortedTreesPack.schem（烘焙输入，入库，**非渲染资源**）
 │  │                           #   + trees.json / trees.meta.json（烘焙产物）
 │  ├─ giant-pyramid/           # 巨型金字塔（Giant Pyramid Epic）：src/small_pyramid_maze.litematic
@@ -2106,6 +2195,9 @@ mc-heavy/
    ├─ voxel/       # constants / block-registry / chunk-column / world-data / blocks-data / faces-data
    ├─ gen/         # noise.js / terrain.js / structure-index.js / structures/*（M2 地标与空中结构）
    │               #  scatter.js 结构撒布判定 + 代码生成 house/ship（唯一权威；Worker 同构）
+   │               #  azalea-trees.js 杜鹃树（v1.99）：与 giant-trees 同构但**不复用**（巨树是多族多路径
+   │               #    系统，硬套会引入无消费的死字段）。只落 AZALEA biome + 陆上；叶子槽按 30%
+   │               #    世界坐标纯函数掷花/叶（跨 column 一致）。旧代码生成的 5×5 小树已停用
    │               #  giant-trees.js 巨树景观：region 层候选（全局对齐网格 + 内缩抖动）+ column 层光栅化
    │               #    （合并邻域候选 / 排除 / 地基 / 覆盖窗口；Worker 同构）
    │               #  mesa.js Cloudland 高台落点（v1.76）：每块沙漠至多 1 个。判据 = 基座 15×15
@@ -2218,6 +2310,10 @@ npm run pyramid                # 烘焙巨型金字塔 → assets/structures/gia
                                #   PYRAMID_METRICS）或 .litematic 后需跑，否则产物静默过期
                                #   （check:data 的 [巨型金字塔] 指纹检查会抓）
                                #   另有 `-- --census`（源方块普查）/ `-- --census-orient`（校验台阶朝向映射）
+npm run azaleatrees            # 烘焙杜鹃树变体 → assets/azalea-trees/trees.json + trees.meta.json（10 档造型）
+                               #   改 tools/azalea-trees-fingerprint.mjs（SOURCE_MAP / PALETTE /
+                               #   SIZE_EXPECTATIONS）或 .schem 后需跑，否则产物静默过期
+                               #   （check:data 的 [杜鹃树] 指纹会抓）
 npm run gianttrees             # 烘焙巨树变体 → assets/giant-trees/trees.json + trees.meta.json（28 个变体）
                                #   改 .schem / tools/giant-trees-fingerprint.mjs（分类表、族表、调色板、
                                #   降采样参数）后需跑，否则产物静默过期（check:data 的 [巨树] 指纹检查会抓）

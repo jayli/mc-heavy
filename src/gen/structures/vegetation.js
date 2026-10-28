@@ -111,10 +111,13 @@ export function rollVegetation(wx, wz, biome, seed) {
     }
     return {};
   }
-  if (biome === 'AZALEA') {
-    if (seededRandom(wx, wz, seed + 19) < 0.045) return { tree: { type: 'azalea' } };
-    return {};
-  }
+  // AZALEA 的树已改由 `structures/azalea-trees.js`（阶段 2.85）用 asset_oak 的 10 档造型生成 ——
+  // 旧的代码生成小树（`type: 'azalea'`，高 6~8、冠 5×5、约 34 格）**不再落位**。
+  // 故这里返回空：不留 4.5% 的旧树，否则会与新高树叠在一起（旧树的 5×5 冠埋在新树里，
+  // 表现为「新树根部多出一坨形状怪异的叶子」）。
+  // `generateTree` 的 `'azalea'` 分支保留（它不是只服务本分支的私有实现，删掉会让
+  // `generateTree(type)` 的公开契约缺一档；且将来若要「小杜鹃树」变体可直接复用）。
+  if (biome === 'AZALEA') return {};
   if (biome === 'SWAMP') {
     if (seededRandom(wx, wz, seed + 20) < 0.03) return { tree: { type: 'swamp' } };
     return {};

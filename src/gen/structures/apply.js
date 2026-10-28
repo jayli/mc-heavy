@@ -22,7 +22,8 @@ import {
   generateCodeHouse, generateCodeShip, inCityBounds,
 } from './scatter.js';
 import { SEA_Y, blockIndex } from '../../voxel/constants.js';
-import { applyGiantTrees, loadGiantTrees } from './giant-trees.js';
+import { applyGiantTrees, loadGiantTrees, getGiantTreesSync } from './giant-trees.js';
+import { applyAzaleaTrees, loadAzaleaTrees } from './azalea-trees.js';
 import { PYRAMID_HALF, inGiantPyramidFootprint } from './giant-pyramid.js';
 import { TARN_ZONE_RADIUS, snowLandSuppressedByTarn, TARN_CLOUD_MIN_Y } from './tarn-zone.js';
 import { fillTarnPlateau, tarnSnowCap, tarnPlantAt } from './tarn-terrain.js';
@@ -141,6 +142,29 @@ function pointContext(wx, wz, layouts, cityLayout, seed) {
  * 海岛 / 雪原 / 冰封山（kind 为 city/none/island/snow/fm），树让路。
  * @returns {(wx:number, wz:number) => boolean}
  */
+export function azaleaAllowedAtFor(layouts, cityLayout, seed) {
+  return (wx, wz) => {
+    const ctx = pointContext(wx, wz, layouts, cityLayout, seed);
+    return ctx.kind === 'normal' && ctx.biome === 'AZALEA';
+  };
+}
+
+/**
+ * 杜鹃树的「**树冠**允许范围」判据（与 `azaleaAllowedAtFor` 配对使用）。
+ *
+ * 语义差别是载荷性的：
+ *   · **锚点**用 `azaleaAllowedAtFor`（必须落在 AZALEA biome 的陆地上 —— 树「长在」那里）；
+ *   · **树冠覆盖的九点**只要求「不是城市/金字塔/高地/雪原/冰封山/海岛/高台地带」
+ *     （`kind === 'normal'`），**不要求**是 AZALEA —— 树冠伸到 Biome 边界外是自然现象。
+ *
+ * ⚠️ **不要用 `azaleaAllowedAtFor` 判九点**（v2.0 第一版就是这样）：AZALEA 地块在真实世界是
+ * 不规则小块，树冠半宽 6 格的九点采样极易落在地块外 → 实测 234 个候选只剩 **71 个**通过
+ * （拒掉 70%），视域内只有 **8 棵**树（面积估算应有 29 棵）—— 用户要的「密林」完全落空。
+ */
+export function azaleaCrownAllowedAtFor(layouts, cityLayout, seed) {
+  return (wx, wz) => pointContext(wx, wz, layouts, cityLayout, seed).kind === 'normal';
+}
+
 export function giantAllowedAtFor(layouts, cityLayout, seed) {
   // ⚠️ v1.80：沙漠孤立高台已删除，不再有「巨树给高台让路」这一段。
   // 高台地带的占地让路走 `pointContext` 的 `kind:'tarn'`（一个分支覆盖全部下游消费者）。
@@ -222,6 +246,7 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
   // 这里命中缓存 ≈ 0ms；⚠️ 不预热的话每个 Worker 的首个 GEN 要付 fetch+解析（实测使 structure-gen 的
   // genP95 从 ~9ms 涨到 ~12ms，撞破 10ms 门）。fetch 失败不阻断 GEN（空 families → 本列无巨树）。
   await loadGiantTrees();
+  await loadAzaleaTrees();
 
   // ---- 阶段 1：地形整形（mc-lite 列循环 elif 链）----
   for (let lx = 0; lx < 16; lx++) {
@@ -476,6 +501,26 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
     allowedAt: giantAllowedAtFor(layouts, cityLayout, seed),
   });
 
+  // ---- 阶段 2.85：杜鹃树（Azalea Trees Epic）----
+  // 层序理由：在巨树之后（杜鹃树给巨树让路 —— 巨树 AABB 达 17×17，重叠时必须由巨树胜出），
+  // 在阶段 3 植被之前（阶段 3 的旧植物按覆盖窗口抑制，与巨树同一机制）。
+  //
+  // 让路判据复用 `pointContext` 的 kind：只允许 natural 陆地 + AZALEA biome
+  // （`pointContext` 已一次覆盖城市/金字塔/平地/雪原/冰封山/海岛/高台地带 —— **不要为每一处各写一份**）。
+  // ⚠️ 额外要求 biome === 'AZALEA'：候选层已判过，这里是纵深防御（allowedAt 的九点采样会
+  // 落到树冠边缘，而树冠可能越过 biome 边界）。`pointContext` 只在 kind==='normal' 时带 biome。
+  const azalea = applyAzaleaTrees(column, layouts, seed, registry, {
+    ext: VEGETATION_EXT,
+    // 锚点判据 = 必须落在 AZALEA 陆地；树冠九点判据 = 只要不被地标占住（见函数注释的实测理由）
+    allowedAt: azaleaAllowedAtFor(layouts, cityLayout, seed),
+    crownAllowedAt: azaleaCrownAllowedAtFor(layouts, cityLayout, seed),
+    // 巨树变体数据：杜鹃树的「树干间距」判据要按巨树的**真实树干列**算（不能只用锚点 ——
+    // 实测巨树树干相对锚点最多偏 ±5 格，只用锚点会漏判到 1 格）。
+    // ⚠️ 必须在这里显式传入：`getGiantTreesSync()` 在页面主线程恒 null（巨树数据只在 Worker 加载），
+    // 靠它自取会让判据静默退化（不报错，只是「间距没生效」）。
+    giantData: getGiantTreesSync(),
+  });
+
   // ---- 阶段 2.5：空中结构（M2-7：Y=55 单云 + 空岛，层序先云后岛；mc-lite 空中内容后写）----
   const skyCandidates = layouts.map((l) => l.sky).filter(Boolean);
   if (skyCandidates.length > 0) {
@@ -492,8 +537,14 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
     for (let wz = minZ - EXT; wz <= maxZ + EXT; wz++) {
       const inColumn = wx >= minX && wx <= maxX && wz >= minZ && wz <= maxZ;
       const ctx = pointContext(wx, wz, layouts, cityLayout, seed);
-      // 巨树覆盖区内的旧植被树不再生成（替换语义）。覆盖窗口含 column 外 EXT 格带：带内旧树的树冠会写进本 column。
+      // 巨树 / 杜鹃树覆盖区内的旧植被树不再生成（替换语义）。覆盖窗口含 column 外 EXT 格带：
+      // 带内旧树的树冠会写进本 column。
       const inGiant = giant.covers(wx, wz);
+      // 杜鹃树覆盖区（Azalea Trees Epic）：旧杜鹃树（代码生成的 5×5 小树）在这里被抑制掉 ——
+      // 新造型由阶段 2.85 写入，旧树若再生就成了「一棵新大树 + 一坨旧小树」叠在一起。
+      // ⚠️ 只抑制**树**，不抑制单格植物：覆盖区标记的是完整 AABB，树下长草是合理的
+      // （与巨树的判据同口径 —— `roll.plant` 分支只额外判目标格是否已被占用）。
+      const inAzalea = azalea.covers(wx, wz);
 
       if (inColumn && ctx.kind === 'water' && ctx.biome === 'SWAMP' && seededRandom(wx, wz, seed + 12) < 0.08) {
         // 睡莲放在水面格的**上一格**（SEA_Y+1，原本是空气），不是 SEA_Y：
@@ -555,7 +606,7 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
         }
       }
 
-      if (tree && !inGiant) {
+      if (tree && !inGiant && !inAzalea) {
         if (tree.type === 'birchTree') {
           rasterizeStructure('birchTree', wx, baseY, wz, setBlock, column, registry, seed, false);
         } else if (tree.type === 'birchTreeWithSnow') {
