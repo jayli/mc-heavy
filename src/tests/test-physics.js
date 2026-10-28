@@ -119,7 +119,9 @@ test('physics: 头顶净空不足的台阶不可登上', () => {
   assertTrue(p.pos.x < 10 - 0.3, `blocked by low ceiling, x=${p.pos.x}`);
 });
 
-// ---- M2-7：cloud 可站立、非实心（仅向下 Y 支撑）----
+// ---- 云：v1.96 起 solid=true（不可穿越；supportsPlayer 仍保留 = 可站立）----
+// ⚠️ v1.96 前这里的两条是「穿过云」的反向断言（M2-7 口径：云 non-solid、只在向下碰撞时生效）。
+// 用户 2026-10-28 裁定「云不可穿越」→ 语义翻转：水平/向上/向下全部走 `solid` 分支。
 
 function makeCloudFloor(world, reg, y) {
   const col = world.getColumn(0, 0);
@@ -128,7 +130,7 @@ function makeCloudFloor(world, reg, y) {
   }
 }
 
-test('physics: 下落落在云上（仅向下 Y 支撑，M2-7）', () => {
+test('physics: 下落落在云上（云是实心地面，v1.96）', () => {
   const { world, reg } = makeWorld();
   makeCloudFloor(world, reg, 10);
   const p = new PlayerPhysics(world);
@@ -138,10 +140,13 @@ test('physics: 下落落在云上（仅向下 Y 支撑，M2-7）', () => {
   assertTrue(Math.abs(p.pos.y - 11) < 0.01, `rest at cloud top y=11, got ${p.pos.y}`);
 });
 
-test('physics: 上跳穿过头顶云（向上不碰撞，M2-7）', () => {
+test('physics: 上跳被头顶云挡住（v1.96 前是穿过去）', () => {
   const { world, reg } = makeWorld(); // stone 地面 y=0
   const col = world.getColumn(0, 0);
-  // 头顶云 grid y=4：若云挡头顶，跳跃峰值被压在 y≈2.2；自由峰值 ≈3.1
+  // 头顶云 grid y=4（占 [4,5)）。玩家 1.8 高 → 头不能进 y=4 格 ⇒ 脚底上限 4−1.8 = 2.2。
+  // ⚠️ **阈值必须落在「被挡住」与「穿过去」两个实测值之间**（实测：被挡 2.2008 / 自由跳跃 3.0）：
+  //    取中点 2.6 —— 两侧各留 0.4 余量。
+  //    写成 `maxY < 4` 是**无效盲区** —— 自由跳跃的 3.0 也 < 4，注入回退照样全绿（实测确认）。
   for (let lx = 4; lx < 12; lx++) for (let lz = 4; lz < 12; lz++) {
     col.blocks[blockIndex(lx, 4, lz)] = reg.idOf('cloud');
   }
@@ -151,13 +156,13 @@ test('physics: 上跳穿过头顶云（向上不碰撞，M2-7）', () => {
   p.jump();
   let maxY = 0;
   for (let i = 0; i < 90; i++) { p.step(1 / 60); maxY = Math.max(maxY, p.pos.y); }
-  assertTrue(maxY > 2.8, `jump passed through cloud, peak=${maxY}`);
+  assertTrue(maxY < 2.6, `jump blocked by cloud bottom y=4 (实测被挡 2.2008 / 自由跳跃 3.0), peak=${maxY}`);
 });
 
-test('physics: X/Z 穿过侧面云（水平不碰撞，M2-7）', () => {
+test('physics: X/Z 被侧面云墙挡住（v1.96 前是穿过去）', () => {
   const { world, reg } = makeWorld();
   const col = world.getColumn(0, 0);
-  // x=10 立一面云墙（y=1..3），对照石墙测试的同款布局
+  // x=10 立一面云墙（y=1..3），与同文件 stone 墙用例同款布局 → 两者断言可直接对照
   for (let y = 1; y <= 3; y++) for (let lz = 0; lz < 16; lz++) {
     col.blocks[blockIndex(10, y, lz)] = reg.idOf('cloud');
   }
@@ -165,10 +170,10 @@ test('physics: X/Z 穿过侧面云（水平不碰撞，M2-7）', () => {
   p.pos = { x: 8, y: 1, z: 8 };
   for (let i = 0; i < 10; i++) p.step(1 / 60);
   for (let i = 0; i < 120; i++) { p.move(1, 0); p.step(1 / 60); }
-  assertTrue(p.pos.x > 11, `walked through cloud wall, x=${p.pos.x}`);
+  assertTrue(p.pos.x < 10 - 0.3, `blocked by cloud wall, x=${p.pos.x}`);
 });
 
-test('physics: 云上对 solid 台阶仍走 _tryStepUp（M2-7）', () => {
+test('physics: 云上对 solid 台阶仍走 _tryStepUp（云是实心地面）', () => {
   const { world, reg } = makeWorld();
   makeCloudFloor(world, reg, 10); // 站立面 y=11
   const col = world.getColumn(0, 0);

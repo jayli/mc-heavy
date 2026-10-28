@@ -18,6 +18,8 @@
 // 方块（4 台阶 + 3 栏杆 + 2 柱子 + chest + azalea_flowers + hanging_lamp）由
 // 'transparent' 改 'cutout'——blended 通道 depthWrite=false 致 L 形台阶凹角透视穿帮。
 // 剔除语义由 opaqueTable 独立承担（这些方块仍不剔除邻居面）。详见设计文档 §4.1 勘误。
+// v1.96 勘误：`cloud` 由 `solid:false` 改 `solid:true`（云不可穿越）——与 mc-lite 的
+// `isSolid:false` 相反，**有意偏离**，理由与六个消费方见下面 cloud 行注释。
 // 注意：air 必须是第一个元素（ID 0）。faces 纹理映射在 faces-data.js（对齐 MaterialManager）。
 
 export const BLOCKS = [
@@ -27,7 +29,19 @@ export const BLOCKS = [
   {"name":"swamp_water","solid":false,"cullMode":"transparent","orientationModes":4,"geometry":"box"},
   // M2-7 通道勘误（§4.1 口径）：mc-lite 云材质 mkMat('#FFFFFF',1) opacity=1 不透明；
   // 原 'transparent' 通道 depthWrite=false 使云块侧面混叠成方格缝。opaqueTable 仍 0（不遮光）。
-  {"name":"cloud","solid":false,"supportsPlayer":true,"cullMode":"opaque","orientationModes":4,"geometry":"box","shadowCast":false},
+  //
+  // v1.96：**cloud 改 solid:true（用户裁定：云不可穿越）**。此前 `isSolid:false` 是有意偏离
+  // mc-lite（M2-7 只给了「向下可站立」），但实玩上「能穿过云」是被否掉的体验。
+  // `solid` 是 registry 的单一权威表 → 六个消费方**零代码改动**跟着变：
+  //   ① 玩家物理 `_collides`（水平撞云墙 / 向上撞云底 / step-up）
+  //   ② 丧尸物理与站立判据（`zombie-system.js`）
+  //   ③ 炮塔 LOS + 弹丸阻挡（`isProjectileOccluding = solid && opaque`，云两项都是 1）
+  //   ④ 矿车「前方实心不能穿」与「玩家头顶净空」
+  //   ⑤ 雨滴地面截停（`rain.js`）⑥ 放置兜底遮挡 / 结构 ground-support 探地
+  // ⚠️ **`supportsPlayer:true` 保留**：它与 `solid` 是**叠加**关系而非替代 —— 可站立语义
+  // 原样不动（`isSolid` 先命中，该表成为冗余但无害的第二道门）。删掉它会改动「向下碰撞」
+  // 的分支组合，属无收益的行为变更。`opaque` / `shadowCast` 两项也**未动**。
+  {"name":"cloud","solid":true,"supportsPlayer":true,"cullMode":"opaque","orientationModes":4,"geometry":"box","shadowCast":false},
   {"name":"glass_block","solid":true,"cullMode":"transparent","orientationModes":4,"geometry":"box"},
   {"name":"glass_blink","solid":true,"cullMode":"transparent","orientationModes":4,"geometry":"box"},
   // ---- 树叶类：全部 `cutout` 通道 + `opaque:true`（2026-10-23 用户裁定，对齐巨树叶）----

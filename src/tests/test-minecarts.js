@@ -123,6 +123,10 @@ test('hasTrackAt / hasSolidAt: 读真实世界数据', () => {
   assertFalse(hasSolidAt(world, registry, 9, 10, 9), '空气不实心');
   // 铁轨声明 solid:true（blocks-data.js:165）→ 判为实心。这是事实断言，不是同义反复。
   assertTrue(hasSolidAt(world, registry, 4, 10, 4), '铁轨声明 solid:true → 判为实心');
+  // v1.96：cloud 改 solid:true → 矿车「前方实心不能穿」与「玩家头顶净空」都会把云算进去。
+  // 与水那条构成**一真一假对照对**：缺任一条都抓不到「忽略 solidTable」的注入。
+  world.setBlock(7, 10, 4, registry.idOf('cloud'), 0);
+  assertTrue(hasSolidAt(world, registry, 7, 10, 4), '云声明 solid:true → 判为实心');
   // fallback：registry 缺省走 world.registry（minecart-config.js 的 `registry ?? world.registry`）
   assertTrue(hasTrackAt(world, null, 4, 10, 4), 'registry=null 时回落 world.registry');
   assertFalse(isTrackBlock(registry.idOf('sand_train_track'), undefined), 'registry=undefined → false（无 registry 可查）');

@@ -98,6 +98,15 @@ test('place-ray: 水面邻居不算实心（isSolid 口径，与 mc-lite 的 phy
     'water 的 solid 为 false → 不构成本 ② 的邻居');
 });
 
+test('place-ray: 云邻居算实心（v1.96 solid:true）→ 可贴它放', () => {
+  const { world, reg } = makeWorld();
+  put(world, reg, 10, 3, 7, 'cloud');
+  const r = findPlaceCell(world, [8.5, 3.5, 8.5], [1, 0, 0]);
+  assertTrue(r.hit, '云声明 solid:true → 构成本②的邻居');
+  assertEqual(r.placeCell.join(','), '10,3,8', '贴云侧面放');
+  assertEqual(r.neighbor.join(','), '10,3,7', '被贴住的正是云');
+});
+
 test('place-ray: 射程截断（地面从 x=11 才开始，实测 trio）', () => {
   const { world, reg } = makeWorld();
   for (let x = 11; x < 16; x++) for (let z = 0; z < 16; z++) put(world, reg, x, 0, z);

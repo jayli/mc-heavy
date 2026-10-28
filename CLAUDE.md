@@ -358,6 +358,17 @@ M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 
   阈值口径是「**默认白，只在白到看不见时才转黑**」（220 / 回差 200），**不是按亮度中点二选一**
   —— 后者会让石头地这类中灰常见画面「乱变色」。准心由模块运行时创建并挂 `body` 下，`index.html`
   里**已无静态准心**；切色只改 `color`（`background: currentColor`），不碰布局。
+- **`solid` 与 `supportsPlayer` 是叠加关系，不是二选一（v1.96）**：`cloud` 已在 v1.96 改为
+  `solid:true`（用户裁定「云不可穿越」），**但 `supportsPlayer:true` 刻意保留**——`isSolid`
+  先命中，该表成为向下碰撞的冗余第二道门，可站立语义原样不动。删它会改变向碰撞分支的组合，
+  属无收益变更。
+  ⚠️ **改 `solid` 是一行声明、六个消费方全变**，改前必须逐项评估（它们全读同一张 `solidTable`）：
+  ① 玩家物理 `_collides` ② 丧尸物理与站立判据 ③ **炮塔 LOS + 弹丸阻挡**（`isProjectileOccluding
+  = solid && opaque`）④ 矿车前方实心与玩家头顶净空 ⑤ 雨滴地面截停 ⑥ 放置兜底遮挡 / 结构探地。
+  其中 ③ 是**改变玩法**且最易漏的一条，必须同时在 `test-turrets.js` 钉住。
+  ⚠️ **写「穿透/挡住」类断言的阈值必须落在两侧实测值之间**：云挡头顶那条最初写「峰值 < 云底
+  4」，而自由跳跃的 **3.0** 也 < 4 → 注入回退照样全绿（无效盲区）；改成两侧中点（被挡 **2.2008** /
+  自由跳跃 **3.0** → 阈值 **2.6**）才真区分。同 `testing-policy` §2.7 的「上下界都要钉」。
 - **判断方块渲染语义必须读 mc-lite 的 `MaterialManager`（材质层）+ `BlockData`（数据层），
   不能只看 mc-heavy 的 `cullMode`** —— 后者是前者的转换产物，转换规则
   （`blocks-data.js:6`「名字含 leaves → cutout」）本身可能有偏差。`cullMode`（渲染通道）与
@@ -608,9 +619,12 @@ M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 
   `entities.despawnColumn()` 回收临时实体，那条路径**绕过玩法服务** → 渲染 slot 不归还。
   Game 的 handle 里必须 `zombies.despawnColumn(key)` 先行（见 `game.js` 注释）。M7 巢穴刷怪
   同理：任何临时实体都要在 commit 前经自己的服务回收。
-- **`findSpawnY`（`gen/terrain.js:98`）会把空中结构当出生点**（云层 `supportsPlayer=1` 但
-  `solid=0` → 玩家可能出生在云面上）。后果：**云面上不会自然刷怪**，且测试落点扫描须
+- **`findSpawnY`（`gen/terrain.js:98`）会把空中结构当出生点**（它从世界顶向下扫第一个非空方块
+  → 玩家可能出生在云层 / 空岛顶面上）。后果：**云面上不会自然刷怪**，且测试落点扫描须
   **向下扫真实地面**而非用玩家 y±4。实测细节见 roadmap「活跃约束详情」的出生点与刷怪段。
+  ⚠️ v1.96 起 cloud 是 `solid:true`，但**这条约束仍然成立且更明显** —— 云以前还可能「站不住掉下去」，
+  现在云顶是合法的 `solid` 站立面与合法丧尸落点（`ZombieService.spawn` 的脚下判据也是 `isSolid`）。
+  实测默认 seed 出生点 City 中心 ±8 格 0 个云列、雨幕半径 18 内 0 个云列 → 地面附近不受影响。
 - **负向验证若「注入后仍全绿」，先怀疑断言落点而非实现** —— 九类盲区高发区见
   [`docs/testing-policy.md`](docs/testing-policy.md) §2.7（含 M6 实测的 15 条无效盲区）。
 - **从实例矩阵反解旋转必须用 `atan2(elements[8], elements[0])`，不能用 `Euler.setFromQuaternion`**

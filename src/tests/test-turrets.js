@@ -369,6 +369,9 @@ test('isProjectileOccluding：solid && opaque 才阻挡（LOS 与弹丸共用判
   assertEqual(isProjectileOccluding(registry.idOf('glass_block'), registry), false);  // 实心但透明
   // 2026-10-23 口径变更：树叶 opaqueTable=1 → **现在阻挡**（用户裁定，与巨树叶一致）
   assertEqual(isProjectileOccluding(registry.idOf('leaves'), registry), true);        // 实心且不透明（opaqueTable=1）
+  // v1.96：cloud 改 solid:true 后 solid && opaque 两项都成立 → **云开始阻挡视线与弹丸**。
+  // 这是 solid 变更最容易被漏掉的玩法后果（LOS 与弹丸共用本函数，红线 1）—— 显式钉住。
+  assertEqual(isProjectileOccluding(registry.idOf('cloud'), registry), true);         // v1.96：云阻挡 LOS 与弹丸
   assertEqual(isProjectileOccluding(registry.idOf('water'), registry), false);        // 非实心
   assertEqual(isProjectileOccluding(registry.idOf('air'), registry), false);
   assertEqual(isProjectileOccluding(registry.idOf('obsidian'), registry), true);

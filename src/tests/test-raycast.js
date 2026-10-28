@@ -50,13 +50,16 @@ test('raycast: maxDist 截断', () => {
   assertEqual(r.hit, false, 'beyond maxDist');
 });
 
-test('raycast: cloud 可命中（non-solid 不跳过）、water 仍跳过（M2-7）', () => {
+test('raycast: cloud 可命中（非 air 即停，与 solid 无关）；water 仍跳过（M2-7）', () => {
   const { world, reg } = makeWorld();
   const col = world.getColumn(0, 0);
   col.blocks[blockIndex(8, 3, 8)] = reg.idOf('cloud');
   const r = raycastVoxel(world, [8, 6, 8], [0, -1, 0], 40);
   assertTrue(r.hit, 'hits cloud');
   assertEqual(r.blockPos[1], 3, 'hit block is cloud');
+  // v1.96：cloud 改 solid:true 后本条仍成立 —— 缺省 `hitTest` 判的是「非 air 且非 water」，
+  // 不读 `solidTable`（那是物理/弹丸遮挡的判据，不是玩家准心命中的判据）。
+  // 弹丸那条走的是 `isProjectileOccluding`（test-turrets.js 已钉云会阻挡）。
   // water 仍被跳过，命中其下方 stone
   col.blocks[blockIndex(4, 3, 8)] = reg.idOf('water');
   col.blocks[blockIndex(4, 2, 8)] = reg.idOf('stone');

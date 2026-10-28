@@ -46,6 +46,22 @@ test('BlockRegistry: supportsPlayer 表仅 cloud=1（M2-7 云可站立）', () =
   }
 });
 
+test('BlockRegistry: cloud 是实心（v1.96：云不可穿越）', () => {
+  const reg = createRegistry();
+  for (const def of BLOCKS) reg.register(def.name, def);
+  reg.freeze();
+  const cloud = reg.idOf('cloud');
+  // 本改动的**唯一直接落点**。所有消费方（玩家/丧尸物理、炮塔 LOS 与弹丸、矿车、雨滴截停、
+  // 放置兜底、结构探地）读的都是这张表 —— 改这里就是全都要改，不需要逐个追加判据。
+  assertEqual(reg.solidTable[cloud], 1, 'cloud solidTable == 1（不可穿越）');
+  // `supportsPlayer` 与之**叠加**而非替代：M2-7 的可站立语义原样保留（删它会改动向下碰撞的
+  // 分支组合，属无收益的行为变更）。上面那条 `supportsPlayer 表仅 cloud=1` 门禁仍在守它。
+  assertEqual(reg.supportsPlayerTable[cloud], 1, 'cloud 仍可站立（supportsPlayer 保留）');
+  // 镂空/遮挡口径不受本改动影响：云仍不投影、且 opaqueTable 仍 1（同材质不透明）。
+  assertEqual(reg.shadowCastTable[cloud], 0, 'cloud 仍不投影（shadowCast:false 未动）');
+  assertEqual(reg.opaqueTable[cloud], 1, 'cloud opaqueTable 仍 1（M2-7 通道勘误未回退）');
+});
+
 test('BlockRegistry: typed 表与声明一致', () => {
   const reg = createRegistry();
   for (const def of BLOCKS) reg.register(def.name, def);

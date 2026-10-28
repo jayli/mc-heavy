@@ -717,6 +717,8 @@ export class Game {
 
     // 天气 + 雨效（M3-3）：状态机自动周期（晴 60~180s → 雨 30~90s，5s 过渡），
     // rain 效果移植 mc-lite RainEffect（world.isSolid 地面截停；267 滴分批迁移削峰）
+    // ⚠️ v1.96 起 cloud 是 `solid:true` → **雨滴会停在云顶**（Y=35/55 云簇完全在雨幕循环高度
+    // 42 的范围内）。实测默认 seed 出生点 City 中心雨幕半径 18 内 0 个云列 → 地面附近体验不变。
     this.weather = new WeatherState();
     if (this._startWeather) this.weather.force(this._startWeather);
     this.rain = new RainEffect(this.scene, {
@@ -1129,7 +1131,10 @@ export class Game {
    *
    * `findSpawnY` 从世界顶向下扫**第一个非空方块**，会把地带的巨型云（y∈[54,95]）当地面
    * —— 实测那是既有坑（CLAUDE.md「findSpawnY 会把空中结构当出生点」）。这里从 `plateauY`
-   * 向上扫到第一个「脚下实心且自身与头顶都是空气」的格，云层天然被排除（云 `solid=0`）。
+   * 向上扫到第一个「脚下实心且自身与头顶都是空气」的格，云层天然被排除。
+   * ⚠️ **v1.96 起 cloud 是 `solid:true`**，旧理由「云 `solid=0`」已失效 —— 真正的判据是
+   * 「自身与头顶都是空气」：云块本身占格，露天的云顶格上方才是空气，所以逐列扫描时云
+   * **不会**成为落点。行为零变化（`tarn-zone.spec` 把 cloud 列入 `SLOPE_NON_SURFACE`，同口径）。
    *
    * ## 传送后不等 column
    *
@@ -1614,8 +1619,9 @@ export class Game {
    *
    * **两处有意偏离 mc-lite**（都是 M6 验收时实测到的坑，详见验收报告 §4）：
    * ① 向下扫判据用 `isSolid`，不是 mc-lite 的「非空气」（`getBlock !== null && !== 'air'`）。
-   *    理由：M2-7 云层 `supportsPlayer=1` 但 `solid=0`，按「非空气」会把云面当地面 →
-   *    `ZombieService.spawn` 的「脚下 solid」门控拒绝 → 生成静默失败。
+   *    理由：本判据必须与 `ZombieService.spawn` 的「脚下 solid」门控同源（红线 1）。
+   *    ⚠️ v1.96 起 cloud 也是 `solid:true` → 云顶现在也满足本判据（扫描从玩家高度向下，
+   *    实测出生点 City 中心雨幕半径内 0 个云列 → 地面附近的落点不受影响）。
    * ② 扫描深度 64 格，不是 mc-lite 的 10 格。理由：`findSpawnY`（`gen/terrain.js:98`）从世界顶
    *    向下扫第一个非空气方块，会把空中结构当出生点 → 随机 seed 下玩家可能在云面上（实测
    *    y≈56），与真实地面（y≈17~26）落差约 40 格，10 格扫不到。
