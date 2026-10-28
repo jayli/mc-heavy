@@ -347,6 +347,43 @@ async function checkScatterStructureIntegrity() {
   } else {
     infos.push(`[撒布结构] ${jsonTypes.length} 个 JSON 类型 + ${CODE_GENERATED_SCATTER_TYPES.length} 个代码生成类型，占地齐全`);
   }
+
+  // ---- `SCATTER_FOOTPRINT[*].real` 必须与磁盘 JSON 实测包围盒一致（v2.2）----
+  //
+  // 为什么需要这条：`real`（真实占地）与 `halfX/halfZ`（抑制/裁剪范围）是**两套口径**，而
+  // pavilion 的跨类型重叠判定只读 `real`。假设有人改了 pavilion.json 的几何却忘同步 `real`：
+  // 重叠判定就会用错的框子 —— 后果是**静默的**（亭子要么多穿别的结构，要么白占一块地），
+  // 方块层面完全看不出异常。
+  //
+  // ⚠️ 只校验 JSON 类型；代码生成类型（house/ship）的 `real` 由生成函数决定，无 JSON 可比。
+  // ⚠️ `tallWell` 的 `real`（5/4）与 `halfX/halfZ`（24/20）**故意不一致**，本门禁不为此报错 ——
+  // 它只校 real ↔ JSON，不校 real ↔ half。
+  const realProblems = [];
+  for (const t of jsonTypes) {
+    const fp = SCATTER_FOOTPRINT[t];
+    if (!fp || !fp.real) { realProblems.push(`${t} 缺 SCATTER_FOOTPRINT.real（重叠判定会退化成不相交）`); continue; }
+    let raw;
+    try {
+      raw = JSON.parse(fs.readFileSync(path.join(ROOT, 'assets', 'structures', STRUCTURE_FILES[t]), 'utf8'));
+    } catch { continue; }   // 文件缺失已由上面的环节报错，此处不重复
+    // 只支持「旧格式 {blocks:[{x,y,z}]}」的实测包围盒 —— palette 格式（高台/金字塔）不参与撒布
+    if (!Array.isArray(raw.blocks) || typeof raw.blocks[0] !== 'object') continue;
+    let mnx = Infinity, mxx = -Infinity, mnz = Infinity, mxz = -Infinity;
+    for (const b of raw.blocks) {
+      if (b.x < mnx) mnx = b.x; if (b.x > mxx) mxx = b.x;
+      if (b.z < mnz) mnz = b.z; if (b.z > mxz) mxz = b.z;
+    }
+    const r = fp.real;
+    if (r.minX !== mnx || r.maxX !== mxx || r.minZ !== mnz || r.maxZ !== mxz) {
+      realProblems.push(`${t} 的 real 与 JSON 实测不符：声明 x[${r.minX},${r.maxX}] z[${r.minZ},${r.maxZ}]，`
+        + `实测 x[${mnx},${mxx}] z[${mnz},${mxz}]`);
+    }
+  }
+  if (realProblems.length) {
+    for (const p of realProblems) failures.push(`[撒布占地] ${p}`);
+  } else {
+    infos.push(`[撒布占地] ${jsonTypes.length} 个 JSON 类型的 real 与磁盘实测包围盒一致`);
+  }
 }
 
 // ---------------------------------------------------------------- [结构 JSON] 孤立块契约

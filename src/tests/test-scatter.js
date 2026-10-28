@@ -15,7 +15,7 @@ import {
   safeForStructure, rollCityScatter, rollOutsideScatter, generateCodeHouse, SCATTER_TYPES,
   rollShipScatter, generateCodeShip, SHIP_DEEP_SEA_Y,
   CODE_GENERATED_SCATTER_TYPES, SCATTER_JSON_TYPES, SCATTER_STRIDE,
-  HOUSE_MAX_SURFACE_SPAN,
+  HOUSE_MAX_SURFACE_SPAN, filterPavilionOverlaps, computeScatterCandidates,
 } from '../gen/structures/scatter.js';
 import { computeRegionLayout, neighborRegionKeys } from '../gen/structures/structure-layout.js';
 import { applyStructuresToColumn } from '../gen/structures/apply.js';
@@ -94,10 +94,15 @@ test('safeForStructure：chunk 内圈 [3,12]×[3,12] 为真，边缘为假', () 
 
 // ==================== 概率口径：关系式断言 ====================
 
-test('城市撒布概率口径：pavilion = flowerBed×6，tallWell = flowerBed×3（mc-lite 派生关系）', () => {
-  // mc-lite WorldWorker.js:92-93 —— 不是独立常量，是从 flowerBed 派生的倍数
-  assertEqual(CITY_SCATTER_CHANCE.pavilion, CITY_SCATTER_CHANCE.flowerBed * 6, 'pavilion 是 flowerBed×6');
+test('城市撒布概率口径：pavilion = flowerBed×3，tallWell = flowerBed×3（v2.2 起同档）', () => {
+  // mc-lite WorldWorker.js:92-93 是 pavilion=×6 / tallWell=×3。
+  // ⚠️ **本仓 v2.2 把 pavilion 从 ×6 降到 ×3**（用户 2026-10-28：「pavilion 在 city 中出现的
+  // 概率降低一倍」= 减半）。这里钉住的是**当前的关系式**，不是 mc-lite 原值 —— 若将来有人
+  // 照上游“补齐”回 ×6，这条会红并指向 pavilion 注释里的理由（观感 + cutout 压力）。
+  assertEqual(CITY_SCATTER_CHANCE.pavilion, CITY_SCATTER_CHANCE.flowerBed * 3, 'pavilion 是 flowerBed×3');
   assertEqual(CITY_SCATTER_CHANCE.tallWell, CITY_SCATTER_CHANCE.flowerBed * 3, 'tallWell 是 flowerBed×3');
+  assertEqual(CITY_SCATTER_CHANCE.pavilion, CITY_SCATTER_CHANCE.tallWell,
+    'v2.2 起 pavilion 与 tallWell 同档（刻意偏离 mc-lite 的 ×6）');
   assertTrue(CITY_SCATTER_CHANCE.flowerBed > 0, 'flowerBed 概率为正');
 });
 
@@ -298,6 +303,76 @@ test('城市撒布：tallWell/pavilion 命中点周边无 flowerBed（nearCityFl
     }
     assertEqual(leaked, 0, `${hits.length} 个 ${type} 命中点周边 ${radius} 格内无 flowerBed`);
   }
+});
+
+// —— pavilion 重叠（v2.2，用户 2026-10-28：「渲染的时候注意不要跟其他实体有重叠」）——
+//
+// 根因（实测 seed 12345）：pavilion 没有跨类型互斥，同类互斥的扫描窗也只开了 `±half`
+// （两个相距 ≤2×half 的候选本来就重叠）→ 实测重叠 12 对同类 + 23 对与其它类型。
+test('pavilion 互斥：城市候选里 pavilion 两两不相交、且不与任何其它撒布结构相交', () => {
+  const layout = computeRegionLayout(0, 0, SEED);
+  const city = layout.city;
+  assertNotNull(city, 'city layout');
+  const cands = computeScatterCandidates(0, 0, SEED, city);
+  const by = {};
+  for (let i = 0; i < cands.cityScatter.length; i += SCATTER_STRIDE) {
+    const t = SCATTER_TYPES[cands.cityScatter[i + 3]];
+    (by[t] || (by[t] = [])).push({ x: cands.cityScatter[i], z: cands.cityScatter[i + 2] });
+  }
+  const pav = by.pavilion || [];
+  // 判别力：必须有 pavilion，否则下面的「无重叠」恒真
+  assertTrue(pav.length > 20, `须有足量 pavilion（v2.2 实测 76 个），否则断言无判别力：${pav.length}`);
+
+  // 重叠判定用 **real 真实包围盒**（不是 halfX/halfZ —— 后者是抑制/裁剪范围，
+  // tallWell 的 24/20 vs 真实 5/4 差很多，混用会把 20 格外的合法亭子也算成重叠）。
+  const box = (t, c) => {
+    const r = SCATTER_FOOTPRINT[t].real;
+    return { x0: c.x + r.minX, x1: c.x + r.maxX, z0: c.z + r.minZ, z1: c.z + r.maxZ };
+  };
+  const hit = (a, b) => a.x0 <= b.x1 && b.x0 <= a.x1 && a.z0 <= b.z1 && b.z0 <= a.z1;
+
+  let selfOverlap = 0;
+  for (let i = 0; i < pav.length; i++) {
+    for (let j = i + 1; j < pav.length; j++) {
+      if (hit(box('pavilion', pav[i]), box('pavilion', pav[j]))) selfOverlap++;
+    }
+  }
+  assertEqual(selfOverlap, 0, 'pavilion 之间不得重叠（实测修复前 12 对）');
+
+  let crossOverlap = 0;
+  const kinds = {};
+  for (const p of pav) {
+    for (const [t, list] of Object.entries(by)) {
+      if (t === 'pavilion') continue;
+      for (const q of list) {
+        if (hit(box('pavilion', p), box(t, q))) { crossOverlap++; kinds[t] = (kinds[t] || 0) + 1; }
+      }
+    }
+  }
+  assertEqual(crossOverlap, 0,
+    `pavilion 不得与其它撒布结构重叠（实测修复前 23 对）：${JSON.stringify(kinds)}`);
+});
+
+test('filterPavilionOverlaps：结果与输入顺序无关（跨 column 确定性，红线 2）', () => {
+  // 这条不变式是该函数能放在 region 层一次算的前提：多个 column 会对同一批候选各算一遍，
+  // 若结果依赖候选的遍历/下标顺序 → 同一坐标在不同 column 得不同结论 → 结构接缝断裂。
+  const cands = [
+    { x: 100, z: 100, y: 0, type: 'pavilion' },
+    { x: 106, z: 102, y: 0, type: 'pavilion' },   // 与上一个真实框相交（x 距 6 ≤ 9）
+    { x: 200, z: 200, y: 0, type: 'pavilion' },   // 孤立
+    { x: 103, z: 101, y: 0, type: 'tallWell' },   // 与两个 pavilion 都相交
+    { x: 300, z: 300, y: 0, type: 'flowerBed' },  // 孤立
+  ];
+  const keyOf = (list) => list.map((c) => `${c.type}@${c.x},${c.z}`).sort().join('|');
+  const a = filterPavilionOverlaps(cands);
+  const b = filterPavilionOverlaps([...cands].reverse());
+  const c = filterPavilionOverlaps([cands[2], cands[0], cands[4], cands[3], cands[1]]);
+  assertEqual(keyOf(a), keyOf(b), '倒序输入得到同一保留集合');
+  assertEqual(keyOf(a), keyOf(c), '任意重排输入得到同一保留集合');
+  // 判别力：非 pavilion 必须全部保留，且被 tallWell 夹住的 pavilion 必须被剔除
+  assertTrue(a.some((x) => x.type === 'tallWell'), '非 pavilion 全量保留');
+  assertTrue(a.some((x) => x.type === 'pavilion' && x.x === 200), '孤立的 pavilion 保留');
+  assertEqual(a.filter((x) => x.type === 'pavilion').length, 1, '被邻接结构夹住的 pavilion 全部剔除');
 });
 
 test('城市外撒布：occupied=true 时不出任何大型结构', () => {
@@ -583,6 +658,65 @@ test('端到端：城市里有 flowerBed/pavilion/tallWell 落地（真实 GEN �
     // 落地率须高：撒布结构 AABB 相交判定与 footprint 一致，不该大面积落空
     assertTrue(landed / checked > 0.5, `${type} 落地率 ${(landed / checked * 100).toFixed(0)}% > 50%`);
   }
+});
+
+// —— pavilion 占地内不长城市树（v2.2，用户 2026-10-28：「不要跟其他实体有重叠」）——
+//
+// 根因：阶段 3 城市树在阶段 2.7 撒布**之后**跑，而 `makeColumnSetter` 对未注册名字是后写胜、
+// **无占用格守卫** → 树冠直接把亭子屋顶打穿。
+//
+// ⚠️ **判据必须用差分/白名单，不能按方块名数**：`pavilion.json` 自身就含
+// `leaves`(10) / `azalea_leaves`(6) / `azalea_flowers`(14) —— 拿这几个名字数会把 pavilion
+// 自己的装饰叶当成「树穿进来了」（实测踩坑，错误读数 32 格）。这里用「pavilion.json 里
+// 没出现过的树方块名」作判据。
+test('端到端：pavilion 真实占地内没有任何「外来的」树方块', async () => {
+  const reg = makeRegistry();
+  const layout = computeRegionLayout(0, 0, SEED);
+  const arr = layout.scatter.cityScatter;
+  const pav = [];
+  for (let i = 0; i < arr.length; i += 4) {
+    if (SCATTER_TYPES[arr[i + 3]] === 'pavilion') pav.push({ x: arr[i], y: arr[i + 1], z: arr[i + 2] });
+  }
+  assertTrue(pav.length > 5, `须有足量 pavilion，否则断言无判别力：${pav.length}`);
+
+  // pavilion 自己的 JSON 里出现的方块名 → 不能当作「树」的证据
+  const { loadStructure } = await import('../gen/structures/structure-json.js');
+  const ownData = await loadStructure('pavilion');
+  const ownNames = new Set(ownData.blocks.map((b) => b.type));
+  assertTrue(ownNames.has('leaves'),
+    'pavilion.json 确实自带 leaves（否则下面的白名单是空集，断言失去意义）');
+  const TREE_NAMES = ['wood', 'leaves', 'birch_wood', 'birch_leaves', 'jungle_wood',
+    'azalea_leaves', 'azalea_flowers'];
+  const foreignTreeNames = TREE_NAMES.filter((n) => !ownNames.has(n));
+  assertTrue(foreignTreeNames.length > 0, `须有「外来的」树方块名可判：${foreignTreeNames.join(',')}`);
+  const foreignIds = new Set(foreignTreeNames.map((n) => reg.idOf(n)).filter((id) => id > 0));
+
+  const real = SCATTER_FOOTPRINT.pavilion.real;
+  assertNotNull(real, 'pavilion 须有 real 真实包围盒');
+  const colCache = new Map();
+  let total = 0, pavWithTrees = 0, checked = 0;
+  for (const p of pav.slice(0, 8)) {
+    const cx = Math.floor(p.x / 16), cz = Math.floor(p.z / 16);
+    const key = `${cx},${cz}`;
+    if (!colCache.has(key)) colCache.set(key, await genColumnFull(reg, cx, cz));
+    const col = colCache.get(key);
+    const get = makeGetter(col, cx, cz);
+    checked++;
+    let inside = 0;
+    for (let dx = real.minX; dx <= real.maxX; dx++) {
+      for (let dz = real.minZ; dz <= real.maxZ; dz++) {
+        for (let y = 0; y < 96; y++) {
+          const id = get(p.x + dx, y, p.z + dz);
+          if (id !== 0 && foreignIds.has(id)) inside++;
+        }
+      }
+    }
+    total += inside;
+    if (inside) pavWithTrees++;
+  }
+  assertEqual(total, 0,
+    `${checked} 个 pavilion 真实占地内不得有外来的树方块（实测修复前 297 格 / 39 个 pavilion）`);
+  assertEqual(pavWithTrees, 0, '不得有任何 pavilion 被树打穿');
 });
 
 test('端到端：城市里有代码生成 house 落地（地基 stone + 窗 glass_block + chest）', async () => {

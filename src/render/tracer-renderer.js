@@ -24,6 +24,28 @@ import { MAX_ACTIVE_TRACERS } from '../player/weapons/weapon-catalog.js';
 // 曳光截面基准半径：直径 0.05 世界单位 × thickness（mc-lite BoxGeometry(0.05,...) 同口径）
 const TRACER_BASE_RADIUS = 0.025;
 
+/**
+ * 曳光在 transparent 队列里的绘制序号（v2.2）。
+ *
+ * 声明绘制三重顺序是**一组固定不变式**（`water-order.spec.mjs` + `tracer-water-occlusion.spec.mjs`
+ * 两侧夹住）：
+ * | 顺序 | 对象 | renderOrder | depthWrite |
+ * |---|---|---|---|
+ * | 1 | 体素水（transparent 通道） | 0（默认） | false |
+ * | 2 | 海面平面 | 1（`ocean.js`） | **true** |
+ * | 3 | 曳光 | **2（本常量）** | false |
+ *
+ * 根因（用户 2026-10-28：「曳光线被波纹水面所遮挡……只有当曳光线入水后，才被水面所遮挡」）：
+ * 曳光原先用默认 renderOrder=0、与海面**都不写深度** → 曳光先画不留深度，海面后画时深度测试
+ * 无条件通过 → **连水面上方的曳光也被整片盖掉**（实测水面上方可见像素 1544，应为 3528）。
+ *
+ * 排到海面之后 + 海面写深度后：水面上方的曳光深度测试通过 → 可见；入水段深度测试失败 →
+ * 被水面挡住（实测水面上方 3528 / 水下 0）。
+ *
+ * ⚠️ **与 `ocean.js` 的 `waterMaterial.depthWrite = true` 是一组耦合约定**，改任一处都要一起看。
+ */
+const TRACER_RENDER_ORDER = 2;
+
 // 复用的临时对象（避免每帧分配）
 const _matrix = new THREE.Matrix4();
 const _quaternion = new THREE.Quaternion();
@@ -54,6 +76,9 @@ export class TracerRenderer {
     });
     this.mesh = new THREE.InstancedMesh(this.geometry, this.material, maxActive);
     this.mesh.frustumCulled = false;
+    // 排在体素水(0)与海面(1)之后绘制：配合 `ocean.js` 的 depthWrite=true，曳光入水后的段
+    // 才会被水面正常遮挡，而水面上方的段保持可见（见 TRACER_RENDER_ORDER 的实测表）。
+    this.mesh.renderOrder = TRACER_RENDER_ORDER;
     // 无活跃曳光时整体隐藏：常驻 scene 的透明 mesh 会进入透明渲染列表，其锚点
     // （世界原点）随镜头转动与体素水/海面的排序锚点交叉，干扰 issue#2 的绘制顺序
     // 不变式（water-order.spec）。visible=false 时不提交渲染，列表回到无曳光基线。

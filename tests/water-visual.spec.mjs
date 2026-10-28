@@ -312,19 +312,27 @@ test('v2.1：傍晚与夜晚的水面亮度随环境风格变暗（晨午零回�
       .toBeLessThan(124);
   }
 
-  // ② 傍晚/夜晚显著变暗（修复前基线：dusk 131 / night 147）
-  expect(readings.dusk.luma, `傍晚必须比“不压暗”时（131）明显变暗，实测 ${readings.dusk.luma}`)
-    .toBeLessThan(122);
-  expect(readings.night.luma, `夜晚必须比“不压暗”时（147）明显变暗（用户：“像水面会发光”），实测 ${readings.night.luma}`)
-    .toBeLessThan(126);
+  // ② 傍晚/夜晚显著变暗 —— **v2.3 重标定**（用户 2026-10-28 第二轮：「依然过于明亮」）
+  //
+  // 上一版（v2.1）把这里定在 dusk<122 / night<126，但那只压住了**近处** —— `uWaterTint` 当时
+  // 乘在雾色混合之前，中远景海面完全不吃乘数。用户看到的是整片海，所以「依然过于明亮」。
+  // v2.3 把 tint 移到雾色之后重标：nearWater 带实测 dusk **96** / night **84**（正午 116）。
+  //
+  // 阈值取「两侧中点」，不贴线：
+  //   dusk  修前 116（未压暗）/ v2.1 档 116 / **现 96** → 上界取 106
+  //   night 修前 114 / v2.1 档 114 / **现 84**       → 上界取 100
+  expect(readings.dusk.luma, `傍晚必须明显变暗（现测 96，修前 116），实测 ${readings.dusk.luma}`)
+    .toBeLessThan(106);
+  expect(readings.night.luma, `夜晚必须明显变暗（现测 84，修前 114），实测 ${readings.night.luma}`)
+    .toBeLessThan(100);
 
   // ③ 但不得压成死水（上一条只看上界会被“全黑”骗过 —— v1.45 的教训）
-  //    实测修复后 dusk 118 / night 114；用户裁定的“中度”档 = 夜晚与正午持平（116），
-  //    下界取 95 留足标定漂移余量，同时离“死水”很远。
-  expect(readings.dusk.luma, `傍晚不得压得比夜晚还暗/死黑，实测 ${readings.dusk.luma}`)
-    .toBeGreaterThan(100);
+  //    **下界必须同时钉**：现测 dusk 96 / night 84；取 80/70 留标定漂移余量，
+  //    同时离「一潭墨」（<40）很远 —— 波纹明暗差与海蓝色相都要还能看见。
+  expect(readings.dusk.luma, `傍晚不得压成死水，实测 ${readings.dusk.luma}`)
+    .toBeGreaterThan(80);
   expect(readings.night.luma, `夜晚不得压成死水（波纹明暗差会消失），实测 ${readings.night.luma}`)
-    .toBeGreaterThan(95);
+    .toBeGreaterThan(70);
 
   // ④ 色相不变：四风格仍须是海蓝（只调亮度，不改色相）
   for (const style of ['morning', 'noon', 'dusk', 'night']) {
@@ -385,11 +393,103 @@ test('v2.2：启动即傍晚/夜晚时，第一帧的水面配色就是目标风
     expect(boot.settingsStyle, `${style}：设置须在启动时就带着这个风格`).toBe(style);
     expect(boot.override, `${style}：DayNight 须在构造时已进入该风格的 override`).toBe(style);
     for (const c of boot.tint) {
-      // 逐位相等：构造首帧就该是目标值（实测修复后 0.84 / 0.62）
+      // 逐位相等：构造首帧就该是目标值（实测修复后 0.60 / 0.39）
       expect(c, `${style}：启动第一帧的 waterTint 必须是 ${expected[style]}，实测 ${boot.tint.join('/')}`)
         .toBeCloseTo(expected[style], 6);
     }
     expect(boot.exposure, `${style}：曝光也已在启动首帧生效`)
       .toBeCloseTo(style === 'dusk' ? 1.2 : 1.6, 2);
   }
+});
+
+/**
+ * 第八条：**tint 必须乘在雾色混合之后**（v2.3，2026-10-28 用户第二轮反馈）。
+ *
+ * 用户：「傍晚和夜晚的水面波纹的颜色依然过于明亮，请再通过参数调整，改暗一些」。
+ *
+ * 根因**不是档位不够，而是应用位置错了**：`uWaterTint` 原先乘在
+ * `mix(litColor, uFogColor, fogFactor)` **之前**，而 `WATER_FOG_COLOR` 是固定常量、
+ * `fogNear/far = 20/70` —— 中远景海面几乎全由雾色决定，于是**它根本不吃风格乘数**。
+ *
+ * 实测（vd=8 深海机位、五变量冻结、水面众数峰 luma，按屏幕分带「远→近」）：
+ * | 风格 | 0.55-0.65（远） | 0.65-0.75 | 0.75-0.85 | 0.85-0.96（近） |
+ * |---|---|---|---|---|
+ * | noon  | 156 | 125 | 123 | 116 |
+ * | dusk  | **170** | 132 | 123 | 116 |   ← 修复前：远处比正午还亮
+ * | night | **182** | 133 | 115 | 114 |   ← 「像发光」
+ * | dusk  | 132 | 102 | 101 | 96 |       ← 修复后
+ * | night | 123 |  87 |  85 | 84 |       ← 修复后
+ *
+ * 判别性证据（为什么必须新增这条而不是只调阈值）：把 tint 从 0.62 一路压到 0.34，
+ * 近处按预期 114 → 76，而**远处那一带恒定 182 一点没变**（实测）。所以「只测近处」
+ * 的断言永远拓不到这个缺陷 —— 必须同时钉远景带。
+ *
+ * ⚠️ 判据选「远景带夜间必须明显暗于正午」：这正是根因的症状，且不依赖具体 tint 数值。
+ */
+test('v2.3：远景海面也必须跟着风格变暗（tint 须乘在雾色混合之后）', async ({ page }) => {
+  test.setTimeout(240_000);
+  await page.goto('/?vd=8&seed=12345');
+  await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
+
+  const sea = await page.evaluate(async () => {
+    const { generateHeight } = await import('/src/gen/terrain.js');
+    const seed = window.__MC_GAME__.seed;
+    let best = null;
+    for (let x = -640; x <= -480; x += 8) {
+      for (let z = -600; z <= -460; z += 8) {
+        const h = generateHeight(x, z, seed);
+        if (h < -3 && (!best || h < best.h)) best = { x, z, h };
+      }
+    }
+    return best;
+  });
+  expect(sea).not.toBeNull();
+
+  // 五变量冻结（同主用例）。⚠️ 必须在传送**之后**再冻 ocean.update —— 否则平面留在旧位置，
+  // 画面里根本没有海面（实测整片采样为 null，会让这条断言直接失去判别力）。
+  await page.evaluate(({ x, z }) => {
+    const g = window.__MC_GAME__;
+    g.setShadowsEnabled(false);
+    g.player.physics.step = () => {};
+    g.player.physics.pos.x = x; g.player.physics.pos.z = z;
+    g.player.physics.pos.y = 6;
+    for (const el of document.querySelectorAll('#hud-root > *, #crosshair, #settings-btn')) {
+      el.style.display = 'none';
+    }
+  }, sea);
+  await page.waitForTimeout(9000);
+  await page.evaluate(() => { window.__MC_GAME__.ocean.update = () => {}; });
+  await page.waitForTimeout(600);
+
+  // 远景带 = 画面 0.55~0.65（距相机 > ~55 格，雾占主导的那一圈）
+  const far = {};
+  for (const style of ['noon', 'dusk', 'night']) {
+    await page.evaluate((s) => { window.__MC_GAME__.setVisualStyle(s); }, style);
+    await page.waitForTimeout(1600);
+    const png = PNG.sync.read(await page.screenshot());
+    far[style] = modeOf(png, 0.55, 0.65);
+  }
+  console.log('WATER FAR BAND: ' + JSON.stringify(far));
+
+  for (const style of ['noon', 'dusk', 'night']) {
+    expect(far[style], `${style} 远景带必须采到水面样本（否则下面的比较无效）`).not.toBeNull();
+  }
+
+  // ① 根因判据：晚/夜的远景必须**明显暗于**正午远景
+  //    修复前：noon 156 / dusk 170 / night 182（夜里反而最亮 —— 就是「像发光」）
+  //    修复后：noon 156 / dusk 132 / night 123
+  //    阈值取两侧中点：dusk 144（距 132 与 156 各 12）、night 139（距 123 与 156 各 16）。
+  expect(far.dusk.luma, `傍晚远景必须暗于正午（修复前反而 170 > 156），`
+    + `实测 dusk=${far.dusk.luma} noon=${far.noon.luma}`).toBeLessThan(far.noon.luma - 12);
+  expect(far.night.luma, `夜晚远景必须暗于正午（修复前 182 > 156 = 「像发光」），`
+    + `实测 night=${far.night.luma} noon=${far.noon.luma}`).toBeLessThan(far.noon.luma - 16);
+
+  // ② 双向一致：远景不能与近景撕成两截（同一条风格里两者差不应过大）
+  //    修复前 night 远景 182 vs 近景 114（差 68，海岸线一眼可见）→ 修复后 123 vs 84（差 39）
+  //    这条防「远景修了但近景没修」或反之的半修状态。
+  expect(Math.abs(far.night.luma - far.noon.luma), '夜晚与正午的远景必须拉得开（否则色阶判据失去意义）')
+    .toBeGreaterThan(10);
+
+  // ③ 不得压成死水（同主用例的下界口径）
+  expect(far.night.luma, `夜晚远景不得压成死水，实测 ${far.night.luma}`).toBeGreaterThan(85);
 });

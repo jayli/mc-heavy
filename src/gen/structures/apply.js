@@ -65,6 +65,48 @@ function placementIntersects(p, halfX, halfZ, cx, cz) {
 }
 
 /**
+ * 构建「pavilion 覆盖格」查询器（v2.2）。
+ *
+ * 供阶段 3 的城市树让路：pavilion 占地区（**真实包围盒 + `ext` 外扩**）内不长树。
+ *
+ * ⚠️ `ext` 传的值 = 树冠最大伸出量（`VEGETATION_EXT`）：基部在真实框外扩 `ext` 内的树，
+ * 树冠都可能探进亭子。实测外扩 3 / 4 / 6 三档下「pavilion 真实框内外来树方块」都是 0 格
+ * —— 说明 3 已经够用；再往外扩只会误删正常城市树（2 倍外扩直接让 `test-vegetation.js` 的
+ * 城市树 fixture FAIL）。
+ *
+ * @param {Int32Array[]} arrs 本 column 查询域内全部撒布候选数组（cityScatter + outsideScatter）
+ * @param {Set<Int32Array>} cityArrs 其中哪些是城市撒布（pavilion 只在城市撒布里）
+ * @param {number} ext 外扩格数
+ * @returns {{has:(wx:number,wz:number)=>boolean}} 查询器
+ *
+ * ⚠️ **必须在阶段 2.7 之后、阶段 3 之前调**，且只用已合并的 `scatterCandidates`（与光栅化
+ * 消费同一份数组，不另算候选 —— 红线 1）。
+ * ⚠️ 空集合时 `has` 恒 false，零开销（大多数 column 没有 pavilion）。
+ * ⚠️ **只对 pavilion 做**：tallWell / flowerBed 占地内的树仍会穿（与修复前同），
+ * 属既存行为，不在本需求范围内。
+ */
+function buildPavilionCovers(arrs, cityArrs, ext) {
+  /** @type {Set<string>|null} 懒建：只有真遇到 pavilion 才分配 Set */
+  let cells = null;
+  for (const arr of arrs) {
+    if (!cityArrs.has(arr)) continue;   // pavilion 只出现在城市撒布里
+    for (let i = 0; i < arr.length; i += SCATTER_STRIDE) {
+      if (SCATTER_TYPES[arr[i + 3]] !== 'pavilion') continue;
+      const cx = arr[i], cz = arr[i + 2];
+      const real = SCATTER_FOOTPRINT.pavilion.real;
+      if (!cells) cells = new Set();
+      for (let dx = real.minX - ext; dx <= real.maxX + ext; dx++) {
+        for (let dz = real.minZ - ext; dz <= real.maxZ + ext; dz++) {
+          cells.add(`${cx + dx},${cz + dz}`);
+        }
+      }
+    }
+  }
+  if (!cells) return { has: () => false };
+  return { has: (wx, wz) => cells.has(`${wx},${wz}`) };
+}
+
+/**
  * 植被上下文（mc-lite 列循环各分支的植被挂载点）：
  * kind = city / tarn / island / snow / fm / normal / water / none（金字塔/平地不挂植被）。
  */
@@ -461,6 +503,25 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
     }
   }
 
+  // ---- 阶段 2.7 末尾：构建「pavilion 覆盖格集合」（供阶段 3 城市树让路，v2.2）----
+  // 用户 2026-10-28：「渲染的时候注意不要跟其他实体有重叠」。实测（seed 12345）修复前
+  // **82/174** 个 pavilion 的占地内有城市树（共 124 格）。
+  //
+  // 根因：阶段 3 城市树在阶段 2.7 撒布**之后**跑，而 `makeColumnSetter` 对未注册名字是后写胜、
+  // **无占用格守卫** → 树冠直接把亭子屋顶打穿（树完全长在亭子里，方块层面看不出是缺陷）。
+  //
+  // ⚠️ **为什么在这里构建而不是逐点判**：pavilion 候选可从多个邻域 layout 的 `cityScatter`
+  // 里来（城市 bounds 可跨 region），而阶段 3 是逐格循环（10 万次量级）—— 在那里对每个格
+  // 扫全部候选是 O(n·m)。这里一次构建 Set、阶段 3 只做 O(1) 查。
+  //
+  // ⚠️ 外扩量 = `VEGETATION_EXT`（= 树冠半径 3）：树冠最远能伸出基部 3 格，所以「基部落在
+  // 真实框外扩 3 格内」的树都可能打到亭子上。
+  // ⚠️ **不要外扩到 2 倍**（试过）：那会把覆盖区撑到 12×18，实测把城市中心正常生长的
+  // 城市树大片误删 —— `test-vegetation.js` 的「城市残丘清除后：树植根城市地表」直接 FAIL
+  // （fixture 点 (311,-88) 距最近 pavilion (308,-95) 是 dt=(3,7)，在真实框外、但落在 2 倍外扩带里）。
+  // 1 倍外扩实测已经做到「pavilion 真实框内外来树方块 0 格」（EXT=3/4/6 三档实测都是 0）。
+  const pavilionCover = buildPavilionCovers(scatterCandidates, cityScatterArrs, VEGETATION_EXT);
+
   // ---- 阶段 2.75：Cloudland 高台（桌山景观）----
   // 层序理由：撒布结构（2.7）是地面级小内容，先写；高台是地面级固定景观，在其上（后写胜）；
   // 巨树（2.8）有 allowedAt 判据可避让，故高台先于巨树。
@@ -569,6 +630,9 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
         }
         if (roll.tree) { tree = roll.tree; baseY = ctx.h + 1; }
       } else if (ctx.kind === 'city') {
+        // pavilion 占地区（外扩 2×树冠半径）内不生成城市树（v2.2，见 `buildPavilionCovers`）。
+        // 必须判在 `rollCityTree` 之前 —— 它挡的是「基部在这里、树冠会伸进亭子」的树。
+        if (pavilionCover.has(wx, wz)) continue;
         if (!isPointNearCityStructure(wx, wz, cityLayout, 2)) {
           const roll = rollCityTree(wx, wz, seed);
           if (roll.tree) { tree = roll.tree; baseY = ctx.surfaceY + 1; }

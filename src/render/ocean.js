@@ -247,11 +247,24 @@ export function setupOcean(scene) {
       .mul(WATER_HIGHLIGHT_GAIN)
       .min(1.0);
     const litColor = baseColor.add(highlight.mul(glow).mul(vec3(1.0, 1.0, 1.0).sub(baseColor)));
-    const finalColor = litColor.mul(uWaterTint);
 
     const depth = length(cameraPosition.sub(positionWorld));
     const fogFactor = smoothstep(uFogNear, uFogFar, depth);
-    return mix(finalColor, uFogColor, fogFactor);
+    // ⚠️ **tint 必须乘在雾混合之后**（v2.2 修的根因，用户 2026-10-28 第二轮反馈
+    // 「傍晚和夜晚的水面波纹颜色依然过于明亮」）：
+    // `WATER_FOG_COLOR` 是正午口径的固定常量、`fogNear=20 / fogFar=70`，中远景海面几乎全由
+    // 雾色决定。乘在 mix **之前**时雾色完全不吃风格亮度乘数 —— 实测（vd=8 深海机位、
+    // 五变量冻结、水面众数峰 luma，按屏幕分带「远→近」）：
+    // | 风格 | 0.55-0.65（远） | 0.65-0.75 | 0.75-0.85 | 0.85-0.96（近） |
+    // |---|---|---|---|---|
+    // | noon | 156 | 126 | 123 | 116 |
+    // | dusk | **170** | 132 | 123 | 116 |
+    // | night | **182** | 133 | 115 | 114 |
+    // **夜晚远处 182 比正午 156 还亮一档** —— 这正是「像发光」的大头。
+    // 判别性证据：tint 从 0.62 压到 0.34 时近处 114→76，而远处那一带**恒定 182 一点没变**。
+    //
+    // `tint = 1`（晨/午）时 `× 1.0` 在 IEEE754 下逐位精确 → 晨午零回归。
+    return mix(litColor, uFogColor, fogFactor).mul(uWaterTint);
   })();
 
   const opacityNode = Fn(() => {
@@ -266,7 +279,26 @@ export function setupOcean(scene) {
   waterMaterial.opacityNode = opacityNode;
 
   waterMaterial.transparent = true;
-  waterMaterial.depthWrite = false;
+  /**
+   * **水面必须写深度**（v2.2）。
+   *
+   * 根因（用户 2026-10-28：「曳光线被波纹水面所遮挡……只有当曳光线入水后，才被水面所遮挡」）：
+   * 水面与曳光都在 transparent 队列、原先**都不写深度**，而海面 `renderOrder = 1` 排在曳光
+   * （默认 0）之后绘制 → 曳光先画却不留深度，海面后画时深度测试无条件通过 → **连同水面上方的
+   * 曳光也被整片盖住**。
+   *
+   * 实测（同机位，曳光固定在水面上方 3 格 / 下方 3.5 格，两配置交替各 3 轮，可见像素）：
+   * | 配置 | 水面上方 | 水面下方 |
+   * |---|---|---|
+   * | 修前（不写深度、曳光先画） | 1544 / 1544 / 1544 | 3134 / 3134 / 3135 |
+   * | 修后（写深度、曳光后画 + 深度测试） | 3528 / 3528 / 3528 | **0 / 0 / 0** |
+   *
+   * ⚠️ **与 `tracer-renderer.js` 的 `renderOrder = 2` 是一组耦合约定**，改任一处都要一起看：
+   * 只写深度而不把曳光排到海面之后 → 曳光先画仍会被海面混合覆盖；只排后画而不写深度 →
+   * 海面不留深度，曳光在水下也照样透出来。
+   * `Discard` 已处理遮罩/淡出区，不会把深度写进本该透明的像素。
+   */
+  waterMaterial.depthWrite = true;
   waterMaterial.side = THREE.DoubleSide;
 
   const plane = new THREE.Mesh(waterGeo, waterMaterial);

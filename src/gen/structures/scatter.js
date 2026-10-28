@@ -44,7 +44,13 @@ import { SEA_Y } from '../../voxel/constants.js';
 export const CITY_SCATTER_CHANCE = Object.freeze({
   flowerBed: 0.00025,        // seed+823（mc-lite 0.0005，减半以守 cutout 预算）
   house: 0.0007,             // seed+812（城市 filler house，代码生成；不降）
-  pavilion: 0.00025 * 6,     // seed+824（CITY_PAVILION_CHANCE = flowerBed×6）
+  // seed+824。⚠️ **v2.2 从 flowerBed×6 降到 ×3**（用户 2026-10-28：「pavilion 在 city 中
+  // 出现的概率降低一倍」= 减半）。**有意偏离 mc-lite 的 ×6** —— 上游 WorldWorker.js:92-93
+  // 是 pavilion=×6 / tallWell=×3，现在两者同档。
+  // 理由：pavilion 的占地（10×6）与 flowerBed 同尺寸但方块密度高得多（128 vs 97），
+  // 是 city cutout 通道的压力来源之一；且它常与 tallWell 挤在同一片街区。
+  // 实测（seed 12345，region[0,0] 城市）：174 → 约 87 个；叠加下面的真实包围盒互斥后 ≈68 个。
+  pavilion: 0.00025 * 3,
   tallWell: 0.00025 * 3,     // seed+826（CITY_TALL_WELL_CHANCE = flowerBed×3）
 });
 
@@ -440,6 +446,13 @@ function rollCityScatterAt(wx, wz, city, seed) {
 function isFirstInFootprint(wx, wz, type, city, seed) {
   const fp = SCATTER_FOOTPRINT[type];
   if (!fp) return true;
+  // ⚠️ **扫描半径是 `±half`，不是 `±2×half`** —— 即使它的语义严格讲该扫 2×half
+  // （两个相距 ≤2×half 的同类候选本来就重叠），也不能改：
+  // 实测把 tallWell（抑制范围 24×20）的窗口放到 ±2×half 会把井从 70 个砂到 **29 个**（seed 12345），
+  // 这同时是一个观感回归与 cutout 预算的重标定事件。
+  // 故 **pavilion 不走这条函数**，它的同类互斥改用 `filterPavilionOverlaps` 的真实包围盒
+  // 全局过滤（它没有历史遗留的抑制范围，改起来零副作用）。tallWell 的同类重叠保留为
+  // 已知问题（本次不动，已在计划文档「明确不做」里点名）。
   for (let dx = -fp.halfX; dx <= fp.halfX; dx++) {
     for (let dz = -fp.halfZ; dz <= fp.halfZ; dz++) {
       if (dx === 0 && dz === 0) continue;
@@ -449,6 +462,62 @@ function isFirstInFootprint(wx, wz, type, city, seed) {
     }
   }
   return true;
+}
+
+/**
+ * 两个撒布候选的**真实包围盒**是否相交（v2.2）。
+ *
+ * ⚠️ **必须用 `SCATTER_FOOTPRINT[t].real`，不得用 `halfX/halfZ`**：后者是「抑制/裁剪范围」，
+ * 可以大于真实占地（`tallWell` 是 24/20 vs 真实 5/4）。混用后果实测：pavilion×tallWell
+ * 从真实的 16 对膨胀到 157 对，pavilion 保留量从 151 跌到 52。
+ *
+ * 与 `landmarks.js` 的候选层让路同口径（那里也是用真实占地判），不另造一套几何语义。
+ */
+function scatterBoxesOverlap(ax, az, aType, bx, bz, bType) {
+  const a = SCATTER_FOOTPRINT[aType]?.real;
+  const b = SCATTER_FOOTPRINT[bType]?.real;
+  if (!a || !b) return false;
+  return ax + a.maxX >= bx + b.minX && bx + b.maxX >= ax + a.minX &&
+         az + a.maxZ >= bz + b.minZ && bz + b.maxZ >= az + a.minZ;
+}
+
+/**
+ * **pavilion 的真实包围盒互斥**（v2.2，用户 2026-10-28：「渲染的时候注意不要跟其他实体有重叠」）。
+ *
+ * 输入**全部城市候选**（含 pavilion 自己），按 `(wx, wz)` 规范顺序贪心：一个 pavilion 只有在
+ * 不与任何**已保留的非 pavilion 候选**、也不与**已保留的 pavilion** 相交时才保留。
+ *
+ * ## 为何是后置全局过滤，而不是逐点判定
+ *
+ * 逐点判定只能看到「自己周围」的邻域，而邻域扫描会递归触发 `rollCityScatter`（每条卡在
+ * 概率门后才跑树扫描）—— 实测单城市会从 40ms 爆到秒级（`nearCityFlowerBed` 的注释里有
+ * 同类踩坑：4200 万次 sin）。全局过滤只需一次 O(n²) 的纯算术比较（n≈250 → 6 万次），
+ * 且仍然是 `(regionX, regionZ, seed, city)` 的纯函数 → 任意 column 算出的集合逐位相同
+ * （跨 column 不变式不破）。
+ *
+ * ## 为何非 pavilion 候选优先
+ *
+ * 它们是**先于** pavilion 判定的类型（`rollCityScatter` 的优先级顺序是 flowerBed → house →
+ * tallWell → pavilion），且 flowerBed/tallWell 有「互不靠近」的既有门控。让后判的 pavilion
+ * 让位保持现状语义，不会反过来改变其它类型的密度。
+ *
+ * @param {Array<{x:number,z:number,type:string}>} all 全部城市候选（顺序无所谓）
+ * @returns {Array<{x:number,z:number,type:string}>} 过滤后的候选（保持非 pavilion 全量）
+ */
+export function filterPavilionOverlaps(all) {
+  // 规范顺序：非 pavilion 先入位（顺序不影响结果 —— 它们之间不做互斥），
+  // pavilion 按 (wx, wz) 字典序依次决定，保证结果与输入顺序无关。
+  const kept = all.filter((c) => c.type !== 'pavilion');
+  const pavilions = all.filter((c) => c.type === 'pavilion')
+    .sort((a, b) => (a.x - b.x) || (a.z - b.z));
+  for (const p of pavilions) {
+    let blocked = false;
+    for (const q of kept) {
+      if (scatterBoxesOverlap(p.x, p.z, 'pavilion', q.x, q.z, q.type)) { blocked = true; break; }
+    }
+    if (!blocked) kept.push(p);
+  }
+  return kept;
 }
 
 /**
@@ -478,6 +547,8 @@ function isFirstInFootprint(wx, wz, type, city, seed) {
  */
 export function computeScatterCandidates(regionX, regionZ, seed, city) {
   const cityOut = [];
+  /** 城市候选的临时对象表（pavilion 真实包围盒互斥需要全局视角，见下方过滤） */
+  const cityCands = [];
   const outsideOut = [];
   const baseX = regionX * REGION_SIZE, baseZ = regionZ * REGION_SIZE;
 
@@ -494,11 +565,18 @@ export function computeScatterCandidates(regionX, regionZ, seed, city) {
             seededRandom(wx, wz, seed + SALT.pavilion) >= CITY_SCATTER_CHANCE.pavilion) continue;
         const r = rollCityScatter(wx, wz, info, getCityFinalSurfaceY(wx, wz, info, seed), seed);
         if (!r) continue;
-        // footprint 互斥（pavilion/tallWell 占地大，必须防自相重叠）
-        if ((r.type === 'pavilion' || r.type === 'tallWell') &&
-            !isFirstInFootprint(wx, wz, r.type, city, seed)) continue;
-        cityOut.push(r.x, r.y, r.z, TYPE_INDEX[r.type]);
+        // footprint 互斥（tallWell 的抑制范围 24×20 足够大，逐点判定即可）。
+        // ⚠️ **pavilion 不在这里判**（v2.2）：它需要与**跨类型**及全量同类做真实包围盒互斥，
+        // 逐点邻域扫描会把 21 对同类重叠全部漏掉（详见 `isFirstInFootprint` 的半径注释与
+        // `filterPavilionOverlaps`），统一在循环外后置过滤。
+        if (r.type === 'tallWell' && !isFirstInFootprint(wx, wz, r.type, city, seed)) continue;
+        cityCands.push({ x: r.x, y: r.y, z: r.z, type: r.type });
       }
+    }
+    // pavilion 真实包围盒互斥（v2.2）：与所有非 pavilion 候选、以及已保留的 pavilion 不相交。
+    // 纯函数（结果与候选遍历顺序无关）→ 跨 column 结论恒一致。
+    for (const c of filterPavilionOverlaps(cityCands)) {
+      cityOut.push(c.x, c.y, c.z, TYPE_INDEX[c.type]);
     }
   }
 

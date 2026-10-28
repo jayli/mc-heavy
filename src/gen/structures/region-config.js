@@ -58,6 +58,14 @@ export const CITY_STRUCTURE_FOOTPRINT = Object.freeze({
  *   ① `apply.js:240` 的 AABB 裁剪（决定哪些 column 会光栅化该候选）；
  *   ② `scatter.js` 的 `isFirstInFootprint`（同类型候选互斥抑制范围 → **直接影响密度**）。
  *
+ * ⚠️ **`real` 字段是「真实包围盒」，与上面的 `halfX/halfZ` 是两套口径，不得混用**
+ * （v2.2，pavilion 重叠修复）：
+ *   · `halfX/halfZ` —— 抑制/裁剪范围，**可以大于真实包围盒**（历史遗留或保守取值）；
+ *   · `real` —— JSON 实测的真实占地，**只用于重叠判定**（pavilion 与其它撒布结构互斥）。
+ * 两者混用的后果已经实测过：`tallWell` 的抑制范围是 24/20（真实只有 5/4，见下方注释），
+ * 拿它判重叠会把 20 格外**本来合法**的亭子也毙掉 —— 实测 pavilion×tallWell 从真实的
+ * **16 对**膨胀到 **157 对**（近 10 倍），pavilion 保留量从 151 跌到 52。
+ *
  * ⚠️ `tallWell` 的 **24/20 是历史遗留的抑制范围，不是真实包围盒**（表头「按 JSON 实测
  * 完整包围盒」的唯一例外）：2026-09-30 前 JSON 里有一个孤立的 `chest@(24,51,20)` 把包围盒
  * 撑到 x[-5,24] z[-4,20]（mc-lite 上游数据异常，井体本身只到 y=16、x[-5,3] z[-4,4]）。
@@ -68,15 +76,20 @@ export const CITY_STRUCTURE_FOOTPRINT = Object.freeze({
  * bench 无法实测验证。保留 24/20 维持用户当前看到的井密度，仅浪费少量 AABB 裁剪计算。
  */
 export const SCATTER_FOOTPRINT = Object.freeze({
-  flowerBed: { halfX: 5, halfZ: 3 },      // x[-4,5] z[-2,3]
-  pavilion: { halfX: 5, halfZ: 3 },       // x[-4,5] z[-2,3]
-  tallWell: { halfX: 24, halfZ: 20 },     // 历史遗留抑制范围（孤立 chest 已删，见上注释）
-  desertPyramid: { halfX: 12, halfZ: 12 }, // x[-12,12] z[-12,12]
-  desertVillage: { halfX: 8, halfZ: 8 },   // x[-8,8] z[-8,8]
-  uglyHouse: { halfX: 6, halfZ: 10 },      // x[-6,4] z[-4,10]
-  tank: { halfX: 12, halfZ: 8 },           // x[-12,9] z[-8,-2]
-  house: { halfX: 2, halfZ: 2 },           // 代码生成：5×5 地基 + 屋顶
-  ship: { halfX: 2, halfZ: 3 },            // 代码生成：dx -2..2 (5) × dz -3..3 (7)
+  // flowerBed/pavilion 的抑制范围与真实包围盒一致（两者都是 x[-4,5] z[-2,3]）
+  flowerBed: { halfX: 5, halfZ: 3, real: { minX: -4, maxX: 5, minZ: -2, maxZ: 3 } },
+  pavilion: { halfX: 5, halfZ: 3, real: { minX: -4, maxX: 5, minZ: -2, maxZ: 3 } },
+  // ⚠️ tallWell 的 24/20 与 real 5/4 **故意不一致** —— 前者是历史遗留抑制范围（见下方注释），
+  // 后者是 JSON 实测真实占地。重叠判定只能用 real（混用后果见文件头）。
+  tallWell: { halfX: 24, halfZ: 20, real: { minX: -5, maxX: 3, minZ: -4, maxZ: 4 } },
+  desertPyramid: { halfX: 12, halfZ: 12, real: { minX: -12, maxX: 12, minZ: -12, maxZ: 12 } },
+  desertVillage: { halfX: 8, halfZ: 8, real: { minX: -8, maxX: 8, minZ: -8, maxZ: 8 } },
+  uglyHouse: { halfX: 6, halfZ: 10, real: { minX: -6, maxX: 4, minZ: -4, maxZ: 10 } },
+  tank: { halfX: 12, halfZ: 8, real: { minX: -12, maxX: 9, minZ: -8, maxZ: -2 } },
+  // 代码生成的 house：5×5 地基（y-1）居中 → 真实占地 = 抑制范围
+  house: { halfX: 2, halfZ: 2, real: { minX: -2, maxX: 2, minZ: -2, maxZ: 2 } },
+  // 代码生成的 ship：dx -2..2 (5) × dz -3..3 (7)
+  ship: { halfX: 2, halfZ: 3, real: { minX: -2, maxX: 2, minZ: -3, maxZ: 3 } },
 });
 
 /** City 结构生成配额配置 */

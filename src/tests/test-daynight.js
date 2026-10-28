@@ -483,7 +483,7 @@ test('waterTint：四种风格都有三分量乘数，晨午中性（晨午逐�
   for (const key of Object.keys(VISUAL_STYLES)) {
     const t = VISUAL_STYLES[key].waterTint;
     assertTrue(Array.isArray(t) && t.length === 3, `${key}.waterTint 须是三分量数组`);
-    for (const v of t) assertTrue(typeof v === 'number' && v > 0.2 && v <= 1.0, `${key}.waterTint 分量须在 (0.2,1]：${v}`);
+    for (const v of t) assertTrue(typeof v === 'number' && v > 0.15 && v <= 1.0, `${key}.waterTint 分量须在 (0.15,1]：${v}`);
   }
   // 晨/午是用户的基准态（「没问题」）→ 乘数必须恒为 1（逐位零回归）
   for (const key of ['morning', 'noon']) {
@@ -500,8 +500,10 @@ test('waterTint：傍晚比正午暗、夜晚最暗（亮度序与用户反馈�
   assertEqual(n, 1, '正午水面不压暗');
   assertTrue(d < n - 0.05, `傍晚须明显比正午暗：dusk=${d.toFixed(3)} noon=${n}`);
   assertTrue(k < d - 0.05, `夜晚须比傍晚更暗：night=${k.toFixed(3)} dusk=${d.toFixed(3)}`);
-  // 下界：不能压到「一潭墨」—— 水面仍要有波纹明暗差与海蓝色相（Tier 4 会再钉像素）
-  assertTrue(k > 0.4, `夜晚不得压得过狠（留给波纹明暗差）：night=${k.toFixed(3)}`);
+  // 下界：不能压到「一潭墨」—— 水面仍要有波纹明暗差与海蓝色相（Tier 4 会再钉像素）。
+  // v2.2 从 0.4 降到 0.3：用户第二轮反馈「依然过于明亮」后选定「中等」档 = 夜晚近处 luma 82
+  // （正午 116，降 ≈29%），实测对应 tint ≈0.39。
+  assertTrue(k > 0.3, `夜晚不得压得过狠（留给波纹明暗差）：night=${k.toFixed(3)}`);
 });
 
 test('waterTint：不改变色相（四风格三通道一致，只调亮度不偏色）', () => {
@@ -568,4 +570,35 @@ test('dusk：夜空混合显式指定为 0（不得从 skyDim 倒算出星空混
   assertEqual(nightBlendOf(paramsAtHour(12)), 0, '正午仍派生为 0');
   assertTrue(Math.abs(nightBlendOf(paramsAtHour(0)) - 1) < 1e-12, '深夜仍派生为 1');
   assertTrue(Math.abs(nightBlendOf(paramsAtHour(7)) - 0.26666666666666666) < 1e-9, '早晨派生值不变');
+});
+
+// —— 水面 tint 的**应用位置** = 雾混合之后（v2.2，2026-10-28 用户第二轮反馈）——
+// 用户：「傍晚和夜晚的水面波纹的颜色依然过于明亮，请再通过参数调整，改暗一些」。
+// 根因**不是档位不够**，而是 `uWaterTint` 乘在 `mix(litColor, uFogColor, fogFactor)` **之前**
+// ——而 `WATER_FOG_COLOR` 是固定常量、`fogNear/far = 20/70`，中远景海面几乎全由雾色决定，
+// 于是它根本不吃风格乘数。实测（vd=8 深海机位、五变量冻结、水面众数峰 luma）：
+// | 风格 | 远 0.55-0.65 | 0.65-0.75 | 0.75-0.85 | 近 0.85-0.96 |
+// |---|---|---|---|---|
+// | noon | 156 | 126 | 123 | 116 |
+// | dusk | **170** | 132 | 123 | 116 |
+// | night | **182** | 133 | 115 | 114 |
+// 夜里远处 182 比正午 156 还亮 —— 这就是「像发光」的大头。档位再压也没用：把 tint 从 0.62
+// 压到 0.34 时近处 114→76，而远处那一带**恒定 182 一点没变**。
+//
+// ⚠️ **这条不可能用纯逻辑单测验**（TSL 在 GPU 求值，乘在哪里只有渲染结果能反映）——
+// 所以放在 Tier 4 的 `tests/water-visual.spec.mjs`（那里有「远处必须跟着变暗」的判据）。
+// 这里只钉住**源码顺序不强得过来的部分**：dusk/night 的档位确实比旧值更小，且与实测目标一致。
+test('waterTint：v2.2 档位对应实测目标（近处夜间 ≈82 / 傍晚 ≈96，正午基准 116）', () => {
+  // 实测标定表（见 `daynight.js` 的注释）：tint → 近处 luma
+  //   dusk:   0.70→104, 0.62→96, 0.60→96, 0.58→94, 0.55→92
+  //   night:  0.46→94,  0.42→87,  0.40→85,  0.39→≈82, 0.38→79
+  // 断言用**区间**而不是贴线值：ACES 在亮端压缩，tint → 屏幕亮度不是线性的，
+  // 且不同机位/贴图会漂移几个点（v1.84 的水色标定也有同一条纪律）。
+  const dusk = VISUAL_STYLES.dusk.waterTint[0];
+  const night = VISUAL_STYLES.night.waterTint[0];
+  assertTrue(dusk > 0.55 && dusk < 0.65, `dusk 须在实测标定带内 [0.55,0.65]：${dusk}`);
+  assertTrue(night > 0.35 && night < 0.43, `night 须在实测标定带内 [0.35,0.43]：${night}`);
+  // 相对 v2.1 的旧值必须**下调**（旧值是在 tint 乘在雾前时标的，已作废）
+  assertTrue(dusk < 0.84, `dusk 必须低于 v2.1 的 0.84：${dusk}`);
+  assertTrue(night < 0.62, `night 必须低于 v2.1 的 0.62：${night}`);
 });
