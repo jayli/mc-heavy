@@ -385,6 +385,29 @@ export function tarnZoneCenter(regionX, regionZ) {
 }
 
 /**
+ * 世界坐标是否落在地带圆**内**（半径 `TARN_ZONE_RADIUS`）。
+ *
+ * ⚠️ **候选层「圆内才剔除」的唯一实现**（红线 1）：`structure-layout.js` 的杜鹃候选清空
+ * 与 `apply.js` 的 `pointContext` 的 `kind:'tarn'` 分支必须同源 —— 两份判据漂移会让
+ * 「候选层剔了、apply 层没剔」（树写进台地）或反过来（圆外被误剔 → 大片空地）。
+ *
+ * ⚠️ **不要只看 `isTarnZone(region) `就清空整个 region 的候选**（v2.3 修掉的缺陷）：
+ * 地带圆半径 138 只覆盖 400×400 region 的 **37.4%**，整块清空会把圆外 62.6% 的
+ * 合法杜鹃树/巨树一并抹掉 —— 实测 seed 12345 的 `region(2,0)` 28 个候选全在圆外，
+ * 留下 **104×91 格** 的连续纯草地（用户 2026-10-28 报告的「大片空地」）。
+ *
+ * @param {number} wx 世界 x
+ * @param {number} wz 世界 z
+ * @param {{cx: number, cz: number}} tarn 地带布局（至少含圆心）
+ * @returns {boolean}
+ */
+export function inTarnRadius(wx, wz, tarn) {
+  if (!tarn) return false;
+  const dx = wx - tarn.cx, dz = wz - tarn.cz;
+  return dx * dx + dz * dz < TARN_ZONE_RADIUS * TARN_ZONE_RADIUS;
+}
+
+/**
  * 找**离给定世界坐标最近**的高台地带（设置面板「瞬移 → 高台地带」的落点解析）。
  *
  * 从包含 `(wx, wz)` 的 region 开始，按环半径 0,1,2,… 向外扩，第一个命中的环上取曼哈顿

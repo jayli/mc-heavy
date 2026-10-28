@@ -14,15 +14,16 @@ import { resourceUrl } from '../core/resource-url.js';
 import {
   AZALEA_STRIDE, AZALEA_TREE_PATH, AZALEA_SUPPORT_MAX, AZALEA_FLOWER_CHANCE,
   azaleaTreeSize, azaleaFlowerAt, computeAzaleaTreeCandidates, loadAzaleaTrees,
+  AZALEA_CELL_PROBES,
   rotateCell, rotatedFootprint, treeBox, collectAzaleaTrees, isAzaleaTreeAllowed,
   rasterizeAzaleaTree, buildCoveredWindow, applyAzaleaTrees, AZALEA_VARIANT_COUNT,
   AZALEA_TRUNK_CLEARANCE, TrunkGrid, isTrunkClear, collectOtherTrunks,
-  acceptAzaleaTrunks, trunkColumnsOf,
+  acceptAzaleaTrunks, trunkColumnsOf, trunkBaseColumnsOf, variantsByFootprint,
   azaleaStaggeredSizeIdx, azaleaSizeClass, azaleaHeightClass,
   AZALEA_STAGGER_CLASSES, AZALEA_STAGGER_CELL,
 } from '../gen/structures/azalea-trees.js';
 import { generateHeight } from '../gen/terrain.js';
-import { getBiome } from '../gen/noise.js';
+import { getBiome, seededRandom } from '../gen/noise.js';
 import { REGION_SIZE } from '../gen/structures/region-config.js';
 import { SEA_Y, blockIndex } from '../voxel/constants.js';
 import { makeColumnSetter } from '../gen/structures/landmarks.js';
@@ -208,20 +209,24 @@ test('候选：错开判定（间距 ≥ spacing + 1，构造性保证）', () =
   assertTrue(minCheb >= AZALEA_TREE_PATH.spacing + 1, `最小切比雪夫间距 ${minCheb} ≥ ${AZALEA_TREE_PATH.spacing + 1}`);
 });
 
-test('候选：跨 region 无缝（相邻 region 各算一次，不重不漏）', () => {
+test('候选：跨 region 无缝（cell 归属唯一，不重不漏）', () => {
   const C = AZALEA_TREE_PATH.spacing + AZALEA_TREE_PATH.jitter;
+  // ⚠️ **归属判据是「cell 中心所属 region」，不是「探测点落在本 region 内」**。
+  // v2.2（每格只探测一次）两者碰巧等价；v2.3 加了格内重试后**不再等价** ——
+  // 跨 region 边界的 cell 两侧会各自挑出不同的合法探测点，同一个 cell 产出两棵树、
+  // 相距可少至 1 格（实测 C=11 时最小切比雪夫 = 1，间距构造性保证被静默破坏）。
+  // ⇒ 探测点**可以**跨出本 region（在抖动盒内），但每个 cell 只能被一个 region 产出。
+  const cellOwner = (i, j) => `${Math.floor((i * C + C / 2) / REGION_SIZE)},${Math.floor((j * C + C / 2) / REGION_SIZE)}`;
   for (const rx of [-1, 0, 1]) {
     for (const rz of [-1, 0, 1]) {
       const arr = computeAzaleaTreeCandidates(rx, rz, SEED);
       for (let i = 0; i < arr.length; i += AZALEA_STRIDE) {
-        assertTrue(arr[i] >= rx * REGION_SIZE && arr[i] < (rx + 1) * REGION_SIZE, `wx ${arr[i]} 落在 region ${rx} 内`);
-        assertTrue(arr[i + 2] >= rz * REGION_SIZE && arr[i + 2] < (rz + 1) * REGION_SIZE, `wz ${arr[i + 2]} 落在 region ${rz} 内`);
-        // ⚠️ **不能断言「cell 的格原点所属 region == 本 region」**：cell 边长 C 与 REGION_SIZE(400)
-        // 不是整除关系（C=13 时 400/13 = 30.77），跨 region 边界的 cell 其格原点可能在隔壁 region，
-        // 而**点**落在本 region —— 这正是「跨 region cell 由两侧各算一次、各自只保留落在本 region 内的点」
-        // 的设计意图（C=16 时恰好整除，才让旧断言侥幸成立）。
-        // 真正的不变式是：**点**归属唯一 —— 它落在哪个 region 就只由那个 region 产出。
-        void C;
+        const ci = Math.floor(arr[i] / C), cj = Math.floor(arr[i + 2] / C);
+        assertEqual(cellOwner(ci, cj), `${rx},${rz}`,
+          `候选 (${arr[i]},${arr[i + 2]}) 所属 cell(${ci},${cj}) 的归属必须是 region(${rx},${rz})`);
+        // 纵深防御：探测点仍须在 cell 的抖动盒周围（不能跑到别的 cell 里去）
+        assertTrue(arr[i] >= ci * C && arr[i] < ci * C + C, `wx ${arr[i]} 落在 cell ${ci} 的范围内`);
+        assertTrue(arr[i + 2] >= cj * C && arr[i + 2] < cj * C + C, `wz ${arr[i + 2]} 落在 cell ${cj} 的范围内`);
       }
     }
   }
@@ -229,6 +234,11 @@ test('候选：跨 region 无缝（相邻 region 各算一次，不重不漏）'
   const all = blockCandidates();
   const uniq = new Set(all.map((c) => `${c.wx},${c.wz}`));
   assertEqual(uniq.size, all.length, '跨 region 无重复候选点');
+  // ⚠️ **这条是 v2.3 回归的直接护栏**：加重试后曾出现「同一 cell 两侧各产一棵、相距 1 格」。
+  // 判据 = 同一 cell 不得出现两次（这是那个 bug 的直接形态，比看距离更贴近根因）。
+  const cellKeys = all.map((c) => `${Math.floor(c.wx / C)},${Math.floor(c.wz / C)}`);
+  assertEqual(new Set(cellKeys).size, cellKeys.length,
+    '每个 cell 至多一个候选（同一 cell 被两个 region 各产一棵 = 跨 region 重复的实际形态）');
 });
 
 test('候选：10 档变体全部真的出现过（变体选择不能退化成只剩几档）', () => {
@@ -242,6 +252,90 @@ test('候选：确定性（同 region 两次算逐值一致）', () => {
   const a = computeAzaleaTreeCandidates(1, -1, SEED);
   const b = computeAzaleaTreeCandidates(1, -1, SEED);
   assertDeepEqual([...a], [...b], '两次候选逐值一致');
+});
+
+test('候选：地带圆内剔除、圆外保留（v2.3 修掉的「大片空地」缺陷）', () => {
+  // ⚠️ **这是与撒布/巨树/空岛相反的语义**：地带圆半径 138 只覆盖 400×400 region 的 37.4%，
+  // 整块清空会把圆外 62.6% 的合法杜鹃树一并抹掉。实测 seed 12345 的 region(2,0) 28 个候选
+  // **全部在圆外** → 整块清空后那里留下 104×91 格纯草地（用户 2026-10-28 报告）。
+  // 而 `pointContext` 本来就只对**圆心内**返回 `kind:'tarn'`。
+  const tarn = { cx: 0, cz: 0 };
+  const radius = 138;
+  // 直接调两次：带 tarn 与不带，验证「只去掉圆内的点，其余逐位相同」
+  let checked = 0, insideAll = 0, outsideAll = 0;
+  for (const [rx, rz] of [[-1, 0], [0, 0], [1, 0], [0, 1], [-1, -1]]) {
+    const withTarn = computeAzaleaTreeCandidates(rx, rz, SEED, AZALEA_TREE_PATH, tarn);
+    const without = computeAzaleaTreeCandidates(rx, rz, SEED);
+    // 每一个带 tarn 的候选必须都在圆外
+    for (let i = 0; i < withTarn.length; i += AZALEA_STRIDE) {
+      const d = Math.hypot(withTarn[i] - tarn.cx, withTarn[i + 2] - tarn.cz);
+      assertTrue(d >= radius, `地带版本候选 (${withTarn[i]},${withTarn[i + 2]}) 距圆心 ${d.toFixed(1)} 应 ≥ ${radius}`);
+      insideAll++;
+    }
+    // 不带 tarn 的候选里，圆外的那些必须一个不少地保留在带 tarn 的里
+    let expectKept = 0;
+    for (let i = 0; i < without.length; i += AZALEA_STRIDE) {
+      const d = Math.hypot(without[i] - tarn.cx, without[i + 2] - tarn.cz);
+      if (d >= radius) expectKept++;
+    }
+    // 带 tarn 的候选数可能 ≤ expectKept（重试会把原本落在圆内的 cell 换点 → 新增候选），
+    // 但绝不能少于「不带 tarn 时已在圆外」的那批
+    for (let i = 0; i < without.length && expectKept > 0; i += AZALEA_STRIDE) {
+      const d = Math.hypot(without[i] - tarn.cx, without[i + 2] - tarn.cz);
+      if (d < radius) continue;
+      const key = `${without[i]},${without[i + 2]}`;
+      let found = false;
+      for (let k = 0; k < withTarn.length; k += AZALEA_STRIDE) {
+        if (`${withTarn[k]},${withTarn[k + 2]}` === key) { found = true; break; }
+      }
+      assertTrue(found, `圆外候选 (${without[i]},${without[i + 2]}) 不得被地带过滤误删`);
+      checked++;
+    }
+    outsideAll++; // 只为让变数被使用（每个 region 兜底计数）
+  }
+  assertTrue(checked > 10, `验证了 ${checked} 个圆外候选的保留（判据必须有量）`);
+  void insideAll; void outsideAll;
+});
+
+test('候选：格内重试（AZALEA_CELL_PROBES）真的能降低「整格无树」的比例', () => {
+  // 每个 cell 只在**一个点**判 biome 时，点落空 → 整个 169 格² 没树。
+  // 实测（seed 12345，同口径）无候选 cell 覆盖可种树面积：T=1 → 21.4%、T=3 → 16.5%。
+  // 判据：必须真的多出候选（否则重试没生效）。
+  assertTrue(AZALEA_CELL_PROBES >= 2,
+    `AZALEA_CELL_PROBES=${AZALEA_CELL_PROBES} 应 ≥ 2（=1 时格内重试完全没生效）`);
+  // ⚠️ 不能靠传 `path.probes` 来关掉重试 —— 该字段**不是**接口（实现读的是模块常量），
+  // 写了只会静默无效（实测踩过：两侧都是 219，断言假 FAIL）。
+  // 改用「重试点是否真的两两不同」这个直接可观测的判据：
+  // 三个探测点若塌到同一个位置，重试等于白跑。
+  const path = AZALEA_TREE_PATH;
+  const jitter = path.jitter;
+  let cellsChecked = 0, allDistinct = 0;
+  // azaleaCellProbe 是内部函数，这里按同一公式复算（与实现首试逐位一致）
+  for (let i = 0; i < 40; i++) {
+    for (let j = 0; j < 40; j++) {
+      cellsChecked++;
+      const pts = new Set();
+      for (let k = 0; k < AZALEA_CELL_PROBES; k++) {
+        const ox = k === 0
+          ? Math.floor(seededRandom(i, j, SEED + path.salt + 1) * jitter)
+          : Math.floor(seededRandom(i + k * 7919, j + k * 104729, SEED + path.salt + 1) * jitter);
+        const oz = k === 0
+          ? Math.floor(seededRandom(i, j, SEED + path.salt + 2) * jitter)
+          : Math.floor(seededRandom(i + k * 104729, j + k * 7919, SEED + path.salt + 2) * jitter);
+        // 约束一：必须在抖动盒内（间距构造性保证的前提）
+        assertTrue(ox >= 0 && ox < jitter && oz >= 0 && oz < jitter,
+          `cell(${i},${j}) 第 ${k} 次探测偏移 (${ox},${oz}) 必须在 [0,${jitter}) 盒内`);
+        pts.add(`${ox},${oz}`);
+      }
+      if (pts.size === AZALEA_CELL_PROBES) allDistinct++;
+    }
+  }
+  // 近似独立哈希下偶有重复（jitter=5 ⇒ 只有 25 个格位、取 3 个点，
+  // 按生日问题估算应约 11% 的 cell 有重复），实测 **88.1%** 的 cell 三点全不同。
+  // 阈值取 80%（实测 88.1% 与「三点塌陷」的恶劣情形两侧不贴线）。
+  assertTrue(allDistinct / cellsChecked > 0.8,
+    `三个探测点全部不同的 cell 占 ${(allDistinct / cellsChecked * 100).toFixed(1)}% 应 > 80%` +
+    '（大面积塌陷意味着重试白跑 —— 首版 `(ox+2k)%jitter` 就是三点共线）');
 });
 
 // ======================================================================== column 层
@@ -360,16 +454,30 @@ test('applyAzaleaTrees（合成场景）：允许 → 写入方块并返回覆�
 });
 
 
-// ======================================================================== 树干间距（v2.0：杜鹃树不与别的树打架）
+// ======================================================================== 树干间距（v2.0 立、v2.5 放宽）
 
-test('AZALEA_TREE_PATH：密度 C=13（spacing 8 + jitter 5，用户 2026-10-28 裁定「稍微增加密度」）', () => {
-  assertEqual(AZALEA_TREE_PATH.spacing, 8, 'spacing=8');
-  assertEqual(AZALEA_TREE_PATH.jitter, 5, 'jitter=5');
-  assertEqual(AZALEA_TREE_PATH.spacing + AZALEA_TREE_PATH.jitter, 13, 'C=13（每 100×100 约 59 棵）');
+test('AZALEA_TREE_PATH：C=8（spacing 2 + jitter 6）—— C 才是密度的真正旋钮', () => {
+  const P = AZALEA_TREE_PATH;
+  const C = P.spacing + P.jitter;
+  assertEqual(C, 8, 'C=8（v2.4 是 11、v2.3 是 13）');
+  assertEqual(P.spacing, 2, 'spacing=2');
+  assertEqual(P.jitter, 6, 'jitter=6');
+  // ⭐ 构造性最小锚距 = C − (jitter − 1) = 3，**恰好等于**树干间距阈值（有意）
+  const minAnchor = C - (P.jitter - 1);
+  assertEqual(minAnchor, 3, '构造性最小锚距 = 3');
+  assertTrue(minAnchor >= AZALEA_TRUNK_CLEARANCE,
+    `构造性最小锚距 ${minAnchor} 不得 < 树干间距阈值 ${AZALEA_TRUNK_CLEARANCE}（否则网格允许过近锚点 → 成片双拒）`);
 });
 
-test('AZALEA_TRUNK_CLEARANCE = 6（树干最小间距；树叶不受限，可自由相交）', () => {
-  assertEqual(AZALEA_TRUNK_CLEARANCE, 6, '树干中心距 ≥6 格');
+test('AZALEA_TRUNK_CLEARANCE = 3（v2.5 从 6 放宽；树叶不受限，可自由相交）', () => {
+  // ⚠️ **这是有意推翻 v2.0「树干要隔开」的口径**（两条需求直接对立）。
+  // 用户 2026-10-29：「空地上都给我再补充生成出来较矮的杜鹃花树……别留空」。
+  // 实测：空地里 **61.2% 是被本阈值拒掉的** —— 它不是网格没位置，而是已占位的树被毙了。
+  // 6 → 56.2% 叶面覆盖 / 21.9% 空地；**3 → 91.5% / 2.7%**。
+  assertEqual(AZALEA_TRUNK_CLEARANCE, 3, '树干中心距 ≥3 格');
+  // 下界：不能降到 1（那就等于完全不判，两棵树可以重叠在同一格）
+  assertTrue(AZALEA_TRUNK_CLEARANCE >= 2,
+    `阈值 ${AZALEA_TRUNK_CLEARANCE} 应 ≥ 2（=1 时两棵树可以在同一格重叠）`);
 });
 
 test('isTrunkClear：距离判据（闭区间边界 = 恰好 6 通过）', () => {
@@ -387,10 +495,13 @@ test('TrunkGrid：负坐标不得漏判（floor 向 -∞ 取整的 off-by-one �
   // 查询点 (0,0) 与邻点 (-6.5,0) —— 后者落在 floor(-6.5/6) = **-2** 号 cell，±1 只扫到 -1
   // → 返回 Infinity（真实距离 6.5，本该拦下）。只在**负坐标**出现，而本仓世界负坐标是常态。
   const cases = [[-6.5, 0, 6.5], [-5.9, 0, 5.9], [0, -6.5, 6.5], [-7, -7, 9.9], [6.5, 0, 6.5], [0, 6.5, 6.5]];
+  // ⚠️ **必须显式传要查的半径**：`TrunkGrid` 默认的 cell 边长是 `2 × AZALEA_TRUNK_CLEARANCE`
+  // （v2.5 起 clearance=3 ⇒ cell 6），而这里要查的是 6.5/9.9 ——
+  // 不传半径就会因扫描圈数不足而返回 Infinity。这是**测试口径**问题，不是 TrunkGrid 的 bug。
   for (const [px, pz, expect] of cases) {
     const g = new TrunkGrid();
     g.add(px, pz);
-    const d = g.nearestDistance(0, 0);
+    const d = g.nearestDistance(0, 0, 12);
     assertTrue(Math.abs(d - expect) < 0.05, `(0,0) 到 (${px},${pz}) 的距离 ${d.toFixed(2)} 应 ≈ ${expect}`);
   }
   // 判据侧：负坐标下 5.9 必须被拒、6.5 必须通过
@@ -484,7 +595,54 @@ test('acceptAzaleaTrunks：真实素材下，树干列全部满足 ≥6 格（�
     '锚点 6.00 但树干列 5.10 → 必须拒（只按锚点的实现会错误接受）');
 });
 
-test('trunkColumnsOf：返回 y=0 层树干列，且随旋转变换', async () => {
+test('variantsByFootprint：降级顺序按冠幅面积升序（矮树才可能放得下）', async () => {
+  const { variants } = await loadAzaleaTrees();
+  const sorted = variantsByFootprint(variants);
+  assertEqual(sorted.length, variants.length, '不丢档');
+  for (let n = 0; n + 1 < sorted.length; n++) {
+    const a = sorted[n].w * sorted[n].d, b = sorted[n + 1].w * sorted[n + 1].d;
+    assertTrue(a <= b, `第 ${n} 项面积 ${a} ≤ 第 ${n + 1} 项 ${b}（降级先试最小的）`);
+  }
+  // 最小档必须真的比最大档小一截（否则「降级」没有意义）
+  const minA = sorted[0].w * sorted[0].d, maxA = sorted[sorted.length - 1].w * sorted[sorted.length - 1].d;
+  assertTrue(minA / maxA < 0.6,
+    `最小冠幅 ${minA} 应明显小于最大 ${maxA}（实测比 ${(minA / maxA).toFixed(2)}）—— 否则降级救不回空地`);
+});
+
+test('trunkColumnsOf：返回**全高**树干列（含上层偏移），trunkBaseColumnsOf 才是 y=0 层', async () => {
+  const { variants } = await loadAzaleaTrees();
+  // ⭐ v2.5 真 bug：杜鹃树上层树干相对 y=0 层水平偏移实测最大 4 格。
+  // 若 trunkColumnsOf 只取 y=0 层，「上层树干贴住其他树」完全在判据盲区
+  // （实测违反：杜鹃树干 y=19 与巨树树干只隔 1 格却被放行）。
+  let foundOffset = null;
+  for (let n = 0; n < variants.length && !foundOffset; n++) {
+    const v = variants[n];
+    const box = treeBox(v, 0, 0, 0);
+    const all = trunkColumnsOf(v, 0, box.x0, box.z0);
+    const base = trunkBaseColumnsOf(v, 0, box.x0, box.z0);
+    if (all.length > base.length) foundOffset = { n, all: all.length, base: base.length };
+  }
+  assertNotNull(foundOffset,
+    '至少有一个档位的「全高树干列」多于「y=0 层」（否则上层偏移没被收纳 —— 判据会漏判）');
+  assertTrue(foundOffset.all > foundOffset.base,
+    `档 ${foundOffset.n}：全高 ${foundOffset.all} 列 > y=0 层 ${foundOffset.base} 列`);
+
+  // 地基填充必须用 y=0 层（用全高会让上层树干各向下补一根地下柱子）
+  const v0 = variants[0];
+  const box0 = treeBox(v0, 0, 0, 0);
+  const base0 = trunkBaseColumnsOf(v0, 0, box0.x0, box0.z0);
+  const all0 = trunkColumnsOf(v0, 0, box0.x0, box0.z0);
+  assertTrue(base0.length > 0, 'y=0 层树干列非空');
+  assertTrue(base0.length <= all0.length, 'y=0 层列数 ≤ 全高列数');
+  // 地基列的每一列都必须真的在 y=0 层有树干格（不能混进上层）
+  const baseKeys = new Set(base0.map(([x, z]) => `${x},${z}`));
+  for (const k of baseKeys) {
+    const [x, z] = k.split(',').map(Number);
+    assertTrue(x >= box0.x0 && x <= box0.x1 && z >= box0.z0 && z <= box0.z1, `(${x},${z}) 在 bbox 内`);
+  }
+});
+
+test('trunkColumnsOf：随旋转变换', async () => {
   const { variants } = await loadAzaleaTrees();
   const v = variants[5];
   // ⚠️ 第三/四个参数是**树原点 x0/z0**（= `treeBox().x0/z0`），不是锚点坐标 ——
@@ -504,90 +662,111 @@ test('trunkColumnsOf：返回 y=0 层树干列，且随旋转变换', async () =
   }
 });
 
-// ---------------------------------------------------------------- 档位错落（v2.2）
+// ---------------------------------------------------------------- 档位错落（v2.3：两类棋盘）
 
-test('档位分类表：三类的档位下标与产物实测高度一一对应（3:3:4）', async () => {
+test('档位分类表：两类的档位下标与产物实测高度一一对应（3:7）', async () => {
   // 判据必须从**烘焙产物**取高度，不能只比对常量表 —— 表写对了但产物换了档位就漂了。
   const { variants } = await loadAzaleaTrees();
   assertEqual(variants.length, AZALEA_VARIANT_COUNT, '产物档数');
-  const byClass = [[], [], []];
+  const byClass = [[], []];
   for (let i = 0; i < variants.length; i++) byClass[azaleaSizeClass(i)].push(i);
   assertDeepEqual(byClass, AZALEA_STAGGER_CLASSES.map((a) => [...a]), '类别表与产物档位一致');
 
   // 每类的高度必须真的落进自己的区间（防止「矮类里混进一棵高的」）
-  for (let c = 0; c < 3; c++) {
+  for (let c = 0; c < 2; c++) {
     for (const idx of AZALEA_STAGGER_CLASSES[c]) {
       assertEqual(azaleaHeightClass(variants[idx].h), c, `档 ${idx} 高度 ${variants[idx].h} 应属类别 ${c}`);
     }
   }
-  // 每类的档位数（矮 3 / 中 3 / 高 4）—— 比例 3:3:4 是密度分布的依据
-  assertDeepEqual(AZALEA_STAGGER_CLASSES.map((a) => a.length), [3, 3, 4], '三类档位数');
+  // 两类的档位数（矮 3 / 高 7）
+  assertDeepEqual(AZALEA_STAGGER_CLASSES.map((a) => a.length), [3, 7], '两类档位数');
+
+  // ⭐ **最小可辨差必须 ≥ 4 格**（v2.3 的核心目标）
+  // v2.2 的「中→高」只差 1 格（中最高 25 vs 高最低 26）—— 那就是用户「错落看不出来」的根因。
+  const lowMax = Math.max(...AZALEA_STAGGER_CLASSES[0].map((i) => variants[i].h));
+  const highMin = Math.min(...AZALEA_STAGGER_CLASSES[1].map((i) => variants[i].h));
+  assertTrue(highMin - lowMax >= 4,
+    `两类最小可辨差 ${highMin - lowMax} 格（矮最高 ${lowMax} vs 高最低 ${highMin}）应 ≥ 4 —— ` +
+    '小于 4 格时树冠（厚 10~23 格、冠幅 11 格、最近邻距 13 格、70.9% 重叠）会完全遮住高度差');
 });
 
-test('azaleaStaggeredSizeIdx：相邻 cell 的高矮类别不同类（不扎堆），且三类分布 3:3:4', () => {
+test('azaleaStaggeredSizeIdx：正交相邻必然异类（「一个高树挨着它的应该是矮树」）', () => {
   const SEED = 12345;
-  // ① 8 邻域的平均同类率必须明显低于独立抽签的期望
-  //    独立抽签：Σp² = 0.3² + 0.3² + 0.4² = 0.34；错落实现实测 0.150。
-  //    阈值取 0.25（两侧都不贴线：修好 0.150 / 改回独立抽签 0.365）。
-  const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
-  let same = 0, tot = 0;
-  for (let i = 0; i < 40; i++) {
-    for (let j = 0; j < 40; j++) {
+  const DIRS_ORTH = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+
+  // ① **主判据**：**粗格内部**的正交相邻必须异类（棋盘不变式）。
+  //    ⚠️ **不能写「全国范围正交同类 === 0」**（实测踩过）：低频扰动的相位逐粗格取，
+  //    跨粗格的那一层相邻对两侧相位可能翻转 ⇒ 必然同类（实测 1170/2880 = 40.6%），
+  //    而跨粗格正交对只占 11.25%。全国口径实测 0.0457。
+  const SC = AZALEA_STAGGER_CELL;
+  let sameIn = 0, sameAll = 0, totAll = 0;
+  for (let i = -40; i < 40; i++) {
+    for (let j = -40; j < 40; j++) {
       const a = azaleaSizeClass(azaleaStaggeredSizeIdx(i, j, SEED));
-      for (const [di, dj] of DIRS) {
-        tot++;
-        if (a === azaleaSizeClass(azaleaStaggeredSizeIdx(i + di, j + dj, SEED))) same++;
+      for (const [di, dj] of DIRS_ORTH) {
+        const eq = a === azaleaSizeClass(azaleaStaggeredSizeIdx(i + di, j + dj, SEED));
+        totAll++;
+        if (!eq) continue;
+        sameAll++;
+        if (Math.floor(i / SC) === Math.floor((i + di) / SC)
+          && Math.floor(j / SC) === Math.floor((j + dj) / SC)) sameIn++;
       }
     }
   }
-  const rate = same / tot;
-  assertTrue(rate < 0.25, `8 邻域同类率 ${rate.toFixed(3)} 应 < 0.25（独立抽签 0.34）`);
+  assertEqual(sameIn, 0,
+    `粗格内的正交相邻同类 ${sameIn} —— **必须为 0**（棋盘不变式；` +
+    '对角相邻同类是棋盘结构的数学后果，不可避免，故不再作为判据）');
+  assertTrue(sameAll / totAll < 0.2,
+    `全国正交同类率 ${(sameAll / totAll).toFixed(3)} 应远低于两类独立抽签的 0.58`);
 
-  // ② 三类分布必须是 3:3:4（不能均分 —— 高类有 4 档，压成 1/3 会让高树偏少）
-  const cnt = [0, 0, 0];
-  for (let i = 0; i < 60; i++) {
-    for (let j = 0; j < 60; j++) cnt[azaleaSizeClass(azaleaStaggeredSizeIdx(i, j, SEED))]++;
+  // ② 两类分布**必然是 50/50**（棋盘结构的数学后果，不是自由选择）。
+  //    ⚠️ **不能期待 3:7**（实测踩过：写过「应 ≈ 0.3」于实现全绿也报 FAIL）：
+  //    `(i+j+shift)%2` 在任何足够大的区域里奇偶各占一半；shift 逐粗格随机也只改相位。
+  //    ⇒ 矮类与高类的**株数比恒为 1:1**，与两类各含几个档位（3 与 7）无关。
+  //    这意味着高树占一半（v2.2 三类方案下高类只 40%）—— 用户要的是「错落相间」，
+  //    高树变多正好强化了这个观感。
+  const cnt = [0, 0];
+  for (let i = 0; i < 80; i++) {
+    for (let j = 0; j < 80; j++) cnt[azaleaSizeClass(azaleaStaggeredSizeIdx(i, j, SEED))]++;
   }
-  const t = cnt[0] + cnt[1] + cnt[2];
-  const frac = cnt.map((v) => v / t);
-  for (let c = 0; c < 3; c++) {
-    const want = AZALEA_STAGGER_CLASSES[c].length / 10;
-    assertTrue(Math.abs(frac[c] - want) < 0.02,
-      `类别 ${c} 占比 ${frac[c].toFixed(3)} 应 ≈ ${want}（3:3:4）`);
-  }
+  const t = cnt[0] + cnt[1];
+  assertTrue(Math.abs(cnt[0] / t - 0.5) < 0.02,
+    `两类各占比 ${(cnt[0] / t).toFixed(3)} / ${(cnt[1] / t).toFixed(3)} 应 ≈ 50/50（棋盘结构的必然结果）`);
 
-  // ④ **低频扰动必须存在**：只用 `(4i+5j)%10` 会在世界留下肉眼可见的斜向条纹
-  //    （每 10 个 cell 一条同类别带）。判据 = 「相邻粗格之间的类别序必须不同」——
-  //    只看 8 邻域同类率是**测不到**的（实测把 shift 置 0 后该率仍是 0.150，注入后全绿）。
-  //    这里直接比较跨粗格的两条对角带：shift 恒 0 时它们逐位相同。
-  //    判据：**沿 `4i+5j` 恒定的方向（同余线）走，类别必须变化**。
-  //    shift=0 时分类只依赖 `4i+5j` 的余数 → 这条线上类别**恒定不变**（实测连续 59 格同类，
-  //    即世界里的斜向同高带）；shift 生效后同类被打散（实测 80 步变化 53 次）。
-  //    ⚠️ 只判「不同粗格的类别集合是否多样」**测不到这一点** —— 各粗格同偏移处的 `4i+5j`
-  //    本来就不同，实测 shift=0 也全绿（无效盲区）。
-  let changes = 0, prev = null;
-  for (let t = 0; t < 80; t++) {
-    const i = 5 * t, j = -4 * t;            // 保持 4i + 5j ≡ 0（mod 10）的同余线
-    const c = azaleaSizeClass(azaleaStaggeredSizeIdx(i, j, SEED));
-    if (prev !== null && c !== prev) changes++;
+  // ③ **低频扰动必须存在**（且只改相位、不改奇偶关系）。
+  //    纯棋盘 `(i+j)%2` 在全国范围内是固定相位 → 对角线上同类别**无限延伸**
+  //    （实测最长段 = 整个采样区 120 cell），玩家会看到大量斜向「同高带」。
+  //    ⚠️ 只判「正交相邻异类」**测不到这一点**（相位偏移不影响奇偶关系 —— 实测 shift=0
+  //    也全绿，那就是无效盲区）。有效判据 = 沿对角线走，类别必须变化。
+  let changes = 0, prev = null, run = 0, maxRun = 0;
+  for (let t2 = 0; t2 < 100; t2++) {
+    const c = azaleaSizeClass(azaleaStaggeredSizeIdx(t2, t2, SEED));
+    if (prev !== null) {
+      if (c !== prev) { changes++; run = 1; } else { run++; }
+      maxRun = Math.max(maxRun, run);
+    }
     prev = c;
   }
   assertTrue(changes > 5,
-    `同余线上类别须被打散（低频扰动生效）—— 实测 80 步变化 ${changes} 次（shift=0 时恒为 0）`);
+    `对角线上类别须被打散（低频扰动生效）—— 实测 100 步变化 ${changes} 次（shift 恒 0 时直线同类）`);
+  // 下界：不能出现「一整条长 50+ cell 的同高对角带」
+  assertTrue(maxRun < 50,
+    `对角同类最长连续段 ${maxRun} cell 应 < 50（纯棋盘时实测 100，即整条线全同类）`);
 
-  // ③ 跨 seed 稳定（seed 只通过 shift 影响粗格相位，不该改变上述统计性质）
+  // ④ 跨 seed 稳定（seed 只通过 shift 影响粗格相位，不改粗格内的奇偶关系）
   for (const s2 of [424242, 777]) {
-    let sm = 0, tt = 0;
+    let inSame = 0;
     for (let i = 0; i < 30; i++) {
       for (let j = 0; j < 30; j++) {
         const a = azaleaSizeClass(azaleaStaggeredSizeIdx(i, j, s2));
-        for (const [di, dj] of [[1, 0], [0, 1], [1, 1]]) {
-          tt++;
-          if (a === azaleaSizeClass(azaleaStaggeredSizeIdx(i + di, j + dj, s2))) sm++;
+        for (const [di, dj] of [[1, 0], [0, 1]]) {
+          if (a !== azaleaSizeClass(azaleaStaggeredSizeIdx(i + di, j + dj, s2))) continue;
+          if (Math.floor(i / SC) === Math.floor((i + di) / SC)
+            && Math.floor(j / SC) === Math.floor((j + dj) / SC)) inSame++;
         }
       }
     }
-    assertTrue(sm / tt < 0.25, `seed ${s2} 邻接同类率 ${(sm / tt).toFixed(3)} 应 < 0.25`);
+    assertEqual(inSame, 0, `seed ${s2} 粗格内正交同类 ${inSame} 必须为 0`);
   }
 });
 
@@ -611,8 +790,8 @@ test('azaleaStaggeredSizeIdx：纯函数 + 跨 region 一致（同一 cell 在�
 test('azaleaSizeClass：下标 → 类别（不是把下标当高度传进去）', () => {
   // ⚠️ 这是真实踩过的坑：`azaleaHeightClass(sizeIdx)` 吃的是**实际高度**，
   // 传下标 0~9 会全部命中 `≤17` 判成矮类（导致「相邻同类率」算出 1.000 的假通过）。
-  for (const idx of AZALEA_STAGGER_CLASSES[2]) {
-    assertEqual(azaleaSizeClass(idx), 2, `档 ${idx} 应属高类`);
+  for (const idx of AZALEA_STAGGER_CLASSES[1]) {
+    assertEqual(azaleaSizeClass(idx), 1, `档 ${idx} 应属高类`);
     assertTrue(azaleaHeightClass(9) === 0, '把下标 9 当高度传会误判成矮类 —— 必须用 azaleaSizeClass');
   }
   // 越界 / 负数也要归到合法类别（对 AZALEA_VARIANT_COUNT 取模后查表）

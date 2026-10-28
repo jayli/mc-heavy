@@ -209,7 +209,7 @@ test('杜鹃树替代：旧代码生成小树不再出现（AZALEA 视域里没�
   expect(newTrees.logs, '同一视域里必须有新树的树干（否则「无残留」是恒真）').toBeGreaterThan(100);
 });
 
-test('杜鹃树干间距：与其他树的树干基部保持 ≥6 格（树叶不受限，可相交）', async ({ page }) => {
+test('杜鹃树干间距：与其他树的树干基部保持 ≥AZALEA_TRUNK_CLEARANCE 格（树叶不受限）', async ({ page }) => {
   test.setTimeout(600_000);
   await openGame(page);
   // ⚠️ 必须用**最密集**视域（`densestSpots`），不能用 `realSpots`：
@@ -219,43 +219,47 @@ test('杜鹃树干间距：与其他树的树干基部保持 ≥6 格（树叶�
   expect(spots.length, '有能落地的杜鹃树').toBeGreaterThan(0);
   await flyTo(page, spots[0].wx, spots[0].wz);
 
-  const r = await page.evaluate(() => {
+  const r = await page.evaluate(async () => {
     const g = window.__MC_GAME__;
+    // ⚠️ **阈值必须从常量派生，不得写死**（v2.5 曾把 6 改成 3，写死的 6 立刻假失败）。
+    const az = await import('/src/gen/structures/azalea-trees.js');
+    const CLEAR = az.AZALEA_TRUNK_CLEARANCE;
     const AZ = g.registry.idOf('azalea_log');
     const OTHER = new Set(['wood', 'birch_log', 'dark_oak', 'sky_wood', 'giant_oak_log', 'giant_mangrove_log']
       .map((n) => g.registry.idOf(n)).filter((x) => x !== undefined));
     const A = [], B = [];
+    // ⚠️ 扫描高度带也要与判据同源（`GIANT_TRUNK_SCAN_MAX_Y`）：判据只看 y≤24 的树干，
+    // 这里用全高度会把巨树 y>24 的段算成「另一棵树长在这里」（实测误报 360 处）。
+    const MAX_Y = az.GIANT_TRUNK_SCAN_MAX_Y;
     for (const c of g.world.columns.values()) {
       for (let lx = 0; lx < 16; lx++) for (let lz = 0; lz < 16; lz++) for (let y = 0; y < 128; y++) {
         const id = c.blocks[lx + lz * 16 + y * 256]; if (!id) continue;
         const wy = y - 32;
-        // 只统计**树干基部高度带**（0..24）：判据管的是两棵树的水平位置关系，
-        // 而巨树/空岛的上段树干不代表「另一棵树长在这里」（其基部可能在十几格外）。
-        // 用全高度统计会得到虚假冲突 —— 实测诊断时踩过（360 个「漏判」全是巨树 y>24 的段）。
-        if (wy < 0 || wy > 24) continue;
+        if (wy < 0 || wy > MAX_Y) continue;
         if (id === AZ) A.push([c.cx * 16 + lx, c.cz * 16 + lz]);
         else if (OTHER.has(id)) B.push([c.cx * 16 + lx, c.cz * 16 + lz]);
       }
     }
     const uA = [...new Map(A.map((p) => [p.join(','), p])).values()];
     const uB = [...new Map(B.map((p) => [p.join(','), p])).values()];
-    let minD = Infinity, nLT6 = 0;
+    let minD = Infinity, nLT = 0;
     for (const p of uA) {
       for (const q of uB) {
         const d = Math.hypot(p[0] - q[0], p[1] - q[1]);
         if (d < minD) minD = d;
-        if (d < 6) nLT6++;
+        if (d < CLEAR) nLT++;
       }
     }
-    return { azCols: uA.length, otherCols: uB.length, minD: Number.isFinite(minD) ? +minD.toFixed(2) : null, nLT6 };
+    return { CLEAR, azCols: uA.length, otherCols: uB.length,
+      minD: Number.isFinite(minD) ? +minD.toFixed(2) : null, nLT };
   });
   expect(r.azCols, '视域里有杜鹃树干（判据必须有量）').toBeGreaterThan(50);
   expect(r.otherCols, '视域里有其他树干（对照，防恒真）').toBeGreaterThan(50);
-  // 判据：>= 6 格（AST 允许相等）。实测最小 6.x（见 roadmap v2.0 行）
-  expect(r.nLT6, `${r.nLT6} 对杜鹃树干与其他树干相距 <6 格（最小 ${r.minD}）`).toBe(0);
+  // 判据：>= AZALEA_TRUNK_CLEARANCE（闭区间，恰好等距算通过）。
+  expect(r.nLT, `${r.nLT} 对杜鹃树干与其他树干相距 <${r.CLEAR} 格（最小 ${r.minD}）`).toBe(0);
 });
 
-test('杜鹃树密度：C=13 下视域里明显成林（≥ 15 棵）', async ({ page }) => {
+test('杜鹃树密度：C=8 下视域里成密集林（≥ 15 棵）', async ({ page }) => {
   test.setTimeout(600_000);
   await openGame(page);
   // 密度用例取「最密集处」的视域（见 densestSpots 的注释：最近候选常在地块边缘）
@@ -286,8 +290,10 @@ test('杜鹃树密度：C=13 下视域里明显成林（≥ 15 棵）', async ({
     }
     return { trees, cols: cols.length };
   });
-  // C=16 时实测视域约 13 棵；C=13 提到约 20 棵（同密度下 C 从 16 降到 13 = 面积比 1.51）
-  expect(r.trees, `视域内杜鹃树 ${r.trees} 棵（C=16 时约 13 棵）`).toBeGreaterThan(15);
+  // C=16 约 13 棵；C=13 约 20 棵；C=11（v2.4）密度 ×1.40 → 约 28 棵。
+  // 阈值仍取 15（不贴线）—— 它钉的是「成林」这个量级，不是标定密度；
+  // 真正的密度口径在 `test-azalea-trees` 的 C 常量断言与 `[杜鹃树]` 门禁里。
+  expect(r.trees, `视域内杜鹃树 ${r.trees} 棵（C=13 时约 20 棵，C=11 应约 28 棵）`).toBeGreaterThan(15);
 });
 
 test('杜鹃叶贴图：叶面覆盖高于普通树叶（8% 孔洞率，不是 15%），且带花叶与纯叶同档', async ({ page }) => {
@@ -336,10 +342,15 @@ test('杜鹃叶贴图：叶面覆盖高于普通树叶（8% 孔洞率，不是 1
   expect(r.azalea, '杜鹃叶仍须保留孔洞纹理').toBeGreaterThan(0.03);
 });
 
-test('杜鹃树高矮错落：相邻树的档位类别不扎堆（真实世界，8 邻域同类率低于独立抽签）', async ({ page }) => {
+test('杜鹃树高矮错落：相邻树的档位类别不扎堆（真实世界，正交相邻率远低于独立抽签）', async ({ page }) => {
   // 用户 2026-10-28：「高树和矮树错略相间一些，别一下子高树扎堆，或者矮树扎堆」。
-  // 判据落在**真实世界的树集合**上（不是纯函数抽样）：候选还要过 allowedAt / 间距判据，
-  // 纯函数层的分布不等于玩家看到的分布。
+  // 后来（v2.3）用户又选了两类棋盘方案，要求「一个高树挨着它的应该是矮树」。
+  //
+  // ⚠️ **判据口径在 v2.3 变了，不能继续用「8 邻域同类率」**：
+  // 棋盘结构下**对角相邻必然同类**（数学后果）⇒ 8 邻域同类率恒 ≈ 50%，
+  // 不可能低于两类独立抽签的 Σp² = 0.58。继续用旧口径会把正确实现判 FAIL。
+  // 现判据：**正交相邻**（玩家真正“挨着”的方向）同类型率。
+  // 实测（三 seed，真实 accepted 树）：棋盘 SC=9 → 全国 0.046，v2.2 三类 → 0.21。
   test.setTimeout(300000);
   await openGame(page);
   const r = await page.evaluate(async () => {
@@ -356,25 +367,40 @@ test('杜鹃树高矮错落：相邻树的档位类别不扎堆（真实世界�
     }
     const trees = az.collectAzaleaTrees(layouts, 12345, data.variants,
       { minX: lx0, maxX: lx1, minZ: lz0, maxZ: lz1 }, 3)
-      .map((t) => ({ wx: t.wx, wz: t.wz, cls: az.azaleaHeightClass(t.variant.h) }));
-    // 每棵树取最近 8 个邻居，统计同类比例
+      .map((t) => ({ wx: t.wx, wz: t.wz, cls: az.azaleaHeightClass(t.variant.h), h: t.variant.h }));
+    // cell 下标（与候选层同一个 C）
+    const C = az.AZALEA_TREE_PATH.spacing + az.AZALEA_TREE_PATH.jitter;
+    const byCell = new Map();
+    for (const t of trees) byCell.set(`${Math.floor(t.wx / C)},${Math.floor(t.wz / C)}`, t);
+    // ① 正交相邻同类率（主指标）
     let same = 0, tot = 0;
-    for (const t of trees) {
-      const near = trees.filter((o) => o !== t)
-        .map((o) => ({ o, d: Math.hypot(o.wx - t.wx, o.wz - t.wz) }))
-        .sort((a, b) => a.d - b.d).slice(0, 8);
-      for (const { o } of near) { tot++; if (o.cls === t.cls) same++; }
+    let dLe4 = 0, dTot = 0;
+    for (const [key, t] of byCell) {
+      const [i, j] = key.split(',').map(Number);
+      for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const o = byCell.get(`${i + di},${j + dj}`);
+        if (!o) continue;
+        tot++;
+        if (o.cls === t.cls) same++;
+        dTot++;
+        if (Math.abs(o.h - t.h) <= 4) dLe4++;
+      }
     }
-    const cnt = [0, 0, 0];
+    // ② 两类分布（棋盘 ⇒ 必然 50/50）
+    const cnt = [0, 0];
     for (const t of trees) cnt[t.cls]++;
-    return { n: trees.length, rate: same / tot, cnt, frac: cnt.map((v) => v / trees.length) };
+    return { n: trees.length, rate: same / Math.max(1, tot), tot,
+      dhLe4: dLe4 / Math.max(1, dTot), cnt, frac: cnt.map((v) => v / trees.length) };
   });
   expect(r.n, '有杜鹃树').toBeGreaterThan(50);
-  // 独立抽签期望 Σp² = 0.30²+0.30²+0.40² = 0.34；错落实测 0.289。
-  // 阈值 0.32：两侧都不贴线（修好 0.289 / 改回独立抽签 0.365）。
-  expect(r.rate, `8 邻域同类率 ${r.rate.toFixed(3)} 应低于独立抽签期望 0.34（实测扎堆率）`)
-    .toBeLessThan(0.32);
-  // 三类分布接近 3:3:4（高树不能因为档位多反而偏少）
-  expect(r.frac[0], `矮类占比 ${r.frac[0].toFixed(3)} 应 ≈ 0.30`).toBeGreaterThan(0.24);
-  expect(r.frac[2], `高类占比 ${r.frac[2].toFixed(3)} 应 ≈ 0.40`).toBeGreaterThan(0.34);
+  expect(r.tot, '有正交相邻对（判据必须有量）').toBeGreaterThan(50);
+  // 主判据：正交相邻同类率必须远低于两类独立抽签的 Σp² = 0.58
+  // 实测 0.046（SC=9）；v2.2 三类方案是 0.21。阈值 0.20 两侧不贴线。
+  expect(r.rate, `正交相邻同类率 ${r.rate.toFixed(3)} 应远低于两类独立抽签的 0.58（实测 0.046）`)
+    .toBeLessThan(0.20);
+  // 相邻 |Δh| ≤ 4（肉眼基本一样高）的占比：实测 0.074，v2.2 是 0.367
+  expect(r.dhLe4, `正交相邻 |Δh|≤4 占 ${(r.dhLe4 * 100).toFixed(1)}% 应低于 20%（实测 7.4%，v2.2 三类 36.7%）`)
+    .toBeLessThan(0.20);
+  // 两类分布 50/50（棋盘结构的数学后果，与各类档位数无关）
+  expect(Math.abs(r.frac[0] - 0.5), `矮类占比 ${r.frac[0].toFixed(3)} 应 ≈ 0.5`).toBeLessThan(0.08);
 });

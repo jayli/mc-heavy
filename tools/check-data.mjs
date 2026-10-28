@@ -1638,20 +1638,37 @@ async function checkAzaleaTrees() {
   if (mod.AZALEA_FLOWER_CHANCE !== 0.3) {
     fail(`AZALEA_FLOWER_CHANCE=${mod.AZALEA_FLOWER_CHANCE} ≠ 0.3（用户 2026-10-28 裁定：沿用旧杜鹃树的 30%）`);
   }
-  // 树干间距判据（v2.0）：常量与判据本身都要在
-  if (mod.AZALEA_TRUNK_CLEARANCE !== 6) {
-    fail(`AZALEA_TRUNK_CLEARANCE=${mod.AZALEA_TRUNK_CLEARANCE} ≠ 6（用户 2026-10-28 裁定：树干间距 ≥6 格）`);
+  // 树干间距判据：常量与判据入口都要在
+  // ⚠️ 阈值 v2.5 从 6 降到 3（用户 2026-10-29 裁定「别留空」）—— 这**有意推翻** v2.0 的
+  // 「树干要隔开」，两条需求直接对立。改回疏林只需把这个数改回 6（门禁与 E2E 都从它派生）。
+  if (mod.AZALEA_TRUNK_CLEARANCE !== 3) {
+    fail(`AZALEA_TRUNK_CLEARANCE=${mod.AZALEA_TRUNK_CLEARANCE} ≠ 3（用户 2026-10-29 裁定：填满空地，树干间距 ≥3 格）`);
   }
   if (typeof mod.acceptAzaleaTrunks !== 'function' || typeof mod.collectOtherTrunks !== 'function') {
     fail('缺 acceptAzaleaTrunks / collectOtherTrunks（树干间距判据的接线入口）');
   }
-  // 密度 C=13（spacing 8 + jitter 5）
-  if (mod.AZALEA_TREE_PATH.spacing !== 8 || mod.AZALEA_TREE_PATH.jitter !== 5) {
-    fail(`AZALEA_TREE_PATH spacing/jitter = ${mod.AZALEA_TREE_PATH.spacing}/${mod.AZALEA_TREE_PATH.jitter} ≠ 8/5（C=13）`);
+  // 密度：**C=8**（v2.5；v2.4 是 11）。C 才是密度的真正旋钮 —— 不是 jitter。
+  if (mod.AZALEA_TREE_PATH.spacing !== 2 || mod.AZALEA_TREE_PATH.jitter !== 6) {
+    fail(`AZALEA_TREE_PATH spacing/jitter = ${mod.AZALEA_TREE_PATH.spacing}/${mod.AZALEA_TREE_PATH.jitter} ≠ 2/6` +
+      '（用户 2026-10-29「别留空、都给我种上」：C=8 时叶面覆盖 87.7%、空地仅 3.5%）');
   }
-  // 高矮错落（v2.2）：类别表必须与产物实际高度对得上，且相邻同类率显著低于独立抽签
+  // ⭐ C 与「构造性最小锚距」都是派生量，必须自洽：
+  //   ① C = spacing + jitter = 8
+  //   ② 构造性最小锚距 = C − (jitter − 1) = 3 —— 不得小于树干间距阈值
+  //     （v2.5 有意让二者相等：网格不再保证间距，全交给 acceptAzaleaTrunks 贪心）
+  if (mod.AZALEA_TREE_PATH.spacing + mod.AZALEA_TREE_PATH.jitter !== 8) {
+    fail(`C = ${mod.AZALEA_TREE_PATH.spacing + mod.AZALEA_TREE_PATH.jitter} ≠ 8`);
+  }
   {
-    const byClass = [[], [], []];
+    const minAnchor = mod.AZALEA_TREE_PATH.spacing + 1;
+    if (minAnchor < mod.AZALEA_TRUNK_CLEARANCE) {
+      fail(`构造性最小锚距 ${minAnchor} < AZALEA_TRUNK_CLEARANCE ${mod.AZALEA_TRUNK_CLEARANCE}` +
+        ' —— 网格会允许比树干间距阈值更近的锚点，成片双拒');
+    }
+  }
+  // 高矮错落（v2.3：两类棋盘）：类别表必须与产物实际高度对得上，且正交相邻必然异类
+  {
+    const byClass = [[], []];
     for (let i = 0; i < mod.AZALEA_VARIANT_COUNT; i++) byClass[mod.azaleaSizeClass(i)].push(i);
     const want = mod.AZALEA_STAGGER_CLASSES.map((a) => a.join(','));
     const got = byClass.map((a) => a.join(','));
@@ -1659,25 +1676,47 @@ async function checkAzaleaTrees() {
       fail(`档位类别表 [${want.join(' | ')}] 与按 azaleaSizeClass 反查的结果 [${got.join(' | ')}] 不一致`);
     }
     const lens = mod.AZALEA_STAGGER_CLASSES.map((a) => a.length);
-    if (lens.join(',') !== '3,3,4') fail(`三类档位数 ${lens.join(',')} ≠ 3,3,4（高类有 4 档）`);
-    // 相邻同类率：独立抽签期望 Σp² = 0.34，错落实测 0.15。
-    // ⚠️ 这条是**关系式**（低于独立抽签），不是硬编码统计值 —— 改系数/换成别的错落算法时不需要重标。
-    const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
-    let same = 0, tot = 0;
-    for (let i = 0; i < 30; i++) {
-      for (let j = 0; j < 30; j++) {
+    if (lens.join(',') !== '3,7') fail(`两类档位数 ${lens.join(',')} ≠ 3,7`);
+    // ⭐ 主判据：**粗格内的正交相邻必然异类**（棋盘不变式，「一个高树挨着它的应该是矮树」）
+    //
+    // ⚠️ **不能写「全国范围正交同类 === 0」**（实测踩过，会把正确实现判 FAIL）：
+    // 低频扰动的相位**逐粗格**取，跨粗格的那一层相邻对两侧相位可能翻转 ⇒ 必然同类。
+    // 实测：粗格内 0/22720（必为 0）、跨粗格 1170/2880 = 40.6%、全国口径 0.0457。
+    //
+    // ⚠️ **v2.2 的「8 邻域同类率 < 独立抽签」口径对两类方案结构性失效**：
+    // 棋盘结构下**对角相邻必然同类** ⇒ 8 邻域同类率恒 ≈ 50%，不可能低于独立抽签。
+    const SC = mod.AZALEA_STAGGER_CELL;
+    const ORTH = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+    let sameIn = 0, sameAll = 0, totAll = 0;
+    for (let i = -20; i < 20; i++) {
+      for (let j = -20; j < 20; j++) {
         const c = mod.azaleaSizeClass(mod.azaleaStaggeredSizeIdx(i, j, 12345));
-        for (const [di, dj] of DIRS) {
-          tot++;
-          if (c === mod.azaleaSizeClass(mod.azaleaStaggeredSizeIdx(i + di, j + dj, 12345))) same++;
+        for (const [di, dj] of ORTH) {
+          const eq = c === mod.azaleaSizeClass(mod.azaleaStaggeredSizeIdx(i + di, j + dj, 12345));
+          totAll++;
+          if (!eq) continue;
+          sameAll++;
+          if (Math.floor(i / SC) === Math.floor((i + di) / SC)
+            && Math.floor(j / SC) === Math.floor((j + dj) / SC)) sameIn++;
         }
       }
     }
-    const rate = same / tot;
-    const independent = lens.reduce((a, n) => a + (n / 10) ** 2, 0);
-    if (!(rate < independent - 0.1)) {
-      fail(`相邻同类率 ${rate.toFixed(3)} 未显著低于独立抽签的 ${independent.toFixed(3)}` +
-        `（高矮扎堆 —— 确认 azaleaStaggeredSizeIdx 还在用类别环；用户 2026-10-28 要求错落相间）`);
+    if (sameIn !== 0) {
+      fail(`粗格内的正交相邻同类 ${sameIn} 对（**必须为 0**）—— ` +
+        '棋盘不变式被破坏（用户 2026-10-28 要求「一个高树挨着它的应该是矮树」）');
+    }
+    // 全国口径的同类型率必须远低于两类独立抽签的 Σp² = 0.09 + 0.49 = 0.58（实测 0.046）
+    if (!(sameAll / totAll < 0.2)) {
+      fail(`全国正交同类率 ${(sameAll / totAll).toFixed(3)} 应远低于两类独立抽签的 0.58`);
+    }
+    // 两类的最小可辨差必须 ≥ 4 格（v2.2 的中→高只差 1 格，那就是「错落看不出来」的根因）
+    const heights = (trees || []).map((t) => t.h);
+    if (heights.length === mod.AZALEA_VARIANT_COUNT) {
+      const lowMax = Math.max(...mod.AZALEA_STAGGER_CLASSES[0].map((i) => heights[i]));
+      const highMin = Math.min(...mod.AZALEA_STAGGER_CLASSES[1].map((i) => heights[i]));
+      if (highMin - lowMax < 4) {
+        fail(`两类最小可辨差 ${highMin - lowMax} 格（矮最高 ${lowMax} / 高最低 ${highMin}）应 ≥ 4`);
+      }
     }
   }
   // AZALEA biome 面积（v2.0 用户要求扩大 50%：4.6% → ≈6.7%）
@@ -1701,7 +1740,7 @@ async function checkAzaleaTrees() {
   if (oldTreeHits > 0) fail(`rollVegetation 的 AZALEA 分支仍在返回旧小树（${oldTreeHits} 次命中）—— 会与新树叠在一起`);
 
   if (failures.length === before) {
-    infos.push(`[杜鹃树] ${trees.length} 档（${meta.sizes.join(' ')}）共 ${total} 格，树干 azalea_log、叶子 LEAF 哨兵按 30% 掷花、指纹匹配、旧小树已停用；间距 ≥${mod.AZALEA_TRUNK_CLEARANCE} 格、密度 C=${mod.AZALEA_TREE_PATH.spacing + mod.AZALEA_TREE_PATH.jitter}、AZALEA 面积 ${(azFrac * 100).toFixed(1)}%、高矮错落（相邻同类率 < 独立抽签）`);
+    infos.push(`[杜鹃树] ${trees.length} 档（${meta.sizes.join(' ')}）共 ${total} 格，树干 azalea_log、叶子 LEAF 哨兵按 30% 掷花、指纹匹配、旧小树已停用；间距 ≥${mod.AZALEA_TRUNK_CLEARANCE} 格、密度 C=${mod.AZALEA_TREE_PATH.spacing + mod.AZALEA_TREE_PATH.jitter}、AZALEA 面积 ${(azFrac * 100).toFixed(1)}%、高矮错落（两类棋盘：正交相邻异类、最小可辨差 ≥4 格）`);
   }
 }
 

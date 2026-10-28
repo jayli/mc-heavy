@@ -936,6 +936,42 @@ test('地带接线：地带里撒布候选与巨树候选全空', () => {
   }
 });
 
+test('地带接线：杜鹃候选**不**整块清空 —— 圆内剔除、圆外保留（v2.3）', () => {
+  // ⚠️ **这是与撒布/巨树/空岛相反的语义，不要去「对齐」它们**：
+  // 地带圆半径 138 只覆盖 400×400 region 的 37.4%，整块清空会把圆外 62.6% 的合法杜鹃树
+  // 一并抹掉 —— 实测 seed 12345 的 region(2,0) 28 个候选**全部在圆外**，
+  // 整块清空后那里留下 104×91 格纯草地（用户 2026-10-28：「大片空地没有渲染出树」）。
+  // 而 `pointContext` 本来就只对**圆心内**返回 `kind:'tarn'`，圆外是普通地形。
+  const tarnRegions = [];
+  for (let rx = -6; rx <= 6 && tarnRegions.length < 4; rx++) {
+    for (let rz = -6; rz <= 6 && tarnRegions.length < 4; rz++) {
+      if (isTarnZone(rx, rz, SEED)) tarnRegions.push({ rx, rz });
+    }
+  }
+  assertTrue(tarnRegions.length > 0, '找到地带 region');
+
+  let totalCandidates = 0, insideCircle = 0, outsideCircle = 0;
+  for (const { rx, rz } of tarnRegions) {
+    const lay = computeRegionLayout(rx, rz, SEED);
+    const arr = lay.azaleaTrees;
+    assertTrue(arr instanceof Int32Array, `地带 region(${rx},${rz}) 的 azaleaTrees 必须是 Int32Array`);
+    for (let i = 0; i < arr.length; i += 4) {
+      totalCandidates++;
+      const d = Math.hypot(arr[i] - lay.tarn.cx, arr[i + 2] - lay.tarn.cz);
+      if (d < TARN_ZONE_RADIUS) insideCircle++; else outsideCircle++;
+    }
+  }
+  // 主判据：圆内**必须**为 0（台地要干净），圆外**必须**有（不是整块清空）
+  assertEqual(insideCircle, 0,
+    `地带圆内不得有杜鹃候选（实测 ${insideCircle} 棵；台地上不能长树）`);
+  assertTrue(outsideCircle > 0,
+    `地带 region 的圆外**必须**保留杜鹃候选（实测 ${outsideCircle} 棵）—— ` +
+    '整块清空会让圆外 62.6% 的合法地点变成大片空地（v2.3 修掉的缺陷）');
+  // 下界：判别力（否则「圆外 > 0」可能被偶然一个点蒙过）
+  assertTrue(totalCandidates >= 10,
+    `四个地带 region 合计候选 ${totalCandidates} 棵（判据必须有量）`);
+});
+
 test('地带接线：非地带且雪原未让路的 region 逐字段零回归（压制不得漏到别处）', () => {
   // ⚠️ 口径必须**双向收窄**：
   //    ① 跳过 `isTarnZone` 的 region（那些**应当**被压制）

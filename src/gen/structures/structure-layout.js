@@ -15,7 +15,7 @@ import { computeScatterCandidates } from './scatter.js';
 import { computeGiantTreeCandidates } from './giant-trees.js';
 import { computeAzaleaTreeCandidates } from './azalea-trees.js';
 import { computeGiantPyramidAnchor } from './giant-pyramid.js';
-import { isTarnZone, computeTarnZone } from './tarn-zone.js';
+import { isTarnZone, computeTarnZone, inTarnRadius } from './tarn-zone.js';
 
 /**
  * 计算单个 region 的确定性布局（纯函数，无缓存——缓存由调用方 StructureIndex 管）。
@@ -103,8 +103,18 @@ export function computeRegionLayout(regionX, regionZ, seed) {
     : giantTreesRaw;
 
   // 杜鹃树（Azalea Trees Epic）：单条路径，全局对齐网格抖动，与 region 邻居无关。
-  // 地带里清空（台地/水池要干净，与 giantTrees 同口径）。
-  const azaleaTrees = tarn ? new Int32Array(0) : computeAzaleaTreeCandidates(regionX, regionZ, seed);
+  //
+  // ⚠️ **地带里只剔除「圆内」的候选，不是整块 region 清空**（v2.3 修掉的缺陷）：
+  // `tarn ? 空 : compute…` 会把圆外的合法树一并抹掉 —— 地带圆半径 138 只覆盖 400×400 的
+  // **37.4%**，圆外 62.6% 仍是普通地形（`pointContext` 只对圆内返回 `kind:'tarn'`）。
+  // 实测（seed 12345）`region(2,0)` 的 28 个候选**全部在圆外**，整块清空后那一带留下
+  // **104×91 格**的连续纯草地（用户 2026-10-28：「杜鹃花地带中有大片空地没有渲染出树」）。
+  // 三个 seed 实测：圆外被误清 70~185 棵/seed（对应 12k~33k 格² 可种树面积）。
+  // 判据 `inTarnRadius` 与 `pointContext` 的 `kind:'tarn'` 分支**同源**（红线 1）。
+  //
+  // ⚠️ 撒布 / 巨树 / 空岛的整块清空是**刻意保留**的：spec DR-6 明写「地带 region 内不出现
+  // 撒布结构 / 巨树 / 空岛」，且 `test-tarn-zone.js` 钉住了那几项（不要顺手"修"它们）。
+  const azaleaTrees = computeAzaleaTreeCandidates(regionX, regionZ, seed, undefined, tarn);
 
   // ⚠️ v1.80：沙漠孤立高台系统已整体删除（DR-11，由「高台地带」取代），`mesa` 字段不再存在。
 
