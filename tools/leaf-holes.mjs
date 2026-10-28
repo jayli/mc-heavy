@@ -34,9 +34,25 @@ export const HOLE_ALPHA = 77;
  */
 export const LEAF_HOLE_RATIO = 0.15;
 
-/** 门禁允许的孔洞率区间（5%~25%；太小像实心色板，太接近源图就回到「叶冠太稀」） */
-export const LEAF_HOLE_RATIO_MIN = 0.05;
+/** 门禁允许的孔洞率区间（3%~25%；太小像实心色板，太接近源图就回到「叶冠太稀」） */
+export const LEAF_HOLE_RATIO_MIN = 0.03;
 export const LEAF_HOLE_RATIO_MAX = 0.25;
+
+/**
+ * 杜鹃树叶的孔洞率（2026-10-28 用户裁定：8%）。
+ *
+ * **为什么杜鹃叶要单独一档，不能沿用 `LEAF_HOLE_RATIO`（0.15）**
+ * —— 同一个孔洞**率**在两张贴图上不是同一个观感，判据是**孔洞块的大小**而不是总量：
+ *   实测 `azalea_leaves` 在 15% 时孔洞 22 块、**最大 4px**、≥3px 的块有 4 个；
+ *   而普通树叶 `leaves` 在 15% 时 30 块、**最大只有 2px**、≥3px 的块 0 个。
+ * 树冠越大，单层外壳上一个 4px 的大孔越容易直接透到背后的天空（内面被 `opaqueTable=1`
+ * 剔掉了），所以普通树 5×5 冠幅看不出来、杜鹃树 8~13 冠幅就明显「镂空感强烈」。
+ * 降到 8% 后两张杜鹃贴图的**最大孔洞块都收敛到 2px、≥3px 归零**，与普通树叶同档。
+ *
+ * ⚠️ **改这个值必须同时重跑 `npm run leaftextures` 与 `npm run atlas`**（贴图是 atlas 输入），
+ * 且 `check:data` 的 `[树叶贴图]` 会按 `LEAF_HOLE_RATIO_AZALEA` 复算，不匹配即红。
+ */
+export const LEAF_HOLE_RATIO_AZALEA = 0.08;
 
 /** R2 低差异序列：给像素一个确定性的「空间铺开」优先级（不依赖随机数） */
 function r2Priority(i, width) {

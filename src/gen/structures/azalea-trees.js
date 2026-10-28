@@ -266,7 +266,96 @@ export const AZALEA_TREE_PATH = Object.freeze({
   key: 'azalea', salt: 1001, spacing: 8, jitter: 5,
   /** 花叶掷签的 salt（与候选层分开，互不干扰） */
   flowerSalt: 1004,
+  /** 档位错落的类别扰动 salt（与候选/朝向/花叶三者都分开，占 1034） */
+  staggerSalt: 1034,
 });
+
+// ---------------------------------------------------------------- 档位错落（v2.2）
+
+/**
+ * 档位 → 高度类别（0 = 矮、1 = 中、2 = 高）。
+ *
+ * 分类依据是**烘焙产物的实际高度**（`trees.json` 的 `h`），不是档位下标 —— 下标只是尺寸列的顺序：
+ *   矮 ≤17（档 0/1/2，h=12/13/17）· 中 18~25（档 3/4/5，h=22/21/25）· 高 ≥26（档 6/7/8/9，h=26/27/28/29）
+ * 每类 3/3/4 档，与 `AZALEA_STAGGER_CLASSES` 一致（测试钉住）。
+ */
+export function azaleaHeightClass(height) {
+  return height <= 17 ? 0 : (height <= 25 ? 1 : 2);
+}
+
+/** 三个高度类别各自的档位下标（顺序小→大；`test-azalea-trees` 从产物实测值钉住这张表） */
+export const AZALEA_STAGGER_CLASSES = Object.freeze([
+  Object.freeze([0, 1, 2]),   // 矮 ≤17
+  Object.freeze([3, 4, 5]),   // 中 18~25
+  Object.freeze([6, 7, 8, 9]), // 高 ≥26
+]);
+
+/**
+ * 档位下标 → 高度类别（0/1/2）。`AZALEA_STAGGER_CLASSES` 的反查。
+ *
+ * ⚠️ **不要写成 `azaleaHeightClass(sizeIdx)`** —— 后者吃的是**实际高度**（12~29），
+ * 把下标 0~9 传进去会全部命中 `≤17` 判成矮类（实测踩过：相邻同类比例算出 1.000）。
+ */
+export function azaleaSizeClass(sizeIdx) {
+  const n = azaleaTreeSize(sizeIdx);
+  for (let c = 0; c < AZALEA_STAGGER_CLASSES.length; c++) {
+    if (AZALEA_STAGGER_CLASSES[c].includes(n)) return c;
+  }
+  return 0;
+}
+
+/**
+ * 候选 cell 的档位下标（v2.2：高矮相间，不扎堆）。
+ *
+ * ## 为什么不能继续用「独立抽签」
+ *
+ * 原实现是 `floor(seededRandom(i, j, salt) × 10)` —— 纯独立随机。用户 2026-10-28 反馈
+ * 「高树和矮树错落相间一些，别一下子高树扎堆、或者矮树扎堆」。实测（seed 12345、264 棵）：
+ * 最近邻与自己**同类**的比例 **0.409**，而独立抽签的理论期望只有 Σp² = **0.34** ——
+ * 多出来的 20% 就是观感上的「扎堆」。
+ *
+ * ## 做法：类别由 cell 坐标决定，类别内再随机
+ *
+ * `class = (i + j) % 3` —— 水平/垂直相邻 cell 的类别必差 1、对角相邻差 2，**全部不同类**。
+ * 于是任何两棵相邻的树必然一矮一中一高轮转，不会出现「两棵高的挨着」。
+ *
+ * ⚠️ **为什么加低频扰动 `d`**：只用 `(i+j)%3` 会在世界上留下肉眼可见的斜向条纹
+ * （每三条对角线一条高树带）。加一个**由粗格坐标决定的固定偏移** `d ∈ {0,1,2}`（粗格边长
+ * `AZALEA_STAGGER_CELL` 个 cell）后，同一粗格内相位一致 → 内部仍是完美轮转，但相邻粗格之间
+ * 三类顺序会整体错开，条纹被打散。`d` 只依赖 `floor(i/CELL)`，**仍是纯函数、跨 region 一致**。
+ *
+ * ⚠️ **不能按「邻居已落树的档位」做排斥**：候选层跑在 region layout 阶段，此时拿不到邻域的
+ * 最终落树集合（间距判据 `acceptAzaleaTrunks` 要到 apply 阶段才产出），且互相依赖会形成循环。
+ * 本做法完全不读邻居，故任意 column 算出的候选逐位相同。
+ *
+ * @param {number} i cell 的全局 x 下标
+ * @param {number} j cell 的全局 y 下标
+ * @param {number} seed 世界 seed
+ * @param {object} path 路径参数（至少含 salt / staggerSalt）
+ * @returns {number} 档位下标 ∈ [0, AZALEA_VARIANT_COUNT)
+ */
+/** 周期 10 的类别环：矮矮矮中中中高高高高 —— 三类比例精确 3:3:4（= 各档位数），
+ *  且相邻位置**只有第 9→10 处同类**（高,高），故正交相邻同类概率 ≈ 1/10，远低于独立抽签的 0.34。 */
+const AZALEA_CLASS_RING = Object.freeze([0, 1, 2, 0, 1, 2, 0, 1, 2, 2]);
+
+export function azaleaStaggeredSizeIdx(i, j, seed, path = AZALEA_TREE_PATH) {
+  // 粗格相位偏移 ∈ {0..9}：打散 (i+j)%10 的斜向条纹，但同一粗格内一致（内部仍完美轮转）
+  const ci = Math.floor(i / AZALEA_STAGGER_CELL);
+  const cj = Math.floor(j / AZALEA_STAGGER_CELL);
+  const shift = Math.floor(seededRandom(ci, cj, seed + (path.staggerSalt ?? AZALEA_TREE_PATH.staggerSalt)) * 10);
+  // ⚠️ 系数 (4,5) 是实测标定的，不是随手写的：要在环上同时把**正交**（差 4/5）与**对角**
+  // （差 4+5=9、4-5=-1）都推到远离「同类」的位置。实测相邻同类比例对比：
+  //   (1,1) → 正交 0.10 / **对角 0.50**（对角几乎必然同类，观感仍是斜向同类带）
+  //   (4,5) → 正交 0.20 / 对角 **0.10**（合计最优）。改系数前重跑那张组合表。
+  const cls = AZALEA_CLASS_RING[((((4 * i + 5 * j + shift) % 10) + 10) % 10)];
+  const bucket = AZALEA_STAGGER_CLASSES[cls];
+  // 类别内均匀取一档（同一类别的树彼此仍有高矮差异，不是整齐的三档）
+  const k = Math.floor(seededRandom(i, j, seed + path.salt + 4) * bucket.length);
+  return bucket[Math.min(bucket.length - 1, k)];
+}
+
+/** 低频扰动步长（单位 = cell 个数）：5 个 cell ≈ 65 格，比冠幅 13 大一档、又远小于 region 400 */
+export const AZALEA_STAGGER_CELL = 5;
 
 /** 树朝向 0~3（90° 步进）。**必须 floor(r*4)**：seededRandom 返回 [0,1) 浮点，`& 3` 恒为 0。 */
 export function azaleaTreeRotation(wx, wz, seed) {
@@ -312,11 +401,11 @@ export function computeAzaleaTreeCandidates(regionX, regionZ, seed, path = AZALE
       if (wx < x0 || wx >= x0 + REGION_SIZE || wz < z0 || wz >= z0 + REGION_SIZE) continue;
       const h = azaleaEligible(wx, wz, seed);
       if (h === null) continue;
-      // 档位下标 ∈ [0, AZALEA_VARIANT_COUNT)。与巨树的区别：巨树一个族内有 4~8 个变体、候选层
-      // 拿不到变体数（loadGiantTrees 异步）故存原始 hash；杜鹃树的「档」就是变体本身，档数在
-      // src 侧是常量（烘焙产物的档数由 test-azalea-trees 的加载用例钉住），故直接算下标 ——
-      // 少一个死字段（巨树的 variantHash 有用途，这里照搬会变成无消费者的第 5 项）。
-      const sizeIdx = Math.floor(seededRandom(i, j, seed + path.salt + 4) * AZALEA_VARIANT_COUNT);
+      // 档位下标 ∈ [0, AZALEA_VARIANT_COUNT)。**走 azaleaStaggeredSizeIdx 做高矮相间**（v2.2），
+      // 不是独立抽签 —— 理由与实测见该函数的注释。
+      // 与巨树的区别：巨树一个族内有 4~8 个变体、候选层拿不到变体数（loadGiantTrees 异步）故存
+      // 原始 hash；杜鹃树的「档」就是变体本身，档数在 src 侧是常量，故直接算下标。
+      const sizeIdx = azaleaStaggeredSizeIdx(i, j, seed, path);
       out.push(wx, h + 1, wz, sizeIdx % AZALEA_VARIANT_COUNT);
     }
   }

@@ -49,7 +49,7 @@ export const FACES_DATA = {
   // ⚠️ `procedural/sky_leaves` 例外：它走 opaque 通道（材质本就无 alphaTest）→ 不压缩、不在此列。
   leaves: 'procedural/leaf_leaves',
   azalea_leaves: 'procedural/leaf_azalea_leaves',
-  azalea_flowers: 'flowering_azalea_leaves',
+  azalea_flowers: 'procedural/leaf_azalea_flowers',
   yellow_leaves: 'procedural/leaf_leaves_yellow',
   realistic_oak_leaves: 'procedural/leaf_oak_leaves_branch_medium',
   realistic_yellow_leaves: 'procedural/leaf_leaves_yellow',

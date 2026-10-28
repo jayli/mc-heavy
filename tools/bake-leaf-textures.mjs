@@ -9,6 +9,10 @@
 // 23%~**77.6%**（`oak_leaves_branch_medium` 最严重，叶面只剩 22.4%）→ 观感「太稀」。
 // 本脚本把它们统一压到 `LEAF_HOLE_RATIO`（14.8%）。
 //
+// **例外**：两张杜鹃贴图用 `LEAF_HOLE_RATIO_AZALEA`（8%）—— 同「孔洞率」下它们的孔洞块更大
+// （最大 4px vs 普通树 2px），而杜鹃树冠幅 8~13 远大于普通树 5×5 → 大孔透天空、镂空感强烈
+// （用户 2026-10-28 报告）。降到 8% 后最大孔块与普通树叶同档（2px）。
+//
 // ## 做法
 //
 // **只改 alpha，RGB 逐字节保留** —— 与巨树那次不同（巨树要重着色，普通树叶不需要，保持原色）。
@@ -29,7 +33,7 @@ import { PNG } from 'pngjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { LEAF_HOLE_RATIO, compactLeafHoles, applyAlpha, leafHoleStats } from './leaf-holes.mjs';
+import { LEAF_HOLE_RATIO, LEAF_HOLE_RATIO_AZALEA, compactLeafHoles, applyAlpha, leafHoleStats } from './leaf-holes.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, '..');
@@ -48,7 +52,13 @@ const OUT_DIR = path.join(TEX_DIR, 'procedural');
 export const LEAF_TEXTURES = Object.freeze([
   { src: 'leaves', out: 'leaf_leaves' },                                  // leaves / swamp_leaves
   { src: 'leaves_yellow', out: 'leaf_leaves_yellow' },                    // yellow_leaves / realistic_yellow_leaves
-  { src: 'azalea_leaves', out: 'leaf_azalea_leaves' },                    // azalea_leaves
+  // 杜鹃两项用**独立的 8% 孔洞率**（不是 15%）—— 理由见 `leaf-holes.mjs` 的
+  // `LEAF_HOLE_RATIO_AZALEA` 注释：同一个「孔洞率」在杜鹃贴图上孔洞块更大（最大 4px vs 普通树 2px），
+  // 而杜鹃树冠幅 8~13（普通树 5×5）→ 大孔直接透到天空，观感「镂空感太强烈」（用户 2026-10-28 报告）。
+  { src: 'azalea_leaves', out: 'leaf_azalea_leaves', ratio: LEAF_HOLE_RATIO_AZALEA },   // azalea_leaves
+  // ⚠️ `azalea_flowers` 之前**漏了**这张（`faces-data.js` 直接指向未压缩的原图 `flowering_azalea_leaves`
+  // → 孔洞率 19.9%，比叶方块还稀）。带花的叶与纯叶必须同档，否则同一棵树上有两种稀疏度。
+  { src: 'flowering_azalea_leaves', out: 'leaf_azalea_flowers', ratio: LEAF_HOLE_RATIO_AZALEA }, // azalea_flowers
   { src: 'oak_leaves_branch_medium', out: 'leaf_oak_leaves_branch_medium' }, // realistic_oak_leaves（32×32，源孔洞 77.6%）
   { src: 'leaves_with_snow', out: 'leaf_leaves_with_snow' },              // snow_leaves 的 5 个侧面
 ]);
@@ -65,7 +75,7 @@ function main() {
     if (!fs.existsSync(srcPath)) throw new Error(`源图缺失：${srcPath}`);
     const src = PNG.sync.read(fs.readFileSync(srcPath));
     const before = leafHoleStats(src);
-    const { alpha, holeCount } = compactLeafHoles(src, LEAF_HOLE_RATIO);
+    const { alpha, holeCount } = compactLeafHoles(src, t.ratio ?? LEAF_HOLE_RATIO);
     const out = applyAlpha(src, alpha);
 
     // 自检 ①：alpha 必须是 0/255 二值（压缩后不存在半透明像素）
@@ -88,7 +98,8 @@ function main() {
     console.log(`${t.out}: ${path.relative(ROOT, dst)}  ${src.width}×${src.height}  ` +
       `源=${t.src}  孔洞 ${before.holes}/${before.total}（${(before.ratio * 100).toFixed(1)}%）` +
       ` → ${after.holes}/${after.total}（${(after.ratio * 100).toFixed(1)}%）  ` +
-      `叶面覆盖 ${((1 - before.ratio) * 100).toFixed(1)}% → ${((1 - after.ratio) * 100).toFixed(1)}%`);
+      `叶面覆盖 ${((1 - before.ratio) * 100).toFixed(1)}% → ${((1 - after.ratio) * 100).toFixed(1)}%` +
+      (t.ratio ? `  [独立孔洞率 ${t.ratio}]` : ''));
   }
 }
 

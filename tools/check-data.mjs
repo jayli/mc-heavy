@@ -1318,6 +1318,15 @@ async function checkLeafTextures() {
     if (st.ratio < holes.LEAF_HOLE_RATIO_MIN || st.ratio > holes.LEAF_HOLE_RATIO_MAX) {
       fail(`procedural/${t.out}.png 孔洞率 ${(st.ratio * 100).toFixed(1)}%（应 ${holes.LEAF_HOLE_RATIO_MIN * 100}%~${holes.LEAF_HOLE_RATIO_MAX * 100}%）—— 太小像实心色板、太接近源图就回到「叶冠太稀」`);
     }
+    // ② 带独立 ratio 的项（当前只有杜鹃两项）必须**精确**落在自己的档位上，
+    //    不能只是「落在通用区间内」—— 通用区间 3%~25% 放得过 14.8%，那正是本次要修的值。
+    if (t.ratio != null) {
+      const want = Math.round(256 * t.ratio); // 16×16 贴图的孔洞像素数
+      if (st.holes !== want) {
+        fail(`procedural/${t.out}.png 孔洞 ${st.holes} 像素 ≠ 期望 ${want}（ratio ${t.ratio}）—— 跑 npm run leaftextures；` +
+          `杜鹃叶必须比普通树叶更密（孔洞块最大 2px），否则大冠幅下会透出天空`);
+      }
+    }
     // ② RGB 必须与源图逐字节相同（本脚本只应改 alpha；改颜色是另一个需求）
     for (let i = 0; i < png.data.length; i += 4) {
       if (png.data[i] !== src.data[i] || png.data[i + 1] !== src.data[i + 1] || png.data[i + 2] !== src.data[i + 2]) {
@@ -1330,7 +1339,10 @@ async function checkLeafTextures() {
   // ③ 每个树叶族（除 sky_leaves）的 faces-data 都必须指向 procedural/leaf_*
   const LEAF_NAMES = ['leaves', 'azalea_leaves', 'yellow_leaves', 'realistic_oak_leaves',
     'realistic_yellow_leaves', 'swamp_leaves', 'snow_leaves'];
-  for (const n of LEAF_NAMES) {
+  // ⚠️ `azalea_flowers` 是**非叶名**的树叶族（名字里没有 leaves），旧版清单漏了它 →
+  // 它一直指向未压缩的原图 `flowering_azalea_leaves`（19.9%），比同树的纯叶还稀。
+  // 两份贴图稀疏度不同会让同一棵树看起来像两种材质。
+  for (const n of [...LEAF_NAMES, 'azalea_flowers']) {
     const v = FACES_DATA[n];
     if (!v) { fail(`"${n}" 没有 faces-data 映射`); continue; }
     for (const tile of (Array.isArray(v) ? v : [v])) {
@@ -1351,7 +1363,7 @@ async function checkLeafTextures() {
   }
 
   if (failures.length === before) {
-    infos.push(`[树叶贴图] ${LEAF_TEXTURES.length} 张孔洞压缩产物 / 孔洞率 ${(holes.LEAF_HOLE_RATIO * 100).toFixed(1)}% / RGB 与源图逐字节相同`);
+    infos.push(`[树叶贴图] ${LEAF_TEXTURES.length} 张孔洞压缩产物 / 普通叶 ${(holes.LEAF_HOLE_RATIO * 100).toFixed(1)}%、杜鹃叶 ${(holes.LEAF_HOLE_RATIO_AZALEA * 100).toFixed(1)}% / RGB 与源图逐字节相同`);
   }
 }
 
@@ -1637,6 +1649,37 @@ async function checkAzaleaTrees() {
   if (mod.AZALEA_TREE_PATH.spacing !== 8 || mod.AZALEA_TREE_PATH.jitter !== 5) {
     fail(`AZALEA_TREE_PATH spacing/jitter = ${mod.AZALEA_TREE_PATH.spacing}/${mod.AZALEA_TREE_PATH.jitter} ≠ 8/5（C=13）`);
   }
+  // 高矮错落（v2.2）：类别表必须与产物实际高度对得上，且相邻同类率显著低于独立抽签
+  {
+    const byClass = [[], [], []];
+    for (let i = 0; i < mod.AZALEA_VARIANT_COUNT; i++) byClass[mod.azaleaSizeClass(i)].push(i);
+    const want = mod.AZALEA_STAGGER_CLASSES.map((a) => a.join(','));
+    const got = byClass.map((a) => a.join(','));
+    if (want.join('|') !== got.join('|')) {
+      fail(`档位类别表 [${want.join(' | ')}] 与按 azaleaSizeClass 反查的结果 [${got.join(' | ')}] 不一致`);
+    }
+    const lens = mod.AZALEA_STAGGER_CLASSES.map((a) => a.length);
+    if (lens.join(',') !== '3,3,4') fail(`三类档位数 ${lens.join(',')} ≠ 3,3,4（高类有 4 档）`);
+    // 相邻同类率：独立抽签期望 Σp² = 0.34，错落实测 0.15。
+    // ⚠️ 这条是**关系式**（低于独立抽签），不是硬编码统计值 —— 改系数/换成别的错落算法时不需要重标。
+    const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
+    let same = 0, tot = 0;
+    for (let i = 0; i < 30; i++) {
+      for (let j = 0; j < 30; j++) {
+        const c = mod.azaleaSizeClass(mod.azaleaStaggeredSizeIdx(i, j, 12345));
+        for (const [di, dj] of DIRS) {
+          tot++;
+          if (c === mod.azaleaSizeClass(mod.azaleaStaggeredSizeIdx(i + di, j + dj, 12345))) same++;
+        }
+      }
+    }
+    const rate = same / tot;
+    const independent = lens.reduce((a, n) => a + (n / 10) ** 2, 0);
+    if (!(rate < independent - 0.1)) {
+      fail(`相邻同类率 ${rate.toFixed(3)} 未显著低于独立抽签的 ${independent.toFixed(3)}` +
+        `（高矮扎堆 —— 确认 azaleaStaggeredSizeIdx 还在用类别环；用户 2026-10-28 要求错落相间）`);
+    }
+  }
   // AZALEA biome 面积（v2.0 用户要求扩大 50%：4.6% → ≈6.7%）
   const noiseMod = await import(pathToFileURL(path.join(ROOT, 'src/gen/noise.js')).href);
   let azN = 0, tot = 0;
@@ -1658,7 +1701,7 @@ async function checkAzaleaTrees() {
   if (oldTreeHits > 0) fail(`rollVegetation 的 AZALEA 分支仍在返回旧小树（${oldTreeHits} 次命中）—— 会与新树叠在一起`);
 
   if (failures.length === before) {
-    infos.push(`[杜鹃树] ${trees.length} 档（${meta.sizes.join(' ')}）共 ${total} 格，树干 azalea_log、叶子 LEAF 哨兵按 30% 掷花、指纹匹配、旧小树已停用；间距 ≥${mod.AZALEA_TRUNK_CLEARANCE} 格、密度 C=${mod.AZALEA_TREE_PATH.spacing + mod.AZALEA_TREE_PATH.jitter}、AZALEA 面积 ${(azFrac * 100).toFixed(1)}%`);
+    infos.push(`[杜鹃树] ${trees.length} 档（${meta.sizes.join(' ')}）共 ${total} 格，树干 azalea_log、叶子 LEAF 哨兵按 30% 掷花、指纹匹配、旧小树已停用；间距 ≥${mod.AZALEA_TRUNK_CLEARANCE} 格、密度 C=${mod.AZALEA_TREE_PATH.spacing + mod.AZALEA_TREE_PATH.jitter}、AZALEA 面积 ${(azFrac * 100).toFixed(1)}%、高矮错落（相邻同类率 < 独立抽签）`);
   }
 }
 

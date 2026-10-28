@@ -18,6 +18,8 @@ import {
   rasterizeAzaleaTree, buildCoveredWindow, applyAzaleaTrees, AZALEA_VARIANT_COUNT,
   AZALEA_TRUNK_CLEARANCE, TrunkGrid, isTrunkClear, collectOtherTrunks,
   acceptAzaleaTrunks, trunkColumnsOf,
+  azaleaStaggeredSizeIdx, azaleaSizeClass, azaleaHeightClass,
+  AZALEA_STAGGER_CLASSES, AZALEA_STAGGER_CELL,
 } from '../gen/structures/azalea-trees.js';
 import { generateHeight } from '../gen/terrain.js';
 import { getBiome } from '../gen/noise.js';
@@ -500,4 +502,119 @@ test('trunkColumnsOf：返回 y=0 层树干列，且随旋转变换', async () =
   for (const [x, z] of cols0) {
     assertTrue(x >= box0.x0 && x <= box0.x1 && z >= box0.z0 && z <= box0.z1, `(${x},${z}) 在 bbox 内`);
   }
+});
+
+// ---------------------------------------------------------------- 档位错落（v2.2）
+
+test('档位分类表：三类的档位下标与产物实测高度一一对应（3:3:4）', async () => {
+  // 判据必须从**烘焙产物**取高度，不能只比对常量表 —— 表写对了但产物换了档位就漂了。
+  const { variants } = await loadAzaleaTrees();
+  assertEqual(variants.length, AZALEA_VARIANT_COUNT, '产物档数');
+  const byClass = [[], [], []];
+  for (let i = 0; i < variants.length; i++) byClass[azaleaSizeClass(i)].push(i);
+  assertDeepEqual(byClass, AZALEA_STAGGER_CLASSES.map((a) => [...a]), '类别表与产物档位一致');
+
+  // 每类的高度必须真的落进自己的区间（防止「矮类里混进一棵高的」）
+  for (let c = 0; c < 3; c++) {
+    for (const idx of AZALEA_STAGGER_CLASSES[c]) {
+      assertEqual(azaleaHeightClass(variants[idx].h), c, `档 ${idx} 高度 ${variants[idx].h} 应属类别 ${c}`);
+    }
+  }
+  // 每类的档位数（矮 3 / 中 3 / 高 4）—— 比例 3:3:4 是密度分布的依据
+  assertDeepEqual(AZALEA_STAGGER_CLASSES.map((a) => a.length), [3, 3, 4], '三类档位数');
+});
+
+test('azaleaStaggeredSizeIdx：相邻 cell 的高矮类别不同类（不扎堆），且三类分布 3:3:4', () => {
+  const SEED = 12345;
+  // ① 8 邻域的平均同类率必须明显低于独立抽签的期望
+  //    独立抽签：Σp² = 0.3² + 0.3² + 0.4² = 0.34；错落实现实测 0.150。
+  //    阈值取 0.25（两侧都不贴线：修好 0.150 / 改回独立抽签 0.365）。
+  const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
+  let same = 0, tot = 0;
+  for (let i = 0; i < 40; i++) {
+    for (let j = 0; j < 40; j++) {
+      const a = azaleaSizeClass(azaleaStaggeredSizeIdx(i, j, SEED));
+      for (const [di, dj] of DIRS) {
+        tot++;
+        if (a === azaleaSizeClass(azaleaStaggeredSizeIdx(i + di, j + dj, SEED))) same++;
+      }
+    }
+  }
+  const rate = same / tot;
+  assertTrue(rate < 0.25, `8 邻域同类率 ${rate.toFixed(3)} 应 < 0.25（独立抽签 0.34）`);
+
+  // ② 三类分布必须是 3:3:4（不能均分 —— 高类有 4 档，压成 1/3 会让高树偏少）
+  const cnt = [0, 0, 0];
+  for (let i = 0; i < 60; i++) {
+    for (let j = 0; j < 60; j++) cnt[azaleaSizeClass(azaleaStaggeredSizeIdx(i, j, SEED))]++;
+  }
+  const t = cnt[0] + cnt[1] + cnt[2];
+  const frac = cnt.map((v) => v / t);
+  for (let c = 0; c < 3; c++) {
+    const want = AZALEA_STAGGER_CLASSES[c].length / 10;
+    assertTrue(Math.abs(frac[c] - want) < 0.02,
+      `类别 ${c} 占比 ${frac[c].toFixed(3)} 应 ≈ ${want}（3:3:4）`);
+  }
+
+  // ④ **低频扰动必须存在**：只用 `(4i+5j)%10` 会在世界留下肉眼可见的斜向条纹
+  //    （每 10 个 cell 一条同类别带）。判据 = 「相邻粗格之间的类别序必须不同」——
+  //    只看 8 邻域同类率是**测不到**的（实测把 shift 置 0 后该率仍是 0.150，注入后全绿）。
+  //    这里直接比较跨粗格的两条对角带：shift 恒 0 时它们逐位相同。
+  //    判据：**沿 `4i+5j` 恒定的方向（同余线）走，类别必须变化**。
+  //    shift=0 时分类只依赖 `4i+5j` 的余数 → 这条线上类别**恒定不变**（实测连续 59 格同类，
+  //    即世界里的斜向同高带）；shift 生效后同类被打散（实测 80 步变化 53 次）。
+  //    ⚠️ 只判「不同粗格的类别集合是否多样」**测不到这一点** —— 各粗格同偏移处的 `4i+5j`
+  //    本来就不同，实测 shift=0 也全绿（无效盲区）。
+  let changes = 0, prev = null;
+  for (let t = 0; t < 80; t++) {
+    const i = 5 * t, j = -4 * t;            // 保持 4i + 5j ≡ 0（mod 10）的同余线
+    const c = azaleaSizeClass(azaleaStaggeredSizeIdx(i, j, SEED));
+    if (prev !== null && c !== prev) changes++;
+    prev = c;
+  }
+  assertTrue(changes > 5,
+    `同余线上类别须被打散（低频扰动生效）—— 实测 80 步变化 ${changes} 次（shift=0 时恒为 0）`);
+
+  // ③ 跨 seed 稳定（seed 只通过 shift 影响粗格相位，不该改变上述统计性质）
+  for (const s2 of [424242, 777]) {
+    let sm = 0, tt = 0;
+    for (let i = 0; i < 30; i++) {
+      for (let j = 0; j < 30; j++) {
+        const a = azaleaSizeClass(azaleaStaggeredSizeIdx(i, j, s2));
+        for (const [di, dj] of [[1, 0], [0, 1], [1, 1]]) {
+          tt++;
+          if (a === azaleaSizeClass(azaleaStaggeredSizeIdx(i + di, j + dj, s2))) sm++;
+        }
+      }
+    }
+    assertTrue(sm / tt < 0.25, `seed ${s2} 邻接同类率 ${(sm / tt).toFixed(3)} 应 < 0.25`);
+  }
+});
+
+test('azaleaStaggeredSizeIdx：纯函数 + 跨 region 一致（同一 cell 在两侧算出的档位相同）', () => {
+  const SEED = 998877;
+  // 同一 (i,j) 反复调用必须恒等（纯函数、无内部状态）
+  for (const [i, j] of [[0, 0], [-7, 13], [123, -456], [9999, 1]]) {
+    const a = azaleaStaggeredSizeIdx(i, j, SEED);
+    assertEqual(azaleaStaggeredSizeIdx(i, j, SEED), a, `(${i},${j}) 重复调用`);
+  }
+  // 粗格边界两侧的 shift 可以不同，但**同一个 i** 的结果不能依赖调用者是谁 —— 它只吃 (i,j,seed)。
+  // 这条钉住「不许按邻域已落树集合做排斥」（那会让结果依赖 column 处理顺序）。
+  const ci = AZALEA_STAGGER_CELL;
+  for (let i = ci - 2; i <= ci + 2; i++) {
+    const direct = azaleaStaggeredSizeIdx(i, 3, SEED);
+    // 等价地：换一个「调用上下文」不改变结果（同一原子参数）
+    assertEqual(azaleaStaggeredSizeIdx(i, 3, SEED), direct, `i=${i} 不受调用顺序影响`);
+  }
+});
+
+test('azaleaSizeClass：下标 → 类别（不是把下标当高度传进去）', () => {
+  // ⚠️ 这是真实踩过的坑：`azaleaHeightClass(sizeIdx)` 吃的是**实际高度**，
+  // 传下标 0~9 会全部命中 `≤17` 判成矮类（导致「相邻同类率」算出 1.000 的假通过）。
+  for (const idx of AZALEA_STAGGER_CLASSES[2]) {
+    assertEqual(azaleaSizeClass(idx), 2, `档 ${idx} 应属高类`);
+    assertTrue(azaleaHeightClass(9) === 0, '把下标 9 当高度传会误判成矮类 —— 必须用 azaleaSizeClass');
+  }
+  // 越界 / 负数也要归到合法类别（对 AZALEA_VARIANT_COUNT 取模后查表）
+  assertEqual(azaleaSizeClass(AZALEA_VARIANT_COUNT + 7), azaleaSizeClass(7), '越界下标按取模处理');
 });

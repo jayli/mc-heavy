@@ -289,3 +289,92 @@ test('杜鹃树密度：C=13 下视域里明显成林（≥ 15 棵）', async ({
   // C=16 时实测视域约 13 棵；C=13 提到约 20 棵（同密度下 C 从 16 降到 13 = 面积比 1.51）
   expect(r.trees, `视域内杜鹃树 ${r.trees} 棵（C=16 时约 13 棵）`).toBeGreaterThan(15);
 });
+
+test('杜鹃叶贴图：叶面覆盖高于普通树叶（8% 孔洞率，不是 15%），且带花叶与纯叶同档', async ({ page }) => {
+  // 用户 2026-10-28：「杜鹃花树的树叶方块镂空感太强烈，参照普通树的树叶，减少镂空感」。
+  // 判据必须落在**真实 atlas 像素**上，不能只读常量 —— 常量对了但忘了跑烘焙/atlas，
+  // 画面上仍是旧贴图（`check:data` 抓产物过期，这条抓「atlas 里装的是哪张」）。
+  await page.goto('/');
+  await page.waitForFunction(() => window.__MC_GAME__?._atlasTexture, null, { timeout: 60000 });
+  const r = await page.evaluate(async () => {
+    const t = window.__MC_GAME__._atlasTexture;
+    const src = t.image?.bitmap || t.image?.source?.data || t.image;
+    const W = src.width, H = src.height;
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const cx = cv.getContext('2d');
+    cx.drawImage(src, 0, 0);
+    const at = await (await fetch('/assets/atlas.json')).json();
+    // 在 atlas 里按 tile 的 uv 取 16×16，数「会被 alphaTest(0.3) 剔除」的像素
+    const holeRatio = (name) => {
+      const tile = at.tiles[name];
+      if (!tile) return null;
+      const x = Math.round(tile.x), y = Math.round(tile.y);
+      const d = cx.getImageData(x, y, 16, 16).data;
+      let holes = 0;
+      for (let i = 3; i < d.length; i += 4) if (d[i] / 255 < 0.3) holes++;
+      return holes / 256;
+    };
+    return {
+      azalea: holeRatio('procedural/leaf_azalea_leaves'),
+      azaleaFlowers: holeRatio('procedural/leaf_azalea_flowers'),
+      common: holeRatio('procedural/leaf_leaves'),
+    };
+  });
+  expect(r.azalea, 'atlas 里有杜鹃叶 tile').not.toBeNull();
+  expect(r.azaleaFlowers, 'atlas 里有杜鹃带花叶 tile').not.toBeNull();
+  expect(r.common, 'atlas 里有普通树叶 tile').not.toBeNull();
+
+  // 主判据：杜鹃叶面覆盖**必须高于**普通树叶（8% < 15% 孔洞）
+  expect(r.azalea, `杜鹃叶孔洞 ${(r.azalea * 100).toFixed(1)}% 应明显低于普通树叶 ${(r.common * 100).toFixed(1)}%`)
+    .toBeLessThan(r.common - 0.03);
+  // 带花叶必须与纯叶同档（旧实现它指向未压缩原图，比纯叶还稀）
+  expect(Math.abs(r.azaleaFlowers - r.azalea),
+    `带花叶孔洞 ${(r.azaleaFlowers * 100).toFixed(1)}% 应与纯叶 ${(r.azalea * 100).toFixed(1)}% 同档`)
+    .toBeLessThanOrEqual(0.01);
+  // 下界：不能压成实心色板（用户要的是「减少镂空」，不是「没有镂空」）
+  expect(r.azalea, '杜鹃叶仍须保留孔洞纹理').toBeGreaterThan(0.03);
+});
+
+test('杜鹃树高矮错落：相邻树的档位类别不扎堆（真实世界，8 邻域同类率低于独立抽签）', async ({ page }) => {
+  // 用户 2026-10-28：「高树和矮树错略相间一些，别一下子高树扎堆，或者矮树扎堆」。
+  // 判据落在**真实世界的树集合**上（不是纯函数抽样）：候选还要过 allowedAt / 间距判据，
+  // 纯函数层的分布不等于玩家看到的分布。
+  test.setTimeout(300000);
+  await openGame(page);
+  const r = await page.evaluate(async () => {
+    const az = await import('/src/gen/structures/azalea-trees.js');
+    const data = await az.loadAzaleaTrees();
+    const g = window.__MC_GAME__;
+    const idx = g.scheduler.structureIndex;
+    const layouts = [...idx._layouts.values()].filter(Boolean);
+    let lx0 = Infinity, lx1 = -Infinity, lz0 = Infinity, lz1 = -Infinity;
+    for (const l of layouts) {
+      const x0 = l.regionX * 400, z0 = l.regionZ * 400;
+      lx0 = Math.min(lx0, x0); lx1 = Math.max(lx1, x0 + 399);
+      lz0 = Math.min(lz0, z0); lz1 = Math.max(lz1, z0 + 399);
+    }
+    const trees = az.collectAzaleaTrees(layouts, 12345, data.variants,
+      { minX: lx0, maxX: lx1, minZ: lz0, maxZ: lz1 }, 3)
+      .map((t) => ({ wx: t.wx, wz: t.wz, cls: az.azaleaHeightClass(t.variant.h) }));
+    // 每棵树取最近 8 个邻居，统计同类比例
+    let same = 0, tot = 0;
+    for (const t of trees) {
+      const near = trees.filter((o) => o !== t)
+        .map((o) => ({ o, d: Math.hypot(o.wx - t.wx, o.wz - t.wz) }))
+        .sort((a, b) => a.d - b.d).slice(0, 8);
+      for (const { o } of near) { tot++; if (o.cls === t.cls) same++; }
+    }
+    const cnt = [0, 0, 0];
+    for (const t of trees) cnt[t.cls]++;
+    return { n: trees.length, rate: same / tot, cnt, frac: cnt.map((v) => v / trees.length) };
+  });
+  expect(r.n, '有杜鹃树').toBeGreaterThan(50);
+  // 独立抽签期望 Σp² = 0.30²+0.30²+0.40² = 0.34；错落实测 0.289。
+  // 阈值 0.32：两侧都不贴线（修好 0.289 / 改回独立抽签 0.365）。
+  expect(r.rate, `8 邻域同类率 ${r.rate.toFixed(3)} 应低于独立抽签期望 0.34（实测扎堆率）`)
+    .toBeLessThan(0.32);
+  // 三类分布接近 3:3:4（高树不能因为档位多反而偏少）
+  expect(r.frac[0], `矮类占比 ${r.frac[0].toFixed(3)} 应 ≈ 0.30`).toBeGreaterThan(0.24);
+  expect(r.frac[2], `高类占比 ${r.frac[2].toFixed(3)} 应 ≈ 0.40`).toBeGreaterThan(0.34);
+});
