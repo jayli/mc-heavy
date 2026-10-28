@@ -1,10 +1,11 @@
 import { test, expect } from 'playwright/test';
 
-// 「瞬移」验收（设置面板，v1.92）：背景音乐下方一行三按钮。
+// 「瞬移」验收（设置面板，v1.92）：背景音乐下方一行四按钮。
 //
 // 用户 2026-10-29：「在背景音乐下面增加一排按钮，这个区域的功能就是瞬移：
 // ①高台地带 → 瞬移到最近的高台地带；②标记位置 → 记录当前玩家位置；
 // ③跳转标记位置 → 瞬移到标记位置」，并裁定「高台地带的落点是边缘处」「标记跨会话保留」。
+// v1.97 追加 ④回家（用户 2026-10-31：「返回到 City 原始的玩家出生点的位置」）。
 //
 // ⚠️ **本 spec 必须走真实按钮点击**，不能只调 `game.teleportToTarnZone()` ——
 // M7 巢穴的教训（验收报告 §3.7）：只测 Game API 时「面板根本没接线」这类缺陷全绿通过，
@@ -35,7 +36,7 @@ async function openPanel(page) {
   await expect(page.locator('#settings-modal')).toBeVisible();
 }
 
-test('瞬移：三个按钮都在面板里，且位于「背景音乐」下方（用户指定落位）', async ({ page }) => {
+test('瞬移：四个按钮都在面板里，同一行不换行，且位于「背景音乐」下方（用户指定落位）', async ({ page }) => {
   test.setTimeout(180_000);
   await page.goto('/?vd=2&seed=12345');
   await page.waitForFunction(READY, null, { timeout: 90_000 });
@@ -45,12 +46,23 @@ test('瞬移：三个按钮都在面板里，且位于「背景音乐」下方�
   const tarn = page.locator('#btn-teleport-tarn');
   const mark = page.locator('#btn-mark-position');
   const go = page.locator('#btn-teleport-mark');
+  const home = page.locator('#btn-teleport-home');
   await expect(tarn).toBeVisible();
   await expect(mark).toBeVisible();
   await expect(go).toBeVisible();
+  await expect(home).toBeVisible();
   await expect(tarn).toHaveText('高台地带');
   await expect(mark).toHaveText('标记位置');
   await expect(go).toHaveText('跳转标记位置');
+  await expect(home).toHaveText('回家');
+
+  // 四个按钮必须**同一行**（`.mc-btn-group` 的 flex:1 等宽）：换成两行会让每个按钮的字号
+  // 不够排「跳转标记位置」→ 文案折行、面板高度也涨一档。判据用 offsetTop 相等（行内元素
+  // 基线一致），不能用宽度 —— 宽度本来就相等，换行也看不出。
+  const rowTops = await page.evaluate(() =>
+    ['btn-teleport-tarn', 'btn-mark-position', 'btn-teleport-mark', 'btn-teleport-home']
+      .map((id) => document.getElementById(id).offsetTop));
+  expect(new Set(rowTops).size, `四个按钮须同一行，实测 offsetTop=${rowTops.join(',')}`).toBe(1);
 
   // 落位判据：瞬移行必须出现在「背景音乐」那一行**之后**（用户说「在背景音乐下面」）。
   // ⚠️ 用 DOM 顺序（compareDocumentPosition）而不是 getBoundingClientRect 的 top ——
@@ -227,6 +239,56 @@ test('瞬移：点「高台地带」落到最近地带**边缘**（不是圆心�
   // ⚠️ **必须先关面板**：设置面板是模态（`game.uiModal`），主循环的
   // `if (!this.uiModal) this.player.update(dt)` 会整体跳过 → 相机根本不更新。
   // 第一版没关面板就断言，实测 10s 超时（不是实现缺陷，是测试 setup 漏了这一步）。
+  await page.locator('#settings-close').click();
+  await expect(page.locator('#settings-modal')).toBeHidden();
+  await page.waitForFunction(() => {
+    const g = window.__MC_GAME__;
+    const p = g.player.physics.pos;
+    const c = g.player.camera.position;
+    return Math.abs(c.x - p.x) < 1.5 && Math.abs(c.z - p.z) < 1.5;
+  }, null, { timeout: 10_000 });
+});
+
+test('瞬移：点「回家」回到 City 出生点（与 game.spawnX/Y/Z 逐值一致，非重新扫地表）', async ({ page }) => {
+  test.setTimeout(240_000);
+  await page.goto('/?vd=2&seed=12345');
+  await page.waitForFunction(READY, null, { timeout: 90_000 });
+  await page.waitForFunction(STABLE, null, { timeout: 60_000, polling: 500 });
+
+  // 出生点的唯一权威是 game.spawnX/Y/Z（启动期从 getCitySpawnPoint + findSpawnY 写入，
+  // 与 player.spawn(...) 是同一份数字）—— 断言直接对它，不另建副本。
+  const spawn = await page.evaluate(() => {
+    const g = window.__MC_GAME__;
+    return { x: g.spawnX, y: g.spawnY, z: g.spawnZ };
+  });
+
+  // ① 走远（改物理位置而不是走路：物理拉开得慢，而且地形可能挡路）。
+  //    面板开着时 player.update 被跳过，不会自己动。
+  await page.evaluate(() => {
+    const p = window.__MC_GAME__.player.physics.pos;
+    p.x += 500; p.z += 500;
+  });
+  const away = await page.evaluate(POS);
+  expect(Math.abs(away.x - spawn.x) + Math.abs(away.z - spawn.z)).toBeGreaterThan(100);
+
+  // ② 真实按钮点击（不是 game.teleportToSpawn()）—— M7 教训：只测 API 时「面板没接线」类
+  //    缺陷全绿通过。
+  await openPanel(page);
+  await page.locator('#btn-teleport-home').click();
+
+  // ③ toast 必须是「已回到出生点」，不能是「已记录位置」—— 后者是 v1.92 靠嗅探字段判定的
+  //    旧路径会输出的错文案（带 x/y/z 而无 dist → 误判成标记）。
+  await expect(page.locator('#mc-toast')).toContainText('已回到出生点', { timeout: 15_000 });
+
+  const home = await page.evaluate(POS);
+  expect(home.x).toBe(spawn.x);
+  expect(home.z).toBe(spawn.z);
+  // y 必须是**启动时缓存的 spawnY**，不是点击时重扫的结果：此时出生 column 已被卸载，
+  // 重扫会落到兜底值（SEA_Y+2）→ 开在出生点上方/下方。逐值相等才能区分两种实现。
+  expect(home.y).toBe(Math.round(spawn.y));
+
+  // ④ 相机真的跟到出生点（防「physics.pos 改了但相机没跟上」这类静默缺陷）。
+  //    ⚠️ 必须先关面板：面板是模态，主循环跳过 player.update → 相机不更新。
   await page.locator('#settings-close').click();
   await expect(page.locator('#settings-modal')).toBeHidden();
   await page.waitForFunction(() => {

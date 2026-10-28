@@ -1114,7 +1114,7 @@ export class Game {
 
   // ==================== 瞬移（设置面板「瞬移」行，v1.92） ====================
   //
-  // 三个入口的**唯一权威都在本类**（面板只做 DOM 与文案，不碰 world/player）—— 与
+  // 四个入口的**唯一权威都在本类**（面板只做 DOM 与文案，不碰 world/player）—— 与
   // `setMusicEnabled` 同一手法：面板拿不到世界数据，散落进去就会逼它 import voxel/gen 层，
   // 违反依赖方向（§3）。
 
@@ -1163,11 +1163,11 @@ export class Game {
     // y 用**纯函数**算，不等 column 加载（见下面 `_teleportTo` 的说明）。
     const y = tarnSurfaceYAt(x, z, this.seed, lay) + 1; // +1 = 地表方块之上那一格（脚底）
     this._teleportTo(x, y, z);
-    return { ok: true, x, y, z, dist: Math.round(found.dist) };
+    return { ok: true, kind: 'tarn', x, y, z, dist: Math.round(found.dist) };
   }
 
   /**
-   * 传送的**唯一落地实现**（三个入口共用，红线 1）。
+   * 传送的**唯一落地实现**（四个入口共用，红线 1）。
    *
    * ## 为什么不等目标 column 加载
    *
@@ -1213,7 +1213,7 @@ export class Game {
       localStorage.setItem(MARK_KEY, JSON.stringify(mark));
     } catch { /* 私密模式配额失败：内存里也记一份，本次会话仍可用 */ }
     this._markCache = mark;
-    return { ok: true, ...mark };
+    return { ok: true, kind: 'mark', ...mark };
   }
 
   /**
@@ -1232,7 +1232,34 @@ export class Game {
     // y 用存档里的值（标记时玩家就站在那儿，比重新扫地表更忠实于「我刚站过的地方」），
     // 也因此不需要等目标 column 加载。
     this._teleportTo(mark.x, mark.y, mark.z);
-    return { ok: true, ...mark };
+    return { ok: true, kind: 'mark-go', ...mark };
+  }
+
+  /**
+   * 回到出生点（设置面板「回家」按钮，v1.97）。
+   *
+   * 出生点 = `this.spawnX/spawnY/spawnZ`：启动期从 `getCitySpawnPoint(city)` 取 x/z、
+   * `findSpawnY` 取 y（当时出生 column 已 `_waitForColumn` 完，横扫到的就是真实地表）。
+   *
+   * ## y 用启动时缓存的 spawnY，不在点击时重扫
+   *
+   * 点击时玩家可能在 1200 格外，出生 column 早已被卸载、世界里读到全是空气 ——
+   * 此时 `findSpawnY` 会一路扫到兜底 `SEA_Y + 2`，把玩家传到半空或水面下。
+   * 而缓存值来自「column 已加载」的启动期，与 `player.spawn(spawnX, spawnY, spawnZ)`
+   * 走的是同一份数字（红线 1：出生点只有一份权威，不另建副本）。
+   * 与 `teleportToMark` 同理：传送不等目标 column，落地后由帧循环的
+   * `scheduler.update(playerX, playerZ)` 逐片加载（见 `_teleportTo`）。
+   *
+   * @returns {{ok: true, kind: 'spawn', x: number, y: number, z: number} | {ok: false, reason: string}}
+   */
+  teleportToSpawn() {
+    if (!this.player?.physics?.pos) return { ok: false, reason: 'no-player' };
+    const { spawnX: x, spawnY: y, spawnZ: z } = this;
+    // `findSpawnY` 的兜底、以及 meta/URL 带来的异常值都可能是非有限数 —— 传送到 NaN
+    // 会让玩家位置永久坏掉（物理层算不出碰撞），故宁可报错不动玩家。
+    if (![x, y, z].every((v) => Number.isFinite(v))) return { ok: false, reason: 'not-found' };
+    this._teleportTo(x, y, z);
+    return { ok: true, kind: 'spawn', x, y, z };
   }
 
   /**

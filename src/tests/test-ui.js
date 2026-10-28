@@ -23,6 +23,7 @@ import {
   PLAYGROUND_OPEN_LABEL, PLAYGROUND_CLOSE_LABEL, PLAYGROUND_ERRORS,
   PLAYGROUND_ROW_TITLE, PROGRESS_ROW_TITLE, PROGRESS_EXPORT_LABEL, PROGRESS_IMPORT_LABEL, PROGRESS_ERRORS,
   TELEPORT_ROW_TITLE, TELEPORT_TARN_LABEL, TELEPORT_MARK_LABEL, TELEPORT_GO_LABEL,
+  TELEPORT_HOME_LABEL,
 } from '../ui/settings-panel.js';
 import { Toast } from '../ui/toast.js';
 import { PANEL_CSS as INVENTORY_PANEL_CSS } from '../ui/inventory.js';
@@ -336,16 +337,18 @@ test('背包 hover 浮层：显示方块 id 原样，且不拦截鼠标事件', 
   assertTrue(css.includes('#inventory-tooltip.mc-visible'), '浮层须用 .mc-visible 类控制显示');
 });
 
-test('瞬移行的标题与三个按钮文案是导出的单一口径常量（v1.92）', () => {
+test('瞬移行的标题与四个按钮文案是导出的单一口径常量（v1.92 / v1.97 追加回家）', () => {
   // 用户 2026-10-29：「在背景音乐下面增加一排按钮……这个区域的功能就是瞬移」，
-  // 三个按钮依次是「高台地带」「标记位置」「跳转标记位置」。
+  // 三个按钮依次是「高台地带」「标记位置」「跳转标记位置」；
+  // v1.97 用户追加：「增加一个按钮『回家』，就是返回到 City 原始的玩家出生点的位置」。
   assertEqual(TELEPORT_ROW_TITLE, '瞬移');
   assertEqual(TELEPORT_TARN_LABEL, '高台地带');
   assertEqual(TELEPORT_MARK_LABEL, '标记位置');
   assertEqual(TELEPORT_GO_LABEL, '跳转标记位置');
-  // 三个按钮必须互相可区分 —— 否则玩家分不出「标记」与「跳转标记」哪一个是记录
-  const all = [TELEPORT_TARN_LABEL, TELEPORT_MARK_LABEL, TELEPORT_GO_LABEL];
-  assertEqual(new Set(all).size, 3, '三个瞬移按钮文案不得重复');
+  assertEqual(TELEPORT_HOME_LABEL, '回家');
+  // 四个按钮必须互相可区分 —— 否则玩家分不出「标记」与「跳转标记」哪一个是记录
+  const all = [TELEPORT_TARN_LABEL, TELEPORT_MARK_LABEL, TELEPORT_GO_LABEL, TELEPORT_HOME_LABEL];
+  assertEqual(new Set(all).size, 4, '四个瞬移按钮文案不得重复');
   assertFalse(TELEPORT_ROW_TITLE === PROGRESS_ROW_TITLE, '瞬移行不得与进度管理行撞名');
 });
 

@@ -44,13 +44,15 @@ export const PLAYGROUND_ROW_TITLE = '创造台';
  */
 export const PROGRESS_ROW_TITLE = '进度管理';
 /**
- * v1.92：瞬移行的标题与三个按钮文案。导出供 `src/tests/test-ui.js` 钉死（单一口径）。
- * 用户 2026-10-29 需求：「在背景音乐下面增加一排按钮……功能就是瞬移」。
+ * v1.92：瞬移行的标题与按钮文案。导出供 `src/tests/test-ui.js` 钉死（单一口径）。
+ * 用户 2026-10-29 需求：「在背景音乐下面增加一排按钮……功能就是瞬移」；
+ * v1.97 追加「回家」（用户 2026-10-31：「增加一个按钮『回家』，返回到 City 原始的玩家出生点」）。
  */
 export const TELEPORT_ROW_TITLE = '瞬移';
 export const TELEPORT_TARN_LABEL = '高台地带';
 export const TELEPORT_MARK_LABEL = '标记位置';
 export const TELEPORT_GO_LABEL = '跳转标记位置';
+export const TELEPORT_HOME_LABEL = '回家';
 /** 导出 / 导入模型按钮文案（创造台模型，与下行的**进度包**是两个不同粒度） */
 const EXPORT_LABEL = '导出模型';
 const IMPORT_LABEL = '导入模型';
@@ -441,15 +443,20 @@ export class SettingsPanel {
    * v1.92：「瞬移」行（用户 2026-10-29 需求：「在背景音乐下面增加一排按钮，这个区域的功能
    * 就是瞬移」）。
    *
-   * 三个按钮都是**动作型**（点一下执行一次），不是档位开关 —— 所以不用 `_makeRow`
+   * 四个按钮都是**动作型**（点一下执行一次），不是档位开关 —— 所以不用 `_makeRow`
    * （它按 `values` 渲染 `.active` 选中态），而是照 `_rowWorld` 的手法自己拼按钮组：
    * 动作按钮没有「当前值」，渲染选中态会让玩家以为有持久状态。
    *
    * ⚠️ **落位 = 左列（背景音乐下方）**，理由同 `_rowMusic` 注释：左列只有四行、
    * 右列六行且是决定面板高度的那一列，加在左列不抬高面板。用户明确说「背景音乐下面」。
    *
-   * ⚠️ **业务逻辑一律在 Game**（`teleportToTarnZone` / `markPosition` / `teleportToMark`）：
-   * 面板只做 DOM 与文案。散落进来的话要 import voxel/gen 层，违反依赖方向（§3）。
+   * ⚠️ **业务逻辑一律在 Game**（`teleportToTarnZone` / `markPosition` / `teleportToMark` /
+   * `teleportToSpawn`）：面板只做 DOM 与文案。散落进来的话要 import voxel/gen 层，
+   * 违反依赖方向（§3）。
+   *
+   * ⚠️ **四个按钮共享 `.mc-btn-group` 的 `flex:1`** → 同一行、等宽。行数上限取决于左列宽度
+   * （实测 375px），`teleport.spec` 用 `offsetTop` 钉住「不得换行」（换行后每行两个按钮，
+   * 文案会被压成两行，面板高度也会跟着涨）。
    */
   _rowTeleport() {
     const row = document.createElement('div');
@@ -487,21 +494,37 @@ export class SettingsPanel {
       this._toast?.show(this._teleportMessage(r), TELEPORT_TOAST_MS);
     });
 
+    // v1.97：回家（回到 City 出生点）。放在最后 —— 前三个是「去别处」，这一行末尾是「回去」。
+    mk(TELEPORT_HOME_LABEL, 'btn-teleport-home', () => {
+      const r = this.game.teleportToSpawn();
+      this._toast?.show(this._teleportMessage(r), TELEPORT_TOAST_MS);
+    });
+
     return row;
   }
 
   /**
-   * 把 `Game` 的瞬移返回值翻成玩家可读文案（单一口径：三个按钮共用一份映射）。
+   * 把 `Game` 的瞬移返回值翻成玩家可读文案（单一口径：四个按钮共用一份映射）。
+   *
+   * ⚠️ **成功分支按 `kind` 区分，不得靠嗅探字段**：v1.92 原实现是「有 dist 就是高台、
+   * 有 y 就是记录」，加入「回家」后它同样带 x/y/z 但**没有** dist → 会被写成「已记录位置」
+   * （玩家以为按错了按钮）。故 Game 侧给四个入口都打上 `kind`，这里按它 switch。
    *
    * ⚠️ **失败分支必须各有独立文案**：`no-mark`（还没标记）与 `not-found`（范围内没有
    * 高台地带）是两种完全不同的处境，合成一句「操作失败」玩家无从判断下一步做什么。
-   * @param {{ok: boolean, reason?: string, x?: number, y?: number, z?: number, dist?: number}} r
+   * @param {{ok: boolean, kind?: string, reason?: string, x?: number, y?: number, z?: number, dist?: number}} r
    * @returns {string}
    */
   _teleportMessage(r) {
     if (r.ok) {
-      if (r.dist !== undefined) return `已瞬移到高台地带（${r.dist} 格外）`;
-      if (r.y !== undefined) return `已记录位置：${r.x}, ${r.y}, ${r.z}`;
+      switch (r.kind) {
+        case 'tarn': return `已瞬移到高台地带（${r.dist} 格外）`;
+        case 'mark': return `已记录位置：${r.x}, ${r.y}, ${r.z}`;
+        case 'mark-go': return `已跳转到标记位置：${r.x}, ${r.y}, ${r.z}`;
+        case 'spawn': return `已回到出生点：${r.x}, ${r.y}, ${r.z}`;
+        // 未打 kind 的返回值（将来新增入口忘了打）也不得静默变成空提示
+        default: return `已完成：${r.x}, ${r.y}, ${r.z}`;
+      }
     }
     switch (r.reason) {
       case 'no-player': return '玩家尚未就绪';
