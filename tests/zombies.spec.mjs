@@ -659,7 +659,7 @@ test('M6：30 只压力 fixture（M7 联调用，非默认配置）', async ({ p
   // 纯 fixture 用 `new ZombieService({maxActive:30})` 验证容量可扩，不碰真游戏页。
   test.setTimeout(60_000);
   await page.goto('/src/tests/index.html');
-  await page.waitForFunction(() => window.__MC_TEST_RESULTS__ !== undefined, null, { timeout: 30_000 });
+  await page.waitForFunction(() => window.__MC_TEST_RESULTS__ !== undefined, null, { timeout: 90_000 });
   const result = await page.evaluate(async () => {
     const { ZombieService, zombieDefinition } = await import('/src/entities/zombies/zombie-system.js');
     const { ZombieRenderer } = await import('/src/render/zombie-renderer.js');

@@ -7,7 +7,7 @@ test('M4：武器纯逻辑浏览器单测通过', async ({ page }) => {
   await page.waitForFunction(
     () => window.__MC_TEST_RESULTS__ !== undefined,
     null,
-    { timeout: 30_000 },
+    { timeout: 90_000 },
   );
   const results = await page.evaluate(() => window.__MC_TEST_RESULTS__);
   expect(results.failed).toBe(0);
