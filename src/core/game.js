@@ -115,6 +115,16 @@ export class Game {
    */
   constructor({ canvas, registry, seed = null, viewDistance = 8, hudRoot, blurMipmap = false, budgetProfile = 'auto', chunkPace = 8, startWeather = null, shadows = true, skybox = true, settings = null }) {
     this._settings = settings;
+    /**
+     * 生效设置：main.js 已 resolve（存储+URL）传入；缺省自行合并（fixture 页直建 Game 时）。
+     *
+     * ⚠️ **必须在构造期解析，不能等到 `start()` 尾部**（用户 2026-10-31 反馈「启动即傍晚/夜晚
+     * 时水面颜色不对」的根因之一）：`DayNight` 在 `start()` 中段构造，而旧实现要到尾部才赋
+     * `this.settings` → 构造时读不到持久化的 `visualStyle`。同款教训已记在 `bgmEnabled` 上
+     * （AudioManager 构造在 settings 赋值之前，读 `this.settings.bgm` 会抛）。
+     * 此处解析是**幂等**的（resolveSettings 是纯函数），start() 里的那行赋值保留作兵二。
+     */
+    this.settings = settings || resolveSettings(loadStoredSettings(), new URLSearchParams(location.search));
     this._shadowsOption = shadows;
     this._skyboxOption = skybox;
     this.registry = registry;
@@ -304,6 +314,8 @@ export class Game {
     }
     const fogUniforms = setupFog(this.scene, this.viewDistance, this.sky);
     this.fog = fogUniforms; // v1.59：雾色模式开关的 uniform 句柄（setFogColorEnabled）
+    // ⚠️ 海面必须先于 DayNight 创建：它的 `uWaterTint`（v2.1 环境亮度乘数）由 DayNight._apply
+    // 写入，而构造器末尾就会立即 apply 一次 —— 晚于构造就接不到启动那一帧。
     this.ocean = setupOcean(this.scene);
     // ⚠️ 灯光创建必须在 RenderWorld 之前：材质的 shadow() 节点在构建时固定 light 引用。
     this.renderWorld = new RenderWorld({ scene: this.scene, atlasTexture: texture, viewDistance: this.viewDistance, sunLight });
@@ -313,8 +325,11 @@ export class Game {
       fog: fogUniforms,
       voxelUniforms: this.renderWorld.materials.dayNight,
       skyUniforms: this.sky
-        ? { uNightBlend: this.sky.uNightBlend, uDuskBlend: this.sky.uDuskBlend }
-        : null,
+        ? { uNightBlend: this.sky.uNightBlend, uDuskBlend: this.sky.uDuskBlend, uWaterTint: this.ocean.uWaterTint }
+        : { uWaterTint: this.ocean.uWaterTint },
+      // 启动即目标风格（用户 2026-10-31）：持久化的「傍晚/黑夜」必须在**构造首帧**就生效，
+      // 而不是等 start() 尾部的 setVisualStyle() 补 —— 否则首帧（含水面 tint）是正午值。
+      visualStyle: this.settings.visualStyle || null,
       baseFogNear: this.viewDistance * 16 * 0.75,
       baseFogFar: (this.viewDistance + 2) * 16 * 0.95,
       // ACES 曝光写入目标（v1.70）：DayNight._apply 是唯一收口点（setStyle 与日夜循环共用）。
@@ -656,11 +671,11 @@ export class Game {
     // M4：武器渲染/音频运行时（只在主线程；不进 Worker/体素 meshing 管线）。
     // 模型加载失败只记录 console，不中止 worldReady——玩家保持徒手可玩。
     this.weaponModelLoader = new WeaponModelLoader();
-    // v1.63：背景音乐开关来自生效设置。`this.settings` 的赋值在 start() 尾部（:646），
-    // 此处读不到 —— 故照既有手法直接解析一次（Game 构造参数里的 settings 优先）。
+    // v1.63：背景音乐开关来自生效设置。
+    // ⚠️ 旧实现因为 `this.settings` 在 start() 尾部才赋值，这里只能再解析一次；现在已改为
+    // **构造期解析**（见构造器注释，v2.1 修启动即傍晚/夜晚水面不准时一并收口）→ 直接读。
     this.audioManager = new AudioManager(this.camera, {
-      bgmEnabled: (this._settings
-        || resolveSettings(loadStoredSettings(), new URLSearchParams(location.search))).bgm,
+      bgmEnabled: this.settings.bgm,
     });
     this.audioManager.preload().catch((err) => console.warn('[audio] preload failed:', err));
     this.viewWeapon = new ViewWeapon({ camera: this.camera, modelLoader: this.weaponModelLoader });
@@ -749,10 +764,15 @@ export class Game {
       icons: iconManifest.inventory,
     });
     // 生效设置：main.js 已 resolve（存储+URL）传入；缺省自行合并（fixture 页直建 Game 时）
-    this.settings = this._settings || resolveSettings(loadStoredSettings(), new URLSearchParams(location.search));
+    // ⚠️ 构造期已解析过（见构造器），此处保留幂等赋值作兵二。
+    this.settings = this.settings || resolveSettings(loadStoredSettings(), new URLSearchParams(location.search));
     this.settingsPanel = new SettingsPanel(this._hudRoot, this, this.settings);
     // 启动应用视觉风格（设置持久化：null=日夜循环，M2-6）
-    if (this.settings.visualStyle) this.setVisualStyle(this.settings.visualStyle);
+    // ⚠️ 风格已在 `new DayNight({visualStyle})` 构造首帧生效（用户 2026-10-31）；此处只在
+    // **面板/持久化的值在 start() 期间被改过**时补一次 —— 未变时不重复 apply（避免无谓的一次全量写入）。
+    if (this.settings.visualStyle && this.dayNight._styleOverride !== this.settings.visualStyle) {
+      this.setVisualStyle(this.settings.visualStyle);
+    }
     // 启动应用枪械破坏开关（M4：默认 false 已是 weaponController 初值，仅 true 时需调）
     if (this.settings.gunBlockDamage) this.setGunBlockDamage(true);
     // 启动应用 TNT 破坏开关（M8：默认 false 已是 `canTntDestroyBlocks` 初值，仅 true 时需调）

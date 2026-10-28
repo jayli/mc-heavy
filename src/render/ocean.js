@@ -102,6 +102,25 @@ export function setupOcean(scene) {
   const uFogNear = uniform(20.0);
   const uFogFar = uniform(70.0);
   /**
+   * 水面环境亮度乘数（v2.1）—— 由 `DayNight._apply` 按视觉风格写入（`skyUniforms.uWaterTint`）。
+   *
+   * **根因**：本材质是 unlit，此前只读 `uColor`/`uSunDirection`，**完全不跟着色环境的亮度**。
+   * 而 dusk/night 的 `toneMappingExposure` 是 1.20 / 1.60（为体素世界的暗部补光，见
+   * `daynight.js` 的 VISUAL_STYLES）→ 水面连带被提亮。实测（海岸机位，五变量冻结，水面众数峰）：
+   * | 风格 | exposure | 水面 rgb | luma |
+   * |---|---|---|---|
+   * | morning | 1.00 | `77/122/165` | 116 |
+   * | noon | 1.00 | `77/123/166` | 116 |
+   * | dusk | 1.20 | `92/137/179` | **131** |
+   * | night | 1.60 | `109/154/193` | **147** |
+   * 用户 2026-10-31：「傍晚和晚上水面波纹过于亮，晚上像水面会发光」—— 数据完全对得上。
+   * 夜里还有**反向撕裂**：体素水方块被 `skyDim 0.25` 压暗，水面平面反而变亮一档。
+   *
+   * ⚠️ **初值恒 1**：`1` 时下面的公式**逐位等于** v1.85 的原式（零回归）——
+   * 即使无人接线（fixture / 单测 / 未装配），水面也回到改动前的表现。
+   */
+  const uWaterTint = uniform(new THREE.Vector3(1, 1, 1));
+  /**
    * 城市门控 bounds（xyzw = minX/maxX/minZ/maxZ）。
    * 默认取 `OCEAN_MASK_NO_CITY` 哨兵（minX > maxX → 判定恒假 → 门控关闭），
    * 未接线时不误伤任何点；`setCityBounds()` 接真实城市 bounds 后生效。
@@ -213,11 +232,22 @@ export function setupOcean(scene) {
     // 乘法混色 `base + (1−base)×t` 天然有界（t=1 才到纯白），t 小时只提亮一点点，
     // 波纹因此「显出形状」而不「发白」。实测平坦水面的众数峰由此从 170/189/220 落到
     // 132/149/178（见 WATER_COLOR 的表）。
+    //
+    // ---- 环境亮度（v2.1）----
+    // `uWaterTint` 是风格化的环境亮度乘数（晨/午 = 1），**乘在整个水面颜色上**（基色 + 高光）。
+    // ⚠️ **必须乘高光，不能只乘基色**（实测踩坑）：高光走乘法混色 `base + highlight×glow×(1−base)`，
+    // 它的可提升上限 `(1−base)` 会随基色变暗而变大 → 只压基色时高光反向补偿，
+    // 实测 dusk 的 tint 从 1.0 压到 0.80 时水面 luma 只从 131 降到 125（目标 118）。
+    // 整体相乘才能在「基色与高光都暗下去」上得到可标定的单调响应。
+    // ⚠️ 先算完整颜色再乘 tint（不是改写 base，也不是乘在输出最后）：
+    // `tint = 1` 时 `×1.0` 在 IEEE754 下逐位精确 → v1.85 原式零回归。
+    const baseColor = uColor;
     const highlight = vec3(WATER_HIGHLIGHT_COLOR[0], WATER_HIGHLIGHT_COLOR[1], WATER_HIGHLIGHT_COLOR[2]);
     const glow = diffuse.add(scatter).add(spec).add(fresnel.mul(0.1))
       .mul(WATER_HIGHLIGHT_GAIN)
       .min(1.0);
-    const finalColor = uColor.add(highlight.mul(glow).mul(vec3(1.0, 1.0, 1.0).sub(uColor)));
+    const litColor = baseColor.add(highlight.mul(glow).mul(vec3(1.0, 1.0, 1.0).sub(baseColor)));
+    const finalColor = litColor.mul(uWaterTint);
 
     const depth = length(cameraPosition.sub(positionWorld));
     const fogFactor = smoothstep(uFogNear, uFogFar, depth);
@@ -250,6 +280,8 @@ export function setupOcean(scene) {
 
   return {
     plane,
+    /** 环境亮度乘数句柄（`DayNight` 经 `skyUniforms.uWaterTint` 写入；也供测试直接读） */
+    uWaterTint,
     /** 每帧：时间推进 + 跟随相机（无限水面） */
     update(camera, dt) {
       uTime.value += 0.015 * dt * 60;

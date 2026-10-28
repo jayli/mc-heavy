@@ -408,6 +408,150 @@ test('dusk：太阳灯基准色只有一个权威（RGB 数组与 hex 从同一�
   assertEqual(SUN_LIGHT_BASE_HEX, 0xfffaf0, '基准色须仍是 mc-lite Engine.js:168 的原值');
 });
 
+test('启动即目标风格：构造时就按 visualStyle 定下第一帧（不等后续 setStyle）', () => {
+  // 用户 2026-10-31：「刚进入游戏时，如果是晚上或傍晚，默认就要渲染正确的水面颜色，
+  // 而不是只在切换环境的时候把水面颜色渲染正确」。
+  //
+  // 根因不在水面（水面 uniform 就是 passive 的），而在**构造时序**：
+  // `DayNight` 构造器末尾硬性 `_apply(paramsAtHour(12))`（正午），而持久化的风格要到
+  // `game.start()` 尾巴才由 `setVisualStyle()` 补上。两者之间水面拿着正午的 tint ——
+  // 「首帧对不对」于是取决于一个**后置副作用**，而不是构造参数。
+  //
+  // 修法：构造器接受 `visualStyle`，首帧就 apply 目标风格（与 setStyle 同一收口 `_apply`）。
+  const written = [];
+  const skyUniforms = {
+    uNightBlend: { value: -1 }, uDuskBlend: { value: -1 },
+    uWaterTint: { value: { set(r, g, b) { written.push([r, g, b]); } } },
+  };
+  const dayNight = new DayNight({
+    scene: {}, fog: { fogColor: { value: { set() {} } }, fogNear: { value: 0 }, fogFar: { value: 0 } },
+    voxelUniforms: {
+      uSkyDim: { value: 0 }, uBlockBoost: { value: 0 }, uShadowStrength: { value: 0 },
+    },
+    skyUniforms,
+    visualStyle: VISUAL_STYLE_KEYS.NIGHT,
+  });
+  // 构造后的**第一次**写入就必须是 night 的值（不得先写 noon 再补 night 以外的中间态）
+  assertVecClose(written[0], VISUAL_STYLES.night.waterTint, 1e-12,
+    '构造时首帧写入的 waterTint 必须直接是 night 的值');
+  assertEqual(written.length, 1, '构造只能 apply 一次（不得先 noon 再 night 各写一遍）');
+  // 参数与 override 状态也要一致（否则第一次 update() 会跳回自动循环）
+  assertEqual(dayNight._styleOverride, VISUAL_STYLE_KEYS.NIGHT, '构造即进入 override 状态');
+  assertEqual(dayNight.params.skyDim, VISUAL_STYLES.night.skyDim, '首帧参数就是 night 的');
+  assertEqual(dayNight.params.duskBlend, 0, 'night 的 duskBlend 为 0');
+  // 不传 visualStyle 时行为逐位不变（既有调用方零回归）
+  const plain = new DayNight({
+    scene: {}, fog: { fogColor: { value: { set() {} } }, fogNear: { value: 0 }, fogFar: { value: 0 } },
+    voxelUniforms: {
+      uSkyDim: { value: 0 }, uBlockBoost: { value: 0 }, uShadowStrength: { value: 0 },
+    },
+  });
+  assertEqual(plain._styleOverride, null, '缺省仍是自动日夜循环');
+  assertEqual(plain.params.skyDim, VISUAL_STYLES.noon.skyDim, '缺省仍从正午起步');
+});
+
+test('启动即目标风格：dusk 同样在构造首帧生效（不只是 waterTint，sky/曝光/色温一整套）', () => {
+  const seen = { tint: null, exposure: null, duskBlend: null };
+  const skyUniforms = {
+    uNightBlend: { value: -1 }, uDuskBlend: { value: -1 },
+    uWaterTint: { value: { set(r) { seen.tint = r; } } },
+  };
+  const renderer = { set toneMappingExposure(v) { seen.exposure = v; } };
+  const dayNight = new DayNight({
+    scene: {}, fog: { fogColor: { value: { set() {} } }, fogNear: { value: 0 }, fogFar: { value: 0 } },
+    voxelUniforms: {
+      uSkyDim: { value: 0 }, uBlockBoost: { value: 0 }, uShadowStrength: { value: 0 },
+    },
+    skyUniforms, renderer,
+    visualStyle: VISUAL_STYLE_KEYS.DUSK,
+  });
+  const d = VISUAL_STYLES.dusk;
+  assertEqual(seen.tint, d.waterTint[0], '首帧 waterTint 就是 dusk 的值');
+  assertEqual(seen.exposure, d.toneMappingExposure, '首帧曝光就是 dusk 的');
+  assertEqual(skyUniforms.uDuskBlend.value, 1, '首帧就叠黄昏天空盒');
+  assertEqual(dayNight.params.skyDim, d.skyDim, '首帧 skyDim 就是 dusk 的');
+});
+
+// —— 水面配色随环境风格 = waterTint（v2.1，2026-10-31 用户实玩反馈）——
+// 用户：「早晨和正午的水面波纹颜色没问题，但傍晚和晚上过于亮，晚上像水面会发光」。
+// 根因不是配色，而是**机制**：`ocean.js` 是 unlit 材质，只读 uColor/uSunDirection，
+// **完全不接着色环境的亮度**；而 dusk/night 的 `toneMappingExposure` 是 1.20/1.60
+// （为体素世界暗部补光）→ 水面连带被提亮。实测水面 luma 116(noon) → 131(dusk) → 147(night)。
+// 所以水面必须像 sunColor/ambientColor 一样，拿到一个**按风格插值的环境乘数**。
+
+test('waterTint：四种风格都有三分量乘数，晨午中性（晨午逐位零回归）', () => {
+  for (const key of Object.keys(VISUAL_STYLES)) {
+    const t = VISUAL_STYLES[key].waterTint;
+    assertTrue(Array.isArray(t) && t.length === 3, `${key}.waterTint 须是三分量数组`);
+    for (const v of t) assertTrue(typeof v === 'number' && v > 0.2 && v <= 1.0, `${key}.waterTint 分量须在 (0.2,1]：${v}`);
+  }
+  // 晨/午是用户的基准态（「没问题」）→ 乘数必须恒为 1（逐位零回归）
+  for (const key of ['morning', 'noon']) {
+    assertEqual(VISUAL_STYLES[key].waterTint.join(','), '1,1,1', `${key}.waterTint 须为中性 1`);
+  }
+});
+
+test('waterTint：傍晚比正午暗、夜晚最暗（亮度序与用户反馈一致）', () => {
+  const mean = (k) => {
+    const t = VISUAL_STYLES[k].waterTint;
+    return (t[0] + t[1] + t[2]) / 3;
+  };
+  const n = mean('noon'), d = mean('dusk'), k = mean('night');
+  assertEqual(n, 1, '正午水面不压暗');
+  assertTrue(d < n - 0.05, `傍晚须明显比正午暗：dusk=${d.toFixed(3)} noon=${n}`);
+  assertTrue(k < d - 0.05, `夜晚须比傍晚更暗：night=${k.toFixed(3)} dusk=${d.toFixed(3)}`);
+  // 下界：不能压到「一潭墨」—— 水面仍要有波纹明暗差与海蓝色相（Tier 4 会再钉像素）
+  assertTrue(k > 0.4, `夜晚不得压得过狠（留给波纹明暗差）：night=${k.toFixed(3)}`);
+});
+
+test('waterTint：不改变色相（四风格三通道一致，只调亮度不偏色）', () => {
+  // 用户要的是「调暗一些」，不是改色相。三通道各写一份会漂移出「夜里水变绿/变紫」，
+  // 而 RGB 各自独立给值在观感上没有任何收益（它乘的是同一个基色，不是色温）。
+  for (const key of Object.keys(VISUAL_STYLES)) {
+    const t = VISUAL_STYLES[key].waterTint;
+    assertTrue(Math.abs(t[0] - t[1]) < 1e-9 && Math.abs(t[1] - t[2]) < 1e-9,
+      `${key}.waterTint 三通道须相等（只调亮度不改色相）：${t.join(',')}`);
+  }
+});
+
+test('waterTint：paramsAtHour 随关键帧插值，且自动循环全程 ≥ 夜晚值', () => {
+  const nightTint = VISUAL_STYLES.night.waterTint[0];
+  assertEqual(paramsAtHour(12).waterTint.join(','), '1,1,1', '正午取中性 1');
+  assertEqual(paramsAtHour(0).waterTint[0], nightTint, '子夜取 night 原值');
+  // 中间时刻必须严格落在两端之间 —— 证明走插值而不是二态跳变
+  const mid = paramsAtHour(6).waterTint[0];
+  assertTrue(mid > nightTint - 1e-9 && mid < 1 + 1e-9,
+    `6 点（night→morning 段）须在两端之间：mid=${mid}`);
+  // 不变式：自动循环永不低于 night 原值（循环里 dusk 不参与，duskBlend 恒 0）
+  for (let h = 0; h <= 24; h += 0.25) {
+    const v = paramsAtHour(h).waterTint[0];
+    assertTrue(v >= nightTint - 1e-9, `h=${h} 的 waterTint 不得低于 night 原值：${v}`);
+  }
+});
+
+test('waterTint：经 _apply 写到海面 uniform（句柄缺失不抛错，晨午写入 1）', () => {
+  const seen = [];
+  const skyUniforms = {
+    uNightBlend: { value: -1 }, uDuskBlend: { value: -1 },
+    // ⚠️ stub 按真实形状：ocean.js 建的是 `uniform(new THREE.Vector3())` → `.value` 有 set、
+    // 没有 setRGB（Color 才有）。写成 setRGB 会掩盖 `.setRGB()` 那类接线错误。
+    uWaterTint: { value: { set(r, g, b) { seen.push([r, g, b]); } } },
+  };
+  const dayNight = new DayNight({
+    scene: {}, fog: { fogColor: { value: { set() {} } }, fogNear: { value: 0 }, fogFar: { value: 0 } },
+    voxelUniforms: {
+      uSkyDim: { value: 0 }, uBlockBoost: { value: 0 }, uShadowStrength: { value: 0 },
+    },
+    skyUniforms,
+  });
+  dayNight.setStyle(VISUAL_STYLE_KEYS.NIGHT);
+  assertVecClose(seen[seen.length - 1], VISUAL_STYLES.night.waterTint, 1e-12, 'night 写入值');
+  dayNight.setStyle(VISUAL_STYLE_KEYS.NOON);
+  assertVecClose(seen[seen.length - 1], [1, 1, 1], 1e-12, 'noon 须写回中性 1（逐位零回归）');
+  // 句柄缺失（既有调用方 / fixture / 未接线）不得抛错
+  makeDayNightStub().dayNight.setStyle(VISUAL_STYLE_KEYS.DUSK);
+});
+
 test('dusk：夜空混合显式指定为 0（不得从 skyDim 倒算出星空混入）', async () => {
   // 实测踩坑：dusk 的 skyDim 是 0.78（为地面可辨认），按 nightBlendOf 的旧公式会倒算出
   // **0.293** → 傍晚天空混进 30% 星空贴图 → 实测天空暖度被拉成 R−B = −14（仍偏冷）。

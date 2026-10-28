@@ -10,6 +10,24 @@ export const VISUAL_STYLE_KEYS = { MORNING: 'morning', NOON: 'noon', DUSK: 'dusk
 const NEUTRAL_COLOR = Object.freeze([1, 1, 1]);
 
 /**
+ * 水面环境亮度乘数的中性值（全 1 = 不压暗）。
+ *
+ * 语义与 `NEUTRAL_COLOR` 同为「相对乘数」，但它只作用于**海面平面**（`ocean.js` 的
+ * `uWaterTint`），不作用于体素世界：
+ *
+ * **为什么需要它**（v2.1，2026-10-31 用户实玩反馈「傍晚和晚上的水面波纹过于亮，
+ * 晚上看上去像水面会发光」）：`ocean.js` 是 unlit 材质，原本**不接任何环境亮度**；
+ * 而 dusk/night 的 `toneMappingExposure` 是 1.20 / 1.60（为体素世界暗部补光）
+ * → 水面跟着被提亮。实测水面 luma：morning/noon **116** → dusk **131** → night **147**，
+ * 也就是「水面亮度几乎正比于曝光」，而且夜里它与被 `skyDim 0.25` 压暗的体素水反向撕裂。
+ *
+ * ⚠️ **晨/午恒为中性**（用户明确「早晨和正午的水面波纹颜色没问题」）→ 零回归。
+ * ⚠️ **只调亮度、不改色相**：三通道给同一个值。用户要的是「调暗一些」，不是变色；
+ * 分通道会给出一份没有观感收益的额外自由度（而且很容易漂成夜里水发紫）。
+ */
+const NEUTRAL_WATER_TINT = Object.freeze([1, 1, 1]);
+
+/**
  * 太阳方向光（`DirectionalLight`）的**基准颜色** —— 唯一权威，`game.js` 建灯与
  * `_apply` 按色温重算都从这里取（两处各写一份字面量会漂移出「白天灯色对、傍晚灯色不跟」）。
  *
@@ -55,6 +73,8 @@ export const VISUAL_STYLES = {
     moonDirection: [-0.38, 0.45, -0.81], moonVisible: false, moonSize: 20,
     // 色温中性 + 不用黄昏天空盒（零回归锚点：着色器逐位回到 v1.70）
     sunColor: NEUTRAL_COLOR, ambientColor: NEUTRAL_COLOR, duskBlend: 0,
+    // 水面亮度：早晨用户明确说「没问题」→ 中性（零回归）
+    waterTint: NEUTRAL_WATER_TINT,
   },
   noon: {
     sky: 0x87ceeb, fogColor: 0x87ceeb, fogScale: 1.0, skyDim: 1.0, blockBoost: 1.0,
@@ -68,6 +88,8 @@ export const VISUAL_STYLES = {
     toneMappingExposure: 1.0,
     moonDirection: [-0.25, 0.5, -0.82], moonVisible: false, moonSize: 18,
     sunColor: NEUTRAL_COLOR, ambientColor: NEUTRAL_COLOR, duskBlend: 0,
+    // 水面亮度：正午是用户裁定的基准态（「正午的水面波纹颜色没问题」）→ 必须中性
+    waterTint: NEUTRAL_WATER_TINT,
   },
   /**
    * 傍晚（v1.71）—— 天空盒 = mc-lite `skyBox2`（日落）。
@@ -112,6 +134,13 @@ export const VISUAL_STYLES = {
     sunColor: Object.freeze([1.50, 1.02, 0.58]),
     ambientColor: Object.freeze([0.86, 0.93, 1.20]),
     duskBlend: 1,
+    // 水面亮度 **0.84**（v2.1）。标定口径（海岸机位 / 五变量冻结 / 水面众数峰）：
+    // 不压暗时实测 luma **131**（exposure=1.20 把水面一并提亮）；
+    // 用户 2026-10-31 裁定「中度」档 = 傍晚略高于正午（正午 116）→ 目标 ≈118。
+    // 实测 0.80 → 115（偏暗）、0.84 → 118 ✓。
+    // ⚠️ 这是**实测标定值**，不是从 exposure 反推的公式 —— ACES 在亮端压缩，
+    // 线性乘数 → 屏幕亮度的映射不是线性的（同 `sun-shade.js` 的 sRGB 口径教训）。
+    waterTint: Object.freeze([0.84, 0.84, 0.84]),
   },
   night: {
     // ⚠️ **`fogScale` 已从 mc-lite 的 4.0 改为 1.0**（v1.61，用户拍板）：4.0 会把雾距
@@ -134,6 +163,12 @@ export const VISUAL_STYLES = {
     toneMappingExposure: 1.6,
     moonDirection: [-0.32, 0.58, -0.75], moonVisible: true, moonSize: 34,
     sunColor: NEUTRAL_COLOR, ambientColor: NEUTRAL_COLOR, duskBlend: 0,
+    // 水面亮度 **0.62**（v2.1）—— 四风格里最暗的一档。
+    // 不压暗时实测 luma **147**（exposure=1.60，水面比晨午亮 27% → 用户说的「像发光」）；
+    // 用户裁定「中度」档 = 夜晚与正午基本持平（正午 116）→ 目标 ≈112。
+    // 实测 0.55 → 107（偏暗）、0.62 → 112 ✓。
+    // ⚠️ 下界留着：再往下压会把波纹明暗差抹平（水面变一潭墨），Tier 4 会钉像素。
+    waterTint: Object.freeze([0.62, 0.62, 0.62]),
   },
 };
 
@@ -168,6 +203,8 @@ function lerpParams(a, b, t) {
   const am = a.moonDirection, bm = b.moonDirection;
   // 色温与黄昏混合因子是 RGB/标量，同样线性插值。既有风格双方都是中性值 → 插值结果逐位不变。
   const ac = a.sunColor, bc = b.sunColor, aa = a.ambientColor, ba = b.ambientColor;
+  // 水面亮度乘数（v2.1）同理走线性插值 —— 不插的话风格切换到「傍晚→夜」会跳变。
+  const aw = a.waterTint, bw = b.waterTint;
   return {
     sky: lerpHex(a.sky, b.sky, t),
     fogColor: lerpHex(a.fogColor, b.fogColor, t),
@@ -186,6 +223,13 @@ function lerpParams(a, b, t) {
       aa[0] + (ba[0] - aa[0]) * t,
       aa[1] + (ba[1] - aa[1]) * t,
       aa[2] + (ba[2] - aa[2]) * t,
+    ],
+    // 水面亮度乘数（v2.1）：同样返回**新数组**（不得把权威原值暴露给调用方）。
+    // 两端都为中性时插值结果逐位 = 1 → 其余四风格的水面零回归。
+    waterTint: [
+      aw[0] + (bw[0] - aw[0]) * t,
+      aw[1] + (bw[1] - aw[1]) * t,
+      aw[2] + (bw[2] - aw[2]) * t,
     ],
     // 黄昏天空盒混合因子（v1.71）：两风格都是 0（自动循环从不引用 dusk）→ 结果恒 0。
     duskBlend: (a.duskBlend || 0) + ((b.duskBlend || 0) - (a.duskBlend || 0)) * t,
@@ -278,8 +322,11 @@ export class DayNight {
    *   色温（v1.71）必须同时写到灯上：它是枪 PBR 高光的源，否则傍晚里枪身高光仍是中性白。
    *   缺省 null（单测 / fixture）→ 跳过。
    * @param {(dir: [number, number, number]) => void} [opts.onSunDirection] 太阳方向变化回调（已归一化）
+   * @param {string|null} [opts.visualStyle] 启动时的视觉风格（`VISUAL_STYLE_KEYS` 的值，或 null
+   *   = 自动日夜循环）。**构造即生效**：首帧就 apply 这个风格，而不是先 apply 正午再等外部补
+   *   `setStyle()`。见构造器末尾的注释（用户 2026-10-31 反馈）。
    */
-  constructor({ scene, fog, voxelUniforms, skyUniforms = null, baseFogNear, baseFogFar, cycleSeconds = 1200, startHour = 12, renderer = null, sunLight = null, onSunDirection = null }) {
+  constructor({ scene, fog, voxelUniforms, skyUniforms = null, baseFogNear, baseFogFar, cycleSeconds = 1200, startHour = 12, renderer = null, sunLight = null, onSunDirection = null, visualStyle = null }) {
     this.scene = scene;
     this.fog = fog;
     this.voxelUniforms = voxelUniforms;
@@ -296,7 +343,29 @@ export class DayNight {
     // uShadowStrength，必须遵守该标志 —— 否则「关阴影」会在正常日夜循环的下一帧
     // 被覆写回 skyDim（静默失效；override 风格下 update() early-return 测不出来）。
     this.shadowEnabled = true;
-    this._apply(paramsAtHour(this.hour));
+    /**
+     * 首帧就按**目标风格**定下来（不得先 apply 正午再等外部 `setStyle`）。
+     *
+     * 用户 2026-10-31：「刚开始进入游戏的时候，如果是晚上或者傍晚，默认就要渲染正确的
+     * 水面颜色，而不是只在切换环境的时候才正确」。
+     *
+     * 根因是**构造时序**，不是某一个 uniform：旧实现构造末尾硬性
+     * `_apply(paramsAtHour(12))`（正午，M1 口径），而持久化的 `settings.visualStyle` 要到
+     * `game.start()` 尾部才由 `setVisualStyle()` 补上。两者之间，**全部**风格相关状态
+     * （水面 tint、曝光、天空、色温、sunDirection）都是正午值 —— 「首帧对不对」于是依赖
+     * 一个后置副作用。对本轮的水面改动尤其致命：tint 初值是 1（中性），
+     * 所以启动即夜晚时会先拿晨午的水色。
+     *
+     * 现在由构造参数决定：`visualStyle` 非空 → 直接进 override 并 apply 一次；
+     * 空 → 走既有的 `paramsAtHour(startHour)`（**逐位零回归**，缺省仍是正午）。
+     */
+    if (visualStyle) {
+      // 与 setStyle() 同一收口（经 _apply），且只 apply 一次 —— 不先写正午再写目标风格。
+      this._styleOverride = visualStyle;
+      this._apply({ ...VISUAL_STYLES[visualStyle] });
+    } else {
+      this._apply(paramsAtHour(this.hour));
+    }
   }
 
   /** 固定风格（M3 设置面板用）；null 恢复日夜循环 */
@@ -321,6 +390,7 @@ export class DayNight {
     // 不拷贝的话任何调用方 `params.sunColor[0] = x` 会直接改掉风格数据（红线 1）。
     p.sunColor = [...p.sunColor];
     p.ambientColor = [...p.ambientColor];
+    p.waterTint = [...p.waterTint];
     return p;
   }
 
@@ -382,6 +452,15 @@ export class DayNight {
     const uAmbientColor = this.voxelUniforms.uAmbientColor;
     if (uAmbientColor && uAmbientColor.value && typeof uAmbientColor.value.set === 'function') {
       uAmbientColor.value.set(p.ambientColor[0], p.ambientColor[1], p.ambientColor[2]);
+    }
+    // 水面环境亮度（v2.1）：写给**海面平面**的 `uWaterTint`（句柄由 `setupOcean` 提供）。
+    // ⚠️ 它与体素世界的 skyDim/曝光是**两个独立自由度**：体素世界需要 dusk/night 把曝光踢到
+    // 1.20/1.60 才能让暗部不死黑，而水面（unlit）乘的只是它自己的基色 → 不压就会「像发光」。
+    // 句柄缺失（fixture / `?ocean=0` / 尚未接线）时跳过 —— 与 uSunColor 同一容错口径。
+    // ⚠️ 用 `.value.set(x,y,z)`：`ocean.js` 建的是 `uniform(new THREE.Vector3())`，**没有** setRGB。
+    const uWaterTint = this.skyUniforms && this.skyUniforms.uWaterTint;
+    if (uWaterTint && uWaterTint.value && typeof uWaterTint.value.set === 'function') {
+      uWaterTint.value.set(p.waterTint[0], p.waterTint[1], p.waterTint[2]);
     }
     // 太阳灯（枪的 PBR 高光 + 阴影投射灯）的颜色也要跟随色温，否则傍晚里枪身的高光仍是
     // 中性白，与暖橙直射光打架。**基准色是既有常量**（不在这里写第二份字面量）。

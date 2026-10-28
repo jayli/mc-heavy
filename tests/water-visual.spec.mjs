@@ -49,6 +49,24 @@ import { PNG } from 'pngjs';
  * ⚠️ **水体像素判据用 `b > r+12 && g > r+12`，不能用旧的 `b > r+30 && b > g+30`**：
  * 后者要求 B 显著高于 G，把青绿/灰蓝海面整类排除 —— v1.82 之后它量到的样本会越来越少，
  * 极端时一个都采不到（实测出现过）。判据要跟着被测色相走。
+ *
+ * **第六条：水面亮度随环境风格（v2.1，2026-10-31 用户实玩反馈）**
+ * 用户：「早晨和正午的水面波纹颜色没问题，但傍晚和晚上显得过于亮，晚上看上去像水面会发光」。
+ *
+ * 根因**不是配色，是机制**：`ocean.js` 是 unlit 材质，只读 `uColor`/`uSunDirection`，
+ * **完全不接环境亮度**；而 dusk/night 的 `toneMappingExposure` 是 1.20/1.60（为体素世界
+ * 暗部补光，见 `daynight.js` 的 VISUAL_STYLES 标定）→ 水面连带被提亮。
+ * 实测（海岸机位，五变量冻结，水面众数峰 luma）：
+ *
+ * | 风格 | exposure | 修复前 | 修复后 |
+ * |---|---|---|---|
+ * | morning | 1.00 | 116 | **116**（零回归）|
+ * | noon | 1.00 | 116 | **116**（零回归）|
+ * | dusk | 1.20 | **131** | **118** |
+ * | night | 1.60 | **147** | **114** |
+ *
+ * 另一个副作用（用户报告的直接体现）：修复前夜里体素水方块被 `skyDim 0.25` 压暗、
+ * 水面平面反而变亮一档 → 海岸线上同一片水两种亮度。现在两侧方向一致。
  */
 
 /** 水体像素：G 与 B 都高于 R（海蓝、青绿、灰蓝都算） */
@@ -228,4 +246,150 @@ test('M2 验收：海面可见 + 跟随相机 + 帧率达标 + 水色深蓝不�
   const perf = await page.evaluate(() => window.__MC_GAME__.perfSnapshot());
   console.log('WATER FPS:', perf.fps.toFixed(1));
   expect(perf.fps).toBeGreaterThan(process.env.CI ? 20 : 90);
+});
+
+/**
+ * 第六条：水面亮度随环境风格（v2.1）。见文件头「第六条」段。
+ *
+ * 判据设计（每条都对着实测值标，不贴线）：
+ * ① **晨午零回归**：morning/noon 的 luma 必须仍落在既有双侧带 [105,140] 且与 v1.85 的 116 一致；
+ * ② **傍晚/夜晚显著变暗**：相对各自“不压暗”的基线（131 / 147）降幅须 ≥ 8%；
+ * ③ **但不得压成死水**：夜晚 luma 下界 ≥ 95（再暗波纹就看不见了）；
+ * ④ **色相不变**：四风格的 G−R 都仍 ≥ 24（海蓝没变绿/变紫）。
+ *
+ * 为什么不用「夜晚 < 正午」作主判据：它会被“两者都黑掉”骗过（同 v1.45 的
+ * 「影区须比基线暗」单侧断言拓不到纯黑）。故至少一条下界 + 一条色相判据并存。
+ */
+test('v2.1：傍晚与夜晚的水面亮度随环境风格变暗（晨午零回归）', async ({ page }) => {
+  test.setTimeout(240_000);
+  await page.goto('/?vd=8&seed=12345');
+  await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
+
+  const sea = await page.evaluate(async () => {
+    const { generateHeight } = await import('/src/gen/terrain.js');
+    const seed = window.__MC_GAME__.seed;
+    let best = null;
+    for (let x = -640; x <= -480; x += 8) {
+      for (let z = -600; z <= -460; z += 8) {
+        const h = generateHeight(x, z, seed);
+        if (h < -3 && (!best || h < best.h)) best = { x, z, h };
+      }
+    }
+    return best;
+  });
+  expect(sea).not.toBeNull();
+
+  // 与主用例同一套五变量冻结（日光/阴影/HUD/物理/波纹动画）——少冻一个，色阶就不可比。
+  await page.evaluate(({ x, z }) => {
+    const g = window.__MC_GAME__;
+    g.setShadowsEnabled(false);
+    g.player.physics.step = () => {};
+    g.player.physics.pos.x = x; g.player.physics.pos.z = z;
+    g.player.physics.pos.y = 6;
+    for (const el of document.querySelectorAll('#hud-root > *, #crosshair, #settings-btn')) {
+      el.style.display = 'none';
+    }
+  }, sea);
+  await page.waitForTimeout(9000);
+  await page.evaluate(() => { window.__MC_GAME__.ocean.update = () => {}; });
+  await page.waitForTimeout(500);
+
+  const readings = {};
+  for (const style of ['morning', 'noon', 'dusk', 'night']) {
+    await page.evaluate((s) => { window.__MC_GAME__.setVisualStyle(s); }, style);
+    await page.waitForTimeout(1600);
+    const png = PNG.sync.read(await page.screenshot());
+    readings[style] = nearWater(png);
+  }
+  console.log('WATER STYLE: ' + JSON.stringify(readings));
+
+  // ① 晨午零回归：必须仍在既有色阶带内（v1.85 实测 116）
+  for (const style of ['morning', 'noon']) {
+    expect(readings[style], `${style} 必须能采到水面样本`).not.toBeNull();
+    expect(readings[style].luma, `${style} 的水面亮度必须保持不变（v1.85 基准 116，允许 ±8）`)
+      .toBeGreaterThan(108);
+    expect(readings[style].luma, `${style} 的水面亮度必须保持不变（v1.85 基准 116，允许 ±8）`)
+      .toBeLessThan(124);
+  }
+
+  // ② 傍晚/夜晚显著变暗（修复前基线：dusk 131 / night 147）
+  expect(readings.dusk.luma, `傍晚必须比“不压暗”时（131）明显变暗，实测 ${readings.dusk.luma}`)
+    .toBeLessThan(122);
+  expect(readings.night.luma, `夜晚必须比“不压暗”时（147）明显变暗（用户：“像水面会发光”），实测 ${readings.night.luma}`)
+    .toBeLessThan(126);
+
+  // ③ 但不得压成死水（上一条只看上界会被“全黑”骗过 —— v1.45 的教训）
+  //    实测修复后 dusk 118 / night 114；用户裁定的“中度”档 = 夜晚与正午持平（116），
+  //    下界取 95 留足标定漂移余量，同时离“死水”很远。
+  expect(readings.dusk.luma, `傍晚不得压得比夜晚还暗/死黑，实测 ${readings.dusk.luma}`)
+    .toBeGreaterThan(100);
+  expect(readings.night.luma, `夜晚不得压成死水（波纹明暗差会消失），实测 ${readings.night.luma}`)
+    .toBeGreaterThan(95);
+
+  // ④ 色相不变：四风格仍须是海蓝（只调亮度，不改色相）
+  for (const style of ['morning', 'noon', 'dusk', 'night']) {
+    const r = readings[style];
+    expect(r.gMinusR, `${style} 的水面必须仍是海蓝（G 明显高于 R），实测 rgb=${r.rgb.join('/')}`)
+      .toBeGreaterThanOrEqual(24);
+    expect(r.bMinusG, `${style} 的水面必须仍偏蓝，实测 rgb=${r.rgb.join('/')} B−G=${r.bMinusG}`)
+      .toBeGreaterThanOrEqual(8);
+  }
+});
+
+/**
+ * 第七条：**启动即目标风格**（v2.2，2026-10-31 用户第二轮反馈）。
+ *
+ * 用户：「刚开始进入游戏的时候，如果是晚上或者傍晚，默认就要渲染正确的水面颜色，
+ * 而不是只在切换环境的时候把水面颜色渲染正确」。
+ *
+ * 根因是**构造时序**（不是水面本身）：`DayNight` 构造末尾硬性 apply 正午，而持久化的
+ *`visualStyle` 要到 `game.start()` 尾部才补 —— 两者之间水面拿着正午的 tint（中性 1）。
+ * 修法：`DayNight({ visualStyle })` **构造首帧就 apply 目标风格**，且 Game 在构造期解析设置。
+ *
+ * 判据选「`worldReady` 那一刻的 uniform 值」而不是像素：这正是缺陷的形态（首帧状态），
+ * 而像素会因后续每帧 `_apply` 自动收敛成正确值 —— 用像素只能测到「最终对不对」，
+ * 测不到「一开始对不对」，那样即使把修复回退也会全绿（无效盲区）。同时仍采一次像素，
+ * 确认真的渲对了。
+ */
+test('v2.2：启动即傍晚/夜晚时，第一帧的水面配色就是目标风格（不等切换）', async ({ page }) => {
+  test.setTimeout(240_000);
+
+  // 期望值从真实风格数据读（不在测试里写第二份字面量）
+  const expected = await page.goto('/?vd=2&seed=12345').then(async () => {
+    await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
+    return page.evaluate(async () => {
+      const { VISUAL_STYLES } = await import('/src/render/daynight.js');
+      return {
+        dusk: VISUAL_STYLES.dusk.waterTint[0],
+        night: VISUAL_STYLES.night.waterTint[0],
+        noon: VISUAL_STYLES.noon.waterTint[0],
+      };
+    });
+  });
+  expect(expected.night).toBeLessThan(expected.noon);
+
+  for (const style of ['dusk', 'night']) {
+    // 走 URL（等价于面板持久化：两者都经 resolveSettings → settings.visualStyle）
+    await page.goto(`/?vd=2&seed=12345&style=${style}`);
+    await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
+    const boot = await page.evaluate(() => {
+      const g = window.__MC_GAME__;
+      const v = g.ocean.uWaterTint.value;
+      return {
+        tint: [v.x, v.y, v.z],
+        override: g.dayNight._styleOverride,
+        settingsStyle: g.settings.visualStyle,
+        exposure: g.renderer.toneMappingExposure,
+      };
+    });
+    expect(boot.settingsStyle, `${style}：设置须在启动时就带着这个风格`).toBe(style);
+    expect(boot.override, `${style}：DayNight 须在构造时已进入该风格的 override`).toBe(style);
+    for (const c of boot.tint) {
+      // 逐位相等：构造首帧就该是目标值（实测修复后 0.84 / 0.62）
+      expect(c, `${style}：启动第一帧的 waterTint 必须是 ${expected[style]}，实测 ${boot.tint.join('/')}`)
+        .toBeCloseTo(expected[style], 6);
+    }
+    expect(boot.exposure, `${style}：曝光也已在启动首帧生效`)
+      .toBeCloseTo(style === 'dusk' ? 1.2 : 1.6, 2);
+  }
 });
