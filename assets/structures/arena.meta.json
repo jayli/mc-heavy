@@ -1,0 +1,82 @@
+{
+  "version": 1,
+  "source": "assets/arena/src/arena1.schematic",
+  "sourceSize": {
+    "width": 43,
+    "height": 39,
+    "length": 81
+  },
+  "width": 39,
+  "height": 10,
+  "depth": 77,
+  "floorRow": 3,
+  "footprintWidth": 41,
+  "footprintDepth": 79,
+  "contentBounds": {
+    "minX": 2,
+    "maxX": 40,
+    "minY": 2,
+    "maxY": 11,
+    "minZ": 2,
+    "maxZ": 78
+  },
+  "contentCells": 3949,
+  "floorCells": 3003,
+  "railCells": 236,
+  "railOrientationCounts": {
+    "handrail:0": 1,
+    "handrail:1": 1,
+    "handrail:2": 1,
+    "handrail:3": 1,
+    "handrailA:0": 78,
+    "handrailA:1": 154
+  },
+  "blockCounts": {
+    "allium": 14,
+    "chest": 2,
+    "dead_bush": 5,
+    "dirt": 35,
+    "flower": 45,
+    "glass_block": 115,
+    "gold_block": 2,
+    "grass": 2430,
+    "hay_bale": 60,
+    "leaves": 207,
+    "sand": 626,
+    "short_grass": 271,
+    "water": 115,
+    "wood": 22
+  },
+  "sourceBlockCounts": {
+    "air": 111422,
+    "barrier": 10791,
+    "bedrock": 9633,
+    "chest": 2,
+    "dandelion": 14,
+    "deadbush": 5,
+    "dirt": 35,
+    "double_plant": 14,
+    "fence": 40,
+    "fence_gate": 2,
+    "gold_block": 2,
+    "grass": 2430,
+    "hay_block": 60,
+    "leaves": 207,
+    "log": 22,
+    "poppy": 31,
+    "sand": 626,
+    "stained_glass": 115,
+    "tall_grass": 271,
+    "water": 115
+  },
+  "paletteSize": 16,
+  "origin": {
+    "cx": 21,
+    "cz": 40
+  },
+  "fingerprints": {
+    "input": "b4b97e560612d564:3c8adafe25c775be",
+    "sourceSha256": "b4b97e560612d564c171b00a15c2ae7943d1db987b3e4c2399cfca1ec8c0f4e4",
+    "paramsSha256": "3c8adafe25c775be5c4806496446c43793eff5fdb1f6c4479e997d4ee4b388e8"
+  }
+}

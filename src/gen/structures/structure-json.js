@@ -10,6 +10,9 @@ import { resourceUrl } from '../../core/resource-url.js';
 // 里解析会失败 → 整个模块不加载 → **Worker 起不来 → 游戏白屏**（B1 教训，`check:arch` 抓不到
 // 这类运行时解析失败）。映射表与指纹留在 `tools/` 侧，纯数据在 `src/gen/structures/` 侧。
 import { KIT_VARIANTS } from './cloudland-kit-data.js';
+// 城门竞技场的产物基名（纯数据、零 node 依赖）。
+// ⚠️ 与高台那批同一个理由：**不要 import `tools/arena-fingerprint.mjs`**（依赖 `node:fs`）。
+import { ARENA_VARIANTS } from './arena-variants.js';
 
 /** placement 类型 → JSON 文件名（mc-lite structureLoaders 映射） */
 const BASE_STRUCTURE_FILES = {
@@ -42,8 +45,14 @@ const BASE_STRUCTURE_FILES = {
   // 巨型金字塔（Giant Pyramid Epic）：palette + 扁平数组格式（同高台地带的 35 个产物）
   giantPyramid: 'giant_pyramid.json',
 };
+// 城门竞技场（Arena）：从 `ARENA_VARIANTS` 派生（红线 1：加第二个竞技场变体时不用改两处，
+// 漏一行会让那个变体静默不出现 —— `rasterizeStructure` 拿到空 blocks 直接 return，
+// 方块层面完全看不出是漏了映射）。
+// 命名约定：camelCase 变体名 → snake_case 文件名（`arenaGrass` → `arena_grass.json`）。
+for (const base of ARENA_VARIANTS) {
+  BASE_STRUCTURE_FILES[base] = `${base.replace(/[A-Z]/g, (m) => `_${m.toLowerCase()}`)}.json`;
+}
 
-// 高台地带（Cloudland Tarn Zone）：11 座高台 + 5 拱洞 + 7 紫晶柱 + 12 巨型云 = 35 个产物。
 // ⚠️ **不要手写这 35 行清单** —— 从 `KIT_VARIANTS` 派生（红线 1：加第 12 座高台时不用改两处，
 // 漏一行会让那个变体静默不出现：`rasterizeStructure` 拿到空 blocks 直接 return，
 // 方块层面完全看不出是漏了映射）。
@@ -116,6 +125,11 @@ export function loadStructure(type) {
             x: b.x, y: b.y - minY + 1, z: b.z,
             type: b.type, direction: b.direction !== undefined ? b.direction : 0,
           })),
+          // 地板层在归一化坐标里的 y（缺省 1 = 最低层就是地板）。
+          // ⚠️ **必须由产物显式提供**：竞技场的水池把最低两层挖成了沙底 + 水，
+          // 「最低层 = 地板」不再成立（实测源 y=2 是沙底、y=4 才是地板）→ `floorRow = 3`。
+          // 消费方：`apply.js` 阶段 2.9 用它算落位高度（`floorY - (floorRow - 1)`）。
+          floorRow: Number.isInteger(data.floorRow) ? data.floorRow : 1,
         };
         cache.set(type, normalized);
         return normalized;
@@ -132,6 +146,19 @@ export function loadStructure(type) {
 /** 批量预载（GEN 携带城市布局时一次拉齐全部城市结构） */
 export function preloadStructures(types) {
   return Promise.all(types.map(loadStructure));
+}
+
+/**
+ * 结构产物的 `floorRow`（地板层在归一化坐标里的 y）。未加载时返回 1（= 最低层就是地板）。
+ *
+ * ⚠️ **读的是已加载缓存，不触发加载**：调用方必须先 `await loadStructure(type)`
+ * （`apply.js` 的阶段 2.9 之前已有 `preloadStructures`）。返回 1 是安全兜底 —— 对没有
+ * 水池下挖的结构（绝大多数）它就是对的。
+ * @param {string} type @returns {number}
+ */
+export function floorRowOf(type) {
+  const data = cache.get(type);
+  return data && Number.isInteger(data.floorRow) ? data.floorRow : 1;
 }
 
 /**

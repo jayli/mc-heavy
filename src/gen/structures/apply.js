@@ -14,17 +14,18 @@ import {
 } from './landmarks.js';
 import { getCitySurfaceY, isPointNearCityStructure } from './city-layout.js';
 import { CITY_STRUCTURE_FOOTPRINT, ISLAND_SEA_LEVEL, SCATTER_FOOTPRINT } from './region-config.js';
-import { preloadStructures, rasterizeStructure, GROUND_SUPPORT_TYPES } from './structure-json.js';
+import { preloadStructures, rasterizeStructure, GROUND_SUPPORT_TYPES, floorRowOf } from './structure-json.js';
 import { applySkyStructures } from './sky-structures.js';
 import { generateTree, rollVegetation, rollCityTree } from './vegetation.js';
 import {
   SCATTER_TYPES, SCATTER_STRIDE, CODE_GENERATED_SCATTER_TYPES,
   generateCodeHouse, generateCodeShip, inCityBounds,
 } from './scatter.js';
-import { SEA_Y, blockIndex } from '../../voxel/constants.js';
+import { SEA_Y, blockIndex, WORLD_MIN_Y } from '../../voxel/constants.js';
 import { applyGiantTrees, loadGiantTrees, getGiantTreesSync } from './giant-trees.js';
 import { applyAzaleaTrees, loadAzaleaTrees } from './azalea-trees.js';
 import { PYRAMID_HALF, inGiantPyramidFootprint } from './giant-pyramid.js';
+import { ARENA_HALF_X, ARENA_HALF_Z, ARENA_SUPPORT_MAX_DEPTH, inArenaFootprint } from './arena.js';
 import { TARN_ZONE_RADIUS, snowLandSuppressedByTarn, TARN_CLOUD_MIN_Y } from './tarn-zone.js';
 import { fillTarnPlateau, tarnSnowCap, tarnPlantAt } from './tarn-terrain.js';
 import { KIT_VARIANTS, KIT_METRICS } from './cloudland-kit-data.js';
@@ -147,6 +148,18 @@ function pointContext(wx, wz, layouts, cityLayout, seed) {
     const gp = layout.giantPyramid;
     if (!gp) continue;
     if (Math.abs(wx - gp.wx) <= PYRAMID_HALF && Math.abs(wz - gp.wz) <= PYRAMID_HALF) {
+      return { kind: 'none' };
+    }
+  }
+  // 城门竞技场占地：同样整片让路（`kind:'none'`，一个分支覆盖上面列出的五个消费者）。
+  //
+  // ⚠️ **与巨型金字塔同一个手法、同一个理由**：竞技场是用户明确要求「不要和其他实体
+  // 重合」的人工结构；树/植物/巨树/杜鹃长在场地里就是穿模。而锚点层**刻意不避让**这些
+  // 点状内容（否则多数 seed 找不到落点，spec DR-4）—— 两条设计是一对，改一条要重评估另一条。
+  for (const layout of layouts) {
+    const a = layout.arena;
+    if (!a) continue;
+    if (Math.abs(wx - a.wx) <= ARENA_HALF_X && Math.abs(wz - a.wz) <= ARENA_HALF_Z) {
       return { kind: 'none' };
     }
   }
@@ -274,6 +287,8 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
   // 无条件预载会让每个新 Worker 的首个 GEN 多付一次冷 fetch）。
   // 巨型金字塔：同理只在锚点存在时预载
   if (layouts.some((l) => l.giantPyramid)) needTypes.add('giantPyramid');
+  // 城门竞技场：同理（惰性预载，实测 51KB 一个 JSON）
+  if (layouts.some((l) => l.arena)) needTypes.add('arenaGrass');
   // 高台地带：35 个产物。惰性预载 —— 只有地带 region 才拉（1/3 的 region）。
   // 从 KIT_VARIANTS 派生而不是手写清单（红线 1）。
   // ⚠️ 用 `some` 而不是 `find(Boolean)` —— 只要邻域里**有任何一个**地带就需要这 35 个文件。
@@ -467,6 +482,8 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
   //
   // 巨型金字塔锚点列表（阶段 2.7 的撒布剔除用）：只算一次，不每个候选重算
   const giantAnchors = layouts.map((l) => l.giantPyramid);
+  // 竞技场锚点列表（同上，同一判据函数消费）
+  const arenaAnchors = layouts.map((l) => l.arena);
   for (const arr of scatterCandidates) {
     for (let i = 0; i < arr.length; i += SCATTER_STRIDE) {
       const x = arr[i], y = arr[i + 1], z = arr[i + 2];
@@ -488,6 +505,10 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
       // 不剔除的后果：24 格高的小沙漠神殿会长在塔身内部（从外面看像塔上多出一块）；
       // 且因为金字塔在阶段 2.76 **后写胜**，被埋的神殿方块会被塔身覆盖掉一半，剩下的露在空里。
       if (inGiantPyramidFootprint(x, z, giantAnchors)) continue;
+      // 竞技场占地内的撒布候选一律不落地（同上一行的手法与理由：用户要求「竞技场不要
+      // 和其他实体重合」）。竞技场本身在阶段 2.9 光栅化（后写胜），但**只靠后写胜不够**：
+      // 被埋的撒布结构会有一半露在竞技场外面（与巨型金字塔完全同形的缺陷）。
+      if (inArenaFootprint(x, z, arenaAnchors)) continue;
       const fp = SCATTER_FOOTPRINT[type];
       if (!fp) continue;
       if (!placementIntersects({ x, z }, fp.halfX, fp.halfZ, column.cx, column.cz)) continue;
@@ -581,6 +602,62 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
     // 靠它自取会让判据静默退化（不报错，只是「间距没生效」）。
     giantData: getGiantTreesSync(),
   });
+
+  // ---- 阶段 2.9：城门竞技场（Arena，2026-10-29）----
+  // 层序理由：
+  //   · 在巨型金字塔（2.76）与巨树（2.8）**之后** —— 竞技场是用户明确要求「不要和
+  //     其他实体重合」的人工结构，后写胜保证不会被树冠/塔身打穿；
+  //   · 在空中结构（2.5）**之前** —— 空岛/云在 Y=55 以上，与竞技场（贴地）不冲突，
+  //     保持「地面级内容先于空中内容」的既有层序。
+  //
+  // 让路已经在别处做完，这里只做三件事（顺序载荷性，见 spec DR-6）：
+  //   ① **清空占地内 [floorY+1, naturalH]**：不清的话占地内高处的土丘会从地板里长出来；
+  //   ② **补实地板下方的空洞**（cave 挖出来的）：不补的话玩家挖开地板会掉进洞穴；
+  //   ③ **光栅化**：落位 y = floorY - (floorRow - 1)，使**地板层**（归一化 y=floorRow）
+  //     正好落在 floorY（占地内最低自然高度）—— 用户要求「高度贴合周围地形的最低点」。
+  const stoneId = registry.idOf('stone');
+  for (const layout of layouts) {
+    const a = layout.arena;
+    if (!a) continue;
+    if (!placementIntersects({ x: a.wx, z: a.wz }, ARENA_HALF_X, ARENA_HALF_Z, column.cx, column.cz)) continue;
+
+    const lx0 = Math.max(0, a.wx - ARENA_HALF_X - column.cx * 16);
+    const lx1 = Math.min(15, a.wx + ARENA_HALF_X - column.cx * 16);
+    const lz0 = Math.max(0, a.wz - ARENA_HALF_Z - column.cz * 16);
+    const lz1 = Math.min(15, a.wz + ARENA_HALF_Z - column.cz * 16);
+    for (let lx = lx0; lx <= lx1; lx++) {
+      for (let lz = lz0; lz <= lz1; lz++) {
+        const wx = column.cx * 16 + lx;
+        const wz = column.cz * 16 + lz;
+        const naturalH = generateHeight(wx, wz, seed);
+        // ① 清空地板以上、自然地表以下的凸起
+        for (let y = a.floorY + 1; y <= naturalH; y++) {
+          column.blocks[blockIndex(lx, y, lz)] = 0;
+          column.meta[blockIndex(lx, y, lz)] = 0;
+        }
+        // ② 补实地板正下方的空洞（**cave 是在 fillColumn 之后挖的** —— 实测占地内
+        //    236 列在地板正下方是空，最深 21 格）。不补的话玩家挖开地板就掉进洞里；
+        //    用城市地下同款 `stone` 填（与 `generateCity` 补水体缺口的手法一致：
+        //    「清成 air 会造出空洞，挖下去掉进洞里比看到水更糟」）。
+        //    上限 `ARENA_SUPPORT_MAX_DEPTH` 是安全阀：超过它就让它空着（极深的洞不应
+        //    被一根 30 格的实心柱填满 —— 那会让地下矿洞突然断头）。
+        for (let d = 1; d <= ARENA_SUPPORT_MAX_DEPTH; d++) {
+          const y = a.floorY - d;
+          if (y < WORLD_MIN_Y) break;
+          if (column.blocks[blockIndex(lx, y, lz)] !== 0) break;
+          column.blocks[blockIndex(lx, y, lz)] = stoneId;
+          column.meta[blockIndex(lx, y, lz)] = 0;
+        }
+      }
+    }
+
+    // ③ 光栅化（**不补 groundSupport**：上面已显式把地板下方补实，而
+    //    `groundSupport` 会从本地 y=1（地板层）向下探 5 格补柱 —— 那对地板层没用，
+    //    还会在水池底（归一化 y=1）外再插一圈柱子）
+    const floorRow = floorRowOf('arenaGrass');
+    rasterizeStructure('arenaGrass', a.wx, a.floorY - (floorRow - 1), a.wz,
+      setBlock, column, registry, seed, false);
+  }
 
   // ---- 阶段 2.5：空中结构（M2-7：Y=55 单云 + 空岛，层序先云后岛；mc-lite 空中内容后写）----
   const skyCandidates = layouts.map((l) => l.sky).filter(Boolean);

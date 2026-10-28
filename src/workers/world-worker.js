@@ -11,6 +11,7 @@ import { carveCaves } from '../gen/caves.js';
 import { computeRegionLayout } from '../gen/structures/structure-layout.js';
 import { applyStructuresToColumn } from '../gen/structures/apply.js';
 import { getCityBoundsForSeed } from '../gen/structures/city-layout.js';
+import { computeArenaAnchor } from '../gen/structures/arena.js';
 import { preloadStructures } from '../gen/structures/structure-json.js';
 import { SCATTER_JSON_TYPES } from '../gen/structures/scatter.js';
 import { loadGiantTrees } from '../gen/structures/giant-trees.js';
@@ -182,6 +183,11 @@ installRpcHandler({
     // 「先于 GEN、且本 Worker 一定会走到」的位置（与上面两个预载 promise 同处）。
     // 巨型金字塔的候选层读这个缓存判断「占地是否在城市内」。
     getCityBoundsForSeed(p.seed);
+    // 预热竞技场锚点：实测中位 56ms / 最差 98ms（要扫几十个候选 footprint 的地形）。
+    // 不预热的话它会在每个 region 的 `computeRegionLayout` 里被算 —— 而 `layout`
+    // 本身不是 GEN 计时路径，但 `computeRegionLayout` 会被 9 个邻域 region 各调一次，
+    // 不缓存的话同一个 seed 会重复扫几十遍（缓存键是 seed，预热一次即全命中）。
+    computeArenaAnchor(p.seed);
     return computeRegionLayout(p.regionX, p.regionZ, p.seed);
   },
 

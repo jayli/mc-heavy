@@ -1529,6 +1529,206 @@ async function checkGiantPyramid() {
   }
 }
 
+// ---------------------------------------------------------------- [竞技场] 契约（Arena，2026-10-29）
+
+/**
+ * [竞技场] 契约：烘焙输入 / 产物 / 方块映射 / 栏杆朝向 / 尺寸常量五者互相对得上。
+ *
+ * 钉的失效路径（**每条都是静默的**）：
+ *   ① 指纹不匹配 → 改了 BLOCK_MAP / SUPERSEDED_BLOCKS / RAIL_RING_INSET / ARENA_METRICS /
+ *      .schematic 却未重烘 → 世界里是旧竞技场，方块层面看不出差别
+ *   ② palette 含未注册方块 → `makeColumnSetter` 对未注册名字**静默 return**
+ *      → 那格变 air → 地板出现洞（玩家会掉下去）
+ *   ③ `stride !== 5` → 栏杆朝向（direction）没写进产物 → **整圈栏杆全朝 orient=0**
+ *      （直段会变成一半伸 X、一半伸 Z 的错乱，方块层面数得对、就是接不上）
+ *   ④ **栏杆环不闭合 / 臂与邻居不匹配** → 环上出现看不见的缺口（用户核心需求）
+ *   ⑤ `floorRow` 与产物实际不符 → 地板沉到水池底下（整个竞技场低 2 格）
+ *   ⑥ 地板层不满铺 → 玩家从水池/缺口漏到地板以下
+ *   ⑦ 占地尺寸与 `src/gen/structures/arena.js` 的 ARENA_WIDTH/ARENA_DEPTH 不一致
+ *      → 落点判据与光栅化裁剪用的是两套尺寸
+ *   ⑧ `ARENA_VARIANTS` 两侧不一致（src 侧 vs tools 侧）→ 新变体静默不出现
+ *
+ * ⚠️ 主流程是逐个显式调用 —— 漏了本行则门禁永不执行（本仓已因此出过两次事故）。
+ */
+async function checkArena() {
+  const fp = await import('./arena-fingerprint.mjs');
+  const arenaMod = await import('../src/gen/structures/arena.js');
+  const variantsMod = await import('../src/gen/structures/arena-variants.js');
+  const before = failures.length;
+  const fail = (m) => failures.push(`[竞技场] ${m}`);
+
+  // ① 烘焙输入与产物存在性
+  if (!fs.existsSync(fp.ARENA_SOURCE_PATH)) {
+    fail(`烘焙输入缺失 ${path.relative(ROOT, fp.ARENA_SOURCE_PATH)}（.schematic 入库，缺失 = 仓库损坏）`);
+    return;
+  }
+  if (!fs.existsSync(fp.ARENA_JSON) || !fs.existsSync(fp.ARENA_META)) {
+    fail('缺 assets/structures/arena_grass.json 或 arena.meta.json（跑 npm run arena）');
+    return;
+  }
+  let meta, json;
+  try {
+    meta = JSON.parse(fs.readFileSync(fp.ARENA_META, 'utf8'));
+    json = JSON.parse(fs.readFileSync(fp.ARENA_JSON, 'utf8'));
+  } catch { fail('产物不是合法 JSON（重跑 npm run arena）'); return; }
+
+  // ② 指纹
+  const cur = fp.arenaInputFingerprint();
+  if (meta.fingerprints?.input !== cur.input) {
+    fail(`产物已过期：指纹不匹配（烘焙时 "${meta.fingerprints?.input}" vs 当前 "${cur.input}"）→ 跑 npm run arena`);
+  }
+
+  // ⑧ 两侧变体清单必须一致
+  const toolsVariants = [...fp.ARENA_VARIANTS].sort().join(',');
+  const srcVariants = [...variantsMod.ARENA_VARIANTS].sort().join(',');
+  if (toolsVariants !== srcVariants) {
+    fail(`ARENA_VARIANTS 两侧不一致（tools: [${toolsVariants}] vs src: [${srcVariants}]）—— 新变体会静默不出现`);
+  }
+
+  const M = fp.ARENA_METRICS.arenaGrass;
+
+  // ③ stride 必验（与巨型金字塔同理由：错的是「朝向」不是「格数」）
+  const STRIDE = Number.isInteger(json.stride) ? json.stride : 4;
+  if (STRIDE !== 5) {
+    fail(`产物 stride=${STRIDE} ≠ 5 —— 栏杆朝向（direction）没写进产物 → 整圈栏杆会全朝 orient=0`);
+  }
+
+  // ⑤ floorRow
+  if (json.floorRow !== M.floorRow) {
+    fail(`产物 floorRow=${json.floorRow} ≠ ARENA_METRICS.floorRow ${M.floorRow}（地板会沉到水池底下）`);
+  }
+
+  // ④/⑥ 逐格统计
+  const blocks = Array.isArray(json.blocks) ? json.blocks : [];
+  const n = blocks.length / STRIDE;
+  const byType = new Map();
+  const railCells = [];   // {x, z, name, orient}
+  const floorCols = new Set();
+  let mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity, mnz = Infinity, mxz = -Infinity;
+  for (let i = 0; i < blocks.length; i += STRIDE) {
+    const x = blocks[i], y = blocks[i + 1], z = blocks[i + 2];
+    const name = json.palette[blocks[i + 3]];
+    const orient = blocks[i + 4] || 0;
+    byType.set(name, (byType.get(name) || 0) + 1);
+    if (x < mnx) mnx = x; if (x > mxx) mxx = x;
+    if (y < mny) mny = y; if (y > mxy) mxy = y;
+    if (z < mnz) mnz = z; if (z > mxz) mxz = z;
+    if (y === M.floorRow) floorCols.add(`${x},${z}`);
+    if (name === 'handrail' || name === 'handrailA') railCells.push({ x, y, z, name, orient });
+  }
+  if (railCells.length !== M.railCells) {
+    fail(`栏杆格数 ${railCells.length} ≠ ARENA_METRICS.railCells ${M.railCells}`);
+  }
+  if (floorCols.size !== M.floorCells) {
+    fail(`地板层（y=${M.floorRow}）${floorCols.size} 列 ≠ ${M.floorCells}（地板不完整 → 玩家会漏到地板以下）`);
+  }
+
+  // ⑦ 占地尺寸：**产物 bbox 已含栏杆环**（环就写在 blocks 里），故直接与 footprint 比；
+  //    内容本身（去掉环）应该是 `footprint − 2×RAIL_RING_INSET` —— 两边都钉，
+  //    只钉一侧会让「环搬到内圈」这类改动静默通过。
+  const bboxW = mxx - mnx + 1, bboxD = mxz - mnz + 1;
+  const footprintW = M.footprintWidth, footprintD = M.footprintDepth;
+  if (bboxW !== footprintW) fail(`产物宽 ${bboxW} ≠ ARENA_METRICS.footprintWidth ${footprintW}`);
+  if (bboxD !== footprintD) fail(`产物深 ${bboxD} ≠ ARENA_METRICS.footprintDepth ${footprintD}`);
+  if (bboxW - fp.RAIL_RING_INSET * 2 !== M.width) {
+    fail(`去掉栏杆环后的宽 ${bboxW - fp.RAIL_RING_INSET * 2} ≠ ARENA_METRICS.width ${M.width}`);
+  }
+  if (bboxD - fp.RAIL_RING_INSET * 2 !== M.depth) {
+    fail(`去掉栏杆环后的深 ${bboxD - fp.RAIL_RING_INSET * 2} ≠ ARENA_METRICS.depth ${M.depth}`);
+  }
+  if (footprintW !== arenaMod.ARENA_WIDTH) {
+    fail(`产物宽 ${footprintW} ≠ src/gen/structures/arena.js 的 ARENA_WIDTH ${arenaMod.ARENA_WIDTH}（两套尺寸会错开）`);
+  }
+  if (footprintD !== arenaMod.ARENA_DEPTH) {
+    fail(`产物深 ${footprintD} ≠ src/gen/structures/arena.js 的 ARENA_DEPTH ${arenaMod.ARENA_DEPTH}`);
+  }
+  if (mny !== 1) fail(`最低点 y=${mny} ≠ 1（归一化约定：rasterizeStructure 按 b.y 落位）`);
+
+  // ④ **栏杆环闭合 + 臂与邻居匹配**（本设计的核心判据）
+  const railSet = new Set(railCells.map((c) => `${c.x},${c.z}`));
+  const norm = (arms) => ['+X', '-X', '+Z', '-Z'].filter((a) => arms.includes(a)).join(' ');
+  let openCells = 0, mismatch = 0;
+  for (const c of railCells) {
+    const need = [];
+    if (railSet.has(`${c.x + 1},${c.z}`)) need.push('+X');
+    if (railSet.has(`${c.x - 1},${c.z}`)) need.push('-X');
+    if (railSet.has(`${c.x},${c.z + 1}`)) need.push('+Z');
+    if (railSet.has(`${c.x},${c.z - 1}`)) need.push('-Z');
+    if (need.length !== 2) { openCells++; continue; }
+    const got = arenaMod.railArmSet(c.name, c.orient);
+    if (norm(got) !== norm(need)) mismatch++;
+  }
+  if (openCells > 0) {
+    fail(`栏杆环有 ${openCells} 格不是「恰好 2 个环邻居」（环不闭合或有分支）—— 会有缺口`);
+  }
+  if (mismatch > 0) {
+    fail(`栏杆环有 ${mismatch} 格的臂方向与邻居不匹配（转角件朝向或直段件选错）—— 玩家会看到断开的栏杆`);
+  }
+  // 直段必须用 handrailA、转角必须用 handrail（互换会让半边缺失 / 多出断头）
+  const cornerCells = railCells.filter((c) => {
+    const xs = railSet.has(`${c.x + 1},${c.z}`) || railSet.has(`${c.x - 1},${c.z}`);
+    const zs = railSet.has(`${c.x},${c.z + 1}`) || railSet.has(`${c.x},${c.z - 1}`);
+    return xs && zs;
+  });
+  for (const c of cornerCells) {
+    if (c.name !== 'handrail') {
+      fail(`转角格 (${c.x},${c.z}) 用了 ${c.name}（必须是 handrail，否则缺一条臂）`);
+      break;
+    }
+  }
+
+  // ② palette：全部已注册 + 不含容器方块 / 源图栅栏 / 未映射残留
+  const palette = Array.isArray(json.palette) ? json.palette : [];
+  if (palette.length === 0) fail('产物缺 palette（重跑 npm run arena）');
+  for (const name of palette) {
+    if (REGISTRY.idOf(name) === undefined) {
+      fail(`palette 含未注册方块 "${name}"（makeColumnSetter 静默跳过 → 地板出现洞）`);
+    }
+    if (fp.CONTAINER_BLOCKS.includes(name)) {
+      fail(`palette 含容器方块 "${name}"（barrier/bedrock/air 必须烘焙时丢弃）`);
+    }
+    if (fp.SUPERSEDED_BLOCKS.includes(name)) {
+      fail(`palette 含被取代的源方块 "${name}"（原图斜向栅栏应由外圈栏杆环取代）`);
+    }
+  }
+  // 双向：palette → BLOCK_MAP 严格；BLOCK_MAP → palette 只要求「素材实际用到的源方块都能命中」。
+  // ⚠️ 不能要求「每个映射目标都出现在本变体 palette 里」：BLOCK_MAP 刻意留了 Arena2~6
+  // 将来要用的条目（stone / cobblestone / clay …），那样会错杀那张前瞻表。
+  const mapped = new Set(Object.values(fp.BLOCK_MAP).filter(Boolean));
+  const inPalette = new Set(palette.filter((n) => !n.startsWith('handrail')));
+  for (const name of inPalette) {
+    if (!mapped.has(name)) fail(`产物 palette 含 BLOCK_MAP 未映射到的方块 "${name}"（映射表与实际内容不符）`);
+  }
+  // 素材侧普查（meta.sourceBlockCounts）必须能全量映射 —— 这是「没有未知源方块被静默丢弃」的正面证据
+  for (const srcName of Object.keys(meta.sourceBlockCounts || {})) {
+    if (fp.CONTAINER_BLOCKS.includes(srcName) || fp.SUPERSEDED_BLOCKS.includes(srcName)) continue;
+    if (!(srcName in fp.BLOCK_MAP)) {
+      fail(`素材里出现源方块 "${srcName}" 但 BLOCK_MAP 没有它`);
+    } else if (!inPalette.has(fp.BLOCK_MAP[srcName])) {
+      fail(`源方块 "${srcName}" 映射到 "${fp.BLOCK_MAP[srcName]}" 但产物里没有该方块`);
+    }
+  }
+
+  // 内容格数（区分「素材里有多少」与「产物里有多少」）
+  const contentCells = n - railCells.length;
+  if (contentCells !== M.contentCells) {
+    fail(`内容格数 ${contentCells} ≠ ARENA_METRICS.contentCells ${M.contentCells}（源改动？先跑 npm run arena -- --census）`);
+  }
+  if (M.sourceCells - M.supersededCells !== M.contentCells) {
+    fail(`ARENA_METRICS 自相矛盾：sourceCells ${M.sourceCells} − supersededCells ${M.supersededCells} ≠ contentCells ${M.contentCells}`);
+  }
+
+  // ⚠️ 成功行的条件必须涵盖**本函数全部判据**
+  if (failures.length === before) {
+    const orientDist = [0, 1, 2, 3].map((o) => (meta.railOrientationCounts?.[`handrail:${o}`] || 0));
+    const straight = (meta.railOrientationCounts?.['handrailA:0'] || 0) + (meta.railOrientationCounts?.['handrailA:1'] || 0);
+    infos.push(`[竞技场] ${n} 格（内容 ${contentCells} + 栏杆 ${railCells.length}）/ ` +
+      `${mxx - mnx + 1}×${mxy - mny + 1}×${mxz - mnz + 1} / floorRow ${json.floorRow} 满铺 ${floorCols.size} 格 / ` +
+      `stride ${STRIDE} + 栏杆环闭合（转角四向 ${orientDist.join('/')}、直段 ${straight}）/ ` +
+      `${palette.length} 种全已注册 / 指纹匹配`);
+  }
+}
+
 // ---------------------------------------------------------------- [树叶剔除] 契约（v1.70）
 
 /**
@@ -1808,6 +2008,7 @@ await checkGiantTrees();     // 巨树景观：方块/烘焙产物/贴图三方�
 await checkAzaleaTrees();    // 杜鹃树：烘焙产物/方块声明/运行时常量三方契约（⚠️ 漏了本行则门禁永不执行）
 await checkCloudlandTarnZone(); // 高台地带：35 产物/映射表/通道/台顶材质契约（⚠️ 漏了本行则门禁永不执行）
 await checkGiantPyramid();   // 巨型金字塔：烘焙产物/映射表/通道契约（⚠️ 漏了本行则门禁永不执行）
+await checkArena();          // 竞技场：烘焙产物/栏杆朝向/floorRow/占地尺寸契约（⚠️ 漏了本行则门禁永不执行）
 checkLeafCullingContract();  // v1.70：镂空遮挡体派生表与树叶族声明的一致性（⚠️ 漏了本行则门禁永不执行）
 
 console.log('[check:data] 数据契约检查');

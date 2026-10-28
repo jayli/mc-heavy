@@ -59,8 +59,14 @@ const DEFAULT_TILE = { u0: 0, v0: 0, u1: 0.01, v1: 0.01 };
 // 块中心旋转；面剔除/光照/AO/packed face 位用世界面（模型面经同一旋转映射，双射）。
 // ---------------------------------------------------------------------------
 
-/** 局部偏移（相对块中心）按 90° 步长绕 Y 轴旋转：o=1: (dx,dy,dz)→(dz,dy,-dx) */
-function rotateOffset(dx, dy, dz, o) {
+/**
+ * 局部偏移（相对块中心）按 90° 步长绕 Y 轴旋转：o=1: (dx,dy,dz)→(dz,dy,-dx)
+ *
+ * **导出供烘焙脚本复用**（`tools/bake-arena.mjs` 的栏杆臂方向推导）：这是「朝向 → 几何」
+ * 的唯一权威。烘焙侧若自己写一份旋转公式，会漂移出「产物写 orient=1、渲染转到另一个
+ * 方向」的静默缺陷 —— 方块层面完全看不出，只有栏杆断口能看出（红线 1 精神）。
+ */
+export function rotateOffset(dx, dy, dz, o) {
   switch (o) {
     case 1: return [dz, dy, -dx];
     case 2: return [-dx, dy, -dz];

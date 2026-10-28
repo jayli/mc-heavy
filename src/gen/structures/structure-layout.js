@@ -15,6 +15,7 @@ import { computeScatterCandidates } from './scatter.js';
 import { computeGiantTreeCandidates } from './giant-trees.js';
 import { computeAzaleaTreeCandidates } from './azalea-trees.js';
 import { computeGiantPyramidAnchor } from './giant-pyramid.js';
+import { computeArenaAnchor, arenaOverlapsRegion } from './arena.js';
 import { isTarnZone, computeTarnZone, inTarnRadius } from './tarn-zone.js';
 
 /**
@@ -33,6 +34,7 @@ import { isTarnZone, computeTarnZone, inTarnRadius } from './tarn-zone.js';
  *   giantTrees: {forest: Int32Array, beach: Int32Array, banyan: Int32Array},
  *   azaleaTrees: Int32Array,
  *   giantPyramid: ({wx:number, wz:number, floorY:number}|null),
+ *   arena: ({wx:number, wz:number, floorY:number, maxH:number, span:number}|null),
  *   tarn: (import('./tarn-zone.js').TarnLayout|null)
  * }}
  */
@@ -123,9 +125,25 @@ export function computeRegionLayout(regionX, regionZ, seed) {
   // 与 `computeRegionLocalAnchor`）；撒布结构的剔除在 GEN 侧阶段 2.7（那里拿得到布局）。
   const giantPyramid = tarn ? null : computeGiantPyramidAnchor(regionX, regionZ, seed);
 
+  // 城门竞技场（Arena，2026-10-29）：城南门外**一个**（每个 seed 一个）。
+  //
+  // ⚠️ **裁剪到「与本 region 相交」才携带**：锚点可能落在任何 region，而每个 column 的
+  // 查询域只拿 3×3 region 布局 —— 不相交的 region 携带它只会白抬 payload（与巨型金字塔
+  // 不同：那个的内缩量保证锚点必在本 region，竞技场没有内缩）。
+  //
+  // ⚠️ **不能写成 `tarn ? null : …`**（与其它地标不同）：竞技场占地 41×79 可跨 region，
+  // 而 `arenaOverlapsRegion` 只让相交的 region 携带它。若地带 region 把 `arena` 整条压成
+  // null，**该 region 负责的那部分竞技场就会缺半边** —— 实测 20 个 seed 里有 **2 个**
+  // （seed 1 / 5150）的占地 AABB 确实跨进了地带 region。
+  // 这也与「地带是地基级内容」不矛盾：锚点候选层已经把**整圆**当作阻挡物
+  // （`fixedBlockers` 里的 `TARN_ZONE_RADIUS`），所以合法锚点永远不会落在池/台地上；
+  // 这里能相交的只是占地 AABB 的边缘探进了地带 region 的矩形范围（圆外那部分仍是普通地形）。
+  const arenaAll = computeArenaAnchor(seed);
+  const arena = arenaOverlapsRegion(arenaAll, regionX, regionZ) ? arenaAll : null;
+
   return {
     regionX, regionZ, pyramidRaw, pyramid, frozenMountain, snowLand, plainLand,
-    island, city, sky, scatter, giantTrees, azaleaTrees, giantPyramid, tarn,
+    island, city, sky, scatter, giantTrees, azaleaTrees, giantPyramid, arena, tarn,
   };
 }
 
