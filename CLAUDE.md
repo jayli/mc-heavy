@@ -91,6 +91,8 @@ M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 
 （**不进**设计文档修订说明，也不 bump 设计文档版本号 —— 那是架构口径变更专用）。
 本文件只保留**会影响后续实现决策的活跃约束**（下节）。
 
+**v2.7** 在南门外落地**城门竞技场**（用户 2026-10-29：「City 城门外安放两个竞技场……在南门外，City 和其他地形交界的地方，放置一个草地竞技场……方块全都来自现成的方块……竞技场的高度贴合周围地形的最低点……栏杆方块是有方向的，转角栏杆旋转到与两边匹配，确保栏杆连续连接」）：素材 `assets/arena/src/arena1.schematic`（43×39×81）烘焙成 `assets/structures/arena_grass.json`（`stride:5` 带逐格朝向 + `floorRow:3`），落点 `computeArenaAnchor(seed)`（南门以南第一个「出城 + 不压固定地标 + 占地 100% 干燥 + 高差 ≤10」的位置），`apply.js` **阶段 2.9** 清空上方 + 补实 cave 空洞 + 光栅化。**外圈闭合栏杆 236 格**（4 个转角 `handrail` 四向各 1 + 直段 `handrailA` 78/154），臂方向由 `TEMPLATES` + mesher 的 `rotateOffset` 派生。本轮**只做南门一个**（用户裁定），第二个竞技场的素材（Arena2~6）已普查未烘焙。细节见下方「竞技场沉淀的活跃约束」段与 roadmap 的 v2.7 行。
+
 测试现状：Playwright spec 全量 + 浏览器内单元测试全绿。**用例计数以 `npm run check:data`
 输出为准，不在文档硬编码**（同一事实的多个副本属「改动放大器」，违反红线 1 精神）。
 ⚠️ **三条计时型 spec 在高负载下偶发贴线 flaky，单独复跑通过**（不改断言、不放宽阈值）：
@@ -312,9 +314,14 @@ M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 
   ⚠️ **写撒布落地断言不能用「特征方块」判据** —— `uglyHouse` 等类型的方块全部与其它城市
   结构共享（`dark_planks` 是城市 house 屋顶，82/152 个 house 用它）→ 注入后仍全绿。
   用**差分**（剔掉候选再跑 GEN，逐格相同）或「地基正下方必须实心」。
-  ⚠️ **新增浏览器单测必须控制耗时**：`harness.spec.mjs` 的整页等待窗口是 **30s**，
-  全量扫描 5 seed × 全部 house × 逐列 GEN 实测 **42.8s** → 整页 21s→55s → 门禁超时恒红。
-  修法 = 有原理的**抽样**（按旧口径的悬空量降序取前 12，seed 缩到 2 个）→ 整页回到 14.6s。
+  ⚠️ **新增浏览器单测必须控制耗时**：`harness.spec.mjs` 的整页等待窗口 **已从 30s 提到 90s**（v2.7，2026-10-29）——
+  实测**干净 HEAD（c5adae2）整页就已 43.9s**，30s 从 v2.4 起就不可能满足（一直靠串行机器负载碰巧赶上）。
+  **但预算意识不变**：90s 是「实测 46.6s × ~2」，再添大块逐格 GEN 类用例仍会撞线。
+  原 30s 口径下的实测参考：全量扫描 5 seed × 全部 house × 逐列 GEN 实测 **42.8s** → 整页 21s→55s →
+  门禁超时恒红；修法 = 有原理的**抽样**（按旧口径的悬空量降序取前 12，seed 缩到 2 个）→ 整页回到 14.6s。
+  ⚠️ **写大块逐格 GEN 用例时优先按 column 复用**（`new ChunkColumn` + `fillColumn` + `carveCaves` 三者
+  每列 ~0.4ms）：实测 `test-arena-gen.js` 逐格新建 **24024 次 = 10.7s**，改成按 column 缓存后 20 次 → 省 10.7s。
+  同理用模块级单例缓存「整个世界的查询器」（多条用例共用），不要每条用例各建一次。
 - **cutout 扩容是离散 ×1.5 跳增，容量须留足余量**：往 cutout 通道加方块量（新植被/新结构）
   时须重测峰值并重标定 `CAPACITY.cutout.active`（当前 550）—— 差一点就会触发扩容撞破内存
   预算。实测数据见 roadmap 同段。
@@ -1347,6 +1354,91 @@ M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 
 - **放置不消耗物品、拾取不回背包**（创造模式口径，有意偏离 mc-lite 的生存模式语义）。
 - **reload 恢复后车继续原方向**（`movementState` 进 snapshot），mc-lite 恢复后停成 IDLE ——
   有意偏离（玩家重启前正在开的车不该自己停下）。
+
+### 城门竞技场沉淀的活跃约束（v2.7，后续「用 .schematic 落地地面建筑」类改动必读）
+
+设计/实测细节见 `docs/superpowers/specs/2026-10-29-arena-design.md` 与 roadmap 的 v2.7 行。
+素材 = 用户给的 `/Users/bachi/Downloads/Prestance Arenas/Schematics/Arena{1..6}.schematic`，
+入库 `assets/arena/src/arena1.schematic`（**本轮只做 Arena1 = 草地竞技场**，其余已普查未烘焙）。
+
+- **每个素材都自带两类「非内容」方块，必须烘焙时丢弃**：`barrier` 是把整个选区包围盒掏空的
+  **空心盒**（Arena1 y=5..37，10791 格）、`bedrock` 是垫底板（y=0..3，9633 格）。都属
+  `tools/arena-fingerprint.mjs` 的 `CONTAINER_BLOCKS`。⚠️ **原图的斜向 `fence`/`fence_gate`
+  是第三类：`SUPERSEDED_BLOCKS`** —— 它不是容器方块，而是「本设计有意替换掉的美术内容」
+  （由外圈栏杆环取代）。三个集合语义互斥，混在一起会让 `check:data` 无法分别断言。
+
+- **⚠️「内容最低层 ≠ 地板层」——这是 `floorRow` 必须存在的唯一理由**：水池把最低两层挖成
+  沙底 + 水（Arena1 源 y=2/3），地板在 y=4 ⇒ 归一化后 `floorRow = 3`。**任何「最低层就是地板」
+  的假设都会让整个竞技场沉 2 格**（地板进水、玻璃盖悬空）。地板判据 = 「内容里**覆盖最完整**
+  的那一层」（39×77 = 3003 格满铺），在烘焙脚本里现算、写进产物与 `ARENA_METRICS.floorRow`。
+  `apply.js` 用 `rasterizeStructure(..., floorY - (floorRow - 1), ...)` 落位。
+
+- **栏杆的臂方向必须从 `TEMPLATES` + mesher 的 `rotateOffset` 派生，不得写第二份几何表**
+  （红线 1）：`src/gen/structures/arena.js` 的 `railArmSet(name, orient)` 是唯一实现，
+  烘焙脚本与 `check:data` 与单测都调它。`mesher.js` 因此把 `rotateOffset` 加了 `export`
+  （**零行为变化**）。⚠️ 烘焙侧若自写一份旋转公式，会漂移出「产物写 orient=1、渲染转到另一个
+  方向」的**静默**缺陷（方块层面完全看不出，只有栏杆断口能看出）。
+  - 实测（真 mesher 发射顶点）：`handrail` o0..o3 = **+X+Z / +X−Z / −X−Z / −X+Z**（臂伸到 0.625）；
+    `handrailA` o0 = **±X**、o1 = **±Z**（贯穿格，接得上邻居）；
+    `handrailB` 臂只到 **0.25**（格中心）→ **接不上任何邻居，不得进入反查表**（已加用例钉住）。
+  - 「接得上」的判据是**臂伸到格边界（≥0.5）之外**，不是「有臂就行」。`handrailB` 就是反例。
+
+- **矩形闭合环所需臂集合只有 4 种，全可表达**（转角两臂 × 4 向 + 直段两向）；环的位置 =
+  内容包围盒外扩 `RAIL_RING_INSET`(1) —— 实测**正是素材 `barrier` 环的位置**，也就是作者画的
+  选区边界。占地因此从 39×77 变成 **41×79**，两个尺寸在 `arena-fingerprint.mjs`
+  与 `src/gen/structures/arena.js` 各有一份，`check:data` **双向断言**。
+
+- **原图的斜向栏杆在几何上无解**：三个栏杆件的臂只沿 ±X/±Z，没有对角臂 → 逐格替换会在每个
+  斜向交界处出现断口。用户裁定改外圈轴对齐闭合环（spec DR-5）。**不要试图「补齐」斜向**。
+
+- **落点是「抑制型」而非「避让型」**：`computeArenaAnchor(seed)` 只避开**固定**内容
+  （城市 bounds / 地标圆 / 局部巨型金字塔 / 高台地带 / 雪原）+ 占地 100% 干燥 + 高差 ≤10，
+  **刻意不避让点状内容**（撒布 / 巨树 / 杜鹃 / 普通树）—— 那些由竞技场反向让路
+  （`pointContext` 的 `kind:'none'` 一个分支覆盖五个消费者 + 阶段 2.7 的 `inArenaFootprint`），
+  与巨型金字塔完全同手法。实测对照：让路版 **20/20 seed 命中**、避让版只 **7/16** 在 160 格内
+  找得到落点。**改一边必须重评估另一边**。
+
+- **⚠️ `carveCaves` 在 `fillColumn` 之后挖洞 —— 「`floorY` 取 min 就保证地板有支撑」是错的**：
+  实测默认 seed 的竞技场占地内有 **236 列**在地板正下方就是空气、最深 **21 格**；20 seed 扫下来最坏是
+  seed 20240101 的 **33 格**。阶段 2.9 必须显式补实（`ARENA_SUPPORT_MAX_DEPTH = 40` 安全阀 = 实测最坏 + 7），否则玩家挖开地板掉进洞里。这是设计初稿
+  的错判，负向验证实测：去掉补实 → 58 列无支撑（Tier 1 真 FAIL）。
+
+- **`groundSupport` 对竞技场不适用**：它从**本地 y=1**（= 水池沙底那一层）向下探 5 格补柱 ——
+  对地板层没用，还会在水池底外插一圈柱子。竞技场的补实是自己做的（见上一条）。
+
+- **`stride: 5` 是载荷性的**（与巨型金字塔同理由）：只写 4 项（丢 `direction`）会让**整圈栏杆
+  全朝 orient=0** —— 直段会变成一半伸 X、一半伸 Z 的错乱。**格数判据完全拓不到这个缺陷**，
+  故门禁先钉 `stride === 5` 再按它遍历。
+
+- **⚠️ 负向验证暴露的真实盲区：只查「环上每格是 handrail*」抓不到朝向错误**。首版 Tier 4 用例
+  就是这么写的，把直段全改成 `handrail orient=0` 仍**全绿**。有效判据必须**读真实世界方块的
+  `meta`**（`world.getBlockMeta(x,y,z) & 3`）再反推臂方向与邻居比对。修好后注入精确报 81 格不匹配。
+  同一条判据在 `check:data`（读产物 JSON）与单测（读 column meta）各有一份，三层互补。
+
+- **地形处理三件事的顺序是载荷性的**：① 清 `[floorY+1, naturalH]` ② 补实地板下方空洞
+  ③ 光栅化。倒过来（先光栅化再清空）会把栏杆/树冠一起清掉。
+
+- **段 2.9 的层序**：在巨型金字塔（2.76）与巨树（2.8）**之后**、空中结构（2.5）**之前**。
+  后两者理由不同：后写胜保证不会被树冠/塔身打穿；空中结构在 Y=55 以上本来就不冲突。
+
+- **方块全部映射到现成方块，零新增声明与贴图**（用户硬要求「不要自创方块」）：
+  `stained_glass→glass_block`、`hay_block→hay_bale`、`tall_grass→short_grass`、
+  `poppy/dandelion→flower`、`double_plant→allium`、`log→wood`、`leaves→leaves` 等。
+  ⚠️ **`BLOCK_MAP` 刻意留了 Arena2~6 将来要用的条目**（stone/cobblestone/clay/glowstone…），
+  故 `check:data` 的正向判据**只能**用「素材普查里的每个源方块都能映射到产物里的方块」，
+  **不能**要求「每个映射目标都出现在本变体的 palette 里」（会错杀那张前瞻表）。
+
+- **`npm run arena` 不跑则产物静默过期**（渲染旧竞技场）→ `check:data` 的 `[竞技场]` 用指纹抓，
+  覆盖 `.schematic` + `BLOCK_MAP` + `CONTAINER_BLOCKS` + `SUPERSEDED_BLOCKS` +
+  `RAIL_RING_INSET` + `ARENA_METRICS`。已知盲区（同所有烘焙产物）：只改**算法**不动参数时
+  指纹不变 → 靠单测的产物契约与 Tier 4 兜住。
+
+- **⚠️ `layout.arena` **不能**写成 `tarn ? null : …`（与其它地标不同）**：竞技场占地 41×79 **可跨 region**，而 `arenaOverlapsRegion` 只让相交的 region 携带它。若地带 region 把 `arena` 压成 null，**该 region 负责的那半个竞技场直接不生成**（方块层面看不出是 layout 缺字段）。实测 20 个 seed 里有 **2 个**（seed 1 / 5150）的占地 AABB 确实跨进了地带 region。候选层已把**整圆**当作阻挡物（`fixedBlockers` 的 `TARN_ZONE_RADIUS`），合法锚点不会落在池/台地上 —— 能相交的只是占地 AABB 的边缘探进地带 region 的**矩形**范围（圆外那部分仍是普通地形）。回归门 = `test-arena.js` 的「占地相交的每一个 region 都必须携带 layout.arena」。
+
+- **`ARENA_VARIANTS` 有两份**（`src/gen/structures/arena-variants.js` 给浏览器、`tools/arena-fingerprint.mjs`
+  给 node），`check:data` 双向断言相等。只加一边会让新变体**静默不出现**
+  （`rasterizeStructure` 拿到空 blocks 直接 return，方块层面看不出）。加第二个竞技场时
+  两处都要改。
 
 ### Cloudland 高台沉淀的活跃约束（v1.76，后续地形景观 / 结构撒布 / 多格结构类改动必读）
 
@@ -2393,6 +2485,11 @@ mc-heavy/
 ├─ tools/bake-azalea-trees.mjs # 杜鹃树烘焙（npm run azaleatrees）：入库 .schem → 按灰线网格切 50 个地台
 │                              #   → 取杜鹃主题行（行 2）的 10 档 → **1:1 原生尺度**（不降采样）→ 三种叶并进
 │                              #   `LEAF` 哨兵槽 + 树干 → azalea_log → 10 个变体 JSON（7468 格）
+├─ tools/bake-arena.mjs        # 城门竞技场烘焙（npm run arena）：.schematic → 丢弃 barrier/bedrock
+│                              #   → 内容映射 → **外圈栏杆环**（臂集合由 src/gen/structures/arena.js
+│                              #   的 railPlacementFor 反查）→ arena_grass.json（stride:5 + floorRow）
+├─ tools/arena-fingerprint.mjs # 竞技场 BLOCK_MAP / CONTAINER_BLOCKS / SUPERSEDED_BLOCKS /
+│                              #   RAIL_RING_INSET / ARENA_METRICS / 指纹共享模块（同上，红线 1）
 ├─ tools/azalea-trees-fingerprint.mjs # 杜鹃树 SOURCE_MAP / PALETTE / SIZE_EXPECTATIONS / 指纹共享模块（同上，红线 1）
 ├─ tools/bake-giant-trees.mjs  # 巨树烘焙（npm run gianttrees）：入库 .schem → 28 变体 2×2×2 降采样
 │                              #   → assets/giant-trees/trees.json + trees.meta.json（尺寸+输入指纹）
@@ -2429,6 +2526,8 @@ mc-heavy/
 │  │  └─ dusk/                 # 日落（v1.75）：6 面 × 1024²（mc-lite skyBox2，356K，原样复制）
 │  │                           #   ⚠️ 由 `uDuskBlend` 叠在最上层，自动日夜循环恒 0（只手动选「傍晚」用）
 │  │                           #   清单唯一权威 = `render/sky-config.js`（check:data 的 [天空盒] 环节）
+│  ├─ arena/                    # 城门竞技场（v2.7）：src/arena1.schematic（烘焙输入，入库，
+│  │                           #   **非渲染资源**）→ 产物走 assets/structures/arena_grass.json
 │  ├─ models/weapons/          # M4 受控 GLB（pistol / mag7 / minigun）—— 替换后跑 validate:weapon-assets
 │  ├─ turret/                  # 炮塔装甲烘焙产物（armor.png + armor.json）；turret_pic1/2/3 是
 │  │                           #   mc-lite 源图（烘焙输入，勿当渲染资源）
@@ -2453,6 +2552,11 @@ mc-heavy/
    │               #  azalea-trees.js 杜鹃树（v1.99）：与 giant-trees 同构但**不复用**（巨树是多族多路径
    │               #    系统，硬套会引入无消费的死字段）。只落 AZALEA biome + 陆上；叶子槽按 30%
    │               #    世界坐标纯函数掷花/叶（跨 column 一致）。旧代码生成的 5×5 小树已停用
+   │               #  arena.js 城门竞技场（v2.7）：`computeArenaAnchor` 落点纯函数（南门以南第一个
+   │               #    「出城 + 不压固定地标 + 占地 100% 干燥 + 高差 ≤10」的位置，seed 缓存）+ 
+   │               #    `railArmSet`/`railPlacementFor` 栏杆臂方向↔(方块,朝向) 反查（**从 TEMPLATES +
+   │               #    mesher 的 rotateOffset 派生**，烘焙与门禁共用）+ `inArenaFootprint` 占地判据
+   │               #  arena-variants.js 竞技场产物基名（纯数据，与 tools/arena-fingerprint.mjs 双向门禁）
    │               #  giant-trees.js 巨树景观：region 层候选（全局对齐网格 + 内缩抖动）+ column 层光栅化
    │               #    （合并邻域候选 / 排除 / 地基 / 覆盖窗口；Worker 同构）
    │               #  mesa.js Cloudland 高台落点（v1.76）：每块沙漠至多 1 个。判据 = 基座 15×15
@@ -2565,6 +2669,12 @@ npm run pyramid                # 烘焙巨型金字塔 → assets/structures/gia
                                #   PYRAMID_METRICS）或 .litematic 后需跑，否则产物静默过期
                                #   （check:data 的 [巨型金字塔] 指纹检查会抓）
                                #   另有 `-- --census`（源方块普查）/ `-- --census-orient`（校验台阶朝向映射）
+npm run arena                  # 烘焙城门竞技场 → assets/structures/arena_grass.json + arena.meta.json
+                               #   （丢弃 barrier/bedrock、原图斜向 fence 由外圈栏杆环取代、
+                               #   stride:5 带栏杆朝向 + floorRow）。改 tools/arena-fingerprint.mjs
+                               #   （BLOCK_MAP / SUPERSEDED_BLOCKS / RAIL_RING_INSET / ARENA_METRICS）
+                               #   或 .schematic 后需跑，否则产物静默过期（check:data 的 [竞技场] 会抓）
+                               #   另有 `-- --census`（源方块普查 + 栏杆环臂分配）/ `-- --ring`
 npm run azaleatrees            # 烘焙杜鹃树变体 → assets/azalea-trees/trees.json + trees.meta.json（10 档造型）
                                #   改 tools/azalea-trees-fingerprint.mjs（SOURCE_MAP / PALETTE /
                                #   SIZE_EXPECTATIONS）或 .schem 后需跑，否则产物静默过期
