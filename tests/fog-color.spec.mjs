@@ -341,7 +341,7 @@ test('启动默认开启雾色（用户 2026-10-25 裁定）', async ({ page }) 
   // 面板高亮必须同步（默认开启但面板显示「关闭」会静默撕裂）
   await page.evaluate(() => document.getElementById('settings-btn').click());
   await page.waitForTimeout(300);
-  const row = page.locator('#settings-modal .mc-item', { hasText: '雾色' });
+  const row = page.locator('#settings-modal .mc-combined-col', { hasText: '雾色' });
   await expect(row.locator('button.active')).toHaveText('开启');
 
   // `?fog=0` 仍可关闭（默认翻转不得把入口锁死）
@@ -383,9 +383,10 @@ test('面板「雾色」行落在左列环境风格下方，且无天空盒时�
   await page.evaluate(() => document.getElementById('settings-btn').click());
   await page.waitForTimeout(300);
 
-  const row = page.locator('#settings-modal .mc-item', { hasText: '雾色' });
+  const row = page.locator('#settings-modal .mc-combined-col', { hasText: '雾色' });
   await expect(row).toHaveCount(1);
-  // 左列（第 1 列）且**紧接在环境风格之后**（用户 2026-10-21 指定：同属观感）
+  // 左列（第 1 列）且**紧跟环境风格之后**（用户 2026-10-21 指定：同属观感）。
+  // v1.98：雾色与背景音乐共处一个合并盒 → 标题顺序仍是「环境风格 → 雾色 → 背景音乐」。
   const cols = await page.evaluate(() => {
     const rows = [...document.querySelectorAll('#settings-modal .mc-column')];
     return rows.map((c) => [...c.querySelectorAll('.mc-title')].map((t) => t.textContent));
@@ -394,6 +395,16 @@ test('面板「雾色」行落在左列环境风格下方，且无天空盒时�
   expect(cols[0], '「雾色」必须在左列').toContain('雾色');
   const styleIdx = cols[0].indexOf('环境风格');
   expect(cols[0].indexOf('雾色'), '「雾色」必须紧接在环境风格下面').toBe(styleIdx + 1);
+  // v1.98：与背景音乐同盒（左半 / 右半），默认都带「关闭」「开启」两个按钮
+  expect(cols[0].indexOf('背景音乐'), '背景音乐紧跟在雾色之后（同一合并盒的右半）')
+    .toBe(styleIdx + 2);
+  const sameBox = await page.evaluate(() => {
+    const box = (title) => [...document.querySelectorAll('#settings-modal .mc-combined-col')]
+      .find((r) => r.querySelector('.mc-title')?.textContent === title);
+    const a = box('雾色'), b = box('背景音乐');
+    return !!a && !!b && a.parentElement === b.parentElement;
+  });
+  expect(sameBox, '雾色与背景音乐必须共用合并盒（用户 2026-10-31 要求）').toBe(true);
 
   // 环境风格的「自动」按钮必须还在（它是日夜循环的唯一 UI 入口）
   const styleBtns = await page.evaluate(() => {

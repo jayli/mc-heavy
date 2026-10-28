@@ -259,22 +259,35 @@ test('设置面板：TNT 破坏开关落在右列、生效且持久化', async (
   await page.locator('#settings-btn').click();
   await expect(page.locator('#settings-modal')).toBeVisible();
 
-  // ⚠️ 落位断言（计划 Step 7 要求）：该行必须落在**右列**（`.mc-columns` 的第二个 `.mc-column`）。
-  // 理由见 `_rowTntDamage()` 的注释 —— 左列合并盒已容纳两组 4 按钮，再塞第三组会让 6 按钮
-  // 挤在约 375px 内。断言钉住它，避免后续调整面板时被误挪到左列。
-  const inRightColumn = await page.evaluate(() => {
+  // ⚠️ 落位断言：该组必须落在**右列**（`.mc-columns` 的第二个 `.mc-column`），
+  // 且 v1.98 起与「进度管理」共用合并盒（用户 2026-10-31：「同样的处理方式，也处理一下
+  // TNT破坏和进度管理」）。断言钉住两件事：① 仍在右列；② 与进度同盒（被挪回独立一行
+  // 或跨列都会失败）。
+  const placement = await page.evaluate(() => {
     const cols = [...document.querySelectorAll('#settings-modal .mc-columns > .mc-column')];
-    if (cols.length !== 2) return false;   // 面板必须是两列盒（v1.35 布局）
-    const rows = [...cols[1].querySelectorAll('.mc-item .mc-title')].map((t) => t.textContent);
-    return rows.includes('TNT 破坏');
+    if (cols.length !== 2) return { cols: cols.length };
+    const inCol = (col, title) => [...col.querySelectorAll('.mc-title')]
+      .some((t) => t.textContent === title);
+    const combined = document.getElementById('btn-progress-import')?.closest('.mc-combined');
+    const titles = combined
+      ? [...combined.querySelectorAll('.mc-title')].map((t) => t.textContent) : [];
+    return {
+      cols: 2,
+      tntInRight: inCol(cols[1], 'TNT 破坏'),
+      tntInLeft: inCol(cols[0], 'TNT 破坏'),
+      sameCombined: titles.includes('TNT 破坏') && titles.includes('进度管理'),
+    };
   });
-  expect(inRightColumn).toBe(true);
+  expect(placement.cols).toBe(2);
+  expect(placement.tntInRight, '「TNT 破坏」必须在右列').toBe(true);
+  expect(placement.tntInLeft).toBe(false);
+  expect(placement.sameCombined, 'TNT 破坏与进度管理必须同处一个合并盒').toBe(true);
 
-  // ⚠️ **不能用全局文本匹配点按钮** —— 「关闭/开启」文案与左列的「枪械破坏」行**重复**，
-  // 全局 `find(textContent === '开启')` 会先命中枪械破坏那行（DOM 顺序左列在前）。
-  // 故按**标题作用域**定位：先找到含「TNT 破坏」标题的行，再点它自己的按钮。
+  // ⚠️ **不能用全局文本匹配点按钮** —— 「关闭/开启」文案在面板里有**多组重复**
+  // （枪械破坏 / TNT 破坏 / 雾色 / 背景音乐），全局查找会先命中其它组。
+  // 故按**组标题作用域**定位：先找到含「TNT 破坏」标题的组，再点它自己的按钮。
   await page.evaluate(() => {
-    const row = [...document.querySelectorAll('#settings-modal .mc-item')]
+    const row = [...document.querySelectorAll('#settings-modal .mc-combined-col')]
       .find((r) => r.querySelector('.mc-title')?.textContent === 'TNT 破坏');
     [...row.querySelectorAll('button')].find((b) => b.textContent === '开启').click();
   });
@@ -285,7 +298,7 @@ test('设置面板：TNT 破坏开关落在右列、生效且持久化', async (
   }, null, { timeout: 5_000 });
   // 关掉：两态都要可达（单态开关是常见回归）
   await page.evaluate(() => {
-    const row = [...document.querySelectorAll('#settings-modal .mc-item')]
+    const row = [...document.querySelectorAll('#settings-modal .mc-combined-col')]
       .find((r) => r.querySelector('.mc-title')?.textContent === 'TNT 破坏');
     [...row.querySelectorAll('button')].find((b) => b.textContent === '关闭').click();
   });

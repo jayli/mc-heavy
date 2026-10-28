@@ -64,20 +64,24 @@ test('瞬移：四个按钮都在面板里，同一行不换行，且位于「�
       .map((id) => document.getElementById(id).offsetTop));
   expect(new Set(rowTops).size, `四个按钮须同一行，实测 offsetTop=${rowTops.join(',')}`).toBe(1);
 
-  // 落位判据：瞬移行必须出现在「背景音乐」那一行**之后**（用户说「在背景音乐下面」）。
-  // ⚠️ 用 DOM 顺序（compareDocumentPosition）而不是 getBoundingClientRect 的 top ——
+  // 落位判据：瞬移行必须出现在「背景音乐」那一组**之后**（用户说「在背景音乐下面」）。
+  // ⚠️ 用 DOM 顺序（`querySelectorAll` 的文档序）而不是 getBoundingClientRect 的 top ——
   // 两列并排时 top 不能表达「先后」，只有文档顺序才是「下面」。
+  // ⚠️ v1.98：背景音乐不再独占 `.mc-item`（它与雾色同处一个合并盒的右半）→ 必须把
+  // **两种容器**都纳入扫描，否则 `iMusic` 恒为 -1，断言退化成「找不到就报错」。
   const ordered = await page.evaluate(() => {
     const modal = document.getElementById('settings-modal');
-    const rows = [...modal.querySelectorAll('.mc-item')];
+    const rows = [...modal.querySelectorAll('.mc-item, .mc-combined')];
     const titleOf = (r) => r.querySelector('.mc-title')?.textContent ?? '';
-    const iMusic = rows.findIndex((r) => titleOf(r) === '背景音乐');
+    // 合并盒内多个组标题 → 用「包含」判断（合并盒本身是容器，不是某个组）
+    const has = (r, t) => [...r.querySelectorAll('.mc-title')].some((x) => x.textContent === t);
+    const iMusic = rows.findIndex((r) => has(r, '背景音乐'));
     const iTele = rows.findIndex((r) => titleOf(r) === '瞬移');
     return { iMusic, iTele, count: rows.length };
   });
-  expect(ordered.iMusic, '面板里应有「背景音乐」行').toBeGreaterThanOrEqual(0);
+  expect(ordered.iMusic, '面板里应有「背景音乐」').toBeGreaterThanOrEqual(0);
   expect(ordered.iTele, '面板里应有「瞬移」行').toBeGreaterThanOrEqual(0);
-  // 同一列内文档顺序 = 视觉上下顺序；瞬移行必须紧跟在音乐行之后
+  // 同一列内文档顺序 = 视觉上下顺序；瞬移行必须紧跟在背景音乐所在容器之后
   expect(ordered.iTele).toBe(ordered.iMusic + 1);
 });
 

@@ -25,7 +25,7 @@ import {
   TELEPORT_ROW_TITLE, TELEPORT_TARN_LABEL, TELEPORT_MARK_LABEL, TELEPORT_GO_LABEL,
   TELEPORT_HOME_LABEL,
 } from '../ui/settings-panel.js';
-import { Toast } from '../ui/toast.js';
+import { Toast, TOAST_Z_INDEX } from '../ui/toast.js';
 import { PANEL_CSS as INVENTORY_PANEL_CSS } from '../ui/inventory.js';
 
 test('settings: 默认值（vd=8 / blur=off / volume=1 / 风格自动）', () => {
@@ -358,9 +358,14 @@ test('创造台行/进度管理行标题与进度按钮文案是导出的单一�
   assertFalse(PLAYGROUND_ROW_TITLE === PROGRESS_ROW_TITLE, '两行标题必须可区分');
   // 标题不得再出现合并写法（v1.43 前的「创造台和进度管理」已按用户要求拆开）
   assertFalse(PLAYGROUND_ROW_TITLE.includes('进度'), '创造台行标题不得再混入进度');
-  assertEqual(PROGRESS_IMPORT_LABEL, '导入进度');
-  assertEqual(PROGRESS_EXPORT_LABEL, '导出进度');
+  assertEqual(PROGRESS_IMPORT_LABEL, '导入');
+  assertEqual(PROGRESS_EXPORT_LABEL, '导出');
   assertFalse(PROGRESS_IMPORT_LABEL === PROGRESS_EXPORT_LABEL, '两个按钮文案必须可区分');
+  // v1.98：进度按钮与创造台的模型按钮**不是同一粒度**（整世界存档 vs 平台模型），
+  // 改名后两组文案在全局面板里确实重名（都是「导入/导出」）—— 归属靠各自的组标题
+  // 「进度管理」/「创造台」表达。这条断言钉住「标题仍在」，否则重名就真的分不清了。
+  assertEqual(PROGRESS_ROW_TITLE, '进度管理');
+  assertFalse(PROGRESS_ROW_TITLE === PLAYGROUND_ROW_TITLE, '重名按钮的归属只能靠标题区分');
   // 进度错误文案映射：`save/progress-codec.js` 的每个失败 reason 都要有玩家可读文案
   // （否则导入坏文件时玩家只看到裸 reason）。reason 清单与 codec 的失败分支同源。
   for (const reason of ['invalid-json', 'invalid-format', 'unsupported-version', 'invalid-seed']) {
@@ -397,4 +402,31 @@ test('toast 自动淡出（durationMs 后 hide）且重复调用后一条胜出'
   await new Promise((r) => setTimeout(r, 40));
   assertEqual(toast.isVisible(), false, '定时器触发 hide');
   toast.dispose();
+});
+
+/**
+ * toast 的层级必须高于**全部模态面板**（v1.98 修，用户 2026-10-31 报告「导出按钮点击没反应」）。
+ *
+ * **toast 是面板里那些动作按钮（创造台 / 进度导入导出 / 瞬移）唯一的反馈通道**，而它自身的
+ * z-index 当时是 40 —— 低于设置面板遮罩的 70、更低于背包的 80。后果：在面板里点「导出」
+ * 其实已经成功（文件下载了），但提示被盖在遮罩下面、完全看不见 → 玩家看到的就是
+ * 「点了没反应」（实测像素：修前 toast 显示/隐藏两张图 luma **逐位相同** 186.06，
+ * 修后 71.64 vs 186.06）。
+ *
+ * 这条钉的是**层叠顺序的不等式**（纯数值，无需 DOM fixture），配合 E2E 的像素判据双保险：
+ * 单测拓得到「有人把常量改回去」，E2E 拓得到「CSS 真生效且真的画在最上层」。
+ */
+test('toast 的 z-index 必须高于全部模态面板（否则面板里的按钮点击看起来没反应）', () => {
+  // 层级表快照（来自各组件 CSS 模板；改任一处时须同步核对这条不等式）。
+  // 这些值不从 CSS 解析 —— 单测拿不到组件私有模板串，故显式声明并在 E2E 里交叉验证。
+  const SETTINGS_MODAL_Z = 70;   // settings-panel.js  #settings-modal
+  const INVENTORY_Z = 80;        // inventory.js       #inventory-modal
+  const BOOT_ERROR_Z = 100;      // index.html         #webgpu-error（必须永远最上）
+  assertTrue(TOAST_Z_INDEX > SETTINGS_MODAL_Z,
+    `toast(${TOAST_Z_INDEX}) 必须高于设置面板(${SETTINGS_MODAL_Z})`);
+  assertTrue(TOAST_Z_INDEX > INVENTORY_Z,
+    `toast(${TOAST_Z_INDEX}) 必须高于背包(${INVENTORY_Z})`);
+  // 启动错误遮罩必须仍高于 toast —— 它代表「游戏根本没起来」，被提示盖住等于看不见错误
+  assertTrue(TOAST_Z_INDEX < BOOT_ERROR_Z,
+    `toast(${TOAST_Z_INDEX}) 不得压过启动错误遮罩(${BOOT_ERROR_Z})`);
 });

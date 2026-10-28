@@ -6,7 +6,8 @@
 // （组件自带样式，不依赖宿主页面；重复构造只注入一次）。
 // **布局**：沿用 mc-lite 的两列盒（`.settings-columns` + `.setting-combined-item`），
 // 但行列分配按 mc-heavy 当前档位需要重排（面板是后续功能的配置入口，须留扩展余量）：
-// 左列 = 画质+枪械破坏合并盒 / 环境风格；右列 = 视距 / 帧预算 / 世界（新世界 + 删除缓存）。
+// 左列 = 画质+枪械破坏合并盒 / 环境风格 / 雾色+背景音乐合并盒 / 瞬移；
+// 右列 = 视距 / 帧预算 / TNT 破坏+进度管理合并盒 / 创造台 / 世界（新世界 + 删除缓存）。
 // 档位：视距（持久化+重载生效，面板 3 档）/ 画质 blur（重载生效）/ 视觉风格（运行时即时）
 // / 帧预算档位（运行时即时，M3-2）/ 枪械破坏（运行时即时）/ 世界操作（新世界 / 删除缓存）。
 // 音量不入面板（默认 100% 开启，`settings.js` 仍持久化 + `?volume=` URL 可达，待音频消费方接线）。
@@ -44,6 +45,15 @@ export const PLAYGROUND_ROW_TITLE = '创造台';
  */
 export const PROGRESS_ROW_TITLE = '进度管理';
 /**
+ * v1.98：进度按钮文案改为「导入」/「导出」（用户 2026-10-31 要求）。
+ *
+ * 改名的**原因是布局**：进度管理不再独占一行，而是与「TNT 破坏」共用合并盒 →
+ * 每组只剩约 171px 列宽、每按钮约 81px，「导入进度 / 导出进度」四个字在 81px 内会贴到
+ * 斜角边框；两字文案与同盒的「关闭 / 开启」、「像素风 / 平滑」风格一致。
+ * ⚠️ 与创造台行的「导出模型 / 导入模型」**不是同一粒度**（那是平台模型，这是整世界存档）——
+ * 两者靠各自的组标题（「进度管理」vs「创造台」）区分，改文案时不要把两者合并成一个常量。
+ */
+/**
  * v1.92：瞬移行的标题与按钮文案。导出供 `src/tests/test-ui.js` 钉死（单一口径）。
  * 用户 2026-10-29 需求：「在背景音乐下面增加一排按钮……功能就是瞬移」；
  * v1.97 追加「回家」（用户 2026-10-31：「增加一个按钮『回家』，返回到 City 原始的玩家出生点」）。
@@ -57,8 +67,8 @@ export const TELEPORT_HOME_LABEL = '回家';
 const EXPORT_LABEL = '导出模型';
 const IMPORT_LABEL = '导入模型';
 /** 导出 / 导入**进度**（整世界存档）按钮文案。导出供单测钉死（单一口径） */
-export const PROGRESS_EXPORT_LABEL = '导出进度';
-export const PROGRESS_IMPORT_LABEL = '导入进度';
+export const PROGRESS_EXPORT_LABEL = '导出';
+export const PROGRESS_IMPORT_LABEL = '导入';
 
 /**
  * M9：创造台操作的错误文案映射（单一口径，不散落字面量）。
@@ -156,6 +166,15 @@ const PANEL_CSS = `
 }
 #settings-modal .mc-combined-col:first-child { border-right: 1px solid #888; padding-left: 0; }
 #settings-modal .mc-combined-col:last-child { padding-right: 0; }
+/* 合并盒出现在**列中间**时（v1.98：左列的雾色+背景音乐、右列的 TNT+进度），要跟它上方的
+   普通行一样有一条分隔线，否则那一块与上一行之间只剩 10px 空白、视觉节奏断掉。
+   ⚠️ **只覆写 border-top-color 与 padding-top，不用 border 简写** —— 简写会连带改掉
+   .mc-combined 自身方框的左右下三边（v1.35 踩过同型的特异性陷阱：一条 border-top:none
+   把合并盒上边框抹掉，方框缺一边）。首位的合并盒（左列画质+枪械破坏）不加线，与既有观感一致。
+   ⚠️ 本文件在 JS 模板字面量内，注释里**不得用反引号**包裹标识符（会提前终止模板字符串）。 */
+#settings-modal .mc-column > .mc-combined:not(:first-child) {
+  border-top-color: #999; padding-top: 10px;
+}
 /* 创造台：单行按钮盒（v1.43，用户要求 2026-09-30）。
    未激活 = 「打开创造台」独占整行（flex:1 满行）；激活后同行的「导出模型 / 导入模型」
    转为可见，三个按钮由 flex:1 平分该行（不再为模型另辟一行、也不再把主按钮变窄）。
@@ -245,14 +264,18 @@ export class SettingsPanel {
 
     left.appendChild(this._combinedBlurGunDamage()); // 画质 + 枪械破坏共用一行
     left.appendChild(this._rowVisualStyle());
-    left.appendChild(this._rowFogColor());           // v1.59：雾色融入天空（紧接环境风格，同属观感）
-    left.appendChild(this._rowMusic());              // v1.63：背景音乐（与雾色同属「氛围」）
+    // v1.98：雾色 + 背景音乐合并为一行（用户 2026-10-31：「做成跟画质+枪械破坏这部分一样
+    // 的按钮排布，放到一行里，分左右两部分，一块两个按钮」）—— 两组都是两按钮开关、同属
+    // 「氛围」，合并后左列少一行。
+    left.appendChild(this._combinedFogMusic());
     left.appendChild(this._rowTeleport());           // v1.92：瞬移（用户要求在背景音乐下面）
     right.appendChild(this._rowViewDistance());
     right.appendChild(this._rowBudget());
-    right.appendChild(this._rowTntDamage());        // M8：TNT 破坏开关（右列独立一行）
     right.appendChild(this._rowPlayground());        // M9：创造台（右列，纵向余量更大）
-    right.appendChild(this._rowProgress());          // v1.43：进度管理（独立一行，与创造台分开）
+    // v1.98：TNT 破坏 + 进度管理合并为一行（用户同日要求，同样是为了「节省控制面板的空间」）。
+    // 落位 = 原「进度管理」的位置（**创造台之后**）—— 「进度管理在创造台下方」是用户 2026-09-30
+    // 明确裁定过的排布，而 TNT 破坏此前没有指定位置，故由它跟随进度这一行走。
+    right.appendChild(this._combinedTntProgress());
     right.appendChild(this._rowWorld());             // 新世界 + 删除缓存共用一行
 
     const footer = document.createElement('div');
@@ -387,8 +410,9 @@ export class SettingsPanel {
    * v1.59 交付时默认关是「默认值 = 旧行为」的口径；实玩后改为默认开 —— 天空盒一开，固定
    * 0x87ceeb 的远景就与照片天空对不上（实测 R 差 54）。**关**的路径完整保留（本行「关闭」按钮
    * 与 `?fog=0`），关闭时走 `mix()` 插值逐位回到 v1.58 的固定色。
-   * 落位 = **左列，「环境风格」下面一行**（用户 2026-10-21 指定）。理由：两者同属「画面观感」，
-   * 跟随环境风格自然。⚠️ **不改「自动」按钮**：它同时是 `daynight.setStyle(null)`（恢复日夜
+   * 落位 = **左列，紧跟「环境风格」**（用户 2026-10-21 指定，同属「画面观感」）；
+   * v1.98 起与「背景音乐」共用**合并盒**（左半），次序仍是「环境风格 → 雾色+背景音乐」。
+   * ⚠️ **不改「自动」按钮**：它同时是 `daynight.setStyle(null)`（恢复日夜
    * 循环）的唯一 UI 入口，且被 `sun-shadow.spec` / `daynight-visual.spec` 的
    * `setVisualStyle(null)` 用例依赖 —— 替掉它会让日夜循环失去入口。
    *
@@ -397,14 +421,14 @@ export class SettingsPanel {
    * 否则玩家按下去看不到任何变化，会误以为功能坏了。
    * ⚠️ 判据用 `game.sky`（运行时真实状态）而不是 `?skybox` URL 参数 —— 加载失败也走降级路径。
    */
-  _rowFogColor() {
-    const row = this._makeRow('雾色', [false, true], ['关闭', '开启'],
+  _rowFogColor(wrap = 'mc-item') {
+    const row = this._makeGroup('雾色', [false, true], ['关闭', '开启'],
       this.settings.fogColor,
       (v) => {
         this.settings.fogColor = v;
         this._save();
         this.game.setFogColorEnabled(v); // 开启需天空盒；无天空盒时静默保持关
-      });
+      }, wrap);
     if (!this.game.sky) {
       for (const b of row.querySelectorAll('button')) {
         b.disabled = true;
@@ -417,26 +441,42 @@ export class SettingsPanel {
   /**
    * v1.63：「背景音乐」开关（mc-lite `Player.js:296` 的 `playBGM('bgm', 0.15)`，循环单曲）。
    *
-   * ⚠️ **落位 = 左列（雾色下方），不是右列** —— 与 CLAUDE.md「新配置往右列填」的表面口径相反，
-   * 因为那条约束的**适用前提已经变了**：它当初的理由是「左列被两组合并盒 + 四档风格撑高，
-   * 右列余量更大」。现在右列已堆到六行（视距/帧预算/TNT/创造台/进度/世界）、是**决定面板
-   * 高度的那一列**，左列只剩三行。实测把本行加在右列：面板 653px、内容 706px > 可视 645px
-   * → 出现纵向滚动，「世界」行被裁到折线以下；放在左列则面板高度不变（左列 231→300，
-   * 仍远低于右列 571）。判断依据是该约束的**意图**（不抬高面板），不是它的字面。
+   * ⚠️ **落位 = 左列（雾色右侧的合并盒右半）**，不是右列 —— 与 CLAUDE.md「新配置往右列填」
+   * 的表面口径相反，因为那条约束的**适用前提已经变了**：它当初的理由是「左列被两组合并盒 + 四档
+   * 风格撑高，右列余量更大」。v1.63 实测把本行单独加在右列：面板 653px、内容 706px > 可视
+   * 645px → 出现纵向滚动，「世界」行被裁到折线以下。判断依据是该约束的**意图**（不抬高面板），
+   * 不是它的字面。
    *
    * ⚠️ **不置灰**（与雾色相反）：本开关即使 preload 失败 / 无音频设备也能点 —— 它只记意图，
    * 解码完成与用户手势到位后自动起播。按「异步条件未就绪就置灰」得等到 4MB 解码完才能
    * 解除，反而是永久错的初始态。
    * 默认开（面板首次打开即高亮「开启」）；关闭立即停播，重开继续。
    */
-  _rowMusic() {
-    return this._makeRow('背景音乐', [false, true], ['关闭', '开启'],
+  _rowMusic(wrap = 'mc-item') {
+    return this._makeGroup('背景音乐', [false, true], ['关闭', '开启'],
       this.settings.bgm,
       (v) => {
         this.settings.bgm = v;
         this._save();
         this.game.setMusicEnabled(v); // 开启后靠 preload/unlock 两个条件自动起播
-      });
+      }, wrap);
+  }
+
+  /**
+   * v1.98：「雾色 + 背景音乐」合并盒（用户 2026-10-31：「做成跟画质+枪械破坏这部分一样的
+   * 按钮排布，放到一行里，分左右两部分，一块两个按钮」）。
+   *
+   * 两组都是「两个按钮 + 持久化 + 运行时即时生效」的开关，且同属「氛围」，合在一行与
+   * 画质+枪械破坏那一盒同构（`_makeCombined` 同一份实现 → `.mc-combined-box` 两列 grid）。
+   * ⚠️ **雾色那一组的置灰逻辑必须跟着搬进合并盒**：`_rowFogColor` 的 wrap 参数就是为了这个
+   * —— 没有天空盒时它得把**自己那两按钮**禁用，不能因为换了容器就丢掉（丢掉的形态是
+   * 「?skybox=0 下按了没反应」，静默失效）。
+   */
+  _combinedFogMusic() {
+    return this._makeCombined([
+      this._rowFogColor('mc-combined-col'),
+      this._rowMusic('mc-combined-col'),
+    ]);
   }
 
   /**
@@ -447,8 +487,8 @@ export class SettingsPanel {
    * （它按 `values` 渲染 `.active` 选中态），而是照 `_rowWorld` 的手法自己拼按钮组：
    * 动作按钮没有「当前值」，渲染选中态会让玩家以为有持久状态。
    *
-   * ⚠️ **落位 = 左列（背景音乐下方）**，理由同 `_rowMusic` 注释：左列只有四行、
-   * 右列六行且是决定面板高度的那一列，加在左列不抬高面板。用户明确说「背景音乐下面」。
+   * ⚠️ **落位 = 左列（背景音乐右侧的合并盒右半）**，用户说的是「在背景音乐下面」：
+   * v1.98 把雾色+背景音乐合并成一行后，本行落在那个合并盒**下方**，仍在左列。
    *
    * ⚠️ **业务逻辑一律在 Game**（`teleportToTarnZone` / `markPosition` / `teleportToMark` /
    * `teleportToSpawn`）：面板只做 DOM 与文案。散落进来的话要 import voxel/gen 层，
@@ -549,22 +589,38 @@ export class SettingsPanel {
    * `game.canTntDestroyBlocks`）。mc-heavy 走 `game.setTntBlockDamage(enabled)`，默认 false
    * （mc-lite `Game.js:92` 同口径：默认只伤害 + 连锁、不动地形）。
    *
-   * ⚠️ **落位 = 右列独立一行（`.mc-item`），不进左列合并盒** —— 三条理由：
-   * ① 左列合并盒已容纳两组（画质 + 枪械破坏 = 4 按钮），面板总宽 770px、两列各约 375px
-   *    （v1.35 实测）→ 再塞第三组会让 6 按钮挤在 375px 内，文案被压缩或换行；
-   * ② 「两组两按钮档位优先用合并盒」的适用前提是**有两组要合并**，TNT 破坏是单组，不适用；
-   * ③ 右列纵向余量更大（CLAUDE.md「新配置往右列填」），且 TNT 破坏与「帧预算」同属运行时
-   *    即时开关，语义连贯；不触碰左列合并盒 → 避开 v1.35 的 CSS 特异性陷阱
-   *    （`.mc-column > :first-child` 会抹掉 `.mc-combined` 的装饰边框）。
+   * ⚠️ **落位 = 右列（v1.98 起与「进度管理」共用合并盒的左半）**。v1.98 之前的落位理由「单组
+   * 不进合并盒」已**因用户新要求失效**（2026-10-31：「同样的处理方式，也处理一下 TNT 破坏和
+   * 进度管理」）—— 那两条（合并盒已满 / 单组不适用）都是**当时**的档位状态，现在要合的是
+   * 两组、各两个按钮，与画质+枪械破坏那一盒完全同构。
+   * ⚠️ 「TNT 破坏」是面板里最长的组标题（6 字符 + 空格）—— 合并盒列宽约 171px 刚好容下；
+   * 往后改这个标题文案先量 `scrollWidth ≤ clientWidth`（超出会顶开列宽、面板跟着变宽）。
    */
-  _rowTntDamage() {
-    return this._makeRow('TNT 破坏', [false, true], ['关闭', '开启'],
+  _rowTntDamage(wrap = 'mc-item') {
+    return this._makeGroup('TNT 破坏', [false, true], ['关闭', '开启'],
       this.settings.tntDamage,
       (v) => {
         this.settings.tntDamage = v;
         this._save();
         this.game.setTntBlockDamage(v); // 委派 game.canTntDestroyBlocks（爆炸破坏事务的门控）
-      });
+      }, wrap);
+  }
+
+  /**
+   * v1.98：「TNT 破坏 + 进度管理」合并盒（用户 2026-10-31：「同样的处理方式，也处理一下
+   * 【TNT破坏】和【进度管理】，其中进度管理里的两个按钮分别改名为【导入】和【导出】」）。
+   *
+   * 改名不是审美选择，是**布局的必然**：合并后每组只剩约 171px 列宽（`_combinedBlurGunDamage`
+   * 实测同构盒的每组宽度）， 两按钮各约 81px 且还要摊 4px 间隙与斜角边框 ——
+   * 「导入进度」「导出进度」四个字正好贴边；「导入 / 导出」与同盒的「关闭 / 开启」节奏一致。
+   * 代价：文案不再自带「进度」二字 → 归属靠**组标题「进度管理」**表达（与「导出模型 / 导入模型」
+   * 靠「创造台」标题区分是同一手法）。
+   */
+  _combinedTntProgress() {
+    return this._makeCombined([
+      this._rowTntDamage('mc-combined-col'),
+      this._rowProgress('mc-combined-col'),
+    ]);
   }
 
   /**
@@ -671,14 +727,18 @@ export class SettingsPanel {
   /**
    * v1.43：进度管理行 —— 导入 / 导出进度（整世界存档）。
    *
-   * **与创造台分开的独立一行**（用户要求，2026-09-30）：创造台管平台与模型，进度管整个世界的
-   * 存档，两者功能域不同。两个按钮**常驻可见**（与创造台是否激活无关）。
+   * **功能域与创造台分开**（用户要求，2026-09-30）：创造台管平台与模型，进度管整个世界的
+   * 存档，两者靠各自的组标题区分。v1.98 起与「TNT 破坏」共用合并盒（右半），但仍不并入
+   * 创造台那一行。两个按钮**常驻可见**（与创造台是否激活无关）。
    *
    * ⚠️ 两个按钮必须都在 `_onImportProgress`/`_onExportProgress` 上绑定（未定义即 TypeError）。
+   * ⚠️ **动作型按钮不进 `_makeGroup`/`_makeRow`**：它们按 `values` 渲染 `.active` 选中态，
+   * 而导入/导出没有「当前值」—— 渲染选中态会让玩家以为有持久状态（同 `_rowTeleport` 的判据）。
+   * 故标题与按钮组都自己拼，只保留调用方给的 `wrap` 容器类。
    */
-  _rowProgress() {
+  _rowProgress(wrap = 'mc-item') {
     const row = document.createElement('div');
-    row.className = 'mc-item mc-progress';
+    row.className = wrap;
     const t = document.createElement('span');
     t.className = 'mc-title';
     t.textContent = PROGRESS_ROW_TITLE;

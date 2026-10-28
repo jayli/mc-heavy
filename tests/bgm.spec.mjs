@@ -82,8 +82,8 @@ test('背景音乐：手势早于解码也能起播，面板可关可开', async
   // → 先主动退出锁再点面板（生产里玩家按 Esc 也是同一条路径）。
   await page.evaluate(() => document.exitPointerLock());
   await page.locator('#settings-btn').click();
-  const row = page.locator('#settings-modal .mc-item', { hasText: '背景音乐' });
-  await expect(row, '面板必须有「背景音乐」一行').toHaveCount(1);
+  const row = page.locator('#settings-modal .mc-combined-col', { hasText: '背景音乐' });
+  await expect(row, '面板必须有「背景音乐」一组').toHaveCount(1);
   await expect(row.getByRole('button', { name: '开启' })).toHaveClass(/active/,
     '默认开 → 「开启」按钮高亮');
   await row.getByRole('button', { name: '关闭' }).click();
@@ -113,6 +113,6 @@ test('背景音乐：?bgm=0 启动即关，且点击画布不会偷播', async (
   // 面板此时应显示「关闭」高亮
   await page.evaluate(() => document.exitPointerLock());
   await page.locator('#settings-btn').click();
-  const row = page.locator('#settings-modal .mc-item', { hasText: '背景音乐' });
+  const row = page.locator('#settings-modal .mc-combined-col', { hasText: '背景音乐' });
   await expect(row.getByRole('button', { name: '关闭' })).toHaveClass(/active/);
 });

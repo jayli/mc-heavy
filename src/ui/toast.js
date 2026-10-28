@@ -10,12 +10,23 @@
 // → 整个模块解析失败 → 游戏页白屏）。与 settings-panel.js 的 PANEL_CSS 同一陷阱。
 const TOAST_ID = 'mc-toast';
 const TOAST_STYLE_ID = 'mc-toast-style';
+/**
+ * toast 的层级。**必须高于全部模态面板** —— 它是面板里那些动作按钮（创造台 / 进度导入导出 /
+ * 瞬移）唯一的反馈通道，而它自己的 z-index 若低于面板遮罩，提示就被盖在遮罩下面：
+ * 下载栏在浏览器右侧一闪而过，玩家看到的就是「点了没反应」（用户 2026-10-31 报告导出按钮）。
+ *
+ * 取值依据 = 当前全局层级表（改任一层级时须重新核对这条不等式）：
+ * hotbar 40 < coords-hud 50 < settings-btn 60 < **设置面板 70** < **背包 80** <
+ * **toast 90** < 启动错误遮罩 100（后者必须永远在最上：它代表「游戏根本没起来」）。
+ * ⚠️ 不要取成 100 或更高：那会把 WebGPU 启动失败遮罩压下去，玩家看不到真正的错误。
+ */
+export const TOAST_Z_INDEX = 90;
 const TOAST_CSS = `
 #mc-toast {
   position: fixed; left: 50%; top: 62%; transform: translateX(-50%);
   padding: 8px 16px; background: rgba(0, 0, 0, 0.72); color: #fff;
   font: 14px/1.4 monospace; border: 2px solid #555; pointer-events: none;
-  opacity: 0; transition: opacity 0.2s; z-index: 40;
+  opacity: 0; transition: opacity 0.2s; z-index: ${TOAST_Z_INDEX};
 }
 #mc-toast.mc-toast-visible { opacity: 1; }
 `;

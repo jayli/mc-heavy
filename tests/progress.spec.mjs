@@ -1,8 +1,10 @@
 import { test, expect } from 'playwright/test';
 import fs from 'node:fs';
+import { PNG } from 'pngjs';
 
 /**
- * v1.43 验收：设置面板的「导入进度 / 导出进度」。
+ * v1.43 验收：设置面板的进度导入 / 导出（v1.98 起按钮改名为「导入 / 导出」，与 TNT 破坏同处
+ * 一个合并盒 —— 文案变短是布局的必然，见 `_combinedTntProgress()` 注释）。
  *
  * 关键回归（Tier 1）两条，都**在方块层面看不出差别**，只有端到端才能暴露：
  * ① **导出前必须先 `flushNow`** —— 刚放下的方块还在内存 edits 里（5s 防抖未到），
@@ -77,6 +79,71 @@ test('进度导出：按钮存在，导出的 JSON 含 seed 与**刚放下**的�
   expect(cell.type).toBe('stone');
   // 文件名带 seed（便于玩家区分多份进度）
   expect(download.suggestedFilename()).toMatch(/^mc-heavy-progress-12345-.*\.json$/);
+
+  // ⚠️ **反馈必须对玩家可见，不能只断言「下载事件发生了」**（用户 2026-10-31 报告
+  // 「导出按钮点击没反应」）。导出是在面板里点的，而 toast 的 z-index(40) 低于
+  // 设置面板遮罩(70) → 提示文字被盖在遮罩下面、完全看不见，下载栏在右侧一闪而过 ——
+  // 玩家看到的就是「点了没反应」。故判据落在**可见性**上：
+  //   ① toast 文案确实是导出成功（不是「导出失败」）；
+  //   ② toast 的**实际层级高于**设置面板遮罩 —— 用命中测试 `elementFromPoint` 验证
+  //      「toast 中心点上最顶层的元素属于 toast」，这是玩家眼睛能看到的充要条件
+  //      （只断言 `z-index` 数值不够：改遮罩层级/改 DOM 结构都会让数值对比失效）。
+  // 等 toast 的 0.2s 淡入过渡跑完再量（否则 opacity 采到动画中途值，断言的是时序而非可见性）
+  await page.waitForFunction(() => {
+    const t = document.getElementById('mc-toast');
+    return t && Number(getComputedStyle(t).opacity) > 0.99;
+  }, null, { timeout: 5_000 }).catch(() => {});
+  // ⚠️ **不能用 `elementFromPoint` 判「toast 在最上层」**：toast 刻意是
+  // `pointer-events:none`（去掉它会拦光标 → 浮层闪烁），而命中测试会**跳过**
+  // pointer-events:none 的元素 → 哪怕 toast 完全可见，命中的也是它下面的面板
+  // （实测：修好之后仍返回 DIV.mc-columns）。这是判据选错，不是实现有问题。
+  // 改用**像素判据**（Tier 4）：在 toast 自己的矩形内截图，比较「toast 可见」与
+  // 「刚隐藏」两张同位置裁剪图 —— 前者必须明显更暗（toast 是 rgba(0,0,0,.72) 黑底白字）。
+  // 这一步同时证明 z-index 生效：若被面板遮住，两张图会逐像素相同。
+  await page.evaluate(() => document.getElementById('mc-toast').classList.add('mc-toast-visible'));
+  await page.waitForTimeout(400);        // 0.2s opacity 过渡跑完
+  const geo = await page.evaluate(() => {
+    const r = document.getElementById('mc-toast').getBoundingClientRect();
+    return { x: Math.round(r.x), y: Math.round(r.y), width: Math.round(r.width), height: Math.round(r.height) };
+  });
+  const withToast = PNG.sync.read(await page.screenshot({ clip: geo }));
+  await page.evaluate(() => document.getElementById('mc-toast').classList.remove('mc-toast-visible'));
+  await page.waitForTimeout(400);
+  const withoutToast = PNG.sync.read(await page.screenshot({ clip: geo }));
+  const meanOf = (png) => {
+    let s = 0, n = 0;
+    for (let i = 0; i < png.data.length; i += 4) {
+      s += png.data[i] + png.data[i + 1] + png.data[i + 2]; n += 3;
+    }
+    return s / n;
+  };
+  const lumaWith = meanOf(withToast);
+  const lumaWithout = meanOf(withoutToast);
+
+  const feedback = await page.evaluate(() => {
+    const toast = document.getElementById('mc-toast');
+    const modal = document.getElementById('settings-modal');
+    return {
+      exists: !!toast,
+      text: toast?.textContent ?? '',
+      toastZ: Number(getComputedStyle(toast).zIndex),
+      modalZ: Number(getComputedStyle(modal).zIndex),
+      pointerEvents: getComputedStyle(toast).pointerEvents,
+    };
+  });
+  console.log('EXPORT-FEEDBACK ' + JSON.stringify({ ...feedback, lumaWith, lumaWithout }));
+  expect(feedback.exists, '导出后必须有 toast 提示').toBe(true);
+  expect(feedback.text, '提示必须是成功文案（不是失败）').toContain('进度已导出');
+  expect(feedback.toastZ, 'toast 的 z-index 必须高于设置面板（结构层判据）')
+    .toBeGreaterThan(feedback.modalZ);
+  expect(feedback.pointerEvents, 'toast 必须 pointer-events:none（否则会拦光标导致浮层闪烁）')
+    .toBe('none');
+  // 像素判据：toast 真的被画在最上层（被面板遮住时两图逐位相同 → 差值为 0）
+  const drop = lumaWithout - lumaWith;
+  expect(drop,
+    `toast 覆盖区必须明显变暗（黑底提示盖在面板之上）。实测 显示=${lumaWith.toFixed(1)} `
+    + `隐藏=${lumaWithout.toFixed(1)}，差值 ${drop.toFixed(1)} —— 接近 0 说明提示被面板遮住、玩家会以为按钮没反应`)
+    .toBeGreaterThan(20);
 });
 
 test('进度导入：覆盖当前改动、写入包里的方块与 seed', async ({ page }) => {
@@ -116,7 +183,7 @@ test('进度导入：覆盖当前改动、写入包里的方块与 seed', async 
     };
   });
 
-  // ③ 点「导入进度」→ 文件选择 → 导航监听**先武装**（clear-save 的踩坑教训）
+  // ③ 点「导入」→ 文件选择 → 导航监听**先武装**（clear-save 的踩坑教训）
   const nav = page.waitForNavigation({ waitUntil: 'load' });
   const [chooser] = await Promise.all([
     page.waitForEvent('filechooser'),
@@ -218,7 +285,7 @@ test('进度导入/导出：busy 锁拒绝并发点击（异步文件读取期�
   expect(result.after).toBe(result.before);
 });
 
-test('面板布局：创造台与进度管理分成两行；模型按钮挤进创造台同一行、关闭后主按钮恢复满行', async ({ page }) => {
+test('面板布局：创造台与（TNT破坏+进度管理）合并盒分成两行；进度按钮在不换行的情况下与 TNT 同行', async ({ page }) => {
   test.setTimeout(180_000);
   await boot(page);
   await page.locator('#settings-btn').click();
@@ -228,28 +295,43 @@ test('面板布局：创造台与进度管理分成两行；模型按钮挤进�
     const panel = window.__MC_GAME__.settingsPanel;
     const main = document.getElementById('btn-playground');
     const pgRow = main.closest('.mc-item');
-    const progressRow = document.getElementById('btn-progress-import').closest('.mc-item');
+    // v1.98：进度行不再是独立 `.mc-item`，而是与 TNT 破坏共用的合并盒里的右半（`mc-combined-col`）
+    const importBtn = document.getElementById('btn-progress-import');
+    const progressRow = importBtn.closest('.mc-combined-col');
+    const combined = importBtn.closest('.mc-combined');
+    const tntRow = combined.querySelector('.mc-combined-col');
     const group = main.parentElement;
-    const box = (el) => { const r = el.getBoundingClientRect(); return { w: Math.round(r.width), h: Math.round(r.height) }; };
+    const box = (el) => { const r = el.getBoundingClientRect(); return { w: Math.round(r.width), h: Math.round(r.height), top: Math.round(r.top) }; };
     const vis = (el) => getComputedStyle(el).display !== 'none';
+    const noOverflow = (el) => el.scrollWidth <= el.clientWidth;
     const out = {
       pgTitle: pgRow.querySelector('.mc-title').textContent,
       progressTitle: progressRow.querySelector('.mc-title').textContent,
-      // 两行是两个不同的 .mc-item 盒子（若合并成一行两者会相等）
-      rowsAreDistinct: pgRow !== progressRow,
-      progressRowBelow: progressRow.getBoundingClientRect().top
+      tntTitle: tntRow.querySelector('.mc-title').textContent,
+      importLabel: importBtn.textContent,
+      exportLabel: document.getElementById('btn-progress-export').textContent,
+      // 进度与 TNT 同一个合并盒（本次改动的核心）+ 它们在同一个按钮组的 top 上
+      inSameCombined: progressRow.parentElement === tntRow.parentElement
+        && combined !== null,
+      // 合并盒与创造台行是两个不同的盒子，且合并盒在创造台**下方**（用户 2026-09-30 裁定）
+      rowsAreDistinct: pgRow !== combined,
+      combinedBelowPlayground: combined.getBoundingClientRect().top
         > pgRow.getBoundingClientRect().bottom,
-      // 模型按钮与主按钮**同一个按钮组**（用户要求「挤在一行」，不再另辟一行）
+      // 模型按钮与主按钮**同一个按钮组**（既有口径，本次不得回归）
       modelSameGroup: document.getElementById('btn-playground-export').parentElement === group
         && document.getElementById('btn-playground-import').parentElement === group,
       groupWidth: Math.round(group.getBoundingClientRect().width),
       mainLabel: main.textContent,
       main: box(main),
-      // 未激活：主按钮独占整行（基线 flex:1）
-      progressImport: box(document.getElementById('btn-progress-import')),
+      progressImport: box(importBtn),
       progressExport: box(document.getElementById('btn-progress-export')),
-      progressVisible: vis(document.getElementById('btn-progress-import'))
-        && vis(document.getElementById('btn-progress-export')),
+      tntClose: box(tntRow.querySelector('button')),
+      progressVisible: vis(importBtn) && vis(document.getElementById('btn-progress-export')),
+      // 四个按钮必须同一行（合并盒的两列各自一行）
+      progressSameRowAsTnt: box(importBtn).top === box(tntRow.querySelector('button')).top,
+      // 文案不得被压到换行/溢出（合并盒列窄，这是本次唯一真实的布局风险）
+      progressNoOverflow: noOverflow(importBtn) && noOverflow(document.getElementById('btn-progress-export')),
+      tntTitleNoOverflow: noOverflow(tntRow.querySelector('.mc-title')),
       modelsVisibleBefore: vis(document.getElementById('btn-playground-export')),
       modelExport: box(document.getElementById('btn-playground-export')),
       mainScrollW: main.scrollWidth,
@@ -263,7 +345,6 @@ test('面板布局：创造台与进度管理分成两行；模型按钮挤进�
     out.mainAfter = box(main);
     out.modelExportAfter = box(document.getElementById('btn-playground-export'));
     out.modelImportAfter = box(document.getElementById('btn-playground-import'));
-    // 三按钮必须同一行：三者的 top 与 height 一致（错行会让 top 相差一个按钮高度）
     const tops = [main, document.getElementById('btn-playground-export'),
       document.getElementById('btn-playground-import')].map((el) => Math.round(el.getBoundingClientRect().top));
     out.sameTopAfter = tops[0] === tops[1] && tops[1] === tops[2];
@@ -273,7 +354,6 @@ test('面板布局：创造台与进度管理分成两行；模型按钮挤进�
     if (o) window.__MC_GAME__.player.spawn(o[0] - 20, o[1] + 1, o[2]);
     panel._syncPlaygroundState();
     panel._onPlaygroundToggle();
-    // 再次关闭后：模型按钮消失、主按钮**恢复满行**（用户要求）
     out.mainLabelAfterClose = main.textContent;
     out.modelsVisibleAfterClose = vis(document.getElementById('btn-playground-export'));
     out.mainAfterClose = box(main);
@@ -282,21 +362,28 @@ test('面板布局：创造台与进度管理分成两行；模型按钮挤进�
 
   expect(layout.pgTitle).toBe('创造台');
   expect(layout.progressTitle).toBe('进度管理');
-  expect(layout.rowsAreDistinct).toBe(true);        // 两行分开（不再是一行合并盒）
-  expect(layout.progressRowBelow).toBe(true);       // 进度管理在创造台**下方**
-  expect(layout.modelSameGroup).toBe(true);         // 模型按钮与主按钮同一行（挤在一行）
+  expect(layout.tntTitle).toBe('TNT 破坏');
+  expect(layout.importLabel).toBe('导入');       // v1.98 改名
+  expect(layout.exportLabel).toBe('导出');
+  expect(layout.inSameCombined, 'TNT 破坏与进度管理必须在同一个合并盒里').toBe(true);
+  expect(layout.rowsAreDistinct).toBe(true);     // 合并盒与创造台仍是两行
+  expect(layout.combinedBelowPlayground, '进度管理仍在创造台下方（用户 2026-09-30 裁定）').toBe(true);
+  expect(layout.progressVisible).toBe(true);     // 进度按钮常驻（与创造台状态无关）
+  expect(layout.progressSameRowAsTnt, '四个按钮（TNT 两个 + 进度两个）必须同一行').toBe(true);
+  expect(layout.progressNoOverflow, '合入窄列后文案不得溢出').toBe(true);
+  expect(layout.tntTitleNoOverflow, '「TNT 破坏」是面板最长的组标题，不得溢出列宽').toBe(true);
+  expect(layout.progressImport.w).toBeGreaterThan(60);
+  expect(layout.progressExport.w).toBeGreaterThan(60);
   expect(layout.mainLabel).toBe('打开创造台');
   expect(layout.mainScrollW).toBeLessThanOrEqual(layout.mainClientW); // 文案不换行
   // 未激活：主按钮独占整行（若错留 88px 变窄，这里会失败）
   expect(layout.main.w).toBeGreaterThanOrEqual(layout.groupWidth - 1);
   expect(layout.main.w).toBeGreaterThan(300);
-  expect(layout.progressVisible).toBe(true);        // 进度按钮常驻（与创造台状态无关）
-  expect(layout.progressImport.w).toBeGreaterThan(100);  // 两个进度按钮平分独立一行
-  expect(layout.progressExport.w).toBeGreaterThan(100);
   expect(layout.panelWidth).toBe(818);              // 面板宽度未变（770 内容盒 + 2×20 padding + 2×4 border）
   // 隐藏时确实零宽（可见性判据的另一半）
   expect(layout.modelsVisibleBefore).toBe(false);
   expect(layout.modelExport.w).toBe(0);
+  expect(layout.modelSameGroup).toBe(true);         // 模型按钮与主按钮同一行（既有口径不回归）
   // 激活：三按钮同行且各自变窄（由 flex:1 平分，主按钮不再独占）
   expect(layout.mainLabelAfter).toBe('关闭创造台');
   expect(layout.modelsVisibleAfter).toBe(true);
