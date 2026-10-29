@@ -49,6 +49,37 @@ export const OCEAN_MASK_OFFSET = 3.5;
 export const OCEAN_MASK_NO_CITY = Object.freeze({ minX: 1, maxX: 0, minZ: 1, maxZ: 0 });
 
 /**
+ * 门控哨兵：空湖区（`radius <= 0` → 判定恒假 → 门控关闭）。
+ * 与 `OCEAN_MASK_NO_CITY` 同一手法，供未接线或被重置时报安全值。
+ */
+export const OCEAN_MASK_NO_LAKE = Object.freeze({ cx: 0, cz: 0, radius: 0 });
+
+/**
+ * 点是否落在**浅水高台的湖盆圆**内（含 `margin` 格外延）。
+ *
+ * ## 为什么需要这个门控（v2.14，用户报告「水面的波纹并没有覆盖全部」）
+ * 上面的地形高度判据读的是 `generateHeight`（**自然**地形），而浅水高台的整形把湖底
+ * 压到了 `SEA_Y-1` —— **自然高度根本没有变**。于是：
+ *   · 自然高度恰好 < `SEA_Y` 的格子 → 水面平面渲染 ✓（有波纹）
+ *   · 自然高度 ≥ `SEA_Y` 的格子（湖盆的大多数）→ 遮罩关掉平面 ✗
+ *     → 只剩体素水的**静态顶面**（无波纹、无高光）—— 这就是「波纹只盖了一部分」。
+ *
+ * ⇒ 湖区内必须**强制渲染**水面平面，与地形高度无关。
+ * ⚠️ 这与城市门控是**相反方向**：城市是「强制不渲」（压平的陆地），湖区是「强制渲」。
+ *
+ * @param {number} x @param {number} z
+ * @param {{cx:number, cz:number, radius:number}} lake
+ * @param {number} [margin=0] 外延（用于五点取样时把边界包住）
+ * @returns {boolean}
+ */
+export function inLakeCircle(x, z, lake, margin = 0) {
+  if (!lake || !(lake.radius > 0)) return false;
+  const dx = x - lake.cx, dz = z - lake.cz;
+  const r = lake.radius + margin;
+  return dx * dx + dz * dz <= r * r;
+}
+
+/**
  * 遮罩用的地形高度 = 真实生成高度（与 `fillColumn` 同源，见文件头注释）。
  * @param {number} x @param {number} z @param {number} seed
  * @returns {number} 整数高度
@@ -68,10 +99,16 @@ export function inCityBounds(x, z, cityBounds) {
  * 该点是否渲染水面平面（CPU 版判据；GPU 版见 `ocean.js` 的 `oceanMask`）。
  * @param {number} x @param {number} z @param {number} seed
  * @param {{minX:number,maxX:number,minZ:number,maxZ:number}} [cityBounds]
+ * @param {{cx:number,cz:number,radius:number}} [lake] 浅水高台的湖盆圆（强制渲）
  * @returns {boolean}
  */
-export function isOceanMasked(x, z, seed, cityBounds = OCEAN_MASK_NO_CITY) {
-  // 城市门控优先：城市是被压平的陆地，一律不渲染（与阈值无关）
+export function isOceanMasked(x, z, seed, cityBounds = OCEAN_MASK_NO_CITY, lake = OCEAN_MASK_NO_LAKE) {
+  // 湖区门控**优先于一切**：湖底被整形压到 SEA_Y-1，而 `generateHeight` 看不到这件事
+  // → 必须无条件渲染水面平面（否则只剩体素水的静态顶面，无波纹）。
+  // ⚠️ 五点取样会把湖岸外一圈也拉进来 —— 那是**有意的**：让平面与沙滩带重叠，
+  // 否则岸边会出现一圈「体素水顶面 / 平面」的硬边界（与 OCEAN_MASK_OFFSET 同一理由）。
+  if (inLakeCircle(x, z, lake, OCEAN_MASK_OFFSET)) return true;
+  // 城市门控：城市是被压平的陆地，一律不渲染（与阈值无关）
   if (inCityBounds(x, z, cityBounds)) return false;
   const off = OCEAN_MASK_OFFSET;
   return maskTerrainHeight(x, z, seed) < OCEAN_MASK_THRESHOLD

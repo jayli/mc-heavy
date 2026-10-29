@@ -36,7 +36,16 @@ const CHANNELS = ['opaque', 'cutout', 'transparent'];
 const CAPACITY = {
   opaque:      { active: 1800, avgVerts: 1900 },  // 巨树景观 1200→1800（用户裁决：opaque ×1.5，2.85M→4.275M）
   cutout:      { active: 550, avgVerts: 3200 },  // 全部树叶 opaqueTable=1 后回退 600→550（峰值 38.3%，零扩容）
-  transparent: { active: 100, avgVerts: 1000 },
+  // 浅水高台（2026-11-01）：100 → 240（maxVerts 125,000 → 300,000）。
+  // 浅水只有一层体素水 → 真实 `buildSectionMesh` 在 9×9 chunk 全湖上实测
+  // **每 column 1,024 个透明顶点**（湖底沙面互相剔除，只发湖岸一圈竖面），
+  // 视距 8 全湖视域（289 列）峰值 ≈ **29.6 万** —— 旧上限 12.5 万会触发 1 档扩容（→18.75 万）仍不够。
+  // ⚠️ **v2.12 把湖半径从 240 收到 130 后这个数不变**：视距 8 的视域是 272 格，
+  // 而湖直径 260 格 —— 玩家站在湖心时**整个视域仍然全在湖里**，每 column 的透明顶点不变。
+  // ⚠️ **初版按「每格 4 顶点 × 18 万格 = 72.4 万」估过，错了 2.4 倍** ——
+  // 那条估算漏了 mesher 的面剔除。改这个数前必须重跑真实 mesher 实测，不要手算。
+  // 内存：三通道静态 (4.275M + 2.20M + 300K) × 30B = **193.62 MiB** < `m3-fullscene` 的 200 MiB 门。
+  transparent: { active: 240, avgVerts: 1000 },
 };
 
 function slotKey(cx, sy, cz, channel) { return `${cx},${sy},${cz},${channel}`; }

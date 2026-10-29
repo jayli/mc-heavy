@@ -63,6 +63,10 @@ const {
 } = await import('../src/entities/minecarts/minecart-config.js');
 
 const SKYBOX = await import('../src/render/sky-config.js');
+// 浅水高台（v2.11）：产物基名/尺寸/映射表/白名单/指纹都走共享模块（红线 1）
+const SHALLOW = await import('./shallow-tarns-fingerprint.mjs');
+// 两个草方块的贴图烘焙参数与指纹（同上）
+const GRASS_TEX = await import('./grass-textures-fingerprint.mjs');
 const atlasMeta = JSON.parse(fs.readFileSync(path.join(ROOT, 'assets', 'atlas.json'), 'utf8'));
 const tiles = new Set(Object.keys(atlasMeta.tiles));
 
@@ -1729,6 +1733,152 @@ async function checkArena() {
   }
 }
 
+// ---------------------------------------------------------------- [浅水高台] 契约（v2.11，2026-11-01）
+
+/**
+ * [浅水高台] 契约：5 个烘焙产物 / palette 白名单 / 源方块全量映射 / 草基准色 / 方块已登记。
+ *
+ * 钉的失效路径（均为**静默**失败）：
+ *   ① 素材换了但没重烘 → 产物过期（指纹抓）；
+ *   ② 新增源方块没补 `BLOCK_MAP` → 烘焙会 throw，但若有人只改了产物则这里抓；
+ *   ③ `golden` 白名单漂移 → 地图里混进不属于它的材质（观感错但方块层面看不出）；
+ *   ④ 两个新草方块未注册 → `makeColumnSetter` 静默 return → 高台里的草变空气洞；
+ *   ⑤ 产物 bbox 与 `SHALLOW_TARN_METRICS` 不符 → 环上占角与 AABB 裁剪全错（两座重叠）。
+ */
+async function checkShallowTarns() {
+  const before = failures.length;
+  const fail = (m) => failures.push(`[浅水高台] ${m}`);
+
+  const metaPath = SHALLOW.SHALLOW_TARN_META;
+  if (!fs.existsSync(metaPath)) {
+    fail('缺 meta（跑 npm run shallowtarns）');
+    return;
+  }
+  const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+
+  // ① 指纹：产物必须对得上当前的素材 + 映射表 + 分量序
+  const fp = SHALLOW.shallowTarnInputFingerprint();
+  if (meta.fingerprints?.input !== fp.input) {
+    fail(`烘焙指纹不匹配（跑 npm run shallowtarns）：meta ${String(meta.fingerprints?.input).slice(0, 12)}… ≠ 当前 ${fp.input.slice(0, 12)}…`);
+  }
+
+  // ② 产物完整性 + palette 白名单 + 尺寸契约 + 草基准色
+  const legal = new Set(SHALLOW.SHALLOW_TARN_PALETTE);
+  let totalBlocks = 0;
+  const sizes = [];
+  for (const base of SHALLOW.SHALLOW_TARN_VARIANTS) {
+    const file = SHALLOW.variantPath(base);
+    if (!fs.existsSync(file)) { fail(`缺产物 ${base}.json（跑 npm run shallowtarns）`); continue; }
+    const json = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (!Array.isArray(json.palette) || json.palette.length === 0) { fail(`${base}: palette 缺失或为空`); continue; }
+    if (!Array.isArray(json.blocks) || json.blocks.length % 4 !== 0) {
+      fail(`${base}: blocks 长度 ${json.blocks?.length} 不是 4 的整数倍`); continue;
+    }
+    const n = json.blocks.length / 4;
+    totalBlocks += n;
+    // palette 白名单：**不用名字模式**（`polished_blackstone_bricks` 会命中 /brick/）
+    const outside = json.palette.filter((name) => !legal.has(name));
+    if (outside.length) fail(`${base}: palette 含白名单外的方块 ${outside.join(', ')}（同步 SHALLOW_TARN_PALETTE）`);
+    // 每个 palette 名必须是已注册方块（否则光栅化时静默变空气）
+    const unregistered = json.palette.filter((name) => !BLOCKS.some((b) => b.name === name));
+    if (unregistered.length) fail(`${base}: palette 含未注册方块 ${unregistered.join(', ')}（同步 blocks-data.js）`);
+    // 尺寸契约（环上占角与 AABB 裁剪都吃它）
+    let mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity, mnz = Infinity, mxz = -Infinity;
+    for (let i = 0; i < json.blocks.length; i += 4) {
+      const x = json.blocks[i], y = json.blocks[i + 1], z = json.blocks[i + 2];
+      if (x < mnx) mnx = x; if (x > mxx) mxx = x;
+      if (y < mny) mny = y; if (y > mxy) mxy = y;
+      if (z < mnz) mnz = z; if (z > mxz) mxz = z;
+    }
+    const W = mxx - mnx + 1, H = mxy - mny + 1, D = mxz - mnz + 1;
+    const m = SHALLOW.SHALLOW_TARN_METRICS[base];
+    if (m.width !== W || m.height !== H || m.depth !== D) {
+      fail(`${base}: 产物 bbox ${W}×${H}×${D} ≠ SHALLOW_TARN_METRICS ${m.width}×${m.height}×${m.depth}`);
+    }
+    if (m.blocks !== n) fail(`${base}: 格数 ${n} ≠ SHALLOW_TARN_METRICS ${m.blocks}`);
+    // 最低点必须归一化为 y=1（`rasterizeStructure` 的 `y + b.y - 1` 依赖它）
+    if (mny !== 1) fail(`${base}: 最低点 y=${mny} ≠ 1（归一化失败）`);
+    sizes.push(`${W}×${H}×${D}`);
+  }
+
+  // ③ 源方块全量映射（没有未知源方块被静默丢弃）
+  // `air` 排除：它不写进产物（实际就是"没方块"），不需要映射目标。
+  for (const srcName of Object.keys(meta.sourceBlockCounts || {})) {
+    if (srcName === 'air') continue;
+    if (!(srcName in SHALLOW.BLOCK_MAP)) fail(`素材里出现源方块 "${srcName}" 但 BLOCK_MAP 没有它`);
+  }
+  // ④ 草基准色必须在白名单内且已注册（光栅化后由 `paintShallowTarnGrass` 刷成两种草）
+  if (!legal.has(SHALLOW.GRASS_BASE_BLOCK)) {
+    fail(`GRASS_BASE_BLOCK "${SHALLOW.GRASS_BASE_BLOCK}" 不在 palette 白名单内（烘焙会写出未授权的方块）`);
+  }
+  // 两个新草方块必须都已注册且六面同贴图（用户 2026-11-01：「六个面贴图用 …」）
+  for (const name of Object.keys(GRASS_TEX.GRASS_TEXTURES)) {
+    const def = BLOCKS.find((b) => b.name === name);
+    if (!def) { fail(`方块 ${name} 未在 blocks-data.js 注册（光栅化时会静默变空气）`); continue; }
+    if (def.geometry !== 'box') fail(`${name}: geometry 应为 box，实际 "${def.geometry}"`);
+    const faces = FACES_DATA[name];
+    if (typeof faces !== 'string') {
+      fail(`${name}: FACES_DATA 应写成单字符串（六面同一 tile），实际是 ${Array.isArray(faces) ? '数组' : typeof faces}`);
+    }
+  }
+
+  if (failures.length === before) {
+    infos.push(`[浅水高台] ${SHALLOW.SHALLOW_TARN_VARIANTS.length} 个产物 `
+      + `（${sizes.join(' / ')}）共 ${totalBlocks} 格 / palette 全在白名单 / 源方块全映射 / `
+      + `草基准色 ${SHALLOW.GRASS_BASE_BLOCK} / 指纹匹配`);
+  }
+}
+
+// ---------------------------------------------------------------- [草贴图] 契约（v2.11）
+
+/**
+ * [草贴图] 契约：两个产物 PNG 存在、均值与源图差 ≤2/通道、源图未改。
+ *
+ * 钉的失效路径：改源图不重烘（产物过期）、烘焙算法退化（nearest 缩图会让均值偏移且丢失色阶）。
+ * ⚠️ **判据是「均值偏差 ≤2/通道」而不是「文件存在」**：nearest 降采样的均值也会接近源图，
+ * 所以这条拦不住它 —— 真正的防线是「源图 736 必须被 46 整除」（烘焙脚本 throw）
+ * 与输出尺寸 16×16。两者都在烘焙脚本里硬断言。
+ */
+function checkGrassTextures() {
+  const before = failures.length;
+  const fail = (m) => failures.push(`[草贴图] ${m}`);
+
+  const metaPath = GRASS_TEX.GRASS_META;
+  if (!fs.existsSync(metaPath)) { fail('缺 meta（跑 npm run grasstextures）'); return; }
+  const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+  const fp = GRASS_TEX.grassTextureInputFingerprint();
+  if (meta.fingerprints?.input !== fp.input) {
+    fail(`烘焙指纹不匹配（跑 npm run grasstextures）：当前 ${fp.input.slice(0, 12)}…`);
+  }
+  const sizes = [];
+  for (const name of Object.keys(GRASS_TEX.GRASS_TEXTURES)) {
+    const out = GRASS_TEX.outputPath(name);
+    if (!fs.existsSync(out)) { fail(`缺产物 ${GRASS_TEX.GRASS_TEXTURES[name].out}（跑 npm run grasstextures）`); continue; }
+    const png = PNG.sync.read(fs.readFileSync(out));
+    if (png.width !== GRASS_TEX.GRASS_TILE_SIZE || png.height !== GRASS_TEX.GRASS_TILE_SIZE) {
+      fail(`${name}: 产物尺寸 ${png.width}×${png.height} ≠ ${GRASS_TEX.GRASS_TILE_SIZE}×${GRASS_TEX.GRASS_TILE_SIZE}`);
+    }
+    const rec = meta.textures?.[name];
+    if (!rec) { fail(`${name}: meta 里没有该贴图的记录`); continue; }
+    let r = 0, g = 0, b = 0;
+    const np = png.width * png.height;
+    for (let i = 0; i < png.data.length; i += 4) { r += png.data[i]; g += png.data[i + 1]; b += png.data[i + 2]; }
+    const got = [r / np, g / np, b / np];
+    const delta = got.map((v, i) => Math.abs(v - rec.sourceMean[i]));
+    if (delta.some((d) => d > 2)) {
+      fail(`${name}: 产物均值偏离源图 ${delta.map((d) => d.toFixed(2)).join('/')} > 2/通道`);
+    }
+    if (rec.sourceSha256 !== GRASS_TEX.fileSha256(GRASS_TEX.sourcePath(name))) {
+      fail(`${name}: 源图字节变了但未重烘（跑 npm run grasstextures）`);
+    }
+    sizes.push(`${name} ${got.map((v) => v.toFixed(0)).join('/')}`);
+  }
+
+  if (failures.length === before) {
+    infos.push(`[草贴图] ${sizes.join(' · ')}（16×16，源图 46×46 盒式平均，均值偏差 ≤2）`);
+  }
+}
+
 // ---------------------------------------------------------------- [树叶剔除] 契约（v1.70）
 
 /**
@@ -2009,6 +2159,8 @@ await checkAzaleaTrees();    // 杜鹃树：烘焙产物/方块声明/运行时�
 await checkCloudlandTarnZone(); // 高台地带：35 产物/映射表/通道/台顶材质契约（⚠️ 漏了本行则门禁永不执行）
 await checkGiantPyramid();   // 巨型金字塔：烘焙产物/映射表/通道契约（⚠️ 漏了本行则门禁永不执行）
 await checkArena();          // 竞技场：烘焙产物/栏杆朝向/floorRow/占地尺寸契约（⚠️ 漏了本行则门禁永不执行）
+await checkShallowTarns();   // 浅水高台：5 产物/palette 白名单/源方块映射/草基准色/尺寸契约
+checkGrassTextures();        // 草贴图：两个 16×16 产物 + 均值偏差 + 源图未改
 checkLeafCullingContract();  // v1.70：镂空遮挡体派生表与树叶族声明的一致性（⚠️ 漏了本行则门禁永不执行）
 
 console.log('[check:data] 数据契约检查');

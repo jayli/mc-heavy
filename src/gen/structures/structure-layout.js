@@ -16,6 +16,7 @@ import { computeGiantTreeCandidates } from './giant-trees.js';
 import { computeAzaleaTreeCandidates } from './azalea-trees.js';
 import { computeGiantPyramidAnchor } from './giant-pyramid.js';
 import { computeArenaAnchor, arenaOverlapsRegion } from './arena.js';
+import { computeShallowTarnAnchor, shallowTarnOverlapsRegion, shallowTarnSuppressedLandmarks } from './shallow-water-tarns.js';
 import { isTarnZone, computeTarnZone, inTarnRadius } from './tarn-zone.js';
 
 /**
@@ -46,11 +47,40 @@ export function computeRegionLayout(regionX, regionZ, seed) {
 
   const raw = getRegionSeededCenter(regionX, regionZ, seed);
   const pyramidRaw = { cx: raw.centerX, cz: raw.centerZ };
-  // ⚠️ 压制一律写成 `tarn ? null : <原表达式>`，**保留原表达式的求值位置与顺序** ——
+
+  // 浅水高台（Shallow Water Tarns，2026-11-01）：城东外一个。
+  //
+  // ⚠️ **必须早于地标赋值**：它要把落在湖区内的地标压掉。
+  // 为什么是压制而不是避让 —— 见 `shallow-water-tarns.js` 的 `fixedBlockers` 注释：
+  // 地标圆每 region 2~4 个 + 雪原一个，而 region 仅 400 格、湖半径 262 ⇒ 避让实测 10 seed 全部失效。
+  // 这与高台地带 `tarn ? null : …` 是同一裁定（地基级内容压过地标）。
+  const shallowTarnAll = computeShallowTarnAnchor(seed);
+  const shallowTarn = shallowTarnOverlapsRegion(shallowTarnAll, regionX, regionZ) ? shallowTarnAll : null;
+  // 本 region 的**哪些地标**被压：判据是「该地标中心是否落在湖的硬半径内」，
+  // **不是**「本 region 是不是圆心所在 region」。
+  //
+  // ⚠️ 两种写法实测差别很大：湖直径 524（含沙滩）跨 2~3 个 region，而圆心所在的那个 region
+  // 里可能一个地标都没有、地标全在邻居 region。按「圆心 region」压制会
+  // ① 压掉一个本来没冲突的地标（零回归失败），
+  // ② 又不压真正冲突的那些。
+  const suppress = shallowTarnAll
+    ? shallowTarnSuppressedLandmarks(shallowTarnAll, regionX, regionZ, seed)
+    : null;
+  const suppressPyramid = !!suppress?.pyramid;
+  const suppressFrozenMountain = !!suppress?.frozenMountain;
+  const suppressPlainLand = !!suppress?.plainLand;
+  const suppressIsland = !!suppress?.island;
+
+  // ⚠️ `suppress.snowLand` 算出来了但**不在本文件用**：雪原的压制粒度是「这座雪原是否压进湖里」，
+  // 走 `apply.js` 阶段 1 的跳过门（与 `snowLandSuppressedByTarn` 同手法），
+  // 而**不是**把 `snowLand` 字段置 null —— 6 处消费方直接解引用 `.cx`，置 null 会抛 TypeError。
+  // 它仍被 `shallowTarnSuppressedLandmarks` 返回，供单测与将来接入使用。
+
+  // ⚠️ 压制一律写成 `cond ? null : <原表达式>`，**保留原表达式的求值位置与顺序** ——
   // 原值仍会被算出来（多花几次纯函数调用），换来的是零回归：非地带 region 的每个字段
   // 与 v1.x 逐位相同，不需要重新标定任何既有断言。
-  const pyramid = tarn ? null : getPyramidCenterInRegion(regionX, regionZ, seed);
-  const frozenMountain = tarn ? null : getFrozenMountainCenterInRegion(regionX, regionZ, seed);
+  const pyramid = (tarn || suppressPyramid) ? null : getPyramidCenterInRegion(regionX, regionZ, seed);
+  const frozenMountain = (tarn || suppressFrozenMountain) ? null : getFrozenMountainCenterInRegion(regionX, regionZ, seed);
 
   // snowLand 与 mc-lite 一致：未 clamp 的原始中心 + 偏移（可跨 region，由邻区查询吸收）。
   //
@@ -68,11 +98,11 @@ export function computeRegionLayout(regionX, regionZ, seed) {
   const plainLandRaw = isPlainLandValid(plainLandCenter.cx, plainLandCenter.cz, seed)
     ? { ...plainLandCenter, baseHeight: estimatePlainLandBaseHeight(plainLandCenter.cx, plainLandCenter.cz, seed) }
     : null;
-  const plainLand = tarn ? null : plainLandRaw;
+  const plainLand = (tarn || suppressPlainLand) ? null : plainLandRaw;
 
   const { islandCx, islandCz } = getIslandCenterInRegion(regionX, regionZ, seed);
   const islandRaw = isIslandValid(islandCx, islandCz, seed) ? { cx: islandCx, cz: islandCz } : null;
-  const island = tarn ? null : islandRaw;
+  const island = (tarn || suppressIsland) ? null : islandRaw;
 
   // City 全世界唯一，固定在 region [0,0]（mc-lite CITY_REGION 语义）。
   // `isTarnZone` 对 CITY_REGION 恒 false（tarn-zone.js），故这里 `tarn` 恒 null、城市永不被压制 ——
@@ -143,7 +173,7 @@ export function computeRegionLayout(regionX, regionZ, seed) {
 
   return {
     regionX, regionZ, pyramidRaw, pyramid, frozenMountain, snowLand, plainLand,
-    island, city, sky, scatter, giantTrees, azaleaTrees, giantPyramid, arena, tarn,
+    island, city, sky, scatter, giantTrees, azaleaTrees, giantPyramid, arena, tarn, shallowTarn,
   };
 }
 

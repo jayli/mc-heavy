@@ -7,7 +7,7 @@ import {
   smoothstep, mix, positionWorld, cameraPosition, Discard, and, select,
 } from 'three/tsl';
 import {
-  OCEAN_MASK_THRESHOLD, OCEAN_MASK_OFFSET, OCEAN_MASK_NO_CITY,
+  OCEAN_MASK_THRESHOLD, OCEAN_MASK_OFFSET, OCEAN_MASK_NO_CITY, OCEAN_MASK_NO_LAKE,
 } from './ocean-mask.js';
 import { TERRAIN_HEIGHT_PARAMS } from '../gen/terrain.js';
 import { BIOME_PARAMS } from '../gen/noise.js';
@@ -129,6 +129,21 @@ export function setupOcean(scene) {
     OCEAN_MASK_NO_CITY.minX, OCEAN_MASK_NO_CITY.maxX,
     OCEAN_MASK_NO_CITY.minZ, OCEAN_MASK_NO_CITY.maxZ,
   ));
+  /**
+   * 浅水高台的湖盆圆（xyz = cx/cz/radius，w 不用）。
+   *
+   * ⚠️ **v2.14 新增（用户报告「水面的波纹并没有覆盖全部」）**：下面的水域遮罩读的是
+   * `getTerrainHeight`（**自然**地形），而浅水高台的整形把湖底压到了 `SEA_Y-1`
+   * —— `generateHeight` 看不到这件事。于是自然高度 ≥ `SEA_Y` 的那些湖盆格子会被
+   * 遮罩关掉平面，只剩体素水的**静态顶面**（无波纹、无高光）。
+   * ⇒ 湖区内必须**强制渲染**水面平面，与地形高度无关。
+   *
+   * 默认取 `OCEAN_MASK_NO_LAKE`（`radius = 0` → 判定恒假）—— 未接线时不影响任何点，
+   * 与 `uCityBounds` 同一手法。CPU 侧同一判据见 `ocean-mask.js` 的 `inLakeCircle`。
+   */
+  const uLakeCircle = uniform(new THREE.Vector4(
+    OCEAN_MASK_NO_LAKE.cx, OCEAN_MASK_NO_LAKE.cz, OCEAN_MASK_NO_LAKE.radius, 0,
+  ));
 
   const fadeStart = WATER_VISIBLE_DISTANCE - WATER_EDGE_FADE_BAND;
   const fadeEnd = WATER_VISIBLE_DISTANCE;
@@ -187,6 +202,18 @@ export function setupOcean(scene) {
     );
     Discard(inCity);
 
+    // 湖区门控（v2.14）：湖底被整形压到 SEA_Y-1，而 `getTerrainHeight` 读的是自然高度
+    // → 必须**无条件渲染**水面平面，否则只剩体素水的静态顶面（用户看到的「波纹没盖全」）。
+    // 按 `radius + OCEAN_MASK_OFFSET` 外延，让平面与沙滩带重叠，避免岸边一圈硬边界
+    // （与 CPU 侧 `inLakeCircle(x, z, lake, OCEAN_MASK_OFFSET)` 逐字同口径）。
+    const lakeR = uLakeCircle.z.add(float(OCEAN_MASK_OFFSET));
+    const lakeDx = pos.x.sub(uLakeCircle.x);
+    const lakeDz = pos.y.sub(uLakeCircle.y);
+    const inLake = and(
+      uLakeCircle.z.greaterThan(float(0.0)),
+      lakeDx.mul(lakeDx).add(lakeDz.mul(lakeDz)).lessThanEqual(lakeR.mul(lakeR)),
+    );
+
     // 水域遮罩：近处仅在地形低于海平面附近显示，远处全显示
     // 阈值 = OCEAN_MASK_THRESHOLD（SEA_Y）；高度是整数 → `h < SEA_Y` ⟺ `h <= SEA_Y-1`，
     // 正是 fillColumn 的水体方块判据（判据同源，无需 mc-lite 的 floor 余量补偿）。
@@ -203,7 +230,13 @@ export function setupOcean(scene) {
     const step = (h) => select(h.lessThan(threshold), float(1.0), float(0.0));
     const nearOceanMask = max(max(max(max(step(h0), step(h1)), step(h2)), step(h3)), step(h4));
     const inRangeMask = smoothstep(float(100.0), float(99.0), dist);
-    const oceanMask = mix(float(1.0), nearOceanMask, inRangeMask);
+    // 湖区强制渲（v2.14）：在 mix **之后**合并，确保不论远近都生效。
+    // ⚠️ 必须用 `max` 而不是把 `inLake` 掺进 `nearOceanMask`：后者会被 `inRangeMask`
+    // 在 99~100 格外淡到 1，而湖区需要「全屏强制」。
+    const oceanMask = max(
+      mix(float(1.0), nearOceanMask, inRangeMask),
+      select(inLake, float(1.0), float(0.0)),
+    );
     Discard(oceanMask.lessThanEqual(0.001));
 
     // LOD：远距离减少波纹计算
@@ -314,6 +347,10 @@ export function setupOcean(scene) {
     plane,
     /** 环境亮度乘数句柄（`DayNight` 经 `skyUniforms.uWaterTint` 写入；也供测试直接读） */
     uWaterTint,
+    /** 湖区门控句柄（v2.14，供测试直接读；`setLakeCircle` 写入） */
+    uLakeCircle,
+    /** 城市门控句柄（供测试直接读） */
+    uCityBounds,
     /** 每帧：时间推进 + 跟随相机（无限水面） */
     update(camera, dt) {
       uTime.value += 0.015 * dt * 60;
@@ -329,6 +366,20 @@ export function setupOcean(scene) {
     setCityBounds(city) {
       const b = city && Number.isFinite(city.minX) ? city : OCEAN_MASK_NO_CITY;
       uCityBounds.value.set(b.minX, b.maxX, b.minZ, b.maxZ);
+    },
+    /**
+     * 接浅水高台的湖盆圆（v2.14）。
+     *
+     * ⚠️ **不接的话湖面上只有体素水的静态顶面（无波纹）** —— 因为水域遮罩读的是
+     * `generateHeight`（自然地形），而湖底是被整形压到 `SEA_Y-1` 的，自然高度没变。
+     * 用户报告「水面的波纹并没有覆盖全部」就是这个。
+     *
+     * @param {{cx:number, cz:number, radius:number}|null} lake
+     *   `null` 或缺字段 → 恢复哨兵（门控关闭，不影响任何点）。
+     */
+    setLakeCircle(lake) {
+      const l = lake && Number.isFinite(lake.cx) && lake.radius > 0 ? lake : OCEAN_MASK_NO_LAKE;
+      uLakeCircle.value.set(l.cx, l.cz, l.radius, 0);
     },
   };
 }

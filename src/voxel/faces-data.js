@@ -9,6 +9,12 @@
 export const FACES_DATA = {
   // ---- 地形基础 ----
   grass: ['grass_side_carried', 'grass_side_carried', 'grass_carried', 'procedural/grass_bottom', 'grass_side_carried', 'grass_side_carried'],
+  // 浅水高台（v2.11）：深/浅草方块 **六面同一张贴图**（用户 2026-11-01：「六个面贴图用 …」）。
+  // 写成单字符串形式（与 `snow: 'Snow_top'` 同手法）而不是 6 项数组 ——
+  // 数组会让人以为六面可以各不相同，而这里的语义是「就是同一个 tile」。
+  // tile 由 `npm run grasstextures` 烘焙（源图 736×736 → 46×46 盒式平均 → 16×16）。
+  dark_grass: 'procedural/dark_grass',
+  light_grass: 'procedural/light_grass',
   dirt: ['dirt', 'dirt', 'dirt_podzol_top', 'dirt_podzol_top', 'dirt', 'dirt'],
   stone: ['stone', 'stone', 'stone_andesite', 'stone_andesite', 'stone', 'stone'],
   stone_diorite: 'stone_diorite',

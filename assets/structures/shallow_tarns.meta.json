@@ -1,0 +1,247 @@
+{
+  "version": 1,
+  "source": "assets/shallow-tarns/src/valturyterrainasset.schem",
+  "sourceSize": {
+    "width": 211,
+    "height": 102,
+    "length": 361
+  },
+  "sourceVersion": 3,
+  "dataVersion": 4440,
+  "containerLayerY": 0,
+  "blockMap": {
+    "light_gray_concrete_powder": "light_gray_cloth",
+    "stone": "stone",
+    "andesite": "stone_diorite",
+    "green_wool": "moss",
+    "grass_block": "dark_grass",
+    "black_terracotta": "polished_blackstone_bricks",
+    "black_concrete": "polished_blackstone_bricks",
+    "white_concrete": null,
+    "yellow_concrete": null
+  },
+  "paletteWhitelist": [
+    "light_gray_cloth",
+    "stone",
+    "stone_diorite",
+    "moss",
+    "polished_blackstone_bricks",
+    "dark_grass",
+    "light_grass"
+  ],
+  "grassBaseBlock": "dark_grass",
+  "variants": [
+    "shallow_tarn_01",
+    "shallow_tarn_02",
+    "shallow_tarn_03",
+    "shallow_tarn_04",
+    "shallow_tarn_05"
+  ],
+  "variantMetrics": {
+    "shallow_tarn_01": {
+      "role": "tallest",
+      "componentIndex": 1,
+      "width": 65,
+      "height": 56,
+      "depth": 71,
+      "blocks": 59760,
+      "paletteSize": 6,
+      "palette": [
+        "dark_grass",
+        "light_gray_cloth",
+        "moss",
+        "polished_blackstone_bricks",
+        "stone",
+        "stone_diorite"
+      ],
+      "hasGrass": true,
+      "sourceCounts": {
+        "light_gray_concrete_powder": 29241,
+        "stone": 12861,
+        "andesite": 11339,
+        "green_wool": 3854,
+        "grass_block": 2090,
+        "black_terracotta": 375
+      },
+      "origin": {
+        "cx": 170,
+        "cz": 243
+      },
+      "sourceBounds": {
+        "x0": 138,
+        "x1": 202,
+        "y0": 1,
+        "y1": 56,
+        "z0": 208,
+        "z1": 278
+      }
+    },
+    "shallow_tarn_02": {
+      "role": "flatTop",
+      "componentIndex": 9,
+      "width": 31,
+      "height": 12,
+      "depth": 48,
+      "blocks": 12461,
+      "paletteSize": 6,
+      "palette": [
+        "dark_grass",
+        "light_gray_cloth",
+        "moss",
+        "polished_blackstone_bricks",
+        "stone",
+        "stone_diorite"
+      ],
+      "hasGrass": true,
+      "sourceCounts": {
+        "light_gray_concrete_powder": 6552,
+        "andesite": 2387,
+        "stone": 2250,
+        "green_wool": 641,
+        "grass_block": 611,
+        "black_terracotta": 20
+      },
+      "origin": {
+        "cx": 133,
+        "cz": 102
+      },
+      "sourceBounds": {
+        "x0": 118,
+        "x1": 148,
+        "y0": 1,
+        "y1": 12,
+        "z0": 79,
+        "z1": 126
+      }
+    },
+    "shallow_tarn_03": {
+      "role": "midA",
+      "componentIndex": 10,
+      "width": 28,
+      "height": 23,
+      "depth": 37,
+      "blocks": 11485,
+      "paletteSize": 6,
+      "palette": [
+        "dark_grass",
+        "light_gray_cloth",
+        "moss",
+        "polished_blackstone_bricks",
+        "stone",
+        "stone_diorite"
+      ],
+      "hasGrass": true,
+      "sourceCounts": {
+        "light_gray_concrete_powder": 5803,
+        "stone": 2601,
+        "andesite": 2134,
+        "green_wool": 636,
+        "grass_block": 280,
+        "black_terracotta": 31
+      },
+      "origin": {
+        "cx": 58,
+        "cz": 56
+      },
+      "sourceBounds": {
+        "x0": 45,
+        "x1": 72,
+        "y0": 1,
+        "y1": 23,
+        "z0": 38,
+        "z1": 74
+      }
+    },
+    "shallow_tarn_04": {
+      "role": "midB",
+      "componentIndex": 12,
+      "width": 25,
+      "height": 15,
+      "depth": 37,
+      "blocks": 8051,
+      "paletteSize": 6,
+      "palette": [
+        "dark_grass",
+        "light_gray_cloth",
+        "moss",
+        "polished_blackstone_bricks",
+        "stone",
+        "stone_diorite"
+      ],
+      "hasGrass": true,
+      "sourceCounts": {
+        "light_gray_concrete_powder": 4377,
+        "stone": 1636,
+        "andesite": 1325,
+        "green_wool": 501,
+        "grass_block": 200,
+        "black_terracotta": 12
+      },
+      "origin": {
+        "cx": 96,
+        "cz": 104
+      },
+      "sourceBounds": {
+        "x0": 84,
+        "x1": 108,
+        "y0": 1,
+        "y1": 15,
+        "z0": 86,
+        "z1": 122
+      }
+    },
+    "shallow_tarn_05": {
+      "role": "small",
+      "componentIndex": 20,
+      "width": 15,
+      "height": 24,
+      "depth": 12,
+      "blocks": 2892,
+      "paletteSize": 4,
+      "palette": [
+        "light_gray_cloth",
+        "moss",
+        "stone",
+        "stone_diorite"
+      ],
+      "hasGrass": false,
+      "sourceCounts": {
+        "light_gray_concrete_powder": 1094,
+        "stone": 1060,
+        "andesite": 599,
+        "green_wool": 139
+      },
+      "origin": {
+        "cx": 64,
+        "cz": 14
+      },
+      "sourceBounds": {
+        "x0": 57,
+        "x1": 71,
+        "y0": 1,
+        "y1": 24,
+        "z0": 9,
+        "z1": 20
+      }
+    }
+  },
+  "totalBlocks": 94649,
+  "sourceBlockCounts": {
+    "air": 7306154,
+    "light_gray_concrete_powder": 201973,
+    "stone": 79744,
+    "white_concrete": 71591,
+    "andesite": 70770,
+    "green_wool": 21535,
+    "grass_block": 12420,
+    "yellow_concrete": 3108,
+    "black_terracotta": 1444,
+    "black_concrete": 703
+  },
+  "fingerprints": {
+    "input": "dbd4d7792405b23a9e227fb8981a752a935e68430251ac658ad4708ceb851812",
+    "schemSha256": "e7b8ccaf749bb09d9fdd589afc6558740322a17b14698221ce2e067cdc6aa20a",
+    "blockMap": "9b76cd6d29b9d9f7079b30d5312ee748e49e1046fdaa5731d9aeeb66b4bf1552",
+    "components": "shallow_tarn_01:1:65x56x71:59760|shallow_tarn_02:9:31x12x48:12461|shallow_tarn_03:10:28x23x37:11485|shallow_tarn_04:12:25x15x37:8051|shallow_tarn_05:20:15x24x12:2892"
+  }
+}

@@ -5,3 +5,6 @@ playwright-report/
 .qoder/
 pi-session-*.html
 tests/tmp-*
+# 草贴图的 PNG 中间物（`npm run grasstextures` 用 `sips` 从 jpg 转出来，可重建，不入库）。
+# ⚠️ 只排 src/ 下的同名中间物 —— `assets/textures/procedural/` 里的产物是渲染资源，必须入库。
+assets/grass-textures/src/*.png

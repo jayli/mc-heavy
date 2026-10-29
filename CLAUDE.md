@@ -99,6 +99,10 @@ M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 
 
 **v2.10** 把瞬移区改为**五按钮**（用户 2026-10-29：「按钮调整一下：标记，跳转标记，回家，高台，竞技场。尽量在一行摆下这五个按钮，增加了一个竞技场的瞬移」）：顺序按用户指定重排（**推翻 v1.92 的「先地标后标记」**），文案全部缩到 **≤ 4 字**（`高台地带→高台` 等），新增 `Game.teleportToArena()`（落点 = `computeArenaAnchor(seed)` 的 `wx/wz`、`y = floorY+1`，与 `apply.js` 阶段 2.9 同源）。⚠️ **缩短是布局的必然**：左列 375px ÷ 5 ⇒ 每个 69px，「跳转标记位置」6 字会溢出被裁、面板高度涨一档。细节见下方「瞬移行与面板布局」段。
 
+**v2.11** 在 City 东侧新增**浅水高台**（用户 2026-11-01：「在 City 地图的东方创建一个新的地图，浅水高台。是一片水域，水域只有一格浅水，潜水里是五个新的高台……最高的高台，随机选择一个平顶高台，然后再随机选择三个中小型高台……之间留有适当的空隙，浅水高台地图和其他地形形成有梯度的衔接，不要是生硬的断崖式衔接，这个新地图只显示在 City 的东方」）：湖半径 99（四轮收紧 240→130→105→99，岸畔 12.6→**6.6** 格）、湖底恒 `SEA_Y-1`、只填一格水（**水深 0.5 格**，与天然水湾同一机制）；五座从 `valturyterrainasset.schem` 烘焙（最高 65×56×71 + 平顶 31×48 + 三个中小），环半径 45 → 含抖动最小 AABB 间距 **6.47~10.78 格 = 高台地带 `TARN_GAP=4` 的 1.6~2.7 倍**、最远角 92.4 < 湖半径 105；三段式地形（湖盆 99 → 沙滩 7 → 宽缓坡 24）保证**本地图范围内单步落差 ≤1**；
+沙滩 7 格抬 3 格 = 0.43 格/格（比旧值 14 格陡一倍）。缓坡减半目标是 22，但实测 22 会让
+seed 88 突破「单步落差 ≤1」（到 2 格），24 是守住无台阶的最小值。新增 `dark_grass` / `light_grass` 两个方块（六面同贴图，源图 736×736 → 46×46 盒式平均 → 16×16），素材的 `grass_block` 按**世界坐标噪声成片分块**用这两种草。`CAPACITY.transparent.active` 100 → 240（三通道静态内存 188.61 → 193.62 MiB，仍 < 200 MiB 门）。细节见下方「浅水高台沉淀的活跃约束」段与 roadmap 的 v2.11 行。
+
 测试现状：Playwright spec 全量 + 浏览器内单元测试全绿。**用例计数以 `npm run check:data`
 输出为准，不在文档硬编码**（同一事实的多个副本属「改动放大器」，违反红线 1 精神）。
 ⚠️ **三条计时型 spec 在高负载下偶发贴线 flaky，单独复跑通过**（不改断言、不放宽阈值）：
@@ -1361,6 +1365,198 @@ M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 
 - **reload 恢复后车继续原方向**（`movementState` 进 snapshot），mc-lite 恢复后停成 IDLE ——
   有意偏离（玩家重启前正在开的车不该自己停下）。
 
+### 浅水高台沉淀的活跃约束（v2.11，后续「新增大块水域 / 新地图」类改动必读）
+
+设计文档 [`docs/superpowers/specs/2026-11-01-shallow-water-tarns-design.md`](docs/superpowers/specs/2026-11-01-shallow-water-tarns-design.md)。
+素材 = 用户给定的 `/Users/bachi/Downloads/Valtury AssetTerrain/valturyterrainasset.schem`
+（入库 `assets/shallow-tarns/src/`，**烘焙输入、非渲染资源**，同 `assets/arena/src/`）。
+
+- **天然地形不存在「可用的浅水洼」，落点判据不得要求它**：实测 3 seed ×
+  x∈[640,2600] × z∈[-900,900]（步长 60），要求「湖半径 240 的圆外 60 格环带 97% 干燥」
+  → **零点满足**，最高只有 84%。根因是基础地形噪声波长约 78 格、`SEA_Y=-2` 恰在中位
+  → 大范围半湿半干。**地形必须自己整形**；任何「先找天然浅水再落地」的判据都会恒返回 null。
+  ⚠️ 踩坑形态：判据恒 null 时 `computeShallowTarnAnchor` 会因为**遍历全部候选**而跑 18~34 秒
+  （每候选重建阻塞物列表），看起来像「卡死」而不是「没找到」。
+
+- **⚠️ 地标必须「压制」而不是「避让」（与高台地带同源，这条最容易被写错）**：
+  `regionLandmarkCenters` 每 region 返回 2~4 个圆 + 雪原一个，而 region 边长仅 400 格；
+  湖硬半径 119（湖 105 + 沙滩 14）的面积 4.4 万格 —— 虽小于 region 面积，但每 region 有 2~4 个地标圆
+  ⇒ 圆几乎必然压到至少一个，实测避让式落点**通过率约 0.2%**（10 seed 全部失败）。
+  ✅ 正解 = 照 `tarn ? null : …` 的手法把落点区的地标压成 null。
+  **但只收「地基级大结构」做避让**（高台地带 / 竞技场）—— 它们在选点前就必须排除。
+
+- **⚠️⚠️ 压制的判据是「**该地标中心**是否在湖的硬半径内」，**不是**「本 region 是不是圆心 region」**：
+  湖直径 238 跨 1~2 个 region，按 region 判会**同时错两头**——压掉一个本来没冲突的地标，
+  又漏压真正冲突的那些。前者被 `test-tarn-zone.js` 的「非地带且雪原未让路的 region
+  逐字段零回归」当场拓到（`region(4,-1)` 的 pyramid 合法为 null，而它根本不相交于湖）。
+  唯一实现 = `shallowTarnSuppressedLandmarks(anchor, regionX, regionZ, seed)`。
+
+- **⚠️ 硬净空半径用「湖 + 沙滩」（119），**不含缓坡**（163）**：缓坡只做高度插值，
+  不把地标变成本地图的一部分。把它算进净空会让通过率从「10 seed 全中」掉到「0 个」——
+  这是**几何必然**（半径 163 的圆面积 8.4 万格 ≈ 0.5 个 region）。
+  ⇒ 落点判据与「整个湖在城东」的断言都必须用 262，不是 `SHALLOW_TARN_OUTER_RADIUS`。
+  两者混用会得到「实现明明对、用例却 FAIL」的假失败。
+
+- **⚠️ `slopeNaturalHeight` 的缓存键必须是精确坐标，不能降采样**（v2.11 实测 bug）：
+  初版用 `(wx >> 3, wz >> 3)` 把 8×8 格并成一格、缓存第一个落进去的列的高度
+  → 同一块 64 列共享一个高度 = **8 格宽的平台**，跨块边界跳变，实测缓坡内最大单步 **4 格**
+  （而平滑值本身逐格只变 1.01）。改成精确坐标后 **7 个 seed 全部 = 1 格**。
+  ⚠️ 这类缺陷**只在跨 8 格边界处出现**，抽样断言很容易漏 —— 必须逐格遍历。
+
+- **「无断崖」的判据只能覆盖**本地图范围内**（`d <= OUTER_RADIUS`），不能含接缝**：
+  自然地形本身存在 8 格海岸线断崖（实测 seed 12345 的 ang=339° 射线上 `generateHeight`
+  在 1 格内从 -3 跳到 -11）。三条「让缓坡贴合真实地形」的修法实测**全部更差**：
+  | 修法 | 6 seed 最大单步落差 |
+  |---|---|
+  | 缓坡内全用平滑值，外缘直接切到原始值 | 带内 ≤1，接缝 3 |
+  | 平滑→原始权重随 t 衰减到 0 | **5~7**（把自然陡坡掺回整条缓坡）|
+  | 平滑→原始只在最外 12 格过渡 | **4~8**（过渡带内撞上那条海岸线）|
+  | **缓坡一平滑到底（现行）** | **≤1**（本地图范围内；接缝落差落在缓坡外的自然地形上）|
+  ⇒ 语义是「本地图自己是一块坡度可控的地，接缝处的自然落差由外边那块地承担」。
+  ⚠️ 断言写成「含接缝 ≤1」会永远 FAIL，且**不是实现缺陷**。
+
+- **⚠️ transparent 容量必须用真实 `buildSectionMesh` 实测，不能手算**：
+  初版按「每格水面 4 顶点 × 18 万格 = 72.4 万」估，**错了 2.4 倍** —— mesher 让湖底沙面
+  互相剔除、只发射湖岸一圈竖面，实测 9×9 chunk 全湖每 column **1,024 个透明顶点**
+  → 视距 8 全湖视域（289 列）峰值 **29.6 万**（旧上限 12.5 万会触发 1 档扩容仍不够）。
+  `CAPACITY.transparent.active` 100 → **240**（maxVerts 30 万），三通道静态内存
+  188.61 → **193.62 MiB**（< `m3-fullscene` 的 200 MiB 门，余量 6.4 MiB）。
+  ⚠️ **v2.12 把湖半径 240→130 后这个数不变**：视距 8 的视域 272 格 > 湖直径 260 格
+  ⇒ 站湖心时整个视域仍在湖里，每 column 的透明顶点数不变。
+  ⚠️ `opaque` / `cutout` 实测全湖视域分别是 0.59M / 0，**不动**。
+
+- **⚠️ `loadStructure` 在 Node 里会静默返回空结构**（`fetch` 无 base URL → 走 `.catch()`）：
+  所以 Node 侧单测/脚本**验不到光栅化**（拿到的 `blocks` 恒为 0），只有**真实浏览器**能验。
+  症状是「layout 算出来了、`rasterizeStructure` 也调了，但世界里一个方块都没有」。
+  ⇒ 五座高台真的长出来这件事只能由 Tier 4（`tests/shallow-water-tarns.spec.mjs`）兜住。
+  手写诊断脚本时要用 `JSON.parse(fs.readFileSync(...))` 直接读产物，不要走 `loadStructure`。
+
+- **⚠️ `let` 变量删掉后残留的 `void 变量名` 会让整个模块 ReferenceError**：
+  症状极隐蔽 —— 测试页**无报错、无结果、只表现为超时**（`window.__MC_TEST_RESULTS__`
+  永远不存在，`pageerror` 也可能是空）。排查手法：先在 Node 里 `import` 那个模块。
+
+- **水位口径（用户 2026-11-01 裁定「水深 0.5 格」）**：湖底**方块**在 `LAKE_FLOOR_Y = SEA_Y-1`
+  （其顶面 = `SEA_Y`），只填 `y = SEA_Y` **一格** `water`；mesher 的
+  `WATER_SURFACE_SINK = 0.5` 让水面停在 `SEA_Y + 0.5` ⇒ 水深 **0.5 格**，且与海面平面
+  `WATER_LEVEL_OFFSET` 严格共面。这与 `fillColumn` 对**天然水湾**的处理完全同一机制
+  （用户原话「那个怎么实现的你就怎么实现」）。
+  ⚠️ 断言不要写「`y = LAKE_FLOOR_Y` 必须为空」——那一格**正是湖底沙**。
+
+- **⚠️ 向下填实时必须把「天然水」也填成石头，不能只填空气**（v2.11 真实页面实测）：
+  `fillColumn` 在整形**之前**按自然地形填过整列，低于海平面的部分有 `water`。
+  只写 `if (cur === 0) column.blocks[idx] = stone` 的话，湖底**正下方**会留一层天然水 ——
+  真实页面实测 **492 列**中招（用户看到的是「湖底下面还有一层水」）。
+  正确写法 = `if (cur === 0 || cur === waterId) … = stone`，与 `fillTarnPlateau` 的
+  「地下水也要换成石头」同口径。
+  ⚠️ 这条**Node 侧单测抓不到**（我第一版 Node 侧 2821 列全绿），只有 Tier 4 读真实世界才暴露
+  —— 因为 `fillColumn` 在 Node 与浏览器行为一致，差异在于我 Node 侧的检查点没覆盖 `lakeFloorY-1`。
+
+- **⚠️ Tier 4 测「画面是否在动」：隐藏 HUD 后只能 `waitForTimeout`，绝不能 `await requestAnimationFrame`**
+  （v2.14 实测到的反直觉陷阱）：三步对照实测（同一机位、同一 clip）：
+  | 时机 | 两帧变化占比 |
+  |---|---|
+  | A 未隐藏 HUD | 6.53% |
+  | **B 隐藏 HUD 后 `waitForTimeout(2000)`** | **10.87%** ✅ |
+  | C 在 B 之后再 `page.evaluate` 里 `await` 一次 rAF + 500ms | **0.00%** ❌ |
+  ⇒ 在 `page.evaluate` 里 await rAF 会让**后续截图恒为同一帧**（疑似与 Playwright 的 CDP
+  合成时机有关）—— **它比不等待更糟**。所以别写「多等两帧更保险」。
+  判据失效的形态是 `changed = 0.00%` 而 `blue = 65.6%`（水面明明在画面里）→
+  「出现机制上不可能的数值时先怀疑测量方法」（本仓既有约束的又一实例）。
+
+- **⚠️ 「画面在动」与「画面里是不是水」是两条独立判据，缺一不可**：只钉 `changed > 0.05`
+  时，机位拍错成草地也会有植被摆动的变化 → 「湖根本没渲染」时用例照样通过。
+  必须同时钉**蓝色占比**（实测正确实现 blue 65.6% / changed 6.58%，阈值取 blue > 0.3）。
+
+- **⚠️ Tier 4 的 sanity 数值阈值必须从被测尺度派生，不能写死**（v2.13 实测踩到两次）：
+  湖半径三轮收紧（240→130→105）时，spec 里两个「按旧尺度拍的数」先后假失败，
+  **都不是实现缺陷**：
+  ① `expect(r.cols).toBeGreaterThan(2000)` —— 采样圆 π·(lakeRadius−10)²/16 从 3.3 万列
+     降到 **约 1772 列**，阈值 2000 必然不过；
+  ② 单测里写死 `r ∈ [0, 50, 120, LAKE_RADIUS-1]` —— 湖半径 105 时 `120` 已经出湖（落在沙滩带），
+     断言「湖盆地表恒 SEA_Y-1」拿到 0。
+  ⇒ 一律写成 `LAKE_RADIUS * 0.25` / `Math.floor(Math.PI * inner * inner / 16 / 2)` 这种派生形式。
+  同源教训：`test-shallow-water-tarns.js` 的「湖底至少检查 N 列」也是同理。
+
+- **⚠️ Tier 4 读真实世界的判据必须排除「设计上就是例外」的区域**：五座高台的底座坐湖底，
+  所以它们的 AABB 内 `y = lakeFloorY` 是高台方块而非湖底沙。实测不排除时有 **53 列**
+  被误判成「湖底不是 sand」—— 逐一对上全部落在高台 AABB 内。
+  写这类「全图 XXX 应恒为 YYY」的断言前，先列出**本图自己造成的例外**并显式跳过。
+
+- **⚠️ 湖面波纹必须靠「湖区圆门控」强制渲染水面平面（v2.14 修，用户报告「水面的波纹并没有覆盖全部」）**：
+  水域遮罩读的是 `generateHeight`（**自然**地形），而浅水高台的整形把湖底压到 `SEA_Y-1`
+  —— **自然高度根本没变**。所以自然高度 ≥ `SEA_Y` 的湖盆格子会被遮罩关掉平面
+  → 只剩体素水的**静态顶面**（无波纹、无高光）。实测湖内 288 个采样点里 **109 个** 中招。
+  - 修法 = `ocean-mask.js` 的 `inLakeCircle` + `ocean.js` 的 `uLakeCircle` uniform
+    （与 `uCityBounds` 同一手法：哨兵 `OCEAN_MASK_NO_LAKE`（`radius=0` → 恒假），
+    `Game.start()` 用 `computeShallowTarnAnchor(seed)` 接线，**不建第二份落点副本**）。
+  - ⚠️ **方向与城市门控相反**：城市是「强制不渲」（压平的陆地），湖区是「强制渲」。
+  - ⚠️ **湖区判定必须 `max` 在 `mix(...)` 之后**，不能掺进 `nearOceanMask`：
+    后者会被 `inRangeMask` 在 99~100 格外淡掉，而湖区需要「远近都强制」。
+  - ⚠️ **外延 `OCEAN_MASK_OFFSET`**（与五点取样同口径）：让平面与沙滩带重叠，
+    否则岸边会出现一圈「体素水顶面 / 平面」的硬边界。
+  - ⚠️ 湖与城市 bounds 恒相距 40 格（落点判据的 `CITY_CLEARANCE` 保证），两个门控不会打架。
+
+- **两个新草方块的口径**（用户 2026-11-01「深颜色的草方块……浅颜色的草方块……六个面贴图用 …」）：
+  `dark_grass` / `light_grass`，六面**同一张贴图** → `FACES_DATA` 写**单字符串**形式
+  （与 `snow: 'Snow_top'` 同手法），不是 6 项数组。声明与 `grass` / `snow_grass` 完全同档
+  （solid + opaque + box），**不新增非 box 几何**，故不触发那条「非 box 必须显式 opaque:false」。
+  - 贴图 = `npm run grasstextures`：源图 736×736 → **46×46 盒式平均** → 16×16
+    （`736 = 46 × 16` 精确整除，无余数无相位误差；非整除时烘焙脚本 throw）。
+    ⚠️ **必须盒式平均，不能 nearest**：46 倍降采样只取 1/2116 的像素会把柔和色阶变成噪点。
+  - ⚠️ **源图必须放 `assets/grass-textures/src/`，不能留在 `assets/textures/`**：
+    后者被 `build-atlas` **递归扫描**（`atlas.spec` 还断言「tile 数 ≡ PNG 数」），
+    736×736 的源图/中间物会多出两个巨型 tile 白占 atlas。
+  - ⚠️ **本仓没有 jpeg 解码器**（`node_modules` 只有 `pngjs`）：烘焙前要先
+    `sips -s format png` 转出同名 PNG 中间物（`.gitignore` 掉），缺了会被脚本的明确报错拦住。
+
+- **草方块深浅分流按**世界坐标**噪声，不在烘焙期定死**：烘焙把素材的 `grass_block`
+  统一烘成 `GRASS_BASE_BLOCK`（= `dark_grass`，基准色），光栅化后
+  `paintShallowTarnGrass` 按 `blobNoise(wx, wz, seed+1036, 0.09)` 把一半刷成 `light_grass`。
+  - ⚠️ **按素材坐标定死会让分块随摆放位置漂移**（五座高台各有偏置）；按世界坐标算则
+    同一片区域连成一片（与高台地带的 `tarnSurfaceBlock` 同源）。
+  - ⚠️ **不能用逐格随机**（那是棋盘噪点，用户要的是「成片分块」）；判据 = 相邻同色率
+    （逐格随机会 ≈50%，实测 `blobNoise` 约 91%），阈值 75%。
+  - ⚠️ **不能用可分离的 `noise()`**（`sin(x)+cos(z)`，等值线必然十字/菱形，会出现几十格
+    直线段 —— 高台地带 v1.93 踩过）。用不可分离的 `blobNoise`（与 `tarn-terrain.js` 同公式，
+    但**刻意不复用**那个函数：它是内部工具未导出，且横跨两张地图的 import 会引入不该有的耦合）。
+  - ⚠️ **不弄哨兵槽**（初稿写过 `GRASS_PLACEHOLDER`）：`makeColumnSetter` 对未注册名字是
+    **静默 return**（那格变 air），哨兵根本写不进世界。用真实方块作基准色，降级路径安全
+    （替换没跑到 → 世界里是深草，不是空洞）。
+
+- **五座的选型与几何**（用户选定「组 A」）：最高 `comp#1`（65×56×71）/ 平顶 `comp#9`
+  （31×12×48，**548 格同高台面**占足迹 37%，是 4 个平顶候选里平顶占比最高的）/
+  `comp#10`（28×23×37）/ `comp#12`（25×15×37）/ `comp#20`（15×24×12）。
+  环半径 **45** / `SHALLOW_TARN_GAP = 6` → 含抖动的**最小 AABB 间距 6.47~10.78 格**
+  （= 高台地带 `TARN_GAP=4` 的 **1.6~2.7 倍**，用户要求的「普通高台的 1.5 倍左右」）、
+  最远角 92.4 < 湖半径 105（五座全在湖内，岸畔只剩 12.6 格水面 =「刚好裹住」）。
+  ⚠️ 三轮收紧：环半径 130→74→45；间距 97.7→24.8→6.47~10.78。
+  ⚠️ **GAP 是抖动二分的下界**，实际间距由抖动决定 ⇒ 是范围而非恒等于 1.5 倍；
+  收到环半径 44 时 jitterMax 只剩 1.47°（抖动退化成机械等距），≤40 直接放不下。
+  - **「平顶」判据 = 同高层的最大 4-连通块列数**，不能只看高度或台面占比 ——
+    实测 28 个分量里大部分是乱石堆，只有 4 个（comp#4/6/9/16）顶部 4 格内 ≥99% 的列同高。
+  - ⚠️ **AABB 用非对称 `lo/hi`，不能压成 `width/2`**：烘焙原点是
+    `x0 + floor((x1-x0)/2)`，奇数跨度左右不等（28 宽 → lo 13 / hi 14）。
+    压成对称会让大座「看起来没重叠但实际压住邻居 1 格」。
+  - 抖动 `jitterMax` **逐 seed 二分求**（不得写死），安全性论证见 `tarn-zone.js` 的同款注释。
+
+- **素材的 y=0 是展台基座，必须整层丢弃**：76,170 格（`white_concrete` 71,591 +
+  `yellow_concrete` 3,108 + 少量 `andesite`/`stone`/`light_gray_concrete_powder`）——
+  是作者摆作品用的白色展台，不属于任何一座高台。不丢的话 28 个独立结构会被它连成一片
+  （与 Cloudland 素材同一条教训）。
+
+- **`BLOCK_MAP` 的目标全部是既有方块**（用户「不要自创方块」）：`light_gray_concrete_powder`
+  → `light_gray_cloth`（贴图均值 163，与源观感一致）/ `stone` → `stone` /
+  `andesite` → `stone_diorite`（均值 189，比 stone 126 浅一档）/
+  `green_wool` → `moss` / `black_terracotta`+`black_concrete` → `polished_blackstone_bricks`（均值 42）。
+  ⚠️ **不能用 `stone_andesite`** —— 那个名字只出现在 `FACES_DATA.stone` 的顶底面里，
+  **不是独立方块**。
+  ⚠️ **门禁的「不引入砖木」判据必须用白名单，不能用 `/brick|planks|wood|log/i` 名字模式**：
+  `polished_blackstone_bricks` 会命中 `/brick/`，而它是本次特意选的最暗一档贴图。
+
+- **`npm run shallowtarns` / `npm run grasstextures` 不跑则产物静默过期** →
+  `check:data` 的 `[浅水高台]` / `[草贴图]` 两个环节用指纹抓。改 `BLOCK_MAP` /
+  选型 / 源图后必须重跑。
+
 ### 城门竞技场沉淀的活跃约束（v2.7，后续「用 .schematic 落地地面建筑」类改动必读）
 
 设计/实测细节见 `docs/superpowers/specs/2026-10-29-arena-design.md` 与 roadmap 的 v2.7 行。
@@ -2616,6 +2812,11 @@ mc-heavy/
 ├─ tools/bake-azalea-trees.mjs # 杜鹃树烘焙（npm run azaleatrees）：入库 .schem → 按灰线网格切 50 个地台
 │                              #   → 取杜鹃主题行（行 2）的 10 档 → **1:1 原生尺度**（不降采样）→ 三种叶并进
 │                              #   `LEAF` 哨兵槽 + 树干 → azalea_log → 10 个变体 JSON（7468 格）
+├─ tools/bake-shallow-tarns.mjs # 浅水高台烘焙（npm run shallowtarns）：.schem → 丢 y=0 展台基座
+│                              #   → 26 连通分量 → 取 5 个指定分量 → 5 个 JSON + shallow_tarns.meta.json
+├─ tools/shallow-tarns-fingerprint.mjs # 浅水高台 BLOCK_MAP / 白名单 / 度量 / 指纹共享模块（红线 1）
+├─ tools/bake-grass-textures.mjs # 深草/浅草贴图烘焙（npm run grasstextures）：736×736 → 46×46 盒式平均 → 16×16
+├─ tools/grass-textures-fingerprint.mjs # 草贴图参数与指纹共享模块（红线 1）
 ├─ tools/bake-arena.mjs        # 城门竞技场烘焙（npm run arena）：.schematic → 丢弃 barrier/bedrock
 │                              #   → 内容映射 → **外圈栏杆环**（臂集合由 src/gen/structures/arena.js
 │                              #   的 railPlacementFor 反查）→ arena_grass.json（stride:5 + floorRow）
@@ -2657,6 +2858,10 @@ mc-heavy/
 │  │  └─ dusk/                 # 日落（v1.75）：6 面 × 1024²（mc-lite skyBox2，356K，原样复制）
 │  │                           #   ⚠️ 由 `uDuskBlend` 叠在最上层，自动日夜循环恒 0（只手动选「傍晚」用）
 │  │                           #   清单唯一权威 = `render/sky-config.js`（check:data 的 [天空盒] 环节）
+│  ├─ shallow-tarns/           # 浅水高台（v2.11）：src/valturyterrainasset.schem（烘焙输入，入库，
+│  │                           #   **非渲染资源**）→ 产物走 assets/structures/shallow_tarn_0{1..5}.json
+│  ├─ grass-textures/src/      # 深草/浅草源图（v2.11）：grass-{dark,light}-green.jpg（烘焙输入）
+│  │                           #   ⚠️ 不能留在 assets/textures/ —— 那里会被 build-atlas 递归扫进世界 atlas
 │  ├─ arena/                    # 城门竞技场（v2.7）：src/arena1.schematic（烘焙输入，入库，
 │  │                           #   **非渲染资源**）→ 产物走 assets/structures/arena_grass.json
 │  ├─ models/weapons/          # M4 受控 GLB（pistol / mag7 / minigun）—— 替换后跑 validate:weapon-assets
@@ -2687,6 +2892,10 @@ mc-heavy/
    │               #    「出城 + 不压固定地标 + 占地 100% 干燥 + 高差 ≤10」的位置，seed 缓存）+ 
    │               #    `railArmSet`/`railPlacementFor` 栏杆臂方向↔(方块,朝向) 反查（**从 TEMPLATES +
    │               #    mesher 的 rotateOffset 派生**，烘焙与门禁共用）+ `inArenaFootprint` 占地判据
+   │               #  shallow-water-tarns.js 浅水高台（v2.11）：computeShallowTarnAnchor 落点 + 环排布
+   │               #    + shallowTarnSuppressedLandmarks（逐地标压制，非逐 region）+ inShallowTarnFootprint
+   │               #  shallow-water-terrain.js 三段式整形 + 五座高台光栅化 + 深浅草分流
+   │               #  shallow-water-tarn-data.js 5 个变体名与度量（纯数据，零 node 依赖）
    │               #  arena-variants.js 竞技场产物基名（纯数据，与 tools/arena-fingerprint.mjs 双向门禁）
    │               #  giant-trees.js 巨树景观：region 层候选（全局对齐网格 + 内缩抖动）+ column 层光栅化
    │               #    （合并邻域候选 / 排除 / 地基 / 覆盖窗口；Worker 同构）
@@ -2806,6 +3015,15 @@ npm run pyramid                # 烘焙巨型金字塔 → assets/structures/gia
                                #   PYRAMID_METRICS）或 .litematic 后需跑，否则产物静默过期
                                #   （check:data 的 [巨型金字塔] 指纹检查会抓）
                                #   另有 `-- --census`（源方块普查）/ `-- --census-orient`（校验台阶朝向映射）
+npm run shallowtarns           # 烘焙浅水高台 → assets/structures/shallow_tarn_0{1..5}.json
+                               #   + shallow_tarns.meta.json（尺寸 + 源方块普查 + 指纹）
+                               #   ⚠️ 素材的 y=0 是白色展台基座，整层丢弃（不丢会让 28 个结构连成一片）
+                               #   改 tools/shallow-tarns-fingerprint.mjs（BLOCK_MAP / 选型）或 .schem
+                               #   后需跑，否则产物静默过期（check:data 的 [浅水高台] 会抓）
+                               #   另有 `-- --census`（28 个连通分量普查 + 平顶度量 + 源方块映射）
+npm run grasstextures          # 烘焙深草/浅草贴图 → assets/textures/procedural/{dark,light}_grass.png
+                               #   源图 736×736 → 46×46 盒式平均 → 16×16（改源图后需跑，再跑 atlas + icons）
+                               #   ⚠️ 本仓无 jpeg 解码器：先 `sips -s format png` 转出同名 PNG 中间物
 npm run arena                  # 烘焙城门竞技场 → assets/structures/arena_grass.json + arena.meta.json
                                #   （丢弃 barrier/bedrock、原图斜向 fence 由外圈栏杆环取代、
                                #   stride:5 带栏杆朝向 + floorRow）。改 tools/arena-fingerprint.mjs

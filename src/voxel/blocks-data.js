@@ -149,6 +149,12 @@ export const BLOCKS = [
   {"name":"snow_grass","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
   {"name":"ice","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
   {"name":"grass","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
+  // 浅水高台（v2.11）：深/浅两种草方块，**六面同一张贴图**（用户 2026-11-01 要求）。
+  // 声明与 `grass` / `snow_grass` 完全同档（solid + opaque + box）——
+  // 不新增非 box 几何，故不触发「非 box 必须显式 opaque:false」那条约束。
+  // 贴图 = procedural/dark_grass、procedural/light_grass（`npm run grasstextures` 烘焙）。
+  {"name":"dark_grass","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
+  {"name":"light_grass","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
   {"name":"dark_planks","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
   {"name":"blue_planks","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
   {"name":"green_planks","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},

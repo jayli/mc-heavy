@@ -13,6 +13,8 @@ import { KIT_VARIANTS } from './cloudland-kit-data.js';
 // 城门竞技场的产物基名（纯数据、零 node 依赖）。
 // ⚠️ 与高台那批同一个理由：**不要 import `tools/arena-fingerprint.mjs`**（依赖 `node:fs`）。
 import { ARENA_VARIANTS } from './arena-variants.js';
+// 浅水高台的 5 个产物基名（纯数据、零 node 依赖）
+import { SHALLOW_TARN_VARIANTS } from './shallow-water-tarn-data.js';
 
 /** placement 类型 → JSON 文件名（mc-lite structureLoaders 映射） */
 const BASE_STRUCTURE_FILES = {
@@ -45,6 +47,13 @@ const BASE_STRUCTURE_FILES = {
   // 巨型金字塔（Giant Pyramid Epic）：palette + 扁平数组格式（同高台地带的 35 个产物）
   giantPyramid: 'giant_pyramid.json',
 };
+// 浅水高台（Shallow Water Tarns，2026-11-01）：从 `SHALLOW_TARN_VARIANTS` 派生。
+// 命名约定与文件同名（`shallow_tarn_01` → `shallow_tarn_01.json`）。
+// ⚠️ 与竞技场同一理由：**手写 5 行清单会漏**，而漏一行会让那个变体**静默不出现**
+// （`rasterizeStructure` 拿到空 blocks 直接 return，方块层面完全看不出）。
+for (const base of SHALLOW_TARN_VARIANTS) {
+  BASE_STRUCTURE_FILES[base] = `${base}.json`;
+}
 // 城门竞技场（Arena）：从 `ARENA_VARIANTS` 派生（红线 1：加第二个竞技场变体时不用改两处，
 // 漏一行会让那个变体静默不出现 —— `rasterizeStructure` 拿到空 blocks 直接 return，
 // 方块层面完全看不出是漏了映射）。

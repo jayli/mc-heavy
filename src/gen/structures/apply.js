@@ -28,6 +28,11 @@ import { PYRAMID_HALF, inGiantPyramidFootprint } from './giant-pyramid.js';
 import { ARENA_HALF_X, ARENA_HALF_Z, ARENA_SUPPORT_MAX_DEPTH, inArenaFootprint } from './arena.js';
 import { TARN_ZONE_RADIUS, snowLandSuppressedByTarn, TARN_CLOUD_MIN_Y } from './tarn-zone.js';
 import { fillTarnPlateau, tarnSnowCap, tarnPlantAt } from './tarn-terrain.js';
+import { inShallowTarnFootprint } from './shallow-water-tarns.js';
+import { SHALLOW_TARN_VARIANTS } from './shallow-water-tarn-data.js';
+import {
+  fillShallowTarnBasin, rasterizeShallowTarnPlatforms, paintShallowTarnGrass,
+} from './shallow-water-terrain.js';
 import { KIT_VARIANTS, KIT_METRICS } from './cloudland-kit-data.js';
 
 /** 城市 placement 用到的 JSON 结构（GEN 携带城市布局时预载）+ 植被树 JSON */
@@ -133,6 +138,16 @@ function pointContext(wx, wz, layouts, cityLayout, seed) {
       // tarn-zone 再算一遍半径 —— 那就是第二份几何判据（红线 1）。
       return { kind: 'tarn', tarn };
     }
+  }
+  // 浅水高台整形区：整片让路（`kind: 'shallowTarn'`），与上面 `tarn` 同手法 ——
+  // 一个分支同时覆盖五个下游消费者（阶段 2.7 撒布剔除 / 巨树 allowedAt / 城市树 /
+  // 普通树 / 单格植物与睡莲）。
+  //
+  // ⚠️ **判据用「整形区」而不是「湖」**：缓坡带的地表也被改写过，树/结构中在缓坡上
+  // 会穿模；且用户要的「与其它地形有梯度的衔接」里，缓坡是本地图的一部分。
+  // 判据函数 `inShallowTarnFootprint` 是唯一权威（与阶段 2.7 共用同一份）。
+  if (inShallowTarnFootprint(wx, wz, layouts.map((l) => l.shallowTarn))) {
+    return { kind: 'shallowTarn' };
   }
   // 巨型金字塔占地：让路给塔。
   //
@@ -289,6 +304,11 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
   if (layouts.some((l) => l.giantPyramid)) needTypes.add('giantPyramid');
   // 城门竞技场：同理（惰性预载，实测 51KB 一个 JSON）
   if (layouts.some((l) => l.arena)) needTypes.add('arenaGrass');
+  // 浅水高台：5 个产物。惰性预载 —— 只有整形区相交的 region 才拉。
+  // 从 `SHALLOW_TARN_VARIANTS` 派生而不是手写清单（红线 1）。
+  if (layouts.some((l) => l.shallowTarn)) {
+    for (const base of SHALLOW_TARN_VARIANTS) needTypes.add(base);
+  }
   // 高台地带：35 个产物。惰性预载 —— 只有地带 region 才拉（1/3 的 region）。
   // 从 KIT_VARIANTS 派生而不是手写清单（红线 1）。
   // ⚠️ 用 `some` 而不是 `find(Boolean)` —— 只要邻域里**有任何一个**地带就需要这 35 个文件。
@@ -359,6 +379,30 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
         if (fmInfo) { generateFrozenMountain(wx, wz, h, fmInfo, setBlock, seed); handled = true; break; }
       }
     }
+  }
+
+  // ---- 阶段 2.45：浅水高台（Shallow Water Tarns，2026-11-01）----
+  //
+  // 层序理由：
+  //   · 在阶段 1 的地形整形**之后** —— 它要在 `fillColumn` + `carveCaves` 的结果上重塑地表；
+  //     放在阶段 1 循环里会和城市/地标的 elif 链抢优先级（而它是与城市互斥的独立地图）。
+  //   · 在阶段 2.4 高台地带**之前** —— 两者都是「地基级」内容且锚点层已保证互不重叠
+  //     （`fixedBlockers` 把地带整圆列为阻挡），先后不影响结果，但放前面保证
+  //     `fillTarnPlateau` 不会与本结构抢同一片地。
+  //
+  // 三件事的顺序是载荷性的：
+  //   ① `fillShallowTarnBasin`：整形湖盆/沙滩/缓坡（含削平、填实、填水）
+  //   ② `rasterizeShallowTarnPlatforms`：五座高台（底座坐湖底）
+  //   ③ `paintShallowTarnGrass`：把高台里的草基准色按噪声刷成深/浅两种
+  //   倒过来（先光栅化再整形）会把高台削掉。
+  for (const layout of layouts) {
+    const st = layout.shallowTarn;
+    if (!st) continue;
+    // 裁剪由 `fillShallowTarnBasin` 与 `rasterizeShallowTarnPlatforms` 各自内部的
+    // 「扫掠矩形 / AABB 相交」检查完成 —— 这里不再叠一道（两道判据漂移会变成第二份几何权威）。
+    fillShallowTarnBasin(column, st, seed, registry);
+    rasterizeShallowTarnPlatforms(column, st, seed, registry, setBlock);
+    paintShallowTarnGrass(column, st, seed, registry, setBlock);
   }
 
   // ---- 阶段 2.4：高台地带（Cloudland Tarn Zone）----
@@ -482,8 +526,10 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
   //
   // 巨型金字塔锚点列表（阶段 2.7 的撒布剔除用）：只算一次，不每个候选重算
   const giantAnchors = layouts.map((l) => l.giantPyramid);
-  // 竞技场锚点列表（同上，同一判据函数消费）
+  // 竞技场锚点列表（同日手法，同一判据函数消费）
   const arenaAnchors = layouts.map((l) => l.arena);
+  // 浅水高台锚点列表（同上）
+  const shallowTarnAnchors = layouts.map((l) => l.shallowTarn);
   for (const arr of scatterCandidates) {
     for (let i = 0; i < arr.length; i += SCATTER_STRIDE) {
       const x = arr[i], y = arr[i + 1], z = arr[i + 2];
@@ -509,6 +555,10 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
       // 和其他实体重合」）。竞技场本身在阶段 2.9 光栅化（后写胜），但**只靠后写胜不够**：
       // 被埋的撒布结构会有一半露在竞技场外面（与巨型金字塔完全同形的缺陷）。
       if (inArenaFootprint(x, z, arenaAnchors)) continue;
+      // 浅水高台整形区内的撒布候选一律不落地（同上手法与理由）。
+      // 本结构已在阶段 2.45 光栅化完毕，而撒布在阶段 2.7 **后写胜** —— 不剔除的话
+      // 花坛/亭子/房屋会直接长在湖面或高台上（方块层面看不出是缺了一道门控）。
+      if (inShallowTarnFootprint(x, z, shallowTarnAnchors)) continue;
       const fp = SCATTER_FOOTPRINT[type];
       if (!fp) continue;
       if (!placementIntersects({ x, z }, fp.halfX, fp.halfZ, column.cx, column.cz)) continue;

@@ -18,6 +18,7 @@ import {
   HOUSE_MAX_SURFACE_SPAN, filterPavilionOverlaps, computeScatterCandidates,
 } from '../gen/structures/scatter.js';
 import { computeRegionLayout, neighborRegionKeys } from '../gen/structures/structure-layout.js';
+import { computeShallowTarnAnchor, inShallowTarnFootprint } from '../gen/structures/shallow-water-tarns.js';
 import { applyStructuresToColumn } from '../gen/structures/apply.js';
 import { fillColumn, generateHeight } from '../gen/terrain.js';
 import { carveCaves } from '../gen/caves.js';
@@ -748,6 +749,14 @@ test('端到端：城市里有代码生成 house 落地（地基 stone + 窗 gla
 test('端到端：城市外草地有 house 落地（用户反馈的「草地上的房子」）', async () => {
   const reg = makeRegistry();
   const city = computeRegionLayout(0, 0, SEED).city;
+  // 浅水高台（v2.11）的整形区内**不会**长散布结构（`apply.js` 阶段 2.7 的
+  // `inShallowTarnFootprint` 剔除）—— 这些候选本身合法，只是被新地图占了位。
+  //
+  // ⚠️ **本用例必须把那些候选排除在取样外**（与 `apply.js` 同一判据 `inShallowTarnFootprint`，红线 1）：
+  // v2.13 把湖收到 x≈718 后，城市外 house 候选带（x=597~707）正好落在整形区（半径 163）里 ——
+  // 前 10 个里 **8 个**被剔除，剩下的 2 个早已被植被覆写 → 断言稳定 FAIL（实测 4/4 轮 2/10）。
+  // 这不是地图的 bug，而是「取样口径没跟上新地图的占地」。
+  const shallowAnchors = [computeShallowTarnAnchor(SEED)];
   // 收集城市外的全部 house 候选（region [1,0] 实测有 21 个）
   const outside = [];
   for (const [rx, rz] of [[1, 0], [0, 1], [-1, 0], [0, -1], [2, 0], [-2, 0]]) {
@@ -756,6 +765,7 @@ test('端到端：城市外草地有 house 落地（用户反馈的「草地上�
       if (SCATTER_TYPES[arr[i + 3]] !== 'house') continue;
       const x = arr[i], z = arr[i + 2];
       if (x >= city.minX && x <= city.maxX && z >= city.minZ && z <= city.maxZ) continue;
+      if (inShallowTarnFootprint(x, z, shallowAnchors)) continue;
       outside.push({ x, y: arr[i + 1], z, region: `${rx},${rz}` });
     }
   }

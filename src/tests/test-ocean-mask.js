@@ -12,13 +12,14 @@
 // ⚠️ 城市 bounds 门控的代价已随「城内残留水体缺口」一并修掉（landmarks.js generateCity）
 // —— 修完后 bounds 内零暴露水体，门控零误伤。勿按「bounds 内真实水方块 = 0」的旧口径写注释。
 import { test } from './runner.js';
-import { assertEqual, assertTrue } from './assert.js';
+import { assertEqual, assertTrue, assertFalse, assertNotNull } from './assert.js';
 import {
-  OCEAN_MASK_THRESHOLD, OCEAN_MASK_OFFSET,
-  maskTerrainHeight, isOceanMasked, inCityBounds,
+  OCEAN_MASK_THRESHOLD, OCEAN_MASK_OFFSET, OCEAN_MASK_NO_CITY, OCEAN_MASK_NO_LAKE,
+  maskTerrainHeight, isOceanMasked, inCityBounds, inLakeCircle,
 } from '../render/ocean-mask.js';
 import { generateHeight, TERRAIN_HEIGHT_PARAMS } from '../gen/terrain.js';
 import { buildCityLayout } from '../gen/structures/city-layout.js';
+import { computeShallowTarnAnchor, LAKE_RADIUS } from '../gen/structures/shallow-water-tarns.js';
 import { getBiome, noise } from '../gen/noise.js';
 import { SEA_Y } from '../voxel/constants.js';
 
@@ -261,5 +262,70 @@ test('遮罩高度的 biome 调整参数落在单一权威（着色器同构实�
     }
     assertTrue(desertChecked > 0, `seed=${seed} 须有 DESERT 采样点（否则断言是恒真陷阱）`);
     assertTrue(swampChecked > 0, `seed=${seed} 须有 SWAMP 采样点（否则断言是恒真陷阱）`);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 浅水高台的湖区门控（v2.14）
+//
+// 钉的失效形态：**湖面上的波纹只盖了一部分**（用户 2026-11-01 报告）。
+// 根因 = 遮罩读的是 `generateHeight`（自然地形），而湖底是被整形压到 `SEA_Y-1` 的
+//        —— 自然高度没变 → 自然高度 ≥ SEA_Y 的那些湖盆格子被关掉平面
+//        → 只剩体素水的静态顶面（无波纹、无高光）。
+// ---------------------------------------------------------------------------
+
+test('ocean-mask: 湖区内一律渲染水面平面（哪怕自然地形高于海平面）', () => {
+  const seed = 12345;
+  const a = computeShallowTarnAnchor(seed);
+  assertNotNull(a, '默认 seed 必须有浅水高台锚点');
+  const lake = { cx: a.wx, cz: a.wz, radius: LAKE_RADIUS };
+
+  let checked = 0;
+  let naturalDry = 0;
+  for (let ang = 0; ang < 360; ang += 5) {
+    for (const r of [0, LAKE_RADIUS * 0.25, LAKE_RADIUS * 0.5, LAKE_RADIUS * 0.9]) {
+      const x = Math.round(a.wx + Math.cos(ang * Math.PI / 180) * r);
+      const z = Math.round(a.wz + Math.sin(ang * Math.PI / 180) * r);
+      checked++;
+      // 关键前提：湖盆里**确实有自然地形高于海平面的格子**（否则本用例恒真、无判别力）
+      if (maskTerrainHeight(x, z, seed) >= OCEAN_MASK_THRESHOLD) naturalDry++;
+      assertTrue(isOceanMasked(x, z, seed, OCEAN_MASK_NO_CITY, lake),
+        `(${x},${z}) 在湖内（r=${r.toFixed(0)}）→ 必须渲染水面平面（否则没有波纹）`);
+    }
+  }
+  assertTrue(checked > 200, `必须检查足够多点（实际 ${checked}）`);
+  assertTrue(naturalDry > 0,
+    `湖盆内必须有自然高度 >= SEA_Y 的点（实测 ${naturalDry}/${checked}）—— `
+    + '若为 0 则本用例恒真、失去判别力（说明湖区恰好全在天然低地里）');
+});
+
+test('ocean-mask: 湖区外沿用 OCEAN_MASK_OFFSET 外延（平面与沙滩带重叠，避免岸边硬边）', () => {
+  const seed = 12345;
+  const a = computeShallowTarnAnchor(seed);
+  assertNotNull(a, '默认 seed 必须有浅水高台锚点');
+  const lake = { cx: a.wx, cz: a.wz, radius: LAKE_RADIUS };
+  // 湖缘外 OCEAN_MASK_OFFSET 之内仍算「湖内」（与五点取样同口径）
+  const x = a.wx + LAKE_RADIUS + OCEAN_MASK_OFFSET - 1;
+  assertTrue(isOceanMasked(x, a.wz, seed, OCEAN_MASK_NO_CITY, lake),
+    '湖缘外 OCEAN_MASK_OFFSET 之内必须仍渲染（否则岸边出现体素水/平面的硬边界）');
+  // 但远超外延之后不该被湖区强推（此时交给地形判据）
+  const far = a.wx + LAKE_RADIUS + 200;
+  assertFalse(inLakeCircle(far, a.wz, lake, OCEAN_MASK_OFFSET),
+    '湖外 200 格不得被湖区门控拉进来');
+});
+
+test('ocean-mask: 未接线湖区时门控关闭（不误伤任何点）', () => {
+  // 与 setCityBounds 的哨兵同一手法：radius=0 → 判定恒假。
+  const seed = 12345;
+  assertFalse(inLakeCircle(0, 0, OCEAN_MASK_NO_LAKE), '空湖区哨兵恒假');
+  assertFalse(inLakeCircle(0, 0, null), 'null 湖区安全返回 false');
+  assertFalse(inLakeCircle(0, 0, { cx: 0, cz: 0, radius: 0 }), 'radius=0 恒假');
+  // 用默认参数调 isOceanMasked 时行为必须与「没有湖区门控」时**逐位相同**
+  for (const [x, z] of [[0, 0], [500, 500], [-300, 200]]) {
+    assertEqual(
+      isOceanMasked(x, z, seed),
+      isOceanMasked(x, z, seed, OCEAN_MASK_NO_CITY, OCEAN_MASK_NO_LAKE),
+      `(${x},${z}) 默认参数与显式哨兵必须一致`,
+    );
   }
 });

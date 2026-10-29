@@ -131,10 +131,10 @@ test('DEFAULT_INVENTORY_COUNT = 1500（对齐 mc-lite GameConfig）', () => {
 
 // --- BlockRegistry.all()：遍历接口（§4.1 v1.16 补记，冷路径专用） ---
 
-test('registry.all(): 按注册顺序返回 136 条 {id,name}，与 idOf/nameOf 一致', () => {
+test('registry.all(): 按注册顺序返回 138 条 {id,name}，与 idOf/nameOf 一致', () => {
   const reg = makeRegistry();
   const all = reg.all();
-  assertEqual(all.length, 136);  // 126 + 巨树景观 8 个 giant_* + 巨型金字塔 2 个
+  assertEqual(all.length, 138);  // 126 + 巨树 8 + 金字塔 2 + 浅水高台 2（dark_grass/light_grass）
   assertEqual(all[0].name, 'air', '注册序首项 = air（ID 0）');
   assertEqual(all[0].id, 0);
   for (const e of all) {
@@ -176,13 +176,15 @@ test('HIDDEN_FROM_INVENTORY = chimney + 三个床方块 + 创造台两项（6 �
   }
 });
 
-test('buildItemNames: 126 项（136 - 4 功能性 - 6 可放置但不进背包）', () => {
+test('buildItemNames: 128 项（138 - 4 功能性 - 6 可放置但不进背包）', () => {
   const names = buildItemNames(makeRegistry());
   // ⚠️ M9：HIDDEN_FROM_INVENTORY 4 → 6（追加创造台两项）→ 物品集合 118 → 116。
   // 巨树景观：registry 126 → 134、HIDDEN 6 → 14（8 个 giant_* 全部不进背包）→ 仍是 116。
   // 这是硬编码计数的冻结断言，改数字须连算式注释一起改（否则注释与断言漂移）。
-  assertEqual(names.length, 126, '136 - 4 - 6 = 126');
-  assertEqual(new Set(names).size, 126, '无重复');
+  // ⚠️ 浅水高台（v2.11）：两个草方块进背包 → 126 → 128。
+  // 改数字须连算式注释一起改（否则注释与断言漂移）。
+  assertEqual(names.length, 128, '138 - 4 - 6 = 128');
+  assertEqual(new Set(names).size, 128, '无重复');
   for (const bad of NON_PLACEABLE_ITEMS) {
     assertFalse(names.includes(bad), `${bad} 不应在物品集合内`);
   }
@@ -206,7 +208,7 @@ test('buildItemNames: 前 5 项 = HOTBAR_ITEMS（快捷栏顺序冻结，§4.5.4
 test('buildItemNames: 第 6 项起按注册顺序补全且不再重复前 5 项', () => {
   const names = buildItemNames(makeRegistry());
   const rest = names.slice(5);
-  assertEqual(rest.length, 121, '126 - 5');
+  assertEqual(rest.length, 123, '128 - 5');
   const reg = makeRegistry();
   const registered = reg.all().map((e) => e.name)
     .filter((n) => !NON_PLACEABLE_ITEMS.includes(n)
@@ -231,14 +233,14 @@ test('buildItemNames: 确定性——两次构建逐项一致（红线 2：无�
 
 // --- 创造模式无限背包填充 ---
 
-test('createCreativeInventory: 126 槽全部非空且 count=DEFAULT_INVENTORY_COUNT', () => {
+test('createCreativeInventory: 128 槽全部非空且 count=DEFAULT_INVENTORY_COUNT', () => {
   const inv = createCreativeInventory(makeRegistry());
   const filled = inv.slots.filter((s) => !s.isEmpty());
   // ⚠️ M9：物品集合 118 → 116（创造台两项移出）→ 填充槽数随之变，首个空槽 = 下标 116
-  assertEqual(filled.length, 126, '物品集合全量入包');
+  assertEqual(filled.length, 128, '物品集合全量入包');
   for (const s of filled) assertEqual(s.count, DEFAULT_INVENTORY_COUNT, `${s.item} count=1500`);
-  // 剩余槽位保持空（未来生存 Epic 的掉落/拾取可用）；首个空槽 = 下标 126
-  assertTrue(inv.slots[126].isEmpty());
+  // 剩余槽位保持空（未来生存 Epic 的掉落/拾取可用）；首个空槽 = 下标 128
+  assertTrue(inv.slots[128].isEmpty());
   assertEqual(inv.slots.length, 1000);
   // 不入包的 6 项（= HIDDEN_FROM_INVENTORY 全量）
   for (const n of HIDDEN_FROM_INVENTORY) {

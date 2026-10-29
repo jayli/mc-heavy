@@ -5,6 +5,7 @@
 //   · 抖动过大 → 相邻高台贴在一起（水池里两块台子糊成一坨）
 //   · 装饰件叠在高台上 → 拱洞穿进台身
 //   · CITY_REGION 掷到地带 → 全世界唯一的城市消失
+import { computeShallowTarnAnchor, shallowTarnSuppressedLandmarks } from '../gen/structures/shallow-water-tarns.js';
 import { test } from './runner.js';
 import { assertEqual, assertTrue, assertFalse } from './assert.js';
 import {
@@ -973,16 +974,25 @@ test('地带接线：杜鹃候选**不**整块清空 —— 圆内剔除、圆�
 });
 
 test('地带接线：非地带且雪原未让路的 region 逐字段零回归（压制不得漏到别处）', () => {
-  // ⚠️ 口径必须**双向收窄**：
+  // ⚠️ 口径必须**三方收窄**（每一个都会合法地压掉 `pyramid` / `frozenMountain`）：
   //    ① 跳过 `isTarnZone` 的 region（那些**应当**被压制）
   //    ② 跳过 `snowLandSuppressedByTarn` 的 region（那些的雪原在 apply 阶段被跳过，
   //       但 `layout.snowLand` 字段本身**照旧有值** —— 本条只钉字段级零回归，不看 apply）
-  //    若不收窄，断言「pyramid 非空」在地带 region 上必然 FAIL。
+  //    ③ **跳过被浅水高台压制的地标**（v2.11）：那是第二张「地基级内容压过地标」的地图，
+  //       压制粒度是**逐地标**（`shallowTarnSuppressedLandmarks`）而不是逐 region ——
+  //       湖跨 2~3 个 region，按 region 判会压错与漏压两头（见该函数注释）。
+  //       不跳过的话，湖区那几个 region 的 `pyramid` 合法为 null 而断言要求非 null → 假 FAIL。
+  //    若不收窄，断言「pyramid 非空」在那些 region 上必然 FAIL。
+  const shallowAnchor = computeShallowTarnAnchor(SEED);
   let checked = 0;
   for (let rx = -4; rx <= 4; rx++) {
     for (let rz = -4; rz <= 4; rz++) {
       if (isTarnZone(rx, rz, SEED)) continue;
       if (snowLandSuppressedByTarn(rx, rz, SEED)) continue;
+      if (shallowAnchor) {
+        const sup = shallowTarnSuppressedLandmarks(shallowAnchor, rx, rz, SEED);
+        if (sup.pyramid || sup.frozenMountain) continue;
+      }
       const lay = computeRegionLayout(rx, rz, SEED);
       assertEqual(lay.tarn, null, `非地带 region(${rx},${rz}) 的 tarn 必须是 null`);
       // 对照侧：直接调用候选函数（与 layout 内部**同一份**实现，所以这条钉的是「layout
