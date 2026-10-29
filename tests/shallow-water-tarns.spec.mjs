@@ -148,9 +148,22 @@ test('浅水高台：真实页面里湖盆只有一格水（R3「只有一格浅
   await unpin(page);
 
   // sanity：必须真的扫到列（防「扫错坐标 → 全 0 → 恰好通过」的假通过）
-  // ⚠️ **阈值必须从采样几何派生，不能写死**（v2.13/v2.15 都因湖半径变化踩过）。
-  const expectedCols = Math.floor(Math.PI * inner * inner / 16 / 2);
-  expect(r.cols, `必须扫到大量已加载的列（下限 ${expectedCols}，几何期望约 ${Math.round(Math.PI * inner * inner / 16)}）`)
+  // ⚠️ **阈值必须从采样几何派生，不能写死**（v2.13/v2.15/v2.16 都因湖半径变化踩过）。
+  // ⚠️ **不能再拿「圆面积的一半」当分母**：湖半径收到 82 后，五座 AABB 在采样圆里的占比
+  // 从 ~30% 涨到 ~54%（圆小了、台地没小），固定 50% 的下限会假失败。
+  // 现口径 = 逐格枚举「在圆内且不在任何台地 AABB 内」的点，要求实读列数 ≥ 该值的 90%
+  // （10% 余量留给尚未 GEN 完的 column —— `hasColumn` 为真但读不到方块）。
+  let sampledFree = 0;
+  for (let dx = -inner; dx <= inner; dx += 4) {
+    for (let dz = -inner; dz <= inner; dz += 4) {
+      if (dx * dx + dz * dz > inner * inner) continue;
+      const x = anchor.wx + dx, z = anchor.wz + dz;
+      if (platforms.some((b) => x >= b.minX && x <= b.maxX && z >= b.minZ && z <= b.maxZ)) continue;
+      sampledFree++;
+    }
+  }
+  const expectedCols = Math.floor(sampledFree * 0.9);
+  expect(r.cols, `必须扫到大量已加载的列（未被台地占住的采样点 ${sampledFree}，下限 ${expectedCols}）`)
     .toBeGreaterThan(expectedCols);
   expect(r.sandFloor, `湖底必须全是 sand；实得 ${r.sandFloor}/${r.cols}，非 sand = ${JSON.stringify(r.notSand)}`).toBe(r.cols);
   expect(r.waterAtSea, `y=SEA_Y 必须全是水；实得 ${r.waterAtSea}/${r.cols}`).toBe(r.cols);
@@ -171,32 +184,55 @@ test('浅水高台：五座高台都在湖里、互不重叠、且只有深浅�
     const wx = Math.round(anchor.wx + p.cx);
     const wz = Math.round(anchor.wz + p.cz);
     await flyTo(page, wx, wz, anchor.lakeFloorY + 40, 3);
-    const r = await page.evaluate(({ wx, wz, loX, hiX, loZ, hiZ, lakeFloorY }) => {
+    const r = await page.evaluate(async ({ wx, wz, ax, az, loX, hiX, loZ, hiZ, lakeFloorY }) => {
       const g = window.__MC_GAME__;
+      const m = await import('/src/gen/structures/shallow-water-tarns.js');
+      const phase = m.shallowTarnShapePhase(g.seed);
       const nameOf = (id) => (id === 0 ? 'air' : g.registry.nameOf(id));
+      // ⚠️ **只认「该列最顶层方块」且必须是台地材质**（v2.16 改）：
+      // 台地 AABB 现在会稍微压到岸上（湖半径收到 82 后），旧写法「向下扫到非地形方块为止」
+      // 会**穿过缓坡带的 grass 地表**去数埋在下面的方块 —— 实测因此虚报 55 格「在岸外」，
+      // 而真实台地方块最远半径只有 72.5、0 格在岸外。
+      // 候选材质含 `moss` / `grass`：它们是 ⑤「不得出现 moss」与 ④「不得残留香草 grass」的被测对象，
+      // 漏掉会让那两条断言变成恒真。
+      const PLATFORM_MATS = new Set([
+        'light_gray_cloth', 'stone_diorite', 'polished_blackstone_bricks',
+        'dark_grass', 'light_grass', 'moss', 'grass',
+      ]);
       const counts = new Map();
       let blocks = 0;
       let maxTop = -Infinity;
+      let outside = 0;
+      let minGap = Infinity;
       // ⚠️ **步长必须是 1**：最小的 `shallow_tarn_05` 只有 15×12，步长 2 只能采到 48 个点。
       for (let dx = -loX; dx <= hiX; dx += 1) {
         for (let dz = -loZ; dz <= hiZ; dz += 1) {
           const x = wx + dx, z = wz + dz;
           if (!g.world.hasColumn(Math.floor(x / 16), Math.floor(z / 16))) continue;
+          let topY = null, topName = null;
           for (let y = lakeFloorY + 70; y >= lakeFloorY; y--) {
             const id = g.world.getBlockId(x, y, z);
             if (id === 0) continue;
-            const n = nameOf(id);
-            if (n === 'stone' || n === 'sand' || n === 'end_stone' || n === 'bedrock' || n === 'water') break;
-            blocks++;
-            counts.set(n, (counts.get(n) || 0) + 1);
-            if (y > maxTop) maxTop = y;
+            topY = y;
+            topName = nameOf(id);
             break;
           }
+          if (topName === null || !PLATFORM_MATS.has(topName)) continue;   // 地形列，跳过
+          blocks++;
+          counts.set(topName, (counts.get(topName) || 0) + 1);
+          if (topY > maxTop) maxTop = topY;
+          // 该格到湖心的距离 / 方位角（相对湖心，不是相对台地中心）
+          const rx = x - ax, rz = z - az;
+          const d = Math.hypot(rx, rz);
+          const gap = m.shallowTarnLakeRadiusAt(Math.atan2(rz, rx), phase) - d;
+          if (gap < 0) outside++;
+          if (gap < minGap) minGap = gap;
         }
       }
-      return { blocks, maxTop, counts: Object.fromEntries(counts) };
+      return { blocks, maxTop, outside, minGap, counts: Object.fromEntries(counts) };
     }, {
-      wx, wz, loX: p.loX, hiX: p.hiX, loZ: p.loZ, hiZ: p.hiZ,
+      wx, wz, ax: anchor.wx, az: anchor.wz,
+      loX: p.loX, hiX: p.hiX, loZ: p.loZ, hiZ: p.hiZ,
       lakeFloorY: anchor.lakeFloorY,
     });
     results.push({ variant: p.variant, wx, wz, ...r });
@@ -207,29 +243,13 @@ test('浅水高台：五座高台都在湖里、互不重叠、且只有深浅�
   for (const r of results) {
     expect(r.blocks, `${r.variant} 必须真的长出方块（实得 ${r.blocks}）`).toBeGreaterThan(50);
   }
-  // ② 五座都必须在湖内 —— 逐角用 **该方位的湖岸半径** 判（v2.15 起岸线不规则）
-  const corners = [];
-  for (const p of layout) {
-    for (const ox of [-p.hiX, p.loX]) {
-      for (const oz of [-p.hiZ, p.loZ]) {
-        const cx = p.cx + ox, cz = p.cz + oz;
-        corners.push({
-          variant: p.variant, ox, oz,
-          d: Math.hypot(cx, cz),
-          ang: Math.atan2(cz, cx),
-        });
-      }
-    }
+  // ② 五座都必须在湖内 —— 逐格用 **该方位的湖岸半径** 判真实方块（v2.16 起不再用 AABB 角）
+  for (const r of results) {
+    expect(r.outside, `${r.variant}: 有 ${r.outside} 格真实方块落在湖岸外（沙滩/缓坡上）—— `
+      + '台地必须整体被水环绕').toBe(0);
+    expect(r.minGap, `${r.variant}: 最紧一格离岸 ${r.minGap.toFixed(1)} 格，必须 ≥ 3`)
+      .toBeGreaterThanOrEqual(3);
   }
-  const cornerRadii = await page.evaluate(async ({ list, seed }) => {
-    const m = await import('/src/gen/structures/shallow-water-tarns.js');
-    const phase = m.shallowTarnShapePhase(seed);
-    return list.map((c) => m.shallowTarnLakeRadiusAt(c.ang, phase));
-  }, { list: corners, seed: SEED });
-  corners.forEach((c, i) => {
-    expect(c.d, `${c.variant} 角 (${c.ox},${c.oz}) 距湖心 ${c.d.toFixed(1)} 必须在湖岸 ${cornerRadii[i].toFixed(1)} 内`)
-      .toBeLessThan(cornerRadii[i]);
-  });
   // ③ 至少一座同时出现深草与浅草（R15 的可观测判据）
   const withBoth = results.filter((r) => (r.counts.dark_grass || 0) > 0 && (r.counts.light_grass || 0) > 0);
   expect(withBoth.length, '至少一座高台同时出现 dark_grass 与 light_grass（用户要求用深浅两种草）')

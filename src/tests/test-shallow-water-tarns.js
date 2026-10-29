@@ -8,6 +8,7 @@
 //   ③ **地形**（§5）：湖盆恒 SEA_Y-1 / 沙滩单调抬升 / 缓坡无 >1 格台阶 / 只有一格水
 //   ④ **草分流**（§6.3）：成片分块（不是逐格噪点）/ 两种草都出现
 import { test } from './runner.js';
+import { resourceUrl } from '../core/resource-url.js';
 import { assertEqual, assertTrue } from './assert.js';
 import { SEA_Y, blockIndex, WORLD_MIN_Y, WORLD_MAX_Y } from '../voxel/constants.js';
 import { ChunkColumn } from '../voxel/chunk-column.js';
@@ -19,7 +20,7 @@ import {
   LAKE_RADIUS, LAKE_RADIUS_MIN, LAKE_RADIUS_MAX, BEACH_WIDTH, SLOPE_WIDTH, LAKE_FLOOR_Y,
   BEACH_OUTER_Y, BEACH_RISE,
   shallowTarnSuppressedLandmarks, SHALLOW_TARN_HARD_RADIUS,
-  SHALLOW_TARN_OUTER_RADIUS, SHALLOW_TARN_GAP,
+  SHALLOW_TARN_OUTER_RADIUS, SHALLOW_TARN_GAP, SHALLOW_TARN_RING_RADIUS,
   shallowTarnAabbGap, computeShallowTarnAnchor, computeShallowTarnLayout,
   inShallowTarnFootprint, shallowTarnOverlapsRegion, clearShallowTarnCache,
   shallowTarnLakeRadiusAt, shallowTarnShapePhase,
@@ -70,23 +71,69 @@ test('shallowTarn: 湖岸半径是谐波函数（不是常数、不是正圆）'
   assertTrue(Math.abs(shallowTarnShapePhase(999) - phase) > 1e-6, '不同 seed 相位必须不同');
 });
 
-test('shallowTarn: 最窄方位的台地余量（构造性下界）', () => {
-  // 用户选「中等 ±6」的前提 = 台地始终在水里。下界靠**构造性**（LAKE_RADIUS_MIN），
-  // 不靠实测最小值 —— 改谐波参数时该断言会直接抬出。
-  assertTrue(LAKE_RADIUS_MIN > 92.4 + 1,
-    `最小湖岸半径 ${LAKE_RADIUS_MIN} 必须 > 台地最远角 92.4 + 1`);
+test('shallowTarn: 五座真实方块足迹全在湖里，且水环宽约为 v2.15 的一半（v2.16）', async () => {
+  // ## 为什么不能用 AABB 外接框判「台地在水里」（v2.16 改口径）
+  // v2.15 的断言是 `LAKE_RADIUS_MIN > 92.4 + 1`，92.4 = 最大那座 AABB 的**远角**。
+  // 但 AABB 的角区是**空的**（素材是蘑菇形体：顶部宽、四角缺），用它判等于把水面宽度
+  // 系统性估大 ~20 格 —— 实测真实方块足迹的最远径向延伸只有 ~72，而 AABB 角是 92.4。
+  // 后果：为了满足一个空的角，v2.15 把湖半径锁在 102，水环宽（台地→岸边）中位 39.3 格，
+  // 用户 2026-11-02 报「水面还是太大、高台离岸边太远」。
+  //
+  // ⇒ 判据改为**真实方块**的逐方位支撑函数 `max_v(dot(center_v, u) + support_v(θ))`，
+  //    与湖岸 `R(θ)` 相减得到水环宽。三条断言：
+  //    ① 最窄方位仍留有水面（≥ 6 格）—— 五座全在水里；
+  //    ② 水环宽中位数落在 [14, 24]（v2.15 实测 39.3，砍一半 → ~20）；
+  //    ③ 半径下界仍守着构造性保证（`LAKE_RADIUS_MIN > 环半径 + 素材基座半径`）。
+  const fp = await loadShallowTarnFootprints();
   for (const seed of [12345, 1, 424242, 8888, 20240101, 777]) {
     const phase = shallowTarnShapePhase(seed);
-    for (const p of computeShallowTarnLayout(seed)) {
-      for (const ox of [-p.hiX, p.loX]) {
-        for (const oz of [-p.hiZ, p.loZ]) {
-          const d = Math.hypot(p.cx + ox, p.cz + oz);
-          const ang = Math.atan2(p.cz + oz, p.cx + ox);
-          assertTrue(d < shallowTarnLakeRadiusAt(ang, phase),
-            `seed ${seed} ${p.variant} 角 (${ox},${oz}) 距湖心 ${d.toFixed(1)} 必须在湖岸内`);
-        }
+    const placed = computeShallowTarnLayout(seed);
+    const gaps = [];
+    for (let deg = 0; deg < 360; deg += 1) {
+      const ux = Math.cos(deg * Math.PI / 180), uz = Math.sin(deg * Math.PI / 180);
+      let ext = -Infinity;
+      for (const p of placed) {
+        const s = p.cx * ux + p.cz * uz + fp.support(p.variant, deg);
+        if (s > ext) ext = s;
       }
+      gaps.push(shallowTarnLakeRadiusAt(deg * Math.PI / 180, phase) - ext);
     }
+    const sorted = [...gaps].sort((a, b) => a - b);
+    const mn = sorted[0], med = sorted[180], mx = sorted[359];
+    assertTrue(mn >= 6,
+      `seed ${seed}: 平台真实方块离岸最近 ${mn.toFixed(1)} 格，必须 ≥ 6（否则台地会碰到沙滩、不再被水环绕）`);
+    assertTrue(med >= 14 && med <= 24,
+      `seed ${seed}: 水环宽中位 ${med.toFixed(1)} 格必须落在 [14, 24] —— `
+      + `用户 2026-11-02 要求「高台离岸边的距离缩短一半」（v2.15 实测 39.3 → 目标 ~20）`);
+    // 最宽方位（两座之间的空档 × 湖岸最凸处）天然更大，只钉「不比典型值宽一倍以上」：
+    // 6 seed 实测 28.0~34.4 对中位 19.0~19.5（比值 1.45~1.78）。
+    assertTrue(mx <= med * 2,
+      `seed ${seed}: 最宽水环 ${mx.toFixed(1)} 格不得达到中位 ${med.toFixed(1)} 的两倍（远岸方向不能望不到头）`);
+  }
+  // ③ seed 抽样：**本图没有可用的构造性下界** —— 素材基座半径（y≤4 层真实方块到足迹中心的
+  // 最远距离）实测 42.2，加环半径 45 = 87.2 > 最小湖岸半径 75.7。能容下靠的是谐波相位在
+  // 「台地最外凸的那个方位」恰好也外凸（40 seed 实测最紧 7.6 格）。
+  // ⇒ 用抽样守住「任何 seed 都留 ≥ 6 格水面」，改谐波参数/环半径/湖半径都会直接抬出。
+  assertTrue(LAKE_RADIUS_MIN > SHALLOW_TARN_RING_RADIUS + 25,
+    `最小湖岸半径 ${LAKE_RADIUS_MIN.toFixed(1)} 必须比环半径 ${SHALLOW_TARN_RING_RADIUS} 大 25 格以上`
+    + '（再小就连抽样余量都不够了）');
+  for (let k = 0; k < 12; k += 1) {
+    const seed = 1000 + k * 7919;
+    const phase = shallowTarnShapePhase(seed);
+    const placed = computeShallowTarnLayout(seed);
+    let mn = Infinity;
+    for (let deg = 0; deg < 360; deg += 1) {
+      const ux = Math.cos(deg * Math.PI / 180), uz = Math.sin(deg * Math.PI / 180);
+      let ext = -Infinity;
+      for (const p of placed) {
+        const s = p.cx * ux + p.cz * uz + fp.support(p.variant, deg);
+        if (s > ext) ext = s;
+      }
+      const g = shallowTarnLakeRadiusAt(deg * Math.PI / 180, phase) - ext;
+      if (g < mn) mn = g;
+    }
+    assertTrue(mn >= 6,
+      `seed ${seed}: 抽样最紧水环 ${mn.toFixed(1)} 格必须 ≥ 6（40 seed 实测最紧 7.6）`);
   }
 });
 
@@ -832,4 +879,55 @@ function snapshotSurface(col, reg, wx, wz) {
     if (id !== 0) return `${y}:${reg.nameOf(id)}`;
   }
   return 'empty';
+}
+
+// ---------------------------------------------------------------------------
+// 真实方块足迹（供「水环宽」判据用；v2.16）
+// ---------------------------------------------------------------------------
+
+/**
+ * 五座烘焙产物的**真实方块足迹**，按方位给出支撑函数。
+ *
+ * ## 为什么需要它（而不是用 layout 的 AABB）
+ * AABB 的四个角是**空的**（素材是蘑菇形体：顶部宽、四角缺）。用 AABB 判「台地在湖里」
+ * 会把水面宽度系统性估大 ~20 格（AABB 角 92.4 vs 真实最远延伸 ~72），
+ * v2.15 因此把湖半径锁死在 102、水环宽中位 39.3 格（用户 2026-11-02 报「水面太大」）。
+ *
+ * `support(variant, deg)` = 该座在该方位上**真实方块**的最远径向延伸（相对平台中心）。
+ * 相对中心用产物自身的足迹 bbox 中心（= `rasterizeStructure` 的摆放中心，同源）。
+ *
+ * @returns {Promise<{ support: (variant: string, deg: number) => number }>}
+ */
+let footprintCache = null;
+function loadShallowTarnFootprints() {
+  if (footprintCache) return footprintCache;
+  footprintCache = (async () => {
+    const table = new Map();
+    for (const variant of SHALLOW_TARN_VARIANTS) {
+      const json = await (await fetch(resourceUrl(`assets/structures/${variant}.json`))).json();
+      const stride = json.stride ?? 4;
+      const cells = [];
+      let mnX = Infinity, mxX = -Infinity, mnZ = Infinity, mxZ = -Infinity;
+      for (let i = 0; i < json.blocks.length; i += stride) {
+        const bx = json.blocks[i], by = json.blocks[i + 1], bz = json.blocks[i + 2];
+        cells.push([bx, by, bz]);
+        if (bx < mnX) mnX = bx;
+        if (bx > mxX) mxX = bx;
+        if (bz < mnZ) mnZ = bz;
+        if (bz > mxZ) mxZ = bz;
+      }
+      const cxb = (mnX + mxX) / 2, czb = (mnZ + mxZ) / 2;
+      const support = new Float64Array(360);
+      for (const [bx, by, bz] of cells) {
+        const dx = bx - cxb, dz = bz - czb;
+        for (let deg = 0; deg < 360; deg += 1) {
+          const s = dx * Math.cos(deg * Math.PI / 180) + dz * Math.sin(deg * Math.PI / 180);
+          if (s > support[deg]) support[deg] = s;
+        }
+      }
+      table.set(variant, support);
+    }
+    return { support: (variant, deg) => table.get(variant)[((deg % 360) + 360) % 360] };
+  })();
+  return footprintCache;
 }
