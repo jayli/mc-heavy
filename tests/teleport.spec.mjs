@@ -36,33 +36,54 @@ async function openPanel(page) {
   await expect(page.locator('#settings-modal')).toBeVisible();
 }
 
-test('瞬移：四个按钮都在面板里，同一行不换行，且位于「背景音乐」下方（用户指定落位）', async ({ page }) => {
+test('瞬移：五个按钮都在面板里，同一行不换行，且位于「背景音乐」下方（用户指定落位）', async ({ page }) => {
   test.setTimeout(180_000);
   await page.goto('/?vd=2&seed=12345');
   await page.waitForFunction(READY, null, { timeout: 90_000 });
   await page.waitForFunction(STABLE, null, { timeout: 60_000, polling: 500 });
   await openPanel(page);
 
-  const tarn = page.locator('#btn-teleport-tarn');
-  const mark = page.locator('#btn-mark-position');
-  const go = page.locator('#btn-teleport-mark');
-  const home = page.locator('#btn-teleport-home');
-  await expect(tarn).toBeVisible();
-  await expect(mark).toBeVisible();
-  await expect(go).toBeVisible();
-  await expect(home).toBeVisible();
-  await expect(tarn).toHaveText('高台地带');
-  await expect(mark).toHaveText('标记位置');
-  await expect(go).toHaveText('跳转标记位置');
-  await expect(home).toHaveText('回家');
+  // v2.10 用户 2026-10-29 指定顺序：「标记，跳转标记，回家，高台，竞技场」
+  const ORDER = ['btn-mark-position', 'btn-teleport-mark', 'btn-teleport-home',
+    'btn-teleport-tarn', 'btn-teleport-arena'];
+  const LABELS = ['标记', '跳转标记', '回家', '高台', '竞技场'];
+  const ids = new Set(ORDER);
+  for (const id of ORDER) await expect(page.locator(`#${id}`)).toBeVisible();
+  expect(ids.size).toBe(5);
 
-  // 四个按钮必须**同一行**（`.mc-btn-group` 的 flex:1 等宽）：换成两行会让每个按钮的字号
-  // 不够排「跳转标记位置」→ 文案折行、面板高度也涨一档。判据用 offsetTop 相等（行内元素
-  // 基线一致），不能用宽度 —— 宽度本来就相等，换行也看不出。
-  const rowTops = await page.evaluate(() =>
-    ['btn-teleport-tarn', 'btn-mark-position', 'btn-teleport-mark', 'btn-teleport-home']
-      .map((id) => document.getElementById(id).offsetTop));
-  expect(new Set(rowTops).size, `四个按钮须同一行，实测 offsetTop=${rowTops.join(',')}`).toBe(1);
+  const rowTops = await page.evaluate((order) =>
+    order.map((id) => document.getElementById(id).offsetTop), ORDER);
+  // 五个按钮必须**同一行**（`.mc-btn-group` 的 flex:1 等宽）：换成两行会让面板高度涨一档、
+  // 文案也被压窄。判据用 offsetTop 相等（行内元素基线一致），不能用宽度 —— 宽度本来就相等，
+  // 换行也看不出。
+  expect(new Set(rowTops).size, `五个按钮须同一行，实测 offsetTop=${rowTops.join(',')}`).toBe(1);
+  expect(await page.evaluate((order) => order.map((id) => document.getElementById(id).textContent), ORDER))
+    .toEqual(LABELS);
+
+  // ⚠️ **`scrollWidth <= clientWidth` 是「文案排得下」的硬判据**（v1.98 的「导入进度→导入」
+  // 就是这条逼出来的）：五个按钮平分 375px 后每个仅 ~65px 可用，12px 字号下一个汉字约 12px
+  // ⇒ 4 字已贴边。超一个字就会溢出、`text-overflow` 之外没有 ellipsis 设置 → 视觉上被裁掉。
+  const overflow = await page.evaluate((order) => order.map((id) => {
+    const b = document.getElementById(id);
+    return { id, scrollW: b.scrollWidth, clientW: b.clientWidth, text: b.textContent };
+  }), ORDER);
+  for (const o of overflow) {
+    expect(o.scrollW, `「${o.text}」超出按钮宽度（${o.scrollW} > ${o.clientW}）`).toBeLessThanOrEqual(o.clientW);
+  }
+
+  // 顺序必须与 DOM 文档序一致（不能只在视觉上排对了、DOM 序错乱）
+  const domOrder = await page.evaluate(() => {
+    const g = document.querySelector('#settings-modal .mc-teleport .mc-btn-group');
+    return [...g.children].map((b) => b.id);
+  });
+  expect(domOrder).toEqual(ORDER);
+
+  // 面板不得因新增按钮出现纵向滚动条（v1.63/v1.98 的既定判据：面板高度不涨）
+  const scroll = await page.evaluate(() => {
+    const c = document.getElementById('settings-modal').querySelector('.mc-content');
+    return { scrollH: c.scrollHeight, clientH: c.clientHeight };
+  });
+  expect(scroll.scrollH, '面板内容不得溢出（出现纵向滚动条 = 高度涨了一档）').toBeLessThanOrEqual(scroll.clientH + 1);
 
   // 落位判据：瞬移行必须出现在「背景音乐」那一组**之后**（用户说「在背景音乐下面」）。
   // ⚠️ 用 DOM 顺序（`querySelectorAll` 的文档序）而不是 getBoundingClientRect 的 top ——
@@ -293,6 +314,75 @@ test('瞬移：点「回家」回到 City 出生点（与 game.spawnX/Y/Z 逐值
 
   // ④ 相机真的跟到出生点（防「physics.pos 改了但相机没跟上」这类静默缺陷）。
   //    ⚠️ 必须先关面板：面板是模态，主循环跳过 player.update → 相机不更新。
+  await page.locator('#settings-close').click();
+  await expect(page.locator('#settings-modal')).toBeHidden();
+  await page.waitForFunction(() => {
+    const g = window.__MC_GAME__;
+    const p = g.player.physics.pos;
+    const c = g.player.camera.position;
+    return Math.abs(c.x - p.x) < 1.5 && Math.abs(c.z - p.z) < 1.5;
+  }, null, { timeout: 10_000 });
+});
+
+test('瞬移：点「竞技场」落到城南竞技场中心、站得住、且真的传到了（v2.10）', async ({ page }) => {
+  test.setTimeout(240_000);
+  await page.goto('/?vd=2&seed=12345');
+  await page.waitForFunction(READY, null, { timeout: 90_000 });
+  await page.waitForFunction(STABLE, null, { timeout: 60_000, polling: 500 });
+
+  // 竞技场落点的唯一权威 = `computeArenaAnchor(seed)`（与 apply.js 阶段 2.9 同源，红线 1）。
+  // 这里在**页面里** import 同一份纯函数算期望值，不另写一份落点副本。
+  const anchor = await page.evaluate(async () => {
+    const m = await import('/src/gen/structures/arena.js');
+    const a = m.computeArenaAnchor(window.__MC_GAME__.seed);
+    return a ? { wx: a.wx, wz: a.wz, floorY: a.floorY } : null;
+  });
+  // 前提：seed 12345 必须真的有竞技场（否则本用例无判别力 —— 先跑真实数据再断言）
+  expect(anchor, 'seed 12345 须生成竞技场').not.toBeNull();
+
+  const before = await page.evaluate(POS);
+  expect(Math.abs(before.x - anchor.wx) + Math.abs(before.z - anchor.wz),
+    '前提：玩家出生点不在竞技场（否则「传送生效」无判别力）').toBeGreaterThan(50);
+
+  // 真实按钮点击（不是 game.teleportToArena() —— M7 教训：只测 API 会漏「面板没接线」）
+  await openPanel(page);
+  await page.locator('#btn-teleport-arena').click();
+  // 文案必须标明是竞技场，不能落进 default 的「已完成：」
+  await expect(page.locator('#mc-toast')).toContainText(/已瞬移到竞技场/, { timeout: 15_000 });
+
+  const pos = await page.evaluate(POS);
+  // ① 落点 = 竞技场占地中心（x/z 逐值等于 anchor）
+  expect(pos.x).toBe(anchor.wx);
+  expect(pos.z).toBe(anchor.wz);
+  // ② y = floorY + 1（脚底踩在地板层上方一格）。这是 `apply.js` 阶段 2.9 的落位口径：
+  //    地板层坐落在 floorY，故站 floorY+1 就是站在场地上。
+  expect(pos.y).toBe(anchor.floorY + 1);
+
+  // ③ 等目标 column GEN 完再验「脚下是实心、抬头是空气」（传送当帧目标 region 尚未加载，
+  //    此时读世界全是空气 —— 这是 `_teleportTo` 的既定语义，不是缺陷）。
+  await page.waitForFunction(() => {
+    const g = window.__MC_GAME__;
+    const p = g.player.physics.pos;
+    return g.world.hasColumn(Math.floor(p.x / 16), Math.floor(p.z / 16));
+  }, null, { timeout: 120_000 });
+
+  const ground = await page.evaluate(() => {
+    const g = window.__MC_GAME__;
+    const p = g.player.physics.pos;
+    const fy = Math.round(p.y);
+    return {
+      feetSolid: g.world.isSolid(p.x, fy - 1, p.z),
+      atAir: g.world.isSolid(p.x, fy, p.z),
+      headAir: g.world.isSolid(p.x, fy + 1, p.z),
+      floorBlock: g.world.getBlockId(p.x, fy - 1, p.z),
+    };
+  });
+  expect(ground.feetSolid, `脚下须是实心场地（floorBlock=${ground.floorBlock}）`).toBe(true);
+  expect(ground.atAir, '脚所在格须是空气').toBe(false);
+  expect(ground.headAir, '抬头须是空气（不能把头埋进方块里）').toBe(false);
+
+  // ④ 相机真的跟过去（防「physics.pos 改了但相机没跟上」）。必须先关面板 —— 模态期
+  //    主循环跳过 player.update，相机不更新（v1.92 已踩过这个 setup 坑）。
   await page.locator('#settings-close').click();
   await expect(page.locator('#settings-modal')).toBeHidden();
   await page.waitForFunction(() => {

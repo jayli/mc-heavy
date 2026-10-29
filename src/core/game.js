@@ -60,6 +60,7 @@ import { getCitySpawnPoint, getCityInfo } from '../gen/structures/city-layout.js
 import { Player } from '../player/player.js';
 import { Persistence } from '../save/persistence.js';
 import { CoordsHUD } from '../ui/coords-hud.js';
+import { Minimap } from '../ui/minimap.js';
 import { Crosshair } from '../ui/crosshair.js';
 import { SettingsPanel } from '../ui/settings-panel.js';
 import { createHotbar } from '../ui/hotbar.js';
@@ -69,6 +70,7 @@ import { getBiome } from '../gen/noise.js';
 import { loadStoredSettings, resolveSettings } from '../ui/settings.js';
 import { encodeProgress, decodeProgress } from '../save/progress-codec.js';
 import { computeTarnZone, findNearestTarnZone } from '../gen/structures/tarn-zone.js';
+import { computeArenaAnchor } from '../gen/structures/arena.js';
 import { tarnSurfaceYAt } from '../gen/structures/tarn-terrain.js';
 import { WORLD_MAX_Y, WORLD_MIN_Y } from '../voxel/constants.js';
 
@@ -746,6 +748,13 @@ export class Game {
       DEBUG_FLAGS.worldStats ? () => this.worldStats() : null);
     // M3-4 HUD：坐标+biome、快捷栏（atlas tile CSS 裁剪）、设置面板
     this._coordsHud = new CoordsHUD(this._hudRoot, this);
+    // 左下角迷你区域地图（v2.8）：玩家恒在中心，底图随位置滚动。
+    // 区域判据在 `ui/minimap-regions.js`（纯函数，复用 gen 的既有权威）；本层只管画布与节流。
+    // 启动时显式 `redraw()` 一次：`update()` 的时间节流初值是 `-Infinity`，本可以第一帧就画，
+    // 但那样「开局地图是否可见」就寄望于一个远处的初值 —— 显式画一次更稳，也方便将来改节流初值。
+    this._minimap = new Minimap(this._hudRoot, this);
+    // 城市布局此刻已就绪（上面 `structureIndex.waitForRegion(0,0)` 已 await）→ 首帧就能画出城市。
+    this._minimap.redraw();
     // 准心配色自适应（v1.64）：按准心背后画面亮度在白色/黑色间切 —— 固定白在雪地/白墙上消失。
     // 挂在 `_hudRoot` 下（与其他 HUD 同层），但**独立于 HUD 的显示/隐藏**：它是准心不是 HUD。
     this.crosshair = new Crosshair(document.body, this);
@@ -896,6 +905,8 @@ export class Game {
       if (this.weather.isRaining) this.rain.update(this.player.physics.pos, dt);
       this._hud.update(nowMs);
       this._coordsHud.update(nowMs);
+      // 迷你地图（v2.8）：内部 10Hz / 20Hz 双节流，每帧调用零成本（未到期直接 return）
+      this._minimap.update(nowMs);
       this._hotbar.update(this.player.hotbarIndex);
       // M5 帧序最后一步：把实体 pose 发布成 scene 节点（scheduler 可能已卸载/恢复实体，
       // 用最新集合 sync，节点数恒等于实体数 —— 生命周期对称）
@@ -1283,6 +1294,37 @@ export class Game {
   }
 
   /**
+   * 瞬移到城门竞技场（设置面板「竞技场」按钮，v2.10）。
+   *
+   * 落点 = 竞技场占地**中心**、y = `anchor.floorY + 1`（脚底踩在地板层上方一格）。
+   * 这个 y 口径与 `apply.js` 阶段 2.9 的光栅化落位同源：那里 `rasterizeStructure(... ,
+   * floorY - (floorRow - 1), ...)` 让**地板层**正好坐落在 `floorY`，故站在 `floorY + 1`
+   * 就是站在场地上（与 `tarn` 的 `tarnSurfaceYAt(...) + 1` 同一手法）。
+   *
+   * ⚠️ **不与 `computeArenaAnchor` 的缓存脱钩**：那个函数带 64 项 seed 缓存、实测中位 56ms，
+   * 每次点击算一次完全可接受 —— 不要为它建第二份落点副本（红线 1）。
+   *
+   * ⚠️ **没有竞技场时不做任何事**（`computeArenaAnchor` 在少数 seed 会返回 null ——
+   * 南门外 240 格内找不到合法落点），只返回 `no-arena`。
+   *
+   * ⚠️ **reason 必须与「没找到高台」的 `not-found` 区分开**：两者是完全不同的处境
+   * （一个换个 seed 就能碰上、一个得再走远点），合成一句「附近没有」会让玩家走错方向。
+   * 面板 `_teleportMessage` 按 reason 逐条映射（v1.92 定的口径）。
+   *
+   * @returns {{ok: true, kind: 'arena', x: number, y: number, z: number} | {ok: false, reason: string}}
+   */
+  teleportToArena() {
+    if (!this.player?.physics?.pos) return { ok: false, reason: 'no-player' };
+    const a = computeArenaAnchor(this.seed);
+    if (!a) return { ok: false, reason: 'no-arena' };
+    const x = a.wx, z = a.wz, y = a.floorY + 1;
+    if (![x, y, z].every((v) => Number.isFinite(v))) return { ok: false, reason: 'no-arena' };
+    // 落地后由帧循环的 `scheduler.update(playerX, playerZ)` 逐片加载（同 `_teleportTo` 的说明）。
+    this._teleportTo(x, y, z);
+    return { ok: true, kind: 'arena', x, y, z };
+  }
+
+  /**
    * 读取已记录的标记（内存优先，回落 localStorage）。
    * @returns {{x: number, y: number, z: number} | null}
    */
@@ -1301,10 +1343,22 @@ export class Game {
     return mark;
   }
 
+  /**
+   * 城市布局（region [0,0]，全世界唯一的城市）。
+   *
+   * **返回 null 表示布局尚未就绪**（启动早期 / fixture 页直建 Game 时）。消费方须容错 ——
+   * `biomeAt` 与迷你地图都走这里，**不得各自去解引用 `scheduler.structureIndex._layouts`**
+   * （那是对私有字段的重复访问，两个消费方会各写一份 `get('0,0')` 与空值判定）。
+   * @returns {Object|null}
+   */
+  cityLayout() {
+    return this.scheduler?.structureIndex?._layouts?.get('0,0')?.city ?? null;
+  }
+
   /** 玩家位置的 biome 名（M3-4 坐标 HUD；CITY 布局边界优先，否则 getBiome 纯函数） */
   biomeAt(x, z) {
-    const layout = this.scheduler?.structureIndex?._layouts?.get('0,0');
-    if (layout?.city && getCityInfo(Math.floor(x), Math.floor(z), layout.city)) return 'CITY';
+    const city = this.cityLayout();
+    if (city && getCityInfo(Math.floor(x), Math.floor(z), city)) return 'CITY';
     return getBiome(Math.floor(x), Math.floor(z), this.seed);
   }
 
@@ -2021,6 +2075,8 @@ export class Game {
     // （fixture 页多次构造 Game 时旧面板仍会响应按键）。生产路径不调 dispose，
     // 此处为完整清理入口的一致性收尾。
     this.inventoryPanel?.dispose();
+    // 迷你地图（v2.8）：纯 DOM，摘除节点即可（无 GPU 资源、无事件监听）
+    this._minimap?.dispose();
     // M4：反向释放武器运行时（Player → Audio → ModelLoader → WorkerPool → renderer）
     this.player?.dispose();
     this.audioManager?.dispose();

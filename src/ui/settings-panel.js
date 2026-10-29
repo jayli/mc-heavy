@@ -56,13 +56,19 @@ export const PROGRESS_ROW_TITLE = '进度管理';
 /**
  * v1.92：瞬移行的标题与按钮文案。导出供 `src/tests/test-ui.js` 钉死（单一口径）。
  * 用户 2026-10-29 需求：「在背景音乐下面增加一排按钮……功能就是瞬移」；
- * v1.97 追加「回家」（用户 2026-10-31：「增加一个按钮『回家』，返回到 City 原始的玩家出生点」）。
+ * v1.97 追加「回家」；v2.10 改为五个按钮并**全部缩短到 ≤ 4 字**（用户 2026-10-29：
+ * 「按钮调整一下：标记，跳转标记，回家，高台，竞技场。尽量在一行摆下这五个按钮」）。
+ *
+ * ⚠️ **文案长度是布局载荷的**：左列实测 375px，五个按钮平分后每个约 **65px**（12px 字号
+ * ≈ 5 个汉字，去掉 padding 后约 4 个）。「跳转标记位置」6 字会让 `scrollWidth > clientWidth`
+ * → 文案折行 → 面板高度涨一档（与 v1.98 的「导入进度→导入」同一个原因）。
  */
 export const TELEPORT_ROW_TITLE = '瞬移';
-export const TELEPORT_TARN_LABEL = '高台地带';
-export const TELEPORT_MARK_LABEL = '标记位置';
-export const TELEPORT_GO_LABEL = '跳转标记位置';
+export const TELEPORT_MARK_LABEL = '标记';
+export const TELEPORT_GO_LABEL = '跳转标记';
 export const TELEPORT_HOME_LABEL = '回家';
+export const TELEPORT_TARN_LABEL = '高台';
+export const TELEPORT_ARENA_LABEL = '竞技场';
 /** 导出 / 导入模型按钮文案（创造台模型，与下行的**进度包**是两个不同粒度） */
 const EXPORT_LABEL = '导出模型';
 const IMPORT_LABEL = '导入模型';
@@ -491,12 +497,16 @@ export class SettingsPanel {
    * v1.98 把雾色+背景音乐合并成一行后，本行落在那个合并盒**下方**，仍在左列。
    *
    * ⚠️ **业务逻辑一律在 Game**（`teleportToTarnZone` / `markPosition` / `teleportToMark` /
-   * `teleportToSpawn`）：面板只做 DOM 与文案。散落进来的话要 import voxel/gen 层，
+   * `teleportToSpawn` / `teleportToArena`）：面板只做 DOM 与文案。散落进来的话要 import voxel/gen 层，
    * 违反依赖方向（§3）。
    *
-   * ⚠️ **四个按钮共享 `.mc-btn-group` 的 `flex:1`** → 同一行、等宽。行数上限取决于左列宽度
-   * （实测 375px），`teleport.spec` 用 `offsetTop` 钉住「不得换行」（换行后每行两个按钮，
-   * 文案会被压成两行，面板高度也会跟着涨）。
+   * ⚠️ **五个按钮共享 `.mc-btn-group` 的 `flex:1`** → 同一行、等宽。行数上限取决于左列宽度
+   * （实测 375px，五个按钮时每个约 65px），`teleport.spec` 用 `offsetTop` 钉住「不得换行」
+   * （换行后每行两个按钮，文案会被压成两行，面板高度也会跟着涨）。
+   *
+   * **按钮顺序 = 用户 v2.10 指定的顺序**（用户 2026-10-29：「标记，跳转标记，回家，高台，竞技场」）：
+   * 前三个是「标记相关的三连」（记录 → 跳回 → 回家），后两个是「去某个地标」（高台 / 竞技场）。
+   * 不要按「先地标后标记」的习惯改回去 —— 那是上一版（v1.92）的顺序，用户明确重排了。
    */
   _rowTeleport() {
     const row = document.createElement('div');
@@ -519,24 +529,33 @@ export class SettingsPanel {
       return b;
     };
 
-    mk(TELEPORT_TARN_LABEL, 'btn-teleport-tarn', () => {
-      const r = this.game.teleportToTarnZone();
-      this._toast?.show(this._teleportMessage(r), TELEPORT_TOAST_MS);
-    });
-
+    // ① 标记（记下当前位置）
     mk(TELEPORT_MARK_LABEL, 'btn-mark-position', () => {
       const r = this.game.markPosition();
       this._toast?.show(this._teleportMessage(r), TELEPORT_TOAST_MS);
     });
 
+    // ② 跳转标记（瞬移到标记点）
     mk(TELEPORT_GO_LABEL, 'btn-teleport-mark', () => {
       const r = this.game.teleportToMark();
       this._toast?.show(this._teleportMessage(r), TELEPORT_TOAST_MS);
     });
 
-    // v1.97：回家（回到 City 出生点）。放在最后 —— 前三个是「去别处」，这一行末尾是「回去」。
+    // ③ 回家（回到 City 出生点）
     mk(TELEPORT_HOME_LABEL, 'btn-teleport-home', () => {
       const r = this.game.teleportToSpawn();
+      this._toast?.show(this._teleportMessage(r), TELEPORT_TOAST_MS);
+    });
+
+    // ④ 高台（最近的高台地带边缘）
+    mk(TELEPORT_TARN_LABEL, 'btn-teleport-tarn', () => {
+      const r = this.game.teleportToTarnZone();
+      this._toast?.show(this._teleportMessage(r), TELEPORT_TOAST_MS);
+    });
+
+    // ⑤ 竞技场（城南门外的草地竞技场，v2.10 新增）
+    mk(TELEPORT_ARENA_LABEL, 'btn-teleport-arena', () => {
+      const r = this.game.teleportToArena();
       this._toast?.show(this._teleportMessage(r), TELEPORT_TOAST_MS);
     });
 
@@ -562,6 +581,7 @@ export class SettingsPanel {
         case 'mark': return `已记录位置：${r.x}, ${r.y}, ${r.z}`;
         case 'mark-go': return `已跳转到标记位置：${r.x}, ${r.y}, ${r.z}`;
         case 'spawn': return `已回到出生点：${r.x}, ${r.y}, ${r.z}`;
+        case 'arena': return `已瞬移到竞技场：${r.x}, ${r.y}, ${r.z}`;
         // 未打 kind 的返回值（将来新增入口忘了打）也不得静默变成空提示
         default: return `已完成：${r.x}, ${r.y}, ${r.z}`;
       }
@@ -570,6 +590,7 @@ export class SettingsPanel {
       case 'no-player': return '玩家尚未就绪';
       case 'not-found': return '附近范围内没有找到高台地带';
       case 'no-mark': return '尚未标记位置';
+      case 'no-arena': return '这个世界里没有生成竞技场';
       default: return '操作失败';
     }
   }

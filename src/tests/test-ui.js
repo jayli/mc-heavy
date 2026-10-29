@@ -23,7 +23,7 @@ import {
   PLAYGROUND_OPEN_LABEL, PLAYGROUND_CLOSE_LABEL, PLAYGROUND_ERRORS,
   PLAYGROUND_ROW_TITLE, PROGRESS_ROW_TITLE, PROGRESS_EXPORT_LABEL, PROGRESS_IMPORT_LABEL, PROGRESS_ERRORS,
   TELEPORT_ROW_TITLE, TELEPORT_TARN_LABEL, TELEPORT_MARK_LABEL, TELEPORT_GO_LABEL,
-  TELEPORT_HOME_LABEL,
+  TELEPORT_HOME_LABEL, TELEPORT_ARENA_LABEL,
 } from '../ui/settings-panel.js';
 import { Toast, TOAST_Z_INDEX } from '../ui/toast.js';
 import { PANEL_CSS as INVENTORY_PANEL_CSS } from '../ui/inventory.js';
@@ -337,18 +337,28 @@ test('背包 hover 浮层：显示方块 id 原样，且不拦截鼠标事件', 
   assertTrue(css.includes('#inventory-tooltip.mc-visible'), '浮层须用 .mc-visible 类控制显示');
 });
 
-test('瞬移行的标题与四个按钮文案是导出的单一口径常量（v1.92 / v1.97 追加回家）', () => {
-  // 用户 2026-10-29：「在背景音乐下面增加一排按钮……这个区域的功能就是瞬移」，
-  // 三个按钮依次是「高台地带」「标记位置」「跳转标记位置」；
-  // v1.97 用户追加：「增加一个按钮『回家』，就是返回到 City 原始的玩家出生点的位置」。
+test('瞬移行的标题与五个按钮文案是导出的单一口径常量（v2.10 五按钮）', () => {
+  // v2.10 用户 2026-10-29：「操作面板中的瞬移区，按钮调整一下：标记，跳转标记，回家，高台，竞技场。
+  //   尽量在一行摆下这五个按钮，增加了一个竞技场的瞬移」
+  //
+  // ⚠️ **文案全部缩短到 ≤ 4 字不是审美而是布局的必然**：左列实测 375px、`.mc-btn-group` 的
+  // `gap:8px` + 按钮 `padding:6px 4px` 下，**五个按钮平分只剩 ~65px 每个**（12px 字号 ≈ 5 个汉字）。
+  // 「跳转标记位置」6 字会将按钮擑宽 → `scrollWidth > clientWidth` → 文案折行 → 面板高度涨一档
+  // （v1.98 的「导入进度/导出进度」改为「导入/导出」是同一个原因，那条约束已记在 CLAUDE.md）。
   assertEqual(TELEPORT_ROW_TITLE, '瞬移');
-  assertEqual(TELEPORT_TARN_LABEL, '高台地带');
-  assertEqual(TELEPORT_MARK_LABEL, '标记位置');
-  assertEqual(TELEPORT_GO_LABEL, '跳转标记位置');
+  assertEqual(TELEPORT_MARK_LABEL, '标记');
+  assertEqual(TELEPORT_GO_LABEL, '跳转标记');
   assertEqual(TELEPORT_HOME_LABEL, '回家');
-  // 四个按钮必须互相可区分 —— 否则玩家分不出「标记」与「跳转标记」哪一个是记录
-  const all = [TELEPORT_TARN_LABEL, TELEPORT_MARK_LABEL, TELEPORT_GO_LABEL, TELEPORT_HOME_LABEL];
-  assertEqual(new Set(all).size, 4, '四个瞬移按钮文案不得重复');
+  assertEqual(TELEPORT_TARN_LABEL, '高台');
+  assertEqual(TELEPORT_ARENA_LABEL, '竞技场');
+  // 五个按钮必须互相可区分 —— 否则玩家分不出「标记」与「跳转标记」哪一个是记录
+  const all = [TELEPORT_MARK_LABEL, TELEPORT_GO_LABEL, TELEPORT_HOME_LABEL,
+    TELEPORT_TARN_LABEL, TELEPORT_ARENA_LABEL];
+  assertEqual(new Set(all).size, 5, '五个瞬移按钮文案不得重复');
+  // 文案长度约束（布局）：单行排下五个按钮的前提
+  for (const label of all) {
+    assertTrue(label.length <= 4, `「${label}」超过 4 个字，五个按钮一行摆不下（会折行）`);
+  }
   assertFalse(TELEPORT_ROW_TITLE === PROGRESS_ROW_TITLE, '瞬移行不得与进度管理行撞名');
 });
 

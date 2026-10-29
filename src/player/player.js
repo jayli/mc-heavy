@@ -18,6 +18,27 @@ const EYE_HEIGHT = 1.62;
 const REACH = 40; // mc-lite 枪的 far 语义
 
 /**
+ * **出生朝向 = 南**（用户 2026-10-29：「让玩家出生的时候，面朝南方」）。
+ *
+ * 坐标语义（实测，勿凭印象）：`update()` 用 `camera.rotateY(this.yaw)`，
+ * 故相机前向 = `(sin(−yaw), 0, −cos(yaw))`：
+ *
+ * | yaw | 前向 (x, z) | 方位 |
+ * |---|---|---|
+ * | `0` | `(0, −1)` | 北（−Z） |
+ * | `Math.PI` | `(0, +1)` | **南（+Z）** |
+ * | `−Math.PI/2` | `(+1, 0)` | 东（+X） |
+ * | `Math.PI/2` | `(−1, 0)` | 西（−X） |
+ *
+ * ⇒ 南 = `Math.PI`。数值上等价于 `-Math.PI`（两者余弦相同、正弦符号相反但为 0），
+ * 取正值只为了与「+Z 为南」的直觉一致（`rotateY(π)` 与 `rotateY(−π)` 是同一个朝向）。
+ *
+ * ⚠️ **它只是构造初值**：`spawn()`（包括传送）不得重置朝向 —— 玩家自己转过的视角
+ * 不应该在传送后被打回南。回归门见 `test-player-input.js`。
+ */
+export const SPAWN_YAW = Math.PI;
+
+/**
  * 方向键（v1.80）：与 WASD 等价地驱动移动，故 keydown 里需吞掉默认行为。
  * 只列四个移动键 —— 不要泛化成「所有 Arrow*」（没意义），也不要扩到 F5/F12 这类浏览器快捷键。
  */
@@ -140,7 +161,7 @@ export class Player {
     // physics import entities/（依赖方向 §3）。缺省 null → 矿车格不挡人（fixture 单独构造时）。
     this.physics.minecarts = minecarts;
     this._stepLift = new StepLift(); // 上台阶相机缓动（物理瞬时，视觉 ease-out）
-    this.yaw = 0; this.pitch = 0;
+    this.yaw = SPAWN_YAW; this.pitch = 0;
     this.keys = new Set();
     /**
      * 背包 = 物品权威（§4.5.4 M3.1）。创造模式无限背包：122 项全量入包、

@@ -13,7 +13,7 @@
 
 import { test } from './runner.js';
 import { assertTrue, assertEqual } from './assert.js';
-import { Player } from '../player/player.js';
+import { Player, SPAWN_YAW } from '../player/player.js';
 import { FLY_VERTICAL_SPEED } from '../player/physics.js';
 import { WorldData } from '../voxel/world-data.js';
 import { ChunkColumn } from '../voxel/chunk-column.js';
@@ -55,6 +55,55 @@ function stepDelta(player) {
 }
 
 const round3 = (v) => Math.round(v * 1000) / 1000;
+
+/**
+ * **出生朝向 = 南**（用户 2026-10-29：「让玩家出生的时候，面朝南方」）。
+ *
+ * 坐标语义（已实测，勿凭印象）：`player.js` 用 `camera.rotateY(yaw)`，
+ * 故相机前向 = `(sin(-yaw), 0, -cos(yaw))`。
+ *   · `yaw = 0`        → `(0,0,-1)` = **北**（−Z）
+ *   · `yaw = π`        → `(0,0,+1)` = **南**（+Z）
+ *   · `yaw = -π/2`     → `(+1,0,0)` = **东**（+X）
+ * ⇒ 南 = `SPAWN_YAW = Math.PI`。
+ *
+ * ⚠️ **不能只断言 `player.yaw === Math.PI`**：那只验了一个数字，验不了「π 到底朝哪」。
+ * 必须同时钉「按 W 前进的实际位移是 +Z」，两者合起来才能证明「面朝南」。
+ */
+test('出生朝向：面朝南（yaw = π，且按 W 的实际位移沿 +Z）', () => {
+  const { player } = makeFixture();
+  assertEqual(player.yaw, SPAWN_YAW, '出生 yaw 须为 SPAWN_YAW');
+
+  // 用**真实的输入路径**（按 W → _applyInput → physics.step）验证朝向语义，
+  // 而不是再算一遍三角函数（那样两边同源，改错了也测不出）。
+  player.physics.pos = { x: 0, y: 10, z: 0 };
+  player.keys.clear();
+  player.keys.add('KeyW');
+  player._applyInput();
+  player.physics.step(1 / 60);
+  const dz = player.physics.pos.z - 0;
+  const dx = player.physics.pos.x - 0;
+  assertTrue(dz > 0.01, `前进必须沿 +Z（南），实测 dz=${dz}`);
+  assertTrue(Math.abs(dx) < 1e-6, `前进不得有东西向分量，实测 dx=${dx}`);
+
+  // 侧向也一并钉：面朝南时右手边是西（−X）—— 单比前进只能证明「前后没反」，
+  // 无法拓到「yaw 差了 180° 但前后恰好对调」这类错误（两者在前述断言下会同时成立）。
+  player.physics.pos = { x: 0, y: 10, z: 0 };
+  player.keys.clear();
+  player.keys.add('KeyD');
+  player._applyInput();
+  player.physics.step(1 / 60);
+  const dStrafe = player.physics.pos.x - 0;
+  assertTrue(dStrafe < -0.01, `面南时右移必须沿 −X（西），实测 dx=${dStrafe}`);
+  player.dispose();
+});
+
+test('spawn() 不改朝向（传送保留玩家当前视线）', () => {
+  const { player } = makeFixture();
+  player.yaw = -Math.PI / 2; // 玩家自己转到了东
+  player.spawn(10, 20, 30);
+  assertEqual(player.yaw, -Math.PI / 2, '传送不得重置朝向（只有初始值才是南）');
+  player.dispose();
+});
 
 test('方向键与 WASD 产生相同的位移向量', () => {
   const { player } = makeFixture();

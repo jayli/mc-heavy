@@ -73,15 +73,32 @@ test('跑动时相机出现周期晃动，幅度受 intensity 约束；静止时
     // 「bob 算对了但没写进相机」的注入会全绿（实测：删掉 `camera.position.set(p.x + bob.x…)`
     // 里的 `+ bob.x` 后本用例仍 PASS）。相机偏移才是玩家实际看到的东西。
     // 相机 y = 脚底 + 1.62（眼高）+ stepLift + bob.y，故减掉前两项即得 bob 的真实落点。
+    //
+    // ⚠️ **判「歪头」不能读 `camera.rotation.x/z`**（v2.8 出生朝向改南后实际撞到）：
+    // three 的 `camera.rotation` 是 **Euler XYZ 分解**，`yaw = π` 时得到
+    // `(-π, ~0, -π)` —— pitch 与 roll 互相抵消的**等价表示**，但两个分量都非零。
+    // 读它们会把「地平线完全水平」误判成歪头（实测 up 恒 (0,1,0)、最大倾角 **0°**）。
+    // 改读**相机基向量**（= 玩家真正看到的画面）：地平线水平 ⟺ `up` 无水平分量、
+    // `right` 无竖直分量。这与 AGENTS.md 的「从矩阵反解旋转不能用 Euler 分解」同一类陷阱。
+    const V = g.camera.position.constructor;
+    const rollOf = () => {
+      const up = new V(0, 1, 0).applyQuaternion(g.camera.quaternion);
+      const right = new V(1, 0, 0).applyQuaternion(g.camera.quaternion);
+      // 倾斜角 = up 偏离 (0,1,0) 的角度（含 roll+pitch）；横向歪头 = right 的竖直分量
+      return {
+        tilt: Math.acos(Math.min(1, Math.max(-1, up.y))),
+        skew: Math.asin(Math.min(1, Math.max(-1, right.y))),
+      };
+    };
     const sample = () => {
       const p = pl.physics.pos;
+      const r = rollOf();
       return {
         camX: g.camera.position.x - p.x,
         camY: g.camera.position.y - (p.y + 1.62 + pl._stepLift.offset),
-        // v1.49：相机旋转分量（roll 绕 Z / pitch 绕 X）。pitch 须减去玩家自己的 pitch
-        // （无头环境下恒 0，但写出来才不依赖那个前提）。
-        roll: g.camera.rotation.z,
-        pitch: g.camera.rotation.x - pl.pitch,
+        // v1.49：跑动旋转分量。改成相机基向量量出来的**真实倾斜**（见上方注释）。
+        roll: r.skew,   // 横向歪头（地平线变斜）
+        pitch: r.tilt,  // 上下点头
         x: pl.viewBob.offset.x,
         y: pl.viewBob.offset.y,
         bobRoll: pl.viewBob.roll,
@@ -118,7 +135,7 @@ test('跑动时相机出现周期晃动，幅度受 intensity 约束；静止时
     // 相机落点与 bob 输出必须一致（防「算对了没写入」与「写入了但被别处覆盖」两种缺陷）
     const camVsBobX = Math.max(...settled.map((s) => Math.abs(s.camX - s.x)));
     const camVsBobY = Math.max(...settled.map((s) => Math.abs(s.camY - s.y)));
-    const camVsBobRoll = Math.max(...settled.map((s) => Math.abs(s.roll - s.bobRoll)));
+    const camVsBobRoll = Math.max(...settled.map((s) => Math.abs(s.roll)));
     // 相位是否真的在推进（周期性）：x 至少跨过 0 两次以上
     let crossings = 0;
     for (let i = 1; i < settled.length; i++) {
@@ -150,8 +167,8 @@ test('跑动时相机出现周期晃动，幅度受 intensity 约束；静止时
   // 「算成 0 了但 player.js 仍加了个常量」的注入只有相机侧能抓到。
   // ⚠️ 用 `Math.abs(...) === 0` 而不是 `toBe(0)`：`rotateZ(0)` 可产 `-0`，
   // 而 `Object.is(-0, 0) === false`（实测踩到）—— 断言要锁「量为零」而非「符号为正」。
-  expect(Math.abs(result.maxRoll), `跑动时相机 roll 必须为 0（不得歪头），实测 ${result.maxRoll}`).toBe(0);
-  expect(Math.abs(result.maxPitch), `跑动时相机 pitch 必须为 0，实测 ${result.maxPitch}`).toBe(0);
+  expect(Math.abs(result.maxRoll), `跑动时相机不得歪头（地平线倾角），实测 ${result.maxRoll}`).toBe(0);
+  expect(Math.abs(result.maxPitch), `跑动时相机不得点头（俯仰角），实测 ${result.maxPitch}`).toBe(0);
   // 前提：确实在跑（防「零旋转只是因为根本没动」使上面两条恒真）
   expect(result.maxCamX, `前提：须确实跑动产生平移，实测 ${result.maxCamX}`).toBeGreaterThan(0);
   expect(result.amountMax, '振幅须接近目标值').toBeGreaterThan(INTENSITY * 0.8);
