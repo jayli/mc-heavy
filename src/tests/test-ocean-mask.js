@@ -19,7 +19,11 @@ import {
 } from '../render/ocean-mask.js';
 import { generateHeight, TERRAIN_HEIGHT_PARAMS } from '../gen/terrain.js';
 import { buildCityLayout } from '../gen/structures/city-layout.js';
-import { computeShallowTarnAnchor, LAKE_RADIUS } from '../gen/structures/shallow-water-tarns.js';
+import {
+  computeShallowTarnAnchor, LAKE_RADIUS, LAKE_RADIUS_MAX, BEACH_WIDTH, SLOPE_WIDTH,
+  SHALLOW_TARN_OUTER_RADIUS, shallowTarnShapePhase, shallowTarnLakeRadiusAt, clearShallowTarnCache,
+} from '../gen/structures/shallow-water-tarns.js';
+import { shallowTarnSurfaceYAt, clearShallowTarnTerrainCache } from '../gen/structures/shallow-water-terrain.js';
 import { getBiome, noise } from '../gen/noise.js';
 import { SEA_Y } from '../voxel/constants.js';
 
@@ -278,7 +282,7 @@ test('ocean-mask: 湖区内一律渲染水面平面（哪怕自然地形高于�
   const seed = 12345;
   const a = computeShallowTarnAnchor(seed);
   assertNotNull(a, '默认 seed 必须有浅水高台锚点');
-  const lake = { cx: a.wx, cz: a.wz, radius: LAKE_RADIUS };
+  const lake = { cx: a.wx, cz: a.wz, radius: SHALLOW_TARN_OUTER_RADIUS };
 
   let checked = 0;
   let naturalDry = 0;
@@ -303,15 +307,67 @@ test('ocean-mask: 湖区外沿用 OCEAN_MASK_OFFSET 外延（平面与沙滩带�
   const seed = 12345;
   const a = computeShallowTarnAnchor(seed);
   assertNotNull(a, '默认 seed 必须有浅水高台锚点');
-  const lake = { cx: a.wx, cz: a.wz, radius: LAKE_RADIUS };
+  const lake = { cx: a.wx, cz: a.wz, radius: SHALLOW_TARN_OUTER_RADIUS };
   // 湖缘外 OCEAN_MASK_OFFSET 之内仍算「湖内」（与五点取样同口径）
-  const x = a.wx + LAKE_RADIUS + OCEAN_MASK_OFFSET - 1;
+  const x = a.wx + SHALLOW_TARN_OUTER_RADIUS + OCEAN_MASK_OFFSET - 1;
   assertTrue(isOceanMasked(x, a.wz, seed, OCEAN_MASK_NO_CITY, lake),
     '湖缘外 OCEAN_MASK_OFFSET 之内必须仍渲染（否则岸边出现体素水/平面的硬边界）');
   // 但远超外延之后不该被湖区强推（此时交给地形判据）
-  const far = a.wx + LAKE_RADIUS + 200;
+  const far = a.wx + SHALLOW_TARN_OUTER_RADIUS + 200;
   assertFalse(inLakeCircle(far, a.wz, lake, OCEAN_MASK_OFFSET),
     '湖外 200 格不得被湖区门控拉进来');
+});
+
+test('ocean-mask: 门控半径 = 整形区最大半径（不变式）', () => {
+  // v2.15：湖岸不再是正圆、接壤水系后水下方坡一直延伸到 `R(θ)+BEACH+SLOPE`。
+  // 门控只能传一个保守圆（TSL 里重算谐波就是第二份实现）⇒ 必须盖到**最大**边界。
+  assertTrue(SHALLOW_TARN_OUTER_RADIUS >= LAKE_RADIUS_MAX + BEACH_WIDTH + SLOPE_WIDTH,
+    'OUTER_RADIUS 必须覆盖到整形区最外圈（最大半径口径）');
+  const seed = 12345;
+  clearShallowTarnCache();
+  const a = computeShallowTarnAnchor(seed);
+  assertNotNull(a, '默认 seed 必须有浅水高台锚点');
+  const phase = shallowTarnShapePhase(seed);
+  let minR = Infinity;
+  let minAng = 0;
+  for (let deg = 0; deg < 360; deg += 1) {
+    const r = shallowTarnLakeRadiusAt(deg * Math.PI / 180, phase);
+    if (r < minR) { minR = r; minAng = deg; }
+  }
+  const d = minR + BEACH_WIDTH + SLOPE_WIDTH - 1;
+  const x = a.wx + Math.cos(minAng * Math.PI / 180) * d;
+  const z = a.wz + Math.sin(minAng * Math.PI / 180) * d;
+  assertTrue(inLakeCircle(x, z, { cx: a.wx, cz: a.wz, radius: SHALLOW_TARN_OUTER_RADIUS }),
+    `最窄方位整形区外缘（d=${d.toFixed(1)}）必须被门控覆盖，否则接壤坡面只剩体素水顶面`);
+  assertFalse(inLakeCircle(x, z, { cx: a.wx, cz: a.wz, radius: LAKE_RADIUS }),
+    '名义湖半径覆盖不到 —— 这就是门控必须放大的理由');
+});
+
+test('ocean-mask: 整形区内干燥列的地表恒高于水面平面（放大门控不会出假水面）', () => {
+  // 「门控放大到整形区」零风险的**几何论证**：平面在 `SEA_Y + 0.5`；
+  // 干燥列的地表方块在 y ≥ SEA_Y，其顶面 = y+1 ≥ SEA_Y+1 > 平面 → 被深度遮挡。
+  const seed = 12345;
+  clearShallowTarnCache();
+  clearShallowTarnTerrainCache();
+  const a = computeShallowTarnAnchor(seed);
+  assertNotNull(a, '默认 seed 必须有浅水高台锚点');
+  const phase = shallowTarnShapePhase(seed);
+  let dry = 0;
+  let wet = 0;
+  for (let deg = 0; deg < 360; deg += 3) {
+    const ang = deg * Math.PI / 180;
+    const R = shallowTarnLakeRadiusAt(ang, phase);
+    const ux = Math.cos(ang), uz = Math.sin(ang);
+    for (let e = -5; e <= BEACH_WIDTH + SLOPE_WIDTH; e += 1) {
+      const x = Math.round(a.wx + ux * (R + e));
+      const z = Math.round(a.wz + uz * (R + e));
+      const y = shallowTarnSurfaceYAt(x, z, seed, a);
+      if (y <= SEA_Y - 1) { wet++; continue; }
+      dry++;
+      assertTrue(y + 1 > SEA_Y + 0.5, `干燥列 y=${y} 的顶面必须高于水面平面（否则陆地上会冒出假水面）`);
+    }
+  }
+  assertTrue(dry > 100 && wet > 100, `干/湿样本都必须足量（实得 dry=${dry} wet=${wet}）`);
 });
 
 test('ocean-mask: 未接线湖区时门控关闭（不误伤任何点）', () => {

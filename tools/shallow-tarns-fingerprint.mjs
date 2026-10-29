@@ -14,9 +14,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { SHALLOW_TARN_ROLES, SHALLOW_TARN_VARIANTS, SHALLOW_TARN_METRICS } from '../src/gen/structures/shallow-water-tarn-data.js';
+import { SHALLOW_TARN_ROLES, SHALLOW_TARN_VARIANTS, SHALLOW_TARN_METRICS, GRASS_MARKER_BLOCK } from '../src/gen/structures/shallow-water-tarn-data.js';
 
-export { SHALLOW_TARN_ROLES, SHALLOW_TARN_VARIANTS, SHALLOW_TARN_METRICS };
+export { SHALLOW_TARN_ROLES, SHALLOW_TARN_VARIANTS, SHALLOW_TARN_METRICS, GRASS_MARKER_BLOCK };
 
 const __dirname = path.dirname(import.meta.url.replace('file://', ''));
 export const ROOT = path.join(__dirname, '..');
@@ -54,18 +54,18 @@ export const CONTAINER_LAYER_Y = 0;
  * | `light_gray_concrete_powder` | 201,973 | `light_gray_cloth` | 贴图均值 **163**，源方块观感完全对得上（也是高台地带浅色石的口径） |
  * | `stone` | 79,744 | `stone` | 同名同义 |
  * | `andesite` | 70,770 | `stone_diorite` | 贴图均值 **189** vs `stone` 126；安山岩比石头浅一档。⚠️ **不能用 `stone_andesite`** —— 那个名字只出现在 `FACES_DATA.stone` 的顶底面里，**不是独立方块** |
- * | `green_wool` | 21,535 | `moss` | 贴图均值 101~113，是石材族里唯一的绿 |
- * | `grass_block` | 12,420 | **`dark_grass`**（基准） | 用户要求用新的深/浅草 → 烘为深草，光栅化后按世界坐标噪声把**一半**改成 `light_grass`（见 `tools/bake-shallow-tarns.mjs` 与 `paintShallowTarnGrass`） |
+ * | `green_wool` | 21,535 | **`dark_grass`** | 用户 2026-11-02：「所有 moss 方块都替换为 grass-dark-green」—— 直接烘成深草（**终态**，不参与深浅分块） |
+ * | `grass_block` | 12,420 | **`light_grass`**（临时标记）| 用户 2026-11-01 要求用深/浅两种草 → 烘成标记，光栅化后按世界坐标噪声刷成 `dark_grass` / `light_grass`（见 `bake-shallow-tarns.mjs` 与 `paintShallowTarnGrass`）。⚠️ **不能用香草 `grass` 当标记**：`paintShallowTarnGrass` 扫整列，会把普通地形的草方块一起刷（用户 2026-11-02 报的真实缺陷）|
  * | `black_terracotta` | 1,444 | `polished_blackstone_bricks` | 贴图均值 **42**，最暗一档 |
  * | `black_concrete` | 703 | `polished_blackstone_bricks` | 同上 |
  * | `white_concrete` | 71,591 | `null` | **只在 y=0 展台**（见 `CONTAINER_LAYER_Y`） |
  * | `yellow_concrete` | 3,108 | `null` | 同上 |
  *
- * ⚠️ **为什么草不需要哨兵槽**（初稿写过一个 `GRASS_PLACEHOLDER`，已废除）：
+ * ⚠️ **草用「已注册的真方块」作标记**（初稿的哨兵 `GRASS_PLACEHOLDER` 已废除）：
  * `makeColumnSetter` 对未注册名字是**静默 return**（那格变 air）—— 哨兵根本写不进世界。
- * 而「烘成某个真实占位块 + 事后替换」又多一步扫描。直接把草烘成 `dark_grass`
- * （两种草的**基准色**）再按噪声刷浅色，就只剩一个简单的原地替换，
- * 且降级路径安全（替换没跑到 → 世界里是深草，不是空洞）。
+ * v2.15 起 `green_wool` 也烘成 `dark_grass`（终态），两者同名就**无法区分**，所以必须有一个
+ * 独立标记：`grass_block → grass`，光栅化后 `paintShallowTarnGrass` 把每格标记刷成深/浅草。
+ * 降级安全：刷色没跑到时世界里是香草草方块（能被真实页面断言拓到），不是空洞。
  *
  * ⚠️ **未知源方块必须 throw**（同一条静默 return 的理由）。
  *
@@ -76,8 +76,8 @@ export const BLOCK_MAP = Object.freeze({
   light_gray_concrete_powder: 'light_gray_cloth',
   stone: 'stone',
   andesite: 'stone_diorite',
-  green_wool: 'moss',
-  grass_block: 'dark_grass',
+  green_wool: 'dark_grass',
+  grass_block: GRASS_MARKER_BLOCK,
   black_terracotta: 'polished_blackstone_bricks',
   black_concrete: 'polished_blackstone_bricks',
   white_concrete: null,
@@ -85,14 +85,11 @@ export const BLOCK_MAP = Object.freeze({
 });
 
 /**
- * 烘焙时代表草的方块名（两种草的**基准色**）。
+ * 烘焙时代表草的方块名（v2.15-1：仅重命名，值仍为 `dark_grass`；Step 4 改真方块标记）。
  *
- * 光栅化后的 `paintShallowTarnGrass` 会把这个方块**按世界坐标噪声**改成
- * `dark_grass` / `light_grass` 两种（用户 2026-11-01 选定「成片分块」）。
- * 烘焙期就定深浅会让分块固定在素材坐标系里 —— 五座高台各自的摆放位置会让深浅分区
- * 随摆放漂移，而按世界坐标算则同一片区域连成一片。
+ * 烘焙产物把素材的 `grass_block` 烘成它；光栅化后 `paintShallowTarnGrass`
+ * 按**世界坐标噪声**把每一格刷成 `light_grass`（用户 2026-11-01 选定「成片分块」）。
  */
-export const GRASS_BASE_BLOCK = 'dark_grass';
 
 /**
  * 允许出现在产物 palette 里的方块名（**白名单**）。
@@ -104,8 +101,8 @@ export const GRASS_BASE_BLOCK = 'dark_grass';
  * 看得见的改动，比静默误判好。
  */
 export const SHALLOW_TARN_PALETTE = Object.freeze([
-  'light_gray_cloth', 'stone', 'stone_diorite', 'moss', 'polished_blackstone_bricks',
-  'dark_grass', 'light_grass',
+  'light_gray_cloth', 'stone', 'stone_diorite', 'polished_blackstone_bricks',
+  'dark_grass', GRASS_MARKER_BLOCK,   // 标记本身 = light_grass（见 shallow-water-tarn-data.js 的注释）
 ]);
 
 /** 产物格式版本（改产物形状时 bump，`loadStructure` 侧不用它、只作审计线索） */

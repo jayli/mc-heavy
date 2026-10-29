@@ -55,7 +55,7 @@ export const OCEAN_MASK_NO_CITY = Object.freeze({ minX: 1, maxX: 0, minZ: 1, max
 export const OCEAN_MASK_NO_LAKE = Object.freeze({ cx: 0, cz: 0, radius: 0 });
 
 /**
- * 点是否落在**浅水高台的湖盆圆**内（含 `margin` 格外延）。
+ * 点是否落在**浅水高台的整形区**内（含 `margin` 格外延）。
  *
  * ## 为什么需要这个门控（v2.14，用户报告「水面的波纹并没有覆盖全部」）
  * 上面的地形高度判据读的是 `generateHeight`（**自然**地形），而浅水高台的整形把湖底
@@ -67,8 +67,16 @@ export const OCEAN_MASK_NO_LAKE = Object.freeze({ cx: 0, cz: 0, radius: 0 });
  * ⇒ 湖区内必须**强制渲染**水面平面，与地形高度无关。
  * ⚠️ 这与城市门控是**相反方向**：城市是「强制不渲」（压平的陆地），湖区是「强制渲」。
  *
+ * ## 传入的半径是**整形区最大半径**（v2.15）
+ * 湖岸不再是正圆（径向谐波），而 TSL 里重算谐波必然是第二份实现 → 改成传一个**保守圆**：
+ * `SHALLOW_TARN_OUTER_RADIUS`（最大湖岸半径 + 沙滩 + 缓坡）。这在语义上是**正确**的，
+ * 不是绕过问题：整形区内「淹不淹」由本地图自己的 target 决定 ——
+ *   · 干燥列：地表恒 `≥ SEA_Y`（顶面 ≥ -1），平面在 -1.5 → 被深度测试遮掉；
+ *   · 淹水列：体素水面顶面也是 -1.5 → 与平面共面（既有机制）。
+ * ⇒ 放大只会让平面在**陆地下面**多画几片（不可见），但能盖住接壤水系的水下方坡。
+ *
  * @param {number} x @param {number} z
- * @param {{cx:number, cz:number, radius:number}} lake
+ * @param {{cx:number, cz:number, radius:number}} lake 湖心 + **整形区最大半径**
  * @param {number} [margin=0] 外延（用于五点取样时把边界包住）
  * @returns {boolean}
  */

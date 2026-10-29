@@ -34,20 +34,18 @@ import {
 /**
  * 湖盆半径（格）。
  *
+ * ⚠️ **v2.15 起这是「名义半径（谐波均值）」**，不再是恒定的湖半径 —— 实际岸线是
+ * `shallowTarnLakeRadiusAt(θ, phase)`（§14.2）：`102 ± 6.3`，实测范围 **95.99~108.01**。
+ * 「台地全在水里」用的是**构造性下界** `LAKE_RADIUS_MIN`，不是实测最小值。
+ *
  * ⚠️ **v2.14 从 105 收到 99**（用户 2026-11-01：「中心区域的浅水高台距离岸边太远，
- * 浅水高台距离岸边的距离减少一半」）。
+ * 浅水高台距离岸边的距离减少一半」），v2.15 又把名义值抬到 102 以容纳凹凸
+ * （岸距均值 6.6 → 9.6，水面面积 +6.2%）。
  *
  * 五座最远角恒为 **92.4 格**（环半径 45 + 最大半宽 35，与 seed 无关），
- * 所以岸畔留白 = `LAKE_RADIUS - 92.4`：
- * | 湖半径 | 岸畔留白 |
- * |---|---|
- * | 105（v2.13）| 12.6 |
- * | **99** | **6.6**（≈ 减半）|
- *
- * ⚠️ 不能比 99 更小：再往下就压到 92.4，那会让高台直接泡到沙滩里。
- * 用户的「减半」以 6.6 格实现（12.6 → 6.6）。
+ * 所以岸畔留白 = `R(θ) - 92.4`：v2.15 起是一个 **3.6 ~ 15.6** 格的范围。
  */
-export const LAKE_RADIUS = 99;
+export const LAKE_RADIUS = 102;
 
 /**
  * 沙滩带宽度（格）。从湖盆外缘 `LAKE_RADIUS` 到 `LAKE_RADIUS + BEACH_WIDTH`，
@@ -78,8 +76,54 @@ export const BEACH_WIDTH = 7;
  */
 export const SLOPE_WIDTH = 24;
 
-/** 整片整形区的外缘半径 = 湖 + 沙滩 + 缓坡（落点净空按它算） */
-export const SHALLOW_TARN_OUTER_RADIUS = LAKE_RADIUS + BEACH_WIDTH + SLOPE_WIDTH;
+/**
+ * 湖岸形状：径向谐波（v2.15，用户 2026-11-02：「水域形状呈现过于规则的圆形……
+ * 可以有一些凹凸或者不规则的边界形状」）。
+ *
+ * ```
+ * R(θ) = LAKE_RADIUS + Σ amp·sin(k·θ + phase_i + p)
+ * ```
+ *
+ * - `k` 取 **低阶**（2/3/5/7）→ 大尺度的湾与岬，不出现锯齿。
+ * - `amp` 合计 **6.3**（= `LAKE_SHAPE_AMP_SUM`，派生不写字面量）。
+ * - `phase_i` 固定相位错开 → 四条谐波不会同时见顶（否则会成四瓣花）。
+ * - `p` = 每个 seed 不同的整体相位（见 `shallowTarnShapePhase`）。
+ *
+ * ⚠️ **不能用高阶级数或噪声函数**：前者是锯齿（水下坡的单步落差会被局部放大），
+ * 后者需要在 4 个消费方（地形/单测/门控/将来 TSL）各算一次同样的场。闭式公式
+ * 是「一处定义、处处可算」的最简形式。
+ *
+ * ⚠️ **改 `amp` 会同时改两个观感指标**：凹凸幅度与台地余量。实测标定表见
+ * 设计文档 §14.2；改完必须重跑 `test-shallow-water-tarns.js` 的
+ * 「湖岸半径是谐波函数」与「最窄方位的台地余量」两条用例。
+ */
+export const LAKE_SHAPE_HARMONICS = Object.freeze([
+  Object.freeze({ k: 2, amp: 2.5, phase: 0 }),
+  Object.freeze({ k: 3, amp: 1.9, phase: 1.7 }),
+  Object.freeze({ k: 5, amp: 1.2, phase: 3.4 }),
+  Object.freeze({ k: 7, amp: 0.7, phase: 5.1 }),
+]);
+
+/** 谐波幅度上界 `Σ amp`（从表里派生，不另写一份字面量） */
+export const LAKE_SHAPE_AMP_SUM = LAKE_SHAPE_HARMONICS.reduce((s, h) => s + h.amp, 0);
+
+/** 最小湖岸半径（构造性下界，**不是**实测最小值）—— 台地余量判据用它 */
+export const LAKE_RADIUS_MIN = LAKE_RADIUS - LAKE_SHAPE_AMP_SUM;
+
+/** 最大湖岸半径（构造性上界）—— 净空 / 占地 / 水面门控全部用它 */
+export const LAKE_RADIUS_MAX = LAKE_RADIUS + LAKE_SHAPE_AMP_SUM;
+
+/**
+ * 硬净空半径 = 湖 + 沙滩（**不含缓坡**）—— 落点判据与地标压制用它。
+ *
+ * ⚠️ **必须用 `LAKE_RADIUS_MAX`**：凸出的那半边湖会压进城市过渡带 / 地标。
+ * ⚠️ 仍**不含缓坡**：缓坡只做高度插值，不把地标变成本地图的一部分
+ * （含进去会让 10 seed 全部找不到落点，见 `fixedBlockers` 的注释）。
+ */
+export const SHALLOW_TARN_HARD_RADIUS = LAKE_RADIUS_MAX + BEACH_WIDTH;
+
+/** 整片整形区的外缘半径（保守圆，按最大湖岸半径算）—— 让路判据 / 水面门控用它 */
+export const SHALLOW_TARN_OUTER_RADIUS = SHALLOW_TARN_HARD_RADIUS + SLOPE_WIDTH;
 
 /** 湖底方块所在的高度（其顶面 = `SEA_Y`，故水深 0.5 格 —— 见设计文档 §5.2） */
 export const LAKE_FLOOR_Y = SEA_Y - 1;
@@ -172,6 +216,58 @@ export const SHALLOW_TARN_ANGLE_SALT = 1035;
 /** 草方块深浅分流的 salt（`shallow-water-terrain.js` 消费）。 */
 export const SHALLOW_TARN_GRASS_SALT = 1036;
 
+/**
+ * 湖岸形状的整体相位 salt（v2.15，用户选定「每个 seed 不同」）。
+ *
+ * 1037 经**程序化扫描**确认空闲（`src/**` 里的 `seededRandom` 调用与 SALT 常量：
+ * 1~24 / 50~107 / 100~113 / 200~201 / 270~397 / 800~805 / 911~961 / 999 /
+ * 1020~1036 已占用）。⚠️ 带 `+ step` / `+ k` 的调用点占用的是**区间**，不能只 grep 字面量。
+ */
+export const SHALLOW_TARN_SHAPE_SALT = 1037;
+
+// ==================== 湖岸形状（v2.15） ====================
+
+/** 相位缓存（`seed → phase`）。纯函数，`clearShallowTarnCache()` 一并清空。 */
+const phaseCache = new Map();
+const PHASE_CACHE_MAX = 64;
+
+/**
+ * 某 seed 的湖岸**整体相位**（[0, 2π)）—— 决定凹凸往哪个方向凸。
+ *
+ * 用户 2026-11-02 选定「每个 seed 不同」（与台地角向抖动的 salt 同口径）。
+ * ⚠️ **幅度上界与 seed 无关**（`LAKE_SHAPE_AMP_SUM` 是常量）⇒ 「台地在水里」的
+ * 保证仍是构造性的，不依赖实测。
+ *
+ * @param {number} seed
+ * @returns {number}
+ */
+export function shallowTarnShapePhase(seed) {
+  const hit = phaseCache.get(seed);
+  if (hit !== undefined) return hit;
+  const value = seededRandom(0, 0, seed + SHALLOW_TARN_SHAPE_SALT) * Math.PI * 2;
+  if (phaseCache.size >= PHASE_CACHE_MAX) phaseCache.delete(phaseCache.keys().next().value);
+  phaseCache.set(seed, value);
+  return value;
+}
+
+/**
+ * 方位角 `angleRad` 处的**湖岸半径**（纯函数，`LAKE_RADIUS ± LAKE_SHAPE_AMP_SUM` 之内）。
+ *
+ * 三条带（湖盆 / 沙滩 / 缓坡）与一切的「在不在湖里」判据都从它派生：
+ * 把旧的「到湖心的距离 `d`」换成「到湖岸的偏移 `e = d - R(θ)`」。
+ *
+ * @param {number} angleRad @param {number} phase `shallowTarnShapePhase(seed)`
+ * @returns {number}
+ */
+export function shallowTarnLakeRadiusAt(angleRad, phase) {
+  let r = LAKE_RADIUS;
+  for (let i = 0; i < LAKE_SHAPE_HARMONICS.length; i++) {
+    const h = LAKE_SHAPE_HARMONICS[i];
+    r += h.amp * Math.sin(h.k * angleRad + h.phase + phase);
+  }
+  return r;
+}
+
 // ==================== 几何工具 ====================
 
 /**
@@ -225,6 +321,7 @@ const BLOCKER_CACHE_MAX = 8;
 export function clearShallowTarnCache() {
   anchorCache.clear();
   blockerCache.clear();
+  phaseCache.clear();
 }
 
 /** 距离城市 z 中心的两组试探顺序（0 优先：「中央纬度」是用户要求） */
@@ -234,11 +331,16 @@ function* candidateCenters(seed) {
   // 东侧起点：整个整形区都要出城（不是圆心出城 —— 用户要求「只显示在 City 东方」，
   // 湖的整个圆都在城东才成立）。
   //
+  // ⚠️ **`Math.ceil` 是载荷性的**：`SHALLOW_TARN_HARD_RADIUS` 含谐波幅度（108.3），
+  // 直接相加会得到**小数湖心**（实测 714.3）。湖心必须是整数格：台地落位、E2E 读世界、
+  // 城市 bounds 边界全按整数格断言（`lake-ripple.spec` 的 `Math.round(uniform.cx) === a.wx` 当场拓到）。
+  // 取 ceil 而不是 round：净空判据只能变严不能变松。
+  //
   // ⚠️ **必须 +1**（v2.11 实测踩到的 off-by-one）：不加的话第一个候选的
   // 「圆→城市 AABB 净距」恰好等于 `OUTER + CLEAR`，而判据 `gap <= 0` 会把
   // **恰好接触**当成重叠 → 全体候选被拒 → **永远返回 null**（且因为每个候选都要
   // 重建 `fixedBlockers`，探错路径要跑 1000+ 次 ≈ 18 秒才返回）。
-  const baseX = cityBounds.maxX + LAKE_RADIUS + BEACH_WIDTH + CITY_CLEARANCE + 1;
+  const baseX = Math.ceil(cityBounds.maxX + SHALLOW_TARN_HARD_RADIUS + CITY_CLEARANCE) + 1;
   for (let gap = 0; gap <= SHALLOW_TARN_MAX_GAP; gap += GAP_STEP) {
     for (const dz of DZ_OFFSETS) {
       yield { wx: baseX + gap, wz: cityZ + dz, cityBounds };
@@ -254,7 +356,9 @@ function* candidateCenters(seed) {
  * **地标（金字塔 / 冰封山 / 岛 / 平地 / 雪原）刻意不在这个列表里** ——
  * 实测（10 seed）把它们全算进来时 **无一个落点合法**：
  * `regionLandmarkCenters` 每个 region 返回 2~4 个圆、雪原再一个，而 region 边长仅 400 格；
- * 木湖半径 262（湖+沙滩）的面积 21.5 万格 > region 面积 16 万格 ⇒ 圆几乎必然压到至少一个。
+ * 木湖硬净空半径 `LAKE_RADIUS_MAX + BEACH_WIDTH` = 115.3（v2.14 曾是 106）的面积 4.2 万格 vs region 面积 16 万格
+ * —— 单个圆装得下，但 `regionLandmarkCenters` 每 region 返回 2~4 个圆 + 雪原一个
+ * ⇒ 圆几乎必然压到至少一个。
  * 实测清空率约 0.2%，盲搜无解。
  *
  * ✅ **正确做法（与高台地带同源）**：不避让地标，而是**落点所在 region 压制自己的地标**
@@ -280,9 +384,9 @@ function fixedBlockers(seed, cityBounds) {
   if (cached) return cached;
 
   const out = [];
-  const R = LAKE_RADIUS + BEACH_WIDTH;
+  const R = SHALLOW_TARN_HARD_RADIUS;
   const cityZ = Math.round((cityBounds.minZ + cityBounds.maxZ) / 2);
-  const baseX = cityBounds.maxX + R + CITY_CLEARANCE + 1;
+  const baseX = Math.ceil(cityBounds.maxX + SHALLOW_TARN_HARD_RADIUS + CITY_CLEARANCE) + 1;
   const maxDz = DZ_OFFSETS.reduce((m, v) => Math.max(m, Math.abs(v)), 0);
   const pad = R + 200;
   const rxLo = Math.floor((baseX - pad) / REGION_SIZE);
@@ -345,13 +449,15 @@ export function computeShallowTarnAnchor(seed) {
   const cached = anchorCache.get(seed);
   if (cached !== undefined) return cached;
 
-  // 硬净空半径 = 湖 + 沙滩（**不含缓坡**）。
+  // 硬净空半径 = 湖（最大半径）+ 沙滩，**不含缓坡**。
   //
-  // ⚠️ **缓坡不参与净空判据**：缓坡只是「地表高度插值回自然地形」，它不把地标变成
+  // ⚠️ **必须用最大半径**（v2.15 谐波上界 `LAKE_RADIUS_MAX`）：凸出的那半边湖会压进
+  // 城市过渡带 / 地标。
+  // ⚠️ **缓坡仍不参与净空判据**：缓坡只是「地表高度插值回自然地形」，它不把地标变成
   // 本地图的一部分，也不与地标争地（自然地标本身会覆写地形）。把它算进净空会让
-  // 有效半径从 262 涨到 342，在 400 格 region 网格上几乎必然撞到邻区地标（实测 0.2% 通过率）。
+  // 有效半径再涨 24 格，在 400 格 region 网格上几乎必然撞到邻区地标（v2.11 实测 0.2% 通过率）。
   // 而缓坡带内若有地标（金字塔/雪原），地标自己的整形会赢 —— 那正是「有梯度的衔接」的正确表现。
-  const HARD = LAKE_RADIUS + BEACH_WIDTH;
+  const HARD = SHALLOW_TARN_HARD_RADIUS;
   let result = null;
   let blockers = null;
   for (const cand of candidateCenters(seed)) {
@@ -545,7 +651,8 @@ export function inShallowTarnFootprint(wx, wz, anchors) {
  * 浅水高台的整形区是否与本 region 相交（layout 层裁剪用：不相交则不携带锚点，
  * 省掉跨 region 的无谓下发）。
  *
- * ⚠️ **不能写成 `tarn ? null : …`**（与竞技场同一条教训）：整形区半径 342 可跨 region，
+ * ⚠️ **不能写成 `tarn ? null : …`**（与竞技场同一条教训）：整形区保守圆半径
+ * `SHALLOW_TARN_OUTER_RADIUS`（139.3）可跨 region，
  * 而它只应让**相交的** region 携带。若地带 region 把它压成 null，该 region 负责的那部分
  * 就**静默缺半边**（方块层面看不出是 layout 缺字段）。
  * 本结构的锚点判据已避开高台地带（§`fixedBlockers`），能相交的只是整形区边缘探进
@@ -567,7 +674,8 @@ export function shallowTarnOverlapsRegion(anchor, regionX, regionZ) {
  * 本 region 的**哪些地标**落在浅水高台的硬半径（湖 + 沙滩）内 → 供 `structure-layout.js` 压成 null。
  *
  * ## 为什么用「地标中心是否在湖内」而不是「本 region 是不是圆心 region」
- * 湖直径 324（含沙滩）跨 1~2 个 region，而圆心所在那个 region 里可能一个地标都没有、
+ * 湖直径 `2·(LAKE_RADIUS_MAX + BEACH_WIDTH)` ≈ 231 跨 1~2 个 region，而圆心所在那个 region
+ * 里可能一个地标都没有、
  * 地标全在邻居 region。按「圆心 region」压制会同时错两头：
  * ① 压掉一个本来没冲突的地标（零回归失败 —— `test-tarn-zone.js` 的
  *    「非地带且雪原未让路的 region 逐字段零回归」当场拓到）；

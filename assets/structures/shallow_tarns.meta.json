@@ -13,8 +13,8 @@
     "light_gray_concrete_powder": "light_gray_cloth",
     "stone": "stone",
     "andesite": "stone_diorite",
-    "green_wool": "moss",
-    "grass_block": "dark_grass",
+    "green_wool": "dark_grass",
+    "grass_block": "light_grass",
     "black_terracotta": "polished_blackstone_bricks",
     "black_concrete": "polished_blackstone_bricks",
     "white_concrete": null,
@@ -24,12 +24,11 @@
     "light_gray_cloth",
     "stone",
     "stone_diorite",
-    "moss",
     "polished_blackstone_bricks",
     "dark_grass",
     "light_grass"
   ],
-  "grassBaseBlock": "dark_grass",
+  "grassMarkerBlock": "light_grass",
   "variants": [
     "shallow_tarn_01",
     "shallow_tarn_02",
@@ -48,8 +47,8 @@
       "paletteSize": 6,
       "palette": [
         "dark_grass",
+        "light_grass",
         "light_gray_cloth",
-        "moss",
         "polished_blackstone_bricks",
         "stone",
         "stone_diorite"
@@ -86,8 +85,8 @@
       "paletteSize": 6,
       "palette": [
         "dark_grass",
+        "light_grass",
         "light_gray_cloth",
-        "moss",
         "polished_blackstone_bricks",
         "stone",
         "stone_diorite"
@@ -124,8 +123,8 @@
       "paletteSize": 6,
       "palette": [
         "dark_grass",
+        "light_grass",
         "light_gray_cloth",
-        "moss",
         "polished_blackstone_bricks",
         "stone",
         "stone_diorite"
@@ -162,8 +161,8 @@
       "paletteSize": 6,
       "palette": [
         "dark_grass",
+        "light_grass",
         "light_gray_cloth",
-        "moss",
         "polished_blackstone_bricks",
         "stone",
         "stone_diorite"
@@ -199,8 +198,8 @@
       "blocks": 2892,
       "paletteSize": 4,
       "palette": [
+        "dark_grass",
         "light_gray_cloth",
-        "moss",
         "stone",
         "stone_diorite"
       ],
@@ -239,9 +238,9 @@
     "black_concrete": 703
   },
   "fingerprints": {
-    "input": "dbd4d7792405b23a9e227fb8981a752a935e68430251ac658ad4708ceb851812",
+    "input": "2b33deebe0998d8675bc450e51d1c276aa1248eb91c5c87c43cf3bd166d08139",
     "schemSha256": "e7b8ccaf749bb09d9fdd589afc6558740322a17b14698221ce2e067cdc6aa20a",
-    "blockMap": "9b76cd6d29b9d9f7079b30d5312ee748e49e1046fdaa5731d9aeeb66b4bf1552",
+    "blockMap": "c91117b1b9103202b9d7c4222a8c459678259c1da9c589bdda9c2c0bfc04f9bc",
     "components": "shallow_tarn_01:1:65x56x71:59760|shallow_tarn_02:9:31x12x48:12461|shallow_tarn_03:10:28x23x37:11485|shallow_tarn_04:12:25x15x37:8051|shallow_tarn_05:20:15x24x12:2892"
   }
 }

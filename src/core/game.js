@@ -72,7 +72,7 @@ import { encodeProgress, decodeProgress } from '../save/progress-codec.js';
 import { computeTarnZone, findNearestTarnZone } from '../gen/structures/tarn-zone.js';
 import { computeArenaAnchor } from '../gen/structures/arena.js';
 import {
-  computeShallowTarnAnchor, LAKE_RADIUS,
+  computeShallowTarnAnchor, SHALLOW_TARN_OUTER_RADIUS,
 } from '../gen/structures/shallow-water-tarns.js';
 import { tarnSurfaceYAt } from '../gen/structures/tarn-terrain.js';
 import { WORLD_MAX_Y, WORLD_MIN_Y } from '../voxel/constants.js';
@@ -655,14 +655,20 @@ export class Game {
     // 城市把地面压平到接近海平面 → 若不关掉水面平面，玩家在城市里下挖 2 格就会
     // 挖出一汪假水（洞底顶面降到 -2，低于水面平面 -1.5）。判据见 render/ocean-mask.js。
     this.ocean.setCityBounds(regionLayout.city);
-    // 浅水高台的湖盆圆（v2.14）：湖底被整形压到 `SEA_Y-1`，而水域遮罩读的是
+    // 浅水高台的湖盆（v2.14）：湖底被整形压到 `SEA_Y-1`，而水域遮罩读的是
     // `generateHeight`（自然地形，没变）→ 不接这一项的话湖面上只剩体素水的
     // **静态顶面**（无波纹），用户报告的「波纹没盖全」就是这个。
     // 锚点来自 `computeShallowTarnAnchor` 的 seed 缓存（与 layout 层同一份，红线 1），
     // 不建第二份落点副本。
+    //
+    // ⚠️ **v2.15：半径用 `SHALLOW_TARN_OUTER_RADIUS`（整形区最大半径），不是湖半径**。
+    // 理由：① 湖岸已不是圆，在 TSL 里重算谐波必然是第二份实现（会与 JS 漂移）；
+    // ② 放大到整形区是**零风险**的 —— 整形区内干燥列的地表恒 ≥ `SEA_Y`（顶面 ≥ -1 >
+    // 平面 -1.5），平面被深度测试遮掉；淹水列的体素水面顶面正好也是 -1.5。
+    // ③ 接壤水系的水下方坡落在湖缘外 3.5 格之外，不放大就会只剩体素水顶面。
     const shallowTarn = computeShallowTarnAnchor(this.seed);
     this.ocean.setLakeCircle(shallowTarn
-      ? { cx: shallowTarn.wx, cz: shallowTarn.wz, radius: LAKE_RADIUS }
+      ? { cx: shallowTarn.wx, cz: shallowTarn.wz, radius: SHALLOW_TARN_OUTER_RADIUS }
       : null);
     const citySpawn = getCitySpawnPoint(regionLayout.city);
     this.spawnX = citySpawn.x; this.spawnZ = citySpawn.z;

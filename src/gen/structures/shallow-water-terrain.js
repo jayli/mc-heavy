@@ -17,30 +17,56 @@ import { rasterizeStructure } from './structure-json.js';
 import {
   LAKE_RADIUS, BEACH_WIDTH, SLOPE_WIDTH, LAKE_FLOOR_Y, BEACH_OUTER_Y, BEACH_RISE,
   SHALLOW_TARN_OUTER_RADIUS, SHALLOW_TARN_GRASS_SALT, computeShallowTarnLayout,
+  shallowTarnLakeRadiusAt, shallowTarnShapePhase,
 } from './shallow-water-tarns.js';
-import { GRASS_BASE_BLOCK } from './shallow-water-tarn-data.js';
+import { GRASS_MARKER_BLOCK } from './shallow-water-tarn-data.js';
+
+// ==================== 湖岸径向坐标 ====================
+
+/**
+ * 某格到**湖岸**的径向偏移 `e = d − R(θ)`（负数 = 在湖盆里）。
+ *
+ * 这是 v2.15 的核心换元：旧实现用「到湖心的距离 `d`」，而湖岸变成不规则曲线后，
+ * 三条带的判据必须是「到**岸**的距离」—— 否则凸出/凹进的方位上沙滩宽度就不一样了。
+ *
+ * ⚠️ **不得拿 `e` 当欧氏距离用**：它只在固定方位上是距离，跳方向会跳变（尖角）。
+ * 需要欧氏距离的地方（如外接方形裁剪）继续用 `Math.hypot`。
+ *
+ * @param {number} wx @param {number} wz @param {number} seed
+ * @param {{wx: number, wz: number}} anchor
+ * @returns {number}
+ */
+function shallowTarnLakeOffset(wx, wz, seed, anchor) {
+  const dx = wx - anchor.wx;
+  const dz = wz - anchor.wz;
+  const d = Math.hypot(dx, dz);
+  return d - shallowTarnLakeRadiusAt(Math.atan2(dz, dx), shallowTarnShapePhase(seed));
+}
 
 // ==================== 表面材质 ====================
 
 /**
  * 湖盆与沙滩的地表方块 —— **唯一权威**（单测直接用，不复制一份判据 —— 红线 1）。
  *
- * | 带 | 半径 | 地表 |
+ * | 带 | 到湖岸的偏移 `e` | 地表 |
  * |---|---|---|
- * | 湖盆 | `0 ~ LAKE_RADIUS` | `sand` |
- * | 沙滩 | `LAKE_RADIUS ~ LAKE_RADIUS + BEACH_WIDTH` | `sand` |
- * | 外坡 | 再往外 | 自然地表（不动材质，只调高度） |
+ * | 湖盆 / 沙滩 | `e ≤ BEACH_WIDTH` | `sand` |
+ * | 外坡 | 再往外 | `grass`（自然地表材质）|
  *
  * ⚠️ **湖盆与沙滩都用 `sand`**：这是「湖」而不是「水塘边的草地」——
  * 用户要的是「浅水高台」，一圈沙岸能让水域边界在水下也认得出，
  * 且沙不会像草那样与周围地形抢色。
  *
- * @param {number} wx @param {number} wz @param {{wx: number, wz: number}} anchor
+ * @param {number} wx @param {number} wz @param {number} seed
+ * @param {{wx: number, wz: number}} anchor
+ * @param {number} targetY 该列已算好的地表高度（判「该列在水下」用）
  * @returns {string}
  */
-export function shallowTarnSurfaceBlock(wx, wz, anchor) {
-  const d = Math.hypot(wx - anchor.wx, wz - anchor.wz);
-  if (d <= LAKE_RADIUS + BEACH_WIDTH) return 'sand';
+export function shallowTarnSurfaceBlock(wx, wz, seed, anchor, targetY) {
+  if (shallowTarnLakeOffset(wx, wz, seed, anchor) <= BEACH_WIDTH) return 'sand';
+  // 缓坡带：该列在水下（接壤水系的坡面）也铺沙 —— 自然水底本来就是 sand + end_stone
+  // （见 `fillColumn`），铺草会让水下出现一块草地。
+  if (targetY <= SEA_Y - 1) return 'sand';
   return 'grass';
 }
 
@@ -49,11 +75,12 @@ export function shallowTarnSurfaceBlock(wx, wz, anchor) {
  *
  * 与 `fillShallowTarnBasin` 的目标高度公式是同一份（单测驱动、瞬移算落点也用它）。
  *
- * ## 三段
- * 1. `d ≤ LAKE_RADIUS`：恒 `LAKE_FLOOR_Y`（= `SEA_Y-1`，其顶面 = `SEA_Y` → 水深 0.5 格）。
- * 2. `LAKE_RADIUS < d ≤ LAKE_RADIUS + BEACH_WIDTH`：从 `LAKE_FLOOR_Y` **线性**抬到 `BEACH_OUTER_Y`。
- *    22 格内抬 3 格 → 每格 0.14，玩家从水里走上来完全不需要跳（`MAX_STEP = 1.0`）。
+ * ## 三段（v2.15：判据是「到湖岸的偏移 `e = d − R(θ)`」，不是到湖心的距离）
+ * 1. `e ≤ 0`（湖盆）：恒 `LAKE_FLOOR_Y`（= `SEA_Y-1`，其顶面 = `SEA_Y` → 水深 0.5 格）。
+ * 2. `0 < e ≤ BEACH_WIDTH`：从 `LAKE_FLOOR_Y` **线性**抬到 `BEACH_OUTER_Y`。
+ *    7 格内抬 3 格（= 0.43 格/格），玩家从水里走上来完全不需要跳（`MAX_STEP = 1.0`）。
  * 3. 再往外 `SLOPE_WIDTH` 格：从 `BEACH_OUTER_Y` **线性**插值到**平滑后的自然高度**。
+ *    （v2.15 起这一段在「接壤水系」时会往下接自然水底，见 `shallowTarnSurfaceYAt` 的干湿两态）
  *
  * ⚠️ **缓坡必须用平滑高度，不能用本格的 `generateHeight`**（高台地带 v1.90 实测教训）：
  * 自然地形相邻高差实测最大 **11 格**（见设计文档 §5.3），直接插值会把它**放大成断崖**
@@ -63,28 +90,13 @@ export function shallowTarnSurfaceBlock(wx, wz, anchor) {
  * ⚠️ **缓坡之外返回自然高度本身**（不是插值终点的平滑值）：再往外必须是原生地形，
  * 否则本地图会把整片世界的地表都改写（缓坡终点与自然高度在这里本来就相等）。
  *
- * @param {number} wx @param {number} wz @param {number} seed
- * @param {{wx: number, wz: number}} anchor
- * @returns {number} 该列地表的 y（方块所在的那一格）
- */
-/**
- * 某格的地表高度（纯函数）—— 三段式的**唯一权威**。
- *
- * 与 `fillShallowTarnBasin` 的目标高度公式是同一份（单测驱动、瞬时算落点也用它）。
- *
- * ## 三段
- * 1. `d ≤ LAKE_RADIUS`：恒 `LAKE_FLOOR_Y`（= `SEA_Y-1`，其顶面 = `SEA_Y` → 水深 0.5 格）。
- * 2. `LAKE_RADIUS < d ≤ LAKE_RADIUS + BEACH_WIDTH`：从 `LAKE_FLOOR_Y` **线性**抬到 `BEACH_OUTER_Y`。
- *    22 格内抬 3 格 → 每格 0.14，玩家从水里走上来完全不需要跳（`MAX_STEP = 1.0`）。
- * 3. 再往外 `SLOPE_WIDTH` 格：从 `BEACH_OUTER_Y` **线性**插值到平滑后的自然高度。
- *
  * ## 为什么缓坡用「平滑值」而不是真实地形（本地图最关键的一条实测结论）
  * 高台地带 v1.90 的教训：直接用本格 `generateHeight` 会把自然陡坡**放大成断崖**
  * （实测 6~7 格台阶）。本地图更严重 —— 实测 seed 12345 的 ang=339° 射线上，
  * 自然地形在 **1 格内从 -3 跳到 -11（8 格）**（那是海岸线），而缓坡外缘正好压在它上面。
  *
  * 于是「缓坡末端贴合真实地形」这条路**根本走不通**：任何贴着 `generateHeight` 的接缝
- * 都会碰到这种 8 格断崖。两条修法都实测失败：
+ * 都会碰到这种 8 格断崖。三条修法都实测失败：
  * | 修法 | 结果（6 seed 最大单步落差） |
  * |---|---|
  * | 缓坡内全用平滑值（初版） | 带内 ≤1，但**外缘接缝处 3**（平滑值 ≠ 带外原始值）|
@@ -101,16 +113,30 @@ export function shallowTarnSurfaceBlock(wx, wz, anchor) {
  * @returns {number} 该列地表的 y（方块所在的那一格）
  */
 export function shallowTarnSurfaceYAt(wx, wz, seed, anchor) {
-  const d = Math.hypot(wx - anchor.wx, wz - anchor.wz);
-  if (d <= LAKE_RADIUS) return LAKE_FLOOR_Y;
-  const beachOuter = LAKE_RADIUS + BEACH_WIDTH;
-  if (d <= beachOuter) {
-    const t = (d - LAKE_RADIUS) / BEACH_WIDTH;
-    return Math.round(LAKE_FLOOR_Y + BEACH_RISE * t);
+  const e = shallowTarnLakeOffset(wx, wz, seed, anchor);
+  if (e <= 0) return LAKE_FLOOR_Y;
+  // 整形区之外：原生地形（逐方向边界 `R(θ)+BEACH+SLOPE`，不是名义圆）
+  const hS = slopeNaturalHeight(wx, wz, seed);
+  // 干湿两态（v2.15）：权重 0 = 自然地形本身就是水（接壤水系），1 = 干地
+  //
+  // ⚠️ **判据只读平滑高度 `hS`**：实测把真实 `generateHeight` 掺进来（`min(hS, hNat)`）
+  // 会让端点逐格跳 1 格 → 出现 **2 格台阶**（seed 1 / ang 54 / d 111，两侧都露出水面）；
+  // 只用 `hS` 时 7 seed × 180 方位逐格最大单步 = 1。
+  const wetLo = SEA_Y - 1;                                  // 天然水 ⟺ hS ≤ wetLo
+  const t = Math.min(1, Math.max(0, (hS - wetLo) / (BEACH_OUTER_Y - wetLo)));
+  const w = t * t * (3 - 2 * t);                            // smoothstep
+  // 干态（hS ≥ 0）→ endY = 0 → midY = BEACH_OUTER_Y（与 v2.11~v2.14 逐位相同）
+  // 湿态（hS ≤ SEA_Y-1）→ endY = hS → 沙滩带成了**水下坡**，两侧水面连通
+  const endY = Math.min(BEACH_OUTER_Y, hS) * (1 - w);
+  // 沙滩带降幅封顶 BEACH_RISE（与上坡同坡度），余量摊到缓坡带（防 7 格里陡降）
+  const midY = Math.max(LAKE_FLOOR_Y - BEACH_RISE, Math.min(endY, BEACH_OUTER_Y));
+  if (e <= BEACH_WIDTH) {
+    const tb = e / BEACH_WIDTH;
+    return Math.round(LAKE_FLOOR_Y + (midY - LAKE_FLOOR_Y) * tb);
   }
-  if (d > SHALLOW_TARN_OUTER_RADIUS) return generateHeight(wx, wz, seed);
-  const t = (d - beachOuter) / SLOPE_WIDTH;
-  return Math.round(BEACH_OUTER_Y * (1 - t) + slopeNaturalHeight(wx, wz, seed) * t);
+  if (e > BEACH_WIDTH + SLOPE_WIDTH) return generateHeight(wx, wz, seed);
+  const t2 = (e - BEACH_WIDTH) / SLOPE_WIDTH;
+  return Math.round(midY * (1 - t2) + hS * t2);
 }
 /**
  * 平滑后的自然高度：半径 `SLOPE_SMOOTH_RADIUS` 内方形的**均值**。
@@ -281,7 +307,12 @@ export function fillShallowTarnBasin(column, anchor, seed, registry) {
     for (let wz = z0; wz <= z1; wz++) {
       const dz = wz - cz;
       const d2 = dx * dx + dz * dz;
-      if (d2 > outer2) continue;                       // 整形区外：不动
+      if (d2 > outer2) continue;                       // 保守圆外：一定不在整形区（廉价预筛）
+      // 真实整形区边界是「逐方向的 `e ≤ BEACH+SLOPE`」。
+      // ⚠️ **不能只用保守圆**（v2.15）：谐波内凹的方位上保守圆会多出最多 `Σamp` 圈，
+      // 那些列 `targetY` 就是自然高度 —— 但下面的「削平 + 铺地表」会**把自然地表材质刷成 grass**
+      // （沙漠里会冒出一圈绿色）。故必须逐列用 `e` 精确裁。
+      if (shallowTarnLakeOffset(wx, wz, seed, anchor) > BEACH_WIDTH + SLOPE_WIDTH) continue;
 
       const lx = wx - colMinX, lz = wz - colMinZ;
       const targetY = shallowTarnSurfaceYAt(wx, wz, seed, anchor);
@@ -293,7 +324,7 @@ export function fillShallowTarnBasin(column, anchor, seed, registry) {
       }
 
       // ── 2. 地表 ──
-      column.blocks[blockIndex(lx, targetY, lz)] = idOfName(shallowTarnSurfaceBlock(wx, wz, anchor));
+      column.blocks[blockIndex(lx, targetY, lz)] = idOfName(shallowTarnSurfaceBlock(wx, wz, seed, anchor, targetY));
 
       // ── 3. 向下填实（防玩家从地表掉进洞穴/原地下水腔） ──
       // ⚠️ `carveCaves` 在 `fillColumn` **之后**挖洞 —— 不填实的话玩家挖开湖底会掉进洞里
@@ -370,11 +401,18 @@ export function rasterizeShallowTarnPlatforms(column, anchor, seed, registry, se
 }
 
 /**
- * 把已光栅化的高台里的**草基准色**按噪声刷成两种草方块。
+ * 把已光栅化的高台里的**草标记格**按噪声刷成两种草方块。
  *
  * ## 数据流
- * 烘焙产物把素材的 `grass_block` 烘成 `GRASS_BASE_BLOCK`（= `dark_grass`，两种草的基准色）。
- * 本函数把其中**噪声值 > 0 的那一半**改成 `light_grass`。
+ * 烘焙产物把素材的 `grass_block` 烘成 `GRASS_MARKER_BLOCK`（v2.15 起是 `light_grass` —— 临时标记），
+ * 本函数把每一格标记格刷成 `dark_grass` / `light_grass`。
+ *
+ * ⚠️ **只吃标记格**：`green_wool` 烘成的 `dark_grass` 是终态，不得改写（否则 moss 区会
+ * 出现浅草斑块，违反用户 2026-11-02 的「所有 moss 换成深草」）。
+ *
+ * ⚠️⚠️ **本函数扫的是整列（`[lakeFloorY, +64] × 256 格`），所以标记必须是「自然世界里永不出现」
+ * 的方块**：曾用香草 `grass` 当标记 → 缓坡带地表就是 `grass`，普通地形的草方块被一起刷成
+ * 深浅草（**用户 2026-11-02 报的真实缺陷**）。现在标记 = `light_grass`（只由烘焙产物产生）。
  *
  * ## 为什么不是烘焙期直接定深浅
  * 烘焙期处于**素材坐标系** —— 分块会固定在模型里，五座高台各自的摆放位置不同，
@@ -383,9 +421,14 @@ export function rasterizeShallowTarnPlatforms(column, anchor, seed, registry, se
  *
  * ## 为什么不弄「哨兵槽 + 事后整块替换」
  * 初稿写过一个 `GRASS_PLACEHOLDER` 哨兵：`makeColumnSetter` 对未注册名字是**静默 return**
- * → 哨兵根本写不进世界（那格变 air）；改用「真实占位块 + 事后扫描替换」又多一步遍历。
- * 现在只需扫描高台覆盖的 **y 区间 × 本 column 的 256 格**，命中 `dark_grass` 就判一次噪声。
- * 降级路径也安全：替换没跑到时世界里是深草，不是空洞。
+ * → 哨兵根本写不进世界（那格变 air）。v2.15 改用**已注册的真方块** `light_grass` 作标记：
+ * 写得进世界、刷色后落入深浅两种草之一、漏刷时降级成浅草（观感可接受，不是空洞）。
+ * 只需扫描高台覆盖的 **y 区间 × 本 column 的 256 格**。
+ *
+ * ## 为什么两种颜色都要显式写（v2.15）
+ * 标记现在是 `light_grass`（真方块），不再是「深草的基准色」——
+ * 深色那一支**也必须写 `dark_grass`**，否则标记原样留在世界里。
+ * （v2.11~v2.14 靠「不写」实现深色，那是因为标记与终态同名。）
  *
  * @param {import('../../voxel/chunk-column.js').ChunkColumn} column
  * @param {{wx: number, wz: number, lakeFloorY: number}} anchor
@@ -394,8 +437,8 @@ export function rasterizeShallowTarnPlatforms(column, anchor, seed, registry, se
  * @param {(wx:number, y:number, wz:number, name:string, meta?:number) => void} setBlock
  */
 export function paintShallowTarnGrass(column, anchor, seed, registry, setBlock) {
-  const grassId = registry.idOf(GRASS_BASE_BLOCK);
-  if (grassId === undefined) return;
+  const markerId = registry.idOf(GRASS_MARKER_BLOCK);
+  if (markerId === undefined) return;
   const colMinX = column.cx * 16, colMinZ = column.cz * 16;
   const yMin = anchor.lakeFloorY;
   const yMax = Math.min(WORLD_MAX_Y - 1, anchor.lakeFloorY + SHALLOW_TARN_MAX_PLATFORM_HEIGHT);
@@ -403,9 +446,12 @@ export function paintShallowTarnGrass(column, anchor, seed, registry, setBlock) 
     const wx = colMinX + lx;
     for (let lz = 0; lz < 16; lz++) {
       const wz = colMinZ + lz;
+      // 每种草的判定与 y 无关 → 每个 (wx,wz) 只算一次（噪声是纯函数）
+      let target = null;
       for (let y = yMin; y <= yMax; y++) {
-        if (column.blocks[blockIndex(lx, y, lz)] !== grassId) continue;
-        if (shallowTarnGrassBlock(wx, wz, seed) === 'light_grass') setBlock(wx, y, wz, 'light_grass');
+        if (column.blocks[blockIndex(lx, y, lz)] !== markerId) continue;
+        if (target === null) target = shallowTarnGrassBlock(wx, wz, seed);
+        setBlock(wx, y, wz, target);
       }
     }
   }

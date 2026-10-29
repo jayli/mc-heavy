@@ -55,13 +55,21 @@ export const SHALLOW_TARN_METRICS = Object.freeze({
 });
 
 /**
- * 烘培时代表草的方块名（两种草的**基准色**）。
+ * 草的**标记方块** —— 烘焙产物里代表素材 `grass_block` 的那些格。
  *
- * 烘焙产物把素材的 `grass_block` 烘成它；光栅化后 `paintShallowTarnGrass`
- * 按**世界坐标噪声**把其中一半刷成 `light_grass`（用户 2026-11-01 选定「成片分块」）。
+ * 数据流（v2.15）：`grass_block →(烘焙) GRASS_MARKER_BLOCK →(光栅化后按世界坐标噪声)
+ * dark_grass / light_grass`；`green_wool →(烘焙) dark_grass`（终态，不再参与分流）。
  *
- * ⚠️ **不用哨兵名**（如 `GRASS_PLACEHOLDER`）：`makeColumnSetter` 对未注册名字是
- * **静默 return**（那格变 air）—— 哨兵写不进世界。用真实方块名作为基准色，
- * 降级路径就是安全的（替换没跑到 → 世界里是深草，不是空洞）。
+ * ## 标记必须满足两个条件
+ * ① **不能是 `green_wool` 的烘后目标**：用户 2026-11-02 要求「所有 moss 换成深草」后
+ *    `green_wool` 也变成 `dark_grass`，两者同名就**无法区分** —— 沿用 v2.11 的「基准色 = dark_grass」
+ *    会把 moss 区也刷成浅草。
+ * ② **必须已注册且自然世界里永不出现**：`makeColumnSetter` 对未注册名字是**静默 return**
+ *    （那格变 air，方块层面看不出）；而 `paintShallowTarnGrass` 扫的是**整列**的标记格 ——
+ *    若标记是自然地表也会用的方块（例如香草 `grass`），就会把**普通地形的草方块**
+ *    一起刷成深浅草（**用户 2026-11-02 报的真实缺陷**）。
+ *
+ * ⇒ 取 `light_grass`：它只由本烘焙产物产生（自然地形 / 高台地带 / 城市 / 植被都不写它），
+ * 刷色跑不到时降级成「浅草」也是可接受的观感，不是空洞。
  */
-export const GRASS_BASE_BLOCK = 'dark_grass';
+export const GRASS_MARKER_BLOCK = 'light_grass';

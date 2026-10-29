@@ -39,7 +39,13 @@ async function shallowTarnAnchor(page) {
     const m = await import('/src/gen/structures/shallow-water-tarns.js');
     m.clearShallowTarnCache();
     const a = m.computeShallowTarnAnchor(seed);
-    return a ? { wx: a.wx, wz: a.wz, lakeFloorY: a.lakeFloorY, lakeRadius: m.LAKE_RADIUS } : null;
+    return a
+      ? {
+        wx: a.wx, wz: a.wz, lakeFloorY: a.lakeFloorY,
+        lakeRadius: m.LAKE_RADIUS,
+        outerRadius: m.SHALLOW_TARN_OUTER_RADIUS,
+      }
+      : null;
   }, { seed: SEED });
 }
 
@@ -197,4 +203,9 @@ test('浅水高台：湖面与大海的水一样有波纹（同一套着色器�
   expect(uniform.radius, `uLakeCircle.radius 必须 > 0（实际 ${uniform.radius}）`).toBeGreaterThan(0);
   expect(Math.round(uniform.cx), 'uLakeCircle.cx 必须是锚点').toBe(a.wx);
   expect(Math.round(uniform.cz), 'uLakeCircle.cz 必须是锚点').toBe(a.wz);
+  // v2.15：门控半径必须是**整形区最大半径**（不是名义湖半径）——
+  // 湖岸不规则 + 接壤水系后，水下方坡一直延伸到 `R(θ)+BEACH+SLOPE`；
+  // 盖不到那里时只剩体素水顶面（无波纹），而本 spec 只采样湖心，拓不到那个形态。
+  expect(Math.round(uniform.radius), `uLakeCircle.radius 必须是整形区最大半径 ${Math.round(a.outerRadius)}`)
+    .toBe(Math.round(a.outerRadius));
 });

@@ -16,16 +16,19 @@ import { createRegistry } from '../voxel/block-registry.js';
 import { fillColumn } from '../gen/terrain.js';
 import { carveCaves } from '../gen/caves.js';
 import {
-  LAKE_RADIUS, BEACH_WIDTH, LAKE_FLOOR_Y, BEACH_OUTER_Y, shallowTarnSuppressedLandmarks,
+  LAKE_RADIUS, LAKE_RADIUS_MIN, LAKE_RADIUS_MAX, BEACH_WIDTH, SLOPE_WIDTH, LAKE_FLOOR_Y,
+  BEACH_OUTER_Y, BEACH_RISE,
+  shallowTarnSuppressedLandmarks, SHALLOW_TARN_HARD_RADIUS,
   SHALLOW_TARN_OUTER_RADIUS, SHALLOW_TARN_GAP,
   shallowTarnAabbGap, computeShallowTarnAnchor, computeShallowTarnLayout,
   inShallowTarnFootprint, shallowTarnOverlapsRegion, clearShallowTarnCache,
+  shallowTarnLakeRadiusAt, shallowTarnShapePhase,
 } from '../gen/structures/shallow-water-tarns.js';
 import {
   shallowTarnSurfaceYAt, shallowTarnGrassBlock,
-  fillShallowTarnBasin, clearShallowTarnTerrainCache,
+  fillShallowTarnBasin, paintShallowTarnGrass, clearShallowTarnTerrainCache,
 } from '../gen/structures/shallow-water-terrain.js';
-import { SHALLOW_TARN_VARIANTS, SHALLOW_TARN_METRICS } from '../gen/structures/shallow-water-tarn-data.js';
+import { SHALLOW_TARN_VARIANTS, SHALLOW_TARN_METRICS, GRASS_MARKER_BLOCK } from '../gen/structures/shallow-water-tarn-data.js';
 import { computeRegionLayout } from '../gen/structures/structure-layout.js';
 import { isTarnZone } from '../gen/structures/tarn-zone.js';
 
@@ -41,6 +44,51 @@ function registry() {
   registryCache = reg;
   return reg;
 }
+
+// ---------------------------------------------------------------------------
+// ⓪ 湖岸形状（v2.15：径向谐波，不再是正圆）
+// ---------------------------------------------------------------------------
+
+test('shallowTarn: 湖岸半径是谐波函数（不是常数、不是正圆）', () => {
+  const phase = shallowTarnShapePhase(DEFAULT_SEED);
+  let mn = Infinity;
+  let mx = -Infinity;
+  let sum = 0;
+  for (let deg = 0; deg < 360; deg += 1) {
+    const r = shallowTarnLakeRadiusAt(deg * Math.PI / 180, phase);
+    if (r < mn) mn = r;
+    if (r > mx) mx = r;
+    sum += r;
+  }
+  assertTrue(mx - mn > 6, `360° 极差 ${(mx - mn).toFixed(2)} 必须 > 6（否则退化成正圆）`);
+  assertTrue(mn >= LAKE_RADIUS_MIN - 1e-9 && mx <= LAKE_RADIUS_MAX + 1e-9,
+    `半径必须落在 [${LAKE_RADIUS_MIN.toFixed(2)}, ${LAKE_RADIUS_MAX.toFixed(2)}]，实得 [${mn.toFixed(2)}, ${mx.toFixed(2)}]`);
+  assertTrue(Math.abs(sum / 360 - LAKE_RADIUS) < 1,
+    `360° 均值 ${(sum / 360).toFixed(2)} 必须贴近名义半径 ${LAKE_RADIUS}`);
+  // 相位是 seed 的纯函数：同 seed 同值，不同 seed 不同值
+  assertEqual(shallowTarnShapePhase(DEFAULT_SEED), phase, '同 seed 相位一致');
+  assertTrue(Math.abs(shallowTarnShapePhase(999) - phase) > 1e-6, '不同 seed 相位必须不同');
+});
+
+test('shallowTarn: 最窄方位的台地余量（构造性下界）', () => {
+  // 用户选「中等 ±6」的前提 = 台地始终在水里。下界靠**构造性**（LAKE_RADIUS_MIN），
+  // 不靠实测最小值 —— 改谐波参数时该断言会直接抬出。
+  assertTrue(LAKE_RADIUS_MIN > 92.4 + 1,
+    `最小湖岸半径 ${LAKE_RADIUS_MIN} 必须 > 台地最远角 92.4 + 1`);
+  for (const seed of [12345, 1, 424242, 8888, 20240101, 777]) {
+    const phase = shallowTarnShapePhase(seed);
+    for (const p of computeShallowTarnLayout(seed)) {
+      for (const ox of [-p.hiX, p.loX]) {
+        for (const oz of [-p.hiZ, p.loZ]) {
+          const d = Math.hypot(p.cx + ox, p.cz + oz);
+          const ang = Math.atan2(p.cz + oz, p.cx + ox);
+          assertTrue(d < shallowTarnLakeRadiusAt(ang, phase),
+            `seed ${seed} ${p.variant} 角 (${ox},${oz}) 距湖心 ${d.toFixed(1)} 必须在湖岸内`);
+        }
+      }
+    }
+  }
+});
 
 // ---------------------------------------------------------------------------
 // ① 落点
@@ -63,13 +111,14 @@ test('shallowTarn: 锚点确定性（同 seed 同结果，缓存前后一致）'
 test('shallowTarn: 整个湖（不是只有圆心）都在 City 东侧', () => {
   // 用户要求「这个新地图只显示在 City 的东方」的机器化判据。
   //
-  // ⚠️ 判据用的是**硬净空半径**（湖 + 沙滩），与 `computeShallowTarnAnchor` 同一个值 ——
+  // ⚠️ 判据用的是**硬净空半径**（湖的最大半径 + 沙滩），与 `computeShallowTarnAnchor` 同一个值 ——
   // 而不是 `SHALLOW_TARN_OUTER_RADIUS`（含缓坡）。两者是**两套口径**：
   // 缓坡带只做高度插值、不把地标变成本地图的一部分，所以锚点判据刻意不把它算进净空
-  // （算进去会让半径从 262 涨到 342，在 400 格 region 网格上 10 seed 全部失效 ——
+  // （算进去会让有效半径再涨 24 格，在 400 格 region 网格上 10 seed 全部失效 ——
   //  见 `shallow-water-tarns.js` 的 `fixedBlockers` 注释）。
   // 断言用错了口径会得到一个「实现明明对、用例却 FAIL」的假失败。
-  const hard = LAKE_RADIUS + BEACH_WIDTH;
+  const hard = SHALLOW_TARN_HARD_RADIUS;
+  assertEqual(hard, LAKE_RADIUS_MAX + BEACH_WIDTH, '硬净空必须按**最大**湖岸半径算');
   for (const seed of [12345, 1, 424242, 8888, 20240101]) {
     clearShallowTarnCache();
     const a = computeShallowTarnAnchor(seed);
@@ -90,7 +139,7 @@ test('shallowTarn: 落点不与高台地带重叠（两类地基级内容互斥�
     clearShallowTarnCache();
     const a = computeShallowTarnAnchor(seed);
     if (!a) continue;
-    const R = LAKE_RADIUS + BEACH_WIDTH;
+    const R = SHALLOW_TARN_HARD_RADIUS;
     const rx0 = Math.floor((a.wx - R - 200) / 400);
     const rx1 = Math.floor((a.wx + R + 200) / 400);
     const rz0 = Math.floor((a.wz - R - 200) / 400);
@@ -114,7 +163,7 @@ test('shallowTarn: 落在湖内的地标被压制、湖外的照旧（不能漏�
   clearShallowTarnCache();
   const a = computeShallowTarnAnchor(DEFAULT_SEED);
   assertTrue(a !== null, '默认 seed 必须有落点');
-  assertEqual(a.hardRadius, LAKE_RADIUS + BEACH_WIDTH, 'hardRadius = 湖 + 沙滩（不含缓坡）');
+  assertEqual(a.hardRadius, SHALLOW_TARN_HARD_RADIUS, 'hardRadius = 最大湖岸半径 + 沙滩（不含缓坡）');
 
   const rx0 = Math.floor((a.wx - 400) / 400);
   const rx1 = Math.floor((a.wx + 400) / 400);
@@ -187,7 +236,8 @@ test('shallowTarn: inShallowTarnFootprint 覆盖整个整形区、圆外为假',
   assertTrue(a !== null, '默认 seed 必须有落点');
   const anchors = [a, null];
   assertEqual(inShallowTarnFootprint(a.wx, a.wz, anchors), true, '湖心在整形区内');
-  assertEqual(inShallowTarnFootprint(a.wx + LAKE_RADIUS - 1, a.wz, anchors), true, '湖盆内缘在整形区内');
+  // ⚠️ 判据半径是**整形区保守圆**（最大湖岸半径 + 沙滩 + 缓坡），不是湖 —— 缓坡也是本地图的一部分
+  assertEqual(inShallowTarnFootprint(a.wx + LAKE_RADIUS_MIN - 1, a.wz, anchors), true, '湖盆内缘在整形区内');
   assertEqual(inShallowTarnFootprint(
     a.wx + Math.floor(SHALLOW_TARN_OUTER_RADIUS) - 1, a.wz, anchors,
   ), true, '整形区边缘内侧仍在范围内');
@@ -214,25 +264,6 @@ test('shallowTarn: 五座高台两两不重叠，且最小间距 ≥ SHALLOW_TAR
         assertTrue(gap >= SHALLOW_TARN_GAP,
           `seed ${seed}: ${layout[i].variant} ↔ ${layout[j].variant} 间距 ${gap.toFixed(2)} 必须 ≥ ${SHALLOW_TARN_GAP}`);
       }
-    }
-  }
-});
-
-test('shallowTarn: 五座全部落在湖盆内（最远角 < 湖半径）', () => {
-  // 用户要求「潜水里是五个新的高台」—— 高台必须在水里，不能伸出湖岸。
-  for (const seed of [12345, 1, 424242, 8888, 20240101, 777]) {
-    const layout = computeShallowTarnLayout(seed);
-    for (const p of layout) {
-      // 逐角算（不能用 `ring + min(half)` 近似 —— 那是边的中点，会低估最远角）
-      let worst = 0;
-      for (const ox of [-p.hiX, p.loX]) {
-        for (const oz of [-p.hiZ, p.loZ]) {
-          const d = Math.hypot(p.cx + ox, p.cz + oz);
-          if (d > worst) worst = d;
-        }
-      }
-      assertTrue(worst < LAKE_RADIUS,
-        `seed ${seed}: ${p.variant} 最远角 ${worst.toFixed(1)} 必须 < 湖半径 ${LAKE_RADIUS}`);
     }
   }
 });
@@ -278,33 +309,170 @@ test('shallowTarn: 湖盆地表恒 SEA_Y-1（其顶面 = SEA_Y ⇒ 水深 0.5 �
   assertEqual(LAKE_FLOOR_Y, SEA_Y - 1, 'LAKE_FLOOR_Y 必须从 SEA_Y 派生');
   assertEqual(a.lakeFloorY, LAKE_FLOOR_Y, '锚点携带的 lakeFloorY 与常量一致');
   for (const ang of [0, Math.PI / 4, Math.PI / 2, Math.PI, -Math.PI / 3]) {
-    // ⚠️ **采样半径必须从 LAKE_RADIUS 派生**，不能写死。
-    // 初版写了 `[0, 50, 120, LAKE_RADIUS-1]`，而 v2.13 把湖半径从 130 收到 105 后
-    // `120` 已经出湖（那是沙滩带/缓坡）—— 用例会得到「地表 0 而非 -3」的假失败。
-    for (const r of [0, Math.floor(LAKE_RADIUS * 0.25), Math.floor(LAKE_RADIUS * 0.5), LAKE_RADIUS - 1]) {
+    // ⚠️ **采样半径必须从「该方位的湖岸半径」派生**，不能写死也不能用名义半径。
+    // 初版写了 `[0, 50, 120, LAKE_RADIUS-1]`（v2.13 湖半径收到 105 后 `120` 已出湖）；
+    // v2.15 岸线不规则后，`LAKE_RADIUS-1` 在内凹方位已经落在沙滩带上 —— 必须用 R(θ)。
+    const R = shallowTarnLakeRadiusAt(ang, shallowTarnShapePhase(DEFAULT_SEED));
+    for (const f of [0, 0.25, 0.5, 0.9]) {
+      const r = Math.floor(R * f);
       const wx = Math.round(a.wx + Math.cos(ang) * r);
       const wz = Math.round(a.wz + Math.sin(ang) * r);
+      assertTrue(lakeOffset(a, DEFAULT_SEED, wx, wz) <= 0,
+        `湖盆 (r=${r}, ang=${ang.toFixed(2)}) 必须在岸线内`);
       assertEqual(shallowTarnSurfaceYAt(wx, wz, DEFAULT_SEED, a), LAKE_FLOOR_Y,
         `湖盆 (r=${r}, ang=${ang.toFixed(2)}) 地表必须恒 ${LAKE_FLOOR_Y}`);
     }
   }
 });
 
-test('shallowTarn: 沙滩带单调抬升到 SEA_Y+2（走上来不需要跳）', () => {
+test('shallowTarn: 沙滩带剖面 —— 永不超过干态剖面、无台阶、干段占多数', () => {
+  // ⚠️ **不能要求「完全干的岸段逐格等于 v2.14 剖面」**：`hS` 是平滑**场**而不是
+  // 「每个方位一个值」—— 同一方位内不同格子的 `w` 可以不同（实测 seed 12345 ang 42
+  // 的 eCell=1.24 处 hS ≈ −1.5 → w = 0.75 → 沙滩被降低了 1 格）。
+  // ⇒ 改成三条与方位分类无关的聚合判据（实测：等于干态 60.6~70.0% / 低于 30~39.4% / **高于 0%**）。
   clearShallowTarnCache();
   clearShallowTarnTerrainCache();
   const a = computeShallowTarnAnchor(DEFAULT_SEED);
   assertTrue(a !== null, '默认 seed 必须有落点');
   assertEqual(BEACH_OUTER_Y, SEA_Y + 2, 'BEACH_OUTER_Y 必须从 SEA_Y 派生');
-  let prev = LAKE_FLOOR_Y;
-  for (let d = LAKE_RADIUS; d <= LAKE_RADIUS + BEACH_WIDTH; d += 2) {
-    const y = shallowTarnSurfaceYAt(a.wx + d, a.wz, DEFAULT_SEED, a);
-    assertTrue(y >= prev, `沙滩 d=${d}: 地表 ${y} 不得低于上一格 ${prev}（必须单调抬升）`);
-    assertTrue(Math.abs(y - prev) <= 1, `沙滩 d=${d}: 单步落差 ${Math.abs(y - prev)} 必须 ≤1（否则要跳）`);
-    prev = y;
+  const phase = shallowTarnShapePhase(DEFAULT_SEED);
+  let eq = 0;
+  let lower = 0;
+  let higher = 0;
+  let fullDryDirs = 0;
+  for (let deg = 0; deg < 360; deg += 3) {
+    const ang = deg * Math.PI / 180;
+    const R = shallowTarnLakeRadiusAt(ang, phase);
+    const ux = Math.cos(ang), uz = Math.sin(ang);
+    let prev = null;
+    for (let e = 0; e <= BEACH_WIDTH; e += 1) {
+      const x = Math.round(a.wx + ux * (R + e));
+      const z = Math.round(a.wz + uz * (R + e));
+      const eCell = lakeOffset(a, DEFAULT_SEED, x, z);
+      if (eCell > BEACH_WIDTH) continue;
+      const y = shallowTarnSurfaceYAt(x, z, DEFAULT_SEED, a);
+      const dryProfile = Math.round(LAKE_FLOOR_Y + BEACH_RISE * (Math.max(0, eCell) / BEACH_WIDTH));
+      if (y > dryProfile) higher++;
+      else if (y === dryProfile) eq++;
+      else lower++;
+      if (prev !== null) {
+        const step = Math.abs(y - prev);
+        assertTrue(step <= 1, `ang ${deg} 沙滩 e=${e}: 单步落差 ${step} 必须 ≤1（否则要跳）`);
+      }
+      prev = y;
+    }
+    const endCell = Math.round(a.wx + ux * (R + BEACH_WIDTH));
+    const endCellZ = Math.round(a.wz + uz * (R + BEACH_WIDTH));
+    if (shallowTarnSurfaceYAt(endCell, endCellZ, DEFAULT_SEED, a) === BEACH_OUTER_Y) fullDryDirs++;
   }
-  assertEqual(shallowTarnSurfaceYAt(a.wx + LAKE_RADIUS + BEACH_WIDTH, a.wz, DEFAULT_SEED, a),
-    BEACH_OUTER_Y, '沙滩外缘必须正好是 BEACH_OUTER_Y');
+  const total = eq + lower + higher;
+  assertTrue(total > 400, `采样格数必须足量（实得 ${total}）`);
+  // R1：湿态规则**只能降不能抬** —— 任何一格高于干态剖面都是回归（实测 0%）
+  assertEqual(higher, 0, `沙滩带不得有一格高于干态剖面（v2.14 零回归；实测高于 ${higher}/${total}）`);
+  // R2：干态行为仍是大多数（否则整圈沙滩都被泡成水下坡，用户要的沙岸就没了）
+  assertTrue(eq / total > 0.4,
+    `等于干态剖面的比例 ${(eq / total * 100).toFixed(1)}% 必须 > 40%（实测 60.6~70.0%）`);
+  // R3：至少有一条海岸是真的干沙滩（外缘正好到达 BEACH_OUTER_Y）
+  assertTrue(fullDryDirs > 0, `必须有完全干的岸段（实得 ${fullDryDirs}/120）`);
+});
+
+test('shallowTarn: 接壤水系时沙滩带变成水下坡（只能降不能抬，无台阶）', () => {
+  // 用户 2026-11-02：「边缘接壤水系（比如海洋）的时候，中间不要刻意再加陆地隔绝……
+  // 两边水下的方块高度只要呈现坡度的接壤过渡即可」。
+  // 实测这个湖不是「偶尔」碰水：默认 seed 沿湖缘 48 个方位里 17~22 个内侧 2 格已经是天然水。
+  //
+  // ⚠️ **不对「单个方位」做干/湿二分类**（曾踩过）：`hS` 在水面附近时 `w ∈ (0,1)`，
+  // 沙滩带会处于「已经降低但仍在水面之上」的过渡态 —— 此时按某个采样点分类会与邻居矛盾
+  // （实测 seed 1 ang 218：同一方位内 cell 序列是 −3,−3,−3,−2,−2,−2,−3）。
+  // ⇒ 改成三条与分类无关的不变式 + 两条覆盖度证据。
+  for (const seed of [12345, 1, 424242]) {
+    clearShallowTarnCache();
+    clearShallowTarnTerrainCache();
+    const a = computeShallowTarnAnchor(seed);
+    assertTrue(a !== null, `seed ${seed} 必须有落点`);
+    const phase = shallowTarnShapePhase(seed);
+    let wetShoreDirs = 0;
+    let dryShoreDirs = 0;
+    for (let deg = 0; deg < 360; deg += 2) {
+      const ang = deg * Math.PI / 180;
+      const R = shallowTarnLakeRadiusAt(ang, phase);
+      const ux = Math.cos(ang), uz = Math.sin(ang);
+      const at = (e) => shallowTarnSurfaceYAt(
+        Math.round(a.wx + ux * (R + e)), Math.round(a.wz + uz * (R + e)), seed, a,
+      );
+      // ① 沙滩带起点必须是湖底，且**永远不会超过干态剖面**（湿态规则只能降、不能抬）
+      // ⚠️ 干态剖面必须按**该采样的实际偏移 `eCell`** 算，不能用名义 e —— 采样坐标是
+      // 整数格，实际偏移会偏 ~1 格，拿名义 e 比会把「取整误差」判成「抬高了」（实测踩过）。
+      assertEqual(at(0), LAKE_FLOOR_Y, `seed ${seed} ang ${deg}: 沙滩带起点必须是湖底`);
+      let entireBandWet = true;
+      for (let e = 0; e <= BEACH_WIDTH + 1; e += 1) {
+        const x = Math.round(a.wx + ux * (R + e));
+        const z = Math.round(a.wz + uz * (R + e));
+        const eCell = lakeOffset(a, seed, x, z);
+        if (eCell > BEACH_WIDTH) continue;              // 出沙滩带：干态剖面需要 hS，不在本条比
+        const y = shallowTarnSurfaceYAt(x, z, seed, a);
+        const dryProfile = Math.round(LAKE_FLOOR_Y + BEACH_RISE * (Math.max(0, eCell) / BEACH_WIDTH));
+        assertTrue(y <= dryProfile,
+          `seed ${seed} ang ${deg}: 沙滩 eCell=${eCell.toFixed(2)} 的 y=${y} 不得超过干态剖面 ${dryProfile}`);
+        if (y > SEA_Y - 1) entireBandWet = false;
+      }
+      if (entireBandWet) wetShoreDirs++;
+      if (at(BEACH_WIDTH) === BEACH_OUTER_Y) dryShoreDirs++;
+      // ② 本地图范围内（不含外缘接缝）逐格无台阶
+      // ⚠️ 接缝本身不属本地图的责任（设计文档 §5.3）—— 实测 seed 12345 ang 316 在 e=31 处
+      // 平滑值 −6 与自然值 −4 相差 2，采样含接缝会把「外边那片地本来就有起伏」判成缺陷。
+      let prevY = at(0);
+      for (let e = 1; e <= BEACH_WIDTH + SLOPE_WIDTH - 1; e += 1) {
+        const y = at(e);
+        const step = Math.abs(y - prevY);
+        assertTrue(step <= 1, `seed ${seed} ang ${deg}: 单步落差 ${step} 必须 ≤1（用户要的是坡降）`);
+        prevY = y;
+      }
+    }
+    // ③ 覆盖度证据：必须真的有「整条沙滩带都在水下」的岸段（否则接壤水系没生效），
+    //    同时也必须保留「一直干到 BEACH_OUTER_Y」的沙滩（否则全湖被泡成一片浑水）。
+    assertTrue(wetShoreDirs > 0, `seed ${seed}: 必须有整条沙滩带都在水下的岸段（实得 ${wetShoreDirs}/180）`);
+    assertTrue(dryShoreDirs > 0, `seed ${seed}: 也必须保留干沙滩岸段（实得 ${dryShoreDirs}/180）`);
+  }
+});
+
+test('shallowTarn: 湖心水团能连到 150 格外的大洋（洪水填充）', () => {
+  // 修前的实测读数：湖心水团最远只到 **100 格**（= 旧湖半径 99 + 1）—— 沙滩圈是一道完整堤坝。
+  // 本条钉的是「水面真的连成一片」，不只是「某个方向高度低于海平面」。
+  const seed = DEFAULT_SEED;
+  const a = computeShallowTarnAnchor(seed);
+  assertTrue(a !== null, '默认 seed 必须有落点');
+  const STEP = 4;
+  const RANGE = 200;
+  const N = Math.floor(RANGE / STEP) * 2 + 1;
+  const wet = (x, z) => shallowTarnSurfaceYAt(x, z, seed, a) <= SEA_Y - 1;
+  const seen = new Uint8Array(N * N);
+  const mid = Math.floor(N / 2);
+  const start = mid * N + mid;
+  assertTrue(wet(a.wx, a.wz), '湖心必须是水（否则洪水填充起点就错了）');
+  const stack = [start];
+  seen[start] = 1;
+  let maxDist = 0;
+  let cells = 0;
+  while (stack.length) {
+    const cur = stack.pop();
+    cells++;
+    const ci = cur % N, cj = Math.floor(cur / N);
+    const dist = Math.hypot((ci - mid) * STEP, (cj - mid) * STEP);
+    if (dist > maxDist) maxDist = dist;
+    for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const ni = ci + di, nj = cj + dj;
+      if (ni < 0 || nj < 0 || ni >= N || nj >= N) continue;
+      const k = nj * N + ni;
+      if (seen[k]) continue;
+      if (!wet(a.wx - RANGE + ni * STEP, a.wz - RANGE + nj * STEP)) continue;
+      seen[k] = 1;
+      stack.push(k);
+    }
+  }
+  assertTrue(cells > 500, `连通水团必须真的是一大片（实得 ${cells} 个采样点）`);
+  assertTrue(maxDist > 150,
+    `湖心水团最远只到 ${maxDist.toFixed(0)} 格（修前 = 100，说明仍被沙滩堤坝隔断）`);
 });
 
 test('shallowTarn: 缓坡带内单步落差 ≤1（无断崖 —— 用户「不要生硬的断崖式衔接」）', () => {
@@ -334,7 +502,12 @@ test('shallowTarn: 缓坡带内单步落差 ≤1（无断崖 —— 用户「不
       let prev = null;
       // 逐格走遍本地图**全部范围**（湖 + 沙滩 + 缓坡），不只缓坡带 ——
       // 三段之间也要连续（沙滩→缓坡的接缝同样不能有台阶）。
-      for (let d = 0; d <= SHALLOW_TARN_OUTER_RADIUS - 1; d += 1) {
+      // ⚠️ **上界必须用逐方向的边界 `R(θ)+BEACH+SLOPE`**（v2.15）：岸线不规则后，
+      // 内凹方向的边界已经落在 `SHALLOW_TARN_OUTER_RADIUS`（最大半径口径）之内 ——
+      // 用后者会把「本地图外的自然接缝」也算进来（那里本来就有 8 格海岸线断崖）。
+      const Rout = shallowTarnLakeRadiusAt(ang * Math.PI / 180, shallowTarnShapePhase(seed))
+        + BEACH_WIDTH + SLOPE_WIDTH;
+      for (let d = 0; d <= Rout - 1; d += 1) {
         const y = shallowTarnSurfaceYAt(
           Math.round(a.wx + ux * d), Math.round(a.wz + uz * d), seed, a,
         );
@@ -392,7 +565,7 @@ test('shallowTarn: 湖盆只填一格水（R3「只有一格浅水」）', () =>
   for (let lx = 0; lx < 16; lx++) {
     for (let lz = 0; lz < 16; lz++) {
       const wx = cx * 16 + lx, wz = cz * 16 + lz;
-      if (Math.hypot(wx - a.wx, wz - a.wz) > LAKE_RADIUS - 8) continue;   // 只看湖盆内部
+      if (lakeOffset(a, DEFAULT_SEED, wx, wz) > -8) continue;   // 只看湖盆内部（离岸 ≥8 格）
       checked++;
       // 湖底方块在 LAKE_FLOOR_Y
       assertEqual(reg.nameOf(col.blocks[blockIndex(lx, LAKE_FLOOR_Y, lz)]), 'sand',
@@ -428,7 +601,7 @@ test('shallowTarn: 湖盆下方必须是实心（挖开不会掉进洞穴）', (
   for (let lx = 0; lx < 16; lx++) {
     for (let lz = 0; lz < 16; lz++) {
       const wx = cx * 16 + lx, wz = cz * 16 + lz;
-      if (Math.hypot(wx - a.wx, wz - a.wz) > LAKE_RADIUS - 8) continue;
+      if (lakeOffset(a, DEFAULT_SEED, wx, wz) > -8) continue;
       // 湖底方块正下方 1..10 格必须全实心（填的是 stone）
       for (let d = 1; d <= 10; d++) {
         const y = LAKE_FLOOR_Y - d;
@@ -456,11 +629,10 @@ test('shallowTarn: 湖底正下方不得残留天然水（会被看见「湖底�
   const waterId = reg.idOf('water');
   let checked = 0;
   let wet = 0;
-  // ⚠️ **采样半径必须落在湖盆内**（`LAKE_RADIUS - 8`），不能写死也不能用 ±120：
-  // 湖半径四轮收紧（240→130→105→99）后，±120 已经越过湖界进沙滩带（99+7=106 起），
-  // 那里地表是 -5、`LAKE_FLOOR_Y-1 = -4` 落在沙滩内部 —— 水是**应当**有的，
-  // 却被当成「残留天然水」误报 62 列（实测）。
-  const sampleR = LAKE_RADIUS - 8;
+  // ⚠️ **采样范围必须落在湖盆内**（离岸 ≥8 格），不能写死也不能用 ±120：
+  // 湖半径四轮收紧（240→130→105→99）后，±120 已经越过湖界进沙滩带；
+  // v2.15 岸线不规则后，必须逐列用 `e = d − R(θ)` 判（内凹方位上 ±94 也已经到沙滩里了）。
+  const sampleR = LAKE_RADIUS_MIN - 8;
   const seen = new Set();
   for (let dx = -sampleR; dx <= sampleR; dx += 16) {
     for (let dz = -sampleR; dz <= sampleR; dz += 16) {
@@ -476,7 +648,7 @@ test('shallowTarn: 湖底正下方不得残留天然水（会被看见「湖底�
       for (let lx = 0; lx < 16; lx++) {
         for (let lz = 0; lz < 16; lz++) {
           const wx = cx * 16 + lx, wz = cz * 16 + lz;
-          if (Math.hypot(wx - a.wx, wz - a.wz) > sampleR) continue;
+          if (lakeOffset(a, DEFAULT_SEED, wx, wz) > -8) continue;
           checked++;
           if (col.blocks[blockIndex(lx, LAKE_FLOOR_Y - 1, lz)] === waterId) wet++;
         }
@@ -551,9 +723,106 @@ test('shallowTarn: 两个新草方块已注册且六面同贴图', () => {
   }
 });
 
+test('shallowTarn: 刷草把标记格落成噪声指定的那一种，且不碰其它方块', () => {
+  // 标记 = `light_grass`（自然世界里永不出现，见 shallow-water-tarn-data.js）。
+  // ⚠️ 因此**不能断言「标记不得残留」** —— 浅色那一支的产物本来就是 light_grass，
+  // 与未刷的标记同名。真正的「刷色跑过没有」判据 = **每个标记格的最终方块等于噪声指定的那一种**
+  // （深噪声格必须变成 dark_grass，跑不到就还是 light_grass → 本条会红）。
+  // 「不得碰自然地形草方块」由下一条用例单独钉。
+  clearShallowTarnCache();
+  clearShallowTarnTerrainCache();
+  const reg = registry();
+  const a = computeShallowTarnAnchor(DEFAULT_SEED);
+  assertTrue(a !== null, '默认 seed 必须有落点');
+  const cx = Math.floor(a.wx / 16), cz = Math.floor(a.wz / 16);
+  const col = new ChunkColumn(cx, cz);
+  const y = a.lakeFloorY + 4;
+  const markerId = reg.idOf(GRASS_MARKER_BLOCK);
+  const darkId = reg.idOf('dark_grass');
+  const lightId = reg.idOf('light_grass');
+  const mossId = reg.idOf('moss');
+  assertTrue(markerId !== undefined && darkId !== undefined && lightId !== undefined && mossId !== undefined,
+    '四个方块必须都已注册');
+
+  // 标记格挑「噪声为浅」与「噪声为深」各 2 格（实测 seed 12345 下 (0,0~3) 浅、(0,6~9) 深）
+  const cells = [
+    [0, 0, 'marker'], [0, 1, 'marker'], [0, 6, 'marker'], [0, 7, 'marker'],
+    [1, 0, 'dark'], [1, 1, 'dark'], [2, 0, 'moss'], [2, 1, 'moss'],
+  ];
+  for (const [lx, lz, kind] of cells) {
+    col.blocks[blockIndex(lx, y, lz)] = kind === 'marker' ? markerId : (kind === 'dark' ? darkId : mossId);
+  }
+
+  paintShallowTarnGrass(col, a, DEFAULT_SEED, reg, (wx, wy, wz, name) => {
+    col.blocks[blockIndex(wx - cx * 16, wy, wz - cz * 16)] = reg.idOf(name);
+  });
+
+  let othersChanged = 0;
+  for (const [lx, lz, kind] of cells) {
+    const id = col.blocks[blockIndex(lx, y, lz)];
+    if (kind === 'dark') {
+      if (id !== darkId) othersChanged++;
+    } else if (kind === 'moss' && id !== mossId) {
+      othersChanged++;
+    }
+  }
+  assertEqual(othersChanged, 0, '非标记格（dark_grass / moss）必须逐格不变 —— moss 已全部是终态深草');
+  // 每条标记格都必须落到噪声指定的那一种（深噪声格必须被写成 dark_grass → 这就是「刷色跑过了」）
+  for (const [lx, lz, kind] of cells) {
+    if (kind !== 'marker') continue;
+    const expected = shallowTarnGrassBlock(cx * 16 + lx, cz * 16 + lz, DEFAULT_SEED);
+    assertEqual(reg.nameOf(col.blocks[blockIndex(lx, y, lz)]), expected,
+      `(${lx},${lz}) 标记格必须按噪声落成 ${expected}`);
+  }
+});
+
+
+test('shallowTarn: 刷草不得改动自然地形里的草方块（v2.15 回归）', () => {
+  // ⚠️ **这是用户 2026-11-02 报的真实缺陷**：「你怎么把地形中（非模型）里的草地方块也都给我
+  // 替换成 grass-dark-green 和 grass-light-green 了」。
+  // 根因：草标记曾选成 `grass`（香草草方块）——`paintShallowTarnGrass` 扫的是**整列**
+  // `[lakeFloorY, +64] × 256 格`，于是浅水高台周围的**自然地表草**（缓坡带地表就是 `grass`）
+  // 被当成标记刷成了深浅草。
+  // ⇒ 标记必须是「自然世界里永远不会出现」的方块（当前 = `light_grass`，它只由烘焙产物产生）。
+  clearShallowTarnCache();
+  clearShallowTarnTerrainCache();
+  const reg = registry();
+  const a = computeShallowTarnAnchor(DEFAULT_SEED);
+  assertTrue(a !== null, '默认 seed 必须有落点');
+  const cx = Math.floor(a.wx / 16), cz = Math.floor(a.wz / 16);
+  const col = new ChunkColumn(cx, cz);
+  const y = a.lakeFloorY + 4;
+  const grassId = reg.idOf('grass');
+  const sandId = reg.idOf('sand');
+  // 自然地表的四种「不能被碰」的方块（都可能在整列扫描范围内出现）
+  const naturals = [grassId, sandId, reg.idOf('stone'), reg.idOf('moss')];
+  for (let i = 0; i < naturals.length; i++) col.blocks[blockIndex(4 + i, y, 4)] = naturals[i];
+
+  paintShallowTarnGrass(col, a, DEFAULT_SEED, reg, (wx, wy, wz, name) => {
+    col.blocks[blockIndex(wx - cx * 16, wy, wz - cz * 16)] = reg.idOf(name);
+  });
+
+  for (let i = 0; i < naturals.length; i++) {
+    assertEqual(col.blocks[blockIndex(4 + i, y, 4)], naturals[i],
+      `自然地表的 ${reg.nameOf(naturals[i])} 不得被刷草改写（尤其 vanilla grass）`);
+  }
+});
+
 // ---------------------------------------------------------------------------
 // 工具
 // ---------------------------------------------------------------------------
+
+/**
+ * 到**湖岸**的径向偏移 `e = d − R(θ)`（负数 = 湖盆内）。
+ *
+ * ⚠️ 测试侧刻意**不**引实现里的私有封装：这里不重算公式，只调同一对权威函数
+ * （`shallowTarnLakeRadiusAt` + `shallowTarnShapePhase`）—— 判据与实现同源。
+ */
+function lakeOffset(a, seed, wx, wz) {
+  const dx = wx - a.wx, dz = wz - a.wz;
+  const phase = shallowTarnShapePhase(seed);
+  return Math.hypot(dx, dz) - shallowTarnLakeRadiusAt(Math.atan2(dz, dx), phase);
+}
 
 /** 某列「自上而下第一个非空方块」的 `y:name` 快照（判「整形区外未被改写」用） */
 function snapshotSurface(col, reg, wx, wz) {

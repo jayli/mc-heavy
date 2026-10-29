@@ -1799,6 +1799,31 @@ async function checkShallowTarns() {
     // 最低点必须归一化为 y=1（`rasterizeStructure` 的 `y + b.y - 1` 依赖它）
     if (mny !== 1) fail(`${base}: 最低点 y=${mny} ≠ 1（归一化失败）`);
     sizes.push(`${W}×${H}×${D}`);
+
+    // ⑤ moss 必须已全部迁出（用户 2026-11-02：「所有 moss 方块都替换为 grass-dark-green」）
+    if (json.palette.includes('moss')) {
+      fail(`${base}: palette 仍含 moss（moss 应全部换成 dark_grass）`);
+    }
+    // ⑥ 两条**格数关系式**（v2.15）：不硬编码格数，改选型/改素材自动跟随。
+    //    `green_wool → dark_grass` 是终态；`grass_block → grass`（标记，光栅化后才分深浅）。
+    //    ⇒ 产物里 dark_grass == green_wool、grass == grass_block，两个方向都要钉。
+    const blockCounts = new Map();
+    for (let i = 3; i < json.blocks.length; i += 4) {
+      const name = json.palette[json.blocks[i]];
+      blockCounts.set(name, (blockCounts.get(name) || 0) + 1);
+    }
+    const srcCounts = meta.variantMetrics?.[base]?.sourceCounts || {};
+    const markerName = SHALLOW.GRASS_MARKER_BLOCK;   // 'grass'，不写字面量
+    const gotDark = blockCounts.get('dark_grass') || 0;
+    const gotMarker = blockCounts.get(markerName) || 0;
+    const wantDark = srcCounts.green_wool || 0;
+    const wantMarker = srcCounts.grass_block || 0;
+    if (gotDark !== wantDark) {
+      fail(`${base}: dark_grass ${gotDark} 格 ≠ 素材 green_wool ${wantDark} 格（moss 是否全量换成了深草？）`);
+    }
+    if (gotMarker !== wantMarker) {
+      fail(`${base}: ${markerName} ${gotMarker} 格 ≠ 素材 grass_block ${wantMarker} 格（标记方块是否漏了映射？）`);
+    }
   }
 
   // ③ 源方块全量映射（没有未知源方块被静默丢弃）
@@ -1807,9 +1832,12 @@ async function checkShallowTarns() {
     if (srcName === 'air') continue;
     if (!(srcName in SHALLOW.BLOCK_MAP)) fail(`素材里出现源方块 "${srcName}" 但 BLOCK_MAP 没有它`);
   }
-  // ④ 草基准色必须在白名单内且已注册（光栅化后由 `paintShallowTarnGrass` 刷成两种草）
-  if (!legal.has(SHALLOW.GRASS_BASE_BLOCK)) {
-    fail(`GRASS_BASE_BLOCK "${SHALLOW.GRASS_BASE_BLOCK}" 不在 palette 白名单内（烘焙会写出未授权的方块）`);
+  // ④ 草标记方块必须在白名单内且已注册（光栅化后由 `paintShallowTarnGrass` 刷成两种草）
+  if (!legal.has(SHALLOW.GRASS_MARKER_BLOCK)) {
+    fail(`GRASS_MARKER_BLOCK "${SHALLOW.GRASS_MARKER_BLOCK}" 不在 palette 白名单内（烘焙会写出未授权的方块）`);
+  }
+  if (!BLOCKS.some((b) => b.name === SHALLOW.GRASS_MARKER_BLOCK)) {
+    fail(`草标记方块 ${SHALLOW.GRASS_MARKER_BLOCK} 未在 blocks-data.js 注册（makeColumnSetter 会静默 return → 那格变 air）`);
   }
   // 两个新草方块必须都已注册且六面同贴图（用户 2026-11-01：「六个面贴图用 …」）
   for (const name of Object.keys(GRASS_TEX.GRASS_TEXTURES)) {
@@ -1825,7 +1853,7 @@ async function checkShallowTarns() {
   if (failures.length === before) {
     infos.push(`[浅水高台] ${SHALLOW.SHALLOW_TARN_VARIANTS.length} 个产物 `
       + `（${sizes.join(' / ')}）共 ${totalBlocks} 格 / palette 全在白名单 / 源方块全映射 / `
-      + `草基准色 ${SHALLOW.GRASS_BASE_BLOCK} / 指纹匹配`);
+      + `草标记 ${SHALLOW.GRASS_MARKER_BLOCK} / 指纹匹配`);
   }
 }
 

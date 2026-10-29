@@ -22,7 +22,7 @@ import path from 'node:path';
 import { NbtReader } from './nbt-reader.mjs';
 import {
   SCHEM_PATH, STRUCTURE_DIR, SHALLOW_TARN_META, BLOCK_MAP, CONTAINER_LAYER_Y,
-  GRASS_BASE_BLOCK, SHALLOW_TARN_PALETTE, SHALLOW_TARN_FORMAT_VERSION,
+  GRASS_MARKER_BLOCK, SHALLOW_TARN_PALETTE, SHALLOW_TARN_FORMAT_VERSION,
   SHALLOW_TARN_VARIANTS, SHALLOW_TARN_METRICS, shallowTarnInputFingerprint, variantPath, ROOT,
 } from './shallow-tarns-fingerprint.mjs';
 
@@ -236,7 +236,7 @@ function census() {
     try { target = classify(name); } catch (e) { console.log(`  ✗ ${name.padEnd(30)} ${String(n).padStart(7)} 格 → 未映射`); unmapped += n; continue; }
     const label = target === null
       ? '（丢弃 / 展台基座）'
-      : (target === GRASS_BASE_BLOCK ? '草基准色 → 光栅化期按噪声刷成 dark/light_grass' : target);
+      : (target === GRASS_MARKER_BLOCK ? '草标记 → 光栅化期按噪声刷成 dark/light_grass' : target);
     console.log(`  ${name.padEnd(30)} ${String(n).padStart(7)} 格 → ${label}`);
   }
   if (unmapped) { console.log(`\n✗ 未映射共 ${unmapped} 格 —— 补 BLOCK_MAP 后重跑`); process.exitCode = 1; }
@@ -335,14 +335,14 @@ function bake() {
       width: W, height: H, depth: D, blocks: n,
       paletteSize: palette.length,
       palette: [...palette].sort(),
-      hasGrass: palette.includes(GRASS_BASE_BLOCK),
+      hasGrass: palette.includes(GRASS_MARKER_BLOCK),
       sourceCounts: Object.fromEntries([...sourceCounts.entries()].sort((a, b) => b[1] - a[1])),
       origin: { cx: OX, cz: OZ },
       sourceBounds: { x0: comp.x0, x1: comp.x1, y0: comp.y0, y1: comp.y1, z0: comp.z0, z1: comp.z1 },
     };
     grandTotal += n;
     console.log(`${base}.json  ${String(n).padStart(6)} 格  ${W}×${H}×${D}  palette ${palette.length} 种  `
-      + `${palette.includes(GRASS_BASE_BLOCK) ? '含草' : '无草'}`);
+      + `${palette.includes(GRASS_MARKER_BLOCK) ? '含草' : '无草'}`);
   }
 
   // 源方块普查（门禁用它反向断言「没有未知源方块被静默丢弃」）
@@ -356,7 +356,7 @@ function bake() {
     containerLayerY: CONTAINER_LAYER_Y,
     blockMap: BLOCK_MAP,
     paletteWhitelist: SHALLOW_TARN_PALETTE,
-    grassBaseBlock: GRASS_BASE_BLOCK,
+    grassMarkerBlock: GRASS_MARKER_BLOCK,
     variants: SHALLOW_TARN_VARIANTS,
     variantMetrics: records,
     totalBlocks: grandTotal,

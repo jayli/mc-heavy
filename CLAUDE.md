@@ -1391,10 +1391,10 @@ seed 88 突破「单步落差 ≤1」（到 2 格），24 是守住无台阶的�
   逐字段零回归」当场拓到（`region(4,-1)` 的 pyramid 合法为 null，而它根本不相交于湖）。
   唯一实现 = `shallowTarnSuppressedLandmarks(anchor, regionX, regionZ, seed)`。
 
-- **⚠️ 硬净空半径用「湖 + 沙滩」（119），**不含缓坡**（163）**：缓坡只做高度插值，
-  不把地标变成本地图的一部分。把它算进净空会让通过率从「10 seed 全中」掉到「0 个」——
-  这是**几何必然**（半径 163 的圆面积 8.4 万格 ≈ 0.5 个 region）。
-  ⇒ 落点判据与「整个湖在城东」的断言都必须用 262，不是 `SHALLOW_TARN_OUTER_RADIUS`。
+- **⚠️ 硬净空半径 = `SHALLOW_TARN_HARD_RADIUS`（= 最大湖岸半径 + 沙滩），**不含缓坡**（`SHALLOW_TARN_OUTER_RADIUS`）**：
+  缓坡只做高度插值，不把地标变成本地图的一部分。把它算进净空会让通过率从「10 seed 全中」掉到「0 个」——
+  这是**几何必然**（半径再 +24 的圆面积 8.4 万格 ≈ 0.5 个 region）。
+  ⇒ 落点判据与「整个湖在城东」的断言都必须用**硬净空**，不是 `SHALLOW_TARN_OUTER_RADIUS`。
   两者混用会得到「实现明明对、用例却 FAIL」的假失败。
 
 - **⚠️ `slopeNaturalHeight` 的缓存键必须是精确坐标，不能降采样**（v2.11 实测 bug）：
@@ -1556,6 +1556,45 @@ seed 88 突破「单步落差 ≤1」（到 2 格），24 是守住无台阶的�
 - **`npm run shallowtarns` / `npm run grasstextures` 不跑则产物静默过期** →
   `check:data` 的 `[浅水高台]` / `[草贴图]` 两个环节用指纹抓。改 `BLOCK_MAP` /
   选型 / 源图后必须重跑。
+
+- **（v2.15）湖岸形状的唯一权威 = `shallowTarnLakeRadiusAt(θ, phase)`**：三条带（湖盆 / 沙滩 / 缓坡）、
+  `inShallowTarnFootprint`、水面门控全部从它派生。**`LAKE_RADIUS` 只是名义半径（谐波均值 102）**，
+  落地一律用 `LAKE_RADIUS_MIN`（95.7，构造性下界）与 `LAKE_RADIUS_MAX`（108.3，净空/占地/门控用）。
+  ⚠️ 「台地全在水里」靠**构造性下界** `LAKE_RADIUS_MIN > 92.4 + 1`（台地最远角与 seed 无关），
+  不靠实测最小值 —— 改谐波参数会同时改「凹凸幅度」与「台地余量」两个观感指标，改完必须重跑
+  `test-shallow-water-tarns.js` 的两条用例与设计文档 §14.2 的标定表。
+  ⚠️ 相位 salt **1037**（1020~1036 已被高台地带/浅水高台占满，程序化扫描过）。
+- **（v2.15）干湿判据只读平滑自然高度 `hS`**：`hS ≤ SEA_Y−1` ⟹ 自然地形本身是水 ⟹ 那一侧的沙滩带
+  下沉成水下坡（两侧水面连通）。**禁止掺 `generateHeight`**（`min(hS, hNat)` 实测产生 **2 格台阶**：
+  seed 1 / ang 54 / d 111，两侧都露出水面；只用 `hS` 时 7 seed × 180 方位逐格最大单步 = 1）。
+  沙滩带降幅封顶 `BEACH_RISE`、余量摊到缓坡带 —— 否则最深 −15 的自然水底会在 7 格里陡降。
+- **（v2.15）水面平面门控半径 = `SHALLOW_TARN_OUTER_RADIUS`（整形区最大半径），不是湖半径**：
+  湖岸不再是圆，在 TSL 里重算谐波必然是第二份实现（会与 JS 漂移）；放大到整形区**零风险**——
+  干燥列地表恒 `≥ SEA_Y`（顶面 ≥ −1 > 平面 −1.5）被深度测试遮掉，淹水列体素水面顶面恰好也是 −1.5。
+  漏放大 → 接壤处的水下方坡只剩体素水顶面（无波纹）—— 正是 v2.14 修过的缺陷形态。
+- **（v2.15）草标记 = `light_grass`，它是临时方块，且必须满足「自然世界里永不出现」**：
+  `green_wool →(烘焙) dark_grass`（终态）、`grass_block →(烘焙) light_grass →(光栅化后按世界坐标噪声)
+  dark_grass / light_grass`。
+  ⚠️ **为什么不能沿用「基准色 = dark_grass」**：moss 也变深草后两者不可区分，会把 moss 区也刷成浅草；
+  而哨兵名（`GRASS_PLACEHOLDER`）会被 `makeColumnSetter` **静默 return**（那格变 air）。
+  ⚠️⚠️ **为什么不能用香草 `grass` 当标记**（v2.15 实施期的真实缺陷，用户实玩报告「地形里的草方块
+  也被换成了深浅草，换回来」）：`paintShallowTarnGrass` 扫的是**整列** `[lakeFloorY, +64] × 256 格`，
+  而缓坡带地表材质本来就是 `grass` → **普通地形的草方块被当成标记一起刷掉**。
+  实测（把标记改回 `grass`）：缓坡带 `grass=0 / light_grass=54 / dark_grass=40`。
+  ⇒ 标记必须是**只有烘焙产物才会写的方块**。回归门 = `test-shallow-water-tarns.js` 的
+  「刷草不得改动自然地形里的草方块」+ Tier 4「缓坡带地表必须仍是香草 grass」两条（都已负向验证）。
+  `check:data` 的 `[浅水高台]` 用**两条格数关系式**钉住（`dark_grass` ≡ `green_wool`、`grass` ≡ `grass_block`）
+  ＋「palette 不得含 moss」；改 `BLOCK_MAP` 后必须 `npm run shallowtarns`，否则产物静默过期。
+- **（v2.15）湖心必须是整数格**：`baseX = Math.ceil(cityBounds.maxX + HARD + CLEARANCE) + 1`
+  —— `SHALLOW_TARN_HARD_RADIUS` 含 6.3 的谐波幅度，直接相加会得到小数湖心（实测 714.3），
+  而台地落位、E2E 读世界、`lake-ripple.spec` 的 `Math.round(uniform.cx) === a.wx` 全按整数格断言。
+- **（v2.15）E2E 的两个测量口径（踩过的坑，写同类用例前先看）**：
+  ① **`viewDistance` 是切比雪夫半径**（vd=8 → 只有 17×17 列 ≈ ±136 格），要看 140~160 格外的岸线/连通性
+  必须用 `?vd=12`，否则 `flyTo` 会永远等不齐 21×21 列（实测 180s 超时）；
+  ② **「湖岸在哪」不能用水面或岸线沙判**：湖与海洋连通后水面一直延伸到扫描上限（实测读到 160），
+  而远处陆生沙地（h=−2）也正好是「−3 沙 + −4 石」。可靠签名 = `SEA_Y 是水 + lakeFloorY 是 sand + 正下方 stone`
+  （天然水底下是 `end_stone`；陆生沙地缺那格水），且只接受「最后一段湖底落在 `[R, R+2]`」的方位
+  —— 更远的是接壤处的 −3 浅滩，更近的是高台边缘把签名打断。**正圆回退时必须真红**（已负向验证）。
 
 ### 城门竞技场沉淀的活跃约束（v2.7，后续「用 .schematic 落地地面建筑」类改动必读）
 
