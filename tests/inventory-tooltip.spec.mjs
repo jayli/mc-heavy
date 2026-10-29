@@ -1,4 +1,5 @@
 import { test, expect } from 'playwright/test';
+import { PNG } from 'pngjs';
 
 // 背包 hover 浮层验收（v1.93）。
 //
@@ -90,4 +91,92 @@ test('背包：hover 槽位时在鼠标旁显示方块完整名字（原样 id�
   await page.keyboard.press('Escape');
   await expect(modal).toBeHidden();
   await expect(tooltip).toBeHidden();
+});
+
+/**
+ * v2.17：浮层必须画在**背包与设置面板之上**（用户 2026-11-03 报告「设置面板中，hover 到方块图上的
+ * 时候，hover 出现的浮层显示到了设置面板之下」）。
+ *
+ * 根因：浮层挂在 `body` 下、两个模态挂在 `#hud-root` 下，而 `#hud-root` 没有 CSS
+ * （不建层叠上下文）⇒ 三方在同一个根层叠上下文里比 z-index。浮层原值 **60**，既低于设置面板的
+ * **70**、也低于背包自己的 **80** → 被不透明的背包内容框（`#c6c6c6`）整个盖住，
+ * 面板之外那一小圈还被 70% 黑遮罩压暗。
+ *
+ * ⚠️ **既有用例（上面那条）在缺陷态全绿**：`toBeHidden/toBeVisible` 只看 CSS `display`，
+ * 不看「画没画在最上层」。故本用例的判据落在**像素**上：同一位置裁剪图，「浮层可见」
+ * 必须比「浮层隐藏」明显更暗（浮层是 rgba(0,0,0,.88) 黑底白字，底下是浅灰面板 #c6c6c6）。
+ * 缺陷态两张图**逐位相同**（实测 Δ=0，因为浮层根本没被画出来）。
+ *
+ * 两种栈位都要测，它们拓到不同的回归：
+ * ① 仅背包 —— 抓「z-index ≤ 80」；② 设置面板 + 背包 —— 抓「z-index ≤ 70」（用户报的那个）。
+ */
+test('背包 hover 浮层必须画在背包与设置面板之上（像素判据）', async ({ page }) => {
+  test.setTimeout(180_000);
+  await page.goto('/?vd=2&seed=12345');
+  await page.waitForFunction(READY, null, { timeout: 90_000 });
+  await page.waitForFunction(STABLE, null, { timeout: 60_000, polling: 500 });
+
+  const modal = page.locator('#inventory-modal');
+  const tooltip = page.locator('#inventory-tooltip');
+
+  /** 量一次「浮层可见 vs 隐藏」的同位置裁剪图（只改一个变量：`mc-visible` 类） */
+  const measure = async () => {
+    const first = page.locator('#inventory-modal .mc-slot').first();
+    const box = await first.boundingBox();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await expect(tooltip).toBeVisible();
+
+    const geo = await page.evaluate(() => {
+      const r = document.getElementById('inventory-tooltip').getBoundingClientRect();
+      const z = (id) => Number(getComputedStyle(document.getElementById(id)).zIndex);
+      return {
+        clip: { x: Math.round(r.x), y: Math.round(r.y), width: Math.round(r.width), height: Math.round(r.height) },
+        tooltipZ: z('inventory-tooltip'),
+        inventoryZ: z('inventory-modal'),
+        settingsZ: document.getElementById('settings-modal').style.display === 'none'
+          ? null : z('settings-modal'),
+      };
+    });
+    const shown = PNG.sync.read(await page.screenshot({ clip: geo.clip }));
+    await page.evaluate(() => document.getElementById('inventory-tooltip').classList.remove('mc-visible'));
+    const hidden = PNG.sync.read(await page.screenshot({ clip: geo.clip }));
+    await page.evaluate(() => document.getElementById('inventory-tooltip').classList.add('mc-visible'));
+    const meanOf = (png) => {
+      let s = 0, n = 0;
+      for (let i = 0; i < png.data.length; i += 4) {
+        s += png.data[i] + png.data[i + 1] + png.data[i + 2]; n += 3;
+      }
+      return s / n;
+    };
+    return { ...geo, withTooltip: meanOf(shown), withoutTooltip: meanOf(hidden) };
+  };
+  /** 像素判据 + 结构判据（两者互补：像素验「真画上去了」，z-index 验「常量没被改回去」） */
+  const assertOnTop = (m, label) => {
+    const drop = m.withoutTooltip - m.withTooltip;
+    console.log(`TOOLTIP-LAYER[${label}] ` + JSON.stringify({ ...m, drop: +drop.toFixed(1) }));
+    expect(m.tooltipZ, `${label}：浮层 z-index 必须高于背包`).toBeGreaterThan(m.inventoryZ);
+    if (m.settingsZ !== null) {
+      expect(m.tooltipZ, `${label}：浮层 z-index 必须高于设置面板`).toBeGreaterThan(m.settingsZ);
+    }
+    expect(drop,
+      `${label}：浮层覆盖区必须明显变暗（黑底浮层画在最上层）。实测 显示=${m.withTooltip.toFixed(1)} `
+      + `隐藏=${m.withoutTooltip.toFixed(1)}，差值 ${drop.toFixed(1)} —— 接近 0 说明浮层被面板盖住、`
+      + '玩家根本看不到它').toBeGreaterThan(20);
+  };
+
+  // ① 仅背包：浮层必须高于背包自己的 80
+  await page.keyboard.press('KeyZ');
+  await expect(modal).toBeVisible();
+  assertOnTop(await measure(), 'inventory-only');
+  await page.keyboard.press('Escape');
+  await expect(modal).toBeHidden();
+
+  // ② 设置面板 + 背包（用户报的栈位）：浮层还必须高于设置面板的 70
+  // ⚠️ 关背包会恢复 pointer lock → 真实点击会被 canvas 截获（探针实测），故用 DOM click
+  //    开面板；被测对象是浮层层级，不是这个按钮的命中路径。
+  await page.evaluate(() => document.getElementById('settings-btn').click());
+  await expect(page.locator('#settings-modal')).toBeVisible();
+  await page.keyboard.press('KeyZ');
+  await expect(modal).toBeVisible();
+  assertOnTop(await measure(), 'settings+inventory');
 });

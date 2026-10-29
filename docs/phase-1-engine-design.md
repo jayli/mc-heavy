@@ -3346,13 +3346,14 @@ BlockRegistry 新增方块（如 `sky_stone`/`sky_grass`），属预期扩展。
 | 项 | 值 |
 |---|---|
 | 触发 | `Z` toggle、`Escape` 关闭（仅打开态响应） |
-| 遮罩 | `position:fixed; inset:0; background:rgba(0,0,0,.7); z-index:70` |
+| 遮罩 | `position:fixed; inset:0; background:rgba(0,0,0,.7); z-index:80`（高于设置面板的 70：两个模态可共存于栈，后开的背包在上层） |
 | 内容框 | 600×400、`#c6c6c6` 底 + 4px `#555` 边 + `box-shadow:5px 5px 0 #000` |
 | 网格 | `grid-template-columns:repeat(8,1fr)`、gap 8、`overflow-y:auto` |
 | 槽位 | 52×52 **总盒**（`box-sizing:border-box`，= 48 内容区 + 2px 边框 × 2）、`#8b8b8b` 底、左上白/右下 `#373737` 斜角浮雕边；`.selected` 3px `#FFFF00` + `#a0a0a0` 底；`:hover` `#999`。**必须 border-box**：选中边框 2px→3px 在 content-box 下会把总盒撑到 54×54 → grid 该行变高 2px → 下一行整体下移（点选抖动，实测位移 2px）；border-box 下边框往内吃、总盒恒 52 → 零抖动 |
 | 图标 | 32×32、`image-rendering:pixelated`、读预生成的 `background` 串（v1.26，`icons.json` 的 `inventory` 档）；**按显示尺寸烘焙 → 运行时零缩放** |
 | 名称 | `.item-name` 绝对定位顶部、10px 白字 + `text-shadow:1px 1px 0 #000`、溢出省略号 |
 | 空槽 | 不渲染（只列非空槽，mc-lite 同行为） |
+| hover 浮层 | 挂 `body` 的单例、`position:fixed` 跟随光标、`pointer-events:none`、`z-index:85`（`TOOLTIP_Z_INDEX`，v2.17）。**必须高于背包自己的 80 与设置面板的 70** —— 浮层与两个模态同在根层叠上下文（`#hud-root` 无 CSS、不建层叠上下文），原值 60 会被不透明的内容框整个盖住；仍低于 toast 的 90 |
 
 **输入门控（M3.1 修正既有漏洞）**：`Z`/`Escape` 与设置面板共用一套模态协议 —— 打开时
 `document.exitPointerLock()` + 清空 `player.keys` + `game.uiModal = true`，关闭时

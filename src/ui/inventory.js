@@ -20,6 +20,22 @@ const MODAL_OWNER = 'inventory';
  */
 const ICON_SIZE = 32;
 
+/**
+ * hover 浮层的 z-index（v2.17）。
+ *
+ * 层级表（改任一层级须重核这条不等式，同 `toast.js` 的 `TOAST_Z_INDEX`）：
+ * hotbar 40 < coords/perf 50 < settings-btn 60 < 设置面板遮罩 70 < 背包 80
+ *   < **tooltip 85** < toast 90 < 启动错误遮罩 100。
+ *
+ * ⚠️ 浮层挂在 `body` 下、背包与设置面板挂在 `#hud-root` 下，而 `#hud-root` 没有任何
+ * CSS（不建层叠上下文）⇒ 三方在**同一个根层叠上下文**里按 z-index 比较。原先取 60（与
+ * settings-btn 同档）时它低于设置面板的 70、更低于背包自己的 80 → 被不透明的背包内容框
+ * （`#c6c6c6`）整个盖住，只露出面板之外那一小圈（还被遮罩压暗 70%），玩家看到的就是
+ * 「浮层跑到面板下面去了」。实测「浮层可见 vs 隐藏」两张同位置裁剪图**逐位相同**（Δ=0）。
+ * `toBeVisible()` 抓不到这类缺陷 —— 它只看 CSS display，不看画没画在最上层。
+ */
+export const TOOLTIP_Z_INDEX = 85;
+
 /** mc-lite global.css 背包相关规则的移植（选择器加 mc- 前缀避免污染宿主页面） */
 /**
  * 背包面板的样式表文本。**导出供单测读契约**（浮层的 `pointer-events:none` 是载荷性的，
@@ -77,9 +93,10 @@ export const PANEL_CSS = `
 /* hover 浮层：显示方块**完整**名字（槽位里的 10px 小字被 ellipsis 裁掉，
    长的如 polished_blackstone_bricks 根本看不全）。
    ⚠️ pointer-events:none 是必须的 —— 否则浮层会挡在光标下方拦截 mousemove，
-   触发 mouseleave → 隐藏 → 再 mouseenter 的循环闪烁。 */
+   触发 mouseleave → 隐藏 → 再 mouseenter 的循环闪烁。
+   ⚠️ z-index 走 {@link TOOLTIP_Z_INDEX}（85）：必须高于背包自己的 80，否则被盖住。 */
 #inventory-tooltip {
-  position: fixed; z-index: 60; pointer-events: none;
+  position: fixed; z-index: ${TOOLTIP_Z_INDEX}; pointer-events: none;
   padding: 4px 8px; background: rgba(0, 0, 0, 0.88); color: #fff;
   border: 2px solid #555; font: 13px/1.3 monospace;
   white-space: nowrap; display: none;

@@ -26,7 +26,7 @@ import {
   TELEPORT_HOME_LABEL, TELEPORT_ARENA_LABEL,
 } from '../ui/settings-panel.js';
 import { Toast, TOAST_Z_INDEX } from '../ui/toast.js';
-import { PANEL_CSS as INVENTORY_PANEL_CSS } from '../ui/inventory.js';
+import { PANEL_CSS as INVENTORY_PANEL_CSS, TOOLTIP_Z_INDEX } from '../ui/inventory.js';
 
 test('settings: 默认值（vd=8 / blur=off / volume=1 / 风格自动）', () => {
   assertEqual(DEFAULT_SETTINGS.viewDistance, 8);
@@ -335,6 +335,37 @@ test('背包 hover 浮层：显示方块 id 原样，且不拦截鼠标事件', 
   assertTrue(rule.includes('display: none') || rule.includes('display:none'),
     '浮层默认必须隐藏');
   assertTrue(css.includes('#inventory-tooltip.mc-visible'), '浮层须用 .mc-visible 类控制显示');
+});
+
+/**
+ * 浮层的 z-index 必须高于**背包自己的 80**与**设置面板的 70**（v2.17 修，用户报告
+ * 「设置面板中 hover 到方块图上时，浮层显示到了设置面板之下」）。
+ *
+ * 根因：浮层挂在 `body` 下、两个模态挂在 `#hud-root` 下，而 `#hud-root` 没有 CSS
+ * （不建层叠上下文）⇒ 三方在同一个根层叠上下文里比 z-index。浮层原值 60 < 70/80。
+ *
+ * ⚠️ 这类缺陷 **E2E 的 `toBeVisible()` 结构上拓不到**：它只看 CSS display，不看画没画在
+ * 最上层（实测 v1.93 的用例在缺陷态全绿）。判据必须落在**像素**上（见 E2E 的同名用例：
+ * 「浮层可见 vs 隐藏」两张同位置裁剪图，缺陷态 Δ=0），而本单测负责拓「有人把常量改回去」。
+ */
+test('浮层的 z-index 必须高于背包与设置面板（否则被面板盖住）', () => {
+  // 层级表快照（同 toast 那条：不从 CSS 解析，组件私有模板串在单测里拿不到；E2E 交叉验证）
+  const SETTINGS_MODAL_Z = 70;   // settings-panel.js  #settings-modal
+  const INVENTORY_Z = 80;        // inventory.js       #inventory-modal（浮层的宿主面板）
+  const TOAST_Z = 90;            // toast.js           TOAST_Z_INDEX
+  assertTrue(TOOLTIP_Z_INDEX > INVENTORY_Z,
+    `浮层(${TOOLTIP_Z_INDEX}) 必须高于背包(${INVENTORY_Z})，否则被内容框盖住`);
+  assertTrue(TOOLTIP_Z_INDEX > SETTINGS_MODAL_Z,
+    `浮层(${TOOLTIP_Z_INDEX}) 必须高于设置面板(${SETTINGS_MODAL_Z})，否则被遵罩压暗`);
+  // toast 是面板动作按钮的唯一反馈通道（v1.98）—— 提示永远压在浮层之上
+  assertTrue(TOOLTIP_Z_INDEX < TOAST_Z,
+    `浮层(${TOOLTIP_Z_INDEX}) 不得压过 toast(${TOAST_Z})`);
+  // 红线 1：CSS 里不得再写一份字面量，必须吃同一个常量
+  const css = INVENTORY_PANEL_CSS;
+  const i = css.indexOf('#inventory-tooltip');
+  const rule = css.slice(i, css.indexOf('}', i));
+  assertTrue(new RegExp(`z-index:\\s*${TOOLTIP_Z_INDEX}\\s*;`).test(rule),
+    '浮层 CSS 的 z-index 必须引用 TOOLTIP_Z_INDEX 常量（不得另写一份字面量）');
 });
 
 test('瞬移行的标题与五个按钮文案是导出的单一口径常量（v2.10 五按钮）', () => {
