@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **后续追加变更（2026-10-30，用户）**：命中 < 15 格直接放命中面前（对齐 mc-lite），头格 / 身体守卫保持本仓现状 —— 见设计说明 §10。本计划是追加**之前**的执行记录，其中「命中与打空共用就近优先」等表述以设计说明 §10 为准。
+
 **Goal:** 单格方块右键放置时，落点 = 沿准心视线从近到远第一个可放的候选（命中面前的 A 排最后），相机所在格（头格）永不作候选。
 
 **Architecture:** `place-ray.js` 新增「边扫边试」的 `scanPlaceCells`（候选判据的唯一实现，遍历复用 `raycastVoxel` 的 `onCell`），`findPlaceCell` 退化为取第一个候选的薄包装；`player.js` 新增 `_placeNearest`，命中与打空共用一条流程，写入与身体守卫仍只在 `_placeSingle()`。

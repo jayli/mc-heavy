@@ -1,7 +1,7 @@
 // src/player/player.js — 输入/视角/交互编排（§4.5）
 import * as THREE from 'three';
 import { raycastVoxel } from './raycast.js';
-import { scanPlaceCells } from './place-ray.js';
+import { scanPlaceCells, PLACE_NEAR_HIT_DIST } from './place-ray.js';
 import { PlayerPhysics } from './physics.js';
 import { StepLift } from './step-lift.js';
 import { ViewBob } from './view-bob.js';
@@ -737,11 +737,14 @@ export class Player {
   }
 
   placeBlock() {
-    // 单格方块的落点 = 沿视线**从近到远第一个可放的候选**；命中面前的那一格（A = `target.prevPos`）
-    // 只是候选序列里排在最后的一个（v2.25，用户 2026-10-30：「不管十字准心方向经过多少个可放置
-    // 方块的位置，总是先就近放置」）。命中与打空走同一个入口 `_placeNearest()`。
-    // ⚠️ 这**取代了 v1.70 的用户裁定**「兜底只在完全未命中时生效」。A 本身仍是「目标明确」的落点：
-    // 它被玩家 AABB 占住时**不再找别处**（A 已是最后一个候选，后面没有可回落的位置）。
+    // 单格方块的落点（v2.25，用户 2026-10-30），两种情形走同一个入口 `_placeNearest()`：
+    //  · 命中 **< 15 格**：直接放命中面前（A = `target.prevPos`），**不看沿途候选** —— mc-lite
+    //    `interact()` 右键的同款分流（`hits[0].distance < 15`）；
+    //  · 命中 ≥ 15 格或打空：沿视线**从近到远第一个可放的候选**，命中面前的 A 只是序列里排在最后的
+    //    一个（用户：「不管十字准心方向经过多少个可放置方块的位置，总是先就近放置」）。
+    // ⚠️ 这**取代了 v1.72 的用户裁定**「兜底只在完全未命中时生效」（远处命中与打空时先看候选）。
+    // A 被玩家 AABB 占住时**不再找别处**：近处命中是 mc-lite 同款（`tryPlaceBlock` 失败即作罢），
+    // 远处命中则因为 A 已是最后一个候选，后面没有可回落的位置。
     // ⚠️ 特殊物品（巢穴/炮塔/矿车）不参与就近放置：它们的 origin 取**命中格**，无命中即无合法 origin。
     if (!this.target) { this._placeByRayFallback(); return; }
     // M7：受控创造模式物品优先分流（测试 API 路径）。失败保留世界，不写任何方块。
@@ -790,7 +793,7 @@ export class Player {
   }
 
   /**
-   * 打空路径：主射线**完全未命中**时的单格放置（v1.70 兜底；v2.25 起与命中路径共用 `_placeNearest()`）。
+   * 打空路径：主射线**完全未命中**时的单格放置（v1.72 兜底；v2.25 起与命中路径共用 `_placeNearest()`）。
    *
    * 场景（用户报告）：玩家站在一块方块上朝下看，只能看到脚底方块的顶面，看不到它的
    * 水平侧面 —— 想把方块接续放在它东侧时，准心对准那侧的空位，主射线打空（`target`
@@ -816,20 +819,30 @@ export class Player {
   }
 
   /**
-   * 单格放置的**就近优先**入口（v2.25）：沿视线从近到远，把每个候选格依次交给 `_placeSingle()`，
-   * 第一个放成功的算数；候选被拒（身体守卫 / 编辑无变化）就继续往远处找（mc-lite `doSkyPlace`
-   * 同款）；都不行时才轮到命中面前的那一格 A。
+   * 单格放置的入口（v2.25）。**近处命中（`hit.dist < PLACE_NEAR_HIT_DIST` = 15 格）直接放命中面前**
+   * （A = `hit.prevPos`），不看沿途候选，A 被拒就作罢 —— mc-lite `interact()` 的同款分流，用户
+   * 2026-10-30 要求对齐。其余情形（命中 ≥ 15 格 / 打空）走**就近优先**：沿视线从近到远，把每个
+   * 候选格依次交给 `_placeSingle()`，第一个放成功的算数；候选被拒（身体守卫 / 编辑无变化）就继续
+   * 往远处找（mc-lite `doSkyPlace` 同款）；都不行时才轮到命中面前的那一格 A。
    *
    * - 候选判据与「头格出局 / 止于命中格」只在 `place-ray.js` 的 `scanPlaceCells` 一处（红线 1）；
    *   身体守卫与写入只在 `_placeSingle()` 一处。
    * - `hit` = 主射线命中（`this.target`），无命中传 null。搜索止于命中格（不含）；A = `hit.prevPos`
    *   排在最后，被身体守卫拒绝时**不再找别处**（它已是最后一个候选）。
+   * - ⚠️ 命中 ≥ 15 格时扫描范围（15 格）几乎总是到不了命中格，`stopAt` 只在命中距离恰为 15.0 时才起作用
+   *   （此时命中格的进入距离 ≤ 扫描范围）；保留它是边界保险，不是常用路径。
    * - 回调里放成功即中止遍历，不存在「写后读」；扫描 ≤ 15 格、仅右键触发，开销 ≤ 5 µs 量级。
    * @param {number} id 方块 id
    * @param {object | null} hit 主射线命中（`this.target`）；打空传 null
    * @returns {boolean} 是否真的放下了一块
    */
   _placeNearest(id, hit) {
+    // 近处命中：直接放命中面前，不看沿途候选。`typeof` 守卫：真实 target（`raycastVoxel`）恒带 `dist`，
+    // 缺 `dist` 的手塞 target 退回候选扫描路径（与近处分流引入前的行为一致）。
+    if (hit && typeof hit.dist === 'number' && hit.dist < PLACE_NEAR_HIT_DIST) {
+      const [x, y, z] = hit.prevPos;
+      return this._placeSingle(x, y, z, id);
+    }
     const cp = this.camera.position;
     this.camera.getWorldDirection(_forward);
     const r = scanPlaceCells(this.world, [cp.x, cp.y, cp.z], [_forward.x, _forward.y, _forward.z],

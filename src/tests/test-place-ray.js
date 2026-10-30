@@ -23,7 +23,7 @@ import { BLOCKS } from '../voxel/blocks-data.js';
 import { WorldData } from '../voxel/world-data.js';
 import { ChunkColumn } from '../voxel/chunk-column.js';
 import { blockIndex } from '../voxel/constants.js';
-import { PLACE_RAY_MAX_DIST, findPlaceCell, scanPlaceCells } from '../player/place-ray.js';
+import { PLACE_RAY_MAX_DIST, PLACE_NEAR_HIT_DIST, findPlaceCell, scanPlaceCells } from '../player/place-ray.js';
 
 /** 生产同源注册表 + 单 column 空地世界（坐标一律取 0..15 的非负局部坐标） */
 function makeWorld() {
@@ -41,6 +41,10 @@ function put(world, reg, x, y, z, name = 'stone') {
 
 test('place-ray: 射程常量 = 15 格（mc-lite doSkyPlace maxDist）', () => {
   assertEqual(PLACE_RAY_MAX_DIST, 15, 'maxDist');
+});
+
+test('place-ray: 近处命中阈值 = 15 格（mc-lite interact() 的 hits[0].distance < 15）', () => {
+  assertEqual(PLACE_NEAR_HIT_DIST, 15, 'threshold');
 });
 
 test('place-ray: 侧向邻居（-Z 侧一格石头）→ 贴它放', () => {

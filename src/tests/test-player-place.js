@@ -251,18 +251,35 @@ function aimAndPlace(player, editor, feet, dir) {
   return { placed: editor.calls.slice(before).map((c) => [c.x, c.y, c.z]), target: player.target };
 }
 
-test('就近优先：命中远处方块，但视线擦过更近的可贴格 → 放在近处', () => {
+// v2.25 追加（用户 2026-10-30，对齐 mc-lite `interact()` 的 `hits[0].distance < 15`）：命中 **< 15 格**
+// 直接放命中面前（A），不看沿途候选；命中 ≥ 15 格与打空才先找沿途候选。单列夹具世界只有 16 格宽，
+// 要造 ≥ 15 格的水平命中就给世界再加一列（x∈[16,31]）。
+function addEastColumn(world) { world.add(new ChunkColumn(1, 0)); }
+
+test('近处命中（<15 格）：直接放命中面前，不看沿途候选（对齐 mc-lite）', () => {
   const { player, editor, world, registry } = makeFixture();
   selectItem(player, 'stone');
-  setBlocks(world, registry, [[6, 2, 7], [14, 2, 8]]);        // 侧墙（视线擦过）+ 远处被命中的方块
+  setBlocks(world, registry, [[6, 2, 7], [14, 2, 8]]);        // 侧墙（视线擦过，是候选）+ 近处被命中的方块
   const r = aimAndPlace(player, editor, FEET, [1, 0, 0]);
-  assertEqual(r.target.prevPos.join(','), '13,2,8', '前提：主射线命中远处，A = (13,2,8)');
-  assertEqual(J(r.placed), '[[6,2,8]]', '落点 = 贴侧墙的最近格，而不是 A');
-  assertEqual(world.getBlockId(13, 2, 8), 0, 'A 仍是空气');
+  assertEqual(r.target.prevPos.join(','), '13,2,8', '前提：主射线命中，A = (13,2,8)');
+  assertTrue(r.target.dist < 15, `前提：命中距离 ${r.target.dist} < 15`);
+  assertEqual(J(r.placed), '[[13,2,8]]', '直接放命中面前；沿途的 (6,2,8) 虽是候选也不看');
+  assertEqual(world.getBlockId(6, 2, 8), 0, '沿途候选仍是空气');
   player.dispose();
 });
 
-test('就近优先：没有更近的候选时仍放在命中面前', () => {
+test('远处命中（≥15 格）：沿途有候选 → 放在最近的候选，不放命中面前', () => {
+  const { player, editor, world, registry } = makeFixture();
+  selectItem(player, 'stone');
+  setBlocks(world, registry, [[9, 10, 8], [8, 30, 8]]);        // 柱子（竖直视线擦过）+ 远处被命中的方块
+  const r = aimAndPlace(player, editor, [8.5, 1, 8.5], [0, 1, 0]);   // 正上方
+  assertEqual(r.target.prevPos.join(','), '8,29,8', '前提：命中距离≈27.4 ≥ 15，A = (8,29,8)');
+  assertEqual(J(r.placed), '[[8,10,8]]', '落点 = 贴柱子的最近格，而不是 A');
+  assertEqual(world.getBlockId(8, 29, 8), 0, 'A 仍是空气');
+  player.dispose();
+});
+
+test('近处命中且沿途无候选：放在命中面前', () => {
   const { player, editor, world, registry } = makeFixture();
   selectItem(player, 'stone');
   setBlocks(world, registry, [[14, 2, 8]]);
@@ -271,13 +288,15 @@ test('就近优先：没有更近的候选时仍放在命中面前', () => {
   player.dispose();
 });
 
-test('头格出局：背靠墙面朝外、远处命中 —— 花草与石头都落在命中面前', () => {
+test('头格出局：背靠墙面朝外、远处命中（≥15 格）—— 花草与石头都落在命中面前', () => {
   for (const item of ['short_grass', 'stone']) {
     const { player, editor, world, registry } = makeFixture();   // 每个物品新建 fixture
+    addEastColumn(world);
     selectItem(player, item);
-    setBlocks(world, registry, [[2, 2, 8], [14, 2, 8]]);        // 头格 (3,2,8) 的 -X 侧是墙
+    setBlocks(world, registry, [[2, 2, 8], [20, 2, 8]]);        // 头格 (3,2,8) 的 -X 侧是墙；命中在 16.5 格外
     const r = aimAndPlace(player, editor, FEET, [1, 0, 0]);
-    assertEqual(J(r.placed), '[[13,2,8]]', `${item}：落在命中面前`);
+    assertTrue(r.target.dist >= 15, `前提：命中距离 ${r.target.dist} ≥ 15，才会走候选扫描`);
+    assertEqual(J(r.placed), '[[19,2,8]]', `${item}：落在命中面前`);
     assertEqual(world.getBlockId(3, 2, 8), 0, `${item}：头格仍是空气`);
     player.dispose();
   }
@@ -295,13 +314,15 @@ test('头格出局：打空且头格是唯一候选 → 零写入（实心 / 非
   }
 });
 
-test('跳过被身体压住的候选：站位离格边界 <0.3 → 继续放下一个', () => {
+test('跳过被身体压住的候选：站位离格边界 <0.3 → 继续放下一个（远处命中 ≥15 格）', () => {
   const { player, editor, world, registry } = makeFixture();
+  addEastColumn(world);
   selectItem(player, 'stone');
-  setBlocks(world, registry, [...row(1, 13, 3, 8), [14, 2, 8]]);   // 天花板 + 远处命中
+  setBlocks(world, registry, [...row(1, 13, 3, 8), [20, 2, 8]]);   // 天花板 + 16.1 格外的命中
   // 脚底 x=3.9：AABB x∈[3.6,4.2] 压到格 4，最近候选 (4,2,8) 被身体守卫拒绝
   const r = aimAndPlace(player, editor, [3.9, 1, 8.5], [1, 0, 0]);
-  assertEqual(r.target.prevPos.join(','), '13,2,8', '前提：主射线命中远处');
+  assertEqual(r.target.prevPos.join(','), '19,2,8', '前提：主射线命中远处，A = (19,2,8)');
+  assertTrue(r.target.dist >= 15, `前提：命中距离 ${r.target.dist} ≥ 15`);
   assertEqual(J(r.placed), '[[5,2,8]]', '跳过压到身体的 (4,2,8)，放下一个候选 (5,2,8)');
   player.dispose();
 });
@@ -348,14 +369,29 @@ test('打空路径同一流程：越过头格取下一个候选（旧兜底只�
   player.dispose();
 });
 
-test('候选止于命中格：命中格是花草时，不越过它放后面的候选', () => {
+test('候选止于命中格（恰在 15 格边界）：命中格是花草时，不把花草当候选替换掉', () => {
   const { player, editor, world, registry } = makeFixture();
+  addEastColumn(world);
   selectItem(player, 'stone');
-  setBlocks(world, registry, row(9, 13, 3, 8));                  // 命中格之后才有天花板
-  setBlocks(world, registry, [[8, 2, 8]], 'short_grass');        // 非实心的命中格
-  const r = aimAndPlace(player, editor, FEET, [1, 0, 0]);
-  assertEqual(r.target.blockPos.join(','), '8,2,8', '前提：主射线命中花草');
-  assertEqual(J(r.placed), '[[7,2,8]]', '放在命中面前，不越过花草去放 (9,2,8)');
+  setBlocks(world, registry, [[18, 3, 8]]);                      // 命中格上方的方块：让命中格满足候选判据
+  setBlocks(world, registry, [[18, 2, 8]], 'short_grass');       // 非实心的命中格
+  // 脚底 x=3.0（整数）朝 +X：格 18 的进入距离恰为 15.0 → 不走『近处命中』分支，扫描会走到命中格。
+  // ⚠️ 命中 ≥ 15 时扫描范围（15 格）几乎总是到不了命中格，只有恰在边界这一点才需要 stopAt。
+  const r = aimAndPlace(player, editor, [3.0, 1, 8.5], [1, 0, 0]);
+  assertEqual(r.target.blockPos.join(','), '18,2,8', '前提：主射线命中花草');
+  assertEqual(r.target.dist, 15, '前提：命中距离恰为 15（不 < 15）');
+  assertEqual(J(r.placed), '[[17,2,8]]', '放在命中面前；不把花草当候选替换掉');
+  player.dispose();
+});
+
+test('命中恰为 15 格：走候选扫描（阈值是严格 <，与 mc-lite 的 distance < 15 同款）', () => {
+  const { player, editor, world, registry } = makeFixture();
+  addEastColumn(world);
+  selectItem(player, 'stone');
+  setBlocks(world, registry, [[8, 2, 7], [18, 2, 8]]);           // 侧墙（让 (8,2,8) 成为候选）+ 恰在 15.0 格处的命中方块
+  const r = aimAndPlace(player, editor, [3.0, 1, 8.5], [1, 0, 0]);
+  assertEqual(r.target.dist, 15, '前提：命中距离恰为 15');
+  assertEqual(J(r.placed), '[[8,2,8]]', '15 不 < 15 → 走候选扫描，先放沿途最近的候选；阈值写成 <= 会直接放 A=(17,2,8)');
   player.dispose();
 });
 

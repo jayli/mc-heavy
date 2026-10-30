@@ -9,9 +9,11 @@
 // 正是本次改动的落点。M7「只测 API 漏玩家主路径」的同类教训）。
 // 本 spec 用 `player.setTestAim()` 摆真实相机姿态 → `player.update()` 自己算 DDA target
 // → `player.placeBlock()`（与右键同一代码路径）。
-// v2.25（放置就近优先）：落点改为「沿视线从近到远第一个可放的候选，命中面前那格 A 排最后」，
-// 命中与打空共用 `_placeNearest()`；头格（相机所在格）永不作候选。本文件因此新增两条
-// 「真实页面」用例（就近优先 / 头格出局），原第 2 条用例的标题与注释按新语义改写（场景与断言不变）。
+// v2.25（放置就近优先）：命中 ≥ 15 格与打空时，落点改为「沿视线从近到远第一个可放的候选，命中面前
+// 那格 A 排最后」，共用 `_placeNearest()`；头格（相机所在格）永不作候选。本文件因此新增「真实页面」
+// 用例（远处命中的就近优先 / 头格出局），原第 2 条用例的标题与注释按新语义改写（场景与断言不变）。
+// v2.25 追加（用户 2026-10-30，对齐 mc-lite）：命中 **< 15 格**直接放命中面前，不看沿途候选 ——
+// 同样有一条真实页面用例钉住。
 import { test, expect } from 'playwright/test';
 
 const URL = '/?vd=2&seed=12345';
@@ -172,7 +174,7 @@ test('特殊物品（炮塔）未命中时不走兜底 —— 结构不得落在
 });
 
 /**
- * 搭「视线走廊」：高空清出 x∈[px-2,px+14] × z∈[pz-2,pz+2] × y∈[topY-3,topY+4]，玩家站 1×1 石柱
+ * 搭「视线走廊」：高空清出 x∈[px-2,px+19] × z∈[pz-2,pz+2] × y∈[topY-3,topY+4]，玩家站 1×1 石柱
  * （脚底 y=topY），再按 extra（相对 [px, topY, pz] 的偏移）摆石块。头格 = (px, topY+1, pz)。
  * ⚠️ 与 buildPillarAndStand 同理抬到 y=60 一带，避开出生点地形对射线的干扰。
  */
@@ -180,7 +182,7 @@ async function buildRayCorridor(page, extra, topY = 60) {
   return page.evaluate(async ({ topY, extra }) => {
     const g = window.__MC_GAME__, pl = g.player, stone = g.registry.idOf('stone');
     const px = Math.floor(pl.physics.pos.x), pz = Math.floor(pl.physics.pos.z);
-    for (let dx = -2; dx <= 14; dx++) for (let dz = -2; dz <= 2; dz++)
+    for (let dx = -2; dx <= 19; dx++) for (let dz = -2; dz <= 2; dz++)
       for (let y = topY - 3; y <= topY + 4; y++) g.editor.setBlock({ x: px + dx, y, z: pz + dz, id: 0 });
     g.editor.setBlock({ x: px, y: topY - 1, z: pz, id: stone });
     for (const [dx, dy, dz] of extra) g.editor.setBlock({ x: px + dx, y: topY + dy, z: pz + dz, id: stone });
@@ -191,10 +193,10 @@ async function buildRayCorridor(page, extra, topY = 60) {
   }, { topY, extra });
 }
 
-test('就近优先：命中远处方块，但视线擦过更近的可贴格 → 放在近处（真实页面）', async ({ page }) => {
+test('近处命中（<15 格）：直接放命中面前，不看沿途候选（真实页面，对齐 mc-lite）', async ({ page }) => {
   test.setTimeout(150_000);
   await boot(page);
-  // 侧墙 (px+3, 头格高, pz-1)：视线擦过；远处被命中的方块 (px+12, 头格高, pz)
+  // 侧墙 (px+3, 头格高, pz-1)：视线擦过，是候选；近处被命中的方块 (px+12, 头格高, pz)：距离 11.5 < 15
   const s = await buildRayCorridor(page, [[3, 1, -1], [12, 1, 0]]);
   expect(await selectItem(page, 'stone'), 'stone 须在背包里').toBeGreaterThanOrEqual(0);
 
@@ -204,23 +206,50 @@ test('就近优先：命中远处方块，但视线擦过更近的可贴格 → 
     pl.setTestAim([1, 0, 0]);                              // 朝 +X 平视
     await new Promise((r) => requestAnimationFrame(r));    // 让 update() 用新姿态重算 DDA target
     const at = (dx) => g.world.getBlockId(s.px + dx, s.headY, s.pz);
-    const target = pl.target ? { B: pl.target.blockPos, P: pl.target.prevPos } : null;
-    const before = { near: at(3), far: at(11) };
+    const target = pl.target ? { B: pl.target.blockPos, dist: pl.target.dist } : null;
+    const before = { near: at(3), front: at(11) };
     pl.placeBlock();
-    return { target, before, after: { near: at(3), far: at(11) }, stone: g.registry.idOf('stone') };
+    return { target, before, after: { near: at(3), front: at(11) }, stone: g.registry.idOf('stone') };
   }, s);
 
-  expect(r.target?.B, '前提：主射线命中远处方块').toEqual([s.px + 12, s.headY, s.pz]);
-  expect(r.before, '放前两格都是空气').toEqual({ near: 0, far: 0 });
-  expect(r.after.near, '落在贴侧墙的最近格').toBe(r.stone);
-  expect(r.after.far, '命中面前一格（A）不放').toBe(0);
+  expect(r.target?.B, '前提：主射线命中近处方块').toEqual([s.px + 12, s.headY, s.pz]);
+  expect(r.target?.dist, '前提：命中距离 < 15').toBeLessThan(15);
+  expect(r.before, '放前两格都是空气').toEqual({ near: 0, front: 0 });
+  expect(r.after.front, '直接放在命中面前').toBe(r.stone);
+  expect(r.after.near, '沿途候选（贴侧墙那格）不看').toBe(0);
 });
 
-test('头格出局：背靠墙面朝外瞄远处，手持花草落在命中面前、不进头格（真实页面）', async ({ page }) => {
+test('远处命中（≥15 格）：视线擦过更近的可贴格 → 放在近处（真实页面）', async ({ page }) => {
   test.setTimeout(150_000);
   await boot(page);
-  // 墙紧贴头格的 -X 侧；远处被命中的方块 (px+12, 头格高, pz)
-  const s = await buildRayCorridor(page, [[-1, 1, 0], [12, 1, 0]]);
+  // 侧墙 (px+3, 头格高, pz-1)：视线擦过；远处被命中的方块 (px+17, 头格高, pz)：距离 16.5 ≥ 15
+  const s = await buildRayCorridor(page, [[3, 1, -1], [17, 1, 0]]);
+  expect(await selectItem(page, 'stone'), 'stone 须在背包里').toBeGreaterThanOrEqual(0);
+
+  const r = await page.evaluate(async (s) => {
+    const g = window.__MC_GAME__;
+    const pl = g.player;
+    pl.setTestAim([1, 0, 0]);
+    await new Promise((r) => requestAnimationFrame(r));
+    const at = (dx) => g.world.getBlockId(s.px + dx, s.headY, s.pz);
+    const target = pl.target ? { B: pl.target.blockPos, dist: pl.target.dist } : null;
+    const before = { near: at(3), front: at(16) };
+    pl.placeBlock();
+    return { target, before, after: { near: at(3), front: at(16) }, stone: g.registry.idOf('stone') };
+  }, s);
+
+  expect(r.target?.B, '前提：主射线命中远处方块').toEqual([s.px + 17, s.headY, s.pz]);
+  expect(r.target?.dist, '前提：命中距离 ≥ 15').toBeGreaterThanOrEqual(15);
+  expect(r.before, '放前两格都是空气').toEqual({ near: 0, front: 0 });
+  expect(r.after.near, '落在贴侧墙的最近格').toBe(r.stone);
+  expect(r.after.front, '命中面前一格（A）不放').toBe(0);
+});
+
+test('头格出局：背靠墙面朝外瞄远处（≥15 格），手持花草落在命中面前、不进头格（真实页面）', async ({ page }) => {
+  test.setTimeout(150_000);
+  await boot(page);
+  // 墙紧贴头格的 -X 侧；远处被命中的方块 (px+17, 头格高, pz)：距离 16.5 ≥ 15，才会走候选扫描
+  const s = await buildRayCorridor(page, [[-1, 1, 0], [17, 1, 0]]);
   expect(await selectItem(page, 'short_grass'), 'short_grass 须在背包里').toBeGreaterThanOrEqual(0);
 
   const r = await page.evaluate(async (s) => {
@@ -231,10 +260,10 @@ test('头格出局：背靠墙面朝外瞄远处，手持花草落在命中面�
     const at = (dx) => g.world.getBlockId(s.px + dx, s.headY, s.pz);
     const target = pl.target ? { B: pl.target.blockPos } : null;
     pl.placeBlock();
-    return { target, head: at(0), far: at(11), grass: g.registry.idOf('short_grass') };
+    return { target, head: at(0), far: at(16), grass: g.registry.idOf('short_grass') };
   }, s);
 
-  expect(r.target?.B, '前提：主射线命中远处方块').toEqual([s.px + 12, s.headY, s.pz]);
+  expect(r.target?.B, '前提：主射线命中远处方块').toEqual([s.px + 17, s.headY, s.pz]);
   expect(r.head, '头格不得被放进花草（头格出局）').toBe(0);
   expect(r.far, '花草落在命中面前').toBe(r.grass);
 });
