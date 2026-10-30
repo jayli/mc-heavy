@@ -833,10 +833,20 @@ export class Player {
    * @returns {boolean} 是否真的放下了一块
    */
   _placeSingle(x, y, z, id) {
-    // 不与玩家自身 AABB 重叠
-    const p = this.physics.pos;
-    if (x === Math.floor(p.x) && z === Math.floor(p.z) &&
-        (y === Math.floor(p.y) || y === Math.floor(p.y + 1))) return false;
+    // 不与玩家自身 AABB 重叠（v2.22）。
+    //
+    // **必须是真实 AABB，不得退回格近似**：旧实现是
+    // `x === floor(p.x) && z === floor(p.z) && (y === floor(p.y) || y === floor(p.y+1))`，
+    // 玩家 AABB 是 0.6×1.8×0.6，它只覆盖玩家那一列 + 脚底/头顶两格 —— 实测 `(8.9,1,8.9)` 时
+    // 有 6 格被放行但真实相交，方块嵌进玩家身体后物理把它当墙/天花板（用户报告的穿模）。
+    // mc-lite `PlayerInteraction.tryPlaceBlock` 用的就是真实 AABB 精确判据，本仓移植时退化了。
+    //
+    // **只对实心方块拒绝**（相对 mc-lite 的**有意偏离**，它有 `isSolid` 早退但那条查的是**目标格**
+    // 现状，不是「新方块会不会阻挡玩家」）：花草/水/藤/睡莲等 `solidTable === 0` 的方块放进
+    // 玩家 AABB 也**不产生任何碰撞**（`physics._collides` 只读这张表），不存在穿模；
+    // 这是 vanilla `Level.isUnblocked()`（只对非空碰撞形状拒绝）的口径，也是唯一会让守卫
+    // 「合法地放行」的情形。
+    if (this.registry.solidTable[id] === 1 && this.physics.overlapsBlock(x, y, z)) return false;
     // M3.2：算放置朝向（三分支，不看玩家 yaw）。与 M3.1 的取物品逻辑正交叠加。
     const meta = getPlacementOrientation(x, y, z, id, this.registry.orientationModesTable,
       this.lastRemovedBlock, this.placementOrientationMemory);

@@ -226,6 +226,31 @@ export class PlayerPhysics {
   }
 
   /**
+   * 玩家当前 AABB 与「某个单位立方体格」是否有**正体积重叠**（v2.22 放置守卫用）。
+   *
+   * 尺寸走 `aabb()`（`PLAYER_WIDTH`/`PLAYER_HEIGHT` 的单一权威，与碰撞检测同一份）——
+   * 不得在消费方重算一遍（红线 1）。
+   *
+   * **判据必须用格近似的反例**：旧版 `Player._placeSingle()` 的守卫是
+   * `x === floor(p.x) && z === floor(p.z) && (y === floor(p.y) || y === floor(p.y+1))`，
+   * 它只覆盖「玩家所处的那一列 + 脚底/头顶两格」，两处漏判（实测 `(8.9,1,8.9)` 时有 **6 格**
+   * 被放行但真实 AABB 相交）：
+   * ① AABB 宽 0.6，`p.x` 小数部分 >0.7 或 <0.3 时**跨两列**；
+   * ② 竖直用 `floor(p.y)+1` 而非真实顶面 → 跳跃/下落中（`p.y` 是小数）头顶格漏判。
+   *
+   * **严格不等式是载荷性的**：贴面（AABB 的某个面正好落在格边界上，如 `p.x = 8.7` 时右边界
+   * 恰好是 `x = 9` 格的左面）**不算重叠** —— 用 `>=` 会把「贴着墙放的方块」误杀。
+   * @param {number} x @param {number} y @param {number} z 方块格的整数坐标
+   * @returns {boolean}
+   */
+  overlapsBlock(x, y, z) {
+    const b = this.aabb();
+    return b.minX < x + 1 && b.maxX > x &&
+           b.minY < y + 1 && b.maxY > y &&
+           b.minZ < z + 1 && b.maxZ > z;
+  }
+
+  /**
    * 玩家当前 AABB（M7）：尺寸派生自本文件的 `PLAYER_WIDTH`/`PLAYER_HEIGHT` 常量 ——
    * **不得在消费方重算一遍**。巢穴放置的 player-overlap 预检必须用与碰撞检测**同一个** AABB，
    * 否则会撕裂出「物理说没撞墙、巢穴说压住了玩家」（或反之）的不一致判定（红线 1）。
