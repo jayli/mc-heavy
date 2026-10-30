@@ -1565,11 +1565,15 @@ seed 88 突破「单步落差 ≤1」（到 2 格），24 是守住无台阶的�
   （与 Cloudland 素材同一条教训）。
 
 - **`BLOCK_MAP` 的目标全部是既有方块**（用户「不要自创方块」）：`light_gray_concrete_powder`
-  → `light_gray_cloth`（贴图均值 163，与源观感一致）/ `stone` → `stone` /
-  `andesite` → `stone_diorite`（均值 189，比 stone 126 浅一档）/
-  `green_wool` → `moss` / `black_terracotta`+`black_concrete` → `polished_blackstone_bricks`（均值 42）。
+  → `light_gray_cloth`（贴图均值 163，与源观感一致）/ **`stone` → `clay`**（均值 161,166,179；
+  2026-10-30 用户指定「stone 方块改成 clay」，改前是 `stone` 126——⚠️ 黏土与主材 `light_gray_cloth`
+  几乎同亮，原先「石头暗一档」的层次会变弱，这是用户知的取舍）/ `andesite` → **`marble`**（均值 240；
+  同日用户指定「stone_diorite 改成 marble」，改前是 `stone_diorite` 189）/ `green_wool` → `dark_grass` /
+  `black_terracotta`+`black_concrete` → `polished_blackstone_bricks`（均值 47）。
   ⚠️ **不能用 `stone_andesite`** —— 那个名字只出现在 `FACES_DATA.stone` 的顶底面里，
   **不是独立方块**。
+  ⚠️ 改这一行必须同步 `SHALLOW_TARN_PALETTE` 白名单 + 重跑 `npm run shallowtarns`
+  （`check:data` 的 `[浅水高台]` 会同时抓白名单与指纹）。
   ⚠️ **门禁的「不引入砖木」判据必须用白名单，不能用 `/brick|planks|wood|log/i` 名字模式**：
   `polished_blackstone_bricks` 会命中 `/brick/`，而它是本次特意选的最暗一档贴图。
 
@@ -1766,27 +1770,38 @@ seed 88 突破「单步落差 ≤1」（到 2 格），24 是守住无台阶的�
   缩略图。几何只能从 `.schem` 取，靠 26 连通分量的格数与 `BlockCount` **精确唯一匹配**来
   对应「哪个蓝图是哪块几何」。⚠️ 剔除 y=0 地板层再做连通分量，否则 38 个结构会连成一片。
 
-### 瞬移行与面板布局（v2.10，后续面板加按钮 / 改文案必读）
+### 瞬移行与面板布局（v2.19，后续面板加按钮 / 改文案必读）
 
-- **瞬移行五按钮的顺序 = 用户指定**（用户 2026-10-29：「标记，跳转标记，回家，高台，竞技场」）：
-  前三个是**标记三连**（记录 → 跳回 → 回家），后两个是**去地标**（高台 / 竞技场）。
+- **瞬移行六按钮的顺序 = 用户指定**（v2.10「标记，跳转标记，回家，高台，竞技场」+
+  v2.19 末尾追加「湖」，用户 2026-10-30）：「前三个是**标记三连**（记录 → 跳回 → 回家），
+  后三个是**去地标**（高台 / 竞技场 / 湖）。
   这**推翻了 v1.92 的「先地标后标记」**，不要按习惯改回去。`teleport.spec` 同时钉
   「视觉顺序（`offsetTop` 同一行）」与「DOM 文档序 == 该顺序」—— 只钉一个时，
   调换 DOM 顺序但视觉上摆对（或反之）会漏过。
-- **⚠️ 五条文案必须 ≤ 4 字，这是布局载荷不是审美**：左列实测 **375px**，五个按钮由
-  `.mc-btn-group` 的 `flex:1` 平分 ⇒ 每个 **69px**（12px 字号、`padding:6px 4px`）。
-  「跳转标记位置」6 字会让 `scrollWidth > clientWidth` → 文字被裁（**没有 ellipsis**）
-  且面板高度涨一档。与 v1.98「导入进度→导入」是**同一条约束的第二次触发**。
-  判据：`teleport.spec` 逐按钮断言 `scrollWidth <= clientWidth` + 面板
-  `.mc-content` 的 `scrollHeight <= clientHeight`（不得出现纵向滚动条）。
+- **⚠️ 六条文案必须 ≤ 3 字，这是布局载荷不是审美**：左列实测 **375px**，六个按钮由
+  `.mc-btn-group` 的 `flex:1` 平分 ⇒ 每个 **56px**（`clientWidth` 52，扣 `padding:6px 4px`
+  后内容宽 **44px**；五个按钮时是 69/65/56）。12px 字号下 **3 字 = 36px 刚好、4 字 = 48px
+  就折行**（实测按钮高 33 → 50px）—— v2.19 因此把「跳转标记」缩成「跳转」。
+  ⚠️⚠️ **`scrollWidth <= clientWidth` 对「折行」没有判别力**（中文可任意字间断行；
+  折行时两者依然相等，实测 52 == 52）。判据必须加一层**行盒数 == 1**
+  （`Range.getClientRects()` 的 `top` 去重）—— 这条已在 `teleport.spec` 里；
+  面板 `.mc-content` 的 `scrollHeight <= clientHeight` 继续钉「不得出现纵向滚动条」。
 - **`teleportToArena()` 的落点口径与 `apply.js` 阶段 2.9 同源**：`x/z = anchor.wx/wz`、
   `y = anchor.floorY + 1`。原理同 `tarn` 的 `tarnSurfaceYAt(...) + 1` —— 阶段 2.9 用
   `rasterizeStructure(..., floorY - (floorRow - 1), ...)` 让**地板层**坐落在 `floorY`，
   故站 `floorY + 1` 就是站在场地上。少写 `+1` 会把玩家埋进地板（实测 `Received: -2`）。
   ⚠️ **直接复用 `computeArenaAnchor` 的 seed 缓存**（64 项、实测中位 56ms），不建第二份落点副本。
-- **失败 reason 必须逐条独立**：`no-arena`（这个世界没生成竞技场，换个 seed 才行）与
-  `not-found`（附近没有高台地带，走远点再试）是完全不同的处境。合成一句「附近没有东西」
-  会让玩家走错方向 —— 这是 v1.92 定的「逐 reason 映射」口径，新增瞬移入口时照办。
+- **`teleportToShallowTarn()`（v2.19，「湖」）的落点要扫方位，不能死钉正西**：
+  落点 = 湖心方向 `R(θ) + BEACH_WIDTH + SLOPE_WIDTH/2` 的**缓坡带**，`y = shallowTarnSurfaceYAt(...) + 1`。
+  ⚠️ v2.15 的干湿两态会让**整条沙滩带**在「自然地形本身就是水」那一侧沉成水下坡 ⇒
+  死钉正西时玩家可能落在水下坡上。故从正西向两侧对称试 24 个方位（步长 0.15 rad），
+  取第一个**地表 ≥ `SEA_Y`**（上方没有水方块，与 `fillColumn` 的水体判据同源）的；
+  全湿时回落正西（按钮永远有反应）。⚠️ 湖岸半径只走 `shallowTarnLakeRadiusAt`。
+  ⚠️ **E2E 不得复制那段扫方位的逻辑**（会变成第二份落点权威）—— 验**性质**：
+  在湖心以西、距离∈(沙滩带, 整形区)、地表 ≥ `SEA_Y`、且世界实测「最高实心格」== 传送 y − 1。
+- **失败 reason 必须逐条独立**：`no-arena`（这个世界没生成竞技场）/ `no-lake`（没生成浅水高台，
+  两者都换个 seed 才行）与 `not-found`（附近没有高台地带，走远点再试）是完全不同的处境。
+  合成一句「附近没有东西」会让玩家走错方向 —— 这是 v1.92 定的「逐 reason 映射」口径。
 - **新增瞬移入口的接线三件事**（缺一即静默）：① `Game` 加方法（**业务逻辑不在面板**：
   面板只做 DOM 与文案，否则要 import voxel/gen 层、违反 §3）；② `settings-panel.js` 加
   导出文案常量 + `mk()` 一个按钮 + `_teleportMessage` 的 `kind`/`reason` 两个分支；

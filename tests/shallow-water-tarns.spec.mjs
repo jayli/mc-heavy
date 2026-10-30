@@ -196,7 +196,7 @@ test('浅水高台：五座高台都在湖里、互不重叠、且只有深浅�
       // 候选材质含 `moss` / `grass`：它们是 ⑤「不得出现 moss」与 ④「不得残留香草 grass」的被测对象，
       // 漏掉会让那两条断言变成恒真。
       const PLATFORM_MATS = new Set([
-        'light_gray_cloth', 'stone_diorite', 'polished_blackstone_bricks',
+        'light_gray_cloth', 'marble', 'polished_blackstone_bricks',
         'dark_grass', 'light_grass', 'moss', 'grass',
       ]);
       const counts = new Map();

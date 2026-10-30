@@ -23,7 +23,7 @@ import {
   PLAYGROUND_OPEN_LABEL, PLAYGROUND_CLOSE_LABEL, PLAYGROUND_ERRORS,
   PLAYGROUND_ROW_TITLE, PROGRESS_ROW_TITLE, PROGRESS_EXPORT_LABEL, PROGRESS_IMPORT_LABEL, PROGRESS_ERRORS,
   TELEPORT_ROW_TITLE, TELEPORT_TARN_LABEL, TELEPORT_MARK_LABEL, TELEPORT_GO_LABEL,
-  TELEPORT_HOME_LABEL, TELEPORT_ARENA_LABEL,
+  TELEPORT_HOME_LABEL, TELEPORT_ARENA_LABEL, TELEPORT_LAKE_LABEL,
 } from '../ui/settings-panel.js';
 import { Toast, TOAST_Z_INDEX } from '../ui/toast.js';
 import { PANEL_CSS as INVENTORY_PANEL_CSS, TOOLTIP_Z_INDEX } from '../ui/inventory.js';
@@ -368,27 +368,31 @@ test('浮层的 z-index 必须高于背包与设置面板（否则被面板盖�
     '浮层 CSS 的 z-index 必须引用 TOOLTIP_Z_INDEX 常量（不得另写一份字面量）');
 });
 
-test('瞬移行的标题与五个按钮文案是导出的单一口径常量（v2.10 五按钮）', () => {
-  // v2.10 用户 2026-10-29：「操作面板中的瞬移区，按钮调整一下：标记，跳转标记，回家，高台，竞技场。
-  //   尽量在一行摆下这五个按钮，增加了一个竞技场的瞬移」
+test('瞬移行的标题与六个按钮文案是导出的单一口径常量（v2.19 六按钮）', () => {
+  // v2.10 用户 2026-10-29：「操作面板中的瞬移区，按钮调整一下：标记，跳转标记，回家，高台，竞技场」；
+  // v2.19 用户 2026-10-30：「增加一个瞬移按钮：湖，点击瞬移到浅水高台地图」。
   //
-  // ⚠️ **文案全部缩短到 ≤ 4 字不是审美而是布局的必然**：左列实测 375px、`.mc-btn-group` 的
-  // `gap:8px` + 按钮 `padding:6px 4px` 下，**五个按钮平分只剩 ~65px 每个**（12px 字号 ≈ 5 个汉字）。
-  // 「跳转标记位置」6 字会将按钮擑宽 → `scrollWidth > clientWidth` → 文案折行 → 面板高度涨一档
-  // （v1.98 的「导入进度/导出进度」改为「导入/导出」是同一个原因，那条约束已记在 CLAUDE.md）。
+  // ⚠️ **文案全部缩短到 ≤ 3 字不是审美而是布局的必然**：左列实测 375px、`.mc-btn-group` 的
+  // `gap:8px` + 按钮 `padding:6px 4px` 下，**六个按钮平分只剩 56px 每个**（`clientWidth` 52、
+  // 内容宽 44px）⇒ 12px 字号下 3 字（36px）刚好、**4 字（48px）就会折行**。
+  // 实测（真游戏页注入第 6 个按钮）：四字的「跳转标记」变成 2 行、按钮高 33 → 50px。
+  // 故 v2.19 把「跳转标记」缩成「跳转」（用户裁定）。
+  // ⚠️ `scrollWidth <= clientWidth` **对折行没有判别力**（折行时两者依然相等），真正的信号是
+  // 行盒数 —— 那条断言在 `tests/teleport.spec.mjs` 里（Tier 4，能量真实布局）。
   assertEqual(TELEPORT_ROW_TITLE, '瞬移');
   assertEqual(TELEPORT_MARK_LABEL, '标记');
-  assertEqual(TELEPORT_GO_LABEL, '跳转标记');
+  assertEqual(TELEPORT_GO_LABEL, '跳转');
   assertEqual(TELEPORT_HOME_LABEL, '回家');
   assertEqual(TELEPORT_TARN_LABEL, '高台');
   assertEqual(TELEPORT_ARENA_LABEL, '竞技场');
-  // 五个按钮必须互相可区分 —— 否则玩家分不出「标记」与「跳转标记」哪一个是记录
+  assertEqual(TELEPORT_LAKE_LABEL, '湖');
+  // 六个按钮必须互相可区分 —— 否则玩家分不出「标记」与「跳转」哪一个是记录
   const all = [TELEPORT_MARK_LABEL, TELEPORT_GO_LABEL, TELEPORT_HOME_LABEL,
-    TELEPORT_TARN_LABEL, TELEPORT_ARENA_LABEL];
-  assertEqual(new Set(all).size, 5, '五个瞬移按钮文案不得重复');
-  // 文案长度约束（布局）：单行排下五个按钮的前提
+    TELEPORT_TARN_LABEL, TELEPORT_ARENA_LABEL, TELEPORT_LAKE_LABEL];
+  assertEqual(new Set(all).size, 6, '六个瞬移按钮文案不得重复');
+  // 文案长度约束（布局）：单行排下六个按钮的前提（实测 3 字 = 36px ≤ 44px 可用宽）
   for (const label of all) {
-    assertTrue(label.length <= 4, `「${label}」超过 4 个字，五个按钮一行摆不下（会折行）`);
+    assertTrue(label.length <= 3, `「${label}」超过 3 个字，六个按钮一行摆不下（会折行）`);
   }
   assertFalse(TELEPORT_ROW_TITLE === PROGRESS_ROW_TITLE, '瞬移行不得与进度管理行撞名');
 });

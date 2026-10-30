@@ -73,9 +73,11 @@ import { computeTarnZone, findNearestTarnZone } from '../gen/structures/tarn-zon
 import { computeArenaAnchor } from '../gen/structures/arena.js';
 import {
   computeShallowTarnAnchor, SHALLOW_TARN_OUTER_RADIUS,
+  BEACH_WIDTH, SLOPE_WIDTH, shallowTarnShapePhase, shallowTarnLakeRadiusAt,
 } from '../gen/structures/shallow-water-tarns.js';
+import { shallowTarnSurfaceYAt } from '../gen/structures/shallow-water-terrain.js';
 import { tarnSurfaceYAt } from '../gen/structures/tarn-terrain.js';
-import { WORLD_MAX_Y, WORLD_MIN_Y } from '../voxel/constants.js';
+import { WORLD_MAX_Y, WORLD_MIN_Y, SEA_Y } from '../voxel/constants.js';
 
 /**
  * 「标记位置」的 localStorage key（v1.92）。
@@ -93,6 +95,24 @@ const MARK_KEY = 'mc_heavy_mark_v1';
  * 视野里能看见整片地带的轮廓（圆心在 120 格外），又不会站在圆外的自然地形上看不清边界。
  */
 const TARN_TELEPORT_MARGIN = 6;
+
+/**
+ * 瞬移到浅水高台时，落点相对**该方位的湖岸线**再往外的格数（v2.19）。
+ *
+ * = 沙滩带宽 + 半个缓坡带（7 + 12 = 19）：落在缓坡中部 —— 身后是 City 那一侧的自然地形，
+ * 面前是整个湖与五座台地（与「高台」按钮的 `TARN_TELEPORT_MARGIN` 同一口径）。
+ * ⚠️ 两个带宽都从 `shallow-water-tarns.js` 读，不写字面量（红线 1）。
+ */
+const SHALLOW_TARN_TELEPORT_OFFSET = BEACH_WIDTH + Math.round(SLOPE_WIDTH / 2);
+
+/**
+ * 找「干燥岸边」时扫的方位步长（弧度，≈8.6°）与候选数（24 个 = 正西 ±103°）。
+ *
+ * 湖岸谐波最多 6 条、最短周期 120° ⇒ 8.6° 的步长足以采到每一个凸起/凹陷方位，
+ * 又不会把候选数推多（每个候选只调一次带缓存的纯函数）。
+ */
+const SHALLOW_TARN_SHORE_STEP = 0.15;
+const SHALLOW_TARN_SHORE_PROBES = 24;
 
 /** 随机世界 seed（M3-4 新世界）：24bit 正整数，避开 0（noise 退化）与负值 */
 export function randomSeed() {
@@ -1216,7 +1236,7 @@ export class Game {
   }
 
   /**
-   * 传送的**唯一落地实现**（四个入口共用，红线 1）。
+   * 传送的**唯一落地实现**（五个入口共用，红线 1）。
    *
    * ## 为什么不等目标 column 加载
    *
@@ -1266,7 +1286,7 @@ export class Game {
   }
 
   /**
-   * 瞬移到已记录的位置（设置面板「跳转标记位置」按钮）。
+   * 瞬移到已记录的位置（设置面板「跳转」按钮）。
    *
    * ⚠️ **没有标记时不做任何事**（不传送、不改玩家状态），只返回 reason —— 传送到 (0,0)
    * 之类的兜底会让玩家莫名其妙被扔到出生点附近。
@@ -1340,6 +1360,54 @@ export class Game {
     // 落地后由帧循环的 `scheduler.update(playerX, playerZ)` 逐片加载（同 `_teleportTo` 的说明）。
     this._teleportTo(x, y, z);
     return { ok: true, kind: 'arena', x, y, z };
+  }
+
+  /**
+   * 瞬移到浅水高台（设置面板「湖」按钮，v2.19）。
+   *
+   * 落点 = 湖心**正西（City 那一侧）**的岸边缓坡上（下面说明为什么要在西侧扫一圈方位），
+   * 与「高台地带」按钮同一手法：
+   * x/z 由现成的纯函数算出，y 由 `shallowTarnSurfaceYAt(...) + 1` 给出（与地形生成同一份公式），
+   * 传送当帧不等目标 column 加载（见 `_teleportTo`）。
+   *
+   * ## 为什么要扫方位而不是死钉「正西」
+   *
+   * v2.15 的干湿两态会让**整条沙滩带**在「自然地形本身就是水」那一侧沉成水下坡（两侧水面连通）
+   * —— 死钉正西时玩家可能落在水下坡上，而用户 2026-10-30 选的是「干燥落地」。
+   * 故从正西开始向两侧对称试 `SHALLOW_TARN_SHORE_PROBES` 个方位，取**第一个地表不低于
+   * 海平面**的（地表 ≥ `SEA_Y` ⟺ 上方没有水方块，与 `fillColumn` 的水体判据同源）。
+   * 全部方位都湿（湖整个泡在海里）时回落正西 —— 按钮永远有反应，不因观感判据失效。
+   *
+   * ⚠️ **不与 `computeShallowTarnAnchor` 的 seed 缓存脱钩**：每次点击算一次完全可接受，
+   * 不要为落点建第二份副本（红线 1）；湖岸半径也只走 `shallowTarnLakeRadiusAt`。
+   *
+   * ⚠️ **reason 必须是独立的 `no-lake`**：与「附近没有高台地带」的 `not-found` 是两种处境
+   * （这个是换个 seed 才有，那个是走远点再试），面板逐 reason 映射（v1.92 口径）。
+   *
+   * @returns {{ok: true, kind: 'lake', x: number, y: number, z: number} | {ok: false, reason: string}}
+   */
+  teleportToShallowTarn() {
+    if (!this.player?.physics?.pos) return { ok: false, reason: 'no-player' };
+    const a = computeShallowTarnAnchor(this.seed);
+    if (!a) return { ok: false, reason: 'no-lake' };
+    const phase = shallowTarnShapePhase(this.seed);
+    const WEST = Math.PI;
+    let chosen = null;
+    for (let k = 0; k < SHALLOW_TARN_SHORE_PROBES; k++) {
+      // 0, +1, −1, +2, −2 … 从正西向两侧对称展开（先近后远，落点尽量贴 City 那一侧）
+      const ang = WEST + (k === 0 ? 0 : (k % 2 ? 1 : -1) * Math.ceil(k / 2) * SHALLOW_TARN_SHORE_STEP);
+      const r = shallowTarnLakeRadiusAt(ang, phase) + SHALLOW_TARN_TELEPORT_OFFSET;
+      const x = Math.round(a.wx + Math.cos(ang) * r);
+      const z = Math.round(a.wz + Math.sin(ang) * r);
+      const surfaceY = shallowTarnSurfaceYAt(x, z, this.seed, a);
+      if (!chosen) chosen = { x, z, surfaceY };      // 兜底 = 正西（全湿时用它）
+      if (surfaceY >= SEA_Y) { chosen = { x, z, surfaceY }; break; }
+    }
+    const { x, z } = chosen;
+    const y = chosen.surfaceY + 1;                   // +1 = 地表方块之上那一格（脚底）
+    if (![x, y, z].every((v) => Number.isFinite(v))) return { ok: false, reason: 'no-lake' };
+    this._teleportTo(x, y, z);
+    return { ok: true, kind: 'lake', x, y, z };
   }
 
   /**

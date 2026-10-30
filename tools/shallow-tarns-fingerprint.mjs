@@ -46,14 +46,13 @@ export const CONTAINER_LAYER_Y = 0;
  * 素材实测只有 9 种源方块（剥前缀/去属性后）。映射原则：
  * **全部用游戏里已有的方块**（用户 2026-11-01：「都是采用我在游戏里已有的方块，不要自创方块」），
  * 且贴图明度层级要对上 —— 选目标前逐个量过 16×16 顶面贴图的平均 sRGB
- * （`light_gray_cloth` 163 / `stone` 126 / `stone_diorite` 189 / `moss` 101~113 /
- *  `polished_blackstone_bricks` 42）。
+ * （`light_gray_cloth` 163 / `clay` 165 / `marble` 240 / `polished_blackstone_bricks` 47）。
  *
  * | 源方块 | 格数 | 目标 | 依据 |
  * |---|---|---|---|
  * | `light_gray_concrete_powder` | 201,973 | `light_gray_cloth` | 贴图均值 **163**，源方块观感完全对得上（也是高台地带浅色石的口径） |
- * | `stone` | 79,744 | `stone` | 同名同义 |
- * | `andesite` | 70,770 | `stone_diorite` | 贴图均值 **189** vs `stone` 126；安山岩比石头浅一档。⚠️ **不能用 `stone_andesite`** —— 那个名字只出现在 `FACES_DATA.stone` 的顶底面里，**不是独立方块** |
+ * | `stone` | 79,744 | `clay` | 贴图均值 **161,166,179**（2026-10-30 用户指定「stone 方块改成 clay」；改前是 `stone` 126,126,126）。⚠️ 观感上黏土（165）与主材 `light_gray_cloth`（163）几乎同亮，且 B 高 18 → 原先「石头比主体暗一档」的层次会变弱（用户已知悉）；不要再自己把它改成其它色阶 |
+ * | `andesite` | 70,770 | `marble` | 贴图均值 **240**（2026-10-30 用户指定「stone_diorite 改成 marble」；改前是 `stone_diorite` 189）。⚠️ **不能用 `stone_andesite`** —— 那个名字只出现在 `FACES_DATA.stone` 的顶底面里，**不是独立方块** |
  * | `green_wool` | 21,535 | **`dark_grass`** | 用户 2026-11-02：「所有 moss 方块都替换为 grass-dark-green」—— 直接烘成深草（**终态**，不参与深浅分块） |
  * | `grass_block` | 12,420 | **`light_grass`**（临时标记）| 用户 2026-11-01 要求用深/浅两种草 → 烘成标记，光栅化后按世界坐标噪声刷成 `dark_grass` / `light_grass`（见 `bake-shallow-tarns.mjs` 与 `paintShallowTarnGrass`）。⚠️ **不能用香草 `grass` 当标记**：`paintShallowTarnGrass` 扫整列，会把普通地形的草方块一起刷（用户 2026-11-02 报的真实缺陷）|
  * | `black_terracotta` | 1,444 | `polished_blackstone_bricks` | 贴图均值 **42**，最暗一档 |
@@ -74,8 +73,8 @@ export const CONTAINER_LAYER_Y = 0;
  */
 export const BLOCK_MAP = Object.freeze({
   light_gray_concrete_powder: 'light_gray_cloth',
-  stone: 'stone',
-  andesite: 'stone_diorite',
+  stone: 'clay',
+  andesite: 'marble',
   green_wool: 'dark_grass',
   grass_block: GRASS_MARKER_BLOCK,
   black_terracotta: 'polished_blackstone_bricks',
@@ -101,7 +100,7 @@ export const BLOCK_MAP = Object.freeze({
  * 看得见的改动，比静默误判好。
  */
 export const SHALLOW_TARN_PALETTE = Object.freeze([
-  'light_gray_cloth', 'stone', 'stone_diorite', 'polished_blackstone_bricks',
+  'light_gray_cloth', 'clay', 'marble', 'polished_blackstone_bricks',
   'dark_grass', GRASS_MARKER_BLOCK,   // 标记本身 = light_grass（见 shallow-water-tarn-data.js 的注释）
 ]);
 

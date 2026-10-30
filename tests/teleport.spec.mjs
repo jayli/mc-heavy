@@ -36,39 +36,48 @@ async function openPanel(page) {
   await expect(page.locator('#settings-modal')).toBeVisible();
 }
 
-test('瞬移：五个按钮都在面板里，同一行不换行，且位于「背景音乐」下方（用户指定落位）', async ({ page }) => {
+test('瞬移：六个按钮都在面板里，同一行不换行，且位于「背景音乐」下方（用户指定落位）', async ({ page }) => {
   test.setTimeout(180_000);
   await page.goto('/?vd=2&seed=12345');
   await page.waitForFunction(READY, null, { timeout: 90_000 });
   await page.waitForFunction(STABLE, null, { timeout: 60_000, polling: 500 });
   await openPanel(page);
 
-  // v2.10 用户 2026-10-29 指定顺序：「标记，跳转标记，回家，高台，竞技场」
+  // v2.10 用户 2026-10-29 指定顺序：「标记，跳转标记，回家，高台，竞技场」；
+  // v2.19 用户 2026-10-30 在本行末尾追加「湖」（浅水高台）。
+  // ⚠️ 「跳转标记」在 v2.19 缩成「跳转」：六个按钮每个只剩 56px（内容宽 44px），
+  //    四字会折行（实测按钮高 33 → 50px）。
   const ORDER = ['btn-mark-position', 'btn-teleport-mark', 'btn-teleport-home',
-    'btn-teleport-tarn', 'btn-teleport-arena'];
-  const LABELS = ['标记', '跳转标记', '回家', '高台', '竞技场'];
+    'btn-teleport-tarn', 'btn-teleport-arena', 'btn-teleport-lake'];
+  const LABELS = ['标记', '跳转', '回家', '高台', '竞技场', '湖'];
   const ids = new Set(ORDER);
   for (const id of ORDER) await expect(page.locator(`#${id}`)).toBeVisible();
-  expect(ids.size).toBe(5);
+  expect(ids.size).toBe(6);
 
   const rowTops = await page.evaluate((order) =>
     order.map((id) => document.getElementById(id).offsetTop), ORDER);
-  // 五个按钮必须**同一行**（`.mc-btn-group` 的 flex:1 等宽）：换成两行会让面板高度涨一档、
+  // 六个按钮必须**同一行**（`.mc-btn-group` 的 flex:1 等宽）：换成两行会让面板高度涨一档、
   // 文案也被压窄。判据用 offsetTop 相等（行内元素基线一致），不能用宽度 —— 宽度本来就相等，
   // 换行也看不出。
-  expect(new Set(rowTops).size, `五个按钮须同一行，实测 offsetTop=${rowTops.join(',')}`).toBe(1);
+  expect(new Set(rowTops).size, `六个按钮须同一行，实测 offsetTop=${rowTops.join(',')}`).toBe(1);
   expect(await page.evaluate((order) => order.map((id) => document.getElementById(id).textContent), ORDER))
     .toEqual(LABELS);
 
-  // ⚠️ **`scrollWidth <= clientWidth` 是「文案排得下」的硬判据**（v1.98 的「导入进度→导入」
-  // 就是这条逼出来的）：五个按钮平分 375px 后每个仅 ~65px 可用，12px 字号下一个汉字约 12px
-  // ⇒ 4 字已贴边。超一个字就会溢出、`text-overflow` 之外没有 ellipsis 设置 → 视觉上被裁掉。
+  // ⚠️ **`scrollWidth <= clientWidth` 只是第一层判据**（v1.98 的「导入进度→导入」就是它逼出来的）：
+  // 按钮平分 375px 后每个仅 ~56px 可用，12px 字号下一个汉字约 12px。
+  // ⚠️ **它对「文案折行」没有判别力**（v2.19 实测）：中文可在任意字间断行，四字文案放不下时
+  // 浏览器是**折成两行**而不是溢出 —— 折行时 `scrollWidth` 与 `clientWidth` 依然相等（实测 52 == 52），
+  // 真实形态是按钮高 33 → 50px。故必须再加一层**行盒数 == 1** 的判据（`Range.getClientRects()`）。
   const overflow = await page.evaluate((order) => order.map((id) => {
     const b = document.getElementById(id);
-    return { id, scrollW: b.scrollWidth, clientW: b.clientWidth, text: b.textContent };
+    const r = document.createRange();
+    r.selectNodeContents(b);
+    const lines = new Set([...r.getClientRects()].map((x) => Math.round(x.top))).size;
+    return { id, scrollW: b.scrollWidth, clientW: b.clientWidth, text: b.textContent, lines, h: b.offsetHeight };
   }), ORDER);
   for (const o of overflow) {
     expect(o.scrollW, `「${o.text}」超出按钮宽度（${o.scrollW} > ${o.clientW}）`).toBeLessThanOrEqual(o.clientW);
+    expect(o.lines, `「${o.text}」折成了 ${o.lines} 行（按钮高 ${o.h}px）—— 六个按钮平分只剩 44px 内容宽，最多 3 个字`).toBe(1);
   }
 
   // 顺序必须与 DOM 文档序一致（不能只在视觉上排对了、DOM 序错乱）
@@ -106,7 +115,7 @@ test('瞬移：五个按钮都在面板里，同一行不换行，且位于「�
   expect(ordered.iTele).toBe(ordered.iMusic + 1);
 });
 
-test('瞬移：标记 → 走远 → 跳转标记，玩家回到标记点且跨会话保留', async ({ page }) => {
+test('瞬移：标记 → 走远 → 跳转，玩家回到标记点且跨会话保留', async ({ page }) => {
   test.setTimeout(240_000);
   await page.goto('/?vd=2&seed=12345');
   await page.waitForFunction(READY, null, { timeout: 90_000 });
@@ -137,7 +146,7 @@ test('瞬移：标记 → 走远 → 跳转标记，玩家回到标记点且跨�
   const away = await page.evaluate(POS);
   expect(Math.abs(away.x - origin.x) + Math.abs(away.z - origin.z)).toBeGreaterThan(100);
 
-  // 跳转标记 → 回到标记点
+  // 跳转 → 回到标记点
   await page.locator('#btn-teleport-mark').click();
   // 传送是 async（要等目标 column 加载），等它真的落地再读坐标
   await page.waitForFunction((o) => {
@@ -169,7 +178,7 @@ test('瞬移：标记 → 走远 → 跳转标记，玩家回到标记点且跨�
   expect(backAfterReload.z).toBe(origin.z);
 });
 
-test('瞬移：没有标记时点「跳转标记位置」不传送，只给提示', async ({ page }) => {
+test('瞬移：没有标记时点「跳转」不传送，只给提示', async ({ page }) => {
   test.setTimeout(180_000);
   await page.goto('/?vd=2&seed=12345');
   await page.evaluate(() => localStorage.removeItem('mc_heavy_mark_v1'));
@@ -382,6 +391,104 @@ test('瞬移：点「竞技场」落到城南竞技场中心、站得住、且�
   expect(ground.headAir, '抬头须是空气（不能把头埋进方块里）').toBe(false);
 
   // ④ 相机真的跟过去（防「physics.pos 改了但相机没跟上」）。必须先关面板 —— 模态期
+  //    主循环跳过 player.update，相机不更新（v1.92 已踩过这个 setup 坑）。
+  await page.locator('#settings-close').click();
+  await expect(page.locator('#settings-modal')).toBeHidden();
+  await page.waitForFunction(() => {
+    const g = window.__MC_GAME__;
+    const p = g.player.physics.pos;
+    const c = g.player.camera.position;
+    return Math.abs(c.x - p.x) < 1.5 && Math.abs(c.z - p.z) < 1.5;
+  }, null, { timeout: 10_000 });
+});
+
+test('瞬移：湖 → 浅水高台西岸干燥落地（不落水、传送 y 与真实地表同源）', async ({ page }) => {
+  test.setTimeout(300_000);
+  await page.goto('/?vd=2&seed=12345');
+  await page.waitForFunction(READY, null, { timeout: 90_000 });
+  await page.waitForFunction(STABLE, null, { timeout: 60_000, polling: 500 });
+
+  // 期望值只用**纯函数**算（与 Game 同源，红线 1）：湖心 / 湖岸极径 / 海平面 / 整形区外缘。
+  // ⚠️ **不在这里复制 Game 里那段「扫方位找干燥岸」的逻辑** —— 那会变成第二份落点权威；
+  // 本用例验的是**性质**（在湖心以西、在本地图整形区内的缓坡带、干燥、y 与真实地表一致），
+  // 而不是逐值复算落点。
+  const lake = await page.evaluate(async () => {
+    const m = await import('/src/gen/structures/shallow-water-tarns.js');
+    const c = await import('/src/voxel/constants.js');
+    const a = m.computeShallowTarnAnchor(window.__MC_GAME__.seed);
+    if (!a) return null;
+    return {
+      wx: a.wx, wz: a.wz,
+      seaY: c.SEA_Y,
+      radiusMin: m.LAKE_RADIUS_MIN,
+      beach: m.BEACH_WIDTH,
+      outer: m.SHALLOW_TARN_OUTER_RADIUS,
+    };
+  });
+  // 前提：seed 12345 必须真的有浅水高台（否则本用例无判别力 —— 先跑真实数据再断言）
+  expect(lake, 'seed 12345 须生成浅水高台').not.toBeNull();
+
+  const before = await page.evaluate(POS);
+  expect(Math.abs(before.x - lake.wx) + Math.abs(before.z - lake.wz),
+    '前提：玩家出生点不在浅水高台（否则「传送生效」无判别力）').toBeGreaterThan(200);
+
+  // 真实按钮点击（不是 game.teleportToShallowTarn() —— M7 教训：只测 API 会漏「面板没接线」）
+  await openPanel(page);
+  await page.locator('#btn-teleport-lake').click();
+  // 文案必须标明是浅水高台，不能落进 default 的「已完成：」
+  await expect(page.locator('#mc-toast')).toContainText(/已瞬移到浅水高台/, { timeout: 15_000 });
+
+  const pos = await page.evaluate(POS);
+  // ① 落在湖的**西侧**（City 那一侧）：x 必须小于湖心
+  expect(pos.x, `落点须在湖心以西（pos.x=${pos.x}，湖心=${lake.wx}）`).toBeLessThan(lake.wx);
+  // ② 水平距离落在「沙滩带之外 → 整形区外缘之内」 ⇒ 落在缓坡带，属本地图而不是外面的自然地形
+  const d = Math.hypot(pos.x - lake.wx, pos.z - lake.wz);
+  expect(d, `离湖心 ${d.toFixed(1)} 格，须在沙滩带（${(lake.radiusMin + lake.beach).toFixed(1)}）之外`)
+    .toBeGreaterThan(lake.radiusMin + lake.beach);
+  expect(d, `离湖心 ${d.toFixed(1)} 格，须在整形区（${lake.outer.toFixed(1)}）之内`)
+    .toBeLessThan(lake.outer);
+  // ③ 干燥（用户 2026-10-30 选的是「干燥落地」）：地表不低于海平面 ⟺ 上方没有水方块
+  expect(pos.y - 1, `地表 y=${pos.y - 1} 须不低于海平面 ${lake.seaY}（否则落在水下坡）`)
+    .toBeGreaterThanOrEqual(lake.seaY);
+
+  // ④ 等目标 column GEN 完再验世界（传送当帧目标 region 尚未加载，见 `_teleportTo`）
+  await page.waitForFunction(() => {
+    const g = window.__MC_GAME__;
+    const p = g.player.physics.pos;
+    return g.world.hasColumn(Math.floor(p.x / 16), Math.floor(p.z / 16));
+  }, null, { timeout: 120_000 });
+
+  const ground = await page.evaluate(() => {
+    const g = window.__MC_GAME__;
+    const p = g.player.physics.pos;
+    const fy = Math.round(p.y);
+    // 该列「最高的实心方块」—— 与 `shallowTarnSurfaceYAt` 的交叉比对（真实世界 vs 纯函数）。
+    // ⚠️ 用 isSolid 扫而不是「第一个非空气」：落点列上可能长出非实心植被（草/花），
+    // 那不是地形表面，也不影响玩家站立。
+    let topY = null, topId = 0;
+    for (let y = fy + 10; y >= fy - 20; y--) {
+      if (!g.world.isSolid(p.x, y, p.z)) continue;
+      topY = y;
+      topId = g.world.getBlockId(p.x, y, p.z);
+      break;
+    }
+    return {
+      feetSolid: g.world.isSolid(p.x, fy - 1, p.z),
+      atSolid: g.world.isSolid(p.x, fy, p.z),
+      headSolid: g.world.isSolid(p.x, fy + 1, p.z),
+      topY, topName: topId ? g.registry.nameOf(topId) : 'air',
+    };
+  });
+  // ⑤ y 与真实地表同源：世界上「最高的实心方块」必须正好在脚下一格
+  expect(ground.topY, `传送 y 须正好落在地表之上（世界最高实心 y=${ground.topY}（${ground.topName}），`
+    + `脚下=${pos.y - 1}）`).toBe(pos.y - 1);
+  expect(ground.feetSolid, `脚下须是实心地表（${ground.topName}）`).toBe(true);
+  expect(ground.atSolid, '脚所在格须是空气（不能站在方块里）').toBe(false);
+  expect(ground.headSolid, '抬头须是空气（不能把头埋进方块里）').toBe(false);
+  // ⑥ 不得落在水里 —— 干燥落地的硬判据（水的 top face 低下 0.5，视觉上「站水里」也是缺陷）
+  expect(['water', 'swamp_water'], `落点地表不得是水（实得 ${ground.topName}）`).not.toContain(ground.topName);
+
+  // ⑦ 相机真的跟过去（防「physics.pos 改了但相机没跟上」）。必须先关面板 —— 模态期
   //    主循环跳过 player.update，相机不更新（v1.92 已踩过这个 setup 坑）。
   await page.locator('#settings-close').click();
   await expect(page.locator('#settings-modal')).toBeHidden();

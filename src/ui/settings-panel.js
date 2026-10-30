@@ -57,18 +57,24 @@ export const PROGRESS_ROW_TITLE = '进度管理';
  * v1.92：瞬移行的标题与按钮文案。导出供 `src/tests/test-ui.js` 钉死（单一口径）。
  * 用户 2026-10-29 需求：「在背景音乐下面增加一排按钮……功能就是瞬移」；
  * v1.97 追加「回家」；v2.10 改为五个按钮并**全部缩短到 ≤ 4 字**（用户 2026-10-29：
- * 「按钮调整一下：标记，跳转标记，回家，高台，竞技场。尽量在一行摆下这五个按钮」）。
+ * 「按钮调整一下：标记，跳转标记，回家，高台，竞技场。尽量在一行摆下这五个按钮」）；
+ * v2.19 追加「湖」（用户 2026-10-30：「增加一个瞬移按钮：湖，点击瞬移到浅水高台地图」）
+ * 并因它把「跳转标记」缩成「跳转」—— 六个按钮后**上限降到 3 字**（4 字会折行）。
  *
- * ⚠️ **文案长度是布局载荷的**：左列实测 375px，五个按钮平分后每个约 **65px**（12px 字号
- * ≈ 5 个汉字，去掉 padding 后约 4 个）。「跳转标记位置」6 字会让 `scrollWidth > clientWidth`
- * → 文案折行 → 面板高度涨一档（与 v1.98 的「导入进度→导入」同一个原因）。
+ * ⚠️ **文案长度是布局载荷的**（实测数据，不是估算）：左列 375px + `.mc-btn-group` 的
+ * `gap:8px` ⇒ 五个按钮每个 **69px**、六个只剩 **56px**（`clientWidth` 52，扣 `padding:6px 4px`
+ * 后内容宽 **44px**）⇒ 12px 字号下 3 字（36px）刚好、**4 字（48px）就折成两行**
+ * （实测按钮高 33 → 50px）。与 v1.98 的「导入进度→导入」同一个原因。
+ * ⚠️ 折行时 `scrollWidth === clientWidth`（浏览器是折行而不是溢出）—— 判断文案排不排得下
+ * 必须看**行盒数**，见 `tests/teleport.spec.mjs`。
  */
 export const TELEPORT_ROW_TITLE = '瞬移';
 export const TELEPORT_MARK_LABEL = '标记';
-export const TELEPORT_GO_LABEL = '跳转标记';
+export const TELEPORT_GO_LABEL = '跳转';
 export const TELEPORT_HOME_LABEL = '回家';
 export const TELEPORT_TARN_LABEL = '高台';
 export const TELEPORT_ARENA_LABEL = '竞技场';
+export const TELEPORT_LAKE_LABEL = '湖';
 /** 导出 / 导入模型按钮文案（创造台模型，与下行的**进度包**是两个不同粒度） */
 const EXPORT_LABEL = '导出模型';
 const IMPORT_LABEL = '导入模型';
@@ -497,15 +503,20 @@ export class SettingsPanel {
    * v1.98 把雾色+背景音乐合并成一行后，本行落在那个合并盒**下方**，仍在左列。
    *
    * ⚠️ **业务逻辑一律在 Game**（`teleportToTarnZone` / `markPosition` / `teleportToMark` /
-   * `teleportToSpawn` / `teleportToArena`）：面板只做 DOM 与文案。散落进来的话要 import voxel/gen 层，
-   * 违反依赖方向（§3）。
+   * `teleportToSpawn` / `teleportToArena` / `teleportToShallowTarn`）：面板只做 DOM 与文案。
+   * 散落进来的话要 import voxel/gen 层，违反依赖方向（§3）。
    *
-   * ⚠️ **五个按钮共享 `.mc-btn-group` 的 `flex:1`** → 同一行、等宽。行数上限取决于左列宽度
-   * （实测 375px，五个按钮时每个约 65px），`teleport.spec` 用 `offsetTop` 钉住「不得换行」
-   * （换行后每行两个按钮，文案会被压成两行，面板高度也会跟着涨）。
+   * ⚠️ **六个按钮共享 `.mc-btn-group` 的 `flex:1`** → 同一行、等宽。行数上限取决于左列宽度
+   * （实测 375px）：**五个按钮时每只 69px，六个时只剩 56px**（`clientWidth` 52、
+   * 扣掉 `padding:6px 4px` 后内容宽 **44px**）⇒ 12px 字号下**最多 3 个字**（36px）。
+   * 第四个按钮的「跳转标记」就是被这一条逼成「跳转」的（v2.19 用户裁定），
+   * 四字在 56px 按钮里会折行（实测按钮高 33→50px）。
+   * `teleport.spec` 用 `offsetTop` 钉「不得换行」、用**行盒数**钉「文案不得折行」
+   * （`scrollWidth <= clientWidth` 对折行无判别力——折行时两者依然相等，v2.19 实测）。
    *
-   * **按钮顺序 = 用户 v2.10 指定的顺序**（用户 2026-10-29：「标记，跳转标记，回家，高台，竞技场」）：
-   * 前三个是「标记相关的三连」（记录 → 跳回 → 回家），后两个是「去某个地标」（高台 / 竞技场）。
+   * **按钮顺序 = 用户指定**：v2.10（2026-10-29）「标记，跳转标记，回家，高台，竞技场」，
+   * v2.19（2026-10-30）在本行末尾追加「湖」（浅水高台）。
+   * 前三个是「标记相关的三连」（记录 → 跳回 → 回家），后三个是「去某个地标」（高台 / 竞技场 / 湖），
    * 不要按「先地标后标记」的习惯改回去 —— 那是上一版（v1.92）的顺序，用户明确重排了。
    */
   _rowTeleport() {
@@ -535,7 +546,7 @@ export class SettingsPanel {
       this._toast?.show(this._teleportMessage(r), TELEPORT_TOAST_MS);
     });
 
-    // ② 跳转标记（瞬移到标记点）
+    // ② 跳转（瞬移到标记点）
     mk(TELEPORT_GO_LABEL, 'btn-teleport-mark', () => {
       const r = this.game.teleportToMark();
       this._toast?.show(this._teleportMessage(r), TELEPORT_TOAST_MS);
@@ -559,11 +570,17 @@ export class SettingsPanel {
       this._toast?.show(this._teleportMessage(r), TELEPORT_TOAST_MS);
     });
 
+    // ⑥ 湖（浅水高台，v2.19 新增）
+    mk(TELEPORT_LAKE_LABEL, 'btn-teleport-lake', () => {
+      const r = this.game.teleportToShallowTarn();
+      this._toast?.show(this._teleportMessage(r), TELEPORT_TOAST_MS);
+    });
+
     return row;
   }
 
   /**
-   * 把 `Game` 的瞬移返回值翻成玩家可读文案（单一口径：四个按钮共用一份映射）。
+   * 把 `Game` 的瞬移返回值翻成玩家可读文案（单一口径：六个按钮共用一份映射）。
    *
    * ⚠️ **成功分支按 `kind` 区分，不得靠嗅探字段**：v1.92 原实现是「有 dist 就是高台、
    * 有 y 就是记录」，加入「回家」后它同样带 x/y/z 但**没有** dist → 会被写成「已记录位置」
@@ -582,6 +599,7 @@ export class SettingsPanel {
         case 'mark-go': return `已跳转到标记位置：${r.x}, ${r.y}, ${r.z}`;
         case 'spawn': return `已回到出生点：${r.x}, ${r.y}, ${r.z}`;
         case 'arena': return `已瞬移到竞技场：${r.x}, ${r.y}, ${r.z}`;
+        case 'lake': return `已瞬移到浅水高台：${r.x}, ${r.y}, ${r.z}`;
         // 未打 kind 的返回值（将来新增入口忘了打）也不得静默变成空提示
         default: return `已完成：${r.x}, ${r.y}, ${r.z}`;
       }
@@ -591,6 +609,7 @@ export class SettingsPanel {
       case 'not-found': return '附近范围内没有找到高台地带';
       case 'no-mark': return '尚未标记位置';
       case 'no-arena': return '这个世界里没有生成竞技场';
+      case 'no-lake': return '这个世界里没有生成浅水高台';
       default: return '操作失败';
     }
   }

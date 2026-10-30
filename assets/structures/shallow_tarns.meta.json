@@ -11,8 +11,8 @@
   "containerLayerY": 0,
   "blockMap": {
     "light_gray_concrete_powder": "light_gray_cloth",
-    "stone": "stone",
-    "andesite": "stone_diorite",
+    "stone": "clay",
+    "andesite": "marble",
     "green_wool": "dark_grass",
     "grass_block": "light_grass",
     "black_terracotta": "polished_blackstone_bricks",
@@ -22,8 +22,8 @@
   },
   "paletteWhitelist": [
     "light_gray_cloth",
-    "stone",
-    "stone_diorite",
+    "clay",
+    "marble",
     "polished_blackstone_bricks",
     "dark_grass",
     "light_grass"
@@ -46,12 +46,12 @@
       "blocks": 59760,
       "paletteSize": 6,
       "palette": [
+        "clay",
         "dark_grass",
         "light_grass",
         "light_gray_cloth",
-        "polished_blackstone_bricks",
-        "stone",
-        "stone_diorite"
+        "marble",
+        "polished_blackstone_bricks"
       ],
       "hasGrass": true,
       "sourceCounts": {
@@ -84,12 +84,12 @@
       "blocks": 12461,
       "paletteSize": 6,
       "palette": [
+        "clay",
         "dark_grass",
         "light_grass",
         "light_gray_cloth",
-        "polished_blackstone_bricks",
-        "stone",
-        "stone_diorite"
+        "marble",
+        "polished_blackstone_bricks"
       ],
       "hasGrass": true,
       "sourceCounts": {
@@ -122,12 +122,12 @@
       "blocks": 11485,
       "paletteSize": 6,
       "palette": [
+        "clay",
         "dark_grass",
         "light_grass",
         "light_gray_cloth",
-        "polished_blackstone_bricks",
-        "stone",
-        "stone_diorite"
+        "marble",
+        "polished_blackstone_bricks"
       ],
       "hasGrass": true,
       "sourceCounts": {
@@ -160,12 +160,12 @@
       "blocks": 8051,
       "paletteSize": 6,
       "palette": [
+        "clay",
         "dark_grass",
         "light_grass",
         "light_gray_cloth",
-        "polished_blackstone_bricks",
-        "stone",
-        "stone_diorite"
+        "marble",
+        "polished_blackstone_bricks"
       ],
       "hasGrass": true,
       "sourceCounts": {
@@ -198,10 +198,10 @@
       "blocks": 2892,
       "paletteSize": 4,
       "palette": [
+        "clay",
         "dark_grass",
         "light_gray_cloth",
-        "stone",
-        "stone_diorite"
+        "marble"
       ],
       "hasGrass": false,
       "sourceCounts": {
@@ -238,9 +238,9 @@
     "black_concrete": 703
   },
   "fingerprints": {
-    "input": "2b33deebe0998d8675bc450e51d1c276aa1248eb91c5c87c43cf3bd166d08139",
+    "input": "20d8b34136e3784256da8a4ebc2dec14e60a3afe311825edb9a12e920275cfe2",
     "schemSha256": "e7b8ccaf749bb09d9fdd589afc6558740322a17b14698221ce2e067cdc6aa20a",
-    "blockMap": "c91117b1b9103202b9d7c4222a8c459678259c1da9c589bdda9c2c0bfc04f9bc",
+    "blockMap": "dcd804fc88fface61fe6af1d4bc613993160d46ea856e2c27821f416a8a424f9",
     "components": "shallow_tarn_01:1:65x56x71:59760|shallow_tarn_02:9:31x12x48:12461|shallow_tarn_03:10:28x23x37:11485|shallow_tarn_04:12:25x15x37:8051|shallow_tarn_05:20:15x24x12:2892"
   }
 }
