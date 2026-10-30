@@ -15,12 +15,21 @@
 // 计时型：冲刺峰值依赖加载时序，高负载下贴线 → 先交替对照比分布，不要看单次数值（CLAUDE.md 既有口径）。
 import { test, expect } from 'playwright/test';
 
-/** 巨树景观后的初始容量（CAPACITY：opaque 1800×1900×1.25；cutout 550×3200×1.25；transparent 100×1000×1.25）
+/** 巨树景观后的初始容量（CAPACITY：opaque 1800×1900×1.25；cutout 550×3200×1.25；transparent 240×1000×1.25）
  * ⚠️ cutout 曾因巨树叶改走 cutout 通道抬到 600（2.40M）；同日用户又裁定「**普通树叶的 opaqueTable
  *  也设为 1**」→ 全部 14 个树叶族均 opaqueTable=1（叶-叶共享面互剔）→ cutout 占用大幅下降，
  *  **已回退为 550（2.20M）**：5 视域实测峰值 35.1% → 回退后 38.3%（绝对 842,400），零扩容。
- *  三通道静态回到 188.83 MiB（(4.275M+2.20M+0.125M)×30B）。 */
-const INIT = { opaque: 1800 * 1900 * 1.25, cutout: 550 * 3200 * 1.25, transparent: 100 * 1000 * 1.25 };
+ *
+ * ⚠️ **transparent 从 100 改为 240（v2.11 浅水高台，2026-11-01）**：本图视距 8 全湖视域
+ * （289 列）实测透明顶点峰值 **29.6 万**，旧上限 12.5 万会触发 1 档扩容仍不够。
+ * 三通道静态 193.62 MiB（(4.275M+2.20M+0.30M)×30B，仍 < `m3-fullscene` 的 200 MiB 门）。
+ *
+ * ⚠️ **这个常量与 `src/render/render-world.js` 的 `CAPACITY` 是一对，必须同步**：
+ * v2.11 改了 `CAPACITY.transparent.active` 100→240 却漏改这里 → 本 spec 从那天起**恒红**
+ * （2026-11-03 发现：干净 HEAD 同样失败，与本轮改动无关）。`check` 不跑这个 spec，
+ * 所以它静默躺了六天。**改 `CAPACITY` 的任何一项都必须同步这里。**
+ */
+const INIT = { opaque: 1800 * 1900 * 1.25, cutout: 550 * 3200 * 1.25, transparent: 240 * 1000 * 1.25 };
 
 /**
  * 总顶点基线（2026-10-23 第二轮：全部 14 个树叶族均为 opaqueTable=1 之后的实测值）。

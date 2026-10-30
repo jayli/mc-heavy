@@ -28,9 +28,11 @@ import {
 import {
   shallowTarnSurfaceYAt, shallowTarnGrassBlock,
   fillShallowTarnBasin, paintShallowTarnGrass, clearShallowTarnTerrainCache,
+  shallowTarnSurfaceBlock, shallowTarnPlantAt, plantShallowTarnGrass,
 } from '../gen/structures/shallow-water-terrain.js';
-import { SHALLOW_TARN_VARIANTS, SHALLOW_TARN_METRICS, GRASS_MARKER_BLOCK } from '../gen/structures/shallow-water-tarn-data.js';
+import { rollVegetation } from '../gen/structures/vegetation.js';
 import { computeRegionLayout } from '../gen/structures/structure-layout.js';
+import { SHALLOW_TARN_VARIANTS, SHALLOW_TARN_METRICS, GRASS_MARKER_BLOCK } from '../gen/structures/shallow-water-tarn-data.js';
 import { isTarnZone } from '../gen/structures/tarn-zone.js';
 
 const DEFAULT_SEED = 12345;
@@ -853,6 +855,228 @@ test('shallowTarn: 刷草不得改动自然地形里的草方块（v2.15 回归�
     assertEqual(col.blocks[blockIndex(4 + i, y, 4)], naturals[i],
       `自然地表的 ${reg.nameOf(naturals[i])} 不得被刷草改写（尤其 vanilla grass）`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// ⑤ 缓坡草地植被（v2.22，用户 2026-11-03）
+// ---------------------------------------------------------------------------
+//
+// 用户原话：「浅水高台的路基部分，如果是草地方块的话，就按照草地地图的地标植被的渲染方式，
+// 增加地表植被的渲染，包括草、花、蘑菇等，频率密度跟草地地标保持一样即可。」
+//
+// 两轮提问的裁定：
+//   ① 范围 = **只长在缓坡自然草地上**（高台模型里的 `dark_grass` / `light_grass` 不长）；
+//   ② 密度 = **普通草地全量** —— 直接调 `rollVegetation(wx, wz, 'PLAINS', seed)`，
+//      不另写一张概率表（红线 1：改 `vegetation.js` 的 PLAINS 表，两边一起变）。
+
+/**
+ * 某格**到湖岸的偏移**（测试侧工具；判据与实现同源，不重算公式）。
+ * 与 `lakeOffset` 的区别：这个吃 `SHALLOW_TARN_OUTER_RADIUS` 内的采样，用于新的植物用例。
+ */
+function offsetAt(a, seed, wx, wz) {
+  const dx = wx - a.wx, dz = wz - a.wz;
+  return Math.hypot(dx, dz) - shallowTarnLakeRadiusAt(
+    Math.atan2(dz, dx), shallowTarnShapePhase(seed),
+  );
+}
+
+/** 缓坡带（`BEACH_WIDTH < e ≤ BEACH_WIDTH+SLOPE_WIDTH`，即整形区里除湖盆与沙滩之外的部分） */
+const inSlopeBand = (e) => e > BEACH_WIDTH && e <= BEACH_WIDTH + SLOPE_WIDTH;
+
+test('shallowTarn: 缓坡草地植物 = rollVegetation 的 PLAINS 分支（逐株对齐，零拷贝概率表）', () => {
+  // ⚠️ **这是「密度跟草地地标一样」的唯一机器化判据**：不比对某个百分比常量，
+  // 而是逐格比对 `rollVegetation(..., 'PLAINS', ...)` 的返回值 —— 谁改了 PLAINS 表，
+  // 两边必须同时变（否则本条立刻红）。
+  clearShallowTarnCache();
+  clearShallowTarnTerrainCache();
+  const a = computeShallowTarnAnchor(DEFAULT_SEED);
+  assertTrue(a !== null, '默认 seed 必须有落点');
+  const R = Math.ceil(SHALLOW_TARN_OUTER_RADIUS);
+  let grassCells = 0;
+  let mismatched = 0;
+  const kinds = new Map();
+  for (let dx = -R; dx <= R; dx += 1) {
+    for (let dz = -R; dz <= R; dz += 1) {
+      const wx = a.wx + dx, wz = a.wz + dz;
+      const e = offsetAt(a, DEFAULT_SEED, wx, wz);
+      if (!inSlopeBand(e)) continue;
+      const surfY = shallowTarnSurfaceYAt(wx, wz, DEFAULT_SEED, a);
+      if (shallowTarnSurfaceBlock(wx, wz, DEFAULT_SEED, a, surfY) !== 'grass') continue;
+      grassCells++;
+      const want = rollVegetation(wx, wz, 'PLAINS', DEFAULT_SEED).plant || null;
+      const got = shallowTarnPlantAt(wx, wz, DEFAULT_SEED, a);
+      if (got !== want) mismatched++;
+      if (got) kinds.set(got, (kinds.get(got) || 0) + 1);
+    }
+  }
+  // sanity：缓坡草地必须足够多，否则本条无判别力（实测 9985 列）
+  assertTrue(grassCells > 5000, `缓坡草地采样太少（${grassCells} 列）—— 本用例无判别力`);
+  assertEqual(mismatched, 0, `必须逐株等于 PLAINS 分支（${mismatched}/${grassCells} 格不一致）`);
+  // 物种覆盖：草 / 花 / 蘑菇三类都必须真的出现（用户点名要这三类）
+  for (const name of ['short_grass', 'red_mushroom']) {
+    assertTrue((kinds.get(name) || 0) > 0, `${name} 必须出现（实得 ${kinds.get(name) || 0}）`);
+  }
+  const flowers = (kinds.get('allium') || 0) + (kinds.get('flower') || 0) + (kinds.get('azure_bluet') || 0);
+  assertTrue(flowers > 0, `花必须出现（allium/flower/azure_bluet 合计 ${flowers}）`);
+});
+
+test('shallowTarn: 沙滩 / 湖盆 / 水下坡 / 整形区外一株植物都不长', () => {
+  // 用户说的是「**草地方块的话**」才长 —— 沙岸与水面下的坡不长草，也不该长花。
+  // ⚠️ 水下坡（接壤水系那一侧、`e > BEACH_WIDTH` 但 `targetY ≤ SEA_Y-1`）的
+  // `shallowTarnSurfaceBlock` 返回 `sand`，必须同样排除；只判 `e > BEACH_WIDTH` 会漏它。
+  clearShallowTarnCache();
+  clearShallowTarnTerrainCache();
+  const a = computeShallowTarnAnchor(DEFAULT_SEED);
+  assertTrue(a !== null, '默认 seed 必须有落点');
+  const R = Math.ceil(SHALLOW_TARN_OUTER_RADIUS) + 30;   // 故意越过整形区边界
+  let sandCells = 0, wetSlopeCells = 0, outside = 0, bad = 0;
+  const badAt = [];
+  for (let dx = -R; dx <= R; dx += 1) {
+    for (let dz = -R; dz <= R; dz += 1) {
+      const wx = a.wx + dx, wz = a.wz + dz;
+      const e = offsetAt(a, DEFAULT_SEED, wx, wz);
+      // ⚠️ **整形区外必须先用 `e` 出局，不能看 `shallowTarnSurfaceBlock` 的返回值**：
+      // `shallowTarnSurfaceYAt` 在整形区外回落到 `generateHeight`，那里海洋/沙滩的
+      // `surf` 也会是 `sand` —— 但它**不是本地图的沙滩**，只是恰好也在水下/海底。
+      // 实测：采样外接方形里 5280 列属于这一类（第一版把 (592,43) 的自然海底 sand
+      // 判成「本地图沙滩上长了植物」，4593 格假失败）。
+      // ⚠️ 只有 `e > BEACH+SLOPE` 是「区外」—— 湖盆（`e ≤ 0`）**也是**被整形的，
+      // 不能把 `e < 0` 当区外（那会把半个湖判成「不归本地图管」）。
+      if (e > BEACH_WIDTH + SLOPE_WIDTH) {
+        outside++;
+        if (shallowTarnPlantAt(wx, wz, DEFAULT_SEED, a) !== null) {
+          bad++; if (badAt.length < 5) badAt.push(`${wx},${wz}(outside e=${e.toFixed(1)})`);
+        }
+        continue;
+      }
+      const surfY = shallowTarnSurfaceYAt(wx, wz, DEFAULT_SEED, a);
+      const surf = shallowTarnSurfaceBlock(wx, wz, DEFAULT_SEED, a, surfY);
+      const p = shallowTarnPlantAt(wx, wz, DEFAULT_SEED, a);
+      if (surf !== 'grass') {
+        if (e <= BEACH_WIDTH) sandCells++;
+        else if (inSlopeBand(e)) wetSlopeCells++;
+        if (p !== null) { bad++; if (badAt.length < 5) badAt.push(`${wx},${wz}(e=${e.toFixed(1)},${surf})`); }
+      }
+    }
+  }
+  assertTrue(sandCells > 3000, `沙滩/湖盆采样太少（${sandCells}）—— 无判别力`);
+  assertTrue(wetSlopeCells > 100, `水下坡采样太少（${wetSlopeCells}）—— 无判别力`);
+  assertTrue(outside > 100, `整形区外采样太少（${outside}）—— 无判别力`);
+  assertEqual(bad, 0, `沙岸/水下坡/整形区外不得长植物（实得 ${bad} 株：${badAt.join('; ')}）`);
+});
+
+test('shallowTarn: 不种树（缓坡只有 24 格宽，树会挡路并遮住高台）', () => {
+  // 用户只点名「草、花、蘑菇等」，未提树。PLAINS 分支有 0.5% 的 `{tree:{type:'default'}}` ——
+  // 判据直接断言那个抽签格返回 `null`（不是「树没长出来」，而是**根本不去长**）。
+  clearShallowTarnCache();
+  clearShallowTarnTerrainCache();
+  const a = computeShallowTarnAnchor(DEFAULT_SEED);
+  assertTrue(a !== null, '默认 seed 必须有落点');
+  const R = Math.ceil(SHALLOW_TARN_OUTER_RADIUS);
+  let treeDraw = 0, treePlanted = 0;
+  for (let dx = -R; dx <= R; dx += 1) {
+    for (let dz = -R; dz <= R; dz += 1) {
+      const wx = a.wx + dx, wz = a.wz + dz;
+      if (!inSlopeBand(offsetAt(a, DEFAULT_SEED, wx, wz))) continue;
+      const surfY = shallowTarnSurfaceYAt(wx, wz, DEFAULT_SEED, a);
+      if (shallowTarnSurfaceBlock(wx, wz, DEFAULT_SEED, a, surfY) !== 'grass') continue;
+      const roll = rollVegetation(wx, wz, 'PLAINS', DEFAULT_SEED);
+      if (!roll.tree) continue;
+      treeDraw++;
+      if (shallowTarnPlantAt(wx, wz, DEFAULT_SEED, a) !== null) treePlanted++;
+    }
+  }
+  assertTrue(treeDraw > 10, `树抽签格太少（${treeDraw}）—— 本用例无判别力（实测 49）`);
+  assertEqual(treePlanted, 0, `树抽签格不得长出任何植物（实得 ${treePlanted}/${treeDraw}）`);
+});
+
+test('shallowTarn: 缓坡植被是世界坐标纯函数（跨 column 一致 + 确定性）', () => {
+  // ⚠️ 判据必须是「同一格由两个不同 column 的光栅化路径算出同一结果」，
+  // 不能只做「把世界坐标重新组装后调两次」—— 那是同一个表达式调两次，恒等（杜鹃树踩过的无效盲区）。
+  clearShallowTarnCache();
+  clearShallowTarnTerrainCache();
+  const a = computeShallowTarnAnchor(DEFAULT_SEED);
+  const R = Math.ceil(SHALLOW_TARN_OUTER_RADIUS);
+  let checked = 0;
+  let diff = 0;
+  for (let dx = -R; dx <= R; dx += 7) {
+    for (let dz = -R; dz <= R; dz += 7) {
+      const wx = a.wx + dx, wz = a.wz + dz;
+      // 从「世界坐标」与「column 局部坐标反推的世界坐标」两条路径各算一次
+      const viaWorld = shallowTarnPlantAt(wx, wz, DEFAULT_SEED, a);
+      const cx = Math.floor(wx / 16), cz = Math.floor(wz / 16);
+      const viaColumn = shallowTarnPlantAt(cx * 16 + (wx - cx * 16), cz * 16 + (wz - cz * 16), DEFAULT_SEED, a);
+      checked++;
+      if (viaWorld !== viaColumn) diff++;
+    }
+  }
+  assertTrue(checked > 500, `采样太少（${checked}）`);
+  assertEqual(diff, 0, `跨 column 必须一致（${diff}/${checked} 不一致）`);
+});
+
+test('shallowTarn: plantShallowTarnGrass 把植物写在地表上方一格，且不覆盖非空格', () => {
+  // 两条载荷性约束：
+  //   ① 落位 = `surfaceY + 1`（不是 surfaceY —— 那会把草埋进地里）；
+  //   ② **目标格已非空气时不写**：沙岸上可能已经有撒布结构/其它植被的方块，
+  //      后写胜会把它顶掉（与既有巨树覆盖守卫同手法）。
+  clearShallowTarnCache();
+  clearShallowTarnTerrainCache();
+  const reg = registry();
+  const a = computeShallowTarnAnchor(DEFAULT_SEED);
+  assertTrue(a !== null, '默认 seed 必须有落点');
+  // 找一个「缓坡草地且有植物」的 column
+  const R = Math.ceil(SHALLOW_TARN_OUTER_RADIUS);
+  let target = null;
+  for (let dx = -R; dx <= R && !target; dx += 1) {
+    for (let dz = -R; dz <= R; dz += 1) {
+      const wx = a.wx + dx, wz = a.wz + dz;
+      if (!inSlopeBand(offsetAt(a, DEFAULT_SEED, wx, wz))) continue;
+      const surfY = shallowTarnSurfaceYAt(wx, wz, DEFAULT_SEED, a);
+      if (shallowTarnSurfaceBlock(wx, wz, DEFAULT_SEED, a, surfY) !== 'grass') continue;
+      if (shallowTarnPlantAt(wx, wz, DEFAULT_SEED, a) === null) continue;
+      // 该格必须整格（16×16）都在缓坡带内，便于统计
+      const cx = Math.floor(wx / 16), cz = Math.floor(wz / 16);
+      let allInside = true;
+      for (let lx = 0; lx < 16 && allInside; lx++) {
+        for (let lz = 0; lz < 16; lz++) {
+          if (!inSlopeBand(offsetAt(a, DEFAULT_SEED, cx * 16 + lx, cz * 16 + lz))) { allInside = false; break; }
+        }
+      }
+      if (allInside) { target = { cx, cz, wx, wz }; break; }
+    }
+  }
+  assertTrue(target !== null, '必须找到一个整格在缓坡带内、且有植物的 column（否则本用例无判别力）');
+
+  const col = new ChunkColumn(target.cx, target.cz);
+  fillColumn(col, DEFAULT_SEED, reg);
+  carveCaves(col, DEFAULT_SEED);
+  fillShallowTarnBasin(col, a, DEFAULT_SEED, reg);
+  // 目标格先塞一个「别人的方块」（模拟撒布/其它植被已占用）
+  const occupiedLx = target.wx - target.cx * 16;
+  const occupiedLz = target.wz - target.cz * 16;
+  const surfY = shallowTarnSurfaceYAt(target.wx, target.wz, DEFAULT_SEED, a);
+  const stoneId = reg.idOf('stone');
+  col.blocks[blockIndex(occupiedLx, surfY + 1, occupiedLz)] = stoneId;
+
+  const written = [];
+  plantShallowTarnGrass(col, a, DEFAULT_SEED, reg, (wx, y, wz, name) => {
+    const lx = wx - target.cx * 16, lz = wz - target.cz * 16;
+    const id = reg.idOf(name);
+    col.blocks[blockIndex(lx, y, lz)] = id;
+    written.push({ wx, y, wz, name });
+  });
+
+  assertTrue(written.length > 0, '该 column 必须写出至少一株植物（否则本用例无判别力）');
+  // ① 落位必须是 surfaceY + 1
+  for (const w of written) {
+    const y = shallowTarnSurfaceYAt(w.wx, w.wz, DEFAULT_SEED, a);
+    assertEqual(w.y, y + 1, `(${w.wx},${w.wz}) 植物必须落在地表上方一格（地表 ${y}）`);
+  }
+  // ② 被占用的那一格不得被覆盖
+  assertTrue(!written.some((w) => w.wx === target.wx && w.wz === target.wz),
+    `(${target.wx},${target.wz}) 已被 stone 占用，不得被植物覆盖`);
+  assertEqual(col.blocks[blockIndex(occupiedLx, surfY + 1, occupiedLz)], stoneId,
+    '被占用格必须仍是 stone');
 });
 
 // ---------------------------------------------------------------------------

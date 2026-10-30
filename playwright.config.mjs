@@ -2,7 +2,14 @@ import { defineConfig } from 'playwright/test';
 
 export default defineConfig({
   testDir: './tests',
-  timeout: 60_000,
+  // ⚠️ **全局超时必须 ≥ 最长的那个 spec 自身的 `setTimeout` / `waitForFunction` 超时**。
+  // v2.7 把 `harness.spec` 的等待窗口从 30s 提到 **90s**（因浏览器内全量单测实测已 43.9s），
+  // 却漏了同步这里 → 全局 60s **先触发**，spec 内的 90s 永远没机会生效，
+  // 而报错文案是「Test timeout of 60000ms exceeded」，看起来像用例真的卡住。
+  // 2026-11-03 实测（v2.23 后 1150 例）：整页稳定 **63.6 / 63.7s** ⇒ 60s 必然红。
+  // 取 120s：容得下 63.6s × ~1.9 的负载波动，又不至于让真卡死的用例长跑。
+  // （需要更长的 spec 各自 `test.setTimeout(...)`，那不受本值限制。）
+  timeout: 120_000,
   // 串行执行：worker-gen 的 GEN p95<8ms 是计时型冻结断言，
   // 并行 spec 会争抢 CPU 导致 flaky（实测隔离 4ms / 并行偶发 >8ms）。
   // suite 很小（6 spec ~4s），串行化消除整类计时抖动。
