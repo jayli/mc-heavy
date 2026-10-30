@@ -13,7 +13,7 @@
 import { noise, seededRandom } from '../noise.js';
 import { blockIndex, WORLD_MIN_Y, WORLD_MAX_Y, SEA_Y } from '../../voxel/constants.js';
 import { TERRAIN_HEIGHT_PARAMS, generateHeight } from '../terrain.js';
-import { TARN_SLOPE_WIDTH, TARN_ICE_RADIUS, TARN_SNOW_RADIUS } from './tarn-zone.js';
+import { TARN_SLOPE_WIDTH, TARN_ICE_RADIUS, TARN_SNOW_RADIUS, TARN_PLAZA_RADIUS, TARN_PLAZA_CROSS_HALF_WIDTH } from './tarn-zone.js';
 
 /**
  * 台地整形的噪声 salt。
@@ -47,13 +47,14 @@ const SURFACE_SCALE = TERRAIN_HEIGHT_PARAMS.COARSE_SCALE;
 export { TARN_SLOPE_WIDTH };
 
 /**
- * 台地地表方块：**四带分区**的唯一权威（单测直接用，不复制一份判据 —— 红线 1）。
+ * 台地地表方块：**四带 + 中心广场**的唯一权威（单测直接用，不复制一份判据 —— 红线 1）。
  *
- * ## 四带（v1.91，用户 2026-10-28 设计）
+ * ## 分区（v1.91 四带 + v2.25 中心广场）
  *
  * | 带 | 半径 | 材质 |
  * |---|---|---|
- * | 冰 | `0 ~ TARN_ICE_RADIUS` | `ice` |
+ * | **中心广场** | `0 ~ TARN_PLAZA_RADIUS`(28) | `smooth_stone_1`，中间一个正南正北的 3 格宽 `tuff_bricks` 十字（v2.25）|
+ * | 冰 | `TARN_PLAZA_RADIUS ~ TARN_ICE_RADIUS`(44) | `ice` |
  * | 雪环 | `TARN_ICE_RADIUS ~ TARN_SNOW_RADIUS` | `snow`，环宽按方位角连续起伏 |
  * | 草斑 + 黏土 | `TARN_SNOW_RADIUS ~ platformRadius` | `clay` 基底 + 成片连通的 `grass`/`stone` 斑块 |
  * | 黏土缓坡 | `platformRadius ~ plateauRadius` | 整片 `clay` |
@@ -69,12 +70,37 @@ export { TARN_SLOPE_WIDTH };
  * 雪环内部按低频噪声滤掉一部分（雪/非雪），于是环是断断续续的雪块，不是一条实心环。
  * `TARN_SNOW_FILL` 标定到实测占空比 ≈ 65%。
  *
+ * ## 中心广场是一层先判的覆写（v2.25，用户 2026-11-03）
+ *
+ * 广场半径 28 落在冰带内圈，所以它必须在冰/雪分支**之前**判。它不改变四条带的逻辑 ——
+ * 只是把冰带内圈那一块地表换成浅色铺砖 + 十字。广场外仍然是完整的冰带（44 − 28 = 16 格）。
+ *
  * @param {number} wx @param {number} wz @param {number} seed
  * @param {number} cx @param {number} cz @param {number} platformRadius @param {number} plateauRadius
- * @returns {'ice'|'snow'|'clay'|'grass'|'stone'}
+ * @returns {'ice'|'snow'|'clay'|'grass'|'stone'|'smooth_stone_1'|'tuff_bricks'}
  */
 export function tarnSurfaceBlock(wx, wz, seed, cx, cz, platformRadius, plateauRadius) {
-  const d = Math.hypot(wx - cx, wz - cz);
+  const dx = wx - cx;
+  const dz = wz - cz;
+  const d = Math.hypot(dx, dz);
+
+  // ── 中心广场（v2.25）：石英柱围成的圆圈内整片浅色石 + 正南正北的十字 ──
+  //
+  // **用户 2026-11-03**：「中心石英柱子围成的圆圈区域内，用 smooth_stone_1 铺设，
+  // 中间正南正北有一个十字形状的三个方块宽度的十字，十字形状用 tuff_briks 铺设，
+  // 就铺设地表一层，地下仍然是冰块」。
+  //
+  // ⚠️ **必须放在最前面（在冰/雪分支之前）**：广场落在冰带内圈（半径 28 < 冰带 44），
+  //    后在冰带分支里就会先命中 `return 'ice'`。
+  // ⚠️ **十字只在广场圆内铺**（`d <= TARN_PLAZA_RADIUS`）：四条臂自然止于圆周，
+  //    不会穿出广场进冰带（用户裁定的「贯通到圆周」）。
+  // ⚠️ **只改地表这一层** —— 本函数只决定 `fillTarnPlateau` 写进 `plateauY` 那一格的材质；
+  //    它下方的填充（第 3 步）完全不经过本函数。
+  if (d <= TARN_PLAZA_RADIUS) {
+    const inCross = Math.abs(dx) <= TARN_PLAZA_CROSS_HALF_WIDTH
+      || Math.abs(dz) <= TARN_PLAZA_CROSS_HALF_WIDTH;
+    return inCross ? 'tuff_bricks' : 'smooth_stone_1';
+  }
 
   // ── 边界扰动：同一条噪声被三条带共用，边界才能彼此「渗透」而不是各自跳 ──
   const wobble = noise(wx, wz, seed + TARN_BAND_WOBBLE_SALT, TARN_BAND_WOBBLE_SCALE) * BAND_WOBBLE;

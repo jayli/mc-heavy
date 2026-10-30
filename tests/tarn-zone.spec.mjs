@@ -148,8 +148,12 @@ test.describe('高台地带景观', () => {
       return { ...out, waterCells };
     }, { cx: c.cx, cz: c.cz, plateauY: c.lay.plateauY });
     const surface = layers['y' + c.lay.plateauY];
-    // ⚠️ v1.91 起中心是冰带（用户 2026-10-28 设计），不再是草石镶嵌
-    expect(['ice', 'snow'], `平台中心 y=${c.lay.plateauY} 应是冰/雪（实际 ${surface}）`).toContain(surface);
+    // ⚠️ v1.91 起中心是冰带（用户 2026-10-28 设计）；**v2.25 起中心是广场**（用户 2026-11-03：
+    //    「中心石英柱子围成的圆圈区域内，用 smooth_stone_1 铺设……中间正南正北有
+    //    一个十字形状的三个方块宽度的十字，十字用 tuff_bricks」）。
+    //    地带中心恰好落在十字上 → 可能是 `tuff_bricks`（|dx|<=1 或 |dz|<=1）或 `smooth_stone_1`。
+    expect(['tuff_bricks', 'smooth_stone_1'],
+      `平台中心 y=${c.lay.plateauY} 应是广场材质（实际 ${surface}）`).toContain(surface);
     expect(layers['y' + (c.lay.plateauY + 1)], '平台地表之上必须是空气').toBe('air');
     // ⚠️ v1.89 的核心断言：地带内一格水都没有
     expect(layers.waterCells, '地带内出现水格 —— v1.89 起地带必须完全无水（否则占 transparent 通道）').toBe(0);
@@ -197,7 +201,9 @@ test.describe('高台地带景观', () => {
       // ⚠️ **v1.94 起草顶是 `snow_grass` 不是 `grass`**（用户 2026-10-29：「所有顶部的草方块
       //    都换成 snow_grass」）→ 不加进集合，台地赋值率会从 84% 跌到 70%（实测）。
       //    `light_gray_cloth` 是 v1.94 的浅色石（草斑带里的成片浅灰石），同属台地地表。
-      const PLATFORM_MATERIALS = new Set(['ice', 'snow', 'clay', 'grass', 'snow_grass', 'stone', 'light_gray_cloth']);
+      //    **v2.25 起加 `smooth_stone_1` / `tuff_bricks`**（中心广场的两个材质），
+      //    不加的话「地带整形生效」的赋值率会被广场吃掉一块（实测掉 1.8 个点）。
+      const PLATFORM_MATERIALS = new Set(['ice', 'snow', 'clay', 'grass', 'snow_grass', 'stone', 'light_gray_cloth', 'smooth_stone_1', 'tuff_bricks']);
       const platformCoverage = (radMin, radMax) => {
         let total = 0, paved = 0;
         for (let i = 0; i < 64; i++) {
@@ -255,7 +261,10 @@ test.describe('高台地带景观', () => {
       // 按半径带分开统计 ---— 关键：不能全部混在一起数，否则「冰区 100% ice」与
       //「缓坡 100% clay」会互相抵消成一个看不出问题的分布。
       const bands = [
-        ['ice', 0, 44], ['snow', 44, 72], ['plot', 72, lay.platformRadius],
+        // ⚠️ **v2.25 拆出广场带、并抬高冰带下界**：广场半径 28 落在冰带内圈，
+        //    仍按 `0..44` 采样会把广场的 `smooth_stone_1`/`tuff_bricks` 算进冰带
+        //    → 「冰带 ice > 0.5」假失败（实测 43%）。冰带的语义本来就是「广场之外那一圈」。
+        ['plaza', 0, 28], ['ice', 28, 44], ['snow', 44, 72], ['plot', 72, lay.platformRadius],
         ['slope', lay.platformRadius, lay.plateauRadius],
       ];
       const out = {};
@@ -289,7 +298,34 @@ test.describe('高台地带景观', () => {
       return out;
     }, { cx: c.cx, cz: c.cz, lay: c.lay });
 
-    // ① 冰带：主体是 ice
+    // ⓪ **中心广场（v2.25）**：半径 28 内不再是冰 —— 冰/雪一格都不应出现
+    //
+    // ⚠️ **不能断言「只有 smooth_stone_1 / tuff_bricks」**：七根紫晶柱摆在环半径 20 上
+    //    （`TARN_SPIRE_RING_RADIUS`），采样圈必然打到柱体本身。实测（seed 12345 地带
+    //    (-1400,-200)，48 方位 × 4 半径 = 192 样本）：`smooth_stone_1` **0.682** /
+    //    `tuff_bricks` **0.240** / `amethyst` 0.052 / `block_of_quartz` 0.026。
+    //    后两个正是紫晶柱自己的材质（产物 palette 里就有）。
+    //    「广场逐格只能是那两种」这条严格判据在 Tier 1 的纯函数用例里已钉（0 例外）。
+    expect(surface.plaza.ice ?? 0, `广场里还有 ice —— 广场没铺开：${JSON.stringify(surface.plaza)}`)
+      .toBe(0);
+    expect(surface.plaza.snow ?? 0, `广场里还有 snow —— 广场没铺开：${JSON.stringify(surface.plaza)}`)
+      .toBe(0);
+    expect(surface.plaza.smooth_stone_1 ?? 0, `广场里 smooth_stone_1 占比 ${JSON.stringify(surface.plaza)}`)
+      .toBeGreaterThan(0.4);
+    // ⓪½ 十字真的铺出来了
+    // ⚠️ **阈值不能按几何面积比（13.2%）写**：环形采样在 4 个半径上取 48 方位，
+    //    且四臂是「轴向穿过圆心」的 —— 越靠内侧的采样圈打在十字上的比例越高
+    //    （解析：半径 3.5 处 58.3%、10.5 处 25.0%、17.5/24.5 处 8.3%；整圆几何比 13.2%）→
+    //    采样口径下 `tuff_bricks` 占比 **24.0%**（真实页面实测）。
+    //    写 13.2% 土 5 个点会假失败（同「湖泊半径收缩时 sanity 阈值未派生」的教训）。
+    //    上下界只钉「真铺了」与「没退化成大十字块」。
+    expect(surface.plaza.tuff_bricks ?? 0, `广场里十字占比 ${JSON.stringify(surface.plaza)}`)
+      .toBeGreaterThan(0.10);
+    expect(surface.plaza.tuff_bricks ?? 0).toBeLessThan(0.45);
+
+    // ① 冰带（广场之外那一圈 28~44）：主体是 ice
+    // 实测（seed 12345 地带 (-1400,-200)，真实页面）：ice **0.599** / snow 0.302 /
+    //    其余是高台/装饰件/云压在上面的方块。阈值 0.5 —— 增量余量 0.099。
     expect(surface.ice.ice ?? 0, `冰带 ice 占比 ${JSON.stringify(surface.ice)}`).toBeGreaterThan(0.5);
     // ② 雪环：有雪但不是实心一环（松散）
     const snowFrac = surface.snow.snow ?? 0;
