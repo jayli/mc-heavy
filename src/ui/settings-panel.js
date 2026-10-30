@@ -28,6 +28,17 @@ const STYLE_ID = 'mc-settings-style';
  * 2200ms 在视线从场景移回面板的过程中就淡掉了。
  */
 const TELEPORT_TOAST_MS = 3200;
+/**
+ * 瞬移**成功**后延迟多久自动关掉设置面板、把玩家放回游戏（ms）。
+ *
+ * ⚠️ **数值是用户给的，不要改成别的**（2026-10-30：「点击面板中的瞬移的时候，除了点击标记按钮外，
+ * 点击其他的按钮完成跳转后，100ms 后把设置面板关掉，自动进入游戏」）。
+ *
+ * ⚠️ **为什么不是 0**：`close()` 里会退出模态并 `requestPointerLock`；同一事件循环里立刻隐藏面板
+ * 会让这次点击的收尾（toast 布局、按钮 :active 复位）与面板消失挤在一帧里。100ms 足够让点击事件
+ * 派发走完、toast 先渲染出来，玩家从面板切回场景时不会看到一帧空白。
+ */
+export const TELEPORT_AUTO_CLOSE_MS = 100;
 /** 「删除缓存」按钮的常态文案。复位与构造必须共用同一份 —— 写两处会漂移（红线 1 精神） */
 const CLEAR_SAVE_LABEL = '删除缓存';
 
@@ -565,6 +576,12 @@ export class SettingsPanel {
    * v2.19（2026-10-30）在本行末尾追加「湖」（浅水高台）。
    * 前三个是「标记相关的三连」（记录 → 跳回 → 回家），后三个是「去某个地标」（高台 / 竞技场 / 湖），
    * 不要按「先地标后标记」的习惯改回去 —— 那是上一版（v1.92）的顺序，用户明确重排了。
+   *
+   * ⚠️ **五个「跳转」按钮成功后自动关面板**（v2.28，用户 2026-10-30：「点击其他的按钮完成跳转后，
+   * 100ms 后把设置面板关掉，自动进入游戏」）：面板一关就解除模态，`player.update` 恢复 → 相机
+   * 跟上新位置。**「标记」是唯一的例外** —— 它不跳转（只记录当前位置），关面板会让玩家莫名
+   * 回到游戏而坐标提示一闪而过。收尾统一走 `_teleportThenAutoClose()`，不要在按钮里各写一份
+   * `setTimeout`。
    */
   _rowTeleport() {
     const row = document.createElement('div');
@@ -595,35 +612,54 @@ export class SettingsPanel {
 
     // ② 跳转（瞬移到标记点）
     mk(TELEPORT_GO_LABEL, 'btn-teleport-mark', () => {
-      const r = this.game.teleportToMark();
-      this._toast?.show(this._teleportMessage(r), TELEPORT_TOAST_MS);
+      this._teleportThenAutoClose(this.game.teleportToMark());
     });
 
     // ③ 回家（回到 City 出生点）
     mk(TELEPORT_HOME_LABEL, 'btn-teleport-home', () => {
-      const r = this.game.teleportToSpawn();
-      this._toast?.show(this._teleportMessage(r), TELEPORT_TOAST_MS);
+      this._teleportThenAutoClose(this.game.teleportToSpawn());
     });
 
     // ④ 高台（最近的高台地带边缘）
     mk(TELEPORT_TARN_LABEL, 'btn-teleport-tarn', () => {
-      const r = this.game.teleportToTarnZone();
-      this._toast?.show(this._teleportMessage(r), TELEPORT_TOAST_MS);
+      this._teleportThenAutoClose(this.game.teleportToTarnZone());
     });
 
     // ⑤ 竞技场（城南门外的草地竞技场，v2.10 新增）
     mk(TELEPORT_ARENA_LABEL, 'btn-teleport-arena', () => {
-      const r = this.game.teleportToArena();
-      this._toast?.show(this._teleportMessage(r), TELEPORT_TOAST_MS);
+      this._teleportThenAutoClose(this.game.teleportToArena());
     });
 
     // ⑥ 湖（浅水高台，v2.19 新增）
     mk(TELEPORT_LAKE_LABEL, 'btn-teleport-lake', () => {
-      const r = this.game.teleportToShallowTarn();
-      this._toast?.show(this._teleportMessage(r), TELEPORT_TOAST_MS);
+      this._teleportThenAutoClose(this.game.teleportToShallowTarn());
     });
 
     return row;
+  }
+
+  /**
+   * 瞬移按钮的统一收尾：先给 toast，**成功**则 `TELEPORT_AUTO_CLOSE_MS` 后自动关面板回游戏。
+   *
+   * ⚠️ **只有 `ok === true` 才关面板**：失败（`no-mark` / `no-arena` / `no-lake` / `not-found`）
+   * 都要求玩家换个按钮或走远点再试，自动关掉只会逼他再按一次 ⚙ 把面板打开。
+   *
+   * ⚠️ **业务逻辑仍在 `Game`**（这里只消费它的返回值），与 `_teleportMessage` 同一口径 ——
+   * 面板不 import voxel/gen 层（依赖方向 §3）。
+   *
+   * ⚠️ **延迟关闭前重判 `isOpen`**：玩家完全可能在 100ms 内自己点了「关闭」或按了 Esc ——
+   * 那时不必再 `requestPointerLock` 一次（`close()` 虽然幂等，但会重复申请指针锁）。
+   *
+   * @param {{ok: boolean, reason?: string, kind?: string, x?: number, y?: number, z?: number, dist?: number}} r
+   *   `Game` 的瞬移返回值（六个入口同一形状）
+   */
+  _teleportThenAutoClose(r) {
+    this._toast?.show(this._teleportMessage(r), TELEPORT_TOAST_MS);
+    if (!r?.ok) return;
+    setTimeout(() => {
+      // 面板可能已经被玩家自己关掉，或者本项目被销毁（页面卸载）——两种情况都不该再动指针锁
+      if (this.isOpen) this.close();
+    }, TELEPORT_AUTO_CLOSE_MS);
   }
 
   /**

@@ -131,6 +131,11 @@ test('瞬移：标记 → 走远 → 跳转，玩家回到标记点且跨会话�
   await page.locator('#btn-mark-position').click();
   // 提示文案必须出现（不是静默成功）——这是玩家唯一能确认「记下了」的反馈
   await expect(page.locator('#mc-toast')).toContainText(/已记录位置/);
+  // ⚠️「标记」是六个按钮里**唯一不自动关面板**的（用户 2026-10-30：「除了点击标记按钮外，
+  // 点击其他的按钮完成跳转后」）—— 它只记录位置、不跳转，关掉面板会让坐标提示一闪而过。
+  // 晚于 TELEPORT_AUTO_CLOSE_MS（100ms）再断言，才能区分「不关」与「关得慢一点」。
+  await page.waitForTimeout(400);
+  await expect(page.locator('#settings-modal'), '点「标记」后面板必须保持打开').toBeVisible();
 
   // 标记内容落 localStorage（跨会话保留的判据）
   const stored = await page.evaluate(() => localStorage.getItem('mc_heavy_mark_v1'));
@@ -148,6 +153,11 @@ test('瞬移：标记 → 走远 → 跳转，玩家回到标记点且跨会话�
 
   // 跳转 → 回到标记点
   await page.locator('#btn-teleport-mark').click();
+  // v2.28（用户 2026-10-30）：跳转成功 100ms 后自动关面板、回到游戏。
+  // ⚠️ 这条断言必须在本用例里也有：其余五条用例各自只覆盖一个按钮，把某一支漏接线时
+  // 只有那条会红——首版本用例没写这句，负向验证实测「跳转」不关面板时**全绿**。
+  await expect(page.locator('#settings-modal'), '跳转成功后应自动关面板回游戏')
+    .toBeHidden({ timeout: 5000 });
   // 传送是 async（要等目标 column 加载），等它真的落地再读坐标
   await page.waitForFunction((o) => {
     const p = window.__MC_GAME__.player.physics.pos;
@@ -168,6 +178,9 @@ test('瞬移：标记 → 走远 → 跳转，玩家回到标记点且跨会话�
   });
   await openPanel(page);
   await page.locator('#btn-teleport-mark').click();
+  // 重载后这一支同样要自动关面板（与上一条同源断言，防止只给首次会话接线）
+  await expect(page.locator('#settings-modal'), '重载后跳转成功也应自动关面板')
+    .toBeHidden({ timeout: 5000 });
   await page.waitForFunction((o) => {
     const p = window.__MC_GAME__.player.physics.pos;
     return Math.round(p.x) === o.x && Math.round(p.z) === o.z;
@@ -190,6 +203,9 @@ test('瞬移：没有标记时点「跳转」不传送，只给提示', async ({
   await openPanel(page);
   await page.locator('#btn-teleport-mark').click();
   await expect(page.locator('#mc-toast')).toContainText('尚未标记位置', { timeout: 5000 });
+  // ⚠️ **失败不自动关面板**：`no-mark` 要玩家去点「标记」，自动关掉只会逼他再按一次 ⚙。
+  await page.waitForTimeout(400);
+  await expect(page.locator('#settings-modal'), '失败时面板必须保持打开').toBeVisible();
   const after = await page.evaluate(POS);
   // ⚠️ 无标记时**不得传送**：传送到 (0,0) 之类的兜底会把玩家莫名扔走。
   // 断言坐标逐分量不变（不是「差得不多」—— 那是另一个语义）。
@@ -270,11 +286,13 @@ test('瞬移：点「高台地带」落到最近地带**边缘**（不是圆心�
 
   // ④ 相机真的跟到了新位置（防「physics.pos 改了但相机没跟上」这类静默缺陷）
   //
-  // ⚠️ **必须先关面板**：设置面板是模态（`game.uiModal`），主循环的
+  // ⚠️ **面板必须已关闭**：设置面板是模态（`game.uiModal`），主循环的
   // `if (!this.uiModal) this.player.update(dt)` 会整体跳过 → 相机根本不更新。
   // 第一版没关面板就断言，实测 10s 超时（不是实现缺陷，是测试 setup 漏了这一步）。
-  await page.locator('#settings-close').click();
-  await expect(page.locator('#settings-modal')).toBeHidden();
+  // v2.28 起无需手动点 `#settings-close` —— 瞬移成功 100ms 后面板自己关了，
+  // 这里改成**等它自己关**（同时钉住「这条接线真的在」：五条跳转按钮各有一条用例）。
+  await expect(page.locator('#settings-modal'), '瞬移成功后应自动关面板回游戏')
+    .toBeHidden({ timeout: 5000 });
   await page.waitForFunction(() => {
     const g = window.__MC_GAME__;
     const p = g.player.physics.pos;
@@ -322,9 +340,10 @@ test('瞬移：点「回家」回到 City 出生点（与 game.spawnX/Y/Z 逐值
   expect(home.y).toBe(Math.round(spawn.y));
 
   // ④ 相机真的跟到出生点（防「physics.pos 改了但相机没跟上」这类静默缺陷）。
-  //    ⚠️ 必须先关面板：面板是模态，主循环跳过 player.update → 相机不更新。
-  await page.locator('#settings-close').click();
-  await expect(page.locator('#settings-modal')).toBeHidden();
+  //    ⚠️ 面板必须已关闭：面板是模态，主循环跳过 player.update → 相机不更新。
+  //    v2.28 起由「瞬移成功 100ms 后自动关面板」接管（用户 2026-10-30 需求）。
+  await expect(page.locator('#settings-modal'), '瞬移成功后应自动关面板回游戏')
+    .toBeHidden({ timeout: 5000 });
   await page.waitForFunction(() => {
     const g = window.__MC_GAME__;
     const p = g.player.physics.pos;
@@ -392,8 +411,9 @@ test('瞬移：点「竞技场」落到城南竞技场中心、站得住、且�
 
   // ④ 相机真的跟过去（防「physics.pos 改了但相机没跟上」）。必须先关面板 —— 模态期
   //    主循环跳过 player.update，相机不更新（v1.92 已踩过这个 setup 坑）。
-  await page.locator('#settings-close').click();
-  await expect(page.locator('#settings-modal')).toBeHidden();
+  //    v2.28 起由「瞬移成功 100ms 后自动关面板」接管（用户 2026-10-30 需求）。
+  await expect(page.locator('#settings-modal'), '瞬移成功后应自动关面板回游戏')
+    .toBeHidden({ timeout: 5000 });
   await page.waitForFunction(() => {
     const g = window.__MC_GAME__;
     const p = g.player.physics.pos;
@@ -490,8 +510,9 @@ test('瞬移：湖 → 浅水高台西岸干燥落地（不落水、传送 y 与
 
   // ⑦ 相机真的跟过去（防「physics.pos 改了但相机没跟上」）。必须先关面板 —— 模态期
   //    主循环跳过 player.update，相机不更新（v1.92 已踩过这个 setup 坑）。
-  await page.locator('#settings-close').click();
-  await expect(page.locator('#settings-modal')).toBeHidden();
+  //    v2.28 起由「瞬移成功 100ms 后自动关面板」接管（用户 2026-10-30 需求）。
+  await expect(page.locator('#settings-modal'), '瞬移成功后应自动关面板回游戏')
+    .toBeHidden({ timeout: 5000 });
   await page.waitForFunction(() => {
     const g = window.__MC_GAME__;
     const p = g.player.physics.pos;

@@ -23,7 +23,7 @@ import {
   PLAYGROUND_OPEN_LABEL, PLAYGROUND_CLOSE_LABEL, PLAYGROUND_ERRORS,
   PLAYGROUND_ROW_TITLE, PROGRESS_ROW_TITLE, PROGRESS_EXPORT_LABEL, PROGRESS_IMPORT_LABEL, PROGRESS_ERRORS,
   TELEPORT_ROW_TITLE, TELEPORT_TARN_LABEL, TELEPORT_MARK_LABEL, TELEPORT_GO_LABEL,
-  TELEPORT_HOME_LABEL, TELEPORT_ARENA_LABEL, TELEPORT_LAKE_LABEL,
+  TELEPORT_HOME_LABEL, TELEPORT_ARENA_LABEL, TELEPORT_LAKE_LABEL, TELEPORT_AUTO_CLOSE_MS,
   RESOLUTION_ROW_TITLE, RESOLUTION_LABELS,
 } from '../ui/settings-panel.js';
 import {
@@ -435,6 +435,19 @@ test('瞬移行的标题与六个按钮文案是导出的单一口径常量（v2
     assertTrue(label.length <= 3, `「${label}」超过 3 个字，六个按钮一行摆不下（会折行）`);
   }
   assertFalse(TELEPORT_ROW_TITLE === PROGRESS_ROW_TITLE, '瞬移行不得与进度管理行撞名');
+});
+
+test('瞬移：跳转成功后自动关面板的延迟是导出的单一常量，且为 100ms', () => {
+  // 用户 2026-10-30：「点击面板中的瞬移的时候，除了点击标记按钮外，点击其他的按钮完成跳转后，
+  // 100ms 后把设置面板关掉，自动进入游戏」。
+  //
+  // ⚠️ 这个数值是用户点名的，**不是可调的性能参数** —— 改成 0 会让面板消失与这次点击的收尾
+  // 挤在同一帧（toast 布局、按钮 :active 复位），改成几百毫秒则玩家会觉得「点了没反应」。
+  // 断言从常量读（不写字面量）→ 常量一动这条就红，指向本注释。
+  assertEqual(TELEPORT_AUTO_CLOSE_MS, 100);
+  // 必须真的延迟（不能是 0/负数）——setTimeout 传 0 会退化成「下一轮宏任务」窗口，
+  // 而 100ms 是给鼠标抬起与 toast 首帧留出的确定余量。
+  assertTrue(TELEPORT_AUTO_CLOSE_MS > 0, '延迟必须为正 —— 0 会让面板与点击收尾挤在同一帧');
 });
 
 test('分辨率行：标题与两个档位文案是导出的单一口径常量，且与档位值逐项对齐', () => {
