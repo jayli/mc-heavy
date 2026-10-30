@@ -43,7 +43,7 @@
 
 | 源方块 | 总格数 | 映射目标 |
 |---|---|---|
-| `light_gray_concrete_powder` | 201,973 | `light_gray_cloth`（贴图均值 163，与源观感一致） |
+| `light_gray_concrete_powder` | 201,973 | `sky_stone`（贴图均值 220；2026-11-03 用户指定把 `light_gray_cloth` 换成它，改前 163） |
 | `stone` | 79,744 | `clay`（贴图均值 161,166,179；2026-10-30 用户指定改用黏土，改前为 `stone` 126,126,126） |
 | `white_concrete` | 71,591 | **丢弃**（只在 y=0 基座） |
 | `andesite` | 70,770 | `marble`（贴图均值 240；2026-10-30 用户指定改用大理石，改前为 `stone_diorite` 189；`stone_andesite` 贴图 136 更接近但**不是方块名**） |
@@ -522,8 +522,9 @@ const v = blobNoise(wx, wz, seed + SHALLOW_GRASS_SALT, SHALLOW_GRASS_SCALE);
    `CONTAINER_LAYER_Y`/基座白名单）。**正方向**：每个源方块的映射目标必须是
    registry 里存在的方块名（或哨兵 `GRASS_PLACEHOLDER`）。
 3. **palette 白名单**（**不用**名字模式）：五个目标方块名必须**逐项等于**
-   `light_gray_cloth` / `stone` / `marble` / `moss` / `polished_blackstone_bricks`
-   的子集，外加哨兵 `GRASS_PLACEHOLDER`（不入 palette，见 §6.3）。
+   `sky_stone` / `clay` / `marble` / `polished_blackstone_bricks` /
+   `dark_grass` / `light_grass`
+   的子集（2026-11-03：主材 `light_gray_cloth` → `sky_stone`；`moss` 已按 v2.15 全部换成 `dark_grass`）。
    ⚠️ **为什么不用高台地带那条 `/brick|planks|wood|log/i` 名字判据**：实测
    `polished_blackstone_bricks` **会命中 `/brick/`**（它是本次特意选用的最暗一档
    贴图，均值 42，用来替代 `black_terracotta` / `black_concrete`）。用名字模式会

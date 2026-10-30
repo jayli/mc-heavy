@@ -10,7 +10,7 @@
   "dataVersion": 4440,
   "containerLayerY": 0,
   "blockMap": {
-    "light_gray_concrete_powder": "light_gray_cloth",
+    "light_gray_concrete_powder": "sky_stone",
     "stone": "clay",
     "andesite": "marble",
     "green_wool": "dark_grass",
@@ -21,7 +21,7 @@
     "yellow_concrete": null
   },
   "paletteWhitelist": [
-    "light_gray_cloth",
+    "sky_stone",
     "clay",
     "marble",
     "polished_blackstone_bricks",
@@ -49,9 +49,9 @@
         "clay",
         "dark_grass",
         "light_grass",
-        "light_gray_cloth",
         "marble",
-        "polished_blackstone_bricks"
+        "polished_blackstone_bricks",
+        "sky_stone"
       ],
       "hasGrass": true,
       "sourceCounts": {
@@ -87,9 +87,9 @@
         "clay",
         "dark_grass",
         "light_grass",
-        "light_gray_cloth",
         "marble",
-        "polished_blackstone_bricks"
+        "polished_blackstone_bricks",
+        "sky_stone"
       ],
       "hasGrass": true,
       "sourceCounts": {
@@ -125,9 +125,9 @@
         "clay",
         "dark_grass",
         "light_grass",
-        "light_gray_cloth",
         "marble",
-        "polished_blackstone_bricks"
+        "polished_blackstone_bricks",
+        "sky_stone"
       ],
       "hasGrass": true,
       "sourceCounts": {
@@ -163,9 +163,9 @@
         "clay",
         "dark_grass",
         "light_grass",
-        "light_gray_cloth",
         "marble",
-        "polished_blackstone_bricks"
+        "polished_blackstone_bricks",
+        "sky_stone"
       ],
       "hasGrass": true,
       "sourceCounts": {
@@ -200,8 +200,8 @@
       "palette": [
         "clay",
         "dark_grass",
-        "light_gray_cloth",
-        "marble"
+        "marble",
+        "sky_stone"
       ],
       "hasGrass": false,
       "sourceCounts": {
@@ -238,9 +238,9 @@
     "black_concrete": 703
   },
   "fingerprints": {
-    "input": "20d8b34136e3784256da8a4ebc2dec14e60a3afe311825edb9a12e920275cfe2",
+    "input": "022c5a9ae988cce68df86be3632152131a816c6abdecd146aa8bd7325d833296",
     "schemSha256": "e7b8ccaf749bb09d9fdd589afc6558740322a17b14698221ce2e067cdc6aa20a",
-    "blockMap": "dcd804fc88fface61fe6af1d4bc613993160d46ea856e2c27821f416a8a424f9",
+    "blockMap": "e8b0c0de82b6e6a11ce370697cb3735bbb8ba707b0c24d534ef529770ee225c7",
     "components": "shallow_tarn_01:1:65x56x71:59760|shallow_tarn_02:9:31x12x48:12461|shallow_tarn_03:10:28x23x37:11485|shallow_tarn_04:12:25x15x37:8051|shallow_tarn_05:20:15x24x12:2892"
   }
 }

@@ -46,11 +46,11 @@ export const CONTAINER_LAYER_Y = 0;
  * 素材实测只有 9 种源方块（剥前缀/去属性后）。映射原则：
  * **全部用游戏里已有的方块**（用户 2026-11-01：「都是采用我在游戏里已有的方块，不要自创方块」），
  * 且贴图明度层级要对上 —— 选目标前逐个量过 16×16 顶面贴图的平均 sRGB
- * （`light_gray_cloth` 163 / `clay` 165 / `marble` 240 / `polished_blackstone_bricks` 47）。
+ * （`sky_stone` 220 / `clay` 165 / `marble` 240 / `polished_blackstone_bricks` 47）。
  *
  * | 源方块 | 格数 | 目标 | 依据 |
  * |---|---|---|---|
- * | `light_gray_concrete_powder` | 201,973 | `light_gray_cloth` | 贴图均值 **163**，源方块观感完全对得上（也是高台地带浅色石的口径） |
+ * | `light_gray_concrete_powder` | 201,973 | **`sky_stone`** | 贴图均值 **220**（2026-11-03 用户指定「其中 light_gray_cloth 方块改成 sky_stone」；改前是 `light_gray_cloth` 163）。⚠️ 比原来的主材亮一档（`marble` 240 > `sky_stone` 220 > `clay` 165 > `light_gray_cloth` 163），是用户知的取舍 |
  * | `stone` | 79,744 | `clay` | 贴图均值 **161,166,179**（2026-10-30 用户指定「stone 方块改成 clay」；改前是 `stone` 126,126,126）。⚠️ 观感上黏土（165）与主材 `light_gray_cloth`（163）几乎同亮，且 B 高 18 → 原先「石头比主体暗一档」的层次会变弱（用户已知悉）；不要再自己把它改成其它色阶 |
  * | `andesite` | 70,770 | `marble` | 贴图均值 **240**（2026-10-30 用户指定「stone_diorite 改成 marble」；改前是 `stone_diorite` 189）。⚠️ **不能用 `stone_andesite`** —— 那个名字只出现在 `FACES_DATA.stone` 的顶底面里，**不是独立方块** |
  * | `green_wool` | 21,535 | **`dark_grass`** | 用户 2026-11-02：「所有 moss 方块都替换为 grass-dark-green」—— 直接烘成深草（**终态**，不参与深浅分块） |
@@ -72,7 +72,7 @@ export const CONTAINER_LAYER_Y = 0;
  * 所以门禁的「不引入砖木」判据必须用**白名单**而不是名字模式（见 `SHALLOW_TARN_PALETTE`）。
  */
 export const BLOCK_MAP = Object.freeze({
-  light_gray_concrete_powder: 'light_gray_cloth',
+  light_gray_concrete_powder: 'sky_stone',
   stone: 'clay',
   andesite: 'marble',
   green_wool: 'dark_grass',
@@ -100,7 +100,7 @@ export const BLOCK_MAP = Object.freeze({
  * 看得见的改动，比静默误判好。
  */
 export const SHALLOW_TARN_PALETTE = Object.freeze([
-  'light_gray_cloth', 'clay', 'marble', 'polished_blackstone_bricks',
+  'sky_stone', 'clay', 'marble', 'polished_blackstone_bricks',
   'dark_grass', GRASS_MARKER_BLOCK,   // 标记本身 = light_grass（见 shallow-water-tarn-data.js 的注释）
 ]);
 

@@ -195,8 +195,13 @@ test('浅水高台：五座高台都在湖里、互不重叠、且只有深浅�
       // 而真实台地方块最远半径只有 72.5、0 格在岸外。
       // 候选材质含 `moss` / `grass`：它们是 ⑤「不得出现 moss」与 ④「不得残留香草 grass」的被测对象，
       // 漏掉会让那两条断言变成恒真。
+      // ⚠️ `sky_stone` 是台地主材（2026-11-03 用户把 `light_gray_cloth` 换成它）——**必须列进来**，
+      // 否则那座高台的岩面列会被当成地形列整片跳过。它同时也是空岛岛体/云碎块的材质，
+      // 而空岛与台地 AABB 确实有交叠：岛顶层是 `sky_grass`（不在本集合）因而被跳过，
+      // 只有「岛顶高于扫描起点」的少数列会读出 `sky_stone`（实测 72 列，全在台地 AABB 内、
+      // 全在湖内 → `outside`/`minGap` 判据不受影响）。
       const PLATFORM_MATS = new Set([
-        'light_gray_cloth', 'marble', 'polished_blackstone_bricks',
+        'sky_stone', 'marble', 'polished_blackstone_bricks',
         'dark_grass', 'light_grass', 'moss', 'grass',
       ]);
       const counts = new Map();

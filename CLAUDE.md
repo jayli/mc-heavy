@@ -1565,11 +1565,15 @@ seed 88 突破「单步落差 ≤1」（到 2 格），24 是守住无台阶的�
   （与 Cloudland 素材同一条教训）。
 
 - **`BLOCK_MAP` 的目标全部是既有方块**（用户「不要自创方块」）：`light_gray_concrete_powder`
-  → `light_gray_cloth`（贴图均值 163，与源观感一致）/ **`stone` → `clay`**（均值 161,166,179；
-  2026-10-30 用户指定「stone 方块改成 clay」，改前是 `stone` 126——⚠️ 黏土与主材 `light_gray_cloth`
-  几乎同亮，原先「石头暗一档」的层次会变弱，这是用户知的取舍）/ `andesite` → **`marble`**（均值 240；
+  → **`sky_stone`**（贴图均值 220；2026-11-03 用户指定「其中 light_gray_cloth 方块改成 sky_stone」，
+  改前是 `light_gray_cloth` 163——主材因此**亮了一档**，这是用户知的取舍；
+  `sky_stone` 同时是空岛岛身与巨型云 debris 的材质，故 Tier 4 的 `PLATFORM_MATS`
+  必须把它列进来，且「空岛在台地 AABB 内被误计」已实测为 0 格越界）/ **`stone` → `clay`**
+  （均值 161,166,179；2026-10-30 用户指定「stone 方块改成 clay」，改前是 `stone` 126）/
+  `andesite` → **`marble`**（均值 240；
   同日用户指定「stone_diorite 改成 marble」，改前是 `stone_diorite` 189）/ `green_wool` → `dark_grass` /
   `black_terracotta`+`black_concrete` → `polished_blackstone_bricks`（均值 47）。
+  当前明度序：`marble` 240 > `sky_stone` 220 > `clay` 165 > `polished_blackstone_bricks` 47。
   ⚠️ **不能用 `stone_andesite`** —— 那个名字只出现在 `FACES_DATA.stone` 的顶底面里，
   **不是独立方块**。
   ⚠️ 改这一行必须同步 `SHALLOW_TARN_PALETTE` 白名单 + 重跑 `npm run shallowtarns`
