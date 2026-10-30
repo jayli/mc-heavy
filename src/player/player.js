@@ -1,7 +1,7 @@
 // src/player/player.js — 输入/视角/交互编排（§4.5）
 import * as THREE from 'three';
 import { raycastVoxel } from './raycast.js';
-import { findPlaceCell } from './place-ray.js';
+import { scanPlaceCells, PLACE_NEAR_HIT_DIST } from './place-ray.js';
 import { PlayerPhysics } from './physics.js';
 import { StepLift } from './step-lift.js';
 import { ViewBob } from './view-bob.js';
@@ -737,12 +737,16 @@ export class Player {
   }
 
   placeBlock() {
-    // 裁决（v1.70）：兜底**只在完全未命中时**生效（mc-lite 的 `doSkyPlace` 同理 ——
-    // 它只在「命中距离 ≥ 15」时接管，即主射线没有可用命中）。
-    // ⚠️ 「命中但放不下」（`prevPos` 被玩家 AABB 占住）**刻意不走兜底**：那属于
-// 「目标明确但不可放置」，回落到射线找别处会把方块放到玩家没对准的地方。
+    // 单格方块的落点（v2.25，用户 2026-10-30），两种情形走同一个入口 `_placeNearest()`：
+    //  · 命中 **< 15 格**：直接放命中面前（A = `target.prevPos`），**不看沿途候选** —— mc-lite
+    //    `interact()` 右键的同款分流（`hits[0].distance < 15`）；
+    //  · 命中 ≥ 15 格或打空：沿视线**从近到远第一个可放的候选**，命中面前的 A 只是序列里排在最后的
+    //    一个（用户：「不管十字准心方向经过多少个可放置方块的位置，总是先就近放置」）。
+    // ⚠️ 这**取代了 v1.72 的用户裁定**「兜底只在完全未命中时生效」（远处命中与打空时先看候选）。
+    // A 被玩家 AABB 占住时**不再找别处**：近处命中是 mc-lite 同款（`tryPlaceBlock` 失败即作罢），
+    // 远处命中则因为 A 已是最后一个候选，后面没有可回落的位置。
+    // ⚠️ 特殊物品（巢穴/炮塔/矿车）不参与就近放置：它们的 origin 取**命中格**，无命中即无合法 origin。
     if (!this.target) { this._placeByRayFallback(); return; }
-    const [x, y, z] = this.target.prevPos;
     // M7：受控创造模式物品优先分流（测试 API 路径）。失败保留世界，不写任何方块。
     // ⚠️ origin 必须用 **`blockPos`（命中方块）**，不能用 `prevPos` —— 两条放置路径
     // （本分支与下方背包分流）的 origin 语义必须一致，否则结构会整体上移一格悬空
@@ -785,11 +789,11 @@ export class Player {
       }
       return; // 分流后不回落到单格放置
     }
-    this._placeSingle(x, y, z, id);
+    this._placeNearest(id, this.target);
   }
 
   /**
-   * 沿视线找最近可贴格并放置（v1.70 兜底）。**只在主射线完全未命中时被调用**。
+   * 打空路径：主射线**完全未命中**时的单格放置（v1.72 兜底；v2.25 起与命中路径共用 `_placeNearest()`）。
    *
    * 场景（用户报告）：玩家站在一块方块上朝下看，只能看到脚底方块的顶面，看不到它的
    * 水平侧面 —— 想把方块接续放在它东侧时，准心对准那侧的空位，主射线打空（`target`
@@ -798,25 +802,54 @@ export class Player {
    * 对齐 mc-lite `PlayerInteraction.js:781-806` 的 `doSkyPlace()`，判据与射程见
    * `place-ray.js`（纯函数，Tier 1 单测 `test-place-ray.js`）。
    *
-   * ⚠️ **特殊物品（巢穴/炮塔/矿车）不走兜底**：它们的 origin 语义依赖**命中格**
+   * ⚠️ **特殊物品（巢穴/炮塔/矿车）不走就近放置**：它们的 origin 语义依赖**命中格**
    *（多格结构用 `blockPos`、矿车用 `prevPos`），未命中时没有合法 origin —— 强行用
-   * 兜底格会让 38 格结构落在半空。保持「未命中即静默不动作」的现状。
+   * 候选格会让 38 格结构落在半空。保持「未命中即静默不动作」的现状。
    * @returns {boolean} 是否真的放下了一块
    */
   _placeByRayFallback() {
-    // 选中态（`selectPlaceable` 测试 API）与背包里的特殊物品都不兜底（见上方注释）
+    // 选中态（`selectPlaceable` 测试 API）与背包里的特殊物品都不走就近放置（见上方注释）
     if (this._selectedPlaceable) return false;
     const slot = this.inventory.getSelected();
     if (!slot || slot.isEmpty()) return false;
     if (CREATIVE_SPECIALS.has(slot.item)) return false;
     const id = this.registry.idOf(slot.item);
     if (id === undefined) return false;
+    return this._placeNearest(id, null);
+  }
+
+  /**
+   * 单格放置的入口（v2.25）。**近处命中（`hit.dist < PLACE_NEAR_HIT_DIST` = 15 格）直接放命中面前**
+   * （A = `hit.prevPos`），不看沿途候选，A 被拒就作罢 —— mc-lite `interact()` 的同款分流，用户
+   * 2026-10-30 要求对齐。其余情形（命中 ≥ 15 格 / 打空）走**就近优先**：沿视线从近到远，把每个
+   * 候选格依次交给 `_placeSingle()`，第一个放成功的算数；候选被拒（身体守卫 / 编辑无变化）就继续
+   * 往远处找（mc-lite `doSkyPlace` 同款）；都不行时才轮到命中面前的那一格 A。
+   *
+   * - 候选判据与「头格出局 / 止于命中格」只在 `place-ray.js` 的 `scanPlaceCells` 一处（红线 1）；
+   *   身体守卫与写入只在 `_placeSingle()` 一处。
+   * - `hit` = 主射线命中（`this.target`），无命中传 null。搜索止于命中格（不含）；A = `hit.prevPos`
+   *   排在最后，被身体守卫拒绝时**不再找别处**（它已是最后一个候选）。
+   * - ⚠️ 命中 ≥ 15 格时扫描范围（15 格）几乎总是到不了命中格，`stopAt` 只在命中距离恰为 15.0 时才起作用
+   *   （此时命中格的进入距离 ≤ 扫描范围）；保留它是边界保险，不是常用路径。
+   * - 回调里放成功即中止遍历，不存在「写后读」；扫描 ≤ 15 格、仅右键触发，开销 ≤ 5 µs 量级。
+   * @param {number} id 方块 id
+   * @param {object | null} hit 主射线命中（`this.target`）；打空传 null
+   * @returns {boolean} 是否真的放下了一块
+   */
+  _placeNearest(id, hit) {
+    // 近处命中：直接放命中面前，不看沿途候选。`typeof` 守卫：真实 target（`raycastVoxel`）恒带 `dist`，
+    // 缺 `dist` 的手塞 target 退回候选扫描路径（与近处分流引入前的行为一致）。
+    if (hit && typeof hit.dist === 'number' && hit.dist < PLACE_NEAR_HIT_DIST) {
+      const [x, y, z] = hit.prevPos;
+      return this._placeSingle(x, y, z, id);
+    }
     const cp = this.camera.position;
     this.camera.getWorldDirection(_forward);
-    const found = findPlaceCell(this.world, [cp.x, cp.y, cp.z],
-      [_forward.x, _forward.y, _forward.z]);
-    if (!found.hit) return false;
-    const [x, y, z] = found.placeCell;
+    const r = scanPlaceCells(this.world, [cp.x, cp.y, cp.z], [_forward.x, _forward.y, _forward.z],
+      (x, y, z) => this._placeSingle(x, y, z, id), { stopAt: hit ? hit.blockPos : null });
+    if (r.hit) return true;
+    if (!hit) return false;
+    const [x, y, z] = hit.prevPos;
     return this._placeSingle(x, y, z, id);
   }
 
@@ -824,10 +857,10 @@ export class Player {
    * 单格放置的唯一写入路径（v1.70 抽出）：AABB 守卫 → 朝向三分支 → `editor.setBlock`
    * → 成功清记忆并挥动。
    *
-   * **两个调用方**：`placeBlock()` 的命中路径（origin = `target.prevPos`）与
-   * `_placeByRayFallback()` 的兜底路径（origin = 沿视线找到的格）。两处共用这一份，
-   * 否则会出现「一条路径有 AABB 守卫/朝向/挥动，另一条静默没有」的撕裂
-   * （M7 曾因两条放置路径不一致踩过同类坑，见 CLAUDE.md 活跃约束）。
+   * **唯一调用方是 `_placeNearest()`**（v2.25）：沿视线的候选格与命中面前的 A 都经此处，
+   * 命中路径与打空路径共用这一份，否则会出现「一条路径有 AABB 守卫/朝向/挥动，另一条静默没有」的
+   * 撕裂（M7 曾因两条放置路径不一致踩过同类坑，见 CLAUDE.md 活跃约束）。
+   * 返回 false 有两种原因（被 AABB 守卫拒绝 / 编辑无变化），调用方一律当作「这格放不下」。
    * @param {number} x @param {number} y @param {number} z 放置格
    * @param {number} id 方块 id
    * @returns {boolean} 是否真的放下了一块

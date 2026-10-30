@@ -8,7 +8,7 @@
 // `test-giant-trees-gen.js:51`）。真实生成路径就是 `fillColumn` → `fillTarnPlateau` → 结构光栅化。
 import { test } from './runner.js';
 import { assertEqual, assertTrue } from './assert.js';
-import { computeTarnZone, isTarnZone, TARN_SLOPE_WIDTH as TARN_ZONE_SLOPE_WIDTH, TARN_ICE_RADIUS, TARN_SNOW_RADIUS } from '../gen/structures/tarn-zone.js';
+import { computeTarnZone, isTarnZone, TARN_SLOPE_WIDTH as TARN_ZONE_SLOPE_WIDTH, TARN_ICE_RADIUS, TARN_SNOW_RADIUS, TARN_PLAZA_RADIUS, TARN_PLAZA_CROSS_HALF_WIDTH, TARN_SPIRE_RING_RADIUS } from '../gen/structures/tarn-zone.js';
 import { fillTarnPlateau, tarnSnowCap, tarnSurfaceBlock, tarnPlantAt, TARN_TERRAIN_SALT, TARN_SLOPE_WIDTH, TARN_BLEND_WIDTH, tarnIceBoundaryAt, blobNoise } from '../gen/structures/tarn-terrain.js';
 import { buildDefaultRegistry } from '../voxel/block-registry.js';
 import { ChunkColumn } from '../voxel/chunk-column.js';
@@ -55,7 +55,11 @@ test('台地：TARN_TERRAIN_SALT 已导出且在空闲带内', () => {
 function surfaceBandStats(lay) {
   const { cx, cz, platformRadius: flatR, plateauRadius: R } = lay;
   const bands = [
-    ['ice', 0, TARN_ICE_RADIUS],
+    // ⚠️ **冰带的下界是 `TARN_PLAZA_RADIUS` 而不是 0**（v2.25）：中心广场（半径 28）
+    //    已把冰带内圈地表换成 `smooth_stone_1`/`tuff_bricks`。采样从 0 开始时广场会
+    //    吃掉 2453 格，把「冰带纯度」拉低到 43%（实测）—— 那是广场的**预期行为**，
+    //    不是冰带退步。「冰带」这个带的语义本来就是「广场之外那一圈」。
+    ['ice', TARN_PLAZA_RADIUS, TARN_ICE_RADIUS],
     ['snow', TARN_ICE_RADIUS, TARN_SNOW_RADIUS],
     ['plot', TARN_SNOW_RADIUS, flatR],
     ['slope', flatR, R],
@@ -91,11 +95,13 @@ test('台地：四带材质分布（冰 / 雪环 / 草斑+黏土 / 黏土缓坡�
   const lay = computeTarnZone(rx, rz, SEED);
   const { byBand } = surfaceBandStats(lay);
 
-  // ① 冰带：主体必须是 ice（`d < ICE_R` 的采样里有 11% 被雪环的向内渗透带吃掉，属设计）
-  // ⚠️ 下界 0.78（不是 0.9）：冰/雪边界的**齿**（`ICE_TOOTH`=20）会把雪推进冰区几格，
-  //    实测冰带纯度 84.2%。这条数被齿深度直接决定，改齿前先看 `ICE_TOOTH` 的标定表。
-  assertTrue((byBand.ice.ice ?? 0) >= 0.78,
-    `冰带内 ice 只占 ${((byBand.ice.ice ?? 0) * 100).toFixed(1)}%（应 ≥78%）`);
+  // ① 冰带：主体必须是 ice（广场上的「冰带」= 半径 28~44 那一圈）
+  // ⚠️ 下界 0.70（不是 0.9，也不是 0.78）：冰/雪边界的**齿**（`ICE_TOOTH`=20）会把雪推进冰区几格，
+  //    而广场把采样窗口从「0~44」收到「28~44」后，融合带（贴着 44 的那 6 格）占比被放大
+  //    → 实测 60 seed × 各自地带：冰带纯度 **71.0%~75.3%**。下界 0.70 留了 1 个点的余量。
+  //    这条数被齿深度与广场半径**共同**决定，改任一个前先重跑 `test-tarn-terrain.js` 的标定。
+  assertTrue((byBand.ice.ice ?? 0) >= 0.70,
+    `冰带内 ice 只占 ${((byBand.ice.ice ?? 0) * 100).toFixed(1)}%（应 ≥70%）`);
 
   // ② 雪环：松散 —— 既要有雪，也不能是实心一环
   // ⚠️ **区间必须宽到覆盖「不同地带」的实际波动**：环内占空比由 `TARN_SNOW_FILL` 的
@@ -209,7 +215,12 @@ test('台地：冰与雪**互相侵入对方地界**（不是一条夹在中间�
     // 基准圆内侧 8 格以为「冰区深处」，外侧 8 格以外到雪环内为「雪区深处」
     // ⚠️ 参照带取 ±14（齿幅度 20 的一半 ≈ 10，再加 4 格余量）——
     //    取太近会落在齿的过渡区，取太远又会被雪环外缘的扰动影响。
-    if (d < TARN_ICE_RADIUS - 14) { iceZone++; if (m === 'snow') iceZoneSnow++; }
+    //
+    // ⚠️ **v2.25：冰区窗口的下界是 `TARN_PLAZA_RADIUS`（28），不是 0** —— 中心广场
+    //    （半径 28）已经把冰带内圈铺成石砖，那 2453 格不再是 `ice`。不排除它时
+    //    「雪侵入冰区」的读数从 13.1% 跌到 1.1%（实测）→ 用例假失败，且判据变成在量
+    //    「广场占了多少」，不再是「渗透带生效没」。
+    if (d > TARN_PLAZA_RADIUS && d < TARN_ICE_RADIUS - 10) { iceZone++; if (m === 'snow') iceZoneSnow++; }
     else if (d > TARN_ICE_RADIUS + 14 && d < TARN_SNOW_RADIUS) { snowZone++; if (m === 'ice') snowZoneIce++; }
   }
   assertTrue(iceZone > 1000 && snowZone > 1000, `采样太少（冰区 ${iceZone} / 雪区 ${snowZone}）`);
@@ -406,8 +417,163 @@ test('台地：草斑带里浅色石 light_gray_cloth 成片出现（与 stone �
   assertTrue(stone / total > 0.15, `stone 只占 ${(stone / total * 100).toFixed(0)}%`);
 });
 
-test('台地：缓坡宽度与 tarn-zone 同源（两边不得各写一份）', () => {
-  // ⚠️ 这条钉的是**红线 1**：`tarn-terrain.js` 从 `tarn-zone.js` import 坡宽（而不是自己写），
+test('台地：中心广场铺 smooth_stone_1（石英柱圈内整片）', async () => {
+  // **用户 2026-11-03**：「中心石英柱子围成的圆圈区域内，用 smooth_stone_1 铺设」。
+  //
+  // 判据落点 = 纯函数（不跑网格）：广场是「地带的形状」的一部分，与四带边界同口径。
+  const { rx, rz } = findTarnRegion();
+  const lay = computeTarnZone(rx, rz, SEED);
+  const { cx, cz, platformRadius: flatR, plateauRadius: R } = lay;
+
+  let plaza = 0, wrongMat = 0, examples = [];
+  for (let dx = -TARN_PLAZA_RADIUS; dx <= TARN_PLAZA_RADIUS; dx++) {
+    for (let dz = -TARN_PLAZA_RADIUS; dz <= TARN_PLAZA_RADIUS; dz++) {
+      const d = Math.hypot(dx, dz);
+      if (d > TARN_PLAZA_RADIUS) continue;
+      plaza++;
+      const inCross = Math.abs(dx) <= TARN_PLAZA_CROSS_HALF_WIDTH
+        || Math.abs(dz) <= TARN_PLAZA_CROSS_HALF_WIDTH;
+      if (inCross) continue;                     // 十字另有用例
+      const m = tarnSurfaceBlock(cx + dx, cz + dz, SEED, cx, cz, flatR, R);
+      if (m !== 'smooth_stone_1') {
+        wrongMat++;
+        if (examples.length < 5) examples.push(`(${dx},${dz})=${m}`);
+      }
+    }
+  }
+  // 判别力兜底：采样数必须与 plaza 半径自洽（写死阈值会在改半径时假失败 —— 同湖泊半径的教训）
+  assertTrue(plaza > Math.PI * TARN_PLAZA_RADIUS * TARN_PLAZA_RADIUS * 0.95,
+    `广场采样只有 ${plaza} 格，与半径 ${TARN_PLAZA_RADIUS} 不自洽`);
+  assertEqual(wrongMat, 0,
+    `广场内有 ${wrongMat} 格不是 smooth_stone_1（应为 0）：${examples.join(' ')}`);
+
+  // 广场**外**一格都不能是广场材质（半径写大了就会漏到冰带里）
+  let leak = 0;
+  const leakExamples = [];
+  for (let dx = -TARN_ICE_RADIUS; dx <= TARN_ICE_RADIUS; dx++) {
+    for (let dz = -TARN_ICE_RADIUS; dz <= TARN_ICE_RADIUS; dz++) {
+      const d = Math.hypot(dx, dz);
+      if (d <= TARN_PLAZA_RADIUS || d > TARN_ICE_RADIUS) continue;
+      const m = tarnSurfaceBlock(cx + dx, cz + dz, SEED, cx, cz, flatR, R);
+      if (m === 'smooth_stone_1' || m === 'tuff_bricks') {
+        leak++;
+        if (leakExamples.length < 5) leakExamples.push(`(${dx},${dz})=${m}`);
+      }
+    }
+  }
+  assertEqual(leak, 0,
+    `广场外（半径 ${TARN_PLAZA_RADIUS}~${TARN_ICE_RADIUS}）出现 ${leak} 格广场材质：${leakExamples.join(' ')}`);
+
+  // 常量自洽：广场必须真的落在冰带内，且大于紫晶柱环半径（否则柱子一半压在广场外）
+  assertTrue(TARN_PLAZA_RADIUS > TARN_SPIRE_RING_RADIUS + 6,
+    `广场半径 ${TARN_PLAZA_RADIUS} 必须超过紫晶柱环 ${TARN_SPIRE_RING_RADIUS} + 6（柱足迹实测最远 25.4）`);
+  assertTrue(TARN_PLAZA_RADIUS < TARN_ICE_RADIUS - 10,
+    `广场半径 ${TARN_PLAZA_RADIUS} 必须远小于冰带外缘 ${TARN_ICE_RADIUS}（否则冰带被广场吃光）`);
+});
+
+test('台地：广场中心的十字是 tuff_bricks，3 格宽、正南正北、臂止于圆周', async () => {
+  // **用户 2026-11-03**：「中间正南正北有一个十字形状的三个方块宽度的十字，
+  // 十字形状用 tuff_briks 铺设」。
+  const { rx, rz } = findTarnRegion();
+  const lay = computeTarnZone(rx, rz, SEED);
+  const { cx, cz, platformRadius: flatR, plateauRadius: R } = lay;
+  const mat = (dx, dz) => tarnSurfaceBlock(cx + dx, cz + dz, SEED, cx, cz, flatR, R);
+  /** 该格是否落在广场圆内（十字只在圆内铺） */
+  const inPlaza = (dx, dz) => Math.hypot(dx, dz) <= TARN_PLAZA_RADIUS;
+
+  // ① 十字两条臂（正南正北 + 正东正西）逐格必须是 tuff_bricks
+  let armCells = 0, armWrong = 0;
+  const armExamples = [];
+  for (let t = -TARN_PLAZA_RADIUS; t <= TARN_PLAZA_RADIUS; t++) {
+    for (const off of [-TARN_PLAZA_CROSS_HALF_WIDTH, 0, TARN_PLAZA_CROSS_HALF_WIDTH]) {
+      for (const [dx, dz] of [[t, off], [off, t]]) {
+        if (!inPlaza(dx, dz)) continue;
+        armCells++;
+        if (mat(dx, dz) !== 'tuff_bricks') {
+          armWrong++;
+          if (armExamples.length < 5) armExamples.push(`(${dx},${dz})=${mat(dx, dz)}`);
+        }
+      }
+    }
+  }
+  assertTrue(armCells > 200, `十字采样只有 ${armCells} 格（臂宽/半径变了？）`);
+  assertEqual(armWrong, 0, `十字臂上有 ${armWrong} 格不是 tuff_bricks：${armExamples.join(' ')}`);
+
+  // ② **宽度恰好 3 格**（不是 2 也不是 5）：取一行不在中心交叉处的横切面逐格数
+  //    ⚠️ 不能数「整行 tuff 总数」（中心那一行有 3 格，但 |dz|=0 行会被竖臂拉长）
+  for (const rowDz of [-8, -5, 5, 8]) {
+    let width = 0;
+    for (let dx = -TARN_PLAZA_RADIUS; dx <= TARN_PLAZA_RADIUS; dx++) {
+      if (!inPlaza(dx, rowDz)) continue;
+      if (mat(dx, rowDz) === 'tuff_bricks') width++;
+    }
+    assertEqual(width, 2 * TARN_PLAZA_CROSS_HALF_WIDTH + 1,
+      `dz=${rowDz} 那一行的十字宽度是 ${width} 格，应为 ${2 * TARN_PLAZA_CROSS_HALF_WIDTH + 1}`);
+  }
+
+  // ③ 臂端止于圆周（不是停在中间，也不是穿出广场）
+  //    ⚠️ 广场判据是 `d <= TARN_PLAZA_RADIUS`，所以 (0, TARN_PLAZA_RADIUS) 仍在园内。
+  const maxT = TARN_PLAZA_RADIUS;
+  assertEqual(mat(0, maxT), 'tuff_bricks', `十字臂没铺到圆周（(0,${maxT}) 应为 tuff_bricks）`);
+  assertTrue(mat(0, maxT + 1) !== 'tuff_bricks',
+    `十字穿出广场圆（(0,${maxT + 1}) 不该是 tuff_bricks）`);
+
+  // ④ 四向对称（|dz|<=半宽 是轴对称的，不同向的臂长度必须一致）
+  for (const [sx, sz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+    let far = -1;
+    for (let t = 0; t <= TARN_PLAZA_RADIUS; t++) {
+      const dx = sx !== 0 ? sx * t : 0;
+      const dz = sz !== 0 ? sz * t : 0;
+      if (!inPlaza(dx, dz)) break;
+      if (mat(dx, dz) === 'tuff_bricks') far = t;
+    }
+    assertEqual(far, maxT, `(${sx},${sz}) 方向臂长 ${far}，与其他方向不一致（应 ${maxT}）`);
+  }
+
+  // ⑤ 十字以外一格（斜角）必须退回 smooth_stone_1 —— 否则「十字」会退化成「大十字块」
+  for (const [dx, dz] of [[2, 2], [-2, 2], [2, -2], [-2, -2], [2, 3], [3, 2]]) {
+    assertEqual(mat(dx, dz), 'smooth_stone_1', `(${dx},${dz}) 在十字对角上却不是 smooth_stone_1`);
+  }
+});
+
+test('台地：广场只改地表一层（地下逐格与自然地层一致）', async () => {
+  // **用户 2026-11-03**：「就铺设地表一层，地下仍然是冰块」。
+  //
+  // ⚠️ **实测事实（不能写成「地下是冰」的断言）**：广场下方（`plateauY-1` 及以下）是
+  //    自然地层 `stone` / `dirt` / `grass`（`fillColumn` 写的），**一格 `ice` 都没有** ——
+  //    `ice` 只出现在 `plateauY` 这一层的地表材质里。
+  //    所以「地下仍然是冰块」的正确落地 = **不去碰它**（下面几层既不变广场材质、也不变冰）。
+  const { rx, rz } = findTarnRegion();
+  const lay = computeTarnZone(rx, rz, SEED);
+  const reg = await buildDefaultRegistry();
+
+  const PLAZA_MATS = new Set(['smooth_stone_1', 'tuff_bricks']);
+  const DEPTH = 5;
+  let checked = 0, surfaceWrong = 0, deepWrong = 0;
+  const deepExamples = [];
+  for (let dx = -TARN_PLAZA_RADIUS; dx <= TARN_PLAZA_RADIUS; dx += 3) {
+    for (let dz = -TARN_PLAZA_RADIUS; dz <= TARN_PLAZA_RADIUS; dz += 3) {
+      if (Math.hypot(dx, dz) > TARN_PLAZA_RADIUS) continue;
+      const wx = lay.cx + dx, wz = lay.cz + dz;
+      const { col, lx, lz } = await shapedColumn(lay, wx, wz, reg);
+      checked++;
+      if (!PLAZA_MATS.has(reg.nameOf(col.blocks[blockIndex(lx, lay.plateauY, lz)]))) surfaceWrong++;
+      for (let y = lay.plateauY - 1; y >= lay.plateauY - DEPTH; y--) {
+        const n = reg.nameOf(col.blocks[blockIndex(lx, y, lz)]);
+        if (PLAZA_MATS.has(n) || n === 'ice') {
+          deepWrong++;
+          if (deepExamples.length < 5) deepExamples.push(`(${dx},${dz}) y=${y} = ${n}`);
+        }
+      }
+    }
+  }
+  assertTrue(checked > 150, `广场采样列只有 ${checked} 个`);
+  assertEqual(surfaceWrong, 0, `广场地表有 ${surfaceWrong} 列不是广场材质`);
+  assertEqual(deepWrong, 0,
+    `广场下方 ${DEPTH} 层内出现 ${deepWrong} 格广场材质/冰 —— 广场不该往下铺：${deepExamples.join(' ')}`);
+});
+
+test('台地：缓坡宽度与 tarn-zone 同源（两边不得各写一份）', () => {  // ⚠️ 这条钉的是**红线 1**：`tarn-terrain.js` 从 `tarn-zone.js` import 坡宽（而不是自己写），
   // 因为 `isTarnZone` 的「核心沙漠占比」判据要采到平台边缘（= `TARN_ZONE_RADIUS - 坡宽`），
   // 两份漂移后同一个 region 会「判定时按 24 采样、整形时按 40 削坡」，抽中的地方一半是沙漠。
   assertEqual(TARN_SLOPE_WIDTH, TARN_ZONE_SLOPE_WIDTH, '两个模块导出的坡宽必须一致');
