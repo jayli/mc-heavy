@@ -172,6 +172,25 @@ test('浅水高台 GEN：沙滩 / 湖盆 / 水下坡不长植物（只长在草�
   let platformSkipped = 0;
   let sandCells = 0;
   let bad = 0;
+  // 桥面格也要排除（v2.24）：桥跨越湖面，两端头落在**沙滩带上**，
+  // 那里 `surfY + 1` 就是桥面格（`cloud`/`ice`/`sky_stone`/...）而不是植物。
+  // 实测不排除 → 31 格桥面方块被误判成「沙岸上长了东西」。
+  // ⚠️ **宽度从 `BRIDGE_WIDTH` 派生，不写 `[-1,0,1]`**（红线 1：宽度只有一份权威）。
+  const bridgeM = await import('../gen/structures/shallow-water-bridge.js');
+  const bridge = bridgeM.computeShallowTarnBridge(SEED, new Map());
+  const BRIDGE_HALF = (bridgeM.BRIDGE_WIDTH - 1) / 2;
+  const bridgeCells = new Set();
+  if (bridge) {
+    for (let s = -bridge.halfN; s <= bridge.halfP; s++) {
+      const y = bridgeM.shallowTarnBridgeDeckY(s, bridge);
+      for (let off = -BRIDGE_HALF; off <= BRIDGE_HALF; off++) {
+        const x = a.wx + bridge.ux * s + (-bridge.uz) * off;
+        const z = a.wz + bridge.uz * s + bridge.ux * off;
+        bridgeCells.add(`${x},${y},${z}`);
+      }
+    }
+  }
+  let bridgeSkipped = 0;
   const badAt = [];
   for (let wx = a.wx - R; wx <= a.wx + R; wx += 1) {
     for (let wz = a.wz - R; wz <= a.wz + R; wz += 1) {
@@ -191,11 +210,14 @@ test('浅水高台 GEN：沙滩 / 湖盆 / 水下坡不长植物（只长在草�
       // 沙滩/水下坡的上一格可能是水（湖盆上方就是 SEA_Y 的水）—— 那不是植物
       const name = reg.nameOf(above);
       if (name === 'water') continue;
+      // 桥面格（v2.24）：桥两端顺坡落到沙滩/缓坡上，那里 surfY+1 是桥材质
+      if (bridgeCells.has(`${wx},${surfY + 1},${wz}`)) { bridgeSkipped++; continue; }
       bad++;
       if (badAt.length < 5) badAt.push(`${wx},${wz}(${name})`);
     }
   }
   assertTrue(sandCells > 3000, `沙滩/湖盆采样太少（${sandCells}）—— 无判别力`);
+  assertTrue(bridgeSkipped > 0, `桥面格一个都没跳过（${bridgeSkipped}）—— 桥没接进 GEN 或判据失效`);
   assertTrue(platformSkipped > 1000, `台地 AABB 内跳过 ${platformSkipped} 列（防「全部被跳过导致本用例恒真」）`);
   assertEqual(bad, 0, `沙岸/水下坡地上方不得出现植物类方块（实得 ${bad}：${badAt.join('; ')}）`);
 });

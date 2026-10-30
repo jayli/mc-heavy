@@ -67,6 +67,8 @@ const SKYBOX = await import('../src/render/sky-config.js');
 const SHALLOW = await import('./shallow-tarns-fingerprint.mjs');
 // 两个草方块的贴图烘焙参数与指纹（同上）
 const GRASS_TEX = await import('./grass-textures-fingerprint.mjs');
+// 跨湖拱桥的材质契约（v2.24）：六种必须都是已注册的 opaque 方块
+const BRIDGE = await import('../src/gen/structures/shallow-water-bridge.js');
 const atlasMeta = JSON.parse(fs.readFileSync(path.join(ROOT, 'assets', 'atlas.json'), 'utf8'));
 const tiles = new Set(Object.keys(atlasMeta.tiles));
 
@@ -1850,10 +1852,28 @@ async function checkShallowTarns() {
     }
   }
 
+  // ⑦ 跨湖拱桥的材质契约（v2.24）：六种必须都已注册 + 全部 opaque 通道 + 无叶子族。
+  //
+  // 钉的失效路径（全部**静默**）：
+  //   · 材质名拼错 → `makeColumnSetter` 静默 return → 那几格变空气（桥出现空洞，玩家掉下去）
+  //   · 材质改到 cutout/transparent 通道 → 撞容量预算（且只表现为掉帧）
+  //   · 有人「顺手」把叶子加进材质表 → 违反用户「用非叶子方块」的明确要求
+  if (BRIDGE.BRIDGE_MATERIALS.length !== 6) {
+    fail(`BRIDGE_MATERIALS 应为 6 种，实际 ${BRIDGE.BRIDGE_MATERIALS.length}`);
+  }
+  for (const name of BRIDGE.BRIDGE_MATERIALS) {
+    const def = BLOCKS.find((b) => b.name === name);
+    if (!def) { fail(`桥材质 ${name} 未在 blocks-data.js 注册（栅格化会静默变空气）`); continue; }
+    if (def.cullMode !== 'opaque') fail(`桥材质 ${name} 的 cullMode 是 "${def.cullMode}"，应为 opaque`);
+  }
+  const leafLike = BRIDGE.BRIDGE_MATERIALS.filter((n) => /leaves|flower|azalea/.test(n));
+  if (leafLike.length) fail(`桥材质含叶子族 ${leafLike.join(', ')}（用户明确要求用非叶子方块）`);
+
   if (failures.length === before) {
     infos.push(`[浅水高台] ${SHALLOW.SHALLOW_TARN_VARIANTS.length} 个产物 `
       + `（${sizes.join(' / ')}）共 ${totalBlocks} 格 / palette 全在白名单 / 源方块全映射 / `
-      + `草标记 ${SHALLOW.GRASS_MARKER_BLOCK} / 指纹匹配`);
+      + `草标记 ${SHALLOW.GRASS_MARKER_BLOCK} / 指纹匹配 / `
+      + `跨湖拱桥六种材质均为注册的 opaque 方块`);
   }
 }
 

@@ -569,3 +569,136 @@ test('浅水高台：缓坡草地上真的长出了草/花/蘑菇（v2.22，真�
   expect(r.sandWithPlant, `沙岸/水下坡上出现 ${r.sandWithPlant} 格植物 —— 只该长在草地方块上`)
     .toBe(0);
 });
+
+// ==================== 跨湖拱桥（v2.24，spec §15） ====================
+
+test('跨湖拱桥：真实世界里有桥、3 格宽、可步行、六种材质都出现', async ({ page }) => {
+  test.setTimeout(300_000);
+  await openGame(page);
+
+  const probe = await page.evaluate(async ({ seed }) => {
+    const m = await import('/src/gen/structures/shallow-water-bridge.js');
+    const t = await import('/src/gen/structures/shallow-water-tarns.js');
+    t.clearShallowTarnCache();
+    const anchor = t.computeShallowTarnAnchor(seed);
+    const bridge = m.computeShallowTarnBridge(seed, null);
+    if (!bridge) return null;
+    const deck = [];
+    for (let s = -bridge.halfN; s <= bridge.halfP; s++) {
+      deck.push([s, m.shallowTarnBridgeDeckY(s, bridge), m.shallowTarnBridgeBlockAt(s, bridge, seed)]);
+    }
+    return {
+      anchor: { wx: anchor.wx, wz: anchor.wz },
+      bridge: {
+        ux: bridge.ux, uz: bridge.uz, apex: bridge.apex,
+        halfP: bridge.halfP, halfN: bridge.halfN, span: bridge.span,
+      },
+      deck,
+      materials: m.BRIDGE_MATERIALS,
+      // ⚠️ 页面侧也钉**绝对宽度 3**（用户原话「三个方块宽」是外部契约，
+      // 不从 BRIDGE_WIDTH 派生 —— 派生过，实测把常量改成 5 时用例仍全绿）。
+      wantWidth: 3,
+    };
+  }, { seed: SEED });
+  expect(probe, '该 seed 没有合法桥轴').not.toBeNull();
+
+  // 飞到桥心上空，等足够半径的 column 加载（桥跨 ~170 格 → 半径 6 列）
+  await flyTo(page, probe.anchor.wx, probe.anchor.wz, probe.bridge.apex + 12, 6);
+  await unpin(page);
+
+  const observed = await page.evaluate(({ probe }) => {
+    const g = window.__MC_GAME__;
+    const { world, registry } = g;
+    const nameOf = new Map();
+    for (const def of registry.all()) nameOf.set(registry.idOf(def.name), def.name);
+    const out = [];
+    for (const [ds, y, mat] of probe.deck) {
+      const wx = probe.anchor.wx + probe.bridge.ux * ds;
+      const wz = probe.anchor.wz + probe.bridge.uz * ds;
+      if (!world.hasColumn(Math.floor(wx / 16), Math.floor(wz / 16))) continue;
+      const row = [];
+      for (let off = -(probe.wantWidth - 1) / 2; off <= (probe.wantWidth - 1) / 2; off++) {
+        const x = wx + (-probe.bridge.uz) * off;
+        const z = wz + probe.bridge.ux * off;
+        const id = world.getBlockId(x, y, z);
+        row.push(nameOf.get(id) ?? null);
+      }
+      // 端部下方必须是干燥陆地（地表 ≥ SEA_Y）：读该列最高的实心格
+      const groundY = (() => {
+        for (let yy = y - 1; yy > y - 20; yy--) {
+          if (world.getBlockId(wx, yy, wz) !== 0) return yy;
+        }
+        return null;
+      })();
+      out.push({ ds, y, mat, row, groundY });
+    }
+    return out;
+  }, { probe, seed: SEED });
+
+  expect(observed.length, '一个已加载的桥面列都没读到').toBeGreaterThan(20);
+
+  // ① 3 格宽：中线与法向 ±1 都是桥材质
+  const legal = new Set(probe.materials);
+  let fullRows = 0;
+  for (const r of observed) {
+    if (r.row.every((c) => legal.has(c))) fullRows++;
+  }
+  expect(fullRows / observed.length, '三格齐全的行占比过低').toBeGreaterThan(0.9);
+
+  // ①b **反向**：法向再往外一格必须**不是**桥材质。
+  // ⚠️ 只验「三格都在」拓不到「多写了」—— 实测把 BRIDGE_WIDTH 改成 5 时上面那条仍全绿
+  //（前 3 格确实都在，占比 1.0）。用户要的是「恰好三个方块宽」。
+  const overflow = await page.evaluate(({ probe }) => {
+    const { world, registry } = window.__MC_GAME__;
+    const legalIds = new Set(probe.materials.map((n) => registry.idOf(n)));
+    let extra = 0;
+    let checkedRows = 0;
+    for (const [ds, y] of probe.deck) {
+      const wx = probe.anchor.wx + probe.bridge.ux * ds;
+      const wz = probe.anchor.wz + probe.bridge.uz * ds;
+      if (!world.hasColumn(Math.floor(wx / 16), Math.floor(wz / 16))) continue;
+      checkedRows++;
+      for (const off of [(probe.wantWidth + 1) / 2, -(probe.wantWidth + 1) / 2]) {
+        const x = wx + (-probe.bridge.uz) * off;
+        const z = wz + probe.bridge.ux * off;
+        if (legalIds.has(world.getBlockId(x, y, z))) extra++;
+      }
+    }
+    return { extra, checkedRows };
+  }, { probe });
+  expect(overflow.checkedRows, '反向宽度检查没有可读的行').toBeGreaterThan(20);
+  expect(overflow.extra, `桥面比 3 格宽（法向再外一格也有桥材质：${overflow.extra} 格）`).toBe(0);
+
+  // ② 可步行：相邻两列高差 ≤ 1
+  const sorted = observed.slice().sort((a, b) => a.ds - b.ds);
+  for (let i = 1; i < sorted.length; i++) {
+    expect(Math.abs(sorted[i].y - sorted[i - 1].y), `ds=${sorted[i].ds} 高差 > 1`).toBeLessThanOrEqual(1);
+  }
+
+  // ③ 六种材质都出现过
+  const seen = new Set(observed.map((r) => r.mat));
+  for (const m of probe.materials) expect(seen.has(m), `材质 ${m} 没出现`).toBe(true);
+
+  // ④ 桥横跨湖面：中段（|ds| < 30）的下方必须是水（证明它真的"跨"而不是贴地）
+  const overWater = sorted.filter((r) => Math.abs(r.ds) < 30);
+  expect(overWater.length, '湖心段采样太少').toBeGreaterThan(20);
+  const waterBelow = await page.evaluate(({ probe }) => {
+    const { world, registry } = window.__MC_GAME__;
+    const waterId = registry.idOf('water');
+    const seaY = -2;   // SEA_Y（voxel/constants.js）；页面内不再二次 import 常量模块
+    let water = 0;
+    let checked = 0;
+    for (let ds = -30; ds <= 30; ds++) {
+      const wx = probe.anchor.wx + probe.bridge.ux * ds;
+      const wz = probe.anchor.wz + probe.bridge.uz * ds;
+      if (!world.hasColumn(Math.floor(wx / 16), Math.floor(wz / 16))) continue;
+      checked++;
+      // 湖盆的水方块在 LAKE_FLOOR_Y + 1 = SEA_Y 那一格（湖底在 SEA_Y-1），
+      // 从模块读而非写字面量（改 SEA_Y 时这条断言跟着走）
+      if (world.getBlockId(wx, seaY, wz) === waterId) water++;
+    }
+    return { water, checked };
+  }, { probe });
+  expect(waterBelow.checked, '湖心段没有可读的 column').toBeGreaterThan(20);
+  expect(waterBelow.water / waterBelow.checked, '桥心下方不是湖').toBeGreaterThan(0.8);
+});

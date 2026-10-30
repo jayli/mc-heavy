@@ -29,6 +29,7 @@ import { ARENA_HALF_X, ARENA_HALF_Z, ARENA_SUPPORT_MAX_DEPTH, inArenaFootprint }
 import { TARN_ZONE_RADIUS, snowLandSuppressedByTarn, TARN_CLOUD_MIN_Y } from './tarn-zone.js';
 import { fillTarnPlateau, tarnSnowCap, tarnPlantAt } from './tarn-terrain.js';
 import { inShallowTarnFootprint } from './shallow-water-tarns.js';
+import { rasterizeShallowTarnBridge } from './shallow-water-bridge.js';
 import { SHALLOW_TARN_VARIANTS } from './shallow-water-tarn-data.js';
 import {
   fillShallowTarnBasin, rasterizeShallowTarnPlatforms, paintShallowTarnGrass,
@@ -415,6 +416,18 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
     // 范围与密度全在 `shallowTarnPlantAt` 里（纯函数，单测直接驱动）：
     // 只长缓坡 `grass`，密度零拷贝地转调 `rollVegetation(…, 'PLAINS', …)`。
     plantShallowTarnGrass(column, st, seed, registry, setBlock);
+    // ⑤ 跨湖拱桥（v2.24，用户 2026-11-03：「从浅水湖两岸之间架起一座高大的桥……
+    //   单层方块，三个方块宽……形成一个横跨天幕的桥，很雄伟好看」）。
+    //
+    // ⚠️ **必须在 ②③ 之后**：桥的净空判据比对的是**真实烘焙方块**的最顶层，
+    // 先写桥再光栅化高台会被后写胜覆盖（缺陷形态：桥某几段静默消失，方块层面看不出）。
+    // ⚠️ **必须在 ④ 之后**：桥头落在缓坡带上，会顶掉那里的草/花；反过来桥头被植物挡住。
+    //
+    // `platformTop` 传 `null`：本函数不持有「全部烘焙方块的最顶层」这份派生数据，
+    // 逐 column 重建 5 个 JSON 的顶层映射（5442 格 × 5 座）会撞 GEN 预算。
+    // 净空已由 `computeShallowTarnBridge(seed, platformTop)` 在候选层算出并**缓存**，
+    // 这里传入 null 直接命中该缓存（轴向与剖面与择优结果完全一致）。
+    rasterizeShallowTarnBridge(column, st, seed, registry, setBlock, null);
   }
 
   // ---- 阶段 2.4：高台地带（Cloudland Tarn Zone）----
