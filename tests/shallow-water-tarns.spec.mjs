@@ -477,3 +477,95 @@ test('浅水高台：湖水与接壤的海洋连成一片（无陆地堤坝）',
   // 才算「接进大洋」，而不是「湖自己变大了一点」。
   expect(r.maxDist, `湖心水团最远 ${r.maxDist} 格；修前是 100（被沙滩堤坝隔断），必须 > 140`).toBeGreaterThan(140);
 });
+
+test('浅水高台：缓坡草地上真的长出了草/花/蘑菇（v2.22，真实页面）', async ({ page }) => {
+  test.setTimeout(900_000);
+  // ⚠️ **为什么要有这条 Tier 4**：浏览器内单测（`test-shallow-tarn-gen.js`）已经用真实
+  // `applyStructuresToColumn` 验了接线，但它跑在 Playwright 之外的页面上下文里；
+  // 这里钉的是**真游戏页**（Worker 内 GEN + column 调度 + 上传）这条完整链路上植物真的在。
+  //
+  // 用户 2026-11-03：「浅水高台的路基部分，如果是草地方块的话，就按照草地地图的地标植被的
+  // 渲染方式，增加地表植被的渲染，包括草、花、蘑菇等，频率密度跟草地地标保持一样即可。」
+  // 两轮裁定：范围 = **只长缓坡自然草**；密度 = **普通草地全量**（`rollVegetation` 的 PLAINS）。
+  await openGame(page);
+  const st = await shallowTarnLayout(page);
+  expect(st).not.toBeNull();
+  const { anchor } = st;
+
+  // 缓坡带半径最长 ≈ 139，站位取湖心上方即可（视距 8 覆盖 ±160）
+  await flyTo(page, anchor.wx, anchor.wz, anchor.lakeFloorY + 45, 3);
+
+  const r = await page.evaluate(async ({ wx, wz, lakeFloorY }) => {
+    const g = window.__MC_GAME__;
+    const m = await import('/src/gen/structures/shallow-water-tarns.js');
+    const t = await import('/src/gen/structures/shallow-water-terrain.js');
+    const phase = m.shallowTarnShapePhase(g.seed);
+    const name = (id) => (id === 0 ? 'air' : g.registry.nameOf(id));
+    const PLANT_NAMES = new Set([
+      'short_grass', 'allium', 'flower', 'azure_bluet', 'oxeye_daisy', 'red_mushroom', 'dead_bush',
+    ]);
+    const layout = m.computeShallowTarnLayout(g.seed);
+    const inPlatform = (x, z) => layout.some((p) => {
+      const px = Math.round(wx + p.cx), pz = Math.round(wz + p.cz);
+      return x >= px - p.loX && x <= px + p.hiX && z >= pz - p.loZ && z <= pz + p.hiZ;
+    });
+
+    let grassCells = 0, planted = 0, sandWithPlant = 0, outsideShaped = 0;
+    const kinds = new Map();
+    // 步长 2：缓坡带宽 24 格，逐格扫描 4 万列会撞 Tier 4 的时间预算
+    const R = Math.ceil(m.SHALLOW_TARN_OUTER_RADIUS);
+    for (let dx = -R; dx <= R; dx += 2) {
+      for (let dz = -R; dz <= R; dz += 2) {
+        const x = wx + dx, z = wz + dz;
+        if (!g.world.hasColumn(Math.floor(x / 16), Math.floor(z / 16))) continue;
+        if (inPlatform(x, z)) continue;                 // 台地占满整列，不是缓坡
+        const d = Math.hypot(dx, dz);
+        const e = d - m.shallowTarnLakeRadiusAt(Math.atan2(dz, dx), phase);
+        if (e > m.BEACH_WIDTH + m.SLOPE_WIDTH) { outsideShaped++; continue; }   // 整形区外 = 自然地形
+        const surfY = t.shallowTarnSurfaceYAt(x, z, g.seed, { wx, wz, lakeFloorY });
+        const y = surfY + 1;
+        const above = g.world.getBlockId(x, y, z);
+        const surf = name(g.world.getBlockId(x, surfY, z));
+        if (surf !== 'grass') {
+          // 沙滩 / 湖盆 / 水下坡：上方不得有植物（水不算）
+          if (above !== 0) {
+            const nm = name(above);
+            if (nm !== 'water' && PLANT_NAMES.has(nm)) sandWithPlant++;
+          }
+          continue;
+        }
+        grassCells++;
+        if (above === 0) continue;
+        const nm = name(above);
+        if (!PLANT_NAMES.has(nm)) continue;             // 台地/水/结构：不算植物
+        planted++;
+        kinds.set(nm, (kinds.get(nm) || 0) + 1);
+      }
+    }
+    return { grassCells, planted, sandWithPlant, outsideShaped, kinds: Object.fromEntries(kinds) };
+  }, { wx: anchor.wx, wz: anchor.wz, lakeFloorY: anchor.lakeFloorY });
+
+  await unpin(page);
+
+  // sanity：必须真的扫到缓坡草地（防坐标写错 → 全 0 → 恰好通过）
+  expect(r.grassCells, `缓坡草地采样太少（${r.grassCells}）—— 本用例无判别力`).toBeGreaterThan(300);
+  expect(r.outsideShaped, '必须扫到整形区外的列（说明扫描范围真的覆盖了边界两侧）').toBeGreaterThan(50);
+
+  // ① 植物真的长出来了
+  expect(r.planted, `缓坡草地只有 ${r.planted} 株植物（${r.grassCells} 列草地）—— `
+    + '预期约 13%（PLAINS 全量口径）').toBeGreaterThan(20);
+  // ② 密度对齐 PLAINS（±6 个百分点；步长 2 的抽样误差比单测大）
+  const rate = r.planted / r.grassCells;
+  expect(rate, `植物密度 ${(rate * 100).toFixed(1)}% 必须落在 [7%, 19%]（PLAINS 实测 13.1%）`)
+    .toBeGreaterThan(0.07);
+  expect(rate, `植物密度 ${(rate * 100).toFixed(1)}% 必须落在 [7%, 19%]`).toBeLessThan(0.19);
+  // ③ 三类都要出现（用户点名「草、花、蘑菇等」）
+  expect((r.kinds.short_grass || 0), `short_grass 只有 ${r.kinds.short_grass || 0} 株（全部：${JSON.stringify(r.kinds)}）`)
+    .toBeGreaterThan(5);
+  const flowers = (r.kinds.allium || 0) + (r.kinds.flower || 0) + (r.kinds.azure_bluet || 0) + (r.kinds.oxeye_daisy || 0);
+  expect(flowers, `花只有 ${flowers} 株（全部：${JSON.stringify(r.kinds)}）`).toBeGreaterThan(3);
+  expect((r.kinds.red_mushroom || 0), `红蘑菇必须出现（全部：${JSON.stringify(r.kinds)}）`).toBeGreaterThan(0);
+  // ④ 沙滩 / 湖盆 / 水下坡一株不长
+  expect(r.sandWithPlant, `沙岸/水下坡上出现 ${r.sandWithPlant} 格植物 —— 只该长在草地方块上`)
+    .toBe(0);
+});

@@ -19,10 +19,14 @@
 import { test, expect } from 'playwright/test';
 
 const SEED = 12345;
-/** 初始容量（render-world.js CAPACITY：opaque 1800×1900×1.25 / cutout 550×3200×1.25 / transparent 100×1000×1.25）
+/** 初始容量（render-world.js CAPACITY：opaque 1800×1900×1.25 / cutout 550×3200×1.25 / transparent 240×1000×1.25）
  * ⚠️ 「容量 == 标定值」断言必须在**开局**做：扩容是黏性的，`2.85M × 1.5` 恰好等于 `4.275M`
- * （既有教训：改回容量后末尾断言照样通过），所以开局先钉住初始值。 */
-const INIT = { opaque: 1800 * 1900 * 1.25, cutout: 550 * 3200 * 1.25, transparent: 100 * 1000 * 1.25 };
+ * （既有教训：改回容量后末尾断言照样通过），所以开局先钉住初始值。
+ * ⚠️⚠️ **本常量是 `CAPACITY` 的第二个副本**（另一个在 `giant-tree-budget.spec.mjs`），必须与
+ * `src/render/render-world.js` 同步。v2.11 把 `transparent.active` 100 → 240 时两处都漏改
+ * → 两个 spec 从 2026-11-01 起恒红（2026-11-03 才发现；干净 HEAD 同样失败）。
+ * **改 `CAPACITY` 前先 `grep 'transparent: 1' tests/*.spec.mjs`。** */
+const INIT = { opaque: 1800 * 1900 * 1.25, cutout: 550 * 3200 * 1.25, transparent: 240 * 1000 * 1.25 };
 
 /** 队列收敛（唯一权威口径，与 giant-tree-budget.spec.mjs 同一份） */
 const queueConverged = () => {

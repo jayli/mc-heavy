@@ -32,6 +32,7 @@ import { inShallowTarnFootprint } from './shallow-water-tarns.js';
 import { SHALLOW_TARN_VARIANTS } from './shallow-water-tarn-data.js';
 import {
   fillShallowTarnBasin, rasterizeShallowTarnPlatforms, paintShallowTarnGrass,
+  plantShallowTarnGrass,
 } from './shallow-water-terrain.js';
 import { KIT_VARIANTS, KIT_METRICS } from './cloudland-kit-data.js';
 
@@ -390,11 +391,17 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
   //     （`fixedBlockers` 把地带整圆列为阻挡），先后不影响结果，但放前面保证
   //     `fillTarnPlateau` 不会与本结构抢同一片地。
   //
-  // 三件事的顺序是载荷性的：
+  // 四件事的顺序是载荷性的：
   //   ① `fillShallowTarnBasin`：整形湖盆/沙滩/缓坡（含削平、填实、填水）
   //   ② `rasterizeShallowTarnPlatforms`：五座高台（底座坐湖底）
   //   ③ `paintShallowTarnGrass`：把高台里的草基准色按噪声刷成深/浅两种
-  //   倒过来（先光栅化再整形）会把高台削掉。
+  //   ④ `plantShallowTarnGrass`：缓坡草地上的单格植被（v2.22）
+  // 倒过来（先光栅化再整形）会把高台削掉。
+  //
+  // ⚠️ **④ 必须留在这个循环里，不能搬到阶段 3**：它逐格算 `shallowTarnSurfaceYAt`
+  // → `slopeNaturalHeight`（半径 8 的均值，289 次采样），而 `SLOPE_CACHE` 的
+  // **精确坐标**缓存刚被 ① 填过 —— 同一 column 内紧邻调用几乎全命中。搬到别的阶段
+  // 会退化成「每列重新探 289 次」。
   for (const layout of layouts) {
     const st = layout.shallowTarn;
     if (!st) continue;
@@ -403,6 +410,11 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
     fillShallowTarnBasin(column, st, seed, registry);
     rasterizeShallowTarnPlatforms(column, st, seed, registry, setBlock);
     paintShallowTarnGrass(column, st, seed, registry, setBlock);
+    // ④ 缓坡草地植被（v2.22，用户 2026-11-03：「路基部分的草地方块……按照草地地图的
+    // 地标植被的渲染方式，增加地表植被的渲染，包括草、花、蘑菇等，频率密度跟草地地标保持一样」）。
+    // 范围与密度全在 `shallowTarnPlantAt` 里（纯函数，单测直接驱动）：
+    // 只长缓坡 `grass`，密度零拷贝地转调 `rollVegetation(…, 'PLAINS', …)`。
+    plantShallowTarnGrass(column, st, seed, registry, setBlock);
   }
 
   // ---- 阶段 2.4：高台地带（Cloudland Tarn Zone）----

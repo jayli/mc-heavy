@@ -20,6 +20,7 @@ import {
   shallowTarnLakeRadiusAt, shallowTarnShapePhase,
 } from './shallow-water-tarns.js';
 import { GRASS_MARKER_BLOCK } from './shallow-water-tarn-data.js';
+import { rollVegetation } from './vegetation.js';
 
 // ==================== 湖岸径向坐标 ====================
 
@@ -46,7 +47,7 @@ function shallowTarnLakeOffset(wx, wz, seed, anchor) {
 // ==================== 表面材质 ====================
 
 /**
- * 湖盆与沙滩的地表方块 —— **唯一权威**（单测直接用，不复制一份判据 —— 红线 1）。
+ * 表面材质 —— **唯一权威**（公开版与植被路径共用这一份，红线 1）。
  *
  * | 带 | 到湖岸的偏移 `e` | 地表 |
  * |---|---|---|
@@ -57,17 +58,32 @@ function shallowTarnLakeOffset(wx, wz, seed, anchor) {
  * 用户要的是「浅水高台」，一圈沙岸能让水域边界在水下也认得出，
  * 且沙不会像草那样与周围地形抢色。
  *
+ * ⚠️ **缓坡带里「该列在水下」也铺沙**（`targetY ≤ SEA_Y-1`）：自然水底本来就是
+ * sand + end_stone（见 `fillColumn`），铺草会让水下出现一块草地。这条也是植被
+ * 「水下坡一株不长」的来源 —— 那里的地表不是 `grass`。
+ *
+ * ## 为什么要一个吃 `e` 的重载
+ * `shallowTarnSurfaceBlock`（公开版）自己算 `e`（`hypot` + 四条谐波）；植被路径每个
+ * (wx,wz) 已经为了判地面高度算过 `e`，不能再算第二遍。本函数是公开版的**内部形状**，
+ * 两者逐位等价（公开版直接转调本函数）。
+ *
  * @param {number} wx @param {number} wz @param {number} seed
- * @param {{wx: number, wz: number}} anchor
+ * @param {{wx:number, wz:number}} anchor
+ * @param {number} e 到湖岸的径向偏移（负数 = 湖盆里）
  * @param {number} targetY 该列已算好的地表高度（判「该列在水下」用）
  * @returns {string}
  */
-export function shallowTarnSurfaceBlock(wx, wz, seed, anchor, targetY) {
-  if (shallowTarnLakeOffset(wx, wz, seed, anchor) <= BEACH_WIDTH) return 'sand';
-  // 缓坡带：该列在水下（接壤水系的坡面）也铺沙 —— 自然水底本来就是 sand + end_stone
-  // （见 `fillColumn`），铺草会让水下出现一块草地。
+export function shallowTarnSurfaceBlockAtOffset(wx, wz, seed, anchor, e, targetY) {
+  if (e <= BEACH_WIDTH) return 'sand';
+  // 缓坡带：该列在水下（接壤水系的坡面）也铺沙 —— 与公开版同一条理由。
   if (targetY <= SEA_Y - 1) return 'sand';
   return 'grass';
+}
+
+export function shallowTarnSurfaceBlock(wx, wz, seed, anchor, targetY) {
+  return shallowTarnSurfaceBlockAtOffset(
+    wx, wz, seed, anchor, shallowTarnLakeOffset(wx, wz, seed, anchor), targetY,
+  );
 }
 
 /**
@@ -459,6 +475,90 @@ export function paintShallowTarnGrass(column, anchor, seed, registry, setBlock) 
 
 /** 高台的最大高度（产物里最高 56 层）—— `paintShallowTarnGrass` 的扫描上界 */
 const SHALLOW_TARN_MAX_PLATFORM_HEIGHT = 64;
+
+// ==================== 缓坡草地植被（v2.22） ====================
+
+/**
+ * 缓坡草地上的单格植被（v2.22）。
+ *
+ * ## 用户需求（2026-11-03）
+ * 「浅水高台的路基部分，如果是草地方块的话，就按照草地地图的地标植被的渲染方式，增加地表植被的
+ * 渲染，包括草、花、蘑菇等，频率密度跟草地地标保持一样即可。」
+ *
+ * ## 判据与密度
+ * - **只长在缓坡自然草地上**：`shallowTarnSurfaceBlock(...) === 'grass'`。
+ *   沙滩 / 湖盆 / 水下坡（接壤水系那一侧的 `sand`）/ 整形区外**一株不长** ——
+ *   用户说的是「草地方块的话」才长。
+ * - **密度/物种表零拷贝**：直接调 `rollVegetation(wx, wz, 'PLAINS', seed)`。
+ *   改 `vegetation.js` 的 PLAINS 表，草地地标与本图**同时变**（红线 1）——
+ *   不另写第二份概率表（那会漂移出「同一片草，两套密度」）。
+ * - **不种树**：用户只点名「草、花、蘑菇等」。缓坡仅 24 格宽，树会挡路并遮住高台。
+ *   故只取 `roll.plant`，`roll.tree` 的抽签格返回 `null`（**根本不去长**，不是「长不出来」）。
+ *
+ * ## 为什么整格都算（不搞 patch / 聚类）
+ * 高台地带 v1.93 用独立 salt 复刻了 PLAINS 的两项概率，那套做法在这里**不适用**：
+ * 本图要的是「逐格与草地地标完全一致」，逐格转调是唯一能自动跟随上游变化的形式。
+ * 实测（seed 12345 全量扫描 9985 列草地）：13.08% 的草地格长植物 ——
+ * 草 5.01% / 花 5.04% / 雏菊 0.98% / 红蘑菇 0.62% / 枯木 1.42%。
+ *
+ * @param {number} wx @param {number} wz @param {number} seed
+ * @param {{wx:number, wz:number}} anchor
+ * @returns {string|null} 方块名，或 null（= 这一格不长）
+ */
+export function shallowTarnPlantAt(wx, wz, seed, anchor) {
+  const dx = wx - anchor.wx, dz = wz - anchor.wz;
+  const d = Math.hypot(dx, dz);
+  // 整形区分方预筛：圆外一定不在整形区（廉价，避免每格都算谐波）
+  if (d > SHALLOW_TARN_OUTER_RADIUS) return null;
+  const e = d - shallowTarnLakeRadiusAt(Math.atan2(dz, dx), shallowTarnShapePhase(seed));
+  // 三条带之外（湖盆内 / 沙滩内 / 缓坡之外）直接出局：只有缓坡可能是草地
+  if (e <= BEACH_WIDTH || e > BEACH_WIDTH + SLOPE_WIDTH) return null;
+  const targetY = shallowTarnSurfaceYAt(wx, wz, seed, anchor);
+  if (shallowTarnSurfaceBlockAtOffset(wx, wz, seed, anchor, e, targetY) !== 'grass') return null;
+  const roll = rollVegetation(wx, wz, 'PLAINS', seed);
+  return roll.plant || null;   // 树抽签（roll.tree）**刻意不种**，见函数注释
+}
+
+/**
+ * 在整片缓坡草地上撒单格植被（v2.22）。
+ *
+ * ## 落位
+ * 植物的 y = 该列地表 **`+1`**（`surfaceY + 1`）—— 写成 `surfaceY` 会把草埋进地里
+ * （高台地带的 `tarnPlantAt` 同样口径：`plateauY + 1`）。
+ *
+ * ## 目标格已非空气时不写
+ * 沙岸旁边的缓坡上可能已经有别的方块（撒布结构边缘、其它植被路径）。
+ * **后写胜会把它顶掉**，与既有巨树覆盖守卫同手法（仅当目标格是空气才写）。
+ *
+ * ## 性能
+ * 逐列算 `shallowTarnSurfaceYAt` → 它会调 `slopeNaturalHeight`（半径 8 的均值，289 次采样）。
+ * 靠 `SLOPE_CACHE` 的**精确坐标**缓存命中：调用点紧跟 `fillShallowTarnBasin`
+ * （同一个 column、同一个 seed），整列 256 格几乎全命中（实测整页单测无可见增长）。
+ * ⚠️ **不要把调用点搬到别的阶段**：缓存是按 column 访问顺序获益的，搬远了会退化成
+ * 「每列重新探 289 次」。
+ *
+ * @param {import('../../voxel/chunk-column.js').ChunkColumn} column
+ * @param {{wx: number, wz: number, lakeFloorY: number}} anchor
+ * @param {number} seed
+ * @param {import('../../voxel/block-registry.js').BlockRegistry} registry
+ * @param {(wx:number, y:number, wz:number, name:string, meta?:number) => void} setBlock
+ */
+export function plantShallowTarnGrass(column, anchor, seed, registry, setBlock) {
+  const colMinX = column.cx * 16, colMinZ = column.cz * 16;
+  void registry;    // 判据全在纯函数里（不需要查 id）；保留形参与同目录其它函数一致
+  for (let lx = 0; lx < 16; lx++) {
+    const wx = colMinX + lx;
+    for (let lz = 0; lz < 16; lz++) {
+      const wz = colMinZ + lz;
+      const plant = shallowTarnPlantAt(wx, wz, seed, anchor);
+      if (plant === null) continue;
+      const y = shallowTarnSurfaceYAt(wx, wz, seed, anchor) + 1;
+      if (y < WORLD_MIN_Y || y >= WORLD_MAX_Y) continue;
+      if (column.blocks[blockIndex(lx, y, lz)] !== 0) continue;   // 已占用：不顶掉别人
+      setBlock(wx, y, wz, plant);
+    }
+  }
+}
 
 // ==================== 供测试复用的导出 ====================
 
