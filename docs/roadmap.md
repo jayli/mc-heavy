@@ -330,6 +330,7 @@ MAG7 曳光终点回归准心轴（v1.36，原用扫描候选当终点导致斜�
 | v2.24 | 浅水高台：跨湖拱桥（单层 / 3 格宽 / 余弦拱 / 六种材质分片） | ✅ 已完成 | **用户 2026-11-03：「我想在浅水湖两岸之间架起一座高大的桥，单层方块，三个方块宽，你用非叶子方块，用云方块、冰方块、深浅草方块，大理石方块、sky_stone 等，这些方块可以一片一片的连接在一起形成一个横跨天幕的桥，很雄伟好看」**。四轮提问裁定：**拱桥**（中央最高、两端顺坡落地）、**弧顶 45~50 格**（实际 47）、**玩家能一路走上去**、**沿桥方向成片分段**（每片 8~15 格一色）。**实现**：新增 `src/gen/structures/shallow-water-bridge.js`（纯函数、Worker 同构），接线在 `apply.js` 阶段 2.45 的**第 ⑤ 步**（必须在 ②③ 高台光栅化之后 —— 净空判据比对的是真实烘焙方块顶层，先写桥会被后写胜覆盖；也必须在 ④ 植被之后 —— 桥头落在缓坡带上会顶掉草丛）。四块职责：`computeShallowTarnBridge`（桥轴）/ `shallowTarnBridgeDeckY`（余弦拱剖面）/ `shallowTarnBridgeBlockAt` + `bridgeSegments`（材质分片）/ `rasterizeShallowTarnBridge`（按 column 栅格化）。**三条被实测否决的初稿设计**（spec §15.5 / §15.3 / §15.6）：① **任意角度桥轴**——22°/30°/60°/137° 有 **9%~18%** 的沿轴步只覆盖 **2 格**（玩家会掉下去），且足迹法向宽度涨到 **3.8~4.1 格**（不是 3 格），根因是格坐标取整在斜向不对齐；备选「中心细线 + 主轴邻居」在 45° 时 **114/114** 个中心格成孤岛 ⇒ **桥轴必须吸附正轴**（`+X` / `+Z`）。② **抛物剖面 `1−t²`**——端部斜率 2 格/格 > `MAX_STEP = 1.0`，实测 `maxStep = 2`，玩家走不上桥 ⇒ 改用**余弦拱**（端部斜率 0，全程相邻高差恒 1）。③ **逐格分桶上色**——实测材质占比 **4/15/28/32/14/3%**（云与 `sky_stone` 几乎不出现）且片长碎到 1 格 ⇒ 改「**等值线分片 + 游程合并 + 强制相邻异色**」。**实测**（20 seed）：**20/20 全部有合法桥**（每个 seed 恰好一条轴可用，`+X`/`+Z` 择优）、跨度 **162~201 格**、与五座高台净空 **3~27 格**、最大相邻高差恒 **1**、桥头 `gap = 0`（与地面齐平可直接踩上）、片段 min 8 / p25 11 / 中位 13 / p75 15、六种材质全出现且用量 **171~436 格**。**验证**：`npm run check` 全绿（0 error）；`npm run check:data` 新增 `[浅水高台]` 第 ⑦ 项（六种材质均为注册的 opaque 方块 + 无叶子族）；浏览器单测新增 28 条（`src/tests/test-shallow-water-bridge.js`）；Tier 4 `tests/shallow-water-tarns.spec.mjs` 新增一条（真实世界逐格验 3 格宽 / 可步行 / 六种材质 / 桥心下方是湖）。**负向验证 8 项全部真 FAIL**：斜向轴（5 条红）、抛物剖面、`MIN_LEN=1`、双层写入、只写中线、`apply.js` 解除接线（Tier 1 + Tier 4 各红）、门禁注入 `marble_typo` 与 `azalea_leaves`。⚠️ **实施中抓到的三处真实问题**：① **`BRIDGE_SEG_MIN_LEN` 原本没有判别力**——只断言「合并后片长 ≥8」时把阈值改成 1 也全绿（实测原始场只有 9.3% 的片段 <8，且大多与相邻短片段合并后自然超 8）⇒ 新增 `bridgeRawSegmentLengths` 导出 + 用例「合并前存在 <8、合并后一个不剩」。② **「3 格宽」用例原本用累加集合**——相邻 `s` 的 `off=+1` 格正好是下一个 `s` 的 `off=-1` 格，累加后「只写中线」的注入也全绿 ⇒ 改成逐行收集。③ **`test-shallow-tarn-gen.js` 的「沙滩不长植物」把桥面方块误判成植物**（实测 31 格 `sky_stone`）—— 桥两端确实落在沙滩带上，判据补上「跳过桥面格」并加 `bridgeSkipped > 0` 防它变成空操作。设计文档 §15。 |
 | v2.25 | 放置落点：命中 <15 格直接放命中面前（对齐 mc-lite）；命中 ≥15 格 / 打空沿视线从近到远第一个可放的候选；头格永不作候选（取代 v1.72 裁定①） | ✅ 已完成 | **用户 2026-10-30：** ① 「那么当十字准心由近到远经过B和A的时候，即可以在A放置方块，也可以在B放置方块，现在的逻辑是在远方十字准心对准的面A的位置放置方块，而不是B，我要修改一下逻辑，调换一下位置，我要在这个时候在B优先放置方块，而不是A，也就是说，不管十字准心方向经过多少个可放置方块的位置，总是先就近放置」；② 「无论何时，自己脑袋所在的那一格都不能放置方块。排除这个情况后，再论从近到远放置方块」；③ 看到范围实测后追加：「命中在 15 格内，直接放命中面前，也改成跟 mc-lite 一样，即 15 格内，直接放命中面前，不看沿途候选」，并对「头格 / 压到身体的格」明确「这条先不变……我现在的实现更合理」（保持本仓现状，不对齐 mc-lite）。**根因 = 命中与打空之间有一道人为分界**：主射线命中就放 A（`target.prevPos`），只有完全打空才跑 v1.72 兜底去贴沿途最近的「看不见的侧面」格 B —— 同一条视线打到 40 格外放 B、打到 39 格放 A，落点随距离跳变。**实现**：① `place-ray.js` 新增 `scanPlaceCells(world, origin, dir, visit, opts)`（候选判据的唯一实现；`visit` 返回 true = 已放置并中止，false = 这格放不下、继续往远处找；`opts.stopAt` = 命中格，走到即截止、不含）与常量 `PLACE_NEAR_HIT_DIST = 15`，`findPlaceCell` 退化为取第一个候选的薄包装；② `player.js` 新增 `_placeNearest(id, hit)`：命中 `dist < 15`（严格 `<`）直接放 A，被拒即作罢；命中 ≥ 15 / 打空则候选逐个交给 `_placeSingle()`，第一个放成功的算数，最后才是 A；③ 特殊物品（巢穴/炮塔/矿车）与 A 路径行为不变。**扫描路径的三条载荷性规则**：头格出局（用「第一次进入回调」识别，**不能用 `t === 0`** —— 相机恰在格边界时头格之后的下一格 `t` 也是 0）；候选被拒就继续找下一个；止于命中格（命中格是花草时扫描本身不被它遮挡；近处分流后它只在命中恰为 15.0 格时起作用，是边界保险，由专门用例钉住）。**与 mc-lite 的对照**：一致 —— 命中 <15 格直接放命中面前；命中 ≥15 格且沿途有候选放最近候选；打空走候选。有意不同 —— 命中 15~40 格且沿途无候选，本仓放命中面前（v1.72 裁定②；mc-lite 什么都不放）；头格 / 压到身体的格，本仓候选里显式排除头格、身体守卫只拒实心（mc-lite 无显式排除、身体碰撞检查对所有方块生效，花草也不行）；巢穴/炮塔/矿车不参与候选扫描（mc-lite 的 handler 可空中放）；采样用体素 DDA 逐格（mc-lite 每 0.1 格采样，斜射可能漏格）；命中时放置格按射线实际穿过的面（mc-lite 用命中点相对方块中心偏移最大的轴，非整块方块可能不同）；创造口径不消耗背包物品。**实测**：背靠墙 / 头顶有天花板时最近候选恰是头格；站位离视线前方那条格边界不到 0.3 时，紧挨头格的下一格也压身体（朝 −X 看 x=3.10/3.25 被拒、x≥3.5 没事，朝 +X 看则 x>3.7 被拒；约占每个方向 30%），所以「只试第一个候选」会整次右键作废；扫描 0.4–4.9 µs/次（Node 微基准，交替 9 轮取中位）、仅右键 `mousedown` 触发（无按住连放），对照放/挖编辑路径 p95 ≈1.7 ms。**近处分流追加前**（命中一律参与就近优先，终审用真实 `Player` 实测）：1×2 隧道俯角 10°~50°、宽 2 高房间 14 档里 10 档、紧挨墙走（偏航朝墙 0.6° 到离墙约 45°）都会改放到面前一格 / 头部高度，且同一视线连点第 2、3 次无反应 —— 这是用户追加「命中 <15 格直接放 A」的原因。**追加后**（真实 `Player`）：1×2 隧道只有打空（俯角 0°、1°）或命中 ≥15 格（俯角 3°~6°，命中距离 31 / 18.6 / 15.5）才改放到面前一格，6.5°（14.3 格）起直接放 A；紧挨墙走同理（3°~6° 改放，7° 起放 A）；连点三次依次放在 (8,1,8)→(7,1,8)→(6,1,8)，不再无反应。**测试**：`test-place-ray.js` +9、`test-player-place.js` +13、`tests/place-fallback.spec.mjs` +3（真实页面，`setTestAim → update → placeBlock`，不手塞 target）；负向验证：追加前 4/4、追加后 3/3（去掉近处分支 → 1 单测 + 1 E2E 红；`<` 写成 `<=` → 1 单测红；去掉 `stopAt` → 1 单测红）均转红并 `cp` 还原；浏览器单测 harness 0 失败，place-fallback + harness + 其余 7 个调用 `placeBlock()` 的 spec 共 62 条全过。设计说明 `docs/superpowers/specs/2026-10-30-place-nearest-first-design.md`（§10 为追加变更），计划 `docs/superpowers/plans/2026-10-30-place-nearest-first.md`。 |
 | v2.26 | 高台地带：中心广场（smooth_stone_1 铺装 + 3 格宽 tuff_bricks 十字） | ✅ 已完成 | **用户 2026-11-03：「我要优化一下高台地带的中心冰块地面的材质，中心石英柱子围成的圆圈区域内，用 smooth_stone_1 铺设，中间正南正北有一个十字形状的三个方块宽度的十字，十字形状用 tuff_briks 铺设，就铺设地表一层，地下仍然是冰块」**。三处提问裁定：**广场半径 28**（把七根紫晶柱全部罩在广场内）、**十字臂贯通到圆周**（不是停在中间）、**中心交叉 3×3 全 tuff_bricks**。**实现**：`tarn-zone.js` 新增两个几何常量（`TARN_PLAZA_RADIUS = 28` / `TARN_PLAZA_CROSS_HALF_WIDTH = 1`，与四带边界同处 = 「地带的形状」而非「整形实现」）；`tarnSurfaceBlock()` 在**最前面**加一条 `d <= TARN_PLAZA_RADIUS` 分支（十字 `tuff_bricks` / 其余 `smooth_stone_1`）。`fillTarnPlateau` / `tarnSnowCap` / `tarnPlantAt` / `apply.js` / 烘焙产物**零改动** —— 广场只改 `plateauY` 那一层，第 3 步的向下填实不经过 `tarnSurfaceBlock`。**半径 28 是实测标定值**：七根紫晶柱的真实烘焙足迹（逐格量到圆心，非 AABB）全部高度最远 **25.4** 格、基座层 **16.00~23.0**，12 seed 逐格最小 **13.04**；取 28 = 柱脚外侧留 2.6 格空地，且冰带仍留 44−28=16 格外圈。**实测**：广场 2453 格中十字 325 格（几何 13.2%）；真实页面 48 方位 × 4 半径采样得 `smooth_stone_1` **0.682** / `tuff_bricks` **0.240** / 紫晶柱自身材质 0.078（`amethyst` + `block_of_quartz`，采样圈必然打到柱体）；冰带（28~44 那圈）ice **0.599**；广场下方 5 层**零**广场材质、**零** ice（自然地层 `stone`/`dirt`/`grass`）。**⚠️ 实施中抓到三处判据缺陷**：① **「地下仍然是冰块」不能写成「地下是冰」** —— 实测广场下方一格 ice 都没有（`ice` 只存在于 `plateauY` 地表面），正确落地是「不去碰它」，用例改成断言那 5 层内不出现广场材质/冰；② 既有的「冰带 ice ≥78%」与「雪侵入冰区 ≥2%」两条采样窗口都从 0 起，广场吃掉冰带内圈后读数跌到 **43.1% / 1.1%**（**不是回归，是新特征的正确后果**）⇒ 下界改 0.70（实测 60 seed 71.0~75.3%）、冰区窗口下界收到 `TARN_PLAZA_RADIUS`；③ Tier 4 的十字占比阈值**不能按几何面积比 13.2% 写** —— 环形采样越靠内侧打在十字上的比例越高（半径 3.5 处 58.3%、24.5 处 8.3%）⇒ 采样口径实测 24.0%，上下界取 0.10/0.45。**验证**：`npm run check` exit 0；浏览器单测 **1199 例 0 失败**（新增 3 条：广场铺满 / 十字 3 格宽四向对称且止于圆周 / 只改地表一层）；`tests/tarn-zone.spec.mjs` **8/8**（含新增的广场材质与十字占比判据）。**负向验证 3 项全真 FAIL**：① 删掉广场分支 → 3 条单测红（2128 格 / 334 格 / 269 列）；② 十字半宽 1→2 → 「(2,2) 在十字对角上却不是 smooth_stone_1」；③ 广场半径 28→34 → 广场常量自洽 + 冰带纯度 + 冰区采样数 三条红。均 `cp` 副本还原 + sha256 逐位核对。 |
+| v2.27 | 设置面板：分辨率两档（清晰 / 性能）与视距并排 | ✅ 已完成 | **用户 2026-11-03：「在控制面板里增加一个分辨率的选项，一个是当前默认比较清晰的分辨率，一个是画面分辨率更低的按钮，分为两个按钮表达，清晰，性能……『清晰』和『性能』两个按钮放在视距这一排，把原本视距这一排改为两列，类似『雾色』与『背景音乐』两列占据一行的区域」**。三处提问裁定：**性能档 = dpr × 0.5**（不是 mc-lite 的绝对 0.4/0.6/1.0 三档）、**联动降雨滴数**（对齐 mc-lite `refreshRainQualityIfNeeded`）、**视距保持三档并与分辨率并排**。**实现**：新增 `src/render/pixel-ratio.js`（three-free 纯函数：`PIXEL_RATIO_MODE_OPTIONS` / `DEFAULT_PIXEL_RATIO_MODE` / `PERFORMANCE_RATIO_SCALE`=0.5 / `PIXEL_RATIO_MIN`=0.25 / `pixelRatioFor` / `normPixelRatioMode`）—— 档位→像素比的唯一权威，面板 / settings / renderer 三处共用（红线 1）。`settings.js` 加 `pixelRatio` 字段（默认 `'sharp'` = 改动前观感）、存储分支、`?res=sharp|perf|performance` URL 入口；**不做 `settingsVersion` 迁移**（旧存档无此字段，自然回落 —— 与 `chunkPace` 同理，与 `fogColor` 反例的区别已在注释里写明）。`weather.js` 加 `RAIN.PARTICLE_COUNT_PERFORMANCE = 120`（mc-lite 性能档原值）。`game.js`：像素比**唯一写入点 `_applyPixelRatio()`**（`start()` / `_onResize()` / `setPixelRatioMode()` 三处调用方）+ `setPixelRatioMode()`（像素比 + 重建雨效）+ `_rebuildRain()` + `rainParticleCount()` + `get pixelRatio()`。`settings-panel.js`：`_rowViewDistance(wrap)` 加 wrap 参数、新增 `_groupResolution()` 与 `_combinedViewDistanceResolution()`，右列第一行由「视距」单行改为合并盒（左半视距三档 / 右半分辨率两档），导出 `RESOLUTION_ROW_TITLE` / `RESOLUTION_LABELS`。**实测**（真游戏页）：dpr=1 时清晰 1.0 → 性能 **0.5**（`canvas.width` 1280 → **640**、CSS 宽不变）、雨滴 **267 → 120 → 267**；dpr=2（`deviceScaleFactor: 2`）时清晰 **2** → 性能 **1.0**（canvas 2000 → 1000）—— 即 Retina 屏的性能档恰好等于 mc-lite 的「画质档」绝对像素比，观感对齐的是它的清晰档而非 0.4 档（有意偏离，理由见模块头注：照搬绝对档会让本仓的「画质档」相当于 Retina 降半分辨率）。面板：视距三按钮 47px / 分辨率两按钮 77px、文案单行不折行、两组同盒同行（top 相同）、面板 571px 零滚动、宽 818px。**测试**：`npm run check` exit 0（0 error）；浏览器单测 **1210/1210**（新增 8 条：`test-pixel-ratio.js` 6 条纯函数 + `test-ui.js` 2 条契约 —— 三入口 + 文案数量与档位集合逐项对齐）；`tests/settings-resolution.spec.mjs` **6/6**（默认清晰零回归 / 切档后 canvas 后备缓冲真的变小 / 雨滴联动 / Retina 倍率语义 / `?res=perf` 与存档 reload / 行布局同盒同行不折行不滚动）。**负向验证 4 项全部真 FAIL**：① `PERFORMANCE_RATIO_SCALE` 0.5→1.0（4 条红）② `_applyPixelRatio` 不调 `renderer.setPixelRatio`（4 条红）③ `setPixelRatioMode` 不重建雨效（2 条红）④ 面板不调 `game.setPixelRatioMode`（3 条红）。⚠️ **实施中抓到一处真实设计缺陷（②注入第一次只红 2 条）**：`_onResize()` 原先**又直调了一次** `renderer.setPixelRatio`，而 `start()` 的 `_onResize()` 紧接着就跑 → 把 `setPixelRatioMode` 的效果覆盖掉，于是「删掉像素比写入」这个缺陷被遮住、`?res=perf` 与存档用例仍绿。修法 = 收敛成唯一写入点 `_applyPixelRatio()`（`_onResize` 也走它，且不再重建雨效 —— 窗口缩放不改档位）。这正是「同一事实多个副本会漂移」的又一实例。
 
 ### 放置兜底（v1.72）→ 就近优先（v2.25）
 
@@ -608,7 +609,10 @@ reserved 峰值只要超过 `maxVerts` **一个顶点**就整批跳到 ×1.5（1
 | 面板列 | 行（自上而下） | 高度 |
 |---|---|---|
 | 左列 | 画质+枪械破坏合并盒 / 环境风格 / **雾色+背景音乐合并盒（v1.98）** / 瞬移 | 492 → **420** |
-| 右列 | 视距 / 帧预算 / 创造台 / **TNT 破坏+进度管理合并盒（v1.98）** / 世界 | 492 → **420** |
+| 右列 | **视距+分辨率合并盒（v2.27）** / 帧预算 / 创造台 / **TNT 破坏+进度管理合并盒（v1.98）** / 世界 | 492 → **420** |
+
+v2.27 把「视距」从独占一行改为合并盒后，右列**行数不变**（只是那一行内部变成两列），
+实测面板 **571px**、内容 571px、零滚动、面板宽 818px。
 
 把「背景音乐」加在右列时的实测（v1.63）：面板 **653px**、内容 **706px** > 可视 **645px**
 （`.mc-content` 是 `max-height: 84vh; overflow: auto`）→ **出现纵向滚动条**，且「世界」行
@@ -638,6 +642,47 @@ reserved 峰值只要超过 `maxVerts` **一个顶点**就整批跳到 ×1.5（1
 ⚠️ **量法**：`getBoundingClientRect()` 读两列高度 + `.mc-content` 的 `scrollHeight` vs
 `clientHeight`；别只看截图（浏览器在 720p 下滚动条很细，容易漏）。判据是
 **面板高度不增长的那一列**，而不是哪列「名字上余量更大」。
+
+### 渲染分辨率档位（v2.27）
+
+设计文档无专节（改动属设置项，量级与 `chunkPace` 同档）；实现在 `src/render/pixel-ratio.js`。
+
+- **档位→像素比的唯一权威 = `render/pixel-ratio.js`**（three-free 纯函数）：面板（`_groupResolution`）、
+  `settings.js`（默认值 + 归一化）、`game.js`（`_applyPixelRatio`）三处都 import 它。
+  ⚠️ **写两处字面量会漂移出「按钮说性能、实际没降」的静默缺陷** —— 像素比是
+  drawing buffer 的物理尺寸，画面照常出，只是没变小，Retina 屏上肉眼很难看出。
+- **清晰 = `devicePixelRatio` 原值，性能 = dpr × 0.5**（用户 2026-11-03 裁定）。
+  ⚠️ **有意不照抄 mc-lite 的绝对三档（0.4 / 0.6 / 1.0）**：本仓清晰档是 dpr（Retina = 2.0），
+  照搬绝对档会让「1.0 画质档」相当于在 Retina 屏降半分辨率，而 0.4 会比 mc-lite 自己更糊
+  （它默认也只有 0.6）。按相对 dpr 定义后，普通屏性能档恰为 0.5（与 mc-lite 性能档同量级），
+  Retina 屏恰为 1.0（= mc-lite 的画质档）。像素量降到 **1/4**。
+- **`PIXEL_RATIO_MIN = 0.25` 是载荷性的下限，不得为 0**：`setPixelRatio(0)` 会让
+  `canvas.width/height` 归零，而 WebGPU 不为此抛异常 —— 画面只是一片空白（典型静默失效）。
+  非有限 dpr（`NaN` / `Infinity` / `undefined`）一律当下限处理，否则乘积落到 `NaN`
+  同样会让 canvas 尺寸 `NaN`。
+- **像素比只有一个写入点 `Game._applyPixelRatio()`**：`start()`（应用生效设置）、
+  `_onResize()`（浏览器缩放/跨屏拖动时 dpr 会变）、`setPixelRatioMode()`（玩家切档）三处调用。
+  ⚠️ **这里踩到过一个真实设计缺陷（负向验证发现）**：首版 `_onResize()` 自己又直调了一次
+  `renderer.setPixelRatio`，而 `start()` 之前已调 `setPixelRatioMode()` 应用存档档位 →
+  紧接着的 `_onResize()`（在 `start()` 中途同步执行）把它的效果**覆盖**掉 ⇒
+  「删掉像素比写入」这个缺陷被遮住，`?res=perf` 与存档 reload 两条用例仍绿。
+  收敛成单一写入点后，该注入让 **4 条用例真 FAIL**。
+- **切分辨率不重载页面**（与 `applyViewDistance` / `setBlurQuality` 刻意不同）：像素比只是
+  drawing buffer 尺寸，`renderer.setPixelRatio()` 会自己 `setSize(w, h, false)` 重建后备缓冲
+  （`three.webgpu.js:59017`）。那两者必须重载是因为要重建 `BatchedMesh` 容量与 mip 链。
+- **雨滴联动**：`RAIN.PARTICLE_COUNT_PERFORMANCE = 120`（mc-lite 性能档原值），
+  `setPixelRatioMode()` 里 `dispose()` + 重建 `RainEffect`（雨滴数是 `BufferGeometry` 顶点数，
+  构造期固定）。⚠️ **分档判据用 `mode`，不是算出来的像素比** —— 拿绝对像素比查表
+  （mc-lite 的 `scale ≤ 0.4` 那种）会让 Retina 屏的性能档（1.0）落回满雨滴档，等于没联动。
+- **不做 `settingsVersion` 迁移**（与 `chunkPace` 同理，与 `fogColor` 相反）：旧存档没有
+  `pixelRatio` 字段，缺字段自然回落默认。
+- **`?res=` 接受 `perf` 简写**（URL 是手敲的），存储值与档位常量一律用全名 `performance`。
+- ⚠️ **Tier 4 必须显式 `deviceScaleFactor: 2` 才测得出「相对 dpr」这层语义**：
+  Playwright 默认 dsf=1，那时清晰 1.0 / 性能 0.5 与「绝对像素比」的两种解释都自洽 ——
+  若有人把倍率写成固定 `0.5`，dsf=1 用例全绿而 Retina 屏上会变成 1/4 分辨率。
+  同 `minimap.spec`（dpr=1 下有的缺陷形态完全不可见）。
+- ⚠️ **判据只能看 `canvas.width`，不要比截图清晰度**：像素比只改 drawing buffer 的物理尺寸，
+  CSS 尺寸不变（`setSize(w, h, false)` 不写 style）；`canvas.width` 是确定性的因果上游。
 
 ### 出生点与刷怪（M6）
 

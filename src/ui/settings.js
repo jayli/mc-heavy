@@ -21,6 +21,13 @@ export const VIEW_DISTANCE_MAX = 16;
  */
 export const VISUAL_STYLE_OPTIONS = [null, 'morning', 'noon', 'dusk', 'night'];
 
+/**
+ * 渲染分辨率档位（v2.27，「清晰」/「性能」两按钮）。**唯一权威不在本文件** ——
+ * 档位集合、倍率、下限与换算都在 `render/pixel-ratio.js`（渲染口径，面板只是消费者）。
+ * 这里只 re-export 默认档，让 `DEFAULT_SETTINGS` 与面板/渲染读同一个值（红线 1）。
+ */
+import { DEFAULT_PIXEL_RATIO_MODE, normPixelRatioMode } from '../render/pixel-ratio.js';
+
 export const DEFAULT_SETTINGS = {
   // 设置结构版本（不是存档 DB 版本）。每次「语义变更且旧值不可信」时 +1，并在
   // `migrateStored()` 里写一步迁移。当前：
@@ -48,6 +55,12 @@ export const DEFAULT_SETTINGS = {
   // **默认 8（用户 2026-10-27 裁定）**：100ms 窗口内出现约 104 个 section —— 比 0 的
   // 272 明显铺开，又不至于像 1 那样追不上加载速度（实测 1 会剩 1219 个永远补不完）。
   chunkPace: 8,
+  // 渲染分辨率档位（v2.27）：'sharp' = devicePixelRatio 原值（改动前观感，零回归）、
+  // 'performance' = dpr × 0.5（像素量 1/4）。⚠️ **不需要 settingsVersion 迁移** ——
+  // 旧存档里根本没有这个字段，缺字段自然回落新默认（与 `chunkPace` 同理）。
+  // 这与 `fogColor` 那次的处境不同：那次是「默认值是关时顺带落盘的假值」，必须迁移；
+  // 这次没有任何旧存档会写出 `pixelRatio`，所以迁移是多余的。
+  pixelRatio: DEFAULT_PIXEL_RATIO_MODE,
 };
 
 /** 每帧上传 section 数的合法范围（0 = 不限；上限取 16 —— 再大即等同不限） */
@@ -80,6 +93,11 @@ function clampChunkPace(v) {
   return Math.max(CHUNK_PACE_MIN, Math.min(CHUNK_PACE_MAX, Math.round(n)));
 }
 
+/** 分辨率档位归一化（换算口径在 render/pixel-ratio.js，这里只是再导出入口） */
+function normPixelRatio(v) {
+  return normPixelRatioMode(v);
+}
+
 /**
  * 旧存档迁移（就地修改 stored，返回同一对象）。
  *
@@ -110,8 +128,8 @@ export function migrateStored(stored) {
 
 /**
  * 合并生效设置：URL 参数 > 存储值 > 默认值。
- * URL 支持的键：vd / blur(0|1) / volume / style / budget / guns(0|1) / tntDamage(0|1) / fog(0|1) / bgm(0|1)（main.js 既有的
- * ?vd、?blur 语义保持不变，这里统一收口）。
+ * URL 支持的键：vd / blur(0|1) / volume / style / budget / guns(0|1) / tntDamage(0|1) / fog(0|1) / bgm(0|1) /
+ * chunkpace(0~16) / res(sharp|perf)（main.js 既有的 ?vd、?blur 语义保持不变，这里统一收口）。
  * 另有**不在此处收口**的 URL 开关（不走持久化，main.js 直传构造选项，见其解析处）：
  *   ?stats / ?log（DEBUG_FLAGS）、?weather（启动天气）、?seed（复现）、
  *   ?shadows=0（太阳阴影代码级开关，DR-7）。
@@ -135,6 +153,7 @@ export function resolveSettings(stored, params) {
     if (typeof stored.fogColor === 'boolean') s.fogColor = stored.fogColor;
     if (typeof stored.bgm === 'boolean') s.bgm = stored.bgm;
     if (stored.chunkPace !== undefined) s.chunkPace = clampChunkPace(stored.chunkPace);
+    if (stored.pixelRatio !== undefined) s.pixelRatio = normPixelRatio(stored.pixelRatio);
   }
   if (params) {
     if (params.has('vd')) s.viewDistance = clampVD(params.get('vd'));
@@ -147,6 +166,11 @@ export function resolveSettings(stored, params) {
     if (params.has('fog')) s.fogColor = params.get('fog') === '1';
     if (params.has('bgm')) s.bgm = params.get('bgm') === '1';
     if (params.has('chunkpace')) s.chunkPace = clampChunkPace(params.get('chunkpace'));
+    // ?res=sharp|perf 分辨率档位（v2.27）。⚠️ 接受 `perf` 简写：URL 是手敲的，
+    // 而存储值与档位常量一律用全名 `performance`（归一化后统一）。
+    if (params.has('res')) {
+      s.pixelRatio = normPixelRatio(params.get('res') === 'perf' ? 'performance' : params.get('res'));
+    }
   }
   return s;
 }

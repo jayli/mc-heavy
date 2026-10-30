@@ -16,7 +16,7 @@ import { setupSky, placeCelestial } from '../render/sky.js';
 import { DayNight, SUN_LIGHT_BASE_HEX, SUN_LIGHT_BASE_RGB } from '../render/daynight.js';
 import { ShadowScheduler, SUN_DIR_GATE_DEG, sunDirectionChanged, texelSnapOffset } from '../render/shadow-manager.js';
 import { RainEffect } from '../render/rain.js';
-import { WeatherState } from '../render/weather.js';
+import { WeatherState, RAIN } from '../render/weather.js';
 import { WeaponModelLoader } from '../render/weapon-model-loader.js';
 import { AudioManager } from '../render/audio-manager.js';
 import { ViewWeapon } from '../render/view-weapon.js';
@@ -68,6 +68,7 @@ import { InventoryPanel } from '../ui/inventory.js';
 import { loadIconManifest } from '../ui/icons.js';
 import { getBiome } from '../gen/noise.js';
 import { loadStoredSettings, resolveSettings } from '../ui/settings.js';
+import { pixelRatioFor, normPixelRatioMode } from '../render/pixel-ratio.js';
 import { encodeProgress, decodeProgress } from '../save/progress-codec.js';
 import { computeTarnZone, findNearestTarnZone } from '../gen/structures/tarn-zone.js';
 import { computeArenaAnchor } from '../gen/structures/arena.js';
@@ -199,7 +200,11 @@ export class Game {
 
   async start() {
     this.renderer.setSize(window.innerWidth, window.innerHeight);
-    this.renderer.setPixelRatio(window.devicePixelRatio);
+    // 分辨率档位（v2.27）：清晰 = devicePixelRatio（改动前观感，零回归）、性能 = dpr × 0.5。
+    // ⚠️ 这里只写像素比（`_applyPixelRatio`），**不调 `setPixelRatioMode`** —— 后者还会重建雨效，
+    // 而此刻 `rain` 与 `scene` 都还没创建（重建只会白做且会被后面的构造覆盖）。雨效在下方
+    // 构造时直接从 `settings.pixelRatio` 取雨滴数（`rainParticleCount`），两条路径读同一个值。
+    this._applyPixelRatio(this.settings.pixelRatio);
     await this.renderer.init();
 
     // atlas：纹理 + tileRect 元数据（broadcast 给 Worker 供 mesher 查 UV）
@@ -779,6 +784,7 @@ export class Game {
     this.rain = new RainEffect(this.scene, {
       world: this.world,
       playerPos: this.player.physics.pos,
+      particleCount: this.rainParticleCount(this.settings.pixelRatio),
     });
     this.rain.setIntensity(this.weather.intensity);
 
@@ -1040,6 +1046,82 @@ export class Game {
     this.camera.aspect = window.innerWidth / window.innerHeight;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(window.innerWidth, window.innerHeight);
+    // 分辨率档位（v2.27）：setSize 只改尺寸、不改像素比 —— 但浏览器缩放/跨屏拖动时
+    // `devicePixelRatio` 会变，而清晰档的像素比是它的**值**（不是固定 1）。不减不行：
+    // 拖动窗口到不同 DPI 的屏幕上时，画面会一下变糊/变锐，而面板按钮显示的仍是「清晰」。
+    // ⚠️ **走 `_applyPixelRatio()` 这个唯一入口**，不在这里直调 `renderer.setPixelRatio` ——
+    // 两份写入点会造成真回归（实测负向验证时发现）：`start()` 先调 `setPixelRatioMode()`
+    // 应用存档档位，紧接着 `_onResize()` 用旧的直调写法把它的效果**覆盖**掉 →
+    // 「删掉 `setPixelRatioMode` 里的 renderer 调用」这个缺陷会被 `_onResize` 遮住（用例仍绿）。
+    // 雨滴数不在这里重建（窗口缩放不改变档位，重建雨幕只是白白换一次几何）。
+    this._applyPixelRatio(this.settings.pixelRatio);
+  }
+
+  /**
+   * 像素比的**唯一写入点**（v2.27）：档位 × `devicePixelRatio` → `renderer.setPixelRatio()`。
+   * 三处调用方：`start()`（应用生效设置）、`_onResize()`（dpr 变了要重算）、
+   * `setPixelRatioMode()`（玩家切档）。**不得在其他地方直调 `renderer.setPixelRatio`** ——
+   * 两份写入点会互相覆盖，且会让「哪一处写错了」变得无法从行为上判断。
+   * @param {'sharp'|'performance'} mode @returns {number} 实际生效像素比
+   */
+  _applyPixelRatio(mode) {
+    const ratio = pixelRatioFor(normPixelRatioMode(mode), window.devicePixelRatio);
+    this.renderer.setPixelRatio(ratio);
+    return ratio;
+  }
+
+  /**
+   * 切换渲染分辨率档位（v2.27 设置面板「分辨率」行：清晰 / 性能）。
+   *
+   * ## 为什么这个开关**不重载页面**（与视距/画质刻意不同）
+   *
+   * `applyViewDistance` 与 `setBlurQuality` 都必须 `location.assign` 重载：前者要重建
+   * `BatchedMesh`（maxInstances 构造期固定）、后者要重建 mip 链（在纹理创建期决定）。
+   * 而像素比只是 drawing buffer 的物理尺寸 —— `renderer.setPixelRatio()` 会自己
+   * `setSize(w, h, false)` 重建 canvas 后备缓冲（`three.webgpu.js:59017`）。
+   * 重载反而是错的：它会把世界、实体、编辑、雨幕全部重建一遍（数秒）。
+   *
+   * ## 雨滴联动（对齐 mc-lite `refreshRainQualityIfNeeded()`）
+   *
+   * mc-lite 切分辨率时重建雨效，按档位选雨滴数（性能档 120 / 清晰档 267）。
+   * ⚠️ **档位判据用 `mode` 而不是算出来的像素比**：本仓性能档在 Retina 屏（dpr=2）上
+   * 像素比是 1.0，拿绝对像素比查表（mc-lite 的 `scale ≤ 0.4` 那种）会落回满雨滴档 →
+   * 静默不联动。雨滴数是 `BufferGeometry` 的顶点数，构造期固定，故只能 dispose 重建。
+   *
+   * @param {'sharp'|'performance'} mode
+   * @returns {'sharp'|'performance'} 实际生效的档位（非法值回落默认档）
+   */
+  setPixelRatioMode(mode) {
+    const m = normPixelRatioMode(mode);
+    this._applyPixelRatio(m);
+    this._rebuildRain(m);
+    return m;
+  }
+
+  /** 当前实际生效的渲染像素比（E2E 断言用；与 `renderer.getPixelRatio()` 同源） */
+  get pixelRatio() { return this.renderer.getPixelRatio(); }
+
+  /**
+   * 按分辨率档重建雨效（雨滴数在 `BufferGeometry` 构造期固定）。
+   * 无雨/无 rain 实例时也安全：只是重建一个不可见的雨幕，不产生任何画面/性能影响。
+   * @param {'sharp'|'performance'} mode
+   */
+  _rebuildRain(mode) {
+    if (!this.rain || !this.scene) return;
+    this.rain.dispose();
+    this.rain = new RainEffect(this.scene, {
+      world: this.world,
+      playerPos: this.player.physics.pos,
+      particleCount: this.rainParticleCount(mode),
+    });
+    this.rain.setIntensity(this.weather.intensity);
+  }
+
+  /** 档位 → 雨滴数（唯一权威 = `RAIN` 常量，见 `render/weather.js`） */
+  rainParticleCount(mode) {
+    return normPixelRatioMode(mode) === 'performance'
+      ? RAIN.PARTICLE_COUNT_PERFORMANCE
+      : RAIN.PARTICLE_COUNT;
   }
 
   /**

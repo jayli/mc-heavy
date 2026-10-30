@@ -11,6 +11,17 @@ export const RAIN = {
   RAIN_RANGE: [30, 90],         // 雨天随机周期
   // 雨滴视觉（mc-lite 高档：particleCount 267 / radius 18 / speed 24 / dropLength 0.5）
   PARTICLE_COUNT: 267,
+  /**
+   * 性能档（`settings.pixelRatio === 'performance'`）的雨滴数（v2.27）。
+   * 值 = mc-lite `getRainQualityOptions()` 性能档（scale ≤ 0.4）的 **120** ——
+   * 用户 2026-11-03 裁定「性能档减雨滴」（mc-lite 切分辨率时会 `refreshRainQualityIfNeeded()`
+   * 重建雨效，本仓对齐该联动）。
+   * ⚠️ **不照搬 mc-lite 的「按绝对 scale 分三档」查表**：它的档位按 `resolutionScale`
+   * （0.4 / 0.6 / 1.0）分界，而本仓性能档在 Retina 屏上是 **1.0**、普通屏上是 **0.5** ——
+   * 拿绝对 scale 查表会让 Retina 屏的性能档落回满雨滴档，等于没联动。
+   * 故这里只留两个数，分档判据走 `pixelRatio` 档位本身（不是它算出来的像素比）。
+   */
+  PARTICLE_COUNT_PERFORMANCE: 120,
   RADIUS: 18,
   SPEED: 24,
   DROP_LENGTH: 0.5,

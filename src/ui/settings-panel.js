@@ -7,7 +7,8 @@
 // **布局**：沿用 mc-lite 的两列盒（`.settings-columns` + `.setting-combined-item`），
 // 但行列分配按 mc-heavy 当前档位需要重排（面板是后续功能的配置入口，须留扩展余量）：
 // 左列 = 画质+枪械破坏合并盒 / 环境风格 / 雾色+背景音乐合并盒 / 瞬移；
-// 右列 = 视距 / 帧预算 / TNT 破坏+进度管理合并盒 / 创造台 / 世界（新世界 + 删除缓存）。
+// 右列 = 视距+分辨率合并盒（v2.27）/ 帧预算 / 创造台 / TNT 破坏+进度管理合并盒 / 世界
+// （新世界 + 删除缓存）。
 // 档位：视距（持久化+重载生效，面板 3 档）/ 画质 blur（重载生效）/ 视觉风格（运行时即时）
 // / 帧预算档位（运行时即时，M3-2）/ 枪械破坏（运行时即时）/ 世界操作（新世界 / 删除缓存）。
 // 音量不入面板（默认 100% 开启，`settings.js` 仍持久化 + `?volume=` URL 可达，待音频消费方接线）。
@@ -16,6 +17,9 @@
 import {
   VIEW_DISTANCE_OPTIONS, VISUAL_STYLE_OPTIONS, saveStoredSettings,
 } from './settings.js';
+// 分辨率档位的值集合（'sharp' / 'performance'）— 唯一权威在 render/pixel-ratio.js。
+// 面板只引值集合与文案并排显示；换算/钳制一概不在这里做。
+import { PIXEL_RATIO_MODE_OPTIONS } from '../render/pixel-ratio.js';
 import { Toast } from './toast.js';
 
 const STYLE_ID = 'mc-settings-style';
@@ -75,6 +79,18 @@ export const TELEPORT_HOME_LABEL = '回家';
 export const TELEPORT_TARN_LABEL = '高台';
 export const TELEPORT_ARENA_LABEL = '竞技场';
 export const TELEPORT_LAKE_LABEL = '湖';
+
+/**
+ * v2.27：「分辨率」行的标题与两个档位文案。导出供 `src/tests/test-ui.js` 钉死（单一口径）。
+ *
+ * 用户 2026-11-03：「增加一个分辨率的选项，一个是当前默认比较清晰的分辨率，一个是画面
+ * 分辨率更低的按钮，分为两个按钮表达，清晰，性能」—— 文案就是用户点名的两个字。
+ * 落位 = **与「视距」共用合并盒**（右列第一行左半视距、右半分辨率）。
+ * ⚠️ 档位值（`'sharp'`/`'performance'`）不在这里写 —— 唯一权威是 `render/pixel-ratio.js`
+ * 的 `PIXEL_RATIO_MODE_OPTIONS`，本处只负责显示文案（按下标对齐）。
+ */
+export const RESOLUTION_ROW_TITLE = '分辨率';
+export const RESOLUTION_LABELS = ['清晰', '性能'];
 /** 导出 / 导入模型按钮文案（创造台模型，与下行的**进度包**是两个不同粒度） */
 const EXPORT_LABEL = '导出模型';
 const IMPORT_LABEL = '导入模型';
@@ -281,7 +297,7 @@ export class SettingsPanel {
     // 「氛围」，合并后左列少一行。
     left.appendChild(this._combinedFogMusic());
     left.appendChild(this._rowTeleport());           // v1.92：瞬移（用户要求在背景音乐下面）
-    right.appendChild(this._rowViewDistance());
+    right.appendChild(this._combinedViewDistanceResolution()); // 视距 + 分辨率共用一行（v2.27）
     right.appendChild(this._rowBudget());
     right.appendChild(this._rowPlayground());        // M9：创造台（右列，纵向余量更大）
     // v1.98：TNT 破坏 + 进度管理合并为一行（用户同日要求，同样是为了「节省控制面板的空间」）。
@@ -355,18 +371,49 @@ export class SettingsPanel {
     return box;
   }
 
-  _rowViewDistance() {
+  _rowViewDistance(wrap = 'mc-item') {
     // 视距改动 → 持久化 + 带参重载（BatchedMesh maxInstances 构造期固定，不支持运行时扩容）。
     // 面板只留 3 档（省版面），其余档仍可达：`?vd=` URL 与旧存档 → clampVD(2~16)。
     // 当前值不在档位内（如 URL 带 vd=4）时无按钮高亮 —— 档位是「快捷选择」而非全集，
     // 刻意不做「就近高亮」（那会让按钮宣称了一个非生效值）。
-    return this._makeRow('视距', VIEW_DISTANCE_OPTIONS,
+    // v2.27：与「分辨率」共用合并盒（`mc-combined-col`）— 两栏各自最多 3 个按钮，
+    // 列宽 375px 下每个约 55px，三字文案「视距」同字宽的数字都没问题。
+    return this._makeGroup('视距', VIEW_DISTANCE_OPTIONS,
       VIEW_DISTANCE_OPTIONS.map(String), this.settings.viewDistance,
       (v) => {
         this.settings.viewDistance = v;
         this._save();
         this.game.applyViewDistance(v); // 重载生效
-      });
+      }, wrap);
+  }
+
+  /**
+   * v2.27：「分辨率」两档（清晰 / 性能）。
+   *
+   * **清晰 = `devicePixelRatio` 原值**（= 本次改动前的观感，零回归）；
+   * **性能 = dpr × 0.5**（像素量 1/4）。换算口径在 `render/pixel-ratio.js`（红线 1）。
+   *
+   * ⚠️ **不重载页面**：像素比只是 drawing buffer 的物理尺寸，`renderer.setPixelRatio()`
+   * 会自己重建后备缓冲（`applyViewDistance`/`setBlurQuality` 必须重载是另一回事 ——
+   * 它们要重建 BatchedMesh 容量与 mip 链）。故这里直接调 `game.setPixelRatioMode()`
+   * 并**把档位写回 `this.settings`**（两者缺一都是静默失效：只写设置不调 game → 画面不变；
+   * 只调 game 不写设置 → 面板下次打开/重载后又是一个值）。
+   */
+  _groupResolution() {
+    return this._makeGroup(RESOLUTION_ROW_TITLE, PIXEL_RATIO_MODE_OPTIONS, RESOLUTION_LABELS,
+      this.settings.pixelRatio,
+      (v) => {
+        this.settings.pixelRatio = this.game.setPixelRatioMode(v);
+        this._save();
+      }, 'mc-combined-col');
+  }
+
+  /** v2.27：视距 + 分辨率共用一个合并盒（用户 2026-11-03 指定「视距这一排改为两列」） */
+  _combinedViewDistanceResolution() {
+    return this._makeCombined([
+      this._rowViewDistance('mc-combined-col'),
+      this._groupResolution(),
+    ]);
   }
 
   _groupBlur() {

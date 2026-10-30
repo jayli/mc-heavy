@@ -85,6 +85,14 @@ v1.81 新增飞行那行后由三行变四行），
 进度与实测数据一律查 roadmap。里程碑状态、验收报告、遗留 TODO 的
 完整清单**一律查 roadmap** —— 此处不复制（复制就会漂移）。
 
+**v2.27** 给设置面板加了**分辨率两档**（用户 2026-11-03：「增加一个分辨率的选项……分为两个
+按钮表达，清晰，性能」+「『清晰』和『性能』两个按钮放在视距这一排，把原本视距这一排改为
+两列」）：新增 `src/render/pixel-ratio.js`（档位→像素比的**唯一权威**，three-free）；
+**清晰 = `devicePixelRatio` 原值**（改动前观感零回归）、**性能 = dpr × 0.5**（像素量 1/4）；
+切换**不重载页面**（与视距/画质反向：像素比只是 drawing buffer 尺寸）并**联动降雨滴数**
+（267 → 120，对齐 mc-lite `refreshRainQualityIfNeeded`）。面板右列第一行由「视距」单行改为
+合并盒（左半视距三档 / 右半分辨率两档）。细节见下方「面板与 UI」段与 roadmap 的 v2.27 行。
+
 **历次 bugfix / 改造的完整记录不在本文件。** 权威副本：**第一阶段独立改动**在设计文档修订说明 +
 `docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md`（版本区间见 roadmap 的改动表）；
 M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 的「遗留 TODO」段
@@ -422,6 +430,29 @@ seed 88 突破「单步落差 ≤1」（到 2 格），24 是守住无台阶的�
   故照 `_rowWorld` 的手法自己拼 `.mc-btn-group`。判据是「这个控件有没有『当前值』」，
   不是「它在面板里」。⚠️ 这类组若又要被合进合并盒，不能用 `_makeGroup` 建完再删占位按钮
   —— 直接拼行、只把调用方给的 `wrap` 类名应用上去（`_rowProgress(wrap)` 就是这么写的）。
+- **渲染分辨率档位的唯一权威 = `src/render/pixel-ratio.js`（v2.27，three-free 纯函数）**：
+  面板（`_groupResolution`）、`settings.js`、`game.js` 三处都 import 它。
+  **清晰 = `devicePixelRatio` 原值**（= v2.27 之前的观感，零回归）、**性能 = dpr × 0.5**
+  （像素量 1/4）。⚠️ **有意不照搬 mc-lite 的绝对三档（0.4/0.6/1.0）** —— 本仓清晰档是 dpr
+  （Retina 2.0），绝对档会让「1.0 画质档」在 Retina 屏相当于降半分辨率。
+  - ⚠️ **`PIXEL_RATIO_MIN = 0.25` 不得为 0**：`setPixelRatio(0)` 让 `canvas.width/height`
+    归零，而 WebGPU **不报错** —— 画面只是一片空白（静默失效）。非有限 dpr 一律当下限。
+  - ⚠️ **像素比只有一个写入点 `Game._applyPixelRatio()`**（`start` / `_onResize` /
+    `setPixelRatioMode` 三处调用）。**不得在别处直调 `renderer.setPixelRatio`** ——
+    首版 `_onResize()` 又直调了一次，把 `start()` 刚应用的存档档位覆盖掉，结果让
+    「删掉像素比写入」这个缺陷被遮住（两条 E2E 仍绿）；收敛成单点后同一注入红 4 条。
+  - **切分辨率不重载页面**（与 `applyViewDistance`/`setBlurQuality` 反向）：像素比只是
+    drawing buffer 尺寸，`setPixelRatio` 自己 `setSize(w,h,false)` 重建；那两者要重载是因为
+    要重建 `BatchedMesh` 容量与 mip 链。
+  - **雨滴联动**：`RAIN.PARTICLE_COUNT_PERFORMANCE = 120`（mc-lite 性能档原值），
+    `setPixelRatioMode` 里 dispose + 重建（顶点数构造期固定）。⚠️ **分档判据用 `mode`
+    而不是算出的像素比** —— Retina 性能档像素比是 1.0，按 mc-lite 的 `scale ≤ 0.4` 查表
+    会落回满雨滴档（静默不联动）。
+  - **不需要 `settingsVersion` 迁移**（旧存档无此字段 → 自然回落；与 `chunkPace` 同理，
+    与 `fogColor` 反例相反）。`?res=` 接受 `perf` 简写，存储值与常量用全名 `performance`。
+  - ⚠️ **Tier 4 必须显式 `deviceScaleFactor: 2`** 才测得出「相对 dpr」语义（dsf=1 时
+    清晰 1.0/性能 0.5 与「绝对 0.5」两种解释都自洽）；判据用 `canvas.width`，
+    **不要比截图清晰度**（CSS 尺寸不变，物理尺寸才是因果上游）。
 - **面板按钮的失败文案必须逐 reason 分开，不得合成一句「操作失败」**（v1.92）：
   `no-mark`（还没标记）与 `not-found`（范围内没有高台地带）是完全不同的下一步动作。
   映射函数 `_teleportMessage` 与 `Game` 的返回 reason 一一对应，新增 reason 时同改。
@@ -3112,6 +3143,10 @@ mc-heavy/
    │               #  iso-icon.js 等轴测投影纯函数；mesher.js 导出 TEMPLATES / FACE_VERTICES /
    │               #  FACE_UVS 供图标烘焙复用——形状与 UV 的唯一权威，图标不得有第二份几何定义
    ├─ render/      # render-world.js（BatchedMesh 发布层）/ materials.js（TSL）
+   │               #  pixel-ratio.js（v2.27 渲染分辨率档位的**唯一权威**，three-free：
+   │               #    PIXEL_RATIO_MODE_OPTIONS / DEFAULT_PIXEL_RATIO_MODE /
+   │               #    PERFORMANCE_RATIO_SCALE(0.5) / PIXEL_RATIO_MIN(0.25) /
+   │               #    pixelRatioFor / normPixelRatioMode；面板、settings、game 三处共用）
    │               #  sun-shade.js（v1.58 太阳方向光的**标定常数与纯函数**，three-free：
    │               #    SUN_AMBIENT / SUN_INTENSITY / FACE_NORMALS / sunTermFor；Tier 1 单测
    │               #    与 materials.js 的 TSL 必须共用同一份常数）

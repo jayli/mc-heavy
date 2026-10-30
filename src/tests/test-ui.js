@@ -24,7 +24,11 @@ import {
   PLAYGROUND_ROW_TITLE, PROGRESS_ROW_TITLE, PROGRESS_EXPORT_LABEL, PROGRESS_IMPORT_LABEL, PROGRESS_ERRORS,
   TELEPORT_ROW_TITLE, TELEPORT_TARN_LABEL, TELEPORT_MARK_LABEL, TELEPORT_GO_LABEL,
   TELEPORT_HOME_LABEL, TELEPORT_ARENA_LABEL, TELEPORT_LAKE_LABEL,
+  RESOLUTION_ROW_TITLE, RESOLUTION_LABELS,
 } from '../ui/settings-panel.js';
+import {
+  PIXEL_RATIO_MODE_OPTIONS, DEFAULT_PIXEL_RATIO_MODE,
+} from '../render/pixel-ratio.js';
 import { Toast, TOAST_Z_INDEX } from '../ui/toast.js';
 import { PANEL_CSS as INVENTORY_PANEL_CSS, TOOLTIP_Z_INDEX } from '../ui/inventory.js';
 
@@ -110,6 +114,42 @@ test('settings: bgm 默认开，存储与 ?bgm= 均可覆盖', () => {
   assertEqual(resolveSettings({ bgm: true }, new URLSearchParams('bgm=0')).bgm, false);
   // 非布尔脏值不得把开关带成真/假（undefined 被 `if` 挡掉，字符串被类型判断挡掉）
   assertEqual(resolveSettings({ bgm: 'yes' }, new URLSearchParams('')).bgm, true, '脏值回落默认');
+});
+
+/**
+ * v2.27：渲染分辨率档位（「清晰」/「性能」两按钮）。
+ *
+ * 钉的是**三道入口都通**（默认 / 存储 / URL）—— 漏任何一道的表现都是「点下去有效，
+ * 但下次开游戏回到清晰」（玩家会以为自己设的性能档没被记住，而画面看起来只是好了一点）。
+ * ⚠️ **不需要 `settingsVersion` 迁移**（与 `chunkPace` 同理，与 `fogColor` 反例）：
+ * 旧存档根本没这个字段，缺字段自然回落默认 —— 本用例显式钉住这一点，
+ * 防止将来有人照搬 `fogColor` 那套迁移把玩家的选择反复翻回。
+ */
+test('settings: pixelRatio 默认清晰，存储/URL 均可覆盖，且旧存档无需迁移', () => {
+  assertEqual(DEFAULT_SETTINGS.pixelRatio, 'sharp', '默认 = 清晰（= 改动前的观感）');
+  assertEqual(resolveSettings(null, new URLSearchParams('')).pixelRatio, 'sharp');
+  // 旧存档（没有任何版本号、也没有 pixelRatio 字段）→ 自然回落默认，且不是靠迁移
+  assertEqual(resolveSettings({ viewDistance: 4 }, new URLSearchParams('')).pixelRatio, 'sharp',
+    '旧存档缺字段 → 回落默认（不靠迁移）');
+  assertEqual(resolveSettings({ viewDistance: 4, fogColor: false }, new URLSearchParams('')).pixelRatio,
+    'sharp', 'v1 旧存档（会被迁移的那一类）同样回落默认');
+  // 存储
+  assertEqual(resolveSettings({ pixelRatio: 'performance' }, new URLSearchParams('')).pixelRatio,
+    'performance', '存储的性能档生效');
+  // URL 优先于存储；`perf` 简写是 URL 侧的便利入口（存储/常量一律全名）
+  assertEqual(resolveSettings({ pixelRatio: 'performance' }, new URLSearchParams('res=sharp')).pixelRatio,
+    'sharp', 'URL 优先于存储');
+  assertEqual(resolveSettings({ pixelRatio: 'sharp' }, new URLSearchParams('res=perf')).pixelRatio,
+    'performance', '?res=perf 简写等价于 performance');
+  assertEqual(resolveSettings({ pixelRatio: 'sharp' }, new URLSearchParams('res=performance')).pixelRatio,
+    'performance', '全名形式同样可用');
+  // 脏值（手改 URL / 旧存档）一律回落默认，不得让渲染停在非法档位
+  for (const bad of ['', 'SHARP', 'low', '0']) {
+    assertEqual(resolveSettings(null, new URLSearchParams(`res=${bad}`)).pixelRatio, 'sharp',
+      `非法 URL 值 ${JSON.stringify(bad)} 回落默认`);
+    assertEqual(resolveSettings({ pixelRatio: bad }, new URLSearchParams('')).pixelRatio, 'sharp',
+      `非法存储值 ${JSON.stringify(bad)} 回落默认`);
+  }
 });
 
 /**
@@ -395,6 +435,33 @@ test('瞬移行的标题与六个按钮文案是导出的单一口径常量（v2
     assertTrue(label.length <= 3, `「${label}」超过 3 个字，六个按钮一行摆不下（会折行）`);
   }
   assertFalse(TELEPORT_ROW_TITLE === PROGRESS_ROW_TITLE, '瞬移行不得与进度管理行撞名');
+});
+
+test('分辨率行：标题与两个档位文案是导出的单一口径常量，且与档位值逐项对齐', () => {
+  // 用户 2026-11-03 点名要的两个按钮文案
+  assertEqual(RESOLUTION_ROW_TITLE, '分辨率');
+  assertEqual(RESOLUTION_LABELS.length, 2, '用户裁定只要两档');
+  assertEqual(RESOLUTION_LABELS[0], '清晰');
+  assertEqual(RESOLUTION_LABELS[1], '性能');
+  // ⚠️ **数量必须与档位值集合一致**：`_makeGroup` 按**下标**取文案（`labels[i]`），
+  // 少一个文案会让后一个按钮显示 `undefined`，多一个则白写。两者漂移是静默的
+  // （按钮照常可点，只是文字不对/缺一个）。
+  assertEqual(RESOLUTION_LABELS.length, PIXEL_RATIO_MODE_OPTIONS.length,
+    '文案数量必须等于档位值数量（面板按下标取文案）');
+  // 默认档必须排第一（面板第一个按钮就是当前生效值，玩家不必找）
+  assertEqual(PIXEL_RATIO_MODE_OPTIONS[0], DEFAULT_PIXEL_RATIO_MODE,
+    '默认档必须排首位 —— 否则面板一打开高亮的是第二个按钮');
+  // 两字文案不得重复（否则分不出哪个是降分辨率）
+  assertEqual(new Set(RESOLUTION_LABELS).size, 2, '两个按钮文案不得重复');
+  // 布局：合并盒现在左半是视距三按钮（约 47px 宽实测）、右半是分辨率两按钮（约 77px）
+  // ⇒ 两字文案（24px）绰绰有余。4 字以上会贴斜角边框（与 v1.98/v2.19 同一个约束）。
+  for (const label of RESOLUTION_LABELS) {
+    assertTrue(label.length <= 3, `「${label}」超过 3 个字，合并盒半栏摆不下（会折行）`);
+  }
+  // 不得与其他行的标题撞名（玩家靠标题分功能域）
+  assertFalse(RESOLUTION_ROW_TITLE === PLAYGROUND_ROW_TITLE, '分辨率行不得与创造台行撞名');
+  assertFalse(RESOLUTION_ROW_TITLE === PROGRESS_ROW_TITLE, '分辨率行不得与进度管理行撞名');
+  assertFalse(RESOLUTION_ROW_TITLE === TELEPORT_ROW_TITLE, '分辨率行不得与瞬移行撞名');
 });
 
 test('创造台行/进度管理行标题与进度按钮文案是导出的单一口径常量', () => {
