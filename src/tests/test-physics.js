@@ -5,7 +5,7 @@ import { WorldData } from '../voxel/world-data.js';
 import { ChunkColumn } from '../voxel/chunk-column.js';
 import { createRegistry } from '../voxel/block-registry.js';
 import { BLOCKS } from '../voxel/blocks-data.js';
-import { WORLD_MIN_Y, blockIndex } from '../voxel/constants.js';
+import { WORLD_MIN_Y, WORLD_MAX_Y, WORLD_HEIGHT, blockIndex } from '../voxel/constants.js';
 import { EntityManager } from '../entities/entity-manager.js';
 import { MINECART_TYPE } from '../entities/minecarts/minecart-config.js';
 import { MinecartService, minecartDefinition } from '../entities/minecarts/minecart-system.js';
@@ -461,6 +461,111 @@ test('flight: 关闭飞行后恢复重力（自由落体）', () => {
   for (let i = 0; i < 180; i++) p.step(1 / 60);
   assertTrue(p.onGround, '退出飞行后必须落地');
   assertTrue(Math.abs(p.pos.y - 1) < 0.02, `落在石面 y=1，实测 ${p.pos.y}`);
+});
+
+// ==================== resolveStuck（瞬移/出生被埋进方块时向上解卡） ====================
+//
+// 为什么需要它：`Game._teleportTo()` **刻意不等目标 column 加载**（v1.92 实测：等 1200 格外的
+// column 会让面板点击阻塞秒级）。传送当帧目标区域全是未加载 column，`getBlockId` 对缺失 column
+// 返回 0（空气）→ 玩家悬空一路掉到世界底；随后 column GEN 完成，`fillColumn` 的「底部补实」把
+// y=-32 到地表之间全填成 stone → **玩家 AABB 整个埋在实心石头里**，而 `_moveAxis` 只在
+// `delta !== 0` 时检测碰撞、碰撞后二分回退到零位移 → 水平与竖直全部冻结（用户报告的
+// 「瞬移完卡在地底下动弹不得」）。
+//
+// ⚠️ **判据必须复用 `collidesAt`**（与 `_collides` 同一份 PLAYER_WIDTH/HEIGHT 权威，且
+// **只查方块、不查矿车**）—— 站在矿车上/车里不得被误判成「卡住」。
+
+test('resolveStuck: 埋进实心石头里 → 抬到地表之上且清零竖直速度', () => {
+  const { world, reg } = makeWorld();
+  const col = world.getColumn(0, 0);
+  // 把整列填实到 y=5（模拟「掉到世界底后 column 才生成、底部补实把玩家埋住」）
+  for (let y = WORLD_MIN_Y; y <= 5; y++) {
+    for (let lx = 0; lx < 16; lx++) for (let lz = 0; lz < 16; lz++) {
+      col.blocks[blockIndex(lx, y, lz)] = reg.idOf('stone');
+    }
+  }
+  const p = new PlayerPhysics(world);
+  p.pos = { x: 8, y: -30, z: 8 };
+  p.vel = { x: 0, y: -24, z: 0 };
+  assertTrue(p.collidesAt(p.pos.x, p.pos.y, p.pos.z), '前提：该位置必须真的被埋');
+
+  const raised = p.resolveStuck();
+  assertEqual(p.pos.y, 6, '须抬到第一个 AABB 无碰撞的高度（实心到 y=5 ⇒ 脚底 6）');
+  assertEqual(raised, 36, '返回实际抬升量');
+  assertEqual(p.vel.y, 0, '抬升后须清零竖直速度（不得带着 -24 继续掉）');
+  assertFalse(p.collidesAt(p.pos.x, p.pos.y, p.pos.z), '解卡后必须不再与方块重叠');
+});
+
+test('resolveStuck: 只有头埋进方块（脚底在空气里）也要解卡', () => {
+  const { world, reg } = makeWorld();
+  const col = world.getColumn(0, 0);
+  // y=0 地面 + y=2 一层天花板：玩家站 y=1 时脚格是空气、头格（floor(1+1.8-0.001)=2）是实心
+  for (let lx = 0; lx < 16; lx++) for (let lz = 0; lz < 16; lz++) {
+    col.blocks[blockIndex(lx, 2, lz)] = reg.idOf('stone');
+  }
+  const p = new PlayerPhysics(world);
+  p.pos = { x: 8, y: 1, z: 8 };
+  assertTrue(p.collidesAt(p.pos.x, p.pos.y, p.pos.z), '前提：头格被埋');
+  const raised = p.resolveStuck();
+  assertEqual(raised, 2, '须抬到天花板之上（y=3）');
+  assertEqual(p.pos.y, 3);
+  assertFalse(p.collidesAt(p.pos.x, p.pos.y, p.pos.z));
+});
+
+test('resolveStuck: 没被埋时零副作用（返回 0、y 逐位不变、不动 vel）', () => {
+  const { world } = makeWorld();
+  const p = new PlayerPhysics(world);
+  p.pos = { x: 8, y: 1, z: 8 };      // 站在 y=0 石面上（常态）
+  p.vel = { x: 3, y: -1.5, z: -2 };
+  const y0 = p.pos.y;
+  assertEqual(p.resolveStuck(), 0, '常态必须返回 0');
+  assertTrue(p.pos.y === y0, `y 必须逐位不变（不得做任何浮点运算），实测 ${p.pos.y}`);
+  assertEqual(p.vel.y, -1.5, '不得清零速度（常态零副作用）');
+  assertEqual(p.vel.x, 3);
+});
+
+test('resolveStuck: 水与花草（solid=false）不算被埋', () => {
+  const { world, reg } = makeWorld();
+  const col = world.getColumn(0, 0);
+  for (let y = 1; y <= 3; y++) {
+    for (let lx = 0; lx < 16; lx++) for (let lz = 0; lz < 16; lz++) {
+      col.blocks[blockIndex(lx, y, lz)] = reg.idOf(y === 3 ? 'short_grass' : 'water');
+    }
+  }
+  const p = new PlayerPhysics(world);
+  p.pos = { x: 8, y: 1, z: 8 };
+  assertEqual(p.resolveStuck(), 0, '水里/草丛里不得被抬走（与 _collides 同一份 solidTable）');
+  assertEqual(p.pos.y, 1);
+});
+
+test('resolveStuck: 一路到世界顶都实心 → 停在 WORLD_MAX_Y 不越界', () => {
+  const { world, reg } = makeWorld();
+  const col = world.getColumn(0, 0);
+  for (let y = WORLD_MIN_Y; y < WORLD_MAX_Y; y++) {
+    for (let lx = 0; lx < 16; lx++) for (let lz = 0; lz < 16; lz++) {
+      col.blocks[blockIndex(lx, y, lz)] = reg.idOf('stone');
+    }
+  }
+  const p = new PlayerPhysics(world);
+  p.pos = { x: 8, y: WORLD_MIN_Y, z: 8 };
+  p.resolveStuck();
+  assertTrue(p.pos.y <= WORLD_MAX_Y, `不得抬出世界上界，实测 ${p.pos.y}`);
+  assertEqual(p.pos.y, WORLD_MAX_Y, '上界那一格 getBlockId 恒为空气 ⇒ 恰好停在这里');
+});
+
+test('resolveStuck: maxRaise 不够时返回 0 且原地不动（不静默抬到半路）', () => {
+  const { world, reg } = makeWorld();
+  const col = world.getColumn(0, 0);
+  for (let y = WORLD_MIN_Y; y <= 5; y++) {
+    for (let lx = 0; lx < 16; lx++) for (let lz = 0; lz < 16; lz++) {
+      col.blocks[blockIndex(lx, y, lz)] = reg.idOf('stone');
+    }
+  }
+  const p = new PlayerPhysics(world);
+  p.pos = { x: 8, y: -30, z: 8 };
+  assertEqual(p.resolveStuck(3), 0, '抬 3 格仍在实心里 ⇒ 必须放弃');
+  assertEqual(p.pos.y, -30, '放弃时位置必须逐位不变');
+  assertTrue(WORLD_HEIGHT >= WORLD_MAX_Y - WORLD_MIN_Y, '默认上限须覆盖整个世界高度');
 });
 
 test('flight: 顶到天花板不退出飞行（撞头 ≠ 落地）', () => {

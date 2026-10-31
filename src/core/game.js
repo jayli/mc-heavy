@@ -90,6 +90,35 @@ import { WORLD_MAX_Y, WORLD_MIN_Y, SEA_Y } from '../voxel/constants.js';
 const MARK_KEY = 'mc_heavy_mark_v1';
 
 /**
+ * 玩家位置落盘的最小间隔（毫秒）。
+ *
+ * 用户 2026-10-31 要求「记录玩家位置的方法不要影响性能」—— 故**不每帧写**：
+ * 常态每帧成本只是 `_maybeSavePlayerPos()` 里的三次减法比较，静止时零写入。
+ * 5s 与 `Persistence.scheduleFlush` 的 edits 防抖同量级（两个独立的节流，不共用计时器 ——
+ * edits 写的是 column 行、位置写的是 meta 行）。
+ */
+const PLAYER_POS_SAVE_INTERVAL_MS = 5000;
+/** 位置落盘的最小位移（格）：小于它不写（站着不动时不产生任何 IndexedDB 事务）。 */
+const PLAYER_POS_SAVE_MIN_MOVE = 1;
+
+/**
+ * 校验存档里的玩家位置（`meta.playerPos`）。
+ *
+ * 只认「三个有限数 + y 在世界高度范围内」—— 坏存档（手改 / 旧版本 / 写入时被中止的
+ * 不完整行）不得把玩家放到 NaN 或世界外（与 `markedPosition()` / `teleportToSpawn()` 的
+ * 同一防御口径）。非法 → 返回 null，调用方回落 City 出生点（旧存档自然兼容，
+ * 无需 settingsVersion 式迁移）。
+ * @param {unknown} pos
+ * @returns {[number, number, number]|null}
+ */
+function validPlayerPos(pos) {
+  if (!Array.isArray(pos) || pos.length !== 3) return null;
+  if (!pos.every((v) => Number.isFinite(v))) return null;
+  if (pos[1] < WORLD_MIN_Y || pos[1] > WORLD_MAX_Y) return null;
+  return [pos[0], pos[1], pos[2]];
+}
+
+/**
  * 瞬移到高台地带时，落点相对**平台外缘**再往外的格数（v1.92）。
  *
  * 平台半径 114、缓坡宽 24 → 取 6 落在缓坡中部：脚下是黏土缓坡（高度已在插值下降），
@@ -314,6 +343,14 @@ export class Game {
     // 光源跟随节流快照（玩家位置；mc-lite Game.js:537 口径：移动超 5 格才重新定位）。
     // 初始 (0,0,0)：出生点距原点必 >5 格 → 第一帧即自动定位。
     this._lastShadowPos = { x: 0, y: 0, z: 0 };
+    /**
+     * 玩家位置落盘的节流基线（`_maybeSavePlayerPos` / `_savePlayerPos` 共用）。
+     * 初始 null = 「还没有基线」→ 帧循环节流直接返回，不凭空写一次。
+     * `start()` 在 `player.spawn` 之后把它设成实际出生位置（**不写盘** —— 启动时读的就是
+     * 存档里的值，写回去是冗余事务）。
+     */
+    this._lastSavedPos = null;
+    this._lastSavedPosAt = 0;
     // v1.47：太阳方向门控快照（onSunDirection 的角度阈值比较用）。初始 null → 首次恒通过
     // （启动即定位）。由 `_updateSunPosition()` 统一维护（两条重定位路径口径一致）。
     this._lastSunDir = null;
@@ -417,6 +454,9 @@ export class Game {
       }
       await this.persistence.saveMeta({ seed: this.seed, spawn: [8, 8], savedAt: Date.now() });
     }
+    // 上次停留的位置（用户 2026-10-31：「游戏重新进入后……玩家位置也恢复到上次停留的状态」）。
+    // 非法/缺失 → null，下面回落 City 出生点。
+    const resumedPos = validPlayerPos(meta && meta.playerPos);
     this.ocean.setSeed(this.seed);
     // 高台地带池面：初始接一次（玩家可能直接出生在地带附近）。
     // 之后由帧循环按移动阈值刷新 —— 照 `_updateSunPosition()` 的同一手法（不每帧调）。
@@ -483,6 +523,10 @@ export class Game {
       this._createNestControllers(key, column);
       // M8：炮塔锚点同理（同一闭包延迟引用手法 —— 注册回调时 this.turrets 尚未创建）
       this._createTurretControllers(key, column);
+      // 解卡（传送/出生被埋的主修复点，见 `_resolvePlayerStuck`）：传送不等 column，
+      // 玩家可能已掉到世界底，而本 column 的「底部补实」刚把那段填成实心 → 加载完成的
+      // 这一刻把玩家抬出来。内部先做「column 与玩家 AABB 相交」门控，远处 column 零成本。
+      this._resolvePlayerStuck(column);
     });
     // M7：column 卸载 —— 销毁 controller 但**保留 anchor 与全局索引**。
     // 再次加载后从 blockEntity 恢复，`lastSpawnAt` 不重置（M7 规格 §2）。
@@ -700,12 +744,25 @@ export class Game {
     if (!hadMeta) {
       await this.persistence.saveMeta({ seed: this.seed, spawn: [this.spawnX, this.spawnZ], savedAt: Date.now() });
     }
+    // ---- 实际出生位置（与 `spawnX/spawnY/spawnZ` 是**两套口径**，勿混）----
+    // `spawnX/spawnY/spawnZ` 永远 = City 出生点（「回家」按钮与既有 spec 的权威，语义不变）；
+    // 本次真正落地的位置 = 上次停留处（合法时），否则 City 出生点。
+    let startX = resumedPos ? resumedPos[0] : this.spawnX;
+    let startY = resumedPos ? resumedPos[1] : 0;   // City 分支的 y 要等 findSpawnY 才算得出
+    let startZ = resumedPos ? resumedPos[2] : this.spawnZ;
     {
+      // edits 预热必须覆盖 **City ∪ 恢复位置** 两个区域：`getEditsSync` 是同步的，GEN 前没
+      // preload 就等于「该 column 无修改」→ 玩家改动静默丢失。顺带修掉一个既有缺口
+      // （在远离 City 处编辑后重启、再走回去，改动会丢）。Set 去重（两区域常重叠）。
       const R = this.viewDistance;
-      const pcx = Math.floor(this.spawnX / 16), pcz = Math.floor(this.spawnZ / 16);
-      const keys = [];
-      for (let dx = -R; dx <= R; dx++) for (let dz = -R; dz <= R; dz++) keys.push(`${pcx + dx},${pcz + dz}`);
-      await this.persistence.preloadEdits(keys);
+      const keys = new Set();
+      const addArea = (wx, wz) => {
+        const pcx = Math.floor(wx / 16), pcz = Math.floor(wz / 16);
+        for (let dx = -R; dx <= R; dx++) for (let dz = -R; dz <= R; dz++) keys.add(`${pcx + dx},${pcz + dz}`);
+      };
+      addArea(this.spawnX, this.spawnZ);
+      if (resumedPos) addArea(startX, startZ);
+      await this.persistence.preloadEdits([...keys]);
     }
     this.scheduler.update(this.spawnX, this.spawnZ);
     await this._waitForColumn(Math.floor(this.spawnX / 16), Math.floor(this.spawnZ / 16), 10000);
@@ -713,6 +770,20 @@ export class Game {
     // （后续刷新由 shadowScheduler 按需放行）。
     this.sunLight.shadow.needsUpdate = true;
     this.spawnY = findSpawnY(this.world, this.spawnX, this.spawnZ);
+    if (!resumedPos) startY = this.spawnY;
+    // 恢复位置的 column 可能不在 City 加载半径内 → 单独等它。
+    // ⚠️ `driveX/driveZ` 必须传（v1.92 已踩过的坑：不推调度中心则目标永远进不了加载半径
+    // → 超时）。⚠️ 超时**不得让启动整体失败** —— 回落 City 出生点比弹错误遮罩好。
+    const rcx = Math.floor(startX / 16), rcz = Math.floor(startZ / 16);
+    if (!this.world.hasColumn(rcx, rcz)) {
+      this.scheduler.update(startX, startZ);
+      try {
+        await this._waitForColumn(rcx, rcz, 10000, startX, startZ);
+      } catch (err) {
+        console.warn('[game] 恢复位置加载失败，回落 City 出生点：', err);
+        startX = this.spawnX; startY = this.spawnY; startZ = this.spawnZ;
+      }
+    }
     // M4：武器渲染/音频运行时（只在主线程；不进 Worker/体素 meshing 管线）。
     // 模型加载失败只记录 console，不中止 worldReady——玩家保持徒手可玩。
     this.weaponModelLoader = new WeaponModelLoader();
@@ -761,7 +832,14 @@ export class Game {
       // `explodeTnt()`（去重集合的单一权威在本类，见其注释）。
       onIgniteTnt: (x, y, z) => this.explodeTnt(x, y, z),
     });
-    this.player.spawn(this.spawnX, this.spawnY, this.spawnZ);
+    this.player.spawn(startX, startY, startZ);
+    // 解卡（出生路径）：恢复的位置可能被埋（玩家上次停在结构/地形边缘，或存档里的 y
+    // 与当前生成结果有出入）。常态下这里是一次 `collidesAt` 的 no-op。
+    this._resolvePlayerStuck();
+    // 位置落盘的节流基线：设成实际出生位置，**不写盘**（启动时读的就是存档里的值，
+    // 写回去是冗余事务；玩家移动 ≥1 格后由帧循环的 `_maybeSavePlayerPos` 接管）。
+    this._lastSavedPos = { x: startX, y: startY, z: startZ };
+    this._lastSavedPosAt = performance.now();
     this.scene.add(this.player.highlight);
 
     // M6：把实体查询注入**同一个** M4 controller（M6 规格 §2）。只注入两个函数 ——
@@ -846,10 +924,18 @@ export class Game {
     window.addEventListener('resize', () => this._onResize());
     this._onResize();
     // 存档 flush：页面隐藏/退出立即写盘（§4.8）。M5 起实体 snapshot 同步 flush。
+    // ⚠️ 玩家位置也在这里补写一次，但它只是**补充** —— CLAUDE.md 已实测 unload 期的
+    // IndexedDB 事务常被中止，主保障是帧循环的 5s 节流（`_maybeSavePlayerPos`）。
     window.addEventListener('visibilitychange', () => {
-      if (document.hidden) { this.persistence.flushNow(this.world); this.persistence.flushEntities(); }
+      if (document.hidden) {
+        this._savePlayerPos();
+        this.persistence.flushNow(this.world); this.persistence.flushEntities();
+      }
     });
-    window.addEventListener('beforeunload', () => { this.persistence.flushNow(this.world); this.persistence.flushEntities(); });
+    window.addEventListener('beforeunload', () => {
+      this._savePlayerPos();
+      this.persistence.flushNow(this.world); this.persistence.flushEntities();
+    });
 
     this.renderer.setAnimationLoop((nowMs) => {
       this.perf.tick(nowMs);
@@ -937,6 +1023,8 @@ export class Game {
         }
       }
       this.scheduler.update(this.player.physics.pos.x, this.player.physics.pos.z);
+      // 玩家位置节流落盘（重启后恢复到上次停留的位置；常态成本 = 一次时间比较）
+      this._maybeSavePlayerPos(nowMs);
       // ⚠️ v1.89：高台地带的中央水池已整体删除（用户 2026-10-27 裁定），
       // 池面 uniform 刷新与 `setTarnPool` 接线一并移除 —— 地带不再向 transparent 通道
       // 贡献任何东西，也不再需要每帧/每 5 格算一次 `tarnPoolAt()`。
@@ -1343,9 +1431,103 @@ export class Game {
    */
   _teleportTo(x, y, z) {
     this.player.spawn(x, y, z);
+    // 解卡（近处传送）：目标 column 已加载时，落点可能已被地形/结构埋住 → 当场抬出来。
+    // 远处传送此刻读到的全是空气（column 未加载），这里是 no-op，由 `onColumnReady`
+    // 的那一次接管（见 `_resolvePlayerStuck`）。
+    this._resolvePlayerStuck();
+    // 传送后位置突变，不能等帧循环的 5s 节流 —— 否则「传送完立刻关页」会回到传送前的位置。
+    this._savePlayerPos();
     // 把调度中心立刻推到目标：帧循环下一帧就会用它（`scheduler.update(playerX, playerZ)`
     // 本来每帧都读玩家位置，这里只是让**本帧剩余时间**就开始朝目标 GEN，省 16ms）。
     this.scheduler.update(x, z);
+  }
+
+  /**
+   * 玩家被埋进方块时向上解卡（**唯一入口**，三个触发点共用）。
+   *
+   * ## 为什么需要（根因）
+   *
+   * `_teleportTo()` 刻意不等目标 column 加载 → 传送当帧目标区域全是未加载 column，
+   * `getBlockId` 对缺失 column 返回 0（空气）→ 玩家悬空、重力一路拉到世界底；随后 column
+   * GEN 完成，`fillColumn` 的「底部补实」把 `WORLD_MIN_Y` 到地表之间全填成 stone →
+   * **玩家 AABB 整个埋在实心石头里**，而 `_moveAxis` 碰撞后二分回退到零位移并清零 `vel`
+   * → 水平与竖直全部冻结（用户 2026-10-31 报告的「瞬移完卡在地底下动弹不得」）。
+   *
+   * ## 三个触发点（不放帧循环）
+   *
+   * ① `onColumnReady` —— **主根因的修复点**：传送/出生后目标 column 加载完成的那一刻；
+   *    也覆盖「column 卸载重载后结构覆盖玩家」。
+   * ② `_teleportTo` —— 近处传送（目标 column 已加载）。
+   * ③ `start()` 的 `player.spawn` 之后 —— 恢复的位置被埋。
+   *
+   * 刻意**不**放帧循环：那里每帧跑会与矿车的 `pendingPlayerLift`（帧内把玩家顶到车顶）
+   * 抢写 `pos.y`，而三个事件触发点已覆盖全部被埋路径。
+   *
+   * @param {import('../voxel/chunk-column.js').ChunkColumn} [column] 传入时先做「该 column 是否与
+   *        玩家 AABB 覆盖的 column 范围相交」的门控 —— 远处 column 加载不该付这份钱
+   *        （一帧可能有几十个 column ready）。
+   * @returns {number} 实际抬升格数（0 = 没被埋 / 门控拦下 / 乘坐中）
+   */
+  _resolvePlayerStuck(column) {
+    const physics = this.player?.physics;
+    if (!physics) return 0;
+    // 乘坐矿车期间位置由矿车锁定（`_updateMinecartRiding` 写 `pos.y = 车顶`），不得抢写 ——
+    // 抢写会把乘客从车上抬走，下一帧又被锁回来（抖动）。
+    if (this.player.ridingMinecartId) return 0;
+    if (column) {
+      // 相交判据走 `physics.aabb()`（PLAYER_WIDTH 的单一权威派生），不写 0.3 字面量副本。
+      const b = physics.aabb();
+      const cx0 = Math.floor(b.minX / 16), cx1 = Math.floor(b.maxX / 16);
+      const cz0 = Math.floor(b.minZ / 16), cz1 = Math.floor(b.maxZ / 16);
+      if (column.cx < cx0 || column.cx > cx1 || column.cz < cz0 || column.cz > cz1) return 0;
+    }
+    return physics.resolveStuck();
+  }
+
+  /**
+   * 把玩家当前位置写进存档 meta（**唯一写入点**，三个调用方：帧循环节流 / 传送 / 页面隐藏退出）。
+   *
+   * ## `_lastSavedPos === null` 意味着「位置写盘未启用」
+   *
+   * 两个时机它是 null：① `start()` 还没跑到 `player.spawn`（Player 未构造）；
+   * ② `_discardEdits()` 刚丢弃了玩家改动（换世界 / 删缓存 / 导入进度）。
+   * ② 是**载荷性的**：那三条路径都用 `saveMeta` 整行 put（不含 playerPos）把旧位置作废，
+   * 而随后的 `location.assign/reload` 会触发 `beforeunload` → 本方法。不拦的话旧世界的
+   * 坐标会被写回新世界的 meta（新 seed 下那个坐标的地形完全不同）。同 CLAUDE.md 已记的
+   * 「禁止只清 IndexedDB 不清内存 —— 残留会在任何来得及提交的时机写回」同一类竞态。
+   *
+   * 非有限数一律不写 —— 写 NaN 进存档会让下次启动读到非法位置（与 `teleportToSpawn` 的
+   * 同一防御口径）。启动时读回的校验在 `validPlayerPos()`。
+   */
+  _savePlayerPos() {
+    if (!this._lastSavedPos) return;   // 写盘未启用（见上）
+    const p = this.player?.physics?.pos;
+    if (!p || ![p.x, p.y, p.z].every((v) => Number.isFinite(v))) return;
+    this._lastSavedPos = { x: p.x, y: p.y, z: p.z };
+    this._lastSavedPosAt = performance.now();
+    this.persistence.savePlayerPos([p.x, p.y, p.z]);
+  }
+
+  /**
+   * 帧循环节流写盘：距上次写入 ≥ `PLAYER_POS_SAVE_INTERVAL_MS` **且** 移动 ≥
+   * `PLAYER_POS_SAVE_MIN_MOVE` 格才写。
+   *
+   * 常态成本 = 一次时间比较（未到期直接 return）；到期后再做三次减法。静止时零写入、
+   * 零 IndexedDB 事务（用户要求「不要影响性能」的落点）。
+   *
+   * ⚠️ 基线 `_lastSavedPos` 在 `start()` 里初始化（不写盘 —— 启动时读的就是存档里的值，
+   * 写回去是冗余事务）；为 null 时直接返回，不得凭空写一次。
+   * @param {number} nowMs 帧循环的 `performance.now()` 基准时间戳
+   */
+  _maybeSavePlayerPos(nowMs) {
+    const last = this._lastSavedPos;
+    if (!last) return;
+    if (nowMs - this._lastSavedPosAt < PLAYER_POS_SAVE_INTERVAL_MS) return;
+    const p = this.player.physics.pos;
+    const dx = p.x - last.x, dy = p.y - last.y, dz = p.z - last.z;
+    const min = PLAYER_POS_SAVE_MIN_MOVE;
+    if (dx * dx + dy * dy + dz * dz < min * min) return;
+    this._savePlayerPos();
   }
 
   /**
@@ -1605,6 +1787,10 @@ export class Game {
    */
   async _discardEdits() {
     this.persistence.cancelPendingFlush();
+    // 位置写盘一并作废（见 `_savePlayerPos` 的 ②）：调用方随后都会 `saveMeta` 整行 put
+    // （不含 playerPos）并导航重载，而 `beforeunload` 会再调一次 `_savePlayerPos` ——
+    // 不清基线就会把旧世界的坐标写回新世界。
+    this._lastSavedPos = null;
     for (const [, col] of this.world.columns) col.edits.clear(); // 防卸载 flush 写回
     // M5：持久实体同属「玩家改动」，必须一并回收 —— 否则 beforeunload → flushEntities
     // 会把仍活着的实体写回刚清空的 entities store（与 edits 的写回竞态同构），

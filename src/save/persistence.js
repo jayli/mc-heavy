@@ -13,6 +13,12 @@ const DB_VERSION = 2;
 export class Persistence {
   constructor() {
     this.db = null;
+    /**
+     * meta 行的内存缓存。`savePlayerPos` 是**增量 merge 写**（只改 playerPos 字段），
+     * 而 `saveMeta` 是整行 put —— 没有这份缓存，merge 写会把 `seed`/`spawn` 抹掉
+     * （红线 1：meta 行的字段各有权威，不得互相覆盖）。`loadMeta` / `saveMeta` 都刷新它。
+     */
+    this._metaCache = null;
     /** @type {Map<string, Array<{index:number,id:number,meta:number}>>} 内存缓存 */
     this.editsCache = new Map();
     /**
@@ -93,11 +99,36 @@ export class Persistence {
   }
 
   saveMeta(obj) {
-    return this._put('meta', { ...obj, key: 'main' });
+    // 整行 put 语义：调用方给什么就是什么（newWorld / importProgress 换世界时不传
+    // playerPos → 旧世界的玩家位置自然作废，这正是需要的行为）。
+    this._metaCache = { ...obj, key: 'main' };
+    return this._put('meta', this._metaCache);
   }
 
   loadMeta() {
-    return this._get('meta', 'main');
+    return this._get('meta', 'main').then((row) => {
+      this._metaCache = row;
+      return row;
+    });
+  }
+
+  /**
+   * 把玩家位置写进 meta 行（重启后恢复到上次停留的位置，用户 2026-10-31）。
+   *
+   * **必须 merge 进缓存再整行 put**：`saveMeta` 是整行覆盖，只写 `playerPos` 会把
+   * `seed`/`spawn` 抹掉。缓存由 `loadMeta`（启动时）与 `saveMeta` 保持新鲜，
+   * 常态下这里零读盘。
+   *
+   * 调用方（Game）自己做节流（≥5s 且移动 ≥1 格才调）与有限数校验 —— 本方法不重复判，
+   * 但 NaN 写进存档会让下次启动读到非法位置，故这里也拦一道（纵深防御，
+   * 与 `teleportToSpawn` 的同一防御口径）。
+   * @param {[number, number, number]} pos
+   */
+  savePlayerPos(pos) {
+    if (!Array.isArray(pos) || pos.length !== 3 || !pos.every((v) => Number.isFinite(v))) return;
+    const merged = { ...(this._metaCache || {}), playerPos: pos, key: 'main' };
+    this._metaCache = merged;
+    return this._put('meta', merged);
   }
 
   /** @param {string} columnKey @param {Array<{index:number,id:number,meta:number}>} editsArray */

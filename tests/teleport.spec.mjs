@@ -520,3 +520,113 @@ test('瞬移：湖 → 浅水高台西岸干燥落地（不落水、传送 y 与
     return Math.abs(c.x - p.x) < 1.5 && Math.abs(c.z - p.z) < 1.5;
   }, null, { timeout: 10_000 });
 });
+
+// ==================== 解卡（v2.29，用户 2026-10-31） ====================
+//
+// 用户报告：「瞬移过去的时候有时候瞬移到了地底下，导致玩家瞬移完了之后卡在了地底下的方块里
+// 动弹不得」。
+//
+// 根因（实测，见 `_resolvePlayerStuck` 注释）：`_teleportTo()` 刻意不等目标 column 加载 →
+// 传送当帧目标区域全是未加载 column（`getBlockId` 对缺失 column 返回空气）→ 玩家悬空、重力
+// 一路拉到世界底；随后 column GEN 完成，`fillColumn` 的「底部补实」把 `WORLD_MIN_Y` 到地表之间
+// 全填成 stone → **玩家 AABB 整个埋在实心石头里**，而 `_moveAxis` 碰撞后二分回退到零位移并清零
+// `vel` → 水平与竖直全部冻结。
+//
+// ⚠️ **实测还有一个更高频的形态**：三个传送目标（tarn/lake/arena）在默认视距下**全部**触发
+// 「被埋 1 格」（探针实测 `stuck:true, raised:1`）—— 玩家下坠了不到 1 格时 column 才 ready，
+// 脚底那格已被地表方块占住。所以本用例不只测「掉到世界底」，也测「浅埋」。
+
+test('解卡：远处瞬移后玩家被埋进方块 → column 加载完成时自动抬出且能移动（v2.29）', async ({ page }) => {
+  test.setTimeout(300_000);
+  await page.goto('/?vd=2&seed=12345');
+  await page.waitForFunction(READY, null, { timeout: 90_000 });
+  await page.waitForFunction(STABLE, null, { timeout: 60_000, polling: 500 });
+
+  // ① 深埋场景：传送到 700+ 格外的高台地带，**当帧**把玩家压到世界底 —— 精确复现
+  //    「重力一路掉到底、随后 column 才生成并底部补实」的时序。
+  const tp = await page.evaluate(() => {
+    const g = window.__MC_GAME__;
+    const r = g.teleportToTarnZone();
+    g.player.physics.pos.y = -32;      // 世界底（bedrock 兜底那一格）
+    return r;
+  });
+  expect(tp.ok, '前提：seed 12345 须能传送到高台地带').toBe(true);
+  expect(tp.dist, '前提：目标须足够远（column 未加载才有被埋窗口）').toBeGreaterThan(200);
+
+  // ② 等目标 column 加载完（帧循环自动把调度中心推过去）—— 解卡就挂在这条回调上
+  await page.waitForFunction(() => {
+    const g = window.__MC_GAME__;
+    const p = g.player.physics.pos;
+    return g.world.hasColumn(Math.floor(p.x / 16), Math.floor(p.z / 16));
+  }, null, { timeout: 120_000 });
+  await page.waitForTimeout(500);
+
+  // ③ 判据：**不再与方块重叠** + **y 远离世界底** + **真的能走**。
+  //    ⚠️ 三条缺一不可：只断言 `!collidesAt` 时，「解卡把玩家抬到半空又掉回世界底」也满足；
+  //    只断言 y 时，「抬到一个仍被埋的高度」也满足。`moved` 是用户报告的那个症状本身
+  //    （「动弹不得」），也是最直接的判据。
+  const after = await page.evaluate(() => {
+    const g = window.__MC_GAME__;
+    const p = g.player.physics.pos;
+    const y0 = p.y;
+    const x0 = p.x;
+    // 手动驱动物理 30 步（面板未开、帧循环也在跑，这里再推一段确保有位移可读）
+    for (let i = 0; i < 30; i++) { g.player.physics.move(1, 0); g.player.physics.step(1 / 60); }
+    return {
+      y: +y0.toFixed(2),
+      stuck: g.player.physics.collidesAt(p.x, p.y, p.z),
+      moved: +(p.x - x0).toFixed(2),
+    };
+  });
+  expect(after.stuck, `解卡后不得仍与方块重叠（y=${after.y}）`).toBe(false);
+  expect(after.y, `y 须远离世界底 -32（被埋时重力会一路掉到底），实测 ${after.y}`).toBeGreaterThan(-20);
+  expect(after.moved, `玩家须真的能水平移动（「动弹不得」是用户报告的症状），实测 ${after.moved}`).toBeGreaterThan(1);
+});
+
+test('解卡：浅埋（下坠不到 1 格时 column 才 ready）也要抬出，且落点是整数地表', async ({ page }) => {
+  test.setTimeout(300_000);
+  await page.goto('/?seed=12345');   // 默认视距：探针实测三个目标都会浅埋 1 格
+  await page.waitForFunction(READY, null, { timeout: 90_000 });
+  await page.waitForFunction(STABLE, null, { timeout: 60_000, polling: 500 });
+
+  // 装计数器（只包一层，不改实现）：记录解卡是否真的被触发、抬了几格。
+  // ⚠️ 这条断言是「解卡接线在不在」的判据 —— 只断言最终位置时，「根本没被埋所以没抬」
+  //    与「被埋了并抬出来」读起来一样（探针实测三个目标都 raised=1，故这里要求 > 0）。
+  await page.evaluate(() => {
+    const g = window.__MC_GAME__;
+    g.__stuckLog = [];
+    const orig = g._resolvePlayerStuck.bind(g);
+    g._resolvePlayerStuck = (col) => {
+      const p = g.player.physics.pos;
+      const wasStuck = g.player.physics.collidesAt(p.x, p.y, p.z);
+      const raised = orig(col);
+      if (raised !== 0 || wasStuck) g.__stuckLog.push({ raised: +raised.toFixed(3), wasStuck });
+      return raised;
+    };
+  });
+
+  for (const fn of ['teleportToTarnZone', 'teleportToShallowTarn', 'teleportToArena']) {
+    await page.evaluate(() => { window.__MC_GAME__.__stuckLog = []; });
+    const r = await page.evaluate((f) => window.__MC_GAME__[f](), fn);
+    if (!r.ok) continue;   // 少数 seed 没有竞技场/湖；本 seed 三个都有，跳过只是防御
+    await page.waitForFunction(() => {
+      const g = window.__MC_GAME__;
+      const p = g.player.physics.pos;
+      return g.world.hasColumn(Math.floor(p.x / 16), Math.floor(p.z / 16));
+    }, null, { timeout: 120_000 });
+    await page.waitForTimeout(400);
+    const state = await page.evaluate(() => {
+      const g = window.__MC_GAME__;
+      const p = g.player.physics.pos;
+      return {
+        y: p.y, stuck: g.player.physics.collidesAt(p.x, p.y, p.z),
+        log: g.__stuckLog,
+        // 落点必须是整数（`resolveStuck` 抬到整数 y，不过冲 → 无可见弹跳）
+        isInt: Math.abs(p.y - Math.round(p.y)) < 1e-6,
+      };
+    });
+    expect(state.stuck, `${fn}: 落地后不得被埋（y=${state.y}）`).toBe(false);
+    expect(state.log.length, `${fn}: 解卡必须真的被触发过（探针实测三个目标都浅埋 1 格）`).toBeGreaterThan(0);
+    expect(state.isInt, `${fn}: 解卡落点须是整数 y（不过冲、不弹跳），实测 ${state.y}`).toBe(true);
+  }
+});

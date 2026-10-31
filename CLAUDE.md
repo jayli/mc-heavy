@@ -93,6 +93,18 @@ v1.81 新增飞行那行后由三行变四行），
 （267 → 120，对齐 mc-lite `refreshRainQualityIfNeeded`）。面板右列第一行由「视距」单行改为
 合并盒（左半视距三档 / 右半分辨率两档）。细节见下方「面板与 UI」段与 roadmap 的 v2.27 行。
 
+**v2.29** 修了两个用户 2026-10-31 报告的 bug：① **瞬移/出生被埋进方块动弹不得** —— 根因是
+`_teleportTo()` 刻意不等目标 column 加载（v1.92 实测定的），传送当帧目标区域全是未加载 column
+（`getBlockId` 返回空气）→ 玩家悬空掉到世界底，随后 column GEN 的「底部补实」把玩家整个埋进实心
+石头；修法 = `physics.resolveStuck()`（判据复用既有 `collidesAt`，抬到**整数** y 不过冲）+ 三个触发点
+（`onColumnReady` / `_teleportTo` / `start()`，刻意不放帧循环以免与矿车 `pendingPlayerLift` 抢写）。
+② **重启后永远出生在 City 中央** —— 玩家位置从未持久化；修法 = 写进既有 `meta` 行的 `playerPos`
+字段（帧循环 5s + 移动 ≥1 格节流，传送时立即写；`spawnX/Y/Z` 语义不变，仍是「回家」的权威），
+启动时 `validPlayerPos()` 校验后恢复，非法/缺失回落 City（旧存档自然兼容）。⚠️ 实施中抓到两处真实
+缺陷：解卡抬「当前 y+1」会过冲弹跳且被既有用例读到中间态（改抬整数 y）；`_discardEdits` 后
+`beforeunload` 会把旧世界坐标写回新世界 meta（`_lastSavedPos = null` 语义化为「写盘未启用」）。
+细节见下方「瞬移解卡与玩家位置持久化」活跃约束段与 roadmap 的 v2.29 行。
+
 **历次 bugfix / 改造的完整记录不在本文件。** 权威副本：**第一阶段独立改动**在设计文档修订说明 +
 `docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md`（版本区间见 roadmap 的改动表）；
 M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 的「遗留 TODO」段
@@ -2561,6 +2573,56 @@ seed 88 突破「单步落差 ≤1」（到 2 格），24 是守住无台阶的�
     根路径与正确写法**逐字节等价** → 全部 E2E/单测都能全绿而缺陷仍在。
     要验就起一个把仓库挂在子路径的临时静态服务器（做法：任意 HTTP server 把 `/mc-heavy/`
     映射到仓库根，用一条 `tests/tmp-*.spec.mjs` 探针断言「0 个 4xx/5xx + `worldReady`」）。
+
+### 瞬移解卡与玩家位置持久化沉淀的活跃约束（v2.29，后续传送/出生/存档类改动必读）
+
+用户 2026-10-31 报两个 bug：①「瞬移过去有时候瞬移到了地底下……卡在了地底下的方块里动弹不得」；
+②「游戏重新进入后永远出生在 City 的中央……玩家位置也恢复到上次停留的状态」。完整根因链、实测数据与
+负向验证见 roadmap 的 v2.29 行。以下是**会影响后续实现决策的活跃约束**。
+
+- **`_teleportTo()` 刻意不等目标 column 加载（v1.92 实测定的，勿改回等待）⇒ 必须配解卡**：
+  传送当帧目标区域全是未加载 column，`getBlockId` 对缺失 column 返回 **0（空气）** → 玩家悬空、
+  重力一路拉到世界底；随后 column GEN 完成，`fillColumn` 的「底部补实」把 `WORLD_MIN_Y` 到地表之间
+  全填成 stone → **玩家 AABB 整个埋在实心石头里**，而 `_moveAxis` 碰撞后二分回退到零位移并清零 `vel`
+  → 水平与竖直全部冻结（「动弹不得」）。⚠️ **实测更高频的形态是「浅埋 1 格」**：三个传送目标
+  （tarn/lake/arena）在默认视距下**全部**触发 `raised=1`（玩家下坠不到 1 格时 column 才 ready，脚底那格
+  已被地表方块占住）—— 写解卡类断言时**别只测「掉到世界底」**，浅埋才是常态。
+- **解卡判据复用既有的 `physics.collidesAt(x,y,z)`，不另写一份 AABB 判据**（红线 1）：它与 `_collides`
+  共用 `PLAYER_WIDTH/HEIGHT` 这唯一一份尺寸权威，且**只查方块、不查矿车** —— 正是需要的语义
+  （站在矿车上/车里不得被误判成「卡住」而被抬走）。`resolveStuck()` 是 `physics.js` 的唯一实现，
+  `Game._resolvePlayerStuck(column)` 是唯一入口（门控：Player 未构造 / **乘坐矿车中** → return；
+  传 `column` 时先做「该 column 与玩家 AABB 覆盖的 column 范围相交」门控，远处 column 零成本）。
+- **⚠️ 抬到「不低于当前 y 的最小整数 y」，不是 `pos.y + 1`**（实施中抓到的真实缺陷）：被埋时玩家已因
+  column 未加载而下坠了小数格（实测 0.44），`+1` 会抬到地表上方再掉回来（一次可见弹跳），且**中间态
+  会被「column ready 后立即读坐标」的既有用例读到** —— `teleport.spec` 的竞技场用例因此 FAIL
+  （`脚下须是实心场地（floorBlock=0）`）。整数落点不过冲、恰好还原传送的 intended 落点
+  （`tarnSurfaceYAt + 1` / `floorY + 1` 都是整数）、与物理常态静止位置同口径。
+- **⚠️ 三个解卡触发点刻意不放帧循环**：`onColumnReady` 回调末尾（**主根因修复点**）/ `_teleportTo` 内
+  `player.spawn` 之后（近处传送）/ `start()` 的 `player.spawn` 之后（恢复的位置被埋）。放帧循环会与矿车的
+  `pendingPlayerLift`（帧内把玩家顶到车顶）**抢写 `pos.y`**。
+- **⚠️ `spawnX/spawnY/spawnZ` 与「实际落地位置」是两套口径，勿混**：前者永远 = City 出生点
+  （`getCitySpawnPoint` + `findSpawnY`，是「回家」按钮 `teleportToSpawn()` 与 5 个既有 spec 的权威，
+  **语义不变**）；后者是 `start()` 里的 `startX/startY/startZ` = 上次停留处（合法时）否则回落 City。
+  改出生流程时先分清动的是哪一套。
+- **玩家位置写进既有 `meta` 行的 `playerPos` 字段，不新增 store**（红线 1）。`Persistence.savePlayerPos(pos)`
+  **必须 merge 进 `_metaCache` 再整行 put** —— `saveMeta` 是整行覆盖，只写 `playerPos` 会把 `seed`/`spawn`
+  抹掉。`_metaCache` 由 `loadMeta`（启动）与 `saveMeta` 保持新鲜。
+- **⚠️ `_lastSavedPos === null` 语义化为「位置写盘未启用」**，`_savePlayerPos()` 第一行据此 return：
+  `newWorld`/`clearSave`/`importProgress` 走 `saveMeta`（整行 put，不含 playerPos）把旧位置作废后触发
+  `beforeunload` → `_savePlayerPos()` 会把**旧世界的坐标写回新世界的 meta**。故 `_discardEdits()` 里必须
+  清成 null（与它既有的「清内存 edits 防卸载 flush 写回」同一类竞态防护，CLAUDE.md 已记）。
+- **位置写盘节流 = 帧循环 `_maybeSavePlayerPos(nowMs)`：距上次写入 ≥5s（`PLAYER_POS_SAVE_INTERVAL_MS`）
+  且移动 ≥1 格（`PLAYER_POS_SAVE_MIN_MOVE`）才写**（用户要求「不要影响性能」的落点：常态每帧成本 =
+  一次时间比较，静止时零 IndexedDB 事务）。传送时 `_teleportTo` 立即写一次（位置突变不能等 5s）；
+  `visibilitychange`/`beforeunload` 各补一次 —— ⚠️ **只是补充**，CLAUDE.md 已实测 unload 期事务常被中止，
+  主保障是 5s 节流。
+- **⚠️ `preloadEdits` 的中心必须覆盖 City ∪ 恢复位置两个 (2R+1)² 区域**（`Set` 去重）：`getEditsSync`
+  是同步的，GEN 前没 preload 就等于「该 column 无修改」→ 玩家改动静默丢失。顺带修掉一个既有缺口
+  （在远离 City 处编辑后重启、再走回去，改动会丢）。恢复位置的 column 不在 City 加载半径内时单独
+  `_waitForColumn(rcx, rcz, 10000, startX, startZ)`（**第 4/5 参必须传** —— v1.92 已踩过的坑：不推调度中心
+  则目标永远进不了加载半径），且**超时不让启动整体失败**（回落 City 出生点比弹错误遮罩好）。
+- **旧存档无 `playerPos` → 自然回落 City 出生点，无需 settingsVersion 式迁移**（与 `chunkPace` 同理，
+  与 `fogColor` 反例相反）。读回校验在 `validPlayerPos()`（三个有限数 + y 在世界范围内）。
 
 ### 玩家飞行沉淀的活跃约束（v1.81，后续移动/输入/物理类改动必读）
 

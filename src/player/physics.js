@@ -1,4 +1,6 @@
 // src/player/physics.js — AABB 碰撞 + 定步长积分（§4.5.1，常数移植 mc-lite Physics.js）
+import { WORLD_HEIGHT } from '../voxel/constants.js';
+
 const PLAYER_WIDTH = 0.6;
 const PLAYER_HEIGHT = 1.8;
 const GRAVITY = -24.0;
@@ -223,6 +225,62 @@ export class PlayerPhysics {
       }
     }
     return false;
+  }
+
+  /**
+   * 被埋进方块时**向上解卡**（传送 / 出生 / column 后到三条路径共用，唯一实现）。
+   *
+   * ## 为什么需要它
+   *
+   * `Game._teleportTo()` **刻意不等目标 column 加载**（v1.92 实测：等 1200 格外的 column
+   * 会让面板点击阻塞秒级，且 async 异常被吞成「按钮没反应」）。传送当帧目标区域全是未加载
+   * column，`WorldData.getBlockId()` 对缺失 column 返回 **0（空气）** → 玩家悬空、重力一路
+   * 拉到世界底；随后 column GEN 完成，`fillColumn` 的「底部补实」把 `WORLD_MIN_Y` 到地表之间
+   * 全填成 stone → **玩家 AABB 整个埋在实心石头里**。而 `_moveAxis` 只在 `delta !== 0` 时检测
+   * 碰撞、碰撞后二分回退到零位移并清零 `vel` → 水平与竖直全部冻结（用户报告的
+   * 「瞬移完卡在地底下动弹不得」）。
+   *
+   * ## 判据复用 `collidesAt`，不另写一份
+   *
+   * `collidesAt(x, y, z)` 与 `_collides()` 共用 `PLAYER_WIDTH`/`PLAYER_HEIGHT` 这唯一一份尺寸权威
+   * （红线 1），且**只查方块、不查矿车** —— 正是这里需要的语义：站在矿车上/车里不得被误判成
+   * 「卡住」而被抬走。
+   *
+   * ## 成本
+   *
+   * 常态 = 一次 `collidesAt`（≤12 次 `getBlockId`，微秒级）即返回 0，**位置与速度逐位不变**
+   * （不做任何浮点运算，故「常态零副作用」是可断言的）。只有真被埋时才逐格上扫，最坏
+   * `WORLD_HEIGHT` 次 ≈ 0.1ms，且是一次性的。
+   *
+   * ## 抬到**整数** y，不是「当前 y + 1」
+   *
+   * 被埋时正确的落点是「站在地表上」，而地表高度是整数 —— 直接落到整数 y 有三个好处：
+   * ① **不过冲**：玩家因 column 未加载而下坠了 0.44 格时，「+1 格」会抬到地表上方 0.56 格
+   *    再掉回来（一次可见弹跳，且中间态会被「column ready 后立即读坐标」的用例读到）；
+   * ② 恰好还原传送的 intended 落点（`tarnSurfaceYAt + 1` / `floorY + 1` 都是整数）；
+   * ③ 与物理常态的静止位置同口径（`_moveAxis` 二分回退后玩家总是停在整数面上）。
+   *
+   * 抬升后可能悬空 → 由既有重力自然落下站稳，不做额外处理（与传送后短暂悬空同一口径）。
+   *
+   * @param {number} [maxRaise] 最多抬几格（默认整个世界高度）。抬到上限仍被埋 → **放弃并原地不动**，
+   *        不静默抬到半路（半路仍在实心里等于没解卡，却让人以为解了）。
+   * @returns {number} 实际抬升量（0 = 本来没被埋，或抬到上限仍无解）
+   */
+  resolveStuck(maxRaise = WORLD_HEIGHT) {
+    if (!this.collidesAt(this.pos.x, this.pos.y, this.pos.z)) return 0;
+    // 起点 = 不低于当前 y 的最小整数（当前 y 已知被埋，故整数 y 恰好等于它时 dy=0 也会被跳过）
+    const base = Math.ceil(this.pos.y);
+    for (let dy = 0; dy <= maxRaise; dy++) {
+      const y = base + dy;
+      if (!this.collidesAt(this.pos.x, y, this.pos.z)) {
+        const raised = y - this.pos.y;
+        this.pos.y = y;
+        // 清零是载荷性的：被埋时重力已把 vel.y 压到很大的负值，不清会让解卡当帧又往下顶。
+        this.vel.y = 0;
+        return raised;
+      }
+    }
+    return 0;
   }
 
   /**
