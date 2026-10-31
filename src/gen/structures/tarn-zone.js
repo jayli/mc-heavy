@@ -874,8 +874,12 @@ function tarnPlaceClouds(regionX, regionZ, seed) {
  *   tarns: Array<{variant: string, ang: number, ring: number, halfX: number, halfZ: number}>,
  *   decos: Array<{variant: string, kind: 'arch'|'spire', ang: number, ring: number,
  *                 halfX: number, halfZ: number}>,
- *   clouds: Array<{variant: string, ang: number, ring: number}>
+ *   clouds: Array<{variant: string, ang: number, ring: number}>,
+ *   altar: boolean
  * }} TarnLayout
+ *
+ * ⚠️ **`altar === true` 的地带 `decos` 里没有 spire**（v2.31：祭坛地带不生成紫晶柱，
+ * 故 `decos.length` 是 5 而不是 12）。消费方不得假设「地带恒有 7 根紫晶柱」。
  *
  * ⚠️ **`poolRadius` 已在 v1.90 删除**（v1.89 去掉中央水池后它已经没有语义，是死字段）。
  * 现在三个半径的分工：`plateauRadius` = 地带圆外缘（地形整形的扫掠上界）／
@@ -896,9 +900,23 @@ export function computeTarnZone(regionX, regionZ, seed) {
   const jitter = tarnRegionJitter(regionX, regionZ, seed, tarns.length);
   const placed = tarnPlaceOnRing(tarns, occ, gapAngle, jitter);
 
+  // 祭坛地带（v2.30）：本地带是不是「离 City 最近的那个」⇒ 圆心广场要铺祭坛。
+  // ⚠️ 判定转调 `isAltarTarnZone`（带 seed 级缓存），不在这里重算「哪个最近」。
+  const altar = isAltarTarnZone(regionX, regionZ, seed);
+
+  // 装饰件：拱洞（环 96）+ 紫晶柱（环 20）。
+  //
+  // ⚠️ **v2.31 起祭坛地带不放紫晶柱**（用户 2026-10-31：「只删带有祭坛的高台地形里的
+  //    水晶柱，其他高台地带不要动」）。紫晶柱环半径 20 正好压在广场（半径 28）里，
+  //    柱基与祭坛地表图案重叠 11 格 —— 删掉柱子后这 11 格归祭坛，图案 185 格完整落地。
+  //    这推翻了 v2.30 的「柱基后写胜、复现用户存档缺口」口径。
+  // ⚠️ **拱洞角度不受影响**：`tarnPlaceDecos` 按**本族变体数**等角分布（arch 5 个 ⇒ 2π/5），
+  //    与 spire 数量无关 ⇒ 删柱子不会让拱洞漂移（单测钉住角距 ≈ 2π/5）。
+  // ⚠️ **`TARN_PLAZA_RADIUS`(28) 不因此改小**：它的标定理由是「紫晶柱真实足迹最远 25.4」，
+  //    而其他地带仍有柱子 ⇒ 全局常量必须按最坏情况留。
   const decos = [
     ...tarnPlaceDecos(KIT_VARIANTS.arch, TARN_ARCH_RING_RADIUS, 'arch', regionX, regionZ, seed),
-    ...tarnPlaceDecos(KIT_VARIANTS.spire, TARN_SPIRE_RING_RADIUS, 'spire', regionX, regionZ, seed),
+    ...(altar ? [] : tarnPlaceDecos(KIT_VARIANTS.spire, TARN_SPIRE_RING_RADIUS, 'spire', regionX, regionZ, seed)),
   ];
 
   const { cx, cz } = tarnZoneCenter(regionX, regionZ);
@@ -915,9 +933,7 @@ export function computeTarnZone(regionX, regionZ, seed) {
     tarns: placed,
     decos,
     clouds: tarnPlaceClouds(regionX, regionZ, seed),
-    // 祭坛标志（v2.30）：本地带是不是「离 City 最近的那个」⇒ 圆心广场要铺祭坛。
-    // ⚠️ 判定转调 `isAltarTarnZone`（带 seed 级缓存），不在这里重算「哪个最近」。
-    altar: isAltarTarnZone(regionX, regionZ, seed),
+    altar,
   };
 }
 

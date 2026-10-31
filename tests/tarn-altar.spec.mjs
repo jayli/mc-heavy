@@ -13,8 +13,9 @@ import { test, expect } from 'playwright/test';
 //   ③ 玩家按「高台」按钮落到的那个地带，就是带祭坛的那个。
 //
 // 祭坛 = 两层：地表图案（y = plateauY，替换广场材质）+ 中心神龛（dy 1~2，唯一突出地面）。
-// 紫晶柱不受影响：柱基（后写胜）压在祭坛地表格上 —— 正好复现用户存档里「东臂缺 7 格、
-// 对角线缺 3 格」的形态（那 10 格被柱基占了）。
+// ⚠️ **v2.31 起祭坛地带不再生成紫晶柱**（用户 2026-10-31：「只删带有祭坛的高台地形里的
+// 水晶柱，其他高台地带不要动」）⇒ 广场图案 **185 格完整落地**，不再有柱基遮挡的缺口
+// （v2.30 时柱基压掉 11 格）。这推翻了 v2.30 的「紫晶柱全保留」口径。
 
 const READY = () => window.__MC_GAME__?.worldReady === true;
 
@@ -91,7 +92,7 @@ test('祭坛：按「高台」按钮到达的地带带祭坛（真实按钮 + �
   await page.waitForFunction(STABLE, null, { timeout: 120_000, polling: 500 });
   await page.waitForTimeout(800);
 
-  // ── ④ 神龛（唯一突出地面的部分）逐格核对 —— 紫晶柱到不了 dy≥1，无覆盖干扰 ──
+  // ── ④ 神龛（唯一突出地面的部分）逐格核对 —— v2.31 起祭坛地带无紫晶柱，零覆盖干扰 ──
   const shrine = await page.evaluate(async (z) => {
     const g = window.__MC_GAME__;
     const reg = g.registry;
@@ -109,7 +110,7 @@ test('祭坛：按「高台」按钮到达的地带带祭坛（真实按钮 + �
   }, zone);
   expect(shrine.mism, `神龛 ${shrine.total} 格须逐格落地：${shrine.mism.slice(0, 5).join('；')}`).toEqual([]);
 
-  // ── ⑤ 中心 3×3（debris 心 + diamond 边 + gold 角）—— 半径 ≤1.4，紫晶柱（环 20）到不了 ──
+  // ── ⑤ 中心 3×3（debris 心 + diamond 边 + gold 角）──
   const center = await page.evaluate((z) => {
     const g = window.__MC_GAME__;
     const reg = g.registry;
@@ -124,58 +125,68 @@ test('祭坛：按「高台」按钮到达的地带带祭坛（真实按钮 + �
   expect(center.edges, '四正是 diamond').toEqual(['diamond', 'diamond', 'diamond', 'diamond']);
   expect(center.corners, '四角是 gold_block').toEqual(['gold_block', 'gold_block', 'gold_block', 'gold_block']);
 
-  // ── ⑥ 地表图案整体：图案格要么是祭坛方块、要么被紫晶柱基座覆盖（柱赢）──
+  // ── ⑥ 地表图案整体：185 格全部由祭坛自己落地（v2.31 起无柱基遮挡）──
   //    与 test-tarn-altar.js 的「真实 GEN 逐格落地」同判据，但跑在真实游戏页 + Worker 池上。
   const surface = await page.evaluate(async (z) => {
     const g = window.__MC_GAME__;
     const reg = g.registry;
     const { altarSurfaceBlockAt, ALTAR_ARM_LENGTH } = await import('/src/gen/structures/tarn-altar.js');
-    const { resourceUrl } = await import('/src/core/resource-url.js');
-    const m = await import('/src/gen/structures/tarn-zone.js');
-    const lay = m.computeTarnZone(z.regionX, z.regionZ, g.seed);
-
-    // 预计算紫晶柱基座占用的格（b.y===1 → 世界 y = plateauY，与祭坛地表同层）
-    const spireBase = new Map();
-    for (const d of lay.decos.filter((x) => x.kind === 'spire')) {
-      const wx = Math.round(lay.cx + d.ring * Math.cos(d.ang));
-      const wz = Math.round(lay.cz + d.ring * Math.sin(d.ang));
-      const j = await (await fetch(resourceUrl(`assets/structures/${d.variant}.json`))).json();
-      const stride = j.stride || 4;
-      for (let i = 0; i < j.blocks.length; i += stride) {
-        if (j.blocks[i + 1] !== 1) continue;
-        spireBase.set(`${wx + j.blocks[i] - lay.cx},${wz + j.blocks[i + 2] - lay.cz}`, j.palette[j.blocks[i + 3]]);
-      }
-    }
-
-    let placed = 0, overridden = 0;
+    let placed = 0;
     const wrong = [];
     for (let dx = -ALTAR_ARM_LENGTH; dx <= ALTAR_ARM_LENGTH; dx++) {
       for (let dz = -ALTAR_ARM_LENGTH; dz <= ALTAR_ARM_LENGTH; dz++) {
         const b = altarSurfaceBlockAt(dx, dz);
         if (!b) continue;
         const got = reg.nameOf(g.world.getBlockId(z.cx + dx, z.plateauY, z.cz + dz));
-        const spire = spireBase.get(`${dx},${dz}`);
-        if (spire !== undefined) {
-          if (got === spire) overridden++;
-          else wrong.push(`(${dx},${dz}) 柱基应 ${spire} 实 ${got}`);
-        } else if (got === b.type) {
-          placed++;
-        } else {
-          wrong.push(`(${dx},${dz}) 应 ${b.type} 实 ${got}`);
+        if (got === b.type) placed++;
+        else wrong.push(`(${dx},${dz}) 应 ${b.type} 实 ${got}`);
+      }
+    }
+    return { placed, wrong };
+  }, zone);
+  expect(surface.wrong, `地表图案逐格落地：${surface.wrong.slice(0, 5).join('；')}`).toEqual([]);
+  // ⚠️ **185 而不是 v2.30 的「placed + overridden」**：柱子删了 ⇒ 原先被柱基压掉的 11 格
+  //    （东臂 7 + 对角线 4）现在归祭坛。这条同时钉住「柱子真的没了」——
+  //    柱子还在的话 placed 会退回 174。
+  expect(surface.placed, '185 格图案全部由祭坛自己落地（无柱基遮挡）').toBe(185);
+
+  // ── ⑦ 祭坛地带只剩 5 个拱洞（v2.31：紫晶柱已删）──
+  //    ⚠️ 读的是 **Worker RPC 往返后的 layout**（`scheduler.structureIndex._layouts`），
+  //    不是本地 `computeTarnZone` —— 后者验不到 RPC 丢字段这类缺陷（M7 教训）。
+  const decos = await page.evaluate((z) => {
+    const m = window.__MC_GAME__.scheduler.structureIndex._layouts.get(`${z.regionX},${z.regionZ}`);
+    if (!m || !m.tarn) return null;
+    return {
+      total: m.tarn.decos.length,
+      spires: m.tarn.decos.filter((d) => d.kind === 'spire').length,
+      arches: m.tarn.decos.filter((d) => d.kind === 'arch').length,
+    };
+  }, zone);
+  expect(decos, '前提：落点地带的 layout 须经 Worker RPC 拿到').not.toBeNull();
+  expect(decos.spires, '祭坛地带不再生成紫晶柱（v2.31）').toBe(0);
+  expect(decos.arches, '拱洞一根不少').toBe(5);
+  expect(decos.total, '祭坛地带只剩 5 个装饰件').toBe(5);
+
+  // ── ⑧ 广场内不得出现紫晶柱材质（判别力：真实世界里柱子确实消失了）──
+  //    `block_of_quartz` 是干净标记：实测祭坛地带 8 座高台最近格距圆心 34.5、
+  //    5 个拱洞 83.2，都 > TARN_PLAZA_RADIUS(28) ⇒ 广场内唯一可能的石英来源就是
+  //    那 7 根紫晶柱（环半径 20）。⚠️ 不能用 `amethyst` —— 祭坛对角线自己就用它。
+  const quartz = await page.evaluate(async (z) => {
+    const g = window.__MC_GAME__;
+    const reg = g.registry;
+    const { TARN_PLAZA_RADIUS } = await import('/src/gen/structures/tarn-zone.js');
+    const quartzId = reg.idOf('block_of_quartz');
+    let hits = 0;
+    for (let dx = -TARN_PLAZA_RADIUS; dx <= TARN_PLAZA_RADIUS; dx++) {
+      for (let dz = -TARN_PLAZA_RADIUS; dz <= TARN_PLAZA_RADIUS; dz++) {
+        if (Math.hypot(dx, dz) > TARN_PLAZA_RADIUS) continue;
+        // 柱高实测最高 17 格，扫 plateauY..+20 足够覆盖整根柱子
+        for (let dy = 0; dy <= 20; dy++) {
+          if (g.world.getBlockId(z.cx + dx, z.plateauY + dy, z.cz + dz) === quartzId) hits++;
         }
       }
     }
-    return { placed, overridden, wrong };
+    return hits;
   }, zone);
-  expect(surface.wrong, `地表图案逐格落地：${surface.wrong.slice(0, 5).join('；')}`).toEqual([]);
-  expect(surface.placed + surface.overridden, '185 格图案全部有着落').toBe(185);
-  expect(surface.overridden, '判别力：真实世界里必有柱基覆盖祭坛格（复现用户存档的缺口形态）').toBeGreaterThan(0);
-  expect(surface.placed, '判别力：绝大多数图案格由祭坛自己落地').toBeGreaterThan(150);
-
-  // ── ⑦ 紫晶柱不受影响：祭坛地带仍是 12 个装饰件（5 拱洞 + 7 紫晶柱）──
-  const decos = await page.evaluate((z) => {
-    const m = window.__MC_GAME__.scheduler.structureIndex._layouts.get(`${z.regionX},${z.regionZ}`);
-    return m && m.tarn ? m.tarn.decos.length : null;
-  }, zone);
-  expect(decos, '祭坛地带的装饰件数量不变（紫晶柱全保留）').toBe(12);
+  expect(quartz, '祭坛地带广场内不得出现紫晶柱（block_of_quartz）').toBe(0);
 });

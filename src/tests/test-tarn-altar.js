@@ -13,14 +13,19 @@
 //     dy+1：四角与中心 iron、八位 emerald、四向 planks_step（高侧朝中心）；
 //     dy+2：四角 emerald、中心 diamond。
 //
-// ⚠️ 紫晶柱**不受影响**：祭坛先写、紫晶柱后光栅化（后写胜），柱基自然压在祭坛
-// 地表格上 —— 正好复现用户存档里「东臂缺 7 格、对角线缺 3 格」的形态（那 10 格
-// 被柱基占了）。代码生成完整对称图案，柱基覆盖处由柱决定。
+// ⚠️ **v2.31 起祭坛地带不再生成紫晶柱**（用户 2026-10-31：「只删带有祭坛的高台地形里的
+// 水晶柱，其他高台地带不要动」）⇒ 广场图案 **185 格完整落地**，不再有柱基遮挡的缺口。
+// 这推翻了 v2.30 的「紫晶柱全保留、柱基后写胜」口径 —— 当时用户存档里的缺口正是柱基造成的，
+// 现在柱子没了，缺口自然补全。其他地带的 7 根紫晶柱一根不动
+// （`test-tarn-zone.js` / `test-tarn-zone-gen.js` 的 `decos.length === 12` 继续钉住）。
+//
+// ⚠️ **`TARN_PLAZA_RADIUS`(28) 不因此改小**：它的标定理由是「紫晶柱真实足迹最远 25.4」，
+// 而其他地带仍有柱子 ⇒ 全局常量必须按最坏情况留。
 import { test } from './runner.js';
 import { assertEqual, assertTrue } from './assert.js';
 import {
   computeTarnZone, isTarnZone, findNearestTarnZone,
-  findAltarTarnRegion, isAltarTarnZone,
+  findAltarTarnRegion, isAltarTarnZone, TARN_PLAZA_RADIUS,
 } from '../gen/structures/tarn-zone.js';
 import { altarSurfaceBlockAt, altarShrineBlocks, ALTAR_ARM_LENGTH, ALTAR_DIAG_MIN, ALTAR_DIAG_MAX } from '../gen/structures/tarn-altar.js';
 import { computeRegionLayout } from '../gen/structures/structure-layout.js';
@@ -30,7 +35,6 @@ import { ChunkColumn } from '../voxel/chunk-column.js';
 import { blockIndex } from '../voxel/constants.js';
 import { fillColumn } from '../gen/terrain.js';
 import { getCityBoundsForSeed, buildCityLayout, getCitySpawnPoint } from '../gen/structures/city-layout.js';
-import { resourceUrl } from '../core/resource-url.js';
 
 const SEED = 12345;
 
@@ -196,24 +200,10 @@ test('祭坛接线：layout.altar 标志只在最近地带为 true', () => {
   }
 });
 
-test('祭坛接线：真实 GEN 后地表图案逐格落地（柱基覆盖处柱赢）', async () => {
+test('祭坛接线：真实 GEN 后地表图案 185 格完整落地（v2.31 起无柱基遮挡）', async () => {
   const region = findAltarTarnRegion(SEED);
   const lay = computeTarnZone(region.regionX, region.regionZ, SEED);
   const reg = await buildDefaultRegistry();
-
-  // 预计算紫晶柱基座占用的格（b.y===1 → 世界 y = plateauY，与祭坛地表同层）
-  const spireBase = new Map(); // 'dx,dz' -> 柱基方块名
-  for (const d of lay.decos.filter((x) => x.kind === 'spire')) {
-    const wx = Math.round(lay.cx + d.ring * Math.cos(d.ang));
-    const wz = Math.round(lay.cz + d.ring * Math.sin(d.ang));
-    const resp = await fetch(resourceUrl(`assets/structures/${d.variant}.json`));
-    const j = await resp.json();
-    const stride = j.stride || 4;
-    for (let i = 0; i < j.blocks.length; i += stride) {
-      if (j.blocks[i + 1] !== 1) continue; // 只要贴地层
-      spireBase.set(`${wx + j.blocks[i] - lay.cx},${wz + j.blocks[i + 2] - lay.cz}`, j.palette[j.blocks[i + 3]]);
-    }
-  }
 
   // 走真实 GEN 铺满广场区域
   const ccx = Math.floor(lay.cx / 16), ccz = Math.floor(lay.cz / 16);
@@ -231,29 +221,40 @@ test('祭坛接线：真实 GEN 后地表图案逐格落地（柱基覆盖处柱
   };
   const nameAt = (wx, y, wz) => reg.nameOf(blockAt(wx, y, wz));
 
-  // 185 格地表图案：要么是祭坛方块，要么被柱基覆盖（柱赢）
-  let placed = 0, overridden = 0;
+  // 185 格地表图案：全部由祭坛自己落地（v2.31 起祭坛地带无紫晶柱，不再有柱基覆盖）
+  let placed = 0;
   const wrong = [];
   for (let dx = -30; dx <= 30; dx++) {
     for (let dz = -30; dz <= 30; dz++) {
       const b = altarSurfaceBlockAt(dx, dz);
       if (!b) continue;
       const got = nameAt(lay.cx + dx, lay.plateauY, lay.cz + dz);
-      const spire = spireBase.get(`${dx},${dz}`);
-      if (spire !== undefined) {
-        if (got === spire) overridden++;
-        else wrong.push(`(${dx},${dz}) 柱基应为 ${spire}，实得 ${got}`);
-      } else if (got === b.type) {
-        placed++;
-      } else {
-        wrong.push(`(${dx},${dz}) 应为 ${b.type}，实得 ${got}`);
-      }
+      if (got === b.type) placed++;
+      else wrong.push(`(${dx},${dz}) 应为 ${b.type}，实得 ${got}`);
     }
   }
   assertEqual(wrong.length, 0, `图案逐格落地：${wrong.slice(0, 5).join('；')}`);
-  assertEqual(placed + overridden, 185, '185 格全部有着落');
-  assertTrue(overridden > 0, `判别力：seed 12345 必有柱基覆盖祭坛格（实测 11 格），实得 ${overridden}`);
-  assertTrue(placed > 150, `判别力：绝大多数图案格由祭坛自己落地，实得 ${placed}`);
+  // ⚠️ **必须是 185 而不是「placed + overridden」**：v2.30 时柱基压掉 11 格（东臂 7 + 对角线 4），
+  //    故当时 placed 只有 174。删掉紫晶柱后这 11 格归祭坛 ⇒ 185 格逐格都是祭坛方块。
+  //    这条断言同时钉住「柱子真的没了」—— 柱子还在的话 placed 会退回 174。
+  assertEqual(placed, 185, '185 格图案全部由祭坛自己落地（无柱基遮挡）');
+
+  // 广场圆内不得出现紫晶柱材质 —— `block_of_quartz` 是干净标记：
+  // 实测祭坛地带 8 座高台最近格距圆心 34.5、5 个拱洞 83.2，都 > TARN_PLAZA_RADIUS(28)
+  // ⇒ 广场内唯一可能的石英来源就是那 7 根紫晶柱（环半径 20）。
+  // ⚠️ 不能用 `amethyst` 作标记 —— 祭坛自己的对角线就用它。
+  const quartzId = reg.idOf('block_of_quartz');
+  let quartz = 0;
+  for (let dx = -TARN_PLAZA_RADIUS; dx <= TARN_PLAZA_RADIUS; dx++) {
+    for (let dz = -TARN_PLAZA_RADIUS; dz <= TARN_PLAZA_RADIUS; dz++) {
+      if (Math.hypot(dx, dz) > TARN_PLAZA_RADIUS) continue;
+      // 柱高实测最高 17 格，扫 plateauY..+20 足够覆盖整根柱子
+      for (let dy = 0; dy <= 20; dy++) {
+        if (blockAt(lay.cx + dx, lay.plateauY + dy, lay.cz + dz) === quartzId) quartz++;
+      }
+    }
+  }
+  assertEqual(quartz, 0, '祭坛地带广场内不得出现紫晶柱（block_of_quartz 是干净标记）');
 
   // 图案之外的广场格保持原材质（祭坛只替换、不扩散）
   //
@@ -264,7 +265,8 @@ test('祭坛接线：真实 GEN 后地表图案逐格落地（柱基覆盖处柱
   for (const [dx, dz] of [[2, 2], [1, 10], [10, 1], [6, 3], [3, 6], [15, 8], [8, 15], [25, 10]]) {
     assertEqual(altarSurfaceBlockAt(dx, dz), null, `前提：(${dx},${dz}) 不属祭坛图案`);
     const got = nameAt(lay.cx + dx, lay.plateauY, lay.cz + dz);
-    assertTrue(got === 'smooth_stone_1' || got === 'tuff_bricks' || spireBase.has(`${dx},${dz}`),
+    // v2.31 起不再有「柱基占住」这个例外（柱子已删）
+    assertTrue(got === 'smooth_stone_1' || got === 'tuff_bricks',
       `(${dx},${dz}) 图案外应保持广场材质，实得 ${got}`);
   }
 });
@@ -319,9 +321,35 @@ test('祭坛接线：非祭坛地带的广场中心没有祭坛方块', async ()
   assertEqual(hits, 0, '非祭坛地带不得出现祭坛方块（gold/diamond/debris/emerald 均不在自然地形与套件 palette）');
 });
 
-test('祭坛接线：紫晶柱不受影响（祭坛地带仍是 12 个装饰件）', () => {
+test('祭坛接线：祭坛地带只剩 5 个拱洞，其他地带 12 个装饰件不变', () => {
   const region = findAltarTarnRegion(SEED);
   const lay = computeTarnZone(region.regionX, region.regionZ, SEED);
-  assertEqual(lay.decos.length, 12, '祭坛地带仍有 5 拱洞 + 7 紫晶柱');
-  assertEqual(lay.decos.filter((d) => d.kind === 'spire').length, 7, '7 根紫晶柱全部保留');
+  assertEqual(lay.decos.filter((d) => d.kind === 'spire').length, 0, '祭坛地带不生成紫晶柱（v2.31）');
+  assertEqual(lay.decos.length, 5, '祭坛地带只剩 5 个拱洞');
+  assertEqual(lay.decos.filter((d) => d.kind === 'arch').length, 5, '拱洞一根不少');
+  // ⚠️ 拱洞角度不得因删掉紫晶柱而漂移：`tarnPlaceDecos` 按**本族变体数**等角分布
+  //    （arch 5 个 ⇒ 2π/5），与 spire 数量无关。若有人把两族合成一次落位，这条会红。
+  //
+  // ⚠️ **容差 0.25 是标定值，不得收紧到 0.1**（初版就写了 0.1，是个贴线断言）：
+  //    角距 = 基础等分 2π/5 + 两个零和抖动之差，而 `zeroSum()` 单值可达 ±1.75×jitterMax
+  //    （jitterMax = `DECO_JITTER_RAD` ≈ 3° = 0.0524）⇒ **理论上界 = 2×1.75×0.0524 = 0.183**。
+  //    实测（seed 12345）最大偏差已达 **0.0804** —— 0.1 只剩 0.02 余量，换 seed 或改抖动幅度
+  //    就会**假失败**（同 AGENTS.md「阈值必须落在两侧实测值之间」）。
+  //    而真实失效模式的偏差大得多：2π/7 → **0.359**、2π/12 → **0.733**。
+  //    取 0.25 = 落在 [0.183, 0.359] 区间内，两侧都有余量。
+  const archAngles = lay.decos.filter((d) => d.kind === 'arch').map((d) => d.ang);
+  for (let i = 1; i < archAngles.length; i++) {
+    const gap = archAngles[i] - archAngles[i - 1];
+    assertTrue(Math.abs(gap - 2 * Math.PI / 5) < 0.25,
+      `拱洞 ${i - 1}→${i} 角距 ${gap.toFixed(4)} 应接近 2π/5 = ${(2 * Math.PI / 5).toFixed(4)}`);
+  }
+
+  // 其他地带（用户明确「其他高台地带不要动」）：仍是 5 拱洞 + 7 紫晶柱
+  for (const { rx, rz } of allTarnRegions(SEED)) {
+    if (rx === region.regionX && rz === region.regionZ) continue;
+    const other = computeTarnZone(rx, rz, SEED);
+    assertEqual(other.decos.filter((d) => d.kind === 'spire').length, 7,
+      `非祭坛地带 region(${rx},${rz}) 的 7 根紫晶柱一根不动`);
+    assertEqual(other.decos.length, 12, `非祭坛地带 region(${rx},${rz}) 仍是 12 个装饰件`);
+  }
 });

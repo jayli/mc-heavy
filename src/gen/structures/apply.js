@@ -457,9 +457,10 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
     // 的圆心广场铺祭坛 —— 设置面板「高台」瞬移到达的就是它。
     //
     // ⚠️ **层序是载荷性的**：必须在 `fillTarnPlateau` **之后**（祭坛地表替换掉广场的
-    //    tuff_bricks/smooth_stone_1）、在紫晶柱/高台光栅化**之前**（柱基后写胜，压在祭坛
-    //    地表格上 —— 正好复现用户存档里「东臂缺 7 格、对角线缺 3 格」的形态，那 10 格被柱基占了）。
-    //    放到光栅化之后会让祭坛反过来盖掉柱基（与用户存档不符）。
+    //    tuff_bricks/smooth_stone_1，晚于台地整形才不会被它盖回去）。
+    //    （v2.31 起祭坛地带已无紫晶柱 —— `computeTarnZone` 对 `altar` 地带不放 spire，
+    //    故「早于紫晶柱」这条层序不再有实际效果；接线位置不动，若将来加回柱子，
+    //    后写胜仍是正确语义。）
     // ⚠️ **AABB 早退**：祭坛占地 ±`ALTAR_ARM_LENGTH`（28），而每个 column 的查询域里
     //    3×3 邻域的全部地带 layout 都会进这个循环 —— 不早退会对每个不覆盖祭坛的 column
     //    白跑 57×57 次 `altarSurfaceBlockAt`（与 tarns/decos 的 `placementIntersects` 同一手法）。
