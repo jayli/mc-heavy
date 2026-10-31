@@ -915,5 +915,71 @@ export function computeTarnZone(regionX, regionZ, seed) {
     tarns: placed,
     decos,
     clouds: tarnPlaceClouds(regionX, regionZ, seed),
+    // 祭坛标志（v2.30）：本地带是不是「离 City 最近的那个」⇒ 圆心广场要铺祭坛。
+    // ⚠️ 判定转调 `isAltarTarnZone`（带 seed 级缓存），不在这里重算「哪个最近」。
+    altar: isAltarTarnZone(regionX, regionZ, seed),
   };
+}
+
+// ==================== 祭坛地带（v2.30） ====================
+
+/**
+ * 祭坛地带的判定结果 memo（键 = seed）。
+ *
+ * ⚠️ **必须 memo**：`findNearestTarnZone` 实测 1.5ms（要逐环调 `isTarnZone`），而
+ * `computeTarnZone` 在 layout 层每个 region 都会被调 —— 不 memo 等于每个地带 region
+ * 多付 1.5ms。同 `getCityBoundsForSeed` 的 `_cityBoundsCache` 手法（只存派生结果）。
+ *
+ * ⚠️ **名字里不得出现 `RegionCache` 子串**（`check:arch` 的 `FORBIDDEN_NAMES` 是
+ * **子串**匹配，而 `RegionCache` 是 mc-lite 的补丁架构类名，红线 2/4 禁止以任何形式复活）。
+ * 初版叫 `_altarRegionCache` 被静态门当场拦下 —— 那是正当拦截（不是误报）：
+ * 给这种碰撞加白名单会为了一个命名习惯削弱整条红线门。故改用 `memo` 词根。
+ */
+let _altarZoneMemo = null;
+
+/**
+ * 找出**离 City 最近的高台地带**（= 祭坛所在的那个地带）。
+ *
+ * 用户 2026-10-31：「放到距离 City 最近的一个高台地带里，因为在设置面板中，点击
+ * 瞬移区域的『高台』，就会移动到距离 City 最近的一个高台」。
+ *
+ * ⚠️ **判据必须与「高台」按钮同源**：`Game.teleportToTarnZone()` 调的就是
+ * `findNearestTarnZone(玩家位置, seed)`，玩家从 City 出生点按按钮 ⇒ 这里用
+ * 城市出生点作搜索原点，两者必然指向同一个地带（红线 1：不另写一份「哪个最近」）。
+ *
+ * ⚠️ **原点用已缓存的 `getCityBoundsForSeed` 的中心，不用 `getCitySpawnPoint`**：
+ * 后者要 `buildCityLayout`（实测 15ms）且**没有缓存**，会落进 GEN 计时路径；
+ * 而 bounds 恒以出生点为中心对称（`cityCx ± halfSize`，见 `city-layout.js:398`），
+ * 实测 60 个 seed 逐位相等，且 `getCityBoundsForSeed` 已被 Worker 在 layout 入口预热
+ * （`world-worker.js:181`）⇒ 零额外开销。单测钉住这个等价前提。
+ *
+ * @param {number} seed
+ * @returns {{regionX: number, regionZ: number, cx: number, cz: number, dist: number} | null}
+ *          全世界没有地带时返回 null
+ */
+export function findAltarTarnRegion(seed) {
+  if (_altarZoneMemo && _altarZoneMemo.seed === seed) return _altarZoneMemo.region;
+  const b = getCityBoundsForSeed(seed);
+  const cityCx = Math.round((b.minX + b.maxX) / 2);
+  const cityCz = Math.round((b.minZ + b.maxZ) / 2);
+  const found = findNearestTarnZone(cityCx, cityCz, seed);
+  const region = found
+    ? Object.freeze({ regionX: found.regionX, regionZ: found.regionZ, cx: found.cx, cz: found.cz, dist: found.dist })
+    : null;
+  _altarZoneMemo = { seed, region };
+  return region;
+}
+
+/**
+ * 本地带 region 是不是祭坛地带（每个 seed 全世界恰好一个，除非一个地带都没有）。
+ *
+ * ⚠️ **不得自己写一份「最近」判据** —— 转调 `findAltarTarnRegion`，两份判据漂移
+ * 会让「layout 说有祭坛、apply 写在另一个地带」（同 `isTarnZone` 那条约束的理由）。
+ *
+ * @param {number} regionX @param {number} regionZ @param {number} seed
+ * @returns {boolean}
+ */
+export function isAltarTarnZone(regionX, regionZ, seed) {
+  const altar = findAltarTarnRegion(seed);
+  return altar !== null && altar.regionX === regionX && altar.regionZ === regionZ;
 }

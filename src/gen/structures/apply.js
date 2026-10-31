@@ -28,6 +28,7 @@ import { PYRAMID_HALF, inGiantPyramidFootprint } from './giant-pyramid.js';
 import { ARENA_HALF_X, ARENA_HALF_Z, ARENA_SUPPORT_MAX_DEPTH, inArenaFootprint } from './arena.js';
 import { TARN_ZONE_RADIUS, snowLandSuppressedByTarn, TARN_CLOUD_MIN_Y } from './tarn-zone.js';
 import { fillTarnPlateau, tarnSnowCap, tarnPlantAt } from './tarn-terrain.js';
+import { rasterizeAltar, ALTAR_ARM_LENGTH } from './tarn-altar.js';
 import { inShallowTarnFootprint } from './shallow-water-tarns.js';
 import { rasterizeShallowTarnBridge } from './shallow-water-bridge.js';
 import { SHALLOW_TARN_VARIANTS } from './shallow-water-tarn-data.js';
@@ -451,6 +452,21 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
   const tarnLayouts = layouts.map((l) => l.tarn).filter(Boolean);
   for (const tarnLayout of tarnLayouts) {
     fillTarnPlateau(column, tarnLayout, seed, registry);
+
+    // 祭坛（v2.30，用户 2026-10-31）：只在**离 City 最近的那个地带**（`layout.altar`）
+    // 的圆心广场铺祭坛 —— 设置面板「高台」瞬移到达的就是它。
+    //
+    // ⚠️ **层序是载荷性的**：必须在 `fillTarnPlateau` **之后**（祭坛地表替换掉广场的
+    //    tuff_bricks/smooth_stone_1）、在紫晶柱/高台光栅化**之前**（柱基后写胜，压在祭坛
+    //    地表格上 —— 正好复现用户存档里「东臂缺 7 格、对角线缺 3 格」的形态，那 10 格被柱基占了）。
+    //    放到光栅化之后会让祭坛反过来盖掉柱基（与用户存档不符）。
+    // ⚠️ **AABB 早退**：祭坛占地 ±`ALTAR_ARM_LENGTH`（28），而每个 column 的查询域里
+    //    3×3 邻域的全部地带 layout 都会进这个循环 —— 不早退会对每个不覆盖祭坛的 column
+    //    白跑 57×57 次 `altarSurfaceBlockAt`（与 tarns/decos 的 `placementIntersects` 同一手法）。
+    if (tarnLayout.altar &&
+        placementIntersects({ x: tarnLayout.cx, z: tarnLayout.cz }, ALTAR_ARM_LENGTH, ALTAR_ARM_LENGTH, column.cx, column.cz)) {
+      rasterizeAltar(tarnLayout, setBlock);
+    }
 
     // 8 座高台（`TARN_KEPT_TARN_IDS`；烘焙有 11 个产物，运行时只用 8 座）
     for (const t of tarnLayout.tarns) {

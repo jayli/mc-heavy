@@ -105,6 +105,16 @@ v1.81 新增飞行那行后由三行变四行），
 `beforeunload` 会把旧世界坐标写回新世界 meta（`_lastSavedPos = null` 语义化为「写盘未启用」）。
 细节见下方「瞬移解卡与玩家位置持久化」活跃约束段与 roadmap 的 v2.29 行。
 
+**v2.30** 把用户手工修出的**祭坛**内化进代码：只出现在**离 City 最近的那个高台地带**的圆心
+广场（设置面板「高台」瞬移到达的那个），造型逐格解码自用户进度包 —— 地表层（y = plateauY，
+**替换**广场材质、不抬高地面）：黄金十字（±28）+ 紫水晶对角线（半径 4~20）+ 中心 3×3
+（debris 心 / diamond 边 / gold 角）；神龛（唯一突出地面的 7×7 中心）：dy+1 铁柱绿宝环四向台阶
+（高侧朝中心）、dy+2 四角绿宝 + 中心钻石。**紫晶柱完全不受影响**（用户裁定）：柱基后写胜压在
+祭坛地表格上，正好复现用户存档里被柱基挡掉的缺口形态。实现 = 新增 `src/gen/structures/tarn-altar.js`
+（纯函数 Worker 同构）+ `tarn-zone.js` 的 `findAltarTarnRegion`（与「高台」按钮同源，memo 缓存）
+与 layout 的 `altar` 标志 + `apply.js` 阶段 2.4 接线（层序载荷：台地整形之后、光栅化之前）。
+细节见下方「高台地带沉淀的活跃约束」段与 roadmap 的 v2.30 行。
+
 **历次 bugfix / 改造的完整记录不在本文件。** 权威副本：**第一阶段独立改动**在设计文档修订说明 +
 `docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md`（版本区间见 roadmap 的改动表）；
 M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 的「遗留 TODO」段
@@ -707,6 +717,48 @@ seed 88 突破「单步落差 ≤1」（到 2 格），24 是守住无台阶的�
     越靠内侧打在十字上的比例越高（半径 3.5 处 58.3% / 24.5 处 8.3%）⇒ 采样口径实测 **24.0%**。
   - ⚠️ **Tier 4 不能断言广场「只有那两种材质」**：采样圈必须打到紫晶柱本体
     （实测 `amethyst` 0.052 + `block_of_quartz` 0.026）。严格判据（逐格 0 例外）在 Tier 1。
+    ⚠️ **v2.30 起祭坛地带的广场还会多出 gold_block / diamond / debris / emerald / iron /
+    planks_step 六种**（祭坛地表图案 + 神龛）。既有 `tests/tarn-zone.spec.mjs` 采的是
+    seed 12345 的 region(-4,-1)，而祭坛地带是 (2,0) ⇒ 零影响（实测 9/9 绿）。
+    **将来把夹具改成祭坛地带时，这条占比断言会假失败** —— 先确认夹具 region 是不是祭坛地带。
+- **祭坛（v2.30）：只在「离 City 最近的那个地带」的圆心广场，紫晶柱完全不受影响**
+  （用户 2026-10-31 在进度包里手工修出造型，要求内化进代码）。唯一权威 =
+  `src/gen/structures/tarn-altar.js`（纯函数、Worker 同构）：`altarSurfaceBlockAt(dx,dz)`
+  （地表图案）/ `altarShrineBlocks()`（神龛 22 格）/ `rasterizeAltar(layout, setBlock)`。
+  - ⚠️ **祭坛地表层是「替换广场材质」，不是「叠在地表之上」**（用户裁定，我初版读错了 y 层）：
+    黄金十字与紫水晶对角线写在 `y = plateauY`（= `fillTarnPlateau` 写广场材质那一格），
+    **只有中心神龛（dy+1 / dy+2）突出地面**。写成 `plateauY + 1` 会让整个十字与对角线
+    浮在地面上一格（观感是「一层方块铺在地上」而不是「镶嵌进地面」）。
+  - ⚠️ **层序是载荷性的：必须在 `fillTarnPlateau` 之后、紫晶柱/高台光栅化之前**
+    （`apply.js` 阶段 2.4）。柱基**后写胜**压在祭坛地表格上 —— 这正好复现用户存档里
+    「东臂缺 7 格、对角线缺 3 格」的形态（那 10 格被柱基占了，不是设计意图）。
+    放到光栅化之后会让祭坛反过来盖掉柱基（负向验证实测真 FAIL）。
+  - ⚠️ **紫晶柱一根都不删**（用户明确裁定「紫晶柱要保留……跟紫晶柱完全不影响」）：
+    祭坛地带仍是 12 个装饰件（5 拱洞 + 7 紫晶柱）。我初版方案曾提「祭坛取代紫晶柱」，
+    被用户否掉 —— 柱基与祭坛地表格重叠（实测 seed 12345 重叠 11 格）由后写胜自然解决，
+    不需要任何让路逻辑。
+  - ⚠️ **「哪个地带带祭坛」的判据必须与「高台」按钮同源**：`findAltarTarnRegion(seed)`
+    转调 `findNearestTarnZone(城市出生点, seed)`，而 `Game.teleportToTarnZone()` 调的是
+    `findNearestTarnZone(玩家位置, seed)` ⇒ 玩家从 City 按按钮必然落到祭坛地带。
+    **不得自己写一份「哪个最近」**（两份判据漂移 = 「按钮到的地带没祭坛」）。
+  - ⚠️ **原点用已缓存的 `getCityBoundsForSeed` 中心，不用 `getCitySpawnPoint`**：后者要
+    `buildCityLayout`（实测 15ms）且**没有缓存** → 会落进 GEN 计时路径；而 bounds 恒以出生点
+    为中心对称（`cityCx ± halfSize`），实测 **60 个 seed 逐位相等**，且 `getCityBoundsForSeed`
+    已被 Worker 在 layout 入口预热（`world-worker.js:181`）⇒ 零额外开销。
+    **这个等价前提是载荷性的**，单测钉住（`test-tarn-altar.js` 的「城市 bounds 中心 ≡ 城市出生点」）。
+  - ⚠️ **memo 变量名里不得出现 `RegionCache` 子串**：`check:arch` 的 `FORBIDDEN_NAMES` 是
+    **子串**匹配，而 `RegionCache` 是 mc-lite 的补丁架构类名（红线 2/4 禁止以任何形式复活）。
+    初版叫 `_altarRegionCache` 被静态门当场拦下 —— **那是正当拦截，不是误报**：给这种命名
+    碰撞加白名单会为了一个变量名削弱整条红线门。故改用 `memo` 词根（`_altarZoneMemo`）。
+  - ⚠️ **`layout.altar` 必须经 Worker 'layout' RPC 往返后仍在**（结构化克隆会保留布尔字段，
+    实测 region(2,0) `altar:true` / region(3,0) `altar:false`）。**Tier 4 必须走真实按钮点击**
+    而不是本地 `applyStructuresToColumn` —— 后者验不到 RPC 丢字段这类缺陷（M7 教训）。
+  - ⚠️ **写「图案外应保持广场材质」的取样点必须先用 `altarSurfaceBlockAt` 验过是 null**：
+    初版取了 `(5,5)`（实为紫水晶对角线）与 `(22,22)`（d=31.1 已出广场、属冰带）→ 断言描述的
+    是想象中的世界（同「写断言前先在真实数据上跑一次」）。
+  - ⚠️ **祭坛方块是干净的判据标记**：`gold_block` / `diamond` / `debris` / `emerald` 既不在
+    自然地形里、也不在 Cloudland 套件 palette 里（实测 35 个产物全扫）⇒ 「非祭坛地带不得
+    出现这四种」是有效断言。**但 `amethyst` 与 `iron` 不行** —— 紫晶柱本身就用它们。
 - **高台顶部一律 `snow_grass`，不再雪草交替**（v1.94，用户 2026-10-29：「高台地带的**所有**顶部的
   草方块都换成 snow_grass……不再让雪方块和草方块交替。高台腰部的雪方块还照旧」）：
   `tarnSnowCap` 两级处理，**顺序是载荷性的** —— ① 顶层是 `grass` → `snow_grass`（**不限半径**）；
@@ -3207,6 +3259,10 @@ mc-heavy/
    │               #  shallow-water-terrain.js 三段式整形 + 五座高台光栅化 + 深浅草分流
    │               #  shallow-water-tarn-data.js 5 个变体名与度量（纯数据，零 node 依赖）
    │               #  arena-variants.js 竞技场产物基名（纯数据，与 tools/arena-fingerprint.mjs 双向门禁）
+   │               #  tarn-altar.js 祭坛（v2.30）：离 City 最近的地带圆心广场。纯函数 Worker 同构 ——
+   │               #    altarSurfaceBlockAt（地表图案：黄金十字 ±28 + 紫水晶对角线 4~20 + 中心 3×3）
+   │               #    + altarShrineBlocks（神龛 22 格，唯一突出地面的部分）+ rasterizeAltar。
+   │               #    落点判定 findAltarTarnRegion / isAltarTarnZone 在 tarn-zone.js（与「高台」按钮同源）
    │               #  giant-trees.js 巨树景观：region 层候选（全局对齐网格 + 内缩抖动）+ column 层光栅化
    │               #    （合并邻域候选 / 排除 / 地基 / 覆盖窗口；Worker 同构）
    │               #  mesa.js Cloudland 高台落点（v1.76）：每块沙漠至多 1 个。判据 = 基座 15×15
