@@ -31,6 +31,8 @@ import { fillTarnPlateau, tarnSnowCap, tarnPlantAt } from './tarn-terrain.js';
 import { rasterizeAltar, ALTAR_ARM_LENGTH } from './tarn-altar.js';
 import { inShallowTarnFootprint } from './shallow-water-tarns.js';
 import { rasterizeShallowTarnBridge } from './shallow-water-bridge.js';
+import { rasterizeMedievalShip } from './medieval-ship.js';
+import { MEDIEVAL_SHIP_VARIANTS } from './medieval-ship-data.js';
 import { SHALLOW_TARN_VARIANTS } from './shallow-water-tarn-data.js';
 import {
   fillShallowTarnBasin, rasterizeShallowTarnPlatforms, paintShallowTarnGrass,
@@ -311,6 +313,11 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
   // 从 `SHALLOW_TARN_VARIANTS` 派生而不是手写清单（红线 1）。
   if (layouts.some((l) => l.shallowTarn)) {
     for (const base of SHALLOW_TARN_VARIANTS) needTypes.add(base);
+    // 中世纪船（Medieval Ship Epic）：4 个旋转变体。与浅水高台同一个惰性门控 ——
+    // 船只可能落在湖里，故只有携带 `shallowTarn` 锚点的 region 才需要拉。
+    // ⚠️ 从 `MEDIEVAL_SHIP_VARIANTS` 派生（红线 1）：漏一个变体会让那个朝向的船
+    // **静默不出现**（`rasterizeStructure` 拿到空 blocks 直接 return）。
+    for (const base of MEDIEVAL_SHIP_VARIANTS) needTypes.add(base);
   }
   // 高台地带：35 个产物。惰性预载 —— 只有地带 region 才拉（1/3 的 region）。
   // 从 KIT_VARIANTS 派生而不是手写清单（红线 1）。
@@ -429,6 +436,17 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
     // 净空已由 `computeShallowTarnBridge(seed, platformTop)` 在候选层算出并**缓存**，
     // 这里传入 null 直接命中该缓存（轴向与剖面与择优结果完全一致）。
     rasterizeShallowTarnBridge(column, st, seed, registry, setBlock, null);
+    // ⑥ 中世纪船（Medieval Ship Epic，用户：「把最大的船的模型搬运到我的游戏里，
+    //   生成到浅水高台地图的水域里……船不要跟其他实体重叠，比如船不接触高台等等」）。
+    //
+    // ⚠️ **必须在 ① 之后**：船坐在湖底（`y = lakeFloorY + 1`）上，而湖底方块由
+    // `fillShallowTarnBasin` 写。先光栅化船会被湖盆整形覆盖掉。
+    // ⚠️ **与 ②⑤ 无层序依赖**：落点判据已保证船不压高台、不压桥（水平 AABB 含 2 格余量），
+    // 故先后不影响结果。放在最后是为了让「船体挤开那一格水」是最后写入的语义。
+    //
+    // 朝向与落点全是 seed 的纯函数（`computeMedievalShipPlacement`，带缓存），
+    // 任意 column 算出的结论恒一致 ⇒ 跨 column 接缝无缝拼接。
+    rasterizeMedievalShip(column, st, seed, registry, setBlock);
   }
 
   // ---- 阶段 2.4：高台地带（Cloudland Tarn Zone）----

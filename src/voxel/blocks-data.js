@@ -130,6 +130,9 @@ export const BLOCKS = [
   // ⚠️ 两者都进背包（玩家挖下来能拿起），故改贴图或几何后须跑 `npm run icons`。
   {"name":"sand_step","solid":true,"cullMode":"cutout","opaque":false,"orientationModes":4,"geometry":"planks_step"},
   {"name":"sand_slab","solid":true,"cullMode":"cutout","opaque":false,"orientationModes":0,"geometry":"half_block"},
+  // 倒置半砖（中世纪船 Epic）：1×0.5×1 顶贴块顶，几何 half_block_updown 在 mesher.js。
+  // 承载 Minecraft slab[type=top] / trapdoor[half=top]。同 sand_slab 口径：显式 opaque:false、进背包。
+  {"name":"half_block_updown","solid":true,"cullMode":"cutout","opaque":false,"orientationModes":0,"geometry":"half_block_updown"},
   {"name":"stone","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
   {"name":"stone_diorite","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
   {"name":"mossy_stone","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
@@ -137,6 +140,10 @@ export const BLOCKS = [
   {"name":"bricks","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
   {"name":"planks","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
   {"name":"planks_step","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"planks_step"},
+  // 倒置木台阶（中世纪船 Epic）：`planks_step` 的精确上下颠倒，几何在 mesher.js。
+  // ⚠️ 非 box 几何必须显式 `opaque:false`（同 sand_step 注释），否则将来 cullMode 被改成
+  // opaque 会静默误推 opaqueTable=1 → mesher 剔邻居面。进背包，改贴图/几何后须 `npm run icons`。
+  {"name":"planks_step_updown","solid":true,"cullMode":"cutout","opaque":false,"orientationModes":4,"geometry":"planks_step_updown"},
   {"name":"cobblestone_step","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"cobblestone_step"},
   {"name":"cobblestone_step_updown","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"cobblestone_step_updown"},
   {"name":"stone_diorite_step","solid":true,"cullMode":"cutout","orientationModes":4,"geometry":"cobblestone_step"},

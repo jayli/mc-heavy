@@ -1,5 +1,5 @@
 import { test } from './runner.js';
-import { assertEqual, assertTrue, assertNull } from './assert.js';
+import { assertEqual, assertTrue, assertNull, assertDeepEqual } from './assert.js';
 import { resourceUrl } from '../core/resource-url.js';
 import { buildSectionMesh } from '../mesh/mesher.js';
 import { computeSkylightColumn } from '../mesh/lighting.js';
@@ -327,8 +327,9 @@ test('mesher: AO 仅对角遮挡顶点 AO=2（去门控，阴影连成环）', (
 // 是否被该方块占据」。采样点 = 顶点 + 0.25×(法线 + 切向1 + 切向2)：0.25 令采样点的每个
 // 分量恒落在 0.25/0.75/1.25（子格中心），永不落在八分区边界 → 无取整歧义。
 //
-// **纳入范围只有台阶族**（planks_step / cobblestone_step / cobblestone_step_updown 三种几何，
-// 共 5 个方块）。半砖（half_block）与装饰几何（仙人掌/栏杆/花）**不纳入**，逐位保持原样 ——
+// **纳入范围只有台阶族**（planks_step / planks_step_updown / cobblestone_step /
+// cobblestone_step_updown 四种几何，共 6 个方块）。半砖（half_block /
+// half_block_updown）与装饰几何（仙人掌/栏杆/花）**不纳入**，逐位保持原样 ——
 // 它们的「暗部」没有明确物理意义，纳入只会产生无意义暗块。
 
 // 世界坐标助手：把「台阶在 (8,y0,8) + 若干邻居」搭成一个 section
@@ -546,6 +547,12 @@ test('mesher: 台阶 AO 不波及整格世界与未纳入的形状（零回归�
   expectBright('cactus'); // 装饰几何同理不纳入
   expectDarker('planks_step');
   expectDarker('cobblestone_step_updown');
+  // ⚠️ **`planks_step_updown` 刻意不列在这里**（实测否决，勿「补齐」）：
+  // 本 helper 把石墙固定在台阶的 **+X** 侧、且 meta 恒 0。而它的几何是
+  // 「上半全幅 + 下半 **-X** 半幅」⇒ orient 0 时 +X 侧只有上半是实心的，
+  // 实测石墙 -X 面四个顶点**全为 AO=3**（不变暗）—— 写 `expectDarker` 会假失败。
+  // 它在 orient 2（旋转 180°，下半换到 +X）时才变暗（实测全 2）。
+  // 它的亚体素 AO 参与由下面那条**专门的镜像用例**覆盖（按实测值写，不靠推断）。
 
   // 反向确认：把它换成台阶，同样的孤立场景必须出现梯度（证明 ② 的判据有判别力）
   const step = meshStepWorld(reg, [[8, y0, 8, 'planks_step']]);
@@ -553,6 +560,44 @@ test('mesher: 台阶 AO 不波及整格世界与未纳入的形状（零回归�
   assertTrue(!!stepRiser, '孤立台阶有竖面');
   const stepAos = stepRiser.map((v) => v.ao);
   assertTrue(new Set(stepAos).size > 1, `孤立台阶竖面应有梯度，实测 ${JSON.stringify(stepAos)}`);
+});
+
+test('mesher: 倒置木台阶的 AO 梯度是正置台阶的**竖直镜像**（中世纪船 Epic）', () => {
+  const reg = makeRegistry();
+  const y0 = WORLD_MIN_Y + 5;
+  // ⚠️ **本用例不能并进上面「台阶自身的凹角出 AO 梯度」那张枚举表**：那条断言的是
+  // 「竖面**底边**比顶边暗」（正置台阶的凹角在下半柱与踏面交界），而
+  // `planks_step_updown` 是**上下颠倒**的 —— 它的凹角在竖面**顶边**，方向恰好相反。
+  // 混进那张表会让正确实现 FAIL（同 AGENTS.md「写断言前先在真实数据上跑一次」）。
+  //
+  // 实测（孤立方块，x=8.5 处的竖面）：
+  //   planks_step         y[5.50,6.00] → 底 2 / 顶 3（底暗）
+  //   planks_step_updown  y[5.00,5.50] → 底 3 / 顶 2（顶暗）
+  const riserAOs = (name) => {
+    const r = meshStepWorld(reg, [[8, y0, 8, name]]);
+    assertEqual(r.cutout.vertexCount, 48, `${name} = 12 quad / 48 顶点（与正置台阶同）`);
+    const riser = quadsOfFace(r.cutout, 0)
+      .find((q) => q.every((v) => Math.abs(v.x - (8 + 0.5)) < 1e-6));
+    assertTrue(!!riser, `${name} 有 x=8.5 的竖面`);
+    const yMin = Math.min(...riser.map((v) => v.y));
+    const yMax = Math.max(...riser.map((v) => v.y));
+    const bottom = riser.filter((v) => Math.abs(v.y - yMin) < 1e-6).map((v) => v.ao);
+    const top = riser.filter((v) => Math.abs(v.y - yMax) < 1e-6).map((v) => v.ao);
+    return { bottom, top };
+  };
+  const normal = riserAOs('planks_step');
+  const updown = riserAOs('planks_step_updown');
+  // 正置：底暗顶亮
+  assertTrue(Math.max(...normal.bottom) < Math.min(...normal.top),
+    `正置台阶竖面底边应比顶边暗：bottom=${JSON.stringify(normal.bottom)} top=${JSON.stringify(normal.top)}`);
+  // 倒置：**顶暗底亮**（镜像）—— 这条是本用例的载荷性判据
+  assertTrue(Math.max(...updown.top) < Math.min(...updown.bottom),
+    `倒置木台阶竖面**顶边**应比底边暗（凹角在上）：bottom=${JSON.stringify(updown.bottom)} top=${JSON.stringify(updown.top)}`);
+  // 两者的取值集合必须互为镜像（同一组 AO 值，上下对调）
+  assertDeepEqual([...updown.bottom].sort(), [...normal.top].sort(),
+    '倒置台阶的底边 AO == 正置台阶的顶边 AO（竖直镜像）');
+  assertDeepEqual([...updown.top].sort(), [...normal.bottom].sort(),
+    '倒置台阶的顶边 AO == 正置台阶的底边 AO（竖直镜像）');
 });
 
 test('mesher: worldStats 开 → 返回面剔除统计', () => {

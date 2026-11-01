@@ -191,10 +191,20 @@ test('浅水高台 GEN：沙滩 / 湖盆 / 水下坡不长植物（只长在草�
     }
   }
   let bridgeSkipped = 0;
+  // 中世纪船（Medieval Ship Epic）：船坐在湖盆里（`e ≤ 0`），而湖盆的 `surfY + 1`
+  // 恰好就是船底那一层（`LAKE_FLOOR_Y + 1 = SEA_Y`）—— 不排除会把 57 格船体方块
+  // 误判成「沙滩上长了东西」。与高台 / 桥面同一条理由，同一个手法。
+  const shipM = await import('../gen/structures/medieval-ship.js');
+  const ship = shipM.computeMedievalShipPlacement(SEED);
+  const inShip = (x, z) => !!ship &&
+    x >= ship.wx - ship.loX && x <= ship.wx + ship.hiX &&
+    z >= ship.wz - ship.loZ && z <= ship.wz + ship.hiZ;
+  let shipSkipped = 0;
   const badAt = [];
   for (let wx = a.wx - R; wx <= a.wx + R; wx += 1) {
     for (let wz = a.wz - R; wz <= a.wz + R; wz += 1) {
       if (inPlatform(wx, wz)) { platformSkipped++; continue; }
+      if (inShip(wx, wz)) { shipSkipped++; continue; }
       const e = offsetAt(a, wx, wz);
       // ⚠️ 必须先按 `e` 出局：整形区外（外接方形的四角）是**自然地形**，
       // 那里海洋/沙滩的 `shallowTarnSurfaceBlock` 也会返回 `sand`
@@ -219,6 +229,11 @@ test('浅水高台 GEN：沙滩 / 湖盆 / 水下坡不长植物（只长在草�
   assertTrue(sandCells > 3000, `沙滩/湖盆采样太少（${sandCells}）—— 无判别力`);
   assertTrue(bridgeSkipped > 0, `桥面格一个都没跳过（${bridgeSkipped}）—— 桥没接进 GEN 或判据失效`);
   assertTrue(platformSkipped > 1000, `台地 AABB 内跳过 ${platformSkipped} 列（防「全部被跳过导致本用例恒真」）`);
+  // ⚠️ 船落点存在时必须真的跳过了一些列（否则上面的排除是空操作，静默退化）
+  if (ship) {
+    assertTrue(shipSkipped > 0,
+      `船 AABB 内一列都没跳过（${shipSkipped}）—— 排除判据失效或船没接进 GEN`);
+  }
   assertEqual(bad, 0, `沙岸/水下坡地上方不得出现植物类方块（实得 ${bad}：${badAt.join('; ')}）`);
 });
 

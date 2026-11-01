@@ -1877,6 +1877,252 @@ async function checkShallowTarns() {
   }
 }
 
+// ---------------------------------------------------------------- [中世纪船] 契约（Medieval Ship Epic）
+
+/**
+ * [中世纪船] 契约：烘焙输入 / 4 个旋转变体产物 / 映射表 / 两个新方块声明 / 朝向表共用。
+ *
+ * 钉的失效路径（**每条都是静默的**）：
+ *   ① 指纹不匹配 → 改了 BLOCK_MAP / FACING_TO_ORIENT / SHIP_METRICS / .litematic 却没重烘
+ *      → 世界里是旧船形，方块层面看不出差别；
+ *   ② palette 含未注册方块 → `makeColumnSetter` 对未注册名字**静默 return** → 船身出现洞；
+ *   ③ stride ≠ 5 → 台阶/栏杆的 direction 丢失 → 全部按 orient=0 渲染（巨型金字塔踩过）；
+ *   ④ **旋转变体之间不自洽** → 某个朝向的船是坏的（船身转了但台阶朝向没转），
+ *      而格数/尺寸判据完全拓不到 —— 故用「o1/o2/o3 == o0 旋转后逐格重合」直接钉；
+ *   ⑤ 两个新方块（`planks_step_updown` / `half_block_updown`）未注册或几何写错
+ *      → 倒置台阶/倒置半砖渲染成整格或空气；
+ *   ⑥ **`FACING_TO_ORIENT` 与巨型金字塔分家** → 两张表漂移会让「同一朝向的台阶在
+ *      两个结构里高侧不同」（红线 1：朝向语义只有一份权威）；
+ *   ⑦ 新方块漏进背包排除清单 → 玩家挖下来拿不到（用户明确要求加进背包）。
+ *
+ * ⚠️ 主流程是逐个显式调用 —— 漏了本行则门禁永不执行（本仓已因此出过两次事故）。
+ */
+async function checkMedievalShip() {
+  const fp = await import('./medieval-ship-fingerprint.mjs');
+  const shipData = await import('../src/gen/structures/medieval-ship-data.js');
+  const before = failures.length;
+  const fail = (m) => failures.push(`[中世纪船] ${m}`);
+
+  // ① 烘焙输入（入库）与产物存在性
+  if (!fs.existsSync(fp.LITEMATIC_PATH)) {
+    fail(`烘焙输入缺失 ${path.relative(ROOT, fp.LITEMATIC_PATH)}（.litematic 入库，缺失 = 仓库损坏）`);
+    return;
+  }
+  // 用户修复叠加层也是烘焙输入（与 .litematic 同地位）—— 缺了它烘出的就是未修复的船
+  if (!fs.existsSync(fp.USER_FIX_PATH)) {
+    fail(`用户修复叠加层缺失 ${path.relative(ROOT, fp.USER_FIX_PATH)}（入库，缺失 = 烘出未修复的船）`);
+    return;
+  }
+  {
+    const ov = fp.readUserFixOverlay();
+    const M = fp.SHIP_METRICS;
+    if (ov.set.length !== M.userFixSetCells) {
+      fail(`叠加层 set ${ov.set.length} 条 ≠ SHIP_METRICS.userFixSetCells ${M.userFixSetCells}`);
+    }
+    if (ov.remove.length !== M.userFixRemoveCells) {
+      fail(`叠加层 remove ${ov.remove.length} 条 ≠ SHIP_METRICS.userFixRemoveCells ${M.userFixRemoveCells}`);
+    }
+    // 叠加层不得含 air（删格走 remove）—— 含 air 会让「写入一格空气」静默变成 no-op
+    const airOps = ov.set.filter((op) => op[3] === 'air');
+    if (airOps.length) {
+      fail(`叠加层 set 里含 ${airOps.length} 条 air（删格必须走 remove，否则静默失效）`);
+    }
+    // 叠加层的目标方块必须全部已注册（否则 makeColumnSetter 静默 return → 船身出现洞）
+    const unreg = [...new Set(ov.set.map((op) => op[3]))].filter((n) => REGISTRY.idOf(n) === undefined);
+    if (unreg.length) {
+      fail(`叠加层含未注册方块 ${unreg.join(', ')}（makeColumnSetter 静默跳过 → 船身出现洞）`);
+    }
+  }
+  if (!fs.existsSync(fp.SHIP_META)) {
+    fail('缺 assets/structures/medieval_ship.meta.json（跑 npm run ship）');
+    return;
+  }
+  let meta;
+  try { meta = JSON.parse(fs.readFileSync(fp.SHIP_META, 'utf8')); }
+  catch { fail('meta 不是合法 JSON（重跑 npm run ship）'); return; }
+
+  // ② 指纹：改了参数或素材却没重烘
+  const cur = fp.medievalShipInputFingerprint();
+  if (meta.fingerprints?.input !== cur.input) {
+    fail(`产物已过期：指纹不匹配（烘焙时 "${meta.fingerprints?.input}" vs 当前 "${cur.input}"）→ 跑 npm run ship`);
+  }
+
+  // ⑥ 朝向表必须与巨型金字塔**同一份**（红线 1：台阶朝向语义只有一个权威）
+  const pyr = await import('./giant-pyramid-fingerprint.mjs');
+  if (JSON.stringify(fp.FACING_TO_ORIENT) !== JSON.stringify(pyr.FACING_TO_ORIENT)) {
+    fail(`FACING_TO_ORIENT 与巨型金字塔分家（船 ${JSON.stringify(fp.FACING_TO_ORIENT)} vs 金字塔 ${JSON.stringify(pyr.FACING_TO_ORIENT)}）`
+      + ' —— 两张表漂移会让同一朝向的台阶在两个结构里高侧不同');
+  }
+
+  // ③④ 逐个变体：stride / palette 注册 / bbox / 格数 / 归一化 / 朝向多样性
+  const variants = shipData.MEDIEVAL_SHIP_VARIANTS;
+  const loaded = new Map();
+  for (const base of variants) {
+    const file = path.join(ROOT, 'assets', 'structures', `${base}.json`);
+    if (!fs.existsSync(file)) { fail(`缺产物 ${base}.json（跑 npm run ship）`); continue; }
+    let json;
+    try { json = JSON.parse(fs.readFileSync(file, 'utf8')); }
+    catch { fail(`${base}: 不是合法 JSON（重跑 npm run ship）`); continue; }
+    loaded.set(base, json);
+
+    const STRIDE = Number.isInteger(json.stride) ? json.stride : 4;
+    if (STRIDE !== 5) {
+      fail(`${base}: stride=${STRIDE} ≠ 5 —— 台阶/栏杆朝向（direction）没写进产物 → 全部按 orient=0 渲染`);
+    }
+    if (!Array.isArray(json.palette) || json.palette.length === 0) { fail(`${base}: palette 缺失或为空`); continue; }
+    if (!Array.isArray(json.blocks) || json.blocks.length % STRIDE !== 0) {
+      fail(`${base}: blocks 长度 ${json.blocks?.length} 不是 stride ${STRIDE} 的整数倍`); continue;
+    }
+
+    // palette 全部注册（否则光栅化时静默变空气）
+    for (const name of json.palette) {
+      if (REGISTRY.idOf(name) === undefined) {
+        fail(`${base}: palette 含未注册方块 "${name}"（makeColumnSetter 静默跳过 → 船身出现洞）`);
+      }
+    }
+
+    const n = json.blocks.length / STRIDE;
+    const m = shipData.MEDIEVAL_SHIP_METRICS[base];
+    if (!m) { fail(`${base}: MEDIEVAL_SHIP_METRICS 里没有它（产物与数据模块分家）`); continue; }
+    if (n !== m.blocks) fail(`${base}: 格数 ${n} ≠ MEDIEVAL_SHIP_METRICS ${m.blocks}`);
+
+    let mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity, mnz = Infinity, mxz = -Infinity;
+    const updownOrients = new Set();
+    const railCounts = new Map();
+    for (let i = 0; i < json.blocks.length; i += STRIDE) {
+      const x = json.blocks[i], y = json.blocks[i + 1], z = json.blocks[i + 2];
+      if (x < mnx) mnx = x; if (x > mxx) mxx = x;
+      if (y < mny) mny = y; if (y > mxy) mxy = y;
+      if (z < mnz) mnz = z; if (z > mxz) mxz = z;
+      const name = json.palette[json.blocks[i + 3]];
+      if (name === 'planks_step_updown') updownOrients.add(json.blocks[i + 4]);
+      if (name === 'handrail' || name === 'handrailA' || name === 'vertical_pillar') {
+        railCounts.set(name, (railCounts.get(name) || 0) + 1);
+      }
+    }
+    const W = mxx - mnx + 1, H = mxy - mny + 1, D = mxz - mnz + 1;
+    if (W !== m.width || H !== m.height || D !== m.depth) {
+      fail(`${base}: 产物 bbox ${W}×${H}×${D} ≠ MEDIEVAL_SHIP_METRICS ${m.width}×${m.height}×${m.depth}`);
+    }
+    if (mny !== 1) fail(`${base}: 最低点 y=${mny} ≠ 1（归一化约定：rasterizeStructure 按 y + b.y - 1 落位）`);
+    // 倒置台阶四向俱全（只钉格数抓不到「朝向全丢」）
+    if (updownOrients.size !== 4) {
+      fail(`${base}: 倒置台阶只出现 ${updownOrients.size} 种朝向（${[...updownOrients].sort().join(',')}）—— 四向都要有`);
+    }
+
+    // ⚠️⚠️ **栏杆类目标计数 = 「用户修复叠加层有没有被施加」的唯一判据**。
+    //
+    // 用户修复（把大量「孤立竖柱 / 转角件」换成有朝向的直段栏杆）的净效果是：
+    // **格数 1263 不变 / bbox 37×37×11 不变 / 源栅栏 163 与源梯子 31 不变 /
+    // palette 13 种不变 / 台阶 148 与半砖 146 不变** —— 上面每一条既有断言都逐位相同。
+    // 所以「叠加层被漏掉」时它们**全绿**（典型的无效盲区）。唯一变化的是栏杆三兄弟的
+    // 目标分布：handrail 21→6 / handrailA 15→120 / vertical_pillar 158→68。
+    //
+    // ⚠️ 这三个数是**旋转不变量**（旋转只改 meta、不改方块名），故可逐变体断言。
+    const RAIL = fp.SHIP_METRICS.railCells;
+    for (const [name, want] of Object.entries(RAIL)) {
+      const got = railCounts.get(name) || 0;
+      if (got !== want) {
+        fail(`${base}: 栏杆类 "${name}" ${got} 格 ≠ SHIP_METRICS.railCells ${want}`
+          + '（用户修复叠加层没施加？跑 npm run ship）');
+      }
+    }
+  }
+
+  // ④ 旋转变体自洽：o1/o2/o3 必须是 o0 旋转后的**同一艘船**（逐格重合）。
+  //    这条是「船身转了但台阶朝向没跟着转」的唯一防线 —— 格数与 bbox 判据都拓不到它。
+  if (loaded.size === variants.length) {
+    const cellSet = (json) => {
+      const s = new Set();
+      for (let i = 0; i < json.blocks.length; i += json.stride) {
+        s.add(`${json.blocks[i]},${json.blocks[i + 1]},${json.blocks[i + 2]}`);
+      }
+      return s;
+    };
+    const base0 = cellSet(loaded.get(variants[0]));
+    // 与烘焙脚本同一份旋转公式（mesher 的 rotateOffset 是「朝向 → 几何」的唯一权威）
+    const { rotateOffset } = await import('../src/mesh/mesher.js');
+    for (let o = 1; o < 4; o++) {
+      const target = cellSet(loaded.get(variants[o]));
+      let best = 0;
+      // 旋转后重新居中会产生 ±1 的平移差，故允许 3×3 平移搜索取最大重合
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dz = -1; dz <= 1; dz++) {
+          let hit = 0;
+          for (const key of base0) {
+            const [x, y, z] = key.split(',').map(Number);
+            const [rx, , rz] = rotateOffset(x, 0, z, o);
+            if (target.has(`${rx + dx},${y},${rz + dz}`)) hit++;
+          }
+          if (hit > best) best = hit;
+        }
+      }
+      if (best !== base0.size) {
+        fail(`${variants[o]} 与 ${variants[0]} 旋转后只重合 ${best}/${base0.size} 格 —— 旋转变体不自洽（朝向或坐标转错了）`);
+      }
+    }
+  }
+
+  // ⑤⑦ 两个新方块的声明契约
+  const NEW_BLOCKS = [
+    ['planks_step_updown', 'planks_step_updown', 4],
+    ['half_block_updown', 'half_block_updown', 0],
+  ];
+  for (const [name, geom, orientModes] of NEW_BLOCKS) {
+    const def = BLOCKS.find((b) => b.name === name);
+    if (!def) { fail(`${name} 未在 blocks-data.js 注册（光栅化会静默变空气）`); continue; }
+    if (def.geometry !== geom) fail(`${name}: geometry 应为 "${geom}"，实际 "${def.geometry}"`);
+    // ⚠️ 非 box 几何必须显式 opaque:false（AGENTS.md 既有约束）：否则将来 cullMode 被改成
+    // opaque 会静默误推 opaqueTable=1 → mesher 剔邻居面 → 船身出现洞。
+    if (def.opaque !== false) fail(`${name}: 必须显式声明 "opaque":false（非 box 几何的既有约束）`);
+    if (def.cullMode !== 'cutout') fail(`${name}: cullMode 应为 cutout，实际 "${def.cullMode}"`);
+    if (def.orientationModes !== orientModes) {
+      fail(`${name}: orientationModes 应为 ${orientModes}，实际 ${def.orientationModes}`);
+    }
+    if (!FACES_DATA[name]) fail(`${name}: FACES_DATA 缺贴图映射（会兜底成 stone）`);
+    // ⑦ 必须进背包（用户明确要求）：不在任何一个排除清单里
+    if (NON_PLACEABLE_ITEMS.includes(name)) fail(`${name} 被塞进 NON_PLACEABLE_ITEMS（用户要求进背包）`);
+    if (HIDDEN_FROM_INVENTORY.includes(name)) fail(`${name} 被塞进 HIDDEN_FROM_INVENTORY（用户要求进背包）`);
+  }
+  // 倒置半砖的几何必须是「贴顶」（与 half_block 的贴底互补）—— 形状权威在 mesher.js
+  const { TEMPLATES } = await import('../src/mesh/mesher.js');
+  const yRange = (quads) => {
+    let lo = Infinity, hi = -Infinity;
+    for (const q of quads) for (const v of q.v) { if (v[1] < lo) lo = v[1]; if (v[1] > hi) hi = v[1]; }
+    return [lo, hi];
+  };
+  const [upLo, upHi] = yRange(TEMPLATES.half_block_updown);
+  const [dnLo, dnHi] = yRange(TEMPLATES.half_block);
+  if (Math.abs(upLo - 0.5) > 1e-9 || Math.abs(upHi - 1) > 1e-9) {
+    fail(`half_block_updown 的 y 范围是 [${upLo},${upHi}]，应为 [0.5,1]（贴顶半砖）`);
+  }
+  if (Math.abs(dnLo - 0) > 1e-9 || Math.abs(dnHi - 0.5) > 1e-9) {
+    fail(`half_block 的 y 范围变成 [${dnLo},${dnHi}]，应为 [0,0.5]（贴底半砖，既有几何被改坏了）`);
+  }
+  // 倒置台阶必须是 planks_step 的**精确上下颠倒**（高侧方向逐 orient 相同）
+  const [sLo, sHi] = yRange(TEMPLATES.planks_step);
+  const [uLo, uHi] = yRange(TEMPLATES.planks_step_updown);
+  if (Math.abs(sLo - uLo) > 1e-9 || Math.abs(sHi - uHi) > 1e-9) {
+    fail(`planks_step 与 planks_step_updown 的 y 范围不同（[${sLo},${sHi}] vs [${uLo},${uHi}]）—— 两者应同高，只是半幅层上下对调`);
+  }
+
+  // ⚠️ 成功行的条件必须涵盖**本函数全部判据**（同 [巨型金字塔] 的教训）
+  if (failures.length === before) {
+    const sizes = variants.map((v) => {
+      const m = shipData.MEDIEVAL_SHIP_METRICS[v];
+      return `${m.width}×${m.height}×${m.depth}`;
+    });
+    const RAIL = fp.SHIP_METRICS.railCells;
+    infos.push(`[中世纪船] ${variants.length} 个旋转变体（${sizes.join(' / ')}）各 ${meta.blocks} 格 / `
+      + `stride 5 + 倒置台阶四向俱全 / 变体间逐格自洽 / palette ${meta.paletteSize} 种全注册 / `
+      + `台阶 ${meta.stepCells}（正置 ${meta.counts?.planks_step} + 倒置 ${meta.counts?.planks_step_updown}）`
+      + ` 半砖 ${meta.slabCells} / `
+      + `用户修复叠加层已施加（set ${meta.userFix?.set} 含新增 ${meta.userFix?.added} / remove ${meta.userFix?.removed}）`
+      + ` → 栏杆 handrail ${RAIL.handrail} + handrailA ${RAIL.handrailA} + 竖柱 ${RAIL.vertical_pillar} / `
+      + `FACING_TO_ORIENT 与金字塔同源 / 2 个新方块已注册且进背包 / 指纹匹配`);
+  }
+}
+
 // ---------------------------------------------------------------- [草贴图] 契约（v2.11）
 
 /**
@@ -2208,6 +2454,7 @@ await checkCloudlandTarnZone(); // 高台地带：35 产物/映射表/通道/台
 await checkGiantPyramid();   // 巨型金字塔：烘焙产物/映射表/通道契约（⚠️ 漏了本行则门禁永不执行）
 await checkArena();          // 竞技场：烘焙产物/栏杆朝向/floorRow/占地尺寸契约（⚠️ 漏了本行则门禁永不执行）
 await checkShallowTarns();   // 浅水高台：5 产物/palette 白名单/源方块映射/草基准色/尺寸契约
+await checkMedievalShip();   // 中世纪船：4 旋转变体/朝向自洽/新方块声明/朝向表同源（⚠️ 漏了本行则门禁永不执行）
 checkGrassTextures();        // 草贴图：两个 16×16 产物 + 均值偏差 + 源图未改
 checkLeafCullingContract();  // v1.70：镂空遮挡体派生表与树叶族声明的一致性（⚠️ 漏了本行则门禁永不执行）
 

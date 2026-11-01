@@ -247,8 +247,9 @@ function prismQuads(cx, cz, r, y0, y1, segs = 8) {
 // 修法 = 把「这个采样点被遮挡吗」从「整格是否 opaque」换成「采样点所在的 1/2 子格是否被
 // 该方块占据」。掩码 8 位，bit i 表示子格 (i&1, (i>>1)&1, (i>>2)&1) 被占据。
 //
-// **纳入范围只有台阶族**（下方 STEP_BOXES 的三项几何）。半砖（half_block）与装饰几何
-// （仙人掌/栏杆/花等）**不纳入**，逐位保持原样 —— 它们的「暗部」没有明确物理意义。
+// **纳入范围只有台阶族**（下方 STEP_BOXES 的四项几何）。半砖（half_block /
+// half_block_updown）与装饰几何（仙人掌/栏杆/花等）**不纳入**，逐位保持原样 ——
+// 它们的「暗部」没有明确物理意义。
 // ---------------------------------------------------------------------------
 const STEP_BOXES = {
   // 下半全幅 + 上半 -X 半幅（mc-lite geoPlanksStep）
@@ -256,6 +257,15 @@ const STEP_BOXES = {
   cobblestone_step: [[0, 0, 0, 1, 0.5, 1], [0, 0.5, 0, 0.5, 1, 1]],
   // 上半全幅 + 下半 +X 半幅（mc-lite geoCobblestoneStepUpdown）
   cobblestone_step_updown: [[0, 0.5, 0, 1, 1, 1], [0.5, 0, 0, 1, 0.5, 1]],
+  // 上半全幅 + 下半 -X 半幅 —— `planks_step` 的**精确上下颠倒**（中世纪船 Epic）。
+  //
+  // ⚠️ **与 `cobblestone_step_updown` 刻意不同**：那个是「上下颠倒 + 水平镜像」（下半在 +X），
+  // 本几何只做上下颠倒（下半仍在 -X）。这样 `planks_step` 与 `planks_step_updown` 在
+  // **同一个 orient 下高侧方向相同**，只是竖直翻转 —— 映射 Minecraft stairs 的
+  // `half=bottom/top` 时 facing→orient 表可以完全共用一份（红线 1 精神）。
+  // 若复用 `cobblestone_step_updown`，top/bottom 两种台阶的 orient 表会差一个水平镜像，
+  // 是「方向搞错」的高发源（用户明确要求「台阶方块有方向，别错了」）。
+  planks_step_updown: [[0, 0.5, 0, 1, 1, 1], [0, 0, 0, 0.5, 0.5, 1]],
 };
 
 /** 盒列表 → 2×2×2 八分区占用掩码（取每格中心点是否落在任一盒内） */
@@ -385,8 +395,14 @@ export const TEMPLATES = {
   planks_step: STEP_QUADS,
   cobblestone_step: stepQuadsOf('cobblestone_step'),
   cobblestone_step_updown: stepQuadsOf('cobblestone_step_updown'),
+  planks_step_updown: stepQuadsOf('planks_step_updown'),
   // 半高块（床）：1×0.5×1 底贴块底（geoHalfBlock）
   half_block: boxQuads(0, 0, 0, 1, 0.5, 1),
+  // 倒置半高块（中世纪船 Epic）：1×0.5×1 **顶贴块顶**。
+  // 承载 Minecraft `slab[type=top]` 与 `trapdoor[half=top]`（船体曲线 / 舱口盖）。
+  // ⚠️ **刻意不进 `STEP_BOXES`**：半砖的「暗部」没有明确物理意义（与 `half_block` 同口径，
+  // 见上方 SUBVOXEL_AO_GEOMS 注释），纳入只会产生无意义暗块。
+  half_block_updown: boxQuads(0, 0.5, 0, 1, 1, 1),
   // 吊灯：细绳八段棱柱 + 灯体 0.3³（几何逐格复刻 geoHangingLamp，坐标未变）
   // 绳逐格复刻 CylinderGeometry(0.015, 0.015, 0.4, 8) + translate(0,0.3,0)：局部
   // y[0.1,0.5] → 格内 y[0.6,1.0]，块中心 (0.5,0.5) 为轴。

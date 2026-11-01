@@ -127,6 +127,33 @@ v1.81 新增飞行那行后由三行变四行），
 ⚠️ **`TARN_PLAZA_RADIUS`(28) 刻意不改小**：它的标定理由是「紫晶柱真实足迹最远 25.4」，而其他地带
 仍有柱子 ⇒ 全局常量必须按最坏情况留。细节见下方「高台地带沉淀的活跃约束」段与 roadmap 的 v2.31 行。
 
+**v2.32** 把 **Ships & Boats Pack 里最大的船（Medieval Ship，1264 格）搬进了浅水高台水域**
+（用户 2026-11-01：「把最大的船的模型搬运到我的游戏里，生成到浅水高台地图的水域里……船不要跟
+其他实体重叠，比如船不接触高台等等」+「用我游戏里已有的方块组合而成，暂时先不要新创建方块」+
+「我的台阶方块和栏杆方块都是有方向的，请你搞清楚方向，别错了」）：每湖 **1 艘**、朝向随机 4 向、
+**船坐湖底**（湖只有 0.5 格深而船体高 37 格 ⇒ 大部分露出水面，用户裁定不挖坑）。
+**新增 2 个方块**（用户批准的唯一例外）：`planks_step_updown`（倒置木台阶）与 `half_block_updown`
+（倒置半砖）—— **零新贴图、零新几何定义**（复用 `planks_birch` 贴图 + 既有盒式几何）。
+⚠️ **倒置台阶刻意不复用既有 `cobblestone_step_updown`**：那个是「上下颠倒 **+ 水平镜像**」，
+实测高侧与正置台阶逐 orient 差 180°；新几何只做上下颠倒 ⇒ 高侧与 `planks_step` 完全相同 ⇒
+两种台阶**共用一张** `FACING_TO_ORIENT`（与巨型金字塔同源，红线 1）。**旋转在烘焙期做**
+（mesher `rotateOffset` 是唯一权威，运行期零旋转逻辑）⇒ 4 个变体 `medieval_ship_o{0..3}`。
+落点三条判据：船 AABB 全水下 + 不压五座高台 + 不压跨湖拱桥（各含 2 格余量）。
+顶点预算影响可忽略（实测最坏 opaque 0.435% / cutout 0.756% / transparent 0）。
+细节见下方「中世纪船」活跃约束段与 roadmap 的 v2.32 行。
+
+**v2.33** 把**用户对船体的手工修复固化进产物**（用户 2026-11-01：「我对船体做了修复，请你完全按照
+我修复的样子，把船体的结构固化下来」+ 进度包 `mc-heavy-progress-14330926-…json`）：用户在真实游戏里
+逐格改好一艘船（seed 14330926，船心 (603,214)，o0 变体），修复内容 = 把大量「孤立竖柱 / 转角件」
+换成**有朝向的直段栏杆**（handrail 21→6 / handrailA 15→120 / vertical_pillar 158→68）。
+固化方式 = **叠加层** `assets/medieval-ship/src/user-fix-o0.json`（`set` 106 含 6 新增 + `remove` 6），
+烘焙时施加在 `baseCells` 上、**旋转之前** ⇒ 4 个变体同时带上修复。
+⚠️ **不改 `BLOCK_MAP`**：修复是逐格 bespoke 的美术判断（`handrailA` 的 orient 逐格不同，
+0/1/2/3 = 31/15/33/26），无法从素材的 fence Properties 推导 ⇒ 用户的存档就是权威。
+⚠️⚠️ **叠加层被漏掉时指纹与格数都拓不到**（净效果格数/bbox/palette/源计数全不变，且叠加层文件
+不动时指纹逐位相同）⇒ 唯一判据是**栏杆目标计数**（旋转不变量）。细节见下方「中世纪船」活跃约束段
+与 roadmap 的 v2.33 行。
+
 **历次 bugfix / 改造的完整记录不在本文件。** 权威副本：**第一阶段独立改动**在设计文档修订说明 +
 `docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md`（版本区间见 roadmap 的改动表）；
 M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 的「遗留 TODO」段
@@ -384,10 +411,14 @@ seed 88 突破「单步落差 ≤1」（到 2 格），24 是守住无台阶的�
 - **cutout 扩容是离散 ×1.5 跳增，容量须留足余量**：往 cutout 通道加方块量（新植被/新结构）
   时须重测峰值并重标定 `CAPACITY.cutout.active`（当前 550）—— 差一点就会触发扩容撞破内存
   预算。实测数据见 roadmap 同段。
-- **背包物品集合口径 116 项** = registry 134 − `NON_PLACEABLE_ITEMS`（4 项功能性方块）−
-  `HIDDEN_FROM_INVENTORY`（14 项可放置但不进背包：chimney + 床三项 + **M9 创造台两项** + **巨树景观 8 项 `giant_*`**）。
-  ⚠️ 门禁 `[物品集合]` 打印的「排除 N」是**两个集合之和**（当前 `排除 18`），与
-  「`HIDDEN_FROM_INVENTORY` 14 项」不是一个口径，勿混写。**两个集合语义互斥，勿混为一处**
+- **背包物品集合口径 130 项** = registry 140 − `NON_PLACEABLE_ITEMS`（4 项功能性方块）−
+  `HIDDEN_FROM_INVENTORY`（6 项可放置但不进背包：chimney + 床三项 + **M9 创造台两项**）。
+  ⚠️ **巨树景观 8 项 `giant_*` 已从排除集合移出、现在在背包里**（用户 2026-10-25 裁定，
+  `check:data` 的 `[巨树]` 环节钉住「不得在 HIDDEN_FROM_INVENTORY 里」）—— 旧文档写的
+  「HIDDEN 14 项含巨树 8 项」已作废。中世纪船的两个新方块（`planks_step_updown` /
+  `half_block_updown`）**同样在背包里**（用户明确要求）⇒ 128 → 130。
+  ⚠️ 门禁 `[物品集合]` 打印的「排除 N」是**两个集合之和**（当前 `排除 10`），与
+  「`HIDDEN_FROM_INVENTORY` 6 项」不是一个口径，勿混写。**两个集合语义互斥，勿混为一处**
   —— 把可放置方块塞进 `NON_PLACEABLE_ITEMS` 会让集合语义失真。
   ⚠️ 本条是「现状快照」（可带数字）；**其余文档与代码注释一律不硬编码计数**，以
   `npm run check:data` 的 `[物品集合]` 输出为准（M9 已把代码注释里 8 处硬编码计数改掉）。
@@ -1894,6 +1925,136 @@ seed 88 突破「单步落差 ≤1」（到 2 格），24 是守住无台阶的�
   那里 `surfY+1` 是桥材质（实测 31 格 `sky_stone` 被误判成植物）。判据已加
   `bridgeSkipped > 0` 防止该排除静默退化成空操作。
 
+#### 中世纪船（Medieval Ship Epic，后续「把外部 .litematic 模型搬进水域/地图」类改动必读）
+
+用户 2026-11-01：「把最大的船的模型搬运到我的游戏里，生成到浅水高台地图的水域里……船不要跟
+其他实体重叠，比如船不接触高台等等」+「用我游戏里已有的方块组合而成，暂时先不要新创建方块。
+只有倒置的台阶方块似乎需要烘焙一个」+「我还已经提供了栏杆方块，可以帮助你组成船帆之间的连接件。
+我的台阶方块和栏杆方块都是有方向的，请你搞清楚方向，别错了」。素材 = `Ships & Boats Pack` 里
+**块数最多**的 Medieval Ship（1264 格；包里另有 Greek Boat 占地更大但块更少 —— 「最大」有歧义，已问用户）。
+实现在 `src/gen/structures/medieval-ship.js`（落点）+ `medieval-ship-data.js`（纯数据）+
+`tools/bake-medieval-ship.mjs`（烘焙），接线在 `apply.js` 阶段 2.45 的**第 ⑥ 步**。
+
+- **⚠️ 「烘焙」在这里只是数据格式转换，不产生任何新美术资源**（本仓既有教训）：
+  `.litematic` → 紧凑 JSON（palette 索引 + stride 5 带朝向），映射目标**全是 registry 现有方块**。
+  唯二新增的 `planks_step_updown` / `half_block_updown` 是用户批准的「倒置台阶 / 倒置半砖」，
+  且**零新贴图**（复用 `planks_birch`）、**零新几何定义**（复用既有盒式 `boxQuads` / `STEP_BOXES`）。
+  提烘焙方案时第一句就要说清这点，否则用户会以为违背了他「用现成方块」的要求。
+- **⚠️️ 倒置台阶刻意**不复用**既有的 `cobblestone_step_updown`**（这是「方向别错了」的核心）：
+  那个既有几何是「上下颠倒 **+ 水平镜像**」（下半在 **+X**），实测高侧是 `east,north,west,south`，
+  与正置台阶的 `west,south,east,north` **逐 orient 差 180°**。若复用它，Minecraft stairs 的
+  `half=bottom` 与 `half=top` 就需要**两张** facing→orient 表。新增的 `planks_step_updown`
+  只做上下颠倒（下半仍在 **-X**）⇒ 高侧逐 orient 与 `planks_step` **完全相同** ⇒
+  两种台阶**共用一张** `FACING_TO_ORIENT`（红线 1）。`check:data` 的 `[中世纪船]` 钉住
+  「该表与巨型金字塔**同一份**」，`--census-orient` 现场重测两种几何的高侧。
+- **⚠️ 朝向表必须用真实 mesher 实测，不能按 Minecraft 定义推断**（与巨型金字塔同一条教训）：
+  手法 = 给方块设 orient 0~3，读 `buildSectionMesh` 发射顶点里「y > 0.5 那半部」的 bbox，
+  **哪一轴跨度只有半格，高侧就在该轴的那个半边**。⚠️ 判据必须用 **bbox 跨度**，不能用中心点
+  （中心点在「高侧 x 半格 + z 满幅」时会被 z 的中位 0.5 抢走）。实测：orient 0/1/2/3 →
+  高侧 west/south/east/north，正置与倒置逐 orient 一致。
+- **⚠️ 旋转在烘焙期做，运行期零旋转逻辑**：4 个变体 `medieval_ship_o{0..3}` 各自一个 JSON。
+  理由 = 旋转公式只有 mesher 的 `rotateOffset` 一份（红线 1），烘焙脚本 import 它；若运行期
+  再写一份坐标旋转，两份漂移会让「船身转了但台阶朝向没转」（静默，方块层面看不出）。
+  数学前提 = `rotateOffset` 是**加法群**（实测 `rotate(rotate(v,a),b) ≡ rotate(v,(a+b)%4)`）
+  ⇒ 整船旋转 o 后每格 `orient_new = (orient_old + o) % 4`。单测钉住这条群性质。
+  ⚠️ `check:data` 用「o1/o2/o3 == o0 旋转后**逐格重合**」钉变体自洽（允许 ±1 平移搜索，
+  因为旋转后重新居中会有半格偏移）—— 格数/bbox 判据**完全拓不到**「朝向没跟着转」。
+- **⚠️ 船坐湖底，不挖坑**（用户裁定）：湖只有 0.5 格深（湖底 `LAKE_FLOOR_Y = SEA_Y-1`、
+  水面 `SEA_Y+0.5`），而船体高 37 格 ⇒ 船**坐在湖底、绝大部分露出水面**（观感是搁浅在浅滩的船）。
+  y 口径 = `anchor.lakeFloorY + 1`（= `SEA_Y`）⇒ 船底紧贴湖底方块顶面、把那一格水挤开。
+  ⚠️ **与五座高台刻意差一格**：高台传 `lakeFloorY`（底座要**占掉**湖底方块那一层），
+  船传 `lakeFloorY + 1`（坐在湖底**之上**）。照抄高台会让船底埋进沙里一格（方块层面看不出）。
+- **⚠️ 落点三条判据，缺一即「船搁在陆地上 / 穿进高台 / 桅杆缠上桥」**：
+  ① 船 AABB 内**每一列**都在水下（`shallowTarnSurfaceYAt <= SEA_Y-1`，与 `fillColumn` 的水体判据同源）；
+  ② 不与五座高台 AABB 相交（含 `SHIP_CLEARANCE = 2` 余量）；③ 不与跨湖拱桥相交（同余量）。
+  搜索 = 以湖心为原点、步长 3 格枚举，按「离湖心距离升序」取第一个合法位置（确定性）。
+  - **性能**：桥的占用格是**正轴矩形** ⇒ 化简为一次 AABB 相交（逐格 Set 查询 ~600 次/候选是主要开销）；
+    水下判据有**快路径**：船 AABB 最远角到湖心 ≤ `LAKE_RADIUS_MIN`（构造性下界）⇒ 整个 AABB 必在湖盆内
+    ⇒ 免逐格调 `shallowTarnSurfaceYAt`（沙滩/缓坡带每列要探 289 次采样）。实测落点冷算 4.3ms、
+    热算 0.004ms（**38~119ms 那个读数是锚点冷算，不是落点** —— 锚点在生产里已被 Worker 预热）。
+    ⚠️ 快路径必须与慢路径**逐位等价**（单测钉住：快路径为真的落点，慢路径也必须全水下）。
+  - **朝向抽签**：`seededRandom(0,0,seed + 1039)`，salt **1039** 经程序化扫描确认空闲
+    （1038 = 跨湖拱桥）。⚠️ 用错 salt 是**静默的确定性污染**，单测钉住「40 个 seed 覆盖全部 4 个朝向」。
+- **⚠️ 船会挤开湖盆里的水，故所有「湖盆只有一格水」类判据必须排除船 AABB**（与高台底座同一类交互）：
+  已改两处 —— `tests/shallow-water-tarns.spec.mjs` 的「湖盆只有一格水」（船底 y=SEA_Y 正是被测那一格）
+  与 `src/tests/test-shallow-tarn-gen.js` 的「沙滩不长植物」（船底落在湖盆、`surfY+1` 是船体方块，
+  实测不排除 → 57 格船体被误判成「沙滩上长了东西」）。**「船把水挤开」是正确行为，不是回归**。
+  ⚠️ 两处都加了「排除量 > 0」的反向判据，防排除静默退化成空操作。
+- **⚠️ Tier 4 数船体方块的扫描下界必须是 `SEA_Y`，不能更低**：湖底方块在 `SEA_Y-1` 且材质是 `sand`，
+  而 `sand` **也在船的 palette 里**（素材的 double 半砖映射到它，实测 1 格、在世界 y=8 的上层建筑）。
+  扫到 y=-3 会把船 AABB 内全部 407 列湖底沙当成船体（实测读数 1680 = 1263 + 407 + 10）。
+  ⚠️ 判据因此写成**恰好等于产物格数**（不是区间）—— 湖盆内 y ≥ SEA_Y 除了船体只有水（不在材质集合里），
+  没有合法的多余来源；写区间（`>1000 && <1400`）会把这类真实缺陷放过去。
+- **⚠️ 素材里那个孤立 `glass` 格必须丢**（在 (0,0,16)，距船体 15 格）：保留会把包围盒从
+  37×37×**11** 拉宽到 37×37×**14**、让船心偏移（落点判据与 AABB 全跟着错）。
+  判据 = 「26 邻域内无任何其它非空气格」（**不按方块名排除** —— 名字清单是第二份权威，
+  且会误删素材里合法的孤立装饰件）。实测只有这 1 格，`SHIP_METRICS.droppedCells` 钉住。
+- **⚠️ 三处有意偏离素材**（勿「补齐」）：① 转角台阶（`shape=inner_*`，8 格）→ 直台阶近似
+  （本仓 `TEMPLATES` 只有 L 形直台阶，新造转角几何属「按 Minecraft 定义推断」；与巨型金字塔同一取舍）；
+  ② 台阶材质统一为木（素材的 `smooth_sandstone_stairs` 71 格是浅色石 → 也映射到 `planks_step*`，
+  因为用户只批准了**一个**倒置台阶方块，按材质分流要再加一个）；③ 半砖颜色统一为浅木/沙色
+  （`sand_slab` 下半 + `half_block_updown` 上半，实测色距仅 24 ⇒ **轮廓**忠实保留、**逐材质颜色**不保留）。
+- **⚠️ 栅栏臂方向取素材的 `Properties`（`p[k]==='true'`），不查邻居**：Minecraft 把 fence 连接存进
+  方块状态，那是权威；查邻居会因「邻居是原木/羊毛」而丢臂（实测素材里有 26 格 fence 声明连向非 fence 方块）。
+  臂集合 → (方块, 朝向) 的反查**复用 `arena.js` 的 `railPlacementFor`**（臂方向从 `TEMPLATES` 派生的唯一实现，
+  红线 1）：恰好两臂 → 直段 `handrailA` 或转角 `handrail`；其余（0/1/3 臂）→ 纯立柱 `vertical_pillar`。
+  ⚠️ **`handrailB` 不得进反查表**（臂只伸到 0.25 = 格中心，接不上邻居 → 船栏杆出现看不见的缺口）。
+  梯子（31 格）本仓无对应方块 → 也映射到 `vertical_pillar`（桅杆上的攀爬梯读作一根竖杆）。
+- **⚠️ 用户手工修复走「叠加层」固化，不改 `BLOCK_MAP`**（v2.33，用户 2026-11-01：「我对船体做了修复，
+  请你完全按照我修复的样子，把船体的结构固化下来」）：用户在真实游戏里逐格改好一艘船
+  （seed 14330926，船心 (603,214)，抽到 o0），导出进度包 → 解码成
+  `assets/medieval-ship/src/user-fix-o0.json`（**烘焙输入、入库**）：`set` 106 条（写入/替换，
+  含 6 格新增）+ `remove` 6 条（删除）。坐标空间 = **o0 产物的局部坐标**（y 已归一化）。
+  - **为什么是叠加层而不是改映射规则**：修复是**逐格 bespoke** 的 —— 105 处把「孤立竖柱 /
+    转角件」换成 `handrailA`（船帆之间的连接件），且 **orient 逐格不同**（实测 0/1/2/3 =
+    31/15/33/26），取决于那格在船上的具体位置与邻接 —— **无法从素材的 fence Properties 推导**
+    （那是美术判断，不是映射规则）。反推成规则 = 用第二份权威去猜用户的手（红线 1：用户存档就是权威）。
+  - **施加在 `baseCells` 上、旋转之前** ⇒ 4 个变体自动带上同一份修复（旋转是加法群，坐标与 orient
+    一起转）。⚠️ 若在各变体上分别施加，就要为每个朝向各存一份叠加层（4 份会漂移）。
+  - ⚠️⚠️ **o0 的重新居中偏移必须是 (0,0)，且烘焙脚本显式断言它**：叠加层坐标 = o0 产物坐标，
+    而 o0 产物坐标 = `baseCells − shift`。实测 shift = (0,0)（bbox 关于原点对称：x[-18,18]/z[-5,5]）
+    ⇒ 两者重合、可直接施加。**若将来素材换了、bbox 变成偶数跨度，shift 不再是 0**，叠加层会整体
+    错位一格（**静默**：产物照样烘得出、格数也对，只是栏杆长在错的位置）→ 故烘焙脚本算出 shift
+    并 `throw`，不默默假设它是 0。
+  - ⚠️ **`remove` 的目标格必须存在，否则 throw**：找不到就说明坐标空间算错了（或叠加层与素材不同步）。
+    静默跳过会让「删掉那格」这个用户意图丢失，而产物看起来完全正常。
+  - ⚠️ **no-op 编辑刻意不进叠加层**：进度包 118 条里 6 条是 no-op（5 条「删本来就是空气的格」+
+    1 条落在船 AABB 外的 `planks`）⇒ 有效 112 = 106 set + 6 remove。「删空气」写进产物会让叠加层
+    含无意义项，且掩盖「坐标空间算错」这类真实缺陷（坐标错时 remove 找不到目标 → 正好 throw）。
+- **⚠️️ 「叠加层有没有被施加」只能靠栏杆目标计数判，指纹与格数都拓不到**（v2.33 实测，
+  与「指纹盲区」同源但更隐蔽）：用户修复的净效果是 **格数 1263 不变 / bbox 37×37×11 不变 /
+  palette 13 种不变 / 台阶 148 与半砖 146 不变 / 源栅栏 163 与源梯子 31 不变** —— 既有指标
+  **逐位相同**。更糟的是**指纹也逐位相同**：叠加层文件没动、只是烘焙代码没消费它时，
+  `medievalShipInputFingerprint()` 算出的值一模一样（实测 `a1a13d12a0b0307d` 两侧相同）。
+  ⇒ 唯一有判别力的判据 = **栏杆三兄弟的目标分布**（旋转不变量，四个变体逐个可断言）：
+  | 目标方块 | 修复前 | 修复后 |
+  |---|---|---|
+  | `handrail`（转角件） | 21 | **6** |
+  | `handrailA`（直段件） | 15 | **120** |
+  | `vertical_pillar`（竖柱） | 158 | **68** |
+  三层防线都钉它：烘焙脚本 `throw` / `check:data` 的 `[中世纪船]` / `test-medieval-ship.js` 的产物契约。
+  ⚠️ **负向验证实测**：注入「烘焙不消费叠加层」后指纹不变、格数不变、bbox 不变，
+  只有栏杆计数报 12 项违规（4 变体 × 3 种）—— 证明这条判据不可删。
+  ⚠️ 反之「改叠加层文件内容」会让指纹变（叠加层内容已进指纹）⇒ 两个方向都有防线。
+- **⚠️ Tier 4 验「固化」必须用用户自己的 seed（14330926）+ 全新上下文（零 edits）**：
+  判据 = 不施加任何玩家编辑、纯 GEN 出来的船，逐格等于叠加层的 set/remove（含朝向）。
+  全新浏览器上下文 ⇒ IndexedDB 空 ⇒ 读到的每格只能来自产物，不可能是「存档编辑被重放」。
+  ⚠️ **必须用那个 seed**：换个 seed 会抽到别的朝向、落到别的位置，叠加层坐标就对不上
+  （产物本身四变体都带修复，所以其它 seed 也正确，只是无法用这份存档做逐格比对）。
+- **⚠️ `npm run ship` 不跑则产物静默过期**（渲染旧船形，方块层面看不出）→ `check:data` 的
+  `[中世纪船]` 用指纹抓（覆盖 `.litematic` + **`user-fix-o0.json` 内容** + `BLOCK_MAP` +
+  `SHIP_METRICS` + `FACING_TO_ORIENT` + 变体清单）。
+  已知盲区（同所有烘焙产物）：只改**烘焙算法**而不动参数时指纹不变 → 靠单测的产物契约与 Tier 4 兜住
+  （而「叠加层没被消费」正是这类盲区的实例，见上条）。
+- **⚠️ 两个新方块自动进背包**（背包集合是派生的：registry 全量 − `NON_PLACEABLE_ITEMS` −
+  `HIDDEN_FROM_INVENTORY`，两者都不含它们）⇒ **不需要改任何清单**，只需跑 `npm run icons` 烘焙图标。
+  `check:data` 的 `[中世纪船]` 钉住「不在任何一个排除清单里」（用户明确要求加进背包）。
+  ⚠️ 连带改动：registry 138 → **140**、物品集合 128 → **130**、orientation 门控 41 启用/97 不参与 →
+  **42/98**（`planks_step_updown` 是 4 向、`half_block_updown` 是 0 向）—— 这四处硬编码计数已同步。
+- **顶点预算影响可忽略**（实测最坏、完全无剔除）：opaque 18,600 顶点 = 初始容量 **0.435%**、
+  cutout 16,632 = **0.756%**、transparent **0**。故**不需要重标定 `CAPACITY`**，也不触发
+  `giant-tree-budget.spec` 的冻结常量（那 5 个视域都在 chunk 坐标 ±30 内，而船在世界 x≈742）。
+
 ### 城门竞技场沉淀的活跃约束（v2.7，后续「用 .schematic 落地地面建筑」类改动必读）
 
 设计/实测细节见 `docs/superpowers/specs/2026-10-29-arena-design.md` 与 roadmap 的 v2.7 行。
@@ -3231,6 +3392,12 @@ mc-heavy/
 │                              #   的 railPlacementFor 反查）→ arena_grass.json（stride:5 + floorRow）
 ├─ tools/arena-fingerprint.mjs # 竞技场 BLOCK_MAP / CONTAINER_BLOCKS / SUPERSEDED_BLOCKS /
 │                              #   RAIL_RING_INSET / ARENA_METRICS / 指纹共享模块（同上，红线 1）
+├─ tools/bake-medieval-ship.mjs # 中世纪船烘焙（npm run ship）：入库 Medieval Ship.litematic
+│                              #   → 映射现有方块（唯一例外：新增倒置台阶/倒置半砖）→ 丢孤立 glass 标记物
+│                              #   → **烘焙期旋转成 4 个变体**（mesher rotateOffset，运行期零旋转）
+│                              #   → medieval_ship_o{0..3}.json（stride:5 带朝向）
+├─ tools/medieval-ship-fingerprint.mjs # 中世纪船 BLOCK_MAP / SHIP_METRICS / FACING_TO_ORIENT /
+│                              #   指纹共享模块（同上，红线 1；FACING_TO_ORIENT 与金字塔同源）
 ├─ tools/azalea-trees-fingerprint.mjs # 杜鹃树 SOURCE_MAP / PALETTE / SIZE_EXPECTATIONS / 指纹共享模块（同上，红线 1）
 ├─ tools/bake-giant-trees.mjs  # 巨树烘焙（npm run gianttrees）：入库 .schem → 28 变体 2×2×2 降采样
 │                              #   → assets/giant-trees/trees.json + trees.meta.json（尺寸+输入指纹）
@@ -3285,6 +3452,11 @@ mc-heavy/
 │  ├─ giant-pyramid/           # 巨型金字塔（Giant Pyramid Epic）：src/small_pyramid_maze.litematic
 │  │                           #   （烘焙输入，入库，**非渲染资源**）→ 产物走
 │  │                           #   assets/structures/giant_pyramid.json（palette + 扁平数组）
+│  ├─ medieval-ship/           # 中世纪船（v2.32）：src/medieval_ship.litematic（烘焙输入，入库，
+│  │                           #   **非渲染资源**）→ 产物走 assets/structures/medieval_ship_o{0..3}.json
+│  │                           #   （4 个旋转变体，stride:5 带台阶/栏杆朝向）+ medieval_ship.meta.json
+│  │                           #   src/user-fix-o0.json = 用户手工修复的**叠加层**（v2.33，同为烘焙输入：
+│  │                           #   set 106 + remove 6，坐标空间 = o0 产物局部坐标，施加在旋转之前）
 │  └─ structures/              # 从 mc-lite 复制 JSON
 └─ src/
    ├─ core/        # game.js / scheduler.js / worker-pool.js / budget.js / perf.js / perf-hud.js
@@ -3305,6 +3477,10 @@ mc-heavy/
    │               #    + shallowTarnSuppressedLandmarks（逐地标压制，非逐 region）+ inShallowTarnFootprint
    │               #  shallow-water-terrain.js 三段式整形 + 五座高台光栅化 + 深浅草分流
    │               #  shallow-water-tarn-data.js 5 个变体名与度量（纯数据，零 node 依赖）
+   │               #  medieval-ship.js 中世纪船（v2.32）：computeMedievalShipPlacement 落点纯函数
+   │               #    （船 AABB 全水下 + 不压五座高台 + 不压跨湖拱桥，各含 2 格余量；朝向抽签 salt 1039）
+   │               #    + medievalShipTouchesColumn / rasterizeMedievalShip（y = lakeFloorY + 1，船坐湖底）
+   │               #  medieval-ship-data.js 4 个旋转变体名与度量 + medievalShipHalfWidth（纯数据，零 node 依赖）
    │               #  arena-variants.js 竞技场产物基名（纯数据，与 tools/arena-fingerprint.mjs 双向门禁）
    │               #  tarn-altar.js 祭坛（v2.30）：离 City 最近的地带圆心广场。纯函数 Worker 同构 ——
    │               #    altarSurfaceBlockAt（地表图案：黄金十字 ±28 + 紫水晶对角线 4~20 + 中心 3×3）
@@ -3441,6 +3617,14 @@ npm run shallowtarns           # 烘焙浅水高台 → assets/structures/shallo
 npm run grasstextures          # 烘焙深草/浅草贴图 → assets/textures/procedural/{dark,light}_grass.png
                                #   源图 736×736 → 46×46 盒式平均 → 16×16（改源图后需跑，再跑 atlas + icons）
                                #   ⚠️ 本仓无 jpeg 解码器：先 `sips -s format png` 转出同名 PNG 中间物
+npm run ship                   # 烘焙中世纪船 → assets/structures/medieval_ship_o{0..3}.json + .meta.json
+                               #   （Medieval Ship.litematic → 映射现有方块 → 丢孤立 glass 标记物 →
+                               #   **烘焙期旋转成 4 个变体**，stride:5 带台阶/栏杆朝向）。
+                               #   改 tools/medieval-ship-fingerprint.mjs（BLOCK_MAP / SHIP_METRICS /
+                               #   FACING_TO_ORIENT）或 .litematic 后需跑，否则产物静默过期
+                               #   （check:data 的 [中世纪船] 指纹检查会抓）
+                               #   另有 `-- --census`（源方块普查 + 映射）/ `-- --census-orient`
+                               #   （现场重测正置/倒置台阶的高侧，校验两者可共用一张朝向表）
 npm run arena                  # 烘焙城门竞技场 → assets/structures/arena_grass.json + arena.meta.json
                                #   （丢弃 barrier/bedrock、原图斜向 fence 由外圈栏杆环取代、
                                #   stride:5 带栏杆朝向 + floorRow）。改 tools/arena-fingerprint.mjs

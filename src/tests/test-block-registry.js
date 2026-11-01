@@ -14,15 +14,16 @@ test('BlockRegistry: air 恒为 ID 0', () => {
   assertEqual(reg.idOf('air'), 0);
 });
 
-test('BlockRegistry: 138 方块全部注册且 ID 唯一', () => {
+test('BlockRegistry: 140 方块全部注册且 ID 唯一', () => {
   const reg = createRegistry();
   for (const def of BLOCKS) reg.register(def.name, def);
   // 126 + 巨树景观 8 个 giant_* + 巨型金字塔 2 个 sand_step/sand_slab
-  // + 浅水高台 2 个 dark_grass/light_grass = 138
-  assertEqual(reg.count, 138);
+  // + 浅水高台 2 个 dark_grass/light_grass
+  // + 中世纪船 2 个 planks_step_updown/half_block_updown = 140
+  assertEqual(reg.count, 140);
   const ids = new Set();
   for (const def of BLOCKS) ids.add(reg.idOf(def.name));
-  assertEqual(ids.size, 138);
+  assertEqual(ids.size, 140);
 });
 
 test('BlockRegistry: sky_stone/sky_grass 注册且 solid+opaque（M2-7 空岛）', () => {

@@ -15,6 +15,8 @@ import { KIT_VARIANTS } from './cloudland-kit-data.js';
 import { ARENA_VARIANTS } from './arena-variants.js';
 // 浅水高台的 5 个产物基名（纯数据、零 node 依赖）
 import { SHALLOW_TARN_VARIANTS } from './shallow-water-tarn-data.js';
+// 中世纪船的 4 个旋转变体基名（纯数据、零 node 依赖）
+import { MEDIEVAL_SHIP_VARIANTS } from './medieval-ship-data.js';
 
 /** placement 类型 → JSON 文件名（mc-lite structureLoaders 映射） */
 const BASE_STRUCTURE_FILES = {
@@ -52,6 +54,11 @@ const BASE_STRUCTURE_FILES = {
 // ⚠️ 与竞技场同一理由：**手写 5 行清单会漏**，而漏一行会让那个变体**静默不出现**
 // （`rasterizeStructure` 拿到空 blocks 直接 return，方块层面完全看不出）。
 for (const base of SHALLOW_TARN_VARIANTS) {
+  BASE_STRUCTURE_FILES[base] = `${base}.json`;
+}
+// 中世纪船（Medieval Ship Epic）：4 个旋转变体，从 `MEDIEVAL_SHIP_VARIANTS` 派生。
+// ⚠️ 同上：手写 4 行会漏，漏一个变体会让那个朝向的船**静默不出现**。
+for (const base of MEDIEVAL_SHIP_VARIANTS) {
   BASE_STRUCTURE_FILES[base] = `${base}.json`;
 }
 // 城门竞技场（Arena）：从 `ARENA_VARIANTS` 派生（红线 1：加第二个竞技场变体时不用改两处，

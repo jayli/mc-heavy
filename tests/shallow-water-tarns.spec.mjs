@@ -34,9 +34,15 @@ async function shallowTarnLayout(page) {
     const a = m.computeShallowTarnAnchor(seed);
     if (!a) return null;
     const layout = m.computeShallowTarnLayout(seed);
+    // 中世纪船（Medieval Ship Epic）：船坐在湖盆里、把水挤开，
+    // 故「湖盆只有一格水」类用例需要它的 AABB 做排除（与高台同一条理由）。
+    const shipM = await import('/src/gen/structures/medieval-ship.js');
+    shipM.clearMedievalShipCache();
+    const ship = shipM.computeMedievalShipPlacement(seed);
     return {
       anchor: a,
       layout,
+      ship,
       lakeRadius: m.LAKE_RADIUS,
       lakeRadiusMin: m.LAKE_RADIUS_MIN,
       lakeRadiusMax: m.LAKE_RADIUS_MAX,
@@ -104,10 +110,21 @@ test('浅水高台：真实页面里湖盆只有一格水（R3「只有一格浅
     minZ: Math.round(anchor.wz + p.cz) - p.loZ, maxZ: Math.round(anchor.wz + p.cz) + p.hiZ,
   }));
 
+  // ⚠️ **中世纪船（Medieval Ship Epic）同样要排除**：船坐在湖盆里（船底 y = SEA_Y），
+  // 把那一格水挤开 —— 不排除会让「y=SEA_Y 必须全是水」与「y=SEA_Y+1 必须全是空气」
+  // 两条断言在船 AABB 内假失败（与高台底座完全同一类交互）。
+  // 「船把水挤开」是正确行为（船在湖里就该占掉它自己的体积），不是「湖盆有两格水」的回归。
+  const shipBox = st.ship
+    ? {
+      minX: st.ship.wx - st.ship.loX, maxX: st.ship.wx + st.ship.hiX,
+      minZ: st.ship.wz - st.ship.loZ, maxZ: st.ship.wz + st.ship.hiZ,
+    }
+    : null;
+
   // 采样半径 = **最小**湖岸半径 − 10（避开沙滩带；逐点再用 `e = d − R(θ)` 判）。
   // ⚠️ v2.15 湖岸不规则：固定半径的圆采样会在内凹方位吃到沙滩列。
   const inner = Math.floor(lakeRadiusMin - 10);
-  const r = await page.evaluate(({ wx, wz, lakeFloorY, inner, platforms, seed }) => {
+  const r = await page.evaluate(({ wx, wz, lakeFloorY, inner, platforms, shipBox, seed }) => {
     const g = window.__MC_GAME__;
     const nameOf = (id) => (id === 0 ? 'air' : g.registry.nameOf(id));
     const waterId = g.registry.idOf('water');
@@ -117,6 +134,8 @@ test('浅水高台：真实页面里湖盆只有一格水（R3「只有一格浅
     const inPlatform = (x, z) => platforms.some(
       (b) => x >= b.minX && x <= b.maxX && z >= b.minZ && z <= b.maxZ,
     );
+    const inShip = (x, z) => !!shipBox &&
+      x >= shipBox.minX && x <= shipBox.maxX && z >= shipBox.minZ && z <= shipBox.maxZ;
     const step = 4;
     for (let dx = -inner; dx <= inner; dx += step) {
       for (let dz = -inner; dz <= inner; dz += step) {
@@ -124,6 +143,7 @@ test('浅水高台：真实页面里湖盆只有一格水（R3「只有一格浅
         const x = wx + dx, z = wz + dz;
         if (!g.world.hasColumn(Math.floor(x / 16), Math.floor(z / 16))) continue;
         if (inPlatform(x, z)) { skipped++; continue; }
+        if (inShip(x, z)) { skipped++; continue; }
         const floor = g.world.getBlockId(x, lakeFloorY, z);
         // ⚠️ **湖底读不到方块（0）时跳过，不算失败**：`hasColumn` 为真只说明 column 在 map 里，
         // 而 GEN 尚未完成（或该 section 未上传）时读到的就是 0。
@@ -142,7 +162,7 @@ test('浅水高台：真实页面里湖盆只有一格水（R3「只有一格浅
       notSand: Object.fromEntries(notSand),
     };
   }, {
-    wx: anchor.wx, wz: anchor.wz, lakeFloorY: anchor.lakeFloorY, inner, platforms, seed: SEED,
+    wx: anchor.wx, wz: anchor.wz, lakeFloorY: anchor.lakeFloorY, inner, platforms, shipBox, seed: SEED,
   });
 
   await unpin(page);
@@ -159,6 +179,7 @@ test('浅水高台：真实页面里湖盆只有一格水（R3「只有一格浅
       if (dx * dx + dz * dz > inner * inner) continue;
       const x = anchor.wx + dx, z = anchor.wz + dz;
       if (platforms.some((b) => x >= b.minX && x <= b.maxX && z >= b.minZ && z <= b.maxZ)) continue;
+      if (shipBox && x >= shipBox.minX && x <= shipBox.maxX && z >= shipBox.minZ && z <= shipBox.maxZ) continue;
       sampledFree++;
     }
   }

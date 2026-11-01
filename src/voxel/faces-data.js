@@ -157,6 +157,9 @@ export const FACES_DATA = {
   hanging_lamp: 'procedural/hanging_lamp',
   // ---- 台阶（模板几何，单 tile）----
   planks_step: 'planks_birch',
+  planks_step_updown: 'planks_birch',
+  // 倒置半砖（中世纪船 Epic）：顶贴块顶的 1×0.5×1，几何 half_block_updown 在 mesher.js。
+  half_block_updown: 'planks_birch',
   cobblestone_step: 'Cobblestone',
   cobblestone_step_updown: 'Cobblestone',
   stone_diorite_step: 'stone_diorite',
