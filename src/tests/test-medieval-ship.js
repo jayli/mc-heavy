@@ -508,6 +508,32 @@ test('中世纪船: 产物最低层归一化为 y=1（rasterizeStructure 的落�
   }
 });
 
+test('中世纪船: 船体材料已按用户要求换成 iron / snow / marble（v2.34）', async () => {
+  // ⚠️ 这条钉的是「用户 2026-11-04 的改色真的进了产物」。
+  //
+  // 为什么必须单独钉：改色只动 `BLOCK_MAP` 的目标名，**格数 / bbox / 台阶 / 半砖 /
+  // 栏杆计数 / palette 种类（13）全部不变** ⇒ 只看那些指标的断言在「改了映射却没重烘」
+  // 时全绿（旧的 dark_planks / birch_log / light_gray_cloth 还在产物里）。
+  // 指纹会变（设计如此），但指纹只能证明「参数变过」，证明不了产物里的方块名。
+  const OLD = ['dark_planks', 'birch_log', 'light_gray_cloth'];
+  const NEW = { iron: 292, marble: 93, snow: 26 };
+  const { loadStructure } = await import('../gen/structures/structure-json.js');
+  for (const v of MEDIEVAL_SHIP_VARIANTS) {
+    const data = await loadStructure(v);
+    const counts = new Map();
+    for (const b of data.blocks) counts.set(b.type, (counts.get(b.type) || 0) + 1);
+    for (const [name, want] of Object.entries(NEW)) {
+      assertEqual(counts.get(name) || 0, want, `${v}: "${name}" 必须恰好 ${want} 格（用户 2026-11-04 改色）`);
+    }
+    for (const name of OLD) {
+      assertEqual(counts.get(name) || 0, 0, `${v}: 旧材质 "${name}" 已全部换掉，不应再出现`);
+    }
+    // palette 种类仍是 13（3 出 3 进）—— 防止「只改了一半映射」时种类数偷偷变化
+    const kinds = new Set(data.blocks.map((b) => b.type));
+    assertEqual(kinds.size, 13, `${v}: palette 种类应仍为 13（3 出 3 进）`);
+  }
+});
+
 test('中世纪船: 用户修复叠加层已固化进产物（逐格逐朝向）', async () => {
   // ⚠️ 这条钉的是「用户 2026-11-01 的手工修复真的进了产物」。
   //
@@ -619,9 +645,9 @@ test('中世纪船: 真实 GEN 后船方块出现在世界里（接线防线）'
 
   // 数船心列上的船体方块（船是实心的，中心列从船底到甲板都该有方块）
   const shipIds = new Set(
-    ['oak_planks', 'dark_planks', 'planks_step', 'planks_step_updown',
+    ['oak_planks', 'iron', 'planks_step', 'planks_step_updown',
      'half_block_updown', 'sand_slab', 'vertical_pillar', 'handrail', 'handrailA',
-     'light_gray_cloth', 'birch_log', 'giant_mangrove_log']
+     'marble', 'snow', 'giant_mangrove_log']
       .map((n) => reg.idOf(n)).filter((id) => id !== undefined),
   );
   const lx = p.wx - cx * 16, lz = p.wz - cz * 16;

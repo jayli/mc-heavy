@@ -65,18 +65,18 @@
     }
   },
   "counts": {
-    "birch_log": 26,
-    "dark_planks": 292,
     "giant_mangrove_log": 25,
     "half_block_updown": 94,
     "handrail": 6,
     "handrailA": 120,
-    "light_gray_cloth": 93,
+    "iron": 292,
+    "marble": 93,
     "oak_planks": 338,
     "planks_step": 11,
     "planks_step_updown": 137,
     "sand": 1,
     "sand_slab": 52,
+    "snow": 26,
     "vertical_pillar": 68
   },
   "stepOrientationCounts": {
@@ -103,8 +103,8 @@
     "minY": 0
   },
   "fingerprints": {
-    "input": "db9eb0218190fae4:a1a13d12a0b0307d",
+    "input": "db9eb0218190fae4:6baeef394416043b",
     "litematicSha256": "db9eb0218190fae422d603aff69b4fe542034b4dd719265fe5f1dcef8f1bdc58",
-    "paramsSha256": "a1a13d12a0b0307dc0cc0312a8f5b64722bdcc85be4a5e1e0482f7ef537eba2b"
+    "paramsSha256": "6baeef394416043bc445544718f3074d9e0062c5c57e136aa053d1380e73b36a"
   }
 }

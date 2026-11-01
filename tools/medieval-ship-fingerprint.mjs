@@ -78,22 +78,33 @@ export const FACING_TO_ORIENT = Object.freeze({
  * （`node tools/bake-medieval-ship.mjs --census` 打印各色距）。唯二新增的
  * `planks_step_updown` / `half_block_updown` 是用户明确批准的「倒置台阶 / 倒置半砖」，
  * 且**零新贴图、零新几何定义**（复用 `planks_birch` 贴图 + 既有盒式几何，见 mesher.js）。
+ *
+ * ## 2026-11-04 用户改色（原为木/布近色平替，现改为「金属船壳 + 雪桅杆 + 大理石帆」）
+ * 「我想对刚给浅水高台地图里增加的海盗船做一些优化，dark_planks 都换成 iron，
+ *   birch_log 和 light_gray_cloth 换成 snow 和 marble」⇒ 逐项配对 = birch_log→snow、
+ * light_gray_cloth→marble（本轮单独确认过）。**只改目标、不改源 key**，故格数 / bbox /
+ * 台阶 148 / 半砖 146 / 栏杆 6-120-68 / palette 种类 13 **全部不变**（3 出 3 进）。
+ *
+ * ⚠️ **`snow` 的 `FACES_DATA` 是单字符串（六面同为 `Snow_top`）**，故桅杆顶部那 26 格
+ * 是**纯白无木纹**的方块 —— 用户已知悉这是「换成雪」的必然结果。
+ * ⚠️ 三个新目标全是 `cullMode:"opaque"` + `opaqueTable=1` + 满格 box 几何，与旧目标同档
+ * ⇒ 顶点预算零变化（船体最坏仍 0.435% / cutout 0.756%），不需要重标定 `CAPACITY`。
  */
 export const BLOCK_MAP = Object.freeze({
   air: '',
   // ---- 船体木板 ----
-  oak_planks: 'oak_planks',             // 船壳主体（Δ1.4，近乎原色）
-  spruce_planks: 'dark_planks',         // 船壳深色带（Δ20.6）
-  pale_oak_planks: 'birch_log',         // 桅杆顶部浅色件（Δ16.4）
-  dark_oak_planks: 'dark_planks',       // 船尾楼深色板（Δ6.1）
+  oak_planks: 'oak_planks',             // 船壳主体（Δ1.4，近乎原色）—— 保留木色
+  spruce_planks: 'iron',                // 船壳深色带（原 dark_planks 67,43,20 → iron 220,220,220）
+  pale_oak_planks: 'snow',              // 桅杆顶部浅色件（原 birch_log 218,217,208 → snow 249,254,254）
+  dark_oak_planks: 'iron',              // 船尾楼深色板（同上）
   // ---- 桅杆 / 结构原木（stripped_*）----
-  stripped_dark_oak_wood: 'dark_planks', // 甲板横梁（Δ6.1）
-  stripped_dark_oak_log: 'dark_planks',  // 主桅杆（Δ6.1）
-  stripped_spruce_log: 'dark_planks',    // 副桅杆
-  stripped_spruce_wood: 'dark_planks',   // 龙骨
+  stripped_dark_oak_wood: 'iron',        // 甲板横梁
+  stripped_dark_oak_log: 'iron',         // 主桅杆
+  stripped_spruce_log: 'iron',           // 副桅杆
+  stripped_spruce_wood: 'iron',          // 龙骨
   // ---- 帆 / 旗 ----
-  white_wool: 'light_gray_cloth',       // 主帆（浅灰布， cloth 质感）
-  red_wool: 'giant_mangrove_log',       // 旗帜（现有最接近正的红色，Δ30.5）
+  white_wool: 'marble',                 // 主帆（原 light_gray_cloth 163,163,163 → marble 240,238,228）
+  red_wool: 'giant_mangrove_log',       // 旗帜（现有最接近正的红色，Δ30.5）—— 用户未要求改
   // ---- 玻璃 ----
   glass: 'glass_block',                 // 船尾窗（Δ3.7）
 });
@@ -123,9 +134,11 @@ export const SHIP_METRICS = Object.freeze({
                      // ⚠️ 不含 double→整块的 7 格（它们已计入 oak_planks / sand）
   fenceCells: 163,   // **源**栅栏格数（分类阶段的计数，不受用户修复影响）
   ladderCells: 31,   // **源**梯子格数（同上）
-  paletteSize: 13,   // 见 bake 脚本断言（ oak_planks/dark_planks/birch_log/light_gray_cloth/
+  paletteSize: 13,   // 见 bake 脚本断言（ oak_planks/iron/snow/marble/
                      //   giant_mangrove_log/planks_step/planks_step_updown/sand_slab/
                      //   half_block_updown/handrail/handrailA/vertical_pillar/sand ）
+                     // ⚠️ 2026-11-04 改色后仍是 13（dark_planks/birch_log/light_gray_cloth
+                     //   三种出、iron/snow/marble 三种进）
 
   /**
    * 用户修复叠加层的规模（`set` = 写入/替换，`remove` = 删除）。

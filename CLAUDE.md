@@ -1935,6 +1935,25 @@ seed 88 突破「单步落差 ≤1」（到 2 格），24 是守住无台阶的�
 实现在 `src/gen/structures/medieval-ship.js`（落点）+ `medieval-ship-data.js`（纯数据）+
 `tools/bake-medieval-ship.mjs`（烘焙），接线在 `apply.js` 阶段 2.45 的**第 ⑥ 步**。
 
+- **⚠️ 材质制色由用户实玩决定，不是一次定稿（v2.34，2026-11-04）**：用户先要「木色平替」
+  （v2.32 实测 atlas 平均色选最近色），之后又要求「做一些优化」——「`dark_planks` 都换成
+  `iron`，`birch_log` 和 `light_gray_cloth` 换成 `snow` 和 `marble`」。**逐项配对已单独确认**
+  （birch_log→snow、light_gray_cloth→marble）。最终对应：
+  | 源方块 | 目标 | 格数 | 角色 |
+  |---|---|---|---|
+  | `spruce_planks` / `dark_oak_planks` / `stripped_dark_oak_wood` / `stripped_dark_oak_log` / `stripped_spruce_log` / `stripped_spruce_wood` | **`iron`** | 292 | 船壳深色带 + 船尾楼 + 甲板横梁 + 主/副桅杆 + 龙骨 |
+  | `pale_oak_planks` | **`snow`** | 26 | 桅杆顶部浅色件 |
+  | `white_wool` | **`marble`** | 93 | 主帆 |
+  ⚠️ **`snow` 的 `FACES_DATA` 是单字符串（六面同为 `Snow_top`）** ⇒ 桅杆顶部那 26 格
+  是**纯白无木纹**的方块，不再是木材质感 —— 这是「换成雪」的必然结果（用户已知悉）。
+  ⚠️ **改色不改夹具之外的任何指标**：格数 1263 / bbox 37×37×11 / 台阶 148 / 半砖 146 /
+  源栅栏 163 与梯子 31 / 栏杆 6-120-68 / `paletteSize` **仍 13**（3 出 3 进）—— 指纹会变
+  （设计如此），但已有断言一个都不会红。三个新目标与旧目标同为 `cullMode:"opaque"` +
+  `opaqueTable=1` + 满格 box ⇒ **顶点预算零变化**（船体最坏仍 opaque 0.435% / cutout 0.756%），
+  不需要重标定 `CAPACITY`。
+  ⚠️ **Tier 4 / 单测里的「船体材质集合」必须跟着改**（`tests/medieval-ship.spec.mjs` 两处 +
+  `src/tests/test-medieval-ship.js` 一处），否则「船体格数恰好 1263」会变成假失败。
+
 - **⚠️ 「烘焙」在这里只是数据格式转换，不产生任何新美术资源**（本仓既有教训）：
   `.litematic` → 紧凑 JSON（palette 索引 + stride 5 带朝向），映射目标**全是 registry 现有方块**。
   唯二新增的 `planks_step_updown` / `half_block_updown` 是用户批准的「倒置台阶 / 倒置半砖」，

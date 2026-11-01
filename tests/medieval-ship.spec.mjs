@@ -91,15 +91,16 @@ test('中世纪船: 船真的生成在湖里（真实 GEN 后世界里有船体�
   await flyTo(page, p.wx, p.wz, 40, 3);
 
   // 船体材质集合（烘焙产物的 palette）。
+  // ⚠️ 2026-11-04 用户改色：dark_planks→iron、birch_log→snow、light_gray_cloth→marble。
   // ⚠️ **扫描下界必须是 `SEA_Y`（= 船底那一层），不能更低**：湖底方块在
   // `LAKE_FLOOR_Y = SEA_Y-1` 且材质是 `sand`，而 `sand` 也在船的 palette 里
   // （素材的 double 半砖映射到它，实测 1 格、在世界 y=8 的上层建筑里）。
   // 扫到 y=-3 会把船 AABB 内全部 407 列湖底沙当成船体（实测读数 1680 = 1263 + 407 + 10）。
   const SEA_Y = -2;
   const shipMats = new Set([
-    'oak_planks', 'dark_planks', 'planks_step', 'planks_step_updown',
+    'oak_planks', 'iron', 'planks_step', 'planks_step_updown',
     'half_block_updown', 'sand_slab', 'vertical_pillar', 'handrail', 'handrailA',
-    'light_gray_cloth', 'birch_log', 'giant_mangrove_log', 'sand',
+    'marble', 'snow', 'giant_mangrove_log', 'sand',
   ]);
 
   // 扫船 AABB 内从船底到船顶，数船体方块
@@ -139,6 +140,15 @@ test('中世纪船: 船真的生成在湖里（真实 GEN 后世界里有船体�
   expect(result.maxY, `船顶必须到 SEA_Y + height - 1`).toBe(SEA_Y + sp.metrics.height - 1);
   // 主要材质必须是木板（船壳主体）
   expect(result.kinds['oak_planks'] || 0).toBeGreaterThan(200);
+  // ⚠️ **2026-11-04 用户改色的落地判据（v2.34）**：只看格数拓不到「BLOCK_MAP 改了但没重烘」
+  // （旧产物格数/bbox 全一致）。这里逐项钉住三个新材质的**实测格数**（均来自产物契约），
+  // 且旧材质必须一格不剩 —— 否则两种色系会混在船体上而格数总和仍然对。
+  expect(result.kinds['iron'] || 0, '船壳深色带/桅杆/龙骨应为 iron 292 格').toBe(292);
+  expect(result.kinds['marble'] || 0, '主帆应为 marble 93 格').toBe(93);
+  expect(result.kinds['snow'] || 0, '桅杆顶部浅色件应为 snow 26 格').toBe(26);
+  for (const old of ['dark_planks', 'birch_log', 'light_gray_cloth']) {
+    expect(result.kinds[old] || 0, `旧材质 "${old}" 已全部换掉，世界里不应再有`).toBe(0);
+  }
 });
 
 test('中世纪船: 船完整落在水下（船 AABB 内每列地表 ≤ SEA_Y-1）', async ({ page }) => {
@@ -210,9 +220,9 @@ test('中世纪船: 船底紧贴湖底方块顶面（不埋进沙里、不悬空
   // 船心列的船底那一格必须是船体方块（不是水、不是沙）
   const bottomName = await blockNameAt(page, p.wx, SEA_Y, p.wz);
   const shipMats = new Set([
-    'oak_planks', 'dark_planks', 'planks_step', 'planks_step_updown',
+    'oak_planks', 'iron', 'planks_step', 'planks_step_updown',
     'half_block_updown', 'sand_slab', 'vertical_pillar', 'handrail', 'handrailA',
-    'light_gray_cloth', 'birch_log', 'giant_mangrove_log', 'sand',
+    'marble', 'snow', 'giant_mangrove_log', 'sand',
   ]);
   expect(shipMats.has(bottomName)).toBe(true);
 
