@@ -878,3 +878,94 @@ test('M6：丧尸互斥 —— 强制同点生成后必须散开（不重叠）'
     .toBeLessThan(20);
   expect(result.after.count, '散开过程不得丢丧尸').toBe(20);
 });
+
+// ==================== v2.40：局部避障（真游戏页） ====================
+//
+// 分工：纯函数与接线在 `src/tests/test-zombies.js` 的「避障」段落（a~l）。这里只测**真游戏页**
+// 才成立的部分 —— 真实列调度、真实 WorkerPool 的 AI 回包、真实的 60Hz 物理叠加。
+//
+// ⚠️ 两条用例都**先造墙、后 `spawn`**：`spawn` 校验脚格/头格必须为 air，先 spawn 再在它脚下
+// 立墙会把方块写进丧尸身体（且后续 step-up 行为不可预测）。
+
+test('v2.40：丧尸绕开 3 格高短墙追上玩家（真游戏页）', async ({ page }) => {
+  test.setTimeout(180_000);
+  await page.goto('/?vd=4&seed=12345');
+  await waitWorldReady(page);
+  await installHelpers(page);
+  const result = await page.evaluate(async () => {
+    const g = window.__MC_GAME__;
+    const pos = window.__ZT__.legalSpawnNear(8);   // 8~20 格：足够远，绕行才有可观测行程
+    const p = g.player.physics.pos;
+    const stone = g.registry.idOf('stone');
+    const mx = Math.floor((p.x + pos[0]) / 2), mz = Math.floor((p.z + pos[2]) / 2);
+    const y0 = Math.floor(pos[1]);
+    const alongX = Math.abs(pos[0] - p.x) >= Math.abs(pos[2] - p.z);
+    // 3 格高 × 5 格宽的墙：只挡住直线，两端留空 —— 丧尸必须绕过端头才能过来。
+    // 宽度取 5 而非 3：1.2 格步长的探针要让开 5 格宽需要连续 2~3 次偏移，
+    // 「未接线」与「已接线」两侧读数才能拉开（负向验证必须真红）。
+    for (let k = -2; k <= 2; k++) {
+      for (let dy = 0; dy < 3; dy++) {
+        g.editor.setBlock({ x: alongX ? mx : mx + k, y: y0 + dy, z: alongX ? mz + k : mz, id: stone });
+      }
+    }
+    const id = g.zombies.spawn(pos, { source: 'test' });
+    if (!id) return { error: 'spawn rejected', pos };
+    const startDist = Math.hypot(pos[0] - p.x, pos[2] - p.z);
+    // 12 秒：1.2 格/秒 × 12 = 14.4 格行程；绕 5 格宽墙约需 7~9 格
+    await new Promise((r) => setTimeout(r, 12000));
+    const st = g.zombies.get(id);
+    const now = st.position;
+    return {
+      id, startDist,
+      endDist: Math.hypot(now[0] - p.x, now[2] - p.z),
+      // 「跨过墙所在直线、到了玩家这一侧」—— 未接线时永远 false（贴着墙不动）
+      crossed: alongX ? (now[0] - mx) * (p.x - mx) > 0 : (now[2] - mz) * (p.z - mz) > 0,
+      mode: st.mode,
+      count: g.zombies.count(),
+      trace: [pos.map((v) => +v.toFixed(2)), now.map((v) => +v.toFixed(2))],
+    };
+  });
+  expect(result.error, JSON.stringify(result)).toBeUndefined();
+  expect(result.crossed, `须绕到墙的玩家这一侧（trace=${JSON.stringify(result.trace)}）`).toBe(true);
+  expect(result.endDist).toBeLessThan(result.startDist - 2);
+  expect(result.count).toBe(1);
+});
+
+test('v2.40：四面围死时原地站住（blocked），不消失', async ({ page }) => {
+  test.setTimeout(180_000);
+  await page.goto('/?vd=4&seed=12345');
+  await waitWorldReady(page);
+  await installHelpers(page);
+  const result = await page.evaluate(async () => {
+    const g = window.__MC_GAME__;
+    const pos = window.__ZT__.legalSpawnNear(8);
+    const stone = g.registry.idOf('stone');
+    const x0 = Math.floor(pos[0]), y0 = Math.floor(pos[1]), z0 = Math.floor(pos[2]);
+    // 3×3 竖井（内空 1 格）+ 顶盖：把丧尸关在中心格里。
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dz = -1; dz <= 1; dz++) {
+        for (let dy = 0; dy < 3; dy++) {
+          if (dx === 0 && dz === 0) continue;                 // 中心格留给丧尸
+          g.editor.setBlock({ x: x0 + dx, y: y0 + dy, z: z0 + dz, id: stone });
+        }
+        g.editor.setBlock({ x: x0 + dx, y: y0 + 3, z: z0 + dz, id: stone });
+      }
+    }
+    const id = g.zombies.spawn(pos, { source: 'test' });
+    if (!id) return { error: 'spawn rejected', pos };
+    const before = [...g.zombies.get(id).position];
+    await new Promise((r) => setTimeout(r, 8000));
+    const st = g.zombies.get(id);
+    return {
+      moved: Math.hypot(st.position[0] - before[0], st.position[2] - before[2]),
+      dy: Math.abs(st.position[1] - before[1]),
+      mode: st.mode,
+      count: g.zombies.count(),
+    };
+  });
+  expect(result.error, JSON.stringify(result)).toBeUndefined();
+  expect(result.moved, '围死时水平位移须为 0').toBeLessThan(0.05);
+  expect(result.dy).toBeLessThan(0.05);
+  expect(result.mode).toBe('blocked');
+  expect(result.count).toBe(1);   // 没被 column 卸载或上限回收
+});

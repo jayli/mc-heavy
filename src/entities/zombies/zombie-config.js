@@ -119,3 +119,27 @@ export const ZOMBIE_STEP_LIFT = Object.freeze({
    */
   epsilon: 1e-4,
 });
+
+/**
+ * 一格台阶上限（mc-lite `PHYSICS_CONFIG.MAX_STEP`，v2.40 从 `zombie-system.js` 的局部常量上移）。
+ *
+ * 物理的 `tryStepUp` 与避障探针共用这一份（红线 1：两份字面量会漂移成「探针以为能上台阶、
+ * 物理抬不上去」→ 丧尸贴着台阶反复试探，静默且只能靠实玩发现）。
+ */
+export const ZOMBIE_MAX_STEP = 1.0;
+
+/**
+ * 局部避障参数（v2.40，用户裁定「贴身绕行即可」+「完全过不去时留在原地不追」）。
+ *
+ * `probeDistance = 1.2`（≈ 半宽 0.3 + 0.9 格行程）是**实玩标定值不是推导值**：嫌拐早/拐晚只改它。
+ *
+ * `anglesDeg` 必须**升序**、且实现里每档「先 + 后 −」—— 否则取不到「能走通的最小偏角」，
+ * 观感是丧尸在墙角大幅甩头。⚠️ 细档（22.5°）不是装饰：正前方一列墙的最小可通偏角是 45°
+ * （几何：半宽 0.3 + 半格 0.5 需横向让开 0.8 格，`sinθ > 0.8/1.2 ⇒ θ > 41.8°`），
+ * 但「斜擦」场景（探针落点横向恰好只压一列）22.5° 就够，少了它会直接跳到 45°。
+ * ±90° 只在最后兜底沿墙蹭。
+ */
+export const ZOMBIE_STEERING = Object.freeze({
+  probeDistance: 1.2,
+  anglesDeg: Object.freeze([22.5, 45, 67.5, 90]),
+});

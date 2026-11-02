@@ -12,8 +12,9 @@
 // ② **AI 意图写进 state.velocity，不另设 intent 容器**：mc-lite 也用同一个 velocity 字段
 //    驱动步态与移动。另设 intent 会让「渲染看到的移动」与「物理实际的移动」分家。
 import {
-  ZOMBIE, ZOMBIE_FLASH_MS, ZOMBIE_MOVING_EPSILON, ZOMBIE_SEPARATION,
+  ZOMBIE, ZOMBIE_FLASH_MS, ZOMBIE_MAX_STEP, ZOMBIE_MOVING_EPSILON, ZOMBIE_SEPARATION,
 } from './zombie-config.js';
+import { zombieCollidesAt, zombieStepUpY, steerIntent } from './zombie-navigation.js';
 import { normalizePosition, raycastAabbSlab } from '../entity-types.js';
 
 /** 丧尸 AABB（相对 state.position 的局部偏移；position 为脚底 → min.y = 0） */
@@ -123,6 +124,17 @@ export function computeAiUpdates(p) {
   return { updates };
 }
 
+/**
+ * state.mode 的白名单（v2.40 加入 `'blocked'`）。
+ *
+ * ⚠️ **必须是单一实现**：`createState()` 与 `setIntent()` 都消费它。写两份三元表达式会让其中一处
+ * 漏掉 `'blocked'`，形态是「速度与位置都对（都是零）、只有 mode 错」—— 任何只看「它没动」的
+ * 断言都抓不到（实测：注入旧式三元后 k 用例真红）。
+ */
+function normalizeMode(mode) {
+  return mode === 'chasing' || mode === 'blocked' ? mode : 'idle';
+}
+
 /** 新建一份合法 state（形状即 M6 规格 §2 口径，少 generation） */
 function createState({ position, velocity, yaw, health, mode, source, flashedUntil, onGround, _physAccum }) {
   const pos = normalizePosition(position);
@@ -135,7 +147,7 @@ function createState({ position, velocity, yaw, health, mode, source, flashedUnt
     velocity: vel,
     yaw: Number.isFinite(yaw) ? yaw : 0,
     health: Number.isFinite(health) ? health : ZOMBIE.health,
-    mode: mode === 'chasing' ? 'chasing' : 'idle',
+    mode: normalizeMode(mode),
     source: typeof source === 'string' ? source : null,
     flashedUntil: Number.isFinite(flashedUntil) ? flashedUntil : 0,
     /** 物理派生量（step-up 判定依据）。不入 snapshot（丧尸是临时实体），故不算第二份权威 */
@@ -163,8 +175,8 @@ function createState({ position, velocity, yaw, health, mode, source, flashedUnt
  * 与 `player/physics.js` 同口径 —— 手感一致，丧尸不会飘。
  */
 const GRAVITY = -24.0;
-const MAX_STEP = 1.0;
-const PHYS_EPSILON = 0.001;
+// 一格台阶上限的唯一权威已上移到 `zombie-config.js` 的 `ZOMBIE_MAX_STEP`（v2.40）——
+// 避障探针要读同一份（红线 1）。`PHYS_EPSILON` 也随 `collides()` 一并搬到 `zombie-navigation.js`。
 
 /**
  * 分轴移动 + 碰撞 + 自动上台阶（与 player/physics.js `_moveAxis`/`_tryStepUp` 同构）。
@@ -206,8 +218,8 @@ function moveAxis(state, world, delta, axis, keys, zeroVelocityOnHit) {
 function tryStepUp(state, world) {
   if (!state.onGround && state.velocity[1] > 0) return false;
   const oldY = state.position[1];
-  const lifted = Math.floor(oldY + 0.01) + 1;
-  if (lifted - oldY > MAX_STEP) return false; // 超过一格台阶不登（mc-lite MAX_STEP 语义）
+  const lifted = zombieStepUpY(oldY); // 唯一实现在 zombie-navigation.js（探针读同一份）
+  if (lifted - oldY > ZOMBIE_MAX_STEP) return false; // 超过一格台阶不登（mc-lite MAX_STEP 语义）
   state.position[1] = lifted;
   if (!collides(state, world)) { state.velocity[1] = 0; return true; }
   state.position[1] = oldY;
@@ -232,21 +244,14 @@ function physicsStep(state, world, dt) {
   moveAxis(state, world, state.velocity[2] * dt, 2, keys, false);
 }
 
-/** AABB 0.6×1.8×0.6 与实心方块采样检测（脚底为 position） */
+/**
+ * 丧尸 AABB 0.6×1.8×0.6 与实心方块采样检测（脚底为 position）。
+ *
+ * **唯一实现在 `zombie-navigation.js` 的 `zombieCollidesAt`**（v2.40）—— 避障探针要读同一份判据，
+ * 两份会漂移成「探针以为能过、物理撞墙」，而那种漂移是静默的（只表现为丧尸莫名卡顿）。
+ */
 function collides(state, world) {
-  const hw = ZOMBIE.width / 2;
-  const [x, y, z] = state.position;
-  const x0 = Math.floor(x - hw), x1 = Math.floor(x + hw);
-  const y0 = Math.floor(y), y1 = Math.floor(y + ZOMBIE.height - PHYS_EPSILON);
-  const z0 = Math.floor(z - hw), z1 = Math.floor(z + hw);
-  for (let bx = x0; bx <= x1; bx++) {
-    for (let by = y0; by <= y1; by++) {
-      for (let bz = z0; bz <= z1; bz++) {
-        if (world.isSolid(bx, by, bz)) return true;
-      }
-    }
-  }
-  return false;
+  return zombieCollidesAt(world, state.position[0], state.position[1], state.position[2]);
 }
 
 /**
@@ -463,7 +468,7 @@ export class ZombieService {
     entity.state = createState({
       ...state,
       velocity: [outVx, state.velocity[1], outVz],
-      mode: mode === 'chasing' ? 'chasing' : 'idle',
+      mode: normalizeMode(mode),
       yaw,
     });
     return true;
@@ -540,6 +545,12 @@ export class ZombieService {
    * 应用一条 AI 意图回包。**先验代数**再写（红线 7）：迟到的回包不得改变已 despawn 的实例
    * 或同 id 的后续实例。速度长度钳到 `ZOMBIE.speed`（worker 侧口径，主线程再钳一次做防御 ——
    * 恶意/错误的回包不得让丧尸超速追上玩家）。
+   *
+   * **局部避障就在这里（v2.40）**：钳速之后过一道 `steerIntent`，把“目标方向”修成“走得通的方向”。
+   * ⚠️ **必须留在这里，不得搬进 `setIntent`**：后者是通用意图写入口（物理用例、调试代码都用它
+   * 直接下令），探针长在里面会让「想让它走就必须能走」的语义被偷换，且既有的物理用例会被地形
+   * 挡住而假红。避障是 **AI 的能力**，不是指令通道的行为。
+   * ⚠️ 为什么在主线程：worker 无世界数据（M6 规格 §2），世界唯一权威在主线程（红线 1）。
    * @param {{id: string, generation: number, vx: number, vz: number, mode?: string}} update
    * @returns {boolean} false = 过期/未知，已丢弃
    */
@@ -550,7 +561,14 @@ export class ZombieService {
     const speed = Math.hypot(vx, vz);
     let outVx = vx, outVz = vz;
     if (speed > ZOMBIE.speed) { outVx = vx / speed * ZOMBIE.speed; outVz = vz / speed * ZOMBIE.speed; }
-    return this.setIntent(id, { vx: outVx, vz: outVz, mode });
+    // 局部避障：只换方向、不改长度（长度权威仍是上面那次钳制 + ZOMBIE.speed）
+    const steered = steerIntent({
+      world: this.world, position: entity.state.position, vx: outVx, vz: outVz,
+    });
+    return this.setIntent(id, {
+      vx: steered.vx, vz: steered.vz,
+      mode: steered.blocked ? 'blocked' : mode,
+    });
   }
 
   /** @returns {{calls: number, lastBatchSize: number, pending: number}} 只读测试钩子 */

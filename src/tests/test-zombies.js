@@ -18,10 +18,14 @@ import { EntityManager } from '../entities/entity-manager.js';
 import {
   ZOMBIE, ZOMBIE_FLASH_MS, ZOMBIE_WALK_SPEED, ZOMBIE_SWING, ZOMBIE_MOVING_EPSILON,
   ZOMBIE_SEPARATION, ZOMBIE_ARM_SWING, ZOMBIE_HEAD_SWAY,
+  ZOMBIE_MAX_STEP, ZOMBIE_STEERING,
 } from '../entities/zombies/zombie-config.js';
 import {
   ZombieService, zombieDefinition, separationForce, computeAiUpdates,
 } from '../entities/zombies/zombie-system.js';
+import {
+  zombieCollidesAt, zombieStepUpY, steerIntent,
+} from '../entities/zombies/zombie-navigation.js';
 import {
   ZombieRenderer, ZOMBIE_PARTS, ZOMBIE_PART_DEFS, HEAD_FRONT_VERTICES,
 } from '../render/zombie-renderer.js';
@@ -1470,4 +1474,232 @@ test('ZombieRenderer: slot 归还后重分配不继承上一只的缓动', () =>
   renderer.sync(zombies, 300);
   assertEqual(renderer.liftOffsetOf(slot), 0, '新实例不得继承上一只的 lift offset');
   assertClose(renderer.renderYOf(slot), 1, 1e-9, '新实例渲染 y 直接等于物理 y');
+});
+
+// ---------- 局部避障（zombie-navigation，v2.40） ----------
+//
+// 覆盖规格 §6.1 的 a~i。**全部只调纯函数**（接线由 Task 2 的 j~l 覆盖）。
+// fixture：`makeAiFixture()` 的平地 —— cx 0..7 / cz 0（x ∈ [0,128)、z ∈ [0,16)），y=0 全 stone、
+// 脚底 y=1。墙用 `world.setBlock(x, y, z, ids.stone)` 现造。
+//
+// ⚠️ **期望的偏角是按几何算出来的，不是拍脑袋的常数**（实施时发现计划初稿写「正前 1 格墙 → 22.5°」
+// 在几何上不可能）：丧尸半宽 0.3、探针 1.2 格，要让 AABB 横向让开紧邻的那一列需要
+// Δz > 0.3 + 0.5 ⇒ sinθ > 0.8/1.2 ⇒ θ > 41.8°，所以「正前方一列墙」的最小可通偏角是 **45°**。
+// 22.5° 只在「0° 的 AABB 横向跨两列、22.5° 恰好只压一列」的斜擦场景才是答案（用例 d 就是这个夹具）。
+
+test('避障 a) 无障碍 → 输出逐位等于输入（平地零回归）', () => {
+  const { world, ids } = makeAiFixture();
+  const pos = [10.5, 1, 2.5];
+  const out = steerIntent({ world, position: pos, vx: ZOMBIE.speed, vz: 0 });
+  // **逐位相等**（Object.is）而不是 close：归一化重建会让 1.2 变成 1.1999999999999997，
+  // 而「平地也被打偏」这个缺陷只有逐位判定才抓得到（观感是丧尸走路开始画龙）。
+  assertTrue(Object.is(out.vx, ZOMBIE.speed), `vx 须逐位等于 ${ZOMBIE.speed}，实得 ${out.vx}`);
+  assertTrue(Object.is(out.vz, 0), `vz 须逐位等于 0，实得 ${out.vz}`);
+  assertFalse(out.blocked, '无障碍不得判 blocked');
+  // 斜向同样逐位回归（三条路径共用同一个"0° 原样返回"分支，但仍要覆盖斜向归一化）
+  const out2 = steerIntent({ world, position: pos, vx: 0.6, vz: -0.8 });
+  assertTrue(Object.is(out2.vx, 0.6) && Object.is(out2.vz, -0.8), '斜向也须逐位回归');
+  // ⚠️ **必须覆盖“归一化往返不精确”的输入**（负向验证发现的盲区）：像 (1.2, 0)、(0.6,-0.8)
+  // 这类 len 恰为整数或短小数的输入，`vx/len*len === vx` 逐位成立 → 把实现改成在 0° 分支重建
+  // 速度向量时它们仍然全绿（实测注入后 1283/1283 全过）。下面两个是实测能产生 1 ULP 误差的值，
+  // 它们才是“平地也被打偏”的真正判据。
+  for (const [vx, vz] of [[-0.720745, 1.028745], [1.05292, -0.870183]]) {
+    const o = steerIntent({ world, position: pos, vx, vz });
+    assertTrue(Object.is(o.vx, vx) && Object.is(o.vz, vz),
+      `非精确往返输入 (${vx}, ${vz}) 须逐位原样返回，实得 (${o.vx}, ${o.vz})`);
+  }
+  assertTrue(ids !== null || true);
+});
+
+test('避障 b) 正前 1 列墙 → 最小可通偏角 +45°（22.5° 仍压墙）', () => {
+  const { world, ids } = makeAiFixture();
+  // 丧尸在 z=2.5 中线；墙在 (11, y=1..2, z=2) —— 正好挡住 +X 直线
+  world.setBlock(11, 1, 2, ids.stone);
+  world.setBlock(11, 2, 2, ids.stone);
+  const out = steerIntent({ world, position: [10.5, 1, 2.5], vx: ZOMBIE.speed, vz: 0 });
+  assertFalse(out.blocked, '端头留空，不该 blocked');
+  const theta = ZOMBIE_STEERING.anglesDeg[1] * Math.PI / 180; // 45°
+  assertClose(out.vx, Math.cos(theta) * ZOMBIE.speed, 1e-12, 'vx = cos45 × speed（+侧优先）');
+  assertClose(out.vz, Math.sin(theta) * ZOMBIE.speed, 1e-12, 'vz = sin45 × speed');
+});
+
+test('避障 c) +侧被墙封住 → 走 −侧（−45°），双向都被试过', () => {
+  const { world, ids } = makeAiFixture();
+  // z=2 与 z=3 都立墙：+45/+67.5/+90 全部压墙，只有 −45（z=−1 那一列… 实为 z=1）能过
+  for (const z of [2, 3]) {
+    world.setBlock(11, 1, z, ids.stone);
+    world.setBlock(11, 2, z, ids.stone);
+  }
+  const out = steerIntent({ world, position: [10.5, 1, 2.5], vx: ZOMBIE.speed, vz: 0 });
+  assertFalse(out.blocked);
+  const theta = ZOMBIE_STEERING.anglesDeg[1] * Math.PI / 180; // 45°
+  assertClose(out.vx, Math.cos(theta) * ZOMBIE.speed, 1e-12, 'vx');
+  assertClose(out.vz, -Math.sin(theta) * ZOMBIE.speed, 1e-12, 'vz 为负（−侧）');
+});
+
+test('避障 d) 斜擦场景 → 22.5° 才是最小可通偏角（细档真的会被用到）', () => {
+  const { world, ids } = makeAiFixture();
+  // 丧尸在 z=2.9：0° 探针的 AABB 横向跨 z=2..3（压到 z=2 的墙）；
+  // 而 +22.5° 把落点推到 z≈3.36，AABB 只压 z=3（空气）→ 更小的偏角就够。
+  world.setBlock(11, 1, 2, ids.stone);
+  world.setBlock(11, 2, 2, ids.stone);
+  const out = steerIntent({ world, position: [10.5, 1, 2.9], vx: ZOMBIE.speed, vz: 0 });
+  assertFalse(out.blocked);
+  const theta = ZOMBIE_STEERING.anglesDeg[0] * Math.PI / 180; // 22.5°
+  assertClose(out.vx, Math.cos(theta) * ZOMBIE.speed, 1e-12, 'vx');
+  assertClose(out.vz, Math.sin(theta) * ZOMBIE.speed, 1e-12, 'vz');
+  // 与 b（45°）区分：这一条证明阶梯从细到粗按序试，不是直接跳 45°
+  assertTrue(Math.abs(out.vz) < Math.sin(ZOMBIE_STEERING.anglesDeg[1] * Math.PI / 180),
+    '22.5° 的横向分量必须小于 45° 的');
+});
+
+test('避障 e) 一格台阶不算障碍；补成 2 格高才偏转', () => {
+  const { world, ids } = makeAiFixture();
+  const pos = [10.5, 1, 2.5];
+  world.setBlock(11, 1, 2, ids.stone); // 只有 1 格高 = 台阶
+  const step = steerIntent({ world, position: pos, vx: ZOMBIE.speed, vz: 0 });
+  assertFalse(step.blocked, '台阶不得判 blocked');
+  assertTrue(Object.is(step.vx, ZOMBIE.speed) && Object.is(step.vz, 0),
+    '一格台阶须原样直行（交给物理 step-up）');
+  // 补第二格 → 1.8 高的丧尸过不去 → 必须偏转
+  world.setBlock(11, 2, 2, ids.stone);
+  const wall = steerIntent({ world, position: pos, vx: ZOMBIE.speed, vz: 0 });
+  assertFalse(wall.blocked);
+  assertTrue(Math.abs(wall.vz) > 0.1, `两格墙须偏转，实得 vz=${wall.vz}`);
+});
+
+test('避障 f) 四面围死 → blocked 且零速度', () => {
+  const { world, ids } = makeAiFixture();
+  // 把丧尸周围整片填成实心：探针 9 个方向全部撞墙（比"按候选算环"简单且无遗漏）。
+  // ⚠️ 探针只回答「目标点能不能站」，不判「当前是否已被埋」—— 后者归物理层，不在本用例范围。
+  for (let x = 8; x <= 14; x++) {
+    for (let y = 1; y <= 8; y++) {
+      for (let z = 6; z <= 12; z++) world.setBlock(x, y, z, ids.stone);
+    }
+  }
+  const out = steerIntent({ world, position: [10.5, 4, 8.5], vx: ZOMBIE.speed, vz: 0 });
+  assertTrue(out.blocked, '四面实心须判 blocked');
+  assertEqual(out.vx, 0, 'blocked 时 vx 须为 0');
+  assertEqual(out.vz, 0, 'blocked 时 vz 须为 0');
+});
+
+test('避障 g) 只换方向、不改速度长度（9 个方向逐一）', () => {
+  const { world } = makeAiFixture();
+  const pos = [10.5, 1, 2.5];
+  for (let k = 0; k < 9; k++) {
+    const a = (k * 40) * Math.PI / 180;
+    const vx = Math.cos(a) * ZOMBIE.speed, vz = Math.sin(a) * ZOMBIE.speed;
+    const out = steerIntent({ world, position: pos, vx, vz });
+    assertClose(Math.hypot(out.vx, out.vz), Math.hypot(vx, vz), 1e-12, `方向 ${k * 40}° 的长度守恒`);
+  }
+});
+
+test('避障 h) 净空 1.8 的走廊不判 blocked（脚底 y=1.0 与"顶面恰贴边界"的 y=1.2 都要通）', () => {
+  const { world, ids } = makeAiFixture();
+  // 整层 y=3 做顶栅：净空恰 1.8（y=1..2）
+  for (let x = 0; x < 128; x++) for (let z = 0; z < 16; z++) world.setBlock(x, 3, z, ids.stone);
+  for (const y of [1, 1.2]) {
+    const out = steerIntent({ world, position: [10.5, y, 2.5], vx: ZOMBIE.speed, vz: 0 });
+    assertFalse(out.blocked, `脚底 y=${y} 的走廊不得判 blocked（AABB 采样须带 PHYS_EPSILON）`);
+    assertTrue(Object.is(out.vx, ZOMBIE.speed) && Object.is(out.vz, 0), `y=${y} 须原样直行`);
+  }
+});
+
+test('避障 i) 零速/亚阈值意图 → 原样返回、不判 blocked', () => {
+  const { world, ids } = makeAiFixture();
+  world.setBlock(11, 1, 2, ids.stone);
+  world.setBlock(11, 2, 2, ids.stone);
+  const pos = [10.5, 1, 2.5];
+  for (const [vx, vz] of [[0, 0], [1e-4, 0], [0, -1e-4]]) {
+    const out = steerIntent({ world, position: pos, vx, vz });
+    assertFalse(out.blocked, `意图 (${vx},${vz}) 不得判 blocked`);
+    assertTrue(Object.is(out.vx, vx) && Object.is(out.vz, vz), `意图 (${vx},${vz}) 须逐位原样返回`);
+  }
+});
+
+test('避障: zombieCollidesAt 与 zombieStepUpY 是本仓的单一权威（物理与探针共用）', () => {
+  const { world, ids } = makeAiFixture();
+  // 平地：脚底 y=1 不撞、y=0（嵌进地面）撞
+  assertFalse(zombieCollidesAt(world, 10.5, 1, 2.5), '站在地面上不撞');
+  assertTrue(zombieCollidesAt(world, 10.5, 0, 2.5), '嵌进地面须撞');
+  // 一格台阶：y=1 那一层撞（台阶本体）、y=2 不撞（台阶上方）
+  world.setBlock(11, 1, 2, ids.stone);
+  assertTrue(zombieCollidesAt(world, 11.5, 1, 2.5), '台阶那一层须撞');
+  assertFalse(zombieCollidesAt(world, 11.5, 2, 2.5), '台阶上方不撞');
+  // **`ZOMBIE_MAX_STEP` 是「一格」**：`zombieStepUpY` 在整数脚底上恰抬 1 格（不多不少），
+  // 且抬升量与常量一致 —— 派生断言（不在测试里再写一份 1.0）
+  assertEqual(round6(zombieStepUpY(1)), round6(1 + ZOMBIE_MAX_STEP), '整数脚底恰抬 ZOMBIE_MAX_STEP');
+  assertTrue(zombieStepUpY(1.2) - 1.2 <= ZOMBIE_MAX_STEP, '小数脚底的抬升量不超过上限');
+  assertEqual(zombieStepUpY(1.99), 3, '1.99 被 +0.01 推到 2.0 → 抬到 3（即“抬一格”的语义，不会只提到 2）');
+  assertEqual(zombieStepUpY(1.98), 2, '1.98 的 +0.01 仍是 1.99 → 抬到 2');
+  // world 缺失/畸形时返回 false（探针不抛错 —— 它在 AI 回包回调里跑，抛错会中断整条回包）
+  assertFalse(zombieCollidesAt(null, 0, 0, 0), '无世界上下文时按不碰撞处理');
+});
+
+// ---------- 局部避障的接线（Task 2：j~l） ----------
+//
+// 纯函数用例（a~i）只证明「探针本身对」；这一组证明「它真的接在 AI 回包路径上」——
+// M6/M7 的教训：只测纯函数会漏掉「没接线」，而那在方块与位置上完全看不出来。
+
+test('避障 j) _applyIntent 写入的是偏转后的速度（接线，不是纯函数）', async () => {
+  const { zombies, pool, playerPosition, world, ids } = makeAiFixture();
+  // 2 格高墙挡住 +X 直线（丧尸半宽 0.3、墙在 x=11）
+  world.setBlock(11, 1, 0, ids.stone);
+  world.setBlock(11, 2, 0, ids.stone);
+  const id = zombies.spawn([10.5, 1, 0.5], { source: 'test' });
+  const generation = zombies.entities.get(id).generation;
+  pool.replies.push({ updates: [{ id, generation, vx: ZOMBIE.speed, vz: 0, mode: 'chasing' }] });
+  zombies.update(ZOMBIE.aiPeriod, { playerPosition, nowMs: 1000 });
+  await Promise.resolve(); await Promise.resolve();
+  const st = zombies.get(id);
+  // 回包给的是纯 +X，但直线被墙挡住 → 写入 state 的速度必须已被偏转
+  assertTrue(Math.abs(st.velocity[2]) > 0.1, `速度须被偏转（vz=${st.velocity[2]}）`);
+  assertEqual(st.mode, 'chasing', '未被围死 → mode 仍是 chasing');
+  // 速度长度仍等于 ZOMBIE.speed（转向只换方向、不改长度）
+  assertClose(Math.hypot(st.velocity[0], st.velocity[2]), ZOMBIE.speed, 1e-9, '长度守恒');
+});
+
+test('避障 k) mode "blocked" 不被静默规范化成 idle（createState 与 setIntent 两处都要）', () => {
+  const { zombies } = makeAiFixture();
+  const id = zombies.spawn([10.5, 1, 0.5], { source: 'test' });
+  zombies.setIntent(id, { vx: 0, vz: 0, mode: 'blocked' });
+  assertEqual(zombies.get(id).mode, 'blocked', 'setIntent 路径须保留 blocked');
+  // damage 走 createState 重建 state —— 另一份三元表达式的消费路径
+  zombies.damage(id, 1, 0);
+  assertEqual(zombies.get(id).mode, 'blocked', 'createState 路径也须保留 blocked');
+});
+
+test('避障 l) 四面围死 → 原地站住；拆墙后下一周期恢复 chasing 并移动', async () => {
+  const { zombies, entities, pool, playerPosition, world, ids } = makeAiFixture();
+  // 把丧尸周围整片填实（探针 9 个方向全部撞墙）
+  for (let x = 8; x <= 14; x++) {
+    for (let y = 1; y <= 8; y++) for (let z = 6; z <= 12; z++) world.setBlock(x, y, z, ids.stone);
+  }
+  // 先挖出丧尸自己那一格（否则 spawn 的脚/头格 air 门控会拒绝）
+  world.setBlock(10, 4, 8, 0);
+  world.setBlock(10, 5, 8, 0);
+  world.setBlock(10, 3, 8, ids.stone); // 脚下仍有支撑
+  const id = zombies.spawn([10.5, 4, 8.5], { source: 'test' });
+  assertTrue(id !== null, '前提：围死格内仍能生成（脚/头 air + 脚下 solid）');
+  const generation = zombies.entities.get(id).generation;
+  const x0 = zombies.get(id).position[0];
+  pool.replies.push({ updates: [{ id, generation, vx: ZOMBIE.speed, vz: 0, mode: 'chasing' }] });
+  zombies.update(ZOMBIE.aiPeriod, { playerPosition, nowMs: 1000 });
+  await Promise.resolve(); await Promise.resolve();
+  assertEqual(zombies.get(id).mode, 'blocked', '四面实心 → blocked');
+  assertEqual(zombies.get(id).velocity[0], 0, 'blocked → 水平速度归零');
+  for (let i = 0; i < 120; i++) entities.update(1 / 60, { world });
+  assertClose(zombies.get(id).position[0], x0, 0.05, '围死 2 秒内不得移动');
+
+  // 拆掉 +X 方向 1.2 格探针会落到的那些格（实测：0° 探针落点 x=11.7，AABB 跨 x=11..12，
+  // 故两列都得空出来；只拆 x=12 时 x=11 仍实心 → 仍然 blocked。这是 fixture 细节，
+  // 不是实现缺陷，但不对就测不出恢复路径）。
+  for (let x = 11; x <= 15; x++) for (let y = 4; y <= 5; y++) world.setBlock(x, y, 8, 0);
+  pool.replies.push({ updates: [{ id, generation, vx: ZOMBIE.speed, vz: 0, mode: 'chasing' }] });
+  zombies.update(ZOMBIE.aiPeriod, { playerPosition, nowMs: 1050 });
+  await Promise.resolve(); await Promise.resolve();
+  assertEqual(zombies.get(id).mode, 'chasing', '拆墙后须恢复 chasing（探针无记忆）');
+  const xBefore = zombies.get(id).position[0];
+  for (let i = 0; i < 120; i++) entities.update(1 / 60, { world });
+  assertTrue(zombies.get(id).position[0] > xBefore + 0.1, `拆墙后须继续前进（x=${zombies.get(id).position[0]}）`);
 });
