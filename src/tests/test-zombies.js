@@ -1488,7 +1488,7 @@ test('ZombieRenderer: slot 归还后重分配不继承上一只的缓动', () =>
 // 22.5° 只在「0° 的 AABB 横向跨两列、22.5° 恰好只压一列」的斜擦场景才是答案（用例 d 就是这个夹具）。
 
 test('避障 a) 无障碍 → 输出逐位等于输入（平地零回归）', () => {
-  const { world, ids } = makeAiFixture();
+  const { world } = makeAiFixture();
   const pos = [10.5, 1, 2.5];
   const out = steerIntent({ world, position: pos, vx: ZOMBIE.speed, vz: 0 });
   // **逐位相等**（Object.is）而不是 close：归一化重建会让 1.2 变成 1.1999999999999997，
@@ -1508,7 +1508,6 @@ test('避障 a) 无障碍 → 输出逐位等于输入（平地零回归）', ()
     assertTrue(Object.is(o.vx, vx) && Object.is(o.vz, vz),
       `非精确往返输入 (${vx}, ${vz}) 须逐位原样返回，实得 (${o.vx}, ${o.vz})`);
   }
-  assertTrue(ids !== null || true);
 });
 
 test('避障 b) 正前 1 列墙 → 最小可通偏角 +45°（22.5° 仍压墙）', () => {
