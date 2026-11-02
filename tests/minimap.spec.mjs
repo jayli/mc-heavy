@@ -11,7 +11,7 @@ import { test, expect } from 'playwright/test';
  *
  * 判据选型（避坑）：
  *  - **不比绝对色值**，比「该像素是否落在某种类的色域内 + 种类之间是否显著不同」——
- *    渲染管线/DPR 差异不影响判据（同 turret-render / zombie-head 的手法）；
+ *    渲染管线/DPR 差异不影响判据（同 turret-render / zombie-model 的手法）；
  *  - **每个用例都有判别性前提**（「南北两侧确实不同区域」「这个点是真水」）先断言，
  *    否则判据可能恒真（testing-policy §2.7 的无效盲区）；
  *  - 采样点由**Node 侧独立算出的世界格**给出（不读被测模块的 AREA_COLORS 去比它自己），

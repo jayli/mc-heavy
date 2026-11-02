@@ -74,3 +74,23 @@ export const ZOMBIE_SWING = Math.PI / 8;
  * entities 层不得反向依赖 render，故常量必须落在两层都能 import 的 config 里。
  */
 export const ZOMBIE_MOVING_EPSILON = 0.001;
+
+/**
+ * 手臂摆动的幅度（弧度）。
+ *
+ * 与原版一致的关系是「腿跨步 > 臂前后甩 > 头轻摆」—— 手臂挂在肩上、跨幅小于腿的
+ * 髋部扫弧；过头会让丧尸走起来像在挥手。
+ *
+ * ⚠️ **必须小于 `ZOMBIE_SWING`（π/8）**（单测钉住）。数值是实玩标定值，与
+ * `ZOMBIE_SWING` 的多轮调参同性质：先按原版比例取 π/12（15°），实玩觉得不自然再调。
+ */
+export const ZOMBIE_ARM_SWING = Math.PI / 12;
+
+/**
+ * 头部左右轻摆的幅度（弧度）。
+ *
+ * 与手臂的差别有两处：**幅度更小**（π/24 = 7.5°，头部惯性小、摆大了像抽搐），
+ * 且**频率减半**（`sin(phase × 0.5)` —— 走一个完整步周期才摆一次，避免与腿同频抖动）。
+ * 只在绕 Y 轴摆（左右晃），不低头不歪头（`rotation.x/z` 恒 0）。
+ */
+export const ZOMBIE_HEAD_SWAY = Math.PI / 24;

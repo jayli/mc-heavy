@@ -599,7 +599,7 @@ test('8 巢穴 / 30 丧尸中档压力 fixture：队列与 slot 收敛、失效�
     // 释放旧的 20 容量 renderer/service，换 30 容量（先 renderer 后 service，与 game.js 装配同序）
     g.zombies.dispose();
     g.zombieRenderer.dispose();
-    g.zombieRenderer = new ZombieRenderer({ scene: g.scene, maxActive: 30, headTexture: null });
+    g.zombieRenderer = new ZombieRenderer({ scene: g.scene, maxActive: 30, skinTexture: null });
     g.zombies = new ZombieService({
       entities: g.entities, world: g.world, maxActive: 30,
       onSpawn: (id, slot) => g.zombieRenderer.acquireSlot(id, slot),

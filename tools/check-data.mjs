@@ -36,11 +36,12 @@ const {
 } = await import('../src/player/inventory.js');
 const { buildDefaultRegistry } = await import('../src/voxel/block-registry.js');
 const { BLOCKS } = await import('../src/voxel/blocks-data.js');
-// 丧尸头部纹理的图案参数与指纹走共享模块（红线 1：与烘焙脚本同一份逻辑）
+// 丧尸皮肤（标准 64×64 版式）的版式参数与指纹走共享模块
+// （红线 1：与烘焙脚本同一份逻辑，两处漂移会让指纹比对得出错误结论）
 const {
-  HEAD_PNG, HEAD_JSON, HEAD_WIDTH, HEAD_HEIGHT, EYE_CELLS, headInputFingerprint,
-  HEAD_TEXTURE_CONFIG,
-} = await import('./zombie-head-fingerprint.mjs');
+  SKIN_PNG, SKIN_JSON, SKIN_SIZE, SKIN_LAYOUT_VERSION, SKIN_REGIONS,
+  SKIN_REGION_MIN_DIST, skinInputFingerprint,
+} = await import('./zombie-skin-fingerprint.mjs');
 // v1.26：图标走独立 icons-atlas（不再有 INVENTORY_ICONS 表）。指纹/清单走共享模块
 // （红线 1：与烘焙脚本同一份逻辑，两处漂移会让指纹比对得出错误结论）。
 const { iconFingerprintFor, FLAT_BLOCKS, FLAT_ICON_TILE } = await import('./icon-fingerprint.mjs');
@@ -436,58 +437,82 @@ function checkStructureJsonOrphans() {
   }
 }
 
-// ---------------------------------------------------------------- [9] 丧尸头部纹理契约
+// ---------------------------------------------------------------- [9] 丧尸皮肤契约
+
+/** 一组矩形的并集均值 RGB（sRGB 0..255）；门禁与烘焙摘要共用同一口径 */
+function regionMean(png, rects) {
+  let sr = 0, sg = 0, sb = 0, n = 0;
+  for (const r of rects) {
+    for (let y = r.y0; y < r.y1; y++) {
+      for (let x = r.x0; x < r.x1; x++) {
+        const o = (y * png.width + x) * 4;
+        sr += png.data[o]; sg += png.data[o + 1]; sb += png.data[o + 2]; n++;
+      }
+    }
+  }
+  return [sr / n, sg / n, sb / n];
+}
 
 /**
- * 丧尸头部马赛克纹理的三个环节必须齐全，否则头部图案**静默缺失**。
+ * 丧尸皮肤（64×64 标准版式）的四个环节必须齐全，否则观感**静默错乱**。
  *
- * 失效路径与图标过期同类（v1.24 记录过「改 mesher 几何忘跑 atlas」）：纹理是**派生产物**，
- * 权威输入是 `tools/zombie-head-fingerprint.mjs` 的图案参数。改了参数却忘跑 `npm run zombie`
- * → 渲染旧图案（肉眼看不出「图案过期」，只觉得「颜色怪怪的」）。
+ * 失效路径与图标过期同类（v1.24 记录过「改 mesher 几何忘跑 atlas」）：皮肤是**派生产物**，
+ * 权威输入是 `tools/zombie-skin-fingerprint.mjs` 的参数 + re-export 的
+ * `src/render/zombie-model.js` 的 UV 表。改了参数却忘跑 `npm run zombieskin`
+ * → 渲染旧图（肉眼看不出「过期」，只觉得「颜色怪怪的」）。
  *
- * 三条断言：
- *   ① PNG 存在 + 尺寸 = 128×64（双区并排）→ 缺文件时 `loadAsync` 抛错，game.js 的 catch
- *      会退回纯色头（**静默降级**，不阻断启动 → 只有门禁能抓）
- *   ② 黑像素数 = 眼睛格数 × mosaicSize²（**关系型**，不硬编码 128）→ 抓「眼睛画错位置/数量」
- *   ③ 输入指纹匹配 → 抓「改了参数忘重烘」。指纹逻辑走共享模块（红线 1：与烘焙脚本同一份，
- *      两处漂移会误判）
+ * 四条断言：
+ *   ① PNG 存在 + 尺寸 = 64×64 → 缺文件时 `loadAsync` 抛错，game.js 的 catch 会退回纯色
+ *      （**静默降级**，不阻断启动 → 只有门禁能抓）
+ *   ② 版式版本与当前 UV 表匹配 → 抓「UV 表改成新布局但皮肤还是旧布局」
+ *   ③ 三区均值色距 ≥ 阈值 → 抓「绿皮 / 上衣 / 裤子配色撞车」（远看是一个纯色人形）
+ *   ④ 输入指纹匹配 → 抓「改了参数忘重烘」（指纹逻辑走共享模块，红线 1）
  */
-function checkZombieHeadTexture() {
-  if (!fs.existsSync(HEAD_PNG)) {
-    failures.push('[丧尸头部] assets/zombie/head.png 不存在 —— 跑 npm run zombie');
+function checkZombieSkinTexture() {
+  if (!fs.existsSync(SKIN_PNG)) {
+    failures.push('[丧尸皮肤] assets/zombie/skin.png 不存在 —— 跑 npm run zombieskin');
     return;
   }
-  const png = PNG.sync.read(fs.readFileSync(HEAD_PNG));
-  if (png.width !== HEAD_WIDTH || png.height !== HEAD_HEIGHT) {
-    failures.push(`[丧尸头部] PNG ${png.width}×${png.height} 与期望 ${HEAD_WIDTH}×${HEAD_HEIGHT} 不符（烘焙到一半失败？）`);
+  const png = PNG.sync.read(fs.readFileSync(SKIN_PNG));
+  if (png.width !== SKIN_SIZE || png.height !== SKIN_SIZE) {
+    failures.push(`[丧尸皮肤] PNG ${png.width}×${png.height} 与期望 ${SKIN_SIZE}×${SKIN_SIZE} 不符（烘焙到一半失败？）`);
     return;
   }
 
-  // ② 黑像素数（关系型：眼睛格数 × 每格像素数）
-  const expectBlack = EYE_CELLS * HEAD_TEXTURE_CONFIG.mosaicSize * HEAD_TEXTURE_CONFIG.mosaicSize;
-  let black = 0;
-  for (let i = 0; i < png.data.length; i += 4) {
-    if (png.data[i] === 0 && png.data[i + 1] === 0 && png.data[i + 2] === 0) black++;
+  // ② 版式版本 + ③ 三区色距 + ④ 指纹（都需要 manifest）
+  if (!fs.existsSync(SKIN_JSON)) {
+    failures.push('[丧尸皮肤] assets/zombie/skin.json 不存在 —— 跑 npm run zombieskin');
+    return;
   }
-  if (black !== expectBlack) {
-    failures.push(`[丧尸头部] 黑像素 ${black} 个 ≠ 期望 ${expectBlack}（${EYE_CELLS} 个眼睛格 × `
-      + `${HEAD_TEXTURE_CONFIG.mosaicSize}²）—— 眼睛画错位置/数量，重跑 npm run zombie`);
+  const manifest = JSON.parse(fs.readFileSync(SKIN_JSON, 'utf8'));
+  if (manifest.layout !== SKIN_LAYOUT_VERSION) {
+    failures.push(`[丧尸皮肤] 版式版本 ${manifest.layout} ≠ 期望 ${SKIN_LAYOUT_VERSION}`
+      + '（UV 表与皮肤布局不同步，重跑 npm run zombieskin）');
   }
 
-  // ③ 输入指纹（manifest 缺失 = 从没跑过 npm run zombie）
-  if (!fs.existsSync(HEAD_JSON)) {
-    failures.push('[丧尸头部] assets/zombie/head.json 不存在 —— 跑 npm run zombie');
-  } else {
-    const manifest = JSON.parse(fs.readFileSync(HEAD_JSON, 'utf8'));
-    const current = headInputFingerprint();
-    if (manifest.fingerprint !== current) {
-      failures.push('[丧尸头部] 图案参数已变但纹理未重烘（跑 npm run zombie）'
-        + `\n      期望 ${current}\n      实际 ${manifest.fingerprint}`);
+  const means = {};
+  for (const [name, rects] of Object.entries(SKIN_REGIONS)) means[name] = regionMean(png, rects);
+  const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+  const pairs = [['head', 'torso'], ['torso', 'leg'], ['head', 'leg']];
+  for (const [a, b] of pairs) {
+    const d = dist(means[a], means[b]);
+    if (d < SKIN_REGION_MIN_DIST) {
+      failures.push(`[丧尸皮肤] 「${a}」与「${b}」的均值色距 ${d.toFixed(1)} < ${SKIN_REGION_MIN_DIST}`
+        + `（${means[a].map(Math.round)} vs ${means[b].map(Math.round)}）—— 三区分不开，远看是纯色人形`);
     }
   }
 
-  if (!failures.some((f) => f.startsWith('[丧尸头部]'))) {
-    infos.push(`[丧尸头部] head.png ${HEAD_WIDTH}×${HEAD_HEIGHT} + ${EYE_CELLS} 个眼睛格 + 指纹匹配`);
+  const current = skinInputFingerprint();
+  if (manifest.fingerprint !== current) {
+    failures.push('[丧尸皮肤] 参数已变但皮肤未重烘（跑 npm run zombieskin）'
+      + `\n      期望 ${current}\n      实际 ${manifest.fingerprint}`);
+  }
+
+  if (!failures.some((f) => f.startsWith('[丧尸皮肤]'))) {
+    const d01 = dist(means.head, means.torso), d12 = dist(means.torso, means.leg), d02 = dist(means.head, means.leg);
+    infos.push(`[丧尸皮肤] skin.png ${SKIN_SIZE}×${SKIN_SIZE} 版式 ${SKIN_LAYOUT_VERSION}`
+      + ` + 三区色距 ${d01.toFixed(0)}/${d12.toFixed(0)}/${d02.toFixed(0)}（阈值 ${SKIN_REGION_MIN_DIST}）`
+      + ' + 指纹匹配');
   }
 }
 
@@ -2501,7 +2526,7 @@ checkTestRegistration();
 checkGeometryAuthority();
 await checkScatterStructureIntegrity();
 checkStructureJsonOrphans();   // 2026-09-30：tall_well 悬空宝箱回归防线（⚠️ 漏了本行则门禁永不执行）
-checkZombieHeadTexture();
+checkZombieSkinTexture();
 checkTurretArmorTexture();
 checkSkyboxAssets();         // v1.58：天空盒立方图完整性（⚠️ 漏了本行则门禁永不执行）
 await checkNightSkyFreshness(); // v1.60：夜空烘焙产物指纹（⚠️ 漏了本行则门禁永不执行）

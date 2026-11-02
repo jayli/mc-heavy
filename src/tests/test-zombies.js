@@ -17,7 +17,7 @@ import { WORLD_MIN_Y } from '../voxel/constants.js';
 import { EntityManager } from '../entities/entity-manager.js';
 import {
   ZOMBIE, ZOMBIE_FLASH_MS, ZOMBIE_WALK_SPEED, ZOMBIE_SWING, ZOMBIE_MOVING_EPSILON,
-  ZOMBIE_SEPARATION,
+  ZOMBIE_SEPARATION, ZOMBIE_ARM_SWING, ZOMBIE_HEAD_SWAY,
 } from '../entities/zombies/zombie-config.js';
 import {
   ZombieService, zombieDefinition, separationForce, computeAiUpdates,
@@ -25,6 +25,7 @@ import {
 import {
   ZombieRenderer, ZOMBIE_PARTS, ZOMBIE_PART_DEFS, HEAD_FRONT_VERTICES,
 } from '../render/zombie-renderer.js';
+import { ZOMBIE_MODEL_DEFS, ZOMBIE_SKIN_UV, SKIN_SIZE } from '../render/zombie-model.js';
 
 /** 舍入到 1e-6：抵消 IEEE754 累加噪声，让派生量可与字面量比对（testing-policy §2.5） */
 function round6(v) { return Math.round(v * 1e6) / 1e6; }
@@ -44,11 +45,11 @@ function assertClose(actual, expected, tolerance, message = '') {
  * 其上全 air），落点条件完全由 fixture 掌控，可被测试改写（`world.setBlock`）来制造
  * 「头格被占用」等非法出生场景。
  *
- * @param {{maxActive?: number, withRenderer?: boolean, headTexture?: THREE.Texture|null}} [opts]
- *   `headTexture`：传一个 dummy 纹理即走「head 马赛克纹理 + UV 分区」路径；默认 null =
+ * @param {{maxActive?: number, withRenderer?: boolean, skinTexture?: THREE.Texture|null}} [opts]
+ *   `skinTexture`：传一个 dummy 纹理即走「全身皮肤 + 每面 UV 矩形」路径；默认 null =
  *   纯色退回路径（既有测试不受影响，向后兼容）。
  */
-export function makeZombieFixture({ maxActive = ZOMBIE.maxActive, withRenderer = true, headTexture = null } = {}) {
+export function makeZombieFixture({ maxActive = ZOMBIE.maxActive, withRenderer = true, skinTexture = null } = {}) {
   const registry = createRegistry();
   registry.register('air', { solid: false, opaque: false, cullMode: 'none' });
   registry.register('stone', { solid: true, opaque: true, cullMode: 'opaque' });
@@ -71,7 +72,7 @@ export function makeZombieFixture({ maxActive = ZOMBIE.maxActive, withRenderer =
   entities.registerType('zombie', zombieDefinition);
 
   const scene = new THREE.Scene();
-  const renderer = withRenderer ? new ZombieRenderer({ scene, maxActive: ZOMBIE.maxActive, headTexture }) : null;
+  const renderer = withRenderer ? new ZombieRenderer({ scene, maxActive: ZOMBIE.maxActive, skinTexture }) : null;
 
   // 渲染 slot 由 service 的生命周期钩子驱动（service 是同构层，不得 import render —— 注入解耦，
   // 与 EntityManager.onDespawn 同一手法）。**slot 单一权威在 service**（它管 20 上限），
@@ -622,30 +623,75 @@ test('丧尸: 步态与朝向共用同一个移动阈值（跨层一致性，红
   assertTrue(0.0015 > ZOMBIE_MOVING_EPSILON, '前提：测试输入须高于真实阈值');
 });
 
-test('ZombieRenderer: 六部件尺寸/偏移/旋转/配色对齐 mc-lite（防数值漂移）', () => {
-  // 逐项钉住实测自 mc-lite ZombieInstancedRenderer.js:28-82 的数值。这些是**视觉数据**
-  // （Tier 2 口径：改错了立刻可见，但静默改错没人会发现），故用门禁断言而非目视。
-  // head.color 现在是 **0xffffff**（白底乘纹理色，mc-lite 同口径）—— 头部马赛克纹理已接线
-  // （M6 遗留 TODO 补齐），真实颜色由纹理给。曾一度用视觉色 0x406b30（无纹理时的退回），
-  // 那个值现在只在 `_baseColorOf` 的「无纹理退回路径」里，不再是定义色（见下方专测）。
-  assertDeepEqual(ZOMBIE_PART_DEFS.head.size, [0.6, 0.6, 0.6]);
-  assertDeepEqual(ZOMBIE_PART_DEFS.head.offset, [0, 1.8, 0]);
-  assertEqual(ZOMBIE_PART_DEFS.head.color, 0xffffff);
-  assertDeepEqual(ZOMBIE_PART_DEFS.body.size, [0.55, 0.63, 0.45]);
-  assertDeepEqual(ZOMBIE_PART_DEFS.body.offset, [0, 1.15, 0]);
-  assertEqual(ZOMBIE_PART_DEFS.body.color, 0x037c7c);
-  assertDeepEqual(ZOMBIE_PART_DEFS.leftArm.size, [0.23, 0.8, 0.23]);
-  assertDeepEqual(ZOMBIE_PART_DEFS.leftArm.offset, [-0.43, 1.3, 0.3]);
-  assertEqual(ZOMBIE_PART_DEFS.leftArm.rotation[0], -Math.PI / 2.4);
-  assertDeepEqual(ZOMBIE_PART_DEFS.rightArm.offset, [0.43, 1.3, 0.3]);
-  assertEqual(ZOMBIE_PART_DEFS.rightArm.rotation[0], -Math.PI / 2.7);
-  assertDeepEqual(ZOMBIE_PART_DEFS.leftLeg.size, [0.26, 1.0, 0.26]);
-  assertDeepEqual(ZOMBIE_PART_DEFS.leftLeg.offset, [-0.14, 0.9, 0]);
-  assertEqual(ZOMBIE_PART_DEFS.leftLeg.color, 0x322b71);
-  assertDeepEqual(ZOMBIE_PART_DEFS.rightLeg.offset, [0.14, 0.9, 0]);
-  // 腿的 rotation 为 null：摆幅由步态运行时给，不是静态旋转
+test('ZombieRenderer: 六部件尺寸/偏移派生自 zombie-model（原版人形口径）', () => {
+  // 断言的是**派生关系**：`ZOMBIE_PART_DEFS` 必须等于 `ZOMBIE_MODEL_DEFS` 的投影，
+  // 而不是各写一份数值（两份会漂移）。同时钉住「不许有人把旧的自定义尺寸改回去」。
+  for (const part of ZOMBIE_PARTS) {
+    const model = ZOMBIE_MODEL_DEFS[part];
+    const def = ZOMBIE_PART_DEFS[part];
+    assertDeepEqual(def.size, [...model.size], `${part}.size 须派生自 zombie-model`);
+    assertDeepEqual(def.offset, [...model.pivot], `${part}.offset 须 = 模型轴心`);
+    assertEqual(def.color, model.fallbackColor, `${part}.color 须 = 模型退回色`);
+  }
+  // 关键绝对值（原版口径）：躯干 0.5×0.75×0.25、四肢 0.25×0.75×0.25
+  assertDeepEqual(ZOMBIE_PART_DEFS.body.size, [0.5, 0.75, 0.25]);
+  assertDeepEqual(ZOMBIE_PART_DEFS.leftLeg.size, [0.25, 0.75, 0.25]);
+  // 臂仍保留基准前伸角逐（左右略不对称，现状口径）
+  assertEqual(ZOMBIE_PART_DEFS.leftArm.rotation[0], -Math.PI / 2 + 0.12 * Math.PI);
+  // Z 轴不外张：原版丧尸双臂向前直伸、几乎平行。
+  // （实测试过 ±0.10π 外张，观感像企鹅摊手 —— 不是原版）
+  assertEqual(ZOMBIE_PART_DEFS.leftArm.rotation[2], 0, '左臂不应向外张开');
+  assertEqual(ZOMBIE_PART_DEFS.rightArm.rotation[2], 0, '右臂不应向外张开');
+  assertEqual(ZOMBIE_PART_DEFS.rightArm.rotation[0], -Math.PI / 2 + 0.09 * Math.PI);
+  // 腿的静态 rotation 为 null（摆幅由步态给）
   assertNull(ZOMBIE_PART_DEFS.leftLeg.rotation);
   assertNull(ZOMBIE_PART_DEFS.rightLeg.rotation);
+});
+
+test('ZombieRenderer: 有纹理时每个面的 UV 落在该部件对应的皮肤矩形内', () => {
+  const dummy = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
+  const { renderer } = makeZombieFixture({ skinTexture: dummy });
+  const FACES = ['px', 'nx', 'py', 'ny', 'pz', 'nz'];
+  for (const part of ZOMBIE_PARTS) {
+    const uv = renderer.meshes[part].geometry.getAttribute('uv');
+    const table = ZOMBIE_SKIN_UV[part];
+    FACES.forEach((face, faceIndex) => {
+      const r = table[face];
+      const u0 = Math.min(r[0], r[2]) / SKIN_SIZE, u1 = Math.max(r[0], r[2]) / SKIN_SIZE;
+      const v0 = Math.min(r[1], r[3]) / SKIN_SIZE, v1 = Math.max(r[1], r[3]) / SKIN_SIZE;
+      for (let k = 0; k < 4; k++) {
+        const i = faceIndex * 4 + k;
+        const u = uv.getX(i), v = uv.getY(i);
+        assertTrue(u >= u0 - 1e-6 && u <= u1 + 1e-6,
+          `${part}.${face} 顶点 ${i} 的 u=${u} 须落在 [${u0}, ${u1}]`);
+        assertTrue(v >= v0 - 1e-6 && v <= v1 + 1e-6,
+          `${part}.${face} 顶点 ${i} 的 v=${v} 须落在 [${v0}, ${v1}]`);
+      }
+    });
+  }
+});
+
+test('ZombieRenderer: 反向书写的 UV 矩形被映射成镜像（不规范化）', () => {
+  const dummy = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
+  const { renderer } = makeZombieFixture({ skinTexture: dummy });
+  // body.py（+Y 面，faceIndex 2）的矩形是 [28,16,20,20]（u 反向：u0=28 → u1=20）
+  const uv = renderer.meshes.body.geometry.getAttribute('uv');
+  const pts = [0, 1, 2, 3].map((k) => ({ u: uv.getX(2 * 4 + k), v: uv.getY(2 * 4 + k) }));
+  // 矩形规范化后应是 u ∈ [20/64, 28/64]、v ∈ [16/64, 20/64]
+  const uMin = 20 / 64, uMax = 28 / 64, vMin = 16 / 64, vMax = 20 / 64;
+  for (const p of pts) {
+    assertTrue(p.u >= uMin - 1e-6 && p.u <= uMax + 1e-6, `u=${p.u} 超界`);
+    assertTrue(p.v >= vMin - 1e-6 && p.v <= vMax + 1e-6, `v=${p.v} 超界`);
+  }
+  // **镜像判据**：默认 BoxGeometry 的某面四个顶点 UV 是 (0,1)(1,1)(0,0)(1,0) ——
+  // 即「v 相等的两个顶点」之间 u 递增。矩形 u1 < u0 ⇒ 映射后那对顶点的 u 必须**递减**。
+  // 规范化成 min/max 会让它们递增 → 该面水平镜像（衣服纹理左右反了）。
+  // ⚠️ 不能用「u 最大处的 v」做判据：四个顶点的 (u,v) 只取两个值组合，u 与 v 两组配对
+  // 完全相同（实测两侧都是 0.3125）—— 那样写会得出恒真的无效断言。
+  const pair = pts.filter((p) => Math.abs(p.v - Math.max(...pts.map((q) => q.v))) < 1e-9);
+  assertEqual(pair.length, 2, '前提：该面有两个顶点的 v 相等');
+  assertTrue(pair[0].u > pair[1].u,
+    `body.py 在等高 v 处 u 应递减（矩形 [28,16,20,20]），实测 ${pair[0].u} vs ${pair[1].u}`);
 });
 
 test('ZombieRenderer: 腿几何轴心在大腿根部（mc-lite translate 语义）', () => {
@@ -662,21 +708,18 @@ test('ZombieRenderer: 腿几何轴心在大腿根部（mc-lite translate 语义�
   assertClose(renderer.meshes.head.geometry.boundingBox.max.y, ZOMBIE_PART_DEFS.head.size[1] / 2, 1e-6);
 });
 
-test('ZombieRenderer: head UV 分区 —— 正面采纹理右半（有眼睛）、其余五面采左半', () => {
+test('ZombieRenderer: HEAD_FRONT_VERTICES 确实是正面（pz），且 UV 落在头部正脸矩形内', () => {
   // dummy 纹理（DataTexture，无需 DOM/canvas）：只为触发「有 map」路径，内容不重要
   const dummy = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
-  const { renderer } = makeZombieFixture({ headTexture: dummy });
+  const { renderer } = makeZombieFixture({ skinTexture: dummy });
   const geo = renderer.meshes.head.geometry;
   const uv = geo.getAttribute('uv');
-  const pos = geo.getAttribute('position'); // 用 count 遍历全部顶点（法线判据见下）
+  const pos = geo.getAttribute('position');
 
   // ① **前提断言：HEAD_FRONT_VERTICES 确实是「正面（pz）」的顶点**。
   //    必须独立于被测常量验证 —— 否则把常量改成错误索引（如 [0,1,2,3] = 右面）时，
-  //    下面的 UV 断言**仍会全绿**（它读的就是那个被改错的常量）→ 恒真陷阱
-  //    （testing-policy §2.5「测试输入从被测常量派生」）。
-  //    判据用**法线**而非 position.z：正面顶点法线恒 (0,0,+1)，而 position.z 不行 ——
-  //    棱上的顶点被多个面共享 z 值（顶/底/左/右面各有 2 个顶点也在 z=+size/2），
-  //    用它做反向判据会多出 8 个假命中（实测踩过）。
+  //    下面的 UV 断言**仍会全绿**（它读的就是那个被改错的常量）→ 恒真陷阱。
+  //    判据用**法线**而非 position.z：棱上的顶点被多个面共享 z 值。
   const normal = geo.getAttribute('normal');
   for (const i of HEAD_FRONT_VERTICES) {
     assertClose(normal.getX(i), 0, 1e-6, `顶点 ${i} 法线 x 须为 0`);
@@ -684,7 +727,6 @@ test('ZombieRenderer: head UV 分区 —— 正面采纹理右半（有眼睛）
     assertClose(normal.getZ(i), 1, 1e-6, `顶点 ${i} 须是正面（法线 z = +1）`);
   }
   // ② 反向前提：法线 (0,0,+1) 的顶点**恰好**是 HEAD_FRONT_VERTICES → 钉住「不多不少」
-  const frontSet = new Set(HEAD_FRONT_VERTICES);
   const byNormal = [];
   for (let i = 0; i < pos.count; i++) {
     if (Math.abs(normal.getZ(i) - 1) < 1e-6 && Math.abs(normal.getX(i)) < 1e-6 && Math.abs(normal.getY(i)) < 1e-6) {
@@ -694,54 +736,51 @@ test('ZombieRenderer: head UV 分区 —— 正面采纹理右半（有眼睛）
   assertDeepEqual(byNormal.sort((a, b) => a - b), [...HEAD_FRONT_VERTICES].sort((a, b) => a - b),
     '正面顶点须恰好是 HEAD_FRONT_VERTICES（不多不少）');
 
-  // ③ UV 分区生效：正面 u ∈ [0.5, 1]（右半有眼睛）；其余 u ∈ [0, 0.5]（左半无眼睛）。
-  //    只压 u 不动 v → 保持 8×8 马赛克比例（若压 v 会把格子压成 8×4，图案变扁）。
-  for (let i = 0; i < uv.count; i++) {
-    const u = uv.getX(i);
-    if (frontSet.has(i)) {
-      assertTrue(u >= 0.5 - 1e-6 && u <= 1 + 1e-6, `正面顶点 ${i} 的 u 须在 [0.5,1]，got ${u}`);
-    } else {
-      assertTrue(u >= -1e-6 && u <= 0.5 + 1e-6, `非正面顶点 ${i} 的 u 须在 [0,0.5]，got ${u}`);
-    }
+  // ③ 正面采到的是**皮肤里头部正脸那块矩形**（`ZOMBIE_SKIN_UV.head.pz`，眼睛在里面）。
+  //    取代旧版「采双区纹理右半」的断言：现在整张皮肤是一套标准 64×64 版式，
+  //    不再是「左半无眼 / 右半有眼」的分区。
+  const [u1, v1, u2, v2] = ZOMBIE_SKIN_UV.head.pz;
+  const uMin = Math.min(u1, u2) / SKIN_SIZE, uMax = Math.max(u1, u2) / SKIN_SIZE;
+  const vMin = Math.min(v1, v2) / SKIN_SIZE, vMax = Math.max(v1, v2) / SKIN_SIZE;
+  for (const i of HEAD_FRONT_VERTICES) {
+    const u = uv.getX(i), v = uv.getY(i);
+    assertTrue(u >= uMin - 1e-6 && u <= uMax + 1e-6,
+      `正面顶点 ${i} 的 u=${u} 须落在头部正脸矩形 [${uMin}, ${uMax}]`);
+    assertTrue(v >= vMin - 1e-6 && v <= vMax + 1e-6,
+      `正面顶点 ${i} 的 v=${v} 须落在头部正脸矩形 [${vMin}, ${vMax}]`);
   }
-  // ④ v 未被改写：六面 v 仍覆盖 [0,1] 全幅（默认 BoxGeometry 值）→ 纵向没被压扁
-  let minV = Infinity, maxV = -Infinity;
-  for (let i = 0; i < uv.count; i++) { minV = Math.min(minV, uv.getY(i)); maxV = Math.max(maxV, uv.getY(i)); }
-  assertClose(minV, 0, 1e-6, 'v 最小值须为 0（未改写纵向）');
-  assertClose(maxV, 1, 1e-6, 'v 最大值须为 1（未改写纵向）');
 
-  // ⑤ head 材质确实带 map；其余五部件不带（它们不该吃头部纹理）
+  // ④ 六部件全部带 map（皮肤是全身的，不再只有头）
   assertTrue(!!renderer.meshes.head.material.map, 'head 材质须带 map');
-  assertTrue(renderer.headHasTexture(), 'headHasTexture 须为真');
+  assertTrue(renderer.hasSkinTexture(), 'hasSkinTexture 须为真');
   for (const part of ZOMBIE_PARTS) {
-    if (part === 'head') continue;
-    assertNull(renderer.meshes[part].material.map, `${part} 材质不应带 map`);
+    assertTrue(!!renderer.meshes[part].material.map, `${part} 材质须带 map（全身皮肤）`);
   }
 });
 
-test('ZombieRenderer: 无纹理时 head 退回视觉色（不渲染成纯白头）', () => {
-  // 单测 fixture 默认不传纹理 → head 必须退回视觉色 0x406b30（= headPalette.base 的等价纯色）。
-  // **不能读 ZOMBIE_PART_DEFS.head.color**（那是 0xffffff 白底，退回色在 `_baseColorOf`）——
-  // 若这里改成读定义色，断言会在「退回路径失效」时仍全绿（恒真陷阱）。
-  const { renderer } = makeZombieFixture(); // 无 headTexture
-  assertFalse(renderer.headHasTexture(), '默认 fixture 不应有纹理');
-  assertNull(renderer.meshes.head.material.map, '无纹理时 head 不应带 map');
-  // instanceColor 是退回色的可观测落点（构造器初始化每个 slot 时写入）
+test('ZombieRenderer: 无纹理时六部件退回各自视觉色（不渲染成纯白方人）', () => {
+  const { renderer } = makeZombieFixture(); // 无 skinTexture
+  assertFalse(renderer.hasSkinTexture(), '默认 fixture 不应有纹理');
   const c = new THREE.Color();
-  renderer.meshes.head.getColorAt(0, c);
-  assertEqual(c.getHex(), 0x406b30, 'head 无纹理时基色须为视觉色 0x406b30');
-  // 对照：body 无纹理/有纹理都恒用定义色（不吃退回路径）
-  renderer.meshes.body.getColorAt(0, c);
-  assertEqual(c.getHex(), 0x037c7c);
+  for (const part of ZOMBIE_PARTS) {
+    assertNull(renderer.meshes[part].material.map, `${part} 无纹理时不应带 map`);
+    renderer.meshes[part].getColorAt(0, c);
+    // 退回色的权威在 zombie-model.js 的 fallbackColor（不读 ZOMBIE_PART_DEFS.head.color ——
+    // 那已经派生自同一处，读它会让「派生断了」这类缺陷测不出来）
+    assertEqual(c.getHex(), ZOMBIE_MODEL_DEFS[part].fallbackColor, `${part} 退回色`);
+  }
 });
 
-test('ZombieRenderer: 有纹理时 head 基色为白底（避免深绿 × 深绿变暗）', () => {
+test('ZombieRenderer: 有纹理时六部件基色为白底（避免基色 × 纹理变暗）', () => {
   const dummy = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
-  const { renderer } = makeZombieFixture({ headTexture: dummy });
+  const { renderer } = makeZombieFixture({ skinTexture: dummy });
   const c = new THREE.Color();
-  renderer.meshes.head.getColorAt(0, c);
-  // 有 map → 白底乘纹理色。若这里读到 0x406b30，会与纹理的深绿叠加 → 头部严重变暗
-  assertEqual(c.getHex(), 0xffffff, 'head 有纹理时基色须为白底 0xffffff');
+  for (const part of ZOMBIE_PARTS) {
+    assertTrue(!!renderer.meshes[part].material.map, `${part} 有纹理时须带 map`);
+    renderer.meshes[part].getColorAt(0, c);
+    // 有 map → 白底乘纹理色。若读到深色基色，会与纹理叠加 → 整体严重变暗
+    assertEqual(c.getHex(), 0xffffff, `${part} 有纹理时基色须为白底`);
+  }
 });
 
 test('ZombieRenderer: pose 跟随实体位置与朝向（只读发布，不回写 state）', () => {
@@ -1161,4 +1200,113 @@ test('丧尸物理: velocity 上限钳制（AI 回包不得给出超速意图）
   const vel2 = zombies.get(id).velocity;
   assertClose(Math.hypot(vel2[0], vel2[2]), ZOMBIE.speed, 1e-9, '斜向超速同样钳制');
   assertClose(vel2[0], vel2[2], 1e-9, '钳制保方向（两轴等分量）');
+});
+
+// ---------- 手臂与头部摆动（原版人形重建新增） ----------
+
+test('ZOMBIE config: 手臂与头部摆动幅度是冻结常量（渲染层不得写字面量）', () => {
+  assertEqual(ZOMBIE_ARM_SWING, Math.PI / 12);
+  assertEqual(ZOMBIE_HEAD_SWAY, Math.PI / 24);
+  // 幅度必须小于腿的摆幅（原版：腿的跨步比手臂前后甩大）
+  assertTrue(ZOMBIE_ARM_SWING < ZOMBIE_SWING, '臂摆幅须小于腿摆幅');
+  assertTrue(ZOMBIE_HEAD_SWAY < ZOMBIE_ARM_SWING, '头摆幅须小于臂摆幅');
+});
+
+test('ZombieRenderer: 手臂与腿反相摆动、头部半频摆动', () => {
+  const { zombies, renderer } = makeZombieFixture();
+  const id = zombies.spawn([0.5, 1, .5], { source: 'test' });
+  const slot = renderer.slotOf(id);
+  renderer.sync(zombies, 0);
+  // 静止：三者全部为 0
+  assertEqual(renderer.armSwingOf(slot), 0, '静止时臂摆幅为 0');
+  assertEqual(renderer.headSwayOf(slot), 0, '静止时头摆幅为 0');
+
+  const dtMs = 500;
+  zombies.setIntent(id, { vx: 0, vz: ZOMBIE.speed, mode: 'chasing' });
+  renderer.sync(zombies, dtMs);
+  const phase = (dtMs / 1000) * ZOMBIE_WALK_SPEED;
+  const expectedLeg = Math.sin(phase) * ZOMBIE_SWING;
+  const expectedArm = Math.sin(phase) * ZOMBIE_ARM_SWING;
+  const expectedHead = Math.sin(phase * 0.5) * ZOMBIE_HEAD_SWAY;
+  assertClose(renderer.legSwingOf(slot), expectedLeg, 1e-9, '腿摆幅');
+  assertClose(renderer.armSwingOf(slot, 'leftArm'), expectedArm, 1e-9, '左臂摆幅');
+  assertClose(renderer.armSwingOf(slot, 'rightArm'), -expectedArm, 1e-9, '右臂取反');
+  assertClose(renderer.headSwayOf(slot), expectedHead, 1e-9, '头摆幅（半频）');
+
+  // **矩阵级断言**（pose 内存值不是落点）：左臂/右臂的实例矩阵绕 X 的旋转必须反相，
+  // 且各自 = 基准前伸角 + 摆幅。基准角来自 ZOMBIE_PART_DEFS，不与摆动混淆。
+  const euler = new THREE.Euler();
+  const q = new THREE.Quaternion();
+  const p = new THREE.Vector3();
+  const s = new THREE.Vector3();
+  const m = new THREE.Matrix4();
+  const readRotX = (part) => {
+    renderer.meshes[part].getMatrixAt(slot, m);
+    m.decompose(p, q, s);
+    euler.setFromQuaternion(q);
+    return euler.x;
+  };
+  assertClose(readRotX('leftArm'), ZOMBIE_PART_DEFS.leftArm.rotation[0] + expectedArm, 1e-6, '左臂矩阵 = 基准角 + 摆幅');
+  assertClose(readRotX('rightArm'), ZOMBIE_PART_DEFS.rightArm.rotation[0] - expectedArm, 1e-6, '右臂矩阵 = 基准角 − 摆幅');
+  // 头：绕 Y 的摆动（摆幅远小于 π/2，Euler.y 反解安全）
+  assertClose(readRotX('head'), 0, 1e-6, '头部不得绕 X 旋转');
+  renderer.meshes.head.getMatrixAt(slot, m);
+  m.decompose(p, q, s);
+  euler.setFromQuaternion(q);
+  assertClose(euler.y, expectedHead, 1e-6, '头部矩阵绕 Y = 头摆幅');
+  assertClose(euler.z, 0, 1e-6, '头部不得绕 Z 旋转');
+
+  // 静止 → 三者归零（不是冻结在上一个摆幅）
+  zombies.setIntent(id, { vx: 0, vz: 0, mode: 'idle' });
+  renderer.sync(zombies, dtMs + 500);
+  assertEqual(renderer.legSwingOf(slot), 0);
+  assertEqual(renderer.armSwingOf(slot), 0);
+  assertEqual(renderer.headSwayOf(slot), 0);
+});
+
+test('ZombieRenderer: 皮肤 UV 的 v 方向 —— 世界顶部须采到皮肤矩形顶边（不是底边）', () => {
+  // **这条钉的是「脸有没有倒过来」**（用户 2026-11-04 实玩报告：眼睛在下、嘴在上）。
+  //
+  // 两套坐标系方向天然相反，是本 bug 的根源：
+  //   · `BoxGeometry` 的 `+Z` 面 `vdir = -1` ⇒ **世界顶部**的顶点 uv `v = 1`
+  //   · 皮肤矩形按图片像素写（左上角原点）⇒ **矩形顶边**是 `v_img = v1`（小值）
+  // 故映射必须把 `v = 1` 对到 `v1`、`v = 0` 对到 `v2`。
+  //
+  // 取样面用 head 的正脸（`pz`）：它的矩形 `[8,8,16,16]` 里有眼睛（v_img≈11）与嘴（v_img≈13），
+  // 是唯一「上下有明确结构」的面 —— 其余面是随机噪点，倒过来看不出来。
+  //
+  // ⚠️ `DataTexture` 的 `flipY` 默认 **false**，而 `TextureLoader` 是 **true** ——
+  // 两条路径的最终 uv 数值不同。故本用例显式覆盖两种取值，避免「单测走 false、
+  // 真实页走 true」的口径分裂（那正是这个 bug 溜过单测的原因）。
+  const [u1, v1, u2, v2] = ZOMBIE_SKIN_UV.head.pz;
+  for (const flipY of [true, false]) {
+    const tex = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
+    tex.flipY = flipY;
+    const { renderer } = makeZombieFixture({ skinTexture: tex });
+    const geo = renderer.meshes.head.geometry;
+    const uv = geo.getAttribute('uv');
+    const pos = geo.getAttribute('position');
+
+    // 找 +Z 面（顶点 16-19）里 position.y 最大的两个顶点 = 世界顶部
+    const front = [0, 1, 2, 3].map((k) => 16 + k);
+    const topY = Math.max(...front.map((i) => pos.getY(i)));
+    const topVerts = front.filter((i) => Math.abs(pos.getY(i) - topY) < 1e-6);
+    assertEqual(topVerts.length, 2, '前提：正面上有两个顶点的 y 相等且最高');
+    // 背面前提：另外两个顶点的 y 必须更低（证明「最高」真的是顶部而不是全平）
+    for (const i of front) {
+      if (topVerts.includes(i)) continue;
+      assertTrue(pos.getY(i) < topY - 1e-6, `顶点 ${i} 应低于顶部（前提：面有上下之分）`);
+    }
+
+    // 期望的 uv.y：世界顶部 → 皮肤矩形顶边（v_img = v1）
+    // flipY=true 时纹理行序被翻转 ⇒ t = 1 - v_img/SIZE；false 时 t = v_img/SIZE
+    const expected = flipY ? 1 - v1 / SKIN_SIZE : v1 / SKIN_SIZE;
+    const wrongIfFlipped = flipY ? 1 - v2 / SKIN_SIZE : v2 / SKIN_SIZE;
+    for (const i of topVerts) {
+      const v = uv.getY(i);
+      assertClose(v, expected, 1e-6,
+        `flipY=${flipY}: 世界顶部顶点 ${i} 的 uv.v 须指向矩形顶边`
+        + `（期望 ${expected}，若为 ${wrongIfFlipped} 则脸是倒的）`);
+    }
+  }
 });

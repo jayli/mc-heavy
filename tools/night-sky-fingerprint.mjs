@@ -1,7 +1,7 @@
 // tools/night-sky-fingerprint.mjs — 夜空立方图的烘焙参数与输入指纹
 //
 // **两个消费者共用同一份逻辑**（红线 1：参数只有一份权威），沿用
-// `tools/zombie-head-fingerprint.mjs` / `tools/icon-fingerprint.mjs` 的既有模式：
+// `tools/zombie-skin-fingerprint.mjs` / `tools/icon-fingerprint.mjs` 的既有模式：
 //   - `tools/bake-night-sky.mjs` 烘焙时按本参数生成并写进 `assets/sky/night/night-sky.json`
 //   - `tools/check-data.mjs` 用当前参数重算并比对 → 不匹配即报「跑 npm run nightsky」
 //

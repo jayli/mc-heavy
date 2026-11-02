@@ -40,7 +40,7 @@
     await renderer.init();
     renderer.toneMapping = THREE.NoToneMapping;
     // outputColorSpace 用 SRGBColorSpace（真实游戏口径，game.js 的 renderer 同款）——
-    // 用 SRGB 输出则读到的值接近原始纹理参数，阈值可对着烘焙产物读（zombie-head 同款理由）。
+    // 用 SRGB 输出则读到的值接近原始纹理参数，阈值可对着烘焙产物读（zombie-model 同款理由）。
     renderer.outputColorSpace = THREE.SRGBColorSpace;
 
     const texture = await loadTurretArmorTexture();

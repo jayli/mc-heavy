@@ -1,7 +1,7 @@
 import { test, expect } from 'playwright/test';
 import { PNG } from 'pngjs';
 
-/** 以 (cx,cy) 为中心、半径 r 的方形区域平均 RGB（同 zombie-head.spec.mjs 手法） */
+/** 以 (cx,cy) 为中心、半径 r 的方形区域平均 RGB（同 zombie-model.spec.mjs 手法） */
 function regionRGB(png, cx, cy, r) {
   let sr = 0, sg = 0, sb = 0, n = 0;
   for (let y = cy - r; y <= cy + r; y++) {

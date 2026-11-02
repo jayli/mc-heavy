@@ -1,6 +1,6 @@
 // tools/turret-armor-fingerprint.mjs — 炮塔装甲纹理的参数与输入指纹
 //
-// **两个消费者共用同一份逻辑**（红线 1），沿用 `zombie-head-fingerprint.mjs` 的模式：
+// **两个消费者共用同一份逻辑**（红线 1），沿用 `zombie-skin-fingerprint.mjs` 的模式：
 //   - `tools/bake-turret-armor.mjs` 烘焙时按本参数生成并写进 `assets/turret/armor.json`
 //   - `tools/check-data.mjs` 用当前参数重算并比对 → 不匹配即报「跑 npm run turret」
 //

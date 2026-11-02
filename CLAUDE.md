@@ -1034,10 +1034,33 @@ seed 88 突破「单步落差 ≤1」（到 2 格），24 是守住无台阶的�
   `:262-284` 材质数组）会**静默只渲染第一张**（正面看不到眼睛，不报错）。根因
   `three.webgpu.js:34592` `getMaterial()` 直接 `return material`，不遍历 `geometry.groups`、
   不取 `materialIndex`（WebGL 后端 `:30472` 则按 group 分次 draw → 是 WebGPU 后端**刻意不实现**，
-  非整体不支持）。**替代 = 单材质 + 单纹理 + UV 分区**：纹理双区并排（左半无图案 / 右半有图案），
-  几何的正面顶点 UV 改写到右半（`zombie-renderer.js` `applyHeadUV`）。M7 巢穴/炮塔等任何
-  「不同面不同图案」的实体同理。**多区纹理不能用上下分区**（会把 N×N 图案压成 N×(N/2) → 比例失真），
-  须横向并排。M8 炮塔落地为 `npm run turret`（`assets/turret/armor.png` 192×64 三区横向并排 +
+  非整体不支持）。**替代 = 单材质 + 单纹理 + 每面 UV 矩形**：v2.38 起丧尸走**标准 MC 64×64
+  皮肤版式** —— 一张皮肤、六个部件各自把 6 个面的 UV 指到自己的矩形（`src/render/zombie-model.js`
+  的 `ZOMBIE_SKIN_UV`，`remapFaceUV` 逐面重映射）。M7 巢穴/炮塔等任何「不同面不同图案」的实体同理
+  （炮塔仍用三区横向并排的单纹理）。**多区纹理不能用上下分区**（会把 N×N 图案压成 N×(N/2) →
+  比例失真），须横向并排。
+  ⚠️ **UV 矩形按「图片左上角原点」写时必须折 `flipY`**：three 的 `TextureLoader` 默认
+  `flipY = true`（v=0 对应图片**底部**），不折算的形态是**整套皮肤上下颠倒**（头采样到腿），
+  而 UV 数值、单测、纹理加载全部正常（v2.38 实测踩到：全身一个肤色、眼睛跑到画面外）。
+  `remapFaceUV(uv, faceIndex, rect, flipY)` 的第四个参数从 `texture.flipY` 传入；
+  `flipY = false` 时折算自动退化成恒等，两种纹理配置都正确。
+  ⚠️ **Minecraft 皮肤版式的 `up`/`down` 矩形是逆序书写的**（如 `body.py = [28,16,20,20]`，
+  `u1 > u2`）—— 把矩形「规范化」成 `min/max` 会让那些面**水平镜像**（衣服纹理左右反了），
+  且格数/指纹/单测全绿。`remapFaceUV` 的公式 `u1 + u*(u2-u1)` 天然支持递减映射，不得加 min/max。
+  ⚠️ **v 方向有两层翻转，别只做一层**：皮肤矩形按「图片左上角原点」写（矩形顶边 = `v1` 小值），
+  而 `BoxGeometry` 侧面 `vdir = -1`（世界顶 → uv `v = 1`）—— 故映射必须显式写
+  `rowFrac = 1 - v` 再按 `flipY` 折算。只做 `flipY` 那一层的形态是「**面内上下颠倒**」：
+  眼睛跑到下面、嘴跑到上面，而整套皮肤采样、格数、指纹、三区色距、红移全正常
+  （2026-11-04 用户实拍报告，v2.38 修复）。
+  ⚠️⚠️ **调试 v 方向时，探针必须走真实加载路径**：`DataTexture` 默认 `flipY = false`，
+  而 `TextureLoader`（真实游戏用的）是 `true` —— 两者最终 uv **完全不同**。
+  用 `DataTexture` 造条纹/渐变/标记带贴图去测，测的是另一条路径，会得出
+  「方向正确」的**假结论**（v2.38 实测踩到：连续三个探针都说对，真游戏里是反的）。
+  正确做法：把探针图**写成 PNG 文件**放 `assets/zombie/`，用 `loadZombieSkinTexture()`
+  或 `new THREE.TextureLoader().loadAsync(resourceUrl(...))` 加载，与生产路径一致。
+  ⚠️ **肢体的顶面 `py` 与底面 `ny` 必须单独上色，不能靠 `fillPart` 的基色**：
+  手臂前伸（绕 X 转 ≈ -π/2）后，**从正面看到的主要是底面 `ny`**。底面若留在衣服色，
+  整条手臂看上去就是「被袖子包住」（用户实拍反馈「短袖套在手臂上」）。M8 炮塔落地为 `npm run turret`（`assets/turret/armor.png` 192×64 三区横向并排 +
   `armor.json` 指纹，源图是同目录 `turret_pic1/2/3`），`check:data` 的 `[炮塔装甲]` 环节守过期 ——
   改参数或源图后不重烘会**渲染旧装甲**，方块与逻辑层面都看不出差别。
 - **`BoxGeometry` 各面的 `buildPlane` `vdir` 符号不同**（`three.core.js:29515-29519`：正面/侧面
@@ -3450,9 +3473,10 @@ mc-heavy/
 ├─ tools/bake-night-sky.mjs    # 夜空立方图无缝烘焙（npm run nightsky）：方向空间加权重采样
 │                              #   源图 assets/sky/night-src/（mc-lite 原图）→ assets/sky/night/
 ├─ tools/night-sky-fingerprint.mjs # 夜空烘焙参数与指纹共享模块（烘焙脚本与 check:data 共用）
-├─ tools/bake-zombie-head.mjs  # 丧尸头部马赛克纹理烘焙（npm run zombie）：128×64 双区并排
-│                              #   → assets/zombie/head.png + head.json（尺寸+输入指纹）
-├─ tools/zombie-head-fingerprint.mjs # 丧尸头部图案参数与指纹共享模块（同上，红线 1）
+├─ tools/bake-zombie-skin.mjs  # 丧尸全身皮肤烘焙（npm run zombieskin）：标准 MC 64×64 版式
+│                              #   → assets/zombie/skin.png + skin.json（版式版本+区域+指纹）
+├─ tools/zombie-skin-fingerprint.mjs # 皮肤版式参数与指纹共享模块（同上，红线 1）；
+│                              #   re-export src/render/zombie-model.js 的 UV 表/眼睛位置
 ├─ tools/bake-turret-armor.mjs # 炮塔装甲纹理烘焙（npm run turret）：三张源图 → 192×64 三区并排
 │                              #   → assets/turret/armor.png + armor.json（尺寸+输入指纹）
 ├─ tools/turret-armor-fingerprint.mjs # 装甲图案参数与指纹共享模块（同上，红线 1）
@@ -3506,8 +3530,8 @@ mc-heavy/
 │  ├─ icons.json               # 图标 manifest：预生成 CSS 串 + 输入指纹
 │  ├─ sky/                     # 天空盒立方图：day/ = mc-lite skyBox4 原图；night/ = 烘焙产物
 │  │                           #   night-src/ 存 mc-lite skyBox1 原图（烘焙输入，勿当渲染资源）
-│  ├─ zombie/                  # 丧尸头部纹理（**不在 textures/ 下** —— 那里会进世界 atlas）
-│  │  └─ head.png + head.json  # 128×64 双区并排（左半无眼睛/右半有眼睛）+ 尺寸与输入指纹
+│  ├─ zombie/                  # 丧尸全身皮肤（**不在 textures/ 下** —— 那里会进世界 atlas）
+│  │  └─ skin.png + skin.json  # 标准 MC 64×64 版式（六部件各面按 UV 矩形采样）+ 版式版本与指纹
 │  ├─ sounds/                  # 音效（M4 四件武器音效 + M7 `put.mp3` + M8 `explosion`/`turret_gun_fire`）
 │  │                           #   + v1.63 `bgm.mp3`（4.0MB / 254 秒循环背景音乐，从 mc-lite 原样复制）
 │  │                           #   效果音 id 清单的唯一权威 = `render/audio-manager.js` 的 `SOUND_IDS`；
@@ -3600,7 +3624,10 @@ mc-heavy/
    │               #    补刷，纯逻辑无 three；消费端 game.js 帧循环 tick + per-light needsUpdate）
    │               #  zombie-renderer.js（M6 六部件固定容量 InstancedMesh；无活跃丧尸时 visible=false；
    │               #    head 走单纹理 UV 分区 —— 正面顶点 16-19 采纹理右半「有眼睛」，见 applyHeadUV）
-   │               #  zombie-head-texture.js（头部纹理加载，主线程专用；npm run zombie 烘焙产物）
+   │               #  zombie-skin-texture.js（全身皮肤加载，主线程专用；npm run zombieskin 产物）
+   │               #  zombie-model.js（**丧尸模型版式的唯一权威**：六部件尺寸/轴心/皮肤 UV 矩形/
+   │               #    眼睛位置。纯数据零 three 零 node；渲染器与 Tier 4 fixture 都从它派生）
+   │               #    —— 原版 MC 人形口径：头 8³ / 躯干 8×12×4 / 肢 4×12×4 = 32px = 2.0 格
    │               #  minecart-renderer.js（矿车 2 个 InstancedMesh：车斗 + 4 轮；零实例时
    │               #    visible=false；车斗纹理运行时 canvas 生成 → 无指纹门禁，靠 Tier 4 兜底）
    │               #  view-arm.js（第一人称手臂：单个 unlit Mesh 挂 camera 下，与 view-weapon.js
@@ -3678,9 +3705,10 @@ npm run bench                  # M3-5 性能基线跑图（4 场景 → docs/m3-
 npm run lint                   # eslint src tools tests
 npm run icons                  # 烘焙全量背包图标 → assets/icons-atlas.png + icons.json
                                #   改背包内方块的贴图地址或 mesher 几何后需跑，否则图标静默过期
-npm run zombie                 # 烘焙丧尸头部马赛克纹理 → assets/zombie/head.png + head.json
-                               #   改 tools/zombie-head-fingerprint.mjs 图案参数后需跑，
-                               #   否则纹理静默过期（check:data 的 [丧尸头部] 指纹检查会抓）
+npm run zombieskin             # 烘焙丧尸全身皮肤 → assets/zombie/skin.png + skin.json（标准 64×64）
+                               #   改 tools/zombie-skin-fingerprint.mjs 的版式/配色参数，或改
+                               #   src/render/zombie-model.js 的 UV 表后需跑，否则皮肤静默过期
+                               #   （check:data 的 [丧尸皮肤] 会抓指纹 + 版式版本 + 三区色距）
 npm run turret                 # 烘焙炮塔装甲 → assets/turret/armor.png + armor.json（三区并排）
                                #   改 tools/turret-armor-fingerprint.mjs 或源图后需跑，
                                #   否则装甲静默过期（check:data 的 [炮塔装甲] 指纹检查会抓）

@@ -6,7 +6,6 @@
   "scripts": {
     "start": "node server-script/start-server.js",
     "icons": "node tools/bake-icon-atlas.mjs",
-    "zombie": "node tools/bake-zombie-head.mjs",
     "nightsky": "node tools/bake-night-sky.mjs",
     "turret": "node tools/bake-turret-armor.mjs",
     "gianttrees": "node tools/bake-giant-trees.mjs",
@@ -27,7 +26,8 @@
     "validate:weapon-assets": "node tools/validate-weapon-assets.mjs",
     "grasstextures": "node tools/bake-grass-textures.mjs",
     "shallowtarns": "node tools/bake-shallow-tarns.mjs",
-    "ship": "node tools/bake-medieval-ship.mjs"
+    "ship": "node tools/bake-medieval-ship.mjs",
+    "zombieskin": "node tools/bake-zombie-skin.mjs"
   },
   "author": "jayli",
   "repository": "git@github.com:jayli/mc-heavy.git",

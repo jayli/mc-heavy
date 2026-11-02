@@ -8,32 +8,35 @@
 // M6 规格 §3 明令不得为每只丧尸创建 Group、不得导入 GLB。六个部件 mesh 常驻 scene，
 // 每只丧尸占同一个索引，死亡/卸载/dispose 对称归还 —— draw call 恒为 6，与丧尸数无关。
 //
-// 部件尺寸/偏移/旋转/配色全部实测自 mc-lite `src/actors/enemy/ZombieInstancedRenderer.js`
-// （`:28-82` 常量表 + `:176-210` 几何构造 + `:548-566` 矩阵计算），非凭字段名推断。
-// **两处必须照搬的细节**（照字段名实现会渲错）：
-// ① leg 几何做了 `translate(0, -height/2, 0)`（mc-lite `:203`）→ 几何原点在大腿**根部**而非
-//    盒中心，故 offset `y=0.9` 是轴心高度、盒体向下延伸 1.0。不做 translate 则整条腿随摆动
-//    平移（像踩高跷），而不是绕髋部扫弧线 —— 行走动画的关键。
-// ② head 的 `ZOMBIE_COLORS.head = 0xffffff` 是**白底乘纹理色**（mc-lite 六面材质 color 全是
-//    白色，真实颜色由马赛克纹理给，`headPalette.base = [64,107,48]`）。本仓库同样用 `0xffffff`
-//    —— 头部马赛克纹理已接线（见下「头部图案」段），照 `0xffffff` 实现是正确的。
+// 部件尺寸/轴心/退回色的**权威在 `zombie-model.js`**（原版 Minecraft 人形口径：头 8³ /
+// 躯干 8×12×4 / 肢 4×12×4，总共 32px = 2.0 格，脚底贴地 0）。本文件只做投影 +
+// 渲染层专属的两个东西：臂的基准前伸角、步态摆幅。
 //
-// **头部图案：单纹理 UV 分区，而非 mc-lite 的材质数组 + geometry.groups**（M6 遗留 TODO 补齐）。
-// mc-lite 给正面单独一张「有眼睛」纹理（`:237-254` `clearGroups`/`addGroup` + `:262-284`
-// 材质数组 `[withoutEyes, withEyes]`）。**本仓库的 WebGPU 后端不支持这条路** —— 实测
-// （红/绿两材质 + 读渲染像素）：正面像素是 `[255,0,0]` 红而非绿，即六面恒用 `material[0]`。
-// 根因在 `three.webgpu.js:34592` `getMaterial()` 直接 `return material`，不遍历
-// `geometry.groups`、不取 `materialIndex`（WebGL 后端 `:30472` 则按 group 分次 draw →
-// 是 WebGPU 后端**刻意不实现**，非整体不支持）。
-// 故改走**单材质 + 单纹理 + UV 分区**：纹理是双区并排 128×64（左半无眼睛 / 右半有眼睛，
-// 产物由 `npm run zombie` 烘焙），head 几何的正面顶点 UV 改写到右半（`HEAD_FRONT_VERTICES`）。
-// 连带好处：draw call 仍是 6（单材质单 draw range），不是材质数组方案的 7。
+// **两处必须照搬的细节**：
+// ① 臂/腿的几何做了 `translate(0, -height/2, 0)`（`pivotAtTop`）→ 几何原点在**关节那一端**
+//    （肩/髄）而非盒中心，故 offset 是轴心高度、盒体向下延伸整段。不做 translate 则肢体随摆动
+//    平移（像踩高跷），而不是绕关节扫弧线 —— 行走动画的关键。
+// ② 有纹理时六部件的 instanceColor 必须是**白底**（`0xffffff`）—— 真实颜色由皮肤给。
+//    乘上任何深色基色都会「深色 × 深色」严重变暗。
+//
+// **皮肤：单纹理 + 单材质 + 每面 UV 矩形，而非材质数组 + geometry.groups**。
+// **本仓库的 WebGPU 后端不支持材质数组** —— 实测（红/绿两材质 + 读渲染像素）：正面像素是
+// `[255,0,0]` 红而非绿，即六面恒用 `material[0]`。根因在 `three.webgpu.js:34592`
+// `getMaterial()` 直接 `return material`，不遍历 `geometry.groups`、不取 `materialIndex`
+// （WebGL 后端 `:30472` 则按 group 分次 draw → 是 WebGPU 后端**刻意不实现**，非整体不支持）。
+// 故走**标准 64×64 皮肤 + 每面 UV 矩形**（`ZOMBIE_SKIN_UV`）：一个纹理、一个材质、6 个 draw call。
 //
 // 材质用 `MeshBasicMaterial`（unlit）而非 mc-lite 的 `MeshLambertMaterial`：mc-heavy 全场景
 // 是 unlit 设计，灯光只为 PBR 武器模型而设（`game.js` 的 Ambient/Directional 注释）。用 Lambert
 // 会让丧尸吃到为枪标定的 2.3 环境光强度 → 偏亮且随日夜灯光漂移。与 ocean/rain/tracer 同口径。
 import * as THREE from 'three';
-import { ZOMBIE, ZOMBIE_FLASH_MS, ZOMBIE_WALK_SPEED, ZOMBIE_SWING, ZOMBIE_MOVING_EPSILON } from '../entities/zombies/zombie-config.js';
+import {
+  ZOMBIE, ZOMBIE_FLASH_MS, ZOMBIE_WALK_SPEED, ZOMBIE_SWING, ZOMBIE_MOVING_EPSILON,
+  ZOMBIE_ARM_SWING, ZOMBIE_HEAD_SWAY,
+} from '../entities/zombies/zombie-config.js';
+import {
+  ZOMBIE_MODEL_DEFS, ZOMBIE_SKIN_UV, ZOMBIE_UV_FACES, remapFaceUV,
+} from './zombie-model.js';
 
 /** 六部件顺序（M6 规格 §3）。测试断言其长度与集合，勿增删部件 */
 export const ZOMBIE_PARTS = Object.freeze([
@@ -49,39 +52,71 @@ export const ZOMBIE_PARTS = Object.freeze([
 export const HEAD_FRONT_VERTICES = Object.freeze([16, 17, 18, 19]);
 
 /**
- * 部件定义（mc-lite `BODY_PART_SIZES` / `BODY_PART_OFFSETS` / `BODY_PART_ROTATIONS` /
- * `ZOMBIE_COLORS` 逐项对应）。offset 是部件相对丧尸脚底的本地偏移（腿为轴心，其余为盒中心）。
+ * 部件定义（渲染层面向的表）。
+ *
+ * **尺寸/轴心/退回色全部派生自 `zombie-model.js`**（红线 1：同一事实只有一份权威，
+ * 渲染器与单测都从它投影）。这里只额外持有**渲染层专属**的东西：臂的基准前伸角
+ * （原版丧尸的手往前伸，不是垂在体侧）、以及腿的 `rotation: null`（摆幅由步态给）。
+ *
+ * `offset` = 模型轴心（`pivot`）：头/躯干是盒中心，臂/腿是关节所在那一端。
  */
 export const ZOMBIE_PART_DEFS = Object.freeze({
-  // color 0xffffff = 白底乘纹理色（mc-lite 同口径）：真实颜色由马赛克纹理给。
-  // **有 map 时必须白色** —— 若保留旧的视觉色 0x406b30，会「深绿 instanceColor × 深绿纹理」
-  // → 严重变暗。无 map 时（单测 fixture 不传纹理）退回该视觉色见下方 `_baseColorOf`。
-  head: { size: [0.6, 0.6, 0.6], offset: [0, 1.8, 0], rotation: [0, 0, 0], color: 0xffffff },
-  body: { size: [0.55, 0.63, 0.45], offset: [0, 1.15, 0], rotation: [0, 0, 0], color: 0x037c7c },
-  leftArm: { size: [0.23, 0.8, 0.23], offset: [-0.43, 1.3, 0.3], rotation: [-Math.PI / 2.4, 0, 0], color: 0x699058 },
-  rightArm: { size: [0.23, 0.8, 0.23], offset: [0.43, 1.3, 0.3], rotation: [-Math.PI / 2.7, 0, 0], color: 0x699058 },
-  leftLeg: { size: [0.26, 1.0, 0.26], offset: [-0.14, 0.9, 0], rotation: null, color: 0x322b71 },
-  rightLeg: { size: [0.26, 1.0, 0.26], offset: [0.14, 0.9, 0], rotation: null, color: 0x322b71 },
+  head: Object.freeze({
+    size: ZOMBIE_MODEL_DEFS.head.size,
+    offset: ZOMBIE_MODEL_DEFS.head.pivot,
+    rotation: Object.freeze([0, 0, 0]),
+    color: ZOMBIE_MODEL_DEFS.head.fallbackColor,
+  }),
+  body: Object.freeze({
+    size: ZOMBIE_MODEL_DEFS.body.size,
+    offset: ZOMBIE_MODEL_DEFS.body.pivot,
+    rotation: Object.freeze([0, 0, 0]),
+    color: ZOMBIE_MODEL_DEFS.body.fallbackColor,
+  }),
+  leftArm: Object.freeze({
+    size: ZOMBIE_MODEL_DEFS.leftArm.size,
+    offset: ZOMBIE_MODEL_DEFS.leftArm.pivot,
+    // 基准前伸角：原版丧尸的手**向身前平举**。臂的几何轴是 -Y（从肩往下），
+    // 绕 **X 轴**转约 -π/2 把它从「朝下」转到「朝 +Z（身前）」；少转一点让手略微下垂。
+    // Z 轴保持 0（不外张）：原版丧尸的双臂就是从肩上**向前直伸**、几乎平行。
+    // ⚠️ 加外张角（实测试过 ±0.10π）会让双臂像企鹅一样摊开 —— 那不是原版观感。
+    // 肩端的袖子本来就会被躯干挡住一半，这是正确的（原版也如此）。
+    rotation: Object.freeze([-Math.PI / 2 + 0.12 * Math.PI, 0, 0]),
+    color: ZOMBIE_MODEL_DEFS.leftArm.fallbackColor,
+  }),
+  rightArm: Object.freeze({
+    size: ZOMBIE_MODEL_DEFS.rightArm.size,
+    offset: ZOMBIE_MODEL_DEFS.rightArm.pivot,
+    rotation: Object.freeze([-Math.PI / 2 + 0.09 * Math.PI, 0, 0]),
+    color: ZOMBIE_MODEL_DEFS.rightArm.fallbackColor,
+  }),
+  leftLeg: Object.freeze({
+    size: ZOMBIE_MODEL_DEFS.leftLeg.size,
+    offset: ZOMBIE_MODEL_DEFS.leftLeg.pivot,
+    rotation: null, // 摆幅由步态运行时给，不是静态旋转
+    color: ZOMBIE_MODEL_DEFS.leftLeg.fallbackColor,
+  }),
+  rightLeg: Object.freeze({
+    size: ZOMBIE_MODEL_DEFS.rightLeg.size,
+    offset: ZOMBIE_MODEL_DEFS.rightLeg.pivot,
+    rotation: null,
+    color: ZOMBIE_MODEL_DEFS.rightLeg.fallbackColor,
+  }),
 });
 
 /**
- * head 几何的 UV 分区：正面顶点 → 纹理右半（有眼睛），其余顶点 → 左半（无眼睛）。
+ * 按 `ZOMBIE_SKIN_UV` 把六个面的 UV 逐面重映射到皮肤矩形（标准 64×64 版式）。
  *
- * 纹理是双区并排 128×64（`npm run zombie` 烘焙）。默认 `BoxGeometry` 六面 UV 都是
- * u∈[0,1] 全幅 → 六面同色；改写后正面采右半、其余五面采左半。
- *
- * **只压 u（横向），不动 v**：左右分区保持马赛克的 8×8 比例；若改成上下分区（压 v）
- * 会把 8×8 网格压成 8×4 → 马赛克格变扁、图案失真。
+ * 取代旧版只改正面（`applyHeadUV`）的做法：旧版只有头有贴图，躯干四肢是纯色；
+ * 现在六部件共用一张皮肤，每一面都从自己的矩形采样。
+ * **支持反向矩形**（如 `body.py = [28,16,20,20]`）—— 规范化会让那些面水平镜像。
  */
-function applyHeadUV(geometry) {
+function applySkinUV(geometry, part, flipY) {
   const uv = geometry.getAttribute('uv');
-  const front = new Set(HEAD_FRONT_VERTICES);
-  for (let i = 0; i < uv.count; i++) {
-    const u = uv.getX(i);
-    // 正面 → [0.5, 1]（右半有眼睛）；其余 → [0, 0.5]（左半无眼睛）
-    uv.setX(i, front.has(i) ? 0.5 + u * 0.5 : u * 0.5);
+  const table = ZOMBIE_SKIN_UV[part];
+  for (let faceIndex = 0; faceIndex < ZOMBIE_UV_FACES.length; faceIndex++) {
+    remapFaceUV(uv, faceIndex, table[ZOMBIE_UV_FACES[faceIndex]], flipY);
   }
-  uv.needsUpdate = true;
 }
 
 /** 受伤红闪色（mc-lite `ZOMBIE_COLORS.flash`） */
@@ -89,9 +124,6 @@ const FLASH_COLOR = 0xff0000;
 // 红闪用**独立** Color 实例：若复用 `_color`，上一个部件写的基色会污染它 ——
 // 当前恰好不出错只因「同一 pose 的红闪对六部件一致」，改部件顺序即引入 bug。
 const _flashColor = new THREE.Color(FLASH_COLOR);
-
-/** head 无纹理时的视觉色（`headPalette.base = [64,107,48]`）：白底乘纹理色的等价纯色 */
-const HEAD_FALLBACK_COLOR = 0x406b30;
 
 // 复用的临时对象（避免每帧分配，与 tracer-renderer.js 同口径）
 const _local = new THREE.Object3D();
@@ -102,15 +134,16 @@ const _zero = new THREE.Matrix4().makeScale(0, 0, 0); // 空闲 slot：零 scale
 
 export class ZombieRenderer {
   /**
-   * @param {{scene: THREE.Scene, maxActive?: number, headTexture?: THREE.Texture|null}} deps
-   *   `headTexture` 可选（`loadZombieHeadTexture()` 的产物）：有则 head 走马赛克纹理 +
-   *   UV 分区（正面有眼睛）；无则退回纯色（单测 fixture 不需纹理也能跑，向后兼容）。
+   * @param {{scene: THREE.Scene, maxActive?: number, skinTexture?: THREE.Texture|null}} deps
+   *   `skinTexture` 可选（`loadZombieSkinTexture()` 的产物，标准 64×64 皮肤）：
+   *   有则六部件都按 `ZOMBIE_SKIN_UV` 的矩形采样（头部的正面矩形里有眼睛）；
+   *   无则六部件退回各自的纯色（单测 fixture 不需纹理也能跑）。
    */
-  constructor({ scene, maxActive = ZOMBIE.maxActive, headTexture = null }) {
+  constructor({ scene, maxActive = ZOMBIE.maxActive, skinTexture = null }) {
     this.scene = scene;
     this.maxActive = maxActive;
-    /** @type {THREE.Texture|null} head 纹理（dispose 时释放；null = 纯色退回路径） */
-    this._headTexture = headTexture;
+    /** @type {THREE.Texture|null} 全身皮肤（六部件共享同一实例；dispose 时**只释放一次**） */
+    this._skinTexture = skinTexture;
     /** @type {Object<string, THREE.InstancedMesh>} part → 固定容量实例池 */
     this.meshes = {};
     /** @type {Object<string, THREE.BoxGeometry>} 各部件几何（dispose 时释放） */
@@ -119,13 +152,15 @@ export class ZombieRenderer {
     for (const part of ZOMBIE_PARTS) {
       const def = ZOMBIE_PART_DEFS[part];
       const geometry = new THREE.BoxGeometry(def.size[0], def.size[1], def.size[2]);
-      // 腿：轴心移到大腿根部（mc-lite `:203`）。见文件头「必须照搬的细节」①
-      if (part === 'leftLeg' || part === 'rightLeg') geometry.translate(0, -def.size[1] / 2, 0);
-      // head + 有纹理：UV 分区（正面右半有眼睛）+ 材质带 map。见文件头「头部图案」段
-      const useMap = part === 'head' && !!headTexture;
-      if (useMap) applyHeadUV(geometry);
-      // 材质基色白：真实颜色走 instanceColor（mc-lite 同口径 —— 六面材质 color 全是 0xffffff）
-      const material = new THREE.MeshBasicMaterial(useMap ? { color: 0xffffff, map: headTexture } : { color: 0xffffff });
+      // 臂/腿：轴心移到关节那一端（肩/髄）。不移会让摆动时肢体整体**平移**而非扫弧线
+      // （走起来像踩滑板）。`pivotAtTop` 的权威在 zombie-model.js
+      if (ZOMBIE_MODEL_DEFS[part].pivotAtTop) geometry.translate(0, -def.size[1] / 2, 0);
+      // 六部件都吃同一张皮肤：每面按 ZOMBIE_SKIN_UV 的矩形重映射（头部的正面矩形里有眼睛）
+      const useMap = !!skinTexture;
+      // flipY 从纹理读（three 的 TextureLoader 默认 true）—— 不传就会整套皮肤上下颠倒
+      if (useMap) applySkinUV(geometry, part, skinTexture.flipY !== false);
+      // 材质基色白：真实颜色走 instanceColor（有 map 时必白色，否则基色 × 纹理变暗）
+      const material = new THREE.MeshBasicMaterial(useMap ? { color: 0xffffff, map: skinTexture } : { color: 0xffffff });
       const mesh = new THREE.InstancedMesh(geometry, material, maxActive);
       mesh.name = `zombie:${part}`; // 受控标识：测试与调试据此定位节点
       mesh.frustumCulled = false;   // 丧尸可能在视锥边缘可见（mc-lite 同款）
@@ -161,14 +196,13 @@ export class ZombieRenderer {
   /**
    * 部件的基色（instanceColor 用）。
    *
-   * head 有纹理时必须是**白底**（`ZOMBIE_PART_DEFS.head.color = 0xffffff`）—— 真实颜色由
-   * 纹理给，乘上深绿 instanceColor 会「深绿 × 深绿」严重变暗。**无纹理时退回视觉色**
-   * `0x406b30`（= `headPalette.base [64,107,48]` 的等价纯色），否则渲染成纯白头。
-   * 其余五部件恒用定义色（它们不带 map）。
+   * **有纹理时六部件必须全部白底**（`0xffffff`）—— 真实颜色由皮肤给，乘上任何深色
+   * instanceColor 都会「深色 × 深色」严重变暗。**无纹理时退回各自的视觉色**
+   * （`ZOMBIE_MODEL_DEFS[part].fallbackColor`），否则渲染成纯白方人。
    * @param {string} part @returns {number}
    */
   _baseColorOf(part) {
-    if (part === 'head' && !this._headTexture) return HEAD_FALLBACK_COLOR;
+    if (this._skinTexture) return 0xffffff;
     return ZOMBIE_PART_DEFS[part].color;
   }
 
@@ -179,7 +213,10 @@ export class ZombieRenderer {
    */
   acquireSlot(id, slot) {
     this._slots.set(id, slot);
-    this._poses[slot] = { walkTime: 0, swing: 0, flashing: false, position: [0, 0, 0], yaw: 0 };
+    this._poses[slot] = {
+      walkTime: 0, swing: 0, armSwing: 0, headSway: 0,
+      flashing: false, position: [0, 0, 0], yaw: 0,
+    };
     for (const part of ZOMBIE_PARTS) this.meshes[part].visible = true; // 有丧尸才提交渲染
   }
 
@@ -209,11 +246,11 @@ export class ZombieRenderer {
   activeCount() { return this._slots.size; }
 
   /**
-   * @returns {boolean} head 是否走马赛克纹理（只读测试接口）。
-   * 供 E2E 断言钉住「game.js 确实传了纹理」—— 忘传会静默退回纯色头（肉眼看得出但测试抓不到），
+   * @returns {boolean} 是否走皮肤纹理（只读测试接口）。
+   * 供 E2E 断言钉住「game.js 确实传了纹理」—— 忘传会静默退回纯色（肉眼看得出但测试抓不到），
    * 故留一个同步可观测的开关状态。
    */
-  headHasTexture() { return !!this._headTexture; }
+  hasSkinTexture() { return !!this._skinTexture; }
 
   /**
    * 每帧发布 pose：位置/朝向 + 步态 + 红闪。
@@ -241,10 +278,18 @@ export class ZombieRenderer {
         || Math.abs(state.velocity[2]) > ZOMBIE_MOVING_EPSILON;
       if (moving) {
         pose.walkTime += dt;
-        pose.swing = Math.sin(pose.walkTime * ZOMBIE_WALK_SPEED) * ZOMBIE_SWING;
+        // 三条摆动共用同一个相位（与腿同源）：
+        // 腿/臂用 sin(phase)，左右反相；头用 sin(phase × 0.5) —— 半频，走满一个步周期才摆一次
+        const phase = pose.walkTime * ZOMBIE_WALK_SPEED;
+        pose.swing = Math.sin(phase) * ZOMBIE_SWING;
+        pose.armSwing = Math.sin(phase) * ZOMBIE_ARM_SWING;
+        pose.headSway = Math.sin(phase * 0.5) * ZOMBIE_HEAD_SWAY;
       } else {
+        // 静止时三者一并归零（不是冻结在上一个摆幅）
         pose.walkTime = 0;
         pose.swing = 0;
+        pose.armSwing = 0;
+        pose.headSway = 0;
       }
       pose.flashing = nowMs < state.flashedUntil;
       this._writeSlot(slot, pose);
@@ -256,6 +301,22 @@ export class ZombieRenderer {
     const pose = this._poses[slot];
     if (!pose) return 0;
     return part === 'rightLeg' ? -pose.swing : pose.swing;
+  }
+
+  /**
+   * @param {number} slot @param {'leftArm'|'rightArm'} [part] @returns {number} 只读测试接口
+   *   右臂返回取反值（与腿同一口径：左右反相摆动）
+   */
+  armSwingOf(slot, part = 'leftArm') {
+    const pose = this._poses[slot];
+    if (!pose) return 0;
+    return part === 'rightArm' ? -pose.armSwing : pose.armSwing;
+  }
+
+  /** @param {number} slot @returns {number} 只读测试接口：头部左右摆动幅度 */
+  headSwayOf(slot) {
+    const pose = this._poses[slot];
+    return pose ? pose.headSway : 0;
   }
 
   /** @param {number} slot @returns {boolean} 只读测试接口：该 slot 当前是否红闪 */
@@ -279,6 +340,9 @@ export class ZombieRenderer {
       _local.position.set(def.offset[0], def.offset[1], def.offset[2]);
       if (part === 'leftLeg') _local.rotation.set(pose.swing, 0, 0);
       else if (part === 'rightLeg') _local.rotation.set(-pose.swing, 0, 0); // 右腿取反
+      else if (part === 'leftArm') _local.rotation.set(def.rotation[0] + pose.armSwing, 0, 0);
+      else if (part === 'rightArm') _local.rotation.set(def.rotation[0] - pose.armSwing, 0, 0);
+      else if (part === 'head') _local.rotation.set(0, pose.headSway, 0); // 只左右摆，不低头不歪头
       else _local.rotation.set(def.rotation[0], def.rotation[1], def.rotation[2]);
       _local.scale.set(1, 1, 1);
       _local.updateMatrix();
@@ -304,8 +368,8 @@ export class ZombieRenderer {
       mesh.userData.material?.dispose?.();
     }
     // head 纹理也要释放（`InstancedMesh.dispose` 与 `material.dispose` 都不释放 map）
-    this._headTexture?.dispose?.();
-    this._headTexture = null;
+    this._skinTexture?.dispose?.();
+    this._skinTexture = null;
     this._slots.clear();
     this._poses.fill(null);
   }

@@ -37,7 +37,7 @@ import { probeDefinition } from '../entities/entity-types.js';
 import { EntityRenderLayer, createProbeRenderDef } from '../render/entity-render-layer.js';
 import { ZombieService, zombieDefinition } from '../entities/zombies/zombie-system.js';
 import { ZombieRenderer } from '../render/zombie-renderer.js';
-import { loadZombieHeadTexture } from '../render/zombie-head-texture.js';
+import { loadZombieSkinTexture } from '../render/zombie-skin-texture.js';
 import { TurretRenderer } from '../render/turret-renderer.js';
 import { loadTurretArmorTexture } from '../render/turret-armor-texture.js';
 import { loadNestBlueprint } from '../entities/zombie-nests/nest-blueprint.js';
@@ -239,10 +239,11 @@ export class Game {
     // atlas：纹理 + tileRect 元数据（broadcast 给 Worker 供 mesher 查 UV）
     const { texture } = await loadAtlas({ mipmap: this.blurMipmap });
     this._atlasTexture = texture; // 调试/测试引用
-    // 丧尸头部马赛克纹理：与 atlas 一并 await（保持 ZombieRenderer 构造器同步 → 首帧不闪纯色）。
-    // 加载失败不应阻断启动 —— 头部纹理只是观感，缺了退回纯色头即可（_baseColorOf 的退回路径）。
-    this._zombieHeadTexture = await loadZombieHeadTexture().catch((e) => {
-      console.warn('[game] 丧尸头部纹理加载失败，退回纯色头：', e);
+    // 丧尸全身皮肤（标准 64×64）：与 atlas 一并 await（保持 ZombieRenderer 构造器同步 →
+    // 首帧不闪纯色）。加载失败不应阻断启动 —— 皮肤只是观感，缺了退回各部件纯色即可
+    // （_baseColorOf 的退回路径）。
+    this._zombieSkinTexture = await loadZombieSkinTexture().catch((e) => {
+      console.warn('[game] 丧尸皮肤加载失败，退回纯色：', e);
       return null;
     });
     // M8：炮塔装甲纹理（三区并排）。与 atlas 一并 await（保持 TurretRenderer 构造器同步 →
@@ -553,7 +554,7 @@ export class Game {
     // 两者经 onSpawn/onDespawn 钩子对称接线：slot 单一权威在 service，renderer 只接收。
     // 构造顺序：先 renderer 后 service —— service 的钩子闭包引用 renderer，反序会让闭包
     // 在「已创建但未赋值」的窗口里读到 undefined（运行时不炸只因闭包延迟调用，勿照直觉改回）。
-    this.zombieRenderer = new ZombieRenderer({ scene: this.scene, headTexture: this._zombieHeadTexture });
+    this.zombieRenderer = new ZombieRenderer({ scene: this.scene, skinTexture: this._zombieSkinTexture });
     // M8：炮塔渲染层（8 部件固定容量实例池）。slot 由 renderer 内部**差集驱动**分配
     // （sync(poses) 里新 id 分配、消失 id 归还）—— 不在 TurretService 侧建 slot 池。理由：
     // 炮塔不是 EntityManager 实体（是方块锚定装置），没有 `despawnColumn` 绕过玩法服务的

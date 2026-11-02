@@ -28,7 +28,7 @@
 //
 // **主线程专用**：运行时构造 Sprite/材质必然依赖 three。分层归属 `render/`（不在
 // `tools/check-architecture.mjs` 的 `ISOMORPHIC_DIRS` 里 → 天然不受同构检查，无需白名单；
-// 同 `zombie-head-texture.js` 的理由）。
+// 同 `zombie-skin-texture.js` 的理由）。
 import * as THREE from 'three';
 import { resourceUrl } from '../core/resource-url.js';
 
@@ -92,7 +92,7 @@ export function explosionFrameOpacity(progress) {
  */
 export async function loadExplosionSpriteTexture() {
   // 部署路径无关（v1.87）：旧写法是根绝对路径 `/assets/effects/big_blow.png`
-  // （与 atlas-loader.js / zombie-head-texture.js 同一踩坑记录：根路径能躲开
+  // （与 atlas-loader.js / zombie-skin-texture.js 同一踩坑记录：根路径能躲开
   // 「相对文档基址」的坑，但仓库挂子路径部署时会 404）。
   const texture = await new THREE.TextureLoader().loadAsync(resourceUrl('assets/effects/big_blow.png'));
   texture.colorSpace = THREE.SRGBColorSpace;

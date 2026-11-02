@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"><title>zombie model fixture</title><link rel="icon" href="data:,">
+  <style>html, body { margin: 0; }</style>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "../../vendor/three/three.webgpu.js",
+      "three/tsl": "../../vendor/three/three.tsl.js",
+      "three/webgpu": "../../vendor/three/three.webgpu.js",
+      "three/addons/": "../../vendor/three/addons/"
+    }
+  }
+  </script>
+</head>
+<body>
+<script type="module">
+  import * as THREE from 'three';
+  import { ZombieRenderer, ZOMBIE_PARTS } from '../render/zombie-renderer.js';
+  import { loadZombieSkinTexture } from '../render/zombie-skin-texture.js';
+  import {
+    ZOMBIE_MODEL_DEFS, ZOMBIE_SKIN_UV, SKIN_EYES, SKIN_SIZE,
+  } from '../render/zombie-model.js';
+  import {
+    ZOMBIE_WALK_SPEED, ZOMBIE_SWING, ZOMBIE_ARM_SWING, ZOMBIE_HEAD_SWAY,
+  } from '../entities/zombies/zombie-config.js';
+
+  // Tier 4 像素实测场景（丧尸模型重建）。
+  //
+  // 单只丧尸 + 黑背景隔离（无地形/无光照干扰）。**渲染由 spec 驱动**：一个相机只能看一个
+  // 方向，而截图只有最后一帧 —— 多次渲染会互相覆盖。故 fixture 暴露 `renderView(name)`，
+  // spec 每次调用后立刻截图。
+  //
+  // ⚠️ **不引入 ZombieService**：本 fixture 只验渲染层。直接写 `_poses[0]` 再 `_writeSlot`，
+  // 绕开玩法层的 spawn 门控与地形依赖（同 `test-turret-render.html` 的既有手法）。
+  //
+  // ⚠️ **取样点用世界坐标**（按 `ZOMBIE_MODEL_DEFS` 的 pivot/size 算），不硬编码像素：
+  // 模型尺寸一改，取样点自动跟着走。
+  async function run() {
+    const W = 480, H = 360;
+    const renderer = new THREE.WebGPURenderer({ antialias: false });
+    renderer.setSize(W, H);
+    document.body.appendChild(renderer.domElement);
+    await renderer.init();
+    renderer.toneMapping = THREE.NoToneMapping;
+    // outputColorSpace 用 SRGBColorSpace（真实游戏口径）：皮肤 colorSpace 也是 SRGB，
+    // 两端一致时读到的值接近纹理原始参数，阈值可对着 SKIN_PALETTE 读。
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+    const texture = await loadZombieSkinTexture();
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x000000);
+    const zr = new ZombieRenderer({ scene, maxActive: 1, skinTexture: texture });
+
+    // slot 0：丧尸在原点，yaw=0 → 正面朝 +Z
+    zr.acquireSlot('probe', 0);
+    const pose = {
+      walkTime: 0, swing: 0, armSwing: 0, headSway: 0,
+      flashing: false, position: [0, 0, 0], yaw: 0,
+    };
+    zr._poses[0] = pose;
+    zr._writeSlot(0, pose);
+
+    // ---- 取样点（世界坐标）----
+    const D = ZOMBIE_MODEL_DEFS;
+    const headDef = D.head, bodyDef = D.body, legDef = D.leftLeg;
+    // 正面平面 z = 盒中心 z + 半深（头/躯干/腿的 pivot z 都是 0）
+    const frontZ = (d) => d.pivot[2] + d.size[2] / 2 + 1e-3;
+    // 头部正面中心
+    const headPt = () => [0, headDef.pivot[1], frontZ(headDef)];
+    // 躯干正面中心（y 取躯干盒中心）
+    const torsoPt = () => [0, bodyDef.pivot[1], frontZ(bodyDef)];
+    // 手臂取样点：左臂的**远端（手部）**。
+    // 臂绕 X 摆动 = 端点画弧，位移在手部最大、在肩部为 0 —— 取肩附近会让「摆动是否生效」
+    // 测不出来（实测：臂中段的取样点两相位只差 10.7）。
+    // 前伸后整条臂沿 +Z 展开，故手部在世界 z 的最远端、y 略低于肩。
+    // 手臂取样点有**两个用途，位置不同**：
+    //   · `armL`（露皮肤判据）：取靠肩那一段 —— 那里袖子与皮肤交界，最能反映「袖子占比」
+    //   · `armHand`（摆动判据）：取手部末端 —— 绕肩摆动时端点位移最大，根部几乎不动
+    // 用 pivot 直接推导（不做旋转）会偏下 —— 实测取样点落到空白处，故按经验偏移。
+    const armLpt = () => {
+      const a = D.leftArm;
+      return [a.pivot[0] - a.size[0] * 0.2, a.pivot[1] - a.size[1] * 0.15, a.pivot[2] + a.size[1] * 0.45];
+    };
+    const armHandPt = () => {
+      const a = D.leftArm;
+      return [a.pivot[0], a.pivot[1] - a.size[1] * 0.35, a.pivot[2] + a.size[1] * 1.05];
+    };
+    // 腿正面中心（取左腿上半：裤腿部分，避开鞋底）
+    const legPt = () => [legDef.pivot[0], legDef.pivot[1] - legDef.size[1] * 0.25, frontZ(legDef)];
+
+    // 眼睛：从 `SKIN_EYES`（相对正脸 UV 矩形的 dx/dy/w/h）换算到世界坐标。
+    // 正脸矩形 = ZOMBIE_SKIN_UV.head.pz（源像素），BoxGeometry 的 +Z 面 uv 与位置线性对应：
+    //   面上 u ∈ [0,1] 沿 +X（左→右），v ∈ [0,1] 沿 -Y（上→下，vdir = -1）
+    const [ru1, rv1, ru2, rv2] = ZOMBIE_SKIN_UV.head.pz;
+    const rectW = Math.abs(ru2 - ru1), rectH = Math.abs(rv2 - rv1);
+    // 眼睛取样点：眼睛在**皮肤正脸矩形里**的位置 → 世界坐标。
+    //
+    // 三层换算（每层都踩过坑，写清楚以免后人再推一遍）：
+    //   ① 眼睛像素中心（相对矩形左上角）→ 矩形内归一化 fu/fv（0..1，fv=0 是矩形顶边）
+    //   ② flipY：皮肤矩形按「图片左上角原点」写，而纹理 flipY=true 会上下镜像采样。
+    //      ⚠️ **这里不需要再翻** —— `remapFaceUV` 已经在写 UV 时做了 `1 - v`，
+    //      面顶点上的 v 已经是「flipY 之后的 uv 空间」。fu/fv 与面 uv 的对应关系因此是：
+    //      面 uv 的 v 与 fv **同向**（fv 越大越靠下 = 面上 v 越大 = 世界 y 越低，因 vdir=-1）。
+    //   ③ 面 uv → 世界：+Z 面的 u 沿 +X、v 沿 -Y。
+    const eyePt = (e) => {
+      const fu = (e.dx + e.w / 2) / rectW;
+      const fv = (e.dy + e.h / 2) / rectH;
+      const x = headDef.pivot[0] + (fu - 0.5) * headDef.size[0];
+      // 眼睛像素的**行号比例** fv（矩形顶边 = 0）→ 世界 y。
+      // 世界顶部对应 fv = 0（矩形顶边），世界底部 fv = 1（矩形底边）——
+      // 与 `remapFaceUV` 里 `rowFrac = 1 - v` 是同一条语义（两侧必须一致，
+      // 否则取样点会落到额头/下巴上而不是眼睛上）。
+      const y = headDef.pivot[1] + (0.5 - fv) * headDef.size[1];
+      return [x, y, frontZ(headDef)];
+    };
+
+    // 嘴：烘焙时画在眼睛下两行（`drawMouth` 用 `v1 + 5`），矩形顶边 = v1
+    const mouthPt = () => {
+      const fu = 0.5;               // 嘴居中
+      const fv = 5.5 / rectH;       // 第 5~6 行（相对矩形顶边）
+      const x = headDef.pivot[0] + (fu - 0.5) * headDef.size[0];
+      const y = headDef.pivot[1] + (0.5 - fv) * headDef.size[1];
+      return [x, y, frontZ(headDef)];
+    };
+
+    const mkCam = () => new THREE.PerspectiveCamera(50, W / H, 0.05, 100);
+    const center = () => [0, 1.0, 0]; // 模型总高 2.0 的中心
+    const DIST = 3.4;
+    // 供调试截图：暴露相机与渲染（不影响 spec 的取样点语义）
+    window.__ZM_CAM__ = () => cams;
+    const cams = {
+      front: (() => { const c = mkCam(); const t = center(); c.position.set(t[0], t[1], DIST); c.lookAt(...t); return c; })(),
+      side: (() => { const c = mkCam(); const t = center(); c.position.set(DIST, t[1], 1e-3); c.lookAt(...t); return c; })(),
+      back: (() => { const c = mkCam(); const t = center(); c.position.set(t[0], t[1], -DIST); c.lookAt(...t); return c; })(),
+      top: (() => { const c = mkCam(); const t = center(); c.position.set(t[0], DIST, 1e-3); c.lookAt(...t); return c; })(),
+    };
+
+    const project = (camera, wx, wy, wz) => {
+      const v = new THREE.Vector3(wx, wy, wz).project(camera);
+      return {
+        x: Math.round((v.x * 0.5 + 0.5) * W),
+        y: Math.round((-v.y * 0.5 + 0.5) * H),
+      };
+    };
+
+    /** spec 调用：按相位设置摆动 + 可选红闪 → 渲染 → 返回该视角的取样点 */
+    window.__ZM_RENDER__ = (view, { flashing = false, phaseMs = 0 } = {}) => {
+      const phase = (phaseMs / 1000) * ZOMBIE_WALK_SPEED;
+      pose.walkTime = phaseMs / 1000;
+      pose.swing = Math.sin(phase) * ZOMBIE_SWING;
+      pose.armSwing = Math.sin(phase) * ZOMBIE_ARM_SWING;
+      pose.headSway = Math.sin(phase * 0.5) * ZOMBIE_HEAD_SWAY;
+      pose.flashing = flashing;
+      zr._writeSlot(0, pose);
+
+      const cam = cams[view];
+      if (!cam) throw new Error(`unknown view: ${view}`);
+      // 渲染两帧：WebGPU 首帧可能还在编译 shader，第二帧才是稳定结果
+      renderer.render(scene, cam);
+      renderer.render(scene, cam);
+
+      return {
+        head: project(cam, ...headPt()),
+        torso: project(cam, ...torsoPt()),
+        leg: project(cam, ...legPt()),
+        mouth: project(cam, ...mouthPt()),
+        eyeL: project(cam, ...eyePt(SKIN_EYES[0])),
+        eyeR: project(cam, ...eyePt(SKIN_EYES[1])),
+        armL: project(cam, ...armLpt()),
+        armHand: project(cam, ...armHandPt()),
+        // 手臂整块的屏幕包围框（摆动时整块在动，用区域统计比单点稳）
+        armRect: (() => {
+          const a = D.leftArm;
+          const corners = [
+            project(cam, a.pivot[0] - a.size[0], a.pivot[1] - a.size[1], a.pivot[2] + a.size[1] * 1.1),
+            project(cam, a.pivot[0] + a.size[0] * 0.4, a.pivot[1] + a.size[1] * 0.1, a.pivot[2] - a.size[2]),
+          ];
+          return {
+            x0: Math.min(corners[0].x, corners[1].x), x1: Math.max(corners[0].x, corners[1].x),
+            y0: Math.min(corners[0].y, corners[1].y), y1: Math.max(corners[0].y, corners[1].y),
+          };
+        })(),
+        // 头部整块的屏幕包围框（头摆的位移小，用区域统计而不是单点）
+        headRect: (() => {
+          const h = D.head;
+          const halfW = h.size[0] / 2, halfH = h.size[1] / 2;
+          const corners = [
+            project(cam, h.pivot[0] - halfW, h.pivot[1] - halfH, frontZ(h)),
+            project(cam, h.pivot[0] + halfW, h.pivot[1] + halfH, frontZ(h)),
+          ];
+          return {
+            x0: Math.min(corners[0].x, corners[1].x), x1: Math.max(corners[0].x, corners[1].x),
+            y0: Math.min(corners[0].y, corners[1].y), y1: Math.max(corners[0].y, corners[1].y),
+          };
+        })(),
+      };
+    };
+
+    window.__ZM_INFO__ = {
+      hasSkinTexture: zr.hasSkinTexture(),
+      textureSize: [texture.image?.width, texture.image?.height],
+      // 缺席的部件（应为空数组 = 六部件都带 map）
+      partsWithoutMap: ZOMBIE_PARTS.filter((p) => !zr.meshes[p].material.map),
+      skinSize: SKIN_SIZE,
+    };
+    window.__ZM_READY__ = true;
+  }
+  run().catch((e) => { window.__ZM_ERROR__ = String(e?.stack || e); });
+</script>
+</body>
+</html>
