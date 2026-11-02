@@ -15,12 +15,18 @@
   "fenceCells": 163,
   "ladderCells": 31,
   "trapdoorCells": 18,
-  "paletteSize": 13,
+  "paletteSize": 14,
   "userFix": {
     "set": 106,
     "added": 6,
     "removed": 6,
     "source": "assets/medieval-ship/src/user-fix-o0.json"
+  },
+  "hullRecolor": {
+    "from": "oak_planks_1",
+    "to": "acacia_planks",
+    "maxY": 9,
+    "cells": 206
   },
   "variants": {
     "medieval_ship_o0": {
@@ -65,13 +71,14 @@
     }
   },
   "counts": {
+    "acacia_planks": 206,
     "giant_mangrove_log": 25,
     "half_block_updown": 94,
     "handrail": 6,
     "handrailA": 120,
-    "iron": 292,
     "marble": 93,
     "oak_planks": 338,
+    "oak_planks_1": 86,
     "planks_step": 11,
     "planks_step_updown": 137,
     "sand": 1,
@@ -103,8 +110,8 @@
     "minY": 0
   },
   "fingerprints": {
-    "input": "db9eb0218190fae4:6baeef394416043b",
+    "input": "db9eb0218190fae4:8585480f49960266",
     "litematicSha256": "db9eb0218190fae422d603aff69b4fe542034b4dd719265fe5f1dcef8f1bdc58",
-    "paramsSha256": "6baeef394416043bc445544718f3074d9e0062c5c57e136aa053d1380e73b36a"
+    "paramsSha256": "8585480f49960266ccec097b2664bbef3a802d34fb95e3bd989a9c3d2185cc1f"
   }
 }

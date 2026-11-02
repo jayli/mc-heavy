@@ -89,24 +89,91 @@ export const FACING_TO_ORIENT = Object.freeze({
  * 是**纯白无木纹**的方块 —— 用户已知悉这是「换成雪」的必然结果。
  * ⚠️ 三个新目标全是 `cullMode:"opaque"` + `opaqueTable=1` + 满格 box 几何，与旧目标同档
  * ⇒ 顶点预算零变化（船体最坏仍 0.435% / cutout 0.756%），不需要重标定 `CAPACITY`。
+ *
+ * ## 2026-11-02 用户再改色（v2.35：「船体中的 iron 方块都替换成 oak_planks_1」）
+ * 六个映射到 `iron` 的源方块统一改为 `oak_planks_1`（另一种橡木木板贴图，均值 156,130,112）。
+ * **只改目标、不改源 key** ⇒ 格数 / bbox / 台阶 / 半砖 / 栏杆 / palette 种类 13 **全部不变**
+ * （`iron` 出、`oak_planks_1` 进）。`snow` / `marble` / `giant_mangrove_log` 用户未要求，不动。
+ * ⚠️ 用户原话写的是「oak_plants_1」，registry 里无此名 —— 按读音与上下文取 `oak_planks_1`。
+ *
+ * ## 2026-11-02 用户再改色（v2.36：「船身的 oak_planks_1 换成 acacia_planks，甲板之上的保留」）
+ * 分界 = **产物局部 y ≤ 6**（甲板面在 y=7）⇒ 见下方 `HULL_RECOLOR`。这一步**不在这张表里**，
+ * 因为 `spruce_planks` 与 `stripped_dark_oak_wood` 都跨了分界线，按源方块改做不到。
  */
 export const BLOCK_MAP = Object.freeze({
   air: '',
   // ---- 船体木板 ----
   oak_planks: 'oak_planks',             // 船壳主体（Δ1.4，近乎原色）—— 保留木色
-  spruce_planks: 'iron',                // 船壳深色带（原 dark_planks 67,43,20 → iron 220,220,220）
+  spruce_planks: 'oak_planks_1',        // 船壳深色带（v2.35 起；原 dark_planks → iron）
   pale_oak_planks: 'snow',              // 桅杆顶部浅色件（原 birch_log 218,217,208 → snow 249,254,254）
-  dark_oak_planks: 'iron',              // 船尾楼深色板（同上）
+  dark_oak_planks: 'oak_planks_1',      // 船尾楼深色板（同上）
   // ---- 桅杆 / 结构原木（stripped_*）----
-  stripped_dark_oak_wood: 'iron',        // 甲板横梁
-  stripped_dark_oak_log: 'iron',         // 主桅杆
-  stripped_spruce_log: 'iron',           // 副桅杆
-  stripped_spruce_wood: 'iron',          // 龙骨
+  stripped_dark_oak_wood: 'oak_planks_1', // 甲板横梁
+  stripped_dark_oak_log: 'oak_planks_1',  // 主桅杆
+  stripped_spruce_log: 'oak_planks_1',    // 副桅杆
+  stripped_spruce_wood: 'oak_planks_1',   // 龙骨
   // ---- 帆 / 旗 ----
   white_wool: 'marble',                 // 主帆（原 light_gray_cloth 163,163,163 → marble 240,238,228）
   red_wool: 'giant_mangrove_log',       // 旗帜（现有最接近正的红色，Δ30.5）—— 用户未要求改
   // ---- 玻璃 ----
   glass: 'glass_block',                 // 船尾窗（Δ3.7）
+});
+
+/**
+ * **桅杆 / 柱子类源方块**（产物局部 y 再高也不参与船身改色）。
+ *
+ * 用户 2026-11-02：「船甲板上的柱子原本还是 oak_planks_1 的就还保留」⇒ 主/副桅杆必须豁免。
+ * 实测（产物局部 y）：主桅 `stripped_dark_oak_log` 77 格（y 8~30）+ 副桅 `stripped_spruce_log`
+ * 27 格（y 8~10）—— 其中 **8 格落在改色层内**（y=8），故豁免必须按**源方块**判，
+ * 不能只靠 y 分界（否则 y=8 那 8 格桅杆会被一起染成勾棕）。
+ *
+ * ⚠️ **这两项同时也是 `BLOCK_MAP` 的 key**：桅杆依旧映到 `oak_planks_1`
+ * （即「甲板之上保留浅木色」），本集合只控制**是否允许被 `HULL_RECOLOR` 改色**。
+ * 改这张表前先跑 `npm run ship -- --census` 看源方块分布。
+ */
+export const MAST_SOURCE_BLOCKS = Object.freeze([
+  'stripped_dark_oak_log',   // 主桅杆
+  'stripped_spruce_log',     // 副桅杆
+]);
+
+/**
+ * **船身定向改色**（v2.36 立 / v2.37 扩到 y≤9，用户 2026-11-02）。
+ *
+ * 两轮需求：
+ *   ① v2.36：「我要把船身的 oak_planks_1 都换成 acacia_planks，船甲板之上的已经换好的
+ *      oak_planks_1 先保留」+ 裁定「只换 y≤6（甲板围边算甲板）」。
+ *   ② v2.37：「船体的 oak_planks_1 也换成 acacia_planks……船甲板上的柱子原本还是
+ *      oak_planks_1 的就还保留」+ 裁定「改到 **y≤9**，桅杆/柱子保留」。
+ *
+ * 语义 = 「产物局部 y ≤ `maxY` 且**不是桅杆类源方块**的 `oak_planks_1` 改烘成 `acacia_planks`」——
+ * 按**产物 y 层 + 源方块类别**两个条件分界，**不按源方块单条件分**（两者不重合，实测）：
+ *
+ * | 局部 y | oak_planks_1 构成 | 改色后 |
+ * |---|---|---|
+ * | 1~5 | 船壳 132 + 龙骨 24（v2.36 已改） | `acacia_planks` |
+ * | 7 | 甲板围边 66 + 船壳顶 1 = 67 | `acacia_planks`（v2.37 新纳入） |
+ * | 8 | 甲板横梁/船尾横排 7 + **桅杆 8** | 横排 7 改；**桅杆 8 保留** |
+ * | 9 | **桅杆 8** | 全保留 |
+ * | ≥10 | 桅杆 69 + 船尾板 9 = 78 | 全保留 |
+ *
+ * ⇒ 改色 **206 格**，保留 `oak_planks_1` **86 格**（其中桅杆 77 = 含 y=8 那 8 格）。
+ *
+ * ⚠️ **为什么必须「y 层 + 桅杆豁免」两个条件**：
+ *   - 只按源方块改 ⇒ `spruce_planks`（y 1..7）与 `stripped_dark_oak_wood`（y 7..8）都跳了层，
+ *     要么漏染船壳顶上那几格、要么把桅杆一起染了；
+ *   - 只按 y 改 ⇒ y=8 那 8 格桅杆会被染成勾棕（用户明说「柱子保留」）。
+ *
+ * ⚠️ **副作用：`oak_planks_1` 在 y 7~9 与 `acacia_planks` 是交错的**（桅杆穿在甲板之间），
+ * 这是**用户要的**（柱子保持浅木色），不要误当作「分层没做干净」而去「修复」。
+ *
+ * ⚠️ `maxY` / `mastSourceBlocks` 改任一项都要重跑 `npm run ship` 
+ * 与三条门禁（烘焙自守 / `check:data` / Tier 4）。
+ */
+export const HULL_RECOLOR = Object.freeze({
+  from: 'oak_planks_1',   // 只在**目标**上生效：已经映到别的方块的不受影响
+  to: 'acacia_planks',
+  maxY: 9,                // 产物局部 y（最低层 = 1）
+  mastSourceBlocks: MAST_SOURCE_BLOCKS,   // 这些源方块产出的格永不参与改色
 });
 
 /**
@@ -134,11 +201,15 @@ export const SHIP_METRICS = Object.freeze({
                      // ⚠️ 不含 double→整块的 7 格（它们已计入 oak_planks / sand）
   fenceCells: 163,   // **源**栅栏格数（分类阶段的计数，不受用户修复影响）
   ladderCells: 31,   // **源**梯子格数（同上）
-  paletteSize: 13,   // 见 bake 脚本断言（ oak_planks/iron/snow/marble/
+  paletteSize: 14,   // 见 bake 脚本断言（ oak_planks/acacia_planks/oak_planks_1/snow/marble/
                      //   giant_mangrove_log/planks_step/planks_step_updown/sand_slab/
                      //   half_block_updown/handrail/handrailA/vertical_pillar/sand ）
-                     // ⚠️ 2026-11-04 改色后仍是 13（dark_planks/birch_log/light_gray_cloth
-                     //   三种出、iron/snow/marble 三种进）
+                     // ⚠️ 2026-11-04 改色后为 13（dark_planks/birch_log/light_gray_cloth
+                     //   三种出、iron/snow/marble 三种进）；2026-11-02 的 v2.35 把 iron
+                     //   换成 oak_planks_1，仍 13（一出一进）；v2.36 的船身改色只换 **y ≤ 6**
+                     //   那部分 ⇒ `oak_planks_1` 仍存活，`acacia_planks` 是**新进**的 ⇒ 13 → **14**
+                     //   （这里的「增」是真增，不是替换）；v2.37 把改色层扩到 y≤9（桅杆豁免），
+                     //   两者仍共存 ⇒ 仍是 **14**。
 
   /**
    * 用户修复叠加层的规模（`set` = 写入/替换，`remove` = 删除）。
@@ -150,6 +221,26 @@ export const SHIP_METRICS = Object.freeze({
    */
   userFixSetCells: 106,
   userFixRemoveCells: 6,
+
+  /**
+   * **船身改色**（v2.36 立 / v2.37 扩到 y≤9）的产物契约：`HULL_RECOLOR` 实际改陈多少格。
+   *
+   * 实测拆解（产物局部 y，最低层 = 1）：
+   *   - 改色 206 = y 1~5 的 132（船壳 108 + 龙骨 24，v2.36）
+   *     + y=7 的 67（甲板围边 66 + 船壳顶 1）+ y=8 的 7（船尾横排）= **206**
+   *     （y=8 该层 oak_planks_1 共 15 格 = 7 改 + 8 桅杆保留；y=9 的 8 格全是桅杆）
+   *   - 保留 86 = 桅杆 77（主桅 `stripped_dark_oak_log` 56 + 副桅 `stripped_spruce_log` 21）
+   *     + 船尾板 `dark_oak_planks` 9 = **86**（其中桅杆有 16 格落在改色层 y≤9 内）
+   *   - 292 = 206 + 86（与 `v2.35` 的 `oak_planks_1` 总数逐位对上）
+   *
+   * ⚠️ **桅杆豁免是必需的**：主/副桅杆共 **16 格落在 y=8 与 y=9 两层**（各 8 格，都在改色层内），
+   * 靠 y 分界沾不住它们 ⇒ 必须按源方块豁免（`MAST_SOURCE_BLOCKS`）。
+   * **`mastCellsInRange` = 16** 是「改色层内仍为 `oak_planks_1` 的格数」——它的合法来源
+   * **只有桅杆**（其余在层内都该被染）⇒ 多了 = 漏染、少了 = 桅杆被染色，两侧都卡死。
+   * ⚠️ **三个数都要钉**：只钉「acacia 206」时，若桅杆豁免失效，acacia 会变 214 而
+   * oak_planks_1 变 78 —— 两侧都钉能直接看出是哪边错了。
+   */
+  hullRecolor: Object.freeze({ acacia: 206, keptOakPlanks1: 86, mastCellsInRange: 16 }),
 
   /**
    * **施加叠加层之后**的栏杆类目标方块计数。
@@ -191,7 +282,7 @@ export function readUserFixOverlay() {
  * 烘焙输入指纹：`<litematic 内容 sha 前 16>:<参数 sha 前 16>`。
  *
  * 两个消费方（烘焙脚本写进 meta、`check:data` 重算比对）必须拿到同一格式。
- * 改 `BLOCK_MAP` / `SHIP_METRICS` / `FACING_TO_ORIENT` / `.litematic` /
+ * 改 `BLOCK_MAP` / `SHIP_METRICS` / `FACING_TO_ORIENT` / **`HULL_RECOLOR`** / `.litematic` /
  * **`user-fix-o0.json`** 任一都会改变指纹 → 门禁报「产物已过期，跑 npm run ship」，防静默过期。
  *
  * ⚠️ **叠加层必须进指纹**：它是烘焙输入的一部分（与 `.litematic` 同地位）。
@@ -209,7 +300,7 @@ export function medievalShipInputFingerprint() {
   const overlay = readUserFixOverlay();
   const paramsSha256 = createHash('sha256')
     .update(JSON.stringify({
-      BLOCK_MAP, SHIP_METRICS, FACING_TO_ORIENT,
+      BLOCK_MAP, SHIP_METRICS, FACING_TO_ORIENT, HULL_RECOLOR,
       variants: MEDIEVAL_SHIP_VARIANTS,
       userFix: overlay,
     }))

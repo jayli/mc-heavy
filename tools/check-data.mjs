@@ -1954,6 +1954,20 @@ async function checkMedievalShip() {
       + ' —— 两张表漂移会让同一朝向的台阶在两个结构里高侧不同');
   }
 
+  // ②b 船身改色（v2.36）：`HULL_RECOLOR` 是「按产物 y 分层」的规则，不在 BLOCK_MAP 里，
+  // 所以指纹只证明参数变过、证明不了产物内容 ⇒ 这里直读产物逐层核验。
+  // ⚠️ 两侧都钉：只钉 acacia 时 maxY 改成 7 也报错，但报错信息会指向错的一侧。
+  {
+    const R = fp.HULL_RECOLOR;
+    const want = fp.SHIP_METRICS.hullRecolor;
+    if (BLOCKS.find((b) => b.name === R.to)?.name !== R.to) {
+      fail(`船身改色目标 "${R.to}" 未在 blocks-data.js 注册（光栅化会静默变空气）`);
+    }
+    if (!FACES_DATA[R.to]) fail(`船身改色目标 "${R.to}" 缺 FACES_DATA 贴图映射（会兜底成 stone）`);
+    // 分界必须落在甲板面之下（甲板面 = 产物 y 7，围边算甲板 —— 用户 2026-11-02 裁定）
+    if (R.maxY !== 9) fail(`HULL_RECOLOR.maxY = ${R.maxY} ≠ 9（用户裁定：改到 y≤9，桅杆/柱子保留）`);
+  }
+
   // ③④ 逐个变体：stride / palette 注册 / bbox / 格数 / 归一化 / 朝向多样性
   const variants = shipData.MEDIEVAL_SHIP_VARIANTS;
   const loaded = new Map();
@@ -1985,6 +1999,46 @@ async function checkMedievalShip() {
     const m = shipData.MEDIEVAL_SHIP_METRICS[base];
     if (!m) { fail(`${base}: MEDIEVAL_SHIP_METRICS 里没有它（产物与数据模块分家）`); continue; }
     if (n !== m.blocks) fail(`${base}: 格数 ${n} ≠ MEDIEVAL_SHIP_METRICS ${m.blocks}`);
+
+    // ②b 船身改色落地 + **按 y 分层**（v2.36）
+    // ⚠️ 只数总数拓不到「按源方块改」与「按 y 分层改」的区别（两者总数相同）：
+    // `spruce_planks` 在 y 0..6、`stripped_dark_oak_wood` 在 y 6..7 都跨了分界线，
+    // 只改 BLOCK_MAP 会把甲板围边一起染成勾棕而总数仍对。故这里直接按 y 逐格判。
+    {
+      const R = fp.HULL_RECOLOR;
+      const want = fp.SHIP_METRICS.hullRecolor;
+      let acacia = 0;
+      let kept = 0;
+      let above = 0;
+      for (let i = 0; i < json.blocks.length; i += STRIDE) {
+        const y = json.blocks[i + 1];
+        const name = json.palette[json.blocks[i + 3]];
+        if (name === R.to) { acacia++; if (y > R.maxY) above++; }
+        else if (name === R.from) kept++;
+      }
+      if (acacia !== want.acacia) fail(`${base}: 船身改色 ${R.to} ${acacia} 格 ≠ ${want.acacia}（HULL_RECOLOR.maxY = ${R.maxY}？）`);
+      if (kept !== want.keptOakPlanks1) fail(`${base}: 保留的 ${R.from} ${kept} 格 ≠ ${want.keptOakPlanks1}（桅杆/柱子应保留）`);
+      if (above > 0) fail(`${base}: 有 ${above} 格 ${R.to} 落在 y > ${R.maxY}（改色层之外不该被染色）`);
+    }
+
+    // ②c 桅杆豁免落地（v2.37）：改色层（y ≤ maxY）内的 from 必须恰好是那 8 格桅杆。
+    //
+    // ⚠️ 为什么需要这项：`kept` 总数（86）只能证明「保留了多少」，区分不了
+    // 「保留了桅杆」与「保留了其他格、同时把桅杆染了」—— 两者总数能凑对。
+    // 而「改色层内仍为 from 的格数」是桅杆在层内的**唯一合法来源**（否则就是漏染），
+    // 故它恰好等于 8（主/副桅杆各 4 格，全在 y=8）时两侧都卡死：多了 = 漏染、少了 = 桅杆被染。
+    if (base === variants[0]) {
+      const R = fp.HULL_RECOLOR;
+      const wantMast = fp.SHIP_METRICS.hullRecolor.mastCellsInRange;
+      let inRange = 0;
+      for (let i = 0; i < json.blocks.length; i += STRIDE) {
+        if (json.blocks[i + 1] <= R.maxY && json.palette[json.blocks[i + 3]] === R.from) inRange++;
+      }
+      if (inRange !== wantMast) {
+        fail(`${base}: 改色层（y≤${R.maxY}）内仍有 ${inRange} 格 ${R.from}，应为 ${wantMast}`
+          + '（主/副桅杆）—— 多了 = 漏染、少了 = 桅杆被染色');
+      }
+    }
 
     let mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity, mnz = Infinity, mxz = -Infinity;
     const updownOrients = new Set();
@@ -2108,15 +2162,18 @@ async function checkMedievalShip() {
 
   // ⚠️ 成功行的条件必须涵盖**本函数全部判据**（同 [巨型金字塔] 的教训）
   if (failures.length === before) {
+    const RAIL = fp.SHIP_METRICS.railCells;
+    const HULL = fp.SHIP_METRICS.hullRecolor;
+    const R = fp.HULL_RECOLOR;
     const sizes = variants.map((v) => {
       const m = shipData.MEDIEVAL_SHIP_METRICS[v];
       return `${m.width}×${m.height}×${m.depth}`;
     });
-    const RAIL = fp.SHIP_METRICS.railCells;
     infos.push(`[中世纪船] ${variants.length} 个旋转变体（${sizes.join(' / ')}）各 ${meta.blocks} 格 / `
       + `stride 5 + 倒置台阶四向俱全 / 变体间逐格自洽 / palette ${meta.paletteSize} 种全注册 / `
       + `台阶 ${meta.stepCells}（正置 ${meta.counts?.planks_step} + 倒置 ${meta.counts?.planks_step_updown}）`
       + ` 半砖 ${meta.slabCells} / `
+      + `船身改色 y≤${R.maxY} ${R.from}→${R.to} ${HULL.acacia} 格（保留 ${R.from} ${HULL.keptOakPlanks1} 格） / `
       + `用户修复叠加层已施加（set ${meta.userFix?.set} 含新增 ${meta.userFix?.added} / remove ${meta.userFix?.removed}）`
       + ` → 栏杆 handrail ${RAIL.handrail} + handrailA ${RAIL.handrailA} + 竖柱 ${RAIL.vertical_pillar} / `
       + `FACING_TO_ORIENT 与金字塔同源 / 2 个新方块已注册且进背包 / 指纹匹配`);

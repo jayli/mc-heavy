@@ -154,6 +154,28 @@ v1.81 新增飞行那行后由三行变四行），
 不动时指纹逐位相同）⇒ 唯一判据是**栏杆目标计数**（旋转不变量）。细节见下方「中世纪船」活跃约束段
 与 roadmap 的 v2.33 行。
 
+**v2.35** 把船体的 **`iron` → `oak_planks_1`**（用户 2026-11-02：「我想进一步优化 浅水高台地图中
+的船体的建模，我希望把船体中的 iron 方块都替换成 oak_plants_1」）：只动 `BLOCK_MAP` 的
+**6 个目标**（`spruce_planks` / `dark_oak_planks` / `stripped_dark_oak_*` / `stripped_spruce_*`
+→ 船壳深色带 + 船尾楼 + 甲板横梁 + 主/副桅杆 + 龙骨，292 格），`snow` / `marble` /
+`giant_mangrove_log` **不动**。⚠️ **用户写的是 `oak_plants_1`，registry 里没这个名字** ——
+唯一形近的已注册方块是 `oak_planks_1`（atlas 均值 156,130,112；**与无下划线的 `oak_planks`
+163,130,79 是两个不同方块**），按读音与「船体木板」上下文取名。依然是「只改目标不改源 key」⇒
+格数 1263 / bbox / 台阶 148 / 半砖 146 / 栏杆 6-120-68 / `paletteSize` 13 **全部不变**（一出一进）。
+细节见下方「中世纪船」活跃约束段与 roadmap 的 v2.35 行。
+
+**v2.36/v2.37** 把**船身的 `oak_planks_1` 换成 `acacia_planks`**（用户 2026-11-02 两轮：
+「我要把船身的 oak_planks_1 都换成 acacia_planks，船甲板之上的已经换好的 oak_planks_1 先保留」→
+「船体的 oak_planks_1 也换成 acacia_planks……船甲板上的柱子原本还是 oak_planks_1 的就还保留」+
+裁定「改到 y≤9，桅杆/柱子保留」）：新增 **`HULL_RECOLOR`**（烘焙指纹层模块）—— 一条按**产物
+局部 y** 分层**并豁免桅杆类源方块**的改色规则，**不在 `BLOCK_MAP` 里**。
+⚠️⚠️ **两个条件缺一不可**：只按源方块改 ⇒ `spruce_planks`（源 y 1..7）与
+`stripped_dark_oak_wood`（源 y 7..8）都跨层、会漏染船壳顶或错染桅杆；只按 y 改 ⇒ **y=8 与 y=9
+各 8 格桅杆**会被染成橙棕（用户明说「柱子保留」）⇒ 必须按源方块豁免。实测最终改色 **206 格**
+（y 1~5 的 132 + y=7 甲板围边 67 + y=8 船尾横排 7）、保留 **86 格**（桅杆 77 + 船尾板 9）；
+`paletteSize` **13 → 14**（`acacia_planks` 新进，`oak_planks_1` 仍存活）—— 与 v2.34/v2.35 的
+「一出一进仍 13」不同。细节见下方「中世纪船」活跃约束段与 roadmap 的 v2.37 行。
+
 **历次 bugfix / 改造的完整记录不在本文件。** 权威副本：**第一阶段独立改动**在设计文档修订说明 +
 `docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md`（版本区间见 roadmap 的改动表）；
 M4 之后的实玩反馈修正在各里程碑验收报告的偏离表 + roadmap 的「遗留 TODO」段
@@ -1954,6 +1976,49 @@ seed 88 突破「单步落差 ≤1」（到 2 格），24 是守住无台阶的�
   ⚠️ **Tier 4 / 单测里的「船体材质集合」必须跟着改**（`tests/medieval-ship.spec.mjs` 两处 +
   `src/tests/test-medieval-ship.js` 一处），否则「船体格数恰好 1263」会变成假失败。
 
+- **⚠️ `iron` → `oak_planks_1`（v2.35，2026-11-02 用户「船体中的 iron 方块都替换成 oak_planks_1」）**：
+  六个映射到 `iron` 的源方块（船壳深色带 + 船尾楼 + 甲板横梁 + 主/副桅杆 + 龙骨，292 格）
+  统一改映射到 **`oak_planks_1`**（另一种橡木木板贴图，atlas 均值 156,130,112），`snow` /
+  `marble` / `giant_mangrove_log` 用户未提及，**不动**。
+  - ⚠️ **用户原话写的是 `oak_plants_1`，registry 里没有这个名字** —— 唯一形近的已注册方块是
+    `oak_planks_1`（`blocks-data.js` 有声明 + `FACES_DATA` 有贴图 `Oak_Planks_1`），按读音与
+    「船体木板」上下文取名。若将来用户另有所指，改这一条映射即可。
+  - 仍然是**只改目标、不改源 key** ⇒ 格数 1263 / bbox / 台阶 148 / 半砖 146 / 栏杆 6-120-68 /
+    **`paletteSize` 仍 13**（`iron` 出、`oak_planks_1` 进，一出一进）。
+  - ⚠️ **Tier 4 / 单测的判据翻转**：`oak_planks_1` 进「新材质精确格数」（292），`iron` 进
+    「旧材质零残留」那一组。**只加新材质不断言旧材质**会让「映射改了一半」静默通过。
+  - ⚠️ `oak_planks`（无下划线，338 格船壳主体）**与 `oak_planks_1` 是两个不同方块**（贴图不同：
+    163,130,79 vs 156,130,112），不要「统一」成同一个 —— 用户只要求替换 `iron`。
+
+- **⚠️ 船身改色走「按产物 y 分层 + 桅杆豁免」规则 `HULL_RECOLOR`，不是 `BLOCK_MAP`
+  （v2.36 立 / v2.37 扩到 y≤9，用户 2026-11-02）**：
+  用户两轮：「我要把船身的 oak_planks_1 都换成 acacia_planks，船甲板之上的已经换好的
+  oak_planks_1 先保留」→ 又「船体的 oak_planks_1 也换成 acacia_planks……船甲板上的柱子
+  原本还是 oak_planks_1 的就还保留」+ 裁定「**改到 y≤9**，桅杆/柱子保留」。
+  `HULL_RECOLOR = { from: 'oak_planks_1', to: 'acacia_planks', maxY: 9,
+  mastSourceBlocks: ['stripped_dark_oak_log', 'stripped_spruce_log'] }`（产物局部 y，最低层 = 1）。
+  - **实测分界**：改色 **206 格**（y 1~5 的 132：船壳 108 + 龙骨 24；y=7 的 67 甲板围边；
+    y=8 的 7 船尾横排），保留 **86 格**（桅杆 77 + 船尾板 9），292 = 206 + 86。
+  - ⚠️⚠️ **两个条件缺一不可**：只按源方块改 ⇒ `spruce_planks`（y 1..7）与
+    `stripped_dark_oak_wood`（y 7..8）都跨层、会漏染船壳顶或错染桅杆；只按 y 改 ⇒
+    **y=8 与 y=9 各 8 格桅杆**会被染成橙棕（用户明说「柱子保留」）⇒ 必须按源方块豁免
+    （cell 上留 `srcName` 就是为了这个）。
+  - ⚠️ **`oak_planks_1` 在 y 7~9 与 `acacia_planks` 是交错的**（桅杆穿在甲板之间）——
+    这是**用户要的**观感，不要误判成「分层没做干净」去「修复」。
+  - ⚠️ **容器层与叠加层的顺序是载荷性的**：改色在**用户修复叠加层之前**跑。叠加层当前只写
+    `handrailA` / `vertical_pillar`（不相交），但语义上它写什么就是什么，不该被色系规则改掉。
+  - ⚠️ **palette 13 → 14**（`acacia_planks` 新进，而 `oak_planks_1` 仍存活 86 格）——
+    这跟 v2.34/v2.35 的「一出一进仍 13」**不同**，改 `SHIP_METRICS.paletteSize` 时不要想当然。
+  - ⚠️ **Tier 4 的分层判据必须做 worldY 换算**：`rasterizeStructure` 按 `y + b.y - 1` 落位，
+    而产物最低层是 local y=1 ⇒ `worldY = SEA_Y + localY - 1`。改色层边界 local 9 ⇒ 世界
+    `SEA_Y + 8`。（v2.36 初版按 `SEA_Y + 7` 判，把甲板围边 67 格误报成「甲板之下」。）
+  - ⚠️⚠️ **只钉「数量」的判据拓不到「位置错」（2026-11-02 实测踩到）**：「总数 206/86」+
+    「改色层内 from 恰 16 格」两条，在「把 16 格桅杆染色、再把甲板上另外 16 格改回
+    `oak_planks_1`」后**全绿**（数量都对、位置全错）。必须加**按层的位置**判据：
+    **y=8 这一层的 `oak_planks_1` 水平位置数 == 8**（4 根桅杆 × 各 2 格；被染色时归 0）。
+  - ⚠️ **三层防线**：烘焙脚本 `throw`（去豁免 → 222 ≠ 206）/ `check:data`（总数 +
+    层内 from 数）/ Tier 4 + 单测（再加上述位置维度）。
+
 - **⚠️ 「烘焙」在这里只是数据格式转换，不产生任何新美术资源**（本仓既有教训）：
   `.litematic` → 紧凑 JSON（palette 索引 + stride 5 带朝向），映射目标**全是 registry 现有方块**。
   唯二新增的 `planks_step_updown` / `half_block_updown` 是用户批准的「倒置台阶 / 倒置半砖」，
@@ -3416,7 +3481,9 @@ mc-heavy/
 │                              #   → **烘焙期旋转成 4 个变体**（mesher rotateOffset，运行期零旋转）
 │                              #   → medieval_ship_o{0..3}.json（stride:5 带朝向）
 ├─ tools/medieval-ship-fingerprint.mjs # 中世纪船 BLOCK_MAP / SHIP_METRICS / FACING_TO_ORIENT /
-│                              #   指纹共享模块（同上，红线 1；FACING_TO_ORIENT 与金字塔同源）
+│                              #   **HULL_RECOLOR + MAST_SOURCE_BLOCKS**（v2.36/v2.37 按产物 y 分层
+│                              #   并豁免桅杆的船身改色规则）/ 指纹共享模块
+│                              #   （同上，红线 1；FACING_TO_ORIENT 与金字塔同源）
 ├─ tools/azalea-trees-fingerprint.mjs # 杜鹃树 SOURCE_MAP / PALETTE / SIZE_EXPECTATIONS / 指纹共享模块（同上，红线 1）
 ├─ tools/bake-giant-trees.mjs  # 巨树烘焙（npm run gianttrees）：入库 .schem → 28 变体 2×2×2 降采样
 │                              #   → assets/giant-trees/trees.json + trees.meta.json（尺寸+输入指纹）
@@ -3640,6 +3707,7 @@ npm run ship                   # 烘焙中世纪船 → assets/structures/mediev
                                #   （Medieval Ship.litematic → 映射现有方块 → 丢孤立 glass 标记物 →
                                #   **烘焙期旋转成 4 个变体**，stride:5 带台阶/栏杆朝向）。
                                #   改 tools/medieval-ship-fingerprint.mjs（BLOCK_MAP / SHIP_METRICS /
+                               #   HULL_RECOLOR /
                                #   FACING_TO_ORIENT）或 .litematic 后需跑，否则产物静默过期
                                #   （check:data 的 [中世纪船] 指纹检查会抓）
                                #   另有 `-- --census`（源方块普查 + 映射）/ `-- --census-orient`

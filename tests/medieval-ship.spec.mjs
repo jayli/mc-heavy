@@ -92,13 +92,15 @@ test('中世纪船: 船真的生成在湖里（真实 GEN 后世界里有船体�
 
   // 船体材质集合（烘焙产物的 palette）。
   // ⚠️ 2026-11-04 用户改色：dark_planks→iron、birch_log→snow、light_gray_cloth→marble。
+  // ⚠️ 2026-11-02（v2.35）用户再改：iron → oak_planks_1；2026-11-02（v2.36）又要求
+  // 「船身的 oak_planks_1 换成 acacia_planks，甲板之上的保留」⇒ **两者共存**。
   // ⚠️ **扫描下界必须是 `SEA_Y`（= 船底那一层），不能更低**：湖底方块在
   // `LAKE_FLOOR_Y = SEA_Y-1` 且材质是 `sand`，而 `sand` 也在船的 palette 里
   // （素材的 double 半砖映射到它，实测 1 格、在世界 y=8 的上层建筑里）。
   // 扫到 y=-3 会把船 AABB 内全部 407 列湖底沙当成船体（实测读数 1680 = 1263 + 407 + 10）。
   const SEA_Y = -2;
   const shipMats = new Set([
-    'oak_planks', 'iron', 'planks_step', 'planks_step_updown',
+    'oak_planks', 'oak_planks_1', 'acacia_planks', 'planks_step', 'planks_step_updown',
     'half_block_updown', 'sand_slab', 'vertical_pillar', 'handrail', 'handrailA',
     'marble', 'snow', 'giant_mangrove_log', 'sand',
   ]);
@@ -141,14 +143,73 @@ test('中世纪船: 船真的生成在湖里（真实 GEN 后世界里有船体�
   // 主要材质必须是木板（船壳主体）
   expect(result.kinds['oak_planks'] || 0).toBeGreaterThan(200);
   // ⚠️ **2026-11-04 用户改色的落地判据（v2.34）**：只看格数拓不到「BLOCK_MAP 改了但没重烘」
-  // （旧产物格数/bbox 全一致）。这里逐项钉住三个新材质的**实测格数**（均来自产物契约），
+  // （旧产物格数/bbox 全一致）。这里逐项钉住新材质的**实测格数**（均来自产物契约），
   // 且旧材质必须一格不剩 —— 否则两种色系会混在船体上而格数总和仍然对。
-  expect(result.kinds['iron'] || 0, '船壳深色带/桅杆/龙骨应为 iron 292 格').toBe(292);
+  // ⚠️ 2026-11-02（v2.35）：`iron` → `oak_planks_1`，故它进「旧材质」那一组。
+  // ⚠️ 2026-11-02（v2.36 → v2.37）：船身改色扩到 y≤9（桅杆豁免）
+  // ⇒ `oak_planks_1` 只剩 86 格（桅杆 77 + 船尾板 9），`acacia_planks` 206 格。
+  expect(result.kinds['acacia_planks'] || 0, '船身（y≤9 的非桅杆部分）应为 acacia_planks 206 格').toBe(206);
+  expect(result.kinds['oak_planks_1'] || 0, '桅杆/柱子 + 船尾板应保留 oak_planks_1 86 格').toBe(86);
   expect(result.kinds['marble'] || 0, '主帆应为 marble 93 格').toBe(93);
   expect(result.kinds['snow'] || 0, '桅杆顶部浅色件应为 snow 26 格').toBe(26);
-  for (const old of ['dark_planks', 'birch_log', 'light_gray_cloth']) {
+  for (const old of ['dark_planks', 'birch_log', 'light_gray_cloth', 'iron']) {
     expect(result.kinds[old] || 0, `旧材质 "${old}" 已全部换掉，世界里不应再有`).toBe(0);
   }
+
+  // ⚠️ **分层判据（v2.36 立 / v2.37 扩到 y≤9 + 桅杆豁免）**。
+  // 只数总数拓不到「按源方块改」（spruce_planks 跨 y 1..7、stripped_dark_oak_wood 跨 y 7..8
+  // ⇒ 甲板围边会被一起染成勾棕而总数仍对），必须按世界层判。
+  //
+  // ⚠️ **产物局部 y 与世界 y 差一格**：`rasterizeStructure` 按 `y + b.y - 1` 落位，
+  // 而产物最低层是 local y=1 ⇒ `worldY = SEA_Y + localY - 1`。
+  // 改色层边界 local y=9 ⇒ **世界 SEA_Y+8**（初版 v2.36 按 +7 判，把甲板围边 67 格误报）。
+  // ⚠️ **不能断言「改色层内没有 oak_planks_1」**（v2.36 可以，v2.37 不行）：桅杆穿在甲板之间，
+  // 用户明确要保留它们 ⇒ 判据反而要钉「层内 oak_planks_1 必须恰好是那 16 格桅杆」。
+  const layered = await page.evaluate(([p, seaY, cutLocalY, from, to]) => {
+    const g = window.__MC_GAME__;
+    const cutWorldY = seaY + cutLocalY - 1;
+    let badHigh = 0;   // 改色层之外不该有 to
+    let inRange = 0;   // 改色层内仍为 from 的格数（合法来源只有桅杆）
+    const minX = p.wx - p.loX, maxX = p.wx + p.hiX;
+    const minZ = p.wz - p.loZ, maxZ = p.wz + p.hiZ;
+    for (let x = minX; x <= maxX; x++) {
+      for (let z = minZ; z <= maxZ; z++) {
+        for (let wy = seaY; wy <= seaY + 46; wy++) {
+          const id = g.world.getBlockId(x, wy, z);
+          if (!id) continue;
+          const n = g.registry.nameOf(id);
+          const within = wy <= cutWorldY;
+          if (!within && n === to) badHigh++;
+          if (within && n === from) inRange++;
+        }
+      }
+    }
+    return { badHigh, inRange, cutWorldY };
+  }, [p, SEA_Y, 9, 'oak_planks_1', 'acacia_planks']);
+  expect(layered.badHigh, `改色层之外（worldY > ${layered.cutWorldY}）不应出现 acacia_planks`).toBe(0);
+  expect(layered.inRange, `改色层内应恰好有 16 格 oak_planks_1（主/副桅杆各 8，用户要求保留柱子）`).toBe(16);
+
+  // ⚠️ **上面两条还拓不到「位置错」**（实测踩到）：把 16 格桅杆染色、再把甲板上另外 16 格
+  // 改回 `oak_planks_1` ⇒ 总数 206/86 与 `inRange` 16 **全部对得上**，而桅杆已经变橙。
+  // 根因：那两条只数**数量**，不看**位置**。
+  // 修法 = 按 y 层看桅杆位置：桅杆是**垂直连续**的，而甲板格不是。判据取
+  // 「y=8 这一层是 `oak_planks_1` 的水平位置数」——实测正确产物恰好 **8**（4 个桅杆 × 各 2 格），
+  // 桅杆被染色时变 **0**（真 FAIL，已负向验证），而它不依赖「哪几列连续」这类脆弱条件。
+  const mastPositions = await page.evaluate(([p, seaY, cutLocalY, from, to]) => {
+    const g = window.__MC_GAME__;
+    const y8 = seaY + 8 - 1;   // 产物 local y=8 ⇒ 世界 SEA_Y+7（`y + b.y - 1`）
+    const spots = [];
+    for (let x = p.wx - p.loX; x <= p.wx + p.hiX; x++) {
+      for (let z = p.wz - p.loZ; z <= p.wz + p.hiZ; z++) {
+        const id = g.world.getBlockId(x, y8, z);
+        if (id && g.registry.nameOf(id) === from) spots.push([x, z]);
+      }
+    }
+    return spots;
+  }, [p, SEA_Y, 9, 'oak_planks_1', 'acacia_planks']);
+  expect(mastPositions.length,
+    'y=8 这一层的 oak_planks_1 水平位置应恰好 8 个（4 根桅杆 × 各 2 格）'
+    + ' —— 少了说明桅杆被染成 acacia（用户要求柱子保留）').toBe(8);
 });
 
 test('中世纪船: 船完整落在水下（船 AABB 内每列地表 ≤ SEA_Y-1）', async ({ page }) => {
@@ -220,7 +281,7 @@ test('中世纪船: 船底紧贴湖底方块顶面（不埋进沙里、不悬空
   // 船心列的船底那一格必须是船体方块（不是水、不是沙）
   const bottomName = await blockNameAt(page, p.wx, SEA_Y, p.wz);
   const shipMats = new Set([
-    'oak_planks', 'iron', 'planks_step', 'planks_step_updown',
+    'oak_planks', 'oak_planks_1', 'acacia_planks', 'planks_step', 'planks_step_updown',
     'half_block_updown', 'sand_slab', 'vertical_pillar', 'handrail', 'handrailA',
     'marble', 'snow', 'giant_mangrove_log', 'sand',
   ]);

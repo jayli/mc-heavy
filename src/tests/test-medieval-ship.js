@@ -512,11 +512,17 @@ test('中世纪船: 船体材料已按用户要求换成 iron / snow / marble（
   // ⚠️ 这条钉的是「用户 2026-11-04 的改色真的进了产物」。
   //
   // 为什么必须单独钉：改色只动 `BLOCK_MAP` 的目标名，**格数 / bbox / 台阶 / 半砖 /
-  // 栏杆计数 / palette 种类（13）全部不变** ⇒ 只看那些指标的断言在「改了映射却没重烘」
+  // 栏杆计数 / palette 种类（当时 13）全部不变** ⇒ 只看那些指标的断言在「改了映射却没重烘」
   // 时全绿（旧的 dark_planks / birch_log / light_gray_cloth 还在产物里）。
   // 指纹会变（设计如此），但指纹只能证明「参数变过」，证明不了产物里的方块名。
-  const OLD = ['dark_planks', 'birch_log', 'light_gray_cloth'];
-  const NEW = { iron: 292, marble: 93, snow: 26 };
+  //
+  // ⚠️ 2026-11-02（v2.35）：`iron` → `oak_planks_1`（用户「iron 方块都替换成 oak_planks_1」），
+  // 故 NEW 表里的 iron 项已改为 oak_planks_1，且 iron 进 OLD（必须一格不剩）。
+  // ⚠️ 2026-11-02（v2.36）：船身 y≤6 的 `oak_planks_1` 又改成了 `acacia_planks`
+  // ⇒ 这里不能再钉「oak_planks_1 恰好 292」——只剩甲板之上了。分层判据在下一条。
+  // ⚠️ 2026-11-02（v2.37）：改色层扩到 **y≤9**（桅杆豁免）⇒ acacia 206 / oak_planks_1 86。
+  const OLD = ['dark_planks', 'birch_log', 'light_gray_cloth', 'iron'];
+  const NEW = { oak_planks_1: 86, marble: 93, snow: 26 };
   const { loadStructure } = await import('../gen/structures/structure-json.js');
   for (const v of MEDIEVAL_SHIP_VARIANTS) {
     const data = await loadStructure(v);
@@ -528,9 +534,54 @@ test('中世纪船: 船体材料已按用户要求换成 iron / snow / marble（
     for (const name of OLD) {
       assertEqual(counts.get(name) || 0, 0, `${v}: 旧材质 "${name}" 已全部换掉，不应再出现`);
     }
-    // palette 种类仍是 13（3 出 3 进）—— 防止「只改了一半映射」时种类数偷偷变化
+    // palette 种类仍是 14（v2.36 起 `acacia_planks` 新进，`oak_planks_1` 仍保留）
+    // —— 防止「只改了一半映射」时种类数偷偷变化
     const kinds = new Set(data.blocks.map((b) => b.type));
-    assertEqual(kinds.size, 13, `${v}: palette 种类应仍为 13（3 出 3 进）`);
+    assertEqual(kinds.size, 14, `${v}: palette 种类应为 14（v2.36 加入 acacia_planks）`);
+  }
+});
+
+test('中世纪船: 船身改色按 y 分层 + 桅杆豁免（acacia 206 / 保留 oak_planks_1 86）（v2.37）', async () => {
+  // 用户两轮需求：
+  //   ① v2.36：「把船身的 oak_planks_1 都换成 acacia_planks，船甲板之上的已经换好的
+  //      oak_planks_1 先保留」
+  //   ② v2.37：「船体的 oak_planks_1 也换成 acacia_planks……船甲板上的柱子原本还是
+  //      oak_planks_1 的就还保留」+ 裁定「改到 y≤9」
+  //
+  // ⚠️ **只数总数拓不到「按源方块改」与「按 y 分层改」的区别**：两者都是 206/86。
+  // ⚠️ **也拓不到「桅杆豁免」**：主/副桅杆共 16 格落在 y=8/y=9（改色层内），
+  // 靠 y 分界沾不住它们 ⇒ 必须单独判「改色层内仍有 from 的格数 == 16」。
+  // ⚠️ **不 import `tools/medieval-ship-fingerprint.mjs`**（它依赖 `node:fs` → 浏览器解析失败
+  // → 模块不加载 → 整页用例不跑，而 `check:arch` 抓不到这类运行时失败）。分界常量在这里
+  // 硬编码一份，与 `HULL_RECOLOR` 的一致性由 `npm run check:data` 的 `[中世纪船]` 环节钉住。
+  const R = { from: 'oak_planks_1', to: 'acacia_planks', maxY: 9 };
+  const { loadStructure } = await import('../gen/structures/structure-json.js');
+  for (const v of MEDIEVAL_SHIP_VARIANTS) {
+    const data = await loadStructure(v);
+    let acacia = 0;
+    let kept = 0;
+    let above = 0;   // 不该发生：acacia 落在改色层之外
+    let inRange = 0; // 改色层内仍为 from 的格数（合法来源只有桅杆）
+    for (const b of data.blocks) {
+      if (b.type === R.to) { acacia++; if (b.y > R.maxY) above++; }
+      else if (b.type === R.from) { kept++; if (b.y <= R.maxY) inRange++; }
+    }
+    assertEqual(acacia, 206, `${v}: ${R.to} 必须恰好 206 格（船身 y≤9 的非桅杆部分）`);
+    assertEqual(kept, 86, `${v}: 应保留 ${R.from} 86 格（桅杆 77 + 船尾板 9）`);
+    assertEqual(above, 0, `${v}: 不该有 ${R.to} 落在 y > ${R.maxY}（改色层之外）`);
+    assertEqual(inRange, 16,
+      `${v}: 改色层（y≤${R.maxY}）内应仍有 16 格 ${R.from}（主/副桅杆各 8）`
+      + ' —— 多了 = 漏染、少了 = 桅杆被染色了');
+
+    // ⚠️ **上面两条拓不到「位置错」**（同 Tier 4 踩到的盲区）：把 16 格桅杆染色、
+    // 再把甲板上另外 16 格改回 from ⇒ 总数与 inRange 全部对得上，而桅杆已经变橙。
+    // 故再钉一条 **按层的位置** 判据：y=8 那层的 from 水平位置数（实测 = 8 = 4 根桅杆 × 各 2 格）。
+    // 桅杆被染色时它归零（已负向验证）；甲板格被冒充时它会变大。
+    const y8Pos = new Set();
+    for (const b of data.blocks) if (b.y === 8 && b.type === R.from) y8Pos.add(`${b.x},${b.z}`);
+    assertEqual(y8Pos.size, 8,
+      `${v}: y=8 这一层的 ${R.from} 水平位置应恰好 8 个（4 根桅杆 × 各 2 格）`
+      + `（实得 ${y8Pos.size}）—— 少了 = 桅杆被染色、多了 = 甲板格被冒充`);
   }
 });
 
@@ -645,7 +696,7 @@ test('中世纪船: 真实 GEN 后船方块出现在世界里（接线防线）'
 
   // 数船心列上的船体方块（船是实心的，中心列从船底到甲板都该有方块）
   const shipIds = new Set(
-    ['oak_planks', 'iron', 'planks_step', 'planks_step_updown',
+    ['oak_planks', 'oak_planks_1', 'acacia_planks', 'planks_step', 'planks_step_updown',
      'half_block_updown', 'sand_slab', 'vertical_pillar', 'handrail', 'handrailA',
      'marble', 'snow', 'giant_mangrove_log']
       .map((n) => reg.idOf(n)).filter((id) => id !== undefined),

@@ -35,7 +35,7 @@ import { rotateOffset } from '../src/mesh/mesher.js';
 import { MEDIEVAL_SHIP_VARIANTS, MEDIEVAL_SHIP_METRICS } from '../src/gen/structures/medieval-ship-data.js';
 import {
   LITEMATIC_PATH, SHIP_JSON, SHIP_META, BLOCK_MAP, SHIP_METRICS,
-  FACING_TO_ORIENT, medievalShipInputFingerprint, readUserFixOverlay,
+  FACING_TO_ORIENT, HULL_RECOLOR, medievalShipInputFingerprint, readUserFixOverlay,
 } from './medieval-ship-fingerprint.mjs';
 
 /** Minecraft 方位 → 本仓 (dx, dz)（北 = -Z，与 `FACING_TO_ORIENT` 的高侧口径同源） */
@@ -347,9 +347,34 @@ function bake() {
         else if (name === 'ladder') srcCounts.ladder++;
         else if (/_trapdoor$/.test(name)) srcCounts.trapdoor++;
 
-        baseCells.push({ x: x - OX, y: y - mny + 1, z: z - OZ, name: res.block, meta: res.meta });
+        baseCells.push({ x: x - OX, y: y - mny + 1, z: z - OZ, name: res.block, meta: res.meta, srcName: name });
       }
     }
+  }
+
+  // ---- 第二遍半：船身改色（**叠加层之前**，v2.36）----
+  //
+  // 用户 2026-11-02（v2.37）：「船体的 oak_planks_1 也换成 acacia_planks……船甲板上的柱子
+  // 原本还是 oak_planks_1 的就还保留」+ 裁定「改到 y≤9」⇒
+  // 产物局部 y ≤ HULL_RECOLOR.maxY **且非桅杆类源方块**的 from 改烘成 to。
+  //
+  // ⚠️ **必须在叠加层之前**：叠加层只写 `handrailA` / `vertical_pillar`（实测无 oak_planks_1），
+  // 两者当前不相交；但语义上叠加层是「用户对最终外观的修正」，它写入的方块不该再被色系规则
+  // 默默改掉（否则将来叠加层写一格 oak_planks_1 会静默变成 acacia，且梯子/竖杆可能在低层）。
+  // 改色先跑 ⇒ 叠加层写什么就是什么。
+  //
+  // ⚠️ **不能只改 BLOCK_MAP**：`spruce_planks`（y 1..7）与 `stripped_dark_oak_wood`（y 7..8）
+  // 都跨了分界线，按源方块改要么漏染船壳顶上那几格、要么把桅杆一起染了。
+  // ⚠️ **也不能只按 y 改**：主/副桅杆共 8 格在 y=8（改色层内），靠 y 分界沾不住它们
+  // ⇒ `mastSourceBlocks` 豁免是必需的（用户明说「柱子保留」）。
+  const mastSrc = new Set(HULL_RECOLOR.mastSourceBlocks);
+  let hullRecolored = 0;
+  for (const c of baseCells) {
+    if (c.name !== HULL_RECOLOR.from) continue;
+    if (c.y > HULL_RECOLOR.maxY) continue;
+    if (mastSrc.has(c.srcName)) continue;   // 桅杆/柱子永远保留浅木色
+    c.name = HULL_RECOLOR.to;
+    hullRecolored++;
   }
 
   // ---- 第二遍半：施加用户的手工修复叠加层（**旋转之前**）----
@@ -417,6 +442,21 @@ function bake() {
   }
   if (overlayRemoved !== M.userFixRemoveCells) {
     throw new Error(`叠加层 remove ${overlayRemoved} 条 ≠ SHIP_METRICS.userFixRemoveCells ${M.userFixRemoveCells}`);
+  }
+
+  // ---- v2.36 船身改色的产物契约（两侧都钉）----
+  // ⚠️ 只钉 acacia 一侧也能拓到「maxY 改错」，但报错会指错方向；两侧都钉能直接看出是哪边错了。
+  {
+    const acacia = fixedCells.filter((c) => c.name === HULL_RECOLOR.to).length;
+    const kept = fixedCells.filter((c) => c.name === HULL_RECOLOR.from).length;
+    if (acacia !== M.hullRecolor.acacia) {
+      throw new Error(`船身改色后 ${HULL_RECOLOR.to} ${acacia} 格 ≠ SHIP_METRICS.hullRecolor.acacia ${M.hullRecolor.acacia}`
+        + `（HULL_RECOLOR.maxY = ${HULL_RECOLOR.maxY}？桅杆豁免生效吗？用户裁定的是「改到 y≤9、柱子保留」）`);
+    }
+    if (kept !== M.hullRecolor.keptOakPlanks1) {
+      throw new Error(`保留的 ${HULL_RECOLOR.from} ${kept} 格 ≠ SHIP_METRICS.hullRecolor.keptOakPlanks1 ${M.hullRecolor.keptOakPlanks1}`
+        + `（HULL_RECOLOR.maxY = ${HULL_RECOLOR.maxY}？把甲板之上也染了就说明分界错了）`);
+    }
   }
 
   // ---- palette 定稿 + 目标方块计数（**必须在叠加层之后**，否则计数是修复前的）----
@@ -547,6 +587,8 @@ function bake() {
       set: overlaySet, added: overlayAdded, removed: overlayRemoved,
       source: 'assets/medieval-ship/src/user-fix-o0.json',
     },
+    // v2.36 船身改色（不含在 BLOCK_MAP 里的 y 分层规则，故单独记账）
+    hullRecolor: { from: HULL_RECOLOR.from, to: HULL_RECOLOR.to, maxY: HULL_RECOLOR.maxY, cells: hullRecolored },
     variants: variantMetas,
     counts: Object.fromEntries([...counts.entries()].sort()),
     stepOrientationCounts: Object.fromEntries([...stepOrientCounts.entries()].sort()),
@@ -561,6 +603,7 @@ function bake() {
     ` 半砖 ${slabCells}（下 ${counts.get('sand_slab') || 0} / 上 ${counts.get('half_block_updown') || 0}，含活板门 ${srcCounts.trapdoor}）` +
     ` 栅栏 ${fenceCells} + 梯子 ${srcCounts.ladder}（handrail ${counts.get('handrail') || 0} / handrailA ${counts.get('handrailA') || 0} / 立柱 ${counts.get('vertical_pillar') || 0}）`);
   console.log(`  丢弃孤立格 ${dropped.length}：${dropped.join(', ')}`);
+  console.log(`  船身改色 y≤${HULL_RECOLOR.maxY}：${HULL_RECOLOR.from} → ${HULL_RECOLOR.to}，${hullRecolored} 格`);
   console.log(`  台阶朝向分布：${JSON.stringify(meta.stepOrientationCounts)}`);
   console.log(`  栏杆朝向分布：${JSON.stringify(meta.railOrientationCounts)}`);
   console.log(`指纹 ${fp.input}`);
