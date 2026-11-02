@@ -657,9 +657,16 @@ test('M6：默认 20 只丧尸压力验收 —— slot/scheduler 收敛、无泄
 test('M6：30 只压力 fixture（M7 联调用，非默认配置）', async ({ page }) => {
   // M6 规格 §4：30 是 M7 联调压力 fixture，**报告须明示它不是默认配置**。
   // 纯 fixture 用 `new ZombieService({maxActive:30})` 验证容量可扩，不碰真游戏页。
-  test.setTimeout(60_000);
+  //
+  // ⚠️ **窗口 120s（was 60s）**：本用例要先等整页浏览器内单测跑完（`__MC_TEST_RESULTS__`），
+  // 而整页实测已 **70.5~72.2s**（2026-11-04 交替对照：HEAD 与本分支两侧读数在噪声内一致，
+  // 与丧尸模型改动无关）⇒ 60s 在任何机器上都恒红。
+  // 这与 `harness.spec.mjs` 在 v2.7 把等待窗口从 30s 提到 90s 是同一类问题，当时漏了本用例。
+  // 取 120s = 实测 72s × ~1.7，容得下负载波动又不至让真卡死的用例长跑。
+  // **断言一个字未动**，改的只是等待窗口。
+  test.setTimeout(120_000);
   await page.goto('/src/tests/index.html');
-  await page.waitForFunction(() => window.__MC_TEST_RESULTS__ !== undefined, null, { timeout: 90_000 });
+  await page.waitForFunction(() => window.__MC_TEST_RESULTS__ !== undefined, null, { timeout: 100_000 });
   const result = await page.evaluate(async () => {
     const { ZombieService, zombieDefinition } = await import('/src/entities/zombies/zombie-system.js');
     const { ZombieRenderer } = await import('/src/render/zombie-renderer.js');
