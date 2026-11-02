@@ -32,8 +32,9 @@
 import * as THREE from 'three';
 import {
   ZOMBIE, ZOMBIE_FLASH_MS, ZOMBIE_WALK_SPEED, ZOMBIE_SWING, ZOMBIE_MOVING_EPSILON,
-  ZOMBIE_ARM_SWING, ZOMBIE_HEAD_SWAY,
+  ZOMBIE_ARM_SWING, ZOMBIE_HEAD_SWAY, ZOMBIE_STEP_LIFT,
 } from '../entities/zombies/zombie-config.js';
+import { StepLift } from '../player/step-lift.js';
 import {
   ZOMBIE_MODEL_DEFS, ZOMBIE_SKIN_UV, ZOMBIE_UV_FACES, remapFaceUV,
 } from './zombie-model.js';
@@ -216,6 +217,15 @@ export class ZombieRenderer {
     this._poses[slot] = {
       walkTime: 0, swing: 0, armSwing: 0, headSway: 0,
       flashing: false, position: [0, 0, 0], yaw: 0,
+      // v2.39 上台阶视觉缓动：`lift` 每次 trigger 欠下一段负偏移，逐帧 ease-out 归零。
+      // 每只丧尸一个实例（共享一份会让多只互相打断）。
+      lift: new StepLift(),
+      /**
+       * 上一帧的物理 y（`null` = 未对齐）。**首帧必须不触发缓动** ——
+       * `position` 初值是 `[0,0,0]`，把「physicalY − 0」当成抬升量会让每只丧尸出生时
+       * 都从 y=0 升到自己脚下（实现里必然踩到的坑）。
+       */
+      prevY: null,
     };
     for (const part of ZOMBIE_PARTS) this.meshes[part].visible = true; // 有丧尸才提交渲染
   }
@@ -273,6 +283,12 @@ export class ZombieRenderer {
       pose.position = [...state.position];
       pose.yaw = state.yaw;
 
+      // ---- v2.39 上台阶视觉缓动（物理瞬时，只平滑渲染 y）----
+      // 为什么在这里而不是 `ZombieService` / 物理层：缓动**只服务观感**，权威 state 必须保持
+      // 瞬时（AABB 状态要精确，否则碰撞/实体射线/台阶净空全部错位）。与玩家的 `StepLift`
+      // （`player/player.js` 消费 `physics.stepLiftAccum`）同一分工。
+      this._advanceLift(pose, state.position[1], dt);
+
       // 步态：水平速度非零才算移动（mc-lite `Math.abs(velocity.x) > 0.001`）
       const moving = Math.abs(state.velocity[0]) > ZOMBIE_MOVING_EPSILON
         || Math.abs(state.velocity[2]) > ZOMBIE_MOVING_EPSILON;
@@ -328,9 +344,58 @@ export class ZombieRenderer {
     return pose ? { position: [...pose.position], yaw: pose.yaw } : null;
   }
 
+  /**
+   * 推进一只丧尸的 y 缓动（v2.39）。
+   *
+   * 三条分支都是**载荷性的**，任一条写错就退化成缺陷：
+   * ① `prevY === null`（首帧 / slot 刚分配）→ **对齐不触发**。初值 `[0,0,0]` 会让每只丧尸
+   *    出生时从 y=0 升上来。
+   * ② `dy > epsilon`（上台阶）→ `trigger(dy)` 欠下一段负偏移，渲染 y 从旧高度 ease-out 追平。
+   * ③ `dy < 0`（下落）→ **立即清零**，渲染直接跟随物理。下台阶的「动画」本来就来自重力
+   *    （实测 19 帧 / 283ms），再叠一层缓动会让模型短暂陷进台阶下方；而且「上升滞后 +
+   *    下落滞后」会叠加成更长时间的错位。
+   *
+   * 传送/大幅瞬移同样走 ① 之外的 ②/③：② 只在大幅上升时触发一次、随即衰减；当前没有
+   * 「瞬移丧尸」的玩法路径（AI RPC 只回 vx/vz/mode，不回 position）。
+   *
+   * @param {object} pose `_poses[slot]`
+   * @param {number} physY 本帧物理 y（脚底）
+   * @param {number} dt 距上一帧的秒数
+   */
+  _advanceLift(pose, physY, dt) {
+    const prev = pose.prevY;
+    pose.prevY = physY;
+    if (prev === null) {
+      pose.lift.offset = 0; // ① 首帧对齐
+    } else {
+      const dy = physY - prev;
+      if (dy > ZOMBIE_STEP_LIFT.epsilon) pose.lift.trigger(dy);   // ② 上台阶
+      else if (dy < 0) pose.lift.offset = 0;                      // ③ 下落（含重力与瞬移向下）
+    }
+    pose.lift.update(dt);
+  }
+
+  /** @param {number} slot @returns {number} 只读测试接口：当前 y 缓动偏移（格，≤ 0） */
+  liftOffsetOf(slot) {
+    const pose = this._poses[slot];
+    return pose ? pose.lift.offset : 0;
+  }
+
+  /**
+   * @param {number} slot @returns {number} 只读测试接口：**实际发布到实例矩阵**的 y。
+   *   = 物理 y + 缓动偏移。只断言 `liftOffsetOf` 会漏掉「测对了但没写进矩阵」这个形态
+   *   （v1.48 玩家晃动踩过：断言内部量时注入「算对但不写相机」仍全绿）。
+   */
+  renderYOf(slot) {
+    const pose = this._poses[slot];
+    return pose ? pose.position[1] + pose.lift.offset : 0;
+  }
+
   /** 写一个 slot 的六部件矩阵与颜色（父级 yaw × 部件本地偏移/旋转，mc-lite `:548-566` 同构） */
   _writeSlot(slot, pose) {
-    _parent.position.set(pose.position[0], pose.position[1], pose.position[2]);
+    // ⚠️ y 加 `lift.offset`：上台阶的视觉缓动就落在这一处（v2.39）。写回 `pose.position`
+    // 会把缓动偏移污染成「物理位置」的副本 —— `poseOf()` 的语义是只读发布物理位置。
+    _parent.position.set(pose.position[0], pose.position[1] + pose.lift.offset, pose.position[2]);
     _parent.rotation.set(0, pose.yaw, 0);
     _parent.updateMatrix();
     const flash = pose.flashing;

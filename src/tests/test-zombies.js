@@ -814,7 +814,7 @@ test('ZombieRenderer: dispose 清空全部 slot 并从 scene 释放六部件', (
  * 玩家固定在 `[0.5, 1, 0.5]`，丧尸按**精确距离**放置（10 / 59 / 61 格）—— 60 格门控的
  * 断言必须落在「59 进批次、61 不进」这个边界上，靠真实地形扫描落点无法控制距离。
  */
-function makeAiFixture({ worldColumns = 8 } = {}) {
+function makeAiFixture({ worldColumns = 8, withRenderer = false } = {}) {
   const registry = createRegistry();
   registry.register('air', { solid: false, opaque: false, cullMode: 'none' });
   registry.register('stone', { solid: true, opaque: true, cullMode: 'opaque' });
@@ -832,6 +832,9 @@ function makeAiFixture({ worldColumns = 8 } = {}) {
 
   const entities = new EntityManager();
   entities.registerType('zombie', zombieDefinition);
+
+  const scene = new THREE.Scene();
+  const renderer = withRenderer ? new ZombieRenderer({ scene, maxActive: ZOMBIE.maxActive }) : null;
 
   /**
    * fake pool：记录每次 `ai` 调用的 payload，可注入回包。
@@ -854,10 +857,16 @@ function makeAiFixture({ worldColumns = 8 } = {}) {
     },
   };
 
-  const zombies = new ZombieService({ entities, world, pool });
+  const zombies = new ZombieService({
+    entities, world, pool,
+    // 渲染层可选：物理用例不需要它（construction 成本 + 与断言无关）；
+    // 上台阶缓动用例必须走真实「service 分配 slot → renderer 发布 pose」链路。
+    onSpawn: withRenderer ? (id, slot) => renderer.acquireSlot(id, slot) : null,
+    onDespawn: withRenderer ? (id) => renderer.releaseSlot(id) : null,
+  });
   const playerPosition = [0.5, 1, 0.5];
 
-  return { registry, ids, world, entities, zombies, pool, playerPosition };
+  return { registry, ids, world, entities, zombies, pool, playerPosition, renderer: withRenderer ? renderer : null };
 }
 
 test('ZombieService: 20Hz 单条批量 AI RPC + 60 格门控（59 进、61 不进）', async () => {
@@ -1309,4 +1318,156 @@ test('ZombieRenderer: 皮肤 UV 的 v 方向 —— 世界顶部须采到皮肤�
         + `（期望 ${expected}，若为 ${wrongIfFlipped} 则脸是倒的）`);
     }
   }
+});
+
+// ---------- v2.39：上台阶视觉缓动（物理仍瞬时，只有渲染层平滑） ----------
+//
+// 用户报告「丧尸上台阶是瞬移，下台阶有下落动画」。实测根因：`tryStepUp` 把脚底**一帧**
+// 抬到上一格整数面（物理必须瞬时，AABB 状态要精确），而渲染层把 `state.position` 原样发布成
+// 实例平移 → 画面上就是瞬移。下台阶没这问题，因为重力天然一帧一帧下落（实测 19 帧 / 283ms）。
+//
+// 修法 = **只在渲染层**缓动整体 y（复用玩家相机的 `StepLift`）。物理/射线/存档一律不动。
+
+test('ZombieRenderer: 上台阶整体 y 缓动（非瞬移），~200ms 内追平物理且单调上升', () => {
+  // **走真实物理路径**（不是手工调 trigger）：`entities.update` 驱动 step-up，`renderer.sync`
+  // 消费新 y —— 这正是游戏里的两行。只测 `renderer._poses[slot].lift.trigger()` 会漏掉
+  // 「sync 没接线」这个真实失效形态（M6/M7 的「单测测不到没接线」同类）。
+  const { zombies, renderer, entities, world, ids } = makeAiFixture({ withRenderer: true });
+  // x ≥ 12 做成一整段高台（顶面 y=2）—— 孤立一格会让丧尸登上后又掉回（实测踩坑，见物理用例）
+  for (let x = 12; x < 60; x++) world.setBlock(x, 1, 0, ids.stone);
+  const id = zombies.spawn([10.5, 1, .5], { source: 'test' });
+  const slot = renderer.slotOf(id);
+  zombies.setIntent(id, { vx: ZOMBIE.speed, vz: 0, mode: 'chasing' });
+
+  let nowMs = 0;
+  renderer.sync(zombies, nowMs);
+  const y0 = zombies.get(id).position[1];
+  // 逐帧推进（1/120 渲染帧，与游戏 120Hz 一致），直到物理 y 抬升
+  let stepFrame = -1;
+  for (let i = 0; i < 600 && stepFrame < 0; i++) {
+    entities.update(1 / 120, { world });
+    nowMs += 1000 / 120;
+    renderer.sync(zombies, nowMs);
+    if (zombies.get(id).position[1] > y0 + 0.5) stepFrame = i;
+  }
+  assertTrue(stepFrame > 0, '前提：丧尸须在窗口内登上台阶');
+
+  const physY = zombies.get(id).position[1];
+  const renderY = renderer.renderYOf(slot);
+  // ① 抬升那一帧：渲染 y 必须**低于**物理 y（滞后），否则就是瞬移（本次修复的落点）
+  assertTrue(renderY < physY - 0.05,
+    `抬升帧渲染 y 须滞后于物理 y（渲染 ${renderY} / 物理 ${physY}）`);
+  // ② 不得反向越界：渲染 y 必须仍在旧高度之上（起点 = 旧物理 y）
+  assertTrue(renderY >= y0 - 1e-6, `渲染 y 不得落回旧高度以下（${renderY} < ${y0}）`);
+  // ②b **矩阵级断言**：`renderYOf` 读的是 pose 内存值，而「缓动真的发布了」的落点是
+  // 实例矩阵的平移分量。只断言内部量时，注入「`_writeSlot` 不加上 lift.offset」（= 等价回退
+  // 到瞬移）仍然全绿 —— 断言没落在被测路径（testing-policy §2.7，v1.48 玩家晃动同类踩坑）。
+  // 取六部件任意一个的矩阵：父级只有 yaw 旋转 + 平移，`head` 的 y 还会叠加本地轴心偏移，
+  // 故与 `body`（无 local rotation）的差值不恒定 —— 直接比对「矩阵 y − 同帧理论值」不可行。
+  // 改为比对**相对旧物理 y 的偏移量**：两帧的部件本地偏移相同，差值只能来自 lift。
+  const matrixY = (m) => { renderer.meshes.body.getMatrixAt(slot, m); return m.elements[13]; };
+  const mtx = new THREE.Matrix4();
+  const matrixAtStep = matrixY(mtx);
+  // 下一帧把 lift 清零后重写矩阵，得到「无 lift」的基准
+  renderer._poses[slot].lift.offset = 0;
+  renderer._writeSlot(slot, renderer._poses[slot]);
+  const matrixNoLift = matrixY(mtx);
+  assertTrue(matrixAtStep < matrixNoLift - 0.05,
+    `实例矩阵的 y 必须含 lift 偏移（含 lift ${matrixAtStep} 须低于无 lift ${matrixNoLift}）`);
+
+  // ③ 收敛：与玩家相机**同一口径**（`StepLift` 是一阶低通，`DECAY_RATE=12`）：
+  //    ~240ms 后残差 ≤ 15%（视觉上已追平 85%），完全归零靠 `CUTOFF=0.004`（~460ms）。
+  //    ⚠️ **不得断言「200ms 内数值归零」**：那要 575ms，与玩家上台阶的相机手感不一致。
+  const monotone = [];
+  let visuallyCaught = -1;
+  for (let i = 0; i < 29; i++) { // 29 帧 @120Hz ≈ 242ms
+    entities.update(1 / 120, { world });
+    nowMs += 1000 / 120;
+    renderer.sync(zombies, nowMs);
+    const y = renderer.renderYOf(slot);
+    monotone.push(y);
+    if (visuallyCaught < 0 && Math.abs(y - zombies.get(id).position[1]) <= 0.15) visuallyCaught = i;
+  }
+  assertTrue(visuallyCaught >= 0,
+    `须在 ~240ms（29 帧）内把残差收到 15% 以内，实测未达`);
+  // ④ 单调上升（缓动不得抖动 —— 抖动的观感是「卡顿」而非「迈上去」）
+  for (let i = 1; i < monotone.length; i++) {
+    assertTrue(monotone[i] >= monotone[i - 1] - 1e-6,
+      `渲染 y 须单调上升（第 ${i} 帧 ${monotone[i]} < 第 ${i - 1} 帧 ${monotone[i - 1]}）`);
+  }
+  // ⑤ 最终归零（不是永远留一段残差）
+  for (let i = 0; i < 60; i++) {
+    entities.update(1 / 120, { world });
+    nowMs += 1000 / 120;
+    renderer.sync(zombies, nowMs);
+  }
+  assertEqual(renderer.liftOffsetOf(slot), 0, '~750ms 后缓动须归零（CUTOFF 收敛）');
+  assertClose(renderer.renderYOf(slot), zombies.get(id).position[1], 1e-9,
+    '归零后渲染 y 与物理 y 逐位相等');
+  // ⑤ 物理不受影响：缓动只在渲染层，权威 state 的 y 仍是整数格面
+  assertEqual(zombies.get(id).position[1], 2, '物理 y 须仍是整数台阶面（缓动不得改物理）');
+});
+
+test('ZombieRenderer: 下台阶立即跟随物理（缓动必须清零，不得拖成悬空）', () => {
+  // 下台阶的「动画」本来就来自重力（实测 19 帧 / 283ms），渲染层必须**原样跟随**。
+  // 若缓动只在上升步触发、下降步不清零，那么刚爬完台阶立刻走下坡时会残留滞后 → 模型陷进台阶下方。
+  const { zombies, renderer, entities } = makeZombieFixture();
+  const id = zombies.spawn([0.5, 1, .5], { source: 'test' });
+  const slot = renderer.slotOf(id);
+  renderer.sync(zombies, 0);
+  // 先欠下一点缓动（模拟刚爬完台阶）
+  zombies.setIntent(id, { vx: 0, vz: 0, mode: 'idle' });
+  entities.applyAsyncPose({ id, generation: entities.get(id).generation, position: [0.5, 2, .5] });
+  renderer.sync(zombies, 100);
+  assertTrue(renderer.liftOffsetOf(slot) !== 0, '前提：上升后须留有滞后');
+  // 再下降一格：偏移必须立即清零
+  entities.applyAsyncPose({ id, generation: entities.get(id).generation, position: [0.5, 1, .5] });
+  renderer.sync(zombies, 200);
+  assertEqual(renderer.liftOffsetOf(slot), 0, '下落须立即清零缓动（缓动只服务上台阶）');
+  assertClose(renderer.renderYOf(slot), 1, 1e-9, '下落帧渲染 y 直接等于物理 y');
+});
+
+test('ZombieRenderer: 首帧/新 slot 不做缓动（不出现「从地底升上来」）', () => {
+  // `acquireSlot` 的 pose.position 初值是 [0,0,0]，若首帧把「physicalY − 0」当成抬升量，
+  // 每只丧尸出生时都会从 y=0 升到自己脚下 —— 这个坑在实现里是**必然**踩到的。
+  // 用合法出生点（脚下 y=0 是 stone），y=1 与初值 0 差整 1 格 —— 缺陷态下 renderY 会读成 0。
+  const { zombies, renderer } = makeZombieFixture();
+  const id = zombies.spawn([0.5, 1, .5], { source: 'test' });
+  assertTrue(id !== null, '前提：出生须成功（脚下 y=0 是 stone）');
+  const slot = renderer.slotOf(id);
+  renderer.sync(zombies, 0);
+  assertEqual(renderer.liftOffsetOf(slot), 0, '首帧 lift offset 须为 0');
+  assertClose(renderer.renderYOf(slot), 1, 1e-9, '首帧渲染 y 直接等于物理 y（不得从 0 升上来）');
+});
+
+test('ZombieRenderer: 多只丧尸的 lift 各自独立（互不串扰）', () => {
+  const { zombies, renderer, entities } = makeZombieFixture();
+  const a = zombies.spawn([0.5, 1, .5], { source: 'test' });
+  const b = zombies.spawn([2.5, 1, .5], { source: 'test' });
+  const slotA = renderer.slotOf(a);
+  const slotB = renderer.slotOf(b);
+  renderer.sync(zombies, 0);
+  entities.applyAsyncPose({ id: a, generation: entities.get(a).generation, position: [0.5, 2, .5] });
+  renderer.sync(zombies, 100);
+  assertTrue(renderer.liftOffsetOf(slotA) !== 0, 'A 爬台阶须有滞后');
+  assertEqual(renderer.liftOffsetOf(slotB), 0, 'B 未动，lift offset 须恒 0');
+  assertClose(renderer.renderYOf(slotB), 1, 1e-9, 'B 渲染 y 恒等于物理 y');
+});
+
+test('ZombieRenderer: slot 归还后重分配不继承上一只的缓动', () => {
+  const { zombies, renderer, entities } = makeZombieFixture();
+  const a = zombies.spawn([0.5, 1, .5], { source: 'test' });
+  const slot = renderer.slotOf(a);
+  renderer.sync(zombies, 0);
+  entities.applyAsyncPose({ id: a, generation: entities.get(a).generation, position: [0.5, 2, .5] });
+  renderer.sync(zombies, 100);
+  assertTrue(renderer.liftOffsetOf(slot) !== 0, '前提：旧实例留有滞后');
+  zombies.damage(a, 999, 200); // 死亡 → 归还 slot
+  assertNull(renderer.slotOf(a));
+  // 新实例复用同一 slot（低位优先），且第一次 sync 就有正确的 y
+  const b = zombies.spawn([4.5, 1, .5], { source: 'test' });
+  assertEqual(renderer.slotOf(b), slot, '前提：slot 被复用');
+  renderer.sync(zombies, 300);
+  assertEqual(renderer.liftOffsetOf(slot), 0, '新实例不得继承上一只的 lift offset');
+  assertClose(renderer.renderYOf(slot), 1, 1e-9, '新实例渲染 y 直接等于物理 y');
 });
