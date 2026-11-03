@@ -10,6 +10,7 @@ import { assertEqual, assertFalse, assertTrue, assertDeepEqual } from './assert.
 import { JEV_AI } from '../entities/zombies/zombie-config.js';
 import {
   DIRECTION_VECTORS, cellKey, memoryFor, noteVisit, sampleGroundWindow,
+  bearingWords, buildCandidateSteps, buildJevState, markDeadEnd,
 } from '../entities/zombies/zombie-ai-view.js';
 import { ChunkColumn } from '../voxel/chunk-column.js';
 import { WorldData } from '../voxel/world-data.js';
@@ -121,9 +122,7 @@ test('sampleGroundWindow：抬一格可走的台阶写成 "."（复用 step-up �
 
 // ---------- 候选事实与 state（Task 3）----------
 
-import {
-  bearingWords, buildCandidateSteps, buildJevState, markDeadEnd, memoryFor as memOf,
-} from '../entities/zombies/zombie-ai-view.js';
+const memOf = memoryFor;
 
 test('bearingWords：方位文案（参数是 [x,z]：z 减小为北、x 减小为西）', () => {
   assertEqual(bearingWords([0, 0], [1, 1]), 'south and east');  // x+1 东、z+1 南
