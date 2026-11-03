@@ -223,7 +223,7 @@ testing-policy §2.5「派生量不硬编码」的收益兑现）。细节见 ro
 
 **v2.43** 加了 **Boss 召唤框架**（用户 2026-11-03：「我要增加一个召唤每个地图 Boss 的动作……按C键召唤Boss，按照顺序，如果Boss1 已经在了，就召唤 Boss2，如果Boss都在了，就什么都不召唤。只有 Boss 死掉后，再按 C才会召唤出 Boss……Boss 只能从玩家所在的地图中心位置召唤出来……不能召唤相邻地图的Boss」+「祭坛飞龙目前的行为动作先不要做任何的变更」）：新增 `src/entities/bosses/boss-map.js`（`bossMapAt(wx,wz,seed)` = 「玩家站在哪张**地标级地图**里」的唯一权威，四类 CITY/TARN/SNOW/SHALLOW_TARN，判据全部转调既有权威）+ `boss-registry.js`（`BOSS_ROSTER` 名册，当前只有 `TARN → [dragon]`）。召唤流程 `Game.summonBoss()` 只读那两个模块、对具体 Boss 类型一无所知 ⇒ 加 Boss2 / 给别的地图加 Boss 只改名册。**龙的三项语义变更**（行为动作零变更）：去掉自动生成改按 C 召唤 / 轨道中心从「固定祭坛地带」改为玩家所在的那个高台地带 / **永久死亡整体移除**（`meta.dragonDead` 等全删，死后可重召 —— 推翻 v2.41 裁定）。实体 id 改派生（`dragon:<mapKey>:<slot>`，支持多地图共存），渲染层改 `DRAGON_MAX_ALIVE=4` 实例池（几何共享、骨骼/材质逐龙独立）。**已知取舍（用户接受）**：走远 column 卸载龙会被回收、槽位清空，回来要重新按 C。实施中还修了一个 `Toast._install()` 的既有缺陷（`document.body` 没有 `getElementById` → 幂等分支从未生效）。细节见下方「祭坛之龙沉淀的活跃约束」段与 roadmap 的 v2.43 行。
 
-**v2.44** 给飞龙加了 **Boss 级 AI 与火球攻击**（用户 2026-11-03：「飞龙看到玩家（视线没有被实心不透明方块遮挡）且距离近到一定程度时就要飞向玩家……递近玩家后就可以发射火球……火球触碰到玩家身体，或者击中实体方块（包括树叶、玻璃等半透明方块）都会产生爆炸，爆炸是否能破坏方块跟 TNT 破坏方块的开关有关……如果玩家静止不动，则飞龙递近到一定距离后就开始飞跃玩家，飞跃后盘旋回头再次飞向玩家递近，只要脑袋朝向玩家后就可以发射火球……不能像机关枪一样连续发射，要至少间隔五到十秒……当玩家离开火龙的视线后，火龙就开始返回原始高度……自由盘旋过程中可以增加一些随机方向的变化，可以左右拐弯」+ 架构指令「请你将这个实现抽离成一个独立的类，跟原有的逻辑尽量解耦开」——后续会有很多 Boss、每个都有自己的智能体类）。**架构 = BossAgent 抽象**：新增 `src/entities/bosses/boss-agent.js`（抽象基类 + 共用工具，视线转调炮塔 `hasLineOfSight` 唯一权威）+ `dragon-boss-agent.js`（飞龙四态机，`poseAt` 构造注入避免环）；`dragonDefinition.update` 只委托给 Agent，`dragon-system.js` 保留轨道/动画/AABB/服务不写 AI ⇒ 换一个 Boss = 换一个 Agent 子类。**四态机**：orbit（盘旋，半径按 θ 正弦调制 ±5 格左右拐弯）→ 视线通+距≤60 → chase（9 格/秒）→ 距≤20 → attack（approach↔turn 飞跃循环）→ 距>78（滞回）或视线断 → return。**开火四条**：喷火锥 ±20° + 冷却随机 5~10 秒 + **开火瞬间新鲜 LOS 复查** + 距≤60；`fireRequest` 是瞬态字段，由 game.js 在 entities.update 之后消费生成火球（definition 算意图、game.js 执行，与矿车 pendingPlayerLift 同先例）。**火球**（`fireball-system.js`，临时实体，与弹丸刻意独立）：15 格/秒直线无追踪、最远 80 格；遮挡判据**只看 solidTable**（有意不同于弹丸的 solid&&opaque —— 玻璃 opaqueTable=0 弹丸穿过、火球必须挡住）；命中玩家只爆炸不掉血（血量以后再做）。**爆炸复用 TNT 口径**：从 `explodeTnt` 抽出 `_applyExplosion(result)`（破坏受 canTntDestroyBlocks 门控 + 连锁 + 丧尸伤害 + 矿车摧毁 + 音效 + 两层特效），`explodeTnt` = 去重 + 移除自身 TNT + `_applyExplosion`（行为逐位不变，tnt.spec 7/7 零回归）。⚠️ **火球爆炸走 `_applyExplosion` 而不走 `explodeTnt`**（后者会把火球炸过的格键永久留在 `_ignitingTnt` 去重集合 → 之后同格放 TNT 静默不爆）。**渲染**：`FireballRenderer`（InstancedMesh 球体池、火焰色 0xff6a00、unlit、零实例 visible=false）。细节见下方「祭坛之龙沉淀的活跃约束」段与 roadmap 的 v2.44 行。
+**v2.44** 给飞龙加了 **Boss 级 AI 与火球攻击**（用户 2026-11-03：「飞龙看到玩家（视线没有被实心不透明方块遮挡）且距离近到一定程度时就要飞向玩家……递近玩家后就可以发射火球……火球触碰到玩家身体，或者击中实体方块（包括树叶、玻璃等半透明方块）都会产生爆炸，爆炸是否能破坏方块跟 TNT 破坏方块的开关有关……如果玩家静止不动，则飞龙递近到一定距离后就开始飞跃玩家，飞跃后盘旋回头再次飞向玩家递近，只要脑袋朝向玩家后就可以发射火球……不能像机关枪一样连续发射，要至少间隔五到十秒……当玩家离开火龙的视线后，火龙就开始返回原始高度……自由盘旋过程中可以增加一些随机方向的变化，可以左右拐弯」+ 架构指令「请你将这个实现抽离成一个独立的类，跟原有的逻辑尽量解耦开」——后续会有很多 Boss、每个都有自己的智能体类）。**架构 = BossAgent 抽象**：新增 `src/entities/bosses/boss-agent.js`（抽象基类 + 共用工具，视线转调炮塔 `hasLineOfSight` 唯一权威）+ `dragon-boss-agent.js`（飞龙四态机，`poseAt` 构造注入避免环）；`dragonDefinition.update` 只委托给 Agent，`dragon-system.js` 保留轨道/动画/AABB/服务不写 AI ⇒ 换一个 Boss = 换一个 Agent 子类。**四态机**：orbit（盘旋，半径按 θ 正弦调制 ±5 格左右拐弯）→ 视线通+距≤60 → chase（9 格/秒）→ 距≤20 → attack（approach↔turn 飞跃循环）→ 距>78（滞回）或视线断 → return。**开火四条**：喷火锥 ±10°（v2.45 从 20 收紧）+ **瞄准保持 0.2 秒**（v2.45 新增 `aimTime`：锥内累积、出锥清零、喷过清零）+ 冷却随机 5~10 秒 + **开火瞬间新鲜 LOS 复查** + 距≤60；`fireRequest` 是瞬态字段，由 game.js 在 entities.update 之后消费生成火球（definition 算意图、game.js 执行，与矿车 pendingPlayerLift 同先例）。**火球**（`fireball-system.js`，临时实体，与弹丸刻意独立）：25 格/秒（v2.45 从 15 提速）直线无追踪、最远 80 格；遮挡判据**只看 solidTable**（有意不同于弹丸的 solid&&opaque —— 玻璃 opaqueTable=0 弹丸穿过、火球必须挡住）；命中玩家只爆炸不掉血（血量以后再做）。**爆炸复用 TNT 口径**：从 `explodeTnt` 抽出 `_applyExplosion(result)`（破坏受 canTntDestroyBlocks 门控 + 连锁 + 丧尸伤害 + 矿车摧毁 + 音效 + 两层特效），`explodeTnt` = 去重 + 移除自身 TNT + `_applyExplosion`（行为逐位不变，tnt.spec 7/7 零回归）。⚠️ **火球爆炸走 `_applyExplosion` 而不走 `explodeTnt`**（后者会把火球炸过的格键永久留在 `_ignitingTnt` 去重集合 → 之后同格放 TNT 静默不爆）。**渲染**：`FireballRenderer`（v2.45 两层：炽橙亮核 `0xffb340` + additive 径向渐变光晕 billboard，±15%/6Hz 脉动，零实例 visible=false）；**出生点 = 嘴部**（`DRAGON.muzzleOffset` 实测自骨骼 bind 链，沿机头前向 3.36 格）。细节见下方「祭坛之龙沉淀的活跃约束」段与 roadmap 的 v2.44/v2.45 行。
 
 测试现状：Playwright spec 全量 + 浏览器内单元测试全绿。**用例计数以 `npm run check:data`
 输出为准，不在文档硬编码**（同一事实的多个副本属「改动放大器」，违反红线 1 精神）。
@@ -3583,8 +3583,72 @@ testing-policy §2.5「派生量不硬编码」的收益兑现）。细节见 ro
   `performance.now()` 混用陷阱（AGENTS.md 已记）。`rng` 默认 `Math.random`，测试注入确定性值钉
   `[fireCooldownMin, fireCooldownMax]` 两端与中点。⚠️ **开火瞬间必须做一次新鲜 LOS 复查**，
   不能用 10Hz 缓存（`losVisible`）—— 缓存期内玩家可能走进墙后，形态是「隔着墙喷火」。
+- **v2.45 瞄准保持（`aimTime`）：「对准了再喷」的唯一实现**（用户：「火龙刚转身就吐火球……
+  脑袋还没对准玩家就吐火球，感觉很奇怪」）：龙头在喷火锥内时 `aimTime` 逐帧累积，
+  **出锥 / 不可喷火模式 / 无玩家 → 立即清零**，累积到 `aimHoldSeconds`(0.2s) 才允许开火，
+  **喷过也清零**（下一发须重新对准，不得攒着连喷）。配套把 `fireConeDeg` 从 20 收紧到 10。
+  ⚠️ **累积判据刻意不看冷却与距离**：若「冷却没到就不累积」，冷却到点时龙头已对准却还要
+  再等 0.2 秒 —— 玩家看到的是「龙头明明对着我却不喷」。距离门控留在 `_tryFire` 那一刻。
+  ⚠️ **锥角判据用身体中心→玩家的水平角，不用嘴部**：yaw 是身体航向，嘴部偏移由 yaw 派生，
+  用嘴部算夹角会把「已对准」误判成「偏了 3 格」。⚠️ 单测里「条件全满足」的夹具必须预置
+  `aimTime: aimHoldSeconds`（否则「刚进锥那一帧」永不喷火，其余开火用例全部假失败）。
+- **v2.45 火球出生点 = 嘴前（`DRAGON.muzzleOffset`），不是身体中心**（用户：「火球吐出来的
+  位置现在大致是火龙脖子的位置，要在嘴的位置」）：世界坐标 = 身体中心 + 按 yaw 旋转的该偏移，
+  旋转公式与渲染层 `pivot.rotation.set(0, yaw, 0)` 同一套（three 绕 Y：x' = x·cosθ + z·sinθ、
+  z' = −x·sinθ + z·cosθ）⇒ 代入得 xz 偏移 = |z| × 本仓前向向量 (−sin yaw, −cos yaw)。
+  ⚠️ **瞄准方向与新鲜 LOS 复查都从嘴部起算**（火球真的从那里飞出去）；但 `fireRange` 距离
+  门控仍用身体中心（那是「龙与玩家多远」的口径）。⚠️ **`muzzleOffset` 与渲染层的
+  `−DRAGON_MODEL_CENTER` 是两个不同语义的偏移**（体心→嘴前 vs 模型原点→体心），不得混用。
+- **⚠️⚠️ 蒙皮模型的「网格位置」判据必须按动画全程逐帧扫，bind 姿态只是其中一帧**
+  （v2.45 第三轮用户反馈「火球还是出现在火龙的脑袋里面」的根因，实测数据）：
+  脖子在飞行动画里前后摆动，逐帧扫 head+jaw 网格的最前缘 relZ：
+  | 姿态 | 头部最前缘 relZ |
+  |---|---|
+  | bind（静止） | −4.781 |
+  | **fly 动画全程** | **−5.473 ~ −2.253** |
+  | glide 动画全程 | −4.232 ~ −2.572 |
+  第二轮按 bind 口径取 −5.4（≤ −4.781 − 半径 0.45 = −5.231）**测试全绿而玩家看得见缺陷** ——
+  fly 最伸展帧吻部已探到 −5.473，火球被脑袋包住。第三轮按动画口径取 −6.2（126 帧零相交），
+  用户又反馈「**过于靠前了，靠前不要突出这么多**……**稍微朝下移动一点**，更加靠近嘴巴的位置」。
+  **现值 `(0, −0.8, −5.8)`**：精细扫描（z∈[−6.2,−5.0] × y∈[−0.4,−1.2]，逐帧球-网格最近距）
+  得最小余量 **0.142 格**（126 帧零相交，最坏帧 fly#17/head），比 −6.2 少突出 0.4 格、低 0.33 格
+  （bind 嘴缝线 = jaw 上缘 −0.750 ⇒ −0.8 正贴嘴）。⚠️ **再往前（z > −5.5）余量迅速塌缩**：
+  −5.4 时仅 0.02~0.04 格，−5.2/y≤−0.8 已出现相交帧。
+  - **不变式 = `test-dragon-bake.js` 的「两侧界 + 嘴高带」三条**（阈值全部从产物自推导 ⇒
+    改素材/改 scale/改动画后自动重标）：
+    ① **3D 球-网格净空 ≥ 半径 + 0.05**（钉「不埋进脑袋」）—— ⚠️ **不用「z 比最前缘更靠前」的
+    单轴判据**：那拓不到「z 够靠前但 y 偏高撞到吻部侧面」；
+    ② **z 不得比动画最前缘再靠前 0.5 以上**（钉「不悬在嘴前」）—— 实测第三轮的 −6.2 靠前
+    0.727 会被本条拦下，那正是用户说「突出太多」的值；
+    ③ **y 必须在 bind 姿态 jaw 上缘 ±0.35 内**（钉「更靠近嘴巴」）。
+    ⚠️ 用例里**必须带 sanity「动画最前缘 < −5.0（比 bind 更靠前）」** —— 否则「逐帧扫描退化成
+    bind 扫描」这个缺陷本身不会被拓到（同 AGENTS.md「判据必须有判别力」口径）。
+  - ⚠️⚠️ **不变式③的第一版无判别力（实测踩到，与①的教训正好相反）**：它用「jaw 的**动画全程**
+    relY 跨度」作带，而脖子上下摆动使该跨度宽达 **2.69 格** ⇒ y=0.2（头顶上方）与 y=−1.7
+    （下巴下方）都在带内、**注入后仍全绿**。改用 **bind 姿态**的 jaw 上缘（稳定参考）后，
+    四条负向验证（埋进脑袋 −5.0 / 过于靠前 −6.2 / 偏高 y=0.2 / 偏低 y=−1.7）**全部真 FAIL**。
+    ⇒ **「位置」类判据按动画全程扫，「高度带」类判据反而要用 bind 姿态** —— 摆动会把带撑宽到恒真。
+  - **探针手法**（可复用）：逐骨骼链累积 bind 四元数与位移得世界矩阵 → 乘 `inv(bindWorldMat)`
+    得该帧增量 → 施加到按 `skinIndex` 筛出的刚性顶点上。本仓素材 115 个元素全部刚性归属
+    单骨骼（skinWeight 恒 1），故逐骨骼变换即可，不需蒙皮插值。
+    ⚠️ **bind 姿态的顶点已在模型空间**，直接减 `DRAGON_MODEL_CENTER` 即可 —— 再叠一次骨骼
+    世界矩阵会**双重变换**（实测因此把 jaw 上缘读成 2.693 而非 −0.750，一度以为嘴在头顶）。
+  - ⚠️ **同类风险清单**：任何「按模型网格位置定的常量」（武器挂点、鞍座、炮口、碰撞盒偏移）
+    在**有动画的蒙皮模型**上都有这个问题 —— 先问「这个骨骼在动画里摆不摆」，再决定扫一帧还是扫全程。
+- **v2.45 火球渲染是两层（亮核 + 加色光晕），`sync()` 因此多了两个参数**（用户：「要像一个
+  燃烧的火球」）：核心球 `0xffb340`（炽橙，比 v2.44 的 `0xff6a00` 亮）+ 第二个 InstancedMesh
+  的径向渐变光晕（`AdditiveBlending` / `depthWrite:false` / 边长 = 核心半径 × 3.4），光晕尺度
+  ±15% / 6Hz 脉动（相位按 slot 错开 ⇒ 多火球不同步闪）。`sync(entities, cameraQuat, nowMs)`：
+  光晕是 billboard，矩阵旋转 = **相机四元数**（game.js 传 `this.camera.quaternion`）。
+  ⚠️ **光晕用 InstancedMesh 不用 N 个 Sprite**（16 个 Sprite = 16 个 draw call）；两个 mesh 都
+  保持「零实例 visible=false」（否则各恒增 1 个 draw call，M6 教训）。⚠️ 光晕贴图是**运行时
+  canvas 径向渐变**（矿车车斗纹理同先例：纯程序化 ⇒ 无指纹门禁，观感回归靠 Tier 4 兜底）。
+  ⚠️ **Tier 4「光晕比核心大」的判据必须用非黑包围半径，不能用火焰色包围半径**（实测踩到）：
+  光晕外缘是 additive 淡橙，过不了 `r−g≥25` 的火焰色门 ⇒ 火焰色口径只量到 13.6px（光晕几何
+  半径 ≈32px），按 1.6× 下界假失败；改「任一通道 >8」后真通过。负向验证：注入「两个 mesh 恒
+  visible=false」后该条与「火焰色像素」条双双真 FAIL。
 - **火球是独立临时实体系统，不复用炮塔弹丸**（`fireball-system.js` vs `projectile-system.js`）：
-  速度（15 vs 40）、遮挡判据（只看 solid vs solid&&opaque）、命中语义（爆炸 vs 伤害）全不同。
+  速度（25 vs 40）、遮挡判据（只看 solid vs solid&&opaque）、命中语义（爆炸 vs 伤害）全不同。
   ⚠️ **type 刻意用 `'fireball'` 不复用 `'projectile'`**：两个渲染器都按 type 过滤，共用会让
   「火球被画成曳光弹」。判定顺序照 `judgeProjectile`（超距 → 方块 → 玩家），**超距不爆炸**
   （没撞到东西就消失，`judgeFireball` 不给 `at`）。玩家盒由装配层注入 `playerHitboxLocal()`
@@ -3938,8 +4002,9 @@ mc-heavy/
    │               #    + sin(p²·π) 滞后甩腕（v1.49，取代 mc-lite 的对称单曲线））
    │               #  turret-renderer.js / turret-armor-texture.js（炮塔 8 部件实例 + 单纹理 UV 分区）
    │               #  projectile-renderer.js（弹丸）/ tracer-renderer.js（曳光，起终点冻结在世界空间）
-   │               #  fireball-renderer.js（v2.44 飞龙火球：InstancedMesh 球体池、火焰色 0xff6a00、
-   │               #    unlit、零实例 visible=false → draw call 归零；与弹丸渲染器刻意独立）
+   │               #  fireball-renderer.js（v2.44 飞龙火球，v2.45 改燃烧外观：炽橙亮核 0xffb340 +
+   │               #    additive 径向渐变光晕 billboard（±15%/6Hz 脉动），两层都零实例 visible=false；
+   │               #    sync(entities, cameraQuat, nowMs)；与弹丸渲染器刻意独立）
    │               #  explosion-renderer.js（球体扩张）+ explosion-sprite.js（序列帧 billboard）
    │               #    —— 两层叠加才是 mc-lite 的爆炸表现，只做一层会「少一半」
    │               #  block-hit-fx.js + block-color.js（枪击命中：整格白闪 + 按命中面 atlas 取色的碎块）
@@ -3959,7 +4024,8 @@ mc-heavy/
    │               #  dragons/（祭坛飞龙 v2.41，v2.43 改按需召唤，v2.44 加 AI/火球；同构无 three）：
    │               #    dragon-config.js（冻结玩法数值唯一权威：health 3000 / 轨道半径 24 / 盘旋高 /
    │               #    DRAGON_CORE_OBB / MODEL_CENTER / ORBIT_SALT 1040 / MAX_ALIVE 4 /
-   │               #    dragonEntityIdFor 派生 id / **DRAGON_AI 16 项 AI 数值 + FIREBALL 火球数值**）
+   │               #    dragonEntityIdFor 派生 id / **DRAGON_AI 17 项 AI 数值（v2.45 加 aimHoldSeconds、
+   │               #    fireConeDeg 收紧到 10）+ DRAGON.muzzleOffset 嘴部偏移 + FIREBALL 火球数值（speed 25）**）
    │               #    + dragon-system.js（轨道/动画状态机/AABB 纯函数 + dragonDefinition（**update 委托
    │               #    DragonBossAgent**）+ DragonService：summon/damage/activeEntities，临时实体、
    │               #    **无永久死亡**（v2.43 移除 dragonDead）、多实例共存）

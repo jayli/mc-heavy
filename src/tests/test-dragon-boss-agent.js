@@ -52,9 +52,24 @@ function makeState(over = {}) {
     losTimer: 0,
     losVisible: false,
     turnDist: 0,
+    aimTime: 0,
     fireRequest: null,
     ...over,
   };
+}
+
+/**
+ * 嘴部世界坐标（与 Agent 的 `_muzzlePosition` 同公式，供断言用）。
+ *
+ * ⚠️ **公式来源 = three 绕 Y 轴旋转的约定**（渲染层 `pivot.rotation.set(0, yaw, 0)` 同一套）：
+ * 局部 (x,y,z) → 世界 (x·cosθ + z·sinθ, y, −x·sinθ + z·cosθ)。
+ * 代入 `muzzleOffset = (0, −0.47, −3.36)` 得 xz 偏移 = 3.36 × (−sin yaw, −cos yaw)
+ * = **3.36 × 本仓前向向量** —— 即「沿机头前向 3.36 格、低 0.47 格」，与实测嘴尖一致。
+ */
+function muzzleWorld(pos, yaw) {
+  const [ox, oy, oz] = DRAGON.muzzleOffset;
+  const s = Math.sin(yaw), c = Math.cos(yaw);
+  return [pos[0] + ox * c + oz * s, pos[1] + oy, pos[2] - ox * s + oz * c];
 }
 
 // ==================== 状态转移 ====================
@@ -234,11 +249,14 @@ test('移动: 返回全新 state 与全新 position 数组（M5 不变式）', (
 const FIRE_DRAGON = [0, ORBIT.y, 0];
 const FIRE_YAW = -Math.PI / 2;   // 前向 = (+1, 0) = 正东
 
-/** 构造「四条开火条件全满足」的 state（调用方逐项破坏其中一条） */
+/** 构造「开火条件全满足」的 state（调用方逐项破坏其中一条）。
+ *  ⚠️ `aimTime` 缺省已满足瞄准保持（v2.45）—— 否则「刚进锥那一帧」永不喷火，
+ *  本文件其余开火用例全会假失败。瞄准保持本身由下面专门的用例测。 */
 function fireState(over = {}) {
   return makeState({
     mode: 'chase', position: FIRE_DRAGON, yaw: FIRE_YAW,
     fireCooldown: 0, losTimer: 999, losVisible: true,   // 缓存说「通」且不重查
+    aimTime: DRAGON_AI.aimHoldSeconds,
     orbitT: 10, ...over,
   });
 }
@@ -253,23 +271,87 @@ function switchableWorld(state) {
   };
 }
 
-test('开火: 四条全满足 → fireRequest 指向玩家胸部且归一化', () => {
+test('开火: 条件全满足 → fireRequest 从**嘴部**出生、指向玩家胸部且归一化', () => {
   const agent = new DragonBossAgent({ poseAt: fakePoseAt });
   const px = FIRE_DRAGON[0] + 30;   // 距 30 < fireRange
   const ctx = { ...switchableWorld({ blocked: false }), player: { position: [px, 0, 0] } };
   const next = agent.update(fireState(), 0.016, ctx);
-  assertTrue(next.fireRequest !== null, '四条全满足必须开火');
+  assertTrue(next.fireRequest !== null, '条件全满足必须开火');
   const { position, direction } = next.fireRequest;
-  assertDeepEqual(position, next.position, '火球出生点 = 龙的身体中心');
+  // ⚠️ v2.45：出生点 = 嘴部（身体中心 + yaw 旋转的 muzzleOffset），不再是身体中心
+  const expectMuzzle = muzzleWorld(next.position, next.yaw);
+  for (let i = 0; i < 3; i++) {
+    assertTrue(Math.abs(position[i] - expectMuzzle[i]) < 1e-9,
+      `出生点[${i}]=${position[i]} ≠ 嘴部 ${expectMuzzle[i]}（v2.45 必须从嘴吐，不是脖子）`);
+  }
+  // sanity：嘴部确实比身体中心更靠前（沿前向 3.36 格）—— 防「偏移写了但量级为 0」
+  const fwd = [-Math.sin(next.yaw), -Math.cos(next.yaw)];
+  const ahead = (position[0] - next.position[0]) * fwd[0] + (position[2] - next.position[2]) * fwd[1];
+  assertTrue(Math.abs(ahead - (-DRAGON.muzzleOffset[2])) < 1e-9,
+    `嘴部应沿机头前向 ${-DRAGON.muzzleOffset[2]} 格，实测 ${ahead}`);
   const len = Math.hypot(...direction);
   assertTrue(Math.abs(len - 1) < 1e-9, `direction 必须归一化，实际长度 ${len}`);
-  // 指向玩家胸部（y + playerAimOffsetY）：从龙 (0,30,0) 到 (30,1,0)
-  const expect = [px - next.position[0], 0 + DRAGON_AI.playerAimOffsetY - next.position[1], 0];
+  // 指向玩家胸部（y + playerAimOffsetY），**从嘴部起算**
+  const expect = [px - position[0], 0 + DRAGON_AI.playerAimOffsetY - position[1], 0 - position[2]];
   const el = Math.hypot(...expect);
   for (let i = 0; i < 3; i++) {
     assertTrue(Math.abs(direction[i] - expect[i] / el) < 1e-9,
-      `direction[${i}]=${direction[i]} ≠ ${expect[i] / el}（必须瞄准玩家胸部）`);
+      `direction[${i}]=${direction[i]} ≠ ${expect[i] / el}（必须从嘴部瞄准玩家胸部）`);
   }
+});
+
+test('开火: 瞄准保持 —— 刚进锥（aimTime 不足）不喷，累积到 aimHoldSeconds 才喷', () => {
+  const agent = new DragonBossAgent({ poseAt: fakePoseAt });
+  const ctx = { ...switchableWorld({ blocked: false }), player: { position: [30, 0, 0] } };
+  const dt = 0.016;
+  // ① 刚进锥那一帧（aimTime=0）：不得喷火 —— 这正是用户报告的「刚转身就吐火球」
+  const first = agent.update(fireState({ aimTime: 0 }), dt, ctx);
+  assertEqual(first.fireRequest, null, '刚对准那一帧不得喷火（用户：脑袋还没对准就吐很奇怪）');
+  assertTrue(first.aimTime > 0, 'sanity：锥内必须开始累积瞄准时间');
+  // ② 累积到不足阈值：仍不喷
+  const frames = Math.ceil(DRAGON_AI.aimHoldSeconds / dt);
+  let st = first;
+  for (let i = 1; i < frames - 1; i++) st = agent.update(st, dt, ctx);
+  assertEqual(st.fireRequest, null, `瞄准 ${st.aimTime.toFixed(3)}s < ${DRAGON_AI.aimHoldSeconds}s 不得喷火`);
+  // ③ 再推进到阈值：必须喷
+  st = agent.update(st, dt, ctx);
+  assertTrue(st.fireRequest !== null,
+    `瞄准累积到 ${st.aimTime.toFixed(3)}s ≥ ${DRAGON_AI.aimHoldSeconds}s 必须喷火`);
+});
+
+test('开火: 出锥即清零瞄准时间（扫过锥内不算「对准」）', () => {
+  const agent = new DragonBossAgent({ poseAt: fakePoseAt });
+  const cone = DRAGON_AI.fireConeDeg * Math.PI / 180;
+  const dt = 0.016;
+  // 已瞄准 0.19s（差一帧就到阈值），但本帧 yaw 在锥外 → 必须清零且不喷
+  const out = agent.update(
+    fireState({ aimTime: DRAGON_AI.aimHoldSeconds - dt, yaw: FIRE_YAW + cone + 10 * Math.PI / 180 }),
+    dt,
+    { ...switchableWorld({ blocked: false }), player: { position: [30, 0, 0] } },
+  );
+  assertEqual(out.aimTime, 0, '出锥必须清零瞄准时间（否则「扫过」会被当成「对准」）');
+  assertEqual(out.fireRequest, null, '出锥不得喷火');
+});
+
+test('开火: 喷火锥收紧到 10° —— 15° 偏离不喷（v2.44 的 20° 会喷）', () => {
+  const agent = new DragonBossAgent({ poseAt: fakePoseAt });
+  assertEqual(DRAGON_AI.fireConeDeg, 10, '喷火锥半角必须是 10°（v2.45 用户裁定收紧）');
+  const ctx = { ...switchableWorld({ blocked: false }), player: { position: [30, 0, 0] } };
+  // 偏离 15°：在旧的 20° 锥内（会喷），在新的 10° 锥外（不得喷）—— 这条是判别性用例
+  const off15 = agent.update(fireState({ yaw: FIRE_YAW + 15 * Math.PI / 180 }), 0.016, ctx);
+  assertEqual(off15.fireRequest, null, '偏离 15° 不得喷火（旧 20° 锥会喷 ⇒ 本条钉住收紧）');
+  assertEqual(off15.aimTime, 0, '偏离 15° 在锥外 ⇒ 瞄准时间不得累积');
+  // 偏离 5°：在新锥内 → 喷
+  const off5 = agent.update(fireState({ yaw: FIRE_YAW + 5 * Math.PI / 180 }), 0.016, ctx);
+  assertTrue(off5.fireRequest !== null, '偏离 5°（锥内）必须喷火');
+});
+
+test('开火: 喷火后瞄准时间清零（下一发须重新对准）', () => {
+  const agent = new DragonBossAgent({ poseAt: fakePoseAt });
+  const ctx = { ...switchableWorld({ blocked: false }), player: { position: [30, 0, 0] } };
+  const fired = agent.update(fireState({ aimTime: DRAGON_AI.aimHoldSeconds * 3 }), 0.016, ctx);
+  assertTrue(fired.fireRequest !== null, 'sanity：本帧必须喷火');
+  assertEqual(fired.aimTime, 0, '喷火后瞄准时间必须清零（不得攒着下一发立刻喷）');
 });
 
 test('开火: 锥外（yaw 偏离 > fireConeDeg）→ 不喷火；锥内 → 喷', () => {
@@ -283,6 +365,23 @@ test('开火: 锥外（yaw 偏离 > fireConeDeg）→ 不喷火；锥内 → 喷
     'sanity：该帧结束时 yaw 确实在锥外（否则本用例测不到锥角）');
   const inCone = agent.update(fireState(), 0.016, ctx);
   assertTrue(inCone.fireRequest !== null, 'yaw 对准玩家必须喷火');
+});
+
+test('开火: 无玩家 / orbit / return 模式下瞄准时间不累积（恒 0）', () => {
+  const agent = new DragonBossAgent({ poseAt: fakePoseAt });
+  const dt = 0.016;
+  // orbit：yaw 恰好对准玩家也不累积（模式门控在瞄准之前）
+  const orbit = agent.update(
+    makeState({ mode: 'orbit', position: FIRE_DRAGON, yaw: FIRE_YAW, fireCooldown: 0,
+      losVisible: true, losTimer: 999, aimTime: 0 }),
+    dt, { ...switchableWorld({ blocked: false }), player: { position: [30, 0, 0] } },
+  );
+  assertEqual(orbit.aimTime, 0, 'orbit（自由盘旋）不得累积瞄准时间');
+  // 无玩家
+  const noPlayer = agent.update(
+    fireState({ aimTime: 0 }), dt, { ...switchableWorld({ blocked: false }), player: null },
+  );
+  assertEqual(noPlayer.aimTime, 0, '无玩家上下文不得累积瞄准时间');
 });
 
 test('开火: 冷却未到 → 不喷火；到点 → 喷', () => {

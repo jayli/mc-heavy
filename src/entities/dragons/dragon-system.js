@@ -198,11 +198,11 @@ function normalizeOrbit(orbit) {
  * → 恒相等 → 索引永不迁移 → column 卸载漏回收实体）。
  *
  * v2.44 起新增 AI 字段（全部有缺省，旧调用不破）：mode / attackPhase / fireCooldown /
- * losTimer / losVisible / turnDist / fireRequest。
+ * losTimer / losVisible / turnDist / fireRequest。v2.45 再加 aimTime（瞄准保持）。
  */
 function createState({
   position, yaw, orbit, orbitT, health, flashedUntil,
-  mode, attackPhase, fireCooldown, losTimer, losVisible, turnDist, fireRequest,
+  mode, attackPhase, fireCooldown, losTimer, losVisible, turnDist, aimTime, fireRequest,
 }) {
   const p = normalizePosition(position);
   const o = normalizeOrbit(orbit);
@@ -221,6 +221,8 @@ function createState({
     losTimer: Number.isFinite(losTimer) ? losTimer : 0,
     losVisible: losVisible === true,
     turnDist: Number.isFinite(turnDist) ? turnDist : 0,
+    // v2.45 瞄准保持：龙头在喷火锥内累积的时长（出锥清零，到 aimHoldSeconds 才允许喷）
+    aimTime: Number.isFinite(aimTime) ? aimTime : 0,
     // ⚠️ **瞬态**：serialize 跳过；由 game.js 在 entities.update 之后消费（生成火球）
     fireRequest: fireRequest || null,
   };
@@ -295,6 +297,7 @@ export const dragonDefinition = Object.freeze({
       losTimer: 0,
       losVisible: false,
       turnDist: 0,
+      aimTime: 0,
       fireRequest: null,
     };
   },

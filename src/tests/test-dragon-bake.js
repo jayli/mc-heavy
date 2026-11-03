@@ -8,6 +8,7 @@
 import * as THREE from 'three';
 import { test } from './runner.js';
 import { assertEqual, assertTrue, assertDeepEqual, AssertionError } from './assert.js';
+import { DRAGON, DRAGON_MODEL_CENTER, FIREBALL } from '../entities/dragons/dragon-config.js';
 
 const DEG = Math.PI / 180;
 
@@ -323,4 +324,169 @@ test('龙烘焙: 增量语义（t=0 帧的旋转增量应接近单位四元数�
   const qw = a.frames[o + 3];   // 只判 w 分量（增量四元数应接近单位）
   // 增量四元数应接近单位（|qw| 接近 1）；40° 的 bind 会让 |qw| ≈ cos(20°) ≈ 0.94 以下
   assertTrue(Math.abs(qw) > 0.99, `neck1 t=0 增量四元数 qw=${qw.toFixed(4)}（疑似混入 bind 姿态）`);
+});
+
+test('龙烘焙: 火球出生点必须贴在嘴上 —— 不埋进脑袋、也不悬在嘴前（逐动画帧球-网格净空）', async () => {
+  // ⚠️⚠️ **本用例的三轮演进，每轮都是一个真实缺陷**：
+  // ① 第一版只扫 bind 姿态（最前缘 −4.781），让 muzzleOffset −5.4 通过 —— 但脖子在飞行
+  //    动画里前后摆动，fly 最伸展帧吻部探到 **−5.473** ⇒ 用户「火球还是出现在脑袋里面」。
+  // ② 第二版改逐帧扫最前缘（z 单轴），−6.2 通过 —— 但用户反馈「过于靠前、突出这么多」，
+  //    且 y=−0.47 偏高（不在嘴的高度）⇒ 单轴判据拓不到「太远」与「偏高」。
+  // ③ 现版 = **两侧界的 3D 球-网格净空** + 嘴高带：同时钉住「不埋进脑袋」与「不悬在嘴前」。
+  const d = await loadAsset();
+  const g = d.geometry;
+  const headIdx = d.bones.findIndex((b) => b.name === 'head');
+  const jawIdx = d.bones.findIndex((b) => b.name === 'jaw');
+  assertTrue(headIdx >= 0 && jawIdx >= 0, '产物必须有 head 与 jaw 骨骼');
+
+  // ---- 4×4 刚体矩阵工具（与渲染层骨骼链同口径）----
+  const I = () => [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+  const mul = (a, b) => {
+    const o = new Array(16).fill(0);
+    for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) {
+      let s = 0; for (let k = 0; k < 4; k++) s += a[r * 4 + k] * b[k * 4 + c];
+      o[r * 4 + c] = s;
+    }
+    return o;
+  };
+  const fromQT = (q, t) => {
+    const [x, y, z, w] = q;
+    return [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w), 0,
+      2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w), 0,
+      2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y), 0,
+      t[0], t[1], t[2], 1];
+  };
+  const inv = (m) => {   // 刚体逆（旋转转置 + 平移取反）
+    const t = [m[12], m[13], m[14]];
+    const Rt = [[m[0], m[4], m[8]], [m[1], m[5], m[9]], [m[2], m[6], m[10]]];
+    const nt = [
+      -(Rt[0][0] * t[0] + Rt[0][1] * t[1] + Rt[0][2] * t[2]),
+      -(Rt[1][0] * t[0] + Rt[1][1] * t[1] + Rt[1][2] * t[2]),
+      -(Rt[2][0] * t[0] + Rt[2][1] * t[1] + Rt[2][2] * t[2]),
+    ];
+    return [Rt[0][0], Rt[0][1], Rt[0][2], 0, Rt[1][0], Rt[1][1], Rt[1][2], 0,
+      Rt[2][0], Rt[2][1], Rt[2][2], 0, nt[0], nt[1], nt[2], 1];
+  };
+  const apply = (m, v) => [
+    m[0] * v[0] + m[4] * v[1] + m[8] * v[2] + m[12],
+    m[1] * v[0] + m[5] * v[1] + m[9] * v[2] + m[13],
+    m[2] * v[0] + m[6] * v[1] + m[10] * v[2] + m[14],
+  ];
+  const chainOf = (i) => {
+    const c = []; let k = i; while (k !== -1) { c.unshift(k); k = d.bones[k].parentIndex; }
+    return c;
+  };
+  // 骨骼 bi 的世界矩阵（anim=null → bind；否则叠加该帧增量）
+  const worldMat = (bi, anim, frame) => {
+    let m = I();
+    for (const b of chainOf(bi)) {
+      const bone = d.bones[b];
+      let q = bone.bindQuaternion, p = bone.localPosition;
+      if (anim) {
+        const slot = anim.boneIndices.indexOf(b);
+        if (slot >= 0) {
+          const o = (frame * anim.boneIndices.length + slot) * 7;
+          const dr = [anim.frames[o], anim.frames[o + 1], anim.frames[o + 2], anim.frames[o + 3]];
+          const dp = [anim.frames[o + 4], anim.frames[o + 5], anim.frames[o + 6]];
+          q = [
+            q[3] * dr[0] + q[0] * dr[3] + q[1] * dr[2] - q[2] * dr[1],
+            q[3] * dr[1] + q[1] * dr[3] + q[2] * dr[0] - q[0] * dr[2],
+            q[3] * dr[2] + q[2] * dr[3] + q[0] * dr[1] - q[1] * dr[0],
+            q[3] * dr[3] - q[0] * dr[0] - q[1] * dr[1] - q[2] * dr[2],
+          ];
+          p = [p[0] + dp[0], p[1] + dp[1], p[2] + dp[2]];
+        }
+      }
+      m = mul(m, fromQT(q, p));
+    }
+    return m;
+  };
+
+  // head/jaw 的模型空间顶点（刚性绑定：第一槽即归属）
+  const headV = [], jawV = [];
+  for (let v = 0; v < g.skinIndex.length; v += 4) {
+    const p = [g.position[(v / 4) * 3], g.position[(v / 4) * 3 + 1], g.position[(v / 4) * 3 + 2]];
+    if (g.skinIndex[v] === headIdx) headV.push(p);
+    else if (g.skinIndex[v] === jawIdx) jawV.push(p);
+  }
+  assertTrue(headV.length > 0 && jawV.length > 0, 'sanity：必须扫到 head/jaw 顶点');
+
+  // 逐帧扫：同时累计三个量（一次遍历，避免重复算矩阵）
+  //   ① 头部最前缘 relZ（动画全程）
+  //   ② 球心（= muzzleOffset）到 head/jaw 任一顶点的最近距（3D 球-网格净空）
+  //   ③ jaw 的 relY 跨度（嘴的高度带）
+  const bindInvHead = inv(worldMat(headIdx, null, 0));
+  const bindInvJaw = inv(worldMat(jawIdx, null, 0));
+  const [mx, my, mz] = DRAGON.muzzleOffset;
+  let minRelZ = Infinity;
+  let minVertexDist = Infinity;
+  let frameCount = 0;
+  for (const anim of Object.values(d.animations)) {
+    for (let f = 0; f < anim.frameCount; f++) {
+      frameCount++;
+      const dh = mul(worldMat(headIdx, anim, f), bindInvHead);
+      const dj = mul(worldMat(jawIdx, anim, f), bindInvJaw);
+      for (const v of headV) {
+        const w = apply(dh, v);
+        const rz = w[2] - DRAGON_MODEL_CENTER[2];
+        if (rz < minRelZ) minRelZ = rz;
+        const dist = Math.hypot(w[0] - DRAGON_MODEL_CENTER[0] - mx,
+          w[1] - DRAGON_MODEL_CENTER[1] - my, rz - mz);
+        if (dist < minVertexDist) minVertexDist = dist;
+      }
+      for (const v of jawV) {
+        const w = apply(dj, v);
+        const rz = w[2] - DRAGON_MODEL_CENTER[2];
+        if (rz < minRelZ) minRelZ = rz;
+        const dist = Math.hypot(w[0] - DRAGON_MODEL_CENTER[0] - mx,
+          w[1] - DRAGON_MODEL_CENTER[1] - my, rz - mz);
+        if (dist < minVertexDist) minVertexDist = dist;
+      }
+    }
+  }
+  assertTrue(frameCount > 0 && Number.isFinite(minRelZ), 'sanity：必须扫到动画帧');
+  // sanity：动画最前缘必须比 bind 更靠前（否则说明扫描没吃到脖子摆动 → 判据退化）。
+  // bind 口径 head 最前缘实测 −4.781；fly 最伸展帧实测 −5.473。
+  assertTrue(minRelZ < -5.0,
+    `动画最前缘 ${minRelZ.toFixed(3)} 应比 bind(−4.781) 更靠前 —— 否则逐帧扫描失效（退回 bind 口径）`);
+
+  // ---- 不变式①（下界）：火球不得埋进脑袋 ----
+  // 球心到 head/jaw 任一顶点的最近距必须 ≥ 半径 + 净空容差。
+  // ⚠️ **用 3D 球-网格净空，不用「z 比最前缘更靠前」**：后者只看一个轴，会把
+  // 「z 够靠前但 y 偏高/偏低撞到吻部侧面」放过去；而用户第三轮反馈的正是「仍在脑袋里」。
+  // 容差 0.05 是标定值：实测当前 (0,−0.8,−5.8) 的净空是 0.142（126 帧零相交），
+  // 而 −5.4/y=−1.0 是 −0.004、−5.2/y=−0.8 是 −0.061（都已有相交帧）⇒ 0.05 能区分两侧。
+  const CLEARANCE_MARGIN = 0.05;
+  assertTrue(minVertexDist >= FIREBALL.radius + CLEARANCE_MARGIN,
+    `火球（半径 ${FIREBALL.radius}）埋在脑袋里：球心 ${JSON.stringify(DRAGON.muzzleOffset)} 到 head/jaw ` +
+    `顶点的最近距只有 ${minVertexDist.toFixed(3)}，需 ≥ ${(FIREBALL.radius + CLEARANCE_MARGIN).toFixed(3)}`);
+
+  // ---- 不变式②（上界）：火球不得「悬在嘴前老远」----
+  // 用户第四轮反馈「过于靠前、突出这么多」⇒ 出生点最多比动画最前缘再靠前 MAX_STANDOFF。
+  // ⚠️ 0.5 是观感标定值：实测当前 −5.8 比最前缘 −5.473 靠前 0.327（通过），
+  // 而上一版 −6.2 靠前 0.727（会被本条拦下 —— 那正是用户说「突出太多」的那个值）。
+  const MAX_STANDOFF = 0.5;
+  assertTrue(mz >= minRelZ - MAX_STANDOFF,
+    `火球出生点 z=${mz} 过于靠前（动画最前缘 ${minRelZ.toFixed(3)}，最多再靠前 ${MAX_STANDOFF} ` +
+    `⇒ 需 ≥ ${(minRelZ - MAX_STANDOFF).toFixed(3)}）—— 观感应是「从嘴里吐出」而不是「悬在嘴前」`);
+
+  // ---- 不变式③：出生点高度落在「嘴的高度带」内 ----
+  // 用户第四轮要求「稍微朝下移动一点，更加靠近嘴巴」。
+  // ⚠️ **参考点用 bind 姿态的 jaw 上缘（实测 −0.750 = 下颉顶/嘴缝线），不能用动画全程
+  //    的 jaw relY 跨度**：脖子在动画里上下摆动，跨度宽达 2.69 格 ⇒ 「落在跨度内」恒真，
+  //    无判别力（实测 y=0.2 与 y=−1.7 都在跨度内）。bind 姿态的 jaw 上缘是稳定的嘴高参考。
+  // 带宍 ±0.35 是标定值：当前 y=−0.8 在带中心，而 y=0.2（头顶上方）与 y=−1.7（下巴下方）
+  // 都在带外 ⇒ 能区分「贴嘴」与「明显偏高/偏低」。
+  // bind 姿态顶点已在模型空间，直接减 CENTER 即可（不叠加骨骼变换）。
+  let jawTopBind = -Infinity;
+  for (let v = 0; v < g.skinIndex.length; v += 4) {
+    if (g.skinIndex[v] !== jawIdx) continue;
+    const ry = g.position[(v / 4) * 3 + 1] - DRAGON_MODEL_CENTER[1];
+    if (ry > jawTopBind) jawTopBind = ry;
+  }
+  assertTrue(Number.isFinite(jawTopBind), 'sanity：必须扫到 jaw 顶点');
+  const MOUTH_BAND = 0.35;
+  assertTrue(Math.abs(my - jawTopBind) <= MOUTH_BAND,
+    `火球出生点 y=${my} 必须在嘴高带 [jaw 上缘 ${jawTopBind.toFixed(3)} ± ${MOUTH_BAND}] 内` +
+    ` —— 否则火球从头顶/下巴下方冒出，不像从嘴里吐出`);
 });

@@ -331,6 +331,7 @@ test('龙 definition: create 补全 AI 字段缺省值（mode=orbit 等）', () 
   assertEqual(st.fireCooldown, 0);
   assertEqual(st.losVisible, false);
   assertEqual(st.turnDist, 0);
+  assertEqual(st.aimTime, 0, 'v2.45 瞄准保持字段必须有缺省 0（旧调用不破）');
   assertEqual(st.fireRequest, null);
 });
 

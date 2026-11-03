@@ -31,7 +31,7 @@
 // 生产装配传 `dragonPoseAt`，单测传确定性 fake —— Agent 因此独立可测。
 
 import { BossAgent } from './boss-agent.js';
-import { DRAGON_AI } from '../dragons/dragon-config.js';
+import { DRAGON_AI, DRAGON } from '../dragons/dragon-config.js';
 
 export class DragonBossAgent extends BossAgent {
   /**
@@ -136,14 +136,28 @@ export class DragonBossAgent extends BossAgent {
     }
 
     // ⑦ 开火判定（只在 chase / attack 两个模式；orbit 自由盘旋与 return 回家途中不喷火）
+    //
+    // ⚠️ **v2.45 瞄准保持**（用户：「转身后龙头大致方向对准玩家的方向再发射火球」）：
+    // `aimTime` 在「模式可喷火 + 有玩家 + yaw 在喷火锥内」时累积，**出锥即清零**。
+    // 只有累积到 `aimHoldSeconds` 才允许开火 —— 彻底消除「刚转身扫过锥内那一帧就吐」。
+    // 累积**不看冷却与距离**：冷却到点时若已对准就立即喷（否则玩家会看到
+    // 「龙头明明对着我却不喷」）；距离门控留在开火那一刻判。
     let fireRequest = null;
     let fireCooldown = Math.max(0, (Number.isFinite(state.fireCooldown) ? state.fireCooldown : 0) - step);
-    if ((mode === 'chase' || mode === 'attack') && player && fireCooldown <= 0) {
+    let aimTime = Number.isFinite(state.aimTime) ? state.aimTime : 0;
+    const canAim = (mode === 'chase' || mode === 'attack') && player !== null;
+    if (canAim && this._inFireCone([px, y, pz], yaw, player)) {
+      aimTime += step;
+    } else {
+      aimTime = 0;   // 出锥 / 不可喷火模式 / 无玩家 → 重新对准
+    }
+    if (canAim && fireCooldown <= 0 && aimTime >= DRAGON_AI.aimHoldSeconds) {
       fireRequest = this._tryFire([px, y, pz], yaw, player, ctx);
       if (fireRequest) {
         const { fireCooldownMin: lo, fireCooldownMax: hi } = DRAGON_AI;
         // ⚠️ 减去本帧的 step：顶部已统一扣过一次 dt，这里不补扣会让实际间隔多出一帧
         fireCooldown = lo + this.rng() * (hi - lo) - step;
+        aimTime = 0;   // 喷过就清零：下一发须重新对准（不得攒着连喷）
       }
     }
 
@@ -160,37 +174,70 @@ export class DragonBossAgent extends BossAgent {
       losTimer,
       losVisible,
       turnDist,
+      aimTime,
       fireRequest,
     };
   }
 
   /**
-   * 开火四条判据（用户：「脑袋冲着玩家发射火球」+「至少间隔五到十秒」）。
+   * 龙头是否已对准玩家（水平夹角 ≤ `fireConeDeg`）。
    *
-   * ① 脑袋朝向玩家：yaw 与「指向玩家」的夹角 ≤ `fireConeDeg`；
+   * ⚠️ **判据用身体中心→玩家的水平角**（不是嘴部）：yaw 是身体的航向，而嘴部偏移是
+   * 由 yaw 派生的 —— 用嘴部算夹角会把「已经对准」误判成「偏了 3 格」。
+   * @param {[number,number,number]} pos 身体中心 @param {number} yaw
+   * @param {[number,number,number]} player 玩家脚底
+   * @returns {boolean}
+   */
+  _inFireCone(pos, yaw, player) {
+    const cone = DRAGON_AI.fireConeDeg * Math.PI / 180;
+    return Math.abs(this._angleDiff(yaw, this._angleTo(pos, player))) <= cone;
+  }
+
+  /**
+   * 嘴部世界坐标（v2.45，用户：「火球吐出来的位置现在大致是火龙脖子的位置，要在嘴的位置」）。
+   *
+   * = 身体中心 + 按 yaw 旋转的 `DRAGON.muzzleOffset`。旋转公式与渲染层
+   * `pivot.rotation.set(0, yaw, 0)` 同一套（three 绕 Y 轴：x' = x·cosθ + z·sinθ、
+   * z' = −x·sinθ + z·cosθ）。代入 `muzzleOffset = (0, −0.47, −3.36)` 得 xz 偏移
+   * = 3.36 × 本仓前向向量 (−sin yaw, −cos yaw) —— 即「沿机头前向 3.36 格、低 0.47 格」。
+   *
+   * @param {[number,number,number]} pos 身体中心 @param {number} yaw
+   * @returns {[number,number,number]} 新数组
+   */
+  _muzzlePosition(pos, yaw) {
+    const [ox, oy, oz] = DRAGON.muzzleOffset;
+    const s = Math.sin(yaw), c = Math.cos(yaw);
+    return [pos[0] + ox * c + oz * s, pos[1] + oy, pos[2] - ox * s + oz * c];
+  }
+
+  /**
+   * 开火判据（用户：「脑袋冲着玩家发射火球」+「至少间隔五到十秒」）。
+   *
+   * ① 脑袋朝向玩家 + **瞄准保持**（调用方已判：`_inFireCone` 累积 `aimTime` ≥ `aimHoldSeconds`）；
    * ② 冷却到点（调用方已判）；
    * ③ **新鲜视线复查** —— ⚠️ 不得用 `losVisible` 缓存：缓存 10Hz，而玩家可能在这 0.1 秒
    *    里走进墙后（形态是「隔着墙喷火」）；
    * ④ 水平距 ≤ `fireRange`（太远不浪费火球）。
    *
-   * @param {[number,number,number]} pos 龙当前位置 @param {number} yaw
+   * ⚠️ **v2.45：出生点 = 嘴部**（`_muzzlePosition`），瞄准方向 = 嘴部→玩家胸部。
+   * 从身体中心出生会让火球「从脖子里冒出来」（用户报告的原话）。
+   *
+   * @param {[number,number,number]} pos 龙身体中心 @param {number} yaw
    * @param {[number,number,number]} player 玩家脚底位置 @param {object} ctx
    * @returns {{position: [number,number,number], direction: [number,number,number]}|null}
    */
   _tryFire(pos, yaw, player, ctx) {
-    const aim = [player[0], player[1] + DRAGON_AI.playerAimOffsetY, player[2]];
-    // ④ 距离
+    // ④ 距离（用身体中心：fireRange 是「龙与玩家多远」的口径）
     if (this._hDist(pos, player) > DRAGON_AI.fireRange) return null;
-    // ① 喷火锥
-    const cone = DRAGON_AI.fireConeDeg * Math.PI / 180;
-    if (Math.abs(this._angleDiff(yaw, this._angleTo(pos, player))) > cone) return null;
-    // ③ 新鲜视线复查
-    if (!this._hasLos(ctx, pos, aim)) return null;
-    // 方向 = 归一化(玩家胸部 − 火球出生点)：精确瞄准（脑袋已大致对准 ±20°）
-    const dx = aim[0] - pos[0], dy = aim[1] - pos[1], dz = aim[2] - pos[2];
+    const muzzle = this._muzzlePosition(pos, yaw);
+    const aim = [player[0], player[1] + DRAGON_AI.playerAimOffsetY, player[2]];
+    // ③ 新鲜视线复查（从嘴部起算 —— 火球真的要从那里飞出去）
+    if (!this._hasLos(ctx, muzzle, aim)) return null;
+    // 方向 = 归一化(玩家胸部 − 嘴部)：精确瞄准（脑袋已对准 ±10° 且保持了 0.2 秒）
+    const dx = aim[0] - muzzle[0], dy = aim[1] - muzzle[1], dz = aim[2] - muzzle[2];
     const len = Math.hypot(dx, dy, dz);
     if (!(len > 1e-9)) return null;   // 贴身退化：方向无法归一化
-    return { position: [pos[0], pos[1], pos[2]], direction: [dx / len, dy / len, dz / len] };
+    return { position: muzzle, direction: [dx / len, dy / len, dz / len] };
   }
 
   /**

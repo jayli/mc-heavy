@@ -60,17 +60,29 @@
       isBasic: fb.mesh.material.isMeshBasicMaterial === true,
       colorHex: fb.mesh.material.color.getHex(),
       visibleAtStart: fb.mesh.visible,
+      // ---- v2.45 燃烧外观（光晕层）----
+      haloCount: fb.haloMesh.count,
+      haloVisibleAtStart: fb.haloMesh.visible,
+      haloBlending: fb.haloMesh.material.blending,
+      haloAdditive: fb.haloMesh.material.blending === THREE.AdditiveBlending,
+      haloDepthWrite: fb.haloMesh.material.depthWrite,
+      haloTransparent: fb.haloMesh.material.transparent,
+      haloHasMap: fb.haloMesh.material.map !== null,
+      haloSize: fb.haloMesh.geometry.parameters.width,
+      haloScaleRatio: fb.haloMesh.geometry.parameters.width / FIREBALL.radius,
     };
 
     /**
      * 渲染一帧。
-     * @param {{count?: number, offset?: number}} [opts]
+     * @param {{count?: number, offset?: number, nowMs?: number}} [opts]
      *        count = 火球数（0 = 空场景，测「零实例不提交渲染」）；
-     *        offset = 相邻火球的 x 间距（多颗时铺开，避免完全重叠）
+     *        offset = 相邻火球的 x 间距（多颗时铺开，避免完全重叠）；
+     *        nowMs = 光晕脉动的时间基准（v2.45）
      */
     window.__FB_RENDER__ = (opts = {}) => {
       const count = Number.isFinite(opts.count) ? opts.count : 1;
       const offset = Number.isFinite(opts.offset) ? opts.offset : 2;
+      const nowMs = Number.isFinite(opts.nowMs) ? opts.nowMs : 0;
       const entities = [];
       for (let i = 0; i < count; i++) {
         entities.push({
@@ -79,9 +91,14 @@
           state: { position: [(i - (count - 1) / 2) * offset, 0, 0], direction: [0, -1, 0] },
         });
       }
-      fb.sync(entities);
+      // ⚠️ 传相机四元数：光晕是 billboard，必须面向相机（否则侧看时退化成一条线）
+      fb.sync(entities, camera.quaternion, nowMs);
       renderer.render(scene, camera);
-      return { slots: fb.slotCount(), visible: fb.mesh.visible };
+      return {
+        slots: fb.slotCount(),
+        visible: fb.mesh.visible,
+        haloVisible: fb.haloMesh.visible,
+      };
     };
   } catch (err) {
     window.__FB_ERROR__ = String(err && err.message ? err.message : err);

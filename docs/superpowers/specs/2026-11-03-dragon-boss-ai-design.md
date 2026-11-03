@@ -1,6 +1,27 @@
-# 祭坛飞龙 AI 与火球攻击设计（v2.44）
+# 祭坛飞龙 AI 与火球攻击设计（v2.44，v2.45 修订）
 
-> 状态：待批准
+> 状态：已实施（v2.44 交付 + v2.45 观感修订）
+>
+> **v2.45 修订说明（2026-11-04，用户实玩反馈三项）**：
+> ① **火球外观**：从单层纯色球改为**亮核 + additive 径向渐变光晕**两层（§6），光晕 ±15%/6Hz
+>    脉动；`sync()` 签名改为 `sync(entities, cameraQuat, nowMs)`（billboard 朝向 + 脉动时钟）。
+> ② **发射时机**：喷火锥 `fireConeDeg` **20° → 10°**，新增**瞄准保持** `aimHoldSeconds = 0.2` 秒
+>    （新 state 字段 `aimTime`：锥内累积、出锥清零、喷过清零）—— 消除「刚转身扫过锥内那一帧就吐」（§3.4）。
+> ③ **出生点与速度**：火球从**嘴部**出生（新常量 `DRAGON.muzzleOffset = (0, −0.8, −5.8)`；瞄准
+>    方向与新鲜 LOS 复查都从嘴部起算），`FIREBALL.speed` **15 → 25** 格/秒（§3.4/§4）。
+>    ⚠️ **该值经历四轮实测标定**（每轮被用户反馈推翻）：① −3.36（head 骨骼 + 前向 1.2 格）
+>    →「还是出现在脑袋里面」；② 逐顶点扫 head 及后代骨骼得 **bind 最前缘 −4.781**，取 −5.4
+>    → 用户**再次**反馈仍在脑袋里，**根因 = 脖子在飞行动画里摆动**（逐帧扫 head+jaw：
+>    **fly 最伸展帧探到 −5.473**）；③ 按动画口径取 −6.2（126 帧零相交）→「**过于靠前了，
+>    靠前不要突出这么多**……**稍微朝下移动一点**，更加靠近嘴巴的位置」；④ **现值 (0, −0.8, −5.8)**
+>    （精细扫描得最小余量 0.142 格、126 帧零相交；bind 嘴缝线 = jaw 上缘 −0.750 ⇒ −0.8 正贴嘴）。
+>    不变式已进 `test-dragon-bake.js`（**两侧界 + 嘴高带**三条，阈值全部从产物自推导；
+>    四条负向验证——埋进脑袋 / 过于靠前 / 偏高 / 偏低——**全部真 FAIL**）。
+>
+> ⚠️ **v2.44 实施期已推翻本 spec 的两处初稿**（记录在案，正文相应段落以实施为准）：
+> §3.5 的 `orbitBlend` 过渡字段未实现 —— return 改为「追及当前 orbitT 的轨道点」（追及必收敛、
+> 切回无跳变，不需要过渡字段）；§3.6 的「yaw 解析切线在 wobbleAmp=0 时逐位退回 π−θ」实测不成立
+> （不逐位相等），实现改为 wobbleAmp=0 时**显式走旧公式**。
 > 前置：`docs/superpowers/specs/2026-11-03-altar-dragon-design.md`（v2.41~v2.43 龙本体 / Boss 召唤框架）
 > 用户需求（2026-11-03）：给飞龙加智能 —— 看到玩家就追击、递近后喷火球、玩家静止时飞跃玩家再
 > 盘旋回头、脱离视线返回轨道；火球击中玩家或实体方块爆炸，破坏方块与否跟 TNT 开关走。
@@ -101,29 +122,56 @@ entities/ 同构层不得碰。这与矿车 `pendingPlayerLift`（definition 算
 
 ### 3.4 开火条件（chase 与 attack 共用）
 
-同时满足四条才喷火球：
-1. **脑袋朝向玩家**：龙 yaw 与「指向玩家的方向」夹角 ≤ `DRAGON_AI.fireConeDeg = 20°`。
-2. **冷却到点**：`fireCooldown ≤ 0`。开火后重置为 `5 + rng() × 5` 秒（**随机 5~10 秒**，用户要求）。
+同时满足五条才喷火球（v2.45 修订）：
+1. **脑袋朝向玩家**：龙 yaw 与「指向玩家的方向」夹角 ≤ `DRAGON_AI.fireConeDeg = 10°`
+   （v2.44 原为 20°，v2.45 收紧 —— 20° 偏松 + 扫进锥内那一帧就喷 ⇒ 观感是「刚转身就吐」）。
+2. **瞄准保持**（v2.45 新增）：龙头在锥内**持续** `DRAGON_AI.aimHoldSeconds = 0.2` 秒
+   （state 字段 `aimTime` 逐帧累积；**出锥 / 不可喷火模式 / 无玩家 → 立即清零；喷过也清零**）。
+   ⚠️ 累积**不看冷却与距离**：冷却到点时若已对准就立即喷（否则玩家会看到「龙头明明对着我却不喷」）。
+3. **冷却到点**：`fireCooldown ≤ 0`。开火后重置为 `5 + rng() × 5` 秒（**随机 5~10 秒**，用户要求）。
    `rng` 可注入（默认 `Math.random`），测试钉区间。冷却用 **dt 倒计时**（不是绝对时间戳），
    绕开 `Date.now()`/`performance.now()` 混用陷阱。
-3. **新鲜视线通**：开火瞬间重新查一次 `hasLineOfSight`（不用缓存）。
-4. **距离合理**：水平距 ≤ `DRAGON_AI.fireRange = 60`（太远不浪费火球）。
+4. **新鲜视线通**：开火瞬间重新查一次 `hasLineOfSight`（不用缓存）—— v2.45 起**从嘴部起算**。
+5. **距离合理**：水平距 ≤ `DRAGON_AI.fireRange = 60`（太远不浪费火球）—— 用身体中心算（「龙与玩家多远」的口径）。
 
-火球方向 = 归一化(玩家胸部 − 火球出生点)，即**精确瞄准玩家**（龙的脑袋大致朝向玩家 ±20°，
+**火球出生点 = 嘴前**（v2.45）：`DRAGON.muzzleOffset = (0, −0.8, −5.8)`。z/y 分量是**四轮实测
+标定值**（每轮被用户反馈推翻）：① −3.36（head 骨骼位置 + 前向 1.2 格）→ 埋在头骨内部；
+② 逐顶点扫 head 及 13 根后代骨骼得 **bind 姿态最前缘 −4.781**，取 −5.4 → **脖子在飞行动画里
+前后摆动**，逐帧扫 head+jaw 得 **fly 最伸展帧吻部探到 −5.473**（比 bind 多 0.69 格）⇒ 仍被包住；
+③ 按动画口径取 −6.2（126 帧零相交）→ 用户「过于靠前、突出这么多」+「稍微朝下移动一点，
+更加靠近嘴巴」；④ **现值 (0, −0.8, −5.8)**：精细扫描（z∈[−6.2,−5.0] × y∈[−0.4,−1.2]，逐帧
+球-网格最近距）得**最小余量 0.142 格**（126 帧零相交，最坏帧 fly#17/head），比 ③ 少突出
+0.4 格、低 0.33 格（bind 嘴缝线 = jaw 上缘 −0.750 ⇒ −0.8 正贴嘴）。
+⚠️ **不变式已进 `test-dragon-bake.js`，是「两侧界 + 嘴高带」三条**（阈值全部从产物自推导）：
+① **3D 球-网格净空 ≥ 半径 + 0.05**（钉「不埋进脑袋」；不用 z 单轴判据 —— 拓不到「z 够靠前但
+y 偏高撞到吻部侧面」）；② **z 不得比动画最前缘再靠前 0.5 以上**（钉「不悬在嘴前」，③ 的 −6.2
+靠前 0.727 会被拦下）；③ **y 必须在 bind 姿态 jaw 上缘 ±0.35 内**（钉「更靠近嘴巴」）。
+⚠️⚠️ **不变式③的第一版无判别力**（实测踩到，与①的教训正好相反）：它用「jaw 的**动画全程**
+relY 跨度」作带，而脖子上下摆动使该跨度宽达 **2.69 格** ⇒ y=0.2（头顶上方）与 y=−1.7（下巴
+下方）都在带内、**注入后仍全绿**。改用 **bind 姿态**的 jaw 上缘（稳定参考）后，四条负向验证
+（埋进脑袋 −5.0 / 过于靠前 −6.2 / 偏高 y=0.2 / 偏低 y=−1.7）**全部真 FAIL**。
+⇒ **「位置」类判据按动画全程扫，「高度带」类判据反而要用 bind 姿态** —— 摆动会把带撑宽到恒真。
+⚠️ **教训：蒙皮模型的「网格位置」判据必须按动画全程扫，bind 姿态只是其中一帧。**
+世界坐标 = 身体中心 + 按 yaw 旋转的该偏移（旋转公式与渲染层 `pivot.rotation.set(0,yaw,0)` 同一套）。
+火球方向 = 归一化(玩家胸部 − 嘴部)，即**精确瞄准玩家**（脑袋已对准 ±10° 且保持了 0.2 秒，
 火球本身指哪打哪）。
 
 ### 3.5 返回（return）
 
-- 水平飞回轨道圆心 `(orbit.cx, orbit.cz)`，y 回到 `orbit.y`。
-- 到达判据：距圆心 ≤ `orbit.radius` → 切 `orbit`，并从当前位置反解 θ 重置轨道时钟
-  （`θ = atan2(z−cz, x−cx)`），`orbitBlend = 0`（半径从当前值平滑过渡到调制值，防跳变）。
+- 飞向**当前 `orbitT` 的轨道点**（不是圆心），y 仍取 `poseAt` 的 bob 带。
+- 到达判据：距轨道点 ≤ `returnArriveDistance = 1` 格 → 切 `orbit`。
+- ⚠️ **实施时推翻了初稿的「飞回圆心 + `orbitBlend` 半径过渡」**：轨道点也在动（6 格/秒）而龙飞
+  9 格/秒 ⇒ 追及必收敛，且到达时位置已≈轨道点 ⇒ 切回 orbit **无跳变**，不需要过渡字段。
+  （飞向圆心会遇到「龙追不上移动中的轨道点」的追及问题，才逼出了 `orbitBlend` 这个发明。）
 
 ### 3.6 自由盘旋的半径调制（orbit）
 
 - `radius(θ) = orbit.radius + wobbleAmp × sin(wobbleFreq × θ + wobblePhase)`，
   `wobbleAmp = 5`、`wobbleFreq = 3`（每圈半径起伏 3 次）、`wobblePhase` 召唤时随机。
-- **yaw 用调制路径的解析切线** `atan2(−dx/dθ, −dz/dθ)`；`wobbleAmp = 0` 时**逐位退回** `π − θ`
-  （既有「yaw 是切线方向」用例不破）。
+- **yaw**：调制生效时用调制路径的解析切线 `atan2(−dx/dθ, −dz/dθ)`；
+  ⚠️ **`wobbleAmp = 0` 时必须显式走旧公式 `yaw = π − θ`**（实施实测推翻初稿的「逐位退回」：
+  解析切线在 A=0 时与 `π − θ` 数值等价但**不逐位相等** —— 20000 采样中 15244 个不等，
+  最大偏差 2π（角度表示差异）⇒ 按纯解析式写会让「零回归」断言假失败）。
 - wobble 参数进 `orbit`（`summon` 生成），故轨道仍是 `(seed, 时间)` 的纯函数 —— 但**只在 orbit 模式**；
   chase/attack/return 的位置由 AI 积分决定（依赖玩家位置，本就非确定），龙是临时实体不进存档，无碍。
 
@@ -132,7 +180,8 @@ entities/ 同构层不得碰。这与矿车 `pendingPlayerLift`（definition 算
 火球是**临时实体**（`persistent: false`），type = `'fireball'`，与炮塔弹丸同构但独立
 （速度、遮挡判据、命中语义都不同，不复用 `projectile-system.js` 的数值）：
 
-- **速度** `FIREBALL.speed = 15` 格/秒（用户裁定）；**最远** `FIREBALL.maxDistance = 80` 格。
+- **速度** `FIREBALL.speed = 25` 格/秒（v2.45 用户裁定从 15 提速，飞 40 格约 1.6 秒）；
+  **最远** `FIREBALL.maxDistance = 80` 格（寿命约 3.2 秒）。
 - **推进**：`fireballDefinition.update` 直线积分（同 `projectileDefinition.update` 手法，返回全新 state）。
 - **判定** `judgeFireball({next, world, registry, player, stepLen})`，顺序照 `judgeProjectile`
   （超距 → 方块 → 玩家）：
@@ -162,14 +211,22 @@ entities/ 同构层不得碰。这与矿车 `pendingPlayerLift`（definition 算
 会把那个格的键永久留在 `_ignitingTnt` 里 —— 之后玩家在同一格放 TNT 引爆会返回 false 静默不爆。
 抽出的 `_applyExplosion` 不碰去重集合，火球用它就干净。
 
-## 6. 渲染：`FireballRenderer`（新 `src/render/fireball-renderer.js`）
+## 6. 渲染：`FireballRenderer`（新 `src/render/fireball-renderer.js`，v2.45 改燃烧外观）
 
-- `InstancedMesh` 球体池（`SphereGeometry(0.45)`），火焰色 unlit（`MeshBasicMaterial`，
-  与矿车/丧尸同口径 —— 不吃为枪标定的 PBR 灯光）。
-- 容量从 `FIREBALL.poolSize` 派生；**零实例时 `visible = false`** → draw call 归零
+**两层叠加**（v2.45，用户：「要像一个燃烧的火球」）：
+- ① **亮核**：`InstancedMesh` 球体池（`SphereGeometry(0.45)`），炽橙 unlit（`MeshBasicMaterial`，
+  `FIREBALL_CORE_COLOR = 0xffb340`，与矿车/丧尸同口径 —— 不吃为枪标定的 PBR 灯光）。
+- ② **发光光晕**：第二个 `InstancedMesh`（平面几何，边长 = 核心半径 × `FIREBALL_HALO_SCALE`(3.4)），
+  径向渐变 canvas 贴图（运行时生成，矿车车斗纹理同先例 ⇒ 无指纹门禁，观感靠 Tier 4 兜底），
+  `AdditiveBlending` + `depthWrite:false` + `DoubleSide`。billboard 朝向 = sync 时把**相机四元数**
+  写进实例矩阵；光晕尺度 ±`FIREBALL_PULSE_AMP`(15%) / `FIREBALL_PULSE_HZ`(6Hz) 脉动
+  （相位按 slot 错开 ⇒ 多火球不同步闪）。⚠️ 不用 N 个 Sprite（16 个 Sprite = 16 个 draw call）。
+- 容量从 `FIREBALL.poolSize` 派生；**零实例时两个 mesh 都 `visible = false`** → draw call 归零
   （照 `projectile-renderer.js` / `tracer-renderer.js` 手法，AGENTS.md「常驻实例池」约束）。
-- `sync(entities)` 差集驱动 slot（同 `ProjectileRenderer.sync`）。
-- game.js 帧循环在 `entities.update` 后调 `fireballRenderer.sync(this.entities.entities())`。
+- `sync(entities, cameraQuat, nowMs)` 差集驱动 slot（同 `ProjectileRenderer.sync`；后两参缺省时
+  billboard 面向 +Z、脉动静态 —— 单测免相机/时钟）。
+- game.js 帧循环在 `entities.update` 后调
+  `fireballRenderer.sync(this.entities.entities(), this.camera.quaternion, nowMs)`。
 
 ## 7. 数据结构与接口契约
 
@@ -181,8 +238,8 @@ entities/ 同构层不得碰。这与矿车 `pendingPlayerLift`（definition 算
 | `attackPhase` | `'approach'\|'turn'` | 仅 attack 有意义 |
 | `fireCooldown` | number（秒） | dt 倒计时 |
 | `losTimer` / `losVisible` | number / boolean | 视线缓存（10Hz） |
-| `orbitBlend` | number（0~1） | 返回轨道时半径过渡 |
 | `turnDist` | number | turn 子态已飞距离 |
+| `aimTime` | number（秒） | **v2.45** 瞄准保持：锥内累积时长（出锥/喷过清零） |
 | `fireRequest` | `{position, direction} \| null` | **瞬态**：serialize 跳过，game.js 消费 |
 
 `orbit` 新增可选 `wobbleAmp / wobbleFreq / wobblePhase`（缺省 = 无调制，逐位兼容旧行为）。
@@ -234,8 +291,9 @@ export class BossAgent {
 
 - **四态机转移**：构造 ctx（假 world/registry/player），逐态驱动 `DragonBossAgent.update`，
   断言转移条件与滞回（60 进 / 78 出）。
-- **开火条件四条**：分别注入「锥外 / 冷却未到 / 视线断 / 超距」，断言不喷火；全满足才喷。
-  冷却区间钉 `[5, 10]`（注入确定性 rng）。
+- **开火条件五条**（v2.45）：分别注入「锥外 / 瞄准不足 / 冷却未到 / 视线断 / 超距」，断言不喷火；
+  全满足才喷。瞄准保持钉「刚进锥不喷 / 累积到阈值喷 / 出锥清零 / 喷后清零」。
+  冷却区间钉 `[5, 10]`（注入确定性 rng）。出生点钉嘴部（`muzzleOffset` 按 yaw 旋转）。
 - **yaw 切线退化**：`wobbleAmp = 0` 时 `dragonPoseAt` 的 yaw 与 `π − θ` 逐位相等（既有不破）。
 - **火球判定**：超距不爆 / 撞实心爆 / 撞玻璃爆（solid）/ 穿水不爆 / 命中玩家盒爆且不掉血。
 - **爆炸口径**：`_applyExplosion` 与 TNT 同破坏范围；开关关时不破坏方块；火球不走 `explodeTnt`
@@ -255,7 +313,7 @@ export class BossAgent {
 4. **玩家不掉血**：火球命中玩家只爆炸不掉血（用户明确，血量以后做）。
 5. **AI 非确定**：chase/attack 的位置依赖玩家位置与 `Math.random` 冷却，不是 seed 纯函数 ——
    龙是临时实体不进存档，可接受。orbit 模式仍是纯函数。
-6. **火球无追踪**：直线飞向发射瞬间的玩家位置，玩家能躲（速度 15 格/秒，飞 40 格约 2.7 秒）。
+6. **火球无追踪**：直线飞向发射瞬间的玩家位置，玩家能躲（速度 25 格/秒，飞 40 格约 1.6 秒）。
 
 ## 11. 数值参数表（`DRAGON_AI` / `FIREBALL`，config 单一权威）
 
@@ -267,13 +325,15 @@ export class BossAgent {
 | `DRAGON_AI.flyoverDistance` | 6 | 飞跃触发距离 |
 | `DRAGON_AI.turnAroundDistance` | 22 | 飞跃后外飞距离 |
 | `DRAGON_AI.disengageDistance` | 78 | 脱离视线距离（60×1.3 滞回） |
-| `DRAGON_AI.fireConeDeg` | 20 | 喷火锥半角 |
+| `DRAGON_AI.fireConeDeg` | 10 | 喷火锥半角（v2.45 从 20 收紧） |
+| `DRAGON_AI.aimHoldSeconds` | 0.2 | **v2.45** 瞄准保持时长（秒） |
 | `DRAGON_AI.fireCooldownMin/Max` | 5 / 10 | 开火间隔（秒，随机） |
 | `DRAGON_AI.fireRange` | 60 | 开火最大距离 |
 | `DRAGON_AI.turnRate` | 3.0 | yaw 转向速率（rad/秒） |
 | `DRAGON_AI.wobbleAmp/Freq` | 5 / 3 | 盘旋半径调制 |
 | `DRAGON_AI.losInterval` | 0.1 | 视线缓存周期（秒） |
-| `FIREBALL.speed` | 15 | 火球速度（格/秒） |
+| `DRAGON.muzzleOffset` | (0, −0.8, −5.8) | **v2.45** 嘴前出生点（z 按**动画全程**头部最前缘 −5.473 标定、y 按 **bind 姿态** jaw 上缘 −0.750 标定；四轮实测，见 §3.4） |
+| `FIREBALL.speed` | 25 | 火球速度（格/秒，v2.45 从 15 提速） |
 | `FIREBALL.maxDistance` | 80 | 火球最远距离 |
 | `FIREBALL.radius` | 0.45 | 火球渲染半径 |
 | `FIREBALL.poolSize` | 16 | 渲染池容量 |

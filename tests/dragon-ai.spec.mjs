@@ -175,7 +175,7 @@ test('AI E2E: 龙开火 → 生成火球且方向指向玩家；开火间隔在 
   const aim = await page.evaluate(async () => {
     const g = window.__MC_GAME__;
     const { DRAGON_AI } = await import('/src/entities/dragons/dragon-config.js');
-    // 火球寿命最长 80/15 ≈ 5.3 秒，轮询抓一个还在飞的
+    // 火球寿命最长 80/25 ≈ 3.2 秒（v2.45 提速），轮询抓一个还在飞的
     for (let i = 0; i < 100; i++) {
       const fb = [...g.entities.entities()].find((e) => e.type === 'fireball');
       if (fb) {
@@ -408,7 +408,7 @@ test('AI E2E: 真实按 C 召龙后 AI 生效（玩家主路径，不是测试 A
     const d = window.__MC_GAME__.dragons.activeEntities()[0];
     return {
       mode: d.state.mode,
-      hasAiFields: ['attackPhase', 'fireCooldown', 'losTimer', 'losVisible', 'turnDist']
+      hasAiFields: ['attackPhase', 'fireCooldown', 'losTimer', 'losVisible', 'turnDist', 'aimTime']
         .every((k) => k in d.state),
       fireRequestIsNull: d.state.fireRequest === null,
       orbitHasWobble: Number.isFinite(d.state.orbit.wobbleAmp),

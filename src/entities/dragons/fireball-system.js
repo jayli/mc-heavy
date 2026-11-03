@@ -72,8 +72,8 @@ function createState({ position, direction, traveled, source }) {
  *
  * ⚠️ **必须返回全新 state + 全新数组**（M5 不变式）：`EntityManager.update()` 的跨 column
  * 索引迁移判据是「赋值前 position vs 赋值后 position」，原地改写会让 before/after 从同一份
- * 算出 → 恒相等 → 索引永不迁移 → column 卸载漏回收火球。火球 15 格/秒 × 最远 80 格 →
- * 寿命约 5.3 秒，跨 column 是常态，故这条尤其关键。
+ * 算出 → 恒相等 → 索引永不迁移 → column 卸载漏回收火球。火球 25 格/秒 × 最远 80 格 →
+ * 寿命约 3.2 秒，跨 column 是常态，故这条尤其关键。
  *
  * @param {import('../entity-manager.js').Entity} entity
  * @param {number} dt @param {object} _context 本函数刻意不消费（纯直线推进）

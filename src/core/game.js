@@ -1110,8 +1110,9 @@ export class Game {
       this.entityLayer.sync(this.entities.entities());
       // M8 Task 6：弹丸 pose 发布（差集驱动 slot —— 三条回收路径自动覆盖）
       this.projectileRenderer.sync(this.entities.entities());
-      // v2.44：火球 pose 发布（同手法；无火球时 visible=false → draw call 归零）
-      this.fireballRenderer.sync(this.entities.entities());
+      // v2.44：火球 pose 发布（同手法；无火球时 visible=false → draw call 归零）。
+      // v2.45：传相机四元数（光晕 billboard 朝向）+ nowMs（光晕脉动闪烁）。
+      this.fireballRenderer.sync(this.entities.entities(), this.camera.quaternion, nowMs);
       // M6：丧尸六部件实例发布（只读 pose → 位置/朝向 + 步态 + 200ms 红闪）。
       // 传时间戳而非 dt —— renderer 自己算 dt 累积步态相位（mc-lite `_walkTime` 口径）。
       this.zombieRenderer.sync(this.zombies, nowMs);
