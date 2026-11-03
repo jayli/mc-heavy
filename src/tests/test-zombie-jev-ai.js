@@ -8,6 +8,7 @@
 import { test } from './runner.js';
 import { assertEqual, assertFalse, assertTrue, assertDeepEqual } from './assert.js';
 import { JEV_AI } from '../entities/zombies/zombie-config.js';
+import { JevClient } from '../entities/zombies/zombie-jev-client.js';
 import {
   QUESTION_ID, STEP_INSTRUCTIONS, buildQuestions, criterionFor, SITUATION, WINDOW_LEGEND,
 } from '../entities/zombies/zombie-jev-prompts.js';
@@ -262,4 +263,79 @@ test('parseDirectionChoice：答案里的 choice 不在候选表时不得放行'
   const cands = { north: {} };
   const r = parseDirectionChoice({ choice: 'north_east' }, cands);
   assertFalse(r.ok, '不在候选表里的方向一律拒绝');
+});
+
+// ---------- HTTP 客户端（Task 6）----------
+
+/** 记录 warn 调用的假 logger（断言「每个失败都必须打 log」） */
+function makeLogger() {
+  const warns = [];
+  return { warns, warn: (...a) => warns.push(a.join(' ')), info: () => {}, error: (...a) => warns.push(a.join(' ')) };
+}
+
+/** 造一个只回固定响应的假 fetch（并记录调用） */
+function fakeFetch(responder) {
+  const calls = [];
+  const fn = async (url, init) => { calls.push({ url, init, body: JSON.parse(init.body) }); return responder(url, init); };
+  fn.calls = calls;
+  return fn;
+}
+
+const okJson = (obj) => ({ ok: true, status: 200, text: async () => JSON.stringify(obj) });
+
+test('JevClient：成功时返回 answer，并以 POST + JSON 打到 endpoint', async () => {
+  const log = makeLogger();
+  const f = fakeFetch(() => okJson({ model: 'jev-1.14.0', answers: { step: { type: 'choice', choice: 'north' } } }));
+  const c = new JevClient({ fetchImpl: f, log });
+  const r = await c.request({ state: { a: 1 }, questions: { step: { type: 'choice', criteria: { north: 'x' } } } });
+  assertTrue(r.ok);
+  assertEqual(r.answer.choice, 'north');
+  assertEqual(r.model, 'jev-1.14.0');
+  assertEqual(f.calls.length, 1);
+  assertEqual(f.calls[0].url, JEV_AI.endpoint);
+  assertEqual(f.calls[0].init.method, 'POST');
+  assertEqual(f.calls[0].body.model, 'jev-latest');
+  assertEqual(f.calls[0].body.state.a, 1);
+});
+
+test('JevClient：网关拦截返回 HTML → reason=not-json 且打 warn', async () => {
+  const log = makeLogger();
+  const f = fakeFetch(() => ({ ok: false, status: 403, text: async () => '<html>抱歉，您要访问的域名…</html>' }));
+  const c = new JevClient({ fetchImpl: f, log });
+  const r = await c.request({ state: {}, questions: { step: {} } });
+  assertFalse(r.ok);
+  assertEqual(r.reason, 'not-json', 'HTML 必须是 not-json，绝不能读成「没有方向」');
+  assertTrue(log.warns.some((w) => w.includes('[zombie-ai]') && w.includes('not-json')));
+});
+
+test('JevClient：HTTP 错误码带上状态码', async () => {
+  const log = makeLogger();
+  const f = fakeFetch(() => ({ ok: false, status: 429, text: async () => '{"detail":"rate"}' }));
+  const c = new JevClient({ fetchImpl: f, log });
+  const r = await c.request({ state: {}, questions: { step: {} } });
+  assertEqual(r.reason, 'http-429');
+});
+
+test('JevClient：网络异常 → network-error（不 reject）', async () => {
+  const log = makeLogger();
+  const f = async () => { throw new Error('ECONNREFUSED'); };
+  const c = new JevClient({ fetchImpl: f, log });
+  const r = await c.request({ state: {}, questions: { step: {} } });
+  assertEqual(r.reason, 'network-error');
+});
+
+test('JevClient：JSON 里没有 answers.step → no-answer', async () => {
+  const log = makeLogger();
+  const f = fakeFetch(() => okJson({ model: 'x', answers: {} }));
+  const c = new JevClient({ fetchImpl: f, log });
+  const r = await c.request({ state: {}, questions: { step: {} } });
+  assertEqual(r.reason, 'no-answer');
+});
+
+test('JevClient：空 questions 不发请求（省额度）', async () => {
+  const f = fakeFetch(() => okJson({}));
+  const c = new JevClient({ fetchImpl: f, log: makeLogger() });
+  const r = await c.request({ state: {}, questions: {} });
+  assertEqual(r.reason, 'no-answer');
+  assertEqual(f.calls.length, 0);
 });
