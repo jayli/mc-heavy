@@ -23,13 +23,17 @@ export class JevPlanner {
    *          onDecision?: (id: string, d: {vx: number, vz: number, mode: string}) => void,
    *          onFallback?: (id: string, reason: string) => void}} deps
    */
-  constructor({ world, client, breaker, speed, log = null, now = () => Date.now(),
+  constructor({ world, client, breaker, speed, log = null, now = null,
     onDecision = () => {}, onFallback = () => {} } = {}) {
     this.world = world;
     this.client = client;
     this.breaker = breaker;
     this.speed = speed;
-    this._now = now;
+    // ⚠️ **时间基准必须与调用方同源**：`tick(nowMs)` 的 nowMs 来自帧循环的
+    // `performance.now()`，而 `Date.now()` 是 epoch 毫秒（差约 1.7e12）—— 混用会让
+    // `nowMs < _nextAt` 恒真，**整个过程只决策一次**（实测 40 秒只 1 次 decided）。
+    // 这正是 CLAUDE.md 已记的「时间基准统一用 performance.now()，禁止用 Date.now()」。
+    this._now = now ?? (() => (typeof performance !== 'undefined' ? performance.now() : Date.now()));
     this._log = log ?? ((typeof console !== 'undefined') ? console : { warn() {} });
     this._onDecision = onDecision;
     this._onFallback = onFallback;
@@ -110,6 +114,10 @@ export class JevPlanner {
     this._inflight.set(z.id, { startedAt: nowMs });
     const res = await this.client.request({ state, questions });
     this._inflight.delete(z.id);
+    // ⚠️ **等待期间的关闭必须作废这次回包**：`setEnabled(false)` 会清 `_inflight`，但已经
+    // 发出的请求仍会 return —— 不拦的话关掉开关后还会被在线方向驱动约 400ms（直到下一次
+    // 离线回包）。判据用 `enabled` 而不是 `_inflight.has(id)`（后者已被 setEnabled 清空）。
+    if (!this.enabled) return;
     // 周期从**回包**算起（见文件头口径 ①）
     this._nextAt.set(z.id, this._now() + JEV_AI.decisionPeriodMs);
     if (!res.ok) {

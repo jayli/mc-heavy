@@ -748,3 +748,19 @@ test('buildJevState.path_to_player：开阔地可达玩家，墙挡住时只有�
   assertEqual(blocked.path_to_player.walkable_steps_toward_player, 1, '墙在 2 格外 → 只通 1 步');
   assertFalse(blocked.path_to_player.player_is_on_that_line, '直线被墙截断');
 });
+
+test('JevPlanner：等待期间关闭开关 → 该次回包作废（不得写进 state）', async () => {
+  // 回归门：setEnabled(false) 清了 _inflight，但已发出的请求仍会 return。
+  // 不拦的话关掉开关后还会被在线方向驱动约 400ms（直到下一次离线回包）。
+  const { world } = makeWindowWorld();
+  const client = makeControlledClient();
+  const decisions = [];
+  const p = makePlanner(world, client, { onDecision: (id, d) => decisions.push([id, d]) });
+  p.setEnabled(true);
+  p.tick(0, [{ id: 'z0', position: [8.5, 1, 8.5], mobile: true }]);
+  p.setEnabled(false);                                   // 请求在途时关闭
+  client.pending[0].resolve({ ok: true, answer: { choice: 'north' }, model: 'm' });
+  await new Promise((r) => setTimeout(r, 0));
+  assertEqual(decisions.length, 0, '关闭后到达的回包必须作废');
+  assertEqual(p.debugState().memorySize, 0, '记忆也不该被回包重新创建');
+});
