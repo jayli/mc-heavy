@@ -223,6 +223,8 @@ testing-policy §2.5「派生量不硬编码」的收益兑现）。细节见 ro
 
 **v2.43** 加了 **Boss 召唤框架**（用户 2026-11-03：「我要增加一个召唤每个地图 Boss 的动作……按C键召唤Boss，按照顺序，如果Boss1 已经在了，就召唤 Boss2，如果Boss都在了，就什么都不召唤。只有 Boss 死掉后，再按 C才会召唤出 Boss……Boss 只能从玩家所在的地图中心位置召唤出来……不能召唤相邻地图的Boss」+「祭坛飞龙目前的行为动作先不要做任何的变更」）：新增 `src/entities/bosses/boss-map.js`（`bossMapAt(wx,wz,seed)` = 「玩家站在哪张**地标级地图**里」的唯一权威，四类 CITY/TARN/SNOW/SHALLOW_TARN，判据全部转调既有权威）+ `boss-registry.js`（`BOSS_ROSTER` 名册，当前只有 `TARN → [dragon]`）。召唤流程 `Game.summonBoss()` 只读那两个模块、对具体 Boss 类型一无所知 ⇒ 加 Boss2 / 给别的地图加 Boss 只改名册。**龙的三项语义变更**（行为动作零变更）：去掉自动生成改按 C 召唤 / 轨道中心从「固定祭坛地带」改为玩家所在的那个高台地带 / **永久死亡整体移除**（`meta.dragonDead` 等全删，死后可重召 —— 推翻 v2.41 裁定）。实体 id 改派生（`dragon:<mapKey>:<slot>`，支持多地图共存），渲染层改 `DRAGON_MAX_ALIVE=4` 实例池（几何共享、骨骼/材质逐龙独立）。**已知取舍（用户接受）**：走远 column 卸载龙会被回收、槽位清空，回来要重新按 C。实施中还修了一个 `Toast._install()` 的既有缺陷（`document.body` 没有 `getElementById` → 幂等分支从未生效）。细节见下方「祭坛之龙沉淀的活跃约束」段与 roadmap 的 v2.43 行。
 
+**v2.44** 给飞龙加了 **Boss 级 AI 与火球攻击**（用户 2026-11-03：「飞龙看到玩家（视线没有被实心不透明方块遮挡）且距离近到一定程度时就要飞向玩家……递近玩家后就可以发射火球……火球触碰到玩家身体，或者击中实体方块（包括树叶、玻璃等半透明方块）都会产生爆炸，爆炸是否能破坏方块跟 TNT 破坏方块的开关有关……如果玩家静止不动，则飞龙递近到一定距离后就开始飞跃玩家，飞跃后盘旋回头再次飞向玩家递近，只要脑袋朝向玩家后就可以发射火球……不能像机关枪一样连续发射，要至少间隔五到十秒……当玩家离开火龙的视线后，火龙就开始返回原始高度……自由盘旋过程中可以增加一些随机方向的变化，可以左右拐弯」+ 架构指令「请你将这个实现抽离成一个独立的类，跟原有的逻辑尽量解耦开」——后续会有很多 Boss、每个都有自己的智能体类）。**架构 = BossAgent 抽象**：新增 `src/entities/bosses/boss-agent.js`（抽象基类 + 共用工具，视线转调炮塔 `hasLineOfSight` 唯一权威）+ `dragon-boss-agent.js`（飞龙四态机，`poseAt` 构造注入避免环）；`dragonDefinition.update` 只委托给 Agent，`dragon-system.js` 保留轨道/动画/AABB/服务不写 AI ⇒ 换一个 Boss = 换一个 Agent 子类。**四态机**：orbit（盘旋，半径按 θ 正弦调制 ±5 格左右拐弯）→ 视线通+距≤60 → chase（9 格/秒）→ 距≤20 → attack（approach↔turn 飞跃循环）→ 距>78（滞回）或视线断 → return。**开火四条**：喷火锥 ±20° + 冷却随机 5~10 秒 + **开火瞬间新鲜 LOS 复查** + 距≤60；`fireRequest` 是瞬态字段，由 game.js 在 entities.update 之后消费生成火球（definition 算意图、game.js 执行，与矿车 pendingPlayerLift 同先例）。**火球**（`fireball-system.js`，临时实体，与弹丸刻意独立）：15 格/秒直线无追踪、最远 80 格；遮挡判据**只看 solidTable**（有意不同于弹丸的 solid&&opaque —— 玻璃 opaqueTable=0 弹丸穿过、火球必须挡住）；命中玩家只爆炸不掉血（血量以后再做）。**爆炸复用 TNT 口径**：从 `explodeTnt` 抽出 `_applyExplosion(result)`（破坏受 canTntDestroyBlocks 门控 + 连锁 + 丧尸伤害 + 矿车摧毁 + 音效 + 两层特效），`explodeTnt` = 去重 + 移除自身 TNT + `_applyExplosion`（行为逐位不变，tnt.spec 7/7 零回归）。⚠️ **火球爆炸走 `_applyExplosion` 而不走 `explodeTnt`**（后者会把火球炸过的格键永久留在 `_ignitingTnt` 去重集合 → 之后同格放 TNT 静默不爆）。**渲染**：`FireballRenderer`（InstancedMesh 球体池、火焰色 0xff6a00、unlit、零实例 visible=false）。细节见下方「祭坛之龙沉淀的活跃约束」段与 roadmap 的 v2.44 行。
+
 测试现状：Playwright spec 全量 + 浏览器内单元测试全绿。**用例计数以 `npm run check:data`
 输出为准，不在文档硬编码**（同一事实的多个副本属「改动放大器」，违反红线 1 精神）。
 ⚠️ **三条计时型 spec 在高负载下偶发贴线 flaky，单独复跑通过**（不改断言、不放宽阈值）：
@@ -3520,6 +3522,83 @@ testing-policy §2.5「派生量不硬编码」的收益兑现）。细节见 ro
   偏移 `−DRAGON_MODEL_CENTER`，体心正好落在 `state.position`。⚠️ 这是「命中盒相对 position 的
   偏移」（`DRAGON_CORE_OBB.center` 恒 [0,0,0]）与「模型原点到体心的偏移」两个不同语义，别混。
 
+### 飞龙 AI 与火球沉淀的活跃约束（v2.44；后续「Boss 智能体 / 实体发射物 / 爆炸复用」类改动必读）
+
+设计文档 `docs/superpowers/specs/2026-11-03-dragon-boss-ai-design.md` + 计划
+`docs/superpowers/plans/2026-11-03-dragon-boss-ai.md`。
+
+- **Boss 行为决策抽成独立的 `BossAgent` 子类（用户的架构指令，后续每个 Boss 一个智能体类）**：
+  `src/entities/bosses/boss-agent.js`（抽象基类 + 共用工具）+ `dragon-boss-agent.js`（飞龙四态机）。
+  `dragonDefinition.update` **只委托**给模块级单例 Agent，`dragon-system.js` 保留轨道/动画/AABB/
+  服务不写 AI。换一个 Boss = 换一个 Agent 子类，`DragonService` 的服务形状可被未来 Boss 服务复用。
+  ⚠️ **Agent 不 import `dragon-system.js`**（避免环）：轨道 pose 由构造注入 `poseAt`（生产传
+  `dragonPoseAt`，单测传确定性 fake）⇒ Agent 独立可测。
+  ⚠️ **Agent 无跨帧可变成员**（除注入的 `rng`）：所有跨帧状态（冷却/视线缓存/子态）都在 state 里
+  ⇒ 多条龙共用一个 Agent 实例是安全的（v2.43 起支持多龙共存）。
+- **AI 读 ctx 但不生成实体、不改世界**：`DragonBossAgent.update` 读 `ctx.world/registry/player`
+  做视线与距离判定，把「要开火」写进返回 state 的 `fireRequest`，由 `game.js` 在 `entities.update`
+  **之后**统一消费（`_consumeDragonFireRequests`）生成火球。理由：生成实体/改世界是主线程装配层
+  职责（要读 `canTntDestroyBlocks`、调爆炸链路），entities/ 同构层不得碰 —— 与矿车 `pendingPlayerLift`
+  （definition 算意图、game.js 执行）同一先例。⚠️ **`fireRequest` 是瞬态**：serialize 跳过
+  （否则将来龙改持久化时重启会凭空喷一发火球）。
+  ⚠️ **消费必须在判定之前**（帧循环里 `_consumeDragonFireRequests()` 在 `_updateFireballs()` 之前）：
+  否则本帧新生成的火球（`traveled=0`，还没推进过）会被判定拿「步后位置 − direction×stepLen」
+  还原出一条**向后**的线段 → 可能误判命中龙自己脚下的方块。
+- **视线判据与火球遮挡判据是两个判据，刻意不同（混用会撕裂）**：
+  | 判据 | 口径 | 玻璃 | 树叶 | 消费者 |
+  |---|---|---|---|---|
+  | 视线（发现玩家） | `solid && opaque`（`isProjectileOccluding`） | **透过** | 挡住 | `BossAgent._hasLos` → 炮塔 `hasLineOfSight` |
+  | 火球阻挡 | **只看 `solidTable===1`** | **挡住** | 挡住 | `judgeFireball` 的 DDA occludes |
+  用户原话：视线要「实心不透明方块」遮挡，火球要「击中树叶、玻璃等半透明方块」也爆炸。
+  ⚠️ **只测树叶的用例抓不到这个差异**（树叶是 `opaque:true`，两个判据都挡）⇒ 玻璃那条是
+  判别性用例（误用 `isProjectileOccluding` 时它真 FAIL）。连带效果：**龙隔着玻璃看得见玩家、
+  喷出的火球在玻璃上炸开**（逻辑自洽：玻璃透明看得见，但火球是实体）。
+  ⚠️ **树叶挡视线是既有后果**（`leaves` 是 `opaque:true`，v1.42 方案 C），炮塔 LOS 同口径 ——
+  站在树冠下龙发现不了你，不是本次引入的 bug。
+- **火球爆炸走 `_applyExplosion`，绝不走 `explodeTnt`（Review Focus 1）**：`explodeTnt` 的去重集合
+  `_ignitingTnt` 以「格坐标」为键，语义是「这个 TNT 格已引爆过」。火球炸的格**不是 TNT**，
+  若走 `explodeTnt` 会把那个格的键永久留在集合里 → 之后玩家在同格放 TNT 引爆返回 false
+  **静默不爆**（方块层面看不出，只有「先炸火球再放 TNT」的对照能抓 —— `dragon-fireball.spec.mjs`
+  的负向验证实测真 FAIL）。`_applyExplosion(result)` 是从 `explodeTnt` 抽出的公共执行段
+  （破坏事务 + 连锁 + 丧尸伤害 + 矿车摧毁 + 音效 + 两层特效），**不碰去重集合**。
+  ⚠️ **入参是 `computeExplosion` 的结果不是坐标**：TNT 路径在 self-removal 之前就算好 result
+  （chain 不含中心格），火球路径直接算 —— 两条路径共享本函数，行为逐位一致（tnt.spec 7/7 零回归）。
+  ⚠️ **`_tntExploded` 现在统计所有爆炸**（TNT + 火球），火球 E2E 依赖它做「爆炸发生了」的判据。
+- **`wobbleAmp === 0` 时 `dragonPoseAt` 必须显式走旧公式 `yaw = π − θ`，不得用解析切线**（实测裁定）：
+  调制路径的切线是 `atan2(−dx/dθ, −dz/dθ)`，它在 A=0 时与 `π − θ` **数值等价但不逐位相等**
+  （20000 采样里 15244 个不等，最大偏差 2π = 角度表示差异）。既有断言钉的是逐位相等 ⇒
+  必须显式分支，否则「零回归」假失败。⚠️ **`wobbleAmp` 会改变翼尖净空**：`orbitRadius 24 +
+  wobbleAmp 5 + 半翼展 8.25 = 37.25` > 高台最近格 34.5 ⇒ 调制到最外时翼尖扫过高台边缘 2.75 格
+  （龙不碰撞方块，只是视觉擦过；调大前须重测净空）。
+- **`orbitT` 在所有模式都推进，y 恒取 `poseAt(orbit, orbitT).position[1]`（bob 带）**：若 chase 把 y
+  钉死在 `orbit.y`，orbit→chase 瞬间会跳最多 `bobAmplitude`(1.5) 格（可见抽搐）；复用 poseAt 的 y
+  也避免在 Agent 里重写 bob 公式（红线 1）。**return 飞向「当前 orbitT 的轨道点」而不是圆心**
+  （轨道点以 6 格/秒移动、龙飞 9 格/秒 ⇒ 追及必收敛，到达时位置已≈轨道点 ⇒ 切回 orbit 无跳变，
+  不需要 spec 初稿发明的 `orbitBlend` 过渡字段）。
+- **移动沿 yaw 的前向向量（不是直指玩家）**：龙是飞行器，yaw 平滑转向（`turnRate` 限速）+ 沿机头飞
+  才自然产生「飞跃 → 拉远 → 掉头」。⚠️ **`turn` 子态刻意不追踪玩家**：飞跃后必须直飞拉远，
+  若 yaw 继续追踪会立刻 U 型转弯（形态是「龙在玩家头顶原地打转」，`turnAroundDistance` 的外飞失去意义）。
+  掉头回 `approach` 后 yaw 才重新追踪 —— 那正是用户说的「盘旋回头再次递近」。
+- **开火冷却用 dt 倒计时（不是绝对时间戳），随机间隔走可注入的 `rng`**：绕开 `Date.now()`/
+  `performance.now()` 混用陷阱（AGENTS.md 已记）。`rng` 默认 `Math.random`，测试注入确定性值钉
+  `[fireCooldownMin, fireCooldownMax]` 两端与中点。⚠️ **开火瞬间必须做一次新鲜 LOS 复查**，
+  不能用 10Hz 缓存（`losVisible`）—— 缓存期内玩家可能走进墙后，形态是「隔着墙喷火」。
+- **火球是独立临时实体系统，不复用炮塔弹丸**（`fireball-system.js` vs `projectile-system.js`）：
+  速度（15 vs 40）、遮挡判据（只看 solid vs solid&&opaque）、命中语义（爆炸 vs 伤害）全不同。
+  ⚠️ **type 刻意用 `'fireball'` 不复用 `'projectile'`**：两个渲染器都按 type 过滤，共用会让
+  「火球被画成曳光弹」。判定顺序照 `judgeProjectile`（超距 → 方块 → 玩家），**超距不爆炸**
+  （没撞到东西就消失，`judgeFireball` 不给 `at`）。玩家盒由装配层注入 `playerHitboxLocal()`
+  （entities/ 不 import player/，矿车先例）；**命中玩家只爆炸不掉血**（用户：血量以后再做）。
+- **E2E 的两个载荷性陷阱**（实测踩过）：① **必须用 `vd=8`** —— vd=2 的加载半径只有 64 格，
+  而脱离距离 78 / 阈值测试 150 格都超出它 ⇒ 龙的 column 被卸载（临时实体回收），断言读到
+  undefined；② **测试场必须远离城市**（出生点在 City，建筑随机遮挡视线 → LOS 抖动）——
+  实测出生点附近 LOS 只有部分帧为真，远离 600 格的开阔地 27/30 帧为真 ⇒ 断言用「大部分时间」
+  而非「恒」，阈值留余量。⚠️ **sightRange 外侧断言必须带内侧对照**（否则「不追击」是无效盲区：
+  若 AI 根本没接线，「不追击」照样全绿）。
+- **`_fireballSeq` 确定性自增可统计开火次数**（红线 2：不用 Math.random）：火球会消失，
+  「同时存在数」≠「开火次数」⇒ 「不是机关枪」的判据只能落在 seq 增量上（实测注入 0.1~0.2 秒
+  间隔后 26 秒开火 59 次 > 上限 7，真 FAIL）。
+
 
 ## 权威文档（动手前必读）
 
@@ -3847,6 +3926,8 @@ mc-heavy/
    │               #    + sin(p²·π) 滞后甩腕（v1.49，取代 mc-lite 的对称单曲线））
    │               #  turret-renderer.js / turret-armor-texture.js（炮塔 8 部件实例 + 单纹理 UV 分区）
    │               #  projectile-renderer.js（弹丸）/ tracer-renderer.js（曳光，起终点冻结在世界空间）
+   │               #  fireball-renderer.js（v2.44 飞龙火球：InstancedMesh 球体池、火焰色 0xff6a00、
+   │               #    unlit、零实例 visible=false → draw call 归零；与弹丸渲染器刻意独立）
    │               #  explosion-renderer.js（球体扩张）+ explosion-sprite.js（序列帧 billboard）
    │               #    —— 两层叠加才是 mc-lite 的爆炸表现，只做一层会「少一半」
    │               #  block-hit-fx.js + block-color.js（枪击命中：整格白闪 + 按命中面 atlas 取色的碎块）
@@ -3863,16 +3944,25 @@ mc-heavy/
    │               #  minecarts/（矿车 Epic，Worker 同构无 three）：minecart-config.js（冻结玩法
    │               #   数据与几何尺寸唯一权威）+ minecart-system.js（移动/转弯/碰撞/连挂同构
    │               #   纯函数 + MinecartService 玩法入口 + minecartDefinition 持久实体）
-   │               #  dragons/（祭坛飞龙 v2.41，v2.43 改按需召唤；同构无 three）：dragon-config.js
-   │               #    （冻结玩法数值唯一权威：health 3000 / 轨道半径 24 / 盘旋高 /
+   │               #  dragons/（祭坛飞龙 v2.41，v2.43 改按需召唤，v2.44 加 AI/火球；同构无 three）：
+   │               #    dragon-config.js（冻结玩法数值唯一权威：health 3000 / 轨道半径 24 / 盘旋高 /
    │               #    DRAGON_CORE_OBB / MODEL_CENTER / ORBIT_SALT 1040 / MAX_ALIVE 4 /
-   │               #    dragonEntityIdFor 派生 id）+ dragon-system.js（轨道/动画状态机/AABB 纯函数 +
-   │               #    dragonDefinition + DragonService：summon/damage/activeEntities，临时实体、
+   │               #    dragonEntityIdFor 派生 id / **DRAGON_AI 16 项 AI 数值 + FIREBALL 火球数值**）
+   │               #    + dragon-system.js（轨道/动画状态机/AABB 纯函数 + dragonDefinition（**update 委托
+   │               #    DragonBossAgent**）+ DragonService：summon/damage/activeEntities，临时实体、
    │               #    **无永久死亡**（v2.43 移除 dragonDead）、多实例共存）
-   │               #  bosses/（Boss 召唤框架 v2.43，同构无 three）：boss-map.js（`bossMapAt` =
+   │               #    + fireball-system.js（v2.44 火球临时实体：fireballDefinition 直线推进 +
+   │               #    judgeFireball（超距→方块→玩家，遮挡**只看 solidTable**，与弹丸的 solid&&opaque
+   │               #    有意不同）+ FIREBALL_AABB；命中玩家只爆炸不掉血）
+   │               #  bosses/（Boss 框架 v2.43 召唤 + v2.44 智能体；同构无 three）：boss-map.js（`bossMapAt` =
    │               #    「玩家站在哪张地标级地图里」的唯一权威，四类 CITY/TARN/SNOW/SHALLOW_TARN，
    │               #    判据全部转调 gen 层既有权威）+ boss-registry.js（`BOSS_ROSTER` 名册 =
    │               #    地图→Boss 槽位的数据表，当前只有 TARN→[dragon]；`BOSS_SLOTS_PER_MAP=2`）
+   │               #    + **boss-agent.js（v2.44 BossAgent 抽象基类 + 共用工具 _hasLos/_angleTo/
+   │               #    _angleDiff/_hDist，视线转调炮塔 hasLineOfSight 唯一权威）**
+   │               #    + **dragon-boss-agent.js（v2.44 DragonBossAgent 四态机：orbit/chase/attack/return
+   │               #    + 开火四条判据；poseAt 构造注入避免环；只读 state/ctx 返回全新 state，
+   │               #    开火意图写进 fireRequest 由 game.js 消费）**
    │               #  turrets/（M8，方块锚定装置，同构无 three）：turret-config.js（玩法数值唯一权威）
    │               #   + turret-blueprint.js（11 格展开；**BASE_DY=1** —— 底座坐在地面格之上，
    │               #     与巢穴共用 `target.blockPos` 口径，pivot 与 mc-lite 逐位等价）

@@ -519,3 +519,29 @@ yaw   = π − θ（⚠️ 实施修正：原文的 θ + π/2 是错的，见下
 `boss-registry.js`（`BOSS_ROSTER` 名册 = 地图 → Boss 槽位的数据表）。
 召唤流程 `Game.summonBoss()` 只读这两个模块、对具体 Boss 类型一无所知 ⇒
 加 Boss2 或给别的地图加 Boss 只改名册与对应 service，不动流程。
+
+---
+
+## v2.44 取代说明（飞龙 AI 与火球攻击，2026-11-03）
+
+本文档描述的是 v2.41 的祭坛飞龙（纯景观实体）。**用户 2026-11-03 提出「给飞龙加智能」后，
+本文档的下列裁定已被取代**（代码是最终权威；权威副本见 `CLAUDE.md` 的
+「飞龙 AI 与火球沉淀的活跃约束」段与 `docs/roadmap.md` 的 v2.44 行；
+设计文档 = `docs/superpowers/specs/2026-11-03-dragon-boss-ai-design.md`）：
+
+| 本文档的裁定 | v2.44 的实际口径 | 取代理由 |
+|---|---|---|
+| §1「纯景观实体」「不与方块交互、不碰撞、不寻路」 | **四态机 AI**：发现玩家（视线通 + 距 ≤60）→ 追击 → 飞跃 → 喷火球 → 脱离返回 | 用户要求「让火龙和玩家的互动更有意思」 |
+| §6.1 轨道 = 固定圆（`yaw = π − θ`） | orbit 模式**半径按 θ 正弦调制 ±5 格**（左右拐弯）；`wobbleAmp=0` 时逐位退回旧公式 | 用户「不一定就完全按照一个圆圈绕圈，可以左右拐弯，免得绕圈太固定显得单调」 |
+| §8「`dragonDefinition.update` 不读 context」 | **update 委托给 `DragonBossAgent`**，读 `ctx.world/registry/player` 做视线与距离判定 | 行为决策抽成独立智能体类（用户架构指令：后续每个 Boss 都有自己的智能体） |
+| §5.1「龙只有被击中/红闪/死亡」 | 龙**主动开火**：`fireRequest` 瞬态字段 → game.js 消费生成火球实体 | 用户「递近玩家后就可以发射火球」 |
+
+**未被取代的部分**（v2.44 明确保留）：素材与烘焙管线（§2~§4）、`yaw = π − θ` 公式本身
+（`wobbleAmp=0` 时逐位成立）、动画状态机（§6.3）、命中盒 `DRAGON_CORE_OBB`（§5.1）、
+伤害路由 `Game.damageEntity` 与 `WEAPON_HITTABLE_TYPES`（§8）、炮塔索敌 `bodyOffsetY: 0`、
+渲染材质口径、血量 3000（v2.42）、Boss 召唤框架（v2.43）。
+
+**v2.44 新增的模块**（本文档未涉及）：`src/entities/bosses/boss-agent.js`（BossAgent 抽象基类）+
+`dragon-boss-agent.js`（飞龙四态机）、`src/entities/dragons/fireball-system.js`（火球临时实体）、
+`src/render/fireball-renderer.js`（火球渲染池）。爆炸从 `Game.explodeTnt` 抽出 `_applyExplosion`
+供火球复用（TNT 口径：破坏范围 / 开关门控 / 连锁 / 丧尸伤害 / 特效全同）。
