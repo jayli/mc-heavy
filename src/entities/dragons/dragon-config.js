@@ -138,3 +138,67 @@ export const DRAGON_ANIM = Object.freeze({
   glideSeconds: 7.2,
   blendSeconds: 0.4,
 });
+
+/**
+ * 飞龙 AI 数值（v2.44，spec §11）。**唯一权威在此** —— Agent / 单测 / E2E 都从这里派生。
+ *
+ * ## 用户裁定的四项（2026-11-03）
+ *
+ * - `sightRange = 60`：发现距离。略大于步枪 `entityRange` 40 ⇒ 飞龙先手，玩家得先挨近才能反击。
+ * - `fireCooldownMin/Max = 5/10`：开火间隔**随机 5~10 秒**（用户原话「不能像机关枪一样连续发射，
+ *   要至少间隔五到十秒」）。⚠️ 随机数走可注入的 `rng`（默认 `Math.random`）—— 测试钉区间两端。
+ * - 攻击高度**固定 y = `orbit.y`**（= 30）：用户裁定「飞向玩家时依然在半高的高空盘旋」。
+ *   故 chase/attack 都**不俯冲不爬升**，`playerAimOffsetY` 只用于瞄准点，不改龙的高度。
+ * - 火球速度 15 格/秒（在 `FIREBALL` 里）。
+ *
+ * ## 我自己标定的（用户未指定，实玩后可调）
+ *
+ * - `chaseSpeed = 9`：略快于玩家跑步 `SPEED = 8` ⇒ 玩家跑不掉但能周旋。调大就成了「必中」。
+ * - `disengageDistance = 78`（= sightRange × 1.3）：**滞回**。若脱离阈值也取 60，玩家在 60 格
+ *   边界附近走动会让龙在 chase/orbit 之间每帧抖动（形态是「龙原地抽搐」）。
+ * - `flyoverDistance = 6` / `turnAroundDistance = 22`：飞跃触发距离与飞跃后外飞距离。
+ *   外飞 22 格 ≈ 2.4 秒，给玩家留出「看着龙飞远再掉头回来」的节奏。
+ * - `fireConeDeg = 20`：喷火锥半角。用户要求「脑袋冲着玩家发射」—— 20° 是「大致对准」的口径，
+ *   取 0 会因为 yaw 平滑插值而几乎永不满足（龙永远喷不出火）。
+ * - `turnRate = 3.0` rad/秒：yaw 平滑转向速率。约 172°/秒 ⇒ 掉头（180°）约 1 秒。
+ * - `wobbleAmp = 5` / `wobbleFreq = 3`：盘旋半径调制（用户「可以左右拐弯，免得绕圈太固定显得单调」）。
+ *   ⚠️ **`wobbleAmp` 会改变翼尖净空**：`orbitRadius 24 + wobbleAmp 5 + 半翼展 8.25 = 37.25`，
+ *   而高台最近格距圆心 **34.5** ⇒ 调制到最外时翼尖会扫过高台边缘 2.75 格。
+ *   龙不碰撞方块（spec §10 取舍 3），故只是视觉擦过；**调大 `wobbleAmp` 前须重测这个净空**。
+ * - `losInterval = 0.1`：视线缓存周期（10Hz）。60 格 LOS 每帧全查 × 多条龙太贵（红线 3）。
+ *   ⚠️ **开火瞬间必须做一次新鲜复查**，不能用这个缓存（否则隔着墙喷火）。
+ * - `playerAimOffsetY = 1.0`：玩家胸部（视线终点 + 火球瞄准点）。玩家 `position` 是脚底，
+ *   身高 1.8 ⇒ 1.0 ≈ 胸。与炮塔打丧尸的 `enemyBodyOffsetY`（1.2）同一思路。
+ */
+export const DRAGON_AI = Object.freeze({
+  /** 发现距离（水平，格）：视线通 + 水平距 ≤ 此值 → 追击 */
+  sightRange: 60,
+  /** 追击/攻击的水平速度（格/秒） */
+  chaseSpeed: 9,
+  /** chase → attack 的水平距离（格） */
+  attackRange: 20,
+  /** 飞跃触发距离（格）：approach 递近到此值就飞过玩家头顶 */
+  flyoverDistance: 6,
+  /** 飞跃后向外飞多远才掉头（格） */
+  turnAroundDistance: 22,
+  /** 脱离距离（格）：> sightRange 的滞回上界，防边界抖动 */
+  disengageDistance: 78,
+  /** 喷火锥半角（度）：yaw 与「指向玩家」的夹角 ≤ 此值才算「脑袋冲着玩家」 */
+  fireConeDeg: 20,
+  /** 开火间隔下限（秒） */
+  fireCooldownMin: 5,
+  /** 开火间隔上限（秒） */
+  fireCooldownMax: 10,
+  /** 开火最大水平距离（格）：太远不浪费火球 */
+  fireRange: 60,
+  /** yaw 平滑转向速率（rad/秒） */
+  turnRate: 3.0,
+  /** 盘旋半径调制振幅（格） */
+  wobbleAmp: 5,
+  /** 盘旋半径调制频率（每圈起伏次数） */
+  wobbleFreq: 3,
+  /** 视线缓存周期（秒） */
+  losInterval: 0.1,
+  /** 玩家胸部相对脚底 position 的 y 偏移（视线终点 + 火球瞄准点） */
+  playerAimOffsetY: 1.0,
+});
