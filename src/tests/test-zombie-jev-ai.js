@@ -9,6 +9,9 @@ import { test } from './runner.js';
 import { assertEqual, assertFalse, assertTrue, assertDeepEqual } from './assert.js';
 import { JEV_AI } from '../entities/zombies/zombie-config.js';
 import {
+  QUESTION_ID, STEP_INSTRUCTIONS, buildQuestions, criterionFor, SITUATION, WINDOW_LEGEND,
+} from '../entities/zombies/zombie-jev-prompts.js';
+import {
   DIRECTION_VECTORS, cellKey, memoryFor, noteVisit, sampleGroundWindow,
   bearingWords, buildCandidateSteps, buildJevState, markDeadEnd,
 } from '../entities/zombies/zombie-ai-view.js';
@@ -185,4 +188,44 @@ test('buildJevState：形状与 spec §3.5 一致，可 JSON 序列化', () => {
   assertTrue(st.ground_window.legend.length > 50);
   assertTrue(Object.keys(st.candidate_steps).length > 0);
   assertEqual(JSON.parse(JSON.stringify(st)).ground_window.rows.length, JEV_AI.windowSize);
+});
+
+// ---------- 题面（Task 4）----------
+
+test('buildQuestions：1 个 choice，题名 step，选项 = 可走方向', () => {
+  const { world } = makeWindowWorld();
+  const st = buildJevState(world, [8.5, 1, 8.5], [8.5, 1, 12.5], memOf(new Map(), 'z'));
+  const qs = buildQuestions(st.candidate_steps);
+  assertEqual(Object.keys(qs).length, 1);
+  assertEqual(QUESTION_ID, 'step');
+  const q = qs.step;
+  assertEqual(q.type, 'choice');
+  assertEqual(q.instructions, STEP_INSTRUCTIONS);
+  assertDeepEqual(Object.keys(q.criteria).sort(), Object.keys(st.candidate_steps).sort());
+});
+
+test('buildQuestions：无候选时返回空对象（不发请求）', () => {
+  assertDeepEqual(buildQuestions({}), {});
+});
+
+test('criterionFor：包含方位、距离、走廊长度、访问次数、死胡同', () => {
+  const text = criterionFor('north', {
+    direction: 'north',
+    player_lies_toward: 'north and west',
+    straight_line_distance_after_step: '12.3 meters',
+    closer_or_farther: 'closer to the player',
+    open_ground_ahead: '6 meters',
+    other_ways_out_after_the_step: 2,
+    times_already_visited: 3,
+    marked_dead_end: true,
+  });
+  for (const frag of ['north', '12.3 meters', 'closer to the player', '6 meters', '3 times', 'dead end']) {
+    assertTrue(text.includes(frag), `criterion 缺片段 ${frag}: ${text}`);
+  }
+});
+
+test('文案常量：legend 必须解释 # 含「未加载」（spec §3.5）', () => {
+  assertTrue(WINDOW_LEGEND.includes('not loaded'), 'legend 必须说明未加载地形也画成 #');
+  assertTrue(SITUATION.length > 30);
+  assertFalse(STEP_INSTRUCTIONS.includes('\n'), '题干不应换行（保持单段）');
 });
