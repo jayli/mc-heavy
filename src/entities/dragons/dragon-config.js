@@ -199,6 +199,15 @@ export const DRAGON_AI = Object.freeze({
   wobbleFreq: 3,
   /** 视线缓存周期（秒） */
   losInterval: 0.1,
+  /**
+   * return 模式的「已回到轨道」阈值（格）。
+   *
+   * ⚠️ **return 飞向的是「当前 `orbitT` 的轨道点」而不是圆心**（spec §3.5 的简化裁定）：
+   * 轨道点也在动（6 格/秒）而龙飞 9 格/秒 ⇒ 追及必收敛，且到达时位置已≈轨道点
+   * ⇒ 切回 orbit **无跳变**，不需要 spec 初稿发明的 `orbitBlend` 过渡字段。
+   * 取 1 格：小于它时切回 orbit 的位置误差肉眼不可见，而取更小会让追及多绕几圈。
+   */
+  returnArriveDistance: 1,
   /** 玩家胸部相对脚底 position 的 y 偏移（视线终点 + 火球瞄准点） */
   playerAimOffsetY: 1.0,
 });
