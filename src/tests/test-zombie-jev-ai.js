@@ -8,7 +8,7 @@
 import { test } from './runner.js';
 import { assertEqual, assertFalse, assertTrue, assertDeepEqual } from './assert.js';
 import { JEV_AI } from '../entities/zombies/zombie-config.js';
-import { JevClient } from '../entities/zombies/zombie-jev-client.js';
+import { FailureBreaker, JevClient } from '../entities/zombies/zombie-jev-client.js';
 import {
   QUESTION_ID, STEP_INSTRUCTIONS, buildQuestions, criterionFor, SITUATION, WINDOW_LEGEND,
 } from '../entities/zombies/zombie-jev-prompts.js';
@@ -338,4 +338,49 @@ test('JevClient：空 questions 不发请求（省额度）', async () => {
   const r = await c.request({ state: {}, questions: {} });
   assertEqual(r.reason, 'no-answer');
   assertEqual(f.calls.length, 0);
+});
+
+// ---------- 失败熔断（Task 7）----------
+
+test('FailureBreaker：连续 3 次失败进入冷却，期间 available=false', () => {
+  const log = makeLogger();
+  let t = 1000;
+  const b = new FailureBreaker({ now: () => t, log });
+  assertTrue(b.available());
+  b.recordFailure('network-error');
+  b.recordFailure('timeout');
+  b.recordFailure('not-json');
+  assertFalse(b.available(), '3 次后进入冷却');
+  assertTrue(log.warns.some((w) => w.includes('suspended')), '进入冷却须打日志');
+  t += JEV_AI.cooldownMs - 1;
+  assertFalse(b.available(), '冷却未到仍不可用');
+  t += 2;
+  assertTrue(b.available(), '冷却到点恢复');
+  assertEqual(b.state().fails, 0, '恢复后计数清零');
+});
+
+test('FailureBreaker：任意一次成功清零计数', () => {
+  const b = new FailureBreaker({ now: () => 0, log: makeLogger() });
+  b.recordFailure('x');
+  b.recordFailure('y');
+  b.recordSuccess();
+  assertEqual(b.state().fails, 0);
+  b.recordFailure('z');
+  assertTrue(b.available(), '清零后一次失败不该触发冷却');
+});
+
+test('FailureBreaker：失败与成功交替永不冷却', () => {
+  const b = new FailureBreaker({ now: () => 0, log: makeLogger() });
+  for (let i = 0; i < 5; i++) { b.recordFailure('f'); b.recordSuccess(); }
+  assertTrue(b.available());
+});
+
+test('FailureBreaker：冷却期内的失败不累计（否则恢复后立刻又进冷却）', () => {
+  let t = 0;
+  const b = new FailureBreaker({ now: () => t, log: makeLogger() });
+  b.recordFailure('a'); b.recordFailure('b'); b.recordFailure('c');
+  const openUntil = b.state().openUntil;
+  t += 10;
+  b.recordFailure('during-cooldown');
+  assertEqual(b.state().openUntil, openUntil, '冷却期不得延长');
 });

@@ -79,3 +79,54 @@ export class JevClient {
 export function createJevClient(opts) {
   return new JevClient(opts);
 }
+
+/**
+ * 失败熔断（spec §3.8：连续 `maxFailures` 次失败 → 整体暂停 `cooldownMs`）。
+ *
+ * **为什么需要**：单次超时 4s。若网关持续拦截，20 只丧尸 × 4 并发会一直堆着 4s 的挂起请求，
+ * 帧循环里的 `tick` 也会一直空转。熔断把它们整体切回离线 AI，30 秒后再试。
+ *
+ * ⚠️ **`recordSuccess()` 清零**是载荷性的：网关是**间歇性**拦截的（实测同一分钟内 5 次 403
+ * 之后连续 200）。改成「滑窗计数」会让长期跑图的人被零星失败拖进冷却。
+ * ⚠️ **冷却期内的失败不再累计、也不延长冷却**：否则每个在途请求回来都会顺延 30 秒，
+ * 熔断永远不解除。
+ */
+export class FailureBreaker {
+  constructor({ maxFailures = JEV_AI.maxFailures, cooldownMs = JEV_AI.cooldownMs,
+    now = () => Date.now(), log = null } = {}) {
+    this.maxFailures = maxFailures;
+    this.cooldownMs = cooldownMs;
+    this._now = now;
+    this._log = log ?? ((typeof console !== 'undefined') ? console : { warn() {}, info() {} });
+    this.fails = 0;
+    this.openUntil = 0;
+  }
+
+  available(nowMs = this._now()) {
+    return nowMs >= this.openUntil;
+  }
+
+  recordFailure(reason, nowMs = this._now()) {
+    if (!this.available(nowMs)) return;
+    this.fails++;
+    if (this.fails >= this.maxFailures) {
+      this.openUntil = nowMs + this.cooldownMs;
+      this.fails = 0;
+      try {
+        this._log.warn(`[zombie-ai] suspended for ${this.cooldownMs}ms after ${this.maxFailures} failures (last: ${reason})`);
+      } catch { /* ignore */ }
+    }
+  }
+
+  recordSuccess() {
+    if (this.fails !== 0) {
+      this.fails = 0;
+      try { (this._log.info ?? this._log.warn)('[zombie-ai] resumed'); } catch { /* ignore */ }
+    }
+  }
+
+  /** @returns {{fails: number, openUntil: number, suspended: boolean}} 只读测试钩子 */
+  state() {
+    return { fails: this.fails, openUntil: this.openUntil, suspended: !this.available() };
+  }
+}
