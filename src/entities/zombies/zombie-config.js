@@ -145,3 +145,32 @@ export const ZOMBIE_STEERING = Object.freeze({
   probeDistance: 1.2,
   anglesDeg: Object.freeze([22.5, 45, 67.5, 90]),
 });
+
+/**
+ * 在线 AI（Jev / TypeSafe System One）参数（spec §3.3 / §3.8 / §3.9）。
+ *
+ * ⚠️ **`windowSize = 9` 是实测标定值不是推导值**：7×7 与 11×11 在「长迷宫」地形上都会
+ * 让模型 runaway（59 步不出），只有 9×9 在全部 5 个困难地形上通过（spec §2.5）。
+ * ⚠️ **`endpoint` 不带 `?proxy=`**：实测直连 ~330ms，补 `?proxy=1087` 反而慢 10 倍。
+ * ⚠️ **`decisionPeriodMs` 与 `timeoutMs` 是两个独立口径**：前者是「多久问一次」，
+ * 后者是「一次最多等多久」。单次实测 330~800ms（中位 395），4000 只用于掐死挂住的请求。
+ */
+export const JEV_AI = Object.freeze({
+  endpoint: 'https://js-perf.cn/typesafe/v1/systemone',
+  /** 同一只丧尸两次决策的最小间隔（从上次**回包**算起，不是从发起算起） */
+  decisionPeriodMs: 500,
+  /** 同时在途的请求上限（超出排队） */
+  maxConcurrent: 4,
+  /** 单次请求超时（AbortController） */
+  timeoutMs: 4000,
+  /** 地面窗口边长（必须是奇数，保证丧尸在正中） */
+  windowSize: 9,
+  /** 连续失败多少次进入冷却 */
+  maxFailures: 3,
+  /** 冷却时长 */
+  cooldownMs: 30000,
+  /** 记忆里最多保留多少个「走过的格」 */
+  maxVisits: 64,
+  /** 记忆里最多保留多少步轨迹 */
+  maxTrail: 12,
+});
