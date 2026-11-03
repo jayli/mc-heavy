@@ -9,8 +9,12 @@ import { test } from './runner.js';
 import { assertEqual, assertFalse, assertTrue, assertDeepEqual } from './assert.js';
 import { JEV_AI } from '../entities/zombies/zombie-config.js';
 import {
-  DIRECTION_VECTORS, cellKey, memoryFor, noteVisit,
+  DIRECTION_VECTORS, cellKey, memoryFor, noteVisit, sampleGroundWindow,
 } from '../entities/zombies/zombie-ai-view.js';
+import { ChunkColumn } from '../voxel/chunk-column.js';
+import { WorldData } from '../voxel/world-data.js';
+import { createRegistry } from '../voxel/block-registry.js';
+import { WORLD_MIN_Y } from '../voxel/constants.js';
 
 test('JEV_AI：默认值与 spec 一致', () => {
   assertEqual(JEV_AI.endpoint, 'https://js-perf.cn/typesafe/v1/systemone');
@@ -57,12 +61,6 @@ test('memoryFor：同 id 复用同一对象，不同 id 独立', () => {
 });
 
 // ---------- 地面窗口采样（Task 2）----------
-
-import { ChunkColumn } from '../voxel/chunk-column.js';
-import { WorldData } from '../voxel/world-data.js';
-import { createRegistry } from '../voxel/block-registry.js';
-import { WORLD_MIN_Y } from '../voxel/constants.js';
-import { sampleGroundWindow } from '../entities/zombies/zombie-ai-view.js';
 
 /** 平地 fixture：指定 (cx,cz) column 内 y<=solidTop 全 stone，其余 air */
 function makeWindowWorld({ columns = [[0, 0]], solidTop = 0 } = {}) {
