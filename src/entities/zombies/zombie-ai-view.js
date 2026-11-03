@@ -72,3 +72,62 @@ export function noteVisit(mem, x, z) {
     mem.visits.delete(oldest);
   }
 }
+
+/**
+ * 某格（脚底高度 y）能不能站 —— 一格台阶算能站（物理 step-up 会抬上去）。
+ *
+ * **唯一实现**：窗口采样与候选事实都调它（红线 1）。判据全部复用
+ * `zombieCollidesAt` / `zombieStepUpY` / `ZOMBIE_MAX_STEP`，与丧尸物理同源 ——
+ * 两份判据会漂移成「模型以为能走、物理撞墙」。
+ */
+function standableAt(world, bx, y, bz) {
+  const x = bx + 0.5;
+  const z = bz + 0.5;
+  if (!zombieCollidesAt(world, x, y, z)) return true;
+  const lifted = zombieStepUpY(y);
+  return lifted - y <= ZOMBIE_MAX_STEP && !zombieCollidesAt(world, x, lifted, z);
+}
+
+/**
+ * 采样丧尸周围的地面窗口（**用户要的「地面矩阵」**）。
+ *
+ * 语义：
+ * - 边长 `JEV_AI.windowSize`（9），丧尸脚底所在格在**正中**标 `Z`；
+ * - 玩家在窗口范围内则标 `P`（优先于可走性判断，方便模型对齐方位）；
+ * - 可走 → `.`；不可走 → `#`；
+ * - **世界未加载的 column → `#`**（有意与墙同码：对丧尸而言同样是「过不去」）。
+ *   ⚠️ 这条已写进 `WINDOW_LEGEND`（「or terrain that has not loaded yet」），否则模型会把
+ *   加载边缘当成真墙而莫名改道。
+ *
+ * @param {{isSolid(x:number,y:number,z:number):boolean, hasColumn(cx:number,cz:number):boolean}} world
+ * @param {number[]} position 丧尸脚底 [x, y, z]
+ * @param {number[]} playerPosition 玩家脚底 [x, y, z]
+ * @returns {string[]} `windowSize` 行，每行 `windowSize` 字符
+ */
+export function sampleGroundWindow(world, position, playerPosition) {
+  const n = JEV_AI.windowSize;
+  const half = (n - 1) / 2;
+  const [xc, y, zc] = position;   // position 是 [x, y, z]
+  const zx = Math.floor(xc);
+  const zz = Math.floor(zc);
+  const px = Math.floor(playerPosition[0]);
+  const pz = Math.floor(playerPosition[2]);
+  const canCheckColumn = typeof world?.hasColumn === 'function';
+  const rows = [];
+  for (let dr = -half; dr <= half; dr++) {
+    let line = '';
+    for (let dc = -half; dc <= half; dc++) {
+      const bx = zx + dc;
+      const bz = zz + dr;
+      if (dr === 0 && dc === 0) { line += 'Z'; continue; }
+      if (bx === px && bz === pz) { line += 'P'; continue; }
+      if (canCheckColumn && !world.hasColumn(Math.floor(bx / 16), Math.floor(bz / 16))) {
+        line += '#';
+        continue;
+      }
+      line += standableAt(world, bx, y, bz) ? '.' : '#';
+    }
+    rows.push(line);
+  }
+  return rows;
+}

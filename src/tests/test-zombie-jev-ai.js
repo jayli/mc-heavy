@@ -55,3 +55,68 @@ test('memoryFor：同 id 复用同一对象，不同 id 独立', () => {
   assertEqual(memoryFor(m, 'a'), memoryFor(m, 'a'));
   assertFalse(memoryFor(m, 'a') === memoryFor(m, 'b'));
 });
+
+// ---------- 地面窗口采样（Task 2）----------
+
+import { ChunkColumn } from '../voxel/chunk-column.js';
+import { WorldData } from '../voxel/world-data.js';
+import { createRegistry } from '../voxel/block-registry.js';
+import { WORLD_MIN_Y } from '../voxel/constants.js';
+import { sampleGroundWindow } from '../entities/zombies/zombie-ai-view.js';
+
+/** 平地 fixture：指定 (cx,cz) column 内 y<=solidTop 全 stone，其余 air */
+function makeWindowWorld({ columns = [[0, 0]], solidTop = 0 } = {}) {
+  const registry = createRegistry();
+  registry.register('air', { solid: false, opaque: false, cullMode: 'none' });
+  registry.register('stone', { solid: true, opaque: true, cullMode: 'opaque' });
+  registry.register('bedrock', { solid: true, opaque: true, cullMode: 'opaque' });
+  const world = new WorldData(registry);
+  const stone = registry.idOf('stone');
+  for (const [cx, cz] of columns) {
+    const col = new ChunkColumn(cx, cz);
+    for (let lz = 0; lz < 16; lz++) {
+      for (let lx = 0; lx < 16; lx++) {
+        for (let y = WORLD_MIN_Y; y <= solidTop; y++) col.set(lx, y, lz, stone);
+      }
+    }
+    world.add(col);
+  }
+  return { world, registry };
+}
+
+test('sampleGroundWindow：尺寸为 9×9，丧尸在正中（Z），平地全可走', () => {
+  const { world } = makeWindowWorld();
+  const rows = sampleGroundWindow(world, [8.5, 1, 8.5], [8.5, 1, 4.5]);
+  assertEqual(rows.length, JEV_AI.windowSize);
+  for (const r of rows) assertEqual(r.length, JEV_AI.windowSize);
+  const mid = (JEV_AI.windowSize - 1) / 2;
+  assertEqual(rows[mid][mid], 'Z');
+  // 玩家在丧尸正北 4 格 → 窗口内 (mid-4, mid) 是 P
+  assertEqual(rows[mid - 4][mid], 'P');
+  const others = rows.join('').replace(/[ZP]/g, '');
+  assertEqual([...others].filter((c) => c !== '.').length, 0, '平地窗口不该有 #');
+});
+
+test('sampleGroundWindow：两格高的墙写 #，未加载 column 也写 #', () => {
+  const { world, registry } = makeWindowWorld({ columns: [[0, 0]] });
+  const stone = registry.idOf('stone');
+  // ⚠️ **必须两格高**：一格高是「可上台阶」，判定为可走（见下一条用例）。
+  // 一层方块写 # 会让本用例与下一条直接矛盾 —— 计划初稿就是这么写的，由 RED 抓到。
+  world.setBlock(8, 1, 7, stone);
+  world.setBlock(8, 2, 7, stone);
+  const rows = sampleGroundWindow(world, [8.5, 1, 8.5], [8.5, 1, 12.5]);
+  const mid = (JEV_AI.windowSize - 1) / 2;
+  assertEqual(rows[mid - 1][mid], '#', '北一格是两格高的墙');
+  const far = sampleGroundWindow(world, [15.5, 1, 8.5], [15.5, 1, 12.5]);
+  const fm = (JEV_AI.windowSize - 1) / 2;
+  assertEqual(far[fm][fm + 1], '#', 'x=16 未加载须当墙');
+});
+
+test('sampleGroundWindow：抬一格可走的台阶写成 "."（复用 step-up 判据）', () => {
+  const { world, registry } = makeWindowWorld();
+  const stone = registry.idOf('stone');
+  world.setBlock(8, 1, 7, stone);
+  const rows = sampleGroundWindow(world, [8.5, 1, 8.5], [8.5, 1, 12.5]);
+  const mid = (JEV_AI.windowSize - 1) / 2;
+  assertEqual(rows[mid - 1][mid], '.', '一格台阶应可走');
+});
