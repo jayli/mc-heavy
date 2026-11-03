@@ -764,3 +764,15 @@ test('JevPlanner：等待期间关闭开关 → 该次回包作废（不得写�
   assertEqual(decisions.length, 0, '关闭后到达的回包必须作废');
   assertEqual(p.debugState().memorySize, 0, '记忆也不该被回包重新创建');
 });
+
+test('buildJevState.path_to_player：斜向射线不重复计数（同格只数一次）', () => {
+  // 回归门：Math.round 的斜向采样会让相邻 k 落在同一格（实测 30° 射线上每 5 步有 2 次重复），
+  // 不跳过会虚高「能通几格」——而模型正是拿这个数判「该直走还是绕」。
+  const { world } = makeWindowWorld({ columns: [[0, 0]] });
+  // 丧尸 (4,4)，玩家 (14,10)：约 31° 斜线，开阔地整条都能走
+  const st = buildJevState(world, [4.5, 1, 4.5], [14.5, 1, 10.5], memOf(new Map(), 'z'));
+  const steps = st.path_to_player.walkable_steps_toward_player;
+  // 直线距离 ≈ 11.66 格 → 去重后最多 11 步（不含玩家格本身）
+  assertTrue(steps <= 11, `不得因重复采样虚高（实际 ${steps}）`);
+  assertTrue(steps >= 9, `也不该少得离谱（实际 ${steps}）`);
+});

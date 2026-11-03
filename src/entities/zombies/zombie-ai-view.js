@@ -197,9 +197,15 @@ function describePathToPlayer(world, bx, y, bz, px, pz) {
   ddz /= len;
   let n = 0;
   let sawPlayer = false;
+  let lastKey = `${bx},${bz}`;
   for (let k = 1; k <= 16; k++) {
     const cx = bx + Math.round(ddx * k);
     const cz = bz + Math.round(ddz * k);
+    // ⚠️ **同一格只数一次**：斜向 `Math.round` 会让相邻 k 落在同一格（实测 30° 射线上
+    // 每 5 步有 2 次重复），不跳过会把「能通几格」虚高——而模型是拿这个数判「该直走还是绕」。
+    const key = `${cx},${cz}`;
+    if (key === lastKey) continue;
+    lastKey = key;
     if (cx === px && cz === pz) { sawPlayer = true; break; }
     if (!standableAt(world, cx, y, cz)) break;
     n++;
