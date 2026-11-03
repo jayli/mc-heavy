@@ -102,6 +102,12 @@ export const TELEPORT_LAKE_LABEL = '湖';
  */
 export const RESOLUTION_ROW_TITLE = '分辨率';
 export const RESOLUTION_LABELS = ['清晰', '性能'];
+/**
+ * v2.46：在线丧尸 AI 开关的两档文案（≤2 字 —— 左列 375px ÷ 2 按钮的分宽约束，
+ * 与瞬移那六个按钮同一条判据）。
+ */
+export const ZOMBIE_AI_ROW_TITLE = '丧尸 AI';
+export const ZOMBIE_AI_LABELS = ['关闭', '在线'];
 /** 导出 / 导入模型按钮文案（创造台模型，与下行的**进度包**是两个不同粒度） */
 const EXPORT_LABEL = '导出模型';
 const IMPORT_LABEL = '导入模型';
@@ -308,6 +314,7 @@ export class SettingsPanel {
     // 「氛围」，合并后左列少一行。
     left.appendChild(this._combinedFogMusic());
     left.appendChild(this._rowTeleport());           // v1.92：瞬移（用户要求在背景音乐下面）
+    left.appendChild(this._rowZombieAi());           // v2.46：在线丧尸 AI（不抬高面板的那一列）
     right.appendChild(this._combinedViewDistanceResolution()); // 视距 + 分辨率共用一行（v2.27）
     right.appendChild(this._rowBudget());
     right.appendChild(this._rowPlayground());        // M9：创造台（右列，纵向余量更大）
@@ -530,6 +537,23 @@ export class SettingsPanel {
         this._save();
         this.game.setMusicEnabled(v); // 开启后靠 preload/unlock 两个条件自动起播
       }, wrap);
+  }
+
+  /**
+   * v2.46：「丧尸 AI」开关（用户 2026-11-03 裁定：面板 + URL）。
+   *
+   * **落位 = 左列**：判据是「不抬高面板高度的那一列」（v1.63/v1.92 的口径），
+   * 落位后须实测 `.mc-content` 不出现纵向滚动条（实施计划 Task 12）。
+   * 两个按钮都是「有当前值」的档位（开/关），故走 `_makeGroup` 而不是动作型手拼。
+   */
+  _rowZombieAi() {
+    return this._makeGroup(ZOMBIE_AI_ROW_TITLE, [false, true], ZOMBIE_AI_LABELS,
+      this.settings.onlineZombieAi,
+      (v) => {
+        this.settings.onlineZombieAi = v;
+        this._save();
+        this.game.setOnlineZombieAi(v);   // 运行期立即生效（关 → 取消在途 + 清记忆）
+      });
   }
 
   /**

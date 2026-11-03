@@ -61,6 +61,10 @@ export const DEFAULT_SETTINGS = {
   // 这与 `fogColor` 那次的处境不同：那次是「默认值是关时顺带落盘的假值」，必须迁移；
   // 这次没有任何旧存档会写出 `pixelRatio`，所以迁移是多余的。
   pixelRatio: DEFAULT_PIXEL_RATIO_MODE,
+  // 在线丧尸 AI（v2.46，用户 2026-11-03）：开 = 走 Jev 模型决策方向，关 = 现有离线 AI（逐位不变）。
+  // ⚠️ **不需要 settingsVersion 迁移**：旧存档里根本没有这个字段 → 缺字段自然回落默认
+  // （与 chunkPace / pixelRatio 同理；与 fogColor 那次「默认值是关时顺带落盘的假值」相反）。
+  onlineZombieAi: false,
 };
 
 /** 每帧上传 section 数的合法范围（0 = 不限；上限取 16 —— 再大即等同不限） */
@@ -154,6 +158,7 @@ export function resolveSettings(stored, params) {
     if (typeof stored.bgm === 'boolean') s.bgm = stored.bgm;
     if (stored.chunkPace !== undefined) s.chunkPace = clampChunkPace(stored.chunkPace);
     if (stored.pixelRatio !== undefined) s.pixelRatio = normPixelRatio(stored.pixelRatio);
+    if (typeof stored.onlineZombieAi === 'boolean') s.onlineZombieAi = stored.onlineZombieAi;
   }
   if (params) {
     if (params.has('vd')) s.viewDistance = clampVD(params.get('vd'));
@@ -168,6 +173,7 @@ export function resolveSettings(stored, params) {
     if (params.has('chunkpace')) s.chunkPace = clampChunkPace(params.get('chunkpace'));
     // ?res=sharp|perf 分辨率档位（v2.27）。⚠️ 接受 `perf` 简写：URL 是手敲的，
     // 而存储值与档位常量一律用全名 `performance`（归一化后统一）。
+    if (params.has('zombieai')) s.onlineZombieAi = params.get('zombieai') === '1';
     if (params.has('res')) {
       s.pixelRatio = normPixelRatio(params.get('res') === 'perf' ? 'performance' : params.get('res'));
     }

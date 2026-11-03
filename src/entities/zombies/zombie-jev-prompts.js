@@ -9,15 +9,15 @@
  * 情景描述（state.situation）。
  * 只陈述规则，不暗示答案 —— 实测把「往哪走」直接写进 situation 会让模型照抄措辞。
  */
-export const SITUATION = 'A zombie chases the player through terrain with walls. Walls can only be walked around, never broken. The ground window shows the terrain around the zombie.';
+export const SITUATION = 'A zombie chases the player through terrain with walls. Walls can only be walked around, never broken. The ground grid shows the terrain around the zombie.';
 
 /**
- * 地面窗口的图例。
+ * 地面格子图的图例。
  *
- * ⚠️ **必须说明「未加载的地形也画成 `#`」**（spec §3.5）：窗口在加载边缘会把空气画成墙，
+ * ⚠️ **必须说明「未加载的地形也画成 `#`」**（spec §3.5）：格子图在加载边缘会把空气画成墙，
  * 模型若以为那是真墙，会在边界处莫名改道。这条也是 `test-zombie-jev-ai.js` 的断言之一。
  */
-export const WINDOW_LEGEND = "Every character is one square meter of ground. '.' is flat ground the zombie can walk on. '#' is a solid wall, or ground more than one meter higher, or terrain that has not loaded yet: the zombie cannot enter it. 'Z' is the zombie, in the middle of the window. 'P' is the player.";
+export const WINDOW_LEGEND = "Every character is one square meter of ground. '.' is flat ground the zombie can walk on. '#' is a solid wall, or ground more than one meter higher, or terrain that has not loaded yet: the zombie cannot enter it. 'Z' is the zombie, in the middle of the grid. 'P' is the player.";
 
 /** 题名（请求 `questions` 的键，也是回包 `answers` 的键） */
 export const QUESTION_ID = 'step';
@@ -31,7 +31,7 @@ export const QUESTION_ID = 'step';
  * - **不用双重否定**；
  * - **明说该避免什么**（重复访问 / 死胡同）—— 实测这两句是长迷宫能通过的关键（spec §2.4）。
  */
-export const STEP_INSTRUCTIONS = 'Which candidate step is most likely to lead `Z` to `P` without getting stuck? Use both the ground window and the candidate facts. Do not step onto a square the zombie has already visited when another step keeps the route open. It is better to walk farther in a straight line while keeping a way forward than to walk into a dead end or back the way it came.';
+export const STEP_INSTRUCTIONS = 'Which candidate step is most likely to lead `Z` to `P` without getting stuck? Use both the ground grid and the candidate facts. Do not step onto a square the zombie has already visited when another step keeps the route open. It is better to walk farther in a straight line while keeping a way forward than to walk into a dead end or back the way it came.';
 
 /**
  * 单个方向选项的描述。

@@ -36,6 +36,8 @@ import { EntityManager } from '../entities/entity-manager.js';
 import { probeDefinition, WEAPON_HITTABLE_TYPES } from '../entities/entity-types.js';
 import { EntityRenderLayer, createProbeRenderDef } from '../render/entity-render-layer.js';
 import { ZombieService, zombieDefinition } from '../entities/zombies/zombie-system.js';
+import { FailureBreaker, JevClient } from '../entities/zombies/zombie-jev-client.js';
+import { JevPlanner } from '../entities/zombies/zombie-jev-planner.js';
 import { ZombieRenderer } from '../render/zombie-renderer.js';
 import { loadZombieSkinTexture } from '../render/zombie-skin-texture.js';
 import { TurretRenderer } from '../render/turret-renderer.js';
@@ -598,10 +600,32 @@ export class Game {
     this.fireballRenderer = new FireballRenderer({ scene: this.scene });
     /** 玩家命中盒（局部，相对脚底中心）—— entities/ 不 import player/，故由装配层注入 ctx */
     this._playerAabbLocal = playerHitboxLocal();
+    // ---- 在线丧尸 AI（v2.46）----
+    // client 与 breaker 是**全局**的（额度与冷却按整体算，不是每只一份）；planner 注入 service。
+    // ⚠️ **必须在 ZombieService 构造之前创建** —— 构造参数要用到它。
+    // ⚠️ 注入用**函数回调**而非让 entities/ 反向 import core/：planner 只认 `onDecision` 形状。
+    this.jevClient = new JevClient();
+    this.jevBreaker = new FailureBreaker();
+    this.jevPlanner = new JevPlanner({
+      world: this.world,
+      client: this.jevClient,
+      breaker: this.jevBreaker,
+      speed: ZOMBIE.speed,
+      onDecision: (id, d) => {
+        // 走既有的唯一意图消费点：它已含速度钳制 + `steerIntent` 贴身避障（spec §3.3 的叠加关系）
+        const entity = this.entities.get(id);
+        if (entity) {
+          this.zombies._applyIntent({ id, generation: entity.generation, vx: d.vx, vz: d.vz, mode: d.mode });
+        }
+      },
+      // 失败已由 client/breaker 各自打 log；这里保持沉默，让丧尸继续走离线方向即可
+      onFallback: () => {},
+    });
     this.zombies = new ZombieService({
       entities: this.entities, world: this.world,
       // M6 AI：经既有 WorkerPool 的统一 `ai` RPC（不新建 Worker，红线 3 / M5 规格 §3）
       pool: this.pool,
+      planner: this.jevPlanner,
       onSpawn: (id, slot) => this.zombieRenderer.acquireSlot(id, slot),
       onDespawn: (id) => this.zombieRenderer.releaseSlot(id),
     });
@@ -975,6 +999,10 @@ export class Game {
     // 两条都要显式走：材质初值 `uFogColorMix` 恒 0（= 关闭，`materials.js` 的 mix 左端），
     // 所以「关」也不是空操作 —— 落到这里才把 uniform 写成 0，与设置面板点击同一路径。
     this.setFogColorEnabled(this.settings.fogColor);
+    // v2.46：在线丧尸 AI。**无条件调用**是载荷性的（与上一行 fogColor 同一教训）——
+    // 写成 `if (settings.onlineZombieAi) setOnlineZombieAi(true)` 会让「关」这条路径依赖一个
+    // 远处的初值，两条路径口径不对等。
+    this.setOnlineZombieAi(this.settings.onlineZombieAi === true);
     this.worldReady = true;
 
     window.addEventListener('resize', () => this._onResize());
@@ -1417,6 +1445,21 @@ export class Game {
    */
   setMusicEnabled(enabled) {
     return this.audioManager?.setMusicEnabled(enabled) ?? false;
+  }
+
+  /**
+   * 开关在线丧尸 AI（v2.46，spec §3.9）。**关闭 = 现有离线 AI 逐位不变。**
+   * ⚠️ 无条件调用（见 `start()` 里的接线注释）。
+   * @param {boolean} on @returns {boolean} 生效后的状态
+   */
+  setOnlineZombieAi(on) {
+    this.zombies.setOnlineAi(on === true);
+    return this.onlineZombieAiEnabled();
+  }
+
+  /** @returns {boolean} 在线丧尸 AI 当前是否启用 */
+  onlineZombieAiEnabled() {
+    return this.zombies.onlineAiEnabled();
   }
 
   /** 背景音乐开关意图（面板/测试读设置口径，不判断是否已出声） */
