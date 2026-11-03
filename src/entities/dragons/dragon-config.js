@@ -37,8 +37,8 @@ export const DRAGON_ENTITY_ID = 'dragon-altar';
  */
 export const DRAGON = Object.freeze({
   scale: 3,
-  /** 生命。手枪 25 → 12 发；加特林 35 → 9 发；炮塔弹丸 34 → 9 发；MAG7 999 → 一击 */
-  health: 300,
+  /** 生命。手枪 25 → 120 发；加特林 35 → 86 发；炮塔弹丸 34 → 89 发；MAG7 999 → 4 发 */
+  health: 3000,
   orbitRadius: 24,
   /** 盘旋高度 = `TARN_PLATEAU_Y + orbitYOffset` = 2 + 28 = 30 */
   orbitYOffset: 28,

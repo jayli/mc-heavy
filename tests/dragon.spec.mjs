@@ -63,7 +63,12 @@ test('龙 E2E: 传送到祭坛地带后天上有一条龙（位置在轨道上�
     };
   });
   expect(s.type).toBe('dragon');
-  expect(s.health).toBe(300);
+  // ⚠️ 血量从**运行时 config** 读，不硬编码（改 DRAGON.health 时本用例自动跟上）
+  const hp = await page.evaluate(async () => {
+    const { DRAGON } = await import('/src/entities/dragons/dragon-config.js');
+    return DRAGON.health;
+  });
+  expect(s.health).toBe(hp);
   expect(s.persistent).toBe(false);   // 临时实体（位置不进存档，红线 2）
   // 轨道中心 = 祭坛地带中心（与「高台」按钮同源）
   expect(s.orbit.cx).toBe(c.cx);
@@ -88,7 +93,7 @@ test('龙 E2E: 用枪打龙会掉血并红闪（走真实武器路径）', async
     // ⚠️ **玩家必须放在龙的正下方、且在神龛之外**：祭坛中心 7×7 是神龛（铁柱/绿宝/钻石，
     // 占 y=3..4），把玩家放圆心会让**眼睛所在格本身就是方块** → DDA 起点在方块内 →
     // `target.dist = 0` → `blockDist = 0`，而实体命中判据是 `hit.dist < blockDist`
-    // （严格小于）→ 永远为假 → 打不中（实测 health 恒 300）。
+    // （严格小于）→ 永远为假 → 打不中（实测血量纹丝不动）。
     // 龙在半径 24 的轨道上，广场半径 28 内地表恒 plateauY=2 → 脚底 y=3、眼高 4.62，
     // 头顶是空气（射线向上无方块命中 → blockDist = Infinity → 实体命中生效）。
     g.player.physics.pos.x = e.state.position[0];
@@ -222,7 +227,11 @@ test('龙 E2E: 玩家走远再回来，龙重生（column 卸载回收后 ensure
     return { pos: [...e.state.position], health: e.state.health };
   });
   // 重生后满血（已知取舍，spec §5.2）
-  expect(second.health).toBe(300);
+  const hp2 = await page.evaluate(async () => {
+    const { DRAGON } = await import('/src/entities/dragons/dragon-config.js');
+    return DRAGON.health;
+  });
+  expect(second.health).toBe(hp2);
   // 位置仍在轨道上（纯函数重算）
   const r = Math.hypot(second.pos[0] - c.cx, second.pos[2] - c.cz);
   expect(Math.abs(r - 24)).toBeLessThan(1e-6);

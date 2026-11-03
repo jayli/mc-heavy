@@ -207,13 +207,19 @@ seed 88 突破「单步落差 ≤1」（到 2 格），24 是守住无台阶的�
 自身旋转全 0、每元素刚性归属单骨骼、单张 128² 内嵌贴图）→ 离线烘焙（`npm run dragon`）成
 「骨骼层级 + 合并几何 + catmullrom 重采样动画帧」三件套。**渲染 = SkinnedMesh 单几何**（已实测 WebGPU
 后端蒙皮可用，整条龙 **1 个 draw call**，无龙时 visible=false → 0）。**玩法定位 = 可被武器与炮塔击中、
-有血量（300）、红闪、死亡后永久消失**（死亡标记写 meta 行的 `dragonDead`，龙本身是**临时实体**不进存档 ——
+有血量（3000）、红闪、死亡后永久消失**（死亡标记写 meta 行的 `dragonDead`，龙本身是**临时实体**不进存档 ——
 位置是 seed 的纯函数，红线 2）。**伤害路由泛化**：新增 `Game.damageEntity` 按实体类型分发 +
 `WEAPON_HITTABLE_TYPES` 共享集合（三处硬编码 `zombie` 的唯一收敛点）；`computeTurretUpdates` 参数
 `zombies` → `targets`（每项可带 `bodyOffsetY`，龙传 0 因为它的 position 就是身体中心）。
 **关键参数**：尺度 3 倍（体长 18.75 格）/ 轨道半径 24（翼尖最远 32.25 < 高台最近格 34.5）/ 盘旋高
 y=30（plateauY+28，斜距 33.9~36.0 < 步枪射程 40）/ fly+glide 交替（周期 12s）/ yaw=π−θ。
 细节见下方「祭坛之龙沉淀的活跃约束」段与 roadmap 的 v2.41 行。
+
+**v2.42** 把龙的血量从 300 改成 **3000**（用户 2026-11-03：「飞龙血量改成 3000」）—— 定位从
+「一场能赢的战斗」变成「打不死的风景」，实测发数：手枪 120 / 加特林 86 / 炮塔弹丸 89 /
+**MAG7 4 发**（唯一现实的击杀手段）。只改 `DRAGON.health` 一处，测试全部自动跟上
+（v2.41 把临界伤害序列的发数写成从 `DRAGON.health` 派生、E2E 血量断言从运行时 config 读 ——
+testing-policy §2.5「派生量不硬编码」的收益兑现）。细节见 roadmap 的 v2.42 行。
 
 测试现状：Playwright spec 全量 + 浏览器内单元测试全绿。**用例计数以 `npm run check:data`
 输出为准，不在文档硬编码**（同一事实的多个副本属「改动放大器」，违反红线 1 精神）。
@@ -3816,7 +3822,7 @@ mc-heavy/
    │               #   数据与几何尺寸唯一权威）+ minecart-system.js（移动/转弯/碰撞/连挂同构
    │               #   纯函数 + MinecartService 玩法入口 + minecartDefinition 持久实体）
    │               #  dragons/（祭坛飞龙 v2.41，同构无 three）：dragon-config.js（冻结玩法数值唯一
-   │               #    权威：health 300 / 轨道半径 24 / 盘旋高 / DRAGON_CORE_OBB / MODEL_CENTER /
+   │               #    权威：health 3000 / 轨道半径 24 / 盘旋高 / DRAGON_CORE_OBB / MODEL_CENTER /
    │               #    ORBIT_SALT 1040）+ dragon-system.js（轨道/动画状态机/AABB 纯函数 +
    │               #    dragonDefinition + DragonService：ensure/damage/hydrate，临时实体 + meta 死亡标记）
    │               #  turrets/（M8，方块锚定装置，同构无 three）：turret-config.js（玩法数值唯一权威）

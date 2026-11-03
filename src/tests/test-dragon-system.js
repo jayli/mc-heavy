@@ -415,21 +415,25 @@ test('龙 service: damage 精确扣血 + 红闪时间戳（performance.now 口�
   assertEqual(svc.active().state.health, DRAGON.health - 100);
 });
 
-test('龙 service: 临界伤害序列（两发不死、第三发死）', () => {
+test('龙 service: 临界伤害序列（恰好打满血量致死，少一发不死）', () => {
   const seed = findSeedWithAltar(true);
   const { em, svc } = makeService({ seed, ready: [altarColumnKey(seed)] });
   svc.ensure();
   const id = svc.active().id;
   const now = 1000;
-  // 300 血 / 100 伤害 → 三发死。⚠️ 必须在临界值附近断言（远离阈值测不出换算错）
-  svc.damage(id, 100, now);
-  assertEqual(svc.active().state.health, 200);
-  svc.damage(id, 100, now + 1);
-  assertEqual(svc.active().state.health, 100);
-  assertFalse(svc.isDead(), '两发后不得判死');
-  const dead = svc.damage(id, 100, now + 2);
+  // ⚠️ 发数从**冻结常量派生**（testing-policy §2.5），不硬编码 —— 血量改了自动跟上。
+  // 每发 100 伤害 → 致死发数 = ceil(health/100)。临界断言 = 少一发不死、最后一发恰好越界。
+  const dmg = 100;
+  const shotsToKill = Math.ceil(DRAGON.health / dmg);
+  for (let i = 0; i < shotsToKill - 1; i++) {
+    const r = svc.damage(id, dmg, now + i);
+    assertEqual(r.dead, false, `第 ${i + 1} 发不得判死`);
+  }
+  assertEqual(svc.active().state.health, DRAGON.health - dmg * (shotsToKill - 1));
+  assertFalse(svc.isDead(), '少一发不得判死');
+  const dead = svc.damage(id, dmg, now + shotsToKill);
   assertEqual(dead.dead, true);
-  assertEqual(dead.health, 0);
+  assertTrue(dead.health <= 0, `最后一发须越界（health=${dead.health}）`);
   assertEqual(svc.active(), null, '死亡后实体应消失');
   assertEqual(em.count(DRAGON_TYPE), 0);
   assertEqual(svc.isDead(), true);

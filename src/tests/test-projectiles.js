@@ -302,7 +302,7 @@ test('弹丸 1 秒飞行距离 ≈ 40 格（推进只做一遍）', () => {
 
 // ---------- v2.41 祭坛飞龙：弹丸命中 predicate 泛化 ----------
 
-test('弹丸命中龙：经 EntityManager.raycast，伤害 34（九发死）', () => {
+test('弹丸命中龙：经 EntityManager.raycast，伤害按 projectileDamage 累积至死', () => {
   const { world, registry, entities, dragons } = makeProjectileFixture();
   dragons.ensure();
   const dragon = dragons.active();
@@ -315,9 +315,11 @@ test('弹丸命中龙：经 EntityManager.raycast，伤害 34（九发死）', (
   // yaw≈π/2 时长轴转到 x、z 方向只剩宽轴半长 1.125 → 从 6 格外射会脱靶（假失败）。
   // stepLen = 40×0.1 = 4 格，故从 p[2]−2 出发 → 判定线段 [p[2]−2, p[2]+2] 必过盒中心 p[2]。
   const from = [p[0], p[1], p[2] - 2];
-  // **临界值附近断言**：300 血 / 34 伤害 → 八发不死（300−272=28）、九发死
+  // ⚠️ 发数从**冻结常量派生**（testing-policy §2.5），不硬编码 —— 血量改了自动跟上。
+  // 临界断言 = 少一发不死、最后一发恰好越界。
+  const shotsToKill = Math.ceil(DRAGON.health / TURRET.projectileDamage);
   let r;
-  for (let i = 0; i < 8; i++) {
+  for (let i = 0; i < shotsToKill - 1; i++) {
     r = advanceProjectile({
       state: makeProjectileState(from, [0, 0, 1]),
       dt: 0.1, world, registry, entities, nowMs: i * 100, onDamage,
@@ -325,14 +327,14 @@ test('弹丸命中龙：经 EntityManager.raycast，伤害 34（九发死）', (
     assertEqual(r.reason, 'entity', `第 ${i + 1} 发须命中实体`);
     assertEqual(r.hitId, dragon.id);
   }
-  assertEqual(dragons.active().state.health, DRAGON.health - TURRET.projectileDamage * 8);
-  assertTrue(dragons.active().state.health > 0, '八发不死（300−272=28）');
+  assertEqual(dragons.active().state.health, DRAGON.health - TURRET.projectileDamage * (shotsToKill - 1));
+  assertTrue(dragons.active().state.health > 0, `少一发不死（剩 ${dragons.active().state.health}）`);
   r = advanceProjectile({
     state: makeProjectileState(from, [0, 0, 1]),
-    dt: 0.1, world, registry, entities, nowMs: 800, onDamage,
+    dt: 0.1, world, registry, entities, nowMs: shotsToKill * 100, onDamage,
   });
   assertEqual(r.reason, 'entity');
-  assertNull(dragons.active(), '第九发 28−34 ≤ 0 → despawn');
+  assertNull(dragons.active(), `第 ${shotsToKill} 发应致死 → despawn`);
   assertEqual(dragons.isDead(), true);
 });
 
