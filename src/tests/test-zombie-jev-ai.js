@@ -118,3 +118,72 @@ test('sampleGroundWindow：抬一格可走的台阶写成 "."（复用 step-up �
   const mid = (JEV_AI.windowSize - 1) / 2;
   assertEqual(rows[mid - 1][mid], '.', '一格台阶应可走');
 });
+
+// ---------- 候选事实与 state（Task 3）----------
+
+import {
+  bearingWords, buildCandidateSteps, buildJevState, markDeadEnd, memoryFor as memOf,
+} from '../entities/zombies/zombie-ai-view.js';
+
+test('bearingWords：方位文案（参数是 [x,z]：z 减小为北、x 减小为西）', () => {
+  assertEqual(bearingWords([0, 0], [1, 1]), 'south and east');  // x+1 东、z+1 南
+  assertEqual(bearingWords([0, 0], [1, 0]), 'east');            // 只动 x
+  assertEqual(bearingWords([0, 0], [0, 1]), 'south');           // 只动 z
+  assertEqual(bearingWords([0, 0], [0, -3]), 'north');
+  assertEqual(bearingWords([0, 0], [-2, 0]), 'west');
+  assertEqual(bearingWords([0, 0], [0, 0]), 'the same square');
+});
+
+test('buildCandidateSteps：只含可走方向，四面围墙时为空', () => {
+  const { world, registry } = makeWindowWorld();
+  const all = buildCandidateSteps(world, [8.5, 1, 8.5], [8.5, 1, 12.5], memOf(new Map(), 'z'));
+  assertEqual(Object.keys(all).length, 8, '平地 8 个方向都可走');
+  for (const [name, f] of Object.entries(all)) {
+    assertEqual(f.direction, name.replace('_', ' '));
+    assertEqual(f.times_already_visited, 0);
+    assertTrue(typeof f.open_ground_ahead === 'string' && f.open_ground_ahead.endsWith('meters'));
+  }
+  const stone = registry.idOf('stone');
+  for (let dx = -1; dx <= 1; dx++) {
+    for (let dz = -1; dz <= 1; dz++) {
+      if (dx === 0 && dz === 0) continue;
+      for (let dy = 0; dy < 3; dy++) world.setBlock(8 + dx, 1 + dy, 8 + dz, stone);
+    }
+  }
+  const none = buildCandidateSteps(world, [8.5, 1, 8.5], [8.5, 1, 12.5], memOf(new Map(), 'z'));
+  assertEqual(Object.keys(none).length, 0, '四面围死时无候选');
+});
+
+test('buildCandidateSteps：times_already_visited 来自记忆', () => {
+  const { world } = makeWindowWorld();
+  const mem = memOf(new Map(), 'z');
+  // ⚠️ 坐标是 (x, z)：丧尸在格 (8,8)，北一格是 (8,7)
+  noteVisit(mem, 8, 7);
+  const cands = buildCandidateSteps(world, [8.5, 1, 8.5], [8.5, 1, 12.5], mem);
+  assertEqual(cands.north.times_already_visited, 1);
+  assertEqual(cands.south.times_already_visited, 0);
+});
+
+test('buildCandidateSteps：死胡同标记进候选事实', () => {
+  const { world } = makeWindowWorld();
+  const mem = memOf(new Map(), 'z');
+  markDeadEnd(mem, 8, 7);   // (x,z)：北一格
+  const cands = buildCandidateSteps(world, [8.5, 1, 8.5], [8.5, 1, 12.5], mem);
+  assertEqual(cands.north.marked_dead_end, true);
+  assertEqual(cands.south.marked_dead_end, false);
+});
+
+test('buildJevState：形状与 spec §3.5 一致，可 JSON 序列化', () => {
+  const { world } = makeWindowWorld();
+  const st = buildJevState(world, [8.5, 1, 8.5], [8.5, 1, 4.5], memOf(new Map(), 'z'));
+  assertTrue(typeof st.situation === 'string' && st.situation.length > 20);
+  assertEqual(st.player_direction_from_zombie, 'north');
+  assertTrue(st.straight_line_distance_now.endsWith('meters'));
+  assertEqual(st.steps_already_walked, 0);
+  assertEqual(st.ground_window.rows.length, JEV_AI.windowSize);
+  assertEqual(st.ground_window.top_is, 'north');
+  assertEqual(st.ground_window.left_is, 'west');
+  assertTrue(st.ground_window.legend.length > 50);
+  assertTrue(Object.keys(st.candidate_steps).length > 0);
+  assertEqual(JSON.parse(JSON.stringify(st)).ground_window.rows.length, JEV_AI.windowSize);
+});

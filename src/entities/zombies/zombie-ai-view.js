@@ -131,3 +131,106 @@ export function sampleGroundWindow(world, position, playerPosition) {
   }
   return rows;
 }
+
+/**
+ * 方位文案（题面与选项描述共用）。from/to 是 `[x, z]`。
+ *
+ * ⚠️ **只说方位不给坐标**：坐标是绝对值，进 state 既不必要、也让模型更难对齐
+ * （它看不到丧尸实际站在世界的哪一格，只会被数字干扰）。
+ */
+export function bearingWords(from, to) {
+  const dz = to[1] - from[1];
+  const dx = to[0] - from[0];
+  const ns = dz < 0 ? 'north' : dz > 0 ? 'south' : '';
+  const ew = dx < 0 ? 'west' : dx > 0 ? 'east' : '';
+  return [ns, ew].filter(Boolean).join(' and ') || 'the same square';
+}
+
+/** 沿某方向连续可站的格数（最多 cap） */
+function openGroundAhead(world, bx, y, bz, dr, dc, cap = 16) {
+  let n = 0;
+  for (let k = 1; k <= cap; k++) {
+    if (!standableAt(world, bx + dc * k, y, bz + dr * k)) break;
+    n++;
+  }
+  return n;
+}
+
+/** 某格「除来路外的可走方向数」（死胡同信号） */
+function exitsBesides(world, bx, y, bz, cameDr, cameDc) {
+  let n = 0;
+  for (const [, [dr, dc]] of Object.entries(DIRECTION_VECTORS)) {
+    if (bx + dc === bx + cameDc && bz + dr === bz + cameDr) continue;
+    if (standableAt(world, bx + dc, y, bz + dr)) n++;
+  }
+  return n;
+}
+
+/** 标记死胡同（地图性质，不随 LRU 淘汰） */
+export function markDeadEnd(mem, x, z) {
+  mem.deadEnds.add(cellKey(x, z));
+}
+
+/**
+ * 计算候选方向事实（spec §3.5）。**只含可走方向**。
+ *
+ * ⚠️ **这是「可走性由代码算」的落点**（spec §2.2）：把墙也列成选项时，模型 4/12 次选了墙；
+ * 只列可走方向后 0/12 次非法。故这里不是「过滤一下更好看」，而是模型不擅长的部分由代码兜住。
+ *
+ * @param {object} world @param {number[]} position 丧尸脚底 [x,y,z]
+ * @param {number[]} playerPosition 玩家脚底 [x,y,z] @param {object} memory
+ * @returns {Record<string, object>} 键为方向名；空对象 = 四面皆不可走
+ */
+export function buildCandidateSteps(world, position, playerPosition, memory) {
+  const [xb, y, zb] = position;
+  const bx = Math.floor(xb);
+  const bz = Math.floor(zb);
+  const px = Math.floor(playerPosition[0]);
+  const pz = Math.floor(playerPosition[2]);
+  const hereDist = Math.hypot(bx - px, bz - pz);
+  const out = {};
+  for (const [name, [dr, dc]] of Object.entries(DIRECTION_VECTORS)) {
+    const nx = bx + dc;
+    const nz = bz + dr;
+    if (!standableAt(world, nx, y, nz)) continue;
+    const afterDist = Math.hypot(nx - px, nz - pz);
+    out[name] = {
+      direction: name.replace('_', ' '),
+      player_lies_toward: bearingWords([nx, nz], [px, pz]),
+      straight_line_distance_after_step: `${afterDist.toFixed(1)} meters`,
+      closer_or_farther: afterDist < hereDist - 0.05 ? 'closer to the player'
+        : afterDist > hereDist + 0.05 ? 'farther from the player' : 'about the same distance',
+      open_ground_ahead: `${openGroundAhead(world, bx, y, bz, dr, dc)} meters`,
+      other_ways_out_after_the_step: exitsBesides(world, nx, y, nz, dr, dc),
+      times_already_visited: memory.visits.get(cellKey(nx, nz)) ?? 0,
+      marked_dead_end: memory.deadEnds.has(cellKey(nx, nz)),
+    };
+  }
+  return out;
+}
+
+/**
+ * 组装送模型的完整 state（spec §3.5）。**「环境信息」的唯一权威。**
+ *
+ * 输出必须完全可 JSON 序列化（送网络的前提）—— 故这里不含 Map / Set / 函数。
+ */
+export function buildJevState(world, position, playerPosition, memory) {
+  const [xb, y, zb] = position;
+  const bx = Math.floor(xb);
+  const bz = Math.floor(zb);
+  const px = Math.floor(playerPosition[0]);
+  const pz = Math.floor(playerPosition[2]);
+  return {
+    situation: SITUATION,
+    player_direction_from_zombie: bearingWords([bx, bz], [px, pz]),
+    straight_line_distance_now: `${Math.hypot(bx - px, bz - pz).toFixed(1)} meters`,
+    steps_already_walked: Math.max(0, memory.trail.length - 1),
+    ground_window: {
+      rows: sampleGroundWindow(world, position, playerPosition),
+      top_is: 'north',
+      left_is: 'west',
+      legend: WINDOW_LEGEND,
+    },
+    candidate_steps: buildCandidateSteps(world, position, playerPosition, memory),
+  };
+}
