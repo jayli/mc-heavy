@@ -211,3 +211,34 @@ export const DRAGON_AI = Object.freeze({
   /** 玩家胸部相对脚底 position 的 y 偏移（视线终点 + 火球瞄准点） */
   playerAimOffsetY: 1.0,
 });
+
+/**
+ * 火球实体类型名（`EntityManager.registerType` 与渲染器 predicate 共用）。
+ *
+ * ⚠️ **刻意不复用炮塔的 `'projectile'`**：两者速度（15 vs 40）、遮挡判据（只看 solid vs
+ * solid && opaque）、命中语义（爆炸 vs 伤害）全不同。共用一个 type 会让两个渲染器互相
+ * 抢到对方的实体（`sync` 都按 type 过滤），形态是「火球被画成曳光弹」。
+ */
+export const FIREBALL_TYPE = 'fireball';
+
+/**
+ * 火球数值（v2.44，spec §11）。**唯一权威在此**。
+ *
+ * - `speed = 15` 格/秒（用户裁定）：飞 40 格约 2.7 秒 ⇒ 玩家看得见轨迹、来得及躲。
+ * - `maxDistance = 80`：≈ 5.3 秒寿命。超过就消失且**不爆炸**（没撞到东西）。
+ * - `radius = 0.45`：既是渲染球半径也是命中盒半边长（与弹丸 `PROJECTILE_AABB` 同手法：
+ *   0.3 半径 ↔ 0.15 半边）。取 0.45 让火球在 60 格外仍看得见。
+ * - `poolSize = 16`：渲染池容量。龙最多 4 条（`DRAGON_MAX_ALIVE`）× 开火间隔 5 秒 ×
+ *   寿命 5.3 秒 ⇒ 理论峰值 4~5 个；16 是 3 倍余量（装不下时渲染器会回收最早 slot，
+ *   形态是「火球半路消失」—— 静默，故留足）。
+ */
+export const FIREBALL = Object.freeze({
+  /** 飞行速度（格/秒） */
+  speed: 15,
+  /** 最远飞行距离（格）；超过即消失且不爆炸 */
+  maxDistance: 80,
+  /** 渲染球半径 = 命中盒半边长（格） */
+  radius: 0.45,
+  /** 渲染池容量（= draw call 上限） */
+  poolSize: 16,
+});

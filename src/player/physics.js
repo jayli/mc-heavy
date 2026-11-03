@@ -22,6 +22,29 @@ export const FLY_VERTICAL_SPEED = 8;
 const MAX_STEP = 1.0;
 const EPSILON = 0.001;
 
+/**
+ * 玩家命中盒（**相对脚底中心的局部盒**，v2.44 火球命中用）。
+ *
+ * ⚠️ **尺寸从本文件的 `PLAYER_WIDTH`/`PLAYER_HEIGHT` 派生**（红线 1：玩家尺寸的唯一权威
+ * 在此）—— 不得在火球侧重算一遍，否则碰撞盒与命中盒会漂移出「物理说没碰到、火球说命中」。
+ *
+ * ⚠️ **为什么是独立导出而不是让 entities/ import 本文件**：矿车先例 —— `entities/` 不得
+ * import `player/`（依赖方向），故由装配层（game.js）调用本函数后**注入** ctx.playerAabb。
+ *
+ * ⚠️ **形状是 `{min: number[], max: number[]}`**（与 `raycastAabbSlab` 的 aabb 参数同形），
+ * 不是 `aabb()` 的 `{minX, maxX, ...}` 世界盒 —— 两者语义不同：这个是「模板」，
+ * 调用方加 position 得世界盒。
+ *
+ * @returns {{min: [number,number,number], max: [number,number,number]}}
+ */
+export function playerHitboxLocal() {
+  const hw = PLAYER_WIDTH / 2;
+  return {
+    min: [-hw, 0, -hw],
+    max: [hw, PLAYER_HEIGHT, hw],
+  };
+}
+
 export class PlayerPhysics {
   /** @param {import('../voxel/world-data.js').WorldData} world */
   constructor(world) {
