@@ -50,6 +50,7 @@ import { computeTurretUpdates } from '../entities/turrets/turret-system.js';
 import { DRAGON_TYPE, FIREBALL_TYPE, FIREBALL } from '../entities/dragons/dragon-config.js';
 import { dragonDefinition, DragonService } from '../entities/dragons/dragon-system.js';
 import { fireballDefinition, judgeFireball } from '../entities/dragons/fireball-system.js';
+import { FireballRenderer } from '../render/fireball-renderer.js';
 import { playerHitboxLocal } from '../player/physics.js';
 import { bossMapAt } from '../entities/bosses/boss-map.js';
 import { bossSlotsFor } from '../entities/bosses/boss-registry.js';
@@ -583,6 +584,8 @@ export class Game {
     this.entities.registerType(FIREBALL_TYPE, fireballDefinition);
     /** 火球 id 序号（确定性派生 —— 红线 2：不用 Math.random） */
     this._fireballSeq = 0;
+    /** 火球渲染池（InstancedMesh 球体；无活跃火球时 visible=false → draw call 归零） */
+    this.fireballRenderer = new FireballRenderer({ scene: this.scene });
     /** 玩家命中盒（局部，相对脚底中心）—— entities/ 不 import player/，故由装配层注入 ctx */
     this._playerAabbLocal = playerHitboxLocal();
     this.zombies = new ZombieService({
@@ -1097,6 +1100,8 @@ export class Game {
       this.entityLayer.sync(this.entities.entities());
       // M8 Task 6：弹丸 pose 发布（差集驱动 slot —— 三条回收路径自动覆盖）
       this.projectileRenderer.sync(this.entities.entities());
+      // v2.44：火球 pose 发布（同手法；无火球时 visible=false → draw call 归零）
+      this.fireballRenderer.sync(this.entities.entities());
       // M6：丧尸六部件实例发布（只读 pose → 位置/朝向 + 步态 + 200ms 红闪）。
       // 传时间戳而非 dt —— renderer 自己算 dt 累积步态相位（mc-lite `_walkTime` 口径）。
       this.zombieRenderer.sync(this.zombies, nowMs);
@@ -2698,6 +2703,8 @@ export class Game {
     // M8：炮塔渲染层 + 爆炸特效池（Game 装配的独立 scene 节点，不经 player.dispose 释放）
     this.turretRenderer?.dispose();
     this.projectileRenderer?.dispose();
+    // v2.44：火球渲染池（实体已由上面的 dragons.dispose / entities.dispose 回收，这里只释放 scene 节点）
+    this.fireballRenderer?.dispose();
     this.explosionRenderer?.dispose();
     this.explosionSprite?.dispose();
     this.blockHitFx?.dispose();

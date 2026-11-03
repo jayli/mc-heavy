@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"><title>fireball render fixture</title><link rel="icon" href="data:,">
+  <style>html, body { margin: 0; background: #000; }</style>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "../../vendor/three/three.webgpu.js",
+      "three/tsl": "../../vendor/three/three.tsl.js",
+      "three/webgpu": "../../vendor/three/three.webgpu.js"
+    }
+  }
+  </script>
+</head>
+<body>
+<script type="module">
+  // Tier 4 像素实测场景（飞龙火球 v2.44）。
+  //
+  // 单颗火球 + 黑背景隔离（无地形/无光照干扰），同 `test-dragon-render.html` 的手法。
+  // **渲染由 spec 驱动**：fixture 暴露 `renderView(opts)`，spec 每次调用后立刻截图。
+  //
+  // ⚠️ **必须用真实 WebGPU renderer**（不是只查对象图）：火球的颜色/球体轮廓只在 GPU 求值，
+  // 单测读不到片元输出（testing-policy §5.1）。
+  import * as THREE from 'three';
+  import { FireballRenderer } from '../render/fireball-renderer.js';
+  import { FIREBALL, FIREBALL_TYPE } from '../entities/dragons/dragon-config.js';
+
+  const W = 320, H = 240;
+  const DIST = 12;   // 相机距原点（火球半径 0.45 ⇒ 屏幕上约 20px 直径，足够取样）
+
+  let renderer = null;
+  let scene = null;
+  let camera = null;
+  let fb = null;
+
+  try {
+    renderer = new THREE.WebGPURenderer({ antialias: false });
+    renderer.setPixelRatio(1);
+    renderer.setSize(W, H);
+    renderer.domElement.style.display = 'block';
+    document.body.appendChild(renderer.domElement);
+    await renderer.init();
+
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x000000);
+    camera = new THREE.PerspectiveCamera(50, W / H, 0.1, 200);
+    camera.position.set(0, 0, DIST);
+    camera.lookAt(0, 0, 0);
+
+    fb = new FireballRenderer({ scene });
+
+    window.__FB_READY__ = true;
+    window.__FB_INFO__ = {
+      poolSize: FIREBALL.poolSize,
+      radius: FIREBALL.radius,
+      maxActive: fb.maxActive,
+      meshCount: fb.mesh.count,
+      geometryType: fb.mesh.geometry.type,
+      isBasic: fb.mesh.material.isMeshBasicMaterial === true,
+      colorHex: fb.mesh.material.color.getHex(),
+      visibleAtStart: fb.mesh.visible,
+    };
+
+    /**
+     * 渲染一帧。
+     * @param {{count?: number, offset?: number}} [opts]
+     *        count = 火球数（0 = 空场景，测「零实例不提交渲染」）；
+     *        offset = 相邻火球的 x 间距（多颗时铺开，避免完全重叠）
+     */
+    window.__FB_RENDER__ = (opts = {}) => {
+      const count = Number.isFinite(opts.count) ? opts.count : 1;
+      const offset = Number.isFinite(opts.offset) ? opts.offset : 2;
+      const entities = [];
+      for (let i = 0; i < count; i++) {
+        entities.push({
+          id: `fb-${i}`,
+          type: FIREBALL_TYPE,
+          state: { position: [(i - (count - 1) / 2) * offset, 0, 0], direction: [0, -1, 0] },
+        });
+      }
+      fb.sync(entities);
+      renderer.render(scene, camera);
+      return { slots: fb.slotCount(), visible: fb.mesh.visible };
+    };
+  } catch (err) {
+    window.__FB_ERROR__ = String(err && err.message ? err.message : err);
+  }
+</script>
+</body>
+</html>
