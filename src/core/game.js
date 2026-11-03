@@ -47,8 +47,10 @@ import { TurretService } from '../entities/turrets/turret-service.js';
 import { TurretController } from '../entities/turrets/turret-controller.js';
 import { createTurretBlueprint } from '../entities/turrets/turret-blueprint.js';
 import { computeTurretUpdates } from '../entities/turrets/turret-system.js';
-import { DRAGON_TYPE } from '../entities/dragons/dragon-config.js';
+import { DRAGON_TYPE, FIREBALL_TYPE, FIREBALL } from '../entities/dragons/dragon-config.js';
 import { dragonDefinition, DragonService } from '../entities/dragons/dragon-system.js';
+import { fireballDefinition, judgeFireball } from '../entities/dragons/fireball-system.js';
+import { playerHitboxLocal } from '../player/physics.js';
 import { bossMapAt } from '../entities/bosses/boss-map.js';
 import { bossSlotsFor } from '../entities/bosses/boss-registry.js';
 import { DragonRenderer } from '../render/dragon-renderer.js';
@@ -576,6 +578,13 @@ export class Game {
     this.projectileRenderer = new ProjectileRenderer({ scene: this.scene });
     /** 弹丸 id 序号（确定性派生 —— 红线 2：不用 Math.random） */
     this._projectileSeq = 0;
+    // v2.44：飞龙火球是 M5 临时实体（与弹丸同构但刻意独立：速度/遮挡/命中语义全不同）。
+    // ⚠️ **不复用 'projectile' type**：两个渲染器都按 type 过滤，共用会让火球被画成曳光弹。
+    this.entities.registerType(FIREBALL_TYPE, fireballDefinition);
+    /** 火球 id 序号（确定性派生 —— 红线 2：不用 Math.random） */
+    this._fireballSeq = 0;
+    /** 玩家命中盒（局部，相对脚底中心）—— entities/ 不 import player/，故由装配层注入 ctx */
+    this._playerAabbLocal = playerHitboxLocal();
     this.zombies = new ZombieService({
       entities: this.entities, world: this.world,
       // M6 AI：经既有 WorkerPool 的统一 `ai` RPC（不新建 Worker，红线 3 / M5 规格 §3）
@@ -1026,6 +1035,12 @@ export class Game {
       }
       // M8 Task 6：弹丸判定（**只判定 + despawn，不再推进** —— 见 _updateProjectiles 的 ⚠️）
       this._updateProjectiles(nowMs, dt);
+      // v2.44：飞龙火球。先消费龙本帧的开火意图（生成火球实体），再判定已有火球。
+      // ⚠️ **顺序是载荷性的**：消费在前 ⇒ 本帧新生成的火球**不**在本帧被判定（它还没推进过，
+      // `traveled=0`，判定会拿「步后位置 − direction×stepLen」还原出一条**向后**的线段 →
+      // 可能误判命中龙自己脚下的方块）。下一帧 entities.update 推进后才判定，与弹丸同口径。
+      this._consumeDragonFireRequests();
+      this._updateFireballs(dt);
       // M7：巢穴刷怪推进。放在 entities.update **之后** —— 刷怪经 ZombieService.spawn()
       // 创建实体，须等实体运行时本帧推进完成再创建，避免新实体在创建当帧被 update 漏处理。
       // 内部 8 秒节流（controller.update 自己判 nowMs-lastSpawnAt），故每帧调用是零成本的。
@@ -2113,6 +2128,26 @@ export class Game {
       this.editor.setBlock({ x: result.center[0], y: result.center[1], z: result.center[2], id: 0 });
       this._ignitingTnt.delete(key);   // mc-lite `:687` 同口径：移除后释放去重键（该格已非 tnt）
     }
+    this._applyExplosion(result);
+    return true;
+  }
+
+  /**
+   * 爆炸执行（v2.44 从 `explodeTnt` 抽出，**不碰去重集合**）。
+   *
+   * ⚠️ **为什么必须抽出来、火球不能直接调 `explodeTnt`**（Review Focus 1）：
+   * `explodeTnt` 的去重集合 `_ignitingTnt` 以「格坐标」为键，语义是「这个 TNT 格已引爆过」。
+   * 火球爆炸的格**不是 TNT**，若走 `explodeTnt` 会把那个格的键永久留在集合里 ——
+   * 之后玩家在同一格放 TNT 引爆会返回 false **静默不爆**（方块层面看不出，
+   * 只有「先炸火球再放 TNT」的对照能抓 —— `tests/dragon-fireball.spec.mjs` 的负向验证）。
+   *
+   * ⚠️ **入参是 `computeExplosion` 的结果**（不是坐标）：TNT 路径在 self-removal 之前
+   * 就算好了 result（chain 不含中心格，`explosion.js` 的 `dx===0&&dy===0&&dz===0 continue`），
+   * 火球路径直接算 —— 两条路径共享本函数，行为逐位一致。
+   *
+   * @param {{center:[number,number,number], destroy:Array, chain:Array}} result
+   */
+  _applyExplosion(result) {
     // ④ 破坏事务（周围 3×3×3，受开关门控）。⚠️ **过滤掉待爆 TNT** —— 否则连锁 TNT 会被
     //    自己的破坏事务删掉（连锁静默丢失：pending 队列里有它，但它已经是空气了）。
     //
@@ -2152,7 +2187,6 @@ export class Game {
     this.explosionSprite.spawn(burstPos, now);
     this.explosionRenderer.burst(burstPos, now);
     this._tntExploded++;
-    return true;
   }
 
   /**
@@ -2472,6 +2506,83 @@ export class Game {
     // mc-lite `TurretManager.js:148` 的 `playSound('turret_gun_fire', 0.25)`
     this.audioManager?.play('turret_gun_fire', 0.25);
     return spawned !== null;
+  }
+
+  /**
+   * 创建一颗火球（v2.44，M5 临时实体，不存档）。id 确定性派生（红线 2：不用 Math.random）。
+   *
+   * ⚠️ **与 `fireProjectile` 刻意分开**：火球速度 15（vs 弹丸 40）、遮挡只看 solid（vs
+   * solid && opaque）、命中即爆炸（vs 伤害）。共用一个 spawn 会让两套语义纠缠。
+   *
+   * @param {number[]} position 出生点（龙的身体中心）
+   * @param {number[]} direction 归一化方向（指向玩家胸部）
+   * @param {string} source 发射者（龙 id）
+   * @returns {boolean} false = 实体池满额
+   */
+  fireFireball(position, direction, source) {
+    this._fireballSeq += 1;
+    const id = `fireball-${this._fireballSeq}`;
+    const spawned = this.entities.spawn({
+      id, type: FIREBALL_TYPE,
+      state: { position, direction, traveled: 0, source },
+      persistent: false,   // 临时实体：随 column 卸载回收，不进 entities snapshot
+    });
+    return spawned !== null;
+  }
+
+  /**
+   * 消费龙的开火意图（v2.44）。放在 `entities.update` **之后** —— 龙 AI 在 definition.update
+   * 里把「要开火」写进 state.fireRequest，本方法读它并生成火球实体。
+   *
+   * ⚠️ **为什么不在 definition 里直接 spawn**：生成实体是主线程装配层职责（entities/ 同构层
+   * 不得碰 EntityManager 的写接口），与矿车 `pendingPlayerLift`（definition 算意图、game.js 执行）
+   * 同一先例。
+   *
+   * ⚠️ **fireRequest 是瞬态**：消费后不写回（state 每帧由 definition 重建，下一帧自然是 null）。
+   * 多条龙共存时逐条消费（activeEntities 返回快照，spawn 不改变它）。
+   */
+  _consumeDragonFireRequests() {
+    if (!this.dragons) return;
+    for (const dragon of this.dragons.activeEntities()) {
+      const req = dragon.state.fireRequest;
+      if (!req) continue;
+      this.fireFireball(req.position, req.direction, dragon.id);
+    }
+  }
+
+  /**
+   * 帧循环内判定火球（放在 `entities.update` 之后 —— 位置已推进，本方法只判定 + 爆炸 + despawn）。
+   *
+   * ⚠️ **推进不能做两遍**（同 `_updateProjectiles`）：位置推进已由 `fireballDefinition.update`
+   * 经 `entities.update(dt, ctx)` 驱动；本方法**只调 `judgeFireball`（纯谓词）+ 爆炸 + despawn**。
+   *
+   * ⚠️ **爆炸走 `_applyExplosion`，不走 `explodeTnt`**（Review Focus 1）：后者会把火球炸过的格
+   * 键永久留在 `_ignitingTnt` 去重集合里 → 之后玩家在同格放 TNT 静默不爆。
+   * `_applyExplosion` 不碰去重集合。超距（`max-distance`）不爆炸（judgeFireball 不给 at）。
+   */
+  _updateFireballs(dt) {
+    const player = this.player && this.player.physics
+      ? { position: [this.player.physics.pos.x, this.player.physics.pos.y, this.player.physics.pos.z],
+          aabb: this._playerAabbLocal }
+      : null;
+    for (const entity of [...this.entities.entities()]) {   // 快照：despawn 会改底层集合
+      if (entity.type !== FIREBALL_TYPE) continue;
+      const { reason, at } = judgeFireball({
+        next: entity.state, world: this.world, registry: this.registry,
+        player, stepLen: FIREBALL.speed * dt,
+      });
+      if (!reason) continue;
+      // 命中玩家或方块 → 爆炸（TNT 同口径）；超距 → 只消失不爆炸
+      if (at) this._applyExplosion(computeExplosion({ world: this.world, registry: this.registry, center: at }));
+      this.entities.despawn(entity.id, reason);
+    }
+  }
+
+  /** 只读火球诊断状态。@returns {{count: number}} */
+  fireballsDebugState() {
+    let count = 0;
+    for (const entity of this.entities.entities()) if (entity.type === FIREBALL_TYPE) count++;
+    return { count };
   }
 
   /**
