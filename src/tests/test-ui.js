@@ -580,3 +580,14 @@ test('面板：丧尸 AI 行标题与两档文案导出且 ≤ 2 字', () => {
   assertEqual(ZOMBIE_AI_LABELS.length, 2);
   for (const l of ZOMBIE_AI_LABELS) assertTrue([...l].length <= 2, `文案须 ≤2 字：${l}`);
 });
+
+test('面板：「丧尸 AI」行在左列且不产生纵向滚动（v2.46 实测快照口径）', () => {
+  // 静态判据（DOM 侧的滚动条实测在 Playwright 里做，见实施计划 Task 12 的实测记录）：
+  // 两档文案 + 标题必须短到能塞进左列 375px ÷ 2 按钮。
+  // 标题是 `.mc-title`（左对齐、单行），不参与按钮平分 —— 只需不换行
+  assertTrue([...ZOMBIE_AI_ROW_TITLE].length <= 6, `标题须能塞进一行：${ZOMBIE_AI_ROW_TITLE}`);
+  const rowWidth = Math.floor(375 / 2) - 24;   // 列宽 375 → 两按钮；扣 padding
+  for (const l of ZOMBIE_AI_LABELS) {
+    assertTrue([...l].length * 12 <= rowWidth, `文案 ${l} 在 12px 字号下须不折行`);
+  }
+});

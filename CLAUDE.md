@@ -3522,6 +3522,61 @@ testing-policy §2.5「派生量不硬编码」的收益兑现）。细节见 ro
   偏移 `−DRAGON_MODEL_CENTER`，体心正好落在 `state.position`。⚠️ 这是「命中盒相对 position 的
   偏移」（`DRAGON_CORE_OBB.center` 恒 [0,0,0]）与「模型原点到体心的偏移」两个不同语义，别混。
 
+### 丧尸在线 AI 沉淀的活跃约束（v2.46；后续「在线模型决策 / 外部推理接入」类改动必读）
+
+设计 `docs/superpowers/specs/2026-11-03-zombie-online-ai-design.md` + 计划
+`docs/superpowers/plans/2026-11-03-zombie-online-ai.md`。用户 2026-11-03：「使用 js-perf.cn 转接过来的
+typesafe 接口对我的丧尸的 AI 能力进行增强……加一个代码中的开关，开启就走模型AI，不开启就还是现在的
+傻瓜离线 AI」。
+
+- **可走性必须由代码算，不能问模型**（spec §2.2 实测，244 次真实调用）：把 8 个方向（含墙）全交给
+  Jev 选时，它 **4/12 次选了墙**（其中一次还是 0.99 置信度）；先由 `standableAt()` 筛掉不可走的、
+  只把可走方向列成选项后，**0/12 次非法**。官方 `model-jaggedness` 也把「计数 / 数学」列为已知弱点。
+  改这一层时不要「让模型更有自主权」——那正是它做不到的部分。
+- **记忆必须由代码维护并进 state**（spec §2.4）：去掉「这格走过几次」后，螺旋与长迷宫**双双退化成
+  无限绕圈**（59 步不出）。`visits` / `trail` / `deadEnds` 唯一权威在 `JevPlanner._memory`，
+  随 slot 回收（`ZombieService._releaseSlot`）删除 —— 三条回收路径共用那一处。
+- **`JEV_AI.windowSize = 9` 是实测标定值**：7×7 与 11×11 都会在长迷宫上 runaway，只有 9×9 全通。
+  改它要重跑 spec §2.5 的对照表。
+- **`not-json` 与「没有答案」是两件事**（spec §3.8）：js-perf.cn 前面的安全网关会**间歇性**返回
+  HTML（实测同一分钟内 5 次 403 后连续 200）。把它读成「模型没给方向」会让丧尸静默停住。
+  `JevClient` 的所有失败都收敛成 `{ok:false, reason}`（**永不 reject** —— 抛异常会穿到帧循环，
+  整个游戏停摆），且每个 reason 都打 `console.warn('[zombie-ai] …')`（用户明确要求便于排查）。
+- **⚠️ 离线 RPC 与在线决策会抢写 `state.velocity`，必须给在线让路**（E2E 实测抓到的真实缺陷）：
+  离线是 20Hz、在线决策只有 2Hz。两者都无脑写 velocity 时，在线方向在 **50ms 内**被离线回包覆盖
+  → 速度左右翻转、**24 秒净位移只有 0.1 格**（表现为「丧尸在原地抖」）。修法 =
+  `_applyIntent({ source })` + `noteOnlineIntent()`：在线意图 8 个离线周期（~400ms）内，离线回包
+  返回 false 不覆盖。**新加任何「也写 velocity」的路径都要看这条。**
+- **⚠️ `JevPlanner` 的时钟必须与 `tick(nowMs)` 同源**（E2E 实测抓到的第二个真实缺陷）：默认
+  `now` 曾用 `Date.now()`（epoch ~1.7e12）而 tick 传 `performance.now()`（~1e4）→ `nowMs < _nextAt`
+  恒真 → **40 秒只决策 1 次**。这正是 CLAUDE.md 已有的「时间基准统一用 performance.now()」。
+  回归门 = `test-zombie-jev-ai.js` 的「默认时钟与 tick 的时间基准同源」。
+- **给模型的「环境信息」里，两条事实是绕行成功的关键**（E2E 实测缺了它们就贴着墙磨）：
+  ① `path_to_player.walkable_steps_toward_player`（照直朝玩家走能通几格）—— 缺了它，模型会一直选
+  「离玩家更近半步」的方向（实测连续 10 次选 west，而 west 朝向墙心）；
+  ② `room_around_after_the_step`（落点 3×3 内能站几格）—— 缺了它，模型看不出空间在收窄。
+  ⚠️ 不要用「除来路外的出口数」代替 ②：U 底中央那格的出口数也是 3，但走进去仍然出不去。
+- **窗口把「未加载 column」画成 `#`**（与墙同码），这条必须同步写进 `WINDOW_LEGEND`
+  （`or terrain that has not loaded yet`），否则模型会把加载边缘当真墙而莫名改道。
+- **`check:arch` 的 DOM 正则会误伤文案里的英文单词**：`zombie-jev-prompts.js` 的题面原写
+  `ground window`，被 `/(document|window|createImageBitmap)/` 判成引用 DOM API（红线 8）。
+  那是**正当拦截**（同构层不该出现这些词），解法是改文案措辞（`window` → `grid`），**不是加白名单**。
+- **开关关闭必须逐位零回归**：`ZombieService.update()` 走原有 `pool.call('ai', …)` 分支；
+  不构造 planner、不发 fetch、不建记忆表。回归门 = `test-zombies.js` 全部既有用例
+  （含避障 a~l 与 step-up）+ 一条「关闭时不 tick planner」用例。
+- **E2E 会真实消耗额度**（`tests/zombie-jev-ai.spec.mjs`，每步约 1100 input tokens）→ **单独跑**，
+  不要与全量并发。网关全拦时用例 `test.skip` 而不是红（把 `lastReason` 带进 skip 信息）。
+- **E2E 造地形踩过的三个坑**（写同类用例前先看）：
+  ① **必须在城外找平地**：默认 seed 出生点在 City 中心，半径 20 格内全是建筑（实测高差 11~44 格），
+  在那摆墙会架在楼顶/楼缝里，测的是地形不是 AI。开阔平原在距出生点 40 格以外（实测 (-40,+40) 高差 0）。
+  ② **找平地的判据必须逐点比同一个基准高度**（`surfaceAt(x,z) === yHere`），不能比相邻差 ——
+  相邻差 ≤1 会允许缓坡累加成几十格落差，实测那样找不到任何点。
+  ③ **U 形墙的开口若背对玩家且开口在 6 格外，两侧都出不去**（实测两轮）：那是 spec §7 已写明的
+  能力边界（只看 9×9 局部），不是接线缺陷。有效判据是**把出口放进窗口内**（短墙端部缺口）。
+- **已知能力边界**（spec §7）：单步 400~800ms（中位 395）⇒ 反应延迟约 1 步；20 只全开时每只约 2.5s
+  决策一次（`maxConcurrent=4` × 400ms）；BFS 距离 25 步以上的长迷宫需要 90+ 步、约 45 秒才通过；
+  折返类超长地形仍会超步数失败。
+
 ### 飞龙 AI 与火球沉淀的活跃约束（v2.44；后续「Boss 智能体 / 实体发射物 / 爆炸复用」类改动必读）
 
 设计文档 `docs/superpowers/specs/2026-11-03-dragon-boss-ai-design.md` + 计划
