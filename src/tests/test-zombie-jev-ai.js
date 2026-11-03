@@ -13,7 +13,7 @@ import {
 } from '../entities/zombies/zombie-jev-prompts.js';
 import {
   DIRECTION_VECTORS, cellKey, memoryFor, noteVisit, sampleGroundWindow,
-  bearingWords, buildCandidateSteps, buildJevState, markDeadEnd,
+  bearingWords, buildCandidateSteps, buildJevState, markDeadEnd, parseDirectionChoice,
 } from '../entities/zombies/zombie-ai-view.js';
 import { ChunkColumn } from '../voxel/chunk-column.js';
 import { WorldData } from '../voxel/world-data.js';
@@ -228,4 +228,38 @@ test('文案常量：legend 必须解释 # 含「未加载」（spec §3.5）', 
   assertTrue(WINDOW_LEGEND.includes('not loaded'), 'legend 必须说明未加载地形也画成 #');
   assertTrue(SITUATION.length > 30);
   assertFalse(STEP_INSTRUCTIONS.includes('\n'), '题干不应换行（保持单段）');
+});
+
+// ---------- 答案解析（Task 5）----------
+
+test('parseDirectionChoice：合法方向给出单位向量', () => {
+  const cands = { north: {}, east: {} };
+  const r = parseDirectionChoice({ type: 'choice', choice: 'north' }, cands);
+  assertTrue(r.ok);
+  assertEqual(r.direction, 'north');
+  assertEqual(r.vx, 0);
+  assertEqual(r.vz, -1, 'north 是 z 减小');
+  const e = parseDirectionChoice({ type: 'choice', choice: 'east' }, cands);
+  assertEqual(e.vx, 1);
+  assertEqual(e.vz, 0);
+});
+
+test('parseDirectionChoice：对角线是单位向量（不是 (±1,±1)）', () => {
+  const r = parseDirectionChoice({ choice: 'north_east' }, { north_east: {} });
+  assertTrue(r.ok);
+  const len = Math.hypot(r.vx, r.vz);
+  assertTrue(Math.abs(len - 1) < 1e-9, `须单位向量，实际长度 ${len}`);
+});
+
+test('parseDirectionChoice：三种失败 reason 逐条独立（不合成一句）', () => {
+  assertEqual(parseDirectionChoice(null, { north: {} }).reason, 'no-answer');
+  assertEqual(parseDirectionChoice({}, { north: {} }).reason, 'no-answer');
+  assertEqual(parseDirectionChoice({ choice: 'up' }, { north: {} }).reason, 'unknown-direction');
+  assertEqual(parseDirectionChoice({ choice: 'south' }, { north: {} }).reason, 'blocked-direction');
+});
+
+test('parseDirectionChoice：答案里的 choice 不在候选表时不得放行', () => {
+  const cands = { north: {} };
+  const r = parseDirectionChoice({ choice: 'north_east' }, cands);
+  assertFalse(r.ok, '不在候选表里的方向一律拒绝');
 });

@@ -234,3 +234,31 @@ export function buildJevState(world, position, playerPosition, memory) {
     candidate_steps: buildCandidateSteps(world, position, playerPosition, memory),
   };
 }
+
+/**
+ * 把模型答案翻译成**单位**速度向量（spec §3.7）。
+ *
+ * 三条失败 reason **逐条独立**（不合成一句「失败」—— 那是 spec §3.8 逐 reason 映射的口径）：
+ * - `no-answer`：没回包 / 缺 `choice` 字段；
+ * - `unknown-direction`：回了个不认识的字符串（模型幻觉）；
+ * - `blocked-direction`：认识的方向，但**不在候选表里**（= 那一格现在不可走）。
+ *
+ * ⚠️ **候选表是唯一合法性依据**：`buildCandidateSteps` 已用物理判据筛过，「在表里」等价于
+ * 「现在能走」。不在这里重新采样世界 —— 那会让「可走性」变成第二份判据。
+ * ⚠️ **只给单位向量、不给速度大小**：速度上限的唯一权威是 `ZombieService._applyIntent` 的钳制
+ * ＋ `ZOMBIE.speed`，本函数不复制一份。
+ *
+ * @param {object|null} answer `answers[QUESTION_ID]`
+ * @param {Record<string, object>} candidateSteps
+ * @returns {{ok: true, direction: string, vx: number, vz: number} | {ok: false, reason: string}}
+ */
+export function parseDirectionChoice(answer, candidateSteps) {
+  const choice = answer?.choice;
+  if (typeof choice !== 'string' || choice.length === 0) return { ok: false, reason: 'no-answer' };
+  const vec = DIRECTION_VECTORS[choice];
+  if (!vec) return { ok: false, reason: 'unknown-direction' };
+  if (!candidateSteps || !(choice in candidateSteps)) return { ok: false, reason: 'blocked-direction' };
+  const [dr, dc] = vec;            // dr = z 增量，dc = x 增量
+  const len = Math.hypot(dr, dc);
+  return { ok: true, direction: choice, vx: dc / len, vz: dr / len };
+}
