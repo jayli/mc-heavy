@@ -31,7 +31,7 @@ export const QUESTION_ID = 'step';
  * - **不用双重否定**；
  * - **明说该避免什么**（重复访问 / 死胡同）—— 实测这两句是长迷宫能通过的关键（spec §2.4）。
  */
-export const STEP_INSTRUCTIONS = 'Which candidate step is most likely to lead `Z` to `P` without getting stuck? Use both the ground grid and the candidate facts. Do not step onto a square the zombie has already visited when another step keeps the route open. It is better to walk farther in a straight line while keeping a way forward than to walk into a dead end or back the way it came.';
+export const STEP_INSTRUCTIONS = 'Which candidate step is most likely to lead `Z` to `P` without getting stuck? Use both the ground grid and the candidate facts. If the straight line toward the player is blocked after only a few meters, the zombie must walk around: prefer a step that keeps a long way forward and has a lot of room around it, even if it does not get closer this step. Do not step onto a square the zombie has already visited many times, and do not walk back the way it came.';
 
 /**
  * 单个方向选项的描述。
@@ -44,6 +44,7 @@ export function criterionFor(name, f) {
     + `${f.straight_line_distance_after_step} away, so this step is ${f.closer_or_farther}. `
     + `Open ground continuing that way: ${f.open_ground_ahead}. `
     + `Other ways out after the step: ${f.other_ways_out_after_the_step}. `
+    + `Amount of room to move around on and beside that square: ${f.room_around_after_the_step} of 9. `
     + `The zombie has stood on that square ${f.times_already_visited} times before. `
     + (f.marked_dead_end
       ? 'The zombie already found out that this square leads to a dead end.'

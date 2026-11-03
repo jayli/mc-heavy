@@ -615,7 +615,9 @@ export class Game {
         // 走既有的唯一意图消费点：它已含速度钳制 + `steerIntent` 贴身避障（spec §3.3 的叠加关系）
         const entity = this.entities.get(id);
         if (entity) {
-          this.zombies._applyIntent({ id, generation: entity.generation, vx: d.vx, vz: d.vz, mode: d.mode });
+          this.zombies._applyIntent({ id, generation: entity.generation, vx: d.vx, vz: d.vz, mode: d.mode, source: 'online' });
+          // 让接下来的离线回包让位（否则 20Hz 的离线意图会在 50ms 内覆盖在线方向）
+          this.zombies.noteOnlineIntent();
         }
       },
       // 失败已由 client/breaker 各自打 log；这里保持沉默，让丧尸继续走离线方向即可

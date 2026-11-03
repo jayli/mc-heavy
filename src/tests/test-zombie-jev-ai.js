@@ -648,3 +648,103 @@ test('ZombieService：debugOnlineAi 在未注入 planner 时给出全零形状',
   assertEqual(d.inflight, 0);
   assertEqual(d.memorySize, 0);
 });
+
+test('JevPlanner：默认时钟与 tick 的时间基准同源（不得混用 Date.now）', async () => {
+  // 回归门：曾经 `now` 默认 Date.now()（epoch ~1.7e12）而 tick 传 performance.now()（~1e4）
+  // → `nowMs < _nextAt` 恒真 → **整个过程只决策一次**（E2E 实测 40 秒 decided=1）。
+  const { world } = makeWindowWorld();
+  const client = makeControlledClient();
+  const p = new JevPlanner({
+    world, client, breaker: new FailureBreaker({ now: () => 0, log: makeLogger() }),
+    speed: 1.2, log: makeLogger(),   // 故意不传 now：用默认值
+    onDecision: () => {}, onFallback: () => {},
+  });
+  p.setEnabled(true);
+  const z = [{ id: 'z0', position: [8.5, 1, 8.5], mobile: true }];
+  const perfNow = (typeof performance !== 'undefined') ? performance.now() : Date.now();
+  p.tick(perfNow, z);
+  client.pending[0].resolve({ ok: true, answer: { choice: 'north' }, model: 'm' });
+  await new Promise((r) => setTimeout(r, 0));
+  // 周期已过 → 下一帧必须能再决策（若时钟混用，这里恒为 0 次新请求）
+  p.tick(perfNow + JEV_AI.decisionPeriodMs + 50, z);
+  assertEqual(client.pending.length, 2, '周期到点后必须能再次入队（时钟同源的判据）');
+});
+
+test('ZombieService：在线意图新鲜期内，离线回包不得覆盖速度', () => {
+  // 回归门（E2E 实测抓到的缺陷）：离线 RPC 20Hz、在线决策 2Hz。两者都无脑写 velocity 时，
+  // 在线方向会在 50ms 内被离线回包覆盖 → 速度左右翻转、净位移接近 0
+  // （实测 24 秒只前进 0.1 格，vx 在 ±1.19 之间来回翻转）。
+  const { world, entities, svc } = makeServiceFixture();
+  const fakePlanner = {
+    enabled: true, setEnabled(v) { this.enabled = v; }, resetMemory() {}, tick() {},
+    debugState() { return { memorySize: 0, inflight: 0, decided: 0, failed: 0, lastReason: '' }; },
+  };
+  svc.planner = fakePlanner;
+  svc._nowMs = 1000;
+  const id = svc.spawn([8.5, 1, 8.5]);
+  assertTrue(typeof id === 'string');
+  const gen = entities.get(id).generation;
+  // 在线意图：向 +x
+  svc._applyIntent({ id, generation: gen, vx: 1.2, vz: 0, mode: 'chasing', source: 'online' });
+  svc.noteOnlineIntent();
+  // 50ms 后离线回包想写 -x：必须被拒
+  svc._nowMs = 1050;
+  const applied = svc._applyIntent({ id, generation: gen, vx: -1.2, vz: 0, mode: 'chasing', source: 'offline' });
+  assertFalse(applied, '在线意图新鲜期内离线回包须让位');
+  assertTrue(Math.abs(svc.get(id).velocity[0] - 1.2) < 1e-9, '速度应保持在线方向');
+  // 超过 8 个离线周期后，离线重新接管
+  svc._nowMs = 1000 + 8 * 200 + 50;
+  const applied2 = svc._applyIntent({ id, generation: gen, vx: -1.2, vz: 0, mode: 'chasing', source: 'offline' });
+  assertTrue(applied2, '超过新鲜期后离线须重新接管');
+});
+
+test('ZombieService：关闭在线 AI 后离线回包立刻恢复自主（不受新鲜期阻挡）', () => {
+  const { world, entities, svc } = makeServiceFixture();
+  const fakePlanner = {
+    enabled: true, setEnabled(v) { this.enabled = v; }, resetMemory() {}, tick() {},
+    debugState() { return { memorySize: 0, inflight: 0, decided: 0, failed: 0, lastReason: '' }; },
+  };
+  svc.planner = fakePlanner;
+  svc._nowMs = 1000;
+  const id = svc.spawn([8.5, 1, 8.5]);
+  const gen = entities.get(id).generation;
+  svc._applyIntent({ id, generation: gen, vx: 1.2, vz: 0, mode: 'chasing', source: 'online' });
+  svc.noteOnlineIntent();
+  svc.setOnlineAi(false);
+  svc._nowMs = 1010;
+  assertTrue(svc._applyIntent({ id, generation: gen, vx: -1.2, vz: 0, source: 'offline' }),
+    '关掉在线 AI 后离线必须立刻接管');
+});
+
+test('buildCandidateSteps：room_around_after_the_step 反映活动空间（U 底小、开阔地 9）', () => {
+  const { world, registry } = makeWindowWorld();
+  const stone = registry.idOf('stone');
+  // 开阔地：8 邻域全可走 → 落点处 room ≈ 9
+  const open = buildCandidateSteps(world, [8.5, 1, 8.5], [8.5, 1, 12.5], memOf(new Map(), 'z'));
+  assertEqual(open.north.room_around_after_the_step, 9, '开阔地落点周围应为 9');
+
+  // 造一条 1 格宽走廊：z=8 整行除 x=8 外全封 3 格高 → 北侧落点 (8,7) 周围活动空间很小
+  for (let x = 4; x <= 12; x++) {
+    if (x === 8) continue;
+    for (let dy = 0; dy < 3; dy++) world.setBlock(x, 1 + dy, 7, stone);
+  }
+  const narrow = buildCandidateSteps(world, [8.5, 1, 8.5], [8.5, 1, 12.5], memOf(new Map(), 'z'));
+  assertTrue(narrow.north.room_around_after_the_step < 9,
+    `窄走廊里落点活动空间须小于开阔地，实际 ${narrow.north.room_around_after_the_step}`);
+});
+
+test('buildJevState.path_to_player：开阔地可达玩家，墙挡住时只有几格', () => {
+  const { world, registry } = makeWindowWorld();
+  const stone = registry.idOf('stone');
+  // 开阔地：丧尸 (8,8)、玩家正北 (8,4) → 直线可走 4 步且玩家在线上
+  const open = buildJevState(world, [8.5, 1, 8.5], [8.5, 1, 4.5], memOf(new Map(), 'z'));
+  assertEqual(open.path_to_player.walkable_steps_toward_player, 3,
+    '到玩家前一步（k=1..3 可走，k=4 是玩家格本身）');
+  assertTrue(open.path_to_player.player_is_on_that_line, '玩家应在直线上');
+
+  // 在 (8,6) 摆 3 格高墙 → 直线只通 1 步
+  for (let dy = 0; dy < 3; dy++) world.setBlock(8, 1 + dy, 6, stone);
+  const blocked = buildJevState(world, [8.5, 1, 8.5], [8.5, 1, 4.5], memOf(new Map(), 'z'));
+  assertEqual(blocked.path_to_player.walkable_steps_toward_player, 1, '墙在 2 格外 → 只通 1 步');
+  assertFalse(blocked.path_to_player.player_is_on_that_line, '直线被墙截断');
+});

@@ -552,7 +552,7 @@ export class ZombieService {
       this._aiInFlight = false;
       this._aiDebug.pending--;
       for (const update of reply?.updates ?? []) {
-        this._applyIntent(update);
+        this._applyIntent({ ...update, source: 'offline' });
       }
     };
     const fail = () => { this._aiInFlight = false; this._aiDebug.pending--; };
@@ -579,10 +579,19 @@ export class ZombieService {
    * @param {{id: string, generation: number, vx: number, vz: number, mode?: string}} update
    * @returns {boolean} false = 过期/未知，已丢弃
    */
-  _applyIntent({ id, generation, vx, vz, mode }) {
+  _applyIntent({ id, generation, vx, vz, mode, source = 'offline' }) {
     const entity = this.entities.get(id);
     if (!entity || entity.type !== 'zombie') return false;
     if (entity.generation !== generation) return false; // 过期回包
+    // **在线决策的优先级**（v2.46）：离线 RPC 是 20Hz、在线决策只有 2Hz。两个都无脑写
+    // `state.velocity` 时，在线回包会在 50ms 内被离线回包覆盖 → 玩家看到的是「丧尸在振荡
+    // 而不前进」（实测：速度 vx 每 2 秒在 ±1.19 之间来回翻转，24 秒净位移 0.1 格）。
+    // 故离线回包在「在线意图仍新鲜」时不覆盖速度 —— 只让它继续沿用上一次在线方向。
+    // ⚠️ 阈值取 8 个离线周期（~400ms）：比在线周期（500ms）短一点，保证在线回包到达前后
+    // 都不会出现「空窗期没人写速度」。
+    if (source === 'offline' && this.planner?.enabled && this._onlineIntentFresh()) {
+      return false;
+    }
     const speed = Math.hypot(vx, vz);
     let outVx = vx, outVz = vz;
     if (speed > ZOMBIE.speed) { outVx = vx / speed * ZOMBIE.speed; outVz = vz / speed * ZOMBIE.speed; }
@@ -602,6 +611,22 @@ export class ZombieService {
   }
 
   /**
+   * 记录一次「在线决策已写进 state」的时间戳（由 `Game` 的 onDecision 在调 `_applyIntent`
+   * 之后调）。用于让离线回包让位，见 `_applyIntent` 的注释。
+   */
+  noteOnlineIntent() {
+    this._onlineIntentAt = this._nowMs ?? (typeof performance !== 'undefined' ? performance.now() : Date.now());
+  }
+
+  /** 在线意图是否仍然新鲜（8 个离线 AI 周期内） */
+  _onlineIntentFresh() {
+    const at = this._onlineIntentAt;
+    if (!Number.isFinite(at)) return false;
+    const now = this._nowMs ?? (typeof performance !== 'undefined' ? performance.now() : Date.now());
+    return now - at < ZOMBIE.aiPeriod * 1000 * 8;
+  }
+
+  /**
    * 开关在线 AI（v2.46，用户 2026-11-03 裁定：面板 + URL 控制）。
    *
    * ⚠️ **关闭必须清记忆与在途**：`planner.setEnabled(false)` 内部清 `_memory` / `_inflight` / `_nextAt`。
@@ -612,6 +637,7 @@ export class ZombieService {
    */
   setOnlineAi(on) {
     this.planner?.setEnabled?.(on === true);
+    if (on !== true) this._onlineIntentAt = undefined;   // 关掉后离线路径立刻恢复完全自主
   }
 
   /** @returns {boolean} 在线 AI 是否启用（未注入 planner 时恒 false） */

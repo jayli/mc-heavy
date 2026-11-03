@@ -166,6 +166,47 @@ function exitsBesides(world, bx, y, bz, cameDr, cameDc) {
   return n;
 }
 
+/**
+ * 某格周围（含自身，3×3）能站的格数。
+ *
+ * 用途 = 「进去之后还有多大活动空间」：凹角/U 底这一带只有 2~4，开阔地是 9。
+ * ⚠️ **不要用「除来路外的出口数」代替它**：U 底中央那格的出口数也是 3（左/右/后），
+ * 但走到那儿之后仍然出不去 —— 模型看不出「空间在收窄」。
+ */
+function roomAround(world, bx, y, bz) {
+  let n = 0;
+  for (let dz = -1; dz <= 1; dz++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      if (standableAt(world, bx + dx, y, bz + dz)) n++;
+    }
+  }
+  return n;
+}
+
+/**
+ * 沿「朝玩家」的直线方向连续可走多少格（上限 16），以及玩家是否落在这段直线上。
+ *
+ * @returns {{walkable_steps_toward_player: number, player_is_on_that_line: boolean}}
+ */
+function describePathToPlayer(world, bx, y, bz, px, pz) {
+  let ddx = px - bx;
+  let ddz = pz - bz;
+  const len = Math.hypot(ddx, ddz);
+  if (len < 0.5) return { walkable_steps_toward_player: 0, player_is_on_that_line: true };
+  ddx /= len;
+  ddz /= len;
+  let n = 0;
+  let sawPlayer = false;
+  for (let k = 1; k <= 16; k++) {
+    const cx = bx + Math.round(ddx * k);
+    const cz = bz + Math.round(ddz * k);
+    if (cx === px && cz === pz) { sawPlayer = true; break; }
+    if (!standableAt(world, cx, y, cz)) break;
+    n++;
+  }
+  return { walkable_steps_toward_player: n, player_is_on_that_line: sawPlayer };
+}
+
 /** 标记死胡同（地图性质，不随 LRU 淘汰） */
 export function markDeadEnd(mem, x, z) {
   mem.deadEnds.add(cellKey(x, z));
@@ -204,6 +245,11 @@ export function buildCandidateSteps(world, position, playerPosition, memory) {
       other_ways_out_after_the_step: exitsBesides(world, nx, y, nz, dr, dc),
       times_already_visited: memory.visits.get(cellKey(nx, nz)) ?? 0,
       marked_dead_end: memory.deadEnds.has(cellKey(nx, nz)),
+      // **「走开之后还能不能继续走」** —— 这一条是 U 形/凹角的关键信号。
+      // 只给「这一步可走」不够：U 底那两格都可走，但进去之后两侧都是墙，
+      // 丧尸会左右横跳（实测：模型连续 13 次都选 west，位置在 0.1 格内来回摆动）。
+      // 判据 = 该落点周围（含自身，8 邻域）可站格数。凹角里这个数很小。
+      room_around_after_the_step: roomAround(world, nx, y, nz),
     };
   }
   return out;
@@ -224,6 +270,11 @@ export function buildJevState(world, position, playerPosition, memory) {
     situation: SITUATION,
     player_direction_from_zombie: bearingWords([bx, bz], [px, pz]),
     straight_line_distance_now: `${Math.hypot(bx - px, bz - pz).toFixed(1)} meters`,
+    // **「照直朝玩家走能不能走通」** —— 这一条是「该直走还是该绕」的总开关。
+    // ⚠️ 只给 `candidate_steps` 的 closer_or_farther 不够：墙把玩家挡在正前方时，
+    // 「往墙里再挪半步」也是「更近」，模型会一直贴着墙磨（实测连续 10 次选 west）。
+    // 判据 = 从丧尸格沿「朝玩家的方向」连续可走多少格（上限 16），以及玩家是否就在那一段里。
+    path_to_player: describePathToPlayer(world, bx, y, bz, px, pz),
     steps_already_walked: Math.max(0, memory.trail.length - 1),
     ground_window: {
       rows: sampleGroundWindow(world, position, playerPosition),
