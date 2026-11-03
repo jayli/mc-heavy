@@ -9,6 +9,7 @@ import { test } from './runner.js';
 import { assertEqual, assertFalse, assertTrue, assertDeepEqual } from './assert.js';
 import { JEV_AI } from '../entities/zombies/zombie-config.js';
 import { FailureBreaker, JevClient } from '../entities/zombies/zombie-jev-client.js';
+import { JevPlanner } from '../entities/zombies/zombie-jev-planner.js';
 import {
   QUESTION_ID, STEP_INSTRUCTIONS, buildQuestions, criterionFor, SITUATION, WINDOW_LEGEND,
 } from '../entities/zombies/zombie-jev-prompts.js';
@@ -383,4 +384,171 @@ test('FailureBreaker：冷却期内的失败不累计（否则恢复后立刻又
   t += 10;
   b.recordFailure('during-cooldown');
   assertEqual(b.state().openUntil, openUntil, '冷却期不得延长');
+});
+
+// ---------- 编排器（Task 8）----------
+
+/** 可手动 resolve 的假 client（控制时序，验证「在途不重复入队」） */
+function makeControlledClient() {
+  const pending = [];
+  return {
+    pending,
+    request(req) {
+      return new Promise((resolve) => { pending.push({ req, resolve }); });
+    },
+  };
+}
+
+function makePlanner(world, client, opts = {}) {
+  return new JevPlanner({
+    world, client,
+    breaker: opts.breaker ?? new FailureBreaker({ now: () => 0, log: makeLogger() }),
+    speed: 1.2, log: makeLogger(), now: opts.now ?? (() => 0),
+    onDecision: opts.onDecision ?? (() => {}),
+    onFallback: opts.onFallback ?? (() => {}),
+  });
+}
+
+test('JevPlanner：tick 发起请求，回包后回调 onDecision（north → vz=-speed）', async () => {
+  const { world } = makeWindowWorld();
+  const client = makeControlledClient();
+  const decisions = [];
+  const p = makePlanner(world, client, { onDecision: (id, d) => decisions.push([id, d]) });
+  p.setEnabled(true);
+  p.tick(0, [{ id: 'z0', position: [8.5, 1, 8.5], mobile: true }]);
+  assertEqual(client.pending.length, 1, '应发出一条请求');
+  assertEqual(p.debugState().inflight, 1);
+  client.pending[0].resolve({ ok: true, answer: { type: 'choice', choice: 'north' }, model: 'm' });
+  await new Promise((r) => setTimeout(r, 0));
+  assertEqual(decisions.length, 1);
+  assertEqual(decisions[0][0], 'z0');
+  assertTrue(Math.abs(decisions[0][1].vz + 1.2) < 1e-9, `north 应给 vz=-speed，实际 ${decisions[0][1].vz}`);
+  assertEqual(p.debugState().inflight, 0);
+  assertEqual(p.debugState().decided, 1);
+});
+
+test('JevPlanner：并发上限 maxConcurrent 生效', () => {
+  const { world } = makeWindowWorld({ columns: [[0, 0], [0, 1], [0, -1]] });
+  const client = makeControlledClient();
+  const p = makePlanner(world, client);
+  p.setEnabled(true);
+  const zs = Array.from({ length: 10 }, (_, i) => ({ id: `z${i}`, position: [8.5, 1, 8.5], mobile: true }));
+  p.tick(0, zs);
+  assertEqual(client.pending.length, JEV_AI.maxConcurrent, '在途不得超过上限');
+});
+
+test('JevPlanner：同一只在途期间不重复入队', () => {
+  const { world } = makeWindowWorld();
+  const client = makeControlledClient();
+  const p = makePlanner(world, client);
+  p.setEnabled(true);
+  const z = [{ id: 'z0', position: [8.5, 1, 8.5], mobile: true }];
+  p.tick(0, z);
+  p.tick(10, z);
+  assertEqual(client.pending.length, 1, '在途期间不得重复发起');
+});
+
+test('JevPlanner：失败走 onFallback 且 reason 逐条传出', async () => {
+  const { world } = makeWindowWorld();
+  const client = makeControlledClient();
+  const fallbacks = [];
+  const p = makePlanner(world, client, { onFallback: (id, reason) => fallbacks.push([id, reason]) });
+  p.setEnabled(true);
+  p.tick(0, [{ id: 'z0', position: [8.5, 1, 8.5], mobile: true }]);
+  client.pending[0].resolve({ ok: false, reason: 'not-json' });
+  await new Promise((r) => setTimeout(r, 0));
+  assertEqual(fallbacks.length, 1);
+  assertEqual(fallbacks[0][1], 'not-json');
+  assertEqual(p.debugState().lastReason, 'not-json');
+});
+
+test('JevPlanner：非法方向也走 onFallback（不写进 state）', async () => {
+  const { world } = makeWindowWorld();
+  const client = makeControlledClient();
+  const fallbacks = [];
+  const decisions = [];
+  const p = makePlanner(world, client, {
+    onFallback: (id, reason) => fallbacks.push([id, reason]),
+    onDecision: (id, d) => decisions.push([id, d]),
+  });
+  p.setEnabled(true);
+  p.tick(0, [{ id: 'z0', position: [8.5, 1, 8.5], mobile: true }]);
+  client.pending[0].resolve({ ok: true, answer: { choice: 'nowhere' }, model: 'm' });
+  await new Promise((r) => setTimeout(r, 0));
+  assertEqual(decisions.length, 0, '非法方向不得产生决策');
+  assertEqual(fallbacks[0][1], 'unknown-direction');
+});
+
+test('JevPlanner：熔断期内不发请求', () => {
+  const { world } = makeWindowWorld();
+  const client = makeControlledClient();
+  const breaker = new FailureBreaker({ now: () => 0, log: makeLogger() });
+  breaker.recordFailure('a'); breaker.recordFailure('b'); breaker.recordFailure('c');
+  assertFalse(breaker.available());
+  const p = makePlanner(world, client, { breaker });
+  p.setEnabled(true);
+  p.tick(0, [{ id: 'z0', position: [8.5, 1, 8.5], mobile: true }]);
+  assertEqual(client.pending.length, 0, '冷却期不得发请求');
+});
+
+test('JevPlanner：关闭时不发请求且清空记忆', () => {
+  const { world } = makeWindowWorld();
+  const client = makeControlledClient();
+  const p = makePlanner(world, client);
+  p.setEnabled(true);
+  p.tick(0, [{ id: 'z0', position: [8.5, 1, 8.5], mobile: true }]);
+  assertTrue(p.debugState().memorySize > 0);
+  p.setEnabled(false);
+  assertEqual(p.debugState().memorySize, 0, '关闭须清记忆');
+  assertEqual(p.debugState().inflight, 0, '关闭须清在途');
+  p.tick(0, [{ id: 'z0', position: [8.5, 1, 8.5], mobile: true }]);
+  assertEqual(client.pending.length, 1, '关闭后不得新增请求');
+});
+
+test('JevPlanner：四面围墙时不发请求（buildQuestions 为空）', () => {
+  const registry = createRegistry();
+  registry.register('air', { solid: false, opaque: false, cullMode: 'none' });
+  registry.register('stone', { solid: true, opaque: true, cullMode: 'opaque' });
+  registry.register('bedrock', { solid: true, opaque: true, cullMode: 'opaque' });
+  const world = new WorldData(registry);
+  const col = new ChunkColumn(0, 0);
+  const stone = registry.idOf('stone');
+  for (let lz = 0; lz < 16; lz++) {
+    for (let lx = 0; lx < 16; lx++) {
+      for (let y = WORLD_MIN_Y; y <= 1; y++) col.set(lx, y, lz, stone);
+    }
+  }
+  for (let dx = -1; dx <= 1; dx++) {
+    for (let dz = -1; dz <= 1; dz++) {
+      if (dx === 0 && dz === 0) continue;
+      for (let dy = 1; dy <= 3; dy++) col.set(8 + dx, dy, 8 + dz, stone);
+    }
+  }
+  world.add(col);
+  const client = makeControlledClient();
+  const fallbacks = [];
+  const p = makePlanner(world, client, { onFallback: (id, r) => fallbacks.push([id, r]) });
+  p.setEnabled(true);
+  p.tick(0, [{ id: 'z0', position: [8.5, 1, 8.5], mobile: true }]);
+  assertEqual(client.pending.length, 0, '无候选不得发请求');
+  assertEqual(fallbacks[0][1], 'no-candidates');
+});
+
+test('JevPlanner：resetMemory 清掉单只记忆（slot 回收路径）', () => {
+  const { world } = makeWindowWorld();
+  const p = makePlanner(world, makeControlledClient());
+  p.setEnabled(true);
+  p.tick(0, [{ id: 'z0', position: [8.5, 1, 8.5], mobile: true }]);
+  assertEqual(p.debugState().memorySize, 1);
+  p.resetMemory('z0');
+  assertEqual(p.debugState().memorySize, 0);
+});
+
+test('JevPlanner：mobile=false 的丧尸不参与决策', () => {
+  const { world } = makeWindowWorld();
+  const client = makeControlledClient();
+  const p = makePlanner(world, client);
+  p.setEnabled(true);
+  p.tick(0, [{ id: 'z0', position: [8.5, 1, 8.5], mobile: false }]);
+  assertEqual(client.pending.length, 0, 'blocked 的丧尸不该烧额度');
 });
