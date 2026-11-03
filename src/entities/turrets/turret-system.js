@@ -81,9 +81,14 @@ export function normalizeAngle(a) {
 /**
  * 计算一批炮塔的索敌意图。**在主线程同步执行**（规格 §4.1）。
  *
- * 目标选择（mc-lite `findTarget`）：检测范围内**最近**且 LOS 可见的丧尸；先 `distSq` 粗筛
- * 再 LOS（避免对所有丧尸跑 LOS —— 最坏 20 炮塔 × 20 丧尸 × 100 采样）。
+ * 目标选择（mc-lite `findTarget`）：检测范围内**最近**且 LOS 可见的敌对目标；先 `distSq` 粗筛
+ * 再 LOS（避免对所有目标跑 LOS —— 最坏 20 炮塔 × 20 目标 × 100 采样）。
  * 无目标时回归炮塔的默认朝向（`rotation`）。
+ *
+ * ⚠️ **参数名是 `targets` 而不是 `zombies`**（v2.41 祭坛飞龙）：炮塔也要打龙（用户裁定）。
+ * 每项可带 `bodyOffsetY`（瞄准点的 y 偏移）：缺省 = `TURRET.enemyBodyOffsetY`（丧尸胸部，
+ * mc-lite `ENEMY_BODY_OFFSET_Y`），**龙传 0** —— 龙的 `state.position` 就是身体中心
+ * （spec §11 风险 3），而丧尸的 position 是脚底所以要 +1.2 抬到胸部。
  *
  * ⚠️ **yaw/pitch 用 atan2 算，不用 Euler 反解**（CLAUDE.md 活跃约束：three 的 Euler 'XYZ'
  * 序对 Y 轴用 `asin(m13)`，`|θ| > π/2` 时折叠回 `[-π/2, π/2]`）。本函数从坐标直接算角度，
@@ -93,23 +98,24 @@ export function normalizeAngle(a) {
  * 迟到回包）。但若未来把 AI 改成 Worker 任务，它立刻生效。
  *
  * @param {{turrets: Array<{id:string, pivot:[number,number,number], rotation:number}>,
- *          zombies: Array<{id:string, position:[number,number,number]}>,
+ *          targets: Array<{id:string, position:[number,number,number], bodyOffsetY?:number}>,
  *          world: import('../../voxel/world-data.js').WorldData,
  *          registry: ReturnType<import('../../voxel/block-registry.js').createRegistry>}} p
  * @returns {{updates: Array<{id:string, targetYaw:number, targetPitch:number,
  *            hasTarget:boolean, targetId:string|null}>}}
  */
-export function computeTurretUpdates({ turrets, zombies, world, registry }) {
+export function computeTurretUpdates({ turrets, targets, world, registry }) {
   const updates = [];
-  const list = zombies ?? [];
+  const list = targets ?? [];
   for (const t of turrets ?? []) {
     let target = null;
     let targetId = null;
     let minDistSq = TURRET.detectionRange * TURRET.detectionRange;
     if (list.length > 0) {
       for (const z of list) {
-        // 瞄准丧尸上半身（胸部）—— mc-lite `ENEMY_BODY_OFFSET_Y`
-        const tx = z.position[0], ty = z.position[1] + TURRET.enemyBodyOffsetY, tz = z.position[2];
+        // 瞄准点的 y 偏移：缺省是丧尸胸部（mc-lite `ENEMY_BODY_OFFSET_Y`），龙传 0（position 已是身体中心）
+        const offsetY = Number.isFinite(z.bodyOffsetY) ? z.bodyOffsetY : TURRET.enemyBodyOffsetY;
+        const tx = z.position[0], ty = z.position[1] + offsetY, tz = z.position[2];
         const dx = tx - t.pivot[0], dy = ty - t.pivot[1], dz = tz - t.pivot[2];
         const distSq = dx * dx + dy * dy + dz * dz;
         if (distSq >= minDistSq) continue;   // 粗筛：超范围或非最近

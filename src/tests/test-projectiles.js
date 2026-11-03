@@ -10,7 +10,7 @@
 // ⚠️ fixture 里的 `entities` 必须是**真实 `EntityManager`**（不是桩件）—— 命中判定走它的
 // `raycast()`，桩件会让「命中真相只由 EntityManager 给出」这条红线测不出来（testing-policy §2.7）。
 import { test } from './runner.js';
-import { assertEqual, assertTrue, assertNull, assertNotNull } from './assert.js';
+import { assertEqual, assertTrue, assertFalse, assertNull, assertNotNull } from './assert.js';
 import { createRegistry } from '../voxel/block-registry.js';
 import { BLOCKS } from '../voxel/blocks-data.js';
 import { ChunkColumn } from '../voxel/chunk-column.js';
@@ -21,7 +21,9 @@ import {
   projectileDefinition, advanceProjectile, judgeProjectile, PROJECTILE_AABB,
 } from '../entities/turrets/projectile-system.js';
 import { ZombieService, zombieDefinition } from '../entities/zombies/zombie-system.js';
-import { probeDefinition } from '../entities/entity-types.js';
+import { probeDefinition, WEAPON_HITTABLE_TYPES } from '../entities/entity-types.js';
+import { dragonDefinition, DragonService } from '../entities/dragons/dragon-system.js';
+import { DRAGON, DRAGON_TYPE } from '../entities/dragons/dragon-config.js';
 import { ZOMBIE } from '../entities/zombies/zombie-config.js';
 
 function makeRegistry() {
@@ -56,8 +58,15 @@ function makeProjectileFixture() {
   entities.registerType('projectile', projectileDefinition);
   entities.registerType('zombie', zombieDefinition);
   entities.registerType('probe', probeDefinition);
+  entities.registerType(DRAGON_TYPE, dragonDefinition);   // v2.41：弹丸也要能打龙
   const zombies = new ZombieService({ entities, world });   // 不需要 pool（本测试不发 AI RPC）
-  return { world, registry, entities, zombies };
+  // v2.41：龙 service。findAltar 注入成固定中心（本 fixture 的世界只有 column 0..1，
+  // 真实祭坛地带在几百格外，用真实权威会让龙 spawn 在测试世界之外 → 断言成无效盲区）
+  const dragons = new DragonService({
+    entities, persistence: null, seed: 1, world,
+    findAltar: () => ({ regionX: 0, regionZ: 0, cx: 8, cz: 8, dist: 0 }),
+  });
+  return { world, registry, entities, zombies, dragons };
 }
 
 /** 造一份合法弹丸 state（走 definition.create，保证方向已归一化） */
@@ -289,4 +298,65 @@ test('弹丸 1 秒飞行距离 ≈ 40 格（推进只做一遍）', () => {
     `1 秒 traveled=${state.traveled}（须 ≈ ${TURRET.projectileSpeed}）`);
   assertTrue(Math.abs(state.position[2] - (0.5 + TURRET.projectileSpeed)) < 1e-6,
     `1 秒位移=${state.position[2] - 0.5}（须 ≈ ${TURRET.projectileSpeed}）`);
+});
+
+// ---------- v2.41 祭坛飞龙：弹丸命中 predicate 泛化 ----------
+
+test('弹丸命中龙：经 EntityManager.raycast，伤害 34（九发死）', () => {
+  const { world, registry, entities, dragons } = makeProjectileFixture();
+  dragons.ensure();
+  const dragon = dragons.active();
+  assertNotNull(dragon, '龙须 spawn 成功（否则下面的断言是无效盲区）');
+  assertEqual(dragon.state.health, DRAGON.health);
+  const p = dragon.state.position;
+  // ⚠️ **必须传 `onDamage`** —— `judgeProjectile` 里是 `if (onDamage) onDamage(...)`
+  const onDamage = (id, amount, ms) => dragons.damage(id, amount, ms);
+  // ⚠️ **起点必须让「本步判定线段」穿过盒中心，与 yaw 无关**：龙的 yaw 由 phase 随机，
+  // yaw≈π/2 时长轴转到 x、z 方向只剩宽轴半长 1.125 → 从 6 格外射会脱靶（假失败）。
+  // stepLen = 40×0.1 = 4 格，故从 p[2]−2 出发 → 判定线段 [p[2]−2, p[2]+2] 必过盒中心 p[2]。
+  const from = [p[0], p[1], p[2] - 2];
+  // **临界值附近断言**：300 血 / 34 伤害 → 八发不死（300−272=28）、九发死
+  let r;
+  for (let i = 0; i < 8; i++) {
+    r = advanceProjectile({
+      state: makeProjectileState(from, [0, 0, 1]),
+      dt: 0.1, world, registry, entities, nowMs: i * 100, onDamage,
+    });
+    assertEqual(r.reason, 'entity', `第 ${i + 1} 发须命中实体`);
+    assertEqual(r.hitId, dragon.id);
+  }
+  assertEqual(dragons.active().state.health, DRAGON.health - TURRET.projectileDamage * 8);
+  assertTrue(dragons.active().state.health > 0, '八发不死（300−272=28）');
+  r = advanceProjectile({
+    state: makeProjectileState(from, [0, 0, 1]),
+    dt: 0.1, world, registry, entities, nowMs: 800, onDamage,
+  });
+  assertEqual(r.reason, 'entity');
+  assertNull(dragons.active(), '第九发 28−34 ≤ 0 → despawn');
+  assertEqual(dragons.isDead(), true);
+});
+
+test('弹丸打龙：predicate 走 WEAPON_HITTABLE_TYPES（不是硬编码 zombie）', () => {
+  // ⚠️ 这条是「predicate 改回 `=== 'zombie'`」的回归门（plan Task 6 负向验证表第 2 行）。
+  // 判据落在**共享集合本身**：龙必须在里面，且集合是冻结的（改它须显式动手）。
+  assertTrue(WEAPON_HITTABLE_TYPES.includes(DRAGON_TYPE), '龙必须在可击中集合里');
+  assertTrue(WEAPON_HITTABLE_TYPES.includes('zombie'), '丧尸必须在可击中集合里');
+  assertFalse(WEAPON_HITTABLE_TYPES.includes('probe'), 'probe 是测试 fixture，不得可击中');
+  assertFalse(WEAPON_HITTABLE_TYPES.includes('projectile'), '弹丸不得可击中（否则连锁误伤）');
+});
+
+test('弹丸仍不打 probe（泛化后过滤语义不变）', () => {
+  const { world, registry, entities } = makeProjectileFixture();
+  const probe = entities.spawn({
+    id: 'probe-1', type: 'probe', state: { position: [10.5, 5.5, 16.5] }, persistent: false,
+  });
+  assertNotNull(probe);
+  const r = advanceProjectile({
+    state: makeProjectileState([10.5, 5.5, 15.5], [0, 0, 1]),
+    dt: 0.1, world, registry, entities, nowMs: 0,
+  });
+  assertTrue(r.alive, 'probe 不在可击中集合 → 弹丸应穿过');
+  // ⚠️ 未命中时 `advanceProjectile` 返回 `{state, alive:true}`，**不含 reason 字段**
+  // （`projectile-system.js:146`）→ 判 undefined，不是 null。
+  assertEqual(r.reason, undefined);
 });

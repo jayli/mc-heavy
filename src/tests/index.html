@@ -101,6 +101,12 @@
     import './test-minimap.js';
     // 渲染分辨率档位（v2.27）：清晰 / 性能 两档 → 像素比换算
     import './test-pixel-ratio.js';
+    // 祭坛飞龙（v2.41）：烘焙产物契约（骨骼 / 几何 / 动画重采样）
+    import './test-dragon-bake.js';
+    // 祭坛飞龙（v2.41）：轨道/动画/AABB/definition/service 纯逻辑
+    import './test-dragon-system.js';
+    // 祭坛飞龙（v2.41）：渲染层（骨骼层级 / 动画采样 / visible 门控 / 红闪）
+    import './test-dragon-render.js';
 
     runAndExpose().then((r) => {
       document.getElementById('report').textContent =

@@ -33,7 +33,7 @@ import { computeExplosion, EXPLOSION_DAMAGE_RADIUS, EXPLOSION_DAMAGE } from '../
 import { ZOMBIE } from '../entities/zombies/zombie-config.js';
 import { WorldEditor } from './world-editor.js';
 import { EntityManager } from '../entities/entity-manager.js';
-import { probeDefinition } from '../entities/entity-types.js';
+import { probeDefinition, WEAPON_HITTABLE_TYPES } from '../entities/entity-types.js';
 import { EntityRenderLayer, createProbeRenderDef } from '../render/entity-render-layer.js';
 import { ZombieService, zombieDefinition } from '../entities/zombies/zombie-system.js';
 import { ZombieRenderer } from '../render/zombie-renderer.js';
@@ -47,6 +47,10 @@ import { TurretService } from '../entities/turrets/turret-service.js';
 import { TurretController } from '../entities/turrets/turret-controller.js';
 import { createTurretBlueprint } from '../entities/turrets/turret-blueprint.js';
 import { computeTurretUpdates } from '../entities/turrets/turret-system.js';
+import { DRAGON_TYPE } from '../entities/dragons/dragon-config.js';
+import { dragonDefinition, DragonService } from '../entities/dragons/dragon-system.js';
+import { DragonRenderer } from '../render/dragon-renderer.js';
+import { loadDragonAsset } from '../render/dragon-model.js';
 import { projectileDefinition, judgeProjectile } from '../entities/turrets/projectile-system.js';
 import { PlaygroundService } from '../entities/playground/playground-service.js';
 import { ProjectileRenderer } from '../render/projectile-renderer.js';
@@ -578,6 +582,34 @@ export class Game {
     });
     this.entities.registerType('zombie', zombieDefinition);
 
+    // ---- 祭坛飞龙装配（v2.41）----
+    // 龙是**景观实体**：全世界恰好一条，在带祭坛的高台地带上空盘旋。
+    // ⚠️ **装配位置必须在 `persistence`(:447) / `seed`(:451) 之后**（否则拿到 null persistence
+    // 与未定 seed），且在 `_waitForColumn`(:769) **之前** —— 同 M7 巢穴/炮塔的装配约束。
+    // ⚠️ **龙是临时实体**（`persistent: false`）：位置是 seed 的纯函数，进存档就是第二份
+    // 权威（红线 2）。只有「死没死」这一个布尔进 meta 行（`dragonDead`）。
+    this.entities.registerType(DRAGON_TYPE, dragonDefinition);
+    this.dragons = new DragonService({
+      entities: this.entities, persistence: this.persistence, seed: this.seed, world: this.world,
+    });
+    this.dragons.hydrate(meta);   // 从 meta 行恢复死亡标记（旧存档无此字段 → 自然回落未死）
+    // 渲染器：要 await 产物加载。⚠️ **加载失败不得让整个游戏起不来**（龙是景观，
+    // 缺它不该白屏）—— 与 M4 武器模型 / M8 蓝图加载失败同一容错口径。失败则
+    // `dragonRenderer = null`，帧循环判空。
+    try {
+      const dragonAsset = await loadDragonAsset();
+      this.dragonRenderer = new DragonRenderer(this.scene, dragonAsset);
+      await this.dragonRenderer.loadTexture();
+    } catch (err) {
+      console.warn('[dragon] 渲染器加载失败，龙不显示（不影响游戏）:', err);
+      this.dragonRenderer = null;
+    }
+    // 预热轨道 memo：把 `findAltarTarnRegion` 的冷调用（实测 12.6ms）挪到加载阶段，
+    // 避免它落在第一个玩法帧（120Hz 帧预算 8.3ms，开局会掉一帧）。与 `computeArenaAnchor`
+    // 在 Worker layout 入口预热同一口径（AGENTS.md）。⚠️ 放在渲染器加载之后、
+    // `_waitForColumn` 之前 —— 此时 seed 已定、且仍在加载阶段。
+    this.dragons.warm();
+
     // ---- 矿车装配 ----
     // 矿车是 M5 持久实体（设计文档 §2.2）：白拿 entities store 写盘 / column 两阶段卸载 /
     // `_discardEdits` 清档。service 装配位置无 `_waitForColumn` 时序约束（矿车没有
@@ -851,7 +883,9 @@ export class Game {
     this.player.weaponController.setEntityQuery({
       raycast: (origin, dir, maxDist, predicate) =>
         this.entities.raycast(origin, dir, maxDist, predicate),
-      damage: (id, amount, nowMs) => this.zombies.damage(id, amount, nowMs),
+      // v2.41：伤害改为按实体类型分发（不再硬编码丧尸）；predicate 读共享集合
+      damage: (id, amount, nowMs) => this.damageEntity(id, amount, nowMs),
+      isHittable: (entity) => WEAPON_HITTABLE_TYPES.includes(entity.type),
     });
 
     // 天气 + 雨效（M3-3）：状态机自动周期（晴 60~180s → 雨 30~90s，5s 过渡），
@@ -969,6 +1003,9 @@ export class Game {
       // entities.update 之前（mc-lite 的 frameReservations 同生命周期）
       this.minecarts.beginFrame();
       this.zombies.update(dt, { playerPosition: [pp.x, pp.y, pp.z] });
+      // 祭坛飞龙（v2.41）：spawn 编排在 `entities.update` **之前**（与 zombies.update 同段：
+      // 先编排后推进）。幂等：已死 / 已有实体 / column 未就绪时 no-op。
+      this.dragons.ensure();
       // 矿车 context：minecarts = service（跨车协调），player = 玩家位置（抬起判定）。
       // ⚠️ player 传**位置快照**而非 Player 对象 —— entities/ 是同构层，不得依赖 player/
       // ⚠️ **形状必须是 `{position:[x,y,z]}` 对象，不是裸数组** —— `resolvePlayerBlocking`
@@ -1049,6 +1086,9 @@ export class Game {
       // M6：丧尸六部件实例发布（只读 pose → 位置/朝向 + 步态 + 200ms 红闪）。
       // 传时间戳而非 dt —— renderer 自己算 dt 累积步态相位（mc-lite `_walkTime` 口径）。
       this.zombieRenderer.sync(this.zombies, nowMs);
+      // 祭坛飞龙（v2.41）：pose 发布（位置/yaw/bank + 动画采样 + 红闪）。无实体时
+      // visible=false → draw call 归零。⚠️ 传 `nowMs`（performance.now 基准，红闪判定）。
+      if (this.dragonRenderer) this.dragonRenderer.sync(this.dragons.active(), nowMs);
       // 矿车 pose 发布（差集驱动 slot；只读 state）
       this.minecartRenderer.sync(this.entities.entities());
       // M8：炮塔 pose 发布（pivot 世界坐标 + Task 4 插值出的当前 yaw/pitch）。
@@ -1948,6 +1988,32 @@ export class Game {
   /** 只读武器调试状态（含曳光池/视图模型/音频请求计数）。 */
   weaponDebugState() { return this.player.weaponDebugState(); }
 
+  /**
+   * 伤害分发器（v2.41 祭坛飞龙，spec §5.3 分叉一方案 A）：按实体类型路由到对应 service。
+   *
+   * ⚠️ **这是「三处硬编码 zombie」的唯一收敛点**：武器射线（`setEntityQuery.damage`）、
+   * 炮塔弹丸（`_updateProjectiles` 的 `onDamage`）都调它。Game 是装配层，依赖任何层合法
+   * （§3）—— 不给 M5 EntityManager 加玩法接口（那是纯生命周期容器），也不复用
+   * ZombieService 给龙（丧尸的 AI/物理/步态全不适用，开 `if (isDragon)` 分支是 mc-lite
+   * 的补丁架构形态，红线 2/4 禁止）。
+   *
+   * ⚠️ **`this.dragons` 在 `start()` 的 service 装配段创建** → 这里保留 `if (!this.dragons) return null`
+   * 守卫作纵深防御（构造器阶段或装配顺序错时不会抛 TypeError）。装配完成后该守卫自然不再触发。
+   *
+   * @param {string} id @param {number} amount @param {number} nowMs
+   * @returns {{dead: boolean, health: number}|null} 未知 id / 不可击中类型返回 null
+   */
+  damageEntity(id, amount, nowMs) {
+    const entity = this.entities.get(id);
+    if (!entity) return null;
+    if (entity.type === 'zombie') return this.zombies.damage(id, amount, nowMs);
+    if (entity.type === DRAGON_TYPE) {
+      if (!this.dragons) return null;
+      return this.dragons.damage(id, amount, nowMs);
+    }
+    return null;
+  }
+
   // ---- M8 TNT 公开 API ----
 
   /**
@@ -2299,11 +2365,15 @@ export class Game {
     for (const [id, controller] of controllers) {
       turrets.push({ id, pivot: controller.pivot(), rotation: controller.anchor?.rotation ?? 0 });
     }
-    const zombies = this.zombies.activeEntities().map((e) => ({
+    const targets = this.zombies.activeEntities().map((e) => ({
       id: e.id, position: [...e.state.position],
     }));
+    // v2.41：炮塔也打龙（用户裁定）。⚠️ **龙传 `bodyOffsetY: 0`** —— 它的 position 就是
+    // 身体中心，而丧尸的 position 是脚底（缺省 +1.2 抬到胸部，mc-lite `ENEMY_BODY_OFFSET_Y`）。
+    const dragon = this.dragons?.active();
+    if (dragon) targets.push({ id: dragon.id, position: [...dragon.state.position], bodyOffsetY: 0 });
     const { updates } = computeTurretUpdates({
-      turrets, zombies, world: this.world, registry: this.registry,
+      turrets, targets, world: this.world, registry: this.registry,
     });
     for (const u of updates) {
       const c = controllers.get(u.id);
@@ -2355,7 +2425,7 @@ export class Game {
       const { reason } = judgeProjectile({
         next: entity.state, world: this.world, registry: this.registry,
         entities: this.entities, stepLen: TURRET.projectileSpeed * dt, nowMs,
-        onDamage: (id, amount, ms) => this.zombies.damage(id, amount, ms),
+        onDamage: (id, amount, ms) => this.damageEntity(id, amount, ms),
       });
       if (reason) this.entities.despawn(entity.id, reason);
     }
@@ -2443,6 +2513,9 @@ export class Game {
     // —— 与启动顺序相反。反序会让 manager.dispose 触发 despawn 时 renderer 已不存在。
     this.zombies?.dispose();
     this.zombieRenderer?.dispose();
+    // 祭坛飞龙（v2.41）：service 回收实体后释放渲染器（与启动顺序相反）
+    this.dragons?.dispose();
+    this.dragonRenderer?.dispose();
     // 矿车：service 回收实体后释放渲染器（与启动顺序相反）
     this.minecarts?.dispose();
     this.minecartRenderer?.dispose();

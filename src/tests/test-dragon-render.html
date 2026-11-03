@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"><title>dragon render fixture</title><link rel="icon" href="data:,">
+  <style>html, body { margin: 0; background: #000; }</style>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "../../vendor/three/three.webgpu.js",
+      "three/tsl": "../../vendor/three/three.tsl.js",
+      "three/webgpu": "../../vendor/three/three.webgpu.js"
+    }
+  }
+  </script>
+</head>
+<body>
+<script type="module">
+  import * as THREE from 'three';
+  import { loadDragonAsset } from '../render/dragon-model.js';
+  import { DragonRenderer } from '../render/dragon-renderer.js';
+  import { DRAGON, DRAGON_MODEL_CENTER } from '../entities/dragons/dragon-config.js';
+
+  // Tier 4 像素实测场景（祭坛飞龙 v2.41）。
+  //
+  // 单条龙 + 黑背景隔离（无地形/无光照干扰），同 `test-zombie-model.html` 的手法。
+  // **渲染由 spec 驱动**：一个相机只能看一个方向，而截图只有最后一帧 —— 多次渲染会互相
+  // 覆盖。故 fixture 暴露 `renderView(name, opts)`，spec 每次调用后立刻截图。
+  //
+  // ⚠️ **取样点用模型空间世界坐标**（从素材实测推导，见下），不硬编码像素：
+  // 模型尺寸一改，取样点自动跟着走（同 zombie fixture 口径）。
+  //
+  // 取样点推导（素材 `amethyst_dragon.bbmodel`，px × 3/16 = 格，模型空间）：
+  //   skull 中心   [0, 3.6562, -5.3438]   → 头部（north 面 uv=[93,9,101,16]）
+  //   snout 中心   [0, 3.375, -6.75]      → 吻部
+  //   右翼膜1 中心 [5.9062, 4.3406, 0.2812] → 翼膜（1px 薄片，DoubleSide 判据）
+  //   左翼膜2 中心 [-5.8125, 4.2937, 0.1875]
+  //   整体 bbox    x[-8.25,8.25] y[-0.32,6.0] z[-7.31,11.44]
+  // 渲染器把 mesh 局部偏移 −DRAGON_MODEL_CENTER，故 pivot 在原点时模型空间点 p 的世界
+  // 坐标 = p − DRAGON_MODEL_CENTER。
+  const W = 640, H = 480;
+  const DIST = 30;
+
+  function toWorld(p) {
+    return [
+      p[0] - DRAGON_MODEL_CENTER[0],
+      p[1] - DRAGON_MODEL_CENTER[1],
+      p[2] - DRAGON_MODEL_CENTER[2],
+    ];
+  }
+  const PTS = {
+    skull: toWorld([0, 3.6562, -5.3438]),
+    snout: toWorld([0, 3.375, -6.75]),
+    wingR: toWorld([5.9062, 4.3406, 0.2812]),
+    wingL: toWorld([-5.8125, 4.2937, 0.1875]),
+    chest: toWorld([0, 3.375, -0.5625]),
+  };
+  /** 整体 bbox 的中心（相机 lookAt 目标） */
+  const CENTER = toWorld([0, (6.0 - 0.32) / 2, (11.44 - 7.31) / 2]);
+
+  async function run() {
+    const renderer = new THREE.WebGPURenderer({ antialias: false });
+    renderer.setSize(W, H);
+    renderer.setPixelRatio(1);
+    document.body.appendChild(renderer.domElement);
+    await renderer.init();
+    renderer.toneMapping = THREE.NoToneMapping;
+    // outputColorSpace 用 SRGBColorSpace（真实游戏口径）：贴图 colorSpace 也是 SRGB，
+    // 两端一致时读到的值接近纹理原始参数，阈值可对着贴图统计值读。
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+    const asset = await loadDragonAsset();
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x000000);
+    const dr = new DragonRenderer(scene, asset);
+    await dr.loadTexture();
+
+    const mkCam = () => new THREE.PerspectiveCamera(50, W / H, 0.05, 200);
+    const cams = {
+      // 正面：相机在 −Z（龙头朝 −Z）→ 看到 skull 的 north 面
+      front: (() => { const c = mkCam(); c.position.set(CENTER[0], CENTER[1], CENTER[2] - DIST); c.lookAt(...CENTER); return c; })(),
+      // 侧面：相机在 +X → 看到翼展全宽
+      side: (() => { const c = mkCam(); c.position.set(CENTER[0] + DIST, CENTER[1], CENTER[2]); c.lookAt(...CENTER); return c; })(),
+      // 下方：相机在 −Y → 翼膜 DoubleSide 判据（单面渲染时从下方看穿）
+      below: (() => { const c = mkCam(); c.position.set(CENTER[0], CENTER[1] - DIST, CENTER[2]); c.lookAt(...CENTER); return c; })(),
+      // 上方
+      top: (() => { const c = mkCam(); c.position.set(CENTER[0], CENTER[1] + DIST, CENTER[2]); c.lookAt(...CENTER); return c; })(),
+    };
+
+    const project = (camera, wx, wy, wz) => {
+      const v = new THREE.Vector3(wx, wy, wz).project(camera);
+      return { x: Math.round((v.x * 0.5 + 0.5) * W), y: Math.round((-v.y * 0.5 + 0.5) * H) };
+    };
+
+    /** 屏幕包围框：把模型空间 8 个角投影后取 min/max */
+    function bboxRect(cam, lo, hi) {
+      const corners = [];
+      for (const x of [lo[0], hi[0]]) for (const y of [lo[1], hi[1]]) for (const z of [lo[2], hi[2]]) {
+        corners.push(project(cam, ...toWorld([x, y, z])));
+      }
+      const xs = corners.map((c) => c.x), ys = corners.map((c) => c.y);
+      return {
+        x0: Math.max(0, Math.min(...xs)), x1: Math.min(W - 1, Math.max(...xs)),
+        y0: Math.max(0, Math.min(...ys)), y1: Math.min(H - 1, Math.max(...ys)),
+      };
+    }
+
+    /**
+     * spec 调用：设置 pose → 渲染 → 返回该视角的取样点。
+     * @param {string} view front|side|below|top
+     * @param {{orbitT?: number, flashing?: boolean, yaw?: number, hidden?: boolean}} [opts]
+     */
+    window.__DR_RENDER__ = (view, opts = {}) => {
+      const cam = cams[view];
+      if (!cam) throw new Error(`unknown view: ${view}`);
+      if (opts.hidden) {
+        dr.sync(null, 0);
+      } else {
+        dr.sync({
+          id: 'dragon-altar',
+          state: {
+            position: [0, 0, 0],
+            yaw: opts.yaw ?? 0,
+            orbitT: opts.orbitT ?? 0,
+            flashedUntil: opts.flashing ? 1e9 : 0,
+          },
+        }, opts.flashing ? 0 : 1e9);
+      }
+      // 渲染两帧：WebGPU 首帧可能还在编译 shader，第二帧才是稳定结果
+      renderer.render(scene, cam);
+      renderer.render(scene, cam);
+      return {
+        skull: project(cam, ...PTS.skull),
+        snout: project(cam, ...PTS.snout),
+        wingR: project(cam, ...PTS.wingR),
+        wingL: project(cam, ...PTS.wingL),
+        chest: project(cam, ...PTS.chest),
+        // 整体屏幕包围框（翼展/体长量级判据）
+        full: bboxRect(cam, [-8.25, -0.32, -7.31], [8.25, 6.0, 11.44]),
+        // 翼膜小区域（DoubleSide 判据用区域统计比单点稳）
+        wingRect: bboxRect(cam, [3.0, 3.5, -4.0], [8.25, 5.2, 4.0]),
+      };
+    };
+
+    window.__DR_INFO__ = {
+      hasTexture: dr.mesh.material.map !== null,
+      textureSize: [dr.mesh.material.map?.image?.width, dr.mesh.material.map?.image?.height],
+      boneCount: dr.mesh.skeleton.bones.length,
+      vertexCount: dr.mesh.geometry.getAttribute('position').count,
+      side: dr.mesh.material.side,
+      alphaTest: dr.mesh.material.alphaTest,
+      isBasic: dr.mesh.material.isMeshBasicMaterial === true,
+      assetScale: asset.scale,
+      animNames: Object.keys(asset.animations),
+    };
+
+    window.__DR_READY__ = true;
+  }
+
+  run().catch((e) => {
+    window.__DR_ERROR__ = String(e && e.stack || e);
+    window.__DR_READY__ = true;
+  });
+</script>
+</body>
+</html>

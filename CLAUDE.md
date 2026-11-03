@@ -201,6 +201,20 @@ seed 88 突破「单步落差 ≤1」（到 2 格），24 是守住无台阶的�
 **v2.24** 给浅水高台加了一座**横跨湖面的拱桥**（用户 2026-11-03：「我想在浅水湖两岸之间架起一座高大的桥，单层方块，三个方块宽，你用非叶子方块，用云方块、冰方块、深浅草方块，大理石方块、sky_stone 等，这些方块可以一片一片的连接在一起形成一个横跨天幕的桥，很雄伟好看」）：新增 `src/gen/structures/shallow-water-bridge.js`（纯函数、Worker 同构），接线在 `apply.js` 阶段 2.45 的**第 ⑤ 步**。四轮提问裁定：拱桥（中央最高、两端顺坡落地）、弧顶 47 格、**玩家能一路走上去**、沿桥方向成片分段。**三条初稿设计被实测否决**（详见 spec §15.5/§15.3/§15.6 与下方「跨湖拱桥」活跃约束）：① 任意角度桥轴（斜向 9%~18% 的步只覆盖 2 格 + 足迹宽 3.8~4.1 格）→ **必须吸附正轴**；② 抛物剖面（端部斜率 2 > `MAX_STEP`）→ **余弦拱**；③ 逐格分桶上色（云与 sky_stone 几乎不出现、片长碎到 1 格）→ **等值线分片 + 游程合并**。实测 20 seed：20/20 全部有桥、跨度 162~201 格、与五座高台净空 3~27 格、相邻高差恒 1、桥头与地面齐平（gap=0）、片段 min 8 / 中位 13、六种材质全出现。负向验证 8 项全部真 FAIL。⚠️ 实施中抓到三处**判据本身没有判别力**的问题（`BRIDGE_SEG_MIN_LEN` 阈值、3 格宽的累加集合、沙滩植被用例把桥面当植物），均已修并写进活跃约束。细节见下方「跨湖拱桥」段与 roadmap 的 v2.24 行。
 
 **v2.25** 把单格方块的放置改为**沿视线「就近优先」，并与 mc-lite 的右键分流对齐**（用户 2026-10-30：「不管十字准心方向经过多少个可放置方块的位置，总是先就近放置」；「无论何时，自己脑袋所在的那一格都不能放置方块」；看到范围实测后追加：「命中在 15 格内，直接放命中面前，不看沿途候选，跟 mc-lite 一样」；并明确「头格 / 压到身体的格」那条保持本仓现状、不对齐 mc-lite）：此前主射线**命中**一律放命中面前的 A（`target.prevPos`），只有**完全打空**才跑兜底去贴沿途最近的「看不见的侧面」格 B。现在单格放置只有一个入口 `Player._placeNearest()`：**命中 < 15 格直接放 A，不看沿途候选**（mc-lite `interact()` 的 `distance < 15` 同款分流；A 被身体守卫拒绝就作罢）；**命中 ≥ 15 格与打空**才走就近优先 —— `place-ray.js` 新增 `scanPlaceCells`（候选判据的唯一实现，`findPlaceCell` 退化为取第一个候选的薄包装）沿视线从近到远逐个访问候选，调用方把每个候选交给 `_placeSingle()`，**第一个放成功的算数**，A 排最后。扫描路径上的三条载荷性规则：① **头格（相机所在格）永不作候选**；② **候选被拒（身体守卫 / 编辑无变化）就继续找下一个**（mc-lite `doSkyPlace` 同款）；③ **止于命中格（不含）**。A 路径不变（实心被拒、非实心可放进头格；A 被拒不找别处）。⚠️ **取代 v1.72 用户裁定①**（「兜底只在完全未命中时生效」：命中 ≥ 15 格时现在也先看候选）。已知行为变化：只有看得很平（命中 ≥ 15 格）或打空时，视线擦过的方块「看不见的一面」才会让落点改放到更近的格（1×2 隧道里俯角约 6° 以下才会，6.5° 起直接放 A）；近处命中不受影响，连点也不再无反应。与 mc-lite 仍有意不同的几处、实测范围与测试见 roadmap 的 v2.25 行。扫描 ≤5 µs，仅右键 `mousedown` 触发一次。
+**v2.41** 把用户提供的 Blockbench **紫水晶龙**模型导入游戏，让它在**全世界唯一带祭坛的高台地带**
+（`findAltarTarnRegion`）上空盘旋（用户 2026-11-03：「导入龙的模型，让龙在天上盘旋，让龙在带有祭坛的
+高台地带的上空盘旋」+「导入普通的那个，不带鞍的」）。**素材无需重新建模**（实测：115 元素全 cube+box_uv+
+自身旋转全 0、每元素刚性归属单骨骼、单张 128² 内嵌贴图）→ 离线烘焙（`npm run dragon`）成
+「骨骼层级 + 合并几何 + catmullrom 重采样动画帧」三件套。**渲染 = SkinnedMesh 单几何**（已实测 WebGPU
+后端蒙皮可用，整条龙 **1 个 draw call**，无龙时 visible=false → 0）。**玩法定位 = 可被武器与炮塔击中、
+有血量（300）、红闪、死亡后永久消失**（死亡标记写 meta 行的 `dragonDead`，龙本身是**临时实体**不进存档 ——
+位置是 seed 的纯函数，红线 2）。**伤害路由泛化**：新增 `Game.damageEntity` 按实体类型分发 +
+`WEAPON_HITTABLE_TYPES` 共享集合（三处硬编码 `zombie` 的唯一收敛点）；`computeTurretUpdates` 参数
+`zombies` → `targets`（每项可带 `bodyOffsetY`，龙传 0 因为它的 position 就是身体中心）。
+**关键参数**：尺度 3 倍（体长 18.75 格）/ 轨道半径 24（翼尖最远 32.25 < 高台最近格 34.5）/ 盘旋高
+y=30（plateauY+28，斜距 33.9~36.0 < 步枪射程 40）/ fly+glide 交替（周期 12s）/ yaw=π−θ。
+细节见下方「祭坛之龙沉淀的活跃约束」段与 roadmap 的 v2.41 行。
+
 测试现状：Playwright spec 全量 + 浏览器内单元测试全绿。**用例计数以 `npm run check:data`
 输出为准，不在文档硬编码**（同一事实的多个副本属「改动放大器」，违反红线 1 精神）。
 ⚠️ **三条计时型 spec 在高负载下偶发贴线 flaky，单独复跑通过**（不改断言、不放宽阈值）：
@@ -3369,6 +3383,98 @@ seed 88 突破「单步落差 ≤1」（到 2 格），24 是守住无台阶的�
    ② **「众数峰 luma」只能测色阶，测不出高光是否在工作**（实测高光归零后 148 vs 147）——
    想知道「波纹/高光还在」，要测**连续两帧的变化量**（正常 0.20 / 高光归零 0.00）。
 
+### 祭坛之龙沉淀的活跃约束（v2.41，后续「导入外部模型 / 天空景观实体 / 伤害路由」类改动必读）
+
+设计文档 `docs/superpowers/specs/2026-11-03-altar-dragon-design.md` + 计划
+`docs/superpowers/plans/2026-11-03-altar-dragon.md`。素材 = 用户提供的 Blockbench
+`amethyst_dragon.bbmodel`（**不带鞍**的普通版，入库 `assets/dragon/src/`，烘焙输入非渲染资源）。
+
+- **素材无需重新建模**（实测四事实）：115 元素全 `cube`+`box_uv`+**自身旋转全 0**（旋转都在骨骼上）；
+  每元素**刚性归属单个骨骼**（0 孤儿）→ skinWeight 恒 1，SkinnedMesh 只是「骨骼驱动刚性块」的载体；
+  骨骼 `origin` 是**绝对模型空间坐标**（用 chest z∈[−8,2] 与 neck1 origin z=−8 的几何邻接验证）；
+  单张 128² 内嵌 PNG、UV 全在图内。提「导入外部模型」方案时先查这四条 —— 满足就不需要重建模。
+- **骨骼 `localPosition` 必须做旋转修正**（烘焙最易错处）：Blockbench 的 `origin` 是绝对坐标，
+  而 three 的 `Bone.position` 是**相对父骨骼局部空间**的偏移。父骨骼 bind 旋转 ≠ 0 时直接用
+  「origin 差」会让 bind pose 下子骨骼世界位置 ≠ 绝对 origin（实测 neck2：不修正得 [0,23.4,−12.6]，
+  绝对 origin 是 [0,19.5,−14]）→ 蒙皮错位、龙散架。修正公式 `localPosition = R_parentWorld⁻¹ · (childOrigin − parentOrigin)`，
+  可证 bind pose 下骨骼世界位置 = childOrigin、世界旋转 = 累积 rotation。
+- **动画帧是「相对 bind pose 的增量」**（实测素材 `override: false` = additive）：采样结果必须与
+  bind 变换**相乘**（`bindQuat * deltaRot`），不是替换。替换的形态是「龙摆成素材绝对姿态」——
+  脖子从 40° 变 −9°，整条龙瘫掉。**渲染层骨骼变换必须从 bind 快照起算**（每帧
+  `bone.quaternion = bindQuat * delta`），直接 `*= delta` 会**逐帧累积** → 几秒后骨骼旋转数圈
+  （负向验证：注入累积后单测报「body 分量0 累积漂移 0.0086 → 0.0517」真 FAIL）。
+- **catmullrom 重采样留在烘焙期**（30fps 帧序列），运行时只做帧间插值（旋转 slerp / 位移 lerp）。
+  关键帧全是单 `data_point`（无双端点插值边界）、loop 动画首末值全部相同（fly 34/34、glide 33/33）
+  → 去末帧成周期表示、邻居环绕取。**每骨骼的关键帧数不同**（fly：21 根 13 帧、12 根 2 帧）→
+  必须按每骨骼自己的时间序列插值，不能假设全动画共用一组时间点。
+- **yaw 公式是 `π − θ`，不是 spec 原文的 `θ + π/2`**（原文那式子算出的前向与轨道切线**垂直**，
+  龙会侧着身子飞）。推导：轨道切线 `(−sin θ, cos θ)`，本仓 yaw→前向口径 `(−sin yaw, −cos yaw)`
+  （AGENTS.md「出生朝向与相机旋转的测量口径」表），令两者相等 ⇒ `yaw = π − θ`。
+  判据落在单测「yaw 是切线方向」（点积 > 0.99），注入 spec 原文公式真 FAIL。
+- **轨道半径 24 是实测标定值**（spec §6.2）：高台最近格距圆心 **34.5**，翼展 16.5 格 →
+  翼尖最远 `24 + 8.25 = 32.25 < 34.5`（余量 2.25 格）。调大半径前必须重测净空，否则龙穿进高台。
+  **盘旋高 y=30 受武器射程约束**：玩家站广场中心（眼高 4.62）→ 斜距 33.9~36.0 < 步枪 `entityRange` 40；
+  调高会让龙飞出射程，「可被武器击中」名存实亡。MAG7（射程 10）打不到龙是预期内（仅垂直差就 24 格）。
+- **龙是临时实体（`persistent: false`）+ 死亡标记走 meta 行**（分叉二方案 A）：位置是 seed 的纯函数，
+  进存档就是第二份权威（红线 2）。只有 `dragonDead` 布尔进 meta（`Persistence.saveDragonDead`，
+  与 `savePlayerPos` 同一 merge 手法）。**代价 = column 卸载被回收 → `ensure()` 重生、血量重置**
+  （spec §5.2 已记取舍，用户知悉）。⚠️ **不挂 `beforeunload`**（死亡是低频单次事件，挂 unload 会有
+  「旧世界标记写回新世界」竞态）。`newWorld`/`clearSave` 的 `saveMeta` 整行 put 不含本字段 →
+  换 seed / 删存档后龙自然复活，无需 settingsVersion 式迁移。
+- **`ensure()` 的三个门控缺一不可**：已死 → 不 spawn（永久死亡）；已有实体 → 幂等；祭坛中心 column
+  未就绪 → 不 spawn（避免在未加载区放玩家看不见的实体）。**转调 `findAltarTarnRegion`，不自己写
+  一份「哪个地带带祭坛」**（红线 1：与「高台」按钮同源，两份判据漂移 = 「按钮到的地带没龙」）。
+  ⚠️ memo 变量名里不得出现 `RegionCache` 子串（`check:arch` 子串匹配，AGENTS.md 已记该坑）。
+- **`DragonService.warm()` 必须在 `start()` 加载阶段调**（不能留给首个玩法帧）：
+  `findAltarTarnRegion` 冷调用实测 **12.6ms**（热调用 8.4µs）。若不预热，这 12.6ms 落在
+  第一个玩法帧的 `ensure()` 里 —— 120Hz 帧预算 8.3ms，开局直接掉一帧（且玩家可能根本不去
+  祭坛地带，白付）。与 `computeArenaAnchor` 在 Worker layout 入口预热同一口径。幂等（memo 复用）。
+- **伤害路由的唯一收敛点 = `Game.damageEntity`**（分叉一方案 A）：按实体类型分发到
+  Zombie/Dragon service。三处消费方（武器 `setEntityQuery.damage`、炮塔弹丸 `onDamage`、
+  索敌目标集合）都经它或 `WEAPON_HITTABLE_TYPES`。⚠️ **不给 M5 EntityManager 加玩法接口**
+  （它是纯生命周期容器），**不复用 ZombieService 给龙**（丧尸的 AI/物理/步态全不适用，
+  开 `if (isDragon)` 分支是 mc-lite 补丁架构形态，红线 2/4 禁止）。
+- **`WEAPON_HITTABLE_TYPES`（`entity-types.js`）是「哪些实体可被武器/弹丸击中」的唯一权威**：
+  三个消费方（武器 predicate 经注入 / 弹丸 predicate 直接 import / 索敌目标集合由 Game 构造）
+  都从它派生。**加新可击中类型只改这一处**。⚠️ 弹丸（`projectile`）与矿车（`minecart`）
+  **刻意不在里面**（弹丸互相命中会连锁误伤，矿车是玩家资产）。
+- **`computeTurretUpdates` 的参数已从 `zombies` 改名 `targets`**，每项可带 `bodyOffsetY`
+  （瞄准点 y 偏移）：缺省 = `TURRET.enemyBodyOffsetY`（丧尸胸部 +1.2），**龙传 0** ——
+  龙的 `state.position` 就是身体中心，丧尸的 position 是脚底所以要抬到胸部。
+  ⚠️ 既有 `test-turrets.js` 只改参数名、断言一字不动（改名后若某条断言变红，说明实现改了行为）。
+- **SkinnedMesh 在 WebGPU 后端可用**（已实测，spec §2.4 探针：2 骨骼 + 旋转 45° → 左右像素
+  不对称 6025/5145，零页面错误）。115 盒合并成**一个 BufferGeometry**（2760 顶点）→ 整条龙
+  **1 个 draw call**；无龙时 `visible = false` → 0（M6 口径）。⚠️ 材质 unlit（`MeshBasicMaterial`）+
+  `DoubleSide`（翼膜 1px 薄片，单面会从下方看穿）+ `alphaTest: 0.5`（翼膜镂空走 cutout 语义）。
+- **几何用 three `BoxGeometry` 生成，不手工推导面序**：运行时渲染器用 three 的 SkinnedMesh，
+  顶点序/法线/索引必须与 three 逐位一致。手工推导面序极易错（spec §11 风险 1）。
+- **面序映射判据落在产物契约，不是像素**（实测这张贴图近乎均匀紫色 + 素材左右对称 →
+  面序映射错在像素上几乎不可检测：注入 north↔up 互换后头部 luma 204.3 → 203.7）。
+  判据 = `test-dragon-bake.js` 逐元素逐面比对 UV 矩形（任何 FACE_ORDER / faceMap 错误精确暴露）。
+- **flipY 判据的阈值必须落在两侧实测值之间**：skull north 面 uv=[93,9,101,16]（图片顶部），
+  v 轴翻转会采到图片 y∈[112,119]（实测**全透明** → alphaTest 剔除 → 头部只剩 DoubleSide 看到的
+  内壁）。实测正确版 luma **204.3**、翻转版 **126** → 阈值 160。⚠️ 初版写 `> 40` 是**无效判据**
+  （两侧都过，负向验证实测 8 passed）。⚠️ 「B 最大通道」不是 flipY 判据（翻转版同样满足），只是色系 sanity。
+- **`dragon-model.js` 的 fetch 带 cache-busting**（`?t=${Date.now()}`）：dev 服务器不设 Cache-Control，
+  浏览器可能对同 origin JSON 做启发式缓存 → 重烘产物后 reload 可能读到旧 JSON。产物只在启动时
+  加载一次，禁用缓存无性能代价。⚠️ 路径必须走 `resourceUrl()`（v1.87 约束）。
+- **E2E 射击用例的两个载荷性陷阱**（实测踩过）：① **玩家不能放在祭坛正中心**（神龛 7×7 占地，
+  眼睛所在格本身就是方块 → DDA 起点在方块内 → `target.dist = 0` → `blockDist = 0`，而实体命中
+  判据 `hit.dist < blockDist` 严格小于 → 永远为假 → 打不中）。放在龙正下方的广场地表（神龛外）。
+  ② **瞄准方向必须从玩家新位置的眼点算**，不能读 `camera.position`（相机在帧循环里才跟随
+  physics.pos，此刻还是传送时的旧位置 y=40）；且**先选枪再瞄准**（`await selectWeapon` 会让出
+  控制权、帧循环推进 → 龙以 6 格/秒移动，瞄准与开火之间不得有 await）。
+- **炮塔索敌龙不受 ±45° 俯仰限制影响选择**：`computeTurretUpdates` 的选择只看距离 + LOS，
+  pitch 钳制不影响 `hasTarget`。龙在检测范围 50 内且 LOS 通畅 → 能索敌。炮塔放祭坛广场
+  （神龛外）即可。⚠️ 炮塔不能放祭坛正中心（神龛占地 → `place` 以 'occupied' 拒）。
+- **`DRAGON_ORBIT_SALT = 1040`**（程序化扫描后取值）：实测已占 1020~1027、1029~1039。
+  **1028 虽空闲但属被跳过的洞**（可能有历史原因），保守避开。用错 salt 是静默的确定性污染。
+- **`DRAGON_MODEL_CENTER = [0, 4.125, −2.53125]`**（模型空间体心相对模型原点的偏移，已含 3 倍）：
+  几何顶点是模型空间坐标（原点≈脚底），而 `state.position` 是身体中心 → 渲染器把 mesh 局部
+  偏移 `−DRAGON_MODEL_CENTER`，体心正好落在 `state.position`。⚠️ 这是「命中盒相对 position 的
+  偏移」（`DRAGON_CORE_OBB.center` 恒 [0,0,0]）与「模型原点到体心的偏移」两个不同语义，别混。
+
+
 ## 权威文档（动手前必读）
 
 按顺序读完再写代码：
@@ -3521,6 +3627,10 @@ mc-heavy/
 │                              #   源图 assets/sky/night-src/（mc-lite 原图）→ assets/sky/night/
 ├─ tools/night-sky-fingerprint.mjs # 夜空烘焙参数与指纹共享模块（烘焙脚本与 check:data 共用）
 ├─ tools/bake-zombie-skin.mjs  # 丧尸全身皮肤烘焙（npm run zombieskin）：标准 MC 64×64 版式
+├─ tools/bake-dragon.mjs       # 祭坛飞龙烘焙（npm run dragon）：.bbmodel → 骨骼层级 + 合并几何
+│                              #   （three BoxGeometry，2760 顶点）+ catmullrom 重采样动画帧（30fps）
+│                              #   → assets/dragon/dragon.json + dragon.png + dragon.meta.json
+├─ tools/dragon-fingerprint.mjs # 龙的烘焙参数/度量/指纹共享模块（同上，红线 1）
 │                              #   → assets/zombie/skin.png + skin.json（版式版本+区域+指纹）
 ├─ tools/zombie-skin-fingerprint.mjs # 皮肤版式参数与指纹共享模块（同上，红线 1）；
 │                              #   re-export src/render/zombie-model.js 的 UV 表/眼睛位置
@@ -3578,6 +3688,9 @@ mc-heavy/
 │  ├─ sky/                     # 天空盒立方图：day/ = mc-lite skyBox4 原图；night/ = 烘焙产物
 │  │                           #   night-src/ 存 mc-lite skyBox1 原图（烘焙输入，勿当渲染资源）
 │  ├─ zombie/                  # 丧尸全身皮肤（**不在 textures/ 下** —— 那里会进世界 atlas）
+│  ├─ dragon/                  # 祭坛飞龙（v2.41）：src/amethyst_dragon.bbmodel（烘焙输入，入库，
+│  │                           #   **非渲染资源**）→ 产物 dragon.json（骨骼+几何+动画帧）+ dragon.png
+│  │                           #   + dragon.meta.json（度量+指纹）。`npm run dragon` 烘焙
 │  │  └─ skin.png + skin.json  # 标准 MC 64×64 版式（六部件各面按 UV 矩形采样）+ 版式版本与指纹
 │  ├─ sounds/                  # 音效（M4 四件武器音效 + M7 `put.mp3` + M8 `explosion`/`turret_gun_fire`）
 │  │                           #   + v1.63 `bgm.mp3`（4.0MB / 254 秒循环背景音乐，从 mc-lite 原样复制）
@@ -3675,6 +3788,10 @@ mc-heavy/
    │               #  zombie-model.js（**丧尸模型版式的唯一权威**：六部件尺寸/轴心/皮肤 UV 矩形/
    │               #    眼睛位置。纯数据零 three 零 node；渲染器与 Tier 4 fixture 都从它派生）
    │               #    —— 原版 MC 人形口径：头 8³ / 躯干 8×12×4 / 肢 4×12×4 = 32px = 2.0 格
+   │               #  dragon-model.js（祭坛飞龙 v2.41：产物装载 + 动画采样 helper，three-free 部分；
+   │               #    fetch 带 cache-busting + resourceUrl；slerpQuat/multiplyQuat 手写）
+   │               #  dragon-renderer.js（祭坛飞龙 v2.41：SkinnedMesh 单几何渲染，受控发布层；
+   │               #    骨骼增量从 bind 快照起算；unlit + DoubleSide + alphaTest 0.5；红闪走材质 color）
    │               #  minecart-renderer.js（矿车 2 个 InstancedMesh：车斗 + 4 轮；零实例时
    │               #    visible=false；车斗纹理运行时 canvas 生成 → 无指纹门禁，靠 Tier 4 兜底）
    │               #  view-arm.js（第一人称手臂：单个 unlit Mesh 挂 camera 下，与 view-weapon.js
@@ -3698,6 +3815,10 @@ mc-heavy/
    │               #  minecarts/（矿车 Epic，Worker 同构无 three）：minecart-config.js（冻结玩法
    │               #   数据与几何尺寸唯一权威）+ minecart-system.js（移动/转弯/碰撞/连挂同构
    │               #   纯函数 + MinecartService 玩法入口 + minecartDefinition 持久实体）
+   │               #  dragons/（祭坛飞龙 v2.41，同构无 three）：dragon-config.js（冻结玩法数值唯一
+   │               #    权威：health 300 / 轨道半径 24 / 盘旋高 / DRAGON_CORE_OBB / MODEL_CENTER /
+   │               #    ORBIT_SALT 1040）+ dragon-system.js（轨道/动画状态机/AABB 纯函数 +
+   │               #    dragonDefinition + DragonService：ensure/damage/hydrate，临时实体 + meta 死亡标记）
    │               #  turrets/（M8，方块锚定装置，同构无 three）：turret-config.js（玩法数值唯一权威）
    │               #   + turret-blueprint.js（11 格展开；**BASE_DY=1** —— 底座坐在地面格之上，
    │               #     与巢穴共用 `target.blockPos` 口径，pivot 与 mc-lite 逐位等价）
@@ -3753,6 +3874,10 @@ npm run lint                   # eslint src tools tests
 npm run icons                  # 烘焙全量背包图标 → assets/icons-atlas.png + icons.json
                                #   改背包内方块的贴图地址或 mesher 几何后需跑，否则图标静默过期
 npm run zombieskin             # 烘焙丧尸全身皮肤 → assets/zombie/skin.png + skin.json（标准 64×64）
+npm run dragon                 # 烘焙祭坛飞龙 → assets/dragon/dragon.json + dragon.png + dragon.meta.json
+                               #   （.bbmodel → 骨骼层级 + 合并几何 + catmullrom 重采样动画帧）。
+                               #   改 tools/dragon-fingerprint.mjs 的参数/度量或 .bbmodel 后需跑，
+                               #   否则产物静默过期（check:data 的 [龙] 指纹检查会抓）
                                #   改 tools/zombie-skin-fingerprint.mjs 的版式/配色参数，或改
                                #   src/render/zombie-model.js 的 UV 表后需跑，否则皮肤静默过期
                                #   （check:data 的 [丧尸皮肤] 会抓指纹 + 版式版本 + 三区色距）

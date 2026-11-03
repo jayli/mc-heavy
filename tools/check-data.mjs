@@ -42,6 +42,11 @@ const {
   SKIN_PNG, SKIN_JSON, SKIN_SIZE, SKIN_LAYOUT_VERSION, SKIN_REGIONS,
   SKIN_REGION_MIN_DIST, skinInputFingerprint,
 } = await import('./zombie-skin-fingerprint.mjs');
+// 祭坛飞龙（v2.41）的烘焙参数/度量/指纹走共享模块（红线 1：与烘焙脚本同一份逻辑）
+const {
+  DRAGON_JSON, DRAGON_PNG, DRAGON_META, DRAGON_BAKE_PARAMS, DRAGON_METRICS,
+  dragonInputFingerprint,
+} = await import('./dragon-fingerprint.mjs');
 // v1.26：图标走独立 icons-atlas（不再有 INVENTORY_ICONS 表）。指纹/清单走共享模块
 // （红线 1：与烘焙脚本同一份逻辑，两处漂移会让指纹比对得出错误结论）。
 const { iconFingerprintFor, FLAT_BLOCKS, FLAT_ICON_TILE } = await import('./icon-fingerprint.mjs');
@@ -513,6 +518,76 @@ function checkZombieSkinTexture() {
     infos.push(`[丧尸皮肤] skin.png ${SKIN_SIZE}×${SKIN_SIZE} 版式 ${SKIN_LAYOUT_VERSION}`
       + ` + 三区色距 ${d01.toFixed(0)}/${d12.toFixed(0)}/${d02.toFixed(0)}（阈值 ${SKIN_REGION_MIN_DIST}）`
       + ' + 指纹匹配');
+  }
+}
+
+// ---------------------------------------------------------------- [龙] 契约（v2.41 祭坛飞龙）
+
+/**
+ * [龙] 契约：① 产物存在；② PNG 尺寸 = `DRAGON_BAKE_PARAMS.textureSize`；③ 产物契约
+ * （关系式，不硬编码计数）：scale/骨骼数/顶点数/索引数/动画清单与帧数全部与
+ * `DRAGON_METRICS` 双向一致；④ 指纹匹配（静默过期防护，与丧尸皮肤/竞技场同口径）。
+ *
+ * ⚠️ **成功行必须涵盖全部判据**（AGENTS.md 已记该坑：新判据只加进 `failures` 而不并进
+ * 成功行条件，会同时打印「✗」与「✓」，读者只看 ✓ 就误判通过）。
+ *
+ * ⚠️ **已知盲区**（同所有烘焙产物）：只改**烘焙算法**而不动参数时指纹不变 →
+ * 靠 `src/tests/test-dragon-bake.js` 的产物契约与 Tier 4 兑住。
+ */
+function checkDragonAsset() {
+  // ① 产物存在
+  for (const [p, label] of [[DRAGON_JSON, 'dragon.json'], [DRAGON_PNG, 'dragon.png'], [DRAGON_META, 'dragon.meta.json']]) {
+    if (!fs.existsSync(p)) {
+      failures.push(`[龙] assets/dragon/${label} 不存在 —— 跑 npm run dragon`);
+      return;
+    }
+  }
+  // ② PNG 尺寸
+  const png = PNG.sync.read(fs.readFileSync(DRAGON_PNG));
+  if (png.width !== DRAGON_BAKE_PARAMS.textureSize || png.height !== DRAGON_BAKE_PARAMS.textureSize) {
+    failures.push(`[龙] PNG ${png.width}×${png.height} ≠ 期望 ${DRAGON_BAKE_PARAMS.textureSize}²（烘焙到一半失败？）`);
+  }
+  // ③ 产物契约（关系式）
+  const asset = JSON.parse(fs.readFileSync(DRAGON_JSON, 'utf8'));
+  const meta = JSON.parse(fs.readFileSync(DRAGON_META, 'utf8'));
+  const M = DRAGON_METRICS;
+  if (asset.scale !== M.scale || asset.metrics.scale !== M.scale) {
+    failures.push(`[龙] scale ${asset.scale}/${asset.metrics.scale} ≠ 期望 ${M.scale}（用户裁定 3 倍，产物已含、运行时不再乘）`);
+  }
+  if (asset.bones.length !== M.boneCount) {
+    failures.push(`[龙] 骨骼数 ${asset.bones.length} ≠ 期望 ${M.boneCount}（烘焙漏了骨骼 → 静默缺肉）`);
+  }
+  if (asset.geometry.position.length !== M.vertexCount * 3) {
+    failures.push(`[龙] 顶点数 ${asset.geometry.position.length / 3} ≠ 期望 ${M.vertexCount}（烘焙漏了元素）`);
+  }
+  if (asset.geometry.index.length !== M.indexCount) {
+    failures.push(`[龙] 索引数 ${asset.geometry.index.length} ≠ 期望 ${M.indexCount}`);
+  }
+  const animNames = Object.keys(asset.animations).sort();
+  if (animNames.join(',') !== 'fly,glide') {
+    failures.push(`[龙] 动画清单 ${animNames.join(',')} ≠ 期望 fly,glide`);
+  } else {
+    // 帧数 = 素材 length × fps（fly 1.2×30=36、glide 3.0×30=90）
+    const expectFrames = { fly: 36, glide: 90 };
+    for (const name of animNames) {
+      const a = asset.animations[name];
+      if (a.frameCount !== expectFrames[name]) {
+        failures.push(`[龙] ${name} 帧数 ${a.frameCount} ≠ 期望 ${expectFrames[name]}（length×fps）`);
+      }
+      if (a.fps !== 30) failures.push(`[龙] ${name} fps ${a.fps} ≠ 30`);
+      if (a.frames.length !== a.frameCount * a.boneIndices.length * 7) {
+        failures.push(`[龙] ${name} frames 扁平数组长度不符（${a.frames.length}）`);
+      }
+    }
+  }
+  // ④ 指纹
+  const current = dragonInputFingerprint();
+  if (meta.fingerprints?.input !== current.input) {
+    failures.push(`[龙] 输入已变但产物未重烘（跑 npm run dragon）\n      期望 ${current.input}\n      实际 ${meta.fingerprints?.input}`);
+  }
+  // 成功行：全部判据都过才打印（⚠️ 涵盖全部判据，不是只判存在）
+  if (!failures.some((f) => f.startsWith('[龙]'))) {
+    infos.push(`[龙] 产物契约与指纹一致（${asset.bones.length} 骨骼 / ${asset.geometry.position.length / 3} 顶点 / fly ${asset.animations.fly.frameCount} 帧 + glide ${asset.animations.glide.frameCount} 帧 / scale ${asset.scale}）`);
   }
 }
 
@@ -2527,6 +2602,7 @@ checkGeometryAuthority();
 await checkScatterStructureIntegrity();
 checkStructureJsonOrphans();   // 2026-09-30：tall_well 悬空宝箱回归防线（⚠️ 漏了本行则门禁永不执行）
 checkZombieSkinTexture();
+checkDragonAsset();          // v2.41：祭坛飞龙烘焙产物契约与指纹（⚠️ 漏了本行则门禁永不执行）
 checkTurretArmorTexture();
 checkSkyboxAssets();         // v1.58：天空盒立方图完整性（⚠️ 漏了本行则门禁永不执行）
 await checkNightSkyFreshness(); // v1.60：夜空烘焙产物指纹（⚠️ 漏了本行则门禁永不执行）

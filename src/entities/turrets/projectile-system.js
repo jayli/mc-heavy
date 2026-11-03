@@ -12,7 +12,7 @@
 //    `EntityManager.raycast()`（实体命中唯一入口，红线 6）。
 import { TURRET } from './turret-config.js';
 import { isProjectileOccluding } from './turret-system.js';   // 遮挡判据共用（红线 1）
-import { raycastAabbSlab } from '../entity-types.js';
+import { raycastAabbSlab, WEAPON_HITTABLE_TYPES } from '../entity-types.js';
 import { raycastVoxel } from '../../player/raycast.js';
 
 /** 弹丸 AABB：0.3 见方的小盒（mc-lite `_projectileRadius = 0.3` 的等价表达） */
@@ -118,9 +118,13 @@ export function judgeProjectile({ next, world, registry, entities, stepLen, nowM
   // ③ 实体命中：EntityManager.raycast（实体命中唯一入口，红线 6）
   if (entities) {
     const hit = entities.raycast(from, next.direction, stepLen,
-      (entity) => entity.type === 'zombie');   // 只打丧尸（不打其它弹丸/未来实体）
+      // v2.41：可击中类型的唯一权威 = `WEAPON_HITTABLE_TYPES`（丧尸 + 龙）。
+      // ⚠️ 不得写回 `entity.type === 'zombie'` —— 那会让炮塔弹丸穿过龙（用户裁定「炮塔也打龙」），
+      // 且与武器侧的 predicate 漂移出两套口径（红线 1）。弹丸/矿车刻意不在集合里。
+      (entity) => WEAPON_HITTABLE_TYPES.includes(entity.type));
     if (hit) {
-      // 伤害经 ZombieService.damage（M6 已实现红闪 + health ≤ 0 即 despawn，不另写伤害路径）
+      // 伤害经调用方注入的 `onDamage`（Game 的 `damageEntity` 按类型分发到
+      // ZombieService / DragonService）—— 本函数不持有 service 引用（同构层不反向依赖装配层）。
       if (onDamage) onDamage(hit.id, TURRET.projectileDamage, nowMs);
       return { reason: 'entity', hitId: hit.id };
     }

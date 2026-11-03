@@ -2,7 +2,8 @@
 // 覆盖 M4 规格 §3/§4.2：冷却与 transform 目录冻结、不可破坏名单、
 // MAG7「先过滤再计 40」扫描语义、单发/连射状态机、开关豁免。
 import { test } from './runner.js';
-import { assertEqual, assertFalse, assertTrue } from './assert.js';
+import { assertEqual, assertFalse, assertTrue, assertDeepEqual } from './assert.js';
+import { WEAPON_HITTABLE_TYPES } from '../entities/entity-types.js';
 import { createRegistry } from '../voxel/block-registry.js';
 import {
   WEAPON_IDS, WEAPONS, MAX_ACTIVE_TRACERS,
@@ -692,4 +693,81 @@ test('impact: MAG7 命中格的颜色源是删除前的方块 id（不是删除�
   // 负向锚点：命中特效若回查（而非用扫描器记下的 sourceId），这里会是 0（air）
   assertEqual(effect.impacts[0].blockId, ids.stone, '须是删除前的方块 id');
   assertEqual(world.get('2,0,0'), ids.air, '世界确实已被删（前提校验）');
+});
+
+// ==================== v2.41 祭坛飞龙：命中 predicate 泛化 ====================
+//
+// `entityQuery` 契约新增可选字段 `isHittable`：缺省回落「只认 zombie」（M4 行为逐位不变），
+// Game 注入 `WEAPON_HITTABLE_TYPES` 后龙也可被击中。
+// ⚠️ controller 仍**不得** import entities/（自声明约束：注入而非 import，依赖方向 §3）。
+
+test('武器命中: isHittable 缺省回落只认 zombie（M4 零回归）', () => {
+  const { controller, aim } = makeControllerFixture();
+  let gotPredicate = null;
+  controller.setEntityQuery({
+    raycast: (o, d, r, predicate) => { gotPredicate = predicate; return null; },
+    damage: () => {},
+  });
+  // ⚠️ select 不可省：`_tryFire` 第一行就是 `if (selectedId === ARM) return []`，
+  // fixture 不自带 select → 不选武器根本走不到实体射线。
+  controller.select('pistol');
+  controller.fireOnce(aim);
+  assertTrue(gotPredicate !== null, '未发起实体射线（select/fireOnce 没走到 _queryEntityHit）');
+  assertTrue(gotPredicate({ type: 'zombie' }), '缺省应放行 zombie');
+  assertFalse(gotPredicate({ type: 'dragon' }), '缺省不得放行 dragon（M4 零回归）');
+  assertFalse(gotPredicate({ type: 'projectile' }), '缺省不得放行弹丸');
+});
+
+test('武器命中: 注入 isHittable 后龙也可被击中', () => {
+  const { controller, aim } = makeControllerFixture();
+  let gotPredicate = null;
+  controller.setEntityQuery({
+    raycast: (o, d, r, predicate) => { gotPredicate = predicate; return null; },
+    damage: () => {},
+    isHittable: (e) => WEAPON_HITTABLE_TYPES.includes(e.type),
+  });
+  controller.select('pistol');
+  controller.fireOnce(aim);
+  assertTrue(gotPredicate({ type: 'dragon' }), '注入后应放行 dragon');
+  assertTrue(gotPredicate({ type: 'zombie' }), '注入后仍放行 zombie');
+  assertFalse(gotPredicate({ type: 'minecart' }), '非可击中类型仍拒绝');
+  assertFalse(gotPredicate({ type: 'projectile' }), '弹丸不得被枪打（否则连锁误伤）');
+});
+
+test('武器命中: 打中龙时 damage 被调且伤害量取自武器目录', () => {
+  const { controller, aim } = makeControllerFixture();
+  const damaged = [];
+  controller.setEntityQuery({
+    // ⚠️ 实体 dist 必须**严格小于**方块 dist（fixture 的 aim.target.dist = 2）才算命中
+    raycast: (o, d, r, predicate) => {
+      const dragon = { id: 'dragon-altar', type: 'dragon' };
+      return predicate(dragon) ? { id: dragon.id, dist: 1 } : null;
+    },
+    damage: (id, amount) => damaged.push([id, amount]),
+    isHittable: (e) => WEAPON_HITTABLE_TYPES.includes(e.type),
+  });
+  controller.select('pistol');
+  controller.fireOnce(aim);
+  assertDeepEqual(damaged, [['dragon-altar', WEAPONS[WEAPON_IDS.PISTOL].entityDamage]]);
+});
+
+test('武器命中: 实体比方块远时不打实体（既有口径不因泛化而变）', () => {
+  const { controller, aim } = makeControllerFixture();
+  const damaged = [];
+  controller.setEntityQuery({
+    raycast: (o, d, r, predicate) => {
+      const dragon = { id: 'dragon-altar', type: 'dragon' };
+      return predicate(dragon) ? { id: dragon.id, dist: 9 } : null;   // 远于方块 dist=2
+    },
+    damage: (id, amount) => damaged.push([id, amount]),
+    isHittable: (e) => WEAPON_HITTABLE_TYPES.includes(e.type),
+  });
+  controller.select('pistol');
+  controller.fireOnce(aim);
+  assertEqual(damaged.length, 0, '实体更远时不得造成伤害');
+});
+
+test('武器命中: WEAPON_HITTABLE_TYPES 恰好是 zombie + dragon（加类型须显式改这里）', () => {
+  assertDeepEqual([...WEAPON_HITTABLE_TYPES].sort(), ['dragon', 'zombie']);
+  assertTrue(Object.isFrozen(WEAPON_HITTABLE_TYPES), '必须冻结（玩法数据唯一权威）');
 });

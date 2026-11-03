@@ -316,7 +316,7 @@ test('computeTurretUpdates：最近的可见丧尸成为目标，算出 yaw/pitc
     { id: 'z-near', position: [13.5, 4, 10.5] },  // 距 pivot 约 3 格，yaw≈π/2（正确目标）
     { id: 'z-far', position: [10.5, 4, 14.5] },   // 距 pivot 约 4 格，yaw≈0（注入版本会选它）
   ];
-  const r = computeTurretUpdates({ turrets, zombies, world, registry });
+  const r = computeTurretUpdates({ turrets, targets: zombies, world, registry });
   assertEqual(r.updates.length, 1);
   // 目标是近的（+X）→ yaw 指向 +X（atan2 口径，不是 Euler 反解 —— CLAUDE.md 活跃约束）
   assertTrue(Math.abs(r.updates[0].targetYaw - Math.PI / 2) < 0.01, `yaw=${r.updates[0].targetYaw}`);
@@ -329,7 +329,7 @@ test('computeTurretUpdates：最近的可见丧尸成为目标，算出 yaw/pitc
 test('computeTurretUpdates：无丧尸时回归默认朝向（placement rotation）', () => {
   const { world, registry } = makeWorldFixture();
   const turrets = [{ id: 'turret-1', pivot: [10.5, 7.3, 10.5], rotation: 1.2 }];
-  const r = computeTurretUpdates({ turrets, zombies: [], world, registry });
+  const r = computeTurretUpdates({ turrets, targets: [], world, registry });
   assertEqual(r.updates[0].targetYaw, 1.2);   // 回归 placement rotation
   assertEqual(r.updates[0].targetPitch, 0);
 });
@@ -339,7 +339,7 @@ test('computeTurretUpdates：检测范围外的丧尸不成目标（回归默认
   const turrets = [{ id: 'turret-1', pivot: [10.5, 7.3, 10.5], rotation: 0.7 }];
   // 超出 detectionRange(50) —— 用 pivot 外的远坐标（LOS 采样不需要真实方块，只需超范围粗筛）
   const zombies = [{ id: 'z-far', position: [10.5 + TURRET.detectionRange + 5, 4, 10.5] }];
-  const r = computeTurretUpdates({ turrets, zombies, world, registry });
+  const r = computeTurretUpdates({ turrets, targets: zombies, world, registry });
   assertEqual(r.updates[0].targetYaw, 0.7);   // 回归默认，不是指向那只远丧尸
 });
 
@@ -685,16 +685,102 @@ test('computeTurretUpdates：返回目标标识，无目标时为空', () => {
   const { world, registry } = makeWorldFixture();
   const turrets = [{ id: 'turret-1', pivot: [10.5, 7.3, 10.5], rotation: 0 }];
   // 无丧尸 → hasTarget false
-  const none = computeTurretUpdates({ turrets, zombies: [], world, registry });
+  const none = computeTurretUpdates({ turrets, targets: [], world, registry });
   assertEqual(none.updates[0].hasTarget, false, '无丧尸 → hasTarget=false');
   // 有可见丧尸 → hasTarget true 且带 targetId
   const zombies = [{ id: 'z-near', position: [13.5, 4, 10.5] }];
-  const found = computeTurretUpdates({ turrets, zombies, world, registry });
+  const found = computeTurretUpdates({ turrets, targets: zombies, world, registry });
   assertEqual(found.updates[0].hasTarget, true, '有丧尸 → hasTarget=true');
   assertEqual(found.updates[0].targetId, 'z-near');
   // ⚠️ **目标恰好在默认朝向上时，仍须 hasTarget=true**（不能只靠「朝向是否变化」推断有无目标）
   const onDefault = [{ id: 'z-on-default', position: [10.5, 4, 14.5] }];   // +Z 方向 = rotation 0
-  const r = computeTurretUpdates({ turrets, zombies: onDefault, world, registry });
+  const r = computeTurretUpdates({ turrets, targets: onDefault, world, registry });
   assertEqual(r.updates[0].targetYaw, 0, '该丧尸在默认朝向上');
   assertEqual(r.updates[0].hasTarget, true, '朝向不变也须报有目标');
+});
+
+// ==================== v2.41 祭坛飞龙：索敌目标集合泛化 ====================
+//
+// `computeTurretUpdates` 的参数从 `zombies` 改名为 `targets`，每项可带 `bodyOffsetY`
+// （缺省 = `TURRET.enemyBodyOffsetY` 的丧尸胸部偏移；龙传 0，因为它的 position 就是身体中心）。
+//
+// ⚠️ **丧尸零回归是硬门**：既有用例只改参数名、断言一字不动（AGENTS.md：改名后若某条断言
+// 因此变红，说明实现改了行为而不是改名）。
+
+test('炮塔索敌: targets 改名后丧尸行为不变（yaw/pitch/hasTarget/targetId 与既有用例同值）', () => {
+  const { world, registry } = makeWorldFixture();
+  const turrets = [{ id: 'turret-1', pivot: [10.5, 7.3, 10.5], rotation: 0 }];
+  // 与上面「最近的可见丧尸成为目标」用例同一组输入，只把参数名换成 targets
+  const targets = [
+    { id: 'z-near', position: [13.5, 4, 10.5] },
+    { id: 'z-far', position: [10.5, 4, 14.5] },
+  ];
+  const r = computeTurretUpdates({ turrets, targets, world, registry });
+  assertEqual(r.updates.length, 1);
+  assertTrue(Math.abs(r.updates[0].targetYaw - Math.PI / 2) < 0.01, `yaw=${r.updates[0].targetYaw}`);
+  assertTrue(r.updates[0].targetPitch < 0, '丧尸在 pivot 下方 → 俯视');
+  assertTrue(Math.abs(r.updates[0].targetPitch) <= TURRET.maxPitchAngle + 1e-9);
+  assertEqual(r.updates[0].hasTarget, true);
+  assertEqual(r.updates[0].targetId, 'z-near');
+});
+
+test('炮塔索敌: 缺省 bodyOffsetY = 丧尸胸部偏移（不传时行为与改名前逐位相同）', () => {
+  const { world, registry } = makeWorldFixture();
+  const turrets = [{ id: 'turret-1', pivot: [10.5, 7.3, 10.5], rotation: 0 }];
+  const target = { id: 'z1', position: [13.5, 4, 10.5] };
+  const withDefault = computeTurretUpdates({ turrets, targets: [target], world, registry });
+  const withExplicit = computeTurretUpdates({
+    turrets, targets: [{ ...target, bodyOffsetY: TURRET.enemyBodyOffsetY }], world, registry,
+  });
+  assertEqual(withDefault.updates[0].targetPitch, withExplicit.updates[0].targetPitch);
+  assertEqual(withDefault.updates[0].targetYaw, withExplicit.updates[0].targetYaw);
+  // 且确实是「+1.2」而不是 0：pitch = atan2(4 + 1.2 − 7.3, 3)
+  const expect = Math.atan2(4 + TURRET.enemyBodyOffsetY - 7.3, 3);
+  assertTrue(Math.abs(withDefault.updates[0].targetPitch - expect) < 1e-9,
+    `pitch=${withDefault.updates[0].targetPitch} 期望 ${expect}`);
+});
+
+test('炮塔索敌: 龙目标用 bodyOffsetY = 0（position 就是身体中心）', () => {
+  const { world, registry } = makeWorldFixture();
+  // 炮塔 pivot 在 y=6.3（地表 2 + 底座 1 + pivotHeightOffset 3.3），龙在 y=30、水平 24 格
+  // → 垂直差 23.7，pitch = atan2(23.7, 24) ≈ 0.78 rad < maxPitchAngle(π/4≈0.785) → 不被钳制。
+  // ⚠️ 若误用 +1.2 偏移，pitch 会超过 π/4 被钳到 0.785 → 本断言抓到（判别力来自钳制边界）。
+  const turrets = [{ id: 'turret-1', pivot: [0, 6.3, 0], rotation: 0 }];
+  const targets = [{ id: 'dragon-altar', position: [24, 30, 0], bodyOffsetY: 0 }];
+  const r = computeTurretUpdates({ turrets, targets, world, registry });
+  assertEqual(r.updates[0].hasTarget, true);
+  assertEqual(r.updates[0].targetId, 'dragon-altar');
+  const expected = Math.atan2(30 - 6.3, 24);
+  assertTrue(Math.abs(r.updates[0].targetPitch - expected) < 1e-9,
+    `pitch=${r.updates[0].targetPitch} 期望 ${expected}（bodyOffsetY 未生效）`);
+  // 前置校验：这个 pitch 确实没被钳制（否则判据失去判别力）
+  assertTrue(expected < TURRET.maxPitchAngle, `测试前提：${expected} 应 < maxPitchAngle`);
+  // yaw 指向 +X
+  assertTrue(Math.abs(r.updates[0].targetYaw - Math.PI / 2) < 0.01, `yaw=${r.updates[0].targetYaw}`);
+});
+
+test('炮塔索敌: 丧尸与龙同时在候选里，取最近', () => {
+  const { world, registry } = makeWorldFixture();
+  const turrets = [{ id: 'turret-1', pivot: [10.5, 7.3, 10.5], rotation: 0 }];
+  const targets = [
+    { id: 'dragon-altar', position: [13.5, 8.5, 10.5], bodyOffsetY: 0 },   // 距 3 格（更近）
+    { id: 'z1', position: [10.5, 4, 14.5] },                                // 距 4 格
+  ];
+  const r = computeTurretUpdates({ turrets, targets, world, registry });
+  assertEqual(r.updates[0].targetId, 'dragon-altar');
+  // 反序输入也必须选同一个（不得依赖遍历顺序）
+  const r2 = computeTurretUpdates({ turrets, targets: [...targets].reverse(), world, registry });
+  assertEqual(r2.updates[0].targetId, 'dragon-altar');
+});
+
+test('炮塔索敌: targets 缺省/为空时回归默认朝向（与 zombies: [] 同语义）', () => {
+  const { world, registry } = makeWorldFixture();
+  const turrets = [{ id: 'turret-1', pivot: [10.5, 7.3, 10.5], rotation: 1.2 }];
+  const empty = computeTurretUpdates({ turrets, targets: [], world, registry });
+  assertEqual(empty.updates[0].targetYaw, 1.2);
+  assertEqual(empty.updates[0].targetPitch, 0);
+  assertEqual(empty.updates[0].hasTarget, false);
+  const missing = computeTurretUpdates({ turrets, world, registry });
+  assertEqual(missing.updates[0].targetYaw, 1.2);
+  assertEqual(missing.updates[0].hasTarget, false);
 });

@@ -15,6 +15,19 @@ export const PROBE_AABB = Object.freeze({
 });
 
 /**
+ * 「哪些实体类型可被武器 / 炮塔弹丸击中」的**唯一权威**（v2.41 祭坛飞龙）。
+ *
+ * 三个消费方都从它派生（红线 1：各写一份会漂移出「枪打得到但炮塔打不到」的撕裂语义）：
+ *  ① `weapon-controller.js` 的实体射线 predicate（经 Game 注入的 `isHittable`）；
+ *  ② `projectile-system.js` 的弹丸命中 predicate（同层 import）；
+ *  ③ `turret-system.js` 的索敌目标集合（由 Game 构造 `targets` 时决定放谁进去）。
+ *
+ * ⚠️ **加新的可击中实体类型时只改这一处**。⚠️ 弹丸（`projectile`）与矿车（`minecart`）
+ * **刻意不在里面**：弹丸互相命中会连锁误伤，矿车是玩家资产不是敌对目标。
+ */
+export const WEAPON_HITTABLE_TYPES = Object.freeze(['zombie', 'dragon']);
+
+/**
  * position 合法性：必须是 3 个有限数。
  * 校验放在类型侧而非 manager 侧 —— 各类型的 state 形状不同（M6 丧尸还有 yaw/health），
  * 只有 definition 知道自己的合法形状（M5 规格 §2「spawn 仅在 definition.create(state)

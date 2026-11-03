@@ -47,18 +47,24 @@ export class WeaponController {
      * M6 实体查询（Game 装配时注入）。**缺省 null → 不查实体**：徒手/无丧尸场景照常开火，
      * 向后兼容（既有 M4 测试与交互不受影响）。注入而非 import entities —— controller 是纯
      * 逻辑层，不依赖 entities/render（依赖方向 §3）。
-     * @type {{raycast: Function, damage: Function}|null}
+     *
+     * v2.41：`damage` 改为 Game 的 `damageEntity`（按实体类型分发到 Zombie/Dragon service）；
+     * 新增可选 `isHittable`（读 `WEAPON_HITTABLE_TYPES`），缺省回落「只认 zombie」。
+     * @type {{raycast: Function, damage: Function, isHittable?: Function}|null}
      */
     this.entityQuery = null;
   }
 
   /**
    * 注入实体查询（M6 规格 §2）。`raycast` = M5 `EntityManager.raycast()`（实体命中唯一入口，
-   * 红线 6 禁止 Raycaster）；`damage` = `ZombieService.damage(id, amount, nowMs)`。
-   * Game 只把这两个函数注入，controller 不持有任何实体集合（红线 1）。
+   * 红线 6 禁止 Raycaster）；`damage` = Game 的 `damageEntity(id, amount, nowMs)`（v2.41：
+   * 按实体类型分发到 `ZombieService.damage` / `DragonService.damage`，不再硬编码丧尸）；
+   * `isHittable`（可选）= 读 `WEAPON_HITTABLE_TYPES` 的 predicate，缺省回落「只认 zombie」。
+   * Game 只把这些函数注入，controller 不持有任何实体集合（红线 1）。
    * @param {{raycast: (origin:number[], dir:number[], maxDist:number, predicate:Function)=>object|null,
-   *          damage: (id:string, amount:number, nowMs:number)=>object|null}} query
-   * @returns {{raycast: Function, damage: Function}}
+   *          damage: (id:string, amount:number, nowMs:number)=>object|null,
+   *          isHittable?: (entity:object)=>boolean}} query
+   * @returns {{raycast: Function, damage: Function, isHittable?: Function}}
    */
   setEntityQuery(query) {
     this.entityQuery = (query && typeof query.raycast === 'function' && typeof query.damage === 'function')
@@ -178,10 +184,13 @@ export class WeaponController {
     const { origin, forward, target } = aim;
     // ① DDA 距离：无命中 → Infinity（实体永远「更近」，可正常受伤）
     const blockDist = target && target.hit ? target.dist : Infinity;
-    // ② 以该枪射程发起实体射线。predicate 只放行 zombie —— 未来炮塔弹丸/矿车等实体
-    //    不得被枪打死（它们是别的 Epic 的实体，走各自的交互路径）。
-    const hit = this.entityQuery.raycast(origin, forward, weapon.entityRange,
-      (entity) => entity.type === 'zombie');
+    // ② 以该枪射程发起实体射线。predicate 放行「可被武器击中的类型」（v2.41：丧尸 + 龙）。
+    //    ⚠️ **缺省回落「只认 zombie」**（M4 行为逐位不变）：Game 装配时注入 `isHittable`
+    //    （读 `WEAPON_HITTABLE_TYPES`），fixture/旧测试不注入则走缺省。controller 仍**不 import
+    //    entities/**（自声明约束：注入而非 import，依赖方向 §3）—— 集合的权威在 entity-types.js，
+    //    由 Game 注入进来，不在这里写第二份字面量。
+    const hittable = this.entityQuery.isHittable ?? ((entity) => entity.type === 'zombie');
+    const hit = this.entityQuery.raycast(origin, forward, weapon.entityRange, hittable);
     if (!hit) return null;
     // ③ 严格小于才命中（相等按方块优先）
     if (!(hit.dist < blockDist)) return null;

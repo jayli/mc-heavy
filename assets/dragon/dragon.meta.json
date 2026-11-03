@@ -1,0 +1,16 @@
+{
+ "fingerprints": {
+  "input": "202fa07e81ef472e:6da87ac83ff939ea",
+  "bbmodelSha256": "202fa07e81ef472e1ebc099d0091ac39ea1978ff8252102dbc5acd8b805b29bb",
+  "paramsSha256": "6da87ac83ff939ea9be0765971be2c5e7cf7cb3fae6419a18e8c90f131ac7c7e"
+ },
+ "metrics": {
+  "elementCount": 115,
+  "boneCount": 78,
+  "bonesWithElements": 76,
+  "vertexCount": 2760,
+  "indexCount": 4140,
+  "scale": 3
+ },
+ "textureSize": 128
+}

@@ -173,9 +173,11 @@ export const DRAGON_TYPE = 'dragon';
 // 身体核心 OBB（模型空间，已含 3 倍，格）：body+spine+neck+head+jaw 的 bbox
 // 实测 1x = x[−6,6] y[12,32] z[−39,12] px → 3x 后：
 export const DRAGON_CORE_OBB = Object.freeze({
-  halfExtents: [1.125, 1.875, 4.78125],    // 全尺寸 宽 2.25 / 高 3.75 / 长 9.5625
-  center: [0, 4.125, -2.53125],            // 模型空间中心（头朝 −Z；y 中心 22px、z 中心 −13.5px）
+  halfExtents: Object.freeze([1.125, 1.875, 4.78125]),   // 全尺寸 宽 2.25 / 高 3.75 / 长 9.5625
+  center: Object.freeze([0, 0, 0]),   // ⚠️ 实施修正：见下方「修订说明」第 2 条
 });
+// 模型空间体心偏移（渲染层摆放 mesh 用，**不是**命中盒的 center）
+export const DRAGON_MODEL_CENTER = Object.freeze([0, 4.125, -2.53125]);
 ```
 
 血量 300 的取舍：龙是**唯一**的景观 Boss 级目标，要比丧尸（100）耐打得多，
@@ -268,7 +270,7 @@ class DragonService {
 x(t)  = orbit.cx + R × cos θ
 z(t)  = orbit.cz + R × sin θ
 y(t)  = orbit.y + bobAmplitude × sin(2π t / bobPeriod)
-yaw   = θ + π/2（切线方向；模型头朝 −Z，推导在实施时以单测钉住符号）
+yaw   = π − θ（⚠️ 实施修正：原文的 θ + π/2 是错的，见下方「修订说明」第 1 条）
 ```
 
 - `orbit = {cx, cz, y, radius, omega, phase}` 在 spawn 时由 `findAltarTarnRegion(seed)`
@@ -446,3 +448,41 @@ yaw   = θ + π/2（切线方向；模型头朝 −Z，推导在实施时以单�
    若观感有偏差，退路是加密采样（60fps）。
 3. 龙的 `state.position` 语义 = 身体中心（轨道点）—— 与丧尸「脚底」、矿车「块底角」
    都不同，文档与 JSDoc 必须写明（炮塔 bodyOffsetY=0 依赖此语义）。
+
+---
+
+## 修订说明（实施期修正，2026-11-03）
+
+实施（`docs/superpowers/plans/2026-11-03-altar-dragon.md`）期间实测发现本文档两处错误，已按实测收敛。**代码是最终权威**，本节记录「为什么与本文件正文不同」，避免后人照正文改回去。
+
+1. **§6.1 的 yaw 公式 `θ + π/2` 是错的，正确值是 `π − θ`**。
+   推导：轨道切线 = `(−sin θ, cos θ)`（对 `x = cx + R cos θ`、`z = cz + R sin θ` 求导），
+   而本仓的 yaw→前向口径是 `(−sin yaw, −cos yaw)`（AGENTS.md「出生朝向与相机旋转的测量口径」表，
+   源自 `camera.rotateY(yaw)`）。令两者相等：`sin yaw = sin θ` 且 `cos yaw = −cos θ` ⇒ `yaw = π − θ`。
+   原文那式子算出的前向与轨道切线**垂直**（龙会侧着身子飞）。判据落在
+   `test-dragon-system.js` 的「yaw 是切线方向」（点积 > 0.99），注入原文公式真 FAIL。
+
+2. **§5.1 的 `DRAGON_CORE_OBB.center` 应为 `[0,0,0]`，不是模型空间体心 `[0, 4.125, −2.53125]`**。
+   原文与它自己 §11 风险 3「`state.position` 语义 = 身体中心」的裁定**自相矛盾**：既然 position
+   就是身体中心，命中盒相对 position 的偏移自然恒 0。模型空间体心（模型原点≈脚底 → 体心）是
+   **另一个语义**，另存为 `DRAGON_MODEL_CENTER` 供渲染层摆放 mesh 用（mesh 局部偏移
+   `−DRAGON_MODEL_CENTER`，体心正好落在 `state.position`）。两者混用的形态是「命中盒整体抬高
+   4.125 格」→ 打龙的脚底位置才掉血。
+
+3. **§4.1 的动画重采样补充实测事实**：素材的 rotation channel 也是**增量**语义（不只是 position）——
+   实测 `neck1` 的 bind rotation 是 40° 而 fly 关键帧是 ±10°、`head` 的 bind 是 −30° 而关键帧是
+   +1.3~+7（若按绝对替换语义，头会在每次拍翅时翻转 37°，不合理），且素材 `override: false`
+   = additive。故 frames 里存的就是增量，运行时 `bindQuat * deltaQuat`。
+
+5. **§8 装配补充：`DragonService.warm()` 必须在 `start()` 加载阶段调**（实施期新增）。
+   `findAltarTarnRegion` 冷调用实测 **12.6ms**（热调用 8.4µs）—— 若不预热，这 12.6ms 会落在
+   第一个玩法帧的 `ensure()` 里（120Hz 帧预算 8.3ms → 开局掉一帧，且玩家可能根本不去祭坛地带）。
+   修法 = `warm()` 在渲染器加载之后、`_waitForColumn` 之前调一次（幂等，memo 复用），
+   与 `computeArenaAnchor` 在 Worker layout 入口预热同一口径。
+
+4. **§9 的 Tier 4 判据落点修正**：面序映射（§11 风险 1）的判据**落在产物契约**
+   （`test-dragon-bake.js` 逐元素逐面比对 UV 矩形），**不是像素** —— 实测这张贴图近乎均匀紫色
+   （skull 的 north/south/east/west 四区均值 120/117/115/…，两两差 < 6）且素材左右对称 ⇒
+   面序映射错在像素上几乎不可检测（注入 north↔up 互换后头部 luma 204.3 → 203.7）。
+   flipY（§11 风险 2）的像素判据阈值须落在两侧实测值之间：正确版 luma **204.3** / 翻转版 **126**
+   → 阈值 160（初版写 `> 40` 是无效判据，负向验证实测 8 passed）。

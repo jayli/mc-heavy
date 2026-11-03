@@ -27,7 +27,8 @@
     "grasstextures": "node tools/bake-grass-textures.mjs",
     "shallowtarns": "node tools/bake-shallow-tarns.mjs",
     "ship": "node tools/bake-medieval-ship.mjs",
-    "zombieskin": "node tools/bake-zombie-skin.mjs"
+    "zombieskin": "node tools/bake-zombie-skin.mjs",
+    "dragon": "node tools/bake-dragon.mjs"
   },
   "author": "jayli",
   "repository": "git@github.com:jayli/mc-heavy.git",
