@@ -38,7 +38,10 @@ export class JevClient {
   async request({ state, questions }) {
     // 无题目就不发（四面围墙时 buildQuestions 返回 {}）—— 一分额度都不该烧
     if (!questions || Object.keys(questions).length === 0) return this._fail('no-answer');
-    const ctl = typeof AbortController === 'function' ? new AbortController() : null;
+    // ⚠️ 通过 globalThis 取（不是裸 `AbortController`）：本仓 ESLint 的 globals 未声明浏览器
+    // 全局，裸引用会报 `no-undef`；而 `entities/` 是同构层，本就不能假定 DOM 存在。
+    const Abort = globalThis.AbortController;
+    const ctl = typeof Abort === 'function' ? new Abort() : null;
     const timer = ctl ? setTimeout(() => ctl.abort(), this.timeoutMs) : null;
     let res;
     let text;
