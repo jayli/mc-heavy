@@ -325,13 +325,18 @@ export class ZombieService {
    *        render —— 本层是 Worker 同构层，不得依赖 render/three（依赖方向 §3）。
    *        `pool` 缺省时不发 AI RPC（纯 fixture 只测 state/渲染）—— AI 是可选装配。
    */
-  constructor({ entities, world, maxActive = ZOMBIE.maxActive, pool = null, onSpawn = null, onDespawn = null }) {
+  constructor({ entities, world, maxActive = ZOMBIE.maxActive, pool = null, onSpawn = null, onDespawn = null, planner = null }) {
     this.entities = entities;
     this.world = world;
     this.maxActive = maxActive;
     this.pool = pool;
     this._onSpawn = onSpawn;
     this._onDespawn = onDespawn;
+    /**
+     * 在线 AI 编排器（v2.46，`JevPlanner`）。**缺省 null = 在线 AI 未装配**，
+     * 此时 `setOnlineAi()` 静默 no-op（纯 fixture 只测 state/渲染）。
+     */
+    this.planner = planner;
     // ---- AI 编排状态（Task 2）----
     /** accumulator：累计到 `ZOMBIE.aiPeriod` 才发一条 RPC（20Hz，M6 规格 §2） */
     this._aiAccum = 0;
@@ -490,6 +495,26 @@ export class ZombieService {
    * @param {{world?: object, playerPosition: number[], nowMs?: number}} context
    */
   update(dt, { playerPosition } = {}) {
+    // 在线 AI（v2.46）：**独立节流**，与下面的离线 RPC 互不干扰。
+    // ⚠️ **离线路径仍然跑**（作为兜底方向源）：在途的那 400ms 里丧尸沿离线方向走，
+    // 比站着不动自然；在线回包到达后写胜（后写胜）。
+    // ⚠️ 时钟可注入（`this._nowMs`）：浏览器内单测没有真实帧循环，硬编码 performance.now()
+    // 会让「周期未到」这类断言不可控。
+    if (this.planner?.enabled) {
+      const nowMs = this._nowMs ?? (typeof performance !== 'undefined' ? performance.now() : Date.now());
+      const zs = [];
+      for (const entity of this.entities.entities()) {
+        if (entity.type !== 'zombie') continue;
+        zs.push({
+          id: entity.id,
+          position: [...entity.state.position],
+          playerPosition: [...playerPosition],
+          // blocked = 已经走不动，问模型只是烧额度
+          mobile: entity.state.mode !== 'blocked',
+        });
+      }
+      this.planner.tick(nowMs, zs);
+    }
     if (!this.pool) return; // 未装配 pool（纯 fixture）：不发 RPC
     this._aiAccum += dt;
     if (this._aiAccum < ZOMBIE.aiPeriod) return;
@@ -576,6 +601,34 @@ export class ZombieService {
     return { calls: this._aiDebug.calls, lastBatchSize: this._aiDebug.lastBatchSize, pending: this._aiDebug.pending };
   }
 
+  /**
+   * 开关在线 AI（v2.46，用户 2026-11-03 裁定：面板 + URL 控制）。
+   *
+   * ⚠️ **关闭必须清记忆与在途**：`planner.setEnabled(false)` 内部清 `_memory` / `_inflight` / `_nextAt`。
+   * 不清的形态是「关掉再开，丧尸带着关闭前的访问历史」—— 会以为某些格走过而乱绕。
+   * ⚠️ **未注入 planner 时静默 no-op**（纯 fixture / 未装配在线 AI）：不抛错，
+   * 让 `Game.setOnlineZombieAi` 可以无条件调用。
+   * @param {boolean} on
+   */
+  setOnlineAi(on) {
+    this.planner?.setEnabled?.(on === true);
+  }
+
+  /** @returns {boolean} 在线 AI 是否启用（未注入 planner 时恒 false） */
+  onlineAiEnabled() {
+    return this.planner?.enabled === true;
+  }
+
+  /**
+   * 只读在线 AI 状态（测试/诊断用）。
+   * @returns {{enabled: boolean, inflight: number, decided: number, failed: number, lastReason: string, memorySize: number}}
+   */
+  debugOnlineAi() {
+    const base = { enabled: false, inflight: 0, decided: 0, failed: 0, lastReason: '', memorySize: 0 };
+    if (!this.planner) return base;
+    return { enabled: this.planner.enabled === true, ...(this.planner.debugState?.() ?? {}) };
+  }
+
   /** @param {string} id @returns {number|null} 只读测试接口：id 的渲染 slot */
   slotOf(id) {
     const slot = this._slots.get(id);
@@ -614,6 +667,9 @@ export class ZombieService {
     this._slots.delete(id);
     this._active--;
     this._freeSlots.push(slot);
+    // **同处回收在线 AI 的旅行记忆**（v2.46）：三条回收路径（死亡 / column 卸载 / dispose）
+    // 都经过本函数，故只改这一处即可。漏了会带上一只的访问历史（id 随 slot 复用）。
+    this.planner?.resetMemory?.(id);
     this._onDespawn?.(id);
   }
 }

@@ -10,6 +10,8 @@ import { assertEqual, assertFalse, assertTrue, assertDeepEqual } from './assert.
 import { JEV_AI } from '../entities/zombies/zombie-config.js';
 import { FailureBreaker, JevClient } from '../entities/zombies/zombie-jev-client.js';
 import { JevPlanner } from '../entities/zombies/zombie-jev-planner.js';
+import { ZombieService, zombieDefinition } from '../entities/zombies/zombie-system.js';
+import { EntityManager } from '../entities/entity-manager.js';
 import {
   QUESTION_ID, STEP_INSTRUCTIONS, buildQuestions, criterionFor, SITUATION, WINDOW_LEGEND,
 } from '../entities/zombies/zombie-jev-prompts.js';
@@ -551,4 +553,98 @@ test('JevPlanner：mobile=false 的丧尸不参与决策', () => {
   p.setEnabled(true);
   p.tick(0, [{ id: 'z0', position: [8.5, 1, 8.5], mobile: false }]);
   assertEqual(client.pending.length, 0, 'blocked 的丧尸不该烧额度');
+});
+
+// ---------- ZombieService 接线（Task 9）----------
+
+/** 造一个装了 ZombieService 的 fixture（pool=null：不发离线 RPC） */
+function makeServiceFixture({ planner = null, world = null, registry = null } = {}) {
+  const w = world ?? makeWindowWorld();
+  const entities = new EntityManager();
+  // ⚠️ spawn 需要已注册的类型（漏了会恒返回 null）
+  entities.registerType('zombie', zombieDefinition);
+  const svc = new ZombieService({ entities, world: w.world, pool: null, planner });
+  return { world: w.world, registry: w.registry, entities, svc };
+}
+
+test('ZombieService：默认在线 AI 关闭，关闭时 planner 不被 tick', () => {
+  const planning = [];
+  const fakePlanner = {
+    enabled: false,
+    setEnabled(v) { this.enabled = v; },
+    resetMemory() {},
+    tick: (...a) => planning.push(a),
+    debugState() { return { memorySize: 0, inflight: 0, decided: 0, failed: 0, lastReason: '' }; },
+  };
+  const { svc } = makeServiceFixture({ planner: fakePlanner });
+  assertFalse(svc.onlineAiEnabled());
+  svc.update(0.1, { playerPosition: [0, 0, 0] });
+  assertEqual(planning.length, 0, '关闭时 planner 不该被 tick');
+});
+
+test('ZombieService.setOnlineAi：开启后 tick 到 planner', () => {
+  const calls = [];
+  const fakePlanner = {
+    enabled: false, _mem: 0,
+    setEnabled(v) { this.enabled = v; if (!v) this._mem = 0; },
+    resetMemory() {},
+    tick: (now, zs) => { calls.push(now); },
+    debugState() { return { memorySize: this._mem, inflight: 0, decided: 0, failed: 0, lastReason: '' }; },
+  };
+  const { svc } = makeServiceFixture({ planner: fakePlanner });
+  svc.setOnlineAi(true);
+  assertTrue(svc.onlineAiEnabled());
+  assertTrue(fakePlanner.enabled);
+  svc.update(0.1, { playerPosition: [0, 0, 0] });
+  assertEqual(calls.length, 1, '开启后应 tick 到 planner');
+  svc.setOnlineAi(false);
+  assertFalse(fakePlanner.enabled);
+});
+
+test('ZombieService：在线回包写进 state.velocity（经 _applyIntent）', async () => {
+  const { world, registry, entities, svc } = makeServiceFixture();
+  const client = makeControlledClient();
+  const planner = new JevPlanner({
+    world, client, breaker: new FailureBreaker({ now: () => 0, log: makeLogger() }),
+    speed: 1.2, log: makeLogger(), now: () => 0,
+    onDecision: (id, d) => {
+      const e = entities.get(id);
+      svc._applyIntent({ id, generation: e.generation, vx: d.vx, vz: d.vz, mode: 'chasing' });
+    },
+    onFallback: () => {},
+  });
+  svc.planner = planner;
+  const id = svc.spawn([8.5, 1, 8.5]);
+  assertTrue(typeof id === 'string', 'spawn 应成功');
+  svc.setOnlineAi(true);
+  svc.update(0.1, { playerPosition: [8.5, 1, 12.5] });
+  assertTrue(client.pending.length >= 1, '应发起在线请求');
+  client.pending[0].resolve({ ok: true, answer: { choice: 'north' }, model: 'm' });
+  await new Promise((r) => setTimeout(r, 0));
+  const st = svc.get(id);
+  assertTrue(Math.abs(st.velocity[2] + 1.2) < 0.2, `vz 应约 -1.2，实际 ${st.velocity[2]}`);
+});
+
+test('ZombieService：死亡时清该只记忆（slot 回收）', () => {
+  const { world } = makeWindowWorld();
+  const reset = [];
+  const fakePlanner = {
+    enabled: false, setEnabled(v) { this.enabled = v; },
+    tick() {}, resetMemory(id) { reset.push(id); },
+    debugState() { return { memorySize: 0, inflight: 0, decided: 0, failed: 0, lastReason: '' }; },
+  };
+  const entities = new EntityManager();
+  entities.registerType('zombie', zombieDefinition);
+  const svc = new ZombieService({ entities, world, pool: null, planner: fakePlanner });
+  const s = svc.spawn([8.5, 1, 8.5]);
+  svc.damage(s, 999, 0);
+  assertTrue(reset.includes(s), 'damage 致死须 resetMemory');
+});
+
+test('ZombieService：debugOnlineAi 在未注入 planner 时给出全零形状', () => {
+  const { svc } = makeServiceFixture();
+  const d = svc.debugOnlineAi();
+  assertFalse(d.enabled);
+  assertEqual(d.inflight, 0);
+  assertEqual(d.memorySize, 0);
 });
