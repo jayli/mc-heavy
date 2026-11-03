@@ -3589,6 +3589,18 @@ testing-policy §2.5「派生量不硬编码」的收益兑现）。细节见 ro
   「火球被画成曳光弹」。判定顺序照 `judgeProjectile`（超距 → 方块 → 玩家），**超距不爆炸**
   （没撞到东西就消失，`judgeFireball` 不给 `at`）。玩家盒由装配层注入 `playerHitboxLocal()`
   （entities/ 不 import player/，矿车先例）；**命中玩家只爆炸不掉血**（用户：血量以后再做）。
+- **红线 6 的核准例外：火球打**玩家**直调 `raycastAabbSlab` + 注入盒，不走 `EntityManager.raycast`**
+  （评审 I1 裁定）：炮塔弹丸打实体走 `entities.raycast(...)`（EntityManager 是实体命中唯一入口），
+  而**玩家不是 EntityManager 的成员**（`Player` 是独立对象、物理在 `player/physics.js`），
+  `EntityManager.raycast()` 结构上就打不到它 ⇒ 注入盒直调是**唯一可行路径**，不是偷懒。
+  红线 6 的实质是「命中真相 = 逻辑 AABB、禁止对 mesh 做 `THREE.Raycaster`」—— 本写法完全符合
+  （用的正是 `raycastAabbSlab` 这唯一实现，盒尺寸从 `PLAYER_WIDTH/HEIGHT` 派生）。
+  ⚠️ **若将来火球要命中其它实体（丧尸/龙）**：那时必须改走 `entities.raycast`（它们**是**
+  EntityManager 成员），而不是给每种实体再手工注入一个盒 —— 那会漂移出 N 份命中口径。
+- **火球 spawn 失败不得静默吞掉**（评审 I3）：`entities.spawn` 满额返回 null 时 `fireFireball`
+  计入 `_fireballSpawnFailed`（进 `fireballsDebugState().spawnFailed`）+ 首次 `console.warn`。
+  形态是「龙张嘴没喷出东西、然后长时间不喷」（冷却已重置）—— 概率低（需 EntityManager 全量满额）
+  但是**静默**的，与本仓的去重集合污染同类，值得一个诊断口。
 - **E2E 的两个载荷性陷阱**（实测踩过）：① **必须用 `vd=8`** —— vd=2 的加载半径只有 64 格，
   而脱离距离 78 / 阈值测试 150 格都超出它 ⇒ 龙的 column 被卸载（临时实体回收），断言读到
   undefined；② **测试场必须远离城市**（出生点在 City，建筑随机遮挡视线 → LOS 抖动）——

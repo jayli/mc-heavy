@@ -26,6 +26,17 @@
 // **本文件不写任何伤害** —— 命中只返回 `reason:'player'` + 爆炸中心，由 game.js 调
 // `_applyExplosion`（玩家掉血以后再做）。
 //
+// ## ⚠️ 为何此处**有意偏离** `judgeProjectile` 的实体命中口径（红线 6 的核准例外）
+//
+// 炮塔弹丸打实体走 `entities.raycast(from, dir, stepLen, predicate)`（EntityManager 是
+// 实体命中的唯一入口），而火球打**玩家**直调 `raycastAabbSlab` + 注入盒。理由：
+// **玩家不是 EntityManager 的成员**（`Player` 是独立对象，物理在 `player/physics.js`），
+// `EntityManager.raycast()` 结构上就打不到它 —— 注入盒直调是**唯一可行路径**，不是偷懒。
+// 红线 6 的实质是「命中真相 = 逻辑 AABB，禁止对 mesh 做 THREE.Raycaster」—— 本写法完全符合
+// （用的正是 `raycastAabbSlab` 这唯一实现，盒尺寸从 `PLAYER_WIDTH/HEIGHT` 派生）。
+// ⚠️ **若将来火球要命中其它实体（丧尸/龙）**：那时必须改走 `entities.raycast`（它们**是**
+// EntityManager 成员），而不是给每种实体再手工注入一个盒 —— 那会漂移出 N 份命中口径。
+//
 // 设计文档 `docs/superpowers/specs/2026-11-03-dragon-boss-ai-design.md` §4。
 
 import { FIREBALL } from './dragon-config.js';

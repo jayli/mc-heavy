@@ -584,6 +584,16 @@ export class Game {
     this.entities.registerType(FIREBALL_TYPE, fireballDefinition);
     /** 火球 id 序号（确定性派生 —— 红线 2：不用 Math.random） */
     this._fireballSeq = 0;
+    /**
+     * 火球 spawn 失败计数（评审 I3 防线）。
+     *
+     * ⚠️ **为什么需要**：`entities.spawn` 满额返回 null 时 `fireFireball` 返回 false，
+     * 而 `_consumeDragonFireRequests` 若不检查返回值，火球会凭空消失且冷却已重置
+     * （龙要再等 5~10 秒）—— 形态是「龙张嘴没喷出东西，然后长时间不喷」，玩家会读作
+     * AI 坏了。概率低（需 EntityManager 全量满额）但是**静默**的，与本仓的去重集合污染同类，
+     * 值得一个诊断口。计数进 `fireballsDebugState()`，首次失败时 console.warn 一次。
+     */
+    this._fireballSpawnFailed = 0;
     /** 火球渲染池（InstancedMesh 球体；无活跃火球时 visible=false → draw call 归零） */
     this.fireballRenderer = new FireballRenderer({ scene: this.scene });
     /** 玩家命中盒（局部，相对脚底中心）—— entities/ 不 import player/，故由装配层注入 ctx */
@@ -2532,6 +2542,13 @@ export class Game {
       state: { position, direction, traveled: 0, source },
       persistent: false,   // 临时实体：随 column 卸载回收，不进 entities snapshot
     });
+    if (!spawned) {
+      // ⚠️ **不得静默吞掉**（评审 I3）：计入诊断 + 首次 warn，否则形态是「龙张嘴没喷出东西」
+      this._fireballSpawnFailed += 1;
+      if (this._fireballSpawnFailed === 1) {
+        console.warn('[dragon] 火球 spawn 失败（实体池满额？）—— 见 fireballsDebugState().spawnFailed');
+      }
+    }
     return spawned !== null;
   }
 
@@ -2544,6 +2561,10 @@ export class Game {
    * 同一先例。
    *
    * ⚠️ **fireRequest 是瞬态**：消费后不写回（state 每帧由 definition 重建，下一帧自然是 null）。
+   * ⚠️ **这依赖一条不变式（评审 M2）：`EntityManager.update` 用 definition 的返回值整体替换
+   * `entity.state`**（entity-manager.js 的 `entity.state = next`）。若将来某个 definition 改成
+   * 原地更新 state，陈旧的 fireRequest 会被**重复消费**（形态是「龙每帧都喷一发」）。
+   * 存档路径已由 serialize 白名单防住（不含 fireRequest 键），这条是运行时路径的同类风险。
    * 多条龙共存时逐条消费（activeEntities 返回快照，spawn 不改变它）。
    */
   _consumeDragonFireRequests() {
@@ -2583,11 +2604,11 @@ export class Game {
     }
   }
 
-  /** 只读火球诊断状态。@returns {{count: number}} */
+  /** 只读火球诊断状态。@returns {{count: number, spawnFailed: number}} */
   fireballsDebugState() {
     let count = 0;
     for (const entity of this.entities.entities()) if (entity.type === FIREBALL_TYPE) count++;
-    return { count };
+    return { count, spawnFailed: this._fireballSpawnFailed };
   }
 
   /**

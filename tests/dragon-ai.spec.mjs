@@ -301,6 +301,80 @@ test('AI E2E: 火球命中玩家 → 爆炸发生但玩家不掉血不位移（�
   expect(Math.abs(after.pos[2] - before.pos[2])).toBeLessThan(0.5);
 });
 
+test('AI E2E: 视线被实心不透明方块遮挡 → 龙不追击；拆掉遮挡 → 追击（用户核心需求）', async ({ page }) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize({ width: 640, height: 480 });
+  // ⚠️ vd=8：本用例要在龙与玩家之间立墙，且龙轨道半径 24 格 ⇒ 加载半径必须盖得住
+  await page.goto('/?vd=8&seed=12345');
+  await waitWorldReady(page);
+
+  // ① 把玩家挪到开阔地，落地后用 stone 把他**完全封进一个石盒**（四壁 + 顶）。
+  //    龙在 y=30、轨道半径 24 ⇒ 视线必然穿过盒顶 → LOS 恒断。
+  const box = await page.evaluate(async () => {
+    const g = window.__MC_GAME__;
+    const p0 = g.player.physics.pos;
+    const cx = Math.floor(p0.x) + 600, cz = Math.floor(p0.z) + 600;
+    g._teleportTo(cx, 45, cz);
+    await new Promise((r) => setTimeout(r, 3000));   // 等落地 + column 加载
+    const p = g.player.physics.pos;
+    const bx = Math.floor(p.x), by = Math.floor(p.y), bz = Math.floor(p.z);
+    const stone = g.registry.idOf('stone');
+    // 内腔 3×3×3（玩家高 1.8 ⇒ 3 格净空足够），四壁 + 顶全封
+    for (let dx = -2; dx <= 2; dx++) {
+      for (let dz = -2; dz <= 2; dz++) {
+        for (let dy = 0; dy <= 3; dy++) {
+          const isWall = Math.abs(dx) === 2 || Math.abs(dz) === 2;
+          const isRoof = dy === 3;
+          if (!isWall && !isRoof) continue;   // 内腔留空
+          g.editor.setBlock({ x: bx + dx, y: by + dy, z: bz + dz, id: stone });
+        }
+      }
+    }
+    // 以玩家为中心召龙（轨道半径 24，龙在盒外 y=30 盘旋）
+    g.dragons.summon('ai-los:0:0', bx, bz, 0);
+    return { bx, by, bz };
+  });
+  await page.waitForFunction(() => window.__MC_GAME__.dragons.activeEntities().length === 1,
+    null, { timeout: 15_000 });
+
+  // sanity：石盒真的封住了（盒顶那格是 stone）—— 否则本用例测不到遮挡
+  const roofSolid = await page.evaluate((b) => {
+    const g = window.__MC_GAME__;
+    return g.world.getBlockId(b.bx, b.by + 3, b.bz) === g.registry.idOf('stone');
+  }, box);
+  expect(roofSolid, 'sanity：石盒顶必须是实心 stone').toBe(true);
+
+  // ② 封在盒里 6 秒：龙**不得**进追击（距离 24 < sightRange 60，唯一拦住它的就是视线）
+  const boxed = await sampleDragon(page, 6);
+  expect(boxed.length).toBeGreaterThan(20);
+  const boxedChase = boxed.filter((s) => s.mode === 'chase' || s.mode === 'attack');
+  expect(boxedChase.length,
+    `玩家被封进石盒（视线遮挡）时龙不得追击 —— 实测 mode 分布 ${JSON.stringify([...new Set(boxed.map((s) => s.mode))])}`)
+    .toBe(0);
+  // 且 LOS 缓存确实读到「不可见」（证明判据生效，不是别的原因让龙没追）
+  expect(boxed.filter((s) => s.los).length, 'sanity：盒内 LOS 必须为 false').toBe(0);
+
+  // ③ **对照**：拆掉盒顶 → 龙必须进追击。
+  //    ⚠️ 没有这条对照，上面那条是无效盲区（testing-policy §2.7）：若龙因为别的原因
+  //    根本不追击（例如 AI 没接线、或玩家不在 sightRange 内），「不追击」照样全绿。
+  await page.evaluate((b) => {
+    const g = window.__MC_GAME__;
+    for (let dx = -2; dx <= 2; dx++) {
+      for (let dz = -2; dz <= 2; dz++) g.editor.setBlock({ x: b.bx + dx, y: b.by + 3, z: b.bz + dz, id: 0 });
+    }
+  }, box);
+  await page.waitForFunction(() => {
+    const d = window.__MC_GAME__.dragons.activeEntities()[0];
+    return d && (d.state.mode === 'chase' || d.state.mode === 'attack');
+  }, null, { timeout: 30_000 });
+  const opened = await page.evaluate(() => {
+    const d = window.__MC_GAME__.dragons.activeEntities()[0];
+    return { mode: d.state.mode, los: d.state.losVisible };
+  });
+  expect(['chase', 'attack']).toContain(opened.mode);
+  expect(opened.los, '拆掉盒顶后 LOS 必须为 true').toBe(true);
+});
+
 test('AI E2E: 真实按 C 召龙后 AI 生效（玩家主路径，不是测试 API）', async ({ page }) => {
   test.setTimeout(180_000);
   await page.setViewportSize({ width: 640, height: 480 });

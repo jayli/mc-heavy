@@ -133,6 +133,30 @@ test('fireRequest 消费：龙有开火请求 → 生成火球；null → 不生
   expect(noop.after, 'fireRequest 为 null 不得生成火球').toBe(noop.before);
 });
 
+test('火球 spawn 失败（实体池满额）不得静默吞掉（评审 I3）', async ({ page }) => {
+  test.setTimeout(120_000);
+  await boot(page);
+
+  // 召一条龙，注入「entities.spawn 恒返回 null」（= 池满额），断言诊断计数增加。
+  // ⚠️ **形态是「龙张嘴没喷出东西，然后长时间不喷」**（冷却已重置）—— 玩家会读作 AI 坏了，
+  // 而概率虽低（需 EntityManager 全量满额）却是**静默**的 —— 与本 spec 第一条的去重污染同类，
+  // 本仓文化里值得一个防线。
+  const r = await page.evaluate(() => {
+    const g = window.__MC_GAME__;
+    const p = g.player.physics.pos;
+    g.dragons.summon('i3:0:0', Math.floor(p.x), Math.floor(p.z), 0);
+    const d = g.dragons.activeEntities()[0];
+    const before = g.fireballsDebugState().spawnFailed;
+    const realSpawn = g.entities.spawn.bind(g.entities);
+    g.entities.spawn = () => null;   // 注入：池满额
+    d.state.fireRequest = { position: [...d.state.position], direction: [0, -1, 0] };
+    g._consumeDragonFireRequests();
+    g.entities.spawn = realSpawn;
+    return { before, after: g.fireballsDebugState().spawnFailed };
+  });
+  expect(r.after, 'spawn 失败必须计入诊断（不得静默吞掉）').toBe(r.before + 1);
+});
+
 test('火球爆炸口径跟 TNT 开关：开启破坏方块、关闭不破坏（用户核心需求）', async ({ page }) => {
   test.setTimeout(120_000);
   await boot(page);
