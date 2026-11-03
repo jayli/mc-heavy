@@ -740,7 +740,7 @@ test('武器命中: 打中龙时 damage 被调且伤害量取自武器目录', (
   controller.setEntityQuery({
     // ⚠️ 实体 dist 必须**严格小于**方块 dist（fixture 的 aim.target.dist = 2）才算命中
     raycast: (o, d, r, predicate) => {
-      const dragon = { id: 'dragon-altar', type: 'dragon' };
+      const dragon = { id: 'dragon:tarn:2:0:0', type: 'dragon' };
       return predicate(dragon) ? { id: dragon.id, dist: 1 } : null;
     },
     damage: (id, amount) => damaged.push([id, amount]),
@@ -748,7 +748,7 @@ test('武器命中: 打中龙时 damage 被调且伤害量取自武器目录', (
   });
   controller.select('pistol');
   controller.fireOnce(aim);
-  assertDeepEqual(damaged, [['dragon-altar', WEAPONS[WEAPON_IDS.PISTOL].entityDamage]]);
+  assertDeepEqual(damaged, [['dragon:tarn:2:0:0', WEAPONS[WEAPON_IDS.PISTOL].entityDamage]]);
 });
 
 test('武器命中: 实体比方块远时不打实体（既有口径不因泛化而变）', () => {
@@ -756,7 +756,7 @@ test('武器命中: 实体比方块远时不打实体（既有口径不因泛化
   const damaged = [];
   controller.setEntityQuery({
     raycast: (o, d, r, predicate) => {
-      const dragon = { id: 'dragon-altar', type: 'dragon' };
+      const dragon = { id: 'dragon:tarn:2:0:0', type: 'dragon' };
       return predicate(dragon) ? { id: dragon.id, dist: 9 } : null;   // 远于方块 dist=2
     },
     damage: (id, amount) => damaged.push([id, amount]),

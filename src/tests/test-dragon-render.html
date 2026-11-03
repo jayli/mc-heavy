@@ -20,7 +20,7 @@
   import { DragonRenderer } from '../render/dragon-renderer.js';
   import { DRAGON, DRAGON_MODEL_CENTER } from '../entities/dragons/dragon-config.js';
 
-  // Tier 4 像素实测场景（祭坛飞龙 v2.41）。
+  // Tier 4 像素实测场景（祭坛飞龙 v2.41，v2.43 改多实例池）。
   //
   // 单条龙 + 黑背景隔离（无地形/无光照干扰），同 `test-zombie-model.html` 的手法。
   // **渲染由 spec 驱动**：一个相机只能看一个方向，而截图只有最后一帧 —— 多次渲染会互相
@@ -56,6 +56,16 @@
   };
   /** 整体 bbox 的中心（相机 lookAt 目标） */
   const CENTER = toWorld([0, (6.0 - 0.32) / 2, (11.44 - 7.31) / 2]);
+  /**
+   * 第二条龙的摆放位置（+X 60 格）。
+   *
+   * ⚠️ **60 是算出来的，不是拍的**：四个常规视角的相机距目标都是 `DIST=30`，
+   * 水平半视角 = atan(tan(25°)×4/3) = 31.9° ⇒ 可见半宽 = 30×0.6217 = **18.6 格**
+   * （x ∈ [−18.6, 18.6]），而第二条龙在 x=60（龙体 ±8.25 ⇒ [51.75, 68.25]）
+   * ⇒ **四个视角全部出画**，既有取样点零污染（side 视角更是把它放在相机背后）。
+   * 改这个值必须重算上面那个不等式（调到 <27 就会探进 front 视角）。
+   */
+  const DRAGON2_X = 60;
 
   async function run() {
     const renderer = new THREE.WebGPURenderer({ antialias: false });
@@ -84,6 +94,20 @@
       below: (() => { const c = mkCam(); c.position.set(CENTER[0], CENTER[1] - DIST, CENTER[2]); c.lookAt(...CENTER); return c; })(),
       // 上方
       top: (() => { const c = mkCam(); c.position.set(CENTER[0], CENTER[1] + DIST, CENTER[2]); c.lookAt(...CENTER); return c; })(),
+      // 广角（v2.43 多实例专用）：同时看到 x=0 与 x=DRAGON2_X 两条龙。
+      // ⚠️ **相机距与 far 必须单独算**：取中点 mid=30、距 90 ⇒ 可见半宽
+      // 90×0.6217 = **56 格**（x ∈ [−26, 86]），两条龙（[−8.25,8.25] 与 [51.75,68.25]）
+      // 全部入画且各占画面 ~15% 宽（够大，取样点才稳）。far 需 ≥ 90+龙体 ⇒ 取 400。
+      // ⚠️ **不能拿 side/front 视角测两条龙**：第二条龙在 x=60，而 side 相机在 x≈30
+      // 且朝 −X 看 ⇒ 它在相机**背后**，根本不入画（实测 changedRatio 恒 0，
+      // 一度误判成「渲染没生效」）。
+      wide: (() => {
+        const c = new THREE.PerspectiveCamera(50, W / H, 0.05, 400);
+        const mid = DRAGON2_X / 2;
+        c.position.set(mid, CENTER[1], CENTER[2] + 90);
+        c.lookAt(mid, CENTER[1], CENTER[2]);
+        return c;
+      })(),
     };
 
     const project = (camera, wx, wy, wz) => {
@@ -106,24 +130,44 @@
 
     /**
      * spec 调用：设置 pose → 渲染 → 返回该视角的取样点。
-     * @param {string} view front|side|below|top
-     * @param {{orbitT?: number, flashing?: boolean, yaw?: number, hidden?: boolean}} [opts]
+     *
+     * ⚠️ **v2.43 多实例**：`sync` 收的是**数组**。`opts.two` 为真时同时摆两条龙
+     * （第二条在 +X `DRAGON2_X` 格，四个常规视角全部出画 ⇒ 不污染既有取样点）。
+     * `opts.twoSync` 为真时第二条用**与第一条相同的 orbitT** —— 这是「骨骼不共享」的
+     * 对照侧：共享骨骼时 two 与 twoSync 两张图会**逐位相同**（第二条被迫摆第一条的姿势）。
+     * @param {string} view front|side|below|top|wide
+     * @param {{orbitT?: number, flashing?: boolean, yaw?: number, hidden?: boolean,
+     *          two?: boolean, twoSync?: boolean}} [opts]
      */
     window.__DR_RENDER__ = (view, opts = {}) => {
       const cam = cams[view];
       if (!cam) throw new Error(`unknown view: ${view}`);
       if (opts.hidden) {
-        dr.sync(null, 0);
+        dr.sync([], 0);
       } else {
-        dr.sync({
-          id: 'dragon-altar',
+        const t1 = opts.orbitT ?? 0;
+        const list = [{
+          id: 'dragon:tarn:0:0:0',
           state: {
             position: [0, 0, 0],
             yaw: opts.yaw ?? 0,
-            orbitT: opts.orbitT ?? 0,
+            orbitT: t1,
             flashedUntil: opts.flashing ? 1e9 : 0,
           },
-        }, opts.flashing ? 0 : 1e9);
+        }];
+        if (opts.two) {
+          list.push({
+            id: 'dragon:tarn:2:1:0',
+            state: {
+              position: [DRAGON2_X, 0, 0],
+              yaw: (opts.yaw ?? 0) + 1.0,
+              // twoSync → 与第一条同姿势（对照侧）；否则差 0.6s ≈ fly 半周期（翅膀一上一下）
+              orbitT: opts.twoSync ? t1 : t1 + 0.6,
+              flashedUntil: 0,
+            },
+          });
+        }
+        dr.sync(list, opts.flashing ? 0 : 1e9);
       }
       // 渲染两帧：WebGPU 首帧可能还在编译 shader，第二帧才是稳定结果
       renderer.render(scene, cam);
@@ -134,6 +178,9 @@
         wingR: project(cam, ...PTS.wingR),
         wingL: project(cam, ...PTS.wingL),
         chest: project(cam, ...PTS.chest),
+        // 第二条龙的取样点（wide 视角用；= 第一条的点整体平移 DRAGON2_X）
+        skull2: project(cam, PTS.skull[0] + DRAGON2_X, PTS.skull[1], PTS.skull[2]),
+        chest2: project(cam, PTS.chest[0] + DRAGON2_X, PTS.chest[1], PTS.chest[2]),
         // 整体屏幕包围框（翼展/体长量级判据）
         full: bboxRect(cam, [-8.25, -0.32, -7.31], [8.25, 6.0, 11.44]),
         // 翼膜小区域（DoubleSide 判据用区域统计比单点稳）
@@ -141,16 +188,23 @@
       };
     };
 
+    // ⚠️ **v2.43 多实例**：读实例池的第一个（取样点全部针对它）。
+    const inst0 = dr.instances[0];
     window.__DR_INFO__ = {
-      hasTexture: dr.mesh.material.map !== null,
-      textureSize: [dr.mesh.material.map?.image?.width, dr.mesh.material.map?.image?.height],
-      boneCount: dr.mesh.skeleton.bones.length,
-      vertexCount: dr.mesh.geometry.getAttribute('position').count,
-      side: dr.mesh.material.side,
-      alphaTest: dr.mesh.material.alphaTest,
-      isBasic: dr.mesh.material.isMeshBasicMaterial === true,
+      hasTexture: inst0.material.map !== null,
+      textureSize: [inst0.material.map?.image?.width, inst0.material.map?.image?.height],
+      boneCount: inst0.mesh.skeleton.bones.length,
+      vertexCount: inst0.mesh.geometry.getAttribute('position').count,
+      side: inst0.material.side,
+      alphaTest: inst0.material.alphaTest,
+      isBasic: inst0.material.isMeshBasicMaterial === true,
       assetScale: asset.scale,
       animNames: Object.keys(asset.animations),
+      // 多实例口径（Tier 4 据此确认池真的建起来了）
+      capacity: dr.capacity,
+      distinctMaterials: new Set(dr.instances.map((i) => i.material)).size,
+      distinctSkeletons: new Set(dr.instances.map((i) => i.mesh.skeleton)).size,
+      sharedGeometry: new Set(dr.instances.map((i) => i.mesh.geometry)).size,
     };
 
     window.__DR_READY__ = true;

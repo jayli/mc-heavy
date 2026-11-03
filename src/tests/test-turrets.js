@@ -746,10 +746,10 @@ test('炮塔索敌: 龙目标用 bodyOffsetY = 0（position 就是身体中心�
   // → 垂直差 23.7，pitch = atan2(23.7, 24) ≈ 0.78 rad < maxPitchAngle(π/4≈0.785) → 不被钳制。
   // ⚠️ 若误用 +1.2 偏移，pitch 会超过 π/4 被钳到 0.785 → 本断言抓到（判别力来自钳制边界）。
   const turrets = [{ id: 'turret-1', pivot: [0, 6.3, 0], rotation: 0 }];
-  const targets = [{ id: 'dragon-altar', position: [24, 30, 0], bodyOffsetY: 0 }];
+  const targets = [{ id: 'dragon:tarn:2:0:0', position: [24, 30, 0], bodyOffsetY: 0 }];
   const r = computeTurretUpdates({ turrets, targets, world, registry });
   assertEqual(r.updates[0].hasTarget, true);
-  assertEqual(r.updates[0].targetId, 'dragon-altar');
+  assertEqual(r.updates[0].targetId, 'dragon:tarn:2:0:0');
   const expected = Math.atan2(30 - 6.3, 24);
   assertTrue(Math.abs(r.updates[0].targetPitch - expected) < 1e-9,
     `pitch=${r.updates[0].targetPitch} 期望 ${expected}（bodyOffsetY 未生效）`);
@@ -763,14 +763,14 @@ test('炮塔索敌: 丧尸与龙同时在候选里，取最近', () => {
   const { world, registry } = makeWorldFixture();
   const turrets = [{ id: 'turret-1', pivot: [10.5, 7.3, 10.5], rotation: 0 }];
   const targets = [
-    { id: 'dragon-altar', position: [13.5, 8.5, 10.5], bodyOffsetY: 0 },   // 距 3 格（更近）
+    { id: 'dragon:tarn:2:0:0', position: [13.5, 8.5, 10.5], bodyOffsetY: 0 },   // 距 3 格（更近）
     { id: 'z1', position: [10.5, 4, 14.5] },                                // 距 4 格
   ];
   const r = computeTurretUpdates({ turrets, targets, world, registry });
-  assertEqual(r.updates[0].targetId, 'dragon-altar');
+  assertEqual(r.updates[0].targetId, 'dragon:tarn:2:0:0');
   // 反序输入也必须选同一个（不得依赖遍历顺序）
   const r2 = computeTurretUpdates({ turrets, targets: [...targets].reverse(), world, registry });
-  assertEqual(r2.updates[0].targetId, 'dragon-altar');
+  assertEqual(r2.updates[0].targetId, 'dragon:tarn:2:0:0');
 });
 
 test('炮塔索敌: targets 缺省/为空时回归默认朝向（与 zombies: [] 同语义）', () => {

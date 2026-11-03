@@ -49,6 +49,8 @@ import { createTurretBlueprint } from '../entities/turrets/turret-blueprint.js';
 import { computeTurretUpdates } from '../entities/turrets/turret-system.js';
 import { DRAGON_TYPE } from '../entities/dragons/dragon-config.js';
 import { dragonDefinition, DragonService } from '../entities/dragons/dragon-system.js';
+import { bossMapAt } from '../entities/bosses/boss-map.js';
+import { bossSlotsFor } from '../entities/bosses/boss-registry.js';
 import { DragonRenderer } from '../render/dragon-renderer.js';
 import { loadDragonAsset } from '../render/dragon-model.js';
 import { projectileDefinition, judgeProjectile } from '../entities/turrets/projectile-system.js';
@@ -72,6 +74,7 @@ import { InventoryPanel } from '../ui/inventory.js';
 import { loadIconManifest } from '../ui/icons.js';
 import { getBiome } from '../gen/noise.js';
 import { loadStoredSettings, resolveSettings } from '../ui/settings.js';
+import { Toast } from '../ui/toast.js';
 import { pixelRatioFor, normPixelRatioMode } from '../render/pixel-ratio.js';
 import { encodeProgress, decodeProgress } from '../save/progress-codec.js';
 import { computeTarnZone, findNearestTarnZone } from '../gen/structures/tarn-zone.js';
@@ -587,12 +590,9 @@ export class Game {
     // ⚠️ **装配位置必须在 `persistence`(:447) / `seed`(:451) 之后**（否则拿到 null persistence
     // 与未定 seed），且在 `_waitForColumn`(:769) **之前** —— 同 M7 巢穴/炮塔的装配约束。
     // ⚠️ **龙是临时实体**（`persistent: false`）：位置是 seed 的纯函数，进存档就是第二份
-    // 权威（红线 2）。只有「死没死」这一个布尔进 meta 行（`dragonDead`）。
+    // 权威（红线 2）。v2.43 起**不再有任何东西进存档** —— 永久死亡标记已随「死后可重召」移除。
     this.entities.registerType(DRAGON_TYPE, dragonDefinition);
-    this.dragons = new DragonService({
-      entities: this.entities, persistence: this.persistence, seed: this.seed, world: this.world,
-    });
-    this.dragons.hydrate(meta);   // 从 meta 行恢复死亡标记（旧存档无此字段 → 自然回落未死）
+    this.dragons = new DragonService({ entities: this.entities, seed: this.seed });
     // 渲染器：要 await 产物加载。⚠️ **加载失败不得让整个游戏起不来**（龙是景观，
     // 缺它不该白屏）—— 与 M4 武器模型 / M8 蓝图加载失败同一容错口径。失败则
     // `dragonRenderer = null`，帧循环判空。
@@ -604,11 +604,8 @@ export class Game {
       console.warn('[dragon] 渲染器加载失败，龙不显示（不影响游戏）:', err);
       this.dragonRenderer = null;
     }
-    // 预热轨道 memo：把 `findAltarTarnRegion` 的冷调用（实测 12.6ms）挪到加载阶段，
-    // 避免它落在第一个玩法帧（120Hz 帧预算 8.3ms，开局会掉一帧）。与 `computeArenaAnchor`
-    // 在 Worker layout 入口预热同一口径（AGENTS.md）。⚠️ 放在渲染器加载之后、
-    // `_waitForColumn` 之前 —— 此时 seed 已定、且仍在加载阶段。
-    this.dragons.warm();
+    // ⚠️ **v2.43 起不再预热**：龙不再绑定祭坛地带（`findAltarTarnRegion` 的 12.6ms 冷调用
+    // 已不在龙的路径上），轨道中心由按 C 时的 `bossMapAt()` 给出。
 
     // ---- 矿车装配 ----
     // 矿车是 M5 持久实体（设计文档 §2.2）：白拿 entities store 写盘 / column 两阶段卸载 /
@@ -851,6 +848,8 @@ export class Game {
       isModal: () => this.uiModal,
       // M6：X 键生成丧尸（调试键，对齐 mc-lite）。注入回调而非传 Game（依赖方向 §3，与 isModal 同手法）
       onSpawnZombie: () => this.spawnZombieNearPlayer(),
+      // v2.43：C 键召唤玩家所在地图的 Boss。注入回调而非传 Game（依赖方向 §3，同手法）
+      onSummonBoss: () => this.summonBoss(),
       // M7：巢穴服务注入。同样注入而非传 Game —— `src/entities/**` 是同构层，
       // Player 不得反向依赖它（依赖方向 §3，与 isModal / onSpawnZombie 同手法）
       nests: this.nests,
@@ -1003,9 +1002,9 @@ export class Game {
       // entities.update 之前（mc-lite 的 frameReservations 同生命周期）
       this.minecarts.beginFrame();
       this.zombies.update(dt, { playerPosition: [pp.x, pp.y, pp.z] });
-      // 祭坛飞龙（v2.41）：spawn 编排在 `entities.update` **之前**（与 zombies.update 同段：
-      // 先编排后推进）。幂等：已死 / 已有实体 / column 未就绪时 no-op。
-      this.dragons.ensure();
+      // ⚠️ **v2.43 起龙不再每帧自动 spawn**（原 `this.dragons.ensure()` 已删）：
+      // 龙只在按 C 时召唤（`summonBoss()`）。保留自动生成的形态是「Boss1 已在 → 召唤 Boss2」
+      // 永远命中「已在」，而高台地带没有 Boss2 ⇒ C 键对高台地带毫无作用。
       // 矿车 context：minecarts = service（跨车协调），player = 玩家位置（抬起判定）。
       // ⚠️ player 传**位置快照**而非 Player 对象 —— entities/ 是同构层，不得依赖 player/
       // ⚠️ **形状必须是 `{position:[x,y,z]}` 对象，不是裸数组** —— `resolvePlayerBlocking`
@@ -1088,7 +1087,7 @@ export class Game {
       this.zombieRenderer.sync(this.zombies, nowMs);
       // 祭坛飞龙（v2.41）：pose 发布（位置/yaw/bank + 动画采样 + 红闪）。无实体时
       // visible=false → draw call 归零。⚠️ 传 `nowMs`（performance.now 基准，红闪判定）。
-      if (this.dragonRenderer) this.dragonRenderer.sync(this.dragons.active(), nowMs);
+      if (this.dragonRenderer) this.dragonRenderer.sync(this.dragons.activeEntities(), nowMs);
       // 矿车 pose 发布（差集驱动 slot；只读 state）
       this.minecartRenderer.sync(this.entities.entities());
       // M8：炮塔 pose 发布（pivot 世界坐标 + Task 4 插值出的当前 yaw/pitch）。
@@ -2014,6 +2013,70 @@ export class Game {
     return null;
   }
 
+  // ---- v2.43 Boss 召唤（按 C）----
+
+  /**
+   * 按 C 召唤玩家所在地图的 Boss（v2.43）。
+   *
+   * 流程（`boss-registry.js` 文件头）：定位地图 → 查名册 → 按 slot 升序找第一个空槽 →
+   * 在地图中心召唤；全占着 → 提示「Boss 都在了」。
+   *
+   * ⚠️ **本方法是通用的**：它只读 `bossMapAt()` 与 `bossSlotsFor()`，对具体 Boss 类型
+   * 一无所知 —— 加 Boss2 / 给别的地图加 Boss 只改 `boss-registry.js` 的名册与对应 service，
+   * 不动这里。service 契约 = `summon(mapKey, cx, cz, slot)` 返回
+   * `{ok:true, id} | {ok:false, reason:'exists'|'limit'}`。
+   *
+   * ⚠️ **召不出时必须给 toast**（用户裁定）：静默失败会让玩家以为按键坏了
+   * （AGENTS.md v1.98「点了没反应」同源教训）。
+   *
+   * @returns {{ok: boolean, reason?: string, id?: string}}
+   */
+  summonBoss() {
+    const p = this.player?.physics?.pos;
+    if (!p) return { ok: false, reason: 'no-player' };
+    const map = bossMapAt(p.x, p.z, this.seed);
+    if (!map) {
+      this._bossToast('这里没有可召唤的 Boss');
+      return { ok: false, reason: 'no-map' };
+    }
+    const slots = bossSlotsFor(map.kind);
+    if (!slots.length) {
+      this._bossToast('这里没有可召唤的 Boss');
+      return { ok: false, reason: 'no-boss' };
+    }
+    for (const slotDef of slots) {
+      const svc = this[slotDef.service];
+      if (!svc || typeof svc.summon !== 'function') continue;
+      const r = svc.summon(map.key, map.cx, map.cz, slotDef.slot);
+      if (r.ok) {
+        this._bossToast(`已召唤 Boss${slotDef.slot + 1}`);
+        return r;
+      }
+      if (r.reason === 'limit') {
+        this._bossToast('Boss 数量已达上限');
+        return r;
+      }
+      // 'exists' → 该槽位已有，试下一个
+    }
+    this._bossToast('Boss 都在了');
+    return { ok: false, reason: 'all-exist' };
+  }
+
+  /**
+   * Boss 召唤的 toast（懒建）。
+   *
+   * ⚠️ **与设置面板的 Toast 共享同一个 `#mc-toast` DOM 元素**（`Toast._install` 按 id 幂等）。
+   * 这是有意的：两个实例各建一个同 id 元素时，`document.getElementById` 只返回文档序里的
+   * 第一个 ⇒ 后建的那个写的文案玩家永远看不到（v2.43 实测踩到，已修 `Toast._install`）。
+   * ⚠️ 因此**不要给本实例调 `dispose()`** —— 它会把共享元素从文档里摘掉，
+   * 设置面板的提示随之静默失效。
+   */
+  _bossToast(message) {
+    if (!this._bossToastInstance) this._bossToastInstance = new Toast({});
+    this._bossToastInstance.show(message);
+    return undefined;
+  }
+
   // ---- M8 TNT 公开 API ----
 
   /**
@@ -2370,8 +2433,10 @@ export class Game {
     }));
     // v2.41：炮塔也打龙（用户裁定）。⚠️ **龙传 `bodyOffsetY: 0`** —— 它的 position 就是
     // 身体中心，而丧尸的 position 是脚底（缺省 +1.2 抬到胸部，mc-lite `ENEMY_BODY_OFFSET_Y`）。
-    const dragon = this.dragons?.active();
-    if (dragon) targets.push({ id: dragon.id, position: [...dragon.state.position], bodyOffsetY: 0 });
+    // ⚠️ **v2.43 起是全部龙**（多实例），不是单条。
+    for (const dragon of this.dragons?.activeEntities() ?? []) {
+      targets.push({ id: dragon.id, position: [...dragon.state.position], bodyOffsetY: 0 });
+    }
     const { updates } = computeTurretUpdates({
       turrets, targets, world: this.world, registry: this.registry,
     });

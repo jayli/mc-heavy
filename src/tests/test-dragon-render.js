@@ -1,6 +1,6 @@
 // src/tests/test-dragon-render.js — 祭坛飞龙（v2.41）渲染层纯逻辑
 //
-// 覆盖「单测能测到」的部分：骨骼层级与几何属性齐全、visible 门控（draw call 归零）、
+// 覆盖「单测能测到」的部分：实例池与骨骼层级、visible 门控（draw call 归零）、
 // pose 发布（position/yaw/bank）、红闪颜色切换、动画采样（loop 闭合 / blend 生效 / 增量语义）。
 //
 // ⚠️ **用真实产物**（fetch `dragon.json`）而不是手造 miniAsset：AGENTS.md 已记「fake 必须
@@ -13,7 +13,9 @@ import { DragonRenderer } from '../render/dragon-renderer.js';
 import {
   loadDragonAsset, sampleDragonAnim, sampleDragonPose, slerpQuat, multiplyQuat,
 } from '../render/dragon-model.js';
-import { DRAGON, DRAGON_ANIM, DRAGON_MODEL_CENTER } from '../entities/dragons/dragon-config.js';
+import {
+  DRAGON, DRAGON_ANIM, DRAGON_MODEL_CENTER, DRAGON_MAX_ALIVE,
+} from '../entities/dragons/dragon-config.js';
 
 let asset = null;
 async function getAsset() {
@@ -21,9 +23,14 @@ async function getAsset() {
   return asset;
 }
 
-function makeEntity(over = {}) {
+/**
+ * 造一个龙实体（v2.43 多实例：id 必须逐条不同，否则渲染池会当成同一条）。
+ * @param {object} [over] state 覆盖
+ * @param {string} [id]
+ */
+function makeEntity(over = {}, id = 'dragon:tarn:0:0:0') {
   return {
-    id: 'dragon-altar',
+    id,
     state: {
       position: [10, 30, 20], yaw: 1.2, orbitT: 0, flashedUntil: 0, ...over,
     },
@@ -183,20 +190,36 @@ test('龙渲染: sampleDragonPose 覆盖两个动画的骨骼并集', async () =
   assertEqual(mixed.size, union.size);
 });
 
-// ==================== 渲染器 ====================
+// ==================== 渲染器（v2.43 多实例池）====================
+
+test('龙渲染: 实例池容量 = DRAGON_MAX_ALIVE，几何共享而骨骼/材质逐龙独立', async () => {
+  const d = await getAsset();
+  const scene = new THREE.Scene();
+  const r = new DragonRenderer(scene, d);
+  assertEqual(r.capacity, DRAGON_MAX_ALIVE);
+  assertEqual(r.instances.length, DRAGON_MAX_ALIVE);
+  const geos = new Set(r.instances.map((i) => i.mesh.geometry));
+  assertEqual(geos.size, 1, '几何必须共享一份（N 份会白占显存）');
+  const mats = new Set(r.instances.map((i) => i.material));
+  assertEqual(mats.size, DRAGON_MAX_ALIVE, '材质必须逐龙独立（红闪是材质级 color）');
+  const skeletons = new Set(r.instances.map((i) => i.mesh.skeleton));
+  assertEqual(skeletons.size, DRAGON_MAX_ALIVE, '骨骼必须逐龙独立（共享会让所有龙摆同一姿势）');
+  r.dispose();
+});
 
 test('龙渲染: 骨骼层级与几何属性齐全', async () => {
   const d = await getAsset();
   const scene = new THREE.Scene();
   const r = new DragonRenderer(scene, d);
-  assertEqual(r.mesh.skeleton.bones.length, d.bones.length);
+  const inst = r.instances[0];
+  assertEqual(inst.mesh.skeleton.bones.length, d.bones.length);
   for (const attr of ['position', 'normal', 'uv', 'skinIndex', 'skinWeight']) {
-    assertTrue(r.mesh.geometry.getAttribute(attr) !== undefined, `缺 ${attr}`);
+    assertTrue(inst.mesh.geometry.getAttribute(attr) !== undefined, `缺 ${attr}`);
   }
-  assertEqual(r.mesh.geometry.getAttribute('position').count, d.metrics.vertexCount);
-  assertEqual(r.mesh.geometry.getIndex().count, d.metrics.indexCount);
+  assertEqual(inst.mesh.geometry.getAttribute('position').count, d.metrics.vertexCount);
+  assertEqual(inst.mesh.geometry.getIndex().count, d.metrics.indexCount);
   // skinWeight 每顶点第一个恒 1、其余 0（刚性绑定）
-  const w = r.mesh.geometry.getAttribute('skinWeight');
+  const w = inst.mesh.geometry.getAttribute('skinWeight');
   for (let i = 0; i < w.count; i++) {
     assertEqual(w.getX(i), 1);
     assertEqual(w.getY(i), 0);
@@ -206,10 +229,10 @@ test('龙渲染: 骨骼层级与几何属性齐全', async () => {
   // 骨骼父子关系与产物一致
   for (let i = 0; i < d.bones.length; i++) {
     const p = d.bones[i].parentIndex;
-    const actualParent = r.mesh.skeleton.bones[i].parent;
-    if (p === -1) assertTrue(actualParent === r.mesh || actualParent === null,
+    const actualParent = inst.mesh.skeleton.bones[i].parent;
+    if (p === -1) assertTrue(actualParent === inst.mesh || actualParent === null,
       `根骨骼 ${d.bones[i].name} 的 parent 应是 mesh`);
-    else assertTrue(actualParent === r.mesh.skeleton.bones[p],
+    else assertTrue(actualParent === inst.mesh.skeleton.bones[p],
       `骨骼 ${d.bones[i].name} 的 parent 应是 ${d.bones[p].name}`);
   }
   r.dispose();
@@ -219,10 +242,12 @@ test('龙渲染: 材质口径（unlit / DoubleSide / alphaTest / 白基色）', 
   const d = await getAsset();
   const scene = new THREE.Scene();
   const r = new DragonRenderer(scene, d);
-  assertTrue(r.mesh.material.isMeshBasicMaterial, '必须 unlit（MeshBasicMaterial）');
-  assertEqual(r.mesh.material.side, THREE.DoubleSide, '翼膜 1px 薄片必须双面');
-  assertEqual(r.mesh.material.alphaTest, 0.5, '翼膜镂空走 cutout 语义');
-  assertEqual(r.mesh.material.color.getHex(), 0xffffff, '有贴图时基色必须白');
+  for (const inst of r.instances) {
+    assertTrue(inst.material.isMeshBasicMaterial, '必须 unlit（MeshBasicMaterial）');
+    assertEqual(inst.material.side, THREE.DoubleSide, '翼膜 1px 薄片必须双面');
+    assertEqual(inst.material.alphaTest, 0.5, '翼膜镂空走 cutout 语义');
+    assertEqual(inst.material.color.getHex(), 0xffffff, '有贴图时基色必须白');
+  }
   r.dispose();
 });
 
@@ -230,21 +255,56 @@ test('龙渲染: mesh 局部偏移 = −DRAGON_MODEL_CENTER（体心对准 state
   const d = await getAsset();
   const scene = new THREE.Scene();
   const r = new DragonRenderer(scene, d);
-  assertEqual(r.mesh.position.x, -DRAGON_MODEL_CENTER[0]);
-  assertEqual(r.mesh.position.y, -DRAGON_MODEL_CENTER[1]);
-  assertEqual(r.mesh.position.z, -DRAGON_MODEL_CENTER[2]);
+  for (const inst of r.instances) {
+    assertEqual(inst.mesh.position.x, -DRAGON_MODEL_CENTER[0]);
+    assertEqual(inst.mesh.position.y, -DRAGON_MODEL_CENTER[1]);
+    assertEqual(inst.mesh.position.z, -DRAGON_MODEL_CENTER[2]);
+  }
   r.dispose();
 });
 
-test('龙渲染: 无实体时 visible = false（draw call 归零）', async () => {
+test('龙渲染: 无实体时全部实例 visible = false（draw call 归零）', async () => {
   const d = await getAsset();
   const scene = new THREE.Scene();
   const r = new DragonRenderer(scene, d);
-  assertFalse(r.pivot.visible, '构造后应隐藏（初始无龙）');
-  r.sync(makeEntity(), 0);
-  assertTrue(r.pivot.visible, '有实体应显示');
-  r.sync(null, 0);
-  assertFalse(r.pivot.visible, '实体消失后必须隐藏（M6 口径）');
+  for (const inst of r.instances) assertFalse(inst.pivot.visible, '构造后应隐藏（初始无龙）');
+  r.sync([makeEntity()], 0);
+  assertTrue(r.instances[0].pivot.visible, '有实体应显示');
+  for (let i = 1; i < r.instances.length; i++) {
+    assertFalse(r.instances[i].pivot.visible, `未用到的实例 ${i} 必须隐藏`);
+  }
+  r.sync([], 0);
+  for (const inst of r.instances) assertFalse(inst.pivot.visible, '实体消失后必须隐藏（M6 口径）');
+  r.dispose();
+});
+
+test('龙渲染: 两条龙同时可见且各自独立摆放', async () => {
+  const d = await getAsset();
+  const scene = new THREE.Scene();
+  const r = new DragonRenderer(scene, d);
+  r.sync([
+    makeEntity({ position: [10, 30, 20], yaw: 1.2 }, 'dragon:tarn:0:0:0'),
+    makeEntity({ position: [900, 30, 700], yaw: -0.4 }, 'dragon:tarn:2:1:0'),
+  ], 0);
+  assertTrue(r.instances[0].pivot.visible && r.instances[1].pivot.visible, '两条龙都须可见');
+  assertEqual(r.instances[0].pivot.position.x, 10);
+  assertEqual(r.instances[1].pivot.position.x, 900);
+  assertTrue(Math.abs(r.instances[0].pivot.rotation.y - 1.2) < 1e-9);
+  assertTrue(Math.abs(r.instances[1].pivot.rotation.y + 0.4) < 1e-9, '两条龙的 yaw 必须各自独立');
+  r.dispose();
+});
+
+test('龙渲染: 红闪只作用于被打中的那条龙（材质逐龙独立的判据）', async () => {
+  const d = await getAsset();
+  const scene = new THREE.Scene();
+  const r = new DragonRenderer(scene, d);
+  // ⚠️ 这条是「共享材质」缺陷的判据：共享时打中一条会让**所有**龙变红
+  r.sync([
+    makeEntity({ flashedUntil: 1000 }, 'a'),
+    makeEntity({ flashedUntil: 0 }, 'b'),
+  ], 500);
+  assertEqual(r.instances[0].material.color.getHex(), 0xff0000, '被打中的龙须变红');
+  assertEqual(r.instances[1].material.color.getHex(), 0xffffff, '未被打中的龙必须保持白色');
   r.dispose();
 });
 
@@ -252,13 +312,14 @@ test('龙渲染: pose 发布（position 来自 state，yaw 在 pivot 上）', as
   const d = await getAsset();
   const scene = new THREE.Scene();
   const r = new DragonRenderer(scene, d);
-  r.sync(makeEntity({ position: [10, 30, 20], yaw: 1.2 }), 0);
-  assertEqual(r.pivot.position.x, 10);
-  assertEqual(r.pivot.position.y, 30);
-  assertEqual(r.pivot.position.z, 20);
+  r.sync([makeEntity({ position: [10, 30, 20], yaw: 1.2 })], 0);
+  const pivot = r.instances[0].pivot;
+  assertEqual(pivot.position.x, 10);
+  assertEqual(pivot.position.y, 30);
+  assertEqual(pivot.position.z, 20);
   // ⚠️ **必须用容差**：`rotateZ` 之后 three 从 quaternion 反解欧拉 XYZ，
   // `rotation.y` 会有 1e-16 级漂移（实测 1.1999999999999997）。用 assertEqual 是贴线断言。
-  assertTrue(Math.abs(r.pivot.rotation.y - 1.2) < 1e-9, `yaw=${r.pivot.rotation.y}`);
+  assertTrue(Math.abs(pivot.rotation.y - 1.2) < 1e-9, `yaw=${pivot.rotation.y}`);
   r.dispose();
 });
 
@@ -266,16 +327,17 @@ test('龙渲染: bank roll 叠加在 yaw 之后（不得混进 yaw）', async ()
   const d = await getAsset();
   const scene = new THREE.Scene();
   const r = new DragonRenderer(scene, d);
-  r.sync(makeEntity({ yaw: 1.2 }), 0);
+  r.sync([makeEntity({ yaw: 1.2 })], 0);
+  const pivot = r.instances[0].pivot;
   // ⚠️ yaw 必须保持（roll 混进 yaw 会让龙飞歪）。用容差 —— 同上条的欧拉反解漂移。
-  assertTrue(Math.abs(r.pivot.rotation.y - 1.2) < 1e-9, `yaw=${r.pivot.rotation.y}`);
+  assertTrue(Math.abs(pivot.rotation.y - 1.2) < 1e-9, `yaw=${pivot.rotation.y}`);
   // roll 体现在 rotation.z（欧拉 XYZ 序下 rotateZ 叠加到 z 分量）
-  assertTrue(Math.abs(r.pivot.rotation.z) > 1e-6, `roll 未生效（z=${r.pivot.rotation.z}）`);
-  assertTrue(Math.abs(Math.abs(r.pivot.rotation.z) - DRAGON.bankRoll) < 1e-6,
-    `roll=${r.pivot.rotation.z} 期望 ±${DRAGON.bankRoll}`);
+  assertTrue(Math.abs(pivot.rotation.z) > 1e-6, `roll 未生效（z=${pivot.rotation.z}）`);
+  assertTrue(Math.abs(Math.abs(pivot.rotation.z) - DRAGON.bankRoll) < 1e-6,
+    `roll=${pivot.rotation.z} 期望 ±${DRAGON.bankRoll}`);
   // 前向仍与 yaw 一致（roll 不改水平朝向）：用基向量判，不读欧拉分量
   // （AGENTS.md：Euler 分解在特定角度有多解/折叠，判朝向要用基向量）
-  const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(r.pivot.quaternion);
+  const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(pivot.quaternion);
   const expectFwd = new THREE.Vector3(Math.sin(-1.2), 0, -Math.cos(1.2));
   // roll 会让 fwd 有微小 y 分量，但水平投影方向必须一致
   const horiz = new THREE.Vector3(fwd.x, 0, fwd.z).normalize();
@@ -289,16 +351,16 @@ test('龙渲染: 红闪期内材质偏红，到期复位白', async () => {
   const scene = new THREE.Scene();
   const r = new DragonRenderer(scene, d);
   const e = makeEntity({ flashedUntil: 1000 });
-  r.sync(e, 500);   // nowMs < flashedUntil → 红
-  assertEqual(r.mesh.material.color.getHex(), 0xff0000);
-  assertTrue(r.mesh.material.color.r > r.mesh.material.color.g, '红闪期应偏红');
-  r.sync(e, 1000);  // 恰好到期（严格小于才闪）→ 白
-  assertEqual(r.mesh.material.color.getHex(), 0xffffff);
-  r.sync(e, 1500);
-  assertEqual(r.mesh.material.color.getHex(), 0xffffff);
+  r.sync([e], 500);   // nowMs < flashedUntil → 红
+  assertEqual(r.instances[0].material.color.getHex(), 0xff0000);
+  assertTrue(r.instances[0].material.color.r > r.instances[0].material.color.g, '红闪期应偏红');
+  r.sync([e], 1000);  // 恰好到期（严格小于才闪）→ 白
+  assertEqual(r.instances[0].material.color.getHex(), 0xffffff);
+  r.sync([e], 1500);
+  assertEqual(r.instances[0].material.color.getHex(), 0xffffff);
   // 再次进入红闪（连续受伤）
-  r.sync(makeEntity({ flashedUntil: 3000 }), 2500);
-  assertEqual(r.mesh.material.color.getHex(), 0xff0000);
+  r.sync([makeEntity({ flashedUntil: 3000 })], 2500);
+  assertEqual(r.instances[0].material.color.getHex(), 0xff0000);
   r.dispose();
 });
 
@@ -308,13 +370,14 @@ test('龙渲染: 骨骼变换从 bind 快照起算（不逐帧累积）', async 
   const r = new DragonRenderer(scene, d);
   // 同一 orbitT 连续 sync 多次，骨骼变换必须逐位相同（累积的形态是每次都不一样）
   const e = makeEntity({ orbitT: 2.5 });
-  r.sync(e, 0);
-  const first = r.mesh.skeleton.bones.map((b) => [
+  r.sync([e], 0);
+  const bones = r.instances[0].mesh.skeleton.bones;
+  const first = bones.map((b) => [
     b.quaternion.x, b.quaternion.y, b.quaternion.z, b.quaternion.w,
     b.position.x, b.position.y, b.position.z,
   ]);
-  for (let i = 0; i < 5; i++) r.sync(e, i * 16);
-  const later = r.mesh.skeleton.bones.map((b) => [
+  for (let i = 0; i < 5; i++) r.sync([e], i * 16);
+  const later = bones.map((b) => [
     b.quaternion.x, b.quaternion.y, b.quaternion.z, b.quaternion.w,
     b.position.x, b.position.y, b.position.z,
   ]);
@@ -331,52 +394,72 @@ test('龙渲染: 不同 orbitT 给出不同骨骼姿态（动画真的在驱动�
   const d = await getAsset();
   const scene = new THREE.Scene();
   const r = new DragonRenderer(scene, d);
-  r.sync(makeEntity({ orbitT: 0 }), 0);
-  const a = r.mesh.skeleton.bones.map((b) => b.quaternion.w);
-  r.sync(makeEntity({ orbitT: 0.6 }), 0);
-  const b = r.mesh.skeleton.bones.map((x) => x.quaternion.w);
+  r.sync([makeEntity({ orbitT: 0 })], 0);
+  const a = r.instances[0].mesh.skeleton.bones.map((b) => b.quaternion.w);
+  r.sync([makeEntity({ orbitT: 0.6 })], 0);
+  const b = r.instances[0].mesh.skeleton.bones.map((x) => x.quaternion.w);
   let changed = 0;
   for (let i = 0; i < a.length; i++) if (Math.abs(a[i] - b[i]) > 1e-9) changed++;
   assertTrue(changed > 10, `只有 ${changed} 根骨骼的姿态变了（动画未驱动）`);
   r.dispose();
 });
 
-test('龙渲染: bind pose（orbitT 使增量为单位）时骨骼等于产物 bind 值', async () => {
+test('龙渲染: 两条龙的动画姿态各自独立（不共享骨骼的判据）', async () => {
   const d = await getAsset();
   const scene = new THREE.Scene();
   const r = new DragonRenderer(scene, d);
-  // 找一个增量接近单位的时刻不容易 → 直接验证「快照起算」的不变式：
-  // 任意时刻，骨骼四元数 = bindQuat * delta（delta 归一化）→ 模长恒 1
-  r.sync(makeEntity({ orbitT: 3.3 }), 0);
+  // ⚠️ 这条是「共享骨骼」缺陷的判据：共享时第二条龙会摆出第一条的姿势
+  r.sync([
+    makeEntity({ orbitT: 0 }, 'a'),
+    makeEntity({ orbitT: 0.6 }, 'b'),
+  ], 0);
+  const qa = r.instances[0].mesh.skeleton.bones.map((b) => b.quaternion.w);
+  const qb = r.instances[1].mesh.skeleton.bones.map((b) => b.quaternion.w);
+  let diff = 0;
+  for (let i = 0; i < qa.length; i++) if (Math.abs(qa[i] - qb[i]) > 1e-9) diff++;
+  assertTrue(diff > 10, `只有 ${diff} 根骨骼不同（疑似共享骨骼 → 两条龙同步扇翅）`);
+  r.dispose();
+});
+
+test('龙渲染: 骨骼四元数模长恒 1（bind 快照起算的不变式）', async () => {
+  const d = await getAsset();
+  const scene = new THREE.Scene();
+  const r = new DragonRenderer(scene, d);
+  r.sync([makeEntity({ orbitT: 3.3 })], 0);
   for (let i = 0; i < d.bones.length; i++) {
-    const q = r.mesh.skeleton.bones[i].quaternion;
+    const q = r.instances[0].mesh.skeleton.bones[i].quaternion;
     const n = Math.hypot(q.x, q.y, q.z, q.w);
     assertTrue(Math.abs(n - 1) < 1e-6, `骨骼 ${d.bones[i].name} 四元数模长 ${n}`);
   }
   r.dispose();
 });
 
-test('龙渲染: dispose 后从 scene 摘除且几何/材质已释放', async () => {
+test('龙渲染: dispose 后全部实例从 scene 摘除且几何/材质已释放', async () => {
   const d = await getAsset();
   const scene = new THREE.Scene();
   const r = new DragonRenderer(scene, d);
-  assertTrue(scene.children.includes(r.pivot), '构造后应挂进 scene');
-  let geoDisposed = false, matDisposed = false;
-  const origGeo = r.mesh.geometry.dispose.bind(r.mesh.geometry);
-  const origMat = r.mesh.material.dispose.bind(r.mesh.material);
-  r.mesh.geometry.dispose = () => { geoDisposed = true; origGeo(); };
-  r.mesh.material.dispose = () => { matDisposed = true; origMat(); };
+  const pivots = r.instances.map((i) => i.pivot);
+  for (const p of pivots) assertTrue(scene.children.includes(p), '构造后应挂进 scene');
+  let geoDisposed = false;
+  let matDisposed = 0;
+  const geo = r.instances[0].mesh.geometry;
+  const origGeo = geo.dispose.bind(geo);
+  geo.dispose = () => { geoDisposed = true; origGeo(); };
+  for (const inst of r.instances) {
+    const orig = inst.material.dispose.bind(inst.material);
+    inst.material.dispose = () => { matDisposed++; orig(); };
+  }
   r.dispose();
-  assertFalse(scene.children.includes(r.pivot), 'dispose 后应从 scene 摘除');
+  for (const p of pivots) assertFalse(scene.children.includes(p), 'dispose 后应从 scene 摘除');
   assertTrue(geoDisposed, 'geometry 未 dispose');
-  assertTrue(matDisposed, 'material 未 dispose');
+  assertEqual(matDisposed, DRAGON_MAX_ALIVE, '每个实例的材质都必须 dispose');
 });
 
 test('龙渲染: 未传贴图时 loadTexture 走 resourceUrl（不写站点根绝对路径）', async () => {
   const d = await getAsset();
   const scene = new THREE.Scene();
   const r = new DragonRenderer(scene, d);
-  assertNull(r.mesh.material.map, '构造时未传贴图 → map 应为空');
+  for (const inst of r.instances) assertNull(inst.material.map, '构造时未传贴图 → map 应为空');
   // ⚠️ 不真的加载（会发网络请求）；只验证方法存在且构造不抛。
   // 真实加载与像素判据在 tests/dragon-render.spec.mjs（Tier 4）。
   assertTrue(typeof r.loadTexture === 'function');

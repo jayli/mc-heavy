@@ -2,7 +2,7 @@
 //
 // 覆盖（spec §5、§6）：轨道确定性与半径高度有界、yaw 是切线方向、salt 不撞车、
 // AABB 随 yaw 旋转、命中判据在临界距离附近区分、动画状态机 fly/glide 交替与周期闭合、
-// definition 返回全新 state（M5 不变式）、DragonService 的 spawn 编排 / damage / 死亡标记。
+// definition 返回全新 state（M5 不变式）、DragonService 的按需召唤（v2.43）/ damage / 死后可重召。
 //
 // 派生量一律从**冻结常量**算出而非硬编码字面量（testing-policy §2.5）。
 import { test } from './runner.js';
@@ -11,9 +11,10 @@ import {
 } from './assert.js';
 import { EntityManager } from '../entities/entity-manager.js';
 import { columnKeyAt } from '../voxel/constants.js';
-import { findAltarTarnRegion, TARN_PLATEAU_Y } from '../gen/structures/tarn-zone.js';
+import { TARN_PLATEAU_Y } from '../gen/structures/tarn-zone.js';
 import {
-  DRAGON, DRAGON_TYPE, DRAGON_ORBIT_SALT, DRAGON_CORE_OBB, DRAGON_ANIM,
+  DRAGON, DRAGON_TYPE, DRAGON_MAX_ALIVE, DRAGON_ORBIT_SALT, DRAGON_CORE_OBB, DRAGON_ANIM,
+  dragonEntityIdFor,
 } from '../entities/dragons/dragon-config.js';
 import {
   dragonPoseAt, dragonAnimStateAt, dragonAabbFor, dragonDefinition, DragonService,
@@ -265,274 +266,216 @@ test('龙 definition: raycastAabb 走 definition 自己的 AABB（不是 PROBE_A
   assertTrue(t > 10, `t=${t} 太小（疑似用了 PROBE_AABB 而不是核心盒）`);
 });
 
-// ==================== DragonService ====================
+// ==================== DragonService（v2.43：按需召唤，多实例）====================
 
-/** fake persistence：必须建模真实对象的副作用（AGENTS.md：形状对了副作用没建模照样是盲区） */
-function fakePersistence(initialMeta = {}) {
-  const store = { meta: { ...initialMeta }, calls: [] };
-  return {
-    store,
-    saveMeta(obj) { store.meta = { ...obj, key: 'main' }; return Promise.resolve(); },
-    // 真实 saveDragonDead 是 merge 写：这里照抄语义，才能拓到「整行覆盖抹掉 seed」的缺陷
-    saveDragonDead(dead) {
-      store.calls.push(dead);
-      store.meta = { ...store.meta, dragonDead: dead, key: 'main' };
-      return Promise.resolve();
-    },
-  };
-}
-function fakeWorld(readyKeys = []) {
-  const keys = new Set(readyKeys);
-  // hasColumn 收的是 column 坐标（与 WorldData.hasColumn 同口径）→ 还原成 column key 比对
-  return { hasColumn: (cx, cz) => keys.has(columnKeyAt(cx * 16, cz * 16)) };
-}
-/** 祭坛地带中心所在的 column key（多处用例共用；columnKeyAt 是唯一权威） */
-function altarColumnKey(seed) {
-  const a = findAltarTarnRegion(seed);
-  return a ? columnKeyAt(a.cx, a.cz) : null;
-}
-/** 找一个真有/没有祭坛地带的 seed（复用 gen 层权威，不自己写判据） */
-function findSeedWithAltar(want) {
-  for (let s = 1; s < 200; s++) if ((findAltarTarnRegion(s) !== null) === want) return s;
-  return null;
-}
-function makeService({ seed, persistence = fakePersistence(), ready = null, findAltar } = {}) {
+/** 一个假地图实例（`bossMapAt()` 的返回形状） */
+const MAP_A = Object.freeze({ kind: 'TARN', cx: 100, cz: -50, key: 'tarn:0:0' });
+const MAP_B = Object.freeze({ kind: 'TARN', cx: 900, cz: 700, key: 'tarn:2:1' });
+
+function makeService({ seed = 12345 } = {}) {
   const em = new EntityManager();
   em.registerType(DRAGON_TYPE, dragonDefinition);
-  const world = ready === null ? { hasColumn: () => true } : fakeWorld(ready);
-  const svc = new DragonService({ entities: em, persistence, seed, world, ...(findAltar ? { findAltar } : {}) });
-  return { em, svc, persistence };
+  const svc = new DragonService({ entities: em, seed });
+  return { em, svc };
 }
 
-test('龙 service: 无祭坛地带时永不 spawn', () => {
-  // ⚠️ **实测 seed 1..500 的 findAltarTarnRegion 全部非 null**（findNearestTarnZone 扫
-  // 33×33 region × 1/5 概率 → 落空概率 ≈ (4/5)^1089 ≈ 0）⇒ 「无地带的 seed」现实中不存在。
-  // 故注入 findAltar 返回 null 来测这条路径（生产不传，走默认权威）。
-  const { em, svc } = makeService({ seed: 1, findAltar: () => null });
-  // ⚠️ column 门控恒真，否则这条拓不到「地带缺失」而只拓到「column 未就绪」
-  for (let i = 0; i < 5; i++) svc.ensure();
-  assertEqual(svc.active(), null);
-  assertEqual(em.count(DRAGON_TYPE), 0);
-});
-
-test('龙 service: 祭坛地带 column 就绪后 spawn 一条，位置在轨道上', () => {
-  const seed = findSeedWithAltar(true);
-  const altar = findAltarTarnRegion(seed);
-  const { em, svc } = makeService({ seed, ready: [altarColumnKey(seed)] });
-  svc.ensure();
-  const e = svc.active();
+test('龙 service: summon 在指定地图中心召出一条，位置在轨道上', () => {
+  const { em, svc } = makeService();
+  const r = svc.summon(MAP_A.key, MAP_A.cx, MAP_A.cz, 0);
+  assertEqual(r.ok, true);
+  assertEqual(r.id, dragonEntityIdFor(MAP_A.key, 0));
+  const e = em.get(r.id);
   assertTrue(e !== null, '应 spawn 一条龙');
   assertEqual(e.type, DRAGON_TYPE);
   assertEqual(em.count(DRAGON_TYPE), 1);
   assertEqual(e.persistent, false, '龙必须是临时实体（位置不进存档，红线 2）');
-  // 位置在轨道上：水平距祭坛中心 = orbitRadius，y 在 bob 带内
-  const r = Math.hypot(e.state.position[0] - altar.cx, e.state.position[2] - altar.cz);
-  assertTrue(Math.abs(r - DRAGON.orbitRadius) < 1e-6, `轨道半径 ${r}`);
-  const y = e.state.position[1];
+  // 位置在轨道上：水平距地图中心 = orbitRadius，y 在 bob 带内
+  const dist = Math.hypot(e.state.position[0] - MAP_A.cx, e.state.position[2] - MAP_A.cz);
+  assertTrue(Math.abs(dist - DRAGON.orbitRadius) < 1e-6, `轨道半径 ${dist}`);
   const yMid = TARN_PLATEAU_Y + DRAGON.orbitYOffset;
-  assertTrue(Math.abs(y - yMid) <= DRAGON.bobAmplitude + 1e-9, `y=${y} 不在 ${yMid}±${DRAGON.bobAmplitude}`);
+  assertTrue(Math.abs(e.state.position[1] - yMid) <= DRAGON.bobAmplitude + 1e-9,
+    `y=${e.state.position[1]} 不在 ${yMid}±${DRAGON.bobAmplitude}`);
   assertEqual(e.state.health, DRAGON.health);
-  // 幂等：再 ensure 不会多 spawn
-  svc.ensure(); svc.ensure();
-  assertEqual(em.count(DRAGON_TYPE), 1);
 });
 
-test('龙 service: 轨道中心 = 祭坛地带中心（与「高台」按钮同源）', () => {
-  const seed = findSeedWithAltar(true);
-  const altar = findAltarTarnRegion(seed);
-  const { svc } = makeService({ seed });
-  svc.ensure();
-  const orbit = svc.active().state.orbit;
-  assertEqual(orbit.cx, altar.cx);
-  assertEqual(orbit.cz, altar.cz);
+test('龙 service: 轨道中心 = 召唤时传入的地图中心（不再绑定祭坛地带）', () => {
+  const { svc } = makeService();
+  svc.summon(MAP_B.key, MAP_B.cx, MAP_B.cz, 0);
+  const orbit = svc.activeEntities()[0].state.orbit;
+  assertEqual(orbit.cx, MAP_B.cx, '轨道中心必须是玩家所在地图的中心');
+  assertEqual(orbit.cz, MAP_B.cz);
   assertEqual(orbit.y, TARN_PLATEAU_Y + DRAGON.orbitYOffset);
   assertEqual(orbit.radius, DRAGON.orbitRadius);
   assertEqual(round6(orbit.omega), round6(DRAGON.orbitSpeed / DRAGON.orbitRadius));
-  // phase ∈ [0, 2π)
   assertTrue(orbit.phase >= 0 && orbit.phase < Math.PI * 2, `phase=${orbit.phase}`);
 });
 
-test('龙 service: phase 是 seed 的纯函数（同 seed 同 phase，不同 seed 一般不同）', () => {
-  const seed = findSeedWithAltar(true);
-  const a = makeService({ seed }); a.svc.ensure();
-  const b = makeService({ seed }); b.svc.ensure();
-  assertEqual(a.svc.active().state.orbit.phase, b.svc.active().state.orbit.phase);
-  // 不同 seed 的 phase 应有差异（否则说明 salt 没进随机流）
-  const others = [];
-  for (let s = seed + 1; s < seed + 40 && others.length < 5; s++) {
-    if (findAltarTarnRegion(s) !== null) {
-      const m = makeService({ seed: s }); m.svc.ensure();
-      if (m.svc.active()) others.push(m.svc.active().state.orbit.phase);
-    }
+test('龙 service: 同一槽位重复 summon 返回 exists（幂等，不产生第二条）', () => {
+  const { em, svc } = makeService();
+  assertEqual(svc.summon(MAP_A.key, MAP_A.cx, MAP_A.cz, 0).ok, true);
+  const again = svc.summon(MAP_A.key, MAP_A.cx, MAP_A.cz, 0);
+  assertEqual(again.ok, false);
+  assertEqual(again.reason, 'exists');
+  assertEqual(em.count(DRAGON_TYPE), 1, '重复召唤不得产生第二条');
+});
+
+test('龙 service: 不同地图可同时各有一条（按地图分别记槽位）', () => {
+  const { em, svc } = makeService();
+  assertEqual(svc.summon(MAP_A.key, MAP_A.cx, MAP_A.cz, 0).ok, true);
+  assertEqual(svc.summon(MAP_B.key, MAP_B.cx, MAP_B.cz, 0).ok, true);
+  assertEqual(em.count(DRAGON_TYPE), 2, '两张地图各自的 Boss1 应共存');
+  const ids = svc.activeEntities().map((e) => e.id).sort();
+  assertDeepEqual(ids, [dragonEntityIdFor(MAP_A.key, 0), dragonEntityIdFor(MAP_B.key, 0)].sort());
+  // 两条龙的轨道中心必须各自独立（共享会让第二条飞到第一张地图去）
+  const orbits = svc.activeEntities().map((e) => e.state.orbit);
+  const centers = new Set(orbits.map((o) => `${o.cx},${o.cz}`));
+  assertEqual(centers.size, 2, '两条龙的轨道中心必须不同');
+});
+
+test('龙 service: 同一地图的 Boss1/Boss2 槽位可共存', () => {
+  const { em, svc } = makeService();
+  assertEqual(svc.summon(MAP_A.key, MAP_A.cx, MAP_A.cz, 0).ok, true);
+  assertEqual(svc.summon(MAP_A.key, MAP_A.cx, MAP_A.cz, 1).ok, true);
+  assertEqual(em.count(DRAGON_TYPE), 2);
+  const ids = svc.activeEntities().map((e) => e.id).sort();
+  assertDeepEqual(ids, [dragonEntityIdFor(MAP_A.key, 0), dragonEntityIdFor(MAP_A.key, 1)].sort());
+});
+
+test('龙 service: 超过 DRAGON_MAX_ALIVE 返回 limit（不静默丢弃）', () => {
+  const { em, svc } = makeService();
+  for (let i = 0; i < DRAGON_MAX_ALIVE; i++) {
+    const r = svc.summon(`tarn:9:${i}`, 1000 + i * 500, 0, 0);
+    assertEqual(r.ok, true, `第 ${i + 1} 条应成功`);
   }
-  assertTrue(others.length >= 3, `只找到 ${others.length} 个有祭坛地带的 seed`);
-  assertTrue(new Set(others.map(round6)).size === others.length, 'phase 在不同 seed 下重复（salt 未生效）');
+  assertEqual(em.count(DRAGON_TYPE), DRAGON_MAX_ALIVE);
+  const over = svc.summon('tarn:9:99', 5000, 5000, 0);
+  assertEqual(over.ok, false);
+  assertEqual(over.reason, 'limit');
+  assertEqual(em.count(DRAGON_TYPE), DRAGON_MAX_ALIVE, '超限不得 spawn');
 });
 
-test('龙 service: column 未就绪时不 spawn（就绪后才 spawn）', () => {
-  const seed = findSeedWithAltar(true);
-  const em = new EntityManager();
-  em.registerType(DRAGON_TYPE, dragonDefinition);
-  const w = fakeWorld([]);
-  const svc = new DragonService({ entities: em, persistence: fakePersistence(), seed, world: w });
-  svc.ensure();
-  assertEqual(svc.active(), null, '未就绪不得 spawn');
-  assertEqual(em.count(DRAGON_TYPE), 0);
-  // 就绪后 spawn
-  w.hasColumn = () => true;
-  svc.ensure();
-  assertTrue(svc.active() !== null, '就绪后应 spawn');
-});
-
-test('龙 service: 被 column 卸载回收后自动重生（位置由纯函数重算）', () => {
-  const seed = findSeedWithAltar(true);
-  const altar = findAltarTarnRegion(seed);
-  const { em, svc } = makeService({ seed, ready: [altarColumnKey(seed)] });
-  svc.ensure();
-  const first = svc.active().state.position.slice();
-  // 模拟玩家走远 → column 卸载回收临时实体
-  em.despawnColumn(columnKeyAt(first[0], first[2]), 'column-unloaded');
-  assertEqual(svc.active(), null, '回收后应无实体');
-  assertEqual(svc.isDead(), false, '回收不等于死亡');
-  svc.ensure();
-  const second = svc.active();
-  assertTrue(second !== null, '应重生（Review Focus 第 4 条）');
-  const r = Math.hypot(second.state.position[0] - altar.cx, second.state.position[2] - altar.cz);
-  assertTrue(Math.abs(r - DRAGON.orbitRadius) < 1e-6, `重生后轨道半径 ${r}`);
-  assertEqual(second.state.health, DRAGON.health, '重生后满血（已知取舍，spec §5.2）');
+test('龙 service: phase 按地图中心派生（同地图重召同 phase，不同地图一般不同）', () => {
+  const a = makeService(); a.svc.summon(MAP_A.key, MAP_A.cx, MAP_A.cz, 0);
+  const b = makeService(); b.svc.summon(MAP_A.key, MAP_A.cx, MAP_A.cz, 0);
+  assertEqual(a.svc.activeEntities()[0].state.orbit.phase,
+    b.svc.activeEntities()[0].state.orbit.phase, '同一张地图重召必须同 phase（确定性）');
+  const { svc } = makeService();
+  svc.summon(MAP_A.key, MAP_A.cx, MAP_A.cz, 0);
+  svc.summon(MAP_B.key, MAP_B.cx, MAP_B.cz, 0);
+  const phases = svc.activeEntities().map((e) => e.state.orbit.phase);
+  assertTrue(Math.abs(phases[0] - phases[1]) > 1e-9,
+    '不同地图的 phase 应有差异（否则多条龙会同步扇翅，观感是复制粘贴）');
 });
 
 test('龙 service: damage 精确扣血 + 红闪时间戳（performance.now 口径）', () => {
-  const seed = findSeedWithAltar(true);
-  const { svc } = makeService({ seed, ready: [altarColumnKey(seed)] });
-  svc.ensure();
-  const id = svc.active().id;
+  const { svc } = makeService();
+  svc.summon(MAP_A.key, MAP_A.cx, MAP_A.cz, 0);
+  const id = svc.activeEntities()[0].id;
   const now = 12345.6;   // performance.now() 量级（不是 Date.now() 的 1.7e12）
   const r = svc.damage(id, 100, now);
   assertEqual(r.dead, false);
   assertEqual(r.health, DRAGON.health - 100);
-  assertEqual(svc.active().state.flashedUntil, now + DRAGON.flashMs);
-  assertEqual(svc.active().state.health, DRAGON.health - 100);
+  assertEqual(svc.activeEntities()[0].state.flashedUntil, now + DRAGON.flashMs);
+  assertEqual(svc.activeEntities()[0].state.health, DRAGON.health - 100);
 });
 
 test('龙 service: 临界伤害序列（恰好打满血量致死，少一发不死）', () => {
-  const seed = findSeedWithAltar(true);
-  const { em, svc } = makeService({ seed, ready: [altarColumnKey(seed)] });
-  svc.ensure();
-  const id = svc.active().id;
+  const { em, svc } = makeService();
+  svc.summon(MAP_A.key, MAP_A.cx, MAP_A.cz, 0);
+  const id = svc.activeEntities()[0].id;
   const now = 1000;
   // ⚠️ 发数从**冻结常量派生**（testing-policy §2.5），不硬编码 —— 血量改了自动跟上。
-  // 每发 100 伤害 → 致死发数 = ceil(health/100)。临界断言 = 少一发不死、最后一发恰好越界。
   const dmg = 100;
   const shotsToKill = Math.ceil(DRAGON.health / dmg);
   for (let i = 0; i < shotsToKill - 1; i++) {
     const r = svc.damage(id, dmg, now + i);
     assertEqual(r.dead, false, `第 ${i + 1} 发不得判死`);
   }
-  assertEqual(svc.active().state.health, DRAGON.health - dmg * (shotsToKill - 1));
-  assertFalse(svc.isDead(), '少一发不得判死');
+  assertEqual(svc.activeEntities()[0].state.health, DRAGON.health - dmg * (shotsToKill - 1));
   const dead = svc.damage(id, dmg, now + shotsToKill);
   assertEqual(dead.dead, true);
   assertTrue(dead.health <= 0, `最后一发须越界（health=${dead.health}）`);
-  assertEqual(svc.active(), null, '死亡后实体应消失');
-  assertEqual(em.count(DRAGON_TYPE), 0);
-  assertEqual(svc.isDead(), true);
-});
-
-test('龙 service: 死亡后 ensure 不再 spawn（永久死亡）', () => {
-  const seed = findSeedWithAltar(true);
-  const { em, svc } = makeService({ seed, ready: [altarColumnKey(seed)] });
-  svc.ensure();
-  svc.damage(svc.active().id, 9999, 500);
-  assertEqual(svc.isDead(), true);
-  for (let i = 0; i < 5; i++) svc.ensure();
-  assertEqual(svc.active(), null);
+  assertEqual(svc.activeEntities().length, 0, '死亡后实体应消失');
   assertEqual(em.count(DRAGON_TYPE), 0);
 });
 
-test('龙 service: hydrate 从 meta 恢复死亡标记', () => {
-  const seed = findSeedWithAltar(true);
-  const { em, svc } = makeService({ seed, ready: [altarColumnKey(seed)] });
-  svc.hydrate({ dragonDead: true, seed: 999, spawn: [1, 2, 3] });
-  assertEqual(svc.isDead(), true);
-  svc.ensure();
-  assertEqual(svc.active(), null, '已死不得 spawn');
-  // hydrate 空对象 → 复活（换 seed / 删存档路径）
-  svc.hydrate({});
-  assertEqual(svc.isDead(), false);
-  svc.ensure();
-  assertTrue(svc.active() !== null, 'hydrate({}) 后应恢复');
+test('龙 service: 死后可重新召唤（v2.43 取代 v2.41 的永久死亡）', () => {
+  const { em, svc } = makeService();
+  svc.summon(MAP_A.key, MAP_A.cx, MAP_A.cz, 0);
+  const id = svc.activeEntities()[0].id;
+  svc.damage(id, DRAGON.health + 1, 500);
+  assertEqual(em.count(DRAGON_TYPE), 0, '死亡后应 despawn');
+  // ⚠️ 这条是 v2.43 的核心语义变更：用户裁定「只有 Boss 死掉后，再按 C 才会召唤出 Boss」
+  const again = svc.summon(MAP_A.key, MAP_A.cx, MAP_A.cz, 0);
+  assertEqual(again.ok, true, '死后同一槽位必须可重召（永久死亡已移除）');
+  assertEqual(again.id, id, '重召复用同一个派生 id（幂等，不攒第二条）');
   assertEqual(em.count(DRAGON_TYPE), 1);
+  assertEqual(svc.activeEntities()[0].state.health, DRAGON.health, '重召满血');
 });
 
-test('龙 service: 死亡标记是 merge 写，不抹掉 meta 其它字段', async () => {
-  const seed = findSeedWithAltar(true);
-  const p = fakePersistence({ seed: 999, spawn: [1, 2, 3], playerPos: { x: 5, y: 6, z: 7 } });
-  const { svc } = makeService({ seed, persistence: p, ready: [altarColumnKey(seed)] });
-  svc.hydrate(p.store.meta);
-  svc.ensure();
-  svc.damage(svc.active().id, 9999, 1000);
-  await Promise.resolve();
-  assertEqual(p.store.meta.seed, 999, 'seed 被抹掉了（整行覆盖而非 merge）');
-  assertDeepEqual(p.store.meta.spawn, [1, 2, 3]);
-  assertDeepEqual(p.store.meta.playerPos, { x: 5, y: 6, z: 7 });
-  assertEqual(p.store.meta.dragonDead, true);
-  assertEqual(p.store.calls.length, 1, 'saveDragonDead 应恰好调一次');
+test('龙 service: 死亡不写任何存档（dragonDead 已随永久死亡移除）', () => {
+  // ⚠️ 判据落在「service 不持有任何 persistence 引用」上：v2.41 的 saveDragonDead 已删，
+  // 若有人把它加回来，这条会红（构造签名里没有 persistence 这个参数）。
+  const { svc } = makeService();
+  assertEqual(svc.persistence, undefined, 'DragonService 不得再持有 persistence');
+  svc.summon(MAP_A.key, MAP_A.cx, MAP_A.cz, 0);
+  svc.damage(svc.activeEntities()[0].id, DRAGON.health + 1, 500);
+  assertEqual(svc.isDead, undefined, 'isDead() 已随永久死亡移除');
 });
 
 test('龙 service: damage 未知 id / 非龙实体返回 null', () => {
-  const seed = findSeedWithAltar(true);
-  const { svc } = makeService({ seed, ready: [altarColumnKey(seed)] });
+  const { svc } = makeService();
   assertNull(svc.damage('nope', 10, 0));
-  svc.ensure();
-  // 非龙类型的实体不得被 DragonService 伤害
+  svc.summon(MAP_A.key, MAP_A.cx, MAP_A.cz, 0);
   assertNull(svc.damage('zombie-1', 10, 0));
 });
 
-test('龙 service: warm() 预热轨道 memo 且幂等（不把 12.6ms 冷调用留给首个玩法帧）', () => {
-  const seed = findSeedWithAltar(true);
-  const { svc } = makeService({ seed });
-  // warm 之前 memo 为空
-  assertEqual(svc._orbitMemo, null);
-  svc.warm();
-  assertTrue(svc._orbitMemo !== null, 'warm 后 memo 应已填充');
-  assertEqual(svc._orbitMemo.seed, seed);
-  const first = svc._orbitMemo.orbit;
-  // 幂等：重复 warm 不重算（同一对象引用）
-  svc.warm();
-  svc.warm();
-  assertTrue(svc._orbitMemo.orbit === first, 'warm 应幂等（复用同一 memo，不重算）');
-  // warm 不 spawn（它只预热轨道，spawn 仍由 ensure 的 column 门控决定）
-  assertEqual(svc.active(), null, 'warm 不得 spawn 实体');
+test('龙 service: activeEntities 返回快照（遍历中 despawn 不失效）', () => {
+  const { svc } = makeService();
+  svc.summon(MAP_A.key, MAP_A.cx, MAP_A.cz, 0);
+  svc.summon(MAP_B.key, MAP_B.cx, MAP_B.cz, 0);
+  const snapshot = svc.activeEntities();
+  assertEqual(snapshot.length, 2);
+  // 遍历中打死第一条（despawn 改变底层集合）→ 快照仍可安全遍历
+  let visited = 0;
+  for (const e of snapshot) {
+    svc.damage(e.id, DRAGON.health + 1, 1000 + visited);
+    visited++;
+  }
+  assertEqual(visited, 2, '快照遍历必须完整（迭代器会因 despawn 失效）');
+  assertEqual(svc.activeEntities().length, 0);
 });
 
-test('龙 service: warm() 在无祭坛地带时不抛（memo 存 null）', () => {
-  const { svc } = makeService({ seed: 1, findAltar: () => null });
-  svc.warm();
-  assertTrue(svc._orbitMemo !== null, 'memo 应已填充（值为 null 轨道）');
-  assertEqual(svc._orbitMemo.orbit, null);
-  svc.ensure();
-  assertEqual(svc.active(), null);
-});
-
-test('龙 service: dispose 回收活着的龙', () => {
-  const seed = findSeedWithAltar(true);
-  const { em, svc } = makeService({ seed, ready: [altarColumnKey(seed)] });
-  svc.ensure();
-  assertEqual(em.count(DRAGON_TYPE), 1);
+test('龙 service: dispose 回收全部存活的龙', () => {
+  const { em, svc } = makeService();
+  svc.summon(MAP_A.key, MAP_A.cx, MAP_A.cz, 0);
+  svc.summon(MAP_B.key, MAP_B.cx, MAP_B.cz, 0);
+  assertEqual(em.count(DRAGON_TYPE), 2);
   svc.dispose();
   assertEqual(em.count(DRAGON_TYPE), 0);
-  assertEqual(svc.active(), null);
+  assertEqual(svc.activeEntities().length, 0);
 });
 
 test('龙 service: 推进 dt 后位置沿轨道前进（definition 真的被驱动）', () => {
-  const seed = findSeedWithAltar(true);
-  const { em, svc } = makeService({ seed, ready: [altarColumnKey(seed)] });
-  svc.ensure();
-  const p0 = svc.active().state.position.slice();
+  const { em, svc } = makeService();
+  svc.summon(MAP_A.key, MAP_A.cx, MAP_A.cz, 0);
+  const p0 = svc.activeEntities()[0].state.position.slice();
   em.update(0.5, {});
-  const p1 = svc.active().state.position;
+  const p1 = svc.activeEntities()[0].state.position;
   const moved = Math.hypot(p1[0] - p0[0], p1[2] - p0[2]);
   // 0.5 秒 × 6 格/秒 = 3 格弧长 → 弦长略小于 3
   assertTrue(moved > 2.5 && moved < 3.05, `0.5 秒移动 ${moved} 格（期望 ≈3 的弦长）`);
+});
+
+test('龙 service: 被 column 卸载回收后槽位清空，可重新召唤（已知取舍）', () => {
+  const { em, svc } = makeService();
+  svc.summon(MAP_A.key, MAP_A.cx, MAP_A.cz, 0);
+  const first = svc.activeEntities()[0].state.position.slice();
+  // 模拟玩家走远 → column 卸载回收临时实体
+  em.despawnColumn(columnKeyAt(first[0], first[2]), 'column-unloaded');
+  assertEqual(svc.activeEntities().length, 0, '回收后应无实体');
+  // ⚠️ 用户 2026-11-03 接受的取舍：卸载也会清槽位，回来要重新按 C
+  const again = svc.summon(MAP_A.key, MAP_A.cx, MAP_A.cz, 0);
+  assertEqual(again.ok, true, '卸载后必须可重召');
+  assertEqual(svc.activeEntities()[0].state.health, DRAGON.health, '重召满血');
 });

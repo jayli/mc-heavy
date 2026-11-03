@@ -1,4 +1,5 @@
-// src/entities/dragons/dragon-system.js — 祭坛飞龙（v2.41）：轨道/动画/AABB 纯函数 + definition + service
+// src/entities/dragons/dragon-system.js — 祭坛飞龙（v2.41，v2.43 改为按需召唤）：
+// 轨道/动画/AABB 纯函数 + definition + service
 //
 // 同构层：**无 DOM、无 three、不新增 Worker**（`check:arch` 的 `ISOMORPHIC_DIRS` 静态门守）。
 // 渲染层（`src/render/dragon-renderer.js`）只读本文件产出的 pose，不回写 state、不参与命中
@@ -7,14 +8,25 @@
 // 设计文档 `docs/superpowers/specs/2026-11-03-altar-dragon-design.md`（下称 spec）。
 //
 // ⚠️ **龙是「景观实体」而不是玩家资产**：位置是 `(seed, 时间)` 的纯函数，**不进存档**
-// （红线 2）。故用 `persistent: false` spawn，只有「死没死」这一个布尔进 `meta` 行。
-// 代价 = column 卸载会被回收 → `ensure()` 重生（血量重置，spec §5.2 已记取舍）。
+// （红线 2）。故用 `persistent: false` spawn。
+//
+// ## v2.43 的三项语义变更（Boss 召唤框架）
+//
+// 1. **不再自动生成**：v2.41 的 `ensure()` 每帧跑、走到祭坛地带龙就在那儿。现在只有
+//    按 C 才召唤（`summon()`）—— 否则「Boss1 已在 → 召唤 Boss2」永远命中「已在」。
+// 2. **不再绑定祭坛地带**：轨道中心 = 召唤时玩家所在的那个高台地带圆心（动态传入）。
+// 3. **去掉永久死亡**：v2.41 的 `meta.dragonDead` 已删 —— 用户裁定「只有 Boss 死掉后，
+//    再按 C 才会召唤出 Boss」，即死后可重召。死亡标记失去作用（按 YAGNI 移除，
+//    而不是改造成「按地带分别记」）。
+//
+// ⚠️ **已知取舍（用户 2026-11-03 接受）**：临时实体 + column 卸载回收 ⇒ 玩家走远、
+// 地带中心 column 卸载时龙被回收、槽位清空，回来要重新按 C。
 import { raycastAabbSlab, normalizePosition } from '../entity-types.js';
-import { COLUMN_SIZE } from '../../voxel/constants.js';
-import { findAltarTarnRegion, TARN_PLATEAU_Y } from '../../gen/structures/tarn-zone.js';
+import { TARN_PLATEAU_Y } from '../../gen/structures/tarn-zone.js';
 import { seededRandom } from '../../gen/noise.js';
 import {
-  DRAGON, DRAGON_TYPE, DRAGON_ENTITY_ID, DRAGON_ORBIT_SALT, DRAGON_CORE_OBB, DRAGON_ANIM,
+  DRAGON, DRAGON_TYPE, DRAGON_MAX_ALIVE, DRAGON_ORBIT_SALT, DRAGON_CORE_OBB, DRAGON_ANIM,
+  dragonEntityIdFor,
 } from './dragon-config.js';
 
 // ==================== 纯函数 ====================
@@ -216,108 +228,68 @@ export const dragonDefinition = Object.freeze({
 /**
  * 龙的玩法入口（形状对齐 `ZombieService`：spawn 编排 / damage / 只读查询）。
  *
- * ⚠️ **不 import three、不 import DOM**（同构层）。`world` 只用 `hasColumn`（依赖注入，
- * 不 import `WorldData` 类）。
+ * ⚠️ **不 import three、不 import DOM**（同构层）。
+ *
+ * ## v2.43 起的接口（Boss 召唤框架）
+ *
+ * - `summon(mapKey, cx, cz, slot)`：在指定地图中心召唤一条龙（取代 v2.41 的 `ensure()`）；
+ * - `activeEntities()`：全部存活的龙（渲染器与炮塔目标集合消费，取代单实例 `active()`）；
+ * - `damage(id, …)`：不变（死亡即 despawn，**不再有永久死亡标记**）。
  */
 export class DragonService {
   /**
-   * @param {{entities: import('../entity-manager.js').EntityManager,
-   *          persistence: {saveDragonDead?: Function}|null,
-   *          seed: number,
-   *          world: {hasColumn: (cx:number, cz:number)=>boolean}}} deps
+   * @param {{entities: import('../entity-manager.js').EntityManager, seed: number}} deps
    */
-  constructor({ entities, persistence = null, seed, world, findAltar = findAltarTarnRegion }) {
+  constructor({ entities, seed }) {
     this.entities = entities;
-    this.persistence = persistence;
     this.seed = seed;
-    this.world = world;
-    /**
-     * 祭坛地带定位函数（默认 `findAltarTarnRegion`，可注入以便测试 null 路径）。
-     * ⚠️ 默认值就是与「高台」按钮同源的那个权威 —— 注入只用于单测，生产不传。
-     */
-    this.findAltar = findAltar;
-    this._dead = false;
-    /**
-     * 轨道 memo（seed 级）。
-     * ⚠️ **变量名里不得出现 `RegionCache` 子串** —— `check:arch` 的 `FORBIDDEN_NAMES` 是
-     * **子串**匹配，而 `RegionCache` 是 mc-lite 的补丁架构类名（红线 2/4）。AGENTS.md 已记
-     * v2.30 的 `_altarRegionCache` 被静态门当场拦下，故用 `memo` 词根。
-     * @type {{seed: number, orbit: object|null}|null}
-     */
-    this._orbitMemo = null;
   }
 
   /**
-   * 派生轨道参数（seed 的纯函数，memo 缓存）。
+   * 在指定地图中心召唤一条龙（按 C 的唯一入口，v2.43）。
    *
-   * ⚠️ **转调 `findAltarTarnRegion`，不自己写一份「哪个地带带祭坛」**（红线 1）：
-   * 那个函数与设置面板「高台」按钮同源（`teleportToTarnZone` → `findNearestTarnZone`），
-   * 两份判据漂移的形态是「按钮到的地带没有龙」。
+   * ⚠️ **轨道中心是参数，不是「祭坛地带」**：v2.41 的龙硬绑定 `findAltarTarnRegion`，
+   * 现在玩家站在哪个高台地带，龙就在哪个地带的圆心盘旋（用户裁定）。
+   * `findAltarTarnRegion` 的 12.6ms 冷调用问题也随之消失（不再需要 `warm()`）。
    *
-   * @returns {object|null} 全世界无祭坛地带时返回 null
+   * ⚠️ **不检查 column 是否加载**：龙是纯景观实体（不碰撞、不寻路、不受重力），
+   * 在未加载区盘旋无害 —— 玩家召了它却因 column 未就绪而「没反应」才是坏体验。
+   * （v2.41 的 hasColumn 门控是为了「自动生成时不放玩家看不见的实体」，召唤语义下不成立。）
+   *
+   * @param {string} mapKey 地图实例标识（`bossMapAt().key`，如 `tarn:2:0`）
+   * @param {number} cx @param {number} cz 地图中心（Boss 的盘旋圆心）
+   * @param {number} slot 名册槽位（0 = Boss1）
+   * @returns {{ok: true, id: string} | {ok: false, reason: 'limit'|'exists'}}
    */
-  _orbitFor() {
-    if (this._orbitMemo && this._orbitMemo.seed === this.seed) return this._orbitMemo.orbit;
-    const altar = this.findAltar(this.seed);
-    const orbit = altar === null ? null : Object.freeze({
-      cx: altar.cx,
-      cz: altar.cz,
+  summon(mapKey, cx, cz, slot) {
+    if (this.entities.count(DRAGON_TYPE) >= DRAGON_MAX_ALIVE) {
+      return { ok: false, reason: 'limit' };
+    }
+    const id = dragonEntityIdFor(mapKey, slot);
+    if (this.entities.get(id)) return { ok: false, reason: 'exists' };
+    const orbit = Object.freeze({
+      cx, cz,
       y: TARN_PLATEAU_Y + DRAGON.orbitYOffset,
       radius: DRAGON.orbitRadius,
       omega: DRAGON.orbitSpeed / DRAGON.orbitRadius,
-      // phase 用专属 salt（1040）：用错 salt 是静默的确定性污染（与别的系统共用随机流）
-      phase: seededRandom(0, 0, this.seed + DRAGON_ORBIT_SALT) * Math.PI * 2,
+      // ⚠️ **相位按地图中心派生**（不是 v2.41 的 seed 级单值）：多条龙共存时各自相位不同，
+      // 而同一张地图重召永远是同一个相位（确定性）。用错 salt 是静默的确定性污染。
+      phase: seededRandom(cx, cz, this.seed + DRAGON_ORBIT_SALT) * Math.PI * 2,
     });
-    this._orbitMemo = { seed: this.seed, orbit };
-    return orbit;
-  }
-
-  /**
-   * 预热轨道 memo（`Game.start()` 装配后调一次）。
-   *
-   * ⚠️ **为什么需要**：`findAltarTarnRegion` 冷调用实测 **12.6ms**（seed 12345；热调用
-   * 8.4µs）。若不预热，这 12.6ms 会落在**第一个玩法帧**的 `ensure()` 里 —— 120Hz 下
-   * 帧预算只有 8.3ms，开局直接掉一帧（而且玩家可能根本不去祭坛地带，白付）。
-   * 放在 `start()` 的加载阶段就与 `computeArenaAnchor` 在 Worker layout 入口预热同一口径
-   * （AGENTS.md：「在每个 Worker 的 layout 入口预热，不能落进 GEN 计时路径」）。
-   *
-   * 幂等：`_orbitFor()` 自带 seed 级 memo，重复调只是 8.4µs 的查表。
-   */
-  warm() {
-    this._orbitFor();
-  }
-
-  /**
-   * 每帧由 `game.js` 在 `entities.update` **之前**调（与 `zombies.update` 同段：先编排后推进）。
-   *
-   * 三个门控缺一不可：① 已死 → 不 spawn（用户裁定「永久死亡」）；② 已有实体 → 幂等；
-   * ③ 祭坛地带中心 column 未就绪 → 不 spawn（避免在未加载区放一个玩家看不见的实体，
-   * 也让「传送过去才出现」自然成立）。
-   */
-  ensure() {
-    if (this._dead) return null;
-    const existing = this.active();
-    if (existing) return existing;
-    const orbit = this._orbitFor();
-    if (orbit === null) return null;
-    if (this.world && typeof this.world.hasColumn === 'function') {
-      const ccx = Math.floor(orbit.cx / COLUMN_SIZE);
-      const ccz = Math.floor(orbit.cz / COLUMN_SIZE);
-      if (!this.world.hasColumn(ccx, ccz)) return null;
-    }
     const pose = dragonPoseAt(orbit, 0);
     const entity = this.entities.spawn({
-      id: DRAGON_ENTITY_ID,
+      id,
       type: DRAGON_TYPE,
       state: createState({
         position: pose.position, yaw: pose.yaw, orbit, orbitT: 0,
         health: DRAGON.health, flashedUntil: 0,
       }),
-      // ⚠️ **临时实体**（spec 分叉二方案 A）：位置是 seed 的纯函数，进存档就是第二份权威
-      // （红线 2）。代价 = column 卸载被回收 → 本方法重生（血量重置，spec §5.2 取舍）。
+      // ⚠️ **临时实体**（v2.41 裁定不变）：位置是纯函数，进存档就是第二份权威（红线 2）。
+      // 代价 = column 卸载被回收 → 槽位清空、回来要重新按 C（用户 2026-11-03 接受的取舍）。
       persistent: false,
     });
-    return entity || null;
+    if (!entity) return { ok: false, reason: 'exists' };
+    return { ok: true, id };
   }
 
   /**
@@ -325,6 +297,9 @@ export class DragonService {
    *
    * ⚠️ **时间基准必须是 `performance.now()`**（调用方负责）：`Date.now()` 与它相差约
    * 17 亿毫秒，会让 `nowMs < flashedUntil` 恒真 → **龙永久红闪、永不消退**（AGENTS.md 已记）。
+   *
+   * ⚠️ **v2.43 起死亡不写任何标记**：v2.41 的 `meta.dragonDead` 已随「永久死亡」一起移除 ——
+   * 死即槽位清空（实体消失 ⇒ `entities.get(id)` 为 null ⇒ 该槽位可再召）。
    *
    * @param {string} id @param {number} amount @param {number} nowMs
    * @returns {{dead: boolean, health: number}|null} 未知 id / 非龙实体返回 null
@@ -339,42 +314,27 @@ export class DragonService {
     entity.state = createState({ ...state, health, flashedUntil });
     if (health <= 0) {
       this.entities.despawn(id, 'killed');
-      this._dead = true;
-      // 死亡标记 merge 写进 meta 行（与 v2.29 `playerPos` 同一手法）。
-      // ⚠️ 不 await、不挂 beforeunload：死亡是低频单次事件，且挂 unload 会有
-      // 「旧世界标记写回新世界」的竞态（playerPos 需要 `_lastSavedPos = null` 正是为此）。
-      if (this.persistence?.saveDragonDead) {
-        Promise.resolve(this.persistence.saveDragonDead(true)).catch((err) => {
-          console.warn('[dragon] saveDragonDead failed:', err);
-        });
-      }
       return { dead: true, health };
     }
     return { dead: false, health };
   }
 
-  /** 当前龙实体或 null（渲染器与炮塔目标集合消费） */
-  active() {
-    return this.entities.get(DRAGON_ENTITY_ID);
-  }
-
-  /** @returns {boolean} 是否已永久死亡 */
-  isDead() { return this._dead; }
-
   /**
-   * 启动时从 meta 行恢复死亡标记（`game.start()` 读到 meta 后调一次）。
-   *
-   * ⚠️ **`hydrate({})` 是「复活」语义**：`newWorld`/`clearSave` 的 `saveMeta` 整行 put
-   * 不含 `dragonDead` → 换 seed / 删存档后龙自然恢复（与 `playerPos` 同机制，
-   * 不需要 settingsVersion 式迁移）。
-   * @param {object|null} metaRow
+   * 全部存活的龙（数组快照，与 `ZombieService.activeEntities` 同手法：
+   * 调用方可能在遍历中调 `damage()` → despawn 改变底层集合，故返回快照而非迭代器）。
+   * @returns {Array<import('../entity-manager.js').Entity>}
    */
-  hydrate(metaRow) {
-    this._dead = !!(metaRow && metaRow.dragonDead);
+  activeEntities() {
+    const out = [];
+    for (const entity of this.entities.entities()) {
+      if (entity.type === DRAGON_TYPE) out.push(entity);
+    }
+    return out;
   }
 
   dispose() {
-    const entity = this.active();
-    if (entity) this.entities.despawn(entity.id, 'dispose');
+    for (const entity of this.activeEntities()) {
+      this.entities.despawn(entity.id, 'dispose');
+    }
   }
 }

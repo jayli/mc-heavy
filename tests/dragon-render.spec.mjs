@@ -43,6 +43,21 @@ function nonBlackRatio(png, rect, threshold = 20) {
   return total ? changed / total : 0;
 }
 
+/** 两张图在指定矩形内「显著变化」的像素占比（区域隔离判据用） */
+function changedRatioInRect(a, b, rect, threshold = 6) {
+  let changed = 0, total = 0;
+  for (let y = rect.y0; y <= rect.y1; y++) {
+    for (let x = rect.x0; x <= rect.x1; x++) {
+      const o = (y * a.width + x) * 4;
+      total++;
+      if (Math.abs(a.data[o] - b.data[o]) > threshold
+        || Math.abs(a.data[o + 1] - b.data[o + 1]) > threshold
+        || Math.abs(a.data[o + 2] - b.data[o + 2]) > threshold) changed++;
+    }
+  }
+  return total ? changed / total : 0;
+}
+
 /** 两张图「显著变化」的像素占比 */
 function changedRatio(a, b, threshold = 6) {
   let changed = 0, total = 0;
@@ -84,6 +99,54 @@ test('龙 Tier 4：fixture 前提（产物/贴图/材质口径）', async ({ pag
   expect(info.isBasic).toBe(true);
   expect(info.side).toBe(2);        // THREE.DoubleSide
   expect(info.alphaTest).toBe(0.5);
+  // v2.43 多实例池：几何共享一份、材质与骨骼逐龙独立
+  expect(info.capacity).toBeGreaterThan(1);
+  expect(info.sharedGeometry).toBe(1);
+  expect(info.distinctMaterials).toBe(info.capacity);
+  expect(info.distinctSkeletons).toBe(info.capacity);
+});
+
+test('龙 Tier 4：两条龙同时渲染且姿态各自独立（不共享骨骼的判据）', async ({ page }) => {
+  await setup(page);
+  // ⚠️ **必须用 wide 视角**：第二条龙在 +X 60 格，front/side/below/top 四个常规视角
+  // 都把它放在画外（side 视角更是放在相机背后）⇒ 那四个视角下 changedRatio 恒 0
+  // （实测踩到，一度误判成「渲染没生效」）。wide 相机距 90、可见半宽 56 ⇒ 两条都入画。
+  //
+  // ⚠️ **判据是「同姿势对照」而不是「两条龙画面不同」**：两条龙本来就摆在不同位置，
+  // 画面当然不同 —— 那拓不到「骨骼共享」。真正的判据是：
+  //   two（第二条 orbitT 差 0.6s）vs twoSync（第二条与第一条同 orbitT）两张图必须不同。
+  // 共享骨骼时第二条会被迫摆第一条的姿势 ⇒ two 与 twoSync **逐位相同**。
+  const two = await shot(page, 'wide', { orbitT: 0.5, two: true });
+  const twoSync = await shot(page, 'wide', { orbitT: 0.5, two: true, twoSync: true });
+  // 先测噪声底：同参数两次渲染必须逐位相同（确定性）
+  const twoAgain = await shot(page, 'wide', { orbitT: 0.5, two: true });
+  expect(changedRatio(two, twoAgain, 6)).toBe(0);
+  // 核心判据：第二条龙换姿势（orbitT 0.5 → 1.1）必须让画面变化 ⇒ 骨骼不共享
+  expect(changedRatio(two, twoSync, 6)).toBeGreaterThan(0.005);
+  // ⚠️ **更尖锐的判据：第一条龙的区域在 two 与 twoSync 之间必须逐位相同**。
+  // 第一条龙在两张图里都是 orbitT=0.5，只有第二条的姿势变了。若骨骼共享，
+  // 后一次 sync 会覆写同一套骨骼 ⇒ 第一条龙也被迫摆第二条的姿势 ⇒ 它的区域会变化。
+  // （实测：只靠上面那条 changedRatio 抓不到「后写胜」型的共享缺陷 —— 两张图里
+  // 第一条龙都变成了第二条的姿势，整图仍不同；区域隔离才能拓到。）
+  const rect1 = await page.evaluate(() => {
+    const pts = window.__DR_RENDER__('wide', { orbitT: 0.5, two: true });
+    return { x0: Math.max(0, pts.skull.x - 60), x1: Math.min(639, pts.skull.x + 60),
+             y0: 0, y1: 479 };
+  });
+  expect(changedRatioInRect(two, twoSync, rect1, 6)).toBe(0);
+  // 且两条龙在 wide 视角下都非黑（真的各画了一条，不是只画了第一条）
+  const pts = await page.evaluate(() => window.__DR_RENDER__('wide', { orbitT: 0.5, two: true }));
+  const png = await shot(page, 'wide', { orbitT: 0.5, two: true });
+  const head1 = regionRGB(png, pts.skull.x, pts.skull.y, 4);
+  const head2 = regionRGB(png, pts.skull2.x, pts.skull2.y, 4);
+  expect(head1).not.toBeNull();
+  expect(head2).not.toBeNull();
+  expect((head1.r + head1.g + head1.b) / 3).toBeGreaterThan(20);
+  expect((head2.r + head2.g + head2.b) / 3).toBeGreaterThan(20);
+  // 隔离性：常规视角下多一条出画的龙不得污染第一条的取样点
+  const frontOne = await shot(page, 'front', { orbitT: 0.5 });
+  const frontTwo = await shot(page, 'front', { orbitT: 0.5, two: true });
+  expect(changedRatio(frontOne, frontTwo, 6)).toBe(0);
 });
 
 test('龙 Tier 4：正面视图有龙头，且贴图方向正确（flipY 判据）', async ({ page }) => {
@@ -181,8 +244,7 @@ test('龙 Tier 4：红闪帧整体偏红', async ({ page }) => {
 
 test('龙 Tier 4：hide 后画面与纯黑背景逐位相同（visible=false 生效）', async ({ page }) => {
   await setup(page);
-  const hidden = await shot(page, 'front', { hidden: true });
-  // 整图应几乎全黑（背景 0x000000）
+  const hidden = await shot(page, 'front', { hidden: true });  // 整图应几乎全黑（背景 0x000000）
   let nonBlack = 0, total = 0;
   for (let i = 0; i < hidden.data.length; i += 4) {
     total++;

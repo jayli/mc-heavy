@@ -52,8 +52,17 @@ export class Toast {
    */
   _install() {
     const root = this._container ?? document.body;
-    // 桩件容器（单测）没有 getElementById → 直接新建，不做幂等检查
-    if (typeof root.getElementById !== 'function') {
+    // ⚠️ **幂等判据必须能拿到一个 Document**：`getElementById` 是 `Document` 的方法，
+    // **`document.body` 上没有它** —— 旧写法 `typeof root.getElementById !== 'function'`
+    // 在生产里（root = body）**恒真** ⇒ 永远走下面的桩件分支、**每次都 append 一个新的
+    // `#mc-toast`**，注释里「提示元素若已存在则复用」从未成立。单实例时看不出来
+    // （只有一个），第二个 Toast 实例一出现就暴露：`document.getElementById` 返回文档序里
+    // **第一个**，而新实例写的是第二个 ⇒ 文案永远读不到（v2.43 Boss 召唤 toast 实测踩到）。
+    // 修法：用 `root.ownerDocument ?? root` 取到 Document 再查（body.ownerDocument = document）。
+    // 桩件容器（单测的 `{appendChild(){}}`）没有 ownerDocument 也没有 getElementById
+    // ⇒ 仍走桩件分支，既有用例逐位不变。
+    const doc = root.ownerDocument ?? root;
+    if (typeof doc.getElementById !== 'function') {
       const style = document.createElement('style');
       style.textContent = TOAST_CSS;
       root.appendChild(style);
@@ -63,14 +72,14 @@ export class Toast {
       root.appendChild(this._el);
       return;
     }
-    if (!root.getElementById(TOAST_STYLE_ID)) {
+    if (!doc.getElementById(TOAST_STYLE_ID)) {
       const style = document.createElement('style');
       style.id = TOAST_STYLE_ID;
       style.textContent = TOAST_CSS;
       root.appendChild(style);
       this._styleEl = style;
     }
-    this._el = root.getElementById(TOAST_ID) ?? document.createElement('div');
+    this._el = doc.getElementById(TOAST_ID) ?? document.createElement('div');
     if (!this._el.id) {
       this._el.id = TOAST_ID;
       root.appendChild(this._el);

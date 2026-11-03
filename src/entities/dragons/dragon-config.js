@@ -13,13 +13,36 @@
 export const DRAGON_TYPE = 'dragon';
 
 /**
- * 全世界唯一那条龙的固定实体 id。
+ * 按「地图实例 + 槽位」派生实体 id（v2.43 Boss 召唤框架）。
  *
- * ⚠️ **固定 id 让重生幂等**：龙被 column 卸载回收后 `DragonService.ensure()` 会重新 spawn，
- * 固定 id 保证「同一时刻至多一条」（`EntityManager.spawn` 撞 id 返回 null）。
- * 不用自增序号 —— 那会让「走远再回来」产生第二条龙（旧 id 的实体已 despawn，序号却前进了）。
+ * ⚠️ **取代 v2.41 的固定 `DRAGON_ENTITY_ID = 'dragon-altar'`**：龙现在可以在**任意**
+ * 高台地带被召唤（用户裁定「按地图分别记槽位，可多条共存」），固定 id 会让
+ * 「在 A 地带召了龙 → 走到 B 地带按 C」被 `EntityManager.spawn` 的撞 id 判据静默吃掉
+ * （形态是「B 地带按 C 没反应」，而 A 的龙好好地在飞）。
+ *
+ * ⚠️ **派生而非自增序号**：id 是 `(mapKey, slot)` 的纯函数 ⇒ 同一张地图的同一个槽位
+ * 恒同 id，「走远 column 卸载 → 回来重召」会复用同一个 id（幂等），不会攒出第二条。
+ * 自增序号正是 v2.41 注释里警告过的那个坑。
+ *
+ * @param {string} mapKey `bossMapAt()` 返回的地图实例标识（如 `tarn:2:0`）
+ * @param {number} slot 名册里的槽位下标（0 = Boss1，1 = Boss2）
+ * @returns {string}
  */
-export const DRAGON_ENTITY_ID = 'dragon-altar';
+export function dragonEntityIdFor(mapKey, slot) {
+  return `dragon:${mapKey}:${slot}`;
+}
+
+/**
+ * 同时存在的龙的上限（= 渲染池容量 = draw call 上限）。
+ *
+ * ⚠️ **这是 draw call 预算决策，不是玩法数值**：每条龙是一个独立 SkinnedMesh
+ * （骨骼是 Object3D，无法像 InstancedMesh 那样合批）⇒ N 条龙 = N 个 draw call。
+ * 4 是「玩家要亲自走到 4 个不同高台地带各按一次 C」才达得到的量，而 bench 场景 ④
+ * 的 draw 基线是 586 ⇒ +4 = 0.68%，在噪声内。调大前须重测该基线。
+ *
+ * 超出时 `summon` 返回 `reason: 'limit'`（toast 提示），不静默丢弃。
+ */
+export const DRAGON_MAX_ALIVE = 4;
 
 /**
  * 玩法数值。用户裁定见 spec §1。

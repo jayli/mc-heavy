@@ -60,12 +60,9 @@ function makeProjectileFixture() {
   entities.registerType('probe', probeDefinition);
   entities.registerType(DRAGON_TYPE, dragonDefinition);   // v2.41：弹丸也要能打龙
   const zombies = new ZombieService({ entities, world });   // 不需要 pool（本测试不发 AI RPC）
-  // v2.41：龙 service。findAltar 注入成固定中心（本 fixture 的世界只有 column 0..1，
-  // 真实祭坛地带在几百格外，用真实权威会让龙 spawn 在测试世界之外 → 断言成无效盲区）
-  const dragons = new DragonService({
-    entities, persistence: null, seed: 1, world,
-    findAltar: () => ({ regionX: 0, regionZ: 0, cx: 8, cz: 8, dist: 0 }),
-  });
+  // v2.43：龙 service（按需召唤）。轨道中心由 summon 传入 —— 本 fixture 的世界只有 column 0..1，
+  // 故把龙召到 (8,8)（测试世界内），避免断言成无效盲区。
+  const dragons = new DragonService({ entities, seed: 1 });
   return { world, registry, entities, zombies, dragons };
 }
 
@@ -304,8 +301,9 @@ test('弹丸 1 秒飞行距离 ≈ 40 格（推进只做一遍）', () => {
 
 test('弹丸命中龙：经 EntityManager.raycast，伤害按 projectileDamage 累积至死', () => {
   const { world, registry, entities, dragons } = makeProjectileFixture();
-  dragons.ensure();
-  const dragon = dragons.active();
+  // v2.43：龙不再自动生成，须显式 summon（召到测试世界内 (8,8)）
+  assertEqual(dragons.summon('tarn:0:0', 8, 8, 0).ok, true);
+  const dragon = dragons.activeEntities()[0];
   assertNotNull(dragon, '龙须 spawn 成功（否则下面的断言是无效盲区）');
   assertEqual(dragon.state.health, DRAGON.health);
   const p = dragon.state.position;
@@ -327,15 +325,14 @@ test('弹丸命中龙：经 EntityManager.raycast，伤害按 projectileDamage �
     assertEqual(r.reason, 'entity', `第 ${i + 1} 发须命中实体`);
     assertEqual(r.hitId, dragon.id);
   }
-  assertEqual(dragons.active().state.health, DRAGON.health - TURRET.projectileDamage * (shotsToKill - 1));
-  assertTrue(dragons.active().state.health > 0, `少一发不死（剩 ${dragons.active().state.health}）`);
+  assertEqual(dragons.activeEntities()[0].state.health, DRAGON.health - TURRET.projectileDamage * (shotsToKill - 1));
+  assertTrue(dragons.activeEntities()[0].state.health > 0, `少一发不死（剩 ${dragons.activeEntities()[0].state.health}）`);
   r = advanceProjectile({
     state: makeProjectileState(from, [0, 0, 1]),
     dt: 0.1, world, registry, entities, nowMs: shotsToKill * 100, onDamage,
   });
   assertEqual(r.reason, 'entity');
-  assertNull(dragons.active(), `第 ${shotsToKill} 发应致死 → despawn`);
-  assertEqual(dragons.isDead(), true);
+  assertEqual(dragons.activeEntities().length, 0, `第 ${shotsToKill} 发应致死 → despawn`);
 });
 
 test('弹丸打龙：predicate 走 WEAPON_HITTABLE_TYPES（不是硬编码 zombie）', () => {

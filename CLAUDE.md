@@ -221,6 +221,8 @@ y=30（plateauY+28，斜距 33.9~36.0 < 步枪射程 40）/ fly+glide 交替（�
 （v2.41 把临界伤害序列的发数写成从 `DRAGON.health` 派生、E2E 血量断言从运行时 config 读 ——
 testing-policy §2.5「派生量不硬编码」的收益兑现）。细节见 roadmap 的 v2.42 行。
 
+**v2.43** 加了 **Boss 召唤框架**（用户 2026-11-03：「我要增加一个召唤每个地图 Boss 的动作……按C键召唤Boss，按照顺序，如果Boss1 已经在了，就召唤 Boss2，如果Boss都在了，就什么都不召唤。只有 Boss 死掉后，再按 C才会召唤出 Boss……Boss 只能从玩家所在的地图中心位置召唤出来……不能召唤相邻地图的Boss」+「祭坛飞龙目前的行为动作先不要做任何的变更」）：新增 `src/entities/bosses/boss-map.js`（`bossMapAt(wx,wz,seed)` = 「玩家站在哪张**地标级地图**里」的唯一权威，四类 CITY/TARN/SNOW/SHALLOW_TARN，判据全部转调既有权威）+ `boss-registry.js`（`BOSS_ROSTER` 名册，当前只有 `TARN → [dragon]`）。召唤流程 `Game.summonBoss()` 只读那两个模块、对具体 Boss 类型一无所知 ⇒ 加 Boss2 / 给别的地图加 Boss 只改名册。**龙的三项语义变更**（行为动作零变更）：去掉自动生成改按 C 召唤 / 轨道中心从「固定祭坛地带」改为玩家所在的那个高台地带 / **永久死亡整体移除**（`meta.dragonDead` 等全删，死后可重召 —— 推翻 v2.41 裁定）。实体 id 改派生（`dragon:<mapKey>:<slot>`，支持多地图共存），渲染层改 `DRAGON_MAX_ALIVE=4` 实例池（几何共享、骨骼/材质逐龙独立）。**已知取舍（用户接受）**：走远 column 卸载龙会被回收、槽位清空，回来要重新按 C。实施中还修了一个 `Toast._install()` 的既有缺陷（`document.body` 没有 `getElementById` → 幂等分支从未生效）。细节见下方「祭坛之龙沉淀的活跃约束」段与 roadmap 的 v2.43 行。
+
 测试现状：Playwright spec 全量 + 浏览器内单元测试全绿。**用例计数以 `npm run check:data`
 输出为准，不在文档硬编码**（同一事实的多个副本属「改动放大器」，违反红线 1 精神）。
 ⚠️ **三条计时型 spec 在高负载下偶发贴线 flaky，单独复跑通过**（不改断言、不放宽阈值）：
@@ -3389,7 +3391,7 @@ testing-policy §2.5「派生量不硬编码」的收益兑现）。细节见 ro
    ② **「众数峰 luma」只能测色阶，测不出高光是否在工作**（实测高光归零后 148 vs 147）——
    想知道「波纹/高光还在」，要测**连续两帧的变化量**（正常 0.20 / 高光归零 0.00）。
 
-### 祭坛之龙沉淀的活跃约束（v2.41，后续「导入外部模型 / 天空景观实体 / 伤害路由」类改动必读）
+### 祭坛之龙沉淀的活跃约束（v2.41，v2.43 改 Boss 召唤框架；后续「导入外部模型 / 天空景观实体 / 伤害路由 / Boss 召唤」类改动必读）
 
 设计文档 `docs/superpowers/specs/2026-11-03-altar-dragon-design.md` + 计划
 `docs/superpowers/plans/2026-11-03-altar-dragon.md`。素材 = 用户提供的 Blockbench
@@ -3421,20 +3423,57 @@ testing-policy §2.5「派生量不硬编码」的收益兑现）。细节见 ro
   翼尖最远 `24 + 8.25 = 32.25 < 34.5`（余量 2.25 格）。调大半径前必须重测净空，否则龙穿进高台。
   **盘旋高 y=30 受武器射程约束**：玩家站广场中心（眼高 4.62）→ 斜距 33.9~36.0 < 步枪 `entityRange` 40；
   调高会让龙飞出射程，「可被武器击中」名存实亡。MAG7（射程 10）打不到龙是预期内（仅垂直差就 24 格）。
-- **龙是临时实体（`persistent: false`）+ 死亡标记走 meta 行**（分叉二方案 A）：位置是 seed 的纯函数，
-  进存档就是第二份权威（红线 2）。只有 `dragonDead` 布尔进 meta（`Persistence.saveDragonDead`，
-  与 `savePlayerPos` 同一 merge 手法）。**代价 = column 卸载被回收 → `ensure()` 重生、血量重置**
-  （spec §5.2 已记取舍，用户知悉）。⚠️ **不挂 `beforeunload`**（死亡是低频单次事件，挂 unload 会有
-  「旧世界标记写回新世界」竞态）。`newWorld`/`clearSave` 的 `saveMeta` 整行 put 不含本字段 →
-  换 seed / 删存档后龙自然复活，无需 settingsVersion 式迁移。
-- **`ensure()` 的三个门控缺一不可**：已死 → 不 spawn（永久死亡）；已有实体 → 幂等；祭坛中心 column
-  未就绪 → 不 spawn（避免在未加载区放玩家看不见的实体）。**转调 `findAltarTarnRegion`，不自己写
-  一份「哪个地带带祭坛」**（红线 1：与「高台」按钮同源，两份判据漂移 = 「按钮到的地带没龙」）。
-  ⚠️ memo 变量名里不得出现 `RegionCache` 子串（`check:arch` 子串匹配，AGENTS.md 已记该坑）。
-- **`DragonService.warm()` 必须在 `start()` 加载阶段调**（不能留给首个玩法帧）：
-  `findAltarTarnRegion` 冷调用实测 **12.6ms**（热调用 8.4µs）。若不预热，这 12.6ms 落在
-  第一个玩法帧的 `ensure()` 里 —— 120Hz 帧预算 8.3ms，开局直接掉一帧（且玩家可能根本不去
-  祭坛地带，白付）。与 `computeArenaAnchor` 在 Worker layout 入口预热同一口径。幂等（memo 复用）。
+- **龙是临时实体（`persistent: false`），v2.43 起不再有任何东西进存档**：位置是 seed 的纯函数，
+  进存档就是第二份权威（红线 2）。⚠️ **v2.41 的永久死亡标记已整体移除**（用户 2026-11-03 裁定
+  「只有 Boss 死掉后，再按 C 才会召唤出 Boss」⇒ 死后可重召 ⇒ 标记失去作用）：`meta.dragonDead` /
+  `Persistence.saveDragonDead` / `hydrate` / `isDead` 全删（按 YAGNI 移除，而不是改造成
+  「按地带分别记」）。**代价 = column 卸载被回收 → 槽位清空，回来要重新按 C**（用户接受的取舍）。
+- **v2.43 起龙不再自动生成，只在按 C 时召唤**：原每帧 `ensure()` 已删 —— 保留自动生成的形态是
+  「Boss1 已在 → 召唤 Boss2」永远命中「已在」，而高台地带没有 Boss2 ⇒ C 键对高台地带毫无作用。
+  `DragonService.summon(mapKey, cx, cz, slot)` 是唯一入口：轨道中心 = 召唤时传入的地图中心
+  （不再绑定祭坛地带，`findAltarTarnRegion` 已不在龙的路径上，`warm()` 随之删除 —— 12.6ms 冷调用
+  问题自然消失）。⚠️ **不检查 column 是否加载**：龙是纯景观实体（不碰撞/不寻路/不受重力），
+  在未加载区盘旋无害 —— 玩家召了它却因 column 未就绪而「没反应」才是坏体验。
+- **实体 id 是派生的 `dragon:<mapKey>:<slot>`**（`dragonEntityIdFor`，v2.43）：固定 id（v2.41 的
+  `'dragon-altar'`）会让「A 地带召了龙 → 走到 B 地带按 C」被 `EntityManager.spawn` 的撞 id 判据
+  **静默吃掉**（形态是「B 地带按 C 没反应」，而 A 的龙好好在飞）。派生 id 让同一张地图的同一槽位
+  恒同 id（重召幂等，不攒第二条），不同地图各自独立。
+- **Boss 召唤框架 = `boss-map.js` + `boss-registry.js`（v2.43）**：`bossMapAt(wx,wz,seed)` 是
+  「玩家站在哪张**地标级地图**里」的唯一权威（四类 CITY/TARN/SNOW/SHALLOW_TARN，优先级同迷你地图），
+  判据**全部转调既有权威**（红线 1）：City 用 `getCityBoundsForSeed`+`inCityBounds`、高台地带用
+  `isTarnZone`+`tarnZoneCenter`+**`inTarnRadius`**、雪原用 `getRegionSeededCenter`+`snowLandSuppressedByTarn`
+  （扫 3×3 邻域 region，雪原中心可探进相邻 region）、浅水高台用 `computeShallowTarnAnchor`+
+  `inShallowTarnFootprint`。⚠️ **只登记有离散中心的地标级地图**（用户裁定）：biome 类（沙漠/森林等）
+  是噪声生成的连续区域、没有离散中心，等真要给它们加 Boss 时再定中心口径。⚠️ **高台地带必须用
+  `inTarnRadius`（圆内）而不是只看 `isTarnZone(region)`**：地带圆半径 138 只覆盖 region 的 37.4%，
+  只看 region 会让玩家在离中心 190 格的普通草地上按 C 也召出龙（而那条龙在 138 格外的中心盘旋，
+  玩家根本看不见）。`BOSS_ROSTER` 名册是数据而非代码分支：加 Boss2 / 给别的地图加 Boss 只改名册
+  与对应 service，**不改 `Game.summonBoss()` 流程**（它对具体 Boss 类型一无所知）。
+  ⚠️ **每张地图最多两个 Boss**（用户裁定，`BOSS_SLOTS_PER_MAP=2`，单测钉住）。
+- **渲染层是 `DRAGON_MAX_ALIVE=4` 的实例池（v2.43 多实例）**：**几何共享一份、骨骼与材质逐龙独立**。
+  骨骼是 Object3D 层级，`bind()` 把 skeleton 绑到具体 mesh ⇒ 无法像 InstancedMesh 合批 ⇒
+  **N 条龙 = N 个 draw call**（4 是「玩家要亲自走到 4 个不同高台地带各按一次 C」才达得到的量，
+  bench 场景 ④ draw 基线 586 ⇒ +4 = 0.68% 在噪声内；调大前须重测该基线）。⚠️ **材质必须逐龙独立**：
+  红闪是材质级 `color`（不是逐实例属性），共享一份会让打中一条龙时**所有龙一起变红**
+  （同 AGENTS.md 记的「白闪池必须逐 slot 独立材质」同一类缺陷）。⚠️ **骨骼必须逐龙独立**：
+  共享会让所有龙摆同一个姿势（第二条跟着第一条扇翅膀）。⚠️ **`sync` 收数组**（`dragons.activeEntities()`），
+  不在池里的实体其实例被隐藏（draw call 归零，M6 口径）。
+- **Tier 4「骨骼不共享」的判据必须是区域隔离**（v2.43 实测）：只断言「两条龙画面不同」抓不到
+  「后写胜」型共享 —— 共享骨骼时后一次 sync 覆写同一套骨骼，两张图里第一条龙都变成了第二条的姿势，
+  整图仍不同。有效判据 = 「第一条龙的区域在 `two`（第二条 orbitT 差 0.6s）与 `twoSync`（同 orbitT）
+  之间**逐位相同**」（注入实测 0.027 ≠ 0 真 FAIL）。⚠️ **测两条龙必须用专门的 wide 视角**：
+  第二条龙放在 +X 60 格（> 四个常规视角的可见半宽 18.6 格 ⇒ 全部出画、不污染既有取样点），
+  而 side 相机在 x≈30 朝 −X 看 ⇒ x=60 的龙在相机**背后**根本不入画（实测 changedRatio 恒 0，
+  一度误判成「渲染没生效」）。
+- **`Toast._install()` 的幂等判据必须能拿到一个 Document**（v2.43 修掉的既有缺陷）：旧写法用
+  `root.getElementById(...)`，而 **`document.body` 没有 `getElementById`**（那是 `Document` 的方法）
+  ⇒ 生产里（root = body）**恒走桩件分支、每个 `new Toast({})` 都 append 一个新的 `#mc-toast`**，
+  注释里「提示元素若已存在则复用」从未成立。单实例时看不出来，第二个 Toast 实例一出现就暴露：
+  `document.getElementById` 返回文档序里**第一个**，而新实例写的是第二个 ⇒ 文案永远读不到
+  （Boss 召唤 toast 实测踩到）。修法 = `root.ownerDocument ?? root` 取到 Document 再查
+  （桩件容器无 ownerDocument ⇒ 仍走桩件分支，既有用例逐位不变）。⚠️ **因此多个 Toast 实例共享
+  同一个 DOM 元素**：`Game._bossToast` 的实例**不要调 `dispose()`**（会把共享元素从文档里摘掉，
+  设置面板的提示随之静默失效）。
 - **伤害路由的唯一收敛点 = `Game.damageEntity`**（分叉一方案 A）：按实体类型分发到
   Zombie/Dragon service。三处消费方（武器 `setEntityQuery.damage`、炮塔弹丸 `onDamage`、
   索敌目标集合）都经它或 `WEAPON_HITTABLE_TYPES`。⚠️ **不给 M5 EntityManager 加玩法接口**
@@ -3449,8 +3488,9 @@ testing-policy §2.5「派生量不硬编码」的收益兑现）。细节见 ro
   龙的 `state.position` 就是身体中心，丧尸的 position 是脚底所以要抬到胸部。
   ⚠️ 既有 `test-turrets.js` 只改参数名、断言一字不动（改名后若某条断言变红，说明实现改了行为）。
 - **SkinnedMesh 在 WebGPU 后端可用**（已实测，spec §2.4 探针：2 骨骼 + 旋转 45° → 左右像素
-  不对称 6025/5145，零页面错误）。115 盒合并成**一个 BufferGeometry**（2760 顶点）→ 整条龙
-  **1 个 draw call**；无龙时 `visible = false` → 0（M6 口径）。⚠️ 材质 unlit（`MeshBasicMaterial`）+
+  不对称 6025/5145，零页面错误）。115 盒合并成**一个 BufferGeometry**（2760 顶点）→ 每条龙
+  **1 个 draw call**（v2.43 起是实例池，最多 `DRAGON_MAX_ALIVE` 条）；无龙时全部实例
+  `visible = false` → 0（M6 口径）。⚠️ 材质 unlit（`MeshBasicMaterial`）+
   `DoubleSide`（翼膜 1px 薄片，单面会从下方看穿）+ `alphaTest: 0.5`（翼膜镂空走 cutout 语义）。
 - **几何用 three `BoxGeometry` 生成，不手工推导面序**：运行时渲染器用 three 的 SkinnedMesh，
   顶点序/法线/索引必须与 three 逐位一致。手工推导面序极易错（spec §11 风险 1）。
@@ -3796,8 +3836,10 @@ mc-heavy/
    │               #    —— 原版 MC 人形口径：头 8³ / 躯干 8×12×4 / 肢 4×12×4 = 32px = 2.0 格
    │               #  dragon-model.js（祭坛飞龙 v2.41：产物装载 + 动画采样 helper，three-free 部分；
    │               #    fetch 带 cache-busting + resourceUrl；slerpQuat/multiplyQuat 手写）
-   │               #  dragon-renderer.js（祭坛飞龙 v2.41：SkinnedMesh 单几何渲染，受控发布层；
-   │               #    骨骼增量从 bind 快照起算；unlit + DoubleSide + alphaTest 0.5；红闪走材质 color）
+   │               #  dragon-renderer.js（祭坛飞龙 v2.41，v2.43 改多实例池：SkinnedMesh 单几何渲染，
+   │               #    受控发布层；DRAGON_MAX_ALIVE=4 实例池 —— **几何共享一份、骨骼与材质逐龙独立**
+   │               #    （N 条龙 = N 个 draw call；材质共享会让红闪传染、骨骼共享会让所有龙同姿势）；
+   │               #    sync 收数组；骨骼增量从 bind 快照起算；unlit + DoubleSide + alphaTest 0.5）
    │               #  minecart-renderer.js（矿车 2 个 InstancedMesh：车斗 + 4 轮；零实例时
    │               #    visible=false；车斗纹理运行时 canvas 生成 → 无指纹门禁，靠 Tier 4 兜底）
    │               #  view-arm.js（第一人称手臂：单个 unlit Mesh 挂 camera 下，与 view-weapon.js
@@ -3821,10 +3863,16 @@ mc-heavy/
    │               #  minecarts/（矿车 Epic，Worker 同构无 three）：minecart-config.js（冻结玩法
    │               #   数据与几何尺寸唯一权威）+ minecart-system.js（移动/转弯/碰撞/连挂同构
    │               #   纯函数 + MinecartService 玩法入口 + minecartDefinition 持久实体）
-   │               #  dragons/（祭坛飞龙 v2.41，同构无 three）：dragon-config.js（冻结玩法数值唯一
-   │               #    权威：health 3000 / 轨道半径 24 / 盘旋高 / DRAGON_CORE_OBB / MODEL_CENTER /
-   │               #    ORBIT_SALT 1040）+ dragon-system.js（轨道/动画状态机/AABB 纯函数 +
-   │               #    dragonDefinition + DragonService：ensure/damage/hydrate，临时实体 + meta 死亡标记）
+   │               #  dragons/（祭坛飞龙 v2.41，v2.43 改按需召唤；同构无 three）：dragon-config.js
+   │               #    （冻结玩法数值唯一权威：health 3000 / 轨道半径 24 / 盘旋高 /
+   │               #    DRAGON_CORE_OBB / MODEL_CENTER / ORBIT_SALT 1040 / MAX_ALIVE 4 /
+   │               #    dragonEntityIdFor 派生 id）+ dragon-system.js（轨道/动画状态机/AABB 纯函数 +
+   │               #    dragonDefinition + DragonService：summon/damage/activeEntities，临时实体、
+   │               #    **无永久死亡**（v2.43 移除 dragonDead）、多实例共存）
+   │               #  bosses/（Boss 召唤框架 v2.43，同构无 three）：boss-map.js（`bossMapAt` =
+   │               #    「玩家站在哪张地标级地图里」的唯一权威，四类 CITY/TARN/SNOW/SHALLOW_TARN，
+   │               #    判据全部转调 gen 层既有权威）+ boss-registry.js（`BOSS_ROSTER` 名册 =
+   │               #    地图→Boss 槽位的数据表，当前只有 TARN→[dragon]；`BOSS_SLOTS_PER_MAP=2`）
    │               #  turrets/（M8，方块锚定装置，同构无 three）：turret-config.js（玩法数值唯一权威）
    │               #   + turret-blueprint.js（11 格展开；**BASE_DY=1** —— 底座坐在地面格之上，
    │               #     与巢穴共用 `target.blockPos` 口径，pivot 与 mc-lite 逐位等价）

@@ -131,29 +131,6 @@ export class Persistence {
     return this._put('meta', merged);
   }
 
-  /**
-   * 把「祭坛飞龙已死」写进 meta 行（v2.41，用户裁定「永久死亡」）。
-   *
-   * **与 `savePlayerPos` 完全同一手法：必须 merge 进缓存再整行 put** —— `saveMeta` 是整行
-   * 覆盖，只写 `dragonDead` 会把 `seed`/`spawn`/`playerPos` 抹掉（红线 1：meta 行的字段
-   * 各有权威，不得互相覆盖）。
-   *
-   * ⚠️ **龙本身不进存档**（它是临时实体，位置是 seed 的纯函数 —— 红线 2）。存下来的只有
-   * 这一个布尔标记，用于重启后不再 spawn。
-   *
-   * ⚠️ **不挂 `beforeunload`**：死亡是低频单次事件，当场写即可。挂 unload 会引入
-   * 「旧世界的标记写回新世界」的竞态（`playerPos` 需要 `_lastSavedPos = null` 语义正是为此，
-   * AGENTS.md v2.29 活跃约束）。`newWorld`/`clearSave` 的 `saveMeta` 整行 put 不含本字段
-   * → 换 seed / 删存档后龙自然复活，无需 settingsVersion 式迁移。
-   *
-   * @param {boolean} dead
-   */
-  saveDragonDead(dead) {
-    const merged = { ...(this._metaCache || {}), dragonDead: !!dead, key: 'main' };
-    this._metaCache = merged;
-    return this._put('meta', merged);
-  }
-
   /** @param {string} columnKey @param {Array<{index:number,id:number,meta:number}>} editsArray */
   saveColumnEdits(columnKey, editsArray) {
     this.editsCache.set(columnKey, editsArray);

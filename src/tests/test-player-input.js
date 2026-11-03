@@ -205,6 +205,38 @@ test('flight: 模态期间 F 不切换', () => {
   player.dispose();
 });
 
+test('KeyC: 模态期间不召唤 Boss（守卫须覆盖 C），非模态才触发', () => {
+  // ⚠️ 夹具的 makeFixture 不注入 onSummonBoss，这里单独构造一个带回调的 Player，
+  // 才能拓到「模态守卫拦不拦 C」—— 只靠默认 null 的用例测不到（null 时 C 本来就无效果）。
+  const registry = createRegistry();
+  const world = new WorldData(registry);
+  world.add(new ChunkColumn(0, 0));
+  let calls = 0;
+  const player = new Player({
+    world, registry,
+    canvas: { addEventListener: () => {}, removeEventListener: () => {}, requestPointerLock: () => {} },
+    editor: { setBlock: () => ({ affected: [] }), subscribe: () => () => {} },
+    camera: { position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 } },
+    scheduler: null,
+    onSummonBoss: () => { calls++; },
+  });
+  // 模态期间：守卫 early-return，C 不得触发回调（否则面板开着按 C 会误召龙）
+  player._isModal = () => true;
+  pressKey('KeyC');
+  releaseKey('KeyC');
+  assertEqual(calls, 0, '模态期间 C 不得触发召唤');
+  // 非模态：正常触发
+  player._isModal = () => false;
+  pressKey('KeyC');
+  releaseKey('KeyC');
+  assertEqual(calls, 1, '非模态 C 应触发一次召唤');
+  // 重复事件（按住 C）不重复触发
+  const ev = new KeyboardEvent('keydown', { code: 'KeyC', repeat: true, cancelable: true, bubbles: true });
+  window.dispatchEvent(ev);
+  assertEqual(calls, 1, 'repeat 事件不得重复召唤');
+  player.dispose();
+});
+
 test('flight: 飞行时空格走垂直上升而不是跳跃', () => {
   const { player } = makeFixture();
   player.physics.toggleFlight();
