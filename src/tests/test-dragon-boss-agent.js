@@ -228,6 +228,142 @@ test('移动: 返回全新 state 与全新 position 数组（M5 不变式）', (
   assertTrue(next.position !== st.position, 'position 数组必须是新引用（原地改写会让 column 索引永不迁移）');
 });
 
+// ==================== 开火条件（Task 3）====================
+
+/** 龙在 (0,y,0)、玩家在正东 +X 远处：yaw=−π/2 即对准玩家 */
+const FIRE_DRAGON = [0, ORBIT.y, 0];
+const FIRE_YAW = -Math.PI / 2;   // 前向 = (+1, 0) = 正东
+
+/** 构造「四条开火条件全满足」的 state（调用方逐项破坏其中一条） */
+function fireState(over = {}) {
+  return makeState({
+    mode: 'chase', position: FIRE_DRAGON, yaw: FIRE_YAW,
+    fireCooldown: 0, losTimer: 999, losVisible: true,   // 缓存说「通」且不重查
+    orbitT: 10, ...over,
+  });
+}
+
+/** 可切换遮挡的 world（测「开火瞬间新鲜复查」用） */
+function switchableWorld(state) {
+  const solidTable = new Uint8Array(256); solidTable[1] = 1;
+  const opaqueTable = new Uint8Array(256); opaqueTable[1] = 1;
+  return {
+    world: { getBlockId: (x) => (state.blocked && Math.floor(x) === 40 ? 1 : 0) },
+    registry: { solidTable, opaqueTable },
+  };
+}
+
+test('开火: 四条全满足 → fireRequest 指向玩家胸部且归一化', () => {
+  const agent = new DragonBossAgent({ poseAt: fakePoseAt });
+  const px = FIRE_DRAGON[0] + 30;   // 距 30 < fireRange
+  const ctx = { ...switchableWorld({ blocked: false }), player: { position: [px, 0, 0] } };
+  const next = agent.update(fireState(), 0.016, ctx);
+  assertTrue(next.fireRequest !== null, '四条全满足必须开火');
+  const { position, direction } = next.fireRequest;
+  assertDeepEqual(position, next.position, '火球出生点 = 龙的身体中心');
+  const len = Math.hypot(...direction);
+  assertTrue(Math.abs(len - 1) < 1e-9, `direction 必须归一化，实际长度 ${len}`);
+  // 指向玩家胸部（y + playerAimOffsetY）：从龙 (0,30,0) 到 (30,1,0)
+  const expect = [px - next.position[0], 0 + DRAGON_AI.playerAimOffsetY - next.position[1], 0];
+  const el = Math.hypot(...expect);
+  for (let i = 0; i < 3; i++) {
+    assertTrue(Math.abs(direction[i] - expect[i] / el) < 1e-9,
+      `direction[${i}]=${direction[i]} ≠ ${expect[i] / el}（必须瞄准玩家胸部）`);
+  }
+});
+
+test('开火: 锥外（yaw 偏离 > fireConeDeg）→ 不喷火；锥内 → 喷', () => {
+  const agent = new DragonBossAgent({ poseAt: fakePoseAt });
+  const ctx = { ...switchableWorld({ blocked: false }), player: { position: [30, 0, 0] } };
+  const cone = DRAGON_AI.fireConeDeg * Math.PI / 180;
+  // ⚠️ 初始偏离取 cone + 10°：chase 每帧只转 turnRate×dt ≈ 2.75°，一帧后仍 > cone
+  const out = agent.update(fireState({ yaw: FIRE_YAW + cone + 10 * Math.PI / 180 }), 0.016, ctx);
+  assertEqual(out.fireRequest, null, '脑袋没对准玩家不得喷火');
+  assertTrue(Math.abs(agent._angleDiff(out.yaw, agent._angleTo(out.position, [30, 0, 0]))) > cone,
+    'sanity：该帧结束时 yaw 确实在锥外（否则本用例测不到锥角）');
+  const inCone = agent.update(fireState(), 0.016, ctx);
+  assertTrue(inCone.fireRequest !== null, 'yaw 对准玩家必须喷火');
+});
+
+test('开火: 冷却未到 → 不喷火；到点 → 喷', () => {
+  const agent = new DragonBossAgent({ poseAt: fakePoseAt });
+  const ctx = { ...switchableWorld({ blocked: false }), player: { position: [30, 0, 0] } };
+  const cooling = agent.update(fireState({ fireCooldown: 1 }), 0.016, ctx);
+  assertEqual(cooling.fireRequest, null, '冷却中不得喷火（用户：不能像机关枪）');
+  const ready = agent.update(fireState({ fireCooldown: 0 }), 0.016, ctx);
+  assertTrue(ready.fireRequest !== null, '冷却到点必须喷火');
+});
+
+test('开火: 缓存说视线通但新鲜复查不通 → 不喷火（不得用缓存）', () => {
+  const agent = new DragonBossAgent({ poseAt: fakePoseAt });
+  const w = switchableWorld({ blocked: false });
+  const ctx = { ...w, player: { position: [60, 0, 0] } };
+  // 帧 1：无墙 → losVisible=true、losTimer 重置为 losInterval
+  let st = agent.update(fireState({ fireCooldown: 999 }), 0.016, ctx);
+  assertEqual(st.losVisible, true, 'sanity：帧 1 视线应通');
+  // 帧 2：突然加墙，但 losTimer 未到期（缓存仍 true）→ 开火必须用新鲜复查
+  w.world.getBlockId = (x) => (Math.floor(x) === 40 ? 1 : 0);
+  st = agent.update({ ...st, fireCooldown: 0 }, 0.016, ctx);
+  assertEqual(st.losVisible, true, 'sanity：缓存确实还没到期（仍为 true）');
+  assertEqual(st.fireRequest, null, '隔着墙不得喷火（开火瞬间必须新鲜复查 LOS）');
+});
+
+test('开火: 水平距 > fireRange → 不喷火；≤ fireRange → 喷', () => {
+  const agent = new DragonBossAgent({ poseAt: fakePoseAt });
+  const R = DRAGON_AI.fireRange;
+  const far = { ...switchableWorld({ blocked: false }), player: { position: [R + 1, 0, 0] } };
+  assertEqual(agent.update(fireState(), 0.016, far).fireRequest, null, '超出 fireRange 不得喷火');
+  const near = { ...switchableWorld({ blocked: false }), player: { position: [R - 1, 0, 0] } };
+  assertTrue(agent.update(fireState(), 0.016, near).fireRequest !== null, 'fireRange 内必须喷火');
+});
+
+test('开火: 冷却重置落在 [fireCooldownMin, fireCooldownMax]（rng 两端 + 中点）', () => {
+  const { fireCooldownMin: lo, fireCooldownMax: hi } = DRAGON_AI;
+  for (const [r, expect] of [[0, lo], [0.5, (lo + hi) / 2], [1, hi]]) {
+    const agent = new DragonBossAgent({ poseAt: fakePoseAt, rng: () => r });
+    const ctx = { ...switchableWorld({ blocked: false }), player: { position: [30, 0, 0] } };
+    const next = agent.update(fireState(), 0.016, ctx);
+    assertTrue(next.fireRequest !== null, `rng=${r} 应开火`);
+    // 本帧已扣 dt，故期望值要减去这一帧的 dt
+    const want = expect - 0.016;
+    assertTrue(Math.abs(next.fireCooldown - want) < 1e-9,
+      `rng=${r} 冷却 ${next.fireCooldown} ≠ ${want}（区间 [${lo}, ${hi}]）`);
+  }
+});
+
+test('开火: orbit 与 return 模式永不喷火（模式门控）', () => {
+  const agent = new DragonBossAgent({ poseAt: fakePoseAt });
+  // orbit：玩家在 sightRange 外（盘旋常态）→ 不喷火
+  const orbitCtx = { ...switchableWorld({ blocked: false }), player: { position: [500, 0, 0] } };
+  assertEqual(agent.update(makeState({ mode: 'orbit', fireCooldown: 0, losVisible: true, losTimer: 999 }), 0.016, orbitCtx).fireRequest,
+    null, 'orbit（自由盘旋）不得喷火');
+  // return：玩家在 fireRange 内、视线通、yaw 对准（轨道点也在 +X 方向）→ 仍不喷火
+  const retCtx = { ...switchableWorld({ blocked: false }), player: { position: [30, 0, 0] } };
+  const ret = agent.update(
+    makeState({ mode: 'return', position: [0, ORBIT.y, 0], yaw: FIRE_YAW, fireCooldown: 0,
+      losVisible: true, losTimer: 999, orbitT: 0 }),
+    0.016, retCtx,
+  );
+  assertEqual(ret.mode, 'return', 'sanity：该帧仍在 return（没被转移走）');
+  assertEqual(ret.fireRequest, null, 'return（回家途中）不得喷火');
+});
+
+test('开火: attack 模式也能喷火（chase 与 attack 共用判据）', () => {
+  const agent = new DragonBossAgent({ poseAt: fakePoseAt });
+  const ctx = { ...switchableWorld({ blocked: false }), player: { position: [30, 0, 0] } };
+  const next = agent.update(fireState({ mode: 'attack', attackPhase: 'approach' }), 0.016, ctx);
+  assertEqual(next.mode, 'attack', 'sanity：距 30 > flyoverDistance，仍在 attack');
+  assertTrue(next.fireRequest !== null, 'attack 模式必须能喷火');
+});
+
+test('开火: 无玩家上下文（player=null）→ 不喷火且不追击', () => {
+  const agent = new DragonBossAgent({ poseAt: fakePoseAt });
+  const ctx = { ...switchableWorld({ blocked: false }), player: null };
+  const next = agent.update(makeState({ mode: 'orbit', fireCooldown: 0, losVisible: true, losTimer: 999 }), 0.016, ctx);
+  assertEqual(next.mode, 'orbit', '无玩家时保持盘旋');
+  assertEqual(next.fireRequest, null, '无玩家时不得喷火');
+});
+
 // ==================== LOS 缓存节奏 ====================
 
 test('LOS 缓存: 第 1 帧查 1 次，随后 6 帧不查，第 8 帧再查（10Hz）', () => {

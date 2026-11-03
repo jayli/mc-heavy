@@ -135,6 +135,18 @@ export class DragonBossAgent extends BossAgent {
       }
     }
 
+    // ⑦ 开火判定（只在 chase / attack 两个模式；orbit 自由盘旋与 return 回家途中不喷火）
+    let fireRequest = null;
+    let fireCooldown = Math.max(0, (Number.isFinite(state.fireCooldown) ? state.fireCooldown : 0) - step);
+    if ((mode === 'chase' || mode === 'attack') && player && fireCooldown <= 0) {
+      fireRequest = this._tryFire([px, y, pz], yaw, player, ctx);
+      if (fireRequest) {
+        const { fireCooldownMin: lo, fireCooldownMax: hi } = DRAGON_AI;
+        // ⚠️ 减去本帧的 step：顶部已统一扣过一次 dt，这里不补扣会让实际间隔多出一帧
+        fireCooldown = lo + this.rng() * (hi - lo) - step;
+      }
+    }
+
     return {
       position: [px, y, pz],
       yaw,
@@ -144,13 +156,41 @@ export class DragonBossAgent extends BossAgent {
       flashedUntil: state.flashedUntil,
       mode,
       attackPhase,
-      fireCooldown: Math.max(0, (Number.isFinite(state.fireCooldown) ? state.fireCooldown : 0) - step),
+      fireCooldown,
       losTimer,
       losVisible,
       turnDist,
-      // Task 3 接入开火判据；Task 2 恒 null
-      fireRequest: null,
+      fireRequest,
     };
+  }
+
+  /**
+   * 开火四条判据（用户：「脑袋冲着玩家发射火球」+「至少间隔五到十秒」）。
+   *
+   * ① 脑袋朝向玩家：yaw 与「指向玩家」的夹角 ≤ `fireConeDeg`；
+   * ② 冷却到点（调用方已判）；
+   * ③ **新鲜视线复查** —— ⚠️ 不得用 `losVisible` 缓存：缓存 10Hz，而玩家可能在这 0.1 秒
+   *    里走进墙后（形态是「隔着墙喷火」）；
+   * ④ 水平距 ≤ `fireRange`（太远不浪费火球）。
+   *
+   * @param {[number,number,number]} pos 龙当前位置 @param {number} yaw
+   * @param {[number,number,number]} player 玩家脚底位置 @param {object} ctx
+   * @returns {{position: [number,number,number], direction: [number,number,number]}|null}
+   */
+  _tryFire(pos, yaw, player, ctx) {
+    const aim = [player[0], player[1] + DRAGON_AI.playerAimOffsetY, player[2]];
+    // ④ 距离
+    if (this._hDist(pos, player) > DRAGON_AI.fireRange) return null;
+    // ① 喷火锥
+    const cone = DRAGON_AI.fireConeDeg * Math.PI / 180;
+    if (Math.abs(this._angleDiff(yaw, this._angleTo(pos, player))) > cone) return null;
+    // ③ 新鲜视线复查
+    if (!this._hasLos(ctx, pos, aim)) return null;
+    // 方向 = 归一化(玩家胸部 − 火球出生点)：精确瞄准（脑袋已大致对准 ±20°）
+    const dx = aim[0] - pos[0], dy = aim[1] - pos[1], dz = aim[2] - pos[2];
+    const len = Math.hypot(dx, dy, dz);
+    if (!(len > 1e-9)) return null;   // 贴身退化：方向无法归一化
+    return { position: [pos[0], pos[1], pos[2]], direction: [dx / len, dy / len, dz / len] };
   }
 
   /**

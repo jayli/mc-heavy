@@ -103,6 +103,14 @@ async function dragonValue(page, field) {
   }, field);
 }
 
+/** 读 `DRAGON_AI` 里的某个 AI 数值（v2.44） */
+async function dragonAiValue(page, field) {
+  return page.evaluate(async (k) => {
+    const { DRAGON_AI } = await import('/src/entities/dragons/dragon-config.js');
+    return DRAGON_AI[k];
+  }, field);
+}
+
 test('Boss E2E: 高台地带按 C 召唤出龙（轨道中心 = 玩家所在地图中心）', async ({ page }) => {
   test.setTimeout(120_000);
   await page.goto(`/?vd=8&seed=${SEED}`);
@@ -129,10 +137,12 @@ test('Boss E2E: 高台地带按 C 召唤出龙（轨道中心 = 玩家所在地�
   // 轨道中心 = 玩家所在地图中心
   expect(s.orbit.cx).toBe(c.cx);
   expect(s.orbit.cz).toBe(c.cz);
-  // 位置在轨道上：水平距中心 = orbitRadius，y 在盘旋带内
+  // 位置在轨道上：水平距中心在 [radius−wobbleAmp, radius+wobbleAmp] 带内
+  // （v2.44 起半径按 θ 调制；旧断言「恒等于 orbitRadius」会把调制误判成缺陷）
   const R = await dragonValue(page, 'orbitRadius');
+  const W = await dragonAiValue(page, 'wobbleAmp');
   const r = Math.hypot(s.pos[0] - c.cx, s.pos[2] - c.cz);
-  expect(Math.abs(r - R)).toBeLessThan(1e-6);
+  expect(Math.abs(r - R)).toBeLessThan(W + 1e-6);
   expect(s.pos[1]).toBeGreaterThan(26);
   expect(s.pos[1]).toBeLessThan(34);
   expect(await toastText(page)).toContain('已召唤 Boss1');
@@ -339,8 +349,9 @@ test('Boss E2E: 玩家走远龙被回收，回来按 C 重新召唤（已知取�
   });
   expect(second.health).toBe(await dragonValue(page, 'health'));
   const R = await dragonValue(page, 'orbitRadius');
+  const W = await dragonAiValue(page, 'wobbleAmp');
   const r = Math.hypot(second.pos[0] - c.cx, second.pos[2] - c.cz);
-  expect(Math.abs(r - R)).toBeLessThan(1e-6);
+  expect(Math.abs(r - R)).toBeLessThan(W + 1e-6);
 });
 
 test('Boss E2E: reload 后龙不自动出现，按 C 重召且轨道参数逐位相同（persistent: false 的判据）', async ({ page }) => {

@@ -14,7 +14,7 @@ import { columnKeyAt } from '../voxel/constants.js';
 import { TARN_PLATEAU_Y } from '../gen/structures/tarn-zone.js';
 import {
   DRAGON, DRAGON_TYPE, DRAGON_MAX_ALIVE, DRAGON_ORBIT_SALT, DRAGON_CORE_OBB, DRAGON_ANIM,
-  dragonEntityIdFor,
+  DRAGON_AI, dragonEntityIdFor,
 } from '../entities/dragons/dragon-config.js';
 import {
   dragonPoseAt, dragonAnimStateAt, dragonAabbFor, dragonDefinition, DragonService,
@@ -66,6 +66,63 @@ test('龙轨道: yaw 是切线方向（头朝 −Z 的模型沿轨道前进）',
     const fx = Math.sin(-yaw), fz = -Math.cos(yaw);
     const dot = (fx * tx + fz * tz) / len;
     assertTrue(dot > 0.99, `t=${t} 前向与切线点积 ${dot}（yaw 符号或 π/2 偏移错）`);
+  }
+});
+
+test('龙轨道: wobbleAmp=0 时 yaw 逐位退回 π−θ（既有口径零回归）', () => {
+  // ⚠️ **必须逐位相等，不是近似**：实测（20000 采样）解析切线 atan2(−dx/dθ, −dz/dθ) 在 A=0 时
+  // 与 π−θ 有 15244 个采样不逐位相等（最大偏差 2π = 角度表示差异）⇒ 实现必须显式分支。
+  for (const t of [0, 0.37, 1.3, 4.7, 12.9, 25.1]) {
+    const theta = ORBIT.phase + ORBIT.omega * t;
+    const { yaw } = dragonPoseAt(ORBIT, t);
+    assertTrue(Object.is(yaw, Math.PI - theta) || yaw === Math.PI - theta,
+      `t=${t} yaw=${yaw} 与 π−θ=${Math.PI - theta} 不逐位相等`);
+  }
+});
+
+test('龙轨道: wobble 生效时半径按 θ 调制（左右拐弯，不再死板画圆）', () => {
+  const A = DRAGON_AI.wobbleAmp, F = DRAGON_AI.wobbleFreq;
+  const wob = Object.freeze({ ...ORBIT, wobbleAmp: A, wobbleFreq: F, wobblePhase: 0 });
+  // 一圈（2π/omega 秒）采 720 点：半径必须在 [R−A, R+A] 内起伏，且**不是常数**
+  const period = (Math.PI * 2) / ORBIT.omega;
+  const N = 720;
+  const radii = new Set();
+  let min = Infinity, max = -Infinity;
+  for (let i = 0; i < N; i++) {
+    const t = (i / N) * period;
+    const p = dragonPoseAt(wob, t).position;
+    const r = Math.hypot(p[0] - wob.cx, p[2] - wob.cz);
+    radii.add(round6(r));
+    if (r < min) min = r;
+    if (r > max) max = r;
+  }
+  assertTrue(radii.size > 100, `半径只有 ${radii.size} 个不同值（疑似没调制）`);
+  // ⚠️ **容差从采样分辨率派生，不写死贴线值**：720 个采样点不可能恰好落在 sin 极值点上，
+  // 采样到的极值必然比真极值偏 amp/2·(freq·Δθ)² 量级（Δθ = period/N）。首版写 1e-6 是
+  // 「断言描述想象中的世界」—— 它要求采样点精确命中极值，换 N 或换 phase 就假失败。
+  const dTheta = period / N;
+  const tol = A * Math.pow(F * dTheta, 2);   // 保守上界（真实误差再小 8 倍）
+  assertTrue(Math.abs(min - (DRAGON.orbitRadius - A)) < tol, `最小半径 ${min} ≠ ${DRAGON.orbitRadius - A}（容差 ${tol}）`);
+  assertTrue(Math.abs(max - (DRAGON.orbitRadius + A)) < tol, `最大半径 ${max} ≠ ${DRAGON.orbitRadius + A}（容差 ${tol}）`);
+  // y 仍在 bob 带内（调制只动水平半径）
+  const p0 = dragonPoseAt(wob, 1.1).position;
+  assertTrue(Math.abs(p0[1] - wob.y) <= DRAGON.bobAmplitude + 1e-9, `y=${p0[1]} 越出 bob 带`);
+});
+
+test('龙轨道: wobble 生效时 yaw 仍是路径切线（不侧着身子飞）', () => {
+  const wob = Object.freeze({
+    ...ORBIT, wobbleAmp: DRAGON_AI.wobbleAmp, wobbleFreq: DRAGON_AI.wobbleFreq, wobblePhase: 0.9,
+  });
+  for (const t of [0, 1.3, 4.7, 12.9]) {
+    const { yaw } = dragonPoseAt(wob, t);
+    const eps = 1e-5;
+    const a = dragonPoseAt(wob, t).position;
+    const b = dragonPoseAt(wob, t + eps).position;
+    const tx = b[0] - a[0], tz = b[2] - a[2];
+    const len = Math.hypot(tx, tz);
+    const fx = Math.sin(-yaw), fz = -Math.cos(yaw);
+    const dot = (fx * tx + fz * tz) / len;
+    assertTrue(dot > 0.99, `t=${t} 调制轨道上 yaw 前向与切线点积 ${dot}`);
   }
 });
 
@@ -236,11 +293,45 @@ test('龙 definition: update 返回全新 state（M5 不变式，不可原地改
   assertEqual(round6(next.yaw), round6(expect.yaw));
 });
 
-test('龙 definition: update 不读 context（龙不与方块交互）', () => {
+test('龙 definition: update 无玩家上下文时仍走轨道（ctx 缺失不崩）', () => {
   const st = makeState();
   const a = dragonDefinition.update({ state: st }, 1 / 60, undefined);
   const b = dragonDefinition.update({ state: st }, 1 / 60, { world: null });
   assertDeepEqual(a, b);
+});
+
+test('龙 definition: update 委托给 DragonBossAgent（有玩家时行为分叉）', () => {
+  // 玩家就在龙旁边（视线通）→ orbit 当帧切 chase；无玩家时保持 orbit。
+  // 这是「definition 不再自己算轨道、而是委托 Agent」的判别性断言：
+  // 若 update 没接 Agent，两种 ctx 的结果会逐位相同。
+  const st = makeState({ position: [ORBIT.cx + DRAGON.orbitRadius, ORBIT.y, ORBIT.cz], orbitT: 0 });
+  const idle = dragonDefinition.update({ state: st }, 1 / 60, { world: null });
+  assertEqual(idle.mode, 'orbit', '无玩家上下文 → 保持盘旋');
+  const chasing = dragonDefinition.update({ state: st }, 1 / 60, {
+    world: { getBlockId: () => 0 },
+    registry: { solidTable: new Uint8Array(256), opaqueTable: new Uint8Array(256) },
+    player: { position: [ORBIT.cx + DRAGON.orbitRadius + 10, ORBIT.y, ORBIT.cz] },
+  });
+  assertEqual(chasing.mode, 'chase', '玩家进入 sightRange 且视线通 → 必须委托给 Agent 进追击');
+});
+
+test('龙 definition: serialize 不含 fireRequest（瞬态字段不进快照）', () => {
+  const st = makeState({ fireRequest: { position: [1, 2, 3], direction: [1, 0, 0] } });
+  const raw = dragonDefinition.serialize(st);
+  assertTrue(!('fireRequest' in raw), 'serialize 输出不得含 fireRequest 键（瞬态，防陈旧请求复活）');
+  // 往返后 fireRequest 恒 null
+  const back = dragonDefinition.deserialize(raw);
+  assertEqual(back.fireRequest, null, 'deserialize 后 fireRequest 必须为 null');
+});
+
+test('龙 definition: create 补全 AI 字段缺省值（mode=orbit 等）', () => {
+  const st = makeState();
+  assertEqual(st.mode, 'orbit', '缺省 mode 必须是 orbit');
+  assertEqual(st.attackPhase, 'approach');
+  assertEqual(st.fireCooldown, 0);
+  assertEqual(st.losVisible, false);
+  assertEqual(st.turnDist, 0);
+  assertEqual(st.fireRequest, null);
 });
 
 test('龙 definition: serialize/deserialize 往返', () => {
@@ -289,9 +380,10 @@ test('龙 service: summon 在指定地图中心召出一条，位置在轨道上
   assertEqual(e.type, DRAGON_TYPE);
   assertEqual(em.count(DRAGON_TYPE), 1);
   assertEqual(e.persistent, false, '龙必须是临时实体（位置不进存档，红线 2）');
-  // 位置在轨道上：水平距地图中心 = orbitRadius，y 在 bob 带内
+  // 位置在轨道上：水平距地图中心在 [radius−wobbleAmp, radius+wobbleAmp] 带内
+  // （v2.44 起半径按 θ 调制；旧断言「恒等于 orbitRadius」会把调制误判成缺陷）
   const dist = Math.hypot(e.state.position[0] - MAP_A.cx, e.state.position[2] - MAP_A.cz);
-  assertTrue(Math.abs(dist - DRAGON.orbitRadius) < 1e-6, `轨道半径 ${dist}`);
+  assertTrue(Math.abs(dist - DRAGON.orbitRadius) <= DRAGON_AI.wobbleAmp + 1e-6, `轨道半径 ${dist}`);
   const yMid = TARN_PLATEAU_Y + DRAGON.orbitYOffset;
   assertTrue(Math.abs(e.state.position[1] - yMid) <= DRAGON.bobAmplitude + 1e-9,
     `y=${e.state.position[1]} 不在 ${yMid}±${DRAGON.bobAmplitude}`);

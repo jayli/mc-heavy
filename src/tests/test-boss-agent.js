@@ -99,6 +99,7 @@ test('DRAGON_AI: 常量齐全且冻结（数值权威单一出处）', () => {
     'sightRange', 'chaseSpeed', 'attackRange', 'flyoverDistance', 'turnAroundDistance',
     'disengageDistance', 'fireConeDeg', 'fireCooldownMin', 'fireCooldownMax', 'fireRange',
     'turnRate', 'wobbleAmp', 'wobbleFreq', 'losInterval', 'playerAimOffsetY',
+    'returnArriveDistance',
   ];
   for (const k of keys) {
     assertTrue(Number.isFinite(DRAGON_AI[k]), `DRAGON_AI.${k} 必须是有限数`);

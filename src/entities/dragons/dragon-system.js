@@ -24,15 +24,16 @@
 import { raycastAabbSlab, normalizePosition } from '../entity-types.js';
 import { TARN_PLATEAU_Y } from '../../gen/structures/tarn-zone.js';
 import { seededRandom } from '../../gen/noise.js';
+import { DragonBossAgent } from '../bosses/dragon-boss-agent.js';
 import {
   DRAGON, DRAGON_TYPE, DRAGON_MAX_ALIVE, DRAGON_ORBIT_SALT, DRAGON_CORE_OBB, DRAGON_ANIM,
-  dragonEntityIdFor,
+  DRAGON_AI, dragonEntityIdFor,
 } from './dragon-config.js';
 
 // ==================== 纯函数 ====================
 
 /**
- * 轨道 pose（spec §6.1）。
+ * 轨道 pose（spec §6.1；v2.44 加半径调制）。
  *
  * ⚠️ **`yaw = π − θ`，不是 spec §6.1 原文写的 `θ + π/2`** —— 原文那式子算出的前向与轨道
  * 切线**垂直**（龙会侧着身子飞）。推导：轨道切线 = `(−sin θ, cos θ)`（对 `x=cx+R cos θ`、
@@ -41,16 +42,48 @@ import {
  * `sin yaw = sin θ` 且 `cos yaw = −cos θ` ⇒ `yaw = π − θ`。
  * 判据落在 `test-dragon-system.js` 的「yaw 是切线方向」（点积 > 0.99），改公式必红。
  *
- * @param {{cx:number, cz:number, y:number, radius:number, omega:number, phase:number}} orbit
+ * ## v2.44 的半径调制（用户：「可以左右拐弯，免得绕圈太固定显得单调」）
+ *
+ * `R(θ) = radius + wobbleAmp × sin(wobbleFreq × θ + wobblePhase)`，每圈起伏 `wobbleFreq` 次。
+ *
+ * ⚠️ **`wobbleAmp` 缺省 0 时必须走旧公式 `yaw = π − θ`，不得用解析切线**（实测裁定）：
+ * 调制路径的切线是 `atan2(−dR/dθ·cos θ + R sin θ, −dR/dθ·sin θ − R cos θ)`，它在 A=0 时
+ * 与 `π − θ` **数值等价但不逐位相等**（20000 采样里 15244 个不等，最大偏差 2π = 角度表示
+ * 差异）。既有断言钉的是逐位相等 ⇒ 必须显式分支，否则「零回归」假失败。
+ *
+ * @param {{cx:number, cz:number, y:number, radius:number, omega:number, phase:number,
+ *          wobbleAmp?:number, wobbleFreq?:number, wobblePhase?:number}} orbit
  * @param {number} t 轨道时钟（秒）
  * @returns {{position: [number,number,number], yaw: number}}
  */
 export function dragonPoseAt(orbit, t) {
   const theta = orbit.phase + orbit.omega * t;
-  const x = orbit.cx + orbit.radius * Math.cos(theta);
-  const z = orbit.cz + orbit.radius * Math.sin(theta);
+  const amp = Number.isFinite(orbit.wobbleAmp) ? orbit.wobbleAmp : 0;
+  let x;
+  let z;
+  let yaw;
+  if (amp === 0) {
+    // 旧路径：逐位兼容 v2.41~v2.43（既有断言钉死）
+    x = orbit.cx + orbit.radius * Math.cos(theta);
+    z = orbit.cz + orbit.radius * Math.sin(theta);
+    yaw = Math.PI - theta;
+  } else {
+    const freq = Number.isFinite(orbit.wobbleFreq) ? orbit.wobbleFreq : DRAGON_AI.wobbleFreq;
+    const ph = Number.isFinite(orbit.wobblePhase) ? orbit.wobblePhase : 0;
+    const w = freq * theta + ph;
+    const R = orbit.radius + amp * Math.sin(w);
+    // dR/dθ（调制路径的切线要用它）
+    const dR = amp * freq * Math.cos(w);
+    x = orbit.cx + R * Math.cos(theta);
+    z = orbit.cz + R * Math.sin(theta);
+    // 路径切线 = (dx/dθ, dz/dθ)；本仓 yaw 口径要求前向 (−sin yaw, −cos yaw) 与之同向
+    // ⇒ yaw = atan2(−dx/dθ, −dz/dθ)
+    const dx = dR * Math.cos(theta) - R * Math.sin(theta);
+    const dz = dR * Math.sin(theta) + R * Math.cos(theta);
+    yaw = Math.atan2(-dx, -dz);
+  }
   const y = orbit.y + DRAGON.bobAmplitude * Math.sin((2 * Math.PI * t) / DRAGON.bobPeriod);
-  return { position: [x, y, z], yaw: Math.PI - theta };
+  return { position: [x, y, z], yaw };
 }
 
 /**
@@ -141,22 +174,36 @@ export function dragonAabbFor(state) {
 // ==================== state 构造 ====================
 
 /**
- * 轨道参数的合法性校验（6 个字段全须有限）。
+ * 轨道参数的合法性校验（6 个核心字段全须有限；wobble 三项可选，缺省 = 无调制）。
  * @returns {object|null} 冻结的 orbit，非法返回 null
  */
 function normalizeOrbit(orbit) {
   if (!orbit || typeof orbit !== 'object') return null;
   const keys = ['cx', 'cz', 'y', 'radius', 'omega', 'phase'];
   for (const k of keys) if (!Number.isFinite(orbit[k])) return null;
-  return Object.freeze({ cx: orbit.cx, cz: orbit.cz, y: orbit.y, radius: orbit.radius, omega: orbit.omega, phase: orbit.phase });
+  const out = { cx: orbit.cx, cz: orbit.cz, y: orbit.y, radius: orbit.radius, omega: orbit.omega, phase: orbit.phase };
+  // wobble 三项：给了就必须有限，缺省 = 0（`dragonPoseAt` 对 amp=0 走旧公式，逐位兼容）
+  for (const k of ['wobbleAmp', 'wobbleFreq', 'wobblePhase']) {
+    if (orbit[k] !== undefined) {
+      if (!Number.isFinite(orbit[k])) return null;
+      out[k] = orbit[k];
+    }
+  }
+  return Object.freeze(out);
 }
 
 /**
  * 构造全新 state（**不原地改写** —— M5 不变式：`EntityManager.update` 的跨 column 索引迁移
  * 判据是「赋值前 position vs 赋值后 position」，原地改写会让 before/after 从同一份算出
  * → 恒相等 → 索引永不迁移 → column 卸载漏回收实体）。
+ *
+ * v2.44 起新增 AI 字段（全部有缺省，旧调用不破）：mode / attackPhase / fireCooldown /
+ * losTimer / losVisible / turnDist / fireRequest。
  */
-function createState({ position, yaw, orbit, orbitT, health, flashedUntil }) {
+function createState({
+  position, yaw, orbit, orbitT, health, flashedUntil,
+  mode, attackPhase, fireCooldown, losTimer, losVisible, turnDist, fireRequest,
+}) {
   const p = normalizePosition(position);
   const o = normalizeOrbit(orbit);
   if (!p || !o) return null;
@@ -167,16 +214,32 @@ function createState({ position, yaw, orbit, orbitT, health, flashedUntil }) {
     orbitT: Number.isFinite(orbitT) ? orbitT : 0,
     health: Number.isFinite(health) ? health : DRAGON.health,
     flashedUntil: Number.isFinite(flashedUntil) ? flashedUntil : 0,
+    // ---- v2.44 AI 字段（缺省 = 盘旋态）----
+    mode: mode === 'chase' || mode === 'attack' || mode === 'return' ? mode : 'orbit',
+    attackPhase: attackPhase === 'turn' ? 'turn' : 'approach',
+    fireCooldown: Number.isFinite(fireCooldown) ? fireCooldown : 0,
+    losTimer: Number.isFinite(losTimer) ? losTimer : 0,
+    losVisible: losVisible === true,
+    turnDist: Number.isFinite(turnDist) ? turnDist : 0,
+    // ⚠️ **瞬态**：serialize 跳过；由 game.js 在 entities.update 之后消费（生成火球）
+    fireRequest: fireRequest || null,
   };
 }
 
 // ==================== definition ====================
 
 /**
+ * 模块级单例 AI（无跨帧成员，多龙共用安全）。poseAt 注入本文件的 `dragonPoseAt`
+ * （轨道唯一权威）—— Agent 不 import 本文件，避免环。
+ */
+const dragonAgent = new DragonBossAgent({ poseAt: dragonPoseAt });
+
+/**
  * 龙的 M5 definition。
  *
- * ⚠️ **`update` 不读 context**：轨道参数全在 state 里，龙不与方块交互（不碰撞、不寻路、
- * 不受重力）—— 它是纯景观实体。故 `entities.update(dt, ctx)` 传什么 ctx 都无所谓。
+ * ⚠️ **v2.44 起 `update` 委托给 `DragonBossAgent`**（用户的解耦指令：行为决策抽成独立
+ * 智能体类）。无玩家上下文（ctx 缺 player）时 Agent 只盘旋 —— 与 v2.41~v2.43 的景观行为
+ * 逐位一致（`test-dragon-system.js` 的「update 无玩家上下文时仍走轨道」钉住）。
  */
 export const dragonDefinition = Object.freeze({
   create(state) {
@@ -185,24 +248,25 @@ export const dragonDefinition = Object.freeze({
   },
 
   /**
-   * 推进轨道时钟并重算 pose。
+   * 委托 AI 推进一帧，返回值经 `createState` 包裹（校验 + 冻结 orbit）。
    * @returns {object} 全新 state（含全新 position 数组）
    */
-  update(entity, dt) {
-    const prev = entity.state;
-    const step = Number.isFinite(dt) && dt > 0 ? dt : 0;
-    const orbitT = prev.orbitT + step;
-    const pose = dragonPoseAt(prev.orbit, orbitT);
-    return createState({
-      position: pose.position, yaw: pose.yaw, orbit: prev.orbit, orbitT,
-      health: prev.health, flashedUntil: prev.flashedUntil,
-    });
+  update(entity, dt, context) {
+    const next = dragonAgent.update(entity.state, dt, context || {});
+    if (!next) return null;
+    return createState(next);
   },
 
   raycastAabb: (state, origin, dir, maxDist) =>
     raycastAabbSlab(state, origin, dir, maxDist, dragonAabbFor(state)),
 
-  /** 临时实体不走存档，最小 snapshot（保留 orbitT 以便调试/未来持久化） */
+  /**
+   * 临时实体不走存档，最小 snapshot（保留 orbitT 以便调试/未来持久化）。
+   *
+   * ⚠️ **`fireRequest` 刻意不进 snapshot**（瞬态）：它是「本帧要开火」的意图，由 game.js
+   * 在 `entities.update` 之后立即消费。写进快照的形态是「陈旧请求复活」—— 若将来龙改成
+   * 持久化，重启后会凭空喷一发火球（且 snapshot 里攒一堆无人消费的请求）。
+   */
   serialize(state) {
     if (!state) return null;
     const p = normalizePosition(state.position);
@@ -210,6 +274,12 @@ export const dragonDefinition = Object.freeze({
     return { position: p, yaw: state.yaw, orbitT: state.orbitT, health: state.health };
   },
 
+  /**
+   * 反序列化。⚠️ **AI 字段一律回缺省（orbit 态）**：snapshot 不含 mode/冷却等，回来就是
+   * 「重新开始盘旋」—— 临时实体本就不走存档，这是可接受的语义。
+   * ⚠️ **`fireRequest` 必须显式为 `null`**（不是 undefined）：消费方判 `!== null`，
+   * undefined 会被当成「有请求」而解构报错。
+   */
   deserialize(raw) {
     if (!raw) return null;
     const p = normalizePosition(raw.position);
@@ -219,6 +289,13 @@ export const dragonDefinition = Object.freeze({
       yaw: Number.isFinite(raw.yaw) ? raw.yaw : 0,
       orbitT: Number.isFinite(raw.orbitT) ? raw.orbitT : 0,
       health: Number.isFinite(raw.health) ? raw.health : DRAGON.health,
+      mode: 'orbit',
+      attackPhase: 'approach',
+      fireCooldown: 0,
+      losTimer: 0,
+      losVisible: false,
+      turnDist: 0,
+      fireRequest: null,
     };
   },
 });
@@ -275,6 +352,14 @@ export class DragonService {
       // ⚠️ **相位按地图中心派生**（不是 v2.41 的 seed 级单值）：多条龙共存时各自相位不同，
       // 而同一张地图重召永远是同一个相位（确定性）。用错 salt 是静默的确定性污染。
       phase: seededRandom(cx, cz, this.seed + DRAGON_ORBIT_SALT) * Math.PI * 2,
+      // v2.44：盘旋半径调制（用户「可以左右拐弯，免得绕圈太固定显得单调」）。
+      // ⚠️ **wobblePhase 也按地图中心派生**：同一张地图重召逐位相同（确定性），
+      // 不同地图的龙拐弯节奏不同（多条龙共存时不会同步摆动，观感不是复制粘贴）。
+      // ⚠️ 复用同一个 salt + 同一个随机值派生两个量是**刻意**的：它们描述的是
+      // 「这条龙在这张地图上的盘旋姿态」这一个事实，开第二个 salt 反而会让两者独立漂移。
+      wobbleAmp: DRAGON_AI.wobbleAmp,
+      wobbleFreq: DRAGON_AI.wobbleFreq,
+      wobblePhase: seededRandom(cx, cz, this.seed + DRAGON_ORBIT_SALT) * Math.PI * 2,
     });
     const pose = dragonPoseAt(orbit, 0);
     const entity = this.entities.spawn({
