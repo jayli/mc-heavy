@@ -2569,6 +2569,10 @@ export class Game {
    */
   _consumeDragonFireRequests() {
     if (!this.dragons) return;
+    // ⚠️ **常态零分配门控**：`activeEntities()` 会新建一个数组，而本方法每帧都跑 ——
+    // 场上没龙时（绝大多数时间）白付一次分配。`count()` 只遍历不分配。
+    // （AGENTS.md：「每帧新建是分配」—— 炮塔 pose 的 Map 复用是同一个教训。）
+    if (this.entities.count(DRAGON_TYPE) === 0) return;
     for (const dragon of this.dragons.activeEntities()) {
       const req = dragon.state.fireRequest;
       if (!req) continue;
@@ -2587,6 +2591,10 @@ export class Game {
    * `_applyExplosion` 不碰去重集合。超距（`max-distance`）不爆炸（judgeFireball 不给 at）。
    */
   _updateFireballs(dt) {
+    // ⚠️ **常态零分配门控**（与 `_consumeDragonFireRequests` 同理）：下面要构造 player 盒对象
+    // + 快照展开实体集合，没火球时（绝大多数帧）这两笔分配是白付的。
+    // 实测后果：bench 场景 ③ fastRemeshP95 1.1 → 4.5（GC 压力正是该指标的记录抖动源）。
+    if (this.entities.count(FIREBALL_TYPE) === 0) return;
     const player = this.player && this.player.physics
       ? { position: [this.player.physics.pos.x, this.player.physics.pos.y, this.player.physics.pos.z],
           aabb: this._playerAabbLocal }
