@@ -31,7 +31,7 @@ export const QUESTION_ID = 'step';
  * - **不用双重否定**；
  * - **明说该避免什么**（重复访问 / 死胡同）—— 实测这两句是长迷宫能通过的关键（spec §2.4）。
  */
-export const STEP_INSTRUCTIONS = 'Which candidate step is most likely to lead `Z` to `P` without getting stuck? Use both the ground grid and the candidate facts. If the straight line toward the player is blocked after only a few meters, the zombie must walk around: prefer a step that keeps a long way forward and has a lot of room around it, even if it does not get closer this step. Do not step onto a square the zombie has already visited many times, and do not walk back the way it came.';
+export const STEP_INSTRUCTIONS = 'A route planner has worked out a walkable route from `Z` to `P`, and one of the candidate steps continues that route. Pick the step the zombie should take now. Follow the planned route unless another step is clearly better: the planned square has already been visited many times, the planned square is a dead end, or the planned square leaves almost no room to move.';
 
 /**
  * 单个方向选项的描述。
@@ -47,8 +47,11 @@ export function criterionFor(name, f) {
     + `Amount of room to move around on and beside that square: ${f.room_around_after_the_step} of 9. `
     + `The zombie has stood on that square ${f.times_already_visited} times before. `
     + (f.marked_dead_end
-      ? 'The zombie already found out that this square leads to a dead end.'
-      : 'This square is not known to be a dead end.');
+      ? 'The zombie already found out that this square leads to a dead end. '
+      : 'This square is not known to be a dead end. ')
+    + (f.continues_planned_route
+      ? 'This step continues the planned route.'
+      : 'This step leaves the planned route.');
 }
 
 /**

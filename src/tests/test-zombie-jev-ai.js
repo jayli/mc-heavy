@@ -19,6 +19,7 @@ import {
   DIRECTION_VECTORS, cellKey, memoryFor, noteVisit, sampleGroundWindow,
   bearingWords, buildCandidateSteps, buildJevState, markDeadEnd, parseDirectionChoice,
 } from '../entities/zombies/zombie-ai-view.js';
+import { planStep } from '../entities/zombies/zombie-pathfinder.js';
 import { ChunkColumn } from '../voxel/chunk-column.js';
 import { WorldData } from '../voxel/world-data.js';
 import { createRegistry } from '../voxel/block-registry.js';
@@ -775,4 +776,61 @@ test('buildJevState.path_to_player：斜向射线不重复计数（同格只数�
   // 直线距离 ≈ 11.66 格 → 去重后最多 11 步（不含玩家格本身）
   assertTrue(steps <= 11, `不得因重复采样虚高（实际 ${steps}）`);
   assertTrue(steps >= 9, `也不该少得离谱（实际 ${steps}）`);
+});
+
+// ---------- v2：代码寻路进 state（Task 2）----------
+
+test('buildJevState.path_plan：空旷地 → reachable，next_step 朝玩家', () => {
+  const { world } = makeWindowWorld({ columns: [[0, 0], [0, -1], [0, 1], [-1, 0], [1, 0]] });
+  const st = buildJevState(world, [8.5, 1, 8.5], [8.5, 1, 3.5], memOf(new Map(), 'z'));
+  assertTrue(st.path_plan.reachable_within_24_meters, '空旷地必须可达');
+  assertEqual(st.path_plan.next_step_toward_player, 'north');
+  assertTrue(st.path_plan.path_length_in_steps >= 4);
+  assertEqual(st.path_plan.walked_along_this_plan, 0);
+});
+
+test('buildJevState.path_plan：长墙（超出 9x9 窗口）仍能给出绕行方向', () => {
+  const { world, registry } = makeWindowWorld({ columns: [[0, 0], [0, -1], [0, 1], [-1, 0], [1, 0]] });
+  const stone = registry.idOf('stone');
+  // 墙：z=6，x∈[2,14]，3 格高（丧尸 (8,8)、玩家 (8,3)）—— 墙宽 13 格，远超 9×9 窗口半宽 4
+  for (let x = 2; x <= 14; x++) for (let dy = 0; dy < 3; dy++) world.setBlock(x, 1 + dy, 6, stone);
+  const st = buildJevState(world, [8.5, 1, 8.5], [8.5, 1, 3.5], memOf(new Map(), 'z'));
+  assertTrue(st.path_plan.reachable_within_24_meters, '13 格宽的墙在 24 格半径内能绕过');
+  assertTrue(['east', 'west', 'north_east', 'north_west'].includes(st.path_plan.next_step_toward_player),
+    `第一步必须是横向绕，实际 ${st.path_plan.next_step_toward_player}`);
+});
+
+test('buildJevState.path_plan：半径外不可达 → reachable=false 且候选表仍完整（回落 v1）', () => {
+  const { world } = makeWindowWorld({ columns: [[0, 0]] });
+  // 玩家在 2000 格外（那里没有 column，BFS 走不到）
+  const st = buildJevState(world, [8.5, 1, 8.5], [8.5, 1, 2000.5], memOf(new Map(), 'z'));
+  assertFalse(st.path_plan.reachable_within_24_meters, '半径内不可达');
+  assertEqual(st.path_plan.next_step_toward_player, null);
+  assertTrue(Object.keys(st.candidate_steps).length > 0,
+    '⚠️ 不可达时候选表仍须完整 —— 空表会导致不发请求、丧尸站死（Review Focus 2）');
+});
+
+test('buildCandidateSteps：continues_planned_route 与计划方向一致', () => {
+  const { world } = makeWindowWorld({ columns: [[0, 0], [0, -1], [0, 1], [-1, 0], [1, 0]] });
+  const r = buildCandidateSteps(world, [8.5, 1, 8.5], [8.5, 1, 3.5], memOf(new Map(), 'z'), 'north');
+  assertTrue(r.north.continues_planned_route, '北与计划方向一致');
+  assertFalse(r.south.continues_planned_route);
+});
+
+test('criterionFor：包含「是否延续计划路线」这句话', () => {
+  const base = {
+    direction: 'north', player_lies_toward: 'north', straight_line_distance_after_step: '5.0 meters',
+    closer_or_farther: 'closer to the player', open_ground_ahead: '8 meters',
+    other_ways_out_after_the_step: 3, times_already_visited: 0, marked_dead_end: false,
+    room_around_after_the_step: 9,
+  };
+  const on = criterionFor('north', { ...base, continues_planned_route: true });
+  assertTrue(on.includes('continues the planned route'), on);
+  const off = criterionFor('south', { ...base, continues_planned_route: false });
+  assertTrue(off.includes('leaves the planned route'), off);
+});
+
+test('STEP_INSTRUCTIONS：说明路线是规划出来的，不要求模型自己发现绕行', () => {
+  assertTrue(STEP_INSTRUCTIONS.includes('route'), '题干必须提到 route');
+  assertTrue(/planner|planned/i.test(STEP_INSTRUCTIONS), '必须说明路线是规划出来的');
 });

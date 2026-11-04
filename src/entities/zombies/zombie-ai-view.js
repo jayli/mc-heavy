@@ -16,6 +16,7 @@
 import { JEV_AI, ZOMBIE_MAX_STEP } from './zombie-config.js';
 import { zombieCollidesAt, zombieStepUpY } from './zombie-navigation.js';
 import { SITUATION, WINDOW_LEGEND } from './zombie-jev-prompts.js';
+import { directionNameOf, planStep } from './zombie-pathfinder.js';
 
 /** 8 个候选方向：[dr, dc] = [z 增量, x 增量]（dr<0 为 north，dc>0 为 east） */
 export const DIRECTION_VECTORS = Object.freeze({
@@ -228,7 +229,7 @@ export function markDeadEnd(mem, x, z) {
  * @param {number[]} playerPosition 玩家脚底 [x,y,z] @param {object} memory
  * @returns {Record<string, object>} 键为方向名；空对象 = 四面皆不可走
  */
-export function buildCandidateSteps(world, position, playerPosition, memory) {
+export function buildCandidateSteps(world, position, playerPosition, memory, plannedDirection = null) {
   const [xb, y, zb] = position;
   const bx = Math.floor(xb);
   const bz = Math.floor(zb);
@@ -256,6 +257,9 @@ export function buildCandidateSteps(world, position, playerPosition, memory) {
       // 丧尸会左右横跳（实测：模型连续 13 次都选 west，位置在 0.1 格内来回摆动）。
       // 判据 = 该落点周围（含自身，8 邻域）可站格数。凹角里这个数很小。
       room_around_after_the_step: roomAround(world, nx, y, nz),
+      // **这一步是否延续代码规划出的路线**（v2）：模型不再需要自己发现绕行方向，
+      // 只需判断「这个方向上有什么理由不照走」。见 spec §3.10.4。
+      continues_planned_route: plannedDirection !== null && name === plannedDirection,
     };
   }
   return out;
@@ -272,6 +276,19 @@ export function buildJevState(world, position, playerPosition, memory) {
   const bz = Math.floor(zb);
   const px = Math.floor(playerPosition[0]);
   const pz = Math.floor(playerPosition[2]);
+  // **代码寻路**（v2，spec §3.10）：9×9 窗口半宽只有 4 格，模型看不到墙的尽头。
+  // 长距离可达性必须由代码算 —— 实测 31 格宽的墙让纯窗口方案 69 次决策净位移 0.7 格。
+  // ⚠️ `planStep` 不可达时（半径内绕不过去）**不改变候选表**：仍回落 v1 的局部决策，
+  // 否则远处玩家会让丧尸完全站死（Review Focus 2）。
+  const plan = planStep(world, position, playerPosition);
+  const plannedDir = plan.reachable && plan.nextStep
+    ? directionNameOf(plan.nextStep[0], plan.nextStep[1])
+    : null;
+  // 计划固化（Review Focus 4）：每 0.5 秒重算 BFS 时「往东绕」与「往西绕」常等长，
+  // 不记住上一次的选择会让丧尸在两条等长路线间来回横跳。
+  const walked = (memory.plan && memory.plan.direction === plannedDir)
+    ? (memory.plan.walked ?? 0)
+    : 0;
   return {
     situation: SITUATION,
     player_direction_from_zombie: bearingWords([bx, bz], [px, pz]),
@@ -288,7 +305,13 @@ export function buildJevState(world, position, playerPosition, memory) {
       left_is: 'west',
       legend: WINDOW_LEGEND,
     },
-    candidate_steps: buildCandidateSteps(world, position, playerPosition, memory),
+    path_plan: {
+      reachable_within_24_meters: plan.reachable,
+      next_step_toward_player: plannedDir,
+      path_length_in_steps: plan.pathLength,
+      walked_along_this_plan: walked,
+    },
+    candidate_steps: buildCandidateSteps(world, position, playerPosition, memory, plannedDir),
   };
 }
 
