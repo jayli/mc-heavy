@@ -66,6 +66,11 @@ view；worker 仅输出每只丧尸的 `{id,generation,vx,vz,mode}`。主线程�
 `world.isSolid()` 应用重力、AABB 碰撞和一格 step-up；回包 id/generation 不匹配即丢弃。这样没有每尸
 往返、主线程 BFS 或第二套物理。
 
+> ⚠️ **2026-11-04 注记**：「主线程 BFS」这条禁令的**意图**是禁止每只丧尸**每帧**做**全图**寻路
+> （会撞破帧预算）。`2026-11-03-zombie-online-ai-design.md` §3.10 引入的是
+> **有界 24 格 + 每 0.5 秒一次 + 同构纯函数**（实测 < 0.3ms），与禁令意图不冲突，
+> 故不视为红线回退；若要放大半径或改成每帧，须重新对照本条。
+
 M4 的冻结 `WEAPONS` catalog 在 M6 增补 `entityDamage` 与 `entityRange` 字段。`WeaponController` 对三把
 枪都以该 range 发起 `EntityManager.raycast()`，并与 DDA 体素命中比较距离：更近的实体受伤；更近的方块
 阻挡实体。这是 M6 明确的统一遮挡口径。MAG7 先完成该 10 格实体命中，再按 M4 已定义的单发体积扫描
