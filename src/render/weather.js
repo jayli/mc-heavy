@@ -29,6 +29,13 @@ export const RAIN = {
   REFRESH_DISTANCE: 8,          // 玩家移动超过 8m 触发雨幕迁移
   CYCLE_HEIGHT: 42,             // GPU 下落循环高度
   OPACITY: 0.6,
+  /**
+   * 雨声音量上限（v2.51）。实际音量 = 本值 × `intensity` → 与天气过渡同步淡入淡出。
+   * 出处 = mc-lite `Game.js:719` 的 `audioManager.playSound('rain', 0.2, true)`（循环）。
+   * ⚠️ 放在这里而不是 `game.js`：雨的音量是「雨」的属性，且 weather.js 是零 three 依赖的
+   * 纯数据/状态机模块（与上面六个视觉常量同一手法）—— 放游戏装配层会变成第二份雨参数。
+   */
+  SOUND_VOLUME: 0.2,
 };
 
 /**

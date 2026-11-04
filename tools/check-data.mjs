@@ -63,6 +63,9 @@ const {
 const {
   PLAYGROUND, PLAYGROUND_KIND, PLAYGROUND_BLOCK, PLAYGROUND_CENTER_BLOCK,
 } = await import('../src/entities/playground/playground-config.js');
+// v2.51：音效与启动图素材契约。清单从**运行时代码** import（红线 1：不在门禁里写第二份清单）
+// —— `SOUND_IDS` / `BGM_TRACKS` 是唯一权威，这里只负责断言「列到的每个 id 都有对应 mp3」。
+const { SOUND_IDS: SOUND_IDS_FOR_GATE, BGM_TRACKS } = await import('../src/render/audio-config.js');
 // 矿车冻结数据 —— 门禁据此断言铁轨类型集合与 config 单一权威一致（红线 1）
 const {
   MINECART_ITEM, TRACK_BLOCK_TYPES,
@@ -2584,7 +2587,39 @@ async function checkAzaleaTrees() {
 
 // ---------------------------------------------------------------- 主流程
 
+/**
+ * 音效与启动图素材契约（v2.51）。
+ *
+ * 钉三件事：
+ *   ① `SOUND_IDS` 里每个 id 都有 `assets/sounds/<id>.mp3` —— 漏一个的形态是**静默无声**
+ *     （`preload()` 的 catch 只 console.warn，页面照常能玩）；
+ *   ② `BGM_TRACKS` 同理（三首随机选，缺一首就有一半开局时间没音乐）；
+ *   ③ loading 占位图与 favicon 素材存在（缺了就是破图 + 空白图标）。
+ *
+ * ⚠️ **清单必须从运行时代码 import**：在门禁里再写一份 id 列表就是红线 1 的第二份权威，
+ * 改了 `SOUND_IDS` 而忘改门禁时它仍然全绿。
+ */
+function checkAudioAssets() {
+  const missing = [];
+  for (const id of SOUND_IDS_FOR_GATE) {
+    if (!fs.existsSync(path.join(ROOT, 'assets', 'sounds', `${id}.mp3`))) missing.push(`音效 ${id}.mp3`);
+  }
+  for (const id of BGM_TRACKS) {
+    if (!fs.existsSync(path.join(ROOT, 'assets', 'sounds', `${id}.mp3`))) missing.push(`背景音乐 ${id}.mp3`);
+  }
+  for (const f of ['Minecraft-Logo.png', 'icon.png']) {
+    if (!fs.existsSync(path.join(ROOT, 'assets', 'ui', f))) missing.push(`启动图 assets/ui/${f}`);
+  }
+  if (missing.length > 0) {
+    failures.push(`[音效] 缺素材或清单与磁盘不一致：${missing.join(', ')}`);
+    return;
+  }
+  infos.push(`[音效] ${SOUND_IDS_FOR_GATE.length} 个效果音 + ${BGM_TRACKS.length} 首背景音乐（${BGM_TRACKS.join('/')}）均有对应 mp3；启动图 assets/ui/ 两件齐备`);
+}
+
 const REGISTRY = await buildDefaultRegistry();
+
+checkAudioAssets();         // v2.51：音效/音乐/启动图素材与清单一致性（⚠️ 漏了本行则门禁永不执行）
 
 checkReferenceIntegrity();
 checkItemSetRelation();

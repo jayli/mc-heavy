@@ -32,13 +32,17 @@ async function boot(page, query = '') {
 
 /** 等 BGM 解码完成（4MB mp3）。超时说明 preload 路径断了。 */
 async function waitDecoded(page) {
+  // ⚠️ v2.51 起曲目是随机的（bgm / bgm2 / bgm3），故用 `debugMusicState().track` 取当前曲目，
+  // 不能写死 'bgm'。
   await page.waitForFunction(() => window.__MC_GAME__?.audioManager?.debugMusicState().decoded === true,
     null, { timeout: 60_000 });
 }
 
 /** 让音乐文件的下载慢一点，把「先点击手势、后解码完成」这个真实顺序造出来。 */
 async function delayMusicDownload(page, ms = 1500) {
-  await page.route('**/assets/sounds/bgm.mp3', async (route) => {
+  // v2.51 起曲目三选一 → 三首都拦（只拦 bgm 的话，抽到 bgm2/bgm3 时这个延迟会静默失效，
+  // 而「先手势后解码」的顺序恰好是这条路要确定性地造出来的东西）。
+  await page.route('**/assets/sounds/bgm*.mp3', async (route) => {
     await new Promise((r) => setTimeout(r, ms));
     await route.continue();
   });
@@ -76,6 +80,7 @@ test('背景音乐：手势早于解码也能起播，面板可关可开', async
     null, { timeout: 20_000 });
   const st = await page.evaluate(() => window.__MC_GAME__.audioManager.debugMusicState());
   expect(st.volume, 'BGM 音量为 mc-lite 原值 0.15，不受 volume 设置影响').toBe(0.15);
+  expect(['bgm', 'bgm2', 'bgm3'], '曲目必须是三首池之一（v2.51 随机选曲）').toContain(st.track);
 
   // ---- ④ 面板「背景音乐 → 关闭」必须真的停播（不是只改按钮高亮） ----
   // 点击画布会拿到 pointer lock，此时其它元素收不到点击（canvas 拦截 pointer events）

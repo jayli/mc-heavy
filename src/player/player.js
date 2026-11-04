@@ -344,6 +344,10 @@ export class Player {
       this.physics.stepLiftAccum = 0;
     }
     this._stepLift.update(dt);
+    // 跑动脚步声（v2.51）。**判据直接读 `viewBob.active`** —— 与“镜头是否在晃”同一个
+    // 权威（移动 + 全速 + 不跳跃 + 未被阻挡），不在这里重算一份 shouldBob。
+    // 每帧调一次：`playLoop` 同名已在播时只改音量，不会重启（否则听到断续“哒哒哒”）。
+    this._updateFootsteps();
     // 相机同步（眼高 1.62 + 台阶缓动偏移 + 跑动晃动）
     // ⚠️ 晃动**融进这一次全量 set**，不得改成 `camera.position.x += bob`：
     // 那样上一帧的偏移会被下一帧当基线继承，逐渐累积漂移（本方法每帧都会重写位置，
@@ -379,6 +383,34 @@ export class Player {
     if (this.viewWeapon) this.viewWeapon.update(dt, { shooting: this.weaponController.debugState().triggerHeld });
     if (this.viewArm) this.viewArm.update(dt);
     if (this.tracerRenderer) this.tracerRenderer.update(dt, aim);
+  }
+
+  /**
+   * 跑动脚步声（v2.51，用户 2026-11-04：「跑步的声音」）。
+   *
+   * 两个循环音效互斥：陆上 `running_land`（0.2）/ 入水 `running_water`（0.25）——
+   * 音量与“入水换音效”的语义照搬 mc-lite `PlayerInteraction.js:911-915`。
+   * 判据只用 `viewBob.active`（单一权威）+ `physics.inWater`（水体判据同 `physics.js`），
+   * 停下或上台阶时两路一起停（`stopLoop` 幂等，重复调用无成本）。
+   *
+   * ⚠️ **乘坐矿车时不播** —— 玩家没有自主移动，播放会变成“车开着我却一直在跑”。
+   */
+  _updateFootsteps() {
+    const am = this.audioManager;
+    if (!am) return;
+    const walking = this.viewBob.active && !this.ridingMinecartId;
+    if (!walking) {
+      am.stopLoop('running_land');
+      am.stopLoop('running_water');
+      return;
+    }
+    if (this.physics.inWater) {
+      am.stopLoop('running_land');
+      am.playLoop('running_water', 0.25);
+    } else {
+      am.stopLoop('running_water');
+      am.playLoop('running_land', 0.2);
+    }
   }
 
   /**
@@ -527,6 +559,14 @@ export class Player {
     if (this.viewWeapon) this.viewWeapon.onShot(effect);
     if (this.tracerRenderer) this.tracerRenderer.spawn(effect);
     if (this.audioManager) this.audioManager.play(effect.sound, effect.volume);
+    // v2.51：枪击摧毁方块 → 销毁音效（用户 2026-11-04：「销毁方块的声音」）。
+    // 判据 = `impacts[].destroyed`（控制器在**写入删除之前**读到的真实结果），
+    // 不是“枪开了就播”。普通枪最多 1 个 impact，MAG7 是 1 个带 `stagger` 的 impact
+    // → 一次散弹只播一次，不会 40 连击音。
+    // 音量与徒手挖块同一档（0.3，mc-lite `delete_get` 原值）。
+    if (this.audioManager && effect.impacts?.some((imp) => imp.destroyed)) {
+      this.audioManager.play('delete', 0.3);
+    }
     // v1.64：方块被击碎/击中的特效（白闪 + 碎块；MAG7 只有白闪）。
     // 纯视觉，池满丢最旧，不回头影响玩法状态。
     if (this.blockHitFx) this.blockHitFx.spawnFromEffect(effect, performance.now());
@@ -714,7 +754,16 @@ export class Player {
     // setBlock 会把 meta 清成 0，之后再读就丢了朝向。
     this.lastRemovedBlock = recordRemovedBlock(x, y, z, id, this.world.getBlockMeta(x, y, z));
     // M4-0：改走唯一编辑路径（remesh fast path / 事件由 WorldEditor 协调）
-    this.editor.setBlock({ x, y, z, id: 0 });
+    const removed = this.editor.setBlock({ x, y, z, id: 0 });
+    // v2.51：挖掉音效（用户 2026-11-04：「销毁方块的声音… delete.mp3」）。
+    // 音量取 mc-lite `PlayerInteraction.js:469-585` 的 `playSound('delete_get', 0.3)`。
+    // ⚠️ **判实际改动而不是无条件播**：`setBlock` 对“本来就是空气”的格返回零 changes，
+    // 无条件播会让“按住左键挖空气”变成连发打击音。
+    if (removed?.changes?.length > 0 && this.audioManager) {
+      try { this.audioManager.play('delete', 0.3); } catch (err) {
+        console.warn('[audio] delete play failed:', err);
+      }
+    }
     // ⚠️ 挥手**不在这里** —— 已提到函数顶部（v1.50：试图挖就挥手，与是否成功无关）。
   }
 
@@ -902,6 +951,14 @@ export class Player {
     this.lastRemovedBlock = null;
     // 手臂挥动（mc-lite `PlayerInteraction.js:143` 同语义：放置成功才 `swing()`）
     if (this.viewArm) this.viewArm.swing();
+    // v2.51：放置音效（用户 2026-11-04：「放置方块… put.mp3」）。音量取 mc-lite
+    // `PlayerInteraction.js:315/768` 的 `playSound('put', 0.3)`。
+    // ⚠️ 音频失败不得影响返回值：世界已经写成功，回滚会让玩家看到方块消失。
+    if (this.audioManager) {
+      try { this.audioManager.play('put', 0.3); } catch (err) {
+        console.warn('[audio] put play failed:', err);
+      }
+    }
     // 创造模式不消耗：slot.count 保持 DEFAULT_INVENTORY_COUNT 不变
     return true;
   }

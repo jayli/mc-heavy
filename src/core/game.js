@@ -1100,6 +1100,9 @@ export class Game {
       this.weather.update(dt);
       this.rain.setIntensity(this.weather.intensity);
       if (this.weather.isRaining) this.rain.update(this.player.physics.pos, dt);
+      // v2.51：雨声（用户 2026-11-04：「雨声只有在下雨的时候才播放」）。
+      // 强度直接当循环音量 → 淡入淡出与天气状态机同步（无雨时 intensity=0 → 停播）。
+      this._syncRainSound();
       this._hud.update(nowMs);
       this._coordsHud.update(nowMs);
       // 迷你地图（v2.8）：内部 10Hz / 20Hz 双节流，每帧调用零成本（未到期直接 return）
@@ -2036,12 +2039,18 @@ export class Game {
   damageEntity(id, amount, nowMs) {
     const entity = this.entities.get(id);
     if (!entity) return null;
-    if (entity.type === 'zombie') return this.zombies.damage(id, amount, nowMs);
-    if (entity.type === DRAGON_TYPE) {
+    let result = null;
+    if (entity.type === 'zombie') result = this.zombies.damage(id, amount, nowMs);
+    else if (entity.type === DRAGON_TYPE) {
       if (!this.dragons) return null;
-      return this.dragons.damage(id, amount, nowMs);
-    }
-    return null;
+      result = this.dragons.damage(id, amount, nowMs);
+    } else return null;
+    // v2.51：丧尸/火龙被消灭的死亡音效（用户 2026-11-04：「丧尸被消灭、火龙被消灭都有一个
+    // 音效 z_die.mp3」）。**判断落在 `dead` 上而不是 `amount` 上** —— 打中但没死不该响。
+    // 音量 0.3 取 mc-lite `TurretManager.js:286` 的 `playSound('z_die', 0.3)`。
+    // ⚠️ TNT 爆炸炸死丧尸走另一条路（`_damageEntitiesInRadius`），那里也要接（同一音效）。
+    if (result?.dead) this.audioManager?.play('z_die', 0.3);
+    return result;
   }
 
   // ---- v2.43 Boss 召唤（按 C）----
@@ -2213,13 +2222,39 @@ export class Game {
    */
   _damageEntitiesInRadius(center, radius, damage, nowMs) {
     const cx = center[0] + 0.5, cy = center[1] + 0.5, cz = center[2] + 0.5;
+    let killed = false;
     for (const entity of this.zombies.activeEntities()) {
       const [px, py, pz] = entity.state.position;
       const dy = py + ZOMBIE.height / 2;   // 度量用丧尸 AABB 中心（mc-lite 同口径）
       if (Math.hypot(px - cx, dy - cy, pz - cz) <= radius) {
-        this.zombies.damage(entity.id, damage, nowMs);
+        // v2.51：爆炸炸死也算「丧尸被消灭」→ 死亡音效。
+        // ⚠️ **本函数绕过 `damageEntity()`**（它直接调 service），所以音效要在这里再接一次；
+        // 两处都只在 `dead` 上触发，且同一帧内只响一声（`killed` 聚合），
+        // 否则一发 TNT 炸死 5 只会变成 5 连击音。
+        if (this.zombies.damage(entity.id, damage, nowMs)?.dead) killed = true;
       }
     }
+    if (killed) this.audioManager?.play('z_die', 0.3);
+  }
+
+  /**
+   * 雨声循环接续（v2.51）。
+   *
+   * 用户 2026-11-04：「增加雨声（rain.mp3）… 其中雨声只有在下雨的时候才播放」。
+   * 判据 = `weather.intensity`（**含过渡期**，`WeatherState.isRaining` 同一口径）→
+   * 强度直接当音量：淡入淡出与天气状态机同步，无雨时 `intensity === 0` → `stopLoop`。
+   * 音量上限 0.2 = mc-lite `Game.js:719` 的 `playSound('rain', 0.2, true)`
+   * （常量在 `RAIN.SOUND_VOLUME`，单一权威）。
+   *
+   * 每帧调用：`playLoop` 同名已在播时只改音量（不重启），`stopLoop` 幂等 ——
+   * 因此常态成本就是两次 Map 查询。
+   */
+  _syncRainSound() {
+    const am = this.audioManager;
+    if (!am) return;
+    const intensity = this.weather?.intensity ?? 0;
+    if (intensity > 0) am.playLoop('rain', RAIN.SOUND_VOLUME * intensity);
+    else am.stopLoop('rain');
   }
 
   /**

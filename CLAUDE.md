@@ -225,6 +225,32 @@ testing-policy §2.5「派生量不硬编码」的收益兑现）。细节见 ro
 
 **v2.44** 给飞龙加了 **Boss 级 AI 与火球攻击**（用户 2026-11-03：「飞龙看到玩家（视线没有被实心不透明方块遮挡）且距离近到一定程度时就要飞向玩家……递近玩家后就可以发射火球……火球触碰到玩家身体，或者击中实体方块（包括树叶、玻璃等半透明方块）都会产生爆炸，爆炸是否能破坏方块跟 TNT 破坏方块的开关有关……如果玩家静止不动，则飞龙递近到一定距离后就开始飞跃玩家，飞跃后盘旋回头再次飞向玩家递近，只要脑袋朝向玩家后就可以发射火球……不能像机关枪一样连续发射，要至少间隔五到十秒……当玩家离开火龙的视线后，火龙就开始返回原始高度……自由盘旋过程中可以增加一些随机方向的变化，可以左右拐弯」+ 架构指令「请你将这个实现抽离成一个独立的类，跟原有的逻辑尽量解耦开」——后续会有很多 Boss、每个都有自己的智能体类）。**架构 = BossAgent 抽象**：新增 `src/entities/bosses/boss-agent.js`（抽象基类 + 共用工具，视线转调炮塔 `hasLineOfSight` 唯一权威）+ `dragon-boss-agent.js`（飞龙四态机，`poseAt` 构造注入避免环）；`dragonDefinition.update` 只委托给 Agent，`dragon-system.js` 保留轨道/动画/AABB/服务不写 AI ⇒ 换一个 Boss = 换一个 Agent 子类。**四态机**：orbit（盘旋，半径按 θ 正弦调制 ±5 格左右拐弯）→ 视线通+距≤60 → chase（9 格/秒）→ 距≤20 → attack（approach↔turn 飞跃循环）→ 距>78（滞回）或视线断 → return。**开火四条**：喷火锥 ±10°（v2.45 从 20 收紧）+ **瞄准保持 0.2 秒**（v2.45 新增 `aimTime`：锥内累积、出锥清零、喷过清零）+ 冷却随机 5~10 秒 + **开火瞬间新鲜 LOS 复查** + 距≤60；`fireRequest` 是瞬态字段，由 game.js 在 entities.update 之后消费生成火球（definition 算意图、game.js 执行，与矿车 pendingPlayerLift 同先例）。**火球**（`fireball-system.js`，临时实体，与弹丸刻意独立）：25 格/秒（v2.45 从 15 提速）直线无追踪、最远 80 格；遮挡判据**只看 solidTable**（有意不同于弹丸的 solid&&opaque —— 玻璃 opaqueTable=0 弹丸穿过、火球必须挡住）；命中玩家只爆炸不掉血（血量以后再做）。**爆炸复用 TNT 口径**：从 `explodeTnt` 抽出 `_applyExplosion(result)`（破坏受 canTntDestroyBlocks 门控 + 连锁 + 丧尸伤害 + 矿车摧毁 + 音效 + 两层特效），`explodeTnt` = 去重 + 移除自身 TNT + `_applyExplosion`（行为逐位不变，tnt.spec 7/7 零回归）。⚠️ **火球爆炸走 `_applyExplosion` 而不走 `explodeTnt`**（后者会把火球炸过的格键永久留在 `_ignitingTnt` 去重集合 → 之后同格放 TNT 静默不爆）。**渲染**：`FireballRenderer`（v2.45 两层：炽橙亮核 `0xffb340` + additive 径向渐变光晕 billboard，±15%/6Hz 脉动，零实例 visible=false）；**出生点 = 嘴部**（`DRAGON.muzzleOffset` 实测自骨骼 bind 链，沿机头前向 3.36 格）。细节见下方「祭坛之龙沉淀的活跃约束」段与 roadmap 的 v2.44/v2.45 行。
 
+**v2.51** 补上**启动 loading 占位图、favicon 与全套环境/动作音效**（用户 2026-11-04：
+「mc-lite 游戏刚开始的时候有一个 loading 占位图，是一个 Minecraft-Logo.png，你把这个占位符也
+转移过来……同时首页的 icon 显示为 mc-lite 里的 icon.png。同时：增加雨声（rain.mp3），跑步的
+声音，放置方块，和销毁方块的声音，put.mp3，delete.mp3。丧尸被消灭、火龙被消灭都有一个音效
+z_die.mp3，其中雨声只有在下雨的时候才播放。另外 bgm 在刷新出来的时候随机选择，bgm.mp3
+bgm2.mp3 和 bgm3.mp3」）。**① 启动占位** = `index.html` 内联静态 `#loading-overlay`
+（logo + 像素 spinner + `Loading` + 阶段副文案，z-index 95），**刻意不由 JS 创建** —— 它要
+覆盖「模块还没解析完」那段黑屏，因此只有「禁用 JS 的上下文里它仍可见」能区分两种实现；
+`src/main.js` 逐阶段更新副文案，`rendererReady` 后淡出并置 `display:none`。素材落
+`assets/ui/`（**不得放 `assets/textures/`**，那里被 build-atlas 递归扫成世界图集）。
+**② 音效清单搬进 `src/render/audio-config.js`（three-free）** —— `check:data` 要在 Node 里断言
+「每个 id 都有对应 mp3」，而 manager 依赖 three，清单住在里面会让门禁 import 阶段就挂。
+**③ 新增 `playLoop`/`stopLoop`/`debugLoops`**（循环效果音）：同名在播只改音量不重建（脚步声
+每帧调用，重启会成断续「哒哒哒」）、不污染 `playRequests`（那是「事件发生几次」的口径）+
+条件未齐只记意图、`preload`/`unlock` 末尾各补一次。**④ 接线**：雨声 = `RAIN.SOUND_VOLUME`(0.2)
+× `weather.intensity`（天晴即 `stopLoop`）；跑动复用 `ViewBob.active`（新增只读快照，不重算第二份
+`shouldBob`），陆/水两套 0.2/0.25，乘矿车不播；放置 `put` 0.3、挖掉 `delete` 0.3（**仅当编辑真有
+changes**，否则挖空气会连发）；枪击摧毁从 `impacts[].destroyed` 判（MAG7 一次散弹只响一声）；
+死亡 `z_die` 0.3 在 **`damageEntity()` 与 `_damageEntitiesInRadius()` 两处**（后者绕过前者），
+判据落在 `dead` 上且爆炸内聚合成一声。**⑤ BGM 三选一**：`pickBgmTrack` 纯函数（`Math.floor`，
+r 钳在 [0,1)）、构造期抽一次（关开不换歌）、**只预载抽中的那一首**（三首 16MB）。
+测试：单测 +8、新增 `tests/loading-overlay.spec.mjs`(3) + `tests/audio-fx.spec.mjs`(4)；
+**三处注入全真 FAIL**（雨声常开 / 放挖不接线 / 占位图改 display:none）。
+细节见下方「背景音乐与环境音效」「环境/动作音效的接线口径」「启动 loading 占位图」三段与
+roadmap 的 v2.51 行。
+
 测试现状：Playwright spec 全量 + 浏览器内单元测试全绿。**用例计数以 `npm run check:data`
 输出为准，不在文档硬编码**（同一事实的多个副本属「改动放大器」，违反红线 1 精神）。
 ⚠️ **三条计时型 spec 在高负载下偶发贴线 flaky，单独复跑通过**（不改断言、不放宽阈值）：
@@ -574,7 +600,8 @@ testing-policy §2.5「派生量不硬编码」的收益兑现）。细节见 ro
   **186.06**（= 根本不在画面上），修后 **71.64 vs 186.06**（Δ=114）。
   层级表（改任一层级须重核这条不等式）：hotbar 40 < coords 50 < settings-btn 60 <
   **设置面板 70** < **背包 80** < **背包 hover 浮层 85（`TOOLTIP_Z_INDEX`）** <
-  **toast 90（`TOAST_Z_INDEX`）** < 启动错误遮罩 100。
+  **toast 90（`TOAST_Z_INDEX`）** < **启动 loading 占位 95（`#loading-overlay`，v2.51）** <
+  启动错误遮罩 100。
   **不得取 100+** —— 那会把 WebGPU 启动失败遮罩压下去，玩家看不到真正的错误。
   ⚠️ **toast 刻意是 `pointer-events:none`，所以不能用 `elementFromPoint` 判「它在最上层」**：
   命中测试会**跳过**这类元素，哪怕 toast 完全可见，命中的也是它下面的面板（实测：修好之后仍
@@ -2954,11 +2981,47 @@ testing-policy §2.5「派生量不硬编码」的收益兑现）。细节见 ro
   场景 ① +16 / ④ +41（545 → 586）。往通道里加大量新几何前别假设 draw 不变。
 - **已有存档里的森林会长出巨树**（用户接受，未 bump DB 版本）；玩家的 edits 照常覆盖在生成结果之上。
 
-### 背景音乐沉淀的活跃约束（v1.63，后续音频/音乐类改动必读）
+### 背景音乐与环境音效沉淀的活跃约束（v1.63 立 / v2.51 扩，后续音频类改动必读）
 
-- **效果音与背景音乐是两份清单（`SOUND_IDS` / `BGM_ID`），不得合并**：语义不同 —— 效果音是
-  「事件触发、播完即止」，音乐是「循环、可开关」。混进去会让 `play(id)` 也可能播 254 秒循环音乐，
+- **效果音与背景音乐是两份清单（`SOUND_IDS` / `BGM_TRACKS`），不得合并**：语义不同 —— 效果音是
+  「事件触发、播完即止」，音乐是「循环、可开关」。混进去会让 `play(id)` 也可能播几分钟循环音乐，
   且 `preload()` 的语义不再单一。`preload()` 默认参数包含两者，但白名单分开判。
+  ⚠️ **循环效果音（`rain` / `running_land` / `running_water`）在 `SOUND_IDS` 里，不在 `BGM_TRACKS`**
+  —— 划分依据是**生命周期**（BGM 是单槽 + 开关意图 + 跨手势对齐，循环效果音是事件驱动的短生命），
+  不是「能否循环」。它们走独立的 `playLoop()` / `stopLoop()`，`play()` 语义不变。
+- **音频清单的唯一权威 = `src/render/audio-config.js`（three-free）**：`audio-manager.js` 依赖 three，
+  而 `check:data` 要在 Node 里断言「清单里每个 id 都有对应 mp3」—— node 解析不了 `three` 裸包名，
+  清单放在 manager 里会让**整条门禁根本不跑**（不是报错，是 import 阶段就挂）。与 `sky-config.js` /
+  `pixel-ratio.js` 同一手法：**清单住 three-free 模块，manager re-export**（红线 1）。
+  在门禁里另写一份 id 列表就是第二份权威 —— 改了代码而忘改门禁时它仍然全绿。
+- **`playLoop()` 与 `play()` 的三点差异都是实测出来的，改任一处都要看这里**：
+  ① **同名已在播只改音量、不重建实例** —— 脚步声每帧都被调用（几百次/秒），重启会听到断续的
+  「哒哒哒」；而雨强度淡入淡出需要连续改音量。
+  ② **不递增 `playRequests`** —— 那个计数是「事件发生了几次」的口径（枪击/挖块），循环音效的
+  调用频次与游戏事件无关（每帧一次），混进去会把计数变成帧数。循环另走 `debugLoops()`。
+  ③ **不走 `_voices` 单槽复用** —— 那个槽是「同一音效内重启」，循环音效需要常驻实例。
+- **`debugLoops()` 必须报真实 `THREE.Audio.getVolume()`，不能报意图值**（v2.51 实测抓到
+  一个真缺陷）：初版实现里 `playLoop()` 对「已存在的循环实例」直接 `return prev.playing`
+  —— **完全没调 `_syncLoop()`**，于是雨声强度淡入淡出与脚步声换档全失效（循环实例一直停在
+  第一次的音量）。而这个缺陷当时**单测与 E2E 全绿**：`debugLoops().volume` 报的是
+  `entry.wanted.volume`（= 诊断口自己的输入），断言描述的是想象。
+  ⇒ 现在 `debugLoops()` 同时报 `volume`（真实 AudioParam 值）与 `target`（意图值），
+  两层判据各拓一类缺陷：**`target` 抓「参数算错」，`volume` 抓「没写下去」**。
+  ⚠️ **两者可不能互相替代**，且**不能拿 `volume` 做精确相等**：three 的 `setVolume()` 走
+  `setTargetAtTime`（指数逼近，0.01s 时间常数），刚调完那一瞬读到的是**斜坡起点** ——
+  实测刚 `play()` 时同步读回 **1**（默认 gain），等 200ms 后才到 0.15；雨声首帧 actual
+  **0.3166** 而 target **0.004**。故断言要么等斜坡收敛（≥200ms），要么比较**稳态值**。
+  与「`block-color` / 白闪必须落在块心」同一类：**断言要落在最终产物上，不是离它一步之遥的输入**。
+- **循环音效的条件未齐时只记意图，`preload()` 与 `unlock()` 末尾各补一次 `_syncLoops()`**：
+  「进游戏第一时间就下雨」是最常见的启动顺序 —— 只在 `playLoop()` 里尝试起播，那一刻 buffer
+  还没解码完就**永远没声音**（与 BGM 同一类盲区，且更难发现）。
+- **BGM 三首随机，但只预载抽中的那一首**（v2.51，用户 2026-11-04）：`BGM_TRACKS` 三首合计约 16MB
+  （4.0 + 5.4 + 6.8），全量预载会把首屏流量翻 4 倍而一次游戏只播一首。
+  ⚠️ **抽签在构造期做一次**（`this._bgmTrack`），不是每次起播 —— 否则「关了再开」会换歌，
+  而用户要的是「这次刷新听哪首」。`pickBgmTrack(rng)` 是纯函数、`rng` 可注入（单测/E2E 确定性）。
+  ⚠️ **`Math.floor(r * n)` 不能写成位运算**：`rng` 返回 [0,1) 浮点，`r & 3` 恒为 0（本文件既有
+  「seededRandom 返回浮点」同一条坑）；且 `r` 必须钳在 [0,1) —— `Math.floor(1.0*3) === 3` 会取到
+  `undefined`，而 `undefined` 在消费端被 `BGM_TRACKS.includes()` 静默当成「没指定」→ 回落成随机。
 - **起播是三个条件的对齐，不是某一个事件**：玩家意图（开关）/ buffer 已解码 / context 已 running。
   生产真实顺序是「先点一下（手势到位）→ 几秒后 4MB 才解码完」，所以 **`preload()` 末尾与
   `unlock()` 末尾各自都要调一次 `_syncMusic()`**。只写一处 = 另一半路径永远没声音，且**无任何报错**
@@ -2971,14 +3034,54 @@ testing-policy §2.5「派生量不硬编码」的收益兑现）。细节见 ro
 - **单测里不得 `AudioManager.dispose()`**：three 的 `AudioListener` 拿的是**全局单例** context
   （`three.core.js:50786` / `:49994` 的 `_context` 缓存），`dispose()` 的 `context.close()` 会把它
   关死 → 后续用例全报 `Cannot suspend a closed AudioContext`（实测一失败带倒三条）。单测收尾只拆
-  listener、停音乐，不关 context。
+  listener、停音乐与循环效果音，不关 context。
 - **写 BGM/音频类 E2E 前先确认两条环境事实**（两条都能让「全绿」变成无效盲区，已实测）：
   ① **Playwright 默认 `--autoplay-policy=no-user-gesture-required`**，新建 AudioContext 一上来就是
   `running` → 「手势未到」在生产里不会自发出现，用例必须主动 `ctx.suspend()` 造出来；
-  ② **localhost 上 4MB mp3 可能几十毫秒就解码完** → 「先手势、后解码」这个真实顺序测不到，
+  ② **localhost 上几 MB mp3 可能几十毫秒就解码完** → 「先手势、后解码」这个真实顺序测不到，
   「preload 不补起播」的注入会**漏过**。修法 = `page.route` 把 mp3 推迟 1.5s 确定性造出该顺序。
-- **`bgm.mp3` 是 4.0MB / 254 秒 / 128kbps（从 mc-lite 原样复制未重编码）**，进首屏预载队列
-  —— 以后再加长音频前先想一下首屏流量。
+  ⚠️ v2.51 起曲目三选一 → **route 必须拦通配 `bgm*.mp3`**（只拦 `bgm.mp3` 时抽到 bgm2/bgm3
+  会让这个延迟静默失效）。
+- **`bgm*.mp3` 是几 MB / 数百秒的长音频**（`bgm` 4.0MB / 254 秒 / 128kbps，从 mc-lite 原样复制
+  未重编码；`bgm2` 5.4MB / `bgm3` 6.8MB）—— 以后再加长音频前先想一下首屏流量。
+
+### 环境/动作音效的接线口径（v2.51，后续加音效必读）
+
+- **死亡音效必须在两处接**：`Game.damageEntity()`（武器/炮塔伤害的收敛点）与
+  `_damageEntitiesInRadius()`（TNT/火球爆炸）—— 后者**绕过前者**（它直接调 `zombies.damage`），
+  只接一处会让「炸死丧尸没声音」。
+  ⚠️ **判据落在 `dead` 上而不是 `amount` 上**（打中但没死不响）；爆炸内用 `killed` 聚合，
+  一发 TNT 炸死 5 只只响一声（否则是 5 连击音）。
+- **挖块音效只在「编辑真有 changes」时播**：`editor.setBlock()` 对本来就是空气的格返回零 changes，
+  无条件播会让「按住左键挖空气」变成连发打击音 —— 玩家听到的是「一直在敲东西」。
+- **枪击摧毁的判据 = `effect.impacts[].destroyed`**（控制器在**写入删除之前**读到的真实结果），
+  不是「枪开了就播」。MAG7 是 1 个带 `stagger` 的 impact 代表 40 格 → 一次散弹只响一声。
+- **跑动脚步复用 `ViewBob.active`**（v2.51 新增的只读快照）—— 与「镜头是否在晃」同一个判据
+  （移动 + 全速 + 不跳跃 + 未被阻挡）。**不得在 Player 里重算一份 shouldBob**（红线 1：两份判据
+  漂移后会出现「画面不晃但脚步声一直响」）。乘坐矿车时不播（玩家没有自主移动）。
+- **雨声音量 = `RAIN.SOUND_VOLUME`(0.2) × `weather.intensity`**：强度直接当循环音量 → 淡入淡出
+  与天气状态机同步；`intensity === 0` 时 `stopLoop`（**摘掉循环实例**，不是只把音量调 0）。
+  常量住 `render/weather.js`（零 three 依赖的纯数据模块，与雨滴数/半径同处）—— 放游戏装配层
+  会变成第二份雨参数。
+- **`assets/ui/` 是启动图专用目录**：`Minecraft-Logo.png`（loading 占位）与 `icon.png`（favicon）
+  **不得放 `assets/textures/`** —— 那里被 `build-atlas` 递归扫描，会把 189KB 的 logo 当成一个
+  巨型 tile 塞进世界图集（`atlas.spec` 还断言「tile 数 ≡ PNG 数」，会连带动到别的边界）。
+
+### 启动 loading 占位图（v2.51，后续改启动流程必读）
+
+- **它是 `index.html` 里的静态节点 `#loading-overlay`，不得改由 JS 创建**：存在意义就是「模块
+  还没解析/尚未跑完时也有画面」—— 由 `src/main.js` 创建的话，页面在模块加载期间仍是一片黑，
+  占位图**完全失效**。判据（`tests/loading-overlay.spec.mjs`）= **禁用 JS 的上下文里它仍可见**
+  （`page.route('**/*.js', abort)`），这是唯一能区分两种实现的测法。
+- **层级 = 95**，插在 **toast 90 < loading 95 < 启动错误遮罩 100** 之间。改这个值必须同步本文件
+  的层级不等式表。⚠️ 低于错误遮罩是有意的：WebGPU gate 失败时错误遮罩必须盖在最上面
+  （那是「游戏根本没起来」）；`showError()` 里同时收掉 loading，避免失败画面里还露着「Loading」。
+- **就绪后必须「先淡出、再置 `display:none`」**：只加淡出 class 时它仍是 `position:fixed; inset:0`
+  的全屏盒子（`pointer-events:none` 不挡点击，但仍参与合成）；只置 display 则没有过渡，观感是硬切。
+  收尾回调 300ms（略大于 CSS 的 0.25s 过渡），手法同 `perf-hud.js` 的折叠动画。
+- **阶段副文案必须真的分阶段**：从打开页面到首帧渲染之间可能十几秒（世界生成），只转圈的 spinner
+  会让玩家分不清「在加载」与「卡死」。三处 `setLoadingStage()`（检查 WebGPU / 加载注册表 / 生成世界）。
+- **favicon 从 `data:,`（空图标）改为 `./assets/ui/icon.png`**：素材同 mc-lite `src/style/icon.png`。
 
 ### 资源 URL 沉淀的活跃约束（v1.87，后续新增资源加载点必读）
 
@@ -4099,8 +4202,14 @@ mc-heavy/
 │  │  └─ skin.png + skin.json  # 标准 MC 64×64 版式（六部件各面按 UV 矩形采样）+ 版式版本与指纹
 │  ├─ sounds/                  # 音效（M4 四件武器音效 + M7 `put.mp3` + M8 `explosion`/`turret_gun_fire`）
 │  │                           #   + v1.63 `bgm.mp3`（4.0MB / 254 秒循环背景音乐，从 mc-lite 原样复制）
-│  │                           #   效果音 id 清单的唯一权威 = `render/audio-manager.js` 的 `SOUND_IDS`；
-│  │                           #   背景音乐走独立的 `BGM_ID`（语义不同，不得混进 SOUND_IDS）
+│  │                           #   + v2.51 `bgm2`/`bgm3`（三首随机，构造期抽一首且只预载它）/
+│  │                           #     `delete` / `rain` / `running_land` / `running_water` / `z_die`
+│  │                           #   效果音 id 清单的唯一权威 = `render/audio-config.js`（**three-free**，
+│  │                           #     因为 `check:data` 在 Node 里 import 它；`audio-manager.js` 只 re-export）
+│  │                           #   背景音乐池 `BGM_TRACKS`（语义不同，不得混进 `SOUND_IDS`）
+│  ├─ ui/                      # 启动图（v2.51）：`Minecraft-Logo.png`（loading 占位）+
+│  │                           #   `icon.png`（favicon）。⚠️ **不得放 `textures/`** —— 那里被
+│  │                           #   `build-atlas` 递归扫描，189KB 的 logo 会变成一个巨型 tile
 │  ├─ effects/                 # 序列帧特效图集（**不在 textures/ 下** —— 那里会进世界 atlas）
 │  │  └─ big_blow.png          # TNT 爆炸序列帧（500×200，5×2=10 帧，从 mc-lite 原样复制）
 │  ├─ sky/                     # 天空盒立方图（v1.58；**不在 textures/ 下**，不走世界 atlas）
@@ -4184,7 +4293,12 @@ mc-heavy/
    │               #  ocean.js（800×800 无限海面平面 + TSL 波纹/遮罩）/ ocean-mask.js
    │               #    （水面遮罩判据唯一权威：阈值 + 五点纵深 + 城市 bounds 门控；
    │               #      CPU 版供单测，ocean.js 的 TSL 版同构实现共用其数值常量）
-   │               #  weather.js（天气状态机）/ rain.js（雨效）/ entity-render-layer.js（M5 受控实体发布层）
+   │               #  weather.js（天气状态机 + RAIN 常量含 SOUND_VOLUME(0.2)）/ rain.js（雨效）/
+   │               #    entity-render-layer.js（M5 受控实体发布层）
+   │               #  audio-config.js（v2.51 音频素材清单**唯一权威**：SOUND_IDS 12 项 /
+   │               #    BGM_TRACKS 三首池 / BGM_VOLUME 0.15 / pickBgmTrack 纯函数。**three-free** ——
+   │               #    `check:data` 在 Node 里 import 它，放 audio-manager 里门禁会 import 失败而整条不跑；
+   │               #    manager re-export 供既有 import 路径）
    │               #  shadow-manager.js（太阳阴影刷新节流 ShadowScheduler：200ms 最小间隔 + pending
    │               #    补刷，纯逻辑无 three；消费端 game.js 帧循环 tick + per-light needsUpdate）
    │               #  zombie-renderer.js（M6 六部件固定容量 InstancedMesh；无活跃丧尸时 visible=false；
@@ -4213,7 +4327,10 @@ mc-heavy/
    │               #    —— 两层叠加才是 mc-lite 的爆炸表现，只做一层会「少一半」
    │               #  block-hit-fx.js + block-color.js（枪击命中：整格白闪 + 按命中面 atlas 取色的碎块）
    │               #  weapon-model-loader.js（受控 GLB 加载，只在主线程）/ audio-manager.js
-   │               #    （效果音 SOUND_IDS + 背景音乐 BGM_ID 两份清单，不得合并）
+   │               #    （效果音 SOUND_IDS + 背景音乐 BGM_TRACKS 两份清单，不得合并；循环效果音
+   │               #     rain/running_* 走 playLoop/stopLoop，与 play() 的「事件触发」语义分开；
+   │               #     条件未齐只记意图，preload/unlock 末尾 _syncLoops 补。**清单/常量/纯函数
+   │               #     在 audio-config.js，本文件只 re-export**）/ audio-config.js（清单唯一权威）
    ├─ entities/    # entity-manager.js（动态实体唯一权威 + generation + AABB raycast）
    │               #  entity-types.js（probe 定义 + AABB slab 射线；Worker 同构，无 three）
    │               #  zombies/（M6，Worker 同构无 three）：zombie-config.js（冻结玩法数据唯一权威）

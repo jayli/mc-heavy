@@ -117,6 +117,17 @@ export class ViewBob {
      */
     this.roll = 0;
     this.pitch = 0;
+    /**
+     * 本帧是否处于「在跑动」状态（`shouldBob` 的原始结果）。
+     *
+     * **只读快照，供跑动脚步声判据使用**（v2.51）：用户 2026-11-04 「跑步的声音」。
+     * 存在的理由 = 单一权威：声音必须跟“镜头在晃”用同一个判据（移动 + 全速 + 不跳跃
+     * + 未被阻挡），否则会出现“画面不晃但脚步声一直响”的撕裂。
+     * ⚠️ 不得在消费端重算一份 shouldBob（红线 1）—— 两边漂移后
+     * `test-view-bob.js` 的判据会全绿而不一致。
+     * @type {boolean}
+     */
+    this.active = false;
   }
 
   /**
@@ -143,6 +154,7 @@ export class ViewBob {
    */
   update(dt, motion) {
     const active = ViewBob.shouldBob({ ...motion, dt });
+    this.active = active;
     if (active) {
       // **距离驱动**：相位增量 = 本帧走过的水平距离 × phasePerBlock（原版 walkDist 口径）。
       // 按物理步调用时，每步位移 × 每格弧度 = 恒定角速度；帧率无关是副产品。

@@ -6,12 +6,47 @@ import { loadStoredSettings, resolveSettings } from './ui/settings.js';
 
 window.__MC_BOOT__ = { webgpu: false, rendererReady: false, error: null };
 
+// ---- 启动 loading 占位（v2.51）----
+// DOM 是 `index.html` 里的静态节点（**不在 JS 里创建**）：它要在模块还没解析完时就可见。
+// 这里只做两件事：更新阶段副文案、在就绪后淡出。
+const LOADING_FADE_MS = 300;   // 略大于 CSS 的 opacity 0.25s 过渡
+
+/**
+ * 更新 loading 副文案（不传则保持原样）。
+ * 阶段文案的意义：从打开页面到首帧渲染之间可能十几秒（世界生成），只转圈的 spinner
+ * 会让玩家分不清「在加载」与「卡死」。
+ * @param {string} text
+ */
+function setLoadingStage(text) {
+  const el = document.getElementById('loading-sub');
+  if (el) el.textContent = text;
+}
+
+/**
+ * 移除 loading 遮罩（幂等）。
+ *
+ * ⚠️ **必须既加 class 又置 `display:none`**：只加 class 时它仍是 `position:fixed; inset:0`
+ * 的全屏盒子 —— 虽然 `pointer-events:none` 不挡点击，但它会继续参与合成（以及日后
+ * 任何按 DOM 数层级的用法都会把它算进去）。只置 display 则没有淡出，观感是硬切。
+ * 回调后置 none 是 `perf-hud.js` 折叠动画的同一手法（过渡结束再收尾）。
+ */
+function hideLoading() {
+  const el = document.getElementById('loading-overlay');
+  if (!el || el.classList.contains('mc-loading-done')) return;
+  el.classList.add('mc-loading-done');
+  setTimeout(() => { el.style.display = 'none'; }, LOADING_FADE_MS);
+}
+
 function showError(detail) {
   if (detail) document.getElementById('webgpu-error-detail').textContent = detail;
   document.getElementById('webgpu-error').style.display = 'flex';
+  // 错误遮罩 z-index 100 > loading 95，但它下面那层 loading 仍在淡出中会透出一瞬
+  // → 直接收掉（启动失败时不应该同时看到「Loading」）
+  hideLoading();
 }
 
 async function boot() {
+  setLoadingStage('正在检查 WebGPU…');
   // WebGPU 仅在安全上下文暴露（http://localhost 与 HTTPS）；
   // http://<局域网IP> 下 navigator.gpu 为 undefined，需单独提示，避免误判为浏览器不支持
   if (!window.isSecureContext) {
@@ -27,6 +62,7 @@ async function boot() {
   }
   window.__MC_BOOT__.webgpu = true;
 
+  setLoadingStage('正在加载方块注册表…');
   const registry = await buildDefaultRegistry();
   const params = new URLSearchParams(location.search);
   // 调试开关 URL 覆盖：?stats=0 关闭世界数据看板统计（对照基线用），?stats=1 强制开
@@ -57,6 +93,7 @@ async function boot() {
   // 不进设置面板，故不过 resolveSettings，直接作构造选项传入。
   const skybox = params.get('skybox') !== '0';
   const shadows = params.get('shadows') !== '0';
+  setLoadingStage('正在生成世界…');
   const game = new Game({
     canvas: document.getElementById('app-canvas'),
     registry, seed,
@@ -73,6 +110,7 @@ async function boot() {
   await game.start();
   window.__MC_BOOT__.rendererReady = true;
   window.__MC_GAME__ = game; // 测试钩子
+  hideLoading();
 }
 
 boot().catch((err) => {
