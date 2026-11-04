@@ -5,7 +5,7 @@
 import { test } from './runner.js';
 import { assertEqual, assertFalse, assertTrue, assertDeepEqual } from './assert.js';
 import { PATHFIND, DIRECTION_ORDER } from '../entities/zombies/zombie-config.js';
-import { directionNameOf, planStep } from '../entities/zombies/zombie-pathfinder.js';
+import { PathCache, directionNameOf, planStep } from '../entities/zombies/zombie-pathfinder.js';
 import { ChunkColumn } from '../voxel/chunk-column.js';
 import { WorldData } from '../voxel/world-data.js';
 import { createRegistry } from '../voxel/block-registry.js';
@@ -133,4 +133,64 @@ test('planStep：确定性（同输入同输出）', () => {
   const a = planStep(world, [7.5, 1, 10.5], [7.5, 1, 2.5]);
   const b = planStep(world, [7.5, 1, 10.5], [7.5, 1, 2.5]);
   assertDeepEqual(a, b);
+});
+
+// ---------- 缓存（Review Focus 5：主线程成本）----------
+
+test('PathCache：沿路径前进时命中（起点在地标附近 → 复用）', () => {
+  const { world } = makeFlat();
+  const c = new PathCache();
+  const a = c.plan(world, [10.5, 1, 10.5], [10.5, 1, 4.5], { agentId: 'z0', nowMs: 0 });
+  // 走了 1 格：起点变了，但仍在旧地标附近 → 必须命中
+  const b = c.plan(world, [10.5, 1, 9.5], [10.5, 1, 4.5], { agentId: 'z0', nowMs: 500 });
+  assertEqual(a, b, '沿路径前进必须复用（引用相等）');
+  assertEqual(c.debugState().misses, 1, '只应真算一次');
+  assertTrue(c.debugState().hitRate > 0.4);
+});
+
+test('PathCache：目标换格立刻重算（玩家跑掉了）', () => {
+  const { world } = makeFlat();
+  const c = new PathCache();
+  c.plan(world, [10.5, 1, 10.5], [10.5, 1, 4.5], { agentId: 'z0', nowMs: 0 });
+  c.plan(world, [10.5, 1, 9.5], [14.5, 1, 4.5], { agentId: 'z0', nowMs: 500 });
+  assertEqual(c.debugState().misses, 2);
+});
+
+test('PathCache：超过 maxAgeMs 重算（防世界改动导致路线过期）', () => {
+  const { world } = makeFlat();
+  const c = new PathCache({ maxAgeMs: 1000 });
+  c.plan(world, [10.5, 1, 10.5], [10.5, 1, 4.5], { agentId: 'z0', nowMs: 0 });
+  c.plan(world, [10.5, 1, 9.5], [10.5, 1, 4.5], { agentId: 'z0', nowMs: 2000 });
+  assertEqual(c.debugState().misses, 2, '超时须重算');
+});
+
+test('PathCache：不同丧尸互不干扰（按 agentId 隔离）', () => {
+  const { world } = makeFlat();
+  const c = new PathCache();
+  c.plan(world, [10.5, 1, 10.5], [10.5, 1, 4.5], { agentId: 'z0', nowMs: 0 });
+  c.plan(world, [10.5, 1, 10.5], [10.5, 1, 4.5], { agentId: 'z1', nowMs: 0 });
+  assertEqual(c.debugState().misses, 2, '不同丧尸各自算一次');
+});
+
+test('PathCache：forget(id) 只清该只的缓存', () => {
+  const { world } = makeFlat();
+  const c = new PathCache();
+  c.plan(world, [10.5, 1, 10.5], [10.5, 1, 4.5], { agentId: 'z0', nowMs: 0 });
+  c.plan(world, [10.5, 1, 10.5], [10.5, 1, 4.5], { agentId: 'z1', nowMs: 0 });
+  c.forget('z0');
+  c.plan(world, [10.5, 1, 10.5], [10.5, 1, 4.5], { agentId: 'z0', nowMs: 100 });
+  assertEqual(c.debugState().misses, 3, 'z0 重算，z1 不受影响');
+  c.plan(world, [10.5, 1, 10.5], [10.5, 1, 4.5], { agentId: 'z1', nowMs: 100 });
+  assertEqual(c.debugState().hits, 1, 'z1 仍命中');
+});
+
+test('PathCache：clear() 只清缓存，不重置统计（统计是诊断用）', () => {
+  const { world } = makeFlat();
+  const c = new PathCache();
+  c.plan(world, [10.5, 1, 10.5], [10.5, 1, 4.5], { agentId: 'z0', nowMs: 0 });
+  c.clear();
+  assertEqual(c.debugState().size, 0, '缓存清空');
+  assertEqual(c.debugState().misses, 1, '统计不因 clear 而复位');
+  c.plan(world, [10.5, 1, 10.5], [10.5, 1, 4.5], { agentId: 'z0', nowMs: 0 });
+  assertEqual(c.debugState().misses, 2, 'clear 后必须重新计算');
 });

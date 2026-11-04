@@ -47,7 +47,8 @@ export function cellKey(x, z) {
 export function memoryFor(memoryMap, id) {
   let mem = memoryMap.get(id);
   if (!mem) {
-    mem = { visits: new Map(), trail: [], deadEnds: new Set(), lastDecision: null };
+    // `__id` 供 PathCache 按丧尸隔离缓存；下划线前缀表示「内部字段，不进 state」
+    mem = { __id: id, visits: new Map(), trail: [], deadEnds: new Set(), lastDecision: null, plan: null };
     memoryMap.set(id, mem);
   }
   return mem;
@@ -270,7 +271,7 @@ export function buildCandidateSteps(world, position, playerPosition, memory, pla
  *
  * 输出必须完全可 JSON 序列化（送网络的前提）—— 故这里不含 Map / Set / 函数。
  */
-export function buildJevState(world, position, playerPosition, memory) {
+export function buildJevState(world, position, playerPosition, memory, precomputedPlan = null) {
   const [xb, y, zb] = position;
   const bx = Math.floor(xb);
   const bz = Math.floor(zb);
@@ -280,7 +281,10 @@ export function buildJevState(world, position, playerPosition, memory) {
   // 长距离可达性必须由代码算 —— 实测 31 格宽的墙让纯窗口方案 69 次决策净位移 0.7 格。
   // ⚠️ `planStep` 不可达时（半径内绕不过去）**不改变候选表**：仍回落 v1 的局部决策，
   // 否则远处玩家会让丧尸完全站死（Review Focus 2）。
-  const plan = planStep(world, position, playerPosition);
+  // ⚠️ `precomputedPlan` 由 `JevPlanner` 传入（它为了「计划固化」已经算过一次）——
+  // 不传会**每帧跑两遍 24 格 BFS**。纯函数式 API 与复用在这里不冲突：
+  // 缺省时自己算（单测/其它调用方的默认路径）。
+  const plan = precomputedPlan ?? planStep(world, position, playerPosition);
   const plannedDir = plan.reachable && plan.nextStep
     ? directionNameOf(plan.nextStep[0], plan.nextStep[1])
     : null;

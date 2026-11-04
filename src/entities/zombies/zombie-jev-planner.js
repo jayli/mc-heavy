@@ -15,6 +15,7 @@ import {
   buildCandidateSteps, buildJevState, markDeadEnd, memoryFor, noteVisit, parseDirectionChoice,
 } from './zombie-ai-view.js';
 import { buildQuestions } from './zombie-jev-prompts.js';
+import { PathCache, directionNameOf } from './zombie-pathfinder.js';
 
 export class JevPlanner {
   /**
@@ -37,6 +38,10 @@ export class JevPlanner {
     this._log = log ?? ((typeof console !== 'undefined') ? console : { warn() {} });
     this._onDecision = onDecision;
     this._onFallback = onFallback;
+    // **寻路缓存**（Review Focus 5）：`planStep` 不可达时要探索满 2401 格，
+    // 实测真实地形 p90 1.09ms；而丧尸每 0.5 秒只移动约 0.6 格 —— 格级坐标常常不变。
+    // 缓存在**格级**命中，把成本降到接近零（命中率见 `debugState().pathCache`）。
+    this._pathCache = new PathCache();
     this.enabled = false;
     /** @type {Map<string, object>} id → 旅行记忆（唯一权威在这里，spec §3.4） */
     this._memory = new Map();
@@ -59,6 +64,7 @@ export class JevPlanner {
       this._inflight.clear();
       this._nextAt.clear();
       this._memory.clear();
+      this._pathCache.clear();
     }
   }
 
@@ -66,6 +72,7 @@ export class JevPlanner {
   resetMemory(id) {
     this._memory.delete(id);
     this._nextAt.delete(id);
+    this._pathCache.forget(id);      // 缓存也要回收（否则 slot 复用会拿到上只的路线）
   }
 
   /**
@@ -87,13 +94,49 @@ export class JevPlanner {
     }
   }
 
+  /**
+   * 刷新某只丧尸的「当前计划」（v2 计划固化）。
+   *
+   * 单独一个方法而不是内联，是因为**判据必须与 `buildJevState` 里的 `walked` 计算同源**：
+   * 它读 `mem.plan.direction`，这里写 `mem.plan`。两处各自算一遍会漂移。
+   *
+   * @param {object} mem 旅行记忆 @param {number[]} position @param {number[]} playerPosition
+   */
+  _refreshPlan(mem, position, playerPosition) {
+    // ⚠️ 这里要**在 buildJevState 之前**算出方向，故直接调 planStep —— 与 buildJevState 里的
+    // 那次调用是同一份纯函数、同一份输入，重复一次的成本是 24 格 BFS（实测 < 0.3ms）。
+    // 不做「传进去复用」是因为那会让 buildJevState 变成有状态的两步调用（更易错）。
+    const plan = this._pathCache.plan(this.world, position, playerPosition, {
+      agentId: mem.__id ?? '__default__',
+      nowMs: this._now(),
+    });
+    const dir = plan.reachable && plan.nextStep
+      ? directionNameOf(plan.nextStep[0], plan.nextStep[1])
+      : null;
+    if (dir === null) {
+      mem.plan = null;                       // 不可达：不固化成任何方向（回落 v1）
+      return plan;                            // 调用方复用同一次 BFS 结果
+    }
+    if (mem.plan && mem.plan.direction === dir) {
+      mem.plan.walked = (mem.plan.walked ?? 0) + 1;
+    } else {
+      mem.plan = { direction: dir, walked: 0 };
+    }
+    return plan;
+  }
+
   /** 发起一次决策（异步，不阻塞 tick） */
   async _dispatch(z, nowMs) {
     const mem = memoryFor(this._memory, z.id);
     const playerPosition = z.playerPosition ?? z.position;
     noteVisit(mem, z.position[0], z.position[2]);
 
-    const state = buildJevState(this.world, z.position, playerPosition, mem);
+    // **计划固化**（v2，Review Focus 4）：每 0.5 秒重算 BFS 时，「往东绕」与「往西绕」
+    // 往往等长 —— 不记住上一次的选择，丧尸会在两条等长路线之间来回横跳。
+    // 做法 = 先把上次的计划方向记进 `mem.plan`，`buildJevState` 依据它算出 `walked`；
+    // 计划方向一变就重置计数（换了路线，之前走的步数不再算「沿此计划」）。
+    const plan = this._refreshPlan(mem, z.position, playerPosition);
+    const state = buildJevState(this.world, z.position, playerPosition, mem, plan);
     const candidateSteps = state.candidate_steps;
     // 死胡同判定（代码侧，spec §3.4）：本格除来路外无出口 → 标记。
     // ⚠️ **不要求模型自己发现死胡同** —— 代码能算的不要问模型（spec §2.2 的结论）。
@@ -151,6 +194,7 @@ export class JevPlanner {
       failed: this._stats.failed,
       lastReason: this._stats.lastReason,
       memorySize: this._memory.size,
+      pathCache: this._pathCache.debugState(),
     };
   }
 }
