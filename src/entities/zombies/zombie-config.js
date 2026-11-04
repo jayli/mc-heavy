@@ -174,3 +174,28 @@ export const JEV_AI = Object.freeze({
   /** 记忆里最多保留多少步轨迹 */
   maxTrail: 12,
 });
+
+/**
+ * 有界寻路参数（v2.46 v2 修订，用户 2026-11-04 裁定「代码寻路 + 模型裁决」）。
+ *
+ * ⚠️ **`maxRadius = 24` 是用户裁定的标定值**，不是推导值：它能绕开 40 格以内的墙，
+ * 而 24 格半径的方形搜索域上限 = 49² = 2401 格。
+ * ⚠️ **不要放大到「能看见整张地图」**：那是每帧全图寻路，会撞破帧预算，
+ * 也是 M6 规格 §1「没有主线程 BFS」那条禁令真正要防的形态。
+ */
+export const PATHFIND = Object.freeze({
+  /** 搜索半径（切比雪夫距离，与 8 邻接的步数一致） */
+  maxRadius: 24,
+  /** 探索格数上限（防病态地形把主线程拖住） */
+  maxExplored: 2601,
+});
+
+/**
+ * 8 邻接的固定顺序（**确定性**：同一输入必得同一路径，红线 2）。
+ * ⚠️ 改顺序会改变所有已规划的路径 —— 只在明确要重标定时才动。
+ * ⚠️ 必须与 `zombie-ai-view.js` 的 `DIRECTION_VECTORS` 键序一致（单测钉住）。
+ */
+export const DIRECTION_ORDER = Object.freeze([
+  'north', 'north_east', 'east', 'south_east',
+  'south', 'south_west', 'west', 'north_west',
+]);
