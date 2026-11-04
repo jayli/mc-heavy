@@ -25,7 +25,6 @@ import {
   TELEPORT_ROW_TITLE, TELEPORT_TARN_LABEL, TELEPORT_MARK_LABEL, TELEPORT_GO_LABEL,
   TELEPORT_HOME_LABEL, TELEPORT_ARENA_LABEL, TELEPORT_LAKE_LABEL, TELEPORT_AUTO_CLOSE_MS,
   RESOLUTION_ROW_TITLE, RESOLUTION_LABELS,
-  ZOMBIE_AI_ROW_TITLE, ZOMBIE_AI_LABELS,
 } from '../ui/settings-panel.js';
 import {
   PIXEL_RATIO_MODE_OPTIONS, DEFAULT_PIXEL_RATIO_MODE,
@@ -557,37 +556,3 @@ test('toast 的 z-index 必须高于全部模态面板（否则面板里的按�
     `toast(${TOAST_Z_INDEX}) 不得压过启动错误遮罩(${BOOT_ERROR_Z})`);
 });
 
-// ---------- v2.46：在线丧尸 AI 开关 ----------
-
-test('设置：onlineZombieAi 默认关闭，URL ?zombieai=1 可开', () => {
-  const base = resolveSettings(null, new URLSearchParams(''));
-  assertEqual(base.onlineZombieAi, false, '默认关闭（spec §3.9）');
-  const on = resolveSettings(null, new URLSearchParams('zombieai=1'));
-  assertEqual(on.onlineZombieAi, true);
-  const off = resolveSettings(null, new URLSearchParams('zombieai=0'));
-  assertEqual(off.onlineZombieAi, false);
-});
-
-test('设置：存档里的 onlineZombieAi 被尊重，旧存档自然回落默认（无需迁移）', () => {
-  const stored = { settingsVersion: 2, onlineZombieAi: true };
-  assertEqual(resolveSettings(stored, null).onlineZombieAi, true);
-  const old = { settingsVersion: 2 };
-  assertEqual(resolveSettings(old, null).onlineZombieAi, false);
-});
-
-test('面板：丧尸 AI 行标题与两档文案导出且 ≤ 2 字', () => {
-  assertEqual(ZOMBIE_AI_ROW_TITLE, '丧尸 AI');
-  assertEqual(ZOMBIE_AI_LABELS.length, 2);
-  for (const l of ZOMBIE_AI_LABELS) assertTrue([...l].length <= 2, `文案须 ≤2 字：${l}`);
-});
-
-test('面板：「丧尸 AI」行在左列且不产生纵向滚动（v2.46 实测快照口径）', () => {
-  // 静态判据（DOM 侧的滚动条实测在 Playwright 里做，见实施计划 Task 12 的实测记录）：
-  // 两档文案 + 标题必须短到能塞进左列 375px ÷ 2 按钮。
-  // 标题是 `.mc-title`（左对齐、单行），不参与按钮平分 —— 只需不换行
-  assertTrue([...ZOMBIE_AI_ROW_TITLE].length <= 6, `标题须能塞进一行：${ZOMBIE_AI_ROW_TITLE}`);
-  const rowWidth = Math.floor(375 / 2) - 24;   // 列宽 375 → 两按钮；扣 padding
-  for (const l of ZOMBIE_AI_LABELS) {
-    assertTrue([...l].length * 12 <= rowWidth, `文案 ${l} 在 12px 字号下须不折行`);
-  }
-});

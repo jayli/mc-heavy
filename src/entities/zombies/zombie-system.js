@@ -15,6 +15,8 @@ import {
   ZOMBIE, ZOMBIE_FLASH_MS, ZOMBIE_MAX_STEP, ZOMBIE_MOVING_EPSILON, ZOMBIE_SEPARATION,
 } from './zombie-config.js';
 import { zombieCollidesAt, zombieStepUpY, steerIntent } from './zombie-navigation.js';
+import { PathCache } from './zombie-pathfinder.js';
+import { decideStep, memoryFor, noteVisit } from './zombie-navigator.js';
 import { normalizePosition, raycastAabbSlab } from '../entity-types.js';
 
 /** 丧尸 AABB（相对 state.position 的局部偏移；position 为脚底 → min.y = 0） */
@@ -325,7 +327,7 @@ export class ZombieService {
    *        render —— 本层是 Worker 同构层，不得依赖 render/three（依赖方向 §3）。
    *        `pool` 缺省时不发 AI RPC（纯 fixture 只测 state/渲染）—— AI 是可选装配。
    */
-  constructor({ entities, world, maxActive = ZOMBIE.maxActive, pool = null, onSpawn = null, onDespawn = null, planner = null }) {
+  constructor({ entities, world, maxActive = ZOMBIE.maxActive, pool = null, onSpawn = null, onDespawn = null }) {
     this.entities = entities;
     this.world = world;
     this.maxActive = maxActive;
@@ -333,10 +335,17 @@ export class ZombieService {
     this._onSpawn = onSpawn;
     this._onDespawn = onDespawn;
     /**
-     * 在线 AI 编排器（v2.46，`JevPlanner`）。**缺省 null = 在线 AI 未装配**，
-     * 此时 `setOnlineAi()` 静默 no-op（纯 fixture 只测 state/渲染）。
+     * 本地导航（v2.47）：`PathCache` + 每只丧尸的旅行记忆。**常开、零网络**。
+     * ⚠️ 历史上这里挂过「在线 AI 编排器」（Jev），已整体删除（用户 2026-11-04 裁定）。
      */
-    this.planner = planner;
+    this._pathCache = new PathCache();
+    /** @type {Map<string, object>} id → 导航记忆（visits/trail/deadEnds/plan） */
+    this._navMemory = new Map();
+    /** 决策周期（秒）：复用离线 AI 周期，不新开节流 */
+    this._navAccum = 0;
+    /** 诊断计数 */
+    this._navDecisions = 0;
+    this._navBlocked = 0;
     // ---- AI 编排状态（Task 2）----
     /** accumulator：累计到 `ZOMBIE.aiPeriod` 才发一条 RPC（20Hz，M6 规格 §2） */
     this._aiAccum = 0;
@@ -494,104 +503,118 @@ export class ZombieService {
    * @param {number} dt 秒
    * @param {{world?: object, playerPosition: number[], nowMs?: number}} context
    */
-  update(dt, { playerPosition } = {}) {
-    // 在线 AI（v2.46）：**独立节流**，与下面的离线 RPC 互不干扰。
-    // ⚠️ **离线路径仍然跑**（作为兜底方向源）：在途的那 400ms 里丧尸沿离线方向走，
-    // 比站着不动自然；在线回包到达后写胜（后写胜）。
-    // ⚠️ 时钟可注入（`this._nowMs`）：浏览器内单测没有真实帧循环，硬编码 performance.now()
-    // 会让「周期未到」这类断言不可控。
-    if (this.planner?.enabled) {
-      const nowMs = this._nowMs ?? (typeof performance !== 'undefined' ? performance.now() : Date.now());
-      const zs = [];
-      for (const entity of this.entities.entities()) {
-        if (entity.type !== 'zombie') continue;
-        zs.push({
-          id: entity.id,
-          position: [...entity.state.position],
-          playerPosition: [...playerPosition],
-          // blocked = 已经走不动，问模型只是烧额度
-          mobile: entity.state.mode !== 'blocked',
-        });
-      }
-      this.planner.tick(nowMs, zs);
-    }
-    if (!this.pool) return; // 未装配 pool（纯 fixture）：不发 RPC
-    this._aiAccum += dt;
-    if (this._aiAccum < ZOMBIE.aiPeriod) return;
-    if (this._aiInFlight) return; // 在途期间不重复调用
-    this._aiAccum = 0;
-
-    const [px, , pz] = playerPosition;
-    const batch = [];
+  /**
+   * 本地导航一步：给所有活动丧尸算方向并写进 `state.velocity`（v2.47）。
+   *
+   * **常开**，不受任何设置开关控制 —— 它是纯本地计算（24 格 BFS + 缓存，实测 20 只
+   * 的帧时零回退），没有"关掉"的理由。用户 2026-11-04 裁定删掉网络推理后，
+   * 这就是丧尸「智能」的全部来源。
+   *
+   * @param {number[]} playerPosition 玩家脚底 [x, y, z]
+   */
+  _stepNavigator(playerPosition) {
+    const world = this.world;
+    const nowMs = this._nowMs
+      ?? (typeof performance !== 'undefined' ? performance.now() : Date.now());
+    // 格坐标可走性判据：**直接复用 `zombieCollidesAt`**（唯一权威，与物理同源）。
+    // 丧尸脚底在 y，AABB 高 1.8 → 占 y..y+1 两层；站在该格 = AABB 不碰撞。
+    // 一层台阶算可走：抬一格后也不碰撞即可（与物理 `tryStepUp` 同口径）。
+    // ⚠️ **不要自己用 `isSolid` 拼判据**（初版就是这么写的，把「脚下是地面」误判成不可走，
+    // 导致所有方向 blocked、丧尸站死）——`zombieCollidesAt` 才懂 AABB 与脚底语义。
+    const isWalkable = (w, bx, y, bz) => {
+      if (!zombieCollidesAt(w, bx + 0.5, y, bz + 0.5)) return true;
+      const lifted = zombieStepUpY(y);
+      return lifted - y <= ZOMBIE_MAX_STEP && !zombieCollidesAt(w, bx + 0.5, lifted, bz + 0.5);
+    };
+    // `separationForce` 的入参形状是 `{id, position}`（mc-lite 口径），先收集一份
+    const allZombies = [];
     for (const entity of this.entities.entities()) {
       if (entity.type !== 'zombie') continue;
-      const [x, , z] = entity.state.position;
-      // 60 格 AI 预算门（水平距离，与 mc-lite 同口径）：超出的丧尸**不进批次**，
-      // 但实体本身保留 —— 60 格是 AI 预算门，**不是销毁半径**（M6 规格 §1）
-      if (Math.hypot(x - px, z - pz) > ZOMBIE.aiSleepDistance) continue;
-      batch.push({
+      allZombies.push({ id: entity.id, position: entity.state.position });
+    }
+    for (const entity of this.entities.entities()) {
+      if (entity.type !== 'zombie') continue;
+      const st = entity.state;
+      const mem = memoryFor(this._navMemory, entity.id);
+      noteVisit(mem, st.position[0], st.position[2]);
+      const step = decideStep({
+        world,
+        position: st.position,
+        playerPosition,
+        memory: mem,
+        pathCache: this._pathCache,
+        nowMs,
+        isWalkable,
+      });
+      this._navDecisions++;
+      if (step.blocked) this._navBlocked++;
+      // **实体排斥力**（v2.47 从已删除的离线 RPC 路径搬过来）：
+      // 20 只丧尸朝同一目标走会收敛成一个点。原来由 `computeAiUpdates` 无条件叠加，
+      // 该路径删掉后必须在这里补回 —— 否则「强制同点生成后必须散开」的观感直接消失
+      // （实测：不补时 190 对全重叠、3 秒后仍然 190 对）。
+      //
+      // ⚠️⚠️ **排斥力必须绕开 `_applyIntent` 的 `steerIntent`**：后者是「把方向修成
+      // 走得通的方向」，0° 一通行就**原样返回输入向量**。把「导航方向 + 排斥力」的合成
+      // 向量喂进去时，只要 0° 通得过，排斥力就被整个吞掉（实测：190 对全重叠散不开）。
+      // 正确做法 = 导航方向走 `_applyIntent`（含避障），排斥力**直接叠加到最终速度上**。
+      // **合成 → 避障 → 钳制**（顺序与 mc-lite `:218-220` 等价，只是避障插在中间）：
+      // ① 导航给出方向，排斥力把它推离同伴；② `steerIntent` 保证合成的方向真的走得通；
+      // ③ 最后统一钳到 `ZOMBIE.speed`。
+      //
+      // ⚠️⚠️ **排斥力必须参与合成，不能事后再单独 setIntent**：
+      // 事后叠加会绕过钳制 —— `separationForce` 在 19 只同点时的合力达 19 格/秒（16 倍速），
+      // 直接把丧尸甩飞；而且它绕过了 `steerIntent`，可能把丧尸推进墙里。
+      // ⚠️ **也不能只把「导航方向」喂给 `_applyIntent` 再叠排斥力**：`steerIntent` 在 0°
+      // 通行时原样返回输入向量，排斥力会被整个吞掉（实测 190 对全重叠散不开）。
+      // ⚠️ **`separationForce` 的入参是 `{id, position}`，不是 `Entity` 对象**
+      // （`Entity` 的位置在 `state.position`，没有顶层 `position`）。传错会抛
+      // `Cannot read properties of undefined (reading '0')` —— 而那个异常在遍历里被吞掉，
+      // 表现为「只有第一只丧尸在动、其余速度恒 0」（实测踩到）。
+      const sep = separationForce({ id: entity.id, position: st.position }, allZombies);
+      this._applyIntent({
         id: entity.id,
         generation: entity.generation,
-        position: [...entity.state.position],
-        yaw: entity.state.yaw,
-        mode: entity.state.mode,
+        vx: step.vx * ZOMBIE.speed + sep.x,
+        vz: step.vz * ZOMBIE.speed + sep.z,
+        mode: step.mode,
       });
     }
-    if (batch.length === 0) return; // 空批次不发 RPC（省往返）
+  }
 
-    this._aiInFlight = true;
-    this._aiDebug.calls++;
-    this._aiDebug.lastBatchSize = batch.length;
-    this._aiDebug.pending++;
-    const result = this.pool.call('ai', {
-      playerPosition: [...playerPosition],
-      dt,
-      zombies: batch,
-    });
-    const settle = (reply) => {
-      this._aiInFlight = false;
-      this._aiDebug.pending--;
-      for (const update of reply?.updates ?? []) {
-        this._applyIntent({ ...update, source: 'offline' });
-      }
-    };
-    const fail = () => { this._aiInFlight = false; this._aiDebug.pending--; };
-    // **`WorkerPool.call` 返回 `{id, promise}`（worker-pool.js:71），不是 promise 本身** ——
-    // 必须取 `.promise` 才能等回包。实测踩坑：只判断 `typeof result.then` 会走同步分支，
-    // 拿到 `{id, promise}` 这个对象（无 `updates` 字段）→ 意图永远写不进去（丧尸原地不动），
-    // 而纯逻辑测试因为 fake pool 返回真 promise 而全绿 —— 测试与真实接线口径不一致的盲区。
-    // 故这里显式兼容两种形状：`{id,promise}`（真实 WorkerPool）/ promise（fixture）。
-    const promise = result?.promise ?? result;
-    if (promise && typeof promise.then === 'function') promise.then(settle, fail);
-    else settle(promise);
+  update(dt, { playerPosition } = {}) {
+    // ---- 本地导航（v2.47）：**常开、零网络、不受任何开关控制** ----
+    // ⚠️ **这是本轮最重要的不变式**：寻路一度只挂在「在线 AI 开关」下，而那个开关默认关闭
+    // ⇒ 玩家实玩时寻路一行都没执行（实测 `plannerEnabled: false, decided: 0`），
+    // 表现为「丧尸完全没有任何寻路逻辑」。寻路是纯本地计算（零 API 成本），必须常开。
+    this._navAccum += dt;
+    if (this._navAccum >= ZOMBIE.aiPeriod) {
+      this._navAccum = 0;
+      this._stepNavigator(playerPosition);
+    }
+    // ⚠️ **离线 RPC 决策分支已整体删除**（v2.47，用户 2026-11-04 裁定「只依赖本地计算」）。
+    // 历史：这里曾走 `pool.call('ai', …)` 让 worker 算「直线朝玩家」的意图。它与本地导航
+    // **抢写同一份 `state.velocity`** —— 实测形态是「速度在 ±1.2 之间翻转、净位移接近 0」。
+    // `state.velocity` 的写者现在**只有** `_stepNavigator`（经 `_applyIntent`）。
+    // `this.pool` 字段保留只为装配层兼容（Game 仍注入），本类不再消费。
   }
 
   /**
-   * 应用一条 AI 意图回包。**先验代数**再写（红线 7）：迟到的回包不得改变已 despawn 的实例
-   * 或同 id 的后续实例。速度长度钳到 `ZOMBIE.speed`（worker 侧口径，主线程再钳一次做防御 ——
-   * 恶意/错误的回包不得让丧尸超速追上玩家）。
+   * 应用一条 AI 意图。**先验代数**再写（红线 7）：迟到的意图不得改变已 despawn 的实例
+   * 或同 id 的后续实例。速度长度钳到 `ZOMBIE.speed`（恶意/错误的意图不得让丧尸超速）。
    *
-   * **局部避障就在这里（v2.40）**：钳速之后过一道 `steerIntent`，把“目标方向”修成“走得通的方向”。
-   * ⚠️ **必须留在这里，不得搬进 `setIntent`**：后者是通用意图写入口（物理用例、调试代码都用它
-   * 直接下令），探针长在里面会让「想让它走就必须能走」的语义被偷换，且既有的物理用例会被地形
-   * 挡住而假红。避障是 **AI 的能力**，不是指令通道的行为。
-   * ⚠️ 为什么在主线程：worker 无世界数据（M6 规格 §2），世界唯一权威在主线程（红线 1）。
+   * **局部避障就在这里**（v2.40）：钳速之后过一道 `steerIntent`，把「目标方向」修成
+   * 「走得通的方向」。
+   * ⚠️ **必须留在这里，不得搬进 `setIntent`**：后者是通用意图写入口（物理用例、调试代码
+   * 直接下令），探针长在里面会让「想让它走就必须能走」的语义被偷换。
+   * ⚠️ **`state.velocity` 的唯一写者链**：`_stepNavigator` → 本方法 → `setIntent`。
+   * v2.47 删掉了离线 RPC 分支，它就是唯一来源。
    * @param {{id: string, generation: number, vx: number, vz: number, mode?: string}} update
    * @returns {boolean} false = 过期/未知，已丢弃
    */
-  _applyIntent({ id, generation, vx, vz, mode, source = 'offline' }) {
+  _applyIntent({ id, generation, vx, vz, mode }) {
     const entity = this.entities.get(id);
     if (!entity || entity.type !== 'zombie') return false;
-    if (entity.generation !== generation) return false; // 过期回包
-    // **在线决策的优先级**（v2.46）：离线 RPC 是 20Hz、在线决策只有 2Hz。两个都无脑写
-    // `state.velocity` 时，在线回包会在 50ms 内被离线回包覆盖 → 玩家看到的是「丧尸在振荡
-    // 而不前进」（实测：速度 vx 每 2 秒在 ±1.19 之间来回翻转，24 秒净位移 0.1 格）。
-    // 故离线回包在「在线意图仍新鲜」时不覆盖速度 —— 只让它继续沿用上一次在线方向。
-    // ⚠️ 阈值取 8 个离线周期（~400ms）：比在线周期（500ms）短一点，保证在线回包到达前后
-    // 都不会出现「空窗期没人写速度」。
-    if (source === 'offline' && this.planner?.enabled && this._onlineIntentFresh()) {
-      return false;
-    }
+    if (entity.generation !== generation) return false; // 过期意图
     const speed = Math.hypot(vx, vz);
     let outVx = vx, outVz = vz;
     if (speed > ZOMBIE.speed) { outVx = vx / speed * ZOMBIE.speed; outVz = vz / speed * ZOMBIE.speed; }
@@ -605,54 +628,22 @@ export class ZombieService {
     });
   }
 
-  /** @returns {{calls: number, lastBatchSize: number, pending: number}} 只读测试钩子 */
+  /** @returns {{calls: number, lastBatchSize: number, pending: number}} 只读测试钩子（已废弃，恒 0） */
   debugAiState() {
     return { calls: this._aiDebug.calls, lastBatchSize: this._aiDebug.lastBatchSize, pending: this._aiDebug.pending };
   }
 
   /**
-   * 记录一次「在线决策已写进 state」的时间戳（由 `Game` 的 onDecision 在调 `_applyIntent`
-   * 之后调）。用于让离线回包让位，见 `_applyIntent` 的注释。
+   * 本地导航的只读诊断（测试/调试用）。**没有开关** —— 寻路常开。
+   * @returns {{memorySize: number, pathCache: object, navDecisions: number, navBlocked: number}}
    */
-  noteOnlineIntent() {
-    this._onlineIntentAt = this._nowMs ?? (typeof performance !== 'undefined' ? performance.now() : Date.now());
-  }
-
-  /** 在线意图是否仍然新鲜（8 个离线 AI 周期内） */
-  _onlineIntentFresh() {
-    const at = this._onlineIntentAt;
-    if (!Number.isFinite(at)) return false;
-    const now = this._nowMs ?? (typeof performance !== 'undefined' ? performance.now() : Date.now());
-    return now - at < ZOMBIE.aiPeriod * 1000 * 8;
-  }
-
-  /**
-   * 开关在线 AI（v2.46，用户 2026-11-03 裁定：面板 + URL 控制）。
-   *
-   * ⚠️ **关闭必须清记忆与在途**：`planner.setEnabled(false)` 内部清 `_memory` / `_inflight` / `_nextAt`。
-   * 不清的形态是「关掉再开，丧尸带着关闭前的访问历史」—— 会以为某些格走过而乱绕。
-   * ⚠️ **未注入 planner 时静默 no-op**（纯 fixture / 未装配在线 AI）：不抛错，
-   * 让 `Game.setOnlineZombieAi` 可以无条件调用。
-   * @param {boolean} on
-   */
-  setOnlineAi(on) {
-    this.planner?.setEnabled?.(on === true);
-    if (on !== true) this._onlineIntentAt = undefined;   // 关掉后离线路径立刻恢复完全自主
-  }
-
-  /** @returns {boolean} 在线 AI 是否启用（未注入 planner 时恒 false） */
-  onlineAiEnabled() {
-    return this.planner?.enabled === true;
-  }
-
-  /**
-   * 只读在线 AI 状态（测试/诊断用）。
-   * @returns {{enabled: boolean, inflight: number, decided: number, failed: number, lastReason: string, memorySize: number}}
-   */
-  debugOnlineAi() {
-    const base = { enabled: false, inflight: 0, decided: 0, failed: 0, lastReason: '', memorySize: 0 };
-    if (!this.planner) return base;
-    return { enabled: this.planner.enabled === true, ...(this.planner.debugState?.() ?? {}) };
+  debugNavigator() {
+    return {
+      memorySize: this._navMemory.size,
+      pathCache: this._pathCache.debugState(),
+      navDecisions: this._navDecisions,
+      navBlocked: this._navBlocked,
+    };
   }
 
   /** @param {string} id @returns {number|null} 只读测试接口：id 的渲染 slot */
@@ -693,9 +684,10 @@ export class ZombieService {
     this._slots.delete(id);
     this._active--;
     this._freeSlots.push(slot);
-    // **同处回收在线 AI 的旅行记忆**（v2.46）：三条回收路径（死亡 / column 卸载 / dispose）
+    // **同处回收导航记忆**（v2.47）：三条回收路径（死亡 / column 卸载 / dispose）
     // 都经过本函数，故只改这一处即可。漏了会带上一只的访问历史（id 随 slot 复用）。
-    this.planner?.resetMemory?.(id);
+    this._navMemory.delete(id);
+    this._pathCache.forget(id);
     this._onDespawn?.(id);
   }
 }

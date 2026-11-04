@@ -873,175 +873,92 @@ function makeAiFixture({ worldColumns = 8, withRenderer = false } = {}) {
   return { registry, ids, world, entities, zombies, pool, playerPosition, renderer: withRenderer ? renderer : null };
 }
 
-test('ZombieService: 20Hz 单条批量 AI RPC + 60 格门控（59 进、61 不进）', async () => {
-  const { zombies, pool, playerPosition } = makeAiFixture();
-  zombies.spawn([10.5, 1, .5], { source: 'test' });   // 距玩家 10 格
-  zombies.spawn([59.5, 1, .5], { source: 'test' });   // 距玩家 59 格 → 在 60 格门内
-  zombies.spawn([61.5, 1, .5], { source: 'test' });   // 距玩家 61 格 → 超门，不进批次
+// ==================== v2.47：本地导航接管决策（原 6 条 RPC 用例的重写） ====================
+//
+// **为什么整段重写**：用户 2026-11-04 裁定「完全去掉 Jev、只依赖本地计算」后，
+// `pool.call('ai', …)` 的离线 RPC 决策分支被整体删除 —— 它与本地导航**抢写同一份
+// `state.velocity`**（实测：速度在 ±1.2 之间翻转、净位移接近 0）。
+// 决策权的唯一写者现在是 `_stepNavigator` → `_applyIntent`。
+//
+// 原来 6 条用例钉的是「RPC 批次的可靠性」（周期节流、在途不重复、代数校验、60 格门控）。
+// 它们服务的机制已不存在，但**其中三条的意图对新机制仍然成立**，故重写而不是删除：
+//   ① 决策有周期节流（不是每帧重算）
+//   ② 朝向从速度派生（移动时跟随、静止保持）
+//   ③ 过期/无主意图不得写入
+// 另加一条本轮最重要的回归门：**默认设置下导航必须真的在跑**。
 
-  // 0.049 秒 < aiPeriod(0.05) → 尚未到周期，不发 RPC
-  zombies.update(0.049, { playerPosition, nowMs: 1000 });
-  assertEqual(zombies.debugAiState().calls, 0, '未到 aiPeriod 不得发 RPC');
-  assertEqual(pool.calls.length, 0);
-
-  // 再推进 0.001 秒 → 累计 0.05 秒 = 一个周期 → 恰好一条 RPC
-  zombies.update(0.001, { playerPosition, nowMs: 1050 });
-  assertEqual(pool.calls.length, 1, '每周期只发一条 RPC');
-  assertEqual(zombies.debugAiState().lastBatchSize, 2, '批次只含 60 格内的 2 只');
-
-  const payload = pool.calls[0].payload;
-  assertEqual(pool.calls[0].method, 'ai');
-  assertEqual(payload.zombies.length, 2);
-  // **不传局部体素 view**（M6 规格 §2：worker 不读世界）
-  assertFalse('localVoxelView' in payload, '不得传 localVoxelView');
-  assertFalse('world' in payload, '不得传 world');
-  // 批次内每只都带 id/generation（回包验证的前提）+ 位置/朝向/mode
-  for (const z of payload.zombies) {
-    assertTrue(typeof z.id === 'string');
-    assertTrue(Number.isFinite(z.generation));
-    assertTrue(Array.isArray(z.position));
-    assertTrue('mode' in z);
-  }
-  assertDeepEqual(payload.playerPosition, playerPosition);
-  // 61 格那只不在批次里（门控生效）
-  const positions = payload.zombies.map((z) => round6(z.position[0]));
-  assertEqual(positions.includes(61.5), false, '超 60 格的丧尸不进批次');
-  assertEqual(positions.includes(59.5), true, '59 格的丧尸进批次');
-});
-
-test('ZombieService: 朝向从速度派生 —— 移动时跟随，静止保持（mc-lite Zombie.js:230-239）', async () => {
-  // mc-lite 口径：`setDesiredVelocity(vx, vz)` 写速度的同时派生 `rotation.y = atan2(vx, vz)`，
-  // **仅在移动时更新**（`abs(vx) > 0.001 || abs(vz) > 0.001`），静止保持原朝向。
-  // 断言从 `atan2` 派生而非硬编码角度值（testing-policy §2.5）。
-  const { zombies, pool, playerPosition } = makeAiFixture();
-  const id = zombies.spawn([10.5, 1, .5], { source: 'test' });
-  const generation = zombies.entities.get(id).generation;
-  assertEqual(zombies.get(id).yaw, 0, '出生朝向为 0');
-
-  // 朝 +X 走 → yaw = atan2(vx, vz) = atan2(1.2, 0) = π/2
-  pool.replies.push({ updates: [{ id, generation, vx: 1.2, vz: 0, mode: 'chasing' }] });
-  zombies.update(ZOMBIE.aiPeriod, { playerPosition, nowMs: 1000 });
-  await Promise.resolve(); await Promise.resolve();
-  assertClose(zombies.get(id).yaw, Math.atan2(1.2, 0), 1e-9, '朝 +X 的朝向');
-
-  // 转向 +Z → yaw = atan2(0, 1.2) = 0（朝向必须**跟着变**，不是停在第一个方向）
-  pool.replies.push({ updates: [{ id, generation, vx: 0, vz: 1.2, mode: 'chasing' }] });
-  zombies.update(ZOMBIE.aiPeriod, { playerPosition, nowMs: 1050 });
-  await Promise.resolve(); await Promise.resolve();
-  assertClose(zombies.get(id).yaw, Math.atan2(0, 1.2), 1e-9, '转向 +Z 后朝向须更新');
-
-  // 斜向 → atan2(vx, vz)（保方向）
-  pool.replies.push({ updates: [{ id, generation, vx: 0.6, vz: 0.6, mode: 'chasing' }] });
-  zombies.update(ZOMBIE.aiPeriod, { playerPosition, nowMs: 1100 });
-  await Promise.resolve(); await Promise.resolve();
-  assertClose(zombies.get(id).yaw, Math.atan2(0.6, 0.6), 1e-9, '斜向朝向');
-
-  // **静止时保持原朝向**（mc-lite：只在移动时更新）→ 零速度回包不得把 yaw 清零
-  const yawBeforeIdle = zombies.get(id).yaw;
-  pool.replies.push({ updates: [{ id, generation, vx: 0, vz: 0, mode: 'idle' }] });
-  zombies.update(ZOMBIE.aiPeriod, { playerPosition, nowMs: 1150 });
-  await Promise.resolve(); await Promise.resolve();
-  assertEqual(zombies.get(id).yaw, yawBeforeIdle, '静止时须保持原朝向（不得清零）');
-
-  // **低于阈值的微小速度也不得派生朝向**（自查发现的盲区，实测踩坑两轮）：
-  // ① 只测精确零速度时，注入「阈值改成 0」仍然全绿 —— 对精确零 `|0| > 0` 为 false，yaw 照样不变；
-  // ② 第一版修法写成 `micro = ZOMBIE_MOVING_EPSILON / 2` —— **测试输入从被测常量派生**，
-  //    注入把常量改成 0 时 micro 也变成 0 → 回到精确零 → 断言恒真（testing-policy §2.5 的
-  //    「硬编码/派生被测代码写入的那个值」陷阱）。故这里用**字面量** 0.0005：
-  //    它低于真实阈值 0.001（正确实现按静止处理），但注入阈值 0 后 `|0.0005| > 0` 为真 →
-  //    朝向被派生 → 断言 FAIL。断言才有牙齿。
-  // 阈值的真正用途是挡浮点噪声（worker 回包可能给出 1e-9 级残余速度）。
-  pool.replies.push({ updates: [{ id, generation, vx: 0.0005, vz: 0, mode: 'chasing' }] });
-  zombies.update(ZOMBIE.aiPeriod, { playerPosition, nowMs: 1200 });
-  await Promise.resolve(); await Promise.resolve();
-  assertEqual(zombies.get(id).yaw, yawBeforeIdle, '低于阈值的微小速度须按静止处理（不派生朝向）');
-  // 前提断言：字面量确实低于真实阈值（否则这条盲区覆盖形同虚设）
-  assertTrue(0.0005 < ZOMBIE_MOVING_EPSILON, '前提：测试输入须低于真实阈值');
-});
-
-test('ZombieService: 60 格外的丧尸不进批次 → 朝向也不变（AI 预算门语义）', async () => {
-  // 超 60 格的丧尸根本不进 AI 批次 → worker 不会给它意图 → 朝向保持出生值。
-  // 这条钉住「朝向派生发生在回包应用时」而非每帧无条件重算。
+test('v2.47 ZombieService: 导航按 aiPeriod 节流（不是每帧重算）', () => {
   const { zombies, playerPosition } = makeAiFixture();
-  const farId = zombies.spawn([61.5, 1, .5], { source: 'test' }); // 距玩家 61 格 → 超门
-  zombies.update(ZOMBIE.aiPeriod, { playerPosition, nowMs: 1000 });
-  await Promise.resolve(); await Promise.resolve();
-  assertEqual(zombies.get(farId).yaw, 0, '超 AI 预算门的丧尸朝向不变');
-  assertEqual(zombies.get(farId).velocity[0], 0, '速度也不变（意图未被写入）');
-});
-
-test('ZombieService: 在途期间不重复发 RPC（真实在途窗口）', async () => {
-  // **必须制造真实的在途窗口**（自查发现的盲区）：原先「AI 回包写入意图，在途期间不重复调用」
-  // 那条测试用 fake pool 的 `Promise.resolve`，回包在同一微任务里就完成了 → 两次 update 之间
-  // `_aiInFlight` 早已被清零 → 注入「删在途门控」测试仍全绿，断言没落在被测路径。
-  // 这里把回包挂在一个手动 resolve 的 promise 上，制造真正的跨帧在途窗口。
-  const { zombies, pool, playerPosition } = makeAiFixture();
   zombies.spawn([10.5, 1, .5], { source: 'test' });
-  zombies.spawn([59.5, 1, .5], { source: 'test' });
-
-  let resolveReply;
-  pool.deferred = new Promise((resolve) => { resolveReply = resolve; });
-
-  // 第一条 RPC 发出并挂起（不回包）
-  zombies.update(ZOMBIE.aiPeriod, { playerPosition, nowMs: 1000 });
-  assertEqual(pool.calls.length, 1);
-  assertEqual(zombies.debugAiState().pending, 1, '在途计数须为 1');
-
-  // 在途期间连推 5 个周期 → **不得**再发 RPC（否则回包互相覆盖、意图抖动）
-  for (let i = 0; i < 5; i++) zombies.update(ZOMBIE.aiPeriod, { playerPosition, nowMs: 1050 + i * 50 });
-  assertEqual(pool.calls.length, 1, '在途期间不得重复发 RPC');
-  assertEqual(zombies.debugAiState().pending, 1);
-
-  // 回包落地后，下一周期才恢复发送
-  resolveReply({ updates: [] });
-  await Promise.resolve(); await Promise.resolve();
-  assertEqual(zombies.debugAiState().pending, 0, '回包落地后在途计数归零');
-  zombies.update(ZOMBIE.aiPeriod, { playerPosition, nowMs: 1400 });
-  assertEqual(pool.calls.length, 2, '回包落地后恢复每周期一条');
-  pool.deferred = null;
+  const before = zombies.debugNavigator().navDecisions;
+  // 0.049 秒 < aiPeriod(0.05) → 尚未到周期
+  zombies.update(0.049, { playerPosition });
+  assertEqual(zombies.debugNavigator().navDecisions, before, '未到周期不得决策');
+  // 再推进 0.001 → 恰好一个周期
+  zombies.update(0.001, { playerPosition });
+  assertEqual(zombies.debugNavigator().navDecisions, before + 1, '每周期决策一次');
 });
 
-test('ZombieService: AI 回包写入意图，在途期间不重复调用', async () => {
-  const { zombies, pool, playerPosition } = makeAiFixture();
+test('v2.47 ZombieService: 默认设置下导航**真的在跑**（本轮核心回归门）', () => {
+  // ⚠️ **这条用例来自一次真实的实玩事故**：v2.46 把寻路挂在「在线 AI 开关」下，而那个开关
+  // 默认关闭 ⇒ 玩家打开游戏时寻路一行都没执行（实测 `plannerEnabled: false, decided: 0`），
+  // 用户反馈「丧尸完全没有任何寻路逻辑」。寻路是纯本地计算，必须常开、不受任何开关控制。
+  const { zombies, playerPosition } = makeAiFixture();
   const id = zombies.spawn([10.5, 1, .5], { source: 'test' });
-  pool.replies.push({
-    updates: [{ id, generation: zombies.entities.get(id).generation, vx: 1.2, vz: 0, mode: 'chasing' }],
-  });
-  zombies.update(ZOMBIE.aiPeriod, { playerPosition, nowMs: 1000 });
-  assertEqual(pool.calls.length, 1);
-  // 回包是 Promise —— 需等微任务排空后才写入意图
-  await Promise.resolve();
-  await Promise.resolve();
-  assertEqual(zombies.get(id).velocity[0], 1.2);
-  assertEqual(zombies.get(id).mode, 'chasing');
-  // 下一周期才发第二条（在途期间不重复调用）
-  zombies.update(ZOMBIE.aiPeriod, { playerPosition, nowMs: 1050 });
-  assertEqual(pool.calls.length, 2);
+  // 玩家在丧尸正西 → 导航应给出朝西的速度
+  zombies.update(ZOMBIE.aiPeriod, { playerPosition: [0.5, 1, 0.5] });
+  const st = zombies.get(id);
+  assertTrue(zombies.debugNavigator().navDecisions > 0, '默认就必须有导航决策');
+  assertTrue(Math.hypot(st.velocity[0], st.velocity[2]) > 0, `默认就必须写出速度，实际 ${st.velocity}`);
+  assertTrue(st.velocity[0] < 0, `须朝西（玩家在西），实际 vx=${st.velocity[0]}`);
 });
 
-test('ZombieService: 迟到 generation 回包不改变已 despawn/reused id 的实体', async () => {
-  const { zombies, pool, playerPosition, entities } = makeAiFixture();
+test('v2.47 ZombieService: 朝向从速度派生（移动跟随、静止保持）', () => {
+  // mc-lite 口径保留：`yaw = atan2(vx, vz)`，**仅在移动时更新**，静止保持原朝向。
+  const { zombies, playerPosition } = makeAiFixture();
+  const id = zombies.spawn([10.5, 1, .5], { source: 'test' });
+  assertEqual(zombies.get(id).yaw, 0, '出生朝向为 0');
+  // 玩家在正东 → 朝 +X → yaw = atan2(vx, 0) = π/2
+  zombies.update(ZOMBIE.aiPeriod, { playerPosition: [30.5, 1, 0.5] });
+  const st = zombies.get(id);
+  assertTrue(st.velocity[0] > 0, `应朝东，实际 vx=${st.velocity[0]}`);
+  assertClose(st.yaw, Math.atan2(st.velocity[0], st.velocity[2]), 1e-9, '朝向须由速度派生');
+  // 静止（无玩家位移且无速度）时保持 —— 由 setIntent 的「移动才派生」保证
+  const yawBefore = st.yaw;
+  zombies.setIntent(id, { vx: 0, vz: 0, mode: 'idle' });
+  assertClose(zombies.get(id).yaw, yawBefore, 1e-9, '静止时必须保持原朝向');
+});
+
+test('v2.47 ZombieService: 导航绕墙（端到端，不是只测纯函数）', () => {
+  // 端到端回归：真 service + 真世界 + 真导航，丧尸必须横向绕墙。
+  const { zombies, ids, playerPosition } = makeAiFixture();
+  // 在 (10,5) 摆 3 格高墙，横跨 3 格（丧尸在 (10,10)，玩家在 (10,0)）
+  for (let dx = -1; dx <= 1; dx++) {
+    for (let dy = 0; dy < 3; dy++) {
+      zombies.world.setBlock(10 + dx, 1 + dy, 5, ids.stone);
+    }
+  }
+  const id = zombies.spawn([10.5, 1, 10.5], { source: 'test' });
+  zombies.update(ZOMBIE.aiPeriod, { playerPosition });
+  const st = zombies.get(id);
+  assertTrue(Math.hypot(st.velocity[0], st.velocity[2]) > 0, '必须有移动意图');
+  assertTrue(Math.abs(st.velocity[0]) > 0.3,
+    `必须横向绕墙（vx=${st.velocity[0]}, vz=${st.velocity[2]}）`);
+});
+
+test('v2.47 ZombieService: 过期 generation 的意图不得写入', () => {
+  // 代数协议仍然有效（`_applyIntent` 的第一道门），与 RPC 是否存在无关。
+  const { zombies, playerPosition, entities } = makeAiFixture();
   const id = zombies.spawn([10.5, 1, .5], { source: 'test' });
   const staleGeneration = entities.get(id).generation;
-  zombies.damage(id, 999, 100); // 死亡 → id 归还可复用
+  zombies.damage(id, 999, 100);                 // 死亡 → id 可复用
   const reborn = zombies.spawn([10.5, 1, .5], { source: 'test' });
   assertEqual(reborn, id, 'id 必须被复用（否则代数协议无从验证）');
   assertTrue(entities.get(reborn).generation > staleGeneration);
-  const beforeX = zombies.get(reborn).position[0];
-
-  // 送达旧代数的回包 → 必须被丢弃
-  pool.replies.push({ updates: [{ id, generation: staleGeneration, vx: 1.2, vz: 0, mode: 'chasing' }] });
-  zombies.update(ZOMBIE.aiPeriod, { playerPosition, nowMs: 1000 });
-  await Promise.resolve();
-  await Promise.resolve();
-  assertEqual(zombies.get(reborn).velocity[0], 0, '过期回包不得写入意图');
-  assertEqual(zombies.get(reborn).position[0], beforeX);
-});
-
-test('ZombieService: 无丧尸时不发 AI RPC（空批次不浪费往返）', () => {
-  const { zombies, pool, playerPosition } = makeAiFixture();
-  zombies.update(ZOMBIE.aiPeriod * 10, { playerPosition, nowMs: 1000 });
-  assertEqual(pool.calls.length, 0);
+  const applied = zombies._applyIntent({
+    id, generation: staleGeneration, vx: 1.2, vz: 0, mode: 'chasing',
+  });
+  assertFalse(applied, '过期代数的意图必须被丢弃');
 });
 
 test('ZombieService: 80 格感知保留为 type 数据（AI 只受 60 格预算门控）', () => {
@@ -1190,32 +1107,26 @@ test('丧尸物理: 不跳跃、不越界（y 稳定在地面，不累积漂移�
   assertEqual(zombies.get(id).position[0], 10.5, '静止不漂移');
 });
 
-test('丧尸物理: velocity 上限钳制（AI 回包不得给出超速意图）', async () => {
+test('丧尸物理: velocity 上限钳制（意图不得让丧尸超速）', () => {
   // 常量口径：把 speed 改大会让丧尸追得上玩家（玩法失衡）
   assertEqual(ZOMBIE.speed, 1.2);
   assertTrue(ZOMBIE.speed < 8.0, '丧尸速度须明显低于玩家 8 格/秒（否则追得上）');
 
-  // **必须真的触发钳制代码**（自查发现的盲区）：原先这条只断言常量，删掉钳制分支测试仍全绿
-  // —— 断言没落在被测路径。走真实回包路径（`update()` → `_applyIntent`），不直接调私有方法。
-  const { zombies, pool, playerPosition } = makeAiFixture();
+  // **必须真的触发钳制代码**：直接走 `_applyIntent`（唯一写入口），不经过任何 RPC。
+  // v2.47 删掉了离线 RPC 分支，故这里直调 —— 钳制逻辑本身没变，只是入口唯一了。
+  const { zombies } = makeAiFixture();
   const id = zombies.spawn([10.5, 1, .5], { source: 'test' });
   const generation = zombies.entities.get(id).generation;
-  // 超速回包（10 格/秒）→ 必须被钳到 ZOMBIE.speed（恶意/错误回包不得让丧尸超速追上玩家）
-  pool.replies.push({ updates: [{ id, generation, vx: 10, vz: 0, mode: 'chasing' }] });
-  zombies.update(ZOMBIE.aiPeriod, { playerPosition, nowMs: 1000 });
-  await Promise.resolve(); await Promise.resolve();
+  // 超速意图（10 格/秒）→ 必须被钳到 ZOMBIE.speed
+  zombies._applyIntent({ id, generation, vx: 10, vz: 0, mode: 'chasing' });
   const vel = zombies.get(id).velocity;
-  assertClose(Math.hypot(vel[0], vel[2]), ZOMBIE.speed, 1e-9, '超速回包须钳到 ZOMBIE.speed');
+  assertClose(Math.hypot(vel[0], vel[2]), ZOMBIE.speed, 1e-9, '超速意图须钳到 ZOMBIE.speed');
   // 斜向超速同样钳制（保方向、改长度）
-  pool.replies.push({ updates: [{ id, generation, vx: 8, vz: 8, mode: 'chasing' }] });
-  zombies.update(ZOMBIE.aiPeriod, { playerPosition, nowMs: 1050 });
-  await Promise.resolve(); await Promise.resolve();
+  zombies._applyIntent({ id, generation, vx: 8, vz: 8, mode: 'chasing' });
   const vel2 = zombies.get(id).velocity;
   assertClose(Math.hypot(vel2[0], vel2[2]), ZOMBIE.speed, 1e-9, '斜向超速同样钳制');
-  assertClose(vel2[0], vel2[2], 1e-9, '钳制保方向（两轴等分量）');
+  assertClose(vel2[0], vel2[2], 1e-9, '钳制须保方向（两轴等分量）');
 });
-
-// ---------- 手臂与头部摆动（原版人形重建新增） ----------
 
 test('ZOMBIE config: 手臂与头部摆动幅度是冻结常量（渲染层不得写字面量）', () => {
   assertEqual(ZOMBIE_ARM_SWING, Math.PI / 12);
@@ -1690,14 +1601,18 @@ test('避障 l) 四面围死 → 原地站住；拆墙后下一周期恢复 chas
   for (let i = 0; i < 120; i++) entities.update(1 / 60, { world });
   assertClose(zombies.get(id).position[0], x0, 0.05, '围死 2 秒内不得移动');
 
-  // 拆掉 +X 方向 1.2 格探针会落到的那些格（实测：0° 探针落点 x=11.7，AABB 跨 x=11..12，
-  // 故两列都得空出来；只拆 x=12 时 x=11 仍实心 → 仍然 blocked。这是 fixture 细节，
-  // 不是实现缺陷，但不对就测不出恢复路径）。
-  for (let x = 11; x <= 15; x++) for (let y = 4; y <= 5; y++) world.setBlock(x, y, 8, 0);
-  pool.replies.push({ updates: [{ id, generation, vx: ZOMBIE.speed, vz: 0, mode: 'chasing' }] });
+  // 拆出一条**通道**（不是只拆一行）：v2.47 起决策来自本地导航（8 邻接 BFS +
+  // `steerIntent` 的 1.2 格前探）。只挖 z=8 一行时，斜向候选（东南/东北）的前探落点
+  // 仍压在石头上，`steerIntent` 会正确地判 blocked —— 那不是缺陷，是 fixture 的
+  // 「一维通道」假设已经不成立（旧实现只有 8 个角度探针、没有 BFS）。
+  // 这里挖 2 格宽 × 2 格高的通道，让 8 邻接的候选都有安身之处。
+  for (let x = 11; x <= 15; x++) {
+    for (let y = 4; y <= 5; y++) {
+      for (let z = 8; z <= 9; z++) world.setBlock(x, y, z, 0);
+    }
+  }
   zombies.update(ZOMBIE.aiPeriod, { playerPosition, nowMs: 1050 });
-  await Promise.resolve(); await Promise.resolve();
-  assertEqual(zombies.get(id).mode, 'chasing', '拆墙后须恢复 chasing（探针无记忆）');
+  assertEqual(zombies.get(id).mode, 'chasing', '拆墙后须恢复 chasing（导航无缓存阻塞记忆）');
   const xBefore = zombies.get(id).position[0];
   for (let i = 0; i < 120; i++) entities.update(1 / 60, { world });
   assertTrue(zombies.get(id).position[0] > xBefore + 0.1, `拆墙后须继续前进（x=${zombies.get(id).position[0]}）`);

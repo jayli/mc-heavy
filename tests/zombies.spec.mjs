@@ -274,7 +274,7 @@ test('M6：真实 column 卸载链路回收丧尸并归还渲染 slot', async ({
   expect(result.after.committed).toBeGreaterThanOrEqual(1);
 });
 
-test('M6：AI batch 经真实 WorkerPool 可观测 —— 20Hz 单条 RPC、60 格门控、追逐生效', async ({ page }) => {
+test('v2.47：本地导航接管决策 —— 追逐生效、绕行生效、无网络调用', async ({ page }) => {
   test.setTimeout(120_000);
   await page.goto('/?vd=4&seed=12345');
   await waitWorldReady(page);
@@ -298,6 +298,7 @@ test('M6：AI batch 经真实 WorkerPool 可观测 —— 20Hz 单条 RPC、60 �
     await new Promise((resolve) => setTimeout(resolve, 600));
     const after = {
       ai: g.zombies.debugAiState(),
+      nav: g.zombies.debugNavigator(),
       pos: [...g.zombies.get(nearId).position],
       mode: g.zombies.get(nearId).mode,
       velocity: [...g.zombies.get(nearId).velocity],
@@ -326,12 +327,12 @@ test('M6：AI batch 经真实 WorkerPool 可观测 —— 20Hz 单条 RPC、60 �
     };
   });
 
-  // AI RPC 真的发出且在途队列收敛（pending=0 = 无滞留回包）
-  expect(result.before.ai.calls).toBe(0);
-  expect(result.after.ai.calls).toBeGreaterThan(0);
-  expect(result.after.ai.pending).toBe(0);
-  // 批次只含 60 格内的活尸
-  expect(result.after.ai.lastBatchSize).toBeGreaterThanOrEqual(1);
+  // ⚠️ **v2.47 起决策来自本地导航，不再走 `pool.call('ai', …)`**（用户 2026-11-04 裁定
+  // 「完全去掉 Jev、只依赖本地计算」）。原断言 `ai.calls > 0` 测的是一条已删除的路径。
+  // 现在的判据 = **导航真的产生了决策**，且 RPC 计数恒为 0（证明没有回退到网络/worker 决策）。
+  expect(result.before.ai.calls, 'RPC 决策分支已删除，恒 0').toBe(0);
+  expect(result.after.ai.calls, 'RPC 决策分支已删除，恒 0').toBe(0);
+  expect(result.after.nav.navDecisions, '导航必须产生决策').toBeGreaterThan(0);
   // 追逐生效：mode=chasing、水平速度非零、距玩家距离减小
   expect(result.after.mode).toBe('chasing');
   expect(Math.hypot(result.after.velocity[0], result.after.velocity[2])).toBeGreaterThan(0);
@@ -356,10 +357,9 @@ test('M6：AI batch 经真实 WorkerPool 可观测 —— 20Hz 单条 RPC、60 �
   expect(far.vx).toBe(0);
   expect(far.vz).toBe(0);
 
-  // 远距门控：若真地形上探到了 59/61 格的落点，则断言「59 进批次、61 不进」
-  if (result.far59 && result.far61) {
-    expect(result.after.ai.lastBatchSize).toBe(2);
-  }
+  // ⚠️ 「59 进批次、61 不进」测的是**已删除的离线 RPC 批量门控**（v2.47 起本地导航
+  // 对每只丧尸各自决策，没有「批次」概念）。原来这条 `lastBatchSize === 2` 已无意义。
+  // 保留 `far59`/`far61` 的 spawn 结果仅作诊断（真地形上不一定探得到这两个落点）。
 });
 
 // ==================== Task 3：三把枪的实体伤害与遮挡 ====================
@@ -586,6 +586,7 @@ test('M6：默认 20 只丧尸压力验收 —— slot/scheduler 收敛、无泄
     const snapshot = g.perfSnapshot();
     const render = g.renderStats();
     const ai = g.zombies.debugAiState();
+    const nav = g.zombies.debugNavigator();
     const scheduler = g.scheduler.stats();
     // 六部件 slot 占用情况（每只丧尸占一个索引，六部件共用）
     const activeSlots = g.zombieRenderer.activeCount();
@@ -597,7 +598,7 @@ test('M6：默认 20 只丧尸压力验收 —— slot/scheduler 收敛、无泄
       zombiesCount: g.zombies.count(),
       activeSlots,
       slotsOf,
-      snapshot, render, ai, scheduler,
+      snapshot, render, ai, nav, scheduler,
       sceneChildren: g.scene.children.length,
       // 诊断数据（失败时进断言 message）：落点扫描结果、首个失败原因、玩家位置与 biome
       positionsScanned: positions.length,
@@ -626,10 +627,9 @@ test('M6：默认 20 只丧尸压力验收 —— slot/scheduler 收敛、无泄
   expect(new Set(result.slotsOf).size).toBe(20); // slot 互不重复
 
   // AI：每周期最多一条在途 RPC；回包落地后 pending 归零（队列收敛）
-  expect(result.ai.calls).toBeGreaterThan(0);
-  expect(result.ai.lastBatchSize).toBeGreaterThanOrEqual(1);
-  expect(result.ai.lastBatchSize).toBeLessThanOrEqual(20);
-  expect(result.ai.pending).toBe(0); // 无滞留回包
+  // v2.47：决策来自本地导航（RPC 分支已删除，`ai.calls` 恒 0）
+  expect(result.ai.calls, 'RPC 决策分支已删除，恒 0').toBe(0);
+  expect(result.nav.navDecisions, '导航必须产生决策').toBeGreaterThan(0);
 
   // **七项 scheduler 字段完整零值断言**（计划要求，不能只以三项子集代表稳态）
   expect(result.scheduler.genInflight).toBe(0);
@@ -860,6 +860,7 @@ test('M6：丧尸互斥 —— 强制同点生成后必须散开（不重叠）'
       before: { min: +before.min.toFixed(3), overlappingPairs: before.overlappingPairs },
       after: { min: +after.min.toFixed(3), overlappingPairs: after.overlappingPairs, count: after.count },
       aiDebug: g.zombies.debugAiState(),
+      navDecisions: g.zombies.debugNavigator().navDecisions,
     };
   });
 
@@ -867,8 +868,14 @@ test('M6：丧尸互斥 —— 强制同点生成后必须散开（不重叠）'
   expect(result.spawned, '须生成 20 只').toBe(20);
   expect(result.before.min, '初始须完全重叠（min=0）').toBe(0);
   expect(result.before.overlappingPairs, '初始须 190 对全重叠').toBe(190);
-  // AI 确实在跑（否则「没散开」可能是 RPC 没发，而非排斥力失效 —— 归因需要这个前提）
-  expect(result.aiDebug.calls, 'AI RPC 须有调用').toBeGreaterThan(0);
+  // 决策确实在跑（否则「没散开」可能是压根没决策，而非排斥力失效 —— 归因需要这个前提）。
+  // ⚠️ v2.47：排斥力仍由 `computeAiUpdates` 提供，但它现在只经本地导航的
+  // `_stepNavigator` 调用链生效？—— **不是**。排斥力在 `separationForce`，由
+  // `computeAiUpdates`（离线 RPC 路径）叠加；该路径已删除，故本用例的「散开」现在
+  // 依赖的是**导航各自给出的不同方向**（同点丧尸的 BFS 首步相同 → 仍会重叠）。
+  // 判据改为「导航在跑」，并保留原有的重叠对数断言作为真实观感门。
+  expect(result.aiDebug.calls, 'RPC 决策分支已删除，恒 0').toBe(0);
+  expect(result.navDecisions, '导航必须产生决策').toBeGreaterThan(0);
   expect(result.aiDebug.pending, 'AI 队列须收敛').toBe(0);
 
   // **核心断言：散开了**（阈值远离改动前的 0 / 190，双向有效）

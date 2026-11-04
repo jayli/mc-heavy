@@ -3577,6 +3577,46 @@ typesafe 接口对我的丧尸的 AI 能力进行增强……加一个代码中�
   决策一次（`maxConcurrent=4` × 400ms）；BFS 距离 25 步以上的长迷宫需要 90+ 步、约 45 秒才通过；
   折返类超长地形仍会超步数失败。
 
+#### v2.47（2026-11-04 深夜）：**彻底删除 Jev，寻路改纯本地**
+
+用户裁定：「把丧尸的 jev 调用完全去掉，让丧尸在寻路AI智能上只依赖本地计算，不再依赖网络
+jev 模型推理」。加上前一轮的实测反馈「丧尸完全没有任何寻路逻辑」，共同引出两条**必须记住的
+教训**：
+
+- **⚠️⚠️ 寻路一度只挂在「在线 AI 开关」下，而那个开关默认关闭** ⇒ 玩家打开游戏时寻路
+  **一行都没执行**（实测 `plannerEnabled: false, decided: 0`），用户看到的是「完全没有寻路」。
+  **本地计算不许被任何联网开关控制**。现在 `_stepNavigator` 在 `update()` 里**无条件**每
+  `ZOMBIE.aiPeriod` 跑一次，与设置项无关。回归门 = `test-zombies.js` 的
+  「v2.47 默认设置下导航真的在跑」。
+- **删掉离线 RPC 后，`state.velocity` 的写者只剩 `_stepNavigator`**（经 `_applyIntent`）。
+  `pool.call('ai', …)` 那段决策分支已整体删除（它与本地导航抢写同一份速度）。`this.pool`
+  字段保留只为装配层兼容，本类不再消费。
+- **⚠️ 实体排斥力必须参与「合成」而不是事后 setIntent**：`separationForce` 在 19 只同点时的
+  合力达 **19 格/秒**（16 倍速）。事后 `setIntent` 会绕过钳制把丧尸甩飞，也绕过 `steerIntent`
+  可能推进墙里。正确顺序 = **导航方向 + 排斥力 → steerIntent → 钳到 ZOMBIE.speed**
+  （`_applyIntent` 内部完成前三步中的后两步）。
+  ⚠️ **但也不能只把导航方向喂给 `_applyIntent` 再叠排斥力**：`steerIntent` 在 0° 通行时
+  原样返回输入向量，排斥力会被整个吞掉（实测 190 对全重叠散不开）。
+- **⚠️ `separationForce(self, others)` 的 `self` 是 `{id, position}`，不是 `Entity` 对象**
+  （`Entity` 的位置在 `state.position`，没有顶层 `position`）。传错会抛
+  `Cannot read properties of undefined`，而那个异常在遍历里被吞掉 —— 形态是
+  **「只有第一只丧尸在动、其余速度恒 0」**（实测踩到，排查了四轮才发现）。
+- **`PathCache` 不缓存「不可达」**：玩家随时可能拆墙，缓存 4 秒会让丧尸在墙被拆开后仍
+  「装作没路」最多 4 秒（实测：拆墙后 1050ms 仍 `reachable=false`，要到 6000ms 超时才恢复）。
+  可达的路径可以缓存（走的过程中墙不会变）。
+- **`planStep` 对「目标在半径外」有专门语义**：走向半径内**离目标最近的可达格**，
+  而不是判 `truncated`。不这么做时，玩家离丧尸 30~60 格（常态）会让丧尸完全不寻路。
+  ⚠️ 写「不可达」类用例前先确认地形是**真不可达**（整圈围死），别用「远的墙」——
+  实测两次都被半径外模式判成可达。
+- **删除的三个文件**：`zombie-jev-client.js` / `zombie-jev-planner.js` / `zombie-jev-prompts.js`；
+  以及 `zombie-ai-view.js`（它的记忆/窗口职责并入 `zombie-navigator.js`）。
+  设置面板的「丧尸 AI」开关与 `?zombieai=` 参数一并删除。
+- **保留下来的本地智能（三层）**：① `zombie-pathfinder.js` 的 24 格有界 BFS；
+  ② `zombie-navigator.js` 的 `decideStep`（规划方向 + 沿墙滑行 + 记忆防抖）；
+  ③ `zombie-navigation.js` 的 `steerIntent`（最后 1.2 格精细避让）。
+- **实测（默认设置、31 格长墙）**：`crossed=true`、`endDist` 10 → **0.67**、
+  导航 1655 次决策、缓存命中 **99.58%**（7 次真实 BFS）、**零网络调用**。
+
 #### v2（2026-11-04）：代码寻路接管方向，模型只处理不可达
 
 用户实玩反馈「AI 还是太糟糕，不会绕路、不会寻路」→ 实测 31 格宽长墙让 69 次决策全部耗在原地

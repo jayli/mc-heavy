@@ -100,10 +100,18 @@ export function planStep(world, from, to, { maxRadius = PATHFIND.maxRadius } = {
   if (Math.max(Math.abs(sx - gx), Math.abs(sz - gz)) <= 1) {
     return { reachable: true, nextStep: null, pathLength: 0, explored: 0, truncated: false };
   }
+  // ⚠️ **目标在半径外是常态**（玩家离丧尸 30~60 格很常见），不能因此判「不可达」——
+  // 那会让丧尸在远离玩家时完全不寻路（`truncated=true` → 回落直追）。
+  // 语义改为：**朝目标方向走到半径内「离目标最近的可达格」**，再从那格给出第一步。
+  // 这是 BFS 的天然行为（探索前沿就是「朝目标扩散」），只是终点判据要放宽。
+  const goalOutOfRadius = Math.max(Math.abs(sx - gx), Math.abs(sz - gz)) > maxRadius;
 
   const prev = new Map();           // key → 父节点 key
   const startKey = keyOf(sx, sz);
   const seen = new Set([startKey]);
+  /** 半径外模式：记录「离目标最近的已探索格」 */
+  let best = null;
+  const distToGoal = (x, z) => Math.hypot(x - gx, z - gz);
   // 队列用**两个并行数字数组**而不是 `[x, z]` 元组数组：避免每格分配一个小数组
   const qx = [sx];
   const qz = [sz];
@@ -118,7 +126,12 @@ export function planStep(world, from, to, { maxRadius = PATHFIND.maxRadius } = {
     head++;
     explored++;
     const curKey = keyOf(cx, cz);
-    if (Math.max(Math.abs(cx - gx), Math.abs(cz - gz)) <= 1) {
+    if (goalOutOfRadius) {
+      // 半径外：把「探索到的前沿」里离目标最近的那格当作阶段终点
+      const d = distToGoal(cx, cz);
+      if (best === null || d < best.d) best = { x: cx, z: cz, key: curKey, d };
+    }
+    if (!goalOutOfRadius && Math.max(Math.abs(cx - gx), Math.abs(cz - gz)) <= 1) {
       // 回溯到「起点之后的第一步」
       let k = curKey;
       let steps = 0;
@@ -151,6 +164,28 @@ export function planStep(world, from, to, { maxRadius = PATHFIND.maxRadius } = {
       prev.set(k, curKey);
       qx.push(nx);
       qz.push(nz);
+    }
+  }
+  // 半径外模式：用「离目标最近的前沿格」回溯第一步
+  if (goalOutOfRadius && best !== null && (best.x !== sx || best.z !== sz)) {
+    let k = best.key;
+    let steps = 0;
+    for (let guard = 0; guard < cap; guard++) {
+      const p = prev.get(k);
+      if (p === undefined) break;
+      steps++;
+      if (p === startKey) {
+        const [nx, nz] = keyToXZ(k);
+        return {
+          reachable: true,
+          nextStep: [nx - sx, nz - sz],
+          pathLength: steps,
+          explored,
+          // 目标仍在半径外 —— 但「沿着这条路继续走」是对的，不该判 truncated 让调用方降级
+          truncated: false,
+        };
+      }
+      k = p;
     }
   }
   return { reachable: false, nextStep: null, pathLength: 0, explored, truncated };
@@ -203,6 +238,10 @@ export class PathCache {
     const prev = this._cache.get(id);
     if (prev !== undefined
       && prev.radius === radius
+      // ⚠️ **不可达的结果绝不缓存**：玩家随时可能拆墙/挖通道，缓存 4 秒会让丧尸在墙被拆开后
+      // 仍然"装作没路"最多 4 秒（实测：拆墙后 1050ms 仍返回 reachable=false，要到 6000ms
+      // 超时才恢复）。可达的路径可以缓存（走的过程中墙不会变），不可达的必须每次重算。
+      && prev.result.reachable === true
       && prev.goalX === Math.floor(to[0]) && prev.goalZ === Math.floor(to[2])
       && prev.at !== undefined && (nowMs - prev.at) <= this.maxAgeMs) {
       // 起点仍在「上一条路径的地标附近」→ 沿计划前进，复用
