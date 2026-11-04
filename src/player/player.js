@@ -563,9 +563,9 @@ export class Player {
     // 判据 = `impacts[].destroyed`（控制器在**写入删除之前**读到的真实结果），
     // 不是“枪开了就播”。普通枪最多 1 个 impact，MAG7 是 1 个带 `stagger` 的 impact
     // → 一次散弹只播一次，不会 40 连击音。
-    // 音量与徒手挖块同一档（0.3，mc-lite `delete_get` 原值）。
+    // 音量与徒手挖块同一档（0.6，见 `digBlock` 处的 v2.53 裁定注释）。
     if (this.audioManager && effect.impacts?.some((imp) => imp.destroyed)) {
-      this.audioManager.play('delete', 0.3);
+      this.audioManager.play('delete', 0.6);
     }
     // v1.64：方块被击碎/击中的特效（白闪 + 碎块；MAG7 只有白闪）。
     // 纯视觉，池满丢最旧，不回头影响玩法状态。
@@ -756,11 +756,17 @@ export class Player {
     // M4-0：改走唯一编辑路径（remesh fast path / 事件由 WorldEditor 协调）
     const removed = this.editor.setBlock({ x, y, z, id: 0 });
     // v2.51：挖掉音效（用户 2026-11-04：「销毁方块的声音… delete.mp3」）。
-    // 音量取 mc-lite `PlayerInteraction.js:469-585` 的 `playSound('delete_get', 0.3)`。
+    // ⚠️ **音量 0.6 是本仓裁定值，不是 mc-lite 原值**（mc-lite
+    // `PlayerInteraction.js:469-585` 是 `playSound('delete_get', 0.3)`）。v2.53 用户
+    // 2026-11-05：「删除方块时的声音太小，适当放大一些」→ 统一翻倍到 0.6。
+    // 根因不只是那个 0.3：对调前实测素材峰值 put −13.5 dB / delete −7.8 dB，
+    // 而 `gun_fire.mp3` / `explosion.mp3` 都是 0.0 dB —— 同样 0.3 的增益下放置声
+    // （输出峰值 0.063）比手枪射击（0.090）还轻。用户 2026-11-05 手工对调了两个
+    // 素材（现 put −7.8 dB / delete −13.5 dB，不再与 mc-lite 逐位相同），0.6 增益保留。
     // ⚠️ **判实际改动而不是无条件播**：`setBlock` 对“本来就是空气”的格返回零 changes，
     // 无条件播会让“按住左键挖空气”变成连发打击音。
     if (removed?.changes?.length > 0 && this.audioManager) {
-      try { this.audioManager.play('delete', 0.3); } catch (err) {
+      try { this.audioManager.play('delete', 0.6); } catch (err) {
         console.warn('[audio] delete play failed:', err);
       }
     }
@@ -951,11 +957,12 @@ export class Player {
     this.lastRemovedBlock = null;
     // 手臂挥动（mc-lite `PlayerInteraction.js:143` 同语义：放置成功才 `swing()`）
     if (this.viewArm) this.viewArm.swing();
-    // v2.51：放置音效（用户 2026-11-04：「放置方块… put.mp3」）。音量取 mc-lite
-    // `PlayerInteraction.js:315/768` 的 `playSound('put', 0.3)`。
+    // v2.51：放置音效（用户 2026-11-04：「放置方块… put.mp3」）。
+    // ⚠️ **音量 0.6 是本仓裁定值**（mc-lite `PlayerInteraction.js:315/768` 是 0.3）——
+    // v2.53 用户 2026-11-05 要求放大，与挖块同档，理由见 `digBlock` 处的注释。
     // ⚠️ 音频失败不得影响返回值：世界已经写成功，回滚会让玩家看到方块消失。
     if (this.audioManager) {
-      try { this.audioManager.play('put', 0.3); } catch (err) {
+      try { this.audioManager.play('put', 0.6); } catch (err) {
         console.warn('[audio] put play failed:', err);
       }
     }
@@ -1019,10 +1026,10 @@ export class Player {
       });
       if (!result.ok) return false;
       if (this.audioManager) {
-        // mc-lite `TurretPlacementHandler.js:144` 的 `playSound('put', 0.3)`。
-        // ⚠️ 音量与巢穴不同（0.3 vs 0.6）—— 这是 mc-lite 的实际值，不是笔误。
+        // mc-lite `TurretPlacementHandler.js:144` 是 `playSound('put', 0.3)`，与巢穴的 0.6
+        // 不同；v2.53 起本仓把**所有** put/delete 统一到 0.6，这个差异刻意不再保留。
         try {
-          this.audioManager.play('put', 0.3);
+          this.audioManager.play('put', 0.6);
         } catch (err) {
           // 只记诊断，不回滚（同上）
           console.warn('[audio] put play failed:', err);
@@ -1040,7 +1047,7 @@ export class Player {
       if (!result.ok) return false;
       if (this.audioManager) {
         try {
-          this.audioManager.play('put', 0.3);   // mc-lite MinecartPlacementHandler 同音量
+          this.audioManager.play('put', 0.6);   // v2.53 统一档（mc-lite 原值 0.3）
         } catch (err) {
           console.warn('[audio] put play failed:', err);   // 只记诊断，不回滚
         }
