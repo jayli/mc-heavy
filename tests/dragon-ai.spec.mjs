@@ -342,7 +342,7 @@ test('AI E2E: 火球命中玩家 → 爆炸发生但玩家不掉血不位移（�
     const exploded = g.tntChainDebugState().exploded;
     // 从玩家头顶 3 格朝下发射 → 必然命中玩家盒（0.6×1.8×0.6）
     g.fireFireball([p.x, p.y + 3, p.z], [0, -1, 0], 'dragon:ai-spec');
-    return { exploded, pos: [p.x, p.y, p.z], vel: [g.player.physics.vel.x, g.player.physics.vel.y, g.player.physics.vel.z] };
+    return { exploded, pos: [p.x, p.y, p.z], vel: [g.player.physics.vel.x, g.player.physics.vel.y, g.player.physics.vel.z], health: g.player.health };
   });
 
   // 等火球消失（命中或超距）
@@ -356,12 +356,15 @@ test('AI E2E: 火球命中玩家 → 爆炸发生但玩家不掉血不位移（�
     return {
       exploded: g.tntChainDebugState().exploded,
       pos: [p.x, p.y, p.z],
-      // 玩家没有血量字段（当前设计）—— 钉住「没有因为被击中而新增任何受伤状态」
-      hasHealthField: 'health' in p || 'health' in g.player,
+      // 玩家血量（v2.52 生命系统显示层新增字段）—— 钉住「火球命中不得扣血」。
+      health: g.player.health,
     };
   });
   expect(after.exploded, '火球命中玩家必须触发爆炸').toBe(before.exploded + 1);
-  expect(after.hasHealthField, '玩家当前没有血量概念（用户：以后再实现）').toBe(false);
+  // ⚠️ **旧断言是 `'health' in g.player === false`**（当时玩家没有血量概念），v2.52 加了
+  // 血量字段后那条已过时。本意（火球不伤玩家）改为**更强**的判据：血量前后必须逐位不变。
+  // 不写死 20 —— 比对 before/after 就不需要在这里复制一份 `PLAYER_MAX_HEALTH`（红线 1）。
+  expect(after.health, '火球命中玩家不得扣血（掉血逻辑用户后续添加）').toBe(before.health);
   // 玩家位置不得因被击中而突变（爆炸不推玩家 —— 当前无击退设计）
   expect(Math.abs(after.pos[0] - before.pos[0])).toBeLessThan(0.5);
   expect(Math.abs(after.pos[2] - before.pos[2])).toBeLessThan(0.5);

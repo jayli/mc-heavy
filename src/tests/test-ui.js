@@ -30,6 +30,8 @@ import {
   PIXEL_RATIO_MODE_OPTIONS, DEFAULT_PIXEL_RATIO_MODE,
 } from '../render/pixel-ratio.js';
 import { Toast, TOAST_Z_INDEX } from '../ui/toast.js';
+import { HEALTH_Z_INDEX } from '../ui/health-hud.js';
+import { DAMAGE_NUMBER_Z_INDEX } from '../ui/damage-numbers.js';
 import { PANEL_CSS as INVENTORY_PANEL_CSS, TOOLTIP_Z_INDEX } from '../ui/inventory.js';
 
 test('settings: 默认值（vd=8 / blur=off / volume=1 / 风格自动）', () => {
@@ -554,5 +556,46 @@ test('toast 的 z-index 必须高于全部模态面板（否则面板里的按�
   // 启动错误遮罩必须仍高于 toast —— 它代表「游戏根本没起来」，被提示盖住等于看不见错误
   assertTrue(TOAST_Z_INDEX < BOOT_ERROR_Z,
     `toast(${TOAST_Z_INDEX}) 不得压过启动错误遮罩(${BOOT_ERROR_Z})`);
+});
+
+/**
+ * 生命系统显示层的两个新层级（用户 2026-11-05）必须嵌进既有不等式。
+ *
+ * AGENTS.md「UI 层级」那条不等式是载荷性的（改任一层必须重核）：
+ *   hotbar 40 < 迷你地图 45 < 坐标/性能面板 50 = **血心 50** < **伤害数字 55**
+ *   < 设置按钮 60 < 设置面板 70 < 背包 80 < 浮层 85 < toast 90 < loading 95 < 错误遮罩 100
+ *
+ * 两条判据各自防的缺陷形态：
+ * ① 血心 = 面板同层（50）：它是常驻信息，与坐标/性能面板平级。低于面板会被面板底色盖住
+ *    （形态：开局看不见血量）；高于设置按钮（60）会在面板打开时压在模态之上。
+ * ② 伤害数字 = 55：高于看板（50）—— 数字可能飘到面板底色上方，被压住就看不见；
+ *    低于设置按钮（60）与一切模态 —— 它是瞬时反馈，不该挡任何交互。
+ * ③ 两者都**不得取 100+**（会盖掉 WebGPU 启动失败遮罩，那条是「游戏根本没起来」的唯一信号）。
+ */
+test('生命系统显示层的 z-index 必须嵌进既有层级不等式', () => {
+  // 层级表快照（同 toast 那条：显式声明，E2E 交叉验证 computed z-index）
+  const HOTBAR_Z = 40;           // hotbar.js
+  const MINIMAP_Z = 45;          // minimap.js
+  const PANEL_Z = 50;            // perf-hud.js / coords-hud.js
+  const SETTINGS_BTN_Z = 60;     // settings-panel.js  #settings-btn
+  const BOOT_ERROR_Z = 100;      // index.html         #webgpu-error（必须永远最上）
+
+  // ① 血心与看板同层，且不低于 hotbar / 迷你地图
+  assertEqual(HEALTH_Z_INDEX, PANEL_Z,
+    `血心(${HEALTH_Z_INDEX}) 必须与坐标/性能面板同层(${PANEL_Z})`);
+  assertTrue(HEALTH_Z_INDEX > HOTBAR_Z, `血心必须高于 hotbar(${HOTBAR_Z})`);
+  assertTrue(HEALTH_Z_INDEX > MINIMAP_Z, `血心必须高于迷你地图(${MINIMAP_Z})`);
+
+  // ② 伤害数字：高于看板（不被面板底色压住）、低于设置按钮（不挡交互）
+  assertTrue(DAMAGE_NUMBER_Z_INDEX > PANEL_Z,
+    `伤害数字(${DAMAGE_NUMBER_Z_INDEX}) 必须高于看板(${PANEL_Z})，否则飘到面板上时被压住`);
+  assertTrue(DAMAGE_NUMBER_Z_INDEX < SETTINGS_BTN_Z,
+    `伤害数字(${DAMAGE_NUMBER_Z_INDEX}) 必须低于设置按钮(${SETTINGS_BTN_Z})，不得挡交互`);
+
+  // ③ 两者都不得压过启动错误遮罩
+  assertTrue(HEALTH_Z_INDEX < BOOT_ERROR_Z,
+    `血心(${HEALTH_Z_INDEX}) 不得压过启动错误遮罩(${BOOT_ERROR_Z})`);
+  assertTrue(DAMAGE_NUMBER_Z_INDEX < BOOT_ERROR_Z,
+    `伤害数字(${DAMAGE_NUMBER_Z_INDEX}) 不得压过启动错误遮罩(${BOOT_ERROR_Z})`);
 });
 

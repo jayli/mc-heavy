@@ -162,11 +162,12 @@ scheduler/physics）再加 `npm run bench -- --check`。计划里标「冻结」
 - 三层 v 方向翻转（BoxGeometry 各面 `vdir` 符号不同 + `TextureLoader.flipY=true` + 皮肤矩形按图左上
   原点写），调试时必须走**真实加载路径**（`DataTexture` 的 `flipY` 与 `TextureLoader` 相反，用它造探针会得出假结论）。
 
-**UI 层级**（改任一层必须重核这条不等式）：hotbar 40 < 迷你地图 45 < 坐标/性能面板 50 <
-设置按钮 60 < 设置面板 70 < 背包 80 < 背包 hover 浮层 85 < toast 90 < 启动 loading 95 <
-启动错误遮罩 100。**不得取 100+**（会盖掉 WebGPU 启动失败遮罩）。toast 与浮层都是
+**UI 层级**（改任一层必须重核这条不等式）：hotbar 40 < 迷你地图 45 < 坐标/性能面板 50 =
+血心 50 < 伤害数字 55 < 设置按钮 60 < 设置面板 70 < 背包 80 < 背包 hover 浮层 85 < toast 90 <
+启动 loading 95 < 启动错误遮罩 100。**不得取 100+**（会盖掉 WebGPU 启动失败遮罩）。toast 与浮层都是
 `pointer-events:none` → 判「在最上层」只能走像素，`elementFromPoint` 会跳过它们。
-面板里「点了没反应」的报告先查这一条。
+面板里「点了没反应」的报告先查这一条。血心与看板同层（常驻信息）；伤害数字高于看板
+（可能飘到面板底色上方）、低于一切交互元素。
 
 **渲染与 GPU**
 - 阴影只能用 **VSM**：three r185.1 WebGPU 的 depth-compare 路径（PCF/PCFSoft/Basic）会

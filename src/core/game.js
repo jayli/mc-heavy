@@ -47,7 +47,7 @@ import { TurretService } from '../entities/turrets/turret-service.js';
 import { TurretController } from '../entities/turrets/turret-controller.js';
 import { createTurretBlueprint } from '../entities/turrets/turret-blueprint.js';
 import { computeTurretUpdates } from '../entities/turrets/turret-system.js';
-import { DRAGON_TYPE, FIREBALL_TYPE, FIREBALL } from '../entities/dragons/dragon-config.js';
+import { DRAGON_TYPE, FIREBALL_TYPE, FIREBALL, DRAGON_CORE_OBB } from '../entities/dragons/dragon-config.js';
 import { dragonDefinition, DragonService } from '../entities/dragons/dragon-system.js';
 import { fireballDefinition, judgeFireball } from '../entities/dragons/fireball-system.js';
 import { FireballRenderer } from '../render/fireball-renderer.js';
@@ -69,6 +69,8 @@ import { getCitySpawnPoint, getCityInfo } from '../gen/structures/city-layout.js
 import { Player } from '../player/player.js';
 import { Persistence } from '../save/persistence.js';
 import { CoordsHUD } from '../ui/coords-hud.js';
+import { HealthHUD } from '../ui/health-hud.js';
+import { DamageNumbers } from '../ui/damage-numbers.js';
 import { Minimap } from '../ui/minimap.js';
 import { Crosshair } from '../ui/crosshair.js';
 import { SettingsPanel } from '../ui/settings-panel.js';
@@ -947,6 +949,26 @@ export class Game {
       DEBUG_FLAGS.worldStats ? () => this.worldStats() : null);
     // M3-4 HUD：坐标+biome、快捷栏（atlas tile CSS 裁剪）、设置面板
     this._coordsHud = new CoordsHUD(this._hudRoot, this);
+    // 生命系统显示层（用户 2026-11-05）：
+    // ① 玩家血心 —— 10 颗心紧挨性能看板右侧。血量权威在 `player.health`（当前阶段恒满，
+    //    掉血逻辑用户后续添加）；血量 → 心形的换算权威在 `player/health.js` 的 `heartsFor()`。
+    this._healthHud = new HealthHUD(this._hudRoot, this.player);
+    // ② 丧尸/Boss 受击浮动数字 —— DOM 覆盖层（零 draw call），显示「掉血后还剩的血量」。
+    //    投影函数在这里注入（本模块 three-free，`src/ui/` 既有口径）。
+    //    ⚠️ **必须先判「相机背后」再投影**：`Vector3.project()` 对背后的点会除以负 w，
+    //    得到镜像到屏幕内的假坐标（形态：数字出现在身后实体的镜像位置）。
+    //    three 相机看 −Z ⇒ 相机空间 z ≥ 0 即在背后。复用同一个 scratch Vector3（零分配）。
+    const projVec = new THREE.Vector3();
+    this._damageNumbers = new DamageNumbers(this._hudRoot, (worldPos) => {
+      const cam = this.camera;
+      projVec.set(worldPos[0], worldPos[1], worldPos[2]).applyMatrix4(cam.matrixWorldInverse);
+      if (projVec.z >= -0.05) return null;
+      projVec.set(worldPos[0], worldPos[1], worldPos[2]).project(cam);
+      return [
+        (projVec.x * 0.5 + 0.5) * window.innerWidth,
+        (-projVec.y * 0.5 + 0.5) * window.innerHeight,
+      ];
+    });
     // 左下角迷你区域地图（v2.8）：玩家恒在中心，底图随位置滚动。
     // 区域判据在 `ui/minimap-regions.js`（纯函数，复用 gen 的既有权威）；本层只管画布与节流。
     // 启动时显式 `redraw()` 一次：`update()` 的时间节流初值是 `-Infinity`，本可以第一帧就画，
@@ -1129,6 +1151,8 @@ export class Game {
       // 迷你地图（v2.8）：内部 10Hz / 20Hz 双节流，每帧调用零成本（未到期直接 return）
       this._minimap.update(nowMs);
       this._hotbar.update(this.player.hotbarIndex);
+      // 玩家血心：血量没变时内部直接 return（当前阶段恒满 → 每帧一次数值比较）
+      this._healthHud.update(nowMs);
       // M5 帧序最后一步：把实体 pose 发布成 scene 节点（scheduler 可能已卸载/恢复实体，
       // 用最新集合 sync，节点数恒等于实体数 —— 生命周期对称）
       this.entityLayer.sync(this.entities.entities());
@@ -1183,6 +1207,11 @@ export class Game {
       // 准心配色（v1.64）：**必须在 render 之后** —— WebGPU canvas 在 render 前不可读
       // （实测读到恒为 0，会让准心永远判为暗背景而恒白）。内部 100ms 节流 + 迟滞。
       this.crosshair.update(nowMs);
+      // 丧尸/Boss 受击浮动数字（生命系统显示层）。
+      // ⚠️ **必须在 render 之后**（与准心同一理由，但成因不同）：投影读
+      // `camera.matrixWorldInverse`，而它由 `renderer.render()` 每帧重算 —— 在 render 之前
+      // 读到的是上一帧的矩阵，数字会滞后一帧（龙飞 9 格/秒时肉眼可见地甩在身后）。
+      this._damageNumbers.update(nowMs);
       // info 在每帧 render 前被 autoReset 清零，render 后捕获才是本帧真实值
       // （HUD/测试异步读取 renderer.info 会撞上重置点，必须在此快照）
       this._lastRenderInfo = {
@@ -2071,7 +2100,58 @@ export class Game {
     // 音量 0.3 取 mc-lite `TurretManager.js:286` 的 `playSound('z_die', 0.3)`。
     // ⚠️ TNT 爆炸炸死丧尸走另一条路（`_damageEntitiesInRadius`），那里也要接（同一音效）。
     if (result?.dead) this.audioManager?.play('z_die', 0.3);
+    // 生命系统显示层：受击后在头顶弹「掉血后还剩的血量」数字。
+    // ⚠️ **必须在 `damage()` 之后**（`result.health` 才是掉血后的值），且与死亡音效同位点
+    // —— 两条伤害路径（本方法 + `_damageEntitiesInRadius`）都要接，口径一致。
+    if (result) this._emitDamageNumber(entity, result.health, nowMs);
     return result;
+  }
+
+  /**
+   * 在实体头顶弹出「掉血后还剩的血量」浮动数字（生命系统显示层，用户 2026-11-05）。
+   *
+   * 显示的是**剩余血量**（不是伤害值）—— 用户明确要「掉血之后还剩的血量」。
+   *
+   * ⚠️ **锚点 Y 按实体类型取**：丧尸 `position` 是脚底 → 头顶 = `y + ZOMBIE.height`；
+   * 龙 `position` 是身体中心 → 头顶 = `y + DRAGON_CORE_OBB.halfExtents[1]`。
+   * 两个常量都从各自 config import，不写字面量（红线 1）。
+   *
+   * ⚠️ **致命一击也有数字**：实体同帧 despawn，故锚点函数首次调用即返回 null ——
+   * 用发射时刻的 `initialPos` 兜底，数字冻结在死亡位置继续上浮淡出。
+   *
+   * ⚠️ **传 `entity.id` 启用「同实体只显示最新数字」**（用户 2026-11-05 追加）：
+   * 机枪连射时每次命中都弹数字，旧的还没淡出会叠在一起不可读 —— 新数字直接顶掉旧的。
+   *
+   * @param {import('../entities/entity-manager.js').Entity} entity 被击中的实体
+   * @param {number} remaining 掉血后的剩余血量
+   * @param {number} nowMs
+   */
+  _emitDamageNumber(entity, remaining, nowMs) {
+    if (!this._damageNumbers) return; // 构造期/装配顺序错时的纵深防御
+    const state = entity.state;
+    const [x, y, z] = state.position;
+    const topY = entity.type === 'zombie'
+      ? y + ZOMBIE.height
+      : y + DRAGON_CORE_OBB.halfExtents[1];
+    const initial = [x, topY, z];
+    const type = entity.type;
+    // ⚠️ **捕获 generation**（红线 7 版本协议在实体侧的对应物）：丧尸 id 从 slot 池复用
+    // （`z0`~`z19`），若锚点只按 id 查，旧丧尸的冻结死亡数字会**挂到同 id 重生的新丧尸身上**
+    // （形态：新丧尸头顶飘着旧的「0」）。代数不符即返回 null（数字保持冻结）。
+    const gen = entity.generation;
+    // 锚点函数：实体活着返回头顶世界坐标；已 despawn 返回 null（数字冻结）。
+    // ⚠️ 每帧重查 `entities.get(id)` 而不是闭包捕获 state —— state 是逐帧重建的
+    // （`createState` 不变式），捕获旧引用会读到过期的 position。
+    const anchor = () => {
+      const e = this.entities.get(entity.id);
+      if (!e || e.type !== type || e.generation !== gen) return null;
+      const [ex, ey, ez] = e.state.position;
+      const eyTop = type === 'zombie' ? ey + ZOMBIE.height : ey + DRAGON_CORE_OBB.halfExtents[1];
+      return [ex, eyTop, ez];
+    };
+    this._damageNumbers.spawn(
+      String(Math.max(0, Math.round(remaining))), anchor, initial, nowMs, entity.id,
+    );
   }
 
   // ---- v2.43 Boss 召唤（按 C）----
@@ -2253,6 +2333,11 @@ export class Game {
         // 两处都只在 `dead` 上触发，且同一帧内只响一声（`killed` 聚合），
         // 否则一发 TNT 炸死 5 只会变成 5 连击音。
         if (this.zombies.damage(entity.id, damage, nowMs)?.dead) killed = true;
+        // 生命系统显示层：TNT 路径也要弹数字（与 `damageEntity` 同口径）。
+        // ⚠️ **本函数绕过 `damageEntity()`**，故显示也要在这里再接一次 ——
+        // 与死亡音效的两站点模式一致（v2.51 注释同源）。读掉血后的剩余血量。
+        const after = this.zombies.get(entity.id);
+        this._emitDamageNumber(entity, after ? after.health : 0, nowMs);
       }
     }
     if (killed) this.audioManager?.play('z_die', 0.3);

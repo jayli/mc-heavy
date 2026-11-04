@@ -8,6 +8,7 @@ import { ViewBob } from './view-bob.js';
 import { HOTBAR_ITEMS as HOTBAR } from './hotbar-items.js';
 import { createCreativeInventory } from './inventory.js';
 import { getPlacementOrientation, recordRemovedBlock } from './orientation.js';
+import { PLAYER_MAX_HEALTH } from './health.js';
 import { WeaponController } from './weapons/weapon-controller.js';
 import { WEAPON_IDS } from './weapons/weapon-catalog.js';
 import { NEST_ALIAS_BLOCK } from '../entities/zombie-nests/nest-config.js';
@@ -167,6 +168,14 @@ export class Player {
     // physics import entities/（依赖方向 §3）。缺省 null → 矿车格不挡人（fixture 单独构造时）。
     this.physics.minecarts = minecarts;
     this._stepLift = new StepLift(); // 上台阶相机缓动（物理瞬时，视觉 ease-out）
+    /**
+     * 玩家血量（格，满 = 20）。权威常量在 `player/health.js`。
+     *
+     * ⚠️ **当前阶段只显示、不掉血**（用户裁定）：恒为满血，掉血逻辑由用户后续添加。
+     * 血心 HUD（`ui/health-hud.js`）每帧读它换算成 10 颗心。不入存档（值恒为 20，
+     * 存档字段等真做掉血时再加，避免现在白做一次 settingsVersion 迁移）。
+     */
+    this.health = PLAYER_MAX_HEALTH;
     this.yaw = SPAWN_YAW; this.pitch = 0;
     this.keys = new Set();
     /**
