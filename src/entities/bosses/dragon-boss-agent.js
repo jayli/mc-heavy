@@ -20,18 +20,27 @@
 //
 // ## 三条载荷性约定
 //
-// 1. **`orbitT` 在所有模式都推进**，y 恒取 `poseAt(orbit, orbitT).position[1]`（bob 带）——
-//    若 chase 把 y 钉死在 `orbit.y`，orbit→chase 瞬间会跳最多 `bobAmplitude`(1.5) 格。
-// 2. **移动沿 yaw 的前向向量**（不是直指玩家）：龙是飞行器，yaw 平滑转向 + 沿机头飞才自然
-//    产生「飞跃 → 拉远 → 掉头」；直指玩家会让 turn 子态的外飞失去意义（瞬时反向）。
+// 1. **`orbitT` 在所有模式都推进**，y = `poseAt(orbit, orbitT).position[1]`（bob 带）
+//    **+ `diveOffset`**（v2.48 俯冲）。
+//    ⚠️ v2.44~v2.46 的旧约定是「y 恒取 poseAt 的 y」（完全不俯冲）—— 它已被 v2.48 取代，
+//    但**零回归的那一半必须保留**：`diveOffset === 0` 时 y 与旧实现**逐位相同**（单测钉死）。
+//    若 chase 把 y 钉死在 `orbit.y`，orbit→chase 瞬间会跳最多 `bobAmplitude`(1.5) 格；
+//    而俯冲结束后 `diveOffset` 缓归 0 ⇒ 切回 orbit 时也无跳变。
+// 2. **水平移动沿 yaw 的前向向量**（不是直指玩家）：龙是飞行器，yaw 平滑转向 + 沿机头飞才
+//    自然产生「飞跃 → 拉远 → 掉头」；直指玩家会让 turn 子态的外飞失去意义（瞬时反向）。
+//    ⚠️ v2.48 起**水平位移仍按 yaw 算、不按 pitch 缩短**：俯冲是姿态，不是「把 9 格/秒
+//    分解成水平与竖直」的向量飞行（后者会让水平追及变慢、手感变钝，且 attack 的
+//    `flyoverDistance` / `turnAroundDistance` 阈值全是**水平**口径）。竖直分量由 `diveOffset`
+//    单独积分。
 // 3. **只读 state 与 ctx，返回全新 plain 对象**（M5 不变式）；不生成实体、不改世界 ——
-//    开火意图写进 `fireRequest`，由 `game.js` 消费（Task 3 接入，本文件 Task 2 恒 null）。
+//    开火意图写进 `fireRequest`，由 `game.js` 消费。
 //
 // ⚠️ **本文件不 import `dragon-system.js`**（避免环）：轨道 pose 由构造注入（`poseAt`）。
 // 生产装配传 `dragonPoseAt`，单测传确定性 fake —— Agent 因此独立可测。
 
 import { BossAgent } from './boss-agent.js';
 import { DRAGON_AI, DRAGON } from '../dragons/dragon-config.js';
+import { dragonForward, dragonMuzzleOffsetWorld } from '../dragons/dragon-facing.js';
 
 export class DragonBossAgent extends BossAgent {
   /**
@@ -59,15 +68,23 @@ export class DragonBossAgent extends BossAgent {
    */
   update(state, dt, ctx) {
     const step = Number.isFinite(dt) && dt > 0 ? dt : 0;
-    // ① 轨道时钟在所有模式都推进（y 的 bob 带 + return 的追及目标都从它派生）
+
+    // ① 轨道时钟在所有模式都推进（bob 带 + return 的追及目标 + 俯冲基准高度都从它派生）
     const orbitT = state.orbitT + step;
     const orbitPose = this.poseAt(state.orbit, orbitT);
-    const y = orbitPose.position[1];
+    const orbitY = orbitPose.position[1];
 
     // ② 本帧起点：orbit 模式用轨道点，其余用上一帧位置（位置连续，不跳帧）
     let px = state.mode === 'orbit' ? orbitPose.position[0] : state.position[0];
     let pz = state.mode === 'orbit' ? orbitPose.position[2] : state.position[2];
     let yaw = state.mode === 'orbit' ? orbitPose.yaw : state.yaw;
+    // v2.48：俯仰与俯冲位移。**orbit 模式一律归零**（盘旋必须是平飞）——
+    // 从 chase/attack 切回 orbit 的那一帧若还带着 pitch，龙会以低头姿态继续盘旋整圈
+    // （`orbit` 分支不再推进姿态）；深度靠 `climbRate` 在 return 阶段爬回，
+    // 切 orbit 时可能残留一点（≤ climbRate × return 时长），不再额外跳变。
+    let pitch = state.mode === 'orbit' ? 0 : (Number.isFinite(state.pitch) ? state.pitch : 0);
+    let diveOffset = Number.isFinite(state.diveOffset) ? state.diveOffset : 0;
+    let y = orbitY + diveOffset;
 
     // ③ 视线缓存（倒计时；<=0 重查并重置）。所有模式共用 —— chase/attack 靠它判脱离。
     let losTimer = state.losTimer - step;
@@ -135,24 +152,69 @@ export class DragonBossAgent extends BossAgent {
       }
     }
 
+    // ⑥b 俯仰姿态与俯冲（v2.48）—— 用户：「可以让火龙在大致朝向玩家的时候让身体俯冲一下
+    // 朝向玩家转向后喷火球，喷完火球后又返回到原来的飞行轨迹上」。
+    //
+    // ⚠️ **这是 v2.48 的根因修复**：之前龙的身体俯仰恒 0（纯 2D AI），飞到玩家头顶时 yaw 的
+    // 水平角恰好完美 ⇒ 旧的「只看水平角」喷火锥无条件通过 ⇒ 从水平飞行的身体上下蛋。
+    //
+    // 三段：① 算「应向玩家低头多少」（clamp 在 `maxDivePitch`/`maxClimbPitch`）；
+    // ② pitch 按 `pitchRate` 限速追踪它（不在可瞄准帧里就缓归 0 = 拉平）；
+    // ③ 竖直位移按 `sin(pitch)` 积分（低头 → 往下走），双闸门限制深度与世界高度底线。
+    //
+    // ⚠️ **`aimPitch` 不依赖水平相对角**（用户要的「先大致朝向、再俯冲」，不是「先精确对准、再低头」）：
+    // 若 pitch 也要求水平已对准，则横向掠袭时龙抬不起头，永远进不了锥 —— 开火频率会崩。
+    //
+    // ⚠️ **但必须门控在「射程窗口」内**（`fireRange` ≥ hDist ≥ `minFireDistance`）：
+    // 否则远在 5000 格外的追击也会把鼻尖压低 0.3°，而竖直积分会把它慢推到 `maxDiveDepth` 底部
+    // （实测：−0.052 格/秒 × 30 秒 = −1.57 格，而 `pitch` 一直 < 0 ⇒ 爬升分支永不触发）。
+    // 门控后语义也更合用户意图：「先飞近，进射程后再低头俯冲喷火；喷完（尤其是飞过头、
+    // 水平距 < minFireDistance）就把鼻子抬回平飞，回到原来的飞行轨迹」。
+    const canAimMode = (mode === 'chase' || mode === 'attack') && player !== null;
+    const dyAim = player ? (player[1] + DRAGON_AI.playerAimOffsetY) - y : 0;
+    const hDistNow = player ? this._hDist([px, y, pz], player) : Infinity;
+    const inFireWindow = canAimMode
+      && hDistNow <= DRAGON_AI.fireRange && hDistNow >= DRAGON_AI.minFireDistance;
+    const aimPitch = inFireWindow
+      ? clamp(
+        Math.atan2(dyAim, Math.max(hDistNow, 1e-6)),
+        -DRAGON_AI.maxDivePitch, DRAGON_AI.maxClimbPitch,
+      )
+      : 0;
+    const maxPitchStep = DRAGON_AI.pitchRate * step;
+    pitch += clamp(aimPitch - pitch, -maxPitchStep, maxPitchStep);
+    // ① 竖直积分：低头下潜、抬头爬升；每帧都向「盘旋高度」收紧，`mode==='orbit'` 归零后自然停止
+    if (pitch < 0) {
+      diveOffset += DRAGON_AI.chaseSpeed * Math.sin(pitch) * step;
+    }
+    // ② 双闸门：限深（相对出发高度）+ 限底（绝对世界高度）
+    const deepest = Math.max(-DRAGON_AI.maxDiveDepth, DRAGON_AI.minDiveY - orbitY);
+    diveOffset = Math.max(diveOffset, deepest);
+    // ③ 拉平 / 盘旋时爬回：爬升速率低于下潜速率是刻意的（压下去、喷一口、慢慢爬回来）
+    if (pitch >= 0 && diveOffset < 0) {
+      diveOffset = Math.min(0, diveOffset + DRAGON_AI.climbRate * step);
+    }
+    y = orbitY + diveOffset;
+
     // ⑦ 开火判定（只在 chase / attack 两个模式；orbit 自由盘旋与 return 回家途中不喷火）
     //
     // ⚠️ **v2.45 瞄准保持**（用户：「转身后龙头大致方向对准玩家的方向再发射火球」）：
-    // `aimTime` 在「模式可喷火 + 有玩家 + yaw 在喷火锥内」时累积，**出锥即清零**。
-    // 只有累积到 `aimHoldSeconds` 才允许开火 —— 彻底消除「刚转身扫过锥内那一帧就吐」。
-    // 累积**不看冷却与距离**：冷却到点时若已对准就立即喷（否则玩家会看到
-    // 「龙头明明对着我却不喷」）；距离门控留在开火那一刻判。
+    // `aimTime` 在「双轴锥内」时累积，**出锥即清零**。
+    //
+    // ⚠️ **v2.48 双轴锥**（用户：「不能像下蛋一样」）：水平角与竖直角必须**同时**满足。
+    // 头顶自然被排除：正上方需要低头 87°，被 `maxDivePitch`(55°) clamp ⇒ 竖直角差 32° >
+    // `fireElevationConeDeg`(12°) ⇒ 永不满足，龙继续盘旋等角度 —— **不需任何「头顶特判」**
+    // （写特判的形态是判定散落在两处、改一处漂移）。
     let fireRequest = null;
     let fireCooldown = Math.max(0, (Number.isFinite(state.fireCooldown) ? state.fireCooldown : 0) - step);
     let aimTime = Number.isFinite(state.aimTime) ? state.aimTime : 0;
-    const canAim = (mode === 'chase' || mode === 'attack') && player !== null;
-    if (canAim && this._inFireCone([px, y, pz], yaw, player)) {
+    if (canAimMode && this._inFireCone([px, y, pz], yaw, pitch, player)) {
       aimTime += step;
     } else {
       aimTime = 0;   // 出锥 / 不可喷火模式 / 无玩家 → 重新对准
     }
-    if (canAim && fireCooldown <= 0 && aimTime >= DRAGON_AI.aimHoldSeconds) {
-      fireRequest = this._tryFire([px, y, pz], yaw, player, ctx);
+    if (canAimMode && fireCooldown <= 0 && aimTime >= DRAGON_AI.aimHoldSeconds) {
+      fireRequest = this._tryFire([px, y, pz], yaw, pitch, player, ctx);
       if (fireRequest) {
         const { fireCooldownMin: lo, fireCooldownMax: hi } = DRAGON_AI;
         // ⚠️ 减去本帧的 step：顶部已统一扣过一次 dt，这里不补扣会让实际间隔多出一帧
@@ -175,69 +237,114 @@ export class DragonBossAgent extends BossAgent {
       losVisible,
       turnDist,
       aimTime,
+      pitch,
+      diveOffset,
       fireRequest,
     };
   }
 
   /**
-   * 龙头是否已对准玩家（水平夹角 ≤ `fireConeDeg`）。
+   * 机头是否已对准玩家 —— **双轴锥**（v2.48）。
    *
-   * ⚠️ **判据用身体中心→玩家的水平角**（不是嘴部）：yaw 是身体的航向，而嘴部偏移是
-   * 由 yaw 派生的 —— 用嘴部算夹角会把「已经对准」误判成「偏了 3 格」。
-   * @param {[number,number,number]} pos 身体中心 @param {number} yaw
+   * ① 水平：`|Δyaw| ≤ fireConeDeg`（v2.45 的 10°）；
+   * ② 竖直：`|pitch − aimPitch| ≤ fireElevationConeDeg`（v2.48 新增的 12°）。
+   *
+   * ⚠️ **两轴必须同时满足**，任一条单看都会放过「头顶下蛋」：头顶时水平角完美（Δyaw≈0），
+   * 但需要低头 87° 而 `pitch` 被 `maxDivePitch` clamp 到 −55°。
+   *
+   * ⚠️ **判据用身体中心→玩家**（不是嘴部）：yaw/pitch 是身体的姿态，而嘴部偏移是由它们
+   * 派生的 —— 用嘴部算夹角会把「已经对准」误判成「偏了 3 格」。
+   *
+   * ⚠️ 竖直那一项的参照是 **`_aimPitch()`（clamp 后的值）**，不是原始的 `atan2`：
+   * 拿未 clamp 的值比会让「本来就到不了的俯仰」永远差一大截，永远喷不出火。
+   *
+   * @param {[number,number,number]} pos 身体中心 @param {number} yaw @param {number} pitch
    * @param {[number,number,number]} player 玩家脚底
    * @returns {boolean}
    */
-  _inFireCone(pos, yaw, player) {
+  _inFireCone(pos, yaw, pitch, player) {
     const cone = DRAGON_AI.fireConeDeg * Math.PI / 180;
-    return Math.abs(this._angleDiff(yaw, this._angleTo(pos, player))) <= cone;
+    if (Math.abs(this._angleDiff(yaw, this._angleTo(pos, player))) > cone) return false;
+    const elevationCone = DRAGON_AI.fireElevationConeDeg * Math.PI / 180;
+    const want = this._aimPitch(pos, player);
+    return Math.abs(pitch - want) <= elevationCone;
   }
 
   /**
-   * 嘴部世界坐标（v2.45，用户：「火球吐出来的位置现在大致是火龙脖子的位置，要在嘴的位置」）。
+   * 「应向玩家低头多少」（弧度，负 = 低头），已 clamp 到 `[-maxDivePitch, +maxClimbPitch]`。
    *
-   * = 身体中心 + 按 yaw 旋转的 `DRAGON.muzzleOffset`。旋转公式与渲染层
-   * `pivot.rotation.set(0, yaw, 0)` 同一套（three 绕 Y 轴：x' = x·cosθ + z·sinθ、
-   * z' = −x·sinθ + z·cosθ）。代入 `muzzleOffset = (0, −0.47, −3.36)` 得 xz 偏移
-   * = 3.36 × 本仓前向向量 (−sin yaw, −cos yaw) —— 即「沿机头前向 3.36 格、低 0.47 格」。
+   * ⚠️ **不受水平相对角影响**：pitch 只追俯仰角本身。若这里也要求「水平已对准」，
+   * 横向掠袭时龙抬不起头，就永远进不了双轴锥（形态：龙只在极少数「恰好从正前方来」的
+   * 机会喷火，整体开火频率崩掉）。
    *
-   * @param {[number,number,number]} pos 身体中心 @param {number} yaw
+   * @param {[number,number,number]} pos 龙身体中心
+   * @param {[number,number,number]} player 玩家脚底
+   * @returns {number}
+   */
+  _aimPitch(pos, player) {
+    const dy = (player[1] + DRAGON_AI.playerAimOffsetY) - pos[1];
+    const h = this._hDist(pos, player);
+    return clamp(
+      Math.atan2(dy, Math.max(h, 1e-6)),
+      -DRAGON_AI.maxDivePitch, DRAGON_AI.maxClimbPitch,
+    );
+  }
+
+  /**
+   * 嘴部世界坐标（v2.45 立 / v2.48 加俯仰）。
+   *
+   * = 身体中心 + `R(yaw)·R(pitch)` 旋转过的 `DRAGON.muzzleOffset`。
+   * ⚠️ **旋转公式不在这里写**：它住在 `dragons/dragon-facing.js`（唯一权威）——
+   * 渲染层、命中盒、本文件、测试夹具四处共用同一份。各自写一份会漂移出「看到的龙低头 40°，
+   * 火球却按低头 20° 飞」而格数/指纹/单测全绿（M8 炮塔「弹丸往天上飞」同类）。
+   *
+   * @param {[number,number,number]} pos 身体中心 @param {number} yaw @param {number} pitch
    * @returns {[number,number,number]} 新数组
    */
-  _muzzlePosition(pos, yaw) {
-    const [ox, oy, oz] = DRAGON.muzzleOffset;
-    const s = Math.sin(yaw), c = Math.cos(yaw);
-    return [pos[0] + ox * c + oz * s, pos[1] + oy, pos[2] - ox * s + oz * c];
+  _muzzlePosition(pos, yaw, pitch) {
+    const off = dragonMuzzleOffsetWorld(yaw, pitch, DRAGON.muzzleOffset);
+    return [pos[0] + off[0], pos[1] + off[1], pos[2] + off[2]];
   }
 
   /**
    * 开火判据（用户：「脑袋冲着玩家发射火球」+「至少间隔五到十秒」）。
    *
-   * ① 脑袋朝向玩家 + **瞄准保持**（调用方已判：`_inFireCone` 累积 `aimTime` ≥ `aimHoldSeconds`）；
+   * ① 脑袋朝向玩家（双轴）+ **瞄准保持**（调用方已判：`aimTime` ≥ `aimHoldSeconds`）；
    * ② 冷却到点（调用方已判）；
    * ③ **新鲜视线复查** —— ⚠️ 不得用 `losVisible` 缓存：缓存 10Hz，而玩家可能在这 0.1 秒
    *    里走进墙后（形态是「隔着墙喷火」）；
-   * ④ 水平距 ≤ `fireRange`（太远不浪费火球）。
+   * ④ 水平距 ≤ `fireRange` 且 ≥ `minFireDistance`（太远不浪费、太近姿态追不上 —— 后者同时是
+   *    「头顶不下蛋」的显式闸门，双轴锥已在数学上排除它，这里只是防御性的第二道门）。
    *
-   * ⚠️ **v2.45：出生点 = 嘴部**（`_muzzlePosition`），瞄准方向 = 嘴部→玩家胸部。
-   * 从身体中心出生会让火球「从脖子里冒出来」（用户报告的原话）。
+   * ## v2.48 的两项语义变更
    *
-   * @param {[number,number,number]} pos 龙身体中心 @param {number} yaw
+   * - **出生点 = 嘴部并随俯仰旋转**（`_muzzlePosition(pos, yaw, pitch)`）：低头俯冲时嘴在龙头下方，
+   *   不按 pitch 旋转会让火球从「抬头时嘴后上方」冒出来。
+   * - **方向 = 机头前向**（`dragonForward(yaw, pitch)`），不再从嘴部朝玩家胸部做点对点瞄准。
+   *   用户 2026-11-04 裁定「火球方向要严格等于机头方向」—— 否则即使锥内对准，仍会出现
+   *   「飞龙身体朝东、火球往东南飞」的观感偏差（“下蛋”的本质）。
+   *   代价：落点偏差可达 `tan(fireConeDeg)×距离`（10° × 20 格 ≈ 3.5 格）。火球本就不掉血，可接受。
+   *
+   * @param {[number,number,number]} pos 龙身体中心 @param {number} yaw @param {number} pitch
    * @param {[number,number,number]} player 玩家脚底位置 @param {object} ctx
    * @returns {{position: [number,number,number], direction: [number,number,number]}|null}
    */
-  _tryFire(pos, yaw, player, ctx) {
+  _tryFire(pos, yaw, pitch, player, ctx) {
     // ④ 距离（用身体中心：fireRange 是「龙与玩家多远」的口径）
-    if (this._hDist(pos, player) > DRAGON_AI.fireRange) return null;
-    const muzzle = this._muzzlePosition(pos, yaw);
+    const hDist = this._hDist(pos, player);
+    if (hDist > DRAGON_AI.fireRange) return null;
+    if (hDist < DRAGON_AI.minFireDistance) return null;
+    const muzzle = this._muzzlePosition(pos, yaw, pitch);
     const aim = [player[0], player[1] + DRAGON_AI.playerAimOffsetY, player[2]];
     // ③ 新鲜视线复查（从嘴部起算 —— 火球真的要从那里飞出去）
+    // ⚠️ 用「目标点」而非机头方向做 LOS：判据是「我看得见你吗」，不是「我的枪口指向哪里」。
+    // 两者在双轴锥内相近，但用目标点能在「低头角被 clamp 差一点点」时不误杀。
     if (!this._hasLos(ctx, muzzle, aim)) return null;
-    // 方向 = 归一化(玩家胸部 − 嘴部)：精确瞄准（脑袋已对准 ±10° 且保持了 0.2 秒）
-    const dx = aim[0] - muzzle[0], dy = aim[1] - muzzle[1], dz = aim[2] - muzzle[2];
-    const len = Math.hypot(dx, dy, dz);
-    if (!(len > 1e-9)) return null;   // 贴身退化：方向无法归一化
-    return { position: muzzle, direction: [dx / len, dy / len, dz / len] };
+    // 方向 = 机头前向（v2.48）—— 与渲染层 / 命中盒共用 `dragon-facing.js` 的唯一实现
+    const forward = dragonForward(yaw, pitch);
+    const len = Math.hypot(forward[0], forward[1], forward[2]);
+    if (!(len > 1e-9)) return null;   // 退化：方向无法归一化（理论不会发生，前向恒为单位）
+    return { position: muzzle, direction: [forward[0] / len, forward[1] / len, forward[2] / len] };
   }
 
   /**
@@ -263,4 +370,14 @@ export class DragonBossAgent extends BossAgent {
     const to = [player[0], player[1] + DRAGON_AI.playerAimOffsetY, player[2]];
     return this._hasLos(ctx, from, to);
   }
+}
+
+/**
+ * 把 v 夹到 [lo, hi]。本文件唯一的小工具 —— 不用 `Math.min/max` 嵌套是为了让
+ * 「已 clamp」的语义在 `_aimPitch` / 竖直积分两处读起来一致（两处必须用同一口径）。
+ * @param {number} v @param {number} lo @param {number} hi
+ * @returns {number}
+ */
+function clamp(v, lo, hi) {
+  return v < lo ? lo : (v > hi ? hi : v);
 }

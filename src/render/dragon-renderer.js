@@ -182,9 +182,14 @@ export class DragonRenderer {
     const st = entity.state;
     inst.pivot.visible = true;
     inst.pivot.position.set(st.position[0], st.position[1], st.position[2]);
-    inst.pivot.rotation.set(0, st.yaw, 0);
-    // 盘旋内倾：绕局部 Z 的 roll。⚠️ 不得混进 yaw（那会改水平朝向），也不得在
-    // rotation.set 之外用欧拉叠加（会互相耦合）—— 用 rotateZ 在 yaw 之后叠加局部 roll。
+    // ⚠️ **欧拉顺序必须显式 'YXZ'**（v2.48 加俯仰时踩到的坑）：three 默认 'XYZ' 下
+    // 先绕 X 再绕 Y，两个转动会互相耦合（龙侧着走、低头时 Horizon 也歪）。
+    // 'YXZ' = 先绕 Y（偏航）再绕 X（俯仰）—— 与 `dragon-facing.js` 的
+    // `dragonForward` / `dragonRotateLocal` 同一套（单测交叉比对，两套公式漂移必红）。
+    const pitch = Number.isFinite(st.pitch) ? st.pitch : 0;
+    inst.pivot.rotation.set(pitch, st.yaw, 0, 'YXZ');
+    // 盘旋内倾：绕局部 Z 的 roll。⚠️ 不得混进 yaw/pitch（那会改朝向），也不得在
+    // rotation.set 之外用欧拉叠加（会互相耦合）—— 用 rotateZ 在最后叠加局部 roll。
     inst.pivot.rotateZ(DRAGON.bankRoll);
 
     // 动画：采样增量 → 从 bind 快照起算（不累积）

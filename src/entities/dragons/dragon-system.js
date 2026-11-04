@@ -23,8 +23,7 @@
 // 地带中心 column 卸载时龙被回收、槽位清空，回来要重新按 C。
 import { raycastAabbSlab, normalizePosition } from '../entity-types.js';
 import { TARN_PLATEAU_Y } from '../../gen/structures/tarn-zone.js';
-import { seededRandom } from '../../gen/noise.js';
-import { DragonBossAgent } from '../bosses/dragon-boss-agent.js';
+import { seededRandom } from '../../gen/noise.js';import { DragonBossAgent } from '../bosses/dragon-boss-agent.js';
 import {
   DRAGON, DRAGON_TYPE, DRAGON_MAX_ALIVE, DRAGON_ORBIT_SALT, DRAGON_CORE_OBB, DRAGON_ANIM,
   DRAGON_AI, dragonEntityIdFor,
@@ -128,26 +127,30 @@ export function dragonAnimStateAt(t) {
 }
 
 /**
- * 身体核心 OBB 绕 `state.yaw` 旋转后的**轴对齐**包围盒。
+ * body 核心 OBB 绕 `state.yaw` 与 `state.pitch` 旋转后的**轴对齐**包围盒。
  *
  * ⚠️ **返回的是「相对 `state.position` 的局部盒」**，不是世界盒 —— `raycastAabbSlab`
  * （`entity-types.js`）内部会做 `lo = aabb.min[axis] + position[axis]`。返回世界盒会让
  * position 被**加两次**（实测形态：y 方向的盒整体抬高一倍 → 水平射线永远打不中，
  * 而「盒尺寸」类断言全绿，因为尺寸不受平移影响）。
  *
- * ⚠️ **必须按 yaw 现算**：核心盒长轴 9.5625 vs 宽轴 2.25（差 4 倍多），龙在转向，
+ * ⚠️ **必须现算**：核心盒长轴 9.5625 vs 宽轴 2.25（差 4 倍多），龙在转向，
  * 用固定盒会在龙横过来时漏判/误判（「明明打中了却没掉血」）。
  *
- * ⚠️ 旋转用 three 的 Y 轴约定（`x' = x cosθ + z sinθ`、`z' = −x sinθ + z cosθ`）——
- * 与渲染层 `mesh.rotation.y = yaw` 同一口径。两处不同源会让「看到的龙」与「能打中的盒」错开。
+ * ⚠️ **v2.48 起还绕 pitch 旋转**（俯冲）：低头 55° 时盒的长轴从水平转到接近竖直，
+ * 不旋转会让「看到的龙低头俯冲」与「能打中的盒还平着」错开（M8 炮塔「弹丸往天上飞」同类）。
+ * 旋转公式与渲染层 `pivot.rotation.set(pitch, yaw, 0, 'YXZ')` 同源（`dragonRevLocal` 与
+ * `dragonRotateLocal` 就是同一个矩阵作用在向量上，单测交叉比对）。
  *
- * @param {{position:[number,number,number], yaw:number}} state
+ * @param {{position:[number,number,number], yaw:number, pitch?:number}} state
  * @returns {{min:number[], max:number[]}} 局部盒（调用方加 position 得世界盒）
  */
 export function dragonAabbFor(state) {
   const h = DRAGON_CORE_OBB.halfExtents;
   const c = DRAGON_CORE_OBB.center;
+  const pitch = Number.isFinite(state.pitch) ? state.pitch : 0;
   const cos = Math.cos(state.yaw), sin = Math.sin(state.yaw);
+  const cp = Math.cos(pitch), sp = Math.sin(pitch);
   const min = [Infinity, Infinity, Infinity];
   const max = [-Infinity, -Infinity, -Infinity];
   for (let sx = -1; sx <= 1; sx += 2) {
@@ -156,9 +159,13 @@ export function dragonAabbFor(state) {
         const lx = c[0] + sx * h[0];
         const ly = c[1] + sy * h[1];
         const lz = c[2] + sz * h[2];
-        const rx = lx * cos + lz * sin;
-        const ry = ly;
-        const rz = -lx * sin + lz * cos;
+        // 先绕 X（俯仰）：局部 y/z 平面内旋转（负 pitch = 低头）
+        const y1 = ly * cp - lz * sp;
+        const z1 = ly * sp + lz * cp;
+        // 再绕 Y（偏航）：three 约定
+        const rx = lx * cos + z1 * sin;
+        const ry = y1;
+        const rz = -lx * sin + z1 * cos;
         if (rx < min[0]) min[0] = rx;
         if (ry < min[1]) min[1] = ry;
         if (rz < min[2]) min[2] = rz;
@@ -199,10 +206,12 @@ function normalizeOrbit(orbit) {
  *
  * v2.44 起新增 AI 字段（全部有缺省，旧调用不破）：mode / attackPhase / fireCooldown /
  * losTimer / losVisible / turnDist / fireRequest。v2.45 再加 aimTime（瞄准保持）。
+ * v2.48 再加 pitch（俯仰，负=低头）与 diveOffset（≤0 的俯冲位移）。
  */
 function createState({
   position, yaw, orbit, orbitT, health, flashedUntil,
-  mode, attackPhase, fireCooldown, losTimer, losVisible, turnDist, aimTime, fireRequest,
+  mode, attackPhase, fireCooldown, losTimer, losVisible, turnDist, aimTime, pitch, diveOffset,
+  fireRequest,
 }) {
   const p = normalizePosition(position);
   const o = normalizeOrbit(orbit);
@@ -223,6 +232,9 @@ function createState({
     turnDist: Number.isFinite(turnDist) ? turnDist : 0,
     // v2.45 瞄准保持：龙头在喷火锥内累积的时长（出锥清零，到 aimHoldSeconds 才允许喷）
     aimTime: Number.isFinite(aimTime) ? aimTime : 0,
+    // v2.48 俯仰与俯冲：pitch 负=低头；diveOffset ≤ 0（俯冲下潜的垂直位移）
+    pitch: Number.isFinite(pitch) ? pitch : 0,
+    diveOffset: Number.isFinite(diveOffset) ? diveOffset : 0,
     // ⚠️ **瞬态**：serialize 跳过；由 game.js 在 entities.update 之后消费（生成火球）
     fireRequest: fireRequest || null,
   };
@@ -298,6 +310,8 @@ export const dragonDefinition = Object.freeze({
       losVisible: false,
       turnDist: 0,
       aimTime: 0,
+      pitch: 0,
+      diveOffset: 0,
       fireRequest: null,
     };
   },

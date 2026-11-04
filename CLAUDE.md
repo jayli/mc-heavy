@@ -3608,7 +3608,7 @@ typesafe 接口对我的丧尸的 AI 能力进行增强……加一个代码中�
   （实测 endDist 10 → 0.18）。负向验证 = 让 `planStep` 恒返回不可达 → 立刻退回
   `crossed=false` / 净位移 0.9 格（与 v1 实测同量级），真 FAIL。
 
-### 飞龙 AI 与火球沉淀的活跃约束（v2.44；后续「Boss 智能体 / 实体发射物 / 爆炸复用」类改动必读）
+### 飞龙 AI 与火球沉淀的活跃约束（v2.44 / v2.48 俯冲喷火；后续「Boss 智能体 / 实体发射物 / 爆炸复用」类改动必读）
 
 设计文档 `docs/superpowers/specs/2026-11-03-dragon-boss-ai-design.md` + 计划
 `docs/superpowers/plans/2026-11-03-dragon-boss-ai.md`。
@@ -3760,6 +3760,54 @@ typesafe 接口对我的丧尸的 AI 能力进行增强……加一个代码中�
 - **`_fireballSeq` 确定性自增可统计开火次数**（红线 2：不用 Math.random）：火球会消失，
   「同时存在数」≠「开火次数」⇒ 「不是机关枪」的判据只能落在 seq 增量上（实测注入 0.1~0.2 秒
   间隔后 26 秒开火 59 次 > 上限 7，真 FAIL）。
+
+#### v2.48 俯冲喷火：身体俯仰 / 双轴锥 / 火球随机头
+
+用户 2026-11-04：「火龙飞到玩家头顶上的时候，有时候也会喷火球……好像下蛋一样，火球喷出的方向
+和飞龙的身体朝向偏差太远」⇒ 加第三维。**根因是「龙的身体俯仰恒为 0」**（v2.44~v2.46 是纯 2D
+AI），不是「转身慢」—— 飞到你头顶时 yaw 的水平角**恰好完美**，只看水平角的锥无条件通过。
+
+- **旋转公式唯一权威 = `src/entities/dragons/dragon-facing.js`**（three-free 同构层）：
+  `dragonForward(yaw, pitch)` / `dragonRotateLocal(yaw, pitch, local)` /
+  `dragonMuzzleOffsetWorld(...)`。⚠️ **v2.45 前前向散落在四处**（config 注释 / 测试 helper /
+  渲染 `rotation.set` / `dragonAabbFor` 手写旋转），加俯仰时四处必须同时扩成 `R(yaw)·R(pitch)`
+  —— 各写一份会漂移出「**看到的龙低头 40°、火球却按低头 20° 飞**」而格数/指纹/单测全绿
+  （M8 炮塔「弹丸往天上飞」同类）。**加新的龙朝向消费方时 import 它，不要自己再推一遍矩阵。**
+  两条交叉比对守住它：`test-dragon-facing.js`（对 three 的 `YXZ` 矩阵逐位）+
+  `test-dragon-render.js`（对真实 `pivot.quaternion` 变换 `local(0,0,−1)`）。
+- **渲染层 `rotation.set(pitch, yaw, 0, 'YXZ')` 的欧拉顺序必须显式 `'YXZ'`**：默认 `'XYZ'` 下
+  先绕 X 再绕 Y，偏航与俯仰互相耦合（龙侧着走、低头时地平线也歪）。
+- **`aimPitch` 必须门控在「射程窗口」内**（`minFireDistance ≤ hDist ≤ fireRange`）：否则远在
+  5000 格外的追击也会把鼻尖压低 0.3°，而竖直积分会把它慢推到 `maxDiveDepth` 底部（实测
+  −0.052 格/秒 × 30 秒 = −1.57 格；`pitch` 一直 < 0 ⇒ 爬升分支永不触发，龙一路下沉）。
+- **「头顶不下蛋」由几何自动保证，不写特判**：`maxDivePitch`(55°) + `fireElevationConeDeg`(12°)
+  在水平距 12 格处就把头顶排除（正上方需 −87°，被 clamp 到 −55° ⇒ 差 32° > 12°）。
+  ⚠️⚠️ **但光靠双轴锥拦不住「已经在 −55° 俯冲中飞过头顶」那一瞬间**（那时 `aimPitch` 也被
+  clamp 到 −55° ⇒ 差≈0）—— 真正拦住它的是 **`minFireDistance`**。所以：
+  ① **写「头顶不喷」类用例必须采样飞行过程，不能只看单帧**（单帧验不出这道区别）；
+  ② **三条载荷常量是一条不等式**：`minFireDistance` ≈ 「`atan2(−29, h)` 出 12° 锥的那个 h」
+  （h=12 时差 12.5° 刚好出锥，h=14 是 9.2° 已进锥）。**改 `maxDivePitch` 或
+  `fireElevationConeDeg` 必须重算 `minFireDistance`**。
+- ⚠️ **`minFireDistance` 初稿的 18 是错的（实测代价惨重）**：真游戏页 60 秒只开火 **2 发 /
+  间隔 52.2 秒** —— 龙飞跃后外飞 `turnAroundDistance`(22) 格，转头回来要 ~1 秒，而「22 → 18」
+  只够走 0.44 秒 ⇒ 射程窗口太窄，转过头时已飞近。改 12 后实测 **6 发 / 间隔 9.3、15.9、9、
+  10.5、9.4 秒**。**这类「几何上合理但时间上不可达」的阈值只能靠真游戏页计时采样发现，
+  纯逻辑单测全绿。**
+- **水平位移仍按 yaw 算、不按 pitch 缩短**：俯冲是姿态，不是「把 `chaseSpeed` 分解成水平与竖直」
+  的向量飞行（后者会让水平追及变慢、手感变钝，且 `flyoverDistance` / `turnAroundDistance`
+  全是**水平**口径）。竖直分量由 `diveOffset` 单独积分。
+- **`diveOffset` 有两条独立闸门（缺一不可）**：`maxDiveDepth`(8) 限「相对出发高度」、
+  `minDiveY`(12) 限「绝对世界高度」，任一触发即停。⚠️ **`orbit` 模式 `pitch` 归 0、
+  `diveOffset` 靠 `climbRate` 在 return 阶段爬回** —— 这保住了 v2.44 的「切回 orbit 无跳变」
+  不变式（旧的「y 恒取 poseAt」约定已被取代，但**零回归的那一半仍在**：`diveOffset === 0` 时
+  y 与旧实现**逐位相同**，单测钉死）。
+- **火球方向 = 机头前向**（用户裁定「严格随机头」），不再点对点瞄准玩家；代价是落点偏差可达
+  `tan(fireConeDeg) × 距离`（20 格约 3.5 格）。⚠️ **LOS 复查仍用「目标点」而非机头方向**：
+  判据是「我看得见你吗」，不是「我的枪口指向哪里」。
+- ⚠️ **E2E 验「方向 = 机头」必须 hook `fireFireball` 记快照，不能轮询找在飞的火球**：火球
+  25 格/秒，两次 50ms 轮询之间就可能撞完消失 ⇒ 断言包在 `if (found)` 里会**静默跳过**而用例
+  仍绿（实测踩到：注入「退回点对点瞄准」后该 spec 依然通过）。hook 后 direction 与机头是**同一帧**
+  快照，断言可无条件执行（且能收到 `dot === 1 − 1e-16` 这种强判据）。
 
 
 ## 权威文档（动手前必读）

@@ -53,15 +53,24 @@ async function nonAltarTarnCenter(page) {
   });
 }
 
-/** 把玩家挪到指定地图中心上空并等该 column 加载 */
-async function gotoCenter(page, cx, cz) {
+/**
+ * 把玩家挪到指定地图中心上空并等该 column 加载。
+ *
+ * ⚠️ **除了中心 column，还要等探针坐标所在的 column**（`extra` 参数）：炮塔用例把探针放在
+ * `cx + 12`，那是**另一个 column**（16 格宽），而 `hasColumn(中心列)` 为真时那一列可能还没到
+ * ⇒ 向下扫地表得到 `null` ⇒ `placeTurret` 返回 `{reason:'no-surface'}`。
+ * 这是 spec 的既有竞态（真游戏页实测：5 次里偶发 1 次），**与本轮改动无关**，
+ * 但会随机把无关用例变红（同一形态另见 `dragon-ai.spec` 的「等 column 加载」注释）。
+ */
+async function gotoCenter(page, cx, cz, extra = []) {
   await page.evaluate(([x, z]) => {
     window.__MC_GAME__._teleportTo(x, 40, z);   // 高空，避免埋进结构
   }, [cx, cz]);
-  await page.waitForFunction(([x, z]) => {
+  const points = [[cx, cz], ...extra];
+  await page.waitForFunction((pts) => {
     const g = window.__MC_GAME__;
-    return g.world.hasColumn(Math.floor(x / 16), Math.floor(z / 16));
-  }, [cx, cz], { timeout: 30_000 });
+    return pts.every(([x, z]) => g.world.hasColumn(Math.floor(x / 16), Math.floor(z / 16)));
+  }, points, { timeout: 30_000 });
   return { cx, cz };
 }
 
@@ -293,7 +302,8 @@ test('Boss E2E: 炮塔能索敌到龙（targets 接线 + bodyOffsetY=0）', asyn
   await page.goto(`/?vd=8&seed=${SEED}`);
   await waitWorldReady(page);
   const c = await altarCenter(page);
-  await gotoCenter(page, c.cx, c.cz);
+  // ⚠️ 额外等「探针列」（炮塔放在 cx+12）—— 否则向下扫地表会得到 null（见 gotoCenter 注释）
+  await gotoCenter(page, c.cx, c.cz, [[c.cx + 12, c.cz]]);
   await pressC(page);
   await waitDragonCount(page, 1);
   const dragonId = await page.evaluate(() => window.__MC_GAME__.dragons.activeEntities()[0].id);

@@ -16,6 +16,7 @@ import {
 import {
   DRAGON, DRAGON_ANIM, DRAGON_MODEL_CENTER, DRAGON_MAX_ALIVE,
 } from '../entities/dragons/dragon-config.js';
+import { dragonForward } from '../entities/dragons/dragon-facing.js';
 
 let asset = null;
 async function getAsset() {
@@ -343,6 +344,40 @@ test('龙渲染: bank roll 叠加在 yaw 之后（不得混进 yaw）', async ()
   const horiz = new THREE.Vector3(fwd.x, 0, fwd.z).normalize();
   const dot = horiz.dot(expectFwd.normalize());
   assertTrue(dot > 0.999, `roll 改变了水平朝向（dot=${dot}）`);
+  r.dispose();
+});
+
+test('龙渲染: 俯仰发布在 pivot 上（v2.48 俯冲喷火）', async () => {
+  const d = await getAsset();
+  const scene = new THREE.Scene();
+  const r = new DragonRenderer(scene, d);
+  const PITCH = -0.6;   // 低头 34°
+  r.sync([makeEntity({ yaw: 0, pitch: PITCH })], 0);
+  const pivot = r.instances[0].pivot;
+  // ⚠️ **本条用基向量判，不读 rotation.x**：`rotateZ(bankRoll)` 之后 three 从 quaternion 反解
+  // 'YXZ' 欧拉，分量会有 1e-16 级漂移。
+  const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(pivot.quaternion);
+  // yaw=0 时平飞前向 = (0,0,−1)；低头 pitch 后竖直分量应为 sin(pitch)
+  assertTrue(Math.abs(fwd.y - Math.sin(PITCH)) < 1e-6,
+    `低头 ${PITCH} rad 时前向 y=${fwd.y}，期望 ${Math.sin(PITCH)}（俯仰未生效或符号反了）`);
+  assertTrue(fwd.z < -0.5, `仍应主要朝向 −Z，实际 z=${fwd.z}`);
+  // 与 dragon-facing 的唯一权威交叉比对（防两套旋转公式漂移）
+  const want = dragonForward(0, PITCH);
+  const flat = new THREE.Vector3(want[0], want[1], want[2]);
+  assertTrue(fwd.dot(flat.normalize()) > 0.9999,
+    `渲染前向与 dragonForward 不一致（dot=${fwd.dot(flat.normalize())}）—— 两套旋转公式漂移了`);
+  r.dispose();
+});
+
+test('龙渲染: 缺省 pitch（state 里没有该字段）时与旧行为逐位一致', async () => {
+  const d = await getAsset();
+  const scene = new THREE.Scene();
+  const r = new DragonRenderer(scene, d);
+  // ⚠️ 零回归门：v2.46 的 state 没有 pitch 字段，verify 它仍按平飞渲染
+  r.sync([makeEntity({ yaw: 1.2 })], 0);   // makeEntity 不写 pitch
+  const pivot = r.instances[0].pivot;
+  const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(pivot.quaternion);
+  assertTrue(Math.abs(fwd.y) < 1e-6, `缺 pitch 时必须平飞（fwd.y=${fwd.y}）`);
   r.dispose();
 });
 

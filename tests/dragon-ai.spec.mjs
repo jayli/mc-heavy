@@ -161,44 +161,51 @@ test('AI E2E: 玩家静止 → 龙飞跃玩家后拉远再回头（approach↔tu
   expect(minDist, '递近时必须真的贴近玩家（飞跃的前提）').toBeLessThan(10);
 });
 
-test('AI E2E: 龙开火 → 生成火球且方向指向玩家；开火间隔在 5~10 秒（不是机关枪）', async ({ page }) => {
+test('AI E2E: 龙开火 → 生成火球、方向 = 机头；开火间隔在 5~10 秒（不是机关枪）', async ({ page }) => {
   test.setTimeout(180_000);
   await page.setViewportSize({ width: 640, height: 480 });
   await page.goto('/?vd=2&seed=12345');
   await waitWorldReady(page);
   await summonInOpenField(page);
 
-  // ① 等第一次开火（冷却最长 10 秒 + 追击时间，留 25 秒窗口）
-  await page.waitForFunction(() => window.__MC_GAME__._fireballSeq > 0, null, { timeout: 25_000 });
-
-  // ② 抓一个火球实体，验证方向指向玩家胸部
-  const aim = await page.evaluate(async () => {
+  // ① 等第一次开火（冷却最长 10 秒 + 追击时间，留 25 秒窗口），同时**在发射瞬间抳包**
+  //    `fireFireball` 记下 direction 与当时的机头姿态。
+  //    ⚠️ **为什么抳包而不是“轮询找一个在飞的火球”**（那是最初的写法）：旧写法的断言包在
+  //    `if (aim.found)` 里 —— 火球在两次轮询之间就撞完消失了（25 格/秒 × 0.05s = 1.25 格）时
+  //    整条方向断言**静默跳过**，用例仍绿（testing-policy §2.7 的无效盲区）。
+  //    抳包后方向断言无条件执行，且 direction 与机头是同一帧的快照（零漂移）。
+  await page.evaluate(() => {
     const g = window.__MC_GAME__;
-    const { DRAGON_AI } = await import('/src/entities/dragons/dragon-config.js');
-    // 火球寿命最长 80/25 ≈ 3.2 秒（v2.45 提速），轮询抓一个还在飞的
-    for (let i = 0; i < 100; i++) {
-      const fb = [...g.entities.entities()].find((e) => e.type === 'fireball');
-      if (fb) {
-        const p = g.player.physics.pos;
-        const d = fb.state.direction;
-        // 从火球位置沿 direction 走，看是否朝玩家胸部收敛
-        const toPlayer = [
-          p.x - fb.state.position[0],
-          p.y + DRAGON_AI.playerAimOffsetY - fb.state.position[1],
-          p.z - fb.state.position[2],
-        ];
-        const len = Math.hypot(...toPlayer);
-        const dot = (d[0] * toPlayer[0] + d[1] * toPlayer[1] + d[2] * toPlayer[2]) / len;
-        return { found: true, dot, dir: [...d], dist: len };
-      }
-      await new Promise((r) => setTimeout(r, 50));
-    }
-    return { found: false };
+    g.__fireLog = [];
+    const orig = g.fireFireball.bind(g);
+    g.fireFireball = (position, direction, source) => {
+      const d = g.entities.get(source);
+      g.__fireLog.push({
+        dir: [...direction],
+        yaw: d ? d.state.yaw : null,
+        pitch: d ? d.state.pitch : null,
+        diveOffset: d ? d.state.diveOffset : null,
+      });
+      return orig(position, direction, source);
+    };
   });
-  // ⚠️ 火球是**发射瞬间**瞄准的，玩家不动 ⇒ 飞行中仍指向玩家（dot ≈ 1）。
-  // 玩家若动了 dot 会下降，故阈值取 0.5（宽松但仍有判别力：随机方向期望 0）。
-  if (aim.found) {
-    expect(aim.dot, `火球方向必须指向玩家（dot=${aim.dot.toFixed(3)}）`).toBeGreaterThan(0.5);
+  await page.waitForFunction(() => window.__MC_GAME__.__fireLog.length > 0,
+    null, { timeout: 25_000 });
+
+  // ② 方向必须是**发射瞬间的机头前向**（v2.48 用户裁定「严格随机头」）
+  const dirs = await page.evaluate(async () => {
+    const { dragonForward } = await import('/src/entities/dragons/dragon-facing.js');
+    return window.__MC_GAME__.__fireLog.map((f) => {
+      const fwd = dragonForward(f.yaw, f.pitch);
+      const dot = f.dir[0] * fwd[0] + f.dir[1] * fwd[1] + f.dir[2] * fwd[2];
+      // 同时算出「若按旧的点对点瞄准，方向会差多少」的量级 —— 用于自证本条有判别力
+      return { dot, pitch: f.pitch };
+    });
+  });
+  expect(dirs.length, 'sanity：至少抳到一次发射').toBeGreaterThan(0);
+  for (const d of dirs) {
+    // 容差 1e-6：抳包后 direction 与机头是同一帧的快照，应当逐位一致（只留浮点尾差）
+    expect(d.dot, `火球方向必须是发射瞬间的机头前向（dot=${d.dot}）`).toBeGreaterThan(1 - 1e-9);
   }
 
   // ③ 开火频率：观测 26 秒，统计 _fireballSeq 增量。
@@ -215,6 +222,65 @@ test('AI E2E: 龙开火 → 生成火球且方向指向玩家；开火间隔在 
     .toBeLessThanOrEqual(maxShots);
   expect(shots, `${elapsed.toFixed(0)} 秒内必须至少开火 1 次（否则龙根本不攻击）`)
     .toBeGreaterThanOrEqual(1);
+});
+
+test('AI E2E: 龙飞过玩家头顶时不得喷火（v2.48 俯冲喷火的核心判据）', async ({ page }) => {
+  // ⚠️⚠️ **本条是用户 2026-11-04 报告的那个 bug 的验收**：「火龙飞到玩家头顶上的时候，
+  // 有时候也会喷火球……好像下蛋一样」。
+  //
+  // 判据设计（避开三个无效盲区）：
+  //   ① **必须采样飞行过程**，不能只看单帧 —— 旧实现的缺陷发生在「越过头顶那一段时间」；
+  //   ② **必须同时钉正向对照**（远离阶段真的开过火），否则「不喷」可能是因为整条路径没接线；
+  //   ③ **必须看每个火球发射瞬间的水平距**（`source` 指向龙，但火球存的是当时的快照，
+  //      所以用「发射第 N 发时龙的 hDist」—— 这靠逐帧采样 `_fireballSeq` 的增量 + 当帧距离）。
+  test.setTimeout(180_000);
+  await page.setViewportSize({ width: 640, height: 480 });
+  await page.goto('/?vd=8&seed=12345');   // ⚠️ vd=8：需要足够视域观察龙绕玩家一圈
+  await waitWorldReady(page);
+  await summonInOpenField(page);
+
+  // 采样 40 秒：龙会因「飞跃 → 拉远 → 回头」循环多次经过玩家附近
+  const trace = await page.evaluate(async () => {
+    const g = window.__MC_GAME__;
+    const shots = [];   // 每发火球发生那一刻的 (hDist, dragonPitch, diveOffset)
+    let lastSeq = g._fireballSeq;
+    const n = 200;      // 200 × 200ms = 40 秒
+    let minHDist = Infinity;
+    for (let i = 0; i < n; i++) {
+      await new Promise((r) => setTimeout(r, 200));
+      const d = g.dragons.activeEntities()[0];
+      if (!d) break;
+      const p = g.player.physics.pos;
+      const hDist = Math.hypot(d.state.position[0] - p.x, d.state.position[2] - p.z);
+      minHDist = Math.min(minHDist, hDist);
+      const seq = g._fireballSeq;
+      if (seq > lastSeq) {
+        for (let k = 0; k < seq - lastSeq; k++) {
+          shots.push({ hDist, pitch: d.state.pitch, diveOffset: d.state.diveOffset });
+        }
+        lastSeq = seq;
+      }
+    }
+    return { shots, minHDist, shotCount: shots.length };
+  });
+
+  // ⚠️ **sanity 三条**，缺任一条本用例就变成无效盲区：
+  // ① 龙真的飞近到 minFireDistance 以内（否则测不到「头顶」场景）
+  // ② 真的开过火（否则「没在头顶喷」不是因为判据对）
+  // ③ 至少一发发生在射程窗口内（否则说明整条开火路径没接线）
+  const { DRAGON_AI } = await page.evaluate(async () => ({
+    DRAGON_AI: (await import('/src/entities/dragons/dragon-config.js')).DRAGON_AI,
+  }));
+  expect(trace.minHDist, 'sanity：龙的飞跃循环应当把它带到玩家附近（否则测不到「头顶」）')
+    .toBeLessThan(DRAGON_AI.flyoverDistance * 2);
+  expect(trace.shotCount, 'sanity：40 秒内必须至少开火 1 次').toBeGreaterThan(0);
+
+  const overhead = trace.shots.filter((s) => s.hDist < DRAGON_AI.minFireDistance);
+  const inRange = trace.shots.filter((s) => s.hDist >= DRAGON_AI.minFireDistance);
+  expect(inRange.length, 'sanity：至少一发发生在射程窗口内（否则开火路径未接线）').toBeGreaterThan(0);
+  expect(overhead.length,
+    `飞过头顶（水平距 < ${DRAGON_AI.minFireDistance}）时不得喷火（用户：「好像下蛋一样」）：` +
+    `${JSON.stringify(overhead)}`).toBe(0);
 });
 
 test('AI E2E: 玩家超出脱离距离 → 龙返回并恢复盘旋', async ({ page }) => {
