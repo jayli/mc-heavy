@@ -619,11 +619,14 @@ test('ZombieService：在线回包写进 state.velocity（经 _applyIntent）', 
   assertTrue(typeof id === 'string', 'spawn 应成功');
   svc.setOnlineAi(true);
   svc.update(0.1, { playerPosition: [8.5, 1, 12.5] });
-  assertTrue(client.pending.length >= 1, '应发起在线请求');
-  client.pending[0].resolve({ ok: true, answer: { choice: 'north' }, model: 'm' });
-  await new Promise((r) => setTimeout(r, 0));
+  // v2.1：可达时代码**直接**给出方向（零请求）—— 这株丧尸在开阔平地，必可达
+  assertEqual(client.pending.length, 0, '可达时零请求（v2.1 代码优先）');
   const st = svc.get(id);
-  assertTrue(Math.abs(st.velocity[2] + 1.2) < 0.2, `vz 应约 -1.2，实际 ${st.velocity[2]}`);
+  // 玩家在南（z=12.5 > 8.5）→ 代码方向必须含「朝南」分量。
+  // ⚠️ **不要求 vz 恰为 1.2**：BFS 的 8 邻接常给斜向（如 `south_east`），
+  // 那时 vz = 1.2/√2 ≈ 0.85。判据只钉「朝玩家那一侧」。
+  assertTrue(st.velocity[2] > 0.5, `vz 应显著为正（朝南），实际 ${st.velocity[2]}`);
+  assertTrue(Math.hypot(st.velocity[0], st.velocity[2]) <= 1.2001, '合速度不得超过 ZOMBIE.speed');
 });
 
 test('ZombieService：死亡时清该只记忆（slot 回收）', () => {
@@ -833,4 +836,115 @@ test('criterionFor：包含「是否延续计划路线」这句话', () => {
 test('STEP_INSTRUCTIONS：说明路线是规划出来的，不要求模型自己发现绕行', () => {
   assertTrue(STEP_INSTRUCTIONS.includes('route'), '题干必须提到 route');
   assertTrue(/planner|planned/i.test(STEP_INSTRUCTIONS), '必须说明路线是规划出来的');
+});
+
+// ---------- v2：planner 接线 + 计划固化（Task 3）----------
+
+test('JevPlanner：不可达时 path_plan 如实标记 reachable=false 且 walked=0', async () => {
+  // ⚠️ 可达时代码直接给方向、**不发请求**（v2.1 用户裁定），故 state 只在不可达时构造。
+  // 不可达 = 没有计划 ⇒ `walked_along_this_plan` 恒 0（没有「计划」可沿）。
+  // 计划固化的累积只在可达路径上有意义，而那条路径不再产生 state —— 故 walked 的
+  // 实际消费者只剩诊断用途。**这条不变式写在这里，防有人以为它应该累积**。
+  const { world } = makeWindowWorld({ columns: [[0, 0]] });
+  const client = makeControlledClient();
+  const p = makePlanner(world, client);
+  p.setEnabled(true);
+  p.tick(0, [{ id: 'z0', position: [8.5, 1, 8.5], playerPosition: [8.5, 1, 2000.5], mobile: true }]);
+  assertFalse(client.pending[0].req.state.path_plan.reachable_within_24_meters);
+  assertEqual(client.pending[0].req.state.path_plan.walked_along_this_plan, 0);
+  assertEqual(client.pending[0].req.state.path_plan.next_step_toward_player, null);
+  client.pending[0].resolve({ ok: true, answer: { choice: 'north' }, model: 'm' });
+  await new Promise((r) => setTimeout(r, 0));
+  p.tick(600, [{ id: 'z0', position: [8.5, 1, 7.5], playerPosition: [8.5, 1, 2000.5], mobile: true }]);
+  assertEqual(client.pending[1].req.state.path_plan.walked_along_this_plan, 0,
+    '不可达时 walked 恒 0（没有计划可沿）');
+});
+
+test('JevPlanner：不可达模式下每轮都能派发（周期从回包算起）', async () => {
+  const { world } = makeWindowWorld({ columns: [[0, 0]] });
+  const client = makeControlledClient();
+  let now = 0;
+  const p = makePlanner(world, client, { now: () => now });
+  p.setEnabled(true);
+  const positions = [[8.5, 1, 8.5], [8.5, 1, 7.5], [8.5, 1, 6.5]];
+  for (const pos of positions) {
+    // ⚠️ **每轮必须推进 nowMs**：周期从回包算起（`JEV_AI.decisionPeriodMs`），
+    // 全传 0 会让 `_nextAt` 阻止第二次派发 —— 实测踩到（只派发了 1 次）。
+    p.tick(now, [{ id: 'z0', position: pos, playerPosition: [8.5, 1, 2000.5], mobile: true }]);
+    const req = client.pending[client.pending.length - 1];
+    req.resolve({ ok: true, answer: { choice: 'north' }, model: 'm' });
+    await new Promise((r) => setTimeout(r, 0));
+    now += JEV_AI.decisionPeriodMs + 50;
+  }
+  assertEqual(client.pending.length, 3, '三轮都应派发（周期由 nowMs 推进）');
+});
+
+test('JevPlanner：寻路不可达时仍发请求（不得因寻路失败而站死）', async () => {
+  const { world } = makeWindowWorld({ columns: [[0, 0]] });
+  const client = makeControlledClient();
+  const p = makePlanner(world, client);
+  p.setEnabled(true);
+  p.tick(0, [{ id: 'z0', position: [8.5, 1, 8.5], playerPosition: [8.5, 1, 2000.5], mobile: true }]);
+  assertTrue(client.pending.length >= 1, '寻路不可达也必须发请求（回落 v1 行为）');
+  assertFalse(client.pending[0].req.state.path_plan.reachable_within_24_meters);
+  assertTrue(Object.keys(client.pending[0].req.state.candidate_steps).length > 0,
+    '候选表不能被寻路失败清空');
+});
+
+// ---------- v2.1：代码优先，模型只处理不可达（用户 2026-11-04 裁定）----------
+
+test('JevPlanner：寻路可达 → 直接用代码方向，不发请求（省额度 + 不受模型否决）', async () => {
+  const { world } = makeWindowWorld({ columns: [[0, 0], [0, -1], [0, 1], [-1, 0], [1, 0], [0, -2]] });
+  const client = makeControlledClient();
+  const decisions = [];
+  const p = makePlanner(world, client, { onDecision: (id, d) => decisions.push([id, d]) });
+  p.setEnabled(true);
+  p.tick(0, [{ id: 'z0', position: [8.5, 1, 8.5], playerPosition: [8.5, 1, 3.5], mobile: true }]);
+  assertEqual(client.pending.length, 0, '可达时不得调用模型（免得模型否决正确方向）');
+  assertEqual(decisions.length, 1, '必须当场给出决策');
+  assertEqual(decisions[0][0], 'z0');
+  // 玩家正北 → 代码方向 north → vz < 0
+  assertTrue(decisions[0][1].vz < -1, `vz 应为负（朝北），实际 ${decisions[0][1].vz}`);
+  assertEqual(decisions[0][1].vx, 0, `vx 应为 0，实际 ${decisions[0][1].vx}`);
+});
+
+test('JevPlanner：长墙场景 → 代码给出横向绕行方向并直接执行', async () => {
+  const { world, registry } = makeWindowWorld({ columns: [[0, 0], [0, -1], [0, 1], [-1, 0], [1, 0]] });
+  const stone = registry.idOf('stone');
+  for (let x = 2; x <= 14; x++) for (let dy = 0; dy < 3; dy++) world.setBlock(x, 1 + dy, 6, stone);
+  const client = makeControlledClient();
+  const decisions = [];
+  const p = makePlanner(world, client, { onDecision: (id, d) => decisions.push([id, d]) });
+  p.setEnabled(true);
+  p.tick(0, [{ id: 'z0', position: [8.5, 1, 8.5], playerPosition: [8.5, 1, 3.5], mobile: true }]);
+  assertEqual(client.pending.length, 0, '可达时零请求');
+  assertEqual(decisions.length, 1);
+  const d = decisions[0][1];
+  assertTrue(d.vx !== 0, `必须横向绕（vx=${d.vx}, vz=${d.vz}）`);
+});
+
+test('JevPlanner：寻路不可达 → 回落到模型（v1 行为）', async () => {
+  const { world } = makeWindowWorld({ columns: [[0, 0]] });
+  const client = makeControlledClient();
+  const decisions = [];
+  const p = makePlanner(world, client, { onDecision: (id, d) => decisions.push([id, d]) });
+  p.setEnabled(true);
+  p.tick(0, [{ id: 'z0', position: [8.5, 1, 8.5], playerPosition: [8.5, 1, 2000.5], mobile: true }]);
+  assertTrue(client.pending.length >= 1, '不可达时必须问模型');
+  assertEqual(decisions.length, 0, '模型回包前不该有决策');
+  client.pending[0].resolve({ ok: true, answer: { choice: 'south' }, model: 'm' });
+  await new Promise((r) => setTimeout(r, 0));
+  assertEqual(decisions.length, 1, '模型回包后应有决策');
+  assertTrue(decisions[0][1].vz > 0, '朝南');
+});
+
+test('JevPlanner：模型否决只发生在不可达路径（可达时模型根本没被问）', async () => {
+  const { world } = makeWindowWorld({ columns: [[0, 0], [0, -1], [0, 1], [-1, 0], [1, 0]] });
+  const client = makeControlledClient();
+  const fakelog = [];
+  const p = makePlanner(world, client, { onFallback: (id, r) => fakelog.push(r) });
+  p.setEnabled(true);
+  p.tick(0, [{ id: 'z0', position: [8.5, 1, 8.5], playerPosition: [8.5, 1, 3.5], mobile: true }]);
+  assertEqual(fakelog.length, 0, '可达路径不产生任何 fallback');
+  assertEqual(client.pending.length, 0);
 });

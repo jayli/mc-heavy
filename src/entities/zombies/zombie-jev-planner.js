@@ -12,7 +12,7 @@
 // ③ **完全不 await**：`tick()` 只发起与消费，帧循环零阻塞。
 import { JEV_AI } from './zombie-config.js';
 import {
-  buildCandidateSteps, buildJevState, markDeadEnd, memoryFor, noteVisit, parseDirectionChoice,
+  DIRECTION_VECTORS, buildJevState, markDeadEnd, memoryFor, noteVisit, parseDirectionChoice,
 } from './zombie-ai-view.js';
 import { buildQuestions } from './zombie-jev-prompts.js';
 import { PathCache, directionNameOf } from './zombie-pathfinder.js';
@@ -136,6 +136,37 @@ export class JevPlanner {
     // 做法 = 先把上次的计划方向记进 `mem.plan`，`buildJevState` 依据它算出 `walked`；
     // 计划方向一变就重置计数（换了路线，之前走的步数不再算「沿此计划」）。
     const plan = this._refreshPlan(mem, z.position, playerPosition);
+    const plannedDir = (plan.reachable && plan.nextStep)
+      ? directionNameOf(plan.nextStep[0], plan.nextStep[1])
+      : null;
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // **代码优先**（用户 2026-11-04 裁定：「完全由代码决定，模型只处理不可达」）
+    //
+    // 为什么不再让模型裁决：实测 31 格长墙场景下，代码给出了完全正确的
+    // `next_step=north_east` / `path_length=31`，而模型连续 14 次否决它、改选 west/east，
+    // 把丧尸按在原地 20 秒横跳（净位移 1.4 格）。题面里「除非有更好理由」那句话
+    // 对模型来说是**开门**：它认为「离玩家更近半步」就是更好的理由，而它看不到
+    // 「这是唯一出路」——那正是本层要用代码补的信息。
+    // ⇒ 规划可达时**不发请求**：方向由代码决定，省钱、零延迟、且不受模型否决。
+    // ══════════════════════════════════════════════════════════════════════════════
+    if (plannedDir !== null) {
+      const vec = DIRECTION_VECTORS[plannedDir];
+      if (vec) {
+        const len = Math.hypot(vec[0], vec[1]);
+        // dr = z 增量，dc = x 增量（与 DIRECTION_VECTORS 同序）
+        this._stats.decided++;
+        this._nextAt.set(z.id, nowMs);
+        this._onDecision(z.id, {
+          vx: (vec[1] / len) * this.speed,
+          vz: (vec[0] / len) * this.speed,
+          mode: 'chasing',
+        });
+        return;
+      }
+    }
+
+    // ---- 寻路不可达（truncated / 半径外）：回落到 v1 的模型决策 ----
     const state = buildJevState(this.world, z.position, playerPosition, mem, plan);
     const candidateSteps = state.candidate_steps;
     // 死胡同判定（代码侧，spec §3.4）：本格除来路外无出口 → 标记。

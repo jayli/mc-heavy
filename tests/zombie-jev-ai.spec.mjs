@@ -151,3 +151,94 @@ async function runUScenario(page) {
     };
   });
 }
+
+// ==================== v2：长距离绕行（代码寻路层） ====================
+
+test('v2.46-v2：31 格宽长墙 —— 寻路后能绕过去（v1 实测净位移 0.7 格）', async ({ page }) => {
+  test.setTimeout(480_000);
+  await page.goto('/?vd=4&seed=12345&zombieai=1');
+  await waitWorldReady(page);
+  const r = await runLongWallScenario(page);
+  expect(r.error, JSON.stringify(r)).toBeUndefined();
+  console.log('[zombie-jev-ai][long-wall] =', JSON.stringify(r));
+  test.skip((r.debug?.decided ?? 0) === 0,
+    `在线 AI 全程未成功决策（lastReason=${r.debug?.lastReason ?? 'n/a'}）`);
+  // 载荷性判据：必须越过墙（v1 在这里是 false，60 秒净位移 0.7 格）
+  expect(r.crossed, `须越过 31 格宽的长墙（trace=${JSON.stringify(r.trace)}）`).toBe(true);
+  expect(r.endDist).toBeLessThan(r.startDist - 5);
+});
+
+/**
+ * 31 格宽 × 3 格高长墙（远超 9×9 窗口半宽 4 格），丧尸在墙南 2 格、玩家在墙北 8 格。
+ * 跑 90 秒（1.2 格/秒 → 108 格行程；绕行路径实测 31 步 + 剩余直线）。
+ */
+async function runLongWallScenario(page) {
+  return page.evaluate(async () => {
+    const g = window.__MC_GAME__;
+    g.setShadowsEnabled(false);
+    const surf = (x, z) => {
+      for (let y = 60; y >= -20; y--) {
+        if (g.world.isSolid(x, y, z) && g.world.getBlockId(x, y + 1, z) === 0
+          && g.world.getBlockId(x, y + 2, z) === 0) return y + 1;
+      }
+      return null;
+    };
+    const base = g.player.physics.pos;
+    // 找 43×21 的平地（墙 31 宽 + 两侧各 6 格通道余量）
+    const footprint = [];
+    for (let k = -16; k <= 16; k++) {
+      for (const j of [-8, -3, -2, -1, 0, 1, 2, 3, 4, 5]) footprint.push([k, j]);
+    }
+    let site = null;
+    outer:
+    for (let r = 0; r <= 400 && !site; r += 10) {
+      for (const [dx, dz] of [[-r, r], [r, r], [-r, -r], [r, -r], [r, 0], [-r, 0], [0, r], [0, -r]]) {
+        const ax = Math.floor(base.x) + dx;
+        const az = Math.floor(base.z) + dz;
+        const yHere = surf(ax, az);
+        if (yHere === null) continue;
+        let ok = true;
+        for (const [k, j] of footprint) {
+          if (surf(ax + k, az + j) !== yHere) { ok = false; break; }
+        }
+        if (!ok) continue;
+        site = { x: ax, z: az, y: yHere };
+        break outer;
+      }
+    }
+    if (!site) return { error: 'no flat site found' };
+    const stone = g.registry.idOf('stone');
+    const { x: ax, y: ay, z: az } = site;
+    // 长墙：z=az，x ∈ [ax-15, ax+15]，3 格高
+    for (let dy = 0; dy < 3; dy++) {
+      for (let k = -15; k <= 15; k++) {
+        g.editor.setBlock({ x: ax + k, y: ay + dy, z: az, id: stone });
+      }
+    }
+    g.player.physics.pos.x = ax + 0.5;
+    g.player.physics.pos.z = az - 8 + 0.5;
+    g.player.physics.pos.y = ay;
+    g.player.physics.vel.x = 0; g.player.physics.vel.y = 0; g.player.physics.vel.z = 0;
+    await new Promise((r2) => setTimeout(r2, 500));
+    // 丧尸在墙南 2 格、正对墙心
+    const sx = ax;
+    const sz = az + 2;
+    const id = g.zombies.spawn([sx + 0.5, ay, sz + 0.5], { source: 'test-long-wall' });
+    if (!id) return { error: 'spawn rejected', site };
+    const p = g.player.physics.pos;
+    const startDist = Math.hypot(sx + 0.5 - p.x, sz + 0.5 - p.z);
+    await new Promise((r2) => setTimeout(r2, 90_000));
+    const st = g.zombies.get(id);
+    if (!st) return { error: 'zombie despawned', startDist };
+    const now = st.position;
+    return {
+      id, site,
+      startDist: +startDist.toFixed(2),
+      endDist: +Math.hypot(now[0] - p.x, now[2] - p.z).toFixed(2),
+      crossed: now[2] < az,
+      mode: st.mode,
+      debug: g.zombies.debugOnlineAi(),
+      trace: [[sx, ay, sz], now.map((v) => +v.toFixed(1))],
+    };
+  });
+}
