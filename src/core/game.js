@@ -456,14 +456,35 @@ export class Game {
     // 否则随机生成（roadmap「新世界」语义；随机 seed 保证每次新档地形不同）。
     this.persistence = new Persistence();
     await this.persistence.open();
-    const meta = await this.persistence.loadMeta();
+    let meta = await this.persistence.loadMeta();
+
+    // ---- 方块清单指纹校验（v1.29）----
+    //
+    // **为什么必须在 `hadMeta` 之前校验**：edits 行存的是数字方块 ID，而 ID 由注册顺序决定。
+    // 从 `blocks-data.js` 删/插一行声明会让**后面所有 ID 前移**，旧存档里的玩家改动会
+    // 静默错位成别的方块（不报错，只是世界内容变了）。2026-11-04 按用户裁定删
+    // `realistic_oak_leaves`（当时排第 17，后面还有 122 个）就会踩到。
+    //
+    // 处置 = **丢弃旧世界的 edits/entities，保留 seed 与玩家位置**：地形是 seed 的确定性
+    // 函数（红线 2），重新生成后世界完整；丢的只是玩家手工改动（不可恢复，故给 `console.warn`）。
+    // 旧存档没有该字段 → 视为不兼容（宁可丢改动也不静默错位）。
+    const blockFp = this.registry.fingerprint();
+    if (meta && meta.seed !== undefined && meta.blockFp !== blockFp) {
+      console.warn(`[save] 方块清单已变（存档 ${meta.blockFp ?? '(无)'} → 当前 ${blockFp}）：`
+        + '方块 ID 可能已前移，旧存档的玩家改动会错位，已丢弃（seed 与位置保留）。');
+      await this.persistence.clearAllEdits();
+      await this.persistence.clearAllEntities();
+      await this.persistence.saveMeta({ ...meta, blockFp, savedAt: Date.now() });
+      meta = { ...meta, blockFp };
+    }
+
     const hadMeta = !!(meta && meta.seed !== undefined);
     if (hadMeta) this.seed = meta.seed;
     else {
       if (this.seed === null || this.seed === undefined) {
         this.seed = randomSeed();
       }
-      await this.persistence.saveMeta({ seed: this.seed, spawn: [8, 8], savedAt: Date.now() });
+      await this.persistence.saveMeta({ seed: this.seed, spawn: [8, 8], blockFp, savedAt: Date.now() });
     }
     // 上次停留的位置（用户 2026-10-31：「游戏重新进入后……玩家位置也恢复到上次停留的状态」）。
     // 非法/缺失 → null，下面回落 City 出生点。
@@ -794,7 +815,7 @@ export class Game {
     const citySpawn = getCitySpawnPoint(regionLayout.city);
     this.spawnX = citySpawn.x; this.spawnZ = citySpawn.z;
     if (!hadMeta) {
-      await this.persistence.saveMeta({ seed: this.seed, spawn: [this.spawnX, this.spawnZ], savedAt: Date.now() });
+      await this.persistence.saveMeta({ seed: this.seed, spawn: [this.spawnX, this.spawnZ], blockFp: this.registry.fingerprint(), savedAt: Date.now() });
     }
     // ---- 实际出生位置（与 `spawnX/spawnY/spawnZ` 是**两套口径**，勿混）----
     // `spawnX/spawnY/spawnZ` 永远 = City 出生点（「回家」按钮与既有 spec 的权威，语义不变）；
@@ -1822,7 +1843,7 @@ export class Game {
   async newWorld(seed = null) {
     const newSeed = (seed === null || seed === undefined) ? randomSeed() : seed;
     await this._discardEdits();
-    await this.persistence.saveMeta({ seed: newSeed, spawn: [8, 8], savedAt: Date.now() });
+    await this.persistence.saveMeta({ seed: newSeed, spawn: [8, 8], blockFp: this.registry.fingerprint(), savedAt: Date.now() });
     const url = new URL(location.href);
     url.searchParams.set('seed', String(newSeed));
     location.assign(url.toString());
@@ -1938,7 +1959,7 @@ export class Game {
     await this._discardEdits();
     // spawn 非法（null）→ 保留既有 meta.spawn：写 null 进存档会让下次启动读到非法出生点
     const spawn = decoded.spawn ?? [this.spawnX, this.spawnZ];
-    await this.persistence.saveMeta({ seed: decoded.seed, spawn, savedAt: Date.now() });
+    await this.persistence.saveMeta({ seed: decoded.seed, spawn, blockFp: this.registry.fingerprint(), savedAt: Date.now() });
     let cells = 0;
     for (const column of decoded.edits) {
       await this.persistence.saveColumnEdits(column.columnKey, column.edits);

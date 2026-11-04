@@ -74,6 +74,35 @@ export function createRegistry() {
       return id;
     },
 
+    /**
+     * **方块清单指纹**（FNV-1a 32bit）。用途 = 存档兼容性判定。
+     *
+     * ## 为什么需要它
+     * `Persistence` 的 edits 行存的是**数字方块 ID**（`{index, id, meta}`）。而 ID 是
+     * **注册顺序**决定的（`register()` 里的 `count++`）—— 一旦从 `blocks-data.js` 删一行
+     * 声明，**后面所有方块的 ID 都前移一位**，旧存档里的玩家改动会**静默错位**成别的方块
+     * （不报错、不抛异常，只是世界内容变了）。2026-11-04 删 `realistic_oak_leaves` 时
+     * 它排第 17、后面还有 122 个方块 —— 不拦就等于静默损坏旧存档。
+     *
+     * ## 口径
+     * 对**有序的名字串**取哈希（与 `position` 语义一致：ID = 下标）。只改方块属性
+     * （`cullMode` / `solid` / 贴图）不影响本指纹，不会误伤旧存档 —— 而那些属性也
+     * 不改变已存 edits 的解释。
+     *
+     * @returns {string} 32bit 十六进制串
+     */
+    fingerprint() {
+      let h = 0x811c9dc5;
+      for (let id = 0; id < count; id++) {
+        const s = `${idToName[id]}\u0000`;
+        for (let i = 0; i < s.length; i++) {
+          h ^= s.charCodeAt(i);
+          h = Math.imul(h, 0x01000193) >>> 0;
+        }
+      }
+      return (h >>> 0).toString(16).padStart(8, '0');
+    },
+
     freeze() { frozen = true; },
     /**
      * 按注册顺序返回 `{id, name}[]` 只读快照（§4.1 v1.16 补记）。

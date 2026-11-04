@@ -73,7 +73,6 @@ export const BLOCKS = [
   // 面数 735,576→700,064；连带效应（AO 遮挡 / blocklight 阻断 / 炮塔 LOS 阻挡）
   // 见 spec §2.6.3，均为有意偏离 mc-lite。
   {"name":"sky_leaves","solid":true,"cullMode":"opaque","orientationModes":4,"geometry":"box"},
-  {"name":"realistic_oak_leaves","solid":true,"cullMode":"cutout","opaque":true,"orientationModes":4,"geometry":"box"},
   {"name":"realistic_yellow_leaves","solid":true,"cullMode":"cutout","opaque":true,"orientationModes":4,"geometry":"box"},
   {"name":"flower","solid":false,"cullMode":"cutout","orientationModes":4,"geometry":"flower","shadowCast":false},
   {"name":"short_grass","solid":false,"cullMode":"cutout","orientationModes":4,"geometry":"flower","shadowCast":false},

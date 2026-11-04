@@ -67,6 +67,13 @@ function r2Priority(i, width) {
  * （alpha 归 0），其余全部抬到 255。返回新的 alpha 数组与孔洞数。
  *
  * 源图孔洞不够 `ratio` 所需时用全部源孔洞（**不额外挖叶面**）。
+ *
+ * ⚠️⚠️ **未被选为孔洞的「源图孔洞像素」必须继续保持 alpha=0**（v1.29 修的缺陷）。
+ * 旧实现对每个像素一律填 255 再抹掉选中的那几个 —— 而源图那些像素的 **RGB 往往是 (0,0,0)**
+ * （`azalea_leaves` 实测 59 个纯黑源孔洞），抬成 255 就变成**不透明的纯黑噪点**。
+ * 实测被污染 39 个（59 − 20 个选中的孔洞）。这个缺陷在图标上肉眼可见（叶面黑点），
+ * 在世界渲染里只是零星黑像素、被当成“叶脉暗部”忽略了很多轮（2026-11-04 查图标时才发现）。
+ *
  * @param {{width:number,height:number,data:Uint8Array}} src pngjs 解码后的 PNG
  * @param {number} ratio 目标孔洞率（占全部像素）
  * @returns {{alpha: Uint8Array, holeCount: number, srcHoleCount: number}}
@@ -77,9 +84,82 @@ export function compactLeafHoles(src, ratio) {
   for (let i = 0; i < n; i++) if (src.data[i * 4 + 3] < HOLE_ALPHA) srcHoles.push(i);
   const ranked = [...srcHoles].sort((a, b) => r2Priority(a, src.width) - r2Priority(b, src.width) || a - b);
   const holeCount = Math.max(0, Math.min(srcHoles.length, Math.round(n * ratio)));
+
+  // 基准：一律 255（叶面）。再从源图孔洞里按 R2 顺序挑出 `holeCount` 个作孔洞。
   const alpha = new Uint8Array(n).fill(255);
   for (let k = 0; k < holeCount; k++) alpha[ranked[k]] = 0;
   return { alpha, holeCount, srcHoleCount: srcHoles.length };
+}
+
+/**
+ * **颜色漫溢（color bleed）**：给透明像素补上邻近叶面的颜色。
+ *
+ * 为什么必须有它：源图的透明像素**没有可信 RGB** —— `azalea_leaves` 的 59 个孔洞全是
+ * `(0,0,0)`、`oak_leaves_branch_medium` 的 795 个也是。而 `compactLeafHoles` 会把其中一部分
+ * **抬成不透明**（孔洞率从 77.6% 压到 15% 必然如此）—— 不补色就是“不透明的纯黑噪点”。
+ * 实测污染量：`leaf_azalea_leaves` **39 个**（占叶面 16.5%）、`leaf_azalea_flowers` **31 个**。
+ * 它们在世界上被当成“叶脉暗部”忽略了很多轮，但在 32px 背包图标里每颗 texel 约 1.5px，
+ * 黑点是肉眼可见的噪点（用户 2026-11-04 报“镂空过去是黑色的”时就此暴露）。
+ *
+ * 做法 = 广度优先从透明↔不透明的边界向内漫溢（就近叶面色），多轮直到填满或达到上限。
+ * 与图形管线的 alpha bleeding / alpha dilation 同一手法。
+ *
+ * ⚠️ **只用于“会被抬成不透明”的像素**：真正保留为孔洞的像素不需要颜色（alpha=0 不参与
+ * 合成），不漫溢就不会白白改动源图的 RGB。
+ *
+ * @param {{width:number,height:number,data:Uint8Array}} src pngjs 解码后的 PNG
+ * @param {Uint8Array} alpha 目标 alpha 数组（0 或 255）
+ * @returns {Uint8Array} 新的 RGBA 数据（RGB 已对“透明→不透明”的像素补色）
+ */
+export function bleedPromotedColors(src, alpha) {
+  const { width: w, height: h } = src;
+  const n = w * h;
+  const out = new Uint8Array(src.data);
+  // 只有“源图不可信（透明）且目标变为不透明”的像素才需要补色
+  const need = new Uint8Array(n);
+  let pending = 0;
+  for (let i = 0; i < n; i++) {
+    if (src.data[i * 4 + 3] < HOLE_ALPHA && alpha[i] !== 0) { need[i] = 1; pending++; }
+  }
+  if (pending === 0) return out; // 无需要补色的像素 → 逐字节不变（既不改 RGB 也不改 alpha）
+
+  // “可信颜色”集合 = **源图本来就不透明的像素**。
+  // ⚠️ 不能写成“不需要补色的像素” —— 那会把“目标为孔洞（alpha=0）”的源孔洞像素也算成
+  // 可信颜色源，而它们的 RGB 正是 (0,0,0) 填充值 → 扩散的第一轮就从纯黑取样，整片变黑
+  // （实测：oak_leaves_branch_medium 的 641 个待补像素里有 460 个第一次扩散后仍是纯黑）。
+  const trustworthy = new Uint8Array(n);
+  for (let i = 0; i < n; i++) if (src.data[i * 4 + 3] >= HOLE_ALPHA) trustworthy[i] = 1;
+
+  // 逐轮从 8 邻域平均已知颜色（8 邻域让斜边也连续，避免十字状伪影）
+  const filled = Uint8Array.from(trustworthy); // 已具备可信颜色的像素
+  const MAX_ROUNDS = w + h; // 最坏情形从边界一路填到中心
+  for (let round = 0; round < MAX_ROUNDS && pending > 0; round++) {
+    const add = [];
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = y * w + x;
+        if (!need[i] || filled[i]) continue;
+        let r = 0, g = 0, b = 0, c = 0;
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            if (!dx && !dy) continue;
+            const nx = x + dx, ny = y + dy;
+            if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+            const j = ny * w + nx;
+            if (!filled[j]) continue;
+            r += out[j * 4]; g += out[j * 4 + 1]; b += out[j * 4 + 2]; c++;
+          }
+        }
+        if (c) add.push([i, Math.round(r / c), Math.round(g / c), Math.round(b / c)]);
+      }
+    }
+    if (!add.length) break; // 整个图都是透明的（无参照色）→ 保底留原值
+    for (const [i, r, g, b] of add) {
+      out[i * 4] = r; out[i * 4 + 1] = g; out[i * 4 + 2] = b;
+      filled[i] = 1; pending--;
+    }
+  }
+  return out;
 }
 
 /**

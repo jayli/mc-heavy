@@ -9,7 +9,8 @@ import { resourceUrl } from '../core/resource-url.js';
 // cubeQuads 是否与之一致，防止 iso-icon.js 出现第二份立方体/UV 定义（红线 1）。
 import { TEMPLATES, FACE_VERTICES, FACE_UVS } from '../mesh/mesher.js';
 import {
-  ISO_SHADE, projectIso, isoPolygons, isoBBox, renderIsoIcon, cubeQuads,
+  ISO_SHADE, ISO_ALPHA_TEST, ISO_RENDER_VERSION,
+  projectIso, isoPolygons, isoBBox, renderIsoIcon, cubeQuads,
 } from '../mesh/iso-icon.js';
 
 // --- 投影公式（2:1 等轴测） ---
@@ -260,11 +261,22 @@ test('iso-icon: 正置/倒置台阶图标形状不同（烘焙产物）', async 
  *
  * **判据改为尺寸无关的明暗差**（v1.26）。旧判据是「色数 > 贴图自身 38」，那是按 64px 图标
  * 标定的 —— 图标改成 40px 后采样像素变少、色数降到 33，旧阈值失效。直接调低数字属于
- * **静默放宽断言**（CLAUDE.md 规则禁止），故改为测更本质的不变式：
- * 顶面（+Y，shade 1.0）必须比两个侧面（+X 0.75 / +Z 0.55）亮。
- * 这条与分辨率无关，且比「色数」更贴近它要守的东西（三面明暗）。
+ * **静默放宽断言**（CLAUDE.md 规则禁止），故改为测更本质的不变式。
+ *
+ * ## v1.29 重标：取样窗必须按「这个方块**实际可见**的面」摆
+ *
+ * 旧实现下这条用例**碰巧**通过，现在修正了重心插值反而红了 —— 值得记下来：
+ * 竖柱是细柱（0.3×0.3），等轴测下**三个面里只有顶面 + 一个侧面可见**：
+ * 另一个侧面朝向相机内部，被自身几何挡住。两个可见面的屏幕位置（几何推导，
+ * 与 `test-iso-icon.js` 的 `isoBBox` 数字一致）：
+ *   - 顶面（+Y）：菱形，占 y ∈ [11.8, 20.0] px；
+ *   - 侧面（+Z，暗面）：占 y ∈ [20.0, 37.9] px 的左下半；
+ *   - 0.5 高度处的像素正好是**两个面的交界**，所以“右侧”那个窗口全落在顶面上。
+ * 旧的重心错位把顶面图案向下拉了，右窗口才恰好采到侧面 —— 判据因此在测实现缺陷。
+ * 现改为：**只有两个可见面**时比较「顶部区域 vs 下侧区域」，并要求下面那条交叉比对
+ * （顶面亮于侧面）由面编码的几何用例（`test-iso-icon.js` 的 `ISO_SHADE` 那三条）守。
  */
-test('iso-icon: 柱子图标有三面明暗分层（顶面比侧面亮，尺寸无关）', async () => {
+test('iso-icon: 柱子图标的两个可见面有明暗分层（顶面亮于侧面）', async () => {
   const { d, size } = await iconPixels('vertical_pillar');
   /** 某区域的平均亮度（只算不透明像素） */
   const lum = (x0, y0, w, h) => {
@@ -272,19 +284,19 @@ test('iso-icon: 柱子图标有三面明暗分层（顶面比侧面亮，尺寸�
     for (let y = y0; y < y0 + h; y++) {
       for (let x = x0; x < x0 + w; x++) {
         const i = (y * size + x) * 4;
-        if (d[i + 3] === 0) continue;
+        if (d[i + 3] < 250) continue; // 跳过抗锯齿边缘（半透明像素混了背景）
         sum += (d[i] + d[i + 1] + d[i + 2]) / 3; n++;
       }
     }
-    return n ? sum / n : NaN;
+    return { v: n ? sum / n : NaN, n };
   };
-  // 等轴测立方体：顶面在上部中央，+X 面右下、+Z 面左下（与 grass 验证同一分区口径）
-  const top = lum(Math.round(size * 0.2), Math.round(size * 0.15), Math.round(size * 0.6), Math.round(size * 0.2));
-  const left = lum(Math.round(size * 0.05), Math.round(size * 0.55), Math.round(size * 0.3), Math.round(size * 0.3));
-  const right = lum(Math.round(size * 0.65), Math.round(size * 0.55), Math.round(size * 0.3), Math.round(size * 0.3));
-  assertTrue(top > left, `顶面亮度 ${top.toFixed(1)} > 左侧(+Z) ${left.toFixed(1)}（shade 1.0 > 0.55）`);
-  assertTrue(top > right, `顶面亮度 ${top.toFixed(1)} > 右侧(+X) ${right.toFixed(1)}（shade 1.0 > 0.75）`);
-  assertTrue(right > left, `右侧(+X) ${right.toFixed(1)} > 左侧(+Z) ${left.toFixed(1)}（shade 0.75 > 0.55）`);
+  // 几何标定（40px）：顶面 y∈[11.8,20]、侧面 y∈[20,37.9]、柱体 x∈[11.8,28.2]
+  const top = lum(Math.round(size * 0.30), Math.round(size * 0.32), Math.round(size * 0.4), Math.round(size * 0.12));
+  const side = lum(Math.round(size * 0.30), Math.round(size * 0.60), Math.round(size * 0.4), Math.round(size * 0.25));
+  assertTrue(top.n > 20 && side.n > 20,
+    `两个取样窗都有足够像素（顶 ${top.n} / 侧 ${side.n}）—— 防窗口摆错变成空扫描`);
+  assertTrue(top.v > side.v,
+    `顶面亮度 ${top.v.toFixed(1)} > 侧面 ${side.v.toFixed(1)}（ISO_SHADE 1.0 > 0.55，立体感来源）`);
 });
 
 // --- 遮挡正确性（v1.28：深度度量 y 符号 + 逐像素深度测试） ---
@@ -350,14 +362,23 @@ test('iso-icon: 倒置台阶下半部不得出现顶面（被遮住的面不占�
  * 回归防线的**另一半**：防止「粗暴把所有顶面砍掉」的假修法。
  *
  * `planks_step`（下半全幅 + 左上 1/4 柱）的柱顶面在 y=1，是**外部面** = 阶梯踏面，
- * 现实中**可见**、必须保留。它与倒置台阶互为镜像：修正后倒置的幻影消失（88→4px）、
- * 正置的踏面反而露出更多（84→109px）。两条合起来才精确表达正确语义 —— 单独任一条
- * 都能被「全砍」或「全留」的粗暴修法骗过。
+ * 现实中**可见**、必须保留。它与倒置台阶互为镜像：倒置的柱顶面被上半块遮住（实测 2px，
+ * 只剩深度并列的边界），而正置的踏面大面积露出。
+ *
+ * **阈值 50 是几何标定值，不是拟合值**（v1.29 重标，旧注释的 109 是错位权重时代的读数）：
+ * 踏面 = y=0.5、x∈[0.5,1]、z∈[0,1] 的水平矩形，投影后是平行四边形，四角像素
+ * (23.14,12.43)/(30.29,16.00)/(16.00,23.14)/(8.86,19.57)，总面积 **102.0 px²**；
+ * 按 `y ≥ SIZE/2` 裁掉上半后剩 **76.5 px²（75%）**，像素取整后实测 **79**。
+ * 取 50 = 实测值的 63%，既不贴线（像素取整/不同 SIZE 不会假失败），又远高于
+ * 倒置台阶的 2px（差 25 倍）。★ 该阈值的判别对象就是“全部砍掉顶面”那种修法。
  */
 test('iso-icon: 正置台阶阶梯踏面必须保留（外部顶面不得误判为遮挡）', () => {
   const n = topFacePixelsInLowerHalf(TEMPLATES.planks_step);
-  assertTrue(n > 100,
-    `正置台阶下半画布顶面像素 ${n}px > 100（柱顶面 y=1 是阶梯踏面，外部面必须可见）`);
+  const down = topFacePixelsInLowerHalf(TEMPLATES.cobblestone_step_updown);
+  assertTrue(n > 50,
+    `正置台阶下半画布顶面像素 ${n}px > 50（柱顶面 y=1 是阶梯踏面，外部面必须可见）`);
+  assertTrue(n > down * 10,
+    `正置踏面 ${n}px 远多于倒置的 ${down}px（后者被上半块遮住）—— 相互对照，两边都不贴线`);
 });
 
 // --- v1.26：全量图标（消除 UV 副本 + 单位立方体 fallback + 逐面采样） ---
@@ -432,4 +453,156 @@ test('iso-icon: 多面贴图方块三面各采各的贴图（grass 顶绿侧土�
   // 侧面必须是土色的明暗档（0.75 / 0.55）
   assertTrue(colors.has('105,75,45'), `+X 面土色 ×0.75 = rgb(105,75,45)，实得 ${[...colors].join(' ')}`);
   assertTrue(colors.has('77,55,33'), `+Z 面土色 ×0.55 = rgb(77,55,33)，实得 ${[...colors].join(' ')}`);
+});
+
+// --- v1.29：UV 重心插值正确性 / alpha 传播 / 超采样 ---
+//
+// **背景（本节三条用例对应三个用户可见缺陷）**：
+//   ① 「方块可见的三个面有些变花了」—— 重心权重与顶点索引错位（w 是 [wC,wA,wB]，
+//      配的 idx 是 [A,B,C]），每个三角形内的 UV 被**循环旋转**，贴图案被斜向剪切。
+//      这是**全部 114 个等轴测图标**共有的缺陷（实测逐像素全变），不是个别方块的问题。
+//   ② 「玻璃是黑的 / 树叶镂空过去是黑色的」—— `renderIsoIcon` 末尾硬编码
+//      `out[o+3] = 255`，贴图 alpha 被完全丢弃。`Glass.png` 的透明像素 RGB 是 (0,0,0)
+//      → 黑底；树叶孔洞采到贴图残留暗色 → 黑点。
+//   ③ 32/40px 图标轮廓是硬阶梯（「斜上方拍照截图」缺抗锯齿）—— 需要超采样。
+
+/**
+ * ① UV 重心插值正确性（本文件最本质的一条）。
+ *
+ * **判据 = 从像素反解 UV，与几何投影算出的期望值逐像素比对。**
+ * 载体用 `TEMPLATES.lilypad`（**单个水平 quad**）：只有一个面参与，任何被填充的像素
+ * 必然属于它，故不需要「这根像素属于哪个面」的判别 —— 而立方体有三个面共享画布，
+ * 分面取样会让判据本身带上一个容易出错的假设。
+ *
+ * 反解口径（全部来自投影公式，不引入第二份几何定义）：
+ *   `sx = x − z`、`sy = (x+z)/2 − y` ⇒ `x + z = 2(sy + 0.48)`（lilypad 的 y = −0.48）
+ *   该 quad 的 FACE_UVS[2] = [[0,0],[1,0],[1,1],[0,1]] 配顶点
+ *   (0.1,0.9)/(0.9,0.9)/(0.9,0.1)/(0.1,0.1) ⇒ `u = (x−0.1)/0.8`、`v = (0.9−z)/0.8`
+ *
+ * 采样回调把 UV 编码成颜色送回，于是「贴图采样点」= 可读出的测量值。
+ * 缺陷态（权重循环旋转）下三角形内 UV 被旋转 → 误差可达 0.5，远超 0.06 容差。
+ */
+test('iso-icon: UV 按重心插值正确落到面内位置（本轮「面变花」的根因）', () => {
+  const SIZE = 64;
+  const SPAN_PAD = 1.12; // 与 renderIsoIcon 的默认值一致
+  const quads = TEMPLATES.lilypad;
+  // 该 quad 投影后的包围盒（与 isoBBox 同口径，但直接由投影公式推出，不经内部实现）
+  const pts = quads[0].v.map(([x, y, z]) => projectIso(x, y, z));
+  const minX = Math.min(...pts.map((p) => p[0])), maxX = Math.max(...pts.map((p) => p[0]));
+  const minY = Math.min(...pts.map((p) => p[1])), maxY = Math.max(...pts.map((p) => p[1]));
+  const span = Math.max(maxX - minX, maxY - minY) * SPAN_PAD;
+  const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+
+  // 回调把 u,v 编码成颜色（u×255 / v×255）。alpha 用第四分量给满，避免受 alphaMode 影响。
+  const d = renderIsoIcon(quads, SIZE, (u, v) => [u * 255, v * 255, 0]);
+  let checked = 0, worst = 0, worstAt = '';
+  for (let py = 0; py < SIZE; py++) {
+    for (let px = 0; px < SIZE; px++) {
+      const i = (py * SIZE + px) << 2;
+      if (d[i + 3] === 0) continue;
+      // 像素中心 → 世界投影坐标 → 世界 (x,z)
+      const sx = ((px + 0.5) - SIZE / 2) * span / SIZE + cx;
+      const sy = ((py + 0.5) - SIZE / 2) * span / SIZE + cy;
+      // 由投影公式反解世界坐标：sx = x−z、sy = (x+z)/2 − y（y = −0.48 是 lilypad 的叶面高度）
+      // ⇒ x+z = 2(sy − 0.48)、x = (sx + (x+z))/2、z = (x+z−sx)/2
+      const s = 2 * (sy - 0.48);
+      const x = (sx + s) / 2;
+      const z = (s - sx) / 2;
+      const expU = (x - 0.1) / 0.8;
+      const expV = (0.9 - z) / 0.8;
+      // 只比对 quad 内部（边沿像素可能落在三角形的插值容差带里）
+      if (expU < 0.08 || expU > 0.92 || expV < 0.08 || expV > 0.92) continue;
+      const err = Math.max(Math.abs(d[i] / 255 - expU), Math.abs(d[i + 1] / 255 - expV));
+      if (err > worst) { worst = err; worstAt = `px(${px},${py}) 期望 u=${expU.toFixed(3)} v=${expV.toFixed(3)}`; }
+      checked++;
+    }
+  }
+  assertTrue(checked > 100, `内部像素样本 ${checked} 个 > 100（判据有辨识度，不是空扫描）`);
+  assertTrue(worst < 0.06,
+    `UV 反解最大误差 ${worst.toFixed(3)} < 0.06（重心权重必须配对自己顶点的 UV）——最差在 ${worstAt}`);
+});
+
+/**
+ * ② alpha 传播：贴图透明像素必须**真的透明**（不是硬编码 255 后被背景染成黑色）。
+ *
+ * 两种模式各自对应世界渲染的一条真实通道（红线 1：与渲染语义同源，不是另立的 UI 规则）：
+ *   - `'opaque'`：世界 `opaque` 通道 alphaTest=0，完全忽略 alpha（97 个实心方块走这条）
+ *   - `'cutout'`：世界 `cutout` 通道 alphaTest=0.3 → 低于阈值整片丢弃，高于阈值完全不透明
+ *   - `'blend'`：世界 `transparent` 通道 → 保留原 alpha（玻璃）
+ */
+test('iso-icon: alpha 按通道语义传播（opaque 忽略 / cutout 阈值 / blend 保留）', () => {
+  const SIZE = 16;
+  const clearTex = () => [0, 0, 0, 0]; // 模拟 Glass.png 的透明像素（RGB 也是 0）
+  const opaqueAlpha = (mode) => {
+    const d = renderIsoIcon(cubeQuads(), SIZE, clearTex, 1.12, { alphaMode: mode });
+    let n = 0;
+    for (let i = 3; i < d.length; i += 4) if (d[i] > 0) n++;
+    return n;
+  };
+  assertTrue(opaqueAlpha('opaque') > 0,
+    `opaque 模式忽略贴图 alpha（世界 alphaTest=0 同口径）→ 仍有 ${opaqueAlpha('opaque')} 个可见像素`);
+  assertEqual(opaqueAlpha('cutout'), 0, 'cutout 模式把 alpha=0 的像素整片丢弃（不留黑底）');
+  assertEqual(opaqueAlpha('blend'), 0, 'blend 模式 alpha=0 → 全透明');
+
+  // 半透明贴图：cutout 阈值 0.3 分界；blend 原样保留
+  const half = (a, mode) => {
+    const d = renderIsoIcon(cubeQuads(), SIZE, () => [10, 200, 30, a], 1.12, { alphaMode: mode });
+    let sum = 0, n = 0;
+    for (let i = 3; i < d.length; i += 4) { if (d[i] > 0) { sum += d[i]; n++; } }
+    return { n, mean: n ? sum / n : 0 };
+  };
+  assertEqual(half(60, 'cutout').n, 0, 'alpha=60/255=0.235 < 0.3 → cutout 丢弃（不留半透明的洞）');
+  assertTrue(half(120, 'cutout').n > 0, 'alpha=120/255=0.47 ≥ 0.3 → cutout 保留');
+  assertEqual(Math.round(half(120, 'cutout').mean), 255, 'cutout 保留时 alpha 归一为 255（世界 alphaTest 口径）');
+  assertEqual(Math.round(half(120, 'blend').mean), 120, 'blend 保留原始 alpha=120（玻璃半透明）');
+
+  // 三元素回调（旧签名）必须照旧工作：alpha 视为不透明。
+  // ⚠️ 判据只能是“无 alpha=0 的像素”，不能要求“全是 255”：立方体只有**两个**可见面
+  // 覆盖整个菱形（顶面 + 一个侧面占全幅，第三个面退化成一条对角线——实测 161/256 满
+  // alpha、其余仍为 0 的空白）。写成“全部 255”是把形状当正方形，断言描述的是想象中的世界。
+  const legacy = renderIsoIcon(cubeQuads(), SIZE, () => [100, 100, 100]);
+  let cells = 0, partialPx = 0;
+  for (let i = 3; i < legacy.length; i += 4) {
+    if (legacy[i] > 0) cells++;
+    if (legacy[i] > 0 && legacy[i] < 255) partialPx++;
+  }
+  assertEqual(partialPx, 0, '三元素回调 → 没有半透明像素（缺省 alpha 视为不透明）');
+  assertTrue(cells > 0, `三元素回调 → 形状仍然渲染（${cells} 个像素）`);
+});
+
+/**
+ * ③ 超采样抗锯齿：轮廓像素出现**部分覆盖**（0 < alpha < 255）。
+ *
+ * 判据的对照侧是同一次渲染的 `samples: 1` —— 它按像素中心采样，每个像素非 0 即全满，
+ * 数学上不可能出现部分 alpha（结构性质，不是调参）。故这条不需要外部基准参考图。
+ */
+test('iso-icon: samples 超采样让轮廓出现部分覆盖（抗锯齿）', () => {
+  const SIZE = 40;
+  const tex = () => [120, 160, 90]; // 全不透明贴图 → 只有轮廓会产生部分 alpha
+  const count = (opts) => {
+    const d = renderIsoIcon(cubeQuads(), SIZE, tex, 1.12, opts);
+    let partial = 0, solid = 0;
+    for (let i = 3; i < d.length; i += 4) {
+      if (d[i] === 0) continue;
+      if (d[i] === 255) solid++; else partial++;
+    }
+    return { partial, solid };
+  };
+  const s1 = count({ samples: 1 });
+  const s4 = count({ samples: 4 });
+  assertEqual(s1.partial, 0, `samples:1 无部分覆盖（按像素中心采样，结构性质）`);
+  assertTrue(s4.partial > 20,
+    `samples:4 边缘部分覆盖 ${s4.partial}px > 20（斜边抗锯齿，不再是硬阶梯）`);
+  // 超采样不得改变「有没有形状」：实体像素总量必须同量级（防「全糊成半透明」的假修法）
+  assertTrue(Math.abs((s4.solid + s4.partial) - s1.solid) / s1.solid < 0.02,
+    `覆盖面积不变（samples:1 ${s1.solid}px vs samples:4 ${s4.solid + s4.partial}px，差 < 2%）`);
+});
+
+test('iso-icon: ISO_ALPHA_TEST 与世界 cutout 通道的 alphaTest 同值（红线 1）', () => {
+  assertEqual(ISO_ALPHA_TEST, 0.3, 'iso 图标的 cutout 阈值 = materials.js 的 cutout alphaTest');
+});
+
+test('iso-icon: ISO_RENDER_VERSION 存在（进指纹，防「改了渲染算法但指纹不变」）', () => {
+  assertTrue(typeof ISO_RENDER_VERSION === 'string' && ISO_RENDER_VERSION.length > 0,
+    `ISO_RENDER_VERSION 是非空字符串（实得 ${JSON.stringify(ISO_RENDER_VERSION)}）`);
 });

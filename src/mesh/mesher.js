@@ -421,8 +421,13 @@ export const TEMPLATES = {
 };
 
 // mc-lite 材质为 DoubleSide 的立方体方块（MaterialManager 注册 side 字段）：
-// 唯一 realistic_oak_leaves。单材质通道内用双向绕线复刻。
-const DOUBLE_SIDE_CUBES = new Set(['realistic_oak_leaves']);
+// 原本唯一成员是 realistic_oak_leaves。
+//
+// ⚠️ **2026-11-04：该方块已从 `blocks-data.js` 删除**（用户裁定「我不需要了」）→
+// 本集合现在**为空**。机制与消费点（`doubleSide` 分支）**保留未动**：它是 mc-lite
+// 材质 side 属性的转换口径，将来再加 DoubleSide 方块只需把名字放进来，不必重写绕线逻辑。
+// 若确认永不使用，可连同下方消费分支一并删除（届时 `mesher.js` 少一个分支）。
+const DOUBLE_SIDE_CUBES = new Set([]);
 
 // 暴露水面下沉（issue #2 遗留）：water/swamp_water 上方无 opaque/同类水覆盖时，
 // 顶面与侧面顶边下沉 0.5，与海面平面（SEA_Y+0.5）共面，消除俯视可见的蓝色顶面模。

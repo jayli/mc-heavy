@@ -42,13 +42,14 @@ test('orientation: nextOrientation 非法输入回落 EAST（mc-lite `(current||
 
 // --- 门控集合：复用 orientationModesTable，不新增字段 ---
 
-test('orientation: 门控集合 = mc-heavy 42 项启用 / 98 项不参与旋转', () => {
+test('orientation: 门控集合 = mc-heavy 41 项启用 / 98 项不参与旋转', () => {
   const reg = makeRegistry();
   const all = reg.all();
-  assertEqual(all.length, 140);
+  assertEqual(all.length, 139);
   const enabled = all.filter((b) => reg.orientationModesTable[b.id] > 0);
   const disabled = all.filter((b) => reg.orientationModesTable[b.id] === 0);
-  assertEqual(enabled.length, 42, '启用朝向的方块数（mc-lite 40 + 巨型金字塔 sand_step 1 + 中世纪船 planks_step_updown 1）');
+  // ⚠️ 2026-11-04：realistic_oak_leaves（orientationModes=4）已删除 → 42 → 41。
+  assertEqual(enabled.length, 41, '启用朝向的方块数（mc-lite 40 + 巨型金字塔 sand_step 1 + 中世纪船 planks_step_updown 1 − 已删 realistic_oak_leaves）');
   assertEqual(disabled.length, 98, '恒 EAST 的方块数（124 方块的 mc-lite 是 84，此处多 sky_stone/sky_grass、巨树 8 个 giant_*、sand_slab、浅水高台 2 个草、中世纪船 half_block_updown）');
   // 抽查：chest 启用、stone 不参与旋转、M2-7 新增的两个 sky 方块不参与旋转
   assertTrue(reg.orientationModesTable[reg.idOf('chest')] > 0, 'chest 启用朝向');

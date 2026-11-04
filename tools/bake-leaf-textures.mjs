@@ -33,7 +33,7 @@ import { PNG } from 'pngjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { LEAF_HOLE_RATIO, LEAF_HOLE_RATIO_AZALEA, compactLeafHoles, applyAlpha, leafHoleStats } from './leaf-holes.mjs';
+import { LEAF_HOLE_RATIO, LEAF_HOLE_RATIO_AZALEA, compactLeafHoles, applyAlpha, leafHoleStats, bleedPromotedColors } from './leaf-holes.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, '..');
@@ -59,7 +59,9 @@ export const LEAF_TEXTURES = Object.freeze([
   // ⚠️ `azalea_flowers` 之前**漏了**这张（`faces-data.js` 直接指向未压缩的原图 `flowering_azalea_leaves`
   // → 孔洞率 19.9%，比叶方块还稀）。带花的叶与纯叶必须同档，否则同一棵树上有两种稀疏度。
   { src: 'flowering_azalea_leaves', out: 'leaf_azalea_flowers', ratio: LEAF_HOLE_RATIO_AZALEA }, // azalea_flowers
-  { src: 'oak_leaves_branch_medium', out: 'leaf_oak_leaves_branch_medium' }, // realistic_oak_leaves（32×32，源孔洞 77.6%）
+  // ⚠️ **2026-11-04 删除 `oak_leaves_branch_medium` 一项**：它唯一的方块消费方
+  // `realistic_oak_leaves` 已按用户裁定从方块声明中移除 → 继续烘焙就是孤儿产物
+  // （`check:data` 的孤儿检查会报）。源图仍入库不动，将来若要恢复只需加回本行 + 方块声明。
   { src: 'leaves_with_snow', out: 'leaf_leaves_with_snow' },              // snow_leaves 的 5 个侧面
 ]);
 
@@ -76,7 +78,17 @@ function main() {
     const src = PNG.sync.read(fs.readFileSync(srcPath));
     const before = leafHoleStats(src);
     const { alpha, holeCount } = compactLeafHoles(src, t.ratio ?? LEAF_HOLE_RATIO);
+    // 给「源图透明 → 抬成不透明」的像素补色（否则它们是源图的 (0,0,0) 填充值 → 黑噪点）。
+    // 实测污染量：azalea_leaves 39 个、azalea_flowers 31 个、oak_leaves_branch_medium 641 个。
+    const rgb = bleedPromotedColors(src, alpha);
     const out = applyAlpha(src, alpha);
+    // 只盖回 RGB 三通道（`bleedPromotedColors` 返回的是整条 RGBA，其中 alpha 是**源图值**，
+    // 整体 set 会把刚算好的 0/255 二值 alpha 改回 220 之类的原值）。
+    for (let i = 0; i < out.data.length; i += 4) {
+      out.data[i] = rgb[i];
+      out.data[i + 1] = rgb[i + 1];
+      out.data[i + 2] = rgb[i + 2];
+    }
 
     // 自检 ①：alpha 必须是 0/255 二值（压缩后不存在半透明像素）
     for (let i = 0; i < out.data.length; i += 4) {
@@ -86,12 +98,26 @@ function main() {
     // 自检 ②：孔洞数必须等于预期
     const after = leafHoleStats(out);
     if (after.holes !== holeCount) throw new Error(`${t.out}: 孔洞数 ${after.holes} ≠ 预期 ${holeCount}`);
-    // 自检 ③：RGB 必须与源图逐字节相同（本脚本只动 alpha）
+    // 自检 ③：**不会被抬成不透明的像素** RGB 必须与源图逐字节相同（本脚本只补“抬高 alpha”
+    //   那些像素的颜色，其余 RGB 一字不动）。旧版本写的是“全部 RGB 逐字节相同”，
+    //   而抬升 alpha 却不补色正是黑噪点的根因 —— 两条约束直接矛盾。
+    let recolored = 0;
     for (let i = 0; i < out.data.length; i += 4) {
+      const wasHole = src.data[i + 3] < 77;
+      const nowOpaque = out.data[i + 3] !== 0;
+      if (wasHole && nowOpaque) { recolored++; continue; } // 允许（且必须）补色
       for (let c = 0; c < 3; c++) {
-        if (out.data[i + c] !== src.data[i + c]) throw new Error(`${t.out}: RGB 被改了（像素 ${i / 4} 通道 ${c}）—— 本脚本只应改 alpha`);
+        if (out.data[i + c] !== src.data[i + c]) {
+          throw new Error(`${t.out}: 叶面像素 RGB 被改了（像素 ${i / 4} 通道 ${c}）—— 本脚本只应改 alpha 与“抬升像素”的颜色`);
+        }
       }
     }
+    // 自检 ④：抬升的不透明像素不得是纯黑（源图透明处 RGB 的填充值是 0,0,0）
+    let blackOpaque = 0;
+    for (let i = 0; i < out.data.length; i += 4) {
+      if (out.data[i + 3] !== 0 && out.data[i] < 8 && out.data[i + 1] < 8 && out.data[i + 2] < 8) blackOpaque++;
+    }
+    if (blackOpaque > 0) throw new Error(`${t.out}: ${blackOpaque} 个不透明像素是纯黑（补色失败）`);
 
     const dst = path.join(OUT_DIR, `${t.out}.png`);
     fs.writeFileSync(dst, PNG.sync.write(out));

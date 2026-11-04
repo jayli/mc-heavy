@@ -1473,21 +1473,42 @@ async function checkLeafTextures() {
           `杜鹃叶必须比普通树叶更密（孔洞块最大 2px），否则大冠幅下会透出天空`);
       }
     }
-    // ② RGB 必须与源图逐字节相同（本脚本只应改 alpha；改颜色是另一个需求）
+    // ② RGB 口径：**只允许对“源图透明 → 产物不透明”的像素补色**（否则它们的源 RGB
+    //    往往是 (0,0,0) 填充值，抬成不透明就是黑噪点），其余像素的 RGB 逐字节不得变。
+    //
+    //    ⚠️ 旧断言是“全部 RGB 逐字节相同”—— 它与补色直接矛盾：孔洞率从 77.6% 压到 15%
+    //    必然要把一批源孔洞像素抬成不透明，而源孔洞的 RGB 无意义。实测污染：
+    //    azalea_leaves 39 个 / azalea_flowers 31 个 / oak_leaves_branch_medium 641 个（占叶面 73.7%）。
+    let recolored = 0, badOpaque = 0;
     for (let i = 0; i < png.data.length; i += 4) {
+      const wasHole = src.data[i + 3] < holes.HOLE_ALPHA;
+      const nowOpaque = png.data[i + 3] !== 0;
+      if (wasHole && nowOpaque) { recolored++; continue; } // 允许（且必须）补色
       if (png.data[i] !== src.data[i] || png.data[i + 1] !== src.data[i + 1] || png.data[i + 2] !== src.data[i + 2]) {
-        fail(`procedural/${t.out}.png 的 RGB 与源图不一致（像素 ${i / 4}）—— 孔洞压缩只应改 alpha`);
+        fail(`procedural/${t.out}.png 的叶面 RGB 与源图不一致（像素 ${i / 4}）—— 孔洞压缩只应改 alpha 与“被抬升像素”的颜色`);
         break;
       }
+    }
+    // ③ 不透明像素不得是纯黑（源图透明处的 RGB 填充值就是 0,0,0）。这条是黑噪点的直接判据，
+    //    比上面的 RGB 比对更有判别力：注掉补色后实测 leaf_leaves 报 0 但 azalea 两项报 39/31。
+    for (let i = 0; i < png.data.length; i += 4) {
+      if (png.data[i + 3] !== 0 && png.data[i] < 8 && png.data[i + 1] < 8 && png.data[i + 2] < 8) badOpaque++;
+    }
+    if (badOpaque > 0) {
+      fail(`procedural/${t.out}.png 有 ${badOpaque} 个不透明纯黑像素（叶面上会看到黑噪点）—— 跑 npm run leaftextures`);
     }
   }
 
   // ③ 每个树叶族（除 sky_leaves）的 faces-data 都必须指向 procedural/leaf_*
-  const LEAF_NAMES = ['leaves', 'azalea_leaves', 'yellow_leaves', 'realistic_oak_leaves',
+  //    ⚠️ `realistic_oak_leaves` 已于 2026-11-04 从方块声明中删除（用户裁定「我不需要了」），
+  //    其产物 `leaf_oak_leaves_branch_medium` 随之从烘焙表移除 —— 若有人把它加回清单，
+  //    上方 ④ 的孤儿检查与下方 faces-data 检查会交叉拓到。
+  const LEAF_NAMES = ['leaves', 'azalea_leaves', 'yellow_leaves',
     'realistic_yellow_leaves', 'swamp_leaves', 'snow_leaves'];
   // ⚠️ `azalea_flowers` 是**非叶名**的树叶族（名字里没有 leaves），旧版清单漏了它 →
   // 它一直指向未压缩的原图 `flowering_azalea_leaves`（19.9%），比同树的纯叶还稀。
   // 两份贴图稀疏度不同会让同一棵树看起来像两种材质。
+  // 巨树叶与 sky_leaves 不在此列：它们的产物由 `npm run gianttextures` 烘，另有 [巨树] 环节守。
   for (const n of [...LEAF_NAMES, 'azalea_flowers']) {
     const v = FACES_DATA[n];
     if (!v) { fail(`"${n}" 没有 faces-data 映射`); continue; }
@@ -1509,7 +1530,7 @@ async function checkLeafTextures() {
   }
 
   if (failures.length === before) {
-    infos.push(`[树叶贴图] ${LEAF_TEXTURES.length} 张孔洞压缩产物 / 普通叶 ${(holes.LEAF_HOLE_RATIO * 100).toFixed(1)}%、杜鹃叶 ${(holes.LEAF_HOLE_RATIO_AZALEA * 100).toFixed(1)}% / RGB 与源图逐字节相同`);
+    infos.push(`[树叶贴图] ${LEAF_TEXTURES.length} 张孔洞压缩产物 / 普通叶 ${(holes.LEAF_HOLE_RATIO * 100).toFixed(1)}%、杜鹃叶 ${(holes.LEAF_HOLE_RATIO_AZALEA * 100).toFixed(1)}% / 叶面 RGB 与源图逐字节相同 + 无黑噪点`);
   }
 }
 
@@ -2358,7 +2379,9 @@ function checkLeafCullingContract() {
   // ① 带镂空的方块（geometry=box + 有孔洞贴图的那一族）必须全部是镂空遮挡体。
   //    用「已登记的树叶族」作判据：它们按名字约定集中（`*_leaves` + azalea_flowers）——
   const LEAF_FAMILY = BLOCKS.filter((b) => b.name.endsWith('_leaves') || b.name === 'azalea_flowers').map((b) => b.name);
-  const EXPECT_LEAF_FAMILY_SIZE = 14; // 7 普通树叶（含 azalea_leaves）+ 6 巨树叶 + azalea_flowers
+  // 6 普通树叶 + 6 巨树叶 + azalea_flowers + sky_leaves。
+  // ⚠️ **2026-11-04：`realistic_oak_leaves` 已按用户裁定删除**（14 → 13）。
+  const EXPECT_LEAF_FAMILY_SIZE = 13;
   if (LEAF_FAMILY.length !== EXPECT_LEAF_FAMILY_SIZE) {
     fail(`树叶族方块数 ${LEAF_FAMILY.length} ≠ ${EXPECT_LEAF_FAMILY_SIZE}（新增/删除树叶族时须同步本门禁与 blocks-data 注释）：${LEAF_FAMILY.join(', ')}`);
   }

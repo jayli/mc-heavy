@@ -14,16 +14,16 @@ test('BlockRegistry: air 恒为 ID 0', () => {
   assertEqual(reg.idOf('air'), 0);
 });
 
-test('BlockRegistry: 140 方块全部注册且 ID 唯一', () => {
+test('BlockRegistry: 139 方块全部注册且 ID 唯一', () => {
   const reg = createRegistry();
   for (const def of BLOCKS) reg.register(def.name, def);
   // 126 + 巨树景观 8 个 giant_* + 巨型金字塔 2 个 sand_step/sand_slab
   // + 浅水高台 2 个 dark_grass/light_grass
   // + 中世纪船 2 个 planks_step_updown/half_block_updown = 140
-  assertEqual(reg.count, 140);
+  assertEqual(reg.count, 139);
   const ids = new Set();
   for (const def of BLOCKS) ids.add(reg.idOf(def.name));
-  assertEqual(ids.size, 140);
+  assertEqual(ids.size, 139);
 });
 
 test('BlockRegistry: sky_stone/sky_grass 注册且 solid+opaque（M2-7 空岛）', () => {
@@ -240,10 +240,10 @@ test('BlockRegistry: 全部 8 个树叶族都是 cutout 通道 + opaqueTable=1�
   // 这条现在钉的是「两套口径同时成立」：通道必须是 cutout（镂空不能丢），
   // 剔除语义必须是 1（否则顶点 ×8，同巨树叶的教训）。
   const ALL_LEAVES = [
-    'leaves', 'azalea_leaves', 'yellow_leaves', 'realistic_oak_leaves',
+    'leaves', 'azalea_leaves', 'yellow_leaves',
     'realistic_yellow_leaves', 'swamp_leaves', 'snow_leaves', 'sky_leaves',
   ];
-  assertEqual(ALL_LEAVES.length, 8, '8 个树叶族');
+  assertEqual(ALL_LEAVES.length, 7, '7 个树叶族（realistic_oak_leaves 已于 2026-11-04 删除）');
   for (const name of ALL_LEAVES) {
     const id = reg.idOf(name);
     assertTrue(id > 0, `${name} registered`);
@@ -358,4 +358,66 @@ test('巨型金字塔方块：faces-data 六面齐全且指向既有 sand tile�
   assertEqual(getFaceTile('sand_step', 2), 'sand', 'top = sand');
   assertEqual(getFaceTile('sand_step', 3), 'sand', 'bottom = sand');
   assertEqual(getFaceTile('sand_step', 0), 'sand_side', 'side = sand_side');
+});
+
+// --- v1.29：方块清单指纹（存档兼容性判定） ---
+
+/**
+ * 为什么需要指纹：`Persistence` 的 edits 行存**数字 ID**，而 ID = 注册顺序。
+ * 从 `blocks-data.js` 删/插一行声明会让后面所有 ID 前移 → 旧存档的玩家改动**静默错位**。
+ *
+ * 这三条用例对应三种失效：① 指纹不稳定（每次启动不同 → 每次都清档）；
+ * ② 指纹对顺序不敏感（ID 前移反而算作"兼容" → 静默错位）；
+ * ③ 指纹把属性也混进去（改个 cullMode 就清掉玩家的世界 —— 过度清档）。
+ */
+test('BlockRegistry: fingerprint 稳定且区分注册顺序（存档兼容性判定的地基）', () => {
+  const mk = (names) => {
+    const r = createRegistry();
+    for (const n of names) r.register(n, { solid: true });
+    r.freeze();
+    return r;
+  };
+  const a = mk(['air', 'stone', 'dirt', 'grass']);
+  const b = mk(['air', 'stone', 'dirt', 'grass']);
+  assertEqual(a.fingerprint(), b.fingerprint(), '同名同序 → 指纹相同（确定性）');
+
+  // 删中间一项 → 后面全部前移 → 必须判为不兼容
+  const removed = mk(['air', 'dirt', 'grass']);
+  assertTrue(a.fingerprint() !== removed.fingerprint(),
+    `删除中间一项后指纹必须变（${a.fingerprint()} ≠ ${removed.fingerprint()}）`);
+
+  // 插入一项 → 同样前移
+  const inserted = mk(['air', 'stone', 'cobblestone', 'dirt', 'grass']);
+  assertTrue(a.fingerprint() !== inserted.fingerprint(), '插入一项后指纹必须变');
+
+  // **顺序不同但集合相同**也必须不同（这才是 ID 前移的真实形态）
+  const swapped = mk(['air', 'dirt', 'stone', 'grass']);
+  assertTrue(a.fingerprint() !== swapped.fingerprint(),
+    '交换两项顺序 → 指纹必须变（ID 语义变了，集合相同不够）');
+});
+
+test('BlockRegistry: fingerprint 不把方块属性算进去（改属性不该清档）', () => {
+  const mk = (extra) => {
+    const r = createRegistry();
+    r.register('air', { solid: false });
+    r.register('stone', { solid: true, ...extra });
+    r.freeze();
+    return r;
+  };
+  // 只改渲染/物理属性（cullMode / opaque / emissive）→ 已存 edits 的解释不变 → 不得清档
+  assertEqual(mk({ cullMode: 'opaque' }).fingerprint(), mk({ cullMode: 'cutout', opaque: true, emissive: 15 }).fingerprint(),
+    '属性变化不影响指纹（只有「名字的有序清单」进指纹）');
+});
+
+test('BlockRegistry: 生产 registry 的 fingerprint 是 8 位十六进制串', () => {
+  const reg = createRegistry();
+  for (const def of BLOCKS) reg.register(def.name, def);
+  reg.freeze();
+  const fp = reg.fingerprint();
+  assertTrue(/^[0-9a-f]{8}$/.test(fp), `fingerprint 格式 ${fp}（8 位十六进制）`);
+  // 稳定性：同一份 BLOCKS 再建一次必须相同（模块级缓存/随机数都不许混进来）
+  const reg2 = createRegistry();
+  for (const def of BLOCKS) reg2.register(def.name, def);
+  reg2.freeze();
+  assertEqual(reg2.fingerprint(), fp, '两次构建的指纹相同');
 });

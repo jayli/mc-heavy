@@ -41,6 +41,36 @@ const OUT_PNG = path.join(ROOT, 'assets', 'icons-atlas.png');
 const OUT_JSON = path.join(ROOT, 'assets', 'icons.json');
 
 /**
+ * **alpha 处理模式直接从 registry 的 `cullMode` 派生**（红线 1：不另写一份方块名单）。
+ * 世界渲染的三条通道各自怎么消费贴图 alpha，图标就必须怎么消费：
+ *   - `opaque`     alphaTest=0        → 完全忽略 alpha（97 个实心方块）
+ *   - `cutout`     alphaTest=0.3      → 低于阈值丢弃（树叶/台阶/栏杆…）
+ *   - `transparent` 不过 alphaTest     → 保留半透明（玻璃/水）
+ *   - `none`      不渲染面 → 图标仍要有形状，按不透明处理
+ *
+ * **为什么必须派生而非在图标层列举**：枚举一份「哪些方块要透明」的名单就会漂移 ——
+ * 玩家看到背包里树叶是实心的、放到世界里却漏空，或反之。派生口径下改 `blocks-data.js`
+ * 的 `cullMode` 一处，世界渲染与背包图标同时跟上。
+ * @param {{cullMode?: string}} def BLOCKS 条目
+ * @returns {'opaque'|'cutout'|'blend'}
+ */
+function alphaModeOf(def) {
+  const mode = def?.cullMode ?? 'opaque';
+  if (mode === 'cutout') return 'cutout';
+  if (mode === 'transparent') return 'blend';
+  return 'opaque'; // opaque / none
+}
+
+/**
+ * 超采样倍率：形状轮廓抗锯齿。
+ *
+ * **4 是有依据的取值**：再高（8）在 32px 画布上每像素有 64 个样本，视觉上已无差别，
+ * 烘焙时间线性翻倍；4 恰好把斜边阶梯柔化到「斜上方拍照」该有的观感。贴图仍用
+ * nearest 采样（源纹理只有 16px，双线性会糊掉像素风），超采样只柔化**几何轮廓**。
+ */
+const ICON_SUPERSAMPLE = 4;
+
+/**
  * **按显示尺寸烘焙**（用户指定口径）：运行时零缩放 → 不需要 `background-size` 放大，
  * 图标就是显示尺寸，像素风锐利。两套尺寸对应两个消费方：
  *   40 = 快捷栏（`hotbar.js` 的 icon 40×40）
@@ -61,7 +91,8 @@ const PAD = 1; // 图标间留 1px 防 CSS 裁剪边缘渗色
  * 故 tile 局部 v=0 对应 PNG **最后一行**、v=1 对应第一行。`FACE_UVS` 的 v=y
  * （±X/±Z 面）→ y=0 是方块底部 → 采样图片底部，贴图不上下颠倒。
  *
- * 返回 [r,g,b,a] —— 平面路径需要 alpha（植被贴图透明像素），等轴测只用 rgb。
+ * 返回 [r,g,b,a] —— 两条路径都需要 alpha：等轴测按通道语义消费（玻璃/树叶镂空），
+ * 平面路径原样保留（它们本来就是带透明像素的贴图）。
  */
 function sampleTexAt(png, u, v) {
   const x = Math.max(0, Math.min(png.width - 1, Math.floor(u * png.width)));
@@ -71,10 +102,13 @@ function sampleTexAt(png, u, v) {
 }
 
 /**
- * 逐面采样回调（v1.26 关键修正）：按 `face` 取对应贴图。
+ * 逐面采样回调（v1.26 关键修正）：按 `face` 取对应贴图，并**返回 alpha**（v1.29）。
  * `grass` 顶面采 `grass_carried`（绿）、侧面采 `grass_side_carried`（土）——
  * 只采 face 0 会让顶面渲成土色（实测配色错误）。
  * null 面（该面不渲染）回落 face 0 的贴图：等轴测图标不存在「不渲染面」语义。
+ *
+ * **必须把 alpha 一并返回**：`Glass.png` 的透明像素 RGB 是 (0,0,0)，丢掉 alpha 就
+ * 变成黑底；树叶孔洞同理变成黑点（用户报告「镂空过去是黑色的」）。
  */
 function makeFaceSampler(name) {
   const byFace = new Map();
@@ -84,7 +118,7 @@ function makeFaceSampler(name) {
       byFace.set(face, tile ? loadTex(tile) : null);
     }
     const png = byFace.get(face);
-    if (!png) return [0, 0, 0]; // 该方块无 faces-data 条目（正常不触发，check:data 会抓）
+    if (!png) return [0, 0, 0, 255]; // 该方块无 faces-data 条目（正常不触发，check:data 会抓）
     return sampleTexAt(png, u, v);
   };
 }
@@ -94,8 +128,10 @@ function makeFaceSampler(name) {
 /** 等轴测图标（实心方块 + 有几何模板的异形方块） */
 function bakeIsoIcon(name, def, size) {
   const quads = (def.geometry && TEMPLATES[def.geometry]) || cubeQuads();
-  const rgba = renderIsoIcon(quads, size, makeFaceSampler(name));
-  return rgba; // alpha 已由 renderIsoIcon 处理（形状外 = 0，形状内 = 255）
+  return renderIsoIcon(quads, size, makeFaceSampler(name), 1.12, {
+    alphaMode: alphaModeOf(def),
+    samples: ICON_SUPERSAMPLE,
+  }); // alpha 由 renderIsoIcon 按通道语义合成（形状外 = 0）
 }
 
 /**

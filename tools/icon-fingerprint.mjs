@@ -15,7 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { TEMPLATES } from '../src/mesh/mesher.js';
-import { cubeQuads } from '../src/mesh/iso-icon.js';
+import { cubeQuads, ISO_RENDER_VERSION } from '../src/mesh/iso-icon.js';
 import { getFaceTile } from '../src/voxel/faces-data.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -51,6 +51,19 @@ export function texHash(tileName) {
 
 /** 等轴测图标的三个可见面（与 iso-icon.js 的 VISIBLE_FACES 同口径） */
 const VISIBLE_FACES = [0, 2, 4];
+
+/**
+ * 图标的 alpha 处理模式，**与烘焙脚本 `alphaModeOf()` 同一口径**（红线 1）。
+ * 直接从 `cullMode` 派生 —— 不另立一份「哪些方块要透明」名单（那会与世界渲染漂移）。
+ * @param {{cullMode?: string}} def
+ * @returns {'opaque'|'cutout'|'blend'}
+ */
+function alphaModeOf(def) {
+  const mode = def?.cullMode ?? 'opaque';
+  if (mode === 'cutout') return 'cutout';
+  if (mode === 'transparent') return 'blend';
+  return 'opaque';
+}
 
 /**
  * **非实心方块保持平面贴图**（§4.5.4 v1.26，用户指定口径）：等轴测立方体对植被/水/云
@@ -117,12 +130,19 @@ function flatTile(name) {
  */
 export function fingerprint(name, def, flat) {
   const parts = [];
+  // **渲染算法版本必须进指纹**（v1.29）：指纹只覆盖“烘焙读了什么”（几何 + 贴图内容），
+  // 覆盖不到“怎么铺”。改重心插值 / alpha 传播 / 超采样后，同一份输入会烘出完全不同的
+  // 像素（实测 v1.29 的重心修正让 114 个等轴测图标**全部逐像素变化**）—— 若指纹不变，
+  // “改了算法忘重烘”就是静默过期（玩家一直看到旧图标，而门禁放行）。
+  parts.push(`rv:${ISO_RENDER_VERSION}`);
   if (flat) {
     // 平面路径：只采 flatTile(name) 这一张（与 bakeFlatIcon 同口径）
     const tile = flatTile(name) ?? '';
     parts.push(`flat;t:${tile}${tile ? `#${texHash(tile)}` : ''}`);
     return parts.join(';');
   }
+  // alpha 处理模式进指纹：opaque / cutout / blend 会烘出不同 alpha（透明与否）
+  parts.push(`alpha:${alphaModeOf(def)}`);
   const quads = (def?.geometry && TEMPLATES[def.geometry]) || cubeQuads();
   parts.push(`geom:${def?.geometry ?? 'cube'}`);
   parts.push(`quads:${quads.length}`);

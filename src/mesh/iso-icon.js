@@ -43,6 +43,33 @@ function isoDepth(x, y, z) {
 // 自发光的区分同理）。键 = mesher 面索引（0:+X, 2:+Y, 4:+Z）。
 export const ISO_SHADE = { 0: 0.75, 2: 1.0, 4: 0.55 };
 
+/**
+ * cutout 阈值：贴图 alpha 低于它整片丢弃。
+ *
+ * **数值必须与世界渲染的 cutout 通道一致**（`materials.js` 的 `cutout: makeMaterial({
+ * alphaTest: 0.3 })`）—— 否则背包里的树叶/玻璃镂空形状会与实际渲染的轮廓不同，
+ * 玩家按图标判断“能看见背后多少”会被误导（红线 1：渲染语义只有一份权威）。
+ */
+export const ISO_ALPHA_TEST = 0.3;
+
+/**
+ * 图标渲染算法版本（进输入指纹）。
+ *
+ * **为什么需要它**：指纹只覆盖“烘焙读了什么”（几何 + 贴图内容），覆盖不到“怎么铺”。
+ * v1.29 修掉重心权重错位后，同一份几何 + 贴图会烘出完全不同的像素（实测 114 个等轴测
+ * 图标全部逐像素变化）—— 若指纹不变，“改了算法忘重烘”就是静默过期（玩家看到旧图标）。
+ * 改任何影响输出的渲染细节（投影/插值/阴影系数/超采样）都要 bump 它。
+ */
+export const ISO_RENDER_VERSION = 'v1.29';
+
+/**
+ * alpha 处理模（与世界渲染的三条通道一一对应，不是另立的 UI 规则）：
+ *   - `'opaque'`：opaque 通道 alphaTest=0 → **忽略**贴图 alpha（97 个实心方块走这条）
+ *   - `'cutout'`：cutout 通道 alphaTest=0.3 → 低于阈值丢弃、其余归一为不透明
+ *   - `'blend'`：transparent 通道 → 保留原 alpha（玻璃/水）
+ */
+const ALPHA_MODES = new Set(['opaque', 'cutout', 'blend']);
+
 // 只取朝向观察者的三个面：+X(0) / +Y(2) / +Z(4)。
 // -X/-Y/-Z 背向观察者，画出来会被前面的面完全遮挡（painter 算法也会覆盖掉），
 // 提前剔除省一半扫描线填充。
@@ -130,6 +157,8 @@ export function cubeQuads() {
  * → 后画的并列面不覆盖先画的，保持 painter 的既有语义）。
  *
  * 返回 { owner, bary }：owner[y][x] = 多边形索引（-1 = 无覆盖），bary[y][x] = UV 插值权重。
+ *
+ * `size` 由调用方决定；超采样在上层（`renderIsoIcon`）以大尺寸跑本函数再降采样。
  */
 function scanFill(polys, size, toPx) {
   const owner = new Int32Array(size * size).fill(-1);
@@ -175,15 +204,22 @@ function scanFill(polys, size, toPx) {
 }
 
 // 像素中心落在哪个三角形、对应重心权重（用于 UV 插值）。返回 null = 落空（退化三角形）。
+//
+// **v1.29 修的错位 bug（用户报告「可见的三个面变花了」的根因）**：旧实现把
+// `{ w: [1-w1-w2, w1, w2], idx: [i,j,k] }` 返回 —— 而 `w1`/`w2` 是顶点 **A** 与 **B**
+// 的重心坐标（标准推导：`wA = ((B-C)×(P-C)) / ((B-C)×(A-C))`），`1-w1-w2` 才是 C 的。
+// 配成 `[i,j,k]` 等于把权重**循环旋转**一位（A↔C、B↔A），三角形内部 UV 被斜向剪切：
+// 贴图每块图案都被拉伸且方向错，观感就是“花了”。实心方块三面拼在一起时边界处错位最明显。
+// **判据在 `test-iso-icon.js` 的“UV 按重心插值正确落到面内位置”**（从像素反解 UV 比对）。
 function baryWeights(p, pts, tris, px, py) {
   for (const [i, j, k] of tris) {
     const A = pts[i], B = pts[j], C = pts[k];
     const den = (B[1] - C[1]) * (A[0] - C[0]) + (C[0] - B[0]) * (A[1] - C[1]);
     if (Math.abs(den) < 1e-9) continue; // 退化三角形（面积 0）
-    const w1 = ((B[1] - C[1]) * (px - C[0]) + (C[0] - B[0]) * (py - C[1])) / den;
-    const w2 = ((C[1] - A[1]) * (px - C[0]) + (A[0] - C[0]) * (py - C[1])) / den;
+    const wA = ((B[1] - C[1]) * (px - C[0]) + (C[0] - B[0]) * (py - C[1])) / den;
+    const wB = ((C[1] - A[1]) * (px - C[0]) + (A[0] - C[0]) * (py - C[1])) / den;
     // 容差 0.01：像素中心恰在三角形边上时避免因浮点误差落空
-    if (w1 >= -0.01 && w2 >= -0.01 && w1 + w2 <= 1.01) return { w: [1 - w1 - w2, w1, w2], idx: [i, j, k] };
+    if (wA >= -0.01 && wB >= -0.01 && wA + wB <= 1.01) return { w: [wA, wB, 1 - wA - wB], idx: [i, j, k] };
   }
   return null;
 }
@@ -202,30 +238,53 @@ function baryWeights(p, pts, tris, px, py) {
  * 调用方按 face 取对应贴图即可（`getFaceTile(name, face)`）。向后兼容：忽略第三参的
  * 旧回调仍能工作（单测的恒色回调即如此）。
  *
+ * **v1.29：alpha 传播 + 超采样**
+ *   - 旧实现末尾硬编码 `out[o+3] = 255`，把贴图 alpha 完全丢弃。而 `Glass.png` 的透明
+ *     像素 RGB 是 (0,0,0)、树叶孔涞处也残留暗色 → 玻璃渲成黑底、树叶孔变成黑点（用户
+ *     报告“镂空过去是黑色的”）。现按 `alphaMode` 区分（与世界渲染三条通道一一对应）。
+ *   - `samples` 超采样：把画布放大 `samples` 倍跑同一条扫描线/深度管线，再按 **alpha
+ *     预乘平均**降采样 —— 预乘是必要的，否则轮廓像素的 RGB 会抳进“无覆盖”样本的黑 0，
+ *     边缘发黑（与贴图 alpha 无关的第二条黑边来源）。
+ *
  * @param {Array<{v:number[][],face:number,uv?:number[][]}>} quads TEMPLATES 条目或 cubeQuads()
  * @param {number} size 画布边长（px，按显示尺寸烘焙：快捷栏 40 / 背包 32）
  * @param {(u:number,v:number,face:number)=>number[]} sampleTex 贴图采样回调：
- *        tile 局部 UV(0..1) + 面索引 → [r,g,b]（单测传恒色回调验证明暗分层；
- *        烘焙脚本按 face 取 PNG 做 nearest 采样）
+ *        tile 局部 UV(0..1) + 面索引 → `[r,g,b]` 或 `[r,g,b,a]`（单测传恒色回调验证明暗
+ *        分层；烘焙脚本按 face 取 PNG 做 nearest 采样）。**三元素返回值按不透明处理**
+ *        （向后兼容：旧调用方与单测无需改）。
  * @param {number} [spanPad=1.12] 包围盒归一化留白系数（形状占约 89% 画布）
+ * @param {{alphaMode?: 'opaque'|'cutout'|'blend', samples?: number}} [opts]
+ *        `alphaMode` 见模块顶部注释（默认 `'opaque'` = 旧行为）；`samples` 为超采样
+ *        倍率（默认 1 = 不超采样）
  * @returns {Uint8ClampedArray} RGBA 缓冲，长度 size²×4
  */
-export function renderIsoIcon(quads, size, sampleTex, spanPad = 1.12) {
+export function renderIsoIcon(quads, size, sampleTex, spanPad = 1.12, opts = {}) {
+  const alphaMode = opts.alphaMode ?? 'opaque';
+  if (!ALPHA_MODES.has(alphaMode)) throw new Error(`未知的 alphaMode：${alphaMode}`);
+  const samples = Math.max(1, Math.floor(opts.samples ?? 1));
+  const ss = size * samples; // 超采样画布边长（samples=1 时就是 size）
+
   const polys = isoPolygons(quads);
   const bb = isoBBox(polys);
-  // 按最长边归一化（保持宽高比，不拉伸变形）
+  // 按最长边归一化（保持宽高比，不拉伸变形）。⚠️ 归一化量与超采样倍数无关：
+  // 先把世界坐标映到 `ss` 像素，再在降采样时回到 size —— 两条路径的几何完全重合。
   const span = Math.max(bb.maxX - bb.minX, bb.maxY - bb.minY) * spanPad;
   const cx = (bb.minX + bb.maxX) / 2, cy = (bb.minY + bb.maxY) / 2;
   const toPx = ([sx, sy]) => [
-    ((sx - cx) / span) * size + size / 2,
-    ((sy - cy) / span) * size + size / 2,
+    ((sx - cx) / span) * ss + ss / 2,
+    ((sy - cy) / span) * ss + ss / 2,
   ];
-  const { owner, bary } = scanFill(polys, size, toPx);
+  const { owner, bary } = scanFill(polys, ss, toPx);
 
-  const out = new Uint8ClampedArray(size * size * 4); // 默认全 0 = 全透明
-  for (let idx = 0; idx < size * size; idx++) {
+  // 中间缓冲（超采样分辨率）：RGB 已乘 shade，A = **逐样本的有效不透明度**。
+  // ⚠️ “几何覆盖”与“贴图 alpha”是两件事，必须分开：旧实现直接把贴图 alpha 写进 A，
+  // 于是 opaque 模式（世界 alphaTest=0，应完全忽略贴图 alpha）下 `Glass.png` 的透明
+  // 像素会连带把**几何覆盖**也抹掉 → 整个图标消失。现按通道语义合成有效 alpha：
+  //   opaque → 只看覆盖；cutout → 覆盖且贴图 alpha 达阈值；blend → 覆盖 × 贴图 alpha
+  const pre = new Uint8ClampedArray(ss * ss * 4);
+  for (let idx = 0; idx < ss * ss; idx++) {
     const pi = owner[idx];
-    if (pi < 0) continue; // 形状外 → alpha 0（轮廓可见）
+    if (pi < 0) continue; // 形状外 → 全 0（轮廓可见）
     const p = polys[pi];
     const o = idx << 2;
     // UV：quad 自带 uv 优先（cubeQuads 与吊灯棱柱等自定义 UV），否则按面查 mesher 的表
@@ -239,12 +298,63 @@ export function renderIsoIcon(quads, size, sampleTex, spanPad = 1.12) {
         v += bw.w[k] * uvs[bw.idx[k]][1];
       }
     }
-    const [r, g, b] = sampleTex(u, v, p.face);
+    const texel = sampleTex(u, v, p.face);
     const shade = ISO_SHADE[p.face];
-    out[o] = Math.round(r * shade);
-    out[o + 1] = Math.round(g * shade);
-    out[o + 2] = Math.round(b * shade);
-    out[o + 3] = 255;
+    // 第四分量缺省 = 不透明（向后兼容三元素回调）
+    const texAlpha = (texel[3] === undefined ? 255 : texel[3]) / 255;
+    const aEff = alphaMode === 'opaque' ? 1
+      : alphaMode === 'cutout' ? (texAlpha >= ISO_ALPHA_TEST ? 1 : 0)
+      : texAlpha; // blend
+    pre[o] = Math.round(texel[0] * shade);
+    pre[o + 1] = Math.round(texel[1] * shade);
+    pre[o + 2] = Math.round(texel[2] * shade);
+    pre[o + 3] = Math.round(aEff * 255);
+  }
+
+  if (samples === 1) {
+    applyAlphaMode(pre, alphaMode);
+    return pre;
+  }
+
+  // 降采样：alpha 预乘平均 → 再解预乘（避免轮廓像素被“无覆盖样本的黑 0”拉暗）
+  const out = new Uint8ClampedArray(size * size * 4);
+  const n = samples * samples;
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      let r = 0, g = 0, b = 0, a = 0;
+      for (let dy = 0; dy < samples; dy++) {
+        for (let dx = 0; dx < samples; dx++) {
+          const o = (((y * samples + dy) * ss) + (x * samples + dx)) << 2;
+          const al = pre[o + 3] / 255;
+          r += pre[o] * al;
+          g += pre[o + 1] * al;
+          b += pre[o + 2] * al;
+          a += al;
+        }
+      }
+      const o = (y * size + x) << 2;
+      if (a > 0) { // 解预乘（a 是覆盖度之和，不是归一化 alpha）
+        out[o] = Math.round(r / a);
+        out[o + 1] = Math.round(g / a);
+        out[o + 2] = Math.round(b / a);
+      }
+      out[o + 3] = Math.round((a / n) * 255);
+    }
   }
   return out;
+}
+
+/**
+ * 单样本（`samples: 1`）下的 alpha 归一。
+ *
+ * **降采样路径不能跑本函数**：那里的部分 alpha 是**几何覆盖度**（抗锯齿的来源），
+ * 把它也按 0.3 二元化就变成硬阶梯（等于白做超采样）。二元化必须逐样本做
+ * （已在渲染循环里按 `aEff` 完成），这里只负责单样本路径的收起。
+ */
+function applyAlphaMode(buf, alphaMode) {
+  if (alphaMode === 'blend') return;
+  for (let i = 3; i < buf.length; i += 4) {
+    if (alphaMode === 'opaque') { if (buf[i] > 0) buf[i] = 255; }
+    else buf[i] = buf[i] / 255 >= ISO_ALPHA_TEST ? 255 : 0; // cutout
+  }
 }

@@ -132,3 +132,69 @@ test('重启恢复：旧存档无 playerPos → 回落 City 出生点（兼容�
   expect(after.y).toBe(after.spawnY);
   expect(after.z).toBe(after.spawnZ);
 });
+
+/**
+ * 方块清单指纹校验（v1.29）：**方块 ID 前移时旧改动必须被明确丢弃，而不是静默错位**。
+ *
+ * ## 为什么需要这条用例
+ * edits 行存的是**数字方块 ID**，而 ID = 注册顺序。从 `blocks-data.js` 删/插一行声明会让
+ * 后面所有 ID 前移 → 旧存档的玩家改动变成别的方块（不报错、不抛异常，只是世界内容变了）。
+ * 2026-11-04 按用户裁定删 `realistic_oak_leaves`（当时排第 17、后面还有 122 个）就会踩到。
+ *
+ * ## 判据三层（缺一都会留下静默失效的形态）
+ *   ① `meta.blockFp` 被修成当前值（不修则**每次启动**都重复清档）；
+ *   ② edits store **真的被清空**（只改 meta 不清 edits 等于没做事）；
+ *   ③ 打出 `方块清单已变` 的 console.warn（用户要知道自己手工盖的东西没了）。
+ *
+ * ⚠️ **必须先把页面自己的写盘停掉**（`_lastSavedPos = null` + 禁 `flushNow`）：
+ * `_savePlayerPos` 是 merge 后整行 put，会在我们伪造 `deadbeef` 之后把它写回当前值 ——
+ * 实测不做这一步时，reload 读到的 `blockFp` 仍是正确的当前值，用例**永远看不到不匹配**。
+ */
+test('存档：方块清单指纹不匹配时丢弃旧改动并修复 meta（ID 前移不静默错位）', async ({ page }) => {
+  test.setTimeout(120_000);
+  const warns = [];
+  page.on('console', (m) => { if (m.text().includes('方块清单已变')) warns.push(m.text()); });
+
+  await page.goto('/?vd=2');
+  await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 60_000 });
+
+  // 1. 停写盘 + 伪造「方块清单已变」的旧存档（一条真实 column 的 edits）
+  const faked = await page.evaluate(async () => {
+    const g = window.__MC_GAME__;
+    g.persistence.cancelPendingFlush();
+    g._lastSavedPos = null;            // 关闭位置写盘（唯一写入点据此早退）
+    g.persistence.flushNow = () => {}; // 禁掉 edits flush
+    const db = g.persistence.db;
+    const col = g.world.columns.keys().next().value;
+    await new Promise((res, rej) => {
+      const tx = db.transaction(['meta', 'edits'], 'readwrite');
+      tx.objectStore('edits').put({ columnKey: col, edits: [{ index: 12345, id: 2, meta: 0 }] });
+      const store = tx.objectStore('meta');
+      const get = store.get('main');
+      get.onsuccess = () => { const row = get.result; row.blockFp = 'deadbeef'; store.put(row); };
+      tx.oncomplete = res; tx.onerror = rej;
+    });
+    return { col, cur: g.registry.fingerprint() };
+  });
+  expect(faked.cur).not.toBe('deadbeef'); // 前提：伪造值确实不同于当前值
+
+  // 2. 重启
+  await page.reload();
+  await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 60_000 });
+
+  // 3. 三层判据
+  const after = await page.evaluate(async () => {
+    const g = window.__MC_GAME__;
+    const db = g.persistence.db;
+    const rows = await new Promise((res) => { const tx = db.transaction('edits'); const q = tx.objectStore('edits').getAll(); q.onsuccess = () => res(q.result); });
+    const meta = await new Promise((res) => { const tx = db.transaction('meta'); const q = tx.objectStore('meta').get('main'); q.onsuccess = () => res(q.result); });
+    return {
+      cells: rows.reduce((s, r) => s + r.edits.length, 0),
+      fp: meta.blockFp,
+      cur: g.registry.fingerprint(),
+    };
+  });
+  expect(after.cells, '② 旧改动必须被清空（不清 = ID 前移后静默错位）').toBe(0);
+  expect(after.fp, '① meta.blockFp 必须修成当前值（不修则每次启动重复清档）').toBe(after.cur);
+  expect(warns.length, '③ 必须给出 console.warn（玩家要知道手工改动没了）').toBeGreaterThan(0);
+});
