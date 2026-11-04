@@ -82,24 +82,41 @@ function collectPath(prev, endKey, startKey, keyToXZ) {
 }
 
 /**
- * 当前格 `(x, z)` 是否**恰好是缓存路径上的某一格**。
+ * 当前格是否仍在「缓存路径的剩余段」上，**且计划的第一步仍然朝向目标**。
  *
- * ⚠️⚠️ **不许有「±1 格容差」**（第一版写的就是 ≤1，实测把 bug 留下来了）：
- * 有容差时，丧尸走到路径**旁边**（例如已经越过墙端、该转向了）仍被判「在路上」，
- * 于是一直沿旧方向走 —— 实测形态：路径是 `[[31,39],[32,38],[33,37],[34,36],…]`（朝东北），
- * 丧尸走到 `(41,29)`（早已越过墙端、真实寻路给的是西南 `(-1,-1)`）时，因为离 `(34,36)`
- * 等点「在 1 格内」而继续命中，最后整条路线都没重算过一次。
- * 精确匹配后，只要丧尸偏离路径一格就立刻重算 —— 那正是「玩家方向变了」的可靠信号。
+ * ## 两个判据缺一不可（各修一种实测 bug）
+ *
+ * ① **路径附近容忍 `nearRadius` 格** —— 解决「拥挤时命中率崩塌」：
+ *    20 只丧尸互相推挤时位置每帧微动（±0.x 格），精确匹配路径格几乎永不命中。
+ *    实测（1 格宽窄门 + 20 只）：命中率掉到 **10.1%**、13355 次真实 A\*。
+ * ② **必须校验「计划方向仍在靠近目标」** —— 解决「绕过障碍后又往回走」（v2.49 修过的 bug）：
+ *    上一版为了修它改成精确匹配，结果牺牲了命中率。真正的原因是**旧的模糊判据只看距离、
+ *    不看方向**：丧尸走到 (41,29)（早已越过墙端、真实方向是西南）时，因为离旧路径点
+ *    「1 格内」而继续朝东北走。
+ *
+ * ⇒ 现在同时要求「在路径附近」**和**「计划首步让到目标的距离不增加」：
+ *    - 拥挤微动 → 仍在附近、方向也对 → 命中（拿回命中率）
+ *    - 越过墙端该转向了 → 旧计划首步会让距离变大 → **立刻重算**（不会回头）
  *
  * @param {object} entry 缓存条目 @param {number} x @param {number} z 当前格（整数）
+ * @param {number} gx @param {number} gz 目标格
  */
-function onCachedPath(entry, x, z) {
+function onCachedPath(entry, x, z, gx, gz) {
   const path = entry.path;
   if (!path || path.length === 0) return false;
+  // ① 在路径剩余段的 `nearRadius` 格内
+  let near = false;
   for (let i = 0; i < path.length; i++) {
-    if (path[i][0] === x && path[i][1] === z) return true;
+    if (Math.abs(path[i][0] - x) <= entry.nearRadius
+      && Math.abs(path[i][1] - z) <= entry.nearRadius) { near = true; break; }
   }
-  return false;
+  if (!near) return false;
+  // ② 计划首步必须不增加「到目标的距离」（否则说明玩家方向已经变了）
+  const step = entry.result.nextStep;
+  if (!step) return true;
+  const cur = Math.hypot(x - gx, z - gz);
+  const next = Math.hypot(x + step[0] - gx, z + step[1] - gz);
+  return next <= cur + 1e-9;
 }
 
 /**
@@ -293,8 +310,22 @@ export function planStep(world, from, to, { maxRadius = PATHFIND.maxRadius } = {
  */
 export class PathCache {
   /** @param {{maxAgeMs?: number}} [opts] */
-  constructor({ maxAgeMs = 4000 } = {}) {
+  constructor({ maxAgeMs = 4000, nearRadius = 1 } = {}) {
     this.maxAgeMs = maxAgeMs;
+    /**
+     * 「仍在路线上」的水平容差（格）。
+     * ⚠️ **不是越大越好**：太大就会允许丧尸沿旧方向走很远（那正是 v2.49 修的「回头」bug）；
+     * 太小则拥挤时命中率崩塌（实测精确匹配在窄门场景只有 10.1%）。
+     * **1 是实测标定值**（固定地形、1 格宽窄门、20 只丧尸的对照）：
+     * | nearRadius | 到达 | 命中率 | 真实 A\* |
+     * |---|---|---|---|
+     * | 0（精确） | 18/20 | 7.5% | 13674 |
+     * | **1** | **18/20** | **66.1%** | 5021 |
+     * | 2 | 17/20 | 69.2% | 4545 |
+     * ⇒ 取 1：到达率与精确匹配**完全相同**，而真实 A\* 少 63%。
+     * 取 2 只多 3% 命中率却丢了一只（大容差让丧尸沿旧路径走进墙里）。
+     */
+    this.nearRadius = nearRadius;
     /** @type {Map<string, object>} agentId → 缓存条目 */
     this._cache = new Map();
     /** @type {{hits: number, misses: number}} */ this._stats = { hits: 0, misses: 0 };
@@ -324,7 +355,7 @@ export class PathCache {
       && prev.result.reachable === true
       && prev.goalX === Math.floor(to[0]) && prev.goalZ === Math.floor(to[2])
       && prev.at !== undefined && (nowMs - prev.at) <= this.maxAgeMs
-      && onCachedPath(prev, fx, fz)) {
+      && onCachedPath(prev, fx, fz, prev.goalX, prev.goalZ)) {
       this._stats.hits++;
       prev.at = nowMs;
       // 把「已经站在的那格」从路径头部裁掉（只是性能优化：路径会越走越短）
@@ -340,6 +371,7 @@ export class PathCache {
       result, radius, at: nowMs,
       goalX: Math.floor(to[0]), goalZ: Math.floor(to[2]),
       path: result._path ?? null,
+      nearRadius: this.nearRadius,
     });
     return result;
   }

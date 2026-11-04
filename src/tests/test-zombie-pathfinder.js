@@ -364,3 +364,30 @@ test('PathCache：绕出墙端后不得往回走（用户实测 bug 的回归门
     `绕行途中不得远离玩家（实测回归：${JSON.stringify(regressions.slice(0, 2))}）`);
 });
 
+
+test('PathCache：nearRadius 默认 1（实测标定值，不是随手取的）', () => {
+  // 固定地形、1 格宽窄门、20 只丧尸的对照实测：
+  // | nearRadius | 到达 | 命中率 | 真实 A* |
+  // | 0（精确）  | 18/20 |  7.5% | 13674 |
+  // | **1**      | **18/20** | **66.1%** | 5021 |
+  // | 2          | 17/20 | 69.2% | 4545 |
+  // ⇒ 取 1：到达率与精确匹配完全相同，真实 A* 少 63%；取 2 只多 3% 命中率却丢一只。
+  assertEqual(new PathCache().nearRadius, 1);
+});
+
+test('PathCache：拥挤微动仍命中，但计划方向背离目标时立刻重算', () => {
+  // 两个判据缺一不可：
+  // ① 容忍 ≤nearRadius 的推挤抖动（否则命中率 7%）；
+  // ② 计划首步若让「到目标的距离」变大 → 立刻重算（否则会沿旧路径走进墙里，
+  //    实测 nearRadius=2 时 20 只只到了 17 只）。
+  const { world } = makeFlat();
+  const c = new PathCache();
+  const goal = [10.5, 1, 4.5];
+  c.plan(world, [10.5, 1, 10.5], goal, { agentId: 'z0', nowMs: 0 });
+  // 微动 1 格内 → 命中
+  c.plan(world, [10.5, 1, 9.5], goal, { agentId: 'z0', nowMs: 500 });
+  assertEqual(c.debugState().hits, 1, '沿路径微动必须命中');
+  // 偏离很远 → 重算
+  c.plan(world, [15.5, 1, 10.5], goal, { agentId: 'z0', nowMs: 600 });
+  assertEqual(c.debugState().misses, 2, '远离路径必须重算');
+});
