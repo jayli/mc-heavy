@@ -148,9 +148,16 @@ test('PathCache：沿路径前进时命中', () => {
   const { world } = makeFlat();
   const c = new PathCache();
   const a = c.plan(world, [10.5, 1, 10.5], [10.5, 1, 4.5], { agentId: 'z0', nowMs: 0 });
+  // ⚠️ 起点必须**恰好在缓存路径上**（`onCachedPath` 是精确匹配，不留 ±1 容差 ——
+  // 有容差会让丧尸偏离路线后仍沿旧方向走，那是一个实测 bug，见 onCachedPath 的注释）。
+  // 从 (10,10) 朝 (10,4) 的 A* 路径第一格是 (10,9)。
   const b = c.plan(world, [10.5, 1, 9.5], [10.5, 1, 4.5], { agentId: 'z0', nowMs: 500 });
   assertEqual(a, b, '沿路径前进必须复用');
   assertEqual(c.debugState().misses, 1);
+  // 偏离路线一格 → 必须重算
+  const d = c.plan(world, [13.5, 1, 9.5], [10.5, 1, 4.5], { agentId: 'z0', nowMs: 600 });
+  assertEqual(c.debugState().misses, 2, '偏离路线必须重算（精确匹配语义）');
+  assertTrue(d.reachable);
 });
 
 test('PathCache：目标换格 / 超时 / 不同丧尸 各自重算', () => {
@@ -173,7 +180,8 @@ test('PathCache：forget(id) 只清该只', () => {
   c.forget('z0');
   c.plan(world, [10.5, 1, 10.5], [10.5, 1, 4.5], { agentId: 'z0', nowMs: 100 });
   assertEqual(c.debugState().misses, 3);
-  c.plan(world, [10.5, 1, 10.5], [10.5, 1, 4.5], { agentId: 'z1', nowMs: 100 });
+  // z1 的缓存还在（起点在它自己的路径上）→ 命中
+  c.plan(world, [10.5, 1, 9.5], [10.5, 1, 4.5], { agentId: 'z1', nowMs: 100 });
   assertEqual(c.debugState().hits, 1);
 });
 
@@ -319,3 +327,45 @@ test('PathCache：不可达结果不缓存（拆墙后必须立刻恢复，实�
   const b = c.plan(world, pos, goal, { agentId: 'z0', nowMs: 1050 });
   assertTrue(b.reachable, '拆开后必须立刻可达（不得缓存「不可达」）');
 });
+
+// ---------- v2.49：绕出障碍后必须直冲玩家，不能沿旧计划回头 ----------
+
+test('PathCache：绕出墙端后不得往回走（用户实测 bug 的回归门）', () => {
+  // 用户 2026-11-04：「绕过障碍之后已经可以直线走向玩家了，这时丧尸和玩家之间已经没有障碍了，
+  // 但是丧尸直接回头原路返回了，没有走向玩家」。
+  //
+  // ## 根因（不是缓存，是 `planStep` 用纯 BFS）
+  //
+  // 等代价 BFS 只保证「步数最少」。目标在 10 格内时常有**多条等步数路径**，BFS 按邻接顺序
+  // （N,NE,E,SE,S,SW,W,NW）任选一条 ⇒ 选中「先贴墙、再拐向玩家」那条。
+  // 实测：丧尸 (288,170)、玩家 (283,168)，NW `(287,169)` 曼哈顿只有 5（最靠近玩家），
+  // 但 BFS 先探到 SW `(287,171)`（曼哈顿 7，**背离玩家**），因为总步数同样是 4。
+  // 观感 = 「绕出墙端后又往反方向走」。
+  //
+  // ## 判据
+  //
+  // 沿整条绕行路径走一遍，**每一步都必须让「到玩家的距离」不增加**
+  // （允许持平：沿墙滑行时确实可能暂时不靠近）。
+  // 这条判据直接对应用户看到的现象，且不依赖「缓存必须等于实时」这种过强的假设。
+  const { world, set } = makeFlat({ size: 128 });
+  for (let x = 20; x <= 40; x++) for (let dy = 0; dy < 3; dy++) set(x, 1 + dy, 30);
+  const goal = [30.5, 1, 20.5];
+  const c = new PathCache();
+  let pos = [30, 40];
+  let t = 0;
+  let lastDist = Math.hypot(pos[0] - goal[0], pos[1] - goal[2]);
+  const regressions = [];
+  for (let i = 0; i < 40; i++) {
+    const r = c.plan(world, [pos[0] + 0.5, 1, pos[1] + 0.5], goal, { agentId: 'z0', nowMs: t });
+    if (!r.reachable || r.nextStep === null) break;
+    const nxt = [pos[0] + r.nextStep[0], pos[1] + r.nextStep[1]];
+    const dist = Math.hypot(nxt[0] - goal[0], nxt[1] - goal[2]);
+    if (dist > lastDist + 1e-9) regressions.push({ from: [...pos], step: r.nextStep, distBefore: +lastDist.toFixed(2), distAfter: +dist.toFixed(2) });
+    lastDist = dist;
+    pos = nxt;
+    t += 500;
+  }
+  assertEqual(regressions.length, 0,
+    `绕行途中不得远离玩家（实测回归：${JSON.stringify(regressions.slice(0, 2))}）`);
+});
+

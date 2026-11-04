@@ -1551,16 +1551,17 @@ test('避障: zombieCollidesAt 与 zombieStepUpY 是本仓的单一权威（物�
 // 纯函数用例（a~i）只证明「探针本身对」；这一组证明「它真的接在 AI 回包路径上」——
 // M6/M7 的教训：只测纯函数会漏掉「没接线」，而那在方块与位置上完全看不出来。
 
-test('避障 j) _applyIntent 写入的是偏转后的速度（接线，不是纯函数）', async () => {
-  const { zombies, pool, playerPosition, world, ids } = makeAiFixture();
+test('避障 j) _applyIntent 写入的是偏转后的速度（接线，不是纯函数）', () => {
+  // ⚠️ v2.47 起决策来自本地导航，**离线 RPC 回包路径已删除** ⇒ 原先用 `pool.replies`
+  // 注入「纯 +X 速度」的方式失效。这里直接调 `_applyIntent`（它就是偏转发生的唯一位置），
+  // 测的仍然是同一件事：**写进 state 的速度必须是偏转后的**，而不是原始意图。
+  const { zombies, world, ids } = makeAiFixture();
   // 2 格高墙挡住 +X 直线（丧尸半宽 0.3、墙在 x=11）
   world.setBlock(11, 1, 0, ids.stone);
   world.setBlock(11, 2, 0, ids.stone);
   const id = zombies.spawn([10.5, 1, 0.5], { source: 'test' });
   const generation = zombies.entities.get(id).generation;
-  pool.replies.push({ updates: [{ id, generation, vx: ZOMBIE.speed, vz: 0, mode: 'chasing' }] });
-  zombies.update(ZOMBIE.aiPeriod, { playerPosition, nowMs: 1000 });
-  await Promise.resolve(); await Promise.resolve();
+  zombies._applyIntent({ id, generation, vx: ZOMBIE.speed, vz: 0, mode: 'chasing' });
   const st = zombies.get(id);
   // 回包给的是纯 +X，但直线被墙挡住 → 写入 state 的速度必须已被偏转
   assertTrue(Math.abs(st.velocity[2]) > 0.1, `速度须被偏转（vz=${st.velocity[2]}）`);
