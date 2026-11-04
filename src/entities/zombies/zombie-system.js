@@ -16,7 +16,7 @@ import {
 } from './zombie-config.js';
 import { zombieCollidesAt, zombieStepUpY, steerIntent } from './zombie-navigation.js';
 import { PathCache } from './zombie-pathfinder.js';
-import { decideStep, memoryFor, noteVisit } from './zombie-navigator.js';
+import { decideStep, memoryFor } from './zombie-navigator.js';
 import { normalizePosition, raycastAabbSlab } from '../entity-types.js';
 
 /** 丧尸 AABB（相对 state.position 的局部偏移；position 为脚底 → min.y = 0） */
@@ -339,7 +339,7 @@ export class ZombieService {
      * ⚠️ 历史上这里挂过「在线 AI 编排器」（Jev），已整体删除（用户 2026-11-04 裁定）。
      */
     this._pathCache = new PathCache();
-    /** @type {Map<string, object>} id → 导航记忆（visits/trail/deadEnds/plan） */
+    /** @type {Map<string, object>} id → 导航记忆（只剩 `plan`，v2.49 清理） */
     this._navMemory = new Map();
     /** 决策周期（秒）：复用离线 AI 周期，不新开节流 */
     this._navAccum = 0;
@@ -536,7 +536,6 @@ export class ZombieService {
       if (entity.type !== 'zombie') continue;
       const st = entity.state;
       const mem = memoryFor(this._navMemory, entity.id);
-      noteVisit(mem, st.position[0], st.position[2]);
       const step = decideStep({
         world,
         position: st.position,

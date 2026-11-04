@@ -19,7 +19,7 @@
 //
 // 纯 BFS 每 0.5 秒重算时，「往东绕」与「往西绕」常等长 —— 不记住上一次的选择，丧尸会在
 // 两条等长路线间来回横跳（实测形态：位置在 0.1 格内摆动、60 秒净位移接近 0）。
-// 记忆三件事：`visits`（走过几次）、`trail`（最近轨迹）、`deadEnds`（死胡同）。
+// 记忆只剩 `plan`（v2.49 清理，`visits`/`trail`/`deadEnds` 只写不读，已删）。
 import { ZOMBIE_STEERING } from './zombie-config.js';
 import { PathCache, directionNameOf } from './zombie-pathfinder.js';
 
@@ -38,49 +38,26 @@ export const DIRECTION_VECTORS = Object.freeze({
   north_west: Object.freeze([-Math.SQRT1_2, -Math.SQRT1_2]),
 });
 
-/** 记忆里最多保留多少个「走过的格」（LRU） */
-export const MAX_VISITS = 64;
-/** 记忆里最多保留多少步轨迹 */
-export const MAX_TRAIL = 12;
-
-/** 格键（负坐标按 floor 归一） */
-export function cellKey(x, z) {
-  return `${Math.floor(x)},${Math.floor(z)}`;
-}
-
-/** 取（或创建）某只丧尸的导航记忆 */
+/**
+ * 取（或创建）某只丧尸的导航记忆。**只剩 `plan` 一个字段**（v2.49 清理）。
+ *
+ * `plan` = `{direction, walked}`：当前计划方向 + 已沿该计划走了几步。
+ * 用于计划固化 —— BFS 每 0.5 秒重算时「往东绕」与「往西绕」常等长，
+ * 不记住上一次的选择会让丧尸在两条等长路线间来回横跳。
+ *
+ * ⚠️ **加回任何字段前先确认它有生产消费者**：`visits`/`trail`/`deadEnds`/`lastStep`
+ * 曾是喂给已删除的 Jev 模型的「事实」，删 Jev 后只写不读（每秒 400 次无用写入）。
+ *
+ * @param {Map<string, object>} memoryMap id → 记忆
+ * @param {string} id
+ */
 export function memoryFor(memoryMap, id) {
   let mem = memoryMap.get(id);
   if (!mem) {
-    mem = {
-      __id: id,
-      visits: new Map(),
-      trail: [],
-      deadEnds: new Set(),
-      plan: null,
-      lastStep: null,
-    };
+    mem = { __id: id, plan: null };
     memoryMap.set(id, mem);
   }
   return mem;
-}
-
-/** 记录一次「站在 (x,z) 格上」：`visits` 为 LRU，`trail` 截断到上限 */
-export function noteVisit(mem, x, z) {
-  const k = cellKey(x, z);
-  mem.visits.set(k, (mem.visits.get(k) ?? 0) + 1);
-  mem.trail.push([Math.floor(x), Math.floor(z)]);
-  if (mem.trail.length > MAX_TRAIL) {
-    mem.trail.splice(0, mem.trail.length - MAX_TRAIL);
-  }
-  while (mem.visits.size > MAX_VISITS) {
-    mem.visits.delete(mem.visits.keys().next().value);
-  }
-}
-
-/** 标记死胡同（地图性质，不随 LRU 淘汰） */
-export function markDeadEnd(mem, x, z) {
-  mem.deadEnds.add(cellKey(x, z));
 }
 
 /** 单位速度向量（方向名 → [vx, vz]；未知方向返回 null） */
@@ -183,8 +160,6 @@ export function decideStep({ world, position, playerPosition, memory, pathCache,
   if (dir === null) {
     // ⚠️ **不标记死胡同**：这一格只是「此刻」走不出去，玩家随时可能拆墙/开挖。
     // 标成死胡同会让拆墙后仍然 blocked（实测：v2.40 的「拆墙后恢复 chasing」用例因此失败）。
-    // `deadEnds` 的语义是「这格通向死路」（地图性质），不是「这格被封住了」。
-    memory.lastStep = null;
     return {
       vx: 0, vz: 0, mode: 'blocked',
       plannedDirection: plannedDir, reachable: plan.reachable, blocked: true,
@@ -192,18 +167,8 @@ export function decideStep({ world, position, playerPosition, memory, pathCache,
   }
 
   const vec = unitVector(dir);
-  memory.lastStep = dir;
   return {
     vx: vec[0], vz: vec[1], mode: 'chasing',
     plannedDirection: plannedDir, reachable: plan.reachable, blocked: false,
   };
-}
-
-/**
- * 判定某方向「是否在走回头路」——供调用方做诊断/测试（不参与决策）。
- * @returns {boolean}
- */
-export function isBacktrack(memory, bx, bz) {
-  const k = cellKey(bx, bz);
-  return (memory.visits.get(k) ?? 0) > 1;
 }

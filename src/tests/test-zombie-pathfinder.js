@@ -8,9 +8,7 @@ import { test } from './runner.js';
 import { assertEqual, assertFalse, assertTrue, assertDeepEqual } from './assert.js';
 import { PATHFIND, DIRECTION_ORDER, ZOMBIE_MAX_STEP } from '../entities/zombies/zombie-config.js';
 import { PathCache, directionNameOf, planStep } from '../entities/zombies/zombie-pathfinder.js';
-import {
-  DIRECTION_VECTORS, MAX_VISITS, cellKey, decideStep, markDeadEnd, memoryFor, noteVisit,
-} from '../entities/zombies/zombie-navigator.js';
+import { DIRECTION_VECTORS, decideStep, memoryFor } from '../entities/zombies/zombie-navigator.js';
 import { zombieCollidesAt, zombieStepUpY } from '../entities/zombies/zombie-navigation.js';
 import { ChunkColumn } from '../voxel/chunk-column.js';
 import { WorldData } from '../voxel/world-data.js';
@@ -185,27 +183,21 @@ test('PathCache：forget(id) 只清该只', () => {
   assertEqual(c.debugState().hits, 1);
 });
 
-// ---------- 记忆 ----------
+// ---------- 记忆的契约（v2.49 清理后只剩 plan）----------
 
-test('记忆：visits 计数 / trail 上限 / LRU 淘汰 / cellKey 负坐标归一', () => {
+test('记忆：只保留 plan 一个字段（死字段不得加回来）', () => {
+  // v2.49 清理：`visits` / `trail` / `deadEnds` / `lastStep` 原本是喂给已删除的 Jev 模型的
+  // 「事实」，删掉 Jev 后它们**只写不读**（`isBacktrack` 只有测试在调）。
+  // 每次决策多写一个 Map 和一个数组（20 只 × 20Hz = 每秒 400 次无用写入）→ 全部删除。
+  // ⚠️ **加回任何字段前先确认它有生产消费者**，别让死代码再长出来。
   const mem = memoryFor(new Map(), 'z0');
-  assertDeepEqual(mem.trail, []);
-  noteVisit(mem, 1.5, -0.5);
-  noteVisit(mem, 1.5, -0.5);
-  assertEqual(mem.visits.get('1,-1'), 2);
-  assertEqual(cellKey(1.7, -0.2), '1,-1');
-  for (let i = 0; i < 40; i++) noteVisit(mem, 100 + i, 0);
-  assertTrue(mem.trail.length <= 12, `trail 须裁剪，实际 ${mem.trail.length}`);
-  for (let i = 0; i < MAX_VISITS + 20; i++) noteVisit(mem, 500 + i, 7);
-  assertTrue(mem.visits.size <= MAX_VISITS, `visits 须 LRU，实际 ${mem.visits.size}`);
+  assertDeepEqual(Object.keys(mem).sort(), ['__id', 'plan']);
 });
 
-test('记忆：markDeadEnd 记录且不随 LRU 淘汰', () => {
-  const mem = memoryFor(new Map(), 'z0');
-  markDeadEnd(mem, 3, 4);
-  assertTrue(mem.deadEnds.has('3,4'));
-  for (let i = 0; i < MAX_VISITS + 20; i++) noteVisit(mem, 500 + i, 7);
-  assertTrue(mem.deadEnds.has('3,4'), '死胡同是地图性质，不该被 LRU 挤掉');
+test('记忆：同 id 复用同一对象，不同 id 独立', () => {
+  const m = new Map();
+  assertEqual(memoryFor(m, 'a'), memoryFor(m, 'a'));
+  assertFalse(memoryFor(m, 'a') === memoryFor(m, 'b'));
 });
 
 // ---------- decideStep（本地决策的核心）----------
@@ -248,7 +240,7 @@ test('decideStep：不可达（truncated）→ 回落直线朝玩家 + 局部绕
   assertFalse(r.blocked, '但贴墙仍可沿墙滑行（v2.40 口径）');
 });
 
-test('decideStep：四面围死 → blocked（但**不**标记死胡同 —— 玩家可能拆墙）', () => {
+test('decideStep：四面围死 → blocked（不写任何持久状态 —— 玩家可能拆墙）', () => {
   const { world, set } = makeFlat({ top: 0 });
   // 丧尸 (10,1,10) 周围 8 格全部 3 格高
   for (let dx = -1; dx <= 1; dx++) {
@@ -267,9 +259,12 @@ test('decideStep：四面围死 → blocked（但**不**标记死胡同 —— �
   assertEqual(r.mode, 'blocked');
   assertEqual(r.vx, 0);
   assertEqual(r.vz, 0);
-  // ⚠️ **不得标记死胡同**：`deadEnds` 的语义是「这格通向死路」（地图性质），
-  // 不是「这格此刻被封住了」。标了会让拆墙后仍然 blocked（v2.40 的恢复用例会红）。
-  assertFalse(mem.deadEnds.has('10,10'), '围死不算死胡同（那是可变的）');
+  // ⚠️ **blocked 不得往记忆里写任何东西**：这一格只是「此刻」走不出去，玩家随时可能拆墙。
+  // 早先版本会 `markDeadEnd`，导致拆墙后仍然 blocked（v2.40 的恢复用例因此失败）；
+  // v2.49 起连 `deadEnds` 字段都删了（它只写不读）—— 这里钉住「围死不产生副作用」。
+  assertDeepEqual(Object.keys(mem).sort(), ['__id', 'plan'],
+    'blocked 不得给记忆加字段');
+  assertEqual(mem.plan, null, '围死时没有计划可固化');
 });
 
 test('decideStep：规划方向被挡住时沿墙滑行（不直接 blocked）', () => {
