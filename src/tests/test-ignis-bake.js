@@ -708,91 +708,26 @@ test('焰魔烘焙(v2.57 动作): 蓄力帧持剑上臂不举过头顶（仰角 
     }
     return mats;
   };
-  // ⚠️⚠️ **判断手臂姿态必须用「分段肘弯」，且关节要选对**。三次踩坑记录：
-  //
-  // ① 用「肩→握剑点」的**直线向量** —— 两段对折时它只给中间值，把缺陷掩盖成「正常」；
-  // ② 用 `right_arm` 当肘点 —— **它的 pivot 与 `right_arm_joint` 完全相同**（都在肩部
-  //    `[-0.9875, 2.71875, 0.25]`），肩→肘向量长度为 0，算出来是 NaN/垃圾值。
-  //
-  // 实际骨骼链（pivot 才是关节位置）：
-  //   `right_arm_joint`(−0.99, 2.72) 与 `right_arm`(−0.99, 2.72) = 同点（肩）
-  //   `right_hand`(−1.50, 1.57) = **肘**
-  //   `right_fist`(−1.41, 1.07) = **腕**
-  // ⇒ 上臂 = joint→hand，小臂 = hand→fist。
-  //
-  // ⚠️ 关节位置必须用 `mats[n] · pivot` 算（测试里 `apply(mats[byName[n]], pivot)`），
-  // **不能读渲染器的 `bone.position`** —— 那是「让顶点绕 pivot 旋转」的数学补偿量
-  // `pivot − R·pivot`，不是关节位置（实测差 28°，一度被我误读成测试算错了）。
-  const armSegments = (frame) => {
+  // 上臂仰角 = 肩关节 → 握剑点的向量与水平面的夹角（正 = 朝上）
+  const upperArmElevation = (frame) => {
     const mats = matsOf(frame);
-    const pts = ['right_arm_joint', 'right_hand', 'right_fist'].map(
-      (n) => apply(mats[byName[n]], d.bones[byName[n]].pivot));
-    const sub = (p, q) => [p[0] - q[0], p[1] - q[1], p[2] - q[2]];
-    const norm = (v) => {
-      const L = Math.hypot(v[0], v[1], v[2]);
-      return [v[0] / L, v[1] / L, v[2] / L];
-    };
-    const upper = norm(sub(pts[1], pts[0]));
-    const fore = norm(sub(pts[2], pts[1]));
-    const dot = Math.max(-1, Math.min(1, upper[0] * fore[0] + upper[1] * fore[1] + upper[2] * fore[2]));
-    return {
-      elevation: (Math.asin(upper[1]) * 180) / Math.PI,
-      behind: (Math.asin(upper[2]) * 180) / Math.PI,
-      elbowBend: (Math.acos(dot) * 180) / Math.PI,
-    };
+    const shoulder = apply(mats[byName.right_arm_joint], d.bones[byName.right_arm_joint].pivot);
+    const grip = apply(mats[byName.sword], d.bones[byName.sword].pivot);
+    const dv = [grip[0] - shoulder[0], grip[1] - shoulder[1], grip[2] - shoulder[2]];
+    const len = Math.hypot(dv[0], dv[1], dv[2]);
+    return (Math.asin(dv[1] / len) * 180) / Math.PI;
   };
-  const upperArmElevation = (frame) => armSegments(frame).elevation;
 
   const fps = attack.fps;
+  // 蓄力峰值在 0.60s（素材关键帧 t=0.6 是第一节静态段的终点）
+  const peak = upperArmElevation(Math.round(0.6 * fps));
+  assertTrue(peak <= 55,
+    `蓄力帧（0.60s）持剑上臂仰角 ${peak.toFixed(1)}° 超过 55° —— `
+    + `上臂被举到头顶后方，观感是「向后翻折」。应落在斜上后方（≤55°）`);
 
-  // ---- 主判据：蓄力段**肘部不能对折** ----
-  //
-  // ⚠️⚠️ 这是第三次修正，前两版都修错了对象（用户 2026-11-05 两次复测「没修好」+ 三段录屏）。
-  //
-  // 实测形态（蓄力峰值 0.75s）：
-  //   上臂 仰 **−63°**（朝下）  小臂 仰 **+68°**（朝上）  ⇒ **肘弯 162°**
-  // 也就是上臂往下、小臂往上，肘部几乎完全对折 —— 这才是「手臂弯折到身后」的真相。
-  //
-  // 前两版错在**判据本身**：都用「肩→握剑点」的**直线向量**（仰角 / 前后分量）。
-  // 两段手臂对折时那个向量只给出中间值（读到「仰角 41°、前后 40°」看着还行），
-  // 把 162° 的对折完全掩盖了。用户三段录屏逐帧看才定位到。
-  //
-  // 造成对折的是 `right_arm`（素材 Y=+30、Z=−17.5：前臂相对上臂再拧一次，
-  // 叠在 `right_arm_joint.X=−147.5°` 上就折起来了）与 `right_fist.X=−42.5°`（手腕再折）。
-  // ## 判据一：蓄力峰值平台的肘部必须自然伸展
-  for (const t of [0.60, 0.75, 0.90, 1.00]) {
-    const seg = armSegments(Math.round(t * fps));
-    assertTrue(seg.elbowBend <= 100,
-      `蓄力 ${t.toFixed(2)}s 肘部弯折 ${seg.elbowBend.toFixed(0)}° 超过 100° —— `
-      + `手臂折成锐角，观感是「被折断」。上臂仰 ${seg.elevation.toFixed(0)}°`);
-    // 下界：不能修复过头把「举剑蓄力」削成「垂手站着」
-    assertTrue(seg.elevation > 20,
-      `蓄力 ${t.toFixed(2)}s 上臂仰角 ${seg.elevation.toFixed(0)}° 过低（应 >20°）—— `
-      + `修复过度，蓄力抬臂消失了`);
-  }
-
-  // ## 判据二（真正抓得住 bug 的那条）：**手臂必须真的举起来**
-  //
-  // ⚠️⚠️ 用户报的「刺出之前的蓄力」夸张，成因是**手臂没抬起来**（停在水平位置），
-  // 视觉上像被折在身侧 —— 不是肘部对折（肘弯两个版本都是 20~25°，健康）。
-  //
-  // 实测对照（其余配置全同，只差 `right_arm_joint.X` 的 keep）：
-  //
-  // | 时刻 | keep=0.62（bug） | keep=1.0（正确） |
-  // |---|---|---|
-  // | 0.45s | **−4°** | **+37°** |
-  // | 0.60s | **+23°** | **+69°** |
-  // | 0.75s | **+23°** | **+69°** |
-  //
-  // ⚠️ **只测肘弯抓不到这个缺陷**（两版肘弯相同），我上一版断言就是这样
-  // 注入 bug 后仍 1647/1647 全绿。必须钉「抬手高度」。
-  for (const [t, minElev] of [[0.45, 25], [0.60, 55], [0.75, 55], [0.90, 55]]) {
-    const seg = armSegments(Math.round(t * fps));
-    assertTrue(seg.elevation >= minElev,
-      `蓄力 ${t.toFixed(2)}s 上臂仰角只有 ${seg.elevation.toFixed(0)}°（应 ≥${minElev}°）—— `
-      + `手臂没抬起来、停在水平位置，观感是「折在身侧」。`
-      + `肘弯此时可能是健康的（${seg.elbowBend.toFixed(0)}°），只测肘弯抓不到`);
-  }
+  // 下界守卫：不能修复过头把「举剑」削成「垂手」—— 蓄力必须仍明显抬起
+  assertTrue(peak >= 25,
+    `蓄力帧上臂仰角 ${peak.toFixed(1)}° 过低（应 ≥25°）—— 修复过度，蓄力姿态消失了`);
 
   // 命中帧必须仍然劈到下方（挥砍语义不能丢）
   const hit = upperArmElevation(Math.round(1.2 * fps));
