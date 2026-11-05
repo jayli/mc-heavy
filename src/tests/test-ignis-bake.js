@@ -11,12 +11,13 @@
 //
 // 1. **漏 `T(-pivot)`**：Bedrock 的 `pivot` 是绝对模型空间坐标，cube 顶点也是绝对的。
 //    骨骼变换写错时模型炸成碎片，而 53 骨骼 / 80 立方体 / 1920 顶点**全部通过**。
-//    ⇒ 用 `bindPoseHeightBlocks()` 算 bind pose 下的真实包围盒高度钉住（实测 4.0668 格）。
+//    ⇒ 用 `bindPoseHeightBlocks()` 算 bind pose 下的真实包围盒高度钉住（实测 3.8346 格；v2.58 重标，见下）。
 // 2. **UV 布局错**：六面矩形铺错的形态是贴图错位到邻面，而 UV 全在 [0,1]、指纹全对。
 //    ⇒ 单测钉不住，靠 Tier 4 像素实测（`tests/ignis.spec.mjs`）；本文件只钉 UV 值域与
 //    「每个立方体的六个面各自覆盖一个非零面积矩形」。
 import { test } from './runner.js';
 import { assertEqual, assertTrue } from './assert.js';
+import { sampleIgnisAttack, multiplyQuat } from '../render/ignis-model.js';
 
 let asset = null;
 async function loadAsset() {
@@ -182,14 +183,19 @@ function bindPoseHeightBlocks(d) {
   return maxY - minY;
 }
 
-test('焰魔烘焙: bind pose 的真实高度 ≈ 4.07 格（漏 T(-pivot) 会炸开数倍）', async () => {
+// ⚠️ **v2.58 重标（不是放宽）**：本组 bind pose 尺寸曾冻结为 4.0668 × 3.7329 × 5.1576，那是在**错误旋转约定**
+// （`Euler('XYZ')`，见下方「v2.58 旋转约定」一节）下的实测值。
+// 重标依据是**独立来源**：`node tools/ignis-java-reference.mjs` 直接解析 Java 源码的 80 个非零立方体、按 Java 语义
+// 求 bind pose 包围盒 = **4.8796 × 3.8346 × 5.1576 格**（宽×高×深），与修正后的产物逐位一致
+// （手臂外撇使宽 +1.17、角向后掠使高 −0.23；深度由剑长决定，未变）。容差保持原值。
+test('焰魔烘焙: bind pose 的真实高度 ≈ 3.83 格（漏 T(-pivot) 会炸开数倍）', async () => {
   const d = await loadAsset();
   const h = bindPoseHeightBlocks(d);
-  // 实测 4.0668 格（全模型含角与肩甲）。容差 0.05 格够容纳浮点与「某个膨胀件差一点点」。
-  assertTrue(Math.abs(h - 4.0668) < 0.05, `bind pose 高度 ${h.toFixed(4)}，期望 ≈4.0668`);
+  // 实测 3.8346 格（全模型含角与肩甲；与 Java 源码独立复算一致）。容差 0.05 格够容纳浮点与「某个膨胀件差一点点」。
+  assertTrue(Math.abs(h - 3.8346) < 0.05, `bind pose 高度 ${h.toFixed(4)}，期望 ≈3.8346`);
 });
 
-test('焰魔烘焙: bind pose 的水平跨度合理（宽 ≈3.73 / 深 ≈5.16 格）', async () => {
+test('焰魔烘焙: bind pose 的水平跨度合理（宽 ≈4.88 / 深 ≈5.16 格）', async () => {
   const d = await loadAsset();
   const mats = [];
   const mul = (a, b) => {
@@ -234,7 +240,7 @@ test('焰魔烘焙: bind pose 的水平跨度合理（宽 ≈3.73 / 深 ≈5.16 
   }
   const w = maxX - minX;
   const dep = maxZ - minZ;
-  assertTrue(Math.abs(w - 3.7329) < 0.1, `宽度 ${w.toFixed(4)}，期望 ≈3.7329`);
+  assertTrue(Math.abs(w - 4.8796) < 0.1, `宽度 ${w.toFixed(4)}，期望 ≈4.8796`);
   assertTrue(Math.abs(dep - 5.1576) < 0.1, `深度 ${dep.toFixed(4)}，期望 ≈5.1576`);
 });
 
@@ -619,117 +625,242 @@ test('焰魔烘焙(v2.56 缺陷C): 攻击全程手臂贴着肩膀（不甩出去
   }
 });
 
-test('焰魔烘焙(v2.57 动作): 蓄力帧持剑上臂不举过头顶（仰角 ≤ 55°）', async () => {
-  const d = await loadAsset();
-  const attack = d.animations.attack;
+// ==================== v2.58：旋转约定（「蓄力向后抡接近 180°」的真根因）====================
+//
+// 用户 2026-11-05：「挥刀之前的蓄力，向后抡胳膊的幅度接近 180°，这显然是不对的」，并且说
+// 在本仓里手调 `WINDUP_KEEP` 怎么都调不好。
+//
+// ## v2.57 为什么误诊
+//
+// v2.57 比对两侧素材（Java `ModelIgnis.java` 的 `SWING_ATTACK` 与 Bedrock `attack6a`）发现**数值逐帧一致**，
+// 于是断定「不是转换缺陷，是作者设计幅度大」，对蓄力段做衰减（右臂 X 保留 0.62）。
+// 数值一致是对的，**结论是错的：数值相同 ≠ 姿态相同。**
+//
+// ## 真根因
+//
+// Java（Citadel `AdvancedModelBox`）的骨骼矩阵是 `T · Rz · Ry · Rx`，关键帧与默认姿态**逐轴相加**；
+// Bedrock 几何的 y 轴与 Java 相反（pivot 恒为 `24 − y_java`），同样的数值落到 Bedrock 几何空间里等价于
+// `Rz(−θz) · Ry(+θy) · Rx(−θx)`（X、Z 取反）。烘焙脚本原先用 `Euler(θx, θy, θz, 'XYZ')` 再 `bind × delta`
+// —— 顺序反了、X/Z 符号反了：蓄力「向前上方举臂」被翻成「向身后抡」，劈砍「横扫」被翻成「向前尖刺」，
+// 连 bind pose 都是躯干**后仰**而不是前倾。衰减补丁只是在错误的姿态上缩小幅度，所以永远调不对。
+//
+// 下面的判据**不比数值，比世界坐标**：`JAVA_REF` 由 `tools/ignis-java-reference.mjs` 按 Java 语义
+// 解析 `ModelIgnis.java` 求出（px，Bedrock 几何空间）。重生成：`node tools/ignis-java-reference.mjs`，
+// 整表替换，不要手改单个数。
+//
+// ⚠️ 旧用例「蓄力帧上臂仰角 ≤ 55°」已删除：它度量的只是 y 分量（抓不到前/后），且把「衰减后的幅度」
+// 当作目标 —— 那个目标本身就是错误的（原版上臂在蓄力峰值就是近乎竖直举起，约 74°，只是朝**身前**抬）。
 
-  // ## 为什么有这条用例
-  //
-  // 用户 2026-11-05 实玩反馈：「挥刀时手臂先向后弯曲，然后向前尖刺……左手向后弯曲
-  // 过于多了，不自然」。定量复算两侧素材（Java `ModelIgnis.java:429` 的 `SWING_ATTACK`
-  // 与 Bedrock `attack6a` 数值**逐帧相同**，不是转换缺陷）得到真凶：
-  //
-  // | 部位 | idle(bind) | 蓄力 0.60s | 命中 1.25s |
-  // |---|---|---|---|
-  // | 右臂（持剑）上臂仰角 | −80.4°（垂在身侧） | **+72.8°**（举过头顶后方） | −50.2° |
-  //
-  // 蓄力时 `right_arm_joint` 的 X 轴到 **−147.5°**，把上臂从垂下翻成「举过头顶正后方」，
-  // 0.6s 内转了 158.9°（265°/s），接着 0.65s 反向甩 128.7° 下劈 —— 这就是「向后翻折」
-  // 观感的来源。（持盾的**左**臂全程朝下：−52.9° → −31.0°，并没有向后折。）
-  //
-  // 修法是烘焙期对蓄力曲线做衰减（不是改几何、不改时间结构），让上臂最多举到**斜上后方**。
-  const byName = {};
-  d.bones.forEach((b, i) => { byName[b.name] = i; });
-  const qmul = (a, b) => [
-    a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
-    a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
-    a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
-    a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2],
-  ];
-  const qrot = (q, v) => {
-    const [x, y, z, w] = q;
-    const xx = x * x, yy = y * y, zz = z * z;
-    const xy = x * y, xz = x * z, yz = y * z;
-    const wx = w * x, wy = w * y, wz = w * z;
-    return [
-      (1 - 2 * (yy + zz)) * v[0] + 2 * (xy - wz) * v[1] + 2 * (xz + wy) * v[2],
-      2 * (xy + wz) * v[0] + (1 - 2 * (xx + zz)) * v[1] + 2 * (yz - wx) * v[2],
-      2 * (xz - wy) * v[0] + 2 * (yz + wx) * v[1] + (1 - 2 * (xx + yy)) * v[2],
-    ];
-  };
-  const TR = (q, t) => {
-    const [x, y, z, w] = q;
-    const xx = x * x, yy = y * y, zz = z * z;
-    const xy = x * y, xz = x * z, yz = y * z;
-    const wx = w * x, wy = w * y, wz = w * z;
-    return [
-      1 - 2 * (yy + zz), 2 * (xy - wz), 2 * (xz + wy), t[0],
-      2 * (xy + wz), 1 - 2 * (xx + zz), 2 * (yz - wx), t[1],
-      2 * (xz - wy), 2 * (yz + wx), 1 - 2 * (xx + yy), t[2],
-      0, 0, 0, 1,
-    ];
-  };
-  const mul = (a, b) => {
-    const o = new Array(16);
-    for (let r = 0; r < 4; r++) {
-      for (let c = 0; c < 4; c++) {
-        let acc = 0;
-        for (let k = 0; k < 4; k++) acc += a[r * 4 + k] * b[k * 4 + c];
-        o[r * 4 + c] = acc;
-      }
+const JAVA_REF = {
+  // 探针：[骨骼名, 该骨骼的 **Java 局部坐标** 偏移（y 向下）]
+  probes: {
+    'right_arm_joint': ['right_arm_joint', [0, 0, 0]],
+    'right_hand': ['right_hand', [0, 0, 0]],
+    'right_fist': ['right_fist', [0, 0, 0]],
+    'sword_grip': ['sword', [0, 0, 0]],
+    'sword_tip': ['sword', [0, 0, -49]],
+    'head_top': ['head', [0, -8, 0]],
+    'chest_top': ['upperbody', [0, -13, 0]],
+    'left_arm_joint': ['left_arm_joint', [0, 0, 0]],
+    'left_hand': ['left_hand', [0, 0, 0]],
+    'left_fist': ['left_fist', [0, 0, 0]],
+  },
+  poses: {
+    'bind': {
+      'right_arm_joint': [-15.8, 43.68, -0.97],
+      'right_hand': [-28.48, 28.03, -0.97],
+      'right_fist': [-26.98, 20.03, -0.97],
+      'sword_grip': [-25.48, 15.53, -0.97],
+      'sword_tip': [-25.48, 15.53, -49.97],
+      'head_top': [0, 51.34, -1.91],
+      'chest_top': [0, 41.72, -3.45],
+      'left_arm_joint': [15.8, 43.68, -0.97],
+      'left_hand': [28.48, 28.03, -0.97],
+      'left_fist': [26.98, 20.03, -0.97],
+    },
+    't0.6': {
+      'right_arm_joint': [-10.61, 45.46, 10.19],
+      'right_hand': [-15.25, 63.26, 1.99],
+      'right_fist': [-10.35, 69.58, 0.51],
+      'sword_grip': [-7.51, 72.5, 2.95],
+      'sword_tip': [-22.07, 51.69, 44.85],
+      'head_top': [3.47, 51.34, 1.72],
+      'chest_top': [0.89, 42.37, -0.66],
+      'left_arm_joint': [15.79, 41.72, -6.76],
+      'left_hand': [28.8, 26.43, -5.09],
+      'left_fist': [28.45, 21.62, -11.65],
+    },
+    't1': {
+      'right_arm_joint': [-10.61, 45.46, 10.19],
+      'right_hand': [-15.25, 63.26, 1.99],
+      'right_fist': [-10.35, 69.58, 0.51],
+      'sword_grip': [-7.51, 72.5, 2.95],
+      'sword_tip': [-22.07, 51.69, 44.85],
+      'head_top': [3.47, 51.34, 1.72],
+      'chest_top': [0.89, 42.37, -0.66],
+      'left_arm_joint': [15.79, 41.72, -6.76],
+      'left_hand': [28.8, 26.43, -5.09],
+      'left_fist': [28.45, 21.62, -11.65],
+    },
+    't1.5': {
+      'right_arm_joint': [0.12, 35.29, -20.07],
+      'right_hand': [16, 25.37, -27.51],
+      'right_fist': [21.67, 21.8, -22.89],
+      'sword_grip': [24.92, 20.36, -19.75],
+      'sword_tip': [58.02, 16.48, -55.67],
+      'head_top': [0.11, 49.99, -7.48],
+      'chest_top': [1.4, 41.05, -5.08],
+      'left_arm_joint': [-2.85, 49.3, 8.09],
+      'left_hand': [-13.7, 51.38, 24.94],
+      'left_fist': [-17.39, 47.14, 30.82],
+    },
+  },
+};
+
+/** 允许的偏差（px）。HEAD 的偏差在 5~140px 量级，1px 足以区分且容得下 Bedrock 样条在保持段的 <1px 余波 */
+const POSE_TOL_PX = 1.0;
+
+// ---- 4×4 行主序矩阵（模块级，供本节用例共用）----
+function m4mul(a, b) {
+  const o = new Array(16);
+  for (let r = 0; r < 4; r++) {
+    for (let c = 0; c < 4; c++) {
+      let acc = 0;
+      for (let k = 0; k < 4; k++) acc += a[r * 4 + k] * b[k * 4 + c];
+      o[r * 4 + c] = acc;
     }
-    return o;
-  };
-  const apply = (m, p) => [
+  }
+  return o;
+}
+function m4FromQuat(q, t) {
+  const [x, y, z, w] = q;
+  const xx = x * x, yy = y * y, zz = z * z, xy = x * y, xz = x * z, yz = y * z, wx = w * x, wy = w * y, wz = w * z;
+  return [
+    1 - 2 * (yy + zz), 2 * (xy - wz), 2 * (xz + wy), t[0],
+    2 * (xy + wz), 1 - 2 * (xx + zz), 2 * (yz - wx), t[1],
+    2 * (xz - wy), 2 * (yz + wx), 1 - 2 * (xx + yy), t[2],
+    0, 0, 0, 1,
+  ];
+}
+function quatRot(q, v) {
+  const m = m4FromQuat(q, [0, 0, 0]);
+  return [
+    m[0] * v[0] + m[1] * v[1] + m[2] * v[2],
+    m[4] * v[0] + m[5] * v[1] + m[6] * v[2],
+    m[8] * v[0] + m[9] * v[1] + m[10] * v[2],
+  ];
+}
+function m4Apply(m, p) {
+  return [
     m[0] * p[0] + m[1] * p[1] + m[2] * p[2] + m[3],
     m[4] * p[0] + m[5] * p[1] + m[6] * p[2] + m[7],
     m[8] * p[0] + m[9] * p[1] + m[10] * p[2] + m[11],
   ];
-  const matsOf = (frame) => {
-    const deltas = new Map();
-    const n = attack.boneIndices.length;
-    for (let s = 0; s < n; s++) {
-      const o = (frame * n + s) * 7;
-      deltas.set(attack.boneIndices[s], {
-        rot: [attack.frames[o], attack.frames[o + 1], attack.frames[o + 2], attack.frames[o + 3]],
-        pos: [attack.frames[o + 4], attack.frames[o + 5], attack.frames[o + 6]],
-      });
-    }
-    const mats = d.bones.map(() => null);
-    for (let i = 0; i < d.bones.length; i++) {
-      const b = d.bones[i];
-      const dd = deltas.get(i);
-      const q = dd ? qmul(b.bindQuaternion, dd.rot) : b.bindQuaternion;
-      const dp = dd ? dd.pos : [0, 0, 0];
-      const pv = b.pivot || [0, 0, 0];
-      const rp = qrot(q, pv);
-      const local = TR(q, [pv[0] - rp[0] + dp[0], pv[1] - rp[1] + dp[1], pv[2] - rp[2] + dp[2]]);
-      mats[i] = b.parentIndex === -1 ? local : mul(mats[b.parentIndex], local);
-    }
-    return mats;
-  };
-  // 上臂仰角 = 肩关节 → 握剑点的向量与水平面的夹角（正 = 朝上）
-  const upperArmElevation = (frame) => {
-    const mats = matsOf(frame);
-    const shoulder = apply(mats[byName.right_arm_joint], d.bones[byName.right_arm_joint].pivot);
-    const grip = apply(mats[byName.sword], d.bones[byName.sword].pivot);
-    const dv = [grip[0] - shoulder[0], grip[1] - shoulder[1], grip[2] - shoulder[2]];
-    const len = Math.hypot(dv[0], dv[1], dv[2]);
-    return (Math.asin(dv[1] / len) * 180) / Math.PI;
-  };
+}
 
-  const fps = attack.fps;
-  // 蓄力峰值在 0.60s（素材关键帧 t=0.6 是第一节静态段的终点）
-  const peak = upperArmElevation(Math.round(0.6 * fps));
-  assertTrue(peak <= 55,
-    `蓄力帧（0.60s）持剑上臂仰角 ${peak.toFixed(1)}° 超过 55° —— `
-    + `上臂被举到头顶后方，观感是「向后翻折」。应落在斜上后方（≤55°）`);
+/**
+ * 产物在 attack 动画时刻 `t`（秒；`null` = bind pose）下各探针点的世界坐标（px，Bedrock 几何空间）。
+ *
+ * 与渲染器逐式同口径：`R = bind · delta`，`position = pivot − R·pivot + deltaPos`，
+ * `M = M(parent) · T(position) · R`。采样走**运行时同一个** `sampleIgnisAttack`。
+ */
+function probePoints(d, t) {
+  const deltas = t === null ? new Map() : sampleIgnisAttack(d.animations.attack, t);
+  const mats = [];
+  d.bones.forEach((b, i) => {
+    const dd = deltas.get(i);
+    const q = dd ? multiplyQuat(b.bindQuaternion, dd.rot) : b.bindQuaternion;
+    const dp = dd ? dd.pos : [0, 0, 0];
+    const rp = quatRot(q, b.pivot);
+    const local = m4FromQuat(q, [b.pivot[0] - rp[0] + dp[0], b.pivot[1] - rp[1] + dp[1], b.pivot[2] - rp[2] + dp[2]]);
+    mats[i] = b.parentIndex === -1 ? local : m4mul(mats[b.parentIndex], local);
+  });
+  const byName = Object.fromEntries(d.bones.map((b, i) => [b.name, i]));
+  const out = {};
+  for (const [name, [boneName, jl]] of Object.entries(JAVA_REF.probes)) {
+    const bi = byName[boneName];
+    const piv = d.bones[bi].pivot;   // 格
+    // Java 局部坐标 y 向下，Bedrock 几何 y 向上 ⇒ y 取反
+    const p = [piv[0] + jl[0] / 16, piv[1] - jl[1] / 16, piv[2] + jl[2] / 16];
+    out[name] = m4Apply(mats[bi], p).map((v) => v * 16);
+  }
+  return out;
+}
 
-  // 下界守卫：不能修复过头把「举剑」削成「垂手」—— 蓄力必须仍明显抬起
-  assertTrue(peak >= 25,
-    `蓄力帧上臂仰角 ${peak.toFixed(1)}° 过低（应 ≥25°）—— 修复过度，蓄力姿态消失了`);
+/** 与参考表逐点比对，返回偏差最大的探针 */
+function worstDeviation(actual, ref) {
+  let worst = { name: '', px: 0 };
+  for (const [name, r] of Object.entries(ref)) {
+    const a = actual[name];
+    const px = Math.hypot(a[0] - r[0], a[1] - r[1], a[2] - r[2]);
+    if (px > worst.px) worst = { name, px, actual: a, ref: r };
+  }
+  return worst;
+}
 
-  // 命中帧必须仍然劈到下方（挥砍语义不能丢）
-  const hit = upperArmElevation(Math.round(1.2 * fps));
-  assertTrue(hit < 0, `命中帧（1.20s）上臂仰角 ${hit.toFixed(1)}° 应朝下（<0）—— 挥砍方向丢了`);
+const fmt3 = (p) => `(${p.map((v) => v.toFixed(1)).join(', ')})`;
+
+function assertMatchesJava(d, t, key) {
+  const w = worstDeviation(probePoints(d, t), JAVA_REF.poses[key]);
+  assertTrue(w.px <= POSE_TOL_PX,
+    `${key}：探针 ${w.name} 偏离原版 Java ${w.px.toFixed(1)}px（允许 ${POSE_TOL_PX}px）`
+    + ` 实测 ${fmt3(w.actual)} 期望 ${fmt3(w.ref)}`);
+}
+
+test('焰魔烘焙(v2.58 约定): bind pose 与原版 Java 逐点一致（躯干前倾、手臂外撇）', async () => {
+  const d = await loadAsset();
+  assertMatchesJava(d, null, 'bind');
+});
+
+test('焰魔烘焙(v2.58 约定): 蓄力 0.60s 与原版 Java 逐点一致', async () => {
+  const d = await loadAsset();
+  assertMatchesJava(d, 0.6, 't0.6');
+});
+
+test('焰魔烘焙(v2.58 约定): 蓄力保持段末 1.00s 与原版 Java 逐点一致', async () => {
+  const d = await loadAsset();
+  assertMatchesJava(d, 1.0, 't1');
+});
+
+test('焰魔烘焙(v2.58 约定): 劈砍保持段 1.50s 与原版 Java 逐点一致', async () => {
+  const d = await loadAsset();
+  assertMatchesJava(d, 1.5, 't1.5');
+});
+
+// ---- 下面几条是同一件事的「人话」不变量：即使有人整表更新了 JAVA_REF，也拦得住方向性错误 ----
+
+test('焰魔烘焙(v2.58 约定): bind pose 躯干前倾、手臂向外撇（不是后仰、内收）', async () => {
+  const d = await loadAsset();
+  const p = probePoints(d, null);
+  const bodyPivotZ = d.bones.find((b) => b.name === 'upperbody').pivot[2] * 16;
+  assertTrue(p.chest_top[2] < bodyPivotZ,
+    `胸甲顶 z=${p.chest_top[2].toFixed(1)} 应在躯干枢轴 z=${bodyPivotZ.toFixed(1)} 之前（前方 = −z）—— 躯干后仰了`);
+  // 右臂在 −x 侧：手应比肩更靠 −x（外撇 ≥ 8px；原版 12.7px，反了是内收 +3.2px）
+  assertTrue(p.right_hand[0] < p.right_arm_joint[0] - 8,
+    `右手 x=${p.right_hand[0].toFixed(1)} 应比右肩 x=${p.right_arm_joint[0].toFixed(1)} 至少再靠外 8px —— 手臂内收了`);
+});
+
+test('焰魔烘焙(v2.58 约定): 蓄力 0.60s 持剑臂沿「身前」举起，剑搭在肩后下垂（不是向身后抡、剑尖冲天）', async () => {
+  const d = await loadAsset();
+  const p = probePoints(d, 0.6);
+  // 前方 = −z：肘、拳都应在肩的**前方**（原版 −8.2px / −9.7px；约定反了会跑到肩后）
+  assertTrue(p.right_hand[2] < p.right_arm_joint[2],
+    `肘 z=${p.right_hand[2].toFixed(1)} 应在肩 z=${p.right_arm_joint[2].toFixed(1)} 之前 —— 上臂是向身后抡的`);
+  assertTrue(p.right_fist[2] < p.right_arm_joint[2],
+    `拳 z=${p.right_fist[2].toFixed(1)} 应在肩 z=${p.right_arm_joint[2].toFixed(1)} 之前 —— 前臂是向身后抡的`);
+  // 上臂仍明显抬起（原版近乎竖直举起 ≈74°）：肘高于肩 ≥ 10px
+  assertTrue(p.right_hand[1] > p.right_arm_joint[1] + 10,
+    `肘 y=${p.right_hand[1].toFixed(1)} 应明显高于肩 y=${p.right_arm_joint[1].toFixed(1)} —— 蓄力没有抬臂`);
+  // 剑尖低于剑柄（原版低 20.8px；约定反了是剑尖比剑柄高 37px，剑指向天）
+  assertTrue(p.sword_tip[1] < p.sword_grip[1] - 10,
+    `剑尖 y=${p.sword_tip[1].toFixed(1)} 应低于剑柄 y=${p.sword_grip[1].toFixed(1)} —— 剑尖冲天了`);
+});
+
+test('焰魔烘焙(v2.58 约定): 劈砍 1.50s 剑横扫到身体对侧（不是向前尖刺）', async () => {
+  const d = await loadAsset();
+  const p = probePoints(d, 1.5);
+  // 剑从右手（−x 侧）出发，横扫后剑尖应越过身体中线到 +x 侧（原版 +58px；约定反了停在 −25px 向前平指）
+  assertTrue(p.sword_tip[0] > 30,
+    `剑尖 x=${p.sword_tip[0].toFixed(1)} 应越过中线到 +x 侧（>30）—— 劈砍变成了向前尖刺`);
+  assertTrue(p.sword_tip[1] < 30, `剑尖 y=${p.sword_tip[1].toFixed(1)} 应已劈到低处（<30px）`);
 });

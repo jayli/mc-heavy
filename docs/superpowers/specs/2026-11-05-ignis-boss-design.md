@@ -445,7 +445,15 @@ export function applyDamage(health, amount) {
 | `IGNIS_CORE_OBB.halfExtents` | **[0.8264, 1.421, 0.777]** | 躯干+头核心 bbox 实测（不含剑/盾/手臂外沿） |
 | `IGNIS_CORE_OBB.center` | **[0, 0, 0]** | `position` 语义 = 身体核心中心（与飞龙同） |
 | `IGNIS_MODEL_CENTER` | **[0, 1.7335, 0.0895]** | 核心 bbox 中心相对模型原点（单位格），渲染层摆 mesh 用 |
-| 全模型包围盒 | **3.7329 × 4.0668 × 5.1576** 格 | 含剑尖与盾 |
+| 全模型包围盒（bind pose） | **4.8796 × 3.8346 × 5.1576** 格（宽×高×深） | 含剑尖与盾。**v2.58 重标**：旧值 3.7329 × 4.0668 × 5.1576 是错误旋转约定下的实测；新值由 `tools/ignis-java-reference.mjs` 直接解析 Java 源码独立复算，与修正后的产物逐位一致 |
+
+> **v2.58 对本节常量的影响（实测，未采纳，留作后续命中盒对齐的数据）**：旧的 `IGNIS_CORE_OBB` / `IGNIS_MODEL_CENTER`
+> 是在错误约定的 bind pose 上量的。按同一口径（`upperbody, head, lowerbody, lowerbody2, bodycore, right_chestplate,
+> left_chestplate` 七根骨骼）在修正后的 bind pose 上复测：核心 bbox = x[−13.22, 13.22] y[5, 51.84] z[−14.75, 8.05] px
+> ⇒ `halfExtents = [0.8264, 1.4637, 0.7125]`、模型空间中心 = `(0, 1.7762, −0.2095)` 格（躯干前倾使 z 向中心前移 0.30 格）。
+> **本版没有改这两个常量**：它们的语义（`center = [0,0,0]` =「position 是身体核心中心」）与 v2.56 之后渲染器的「position = 脚底」
+> 本就不一致（实测射线只在脚底 −1.4 ~ +1.4 格内命中，胸口 1.5 格以上全部打空），单改 `halfExtents` 只是装饰；
+> 该不一致需要单独评估（见 roadmap v2.58 的「遗留」）。
 
 ### 5.4 刻意不做
 

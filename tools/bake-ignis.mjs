@@ -52,11 +52,32 @@
 //    验证：`src/tests/test-ignis-bake.js` 的 `bindPoseHeightBlocks()` 把这条链累乘后
 //    算真实包围盒（实测 3.73 × 4.07 × 5.16 格）。写错必红。
 //
+// ==================== 旋转约定（v2.58 —— 「蓄力向后抡接近 180°」的真根因）====================
+//
+// ⚠️⚠️ **Bedrock 的骨骼旋转数值 ≠ 标准右手系的 `Euler(x, y, z, 'XYZ')`。**
+//
+// 骨骼 `rotation` 与动画关键帧的三个数是**与 Java（Citadel `AdvancedModelBox`）逐位相同**的那组数；
+// 而 Java 的语义是：
+//   - 矩阵 `M = T(pivot) · Rz · Ry · Rx`（`translateAndRotate` 的调用序是 Z→Y→X）；
+//   - 关键帧值与默认姿态**逐轴相加**（`rotateAngleX += …`），不是四元数复合。
+// Bedrock 几何的 y 轴与 Java 相反（pivot 恒为 `24 − y_java`，x/z 不变），同一个旋转落到 Bedrock 几何空间里是
+//   `S_y · R_java · S_y = Rz(−θz) · Ry(+θy) · Rx(−θx)`  （X、Z 取反，Y 不变，顺序仍是 Z→Y→X）。
+// 此即 `bedrockRotation()`；它是本脚本**唯一**的「角度 → 旋转」入口，bind 与所有动画都走它。
+//
+// 本脚本曾用 `Euler(θx, θy, θz, 'XYZ')`（顺序反、X/Z 符号反）再让运行期做 `bind × delta`，后果：
+//   - 蓄力：上臂本应沿**身前**举起、剑搭在肩后下垂，却变成**向身后抡**、剑尖冲天（未衰减时 0.6s 剑尖比原版高 3.5 格）；
+//   - 劈砍：本应横扫到身体对侧（剑尖 x=+58px），却变成向前尖刺（x=−25px）；
+//   - bind pose：躯干后仰 20° 而不是前倾，手臂内收而不是外撇，头部整体偏后 0.6 格。
+// v2.57 比对两侧素材发现**数值逐帧一致**，误判为「作者设计幅度大」而对蓄力段做衰减打补丁 —— 数值一致
+// 是真的，但**数值相同 ≠ 姿态相同**。验证手段是比对「世界坐标」：`tools/ignis-java-reference.mjs`
+// 按 Java 语义解析 `ModelIgnis.java` 求参考点，`src/tests/test-ignis-bake.js` 把它们冻结并逐点比对
+// （实测本约定下 bind / 蓄力 / 保持 / 劈砍四个时刻与原版偏差 0.0px）。
+//
 // ==================== 动画语义 ====================
 //
-// - 关键帧是**相对 bind pose 的增量**（运行期 `bindQuat * deltaQuat`，与飞龙同口径）。
-//   验证：`head` 的 bind rotation 是 −20.00196°，而 `attack6a` 给它数值关键帧；
-//   若是绝对语义，头会在挥砍时从 −20° 跳到关键帧值（不合理）。
+// - 每帧总旋转 = `bedrockRotation(bind 欧拉角 + 关键帧欧拉角)`（**欧拉角域逐轴相加**，与 Java 一致）。
+//   产物里存的仍是「相对 bind 的增量四元数」`delta = bind⁻¹ · 总旋转`，所以**运行期不用改**：
+//   渲染器的 `bone.quaternion = bind × delta` 恰好还原出总旋转，且 `slerp` 对左乘常量旋转保持不变。
 // - **idle 是两条动画合并**（generala 驱动手臂、generalb 驱动 root/head）：
 //   Bedrock 的 `animate` 列表会同时播放，本仓产物每帧只采一条，故合并。
 // - **idle 的 fps 不是整数**：由 `idleFrameCount / (2π/128)` 算出，使产物
@@ -104,6 +125,39 @@ const ATTACK_FPS = IGNIS_BAKE_PARAMS.defaultFps;
 const BEDROCK_FACE_ORDER = Object.freeze(['east', 'west', 'up', 'down', 'south', 'north']);
 
 function fail(msg) { throw new Error(`[焰魔烘焙] ${msg}`); }
+
+/**
+ * Bedrock/Java 骨骼旋转（度，欧拉三元组）→ 四元数。**本脚本唯一的「角度 → 旋转」入口。**
+ *
+ * `R = Rz(−θz) · Ry(+θy) · Rx(−θx)`：three 的 `'ZYX'` 欧拉序即 `Rz·Ry·Rx`（先 X 再 Y 再 Z 作用于顶点），
+ * X、Z 取反是 Java（y 向下）→ Bedrock 几何（y 向上）的换算。推导与后果见文件头「旋转约定」。
+ *
+ * ⚠️ 不要在别处再写 `new THREE.Euler(..., 'XYZ')`：那就是 v2.58 修掉的根因。
+ *
+ * @param {number} rxDeg @param {number} ryDeg @param {number} rzDeg
+ * @returns {THREE.Quaternion}
+ */
+function bedrockRotation(rxDeg, ryDeg, rzDeg) {
+  return new THREE.Quaternion().setFromEuler(
+    new THREE.Euler(-rxDeg * DEG, ryDeg * DEG, -rzDeg * DEG, 'ZYX'));
+}
+
+/**
+ * 某骨骼在一帧的「增量四元数」：`delta = bind⁻¹ · 总旋转`，总旋转 = `bedrockRotation(bind + 关键帧)`。
+ *
+ * **欧拉角域逐轴相加**（Java `rotateAngleX += …` 的语义）而不是 `bind · Rdelta` 复合：二者只在
+ * bind 与关键帧绕不同轴时不同，而恰恰躯干（bind 绕 X）带着绕 Y 的扭转关键帧时就是这种情况 ——
+ * 复合会让扭转绕「前倾后的轴」而不是竖直轴。
+ *
+ * @param {THREE.Quaternion} bindQ 该骨骼的 bind 四元数（= `bedrockRotation(bindDeg)`）
+ * @param {number[]} bindDeg 该骨骼 bind 欧拉角（度）
+ * @param {number[]} animDeg 该帧关键帧欧拉角（度）
+ * @returns {THREE.Quaternion}
+ */
+function deltaRotation(bindQ, bindDeg, animDeg) {
+  const total = bedrockRotation(bindDeg[0] + animDeg[0], bindDeg[1] + animDeg[1], bindDeg[2] + animDeg[2]);
+  return bindQ.clone().invert().multiply(total);
+}
 
 /**
  * Bedrock 的 box UV 铺开：给定起点与尺寸，返回六个面的源矩形 `[u0,v0,u1,v1]`（源像素）。
@@ -158,16 +212,16 @@ function toPeriodic(kfs, length) {
   return { times: kfs.map((k) => k.time), values: kfs.map((k) => k.value), period: length, clamp: true };
 }
 
-/** 标准 Catmull-Rom 样条求值（Blockbench / Bedrock 的 `catmullrom` 口径） */
-function catmullRom(p0, p1, p2, p3, u) {
-  const u2 = u * u, u3 = u2 * u;
-  return 0.5 * ((2 * p1)
-    + (-p0 + p2) * u
-    + (2 * p0 - 5 * p1 + 4 * p2 - p3) * u2
-    + (-p0 + 3 * p1 - 3 * p2 + p3) * u3);
-}
-
-/** 在周期序列上按 catmullrom 采样一个三分量通道 */
+/**
+ * 在周期序列上**线性插值**采样一个三分量通道。
+ *
+ * ⚠️ Bedrock 关键帧的默认插值是**线性**，只有显式写 `"lerp_mode": "catmullrom"` 才是样条。
+ * 本素材的 84 条动画里**一处 `lerp_mode` 都没有**（计数 0），关键帧全是裸数组 ⇒ 线性。
+ *
+ * 曾经用 Catmull-Rom（v2.58 改掉）：它按「关键帧序号」而不是时间做均匀参数化，蓄力保持段（一段 0.4s）
+ * 与运动段（一段 0.05s）混在一起时，会在本该纹丝不动的保持区间里漂移，剑尖处最大 ≈1.3px。
+ * 原版 Java 的 `setStaticKeyframe` 是一动不动。
+ */
 function sampleChannel3(seq, t) {
   const n = seq.times.length;
   if (n === 0) return [0, 0, 0];
@@ -182,8 +236,8 @@ function sampleChannel3(seq, t) {
     if (seq.clamp) return seq.values[Math.min(n - 1, Math.max(0, k))];
     return seq.values[((k % n) + n) % n];
   };
-  const p0 = at(i - 1), p1 = at(i), p2 = at(i + 1), p3 = at(i + 2);
-  return [0, 1, 2].map((c) => catmullRom(p0[c] || 0, p1[c] || 0, p2[c] || 0, p3[c] || 0, u));
+  const p1 = at(i), p2 = at(i + 1);
+  return [0, 1, 2].map((c) => (p1[c] || 0) + ((p2[c] || 0) - (p1[c] || 0)) * u);
 }
 
 /**
@@ -250,9 +304,10 @@ function collectChannel(bone, channel, length) {
  * @param {number} frameCount 帧数
  * @param {number} fps 帧率（idle 是导出的非整数）
  * @param {Map<string, number>} boneNameToIndex
+ * @param {{deg: number[][], quat: THREE.Quaternion[]}} bind 每根骨骼（按下标）的 bind 欧拉角与四元数
  * @returns {{fps: number, frameCount: number, boneIndices: number[], frames: number[]}}
  */
-function resampleAnimation(anims, names, frameCount, fps, boneNameToIndex) {
+function resampleAnimation(anims, names, frameCount, fps, boneNameToIndex, bind) {
   // 合并多条动画：同一骨骼在两条里都出现时，后者的通道覆盖前者（实测只有 generala/b 的
   // 骨骼集合互斥，故「覆盖」实际不会发生 —— 但语义明确比隐式合并安全）。
   const perBone = new Map();   // boneIndex → {rot: seq|null, pos: seq|null, length}
@@ -283,8 +338,6 @@ function resampleAnimation(anims, names, frameCount, fps, boneNameToIndex) {
   const boneIndices = [...perBone.keys()].sort((a, b) => a - b);
   const slotOf = new Map(boneIndices.map((bi, slot) => [bi, slot]));
   const frames = new Array(frameCount * boneIndices.length * 7);
-  const euler = new THREE.Euler();
-  const quat = new THREE.Quaternion();
 
   for (let f = 0; f < frameCount; f++) {
     const t = f / fps;
@@ -296,132 +349,14 @@ function resampleAnimation(anims, names, frameCount, fps, boneNameToIndex) {
       // 会丢失表达式的高频特性（表达式没有关键帧密度），所以额外走一条重算路径：
       const rot = ch.rot ? sampleChannel3(ch.rot, t) : [0, 0, 0];
       const pos = ch.pos ? sampleChannel3(ch.pos, t) : [0, 0, 0];
-      euler.set(rot[0] * DEG, rot[1] * DEG, rot[2] * DEG, 'XYZ');
-      quat.setFromEuler(euler);
+      const quat = deltaRotation(bind.quat[bi], bind.deg[bi], rot);
       frames[o] = quat.x; frames[o + 1] = quat.y; frames[o + 2] = quat.z; frames[o + 3] = quat.w;
       frames[o + 4] = pos[0] * PX2BLOCK;
       frames[o + 5] = pos[1] * PX2BLOCK;
       frames[o + 6] = pos[2] * PX2BLOCK;
     }
   }
-  applyWindupDamping(frames, frameCount, boneIndices, boneNameToIndex, fps);
   return { fps, frameCount, boneIndices, frames };
-}
-
-// ---------------------------------------------------------------------------
-// 蓄力段衰减（v2.57，用户实玩反馈「手臂向后弯曲过多」）
-// ---------------------------------------------------------------------------
-
-/**
- * 蓄力段的时间窗口（秒）。
- *
- * ⚠️⚠️ **峰值是一段平台 [0.60, 1.00]，不是 0.60 这个单点。**
- * 素材 `attack6a` 在 t=0.6 到达 `right_arm_joint` X=−147.5° 后，靠
- * `setStaticKeyframe(8tick)` 把这个值**保持到 1.0s**，1.05s 才开始挥砍。
- * 把关窗点错放在 0.60（实测踩到）会让 0.60~1.00 的整个平台只被部分衰减，
- * 0.90s 处仰角仍有 79.5° —— 用户看到的「翻折」几乎没被修掉。
- */
-const WINDUP_RAMP_SECONDS = 0.3;    // 起手：与 idle 的接缝，衰减 0→1
-const WINDUP_PLATEAU_START = 0.60;  // 峰值平台起点
-const WINDUP_PLATEAU_END = 1.00;    // 峰值平台终点（挥砍从 1.05s 开始）
-const WINDUP_FADE_OUT = 0.15;       // 平台后的衰减收尾（防一帧反跳，见 weightAt 注释）
-
-/**
- * 骨骼名 → [X, Y, Z] 三轴各自的**保留比例**（1 = 原样，0 = 完全去掉）。
- *
- * ## 为什么要这一层
- *
- * 用户 2026-11-05 反馈：「挥刀时手臂先向后弯曲，然后向前尖刺……左手向后弯曲过多，
- * 不自然」。
- *
- * **不是转换缺陷** —— 定量比对两侧原始素材完全相同（Java `ModelIgnis.java:429` 的
- * `SWING_ATTACK` 与 Bedrock `attack6a` 数值逐帧一致）。是作者原始设计本身幅度极大：
- *
- * | 部位 | idle(bind) | 蓄力 0.60s | 命中 1.25s |
- * |---|---|---|---|
- * | 右臂（持剑）上臂仰角 | −80.4°（垂在身侧） | **+82.0°**（举过头顶后方） | −50.2° |
- *
- * `right_arm_joint` 的 X 轴在蓄力时到 **−147.5°**，0.6s 内从垂下翻转 158.9°（265°/s），
- * 随后 0.65s 反向用 128.7° 下劈 —— 观感就是「胳膊向后翻折」。
- *
- * ## 修法
- *
- * **只衰减蓄力段的旋转幅度**，挥砍与回弹段保持原样，且**不动时间轴** ——
- * `hitFrameSeconds`（1.20s）、`attackAnimSeconds`（2.75s）、冷却与锥形判定全部不受影响。
- *
- * X 保留 0.62 ⇒ −147.5° → −91.5°，上臂仰角从 82° 收到约 43°（仍明显抬起，不垂手）。
- * 左臂 Y 保留 0.7 ⇒ −50° → −35°，把向外摊开的角度收敛。
- */
-const WINDUP_KEEP = new Map([
-  ['right_arm_joint', [0.62, 1, 1]],
-  ['left_arm_joint', [1, 0.7, 1]],
-]);
-
-/**
- * 对蓄力段做旋转衰减（就地修改 frames）。
- *
- * 衰减系数按时窗平滑过渡（避免峰值处出折线，也保证与 idle 的接缝不跳）：
- * - `t ≤ RAMP`：0 → 1 线性上升；
- * - `RAMP < t ≤ PEAK`：保持 1；
- * - `PEAK < t < END`：1 → 0 线性下降；
- * - `t ≥ END`：0（挥砍段完全原样）。
- *
- * @param {number[]} frames 扁平帧数据（每骨 7 个：四元数 + 位置）
- * @param {number} frameCount 帧数
- * @param {number[]} boneIndices 参与动画的骨骼下标（升序）
- * @param {Map<string, number>} boneNameToIndex 骨骼名 → 下标
- * @param {number} fps 帧率
- */
-function applyWindupDamping(frames, frameCount, boneIndices, boneNameToIndex, fps) {
-  const slotOf = new Map(boneIndices.map((bi, slot) => [bi, slot]));
-  const targets = [...WINDUP_KEEP].map(([name, keep]) => {
-    const bi = boneNameToIndex.get(name);
-    if (bi === undefined) fail(`蓄力衰减表里的骨骼 "${name}" 不在几何里`);
-    const slot = slotOf.get(bi);
-    if (slot === undefined) fail(`蓄力衰减目标 "${name}" 没有动画通道`);
-    return { slot, keep };
-  });
-
-  // ⚠️⚠️ 平台终点**必须渐变收尾**，不能断崖式撤掉。
-  //
-  // 实测踩到：平台在 1.000s（帧 30）衰减后是 −91.5°，若平台后立刻恢复原样，
-  // 1.033s（帧 31）就跳回 −143.9° —— 一帧内反向 52°，肉眼是一下抽搐。
-  // 那正是「挥砍起手」段，绝不能插入这种跳变。
-  //
-  // 因此在 [PLATEAU_END, PLATEAU_END + FADE_OUT] 内线性把衰减 1 → 0，
-  // 让姿态从「衰减后的 −91.5°」平滑接回素材的挥砍起手。
-  const weightAt = (t) => {
-    if (t <= WINDUP_RAMP_SECONDS) return t / WINDUP_RAMP_SECONDS;
-    if (t <= WINDUP_PLATEAU_END) return 1;
-    const fadeEnd = WINDUP_PLATEAU_END + WINDUP_FADE_OUT;
-    if (t >= fadeEnd) return 0;
-    return 1 - (t - WINDUP_PLATEAU_END) / WINDUP_FADE_OUT;
-  };
-
-  const n = boneIndices.length;
-  const q = new THREE.Quaternion();
-  const damped = new THREE.Quaternion();
-  const e = new THREE.Euler();
-  for (let f = 0; f < frameCount; f++) {
-    const w = weightAt(f / fps);
-    if (w <= 0) continue;
-    for (const { slot, keep } of targets) {
-      const o = (f * n + slot) * 7;
-      q.set(frames[o], frames[o + 1], frames[o + 2], frames[o + 3]);
-      e.setFromQuaternion(q, 'XYZ');
-      // ⚠️ 不能把四元数 slerp 到 identity —— 那会把三个轴同时缩小，
-      // 而这里要的是「只收 X 轴、Y/Z 不动」。
-      const factor = (k) => 1 - w * (1 - k);
-      damped.setFromEuler(new THREE.Euler(
-        e.x * factor(keep[0]),
-        e.y * factor(keep[1]),
-        e.z * factor(keep[2]),
-        'XYZ',
-      ));
-      frames[o] = damped.x; frames[o + 1] = damped.y;
-      frames[o + 2] = damped.z; frames[o + 3] = damped.w;
-    }
-  }
 }
 
 /**
@@ -433,8 +368,9 @@ function applyWindupDamping(frames, frameCount, boneIndices, boneNameToIndex, fp
  *
  * @param {object} anims @param {string[]} names @param {number} frameCount
  * @param {number} fps @param {Map<string, number>} boneNameToIndex
+ * @param {{deg: number[][], quat: THREE.Quaternion[]}} bind 每根骨骼（按下标）的 bind 欧拉角与四元数
  */
-function resampleMolangAnimation(anims, names, frameCount, fps, boneNameToIndex) {
+function resampleMolangAnimation(anims, names, frameCount, fps, boneNameToIndex, bind) {
   // 收集每条动画每骨骼的「原始通道」（含表达式字符串，不求值）
   const perBone = new Map();   // boneIndex → {rot: [{axis, fn|number}], pos: ...}
   for (const short of names) {
@@ -468,8 +404,6 @@ function resampleMolangAnimation(anims, names, frameCount, fps, boneNameToIndex)
   const boneIndices = [...perBone.keys()].sort((a, b) => a - b);
   const slotOf = new Map(boneIndices.map((bi, slot) => [bi, slot]));
   const frames = new Array(frameCount * boneIndices.length * 7);
-  const euler = new THREE.Euler();
-  const quat = new THREE.Quaternion();
 
   for (let f = 0; f < frameCount; f++) {
     const t = f / fps;
@@ -478,8 +412,7 @@ function resampleMolangAnimation(anims, names, frameCount, fps, boneNameToIndex)
       const o = (f * boneIndices.length + slotOf.get(bi)) * 7;
       const rot = ch.rotation ? ch.rotation.map((fn) => fn(t)) : [0, 0, 0];
       const pos = ch.position ? ch.position.map((fn) => fn(t)) : [0, 0, 0];
-      euler.set(rot[0] * DEG, rot[1] * DEG, rot[2] * DEG, 'XYZ');
-      quat.setFromEuler(euler);
+      const quat = deltaRotation(bind.quat[bi], bind.deg[bi], rot);
       frames[o] = quat.x; frames[o + 1] = quat.y; frames[o + 2] = quat.z; frames[o + 3] = quat.w;
       frames[o + 4] = pos[0] * PX2BLOCK;
       frames[o + 5] = pos[1] * PX2BLOCK;
@@ -520,11 +453,15 @@ function main() {
     if (pi >= i) fail(`骨骼 ${b.name} 的父 "${b.parent}" 下标 ${pi} 不早于自身 ${i}（层级顺序无效）`);
   }
 
-  const bones = bonesRaw.map((b) => {
+  // bind 旋转：欧拉角（度）与四元数（经 `bedrockRotation`，见文件头「旋转约定」）。
+  // 动画增量 `bind⁻¹ · 总旋转` 在欧拉角域与 bind 逐轴相加，故两者都要留着。
+  const bindDeg = bonesRaw.map((b) => b.rotation || [0, 0, 0]);
+  const bindQuat = bindDeg.map((d) => bedrockRotation(d[0], d[1], d[2]));
+  const bind = { deg: bindDeg, quat: bindQuat };
+
+  const bones = bonesRaw.map((b, i) => {
     const pi = b.parent === undefined ? [0, 0, 0] : b.pivot;
-    const rotDeg = b.rotation || [0, 0, 0];
-    const rot = new THREE.Quaternion().setFromEuler(
-      new THREE.Euler(rotDeg[0] * DEG, rotDeg[1] * DEG, rotDeg[2] * DEG, 'XYZ'));
+    const rot = bindQuat[i];
 
     // localPosition = pivot - R(rot) · pivot  （推导见文件头）
     // 意义：让「绕 pivot 旋转」在 three 的「相对父骨骼」模型里等价成立
@@ -650,7 +587,7 @@ function main() {
   const idleFps = idleFrameCount / IGNIS_ANIM_PERIODS.idle;
   const animations = {
     idle: resampleMolangAnimation(
-      anims, IGNIS_ANIM_SOURCES.idle, idleFrameCount, idleFps, boneNameToIndex),
+      anims, IGNIS_ANIM_SOURCES.idle, idleFrameCount, idleFps, boneNameToIndex, bind),
   };
   console.log(`[焰魔烘焙]   动画 idle: ${animations.idle.frameCount} 帧 × `
     + `${animations.idle.boneIndices.length} 骨骼 @ ${idleFps.toFixed(3)}fps`
@@ -659,7 +596,7 @@ function main() {
   // attack：数值关键帧路径
   const attackFrames = Math.round(IGNIS_ANIM_PERIODS.attack * ATTACK_FPS);
   animations.attack = resampleAnimation(
-    anims, IGNIS_ANIM_SOURCES.attack, attackFrames, ATTACK_FPS, boneNameToIndex);
+    anims, IGNIS_ANIM_SOURCES.attack, attackFrames, ATTACK_FPS, boneNameToIndex, bind);
   console.log(`[焰魔烘焙]   动画 attack: ${animations.attack.frameCount} 帧 × `
     + `${animations.attack.boneIndices.length} 骨骼 @ ${ATTACK_FPS}fps`);
 

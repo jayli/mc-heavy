@@ -64,6 +64,15 @@ export const IGNIS_META = path.join(ROOT, 'assets', 'ignis', 'ignis.meta.json');
  *
  * ⚠️ **曾经取 12 帧**（当时误把周期算成 `2π/128` = 0.049 秒的快频摆动，12 帧正好一个周期）。
  * 度制修正后周期变成 2.8125 秒（**57 倍长**），12 帧会退化成每帧 10.67° 的可见跳帧。
+ *
+ * ⚠️ **`rotationConvention`（v2.58）是烘焙「算法」的版本标记，不是可调参数。**
+ * 输入指纹只覆盖输入文件与参数，**改烘焙算法而不动参数时指纹不变**（本文件下方已记的盲区）——
+ * 旋转约定恰恰是这类改动：它不改任何输入，却改变产物里每一根骨骼的 bind 四元数与每一帧的姿态。
+ * 把约定写进参数 ⇒ 换约定必换指纹 ⇒ `check:data` 会报「产物已过期，跑 npm run ignis」。
+ *
+ * 取值 `'java-zyx-additive'` 的含义（权威说明见 `tools/bake-ignis.mjs` 的 `bedrockRotation`）：
+ * 骨骼旋转 `R = Rz(−θz) · Ry(+θy) · Rx(−θx)`（Z→Y→X 作用顺序，X/Z 取反），关键帧与 bind 欧拉角**逐轴相加**。
+ * 曾经的 `'xyz-composed'`（`Euler('XYZ')` + `bind × delta`）把蓄力翻成向身后抡、劈砍翻成向前尖刺。
  */
 export const IGNIS_BAKE_PARAMS = Object.freeze({
   scale: 1,
@@ -72,6 +81,7 @@ export const IGNIS_BAKE_PARAMS = Object.freeze({
   /** 待机动画的帧率不是这个值 —— 它由 `idleFrameCount / 周期` 算出。此字段只用于攻击 */
   defaultFps: 30,
   idleFrameCount: 60,
+  rotationConvention: 'java-zyx-additive',
 });
 
 /**
@@ -111,8 +121,10 @@ export const IGNIS_ANIM_SOURCES = Object.freeze({
  *    `BoxGeometry` 对 0 尺寸会退化成退化三角形 ⇒ 跳过）⇒ **烘焙 80 个**
  *  - 每立方体 `BoxGeometry` 产出 24 顶点 / 36 索引 ⇒ `80 × 24 = 1920` 顶点、
  *    `80 × 36 = 2880` 索引
- *  - 模型空间 bbox（含骨骼旋转、含剑盾）= **59.73 × 65.07 × 82.52 px**
- *    = **3.7329 × 4.0668 × 5.1576 格**（1 倍）
+ *  - bind pose 的模型空间 bbox（含骨骼旋转、含剑盾）= **78.07 × 61.35 × 82.52 px**
+ *    = **4.8796 × 3.8346 × 5.1576 格**（宽×高×深，1 倍）
+ *    ⚠️ v2.58 前冻结为 3.7329 × 4.0668 × 5.1576，那是**错误旋转约定**下的值；现值由
+ *    `node tools/ignis-java-reference.mjs` 直接解析 Java 源码独立复算，与产物逐位一致。
  *
  * ⚠️ **`boneCount` / `cubeCount` 是「素材事实」而不是「可调参数」**：素材换了它们才会变。
  * 把它们钉在这里的意义是「烘焙漏了骨骼/立方体」会立刻被抓到（静默缺肉的形态是身上有洞）。

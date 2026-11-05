@@ -161,6 +161,11 @@ scheduler/physics）再加 `npm run bench -- --check`。计划里标「冻结」
 - 坐标类判据一律非负取模：`wx % 16` 在负坐标返回负值 → 判据恒真。
 - 三层 v 方向翻转（BoxGeometry 各面 `vdir` 符号不同 + `TextureLoader.flipY=true` + 皮肤矩形按图左上
   原点写），调试时必须走**真实加载路径**（`DataTexture` 的 `flipY` 与 `TextureLoader` 相反，用它造探针会得出假结论）。
+- **Bedrock/Java 骨骼旋转的数值 ≠ 标准右手系的 `Euler(x,y,z,'XYZ')`**（焰魔 v2.58，曾误诊为「设计幅度大」）：
+  矩阵是 `Rz·Ry·Rx`，关键帧与 bind **欧拉角逐轴相加**，且 Bedrock 几何 y 与 Java 相反 ⇒ 落到 Bedrock 几何空间必须取
+  `Rz(−θz)·Ry(+θy)·Rx(−θx)`（`bake-ignis.mjs` 的 `bedrockRotation` 是唯一入口，飞龙是 bbmodel，不适用）。
+  **两侧「数值逐帧一致」证明不了姿态一致** —— 症状（蓄力向身后抡、劈砍变尖刺、躯干后仰）只在比对**世界坐标**时现形：
+  用 `tools/ignis-java-reference.mjs` + `test-ignis-bake.js` 的冻结表；动画「看着不对」时先比世界坐标，**不要加衰减补丁**。
 
 **UI 层级**（改任一层必须重核这条不等式）：hotbar 40 < 迷你地图 45 < 坐标/性能面板 50 =
 血心 50 < 伤害数字 55 < 设置按钮 60 < 设置面板 70 < 背包 80 < 背包 hover 浮层 85 < toast 90 <
