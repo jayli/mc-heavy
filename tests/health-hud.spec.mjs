@@ -215,3 +215,55 @@ test('Boss（飞龙）受击：头顶弹「剩余血量」数字', async ({ page
   expect(r.texts, `Boss 受击必须弹数字，内容 = 剩余血量 ${r.maxHp - 100}`)
     .toContain(String(r.maxHp - 100));
 });
+
+test('Boss2（焰魔）受击：数字锚点 = 脚底 + IGNIS.height（头顶），不是龙的「身体中心」口径', async ({ page }) => {
+  test.setTimeout(170_000);
+  // 缺陷形态（v2.59 修）：`_emitDamageNumber` 的首帧位置 `initial` 有焰魔分支（脚底 + 3.25），
+  // 但逐帧跟随的 `anchor()` 只区分 zombie / 其余 ⇒ 焰魔落入「龙」分支（`DRAGON_CORE_OBB.halfExtents[1]` = 1.875）。
+  // 数字首帧在头顶，下一帧就被拉到胸口，而「弹出了正确文本」的断言照样绿 —— 只有锚点高度能抓住它。
+  await page.goto(`/?vd=4&seed=${SEED}`);
+  await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
+  await page.evaluate(async () => {
+    const { findAltarTarnRegion } = await import('/src/gen/structures/tarn-zone.js');
+    const g = window.__MC_GAME__;
+    const a = findAltarTarnRegion(g.seed);
+    g.player.spawn(a.cx, 40, a.cz);
+  });
+  // 等玩家真正落地（传送后 y 还在下坠；此时召唤会把焰魔落到空中结构上）
+  await page.waitForFunction(() => {
+    const g = window.__MC_GAME__;
+    const p = g.player.physics.pos;
+    return g.world.isSolid(Math.floor(p.x), Math.floor(p.y - 0.5), Math.floor(p.z));
+  }, null, { timeout: 30_000 });
+  await page.waitForTimeout(400);
+
+  const r = await page.evaluate(async () => {
+    const g = window.__MC_GAME__;
+    const { IGNIS } = await import('/src/entities/ignis/ignis-config.js');
+    const { DRAGON_CORE_OBB } = await import('/src/entities/dragons/dragon-config.js');
+    const p = g.player.physics.pos;
+    const sum = g.ignises.summon('tarn:hud:0', Math.floor(p.x), Math.floor(p.z) + 4, 1, p.y);
+    await new Promise((res) => setTimeout(res, 500));
+    const e = g.ignises.activeEntities()[0];
+    const maxHp = e.state.health;
+    const hit = g.damageEntity(e.id, 10, performance.now());
+    // 多等几帧：`update()` 逐帧用 anchor() 覆盖 lastPos，首帧的 initial 不算数
+    for (let i = 0; i < 4; i += 1) await new Promise((rr) => requestAnimationFrame(rr));
+    const feetY = g.entities.get(e.id).state.position[1];
+    const slots = g._damageNumbers._slots.filter((s) => s.active)
+      .map((s) => ({ text: s.el.textContent, offsetFromFeet: s.lastPos[1] - feetY }));
+    return {
+      ok: sum.ok, maxHp, hitHealth: hit?.health, slots,
+      ignisHeight: IGNIS.height, dragonCenterHalf: DRAGON_CORE_OBB.halfExtents[1],
+    };
+  });
+
+  expect(r.ok, '前置：焰魔召唤成功').toBe(true);
+  expect(r.hitHealth, '前置：焰魔掉血后剩 maxHp-10').toBe(r.maxHp - 10);
+  expect(r.slots.length, '该焰魔头顶应恰有一个数字（同实体只显示最新）').toBe(1);
+  expect(r.slots[0].text, '数字内容 = 剩余血量').toBe(String(r.maxHp - 10));
+  // 两个候选口径相距 1.375 格（3.25 vs 1.875）⇒ 容差 0.25 足以区分，又不怕焰魔台阶 / 一帧位移的抖动
+  expect(Math.abs(r.slots[0].offsetFromFeet - r.ignisHeight),
+    `锚点应在脚底 + ${r.ignisHeight}（头顶），实测 + ${r.slots[0].offsetFromFeet.toFixed(3)}`
+    + `（龙口径是 + ${r.dragonCenterHalf}）`).toBeLessThan(0.25);
+});

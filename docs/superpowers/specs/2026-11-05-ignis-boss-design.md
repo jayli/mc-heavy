@@ -442,18 +442,25 @@ export function applyDamage(health, amount) {
 | `IGNIS.halfWidth` | **0.5** | Bedrock `minecraft:collision_box` 的 `width: 1` |
 | `IGNIS.height` | **3.25** | Bedrock `collision_box` 的 `height: 3.25` |
 | `IGNIS.modelFeetOffsetY` | **0.3042** | 模型最低顶点在 y = −4.87px = −0.3042 格（软件光栅化实测），**不是 0** |
-| `IGNIS_CORE_OBB.halfExtents` | **[0.8264, 1.421, 0.777]** | 躯干+头核心 bbox 实测（不含剑/盾/手臂外沿） |
-| `IGNIS_CORE_OBB.center` | **[0, 0, 0]** | `position` 语义 = 身体核心中心（与飞龙同） |
-| `IGNIS_MODEL_CENTER` | **[0, 1.7335, 0.0895]** | 核心 bbox 中心相对模型原点（单位格），渲染层摆 mesh 用 |
+| `IGNIS_CORE_OBB.halfExtents` | **[0.8264, 1.4637, 0.7125]** | 七根核心骨骼（`upperbody, head, lowerbody, lowerbody2, bodycore, right_chestplate, left_chestplate`，不含剑/盾/手臂外沿）bind pose 包围盒实测。**v2.59 重标**：旧值 [0.8264, 1.421, 0.777] 是错误旋转约定下的实测 |
+| `IGNIS_CORE_OBB.center` | **[0, 1.5106, −0.2095]** | **相对脚底**（`position` = 脚底，与丧尸一致、与飞龙不同）= `IGNIS_MODEL_CENTER` + (0, `feetOffsetY` = −0.2656, 0) ⇒ 核心盒 y ∈ [0.0469, 2.9744]。**v2.59 由 [0, 0, 0] 改**：旧值沿用「position = 身体核心中心」，与 v2.56 起的脚底语义不一致 |
+| `IGNIS_MODEL_CENTER` | **[0, 1.7762, −0.2095]** | 核心 bbox 中心相对模型原点（单位格）。v2.56 起渲染器不再用它摆 mesh（用产物 `metrics.feetOffsetY`），仅作 `CORE_OBB.center` 的推导记录；`test-ignis-system.js` 钉住 `CORE_OBB.center.y = MODEL_CENTER.y + feetOffsetY` |
 | 全模型包围盒（bind pose） | **4.8796 × 3.8346 × 5.1576** 格（宽×高×深） | 含剑尖与盾。**v2.58 重标**：旧值 3.7329 × 4.0668 × 5.1576 是错误旋转约定下的实测；新值由 `tools/ignis-java-reference.mjs` 直接解析 Java 源码独立复算，与修正后的产物逐位一致 |
 
-> **v2.58 对本节常量的影响（实测，未采纳，留作后续命中盒对齐的数据）**：旧的 `IGNIS_CORE_OBB` / `IGNIS_MODEL_CENTER`
-> 是在错误约定的 bind pose 上量的。按同一口径（`upperbody, head, lowerbody, lowerbody2, bodycore, right_chestplate,
-> left_chestplate` 七根骨骼）在修正后的 bind pose 上复测：核心 bbox = x[−13.22, 13.22] y[5, 51.84] z[−14.75, 8.05] px
+> **v2.58 → v2.59：核心盒已重标并改成「相对脚底」**。v2.58 修正旋转约定后，旧的 `IGNIS_CORE_OBB` / `IGNIS_MODEL_CENTER`
+> （在错误约定的 bind pose 上量的）按同一口径（`upperbody, head, lowerbody, lowerbody2, bodycore, right_chestplate,
+> left_chestplate` 七根骨骼）复测：核心 bbox = x[−13.22, 13.22] y[5, 51.84] z[−14.75, 8.05] px
 > ⇒ `halfExtents = [0.8264, 1.4637, 0.7125]`、模型空间中心 = `(0, 1.7762, −0.2095)` 格（躯干前倾使 z 向中心前移 0.30 格）。
-> **本版没有改这两个常量**：它们的语义（`center = [0,0,0]` =「position 是身体核心中心」）与 v2.56 之后渲染器的「position = 脚底」
-> 本就不一致（实测射线只在脚底 −1.4 ~ +1.4 格内命中，胸口 1.5 格以上全部打空），单改 `halfExtents` 只是装饰；
-> 该不一致需要单独评估（见 roadmap v2.58 的「遗留」）。
+> v2.58 当时**没改**这两个常量，因为 `center = [0,0,0]`（「position 是身体核心中心」）与 v2.56 之后「position = 脚底」本就不一致
+> （实测射线只在脚底 −1.4 ~ +1.4 格内命中，胸口 1.5 格以上全部打空），单改 `halfExtents` 只是装饰。**v2.59 一并改掉**：
+> 渲染器把 mesh 下移 `|feetOffsetY|` = 0.265625 格使最低顶点落在 `position.y`，故相对脚底的核心盒 y ∈ [0.0469, 2.9744]
+> （`IGNIS.height` = 3.25 之内）、`center = [0, 1.5106, −0.2095]`；`ignisAabbFor` 把 center 与半长**一起**绕 `state.yaw` 旋转。
+> 守卫（`src/tests/test-ignis-system.js`）：字面量高度扫描（脚底 +0.1 … +2.9 命中；−1.0 / −0.2 / +3.2 / +3.5 不命中）、
+> yaw 旋转等变性、与产物七骨骼 bind pose 包围盒的独立复算对账（容差 1e-4）、与渲染器真实蒙皮的粗对账（0.3 格）。
+>
+> ⚠️ **口径说明**：命中盒取 **bind pose 链式矩阵**口径（= 模型定义，与 `tools/ignis-java-reference.mjs` 对 Java 源码的独立复算一致）。
+> 渲染器当前 rest 帧显示的并不是该姿态（实测见 roadmap v2.59 的「遗留 ①」），故 z 前缘比画面所见多出约 0.235 格 ——
+> 命中偏宽、不会漏判；渲染器若按该条修正，命中盒与画面将严格吻合，无需再改常量。
 
 ### 5.4 刻意不做
 

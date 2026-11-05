@@ -2145,9 +2145,13 @@ export class Game {
    *
    * 显示的是**剩余血量**（不是伤害值）—— 用户明确要「掉血之后还剩的血量」。
    *
-   * ⚠️ **锚点 Y 按实体类型取**：丧尸 `position` 是脚底 → 头顶 = `y + ZOMBIE.height`；
-   * 龙 `position` 是身体中心 → 头顶 = `y + DRAGON_CORE_OBB.halfExtents[1]`。
-   * 两个常量都从各自 config import，不写字面量（红线 1）。
+   * ⚠️ **锚点 Y 按实体类型取**：丧尸 / 焰魔 `position` 是脚底 → 头顶 = `y + ZOMBIE.height` /
+   * `y + IGNIS.height`；龙 `position` 是身体中心 → 头顶 = `y + DRAGON_CORE_OBB.halfExtents[1]`。
+   * 常量都从各自 config import，不写字面量（红线 1）。
+   *
+   * ⚠️ **首帧位置 `initial` 与逐帧 `anchor()` 必须共用同一个 `headY`**（v2.59）：曾经两处各写一份三元式，
+   * `anchor()` 漏了焰魔分支 ⇒ 焰魔的数字首帧在头顶（脚底 + 3.25），下一帧就被拉进龙的口径（+1.875，胸口）。
+   * 「数字弹出来了、内容也对」的断言抓不到它，只有锚点高度能（`health-hud.spec.mjs` 的 Boss2 用例）。
    *
    * ⚠️ **致命一击也有数字**：实体同帧 despawn，故锚点函数首次调用即返回 null ——
    * 用发射时刻的 `initialPos` 兜底，数字冻结在死亡位置继续上浮淡出。
@@ -2163,13 +2167,14 @@ export class Game {
     if (!this._damageNumbers) return; // 构造期/装配顺序错时的纵深防御
     const state = entity.state;
     const [x, y, z] = state.position;
-    const topY = entity.type === 'zombie'
-      ? y + ZOMBIE.height
-      : entity.type === IGNIS_TYPE
+    // 头顶 y 的唯一权威（`initial` 与逐帧 `anchor` 共用，见上方说明）
+    const headY = (t, baseY) => t === 'zombie'
+      ? baseY + ZOMBIE.height
+      : t === IGNIS_TYPE
         // ⚠️ 焰魔的 `position` 是**脚底**（地面实体）⇒ 头顶 = y + IGNIS.height
-        ? y + IGNIS.height
-        : y + DRAGON_CORE_OBB.halfExtents[1];
-    const initial = [x, topY, z];
+        ? baseY + IGNIS.height
+        : baseY + DRAGON_CORE_OBB.halfExtents[1];
+    const initial = [x, headY(entity.type, y), z];
     const type = entity.type;
     // ⚠️ **捕获 generation**（红线 7 版本协议在实体侧的对应物）：丧尸 id 从 slot 池复用
     // （`z0`~`z19`），若锚点只按 id 查，旧丧尸的冻结死亡数字会**挂到同 id 重生的新丧尸身上**
@@ -2182,8 +2187,7 @@ export class Game {
       const e = this.entities.get(entity.id);
       if (!e || e.type !== type || e.generation !== gen) return null;
       const [ex, ey, ez] = e.state.position;
-      const eyTop = type === 'zombie' ? ey + ZOMBIE.height : ey + DRAGON_CORE_OBB.halfExtents[1];
-      return [ex, eyTop, ez];
+      return [ex, headY(type, ey), ez];
     };
     this._damageNumbers.spawn(
       String(Math.max(0, Math.round(remaining))), anchor, initial, nowMs, entity.id,
