@@ -36,21 +36,27 @@ import { ZOMBIE, ZOMBIE_MAX_STEP, ZOMBIE_MOVING_EPSILON, ZOMBIE_STEERING } from 
 const PHYS_EPSILON = 0.001;
 
 /**
- * 丧尸 AABB 与实心方块是否相交（脚底为 `y`，半宽 0.3、高 1.8）。
+ * 任意 AABB（半宽 + 高）与实心方块是否相交（脚底为 `y`）。
  *
- * **物理的 `collides()` 与避障探针共用本函数**（红线 1）：两份判据会漂移成「探针以为能过、
- * 物理撞墙」或反之，且这种漂移是静默的（只表现为丧尸莫名卡顿），只能靠实玩发现。
+ * **物理的 `collides()`、避障探针、焰魔的地面物理共用本函数**（红线 1）：多份判据会漂移成
+ * 「探针以为能过、物理撞墙」或反之，且这种漂移是静默的（只表现为实体莫名卡顿），
+ * 只能靠实玩发现。
+ *
+ * ⚠️ **`PHYS_EPSILON` 门控是载荷性的**：`y1 = floor(y + height - EPSILON)`。少了它会让
+ * "净空恰好 1.8"的走廊（脚底 y=1.2 时 AABB 顶面恰为 3.0）多采一格头顶，把**能走的走廊
+ * 判成堵死** —— 实体在门洞、隧道、2 格高的走廊里原地僵住，而方块层面完全看不出问题。
  *
  * @param {{isSolid(x: number, y: number, z: number): boolean}} world
  * @param {number} x 脚底中心 x @param {number} y 脚底 y @param {number} z 脚底中心 z
+ * @param {number} halfWidth AABB 半宽（丧尸 0.3 / 焰魔 0.5）
+ * @param {number} height AABB 高（丧尸 1.8 / 焰魔 3.25）
  * @returns {boolean}
  */
-export function zombieCollidesAt(world, x, y, z) {
+export function aabbCollidesAt(world, x, y, z, halfWidth, height) {
   if (!world || typeof world.isSolid !== 'function') return false;
-  const hw = ZOMBIE.width / 2;
-  const x0 = Math.floor(x - hw), x1 = Math.floor(x + hw);
-  const y0 = Math.floor(y), y1 = Math.floor(y + ZOMBIE.height - PHYS_EPSILON);
-  const z0 = Math.floor(z - hw), z1 = Math.floor(z + hw);
+  const x0 = Math.floor(x - halfWidth), x1 = Math.floor(x + halfWidth);
+  const y0 = Math.floor(y), y1 = Math.floor(y + height - PHYS_EPSILON);
+  const z0 = Math.floor(z - halfWidth), z1 = Math.floor(z + halfWidth);
   for (let bx = x0; bx <= x1; bx++) {
     for (let by = y0; by <= y1; by++) {
       for (let bz = z0; bz <= z1; bz++) {
@@ -59,6 +65,20 @@ export function zombieCollidesAt(world, x, y, z) {
     }
   }
   return false;
+}
+
+/**
+ * 丧尸 AABB 与实心方块是否相交（`aabbCollidesAt` 的丧尸参数薄包装）。
+ *
+ * ⚠️ **签名与行为逐位不变** —— 这是参数化重构的零回归约束，由
+ * `test-ignis-collision.js` 的「与 aabbCollidesAt(丧尸参数) 逐位等价」钉住。
+ *
+ * @param {{isSolid(x: number, y: number, z: number): boolean}} world
+ * @param {number} x 脚底中心 x @param {number} y 脚底 y @param {number} z 脚底中心 z
+ * @returns {boolean}
+ */
+export function zombieCollidesAt(world, x, y, z) {
+  return aabbCollidesAt(world, x, y, z, ZOMBIE.width / 2, ZOMBIE.height);
 }
 
 /**
@@ -74,42 +94,62 @@ export function zombieStepUpY(y) {
 }
 
 /**
- * 局部转向探针：把「朝玩家的意图速度」按最小偏角修成一条走得通的方向。
+ * 局部转向探针：把「朝玩家的意图速度」按最小偏角修成一条走得通的方向（**丧尸口径薄包装**）。
  *
- * 语义（用户 2026-11-02 裁定「贴身绕行即可」+「完全过不去时留在原地不追」）：
- * - 候选 = 原方向 0°，然后按 `anglesDeg` **升序**、每档**先 + 后 −**（保证取最小偏角，
- *   ±90° 只在最后兜底沿墙蹭）；
- * - 某个候选的落点（`probeDistance` 之外）AABB 不撞方块 → 可通行；撞了但「抬一格台阶后不撞」
- *   也算可通行（一格台阶交给物理 step-up）；
- * - **0° 命中时原样返回输入**（不重建速度向量）：`vx/len*len` 不保证逐位回到 `vx`，
- *   而「无障碍时逐位零回归」是硬判据（否则丧尸走路会开始画龙，观感缺陷且极难归因）；
- * - 全部不可通行 → `{ vx: 0, vz: 0, blocked: true }`（原地站住，等下一个 AI 周期重探）。
- *
- * **确定性**：同输入必同输出 —— 无 `Math.random()`、不记忆「上次绕哪边」。副作用是两侧都通时
- * 永远先试 +侧（稳定不抖，可测）。
- *
- * ⚠️ **只换方向、不改长度**：速度上限的唯一权威仍是 `ZombieService._applyIntent()` 的钳制
- * ＋ `ZOMBIE.speed`，本函数不复制一份。
- * ⚠️ **不判「当前是否已被埋」**：本函数回答「目标点能不能站」，被埋属于物理层
- * （玩家侧有 `resolveStuck`，丧尸侧靠 column 卸载路径）。
+ * ⚠️ **签名与行为逐位不变**（零回归）。实现在 `steerIntentAabb`。
  *
  * @param {{world: object, position: number[], vx: number, vz: number}} p
  * @returns {{vx: number, vz: number, blocked: boolean}}
  */
 export function steerIntent({ world, position, vx, vz }) {
+  return steerIntentAabb({
+    world, position, vx, vz,
+    halfWidth: ZOMBIE.width / 2,
+    height: ZOMBIE.height,
+    maxStep: ZOMBIE_MAX_STEP,
+    steering: ZOMBIE_STEERING,
+  });
+}
+
+/**
+ * 任意 AABB 的局部转向探针（v2.55 焰魔用；丧尸经 `steerIntent` 走同一份实现）。
+ *
+ * 语义（用户 2026-11-02 裁定「贴身绕行即可」+「完全过不去时留在原地不追」）：
+ * - 候选 = 原方向 0°，然后按 `steering.anglesDeg` **升序**、每档**先 + 后 −**（保证取最小偏角，
+ *   ±90° 只在最后兜底沿墙蹭）；
+ * - 某个候选的落点（`steering.probeDistance` 之外）AABB 不撞方块 → 可通行；撞了但「抬一格台阶后
+ *   不撞」也算可通行（一格台阶交给物理 step-up）；
+ * - **0° 命中时原样返回输入**（不重建速度向量）：`vx/len*len` 不保证逐位回到 `vx`，
+ *   而「无障碍时逐位零回归」是硬判据（否则实体走路会开始画龙，观感缺陷且极难归因）；
+ * - 全部不可通行 → `{ vx: 0, vz: 0, blocked: true }`（原地站住，等下一个 AI 周期重探）。
+ *
+ * **确定性**：同输入必同输出 —— 无 `Math.random()`、不记忆「上次绕哪边」。副作用是两侧都通时
+ * 永远先试 +侧（稳定不抖，可测）。
+ *
+ * ⚠️ **只换方向、不改长度**：速度上限的唯一权威仍是调用方的钳制与各自的 `speed` 常量，
+ * 本函数不复制一份。
+ * ⚠️ **不判「当前是否已被埋」**：本函数回答「目标点能不能站」，被埋属于物理层。
+ *
+ * @param {{world: object, position: number[], vx: number, vz: number,
+ *          halfWidth: number, height: number, maxStep: number,
+ *          steering: {probeDistance: number, anglesDeg: readonly number[]}}} p
+ * @returns {{vx: number, vz: number, blocked: boolean}}
+ */
+export function steerIntentAabb({ world, position, vx, vz, halfWidth, height, maxStep, steering }) {
   const vx0 = Number.isFinite(vx) ? vx : 0;
   const vz0 = Number.isFinite(vz) ? vz : 0;
   const len = Math.hypot(vx0, vz0);
-  // 零速/亚阈值意图不探针：静止的丧尸不该凭空转向，也不该被判 blocked
-  // （阈值复用 ZOMBIE_MOVING_EPSILON —— 与步态、朝向派生同一份口径）
+  // 零速/亚阈值意图不探针：静止的实体不该凭空转向，也不该被判 blocked
   if (len <= ZOMBIE_MOVING_EPSILON) return { vx: vx0, vz: vz0, blocked: false };
   const [x, y, z] = position;
   const ux = vx0 / len, uz = vz0 / len;
 
-  // 0° 先试：命中就原样返回（逐位零回归）
-  if (probeClear(world, x, y, z, ux, uz)) return { vx: vx0, vz: vz0, blocked: false };
+  const clear = (dx, dz) => probeClearAabb(world, x, y, z, dx, dz, halfWidth, height, maxStep, steering.probeDistance);
 
-  for (const deg of ZOMBIE_STEERING.anglesDeg) {
+  // 0° 先试：命中就原样返回（逐位零回归）
+  if (clear(ux, uz)) return { vx: vx0, vz: vz0, blocked: false };
+
+  for (const deg of steering.anglesDeg) {
     const theta = deg * Math.PI / 180;
     const cos = Math.cos(theta), sin = Math.sin(theta);
     // 先 +后 −：一个旋转公式两种符号，不写两份（红线 1）
@@ -118,7 +158,7 @@ export function steerIntent({ world, position, vx, vz }) {
       // 旋转公式与 yaw = atan2(vx, vz) 同序（x east / z south）
       const dx = ux * cos - uz * s;
       const dz = ux * s + uz * cos;
-      if (probeClear(world, x, y, z, dx, dz)) {
+      if (clear(dx, dz)) {
         return { vx: dx * len, vz: dz * len, blocked: false };
       }
     }
@@ -127,22 +167,16 @@ export function steerIntent({ world, position, vx, vz }) {
 }
 
 /**
- * 单个候选方向是否可通行：`probeDistance` 之外那一点 AABB 不撞方块，或者抬一格台阶后不撞。
+ * 单个候选方向是否可通行（`steerIntentAabb` 的内部判据，抽出来只为可读）。
  *
- * ⚠️ **与物理 `tryStepUp` 有两处已知发散，都是有意保留的**：
- * ① **不复制「跳跃上升段拒绝」门控** —— 探针回答的是**几何可达性**，物理回答的是**此刻能否抬**。
- *    丧尸不会跳，几乎不处于上升段。
- * ② **判定位置不同** —— 物理在「已撞到台阶、仍未抬升的当前位置」测抬升后的 AABB；探针在
- *    `probeDistance`（1.2 格）之外的**前瞻落点**测。所以探针可能批准一个「真实落点在那之后
- *    才需要抬」的台阶。实践上物理会分 2~3 个子步完成，不会让丧尸贴墙；代价只是
- *    “探针批准的位置比物理抬升的位置提前”。
- *    ⇒ **不改探针去复制物理的逐格判定**：那会把 1 次探针变成沿路径逐格扫（成本乘上
- *    `probeDistance` 倍），而收益只是消除一个不可见的提前量。
+ * ⚠️ **与物理 `tryStepUp` 有两处已知发散，都是有意保留的**（与丧尸版注释同一理由）：
+ * ① **不复制「跳跃上升段拒绝」门控** —— 探针回答的是**几何可达性**；
+ * ② **判定位置不同** —— 物理在当前位置测抬升后 AABB，探针在 `probeDistance` 之外的**前瞻落点**测。
  */
-function probeClear(world, x, y, z, dx, dz) {
-  const tx = x + dx * ZOMBIE_STEERING.probeDistance;
-  const tz = z + dz * ZOMBIE_STEERING.probeDistance;
-  if (!zombieCollidesAt(world, tx, y, tz)) return true;
+function probeClearAabb(world, x, y, z, dx, dz, halfWidth, height, maxStep, probeDistance) {
+  const tx = x + dx * probeDistance;
+  const tz = z + dz * probeDistance;
+  if (!aabbCollidesAt(world, tx, y, tz, halfWidth, height)) return true;
   const lifted = zombieStepUpY(y);
-  return lifted - y <= ZOMBIE_MAX_STEP && !zombieCollidesAt(world, tx, lifted, tz);
+  return lifted - y <= maxStep && !aabbCollidesAt(world, tx, lifted, tz, halfWidth, height);
 }
