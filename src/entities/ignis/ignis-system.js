@@ -17,6 +17,7 @@
 // | 攻击 | 喷火球（生成实体） | 挥剑（扣玩家血，由 game.js 结算） |
 import { raycastAabbSlab, normalizePosition } from '../entity-types.js';
 import { IGNIS_TYPE, IGNIS, IGNIS_CORE_OBB, ignisEntityIdFor } from './ignis-config.js';
+import { IgnisBossAgent } from '../bosses/ignis-boss-agent.js';
 
 // ==================== 纯函数 ====================
 
@@ -118,25 +119,12 @@ function createState({
 // ==================== definition ====================
 
 /**
- * 模块级单例 Agent（无跨帧成员，多条焰魔共用安全）。
+ * 模块级单例 Agent（无跨帧成员，多条焰魔共用安全；与飞龙的 `dragonAgent` 同一手法）。
  *
- * ⚠️ **Task 5 这里是占位**：只做重力，不做 AI。Task 7 换成真正的 `IgnisBossAgent`
- * （与飞龙的 `dragonAgent` 同一手法）。留占位是为了本任务能独立测通
- * create / summon / damage 契约，不被 AI 未完成阻塞。
+ * ⚠️ **本文件不写 AI**（用户的解耦指令：每个 Boss 有自己的智能体类）。
+ * `ignis-boss-agent.js` 也不 import 本文件 —— 它只依赖 config 与 navigation，避免循环依赖。
  */
-const placeholderAgent = {
-  update(state, dt, _ctx) {
-    const step = Number.isFinite(dt) && dt > 0 ? dt : 0;
-    // 只做重力：竖直速度累加重力，位置下移（不判碰撞 —— 那是 Agent 的事）
-    const vy = (state.velocity[1] || 0) + (-24) * step;
-    return {
-      ...state,
-      position: [state.position[0], state.position[1] + vy * step, state.position[2]],
-      velocity: [state.velocity[0], vy, state.velocity[2]],
-      attackRequest: null,
-    };
-  },
-};
+const ignisAgent = new IgnisBossAgent();
 
 /**
  * 焰魔的 M5 definition。
@@ -155,7 +143,7 @@ export const ignisDefinition = Object.freeze({
    * @returns {object|null} 全新 state
    */
   update(entity, dt, context) {
-    const next = placeholderAgent.update(entity.state, dt, context || {});
+    const next = ignisAgent.update(entity.state, dt, context || {});
     if (!next) return null;
     return createState(next);
   },
