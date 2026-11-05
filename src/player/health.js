@@ -17,9 +17,14 @@
 //
 // ## 当前阶段（用户裁定）
 //
-// 玩家血量**只显示、不掉血**：`Player.health` 恒为满血 20，掉血逻辑由用户后续添加。
-// 故本模块只提供「血量 → 心形」的显示换算，不含任何伤害/恢复逻辑。
-// 也不入存档（值恒为 20，存档字段等真做掉血时再加，避免现在白做一次 settingsVersion 迁移）。
+// v2.55 起**焰魔会扣玩家血**（近战挥砍），故本模块新增 `applyDamage()`：
+// 「扣血 → 钳制到 [0, PLAYER_MAX_HEALTH]」的纯函数。
+//
+// ⚠️ **用户 2026-11-05 裁定「只扣血，不做死亡」**：血降到 0 就**停在 0**，
+// 不弹死亡界面、不重生、不回血。故本模块**没有**死亡判定与恢复逻辑。
+// 也不入存档：`Player.health` 不写 `meta` 行 ⇒ **重进游戏回满血**。
+// 这是有意的取舍 —— 把 health 写进存档需要 `settingsVersion` 迁移，而「重进就回满」
+// 对「只扣血不死亡」的当前阶段是合理语义（用户没要求持久化）。
 
 /** 玩家满血格数（原版口径：20 格 = 10 颗心 × 2） */
 export const PLAYER_MAX_HEALTH = 20;
@@ -59,4 +64,31 @@ export function heartsFor(health) {
     out[i] = lit >= HEALTH_PER_HEART ? 'full' : lit >= 1 ? 'half' : 'empty';
   }
   return out;
+}
+
+/**
+ * 扣血：把 `health` 减去 `amount`，结果钳制到 `[0, PLAYER_MAX_HEALTH]`。
+ *
+ * ## 三 条语义（都有对错可言，单测逐条钉住）
+ *
+ * 1. **下限钳到 0，不钳到「死」** —— 用户 2026-11-05 裁定「血降到 0 就停在 0」，
+ *    没有死亡界面也不需要重生。**重复打也不会变成负数**（血心行不会出现异常形态）。
+ * 2. **负数伤害不收血** —— `amount <= 0` 一律当 0 伤害。把负数当治疗是一个语义偷换：
+ *    将来的治疗应该是独立函数（带自己的上限/冷却），不是「负的伤害」。
+ * 3. **非法值不产生 NaN** —— `health` 非法时按满血兜底（防御：宁可满血也不能变成 NaN，
+ *    后者会让 `heartsFor` 全部变空、玩家看起来当场暴毙）。
+ *
+ * ⚠️ **本函数不改 `Player.health` 本身**（纯函数）：调用方写回
+ * `player.health = applyDamage(player.health, dmg)`。这样它能在浏览器单测里直接验证，
+ * 也不需要 `Player` 依赖。
+ *
+ * @param {number} health 当前血量（格）
+ * @param {number} amount 伤害量（格，正数才生效）
+ * @returns {number} 扣血后的血量（格，∈ [0, PLAYER_MAX_HEALTH]）
+ */
+export function applyDamage(health, amount) {
+  const hp = Number.isFinite(health) ? health : PLAYER_MAX_HEALTH;
+  // ⚠️ 只接受有限正数：Infinity / NaN / 负数 / 字符串 全部当 0 伤害
+  const dmg = Number.isFinite(amount) && amount > 0 ? amount : 0;
+  return Math.max(0, Math.min(PLAYER_MAX_HEALTH, hp - dmg));
 }

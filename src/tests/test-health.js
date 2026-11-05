@@ -9,7 +9,7 @@
 import { test } from './runner.js';
 import { assertEqual, assertTrue, assertDeepEqual } from './assert.js';
 import {
-  PLAYER_MAX_HEALTH, PLAYER_MAX_HEARTS, heartsFor,
+  PLAYER_MAX_HEALTH, PLAYER_MAX_HEARTS, heartsFor, applyDamage,
 } from '../player/health.js';
 
 test('health: 常量自洽（20 血 = 10 心，半心 = 1 血）', () => {
@@ -86,4 +86,57 @@ test('health: 越界与非法值钳制（>满血按满血、<0/NaN 按空，绝�
   const frac = heartsFor(1.9);
   assertEqual(frac.length, 10);
   assertEqual(frac[0], 'half', '1.9 血向下取整到 1 格 = 首颗半心');
+});
+
+
+// ==================== applyDamage：v2.55 焰魔扣血 ====================
+
+test('applyDamage: 正常扣血', () => {
+  assertEqual(applyDamage(20, 3), 17);
+  assertEqual(applyDamage(10, 10), 0);
+  assertEqual(applyDamage(4, 3), 1);
+});
+
+test('applyDamage: 下限钳到 0（用户裁定「停在 0 不动」）', () => {
+  assertEqual(applyDamage(1, 3), 0);
+  assertEqual(applyDamage(0, 99), 0);
+  assertEqual(applyDamage(2, 100), 0);
+});
+
+test('applyDamage: 负数伤害不收血（不是治疗）', () => {
+  assertEqual(applyDamage(20, -5), 20);
+  assertEqual(applyDamage(10, -5), 10);
+});
+
+test('applyDamage: 结果永不超过满血', () => {
+  for (let hp = 0; hp <= 20; hp++) {
+    for (const dmg of [0, 1, 14, 100]) {
+      const r = applyDamage(hp, dmg);
+      assertTrue(r >= 0 && r <= PLAYER_MAX_HEALTH, `hp=${hp} dmg=${dmg} → ${r}`);
+    }
+  }
+});
+
+test('applyDamage: 非法值不产生 NaN（血量按满血兜底，伤害按 0）', () => {
+  assertEqual(applyDamage(NaN, 3), PLAYER_MAX_HEALTH - 3);
+  assertEqual(applyDamage(undefined, 3), PLAYER_MAX_HEALTH - 3);
+  assertEqual(applyDamage(20, NaN), 20);
+  assertEqual(applyDamage(20, Infinity), 20);
+  assertEqual(applyDamage(20, -Infinity), 20);
+  assertEqual(applyDamage(20, '5'), 20);   // 字符串伤害不生效（不是隐式转换）
+});
+
+test('applyDamage: 焰魔的一击（14）打两次就让满血归 0（作者的原始压迫感）', () => {
+  let hp = PLAYER_MAX_HEALTH;
+  hp = applyDamage(hp, 14);
+  assertEqual(hp, 6);
+  hp = applyDamage(hp, 14);
+  assertEqual(hp, 0);
+});
+
+test('applyDamage: 纯函数（不改输入、同参同结果）', () => {
+  const hp = 20;
+  assertEqual(applyDamage(hp, 5), 15);
+  assertEqual(hp, 20, '输入未被修改');
+  assertEqual(applyDamage(hp, 5), applyDamage(hp, 5));
 });
