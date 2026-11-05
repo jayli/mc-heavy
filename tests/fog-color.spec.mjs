@@ -76,6 +76,25 @@ const shot = async (page) => PNG.sync.read(await page.screenshot());
  * `physics.pos` 的新值 → 换了机位但画面根本没变（实测整屏 Δ=0，一度误判为「雾色失效」）。
  * 正确做法是只停 `physics.step`，相机仍由 `player.update()` 跟随新位置。
  * ⚠️ 出生点在城市（城堡围栏）——直接在那里测雾带会被墙挡住。往外挪 400 格到开阔地。
+ *
+ * ## v2.57：从「固定等 2200ms」改为「等画面真正静止」（修既有 flaky）
+ *
+ * ⚠️⚠️ **原实现 `await page.waitForTimeout(2200)` 是 3 条用例长期失败的根因**
+ * （2026-11-05 实测，`main` 基线上同样必红）：它等的是「传送指令下发后 2200ms」，
+ * 而**列加载与网格上传耗时随机器负载浮动** —— 高负载时 2200ms 后地形还在长。
+ *
+ * 确定性探针（同一 page.evaluate 内逐帧采样，本机实测）：
+ * - t=0→600ms ：**3144 px 变化，maxDelta 431**（地形还在长）
+ * - t=600ms→4200ms：**0 变化**（完全稳定，逐位静止）
+ *
+ * 而 `scheduler.stats()` 的 `inflight / meshInflight / uploadQueue` 全程为 **0**、
+ * `renderStats().sections` 恒为 **1490** —— 队列/section 数归零**不等于**世界稳定
+ * （memory `world-stable-judgement-in-playwright-specs` 记的同一类缺陷）。
+ *
+ * ⇒ 唯一可靠的判据是**画面本身连续两次逐位相同**，而这正好是测试要断言的东西。
+ *
+ * @param {import('playwright/test').Page} page
+ * @param {string} [style] 视觉风格
  */
 async function pinView(page, style = 'noon') {
   await page.evaluate((style) => {
@@ -93,7 +112,50 @@ async function pinView(page, style = 'noon') {
       el.style.display = 'none';
     }
   }, style);
-  await page.waitForTimeout(2200);      // 等新位置的 column 加载完成（否则看到的是空洞）
+  // ⚠️ v2.57：**不再固定等 2200ms**，改为等画面真正静止（见上方文件注释的实测数据）。
+  await waitForStableFrame(page);
+}
+
+/**
+ * 等到画面**连续两次截图逐位相同**（世界真的加载完了）。
+ *
+ * 为什么要等到逐位相同而不是「等够久」：
+ * - `scheduler.stats()` 的队列与 `renderStats().sections` **全程都是稳态**
+ *   （实测 0/0/0 + 1490），它们在列加载期间完全看不出变化 ⇒ 不能用作判据；
+ * - 列加载 + 网格上传的耗时随机器负载浮动，任何固定毫秒数都会在重负载下不够。
+ *
+ * ⚠️ **必须用 PNG 字节比较，不能用 `page.screenshot()` 的 Buffer 直接比**：
+ * PNG 编码器不保证同一画面输出完全相同的字节（时间戳/压缩器行为）。本仓的
+ * `tests/helpers/png-diff.mjs` 提供了现成的逐像素比较。
+ *
+ * @param {import('playwright/test').Page} page
+ * @param {{maxWaitMs?: number, intervalMs?: number}} [opts]
+ */
+async function waitForStableFrame(page, opts = {}) {
+  const maxWaitMs = opts.maxWaitMs ?? 30_000;
+  const intervalMs = opts.intervalMs ?? 500;
+  const start = Date.now();
+  let prev = null;
+  while (Date.now() - start < maxWaitMs) {
+    await page.waitForTimeout(intervalMs);
+    const png = PNG.sync.read(await page.screenshot());
+    if (prev && pixelIdentical(prev, png)) return;
+    prev = png;
+  }
+  // 超时也不直接失败：后续的噪声底断言会给更具体的错误信息
+  // （但如果真的一直在动，那条断言会红，带出实际噪声值）。
+  throw new Error(`[pinView] 画面在 ${maxWaitMs}ms 内未稳定（世界一直在动，后续断言不可信）`);
+}
+
+/** 两张 PNG 是否逐位相同 */
+function pixelIdentical(a, b) {
+  if (a.width !== b.width || a.height !== b.height) return false;
+  const da = a.data;
+  const db = b.data;
+  for (let i = 0; i < da.length; i++) {
+    if (da[i] !== db[i]) return false;
+  }
+  return true;
 }
 
 /**
@@ -193,7 +255,9 @@ async function pinLookDown(page) {
       el.style.display = 'none';
     }
   });
-  await page.waitForTimeout(2200);
+  // ⚠️ v2.57：与 `pinView` 同一修法 —— 固定 2200ms 在重负载下不够（列加载浮动），
+  // 改为等画面连续两帧逐位相同。
+  await waitForStableFrame(page);
 }
 
 test('俯视时雾色仍向地平线天色移动（防「采样到天底」回归）', async ({ page }) => {
