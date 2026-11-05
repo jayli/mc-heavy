@@ -155,6 +155,62 @@ test('view-bob: 实际位移不足意图速度 95%（撞墙/半速）不累积�
   assertEqual(bob.amount, 0, '受阻/半速时振幅须收敛到 0');
 });
 
+// ---- walking（脚步声判据，v2.54）----
+// 背景：脚步声（`_updateFootsteps`）与镜头晃动（相机 offset）在 v2.51 共用 `active`。
+// 但本仓物理有**水中阻力**（`physics.js` 的 `WATER_DRAG = 0.6`，mc-lite 没有）：
+// 水中实际位移 = 意图速度 × 0.6 × dt，actual/expected 恒为 0.6 < fullSpeedRatio 0.95
+// → `active` 恒 false → `running_water` 永不播（用户报告：「进入水里行走没有声音」）。
+// 修法（用户裁定 2026-11-05：**只让声音响、镜头保持不晃**）：新增 `walking` 标志专供脚步声，
+// 全速判据按 drag 折算期望位移；`active`（驱动镜头）保持原判据不动。
+
+test('view-bob: walking 陆地全速为 true，与 active 一致', () => {
+  const bob = new ViewBob();
+  run(bob, 1 / 60, 5);
+  assertTrue(bob.active, '陆地全速 active 须为 true');
+  assertTrue(bob.walking, '陆地全速 walking 须为 true（脚步声判据）');
+});
+
+test('view-bob: walking 水中（drag=0.6）为 true，而 active 保持 false（镜头不晃）', () => {
+  // 水中物理实测：inputSpeed = SPEED×0.6 = 4.8，实际位移 = 4.8 × 0.6 × dt（drag 再乘一次）。
+  // 旧实现 active 用「未折算」的期望位移 → 0.6 < 0.95 恒 false → 脚步声永不播。
+  const bob = new ViewBob();
+  const dt = 1 / 60;
+  const inputSpeed = 8 * 0.6;
+  for (let i = 0; i < 5; i++) {
+    bob.update(dt, { dx: inputSpeed * 0.6 * dt, dz: 0, inputSpeed, drag: 0.6 });
+  }
+  assertFalse(bob.active, '镜头判据不变：水中 actual/expected=0.6 < 0.95 → 不晃');
+  assertTrue(bob.walking, '脚步声判据按 drag 折算后须为 true（否则 running_water 永不播）');
+});
+
+test('view-bob: walking 水中受阻（实际位移远低于 drag 折算期望）为 false', () => {
+  // 下界守卫：drag 折算不是「一律放行」—— 水中撞墙/原地不动时 actual 远低于
+  // inputSpeed×drag×dt，walking 必须为 false（否则卡在水里脚步声一直响）。
+  const bob = new ViewBob();
+  const dt = 1 / 60;
+  const inputSpeed = 8 * 0.6;
+  for (let i = 0; i < 5; i++) {
+    bob.update(dt, { dx: inputSpeed * 0.6 * dt * 0.3, dz: 0, inputSpeed, drag: 0.6 });
+  }
+  assertFalse(bob.walking, '实际位移仅达折算期望的 30% → 判受阻，脚步声不播');
+});
+
+test('view-bob: walking 跳跃中为 false（与 active 同判据）', () => {
+  const bob = new ViewBob();
+  const dt = 1 / 60;
+  for (let i = 0; i < 5; i++) {
+    bob.update(dt, { dx: 8 * dt, dz: 0, inputSpeed: 8, jumping: true });
+  }
+  assertFalse(bob.walking, '跳跃中不得播脚步声');
+});
+
+test('view-bob: walking 缺省 drag=1（陆地路径零回归）', () => {
+  // 不传 drag 时行为与 active 完全一致（既有调用方不受影响）。
+  const bob = new ViewBob();
+  run(bob, 1 / 60, 5);
+  assertEqual(bob.walking, bob.active, '缺省 drag 时 walking 与 active 同步');
+});
+
 test('view-bob: 完全无意图（inputSpeed=0）但有位移不产生晃动', () => {
   const bob = new ViewBob();
   run(bob, 1 / 60, 10, { dx: 0.5, dz: 0, input: 0 });

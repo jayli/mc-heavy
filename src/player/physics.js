@@ -21,6 +21,13 @@ export const FLY_SPEED_MULT = 2;
 export const FLY_VERTICAL_SPEED = 8;
 const MAX_STEP = 1.0;
 const EPSILON = 0.001;
+/**
+ * 水中水平阻力系数：`step()` 里水平位移 = vel × dt × drag。
+ * 导出供 `player.js` 传给 `viewBob.update`（脚步声判据要按它折算期望位移，
+ * 否则水中 actual/expected 恒 0.6 → 误判「被阻挡」→ `running_water` 永不播，v2.54 根因）。
+ * 红线 1：`step()` 内不得再写字面量 0.6。
+ */
+export const WATER_DRAG = 0.6;
 
 /**
  * 玩家命中盒（**相对脚底中心的局部盒**，v2.44 火球命中用）。
@@ -100,7 +107,7 @@ export class PlayerPhysics {
     const gravity = this.inWater ? GRAVITY * 0.4 : GRAVITY;
     this.vel.y += gravity * dt;
     if (this.inWater) { this.vel.y = Math.max(this.vel.y, -4); }
-    const drag = this.inWater ? 0.6 : 1;
+    const drag = this.horizontalDrag;
     // 分轴移动 + 碰撞
     this._moveAxis(this.vel.x * dt * drag, 0);
     this._moveAxis(this.vel.z * dt * drag, 2);
@@ -346,6 +353,16 @@ export class PlayerPhysics {
       minZ: this.pos.z - hw, maxZ: this.pos.z + hw,
     };
   }
+
+  /**
+   * 本步的水平阻力系数（水中 `WATER_DRAG` / 其余 1）。
+   *
+   * **`step()` 与 `player.js` 的 footsteps 判据共用这一份**（红线 1）：后者要把期望位移
+   * 按同一系数折算，否则「物理实际走的」与「判据以为应该走的」不同口径 ——
+   * 这正是 v2.51 水中脚步声永不播的根因（actual/expected 恒 0.6 < 0.95）。
+   * @returns {number}
+   */
+  get horizontalDrag() { return this.inWater ? WATER_DRAG : 1; }
 
   jump() {
     if (this.flying) return;   // 飞行中空格归 moveVertical(+1) 管（双保险，player.js 侧也已分流）

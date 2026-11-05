@@ -118,29 +118,49 @@ export class ViewBob {
     this.roll = 0;
     this.pitch = 0;
     /**
-     * 本帧是否处于「在跑动」状态（`shouldBob` 的原始结果）。
+     * 本帧是否处于「在跑动」状态（`shouldBob` 以 `drag: 1` 调用的结果）。
      *
-     * **只读快照，供跑动脚步声判据使用**（v2.51）：用户 2026-11-04 「跑步的声音」。
-     * 存在的理由 = 单一权威：声音必须跟“镜头在晃”用同一个判据（移动 + 全速 + 不跳跃
-     * + 未被阻挡），否则会出现“画面不晃但脚步声一直响”的撕裂。
-     * ⚠️ 不得在消费端重算一份 shouldBob（红线 1）—— 两边漂移后
-     * `test-view-bob.js` 的判据会全绿而不一致。
+     * **驱动相机晃动**（v1.48 起）。⚠️ v2.51 曾让脚步声也读它，但本仓物理有水中阻力
+     * （mc-lite 没有）→ 水中它恒为 false → `running_water` 永不播。v2.54 起脚步声改读
+     * `walking`（按阻力折算），本标志的判据与行为**一字未改**（用户裁定：镜头保持不晃）。
      * @type {boolean}
      */
     this.active = false;
+    /**
+     * 本帧是否处于「在行走」状态（脚步声判据，v2.54）。
+     *
+     * **与 `active` 分开的原因 = 本仓物理有水中阻力而 mc-lite 没有**：
+     * `physics.js` 的 `WATER_DRAG = 0.6` 让水中实际位移只有意图位移的 0.6 倍，
+     * 而 `active` 的全速判据是「actual > expected × 0.95」（expected 未折算阻力）
+     * → 水中 `active` **恒为 false**（实测 ratio 恒 0.600）→ `running_water` 永不播。
+     * `walking` 把期望位移按阻力折算（`expected = inputSpeed × drag × dt`），
+     * 水中 ratio 回到 1.000 → 脚步声正常播。
+     *
+     * ⚠️ **用户裁定 2026-11-05：只让声音响，镜头保持不晃** —— 故 `active`（驱动相机 offset）
+     * 的判据一个字不改，水中仍不晃。两个标志共用 `shouldBob()` 这**一份**判据实现，
+     * 只是传入的 `drag` 不同（红线 1：不写第二份 shouldBob）。
+     * @type {boolean}
+     */
+    this.walking = false;
   }
 
   /**
    * 判定本帧是否应晃动（mc-lite `shouldBob` 的同义判据）。
-   * @param {{dx:number, dz:number, inputSpeed:number, jumping?:boolean, dt:number}} m
+   *
+   * **也是脚步声的判据**（v2.54）：`update()` 用 `drag: 1` 调它得 `active`（镜头），
+   * 用真实 `drag` 调它得 `walking`（脚步声）。判据只此一份。
+   * @param {{dx:number, dz:number, inputSpeed:number, jumping?:boolean, dt:number, drag?:number}} m
    *        `dx/dz` 本帧**实际**位移（格，调用方从物理前后位置算差值）；
-   *        `inputSpeed` 玩家意图水平速度（格/秒）；`jumping` 在空中则 true
+   *        `inputSpeed` 玩家意图水平速度（格/秒）；`jumping` 在空中则 true；
+   *        `drag` 物理对本步位移的阻力系数（水中 0.6 / 其余 1），缺省 1。
+   *        ⚠️ 实际位移是**阻力后**的、`inputSpeed` 是**阻力前**的 —— 不折算就会把
+   *        「水中正常行走」误判成「被阻挡」（这正是 v2.51 水中无声的根因）。
    * @returns {boolean}
    */
-  static shouldBob({ dx, dz, inputSpeed, jumping = false, dt }) {
+  static shouldBob({ dx, dz, inputSpeed, jumping = false, dt, drag = 1 }) {
     if (jumping) return false;
     if (!(inputSpeed > 0)) return false;
-    const expected = inputSpeed * dt;
+    const expected = inputSpeed * drag * dt;
     if (!(expected > 0)) return false;
     const actual = Math.sqrt(dx * dx + dz * dz);
     if (!(actual > BOB.movingEpsilon)) return false;
@@ -150,10 +170,13 @@ export class ViewBob {
   /**
    * 每渲染帧推进。
    * @param {number} dt 秒
-   * @param {{dx:number, dz:number, inputSpeed:number, jumping?:boolean}} motion
+   * @param {{dx:number, dz:number, inputSpeed:number, jumping?:boolean, drag?:number}} motion
    */
   update(dt, motion) {
-    const active = ViewBob.shouldBob({ ...motion, dt });
+    // 镜头判据：**刻意强制 `drag: 1`**（= v2.54 之前的行为，水中不晃，用户裁定保持）。
+    const active = ViewBob.shouldBob({ ...motion, dt, drag: 1 });
+    // 脚步声判据：用物理真实的阻力系数折算期望位移（水中 0.6 → ratio 回到 1）。
+    this.walking = ViewBob.shouldBob({ ...motion, dt });
     this.active = active;
     if (active) {
       // **距离驱动**：相位增量 = 本帧走过的水平距离 × phasePerBlock（原版 walkDist 口径）。

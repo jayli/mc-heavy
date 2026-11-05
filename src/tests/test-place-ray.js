@@ -23,7 +23,7 @@ import { BLOCKS } from '../voxel/blocks-data.js';
 import { WorldData } from '../voxel/world-data.js';
 import { ChunkColumn } from '../voxel/chunk-column.js';
 import { blockIndex } from '../voxel/constants.js';
-import { PLACE_RAY_MAX_DIST, PLACE_NEAR_HIT_DIST, findPlaceCell, scanPlaceCells } from '../player/place-ray.js';
+import { PLACE_RAY_MAX_DIST, findPlaceCell, scanPlaceCells } from '../player/place-ray.js';
 
 /** 生产同源注册表 + 单 column 空地世界（坐标一律取 0..15 的非负局部坐标） */
 function makeWorld() {
@@ -41,10 +41,6 @@ function put(world, reg, x, y, z, name = 'stone') {
 
 test('place-ray: 射程常量 = 15 格（mc-lite doSkyPlace maxDist）', () => {
   assertEqual(PLACE_RAY_MAX_DIST, 15, 'maxDist');
-});
-
-test('place-ray: 近处命中阈值 = 15 格（mc-lite interact() 的 hits[0].distance < 15）', () => {
-  assertEqual(PLACE_NEAR_HIT_DIST, 15, 'threshold');
 });
 
 test('place-ray: 侧向邻居（-Z 侧一格石头）→ 贴它放', () => {
@@ -185,15 +181,6 @@ test('scanPlaceCells: visit 返回 true → 立刻中止并返回该格；返回
   assertEqual(r.neighbor.join(','), '6,3,8');
 });
 
-test('scanPlaceCells: stopAt（命中格）严格不含 —— 命中格是花草时也在它之前截止', () => {
-  const { world, reg } = makeWorld();
-  ceilingRow(world, reg);
-  put(world, reg, 8, 2, 8, 'short_grass');        // 非实心：主射线会命中它，扫描却不会被它遮挡
-  assertEqual(J(scan(world, EYE, [1, 0, 0], { stopAt: [8, 2, 8] }).seen), J(row(4, 7)));
-  // 对照：不给 stopAt 则穿过花草一路扫到 13（证明上一条断言有判别力）
-  assertEqual(J(scan(world, EYE, [1, 0, 0]).seen), J(row(4, 13)));
-});
-
 test('scanPlaceCells: maxDist 之外的候选不访问', () => {
   const { world, reg } = makeWorld();
   ceilingRow(world, reg);
@@ -207,11 +194,42 @@ test('scanPlaceCells: 相机恰在格边界 —— 头格之后 t=0 的那一格
   assertEqual(J(scan(world, [4.0, 2.62, 8.5], [-1, 0, 0]).seen), J([[3, 2, 8], [2, 2, 8], [1, 2, 8]]));
 });
 
-test('scanPlaceCells: 遮挡 / 前方实心判据保持（x=10 是实心墙 → 候选止于 8）', () => {
+test('scanPlaceCells: 遮挡判据保持（x=10 是实心墙 → 遍历止于该格）', () => {
   const { world, reg } = makeWorld();
   ceilingRow(world, reg);
   put(world, reg, 10, 2, 8);
-  assertEqual(J(scan(world, EYE, [1, 0, 0]).seen), J(row(4, 8)), '9 的 +X 邻居是墙（视线前方）→ 否决；10 实心 → 中止');
+  // 面级筛选（v2.54）后 (9,2,8) 也是候选：它的 +X 面是那堵墙（正对，只跳过该面），
+  // 但它的 +Y 面是天花板 (9,3,8)（dot=0 → 背对/侧面，合法）。走到 (10,2,8) 实心 → 中止。
+  assertEqual(J(scan(world, EYE, [1, 0, 0]).seen), J(row(4, 9)));
+});
+
+// ---- 面级筛选（v2.54，用户 2026-11-05「就近原则」）----
+// 旧实现的判据③是**格级否决**：候选格只要有任一实心邻居在视线前方，整格出局。
+// 后果 = 用户报告的「就远」缺陷：近处那格常常同时挨着「背对玩家的面」（合法落点）与
+// 「正对玩家的面」（如它头顶的方块），于是被整格否掉，落点退到更远处的背对面。
+// 修法 = 正对面只**跳过该面**，格子仍凭其余背对/侧面成为候选。
+
+test('scanPlaceCells: 候选格同时有正对面与背对面 → 仍是候选，且取背对面（不因正对面整格否决）', () => {
+  const { world, reg } = makeWorld();
+  // 眼 (0.5,2.5,8.5) 朝 (1,0.2,0)：射线在 y=2 层走到 x=4，之后进 y=3 层（x∈[5,9]）。
+  // 主射线全程不命中任何方块（探针实测 hit=null）→ 走候选扫描。
+  put(world, reg, 5, 2, 8);    // (5,3,8) 的下方邻居：dot<0 → 背对面（合法落点）
+  put(world, reg, 5, 4, 8);    // (5,3,8) 的上方邻居：dot>0 → 正对面（旧实现据此整格否决）
+  put(world, reg, 12, 3, 8);   // 更远处 (12,4,8) 的下方邻居：旧实现的实际落点（就远）
+  const r = findPlaceCell(world, [0.5, 2.5, 8.5], [1, 0.2, 0]);
+  assertTrue(r.hit, '须找到可贴格');
+  assertEqual(r.placeCell.join(','), '5,3,8', '就近：贴背对面 (5,2,8)，不退到 7 格外的 (12,4,8)');
+  assertEqual(r.neighbor.join(','), '5,2,8', 'neighbor 取背对面，不取正对面 (5,4,8)');
+});
+
+test('scanPlaceCells: 面级筛选不放宽「唯一实心邻居在正前方」的否决（墙仍不被贴）', () => {
+  const { world, reg } = makeWorld();
+  // (11,2,8) 的唯一实心邻居是正前方的墙 (12,2,8) → 没有任何背对/侧面 → 仍出局；
+  // 走到 (12,2,8) 实心 → 中止。这条是面级筛选的**下界守卫**（防止改成「一律放行」）。
+  for (let y = 0; y < 8; y++) put(world, reg, 12, y, 8);
+  const { r, seen } = scan(world, [8.5, 1.5, 8.5], [1, 0, 0]);
+  assertEqual(J(seen), '[]', '无背对/侧面 → 不是候选');
+  assertFalse(r.hit);
 });
 
 test('findPlaceCell: 薄包装 = 第一个候选，头格同样出局', () => {

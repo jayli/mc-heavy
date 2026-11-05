@@ -1,7 +1,7 @@
 // src/player/player.js — 输入/视角/交互编排（§4.5）
 import * as THREE from 'three';
 import { raycastVoxel } from './raycast.js';
-import { scanPlaceCells, PLACE_NEAR_HIT_DIST } from './place-ray.js';
+import { scanPlaceCells } from './place-ray.js';
 import { PlayerPhysics } from './physics.js';
 import { StepLift } from './step-lift.js';
 import { ViewBob } from './view-bob.js';
@@ -340,6 +340,10 @@ export class Player {
           dz: this.physics.pos.z - bz,
           inputSpeed,
           jumping: !this.physics.onGround,
+          // 水中阻力（v2.54）：实际位移是阻力后的、`inputSpeed` 是阻力前的，
+          // 不传就会把「水中正常行走」误判成「被阻挡」→ 脚步声永不播。
+          // 读 getter 而不是重算 `inWater ? 0.6 : 1`（红线 1：阻力系数只有 physics 一份权威）。
+          drag: this.physics.horizontalDrag,
         });
       } else {
         // 乘坐期物理不跑（位置由矿车锁定）→ 无自主位移，晃动自然衰减到 0
@@ -353,8 +357,11 @@ export class Player {
       this.physics.stepLiftAccum = 0;
     }
     this._stepLift.update(dt);
-    // 跑动脚步声（v2.51）。**判据直接读 `viewBob.active`** —— 与“镜头是否在晃”同一个
-    // 权威（移动 + 全速 + 不跳跃 + 未被阻挡），不在这里重算一份 shouldBob。
+    // 跑动脚步声（v2.51；v2.54 改读 `viewBob.walking`）。**判据读 `walking` 而不是 `active`**：
+    // 两者共用 `ViewBob.shouldBob()` 同一份实现，区别只在 `active` 强制 `drag: 1`（镜头，水中不晃，
+    // 用户裁定 2026-11-05）、`walking` 按真实阻力折算（水中 ratio 回到 1.0 → 能播）。
+    // 旧版读 `active` 的后果：本仓物理有水中阻力（mc-lite 没有）→ 水中 actual/expected 恒 0.6
+    // < fullSpeedRatio 0.95 → `active` 恒 false → `running_water` **永不播**（实测 0/120 帧）。
     // 每帧调一次：`playLoop` 同名已在播时只改音量，不会重启（否则听到断续“哒哒哒”）。
     this._updateFootsteps();
     // 相机同步（眼高 1.62 + 台阶缓动偏移 + 跑动晃动）
@@ -399,15 +406,20 @@ export class Player {
    *
    * 两个循环音效互斥：陆上 `running_land`（0.2）/ 入水 `running_water`（0.25）——
    * 音量与“入水换音效”的语义照搬 mc-lite `PlayerInteraction.js:911-915`。
-   * 判据只用 `viewBob.active`（单一权威）+ `physics.inWater`（水体判据同 `physics.js`），
-   * 停下或上台阶时两路一起停（`stopLoop` 幂等，重复调用无成本）。
+   * 判据用 `viewBob.walking`（v2.54；单一权威在 `ViewBob.shouldBob`，按水中阻力折算）
+   * + `physics.inWater`（水体判据同 `physics.js`），停下或上台阶时两路一起停
+   * （`stopLoop` 幂等，重复调用无成本）。
+   *
+   * ⚠️ **不得改回读 `viewBob.active`**：`active` 是镜头判据（强制 `drag: 1`），水中恒 false
+   * → 脚步声永不播（v2.51~v2.53 的实际缺陷，实测 0/120 帧）。用户裁定 2026-11-05：
+   * **只让声音响、镜头保持不晃** —— 故两个标志刻意分开，不是遗漏。
    *
    * ⚠️ **乘坐矿车时不播** —— 玩家没有自主移动，播放会变成“车开着我却一直在跑”。
    */
   _updateFootsteps() {
     const am = this.audioManager;
     if (!am) return;
-    const walking = this.viewBob.active && !this.ridingMinecartId;
+    const walking = this.viewBob.walking && !this.ridingMinecartId;
     if (!walking) {
       am.stopLoop('running_land');
       am.stopLoop('running_water');
@@ -812,14 +824,13 @@ export class Player {
   }
 
   placeBlock() {
-    // 单格方块的落点（v2.25，用户 2026-10-30），两种情形走同一个入口 `_placeNearest()`：
-    //  · 命中 **< 15 格**：直接放命中面前（A = `target.prevPos`），**不看沿途候选** —— mc-lite
-    //    `interact()` 右键的同款分流（`hits[0].distance < 15`）；
-    //  · 命中 ≥ 15 格或打空：沿视线**从近到远第一个可放的候选**，命中面前的 A 只是序列里排在最后的
-    //    一个（用户：「不管十字准心方向经过多少个可放置方块的位置，总是先就近放置」）。
-    // ⚠️ 这**取代了 v1.72 的用户裁定**「兜底只在完全未命中时生效」（远处命中与打空时先看候选）。
-    // A 被玩家 AABB 占住时**不再找别处**：近处命中是 mc-lite 同款（`tryPlaceBlock` 失败即作罢），
-    // 远处命中则因为 A 已是最后一个候选，后面没有可回落的位置。
+    // 单格方块的落点（v2.54，用户 2026-11-05），两种情形走同一个入口 `_placeNearest()`：
+    //  · **命中（不论远近）**：直接放命中面前（A = `target.prevPos`），**不看沿途候选** ——
+    //    「准心对准可放置面 → 优先级永远最高」；
+    //  · **打空**：沿视线**从近到远第一个可放的候选**（就近原则）。
+    // ⚠️ 这**取代了 v2.25 的 15 格分流**（命中 <15 放 A、≥15 先看候选）：那道分界会让同一条
+    // 视线的落点在 15 格处跳变，且与「命中优先级永远最高」矛盾。详见 `_placeNearest()` 的注释。
+    // A 被玩家 AABB 占住时**不再找别处**（mc-lite `tryPlaceBlock` 失败即作罢，同款）。
     // ⚠️ 特殊物品（巢穴/炮塔/矿车）不参与就近放置：它们的 origin 取**命中格**，无命中即无合法 origin。
     if (!this.target) { this._placeByRayFallback(); return; }
     // M7：受控创造模式物品优先分流（测试 API 路径）。失败保留世界，不写任何方块。
@@ -868,7 +879,8 @@ export class Player {
   }
 
   /**
-   * 打空路径：主射线**完全未命中**时的单格放置（v1.72 兜底；v2.25 起与命中路径共用 `_placeNearest()`）。
+   * 打空路径：主射线**完全未命中**时的单格放置（v1.72 兜底；v2.54 起命中一律走 A 路径，
+   * 本扫描只服务打空）。
    *
    * 场景（用户报告）：玩家站在一块方块上朝下看，只能看到脚底方块的顶面，看不到它的
    * 水平侧面 —— 想把方块接续放在它东侧时，准心对准那侧的空位，主射线打空（`target`
@@ -894,38 +906,38 @@ export class Player {
   }
 
   /**
-   * 单格放置的入口（v2.25）。**近处命中（`hit.dist < PLACE_NEAR_HIT_DIST` = 15 格）直接放命中面前**
-   * （A = `hit.prevPos`），不看沿途候选，A 被拒就作罢 —— mc-lite `interact()` 的同款分流，用户
-   * 2026-10-30 要求对齐。其余情形（命中 ≥ 15 格 / 打空）走**就近优先**：沿视线从近到远，把每个
-   * 候选格依次交给 `_placeSingle()`，第一个放成功的算数；候选被拒（身体守卫 / 编辑无变化）就继续
-   * 往远处找（mc-lite `doSkyPlace` 同款）；都不行时才轮到命中面前的那一格 A。
+   * 单格放置的入口（v2.54）。**命中一律优先**：主射线命中任何方块（不论远近）都直接放
+   * 命中面前那一格 A（`hit.prevPos`），**不看沿途候选**，A 被拒（身体守卫 / 编辑无变化）就作罢。
+   * 只有**完全打空**时才走就近优先：沿视线从近到远，把每个候选格依次交给 `_placeSingle()`，
+   * 第一个放成功的算数；候选被拒就继续往远处找（mc-lite `doSkyPlace` 同款）。
    *
-   * - 候选判据与「头格出局 / 止于命中格」只在 `place-ray.js` 的 `scanPlaceCells` 一处（红线 1）；
+   * ⚠️ **v2.54 取代了 v2.25 的 15 格分流**（用户 2026-11-05：「如果十字准心对准了任何一个
+   * 可以放置方块的面，则优先在这个面上放置方块，这个优先级永远是最高的。只有十字准心不对准
+   * 任何一个可以放置方块的面时，才采用就近原则」）。旧分流让「瞄哪儿放哪儿」在 15 格处跳变：
+   * 同一条视线打到 14 格放 A、打到 16 格却放到沿途某个玩家没对准的格。
+   * 连带删除：`PLACE_NEAR_HIT_DIST` 与 `scanPlaceCells` 的 `opts.stopAt`（命中不再进扫描 → 无消费者）。
+   *
+   * - 候选判据与「头格出局」只在 `place-ray.js` 的 `scanPlaceCells` 一处（红线 1）；
    *   身体守卫与写入只在 `_placeSingle()` 一处。
-   * - `hit` = 主射线命中（`this.target`），无命中传 null。搜索止于命中格（不含）；A = `hit.prevPos`
-   *   排在最后，被身体守卫拒绝时**不再找别处**（它已是最后一个候选）。
-   * - ⚠️ 命中 ≥ 15 格时扫描范围（15 格）几乎总是到不了命中格，`stopAt` 只在命中距离恰为 15.0 时才起作用
-   *   （此时命中格的进入距离 ≤ 扫描范围）；保留它是边界保险，不是常用路径。
    * - 回调里放成功即中止遍历，不存在「写后读」；扫描 ≤ 15 格、仅右键触发，开销 ≤ 5 µs 量级。
    * @param {number} id 方块 id
    * @param {object | null} hit 主射线命中（`this.target`）；打空传 null
    * @returns {boolean} 是否真的放下了一块
    */
   _placeNearest(id, hit) {
-    // 近处命中：直接放命中面前，不看沿途候选。`typeof` 守卫：真实 target（`raycastVoxel`）恒带 `dist`，
-    // 缺 `dist` 的手塞 target 退回候选扫描路径（与近处分流引入前的行为一致）。
-    if (hit && typeof hit.dist === 'number' && hit.dist < PLACE_NEAR_HIT_DIST) {
+    // 命中一律优先：直接放命中面前，不看沿途候选。
+    // ⚠️ 不再判 `hit.dist`：v2.25 的 `typeof hit.dist === 'number'` 守卫是为了让「缺 dist 的手塞
+    // target」退回扫描路径；现在命中与距离无关，手塞 target（多个既有 spec 用）与真实 target 同路。
+    if (hit) {
       const [x, y, z] = hit.prevPos;
       return this._placeSingle(x, y, z, id);
     }
+    // 打空：沿视线就近优先
     const cp = this.camera.position;
     this.camera.getWorldDirection(_forward);
     const r = scanPlaceCells(this.world, [cp.x, cp.y, cp.z], [_forward.x, _forward.y, _forward.z],
-      (x, y, z) => this._placeSingle(x, y, z, id), { stopAt: hit ? hit.blockPos : null });
-    if (r.hit) return true;
-    if (!hit) return false;
-    const [x, y, z] = hit.prevPos;
-    return this._placeSingle(x, y, z, id);
+      (x, y, z) => this._placeSingle(x, y, z, id));
+    return r.hit;
   }
 
   /**

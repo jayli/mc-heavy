@@ -9,11 +9,15 @@
 // 正是本次改动的落点。M7「只测 API 漏玩家主路径」的同类教训）。
 // 本 spec 用 `player.setTestAim()` 摆真实相机姿态 → `player.update()` 自己算 DDA target
 // → `player.placeBlock()`（与右键同一代码路径）。
-// v2.25（放置就近优先）：命中 ≥ 15 格与打空时，落点改为「沿视线从近到远第一个可放的候选，命中面前
-// 那格 A 排最后」，共用 `_placeNearest()`；头格（相机所在格）永不作候选。本文件因此新增「真实页面」
-// 用例（远处命中的就近优先 / 头格出局），原第 2 条用例的标题与注释按新语义改写（场景与断言不变）。
-// v2.25 追加（用户 2026-10-30，对齐 mc-lite）：命中 **< 15 格**直接放命中面前，不看沿途候选 ——
-// 同样有一条真实页面用例钉住。
+// v2.25（放置就近优先）：打空时落点改为「沿视线从近到远第一个可放的候选」，共用 `_placeNearest()`；
+// 头格（相机所在格）永不作候选。本文件因此新增「真实页面」用例，原第 2 条用例的标题与注释按新语义改写。
+// **v2.54（用户 2026-11-05）两处语义变更**：
+//   ① **命中一律优先**（取代 v2.25 的 15 格分流）：「如果十字准心对准了任何一个可以放置方块的面，
+//      则优先在这个面上放置方块，这个优先级永远是最高的」—— 命中不论远近都放 A，只有打空才扫描。
+//      故「远处命中（≥15 格）」用例的期望**翻转**（旧：放近处候选；新：放 A）。
+//   ② **候选判据③改面级筛选**（修「就远」缺陷）：旧实现是「该格只要有任一实心邻居在视线前方
+//      → 整格出局」，于是同时挨着背对面（合法落点）与正对面（如头顶方块）的近处格被整格否掉，
+//      落点退到更远处。改为「正对面只跳过该面」后就近原则才真的成立（新增一条真实页面用例钉住）。
 import { test, expect } from 'playwright/test';
 
 const URL = '/?vd=2&seed=12345';
@@ -219,10 +223,10 @@ test('近处命中（<15 格）：直接放命中面前，不看沿途候选（�
   expect(r.after.near, '沿途候选（贴侧墙那格）不看').toBe(0);
 });
 
-test('远处命中（≥15 格）：视线擦过更近的可贴格 → 放在近处（真实页面）', async ({ page }) => {
+test('远处命中（≥15 格）：命中一律优先 → 放在命中面前，不看沿途更近的候选（真实页面）', async ({ page }) => {
   test.setTimeout(150_000);
   await boot(page);
-  // 侧墙 (px+3, 头格高, pz-1)：视线擦过；远处被命中的方块 (px+17, 头格高, pz)：距离 16.5 ≥ 15
+  // 侧墙 (px+3, 头格高, pz-1)：视线擦过，是候选；远处被命中的方块 (px+17, 头格高, pz)：距离 16.5 ≥ 15
   const s = await buildRayCorridor(page, [[3, 1, -1], [17, 1, 0]]);
   expect(await selectItem(page, 'stone'), 'stone 须在背包里').toBeGreaterThanOrEqual(0);
 
@@ -241,8 +245,49 @@ test('远处命中（≥15 格）：视线擦过更近的可贴格 → 放在近
   expect(r.target?.B, '前提：主射线命中远处方块').toEqual([s.px + 17, s.headY, s.pz]);
   expect(r.target?.dist, '前提：命中距离 ≥ 15').toBeGreaterThanOrEqual(15);
   expect(r.before, '放前两格都是空气').toEqual({ near: 0, front: 0 });
-  expect(r.after.near, '落在贴侧墙的最近格').toBe(r.stone);
-  expect(r.after.front, '命中面前一格（A）不放').toBe(0);
+  // v2.54（用户 2026-11-05）：「准心对准可放置面 → 优先级永远最高」，不再按 15 格分流。
+  // 旧期望是 after.near = stone（贴侧墙的最近候选）—— 那正是「瞄哪儿不放哪儿」的缺陷形态。
+  expect(r.after.front, '命中即放命中面前（A）').toBe(r.stone);
+  expect(r.after.near, '沿途更近的候选不看').toBe(0);
+});
+
+test('打空 + 近处候选格同时有正对面与背对面 → 就近放置（真实页面）', async ({ page }) => {
+  test.setTimeout(150_000);
+  await boot(page);
+  // 用户报告的缺陷形态：准心没对准任何可放置面（主射线打空），但射线扫过多个
+  // 「背对玩家视线的面」，旧实现把落点给了**更远**的那个。
+  // 根因 = 判据③的「格级否决」：近处那格同时挨着背对面（合法落点）与正对面 → 整格出局 → 退到远处。
+  // 修法 = 面级筛选（正对面只跳过该面）。
+  // 几何（真实页面探针实测，extra 的 dy 相对 topY，headY = topY+1）：视线略向上 dir=(1, 0.2, 0)，
+  // 眼在 headY+0.62；射线在 x=px+3 处位于格 (px+3, headY+1)：
+  //   (px+3, headY, pz)   = 该格的下方邻居 → 背对面（dot<0，合法落点）
+  //   (px+3, headY+2, pz) = 该格的上方邻居 → 正对面（dot>0，旧实现据此**整格否决**）
+  //   (px+12, headY+1, pz) = 远处方块的顶面，旧实现的实际落点是它上方的 (px+12, headY+2)
+  // 探针实测：旧实现放在 [12, headY+2]（就远）；面级筛选后放在 [3, headY+1]（就近），target=null。
+  const s = await buildRayCorridor(page, [[3, 1, 0], [3, 3, 0], [12, 2, 0]]);
+  expect(await selectItem(page, 'stone'), 'stone 须在背包里').toBeGreaterThanOrEqual(0);
+
+  const r = await page.evaluate(async (s) => {
+    const g = window.__MC_GAME__;
+    const pl = g.player;
+    pl.setTestAim([1, 0.2, 0]);
+    await new Promise((r) => requestAnimationFrame(r));
+    const target = pl.target ? { B: pl.target.blockPos, dist: pl.target.dist } : null;
+    const nearCell = [s.px + 3, s.headY + 1, s.pz];
+    const farCell = [s.px + 12, s.headY + 2, s.pz];
+    const read = () => ({
+      near: g.world.getBlockId(...nearCell),
+      far: g.world.getBlockId(...farCell),
+    });
+    const before = read();
+    pl.placeBlock();
+    return { target, before, after: read(), stone: g.registry.idOf('stone'), nearCell, farCell };
+  }, s);
+
+  expect(r.target, '前提：该姿态下主射线必须打空（否则测的是 A 路径）').toBe(null);
+  expect(r.before, '放前两格都是空气').toEqual({ near: 0, far: 0 });
+  expect(r.after.near, `就近：贴背对面放在近处那格 ${JSON.stringify(r.nearCell)}`).toBe(r.stone);
+  expect(r.after.far, `旧实现的远处落点不放 ${JSON.stringify(r.farCell)}`).toBe(0);
 });
 
 test('头格出局：背靠墙面朝外瞄远处（≥15 格），手持花草落在命中面前、不进头格（真实页面）', async ({ page }) => {

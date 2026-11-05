@@ -171,6 +171,86 @@ test('跑动：全速移动时播陆上脚步声，停下即停', async ({ page 
   expect(walked.afterStop.water, '停下后水上脚步声也必须停').toBeNull();
 });
 
+test('水中行走：播 running_water（不是 running_land），停下即停；镜头仍不晃', async ({ page }) => {
+  test.setTimeout(180_000);
+  await boot(page, '&weather=clear');
+
+  // 缺陷形态（v2.51~v2.53）：本仓物理有**水中阻力**（`WATER_DRAG = 0.6`，mc-lite 没有），
+  // 而脚步声判据读的是镜头判据 `viewBob.active`（要求 actual > expected×0.95，expected 未折算阻力）
+  // → 水中 actual/expected 恒 **0.600** → `active` 恒 false → `running_water` **永不播**。
+  // 修法（用户裁定 2026-11-05：**只让声音响、镜头保持不晃**）：新增 `viewBob.walking`
+  // 按阻力折算期望位移，脚步声改读它；`active` 判据一字未改。
+  // ⚠️ 故本用例**必须同时钉住两侧**：声音要响（walking/running_water）+ 镜头不晃（active=false）。
+  // 只钉「有声音」的话，把 `active` 也改成折算版（镜头跟着晃）仍会全绿。
+  const walked = await page.evaluate(async () => {
+    const g = window.__MC_GAME__;
+    const pl = g.player;
+    const px = Math.floor(pl.physics.pos.x);
+    const pz = Math.floor(pl.physics.pos.z);
+    let groundY = -1;
+    for (let y = Math.floor(pl.physics.pos.y); y > Math.floor(pl.physics.pos.y) - 8; y--) {
+      if (g.world.getBlockId(px, y, pz) !== 0) { groundY = y; break; }
+    }
+    const feetY = groundY + 1;
+    // 造一条 18 格长、6 格深的水池。⚠️ 出生点地形会向 +X 抬升（实测池深 3 格时玩家
+    // 4 秒内会爬上池沿出水），故池深取 6 格、清空高度取 8 格，尽量把玩家留在水里；
+    // 断言本身按「在水中的帧」统计，不要求全窗口在水下（地形不可控）。
+    const stone = g.registry.idOf('stone');
+    const water = g.registry.idOf('water');
+    for (let dx = -3; dx <= 18; dx++) for (let dz = -3; dz <= 3; dz++) {
+      for (let y = feetY - 1; y <= feetY + 7; y++) g.editor.setBlock({ x: px + dx, y, z: pz + dz, id: 0 });
+      g.editor.setBlock({ x: px + dx, y: feetY - 1, z: pz + dz, id: stone });
+      for (let y = feetY; y <= feetY + 5; y++) g.editor.setBlock({ x: px + dx, y, z: pz + dz, id: water });
+    }
+    pl.physics.pos.x = px + 0.5;
+    pl.physics.pos.y = feetY;
+    pl.physics.pos.z = pz + 0.5;
+    pl.physics.vel.x = 0; pl.physics.vel.y = 0; pl.physics.vel.z = 0;
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+    pl.keys.add('KeyW');
+    const t0 = performance.now();
+    let frames = 0, waterFrames = 0, walkingInWater = 0, activeInWater = 0, landLoopInWater = 0;
+    let sawWaterLoop = false;
+    let drag = null;
+    while (performance.now() - t0 < 4000) {
+      await new Promise((r) => requestAnimationFrame(r));
+      frames++;
+      const loops = g.audioManager.debugLoops();
+      if (pl.physics.inWater) {
+        waterFrames++;
+        if (pl.viewBob.walking) walkingInWater++;
+        if (pl.viewBob.active) activeInWater++;
+        if (loops.running_land?.playing) landLoopInWater++;
+        drag = pl.physics.horizontalDrag;
+      }
+      if (loops.running_water?.playing) sawWaterLoop = true;
+    }
+    pl.keys.delete('KeyW');
+    for (let i = 0; i < 15; i++) await new Promise((r) => requestAnimationFrame(r));
+    const after = g.audioManager.debugLoops();
+    return {
+      frames, waterFrames, walkingInWater, activeInWater, landLoopInWater, drag,
+      sawWaterLoop,
+      afterStop: { water: after.running_water ?? null, land: after.running_land ?? null },
+    };
+  });
+
+  // 前提：采样窗口内有足够多的帧确实在水里（否则测的是陆地路径，断言全绿也无意义）。
+  // ⚠️ 不要求全窗口在水下：出生点地形向 +X 抬升，玩家可能中途爬上池沿（不可控）。
+  expect(walked.waterFrames, '前置：按 W 期间须有 ≥60 帧在水中').toBeGreaterThanOrEqual(60);
+  expect(walked.drag, '前置：水中阻力系数 = 0.6（缺陷的成因）').toBeCloseTo(0.6, 10);
+  // 核心：水中的每一帧脚步声判据都成立（旧版读 active 恒 false → 此值恒 0）
+  expect(walked.walkingInWater, '水中行走的每一帧 walking 判据都必须成立').toBe(walked.waterFrames);
+  expect(walked.sawWaterLoop, '水中行走必须播 running_water').toBe(true);
+  expect(walked.landLoopInWater, '两路互斥：在水中的帧不得同时播 running_land').toBe(0);
+  // 用户裁定：镜头保持不晃（active 判据不变）
+  expect(walked.activeInWater, '镜头判据不变：水中的帧 actual/expected=0.6 < 0.95 → 不晃').toBe(0);
+  // 停下后两路都收掉
+  expect(walked.afterStop.water, '停下后水中脚步声必须停').toBeNull();
+  expect(walked.afterStop.land, '停下后陆上脚步声也必须停').toBeNull();
+});
+
 test('死亡：丧尸被击杀播 z_die，打中但没死时不播', async ({ page }) => {
   test.setTimeout(180_000);
   await boot(page, '&weather=clear');
