@@ -46,10 +46,15 @@ import { ZombieNestController } from '../entities/zombie-nests/zombie-nest-contr
 import { TurretService } from '../entities/turrets/turret-service.js';
 import { TurretController } from '../entities/turrets/turret-controller.js';
 import { createTurretBlueprint } from '../entities/turrets/turret-blueprint.js';
-import { computeTurretUpdates } from '../entities/turrets/turret-system.js';
+import { computeTurretUpdates, hasLineOfSight, shortestAngleDiff } from '../entities/turrets/turret-system.js';
 import { DRAGON_TYPE, FIREBALL_TYPE, FIREBALL, DRAGON_CORE_OBB } from '../entities/dragons/dragon-config.js';
 import { dragonDefinition, DragonService } from '../entities/dragons/dragon-system.js';
 import { fireballDefinition, judgeFireball } from '../entities/dragons/fireball-system.js';
+import { IGNIS_TYPE, IGNIS, IGNIS_AI } from '../entities/ignis/ignis-config.js';
+import { ignisDefinition, IgnisService } from '../entities/ignis/ignis-system.js';
+import { IgnisRenderer } from '../render/ignis-renderer.js';
+import { loadIgnisAsset } from '../render/ignis-model.js';
+import { applyDamage } from '../player/health.js';
 import { FireballRenderer } from '../render/fireball-renderer.js';
 import { playerHitboxLocal } from '../player/physics.js';
 import { bossMapAt } from '../entities/bosses/boss-map.js';
@@ -652,6 +657,24 @@ export class Game {
     // ⚠️ **v2.43 起不再预热**：龙不再绑定祭坛地带（`findAltarTarnRegion` 的 12.6ms 冷调用
     // 已不在龙的路径上），轨道中心由按 C 时的 `bossMapAt()` 给出。
 
+    // ---- 焰魔装配（v2.55，高台地带的 Boss2）----
+    // ⚠️ **装配位置与龙同段**（在 `persistence` / `seed` 之后、`_waitForColumn` 之前）。
+    // 焰魔也是**临时实体**（`persistent: false`）—— 它是 Boss，但进存档就是第二份权威（红线 2）。
+    this.entities.registerType(IGNIS_TYPE, ignisDefinition);
+    // `world` 用于召唤时扫描地表落点（spec：不能用 `findSpawnY`，它会把高台地带的巨型云当地面）
+    this.ignises = new IgnisService({
+      entities: this.entities, world: this.world, seed: this.seed,
+    });
+    // 渲染器：加载失败不得让整个游戏起不来（与龙/武器模型/蓝图同一容错口径）
+    try {
+      const ignisAsset = await loadIgnisAsset();
+      this.ignisRenderer = new IgnisRenderer(this.scene, ignisAsset);
+      await this.ignisRenderer.loadTexture();
+    } catch (err) {
+      console.warn('[ignis] 渲染器加载失败，焰魔不显示（不影响游戏）:', err);
+      this.ignisRenderer = null;
+    }
+
     // ---- 矿车装配 ----
     // 矿车是 M5 持久实体（设计文档 §2.2）：白拿 entities store 写盘 / column 两阶段卸载 /
     // `_discardEdits` 清档。service 装配位置无 `_waitForColumn` 时序约束（矿车没有
@@ -1097,6 +1120,10 @@ export class Game {
       // 可能误判命中龙自己脚下的方块）。下一帧 entities.update 推进后才判定，与弹丸同口径。
       this._consumeDragonFireRequests();
       this._updateFireballs(dt);
+      // v2.55：焰魔的挥剑命中结算（消费 attackRequest）。
+      // 位置与龙的火球无关，但同样必须在 `entities.update` 之后 —— Agent 本帧写入的
+      // `attackRequest` 才存在。
+      this._consumeIgnisAttackRequests();
       // M7：巢穴刷怪推进。放在 entities.update **之后** —— 刷怪经 ZombieService.spawn()
       // 创建实体，须等实体运行时本帧推进完成再创建，避免新实体在创建当帧被 update 漏处理。
       // 内部 8 秒节流（controller.update 自己判 nowMs-lastSpawnAt），故每帧调用是零成本的。
@@ -1167,6 +1194,8 @@ export class Game {
       // 祭坛飞龙（v2.41）：pose 发布（位置/yaw/bank + 动画采样 + 红闪）。无实体时
       // visible=false → draw call 归零。⚠️ 传 `nowMs`（performance.now 基准，红闪判定）。
       if (this.dragonRenderer) this.dragonRenderer.sync(this.dragons.activeEntities(), nowMs);
+      // 焰魔（v2.55）：同口径的 pose 发布（池容量 2，含脚底补偿）
+      if (this.ignisRenderer) this.ignisRenderer.sync(this.ignises.activeEntities(), nowMs);
       // 矿车 pose 发布（差集驱动 slot；只读 state）
       this.minecartRenderer.sync(this.entities.entities());
       // M8：炮塔 pose 发布（pivot 世界坐标 + Task 4 插值出的当前 yaw/pitch）。
@@ -2094,6 +2123,10 @@ export class Game {
     else if (entity.type === DRAGON_TYPE) {
       if (!this.dragons) return null;
       result = this.dragons.damage(id, amount, nowMs);
+    } else if (entity.type === IGNIS_TYPE) {
+      // v2.55 焰魔：与龙同形状的 damage 契约（红闪 + 死亡即 despawn）
+      if (!this.ignises) return null;
+      result = this.ignises.damage(id, amount, nowMs);
     } else return null;
     // v2.51：丧尸/火龙被消灭的死亡音效（用户 2026-11-04：「丧尸被消灭、火龙被消灭都有一个
     // 音效 z_die.mp3」）。**判断落在 `dead` 上而不是 `amount` 上** —— 打中但没死不该响。
@@ -2132,7 +2165,10 @@ export class Game {
     const [x, y, z] = state.position;
     const topY = entity.type === 'zombie'
       ? y + ZOMBIE.height
-      : y + DRAGON_CORE_OBB.halfExtents[1];
+      : entity.type === IGNIS_TYPE
+        // ⚠️ 焰魔的 `position` 是**脚底**（地面实体）⇒ 头顶 = y + IGNIS.height
+        ? y + IGNIS.height
+        : y + DRAGON_CORE_OBB.halfExtents[1];
     const initial = [x, topY, z];
     const type = entity.type;
     // ⚠️ **捕获 generation**（红线 7 版本协议在实体侧的对应物）：丧尸 id 从 slot 池复用
@@ -2628,6 +2664,12 @@ export class Game {
     for (const dragon of this.dragons?.activeEntities() ?? []) {
       targets.push({ id: dragon.id, position: [...dragon.state.position], bodyOffsetY: 0 });
     }
+    // v2.55：炮塔也打焰魔（它进了 `WEAPON_HITTABLE_TYPES`）。
+    // ⚠️ **焰魔的 `position` 是脚底** ⇒ 用缺省的 `bodyOffsetY`（抬到胸部），
+    // 与丧尸同口径；而龙的 position 已是身体中心，故显式传 0。
+    for (const ignis of this.ignises?.activeEntities() ?? []) {
+      targets.push({ id: ignis.id, position: [...ignis.state.position] });
+    }
     const { updates } = computeTurretUpdates({
       turrets, targets, world: this.world, registry: this.registry,
     });
@@ -2719,6 +2761,53 @@ export class Game {
       const req = dragon.state.fireRequest;
       if (!req) continue;
       this.fireFireball(req.position, req.direction, dragon.id);
+    }
+  }
+
+  /**
+   * 焰魔的挥剑命中结算（v2.55）。
+   *
+   * 消费 `state.attackRequest`（**瞬态**，由 `IgnisBossAgent` 在动画到达命中帧那一帧写入）。
+   * 三条判据全过才扣血：
+   *   ① 玩家水平距 ≤ `IGNIS_AI.hitRange`（6.5，作者 `AreaAttack` 的 `range`）
+   *   ② |Δyaw| ≤ `IGNIS_AI.hitConeDeg`（**半角 35°** —— 作者 `arc 70` 的一半）
+   *   ③ 焰魔胸部 → 玩家胸部视线通
+   *
+   * ⚠️ **只在该帧判定一次**（不是每帧）：`attackRequest` 只在命中帧出现，Agent 下一帧自动置 null。
+   * 否则玩家站在旁边会被连续扣血。
+   *
+   * ⚠️ **`attackRequest.at` 是焰魔的身体位置**（不是玩家位置）—— 距离与角度都要从它算。
+   *
+   * ⚠️ **伤害写 `player.health`（不走 `Player` 的方法）**：本仓 `Player.health` 没有
+   * setter/伤害方法（`player/health.js` 的口径是「纯函数 + 外部写回」），而
+   * `applyDamage` 已把钳制逻辑封装。用户 2026-11-05 裁定：**只扣血、不做死亡**。
+   *
+   * ⚠️ **常态零分配门控**：`activeEntities()` 会新建数组，而本方法每帧都跑 ——
+   * 场上没焰魔时用 `count()` 直接返回（与 `_consumeDragonFireRequests` 同一手法）。
+   */
+  _consumeIgnisAttackRequests() {
+    if (!this.ignises || !this.player) return;
+    if (this.entities.count(IGNIS_TYPE) === 0) return;
+    const p = this.player.physics?.pos;
+    if (!p) return;
+    for (const ignis of this.ignises.activeEntities()) {
+      const req = ignis.state.attackRequest;
+      if (!req) continue;
+      const [ex, ey, ez] = req.at;
+      const dx = p.x - ex;
+      const dz = p.z - ez;
+      // ① 水平距
+      if (Math.hypot(dx, dz) > IGNIS_AI.hitRange) continue;
+      // ② 前方锥（本仓 yaw 口径：指向玩家 = atan2(−dx, −dz)）
+      const toPlayerYaw = Math.atan2(-dx, -dz);
+      const cone = IGNIS_AI.hitConeDeg * Math.PI / 180;
+      if (Math.abs(shortestAngleDiff(req.yaw, toPlayerYaw)) > cone) continue;
+      // ③ 视线（从焰魔胸部到玩家胸部；与炮塔 LOS / 飞龙火球同一份权威）
+      const from = [ex, ey + IGNIS.height * 0.5, ez];
+      const to = [p.x, p.y + 1.0, p.z];
+      if (!hasLineOfSight({ world: this.world, registry: this.registry, from, to })) continue;
+      // 三条全过 → 扣血（钳制在 applyDamage 里）
+      this.player.health = applyDamage(this.player.health, IGNIS.attackDamage);
     }
   }
 
@@ -2868,6 +2957,9 @@ export class Game {
     // 祭坛飞龙（v2.41）：service 回收实体后释放渲染器（与启动顺序相反）
     this.dragons?.dispose();
     this.dragonRenderer?.dispose();
+    // 焰魔（v2.55）：同口径（service 回收实体后释放渲染器）
+    this.ignises?.dispose();
+    this.ignisRenderer?.dispose();
     // 矿车：service 回收实体后释放渲染器（与启动顺序相反）
     this.minecarts?.dispose();
     this.minecartRenderer?.dispose();

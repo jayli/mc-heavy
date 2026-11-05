@@ -767,7 +767,10 @@ test('武器命中: 实体比方块远时不打实体（既有口径不因泛化
   assertEqual(damaged.length, 0, '实体更远时不得造成伤害');
 });
 
-test('武器命中: WEAPON_HITTABLE_TYPES 恰好是 zombie + dragon（加类型须显式改这里）', () => {
-  assertDeepEqual([...WEAPON_HITTABLE_TYPES].sort(), ['dragon', 'zombie']);
+test('武器命中: WEAPON_HITTABLE_TYPES 恰好是 zombie + dragon + ignis（加类型须显式改这里）', () => {
+  // v2.55 加 ignis（焰魔）：它**应该**可被武器与炮塔击中（用户可建炮塔助战）。
+  // ⚠️ 本用例是「新增可击中类型必须是有意识的改动」的闸门 —— 不要图方便改成
+  // `includes(...)`，那会让「静默把一个类型加进去」失去拦截。
+  assertDeepEqual([...WEAPON_HITTABLE_TYPES].sort(), ['dragon', 'ignis', 'zombie']);
   assertTrue(Object.isFrozen(WEAPON_HITTABLE_TYPES), '必须冻结（玩法数据唯一权威）');
 });

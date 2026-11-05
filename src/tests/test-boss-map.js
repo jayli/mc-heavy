@@ -123,12 +123,18 @@ test('bossMapAt: 优先级 CITY > TARN（城市中心即使碰巧在别处也判
 
 // ==================== bossSlotsFor：名册 ====================
 
-test('名册: 高台地带登记了 Boss1 = dragon（service=dragons）', () => {
+test('名册: 高台地带登记了两个 Boss（slot 0 = 飞龙，slot 1 = 焰魔）', () => {
   const slots = bossSlotsFor('TARN');
-  assertEqual(slots.length, 1, '用户：目前高台地带只有 Boss1，没有 Boss2');
+  // 用户 2026-11-05：给高台地带加第二个 Boss「焰魔」
+  assertEqual(slots.length, 2, '高台地带应有 Boss1(飞龙) + Boss2(焰魔)');
+  // slot 0 = 飞龙（用户裁定「飞龙先，焰魔后」——召唤按 slot 升序找第一个空槽）
   assertEqual(slots[0].slot, 0);
   assertEqual(slots[0].type, 'dragon');
   assertEqual(slots[0].service, 'dragons');
+  // slot 1 = 焰魔
+  assertEqual(slots[1].slot, 1);
+  assertEqual(slots[1].type, 'ignis');
+  assertEqual(slots[1].service, 'ignises');
 });
 
 test('名册: 未登记的地图返回空数组（不是 undefined / 不抛）', () => {

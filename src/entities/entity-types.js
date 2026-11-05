@@ -24,8 +24,11 @@ export const PROBE_AABB = Object.freeze({
  *
  * ⚠️ **加新的可击中实体类型时只改这一处**。⚠️ 弹丸（`projectile`）与矿车（`minecart`）
  * **刻意不在里面**：弹丸互相命中会连锁误伤，矿车是玩家资产不是敌对目标。
+ *
+ * v2.55 加 `ignis`（焰魔）：它**应该**可被武器与炮塔击中（用户可建炮塔助战），
+ * 故加入本表即可 —— `turret-system.js` 会自动开始索敌它（消费同一份表）。
  */
-export const WEAPON_HITTABLE_TYPES = Object.freeze(['zombie', 'dragon']);
+export const WEAPON_HITTABLE_TYPES = Object.freeze(['zombie', 'dragon', 'ignis']);
 
 /**
  * position 合法性：必须是 3 个有限数。

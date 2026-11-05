@@ -19,6 +19,7 @@
 // 死亡即 despawn ⇒ `slotOccupied` 变假 ⇒ 该槽位重新可召。故 v2.41 的永久死亡标记
 // （`meta.dragonDead`）已随本次改动移除。
 import { DRAGON_TYPE } from '../dragons/dragon-config.js';
+import { IGNIS_TYPE } from '../ignis/ignis-config.js';
 
 /**
  * Boss 槽位描述。
@@ -40,8 +41,13 @@ import { DRAGON_TYPE } from '../dragons/dragon-config.js';
  * ⚠️ **名册长度不得超过 2**（单测钉住）：用户明确「一个或者两个 Boss（最多两个）」。
  */
 export const BOSS_ROSTER = Object.freeze({
-  // 高台地带：Boss1 = 祭坛飞龙。Boss2 尚未设计（用户：「目前还没有 Boss2」）。
-  TARN: Object.freeze([Object.freeze({ slot: 0, type: DRAGON_TYPE, service: 'dragons' })]),
+  // 高台地带：Boss1 = 祭坛飞龙，Boss2 = 焰魔（v2.55）
+  // ⚠️ **顺序即召唤顺序**（按 slot 升序找第一个空槽）：用户 2026-11-05 裁定
+  // 「飞龙先，焰魔后」，故飞龙恒为 slot 0。
+  TARN: Object.freeze([
+    Object.freeze({ slot: 0, type: DRAGON_TYPE, service: 'dragons' }),
+    Object.freeze({ slot: 1, type: IGNIS_TYPE, service: 'ignises' }),
+  ]),
 });
 
 /** 每张地图的 Boss 槽位上限（用户裁定「最多两个」） */
