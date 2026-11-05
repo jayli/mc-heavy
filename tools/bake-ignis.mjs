@@ -572,13 +572,27 @@ function main() {
   // （剑尖/脚甲探到原点下方），而渲染器当时用的是「身体核心中心」的偏移
   // （-IGNIS_MODEL_CENTER[1] = -1.7335），于是整个模型陷入地下 **1.70 格**。
   //
-  // 正确语义：**渲染器把 mesh 抬高 `feetOffsetY`**，使「动画全程的最低点」恰好落在
-  // `state.position.y`（脚底）。所以本值必须是**扫遍所有动画所有帧**得到的最小值，
-  // 不是 bind pose 的 —— 抬脚/挥剑的帧可能更低。
+  // 正确语义：**渲染器把 mesh 平移 `feetOffsetY`**，使「**身体**（不含武器）在动画全程的
+  // 最低点」恰好落在 `state.position.y`（脚底）。所以本值必须是**扫遍所有动画所有帧、
+  // 且只算身体骨骼**得到的最小值。
+  //
+  // ⚠️ 本值**可为负**（现在就是 -0.2005）：模型空间里脚在 +0.31，要让脚落到 position.y
+  // 就得往下移。负值不是 bug。
   //
   // 与 `IGNIS_MODEL_CENTER`（身体核心中心，用于命中盒）**语义不同**，两个都要留着。
   let lowestY = Infinity;
   const bakeBones = asset.bones;
+  // ⚠️ **只扫「身体」骨骼，排除武器**（剑/盾）。
+  // 用户 2026-11-05 追加报告：「焰魔的身体完全漂浮在地表之上一个方格之上的位置，
+  // 焰魔的身体下降一个方格的距离我觉得刚好合适」。
+  // 根因：用**全局**最低点（含剑）时，`feetOffsetY` 取的是「attack 动画里剑劈到最低」的
+  // 1.6532，而脚（lowerbody2 的立方体底）在模型空间的 +0.3125 ⇒ 脚被抬到离地 1.97 格。
+  // 正确语义是「**脚底**贴 position.y」—— 剑劈到地下是美术上可接受的（攻击动作本来就是
+  // 往下方劈），把脚悬空才是错的。
+  const WEAPON_BONE = /^(sword|shield)/;
+  const bodyBoneIdx = new Set(
+    bakeBones.map((b, i) => (WEAPON_BONE.test(b.name) ? -1 : i)).filter((i) => i >= 0),
+  );
   // 复用一个 4x4 矩阵累乘器（与渲染器同一口径：position 固定为 localPosition）
   const mul4 = (a, b) => {
     const o = new Array(16);
@@ -654,6 +668,7 @@ function main() {
         world[i] = b.parentIndex === -1 ? local : mul4(world[b.parentIndex], local);
       }
       for (let v = 0; v < vOff; v++) {
+        if (!bodyBoneIdx.has(skinIndex[v * 4])) continue;   // 跳过剑/盾顶点
         const w = apply4(world[skinIndex[v * 4]], [position[v * 3], position[v * 3 + 1], position[v * 3 + 2]]);
         if (w[1] < lowestY) lowestY = w[1];
       }

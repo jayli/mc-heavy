@@ -113,9 +113,10 @@ test('焰魔渲染(v2.56 缺陷A): mesh 抬高 = 产物 metrics.feetOffsetY（�
   // 水平方向不该有偏移（模型原点已是脚下中轴）
   assertTrue(Math.abs(inst.mesh.position.x) < 1e-9, `x 偏移 ${inst.mesh.position.x}`);
   assertTrue(Math.abs(inst.mesh.position.z) < 1e-9, `z 偏移 ${inst.mesh.position.z}`);
-  // feetOffsetY 必须为正且量级合理（模型最低点在原点下方，约 1.6 格）
-  assertTrue(d.metrics.feetOffsetY > 1.0 && d.metrics.feetOffsetY < 2.5,
-    `feetOffsetY ${d.metrics.feetOffsetY} 量级异常`);
+  // feetOffsetY 是**小负数**（v2.56 追加修正后）：身体（不含武器）最低点在原点上方约 0.3，
+  // 要让脚落到 position.y 就得下移 0.2 格。
+  assertTrue(d.metrics.feetOffsetY > -0.6 && d.metrics.feetOffsetY < 0.1,
+    `feetOffsetY ${d.metrics.feetOffsetY} 量级异常（应是小负数 ≈-0.2）`);
   r.dispose();
 });
 

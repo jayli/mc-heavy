@@ -376,7 +376,7 @@ test('焰魔烘焙: 产物的 scale 与度量一致（1 倍，产物已含、运
  * @param {number} frame 动画帧号
  * @returns {{min:number[], max:number[]}} 世界空间 bbox（单位格，模型空间原点为脚底附近）
  */
-function worldBBoxOfFrame(asset, anim, frame) {
+function worldBBoxOfFrame(asset, anim, frame, onlyBoneIdx = null) {
   const qmul = (a, b) => [
     a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
     a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
@@ -461,6 +461,7 @@ function worldBBoxOfFrame(asset, anim, frame) {
   const min = [Infinity, Infinity, Infinity];
   const max = [-Infinity, -Infinity, -Infinity];
   for (let v = 0; v < pos.length / 3; v++) {
+    if (onlyBoneIdx && !onlyBoneIdx.has(si[v * 4])) continue;   // 只统计指定骨骼
     const w = apply(mats[si[v * 4]], [pos[v * 3], pos[v * 3 + 1], pos[v * 3 + 2]]);
     for (let k = 0; k < 3; k++) {
       if (w[k] < min[k]) min[k] = w[k];
@@ -472,25 +473,35 @@ function worldBBoxOfFrame(asset, anim, frame) {
 
 // ---- 缺陷 A：模型最低点必须能被渲染器补偿到「脚底 = position」 ----
 
-test('焰魔烘焙(v2.56 缺陷A): feetOffsetY = 全部动画全程最低点的绝对值', async () => {
+test('焰魔烘焙(v2.56 缺陷A): feetOffsetY 让「身体」（不含武器）的脚底贴 position.y', async () => {
   const d = await loadAsset();
   assertTrue(Number.isFinite(d.metrics.feetOffsetY),
     '产物缺 metrics.feetOffsetY —— 渲染器无法把模型脚底对齐到 position');
-  // ⚠️ **必须扫 idle 和 attack 两个动画**（与烘焙器同一口径）：只扫 idle 会低估，
-  // 因为挥剑时手臂/剑探得更低。实测：idle 最低 -0.34、attack 最低 -1.65 ⇒ 取 1.65。
-  let lowest = Infinity;
+
+  // ⚠️⚠️ **只算「身体」骨骼，排除剑/盾**（用户 2026-11-05 追加报告：「身体完全漂浮在
+  // 地表之上一个方格……下降一个方格刚好合适」）。
+  // 用**全局**最低（含剑）时取到的是「剑劈到最低」的 -1.65 ⇒ 把脚抬到离地 1.97 格。
+  // 正确语义是「脚底贴 position.y」—— 剑劈进地下是美术上可接受的。
+  const WEAPON = /^(sword|shield)/;
+  const bodyIdx = new Set(
+    d.bones.map((b, i) => (WEAPON.test(b.name) ? -1 : i)).filter((i) => i >= 0),
+  );
+  let bodyLowest = Infinity;
   for (const anim of Object.values(d.animations)) {
     for (let f = 0; f < anim.frameCount; f++) {
-      const box = worldBBoxOfFrame(d, anim, f);
-      if (box.min[1] < lowest) lowest = box.min[1];
+      const box = worldBBoxOfFrame(d, anim, f, bodyIdx);
+      if (box.min[1] < bodyLowest) bodyLowest = box.min[1];
     }
   }
-  assertTrue(Math.abs(d.metrics.feetOffsetY - (-lowest)) < 1e-3,
-    `feetOffsetY=${d.metrics.feetOffsetY.toFixed(4)} 应等于 -minY=${(-lowest).toFixed(4)}`
-    + `（全部动画全程最低点；只扫 idle 会得到 ${d.metrics.feetOffsetY.toFixed(4) !== (-lowest).toFixed(4) ? '偏小值' : ''}）`);
-  // 量级守卫：模型最低点应在原点下方 1~2 格（不是 0.3 也不是 4）
-  assertTrue(d.metrics.feetOffsetY > 1.0 && d.metrics.feetOffsetY < 2.5,
-    `feetOffsetY ${d.metrics.feetOffsetY.toFixed(3)} 量级异常`);
+  assertTrue(Math.abs(d.metrics.feetOffsetY - (-bodyLowest)) < 1e-3,
+    `feetOffsetY=${d.metrics.feetOffsetY.toFixed(4)} 应等于 -bodyMinY=${(-bodyLowest).toFixed(4)}`
+    + `（身体最低点，不含武器）`);
+
+  // 量级守卫：身体最低点在原点**上方** 0~0.5 格 ⇒ feetOffsetY 是 [-0.5, 0] 的小负数
+  assertTrue(bodyLowest > -0.1 && bodyLowest < 0.6,
+    `身体最低点 ${bodyLowest.toFixed(3)} 量级异常（应在 0~0.5）`);
+  assertTrue(d.metrics.feetOffsetY > -0.6 && d.metrics.feetOffsetY < 0.1,
+    `feetOffsetY ${d.metrics.feetOffsetY.toFixed(3)} 量级异常（应是小负数 ~-0.2）`);
 });
 
 // ---- 缺陷 B 的守卫在 test-molang.js（单位是求值器的语义，产物层看不出来） ----
