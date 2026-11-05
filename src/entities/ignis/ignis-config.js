@@ -24,8 +24,9 @@
 // 交叉证据：`attack6a` 的 `root.rotation.y` 到 −65°（配得上 arc 70° 的横扫），`attack1` 只到 +30°。
 //
 // ⚠️ 本文件**不 import 任何模块**：纯常量表。几何度量（`IGNIS_CORE_OBB` /
-// `IGNIS_MODEL_CENTER`）是软件光栅化实测值，与 `tools/ignis-fingerprint.mjs` 的烘焙度量
+// `IGNIS_MODEL_CENTER`）是烘焙产物 bind pose 的包围盒实测值，与 `tools/ignis-fingerprint.mjs` 的烘焙度量
 // **语义不同**（那个是顶点/骨骼计数，这个是空间尺寸），故不互相 import。
+// 它们与产物的一致性由 `test-ignis-system.js` 的「产物独立复算」用例钉住（素材/烘焙器变了会红）。
 
 /**
  * 实体类型名（`EntityManager.registerType` 与各处 predicate 共用）。
@@ -169,32 +170,47 @@ export const IGNIS_AI = Object.freeze({
 });
 
 /**
- * 身体核心的命中盒（**相对 `state.position` 的局部空间**，单位格）。
+ * 身体核心的命中盒（**相对 `state.position`（脚底）的局部空间**，单位格）。
  *
- * 用户裁定「只算身体核心」（不含剑/盾/手臂外沿）：实测 body+head+上下身的模型空间 bbox
- * = **26.44 × 45.47 × 24.86 px** → ×1/16 = **1.6528 × 2.842 × 1.5539 格**
- * ⇒ 半长 `[0.8264, 1.421, 0.777]`。
+ * 用户裁定「只算身体核心」（不含剑/盾/手臂外沿/角/护肩）：核心 = 七根骨骼
+ * `upperbody / head / lowerbody / lowerbody2 / bodycore / right_chestplate / left_chestplate`，
+ * 取其 **bind pose**（骨骼层级逐级累乘 `T(localPosition)·R(bindQuaternion)` 之后）的顶点包围盒。
  *
- * ⚠️ **`center` 恒 `[0,0,0]`**：`state.position` 的语义就是「身体核心中心」（与飞龙同）。
+ * v2.59 实测（`assets/ignis/ignis.json`，v2.58 旋转约定修正后的 bind pose）：
+ * 模型空间 x[−13.222, 13.222] y[5, 51.84] z[−14.753, 8.048] px
+ * = **26.44 × 46.84 × 22.80 px** → ×1/16 = **1.6528 × 2.9275 × 1.4251 格** ⇒ 半长 `[0.8264, 1.4637, 0.7125]`。
+ * 渲染器把 mesh 下移 `|feetOffsetY|`（0.265625 格 = 4.25px）使「动画全程最低顶点」落在 `position.y`，
+ * 故**相对脚底**：y ∈ [0.0469, 2.9744]、中心 `[0, 1.5106, −0.2095]`。
+ *
+ * ⚠️⚠️ **`position` 是脚底，不是身体中心**（与丧尸一致、与飞龙不同）。本常量在 v2.56 之前沿用
+ * 「position = 身体核心中心」的旧语义（`center = [0,0,0]`）；v2.56 把召唤落点与渲染改成脚底语义后
+ * 漏改了它 ⇒ 盒子以脚底为中心、下半截埋在地下：射线只在脚底 −1.4 ~ +1.4 格内命中，
+ * **胸口以上（≥ 1.5 格）全部打空**，而模型有 3.83 格高（v2.59 修）。
+ * 守卫：`test-ignis-system.js` 的「命中盒相对脚底」一组（字面量高度扫描 + 产物独立复算 + 与画面交叉）。
+ *
+ * ⚠️ **`center.z` 为负**：核心躯干相对脚底轴线偏向身前（−Z，yaw=0 的前向）0.21 格。
+ * `ignisAabbFor` 会把 center 与半长**一起**绕 `state.yaw` 旋转。
  * ⚠️ **AABB 必须按 `state.yaw` 现算**（`ignisAabbFor`）：焰魔在转向，固定盒会在它横过来时
  * 漏判/误判（「明明打中了却没掉血」）。
  */
 export const IGNIS_CORE_OBB = Object.freeze({
-  halfExtents: Object.freeze([0.8264, 1.421, 0.777]),
-  center: Object.freeze([0, 0, 0]),
+  halfExtents: Object.freeze([0.8264, 1.4637, 0.7125]),
+  center: Object.freeze([0, 1.5106, -0.2095]),
 });
 
 /**
  * 模型空间里「身体核心 bbox 的中心」相对模型原点的偏移（单位格）。
  *
- * 实测核心 bbox 在模型空间是 x[−13.22, 13.22] y[5, 50.47] z[−11, 13.86] px
- * → 中心 (0, 27.736, 1.431) px → ×1/16 = **(0, 1.7335, 0.0895)** 格。
+ * v2.59 实测核心 bbox（同 `IGNIS_CORE_OBB` 的口径）在模型空间是 x[−13.222, 13.222] y[5, 51.84]
+ * z[−14.753, 8.048] px → 中心 (0, 28.42, −3.352) px → ×1/16 = **(0, 1.7762, −0.2095)** 格。
  *
- * **渲染层专用**：几何顶点是模型空间坐标（模型原点在脚底附近），而 `state.position`
- * 是身体核心中心 ⇒ 渲染器把 mesh 局部偏移 `−IGNIS_MODEL_CENTER`，体心就正好落在
- * `state.position`。**命中判定不用它**（用上面的 `IGNIS_CORE_OBB`）。
+ * ⚠️ **现在没有运行时使用者**：渲染器自 v2.56 起用产物的 `metrics.feetOffsetY` 摆 mesh，不再用本常量。
+ * 保留它只为记录推导链 `IGNIS_CORE_OBB.center = IGNIS_MODEL_CENTER + (0, feetOffsetY, 0)`
+ * （`test-ignis-system.js` 钉住这条关系，并与产物独立复算对账）。
+ * ⚠️ **不得再用它摆 mesh**：它是命中盒的度量（核心中心），不是脚底偏移 ——
+ * 混用的形态是整个模型陷入地下 1.7 格（用户 2026-11-05 缺陷 A）。
  */
-export const IGNIS_MODEL_CENTER = Object.freeze([0, 1.7335, 0.0895]);
+export const IGNIS_MODEL_CENTER = Object.freeze([0, 1.7762, -0.2095]);
 
 /**
  * 盘旋（不适用）：焰魔是地面 Boss，没有轨道参数。
