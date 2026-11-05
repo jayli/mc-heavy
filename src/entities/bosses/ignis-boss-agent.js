@@ -97,6 +97,9 @@ export class IgnisBossAgent extends BossAgent {
 
     let mode = state.mode;
     let attackAnimT = Number.isFinite(state.attackAnimT) ? state.attackAnimT : 0;
+    // 待机动画的相位（渲染层消费）。**属于实体状态而非渲染器**：用 performance.now() 会让
+    // 「重新召唤的焰魔」继承上一只的相位，且纯函数采样在单测里不可复现。
+    const idleTime = (Number.isFinite(state.idleTime) ? state.idleTime : 0) + step;
     let attackCooldown = Math.max(0,
       (Number.isFinite(state.attackCooldown) ? state.attackCooldown : 0) - step);
     let attackRequest = null;
@@ -213,6 +216,7 @@ export class IgnisBossAgent extends BossAgent {
       flashedUntil: state.flashedUntil,
       mode,
       attackAnimT,
+      idleTime,
       attackCooldown,
       losTimer,
       losVisible,

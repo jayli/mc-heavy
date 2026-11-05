@@ -77,7 +77,7 @@ const MODES = Object.freeze(['idle', 'chase', 'attack']);
  */
 function createState({
   position, velocity, yaw, health, flashedUntil, mode,
-  attackAnimT, attackCooldown, losTimer, losVisible, onGround, attackRequest,
+  attackAnimT, idleTime, attackCooldown, losTimer, losVisible, onGround, attackRequest,
 }) {
   const p = normalizePosition(position);
   if (!p) return null;
@@ -98,6 +98,11 @@ function createState({
      * 命中判定用它越过 `IGNIS_AI.hitFrameSeconds` 的那一帧触发（**只触发一次**）。
      */
     attackAnimT: Number.isFinite(attackAnimT) ? attackAnimT : 0,
+    /**
+     * 待机动画的相位（秒，渲染层消费）。
+     * ⚠️ **不属于 `position` 派生的量**：它要跨帧累积，否则待机动画永远停在第 0 帧。
+     */
+    idleTime: Number.isFinite(idleTime) ? idleTime : 0,
     /** 攻击冷却剩余秒数 */
     attackCooldown: Number.isFinite(attackCooldown) ? attackCooldown : 0,
     /** 视线缓存倒计时（秒） */
