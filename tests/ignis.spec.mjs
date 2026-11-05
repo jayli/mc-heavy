@@ -278,4 +278,78 @@ test.describe('焰魔（Ignis）Tier 4', () => {
     expect(r.damage, `应为一次完整伤害 ${r.expectedDamage}`).toBe(r.expectedDamage);
     expect(r.hpEnd, '20 − 14 = 6').toBe(6);
   });
+
+  /**
+   * v2.60：玩家站定不动时，焰魔**不得穿模**，且要能连续砍中。
+   *
+   * ## 为什么这条只能做成 E2E（Tier 4）
+   *
+   * 缺陷的两个面向分别需要「真物理 + 真 `_consumeIgnisAttackRequests` 锥判据」：
+   * - 数据层看着都正常（`attackRequest` 每轮都出现一次、health 也真掉过一次）；
+   * - 但玩家站定后焰魔会走到 `hDist ≈ 0`（穿过玩家），下一刀玩家在它背后，锥判据
+   *   （半角 35°）全程跳过 ⇒ **只有一刀能打中**。
+   *
+   * 单测（`test-ignis-boss-agent.js`）钉了 agent 的行为面（最近距离 / 命中帧朝向 /
+   * 原地连砍），这里钉真实帧循环里的最终观感与结算：**第二次及以上命中**。
+   */
+  test('战斗：玩家站定不动 → 焰魔停在几格外连续砍中，且不穿模（v2.60）', async ({ page }) => {
+    test.setTimeout(180_000);
+    await page.goto(`/?seed=${SEED}`);
+    await waitWorldReady(page);
+    await teleportToTarnCenter(page);
+    await waitPlayerLanded(page);
+
+    const r = await page.evaluate(async () => {
+      const g = window.__MC_GAME__;
+      const { IGNIS_AI } = await import('/src/entities/ignis/ignis-config.js');
+      const p0 = g.player.physics.pos;
+      const start = [p0.x, p0.y, p0.z];
+      // 召唤到玩家 11 格外（远于站定环）⇒ 必须走过来
+      const sum = g.ignises.summon('tarn:e2e:3', Math.floor(p0.x), Math.floor(p0.z) + 11, 1);
+      if (!sum.ok) return { err: sum.reason };
+      const dists = [];
+      const strikes = [];
+      // ⚠️ 每刀 14、玩家 20 格血 ⇒ 第二刀就钳到 0（本仓"只扣血不死亡"）。
+      // 每次命中后把血回满，否则第三刀起 0 → 0 看不到变化，"连砍"就测不出来了。
+      const FULL_HP = g.player.health;
+      let prevHp = FULL_HP;
+      for (let i = 0; i < 150; i++) {          // 150 × 200ms = 30 秒
+        await new Promise((res) => setTimeout(res, 200));
+        const e = g.entities.get(sum.id);
+        if (!e) break;
+        const [ex, , ez] = e.state.position;
+        const pp = g.player.physics.pos;
+        dists.push(Math.hypot(ex - pp.x, ez - pp.z));
+        if (g.player.health < prevHp) {
+          strikes.push({ t: +(i * 0.2).toFixed(1), d: Math.hypot(ex - pp.x, ez - pp.z) });
+          g.player.health = FULL_HP;
+          prevHp = FULL_HP;
+        }
+      }
+      const pp = g.player.physics.pos;
+      return {
+        strikeCount: strikes.length,
+        strikes,
+        minDist: Math.min(...dists),
+        // 玩家自己没动（没受击位移）—— 若这条不为 0，说明距离变化来自玩家而非焰魔
+        playerMoved: Math.hypot(pp.x - start[0], pp.z - start[2]),
+        standoffRange: IGNIS_AI.standoffRange,
+      };
+    });
+
+    expect(r.err).toBeUndefined();
+    expect(r.playerMoved, '玩家应站定不动（否则测的不是 Boss 的行为）').toBeLessThan(0.5);
+    // ① **不穿模**：任何时刻都不能挤到玩家身上（实测修前最小距 0.01 格）
+    //    留 1 格余量：追击慢近时最后一步会落到站定环内侧，死区上半区容差
+    expect(r.minDist, `最近只到 ${r.minDist?.toFixed(2)} 格（应停在站定环外）`)
+      .toBeGreaterThan(r.standoffRange - 1.5);
+    // ② **能连砍**：玩家站定 ⇒ 至少命中三刀（修前只有第一刀能中，第二刀起玩家在它背后）
+    expect(r.strikeCount, `30 秒内只命中 ${r.strikeCount} 刀（站定时应能连砍）`)
+      .toBeGreaterThanOrEqual(3);
+    // ③ 命中发生在合理距离上（不是贴着 0 格砍）
+    for (const s of r.strikes) {
+      expect(s.d, `第 ${s.t}s 的命中距离只有 ${s.d.toFixed(2)} 格（应该相距几格）`)
+        .toBeGreaterThan(r.standoffRange - 1.5);
+    }
+  });
 });

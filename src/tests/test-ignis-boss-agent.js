@@ -274,6 +274,153 @@ test('焰魔 AI: 追击时 yaw 朝玩家平滑转动（不瞬移）', () => {
   assertTrue(s.yaw < -0.3, `转完 1 秒 yaw=${s.yaw.toFixed(3)}（应已开始朝向 +X）`);
 });
 
+// ==================== 站定环：不主动穿模（v2.60）====================
+//
+// ### 缺陷与根因（2026-11-05 用户实玩 + 本机实测复现）
+//
+// 用户报告：第一刀位置正确（相距几格），挥完后焰魔继续走向玩家、**穿过玩家身体到身后**，
+// 再转身回来、再穿一次。
+//
+// 根因**不是「不该走」而是「走到哪」**：`chase` 段的意图是「朝玩家位置直走」，没有任何
+// 接近距离下限 ⇒ 玩家站定时焰魔会一直走到 `hDist ≈ 0`（实测 0.01，与玩家完全重合）。
+// 然后 `attack` 段站定挥砍（这段原本是对的），但**下刀那一刻玩家在它背后**（|Δyaw| ≈ 180°
+// ≫ 半角 35°，打不中），所以从第二刀起等于空砍。挥完回 `chase` → 它继续朝玩家中心走 →
+// 再次穿过。
+//
+// 修法：追击目标是「玩家外侧 `standoffRange` 格」的**站定环**，不是一个点。进了环就停住、
+// 只转向；离环太近（玩家主动贴上来）就退开。于是任何时刻都不会主动挤进这个环。
+//
+// ⚠️ **与 `attackRange` 是两个量，不是重复**：`attackRange` 决定「什么时候起手」，
+// `standoffRange` 决定「站在哪」。前者必须 ≤ 后者，否则焰魔会在还没走到自己习惯的距离时
+// 就起手（即旧行为）。
+
+/**
+ * 在平地上跑一段时间，收集「焰魔到玩家的水平距」与朝向信息。
+ *
+ * ⚠️ 用 `groundWorld` 让它在真实物理里走（不是改坐标），否则测不到「走过头」这个形态。
+ */
+function runStandoff(over, ctxPlayer, seconds = 30) {
+  const a = new IgnisBossAgent({ rng: () => 0.5 });
+  const w = groundWorld(9);           // 方块顶面 y = 10
+  const ctx = { world: w, registry: REGISTRY, player: ctxPlayer };
+  let s = st({ position: [0.5, 10, 0], onGround: true, ...over });
+  const trace = [];
+  const frames = Math.round(seconds * 60);
+  for (let i = 0; i < frames; i++) {
+    s = a.update(s, 1 / 60, ctx);
+    const d = Math.hypot(s.position[0] - ctxPlayer.position[0],
+      s.position[2] - ctxPlayer.position[2]);
+    trace.push({ t: i / 60, d, mode: s.mode, yaw: s.yaw, pos: s.position.slice(),
+      hit: s.attackRequest !== null });
+  }
+  return { s, trace };
+}
+
+/** 朝向玩家的角度 → 「玩家的相对方位角」（0 = 正前方，±π = 背后） */
+function bearingTo(s, player) {
+  const yawToPlayer = Math.atan2(-(player.position[0] - s.position[0]),
+    -(player.position[2] - s.position[2]));
+  let d = yawToPlayer - s.yaw;
+  while (d > Math.PI) d -= 2 * Math.PI;
+  while (d < -Math.PI) d += 2 * Math.PI;
+  return d;
+}
+
+test('焰魔 AI: 站定时不主动挤进玩家身体（任何时刻都停在 standoffRange 之外）', () => {
+  // 缺陷形态实测（修前）：30 秒最小水平距 0.01 格 = 与玩家完全重合；
+  // 每 3 秒左右穿过玩家一次，来回摆。
+  const { trace } = runStandoff({}, playerAt(12));
+  let minD = Infinity;
+  for (const f of trace) if (f.d < minD) minD = f.d;
+  assertTrue(minD >= IGNIS_AI.standoffRange - 0.5,
+    `最近只到 ${minD.toFixed(2)} 格（应停在 ${IGNIS_AI.standoffRange} 格之外）`);
+});
+
+test('焰魔 AI: 站定环的四个数值约束（改任一个都会静默失效）', () => {
+  // ① 起手距离必须 ≥ 环半径，否则焰魔停在环上**既不再前进也不起手**（僵住，数据全对）
+  assertTrue(IGNIS_AI.attackRange >= IGNIS_AI.standoffRange,
+    `attackRange(${IGNIS_AI.attackRange}) 必须 ≥ standoffRange(${IGNIS_AI.standoffRange})，否则追到环上时超出起手距离 ⇒ 僵住`);
+  // ② 站定环必须在挥砍能够到的范围内，否则永远打不中
+  assertTrue(IGNIS_AI.standoffRange <= IGNIS_AI.hitRange,
+    `standoffRange(${IGNIS_AI.standoffRange}) 必须 ≤ hitRange(${IGNIS_AI.hitRange})，否则站定后够不着`);
+  // ③ 死区必须比追击的单步位移大，否则永远“进不去”死区（在边界上来回振）
+  const stepLen = IGNIS_AI.chaseSpeed / 60;
+  assertTrue(IGNIS_AI.standoffDeadband > stepLen,
+    `standoffDeadband(${IGNIS_AI.standoffDeadband}) 必须 > 单步位移 ${stepLen.toFixed(3)}，否则死区会持续跳进跳出`);
+  // ④ 死区下界必须大于「双方半宽之和」（0.8 = 玩家 0.3 + 焰魔 0.5），否则玩家推开时模型仍会重叠
+  const inner = IGNIS_AI.standoffRange - IGNIS_AI.standoffDeadband;
+  assertTrue(inner > 0.8,
+    `死区下界 ${inner} 必须 > 0.8（玩家半宽 0.3 + 焰魔半宽 0.5）`);
+});
+
+test('焰魔 AI: 命中帧朝向正对玩家（站定环里连砍，不会在背后空砍）', () => {
+  // 缺陷形态实测（修前）：第二刀起命中时朝向偏差 ≈ 180°（玩家在被穿过的身后）——
+  // `game.js` 的锥判据（半角 35°）会全程跳过伤害，而数据层「命中一次」看起来正常。
+  const player = playerAt(12);
+  const { trace } = runStandoff({}, player);
+  const hits = trace.filter((f) => f.hit);
+  assertTrue(hits.length >= 3, `30 秒内命中 ${hits.length} 次（应 ≥3：连砍）`);
+  const cone = IGNIS_AI.hitConeDeg * Math.PI / 180;
+  for (const h of hits) {
+    const b = bearingTo({ position: h.pos, yaw: h.yaw }, player);
+    assertTrue(Math.abs(b) <= cone,
+      `t=${h.t.toFixed(2)}s 命中帧朝向偏差 ${(b * 180 / Math.PI).toFixed(1)}°（> 半角 ${IGNIS_AI.hitConeDeg}°）`);
+  }
+});
+
+test('焰魔 AI: 玩家站定时焰魔原地连砍、不再左右来回摆（连砍期间不移动）', () => {
+  const player = playerAt(12);
+  const { trace } = runStandoff({}, player, 40);
+  // 从第一次起手开始，位置就该稳定下来（绕桩摆动会表现为位移持续增长）
+  const firstAttack = trace.findIndex((f) => f.mode === 'attack');
+  assertTrue(firstAttack >= 0, '从来没有进入 attack');
+  const settle = trace.slice(firstAttack + 60);   // 起手 1 秒后开始观察
+  let maxDrift = 0;
+  for (const f of settle) {
+    const drift = Math.hypot(f.pos[0] - settle[0].pos[0], f.pos[2] - settle[0].pos[2]);
+    if (drift > maxDrift) maxDrift = drift;
+  }
+  assertTrue(maxDrift < 2.0,
+    `起手后位置漂移 ${maxDrift.toFixed(2)} 格（应原地连砍，来回摆说明站定环没生效）`);
+});
+
+test('焰魔 AI: 玩家主动贴上来 → 焰魔后退让位（而不是原地被穿模）', () => {
+  // ⚠️ **必须在 chase 态测**：`attack` 态的站定是作者原实现（`setDeltaMovement(0,...)`），
+  // 挥刀时它本来就不能挪 —— 玩家这时挤进来属于玩家自己的选择。本用例只钉「追击段
+  // 遇到逼近的玩家会退让」，所以用大冷却把 attack 排掉（否则第 0 帧就起手，测的是另一件事）。
+  const a = new IgnisBossAgent({ rng: () => 0.5 });
+  const w = groundWorld(9);
+  const player = { position: [0.5, 10, -5.5] };
+  let s = st({ position: [0.5, 10, 0], onGround: true, mode: 'chase', attackCooldown: 999 });
+  for (let i = 0; i < 120; i++) {
+    player.position[2] += 0.1;
+    s = a.update(s, 1 / 60, { world: w, registry: REGISTRY, player });
+  }
+  const d = Math.hypot(s.position[0] - player.position[0], s.position[2] - player.position[2]);
+  // 能退让到的最近处就是死区下界（更近就继续退）
+  const inner = IGNIS_AI.standoffRange - IGNIS_AI.standoffDeadband;
+  assertTrue(d >= inner - 0.25,
+    `玩家贴上来后间距只剩 ${d.toFixed(2)} 格（应退到死区下界 ${inner} 格附近）`);
+  // ⚠️ 同时钉上界：不能退成"逃跑"（无限后退）
+  assertTrue(d <= IGNIS_AI.standoffRange + 0.75,
+    `退过头了：间距 ${d.toFixed(2)} 格（应稳在 ${inner}~${IGNIS_AI.standoffRange} 之间）`);
+});
+
+test('焰魔 AI: 站定环内优先原地不动（不为了「对齐」绕圈）', () => {
+  // ⚠️ 这条守的是一个**修法陷阱**：只做「朝环上最近点走」会让焰魔绕着玩家画圆 ——
+  // 它在环内，最近点在环上，方向可能与它当前站位垂直 ⇒ 侧向漂移，观感比穿模好不了多少。
+  const player = playerAt(4.0);   // 已比环半径小（玩家自己走过来 / 被推近）
+  const { trace } = runStandoff({}, player, 8);
+  const start = trace[0].pos;
+  let maxDrift = 0;
+  for (const f of trace) {
+    const drift = Math.hypot(f.pos[0] - start[0], f.pos[2] - start[2]);
+    if (drift > maxDrift) maxDrift = drift;
+  }
+  // 只需退开 standoffRange − 4.0 = 1.5 格的距离，不该走成绕圈（那会 ≥ 数格）
+  assertTrue(maxDrift < 3.0, `8 秒内漂移 ${maxDrift.toFixed(2)} 格（应直线退开，不是绕圈）`);
+});
+
 // ==================== 攻击冷却 ====================
 
 test('焰魔 AI: 攻击冷却按 attackCooldownMin/Max 区间随机', () => {

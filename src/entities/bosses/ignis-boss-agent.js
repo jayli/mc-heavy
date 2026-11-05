@@ -147,9 +147,10 @@ export class IgnisBossAgent extends BossAgent {
     let wantVz = 0;
     if (mode === 'chase' && player) {
       yaw = this._steerYaw(yaw, this._angleTo([px, py, pz], player), step);
-      // 沿机头前向飞/走（本仓 yaw 口径：前向 = (−sin yaw, −cos yaw)）
-      wantVx = -Math.sin(yaw) * IGNIS_AI.chaseSpeed;
-      wantVz = -Math.cos(yaw) * IGNIS_AI.chaseSpeed;
+      // 站定环："朝玩家走"改成"走到玩家外侧 standoffRange 格的环上"（v2.60 根因修复）
+      const intent = this._ringIntent(px, pz, player);
+      wantVx = intent.vx;
+      wantVz = intent.vz;
     } else if (mode === 'attack') {
       // 挥砍时站定（作者原实现：`setDeltaMovement(0, ..., 0)`）
       wantVx = 0;
@@ -232,6 +233,55 @@ export class IgnisBossAgent extends BossAgent {
       attackRequest,
       _physAccum: accum,
     };
+  }
+
+  /**
+   * 站定环的移动意图：焰魔主动保持的与玩家水平距离（v2.60）。
+   *
+   * ## 为什么不是「朝玩家直走」（根因）
+   *
+   * 旧实现把意图写成玩家位置方向上的全速，**没有任何接近距离下限** ⇒ 玩家站定时焰魔
+   * 会一直走到与玩家重合（实测 0.01 格），即用户看到的「穿模到身后 → 转回来 → 再穿」。
+   * 攻击段本来是站定的，但下刀那一刻玩家已在它背后（|Δyaw| ≈ 180° ≫ 半角 35°）⇒
+   * 第二刀起全部落空；挥完回 chase 继续走 → 再次穿过。
+   *
+   * ## 三档（死区内完全不动）
+   *
+   * | 当前距离 d | 意图 |
+   * |---|---|
+   * | `d < standoff − deadband` | **主动退开**（远离玩家，速度 = chaseSpeed）|
+   * | 环内死区（上面到 `standoff`） | 原地不动，只转向 |
+   * | `d > standoff` | 朝玩家的**最近环上点**走全速 |
+   *
+   * ⚠️ **死区里不微调、不绕圈**：只做「朝环上最近点走」会让环内的焰魔侧向漂移
+   * （目标点与当前站位垂直 ⇒ 绕着玩家画圆），观感比穿模好不了多少。
+   * 死区宽度取 `standoffDeadband`：追击一步位移 6.6/60 ≈ 0.11 格，远小于它，
+   * 故一旦进死区就不会因为浮点误差退出。
+   *
+   * ⚠️ **不退让到死区下界以外**：玩家持续逼近时焰魔只退到 `standoff − deadband`，
+   * 不会无限后退（那是「逃跑」而不是 Boss 打法）。死区下界 ≥ 0.8 格（双方半宽之和）
+   * 是硬要求 —— 更小会让模型继续重叠。
+   *
+   * @param {number} px 焰魔脚底 x @param {number} pz 焰魔脚底 z
+   * @param {[number,number,number]} player 玩家位置
+   * @returns {{vx: number, vz: number}} 速度意图（未绕行、未归一化到 yaw）
+   */
+  _ringIntent(px, pz, player) {
+    const dx = player[0] - px;
+    const dz = player[2] - pz;
+    const d = Math.hypot(dx, dz);
+    const { standoffRange, standoffDeadband, chaseSpeed } = IGNIS_AI;
+    const inner = standoffRange - standoffDeadband;
+    // 玩家与自己重合（退化的奇点）：没有可用方向 ⇒ 站着，不要拿 0/0 造 NaN
+    if (!(d > 1e-6)) return { vx: 0, vz: 0 };
+    if (d >= inner && d <= standoffRange) return { vx: 0, vz: 0 };   // 死区：站住
+    const ux = dx / d, uz = dz / d;
+    if (d > standoffRange) {
+      // 还远：朝玩家走全速（与旧行为一致，只是多了「进环就停」）
+      return { vx: ux * chaseSpeed, vz: uz * chaseSpeed };
+    }
+    // 太近：背离玩家退开
+    return { vx: -ux * chaseSpeed, vz: -uz * chaseSpeed };
   }
 
   /**

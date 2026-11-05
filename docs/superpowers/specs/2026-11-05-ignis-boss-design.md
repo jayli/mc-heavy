@@ -350,6 +350,30 @@ chase ──(水平距 ≤ attackRange)──▶ attack ──(动画播完)─�
 attack ──(水平距 > disengageRange)──▶ chase
 ```
 
+**`chase` 的移动目标是「站定环」，不是玩家位置**（v2.60 根因修复）。
+
+`standoffRange`（5.0 格）是焰魔主动保持的与玩家的水平距离：
+
+| 当前距离 d | 意图 |
+|---|---|
+| `d > standoffRange` | 全速朝玩家走（与旧行为一致） |
+| `standoffRange − standoffDeadband ≤ d ≤ standoffRange` | **原地不动**，只转向（死区） |
+| `d < standoffRange − standoffDeadband` | 背离玩家退让（玩家主动贴上来时） |
+
+⚠️ **为什么必须有它**：旧实现的意图是「朝玩家**位置**直走」，没有任何接近距离下限 ⇒
+玩家站定时焰魔一直走到 `hDist ≈ 0`（实测 0.01 格，即**穿过玩家身体**），转身回来再穿。
+`attack` 段本身站定（作者原实现），但下刀那一刻玩家在它背后 ⇒ 第二刀起全部落空。
+修复后实测最小水平距 4.96 格、30 秒命中 5 次（修前 0.01 格 / 1 次）。
+
+⚠️ **死区不做比例控制**：只朝「环上最近点」走会让环内的焰魔侧向画圆（目标点与站位垂直
+⇒ 绕桩），观感不比穿模好。「全速或不动」最简，且观感是「走过来，站住，挥刀」。
+
+**四条数值不变式**（改任一个都会静默失效，`test-ignis-boss-agent.js` 钉住）：
+`attackRange ≥ standoffRange`（否则停在环上既不走也不起手）/
+`standoffRange ≤ hitRange`（否则站定后够不着）/
+`standoffDeadband > chaseSpeed/60`（否则死区跳进跳出）/
+`standoffRange − standoffDeadband > 0.8`（玩家半宽 0.3 + 焰魔半宽 0.5，模型永不重叠）。
+
 - **重力 + 地面吸附**：复用 `zombie-system.js` 的 `physicsStep` 手法（`GRAVITY = -24`、
   分轴移动 + `tryStepUp`），**碰撞判据用 `zombie-navigation.js` 的 `zombieCollidesAt`**
   —— 但那函数写死了丧尸的 0.6×1.8 AABB。**故新增一个类型参数版**：
@@ -429,6 +453,8 @@ export function applyDamage(health, amount) {
 | 常量 | 值 | 依据 |
 |---|---|---|
 | `IGNIS_AI.attackRange` | 5.5 | 进入攻击的距离。比 `hitRange`(6.5) 小 1 格是**滞回**：在 6.5 边界来回走不会让「起步/取消」每帧抖动 |
+| `IGNIS_AI.standoffRange` | 5.0 | **v2.60**：焰魔主动保持的与玩家的水平距离（站定环半径）。依据是三条约束——`+ 一步(0.11) ≤ attackRange`（否则追到环上已超出起手距离 ⇒ 僵住）、`≤ hitRange`（否则够不着）、死区下界 `5.0 − 0.75 = 4.25 > 0.8`（玩家半宽 + 焰魔半宽，模型永不重叠）。**旧行为是「朝玩家位置直走」⇒ 实测穿模到 0.01 格** |
+| `IGNIS_AI.standoffDeadband` | 0.75 | 站定环的死区宽度（格）。必须 `> chaseSpeed/60 ≈ 0.11`（单步位移），否则死区持续跳进跳出 |
 | `IGNIS_AI.chaseSpeed` 的采用说明 | — | 6.6 格/秒 vs 玩家跑步 8 格/秒 ⇒ 跑得掉但甩不脱（作者原值就是「比你慢一点」） |
 | `IGNIS_AI.turnRate` | 3.0 rad/秒 | 与飞龙同（作者未给常量，Java 的 `lookControl` 是 30°/tick 的转向插值，本仓用平滑限速更自然） |
 | `IGNIS_AI.attackCooldownMin/Max` | 2.75 / 5.0 | 攻击动画本身 2.75 秒，加 0~2.25 秒间隔。⚠️ **不是**作者的 `HORIZONTAL_SWING_COOLDOWN = 160 tick`（那是横扫的专属冷却，本 v1 只有一个攻击） |
