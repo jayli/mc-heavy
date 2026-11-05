@@ -157,18 +157,31 @@ test('Boss E2E: 高台地带按 C 召唤出龙（轨道中心 = 玩家所在地�
   expect(await toastText(page)).toContain('已召唤 Boss1');
 });
 
-test('Boss E2E: 再按 C 提示「Boss 都在了」，不产生第二条', async ({ page }) => {
+test('Boss E2E: 再按 C 先召 Boss2（焰魔），第三次才提示「Boss 都在了」', async ({ page }) => {
   test.setTimeout(120_000);
   await page.goto(`/?vd=8&seed=${SEED}`);
   await waitWorldReady(page);
   const c = await altarCenter(page);
   await gotoCenter(page, c.cx, c.cz);
+  // ⚠️ **v2.55 起高台地带有两个 Boss**（用户 2026-11-05）：
+  // 第一次按 C → 飞龙（slot 0），第二次 → 焰魔（slot 1），第三次 → 都满了。
+  // 本用例原断言「第二次按 C 就提示 Boss 都在了」已被该改动推翻，按新语义改写。
   await pressC(page);
   await waitDragonCount(page, 1);
+
+  // 第二次：召焰魔
+  await pressC(page);
+  await page.waitForFunction(() => window.__MC_GAME__.ignises.activeEntities().length === 1,
+    null, { timeout: 30_000 });
+  expect(await page.evaluate(() => window.__MC_GAME__.dragons.activeEntities().length)).toBe(1);
+  expect(await page.evaluate(() => window.__MC_GAME__.ignises.activeEntities().length)).toBe(1);
+  expect(await toastText(page)).toContain('已召唤 Boss2');
+
+  // 第三次：两个槽位都占着
   await pressC(page);
   await page.waitForTimeout(500);
-  // 高台地带名册只有 Boss1（用户：「目前还没有 Boss2」）⇒ 槽位已满
   expect(await page.evaluate(() => window.__MC_GAME__.dragons.activeEntities().length)).toBe(1);
+  expect(await page.evaluate(() => window.__MC_GAME__.ignises.activeEntities().length)).toBe(1);
   expect(await toastText(page)).toContain('Boss 都在了');
 });
 
