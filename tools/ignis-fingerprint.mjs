@@ -98,7 +98,7 @@ export const IGNIS_ANIM_SOURCES = Object.freeze({
  * 产物必须满足的指标 —— 烘焙脚本与 `check:data` 共用这一份。
  *
  * 全部实测值（解析 `assets/ignis/src/ignis.geo.json` 可复现）：
- *  - **53 根骨骼**，其中 **50 根带立方体**
+ *  - **53 根骨骼**，其中 50 根挂了立方体，但**只有 43 根**的立方体是非零尺寸
  *  - **88 个立方体**，其中 **8 个含 0 尺寸分量**（`right_helmet` 这类零厚薄片，
  *    `BoxGeometry` 对 0 尺寸会退化成退化三角形 ⇒ 跳过）⇒ **烘焙 80 个**
  *  - 每立方体 `BoxGeometry` 产出 24 顶点 / 36 索引 ⇒ `80 × 24 = 1920` 顶点、
@@ -111,7 +111,16 @@ export const IGNIS_ANIM_SOURCES = Object.freeze({
  */
 export const IGNIS_METRICS = Object.freeze({
   boneCount: 53,
-  bonesWithCubes: 50,
+  /** 几何里挂了至少一个立方体的骨骼数（含只有零尺寸薄片的那些）= 50 */
+  bonesWithAnyCubes: 50,
+  /**
+   * 实际有「非零尺寸立方体」被烘焙的骨骼数 = **43**。
+   *
+   * ⚠️ **不能是 50**：另 7 根骨骼只挂了零尺寸薄片（如 `right_helmet` 的 `[0,5,7]`），
+   * 全部被跳过 ⇒ 它们不贡献任何顶点。这是实测值（2026-11-05 逐骨骼统计），
+   * 写成 50 会让烘焙器在正确的实现上报错。
+   */
+  bonesWithCubes: 43,
   cubeCount: 88,
   /** 含 0 尺寸分量、被跳过的立方体数 */
   skippedCubes: 8,

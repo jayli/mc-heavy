@@ -1,0 +1,31 @@
+{
+ "fingerprints": {
+  "input": "07c1edf5dbe821b1:971ce56ff5f84d23",
+  "sourceSha256": "07c1edf5dbe821b11f83216f9891afdf53cd102963ac4603ece48bc1501a7ce6",
+  "paramsSha256": "971ce56ff5f84d238e4743846702026a2944b5dab4f897ef4b4b8d9323cf8c82"
+ },
+ "metrics": {
+  "boneCount": 53,
+  "bonesWithCubes": 43,
+  "cubeCount": 88,
+  "skippedCubes": 8,
+  "bakedCubes": 80,
+  "vertexCount": 1920,
+  "indexCount": 2880,
+  "scale": 1
+ },
+ "textureSize": 256,
+ "animPeriods": {
+  "idle": 0.04908738521234052,
+  "attack": 2.75
+ },
+ "animSources": {
+  "idle": [
+   "generala",
+   "generalb"
+  ],
+  "attack": [
+   "attack6a"
+  ]
+ }
+}

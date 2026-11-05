@@ -25,6 +25,11 @@ const ROOT = path.join(__dirname, '..');
 const MIME_TYPES = {
   '.html': 'text/html',
   '.js': 'text/javascript',
+  // ⚠️ `.mjs` 必须显式登记：浏览器对 module script 做**严格 MIME 检查**，
+  // 未登记的扩展名会回落到 `application/octet-stream` → 整个模块脚本拒绝加载
+  // （形态：测试页 report 恒空、`window.__MC_TEST_RESULTS__` 为 undefined，
+  // 而 node 侧 `node xxx.mjs` 一切正常 —— 2026-11-05 焰魔 Molang 测试踩到）。
+  '.mjs': 'text/javascript',
   '.css': 'text/css',
   '.json': 'application/json',
   '.png': 'image/png',
