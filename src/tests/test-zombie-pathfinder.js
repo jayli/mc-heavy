@@ -6,8 +6,8 @@
 // 表现为「丧尸完全没有任何寻路逻辑」。寻路是纯本地计算，**必须常开**。
 import { test } from './runner.js';
 import { assertEqual, assertFalse, assertTrue, assertDeepEqual } from './assert.js';
-import { PATHFIND, DIRECTION_ORDER, ZOMBIE_MAX_STEP } from '../entities/zombies/zombie-config.js';
-import { PathCache, directionNameOf, planStep } from '../entities/zombies/zombie-pathfinder.js';
+import { PATHFIND, DIRECTION_ORDER, ZOMBIE_MAX_STEP, ZOMBIE_STEERING } from '../entities/zombies/zombie-config.js';
+import { DEFAULT_BOX, PathCache, directionNameOf, planStep } from '../entities/zombies/zombie-pathfinder.js';
 import { DIRECTION_VECTORS, decideStep, memoryFor } from '../entities/zombies/zombie-navigator.js';
 import { zombieCollidesAt, zombieStepUpY } from '../entities/zombies/zombie-navigation.js';
 import { ChunkColumn } from '../voxel/chunk-column.js';
@@ -390,4 +390,75 @@ test('PathCache：拥挤微动仍命中，但计划方向背离目标时立刻�
   // 偏离很远 → 重算
   c.plan(world, [15.5, 1, 10.5], goal, { agentId: 'z0', nowMs: 600 });
   assertEqual(c.debugState().misses, 2, '远离路径必须重算');
+});
+
+// ==================== 可走性参数化（v2.61：焰魔复用同一份 A*）====================
+//
+// ## 为什么要参数化而不是给焰魔写第二份
+//
+// 寻路的漂移形态是「一个实体绕得过去、另一个绕不过去」，且两边的注释都自圆其说 ——
+// 只能靠实玩发现。故必须同一份实现 + 缺省等于丧尸参数（红线 1）。
+
+/**
+ * 一道带门洞的墙：z = 10 这一列全高封死，只在 y ∈ [1, 洞高] 开一个 3 格宽的洞。
+ *
+ * ⚠️ **必须有地板（y ≤ 0 实心）**：`standable` 的快路径入口是「脚底那格空气 + 脚下实心」——
+ * 没有地板就永远走不到快路径，本组用例就测不到「层数」这一层逻辑（实测踩到：
+ * 空世界版本下把 `spans` 写死回 2 仍然全绿）。
+ */
+function makeDoorWorld({ doorHeight }) {
+  const inHole = (x, y) => x >= 9 && x <= 11 && y >= 1 && y <= doorHeight;
+  const solid = (x, y, z) => {
+    if (y <= 0) return true;                       // 地板
+    if (z !== 10) return false;
+    return !inHole(x, y);                          // 墙（洞以外全是实心）
+  };
+  return { isSolid: solid, getBlockId: (x, y, z) => (solid(x, y, z) ? 1 : 0) };
+}
+
+test('planStep：丧尸缺省参数与显式传 DEFAULT_BOX 逐位相同（零回归硬判据）', () => {
+  const { world, set } = makeFlat({ size: 128 });
+  for (let x = 20; x <= 50; x++) for (let dy = 0; dy < 3; dy++) set(x, 1 + dy, 30);
+  const from = [35.5, 1, 40.5];
+  const to = [35.5, 1, 20.5];
+  const a = planStep(world, from, to);
+  const b = planStep(world, from, to, { box: DEFAULT_BOX });
+  // 逐字段比 —— 只比 reachable 会漏掉「nextStep 变了但都可达」这种静默漂移
+  assertDeepEqual(b, a, '显式传默认 box 必须与不传逐位相同');
+});
+
+test('planStep：门洞高度真的参与可走性（2 格挡丧尸之外、4 格放行）', () => {
+  // 焰魔 halfWidth 0.5 / height 3.25 —— 与 IGNIS 常量同值，但不 import 它：
+  // 本用例守的是 pathfinder 的通用能力，不该依赖某个 Boss 的配置文件
+  const IGNIS_BOX = { halfWidth: 0.5, height: 3.25, maxStep: 1.0 };
+  const ZOMBIE_BOX = { halfWidth: 0.3, height: 1.8, maxStep: 1.0 };
+
+  // ⚠️ 洞高 2：丧尸（1.8 高）过得去，焰魔（3.25 高）过不去。
+  //   这是「层数写死 2」唯一能被红的地方 —— 快路径只看两层时焰魔会误判可走。
+  const low = makeDoorWorld({ doorHeight: 2 });
+  assertTrue(planStep(low, [10.5, 1, 13.5], [10.5, 1, 7.5], { box: ZOMBIE_BOX }).reachable,
+    '丧尸（1.8 高）应能穿过 2 格高的洞');
+  assertFalse(planStep(low, [10.5, 1, 13.5], [10.5, 1, 7.5], { box: IGNIS_BOX }).reachable,
+    '焰魔（3.25 高）不得穿过 2 格高的洞');
+
+  // 洞高 4：两者都能过（防止上一条只是「一律不可达」的假阳性）
+  const high = makeDoorWorld({ doorHeight: 4 });
+  assertTrue(planStep(high, [10.5, 1, 13.5], [10.5, 1, 7.5], { box: IGNIS_BOX }).reachable,
+    '焰魔应能穿过 4 格高的洞');
+});
+
+test('decideStep：不传 steering/box 时行为与显式传默认值一致（零回归）', () => {
+  const { world } = makeFlat();
+  const p = [10.5, 1, 10.5];
+  const goal = [10.5, 1, 4.5];
+  const base = {
+    world, position: p, playerPosition: goal, nowMs: 0,
+    isWalkable: makeWalkable(),
+  };
+  const a = decideStep({ ...base, memory: memoryFor(new Map(), 'z0'), pathCache: new PathCache() });
+  const b = decideStep({
+    ...base, memory: memoryFor(new Map(), 'z0'), pathCache: new PathCache(),
+    box: DEFAULT_BOX, steering: ZOMBIE_STEERING,
+  });
+  assertDeepEqual(b, a, '缺省值必须与显式默认逐位相同');
 });

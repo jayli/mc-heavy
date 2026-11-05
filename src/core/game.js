@@ -1090,6 +1090,11 @@ export class Game {
       // entities.update 之前（mc-lite 的 frameReservations 同生命周期）
       this.minecarts.beginFrame();
       this.zombies.update(dt, { playerPosition: [pp.x, pp.y, pp.z] });
+      // v2.61：焰魔的寻路拍（A\* + 决策），与丧尸同帧序 —— **必须在 entities.update 之前**，
+      // 那样 Agent 本帧的移动意图才能读到本帧最新写好的 `state.navDir`。
+      // 反序会让它用上帧的方向走一步（形态：长墙拐角晚一拍、看着像抖动）。
+      // 内部 20Hz 节流，且只给 `needsPath` 的焰魔真跑 A\* —— 常态开销为零。
+      this.ignises?.update(dt, { playerPosition: [pp.x, pp.y, pp.z], nowMs });
       // ⚠️ **v2.43 起龙不再每帧自动 spawn**（原 `this.dragons.ensure()` 已删）：
       // 龙只在按 C 时召唤（`summonBoss()`）。保留自动生成的形态是「Boss1 已在 → 召唤 Boss2」
       // 永远命中「已在」，而高台地带没有 Boss2 ⇒ C 键对高台地带毫无作用。

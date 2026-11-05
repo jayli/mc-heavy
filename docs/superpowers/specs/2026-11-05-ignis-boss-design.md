@@ -342,13 +342,21 @@ Agent 的 `_steerYaw` 控制，再叠一层物理头部朝向会双重叠加。
 
 ### 4.4 地面 AI（`ignis-boss-agent.js`）
 
-三态机：
+三态机（**v2.61 起视线不再是追击的生死门**）：
 
 ```
-idle ──(视线通 + 水平距 ≤ sightRange)──▶ chase
-chase ──(水平距 ≤ attackRange)──▶ attack ──(动画播完)──▶ chase
-attack ──(水平距 > disengageRange)──▶ chase
+idle ──(水平距 ≤ sightRange)──▶ chase
+chase ──(水平距 ≤ attackRange + 视线通 + 冷却好)──▶ attack ──(动画播完)──▶ chase
+chase ──(水平距 > disengageRange)──▶ idle
+attack ──(视线断 或 超出 disengageRange)──▶ chase
 ```
+
+⚠️⚠️ **v2.61 修掉的永久死锁**：旧转移是 `idle →(视线通 且 距离够)→ chase` +
+`chase →(视线断)→ idle`。中间一有方块，`chase` 退回 `idle`，而 `idle` 除了转头什么都不做，
+回 `chase` 又要先视线通 ⇒ **永久僵住**（用户实玩：「玩家不动，焰魔也不动了」）。
+
+修法：脱离追击只看距离；视线只服务一件事 —— **这一刀砍不砍得到**（起手前提 + 命中帧的新鲜
+复查两处）。有了寻路，「看不见」从**停止条件**变成**可解状态**。
 
 **`chase` 的移动目标是「站定环」，不是玩家位置**（v2.60 根因修复）。
 
@@ -379,8 +387,41 @@ attack ──(水平距 > disengageRange)──▶ chase
   —— 但那函数写死了丧尸的 0.6×1.8 AABB。**故新增一个类型参数版**：
   `collidesAt(world, x, y, z, halfWidth, height)`，`zombieCollidesAt` 变成它的薄包装
   （红线 1：只留一份实现，丧尸行为零变化）。
-- **寻路**：复用 `steerIntent()`（同样需要参数化 AABB）。**不做 A* / 寻路网格**
-  （与丧尸同口径：局部绕行即可）。
+- **寻路（v2.61，三层全部复用丧尸）**：
+
+  | 层 | 来源 | 焰魔的差异 |
+  |---|---|---|
+  | ① 长距离 | `zombie-pathfinder.js` 的 `planStep` / `PathCache`（24 格有界 A\*） | **只传 `box`**（`halfWidth 0.5 / height 3.25`） |
+  | ② 方向 | `zombie-navigator.js` 的 `decideStep` | **只传 `box` / `steering`** |
+  | ③ 精细 | `zombie-navigation.js` 的 `steerIntentAabb`（已在用） | 无需改 |
+
+  **为什么必须复用而不是另写一份**：寻路的漂移形态是「一个实体绕得过去、另一个绕不过去」，
+  而两边的注释都自圆其说 —— 只能靠实玩发现。故第①②层做的是**参数化**（`box` 缺省 = 丧尸值），
+  丧尸逐位零回归由 `test-zombie-pathfinder.js` 的三条对账用例钉住。
+
+  ⚠️⚠️ **高度真的改变可走性**：`standable()` 的快路径原来写死「丧尸 1.8 高 ⇒ 占 2 层」。
+  焰魔 3.25 高占 **4 层**，写死 2 会让快路径把 2 格高门洞判成可走 —— 形态正是「规划得出、
+  物理走不通」。现在层数由 `floor(y + height − ε) − floor(y) + 1` 算（同一个 ε 从
+  `zombie-navigation` 的 `AABB_EPSILON` 导出，快路径通过 ⇔ AABB 不碰撞）。
+
+  **`needsPath` 协议**（Agent ↔ Service 的唯一接口）：
+
+  | 谁 | 做什么 |
+  |---|---|
+  | `IgnisBossAgent` | 判「这一帧直线走不通吗」→ 写 `state.needsPath`；有 `navDir` 时优先用它 |
+  | `IgnisService` | 20Hz 一拍，**只给 `needsPath` 的焰魔**跑 A\*，结果写 `state.navDir` / `navMode` |
+
+  判定口径：`steerIntentAabb(direct)` 被 `blocked`，或修过方向与 `direct` 夹角 > 5°。
+  ⚠️ **必须用「相对 direct 的偏差」而不是最终向量**，否则会自激（用了 `navDir` → 不偏 →
+  清标志 → 下一帧又偏）。无阻碍时 `steerIntentAabb` 0° 命中会**逐位原样返回**，故开阔地
+  永不触发 A\*，也不引入 8 向网格化走路。
+
+  ⚠️ **A\* 必须在服务层而不在 Agent**：它需要 `PathCache`（跨帧时效 + 路径前缀匹配）与
+  20Hz 节流，而 `BossAgent` 的契约是「无跨帧成员」（同一个 Agent 实例服务多条龙）。
+  丧尸的 `_stepNavigator` 也在服务层 —— 两条寻路路径因此长得一样。
+
+  **非目标**：不做跨层寻路（只在 `from[1]` 这一层搜，丧尸同口径）；不放大半径
+  （沿用 24 格 —— 全图 BFS 是 M6 规格 §1 明令禁止的形态）；不拆方块（绕不过去就走不过去）。
 - **转向**：`_steerYaw` 复用 `BossAgent` 基类（`turnRate` 限速）。
 - **攻击击发**：`attackAnimT` 累积；`attackAnimT` 越过 `hitFrameSeconds`（**1.20 秒** =
   作者 `SWING_ATTACK` 的 tick 24）的那一帧置

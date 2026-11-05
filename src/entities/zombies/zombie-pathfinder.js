@@ -17,8 +17,21 @@
 //
 // 不做跨层寻路（不搜上下楼梯）—— 三维搜索成本 ×几十，而当前玩法里丧尸追的是同一层平面上的
 // 玩家。不做全图寻路 —— 半径 24 格有界，超出即 `truncated`（回落到 v1 的局部决策）。
-import { PATHFIND, DIRECTION_ORDER, ZOMBIE_MAX_STEP } from './zombie-config.js';
-import { zombieCollidesAt, zombieStepUpY } from './zombie-navigation.js';
+import { PATHFIND, DIRECTION_ORDER, ZOMBIE, ZOMBIE_MAX_STEP } from './zombie-config.js';
+import { AABB_EPSILON, aabbCollidesAt, zombieStepUpY } from './zombie-navigation.js';
+
+/**
+ * 缺省的可走性体型 = **丧尸**（v2.61 参数化后的缺省值，保证零回归）。
+ *
+ * ⚠️ **任何新增调用方都应该显式传 `box`**；缺省值只为「既有丧尸调用一行不改」。
+ * 复用同一份 A\* 而不是写第二份，是红线 1 的要求 —— 两份寻路的漂移形态是
+ * 「一个实体绕得过去、另一个绕不过去」，而且只能靠实玩发现。
+ */
+export const DEFAULT_BOX = Object.freeze({
+  halfWidth: ZOMBIE.width / 2,
+  height: ZOMBIE.height,
+  maxStep: ZOMBIE_MAX_STEP,
+});
 
 /**
  * 8 邻接增量 `[dx, dz]`，**与 `DIRECTION_ORDER` 严格同序**
@@ -47,20 +60,36 @@ export function directionNameOf(dx, dz) {
  * 该格能否站（一层台阶算能站 —— 与物理 step-up 同口径）。
  *
  * ⚠️ **快路径是载荷性的**（实测：BFS 最坏单次 0.75ms，其中 20% 花在 `getBlockId`）。
- * 绝大多数格是「空 + 脚下实心」，那种情况下 `zombieCollidesAt`（要扫 3×3×2 = 6~18 格、
- * 每格都从 `columnKey` 字符串查起）完全是浪费。先用 3 次 `isSolid` 判掉这个常见情形，
- * 只有需要时才走完整 AABB —— 结果**逐位等价**（快路径通过 ⟺ AABB 不碰撞）。
+ * 绝大多数格是「空 + 脚下实心」，那种情况下完整 AABB 扫描（丧尸 3×3×2 = 6~18 格、
+ * 焰魔 3×3×4 = 12~48 格，每格都从 `columnKey` 字符串查起）完全是浪费。
+ * 先用几次 `isSolid` 判掉这个常见情形，只有需要时才走完整 AABB —— 结果**逐位等价**。
+ *
+ * ⚠️⚠️ **层数由 AABB 跨度算，不能写死 2**（v2.61）：
+ * 旧版注释写「丧尸高 1.8、脚底 y 的整数部分是 by ⇒ 占据 by 与 by+1 两层」，那是**丧尸专属**的
+ * 推导。焰魔 height 3.25 ⇒ 占 `by … by+3` **四层**，写死 2 会让快路径把一个 2 格高的门洞判成
+ * 「可走」（它只检查了下面两层）—— 形态是「规划得出、物理走不通」，正是本文件头部警告的那类漂移。
+ *
+ * `spans = floor(y + height − ε) − floor(y) + 1` 与 `aabbCollidesAt` 的 `y1` 用**同一个** ε
+ * （`AABB_EPSILON`，从 `zombie-navigation` 导出），故快路径通过 ⇔ AABB 不碰撞。
+ * 整数 `y` 且 `height` 1.8 时 `spans === 2`，与改动前**逐位相同**。
+ *
+ * @param {object} world @param {number} x @param {number} y @param {number} z 格坐标
+ * @param {{halfWidth: number, height: number, maxStep: number}} box 可走性体型
  */
-function standable(world, x, y, z) {
+function standable(world, x, y, z, box) {
   const by = Math.floor(y);
-  // 快路径：脚底那格空气 + 头顶那格空气 + 脚下实心 ⇒ AABB 必然不碰撞
-  // （丧尸高 1.8、脚底 y 的整数部分是 by ⇒ 占据 by 与 by+1 两层）
-  if (!world.isSolid(x, by, z) && !world.isSolid(x, by + 1, z) && world.isSolid(x, by - 1, z)) {
-    return true;
+  const spans = Math.floor(y + box.height - AABB_EPSILON) - by + 1;
+  if (!world.isSolid(x, by, z) && world.isSolid(x, by - 1, z)) {
+    let clear = true;
+    for (let i = 1; i < spans; i++) {
+      if (world.isSolid(x, by + i, z)) { clear = false; break; }
+    }
+    if (clear) return true;
   }
-  if (!zombieCollidesAt(world, x + 0.5, y, z + 0.5)) return true;
+  if (!aabbCollidesAt(world, x + 0.5, y, z + 0.5, box.halfWidth, box.height)) return true;
   const lifted = zombieStepUpY(y);
-  return lifted - y <= ZOMBIE_MAX_STEP && !zombieCollidesAt(world, x + 0.5, lifted, z + 0.5);
+  return lifted - y <= box.maxStep
+    && !aabbCollidesAt(world, x + 0.5, lifted, z + 0.5, box.halfWidth, box.height);
 }
 
 /**
@@ -140,13 +169,15 @@ function onCachedPath(entry, x, z, gx, gz) {
  * - 邻接顺序固定 → 同输入同路径（红线 2）。
  *
  * @param {{isSolid(x:number,y:number,z:number):boolean}} world
- * @param {number[]} from 丧尸脚底 `[x, y, z]`
+ * @param {number[]} from 实体脚底 `[x, y, z]`
  * @param {number[]} to 玩家脚底 `[x, y, z]`
- * @param {{maxRadius?: number}} [opts]
+ * @param {{maxRadius?: number, box?: {halfWidth: number, height: number, maxStep: number}}} [opts]
+ *   `box` = 可走性体型（半宽 / 高 / 能上的台阶高度），缺省 `DEFAULT_BOX`（丧尸）。
+ *   ⚠️ **高度真的改变结果**：同一格 2 格高门洞对丧尸可走、对焰魔（3.25 高）不可走。
  * @returns {{reachable: boolean, nextStep: [number, number]|null, pathLength: number,
  *            explored: number, truncated: boolean}}
  */
-export function planStep(world, from, to, { maxRadius = PATHFIND.maxRadius } = {}) {
+export function planStep(world, from, to, { maxRadius = PATHFIND.maxRadius, box = DEFAULT_BOX } = {}) {
   const sx = Math.floor(from[0]);
   const sz = Math.floor(from[2]);
   const y = from[1];
@@ -240,7 +271,7 @@ export function planStep(world, from, to, { maxRadius = PATHFIND.maxRadius } = {
       const k = keyOf(nx, nz);
       if (seen.has(k)) continue;
       if (Math.max(Math.abs(nx - sx), Math.abs(nz - sz)) > maxRadius) { truncated = true; continue; }
-      if (!standable(world, nx, y, nz)) continue;
+      if (!standable(world, nx, y, nz, box)) continue;
       seen.add(k);
       prev.set(k, curKey);
       // 斜向按 √2 计代价（8 邻接的真实几何距离）；启发 = 欧氏距离（可采纳、一致）
@@ -334,14 +365,16 @@ export class PathCache {
   /**
    * 取（或计算）一次规划结果。
    * @param {object} world
-   * @param {number[]} from 丧尸脚底 [x, y, z]
+   * @param {number[]} from 实体脚底 [x, y, z]
    * @param {number[]} to 玩家脚底 [x, y, z]
-   * @param {{maxRadius?: number, agentId?: string, nowMs?: number}} [opts]
-   *   `agentId` 用于把缓存按丧尸隔离（缺省 `__default__`）
+   * @param {{maxRadius?: number, agentId?: string, nowMs?: number,
+   *          box?: {halfWidth: number, height: number, maxStep: number}}} [opts]
+   *   `agentId` 用于把缓存按实体隔离（缺省 `__default__`）；`box` 转发给 `planStep`
    * @returns {ReturnType<typeof planStep>}
    */
   plan(world, from, to, opts = {}) {
     const radius = opts.maxRadius ?? PATHFIND.maxRadius;
+    const box = opts.box ?? DEFAULT_BOX;
     const id = opts.agentId ?? '__default__';
     const nowMs = opts.nowMs ?? 0;
     const fx = Math.floor(from[0]);
@@ -366,7 +399,7 @@ export class PathCache {
       return prev.result;
     }
     this._stats.misses++;
-    const result = planStep(world, from, to, { maxRadius: radius });
+    const result = planStep(world, from, to, { maxRadius: radius, box });
     this._cache.set(id, {
       result, radius, at: nowMs,
       goalX: Math.floor(to[0]), goalZ: Math.floor(to[2]),

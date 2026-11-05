@@ -31,7 +31,7 @@
 // 3. **命中只在一帧触发**：`attackAnimT` 越过 `hitFrameSeconds` 的那一帧（不是每帧）。
 
 import { BossAgent } from './boss-agent.js';
-import { IGNIS, IGNIS_AI } from '../ignis/ignis-config.js';
+import { IGNIS, IGNIS_AI, IGNIS_STEERING } from '../ignis/ignis-config.js';
 import { aabbCollidesAt, steerIntentAabb } from '../zombies/zombie-navigation.js';
 
 /** 物理固定步长（与 `zombie-system.js` 的 60Hz 固定步同口径，保证与帧率无关） */
@@ -48,17 +48,27 @@ const MAX_PHYS_STEPS = 5;
 const SUPPORT_EPSILON = 0.01;
 
 /**
- * 焰魔的绕行参数。
+ * 焰魔的绕行参数 —— **现在是 `IGNIS_STEERING` 的别名**（v2.61 上移到 config）。
+ *
+ * 移走的理由：寻路的第②层（`decideStep` 的 8 向地标滑行）也需同一组偏角，
+ * 而它在 `IgnisService` 里跑。写在两处就是同一事实的两个副本（红线 1）。
  *
  * ⚠️ **复用丧尸的档位**（22.5°/45°/67.5°/90°）而不是另标一套：焰魔更宽
  * （halfWidth 0.5 vs 0.3），但这些档位是**角度**，与宽度无关；宽度通过
  * `aabbCollidesAt` 的 `halfWidth` 参数生效。另标一套会让「两个地面实体绕同一堵墙时
  * 走出不同路径」——那正是「探针漂移」的形态。
  */
-const IGNIS_STEERING = Object.freeze({
-  probeDistance: 1.2,
-  anglesDeg: Object.freeze([22.5, 45, 67.5, 90]),
-});
+const IGNIS_STEERING_PARAMS = IGNIS_STEERING;
+
+/**
+ * `needsPath` 判据的偏角阈值（弧度）—— `steerIntentAabb` 修过方向后与原始意图的夹角
+ * 超过此值就算「被障碍逼偏了」。
+ *
+ * ⚠️ **取小值（~5°）而不是 0**：`steerIntentAabb` 在 0° 通行时**逐位原样返回**输入，
+ * 理论差值为 0；但 `atan2` 与归一化的浮点往返会让「差不多同向」的两个向量差出 1e-16 量级。
+ * 写 0 会让 `needsPath` 在开阔地也恒真（每拍都跑 A\*）。
+ */
+const PATH_DEVIATION_EPS = 5 * Math.PI / 180;
 
 /**
  * 焰魔的转向目标角（from → to 的水平方向），落在本仓的 yaw 口径里。
@@ -124,14 +134,24 @@ export class IgnisBossAgent extends BossAgent {
 
     // ---- 状态转移（用本帧起点位置，与移动同帧完成，不慢一帧）----
     if (mode === 'idle') {
-      if (player && losVisible && hDist <= IGNIS_AI.sightRange) mode = 'chase';
+      // ⚠️⚠️ **v2.61：不再要求视线通**。视线曾是一个**永久死锁**：`chase` 里
+      // `if (!losVisible) mode = 'idle'`，`idle` 除了转头什么都不做，而回 `chase` 又要
+      // 先视线通 ⇒ 中间一有方块就永久僵住（用户实玩：玩家站定不动，焰魔也不动了）。
+      // 有了寻路（第①②层）后，「看不见」从一个**停止条件**变成一个**可解状态**；
+      // `losVisible` 现在只服务「这一刀砍不砍得到」。
+      if (player && hDist <= IGNIS_AI.sightRange) mode = 'chase';
     } else if (mode === 'chase') {
-      if (!losVisible) mode = 'idle';
+      // 脱离追击只看距离（与 `sightRange` 构成滞回，同飞龙的 `disengageDistance` 手法）
+      if (!player || hDist > IGNIS_AI.disengageRange) mode = 'idle';
       // ⚠️ **`attackCooldown <= 0` 是必需条件**，不是可选项：
       // 缺了它，「动画播完 → 回 chase → 下一帧距离开在 attackRange 内 → 立即再起手」
       // 会让焰魔**无间隔地连续挥砍**（`attackCooldownMin/Max` 形同虚设）。
       // 实测踩到：冷却算出来了、也返回了，但从未参与判断。
-      else if (player && hDist <= IGNIS_AI.attackRange && attackCooldown <= 0) {
+      //
+      // ⚠️ **起手仍要求视线通**（v2.61 保留）：隔着墙起手就是空砍，而且会白白消耗冷却。
+      // 注意这一条与上面的脱离追击是两回事 —— 看不见但**距离近**时它仍在 `chase` 里，
+      // 只是不起手（它会忙着绕路）。
+      else if (player && hDist <= IGNIS_AI.attackRange && attackCooldown <= 0 && losVisible) {
         mode = 'attack';
         attackAnimT = 0;   // 起手：动画从头播
       }
@@ -145,12 +165,28 @@ export class IgnisBossAgent extends BossAgent {
     // ---- 按模式决定水平移动意图 ----
     let wantVx = 0;
     let wantVz = 0;
+    /** 本帧是否需要（下一拍）重新寻路（v2.61）。先按「确实要移动」预设为 false */
+    let needsPath = false;
+    /**
+     * 本帧意图是否为「太近、要退开」。
+     *
+     * ⚠️⚠️ **退让优先级高于寻路**：看不见玩家、但玩家已经贴到 `standoff − deadband` 以内时，
+     * 寻路会给出「朝玩家所在格走」的地标 —— 直接采纳会让焰魔**朝着玩家撞过去**
+     * （正是 v2.60 修掉的穿模缺陷换个形式复活）。玩家本人在寻路里不是一个障碍物，
+     * `standable` 只看方块。故退让不吃 `navDir`。
+     */
+    let retreating = false;
     if (mode === 'chase' && player) {
       yaw = this._steerYaw(yaw, this._angleTo([px, py, pz], player), step);
       // 站定环："朝玩家走"改成"走到玩家外侧 standoffRange 格的环上"（v2.60 根因修复）
       const intent = this._ringIntent(px, pz, player);
       wantVx = intent.vx;
       wantVz = intent.vz;
+      retreating = intent.retreat === true;
+      // **看不见玩家时强制走寻路**：否则玩家站在墙后、焰魔停在站定环上，
+      // 会永远隔着墙空砍（"起手仍要求视线通"使 attack 永不进入）—— 那就回到了
+      // 用户报告的僵住形态，只是从 idle 换成 chase。
+      if (!losVisible) needsPath = true;
     } else if (mode === 'attack') {
       // 挥砍时站定（作者原实现：`setDeltaMovement(0, ..., 0)`）
       wantVx = 0;
@@ -162,6 +198,8 @@ export class IgnisBossAgent extends BossAgent {
 
     // ---- 局部绕行（只换方向、不改长度；一步只探一次，与丧尸同一份实现）----
     if (world && (wantVx !== 0 || wantVz !== 0)) {
+      const directVx = wantVx;
+      const directVz = wantVz;
       const steering = steerIntentAabb({
         world,
         position: [px, py, pz],
@@ -170,10 +208,58 @@ export class IgnisBossAgent extends BossAgent {
         halfWidth: IGNIS.halfWidth,
         height: IGNIS.height,
         maxStep: IGNIS_AI.maxStep,
-        steering: IGNIS_STEERING,
+        steering: IGNIS_STEERING_PARAMS,
       });
       wantVx = steering.vx;
       wantVz = steering.vz;
+      // 被障碍逼偏（或完全走不通）⇒ 下一拍值得跑一次 A\*。
+      // ⚠️ **判据用「相对原始意图的偏差」而不是最终向量** —— 否则会自激：
+      // 用了 navDir → 与直接方向不偏 → 清掉标志 → 下一帧又偏。
+      // 无阻碍时 `steerIntentAabb` 0° 命中会**逐位原样返回**，故偏差恒 0，
+      // 开阔地永远不会误触发寻路（不引入 8 向网格化走路）。
+      const directLen = Math.hypot(directVx, directVz);
+      const steeredLen = Math.hypot(steering.vx, steering.vz);
+      if (steering.blocked) {
+        needsPath = true;
+      } else if (directLen > 1e-9 && steeredLen > 1e-9) {
+        const cos = (directVx * steering.vx + directVz * steering.vz) / (directLen * steeredLen);
+        if (Math.acos(Math.max(-1, Math.min(1, cos))) > PATH_DEVIATION_EPS) needsPath = true;
+      }
+    }
+
+    // ---- 寻路方向优先（v2.61：第①②层的结果，由 `IgnisService` 上一拍写好）----
+    //
+    // ⚠️ **站定环的语义优先级取决于"看不看得见玩家"**：
+    // - **看得见** ⇒ 站定环说了算。死区里想 = 0，而 `needsPath` 此时只可能来自
+    //   `deviated`（它只在 want 非零时才计算）⇒ 本块根本不会进入。
+    // - **看不见** ⇒ 寻路说了算，**包括死区**。玩家站在墙后时焰魔可能已处于「与玩家的水平
+    //   距离恰好落在 5 格环上」的状态，那时 `_ringIntent` 返回 0；若因此不听寻路，它会
+    //   永远隔着墙站着不动（就是用户报告的形态）。故条件里保留 `mode === 'chase'`。
+    const navDir = Array.isArray(state.navDir) && state.navDir.length === 2
+      && state.navDir.every((n) => Number.isFinite(n))
+      ? state.navDir : null;
+    if (needsPath && navDir && !retreating && (wantVx !== 0 || wantVz !== 0 || mode === 'chase')) {
+      const len = Math.hypot(navDir[0], navDir[1]);
+      if (len > 1e-9) {
+        // 寻路给的是**单位方向**，乘上自己的追击速度（速度上限的唯一权威仍是本 Agent）
+        wantVx = navDir[0] / len * IGNIS_AI.chaseSpeed;
+        wantVz = navDir[1] / len * IGNIS_AI.chaseSpeed;
+        // 8 向地标也要过局部避让：地标是格中心，物理推进时可能蹭到角
+        if (world) {
+          const re = steerIntentAabb({
+            world,
+            position: [px, py, pz],
+            vx: wantVx,
+            vz: wantVz,
+            halfWidth: IGNIS.halfWidth,
+            height: IGNIS.height,
+            maxStep: IGNIS_AI.maxStep,
+            steering: IGNIS_STEERING_PARAMS,
+          });
+          wantVx = re.vx;
+          wantVz = re.vz;
+        }
+      }
     }
 
     // ---- 物理：60Hz 固定步长（与帧率无关）----
@@ -231,6 +317,12 @@ export class IgnisBossAgent extends BossAgent {
       losVisible,
       onGround,
       attackRequest,
+      // ⚠️ **`navDir` 原样透传**（不在 Agent 里改）：它属于寻路层的结果，由
+      // `IgnisService` 写入。Agent 只是消费方与 `needsPath` 的判定方。
+      navDir: state.navDir ?? null,
+      navMode: state.navMode ?? null,
+      /** 本帧判定：下一拍需要重新寻路（服务层消费后写回 `navDir`） */
+      needsPath,
       _physAccum: accum,
     };
   }
@@ -264,7 +356,8 @@ export class IgnisBossAgent extends BossAgent {
    *
    * @param {number} px 焰魔脚底 x @param {number} pz 焰魔脚底 z
    * @param {[number,number,number]} player 玩家位置
-   * @returns {{vx: number, vz: number}} 速度意图（未绕行、未归一化到 yaw）
+   * @returns {{vx: number, vz: number, retreat: boolean}} 速度意图（未绕行、未归一化到 yaw）
+   *   `retreat` = 本次是「太近要退开」。调用方据此**禁止**寻路覆盖这个意图（见 `update`）。
    */
   _ringIntent(px, pz, player) {
     const dx = player[0] - px;
@@ -273,15 +366,15 @@ export class IgnisBossAgent extends BossAgent {
     const { standoffRange, standoffDeadband, chaseSpeed } = IGNIS_AI;
     const inner = standoffRange - standoffDeadband;
     // 玩家与自己重合（退化的奇点）：没有可用方向 ⇒ 站着，不要拿 0/0 造 NaN
-    if (!(d > 1e-6)) return { vx: 0, vz: 0 };
-    if (d >= inner && d <= standoffRange) return { vx: 0, vz: 0 };   // 死区：站住
+    if (!(d > 1e-6)) return { vx: 0, vz: 0, retreat: false };
+    if (d >= inner && d <= standoffRange) return { vx: 0, vz: 0, retreat: false };   // 死区：站住
     const ux = dx / d, uz = dz / d;
     if (d > standoffRange) {
       // 还远：朝玩家走全速（与旧行为一致，只是多了「进环就停」）
-      return { vx: ux * chaseSpeed, vz: uz * chaseSpeed };
+      return { vx: ux * chaseSpeed, vz: uz * chaseSpeed, retreat: false };
     }
     // 太近：背离玩家退开
-    return { vx: -ux * chaseSpeed, vz: -uz * chaseSpeed };
+    return { vx: -ux * chaseSpeed, vz: -uz * chaseSpeed, retreat: true };
   }
 
   /**

@@ -115,12 +115,26 @@ test('焰魔 AI: chase 时朝玩家走（-Z 方向）', () => {
   assertTrue(next.position[2] < 0, `没有朝 -Z 移动：z=${next.position[2]}`);
 });
 
-test('焰魔 AI: 视线被挡 → 从 chase 退回 idle', () => {
+test('焰魔 AI: 视线被挡仍留在 chase（v2.61：看不见是可解状态，不是停止条件）', () => {
+  // ⚠️⚠️ **这条用例就是用户 bug 的编码**：旧实现 `chase` 里写 `if (!losVisible) mode = 'idle'`，
+  // 而 `idle` 除了转头什么都不做、回 `chase` 又要先视线通 ⇒ 中间一有方块就**永久僵住**。
+  // 用户实玩形态：「玩家不动，焰魔也不动了」。
+  //
+  // 修法：脱离追击只看距离；视线只服务「这一刀砍不砍得到」（起手 + 命中帧新鲜复查）。
   const a = new IgnisBossAgent({ rng: () => 0.5 });
-  // 中间一堵墙（z ∈ [-15, -14]，全部 y）
+  // 中间一墙（z ∈ [-15, -14]，全部 y）
   const wall = makeWorld((_x, _y, z) => z >= -15 && z <= -14);
   const next = a.update(st({ mode: 'chase', onGround: true }), 0.1, {
     world: wall, registry: REGISTRY, player: playerAt(30),
+  });
+  assertEqual(next.mode, 'chase', '视线被挡时仍应处于 chase（否则永远追不过去）');
+  assertTrue(next.needsPath === true, '看不见玩家时必须标记需要寻路');
+});
+
+test('焰魔 AI: 玩家跑出 disengageRange → 退回 idle', () => {
+  const a = new IgnisBossAgent({ rng: () => 0.5 });
+  const next = a.update(st({ mode: 'chase', onGround: true }), 0.1, {
+    ...OPEN_CTX, player: playerAt(IGNIS_AI.disengageRange + 5),
   });
   assertEqual(next.mode, 'idle');
 });
@@ -421,6 +435,88 @@ test('焰魔 AI: 站定环内优先原地不动（不为了「对齐」绕圈）
   assertTrue(maxDrift < 3.0, `8 秒内漂移 ${maxDrift.toFixed(2)} 格（应直线退开，不是绕圈）`);
 });
 
+// ==================== 寻路：绕行障碍物找到玩家（v2.61）====================
+//
+// ### 缺陷与根因（用户 2026-11-05 实玩）
+//
+// 「焰魔和玩家之间如果有方块阻隔的时候，玩家不动，焰魔就不再动了」—— 两条根因：
+// ① `chase` 里 `if (!losVisible) mode = 'idle'` 是**永久死锁**（idle 不移动，回 chase 又要视线）；
+// ② 焰魔只有 1.2 格的局部避障，**看不到墙的尽头**（这正是丧尸 v2.46 被推翻的那层）。
+//
+// 修法 = 复用丧尸的三层寻路（A\* + `decideStep` + `steerIntentAabb`），参数化 AABB。
+// 本组用例钉的是 **Agent 的行为面**（是否标记需要寻路、是否消费 navDir）；
+// 真实 A\* 规划与物理绕行的端到端验证在 `tests/ignis.spec.mjs` 的 E2E 与
+// `test-ignis-system.js` 的 `IgnisService` 用例里。
+
+/**
+ * 平地 + 一道带缺口的墙。墙在 z = wallZ，x ∈ [-halfLen, halfLen]，高 `wallH` 格。
+ *
+ * @param {{groundY?: number, wallZ?: number, halfLen?: number, wallH?: number}} [opts]
+ */
+function wallWorld({ groundY = 9, wallZ = -14, halfLen = 6, wallH = 4 } = {}) {
+  return makeWorld((x, y, _z) => {
+    if (y <= groundY) return true;                                  // 地面
+    return Math.abs(x) <= halfLen && y > groundY && y <= groundY + wallH
+      && Math.abs(_z - wallZ) <= 0.5;                               // 墙
+  });
+}
+
+test('焰魔 AI: 无障碍直线追击时不标记寻路（开阔地零 A* 开销）', () => {
+  // ⚠️ 这条守的是「不能引入 8 向网格化走路」：`steerIntentAabb` 在 0° 通行时
+  // **逐位原样返回**输入，故偏差恒 0；若判据写成 0 容差就会因浮点噪声恒真。
+  const a = new IgnisBossAgent({ rng: () => 0.5 });
+  const w = groundWorld(9);
+  let s = st({ position: [0.5, 10, 0.5], mode: 'chase', onGround: true });
+  s = a.update(s, 1 / 60, { world: w, registry: REGISTRY, player: playerAt(20) });
+  assertEqual(s.needsPath, false, '开阔地不应触发寻路');
+});
+
+test('焰魔 AI: 长墙挡路 → 标记需要寻路，并消费 navDir 侧向绕行', () => {
+  // 墙在 z=−14、高 4 格、宽 13 格（远超 1.2 格探针，局部避障看不到尽头）。
+  const w = wallWorld();
+  const a = new IgnisBossAgent({ rng: () => 0.5 });
+  // 焰魔在 (0.5, 10, 0.5)，玩家在墙后 (0.5, 10, −24.5)
+  let s = st({ position: [0.5, 10, 0.5], mode: 'chase', onGround: true, losTimer: 999 });
+  const ctx = { world: w, registry: REGISTRY, player: { position: [0.5, 10, -24.5] } };
+  s = a.update(s, 1 / 60, ctx);
+  assertEqual(s.needsPath, true, '长墙挡路时必须标记需要寻路');
+
+  // 服务层给了「往 +X 绕」的方向 ⇒ Agent 必须采纳（而不是继续朝墙走）
+  // ⚠️ 判据用**位置位移**而不是 `velocity`：`state.velocity` 是物理步里的竖直速度载体，
+  // 水平移动读的是本帧的 `wantVx/wantVz`（不写回 velocity）—— 测 velocity 会得到恒 0。
+  const before = s.position.slice();
+  for (let i = 0; i < 30; i++) {
+    s = { ...s, navDir: [1, 0], navMode: 'chasing' };
+    s = a.update(s, 1 / 60, ctx);
+  }
+  const dx = s.position[0] - before[0];
+  assertTrue(dx > 0.5, `应采纳 navDir 往 +X 绕，实际 x 只变了 ${dx.toFixed(2)} 格`);
+});
+
+test('焰魔 AI: 四面围死 → 不产生 NaN、不穿墙（blocked 时站住）', () => {
+  // 把焰魔关在一个 3×3 格、4 格高的完全封闭盒子里
+  const w = makeWorld((x, y, z) => {
+    if (y <= 9) return true;                                  // 地板
+    const inBox = x >= -2 && x <= 2 && z >= -2 && z <= 2 && y <= 13;
+    const onWall = Math.abs(x) === 2 || Math.abs(z) === 2 || y === 13;
+    return inBox && onWall;
+  });
+  const a = new IgnisBossAgent({ rng: () => 0.5 });
+  let s = st({ position: [0.5, 10, 0.5], mode: 'chase', onGround: true, losTimer: 999 });
+  const ctx = { world: w, registry: REGISTRY, player: { position: [40, 10, 40] } };
+  const start = s.position.slice();
+  for (let i = 0; i < 180; i++) {
+    s = { ...s, navDir: null, navMode: 'blocked' };
+    s = a.update(s, 1 / 60, ctx);
+  }
+  assertTrue(s.position.every(Number.isFinite), `出现 NaN：${s.position}`);
+  // 不能穿出盒子（x/z 任一方向超过 1.5 就是穿墙了）
+  assertTrue(Math.abs(s.position[0] - start[0]) < 1.5,
+    `x 方向穿了 ${Math.abs(s.position[0] - start[0]).toFixed(2)} 格`);
+  assertTrue(Math.abs(s.position[2] - start[2]) < 1.5,
+    `z 方向穿了 ${Math.abs(s.position[2] - start[2]).toFixed(2)} 格`);
+});
+
 // ==================== 攻击冷却 ====================
 
 test('焰魔 AI: 攻击冷却按 attackCooldownMin/Max 区间随机', () => {
@@ -491,4 +587,24 @@ test('焰魔 AI: 攻击冷却真的生效（不会无间隔连砍）', () => {
     assertTrue(gap >= minGap - 1e-6,
       `第 ${i} 次与上一次间隔 ${gap.toFixed(2)}s < 下限 ${minGap}s（冷却没生效）`);
   }
+});
+
+test('焰魔 AI: 看不见玩家且玩家已贴近 → 仍退让，不被寻路方向覆盖（v2.61 陷阱）', () => {
+  // ⚠️⚠️ **这条守的是一个修法陷阱**：看不见玩家时我们强制 `needsPath = true`，而寻路
+  // 的目标是「玩家所在格」—— 玩家本人在寻路里**不是障碍物**（`standable` 只看方块）。
+  // 于是「玩家贴到 4 格内 + 中间有墙」时，navDir 会让焰魔朝玩家撞过去 ——
+  // 正是 v2.60 修掉的穿模缺陷换个形式复活。
+  const a = new IgnisBossAgent({ rng: () => 0.5 });
+  // 玩家在 -Z 方向 3 格（小于死区下界 4.25）⇒ 应背离 +Z 退开
+  const player = { position: [0.5, 10, -3] };
+  let s = st({ position: [0.5, 10, 0.5], mode: 'chase', onGround: true, attackCooldown: 999 });
+  // 造一个「看不见」的世界（中间有墙），同时 navDir 明确指向玩家方向
+  const wall = makeWorld((_x, y, z) => y <= 9 || (z >= -2 && z <= -1));
+  const before = s.position[2];
+  for (let i = 0; i < 30; i++) {
+    s = { ...s, navDir: [0, -1], navMode: 'chasing' };   // 寻路说「往 −Z（朝玩家）走」
+    s = a.update(s, 1 / 60, { world: wall, registry: REGISTRY, player });
+  }
+  assertTrue(s.position[2] > before,
+    `应背离玩家退到 +Z，实际 z 从 ${before} 变成 ${s.position[2].toFixed(3)}（说明采纳了朝玩家的 navDir）`);
 });

@@ -77,14 +77,19 @@ function unitVector(dir) {
  *
  * @param {{world: object, position: number[], playerPosition: number[],
  *          memory: object, pathCache: PathCache, nowMs: number,
- *          isWalkable: (world: object, x: number, y: number, z: number) => boolean}} p
+ *          isWalkable: (world: object, x: number, y: number, z: number) => boolean,
+ *          box?: {halfWidth: number, height: number, maxStep: number},
+ *          steering?: {probeDistance: number, anglesDeg: readonly number[]}}} p
  *   `isWalkable(x, y, z)` 是**格坐标**判据（由调用方注入 `zombie-navigation.js` 的实现，
  *   避免本模块反向依赖它 —— 依赖方向：navigator → pathfinder → navigation）
+ *   `box` = 可走性体型（转发给 `pathCache.plan`）；缺省 = 丧尸（零回归）
+ *   `steering` = 沿墙滑行 / 回落的偏角档位；缺省 = `ZOMBIE_STEERING`（零回归）
  * @returns {{vx: number, vz: number, mode: 'chasing'|'blocked', plannedDirection: string|null,
  *            reachable: boolean, blocked: boolean}}
- *   速度是**单位向量**，大小由调用方乘 `ZOMBIE.speed`
+ *   速度是**单位向量**，大小由调用方乘各自的 `speed`
  */
-export function decideStep({ world, position, playerPosition, memory, pathCache, nowMs, isWalkable }) {
+export function decideStep({ world, position, playerPosition, memory, pathCache, nowMs, isWalkable,
+  box = undefined, steering = ZOMBIE_STEERING }) {
   const [x, y, z] = position;
   const bx = Math.floor(x);
   const bz = Math.floor(z);
@@ -93,6 +98,7 @@ export function decideStep({ world, position, playerPosition, memory, pathCache,
   const plan = pathCache.plan(world, position, playerPosition, {
     agentId: memory.__id ?? '__default__',
     nowMs,
+    box,
   });
   const plannedDir = (plan.reachable && plan.nextStep)
     ? directionNameOf(plan.nextStep[0], plan.nextStep[1])
@@ -118,7 +124,7 @@ export function decideStep({ world, position, playerPosition, memory, pathCache,
       bz + Math.round(DIRECTION_VECTORS[plannedDir][1]))) {
       const base = Math.atan2(DIRECTION_VECTORS[plannedDir][1], DIRECTION_VECTORS[plannedDir][0]);
       dir = null;
-      for (const deg of ZOMBIE_STEERING.anglesDeg) {
+      for (const deg of steering.anglesDeg) {
         for (const sign of [1, -1]) {
           const th = base + (sign * deg * Math.PI) / 180;
           const cx = bx + Math.round(Math.cos(th));
@@ -140,7 +146,7 @@ export function decideStep({ world, position, playerPosition, memory, pathCache,
     const len = Math.hypot(dx, dz);
     if (len > 1e-6) {
       const base = Math.atan2(dz, dx);
-      for (const deg of [0, ...ZOMBIE_STEERING.anglesDeg]) {
+      for (const deg of [0, ...steering.anglesDeg]) {
         let found = false;
         for (const sign of deg === 0 ? [1] : [1, -1]) {
           const th = base + (sign * deg * Math.PI) / 180;

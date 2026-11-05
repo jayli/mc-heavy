@@ -32,8 +32,12 @@ import { ZOMBIE, ZOMBIE_MAX_STEP, ZOMBIE_MOVING_EPSILON, ZOMBIE_STEERING } from 
  * ⚠️ **载荷性**：`y1 = floor(y + height - EPSILON)`。少了它会让"净空恰好 1.8"的走廊
  * （脚底 y=1.2 时 AABB 顶面恰为 3.0）多采一格头顶，把**能走的走廊判成堵死** —— 丧尸在门洞、
  * 隧道、2 格高的走廊里原地僵住，而方块层面完全看不出问题。
+ *
+ * ⚠️ **导出（v2.61）**：`zombie-pathfinder.js` 的 `standable()` 快路径必须用**同一个** epsilon
+ * 才能与 `aabbCollidesAt` 逐位等价。写第二份就是同一事实的第二个副本（红线 1），
+ * 且漂移形态是「快路径通过、权威判定不通过」（或反之）—— 静默。
  */
-const PHYS_EPSILON = 0.001;
+export const AABB_EPSILON = 0.001;
 
 /**
  * 任意 AABB（半宽 + 高）与实心方块是否相交（脚底为 `y`）。
@@ -42,7 +46,7 @@ const PHYS_EPSILON = 0.001;
  * 「探针以为能过、物理撞墙」或反之，且这种漂移是静默的（只表现为实体莫名卡顿），
  * 只能靠实玩发现。
  *
- * ⚠️ **`PHYS_EPSILON` 门控是载荷性的**：`y1 = floor(y + height - EPSILON)`。少了它会让
+ * ⚠️ **`AABB_EPSILON` 门控是载荷性的**：`y1 = floor(y + height - EPSILON)`。少了它会让
  * "净空恰好 1.8"的走廊（脚底 y=1.2 时 AABB 顶面恰为 3.0）多采一格头顶，把**能走的走廊
  * 判成堵死** —— 实体在门洞、隧道、2 格高的走廊里原地僵住，而方块层面完全看不出问题。
  *
@@ -55,7 +59,7 @@ const PHYS_EPSILON = 0.001;
 export function aabbCollidesAt(world, x, y, z, halfWidth, height) {
   if (!world || typeof world.isSolid !== 'function') return false;
   const x0 = Math.floor(x - halfWidth), x1 = Math.floor(x + halfWidth);
-  const y0 = Math.floor(y), y1 = Math.floor(y + height - PHYS_EPSILON);
+  const y0 = Math.floor(y), y1 = Math.floor(y + height - AABB_EPSILON);
   const z0 = Math.floor(z - halfWidth), z1 = Math.floor(z + halfWidth);
   for (let bx = x0; bx <= x1; bx++) {
     for (let by = y0; by <= y1; by++) {

@@ -454,3 +454,136 @@ test('焰魔(命中盒相对脚底): 盒子随 yaw 旋转（中心的 z 偏移�
     }
   }
 });
+
+// ==================== 寻路接线（v2.61）====================
+//
+// 为什么放在 service 层而不是 Agent：A\* 需要 `PathCache`（跨帧时效 + 路径前缀匹配）
+// 与 20Hz 节流，而 `BossAgent` 的契约是「无跨帧成员」。丧尸的 `_stepNavigator` 也在服务层
+// —— 两条寻路路径因此长得一样（红线 1 的统一入口）。
+
+/**
+ * 平地 + 一道带缺口的墙（与 `test-ignis-boss-agent.js` 的 `wallWorld` 同形）。
+ * 墙在 z = wallZ，x ∈ [-halfLen, halfLen]。
+ */
+function wallWorldForService({ groundY = 9, wallZ = -14, halfLen = 6, wallH = 4 } = {}) {
+  const solid = (x, y, z) => {
+    if (y <= groundY) return true;
+    return Math.abs(x) <= halfLen && y <= groundY + wallH && Math.abs(z - wallZ) <= 0.5;
+  };
+  return { isSolid: solid, getBlockId: (x, y, z) => (solid(x, y, z) ? 1 : 0) };
+}
+
+test('IgnisService 寻路: needsPath 为真时写入 navDir，为假时保持 null', () => {
+  const em = new EntityManager();
+  em.registerType(IGNIS_TYPE, ignisDefinition);
+  const w = wallWorldForService();
+  const svc = new IgnisService({ entities: em, world: w, seed: 1 });
+  const { id } = svc.summon('tarn:2:0', 0, 0, 1);
+  const e = em.get(id);
+  // 主动摆到墙南侧，玩家在墙北侧（中间隔墙 ⇒ 需要绕行）
+  e.state = ignisDefinition.create({ ...e.state, position: [0.5, 10, 0.5], needsPath: true });
+  svc.update(IGNIS_AI.navPeriod, { playerPosition: [0.5, 10, -24.5], nowMs: 0 });
+  const after = em.get(id).state;
+  assertNotNull(after.navDir, '需要绕行的焰魔应拿到寻路方向');
+  assertTrue(Math.hypot(after.navDir[0], after.navDir[1]) > 0.9,
+    `navDir 应是单位方向，实测 ${after.navDir}`);
+  // ⚠️ **不能要求「第一步就横向移动」**：墙只有 13 格宽，A\* 的正确路径是先直走到
+  // 墙前、再沿墙横移、最后绕端过去（实测 _path：z 到 −8 才开始横向）。
+  // 断言应当落在**整条路径真的绕开了墙**上 —— 路径里每一点的脚底格都不得落在墙体上。
+  const path = svc.cachedPathOf(id);
+  assertNotNull(path, '应留有缓存路径供核查');
+  let crossedAtX = null;
+  for (const [px, pz] of path) {
+    // 这一格能不能站（用被测实现之外的独立判据：直接问世界）
+    assertTrue(!w.isSolid(px, 10, pz),
+      `路径点 (${px},10,${pz}) 落在实体方块上（规划出了穿墙路线）`);
+    if (crossedAtX === null && pz <= -14) crossedAtX = px;
+  }
+  assertNotNull(crossedAtX, '路径应真的越过墙所在的 z 列');
+  assertTrue(Math.abs(crossedAtX) > 6,
+    `越过墙时 x=${crossedAtX}，应绕到墙端之外（|x| > 6）`);
+
+  // needsPath=false ⇒ 不规划（navDir 保持 null）
+  const em2 = new EntityManager();
+  em2.registerType(IGNIS_TYPE, ignisDefinition);
+  const svc2 = new IgnisService({ entities: em2, world: flatWorld(9), seed: 1 });
+  const r2 = svc2.summon('tarn:2:0', 0, 0, 1);
+  svc2.update(IGNIS_AI.navPeriod, { playerPosition: [0.5, 10, -24.5], nowMs: 0 });
+  assertNull(em2.get(r2.id).state.navDir, 'needsPath=false 时不应规划（零 A* 开销）');
+  assertEqual(svc2.navDebugState().decisions, 0, '不该有任何寻路决策');
+});
+
+test('IgnisService 寻路: 节流到 navPeriod（每帧 update 不会每帧跑 A*）', () => {
+  const em = new EntityManager();
+  em.registerType(IGNIS_TYPE, ignisDefinition);
+  const svc = new IgnisService({ entities: em, world: wallWorldForService(), seed: 1 });
+  const { id } = svc.summon('tarn:2:0', 0, 0, 1);
+  em.get(id).state = ignisDefinition.create({ ...em.get(id).state, position: [0.5, 10, 0.5], needsPath: true });
+  // 跑 1 秒的帧循环（60 帧）：20Hz ⇒ 约 20 次决策，远小于 60
+  for (let i = 0; i < 60; i++) {
+    em.get(id).state = ignisDefinition.create({ ...em.get(id).state, needsPath: true });
+    svc.update(1 / 60, { playerPosition: [0.5, 10, -24.5], nowMs: i * (1000 / 60) });
+  }
+  const d = svc.navDebugState().decisions;
+  assertTrue(d >= 15 && d <= 25, `1 秒内决策 ${d} 次（应约 20 次 = 20Hz，不是 60 次）`);
+});
+
+test('IgnisService 寻路: 死亡后缓存与导航记忆都被回收', () => {
+  const em = new EntityManager();
+  em.registerType(IGNIS_TYPE, ignisDefinition);
+  const svc = new IgnisService({ entities: em, world: wallWorldForService(), seed: 1 });
+  const { id } = svc.summon('tarn:2:0', 0, 0, 1);
+  em.get(id).state = ignisDefinition.create({ ...em.get(id).state, needsPath: true });
+  svc.update(IGNIS_AI.navPeriod, { playerPosition: [0.5, 10, -24.5], nowMs: 0 });
+  assertNotNull(svc.cachedPathOf(id), '规划后应留有缓存路径');
+
+  svc.damage(id, IGNIS.health + 1, 0);
+  assertNull(svc.cachedPathOf(id), '死亡后缓存条目必须被回收（否则重召会带上一条命的状态）');
+});
+
+test('IgnisService + 焰魔 Agent 闭环：长墙挡路时真的绕过去走到玩家身边（v2.61 核心用例）', () => {
+  // ⚠️ 这是**唯一一条端到端**的单测：`svc.update`（寻路）+ `ignisDefinition.update`（Agent
+  // 物理）按真实帧序交替推进。上面几条只钉各层自己的契约，这一条钉「合起来真的能到」。
+  //
+  // 墙：z = −14，x ∈ [−6, 6]，高 4 格（远超 1.2 格探针 ⇒ 局部避障看不到尽头）。
+  const em = new EntityManager();
+  em.registerType(IGNIS_TYPE, ignisDefinition);
+  const w = wallWorldForService();
+  const svc = new IgnisService({ entities: em, world: w, seed: 1 });
+  const { id } = svc.summon('tarn:2:0', 0, 0, 1);
+  em.get(id).state = ignisDefinition.create({
+    ...em.get(id).state,
+    // 焰魔在墙南侧 13 格、玩家在墙北侧 10 格
+    position: [0.5, 10, 0.5], mode: 'chase', onGround: true, yaw: 0,
+  });
+  const playerPos = [0.5, 10, -24.5];
+  const ctx = {
+    world: w,
+    registry: { solidTable: { 1: 1 }, opaqueTable: { 1: 1 } },
+    player: { position: playerPos },
+  };
+  const DT = 1 / 60;
+  let minD = Infinity;
+  let pathUsed = 0;
+  // 60 秒 —— 足够绕完 13 格宽的墙（追击速度 6.6 格/秒）
+  for (let i = 0; i < 60 * 60; i++) {
+    svc.update(DT, { playerPosition: playerPos, nowMs: i * (1000 / 60) });
+    const ent = em.get(id);
+    const next = ignisDefinition.update(ent, DT, ctx);
+    if (next) em.get(id).state = next;
+    if (em.get(id).state.navDir) pathUsed++;
+    const p = em.get(id).state.position;
+    minD = Math.min(minD, Math.hypot(p[0] - playerPos[0], p[2] - playerPos[2]));
+    if (minD <= IGNIS_AI.standoffRange + 1) break;
+  }
+  const p = em.get(id).state.position;
+  const d = Math.hypot(p[0] - playerPos[0], p[2] - playerPos[2]);
+  // ① 真的走到了玩家身边（站定环附近）
+  assertTrue(d <= IGNIS_AI.standoffRange + 1.5,
+    `60 秒后仍在 ${d.toFixed(2)} 格外（应绕到 ${IGNIS_AI.standoffRange} 格附近）`);
+  // ② 整个过程中真的用了寻路（否则这条用例只是「区域无障碍」的假通过）
+  assertTrue(pathUsed > 0, '一次寻路结果都没拿到 —— 这条用例没测到绕行');
+  // ③ 从没落进墙体（穿墙的形态是「直线到玩家」）
+  assertTrue(!w.isSolid(Math.floor(p[0]), Math.floor(p[1]), Math.floor(p[2])),
+    `最终位置 (${p.map((n) => n.toFixed(2))}) 在方块内部`);
+});

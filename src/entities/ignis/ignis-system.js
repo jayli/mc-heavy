@@ -16,8 +16,14 @@
 // | AI | 四态机（orbit/chase/attack/return） | 三态机（idle/chase/attack） |
 // | 攻击 | 喷火球（生成实体） | 挥剑（扣玩家血，由 game.js 结算） |
 import { raycastAabbSlab, normalizePosition } from '../entity-types.js';
-import { IGNIS_TYPE, IGNIS, IGNIS_CORE_OBB, ignisEntityIdFor } from './ignis-config.js';
+import { IGNIS_TYPE, IGNIS, IGNIS_AI, IGNIS_CORE_OBB, IGNIS_STEERING, ignisEntityIdFor }
+  from './ignis-config.js';
 import { IgnisBossAgent } from '../bosses/ignis-boss-agent.js';
+// 寻路三层中的第①②层 —— **与丧尸同一份实现**（v2.61 参数化，红线 1）。
+// 第③层（`steerIntentAabb` 的 1.2 格精细避让）已经在 Agent 里，不重复引用。
+import { PathCache } from '../zombies/zombie-pathfinder.js';
+import { decideStep, memoryFor } from '../zombies/zombie-navigator.js';
+import { aabbCollidesAt, zombieStepUpY } from '../zombies/zombie-navigation.js';
 
 // ==================== 纯函数 ====================
 
@@ -78,6 +84,7 @@ const MODES = Object.freeze(['idle', 'chase', 'attack']);
 function createState({
   position, velocity, yaw, health, flashedUntil, mode,
   attackAnimT, idleTime, attackCooldown, losTimer, losVisible, onGround, attackRequest,
+  navDir, navMode, needsPath,
   _physAccum,
 }) {
   const p = normalizePosition(position);
@@ -131,6 +138,29 @@ function createState({
      * 因为命中判据是「玩家的水平距 + 相对角」由结算方算。
      */
     attackRequest: attackRequest || null,
+    /**
+     * 寻路给出的**单位方向**（`[vx, vz]`），或 `null` = 当前不需要绕行（v2.61）。
+     *
+     * 由 `IgnisService._stepNavigator` 写入（第①层 A\* + 第②层 `decideStep`），
+     * 由 `IgnisBossAgent` 在「直线走不通」时消费。
+     *
+     * ⚠️ **方向不是位置**：写位置就是第二条位置权威（红线 1）—— 移动仍必须走
+     * Agent 的物理（重力/碰撞/step-up），那才是唯一的位置更新路径。
+     */
+    navDir: Array.isArray(navDir) && navDir.length === 2 && navDir.every((n) => Number.isFinite(n))
+      ? [navDir[0], navDir[1]]
+      : null,
+    /** 寻路给出的模式：`chasing`（有方向）/ `blocked`（四面围死）/ `null`（未规划） */
+    navMode: navMode === 'chasing' || navMode === 'blocked' ? navMode : null,
+    /**
+     * 「下一拍需要重新寻路」标志（v2.61）。
+     *
+     * ⚠️ **由 Agent 写、由 Service 消费后清**：两者分离的原因与丧尸同 ——
+     * Agent 只看得到「这一帧走不通」（1.2 格探针），所以由它判定需求；
+     * A\* 是主线程服务层的事（要 `PathCache` 与 20Hz 节流）。
+     * 判据必须用「相对意图的偏差」而不是最终向量，否则会自激（见 Agent 注释）。
+     */
+    needsPath: needsPath === true,
   };
 }
 
@@ -215,7 +245,125 @@ export class IgnisService {
     this.entities = entities;
     this.world = world;
     this.seed = seed;
+    /**
+     * 寻路状态（v2.61）：缓存 + 每只焰魔的旅行记忆 + 决策周期累积器。
+     * 与 `ZombieService._stepNavigator` 同一套构件，只是体型参数不同。
+     */
+    this._pathCache = new PathCache();
+    /** @type {Map<string, object>} id → 导航记忆（`plan` 防等长路线横跳） */
+    this._navMemory = new Map();
+    /** 决策周期累积器（秒） */
+    this._navAccum = 0;
+    /** @type {{decisions: number, blocked: number}} 只读诊断钩子 */
+    this._navDebug = { decisions: 0, blocked: 0 };
   }
+
+  /**
+   * 寻路一拍：给所有「Agent 报告需要绕行」的焰魔跑 A\* + `decideStep`，把方向写进 state。
+   *
+   * ## 为什么要走服务层而不是 Agent 里算
+   *
+   * A\* 需要 `PathCache`（带去抖时效与路径前缀匹配）与 20Hz 节流 —— 两者都是**跨帧状态**，
+   * 而 `BossAgent.update` 的契约是「只读 state + ctx，返回全新 state」，不得持有跨帧成员
+   * （基类注释：Agent 实例无状态，同一个 Agent 服务多条龙是安全的）。
+   * 服务层本就按实体隔离（`_pathCache` 按 agentId 分槽），职责也对：
+   * 丧尸的 `_stepNavigator` 就在这里，两条寻路路径因此长得一样。
+   *
+   * ## `needsPath` 的消费语义
+   *
+   * 只给 `state.needsPath === true` 的焰魔算 —— 开阔地形上这个标志恒假 ⇒ 零 A\* 开销。
+   * 规划完**不清标志**：标志由 Agent 下一帧根据「实际走开来没有」重算（它才是唯一有权
+   * 判"走不通"的一方）。服务只负责「既然你说走不通，就把新方向写这里」。
+   *
+   * @param {number[]} playerPosition 玩家脚底 [x, y, z]
+   * @param {number} [nowMs] 时间基准（`performance.now()` 口径）；缺省取全局。
+   *        仅供 `PathCache` 的时效判定用 —— 传 `Date.now()` 会让缓存永不命中（差 17 亿毫秒）。
+   */
+  _stepNavigator(playerPosition, nowMs) {
+    const world = this.world;
+    if (!world || typeof world.isSolid !== 'function') return;
+    // 格坐标可走性判据：**复用 `aabbCollidesAt`**（唯一权威，与物理同源）。
+    // 一层台阶算可走：抬一格后也不碰撞即可（与物理 `_tryStepUp` 同口径）。
+    // ⚠️ **不要自己用 `isSolid` 拼判据**：那会把「脚下是地面」误判成不可走，丧尸侧实测踩过。
+    const isWalkable = (w, bx, y, bz) => {
+      if (!aabbCollidesAt(w, bx + 0.5, y, bz + 0.5, IGNIS.halfWidth, IGNIS.height)) return true;
+      const lifted = zombieStepUpY(y);
+      return lifted - y <= IGNIS_AI.maxStep
+        && !aabbCollidesAt(w, bx + 0.5, lifted, bz + 0.5, IGNIS.halfWidth, IGNIS.height);
+    };
+    /** 焰魔的可走性体型（高 3.25 ⇒ 占 4 层，与丧尸的 2 层不同） */
+    const box = {
+      halfWidth: IGNIS.halfWidth,
+      height: IGNIS.height,
+      maxStep: IGNIS_AI.maxStep,
+    };
+    const now = Number.isFinite(nowMs)
+      ? nowMs
+      : (typeof performance !== 'undefined' ? performance.now() : 0);
+
+    const active = this.activeEntities();
+    // 清理已消失焰魔的寻路残留（column 卸载走 `EntityManager.despawnColumn`，绕过本服务）
+    if (this._navMemory.size > active.length) {
+      const live = new Set(active.map((e) => e.id));
+      for (const id of [...this._navMemory.keys()]) {
+        if (!live.has(id)) this._forgetNavigation(id);
+      }
+    }
+
+    for (const entity of active) {
+      if (entity.state.needsPath !== true) continue;
+      const mem = memoryFor(this._navMemory, entity.id);
+      const step = decideStep({
+        world,
+        position: entity.state.position,
+        playerPosition,
+        memory: mem,
+        pathCache: this._pathCache,
+        nowMs: now,
+        isWalkable,
+        box,
+        // 偏角档位与局部避让共用 `IGNIS_STEERING`（角度与体型无关，与丧尸同值）
+        steering: IGNIS_STEERING,
+      });
+      this._navDebug.decisions++;
+      if (step.blocked) this._navDebug.blocked++;
+      // 用 `createState` 重建（不原地改）：与 Agent 同一契约
+      entity.state = createState({
+        ...entity.state,
+        navDir: step.blocked ? null : [step.vx, step.vz],
+        navMode: step.mode,
+      });
+    }
+  }
+
+  /**
+   * 每帧推进寻路（**必须在 `entities.update` 之前调**，与 `ZombieService.update` 同一帧序）。
+   *
+   * ⚠️ **必须早于物理**：Agent 本帧的移动意图要读 `state.navDir`。反序会让焰魔
+   * 用上帧的寻路方向走一步 —— 形态是「绕行晚一拍」，在长墙拐角会明显抖动。
+   *
+   * @param {number} dt 秒
+   * @param {{playerPosition?: number[], nowMs?: number}} [ctx]
+   */
+  update(dt, { playerPosition, nowMs } = {}) {
+    if (!Array.isArray(playerPosition) || playerPosition.length < 3) return;
+    const step = Number.isFinite(dt) && dt > 0 ? dt : 0;
+    this._navAccum += step;
+    if (this._navAccum < IGNIS_AI.navPeriod) return;
+    this._navAccum = 0;
+    this._stepNavigator(playerPosition, nowMs);
+  }
+
+  /** @returns {{decisions: number, blocked: number, cache: object}} 只读诊断（测试/调试用） */
+  navDebugState() {
+    return { ...this._navDebug, cache: this._pathCache.debugState() };
+  }
+
+  /**
+   * @param {string} id
+   * @returns {ReadonlyArray<{x: number, z: number}>|null} 只读测试钩子：该焰魔的缓存路径
+   */
+  cachedPathOf(id) { return this._pathCache.cachedPathOf(id); }
 
   /**
    * 在指定地图中心召唤一只焰魔（按 C 的 Boss2 入口）。
@@ -339,9 +487,24 @@ export class IgnisService {
     entity.state = createState({ ...state, health, flashedUntil });
     if (health <= 0) {
       this.entities.despawn(id, 'killed');
+      this._forgetNavigation(id);
       return { dead: true, health };
     }
     return { dead: false, health };
+  }
+
+  /**
+   * 回收某只焰魔的寻路残留（缓存条目 + 导航记忆）。
+   *
+   * ⚠️ **两条回收路径都必须调**（`damage` 的死亡分支与 `dispose`）：漏一条的形态是
+   * `PathCache` 与 `_navMemory` 随「死了又召」单调增长，且旧条目会以同一个 id
+   * （`ignisEntityIdFor` 是确定性的）继续命中 —— 去抖与记忆都带着上一条命的状态。
+   *
+   * @param {string} id
+   */
+  _forgetNavigation(id) {
+    this._pathCache.forget(id);
+    this._navMemory.delete(id);
   }
 
   /**
@@ -360,6 +523,9 @@ export class IgnisService {
   dispose() {
     for (const entity of this.activeEntities()) {
       this.entities.despawn(entity.id, 'dispose');
+      this._forgetNavigation(entity.id);
     }
+    this._pathCache.clear();
+    this._navMemory.clear();
   }
 }

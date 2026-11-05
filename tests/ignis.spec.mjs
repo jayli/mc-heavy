@@ -352,4 +352,113 @@ test.describe('焰魔（Ignis）Tier 4', () => {
         .toBeGreaterThan(r.standoffRange - 1.5);
     }
   });
+
+  /**
+   * v2.61：焰魔必须能**绕过方块障碍**走到玩家身边。
+   *
+   * ## 为什么这条只能做成 E2E
+   *
+   * 单测（`test-ignis-system.js` 的闭环用例）证明了「平面 + 一道墙」上能绕，但那是假世界。
+   * 真实页面有三个单测盖不到的面：
+   * ① `game.js` 的帧序（`ignises.update` 必须在 `entities.update` **之前**，否则绕行动作
+   *    永远晚一拍）；② 真实 `WorldData` 的 `isSolid`（含 `opaqueTable` / `solidTable` 语义）；
+   * ③ 真实 `editor.setBlock` 写盘后的 remesh/light 收敛时机（墙刚垒上时 column 是否已就绪）。
+   *
+   * ## 判据为什么是「血量下降」而不是「位移」
+   *
+   * 墙后的玩家看不见 ⇒ `attack` 进不去（起手要求视线通，这是刻意的）⇒ **只有绕过墙**
+   * 到能看见的位置才可能扣血。于是「血量真的降了」同时钉住了「绕到了」与「绕完能打」。
+   * 反向钉一条「墙还在」—— 防止实现改成拆方块过关。
+   */
+  test('寻路：玩家躲在墙后不动 → 焰魔绕过墙砍到人，且不拆墙（v2.61）', async ({ page }) => {
+    test.setTimeout(240_000);
+    await page.goto(`/?seed=${SEED}`);
+    await waitWorldReady(page);
+    await teleportToTarnCenter(page);
+    await waitPlayerLanded(page);
+
+    // ---- ① 垒墙：在玩家 +Z 侧 9 格处垒一道 15 格宽、高到天花板之下的墙 ----
+    const built = await page.evaluate(() => {
+      const g = window.__MC_GAME__;
+      const p = g.player.physics.pos;
+      const stone = g.registry.idOf('stone');
+      const pz = Math.floor(p.z);
+      const px = Math.floor(p.x);
+      const wallZ = pz + 9;
+      // 墙底从玩家脚底所在层开始，往上 6 格（焰魔 3.25 高，必须真的挡住）
+      const feetY = Math.floor(p.y);
+      let placed = 0;
+      for (let dx = -7; dx <= 7; dx++) {
+        for (let dy = 0; dy < 6; dy++) {
+          g.editor.setBlock({ x: px + dx, y: feetY + dy, z: wallZ, id: stone });
+          placed++;
+        }
+      }
+      return { px, pz, wallZ, feetY, placed };
+    });
+    expect(built.placed, '墙应垒满 15×6 = 90 格').toBe(90);
+    // 等 remesh / 光照收敛（墙刚写进去时 column 可能还在队列里）
+    await page.waitForTimeout(2500);
+
+    // ---- ② 把焰魔召到墙外侧（穿墙看不见玩家），然后站定 60 秒 ----
+    const r = await page.evaluate(async (b) => {
+      const g = window.__MC_GAME__;
+      const { IGNIS_AI } = await import('/src/entities/ignis/ignis-config.js');
+      const p0 = g.player.physics.pos;
+      const start = [p0.x, p0.y, p0.z];
+      // 召唤在墙另一侧：比墙再远 11 格 ⇒ 玩家 → 墙(9) → 焰魔(20)，直线视野被墙完全挡住
+      const sum = g.ignises.summon('tarn:e2e:4', Math.floor(p0.x), b.wallZ + 11, 1, Math.floor(p0.y));
+      if (!sum.ok) return { err: sum.reason };
+      const FULL_HP = g.player.health;
+      let prevHp = FULL_HP;
+      let strikes = 0;
+      let minDist = Infinity;
+      let navDecisions = 0;
+      let minWallBlocks = Infinity;
+      for (let i = 0; i < 300; i++) {           // 300 × 200ms = 60 秒
+        await new Promise((res) => setTimeout(res, 200));
+        const e = g.entities.get(sum.id);
+        if (!e) break;
+        const [ex, , ez] = e.state.position;
+        const pp = g.player.physics.pos;
+        minDist = Math.min(minDist, Math.hypot(ex - pp.x, ez - pp.z));
+        if (e.state.needsPath) navDecisions++;
+        if (g.player.health < prevHp) {
+          strikes++;
+          g.player.health = FULL_HP;          // 回满以便测「多次命中」
+          prevHp = FULL_HP;
+        }
+        // 墙还在？（每次抽样都数一遍，取最小值）
+        if (i % 20 === 0) {
+          let n = 0;
+          for (let dx = -7; dx <= 7; dx++) {
+            for (let dy = 0; dy < 6; dy++) {
+              if (g.world.isSolid(b.px + dx, b.feetY + dy, b.wallZ)) n++;
+            }
+          }
+          minWallBlocks = Math.min(minWallBlocks, n);
+        }
+        if (strikes >= 2) break;                // 砍到两刀就够了（不必跑满 60 秒）
+      }
+      const pp = g.player.physics.pos;
+      return {
+        strikes, minDist, navDecisions, minWallBlocks,
+        playerMoved: Math.hypot(pp.x - start[0], pp.z - start[2]),
+        standoffRange: IGNIS_AI.standoffRange,
+      };
+    }, built);
+
+    expect(r.err).toBeUndefined();
+    // ① 玩家自始至终站定（否则测的不是 Boss 的行为）
+    expect(r.playerMoved, '玩家应站定不动').toBeLessThan(0.5);
+    // ② **真的绕过去了**：墙挡住直线视野时它砍到了人
+    expect(r.strikes, `60 秒内一刀没砍到（焰魔在墙后原地不动？minDist=${r.minDist?.toFixed(2)}）`)
+      .toBeGreaterThanOrEqual(1);
+    // ③ 走过寻路（否则可能是别的原因成立的）
+    expect(r.navDecisions, '整个过程中一次寻路需求都没产生 —— 这条用例没测到绕行')
+      .toBeGreaterThan(0);
+    // ④ **不拆墙**：90 格必须全程都在
+    expect(r.minWallBlocks, '墙被拆了 —— 实现应该是绕过去，不是清障')
+      .toBe(90);
+  });
 });
