@@ -240,15 +240,17 @@ test('焰魔烘焙: bind pose 的水平跨度合理（宽 ≈3.73 / 深 ≈5.16 
 
 // ==================== 动画契约 ====================
 
-test('焰魔烘焙: idle 帧数 12，且 duration 逐位等于表达式周期（接缝恒 0）', async () => {
+test('焰魔烘焙: idle 帧数 60，且 duration 逐位等于表达式周期（接缝恒 0）', async () => {
   const d = await loadAsset();
   const a = d.animations.idle;
-  assertEqual(a.frameCount, 12);
+  // v2.56：度制修正后周期从 0.049s 变成 2.8125s（57 倍长）⇒ 帧数 12 → 60（每帧 2.13°）
+  assertEqual(a.frameCount, 60);
   // ⚠️ fps 必须是非整数（12 / 2π/128 ≈ 244.46）。取整会破坏「duration ≡ 周期」
   assertTrue(a.fps !== Math.round(a.fps), `fps ${a.fps} 被取整了`);
   const duration = a.frameCount / a.fps;
-  assertTrue(Math.abs(duration - 2 * Math.PI / 128) < 1e-12,
-    `duration ${duration} ≠ 2π/128`);
+  // 度制周期 = 360/128（不是 2π/128 —— 那是弧度的算法，v2.56 修正）
+  assertTrue(Math.abs(duration - 360 / 128) < 1e-12,
+    `duration ${duration} ≠ 360/128`);
 });
 
 test('焰魔烘焙: attack 帧数 = round(2.75 × 30)，fps 30', async () => {
@@ -355,4 +357,253 @@ test('焰魔烘焙: 产物的 scale 与度量一致（1 倍，产物已含、运
   const d = await loadAsset();
   assertEqual(d.scale, 1);
   assertEqual(d.metrics.scale, 1);
+});
+
+// ==================== v2.56 修正：三个实玩缺陷的根因守卫 ====================
+//
+// 用户 2026-11-05 实玩报告三处缺陷，根因全在**烘焙/渲染的坐标系与单位**上，
+// 而当时的产物契约测试（骨骼数/顶点数/UV 值域/帧数）**全部通过**。以下三条把根因钉住。
+
+/**
+ * bind pose + 动画增量下的**世界空间顶点 bbox**。
+ *
+ * 与 `bindPoseHeightBlocks` 的区别：那个只算 bind pose（无动画），这个把动画增量也算进去，
+ * 并且**按产物的骨骼层级**（`bones[].localPosition` / `bindQuaternion`）累乘 ——
+ * 也就是说它验证的是**渲染器实际会看到的东西**。
+ *
+ * @param {object} asset 产物
+ * @param {{fps:number, frameCount:number, boneIndices:number[], frames:number[]}|null} anim
+ * @param {number} frame 动画帧号
+ * @returns {{min:number[], max:number[]}} 世界空间 bbox（单位格，模型空间原点为脚底附近）
+ */
+function worldBBoxOfFrame(asset, anim, frame) {
+  const qmul = (a, b) => [
+    a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
+    a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+    a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
+    a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2],
+  ];
+  const TR = (q, t) => {
+    const [x, y, z, w] = q;
+    const xx = x * x, yy = y * y, zz = z * z;
+    const xy = x * y, xz = x * z, yz = y * z;
+    const wx = w * x, wy = w * y, wz = w * z;
+    return [
+      1 - 2 * (yy + zz), 2 * (xy - wz), 2 * (xz + wy), t[0],
+      2 * (xy + wz), 1 - 2 * (xx + zz), 2 * (yz - wx), t[1],
+      2 * (xz - wy), 2 * (yz + wx), 1 - 2 * (xx + yy), t[2],
+      0, 0, 0, 1,
+    ];
+  };
+  const mul = (a, b) => {
+    const o = new Array(16);
+    for (let r = 0; r < 4; r++) {
+      for (let c = 0; c < 4; c++) {
+        let s = 0;
+        for (let k = 0; k < 4; k++) s += a[r * 4 + k] * b[k * 4 + c];
+        o[r * 4 + c] = s;
+      }
+    }
+    return o;
+  };
+  const apply = (m, p) => [
+    m[0] * p[0] + m[1] * p[1] + m[2] * p[2] + m[3],
+    m[4] * p[0] + m[5] * p[1] + m[6] * p[2] + m[7],
+    m[8] * p[0] + m[9] * p[1] + m[10] * p[2] + m[11],
+  ];
+
+  // 动画增量（boneIndex → {rot, pos}）
+  const deltas = new Map();
+  if (anim && anim.frameCount > 0) {
+    const n = anim.boneIndices.length;
+    for (let s = 0; s < n; s++) {
+      const o = (frame * n + s) * 7;
+      deltas.set(anim.boneIndices[s], {
+        rot: [anim.frames[o], anim.frames[o + 1], anim.frames[o + 2], anim.frames[o + 3]],
+        pos: [anim.frames[o + 4], anim.frames[o + 5], anim.frames[o + 6]],
+      });
+    }
+  }
+
+  const qrot = (q, v) => {
+    const [x, y, z, w] = q;
+    const xx = x * x, yy = y * y, zz = z * z;
+    const xy = x * y, xz = x * z, yz = y * z;
+    const wx = w * x, wy = w * y, wz = w * z;
+    return [
+      (1 - 2 * (yy + zz)) * v[0] + 2 * (xy - wz) * v[1] + 2 * (xz + wy) * v[2],
+      2 * (xy + wz) * v[0] + (1 - 2 * (xx + zz)) * v[1] + 2 * (yz - wx) * v[2],
+      2 * (xz - wy) * v[0] + 2 * (yz + wx) * v[1] + (1 - 2 * (xx + yy)) * v[2],
+    ];
+  };
+  const mats = asset.bones.map(() => null);
+  for (let i = 0; i < asset.bones.length; i++) {
+    const b = asset.bones[i];
+    const d = deltas.get(i);
+    const q = d ? qmul(b.bindQuaternion, d.rot) : b.bindQuaternion;
+    const dp = d ? d.pos : [0, 0, 0];
+    // ⚠️ **与渲染器（ignis-renderer._syncOne）同一公式**：
+    //   position = pivot − R_current · pivot + animDeltaPos
+    // 用 bind 的 `localPosition` 只对 bind 姿态成立，动画帧必须重算（缺陷 C 的根因）。
+    const pv = b.pivot || [0, 0, 0];
+    const rp = qrot(q, pv);
+    const pos = [
+      pv[0] - rp[0] + dp[0],
+      pv[1] - rp[1] + dp[1],
+      pv[2] - rp[2] + dp[2],
+    ];
+    const local = TR(q, pos);
+    mats[i] = b.parentIndex === -1 ? local : mul(mats[b.parentIndex], local);
+  }
+
+  const pos = asset.geometry.position;
+  const si = asset.geometry.skinIndex;
+  const min = [Infinity, Infinity, Infinity];
+  const max = [-Infinity, -Infinity, -Infinity];
+  for (let v = 0; v < pos.length / 3; v++) {
+    const w = apply(mats[si[v * 4]], [pos[v * 3], pos[v * 3 + 1], pos[v * 3 + 2]]);
+    for (let k = 0; k < 3; k++) {
+      if (w[k] < min[k]) min[k] = w[k];
+      if (w[k] > max[k]) max[k] = w[k];
+    }
+  }
+  return { min, max };
+}
+
+// ---- 缺陷 A：模型最低点必须能被渲染器补偿到「脚底 = position」 ----
+
+test('焰魔烘焙(v2.56 缺陷A): feetOffsetY = 全部动画全程最低点的绝对值', async () => {
+  const d = await loadAsset();
+  assertTrue(Number.isFinite(d.metrics.feetOffsetY),
+    '产物缺 metrics.feetOffsetY —— 渲染器无法把模型脚底对齐到 position');
+  // ⚠️ **必须扫 idle 和 attack 两个动画**（与烘焙器同一口径）：只扫 idle 会低估，
+  // 因为挥剑时手臂/剑探得更低。实测：idle 最低 -0.34、attack 最低 -1.65 ⇒ 取 1.65。
+  let lowest = Infinity;
+  for (const anim of Object.values(d.animations)) {
+    for (let f = 0; f < anim.frameCount; f++) {
+      const box = worldBBoxOfFrame(d, anim, f);
+      if (box.min[1] < lowest) lowest = box.min[1];
+    }
+  }
+  assertTrue(Math.abs(d.metrics.feetOffsetY - (-lowest)) < 1e-3,
+    `feetOffsetY=${d.metrics.feetOffsetY.toFixed(4)} 应等于 -minY=${(-lowest).toFixed(4)}`
+    + `（全部动画全程最低点；只扫 idle 会得到 ${d.metrics.feetOffsetY.toFixed(4) !== (-lowest).toFixed(4) ? '偏小值' : ''}）`);
+  // 量级守卫：模型最低点应在原点下方 1~2 格（不是 0.3 也不是 4）
+  assertTrue(d.metrics.feetOffsetY > 1.0 && d.metrics.feetOffsetY < 2.5,
+    `feetOffsetY ${d.metrics.feetOffsetY.toFixed(3)} 量级异常`);
+});
+
+// ---- 缺陷 B 的守卫在 test-molang.js（单位是求值器的语义，产物层看不出来） ----
+//
+// 为什么不在本文件测：产物的 idle 帧数是按「1 个表达式周期」定的，而周期的**数值**
+// 取决于单位。弧度解（20.4 Hz）与度解（0.356 Hz）会得到**帧数不同的两份产物**，
+// 但「帧数 = 12 且 duration = 2π/128」这个契约在两种解释下都自洽 —— 单看产物无法区分。
+// 可区分的地方是求值器本身（`test-molang.js` 的「Math.sin 用度不是弧度」用例），
+// 以及烘焙器的 `IGNIS_ANIM_PERIODS.idle`（由它派生出正确的周期与帧数）。
+
+// ---- 缺陷 C：挥砍时肢体不能散开（骨骼原点必须随旋转移动） ----
+
+test('焰魔烘焙(v2.56 缺陷C): 攻击全程手臂贴着肩膀（不甩出去）', async () => {
+  const d = await loadAsset();
+  const attack = d.animations.attack;
+  // ⚠️ **不能用「整体最低 y」作判据**：素材的剑本来就探到原点下方（bind 姿态 -0.27、
+  // 挥砍时更低），那是**正确**的几何，不是散架。
+  //
+  // 缺陷 C 的实测形态是**手臂相对肩膀的偏移**：用 bind 的 localPosition 而不重算
+  // ⇒ 挥到一半（frame 30）right_arm 的顶点 bbox 跑到 y ∈ [-3.2, -1.79]，
+  // 而躯干在 y ∈ [1.75, 3.14] ⇒ 整条胳膊被甩到躯干下方 5 格。
+  //
+  // 正确判据：**手臂顶点的重心必须落在肩膀附近**（手臂长度约 1.4 格，允许 2 格内）。
+  // 直接逐帧检查「手臂与躯干的重叠」：两者 bbox 的 y 区间必须相交
+  const bonesOf = (names) => new Set(names.map((n) => d.bones.findIndex((b) => b.name === n)));
+  const torso = bonesOf(['upperbody', 'bodycore']);
+  const arms = bonesOf(['right_arm', 'left_arm']);
+
+  const boxOfSet = (anim, frame, set) => {
+    const qmul = (a, b) => [
+      a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
+      a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+      a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
+      a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2],
+    ];
+    const qrot = (q, v) => {
+      const [x, y, z, w] = q;
+      const xx = x * x, yy = y * y, zz = z * z;
+      const xy = x * y, xz = x * z, yz = y * z;
+      const wx = w * x, wy = w * y, wz = w * z;
+      return [
+        (1 - 2 * (yy + zz)) * v[0] + 2 * (xy - wz) * v[1] + 2 * (xz + wy) * v[2],
+        2 * (xy + wz) * v[0] + (1 - 2 * (xx + zz)) * v[1] + 2 * (yz - wx) * v[2],
+        2 * (xz - wy) * v[0] + 2 * (yz + wx) * v[1] + (1 - 2 * (xx + yy)) * v[2],
+      ];
+    };
+    const TR = (q, t) => {
+      const [x, y, z, w] = q;
+      const xx = x * x, yy = y * y, zz = z * z;
+      const xy = x * y, xz = x * z, yz = y * z;
+      const wx = w * x, wy = w * y, wz = w * z;
+      return [
+        1 - 2 * (yy + zz), 2 * (xy - wz), 2 * (xz + wy), t[0],
+        2 * (xy + wz), 1 - 2 * (xx + zz), 2 * (yz - wx), t[1],
+        2 * (xz - wy), 2 * (yz + wx), 1 - 2 * (xx + yy), t[2],
+        0, 0, 0, 1,
+      ];
+    };
+    const mul = (a, b) => {
+      const o = new Array(16);
+      for (let r = 0; r < 4; r++) {
+        for (let c = 0; c < 4; c++) {
+          let acc = 0;
+          for (let k = 0; k < 4; k++) acc += a[r * 4 + k] * b[k * 4 + c];
+          o[r * 4 + c] = acc;
+        }
+      }
+      return o;
+    };
+    const apply = (m, p) => [
+      m[0] * p[0] + m[1] * p[1] + m[2] * p[2] + m[3],
+      m[4] * p[0] + m[5] * p[1] + m[6] * p[2] + m[7],
+      m[8] * p[0] + m[9] * p[1] + m[10] * p[2] + m[11],
+    ];
+    const deltas = new Map();
+    const n = anim.boneIndices.length;
+    for (let s = 0; s < n; s++) {
+      const o = (frame * n + s) * 7;
+      deltas.set(anim.boneIndices[s], {
+        rot: [anim.frames[o], anim.frames[o + 1], anim.frames[o + 2], anim.frames[o + 3]],
+        pos: [anim.frames[o + 4], anim.frames[o + 5], anim.frames[o + 6]],
+      });
+    }
+    const mats = d.bones.map(() => null);
+    for (let i = 0; i < d.bones.length; i++) {
+      const b = d.bones[i];
+      const dd = deltas.get(i);
+      const q = dd ? qmul(b.bindQuaternion, dd.rot) : b.bindQuaternion;
+      const dp = dd ? dd.pos : [0, 0, 0];
+      const pv = b.pivot || [0, 0, 0];
+      const rp = qrot(q, pv);
+      const local = TR(q, [pv[0] - rp[0] + dp[0], pv[1] - rp[1] + dp[1], pv[2] - rp[2] + dp[2]]);
+      mats[i] = b.parentIndex === -1 ? local : mul(mats[b.parentIndex], local);
+    }
+    const pos = d.geometry.position;
+    const si = d.geometry.skinIndex;
+    let mn = Infinity, mx = -Infinity;
+    for (let v = 0; v < pos.length / 3; v++) {
+      if (!set.has(si[v * 4])) continue;
+      const w = apply(mats[si[v * 4]], [pos[v * 3], pos[v * 3 + 1], pos[v * 3 + 2]]);
+      if (w[1] < mn) mn = w[1];
+      if (w[1] > mx) mx = w[1];
+    }
+    return { mn, mx };
+  };
+
+  for (const f of [0, Math.round(1.0 * attack.fps), Math.round(1.2 * attack.fps), attack.frameCount - 1]) {
+    const t = boxOfSet(attack, f, torso);
+    const a = boxOfSet(attack, f, arms);
+    // 手臂的 y 区间必须与躯干区间**有交叠**（肩膀连着身体）
+    const overlap = Math.min(t.mx, a.mx) - Math.max(t.mn, a.mn);
+    assertTrue(overlap > 0.2,
+      `攻击第 ${f} 帧手臂 y[${a.mn.toFixed(2)},${a.mx.toFixed(2)}] 与躯干 y[${t.mn.toFixed(2)},${t.mx.toFixed(2)}] `
+      + `交叠只有 ${overlap.toFixed(2)} 格（应 >0.2）—— 手臂被甩离肩膀`);
+  }
 });

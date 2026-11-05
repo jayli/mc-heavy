@@ -420,6 +420,18 @@ function main() {
       parentIndex: b.parent === undefined ? -1 : boneIndex.get(b.parent),
       localPosition: [local.x * PX2BLOCK, local.y * PX2BLOCK, local.z * PX2BLOCK],
       bindQuaternion: [rot.x, rot.y, rot.z, rot.w],
+      /**
+       * 该骨骼旋转中心（绝对模型空间坐标，单位格）。
+       *
+       * ⚠️⚠️ **渲染器必须用它按当前旋转重算 `bone.position`**（用户 2026-11-05 缺陷 C）：
+       * `localPosition` 只是 **bind pose** 下的值（`p - R_bind·p`）。动画改变旋转后，
+       * 骨骼原点必须移到新的 `p - R_current·p`，否则肢体绕「旧位置」转 ——
+       * 形态是挥剑时胳膊从肩膀甩出去（实测 right_arm 顶点落到 y=-3.2，躯干在 y=1.75~3.14）。
+       *
+       * 公式（与文件头的 `T(piv)·R·T(-piv)` 同一套）：
+       *   `bone.position = pivot - R_current · pivot + animDeltaPos`
+       */
+      pivot: [pi[0] * PX2BLOCK, pi[1] * PX2BLOCK, pi[2] * PX2BLOCK],
     };
   });
 
@@ -553,6 +565,108 @@ function main() {
       scale,
     },
   };
+  // ==================== 6. 脚底补偿量（feetOffsetY）====================
+  //
+  // ⚠️⚠️ **这是用户 2026-11-05 实玩缺陷 A 的根因修复**（「焰魔生成出来后，身体的下半截
+  // 埋在地下」）。几何的 y 原点**不是脚底**：bind pose 下模型最低点在 y = -0.27 格
+  // （剑尖/脚甲探到原点下方），而渲染器当时用的是「身体核心中心」的偏移
+  // （-IGNIS_MODEL_CENTER[1] = -1.7335），于是整个模型陷入地下 **1.70 格**。
+  //
+  // 正确语义：**渲染器把 mesh 抬高 `feetOffsetY`**，使「动画全程的最低点」恰好落在
+  // `state.position.y`（脚底）。所以本值必须是**扫遍所有动画所有帧**得到的最小值，
+  // 不是 bind pose 的 —— 抬脚/挥剑的帧可能更低。
+  //
+  // 与 `IGNIS_MODEL_CENTER`（身体核心中心，用于命中盒）**语义不同**，两个都要留着。
+  let lowestY = Infinity;
+  const bakeBones = asset.bones;
+  // 复用一个 4x4 矩阵累乘器（与渲染器同一口径：position 固定为 localPosition）
+  const mul4 = (a, b) => {
+    const o = new Array(16);
+    for (let r = 0; r < 4; r++) {
+      for (let c = 0; c < 4; c++) {
+        let acc = 0;
+        for (let k = 0; k < 4; k++) acc += a[r * 4 + k] * b[k * 4 + c];
+        o[r * 4 + c] = acc;
+      }
+    }
+    return o;
+  };
+  const trMat = (q, t) => {
+    const [x, y, z, w] = q;
+    const xx = x * x, yy = y * y, zz = z * z;
+    const xy = x * y, xz = x * z, yz = y * z;
+    const wx = w * x, wy = w * y, wz = w * z;
+    return [
+      1 - 2 * (yy + zz), 2 * (xy - wz), 2 * (xz + wy), t[0],
+      2 * (xy + wz), 1 - 2 * (xx + zz), 2 * (yz - wx), t[1],
+      2 * (xz - wy), 2 * (yz + wx), 1 - 2 * (xx + yy), t[2],
+      0, 0, 0, 1,
+    ];
+  };
+  const apply4 = (m, p) => [
+    m[0] * p[0] + m[1] * p[1] + m[2] * p[2] + m[3],
+    m[4] * p[0] + m[5] * p[1] + m[6] * p[2] + m[7],
+    m[8] * p[0] + m[9] * p[1] + m[10] * p[2] + m[11],
+  ];
+  const qrot = (q, v) => {
+    const [x, y, z, w] = q;
+    const xx = x * x, yy = y * y, zz = z * z;
+    const xy = x * y, xz = x * z, yz = y * z;
+    const wx = w * x, wy = w * y, wz = w * z;
+    return [
+      (1 - 2 * (yy + zz)) * v[0] + 2 * (xy - wz) * v[1] + 2 * (xz + wy) * v[2],
+      2 * (xy + wz) * v[0] + (1 - 2 * (xx + zz)) * v[1] + 2 * (yz - wx) * v[2],
+      2 * (xz - wy) * v[0] + 2 * (yz + wx) * v[1] + (1 - 2 * (xx + yy)) * v[2],
+    ];
+  };
+  const qmulLocal = (a, b) => [
+    a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
+    a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+    a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
+    a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2],
+  ];
+  const scanAnim = (anim) => {
+    if (!anim || !(anim.frameCount > 0)) return;
+    for (let f = 0; f < anim.frameCount; f++) {
+      const world = new Array(bakeBones.length);
+      for (let i = 0; i < bakeBones.length; i++) {
+        const b = bakeBones[i];
+        // 找该骨骼在这一帧的增量
+        let dq = null;
+        let dp = null;
+        const slot = anim.boneIndices.indexOf(i);
+        if (slot >= 0) {
+          const o = (f * anim.boneIndices.length + slot) * 7;
+          dq = [anim.frames[o], anim.frames[o + 1], anim.frames[o + 2], anim.frames[o + 3]];
+          dp = [anim.frames[o + 4], anim.frames[o + 5], anim.frames[o + 6]];
+        }
+        const q = dq ? qmulLocal(b.bindQuaternion, dq) : b.bindQuaternion;
+        // ⚠️ **必须按当前旋转重算骨骼原点**（缺陷 C 的同一公式）：
+        //   position = pivot - R_current · pivot + animDeltaPos
+        // 用 bind 的 localPosition 会让肢体绕旧位置转、扫出错误的包围盒。
+        const rp = qrot(q, b.pivot);
+        const pos = [
+          b.pivot[0] - rp[0] + (dp ? dp[0] : 0),
+          b.pivot[1] - rp[1] + (dp ? dp[1] : 0),
+          b.pivot[2] - rp[2] + (dp ? dp[2] : 0),
+        ];
+        const local = trMat(q, pos);
+        world[i] = b.parentIndex === -1 ? local : mul4(world[b.parentIndex], local);
+      }
+      for (let v = 0; v < vOff; v++) {
+        const w = apply4(world[skinIndex[v * 4]], [position[v * 3], position[v * 3 + 1], position[v * 3 + 2]]);
+        if (w[1] < lowestY) lowestY = w[1];
+      }
+    }
+  };
+  scanAnim(animations.idle);
+  scanAnim(animations.attack);
+  if (!Number.isFinite(lowestY)) fail('脚底补偿扫描失败（没有任何顶点）');
+  const feetOffsetY = -lowestY;
+  asset.metrics.feetOffsetY = feetOffsetY;
+  console.log(`[焰魔烘焙]   脚底补偿 feetOffsetY = ${feetOffsetY.toFixed(4)}`
+    + `（动画全程最低点 y = ${lowestY.toFixed(4)} 格）`);
+
   fs.writeFileSync(IGNIS_JSON, JSON.stringify(asset));
 
   const fp = ignisInputFingerprint();

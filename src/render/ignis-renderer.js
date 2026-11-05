@@ -21,9 +21,11 @@
 // ## 三处与飞龙渲染器的差异
 //
 // 1. **池容量 2**（不是 4）。
-// 2. **脚底补偿**：模型最低顶点在 `y = −0.3042` 格（剑尖/脚甲探到原点下方），
-//    故 mesh 的 y 偏移要**加上** `IGNIS.modelFeetOffsetY`。不补偿的形态是
-//    「焰魔半只脚陷进地面」（0.3 格，肉眼看得出但格数与指纹全对）。
+// 2. **脚底补偿**：几何的 y 原点**不是脚底** —— 烘焙期扫遍全部动画帧得到「动画全程
+//    最低点」，把它记在产物的 `metrics.feetOffsetY` 里，渲染器直接把 mesh 抬高这个量，
+//    「最低顶点」就恰好落在 `state.position.y`（脚底）。
+//    ⚠️ **不得用 `IGNIS_MODEL_CENTER`（身体核心中心）做这件事** —— 那是命中盒的语义，
+//    混用的形态是整个模型陷入地下 1.7 格（用户 2026-11-05 缺陷 A）。
 // 3. **动画由 `attackAnimT` 选择**：`> 0` 走 `attack`（播完停末帧），否则走 `idle`（循环）。
 //    飞龙是 `sampleDragonPose` 内部的状态机，这里没有。
 //
@@ -38,7 +40,7 @@
 // 单面渲染会从某些角度看穿。
 import * as THREE from 'three';
 import { resourceUrl } from '../core/resource-url.js';
-import { IGNIS, IGNIS_MODEL_CENTER } from '../entities/ignis/ignis-config.js';
+import { IGNIS } from '../entities/ignis/ignis-config.js';
 import { sampleIgnisAnim, sampleIgnisAttack } from './ignis-model.js';
 
 /** 红闪色（与丧尸/飞龙 `FLASH_COLOR` 同口径：纯红乘贴图） */
@@ -47,6 +49,7 @@ const FLASH_COLOR = 0xff0000;
 const BASE_COLOR = 0xffffff;
 
 const _tmpQuat = new THREE.Quaternion();
+const _tmpVec = new THREE.Vector3();
 
 /**
  * 焰魔的渲染器（实例池）。
@@ -68,7 +71,9 @@ export class IgnisRenderer {
     this._ownsTexture = texture === null;
     // bind 快照（**全实例共享**：它是烘焙产物的只读数据，不是运行时状态）
     this._bindQuat = asset.bones.map((b) => b.bindQuaternion.slice());
-    this._bindPos = asset.bones.map((b) => b.localPosition.slice());
+    // ⚠️ **pivot 才是骨骼旋转中心**（绝对模型空间，单位格）。
+    // 渲染时必须按**当前**旋转重算 position（见 `_syncOne`），不能用 bind 的 localPosition。
+    this._pivot = asset.bones.map((b) => (b.pivot || [0, 0, 0]).slice());
 
     // ---- 合并几何（全实例共享一份）----
     const g = asset.geometry;
@@ -116,15 +121,15 @@ export class IgnisRenderer {
     const mesh = new THREE.SkinnedMesh(this._geometry, material);
     mesh.add(bones[0]);
     mesh.bind(new THREE.Skeleton(bones));
-    // 几何顶点是模型空间坐标（原点≈脚底），而 state.position 是**脚底** →
-    // 把 mesh 局部偏移 −IGNIS_MODEL_CENTER（体心回到原点），再 +modelFeetOffsetY
-    // 把「最低顶点在 −0.3042 格」的模型抬起来，脚底才与 position.y 对齐。
-    // ⚠️ 挂在 yaw 父节点下（Group 承载旋转），偏移随朝向转，体心始终对准。
-    mesh.position.set(
-      -IGNIS_MODEL_CENTER[0],
-      -IGNIS_MODEL_CENTER[1] + IGNIS.modelFeetOffsetY,
-      -IGNIS_MODEL_CENTER[2],
-    );
+    // 几何顶点是模型空间坐标（原点在脚底附近），而 state.position 是**脚底** →
+    // 只需把 mesh 抬高 `metrics.feetOffsetY`（烘焙期扫全部动画帧算出的最低点绝对值），
+    // 使「动画全程的最低顶点」恰好落在 position.y。
+    //
+    // ⚠️⚠️ **这里曾经写成 `-IGNIS_MODEL_CENTER[1] + IGNIS.modelFeetOffsetY`**（-1.43），
+    // 导致整个模型陷入地下 1.70 格（用户 2026-11-05 缺陷 A：「身体的下半截埋在地下」）。
+    // 错因：把「身体核心 bbox 中心」（命中盒用，-1.7335）当成了「脚底」偏移。
+    // `IGNIS_MODEL_CENTER` 与 `feetOffsetY` 是**两个不同语义的量**，不得混用。
+    mesh.position.set(0, this.asset.metrics.feetOffsetY, 0);
     const pivot = new THREE.Group();
     pivot.add(mesh);
     pivot.visible = false;   // 初始无焰魔
@@ -208,8 +213,23 @@ export class IgnisRenderer {
       bone.quaternion.set(bq[0], bq[1], bq[2], bq[3]);
       bone.quaternion.multiply(
         _tmpQuat.set(delta.rot[0], delta.rot[1], delta.rot[2], delta.rot[3]));
-      const bp = this._bindPos[bi];
-      bone.position.set(bp[0] + delta.pos[0], bp[1] + delta.pos[1], bp[2] + delta.pos[2]);
+      // ⚠️⚠️ **骨骼原点必须按「当前」旋转重算**（用户 2026-11-05 缺陷 C：
+      // 「挥舞兵刃的时候胳膊和身体分开了，特别是肩膀的部位」）。
+      //
+      // 骨骼的语义是「绕 pivot 旋转」：`M = T(pivot) · R · T(-pivot)`。
+      // three 的 `Bone.position` 是父空间平移，故：
+      //   `position = pivot − R_current · pivot + animDeltaPos`
+      //
+      // ⚠️ 用 **bind 的 localPosition**（烘焙产物里的那个）只能对 bind 姿态成立 ——
+      // 动画一转，旋转中心就漂了。实测形态：right_arm 顶点落到 y=-3.2（躯干在 y=1.75~3.14），
+      // 整条胳膊被甩到地下。
+      const piv = this._pivot[bi];
+      _tmpVec.set(piv[0], piv[1], piv[2]).applyQuaternion(bone.quaternion);
+      bone.position.set(
+        piv[0] - _tmpVec.x + delta.pos[0],
+        piv[1] - _tmpVec.y + delta.pos[1],
+        piv[2] - _tmpVec.z + delta.pos[2],
+      );
     }
 
     // 红闪：nowMs < flashedUntil → 纯红乘贴图（与丧尸/飞龙同口径）。

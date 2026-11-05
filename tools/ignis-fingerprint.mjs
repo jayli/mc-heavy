@@ -56,11 +56,14 @@ export const IGNIS_META = path.join(ROOT, 'assets', 'ignis', 'ignis.meta.json');
  *
  * ⚠️ **`pxPerBlock: 16`** 是 Bedrock/MC 的原生口径（1 格 = 16 像素）。
  *
- * ⚠️ **`idleFrameCount: 12` 与 `IGNIS_ANIM_PERIODS.idle` 是同一个事实的两面**：
- * 待机动画的频率是 `128 rad/秒`（素材表达式 `q.life_time * 128`），周期
- * `2π/128 ≈ 0.0490874` 秒。取 12 帧覆盖**恰好一个**周期，`fps = 12 / period`（≈244.46，
- * **不是整数，这是刻意的**）⇒ 产物 `duration` 与周期**逐位相等**，循环接缝在数学上恒为 0。
- * 30fps 采样只有 1.47 样本/周期 → 严重混叠（拍频伪影）。详见 spec §4.2。
+ * ⚠️ **`idleFrameCount: 60` 与 `IGNIS_ANIM_PERIODS.idle` 是同一个事实的两面**：
+ * 待机动画的角速度是 128 **度/秒**（素材表达式 `q.life_time * 128` —— Molang 的三角函数
+ * 以度为单位），周期 `360/128 = 2.8125` 秒。取 60 帧覆盖**恰好一个**周期，
+ * `fps = 60 / 2.8125 = 21.333`（**不是整数，这是刻意的**）⇒ 产物 `duration` 与周期
+ * **逐位相等**，循环接缝在数学上恒为 0。每帧转 `128/60 = 2.13°` ⇒ 缓慢呼吸是平滑的。
+ *
+ * ⚠️ **曾经取 12 帧**（当时误把周期算成 `2π/128` = 0.049 秒的快频摆动，12 帧正好一个周期）。
+ * 度制修正后周期变成 2.8125 秒（**57 倍长**），12 帧会退化成每帧 10.67° 的可见跳帧。
  */
 export const IGNIS_BAKE_PARAMS = Object.freeze({
   scale: 1,
@@ -68,21 +71,26 @@ export const IGNIS_BAKE_PARAMS = Object.freeze({
   textureSize: 256,
   /** 待机动画的帧率不是这个值 —— 它由 `idleFrameCount / 周期` 算出。此字段只用于攻击 */
   defaultFps: 30,
-  idleFrameCount: 12,
+  idleFrameCount: 60,
 });
 
 /**
  * 动画周期（秒）。**由素材内容计算，不写字面量**。
  *
  * - `idle`：素材 `generala`/`generalb` 的表达式是 `Math.sin(q.life_time * 128)`，
- *   角频率 128 rad/秒 ⇒ 周期 `2π/128`。写死 `0.0490873` 会让「素材换了频率」
- *   静默过期（指纹只覆盖文件内容，覆盖不到「这个数字该怎么算」）。
+ *   而 **Molang 的三角函数以「度」为单位**（不是弧度）⇒ 角速度 128 **度/秒**
+ *   ⇒ 周期 `360 / 128 = 2.8125` 秒。
+ *
+ *   ⚠️⚠️ **不是 `2π/128`（那是弧度的算法）**：2026-11-05 实测踩到 —— 按弧度算得到
+ *   0.049 秒的周期，把「缓慢呼吸」变成了 20.4 Hz 的抖动（用户实玩报告「身体在抖动」）。
+ *   两者相差 **57 倍**，而「帧数 = 12、duration ≡ 周期」这个产物契约在两种口径下都自洽，
+ *   所以只有**求值器的单位口径**拦得住（`src/tests/test-molang.js` 的度制用例）。
  * - `attack`：素材 `attack6a` 的 `animation_length` = 2.75 秒（55 tick）。
  *   ⚠️ **不是 `attack1`（3.5 秒 / 70 tick）** —— tick 配对表（spec §2.0）显示 55 tick
  *   ↔ Java `SWING_ATTACK`，而 `attack1` 对应 `SHIELD_SMASH_ATTACK`（盾碎）。
  */
 export const IGNIS_ANIM_PERIODS = Object.freeze({
-  idle: 2 * Math.PI / 128,
+  idle: 360 / 128,
   attack: 2.75,
 });
 

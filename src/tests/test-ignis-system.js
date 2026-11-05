@@ -62,9 +62,10 @@ test('焰魔: 碰撞盒取自 Bedrock collision_box（1.0 × 3.25）', () => {
   assertEqual(IGNIS.height, 3.25);
 });
 
-test('焰魔: 模型脚底不在 y=0（最低顶点 -0.3042 格，渲染必须补偿）', () => {
-  assertEqual(IGNIS.modelFeetOffsetY, 0.3042);
-  assertTrue(IGNIS.modelFeetOffsetY > 0, '补偿量必须为正（模型往下探出了原点）');
+test('焰魔: 脚底补偿量不在 config 里（唯一权威是烘焙产物的 metrics.feetOffsetY）', () => {
+  // ⚠️ 这条是「红线 1」的守卫：脚底补偿量由烘焙器扫**全部动画帧**算出（v2.56 起），
+  // 写在 config 里就是第二份权威 —— 素材/动画变了它不会跟着变，形态是模型重新陷进地里。
+  assertEqual(IGNIS.modelFeetOffsetY, undefined, 'config 不该有 modelFeetOffsetY（权威在产物）');
 });
 
 test('焰魔: 实测度量（改烘焙器/素材后必须同步这里）', () => {

@@ -12,7 +12,7 @@ import { test } from './runner.js';
 import { assertEqual, assertTrue, assertNotNull } from './assert.js';
 import { IgnisRenderer } from '../render/ignis-renderer.js';
 import { sampleIgnisAnim, sampleIgnisAttack, loadIgnisAsset } from '../render/ignis-model.js';
-import { IGNIS, IGNIS_MODEL_CENTER } from '../entities/ignis/ignis-config.js';
+import { IGNIS } from '../entities/ignis/ignis-config.js';
 
 let asset = null;
 async function getAsset() {
@@ -102,17 +102,20 @@ test('焰魔渲染: 几何属性齐全（含 skinWeight 刚性绑定）', async 
 
 // ==================== 脚底补偿（本渲染器独有的关键点）====================
 
-test('焰魔渲染: mesh 的 y 偏移含脚底补偿（模型最低顶点在 −0.3042 格）', async () => {
+test('焰魔渲染(v2.56 缺陷A): mesh 抬高 = 产物 metrics.feetOffsetY（不是 IGNIS_MODEL_CENTER）', async () => {
   const d = await getAsset();
   const scene = new THREE.Scene();
   const r = new IgnisRenderer(scene, d);
   const inst = r.instances[0];
-  // 期望：mesh.position = −IGNIS_MODEL_CENTER + [0, modelFeetOffsetY, 0]
-  const wantY = -IGNIS_MODEL_CENTER[1] + IGNIS.modelFeetOffsetY;
-  assertTrue(Math.abs(inst.mesh.position.y - wantY) < 1e-9,
-    `mesh.position.y = ${inst.mesh.position.y}，期望 ${wantY}`);
-  assertTrue(Math.abs(inst.mesh.position.x - (-IGNIS_MODEL_CENTER[0])) < 1e-9);
-  assertTrue(Math.abs(inst.mesh.position.z - (-IGNIS_MODEL_CENTER[2])) < 1e-9);
+  // ⚠️ 曾经写成 `-IGNIS_MODEL_CENTER[1] + IGNIS.modelFeetOffsetY`（-1.43）⇒ 模型陷地 1.70 格
+  assertTrue(Math.abs(inst.mesh.position.y - d.metrics.feetOffsetY) < 1e-9,
+    `mesh.position.y = ${inst.mesh.position.y}，期望 metrics.feetOffsetY = ${d.metrics.feetOffsetY}`);
+  // 水平方向不该有偏移（模型原点已是脚下中轴）
+  assertTrue(Math.abs(inst.mesh.position.x) < 1e-9, `x 偏移 ${inst.mesh.position.x}`);
+  assertTrue(Math.abs(inst.mesh.position.z) < 1e-9, `z 偏移 ${inst.mesh.position.z}`);
+  // feetOffsetY 必须为正且量级合理（模型最低点在原点下方，约 1.6 格）
+  assertTrue(d.metrics.feetOffsetY > 1.0 && d.metrics.feetOffsetY < 2.5,
+    `feetOffsetY ${d.metrics.feetOffsetY} 量级异常`);
   r.dispose();
 });
 
@@ -231,4 +234,55 @@ test('焰魔渲染: 骨骼增量从 bind 快照起算（不逐帧累积）', asy
     }
   }
   r.dispose();
+});
+
+// ==================== v2.56 缺陷 C：骨骼原点必须随旋转变化 ====================
+//
+// 用户 2026-11-05：「挥舞兵刃的动作，有动作，但是身体的形状支离破碎了……特别是肩膀的
+// 部位，似乎离开身体太远了」。
+//
+// 根因：`bone.position` 固定为**bind pose** 的 `localPosition`，只换 `quaternion`。
+// 骨骼语义是「绕 pivot 旋转」，所以 position 必须按**当前**旋转重算：
+//   `position = pivot − R_current · pivot`
+// 不重算时，挥到一半的 right_arm 顶点实测落到 y ∈ [-3.2, -1.79]，躯干在 [1.75, 3.14]。
+//
+// ⚠️ **这条直接检查渲染器产出的 `bone.position`**（不是烘焙产物）——
+// 烘焙产物 + 测试辅助函数都算对，也不能保证渲染器算对（它们各自实现同一公式）。
+
+test('焰魔渲染(v2.56 缺陷C): 骨骼 position 随动画旋转重算（不是 bind 的 fixed 值）', async () => {
+  const d = await getAsset();
+  const scene = new THREE.Scene();
+  const r = new IgnisRenderer(scene, d);
+  const base = { position: [0, 0, 0], yaw: 0, health: 450, flashedUntil: 0, attackCooldown: 0 };
+
+  // right_arm_joint 在攻击动画里转到 −147°，是位移最剧烈的一根
+  const armIdx = d.bones.findIndex((b) => b.name === 'right_arm_joint');
+  assertTrue(armIdx >= 0, '产物缺 right_arm_joint');
+
+  // ① bind 帧（attackAnimT=0）的 position
+  r.sync([{ id: 'a', state: { ...base, attackAnimT: 0 } }], 0);
+  const bindPos = r.instances[0].bones[armIdx].position.toArray();
+
+  // ② 挥到一半（约 1.0s，胳膊抬到最高）
+  r.sync([{ id: 'a', state: { ...base, attackAnimT: 1.0 } }], 0);
+  const animPos = r.instances[0].bones[armIdx].position.toArray();
+
+  const moved = Math.hypot(animPos[0] - bindPos[0], animPos[1] - bindPos[1], animPos[2] - bindPos[2]);
+  // 注入「固定 bind localPosition」时 moved 只来自动画的位移增量（接近 0）
+  assertTrue(moved > 0.3,
+    `right_arm_joint 的 position 只移动了 ${moved.toFixed(4)} 格 —— `
+    + '说明用的是 bind 的固定值，没有按当前旋转重算（挥砍时胳膊会甩出去）');
+
+  // ③ 用 pivot 公式反算校验（与烘焙同源的独立推导）
+  const piv = d.bones[armIdx].pivot;
+  assertTrue(Array.isArray(piv) && piv.length === 3, '产物缺 bones[].pivot');
+  const q = r.instances[0].bones[armIdx].quaternion;
+  const rp = new THREE.Vector3(piv[0], piv[1], piv[2]).applyQuaternion(q);
+  const delta = r.instances[0].bones[armIdx].position;
+  r.dispose();
+  // 该帧动画的位移增量是 0（right_arm_joint 只有 rotation 关键帧）⇒ position ≈ pivot − R·pivot
+  assertTrue(Math.abs(delta.x - (piv[0] - rp.x)) < 1e-4,
+    `position.x=${delta.x.toFixed(4)} ≠ pivot−R·pivot=${(piv[0] - rp.x).toFixed(4)}`);
+  assertTrue(Math.abs(delta.y - (piv[1] - rp.y)) < 1e-4,
+    `position.y=${delta.y.toFixed(4)} ≠ pivot−R·pivot=${(piv[1] - rp.y).toFixed(4)}`);
 });

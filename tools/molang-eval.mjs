@@ -65,8 +65,24 @@ const QUERY_FIELDS = Object.freeze({
 });
 
 /** 支持的 `Math.*` 函数 */
+/**
+ * 支持的 `Math.*` 函数。
+ *
+ * ⚠️⚠️ **三角函数的参数是「度」不是「弧度」** —— 这是 Bedrock Molang 的口径，
+ * 不是 JS `Math.sin` 的口径。2026-11-05 实测踩到这个坑：素材的待机动画写的是
+ * `Math.sin(q.life_time * 128) * -2.5`，原意是 **128°/秒**（周期 360/128 = 2.81 秒的缓慢
+ * 呼吸），按弧度求值就变成 **128 rad/秒 = 20.4 Hz** 的剧烈抖动 —— 用户实玩报告
+ * 「焰魔移动的过程中，身体是抖动的」。
+ *
+ * 权威：Microsoft Molang 文档与 bedrock.dev 的 Math Functions 表都明写
+ * 「math.cos(value) — Cosine (in degrees) of value」。
+ *
+ * 修复方式：入参先乘 π/180 再交给 JS 的 Math.*。
+ */
+const DEG_TO_RAD = Math.PI / 180;
 const MATH_FNS = Object.freeze({
-  sin: Math.sin,
+  sin: (deg) => Math.sin(deg * DEG_TO_RAD),
+  cos: (deg) => Math.cos(deg * DEG_TO_RAD),
 });
 
 /** 词法单元类型 */

@@ -55,7 +55,8 @@ export function ignisEntityIdFor(mapKey, slot) {
  *
  * ⚠️ **`position` 语义是「脚底中心」**（与丧尸一致，与飞龙的「身体中心」不同）：
  * 焰魔是地面实体，靠重力 + step-up 移动，脚底语义才能让物理与碰撞盒对齐。
- * 渲染层要用 `modelFeetOffsetY` 补偿「模型最低顶点低于原点」。
+ * 渲染层的脚底补偿量来自**烘焙产物的 `metrics.feetOffsetY`**（扫全部动画帧算出的
+ * 最低点绝对值），不在这里写第二份（红线 1：同一事实只有一个权威）。
  */
 export const IGNIS = Object.freeze({
   /** 生命。作者 `MAX_HEALTH`；与 Bedrock `ignis.json` 的 450 一致 */
@@ -64,15 +65,6 @@ export const IGNIS = Object.freeze({
   halfWidth: 0.5,
   /** AABB 高（Bedrock `collision_box.height: 3.25`） */
   height: 3.25,
-  /**
-   * 模型最低顶点相对模型原点的**下沉量**（格，正数）。
-   *
-   * 实测：烘焙后 bind pose 的世界包围盒最低 y = **−0.3042 格**（剑尖/脚甲探到原点下方）。
-   * 渲染层把 mesh 抬高这个量，脚底才与 `state.position.y` 对齐。
-   *
-   * ⚠️ 不补偿的形态是「焰魔半只脚陷进地面」（0.3 格，肉眼看得出但格数与指纹全对）。
-   */
-  modelFeetOffsetY: 0.3042,
   /**
    * 近战伤害。作者 `ATTACK_DAMAGE`。
    *
