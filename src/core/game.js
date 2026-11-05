@@ -2224,7 +2224,11 @@ export class Game {
     for (const slotDef of slots) {
       const svc = this[slotDef.service];
       if (!svc || typeof svc.summon !== 'function') continue;
-      const r = svc.summon(map.key, map.cx, map.cz, slotDef.slot);
+      // ⚠️ **传玩家 y 作为参考高度**：焰魔的地面扫描据此取「玩家所在那一层」的地面，
+      // 而不是地图中心列上的最低位置。高台地带有多层可站结构（广场地面 / 高台顶 46 /
+      // 拱洞 / 巨云 54~95），不传会让焰魔落到与玩家相距 30+ 格的高度。
+      // 飞龙忽略这个多余参数（它恒在轨道高度）。
+      const r = svc.summon(map.key, map.cx, map.cz, slotDef.slot, p.y);
       if (r.ok) {
         this._bossToast(`已召唤 Boss${slotDef.slot + 1}`);
         return r;

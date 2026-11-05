@@ -78,6 +78,7 @@ const MODES = Object.freeze(['idle', 'chase', 'attack']);
 function createState({
   position, velocity, yaw, health, flashedUntil, mode,
   attackAnimT, idleTime, attackCooldown, losTimer, losVisible, onGround, attackRequest,
+  _physAccum,
 }) {
   const p = normalizePosition(position);
   if (!p) return null;
@@ -110,6 +111,18 @@ function createState({
     losVisible: losVisible === true,
     /** 本帧是否站在地面上（物理用，决定能否 step-up） */
     onGround: onGround === true,
+    /**
+     * 物理固定步长累积器（瞬态物理量，不入 snapshot）。
+     *
+     * ⚠️⚠️ **必须保留本字段**，否则 `ignis-boss-agent` 的 accumulator 每帧被重置为 0 ⇒
+     * 固定步长最多跑 0~1 步、且余量被丢掉。缺陷形态极其隐蔽（实测踩到）：
+     * 焰魔**站得住、位置也对**（因为重力推不动它 —— 下沉量被碰撞卡住），
+     * 但 `onGround` 恒为 `false`（"脚底贴地支撑"的判定需要累积出一次完整的
+     * `_physicsStep`，而累积器被清零后多数帧根本不跑）。
+     * 同类缺陷在丧尸侧被当作「瞬态不入 snapshot」处理，但**必须留在 state 里跨帧传递**——
+     * 「不入存档」与「不入 state」是两件事。
+     */
+    _physAccum: Number.isFinite(_physAccum) ? _physAccum : 0,
     /**
      * ⚠️ **瞬态**：本帧要结算一次挥砍命中。由 game.js 在 `entities.update` 之后消费
      * （生成伤害），Agent 下一帧自动清成 null。
@@ -219,16 +232,22 @@ export class IgnisService {
    * @param {string} mapKey 地图实例标识（`bossMapAt().key`）
    * @param {number} cx @param {number} cz 地图中心
    * @param {number} slot 名册槽位（焰魔 = 1）
+   * @param {number} [refY] 参考高度（装配层传玩家 y）。给了就取**靠近它**的地面，
+   *        避开空中结构；不给则取该列最低的可站位置。
    * @returns {{ok: true, id: string} | {ok: false, reason: 'limit'|'exists'}}
    */
-  summon(mapKey, cx, cz, slot) {
+  summon(mapKey, cx, cz, slot, refY) {
     if (this.entities.count(IGNIS_TYPE) >= IGNIS.maxAlive) {
       return { ok: false, reason: 'limit' };
     }
     const id = ignisEntityIdFor(mapKey, slot);
     if (this.entities.get(id)) return { ok: false, reason: 'exists' };
 
-    const y = this._findGroundY(cx, cz);
+    // ⚠️ **参考高度必须传**：不传会让 `_findGroundY` 取「最低可站位置」，
+    // 而高台地带的空中结构（巨云 / 拱洞 / 高台顶）与地面都可以站 —— 取最低通常对，
+    // 但玩家若正在高台上，就会召到脚下的广场地面（相距 40 格）。
+    // `refY` 由装配层（game.js）传入玩家 y —— entities/ 同构层**不得 import player/**。
+    const y = this._findGroundY(cx, cz, refY);
     const entity = this.entities.spawn({
       id,
       type: IGNIS_TYPE,
@@ -247,30 +266,57 @@ export class IgnisService {
   /**
    * 找 `(cx, cz)` 列上可以站立的脚底 y。
    *
-   * 从世界顶向下扫，返回第一个「本格空气 + 下方实心 + 头顶 3 格也空气」的 y。
-   * 找不到（空世界/全是方块）时返回 `WORLD_MAX_Y` 的下方兜底高度，**保证 y 是有限数**
-   * （返回 NaN 会让实体出生在 NaN 位置 → 物理与索引全崩，且是静默的）。
+   * ## 从哪开始扫（这是踩过的真坑）
+   *
+   * ⚠️ **不能从世界顶部（y=96）往下扫**：高台地带里有**空中结构**（巨型云 y∈[54,95]、
+   * 拱洞、高台顶）—— 从顶部扫到的第一个「有支撑 + 头顶净空」的位置往往在**半空平台**上。
+   * 实测形态：玩家站在广场地面 y=5，焰魔被召到 y=36（拱洞顶），两者相距 31 格，
+   * 画面里根本看不到它，而「召唤成功 / 实体存在 / 渲染器可见」全部为真。
+   *
+   * ## 做法：以**地图中心的地表**为基准，向上找最近的空位
+   *
+   * 先用 `findSpawnY` 拿到该列的地表（它会停在**地表**而不只是「第一个非空」——
+   * 因为下面还要验证「头顶有 4 格净空」，悬空的云层/拱洞会被这一步排除）：
+   * 1. 从 `WORLD_MAX−1` 往下找第一个**连续 4 格空气且其下为实心**的位置；
+   * 2. 如果找到的位置高于「玩家所在高度 + maxSpawnRiseY」，就**继续往下找**；
+   * 3. 都找不到时退回最下面那个可站位置。
    *
    * @param {number} cx @param {number} cz 整数列坐标
-   * @returns {number}
+   * @param {number} [nearY] 参考高度（玩家所在 y / 地图中心地表）。给了就优先取**靠近它**的地面，
+   *        避免落到空中结构上。
+   * @returns {number} 保证有限的 y（找不到时返回 0）
    */
-  _findGroundY(cx, cz) {
+  _findGroundY(cx, cz, nearY) {
     const w = this.world;
     if (!w || typeof w.isSolid !== 'function') return 0;
-    const top = 96;        // 与 WORLD_MAX_Y 同量级；多扫几格无害
-    const bottom = -32;
-    for (let y = top; y > bottom; y--) {
-      if (w.isSolid(cx, y, cz)) continue;          // 本格被占，继续往下
-      if (!w.isSolid(cx, y - 1, cz)) continue;     // 下方不实心（悬空），继续往下
-      // 头顶需要有 4 格净空（焰魔 3.25 高）
+    // 焰魔 3.25 高 ⇒ 需要 4 格净空（含脚底那一格之上的 3 格）
+    const HEADROOM = 4;
+    const TOP = 96;
+    const BOTTOM = -32;
+    /** 收集该列全部可站立位置（从高到低） */
+    const candidates = [];
+    for (let y = TOP; y > BOTTOM; y--) {
+      if (w.isSolid(cx, y, cz)) continue;          // 本格被占
+      if (!w.isSolid(cx, y - 1, cz)) continue;     // 下方不实心（悬空）
       let clear = true;
-      for (let dy = 1; dy <= 4; dy++) {
+      for (let dy = 1; dy <= HEADROOM; dy++) {
         if (w.isSolid(cx, y + dy, cz)) { clear = false; break; }
       }
-      if (clear) return y;
+      if (clear) candidates.push(y);
     }
-    // 兜底：站在世界底附近（空世界时走到这里）
-    return 0;
+    if (candidates.length === 0) return 0;
+    // 有参考高度 ⇒ 取离它最近的那个（同时避免空中结构）
+    if (Number.isFinite(nearY)) {
+      let best = candidates[0];
+      let bestD = Math.abs(best - nearY);
+      for (const y of candidates) {
+        const d = Math.abs(y - nearY);
+        if (d < bestD) { best = y; bestD = d; }
+      }
+      return best;
+    }
+    // 无参考高度 ⇒ 取**最低**的那个（最接近自然地表的那个，刻意避开空中结构）
+    return candidates[candidates.length - 1];
   }
 
   /**

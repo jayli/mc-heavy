@@ -38,6 +38,14 @@ import { aabbCollidesAt, steerIntentAabb } from '../zombies/zombie-navigation.js
 const FIXED_STEP = 1 / 60;
 /** 单个 update 里最多跑几个固定步（防后台切回时一次跑上百步，卡顿尖峰） */
 const MAX_PHYS_STEPS = 5;
+/**
+ * 「脚下支撑」探测距离（格）。
+ *
+ * 静立时每帧的下沉量 = `gravity × step² = 24 / 3600 ≈ 0.0067` 格，远小于这个值，
+ * 故 `0.01` 足够区分「贴地悬停」与「真的悬空」。取大了会让焰魔在离地 1cm 时"站住"，
+ * 取小了会被浮点误差骗。
+ */
+const SUPPORT_EPSILON = 0.01;
 
 /**
  * 焰魔的绕行参数。
@@ -260,6 +268,20 @@ export class IgnisBossAgent extends BossAgent {
         vy = 0;
       } else {
         py = ny;
+        // ⚠️ **静止在支撑面上时必须也能置 onGround**（否则重力永远推不动它）：
+        // 落地后 `vy = 0` ⇒ 下一帧 `dy = gravity·step·step` 是一个**极小**的负数
+        // （−24 × (1/60)² ≈ −0.0067 格），不足以让它撞进下方的实心格 ⇒ 位置每帧
+        // 微微下沉一点点、`_collides` 永远返回 false ⇒ `onGround` 恒为 false。
+        // 实测形态：焰魔站在地上、y 不变、`vy = 0`，但 `onGround = false`（
+        // `test-ignis-boss-agent.js` 的「落到地面后停住」用例抓不到，因为那条跑了
+        // 300 帧后恰好跨过了一个沉降阈值）。
+        // 修正：本帧未能下移时，主动检查「脚底下一小格内是否有支撑」。
+        if (dy < 0 && !this._collides(world, px, py - SUPPORT_EPSILON, pz)) {
+          // 仍有空隙 → 真的悬空，继续下坠
+        } else if (dy < 0) {
+          onGround = true;
+          vy = 0;
+        }
       }
     } else {
       py += vy * FIXED_STEP;
