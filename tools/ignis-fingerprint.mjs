@@ -1,0 +1,161 @@
+// tools/ignis-fingerprint.mjs — 焰魔（Ignis）烘焙的**参数、产物指标与输入指纹**共享模块
+//
+// 唯一权威（红线 1）：烘焙脚本 `bake-ignis.mjs` 与数据契约门 `check-data.mjs` 都从这里
+// import，不得各写一份。与 `dragon-fingerprint.mjs` / `arena-fingerprint.mjs` /
+// `zombie-skin-fingerprint.mjs` 同一手法。
+//
+// 素材**入库**（`assets/ignis/src/`，与 `assets/dragon/src/` 同口径：烘焙输入，不是渲染资源）
+// → 指纹不依赖仓库外文件，任何机器 `npm run check` 结果一致。
+//
+// ⚠️ node 侧模块（要读文件），不进 `src/`，浏览器不消费。
+// ⚠️ **`src/**` 与浏览器单测绝不能 import 它** —— 它依赖 `node:fs`，浏览器无法解析 `node:`
+// 协议 → 整个模块不加载 → 游戏白屏，而 `check:arch` 抓不到这类运行时解析失败。
+// 运行期消费的纯数据是 `assets/ignis/ignis.json`（产物）与 `src/entities/ignis/ignis-config.js`
+// （玩法数值）。
+//
+// ## 素材来源（2026-11-05 用户提供）
+//
+// `[苦力怕论坛]v1.3.0-焰魔.mcaddon`（Bedrock 附加包，zip 内 GBK 编码路径）。
+// 与姊妹仓库 `cataclysm1.19.2modding`（Java 版同 mod）的对照见
+// `docs/superpowers/specs/2026-11-05-ignis-boss-design.md` §2.0：
+// 贴图逐像素相同，但模型是**不同的建模迭代**（剑/盾骨骼拆分不同）⇒ 采用 Bedrock 版。
+import fs from 'node:fs';
+import path from 'node:path';
+import { createHash } from 'node:crypto';
+
+const ROOT = path.resolve(import.meta.dirname, '..');
+
+/** 烘焙输入目录（**入库**，不是渲染资源） */
+export const IGNIS_SRC_DIR = path.join(ROOT, 'assets', 'ignis', 'src');
+/** 输入：Bedrock 几何（53 骨骼 / 88 立方体 / 256² 贴图） */
+export const IGNIS_GEO_SRC = path.join(IGNIS_SRC_DIR, 'ignis.geo.json');
+/** 输入：Bedrock 动画（84 条；本仓只取 idle 与 attack） */
+export const IGNIS_ANIM_SRC = path.join(IGNIS_SRC_DIR, 'ignis.animation.json');
+/**
+ * 输入：贴图（256²）。
+ *
+ * ⚠️ **只取 `ignis_idle_0.png` 这一张**：素材有 `idle_0`~`idle_7` 八帧火焰闪烁
+ * （render_controller 按 `q.life_time * 12` 循环切帧），但用户 2026-11-05 裁定
+ * **只取一张静态贴图**（与飞龙同口径）。八帧里第 0 帧是基准姿态，其余是火焰位移。
+ */
+export const IGNIS_TEX_SRC = path.join(IGNIS_SRC_DIR, 'ignis_idle_0.png');
+
+/** 烘焙产物：模型 JSON（进运行期，`src/render/ignis-model.js` 加载） */
+export const IGNIS_JSON = path.join(ROOT, 'assets', 'ignis', 'ignis.json');
+/** 烘焙产物：贴图（进运行期，`TextureLoader` 加载） */
+export const IGNIS_PNG = path.join(ROOT, 'assets', 'ignis', 'ignis.png');
+/** 烘焙产物：伴随元数据（度量 / 指纹，不进运行期） */
+export const IGNIS_META = path.join(ROOT, 'assets', 'ignis', 'ignis.meta.json');
+
+/**
+ * 烘焙参数。
+ *
+ * ⚠️ **`scale: 1`**（用户 2026-11-05 裁定「原生 1 倍」）：素材 16px/格下模型是
+ * **3.73 × 4.07 × 5.16 格**（含剑尖，已由软件光栅化实测），约玩家 1.8 格的 2.2 倍。
+ * 与飞龙的 `scale: 3` 不同 —— 飞龙的素材原生只有 6.25 格长，需要放大；焰魔原生就对。
+ *
+ * ⚠️ **`pxPerBlock: 16`** 是 Bedrock/MC 的原生口径（1 格 = 16 像素）。
+ *
+ * ⚠️ **`idleFrameCount: 12` 与 `IGNIS_ANIM_PERIODS.idle` 是同一个事实的两面**：
+ * 待机动画的频率是 `128 rad/秒`（素材表达式 `q.life_time * 128`），周期
+ * `2π/128 ≈ 0.0490874` 秒。取 12 帧覆盖**恰好一个**周期，`fps = 12 / period`（≈244.46，
+ * **不是整数，这是刻意的**）⇒ 产物 `duration` 与周期**逐位相等**，循环接缝在数学上恒为 0。
+ * 30fps 采样只有 1.47 样本/周期 → 严重混叠（拍频伪影）。详见 spec §4.2。
+ */
+export const IGNIS_BAKE_PARAMS = Object.freeze({
+  scale: 1,
+  pxPerBlock: 16,
+  textureSize: 256,
+  /** 待机动画的帧率不是这个值 —— 它由 `idleFrameCount / 周期` 算出。此字段只用于攻击 */
+  defaultFps: 30,
+  idleFrameCount: 12,
+});
+
+/**
+ * 动画周期（秒）。**由素材内容计算，不写字面量**。
+ *
+ * - `idle`：素材 `generala`/`generalb` 的表达式是 `Math.sin(q.life_time * 128)`，
+ *   角频率 128 rad/秒 ⇒ 周期 `2π/128`。写死 `0.0490873` 会让「素材换了频率」
+ *   静默过期（指纹只覆盖文件内容，覆盖不到「这个数字该怎么算」）。
+ * - `attack`：素材 `attack6a` 的 `animation_length` = 2.75 秒（55 tick）。
+ *   ⚠️ **不是 `attack1`（3.5 秒 / 70 tick）** —— tick 配对表（spec §2.0）显示 55 tick
+ *   ↔ Java `SWING_ATTACK`，而 `attack1` 对应 `SHIELD_SMASH_ATTACK`（盾碎）。
+ */
+export const IGNIS_ANIM_PERIODS = Object.freeze({
+  idle: 2 * Math.PI / 128,
+  attack: 2.75,
+});
+
+/** 素材里的动画键名（`animation.null.<name>`），烘焙脚本按此取 */
+export const IGNIS_ANIM_SOURCES = Object.freeze({
+  /** 待机：**两条**动画合并（generala 驱动手臂、generalb 驱动 root/head） */
+  idle: Object.freeze(['generala', 'generalb']),
+  /** 攻击：普通挥砍（Java 的 SWING_ATTACK，55 tick） */
+  attack: Object.freeze(['attack6a']),
+});
+
+/**
+ * 产物必须满足的指标 —— 烘焙脚本与 `check:data` 共用这一份。
+ *
+ * 全部实测值（解析 `assets/ignis/src/ignis.geo.json` 可复现）：
+ *  - **53 根骨骼**，其中 **50 根带立方体**
+ *  - **88 个立方体**，其中 **8 个含 0 尺寸分量**（`right_helmet` 这类零厚薄片，
+ *    `BoxGeometry` 对 0 尺寸会退化成退化三角形 ⇒ 跳过）⇒ **烘焙 80 个**
+ *  - 每立方体 `BoxGeometry` 产出 24 顶点 / 36 索引 ⇒ `80 × 24 = 1920` 顶点、
+ *    `80 × 36 = 2880` 索引
+ *  - 模型空间 bbox（含骨骼旋转、含剑盾）= **59.73 × 65.07 × 82.52 px**
+ *    = **3.7329 × 4.0668 × 5.1576 格**（1 倍）
+ *
+ * ⚠️ **`boneCount` / `cubeCount` 是「素材事实」而不是「可调参数」**：素材换了它们才会变。
+ * 把它们钉在这里的意义是「烘焙漏了骨骼/立方体」会立刻被抓到（静默缺肉的形态是身上有洞）。
+ */
+export const IGNIS_METRICS = Object.freeze({
+  boneCount: 53,
+  bonesWithCubes: 50,
+  cubeCount: 88,
+  /** 含 0 尺寸分量、被跳过的立方体数 */
+  skippedCubes: 8,
+  /** 实际参与烘焙的立方体数 = cubeCount − skippedCubes */
+  bakedCubes: 80,
+  vertexCount: 1920,
+  indexCount: 2880,
+  scale: 1,
+});
+
+/**
+ * 烘焙输入指纹：`<三份输入内容 sha 前 16>:<参数 sha 前 16>`。
+ *
+ * 两个消费方（烘焙脚本写进 meta、`check:data` 重算比对）必须拿到同一格式。
+ * 改 `IGNIS_BAKE_PARAMS` / `IGNIS_METRICS` / `IGNIS_ANIM_PERIODS` / 任一输入文件都会改变
+ * 指纹 → 门禁报「产物已过期，跑 npm run ignis」，防静默过期。
+ *
+ * ⚠️ **三份输入串联后取一次 sha**（不是各自取 sha 再拼）：拼接顺序固定（geo → anim → png），
+ * 换顺序会换指纹，这是刻意的 —— 指纹描述的是「这一组输入」。
+ *
+ * 已知盲区（与图标/夜空/巨树/高台/竞技场/中世纪船/龙同口径）：只改**烘焙算法**而不动参数时
+ * 指纹不变 —— 那类改动靠 `src/tests/test-ignis-bake.js` 的产物契约与 Tier 4 兜住。
+ *
+ * @returns {{input: string, sourceSha256: string, paramsSha256: string}}
+ */
+export function ignisInputFingerprint() {
+  for (const [label, p] of [
+    ['几何', IGNIS_GEO_SRC], ['动画', IGNIS_ANIM_SRC], ['贴图', IGNIS_TEX_SRC],
+  ]) {
+    if (!fs.existsSync(p)) {
+      throw new Error(`[焰魔] 烘焙输入缺失（${label}）：${p}（素材入库，缺失 = 仓库损坏）`);
+    }
+  }
+  const hash = createHash('sha256');
+  for (const p of [IGNIS_GEO_SRC, IGNIS_ANIM_SRC, IGNIS_TEX_SRC]) {
+    hash.update(fs.readFileSync(p));
+  }
+  const sourceSha256 = hash.digest('hex');
+  const paramsSha256 = createHash('sha256')
+    .update(JSON.stringify({ IGNIS_BAKE_PARAMS, IGNIS_METRICS, IGNIS_ANIM_PERIODS, IGNIS_ANIM_SOURCES }))
+    .digest('hex');
+  return {
+    input: `${sourceSha256.slice(0, 16)}:${paramsSha256.slice(0, 16)}`,
+    sourceSha256,
+    paramsSha256,
+  };
+}
