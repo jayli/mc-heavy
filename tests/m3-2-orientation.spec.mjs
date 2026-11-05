@@ -18,6 +18,28 @@ async function boot(page) {
   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 60_000 });
 }
 
+/**
+ * 等世界**真正稳定**：sections 连续两次采样不变 + 全队列归零。
+ *
+ * ⚠️ **不能只等「队列瞬时归零」再采样**（v2.54 修 flaky）：瞬时归零后，光照异步收敛触发的
+ * remesh 或视距内新到达的 column 会让队列再次非零 —— 实测在全量回归负载下概率性读到
+ * `meshInflight = 32`（单独跑通过；2026-11-05 批量连跑又实测到 `meshInflight = 1`）。
+ * 加上「sections 不再增长」这半条判据后，等的是「世界加载完毕」而不是「某一瞬间队列恰好为空」。
+ * 语义仍是「无永久积压」，不削弱检查强度（判据同 `place-fallback` / `tnt` 等 spec）。
+ */
+async function waitWorldStable(page) {
+  await page.waitForFunction(() => {
+    const g = window.__MC_GAME__;
+    const s = g.scheduler.stats();
+    const sections = g.renderStats().sections;
+    const prev = window.__MC_STABLE_PREV__;
+    window.__MC_STABLE_PREV__ = sections;
+    return prev === sections &&
+      s.inflight === 0 && s.meshInflight === 0 && s.meshQueued === 0 &&
+      s.pendingMesh === 0 && s.lightInflight === 0 && s.lightQueued === 0 && s.uploadQueue === 0;
+  }, null, { timeout: 60_000, polling: 500 });
+}
+
 /** 在页内找一个可放块的空中点位（玩家旁地面上方 1 格），返回坐标 */
 async function pickSpot(page) {
   return page.evaluate(() => {
@@ -269,15 +291,12 @@ test('M3.2：旋转后 section 重建无报错、draw 受控', async ({ page }) 
   expect(after.sections, `旋转不新增 section｜${diag}`).toBe(before.sections);
   expect(maxDraw - before.draw, `draw 不随旋转次数增长｜${diag}`).toBeLessThanOrEqual(2);
   expect(after.draw - before.draw, `收尾 draw 与起始对等｜${diag}`).toBeLessThanOrEqual(2);
-  // 队列最终归零（无永久积压）。必须**再次等待收敛**而不是立刻采样：上面的
-  // waitForFunction 归零后，中间几个同步断言期间世界可能又开始加载（光照异步收敛触发
-  // remesh、或视距内 column 到达），此刻直接采样会读到非零——实测在全量回归负载下
-  // 概率性读到 meshInflight=32（单独跑通过）。语义仍是「无永久积压」，只是改为等它
-  // 真正收敛后再断言，不削弱检查强度。
-  await page.waitForFunction(() => {
-    const s = window.__MC_GAME__.scheduler.stats();
-    return s.inflight === 0 && s.meshInflight === 0 && s.uploadQueue === 0;
-  }, null, { timeout: 30_000 });
+  // 队列最终归零（无永久积压）。⚠️ 必须等**真正稳定**而不是「瞬时归零」：
+  // 瞬时归零后，中间几个同步断言期间世界可能又开始加载（光照异步收敛触发 remesh、
+  // 或视距内 column 到达），此刻直接采样会读到非零 —— 实测在全量回归负载下
+  // 概率性读到 meshInflight=32（单独跑通过）。v2.54 改用 `waitWorldStable()`
+  // （sections 不再增长 + 全队列归零）取代原来的「等瞬时归零再采样」。
+  await waitWorldStable(page);
   const settled = await page.evaluate(() => window.__MC_GAME__.scheduler.stats());
   expect(settled.inflight).toBe(0);
   expect(settled.meshInflight).toBe(0);

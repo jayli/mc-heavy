@@ -147,7 +147,16 @@ test('M3.1：点击第 6 格外的槽位 → 放块用该方块（世界实际�
   });
   expect(picked.idx).toBe(7);
   expect(await page.evaluate(() => window.__MC_GAME__.player.inventory.selectedSlot)).toBe(7);
-  // 快捷栏 5 格无高亮（selectedSlot > 4，mc-lite 同行为）
+  // 快捷栏 5 格无高亮（selectedSlot > 4，mc-lite 同行为）。
+  // ⚠️ **必须等帧、不能点完立即读**（v2.54 修 flaky）：`selectedSlot` 是点击同步写入的，
+  // 但快捷栏高亮由帧循环里的 `hotbar.update()` 刷新（`game.js`，且它 `sel === lastSelected`
+  // 时早退）—— 点击那一帧之前 cell 0 仍是 `#fff`。单独跑时下一帧赶得上、批量回归负载下
+  // 帧间隔变长，同步读会抢在刷新之前（实测 2026-11-05：批量连跑概率性读到 `#fff` → 红）。
+  // 改用条件轮询（不是 `waitForTimeout` 硬等）：超时即真失败，语义仍是「5 格无高亮」。
+  await page.waitForFunction(() => {
+    const borders = [...document.getElementById('mc-hotbar').children].map((c) => c.style.borderColor);
+    return borders.every((b) => b !== 'rgb(255, 255, 255)' && b !== '#fff');
+  }, null, { timeout: 5_000, polling: 100 });
   const hotbarBorders = await page.evaluate(() => [...document.getElementById('mc-hotbar').children]
     .map((c) => c.style.borderColor));
   expect(hotbarBorders.every((b) => b !== 'rgb(255, 255, 255)' && b !== '#fff')).toBe(true);
