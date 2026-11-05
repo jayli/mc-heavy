@@ -618,3 +618,118 @@ test('焰魔烘焙(v2.56 缺陷C): 攻击全程手臂贴着肩膀（不甩出去
       + `交叠只有 ${overlap.toFixed(2)} 格（应 >0.2）—— 手臂被甩离肩膀`);
   }
 });
+
+test('焰魔烘焙(v2.57 动作): 蓄力帧持剑上臂不举过头顶（仰角 ≤ 55°）', async () => {
+  const d = await loadAsset();
+  const attack = d.animations.attack;
+
+  // ## 为什么有这条用例
+  //
+  // 用户 2026-11-05 实玩反馈：「挥刀时手臂先向后弯曲，然后向前尖刺……左手向后弯曲
+  // 过于多了，不自然」。定量复算两侧素材（Java `ModelIgnis.java:429` 的 `SWING_ATTACK`
+  // 与 Bedrock `attack6a` 数值**逐帧相同**，不是转换缺陷）得到真凶：
+  //
+  // | 部位 | idle(bind) | 蓄力 0.60s | 命中 1.25s |
+  // |---|---|---|---|
+  // | 右臂（持剑）上臂仰角 | −80.4°（垂在身侧） | **+72.8°**（举过头顶后方） | −50.2° |
+  //
+  // 蓄力时 `right_arm_joint` 的 X 轴到 **−147.5°**，把上臂从垂下翻成「举过头顶正后方」，
+  // 0.6s 内转了 158.9°（265°/s），接着 0.65s 反向甩 128.7° 下劈 —— 这就是「向后翻折」
+  // 观感的来源。（持盾的**左**臂全程朝下：−52.9° → −31.0°，并没有向后折。）
+  //
+  // 修法是烘焙期对蓄力曲线做衰减（不是改几何、不改时间结构），让上臂最多举到**斜上后方**。
+  const byName = {};
+  d.bones.forEach((b, i) => { byName[b.name] = i; });
+  const qmul = (a, b) => [
+    a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
+    a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+    a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
+    a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2],
+  ];
+  const qrot = (q, v) => {
+    const [x, y, z, w] = q;
+    const xx = x * x, yy = y * y, zz = z * z;
+    const xy = x * y, xz = x * z, yz = y * z;
+    const wx = w * x, wy = w * y, wz = w * z;
+    return [
+      (1 - 2 * (yy + zz)) * v[0] + 2 * (xy - wz) * v[1] + 2 * (xz + wy) * v[2],
+      2 * (xy + wz) * v[0] + (1 - 2 * (xx + zz)) * v[1] + 2 * (yz - wx) * v[2],
+      2 * (xz - wy) * v[0] + 2 * (yz + wx) * v[1] + (1 - 2 * (xx + yy)) * v[2],
+    ];
+  };
+  const TR = (q, t) => {
+    const [x, y, z, w] = q;
+    const xx = x * x, yy = y * y, zz = z * z;
+    const xy = x * y, xz = x * z, yz = y * z;
+    const wx = w * x, wy = w * y, wz = w * z;
+    return [
+      1 - 2 * (yy + zz), 2 * (xy - wz), 2 * (xz + wy), t[0],
+      2 * (xy + wz), 1 - 2 * (xx + zz), 2 * (yz - wx), t[1],
+      2 * (xz - wy), 2 * (yz + wx), 1 - 2 * (xx + yy), t[2],
+      0, 0, 0, 1,
+    ];
+  };
+  const mul = (a, b) => {
+    const o = new Array(16);
+    for (let r = 0; r < 4; r++) {
+      for (let c = 0; c < 4; c++) {
+        let acc = 0;
+        for (let k = 0; k < 4; k++) acc += a[r * 4 + k] * b[k * 4 + c];
+        o[r * 4 + c] = acc;
+      }
+    }
+    return o;
+  };
+  const apply = (m, p) => [
+    m[0] * p[0] + m[1] * p[1] + m[2] * p[2] + m[3],
+    m[4] * p[0] + m[5] * p[1] + m[6] * p[2] + m[7],
+    m[8] * p[0] + m[9] * p[1] + m[10] * p[2] + m[11],
+  ];
+  const matsOf = (frame) => {
+    const deltas = new Map();
+    const n = attack.boneIndices.length;
+    for (let s = 0; s < n; s++) {
+      const o = (frame * n + s) * 7;
+      deltas.set(attack.boneIndices[s], {
+        rot: [attack.frames[o], attack.frames[o + 1], attack.frames[o + 2], attack.frames[o + 3]],
+        pos: [attack.frames[o + 4], attack.frames[o + 5], attack.frames[o + 6]],
+      });
+    }
+    const mats = d.bones.map(() => null);
+    for (let i = 0; i < d.bones.length; i++) {
+      const b = d.bones[i];
+      const dd = deltas.get(i);
+      const q = dd ? qmul(b.bindQuaternion, dd.rot) : b.bindQuaternion;
+      const dp = dd ? dd.pos : [0, 0, 0];
+      const pv = b.pivot || [0, 0, 0];
+      const rp = qrot(q, pv);
+      const local = TR(q, [pv[0] - rp[0] + dp[0], pv[1] - rp[1] + dp[1], pv[2] - rp[2] + dp[2]]);
+      mats[i] = b.parentIndex === -1 ? local : mul(mats[b.parentIndex], local);
+    }
+    return mats;
+  };
+  // 上臂仰角 = 肩关节 → 握剑点的向量与水平面的夹角（正 = 朝上）
+  const upperArmElevation = (frame) => {
+    const mats = matsOf(frame);
+    const shoulder = apply(mats[byName.right_arm_joint], d.bones[byName.right_arm_joint].pivot);
+    const grip = apply(mats[byName.sword], d.bones[byName.sword].pivot);
+    const dv = [grip[0] - shoulder[0], grip[1] - shoulder[1], grip[2] - shoulder[2]];
+    const len = Math.hypot(dv[0], dv[1], dv[2]);
+    return (Math.asin(dv[1] / len) * 180) / Math.PI;
+  };
+
+  const fps = attack.fps;
+  // 蓄力峰值在 0.60s（素材关键帧 t=0.6 是第一节静态段的终点）
+  const peak = upperArmElevation(Math.round(0.6 * fps));
+  assertTrue(peak <= 55,
+    `蓄力帧（0.60s）持剑上臂仰角 ${peak.toFixed(1)}° 超过 55° —— `
+    + `上臂被举到头顶后方，观感是「向后翻折」。应落在斜上后方（≤55°）`);
+
+  // 下界守卫：不能修复过头把「举剑」削成「垂手」—— 蓄力必须仍明显抬起
+  assertTrue(peak >= 25,
+    `蓄力帧上臂仰角 ${peak.toFixed(1)}° 过低（应 ≥25°）—— 修复过度，蓄力姿态消失了`);
+
+  // 命中帧必须仍然劈到下方（挥砍语义不能丢）
+  const hit = upperArmElevation(Math.round(1.2 * fps));
+  assertTrue(hit < 0, `命中帧（1.20s）上臂仰角 ${hit.toFixed(1)}° 应朝下（<0）—— 挥砍方向丢了`);
+});

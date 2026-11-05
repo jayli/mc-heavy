@@ -304,7 +304,124 @@ function resampleAnimation(anims, names, frameCount, fps, boneNameToIndex) {
       frames[o + 6] = pos[2] * PX2BLOCK;
     }
   }
+  applyWindupDamping(frames, frameCount, boneIndices, boneNameToIndex, fps);
   return { fps, frameCount, boneIndices, frames };
+}
+
+// ---------------------------------------------------------------------------
+// 蓄力段衰减（v2.57，用户实玩反馈「手臂向后弯曲过多」）
+// ---------------------------------------------------------------------------
+
+/**
+ * 蓄力段的时间窗口（秒）。
+ *
+ * ⚠️⚠️ **峰值是一段平台 [0.60, 1.00]，不是 0.60 这个单点。**
+ * 素材 `attack6a` 在 t=0.6 到达 `right_arm_joint` X=−147.5° 后，靠
+ * `setStaticKeyframe(8tick)` 把这个值**保持到 1.0s**，1.05s 才开始挥砍。
+ * 把关窗点错放在 0.60（实测踩到）会让 0.60~1.00 的整个平台只被部分衰减，
+ * 0.90s 处仰角仍有 79.5° —— 用户看到的「翻折」几乎没被修掉。
+ */
+const WINDUP_RAMP_SECONDS = 0.3;    // 起手：与 idle 的接缝，衰减 0→1
+const WINDUP_PLATEAU_START = 0.60;  // 峰值平台起点
+const WINDUP_PLATEAU_END = 1.00;    // 峰值平台终点（挥砍从 1.05s 开始）
+const WINDUP_FADE_OUT = 0.15;       // 平台后的衰减收尾（防一帧反跳，见 weightAt 注释）
+
+/**
+ * 骨骼名 → [X, Y, Z] 三轴各自的**保留比例**（1 = 原样，0 = 完全去掉）。
+ *
+ * ## 为什么要这一层
+ *
+ * 用户 2026-11-05 反馈：「挥刀时手臂先向后弯曲，然后向前尖刺……左手向后弯曲过多，
+ * 不自然」。
+ *
+ * **不是转换缺陷** —— 定量比对两侧原始素材完全相同（Java `ModelIgnis.java:429` 的
+ * `SWING_ATTACK` 与 Bedrock `attack6a` 数值逐帧一致）。是作者原始设计本身幅度极大：
+ *
+ * | 部位 | idle(bind) | 蓄力 0.60s | 命中 1.25s |
+ * |---|---|---|---|
+ * | 右臂（持剑）上臂仰角 | −80.4°（垂在身侧） | **+82.0°**（举过头顶后方） | −50.2° |
+ *
+ * `right_arm_joint` 的 X 轴在蓄力时到 **−147.5°**，0.6s 内从垂下翻转 158.9°（265°/s），
+ * 随后 0.65s 反向用 128.7° 下劈 —— 观感就是「胳膊向后翻折」。
+ *
+ * ## 修法
+ *
+ * **只衰减蓄力段的旋转幅度**，挥砍与回弹段保持原样，且**不动时间轴** ——
+ * `hitFrameSeconds`（1.20s）、`attackAnimSeconds`（2.75s）、冷却与锥形判定全部不受影响。
+ *
+ * X 保留 0.62 ⇒ −147.5° → −91.5°，上臂仰角从 82° 收到约 43°（仍明显抬起，不垂手）。
+ * 左臂 Y 保留 0.7 ⇒ −50° → −35°，把向外摊开的角度收敛。
+ */
+const WINDUP_KEEP = new Map([
+  ['right_arm_joint', [0.62, 1, 1]],
+  ['left_arm_joint', [1, 0.7, 1]],
+]);
+
+/**
+ * 对蓄力段做旋转衰减（就地修改 frames）。
+ *
+ * 衰减系数按时窗平滑过渡（避免峰值处出折线，也保证与 idle 的接缝不跳）：
+ * - `t ≤ RAMP`：0 → 1 线性上升；
+ * - `RAMP < t ≤ PEAK`：保持 1；
+ * - `PEAK < t < END`：1 → 0 线性下降；
+ * - `t ≥ END`：0（挥砍段完全原样）。
+ *
+ * @param {number[]} frames 扁平帧数据（每骨 7 个：四元数 + 位置）
+ * @param {number} frameCount 帧数
+ * @param {number[]} boneIndices 参与动画的骨骼下标（升序）
+ * @param {Map<string, number>} boneNameToIndex 骨骼名 → 下标
+ * @param {number} fps 帧率
+ */
+function applyWindupDamping(frames, frameCount, boneIndices, boneNameToIndex, fps) {
+  const slotOf = new Map(boneIndices.map((bi, slot) => [bi, slot]));
+  const targets = [...WINDUP_KEEP].map(([name, keep]) => {
+    const bi = boneNameToIndex.get(name);
+    if (bi === undefined) fail(`蓄力衰减表里的骨骼 "${name}" 不在几何里`);
+    const slot = slotOf.get(bi);
+    if (slot === undefined) fail(`蓄力衰减目标 "${name}" 没有动画通道`);
+    return { slot, keep };
+  });
+
+  // ⚠️⚠️ 平台终点**必须渐变收尾**，不能断崖式撤掉。
+  //
+  // 实测踩到：平台在 1.000s（帧 30）衰减后是 −91.5°，若平台后立刻恢复原样，
+  // 1.033s（帧 31）就跳回 −143.9° —— 一帧内反向 52°，肉眼是一下抽搐。
+  // 那正是「挥砍起手」段，绝不能插入这种跳变。
+  //
+  // 因此在 [PLATEAU_END, PLATEAU_END + FADE_OUT] 内线性把衰减 1 → 0，
+  // 让姿态从「衰减后的 −91.5°」平滑接回素材的挥砍起手。
+  const weightAt = (t) => {
+    if (t <= WINDUP_RAMP_SECONDS) return t / WINDUP_RAMP_SECONDS;
+    if (t <= WINDUP_PLATEAU_END) return 1;
+    const fadeEnd = WINDUP_PLATEAU_END + WINDUP_FADE_OUT;
+    if (t >= fadeEnd) return 0;
+    return 1 - (t - WINDUP_PLATEAU_END) / WINDUP_FADE_OUT;
+  };
+
+  const n = boneIndices.length;
+  const q = new THREE.Quaternion();
+  const damped = new THREE.Quaternion();
+  const e = new THREE.Euler();
+  for (let f = 0; f < frameCount; f++) {
+    const w = weightAt(f / fps);
+    if (w <= 0) continue;
+    for (const { slot, keep } of targets) {
+      const o = (f * n + slot) * 7;
+      q.set(frames[o], frames[o + 1], frames[o + 2], frames[o + 3]);
+      e.setFromQuaternion(q, 'XYZ');
+      // ⚠️ 不能把四元数 slerp 到 identity —— 那会把三个轴同时缩小，
+      // 而这里要的是「只收 X 轴、Y/Z 不动」。
+      const factor = (k) => 1 - w * (1 - k);
+      damped.setFromEuler(new THREE.Euler(
+        e.x * factor(keep[0]),
+        e.y * factor(keep[1]),
+        e.z * factor(keep[2]),
+        'XYZ',
+      ));
+      frames[o] = damped.x; frames[o + 1] = damped.y;
+      frames[o + 2] = damped.z; frames[o + 3] = damped.w;
+    }
+  }
 }
 
 /**
