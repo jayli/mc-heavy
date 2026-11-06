@@ -3,24 +3,35 @@
 // 不新增地形渲染通道 / InstancedMesh / BatchedMesh，也不污染 M3 draw-call 基线）。
 // 每次只有当前一把枪存在；模型缓存只保存只读模板（由 WeaponModelLoader 持有），装备时 clone。
 // 加特林视图节点在应用绕局部 x 轴的枪管旋转前设 rotation.order='YXZ'（避免万向锁）。
+import * as THREE from 'three';
 import { WEAPONS, WEAPON_IDS } from '../player/weapons/weapon-catalog.js';
 
 /**
- * 近战剑挥砍动画参数（v2.65）。曲线与 `view-arm.js` 的 attack/whip 同口径：
- *   · `attack = sin(√p·π)` —— 峰值在 p≈0.25（快出慢收），主下劈跟这条；
- *   · `whip   = sin(p²·π)` —— 峰值在 p≈0.707（滞后），甩腕（roll）跟这条。
- * 时长由 catalog 的 `swingSeconds`（0.3s）给，不在这里写第二份。
+ * 近战挥砍曲线（v2.67 按原版 `ItemInHandRenderer` 重建）。
+ *
+ * **为何要绕「握点」转，而不是绕模型中心**（用户 2026-11-06：「原来的挥剑动作你也给
+ * 简化了，也是不对的，要有一个合理的挥剑动作」）：v2.65/v2.66 只对节点做整体
+ * `rotation.x -= arc`，而节点原点在**模型中心** ⇒ 整把剑绕自己的腰线像螺旋桨一样转，
+ * 剑柄也跟着飞 —— 那不是挥砍，是转棍子。真实挥砍的支点是**手（握点）**，剑身在支点
+ * 外侧成弧扫过。
+ *
+ * **三段式（不是单一 sin）**：
+ *   · `attack = sin(√p·π)` —— 峰在 p≈0.25，快出慢收 ⇒ 主下劈
+ *   · `whip   = sin(p²·π)` —— 峰在 p≈0.707，滞后 ⇒ 甩腕
+ *   · `windup` —— 前 30% **反向抬手蓄力**，之后才砍下去
+ * 四段齐（蓄力 → 快劈 → 滞腕 → 回位）才像一刀；只一个正弦峰值就是「摆了一下」。
  */
-const SWORD_SWING = Object.freeze({
-  /** 下劈幅度（弧度，绕 x 轴）：从举起姿态向前下砍 */
-  arc: 1.4,
-  /** 甩腕幅度（弧度，绕 z 轴）：滞后于主劈，给「手腕一抖」的质感 */
-  roll: 0.35,
-  /** 挥砍时向前探的位移（格） */
-  forward: 0.2,
-  /** 挥砍时向下的位移（格） */
-  drop: 0.1,
+const SWORD_SWING_CURVES = Object.freeze({
+  /** 快出慢收：下劈主曲线 */
+  attack: (p) => Math.sin(Math.sqrt(p) * Math.PI),
+  /** 滞后：甩腕曲线 */
+  whip: (p) => Math.sin(p * p * Math.PI),
+  /** 蓄力：前 `end` 段抬手（正），之后归 0 */
+  windup: (p, end) => (p >= end ? 0 : Math.sin((p / end) * Math.PI)),
 });
+
+/** 蓄力段占比（前 30% 抬手，后 70% 砍下去） */
+const SWORD_WINDUP_END = 0.3;
 
 export class ViewWeapon {
   /**
@@ -117,30 +128,64 @@ export class ViewWeapon {
     const [rx, ry, rz] = weapon.transform.rotation;
     const [sx, sy, sz] = weapon.transform.scale;
 
-    // v2.65 近战剑挥砍：推进进度并叠加弧线运动（枪无此分支，逐位不变）
-    let swingDrop = 0;
-    let swingForward = 0;
-    let swingArc = 0;
-    let swingRoll = 0;
-    if (weapon.melee && this._swingElapsed < this._swingDuration) {
-      this._swingElapsed = Math.min(this._swingDuration, this._swingElapsed + dt);
-      const p = this._swingElapsed / this._swingDuration;
-      const attack = Math.sin(Math.sqrt(p) * Math.PI); // 快出曲线（主下劈）
-      const whip = Math.sin(p * p * Math.PI);          // 滞后曲线（甩腕）
-      swingDrop = attack * SWORD_SWING.drop;
-      swingForward = attack * SWORD_SWING.forward;
-      swingArc = attack * SWORD_SWING.arc;
-      swingRoll = whip * SWORD_SWING.roll;
+    // ---- 非近战（枪）：原路径逐位不变 ----
+    if (!weapon.melee) {
+      this.node.position.set(px, py - drawOffset, pz + this._recoil);
+      this.node.rotation.set(rx + (weapon.spin ? this._spinRotation : 0), ry, rz);
+      this.node.scale.set(sx, sy, sz);
+      return;
     }
 
-    this.node.position.set(px, py - drawOffset - swingDrop, pz + this._recoil - swingForward);
-    // rotation.x = baseRotationX + spinRotation（加特林）− swingArc（剑下劈）；
-    // Euler order 在 select 时已设
-    this.node.rotation.set(
-      rx + (weapon.spin ? this._spinRotation : 0) - swingArc,
-      ry,
-      rz + swingRoll,
-    );
+    // ---- 近战：绕「握点」挥砍 ----
+    //
+    // 支点 = catalog 的 `swingPivot`（**节点局部坐标**，= 剑柄末端位置 × scale）。
+    // 真挥砍的支点是手，不是剑的中心 —— 绕中心转的形态是「螺旋桨」，用户已明确指出。
+    // 数学：目标变换 = T(t) · R · T(−pivot)，使 pivot 在相机空间里保持不动：
+    //   新位置 = 基础位置 + pivot − R · pivot
+    const pivot = weapon.swingPivot ?? [0, 0, 0];
+    let swingPitch = 0;
+    let swingRoll = 0;
+    let swingYaw = 0;
+    let swingDrop = 0;
+    let swingForward = 0;
+    const swinging = weapon.swing && this._swingElapsed < this._swingDuration;
+    if (swinging) {
+      this._swingElapsed = Math.min(this._swingDuration, this._swingElapsed + dt);
+      const p = this._swingElapsed / this._swingDuration;
+      const attack = SWORD_SWING_CURVES.attack(p);
+      const whip = SWORD_SWING_CURVES.whip(p);
+      const windup = SWORD_SWING_CURVES.windup(p, SWORD_WINDUP_END);
+      const w = weapon.swing;
+      // 蓄力抬手（反向）+ 下劈（正向）—— 两段方向相反，合成后才是「拉起再劈」
+      swingPitch = -windup * w.windupArc + attack * w.arc;
+      swingRoll = whip * w.roll;
+      swingYaw = whip * w.yaw;
+      swingDrop = attack * w.drop;
+      swingForward = attack * w.forward;
+    }
+    const euler = new THREE.Euler(rx + swingPitch, ry + swingYaw, rz + swingRoll, 'XYZ');
+    // ⚠️ **直支点补偿只在真正挥砍时施加**：静止时必须逐位等于 catalog 的 position
+    // （曾经的缺陷：无条件加 `pivot − R·pivot`，而 R 是**基础朝向**下的旋转 ⇒ 静止也把节点
+    // 拉偏 (−1.195, 0.026, −2.802) vs 设定值 (−0.336, 0.719, −1.387)，剑体飞到画面中间）。
+    let posX = px;
+    let posY = py - drawOffset;
+    let posZ = pz + this._recoil;
+    if (swinging) {
+      const rot = new THREE.Matrix4().makeRotationFromEuler(euler);
+      const pv = new THREE.Vector3(pivot[0], pivot[1], pivot[2]);
+      const rp = pv.clone().applyMatrix4(rot);
+      // 目标：支点在相机空间保持不动。绕**基础**朝向的支点位置为 pv；绕当前朝向为 rp。
+      // 两者之差补回节点位置，支点就不动。
+      const base = new THREE.Matrix4().makeRotationFromEuler(
+        new THREE.Euler(rx, ry, rz, 'XYZ'),
+      );
+      const rp0 = pv.clone().applyMatrix4(base);
+      posX += rp0.x - rp.x;
+      posY += rp0.y - rp.y;
+      posZ += rp0.z - rp.z;
+    }
+    this.node.position.set(posX, posY - swingDrop, posZ - swingForward);
+    this.node.rotation.copy(euler);
     this.node.scale.set(sx, sy, sz);
   }
 

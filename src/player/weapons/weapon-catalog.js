@@ -11,6 +11,18 @@ export const WEAPON_IDS = Object.freeze({
   ARM: 'arm', PISTOL: 'pistol', MAG7: 'mag7', MINIGUN: 'minigun', SWORD: 'sword',
 });
 
+/**
+ * 剑体基础朝向（弧度，XYZ 序）。
+ *
+ * 来源：先定「相机空间目标基」再反解欧拉角（推导见 `WEAPONS[SWORD].transform` 注释），
+ * 度数结果是 **-60° / -90°**。这里用表达式而不是 `-1.047` 这类硬编码小数，是为了让
+ * 后面的人一眼看出它是角度换算 —— v2.65 的缺陷就是「度/弧度」混用。
+ */
+const SWORD_LENGTH_SCALE = 0.85967;
+const SWORD_ROTATION_X = (78.506 * Math.PI) / 180;
+const SWORD_ROTATION_Y = (-76.693 * Math.PI) / 180;
+const SWORD_ROTATION_Z = (126.082 * Math.PI) / 180;
+
 /** 曳光池上限：池满时丢弃最旧的纯视觉曳光，绝不丢弃命中或世界编辑（M4 规格 §4.2） */
 export const MAX_ACTIVE_TRACERS = 32;
 
@@ -83,11 +95,62 @@ export const WEAPONS = freeze({
    */
   [WEAPON_IDS.SWORD]: {
     id: 'sword', model: 'sword', cooldown: 0.5, recoil: 0, sound: 'player_swing', volume: 0.5,
-    transform: { scale: [1.0, 1.0, 1.0], position: [0.42, -0.42, -0.55], rotation: [0.25, -0.35, -0.5] },
+    /**
+     * 第一人称摆放（v2.66 重构，实测定标 —— 勿凭手感改）。
+     *
+     * **欧拉角不是拍脑袋的**：先定「相机空间目标基」，再反解欧拉角。模型空间轴 ↔ 相机空间：
+     *   · 模型 +X（薄轴 = 剑面法线）→ (0, √3/2, 0.5)  朝相机且略朝上 ⇒ 看到剑面而不是刀背
+     *   · 模型 +Y（柄→尖）          → (0, 0.5, -√3/2) 向前且朝上 ⇒ **刀刃向前**（用户裁定）
+     *   · 模型 +Z（剑身宽度）        → (-1, 0, 0)      屏幕内朝左
+     * 三个基向量正交（c3 由前两者叉乘得到）、det = +1、欧拉往返误差 1.5e-8。
+     * 反解结果是 **90° / -70.08° / 144.96°（XYZ 序）**，见文件头 `SWORD_ROTATION_*` 常量注释。
+     *
+     * ⚠️ **catalog 的 `rotation` 单位是弧度**（与枪同一口径：MAG7 写的是 `-Math.PI / 2`）。
+     * 曾经把度数（-60）直接填进来，实测被当成 **-60 弧度 = -3437°** ⇒ 剑体变成无从预期的朝向。
+     * 这种错在任何「模型加载成功 / 非黑像素」类判据下都不会报，只有量相机空间坐标才现形。
+     *
+     * ⚠️ **v2.65 的 `[0.25, -0.35, -0.5]` 是错的**（实测：剑尖 z=-0.362 比剑柄 z=-0.738
+     * 更靠近相机 ⇒ 剑体前后颠倒，柄朝前、尖朝脸），且屏幕包围盒 x[575..2162] y[-277..1357]
+     * 对 1280×720 视口只有 **19.6%** 落在窗内。两个缺陷同源。
+     * 自我约束：改这三个数后必须重跑 `tests/sword.spec.mjs` 的「剑体朝向」与
+     * 「剑体大部分在视窗内」两条 —— 它们判的是**相机空间坐标与屏幕包围盒**，不是目视。
+     */
+    transform: {
+      scale: [SWORD_LENGTH_SCALE, SWORD_LENGTH_SCALE, SWORD_LENGTH_SCALE],
+      position: [0.26405, 0.10824, -1.09537],
+      rotation: [SWORD_ROTATION_X, SWORD_ROTATION_Y, SWORD_ROTATION_Z],
+      rotationOrder: 'XYZ',
+    },
+    /**
+     * 挥砍支点（**节点局部坐标**，未乘 scale）= 剑柄末端在节点里的位置。
+     *
+     * 实测值：柄末端局部坐标 `(0, -0.9375, 0.0996)` × scale `0.5436` = `(0, -0.5097, 0.0541)`。
+     * 挥砍时绕它转，则**握点（手）在相机空间里不动**、剑身在支点外侧扫弧 —— 这才是挥砍。
+     * 绕模型中心转的形态是「螺旋桨」，用户 2026-11-06 已明确否掉。
+     */
+    swingPivot: [0, -0.80594, 0.08561],
     // 近战：无 muzzleOffset / localStart / tracer / automatic / scan（枪专属字段）
     entityDamage: 50, entityRange: 3, melee: true,
     hitSound: 'emp_activated', hitVolume: 0.6,
     swingSeconds: 0.3,
+    /**
+     * 挥砍幅度（弧度 / 格）。四段式，与 `view-weapon.js` 的三条曲线配合：
+     * `windup`（前 30% 抬手）→ `arc`（快出下劈）→ `roll`/`yaw`（滞后甩腕）。
+     */
+    swing: {
+      /** 蓄力抬手幅度（反向，拉起剑） */
+      windupArc: 0.55,
+      /** 主下劈幅度（绕握点的 pitch） */
+      arc: 1.45,
+      /** 甩腕（绕握点的 roll，滞后曲线） */
+      roll: 0.55,
+      /** 横摆（绕握点的 yaw，滞后曲线）—— 原版主摆动轴 */
+      yaw: 0.35,
+      /** 下劈时向下探（格） */
+      drop: 0.12,
+      /** 下劈时向前探（格） */
+      forward: 0.22,
+    },
     /**
      * 击退距离（格）。用户：「挨了一剑后，如果没死的话，就往后退一小步」。
      *

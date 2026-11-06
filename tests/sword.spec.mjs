@@ -114,6 +114,8 @@ test.describe('近战剑（v2.65）', () => {
     let diffCount = 0;
     let lumSum = 0;
     let rSum = 0; let gSum = 0; let bSum = 0;
+    /** 紫色像素数：b-g>40 且 r-g>20（素材剑刃 rgb(146,67,166) ⇒ b-g=99、r-g=79） */
+    let purpleCount = 0;
     for (let y = 0; y < pngA.height; y++) {
       for (let x = 0; x < pngA.width; x++) {
         const i = (pngA.width * y + x) << 2;
@@ -122,8 +124,10 @@ test.describe('近战剑（v2.65）', () => {
           + Math.abs(pngA.data[i + 2] - pngB.data[i + 2]);
         if (d > 8) {
           diffCount++;
-          rSum += pngB.data[i]; gSum += pngB.data[i + 1]; bSum += pngB.data[i + 2];
-          lumSum += (pngB.data[i] + pngB.data[i + 1] + pngB.data[i + 2]) / 3;
+          const r = pngB.data[i]; const g = pngB.data[i + 1]; const b = pngB.data[i + 2];
+          rSum += r; gSum += g; bSum += b;
+          lumSum += (r + g + b) / 3;
+          if (b - g > 40 && r - g > 20) purpleCount++;
         }
       }
     }
@@ -132,11 +136,169 @@ test.describe('近战剑（v2.65）', () => {
     const avgG = gSum / diffCount;
     const avgB = bSum / diffCount;
     const avgLum = lumSum / diffCount;
-    // ② 偏紫：R 与 B 都显著高于 G（素材剑刃 rgb(146,67,166) ⇒ B-G ≈ 99）
-    expect(avgB - avgG, `剑体必须偏紫（实测 avgRGB=${avgR.toFixed(0)},${avgG.toFixed(0)},${avgB.toFixed(0)}）`).toBeGreaterThan(15);
-    expect(avgR - avgG, '红通道也必须高于绿（紫色 = 红+蓝）').toBeGreaterThan(5);
+    // ② 偏紫：用**紫色像素计数**判，不用全 diff 区域的平均色差。
+    //
+    // ⚠️ v2.66 重新标定。旧断言是 `avgB - avgG > 15`，它在 v2.65 的旧摆放（剑占屏 10.1%）下
+    // 成立，换了正确姿态后降到 12.5 而失败 —— 但那是**判据随剑体在屏上大小漂移**，不是剑变不紫了：
+    // 剑体变小/变远后 diff 区域混进了更多背景（灰石头，r≈g≈b），把平均值拉平。
+    // 实测对照（同一帧背景、只差 transform）：旧姿态紫色像素占比 50.3%、新姿态 16% —— **两者都紫**。
+    // 噪声底实测：同状态重复截图 purpleCount = **0** ⇒ 这个判据没有假阳性。
+    expect(purpleCount, `剑体必须真有紫色像素（实测 purple=${purpleCount} / diff=${diffCount}，avgRGB=${avgR.toFixed(0)},${avgG.toFixed(0)},${avgB.toFixed(0)}）`)
+      .toBeGreaterThan(300);
+    expect(purpleCount / diffCount, '紫色应占 diff 区的有意义份额（实测 16%）').toBeGreaterThan(0.05);
     // ③ 非纯黑（unlit 场景缺灯会让模型全黑，历史缺陷）
     expect(avgLum, '剑体不得渲染为纯黑').toBeGreaterThan(15);
+  });
+
+  test('剑体朝向与视窗内占比（v2.66：相机空间 + 屏幕包围盒实测，非目视）', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.goto('/?vd=4');
+    await waitWorldReady(page);
+    await page.evaluate(() => window.__MC_GAME__.selectWeapon('sword'));
+    await page.waitForFunction(() => window.__MC_GAME__.player.viewWeapon.node !== null, null, { timeout: 20_000 });
+    await page.waitForTimeout(900); // 等举剑动画走完
+
+    // ⚠️ 这三条判的都是**相机空间坐标与屏幕包围盒**，不是「模型加载成功 / 有紫色像素」——
+    // v2.65 的两个真缺陷（刃朝后、柄跑到相机背后只剩 19.6% 在窗内）在前一类判据下全绿。
+    const m = await page.evaluate(async () => {
+      const g = window.__MC_GAME__;
+      const THREE = await import('three');
+      const node = g.player.viewWeapon.node;
+      let mesh = null; node.traverse((o) => { if (o.isMesh) mesh = o; });
+      const cam = g.camera;
+      g.scene.updateMatrixWorld(true);
+      cam.updateMatrixWorld(true);
+      const camInv = new THREE.Matrix4().copy(cam.matrixWorld).invert();
+      const pos = mesh.geometry.attributes.position;
+      const N = pos.count / 24;
+      const W = innerWidth, H = innerHeight;
+      const tan = Math.tan((cam.fov / 2) * Math.PI / 180);
+      const pts = [];
+      const centers = [];
+      for (let e = 0; e < N; e++) {
+        const c = new THREE.Vector3();
+        for (let k = 0; k < 24; k++) {
+          const v = new THREE.Vector3(pos.getX(e * 24 + k), pos.getY(e * 24 + k), pos.getZ(e * 24 + k));
+          v.applyMatrix4(mesh.matrixWorld).applyMatrix4(camInv);
+          pts.push(v); c.add(v);
+        }
+        centers.push(c.multiplyScalar(1 / 24));
+      }
+      const zs = pts.map((p) => p.z);
+      const front = pts.filter((p) => p.z < -cam.near);
+      const sxs = [], sys = [];
+      for (const v of front) {
+        sxs.push(((v.x / (-v.z * tan * cam.aspect)) + 1) / 2 * W);
+        sys.push((1 - v.y / (-v.z * tan)) / 2 * H);
+      }
+      const clip = (a, b, lo, hi) => Math.max(0, Math.min(b, hi) - Math.max(a, lo));
+      const bx = [Math.min(...sxs), Math.min(...sys), Math.max(...sxs), Math.max(...sys)];
+      const el0 = centers[0]; // 柄尾
+      const el5 = centers[5]; // 剑尖
+      return {
+        vertsBehindCamera: pts.length - front.length,
+        zMax: Math.max(...zs),
+        bbox: bx,
+        inViewPct: 100 * clip(bx[0], bx[2], 0, W) * clip(bx[1], bx[3], 0, H)
+          / (((bx[2] - bx[0]) * (bx[3] - bx[1])) || 1),
+        zHilt: el0.z, zTip: el5.z,
+        screenHilt: [((el0.x / (-el0.z * tan * cam.aspect)) + 1) / 2 * W, (1 - el0.y / (-el0.z * tan)) / 2 * H],
+        screenTip: [((el5.x / (-el5.z * tan * cam.aspect)) + 1) / 2 * W, (1 - el5.y / (-el5.z * tan)) / 2 * H],
+      };
+    });
+
+    // ① 没有任何顶点在相机背后（否则近平面裁剪炸掉，投影出离谱坐标）
+    expect(m.vertsBehindCamera, '剑不得有任何顶点跑到相机背后').toBe(0);
+    expect(m.zMax, '全部顶点必须在相机前方（相机朝 -Z）').toBeLessThan(0);
+    // ② 刀刃朝前：剑尖（el5）比剑柄（el0）离相机更远
+    expect(m.zTip, `剑尖 z=${m.zTip.toFixed(3)} 必须比剑柄 z=${m.zHilt.toFixed(3)} 更远（= 刃朝前）`)
+      .toBeLessThan(m.zHilt);
+    // ③ 剑体大部分在视窗内。
+    //
+    // ⚠️ **阈值 v2.67 从 85% 降到 55%，是口径变更而不是放宽容差**：用户 2026-11-06
+    // 要求「要呈现出一种合理的执剑状态」（参考原版第一人称：剑柄从**屏幕外**右下伸进来）。
+    // 柄端落到屏幕外正是握持感的来源 —— 要求 100% 入窗与「剑不能被悬空握着」相互矛盾。
+    // 现在的口径是「主体（刃身）必须在窗内」：55% 对应「柄端出窗、刃身完整可见」，
+    // 实测 73.4%（旧实现是 19.6%，那才是真缺陷）。
+    expect(m.inViewPct, `剑体在视窗内占比 ${m.inViewPct.toFixed(1)}%（bbox=${m.bbox.map(Math.round)}）`)
+      .toBeGreaterThan(55);
+    // ④ 姿态方向：柄在右下、尖在左上
+    expect(m.screenHilt[0], '剑柄必须在屏幕右半边').toBeGreaterThan(1280 * 0.6);
+    expect(m.screenTip[0], '剑尖必须在屏幕左半边').toBeLessThan(1280 * 0.6);
+    expect(m.screenHilt[1], '剑柄必须低于剑尖（柄在下）').toBeGreaterThan(m.screenTip[1]);
+  });
+
+  test('剑体尺寸与握持感（v2.68：剑要够大 + 剑柄藏到屏幕下方，不画手臂）', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.goto('/?vd=4');
+    await waitWorldReady(page);
+    await page.evaluate(() => window.__MC_GAME__.selectWeapon('sword'));
+    await page.waitForFunction(() => window.__MC_GAME__.player.viewWeapon.node !== null, null, { timeout: 20_000 });
+    await page.waitForTimeout(1000);
+
+    // 用户 2026-11-06 三轮反馈的最终裁定：
+    //   ①「怎么这么小呢……要把剑放大到合适的尺寸」
+    //   ②「哪有这样悬空的」（剑要像被握着）
+    //   ③「只需要有剑的动作就可以了，不需要手臂，剑柄藏在屏幕的下方即可」
+    // 这三条在「模型加载成功 / 有紫色像素」类判据下全绿 —— 必须量尺寸与柄端出屏。
+    const m = await page.evaluate(async () => {
+      const g = window.__MC_GAME__;
+      const THREE = await import('three');
+      const vw = g.player.viewWeapon;
+      const node = vw.node;
+      const group = node.children[0];
+      let mesh = null; node.traverse((o) => { if (o.isMesh) mesh = o; });
+      const cam = g.camera;
+      g.scene.updateMatrixWorld(true);
+      cam.updateMatrixWorld(true);
+      const camInv = new THREE.Matrix4().copy(cam.matrixWorld).invert();
+      const pos = mesh.geometry.attributes.position;
+      const W = innerWidth, H = innerHeight;
+      const tan = Math.tan((cam.fov / 2) * Math.PI / 180);
+      const scr = (v) => [((v.x / (-v.z * tan * cam.aspect)) + 1) / 2 * W, (1 - v.y / (-v.z * tan)) / 2 * H];
+      // group 局部坐标（归一化偏移在 group.position 上）
+      const gp = group.position, gs = group.scale.x;
+      const inGroup = (v) => v.clone().add(gp).multiplyScalar(gs);
+      const camPt = (q) => q.clone().applyMatrix4(node.matrixWorld).applyMatrix4(camInv);
+      const elCenter = (e) => {
+        const c = new THREE.Vector3();
+        for (let k = 0; k < 24; k++) {
+          c.add(new THREE.Vector3(pos.getX(e * 24 + k), pos.getY(e * 24 + k), pos.getZ(e * 24 + k)));
+        }
+        return inGroup(c.multiplyScalar(1 / 24));
+      };
+      const hilt = camPt(elCenter(0));   // el0 在柄端
+      const tip = camPt(elCenter(5));    // el5 在剑尖
+      const hs = scr(hilt), ts = scr(tip);
+      // 全顶点包围盒
+      const all = [];
+      for (let i = 0; i < pos.count; i++) {
+        all.push(scr(camPt(inGroup(new THREE.Vector3(pos.getX(i), pos.getY(i), pos.getZ(i))))));
+      }
+      const xs = all.map((q) => q[0]), ys = all.map((q) => q[1]);
+      return {
+        bladePx: Math.hypot(ts[0] - hs[0], ts[1] - hs[1]),
+        hiltScreenY: hs[1], tipScreenY: ts[1],
+        hiltScreen: hs.map(Math.round), tipScreen: ts.map(Math.round),
+        bbox: [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)].map(Math.round),
+        armVisible: g.viewArm.mesh.visible,
+      };
+    });
+
+    // ① 尺寸：剑刃屏幕跨度 ≥ 屏幕对角线的 35%（旧实现约 20%，用户说「怎么这么小」）
+    const pct = 100 * m.bladePx / Math.hypot(1280, 720);
+    expect(pct, `剑刃屏幕跨度 ${pct.toFixed(1)}%（柄 ${m.hiltScreen} → 尖 ${m.tipScreen}）`)
+      .toBeGreaterThan(35);
+    // ② 握持感（替代手臂）：剑柄端必须落在**屏幕下方之外**
+    //    —— 用户：「剑柄藏在屏幕的下方即可，不用把手臂绘制出来」。
+    //    柄端不出屏 = 剑整把悬在画面里（v2.66 那版的观感缺陷）。
+    expect(m.hiltScreenY, `剑柄端 y=${m.hiltScreen[1]} 必须大于视口高 720（藏在屏幕下方外）`)
+      .toBeGreaterThan(720);
+    // ③ 剑尖必须在屏幕内（否则整把剑看不见）
+    expect(m.tipScreenY, '剑尖必须在视口内').toBeLessThan(720);
+    expect(m.tipScreenY).toBeGreaterThan(0);
+    // ④ 不画手臂（用户明确要求）
+    expect(m.armVisible, '持剑时不得显示手臂').toBe(false);
   });
 
   test('剑命中丧尸：扣血 + 红闪 + 击退 + 音效', async ({ page }) => {
