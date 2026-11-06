@@ -23,7 +23,7 @@ import { IgnisBossAgent } from '../bosses/ignis-boss-agent.js';
 // 第③层（`steerIntentAabb` 的 1.2 格精细避让）已经在 Agent 里，不重复引用。
 import { PathCache } from '../zombies/zombie-pathfinder.js';
 import { decideStep, memoryFor } from '../zombies/zombie-navigator.js';
-import { aabbCollidesAt, zombieStepUpY } from '../zombies/zombie-navigation.js';
+import { aabbCollidesAt, zombieStepUpY, displaceGroundEntity } from '../zombies/zombie-navigation.js';
 
 // ==================== 纯函数 ====================
 
@@ -617,6 +617,39 @@ export class IgnisService {
       return { dead: true, health };
     }
     return { dead: false, health };
+  }
+
+  /**
+   * 击退（v2.65 近战剑）：沿给定水平位移把焰魔推开一小步。
+   *
+   * 与 `ZombieService.knockback` 同口径（位置位移 + 共用 `aabbCollidesAt` + `reindexColumn`）。
+   *
+   * ## 与「不动如山」裁定的关系（勿误读为回退）
+   *
+   * v2.62 的用户裁定是「**玩家贴近时焰魔不主动退让**」（`_ringIntent` 的站定环），
+   * 针对的是「玩家跑向焰魔 → 焰魔自己走开 → 看着像玩家推着它走」。本方法是
+   * **被砍一刀后的受击反馈**（用户 2026-11-06：「boss 和丧尸挨了一剑后，如果没死的话，
+   * 就往后退一小步」）—— 两者语义不同：前者是走位策略（每帧），后者是一次性位移。
+   *
+   * ⚠️ **位移量必须小**（catalog 的 `knockbackDistance` = 0.4 格）：焰魔站定环半径 5.0 格，
+   * 一次推开 0.4 格仍在死区（0.75 格宽）内 ⇒ 不会触发「退出死区 → 重新追击」的抖动。
+   * 把击退距离调到 > `standoffDeadband` 会让「砍一刀」变成「把它打跑」，观感与裁定相左。
+   *
+   * @param {string} id @param {number} dx @param {number} dz 水平位移（格）
+   * @returns {boolean} false = 未知 id / 完全走不动
+   */
+  knockback(id, dx, dz) {
+    const entity = this.entities.get(id);
+    if (!entity || entity.type !== IGNIS_TYPE) return false;
+    const state = entity.state;
+    const next = displaceGroundEntity(
+      this.world, state.position, dx, dz, IGNIS.halfWidth, IGNIS.height,
+    );
+    if (next[0] === state.position[0] && next[2] === state.position[2]) return false;
+    // 经 createState 重建（不原地改）：与 Agent / damage 同一契约
+    entity.state = createState({ ...state, position: next });
+    this.entities.reindexColumn(id);
+    return true;
   }
 
   /**

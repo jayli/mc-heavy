@@ -980,6 +980,8 @@ export class Game {
       // v2.41：伤害改为按实体类型分发（不再硬编码丧尸）；predicate 读共享集合
       damage: (id, amount, nowMs) => this.damageEntity(id, amount, nowMs),
       isHittable: (entity) => WEAPON_HITTABLE_TYPES.includes(entity.type),
+      // v2.65 近战剑：击退（方向由 Game 用玩家位置算，controller 只传 id 与距离）
+      knockback: (id, dist) => this.knockbackEntity(id, dist),
     });
 
     // 天气 + 雨效（M3-3）：状态机自动周期（晴 60~180s → 雨 30~90s，5s 过渡），
@@ -2201,6 +2203,51 @@ export class Game {
     // —— 两条伤害路径（本方法 + `_damageEntitiesInRadius`）都要接，口径一致。
     if (result) this._emitDamageNumber(entity, result.health, nowMs);
     return result;
+  }
+
+  /**
+   * 击退分发器（v2.65 近战剑）：按实体类型路由到对应 service 的 `knockback()`。
+   *
+   * 与 `damageEntity()` 同一手法（装配层按类型分发，不给 EntityManager 加玩法接口）。
+   *
+   * ## 方向在这里算，不在 controller 里
+   *
+   * controller 只传 `(id, dist)`：它是纯逻辑层，**不持有玩家位置**（依赖方向 §3）。
+   * 击退方向 = 「背离玩家」= `normalize(entity.pos - player.pos)` 的水平分量，由本方法用
+   * `this.player.physics.pos` 算。
+   *
+   * ## 退化情形：不猜方向
+   *
+   * 玩家与实体水平重合（`d < 1e-6`）⇒ 没有可用的「背离玩家」方向。此时**直接返回 false
+   * 不击退**，而不是拿 yaw 兜一个方向 —— 两个理由：
+   *
+   * ① **yaw→前向的口径按实体类型不同**（实测）：丧尸是 `atan2(vx, vz)` ⇒ 前向
+   *    `(sin yaw, cos yaw)`；焰魔与飞龙是 `atan2(-dx, -dz)` ⇒ 前向 `(-sin yaw, -cos yaw)`。
+   *    在装配层写一张「类型 → 前向公式」表就是红线 1 的第二份权威（那两份公式的权威在
+   *    各自的 `zombie-system.js` / `dragon-system.js` / `ignis-boss-agent.js`），且用错一侧的
+   *    形态是「Boss 被砍一刀反而扑向玩家」。
+   * ② **这个退化态各实体自己已有处理**：焰魔真重叠时走 `overlapEscapeDist` 后退自愈
+   *    （v2.62 final review P1-3），丧尸/飞龙则被玩家物理挡住不会真重合。
+   *
+   * @param {string} id @param {number} dist 击退距离（格，来自 catalog 的 `knockbackDistance`）
+   * @returns {boolean} false = 未知 id / 不可击退类型 / 方向退化 / 完全走不动
+   */
+  knockbackEntity(id, dist) {
+    const entity = this.entities.get(id);
+    if (!entity) return false;
+    const amount = Number.isFinite(dist) ? dist : 0;
+    if (!(amount > 0)) return false;
+    const [ex, , ez] = entity.state.position;
+    const p = this.player?.physics?.pos;
+    if (!p) return false;
+    const d = Math.hypot(ex - p.x, ez - p.z);
+    if (!(d > 1e-6)) return false;   // 方向退化：不猜（见上）
+    const dx = ((ex - p.x) / d) * amount;
+    const dz = ((ez - p.z) / d) * amount;
+    if (entity.type === 'zombie') return this.zombies.knockback(id, dx, dz);
+    if (entity.type === IGNIS_TYPE) return this.ignises ? this.ignises.knockback(id, dx, dz) : false;
+    if (entity.type === DRAGON_TYPE) return this.dragons ? this.dragons.knockback(id, dx, dz) : false;
+    return false;
   }
 
   /**

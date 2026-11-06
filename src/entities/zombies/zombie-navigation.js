@@ -86,6 +86,49 @@ export function zombieCollidesAt(world, x, y, z) {
 }
 
 /**
+ * 水平位移一个地面实体，**撞墙就少走**（v2.65 近战剑的击退）。
+ *
+ * ## 为什么是位移而不是速度
+ *
+ * 丧尸的水平 `velocity` 是 **AI 意图**（RPC 每 `ZOMBIE.aiPeriod`=0.05 秒覆写一次），
+ * 焰魔的意图每帧由 Agent 重算 —— 把击退写进 velocity 的形态是「下一拍 AI 回包把它冲掉」，
+ * 而数据层看着正常（写的那一刻确实有值）。故击退必须是**位置位移**。
+ *
+ * ## 为什么必须碰撞检查
+ *
+ * 直接加位移会把实体推进方块里（贴墙砍丧尸 → 丧尸进墙 → 物理二分回退把它弹回来，
+ * 观感是抽搐）。这里用**与物理同一个** `aabbCollidesAt`（红线 1：不写第二份碰撞判据），
+ * 撞了就对位移系数二分回退（与 `zombie-system.js` 的 `moveAxis` 同手法）。
+ *
+ * ⚠️ **不做 step-up**：击退是水平推开，不该顺手把实体抬上一格台阶（那会让「被砍一刀」
+ * 变成「被砍上墙头」）。撞台阶就少走，下一帧物理的 `tryStepUp` 会按正常语义处理。
+ *
+ * @param {{isSolid(x:number,y:number,z:number):boolean}|null} world
+ * @param {number[]} position 脚底位置 `[x,y,z]`
+ * @param {number} dx @param {number} dz 水平位移（格）
+ * @param {number} halfWidth @param {number} height AABB 参数
+ * @returns {number[]} 新位置（**新数组**，不原地改）；完全走不动时返回原值拷贝
+ */
+export function displaceGroundEntity(world, position, dx, dz, halfWidth, height) {
+  const [x, y, z] = position;
+  if (!dx && !dz) return [x, y, z];
+  // 无世界（fixture）→ 不做碰撞检查，直接位移
+  if (!world || typeof world.isSolid !== 'function') return [x + dx, y, z + dz];
+  if (!aabbCollidesAt(world, x + dx, y, z + dz, halfWidth, height)) {
+    return [x + dx, y, z + dz];
+  }
+  // 撞了：对位移系数二分回退到「能走的最远处」（8 次，与 moveAxis 同口径）
+  let lo = 0;
+  let hi = 1;
+  for (let i = 0; i < 8; i++) {
+    const mid = (lo + hi) / 2;
+    if (aabbCollidesAt(world, x + dx * mid, y, z + dz * mid, halfWidth, height)) hi = mid;
+    else lo = mid;
+  }
+  return [x + dx * lo, y, z + dz * lo];
+}
+
+/**
  * 一格台阶的落点脚底高度（物理 `tryStepUp` 与探针共用，红线 1）。
  *
  * `+0.01` 是浮点容错：站立时脚底 ≈ 整数，不加容错会算出「上一格」而不是「上两格」。

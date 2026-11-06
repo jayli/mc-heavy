@@ -24,6 +24,9 @@ import {
   SOUND_IDS, SOUND_EXT_OVERRIDES, SOUND_VOLUMES, BOSS_BGM_TRACK, BOSS_BGM_FADE_MS,
   soundFileName,
 } from '../render/audio-config.js';
+// v2.65：近战剑的两个音效是**武器音**，音量权威在 catalog 而不在 `SOUND_VOLUMES`
+// （与枪声同一手法）—— 本文件的契约用例要同时读两侧才能钉住「只有一份」。
+import { WEAPONS, WEAPON_IDS } from '../player/weapons/weapon-catalog.js';
 
 /**
  * 造一个只在测试里用的管理器：真 listener、假解码（返回 1 秒静音 buffer）。
@@ -326,6 +329,28 @@ test('audio-config: v2.64 的 7 个新音效全部在 SOUND_IDS 里且各有音�
       `${id} 必须有正音量（0/缺失 = 听不见）`);
   }
   assertEqual(SOUND_VOLUMES.z_die, 0.3, 'z_die 音量沿用 mc-lite 原值（不得顺手改）');
+});
+
+test('audio-config: v2.65 近战剑的两个音效在清单里、走 ogg、但音量不在 SOUND_VOLUMES', () => {
+  // ① 必须在 `SOUND_IDS` 里：否则 `preload()` 不加载 → fetch 不发起 → **静默无声**
+  //（而页面照常能玩，只有 `console.warn` 一句）。
+  for (const id of ['player_swing', 'emp_activated']) {
+    assertTrue(SOUND_IDS.includes(id), `${id} 必须在清单里（否则 preload 不加载 → 静默）`);
+    // ② 扩展名必须是 ogg：回落 mp3 的形态同样是静默无声（404 被 catch 吞）
+    assertEqual(SOUND_EXT_OVERRIDES[id], 'ogg', `${id} 必须在扩展名覆盖表里`);
+    assertEqual(soundFileName(id), `${id}.ogg`);
+    // ③ **音量刻意不在 SOUND_VOLUMES**：武器音的音量权威在 `weapon-catalog.js`
+    //（`volume` / `hitVolume`，与枪声同一手法）。这里再写一份就是红线 1 的第二份权威，
+    // 而本表那两个值**无人读**（静默失效）—— 故钉住「不在」而不是「在」。
+    assertEqual(SOUND_VOLUMES[id], undefined,
+      `${id} 的音量不得写进 SOUND_VOLUMES（权威在 weapon-catalog，写两份会漂移）`);
+  }
+  // ④ 音量权威确实在 catalog 上（与 ③ 成对：只钉「不在这里」会漏掉「两边都没有」）
+  const sword = WEAPONS[WEAPON_IDS.SWORD];
+  assertTrue(sword.volume > 0, '挥砍音音量必须在 catalog 上且为正');
+  assertTrue(sword.hitVolume > 0, '砍中音音量必须在 catalog 上且为正');
+  assertEqual(sword.sound, 'player_swing', 'catalog 的 sound 必须指向挥砍音');
+  assertEqual(sword.hitSound, 'emp_activated', 'catalog 的 hitSound 必须指向砍中音');
 });
 
 test('audio-config: boss 曲不进随机池，淡变时长为正', () => {

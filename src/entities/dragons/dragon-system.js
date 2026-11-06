@@ -422,6 +422,36 @@ export class DragonService {
   }
 
   /**
+   * 击退（v2.65 近战剑）：沿给定水平位移把飞龙推开一小步。
+   *
+   * ## 与地面实体（丧尸/焰魔）的差异：不做碰撞检查
+   *
+   * 飞龙是**飞行实体**，`DragonBossAgent` 本身就不做地形碰撞（chase/attack 沿机头前向
+   * 直接推 px/pz，y = `orbitY + diveOffset`）—— 它能飞越/穿过地形是既有语义。故击退
+   * 也不做碰撞（与它平时的移动同口径），`DragonService` 也不持有 `world`。
+   *
+   * ⚠️ **位移只在 chase/attack/return 态生效**：`orbit` 态的 position 每帧被轨道 pose
+   * 覆写（`dragon-boss-agent.js` ②）。但玩家近战（3 格）只可能在飞龙俯冲/贴近时命中，
+   * 那时它必在 chase/attack 态（orbit 在 y≈30 高空）⇒ 位移会被读到、可见。
+   *
+   * ⚠️ **必须显式 `reindexColumn`**：在 `EntityManager.update` 之外改 `state.position`（AGENTS.md 已记）。
+   *
+   * @param {string} id @param {number} dx @param {number} dz 水平位移（格）
+   * @returns {boolean} false = 未知 id / 位移为零
+   */
+  knockback(id, dx, dz) {
+    const entity = this.entities.get(id);
+    if (!entity || entity.type !== DRAGON_TYPE) return false;
+    if (!dx && !dz) return false;
+    const state = entity.state;
+    const [x, y, z] = state.position;
+    // 经 createState 重建（不原地改）：与 Agent / damage 同一契约
+    entity.state = createState({ ...state, position: [x + dx, y, z + dz] });
+    this.entities.reindexColumn(id);
+    return true;
+  }
+
+  /**
    * 全部存活的龙（数组快照，与 `ZombieService.activeEntities` 同手法：
    * 调用方可能在遍历中调 `damage()` → despawn 改变底层集合，故返回快照而非迭代器）。
    * @returns {Array<import('../entity-manager.js').Entity>}

@@ -10,7 +10,7 @@ import { createCreativeInventory } from './inventory.js';
 import { getPlacementOrientation, recordRemovedBlock } from './orientation.js';
 import { PLAYER_MAX_HEALTH } from './health.js';
 import { WeaponController } from './weapons/weapon-controller.js';
-import { WEAPON_IDS } from './weapons/weapon-catalog.js';
+import { WEAPON_IDS, WEAPONS } from './weapons/weapon-catalog.js';
 import { NEST_ALIAS_BLOCK } from '../entities/zombie-nests/nest-config.js';
 import { TURRET_ALIAS_BLOCK, defaultTurretRotation } from '../entities/turrets/turret-config.js';
 import { MINECART_ITEM, MINECART_TYPE, MINECART } from '../entities/minecarts/minecart-config.js';
@@ -578,8 +578,14 @@ export class Player {
   /** 效果事件统一出口：视图模型后坐 → 曳光 → 音效 → 命中特效（顺序固定，M4 规格 §4.2）。 */
   _applyWeaponEffect(effect) {
     if (this.viewWeapon) this.viewWeapon.onShot(effect);
-    if (this.tracerRenderer) this.tracerRenderer.spawn(effect);
+    // v2.65 近战剑：effect 无 `tracer`（剑不发曳光）—— 判存在才 spawn，枪行为逐位不变
+    if (this.tracerRenderer && effect.tracer) this.tracerRenderer.spawn(effect);
     if (this.audioManager) this.audioManager.play(effect.sound, effect.volume);
+    // v2.65 近战剑：砍中敌人的音效（`emp_activated`）—— 与挥砍音分开：
+    // 挥空也响 `effect.sound`（player_swing），只有命中才响 `hitSound`。
+    if (this.audioManager && effect.hitSound) {
+      this.audioManager.play(effect.hitSound, effect.hitVolume ?? 1);
+    }
     // v2.51：枪击摧毁方块 → 销毁音效（用户 2026-11-04：「销毁方块的声音」）。
     // 判据 = `impacts[].destroyed`（控制器在**写入删除之前**读到的真实结果），
     // 不是“枪开了就播”。普通枪最多 1 个 impact，MAG7 是 1 个带 `stagger` 的 impact
@@ -603,7 +609,11 @@ export class Player {
     if (this.viewWeapon) await this.viewWeapon.select(id);
     // 手臂与持枪视图模型互斥：arm 时显示手臂，其余隐藏（mc-lite `updateArm` 同口径）
     if (this.viewArm) this.viewArm.setWeapon(id);
-    if (id !== WEAPON_IDS.ARM && this.audioManager) this.audioManager.play('gun_load', 0.4);
+    // v2.65：近战剑不播 gun_load（那是枪的上膛音；剑的出场音就是挥砍时的 player_swing）
+    const weapon = WEAPONS[id];
+    if (id !== WEAPON_IDS.ARM && !weapon?.melee && this.audioManager) {
+      this.audioManager.play('gun_load', 0.4);
+    }
     return this.weaponController.debugState().selectedId;
   }
 

@@ -33,6 +33,11 @@
  *   `dragon_shout` — 飞龙空中随机叫声；
  *   `dragon_fire` — 飞龙喷火球。
  *
+ * v2.65 追加近战剑音效（用户 2026-11-06，出处均为 `assets/sounds/` 里已入库的 `.ogg`
+ *   素材 —— **零新增美术资源**，只是把既有文件接进清单）：
+ *   `player_swing` — 玩家挥剑（用户：「挥剑的时候带一个音效：player_swing.ogg」）；
+ *   `emp_activated` — 剑砍中敌人（用户：「击中敌人后也带一个音效：emp_activated.ogg」）。
+ *
  * ⚠️ **循环类音效（rain / running_*）也在这份清单里**：`play()` 的语义（事件触发、播完即止）
  * 不变，循环走独立的 `playLoop()` / `stopLoop()`。与 BGM 分成两份清单的理由是**生命周期**，
  * 不是「能否循环」（BGM 是单槽 + 开关意图 + 跨手势对齐，循环效果音是事件驱动的短生命）。
@@ -42,7 +47,9 @@ export const SOUND_IDS = Object.freeze(['gun_load', 'gun_fire', 'mag7_fire', 'mi
   'z_die',
   // v2.64：Boss 战与击杀音效（.ogg，见 SOUND_EXT_OVERRIDES）
   'ignis_die', 'ignis_attack_swing', 'ignis_burn', 'ignis_hurt', 'ignis_jump',
-  'dragon_shout', 'dragon_fire']);
+  'dragon_shout', 'dragon_fire',
+  // v2.65：近战剑音效（.ogg，见 SOUND_EXT_OVERRIDES）
+  'player_swing', 'emp_activated']);
 
 /**
  * 音效文件的扩展名覆盖表（v2.64）。
@@ -63,6 +70,9 @@ export const SOUND_EXT_OVERRIDES = Object.freeze({
   dragon_shout: 'ogg',
   dragon_fire: 'ogg',
   bgm_boss: 'ogg',
+  // v2.65：近战剑音效
+  player_swing: 'ogg',
+  emp_activated: 'ogg',
 });
 
 /**
@@ -82,6 +92,12 @@ export function soundFileName(id) {
  *
  * ⚠️ 初值是按素材响度与既有口径（`z_die` 0.3 / `explosion` 0.4）估的，**均可再调** ——
  * 调音量只改这里，不动触发点。未列出的 id 由调用方给默认值（`play()` 的第二参缺省 1）。
+ *
+ * ⚠️ **武器音不在本表**：枪声（`gun_fire`/`mag7_fire`/`minigun_fire`）与 v2.65 近战剑的
+ * 两个音（`player_swing`/`emp_activated`）的音量权威在 `weapon-catalog.js`（`volume` /
+ * `hitVolume`），因为它们是「效果事件」的一部分 —— 由 controller 写进 effect、
+ * `player._applyWeaponEffect()` 消费。在本表再写一份就是红线 1 的第二份权威，
+ * 调音量时会漂移成「catalog 改了、这张表没跟上」（而本表那两个值无人读，静默失效）。
  */
 export const SOUND_VOLUMES = Object.freeze({
   z_die: 0.3,

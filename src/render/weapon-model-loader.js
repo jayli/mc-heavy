@@ -5,6 +5,8 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { resourceUrl } from '../core/resource-url.js';
+import { WEAPON_IDS } from '../player/weapons/weapon-catalog.js';
+import { loadBlockbenchSword } from './blockbench-model-loader.js';
 
 /**
  * 仓库受控的三件 glTF 2.0 .glb；禁止用户文件、外链、Draco/KTX2。
@@ -17,6 +19,15 @@ export const WEAPON_ASSET_URLS = Object.freeze({
   mag7: resourceUrl('assets/models/weapons/mag7.glb'),
   minigun: resourceUrl('assets/models/weapons/minigun.glb'),
 });
+
+/**
+ * 剑（Blockbench 逐面 UV 模型，非 GLB）：走 `blockbench-model-loader.js` 的独立加载路径。
+ *
+ * ⚠️ **id 从 `WEAPON_IDS.SWORD` 取**，不在这里再写一个字面量（红线 1：同一事实只有一份
+ * 权威）。`render/` 已有多处 import `player/weapons/weapon-catalog.js`（`view-weapon.js`），
+ * 依赖方向合法。
+ */
+const SWORD_WEAPON_ID = WEAPON_IDS.SWORD;
 
 export class WeaponModelLoader {
   /**
@@ -39,6 +50,20 @@ export class WeaponModelLoader {
    */
   load(id) {
     if (this._promises.has(id)) return this._promises.get(id).then((t) => t.clone());
+    // 剑不是 GLB：走 Blockbench 逐面 UV 加载路径（源 JSON 直接入库，无烘焙产物）
+    if (id === SWORD_WEAPON_ID) {
+      const promise = loadBlockbenchSword()
+        .then((template) => {
+          this._templates.set(id, template);
+          return template;
+        })
+        .catch((err) => {
+          this._promises.delete(id); // 失败不缓存，允许重试
+          throw new Error(`weapon asset ${id} failed: ${err?.message ?? err}`);
+        });
+      this._promises.set(id, promise);
+      return promise.then((t) => t.clone());
+    }
     const url = this.urls[id];
     if (!url) return Promise.reject(new Error(`weapon asset ${id} failed: no url`));
     const promise = this.loader.loadAsync(url)
