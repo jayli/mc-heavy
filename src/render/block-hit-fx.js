@@ -28,6 +28,13 @@
 // ⚠️ 「枪械破坏」关闭时**仍出白闪**、不出碎块（改发少量粉尘）—— 默认设置下也要能看出
 // 「打中了」，而碎屑四溅会误导成「方块碎了」。白闪盖在未删除的方块上会淡出复原，不误导。
 //
+// ⚠️ **碎块池兼宿主实体死亡爆散（v2.64）**：丧尸被击杀时走 `spawnDeathBurst()` ——
+// 同一个 InstancedMesh 池、同一套抛物线/自旋/缩零曲线，**不开第二个池**（红线自检：
+// 不绕过统一管线新开子系统）。与枪击碎块唯一的实质差别是**方向分布**：枪击以命中面法线
+// 为轴取半球（碎块永远朝被打的那一面外飞），死亡爆散没有「命中面」⇒ 取**全球面**
+// （上下两个半球各撒一半，读作「身体整体炸开」）。白闪层不参与死亡爆散 ——
+// 白闪的语义是「这块方块变白了」，用在实体身上会误导成「方块碎了」。
+//
 // ⚠️ 三条池化硬约束（与 tracer-renderer / explosion-renderer 同口径，M6 实测教训）：
 //   · 空闲 slot 必须 `visible=false`，否则每帧恒增 draw call 且进透明排序列表
 //   · 每帧零分配：所有临时矩阵/四元数/向量都是模块级常量
@@ -108,6 +115,55 @@ export function freezeDeep(value) {
     Object.freeze(value);
   }
   return value;
+}
+
+/**
+ * 宿主实体死亡爆散（v2.64，用户 2026-11-07：「加一个丧尸死亡消失的特效」，裁定形态 =
+ * 绿色碎块爆散）。
+ *
+ * 字段语义与 `IMPACT_PROFILES` 的碎块项一致（`size` 边长 / `speed` 初速区间 / `spin` 自旋
+ * 角速度区间），故能直接喂给 `createDebrisSeeds`（不写第二套抽样数学 —— 红线 1）。
+ *
+ * ⚠️ **寿命沿用 `IMPACT_FX.debris.lifeMs`**（不另设一个）：`debrisSizeAt` / `debrisOffset`
+ * 都从那个常量读寿命，另设一份会让「缩零时刻」与「回收时刻」分家（形态：碎块缩到 0 后
+ * 仍占着 slot 直到另一个时刻才回收）。
+ *
+ * ⚠️ **`count` 必须 ≤ `IMPACT_FX.debris.maxActive`**（单测钉住）：一次爆散就超池容量时，
+ * 后面的碎块会覆盖前面**同一发**的（FIFO 绕回），观感是「只炸出半边」。
+ */
+export const DEATH_BURST = freezeDeep({
+  count: 20,             // 一次死亡出多少块（丧尸体型 0.6×1.8×0.6，20 块读作「整个人炸开」）
+  size: [0.16, 0.28],    // 边长（方块=1）：与手枪碎块同量级，6 格外仍肉眼可见
+  speed: [2.2, 4.8],     // 初速区间（世界单位/秒）
+  spin: [6, 14],         // 自旋角速度区间（弧度/秒）
+});
+
+/** 喂给 `createDebrisSeeds` 的合成 profile（形状与 `IMPACT_PROFILES` 的碎块项一致） */
+const DEATH_BURST_PROFILE = Object.freeze({
+  debrisCount: DEATH_BURST.count,
+  size: DEATH_BURST.size,
+  speed: DEATH_BURST.speed,
+  spin: DEATH_BURST.spin,
+});
+
+/**
+ * 一簇死亡爆散碎块的随机种子（纯函数，`rand` 注入 → 可复现）。
+ *
+ * **全球面 = 上/下两个半球各撒一半**：`createDebrisSeeds` 的抽样是「以法线为轴的半球」，
+ * 调两次（法线 +Y 与 −Y）拼出全球面。不自己写球面抽样数学 —— 那会是第二份权威，
+ * 且两套抽样的分布差异肉眼看不出来（正是「对照脚本与被测代码共用同一个错误假设」的温床）。
+ *
+ * @param {() => number} rand [0,1) 均匀随机
+ * @param {number} [count] 覆盖 `DEATH_BURST.count`
+ * @returns {Array<{velocity:number[], spinRate:number, spinAxis:number[], size:number, tone:number}>}
+ */
+export function createDeathBurstSeeds(rand, count = DEATH_BURST.count) {
+  const n = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+  const up = Math.ceil(n / 2);
+  const down = n - up;
+  const seeds = up > 0 ? createDebrisSeeds(DEATH_BURST_PROFILE, [0, 1, 0], rand, up) : [];
+  if (down > 0) seeds.push(...createDebrisSeeds(DEATH_BURST_PROFILE, [0, -1, 0], rand, down));
+  return seeds;
 }
 
 /**
@@ -530,6 +586,49 @@ export class BlockHitFxRenderer {
       this._debris.push({ slot, origin, seed, bornAt: nowMs, dust });
       const tone = seed.tone * (dust ? 0.62 : 1);
       _color.setRGB(color[0] * tone, color[1] * tone, color[2] * tone);
+      this._debrisMesh.setColorAt(slot, _color);
+    }
+    if (this._debrisMesh.instanceColor) this._debrisMesh.instanceColor.needsUpdate = true;
+    this._debrisMesh.visible = true;
+  }
+
+  /**
+   * 宿主实体死亡爆散（v2.64）：在死亡位置向**全球面**撒一簇碎块。
+   *
+   * 与 `spawnFromEffect`（枪击方块）共用同一个碎块池与同一套推进曲线（`update`），
+   * 差别只有三处：
+   *   · **方向**：全球面（`createDeathBurstSeeds` 上下半球各一半），不是命中面半球；
+   *   · **颜色**：由调用方给（丧尸 = 皮肤绿），不读方块 atlas 平均色；
+   *   · **不出白闪、不吃热度**：白闪的语义是「这块方块变白了」，用在实体上会误导；
+   *     热度是加特林连射的概念，与死亡无关。
+   *
+   * ⚠️ **不开第二个池**（红线自检：不绕过统一管线新开子系统）：池满时覆盖最旧 slot
+   * 的语义与枪击碎块一致（纯视觉，丢弃无副作用）。
+   *
+   * @param {number[]} position 世界坐标（丧尸身体中心 = 脚底 + height/2，由调用方给）
+   * @param {number[]} colorRgb 0..1 三分量（碎块基色，逐块再乘 `tone` 做明暗差）
+   * @param {number} nowMs `performance.now()` 基准（**禁止 `Date.now()`**，见文件头）
+   * @param {{count?: number, rand?: () => number}} [opts] 测试可注入确定性 rand
+   */
+  spawnDeathBurst(position, colorRgb, nowMs, { count, rand = Math.random } = {}) {
+    if (!Array.isArray(position) || position.length !== 3) return;
+    if (!position.every((n) => Number.isFinite(n))) return;   // NaN 会污染整个实例矩阵
+    const color = Array.isArray(colorRgb) && colorRgb.length === 3 && colorRgb.every(Number.isFinite)
+      ? colorRgb : [0.4, 0.6, 0.3];   // 缺色退回中性绿（不阻断特效）
+    const seeds = createDeathBurstSeeds(rand, count);
+    if (seeds.length === 0) return;
+    for (const seed of seeds) {
+      const slot = this._nextDebrisSlot;
+      this._nextDebrisSlot = (this._nextDebrisSlot + 1) % IMPACT_FX.debris.maxActive;
+      const existing = this._debris.findIndex((d) => d.slot === slot);
+      if (existing !== -1) this._debris.splice(existing, 1);
+      // `dust: false` —— 死亡碎块是「身体碎了」的实体块，不是扬尘（不压暗、不减速）
+      // ⚠️ **origin 必须拷一份**：调用方可能复用同一个数组（逐帧复用的临时向量是本仓
+      // 的常规手法），存引用会让已入池的碎块跟着调用方的下一次写入一起漂移。
+      this._debris.push({
+        slot, origin: [position[0], position[1], position[2]], seed, bornAt: nowMs, dust: false,
+      });
+      _color.setRGB(color[0] * seed.tone, color[1] * seed.tone, color[2] * seed.tone);
       this._debrisMesh.setColorAt(slot, _color);
     }
     if (this._debrisMesh.instanceColor) this._debrisMesh.instanceColor.needsUpdate = true;

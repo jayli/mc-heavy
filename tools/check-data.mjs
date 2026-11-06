@@ -69,8 +69,12 @@ const {
   PLAYGROUND, PLAYGROUND_KIND, PLAYGROUND_BLOCK, PLAYGROUND_CENTER_BLOCK,
 } = await import('../src/entities/playground/playground-config.js');
 // v2.51：音效与启动图素材契约。清单从**运行时代码** import（红线 1：不在门禁里写第二份清单）
-// —— `SOUND_IDS` / `BGM_TRACKS` 是唯一权威，这里只负责断言「列到的每个 id 都有对应 mp3」。
-const { SOUND_IDS: SOUND_IDS_FOR_GATE, BGM_TRACKS } = await import('../src/render/audio-config.js');
+// —— `SOUND_IDS` / `BGM_TRACKS` 是唯一权威，这里只负责断言「列到的每个 id 都有对应文件」。
+// v2.64：扩展名不再写死 `.mp3`（新增音效与 boss 曲是 `.ogg`）—— 走 `soundFileName(id)`
+// 这个唯一权威，否则门禁查一个不存在的 `.mp3` 会误报缺失（或反过来漏查真缺的 `.ogg`）。
+const {
+  SOUND_IDS: SOUND_IDS_FOR_GATE, BGM_TRACKS, BOSS_BGM_TRACK, soundFileName,
+} = await import('../src/render/audio-config.js');
 // 矿车冻结数据 —— 门禁据此断言铁轨类型集合与 config 单一权威一致（红线 1）
 const {
   MINECART_ITEM, TRACK_BLOCK_TYPES,
@@ -2707,21 +2711,30 @@ async function checkAzaleaTrees() {
  * 音效与启动图素材契约（v2.51）。
  *
  * 钉三件事：
- *   ① `SOUND_IDS` 里每个 id 都有 `assets/sounds/<id>.mp3` —— 漏一个的形态是**静默无声**
+ *   ① `SOUND_IDS` 里每个 id 都有 `assets/sounds/<soundFileName(id)>` —— 漏一个的形态是**静默无声**
  *     （`preload()` 的 catch 只 console.warn，页面照常能玩）；
- *   ② `BGM_TRACKS` 同理（三首随机选，缺一首就有一半开局时间没音乐）；
+ *   ② `BGM_TRACKS` + `BOSS_BGM_TRACK` 同理（三首随机选，缺一首就有一半开局时间没音乐；
+ *     boss 曲缺了就是召唤 Boss 后战斗音乐静默）；
  *   ③ loading 占位图与 favicon 素材存在（缺了就是破图 + 空白图标）。
  *
  * ⚠️ **清单必须从运行时代码 import**：在门禁里再写一份 id 列表就是红线 1 的第二份权威，
  * 改了 `SOUND_IDS` 而忘改门禁时它仍然全绿。
+ * ⚠️ **扩展名走 `soundFileName(id)`**（v2.64）：写死 `.mp3` 会让 7 个 `.ogg` 音效恒报缺失。
  */
 function checkAudioAssets() {
   const missing = [];
   for (const id of SOUND_IDS_FOR_GATE) {
-    if (!fs.existsSync(path.join(ROOT, 'assets', 'sounds', `${id}.mp3`))) missing.push(`音效 ${id}.mp3`);
+    if (!fs.existsSync(path.join(ROOT, 'assets', 'sounds', soundFileName(id)))) {
+      missing.push(`音效 ${soundFileName(id)}`);
+    }
   }
   for (const id of BGM_TRACKS) {
-    if (!fs.existsSync(path.join(ROOT, 'assets', 'sounds', `${id}.mp3`))) missing.push(`背景音乐 ${id}.mp3`);
+    if (!fs.existsSync(path.join(ROOT, 'assets', 'sounds', soundFileName(id)))) {
+      missing.push(`背景音乐 ${soundFileName(id)}`);
+    }
+  }
+  if (!fs.existsSync(path.join(ROOT, 'assets', 'sounds', soundFileName(BOSS_BGM_TRACK)))) {
+    missing.push(`Boss 背景音乐 ${soundFileName(BOSS_BGM_TRACK)}`);
   }
   for (const f of ['Minecraft-Logo.png', 'icon.png']) {
     if (!fs.existsSync(path.join(ROOT, 'assets', 'ui', f))) missing.push(`启动图 assets/ui/${f}`);
@@ -2730,7 +2743,7 @@ function checkAudioAssets() {
     failures.push(`[音效] 缺素材或清单与磁盘不一致：${missing.join(', ')}`);
     return;
   }
-  infos.push(`[音效] ${SOUND_IDS_FOR_GATE.length} 个效果音 + ${BGM_TRACKS.length} 首背景音乐（${BGM_TRACKS.join('/')}）均有对应 mp3；启动图 assets/ui/ 两件齐备`);
+  infos.push(`[音效] ${SOUND_IDS_FOR_GATE.length} 个效果音 + ${BGM_TRACKS.length} 首背景音乐（${BGM_TRACKS.join('/')}）+ Boss 曲 ${BOSS_BGM_TRACK} 均有对应文件；启动图 assets/ui/ 两件齐备`);
 }
 
 const REGISTRY = await buildDefaultRegistry();

@@ -14,10 +14,13 @@ import { test } from './runner.js';
 import {
   assertEqual, assertTrue, assertFalse, assertNotNull, assertNull, assertUndefined,
 } from './assert.js';
+import * as THREE from 'three';
 import {
   IMPACT_FX, IMPACT_PROFILES, impactProfile, impactPosition, blockCenter, debrisCountFor,
   createDebrisSeeds, debrisOffset, debrisSizeAt, debrisSpinAngle, whiteFlashOpacityAt,
   staggerTimes, heatDecay,
+  // v2.64：宿主实体死亡爆散（丧尸）
+  DEATH_BURST, createDeathBurstSeeds, BlockHitFxRenderer,
 } from '../render/block-hit-fx.js';
 
 /** 确定性 LCG：同一 seed 产出同一序列（特效是随机的，测试必须可复现） */
@@ -302,4 +305,94 @@ test('impact fx: 白闪池容量须装得下一次 MAG7 的全部格（否则尾
   // 观感是「扩散到一半就没了」。
   assertTrue(IMPACT_FX.whiteFlash.maxActive >= 40,
     `白闪池 ${IMPACT_FX.whiteFlash.maxActive} 须 >= MAG7 的 40 格上限`);
+});
+
+// ==================== v2.64：宿主实体死亡爆散（丧尸） ====================
+//
+// 用户 2026-11-07：「丧尸被击杀的时候是直接消失……我希望加一个丧尸死亡消失的特效」，
+// 裁定形态 = **绿色碎块爆散**（复用本文件的碎块池，不开新渲染器/新池）。
+//
+// ⚠️ **与枪击碎块的关键差别是方向分布**：枪击碎块以命中面法线为轴取**半球**（永远朝被打的
+// 那一面外飞，不穿进方块内部）；死亡爆散没有「命中面」这个概念 —— 丧尸是**整体炸开**，
+// 必须**全球面**（上下左右都有碎块）。只撒半球的缺陷形态是「碎块全朝天上飞」或「全朝地里钻」，
+// 而 `spawnDeathBurst` 照常返回、池照常推进 ⇒ 单看「有碎块出现」的断言抓不到。
+// 故下面第二条用例直接钉「vy 有正有负」。
+
+test('death burst: 数量与配置一致，同 rand 可复现，异 rand 有差异', () => {
+  const a = createDeathBurstSeeds(makeRand(11));
+  const b = createDeathBurstSeeds(makeRand(11));
+  const c = createDeathBurstSeeds(makeRand(12));
+  assertEqual(a.length, DEATH_BURST.count, '数量取配置（不得写死字面量）');
+  assertEqual(JSON.stringify(a), JSON.stringify(b), '可复现（rand 必须真的被消费）');
+  assertFalse(JSON.stringify(a) === JSON.stringify(c), '异 rand 必须真的不同');
+  // 显式 count 覆盖（渲染器/测试用）
+  assertEqual(createDeathBurstSeeds(makeRand(11), 5).length, 5);
+});
+
+test('death burst: 全球面爆散（vy 有正有负），不是半球', () => {
+  const seeds = createDeathBurstSeeds(makeRand(3), 64);
+  let up = 0;
+  let down = 0;
+  for (const s of seeds) {
+    assertTrue(Number.isFinite(s.velocity[0]) && Number.isFinite(s.velocity[1])
+      && Number.isFinite(s.velocity[2]), '速度不得出现 NaN');
+    const len = Math.hypot(...s.velocity);
+    assertTrue(len > 0.1, `初速不得近零（碎块会原地不动）：${len}`);
+    assertTrue(len <= DEATH_BURST.speed[1] * 1.001, `初速不得超上界：${len}`);
+    if (s.velocity[1] > 0) up += 1;
+    if (s.velocity[1] < 0) down += 1;
+  }
+  // 负向锚点：只对一个半球撒（例如恒用 +Y 法线）会让 down === 0 → 本条 FAIL。
+  assertTrue(up >= 8 && down >= 8,
+    `全球面覆盖：向上 ${up} / 向下 ${down}（只撒半球会有一侧为 0）`);
+  // 水平方向也要铺开（不能全在竖直轴上）
+  const horiz = seeds.filter((s) => Math.hypot(s.velocity[0], s.velocity[2]) > 0.5).length;
+  assertTrue(horiz >= seeds.length * 0.5, `水平铺开：${horiz}/${seeds.length}`);
+});
+
+test('death burst: 碎块尺寸肉眼可见，且配置递归冻结', () => {
+  assertTrue(DEATH_BURST.size[0] > 0.1,
+    `碎块边长须肉眼可见（方块=1）：${DEATH_BURST.size[0]}`);
+  assertTrue(DEATH_BURST.size[1] >= DEATH_BURST.size[0], '尺寸区间上下界不得倒置');
+  assertTrue(DEATH_BURST.speed[1] > DEATH_BURST.speed[0], '速度区间上下界不得倒置');
+  assertTrue(DEATH_BURST.count > 0, '至少出一块（0 = 特效静默不发生）');
+  assertTrue(DEATH_BURST.count <= IMPACT_FX.debris.maxActive,
+    `一次爆散须装得进碎块池（${DEATH_BURST.count} <= ${IMPACT_FX.debris.maxActive}），否则自己覆盖自己`);
+  assertTrue(Object.isFrozen(DEATH_BURST));
+  assertTrue(Object.isFrozen(DEATH_BURST.size));
+});
+
+test('death burst: 渲染器入口真的把碎块推进池（并置可见）', () => {
+  const scene = new THREE.Scene();
+  const fx = new BlockHitFxRenderer({ scene });
+  try {
+    assertEqual(fx.activeDebrisCount, 0, '前置：池空');
+    assertFalse(fx.debrisMesh.visible, '前置：空闲池不得提交渲染（draw call 基线）');
+
+    fx.spawnDeathBurst([10, 20, 30], [0.25, 0.42, 0.19], 1000);
+    assertEqual(fx.activeDebrisCount, DEATH_BURST.count, '碎块全部入池');
+    assertTrue(fx.debrisMesh.visible, '有碎块时必须可见');
+
+    // 推进到寿命末尾 → 全部回收、池回到不可见（draw call 回基线）
+    fx.update(1000 + IMPACT_FX.debris.lifeMs + 1);
+    assertEqual(fx.activeDebrisCount, 0, '到期必须全部回收（不得泄漏 slot）');
+    assertFalse(fx.debrisMesh.visible, '回收后回到不可见');
+  } finally {
+    fx.dispose();
+  }
+});
+
+test('death burst: 池满时覆盖最旧，不抛异常也不静默丢弃新的', () => {
+  const scene = new THREE.Scene();
+  const fx = new BlockHitFxRenderer({ scene });
+  try {
+    // 连爆到超过池容量（一发 TNT 炸死一群丧尸 / 机枪连杀都会走到这里）
+    const rounds = Math.ceil(IMPACT_FX.debris.maxActive / DEATH_BURST.count) + 2;
+    for (let i = 0; i < rounds; i++) fx.spawnDeathBurst([i, 0, 0], [0.2, 0.5, 0.2], 1000 + i);
+    assertTrue(fx.activeDebrisCount <= IMPACT_FX.debris.maxActive,
+      `活跃数不得超过池容量：${fx.activeDebrisCount}`);
+    assertTrue(fx.activeDebrisCount > 0, '池满时仍要有碎块在飞（不得整批丢弃）');
+  } finally {
+    fx.dispose();
+  }
 });

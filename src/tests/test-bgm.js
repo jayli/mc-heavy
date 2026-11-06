@@ -20,6 +20,10 @@ import { test } from './runner.js';
 import { assertEqual, assertTrue, assertFalse } from './assert.js';
 import * as THREE from 'three';
 import { AudioManager, BGM_TRACKS, pickBgmTrack } from '../render/audio-manager.js';
+import {
+  SOUND_IDS, SOUND_EXT_OVERRIDES, SOUND_VOLUMES, BOSS_BGM_TRACK, BOSS_BGM_FADE_MS,
+  soundFileName,
+} from '../render/audio-config.js';
 
 /**
  * 造一个只在测试里用的管理器：真 listener、假解码（返回 1 秒静音 buffer）。
@@ -59,6 +63,11 @@ function teardown(mgr) {
   for (const id of [...mgr._loops.keys()]) mgr.stopLoop(id);
   mgr.setMusicEnabled(false);
   mgr._music = null;
+  // v2.64：boss 槽也要收（否则下个用例的前置断言会读到一条在播的战斗曲）。
+  // 直接停实例而不走 `setBossMusicActive(false)` —— 后者只是置意图，真正的停播
+  // 要等 `update()` 把淡变跑完，而 teardown 没有帧循环可驱动。
+  if (mgr._bossMusic?.isPlaying) mgr._bossMusic.stop();
+  mgr._bossMusic = null;
   mgr.camera.remove(mgr.listener);
   mgr._buffers.clear();
   mgr._counts.clear();
@@ -288,4 +297,172 @@ test('bgm: stopLoop 幂等，且不计入效果音播放请求', async () => {
     assertFalse(mgr.debugLoops().rain?.playing ?? false, '停后不再在播');
     assertFalse(mgr.playRequests.has('rain'), '循环音效不写 playRequests（那是「事件发生几次」的口径）');
   });
+});
+
+// ==================== v2.64：音效扩展名契约（ogg/mp3 混存） ====================
+
+/**
+ * ⚠️ 这组用例钉的是「静默无声」的另一半：`preload()` 历史上写死 `.mp3`，而 v2.64 的
+ * 7 个新音效与 boss 曲是 `.ogg`。扩展名表若失效（全回落 mp3），fetch 404 被 catch 吞掉，
+ * 页面照常能玩、只是永远没声音 —— 与 BGM 起播同类盲区。
+ */
+test('audio-config: soundFileName 默认 mp3，覆盖表里的 id 走 ogg', () => {
+  assertEqual(soundFileName('z_die'), 'z_die.mp3', '既有音效保持 mp3');
+  assertEqual(soundFileName('gun_fire'), 'gun_fire.mp3');
+  assertEqual(soundFileName('bgm'), 'bgm.mp3', '普通 BGM 是 mp3');
+  assertEqual(soundFileName('ignis_die'), 'ignis_die.ogg', '新音效走 ogg');
+  assertEqual(soundFileName('dragon_fire'), 'dragon_fire.ogg');
+  assertEqual(soundFileName(BOSS_BGM_TRACK), 'bgm_boss.ogg', 'boss 曲是 ogg');
+  // 负向锚点：把覆盖表删空（全回落 mp3）会让上面三条 ogg 断言 FAIL。
+  assertTrue(SOUND_EXT_OVERRIDES[BOSS_BGM_TRACK] === 'ogg', 'boss 曲必须在覆盖表里');
+});
+
+test('audio-config: v2.64 的 7 个新音效全部在 SOUND_IDS 里且各有音量', () => {
+  const v264 = ['ignis_die', 'ignis_attack_swing', 'ignis_burn', 'ignis_hurt',
+    'ignis_jump', 'dragon_shout', 'dragon_fire'];
+  for (const id of v264) {
+    assertTrue(SOUND_IDS.includes(id), `${id} 必须在清单里（否则 preload 不加载 → 静默）`);
+    assertTrue(typeof SOUND_VOLUMES[id] === 'number' && SOUND_VOLUMES[id] > 0,
+      `${id} 必须有正音量（0/缺失 = 听不见）`);
+  }
+  assertEqual(SOUND_VOLUMES.z_die, 0.3, 'z_die 音量沿用 mc-lite 原值（不得顺手改）');
+});
+
+test('audio-config: boss 曲不进随机池，淡变时长为正', () => {
+  assertFalse(BGM_TRACKS.includes(BOSS_BGM_TRACK),
+    'bgm_boss 混进随机池会让开局就抽中战斗曲');
+  assertTrue(BOSS_BGM_FADE_MS > 0, '淡变时长必须为正（0 = 硬切，用户要的是渐隐过渡）');
+});
+
+// ==================== v2.64：Boss 战 BGM 交叉淡化状态机 ====================
+
+/**
+ * 造一个「普通曲 + boss 曲都已解码」的管理器（测试交叉淡化主路径用）。
+ * 真实路径里 boss 曲是懒加载的 —— 那一条单独有用例覆盖（见下）。
+ */
+async function withBossReadyManager(body) {
+  await withManager({ bgmEnabled: true, bgmTrack: 'bgm' }, async (mgr) => {
+    await mgr.preload(['bgm']);
+    // 直接注入 boss 曲 buffer（绕过懒加载，聚焦淡变状态机本身）
+    mgr._buffers.set(BOSS_BGM_TRACK, mgr.listener.context.createBuffer(1, 8000, 8000));
+    await mgr.unlock();
+    await body(mgr);
+  });
+}
+
+test('boss bgm: 激活 → 交叉淡化（普通曲渐隐、boss 曲渐入），淡完普通曲停', async () => {
+  await withBossReadyManager(async (mgr) => {
+    assertTrue(mgr.musicPlaying, '前置：普通曲在播');
+    const t0 = mgr.listener.context.currentTime * 1000;
+
+    mgr.setBossMusicActive(true);
+    mgr.update(t0);
+    const st = mgr.debugMusicState();
+    assertTrue(st.boss.wanted, 'boss 意图已置位');
+    assertTrue(st.boss.playing, 'boss 曲必须起播（从 0 音量渐入）');
+    assertTrue(mgr.musicPlaying, '淡变期间普通曲仍在播（不能硬切静音）');
+
+    // 中点：两槽都还活着
+    mgr.update(t0 + BOSS_BGM_FADE_MS / 2);
+    assertTrue(mgr.musicPlaying, '中点：普通曲未停');
+    assertTrue(mgr.debugMusicState().boss.playing, '中点：boss 曲在播');
+
+    // 淡变完成：普通曲停、boss 曲循环播
+    mgr.update(t0 + BOSS_BGM_FADE_MS + 1);
+    const after = mgr.debugMusicState();
+    assertFalse(after.playing, '淡完普通曲必须停（不是两首叠播）');
+    assertTrue(after.boss.playing, 'boss 曲继续循环');
+    assertTrue(mgr._bossMusic.loop, 'boss 曲必须循环（战斗时长不定）');
+  });
+});
+
+test('boss bgm: 全灭 → 淡回开局那首（从头播），boss 曲停', async () => {
+  await withBossReadyManager(async (mgr) => {
+    const t0 = mgr.listener.context.currentTime * 1000;
+    mgr.setBossMusicActive(true);
+    mgr.update(t0);
+    mgr.update(t0 + BOSS_BGM_FADE_MS + 1);
+    assertFalse(mgr.musicPlaying, '前置：普通曲已停');
+    assertTrue(mgr.debugMusicState().boss.playing, '前置：boss 曲在播');
+
+    mgr.setBossMusicActive(false);
+    mgr.update(t0 + BOSS_BGM_FADE_MS + 2);
+    assertTrue(mgr.musicPlaying, '淡回启动：普通曲必须重新起播');
+    assertTrue(mgr.debugMusicState().boss.playing, '淡出期间 boss 曲仍在播');
+
+    mgr.update(t0 + BOSS_BGM_FADE_MS * 2 + 3);
+    const st = mgr.debugMusicState();
+    assertTrue(st.playing, '淡回完成：普通曲在播');
+    assertFalse(st.boss.playing, '淡回完成：boss 曲停');
+    assertEqual(st.track, 'bgm', '恢复的是开局抽中的那首（用户裁定，不重新抽签）');
+  });
+});
+
+test('boss bgm: boss 曲未解码 → 普通曲继续播，解码到达后才开始淡变', async () => {
+  await withManager({ bgmEnabled: true, bgmTrack: 'bgm' }, async (mgr) => {
+    await mgr.preload(['bgm']);
+    await mgr.unlock();
+    assertTrue(mgr.musicPlaying, '前置：普通曲在播');
+    const t0 = mgr.listener.context.currentTime * 1000;
+
+    mgr.setBossMusicActive(true);
+    mgr.update(t0);
+    assertTrue(mgr.musicPlaying, '解码未到 → 普通曲不得停（不留静音缝）');
+    assertFalse(mgr.debugMusicState().boss.playing, '没 buffer 不得谎报 boss 在播');
+
+    // 懒加载完成（真实路径：fetch+decode 的 promise 落定后写入 buffer）
+    mgr._buffers.set(BOSS_BGM_TRACK, mgr.listener.context.createBuffer(1, 8000, 8000));
+    mgr.update(t0 + 100);
+    assertTrue(mgr.debugMusicState().boss.playing, '解码到达 → 补起播并开始淡变');
+    mgr.update(t0 + 100 + BOSS_BGM_FADE_MS + 1);
+    assertFalse(mgr.musicPlaying, '淡完普通曲停');
+    assertTrue(mgr.debugMusicState().boss.playing);
+  });
+});
+
+test('boss bgm: 玩家关掉音乐 → boss 意图在场也不播；重开恢复到 boss 曲', async () => {
+  await withBossReadyManager(async (mgr) => {
+    const t0 = mgr.listener.context.currentTime * 1000;
+    mgr.setBossMusicActive(true);
+    mgr.update(t0);
+    mgr.update(t0 + BOSS_BGM_FADE_MS + 1);
+    assertTrue(mgr.debugMusicState().boss.playing, '前置：boss 曲在播');
+
+    mgr.setMusicEnabled(false);
+    assertFalse(mgr.debugMusicState().boss.playing, '关音乐必须连 boss 曲一起停');
+    assertFalse(mgr.musicPlaying);
+
+    mgr.setMusicEnabled(true);
+    mgr.update(t0 + BOSS_BGM_FADE_MS + 2);
+    const st = mgr.debugMusicState();
+    assertTrue(st.boss.playing, '重开时 boss 仍在场 → 恢复战斗曲（不是普通曲）');
+    assertFalse(st.playing, '普通曲不得同时播');
+  });
+});
+
+test('boss bgm: 懒加载只在首次激活时发起一次（重复激活不重复下载）', async () => {
+  const requested = [];
+  const camera = new THREE.PerspectiveCamera();
+  const ctxRef = { ctx: null };
+  const mgr = new AudioManager(camera, {
+    bgmTrack: 'bgm',
+    loadBuffer: async (id) => {
+      requested.push(id);
+      return ctxRef.ctx.createBuffer(1, 8000, 8000);
+    },
+  });
+  ctxRef.ctx = mgr.listener.context;
+  try {
+    await mgr.preload(['bgm']);
+    await mgr.unlock();
+    mgr.setBossMusicActive(true);
+    mgr.setBossMusicActive(true);   // 重复激活（帧循环里每帧都会调 sync）
+    mgr.setBossMusicActive(false);
+    mgr.setBossMusicActive(true);
+    await new Promise((r) => setTimeout(r, 50)); // 等懒加载 promise 落定
+    const bossLoads = requested.filter((id) => id === BOSS_BGM_TRACK).length;
+    assertEqual(bossLoads, 1, 'boss 曲只下载一次（4.7MB，重复 fetch 是流量事故）');
+  } finally {
+    teardown(mgr);
+  }
 });

@@ -251,7 +251,7 @@ test('水中行走：播 running_water（不是 running_land），停下即停�
   expect(walked.afterStop.land, '停下后陆上脚步声也必须停').toBeNull();
 });
 
-test('死亡：丧尸被击杀播 z_die，打中但没死时不播', async ({ page }) => {
+test('死亡：丧尸被击杀播 z_die + 绿色碎块爆散，打中但没死时两者都不出', async ({ page }) => {
   test.setTimeout(180_000);
   await boot(page, '&weather=clear');
 
@@ -263,19 +263,40 @@ test('死亡：丧尸被击杀播 z_die，打中但没死时不播', async ({ pa
     if (!res.spawned) return { skipped: true, attempts: res.attempts, count: res.count };
     const id = res.spawned;
     const base = g.audioDebugState().playRequests.z_die ?? 0;
-    // ① 打 1 点血（不死）→ 不得响
+    // v2.64：碎块池的前置读数（先 reset 一次，避免之前挖方块留下的碎块污染计数）
+    g.blockHitFx.reset();
+    const debrisBase = g.blockHitFx.activeDebrisCount;
+    const visibleBase = g.blockHitFx.debrisMesh.visible;
+    // ① 打 1 点血（不死）→ 不得响、不得出碎块
     const partial = g.damageEntity(id, 1, performance.now());
     const afterPartial = g.audioDebugState().playRequests.z_die ?? 0;
-    // ② 打满 → 必须响一次
+    const debrisAfterPartial = g.blockHitFx.activeDebrisCount;
+    // ② 打满 → 必须响一次 + 爆一簇碎块
     const lethal = g.damageEntity(id, 10_000, performance.now());
     const afterLethal = g.audioDebugState().playRequests.z_die ?? 0;
+    const debrisAfterLethal = g.blockHitFx.activeDebrisCount;
+    const visibleAfterLethal = g.blockHitFx.debrisMesh.visible;
+    // ③ 推进到寿命末尾 → 碎块全部回收、池回到不可见（draw call 回基线）
+    g.blockHitFx.update(performance.now() + 5000);
+    const debrisAfterExpire = g.blockHitFx.activeDebrisCount;
+    const visibleAfterExpire = g.blockHitFx.debrisMesh.visible;
     return { id, partialDead: partial?.dead, lethalDead: lethal?.dead,
-      base, afterPartial, afterLethal };
+      base, afterPartial, afterLethal,
+      debrisBase, visibleBase, debrisAfterPartial, debrisAfterLethal, visibleAfterLethal,
+      debrisAfterExpire, visibleAfterExpire };
   });
   expect(r.skipped ?? false,
     `丧尸生成失败（attempts=${r.attempts}, count=${r.count}）—— 出生点附近无合法落点或被上限拒绝`).toBe(false);
   expect(r.partialDead, '前置：1 点伤害不该致死').toBe(false);
   expect(r.afterPartial - r.base, '打中但没死时不得播死亡音效').toBe(0);
+  expect(r.debrisBase, '前置：reset 后碎块池应为空').toBe(0);
+  expect(r.visibleBase, '前置：空池不得提交渲染（draw call 基线）').toBe(false);
+  expect(r.debrisAfterPartial, '打中但没死时不得出碎块（否则「打一下就爆一次」）').toBe(0);
   expect(r.lethalDead, '前置：致死伤害').toBe(true);
   expect(r.afterLethal - r.base, '击杀必须播一次 z_die').toBe(1);
+  // v2.64：死亡特效（用户 2026-11-07：「加一个丧尸死亡消失的特效」，裁定形态 = 绿色碎块爆散）
+  expect(r.debrisAfterLethal, '击杀必须爆出一簇碎块（不得直接消失）').toBeGreaterThanOrEqual(10);
+  expect(r.visibleAfterLethal, '有碎块时池必须可见').toBe(true);
+  expect(r.debrisAfterExpire, '寿命末尾必须全部回收（不得泄漏 slot）').toBe(0);
+  expect(r.visibleAfterExpire, '回收后池必须回到不可见').toBe(false);
 });
