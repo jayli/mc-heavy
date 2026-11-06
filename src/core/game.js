@@ -27,7 +27,7 @@ import { ViewArm } from '../render/view-arm.js';
 import { WEAPON_IDS } from '../player/weapons/weapon-catalog.js';
 import { TracerRenderer } from '../render/tracer-renderer.js';
 import { ExplosionRenderer } from '../render/explosion-renderer.js';
-import { BlockHitFxRenderer } from '../render/block-hit-fx.js';
+import { BlockHitFxRenderer, IGNIS_DEATH_BURST } from '../render/block-hit-fx.js';
 import { createAtlasColorResolver } from '../render/block-color.js';
 import {
   ExplosionSpriteRenderer, loadExplosionSpriteTexture,
@@ -56,7 +56,7 @@ import { fireballDefinition, judgeFireball } from '../entities/dragons/fireball-
 import { IGNIS_TYPE, IGNIS, IGNIS_AI } from '../entities/ignis/ignis-config.js';
 import { ignisDefinition, IgnisService } from '../entities/ignis/ignis-system.js';
 import { IgnisRenderer } from '../render/ignis-renderer.js';
-import { loadIgnisAsset } from '../render/ignis-model.js';
+import { loadIgnisAsset, IGNIS_DEATH_COLOR } from '../render/ignis-model.js';
 import { applyDamage } from '../player/health.js';
 import { FireballRenderer } from '../render/fireball-renderer.js';
 import { playerHitboxLocal } from '../player/physics.js';
@@ -2213,9 +2213,12 @@ export class Game {
    *   · zombie → `z_die`（音量 0.3，mc-lite `TurretManager.js:286` 原值）；
    *   · dragon / ignis → `ignis_die`。
    *
-   * 死亡特效**目前只有丧尸有**（用户裁定形态 = 绿色碎块爆散）：在身体中心向全球面撒一簇
-   * 绿色碎块（`block-hit-fx.spawnDeathBurst`，复用枪击碎块池，不开第二个池）。焰魔/飞龙
-   * 本期不做死亡特效 —— 池子通用，以后要加是一行调用。
+   * 死亡特效（用户裁定形态 = 碎块爆散）：在身体中心向全球面撒一簇碎块
+   * （`block-hit-fx.spawnDeathBurst`，复用枪击碎块池，不开第二个池）：
+   *   · 丧尸 → 绿色（皮肤色）+ `DEATH_BURST` 口径；
+   *   · 焰魔 → 火焰色 + `IGNIS_DEATH_BURST` 口径（v2.64b 用户追问后补上：体型更大 ⇒
+   *     块更多、块更大、炸得更开）；
+   *   · 飞龙本期不做（用户未要求；池子通用，要加是一行调用）。
    *
    * ⚠️ **爆散锚点 = 身体中心**（不是脚底）：丧尸 `position` 是脚底，身体中心 = `y + height/2`。
    * 用脚底会让碎块从地里往上炸（观感是「地面炸了」而不是「身体炸了」）。
@@ -2236,6 +2239,14 @@ export class Game {
       this.blockHitFx.spawnDeathBurst([x, y + ZOMBIE.height / 2, z], color, nowMs);
     } else if (type === DRAGON_TYPE || type === IGNIS_TYPE) {
       this.audioManager?.play('ignis_die', SOUND_VOLUMES.ignis_die);
+      // v2.64b：焰魔死亡碎块爆散（火焰色，Boss 口径）。飞龙不做（用户未要求）。
+      // ⚠️ 锚点同丧尸：身体中心（脚底 + height/2），用脚底会读作「地面炸了」。
+      if (type === IGNIS_TYPE) {
+        const [x, y, z] = entity.state.position;
+        this.blockHitFx.spawnDeathBurst(
+          [x, y + IGNIS.height / 2, z], IGNIS_DEATH_COLOR, nowMs, { burst: IGNIS_DEATH_BURST },
+        );
+      }
     }
   }
 

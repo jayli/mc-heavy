@@ -183,6 +183,9 @@ test('焰魔：挥刀播 ignis_attack_swing、跳跃播 ignis_jump、死亡播 i
   // ---- ② 死亡音：打死焰魔 → ignis_die（不是 z_die）----
   const zDieBase = (await counts(page)).z_die ?? 0;
   const ignisDieBase = (await counts(page)).ignis_die ?? 0;
+  // v2.64b：死亡碎块爆散的前置读数（reset 清掉之前挖方块的碎块）
+  await page.evaluate(() => window.__MC_GAME__.blockHitFx.reset());
+  const debrisBase = await page.evaluate(() => window.__MC_GAME__.blockHitFx.activeDebrisCount);
   const dead = await page.evaluate((id) => {
     const g = window.__MC_GAME__;
     return g.damageEntity(id, 10_000, performance.now());
@@ -190,6 +193,10 @@ test('焰魔：挥刀播 ignis_attack_swing、跳跃播 ignis_jump、死亡播 i
   expect(dead?.dead, '前置：致死伤害').toBe(true);
   expect((await counts(page)).ignis_die ?? 0, '焰魔死亡必须播 ignis_die').toBe(ignisDieBase + 1);
   expect((await counts(page)).z_die ?? 0, '焰魔死亡不得播 z_die（那是丧尸的）').toBe(zDieBase);
+  // v2.64b：焰魔死亡特效（用户追问后补上）—— 火焰色碎块爆散，Boss 口径比丧尸更多块
+  const debrisAfter = await page.evaluate(() => window.__MC_GAME__.blockHitFx.activeDebrisCount);
+  expect(debrisBase, '前置：reset 后碎块池应为空').toBe(0);
+  expect(debrisAfter, '焰魔死亡必须爆出碎块（不得直接消失）').toBeGreaterThanOrEqual(20);
 });
 
 test('焰魔：脱困飞跃播 ignis_jump（2 格高围栏困住 → 卡住后跳出）', async ({ page }) => {

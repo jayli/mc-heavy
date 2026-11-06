@@ -19,8 +19,8 @@ import {
   IMPACT_FX, IMPACT_PROFILES, impactProfile, impactPosition, blockCenter, debrisCountFor,
   createDebrisSeeds, debrisOffset, debrisSizeAt, debrisSpinAngle, whiteFlashOpacityAt,
   staggerTimes, heatDecay,
-  // v2.64：宿主实体死亡爆散（丧尸）
-  DEATH_BURST, createDeathBurstSeeds, BlockHitFxRenderer,
+  // v2.64：宿主实体死亡爆散（丧尸 / 焰魔）
+  DEATH_BURST, IGNIS_DEATH_BURST, createDeathBurstSeeds, BlockHitFxRenderer,
 } from '../render/block-hit-fx.js';
 
 /** 确定性 LCG：同一 seed 产出同一序列（特效是随机的，测试必须可复现） */
@@ -392,6 +392,67 @@ test('death burst: 池满时覆盖最旧，不抛异常也不静默丢弃新的'
     assertTrue(fx.activeDebrisCount <= IMPACT_FX.debris.maxActive,
       `活跃数不得超过池容量：${fx.activeDebrisCount}`);
     assertTrue(fx.activeDebrisCount > 0, '池满时仍要有碎块在飞（不得整批丢弃）');
+  } finally {
+    fx.dispose();
+  }
+});
+
+// ---------- v2.64b：焰魔死亡爆散（与丧尸共用池，差别在体型与颜色） ----------
+
+test('ignis death burst: 配置合法且比丧尸口径更大（Boss 死亡更有爆发力）', () => {
+  assertTrue(IGNIS_DEATH_BURST.count > DEATH_BURST.count,
+    `焰魔体型 1×3.25×1 远大于丧尸 0.6×1.8×0.6，块数应更多：${IGNIS_DEATH_BURST.count} vs ${DEATH_BURST.count}`);
+  assertTrue(IGNIS_DEATH_BURST.size[0] >= DEATH_BURST.size[0], '碎块边长不得小于丧尸口径');
+  assertTrue(IGNIS_DEATH_BURST.size[0] > 0.1, `碎块边长须肉眼可见：${IGNIS_DEATH_BURST.size[0]}`);
+  assertTrue(IGNIS_DEATH_BURST.speed[1] > IGNIS_DEATH_BURST.speed[0], '速度区间上下界不得倒置');
+  assertTrue(IGNIS_DEATH_BURST.size[1] >= IGNIS_DEATH_BURST.size[0], '尺寸区间上下界不得倒置');
+  // ⚠️ 与丧尸同一条约束：一次爆散必须装得进碎块池，否则自己覆盖自己（只炸出半边）
+  assertTrue(IGNIS_DEATH_BURST.count <= IMPACT_FX.debris.maxActive,
+    `一次爆散须装得进碎块池（${IGNIS_DEATH_BURST.count} <= ${IMPACT_FX.debris.maxActive}）`);
+  assertTrue(Object.isFrozen(IGNIS_DEATH_BURST));
+  assertTrue(Object.isFrozen(IGNIS_DEATH_BURST.size));
+});
+
+test('ignis death burst: 种子数与尺寸真的按焰魔配置走（不是沿用丧尸口径）', () => {
+  const seeds = createDeathBurstSeeds(makeRand(21), undefined, IGNIS_DEATH_BURST);
+  assertEqual(seeds.length, IGNIS_DEATH_BURST.count, '块数取焰魔配置');
+  // 负向锚点：若 `burst` 参数被忽略（恒用 DEATH_BURST），下面两条都会 FAIL。
+  assertFalse(seeds.length === DEATH_BURST.count, '不得等于丧尸口径的块数');
+  for (const s of seeds) {
+    assertTrue(s.size >= IGNIS_DEATH_BURST.size[0] - 1e-9
+      && s.size <= IGNIS_DEATH_BURST.size[1] + 1e-9,
+      `碎块边长须落在焰魔区间 [${IGNIS_DEATH_BURST.size}]：${s.size}`);
+    const len = Math.hypot(...s.velocity);
+    assertTrue(len >= IGNIS_DEATH_BURST.speed[0] - 1e-6
+      && len <= IGNIS_DEATH_BURST.speed[1] + 1e-6,
+      `初速须落在焰魔区间 [${IGNIS_DEATH_BURST.speed}]：${len}`);
+  }
+  // 全球面覆盖与丧尸同口径（上下半球各一半）
+  let up = 0;
+  let down = 0;
+  for (const s of seeds) {
+    if (s.velocity[1] > 0) up += 1;
+    if (s.velocity[1] < 0) down += 1;
+  }
+  assertTrue(up >= 4 && down >= 4, `全球面覆盖：向上 ${up} / 向下 ${down}`);
+});
+
+test('ignis death burst: 渲染器入口按 burst 参数出块（缺省仍是丧尸口径）', () => {
+  const scene = new THREE.Scene();
+  const fx = new BlockHitFxRenderer({ scene });
+  try {
+    fx.reset();
+    fx.spawnDeathBurst([0, 3, 0], [0.95, 0.45, 0.1], 1000, { burst: IGNIS_DEATH_BURST });
+    assertEqual(fx.activeDebrisCount, IGNIS_DEATH_BURST.count, '焰魔口径入池');
+    assertTrue(fx.debrisMesh.visible, '有碎块时必须可见');
+
+    fx.reset();
+    fx.spawnDeathBurst([0, 3, 0], [0.25, 0.42, 0.19], 1000);
+    assertEqual(fx.activeDebrisCount, DEATH_BURST.count, '缺省仍是丧尸口径（零回归）');
+
+    fx.update(1000 + IMPACT_FX.debris.lifeMs + 1);
+    assertEqual(fx.activeDebrisCount, 0, '到期全部回收');
+    assertFalse(fx.debrisMesh.visible, '回收后回到不可见');
   } finally {
     fx.dispose();
   }

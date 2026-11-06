@@ -119,7 +119,7 @@ export function freezeDeep(value) {
 
 /**
  * 宿主实体死亡爆散（v2.64，用户 2026-11-07：「加一个丧尸死亡消失的特效」，裁定形态 =
- * 绿色碎块爆散）。
+ * 绿色碎块爆散；v2.64b 用户追问「焰魔的死亡特效你实现了吗」→ 补焰魔的火焰色爆散）。
  *
  * 字段语义与 `IMPACT_PROFILES` 的碎块项一致（`size` 边长 / `speed` 初速区间 / `spin` 自旋
  * 角速度区间），故能直接喂给 `createDebrisSeeds`（不写第二套抽样数学 —— 红线 1）。
@@ -138,13 +138,30 @@ export const DEATH_BURST = freezeDeep({
   spin: [6, 14],         // 自旋角速度区间（弧度/秒）
 });
 
-/** 喂给 `createDebrisSeeds` 的合成 profile（形状与 `IMPACT_PROFILES` 的碎块项一致） */
-const DEATH_BURST_PROFILE = Object.freeze({
-  debrisCount: DEATH_BURST.count,
-  size: DEATH_BURST.size,
-  speed: DEATH_BURST.speed,
-  spin: DEATH_BURST.spin,
+/**
+ * 焰魔死亡爆散（v2.64b）。与丧尸同一套池与曲线，差别只在**体型与颜色**：
+ * 焰魔 1×3.25×1（丧尸的近 2 倍高）⇒ 块数更多、块更大、炸得更开；颜色 = 火焰橙
+ * （与丧尸的「皮肤绿」同位点 —— 颜色由调用方给，见 `Game._onEntityDeath`）。
+ */
+export const IGNIS_DEATH_BURST = freezeDeep({
+  count: 32,             // 体型更大 → 更多块（32 < 池容量 128，一次爆散不会自己覆盖自己）
+  size: [0.2, 0.34],     // 边长略大于丧尸（读作「更大的身体碎成更大的块」）
+  speed: [2.6, 5.6],     // 初速略快（Boss 死亡应当比杂兵更有爆发力）
+  spin: [6, 16],
 });
+
+/**
+ * 死亡爆散配置 → `createDebrisSeeds` 的 profile 形状（与 `IMPACT_PROFILES` 的碎块项一致）。
+ * ⚠️ 逐字段派生而不是共享引用：`createDebrisSeeds` 只读这四个字段，形状对齐即可。
+ */
+function deathBurstProfile(cfg) {
+  return Object.freeze({
+    debrisCount: cfg.count,
+    size: cfg.size,
+    speed: cfg.speed,
+    spin: cfg.spin,
+  });
+}
 
 /**
  * 一簇死亡爆散碎块的随机种子（纯函数，`rand` 注入 → 可复现）。
@@ -154,15 +171,17 @@ const DEATH_BURST_PROFILE = Object.freeze({
  * 且两套抽样的分布差异肉眼看不出来（正是「对照脚本与被测代码共用同一个错误假设」的温床）。
  *
  * @param {() => number} rand [0,1) 均匀随机
- * @param {number} [count] 覆盖 `DEATH_BURST.count`
+ * @param {number} [count] 覆盖 `cfg.count`
+ * @param {object} [cfg] 爆散配置（`DEATH_BURST` / `IGNIS_DEATH_BURST`），缺省丧尸口径
  * @returns {Array<{velocity:number[], spinRate:number, spinAxis:number[], size:number, tone:number}>}
  */
-export function createDeathBurstSeeds(rand, count = DEATH_BURST.count) {
-  const n = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+export function createDeathBurstSeeds(rand, count, cfg = DEATH_BURST) {
+  const n = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : cfg.count;
   const up = Math.ceil(n / 2);
   const down = n - up;
-  const seeds = up > 0 ? createDebrisSeeds(DEATH_BURST_PROFILE, [0, 1, 0], rand, up) : [];
-  if (down > 0) seeds.push(...createDebrisSeeds(DEATH_BURST_PROFILE, [0, -1, 0], rand, down));
+  const profile = deathBurstProfile(cfg);
+  const seeds = up > 0 ? createDebrisSeeds(profile, [0, 1, 0], rand, up) : [];
+  if (down > 0) seeds.push(...createDebrisSeeds(profile, [0, -1, 0], rand, down));
   return seeds;
 }
 
@@ -605,17 +624,19 @@ export class BlockHitFxRenderer {
    * ⚠️ **不开第二个池**（红线自检：不绕过统一管线新开子系统）：池满时覆盖最旧 slot
    * 的语义与枪击碎块一致（纯视觉，丢弃无副作用）。
    *
-   * @param {number[]} position 世界坐标（丧尸身体中心 = 脚底 + height/2，由调用方给）
+   * @param {number[]} position 世界坐标（实体身体中心，由调用方给）
    * @param {number[]} colorRgb 0..1 三分量（碎块基色，逐块再乘 `tone` 做明暗差）
    * @param {number} nowMs `performance.now()` 基准（**禁止 `Date.now()`**，见文件头）
-   * @param {{count?: number, rand?: () => number}} [opts] 测试可注入确定性 rand
+   * @param {{count?: number, rand?: () => number, burst?: object}} [opts]
+   *   `burst` = 爆散配置（`DEATH_BURST` 丧尸 / `IGNIS_DEATH_BURST` 焰魔），缺省丧尸口径；
+   *   `count` 直接覆盖块数（测试用）；`rand` 注入确定性随机源（测试用）
    */
-  spawnDeathBurst(position, colorRgb, nowMs, { count, rand = Math.random } = {}) {
+  spawnDeathBurst(position, colorRgb, nowMs, { count, rand = Math.random, burst = DEATH_BURST } = {}) {
     if (!Array.isArray(position) || position.length !== 3) return;
     if (!position.every((n) => Number.isFinite(n))) return;   // NaN 会污染整个实例矩阵
     const color = Array.isArray(colorRgb) && colorRgb.length === 3 && colorRgb.every(Number.isFinite)
       ? colorRgb : [0.4, 0.6, 0.3];   // 缺色退回中性绿（不阻断特效）
-    const seeds = createDeathBurstSeeds(rand, count);
+    const seeds = createDeathBurstSeeds(rand, count, burst);
     if (seeds.length === 0) return;
     for (const seed of seeds) {
       const slot = this._nextDebrisSlot;

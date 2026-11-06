@@ -39,6 +39,16 @@ export async function loadIgnisAsset() {
 }
 
 /**
+ * 焰魔死亡爆散的碎块基色（v2.64b，火焰橙）。0..1 三分量。
+ *
+ * ⚠️ **焰魔是纹理驱动的**（不像丧尸有 `fallbackColor` 可读），故这里单独给一个常量。
+ * 取色依据：`assets/ignis/ignis.png` 的实测主色是金黄/橙的火焰色（占比前三档
+ * rgb 255,234,144 / 255,215,63 / 205,126,0），取中间档 `255,215,63` 偏橙的火焰色，
+ * 读作「一团火炸开」。与丧尸的「皮肤绿」同位点 —— 颜色由调用方（`Game._onEntityDeath`）给。
+ */
+export const IGNIS_DEATH_COLOR = Object.freeze([1.0, 0.84, 0.25]);
+
+/**
  * 四元数球面插值（手写 —— 本文件的采样函数保持 three-free）。
  *
  * ⚠️ **`dot < 0` 时取反一端**：四元数 q 与 −q 表示同一旋转，不取反会走「长弧」
