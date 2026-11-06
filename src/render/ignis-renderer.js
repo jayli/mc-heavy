@@ -40,7 +40,8 @@
 // 单面渲染会从某些角度看穿。
 import * as THREE from 'three';
 import { resourceUrl } from '../core/resource-url.js';
-import { IGNIS } from '../entities/ignis/ignis-config.js';
+import { IGNIS, IGNIS_STEP_LIFT } from '../entities/ignis/ignis-config.js';
+import { StepLift } from '../player/step-lift.js';
 import { sampleIgnisAnim, sampleIgnisAttack } from './ignis-model.js';
 
 /** 红闪色（与丧尸/飞龙 `FLASH_COLOR` 同口径：纯红乘贴图） */
@@ -94,6 +95,11 @@ export class IgnisRenderer {
     for (let i = 0; i < IGNIS.maxAlive; i++) this._instances.push(this._makeInstance());
     /** @type {Map<string, number>} 实体 id → 实例下标 */
     this._byId = new Map();
+    /**
+     * 上次 `sync` 的时间戳（ms）—— 只为算出缓动用的 dt（调用方传的是时间戳，不是 dt）。
+     * `null` = 首次（dt 给 0，与丧尸渲染器同口径）。
+     */
+    this._lastSyncMs = null;
   }
 
   /** 造一个实例：独立骨骼层级 + 独立材质 + SkinnedMesh + yaw 父节点 */
@@ -134,7 +140,30 @@ export class IgnisRenderer {
     pivot.add(mesh);
     pivot.visible = false;   // 初始无焰魔
     this.scene.add(pivot);
-    return { bones, material, mesh, pivot };
+    return {
+      bones, material, mesh, pivot,
+      /**
+       * 当前占用本实例的实体 id（`null` = 空闲）。
+       *
+       * ⚠️ **只为 P1-2 的缓动重置**：`sync` 按 list 下标分配实例，焰魔死亡后实例隐藏但
+       * `prevY/lift.offset` 残留；重召时若 id 变了，必须把缓动状态清零，否则新焰魔
+       * 出生会被当成一次「上台阶」陷进地面再 ease 上来。
+       */
+      entityId: null,
+      /**
+       * 上台阶视觉缓动（v2.62 用户缺陷③：「上台阶……而不是闪现到台阶之上」）。
+       *
+       * ⚠️ **逐实例一份**（共享会让多只焰魔互相打断）。衰减参数不写第二份 ——
+       * 全部在 `StepLift` 里（红线 1，与玩家相机/丧尸同一手感）。
+       */
+      lift: new StepLift(),
+      /**
+       * 上一帧的物理 y（`null` = 未对齐）。**首帧必须不触发缓动** —— 实例初值在
+       * y=0 附近，把「物理 y − 0」当成抬升量会让每只焰魔出生时都从世界底升上来
+       *（丧尸渲染器实测踩过的同一个坑）。
+       */
+      prevY: null,
+    };
   }
 
   /** 加载贴图（构造时未传则调用）。走真实 `TextureLoader` 路径（flipY 口径，见下） */
@@ -174,13 +203,30 @@ export class IgnisRenderer {
    */
   sync(entities, nowMs) {
     const list = entities || [];
+    // 缓动用的 dt：调用方传的是时间戳（与丧尸渲染器同口径）
+    const dt = this._lastSyncMs === null
+      ? 0
+      : Math.max(0, (nowMs - this._lastSyncMs) / 1000);
+    this._lastSyncMs = nowMs;
     const used = new Set();
     for (let i = 0; i < list.length && i < this._instances.length; i++) {
       const entity = list[i];
       const inst = this._instances[i];
       used.add(i);
       this._byId.set(entity.id, i);
-      this._syncOne(inst, entity, nowMs);
+      // ⚠️ **实例复用给新实体时重置缓动**（final review P1-2）：`prevY` 只在 `_makeInstance()`
+      //（构造期）设一次，而 `sync` 按 list 下标分配实例、隐藏时不清 `prevY/lift.offset`。
+      // 于是：焰魔 A 在 y=10 死亡 → 实例隐藏、`prevY=10` 留存 → 在高原重召（y=46）→
+      // `_advanceLift` 走分支②，`dy=36 > epsilon` ⇒ `trigger(36)` ⇒ 新焰魔出生头 ~190ms
+      // 渲染在 y=45（陷进地面 1 格）再 ease 上来。两只焰魔且其中一只死亡时，
+      // `activeEntities()` 顺序变化还会让另一只吃到这个伪抬升。
+      // 丧尸侧没有这个问题：`acquireSlot` 每次 spawn 都重建 pose（`prevY: null`）。
+      if (inst.entityId !== entity.id) {
+        inst.entityId = entity.id;
+        inst.prevY = null;
+        inst.lift.offset = 0;
+      }
+      this._syncOne(inst, entity, nowMs, dt);
     }
     // 未用到的实例一律隐藏（⚠️ draw call 归零，M6 口径）
     for (let i = 0; i < this._instances.length; i++) {
@@ -193,10 +239,17 @@ export class IgnisRenderer {
   }
 
   /** 发布单只焰魔 */
-  _syncOne(inst, entity, nowMs) {
+  _syncOne(inst, entity, nowMs, dt = 0) {
     const st = entity.state;
     inst.pivot.visible = true;
-    inst.pivot.position.set(st.position[0], st.position[1], st.position[2]);
+    // ---- 上台阶视觉缓动（v2.62）----
+    // 为什么在渲染层而不是 Agent/物理：缓动**只服务观感**，权威 state 必须保持瞬时
+    //（AABB 状态要精确，否则碰撞/实体射线/台阶净空全部错位）。与玩家的 `StepLift`
+    //（`player.js` 消费 `physics.stepLiftAccum`）、丧尸的 `_advanceLift` 同一分工。
+    this._advanceLift(inst, st.position[1], dt);
+    // ⚠️ **y 加 `lift.offset`**：上台阶的视觉缓动就落在这一处。写回 `st.position` 会把
+    // 缓动偏移污染成「物理位置」的副本（丧尸渲染器同一注释）。
+    inst.pivot.position.set(st.position[0], st.position[1] + inst.lift.offset, st.position[2]);
     // ⚠️ **欧拉顺序必须显式 'YXZ'**：three 默认 'XYZ' 下会先绕 X 再绕 Y，两个转动互相耦合。
     // 焰魔没有俯仰（地面实体），但保持与飞龙同一口径以免将来加俯仰时踩坑。
     inst.pivot.rotation.set(0, st.yaw, 0, 'YXZ');
@@ -235,6 +288,54 @@ export class IgnisRenderer {
     // 红闪：nowMs < flashedUntil → 纯红乘贴图（与丧尸/飞龙同口径）。
     // ⚠️ 时间基准 performance.now()（Date.now() 会让判定恒真 → 永久红闪）。
     inst.material.color.setHex(nowMs < st.flashedUntil ? FLASH_COLOR : BASE_COLOR);
+  }
+
+  /**
+   * 推进一只焰魔的 y 缓动（v2.62，与丧尸 `_advanceLift` 三分支逐条同义）。
+   *
+   * 三条分支都是**载荷性的**，任一条写错就退化成缺陷：
+   * ① `prevY === null`（首帧 / 实例刚分配）→ **对齐不触发**（否则出生时从 y=0 升上来）；
+   * ② `dy > epsilon`（上台阶）→ `trigger(dy)` 欠下一段负偏移，渲染 y 从旧高度 ease-out 追平；
+   * ③ `dy < 0`（下落）→ **立即清零**，渲染直接跟随物理。下台阶的「动画」本来就来自
+   *    重力，再叠一层缓动会让模型短暂陷进台阶下方。
+   *
+   * @param {object} inst `_instances[i]`
+   * @param {number} physY 本帧物理 y（脚底）
+   * @param {number} dt 距上一帧的秒数
+   */
+  _advanceLift(inst, physY, dt) {
+    const prev = inst.prevY;
+    inst.prevY = physY;
+    if (prev === null) {
+      inst.lift.offset = 0;                                        // ① 首帧对齐
+    } else {
+      const dy = physY - prev;
+      if (dy > IGNIS_STEP_LIFT.epsilon) inst.lift.trigger(dy);      // ② 上台阶
+      else if (dy < 0) inst.lift.offset = 0;                        // ③ 下落
+    }
+    inst.lift.update(dt);
+  }
+
+  /**
+   * @param {number} index 实例下标
+   * @returns {number} 只读测试钩子：当前 y 缓动偏移（格，≤ 0）
+   */
+  liftOffsetOf(index) {
+    const inst = this._instances[index];
+    return inst ? inst.lift.offset : 0;
+  }
+
+  /**
+   * @param {number} index 实例下标
+   * @returns {number} 只读测试钩子：**实际发布到 pivot 矩阵**的 y = 物理 y + 缓动偏移。
+   *
+   * ⚠️ 只断言 `liftOffsetOf` 会漏掉「算对了但没写进矩阵」这个形态（v1.48 玩家晃动
+   * 踩过：断言内部量时注入「算对但不写相机」仍全绿）。故另有一条用例直读
+   * `instances[i].pivot.position.y` 交叉验证。
+   */
+  renderYOf(index) {
+    const inst = this._instances[index];
+    return inst ? inst.pivot.position.y : 0;
   }
 
   dispose() {

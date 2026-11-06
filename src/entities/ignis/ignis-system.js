@@ -69,8 +69,11 @@ export function ignisAabbFor(state) {
 
 // ==================== state 构造 ====================
 
-/** 合法的 mode 取值（其余一律回落 `idle`） */
-const MODES = Object.freeze(['idle', 'chase', 'attack']);
+/** 合法的 mode 取值（其余一律回落 `idle`）。`leap` 是 v2.62 新增的飞跃态（脱困/跳劈共用） */
+const MODES = Object.freeze(['idle', 'chase', 'attack', 'leap']);
+
+/** 合法的 leapKind 取值（其余一律回落 `null`）：`escape` 脱困飞跃 / `attack` 跳跃劈砍 */
+const LEAP_KINDS = Object.freeze(['escape', 'attack']);
 
 /**
  * 构造全新 state（**不原地改写** —— M5 不变式：`EntityManager.update` 的跨 column 索引
@@ -85,6 +88,8 @@ function createState({
   position, velocity, yaw, health, flashedUntil, mode,
   attackAnimT, idleTime, attackCooldown, losTimer, losVisible, onGround, attackRequest,
   navDir, navMode, needsPath,
+  acquireT, stuckT, stuckAnchor, sensedPlayer, senseTimer,
+  leapKind, leapDir, leapT, leapTargetY, leapAttackCooldown,
   _physAccum,
 }) {
   const p = normalizePosition(position);
@@ -161,6 +166,66 @@ function createState({
      * 判据必须用「相对意图的偏差」而不是最终向量，否则会自激（见 Agent 注释）。
      */
     needsPath: needsPath === true,
+    /**
+     * 待机重新锁定的累计秒数（v2.62 用户缺陷①）。
+     *
+     * `idle` 中玩家在 `sightRange` 内时累加，离开立即清零；满 `IGNIS_AI.turnDelay` 才转
+     * `chase`。⚠️ **跨帧累积量，必须在 createState 里保留**（同 `_physAccum` 的教训：
+     * 丢掉它 ⇒ 延迟永远累不满 ⇒ 行为静默退化成「立即追击」）。
+     */
+    acquireT: Number.isFinite(acquireT) ? acquireT : 0,
+    /**
+     * 「卡住」的累计秒数（v2.62 用户缺陷⑤）。
+     *
+     * 满 `IGNIS_AI.stuckLeapSeconds` 且在地面 ⇒ 起跳脱困（`leap`/`escape`）。
+     * ⚠️ v2.63 起计量口径改为**棘轮式锚点**（不看意图，见 `stuckNetDist` 与 `stuckAnchor`）。
+     */
+    stuckT: Number.isFinite(stuckT) ? stuckT : 0,
+    /**
+     * 「上次确认有进展」的位置锚点（v2.63 棘轮式卡住判据），`[x, z]` 或 `null`。
+     *
+     * ⚠️ **跨帧累积量，必须在 createState 里保留** —— 丢掉它 ⇒ 每帧重新初始化锚点 ⇒
+     * `stuckT` 永不累计 ⇒ 脱困飞跃永不触发（同 `_physAccum` 的教训）。
+     */
+    stuckAnchor: Array.isArray(stuckAnchor) && stuckAnchor.length === 2
+      && stuckAnchor.every((n) => Number.isFinite(n))
+      ? [stuckAnchor[0], stuckAnchor[1]]
+      : null,
+    /**
+     * 玩家位置的**感知快照**（v2.63：1~2 秒间隔采样），`[x, y, z]` 或 `null`。
+     *
+     * chase 的移动与转向一律读它，不读真实位置（用户：「不是每时每刻都检测玩家位置，
+     * 而是间隔最快 1 秒检测玩家位置，根据这个检测到的玩家位置进行位置移动和转向」）。
+     * ⚠️ **跨帧累积量，必须在 createState 里保留** —— 丢掉它 ⇒ 每帧重采 ⇒ 感知间隔失效
+     * ⇒ 退化成 v2.62 的每帧跟随（用户报告的问题原样复活）。
+     */
+    sensedPlayer: Array.isArray(sensedPlayer) && sensedPlayer.length === 3
+      && sensedPlayer.every((n) => Number.isFinite(n))
+      ? [sensedPlayer[0], sensedPlayer[1], sensedPlayer[2]]
+      : null,
+    /** 下次感知玩家的倒计时（秒），与 `sensedPlayer` 配套 */
+    senseTimer: Number.isFinite(senseTimer) ? senseTimer : 0,
+    /** 飞跃类别（仅 `mode === 'leap'` 时有意义）：`escape` 脱困 / `attack` 跳跃劈砍 */
+    leapKind: LEAP_KINDS.includes(leapKind) ? leapKind : null,
+    /**
+     * 飞跃期的水平速度（`[vx, vz]`，**含长度**，不是单位方向）或 `null`。
+     *
+     * 起跳时算定、空中不再改（常量向量）—— 碰撞/step-up 照常生效，撞墙就滑停。
+     * 校验手法同 `navDir`（长度 2 且全部有限）。
+     */
+    leapDir: Array.isArray(leapDir) && leapDir.length === 2 && leapDir.every((n) => Number.isFinite(n))
+      ? [leapDir[0], leapDir[1]]
+      : null,
+    /** 飞跃已持续秒数（安全阀 `IGNIS_AI.leapMaxSeconds` 用） */
+    leapT: Number.isFinite(leapT) ? leapT : 0,
+    /**
+     * 跳跃劈砍的预判落点 y（仅 `leapKind === 'attack'`），或 `null`。
+     *
+     * 「快触地时起劈」的判据：下落中且 `py ≤ leapTargetY + IGNIS_AI.leapSlashLead`。
+     */
+    leapTargetY: Number.isFinite(leapTargetY) ? leapTargetY : null,
+    /** 跳跃劈砍的冷却剩余秒数（**独立于** `attackCooldown`） */
+    leapAttackCooldown: Number.isFinite(leapAttackCooldown) ? leapAttackCooldown : 0,
   };
 }
 
@@ -252,6 +317,20 @@ export class IgnisService {
     this._pathCache = new PathCache();
     /** @type {Map<string, object>} id → 导航记忆（`plan` 防等长路线横跳） */
     this._navMemory = new Map();
+    /**
+     * 曾经召唤过的焰魔 id 集合（v2.62）—— 只为 `overlapsAabb` 的**热路径短路**。
+     *
+     * ⚠️ **为什么不能直接遍历 `entities.entities()`**：`overlapsAabb` 被玩家物理的
+     * `_collides()` 每帧调几十次（含二分回退），若每次都遍历全部实体（常态 20+ 丧尸）
+     * + 分配一个数组，就是热路径上的无谓开销 —— 而场上最多只有 2 只焰魔。
+     *
+     * ⚠️ **不需要在 column 卸载时清理**：id 由 `ignisEntityIdFor(mapKey, slot)` 确定性派生，
+     * 「走远 column 卸载 → 回来重召」复用同一个 id ⇒ Set 不累积；已 despawn 的 id
+     * 留在 Set 里也无害（`entities.get(id)` 返回 null ⇒ 跳过）。尺寸上界 = 玩家去过的
+     * 高台地带数 × slot 数（实际个位数）。
+     * @type {Set<string>}
+     */
+    this._ignisIds = new Set();
     /** 决策周期累积器（秒） */
     this._navAccum = 0;
     /** @type {{decisions: number, blocked: number}} 只读诊断钩子 */
@@ -408,6 +487,7 @@ export class IgnisService {
       persistent: false,
     });
     if (!entity) return { ok: false, reason: 'exists' };
+    this._ignisIds.add(id);   // 热路径短路用（见字段注释）
     return { ok: true, id };
   }
 
@@ -465,6 +545,52 @@ export class IgnisService {
     }
     // 无参考高度 ⇒ 取**最低**的那个（最接近自然地表的那个，刻意避开空中结构）
     return candidates[candidates.length - 1];
+  }
+
+  /**
+   * 给定一个**世界 AABB**，是否与任一存活焰魔的身体盒相交（v2.62 用户缺陷⑦）。
+   *
+   * ## 为什么在 service 而不是 player 侧算
+   *
+   * 玩家物理要「撞到焰魔就像撞到实心方块」（用户原文），但 `player/` **不得 import
+   * `entities/`**（依赖方向）—— 故由装配层（game.js）把本 service 注入 `PlayerPhysics.ignises`，
+   * 与 `minecarts` 完全同一手法。
+   *
+   * ## 两侧各自持有自己的尺寸权威（红线 1）
+   *
+   * 调用方（`physics.js`）传**自己的** `aabb()`（玩家尺寸权威在那边）；本方法只用
+   * `ignisAabbFor(state)`（焰魔身体盒的唯一权威，含 yaw 旋转）。两边都不复制对方的量。
+   *
+   * ⚠️ **严格不等式**（贴面不算重叠，同 `PlayerPhysics.overlapsBlock` 口径）：用 `>=`
+   * 会让「恰好贴着焰魔站」被当成重叠 ⇒ 玩家被二分回退推离，观感是「碰不到它」。
+   *
+   * ⚠️ **用身体盒（`IGNIS_CORE_OBB`）而不是碰撞盒（`IGNIS.halfWidth/height`）**：
+   * 身体盒是「看得见的躯干」（半宽 0.83），碰撞盒是 1.0×3.25 的粗盒 —— 用后者会让
+   * 玩家停在「离模型还有一截」的地方，看着像隔空被挡。
+   *
+   * @param {{minX:number,maxX:number,minY:number,maxY:number,minZ:number,maxZ:number}} box
+   *        调用方给的世界 AABB（形状 = `PlayerPhysics.aabb()` 的返回值）
+   * @returns {boolean}
+   */
+  overlapsAabb(box) {
+    if (!box || this._ignisIds.size === 0) return false;
+    // ⚠️ **热路径短路**（玩家物理 `_collides()` 每帧调几十次）：只遍历 `_ignisIds`
+    //（尺寸 ≤ 玩家去过的高台地带数 × slot 数，实际个位数）+ O(1) 的 `entities.get`，
+    // **不**遍历全部实体、**不**分配数组（`activeEntities()` 两者都做，那是给低频
+    // 调用方用的）。已 despawn 的 id 留在 Set 里无害：`get` 返回 null ⇒ 跳过。
+    for (const id of this._ignisIds) {
+      const entity = this.entities.get(id);
+      if (!entity) continue;
+      const local = ignisAabbFor(entity.state);
+      const p = entity.state.position;
+      const minX = p[0] + local.min[0], maxX = p[0] + local.max[0];
+      const minY = p[1] + local.min[1], maxY = p[1] + local.max[1];
+      const minZ = p[2] + local.min[2], maxZ = p[2] + local.max[2];
+      if (box.minX < maxX && box.maxX > minX
+        && box.minY < maxY && box.maxY > minY
+        && box.minZ < maxZ && box.maxZ > minZ) return true;
+    }
+    return false;
   }
 
   /**
@@ -527,5 +653,6 @@ export class IgnisService {
     }
     this._pathCache.clear();
     this._navMemory.clear();
+    this._ignisIds.clear();
   }
 }

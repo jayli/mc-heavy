@@ -287,3 +287,117 @@ test('焰魔渲染(v2.56 缺陷C): 骨骼 position 随动画旋转重算（不�
   assertTrue(Math.abs(delta.y - (piv[1] - rp.y)) < 1e-4,
     `position.y=${delta.y.toFixed(4)} ≠ pivot−R·pivot=${(piv[1] - rp.y).toFixed(4)}`);
 });
+
+// ==================== 上台阶视觉缓动（v2.62 用户缺陷③）====================
+//
+// 用户原文：「焰魔上台阶的动作没有缓动的动画，要像丧尸一样，上台阶也要有一个缓动的
+// 动画效果，而不是闪现到台阶之上」。
+//
+// 分工与丧尸 v2.39 / 玩家相机完全一致：**物理瞬时**（AABB 状态要精确，否则碰撞/实体射线/
+// 台阶净空全部错位），**只平滑渲染 y**。衰减参数不写第二份（复用 `player/step-lift.js`）。
+
+/** 造一个最小可 sync 的焰魔实体（只改 y） */
+function ignisAt(y, over = {}) {
+  return {
+    id: 'ignis-lift',
+    state: {
+      position: [0, y, 0], yaw: 0, health: 450, flashedUntil: 0,
+      attackAnimT: 0, idleTime: 0, ...over,
+    },
+  };
+}
+
+test('焰魔渲染: 首帧对齐不触发缓动（出生不从 y=0 升上来）', async () => {
+  const d = await getAsset();
+  const r = new IgnisRenderer(new THREE.Scene(), d);
+  r.sync([ignisAt(37)], 0);
+  assertEqual(r.liftOffsetOf(0), 0, '首帧 prevY=null 应对齐而不触发');
+  assertEqual(r.renderYOf(0), 37, '首帧渲染 y 应等于物理 y');
+  r.dispose();
+});
+
+test('焰魔渲染: 上台阶 → 欠下负偏移且逐帧 ease-out 归零', async () => {
+  const d = await getAsset();
+  const r = new IgnisRenderer(new THREE.Scene(), d);
+  r.sync([ignisAt(10)], 0);          // 首帧对齐
+  r.sync([ignisAt(11)], 16);         // 物理瞬时抬 1 格
+  const off = r.liftOffsetOf(0);
+  assertTrue(off < 0, `上台阶应欠下负偏移，实际 ${off}`);
+  assertTrue(off >= -1.0, `偏移不得超 StepLift 的 MAX_LAG(1 格)，实际 ${off}`);
+  // 渲染 y = 物理 y + 偏移（钉住「算对了且写进了矩阵」）
+  assertTrue(Math.abs(r.renderYOf(0) - (11 + off)) < 1e-9,
+    `renderYOf=${r.renderYOf(0)} 应等于 physY+offset=${11 + off}`);
+  // 渲染 y 此时应仍接近**旧**高度（观感：从旧高度平滑追平，不是瞬移）
+  assertTrue(r.renderYOf(0) < 10.95,
+    `抬升当帧渲染 y=${r.renderYOf(0).toFixed(3)}，应仍贴近旧高度 10（否则就是瞬移）`);
+  // 逐帧衰减：单调上升并收敛到 0
+  let prev = off;
+  for (let i = 0; i < 60; i++) {
+    r.sync([ignisAt(11)], 16 + (i + 1) * 16);
+    const cur = r.liftOffsetOf(0);
+    assertTrue(cur >= prev - 1e-12, `偏移应单调上升（ease-out），${prev} → ${cur}`);
+    prev = cur;
+  }
+  assertEqual(r.liftOffsetOf(0), 0, '约 1 秒后应收敛到 0');
+  assertEqual(r.renderYOf(0), 11, '收敛后渲染 y 应等于物理 y');
+  r.dispose();
+});
+
+test('焰魔渲染: 下落 → 偏移立即清零（不叠缓动）', async () => {
+  const d = await getAsset();
+  const r = new IgnisRenderer(new THREE.Scene(), d);
+  r.sync([ignisAt(10)], 0);
+  r.sync([ignisAt(11)], 16);
+  assertTrue(r.liftOffsetOf(0) < 0, '前置：先欠下一段偏移');
+  r.sync([ignisAt(10.5)], 32);       // 下落
+  assertEqual(r.liftOffsetOf(0), 0, '下落应立即清零（下台阶的动画本来就来自重力）');
+  assertEqual(r.renderYOf(0), 10.5);
+  r.dispose();
+});
+
+test('焰魔渲染: 缓动偏移写进了 pivot 矩阵（不是只算不用）', async () => {
+  // ⚠️ 这条守的是「算对了但没写进矩阵」的形态（v1.48 玩家晃动踩过：断言内部量时
+  // 注入「算对但不写相机」仍全绿）。故直接读 three 节点的 position。
+  const d = await getAsset();
+  const r = new IgnisRenderer(new THREE.Scene(), d);
+  r.sync([ignisAt(10)], 0);
+  r.sync([ignisAt(11)], 16);
+  const off = r.liftOffsetOf(0);
+  assertTrue(off < 0, '前置：应有负偏移');
+  const pivotY = r.instances[0].pivot.position.y;
+  assertTrue(Math.abs(pivotY - (11 + off)) < 1e-9,
+    `pivot.position.y=${pivotY.toFixed(4)} 应等于 physY+offset=${(11 + off).toFixed(4)}`);
+  r.dispose();
+});
+
+test('焰魔渲染: 多实例的缓动互不干扰（逐实例独立 StepLift）', async () => {
+  const d = await getAsset();
+  const r = new IgnisRenderer(new THREE.Scene(), d);
+  r.sync([ignisAt(10), { ...ignisAt(20), id: 'b' }], 0);
+  r.sync([ignisAt(11), { ...ignisAt(20), id: 'b' }], 16);   // 只第 0 只上台阶
+  assertTrue(r.liftOffsetOf(0) < 0, '第 0 只应有偏移');
+  assertEqual(r.liftOffsetOf(1), 0, '第 1 只不应被干扰（共享一份 StepLift 会互相打断）');
+  r.dispose();
+});
+
+test('焰魔渲染: 实例复用给新实体时重置缓动（不把出生当成上台阶，v2.62 修复 P1-2）', async () => {
+  // ⚠️ **这条守的是 final review P1-2 的真缺陷**：`prevY` 只在 `_makeInstance()`（构造期）
+  // 设一次，而 `sync` 按 list 下标分配实例、隐藏时不清 `prevY/lift.offset`。
+  // 于是：焰魔 A 在 y=10 死亡 → 实例隐藏、`prevY=10` 留存 → 在高原重召（y=46）→
+  // `_advanceLift` 走分支②，`dy=36 > epsilon` ⇒ `trigger(36)` ⇒ 新焰魔出生头 ~190ms
+  // 渲染在 y=45（陷进地面 1 格）再 ease 上来。
+  // 丧尸侧没有这个问题：`acquireSlot` 每次 spawn 都重建 pose（`prevY: null`）。
+  const d = await getAsset();
+  const r = new IgnisRenderer(new THREE.Scene(), d);
+  // 第 1 只：id='a'，y=10，走几帧让 prevY 稳定在 10
+  r.sync([{ id: 'a', state: ignisAt(10).state }], 0);
+  r.sync([{ id: 'a', state: ignisAt(10).state }], 16);
+  // 第 1 只死亡（list 变空）→ 实例 0 隐藏，但 prevY 残留
+  r.sync([], 32);
+  // 第 2 只：id='b'，y=46（高原重召）—— 若 prevY 没重置，会 trigger(36)
+  r.sync([{ id: 'b', state: ignisAt(46).state }], 48);
+  assertEqual(r.liftOffsetOf(0), 0,
+    '新实体出生不应继承上一只的 prevY（否则陷进地面 1 格再 ease 上来）');
+  assertEqual(r.renderYOf(0), 46, '新实体出生当帧渲染 y 应直接等于物理 y');
+  r.dispose();
+});

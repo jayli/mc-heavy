@@ -10,7 +10,7 @@
 // Tier 1（数据模型 + 状态机地基）⇒ 必须 TDD。
 import * as THREE from 'three';
 import { test } from './runner.js';
-import { assertEqual, assertTrue, assertNull, assertNotNull } from './assert.js';
+import { assertEqual, assertTrue, assertNull, assertNotNull, assertFalse } from './assert.js';
 // config 与 system 分开 import（system 只 re-export 它需要的东西，不是全部）
 import {
   IGNIS_TYPE, IGNIS, IGNIS_AI, IGNIS_CORE_OBB, IGNIS_MODEL_CENTER, ignisEntityIdFor,
@@ -48,7 +48,53 @@ test('焰魔: 玩法数值取自原作者（Ignis_Entity.java 的 ignis() 属性
   assertEqual(IGNIS.health, 450);          // MAX_HEALTH
   assertEqual(IGNIS.attackDamage, 14);     // ATTACK_DAMAGE
   assertEqual(IGNIS_AI.sightRange, 50);    // FOLLOW_RANGE
-  assertEqual(IGNIS_AI.chaseSpeed, 6.6);   // MOVEMENT_SPEED 0.33 格/tick × 20
+  // ⚠️ v2.62/v2.63 用户两次裁定减速（作者原值 6.6 = MOVEMENT_SPEED 0.33 格/tick × 20）：
+  // v2.62「降低三分之一」⇒ 4.4；v2.63「再减少三分之一」⇒ 4.4 × 2/3 = 2.93
+  assertEqual(IGNIS_AI.chaseSpeed, 2.93);
+});
+
+test('焰魔: createState 保留全部行为新字段（同 _physAccum 的载荷性）', () => {
+  // ⚠️ 这些字段是跨帧累积量，若 createState 重建时丢掉，行为会静默失效
+  //（同 `_physAccum` 被清零 ⇒ onGround 恒假 的既有教训）。
+  // v2.63 新增 `stuckAnchor` / `sensedPlayer` / `senseTimer`：丢掉它们 ⇒ 脱困永不触发 /
+  // 感知间隔失效（退化成每帧跟随，用户报告的问题原样复活）。
+  const s = ignisDefinition.create({
+    position: [0, 10, 0], acquireT: 1.2, stuckT: 3.4, leapKind: 'attack',
+    leapDir: [1, 2], leapT: 0.5, leapTargetY: 9, leapAttackCooldown: 7,
+    stuckAnchor: [3, 4], sensedPlayer: [5, 6, 7], senseTimer: 1.8,
+  });
+  assertEqual(s.acquireT, 1.2);
+  assertEqual(s.stuckT, 3.4);
+  assertEqual(s.leapKind, 'attack');
+  assertEqual(s.leapDir[0], 1);
+  assertEqual(s.leapT, 0.5);
+  assertEqual(s.leapTargetY, 9);
+  assertEqual(s.leapAttackCooldown, 7);
+  assertEqual(s.stuckAnchor[0], 3);
+  assertEqual(s.stuckAnchor[1], 4);
+  assertEqual(s.sensedPlayer[0], 5);
+  assertEqual(s.sensedPlayer[2], 7);
+  assertEqual(s.senseTimer, 1.8);
+});
+
+test('焰魔: 感知间隔常量在用户裁定的 [1, 2] 秒区间内', () => {
+  // 用户原文：「这个延迟做成一个 1 到 2 秒的时间间隔……间隔最快 1 秒检测玩家位置」
+  assertEqual(IGNIS_AI.senseIntervalMin, 1.0);
+  assertEqual(IGNIS_AI.senseIntervalMax, 2.0);
+  assertTrue(IGNIS_AI.senseIntervalMin < IGNIS_AI.senseIntervalMax,
+    '上下界相等会让 rng 失去意义（固定间隔）');
+});
+
+test('焰魔: 新常量数值不变式（改任一个都会静默失效）', () => {
+  // ① 跳劈窗下界必须在原地起手距离外：否则两个起手机制在边界重叠抖动
+  assertTrue(IGNIS_AI.leapAttackMin > IGNIS_AI.attackRange,
+    `leapAttackMin(${IGNIS_AI.leapAttackMin}) 必须 > attackRange(${IGNIS_AI.attackRange})`);
+  // ② 跳劈窗上界不得超出索敌范围（看不见的目标不跳）
+  assertTrue(IGNIS_AI.leapAttackMax <= IGNIS_AI.sightRange,
+    `leapAttackMax(${IGNIS_AI.leapAttackMax}) 必须 ≤ sightRange(${IGNIS_AI.sightRange})`);
+  // ③ 跳劈落点（玩家外侧 standoff − deadband/2）必须落在挥砍能够到的范围内
+  assertTrue(IGNIS_AI.standoffRange - IGNIS_AI.standoffDeadband / 2 < IGNIS_AI.hitRange,
+    '跳劈落点必须在 hitRange 内，否则跳完砍不到');
 });
 
 test('焰魔: 近战判据取自 AreaAttack(6.5, 6, 70, ...)（arc 是总角度 ⇒ 半角 35）', () => {
@@ -270,6 +316,78 @@ test('焰魔: 与飞龙的 id 前缀不同（两种 Boss 不会撞 id）', () =>
   assertTrue(ignisEntityIdFor('tarn:2:0', 1).startsWith(IGNIS_TYPE),
     `id 应以 ${IGNIS_TYPE} 开头：${ignisEntityIdFor('tarn:2:0', 1)}`);
   assertTrue(!ignisEntityIdFor('tarn:2:0', 1).includes('dragon'));
+});
+
+// ==================== overlapsAabb（v2.62 玩家阻挡）====================
+//
+// 用户缺陷⑦：「焰魔作为一个巨大的存在，如果焰魔不动，焰魔是可以挡住玩家前进的」。
+// 玩家物理把焰魔身体盒当实心（`player/physics.js` 注入本 service，同 minecarts 手法）。
+// 本方法回答「给定一个世界 AABB，是否与任一存活焰魔的身体盒相交」。
+
+test('焰魔: overlapsAabb 相交真 / 远离假 / 无焰魔假', () => {
+  const em = new EntityManager();
+  em.registerType(IGNIS_TYPE, ignisDefinition);
+  const svc = new IgnisService({ entities: em, world: flatWorld(10), seed: 1 });
+  assertTrue(svc.summon('tarn:t:0', 5, 5, 1, 11).ok);
+  const e = svc.activeEntities()[0];
+  const [ex, ey, ez] = e.state.position;
+  // 包住焰魔身体的盒 → 相交
+  assertTrue(svc.overlapsAabb({
+    minX: ex - 1, maxX: ex + 1, minY: ey, maxY: ey + 3, minZ: ez - 1, maxZ: ez + 1,
+  }), '包住身体的盒应相交');
+  // 远离 10 格的盒 → 不相交
+  assertFalse(svc.overlapsAabb({
+    minX: ex + 10, maxX: ex + 11, minY: ey, maxY: ey + 1, minZ: ez + 10, maxZ: ez + 11,
+  }), '远离的盒不应相交');
+  // 贴面（恰好碰到身体盒边界）→ 严格不等式，不算重叠
+  const local = ignisAabbFor(e.state);
+  const wMaxX = ex + local.max[0];
+  assertFalse(svc.overlapsAabb({
+    minX: wMaxX, maxX: wMaxX + 1, minY: ey, maxY: ey + 3, minZ: ez - 1, maxZ: ez + 1,
+  }), '贴面不应算重叠（同 overlapsBlock 口径）');
+  // 无焰魔的 service → 恒假
+  const em2 = new EntityManager();
+  em2.registerType(IGNIS_TYPE, ignisDefinition);
+  const svc2 = new IgnisService({ entities: em2, world: flatWorld(10), seed: 1 });
+  assertFalse(svc2.overlapsAabb({
+    minX: -1, maxX: 1, minY: 0, maxY: 2, minZ: -1, maxZ: 1,
+  }), '无焰魔应恒假');
+});
+
+test('焰魔: overlapsAabb 随 yaw 旋转（横过来时身体盒变宽）', () => {
+  const em = new EntityManager();
+  em.registerType(IGNIS_TYPE, ignisDefinition);
+  const svc = new IgnisService({ entities: em, world: flatWorld(10), seed: 1 });
+  assertTrue(svc.summon('tarn:t:0', 5, 5, 1, 11).ok);
+  const e = svc.activeEntities()[0];
+  const [ex, ey, ez] = e.state.position;
+  // yaw=0 时身体盒 z 向较窄；把焰魔转 90°，x 向变宽
+  e.state = ignisDefinition.create({ ...e.state, yaw: Math.PI / 2 });
+  const local = ignisAabbFor(e.state);
+  // 在旋转后的 x 边界外一点点放一个盒 → 不应相交
+  assertFalse(svc.overlapsAabb({
+    minX: ex + local.max[0] + 0.5, maxX: ex + local.max[0] + 1.5,
+    minY: ey, maxY: ey + 3, minZ: ez - 0.2, maxZ: ez + 0.2,
+  }), '旋转后边界外的盒不应相交');
+});
+
+test('焰魔: overlapsAabb 死亡后不再相交（id 留在短路 Set 里但实体已 despawn）', () => {
+  // ⚠️ 这条钉的是 `_ignisIds` 热路径短路的**边界**：id 由 `ignisEntityIdFor` 确定性派生，
+  // 死了又召复用同 id ⇒ Set 不清理；但已 despawn 的 id 必须不再参与相交判定
+  //（`entities.get(id)` 返回 null ⇒ 跳过）。若实现漏了 null 检查会在这里抛 TypeError。
+  const em = new EntityManager();
+  em.registerType(IGNIS_TYPE, ignisDefinition);
+  const svc = new IgnisService({ entities: em, world: flatWorld(10), seed: 1 });
+  assertTrue(svc.summon('tarn:t:0', 5, 5, 1, 11).ok);
+  const e = svc.activeEntities()[0];
+  const [ex, ey, ez] = e.state.position;
+  const hitBox = {
+    minX: ex - 1, maxX: ex + 1, minY: ey, maxY: ey + 3, minZ: ez - 1, maxZ: ez + 1,
+  };
+  assertTrue(svc.overlapsAabb(hitBox), '前置：活着时应相交');
+  svc.damage(e.id, IGNIS.health + 1, 0);   // 打死 ⇒ despawn
+  assertEqual(svc.activeEntities().length, 0, '前置：应已 despawn');
+  assertFalse(svc.overlapsAabb(hitBox), '死亡后不应再相交（id 留在 Set 里但实体没了）');
 });
 
 // ==================== service.summon ====================

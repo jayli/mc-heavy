@@ -239,6 +239,11 @@ export class Game {
     this._startWeather = startWeather;
     this.player = null;
     this._lastFrameMs = -1;
+    /**
+     * 上一帧的玩家位置（v2.62）—— 只为差分算出玩家速度（焰魔跳跃劈砍的落点预判用）。
+     * `null` = 首帧（给 `[0,0,0]`，防 NaN）。
+     */
+    this._prevPlayerPos = null;
     this.persistence = null;
     /** 每帧 render 后捕获的 renderer.info 快照（异步读取不撞 autoReset 重置点） */
     this._lastRenderInfo = { drawCalls: 0, triangles: 0 };
@@ -933,6 +938,10 @@ export class Game {
       onIgniteTnt: (x, y, z) => this.explodeTnt(x, y, z),
     });
     this.player.spawn(startX, startY, startZ);
+    // v2.62：把焰魔服务注入玩家物理（用户缺陷⑦「不动如山」）—— 玩家撞上焰魔身体盒
+    // 就像撞上实心方块。注入而非让 `player/` import `entities/`（依赖方向 §3，与
+    // `physics.minecarts` / `nests` / `turrets` 完全同一手法）。`this.ignises` 在 :665 已建好。
+    this.player.physics.ignises = this.ignises;
     // 解卡（出生路径）：恢复的位置可能被埋（玩家上次停在结构/地形边缘，或存档里的 y
     // 与当前生成结果有出入）。常态下这里是一次 `collidesAt` 的 no-op。
     this._resolvePlayerStuck();
@@ -1086,6 +1095,28 @@ export class Game {
       //    （60Hz 固定步长 accumulator 在 definition 内），**不在 ZombieService 里跑物理** ——
       //    两处物理会让丧尸推进两遍（速度翻倍），是同一事实的两个副本（红线 1）。
       const pp = this.player.physics.pos;
+      // v2.62：玩家速度（焰魔跳跃劈砍的落点预判用）。**用位置差分实测**，不读
+      // `physics.vel` —— `step()` 末尾把 vel.x/z 清零（无惯性手感），读它恒近 0。
+      // ⚠️ 首帧 / dt=0 给 `[0,0,0]`（防 NaN 传进 Agent 的预判算式）。
+      //
+      // ⚠️ **合理性门是必需的**（final review P1-1）：传送路径（`_teleportTo` →
+      // `player.spawn`）会让首帧差分出**几万格/秒**的伪速度（例：1200 格 / 0.016s
+      // = 75000 格/秒），该值进跳劈预判 ⇒ 落点偏出几万格。`_teleportTo` 里已重置
+      // `_prevPlayerPos`，这里是第二道防线：单帧位移超过 `PLAYER_TELEPORT_EPS`
+      // 即视为传送 ⇒ 速度给 0。阈值不从 `physics.SPEED` 派生（避免把玩家速度权威
+      // 拷进装配层，红线 1），取一个远大于任何合法单帧位移的常数。
+      let pvel = [0, 0, 0];
+      if (this._prevPlayerPos && dt > 0) {
+        const dx = pp.x - this._prevPlayerPos.x;
+        const dy = pp.y - this._prevPlayerPos.y;
+        const dz = pp.z - this._prevPlayerPos.z;
+        // 合法单帧位移上限：玩家 SPEED=8 × dt(≤0.1) = 0.8 格；飞行 16 × 0.1 = 1.6；
+        // 矿车相向碰撞回弹实测单帧 ~2 格。取 4 格作为「超过即传送」的阈值。
+        if (dx * dx + dy * dy + dz * dz <= 4 * 4) {
+          pvel = [dx / dt, dy / dt, dz / dt];
+        }
+      }
+      this._prevPlayerPos = { x: pp.x, y: pp.y, z: pp.z };
       // 矿车帧序：beginFrame 清瞬态（reservations/deferred/抬玩家意图）—— 必须在
       // entities.update 之前（mc-lite 的 frameReservations 同生命周期）
       this.minecarts.beginFrame();
@@ -1107,7 +1138,9 @@ export class Game {
       // ⚠️ **复用上一行已有的 `pp`** —— 重复 `const pp` 会是 SyntaxError（同一块作用域）。
       this.entities.update(dt, {
         world: this.world, registry: this.registry,
-        minecarts: this.minecarts, player: { position: [pp.x, pp.y, pp.z] },
+        minecarts: this.minecarts,
+        // v2.62：多传 `velocity`（焰魔跳跃劈砍的落点预判）。矿车/丧尸不读它，零影响。
+        player: { position: [pp.x, pp.y, pp.z], velocity: pvel },
       });
       // 跨车写入统一生效 + 位置索引同步（设计文档 §3.4：必须在 entities.update 之后）
       this.minecarts.applyDeferred();
@@ -1589,6 +1622,9 @@ export class Game {
    */
   _teleportTo(x, y, z) {
     this.player.spawn(x, y, z);
+    // v2.62：传送后位置突变，重置玩家速度差分的基准 —— 否则下一帧会算出
+    // 「新pos − 旧pos」的伪速度（可达几万格/秒）传进焰魔跳劈预判（final review P1-1）。
+    this._prevPlayerPos = null;
     // 解卡（近处传送）：目标 column 已加载时，落点可能已被地形/结构埋住 → 当场抬出来。
     // 远处传送此刻读到的全是空气（column 未加载），这里是 no-op，由 `onColumnReady`
     // 的那一次接管（见 `_resolvePlayerStuck`）。

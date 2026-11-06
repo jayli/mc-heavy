@@ -461,4 +461,397 @@ test.describe('焰魔（Ignis）Tier 4', () => {
     expect(r.minWallBlocks, '墙被拆了 —— 实现应该是绕过去，不是清障')
       .toBe(90);
   });
+
+  /**
+   * v2.62 用户缺陷⑦：「玩家奔跑向焰魔，撞到焰魔的身体，焰魔应该不动如山，
+   * 玩家也应当停止前进，就类似撞到实心方块一样」。
+   *
+   * ## 为什么只能做成 E2E
+   *
+   * 单测（`test-physics.js`）用**假 service** 证明了「玩家物理会消费 `overlapsAabb`」，
+   * `test-ignis-system.js` 证明了「真 service 的 `overlapsAabb` 契约对」。但两者中间还有一段
+   * 只有真实页面能盖住的接线：`game.js` 是否真的把 `this.ignises` 注入了 `player.physics`
+   *（漏接线的形态是两侧单测全绿、游戏里玩家直接穿过焰魔）。
+   *
+   * ## 判据钉上下界（AGENTS.md）
+   *
+   * 只钉「没穿过」（下界）会漏掉「玩家根本就没走过去」的假绿；只钉上界会漏掉穿模。
+   * 下界取身体盒半宽（0.71~0.83）+ 玩家半宽（0.3）的量级；上界取 3 格（再远就是没撞上）。
+   */
+  test('不动如山：玩家全速冲向焰魔 → 被身体挡住、焰魔不被推着走（v2.62）', async ({ page }) => {
+    test.setTimeout(180_000);
+    await page.goto(`/?seed=${SEED}`);
+    await waitWorldReady(page);
+    await teleportToTarnCenter(page);
+    await waitPlayerLanded(page);
+
+    const r = await page.evaluate(async () => {
+      const g = window.__MC_GAME__;
+      const p0 = g.player.physics.pos;
+      // 召唤到玩家 +Z 侧 7 格（在跳劈窗 [8,14] 之外 ⇒ 它只会走过来，不会跳劈干扰本用例）
+      const sum = g.ignises.summon('tarn:e2e:7', Math.floor(p0.x), Math.floor(p0.z) + 7, 1, Math.floor(p0.y));
+      if (!sum.ok) return { err: sum.reason };
+      await new Promise((res) => setTimeout(res, 1500));   // 等它落地站稳
+      const e0 = g.entities.get(sum.id);
+      if (!e0) return { err: 'despawned' };
+      const ignisStart = e0.state.position.slice();
+
+      // 玩家转向焰魔（yaw=π ⇒ 前向 +Z，同本文件既有用例口径）并全速前进
+      const px = g.player.physics.pos.x;
+      const pz = g.player.physics.pos.z;
+      g.player.yaw = (ignisStart[2] > pz) ? Math.PI : 0;
+      g.player.keys.add('KeyW');
+
+      const dists = [];
+      const ignisTail = [];
+      for (let i = 0; i < 30; i++) {          // 30 × 100ms = 3 秒
+        await new Promise((res) => setTimeout(res, 100));
+        const e = g.entities.get(sum.id);
+        if (!e) break;
+        const pp = g.player.physics.pos;
+        dists.push(Math.hypot(e.state.position[0] - pp.x, e.state.position[2] - pp.z));
+        ignisTail.push(e.state.position.slice());
+      }
+      g.player.keys.delete('KeyW');
+
+      const e = g.entities.get(sum.id);
+      // 「不动如山」：取最后 1 秒的焰魔位移（它应该已经站定，而不是被玩家推着退）
+      const tail = ignisTail.slice(-10);
+      let tailDrift = 0;
+      if (tail.length > 1) {
+        for (const q of tail) {
+          tailDrift = Math.max(tailDrift,
+            Math.hypot(q[0] - tail[0][0], q[2] - tail[0][2]));
+        }
+      }
+      return {
+        minDist: Math.min(...dists),
+        finalDist: dists[dists.length - 1],
+        tailDrift,
+        ignisStart,
+        ignisEnd: e ? e.state.position.slice() : null,
+        playerX: g.player.physics.pos.x, playerZ: g.player.physics.pos.z,
+        px, pz,
+      };
+    });
+    console.log('[不动如山]', JSON.stringify(r));
+
+    expect(r.err).toBeUndefined();
+    // ① 玩家真的走到了焰魔跟前（否则测不到「撞」）
+    expect(r.minDist, '玩家根本没靠近焰魔，本用例没测到阻挡').toBeLessThan(3.0);
+    // ② **被身体挡住**：中心距不得小于「身体盒半宽 + 玩家半宽」的量级。
+    // ⚠️ **下界必须是 1.0，不能是 0.8**（final review P2-3）：身体盒最窄半宽
+    // `IGNIS_CORE_OBB.halfExtents[2]` = 0.7125 + 玩家半宽 0.3 = **1.0125**。
+    // 写 0.8 会让「玩家停在 0.85 格」这种**已经穿进躯干**的形态变绿（判据无判别力，
+    // AGENTS.md 已记的坑）；写 1.0 则「用了错的盒（例如碰撞盒 1.0 半宽）」也会被发现。
+    // 实测值 1.36 格，两侧都有余量。
+    expect(r.minDist, `玩家穿进了焰魔身体（最近 ${r.minDist?.toFixed(2)} 格，应 ≥ 1.0）`)
+      .toBeGreaterThan(1.0);
+    // ③ **焰魔不动如山**：最后 1 秒它几乎不动（被推着退会表现为持续位移）
+    expect(r.tailDrift, `焰魔被玩家推着走了 ${r.tailDrift?.toFixed(2)} 格（应不动如山）`)
+      .toBeLessThan(0.6);
+  });
+
+  /**
+   * v2.62 用户缺陷⑥：「距离玩家一定的距离，就执行一个飞跃向前的动作，落点刚好就在
+   * 玩家的面前，飞跃到快触碰到地面的时候，执行当前的劈砍的动作」。
+   *
+   * 判据三层：① 真的进了 `leap(attack)`（而不是直接走过来）；② 随后进了 `attack`；
+   * ③ 玩家真的被砍到（跳完砍得到 —— 落点预判与命中锥都对）。
+   */
+  test('跳跃劈砍：相距 ~11 格 → 飞跃向前、近地起劈、砍中玩家（v2.62）', async ({ page }) => {
+    test.setTimeout(180_000);
+    await page.goto(`/?seed=${SEED}`);
+    await waitWorldReady(page);
+    await teleportToTarnCenter(page);
+    await waitPlayerLanded(page);
+
+    const r = await page.evaluate(async () => {
+      const g = window.__MC_GAME__;
+      const p0 = g.player.physics.pos;
+      const start = [p0.x, p0.y, p0.z];
+      // 召唤到玩家 +Z 侧 11 格 —— 正好在跳劈窗 [leapAttackMin, leapAttackMax] 内
+      const sum = g.ignises.summon('tarn:e2e:6', Math.floor(p0.x), Math.floor(p0.z) + 11, 1, Math.floor(p0.y));
+      if (!sum.ok) return { err: sum.reason };
+      const FULL_HP = g.player.health;
+      let prevHp = FULL_HP;
+      let sawLeapAttack = false;
+      let sawAttackAfterLeap = false;
+      let strikes = 0;
+      let minDist = Infinity;
+      let maxLeapY = -Infinity;
+      const modes = new Set();
+      for (let i = 0; i < 150; i++) {          // 150 × 100ms = 15 秒
+        await new Promise((res) => setTimeout(res, 100));
+        const e = g.entities.get(sum.id);
+        if (!e) break;
+        const st = e.state;
+        modes.add(st.mode + (st.leapKind ? ':' + st.leapKind : ''));
+        if (st.mode === 'leap' && st.leapKind === 'attack') {
+          sawLeapAttack = true;
+          maxLeapY = Math.max(maxLeapY, st.position[1]);
+        }
+        if (sawLeapAttack && st.mode === 'attack') sawAttackAfterLeap = true;
+        const pp = g.player.physics.pos;
+        minDist = Math.min(minDist, Math.hypot(st.position[0] - pp.x, st.position[2] - pp.z));
+        if (g.player.health < prevHp) {
+          strikes++;
+          g.player.health = FULL_HP;           // 回满以便测多次命中（20 格血 ÷ 14 伤害）
+          prevHp = FULL_HP;
+        }
+        if (sawAttackAfterLeap && strikes >= 1) break;
+      }
+      const pp = g.player.physics.pos;
+      return {
+        sawLeapAttack, sawAttackAfterLeap, strikes, minDist, maxLeapY,
+        modes: [...modes],
+        playerMoved: Math.hypot(pp.x - start[0], pp.z - start[2]),
+      };
+    });
+    console.log('[跳跃劈砍]', JSON.stringify(r));
+
+    expect(r.err).toBeUndefined();
+    expect(r.playerMoved, '玩家应站定不动（否则测的不是 Boss 的行为）').toBeLessThan(0.5);
+    // ① 真的飞跃了（而不是单纯走过来）
+    expect(r.sawLeapAttack, `从未进入 leap(attack)，实际经过的状态：${r.modes.join(',')}`)
+      .toBe(true);
+    // ② 飞跃后接上了劈砍
+    expect(r.sawAttackAfterLeap, '飞跃后没有起劈（应「快触地时执行劈砍」）').toBe(true);
+    // ③ 跳完砍得到
+    expect(r.strikes, `跳跃劈砍后一刀没砍中（落点预判或命中锥不对）`)
+      .toBeGreaterThanOrEqual(1);
+  });
+
+  /**
+   * v2.62 用户缺陷⑤：「当焰魔卡住不动的时候，比如卡住 4 秒钟，就飞跃出来，
+   * 不要陷在卡住的位置一直动弹不得」。
+   *
+   * ## 围栏为什么是 2 格高
+   *
+   * `leapJumpForce`(11) 的抛物线顶点 = `v²/(2|g|) = 121/48 ≈ 2.52` 格（spec §3.2 的标定：
+   * 「越得过 2 格障碍」）。3 格高的墙它跳不出去 —— 那不是本用例要测的「卡住」，
+   * 而是「真的困死了」（spec §6 已记：焰魔不拆方块，绕不过去就走不过去）。
+   * 2 格高也超过 `maxStep`(1.0) ⇒ step-up 上不去，只能靠飞跃。
+   */
+  test('围困脱困：2 格高围栏困住焰魔 → 卡住约 4 秒后飞跃出来（v2.62）', async ({ page }) => {
+    test.setTimeout(180_000);
+    await page.goto(`/?seed=${SEED}`);
+    await waitWorldReady(page);
+    await teleportToTarnCenter(page);
+    await waitPlayerLanded(page);
+
+    // ---- ① 先召焰魔，读它落地后的真实位置，再围着那个位置垒栏 ----
+    const built = await page.evaluate(async () => {
+      const g = window.__MC_GAME__;
+      const p0 = g.player.physics.pos;
+      const sum = g.ignises.summon('tarn:e2e:5', Math.floor(p0.x), Math.floor(p0.z) + 6, 1, Math.floor(p0.y));
+      if (!sum.ok) return { err: sum.reason };
+      await new Promise((res) => setTimeout(res, 1500));   // 等落地站稳
+      const e = g.entities.get(sum.id);
+      if (!e) return { err: 'despawned' };
+      const [ex, ey, ez] = e.state.position;
+      const cx = Math.floor(ex), cz = Math.floor(ez);
+      const feetY = Math.floor(ey);
+      const stone = g.registry.idOf('stone');
+      // 切比雪夫距离 **2** 的闭合围栏，高 2 格（y = feetY, feetY+1）。
+      //
+      // ⚠️ **半径必须是 2，不能是 3**（首轮实测逼出来的）：半径 3 的围栏内部有 5×5 格
+      // 空间，焰魔能贴着内壁**滑动**追玩家 —— 每帧都有进展 ⇒ `stuckT` 被正确清零
+      //（实测 15 秒只累到 0.0166 = 恰好一帧）。那不是用户说的「卡住不动」。
+      //
+      // ⚠️ **也不能是 1**：焰魔 halfWidth 0.5 ⇒ `aabbCollidesAt` 采样 floor(px±0.5) 共 2 格，
+      // 墙贴在 1 格外会让它**出生即被埋** ⇒ 走的是 Task 4 的 `_resolveStuck`（直接抬到墙顶）
+      // 而不是本用例要测的脱困飞跃。
+      // 半径 2 恰好：可移动范围 ≈ 1 格（约 0.23 秒走到头）⇒ 之后真的动不了。
+      let placed = 0;
+      for (let dx = -2; dx <= 2; dx++) {
+        for (let dz = -2; dz <= 2; dz++) {
+          if (Math.max(Math.abs(dx), Math.abs(dz)) !== 2) continue;   // 只要环
+          for (let dy = 0; dy < 2; dy++) {
+            g.editor.setBlock({ x: cx + dx, y: feetY + dy, z: cz + dz, id: stone });
+            placed++;
+          }
+        }
+      }
+      return { id: sum.id, cx, cz, feetY, placed, ex, ey, ez, px: p0.x, py: p0.y, pz: p0.z };
+    });
+    expect(built.err).toBeUndefined();
+    expect(built.placed, '围栏应垒满 16 格 × 2 层 = 32').toBe(32);
+    await page.waitForTimeout(2500);           // 等 remesh / 光照收敛
+
+    // ---- ② 把玩家移到远处（关键！）----
+    //
+    // ⚠️ **这一步是实测逼出来的**（首轮失败：`stuckT` 只到 0.0166 = 恰好一帧）：
+    // 召唤点只离玩家 6 格，而 `hitRange` 是 6.5 ⇒ 焰魔站在围栏里就能砍到人 ⇒
+    // 一直停在 `attack` 态（意图恒 0）⇒ `stuckT` 被**正确地**清零（能砍到人的焰魔
+    // 本来就不算「卡住」）。要测脱困，必须让它**够不着玩家、非得移动不可**：
+    // 移到 25 格外 ⇒ > `attackRange`(5.5) 且 > `leapAttackMax`(14) ⇒ 只能 chase 走过来。
+    await page.evaluate((b) => {
+      const g = window.__MC_GAME__;
+      g.player.spawn(b.px, b.py, b.cz - 22);   // 移到围栏另一侧远处（-Z）
+    }, built);
+    await waitPlayerLanded(page);
+
+    // ---- ③ 观察 15 秒：它应该卡住约 4 秒后飞跃出来 ----
+    const r = await page.evaluate(async (b) => {
+      const g = window.__MC_GAME__;
+      let sawLeap = false;
+      let sawEscape = false;
+      let escaped = false;
+      let maxStuckT = 0;
+      let maxY = -Infinity;
+      let minDistToCenter = Infinity;
+      const modes = new Set();
+      for (let i = 0; i < 150; i++) {          // 15 秒
+        await new Promise((res) => setTimeout(res, 100));
+        const e = g.entities.get(b.id);
+        if (!e) break;
+        const st = e.state;
+        modes.add(st.mode + (st.leapKind ? ':' + st.leapKind : ''));
+        maxStuckT = Math.max(maxStuckT, st.stuckT || 0);
+        maxY = Math.max(maxY, st.position[1]);
+        if (st.mode === 'leap') {
+          sawLeap = true;
+          if (st.leapKind === 'escape') sawEscape = true;
+        }
+        // 脱困判据：脚底高过栏顶（feetY+2）或水平出了围栏（切比雪夫距 > 2.5）
+        const dCheb = Math.max(Math.abs(st.position[0] - (b.cx + 0.5)),
+          Math.abs(st.position[2] - (b.cz + 0.5)));
+        minDistToCenter = Math.min(minDistToCenter, dCheb);
+        if (st.position[1] > b.feetY + 2 || dCheb > 2.5) escaped = true;
+        if (escaped && sawEscape) break;
+      }
+      const e = g.entities.get(b.id);
+      return {
+        sawLeap, sawEscape, escaped, maxStuckT, maxY,
+        finalPos: e ? e.state.position.slice() : null,
+        finalMode: e ? e.state.mode : null,
+        modes: [...modes], feetY: b.feetY, cx: b.cx, cz: b.cz,
+      };
+    }, built);
+    console.log('[围困脱困]', JSON.stringify(r));
+
+    // ① 真的卡住过（stuckT 累计起来了 —— 否则本用例没测到「卡住」这个前提）
+    expect(r.maxStuckT, `stuckT 只到 ${r.maxStuckT?.toFixed(2)}，围栏没真的困住它（modes=${r.modes}）`)
+      .toBeGreaterThan(1.0);
+    // ② 触发了脱困飞跃
+    expect(r.sawEscape, `从未进入 leap(escape)，实际状态：${r.modes.join(',')}`).toBe(true);
+    // ③ 真的出来了
+    expect(r.escaped,
+      `飞跃了但没出来（finalPos=${JSON.stringify(r.finalPos)}, feetY=${r.feetY}, maxY=${r.maxY?.toFixed(2)}）`)
+      .toBe(true);
+  });
+
+  /**
+   * v2.63 用户第③项：「不是每时每刻都检测玩家位置，而是间隔最快 1 秒检测玩家位置，
+   * 根据这个检测到的玩家位置进行位置移动和转向」。
+   *
+   * ## 为什么需要这条 E2E（单测盖不住什么）
+   *
+   * 单测证明了 Agent 读快照、且快照按间隔刷新。但真实页面有三个单测盖不住的面：
+   * ① 帧循环真的以 60fps 驱动（单测是手动喂 dt）；② 玩家真的在跑（`keys.add` 路径）；
+   * ③ **行为后果**：焰魔是不是真的在追「1~2 秒前的你」而不是当前的你。
+   *
+   * ## 判据（三层，缺一不可）
+   *
+   * ① 刷新次数：4 秒内 `sensedPlayer` 的变更次数必须远小于帧数（每帧刷新 = 机制失效）；
+   * ② 滞后量：存在时刻「快照 vs 真实位置」差 > 2 格（玩家 8 格/秒 × 1~2 秒 ⇒ 应有 8~16 格）；
+   * ③ **行为**：焰魔的行进方向更接近「快照方向」而不是「真实玩家方向」——
+   *   这是用户真正要的东西（前两条只证明机制在跑，不证明它被用上了）。
+   */
+  test('感知间隔：玩家跑动时焰魔追的是「1~2 秒前的你」，不是每帧跟随（v2.63）', async ({ page }) => {
+    test.setTimeout(180_000);
+    await page.goto(`/?seed=${SEED}`);
+    await waitWorldReady(page);
+    await teleportToTarnCenter(page);
+    await waitPlayerLanded(page);
+
+    const r = await page.evaluate(async () => {
+      const g = window.__MC_GAME__;
+      const p0 = g.player.physics.pos;
+      // 召唤到玩家 +Z 侧 12 格（在跳劈窗内，但本用例只看追击方向，跳劈不影响判据）
+      const sum = g.ignises.summon('tarn:e2e:8', Math.floor(p0.x), Math.floor(p0.z) + 12, 1, Math.floor(p0.y));
+      if (!sum.ok) return { err: sum.reason };
+      await new Promise((res) => setTimeout(res, 2500));   // 等它落地 + 完成首次感知
+      const e0 = g.entities.get(sum.id);
+      if (!e0) return { err: 'despawned' };
+
+      // 玩家横向（+X）全速跑动 4 秒：yaw=-π/2 ⇒ 前向 +X（同本文件既有用例口径）
+      g.player.yaw = -Math.PI / 2;
+      g.player.keys.add('KeyW');
+
+      const samples = [];
+      let prevSensed = null;
+      let refreshes = 0;
+      for (let i = 0; i < 40; i++) {          // 40 × 100ms = 4 秒
+        await new Promise((res) => setTimeout(res, 100));
+        const e = g.entities.get(sum.id);
+        if (!e) break;
+        const st = e.state;
+        const pp = g.player.physics.pos;
+        const sensed = st.sensedPlayer;
+        if (sensed) {
+          // 快照变更计数（位置差 > 1e-6 才算一次刷新）
+          if (!prevSensed
+            || Math.hypot(sensed[0] - prevSensed[0], sensed[2] - prevSensed[2]) > 1e-6) {
+            refreshes++;
+          }
+          prevSensed = sensed.slice();
+          samples.push({
+            ex: st.position[0], ez: st.position[2],
+            px: pp.x, pz: pp.z,
+            sx: sensed[0], sz: sensed[2],
+            yaw: st.yaw,
+            lag: Math.hypot(sensed[0] - pp.x, sensed[2] - pp.z),
+            mode: st.mode,
+          });
+        }
+      }
+      g.player.keys.delete('KeyW');
+
+      // ③ 行为判据（直接对应用户原文「面向一直朝向玩家」）：
+      //    量 **yaw 与「朝真实玩家」的夹角**。每帧跟随（v2.62）时 chase 的 yaw 朝行进
+      //    方向、而行进方向朝真实玩家 ⇒ 夹角恒≈ 0；有感知间隔（v2.63）时行进方向朝
+      //    **快照**，而快照滞后于横向跑动的玩家 ⇒ 夹角必然显著偏离 0。
+      //    ⚠️ 不用「朝快照 vs 朝真实」的细微比较（实测踩到：玩家横跑、焰魔纵追时
+      //    两个方向在 -Z 主轴上夹角都只有 0.2~0.3 rad，被 navDir/steering 噪声淹没）。
+      const norm = (a) => { while (a > Math.PI) a -= 2 * Math.PI; while (a < -Math.PI) a += 2 * Math.PI; return a; };
+      let maxYawOff = 0, sumYawOff = 0, compared = 0;
+      for (const b of samples) {
+        if (b.mode !== 'chase' || b.lag <= 3) continue;
+        // 朝真实玩家的角度（本仓 yaw 口径：前向 = (−sin yaw, −cos yaw) ⇒ yaw = atan2(−dx, −dz)）
+        const want = Math.atan2(-(b.px - b.ex), -(b.pz - b.ez));
+        const off = Math.abs(norm(b.yaw - want));
+        maxYawOff = Math.max(maxYawOff, off);
+        sumYawOff += off;
+        compared++;
+      }
+      return {
+        refreshes,
+        sampleCount: samples.length,
+        maxLag: samples.length ? Math.max(...samples.map((s) => s.lag)) : 0,
+        maxYawOff,
+        avgYawOff: compared ? sumYawOff / compared : null,
+        compared,
+      };
+    });
+    console.log('[感知间隔]', JSON.stringify(r));
+
+    expect(r.err).toBeUndefined();
+    // ① 快照不是每帧刷新：4 秒 / 最快 1 秒间隔 ⇒ 最多约 5 次（含首次）。
+    //    每帧刷新（60fps × 4s = 240 帧，采样 40 次）会让这个数接近采样数。
+    expect(r.refreshes, `sensedPlayer 在 4 秒内刷新了 ${r.refreshes} 次（应 ≤ 6，每帧刷新就是机制失效）`)
+      .toBeLessThanOrEqual(6);
+    expect(r.refreshes, '快照一次都没刷新过（应至少按间隔重采）').toBeGreaterThanOrEqual(2);
+    // ② 真的有滞后：玩家 8 格/秒 × 1~2 秒间隔 ⇒ 滞后应有数格
+    expect(r.maxLag, `快照与真实位置最大只差 ${r.maxLag?.toFixed(2)} 格（应 > 2，否则等于实时跟随）`)
+      .toBeGreaterThan(2);
+    // ③ 行为：yaw 不是一直精确对准真实玩家（用户原文「不要一直朝向玩家」）。
+    //    阈值 0.15 rad ≈ 8.6°：每帧跟随时该值恒≈ 0（行进方向即朝真实玩家）；
+    //    滞后 9 格、玩家横跑 16 格时，朝快照与朝真实玩家的夹角在 30°+ 量级。
+    expect(r.compared, '没有可用采样点（滞后 > 3 格且在 chase 的帧太少）').toBeGreaterThan(3);
+    expect(r.maxYawOff,
+      `yaw 与「朝真实玩家」的最大夹角只有 ${(r.maxYawOff * 180 / Math.PI).toFixed(1)}°（应 > 8.6°，否则就是每帧精确跟随）`)
+      .toBeGreaterThan(0.15);
+  });
 });

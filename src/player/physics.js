@@ -79,6 +79,23 @@ export class PlayerPhysics {
      * @type {import('../entities/minecarts/minecart-system.js').MinecartService|null}
      */
     this.minecarts = null;
+    /**
+     * 焰魔服务（Player 构造后由装配层注入，同 `minecarts` 手法 —— physics 不 import entities/）。
+     *
+     * 非 null 时 `_collides` 把**焰魔身体盒**视为实心（v2.62 用户缺陷⑦）：玩家奔跑撞上
+     * 焰魔就停住（二分回退），而焰魔站定不动 —— 「不动如山」。
+     * 原版佐证：`KNOCKBACK_RESISTANCE = 1.0`（`Ignis_Entity.java:508`，完全免疫击退）。
+     *
+     * ⚠️ **阻挡是单向的**：焰魔自己的物理（`ignis-boss-agent.js`）看不见玩家，
+     * 故飞跃期靠 Agent 里的「与玩家过近则本步水平意图清零」守卫防穿（spec §2.5）。
+     * ⚠️ **重叠自愈（v2.62 final review P1-3）**：玩家若因传送/矿车下车落在焰魔身体盒
+     * **内部**，本方法会让 `_collides()` 恒真 ⇒ 玩家四轴全冻结（走不开也落不下）。
+     * 自愈在 Agent 侧：`_ringIntent` 的「真重叠例外后退」档（`d < overlapEscapeDist`）
+     * 让焰魔主动退开。⚠️ **不能只靠「玩家等焰魔走开」**—— 去退让后焰魔在贴近时站定、
+     * 永不主动离开，那是个真软锁（详见 spec §2.7）。
+     * @type {import('../entities/ignis/ignis-system.js').IgnisService|null}
+     */
+    this.ignises = null;
   }
 
   /** 开/关飞行（边沿由调用方保证 —— `player.js` 的 `!e.repeat`）。同时清零竖直速度： */
@@ -218,6 +235,16 @@ export class PlayerPhysics {
    *        （M2-7：仅 Y 轴向下使用，云可站立但非墙）
    */
   _collides(includeSupportsPlayer = false) {
+    // 焰魔身体盒视为实心（v2.62 用户缺陷⑦：「焰魔应该不动如山，玩家也应当停止前进，
+    // 就类似撞到实心方块一样」）。
+    //
+    // ⚠️ **放在函数顶部而不是末尾**：`_moveAxis` 与 `_tryStepUp` 都是「先改 `this.pos`
+    // 到候选位置、再问 `_collides()`」，故本方法读到的 `this.aabb()` 已经是候选位置 ——
+    // 两处调用都因此自动生效（包括「抬一格后是否仍与焰魔重叠」⇒ 玩家爬不上焰魔）。
+    //
+    // ⚠️ **尺寸权威不互拷**（红线 1）：玩家盒由本文件的 `PLAYER_WIDTH/HEIGHT` 给出
+    //（经 `aabb()`），焰魔盒由 `IgnisService.overlapsAabb` 内部的 `ignisAabbFor` 给出。
+    if (this.ignises && this.ignises.overlapsAabb(this.aabb())) return true;
     const w = this.world;
     const hw = PLAYER_WIDTH / 2;
     const x0 = Math.floor(this.pos.x - hw), x1 = Math.floor(this.pos.x + hw);

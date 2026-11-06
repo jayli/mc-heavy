@@ -72,6 +72,53 @@ test('physics: 不穿底（世界底部以下 isSolid）', () => {
   assertTrue(p.pos.y >= WORLD_MIN_Y, 'never below world');
 });
 
+// ==================== 焰魔阻挡玩家（v2.62 用户缺陷⑦）====================
+//
+// 「玩家奔跑向焰魔，撞到焰魔的身体，焰魔应该不动如山，玩家也应当停止前进，
+// 就类似撞到实心方块一样」。实现：`_collides()` 把焰魔身体盒当实心（注入 service，
+// 同 minecarts 手法）。本组用**注入一个假 service**（只实现 `overlapsAabb`）验证
+// 玩家物理真的消费了它 —— 真 service 的 `overlapsAabb` 契约在 `test-ignis-system.js`。
+
+test('physics: 玩家撞焰魔身体盒被挡（不动如山）', () => {
+  const { world } = makeWorld();
+  const p = new PlayerPhysics(world);
+  // 假 service：焰魔身体盒占 x∈[9.5,10.5]、z∈[7.5,8.5]、y∈[1,4]（玩家正前方）
+  p.ignises = {
+    overlapsAabb: (box) => box.maxX > 9.5 && box.minX < 10.5
+      && box.maxZ > 7.5 && box.minZ < 8.5 && box.maxY > 1 && box.minY < 4,
+  };
+  p.pos = { x: 8, y: 1, z: 8 };
+  for (let i = 0; i < 10; i++) p.step(1 / 60);   // 先落地
+  for (let i = 0; i < 120; i++) { p.move(1, 0); p.step(1 / 60); }   // 朝 +X 全速冲
+  // 玩家半宽 0.3 ⇒ 撞到盒左缘 9.5 时中心停在 9.2
+  assertTrue(p.pos.x < 9.5, `应被焰魔挡住，实际 x=${p.pos.x.toFixed(3)}`);
+  assertTrue(p.pos.x > 8.5, `不应完全没动（否则测不到「冲过去被挡」），x=${p.pos.x.toFixed(3)}`);
+});
+
+test('physics: 无 ignises 注入时玩家照常穿过该区域（零回归）', () => {
+  const { world } = makeWorld();
+  const p = new PlayerPhysics(world);
+  p.pos = { x: 8, y: 1, z: 8 };
+  for (let i = 0; i < 10; i++) p.step(1 / 60);
+  for (let i = 0; i < 120; i++) { p.move(1, 0); p.step(1 / 60); }
+  assertTrue(p.pos.x > 9.5, `无焰魔时应能走过 x=9.5，实际 x=${p.pos.x.toFixed(3)}`);
+});
+
+test('physics: 玩家爬不上焰魔（盒高 > 抬升后头顶）', () => {
+  const { world } = makeWorld();
+  const p = new PlayerPhysics(world);
+  // 焰魔盒 y∈[1,4]（3 格高）：玩家 1.8 高，step-up 抬 1 格后头顶到 y=2.8 仍在盒内 ⇒ 上不去
+  p.ignises = {
+    overlapsAabb: (box) => box.maxX > 9.5 && box.minX < 10.5
+      && box.maxZ > 7.5 && box.minZ < 8.5 && box.maxY > 1 && box.minY < 4,
+  };
+  p.pos = { x: 8, y: 1, z: 8 };
+  for (let i = 0; i < 10; i++) p.step(1 / 60);
+  for (let i = 0; i < 180; i++) { p.move(1, 0); p.step(1 / 60); }
+  assertTrue(p.pos.x < 9.5, `不应爬上焰魔，实际 x=${p.pos.x.toFixed(3)}`);
+  assertTrue(Math.abs(p.pos.y - 1) < 0.01, `不应被抬升，实际 y=${p.pos.y.toFixed(3)}`);
+});
+
 test('physics: 1 格台阶可登上（step-up）', () => {
   const { world, reg } = makeWorld();
   const col = world.getColumn(0, 0);
