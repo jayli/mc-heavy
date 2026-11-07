@@ -15,7 +15,7 @@
 // 3. **按 slot 升序**找第一个空槽（`slotOccupied` 为假）→ 在该地图中心召唤；
 // 4. 全部槽位都占着 → 提示「Boss 都在了」，什么都不召唤。
 //
-// ⚠️ **「Boss 死掉后再按 C 才会召唤」是这套流程的自然结果，不需要额外状态**：
+// ⚠️ **「Boss 死掉后再按 B 才会召唤」是这套流程的自然结果，不需要额外状态**：
 // 死亡即 despawn ⇒ `slotOccupied` 变假 ⇒ 该槽位重新可召。故 v2.41 的永久死亡标记
 // （`meta.dragonDead`）已随本次改动移除。
 import { DRAGON_TYPE } from '../dragons/dragon-config.js';
@@ -34,7 +34,7 @@ import { IGNIS_TYPE } from '../ignis/ignis-config.js';
  * 地图种类 → Boss 名册（**最多两个**，用户裁定）。
  *
  * ⚠️ **只列有 Boss 的地图**：`bossSlotsFor()` 对未登记的种类返回空数组，
- * 语义是「这张地图目前没有 Boss」——按 C 会提示「这里没有可召唤的 Boss」。
+ * 语义是「这张地图目前没有 Boss」——按 B 会提示「这里没有可召唤的 Boss」。
  * 刻意**不**为 CITY / SNOW / SHALLOW_TARN 写空数组条目：那会让「还没做」与
  * 「做了但故意没有」在表里长得一样。
  *

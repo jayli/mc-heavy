@@ -3,7 +3,7 @@
 // **为什么必须有这个 spec**：`src/tests/test-bgm.js` 证明了 AudioManager 的交叉淡化状态机
 // 本身正确，`src/tests/test-block-hit-fx.js` 证明了碎块数学正确 —— 但证明不了它们在
 // **游戏里被接上了**。漏接线的形态全是静默的（没有任何报错）：
-//   ① 召唤没接 `ignis_burn` → 按 C 没声音；
+//   ① 召唤没接 `ignis_burn` → 按 B 没声音；
 //   ② 死亡音分型没接 → 打死龙/焰魔仍是 z_die（或没声音）；
 //   ③ 挥刀/跳跃迁移检测没接 → 焰魔挥刀/跳跃没声音；
 //      （v2.79 起起手音按 `attackKind` 分流：普攻 `ignis_attack_swing` / 旋斩 `ignis_attack_circle`）
@@ -14,7 +14,7 @@
 // `audioDebugState().playRequests`（播放请求计数）与 `audioManager.debugMusicState()`
 // （boss 意图/在播/混合度），与既有 `audio-fx.spec.mjs` / `bgm.spec.mjs` 同口径。
 //
-// ⚠️ **必须走玩家真实入口**（AGENTS.md M7 教训）：召唤走真实 C 键派发，伤害走
+// ⚠️ **必须走玩家真实入口**（AGENTS.md M7 教训）：召唤走真实 B 键派发，伤害走
 // `damageEntity()`（武器/炮塔的共同入口），不手工塞 state.mode。
 import { test, expect } from 'playwright/test';
 
@@ -34,13 +34,13 @@ async function musicState(page) {
   return page.evaluate(() => window.__MC_GAME__.audioManager.debugMusicState());
 }
 
-/** 按 C（真实键盘事件路径，与 dragon.spec.mjs 同手法） */
+/** 按 B（真实键盘事件路径，与 dragon.spec.mjs 同手法） */
 async function pressC(page) {
   await page.evaluate(() => {
     window.dispatchEvent(new KeyboardEvent('keydown', {
-      code: 'KeyC', repeat: false, bubbles: true, cancelable: true,
+      code: 'KeyB', repeat: false, bubbles: true, cancelable: true,
     }));
-    window.dispatchEvent(new KeyboardEvent('keyup', { code: 'KeyC', bubbles: true, cancelable: true }));
+    window.dispatchEvent(new KeyboardEvent('keyup', { code: 'KeyB', bubbles: true, cancelable: true }));
   });
 }
 
@@ -79,7 +79,7 @@ test('Boss BGM：召唤 → 战斗曲淡入；全灭 → 淡回开局曲目', as
     null, { timeout: 60_000 });
   const normalTrack = (await musicState(page)).track;
 
-  // ---- 召唤飞龙（真实 C 键路径）----
+  // ---- 召唤飞龙（真实 B 键路径）----
   const c = await altarCenter(page);
   expect(c, '前置：seed 12345 必须有祭坛地带').not.toBeNull();
   await page.evaluate(([x, z]) => window.__MC_GAME__._teleportTo(x, 40, z), [c.cx, c.cz]);

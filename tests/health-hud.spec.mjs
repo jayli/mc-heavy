@@ -184,14 +184,14 @@ test('Boss（飞龙）受击：头顶弹「剩余血量」数字', async ({ page
   });
   expect(c, '前置：seed 12345 必须有祭坛地带').not.toBeNull();
 
-  // 传送到祭坛中心上空并等 column 加载，然后按 C 召唤（真实键盘事件路径）
+  // 传送到祭坛中心上空并等 column 加载，然后按 B 召唤（真实键盘事件路径）
   await page.evaluate(([x, z]) => window.__MC_GAME__._teleportTo(x, 40, z), [c.cx, c.cz]);
   await page.waitForFunction(([x, z]) =>
     window.__MC_GAME__.world.hasColumn(Math.floor(x / 16), Math.floor(z / 16)),
   [c.cx, c.cz], { timeout: 30_000 });
   await page.evaluate(() => {
-    window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyC', repeat: false, bubbles: true, cancelable: true }));
-    window.dispatchEvent(new KeyboardEvent('keyup', { code: 'KeyC', bubbles: true, cancelable: true }));
+    window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyB', repeat: false, bubbles: true, cancelable: true }));
+    window.dispatchEvent(new KeyboardEvent('keyup', { code: 'KeyB', bubbles: true, cancelable: true }));
   });
   await page.waitForFunction(() =>
     (window.__MC_GAME__.dragons?.activeEntities().length ?? 0) >= 1, null, { timeout: 15_000 });

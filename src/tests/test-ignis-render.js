@@ -165,7 +165,7 @@ test('焰魔渲染: 有实体时对应实例可见且位置对齐 state.position
   const entity = {
     id: 'ignis:a:1',
     state: {
-      position: [3, 11, -7], yaw: 0.5, health: 450, flashedUntil: 0,
+      position: [3, 11, -7], yaw: 0.5, health: 1000, flashedUntil: 0,
       attackAnimT: 0, attackCooldown: 0,
     },
   };
@@ -183,7 +183,7 @@ test('焰魔渲染: 红闪用材质 color（performance.now 基准，不是 Date
   const d = await getAsset();
   const scene = new THREE.Scene();
   const r = new IgnisRenderer(scene, d);
-  const base = { position: [0, 0, 0], yaw: 0, health: 450, attackCooldown: 0 };
+  const base = { position: [0, 0, 0], yaw: 0, health: 1000, attackCooldown: 0 };
   // flashedUntil 在未来 → 红
   r.sync([{ id: 'a', state: { ...base, flashedUntil: 1000, attackAnimT: 0 } }], 500);
   assertTrue(r.instances[0].material.color.getHex() !== 0xffffff, '红闪时基色应改变');
@@ -199,7 +199,7 @@ test('焰魔渲染: attackAnimT > 0 时用 attack 动画，= 0 时用 idle', asy
   const d = await getAsset();
   const scene = new THREE.Scene();
   const r = new IgnisRenderer(scene, d);
-  const base = { position: [0, 0, 0], yaw: 0, health: 450, flashedUntil: 0, attackCooldown: 0 };
+  const base = { position: [0, 0, 0], yaw: 0, health: 1000, flashedUntil: 0, attackCooldown: 0 };
 
   // 记录骨骼姿态：idle 与 attack 在同一时刻的姿态不同
   r.sync([{ id: 'a', state: { ...base, attackAnimT: 0 } }], 0);
@@ -220,7 +220,7 @@ test('焰魔渲染(v2.75): attackKind="spin" 时用 spin 动画（不是 attack�
   const d = await getAsset();
   const scene = new THREE.Scene();
   const r = new IgnisRenderer(scene, d);
-  const base = { position: [0, 0, 0], yaw: 0, health: 450, flashedUntil: 0, attackCooldown: 0 };
+  const base = { position: [0, 0, 0], yaw: 0, health: 1000, flashedUntil: 0, attackCooldown: 0 };
   let clock = 0;
   const poseOf = (state) => {
     clock = settle(r, { id: 'a', state: { ...base, ...state } }, clock);
@@ -278,7 +278,7 @@ test('焰魔渲染: 骨骼增量从 bind 快照起算（不逐帧累积）', asy
   const d = await getAsset();
   const scene = new THREE.Scene();
   const r = new IgnisRenderer(scene, d);
-  const base = { position: [0, 0, 0], yaw: 0, health: 450, flashedUntil: 0, attackCooldown: 0 };
+  const base = { position: [0, 0, 0], yaw: 0, health: 1000, flashedUntil: 0, attackCooldown: 0 };
   // 同一状态重复 sync 5 次，姿态必须逐位相同（累积会越跑越散架）
   r.sync([{ id: 'a', state: { ...base, attackAnimT: 0.3 } }], 0);
   const first = r.instances[0].bones.map((b) => b.quaternion.toArray());
@@ -310,7 +310,7 @@ test('焰魔渲染(v2.56 缺陷C): 骨骼 position 随动画旋转重算（不�
   const d = await getAsset();
   const scene = new THREE.Scene();
   const r = new IgnisRenderer(scene, d);
-  const base = { position: [0, 0, 0], yaw: 0, health: 450, flashedUntil: 0, attackCooldown: 0 };
+  const base = { position: [0, 0, 0], yaw: 0, health: 1000, flashedUntil: 0, attackCooldown: 0 };
 
   // right_arm_joint 在攻击动画里转到 −147°，是位移最剧烈的一根
   const armIdx = d.bones.findIndex((b) => b.name === 'right_arm_joint');
@@ -357,7 +357,7 @@ function ignisAt(y, over = {}) {
   return {
     id: 'ignis-lift',
     state: {
-      position: [0, y, 0], yaw: 0, health: 450, flashedUntil: 0,
+      position: [0, y, 0], yaw: 0, health: 1000, flashedUntil: 0,
       attackAnimT: 0, idleTime: 0, ...over,
     },
   };
@@ -482,7 +482,7 @@ test('焰魔渲染: 实例复用给新实体时重置缓动（不把出生当成
 // 「数据变了、根本没有跳变」的退化）。
 
 const IDENT_Q = [0, 0, 0, 1];
-const IGNIS_BASE = { position: [0, 0, 0], yaw: 0, health: 450, flashedUntil: 0, attackCooldown: 0 };
+const IGNIS_BASE = { position: [0, 0, 0], yaw: 0, health: 1000, flashedUntil: 0, attackCooldown: 0 };
 
 /**
  * 两个四元数的转角（度）= 相对旋转 `conj(a) * b` 的转角。

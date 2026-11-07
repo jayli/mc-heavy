@@ -1,6 +1,6 @@
 // tests/dragon-ai.spec.mjs — 飞龙 AI 行为验收（v2.44 Task 7）
 //
-// Tier 4（真实页面行为）。**必须走玩家真实入口**（按 C 召龙 + 真实帧循环推进），
+// Tier 4（真实页面行为）。**必须走玩家真实入口**（按 B 召龙 + 真实帧循环推进），
 // 不得手工塞 `state.mode`（M7 教训：只测 API 漏玩家主路径）。
 //
 // ⚠️ **爆炸口径（破坏方块跟 TNT 开关）不在本 spec** —— 已由 `tests/dragon-fireball.spec.mjs`
@@ -444,13 +444,13 @@ test('AI E2E: 视线被实心不透明方块遮挡 → 龙不追击；拆掉遮�
   expect(opened.los, '拆掉盒顶后 LOS 必须为 true').toBe(true);
 });
 
-test('AI E2E: 真实按 C 召龙后 AI 生效（玩家主路径，不是测试 API）', async ({ page }) => {
+test('AI E2E: 真实按 B 召龙后 AI 生效（玩家主路径，不是测试 API）', async ({ page }) => {
   test.setTimeout(180_000);
   await page.setViewportSize({ width: 640, height: 480 });
   await page.goto('/?vd=8&seed=12345');
   await waitWorldReady(page);
 
-  // 走到祭坛地带中心（真实高台地带），按 C 召龙 —— 与 dragon.spec.mjs 同一入口
+  // 走到祭坛地带中心（真实高台地带），按 B 召龙 —— 与 dragon.spec.mjs 同一入口
   const c = await page.evaluate(async () => {
     const { findAltarTarnRegion } = await import('/src/gen/structures/tarn-zone.js');
     const a = findAltarTarnRegion(window.__MC_GAME__.seed);
@@ -465,9 +465,9 @@ test('AI E2E: 真实按 C 召龙后 AI 生效（玩家主路径，不是测试 A
   // 真实键盘事件（与 dragon.spec.mjs 的 pressC 同手法）
   await page.evaluate(() => {
     window.dispatchEvent(new KeyboardEvent('keydown', {
-      code: 'KeyC', repeat: false, bubbles: true, cancelable: true,
+      code: 'KeyB', repeat: false, bubbles: true, cancelable: true,
     }));
-    window.dispatchEvent(new KeyboardEvent('keyup', { code: 'KeyC', bubbles: true, cancelable: true }));
+    window.dispatchEvent(new KeyboardEvent('keyup', { code: 'KeyB', bubbles: true, cancelable: true }));
   });
   await page.waitForFunction(() => window.__MC_GAME__.dragons.activeEntities().length === 1,
     null, { timeout: 15_000 });

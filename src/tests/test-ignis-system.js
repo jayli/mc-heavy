@@ -45,7 +45,8 @@ test('焰魔: IGNIS_TYPE 是稳定的字符串常量', () => {
 
 test('焰魔: 玩法数值取自原作者（Ignis_Entity.java 的 ignis() 属性表）', () => {
   // 这些不是「可调参数」，是素材作者的真实值 —— 改成别的值需要明确理由
-  assertEqual(IGNIS.health, 450);          // MAX_HEALTH
+  // ⚠️ health 是唯一例外：用户 2026-11-07 裁定「Boss 的血量改为 1000」（作者原值 450）
+  assertEqual(IGNIS.health, 1000);         // MAX_HEALTH → 用户裁定 1000
   assertEqual(IGNIS.attackDamage, 14);     // ATTACK_DAMAGE
   assertEqual(IGNIS_AI.sightRange, 50);    // FOLLOW_RANGE
   // ⚠️ v2.62/v2.63 用户两次裁定减速（作者原值 6.6 = MOVEMENT_SPEED 0.33 格/tick × 20）：

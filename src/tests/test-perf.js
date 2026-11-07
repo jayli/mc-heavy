@@ -151,14 +151,14 @@ test('PerfHUD: 面板宽度固定 + 操作说明四行入面板', () => {
   assertTrue(hud.helpEl.textContent.includes('F：飞行开关'), '飞行开关的键位须出现在操作说明里');
   assertTrue(hud.helpEl.textContent.includes('Space：升') && hud.helpEl.textContent.includes('Shift：降'),
     '飞行中的升降键位须出现在操作说明里');
-  // v2.43：C 键召唤 Boss。⚠️ **必须钉「在 Space：跳 之后」**（用户明确要求的位置），
+  // v2.43：召唤 Boss 键（2026-11-07 用户裁定从 C 改为 B）。⚠️ **必须钉「在 Space：跳 之后」**（用户明确要求的位置），
   // 只钉 includes 拓不到「放错行/放错位置」。
-  assertTrue(hud.helpEl.textContent.includes('C：召唤Boss'), 'C 键召唤 Boss 须出现在操作说明里');
+  assertTrue(hud.helpEl.textContent.includes('B：召唤Boss'), 'B 键召唤 Boss 须出现在操作说明里');
   const helpText = hud.helpEl.textContent;
-  assertTrue(helpText.indexOf('Space：跳') < helpText.indexOf('C：召唤Boss'),
-    'C：召唤Boss 必须排在 Space：跳 之后（用户指定的位置）');
-  assertTrue(helpText.indexOf('C：召唤Boss') < helpText.indexOf('\nF：飞行开关'),
-    'C：召唤Boss 必须与 Space：跳 同一行（不得另起一行）');
+  assertTrue(helpText.indexOf('Space：跳') < helpText.indexOf('B：召唤Boss'),
+    'B：召唤Boss 必须排在 Space：跳 之后（用户指定的位置）');
+  assertTrue(helpText.indexOf('B：召唤Boss') < helpText.indexOf('\nF：飞行开关'),
+    'B：召唤Boss 必须与 Space：跳 同一行（不得另起一行）');
   assertEqual(hud.helpEl.parentElement, hud.el, '操作说明在面板内');
   assertTrue(!hud.bodyEl.textContent.includes('操作：'), '操作说明不得搭进 250ms 重写的 bodyEl');
 

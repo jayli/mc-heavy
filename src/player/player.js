@@ -106,9 +106,9 @@ export class Player {
      */
     this._onSpawnZombie = onSpawnZombie;
     /**
-     * v2.43 C 键召唤 Boss 的回调（Game 注入 `() => this.summonBoss()`）。
+     * v2.43 B 键召唤 Boss 的回调（Game 注入 `() => this.summonBoss()`）。
      * 注入而非直接引用 Game —— 保持 Player 不反向依赖 core/（依赖方向 §3，与 `isModal` 同手法）。
-     * 缺省 null → C 键无效果（Player 单独构造时，如测试 fixture）。
+     * 缺省 null → B 键无效果（Player 单独构造时，如测试 fixture）。
      */
     this._onSummonBoss = onSummonBoss;
     /**
@@ -251,11 +251,12 @@ export class Player {
       // 否则按住 X 会以键盘重复率（约 30Hz）连续生成，瞬间填满 20 上限。
       // 上限校验由 `ZombieService.spawn()` 负责（满额返回 null），这里不重复判断。
       if (e.code === 'KeyX' && !e.repeat && this._onSpawnZombie) this._onSpawnZombie();
-      // v2.43：KeyC 召唤玩家所在地图的 Boss。同样**非重复事件**才触发 —— 按住 C 会以
+      // v2.43：KeyB 召唤玩家所在地图的 Boss（用户 2026-11-07：从 C 改为 B，C 不再绑定）。
+      // 同样**非重复事件**才触发 —— 按住 B 会以
       // 键盘重复率（约 30Hz）连续调用，虽然 `summon` 对已占槽位幂等（返回 'exists'），
       // 但会刷出一串 toast（后一条覆盖前一条，观感是提示在闪）。
-      // 不 preventDefault：C 不是浏览器功能键（与 KeyF / KeyX 同口径）。
-      if (e.code === 'KeyC' && !e.repeat && this._onSummonBoss) this._onSummonBoss();
+      // 不 preventDefault：B 不是浏览器功能键（与 KeyF / KeyX 同口径）。
+      if (e.code === 'KeyB' && !e.repeat && this._onSummonBoss) this._onSummonBoss();
       // 飞行开关（spec 2026-10-25 §4.4）：单击 F，**非重复事件**才触发 ——
       // 按住 F 时键盘重复率约 30Hz，不判 `e.repeat` 会让飞行状态疯狂抖动。
       // 不 preventDefault：F 不是浏览器功能键（与 ARROW_CODES 只拦方向键的口径一致）。

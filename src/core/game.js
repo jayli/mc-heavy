@@ -678,7 +678,7 @@ export class Game {
       this.dragonRenderer = null;
     }
     // ⚠️ **v2.43 起不再预热**：龙不再绑定祭坛地带（`findAltarTarnRegion` 的 12.6ms 冷调用
-    // 已不在龙的路径上），轨道中心由按 C 时的 `bossMapAt()` 给出。
+    // 已不在龙的路径上），轨道中心由按 B 时的 `bossMapAt()` 给出。
 
     // ---- 焰魔装配（v2.55，高台地带的 Boss2）----
     // ⚠️ **装配位置与龙同段**（在 `persistence` / `seed` 之后、`_waitForColumn` 之前）。
@@ -939,7 +939,7 @@ export class Game {
       isModal: () => this.uiModal,
       // M6：X 键生成丧尸（调试键，对齐 mc-lite）。注入回调而非传 Game（依赖方向 §3，与 isModal 同手法）
       onSpawnZombie: () => this.spawnZombieNearPlayer(),
-      // v2.43：C 键召唤玩家所在地图的 Boss。注入回调而非传 Game（依赖方向 §3，同手法）
+      // v2.43：B 键召唤玩家所在地图的 Boss。注入回调而非传 Game（依赖方向 §3，同手法）
       onSummonBoss: () => this.summonBoss(),
       // M7：巢穴服务注入。同样注入而非传 Game —— `src/entities/**` 是同构层，
       // Player 不得反向依赖它（依赖方向 §3，与 isModal / onSpawnZombie 同手法）
@@ -1147,8 +1147,8 @@ export class Game {
       // 内部 20Hz 节流，且只给 `needsPath` 的焰魔真跑 A\* —— 常态开销为零。
       this.ignises?.update(dt, { playerPosition: [pp.x, pp.y, pp.z], nowMs });
       // ⚠️ **v2.43 起龙不再每帧自动 spawn**（原 `this.dragons.ensure()` 已删）：
-      // 龙只在按 C 时召唤（`summonBoss()`）。保留自动生成的形态是「Boss1 已在 → 召唤 Boss2」
-      // 永远命中「已在」，而高台地带没有 Boss2 ⇒ C 键对高台地带毫无作用。
+      // 龙只在按 B 时召唤（`summonBoss()`）。保留自动生成的形态是「Boss1 已在 → 召唤 Boss2」
+      // 永远命中「已在」，而高台地带没有 Boss2 ⇒ B 键对高台地带毫无作用。
       // 矿车 context：minecarts = service（跨车协调），player = 玩家位置（抬起判定）。
       // ⚠️ player 传**位置快照**而非 Player 对象 —— entities/ 是同构层，不得依赖 player/
       // ⚠️ **形状必须是 `{position:[x,y,z]}` 对象，不是裸数组** —— `resolvePlayerBlocking`
@@ -2351,10 +2351,10 @@ export class Game {
     );
   }
 
-  // ---- v2.43 Boss 召唤（按 C）----
+  // ---- v2.43 Boss 召唤（按 B）----
 
   /**
-   * 按 C 召唤玩家所在地图的 Boss（v2.43）。
+   * 按 B 召唤玩家所在地图的 Boss（v2.43）。
    *
    * 流程（`boss-registry.js` 文件头）：定位地图 → 查名册 → 按 slot 升序找第一个空槽 →
    * 在地图中心召唤；全占着 → 提示「Boss 都在了」。
@@ -2395,7 +2395,7 @@ export class Game {
         // v2.64：召唤音效（用户 2026-11-07：「焰魔和飞龙被创建的时候的音效 ignis_burn.ogg」）。
         // ⚠️ **接在 `summonBoss` 的成功分支而不是各 service 的 `summon()` 里**：
         // ① service 是同构层（不得碰音频，红线 8）；② 这里是飞龙与焰魔的**唯一**召唤入口
-        // （按 C），一处接线两种 Boss 都覆盖。Boss 战 BGM 不用在这里触发 ——
+        // （按 B），一处接线两种 Boss 都覆盖。Boss 战 BGM 不用在这里触发 ——
         // `_syncBossAudio` 每帧按 `entities.count()` 判定，下一帧自然淡入。
         this.audioManager?.play('ignis_burn', SOUND_VOLUMES.ignis_burn);
         return r;

@@ -17,8 +17,8 @@ export const DRAGON_TYPE = 'dragon';
  *
  * ⚠️ **取代 v2.41 的固定 `DRAGON_ENTITY_ID = 'dragon-altar'`**：龙现在可以在**任意**
  * 高台地带被召唤（用户裁定「按地图分别记槽位，可多条共存」），固定 id 会让
- * 「在 A 地带召了龙 → 走到 B 地带按 C」被 `EntityManager.spawn` 的撞 id 判据静默吃掉
- * （形态是「B 地带按 C 没反应」，而 A 的龙好好地在飞）。
+ * 「在 A 地带召了龙 → 走到另一地带按 B」被 `EntityManager.spawn` 的撞 id 判据静默吃掉
+ * （形态是「在另一地带按 B 没反应」，而 A 的龙好好地在飞）。
  *
  * ⚠️ **派生而非自增序号**：id 是 `(mapKey, slot)` 的纯函数 ⇒ 同一张地图的同一个槽位
  * 恒同 id，「走远 column 卸载 → 回来重召」会复用同一个 id（幂等），不会攒出第二条。

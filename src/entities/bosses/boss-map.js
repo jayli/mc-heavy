@@ -19,7 +19,7 @@
 // | SHALLOW_TARN | `computeShallowTarnAnchor` + `inShallowTarnFootprint` |
 //
 // ⚠️ **不得自己写一份判据**：两份「玩家在哪张地图」漂移的形态是「迷你地图显示高台地带、
-// 按 C 却说这里没有 Boss」（或反过来）。
+// 按 B 却说这里没有 Boss」（或反过来）。
 //
 // ## 优先级 = 迷你地图的同一套（先命中者胜）
 //
@@ -63,8 +63,8 @@ const SNOW_HALF_EXTENT = Math.floor(SNOW_LAND_SIZE / 2) + TRANSITION_SIZE.SNOW_L
  *
  * ⚠️ **必须用 `inTarnRadius` 而不是只看 `isTarnZone(region)`**：地带圆半径 138 只覆盖
  * 400×400 region 的 **37.4%**（AGENTS.md「杜鹃树大片空地」条已记这个坑）。只看 region
- * 会让玩家在离地带中心 190 格的普通草地上按 C 也召出龙 —— 而那条龙会在 138 格外的
- * 地带中心盘旋，玩家根本看不见（形态是「按了 C 什么都没发生」）。
+ * 会让玩家在离地带中心 190 格的普通草地上按 B 也召出龙 —— 而那条龙会在 138 格外的
+ * 地带中心盘旋，玩家根本看不见（形态是「按了 B 什么都没发生」）。
  *
  * @returns {BossMap|null}
  */
@@ -142,7 +142,7 @@ const DETECTORS = Object.freeze([
 /**
  * 玩家站在哪张地标级地图里（Boss 召唤的定位入口）。
  *
- * 纯函数（`(wx, wz, seed)` 决定结果），且**只在按 C 时调用一次** —— 不进帧循环，
+ * 纯函数（`(wx, wz, seed)` 决定结果），且**只在按 B 时调用一次** —— 不进帧循环，
  * 故 `getCityBoundsForSeed` / `computeShallowTarnAnchor` 的冷调用成本无关紧要
  * （两者各自带 seed 级缓存，且都已在 `Game.start()` 里被预热过）。
  *

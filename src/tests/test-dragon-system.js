@@ -498,7 +498,7 @@ test('龙 service: 死后可重新召唤（v2.43 取代 v2.41 的永久死亡）
   const id = svc.activeEntities()[0].id;
   svc.damage(id, DRAGON.health + 1, 500);
   assertEqual(em.count(DRAGON_TYPE), 0, '死亡后应 despawn');
-  // ⚠️ 这条是 v2.43 的核心语义变更：用户裁定「只有 Boss 死掉后，再按 C 才会召唤出 Boss」
+  // ⚠️ 这条是 v2.43 的核心语义变更：用户裁定「只有 Boss 死掉后，再按 B 才会召唤出 Boss」
   const again = svc.summon(MAP_A.key, MAP_A.cx, MAP_A.cz, 0);
   assertEqual(again.ok, true, '死后同一槽位必须可重召（永久死亡已移除）');
   assertEqual(again.id, id, '重召复用同一个派生 id（幂等，不攒第二条）');
@@ -567,7 +567,7 @@ test('龙 service: 被 column 卸载回收后槽位清空，可重新召唤（�
   // 模拟玩家走远 → column 卸载回收临时实体
   em.despawnColumn(columnKeyAt(first[0], first[2]), 'column-unloaded');
   assertEqual(svc.activeEntities().length, 0, '回收后应无实体');
-  // ⚠️ 用户 2026-11-03 接受的取舍：卸载也会清槽位，回来要重新按 C
+  // ⚠️ 用户 2026-11-03 接受的取舍：卸载也会清槽位，回来要重新按 B
   const again = svc.summon(MAP_A.key, MAP_A.cx, MAP_A.cz, 0);
   assertEqual(again.ok, true, '卸载后必须可重召');
   assertEqual(svc.activeEntities()[0].state.health, DRAGON.health, '重召满血');

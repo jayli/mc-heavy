@@ -464,7 +464,7 @@ export class IgnisService {
   cachedPathOf(id) { return this._pathCache.cachedPathOf(id); }
 
   /**
-   * 在指定地图中心召唤一只焰魔（按 C 的 Boss2 入口）。
+   * 在指定地图中心召唤一只焰魔（按 B 的 Boss2 入口）。
    *
    * ## 落点：从地图中心向下扫第一个能站立的 y
    *

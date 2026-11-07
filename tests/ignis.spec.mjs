@@ -18,7 +18,7 @@ import { test, expect } from 'playwright/test';
  *
  * ## 从玩家真实入口驱动（AGENTS.md M7 教训）
  *
- * 召唤走 `g.summonBoss()`（与 C 键同一条路径），而不是直接调 `ignises.summon()` ——
+ * 召唤走 `g.summonBoss()`（与 B 键同一条路径），而不是直接调 `ignises.summon()` ——
  * 后者会漏掉「名册没登记 / service 没装配 / 地图判定不对」这类接线缺陷。
  *
  * ⚠️ seed 用 12345（默认）。祭坛地带在 region(2,0)。
@@ -135,7 +135,7 @@ async function installSettle(page) {
 test.describe('焰魔（Ignis）Tier 4', () => {
   test.skip(({ browserName }) => browserName !== 'chromium', 'WebGPU 只在 chromium 有 adapter');
 
-  test('召唤：按 C（summonBoss）在祭坛高台地带召出焰魔，且落在地面上', async ({ page }) => {
+  test('召唤：按 B（summonBoss）在祭坛高台地带召出焰魔，且落在地面上', async ({ page }) => {
     await page.goto(`/?seed=${SEED}`);
     await waitWorldReady(page);
     const center = await teleportToTarnCenter(page);

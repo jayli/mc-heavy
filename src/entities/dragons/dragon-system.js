@@ -13,14 +13,14 @@
 // ## v2.43 的三项语义变更（Boss 召唤框架）
 //
 // 1. **不再自动生成**：v2.41 的 `ensure()` 每帧跑、走到祭坛地带龙就在那儿。现在只有
-//    按 C 才召唤（`summon()`）—— 否则「Boss1 已在 → 召唤 Boss2」永远命中「已在」。
+//    按 B 才召唤（`summon()`）—— 否则「Boss1 已在 → 召唤 Boss2」永远命中「已在」。
 // 2. **不再绑定祭坛地带**：轨道中心 = 召唤时玩家所在的那个高台地带圆心（动态传入）。
 // 3. **去掉永久死亡**：v2.41 的 `meta.dragonDead` 已删 —— 用户裁定「只有 Boss 死掉后，
-//    再按 C 才会召唤出 Boss」，即死后可重召。死亡标记失去作用（按 YAGNI 移除，
+//    再按 B 才会召唤出 Boss」，即死后可重召。死亡标记失去作用（按 YAGNI 移除，
 //    而不是改造成「按地带分别记」）。
 //
 // ⚠️ **已知取舍（用户 2026-11-03 接受）**：临时实体 + column 卸载回收 ⇒ 玩家走远、
-// 地带中心 column 卸载时龙被回收、槽位清空，回来要重新按 C。
+// 地带中心 column 卸载时龙被回收、槽位清空，回来要重新按 B。
 import { raycastAabbSlab, normalizePosition } from '../entity-types.js';
 import { TARN_PLATEAU_Y } from '../../gen/structures/tarn-zone.js';
 import { seededRandom } from '../../gen/noise.js';import { DragonBossAgent } from '../bosses/dragon-boss-agent.js';
@@ -340,7 +340,7 @@ export class DragonService {
   }
 
   /**
-   * 在指定地图中心召唤一条龙（按 C 的唯一入口，v2.43）。
+   * 在指定地图中心召唤一条龙（按 B 的唯一入口，v2.43）。
    *
    * ⚠️ **轨道中心是参数，不是「祭坛地带」**：v2.41 的龙硬绑定 `findAltarTarnRegion`，
    * 现在玩家站在哪个高台地带，龙就在哪个地带的圆心盘旋（用户裁定）。
@@ -387,7 +387,7 @@ export class DragonService {
         health: DRAGON.health, flashedUntil: 0,
       }),
       // ⚠️ **临时实体**（v2.41 裁定不变）：位置是纯函数，进存档就是第二份权威（红线 2）。
-      // 代价 = column 卸载被回收 → 槽位清空、回来要重新按 C（用户 2026-11-03 接受的取舍）。
+      // 代价 = column 卸载被回收 → 槽位清空、回来要重新按 B（用户 2026-11-03 接受的取舍）。
       persistent: false,
     });
     if (!entity) return { ok: false, reason: 'exists' };

@@ -4,14 +4,14 @@ import { test, expect } from 'playwright/test';
  * Boss 召唤（v2.43）+ 祭坛飞龙 真游戏页 E2E。
  *
  * ⚠️ **必须从玩家真实入口验证**（AGENTS.md M7 教训：只测 API 会漏「面板/武器没接线」）。
- * 召唤走**真实 C 键派发**（`window.dispatchEvent(new KeyboardEvent('keydown', {code:'KeyC'}))`，
+ * 召唤走**真实 B 键派发**（`window.dispatchEvent(new KeyboardEvent('keydown', {code:'KeyB'}))`，
  * 与 zombies.spec.mjs 同手法 —— keydown 监听挂在 window 上，不用 `page.keyboard.press`
  * 是因为它需要元素焦点），射击走 `setTestAim` + `fireWeaponOnce`（与右键同路径）。
  *
  * ⚠️ **v2.43 的语义变更**（本文件全部用例按新语义写）：
- * - 龙**不再自动生成**：走到高台地带天上没有龙，必须按 C 召唤；
+ * - 龙**不再自动生成**：走到高台地带天上没有龙，必须按 B 召唤；
  * - 龙**不再绑定祭坛地带**：玩家站在哪个高台地带，龙就在哪个地带的圆心盘旋；
- * - **永久死亡已移除**：打死后槽位清空，再按 C 会重新召唤（满血）；
+ * - **永久死亡已移除**：打死后槽位清空，再按 B 会重新召唤（满血）；
  * - 实体 id 是**派生的**（`dragon:<mapKey>:<slot>`），不再是固定的 `dragon-altar`。
  *
  * ⚠️ **reload 类用例的导航监听必须在触发 reload 之前武装**（clear-save.spec.mjs:97 实测竞态）：
@@ -74,13 +74,13 @@ async function gotoCenter(page, cx, cz, extra = []) {
   return { cx, cz };
 }
 
-/** 按 C（真实键盘事件路径） */
+/** 按 B（真实键盘事件路径） */
 async function pressC(page) {
   await page.evaluate(() => {
     window.dispatchEvent(new KeyboardEvent('keydown', {
-      code: 'KeyC', repeat: false, bubbles: true, cancelable: true,
+      code: 'KeyB', repeat: false, bubbles: true, cancelable: true,
     }));
-    window.dispatchEvent(new KeyboardEvent('keyup', { code: 'KeyC', bubbles: true, cancelable: true }));
+    window.dispatchEvent(new KeyboardEvent('keyup', { code: 'KeyB', bubbles: true, cancelable: true }));
   });
 }
 
@@ -120,14 +120,14 @@ async function dragonAiValue(page, field) {
   }, field);
 }
 
-test('Boss E2E: 高台地带按 C 召唤出龙（轨道中心 = 玩家所在地图中心）', async ({ page }) => {
+test('Boss E2E: 高台地带按 B 召唤出龙（轨道中心 = 玩家所在地图中心）', async ({ page }) => {
   test.setTimeout(120_000);
   await page.goto(`/?vd=8&seed=${SEED}`);
   await waitWorldReady(page);
   const c = await altarCenter(page);
   expect(c).not.toBeNull();
   await gotoCenter(page, c.cx, c.cz);
-  // ⚠️ **v2.43 的核心判据：不按 C 就没有龙**（自动生成已移除）
+  // ⚠️ **v2.43 的核心判据：不按 B 就没有龙**（自动生成已移除）
   await page.waitForTimeout(1500);
   expect(await page.evaluate(() => window.__MC_GAME__.dragons.activeEntities().length)).toBe(0);
   await pressC(page);
@@ -157,15 +157,15 @@ test('Boss E2E: 高台地带按 C 召唤出龙（轨道中心 = 玩家所在地�
   expect(await toastText(page)).toContain('已召唤 Boss1');
 });
 
-test('Boss E2E: 再按 C 先召 Boss2（焰魔），第三次才提示「Boss 都在了」', async ({ page }) => {
+test('Boss E2E: 再按 B 先召 Boss2（焰魔），第三次才提示「Boss 都在了」', async ({ page }) => {
   test.setTimeout(120_000);
   await page.goto(`/?vd=8&seed=${SEED}`);
   await waitWorldReady(page);
   const c = await altarCenter(page);
   await gotoCenter(page, c.cx, c.cz);
   // ⚠️ **v2.55 起高台地带有两个 Boss**（用户 2026-11-05）：
-  // 第一次按 C → 飞龙（slot 0），第二次 → 焰魔（slot 1），第三次 → 都满了。
-  // 本用例原断言「第二次按 C 就提示 Boss 都在了」已被该改动推翻，按新语义改写。
+  // 第一次按 B → 飞龙（slot 0），第二次 → 焰魔（slot 1），第三次 → 都满了。
+  // 本用例原断言「第二次按 B 就提示 Boss 都在了」已被该改动推翻，按新语义改写。
   await pressC(page);
   await waitDragonCount(page, 1);
 
@@ -185,7 +185,7 @@ test('Boss E2E: 再按 C 先召 Boss2（焰魔），第三次才提示「Boss �
   expect(await toastText(page)).toContain('Boss 都在了');
 });
 
-test('Boss E2E: 不在任何地标级地图内按 C → 提示且什么都不召唤', async ({ page }) => {
+test('Boss E2E: 不在任何地标级地图内按 B → 提示且什么都不召唤', async ({ page }) => {
   test.setTimeout(120_000);
   await page.goto(`/?vd=8&seed=${SEED}`);
   await waitWorldReady(page);
@@ -277,7 +277,7 @@ test('Boss E2E: 用枪打龙会掉血并红闪（走真实武器路径）', asyn
   expect(result.flashedUntil).toBeLessThan(result.now + 1000);
 });
 
-test('Boss E2E: 打死后槽位清空，再按 C 重新召唤（永久死亡已移除）', async ({ page }) => {
+test('Boss E2E: 打死后槽位清空，再按 B 重新召唤（永久死亡已移除）', async ({ page }) => {
   test.setTimeout(120_000);
   await page.goto(`/?vd=8&seed=${SEED}`);
   await waitWorldReady(page);
@@ -292,7 +292,7 @@ test('Boss E2E: 打死后槽位清空，再按 C 重新召唤（永久死亡已�
     g.dragons.damage(g.dragons.activeEntities()[0].id, 99999, performance.now());
   });
   expect(await page.evaluate(() => window.__MC_GAME__.dragons.activeEntities().length)).toBe(0);
-  // ⚠️ **v2.43 的核心语义变更**：死后再按 C 会重新召唤（v2.41 是永久死亡）
+  // ⚠️ **v2.43 的核心语义变更**：死后再按 B 会重新召唤（v2.41 是永久死亡）
   await pressC(page);
   await waitDragonCount(page, 1);
   const second = await page.evaluate(() => {
@@ -346,7 +346,7 @@ test('Boss E2E: 炮塔能索敌到龙（targets 接线 + bodyOffsetY=0）', asyn
   expect(t.targetId).toBe(dragonId);
 });
 
-test('Boss E2E: 玩家走远龙被回收，回来按 C 重新召唤（已知取舍）', async ({ page }) => {
+test('Boss E2E: 玩家走远龙被回收，回来按 B 重新召唤（已知取舍）', async ({ page }) => {
   test.setTimeout(120_000);
   await page.goto(`/?vd=8&seed=${SEED}`);
   await waitWorldReady(page);
@@ -360,7 +360,7 @@ test('Boss E2E: 玩家走远龙被回收，回来按 C 重新召唤（已知取�
   }, [c.cx, c.cz]);
   await page.waitForFunction(
     () => window.__MC_GAME__.dragons.activeEntities().length === 0, null, { timeout: 20_000 });
-  // ⚠️ 用户 2026-11-03 接受的取舍：卸载也会清槽位，回来要重新按 C（不自动重生）
+  // ⚠️ 用户 2026-11-03 接受的取舍：卸载也会清槽位，回来要重新按 B（不自动重生）
   await gotoCenter(page, c.cx, c.cz);
   await page.waitForTimeout(1500);
   expect(await page.evaluate(() => window.__MC_GAME__.dragons.activeEntities().length)).toBe(0);
@@ -377,7 +377,7 @@ test('Boss E2E: 玩家走远龙被回收，回来按 C 重新召唤（已知取�
   expect(Math.abs(r - R)).toBeLessThan(W + 1e-6);
 });
 
-test('Boss E2E: reload 后龙不自动出现，按 C 重召且轨道参数逐位相同（persistent: false 的判据）', async ({ page }) => {
+test('Boss E2E: reload 后龙不自动出现，按 B 重召且轨道参数逐位相同（persistent: false 的判据）', async ({ page }) => {
   test.setTimeout(120_000);
   await page.goto(`/?vd=8&seed=${SEED}`);
   await waitWorldReady(page);
@@ -411,7 +411,7 @@ test('Boss E2E: reload 后龙不自动出现，按 C 重召且轨道参数逐位
   expect(after.phase).toBe(before.phase);
 });
 
-test('Boss E2E: 换 seed 后按 C 仍能召唤（无残留状态）', async ({ page }) => {
+test('Boss E2E: 换 seed 后按 B 仍能召唤（无残留状态）', async ({ page }) => {
   test.setTimeout(120_000);
   await page.goto(`/?vd=8&seed=${SEED}`);
   await waitWorldReady(page);
