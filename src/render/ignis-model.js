@@ -191,3 +191,133 @@ export function sampleIgnisAttack(anim, timeSeconds) {
   }
   return out;
 }
+
+// ==================== 姿态衔接（v2.76）====================
+//
+// 用户缺陷（录像「焰魔旋转.mov」1.13s）：「身体本来是站定的，突然就切换到身体旋转举刀的形态了，
+// 中间没有补间过渡」。根因：渲染器在 idle 与攻击片段之间按 `attackAnimT > 0` **硬切**，而旋斩的
+// t=0 姿态（root.y −75° / sword.x 180° …）本是原版 `SPIN_ATTACK` 的**衔接姿态**
+//（`startKeyframe(0)` 瞬间到位，且原版只会把它接在 `HORIZONTAL_SMALL_SWING_ALT_ATTACK2` 的收势后，
+// `Ignis_Entity.java:2297`）。本仓按「每次起手按权重随机」让它从站立起手 ⇒ 一帧内整副骨架跳变
+//（真实产物实测单帧最大骨骼角 177°，旋斩自身最快的合法单帧仅 24.5°）。
+//
+// 解法在渲染层（纯视觉，权威 state 仍瞬时，与 v2.62 上台阶缓动同一分工）：来源切换时把「上一帧
+// 实际发布的姿态」冻结成起点，用 smoothstep 权重混向新来源的**实时**采样。片段时钟不被推迟 ⇒
+// 命中帧 / 动画时长 / 冷却一概不变。
+
+/** 单位增量（无旋转、无位移）：某骨骼在一侧姿态里缺席时，按它参与混合（= 回到 bind） */
+const IDENTITY_DELTA = Object.freeze({
+  rot: Object.freeze([0, 0, 0, 1]),
+  pos: Object.freeze([0, 0, 0]),
+});
+
+/**
+ * 两个骨骼增量的混合（旋转 slerp、位移 lerp）。
+ *
+ * ⚠️ **端点直接取值、不走 slerp**：`w=1` 时 slerp 在 `dot<0` 会返回 `−b`（同一旋转、符号相反），
+ * 让「走满淡入后精确等于目标」在分量层面成立不了；端点特判后返回值与入参同值，且始终是新数组
+ *（不与入参共享，调用方可放心持有）。
+ */
+function mixDelta(a, b, w) {
+  if (w <= 0) return { rot: a.rot.slice(), pos: a.pos.slice() };
+  if (w >= 1) return { rot: b.rot.slice(), pos: b.pos.slice() };
+  return {
+    rot: slerpQuat(a.rot, b.rot, w),
+    pos: [
+      a.pos[0] + (b.pos[0] - a.pos[0]) * w,
+      a.pos[1] + (b.pos[1] - a.pos[1]) * w,
+      a.pos[2] + (b.pos[2] - a.pos[2]) * w,
+    ],
+  };
+}
+
+/**
+ * 混合两个姿态：`w=0` → `a`，`w=1` → `b`（`w` 越界 / NaN 钳到 [0,1] / 0）。
+ *
+ * ## 骨骼集合取并集，缺席一侧按单位增量
+ *
+ * 不同来源驱动的骨骼不同（idle 驱动 6 根，旋斩驱动 9 根，其中 5 根 idle 不驱动，如 `sword`）。
+ * 渲染器只写「本帧姿态里出现的骨骼」—— 若混合后某骨骼从输出里**消失**而它当时不在 bind，
+ * 它会永远停在那个姿态。取并集 + 缺席按单位增量混合，能让它在 `w=1` 时精确回到 bind
+ *（与 `dragon-model.js` 的 `sampleDragonPose` 同口径，那份是时钟驱动的无状态版）。
+ *
+ * @param {Map<number, {rot:number[], pos:number[]}>} a 起点姿态（不被修改）
+ * @param {Map<number, {rot:number[], pos:number[]}>} b 终点姿态（不被修改）
+ * @param {number} w 权重 ∈ [0,1]
+ * @returns {Map<number, {rot:number[], pos:number[]}>} 新 Map（骨骼集合 = a ∪ b）
+ */
+export function blendIgnisPose(a, b, w) {
+  const t = Number.isFinite(w) ? Math.min(1, Math.max(0, w)) : 0;
+  const out = new Map();
+  for (const [bi, da] of a) out.set(bi, mixDelta(da, b.get(bi) || IDENTITY_DELTA, t));
+  for (const [bi, db] of b) {
+    if (!a.has(bi)) out.set(bi, mixDelta(IDENTITY_DELTA, db, t));
+  }
+  return out;
+}
+
+/**
+ * 逐实例的姿态过渡器（每只焰魔一份，**有状态**）。
+ *
+ * 每帧传入「本帧来源的标识 `key`」与「该来源在本帧的实时采样 `target`」，返回本帧应发布的姿态：
+ * - 首帧 / `reset()` 之后：没有「上一帧输出」可衔接，直接发布 `target`。
+ * - `key` 与上一帧不同（来源切换）：把**上一帧实际发布的姿态**冻结成起点，`elapsed = 0`。
+ *   ⚠️ 起点取「上一帧的输出」而不是「上一个来源的采样」—— 这样**淡入中途被再次打断**也从
+ *   当前混合结果起步，永远没有跳变（连续性对任意切换序列成立）。
+ * - 过渡期内：`blend(起点, target, smoothstep(elapsed / seconds))`。smoothstep 两端斜率为 0 ——
+ *   起步不突兀、收尾与片段自身的运动无速度断裂（线性权重在两端都有速度突变）。
+ * - 走满 `seconds` 的那一帧：按并集 `w=1` 发布一次（只有「起点驱动而目标不驱动」的骨骼要借这一帧
+ *   以单位增量回到 bind），之后丢弃起点、直接发布 `target`。
+ *
+ * ⚠️ **持有 `target`**：过渡器把本帧输出留作下一次切换的起点，所以调用方在 `step()` 之后
+ * 不得再修改传入的 Map（`sampleIgnisAnim` / `sampleIgnisAttack` 每次返回新 Map，天然满足）。
+ *
+ * ⚠️ **`dt` 是真实帧间隔**（秒）：过渡走的是墙钟时间，与攻击片段的时钟同源同步前进，所以
+ * 淡入结束那一刻发布的就是片段在该时刻的姿态（片段时钟不被推迟）。
+ */
+export class IgnisPoseTransition {
+  /** @param {number} seconds 淡入淡出时长（秒）；≤0 / 非法 ⇒ 不过渡，等价硬切换 */
+  constructor(seconds) {
+    this._seconds = Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
+    this.reset();
+  }
+
+  /** 清空衔接状态（实例复用给新实体时调用：新实体不得从上一只的姿态淡出） */
+  reset() {
+    this._key = null;
+    this._last = null;      // 上一帧实际发布的姿态
+    this._from = null;      // 过渡起点（null = 不在过渡中）
+    this._elapsed = 0;
+  }
+
+  /**
+   * @param {string} key 本帧来源（'idle' | 'attack' | 'spin'）
+   * @param {Map<number, {rot:number[], pos:number[]}>} target 该来源在本帧的实时采样
+   * @param {number} dt 距上一帧的秒数（非法 / 负数按 0）
+   * @returns {Map<number, {rot:number[], pos:number[]}>} 本帧应发布的姿态
+   */
+  step(key, target, dt) {
+    const dtSafe = Number.isFinite(dt) && dt > 0 ? dt : 0;
+    if (this._last === null) {
+      this._from = null;                       // 首帧：无从衔接
+    } else if (key !== this._key) {
+      this._from = this._last;                 // 来源切换：冻结上一帧的输出
+      this._elapsed = 0;
+    }
+    this._key = key;
+
+    let out = target;
+    if (this._from !== null) {
+      this._elapsed += dtSafe;
+      if (this._elapsed >= this._seconds) {
+        out = blendIgnisPose(this._from, target, 1);   // 并集 w=1：让目标不驱动的骨骼回到 bind
+        this._from = null;
+      } else {
+        const s = this._elapsed / this._seconds;
+        out = blendIgnisPose(this._from, target, s * s * (3 - 2 * s));   // smoothstep
+      }
+    }
+    this._last = out;
+    return out;
+  }
+}

@@ -101,6 +101,36 @@ async function pixelDiff(page, a, b) {
   }, [a.toString('base64'), b.toString('base64')]);
 }
 
+/**
+ * 往页面里装一个「把焰魔渲染器的姿态衔接走到稳态」的辅助（v2.76）。
+ *
+ * ## 为什么需要
+ *
+ * v2.76 起 idle ↔ 攻击片段切换会在 `IGNIS_POSE_BLEND.seconds`（0.2s）内淡入淡出，不再硬切。
+ * 这些用例的套路是「注入 state → 手动 `sync` → 立刻读骨骼/截图」，想要的是**这一状态的稳态姿态**；
+ * 单次 `sync` 之后只是淡入的起点（姿态差 0.012 而期望 >0.3，实测踩到）。
+ *
+ * ## 怎么走
+ *
+ * 以合成时间戳（每步 1/60s）连续 `sync` 同一状态直到淡入走满。⚠️ **必须与状态注入在同一个同步
+ * `evaluate` 里完成** —— 中间让出给 rAF 的话，游戏循环会用真实时间戳、并用被 Agent 推进过的 state
+ * 再 `sync` 一次，取到的就不是想要的那一刻。合成时间戳超前于真实时间不会留下后遗症：下一次真实
+ * `sync` 的 `dt = max(0, 负数) = 0`，随后恢复正常。
+ */
+async function installSettle(page) {
+  await page.evaluate(() => {
+    window.__e2eSettle = (blendSeconds) => {
+      const g = window.__MC_GAME__;
+      const list = g.ignises.activeEntities();
+      let ms = performance.now();
+      for (let i = 0; i < Math.ceil(blendSeconds * 60) + 3; i++) {
+        ms += 1000 / 60;
+        g.ignisRenderer.sync(list, ms);
+      }
+    };
+  });
+}
+
 test.describe('焰魔（Ignis）Tier 4', () => {
   test.skip(({ browserName }) => browserName !== 'chromium', 'WebGPU 只在 chromium 有 adapter');
 
@@ -227,12 +257,14 @@ test.describe('焰魔（Ignis）Tier 4', () => {
     const idle = await shoot(page);
 
     // ② 命中帧（attackAnimT = hitFrameSeconds = 1.20）
+    await installSettle(page);
     await page.evaluate(async () => {
       const g = window.__MC_GAME__;
-      const { IGNIS_AI } = await import('/src/entities/ignis/ignis-config.js');
+      const { IGNIS_AI, IGNIS_POSE_BLEND } = await import('/src/entities/ignis/ignis-config.js');
       const e = g.entities.get(window.__E2E_ID__);
       if (e) e.state = { ...e.state, attackAnimT: IGNIS_AI.hitFrameSeconds, velocity: [0, 0, 0] };
       g.ignisRenderer.sync(g.ignises.activeEntities(), performance.now());
+      window.__e2eSettle(IGNIS_POSE_BLEND.seconds);   // idle → attack 的淡入走满（v2.76）
     });
     const attack = await shoot(page);
 
@@ -259,14 +291,18 @@ test.describe('焰魔（Ignis）Tier 4', () => {
     });
     await page.waitForTimeout(300);
 
+    await installSettle(page);
+
     /** 把 state 钉到「某一招 + 某一时刻」再截屏（不经 AI，否则它会选招/推进） */
     const poseAt = async (kind, t) => {
       await page.evaluate(async ([k, tt]) => {
         const g = window.__MC_GAME__;
+        const { IGNIS_POSE_BLEND } = await import('/src/entities/ignis/ignis-config.js');
         const e = g.entities.get(window.__E2E_ID__);
         // ⚠️ `mode` 必须是 attack 且 `attackAnimT` 非零，否则渲染器会去播 idle
         if (e) e.state = { ...e.state, mode: 'attack', attackKind: k, attackAnimT: tt, velocity: [0, 0, 0] };
         g.ignisRenderer.sync(g.ignises.activeEntities(), performance.now());
+        window.__e2eSettle(IGNIS_POSE_BLEND.seconds);   // 淡入走满（v2.76），截到的才是这一招这一刻的稳态
       }, [kind, t]);
       return shoot(page);
     };
@@ -282,9 +318,11 @@ test.describe('焰魔（Ignis）Tier 4', () => {
     const bonePoseAt = async (kind, t) => {
       return page.evaluate(async ([k, tt]) => {
         const g = window.__MC_GAME__;
+        const { IGNIS_POSE_BLEND } = await import('/src/entities/ignis/ignis-config.js');
         const e = g.entities.get(window.__E2E_ID__);
         if (e) e.state = { ...e.state, mode: 'attack', attackKind: k, attackAnimT: tt, velocity: [0, 0, 0] };
         g.ignisRenderer.sync(g.ignises.activeEntities(), performance.now());
+        window.__e2eSettle(IGNIS_POSE_BLEND.seconds);   // 淡入走满（v2.76）：否则读到的是起点姿态
         const idx = g.ignises.activeEntities().findIndex((x) => x.id === window.__E2E_ID__);
         const inst = g.ignisRenderer.instances[idx];
         return inst ? inst.bones.map((b) => b.quaternion.toArray()) : null;
@@ -318,6 +356,126 @@ test.describe('焰魔（Ignis）Tier 4', () => {
     const ds = await pixelDiff(page, spinStart, spinMid);
     expect(ds.changed, '旋斩从起手到中段应大幅改变画面').toBeGreaterThan(15000);
     expect(ds.maxX - ds.minX, '旋斩的变化应横跨身体两侧（转身扫剑）').toBeGreaterThan(100);
+  });
+
+  test('渲染(v2.76)：站定 → 旋斩起手，真实游戏页发布的骨骼无单帧跳变（用户缺陷：录像 1.13s 硬切）', async ({ page }) => {
+    // 用户 2026-11-07（录像「焰魔旋转.mov」1.13s）：「身体本来是站定的，突然就切换到身体旋转举刀的
+    // 形态了，中间没有补间过渡 …… 我要求有一个过渡动画」。逐帧抽录像：n=9（t=1.117s）站定，
+    // n=10（t=1.133s）已是旋斩起手姿态 —— 相邻两帧（16.7ms）整副骨架跳变。
+    // 实测（真实烘焙产物）：idle → spin(t=1/60) 单帧最大骨骼角 177°，旋斩自身最快的合法单帧仅 24.5°。
+    //
+    // ## 从玩家真实入口驱动（M7 教训：单测只能测算法与「注入的时间戳」）
+    // 状态序列与 Agent 自己起手时一致（`mode='attack'`、`attackKind='spin'`、`attackAnimT` 从 0 起
+    // 由 Agent 逐帧推进）；帧由游戏自己的 rAF 循环产出、经真实 `IgnisRenderer.sync(nowMs)` 发布。
+    // 本用例**不手动 sync、不合成时间戳**，只在每帧渲染后读发布到 `bones[i].quaternion` 的结果，
+    // 并按真实帧间隔把单帧转角换算成角速度（°/s）—— 机器慢时帧率会变，角速度不会。
+    await page.goto(`/?seed=${SEED}`);
+    await waitWorldReady(page);
+    await teleportToTarnCenter(page);
+    await waitPlayerLanded(page);
+
+    await page.evaluate(async () => {
+      const g = window.__MC_GAME__;
+      g.player.yaw = Math.PI;
+      g.player.pitch = -0.15;
+      const p = g.player.physics.pos;
+      const sum = g.ignises.summon('tarn:e2e:pop', Math.floor(p.x), Math.floor(p.z) + 4, 1);
+      window.__E2E_ID__ = sum.ok ? sum.id : null;
+      await new Promise((r) => setTimeout(r, 500));
+      // 压住 Agent 自己的起手（冷却设得很大）：「站定」这一段由本用例控制，起手由本用例注入
+      const e = g.entities.get(window.__E2E_ID__);
+      if (e) e.state = { ...e.state, attackCooldown: 1e6, velocity: [0, 0, 0] };
+    });
+    await page.waitForTimeout(1200);            // 站稳：渲染器早已走过首帧，处在 idle 稳态
+
+    const frames = await page.evaluate(async () => {
+      const g = window.__MC_GAME__;
+      const id = window.__E2E_ID__;
+      const rec = [];
+      let on = true;
+      // 游戏的 rAF 回调先注册，本回调后注册 ⇒ 同一帧内本回调在游戏渲染（含 sync）之后执行
+      const tick = () => {
+        const idx = g.ignises.activeEntities().findIndex((x) => x.id === id);
+        const inst = idx >= 0 ? g.ignisRenderer.instances[idx] : null;
+        const e = g.entities.get(id);
+        if (inst && e) {
+          rec.push({
+            t: performance.now(),
+            animT: e.state.attackAnimT,
+            kind: e.state.attackKind,
+            q: inst.bones.map((b) => b.quaternion.toArray()),
+          });
+        }
+        if (on) requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+      await new Promise((r) => setTimeout(r, 300));          // 先录一小段站定
+      const e0 = g.entities.get(id);
+      if (e0) e0.state = { ...e0.state, mode: 'attack', attackKind: 'spin', attackAnimT: 0, velocity: [0, 0, 0] };
+      await new Promise((r) => setTimeout(r, 1000));         // 起手后 ~1s：覆盖整个淡入与蓄力段
+      on = false;
+      return rec;
+    });
+
+    // 判据常量全部由真实烘焙产物现算（不写死魔数）：旋斩自身最快的合法角速度 + sword 的 bind
+    const ref = await page.evaluate(async () => {
+      const { loadIgnisAsset, sampleIgnisAttack } = await import('/src/render/ignis-model.js');
+      const d = await loadIgnisAsset();
+      const ang = (a, b) => {
+        const rw = a[3] * b[3] + a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        const rx = a[3] * b[0] - a[0] * b[3] - a[1] * b[2] + a[2] * b[1];
+        const ry = a[3] * b[1] + a[0] * b[2] - a[1] * b[3] - a[2] * b[0];
+        const rz = a[3] * b[2] - a[0] * b[1] + a[1] * b[0] - a[2] * b[3];
+        return (2 * Math.atan2(Math.hypot(rx, ry, rz), Math.abs(rw)) * 180) / Math.PI;
+      };
+      const spin = d.animations.spin;
+      const dt = 1 / 60;
+      let maxStep = 0;
+      for (let t = 0; t + dt <= spin.frameCount / spin.fps; t += dt) {
+        const p = sampleIgnisAttack(spin, t);
+        const q = sampleIgnisAttack(spin, t + dt);
+        for (const [bi, x] of p) maxStep = Math.max(maxStep, ang(x.rot, q.get(bi).rot));
+      }
+      const swordIdx = d.bones.findIndex((b) => b.name === 'sword');
+      return { clipMaxDegPerSec: maxStep / dt, swordIdx, swordBind: d.bones[swordIdx].bindQuaternion };
+    });
+
+    const ang = (a, b) => {
+      const rw = a[3] * b[3] + a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+      const rx = a[3] * b[0] - a[0] * b[3] - a[1] * b[2] + a[2] * b[1];
+      const ry = a[3] * b[1] + a[0] * b[2] - a[1] * b[3] - a[2] * b[0];
+      const rz = a[3] * b[2] - a[0] * b[1] + a[1] * b[0] - a[2] * b[3];
+      return (2 * Math.atan2(Math.hypot(rx, ry, rz), Math.abs(rw)) * 180) / Math.PI;
+    };
+    const stepDeg = (f0, f1) => Math.max(...f0.q.map((q, i) => ang(q, f1.q[i])));
+
+    // 起手帧 = 第一条 animT>0 且 kind==='spin'
+    const i0 = frames.findIndex((f) => f.animT > 0 && f.kind === 'spin');
+    expect(i0, `应录到旋斩起手（共 ${frames.length} 帧）`).toBeGreaterThan(3);
+    const end = Math.min(frames.length - 1, i0 + 40);
+    expect(end - i0, `起手后应至少录到 30 帧（实录 ${frames.length - i0}）`).toBeGreaterThanOrEqual(30);
+
+    // 起手前 3 帧 → 起手后 40 帧（≈0.67s）逐对相邻帧的最大骨骼角速度
+    let worst = { speed: 0, i: -1, step: 0, dtMs: 0 };
+    for (let i = i0 - 3; i < end; i++) {
+      const dtSec = (frames[i + 1].t - frames[i].t) / 1000;
+      if (dtSec <= 0) continue;
+      const step = stepDeg(frames[i], frames[i + 1]);
+      if (step / dtSec > worst.speed) worst = { speed: step / dtSec, i, step, dtMs: dtSec * 1000 };
+    }
+    // 上限 = 旋斩自身最快合法角速度的 2 倍（吸收帧间隔抖动）。硬切换（177° / 一帧）在 60fps 约
+    // 10600°/s、30fps 约 5300°/s —— 远在上限之上，约 18fps 以上都分得开。
+    const limit = ref.clipMaxDegPerSec * 2;
+    expect(worst.speed,
+      `起手前后的最大骨骼角速度 ${worst.speed.toFixed(0)}°/s（第 ${worst.i - i0} 帧：单帧 ${worst.step.toFixed(1)}°、`
+      + `间隔 ${worst.dtMs.toFixed(1)}ms）超过旋斩自身合法上限的 2 倍 ${limit.toFixed(0)}°/s —— 站定 → 旋斩仍是硬切换`)
+      .toBeLessThan(limit);
+
+    // 非空洞：旋斩真的播了（sword 在淡入后离开 bind > 60°；片段里它在 0.2s 时是 112°）
+    let swordMax = 0;
+    for (let i = i0; i <= end; i++) swordMax = Math.max(swordMax, ang(frames[i].q[ref.swordIdx], ref.swordBind));
+    expect(swordMax, `起手后 sword 最大偏离 bind ${swordMax.toFixed(0)}°：旋斩没真正播出来（判据会空洞地通过）`)
+      .toBeGreaterThan(60);
   });
 
   test('战斗：挥剑真的扣玩家血（20 → 6，正好 IGNIS.attackDamage = 14）', async ({ page }) => {

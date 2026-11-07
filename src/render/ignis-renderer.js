@@ -27,7 +27,10 @@
 //    ⚠️ **不得用 `IGNIS_MODEL_CENTER`（身体核心中心）做这件事** —— 那是命中盒的语义，
 //    混用的形态是整个模型陷入地下 1.7 格（用户 2026-11-05 缺陷 A）。
 // 3. **动画由 `attackAnimT` 选择**：`> 0` 走 `attack`（播完停末帧），否则走 `idle`（循环）。
-//    飞龙是 `sampleDragonPose` 内部的状态机，这里没有。
+//    飞龙是 `sampleDragonPose` 内部的状态机，这里没有。v2.75 起 `attackKind` 再在 `attack` /
+//    `spin` 间选片段。**v2.76 起来源切换不再硬切**：逐实例的 `IgnisPoseTransition` 把上一帧发布的
+//    姿态冻结成起点，在 `IGNIS_POSE_BLEND.seconds`（0.2s）内淡入新来源的实时采样（旋斩的 t=0 姿态
+//    与 idle 差 177°，硬切就是用户看到的「站定 → 一帧闪成旋转举刀」）。纯视觉层，权威 state 仍瞬时。
 //
 // ⚠️ **骨骼增量必须从 bind 快照起算**（每帧 `bone.quaternion = bindQuat * deltaRot`）：
 // 动画帧是「相对 bind pose 的增量」。若直接 `bone.quaternion *= delta` 会**逐帧累积**
@@ -40,9 +43,9 @@
 // 单面渲染会从某些角度看穿。
 import * as THREE from 'three';
 import { resourceUrl } from '../core/resource-url.js';
-import { IGNIS, IGNIS_STEP_LIFT } from '../entities/ignis/ignis-config.js';
+import { IGNIS, IGNIS_STEP_LIFT, IGNIS_POSE_BLEND } from '../entities/ignis/ignis-config.js';
 import { StepLift } from '../player/step-lift.js';
-import { sampleIgnisAnim, sampleIgnisAttack } from './ignis-model.js';
+import { sampleIgnisAnim, sampleIgnisAttack, IgnisPoseTransition } from './ignis-model.js';
 
 /** 红闪色（与丧尸/飞龙 `FLASH_COLOR` 同口径：纯红乘贴图） */
 const FLASH_COLOR = 0xff0000;
@@ -163,7 +166,28 @@ export class IgnisRenderer {
        *（丧尸渲染器实测踩过的同一个坑）。
        */
       prevY: null,
+      /**
+       * 姿态衔接（v2.76）：idle ↔ 攻击片段切换时的淡入淡出。**逐实例一份**（有状态：持有上一帧
+       * 发布的姿态；共享会让两只焰魔互相拿对方的姿态当起点）。时长的唯一权威 = `IGNIS_POSE_BLEND`。
+       */
+      transition: new IgnisPoseTransition(IGNIS_POSE_BLEND.seconds),
     };
+  }
+
+  /**
+   * 把一个实例的整副骨架恢复成 bind 姿态（四元数 + 位置）。
+   *
+   * 渲染器只写「当前来源驱动的骨骼」，所以实例复用给新实体时，上一只留下的姿态（尤其是只被攻击
+   * 片段驱动的 sword / upperbody …）会残留在没被写到的骨骼上。与 `_makeInstance` 里骨骼的初值
+   * 同一口径（同一份 `bindQuaternion` / `localPosition`）。
+   */
+  _restoreBindPose(inst) {
+    for (let i = 0; i < inst.bones.length; i++) {
+      const b = this.asset.bones[i];
+      inst.bones[i].quaternion.set(
+        b.bindQuaternion[0], b.bindQuaternion[1], b.bindQuaternion[2], b.bindQuaternion[3]);
+      inst.bones[i].position.set(b.localPosition[0], b.localPosition[1], b.localPosition[2]);
+    }
   }
 
   /** 加载贴图（构造时未传则调用）。走真实 `TextureLoader` 路径（flipY 口径，见下） */
@@ -225,6 +249,10 @@ export class IgnisRenderer {
         inst.entityId = entity.id;
         inst.prevY = null;
         inst.lift.offset = 0;
+        // v2.76：姿态衔接同属「逐实例、隐藏时不清」的状态 —— 不清则新焰魔出生头 0.2s 从上一只的
+        // 姿态淡出；骨架也要回 bind，否则上一只死于旋斩中途时，它的 sword/upperbody 会残留在新实体上。
+        inst.transition.reset();
+        this._restoreBindPose(inst);
       }
       this._syncOne(inst, entity, nowMs, dt);
     }
@@ -260,10 +288,15 @@ export class IgnisRenderer {
     // ⚠️ **缺 `attackKind`（旧调用方）回落 `attack`**；`attackAnimT > 0` 仍是「是否在攻击」
     // 的判据 —— 两者不是同一件事：`attackKind` 只说哪一招，不表示现在在打。
     const attackT = Number.isFinite(st.attackAnimT) ? st.attackAnimT : 0;
-    const anim = st.attackKind === 'spin' ? this.asset.animations.spin : this.asset.animations.attack;
-    const deltas = attackT > 0
-      ? sampleIgnisAttack(anim, attackT)
+    const clipKey = st.attackKind === 'spin' ? 'spin' : 'attack';
+    const sourceKey = attackT > 0 ? clipKey : 'idle';
+    const target = attackT > 0
+      ? sampleIgnisAttack(this.asset.animations[clipKey], attackT)
       : sampleIgnisAnim(this.asset.animations.idle, idleTimeOf(st));
+    // ⚠️ **来源切换（idle ↔ 攻击片段）不得硬切**（v2.76 用户缺陷：旋斩起手 idle → spin(0) 单帧
+    // 177°）。过渡器持有上一帧发布的姿态，切换时在 `IGNIS_POSE_BLEND.seconds` 内淡入新来源的实时采样。
+    // 它是纯视觉层：权威 state（`attackAnimT` / 命中帧）仍瞬时，不受影响。
+    const deltas = inst.transition.step(sourceKey, target, dt);
     for (const [bi, delta] of deltas) {
       const bone = inst.bones[bi];
       if (!bone) continue;
