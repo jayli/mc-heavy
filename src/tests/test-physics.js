@@ -1,6 +1,6 @@
 import { test } from './runner.js';
 import { assertTrue, assertFalse, assertNotNull, assertEqual } from './assert.js';
-import { PlayerPhysics, FLY_SPEED_MULT, FLY_VERTICAL_SPEED } from '../player/physics.js';
+import { PlayerPhysics, FLY_SPEED_MULT, FLY_VERTICAL_SPEED, IGNIS_EJECT_SPEED } from '../player/physics.js';
 import { WorldData } from '../voxel/world-data.js';
 import { ChunkColumn } from '../voxel/chunk-column.js';
 import { createRegistry } from '../voxel/block-registry.js';
@@ -117,6 +117,160 @@ test('physics: 玩家爬不上焰魔（盒高 > 抬升后头顶）', () => {
   for (let i = 0; i < 180; i++) { p.move(1, 0); p.step(1 / 60); }
   assertTrue(p.pos.x < 9.5, `不应爬上焰魔，实际 x=${p.pos.x.toFixed(3)}`);
   assertTrue(Math.abs(p.pos.y - 1) < 0.01, `不应被抬升，实际 y=${p.pos.y.toFixed(3)}`);
+});
+
+// ---- 焰魔身体盒扫过玩家 → 玩家被推出（v2.78 用户缺陷：跑太近就卡死）----
+//
+// 用户 2026-11-07：「玩家跑进焰魔，跑的太近就会和焰魔靠在一起，然后玩家就不能动弹了，跳也不行，
+// 前后左右都无法动弹」。真实游戏复现（seed=12345，真实 AI + 真实物理）：玩家站在焰魔身体盒的
+// **斜角外**（d≈1.4），焰魔醒来转向玩家，盒子（身体 OBB 绕 yaw 旋转后的包围盒，随朝向变形）扫过去
+// ⇒ 之后 30/40 帧 `overlap=true`，W/S/A/D/Space 六个方向位移**全是 0**；焰魔侧的自愈
+//（`overlapEscapeDist = 1.15`，仅 chase 态）在 d≈1.4 时从不触发 ⇒ 永久软锁。
+//
+// 根因与取值见 `IGNIS_EJECT_SPEED`。本组用**会动的假盒子**（`overlapsAabb` 与真 service 同口径：
+// 严格不等式）复现「盒子扫过静止的玩家」，断言玩家物理自己把人推出来。
+// 真 service + 真 AI + 真输入的整条链路由 `tests/ignis.spec.mjs` 的 E2E 守。
+
+/** 会动的假焰魔盒（世界坐标）。⚠️ 严格不等式：贴面不算重叠（同 `IgnisService.overlapsAabb`） */
+function movingIgnisBox(box) {
+  return {
+    box,
+    overlapsAabb(q) {
+      const b = this.box;
+      return q.minX < b.x1 && q.maxX > b.x0 && q.minZ < b.z1 && q.maxZ > b.z0
+        && q.minY < b.y1 && q.maxY > b.y0;
+    },
+  };
+}
+
+/** 先让玩家落地站稳，再把盒子换成给定位置（避免「出生即重叠」影响落地） */
+function landedPlayerWithBox(world, pos, box) {
+  const p = new PlayerPhysics(world);
+  const ig = movingIgnisBox({ x0: 100, x1: 101, z0: 100, z1: 101, y0: 1, y1: 4 });   // 远处
+  p.ignises = ig;
+  p.pos = { ...pos };
+  for (let i = 0; i < 10; i++) p.step(1 / 60);
+  ig.box = box;
+  return { p, ig };
+}
+
+test('physics(v2.78): 焰魔身体盒扫过玩家后，玩家被推出盒外且不再四轴冻结', () => {
+  const { world } = makeWorld();
+  const p = new PlayerPhysics(world);
+  const ig = movingIgnisBox({ x0: 9.0, x1: 11.0, z0: 7.0, z1: 9.0, y0: 1, y1: 4 });
+  p.ignises = ig;
+  p.pos = { x: 8.6, y: 1, z: 8 };                       // 玩家 x∈[8.3, 8.9]，盒 x0 = 9.0 ⇒ 贴近但不重叠
+  for (let i = 0; i < 10; i++) p.step(1 / 60);          // 落地
+  assertFalse(ig.overlapsAabb(p.aabb()), '前提：起初不重叠');
+
+  // 焰魔转身，盒子向 −X 扩到 8.55：玩家陷进去 0.35 格（> 单步位移 SPEED/60 = 0.133）
+  ig.box.x0 = 8.55;
+  assertTrue(ig.overlapsAabb(p.aabb()), '前提：盒子扫过来后玩家被罩住');
+  assertTrue(p._collides(), '前提：被罩住时 `_collides()` 恒真 —— 这正是四轴冻结的条件');
+
+  let prevX = p.pos.x;
+  let maxStep = 0;
+  for (let i = 0; i < 30; i++) {
+    p.step(1 / 60);
+    maxStep = Math.max(maxStep, Math.abs(p.pos.x - prevX));
+    prevX = p.pos.x;
+  }
+  assertFalse(ig.overlapsAabb(p.aabb()), `30 步后仍被罩住（四轴冻结），x=${p.pos.x.toFixed(3)}`);
+  // 最近的面是 −X（陷入 0.35）而不是 +X（要走 2.4+ 格）
+  assertTrue(p.pos.x < 8.6, `应向 −X 推出，实际 x=${p.pos.x.toFixed(3)}`);
+  assertTrue(Math.abs(p.pos.z - 8) < 1e-9, `z 不应被动，实际 z=${p.pos.z}`);
+  // 推出是「顶开」而不是瞬移：每步不超过速度上限（0.35 格深 ⇒ 至少分 3 步）
+  assertTrue(maxStep <= IGNIS_EJECT_SPEED / 60 + 1e-9,
+    `单步推出 ${maxStep.toFixed(3)} 超过上限 ${(IGNIS_EJECT_SPEED / 60).toFixed(3)}（瞬移）`);
+  assertTrue(maxStep > 0.05, `应确实在推（单步最大 ${maxStep.toFixed(3)}）`);
+
+  // 解冻：远离 / 贴着盒面平移 / 起跳 都能动；而朝盒子里走仍被挡（「不动如山」不变）
+  const base = { x: p.pos.x, y: p.pos.y, z: p.pos.z };
+  const walk = (mx, mz) => {
+    p.pos = { ...base };
+    p.vel = { x: 0, y: 0, z: 0 };
+    for (let i = 0; i < 30; i++) { p.move(mx, mz); p.step(1 / 60); }
+    return { dx: p.pos.x - base.x, dz: p.pos.z - base.z };
+  };
+  assertTrue(walk(-1, 0).dx < -2, '远离（−X）应能走');
+  assertTrue(walk(0, 1).dz > 2, '贴着盒面向 +Z 平移应能走');
+  assertTrue(walk(0, -1).dz < -2, '贴着盒面向 −Z 平移应能走');
+  const into = walk(1, 0);
+  assertTrue(into.dx < 0.05, `朝盒子里走仍应被挡（不动如山），实际前进 ${into.dx.toFixed(3)}`);
+  assertFalse(ig.overlapsAabb(p.aabb()), '被挡住时也不应陷进盒内');
+  p.pos = { ...base };
+  p.vel = { x: 0, y: 0, z: 0 };
+  p.jump();
+  for (let i = 0; i < 10; i++) p.step(1 / 60);
+  assertTrue(p.pos.y > base.y + 0.3, `起跳应能离地，实际抬升 ${(p.pos.y - base.y).toFixed(3)}`);
+});
+
+test('physics(v2.78): 推出走最近的面（不是固定朝某个方向）', () => {
+  const { world } = makeWorld();
+  const box = { x0: 7, x1: 9, z0: 7, z1: 9, y0: 1, y1: 4 };
+  // ① 玩家陷在 +X 面附近（到 +X 面 0.5，到其余面 ≥ 1.3）⇒ 向 +X 出
+  {
+    const { p, ig } = landedPlayerWithBox(world, { x: 8.8, y: 1, z: 8 }, { ...box });
+    assertTrue(ig.overlapsAabb(p.aabb()), '前提①：玩家在盒内');
+    for (let i = 0; i < 40; i++) p.step(1 / 60);
+    assertFalse(ig.overlapsAabb(p.aabb()), '①应已被推出');
+    assertTrue(p.pos.x > 9.2, `①应从 +X 面出去，实际 x=${p.pos.x.toFixed(3)}`);
+    assertTrue(Math.abs(p.pos.z - 8) < 1e-9, '①z 不应被动');
+  }
+  // ② 玩家陷在 −Z 面附近（到 −Z 面 0.6，到其余面 ≥ 1.3）⇒ 向 −Z 出
+  {
+    const { p, ig } = landedPlayerWithBox(world, { x: 8, y: 1, z: 7.3 }, { ...box });
+    assertTrue(ig.overlapsAabb(p.aabb()), '前提②：玩家在盒内');
+    for (let i = 0; i < 40; i++) p.step(1 / 60);
+    assertFalse(ig.overlapsAabb(p.aabb()), '②应已被推出');
+    assertTrue(p.pos.z < 6.8, `②应从 −Z 面出去，实际 z=${p.pos.z.toFixed(3)}`);
+    assertTrue(Math.abs(p.pos.x - 8) < 1e-9, '②x 不应被动');
+  }
+});
+
+test('physics(v2.78): 推出时不会把玩家推进方块里（最近的面被墙堵住就走次近的）', () => {
+  const { world, reg } = makeWorld();
+  const col = world.getColumn(0, 0);
+  // x=7 立一堵墙（方块 [7,8)）：玩家向 −X 被推到 x≈8.0 时左缘 7.7 ⇒ 嵌进墙
+  for (let y = 1; y <= 3; y++) for (let lz = 0; lz < 16; lz++) col.blocks[blockIndex(7, y, lz)] = reg.idOf('stone');
+  // 玩家 x=8.4（x∈[8.1,8.7]，不碰墙）；盒 x0=8.3 ⇒ 陷入 0.4，最近的出口是 −X（0.4）但被墙堵住；
+  // 次近是 ±Z（1.3）
+  const { p, ig } = landedPlayerWithBox(world, { x: 8.4, y: 1, z: 8 }, { x0: 8.3, x1: 11, z0: 7, z1: 9, y0: 1, y1: 4 });
+  assertTrue(ig.overlapsAabb(p.aabb()), '前提：玩家被罩住');
+  for (let i = 0; i < 60; i++) {
+    p.step(1 / 60);
+    assertFalse(p.collidesAt(p.pos.x, p.pos.y, p.pos.z), `第 ${i} 步玩家被推进了方块，pos=${JSON.stringify(p.pos)}`);
+  }
+  assertFalse(ig.overlapsAabb(p.aabb()), '最终应从另一个方向被推出');
+  assertTrue(Math.abs(p.pos.x - 8.4) < 1e-9, `不应往墙里推（x 应不变），实际 x=${p.pos.x.toFixed(3)}`);
+});
+
+test('physics(v2.78): 不重叠（含恰好贴面）时一动不动（热路径零影响）', () => {
+  const { world } = makeWorld();
+  // 玩家 x∈[8.3, 8.9]；盒 x0=8.9 ⇒ 恰好贴面（严格不等式：不算重叠）
+  const { p, ig } = landedPlayerWithBox(world, { x: 8.6, y: 1, z: 8 }, { x0: 8.9, x1: 11, z0: 7, z1: 9, y0: 1, y1: 4 });
+  assertFalse(ig.overlapsAabb(p.aabb()), '前提：贴面不重叠');
+  const before = { x: p.pos.x, z: p.pos.z };
+  for (let i = 0; i < 60; i++) p.step(1 / 60);
+  assertEqual(p.pos.x, before.x, '不重叠时 x 不应被改');
+  assertEqual(p.pos.z, before.z, '不重叠时 z 不应被改');
+});
+
+test('physics(v2.78): 盒边持续扫过（焰魔持续转身 / 前压）时玩家被一路顶开，每一步都不冻死', () => {
+  const { world } = makeWorld();
+  const { p, ig } = landedPlayerWithBox(world, { x: 8.6, y: 1, z: 8 }, { x0: 9.0, x1: 11, z0: 7, z1: 9, y0: 1, y1: 4 });
+  let prevX = p.pos.x;
+  let maxStep = 0;
+  // 盒边每步前压 0.05（≈ 3 格/秒，与焰魔转身时盒边扫过的速度同量级），共 20 步 ⇒ 总共前压 1.0 格
+  for (let i = 0; i < 20; i++) {
+    ig.box.x0 -= 0.05;
+    p.step(1 / 60);
+    maxStep = Math.max(maxStep, Math.abs(p.pos.x - prevX));
+    prevX = p.pos.x;
+    assertFalse(ig.overlapsAabb(p.aabb()), `第 ${i} 步结束时玩家仍被罩住（推出没追上盒边），x=${p.pos.x.toFixed(3)}`);
+  }
+  assertTrue(p.pos.x + 0.3 <= ig.box.x0 + 1e-9, `盒边停住后玩家应在盒外，x=${p.pos.x.toFixed(3)} x0=${ig.box.x0.toFixed(3)}`);
+  assertTrue(maxStep <= IGNIS_EJECT_SPEED / 60 + 1e-9, `单步推出 ${maxStep.toFixed(3)} 超过上限`);
 });
 
 test('physics: 1 格台阶可登上（step-up）', () => {

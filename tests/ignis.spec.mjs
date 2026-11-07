@@ -888,6 +888,124 @@ test.describe('焰魔（Ignis）Tier 4', () => {
   });
 
   /**
+   * v2.78 用户缺陷：「玩家跑进焰魔，跑的太近就会和焰魔靠在一起，然后玩家就不能动弹了，
+   * 跳也不行，前后左右都无法动弹，是发生穿模了吗？」
+   *
+   * ## 根因（真实游戏实测，不是几何推演）
+   *
+   * 焰魔的阻挡盒 = 身体 OBB 绕 yaw 旋转后的轴对齐包围盒，**随朝向变形**（yaw=0° 时重叠区单边 1.13，
+   * 45° 时 1.54）。焰魔醒来 / 追击 / 起手都会转向玩家，盒子扫过站得近的玩家 ⇒ 玩家落进盒内（斜角站位
+   * 陷入 0.3~0.4 格，而单步位移只有 0.133）。玩家物理把盒子当实心且没有「已经在里面」的分支 ⇒
+   * 每个候选位置都仍重叠 ⇒ 四轴 + 跳跃全拒。焰魔侧的自愈（`overlapEscapeDist = 1.15`，仅 chase 态）
+   * 在斜角站位 `d ≈ 1.4` 时从不触发 ⇒ 永久软锁。
+   *
+   * 修复前实测（seed=12345）：玩家站在盒斜角外，焰魔转到 −126° 后 **30/40 帧 `overlap=true`**，
+   * W/S/A/D/Space 六个方向位移**全是 0**。
+   *
+   * ## 判据
+   *
+   * ① 场景有效：焰魔真的转了身（否则没测到「盒子扫过来」）；
+   * ② 玩家被推出：重叠的采样帧极少、最终不重叠；
+   * ③ 不冻结：远离 / 沿盒面平移 / 起跳都能动；
+   * ④ 「不动如山」不变：朝焰魔里走仍被挡住（不陷进盒内）。
+   */
+  test('不卡死(v2.78)：玩家贴在焰魔盒斜角外，焰魔转身把盒子扫过来 → 被推出盒外，四向与跳跃都不冻结', async ({ page }) => {
+    test.setTimeout(180_000);
+    await page.goto(`/?seed=${SEED}`);
+    await waitWorldReady(page);
+    await teleportToTarnCenter(page);
+    await waitPlayerLanded(page);
+
+    const r = await page.evaluate(async () => {
+      const g = window.__MC_GAME__;
+      const p0 = g.player.physics.pos;
+      const sum = g.ignises.summon('tarn:e2e:stuck', Math.floor(p0.x), Math.floor(p0.z) + 8, 1, Math.floor(p0.y));
+      if (!sum.ok) return { err: sum.reason };
+      await new Promise((res) => setTimeout(res, 1500));              // 落地站稳
+      const id = sum.id;
+      const e = g.entities.get(id);
+      // 压住它自己起手（本用例只观察「转身扫盒」）；朝向 yaw=0（此时盒最小）
+      e.state = { ...e.state, yaw: 0, mode: 'idle', attackCooldown: 1e6, velocity: [0, 0, 0] };
+      const ip = e.state.position;
+      // 玩家紧贴 yaw=0 盒的**斜角**外侧：x 向盒边 0.826、+z 向盒边 0.503，各加玩家半宽 0.3 与 0.01
+      g.player.spawn(ip[0] + 0.826 + 0.3 + 0.01, ip[1], ip[2] + 0.503 + 0.3 + 0.01);
+      await new Promise((res) => setTimeout(res, 400));
+      const pl0 = { x: g.player.physics.pos.x, z: g.player.physics.pos.z };
+
+      // 焰魔「转身面向玩家」之后的朝向（与 Agent 的 `_angleTo` 同口径：yaw = atan2(−dx, −dz)，d = 玩家 − 焰魔）。
+      // ⚠️ **把朝向钉在这个终态，不靠 AI 自然转身来制造「盒子扫到玩家」**：自然转身的终点取决于感知快照与
+      // 时序（实测同一场景有的运行转到 −126°、有的转到 160°），后者盒子压根没扫到玩家 ⇒ 关掉修复后本用例
+      // **空洞地通过**（负向对照实测踩到）。每 20ms 重置一次防止 AI 又转开；盒子「扫到」的瞬间就是下面这次赋值。
+      const PIN = Math.atan2(-(pl0.x - ip[0]), -(pl0.z - ip[2]));
+      const pin = setInterval(() => {
+        const en0 = g.entities.get(id);
+        if (en0) en0.state = { ...en0.state, yaw: PIN };
+      }, 20);
+
+      // 观察 4s：盒子已扫到玩家，玩家物理应把人推出
+      const overlapSeries = [];
+      const samples = 40;
+      for (let i = 0; i < samples; i++) {
+        await new Promise((res) => setTimeout(res, 100));
+        overlapSeries.push(g.ignises.overlapsAabb(g.player.physics.aabb()) ? 1 : 0);
+      }
+      const overlapSamples = overlapSeries.reduce((a, b) => a + b, 0);
+      const lateOverlap = overlapSeries.slice(20).reduce((a, b) => a + b, 0);   // 后 2 秒
+      const finalOverlap = g.ignises.overlapsAabb(g.player.physics.aabb());
+      const pl1 = g.player.physics.pos;
+      const displacement = Math.hypot(pl1.x - pl0.x, pl1.z - pl0.z);
+
+      // 面向焰魔（与 Agent 的 `_angleTo` 同口径：yaw = atan2(−dx, −dz)），逐键试 600ms
+      const en = g.entities.get(id);
+      const pp = g.player.physics.pos;
+      g.player.yaw = Math.atan2(-(en.state.position[0] - pp.x), -(en.state.position[2] - pp.z));
+      const home = { x: pp.x, y: pp.y, z: pp.z };
+      const moved = {};
+      for (const k of ['KeyW', 'KeyS', 'KeyA', 'KeyD', 'Space']) {
+        g.player.spawn(home.x, home.y, home.z);
+        await new Promise((res) => setTimeout(res, 150));
+        const a = { x: g.player.physics.pos.x, y: g.player.physics.pos.y, z: g.player.physics.pos.z };
+        g.player.keys.add(k);
+        await new Promise((res) => setTimeout(res, 600));
+        // 取按键期间的最大位移（Space 看峰值抬升，不看落地后的净位移）
+        const b = g.player.physics.pos;
+        moved[k] = {
+          horiz: Math.hypot(b.x - a.x, b.z - a.z),
+          up: b.y - a.y,
+          overlapAfter: g.ignises.overlapsAabb(g.player.physics.aabb()),
+        };
+        g.player.keys.delete(k);
+        await new Promise((res) => setTimeout(res, 150));
+      }
+      clearInterval(pin);
+      return { overlapSamples, lateOverlap, samples, displacement, finalOverlap, moved };
+    });
+    console.log('[不卡死]', JSON.stringify(r));
+
+    expect(r.err).toBeUndefined();
+    // ① 场景有效：盒子确实「罩住」过玩家 —— 要么观察到重叠（修复前 36/40），要么玩家被推开了（修复后位移 ≈ 陷入深度
+    // 0.3~0.4 格）。两者都没有 ⇒ 盒子根本没扫到玩家，本用例会在关掉修复后**空洞地通过**（负向对照实测踩到）。
+    expect(r.overlapSamples >= 1 || r.displacement >= 0.1,
+      `场景无效：盒子没罩住玩家（重叠采样 ${r.overlapSamples}、玩家位移 ${r.displacement.toFixed(3)} 格）`).toBe(true);
+    // ② 被推出。实测（朝向钉死后，确定性）：修复后盒子扫到的下一个物理步（≤ 16ms）就被推出，100ms 间隔的采样
+    // 几乎碰不到重叠 —— 3 次运行均为 0/40、玩家被推开 0.29~0.40 格；关掉推出：一次 40/40 且五个键位移全 0，
+    // 一次 13/40（焰魔自己走开后才解除）。故两道判据：后 2 秒必须 0 次重叠（钉「不再持续被罩住」），
+    // 全程 ≤ 4（修复后 0 与修复前最小 13 之间；不取 10 —— 离 13 太近，焰魔恰好早走开时会漏）。
+    expect(r.lateOverlap, `后 2 秒的 20 个采样里有 ${r.lateOverlap} 个仍处在焰魔身体盒内（玩家被罩住没有被推出）`)
+      .toBe(0);
+    expect(r.overlapSamples, `40 个采样里有 ${r.overlapSamples} 个处在焰魔身体盒内（应被很快推出）`)
+      .toBeLessThanOrEqual(4);
+    expect(r.finalOverlap, '4 秒后玩家仍在焰魔身体盒内').toBe(false);
+    // ③ 不冻结：远离(S) / 沿盒面平移(A、D) 都能走 ≥ 1 格；起跳能离地 ≥ 0.5 格（修复前全是 0）
+    for (const k of ['KeyS', 'KeyA', 'KeyD']) {
+      expect(r.moved[k].horiz, `${k} 位移 ${r.moved[k].horiz.toFixed(3)} 格：玩家被冻住了`).toBeGreaterThan(1.0);
+    }
+    expect(r.moved.Space.up, `起跳只抬升了 ${r.moved.Space.up.toFixed(3)} 格：玩家被冻住了`).toBeGreaterThan(0.5);
+    // ④ 不动如山不变：朝焰魔里走（W）仍被盒子挡住，不陷进去
+    expect(r.moved.KeyW.overlapAfter, '按 W 朝焰魔里走后陷进了身体盒（不动如山失效）').toBe(false);
+  });
+
+  /**
    * v2.62 用户缺陷⑥：「距离玩家一定的距离，就执行一个飞跃向前的动作，落点刚好就在
    * 玩家的面前，飞跃到快触碰到地面的时候，执行当前的劈砍的动作」。
    *
