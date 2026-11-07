@@ -12,7 +12,7 @@
 import { test } from './runner.js';
 import { assertEqual, assertTrue, assertNotNull, assertFalse } from './assert.js';
 import { IgnisBossAgent } from '../entities/bosses/ignis-boss-agent.js';
-import { IGNIS, IGNIS_AI } from '../entities/ignis/ignis-config.js';
+import { IGNIS, IGNIS_AI, IGNIS_ATTACKS } from '../entities/ignis/ignis-config.js';
 
 /**
  * 假注册表：`hasLineOfSight`（炮塔的唯一权威）需要 `solidTable` / `opaqueTable`。
@@ -244,6 +244,88 @@ test('焰魔 AI: 玩家跑出 disengageRange → attack 中断回 chase', () => 
     ...OPEN_CTX, player: playerAt(IGNIS_AI.disengageRange + 5),
   });
   assertEqual(next.mode, 'chase');
+});
+
+// ==================== 第二招：整圈旋斩（v2.75）====================
+//
+// 用户 2026-11-07 裁定「每次起手按权重随机」。抽签走构造参数 `rng`（已可注入）⇒ 单测钉两个端点。
+
+/** 跑到「起手」那一刻，返回起手后的 state（命中判据/动画选择都要读 attackKind） */
+function runToAttackStart(agent, state, ctx) {
+  let s = state;
+  for (let i = 0; i < 60; i++) {
+    s = agent.update(s, 1 / 60, ctx);
+    if (s.mode === 'attack') return s;
+  }
+  return s;
+}
+
+test('焰魔 AI(v2.75): rng=0 ⇒ 恒选普攻（swing），rng→1 ⇒ 恒选旋斩（spin）', () => {
+  const ctx = { ...OPEN_CTX, player: playerAt(IGNIS_AI.attackRange - 1) };
+  const swingAgent = new IgnisBossAgent({ rng: () => 0 });
+  const s1 = runToAttackStart(swingAgent, st({ mode: 'chase', onGround: true }), ctx);
+  assertEqual(s1.mode, 'attack');
+  assertEqual(s1.attackKind, 'swing', 'rng=0 应抽中第一个档案（swing）');
+
+  // rng 恒 1：落在最后一档（spin）。用 0.999999 而不是 1（有些实现把 1 当越界）
+  const spinAgent = new IgnisBossAgent({ rng: () => 0.999999 });
+  const s2 = runToAttackStart(spinAgent, st({ mode: 'chase', onGround: true }), ctx);
+  assertEqual(s2.mode, 'attack');
+  assertEqual(s2.attackKind, 'spin', 'rng≈1 应抽中最后一档（spin）');
+});
+
+test('焰魔 AI(v2.75): 旋斩的命中帧 = 0.70s（不是普攻的 1.20s）', () => {
+  const a = new IgnisBossAgent({ rng: () => 0.999999 });
+  const ctx = { ...OPEN_CTX, player: playerAt(IGNIS_AI.attackRange - 1) };
+  let s = st({ mode: 'attack', attackAnimT: 0, attackKind: 'spin', onGround: true });
+  const hits = [];
+  const frames = Math.ceil((IGNIS_ATTACKS.spin.animSeconds + 0.4) * 60);
+  for (let i = 0; i < frames; i++) {
+    s = a.update(s, 1 / 60, ctx);
+    if (s.attackRequest) hits.push(s.attackAnimT);
+  }
+  assertEqual(hits.length, 1, `旋斩命中次数 ${hits.length}（应恰为 1）`);
+  assertTrue(Math.abs(hits[0] - IGNIS_ATTACKS.spin.hitFrameSeconds) < 0.03,
+    `旋斩命中帧 ${hits[0].toFixed(4)}s，期望 ${IGNIS_ATTACKS.spin.hitFrameSeconds}s`);
+});
+
+test('焰魔 AI(v2.75): attackRequest 带上 kind（结算方按招取射程/角度，不回读 state）', () => {
+  const a = new IgnisBossAgent({ rng: () => 0.999999 });
+  const ctx = { ...OPEN_CTX, player: playerAt(IGNIS_AI.attackRange - 1) };
+  let s = st({ mode: 'attack', attackAnimT: 0, attackKind: 'spin', onGround: true });
+  for (let i = 0; i < 200 && !s.attackRequest; i++) s = a.update(s, 1 / 60, ctx);
+  assertNotNull(s.attackRequest);
+  assertEqual(s.attackRequest.kind, 'spin');
+});
+
+test('焰魔 AI(v2.75): 旋斩播完回 chase 且 attackKind 清空（否则下一刀会播错动画）', () => {
+  const a = new IgnisBossAgent({ rng: () => 0.5 });
+  const ctx = { ...OPEN_CTX, player: playerAt(IGNIS_AI.attackRange - 1) };
+  let s = st({ mode: 'attack', attackAnimT: 0, attackKind: 'spin', onGround: true });
+  const frames = Math.ceil(IGNIS_ATTACKS.spin.animSeconds * 60) + 5;
+  for (let i = 0; i < frames; i++) s = a.update(s, 1 / 60, ctx);
+  assertTrue(s.mode !== 'attack' || s.attackAnimT < IGNIS_ATTACKS.spin.animSeconds,
+    `旋斩播完仍在 attack（attackAnimT=${s.attackAnimT}）`);
+  if (s.mode !== 'attack') assertEqual(s.attackKind, null, '离开 attack 后 attackKind 必须清空');
+});
+
+test('焰魔 AI(v2.75): 旋斩冷却期间即使抽中 spin 也降级为普攻（不白放冷却）', () => {
+  const a = new IgnisBossAgent({ rng: () => 0.999999 });
+  const ctx = { ...OPEN_CTX, player: playerAt(IGNIS_AI.attackRange - 1) };
+  let s = st({ mode: 'chase', onGround: true, spinCooldown: IGNIS_AI.spinCooldownSeconds });
+  s = runToAttackStart(a, s, ctx);
+  assertEqual(s.mode, 'attack');
+  assertEqual(s.attackKind, 'swing', '冷却未好时抽中 spin 应降级为 swing');
+});
+
+test('焰魔 AI(v2.75): 旋斩起手后写 spinCooldown（独立于 attackCooldown）', () => {
+  const a = new IgnisBossAgent({ rng: () => 0.999999 });
+  const ctx = { ...OPEN_CTX, player: playerAt(IGNIS_AI.attackRange - 1) };
+  const s = runToAttackStart(a, st({ mode: 'chase', onGround: true }), ctx);
+  assertEqual(s.attackKind, 'spin');
+  // 起手当帧就置冷却（不是命中帧）—— 否则玩家跑掉不命中时旋斩可以连抽
+  assertTrue(s.spinCooldown > IGNIS_AI.spinCooldownSeconds - 0.1,
+    `spinCooldown=${s.spinCooldown} 未在起手时置位`);
 });
 
 // ==================== 物理 ====================

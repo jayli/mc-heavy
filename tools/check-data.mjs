@@ -50,6 +50,7 @@ const {
 // 焰魔（v2.55）的烘焙参数/度量/指纹同理（与 bake-ignis.mjs 同一份逻辑）
 const {
   IGNIS_JSON, IGNIS_PNG, IGNIS_META, IGNIS_BAKE_PARAMS, IGNIS_METRICS, IGNIS_ANIM_PERIODS,
+  IGNIS_ATTACK_ANIM_KEYS,
   ignisInputFingerprint,
 } = await import('./ignis-fingerprint.mjs');
 // v1.26：图标走独立 icons-atlas（不再有 INVENTORY_ICONS 表）。指纹/清单走共享模块
@@ -653,11 +654,12 @@ function checkIgnisAsset() {
     failures.push(`[焰魔] 索引数 ${asset.geometry.index.length} ≠ 期望 ${M.indexCount}`);
   }
   const animNames = Object.keys(asset.animations).sort();
-  if (animNames.join(',') !== 'attack,idle') {
-    failures.push(`[焰魔] 动画清单 ${animNames.join(',')} ≠ 期望 attack,idle`);
+  // 期望清单 = idle + 全部招式键（唯一权威 `IGNIS_ANIM_SOURCES` / `IGNIS_ATTACK_ANIM_KEYS`）
+  const expectAnimNames = ['idle', ...IGNIS_ATTACK_ANIM_KEYS].sort();
+  if (animNames.join(',') !== expectAnimNames.join(',')) {
+    failures.push(`[焰魔] 动画清单 ${animNames.join(',')} ≠ 期望 ${expectAnimNames.join(',')}`);
   } else {
     const idle = asset.animations.idle;
-    const attack = asset.animations.attack;
     // idle：帧数 = idleFrameCount，且 duration 逐位等于表达式周期（接缝恒 0）
     if (idle.frameCount !== IGNIS_BAKE_PARAMS.idleFrameCount) {
       failures.push(`[焰魔] idle 帧数 ${idle.frameCount} ≠ 期望 ${IGNIS_BAKE_PARAMS.idleFrameCount}`);
@@ -666,13 +668,16 @@ function checkIgnisAsset() {
     if (Math.abs(idleDuration - IGNIS_ANIM_PERIODS.idle) > 1e-12) {
       failures.push(`[焰魔] idle duration ${idleDuration} ≠ 表达式周期 ${IGNIS_ANIM_PERIODS.idle}（接缝会跳变）`);
     }
-    // attack：帧数 = round(period × fps)
-    const expectAttackFrames = Math.round(IGNIS_ANIM_PERIODS.attack * IGNIS_BAKE_PARAMS.defaultFps);
-    if (attack.frameCount !== expectAttackFrames) {
-      failures.push(`[焰魔] attack 帧数 ${attack.frameCount} ≠ 期望 ${expectAttackFrames}（period×fps）`);
-    }
-    if (attack.fps !== IGNIS_BAKE_PARAMS.defaultFps) {
-      failures.push(`[焰魔] attack fps ${attack.fps} ≠ ${IGNIS_BAKE_PARAMS.defaultFps}`);
+    // 每招：帧数 = round(period × fps)，fps 固定
+    for (const key of IGNIS_ATTACK_ANIM_KEYS) {
+      const a = asset.animations[key];
+      const expectFrames = Math.round(IGNIS_ANIM_PERIODS[key] * IGNIS_BAKE_PARAMS.defaultFps);
+      if (a.frameCount !== expectFrames) {
+        failures.push(`[焰魔] ${key} 帧数 ${a.frameCount} ≠ 期望 ${expectFrames}（period×fps）`);
+      }
+      if (a.fps !== IGNIS_BAKE_PARAMS.defaultFps) {
+        failures.push(`[焰魔] ${key} fps ${a.fps} ≠ ${IGNIS_BAKE_PARAMS.defaultFps}`);
+      }
     }
     for (const [name, a] of Object.entries(asset.animations)) {
       if (a.frames.length !== a.frameCount * a.boneIndices.length * 7) {
@@ -687,7 +692,8 @@ function checkIgnisAsset() {
   }
   // 成功行：全部判据都过才打印
   if (!failures.some((f) => f.startsWith('[焰魔]'))) {
-    infos.push(`[焰魔] 产物契约与指纹一致（${asset.bones.length} 骨骼 / ${asset.metrics.bakedCubes} 立方体（跳过 ${asset.metrics.skippedCubes} 零尺寸） / ${asset.geometry.position.length / 3} 顶点 / idle ${asset.animations.idle.frameCount} 帧 + attack ${asset.animations.attack.frameCount} 帧 / scale ${asset.scale}）`);
+    infos.push(`[焰魔] 产物契约与指纹一致（${asset.bones.length} 骨骼 / ${asset.metrics.bakedCubes} 立方体（跳过 ${asset.metrics.skippedCubes} 零尺寸） / ${asset.geometry.position.length / 3} 顶点 / idle ${asset.animations.idle.frameCount} 帧 + `
+      + `${IGNIS_ATTACK_ANIM_KEYS.map((k) => `${k} ${asset.animations[k].frameCount} 帧`).join(' + ')} / scale ${asset.scale}）`);
   }
 }
 

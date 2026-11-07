@@ -38,9 +38,86 @@ async function loadSource() {
 
 // ==================== 结构性契约 ====================
 
-test('焰魔烘焙: 产物存在且动画清单是 idle + attack', async () => {
+test('焰魔烘焙: 产物存在且动画清单是 idle + attack + spin（第二招旋斩，v2.75）', async () => {
   const d = await loadAsset();
-  assertEqual(Object.keys(d.animations).sort().join(','), 'attack,idle');
+  assertEqual(Object.keys(d.animations).sort().join(','), 'attack,idle,spin');
+});
+
+// ==================== 第二招：整圈旋斩（v2.75）====================
+//
+// 素材鉴别（2026-11-07 实测，不是按名字猜）：38 tick 在 `ignis.animation.json` 里有 4 条候选，
+// 只有 **`attack8a3`** 在 t=0.0 与 t=0.5 的九根骨骼上与 Java `SPIN_ATTACK` 非破盾分支**逐位相等**。
+// `attack8b3` 是同一招的破盾变体、`attack8a2/b2` 是 `HORIZONTAL_SMALL_SWING_ALT_ATTACK2`。
+// 故本文件的判据直接用**素材 `attack8a3` 的关键帧**做独立复算，不引用烘焙器的常量。
+
+test('焰魔烘焙(v2.75): spin 是整圈旋斩 —— root.y 净转角 > 270°（误接成小横扫会红）', async () => {
+  const d = await loadAsset();
+  const spin = d.animations.spin;
+  const rootIdx = d.bones.findIndex((b) => b.name === 'root');
+  const slot = spin.boneIndices.indexOf(rootIdx);
+  assertTrue(slot >= 0, 'spin 动画没有驱动 root 骨骼');
+
+  // 把增量四元数读成绕 Y 的有符号角度（值域 (−360°, 360°]）。
+  // ⚠️ **不能用 `2·atan2(y,w)` 后逐帧累加短弧**：这一招的轨迹是「−75° → 357.5° →
+  // 回落到 −2.5°」，即**转一圈又转回来一半** ⇒ 净转角只有 **74.9°**（实测），
+  // 用它做判据会把整圈旋斩误判成小横扫。正确的量是「**扫过的最大跨度**」：
+  // unwrap 后 `max − min`（实测 **432.5°**）。
+  const yawOf = (f) => {
+    const o = (f * spin.boneIndices.length + slot) * 7;
+    const [, y, , w] = [spin.frames[o], spin.frames[o + 1], spin.frames[o + 2], spin.frames[o + 3]];
+    // 用半角展开（`atan2` 的值域 (−π, π] ⇒ 角度 (−360°, 360°]），这样每帧步进远小于 180°
+    // （实测最大 48.9°），不会在 180° 附近被折叠。
+    return 2 * Math.atan2(y, w) * 180 / Math.PI;
+  };
+  const unwrapped = [];
+  for (let f = 0; f < spin.frameCount; f++) {
+    const cur = yawOf(f);
+    if (f === 0) { unwrapped.push(cur); continue; }
+    let diff = cur - yawOf(f - 1);
+    while (diff > 180) diff -= 360;
+    while (diff < -180) diff += 360;
+    unwrapped.push(unwrapped[f - 1] + diff);
+  }
+  const span = Math.max(...unwrapped) - Math.min(...unwrapped);
+  assertTrue(span > 270,
+    `spin 的 root 扫过总跨度只有 ${span.toFixed(1)}°（< 270°）—— 接错动画了`
+    + '（attack8a1 那类小横扫只走 ~72°；整圈旋斩实测 432.5°）');
+  // 上界也要钉：> 720° 意味着接了两圈或叠了重复帧
+  assertTrue(span < 720, `spin 的扫过总跨度 ${span.toFixed(1)}° 超过两圈（接了别的动画？）`);
+  // 形态：必须真的绕过身侧 —— 至少有一帧角度落在背面区间（|角| > 120°），
+  // 否则「绕到背后躲」这个玩法变成奢谈（实测峰值 357.5°）。
+  const peak = Math.max(...unwrapped.map((v) => Math.abs(((v % 360) + 540) % 360 - 180)));
+  assertTrue(peak > 120,
+    `spin 的最大偏离角只有 ${peak.toFixed(1)}°（< 120°）—— 剑没绕过身侧，不是整圈旋斩`);
+});
+
+test('焰魔烘焙(v2.75): spin 时长 = 38 tick / 20 = 1.9 秒（Java SPIN_ATTACK 的 Animation.create(38)）', async () => {
+  const d = await loadAsset();
+  const spin = d.animations.spin;
+  const duration = spin.frameCount / spin.fps;
+  assertTrue(Math.abs(duration - 1.9) < 1e-6, `spin duration ${duration} ≠ 1.9 秒`);
+  // 与素材的 animation_length 对账（素材是唯一权威）
+  const anims = await (await fetch(new URL('../../assets/ignis/src/ignis.animation.json', import.meta.url))).json();
+  const src = anims.animations['animation.null.ignis.attack8a3'];
+  assertTrue(Math.abs(Number(src.animation_length) - 1.9) < 1e-9,
+    `素材 attack8a3 的 animation_length ${src.animation_length} ≠ 1.9`);
+});
+
+test('焰魔烘焙(v2.75): spin 的起手姿态 = 素材 attack8a3 的 t=0（剑横持 sword.x=180°）', async () => {
+  const d = await loadAsset();
+  const spin = d.animations.spin;
+  const swordIdx = d.bones.findIndex((b) => b.name === 'sword');
+  assertTrue(swordIdx >= 0, '产物里没有 sword 骨骼');
+  const slot = spin.boneIndices.indexOf(swordIdx);
+  assertTrue(slot >= 0, 'spin 动画没有驱动 sword 骨骼（素材 attack8a3 驱动它到 180°）');
+  const o = (0 * spin.boneIndices.length + slot) * 7;
+  const [x, y, z, w] = [spin.frames[o], spin.frames[o + 1], spin.frames[o + 2], spin.frames[o + 3]];
+  // 起手关键帧 `sword.rotation = [180, 0, 0]` ⇒ 绕 X 转 180° ⇒ q = (1, 0, 0, ~0)
+  assertTrue(Math.abs(Math.abs(x) - 1) < 1e-3,
+    `spin 首帧 sword 的增量四元数 x=${x.toFixed(4)}（期望 ±1，即绕 X 180° 的横持姿态）`
+    + ` —— 接错动画的形态（attack6a 的 sword 首帧是单位四元数）`);
+  assertTrue(Math.abs(y) < 1e-3 && Math.abs(z) < 1e-3, `spin 首帧 sword 的 y/z 分量应为 0，实得 ${y}, ${z}`);
+  assertTrue(Math.abs(w) < 1e-3, `spin 首帧 sword 的 w=${w.toFixed(4)}（180° 旋转的 w 应为 0）`);
 });
 
 test('焰魔烘焙: 骨骼数 = 素材骨骼数（漏骨骼 ⇒ 静默缺肉）', async () => {

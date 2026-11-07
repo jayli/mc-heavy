@@ -89,6 +89,7 @@ import {
   IGNIS_GEO_SRC, IGNIS_ANIM_SRC, IGNIS_TEX_SRC,
   IGNIS_JSON, IGNIS_PNG, IGNIS_META,
   IGNIS_BAKE_PARAMS, IGNIS_METRICS, IGNIS_ANIM_PERIODS, IGNIS_ANIM_SOURCES,
+  IGNIS_ATTACK_ANIM_KEYS,
   ignisInputFingerprint,
 } from './ignis-fingerprint.mjs';
 import { compileMolang } from './molang-eval.mjs';
@@ -258,6 +259,23 @@ function collectChannel(bone, channel, length) {
   if (raw === undefined || raw === null) return null;
 
   const asTriple = (val, timeLabel) => {
+    // 形态 C（v2.75）****：`{ pre: [...], post: [...] }` —— Bedrock 的
+    // 「同一时刻的两侧值」。本仓实测只有 1 处：`attack8a3` 的 `root` 在 t=1.4
+    // （`pre: [0, 357.5, 0]` / `post: [0, -2.5, 0]`）。
+    //
+    // ⚠️ 那两个是**同一个朝向**（357.5° ≡ −2.5°），作者用它把「转完一圈」写成
+    // 「归零」以避免整圈在关键帧上视觉回退。本仓用**数值上的 post**（−2.5）
+    // 作为该帧的值，让 0.9→1.4 的插值从 357.5 一路回到 −2.5 —— 恰好是一条
+    // **净转一圈**的弧（中间的 180° 由 `deltaRotation` 的轴角域处理）。
+    //
+    // ⚠️ **取 pre 会让整圈变成「倒着转回去」（−177° 弧）**，形态是「旋斩转一半
+    // 然后倒放」；取 post 则与作者意图一致。这个差别在数据层看不出来（两者都是
+    // 合法关键帧），只能靠 `test-ignis-bake.js` 的「累计净转角 > 270°」钉住。
+    if (val && typeof val === 'object' && !Array.isArray(val)) {
+      const v = val.post ?? val.pre;
+      if (v === undefined) fail(`${channel} 的关键帧对象缺 post/pre（骨骼 ${bone._name}）`);
+      return asTriple(v, timeLabel);
+    }
     if (Array.isArray(val)) {
       return val.map((component, axis) => {
         if (typeof component === 'number') return component;
@@ -593,12 +611,24 @@ function main() {
     + `${animations.idle.boneIndices.length} 骨骼 @ ${idleFps.toFixed(3)}fps`
     + `（duration ${(idleFrameCount / idleFps).toFixed(10)}s ≡ 2π/128）`);
 
-  // attack：数值关键帧路径
-  const attackFrames = Math.round(IGNIS_ANIM_PERIODS.attack * ATTACK_FPS);
-  animations.attack = resampleAnimation(
-    anims, IGNIS_ANIM_SOURCES.attack, attackFrames, ATTACK_FPS, boneNameToIndex, bind);
-  console.log(`[焰魔烘焙]   动画 attack: ${animations.attack.frameCount} 帧 × `
-    + `${animations.attack.boneIndices.length} 骨骼 @ ${ATTACK_FPS}fps`);
+  // 招式动画：数值关键帧路径。**逐招导出**（清单的唯一权威是
+  // `IGNIS_ANIM_SOURCES` —— 新增一招只在那里加一条，烘焙与门禁自动跟上）。
+  //
+  // ⚠️ 产物键名与 `IGNIS_ANIM_SOURCES` 的键一一对应（`attack` / `spin`）：渲染器按
+  // `state.attackKind` 选哪一条，`check:data` 按同一张表校验帧数。写两份清单就会出现
+  // 「新招烘焙了但门禁不查」或「渲染器找不到 animations.spin」的静默分裂。
+  for (const key of IGNIS_ATTACK_ANIM_KEYS) {
+    const period = IGNIS_ANIM_PERIODS[key];
+    if (!Number.isFinite(period) || period <= 0) {
+      fail(`招式 "${key}" 缺 IGNIS_ANIM_PERIODS（无法定帧数）`);
+    }
+    const frames = Math.round(period * ATTACK_FPS);
+    animations[key] = resampleAnimation(
+      anims, IGNIS_ANIM_SOURCES[key], frames, ATTACK_FPS, boneNameToIndex, bind);
+    console.log(`[焰魔烘焙]   动画 ${key}: ${animations[key].frameCount} 帧 × `
+      + `${animations[key].boneIndices.length} 骨骼 @ ${ATTACK_FPS}fps`
+      + `（${IGNIS_ANIM_SOURCES[key].join('+')}）`);
+  }
 
   // ==================== 5. 写产物 ====================
   fs.mkdirSync(path.dirname(IGNIS_JSON), { recursive: true });
@@ -729,7 +759,10 @@ function main() {
     }
   };
   scanAnim(animations.idle);
-  scanAnim(animations.attack);
+  // ⚠️ **扫全部招式动画**（不是只扫 attack）：`feetOffsetY` 的语义是「动画**全程**最低点」，
+  // 漏扫一招的形态是「那一招下蹲时脚穿到地下」（而其他招都对，肉眼极难归因）。
+  // v2.75 实测：加入 spin 后全局限低点从 0.265625 降到 0.26347（idle 仍是 0.265625 的主宰）。
+  for (const key of IGNIS_ATTACK_ANIM_KEYS) scanAnim(animations[key]);
   if (!Number.isFinite(lowestY)) fail('脚底补偿扫描失败（没有任何顶点）');
   const feetOffsetY = -lowestY;
   asset.metrics.feetOffsetY = feetOffsetY;

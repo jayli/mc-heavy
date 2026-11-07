@@ -53,7 +53,7 @@ import { computeTurretUpdates, hasLineOfSight, shortestAngleDiff } from '../enti
 import { DRAGON_TYPE, FIREBALL_TYPE, FIREBALL, DRAGON_CORE_OBB } from '../entities/dragons/dragon-config.js';
 import { dragonDefinition, DragonService } from '../entities/dragons/dragon-system.js';
 import { fireballDefinition, judgeFireball } from '../entities/dragons/fireball-system.js';
-import { IGNIS_TYPE, IGNIS, IGNIS_AI } from '../entities/ignis/ignis-config.js';
+import { IGNIS_TYPE, IGNIS, IGNIS_ATTACKS } from '../entities/ignis/ignis-config.js';
 import { ignisDefinition, IgnisService } from '../entities/ignis/ignis-system.js';
 import { IgnisRenderer } from '../render/ignis-renderer.js';
 import { loadIgnisAsset, IGNIS_DEATH_COLOR } from '../render/ignis-model.js';
@@ -3052,8 +3052,9 @@ export class Game {
    *
    * 消费 `state.attackRequest`（**瞬态**，由 `IgnisBossAgent` 在动画到达命中帧那一帧写入）。
    * 三条判据全过才扣血：
-   *   ① 玩家水平距 ≤ `IGNIS_AI.hitRange`（6.5，作者 `AreaAttack` 的 `range`）
-   *   ② |Δyaw| ≤ `IGNIS_AI.hitConeDeg`（**半角 35°** —— 作者 `arc 70` 的一半）
+   *   ① 玩家水平距 ≤ **本招的 `hitRange`**（v2.75 起按 `req.kind` 取；两招都是 6.5）
+   *   ② |Δyaw| ≤ **本招的 `hitConeDeg`**（横扫 35° = 作者 `arc 70` 的一半；
+   *      旋斩 155° = 作者 `arc 310` 的一半 —— **不是 180**，那会抹掉作者刻意的背向死角）
    *   ③ 焰魔胸部 → 玩家胸部视线通
    *
    * ⚠️ **只在该帧判定一次**（不是每帧）：`attackRequest` 只在命中帧出现，Agent 下一帧自动置 null。
@@ -3077,13 +3078,17 @@ export class Game {
       const req = ignis.state.attackRequest;
       if (!req) continue;
       const [ex, ey, ez] = req.at;
+      // 本招的档案（v2.75）—— 射程与半角都按招取。
+      // ⚠️ **不能读 `IGNIS_AI.hitRange/hitConeDeg`**：那是两招的**派生最大值**（6.5 / **155°**），
+      // 用它判定普攻会把锥从 35° 扩到 155° —— 玩家绕到侧面也会被横扫打中，而数据层完全正常。
+      const profile = IGNIS_ATTACKS[req.kind] || IGNIS_ATTACKS.swing;
       const dx = p.x - ex;
       const dz = p.z - ez;
       // ① 水平距
-      if (Math.hypot(dx, dz) > IGNIS_AI.hitRange) continue;
+      if (Math.hypot(dx, dz) > profile.hitRange) continue;
       // ② 前方锥（本仓 yaw 口径：指向玩家 = atan2(−dx, −dz)）
       const toPlayerYaw = Math.atan2(-dx, -dz);
-      const cone = IGNIS_AI.hitConeDeg * Math.PI / 180;
+      const cone = profile.hitConeDeg * Math.PI / 180;
       if (Math.abs(shortestAngleDiff(req.yaw, toPlayerYaw)) > cone) continue;
       // ③ 视线（从焰魔胸部到玩家胸部；与炮塔 LOS / 飞龙火球同一份权威）
       const from = [ex, ey + IGNIS.height * 0.5, ez];

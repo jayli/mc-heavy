@@ -189,6 +189,34 @@ test('焰魔渲染: attackAnimT > 0 时用 attack 动画，= 0 时用 idle', asy
   r.dispose();
 });
 
+test('焰魔渲染(v2.75): attackKind="spin" 时用 spin 动画（不是 attack）', async () => {
+  const d = await getAsset();
+  const scene = new THREE.Scene();
+  const r = new IgnisRenderer(scene, d);
+  const base = { position: [0, 0, 0], yaw: 0, health: 450, flashedUntil: 0, attackCooldown: 0 };
+  const poseOf = (state) => {
+    r.sync([{ id: 'a', state: { ...base, ...state } }], 0);
+    return r.instances[0].bones.map((b) => b.quaternion.toArray());
+  };
+  const dist = (p, q) => {
+    let s = 0;
+    for (let i = 0; i < p.length; i++) for (let k = 0; k < 4; k++) s += Math.abs(p[i][k] - q[i][k]);
+    return s;
+  };
+  // 同一时刻（0.5s）下三者姿态必须互不相同：idle / swing / spin
+  const idle = poseOf({ attackAnimT: 0 });
+  const swing = poseOf({ attackAnimT: 0.5, attackKind: 'swing' });
+  const spin = poseOf({ attackAnimT: 0.5, attackKind: 'spin' });
+  assertTrue(dist(swing, spin) > 0.2,
+    `attackKind=spin 与 swing 在 0.5s 的姿态差仅 ${dist(swing, spin).toFixed(4)}`
+    + ' —— 渲染器没按 attackKind 选动画（形态是把旋斩播成横扫，而「有动画在播」的断言全绿）');
+  assertTrue(dist(idle, spin) > 0.2, `spin 与 idle 姿态接近（差 ${dist(idle, spin).toFixed(4)}）`);
+  // 反向：缺 attackKind（旧调用方）必须回落 swing，不得变成空姿态
+  const legacy = poseOf({ attackAnimT: 0.5 });
+  assertTrue(dist(legacy, swing) < 1e-9, '缺 attackKind 时应回落 attack（swing）动画');
+  r.dispose();
+});
+
 test('焰魔渲染: attack 采样越过末尾时钳在末帧（不取模回绕）', async () => {
   const d = await getAsset();
   const a = d.animations.attack;

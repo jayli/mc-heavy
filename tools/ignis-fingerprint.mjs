@@ -98,19 +98,42 @@ export const IGNIS_BAKE_PARAMS = Object.freeze({
  * - `attack`：素材 `attack6a` 的 `animation_length` = 2.75 秒（55 tick）。
  *   ⚠️ **不是 `attack1`（3.5 秒 / 70 tick）** —— tick 配对表（spec §2.0）显示 55 tick
  *   ↔ Java `SWING_ATTACK`，而 `attack1` 对应 `SHIELD_SMASH_ATTACK`（盾碎）。
+ * - `spin`（v2.75）：素材 `attack8a3` 的 `animation_length` = 1.9 秒（38 tick），
+ *   ↔ Java `SPIN_ATTACK`（`Animation.create(38)`）。
+ *   ⚠️ 38 tick 在素材里有 4 条候选，**只有 `attack8a3`** 在 t=0.0 / 0.5 的九根骨骼上与
+ *   `SPIN_ATTACK` 非破盾分支逐位相等（`attack8b3` = 破盾变体，`attack8a2/b2` =
+ *   `HORIZONTAL_SMALL_SWING_ALT_ATTACK2`）。详见 `ignis-config.js` 的 `IGNIS_ATTACKS`。
  */
 export const IGNIS_ANIM_PERIODS = Object.freeze({
   idle: 360 / 128,
   attack: 2.75,
+  spin: 1.9,
 });
 
 /** 素材里的动画键名（`animation.null.<name>`），烘焙脚本按此取 */
 export const IGNIS_ANIM_SOURCES = Object.freeze({
   /** 待机：**两条**动画合并（generala 驱动手臂、generalb 驱动 root/head） */
   idle: Object.freeze(['generala', 'generalb']),
-  /** 攻击：普通挥砍（Java 的 SWING_ATTACK，55 tick） */
+  /** 普攻：蓄力 → 原地横扫（Java 的 SWING_ATTACK，55 tick） */
   attack: Object.freeze(['attack6a']),
+  /**
+   * 旋斩（v2.75）：整圈旋转 + 剑横持（Java 的 `SPIN_ATTACK`，38 tick）。
+   *
+   * ⚠️ **借助同一素材里的另一条动画（不新增任何资源）**。素材自带 84 条，本仓 v2.55
+   * 只取了 2 条（idle + attack）；本键让烘焙器多取一条，**输入文件与贴图逐字节不变**。
+   */
+  spin: Object.freeze(['attack8a3']),
 });
+
+/**
+ * 产物里属于「招式」的动画键（= `IGNIS_ANIM_SOURCES` 里除 idle 以外的全部）。
+ *
+ * 烘焙器按这张表**逐招**导出，`check:data` 按它逐招校验帧数 —— 新增一招只需在
+ * `IGNIS_ANIM_SOURCES` 加一条，两个消费方自动跟上（不写第二份清单）。
+ */
+export const IGNIS_ATTACK_ANIM_KEYS = Object.freeze(
+  Object.keys(IGNIS_ANIM_SOURCES).filter((k) => k !== 'idle'),
+);
 
 /**
  * 产物必须满足的指标 —— 烘焙脚本与 `check:data` 共用这一份。

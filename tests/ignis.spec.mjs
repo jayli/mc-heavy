@@ -242,6 +242,84 @@ test.describe('焰魔（Ignis）Tier 4', () => {
     expect(d.maxX - d.minX, '变化应横跨焰魔身体的宽度（挥臂）').toBeGreaterThan(100);
   });
 
+  test('渲染(v2.75)：旋斩 vs 横扫是两个不同姿态（像素级，且剑扫到身体另一侧）', async ({ page }) => {
+    await page.goto(`/?seed=${SEED}`);
+    await waitWorldReady(page);
+    await teleportToTarnCenter(page);
+    await waitPlayerLanded(page);
+
+    await page.evaluate(async () => {
+      const g = window.__MC_GAME__;
+      g.player.yaw = Math.PI;
+      g.player.pitch = -0.15;
+      const p = g.player.physics.pos;
+      const sum = g.ignises.summon('tarn:e2e:spin', Math.floor(p.x), Math.floor(p.z) + 4, 1);
+      window.__E2E_ID__ = sum.ok ? sum.id : null;
+      await new Promise((r) => setTimeout(r, 500));
+    });
+    await page.waitForTimeout(300);
+
+    /** 把 state 钉到「某一招 + 某一时刻」再截屏（不经 AI，否则它会选招/推进） */
+    const poseAt = async (kind, t) => {
+      await page.evaluate(async ([k, tt]) => {
+        const g = window.__MC_GAME__;
+        const e = g.entities.get(window.__E2E_ID__);
+        // ⚠️ `mode` 必须是 attack 且 `attackAnimT` 非零，否则渲染器会去播 idle
+        if (e) e.state = { ...e.state, mode: 'attack', attackKind: k, attackAnimT: tt, velocity: [0, 0, 0] };
+        g.ignisRenderer.sync(g.ignises.activeEntities(), performance.now());
+      }, [kind, t]);
+      return shoot(page);
+    };
+
+    /**
+     * **骨骼姿态指纹** —— 「渲染器到底播了哪一支动画」的最直接证据。
+     *
+     * ⚠️ **不能只用像素作判据**（v2.75 实测踩到）：像素差分比的是「两帧画面不同」，
+     * 而 `attackAnimT` 不同本身就足以让画面不同 —— 注入「永远播 attack」后仍会因时刻不同
+     * 而差异巨大，用例照旧绿（**判据无判别力**）。骨骼四元数是动画采样的直接输出，
+     * 同一时刻下只取决于选的是哪一支。
+     */
+    const bonePoseAt = async (kind, t) => {
+      return page.evaluate(async ([k, tt]) => {
+        const g = window.__MC_GAME__;
+        const e = g.entities.get(window.__E2E_ID__);
+        if (e) e.state = { ...e.state, mode: 'attack', attackKind: k, attackAnimT: tt, velocity: [0, 0, 0] };
+        g.ignisRenderer.sync(g.ignises.activeEntities(), performance.now());
+        const idx = g.ignises.activeEntities().findIndex((x) => x.id === window.__E2E_ID__);
+        const inst = g.ignisRenderer.instances[idx];
+        return inst ? inst.bones.map((b) => b.quaternion.toArray()) : null;
+      }, [kind, t]);
+    };
+    const poseDist = (a, b) => {
+      let s = 0;
+      for (let i = 0; i < a.length; i++) for (let k = 0; k < 4; k++) s += Math.abs(a[i][k] - b[i][k]);
+      return s;
+    };
+
+    // ① 骨骼层：同一时刻（0.55s）下两招必须是两个不同姿态。
+    // 实测（2026-11-07）：swing@0.55 vs spin@0.55 的骨骼四元数总差 = 1.86（远大于 0.05）。
+    const swingBones = await bonePoseAt('swing', 0.55);
+    const spinBones = await bonePoseAt('spin', 0.55);
+    expect(swingBones, '取不到焰魔实例的骨骼').not.toBeNull();
+    const boneDiff = poseDist(swingBones, spinBones);
+    expect(boneDiff, `同一时刻两招的骨骼姿态差 ${boneDiff.toFixed(3)}（应显著不同）`).toBeGreaterThan(0.3);
+
+    // ② 像素层：两招的**命中帧**（横扫 1.20s / 旋斩 0.70s，玩家真正挨刀那一瞬）画面不同
+    const swingHit = await poseAt('swing', 1.20);
+    const spinHit = await poseAt('spin', 0.70);
+    const d = await pixelDiff(page, swingHit, spinHit);
+    expect(d.changed, '旋斩与横扫在命中帧应显著不同').toBeGreaterThan(15000);
+    expect(d.maxX - d.minX, '差异应横跨焰魔身体宽度').toBeGreaterThan(100);
+
+    // ③ 旋斩的形态：剑绕身扫 —— 与**起手帧**相比，变化必须横跨身体两侧
+    //（只在前方摆动的横扫做不到；这条是「真的转了」的像素证据）
+    const spinStart = await poseAt('spin', 0.02);
+    const spinMid = await poseAt('spin', 0.55);
+    const ds = await pixelDiff(page, spinStart, spinMid);
+    expect(ds.changed, '旋斩从起手到中段应大幅改变画面').toBeGreaterThan(15000);
+    expect(ds.maxX - ds.minX, '旋斩的变化应横跨身体两侧（转身扫剑）').toBeGreaterThan(100);
+  });
+
   test('战斗：挥剑真的扣玩家血（20 → 6，正好 IGNIS.attackDamage = 14）', async ({ page }) => {
     await page.goto(`/?seed=${SEED}`);
     await waitWorldReady(page);
@@ -277,6 +355,95 @@ test.describe('焰魔（Ignis）Tier 4', () => {
     // **上下界同时钉**：只钉「掉血」抓不到「一下掉到 0」或「扣错量」
     expect(r.damage, `应为一次完整伤害 ${r.expectedDamage}`).toBe(r.expectedDamage);
     expect(r.hpEnd, '20 − 14 = 6').toBe(6);
+  });
+
+  /**
+   * v2.75：**两招的锥宽差必须在真实结算里生效**。
+   *
+   * ## 为什么必须有这条（手工负向验证揭出的覆盖缺口）
+   *
+   * 把 `_consumeIgnisAttackRequests` 里的 `IGNIS_ATTACKS[req.kind]` 改成恒 `swing`
+   * （= 旋斩也按 35° 判定）时，**既有全部用例仍然全绿** —— 因为两招的 `hitRange` 都是
+   * 6.5，而既有 E2E 测的都是正面命中。那个缺陷的真实形态是「旋斩打不到侧面」，
+   * 除了这一条没人能发现。
+   *
+   * ## 驱动方式（为什么直接调消费点，而不是等 AI 起手）
+   *
+   * `attackRequest` 是**瞬态**：`ignisDefinition.update` 每帧都会返回 `attackRequest: null`
+   * （除非本帧正好越过命中帧），所以**往 state 里塞一个 request 会被下一帧的 Agent 覆写掉**
+   * —— 实测踩到：注入后所有角度都不掉血（连 0° 都不掉），而当时误以为是锥宽算错了。
+   * 这里改为「把 request 塞进去 → **同步**调一次唯一的消费点」，测的仍是同一条结算路径
+   * （`game._consumeIgnisAttackRequests` 与真实战斗同一个方法、同一份 profile 查表）。
+   *
+   * ## 判据（同一几何：玩家在焰魔侧方，距 3 格）
+   *
+   * | 角度 | 旋斩（半角 155°） | 横扫（半角 35°） |
+   * |---|---|---|
+   * | 0°（正面） | 掉血 | 掉血 |
+   * | 80°（侧方） | **掉血** | **不掉血** |
+   * | 170°（背后） | **不掉血**（作者刻意的 50° 死角） | 不掉血 |
+   *
+   * 实测（2026-11-07）：旋斩 0°/80° → 6，170° → 20；横扫只有 0° → 6。
+   */
+  test('战斗(v2.75)：旋斩覆盖侧方但留 50° 背向死角，横扫只打正面（锥宽差真的生效）', async ({ page }) => {
+    await page.goto(`/?seed=${SEED}`);
+    await waitWorldReady(page);
+    await teleportToTarnCenter(page);
+    await waitPlayerLanded(page);
+
+    const r = await page.evaluate(async () => {
+      const g = window.__MC_GAME__;
+      const { IGNIS, IGNIS_ATTACKS } = await import('/src/entities/ignis/ignis-config.js');
+      const p = g.player.physics.pos;
+      const sum = g.ignises.summon('tarn:e2e:cone', Math.floor(p.x), Math.floor(p.z) + 3, 1);
+      if (!sum.ok) return { err: sum.reason };
+      const id = sum.id;
+      await new Promise((res) => setTimeout(res, 600));
+      const e0 = g.entities.get(id);
+      if (!e0) return { err: 'entity gone' };
+      // 焰魔朝向钉成 yaw=0（本仓前向 = (−sin yaw, −cos yaw) ⇒ 前方 −Z）
+      const ex = e0.state.position[0], ey = e0.state.position[1], ez = e0.state.position[2];
+
+      /** 把玩家摆到「前方偏 deg 度、距 3 格」，注入一刀，同步消费，返回血量 */
+      const hitAt = (deg, kind) => {
+        const ang = deg * Math.PI / 180;
+        g.player.physics.pos.x = ex - Math.sin(ang) * 3;
+        g.player.physics.pos.z = ez - Math.cos(ang) * 3;
+        g.player.health = 20;
+        const e = g.entities.get(id);
+        e.state = {
+          ...e.state, yaw: 0,
+          attackRequest: { at: [ex, ey, ez], yaw: 0, kind },
+        };
+        // 同步调**唯一**的结算入口（与真实战斗同一方法；不走 AI 的瞬态覆写）
+        g._consumeIgnisAttackRequests();
+        return g.player.health;
+      };
+
+      return {
+        spinFront: hitAt(0, 'spin'),
+        spinSide: hitAt(80, 'spin'),
+        spinBack: hitAt(170, 'spin'),
+        swingFront: hitAt(0, 'swing'),
+        swingSide: hitAt(80, 'swing'),
+        spinCone: IGNIS_ATTACKS.spin.hitConeDeg,
+        swingCone: IGNIS_ATTACKS.swing.hitConeDeg,
+        damage: IGNIS.attackDamage,
+      };
+    });
+
+    expect(r.err).toBeUndefined();
+    expect(r.spinCone, '旋斩半角').toBe(155);
+    expect(r.swingCone, '横扫半角').toBe(35);
+    expect(r.damage, '两招同伤害').toBe(14);
+
+    // 满血 20 → 挨一刀 6
+    expect(r.spinFront, '旋斩正面必须命中').toBe(6);
+    expect(r.spinSide, '侧方 80° 必须被旋斩打中（半角 155°）').toBe(6);
+    // ⚠️ 这条是「照原版 310°」的形态判据：作者刻意留的 50° 背向死角
+    expect(r.spinBack, '背后 170° 不得被旋斩打中 —— 作者刻意的 50° 死角').toBe(20);
+    expect(r.swingFront, '横扫正面必须命中').toBe(6);
+    expect(r.swingSide, '侧方 80° 不得被横扫打中（半角 35°）').toBe(20);
   });
 
   /**

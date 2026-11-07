@@ -254,10 +254,15 @@ export class IgnisRenderer {
     // 焰魔没有俯仰（地面实体），但保持与飞龙同一口径以免将来加俯仰时踩坑。
     inst.pivot.rotation.set(0, st.yaw, 0, 'YXZ');
 
-    // 动画：attackAnimT > 0 → attack（播完停末帧），否则 idle（循环）
+    // 动画：按 `attackKind` 选片段（v2.75）—— 两招形态完全不同，播错一支的形态是
+    // 「旋斩演成横扫」，而「有动画在播」类断言全绿。
+    //
+    // ⚠️ **缺 `attackKind`（旧调用方）回落 `attack`**；`attackAnimT > 0` 仍是「是否在攻击」
+    // 的判据 —— 两者不是同一件事：`attackKind` 只说哪一招，不表示现在在打。
     const attackT = Number.isFinite(st.attackAnimT) ? st.attackAnimT : 0;
+    const anim = st.attackKind === 'spin' ? this.asset.animations.spin : this.asset.animations.attack;
     const deltas = attackT > 0
-      ? sampleIgnisAttack(this.asset.animations.attack, attackT)
+      ? sampleIgnisAttack(anim, attackT)
       : sampleIgnisAnim(this.asset.animations.idle, idleTimeOf(st));
     for (const [bi, delta] of deltas) {
       const bone = inst.bones[bi];

@@ -31,7 +31,8 @@
 // 3. **命中只在一帧触发**：`attackAnimT` 越过 `hitFrameSeconds` 的那一帧（不是每帧）。
 
 import { BossAgent } from './boss-agent.js';
-import { IGNIS, IGNIS_AI, IGNIS_STEERING } from '../ignis/ignis-config.js';
+import { IGNIS, IGNIS_AI, IGNIS_ATTACKS, IGNIS_ATTACK_IDS, IGNIS_STEERING }
+  from '../ignis/ignis-config.js';
 import { aabbCollidesAt, steerIntentAabb } from '../zombies/zombie-navigation.js';
 
 /** 物理固定步长（与 `zombie-system.js` 的 60Hz 固定步同口径，保证与帧率无关） */
@@ -148,6 +149,24 @@ export class IgnisBossAgent extends BossAgent {
 
     let mode = state.mode;
     let attackAnimT = Number.isFinite(state.attackAnimT) ? state.attackAnimT : 0;
+    /**
+     * 本刀是哪一招（v2.75）：`'swing'`（曹力→横扫）/ `'spin'`（整圈旋斩）。
+     *
+     * 三个消费者：
+     * ① 渲染器（按它选 `animations.attack` / `animations.spin`）；
+     * ② 命中推进（本文件的命中帧 / 时长 —— 每招不同）；
+     * ③ `attackRequest.kind`（给结算方，不回读 state）。
+     *
+     * ⚠️ **非 attack 态为 `null`**（「不在攻击中」就不该声称是哪一招）；渲染器的选择
+     * 还额外由 `attackAnimT > 0` 门控，所以 null 不会导致空姿态。
+     * ⚠️ **有值但非法 → 回落 `'swing'`**（旧存档/旧调用方的字段缺失意义不同于「显式 null」）。
+     */
+    let attackKind = state.attackKind == null
+      ? null
+      : (IGNIS_ATTACK_IDS.includes(state.attackKind) ? state.attackKind : 'swing');
+    /** 旋斩的独立冷却剩余秒数（v2.75）。跨帧累积量 ⇒ 必须在 state 里传递。 */
+    let spinCooldown = Math.max(0,
+      (Number.isFinite(state.spinCooldown) ? state.spinCooldown : 0) - step);
     /**
      * 待机重新锁定的累计秒数（v2.62 用户缺陷①）。
      *
@@ -270,6 +289,12 @@ export class IgnisBossAgent extends BossAgent {
       else if (player && hDist <= IGNIS_AI.attackRange && attackCooldown <= 0 && losVisible) {
         mode = 'attack';
         attackAnimT = 0;   // 起手：动画从头播
+        // ---- 抽签选招（v2.75 用户裁定「每次起手按权重随机」）----
+        // ⚠️ **旋斩冷却未好时降级为普攻**（不白放冷却）：`spinCooldown > 0` 时只从
+        // 非旋斩的档案里抽 —— 否则玩家跑掉不命中的旋斩会反复浪费掉新鲜冷却。
+        attackKind = this._rollAttackKind(spinCooldown > 0);
+        // ⚠️ **起手当帧就置冷却**（不是命中帧）：否则玩家跑掉不命中时旋斩可以连抽。
+        if (attackKind === 'spin') spinCooldown = IGNIS_AI.spinCooldownSeconds;
         // ⚠️ **v2.63：起手当帧把 yaw 立即对准真实玩家**（不走 turnRate 缓动、不用快照）。
         // 快照最多陈旧 2 秒，玩家 8 格/秒能跑 16 格 —— 用陈旧朝向起手会让命中锥
         //（半角 35°）永远砍不中。「追」可以迟钝，「砍」必须准（见 `senseIntervalMin` 注释）。
@@ -279,6 +304,7 @@ export class IgnisBossAgent extends BossAgent {
       if (!losVisible || hDist > IGNIS_AI.disengageRange) {
         mode = 'chase';
         attackAnimT = 0;   // 中断：动画放弃
+        attackKind = null;   // 离开 attack 一律复位（渲染器/结算都不该看到残留）
       }
     }
 
@@ -629,23 +655,28 @@ export class IgnisBossAgent extends BossAgent {
     if (mode === 'attack') {
       const prevAnimT = attackAnimT;
       attackAnimT += step;
+      // 本招的档案 —— 命中帧 / 时长都按招取（两招不同：1.20/2.75 vs 0.70/1.90）
+      const profile = IGNIS_ATTACKS[attackKind] || IGNIS_ATTACKS.swing;
       // ⚠️ **只在「越过」的那一帧触发一次**：`prev < hit <= now`。
       // 写成 `current >= hit` 会每帧都触发（连续扣血）；写成 `current === hit` 在
       // dt 不是 1/fps 整数倍时永远不触发（帧率无关性丢失）。
-      if (prevAnimT < IGNIS_AI.hitFrameSeconds && attackAnimT >= IGNIS_AI.hitFrameSeconds) {
+      if (prevAnimT < profile.hitFrameSeconds && attackAnimT >= profile.hitFrameSeconds) {
         // 新鲜视线复查（不用 10Hz 缓存）—— 否则会隔着墙打人
         const freshLos = player !== null && this._queryLos([px, py, pz], ctx);
         if (freshLos) {
-          attackRequest = { at: [px, py, pz], yaw };
+          // ⚠️ **`kind` 必须装进 request**（v2.75）：结算方按招取射程/半角。
+          // 回读 `state.attackKind` 会在「下一帧 state 已切回 chase」时读到错值。
+          attackRequest = { at: [px, py, pz], yaw, kind: attackKind };
           const { attackCooldownMin: lo, attackCooldownMax: hi } = IGNIS_AI;
           // ⚠️ 减去本帧 step：顶部已统一扣过一次 dt，不补扣会让实际间隔多出一帧
           attackCooldown = lo + this.rng() * (hi - lo) - step;
         }
       }
       // 动画播完 → 回 chase
-      if (attackAnimT >= IGNIS_AI.attackAnimSeconds) {
+      if (attackAnimT >= profile.animSeconds) {
         mode = 'chase';
         attackAnimT = 0;
+        attackKind = null;      // 非 attack 态不得残留上一刀的档案
       }
     }
 
@@ -657,6 +688,8 @@ export class IgnisBossAgent extends BossAgent {
       flashedUntil: state.flashedUntil,
       mode,
       attackAnimT,
+      attackKind,
+      spinCooldown,
       acquireT,
       stuckT,
       stuckAnchor,
@@ -681,6 +714,31 @@ export class IgnisBossAgent extends BossAgent {
       needsPath,
       _physAccum: accum,
     };
+  }
+
+  /**
+   * 抽签选招（v2.75）。
+   *
+   * 用户裁定「每次起手按权重随机」。按 `IGNIS_ATTACK_IDS` 的声明顺序累加 `weight`，
+   * 首个使 `r * 总权重 < 累计` 的档案胜出 —— 用**总权重归一**而不是假定和为 1，
+   * 这样调权重时不必手工配平（虽然 `test-ignis-system.js` 钉了和 = 1，那是为了抽签语义清晰）。
+   *
+   * ⚠️ **`spinBlocked` 时只从非旋斩的候选里抽**：冷却未好就把旋斩从候选集里去掉，
+   * 而不是「抽中了再改判」—— 后者会让剩余概率全部堆到第一个档案上，权重语义变味。
+   *
+   * @param {boolean} spinBlocked 旋斩冷却是否未好
+   * @returns {'swing'|'spin'} 选中的档案键
+   */
+  _rollAttackKind(spinBlocked) {
+    const ids = spinBlocked ? IGNIS_ATTACK_IDS.filter((id) => id !== 'spin') : IGNIS_ATTACK_IDS;
+    const total = ids.reduce((s, id) => s + IGNIS_ATTACKS[id].weight, 0);
+    let r = this.rng() * total;
+    for (const id of ids) {
+      r -= IGNIS_ATTACKS[id].weight;
+      if (r < 0) return id;
+    }
+    // 浮点边界（r 恰好落在末尾）：取最后一个候选，而不是返回 undefined
+    return ids[ids.length - 1];
   }
 
   /**

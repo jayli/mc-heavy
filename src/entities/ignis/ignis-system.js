@@ -16,7 +16,7 @@
 // | AI | 四态机（orbit/chase/attack/return） | 三态机（idle/chase/attack） |
 // | 攻击 | 喷火球（生成实体） | 挥剑（扣玩家血，由 game.js 结算） |
 import { raycastAabbSlab, normalizePosition } from '../entity-types.js';
-import { IGNIS_TYPE, IGNIS, IGNIS_AI, IGNIS_CORE_OBB, IGNIS_STEERING, ignisEntityIdFor }
+import { IGNIS_TYPE, IGNIS, IGNIS_AI, IGNIS_ATTACK_IDS, IGNIS_CORE_OBB, IGNIS_STEERING, ignisEntityIdFor }
   from './ignis-config.js';
 import { IgnisBossAgent } from '../bosses/ignis-boss-agent.js';
 // 寻路三层中的第①②层 —— **与丧尸同一份实现**（v2.61 参数化，红线 1）。
@@ -86,7 +86,8 @@ const LEAP_KINDS = Object.freeze(['escape', 'attack']);
  */
 function createState({
   position, velocity, yaw, health, flashedUntil, mode,
-  attackAnimT, idleTime, attackCooldown, losTimer, losVisible, onGround, attackRequest,
+  attackAnimT, attackKind, spinCooldown,
+  idleTime, attackCooldown, losTimer, losVisible, onGround, attackRequest,
   navDir, navMode, needsPath,
   acquireT, stuckT, stuckAnchor, sensedPlayer, senseTimer,
   leapKind, leapDir, leapT, leapTargetY, leapAttackCooldown,
@@ -111,6 +112,24 @@ function createState({
      * 命中判定用它越过 `IGNIS_AI.hitFrameSeconds` 的那一帧触发（**只触发一次**）。
      */
     attackAnimT: Number.isFinite(attackAnimT) ? attackAnimT : 0,
+    /**
+     * 本刀是哪一招（v2.75）：`'swing'`（蓄力→横扫）/ `'spin'`（整圈旋斩），非攻击态为 `null`。
+     *
+     * 三个消费者：
+     * ① 渲染器（按它选 `animations.attack` / `animations.spin`）；
+     * ② 命中推进（命中帧 / 时长每招不同）；
+     * ③ `attackRequest.kind`（给结算方，不回读本字段 —— 下一帧可能已切回 chase）。
+     *
+     * ⚠️ **null 直接透传**（语义「不在攻击中」）：渲染器另由 `attackAnimT > 0` 门控，无空姿态风险。
+     * ⚠️ **有值但非法则回落 `'swing'`**（字段拼错时的恢复路径）。
+     */
+    attackKind: attackKind == null || IGNIS_ATTACK_IDS.includes(attackKind) ? attackKind : 'swing',
+    /**
+     * 旋斩的独立冷却剩余秒数（v2.75）。
+     * ⚠️ **跨帧累积量，必须在 createState 里保留** —— 丢掉它 ⇒ 每帧重置为 0 ⇒
+     * 旋斩冷却永不生效 ⇒ 抽签退化（同 `_physAccum` / `senseTimer` 的教训）。
+     */
+    spinCooldown: Number.isFinite(spinCooldown) ? spinCooldown : 0,
     /**
      * 待机动画的相位（秒，渲染层消费）。
      * ⚠️ **不属于 `position` 派生的量**：它要跨帧累积，否则待机动画永远停在第 0 帧。

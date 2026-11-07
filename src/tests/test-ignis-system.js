@@ -13,7 +13,7 @@ import { test } from './runner.js';
 import { assertEqual, assertTrue, assertNull, assertNotNull, assertFalse } from './assert.js';
 // config 与 system 分开 import（system 只 re-export 它需要的东西，不是全部）
 import {
-  IGNIS_TYPE, IGNIS, IGNIS_AI, IGNIS_CORE_OBB, IGNIS_MODEL_CENTER, ignisEntityIdFor,
+  IGNIS_TYPE, IGNIS, IGNIS_AI, IGNIS_ATTACKS, IGNIS_CORE_OBB, IGNIS_MODEL_CENTER, ignisEntityIdFor,
 } from '../entities/ignis/ignis-config.js';
 import { ignisDefinition, IgnisService, ignisAabbFor } from '../entities/ignis/ignis-system.js';
 import { EntityManager } from '../entities/entity-manager.js';
@@ -98,10 +98,15 @@ test('焰魔: 新常量数值不变式（改任一个都会静默失效）', () 
 });
 
 test('焰魔: 近战判据取自 AreaAttack(6.5, 6, 70, ...)（arc 是总角度 ⇒ 半角 35）', () => {
-  assertEqual(IGNIS_AI.hitRange, 6.5);
-  assertEqual(IGNIS_AI.hitConeDeg, 35);
+  // ⚠️ v2.75 起 `IGNIS_AI` 的这两项是**两招的派生最大值**（旋斩的 155 比横扫的 35 大），
+  // 单招判据的权威在 `IGNIS_ATTACKS`。扫描式的判据仍钉在这里，只是读的是本条档案。
+  const swing = IGNIS_ATTACKS.swing;
+  assertEqual(swing.hitRange, 6.5);
+  assertEqual(swing.hitConeDeg, 35);
   // ⚠️ 若有人把 70 直接填进来（当成半角），扇面会翻倍到 140° —— 玩家绕到侧面也躲不掉
-  assertTrue(IGNIS_AI.hitConeDeg < 70, 'hitConeDeg 必须是半角，不是 arc 原值');
+  assertTrue(swing.hitConeDeg < 70, 'swing.hitConeDeg 必须是半角，不是 arc 原值');
+  // 派生值 = 两招最大者（旋斩的 155），这条不变式在 `旋斩档案` 用例里另有守卫
+  assertEqual(IGNIS_AI.hitConeDeg, 155);
 });
 
 test('焰魔: 命中帧 = SWING_ATTACK 的 tick 24 / 20 = 1.20 秒', () => {
@@ -109,6 +114,69 @@ test('焰魔: 命中帧 = SWING_ATTACK 的 tick 24 / 20 = 1.20 秒', () => {
   // 必须落在攻击动画时长之内，否则永远不会触发
   assertTrue(IGNIS_AI.hitFrameSeconds < IGNIS_AI.attackAnimSeconds,
     `命中帧 ${IGNIS_AI.hitFrameSeconds} 超出动画 ${IGNIS_AI.attackAnimSeconds}`);
+});
+
+// ==================== 第二招：整圈旋斩（v2.75）====================
+//
+// 数值全部取自 `Ignis_Entity.java` 的 `SPIN_ATTACK` 分支：
+//   `AreaAttack(6.5f, 6, 310, 1.0f, ...)` + `getAnimationTick() == 14` + `Animation.create(38)`。
+// 用户 2026-11-07 裁定：「照原版：同伤害 + 原版角度射程」。
+
+test('焰魔(v2.75): 旋斩档案取自 AreaAttack(6.5, 6, 310, 1.0) —— arc 是总角 ⇒ 半角 155且必须 < 180', () => {
+  const spin = IGNIS_ATTACKS.spin;
+  assertEqual(spin.hitRange, 6.5);
+  assertEqual(spin.hitConeDeg, 155);
+  // ⚠️⚠️ **310° 不是 360°**：作者刻意留了 50° 的背向死角（唯一的安全位）。
+  // 写成 180（或把 310 当半角填）会让「绕到背后」这个躲法直接消失，而在数据层看不出任何差别。
+  assertTrue(spin.hitConeDeg < 180,
+    `旋斩半角 ${spin.hitConeDeg}° 不得 ≥ 180° —— 那是全向，背向死角（作者刻意的 50°）会消失`);
+  // 与横扫的守卫同口径：必须是半角，不是 arc 原值
+  assertTrue(spin.hitConeDeg < 310, 'hitConeDeg 必须是半角 155，不是 arc 原值 310');
+});
+
+test('焰魔(v2.75): 旋斩命中帧 = SPIN_ATTACK 的 tick 14 / 20 = 0.70 秒，且落在动画内', () => {
+  const spin = IGNIS_ATTACKS.spin;
+  assertEqual(spin.hitFrameSeconds, 0.70);
+  assertTrue(spin.hitFrameSeconds < spin.animSeconds,
+    `命中帧 ${spin.hitFrameSeconds} 超出动画 ${spin.animSeconds}`);
+  // 动画时长 = Java Animation.create(38) ⇒ 38/20
+  assertEqual(spin.animSeconds, 1.9);
+});
+
+test('焰魔(v2.75): 两招档案的形状一致（缺字段的招式在命中帧会静默不触发）', () => {
+  const KEYS = ['hitRange', 'hitConeDeg', 'hitFrameSeconds', 'animSeconds', 'weight'];
+  assertEqual(Object.keys(IGNIS_ATTACKS).sort().join(','), 'spin,swing');
+  for (const [name, a] of Object.entries(IGNIS_ATTACKS)) {
+    for (const k of KEYS) {
+      assertTrue(Number.isFinite(a[k]), `${name}.${k} 不是有限数（缺字段 ⇒ 命中/时长判定会静默失效）`);
+    }
+    assertTrue(a.weight > 0 && a.weight < 1, `${name}.weight ${a.weight} 必须 ∈ (0,1)`);
+  }
+  // 权重和 = 1（抽签用 `<` 比较，不等于 1 会让剩下的概率落到哪个分支取决于实现细节）
+  const sum = Object.values(IGNIS_ATTACKS).reduce((s, a) => s + a.weight, 0);
+  assertTrue(Math.abs(sum - 1) < 1e-9, `权重和 ${sum} ≠ 1`);
+  // 伤害只有一份权威（两招共用，用户裁定「同伤害」）
+  assertEqual(IGNIS.attackDamage, 14);
+});
+
+test('焰魔(v2.75): IGNIS_AI 的四项是各招的派生最大值（既有断言/文档都引用它们）', () => {
+  const max = (k) => Math.max(...Object.values(IGNIS_ATTACKS).map((a) => a[k]));
+  assertEqual(IGNIS_AI.hitRange, max('hitRange'));
+  assertEqual(IGNIS_AI.hitConeDeg, max('hitConeDeg'));
+  // ⚠️ 命中帧与时长**取最大值**而不是取某一招的值：语义是「最迟那一刀落在何时」/「最长的一招多长」。
+  // 冷却不变式 `attackCooldownMin > attackAnimSeconds` 就靠这个派生值保护。
+  assertEqual(IGNIS_AI.hitFrameSeconds, max('hitFrameSeconds'));
+  assertEqual(IGNIS_AI.attackAnimSeconds, max('animSeconds'));
+});
+
+test('焰魔(v2.75): 旋斩冷却独立于普攻冷却（否则权重会被普攻高频放大成「连着放」）', () => {
+  assertTrue(Number.isFinite(IGNIS_AI.spinCooldownSeconds), '缺 spinCooldownSeconds');
+  assertTrue(IGNIS_AI.spinCooldownSeconds > IGNIS_ATTACKS.spin.animSeconds,
+    `spinCooldownSeconds(${IGNIS_AI.spinCooldownSeconds}) 必须 > 旋斩动画 ${IGNIS_ATTACKS.spin.animSeconds}`
+    + '（同 attackCooldownMin 的教训：冷却短于动画会被动画吃掉，数值上不起作用）');
+  // 与普攻命中间隔 [3.5, 6.0] 同量级：约两次普攻一次旋斩
+  assertTrue(IGNIS_AI.spinCooldownSeconds >= IGNIS_AI.attackCooldownMin,
+    '旋斩冷却不应短于普攻冷却下限（否则旋斩比普攻还频繁）');
 });
 
 test('焰魔: 碰撞盒取自 Bedrock collision_box（1.0 × 3.25）', () => {

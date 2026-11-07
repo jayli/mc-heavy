@@ -19,6 +19,10 @@
 // | `IGNIS_AI.hitFrameSeconds` | 1.20 | `SWING_ATTACK` 的 tick 24 ÷ 20 |
 // | `IGNIS_AI.attackAnimSeconds` | 2.75 | `SWING_ATTACK` = 55 tick（↔ Bedrock `attack6a`） |
 //
+// ⚠️ **v2.75 起上面四行的字面量搬进了 `IGNIS_ATTACKS` 档案表**（两招各一份），
+// `IGNIS_AI` 保留的四项是**派生最大值**（语义：最远/最宽能打到多远、最迟那一刀落在何时、
+// 最长的一招多长）。同一事实只有一份权威（红线 1），命中结算必须按 `req.kind` 取本招的值。
+//
 // ⚠️ **动画配对依据**（spec §2.0 的 tick 表）：Java `SWING_ATTACK` 是 55 tick，
 // 对应 Bedrock 的 **`attack6a`**（2.75 秒），**不是** `attack1`（70 tick = `SHIELD_SMASH_ATTACK`）。
 // 交叉证据：`attack6a` 的 `root.rotation.y` 到 −65°（配得上 arc 70° 的横扫），`attack1` 只到 +30°。
@@ -86,6 +90,71 @@ export const IGNIS = Object.freeze({
 });
 
 /**
+ * 每招攻击的玩法档案 —— **命中判据与动画时长的唯一权威**（v2.75，红线 1）。
+ *
+ * ## 为什么要有这张表
+ *
+ * v2.55 只有一招时，四个数（射程 / 半角 / 命中帧 / 时长）直接写在 `IGNIS_AI` 里就够。
+ * 加了第二招后每个数都有**两份**，若继续平铺在 `IGNIS_AI` 里，「结算用哪一份」只能靠
+ * 调用点记得 `if (kind === 'spin')` —— 那正是红线 1 禁止的第二份副本：漏改一处的形态是
+ * **旋斩按横扫的 35° 判定**（只能打到正面，而数据层看起来完全正常）。
+ *
+ * ## 两招的来源（作者原实现，勿凭直觉改）
+ *
+ * | 招 | Java 动画 | Bedrock 素材 | `AreaAttack(...)` | 命中 tick |
+ * |---|---|---|---|---|
+ * | `swing` | `SWING_ATTACK`（55t） | `attack6a` | `(6.5, 6, 70, 1.0)` | 24 |
+ * | `spin` | `SPIN_ATTACK`（38t） | `attack8a3` | `(6.5, 6, 310, 1.0)` | 14 |
+ *
+ * ⚠️ **`attack8a3` 的配对是数值实测的结果**，不是按名字猜：38 tick 在素材里有 4 条候选
+ * （`attack8a2/a3/b2/b3`），只有 `attack8a3` 在 t=0.0 与 t=0.5 的九根骨骼上与 `SPIN_ATTACK`
+ * 非破盾分支**逐位相等**。`attack8b3` 是同一招的破盾变体，`attack8a2/b2` 是
+ * `HORIZONTAL_SMALL_SWING_ALT_ATTACK2`。
+ *
+ * ⚠️⚠️ **`hitConeDeg` 在两招里都是半角**（`AreaAttack` 判 `|相对角| ≤ arc/2`）。
+ * 旋斩的 310° 原值 ⇒ 半角 **155°**，**不是 180°**：作者刻意留了 50° 的背向死角 ——
+ * 那是玩家绕到背后时唯一的安全位。写成 180 会让它消失，而**没有任何断言会红**
+ * （它只是「打得更宽」）。守卫：`test-ignis-system.js` 的 `spin.hitConeDeg < 180`。
+ *
+ * ⚠️ **伤害刻意不在这张表里**：用户 2026-11-07 裁定「照原版：同伤害」，两招共用
+ * `IGNIS.attackDamage`。写两份就是红线 1。
+ */
+export const IGNIS_ATTACKS = Object.freeze({
+  /** 普攻：蓄力 → 原地横扫（v2.55 的唯一一招） */
+  swing: Object.freeze({
+    hitRange: 6.5,
+    hitConeDeg: 35,
+    hitFrameSeconds: 1.20,
+    animSeconds: 2.75,
+    /** 抽签权重（两招之和 = 1）。本仓标定：约七成普攻、三成旋斩 */
+    weight: 0.7,
+  }),
+  /** 旋斩：身体绕竖轴扫一整圈（v2.75）。素材 `root.y` 净转角 ≈ 282° */
+  spin: Object.freeze({
+    hitRange: 6.5,
+    hitConeDeg: 155,
+    hitFrameSeconds: 0.70,
+    animSeconds: 1.90,
+    weight: 0.3,
+  }),
+});
+
+/** 合法的攻击档案键（`attackKind` 的取值域）。顺序 = 抽签顺序 */
+export const IGNIS_ATTACK_IDS = Object.freeze(Object.keys(IGNIS_ATTACKS));
+
+/**
+ * 多招档案的**派生最大值** —— `IGNIS_AI` 那四项的来源（语义见各自注释）。
+ * ⚠️ 抽签/命中一律用 `IGNIS_ATTACKS[本招]`，这些派生值只服务「最大能打多宽/多久」这类读法
+ * 与既有的不变式（如 `attackCooldownMin > attackAnimSeconds`）。
+ */
+const ATTACK_MAX = Object.freeze(
+  Object.fromEntries(
+    ['hitRange', 'hitConeDeg', 'hitFrameSeconds', 'animSeconds']
+      .map((k) => [k, Math.max(...IGNIS_ATTACK_IDS.map((id) => IGNIS_ATTACKS[id][k]))]),
+  ),
+);
+
+/**
  * 焰魔的地面 AI 数值。
  *
  * ⚠️ **前 8 项是作者真实值，不得随意改**（见文件头的来源表）—— **唯一例外是 `chaseSpeed`**：
@@ -114,30 +183,64 @@ export const IGNIS_AI = Object.freeze({
    */
   chaseSpeed: 2.93,
   /**
-   * 命中判据的水平距离（格）。作者 `AreaAttack` 的第一参 `range`。
+   * 命中判据的水平距离（格）—— **各招最大值**（派生自 `IGNIS_ATTACKS`）。
+   * 作者 `AreaAttack` 的第一参 `range`。
    * ⚠️ 6.5 是「持剑横扫能够到的范围」，比 `attackRange` 大（滞回，见下）。
+   * ⚠️ **结算必须用 `IGNIS_ATTACKS[req.kind].hitRange`** —— 这个派生值只服务
+   * 「最远能打到多远」这类读法（站定环/跳劈落点的既有不变式读的就是它）。
    */
-  hitRange: 6.5,
+  hitRange: ATTACK_MAX.hitRange,
   /**
-   * 命中判据的前方**半角**（度）。
+   * 命中判据的前方**半角**（度）—— **各招最大值**（派生自 `IGNIS_ATTACKS`）。
    *
-   * ⚠️⚠️ **35 = 作者 `arc 70` 的一半**，不是 70 本身。`AreaAttack` 里判的是
+   * ⚠️⚠️ **横扫的 35 = 作者 `arc 70` 的一半**，不是 70 本身。`AreaAttack` 里判的是
    * `|relativeAngle| <= arc/2`；本仓的 `fireConeDeg` / `hitConeDeg` 口径都是**半角**。
    * 直接填 70 会让扇面变成 **140°** —— 玩家绕到侧面也躲不掉，而且**没有任何断言会红**
    * （它只是「打得更宽」）。`test-ignis-system.js` 有一条 `hitConeDeg < 70` 的守卫。
+   *
+   * ⚠️ v2.75 起这个派生值是旋斩的 **155**（两招最大者）。单招判定必须读
+   * `IGNIS_ATTACKS[req.kind].hitConeDeg`。
    */
-  hitConeDeg: 35,
+  hitConeDeg: ATTACK_MAX.hitConeDeg,
   /**
-   * 挥砍动画的命中时刻（秒）。作者在 `SWING_ATTACK` 的 **tick 24** 结算伤害
-   * （`Ignis_Entity.java` 的 `aiStep()`：`getAnimationTick() == 24` → `AreaAttack(...)`）。
-   * 24 ÷ 20 tick/秒 = **1.20 秒**。
+   * 挥砍动画的命中时刻（秒）—— **各招最大值**（派生自 `IGNIS_ATTACKS`）。
+   *
+   * 横扫：作者在 `SWING_ATTACK` 的 **tick 24** 结算（`Ignis_Entity.java` 的 `aiStep()`：
+   * `getAnimationTick() == 24` → `AreaAttack(...)`），24 ÷ 20 = **1.20 秒**；
+   * 旋斩：`SPIN_ATTACK` 的 **tick 14** ⇒ **0.70 秒**。取最大 ⇒ 1.20。
    */
-  hitFrameSeconds: 1.20,
+  hitFrameSeconds: ATTACK_MAX.hitFrameSeconds,
   /**
-   * 攻击动画时长（秒）= Java `SWING_ATTACK` 的 55 tick ÷ 20 = **2.75 秒**。
-   * 与烘焙产物 `animations.attack` 的 `frameCount / fps` 同源。
+   * 动画时长（秒）—— **各招最大值**（派生自 `IGNIS_ATTACKS`）。
+   *
+   * 横扫 = Java `SWING_ATTACK` 的 55 tick = **2.75 秒**（↔ Bedrock `attack6a`）；
+   * 旋斩 = `SPIN_ATTACK` 的 38 tick = **1.90 秒**（↔ `attack8a3`）。
+   * 与烘焙产物各条动画的 `frameCount / fps` 同源。
+   *
+   * ⚠️ 派生取最大值是载荷性的：`attackCooldownMin > attackAnimSeconds` 这条不变式
+   * 靠它保护（将来若加入更长的招式，自动收紧冷却下限）。
    */
-  attackAnimSeconds: 2.75,
+  attackAnimSeconds: ATTACK_MAX.animSeconds,
+  /**
+   * 旋斩的**独立冷却**（秒）—— 本仓标定（v2.75）。
+   *
+   * ## 为什么必需
+   *
+   * 用户裁定「每次起手按权重随机」。若抽签只看权重、不加独立冷却，旋斩的实际出现频率会被
+   * **普攻的刷新速度**放大：普攻命中间隔只有 [3.5, 6.0] 秒，每次起手都抽一次签 ⇒
+   * 30% 的分支被高频触发，观感是「旋斩连着放」。独立冷却把它压成「约两次普攻一次旋斩」。
+   *
+   * ## 取值（8.0）的三条约束
+   *
+   * ① 必须 **> 旋斩动画时长**（1.9）：同 `attackCooldownMin` 的教训 —— 冷却短于动画会被
+   *    动画吃掉，数值上不起作用（缺陷形态：无间隔连旋，而常量看上去都对）。
+   * ② 必须 **≥ `attackCooldownMin`**（3.5）：否则旋斩比普攻还频繁，与「普攻为主」的权重口径矛盾。
+   * ③ 8.0 ≈ 普攻命中间隔中位数（4.75）的 1.7 倍 ⇒ 玩家能读出「砍两下、转一圈」的节奏。
+   *
+   * ⚠️ **起手当帧就置位**（不是命中帧）：玩家跑掉不命中时，若按命中帧计冷却，
+   * 旋斩会可以反复抽中而一次也没打出去。
+   */
+  spinCooldownSeconds: 8.0,
 
   // ==================== 本仓标定（作者无对应常量）====================
 
