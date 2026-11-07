@@ -79,6 +79,8 @@
     import './test-iso-icon.js';
     import './test-world-editor.js';
     import './test-weapons.js';
+    // v2.65 近战剑：Blockbench 逐面 UV 模型的纯几何解析
+    import './test-blockbench-geometry.js';
     import './test-entity-manager.js';
     import './test-zombies.js';
     import './test-zombie-model.js';
@@ -116,6 +118,18 @@
     import './test-boss-agent.js';
     // 飞龙 Boss 智能体四态机（v2.44）
     import './test-dragon-boss-agent.js';
+    // 焰魔（v2.55）：Molang 子集求值器（烘焙期待机动画的表达式）
+    import './test-molang.js';
+    // 焰魔（v2.55）：烘焙产物契约（骨骼层级 / UV / inflate / mirror / 动画帧数）
+    import './test-ignis-bake.js';
+    // 焰魔（v2.55）：碰撞/绕行判据参数化（丧尸零回归守门）
+    import './test-ignis-collision.js';
+    // 焰魔（v2.55）：实体定义 + service（create 校验 / 召唤幂等 / 死亡即消失）
+    import './test-ignis-system.js';
+    // 焰魔（v2.55）：地面三态机 AI（重力/step-up/命中帧攻击意图）
+    import './test-ignis-boss-agent.js';
+    // 焰魔（v2.55）：渲染器（池 2 / 脚底补偿 / idle↔attack 动画选择）
+    import './test-ignis-render.js';
     // 飞龙火球（v2.44）：推进 / DDA 阻挡 / 玩家命中
     import './test-fireball.js';
     // 飞龙火球渲染池（v2.44）：容量派生 / visible 门控 / 差集驱动 slot

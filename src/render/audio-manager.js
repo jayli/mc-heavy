@@ -8,10 +8,16 @@ import * as THREE from 'three';
 import { resourceUrl } from '../core/resource-url.js';
 // 清单/常量/纯函数的**唯一权威**在 `audio-config.js`（three-free）：
 // `check:data` 在 Node 里 import 它（node 解析不了 `three` 裸包名，放本文件会让门禁根本不跑）。
-import { SOUND_IDS, BGM_TRACKS, BGM_VOLUME, pickBgmTrack } from './audio-config.js';
+import {
+  SOUND_IDS, BGM_TRACKS, BGM_VOLUME, pickBgmTrack,
+  soundFileName, BOSS_BGM_TRACK, BOSS_BGM_FADE_MS,
+} from './audio-config.js';
 
 // 再导出供既有 import 路径（`test-bgm.js` 等）继续工作 —— 只是一层转发，不是第二份定义。
-export { SOUND_IDS, BGM_TRACKS, BGM_VOLUME, pickBgmTrack };
+export {
+  SOUND_IDS, BGM_TRACKS, BGM_VOLUME, pickBgmTrack,
+  soundFileName, BOSS_BGM_TRACK, BOSS_BGM_FADE_MS,
+};
 
 /**
  * 音频目录（仓库相对路径 → 绝对 URL）。
@@ -59,6 +65,36 @@ export class AudioManager {
      * @type {boolean}
      */
     this._musicWanted = bgmEnabled;
+
+    // ---- v2.64：Boss 战 BGM 交叉淡化（用户 2026-11-07）----
+    /**
+     * Boss 战音乐槽（与普通曲 `_music` 分开的第二个单槽）。
+     * 交叉淡化期间两槽同时在播、音量互补；淡完一侧停。
+     * @type {THREE.Audio|null}
+     */
+    this._bossMusic = null;
+    /** 「有 Boss 在场」的意图位（`setBossMusicActive` 写，帧循环的 `update` 消费） */
+    this._bossWanted = false;
+    /**
+     * 当前混合度：0 = 全普通曲，1 = 全 boss 曲。淡变逐帧推进（`update`）。
+     * 两槽音量 = `BGM_VOLUME × (1 − mix)` / `BGM_VOLUME × mix`（互补交叉）。
+     * @type {number}
+     */
+    this._bossMix = 0;
+    /** 淡变起点时刻（ms）与起点混合度；`null` = 下次 `update` 重新锚定 */
+    this._fadeStartMs = null;
+    this._fadeFromMix = 0;
+    /** 淡变目标（0/1）；与 `_bossWanted` 分开 —— 后者是意图，前者是「已解码才算数」的目标 */
+    this._fadeTarget = 0;
+    /** 正在淡变（`_bossMix !== _fadeTarget`）—— 期间两槽同时在播，见 `_syncMusicSlots` 的 ⚠️ */
+    this._fading = false;
+    /** 上次写入各槽的音量（`null` = 需强制重写；避免稳态下每帧白调 setVolume） */
+    this._normalVol = null;
+    this._bossVol = null;
+    /** boss 曲懒加载去重标志（4.7MB，重复 fetch 是流量事故） */
+    this._bossLoading = false;
+    /** boss 曲加载失败标志（失败不重试，否则断网时每帧重发请求） */
+    this._bossLoadFailed = false;
   }
 
   /**
@@ -72,7 +108,9 @@ export class AudioManager {
       try {
         const buffer = this._loadBuffer
           ? await this._loadBuffer(id)
-          : await this._decodeFromUrl(`${SOUND_DIR}/${id}.mp3`);
+          // v2.64：扩展名走 `soundFileName()`（新增音效与 boss 曲是 .ogg，写死 .mp3 会 404
+          // → 被下面的 catch 吞成一句 warn → **静默无声**）。
+          : await this._decodeFromUrl(`${SOUND_DIR}/${soundFileName(id)}`);
         this._buffers.set(id, buffer);
       } catch (err) {
         console.warn(`[audio] preload ${id} failed:`, err);
@@ -133,6 +171,9 @@ export class AudioManager {
   /**
    * 只读音乐诊断状态。**存在理由与 `playRequests` 相同**：无头环境没有音频输出，
    * 「是否真的出声」不可断言；断言必须落在可观测的状态机上（意图 / 缓冲 / 手势）。
+   *
+   * v2.64 增 `boss` 子对象（Boss 战曲的意图 / 是否在播 / 是否已解码 / 当前混合度）：
+   * 交叉淡化是逐帧推进的，无头环境听不见 —— 只能靠这四个字段断言「真的在淡」。
    */
   debugMusicState() {
     return {
@@ -142,23 +183,164 @@ export class AudioManager {
       unlocked: this._unlocked,
       volume: BGM_VOLUME,
       track: this._bgmTrack,
+      boss: {
+        wanted: this._bossWanted,
+        playing: (this._bossMusic?.isPlaying ?? false) === true,
+        decoded: this._buffers.has(BOSS_BGM_TRACK),
+        mix: this._bossMix,
+      },
     };
   }
 
-  /** 条件对齐：想听 ∧ 已解码 ∧ context running ∧ 未在播 → 起播；否则该停的停。 */
-  _syncMusic() {
-    const ready = this._musicWanted && this._buffers.has(this._bgmTrack)
-      && this.listener.context.state === 'running';
-    if (!ready) {
-      if (this._music?.isPlaying) this._music.stop();
+  /**
+   * 条件对齐（无帧时间戳的入口）：`preload()` / `unlock()` / `setMusicEnabled()` 调它。
+   *
+   * ⚠️ **不推进淡变**（没有 `nowMs` 可算差）—— 只按当前 `_bossMix` 对齐两个槽的起停与音量。
+   * 逐帧推进走 `update(nowMs)`（帧循环调，同 `_syncRainSound` 手法）。
+   */
+  _syncMusic() { this._syncMusicSlots(); }
+
+  // ---- v2.64：Boss 战 BGM 交叉淡化 ----
+
+  /**
+   * 置「有 Boss 在场」意图（`Game._syncBossMusic()` 每帧调，幂等）。
+   *
+   * 激活时**顺带发起 boss 曲的懒加载**（4.7MB，不进首屏 `preload()`）：
+   * 绝大多数会话根本不召唤 Boss，预载它就是白付 4.7MB 流量。
+   *
+   * ⚠️ **去重两道**（`_buffers.has` + `_bossLoading`）：帧循环每帧都调本方法，
+   * 少了任一道就会重复 fetch（测试钉住「只下载一次」）。
+   * ⚠️ **加载失败不重试**（`_bossLoadFailed`）：否则断网/404 时每帧重发请求。
+   * 失败后的行为是「普通曲继续播」—— 战斗音乐静默，但游戏照玩（与 `preload` 同口径）。
+   *
+   * @param {boolean} active
+   */
+  setBossMusicActive(active) {
+    this._bossWanted = active === true;
+    if (this._bossWanted) this._ensureBossBuffer();
+  }
+
+  /** Boss 战意图位（诊断用） */
+  get bossMusicActive() { return this._bossWanted; }
+
+  /** 懒加载 boss 曲（只发一次；条件未齐时由 `update()` 在 buffer 到达后自然接上淡变）。 */
+  _ensureBossBuffer() {
+    if (this._buffers.has(BOSS_BGM_TRACK)) return;
+    if (this._bossLoading || this._bossLoadFailed) return;
+    this._bossLoading = true;
+    const done = (buffer) => {
+      this._bossLoading = false;
+      this._buffers.set(BOSS_BGM_TRACK, buffer);
+      // 解码到达即对齐一次（不等下一帧）：否则「召唤后头一帧」会多播一拍普通曲。
+      this._syncMusicSlots();
+    };
+    const fail = (err) => {
+      this._bossLoading = false;
+      this._bossLoadFailed = true;
+      console.warn(`[audio] boss bgm 加载失败（战斗音乐将静默）:`, err);
+    };
+    if (this._loadBuffer) {
+      // 测试注入路径：与 `preload()` 同一个钩子（否则单测会真去 fetch 4.7MB）。
+      Promise.resolve(this._loadBuffer(BOSS_BGM_TRACK)).then(done, fail);
       return;
     }
-    if (this._music?.isPlaying) return;
-    if (!this._music) this._music = new THREE.Audio(this.listener);
-    this._music.setBuffer(this._buffers.get(this._bgmTrack));
-    this._music.setLoop(true); // 循环播放（mc-lite playBGM 同语义）
-    this._music.setVolume(BGM_VOLUME);
-    this._music.play();
+    this._decodeFromUrl(`${SOUND_DIR}/${soundFileName(BOSS_BGM_TRACK)}`).then(done, fail);
+  }
+
+  /**
+   * 逐帧推进交叉淡化（帧循环调，同 `_syncRainSound`）。
+   *
+   * **锚点式而不是逐帧累加**（与 `explosion-sprite` / `tracer` 同一理由：累加会随帧率漂移）：
+   * 记住淡变起点时刻与起点混合度，每帧用 `(nowMs − start) / FADE_MS` 直接算当前值。
+   * 中途反向（淡入淡到一半又全灭）时**从当前混合度重新锚定** —— 否则会跳变。
+   *
+   * ⚠️ **常态成本**：没召唤过 Boss 时 `target === 0 === _bossMix === _fadeTarget`，
+   * 跳过全部淡变算术，只剩 `_syncMusicSlots()` 里的几个布尔判断与 Map 查询。
+   *
+   * @param {number} nowMs `performance.now()` 基准（**禁止 `Date.now()`**：两者相差约 17 亿
+   *   毫秒，混用会让淡变进度恒为 1 → 硬切而不是渐隐）
+   */
+  update(nowMs) {
+    // 目标混合度：boss 曲**已解码**才算数 —— 未解码时保持 0（普通曲继续播，不留静音缝）。
+    const target = (this._bossWanted && this._buffers.has(BOSS_BGM_TRACK)) ? 1 : 0;
+    if (this._fadeTarget !== target) {
+      this._fadeTarget = target;
+      this._fadeFromMix = this._bossMix;
+      this._fadeStartMs = Number.isFinite(nowMs) ? nowMs : null;
+    }
+    if (this._bossMix !== target && this._fadeStartMs !== null && Number.isFinite(nowMs)) {
+      const span = BOSS_BGM_FADE_MS > 0 ? BOSS_BGM_FADE_MS : 1;
+      const p = Math.min(1, Math.max(0, (nowMs - this._fadeStartMs) / span));
+      this._bossMix = p >= 1 ? target : this._fadeFromMix + (target - this._fadeFromMix) * p;
+    }
+    this._fading = this._bossMix !== this._fadeTarget;
+    this._syncMusicSlots();
+  }
+
+  /**
+   * 两个音乐槽的起停与音量对齐（唯一写 `THREE.Audio` 的地方，同 `_syncLoop` 的地位）。
+   *
+   * 不变式：
+   *   · 玩家关音乐 / context 未 running → **两槽都停**（boss 意图在场也不得偷播）；
+   *   · `mix < 1` **或正在淡变** → 普通曲在播，音量 `BGM_VOLUME × (1 − mix)`；
+   *   · boss 曲已解码 ∧（意图在场 ∨ `mix > 0` ∨ 正在淡变）→ boss 槽在播，音量 `BGM_VOLUME × mix`。
+   *
+   * ⚠️ **「正在淡变」那一项是必需的，不是冗余**（实测踩到）：淡出的**起始帧** `mix` 恰好还是 1
+   * （p=0），若只看 `mix < 1` 则普通曲那一帧仍被判停 → 淡回晚一帧才开始（单帧听不出，
+   * 但「全灭后普通曲必须重新起播」的断言会红）。淡变中两槽**同时**在播、音量互补 ——
+   * 这正是交叉淡化的定义；`mix` 到达端点后 `_fading` 转假，多余的那一槽才真的停。
+   *
+   * ⚠️ **音量只在变化时写**：`setVolume()` 内部是 `setTargetAtTime`（每次调用都重新调度一条
+   * 斜坡），稳态下每帧白调一次是无谓开销 —— 与雨声循环不同（那个音量真的每帧在变）。
+   */
+  _syncMusicSlots() {
+    const allowed = this._musicWanted && this.listener.context.state === 'running';
+    const mix = this._bossMix;
+    const bossReady = this._buffers.has(BOSS_BGM_TRACK);
+    const fading = this._fading === true;
+
+    // ---- 普通曲槽 ----
+    const normalOn = allowed && this._buffers.has(this._bgmTrack) && (mix < 1 || fading);
+    if (!normalOn) {
+      if (this._music?.isPlaying) this._music.stop();
+      this._normalVol = null;   // 下次起播必须重写音量（stop 不保留 gain 的意图值）
+    } else {
+      if (!this._music) this._music = new THREE.Audio(this.listener);
+      if (!this._music.isPlaying) {
+        this._music.setBuffer(this._buffers.get(this._bgmTrack));
+        this._music.setLoop(true); // 循环播放（mc-lite playBGM 同语义）
+        this._normalVol = null;    // 新起播：强制写一次音量
+        this._music.play();
+      }
+      this._writeVolume(this._music, BGM_VOLUME * (1 - mix), '_normalVol');
+    }
+
+    // ---- Boss 战曲槽 ----
+    const bossOn = allowed && bossReady && (this._bossWanted || mix > 0 || fading);
+    if (!bossOn) {
+      if (this._bossMusic?.isPlaying) this._bossMusic.stop();
+      this._bossVol = null;
+    } else {
+      if (!this._bossMusic) this._bossMusic = new THREE.Audio(this.listener);
+      if (!this._bossMusic.isPlaying) {
+        this._bossMusic.setBuffer(this._buffers.get(BOSS_BGM_TRACK));
+        this._bossMusic.setLoop(true);   // 战斗时长不定，必须循环
+        this._bossVol = null;
+        this._bossMusic.play();
+      }
+      this._writeVolume(this._bossMusic, BGM_VOLUME * mix, '_bossVol');
+    }
+  }
+
+  /**
+   * 只在目标音量与上次写入值有可闻差异时才调 `setVolume`（见 `_syncMusicSlots` 的 ⚠️）。
+   * @param {THREE.Audio} audio @param {number} volume @param {string} key 记录上次值的字段名
+   */
+  _writeVolume(audio, volume, key) {
+    const v = Math.max(0, Math.min(1, volume));
+    if (this[key] !== null && Math.abs(this[key] - v) < 1e-4) return;
+    this[key] = v;
+    audio.setVolume(v);
   }
 
   /**
@@ -302,6 +484,9 @@ export class AudioManager {
     this._loops.clear();
     if (this._music?.isPlaying) this._music.stop();
     this._music = null;
+    // v2.64：boss 战曲槽也要收（否则 dispose 后战斗曲继续响）
+    if (this._bossMusic?.isPlaying) this._bossMusic.stop();
+    this._bossMusic = null;
     this.camera.remove(this.listener);
     this.listener.context.close?.();
     this._buffers.clear();

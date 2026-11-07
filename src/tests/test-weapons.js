@@ -256,12 +256,13 @@ test('WeaponController: MAG7 单发且无视开关，手枪按住依冷却重复
   assertEqual(editor.singleCalls, 2);
 });
 
-test('WeaponController: R 键循环四次回到徒手', () => {
+test('WeaponController: R 键循环五次回到徒手（v2.65 追加剑）', () => {
   const { controller } = makeControllerFixture();
   assertEqual(controller.debugState().selectedId, 'arm');
   controller.cycle(); assertEqual(controller.debugState().selectedId, 'pistol');
   controller.cycle(); assertEqual(controller.debugState().selectedId, 'mag7');
   controller.cycle(); assertEqual(controller.debugState().selectedId, 'minigun');
+  controller.cycle(); assertEqual(controller.debugState().selectedId, 'sword');
   controller.cycle(); assertEqual(controller.debugState().selectedId, 'arm');
 });
 
@@ -398,6 +399,8 @@ function makeEntityControllerFixture({ entityDist = null, blockDist = 4, entityI
   const raycastCalls = [];
   /** @type {Array<{id:string, amount:number, nowMs:number}>} */
   const damageCalls = [];
+  /** @type {Array<{id:string, dist:number}>} v2.65：近战击退调用记录 */
+  const knockbackCalls = [];
   const entityQuery = {
     raycast(origin, dir, maxDist, predicate) {
       raycastCalls.push({ origin, dir, maxDist, predicate });
@@ -411,6 +414,10 @@ function makeEntityControllerFixture({ entityDist = null, blockDist = 4, entityI
     damage(id, amount, nowMs) {
       damageCalls.push({ id, amount, nowMs });
       return { dead: amount >= 100, health: Math.max(0, 100 - amount) };
+    },
+    knockback(id, dist) {
+      knockbackCalls.push({ id, dist });
+      return true;
     },
   };
   const effects = [];
@@ -428,7 +435,9 @@ function makeEntityControllerFixture({ entityDist = null, blockDist = 4, entityI
   });
   controller.setEntityQuery(entityQuery);
   controller.select('pistol');
-  return { registry, ids, controller, aim, effects, editor, raycastCalls, damageCalls };
+  return {
+    registry, ids, controller, aim, effects, editor, raycastCalls, damageCalls, knockbackCalls,
+  };
 }
 
 test('WeaponController: 近实体优先 —— 实体比方块近时扣血并发 entity-hit', () => {
@@ -767,7 +776,145 @@ test('武器命中: 实体比方块远时不打实体（既有口径不因泛化
   assertEqual(damaged.length, 0, '实体更远时不得造成伤害');
 });
 
-test('武器命中: WEAPON_HITTABLE_TYPES 恰好是 zombie + dragon（加类型须显式改这里）', () => {
-  assertDeepEqual([...WEAPON_HITTABLE_TYPES].sort(), ['dragon', 'zombie']);
+test('武器命中: WEAPON_HITTABLE_TYPES 恰好是 zombie + dragon + ignis（加类型须显式改这里）', () => {
+  // v2.55 加 ignis（焰魔）：它**应该**可被武器与炮塔击中（用户可建炮塔助战）。
+  // ⚠️ 本用例是「新增可击中类型必须是有意识的改动」的闸门 —— 不要图方便改成
+  // `includes(...)`，那会让「静默把一个类型加进去」失去拦截。
+  assertDeepEqual([...WEAPON_HITTABLE_TYPES].sort(), ['dragon', 'ignis', 'zombie']);
   assertTrue(Object.isFrozen(WEAPON_HITTABLE_TYPES), '必须冻结（玩法数据唯一权威）');
+});
+
+// ---------- v2.65：近战剑 ----------
+
+test('weapon catalog: 剑的近战冻结数值（伤害/射程/冷却/音效/击退）', () => {
+  const sword = WEAPONS[WEAPON_IDS.SWORD];
+  assertTrue(sword.melee === true, '剑必须标记 melee（controller 据此走 _fireMelee）');
+  assertEqual(sword.entityDamage, 50);
+  assertEqual(sword.entityRange, 3);
+  assertEqual(sword.cooldown, 0.5);
+  assertEqual(sword.sound, 'player_swing', '挥砍音');
+  assertEqual(sword.hitSound, 'emp_activated', '砍中音');
+  // 用户 2026-11-06 手改 0.4 → 0.9（更大的推离感）
+  assertEqual(sword.knockbackDistance, 0.9);
+  assertEqual(sword.swingSeconds, 0.3);
+  // 剑刻意没有枪的专属字段（曳光/枪口/连射）
+  assertFalse(sword.automatic === true, '剑是单发（用户：点击左键挥一刀）');
+  assertEqual(sword.tracer, undefined, '剑不发曳光');
+  assertEqual(sword.localStart, undefined, '剑无枪口起点');
+  // 生命 100 口径：丧尸两刀致死
+  assertEqual(Math.ceil(100 / sword.entityDamage), 2);
+  assertTrue(Object.isFrozen(sword));
+});
+
+test('weapon catalog: 剑的第一人称摆放冻结值（v2.70 实测定标口径）', () => {
+  const sword = WEAPONS[WEAPON_IDS.SWORD];
+  const { position, rotation, scale, rotationOrder } = sword.transform;
+  // ⚠️ catalog 的 rotation 单位是**弧度**（与 MAG7 的 -Math.PI/2 同口径）。
+  // v2.65 曾把度数直填进来 → 被当成 -3437°，剑体朝向完全无从预期。
+  assertTrue(Math.abs(rotation[0]) <= Math.PI && Math.abs(rotation[1]) <= Math.PI
+    && Math.abs(rotation[2]) <= Math.PI, 'rotation 必须是弧度（绝对值 ≤ π），填度数会让剑体乱转');
+  // 冻结值（v2.69 反解结果：柄屏 (1050,780) 藏屏下 / 尖 (1216,262) 朝右上，对齐参考图）
+  assertEqual(rotationOrder, 'XYZ');
+  const deg = rotation.map((r) => +((r * 180) / Math.PI).toFixed(2));
+  assertEqual(deg.join(','), '168.64,10.65,-172.68');
+  assertEqual(position.map((v) => +v.toFixed(3)).join(','), '0.993,-0.206,-1.203');
+  assertEqual(+scale[0].toFixed(3), 1.253);
+  // 位置必须在相机前方（相机朝 -Z），否则模型跑到镜头背后
+  assertTrue(position[2] < -0.3, '剑必须在相机前方');
+  // 挥砍支点 = 剑柄末端（**节点局部**坐标，不乘 scale：挥砍矩阵作用在节点局部点上，
+  // baseM 已含 scale，再乘一次等于把支点推远一倍 —— v2.69 实测握点漂移 166px 的根因）。
+  const pivot = sword.swingPivot;
+  assertTrue(Array.isArray(pivot) && pivot.length === 3, '近战武器必须给 swingPivot（挥砍支点）');
+  // 柄末端节点局部坐标实测 (0, -0.9375, 0.0996)，与 scale 无关
+  assertTrue(pivot[1] < -0.7 && pivot[1] > -1.1, '支点必须在剑柄侧（节点局部柄端 −0.9375）');
+  assertTrue(Math.abs(pivot[1] - (-0.9375)) < 0.02, '支点必须等于柄末端节点局部坐标（不乘 scale）');
+  // 挥砍参数（两段式扇形；用户澄清：「剑体不绕着剑柄的方向的轴旋转」——禁自转，不是禁挥砍）
+  assertTrue(sword.swing.strikeEnd > 0 && sword.swing.strikeEnd < 1, '挥砍段占比必须在 (0,1)');
+  assertTrue(sword.swing.arc < -0.3, 'arc 必须为负（绕相机 X 负向 = 剑尖向前下方砍出，正向会把剑尖翻向镜头）');
+  // 向左挥扫（用户 2026-11-06：「剑头有一个向左挥的效果，而不是纯纯向前劈」）：
+  // 绕相机 Y（垂直轴）偏航，正 = 剑尖向左扫；与 arc 共用同一条 amount 曲线。
+  // 刻意**不是**平移（旧 swing.shift）：平移时剑身姿态不变，看起来只是整把剑横着挪。
+  assertTrue(typeof sword.swing.yaw === 'number', 'swing.yaw 必须存在（向左挥扫幅度）');
+  assertTrue(sword.swing.yaw > 0, 'swing.yaw 必须为正（相机 Y 正向 = 剑尖向左扫）');
+  // 左移量（用户 2026-11-06 第二轮：「shift 这个就是左移的参数，加回来是不是就可以做到剑柄挥砍的时候稍微左移一下」）：
+  // 与 yaw **互补而非互斥** —— yaw 让剑尖划弧扫过去（旋转），shift 把整个挥扫区域递向左（平移，剑柄一起左移）。
+  // 必须为负（相机空间 x 负 = 屏幕左），且与 arc/yaw 共用同一条 amount 曲线。
+  assertTrue(typeof sword.swing.shift === 'number', 'swing.shift 必须存在（挥砍时的左移量）');
+  assertTrue(sword.swing.shift < 0, 'swing.shift 必须为负（屏幕左移，靠近准心）');
+  // 上界：shift 过大会把剑柄推过相机中轴（实测 -1.5 时剑柄相机 x = -0.578，整把剑横穿屏幕）
+  assertTrue(sword.swing.shift >= -1, `swing.shift 不得 < -1（当前 ${sword.swing.shift}，会把剑柄推过屏幕中轴）`);
+  // 旧的四段式 / 绕剑轴自转 / 纯平移字段必须已删除
+  for (const dead of ['windupEnd', 'windupRoll', 'roll', 'wrist', 'returnSweep',
+    'chop', 'sweep', 'reach', 'rise', 'offset']) {
+    assertEqual(sword.swing[dead], undefined, `挥砍不得再有 ${dead}（已改为屏幕平面扇形）`);
+  }
+});
+
+test('WeaponController: 剑挥砍命中实体 —— 扣血 + 击退 + melee-hit 事件', () => {
+  const { controller, aim, damageCalls, knockbackCalls, editor } =
+    makeEntityControllerFixture({ entityDist: 2, blockDist: 4 });
+  controller.select('sword');
+  controller.setBlockDamage(true); // 开关开启也**不得**写方块（剑不破坏方块）
+  const fired = controller.fireOnce(aim);
+  assertEqual(damageCalls.length, 1, '命中必须扣血');
+  assertEqual(damageCalls[0].id, 'z0');
+  assertEqual(damageCalls[0].amount, WEAPONS[WEAPON_IDS.SWORD].entityDamage);
+  assertTrue(Number.isFinite(damageCalls[0].nowMs), 'nowMs 必须是 performance.now() 口径的有限数');
+  assertEqual(knockbackCalls.length, 1, '命中必须击退');
+  assertEqual(knockbackCalls[0].id, 'z0');
+  assertEqual(knockbackCalls[0].dist, WEAPONS[WEAPON_IDS.SWORD].knockbackDistance);
+  // 效果事件口径：melee-hit + 砍中音，无曳光
+  assertEqual(fired.length, 1);
+  assertEqual(fired[0].type, 'melee-hit');
+  assertEqual(fired[0].weaponId, 'sword');
+  assertEqual(fired[0].sound, 'player_swing');
+  assertEqual(fired[0].hitSound, 'emp_activated');
+  assertEqual(fired[0].entityId, 'z0');
+  assertEqual(fired[0].tracer, undefined, '剑不发曳光');
+  assertEqual(editor.singleCalls, 0, '剑绝不写方块（即使开关开启）');
+  assertEqual(editor.batchCalls, 0, '剑绝不批量写方块');
+});
+
+test('WeaponController: 剑挥空 —— 不扣血不击退，发 melee 事件（仍响挥砍音）', () => {
+  const { controller, aim, damageCalls, knockbackCalls, editor } =
+    makeEntityControllerFixture({ entityDist: null, blockDist: 4 });
+  controller.select('sword');
+  controller.setBlockDamage(true);
+  const fired = controller.fireOnce(aim);
+  assertEqual(damageCalls.length, 0, '挥空不得扣血');
+  assertEqual(knockbackCalls.length, 0, '挥空不得击退');
+  assertEqual(editor.singleCalls, 0, '挥空也不得写方块');
+  assertEqual(fired.length, 1);
+  assertEqual(fired[0].type, 'melee');
+  assertEqual(fired[0].sound, 'player_swing', '挥空也响挥砍音');
+  assertEqual(fired[0].hitSound, undefined, '挥空不响砍中音');
+});
+
+test('WeaponController: 剑超射程（>3 格）不命中，且被方块遮挡时也不命中', () => {
+  // ① 实体 5 格 > entityRange 3 → raycast 的 maxDist 裁剪掉
+  const far = makeEntityControllerFixture({ entityDist: 5, blockDist: Infinity });
+  far.controller.select('sword');
+  const firedFar = far.controller.fireOnce(far.aim);
+  assertEqual(far.damageCalls.length, 0, '超射程不得扣血');
+  assertEqual(firedFar[0].type, 'melee', '超射程 = 挥空');
+  // ② 实体 2 格但方块 1 格挡在前面 → 方块优先（隔墙砍不中）
+  const blocked = makeEntityControllerFixture({ entityDist: 2, blockDist: 1 });
+  blocked.controller.select('sword');
+  blocked.controller.fireOnce(blocked.aim);
+  assertEqual(blocked.damageCalls.length, 0, '被方块遮挡时不得扣血');
+});
+
+test('WeaponController: 剑单发 —— 按住不连砍，冷却期内不重复', () => {
+  const { controller, aim, damageCalls } =
+    makeEntityControllerFixture({ entityDist: 2, blockDist: 4 });
+  controller.select('sword');
+  controller.pointerDown(aim);
+  assertEqual(damageCalls.length, 1, '按下边沿砍一刀');
+  // 按住 + 推进不足冷却（0.5s）→ 不重复
+  controller.update(0.3, aim);
+  assertEqual(damageCalls.length, 1, '冷却期内按住不得连砍');
+  // 冷却结束后仍**不**自动重复（automatic 缺省 false，单发语义）
+  controller.update(0.3, aim);
+  assertEqual(damageCalls.length, 1, '剑是单发：冷却结束也不自动重复');
+  controller.pointerUp();
 });

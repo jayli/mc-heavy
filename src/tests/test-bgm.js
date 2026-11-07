@@ -20,6 +20,15 @@ import { test } from './runner.js';
 import { assertEqual, assertTrue, assertFalse } from './assert.js';
 import * as THREE from 'three';
 import { AudioManager, BGM_TRACKS, pickBgmTrack } from '../render/audio-manager.js';
+import {
+  SOUND_IDS, SOUND_EXT_OVERRIDES, SOUND_VOLUMES, BOSS_BGM_TRACK, BOSS_BGM_FADE_MS,
+  soundFileName, IGNIS_ATTACK_SOUNDS, ignisAttackSound,
+} from '../render/audio-config.js';
+// v2.65：近战剑的两个音效是**武器音**，音量权威在 catalog 而不在 `SOUND_VOLUMES`
+// （与枪声同一手法）—— 本文件的契约用例要同时读两侧才能钉住「只有一份」。
+import { WEAPONS, WEAPON_IDS } from '../player/weapons/weapon-catalog.js';
+// v2.79：招式 → 起手音的唯一权威映射与招式取值域（两边都要读才能钉住「键集合一致」）。
+import { IGNIS_ATTACK_IDS } from '../entities/ignis/ignis-config.js';
 
 /**
  * 造一个只在测试里用的管理器：真 listener、假解码（返回 1 秒静音 buffer）。
@@ -59,6 +68,11 @@ function teardown(mgr) {
   for (const id of [...mgr._loops.keys()]) mgr.stopLoop(id);
   mgr.setMusicEnabled(false);
   mgr._music = null;
+  // v2.64：boss 槽也要收（否则下个用例的前置断言会读到一条在播的战斗曲）。
+  // 直接停实例而不走 `setBossMusicActive(false)` —— 后者只是置意图，真正的停播
+  // 要等 `update()` 把淡变跑完，而 teardown 没有帧循环可驱动。
+  if (mgr._bossMusic?.isPlaying) mgr._bossMusic.stop();
+  mgr._bossMusic = null;
   mgr.camera.remove(mgr.listener);
   mgr._buffers.clear();
   mgr._counts.clear();
@@ -288,4 +302,248 @@ test('bgm: stopLoop 幂等，且不计入效果音播放请求', async () => {
     assertFalse(mgr.debugLoops().rain?.playing ?? false, '停后不再在播');
     assertFalse(mgr.playRequests.has('rain'), '循环音效不写 playRequests（那是「事件发生几次」的口径）');
   });
+});
+
+// ==================== v2.64：音效扩展名契约（ogg/mp3 混存） ====================
+
+/**
+ * ⚠️ 这组用例钉的是「静默无声」的另一半：`preload()` 历史上写死 `.mp3`，而 v2.64 的
+ * 7 个新音效与 boss 曲是 `.ogg`。扩展名表若失效（全回落 mp3），fetch 404 被 catch 吞掉，
+ * 页面照常能玩、只是永远没声音 —— 与 BGM 起播同类盲区。
+ */
+test('audio-config: soundFileName 默认 mp3，覆盖表里的 id 走 ogg', () => {
+  assertEqual(soundFileName('z_die'), 'z_die.mp3', '既有音效保持 mp3');
+  assertEqual(soundFileName('gun_fire'), 'gun_fire.mp3');
+  assertEqual(soundFileName('bgm'), 'bgm.mp3', '普通 BGM 是 mp3');
+  assertEqual(soundFileName('ignis_die'), 'ignis_die.ogg', '新音效走 ogg');
+  assertEqual(soundFileName('dragon_fire'), 'dragon_fire.ogg');
+  assertEqual(soundFileName(BOSS_BGM_TRACK), 'bgm_boss.ogg', 'boss 曲是 ogg');
+  // 负向锚点：把覆盖表删空（全回落 mp3）会让上面三条 ogg 断言 FAIL。
+  assertTrue(SOUND_EXT_OVERRIDES[BOSS_BGM_TRACK] === 'ogg', 'boss 曲必须在覆盖表里');
+});
+
+test('audio-config: v2.64 的 7 个新音效全部在 SOUND_IDS 里且各有音量', () => {
+  const v264 = ['ignis_die', 'ignis_attack_swing', 'ignis_burn', 'ignis_hurt',
+    'ignis_jump', 'dragon_shout', 'dragon_fire'];
+  for (const id of v264) {
+    assertTrue(SOUND_IDS.includes(id), `${id} 必须在清单里（否则 preload 不加载 → 静默）`);
+    assertTrue(typeof SOUND_VOLUMES[id] === 'number' && SOUND_VOLUMES[id] > 0,
+      `${id} 必须有正音量（0/缺失 = 听不见）`);
+  }
+  assertEqual(SOUND_VOLUMES.z_die, 0.3, 'z_die 音量沿用 mc-lite 原值（不得顺手改）');
+});
+
+test('audio-config: v2.65 近战剑的两个音效在清单里、走 ogg、但音量不在 SOUND_VOLUMES', () => {
+  // ① 必须在 `SOUND_IDS` 里：否则 `preload()` 不加载 → fetch 不发起 → **静默无声**
+  //（而页面照常能玩，只有 `console.warn` 一句）。
+  for (const id of ['player_swing', 'emp_activated']) {
+    assertTrue(SOUND_IDS.includes(id), `${id} 必须在清单里（否则 preload 不加载 → 静默）`);
+    // ② 扩展名必须是 ogg：回落 mp3 的形态同样是静默无声（404 被 catch 吞）
+    assertEqual(SOUND_EXT_OVERRIDES[id], 'ogg', `${id} 必须在扩展名覆盖表里`);
+    assertEqual(soundFileName(id), `${id}.ogg`);
+    // ③ **音量刻意不在 SOUND_VOLUMES**：武器音的音量权威在 `weapon-catalog.js`
+    //（`volume` / `hitVolume`，与枪声同一手法）。这里再写一份就是红线 1 的第二份权威，
+    // 而本表那两个值**无人读**（静默失效）—— 故钉住「不在」而不是「在」。
+    assertEqual(SOUND_VOLUMES[id], undefined,
+      `${id} 的音量不得写进 SOUND_VOLUMES（权威在 weapon-catalog，写两份会漂移）`);
+  }
+  // ④ 音量权威确实在 catalog 上（与 ③ 成对：只钉「不在这里」会漏掉「两边都没有」）
+  const sword = WEAPONS[WEAPON_IDS.SWORD];
+  assertTrue(sword.volume > 0, '挥砍音音量必须在 catalog 上且为正');
+  assertTrue(sword.hitVolume > 0, '砍中音音量必须在 catalog 上且为正');
+  assertEqual(sword.sound, 'player_swing', 'catalog 的 sound 必须指向挥砍音');
+  assertEqual(sword.hitSound, 'emp_activated', 'catalog 的 hitSound 必须指向砍中音');
+});
+
+test('audio-config: boss 曲不进随机池，淡变时长为正', () => {
+  assertFalse(BGM_TRACKS.includes(BOSS_BGM_TRACK),
+    'bgm_boss 混进随机池会让开局就抽中战斗曲');
+  assertTrue(BOSS_BGM_FADE_MS > 0, '淡变时长必须为正（0 = 硬切，用户要的是渐隐过渡）');
+});
+
+// ==================== v2.79：焰魔旋斩音（招式 → 起手音的唯一权威） ====================
+
+/**
+ * 这组用例钉的是「哪个招式播哪个音」的**唯一权威**：v2.75 起焰魔有两招，起手音的选择若
+ * 写在装配层（`if (kind === 'spin') …`），加第三招时漏改一处的形态是**该招静默沿用普攻音**
+ * —— 而所有数据层指标全绿、只是声音不对。
+ */
+test('audio-config: v2.79 旋斩音在清单/覆盖表/音量表三处齐全', () => {
+  const id = 'ignis_attack_circle';
+  // ① 不在 `SOUND_IDS` → `preload()` 不加载 → fetch 不发起 → **静默无声**
+  assertTrue(SOUND_IDS.includes(id), `${id} 必须在清单里（否则 preload 不加载 → 静默）`);
+  // ② 扩展名回落 mp3 的形态同样是静默无声（404 被 preload 的 catch 吞成一句 warn）
+  assertEqual(SOUND_EXT_OVERRIDES[id], 'ogg', `${id} 必须在扩展名覆盖表里`);
+  assertEqual(soundFileName(id), 'ignis_attack_circle.ogg');
+  // ③ 音量 0/缺失 = 听不见
+  assertTrue(typeof SOUND_VOLUMES[id] === 'number' && SOUND_VOLUMES[id] > 0,
+    `${id} 必须有正音量（0/缺失 = 听不见）`);
+});
+
+test('audio-config: IGNIS_ATTACK_SOUNDS 覆盖全部招式且每个 id 都能播放', () => {
+  // ① 键集合必须与 `IGNIS_ATTACK_IDS`（抽签取值域）**完全一致**：少一个键的形态是那招
+  // 静默回落普攻音；多一个键是残留的旧招式名。
+  const kinds = [...IGNIS_ATTACK_IDS].sort();
+  const keys = Object.keys(IGNIS_ATTACK_SOUNDS).sort();
+  assertTrue(keys.length === kinds.length && keys.every((k, i) => k === kinds[i]),
+    `IGNIS_ATTACK_SOUNDS 的键必须与 IGNIS_ATTACK_IDS 一致（实际 ${keys} vs ${kinds}）`);
+  // ② 每个音效 id 都要真能出声（清单 + ogg + 正音量）：只钉「表里有映射」会漏掉
+  // 「映射到一个 preload 不加载的 id」这种静默失效。
+  for (const kind of kinds) {
+    const id = IGNIS_ATTACK_SOUNDS[kind];
+    assertTrue(SOUND_IDS.includes(id), `${kind} 的起手音 ${id} 必须在 SOUND_IDS 里`);
+    assertEqual(SOUND_EXT_OVERRIDES[id], 'ogg', `${kind} 的起手音 ${id} 必须是 ogg`);
+    assertTrue(typeof SOUND_VOLUMES[id] === 'number' && SOUND_VOLUMES[id] > 0,
+      `${kind} 的起手音 ${id} 必须有正音量`);
+  }
+  // ③ 两招不得共用同一个音（共用 = 加了招式却没加音，而断言全绿）
+  assertTrue(IGNIS_ATTACK_SOUNDS.swing !== IGNIS_ATTACK_SOUNDS.spin,
+    '普攻与旋斩必须是两个不同的音效（共用同一个音 = 新增招式没接音）');
+  // ④ 旋斩音就是用户指定的那个文件
+  assertEqual(IGNIS_ATTACK_SOUNDS.spin, 'ignis_attack_circle',
+    '旋斩必须播 ignis_attack_circle.ogg（用户 2026-11-07 指定）');
+});
+
+test('audio-config: ignisAttackSound 缺省/非法 attackKind 回落 swing（不返回 undefined）', () => {
+  // 缺省回落必须与渲染器选片段的口径一致（`ignis-renderer.js`：缺 attackKind 用 attack 片段）。
+  // 返回 `undefined` 的形态是 `play(undefined)` → 计数记到 undefined 键 → 静默无声。
+  for (const bad of [null, undefined, '', 'nope', 0, {}]) {
+    assertEqual(ignisAttackSound(bad), IGNIS_ATTACK_SOUNDS.swing,
+      `非法 attackKind ${String(bad)} 必须回落 swing，而不是 undefined`);
+  }
+  assertEqual(ignisAttackSound('spin'), 'ignis_attack_circle');
+  assertEqual(ignisAttackSound('swing'), 'ignis_attack_swing');
+});
+
+// ==================== v2.64：Boss 战 BGM 交叉淡化状态机 ====================
+
+/**
+ * 造一个「普通曲 + boss 曲都已解码」的管理器（测试交叉淡化主路径用）。
+ * 真实路径里 boss 曲是懒加载的 —— 那一条单独有用例覆盖（见下）。
+ */
+async function withBossReadyManager(body) {
+  await withManager({ bgmEnabled: true, bgmTrack: 'bgm' }, async (mgr) => {
+    await mgr.preload(['bgm']);
+    // 直接注入 boss 曲 buffer（绕过懒加载，聚焦淡变状态机本身）
+    mgr._buffers.set(BOSS_BGM_TRACK, mgr.listener.context.createBuffer(1, 8000, 8000));
+    await mgr.unlock();
+    await body(mgr);
+  });
+}
+
+test('boss bgm: 激活 → 交叉淡化（普通曲渐隐、boss 曲渐入），淡完普通曲停', async () => {
+  await withBossReadyManager(async (mgr) => {
+    assertTrue(mgr.musicPlaying, '前置：普通曲在播');
+    const t0 = mgr.listener.context.currentTime * 1000;
+
+    mgr.setBossMusicActive(true);
+    mgr.update(t0);
+    const st = mgr.debugMusicState();
+    assertTrue(st.boss.wanted, 'boss 意图已置位');
+    assertTrue(st.boss.playing, 'boss 曲必须起播（从 0 音量渐入）');
+    assertTrue(mgr.musicPlaying, '淡变期间普通曲仍在播（不能硬切静音）');
+
+    // 中点：两槽都还活着
+    mgr.update(t0 + BOSS_BGM_FADE_MS / 2);
+    assertTrue(mgr.musicPlaying, '中点：普通曲未停');
+    assertTrue(mgr.debugMusicState().boss.playing, '中点：boss 曲在播');
+
+    // 淡变完成：普通曲停、boss 曲循环播
+    mgr.update(t0 + BOSS_BGM_FADE_MS + 1);
+    const after = mgr.debugMusicState();
+    assertFalse(after.playing, '淡完普通曲必须停（不是两首叠播）');
+    assertTrue(after.boss.playing, 'boss 曲继续循环');
+    assertTrue(mgr._bossMusic.loop, 'boss 曲必须循环（战斗时长不定）');
+  });
+});
+
+test('boss bgm: 全灭 → 淡回开局那首（从头播），boss 曲停', async () => {
+  await withBossReadyManager(async (mgr) => {
+    const t0 = mgr.listener.context.currentTime * 1000;
+    mgr.setBossMusicActive(true);
+    mgr.update(t0);
+    mgr.update(t0 + BOSS_BGM_FADE_MS + 1);
+    assertFalse(mgr.musicPlaying, '前置：普通曲已停');
+    assertTrue(mgr.debugMusicState().boss.playing, '前置：boss 曲在播');
+
+    mgr.setBossMusicActive(false);
+    mgr.update(t0 + BOSS_BGM_FADE_MS + 2);
+    assertTrue(mgr.musicPlaying, '淡回启动：普通曲必须重新起播');
+    assertTrue(mgr.debugMusicState().boss.playing, '淡出期间 boss 曲仍在播');
+
+    mgr.update(t0 + BOSS_BGM_FADE_MS * 2 + 3);
+    const st = mgr.debugMusicState();
+    assertTrue(st.playing, '淡回完成：普通曲在播');
+    assertFalse(st.boss.playing, '淡回完成：boss 曲停');
+    assertEqual(st.track, 'bgm', '恢复的是开局抽中的那首（用户裁定，不重新抽签）');
+  });
+});
+
+test('boss bgm: boss 曲未解码 → 普通曲继续播，解码到达后才开始淡变', async () => {
+  await withManager({ bgmEnabled: true, bgmTrack: 'bgm' }, async (mgr) => {
+    await mgr.preload(['bgm']);
+    await mgr.unlock();
+    assertTrue(mgr.musicPlaying, '前置：普通曲在播');
+    const t0 = mgr.listener.context.currentTime * 1000;
+
+    mgr.setBossMusicActive(true);
+    mgr.update(t0);
+    assertTrue(mgr.musicPlaying, '解码未到 → 普通曲不得停（不留静音缝）');
+    assertFalse(mgr.debugMusicState().boss.playing, '没 buffer 不得谎报 boss 在播');
+
+    // 懒加载完成（真实路径：fetch+decode 的 promise 落定后写入 buffer）
+    mgr._buffers.set(BOSS_BGM_TRACK, mgr.listener.context.createBuffer(1, 8000, 8000));
+    mgr.update(t0 + 100);
+    assertTrue(mgr.debugMusicState().boss.playing, '解码到达 → 补起播并开始淡变');
+    mgr.update(t0 + 100 + BOSS_BGM_FADE_MS + 1);
+    assertFalse(mgr.musicPlaying, '淡完普通曲停');
+    assertTrue(mgr.debugMusicState().boss.playing);
+  });
+});
+
+test('boss bgm: 玩家关掉音乐 → boss 意图在场也不播；重开恢复到 boss 曲', async () => {
+  await withBossReadyManager(async (mgr) => {
+    const t0 = mgr.listener.context.currentTime * 1000;
+    mgr.setBossMusicActive(true);
+    mgr.update(t0);
+    mgr.update(t0 + BOSS_BGM_FADE_MS + 1);
+    assertTrue(mgr.debugMusicState().boss.playing, '前置：boss 曲在播');
+
+    mgr.setMusicEnabled(false);
+    assertFalse(mgr.debugMusicState().boss.playing, '关音乐必须连 boss 曲一起停');
+    assertFalse(mgr.musicPlaying);
+
+    mgr.setMusicEnabled(true);
+    mgr.update(t0 + BOSS_BGM_FADE_MS + 2);
+    const st = mgr.debugMusicState();
+    assertTrue(st.boss.playing, '重开时 boss 仍在场 → 恢复战斗曲（不是普通曲）');
+    assertFalse(st.playing, '普通曲不得同时播');
+  });
+});
+
+test('boss bgm: 懒加载只在首次激活时发起一次（重复激活不重复下载）', async () => {
+  const requested = [];
+  const camera = new THREE.PerspectiveCamera();
+  const ctxRef = { ctx: null };
+  const mgr = new AudioManager(camera, {
+    bgmTrack: 'bgm',
+    loadBuffer: async (id) => {
+      requested.push(id);
+      return ctxRef.ctx.createBuffer(1, 8000, 8000);
+    },
+  });
+  ctxRef.ctx = mgr.listener.context;
+  try {
+    await mgr.preload(['bgm']);
+    await mgr.unlock();
+    mgr.setBossMusicActive(true);
+    mgr.setBossMusicActive(true);   // 重复激活（帧循环里每帧都会调 sync）
+    mgr.setBossMusicActive(false);
+    mgr.setBossMusicActive(true);
+    await new Promise((r) => setTimeout(r, 50)); // 等懒加载 promise 落定
+    const bossLoads = requested.filter((id) => id === BOSS_BGM_TRACK).length;
+    assertEqual(bossLoads, 1, 'boss 曲只下载一次（4.7MB，重复 fetch 是流量事故）');
+  } finally {
+    teardown(mgr);
+  }
 });

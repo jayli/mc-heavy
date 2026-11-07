@@ -14,7 +14,7 @@
 import {
   ZOMBIE, ZOMBIE_FLASH_MS, ZOMBIE_MAX_STEP, ZOMBIE_MOVING_EPSILON, ZOMBIE_SEPARATION,
 } from './zombie-config.js';
-import { zombieCollidesAt, zombieStepUpY, steerIntent } from './zombie-navigation.js';
+import { zombieCollidesAt, zombieStepUpY, steerIntent, displaceGroundEntity } from './zombie-navigation.js';
 import { PathCache } from './zombie-pathfinder.js';
 import { decideStep, memoryFor } from './zombie-navigator.js';
 import { normalizePosition, raycastAabbSlab } from '../entity-types.js';
@@ -452,6 +452,34 @@ export class ZombieService {
       return { dead: true, health };
     }
     return { dead: false, health };
+  }
+
+  /**
+   * 击退（v2.65 近战剑）：沿给定水平位移把丧尸推开一小步。
+   *
+   * ⚠️ **必须是位置位移，不能写 velocity**：丧尸的水平 `velocity` 是 AI 意图，
+   * RPC 每 `ZOMBIE.aiPeriod`(0.05s) 覆写一次 —— 写进 velocity 的击退会在下一拍被冲掉
+   * （形态：数据层看着有值，画面上丧尸纹丝不动）。理由与碰撞回退见
+   * `displaceGroundEntity`（`zombie-navigation.js`，与物理共用同一份 `aabbCollidesAt`）。
+   *
+   * ⚠️ **必须显式 `reindexColumn`**：本方法在 `EntityManager.update` 之外改 `state.position`，
+   * 不调它实体就停在旧 column 索引上不自愈（AGENTS.md 已记）。
+   *
+   * @param {string} id @param {number} dx @param {number} dz 水平位移（格，已含距离与方向）
+   * @returns {boolean} false = 未知 id / 完全走不动（被墙卡死）
+   */
+  knockback(id, dx, dz) {
+    const entity = this.entities.get(id);
+    if (!entity || entity.type !== 'zombie') return false;
+    const state = entity.state;
+    const next = displaceGroundEntity(
+      this.world, state.position, dx, dz, ZOMBIE.width / 2, ZOMBIE.height,
+    );
+    if (next[0] === state.position[0] && next[2] === state.position[2]) return false;
+    // 经 createState 重建（不原地改）：原地改会让跨 column 迁移判据的 before/after 同源
+    entity.state = createState({ ...state, position: next });
+    this.entities.reindexColumn(id);
+    return true;
   }
 
   /**

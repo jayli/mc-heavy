@@ -30,6 +30,37 @@ const EPSILON = 0.001;
 export const WATER_DRAG = 0.6;
 
 /**
+ * 玩家被焰魔身体盒「罩住」时的推出速度上限（格/秒，v2.78）。
+ *
+ * ## 为什么需要（用户缺陷）
+ *
+ * 「玩家跑进焰魔，跑的太近就会和焰魔靠在一起，然后玩家就不能动弹了，跳也不行，前后左右都无法动弹」。
+ * 根因：`_collides()` 把焰魔身体盒当实心，而这个盒子是**身体 OBB 绕 yaw 旋转后的轴对齐包围盒**，
+ * 随焰魔朝向变形（yaw=0° 时重叠区单边 1.13，45° 时 1.54）。焰魔醒来 / 追击 / 起手都会转向玩家，
+ * 盒子扫过站得近的玩家 ⇒ 玩家落进盒内（实测斜角站位陷入 0.3~0.4 格，而单步位移只有
+ * `SPEED / 60 = 0.133`）⇒ 每个候选位置都仍与盒重叠 ⇒ 四轴 + 跳跃全部被拒。
+ * 焰魔侧的自愈（`overlapEscapeDist = 1.15`，仅 `chase` 态）覆盖不到：斜角站位 `d ≈ 1.4`。
+ *
+ * ## 取值
+ *
+ * 9 格/秒（60Hz 下 0.15 格/步）：① 要**快过盒子扫过来的速度**（焰魔追击 4.4 格/秒、转身时盒边约
+ * 3~4 格/秒），否则推出追不上盒子、玩家仍被罩住；② 要**像被顶开而不是瞬移**（0.35 格深的陷入约
+ * 3 步 = 50ms 推完）。略大于玩家疾跑速度（`SPEED = 8`），玩家无法靠「往里顶」抵消推出。
+ * 导出供测试读同一份权威（红线 1）。
+ */
+export const IGNIS_EJECT_SPEED = 9;
+/** 推出探测：沿 ±X / ±Z 逐 `EJECT_PROBE` 格找「第一个不再重叠」的平移量（精度 0.02 格，随后每步继续收敛） */
+const EJECT_PROBE = 0.02;
+/**
+ * 推出探测的最大平移（格）。须 > 最深的陷入：身体盒单边最大 1.236（yaw=45°）+ 玩家半宽 0.3 = 1.54
+ *（玩家被传送到盒正中的最坏情形），留余量取 2.0。
+ */
+const EJECT_MAX = 2.0;
+const EJECT_DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+/** 探测用的临时盒（复用同一个对象，避免重叠期每步分配几百个 —— `overlapsAabb` 不持有入参） */
+const _probeBox = { minX: 0, maxX: 0, minY: 0, maxY: 0, minZ: 0, maxZ: 0 };
+
+/**
  * 玩家命中盒（**相对脚底中心的局部盒**，v2.44 火球命中用）。
  *
  * ⚠️ **尺寸从本文件的 `PLAYER_WIDTH`/`PLAYER_HEIGHT` 派生**（红线 1：玩家尺寸的唯一权威
@@ -79,6 +110,27 @@ export class PlayerPhysics {
      * @type {import('../entities/minecarts/minecart-system.js').MinecartService|null}
      */
     this.minecarts = null;
+    /**
+     * 焰魔服务（Player 构造后由装配层注入，同 `minecarts` 手法 —— physics 不 import entities/）。
+     *
+     * 非 null 时 `_collides` 把**焰魔身体盒**视为实心（v2.62 用户缺陷⑦）：玩家奔跑撞上
+     * 焰魔就停住（二分回退），而焰魔站定不动 —— 「不动如山」。
+     * 原版佐证：`KNOCKBACK_RESISTANCE = 1.0`（`Ignis_Entity.java:508`，完全免疫击退）。
+     *
+     * ⚠️ **阻挡是单向的**：焰魔自己的物理（`ignis-boss-agent.js`）看不见玩家，
+     * 故飞跃期靠 Agent 里的「与玩家过近则本步水平意图清零」守卫防穿（spec §2.5）。
+     * ⚠️ **重叠自愈（v2.62 final review P1-3 → v2.78 补全）**：玩家若落在焰魔身体盒
+     * **内部**，本方法会让 `_collides()` 恒真 ⇒ 玩家四轴全冻结（走不开也落不下）。
+     * v2.62 的自愈在 Agent 侧：`_ringIntent` 的「真重叠例外后退」档（`d < overlapEscapeDist`
+     * = 1.15，仅 chase 态）。**它覆盖不全**（v2.78 用户缺陷「跑太近就卡死」）：盒子随焰魔朝向变形
+     * （重叠区单边 1.13 ~ 1.54），斜角站位被盒子扫到时 `d ≈ 1.4`，固定距离阈值永不触发。
+     * 故 v2.78 起由**玩家物理自己兜底**：`step()` 开头 `_ejectFromIgnis` 用同一判据
+     * `overlapsAabb` 探出最近的出口并有界速度推出（不论盒子为何扫到玩家）。Agent 侧的后退保留，
+     * 只是不再是唯一防线。⚠️ **不能只靠「玩家等焰魔走开」**—— 去退让后焰魔在贴近时站定、
+     * 永不主动离开，那是个真软锁（详见 spec §2.7）。
+     * @type {import('../entities/ignis/ignis-system.js').IgnisService|null}
+     */
+    this.ignises = null;
   }
 
   /** 开/关飞行（边沿由调用方保证 —— `player.js` 的 `!e.repeat`）。同时清零竖直速度： */
@@ -99,8 +151,63 @@ export class PlayerPhysics {
     this.vel.y = dir * FLY_VERTICAL_SPEED;
   }
 
+  /**
+   * 玩家被焰魔身体盒「罩住」时，把玩家推出盒外（v2.78，用户缺陷：跑太近就卡死）。
+   *
+   * ## 问题
+   *
+   * `_collides()` 把焰魔身体盒当实心，但**没有「已经在盒里怎么办」的分支**：玩家一旦落进盒内，
+   * 每个候选位置都仍与盒重叠 ⇒ `_moveAxis` 与 `_tryStepUp` 全部被拒 ⇒ 前后左右 + 跳跃四轴冻结。
+   * 玩家落进盒内的途径：焰魔转身（盒子 = 身体 OBB 绕 yaw 旋转后的包围盒，随朝向变形，扫过站得近的
+   * 玩家，实测斜角站位陷入 0.3~0.4 格）/ 焰魔走位 / 传送 / 矿车下车。焰魔侧的自愈（`overlapEscapeDist`，
+   * 仅 chase 态、仅 `d < 1.15`）覆盖不全，所以必须由玩家物理兜底 —— 与方块的处理一致：
+   * 活塞推到实体就是把实体顶出去，而不是把它焊死在里面。
+   *
+   * ## 做法：用**同一个判据**探出最近的出口
+   *
+   * 冻结的条件是 `ignises.overlapsAabb(box)` 为真；推出的终点就是沿 ±X / ±Z 四个方向各自「第一次
+   * 让该判据为假」的平移量，取最短的 ⇒ 与阻挡判据**按构造一致**，不再复制一份焰魔盒几何，也就不会
+   * 出现「自愈用的几何与阻挡用的几何对不上」（旧自愈的固定距离阈值正是这么失效的）。
+   * 只在重叠时才探（≤ 4 方向 × 100 次）；不重叠的绝大多数帧只多一次 `overlapsAabb`。
+   *
+   * ## 约束
+   *
+   * - **有界速度**（`IGNIS_EJECT_SPEED · dt`）：是被顶开，不是瞬移。
+   * - **不能推进方块里**：出口位置用 `collidesAt`（只查方块）校验，堵住的方向放弃、改走次近的。
+   * - **只推水平**：重叠时竖直方向由重力/站立照常处理；玩家站在盒顶是贴面，不算重叠。
+   * - 不改「不动如山」：朝盒子里走仍被 `_collides()` 挡住，本方法只处理「已经在里面」。
+   * @param {number} dt 秒
+   */
+  _ejectFromIgnis(dt) {
+    const svc = this.ignises;
+    if (!svc) return;
+    const box = this.aabb();
+    if (!svc.overlapsAabb(box)) return;           // 绝大多数帧到此为止
+    const { x, y, z } = this.pos;
+    let best = null;
+    for (let d = 0; d < EJECT_DIRS.length; d++) {
+      const dx = EJECT_DIRS[d][0], dz = EJECT_DIRS[d][1];
+      for (let s = EJECT_PROBE; s <= EJECT_MAX; s += EJECT_PROBE) {
+        if (best && s >= best.s) break;           // 不可能比已找到的更短
+        _probeBox.minX = box.minX + dx * s; _probeBox.maxX = box.maxX + dx * s;
+        _probeBox.minZ = box.minZ + dz * s; _probeBox.maxZ = box.maxZ + dz * s;
+        _probeBox.minY = box.minY; _probeBox.maxY = box.maxY;
+        if (svc.overlapsAabb(_probeBox)) continue;
+        // 这个方向第一个不与焰魔相交的位置：嵌进方块就放弃这个方向（再往外只会更深）
+        if (!this.collidesAt(x + dx * s, y, z + dz * s)) best = { s, dx, dz };
+        break;
+      }
+    }
+    if (!best) return;
+    const move = Math.min(best.s, IGNIS_EJECT_SPEED * dt);
+    const nx = x + best.dx * move, nz = z + best.dz * move;
+    if (!this.collidesAt(nx, y, nz)) { this.pos.x = nx; this.pos.z = nz; }
+  }
+
   /** 单步积分（调用方按 60Hz 定步长驱动） */
   step(dt) {
+    // 先把玩家从焰魔身体盒里推出来（若被罩住）：否则下面的移动会因 `_collides()` 恒真而四轴冻结
+    this._ejectFromIgnis(dt);
     if (this.flying) { this._stepFlying(dt); return; }
     const w = this.world;
     this.inWater = w.getBlockId(Math.floor(this.pos.x), Math.floor(this.pos.y + 0.5), Math.floor(this.pos.z)) === w.registry.idOf('water');
@@ -218,6 +325,16 @@ export class PlayerPhysics {
    *        （M2-7：仅 Y 轴向下使用，云可站立但非墙）
    */
   _collides(includeSupportsPlayer = false) {
+    // 焰魔身体盒视为实心（v2.62 用户缺陷⑦：「焰魔应该不动如山，玩家也应当停止前进，
+    // 就类似撞到实心方块一样」）。
+    //
+    // ⚠️ **放在函数顶部而不是末尾**：`_moveAxis` 与 `_tryStepUp` 都是「先改 `this.pos`
+    // 到候选位置、再问 `_collides()`」，故本方法读到的 `this.aabb()` 已经是候选位置 ——
+    // 两处调用都因此自动生效（包括「抬一格后是否仍与焰魔重叠」⇒ 玩家爬不上焰魔）。
+    //
+    // ⚠️ **尺寸权威不互拷**（红线 1）：玩家盒由本文件的 `PLAYER_WIDTH/HEIGHT` 给出
+    //（经 `aabb()`），焰魔盒由 `IgnisService.overlapsAabb` 内部的 `ignisAabbFor` 给出。
+    if (this.ignises && this.ignises.overlapsAabb(this.aabb())) return true;
     const w = this.world;
     const hw = PLAYER_WIDTH / 2;
     const x0 = Math.floor(this.pos.x - hw), x1 = Math.floor(this.pos.x + hw);

@@ -19,12 +19,15 @@ import { RainEffect } from '../render/rain.js';
 import { WeatherState, RAIN } from '../render/weather.js';
 import { WeaponModelLoader } from '../render/weapon-model-loader.js';
 import { AudioManager } from '../render/audio-manager.js';
+// v2.64：音量表 / 飞龙吼叫间隔 / 死亡爆散配色的唯一权威在各自 config（红线 1：不在装配层写字面量）。
+import { SOUND_VOLUMES, DRAGON_SHOUT, ignisAttackSound } from '../render/audio-config.js';
+import { ZOMBIE_MODEL_DEFS } from '../render/zombie-model.js';
 import { ViewWeapon } from '../render/view-weapon.js';
 import { ViewArm } from '../render/view-arm.js';
 import { WEAPON_IDS } from '../player/weapons/weapon-catalog.js';
 import { TracerRenderer } from '../render/tracer-renderer.js';
 import { ExplosionRenderer } from '../render/explosion-renderer.js';
-import { BlockHitFxRenderer } from '../render/block-hit-fx.js';
+import { BlockHitFxRenderer, IGNIS_DEATH_BURST } from '../render/block-hit-fx.js';
 import { createAtlasColorResolver } from '../render/block-color.js';
 import {
   ExplosionSpriteRenderer, loadExplosionSpriteTexture,
@@ -46,10 +49,15 @@ import { ZombieNestController } from '../entities/zombie-nests/zombie-nest-contr
 import { TurretService } from '../entities/turrets/turret-service.js';
 import { TurretController } from '../entities/turrets/turret-controller.js';
 import { createTurretBlueprint } from '../entities/turrets/turret-blueprint.js';
-import { computeTurretUpdates } from '../entities/turrets/turret-system.js';
+import { computeTurretUpdates, hasLineOfSight, shortestAngleDiff } from '../entities/turrets/turret-system.js';
 import { DRAGON_TYPE, FIREBALL_TYPE, FIREBALL, DRAGON_CORE_OBB } from '../entities/dragons/dragon-config.js';
 import { dragonDefinition, DragonService } from '../entities/dragons/dragon-system.js';
 import { fireballDefinition, judgeFireball } from '../entities/dragons/fireball-system.js';
+import { IGNIS_TYPE, IGNIS, IGNIS_ATTACKS } from '../entities/ignis/ignis-config.js';
+import { ignisDefinition, IgnisService } from '../entities/ignis/ignis-system.js';
+import { IgnisRenderer } from '../render/ignis-renderer.js';
+import { loadIgnisAsset, IGNIS_DEATH_COLOR } from '../render/ignis-model.js';
+import { applyDamage } from '../player/health.js';
 import { FireballRenderer } from '../render/fireball-renderer.js';
 import { playerHitboxLocal } from '../player/physics.js';
 import { bossMapAt } from '../entities/bosses/boss-map.js';
@@ -234,6 +242,11 @@ export class Game {
     this._startWeather = startWeather;
     this.player = null;
     this._lastFrameMs = -1;
+    /**
+     * 上一帧的玩家位置（v2.62）—— 只为差分算出玩家速度（焰魔跳跃劈砍的落点预判用）。
+     * `null` = 首帧（给 `[0,0,0]`，防 NaN）。
+     */
+    this._prevPlayerPos = null;
     this.persistence = null;
     /** 每帧 render 后捕获的 renderer.info 快照（异步读取不撞 autoReset 重置点） */
     this._lastRenderInfo = { drawCalls: 0, triangles: 0 };
@@ -607,6 +620,21 @@ export class Game {
     this.entities.registerType(FIREBALL_TYPE, fireballDefinition);
     /** 火球 id 序号（确定性派生 —— 红线 2：不用 Math.random） */
     this._fireballSeq = 0;
+    // ---- v2.64：Boss 战音效与 BGM 状态（用户 2026-11-07）----
+    /**
+     * 焰魔/飞龙的表现层状态快照（帧间差分用）。
+     *
+     * ⚠️ **为什么不写进 Agent/createState**：挥刀音/跳跃音/随机吼叫是**纯表现层**关注点，
+     * 而 `ignis-boss-agent.js` / `ignis-system.js` 属于 Worker 同构层（红线 8，不得碰音频）。
+     * 把音效触发写进同构层会破坏红线 8（主线程/Worker 同构纯函数）。故在装配层（Game）
+     * 用「上一帧 mode/leapKind」与「本帧」做差分检测状态迁移 —— 焰魔最多 2 只、飞龙最多 4 条，
+     * 每帧一次 Map 查询成本可忽略。
+     *
+     * 形状：`Map<entityId, {mode, leapKind, generation, nextShoutAt}>`。
+     * 实体 despawn 后由 `_syncBossAudio` 清理（按 generation 判失效，与伤害数字同手法）。
+     * @type {Map<string, object>}
+     */
+    this._bossAudioState = new Map();
     /**
      * 火球 spawn 失败计数（评审 I3 防线）。
      *
@@ -651,6 +679,24 @@ export class Game {
     }
     // ⚠️ **v2.43 起不再预热**：龙不再绑定祭坛地带（`findAltarTarnRegion` 的 12.6ms 冷调用
     // 已不在龙的路径上），轨道中心由按 C 时的 `bossMapAt()` 给出。
+
+    // ---- 焰魔装配（v2.55，高台地带的 Boss2）----
+    // ⚠️ **装配位置与龙同段**（在 `persistence` / `seed` 之后、`_waitForColumn` 之前）。
+    // 焰魔也是**临时实体**（`persistent: false`）—— 它是 Boss，但进存档就是第二份权威（红线 2）。
+    this.entities.registerType(IGNIS_TYPE, ignisDefinition);
+    // `world` 用于召唤时扫描地表落点（spec：不能用 `findSpawnY`，它会把高台地带的巨型云当地面）
+    this.ignises = new IgnisService({
+      entities: this.entities, world: this.world, seed: this.seed,
+    });
+    // 渲染器：加载失败不得让整个游戏起不来（与龙/武器模型/蓝图同一容错口径）
+    try {
+      const ignisAsset = await loadIgnisAsset();
+      this.ignisRenderer = new IgnisRenderer(this.scene, ignisAsset);
+      await this.ignisRenderer.loadTexture();
+    } catch (err) {
+      console.warn('[ignis] 渲染器加载失败，焰魔不显示（不影响游戏）:', err);
+      this.ignisRenderer = null;
+    }
 
     // ---- 矿车装配 ----
     // 矿车是 M5 持久实体（设计文档 §2.2）：白拿 entities store 写盘 / column 两阶段卸载 /
@@ -910,6 +956,10 @@ export class Game {
       onIgniteTnt: (x, y, z) => this.explodeTnt(x, y, z),
     });
     this.player.spawn(startX, startY, startZ);
+    // v2.62：把焰魔服务注入玩家物理（用户缺陷⑦「不动如山」）—— 玩家撞上焰魔身体盒
+    // 就像撞上实心方块。注入而非让 `player/` import `entities/`（依赖方向 §3，与
+    // `physics.minecarts` / `nests` / `turrets` 完全同一手法）。`this.ignises` 在 :665 已建好。
+    this.player.physics.ignises = this.ignises;
     // 解卡（出生路径）：恢复的位置可能被埋（玩家上次停在结构/地形边缘，或存档里的 y
     // 与当前生成结果有出入）。常态下这里是一次 `collidesAt` 的 no-op。
     this._resolvePlayerStuck();
@@ -930,6 +980,8 @@ export class Game {
       // v2.41：伤害改为按实体类型分发（不再硬编码丧尸）；predicate 读共享集合
       damage: (id, amount, nowMs) => this.damageEntity(id, amount, nowMs),
       isHittable: (entity) => WEAPON_HITTABLE_TYPES.includes(entity.type),
+      // v2.65 近战剑：击退（方向由 Game 用玩家位置算，controller 只传 id 与距离）
+      knockback: (id, dist) => this.knockbackEntity(id, dist),
     });
 
     // 天气 + 雨效（M3-3）：状态机自动周期（晴 60~180s → 雨 30~90s，5s 过渡），
@@ -1063,10 +1115,37 @@ export class Game {
       //    （60Hz 固定步长 accumulator 在 definition 内），**不在 ZombieService 里跑物理** ——
       //    两处物理会让丧尸推进两遍（速度翻倍），是同一事实的两个副本（红线 1）。
       const pp = this.player.physics.pos;
+      // v2.62：玩家速度（焰魔跳跃劈砍的落点预判用）。**用位置差分实测**，不读
+      // `physics.vel` —— `step()` 末尾把 vel.x/z 清零（无惯性手感），读它恒近 0。
+      // ⚠️ 首帧 / dt=0 给 `[0,0,0]`（防 NaN 传进 Agent 的预判算式）。
+      //
+      // ⚠️ **合理性门是必需的**（final review P1-1）：传送路径（`_teleportTo` →
+      // `player.spawn`）会让首帧差分出**几万格/秒**的伪速度（例：1200 格 / 0.016s
+      // = 75000 格/秒），该值进跳劈预判 ⇒ 落点偏出几万格。`_teleportTo` 里已重置
+      // `_prevPlayerPos`，这里是第二道防线：单帧位移超过 `PLAYER_TELEPORT_EPS`
+      // 即视为传送 ⇒ 速度给 0。阈值不从 `physics.SPEED` 派生（避免把玩家速度权威
+      // 拷进装配层，红线 1），取一个远大于任何合法单帧位移的常数。
+      let pvel = [0, 0, 0];
+      if (this._prevPlayerPos && dt > 0) {
+        const dx = pp.x - this._prevPlayerPos.x;
+        const dy = pp.y - this._prevPlayerPos.y;
+        const dz = pp.z - this._prevPlayerPos.z;
+        // 合法单帧位移上限：玩家 SPEED=8 × dt(≤0.1) = 0.8 格；飞行 16 × 0.1 = 1.6；
+        // 矿车相向碰撞回弹实测单帧 ~2 格。取 4 格作为「超过即传送」的阈值。
+        if (dx * dx + dy * dy + dz * dz <= 4 * 4) {
+          pvel = [dx / dt, dy / dt, dz / dt];
+        }
+      }
+      this._prevPlayerPos = { x: pp.x, y: pp.y, z: pp.z };
       // 矿车帧序：beginFrame 清瞬态（reservations/deferred/抬玩家意图）—— 必须在
       // entities.update 之前（mc-lite 的 frameReservations 同生命周期）
       this.minecarts.beginFrame();
       this.zombies.update(dt, { playerPosition: [pp.x, pp.y, pp.z] });
+      // v2.61：焰魔的寻路拍（A\* + 决策），与丧尸同帧序 —— **必须在 entities.update 之前**，
+      // 那样 Agent 本帧的移动意图才能读到本帧最新写好的 `state.navDir`。
+      // 反序会让它用上帧的方向走一步（形态：长墙拐角晚一拍、看着像抖动）。
+      // 内部 20Hz 节流，且只给 `needsPath` 的焰魔真跑 A\* —— 常态开销为零。
+      this.ignises?.update(dt, { playerPosition: [pp.x, pp.y, pp.z], nowMs });
       // ⚠️ **v2.43 起龙不再每帧自动 spawn**（原 `this.dragons.ensure()` 已删）：
       // 龙只在按 C 时召唤（`summonBoss()`）。保留自动生成的形态是「Boss1 已在 → 召唤 Boss2」
       // 永远命中「已在」，而高台地带没有 Boss2 ⇒ C 键对高台地带毫无作用。
@@ -1079,7 +1158,9 @@ export class Game {
       // ⚠️ **复用上一行已有的 `pp`** —— 重复 `const pp` 会是 SyntaxError（同一块作用域）。
       this.entities.update(dt, {
         world: this.world, registry: this.registry,
-        minecarts: this.minecarts, player: { position: [pp.x, pp.y, pp.z] },
+        minecarts: this.minecarts,
+        // v2.62：多传 `velocity`（焰魔跳跃劈砍的落点预判）。矿车/丧尸不读它，零影响。
+        player: { position: [pp.x, pp.y, pp.z], velocity: pvel },
       });
       // 跨车写入统一生效 + 位置索引同步（设计文档 §3.4：必须在 entities.update 之后）
       this.minecarts.applyDeferred();
@@ -1097,6 +1178,15 @@ export class Game {
       // 可能误判命中龙自己脚下的方块）。下一帧 entities.update 推进后才判定，与弹丸同口径。
       this._consumeDragonFireRequests();
       this._updateFireballs(dt);
+      // v2.55：焰魔的挥剑命中结算（消费 attackRequest）。
+      // 位置与龙的火球无关，但同样必须在 `entities.update` 之后 —— Agent 本帧写入的
+      // `attackRequest` 才存在。
+      this._consumeIgnisAttackRequests();
+      // v2.64：Boss 战音频（BGM 交叉淡化 + 焰魔挥刀/跳跃音 + 飞龙随机吼叫）。
+      // ⚠️ **必须在 `entities.update` 之后**（Agent 本帧写入的 mode/leapKind 才存在），
+      // 且在 `_consumeIgnisAttackRequests` 之后（两者都读焰魔 state，顺序不影响结果但
+      // 放一起便于阅读）。内部零分配门控：没 Boss 时只有两次 count() + 一次布尔判断。
+      this._syncBossAudio(nowMs);
       // M7：巢穴刷怪推进。放在 entities.update **之后** —— 刷怪经 ZombieService.spawn()
       // 创建实体，须等实体运行时本帧推进完成再创建，避免新实体在创建当帧被 update 漏处理。
       // 内部 8 秒节流（controller.update 自己判 nowMs-lastSpawnAt），故每帧调用是零成本的。
@@ -1167,6 +1257,8 @@ export class Game {
       // 祭坛飞龙（v2.41）：pose 发布（位置/yaw/bank + 动画采样 + 红闪）。无实体时
       // visible=false → draw call 归零。⚠️ 传 `nowMs`（performance.now 基准，红闪判定）。
       if (this.dragonRenderer) this.dragonRenderer.sync(this.dragons.activeEntities(), nowMs);
+      // 焰魔（v2.55）：同口径的 pose 发布（池容量 2，含脚底补偿）
+      if (this.ignisRenderer) this.ignisRenderer.sync(this.ignises.activeEntities(), nowMs);
       // 矿车 pose 发布（差集驱动 slot；只读 state）
       this.minecartRenderer.sync(this.entities.entities());
       // M8：炮塔 pose 发布（pivot 世界坐标 + Task 4 插值出的当前 yaw/pitch）。
@@ -1555,6 +1647,9 @@ export class Game {
    */
   _teleportTo(x, y, z) {
     this.player.spawn(x, y, z);
+    // v2.62：传送后位置突变，重置玩家速度差分的基准 —— 否则下一帧会算出
+    // 「新pos − 旧pos」的伪速度（可达几万格/秒）传进焰魔跳劈预判（final review P1-1）。
+    this._prevPlayerPos = null;
     // 解卡（近处传送）：目标 column 已加载时，落点可能已被地形/结构埋住 → 当场抬出来。
     // 远处传送此刻读到的全是空气（column 未加载），这里是 no-op，由 `onColumnReady`
     // 的那一次接管（见 `_resolvePlayerStuck`）。
@@ -2094,12 +2189,15 @@ export class Game {
     else if (entity.type === DRAGON_TYPE) {
       if (!this.dragons) return null;
       result = this.dragons.damage(id, amount, nowMs);
+    } else if (entity.type === IGNIS_TYPE) {
+      // v2.55 焰魔：与龙同形状的 damage 契约（红闪 + 死亡即 despawn）
+      if (!this.ignises) return null;
+      result = this.ignises.damage(id, amount, nowMs);
     } else return null;
-    // v2.51：丧尸/火龙被消灭的死亡音效（用户 2026-11-04：「丧尸被消灭、火龙被消灭都有一个
-    // 音效 z_die.mp3」）。**判断落在 `dead` 上而不是 `amount` 上** —— 打中但没死不该响。
-    // 音量 0.3 取 mc-lite `TurretManager.js:286` 的 `playSound('z_die', 0.3)`。
-    // ⚠️ TNT 爆炸炸死丧尸走另一条路（`_damageEntitiesInRadius`），那里也要接（同一音效）。
-    if (result?.dead) this.audioManager?.play('z_die', 0.3);
+    // v2.51/v2.64：死亡音效 + 死亡特效。**判断落在 `dead` 上而不是 `amount` 上** ——
+    // 打中但没死不该响。音量表在 `audio-config.js`（红线 1，不在装配层写字面量）。
+    // ⚠️ TNT 爆炸炸死丧尸走另一条路（`_damageEntitiesInRadius`），那里也要接（同一助手）。
+    if (result?.dead) this._onEntityDeath(entity, nowMs);
     // 生命系统显示层：受击后在头顶弹「掉血后还剩的血量」数字。
     // ⚠️ **必须在 `damage()` 之后**（`result.health` 才是掉血后的值），且与死亡音效同位点
     // —— 两条伤害路径（本方法 + `_damageEntitiesInRadius`）都要接，口径一致。
@@ -2108,13 +2206,109 @@ export class Game {
   }
 
   /**
+   * 击退分发器（v2.65 近战剑）：按实体类型路由到对应 service 的 `knockback()`。
+   *
+   * 与 `damageEntity()` 同一手法（装配层按类型分发，不给 EntityManager 加玩法接口）。
+   *
+   * ## 方向在这里算，不在 controller 里
+   *
+   * controller 只传 `(id, dist)`：它是纯逻辑层，**不持有玩家位置**（依赖方向 §3）。
+   * 击退方向 = 「背离玩家」= `normalize(entity.pos - player.pos)` 的水平分量，由本方法用
+   * `this.player.physics.pos` 算。
+   *
+   * ## 退化情形：不猜方向
+   *
+   * 玩家与实体水平重合（`d < 1e-6`）⇒ 没有可用的「背离玩家」方向。此时**直接返回 false
+   * 不击退**，而不是拿 yaw 兜一个方向 —— 两个理由：
+   *
+   * ① **yaw→前向的口径按实体类型不同**（实测）：丧尸是 `atan2(vx, vz)` ⇒ 前向
+   *    `(sin yaw, cos yaw)`；焰魔与飞龙是 `atan2(-dx, -dz)` ⇒ 前向 `(-sin yaw, -cos yaw)`。
+   *    在装配层写一张「类型 → 前向公式」表就是红线 1 的第二份权威（那两份公式的权威在
+   *    各自的 `zombie-system.js` / `dragon-system.js` / `ignis-boss-agent.js`），且用错一侧的
+   *    形态是「Boss 被砍一刀反而扑向玩家」。
+   * ② **这个退化态各实体自己已有处理**：焰魔真重叠时走 `overlapEscapeDist` 后退自愈
+   *    （v2.62 final review P1-3），丧尸/飞龙则被玩家物理挡住不会真重合。
+   *
+   * @param {string} id @param {number} dist 击退距离（格，来自 catalog 的 `knockbackDistance`）
+   * @returns {boolean} false = 未知 id / 不可击退类型 / 方向退化 / 完全走不动
+   */
+  knockbackEntity(id, dist) {
+    const entity = this.entities.get(id);
+    if (!entity) return false;
+    const amount = Number.isFinite(dist) ? dist : 0;
+    if (!(amount > 0)) return false;
+    const [ex, , ez] = entity.state.position;
+    const p = this.player?.physics?.pos;
+    if (!p) return false;
+    const d = Math.hypot(ex - p.x, ez - p.z);
+    if (!(d > 1e-6)) return false;   // 方向退化：不猜（见上）
+    const dx = ((ex - p.x) / d) * amount;
+    const dz = ((ez - p.z) / d) * amount;
+    if (entity.type === 'zombie') return this.zombies.knockback(id, dx, dz);
+    if (entity.type === IGNIS_TYPE) return this.ignises ? this.ignises.knockback(id, dx, dz) : false;
+    if (entity.type === DRAGON_TYPE) return this.dragons ? this.dragons.knockback(id, dx, dz) : false;
+    return false;
+  }
+
+  /**
+   * 实体死亡时的音效与特效（v2.64，用户 2026-11-07）。
+   *
+   * **两条伤害路径共用**（`damageEntity` + `_damageEntitiesInRadius`），口径一致。
+   *
+   * 死亡音**按类型分型**（v2.64 用户裁定：「焰魔死亡的音效 ignis_die.ogg，飞龙的死亡音效
+   * 也是 ignis_die.ogg」，丧尸沿用 v2.51 的 `z_die`）：
+   *   · zombie → `z_die`（音量 0.3，mc-lite `TurretManager.js:286` 原值）；
+   *   · dragon / ignis → `ignis_die`。
+   *
+   * 死亡特效（用户裁定形态 = 碎块爆散）：在身体中心向全球面撒一簇碎块
+   * （`block-hit-fx.spawnDeathBurst`，复用枪击碎块池，不开第二个池）：
+   *   · 丧尸 → 绿色（皮肤色）+ `DEATH_BURST` 口径；
+   *   · 焰魔 → 火焰色 + `IGNIS_DEATH_BURST` 口径（v2.64b 用户追问后补上：体型更大 ⇒
+   *     块更多、块更大、炸得更开）；
+   *   · 飞龙本期不做（用户未要求；池子通用，要加是一行调用）。
+   *
+   * ⚠️ **爆散锚点 = 身体中心**（不是脚底）：丧尸 `position` 是脚底，身体中心 = `y + height/2`。
+   * 用脚底会让碎块从地里往上炸（观感是「地面炸了」而不是「身体炸了」）。
+   *
+   * @param {import('../entities/entity-manager.js').Entity} entity 刚死亡的实体
+   * @param {number} nowMs `performance.now()` 基准
+   */
+  _onEntityDeath(entity, nowMs, { silent = false } = {}) {
+    const type = entity.type;
+    if (type === 'zombie') {
+      // ⚠️ `silent` 是 TNT 半径杀伤路径用的（一发炸死 N 只只响一声，聚合在调用方）；
+      // 特效不静默 —— 每只死亡的丧尸都要有自己的碎块爆散。
+      if (!silent) this.audioManager?.play('z_die', SOUND_VOLUMES.z_die);
+      // 绿色碎块爆散：颜色取丧尸头部皮肤绿（`zombie-model.js` 的唯一权威，不写死字面量）。
+      const hex = ZOMBIE_MODEL_DEFS.head.fallbackColor;
+      const color = [((hex >> 16) & 255) / 255, ((hex >> 8) & 255) / 255, (hex & 255) / 255];
+      const [x, y, z] = entity.state.position;
+      this.blockHitFx.spawnDeathBurst([x, y + ZOMBIE.height / 2, z], color, nowMs);
+    } else if (type === DRAGON_TYPE || type === IGNIS_TYPE) {
+      this.audioManager?.play('ignis_die', SOUND_VOLUMES.ignis_die);
+      // v2.64b：焰魔死亡碎块爆散（火焰色，Boss 口径）。飞龙不做（用户未要求）。
+      // ⚠️ 锚点同丧尸：身体中心（脚底 + height/2），用脚底会读作「地面炸了」。
+      if (type === IGNIS_TYPE) {
+        const [x, y, z] = entity.state.position;
+        this.blockHitFx.spawnDeathBurst(
+          [x, y + IGNIS.height / 2, z], IGNIS_DEATH_COLOR, nowMs, { burst: IGNIS_DEATH_BURST },
+        );
+      }
+    }
+  }
+
+  /**
    * 在实体头顶弹出「掉血后还剩的血量」浮动数字（生命系统显示层，用户 2026-11-05）。
    *
    * 显示的是**剩余血量**（不是伤害值）—— 用户明确要「掉血之后还剩的血量」。
    *
-   * ⚠️ **锚点 Y 按实体类型取**：丧尸 `position` 是脚底 → 头顶 = `y + ZOMBIE.height`；
-   * 龙 `position` 是身体中心 → 头顶 = `y + DRAGON_CORE_OBB.halfExtents[1]`。
-   * 两个常量都从各自 config import，不写字面量（红线 1）。
+   * ⚠️ **锚点 Y 按实体类型取**：丧尸 / 焰魔 `position` 是脚底 → 头顶 = `y + ZOMBIE.height` /
+   * `y + IGNIS.height`；龙 `position` 是身体中心 → 头顶 = `y + DRAGON_CORE_OBB.halfExtents[1]`。
+   * 常量都从各自 config import，不写字面量（红线 1）。
+   *
+   * ⚠️ **首帧位置 `initial` 与逐帧 `anchor()` 必须共用同一个 `headY`**（v2.59）：曾经两处各写一份三元式，
+   * `anchor()` 漏了焰魔分支 ⇒ 焰魔的数字首帧在头顶（脚底 + 3.25），下一帧就被拉进龙的口径（+1.875，胸口）。
+   * 「数字弹出来了、内容也对」的断言抓不到它，只有锚点高度能（`health-hud.spec.mjs` 的 Boss2 用例）。
    *
    * ⚠️ **致命一击也有数字**：实体同帧 despawn，故锚点函数首次调用即返回 null ——
    * 用发射时刻的 `initialPos` 兜底，数字冻结在死亡位置继续上浮淡出。
@@ -2130,10 +2324,14 @@ export class Game {
     if (!this._damageNumbers) return; // 构造期/装配顺序错时的纵深防御
     const state = entity.state;
     const [x, y, z] = state.position;
-    const topY = entity.type === 'zombie'
-      ? y + ZOMBIE.height
-      : y + DRAGON_CORE_OBB.halfExtents[1];
-    const initial = [x, topY, z];
+    // 头顶 y 的唯一权威（`initial` 与逐帧 `anchor` 共用，见上方说明）
+    const headY = (t, baseY) => t === 'zombie'
+      ? baseY + ZOMBIE.height
+      : t === IGNIS_TYPE
+        // ⚠️ 焰魔的 `position` 是**脚底**（地面实体）⇒ 头顶 = y + IGNIS.height
+        ? baseY + IGNIS.height
+        : baseY + DRAGON_CORE_OBB.halfExtents[1];
+    const initial = [x, headY(entity.type, y), z];
     const type = entity.type;
     // ⚠️ **捕获 generation**（红线 7 版本协议在实体侧的对应物）：丧尸 id 从 slot 池复用
     // （`z0`~`z19`），若锚点只按 id 查，旧丧尸的冻结死亡数字会**挂到同 id 重生的新丧尸身上**
@@ -2146,8 +2344,7 @@ export class Game {
       const e = this.entities.get(entity.id);
       if (!e || e.type !== type || e.generation !== gen) return null;
       const [ex, ey, ez] = e.state.position;
-      const eyTop = type === 'zombie' ? ey + ZOMBIE.height : ey + DRAGON_CORE_OBB.halfExtents[1];
-      return [ex, eyTop, ez];
+      return [ex, headY(type, ey), ez];
     };
     this._damageNumbers.spawn(
       String(Math.max(0, Math.round(remaining))), anchor, initial, nowMs, entity.id,
@@ -2188,9 +2385,19 @@ export class Game {
     for (const slotDef of slots) {
       const svc = this[slotDef.service];
       if (!svc || typeof svc.summon !== 'function') continue;
-      const r = svc.summon(map.key, map.cx, map.cz, slotDef.slot);
+      // ⚠️ **传玩家 y 作为参考高度**：焰魔的地面扫描据此取「玩家所在那一层」的地面，
+      // 而不是地图中心列上的最低位置。高台地带有多层可站结构（广场地面 / 高台顶 46 /
+      // 拱洞 / 巨云 54~95），不传会让焰魔落到与玩家相距 30+ 格的高度。
+      // 飞龙忽略这个多余参数（它恒在轨道高度）。
+      const r = svc.summon(map.key, map.cx, map.cz, slotDef.slot, p.y);
       if (r.ok) {
         this._bossToast(`已召唤 Boss${slotDef.slot + 1}`);
+        // v2.64：召唤音效（用户 2026-11-07：「焰魔和飞龙被创建的时候的音效 ignis_burn.ogg」）。
+        // ⚠️ **接在 `summonBoss` 的成功分支而不是各 service 的 `summon()` 里**：
+        // ① service 是同构层（不得碰音频，红线 8）；② 这里是飞龙与焰魔的**唯一**召唤入口
+        // （按 C），一处接线两种 Boss 都覆盖。Boss 战 BGM 不用在这里触发 ——
+        // `_syncBossAudio` 每帧按 `entities.count()` 判定，下一帧自然淡入。
+        this.audioManager?.play('ignis_burn', SOUND_VOLUMES.ignis_burn);
         return r;
       }
       if (r.reason === 'limit') {
@@ -2328,11 +2535,14 @@ export class Game {
       const [px, py, pz] = entity.state.position;
       const dy = py + ZOMBIE.height / 2;   // 度量用丧尸 AABB 中心（mc-lite 同口径）
       if (Math.hypot(px - cx, dy - cy, pz - cz) <= radius) {
-        // v2.51：爆炸炸死也算「丧尸被消灭」→ 死亡音效。
-        // ⚠️ **本函数绕过 `damageEntity()`**（它直接调 service），所以音效要在这里再接一次；
-        // 两处都只在 `dead` 上触发，且同一帧内只响一声（`killed` 聚合），
-        // 否则一发 TNT 炸死 5 只会变成 5 连击音。
-        if (this.zombies.damage(entity.id, damage, nowMs)?.dead) killed = true;
+        // v2.51/v2.64：爆炸炸死也算「丧尸被消灭」→ 死亡音效 + 碎块爆散。
+        // ⚠️ **本函数绕过 `damageEntity()`**（它直接调 service），所以死亡处理要在这里再接一次；
+        // 两处都只在 `dead` 上触发，且同一帧内只响一声（`killed` 聚合，`silent` 传入），
+        // 否则一发 TNT 炸死 5 只会变成 5 连击音；但**碎块不聚合** —— 每只都要爆。
+        if (this.zombies.damage(entity.id, damage, nowMs)?.dead) {
+          killed = true;
+          this._onEntityDeath(entity, nowMs, { silent: true });
+        }
         // 生命系统显示层：TNT 路径也要弹数字（与 `damageEntity` 同口径）。
         // ⚠️ **本函数绕过 `damageEntity()`**，故显示也要在这里再接一次 ——
         // 与死亡音效的两站点模式一致（v2.51 注释同源）。读掉血后的剩余血量。
@@ -2361,6 +2571,116 @@ export class Game {
     const intensity = this.weather?.intensity ?? 0;
     if (intensity > 0) am.playLoop('rain', RAIN.SOUND_VOLUME * intensity);
     else am.stopLoop('rain');
+  }
+
+  /**
+   * Boss 战音频总接线（v2.64，用户 2026-11-07）。帧循环每帧调（放在
+   * `_consumeIgnisAttackRequests` 之后 —— 焰魔本帧的 mode/leapKind 已由 Agent 写入）。
+   *
+   * 四件事：
+   *   ① **Boss 战 BGM 意图**：场上有任一 Boss（龙或焰魔）→ `setBossMusicActive(true)`，
+   *      全灭 → false；再调 `audioManager.update(nowMs)` 逐帧推进交叉淡化。
+   *      判据用 `entities.count()`（零分配，与 `_consumeDragonFireRequests` 同手法）。
+   *   ② **焰魔起手音**：mode 迁入 `attack` 的那一帧，按本招的 `attackKind` 播对应音
+   *      （`IGNIS_ATTACK_SOUNDS`：`swing` → `ignis_attack_swing`、`spin` → `ignis_attack_circle`，
+   *      v2.79 用户裁定「旋斩只用 circle，不与挥刀音叠播」）。chase→attack 与 leap→attack
+   *      两条路径都算。`attackKind` 在起手当帧就由 Agent 写进 state，所以迁移帧读到的一定是当招的值。
+   *   ③ **焰魔跳跃音**：mode 迁入 `leap` 的那一帧响 `ignis_jump`
+   *      （escape 脱困跳与 attack 跳劈都算，用户裁定「跳跃时」不分种类）。
+   *   ④ **飞龙随机吼叫**：每条龙维护独立的下次吼叫时刻（`DRAGON_SHOUT` 区间内随机），
+   *      到期响 `dragon_shout` 并续期。
+   *
+   * ⚠️ **为什么用「上一帧快照差分」而不是在 Agent 里直接响**：`ignis-boss-agent.js` 属于
+   * Worker 同构层（红线 8：不得 import 渲染/DOM 依赖），碰不了音频。音效是纯表现层关注点，留在装配层。
+   * （⚠️ 本注释刻意不写同构自声明的原字样：`check-architecture.mjs` 的
+   * `ISOMORPHIC_DECLARED` 正则扫全文，game.js 里出现该字样会让本文件被误判成
+   * 自声明同构模块 → 架构门 12 条误报，实测已踩到。）
+   * 快照按 `{id → {mode, leapKind, generation}}` 存 `_bossAudioState`，**generation 不符
+   * 视为新实体**（id 会被「死了又召」复用，与伤害数字的 generation 守卫同手法）——
+   * 否则旧快照的 mode 会与新实体的 idle 构成假迁移。
+   *
+   * ⚠️ **常态成本**：没 Boss 时（绝大多数帧）= 两次 `count()` + 一次 `update()` 里的
+   * 布尔判断 + 空 Map 遍历，零分配。
+   *
+   * @param {number} nowMs `performance.now()` 基准
+   */
+  _syncBossAudio(nowMs) {
+    const am = this.audioManager;
+    if (!am) return;
+
+    // ① Boss 战 BGM：有 Boss 在场 → 战斗曲；全灭 → 淡回开局那首。
+    const bossAlive = this.entities.count(DRAGON_TYPE) + this.entities.count(IGNIS_TYPE) > 0;
+    am.setBossMusicActive(bossAlive);
+    am.update(nowMs);
+
+    // ②③④ 需要逐实体读 state —— 没 Boss 时直接跳过（零分配门控，同 `_consumeDragonFireRequests`）
+    if (!bossAlive) {
+      if (this._bossAudioState.size > 0) this._bossAudioState.clear();
+      return;
+    }
+
+    const prev = this._bossAudioState;
+
+    // ---- 焰魔：挥刀 / 跳跃迁移检测 ----
+    if (this.ignises && this.entities.count(IGNIS_TYPE) > 0) {
+      for (const ignis of this.ignises.activeEntities()) {
+        const { mode, leapKind } = ignis.state;
+        const old = prev.get(ignis.id);
+        // generation 不符（死了又召）→ 视为新实体，不触发迁移音（否则旧 mode 与新 idle
+        // 构成假迁移；且召唤瞬间的 `ignis_burn` 已由 summonBoss 负责，不重复）。
+        const isNew = !old || old.generation !== ignis.generation;
+        if (!isNew) {
+          if (old.mode !== 'attack' && mode === 'attack') {
+            // v2.79：按本招选起手音（旋斩 → `ignis_attack_circle`，普攻 → `ignis_attack_swing`）。
+            // 表与缺省回落都在 `audio-config.js`（红线 1：装配层不写招式分支）。
+            const soundId = ignisAttackSound(ignis.state.attackKind);
+            am.play(soundId, SOUND_VOLUMES[soundId]);
+          }
+          if (old.mode !== 'leap' && mode === 'leap') {
+            am.play('ignis_jump', SOUND_VOLUMES.ignis_jump);
+          }
+        }
+        // ⚠️ **原地改条目而不是每帧新建 Map**（分配）：`seenAt` 是本帧时间戳，
+        // 扫完一轮后把 `seenAt !== nowMs` 的条目删掉 —— 那就是已 despawn 的实体。
+        if (old) {
+          old.mode = mode; old.leapKind = leapKind;
+          old.generation = ignis.generation; old.seenAt = nowMs;
+        } else {
+          prev.set(ignis.id, {
+            mode, leapKind, generation: ignis.generation, seenAt: nowMs, nextShoutAt: null,
+          });
+        }
+      }
+    }
+
+    // ---- 飞龙：随机吼叫 ----
+    if (this.dragons && this.entities.count(DRAGON_TYPE) > 0) {
+      for (const dragon of this.dragons.activeEntities()) {
+        const old = prev.get(dragon.id);
+        const isNew = !old || old.generation !== dragon.generation;
+        let nextShoutAt = isNew ? null : old.nextShoutAt;
+        if (nextShoutAt === null || nowMs >= nextShoutAt) {
+          // 首次（或死了又召）不在当帧吼 —— 那一刻已有 `ignis_burn`；到期才吼并续期。
+          if (!isNew) am.play('dragon_shout', SOUND_VOLUMES.dragon_shout);
+          const { minSeconds: lo, maxSeconds: hi } = DRAGON_SHOUT;
+          nextShoutAt = nowMs + (lo + Math.random() * (hi - lo)) * 1000;
+        }
+        // 龙的快照只存吼叫时刻（mode/leapKind 是焰魔的字段，龙没有）
+        if (old && !isNew) {
+          old.generation = dragon.generation; old.seenAt = nowMs; old.nextShoutAt = nextShoutAt;
+        } else {
+          prev.set(dragon.id, {
+            mode: null, leapKind: null, generation: dragon.generation,
+            seenAt: nowMs, nextShoutAt,
+          });
+        }
+      }
+    }
+
+    // 清理已 despawn 的条目（本帧没被看到的）。常态最多 6 条，遍历成本可忽略。
+    for (const [id, entry] of prev) {
+      if (entry.seenAt !== nowMs) prev.delete(id);
+    }
   }
 
   /**
@@ -2628,6 +2948,12 @@ export class Game {
     for (const dragon of this.dragons?.activeEntities() ?? []) {
       targets.push({ id: dragon.id, position: [...dragon.state.position], bodyOffsetY: 0 });
     }
+    // v2.55：炮塔也打焰魔（它进了 `WEAPON_HITTABLE_TYPES`）。
+    // ⚠️ **焰魔的 `position` 是脚底** ⇒ 用缺省的 `bodyOffsetY`（抬到胸部），
+    // 与丧尸同口径；而龙的 position 已是身体中心，故显式传 0。
+    for (const ignis of this.ignises?.activeEntities() ?? []) {
+      targets.push({ id: ignis.id, position: [...ignis.state.position] });
+    }
     const { updates } = computeTurretUpdates({
       turrets, targets, world: this.world, registry: this.registry,
     });
@@ -2718,8 +3044,91 @@ export class Game {
     for (const dragon of this.dragons.activeEntities()) {
       const req = dragon.state.fireRequest;
       if (!req) continue;
+      // v2.64：喷火球音效（用户 2026-11-07：「飞龙发出火球时的声音 dragon_fire.ogg」）。
+      // ⚠️ **接在消费点而不是 `fireFireball()` 里**：后者是公开 API（测试与未来其它调用方
+      // 都会走），把音效塞进去会让「程序化生成一颗火球」也响一声。这里才是「龙真的喷了」。
+      this.audioManager?.play('dragon_fire', SOUND_VOLUMES.dragon_fire);
       this.fireFireball(req.position, req.direction, dragon.id);
     }
+  }
+
+  /**
+   * 焰魔的挥剑命中结算（v2.55）。
+   *
+   * 消费 `state.attackRequest`（**瞬态**，由 `IgnisBossAgent` 在动画到达命中帧那一帧写入）。
+   * 三条判据全过才扣血：
+   *   ① 玩家水平距 ≤ **本招的 `hitRange`**（v2.75 起按 `req.kind` 取；两招都是 6.5）
+   *   ② |Δyaw| ≤ **本招的 `hitConeDeg`**（横扫 35° = 作者 `arc 70` 的一半；
+   *      旋斩 155° = 作者 `arc 310` 的一半 —— **不是 180**，那会抹掉作者刻意的背向死角）
+   *   ③ 焰魔胸部 → 玩家胸部视线通
+   *
+   * ⚠️ **只在该帧判定一次**（不是每帧）：`attackRequest` 只在命中帧出现，Agent 下一帧自动置 null。
+   * 否则玩家站在旁边会被连续扣血。
+   *
+   * ⚠️ **`attackRequest.at` 是焰魔的身体位置**（不是玩家位置）—— 距离与角度都要从它算。
+   *
+   * ⚠️ **伤害写 `player.health`（不走 `Player` 的方法）**：本仓 `Player.health` 没有
+   * setter/伤害方法（`player/health.js` 的口径是「纯函数 + 外部写回」），而
+   * `applyDamage` 已把钳制逻辑封装。用户 2026-11-05 裁定：**只扣血、不做死亡**。
+   *
+   * ⚠️ **常态零分配门控**：`activeEntities()` 会新建数组，而本方法每帧都跑 ——
+   * 场上没焰魔时用 `count()` 直接返回（与 `_consumeDragonFireRequests` 同一手法）。
+   */
+  _consumeIgnisAttackRequests() {
+    if (!this.ignises || !this.player) return;
+    if (this.entities.count(IGNIS_TYPE) === 0) return;
+    const p = this.player.physics?.pos;
+    if (!p) return;
+    for (const ignis of this.ignises.activeEntities()) {
+      const req = ignis.state.attackRequest;
+      if (!req) continue;
+      const [ex, ey, ez] = req.at;
+      // 本招的档案（v2.75）—— 射程与半角都按招取。
+      // ⚠️ **不能读 `IGNIS_AI.hitRange/hitConeDeg`**：那是两招的**派生最大值**（6.5 / **155°**），
+      // 用它判定普攻会把锥从 35° 扩到 155° —— 玩家绕到侧面也会被横扫打中，而数据层完全正常。
+      const profile = IGNIS_ATTACKS[req.kind] || IGNIS_ATTACKS.swing;
+      const dx = p.x - ex;
+      const dz = p.z - ez;
+      // ① 水平距
+      if (Math.hypot(dx, dz) > profile.hitRange) continue;
+      // ② 前方锥（本仓 yaw 口径：指向玩家 = atan2(−dx, −dz)）
+      const toPlayerYaw = Math.atan2(-dx, -dz);
+      const cone = profile.hitConeDeg * Math.PI / 180;
+      if (Math.abs(shortestAngleDiff(req.yaw, toPlayerYaw)) > cone) continue;
+      // ③ 视线（从焰魔胸部到玩家胸部；与炮塔 LOS / 飞龙火球同一份权威）
+      const from = [ex, ey + IGNIS.height * 0.5, ez];
+      const to = [p.x, p.y + 1.0, p.z];
+      if (!hasLineOfSight({ world: this.world, registry: this.registry, from, to })) continue;
+      // 三条全过 → 扣血（钳制在 applyDamage 里）
+      this._damagePlayer(IGNIS.attackDamage);
+    }
+  }
+
+  /**
+   * 玩家受伤的唯一入口（v2.64）。
+   *
+   * 用户 2026-11-07：「玩家被击中时的音效（**不管被谁击中**，只要被击中就有这个音效）
+   * ignis_hurt.ogg」。故把「扣血 + 受击音」收成一个方法 —— 将来任何新的伤害源
+   * （火球直接扣血、坠落、其它 Boss）都调它，不会再出现「某条路径忘了配音效」。
+   *
+   * ⚠️ **抽这个方法不是为了少写一行**：v2.64 之前 `applyDamage` 只有一处调用点，
+   * 音效本可以直接写在那里。但「不管被谁击中」是一条**对未来生效**的约束 ——
+   * 散在调用点的音效无法保证它，唯一入口可以。
+   *
+   * ⚠️ **血量没真的变（已是 0）时不响**：用户裁定「只扣血、不做死亡」，血停在 0 后
+   * 再被砍不算「被击中」的新反馈（否则站在焰魔面前会持续响，读作音效卡住）。
+   *
+   * @param {number} amount 伤害格数
+   * @returns {number} 扣血后的剩余血量
+   */
+  _damagePlayer(amount) {
+    const before = this.player.health;
+    const after = applyDamage(before, amount);
+    this.player.health = after;
+    if (after < before) {
+      this.audioManager?.play('ignis_hurt', SOUND_VOLUMES.ignis_hurt);
+    }
+    return after;
   }
 
   /**
@@ -2868,6 +3277,9 @@ export class Game {
     // 祭坛飞龙（v2.41）：service 回收实体后释放渲染器（与启动顺序相反）
     this.dragons?.dispose();
     this.dragonRenderer?.dispose();
+    // 焰魔（v2.55）：同口径（service 回收实体后释放渲染器）
+    this.ignises?.dispose();
+    this.ignisRenderer?.dispose();
     // 矿车：service 回收实体后释放渲染器（与启动顺序相反）
     this.minecarts?.dispose();
     this.minecartRenderer?.dispose();

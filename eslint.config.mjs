@@ -212,8 +212,11 @@ export default [
     // 方块数据 / 面映射：方块名作为对象键（stone_diorite、glass_block 等），
     // camelcase 规则会命中对象键，需豁免（与 mc-lite 方块命名保持一致）。
     // cloudland-kit-data.js 同理：KIT_METRICS 的键是产物基名（cloudland_tarn_01）
+    // audio-config.js 同理（v2.64）：SOUND_EXT_OVERRIDES / SOUND_VOLUMES 的键是**音效 id**，
+    // 而 id 就是磁盘文件名（ignis_die.ogg / dragon_fire.ogg）—— 改成 camelCase 会让
+    // `soundFileName(id)` 拼出磁盘上不存在的文件名，形态是**静默无声**（fetch 404 被 catch 吞）。
     files: ['src/voxel/blocks-data.js', 'src/voxel/faces-data.js', 'src/tests/test-mesher.js',
-      'src/gen/structures/cloudland-kit-data.js'],
+      'src/gen/structures/cloudland-kit-data.js', 'src/render/audio-config.js'],
     rules: {
       'camelcase': 'off',
     },

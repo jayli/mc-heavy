@@ -16,7 +16,9 @@ const MISS_RANGE = 40;
  */
 const MAG7_MISS_RANGE = WEAPONS[WEAPON_IDS.MAG7].scan.max;
 
-const CYCLE_ORDER = [WEAPON_IDS.ARM, WEAPON_IDS.PISTOL, WEAPON_IDS.MAG7, WEAPON_IDS.MINIGUN];
+const CYCLE_ORDER = [
+  WEAPON_IDS.ARM, WEAPON_IDS.PISTOL, WEAPON_IDS.MAG7, WEAPON_IDS.MINIGUN, WEAPON_IDS.SWORD,
+];
 
 export class WeaponController {
   /**
@@ -61,10 +63,16 @@ export class WeaponController {
    * 按实体类型分发到 `ZombieService.damage` / `DragonService.damage`，不再硬编码丧尸）；
    * `isHittable`（可选）= 读 `WEAPON_HITTABLE_TYPES` 的 predicate，缺省回落「只认 zombie」。
    * Game 只把这些函数注入，controller 不持有任何实体集合（红线 1）。
+   *
+   * v2.65 近战剑追加可选 `knockback(id, dist)`：把被砍中的实体沿「背离玩家」方向位移一小步
+   * （方向由 Game 用玩家位置算 —— controller 不持有玩家位置，只传命中 id 与距离）。
+   * 缺省 null → 无击退（fixture/旧测试不注入则走缺省，逐位不变）。
+   *
    * @param {{raycast: (origin:number[], dir:number[], maxDist:number, predicate:Function)=>object|null,
    *          damage: (id:string, amount:number, nowMs:number)=>object|null,
-   *          isHittable?: (entity:object)=>boolean}} query
-   * @returns {{raycast: Function, damage: Function, isHittable?: Function}}
+   *          isHittable?: (entity:object)=>boolean,
+   *          knockback?: (id:string, dist:number)=>boolean}} query
+   * @returns {{raycast: Function, damage: Function, isHittable?: Function, knockback?: Function}}
    */
   setEntityQuery(query) {
     this.entityQuery = (query && typeof query.raycast === 'function' && typeof query.damage === 'function')
@@ -86,7 +94,8 @@ export class WeaponController {
     return true;
   }
 
-  /** R 键循环：徒手 → 手枪 → MAG7 → 加特林 → 徒手（与 mc-lite 一致）。@returns {string} */
+  /**
+   * R 键循环：徒手 → 手枪 → MAG7 → 加特林 → 剑 → 徒手（v2.65 追加剑）。@returns {string} */
   cycle() {
     const next = CYCLE_ORDER[(CYCLE_ORDER.indexOf(this.selectedId) + 1) % CYCLE_ORDER.length];
     this.select(next);
@@ -157,7 +166,9 @@ export class WeaponController {
     this.shotsFired++;
     const effect = weapon.id === WEAPON_IDS.MAG7
       ? this._fireMag7(aim, weapon)
-      : this._fireHitscan(aim, weapon);
+      : weapon.melee
+        ? this._fireMelee(aim, weapon)
+        : this._fireHitscan(aim, weapon);
     this.lastEffect = effect;
     this.onEffect(effect);
     return [effect];
@@ -207,6 +218,48 @@ export class WeaponController {
       origin[2] + forward[2] * hit.dist,
     ];
     return { entityId: hit.id, entityDamage: weapon.entityDamage, end };
+  }
+
+  /**
+   * v2.65 近战剑：左键挥砍。与枪的三个刻意差异（用户 2026-11-06 裁定）：
+   *
+   * ① **不写方块**：剑不能破坏方块（不调 `editor.setBlock`，不读 `blockDamageEnabled`）。
+   * ② **不发曳光**：effect 无 `start`/`end`/`tracer`（渲染层判 `tracer` 存在才 spawn）。
+   * ③ **单发**：catalog 无 `automatic`，按住不放不连砍（同 MAG7 语义）。
+   *
+   * 命中判据与枪同口径：`_queryEntityHit`（DDA 方块遮挡 + `entityRange` 裁剪 +
+   * `WEAPON_HITTABLE_TYPES` predicate）—— 丧尸/飞龙/焰魔都打得到（剑不破坏方块，
+   * 故「实体被方块挡」仍生效：隔墙砍不中）。
+   *
+   * 命中时额外做两件事：
+   *   · `entityQuery.knockback(id, dist)` —— 击退一小步（Game 算背离方向，见注入注释）；
+   *   · effect 带 `hitSound`/`hitVolume` —— 砍中音（`emp_activated`），与挥砍音分开。
+   *
+   * @param {AimSnapshot} aim @param {object} weapon
+   * @returns {object} 效果事件（type: 'melee' 或 'melee-hit'）
+   */
+  _fireMelee(aim, weapon) {
+    const entityHit = this._queryEntityHit(aim, weapon);
+    const base = {
+      type: entityHit ? 'melee-hit' : 'melee',
+      weaponId: weapon.id,
+      sound: weapon.sound,
+      volume: weapon.volume,
+      recoil: weapon.recoil,
+      impacts: [],
+    };
+    if (!entityHit) return base;
+    // 击退：方向由 Game 用玩家位置算（controller 不持有玩家位置，只传 id 与距离）
+    if (typeof this.entityQuery?.knockback === 'function') {
+      this.entityQuery.knockback(entityHit.entityId, weapon.knockbackDistance ?? 0.4);
+    }
+    return {
+      ...base,
+      entityId: entityHit.entityId,
+      entityDamage: entityHit.entityDamage,
+      hitSound: weapon.hitSound ?? null,
+      hitVolume: weapon.hitVolume ?? 1,
+    };
   }
 
   /**

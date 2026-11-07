@@ -20,7 +20,30 @@
  *   `rain` — 雨声（**循环**，仅在 `weather.intensity > 0` 时播）；
  *   `running_land` / `running_water` — 跑动脚步声（**循环**，陆地/水中两套，
  *      mc-lite `PlayerInteraction.js:891-915` 的 `playSound(..., 0.2|0.25, true)`）；
- *   `z_die` — 丧尸/火龙被消灭（mc-lite `TurretManager.js:286` 的 `playSound('z_die', 0.3)`）。
+ *   `z_die` — 丧尸被消灭（mc-lite `TurretManager.js:286` 的 `playSound('z_die', 0.3)`）。
+ *      ⚠️ v2.64 起**只用于丧尸**：飞龙/焰魔的死亡音改走 `ignis_die`（用户裁定，见下）。
+ *
+ * v2.64 追加 Boss 战与击杀音效（用户 2026-11-07 需求，出处均为 `assets/sounds/` 里已入库的
+ *   `.ogg` 素材 —— **零新增美术资源**，只是把既有文件接进清单）：
+ *   `ignis_die` — 焰魔 / 飞龙被消灭（用户：「焰魔死亡的音效 ignis_die.ogg，飞龙的死亡音效也是 ignis_die.ogg」）；
+ *   `ignis_attack_swing` — 焰魔挥刀起手；
+ *   `ignis_burn` — 焰魔 / 飞龙被召唤出来（用户：「焰魔和飞龙被创建的时候的音效」）；
+ *   `ignis_hurt` — 玩家被击中（用户：「不管被谁击中，只要被击中就有这个音效」）；
+ *   `ignis_jump` — 焰魔跳跃（飞跃 escape / attack 两种起跳都算）；
+ *   `dragon_shout` — 飞龙空中随机叫声；
+ *   `dragon_fire` — 飞龙喷火球。
+ *
+ * v2.65 追加近战剑音效（用户 2026-11-06，出处均为 `assets/sounds/` 里已入库的 `.ogg`
+ *   素材 —— **零新增美术资源**，只是把既有文件接进清单）：
+ *   `player_swing` — 玩家挥剑（用户：「挥剑的时候带一个音效：player_swing.ogg」）；
+ *   `emp_activated` — 剑砍中敌人（用户：「击中敌人后也带一个音效：emp_activated.ogg」）。
+ *
+ * v2.79 追加旋斩音（用户 2026-11-07：「给焰魔的旋转攻击加上一个音效，音效文件是
+ *   `ignis_attack_circle.ogg`」）：
+ *   `ignis_attack_circle` — 焰魔**旋斩**起手（与普攻的 `ignis_attack_swing` 分工，
+ *      映射唯一权威在下面的 `IGNIS_ATTACK_SOUNDS`）。
+ *      ⚠️ **上游无对应音**：原版 `Ignis_Entity.java` 里普攻与旋斩都播 `ModSounds.STRONGSWING`
+ *      （没有独立的「旋斩音」），所以这条是用户新增的音，没有 Java 口径可对照。
  *
  * ⚠️ **循环类音效（rain / running_*）也在这份清单里**：`play()` 的语义（事件触发、播完即止）
  * 不变，循环走独立的 `playLoop()` / `stopLoop()`。与 BGM 分成两份清单的理由是**生命周期**，
@@ -28,7 +51,121 @@
  */
 export const SOUND_IDS = Object.freeze(['gun_load', 'gun_fire', 'mag7_fire', 'minigun_fire',
   'put', 'explosion', 'turret_gun_fire', 'delete', 'rain', 'running_land', 'running_water',
-  'z_die']);
+  'z_die',
+  // v2.64：Boss 战与击杀音效（.ogg，见 SOUND_EXT_OVERRIDES）
+  'ignis_die', 'ignis_attack_swing', 'ignis_burn', 'ignis_hurt', 'ignis_jump',
+  'dragon_shout', 'dragon_fire',
+  // v2.65：近战剑音效（.ogg，见 SOUND_EXT_OVERRIDES）
+  'player_swing', 'emp_activated',
+  // v2.79：焰魔旋斩（.ogg，见 SOUND_EXT_OVERRIDES 与 IGNIS_ATTACK_SOUNDS）
+  'ignis_attack_circle']);
+
+/**
+ * 音效文件的扩展名覆盖表（v2.64）。
+ *
+ * **为什么需要**：`preload()` 历史上写死 `assets/sounds/<id>.mp3`，而 v2.64 新增的 7 个音效
+ * 与 boss 背景音乐都是 `.ogg`。缺一张扩展名表的形态是**静默无声** —— `_decodeFromUrl` 的
+ * fetch 拿到 404，被 `preload()` 的 catch 吞成一句 `console.warn`，页面照常能玩。
+ *
+ * ⚠️ **不在表里的 id 一律按 `.mp3`**（既有 12 个音效全是 mp3，零回归）。`soundFileName()`
+ * 是唯一消费点，`audio-manager.preload()` 与 `check:data` 都从它派生（红线 1：扩展名只有一份权威）。
+ */
+export const SOUND_EXT_OVERRIDES = Object.freeze({
+  ignis_die: 'ogg',
+  ignis_attack_swing: 'ogg',
+  ignis_burn: 'ogg',
+  ignis_hurt: 'ogg',
+  ignis_jump: 'ogg',
+  dragon_shout: 'ogg',
+  dragon_fire: 'ogg',
+  bgm_boss: 'ogg',
+  // v2.65：近战剑音效
+  player_swing: 'ogg',
+  emp_activated: 'ogg',
+  // v2.79：焰魔旋斩
+  ignis_attack_circle: 'ogg',
+});
+
+/**
+ * 音效 id → 磁盘文件名（含扩展名）。`preload()` 与 `check:data` 的唯一权威。
+ *
+ * @param {string} id 音效 / 背景音乐 id
+ * @returns {string} 如 `z_die.mp3` / `ignis_die.ogg`
+ */
+export function soundFileName(id) {
+  const ext = SOUND_EXT_OVERRIDES[id] || 'mp3';
+  return `${id}.${ext}`;
+}
+
+/**
+ * 各音效的播放音量（v2.64）。集中在这一张表，触发点只写 `play(id, SOUND_VOLUMES[id])`，
+ * 不在 game.js 里散落字面量（红线 1：同一事实只有一份权威）。
+ *
+ * ⚠️ 初值是按素材响度与既有口径（`z_die` 0.3 / `explosion` 0.4）估的，**均可再调** ——
+ * 调音量只改这里，不动触发点。未列出的 id 由调用方给默认值（`play()` 的第二参缺省 1）。
+ *
+ * ⚠️ **武器音不在本表**：枪声（`gun_fire`/`mag7_fire`/`minigun_fire`）与 v2.65 近战剑的
+ * 两个音（`player_swing`/`emp_activated`）的音量权威在 `weapon-catalog.js`（`volume` /
+ * `hitVolume`），因为它们是「效果事件」的一部分 —— 由 controller 写进 effect、
+ * `player._applyWeaponEffect()` 消费。在本表再写一份就是红线 1 的第二份权威，
+ * 调音量时会漂移成「catalog 改了、这张表没跟上」（而本表那两个值无人读，静默失效）。
+ */
+export const SOUND_VOLUMES = Object.freeze({
+  z_die: 0.3,
+  ignis_die: 0.5,
+  ignis_attack_swing: 0.5,
+  ignis_burn: 0.6,
+  ignis_hurt: 0.5,
+  ignis_jump: 0.5,
+  dragon_shout: 0.4,
+  dragon_fire: 0.5,
+  // v2.79：与 `ignis_attack_swing` 同档。实测素材峰值 circle −0.3 dB / swing −0.9 dB
+  //（平均能量 circle 高约 9 dB）—— 初值取同档，嫌响/嫌轻只改这一个数，不动触发点。
+  ignis_attack_circle: 0.5,
+});
+
+/**
+ * 焰魔「哪一招 → 哪个起手音」的唯一权威（v2.79）。
+ *
+ * **为什么需要这张表**：v2.75 起焰魔有两招（`attackKind = 'swing' | 'spin'`），起手音的
+ * 选择必须与招式一一对应 —— 在触发点写 `if (kind === 'spin') am.play('ignis_attack_circle')
+ * else am.play('ignis_attack_swing')` 就是红线 1 禁止的第二份分支：将来加第三招时漏改一处
+ * 的形态是**该招静默沿用普攻音**（而所有数据层指标都正常）。
+ *
+ * 覆盖度由 `check:data` 的 `[音效]` 环节之外的单测钉住（`test-bgm.js`：两键齐全、
+ * 每个 id 都在 `SOUND_IDS` 里且走 ogg、`attackKind` 的取值域与键集合一致）。
+ *
+ * ⚠️ **缺省回落 `swing`**：`attackKind` 为 `null`/缺失时（旧 state、非攻击态）与渲染器
+ * 选片段的口径一致 —— 两处都是「缺了就当作普攻」，不各自造一套默认。
+ */
+export const IGNIS_ATTACK_SOUNDS = Object.freeze({
+  swing: 'ignis_attack_swing',
+  spin: 'ignis_attack_circle',
+});
+
+/**
+ * `attackKind` → 起手音效 id（缺省/非法值回落 `swing`，`IGNIS_ATTACK_SOUNDS` 的唯一读取口）。
+ * @param {string|null|undefined} kind 焰魔本招档案键（`'swing'` / `'spin'`）
+ * @returns {string} 音效 id
+ */
+export function ignisAttackSound(kind) {
+  return IGNIS_ATTACK_SOUNDS[kind] || IGNIS_ATTACK_SOUNDS.swing;
+}
+
+/**
+ * 飞龙空中随机吼叫的间隔区间（秒，v2.64）。
+ *
+ * 用户 2026-11-07：「飞龙在空中会随机的发出声音叫声 dragon_shout.ogg」—— 「随机」故用区间
+ * 而不是固定周期（固定周期听得出节拍，像定时器而不像生物）。
+ *
+ * ⚠️ **区间下限必须 > 0**：0 会让每帧都到期 → 每帧响一声（叠成持续器噪）。
+ * 随机源用 `Math.random()`（不是 seededRandom）：吼叫是**表现层**事件，不影响世界生成，
+ * 与 X 键调试生成丧尸同一口径（红线 2 只管「seed 确定性世界生成」）。
+ */
+export const DRAGON_SHOUT = Object.freeze({
+  minSeconds: 6,
+  maxSeconds: 14,
+});
 
 /**
  * 背景音乐池（v2.51，用户 2026-11-04：「bgm 在刷新出来的时候随机选择，
@@ -40,6 +177,27 @@ export const SOUND_IDS = Object.freeze(['gun_load', 'gun_fire', 'mag7_fire', 'mi
  * 用户要的是「这次刷新听哪首」，不是「每首歌轮播」。
  */
 export const BGM_TRACKS = Object.freeze(['bgm', 'bgm2', 'bgm3']);
+
+/**
+ * Boss 战背景音乐（v2.64，用户 2026-11-07：「当召唤出 boss 的时候，背景音乐就换成 bgm_boss.ogg」）。
+ *
+ * ⚠️ **刻意不进 `BGM_TRACKS` 随机池**：那三首是「开局随机抽一首」的普通 BGM，boss 曲是
+ * 「有 Boss 在场时覆盖播放」的战斗曲，两者生命周期不同（普通曲随会话、boss 曲随 Boss 存活）。
+ * 混进随机池会让「开局就抽中 boss 曲」这种荒诞情形出现。
+ *
+ * ⚠️ **懒加载**：`bgm_boss.ogg` 约 4.7MB，绝大多数会话根本不会召唤 Boss → 不进 `preload()`
+ * 的首屏清单，首次 `setBossMusicActive(true)` 时才 fetch+decode（条件未齐走「记意图、齐了补播」
+ * 的既有手法，与 BGM/循环音效同口径）。
+ */
+export const BOSS_BGM_TRACK = 'bgm_boss';
+
+/**
+ * Boss 战 BGM 的交叉淡化时长（ms，v2.64）。
+ *
+ * 用户要求「和原有的背景音乐之间加一个渐隐的过渡」。1.5 秒是听感上「淡出淡入不突兀、
+ * 又不至于拖沓」的量级；改这个值只影响过渡快慢，不影响状态机正确性。
+ */
+export const BOSS_BGM_FADE_MS = 1500;
 
 /**
  * 背景音乐音量（mc-lite `Player.js:296` 的 `playBGM('bgm', 0.15)` 原值）。

@@ -47,6 +47,12 @@ const {
   DRAGON_JSON, DRAGON_PNG, DRAGON_META, DRAGON_BAKE_PARAMS, DRAGON_METRICS,
   dragonInputFingerprint,
 } = await import('./dragon-fingerprint.mjs');
+// 焰魔（v2.55）的烘焙参数/度量/指纹同理（与 bake-ignis.mjs 同一份逻辑）
+const {
+  IGNIS_JSON, IGNIS_PNG, IGNIS_META, IGNIS_BAKE_PARAMS, IGNIS_METRICS, IGNIS_ANIM_PERIODS,
+  IGNIS_ATTACK_ANIM_KEYS,
+  ignisInputFingerprint,
+} = await import('./ignis-fingerprint.mjs');
 // v1.26：图标走独立 icons-atlas（不再有 INVENTORY_ICONS 表）。指纹/清单走共享模块
 // （红线 1：与烘焙脚本同一份逻辑，两处漂移会让指纹比对得出错误结论）。
 const { iconFingerprintFor, FLAT_BLOCKS, FLAT_ICON_TILE } = await import('./icon-fingerprint.mjs');
@@ -64,8 +70,12 @@ const {
   PLAYGROUND, PLAYGROUND_KIND, PLAYGROUND_BLOCK, PLAYGROUND_CENTER_BLOCK,
 } = await import('../src/entities/playground/playground-config.js');
 // v2.51：音效与启动图素材契约。清单从**运行时代码** import（红线 1：不在门禁里写第二份清单）
-// —— `SOUND_IDS` / `BGM_TRACKS` 是唯一权威，这里只负责断言「列到的每个 id 都有对应 mp3」。
-const { SOUND_IDS: SOUND_IDS_FOR_GATE, BGM_TRACKS } = await import('../src/render/audio-config.js');
+// —— `SOUND_IDS` / `BGM_TRACKS` 是唯一权威，这里只负责断言「列到的每个 id 都有对应文件」。
+// v2.64：扩展名不再写死 `.mp3`（新增音效与 boss 曲是 `.ogg`）—— 走 `soundFileName(id)`
+// 这个唯一权威，否则门禁查一个不存在的 `.mp3` 会误报缺失（或反过来漏查真缺的 `.ogg`）。
+const {
+  SOUND_IDS: SOUND_IDS_FOR_GATE, BGM_TRACKS, BOSS_BGM_TRACK, soundFileName,
+} = await import('../src/render/audio-config.js');
 // 矿车冻结数据 —— 门禁据此断言铁轨类型集合与 config 单一权威一致（红线 1）
 const {
   MINECART_ITEM, TRACK_BLOCK_TYPES,
@@ -591,6 +601,99 @@ function checkDragonAsset() {
   // 成功行：全部判据都过才打印（⚠️ 涵盖全部判据，不是只判存在）
   if (!failures.some((f) => f.startsWith('[龙]'))) {
     infos.push(`[龙] 产物契约与指纹一致（${asset.bones.length} 骨骼 / ${asset.geometry.position.length / 3} 顶点 / fly ${asset.animations.fly.frameCount} 帧 + glide ${asset.animations.glide.frameCount} 帧 / scale ${asset.scale}）`);
+  }
+}
+
+// ---------------------------------------------------------------- [焰魔] 契约（v2.55）
+
+/**
+ * [焰魔] 契约：① 三个产物存在；② PNG 尺寸 = `IGNIS_BAKE_PARAMS.textureSize`；
+ * ③ 产物契约（骨骼数 / 烘焙立方体数 / 顶点数 / 索引数 / 动画清单与帧数）；
+ * ④ 指纹匹配（静默过期防护）。
+ *
+ * ⚠️ **成功行必须涵盖全部判据**（AGENTS.md 已记该坑：新判据只加进 `failures` 而不并进
+ * 成功行条件，会同时打印「✗」与「✓」，读者只看 ✓ 就误判通过）。
+ *
+ * ⚠️ **`animations.idle.fps` 不是整数**（`idleFrameCount / (2π/128)` ≈ 244.46）：
+ * 刻意的，使产物 `duration` 与表达式周期**逐位相等**（循环接缝恒 0）。
+ * 这里断言的是 **duration 关系式**，不是 fps 的具体值。
+ */
+function checkIgnisAsset() {
+  // ① 产物存在
+  for (const [p, label] of [[IGNIS_JSON, 'ignis.json'], [IGNIS_PNG, 'ignis.png'], [IGNIS_META, 'ignis.meta.json']]) {
+    if (!fs.existsSync(p)) {
+      failures.push(`[焰魔] assets/ignis/${label} 不存在 —— 跑 npm run ignis`);
+      return;
+    }
+  }
+  // ② PNG 尺寸
+  const png = PNG.sync.read(fs.readFileSync(IGNIS_PNG));
+  if (png.width !== IGNIS_BAKE_PARAMS.textureSize || png.height !== IGNIS_BAKE_PARAMS.textureSize) {
+    failures.push(`[焰魔] PNG ${png.width}×${png.height} ≠ 期望 ${IGNIS_BAKE_PARAMS.textureSize}²（烘焙到一半失败？）`);
+  }
+  // ③ 产物契约
+  const asset = JSON.parse(fs.readFileSync(IGNIS_JSON, 'utf8'));
+  const meta = JSON.parse(fs.readFileSync(IGNIS_META, 'utf8'));
+  const M = IGNIS_METRICS;
+  if (asset.scale !== M.scale || asset.metrics.scale !== M.scale) {
+    failures.push(`[焰魔] scale ${asset.scale}/${asset.metrics.scale} ≠ 期望 ${M.scale}（用户裁定原生 1 倍，产物已含、运行时不再乘）`);
+  }
+  if (asset.bones.length !== M.boneCount) {
+    failures.push(`[焰魔] 骨骼数 ${asset.bones.length} ≠ 期望 ${M.boneCount}（烘焙漏了骨骼 → 静默缺肉）`);
+  }
+  if (asset.metrics.bakedCubes !== M.bakedCubes) {
+    failures.push(`[焰魔] 烘焙立方体数 ${asset.metrics.bakedCubes} ≠ 期望 ${M.bakedCubes}`);
+  }
+  if (asset.metrics.skippedCubes !== M.skippedCubes) {
+    failures.push(`[焰魔] 跳过的零尺寸立方体数 ${asset.metrics.skippedCubes} ≠ 期望 ${M.skippedCubes}`);
+  }
+  if (asset.geometry.position.length !== M.vertexCount * 3) {
+    failures.push(`[焰魔] 顶点数 ${asset.geometry.position.length / 3} ≠ 期望 ${M.vertexCount}`);
+  }
+  if (asset.geometry.index.length !== M.indexCount) {
+    failures.push(`[焰魔] 索引数 ${asset.geometry.index.length} ≠ 期望 ${M.indexCount}`);
+  }
+  const animNames = Object.keys(asset.animations).sort();
+  // 期望清单 = idle + 全部招式键（唯一权威 `IGNIS_ANIM_SOURCES` / `IGNIS_ATTACK_ANIM_KEYS`）
+  const expectAnimNames = ['idle', ...IGNIS_ATTACK_ANIM_KEYS].sort();
+  if (animNames.join(',') !== expectAnimNames.join(',')) {
+    failures.push(`[焰魔] 动画清单 ${animNames.join(',')} ≠ 期望 ${expectAnimNames.join(',')}`);
+  } else {
+    const idle = asset.animations.idle;
+    // idle：帧数 = idleFrameCount，且 duration 逐位等于表达式周期（接缝恒 0）
+    if (idle.frameCount !== IGNIS_BAKE_PARAMS.idleFrameCount) {
+      failures.push(`[焰魔] idle 帧数 ${idle.frameCount} ≠ 期望 ${IGNIS_BAKE_PARAMS.idleFrameCount}`);
+    }
+    const idleDuration = idle.frameCount / idle.fps;
+    if (Math.abs(idleDuration - IGNIS_ANIM_PERIODS.idle) > 1e-12) {
+      failures.push(`[焰魔] idle duration ${idleDuration} ≠ 表达式周期 ${IGNIS_ANIM_PERIODS.idle}（接缝会跳变）`);
+    }
+    // 每招：帧数 = round(period × fps)，fps 固定
+    for (const key of IGNIS_ATTACK_ANIM_KEYS) {
+      const a = asset.animations[key];
+      const expectFrames = Math.round(IGNIS_ANIM_PERIODS[key] * IGNIS_BAKE_PARAMS.defaultFps);
+      if (a.frameCount !== expectFrames) {
+        failures.push(`[焰魔] ${key} 帧数 ${a.frameCount} ≠ 期望 ${expectFrames}（period×fps）`);
+      }
+      if (a.fps !== IGNIS_BAKE_PARAMS.defaultFps) {
+        failures.push(`[焰魔] ${key} fps ${a.fps} ≠ ${IGNIS_BAKE_PARAMS.defaultFps}`);
+      }
+    }
+    for (const [name, a] of Object.entries(asset.animations)) {
+      if (a.frames.length !== a.frameCount * a.boneIndices.length * 7) {
+        failures.push(`[焰魔] ${name} frames 扁平数组长度不符（${a.frames.length}）`);
+      }
+    }
+  }
+  // ④ 指纹
+  const current = ignisInputFingerprint();
+  if (meta.fingerprints?.input !== current.input) {
+    failures.push(`[焰魔] 输入已变但产物未重烘（跑 npm run ignis）\n      期望 ${current.input}\n      实际 ${meta.fingerprints?.input}`);
+  }
+  // 成功行：全部判据都过才打印
+  if (!failures.some((f) => f.startsWith('[焰魔]'))) {
+    infos.push(`[焰魔] 产物契约与指纹一致（${asset.bones.length} 骨骼 / ${asset.metrics.bakedCubes} 立方体（跳过 ${asset.metrics.skippedCubes} 零尺寸） / ${asset.geometry.position.length / 3} 顶点 / idle ${asset.animations.idle.frameCount} 帧 + `
+      + `${IGNIS_ATTACK_ANIM_KEYS.map((k) => `${k} ${asset.animations[k].frameCount} 帧`).join(' + ')} / scale ${asset.scale}）`);
   }
 }
 
@@ -2614,21 +2717,30 @@ async function checkAzaleaTrees() {
  * 音效与启动图素材契约（v2.51）。
  *
  * 钉三件事：
- *   ① `SOUND_IDS` 里每个 id 都有 `assets/sounds/<id>.mp3` —— 漏一个的形态是**静默无声**
+ *   ① `SOUND_IDS` 里每个 id 都有 `assets/sounds/<soundFileName(id)>` —— 漏一个的形态是**静默无声**
  *     （`preload()` 的 catch 只 console.warn，页面照常能玩）；
- *   ② `BGM_TRACKS` 同理（三首随机选，缺一首就有一半开局时间没音乐）；
+ *   ② `BGM_TRACKS` + `BOSS_BGM_TRACK` 同理（三首随机选，缺一首就有一半开局时间没音乐；
+ *     boss 曲缺了就是召唤 Boss 后战斗音乐静默）；
  *   ③ loading 占位图与 favicon 素材存在（缺了就是破图 + 空白图标）。
  *
  * ⚠️ **清单必须从运行时代码 import**：在门禁里再写一份 id 列表就是红线 1 的第二份权威，
  * 改了 `SOUND_IDS` 而忘改门禁时它仍然全绿。
+ * ⚠️ **扩展名走 `soundFileName(id)`**（v2.64）：写死 `.mp3` 会让 7 个 `.ogg` 音效恒报缺失。
  */
 function checkAudioAssets() {
   const missing = [];
   for (const id of SOUND_IDS_FOR_GATE) {
-    if (!fs.existsSync(path.join(ROOT, 'assets', 'sounds', `${id}.mp3`))) missing.push(`音效 ${id}.mp3`);
+    if (!fs.existsSync(path.join(ROOT, 'assets', 'sounds', soundFileName(id)))) {
+      missing.push(`音效 ${soundFileName(id)}`);
+    }
   }
   for (const id of BGM_TRACKS) {
-    if (!fs.existsSync(path.join(ROOT, 'assets', 'sounds', `${id}.mp3`))) missing.push(`背景音乐 ${id}.mp3`);
+    if (!fs.existsSync(path.join(ROOT, 'assets', 'sounds', soundFileName(id)))) {
+      missing.push(`背景音乐 ${soundFileName(id)}`);
+    }
+  }
+  if (!fs.existsSync(path.join(ROOT, 'assets', 'sounds', soundFileName(BOSS_BGM_TRACK)))) {
+    missing.push(`Boss 背景音乐 ${soundFileName(BOSS_BGM_TRACK)}`);
   }
   for (const f of ['Minecraft-Logo.png', 'icon.png']) {
     if (!fs.existsSync(path.join(ROOT, 'assets', 'ui', f))) missing.push(`启动图 assets/ui/${f}`);
@@ -2637,7 +2749,7 @@ function checkAudioAssets() {
     failures.push(`[音效] 缺素材或清单与磁盘不一致：${missing.join(', ')}`);
     return;
   }
-  infos.push(`[音效] ${SOUND_IDS_FOR_GATE.length} 个效果音 + ${BGM_TRACKS.length} 首背景音乐（${BGM_TRACKS.join('/')}）均有对应 mp3；启动图 assets/ui/ 两件齐备`);
+  infos.push(`[音效] ${SOUND_IDS_FOR_GATE.length} 个效果音 + ${BGM_TRACKS.length} 首背景音乐（${BGM_TRACKS.join('/')}）+ Boss 曲 ${BOSS_BGM_TRACK} 均有对应文件；启动图 assets/ui/ 两件齐备`);
 }
 
 const REGISTRY = await buildDefaultRegistry();
@@ -2661,6 +2773,7 @@ await checkScatterStructureIntegrity();
 checkStructureJsonOrphans();   // 2026-09-30：tall_well 悬空宝箱回归防线（⚠️ 漏了本行则门禁永不执行）
 checkZombieSkinTexture();
 checkDragonAsset();          // v2.41：祭坛飞龙烘焙产物契约与指纹（⚠️ 漏了本行则门禁永不执行）
+checkIgnisAsset();           // v2.55：焰魔烘焙产物契约与指纹（⚠️ 同上）
 checkTurretArmorTexture();
 checkSkyboxAssets();         // v1.58：天空盒立方图完整性（⚠️ 漏了本行则门禁永不执行）
 await checkNightSkyFreshness(); // v1.60：夜空烘焙产物指纹（⚠️ 漏了本行则门禁永不执行）
