@@ -20,7 +20,7 @@ import { WeatherState, RAIN } from '../render/weather.js';
 import { WeaponModelLoader } from '../render/weapon-model-loader.js';
 import { AudioManager } from '../render/audio-manager.js';
 // v2.64：音量表 / 飞龙吼叫间隔 / 死亡爆散配色的唯一权威在各自 config（红线 1：不在装配层写字面量）。
-import { SOUND_VOLUMES, DRAGON_SHOUT } from '../render/audio-config.js';
+import { SOUND_VOLUMES, DRAGON_SHOUT, ignisAttackSound } from '../render/audio-config.js';
 import { ZOMBIE_MODEL_DEFS } from '../render/zombie-model.js';
 import { ViewWeapon } from '../render/view-weapon.js';
 import { ViewArm } from '../render/view-arm.js';
@@ -2581,8 +2581,10 @@ export class Game {
    *   ① **Boss 战 BGM 意图**：场上有任一 Boss（龙或焰魔）→ `setBossMusicActive(true)`，
    *      全灭 → false；再调 `audioManager.update(nowMs)` 逐帧推进交叉淡化。
    *      判据用 `entities.count()`（零分配，与 `_consumeDragonFireRequests` 同手法）。
-   *   ② **焰魔挥刀音**：mode 迁入 `attack` 的那一帧响 `ignis_attack_swing`
-   *      （chase→attack 与 leap→attack 两条路径都算 —— 都是「挥刀」）。
+   *   ② **焰魔起手音**：mode 迁入 `attack` 的那一帧，按本招的 `attackKind` 播对应音
+   *      （`IGNIS_ATTACK_SOUNDS`：`swing` → `ignis_attack_swing`、`spin` → `ignis_attack_circle`，
+   *      v2.79 用户裁定「旋斩只用 circle，不与挥刀音叠播」）。chase→attack 与 leap→attack
+   *      两条路径都算。`attackKind` 在起手当帧就由 Agent 写进 state，所以迁移帧读到的一定是当招的值。
    *   ③ **焰魔跳跃音**：mode 迁入 `leap` 的那一帧响 `ignis_jump`
    *      （escape 脱困跳与 attack 跳劈都算，用户裁定「跳跃时」不分种类）。
    *   ④ **飞龙随机吼叫**：每条龙维护独立的下次吼叫时刻（`DRAGON_SHOUT` 区间内随机），
@@ -2629,7 +2631,10 @@ export class Game {
         const isNew = !old || old.generation !== ignis.generation;
         if (!isNew) {
           if (old.mode !== 'attack' && mode === 'attack') {
-            am.play('ignis_attack_swing', SOUND_VOLUMES.ignis_attack_swing);
+            // v2.79：按本招选起手音（旋斩 → `ignis_attack_circle`，普攻 → `ignis_attack_swing`）。
+            // 表与缺省回落都在 `audio-config.js`（红线 1：装配层不写招式分支）。
+            const soundId = ignisAttackSound(ignis.state.attackKind);
+            am.play(soundId, SOUND_VOLUMES[soundId]);
           }
           if (old.mode !== 'leap' && mode === 'leap') {
             am.play('ignis_jump', SOUND_VOLUMES.ignis_jump);

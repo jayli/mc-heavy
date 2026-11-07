@@ -38,6 +38,13 @@
  *   `player_swing` — 玩家挥剑（用户：「挥剑的时候带一个音效：player_swing.ogg」）；
  *   `emp_activated` — 剑砍中敌人（用户：「击中敌人后也带一个音效：emp_activated.ogg」）。
  *
+ * v2.79 追加旋斩音（用户 2026-11-07：「给焰魔的旋转攻击加上一个音效，音效文件是
+ *   `ignis_attack_circle.ogg`」）：
+ *   `ignis_attack_circle` — 焰魔**旋斩**起手（与普攻的 `ignis_attack_swing` 分工，
+ *      映射唯一权威在下面的 `IGNIS_ATTACK_SOUNDS`）。
+ *      ⚠️ **上游无对应音**：原版 `Ignis_Entity.java` 里普攻与旋斩都播 `ModSounds.STRONGSWING`
+ *      （没有独立的「旋斩音」），所以这条是用户新增的音，没有 Java 口径可对照。
+ *
  * ⚠️ **循环类音效（rain / running_*）也在这份清单里**：`play()` 的语义（事件触发、播完即止）
  * 不变，循环走独立的 `playLoop()` / `stopLoop()`。与 BGM 分成两份清单的理由是**生命周期**，
  * 不是「能否循环」（BGM 是单槽 + 开关意图 + 跨手势对齐，循环效果音是事件驱动的短生命）。
@@ -49,7 +56,9 @@ export const SOUND_IDS = Object.freeze(['gun_load', 'gun_fire', 'mag7_fire', 'mi
   'ignis_die', 'ignis_attack_swing', 'ignis_burn', 'ignis_hurt', 'ignis_jump',
   'dragon_shout', 'dragon_fire',
   // v2.65：近战剑音效（.ogg，见 SOUND_EXT_OVERRIDES）
-  'player_swing', 'emp_activated']);
+  'player_swing', 'emp_activated',
+  // v2.79：焰魔旋斩（.ogg，见 SOUND_EXT_OVERRIDES 与 IGNIS_ATTACK_SOUNDS）
+  'ignis_attack_circle']);
 
 /**
  * 音效文件的扩展名覆盖表（v2.64）。
@@ -73,6 +82,8 @@ export const SOUND_EXT_OVERRIDES = Object.freeze({
   // v2.65：近战剑音效
   player_swing: 'ogg',
   emp_activated: 'ogg',
+  // v2.79：焰魔旋斩
+  ignis_attack_circle: 'ogg',
 });
 
 /**
@@ -108,7 +119,38 @@ export const SOUND_VOLUMES = Object.freeze({
   ignis_jump: 0.5,
   dragon_shout: 0.4,
   dragon_fire: 0.5,
+  // v2.79：与 `ignis_attack_swing` 同档。实测素材峰值 circle −0.3 dB / swing −0.9 dB
+  //（平均能量 circle 高约 9 dB）—— 初值取同档，嫌响/嫌轻只改这一个数，不动触发点。
+  ignis_attack_circle: 0.5,
 });
+
+/**
+ * 焰魔「哪一招 → 哪个起手音」的唯一权威（v2.79）。
+ *
+ * **为什么需要这张表**：v2.75 起焰魔有两招（`attackKind = 'swing' | 'spin'`），起手音的
+ * 选择必须与招式一一对应 —— 在触发点写 `if (kind === 'spin') am.play('ignis_attack_circle')
+ * else am.play('ignis_attack_swing')` 就是红线 1 禁止的第二份分支：将来加第三招时漏改一处
+ * 的形态是**该招静默沿用普攻音**（而所有数据层指标都正常）。
+ *
+ * 覆盖度由 `check:data` 的 `[音效]` 环节之外的单测钉住（`test-bgm.js`：两键齐全、
+ * 每个 id 都在 `SOUND_IDS` 里且走 ogg、`attackKind` 的取值域与键集合一致）。
+ *
+ * ⚠️ **缺省回落 `swing`**：`attackKind` 为 `null`/缺失时（旧 state、非攻击态）与渲染器
+ * 选片段的口径一致 —— 两处都是「缺了就当作普攻」，不各自造一套默认。
+ */
+export const IGNIS_ATTACK_SOUNDS = Object.freeze({
+  swing: 'ignis_attack_swing',
+  spin: 'ignis_attack_circle',
+});
+
+/**
+ * `attackKind` → 起手音效 id（缺省/非法值回落 `swing`，`IGNIS_ATTACK_SOUNDS` 的唯一读取口）。
+ * @param {string|null|undefined} kind 焰魔本招档案键（`'swing'` / `'spin'`）
+ * @returns {string} 音效 id
+ */
+export function ignisAttackSound(kind) {
+  return IGNIS_ATTACK_SOUNDS[kind] || IGNIS_ATTACK_SOUNDS.swing;
+}
 
 /**
  * 飞龙空中随机吼叫的间隔区间（秒，v2.64）。

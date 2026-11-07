@@ -6,6 +6,7 @@
 //   ① 召唤没接 `ignis_burn` → 按 C 没声音；
 //   ② 死亡音分型没接 → 打死龙/焰魔仍是 z_die（或没声音）；
 //   ③ 挥刀/跳跃迁移检测没接 → 焰魔挥刀/跳跃没声音；
+//      （v2.79 起起手音按 `attackKind` 分流：普攻 `ignis_attack_swing` / 旋斩 `ignis_attack_circle`）
 //   ④ 火球/吼叫没接 → 龙喷火/叫唤没声音；
 //   ⑤ Boss BGM 意图没接 → 召唤后战斗音乐不淡入、全灭后不淡回。
 //
@@ -197,6 +198,101 @@ test('焰魔：挥刀播 ignis_attack_swing、跳跃播 ignis_jump、死亡播 i
   const debrisAfter = await page.evaluate(() => window.__MC_GAME__.blockHitFx.activeDebrisCount);
   expect(debrisBase, '前置：reset 后碎块池应为空').toBe(0);
   expect(debrisAfter, '焰魔死亡必须爆出碎块（不得直接消失）').toBeGreaterThanOrEqual(20);
+});
+
+test('焰魔：旋斩起手播 ignis_attack_circle、普攻起手播 ignis_attack_swing（两音不混）', async ({ page }) => {
+  test.setTimeout(180_000);
+  await page.goto(`/?vd=2&seed=${SEED}`);
+  await waitWorldReady(page);
+  await gotoOpenField(page);
+
+  // 召唤焰魔到玩家身边 4 格（attackRange 5.5 内 → 会自然起手）
+  const sum = await page.evaluate(() => {
+    const g = window.__MC_GAME__;
+    const p = g.player.physics.pos;
+    return g.ignises.summon('audio-spec:0:4', Math.floor(p.x), Math.floor(p.z) + 4, 1, Math.floor(p.y));
+  });
+  expect(sum.ok, `前置：焰魔召唤成功（${sum.reason ?? ''}）`).toBe(true);
+
+  // ⚠️ **探针必须装在页面里逐帧采样**，而且必须同时录两样东西：
+  //   · **起手事件**（`mode` 从非 attack 迁入 attack 的那一帧）与当时的 `attackKind`；
+  //   · 该帧两个音的**播放增量**（`playRequests` 差分）。
+  // 只录音符就分不清「这音是哪一招响的」；只录 mode 就不知道到底出没出声。
+  // 从 Playwright 侧轮询更不行：迁移那一帧一瞬即逝，而轮询跨进程往返 ~10ms。
+  //
+  // ⚠️ **同一 tick 内的一致性**：`Game.update()` 里先推实体、后调 `_syncBossAudio()`
+  //（迁移检测 + play），所以任一 rAF 快照都能看到一个完整 tick —— 要么都还没发生、
+  // 要么两件都已完成，不会读到半帧。
+  await page.evaluate((id) => {
+    const g = window.__MC_GAME__;
+    const ids = ['ignis_attack_swing', 'ignis_attack_circle'];
+    const snap = {};
+    for (const k of ids) snap[k] = g.audioDebugState().playRequests[k] ?? 0;
+    /** @type {Array<{kind: string|null, frame: number, played: Record<string, number>}>} */
+    const events = [];
+    /** 有播放但没有对应的起手事件（游离音）—— 那也是一种缺陷 */
+    const stray = [];
+    let frame = 0;
+    const modeOf = () => g.entities.get(id)?.state?.mode ?? null;
+    let prevMode = modeOf();
+    const tick = () => {
+      frame += 1;
+      const countsNow = g.audioDebugState().playRequests;
+      const played = {};
+      for (const k of ids) {
+        played[k] = (countsNow[k] ?? 0) - snap[k];
+        snap[k] = countsNow[k] ?? 0;
+      }
+      const mode = modeOf();
+      const started = prevMode !== 'attack' && mode === 'attack';
+      if (started) {
+        events.push({
+          kind: g.entities.get(id)?.state?.attackKind ?? null, frame, played,
+        });
+      } else if (played.ignis_attack_swing + played.ignis_attack_circle > 0) {
+        stray.push({ mode, frame, played });
+      }
+      prevMode = mode;
+      window.__SPIN_AUDIO_PROBE__ = { events, stray };
+      if (events.length < 12) requestAnimationFrame(tick);
+    };
+    window.__SPIN_AUDIO_PROBE__ = { events, stray };
+    requestAnimationFrame(tick);
+  }, sum.id);
+
+  // 等采到足够多的起手样本。冷却 [3.5,6.0]s + 动画 1.9/2.75s ⇒ 每个起手 ~5.5s 均值；
+  // 12 个样本约 65s，留 120s 窗口。Spin 权重 0.3 且带 8s 独立冷却 ⇒ 12 个样本里
+  // 旋斩预期 3~4 次（完全一次都没抽中的概率 ≈ 0.7^15 ≈ 0.5%，窗口足够容错）。
+  await page.waitForFunction(() => (window.__SPIN_AUDIO_PROBE__?.events.length ?? 0) >= 12,
+    null, { timeout: 120_000 }).catch(() => {});
+
+  const probe = await page.evaluate(() => window.__SPIN_AUDIO_PROBE__);
+  const { events, stray } = probe;
+  const spins = events.filter((e) => e.kind === 'spin');
+  const swings = events.filter((e) => e.kind === 'swing');
+  const summary = events.map((e) =>
+    `${e.kind}:swing=${e.played.ignis_attack_swing},circle=${e.played.ignis_attack_circle}`).join(' | ');
+
+  // 前置：两类招式都真的出现过（只采到普攻时，下面「旋斩播 circle」那条测的是空集）
+  expect(events.length, '前置：必须采到多个起手（实际没有 → 焰魔一直没起手）')
+    .toBeGreaterThanOrEqual(4);
+  expect(swings.length, `前置：普攻起手必须非空（实际：${summary}）`).toBeGreaterThan(0);
+  expect(spins.length, `前置：旋斩起手必须非空（实际：${summary}）`).toBeGreaterThan(0);
+
+  // ① 旋斩起手 → 只播 ignis_attack_circle（不播、或同时播挥刀音都算错）
+  for (const e of spins) {
+    expect(e.played.ignis_attack_circle, `旋斩起手必须播 ignis_attack_circle（实际：${summary}）`).toBe(1);
+    expect(e.played.ignis_attack_swing, '旋斩起手不得再播挥刀音（用户裁定只用 circle）').toBe(0);
+  }
+  // ② 普攻起手 → 只播 ignis_attack_swing（负向锚点：
+  //   把触发点写成恒 `ignis_attack_swing` 时，① 红而 ② 仍绿 —— 两条成对才能钉住「分流」）
+  for (const e of swings) {
+    expect(e.played.ignis_attack_swing, `普攻起手必须播 ignis_attack_swing（实际：${summary}）`).toBe(1);
+    expect(e.played.ignis_attack_circle, '普攻起手不得播旋斩音').toBe(0);
+  }
+  // ③ 不得有游离音：每次播放都必须对得上一次起手（否则计数被别处悄悄写到，
+  //   ① 、② 可能描的是一个与真实起手无关的分支）
+  expect(stray, `不得有游离的起手音（实际：${JSON.stringify(stray)}）`).toHaveLength(0);
 });
 
 test('焰魔：脱困飞跃播 ignis_jump（2 格高围栏困住 → 卡住后跳出）', async ({ page }) => {

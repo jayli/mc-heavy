@@ -22,11 +22,13 @@ import * as THREE from 'three';
 import { AudioManager, BGM_TRACKS, pickBgmTrack } from '../render/audio-manager.js';
 import {
   SOUND_IDS, SOUND_EXT_OVERRIDES, SOUND_VOLUMES, BOSS_BGM_TRACK, BOSS_BGM_FADE_MS,
-  soundFileName,
+  soundFileName, IGNIS_ATTACK_SOUNDS, ignisAttackSound,
 } from '../render/audio-config.js';
 // v2.65：近战剑的两个音效是**武器音**，音量权威在 catalog 而不在 `SOUND_VOLUMES`
 // （与枪声同一手法）—— 本文件的契约用例要同时读两侧才能钉住「只有一份」。
 import { WEAPONS, WEAPON_IDS } from '../player/weapons/weapon-catalog.js';
+// v2.79：招式 → 起手音的唯一权威映射与招式取值域（两边都要读才能钉住「键集合一致」）。
+import { IGNIS_ATTACK_IDS } from '../entities/ignis/ignis-config.js';
 
 /**
  * 造一个只在测试里用的管理器：真 listener、假解码（返回 1 秒静音 buffer）。
@@ -357,6 +359,60 @@ test('audio-config: boss 曲不进随机池，淡变时长为正', () => {
   assertFalse(BGM_TRACKS.includes(BOSS_BGM_TRACK),
     'bgm_boss 混进随机池会让开局就抽中战斗曲');
   assertTrue(BOSS_BGM_FADE_MS > 0, '淡变时长必须为正（0 = 硬切，用户要的是渐隐过渡）');
+});
+
+// ==================== v2.79：焰魔旋斩音（招式 → 起手音的唯一权威） ====================
+
+/**
+ * 这组用例钉的是「哪个招式播哪个音」的**唯一权威**：v2.75 起焰魔有两招，起手音的选择若
+ * 写在装配层（`if (kind === 'spin') …`），加第三招时漏改一处的形态是**该招静默沿用普攻音**
+ * —— 而所有数据层指标全绿、只是声音不对。
+ */
+test('audio-config: v2.79 旋斩音在清单/覆盖表/音量表三处齐全', () => {
+  const id = 'ignis_attack_circle';
+  // ① 不在 `SOUND_IDS` → `preload()` 不加载 → fetch 不发起 → **静默无声**
+  assertTrue(SOUND_IDS.includes(id), `${id} 必须在清单里（否则 preload 不加载 → 静默）`);
+  // ② 扩展名回落 mp3 的形态同样是静默无声（404 被 preload 的 catch 吞成一句 warn）
+  assertEqual(SOUND_EXT_OVERRIDES[id], 'ogg', `${id} 必须在扩展名覆盖表里`);
+  assertEqual(soundFileName(id), 'ignis_attack_circle.ogg');
+  // ③ 音量 0/缺失 = 听不见
+  assertTrue(typeof SOUND_VOLUMES[id] === 'number' && SOUND_VOLUMES[id] > 0,
+    `${id} 必须有正音量（0/缺失 = 听不见）`);
+});
+
+test('audio-config: IGNIS_ATTACK_SOUNDS 覆盖全部招式且每个 id 都能播放', () => {
+  // ① 键集合必须与 `IGNIS_ATTACK_IDS`（抽签取值域）**完全一致**：少一个键的形态是那招
+  // 静默回落普攻音；多一个键是残留的旧招式名。
+  const kinds = [...IGNIS_ATTACK_IDS].sort();
+  const keys = Object.keys(IGNIS_ATTACK_SOUNDS).sort();
+  assertTrue(keys.length === kinds.length && keys.every((k, i) => k === kinds[i]),
+    `IGNIS_ATTACK_SOUNDS 的键必须与 IGNIS_ATTACK_IDS 一致（实际 ${keys} vs ${kinds}）`);
+  // ② 每个音效 id 都要真能出声（清单 + ogg + 正音量）：只钉「表里有映射」会漏掉
+  // 「映射到一个 preload 不加载的 id」这种静默失效。
+  for (const kind of kinds) {
+    const id = IGNIS_ATTACK_SOUNDS[kind];
+    assertTrue(SOUND_IDS.includes(id), `${kind} 的起手音 ${id} 必须在 SOUND_IDS 里`);
+    assertEqual(SOUND_EXT_OVERRIDES[id], 'ogg', `${kind} 的起手音 ${id} 必须是 ogg`);
+    assertTrue(typeof SOUND_VOLUMES[id] === 'number' && SOUND_VOLUMES[id] > 0,
+      `${kind} 的起手音 ${id} 必须有正音量`);
+  }
+  // ③ 两招不得共用同一个音（共用 = 加了招式却没加音，而断言全绿）
+  assertTrue(IGNIS_ATTACK_SOUNDS.swing !== IGNIS_ATTACK_SOUNDS.spin,
+    '普攻与旋斩必须是两个不同的音效（共用同一个音 = 新增招式没接音）');
+  // ④ 旋斩音就是用户指定的那个文件
+  assertEqual(IGNIS_ATTACK_SOUNDS.spin, 'ignis_attack_circle',
+    '旋斩必须播 ignis_attack_circle.ogg（用户 2026-11-07 指定）');
+});
+
+test('audio-config: ignisAttackSound 缺省/非法 attackKind 回落 swing（不返回 undefined）', () => {
+  // 缺省回落必须与渲染器选片段的口径一致（`ignis-renderer.js`：缺 attackKind 用 attack 片段）。
+  // 返回 `undefined` 的形态是 `play(undefined)` → 计数记到 undefined 键 → 静默无声。
+  for (const bad of [null, undefined, '', 'nope', 0, {}]) {
+    assertEqual(ignisAttackSound(bad), IGNIS_ATTACK_SOUNDS.swing,
+      `非法 attackKind ${String(bad)} 必须回落 swing，而不是 undefined`);
+  }
+  assertEqual(ignisAttackSound('spin'), 'ignis_attack_circle');
+  assertEqual(ignisAttackSound('swing'), 'ignis_attack_swing');
 });
 
 // ==================== v2.64：Boss 战 BGM 交叉淡化状态机 ====================
