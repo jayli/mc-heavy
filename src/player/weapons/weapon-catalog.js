@@ -18,10 +18,10 @@ export const WEAPON_IDS = Object.freeze({
  * 度数结果是 **-60° / -90°**。这里用表达式而不是 `-1.047` 这类硬编码小数，是为了让
  * 后面的人一眼看出它是角度换算 —— v2.65 的缺陷就是「度/弧度」混用。
  */
-const SWORD_LENGTH_SCALE = 1.07534;
-const SWORD_ROTATION_X = (-87.626 * Math.PI) / 180;
-const SWORD_ROTATION_Y = (-29.922 * Math.PI) / 180;
-const SWORD_ROTATION_Z = (-53.738 * Math.PI) / 180;
+const SWORD_LENGTH_SCALE = 1.2534;
+const SWORD_ROTATION_X = (168.639 * Math.PI) / 180;
+const SWORD_ROTATION_Y = (10.654 * Math.PI) / 180;
+const SWORD_ROTATION_Z = (-172.683 * Math.PI) / 180;
 
 /** 曳光池上限：池满时丢弃最旧的纯视觉曳光，绝不丢弃命中或世界编辑（M4 规格 §4.2） */
 export const MAX_ACTIVE_TRACERS = 32;
@@ -117,7 +117,7 @@ export const WEAPONS = freeze({
      */
     transform: {
       scale: [SWORD_LENGTH_SCALE, SWORD_LENGTH_SCALE, SWORD_LENGTH_SCALE],
-      position: [1.09287, -0.006, -1.00283],
+      position: [1.09287, -0.206, -1.20283],
       rotation: [SWORD_ROTATION_X, SWORD_ROTATION_Y, SWORD_ROTATION_Z],
       rotationOrder: 'XYZ',
     },
