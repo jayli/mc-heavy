@@ -18,10 +18,10 @@ export const WEAPON_IDS = Object.freeze({
  * 度数结果是 **-60° / -90°**。这里用表达式而不是 `-1.047` 这类硬编码小数，是为了让
  * 后面的人一眼看出它是角度换算 —— v2.65 的缺陷就是「度/弧度」混用。
  */
-const SWORD_LENGTH_SCALE = 0.85967;
-const SWORD_ROTATION_X = (78.506 * Math.PI) / 180;
-const SWORD_ROTATION_Y = (-76.693 * Math.PI) / 180;
-const SWORD_ROTATION_Z = (126.082 * Math.PI) / 180;
+const SWORD_LENGTH_SCALE = 1.07534;
+const SWORD_ROTATION_X = (-87.626 * Math.PI) / 180;
+const SWORD_ROTATION_Y = (-29.922 * Math.PI) / 180;
+const SWORD_ROTATION_Z = (-53.738 * Math.PI) / 180;
 
 /** 曳光池上限：池满时丢弃最旧的纯视觉曳光，绝不丢弃命中或世界编辑（M4 规格 §4.2） */
 export const MAX_ACTIVE_TRACERS = 32;
@@ -117,39 +117,46 @@ export const WEAPONS = freeze({
      */
     transform: {
       scale: [SWORD_LENGTH_SCALE, SWORD_LENGTH_SCALE, SWORD_LENGTH_SCALE],
-      position: [0.26405, 0.10824, -1.09537],
+      position: [1.09287, -0.006, -1.00283],
       rotation: [SWORD_ROTATION_X, SWORD_ROTATION_Y, SWORD_ROTATION_Z],
       rotationOrder: 'XYZ',
     },
     /**
      * 挥砍支点（**节点局部坐标**，未乘 scale）= 剑柄末端在节点里的位置。
      *
-     * 实测值：柄末端局部坐标 `(0, -0.9375, 0.0996)` × scale `0.5436` = `(0, -0.5097, 0.0541)`。
+     * 实测值 = 柄末端**节点局部**坐标 `(0, -0.9375, 0.0996)`，**不乘 scale**：
+     * 挥砍矩阵 `M = ΔR · baseM · T(c)` 作用在节点局部点上，而 baseM 已含节点 scale，
+     * 再乘一次 scale 等于把支点推远一倍（v2.69 实测握点漂移 166px 的根因）。
+     * 不乘 scale 还有个好处：改 `SWORD_LENGTH_SCALE` 时支点不用跟着重标。
      * 挥砍时绕它转，则**握点（手）在相机空间里不动**、剑身在支点外侧扫弧 —— 这才是挥砍。
      * 绕模型中心转的形态是「螺旋桨」，用户 2026-11-06 已明确否掉。
      */
-    swingPivot: [0, -0.80594, 0.08561],
+    swingPivot: [0, -0.9375, 0.09958],
     // 近战：无 muzzleOffset / localStart / tracer / automatic / scan（枪专属字段）
     entityDamage: 50, entityRange: 3, melee: true,
     hitSound: 'emp_activated', hitVolume: 0.6,
     swingSeconds: 0.3,
     /**
-     * 挥砍幅度（弧度 / 格）。四段式，与 `view-weapon.js` 的三条曲线配合：
-     * `windup`（前 30% 抬手）→ `arc`（快出下劈）→ `roll`/`yaw`（滞后甩腕）。
+     * 挥砍幅度（弧度）。轴是**相机空间**的（见 `view-weapon.js` 头部注释）：
+     * 相机 Z+ = 屏幕平面内逆时针（蓄力与主挥同号连续斜劈）、Y+ = 收刀沿屏底拉回；
+     * 与静止姿态解耦，改姿态不重标。
+     * 蓄力（Z+ 抬向正上）→ 主挥（Z+ 继续斜劈到左下）→ 收刀（Y+ 沿屏底回位）→ 甩腕。
      */
     swing: {
-      /** 蓄力抬手幅度（反向，拉起剑） */
-      windupArc: 0.55,
-      /** 主下劈幅度（绕握点的 pitch） */
-      arc: 1.45,
-      /** 甩腕（绕握点的 roll，滞后曲线） */
-      roll: 0.55,
-      /** 横摆（绕握点的 yaw，滞后曲线）—— 原版主摆动轴 */
-      yaw: 0.35,
-      /** 下劈时向下探（格） */
-      drop: 0.12,
-      /** 下劈时向前探（格） */
-      forward: 0.22,
+      /** 蓄力段占比：前 25% 抬剑，后 75% 砍出去再收回 */
+      windupEnd: 0.25,
+      /** 蓄力抬剑（相机 Z+，屏幕平面内逆时针：剑尖从右上抬向正上） */
+      windupRoll: 0.35,
+      /** 主挥（相机 Z+ 继续逆时针：正上 → 左 → 左下，右手持剑的斜劈半圆） */
+      roll: 3.1,
+      /** 下劈带的深度（相机 X，辅助） */
+      chop: 0.3,
+      /** 下劈带的横移（相机 Y，辅助） */
+      sweep: 0.18,
+      /** 收刀（相机 Y+，滞后曲线）：把回位路径沿屏底拉回，不走原弧翻回屏顶 */
+      returnSweep: 0.9,
+      /** 甩腕（绕剑身长轴拧腕，滞后曲线） */
+      wrist: 0.5,
     },
     /**
      * 击退距离（格）。用户：「挨了一剑后，如果没死的话，就往后退一小步」。

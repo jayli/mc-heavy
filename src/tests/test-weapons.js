@@ -812,24 +812,26 @@ test('weapon catalog: 剑的第一人称摆放冻结值（v2.66 反解口径）'
   // v2.65 曾把度数直填进来 → 被当成 -3437°，剑体朝向完全无从预期。
   assertTrue(Math.abs(rotation[0]) <= Math.PI && Math.abs(rotation[1]) <= Math.PI
     && Math.abs(rotation[2]) <= Math.PI, 'rotation 必须是弧度（绝对值 ≤ π），填度数会让剑体乱转');
-  // 冻结值（反解结果：柄屏 (0.80W, 0.87H) / 尖 (0.60W, 0.47H)，见 catalog 注释）
+  // 冻结值（v2.69 反解结果：柄屏 (1050,780) 藏屏下 / 尖 (1216,262) 朝右上，对齐参考图）
   assertEqual(rotationOrder, 'XYZ');
   const deg = rotation.map((r) => +((r * 180) / Math.PI).toFixed(2));
-  assertEqual(deg.join(','), '78.51,-76.69,126.08');
-  assertEqual(position.map((v) => +v.toFixed(3)).join(','), '0.264,0.108,-1.095');
-  assertEqual(+scale[0].toFixed(3), 0.860);
+  assertEqual(deg.join(','), '-87.63,-29.92,-53.74');
+  assertEqual(position.map((v) => +v.toFixed(3)).join(','), '1.093,-0.006,-1.003');
+  assertEqual(+scale[0].toFixed(3), 1.075);
   // 位置必须在相机前方（相机朝 -Z），否则模型跑到镜头背后
   assertTrue(position[2] < -0.3, '剑必须在相机前方');
-  // 挥砍支点 = 剑柄末端（节点局部坐标，未乘 scale）。绕它转才是挥砍，绕模型中心是螺旋桨。
+  // 挥砍支点 = 剑柄末端（**节点局部**坐标，不乘 scale：挥砍矩阵作用在节点局部点上，
+  // baseM 已含 scale，再乘一次等于把支点推远一倍 —— v2.69 实测握点漂移 166px 的根因）。
   const pivot = sword.swingPivot;
   assertTrue(Array.isArray(pivot) && pivot.length === 3, '近战武器必须给 swingPivot（挥砍支点）');
-  // 柄末端局部坐标 (0, -0.9375, 0.0996) × scale ⇒ 断言量级一致（防“支点跑到剑尖上”）
-  assertTrue(pivot[1] < -0.7 && pivot[1] > -1.1, '支点必须在剑柄侧（group 局部柄端 −0.9375 × scale）');
-  assertTrue(Math.abs(pivot[1] - (-0.9375 * scale[0])) < 0.02, '支点必须等于柄末端 × scale');
-  // 四段式挥砍参数（蓄力/下劈/甩腕/横摆）
-  assertTrue(sword.swing.windupArc > 0 && sword.swing.arc > sword.swing.windupArc,
-    '下劈幅度必须大于蓄力幅度（否则看不出砍）');
-  assertTrue(sword.swing.roll > 0 && sword.swing.yaw > 0, '甩腕与横摆都要有（原版双轴）');
+  // 柄末端节点局部坐标实测 (0, -0.9375, 0.0996)，与 scale 无关
+  assertTrue(pivot[1] < -0.7 && pivot[1] > -1.1, '支点必须在剑柄侧（节点局部柄端 −0.9375）');
+  assertTrue(Math.abs(pivot[1] - (-0.9375)) < 0.02, '支点必须等于柄末端节点局部坐标（不乘 scale）');
+  // 挥砍参数（相机空间轴：Z+ 逆时针斜劈 / Y+ 收刀沿屏底拉回 / 剑轴拧腕）
+  assertTrue(sword.swing.roll > sword.swing.windupRoll,
+    '主挥幅度必须大于蓄力幅度（否则看不出砍）');
+  assertTrue(sword.swing.returnSweep > 0, '收刀必须沿屏底拉回（不走原弧翻回屏顶）');
+  assertTrue(sword.swing.wrist > 0, '甩腕要有（滞后拧腕）');
 });
 
 test('WeaponController: 剑挥砍命中实体 —— 扣血 + 击退 + melee-hit 事件', () => {

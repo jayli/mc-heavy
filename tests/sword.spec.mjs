@@ -222,10 +222,12 @@ test.describe('近战剑（v2.65）', () => {
     // 实测 73.4%（旧实现是 19.6%，那才是真缺陷）。
     expect(m.inViewPct, `剑体在视窗内占比 ${m.inViewPct.toFixed(1)}%（bbox=${m.bbox.map(Math.round)}）`)
       .toBeGreaterThan(55);
-    // ④ 姿态方向：柄在右下、尖在左上
+    // ④ 姿态方向（v2.69 对齐参考图 `~/ttt/bug/images.jpeg`）：刃身沿屏幕右缘，
+    //    柄在右下（藏屏下）、尖在右上。旧版「尖在左上」与参考图相反，用户已否。
     expect(m.screenHilt[0], '剑柄必须在屏幕右半边').toBeGreaterThan(1280 * 0.6);
-    expect(m.screenTip[0], '剑尖必须在屏幕左半边').toBeLessThan(1280 * 0.6);
+    expect(m.screenTip[0], '剑尖必须在屏幕右半边（刃沿右缘，同参考图）').toBeGreaterThan(1280 * 0.6);
     expect(m.screenHilt[1], '剑柄必须低于剑尖（柄在下）').toBeGreaterThan(m.screenTip[1]);
+    expect(m.screenTip[1], '剑尖必须在屏幕上半（朝前上方）').toBeLessThan(720 * 0.5);
   });
 
   test('剑体尺寸与握持感（v2.68：剑要够大 + 剑柄藏到屏幕下方，不画手臂）', async ({ page }) => {
@@ -299,6 +301,84 @@ test.describe('近战剑（v2.65）', () => {
     expect(m.tipScreenY).toBeGreaterThan(0);
     // ④ 不画手臂（用户明确要求）
     expect(m.armVisible, '持剑时不得显示手臂').toBe(false);
+  });
+
+  test('挥砍轨迹（v2.69：右上蓄力 → 自上而下斜劈半圆 → 沿屏底收回，握点不动）', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.goto('/?vd=4');
+    await waitWorldReady(page);
+    await page.evaluate(() => window.__MC_GAME__.selectWeapon('sword'));
+    await page.waitForFunction(() => window.__MC_GAME__.player.viewWeapon.node !== null, null, { timeout: 20_000 });
+    await page.waitForTimeout(1000);
+
+    // 用户 2026-11-06：「现在的挥剑的动作非常不自然，是从下向上挥，顺序不对，
+    // 挥剑是从上向下挥，抡一个半圆的形状，然后收回」。
+    // 判据全部是**剑尖屏幕轨迹**（元素中心走真实矩阵链），不是目视：
+    //   ① 蓄力段剑尖必须比静止时**更高**（抬剑，不是压剑）
+    //   ② 主挥段剑尖必须**先向左下**扫过屏幕左半（斜劈半圆，不是原地上下抖）
+    //   ③ 收刀段剑尖回到右半屏（沿屏底拉回，不翻回屏顶）
+    //   ④ 握点（剑柄端）全程几乎不动（支点是手，不是螺旋桨）
+    const m = await page.evaluate(async () => {
+      const g = window.__MC_GAME__;
+      const THREE = await import('three');
+      const vw = g.player.viewWeapon;
+      const node = vw.node;
+      const group = node.children[0];
+      let mesh = null; node.traverse((o) => { if (o.isMesh) mesh = o; });
+      const pos = mesh.geometry.attributes.position;
+      const cam = g.camera;
+      const tan = Math.tan((cam.fov / 2) * Math.PI / 180);
+      const W = innerWidth, H = innerHeight;
+      const scr = (v) => [((v.x / (-v.z * tan * cam.aspect)) + 1) / 2 * W, (1 - v.y / (-v.z * tan)) / 2 * H];
+      const elCenter = (e) => {
+        const c = new THREE.Vector3();
+        for (let k = 0; k < 24; k++) {
+          c.add(new THREE.Vector3(pos.getX(e * 24 + k), pos.getY(e * 24 + k), pos.getZ(e * 24 + k)));
+        }
+        return c.multiplyScalar(1 / 24).multiplyScalar(group.scale.x).add(group.position);
+      };
+      const tipL = elCenter(5), hiltL = elCenter(0);
+      const measure = () => {
+        g.scene.updateMatrixWorld(true); cam.updateMatrixWorld(true);
+        const camInv = new THREE.Matrix4().copy(cam.matrixWorld).invert();
+        const f = (q) => scr(q.clone().applyMatrix4(node.matrixWorld).applyMatrix4(camInv));
+        return { tip: f(tipL), hilt: f(hiltL) };
+      };
+      const rest = measure();
+      const frames = [];
+      for (let i = 0; i <= 20; i++) {
+        const p = i / 20;
+        vw._swingElapsed = p * 0.3000001; vw._swingDuration = 0.3; vw.update(0, {});
+        frames.push({ p, ...measure() });
+      }
+      vw._swingElapsed = Infinity; vw.update(0, {});
+      return { rest, frames };
+    });
+
+    const restTip = m.rest.tip;
+    const windup = m.frames.filter((f) => f.p > 0 && f.p <= 0.2);
+    const slash = m.frames.filter((f) => f.p > 0.25 && f.p <= 0.55);
+    const ret = m.frames.filter((f) => f.p > 0.6 && f.p <= 0.9);
+
+    // ① 蓄力：剑尖比静止更高（y 更小）
+    const windupTop = Math.min(...windup.map((f) => f.tip[1]));
+    expect(windupTop, `蓄力段剑尖最高 y=${windupTop.toFixed(0)} 必须高于静止 y=${restTip[1].toFixed(0)}（抬剑）`)
+      .toBeLessThan(restTip[1] - 40);
+    // ② 主挥：剑尖扫到屏幕左半（斜劈半圆）
+    const slashLeft = Math.min(...slash.map((f) => f.tip[0]));
+    expect(slashLeft, `主挥段剑尖最左 x=${slashLeft.toFixed(0)} 必须进入左半屏（<640）`)
+      .toBeLessThan(1280 * 0.5);
+    // ③ 收刀：不翻回屏顶（整段 y > 0；Y3 版的缺陷是收刀沿原弧翻回，y 到 −333），
+    //    且最终回到右半屏归位。
+    const retMinY = Math.min(...ret.map((f) => f.tip[1]));
+    expect(retMinY, `收刀段剑尖最低 y=${retMinY.toFixed(0)} 不得出屏顶（> 0）`).toBeGreaterThan(0);
+    const last = m.frames[m.frames.length - 2]; // p=0.95
+    expect(last.tip[0], `收刀末（p=0.95）剑尖 x=${last.tip[0].toFixed(0)} 必须回到右半屏`)
+      .toBeGreaterThan(1280 * 0.5);
+    // ④ 握点全程几乎不动（支点是手）
+    const hiltDrift = Math.max(...m.frames.map((f) => Math.hypot(f.hilt[0] - m.rest.hilt[0], f.hilt[1] - m.rest.hilt[1])));
+    expect(hiltDrift, `握点全程漂移 ${hiltDrift.toFixed(1)}px 必须 < 5（手不动、剑身扫）`)
+      .toBeLessThan(5);
   });
 
   test('剑命中丧尸：扣血 + 红闪 + 击退 + 音效', async ({ page }) => {

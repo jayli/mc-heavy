@@ -7,31 +7,35 @@ import * as THREE from 'three';
 import { WEAPONS, WEAPON_IDS } from '../player/weapons/weapon-catalog.js';
 
 /**
- * 近战挥砍曲线（v2.67 按原版 `ItemInHandRenderer` 重建）。
+ * 近战挥砍曲线（v2.69 按用户裁定重建：「挥剑是从上向下挥，抡一个半圆，然后收回」）。
  *
- * **为何要绕「握点」转，而不是绕模型中心**（用户 2026-11-06：「原来的挥剑动作你也给
- * 简化了，也是不对的，要有一个合理的挥剑动作」）：v2.65/v2.66 只对节点做整体
- * `rotation.x -= arc`，而节点原点在**模型中心** ⇒ 整把剑绕自己的腰线像螺旋桨一样转，
- * 剑柄也跟着飞 —— 那不是挥砍，是转棍子。真实挥砍的支点是**手（握点）**，剑身在支点
- * 外侧成弧扫过。
+ * **挥砍旋转定义在相机空间，不是节点局部欧拉角**（v2.69 的根因修复）：
+ * 局部欧拉轴的屏幕语义**随姿态漂移** —— 探针实测旧姿态 `x+ = 剑尖上 / y+ = 左`，
+ * 换了静止姿态后变成 `x+ = 右上 / y+ = 右下 / z+ = 左下`，同一组挥砍参数在新姿态下
+ * 合成出「直直向下捅」、剑体整把出屏。用户已两次改姿态，第三次必须解耦：
+ * 把挥砍旋转 ΔR **前乘**到基础矩阵上（`M = ΔR · M_base · T(c)`），则
+ *   · 相机 X− = 下劈（屏幕水平轴，X+ = 上）
+ *   · 相机 Y+ = 横扫（屏幕垂直轴，右→左）
+ *   · 绕剑身长轴 = 拧腕
+ * 永远成立，与姿态无关。`T(c)` 是支点补偿：使握点（catalog `swingPivot`）在相机空间
+ * 不动 —— 绕模型中心转是「螺旋桨」，用户 v2.67 已否掉。
  *
- * **三段式（不是单一 sin）**：
- *   · `attack = sin(√p·π)` —— 峰在 p≈0.25，快出慢收 ⇒ 主下劈
- *   · `whip   = sin(p²·π)` —— 峰在 p≈0.707，滞后 ⇒ 甩腕
- *   · `windup` —— 前 30% **反向抬手蓄力**，之后才砍下去
- * 四段齐（蓄力 → 快劈 → 滞腕 → 回位）才像一刀；只一个正弦峰值就是「摆了一下」。
+ * **半圆的合成**（相机空间，探针实测轴语义）：
+ *   · 相机 **Z+ = 屏幕平面内逆时针**（剑尖从右上 → 正上 → 左上 → 左下）
+ *   · 蓄力与主挥**同号**（连续逆时针）：右上 → 抬到正上 → 继续斜劈到左下，
+ *     这就是右手持剑「从上向下抡一个半圆」
+ *   · 收刀不走原弧（单标量 roll 0→A→0 会原路翻回屏顶）：收刀段加相机 **Y+**
+ *     把回位路径沿屏底拉回，再归位
+ * 甩腕 `whip` 滞后于主挥，收刀时才拧腕。
  */
 const SWORD_SWING_CURVES = Object.freeze({
-  /** 快出慢收：下劈主曲线 */
-  attack: (p) => Math.sin(Math.sqrt(p) * Math.PI),
-  /** 滞后：甩腕曲线 */
+  /** 主挥：`end` 之后 0→1→0，快出慢收（√ 把峰值前移到 p≈0.44） */
+  sweep: (p, end) => (p <= end ? 0 : Math.sin(Math.sqrt((p - end) / (1 - end)) * Math.PI)),
+  /** 滞后甩腕：峰在 p≈0.707（收刀段） */
   whip: (p) => Math.sin(p * p * Math.PI),
-  /** 蓄力：前 `end` 段抬手（正），之后归 0 */
+  /** 蓄力：前 `end` 段 0→1→0（抬剑后拉），之后归 0 交给主挥 */
   windup: (p, end) => (p >= end ? 0 : Math.sin((p / end) * Math.PI)),
 });
-
-/** 蓄力段占比（前 30% 抬手，后 70% 砍下去） */
-const SWORD_WINDUP_END = 0.3;
 
 export class ViewWeapon {
   /**
@@ -136,56 +140,50 @@ export class ViewWeapon {
       return;
     }
 
-    // ---- 近战：绕「握点」挥砍 ----
+    // ---- 近战：相机空间挥砍（绕握点） ----
     //
-    // 支点 = catalog 的 `swingPivot`（**节点局部坐标**，= 剑柄末端位置 × scale）。
-    // 真挥砍的支点是手，不是剑的中心 —— 绕中心转的形态是「螺旋桨」，用户已明确指出。
-    // 数学：目标变换 = T(t) · R · T(−pivot)，使 pivot 在相机空间里保持不动：
-    //   新位置 = 基础位置 + pivot − R · pivot
+    // ΔR 前乘到基础矩阵：挥砍轴 = 相机轴（X− 下劈 / Y+ 横扫 / 剑轴拧腕），与姿态解耦。
+    // 支点补偿 T(c)：c = M_base⁻¹ · ΔR⁻¹ · p0 − P（p0 = M_base · P = 握点相机位置），
+    // 使 M · P = p0 恒成立 ⇒ 握点在相机空间不动。
     const pivot = weapon.swingPivot ?? [0, 0, 0];
-    let swingPitch = 0;
-    let swingRoll = 0;
-    let swingYaw = 0;
-    let swingDrop = 0;
-    let swingForward = 0;
     const swinging = weapon.swing && this._swingElapsed < this._swingDuration;
     if (swinging) {
       this._swingElapsed = Math.min(this._swingDuration, this._swingElapsed + dt);
       const p = this._swingElapsed / this._swingDuration;
-      const attack = SWORD_SWING_CURVES.attack(p);
-      const whip = SWORD_SWING_CURVES.whip(p);
-      const windup = SWORD_SWING_CURVES.windup(p, SWORD_WINDUP_END);
       const w = weapon.swing;
-      // 蓄力抬手（反向）+ 下劈（正向）—— 两段方向相反，合成后才是「拉起再劈」
-      swingPitch = -windup * w.windupArc + attack * w.arc;
-      swingRoll = whip * w.roll;
-      swingYaw = whip * w.yaw;
-      swingDrop = attack * w.drop;
-      swingForward = attack * w.forward;
-    }
-    const euler = new THREE.Euler(rx + swingPitch, ry + swingYaw, rz + swingRoll, 'XYZ');
-    // ⚠️ **直支点补偿只在真正挥砍时施加**：静止时必须逐位等于 catalog 的 position
-    // （曾经的缺陷：无条件加 `pivot − R·pivot`，而 R 是**基础朝向**下的旋转 ⇒ 静止也把节点
-    // 拉偏 (−1.195, 0.026, −2.802) vs 设定值 (−0.336, 0.719, −1.387)，剑体飞到画面中间）。
-    let posX = px;
-    let posY = py - drawOffset;
-    let posZ = pz + this._recoil;
-    if (swinging) {
-      const rot = new THREE.Matrix4().makeRotationFromEuler(euler);
-      const pv = new THREE.Vector3(pivot[0], pivot[1], pivot[2]);
-      const rp = pv.clone().applyMatrix4(rot);
-      // 目标：支点在相机空间保持不动。绕**基础**朝向的支点位置为 pv；绕当前朝向为 rp。
-      // 两者之差补回节点位置，支点就不动。
-      const base = new THREE.Matrix4().makeRotationFromEuler(
-        new THREE.Euler(rx, ry, rz, 'XYZ'),
+      const windup = SWORD_SWING_CURVES.windup(p, w.windupEnd);
+      const sweep = SWORD_SWING_CURVES.sweep(p, w.windupEnd);
+      const whip = SWORD_SWING_CURVES.whip(p);
+      // 蓄力 = 相机 Z+ 抬剑到右上；主挥 = Z+ 继续逆时针斜劈（右上 → 左 → 左下），
+      // 收刀 = 相机 Y+ 把回位路径沿屏底拉回（不走原弧翻回屏顶）。
+      const roll = windup * w.windupRoll + sweep * w.roll;
+      const chop = sweep * w.chop;      // 相机 X（带一点深度）
+      const sweepYaw = sweep * w.sweep + whip * w.returnSweep; // 相机 Y（横扫横移 + 收刀）
+      const wrist = whip * w.wrist;
+      const baseM = new THREE.Matrix4().compose(
+        new THREE.Vector3(px, py - drawOffset, pz + this._recoil),
+        new THREE.Quaternion().setFromEuler(new THREE.Euler(rx, ry, rz, 'XYZ')),
+        new THREE.Vector3(sx, sy, sz),
       );
-      const rp0 = pv.clone().applyMatrix4(base);
-      posX += rp0.x - rp.x;
-      posY += rp0.y - rp.y;
-      posZ += rp0.z - rp.z;
+      // 剑身长轴（相机空间，基础姿态下）= 拧腕轴。模型 +Y 是柄→尖（几何唯一权威），
+      // 用基础四元数旋到相机空间 —— 不在 catalog 写第二份轴常量。
+      const axis = new THREE.Vector3(0, 1, 0)
+        .applyQuaternion(new THREE.Quaternion().setFromEuler(new THREE.Euler(rx, ry, rz, 'XYZ')))
+        .normalize();
+      const dR = new THREE.Matrix4()
+        .makeRotationFromQuaternion(new THREE.Quaternion().setFromAxisAngle(axis, wrist))
+        .multiply(new THREE.Matrix4().makeRotationZ(roll))
+        .multiply(new THREE.Matrix4().makeRotationX(chop))
+        .multiply(new THREE.Matrix4().makeRotationY(sweepYaw));
+      const P = new THREE.Vector3(...pivot);
+      const p0 = P.clone().applyMatrix4(baseM);
+      const c = p0.clone().applyMatrix4(dR.clone().invert()).applyMatrix4(baseM.clone().invert()).sub(P);
+      const M = dR.multiply(baseM).multiply(new THREE.Matrix4().makeTranslation(c.x, c.y, c.z));
+      M.decompose(this.node.position, this.node.quaternion, this.node.scale);
+      return;
     }
-    this.node.position.set(posX, posY - swingDrop, posZ - swingForward);
-    this.node.rotation.copy(euler);
+    this.node.position.set(px, py - drawOffset, pz + this._recoil);
+    this.node.rotation.set(rx, ry, rz);
     this.node.scale.set(sx, sy, sz);
   }
 
