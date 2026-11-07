@@ -43,7 +43,9 @@
 // 单面渲染会从某些角度看穿。
 import * as THREE from 'three';
 import { resourceUrl } from '../core/resource-url.js';
-import { IGNIS, IGNIS_STEP_LIFT, IGNIS_POSE_BLEND } from '../entities/ignis/ignis-config.js';
+import {
+  IGNIS, IGNIS_STEP_LIFT, IGNIS_POSE_BLEND, ignisBlendSeconds,
+} from '../entities/ignis/ignis-config.js';
 import { StepLift } from '../player/step-lift.js';
 import { sampleIgnisAnim, sampleIgnisAttack, IgnisPoseTransition } from './ignis-model.js';
 
@@ -296,7 +298,8 @@ export class IgnisRenderer {
     // ⚠️ **来源切换（idle ↔ 攻击片段）不得硬切**（v2.76 用户缺陷：旋斩起手 idle → spin(0) 单帧
     // 177°）。过渡器持有上一帧发布的姿态，切换时在 `IGNIS_POSE_BLEND.seconds` 内淡入新来源的实时采样。
     // 它是纯视觉层：权威 state（`attackAnimT` / 命中帧）仍瞬时，不受影响。
-    const deltas = inst.transition.step(sourceKey, target, dt);
+    // 时长按**目标来源**取（旋斩入场 0.6s、其余 0.2s，v2.77）；策略的单一权威是 `ignisBlendSeconds`。
+    const deltas = inst.transition.step(sourceKey, target, dt, ignisBlendSeconds(sourceKey));
     for (const [bi, delta] of deltas) {
       const bone = inst.bones[bi];
       if (!bone) continue;

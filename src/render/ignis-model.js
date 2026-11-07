@@ -276,7 +276,10 @@ export function blendIgnisPose(a, b, w) {
  * 淡入结束那一刻发布的就是片段在该时刻的姿态（片段时钟不被推迟）。
  */
 export class IgnisPoseTransition {
-  /** @param {number} seconds 淡入淡出时长（秒）；≤0 / 非法 ⇒ 不过渡，等价硬切换 */
+  /**
+   * @param {number} seconds 默认淡入淡出时长（秒）—— `step()` 没传「本次时长」时用它；
+   *        ≤0 / 非法 ⇒ 不过渡，等价硬切换
+   */
   constructor(seconds) {
     this._seconds = Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
     this.reset();
@@ -288,32 +291,40 @@ export class IgnisPoseTransition {
     this._last = null;      // 上一帧实际发布的姿态
     this._from = null;      // 过渡起点（null = 不在过渡中）
     this._elapsed = 0;
+    this._duration = this._seconds;   // 当前这次过渡的时长（切换时锁定）
   }
 
   /**
    * @param {string} key 本帧来源（'idle' | 'attack' | 'spin'）
    * @param {Map<number, {rot:number[], pos:number[]}>} target 该来源在本帧的实时采样
    * @param {number} dt 距上一帧的秒数（非法 / 负数按 0）
+   * @param {number} [seconds] **本次切换**的淡入时长（秒；v2.77：旋斩入场比其余来源慢）。
+   *        只在「这一帧发生了来源切换」时读取并**锁定**到走完 —— 淡入途中再传别的值不会改动正在
+   *        进行的这一次；不传 ⇒ 构造时的默认值；≤0 / 非法 ⇒ 这一次不过渡。
+   *        谁用哪个时长的策略不在本类：渲染器按目标来源取 `ignisBlendSeconds(key)`（单一权威）。
    * @returns {Map<number, {rot:number[], pos:number[]}>} 本帧应发布的姿态
    */
-  step(key, target, dt) {
+  step(key, target, dt, seconds) {
     const dtSafe = Number.isFinite(dt) && dt > 0 ? dt : 0;
     if (this._last === null) {
       this._from = null;                       // 首帧：无从衔接
     } else if (key !== this._key) {
       this._from = this._last;                 // 来源切换：冻结上一帧的输出
       this._elapsed = 0;
+      this._duration = seconds === undefined
+        ? this._seconds
+        : (Number.isFinite(seconds) && seconds > 0 ? seconds : 0);
     }
     this._key = key;
 
     let out = target;
     if (this._from !== null) {
       this._elapsed += dtSafe;
-      if (this._elapsed >= this._seconds) {
+      if (this._elapsed >= this._duration) {
         out = blendIgnisPose(this._from, target, 1);   // 并集 w=1：让目标不驱动的骨骼回到 bind
         this._from = null;
       } else {
-        const s = this._elapsed / this._seconds;
+        const s = this._elapsed / this._duration;
         out = blendIgnisPose(this._from, target, s * s * (3 - 2 * s));   // smoothstep
       }
     }

@@ -14,7 +14,9 @@ import { IgnisRenderer } from '../render/ignis-renderer.js';
 import {
   sampleIgnisAnim, sampleIgnisAttack, loadIgnisAsset, blendIgnisPose, IgnisPoseTransition,
 } from '../render/ignis-model.js';
-import { IGNIS, IGNIS_POSE_BLEND } from '../entities/ignis/ignis-config.js';
+import {
+  IGNIS, IGNIS_ATTACKS, IGNIS_POSE_BLEND, ignisBlendSeconds,
+} from '../entities/ignis/ignis-config.js';
 
 let asset = null;
 async function getAsset() {
@@ -24,6 +26,8 @@ async function getAsset() {
 }
 
 const FRAME_MS = 1000 / 60;
+/** 走满最长一次淡入（旋斩入场 `spinInSeconds`，v2.77）所需的帧数（60fps，多留 3 帧吸收浮点累加） */
+const SETTLE_FRAMES = Math.ceil(Math.max(IGNIS_POSE_BLEND.seconds, IGNIS_POSE_BLEND.spinInSeconds) * 60) + 3;
 
 /**
  * 以 60fps 时间戳把**同一状态**连续 `sync` 若干帧，让姿态衔接（idle ↔ 攻击片段的淡入淡出，
@@ -35,7 +39,7 @@ const FRAME_MS = 1000 / 60;
  *
  * @returns {number} 末帧时间戳（ms），供调用方接着往后走
  */
-function settle(r, entity, fromMs = 0, frames = Math.ceil(IGNIS_POSE_BLEND.seconds * 60) + 3) {
+function settle(r, entity, fromMs = 0, frames = SETTLE_FRAMES) {
   let ms = fromMs;
   for (let i = 0; i < frames; i++) {
     ms += FRAME_MS;
@@ -551,11 +555,12 @@ function simulateEntry(d, clipKey, idlePhase, frames) {
   let out = null;
   for (let i = 0; i < 60; i++) {
     t += dt;
-    out = tr.step('idle', sampleIgnisAnim(d.animations.idle, t), dt);
+    out = tr.step('idle', sampleIgnisAnim(d.animations.idle, t), dt, ignisBlendSeconds('idle'));
   }
   const seq = [out];
   for (let k = 1; k <= frames; k++) {
-    seq.push(tr.step(clipKey, sampleIgnisAttack(d.animations[clipKey], k * dt), dt));
+    // 时长按目标来源取（旋斩入场 0.6s，挥砍入场 0.2s）—— 与渲染器同一份 `ignisBlendSeconds`
+    seq.push(tr.step(clipKey, sampleIgnisAttack(d.animations[clipKey], k * dt), dt, ignisBlendSeconds(clipKey)));
   }
   return seq;
 }
@@ -639,6 +644,26 @@ test('焰魔姿态衔接(v2.76): 淡入中点 = 50% 混合（smoothstep(0.5)=0.5
   assertTrue(quatAngleDeg(o.get(1).rot, rotY(90).rot) < 1e-9, '走满淡入时长后应精确等于目标');
 });
 
+test('焰魔姿态衔接(v2.77): step() 的第 4 个参数是「本次切换」的时长 —— 切换时锁定，不传则用构造时的默认值', () => {
+  const tr = new IgnisPoseTransition(0.2);
+  tr.step('idle', new Map([[1, rotY(0)]]), 0);
+  const target = () => new Map([[1, rotY(90)]]);
+  // 切到 spin，本次时长 0.6：走到 0.3s（一半）⇒ smoothstep(0.5)=0.5 ⇒ 45°。
+  // 误用构造默认 0.2 时此刻早已走满 = 90°。
+  let o;
+  for (let i = 0; i < 5; i++) o = tr.step('spin', target(), 0.03, 0.6);                   // 0.15s
+  // 淡入途中调用方传了别的时长也不得改动正在进行的这一次（切换时锁定）
+  for (let i = 0; i < 5; i++) o = tr.step('spin', target(), 0.03, 0.2);                   // 累计 0.30s
+  const mid = quatAngleDeg(o.get(1).rot, IDENT_Q);
+  assertTrue(Math.abs(mid - 45) < 1e-6, `0.6s 淡入走到 0.3s 应为 45°，实为 ${mid.toFixed(3)}°`);
+  for (let i = 0; i < 12; i++) o = tr.step('spin', target(), 0.03, 0.6);                  // 累计 0.66s ≥ 0.6
+  assertTrue(quatAngleDeg(o.get(1).rot, rotY(90).rot) < 1e-9, '走满 0.6s 后应精确等于目标');
+  // 时长不「粘」在过渡器上：切回 idle 且不传时长 ⇒ 构造默认 0.2s；一步走 0.1s（一半）⇒ 90° → 45°
+  o = tr.step('idle', new Map([[1, rotY(0)]]), 0.1);
+  const back = quatAngleDeg(o.get(1).rot, IDENT_Q);
+  assertTrue(Math.abs(back - 45) < 1e-6, `回 idle（默认 0.2s）走 0.1s 应为 45°，实为 ${back.toFixed(3)}°`);
+});
+
 test('焰魔姿态衔接(v2.76): 起步缓入、收尾缓出（两端权重斜率为 0，不是线性）', () => {
   // 线性权重在两端有速度突变：起步第 1 帧就走 1/12 全程，等于换了个形态的「闪一下」。
   // 总转角 90°、0.2s（12 帧@60fps）：smoothstep 第 1 帧 = 0.0197×90 ≈ 1.8°（线性 7.5°）；
@@ -709,7 +734,7 @@ test('焰魔姿态衔接(v2.76，用户缺陷): 站定 → 旋斩起手，补间
   let worst = 0;
   let hardWorst = 0;
   for (let i = 0; i < 8; i++) {                                                    // 8 档 idle 相位取最坏
-    const seq = simulateEntry(d, 'spin', (i / 8) * period, Math.ceil(IGNIS_POSE_BLEND.seconds * 60) + 6);
+    const seq = simulateEntry(d, 'spin', (i / 8) * period, Math.ceil(ignisBlendSeconds('spin') * 60) + 6);
     for (let k = 1; k < seq.length; k++) worst = Math.max(worst, poseStepDeg(seq[k - 1], seq[k]));
     hardWorst = Math.max(hardWorst, poseStepDeg(seq[0], sampleIgnisAttack(d.animations.spin, 1 / 60)));
   }
@@ -725,7 +750,7 @@ test('焰魔姿态衔接(v2.76): 站定 → 挥砍起手同样平滑（挥砍首
   const period = d.animations.idle.frameCount / d.animations.idle.fps;
   let worst = 0;
   for (let i = 0; i < 8; i++) {
-    const seq = simulateEntry(d, 'attack', (i / 8) * period, Math.ceil(IGNIS_POSE_BLEND.seconds * 60) + 6);
+    const seq = simulateEntry(d, 'attack', (i / 8) * period, Math.ceil(ignisBlendSeconds('attack') * 60) + 6);
     for (let k = 1; k < seq.length; k++) worst = Math.max(worst, poseStepDeg(seq[k - 1], seq[k]));
   }
   assertTrue(worst <= limit, `挥砍入场补间单帧最大骨骼角 ${worst.toFixed(1)}° 超过合法上限 ${limit.toFixed(1)}°`);
@@ -744,7 +769,7 @@ test('焰魔姿态衔接(v2.76): 攻击片段播完 → 回 idle 同样淡出（
       let out = tr.step(key, sampleIgnisAttack(d.animations[key], 99), 0);         // 播完停末帧
       const seq = [out];
       for (let k = 1; k <= 20; k++) {
-        out = tr.step('idle', sampleIgnisAnim(d.animations.idle, phase + k * dt), dt);
+        out = tr.step('idle', sampleIgnisAnim(d.animations.idle, phase + k * dt), dt, ignisBlendSeconds('idle'));
         seq.push(out);
       }
       for (let k = 1; k < seq.length; k++) worst = Math.max(worst, poseStepDeg(seq[k - 1], seq[k]));
@@ -756,16 +781,23 @@ test('焰魔姿态衔接(v2.76): 攻击片段播完 → 回 idle 同样淡出（
   }
 });
 
-test('焰魔姿态衔接(v2.76): 淡入时长上界 —— 淡入结束时旋斩的「举刀」仍抬着（不把蓄力吃掉）', async () => {
-  // 下界（补间单帧角 ≤ 片段合法上限）由上面的入场用例钉；这里钉上界。
-  // 旋斩起手 sword 绕 X 的角随 t 缓降：0.20s=112°、0.25s=90°、0.50s=0°。
-  const d = await getAsset();
-  const swordIdx = d.bones.findIndex((b) => b.name === 'sword');
-  const atEnd = sampleIgnisAttack(d.animations.spin, IGNIS_POSE_BLEND.seconds).get(swordIdx);
-  const deg = quatAngleDeg(atEnd.rot, IDENT_Q);
-  assertTrue(deg >= 90,
-    `淡入结束（t=${IGNIS_POSE_BLEND.seconds}s）时旋斩的 sword 已落到 ${deg.toFixed(0)}°（<90°）`
-    + ' —— 观感是「还没举起来就开始转」');
+test('焰魔姿态衔接(v2.77): 旋斩入场 0.6s（用户裁定，只改入场），且必须在命中帧之前走完', () => {
+  // 用户 2026-11-07：「旋斩起手的动作过渡从 0.2s 改为 0.6s」。**只改旋斩入场**；挥砍入场、各招离场、
+  // 被打断回 idle 仍是 0.2s。
+  //
+  // v2.76 曾有一条「淡入结束时 sword 仍 ≥ 90°（不把举刀吃掉）」的上界用例（⇒ D ≤ 0.25s）。那是我自拟的
+  // 判据，用户选了更缓的衔接而有意放弃举刀幅度（0.6s 时淡入期内 sword 峰值只有 34°，0.2s 时 117°），
+  // 故该用例随裁定一并撤下，**不是放宽阈值**。仍然成立的硬约束只剩下面这条：
+  // 淡入必须在命中帧之前走完 —— 命中那一刻画面里要是完整的旋斩姿态，而不是还没混完的站姿。
+  assertEqual(IGNIS_POSE_BLEND.spinInSeconds, 0.6, '用户裁定：旋斩入场淡入 0.6s');
+  assertEqual(ignisBlendSeconds('spin'), 0.6);
+  assertEqual(ignisBlendSeconds('attack'), 0.2, '挥砍入场不受影响');
+  assertEqual(ignisBlendSeconds('idle'), 0.2, '回 idle（旋斩收招 / 被打断）不受影响');
+  assertTrue(ignisBlendSeconds('spin') < IGNIS_ATTACKS.spin.hitFrameSeconds,
+    `旋斩淡入 ${ignisBlendSeconds('spin')}s 必须短于命中帧 ${IGNIS_ATTACKS.spin.hitFrameSeconds}s`
+    + '（否则命中那一刻画面里还是半个站姿）');
+  assertTrue(ignisBlendSeconds('attack') < IGNIS_ATTACKS.swing.hitFrameSeconds,
+    '挥砍淡入必须短于命中帧');
 });
 
 // ---------- 真实渲染器：发布到骨骼上的结果 ----------
@@ -783,7 +815,9 @@ test('焰魔姿态衔接(v2.76，用户缺陷·渲染器级): 真实 sync 序列
     r.sync([{ id: 'a', state: { ...IGNIS_BASE, attackAnimT: 0, idleTime: ms / 1000 } }], ms);
     frames.push(r.instances[0].bones.map((b) => b.quaternion.toArray()));
   }
-  const N = 30;                                                     // 起手 0.5s（Agent 起手当帧 attackAnimT = step > 0）
+  // 起手 0.8s：覆盖旋斩 0.6s 淡入 + 命中帧 0.70s（Agent 起手当帧 attackAnimT = step > 0）。
+  // frames[59] = 站定末帧；旋斩第 k 帧 = frames[59 + k]
+  const N = 48;
   for (let k = 1; k <= N; k++) {
     ms += FRAME_MS;
     r.sync([{ id: 'a', state: { ...IGNIS_BASE, attackKind: 'spin', attackAnimT: k / 60, idleTime: ms / 1000 } }], ms);
@@ -797,6 +831,16 @@ test('焰魔姿态衔接(v2.76，用户缺陷·渲染器级): 真实 sync 序列
   assertTrue(worst <= limit,
     `发布到骨骼上的相邻帧最大转角 ${worst.toFixed(1)}° 超过旋斩自身合法上限 ${limit.toFixed(1)}°`
     + `（硬切换 ${hard.toFixed(0)}°）—— 站定 → 旋斩起手仍是一帧跳变`);
+  // v2.77：旋斩入场淡入是 0.6s 而不是 0.2s —— 起手后 0.3s（淡入刚过半）发布的姿态离纯片段姿态还很远
+  //（权重 0.5 ⇒ 最大骨骼偏差约片段幅度的一半，实测 >30°）。0.2s 时此刻已走满、偏差为 0。
+  const midK = 18;
+  const midGap = boneStepDeg(frames[59 + midK], expectedBones(d, sampleIgnisAttack(d.animations.spin, midK / 60)));
+  assertTrue(midGap > 10,
+    `起手后 0.3s 发布的姿态与纯片段姿态仅差 ${midGap.toFixed(1)}°：淡入已走满，旋斩入场没有按 0.6s 走`);
+  // 命中帧：淡入已走完（0.6s < 0.70s），此刻发布的是完整的旋斩姿态，不是还没混完的站姿
+  const hitK = Math.ceil(IGNIS_ATTACKS.spin.hitFrameSeconds * 60);
+  const hitGap = boneStepDeg(frames[59 + hitK], expectedBones(d, sampleIgnisAttack(d.animations.spin, hitK / 60)));
+  assertTrue(hitGap < 1e-6, `命中帧（第 ${hitK} 帧）发布的姿态与旋斩片段相差 ${hitGap.toFixed(3)}°：淡入没在命中前走完`);
   // 收敛：淡入走满后发布的骨骼 = bind × 片段采样（没有残留的混合）
   const want = expectedBones(d, sampleIgnisAttack(d.animations.spin, N / 60));
   assertTrue(boneStepDeg(frames[frames.length - 1], want) < 1e-6, '淡入走满后骨骼应精确等于旋斩片段的姿态');
@@ -815,14 +859,18 @@ test('焰魔姿态衔接(v2.76): 攻击被中断（attackAnimT 清零）后，�
   assertTrue(only.includes(swordIdx) && only.length >= 4, '前提：旋斩驱动了 idle 不驱动的骨骼（含 sword）');
 
   let ms = 0;
-  for (let k = 1; k <= 12; k++) {                                   // 旋斩播到 0.2s（sword=112°），然后被打断
+  // 旋斩播到 0.75s（0.6s 淡入已走完、片段处在快旋段：right_arm_joint 偏离 bind 约 61°），然后被打断。
+  // ⚠️ v2.77 之前这里播到 0.2s 取 sword=112° 做前提；入场改 0.6s 后那一刻 sword 只显示 ~29°，
+  // 且 0.5s 后片段里 sword 本就归零 —— 前提改取「旋斩独有骨骼里偏转最大的那根」，不依赖某一根骨骼。
+  for (let k = 1; k <= 45; k++) {
     ms += FRAME_MS;
     r.sync([{ id: 'a', state: { ...IGNIS_BASE, attackKind: 'spin', attackAnimT: k / 60, idleTime: 0 } }], ms);
   }
-  const midOff = quatAngleDeg(r.instances[0].bones[swordIdx].quaternion.toArray(), d.bones[swordIdx].bindQuaternion);
-  assertTrue(midOff > 30, `前提：被打断前 sword 应已离开 bind（实为 ${midOff.toFixed(1)}°）`);
+  const midOff = Math.max(...only.map((bi) =>
+    quatAngleDeg(r.instances[0].bones[bi].quaternion.toArray(), d.bones[bi].bindQuaternion)));
+  assertTrue(midOff > 30, `前提：被打断前旋斩独有骨骼里至少一根应已明显离开 bind（最大 ${midOff.toFixed(1)}°）`);
 
-  for (let i = 0; i < Math.ceil(IGNIS_POSE_BLEND.seconds * 60) + 3; i++) {
+  for (let i = 0; i < Math.ceil(ignisBlendSeconds('idle') * 60) + 3; i++) {
     ms += FRAME_MS;
     r.sync([{ id: 'a', state: { ...IGNIS_BASE, attackAnimT: 0, idleTime: 0 } }], ms);
   }

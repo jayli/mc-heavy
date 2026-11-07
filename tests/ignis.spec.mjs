@@ -106,7 +106,8 @@ async function pixelDiff(page, a, b) {
  *
  * ## 为什么需要
  *
- * v2.76 起 idle ↔ 攻击片段切换会在 `IGNIS_POSE_BLEND.seconds`（0.2s）内淡入淡出，不再硬切。
+ * v2.76 起 idle ↔ 攻击片段切换会淡入淡出，不再硬切：默认 `IGNIS_POSE_BLEND.seconds`（0.2s），
+ * v2.77 起**旋斩入场** `spinInSeconds`（0.6s）。调用方传「要走满的最长时长」即可。
  * 这些用例的套路是「注入 state → 手动 `sync` → 立刻读骨骼/截图」，想要的是**这一状态的稳态姿态**；
  * 单次 `sync` 之后只是淡入的起点（姿态差 0.012 而期望 >0.3，实测踩到）。
  *
@@ -264,7 +265,7 @@ test.describe('焰魔（Ignis）Tier 4', () => {
       const e = g.entities.get(window.__E2E_ID__);
       if (e) e.state = { ...e.state, attackAnimT: IGNIS_AI.hitFrameSeconds, velocity: [0, 0, 0] };
       g.ignisRenderer.sync(g.ignises.activeEntities(), performance.now());
-      window.__e2eSettle(IGNIS_POSE_BLEND.seconds);   // idle → attack 的淡入走满（v2.76）
+      window.__e2eSettle(Math.max(IGNIS_POSE_BLEND.seconds, IGNIS_POSE_BLEND.spinInSeconds));   // idle → attack 的淡入走满（v2.76）
     });
     const attack = await shoot(page);
 
@@ -302,7 +303,7 @@ test.describe('焰魔（Ignis）Tier 4', () => {
         // ⚠️ `mode` 必须是 attack 且 `attackAnimT` 非零，否则渲染器会去播 idle
         if (e) e.state = { ...e.state, mode: 'attack', attackKind: k, attackAnimT: tt, velocity: [0, 0, 0] };
         g.ignisRenderer.sync(g.ignises.activeEntities(), performance.now());
-        window.__e2eSettle(IGNIS_POSE_BLEND.seconds);   // 淡入走满（v2.76），截到的才是这一招这一刻的稳态
+        window.__e2eSettle(Math.max(IGNIS_POSE_BLEND.seconds, IGNIS_POSE_BLEND.spinInSeconds));   // 淡入走满（v2.76/v2.77：旋斩入场 0.6s），截到的才是这一招这一刻的稳态
       }, [kind, t]);
       return shoot(page);
     };
@@ -322,7 +323,7 @@ test.describe('焰魔（Ignis）Tier 4', () => {
         const e = g.entities.get(window.__E2E_ID__);
         if (e) e.state = { ...e.state, mode: 'attack', attackKind: k, attackAnimT: tt, velocity: [0, 0, 0] };
         g.ignisRenderer.sync(g.ignises.activeEntities(), performance.now());
-        window.__e2eSettle(IGNIS_POSE_BLEND.seconds);   // 淡入走满（v2.76）：否则读到的是起点姿态
+        window.__e2eSettle(Math.max(IGNIS_POSE_BLEND.seconds, IGNIS_POSE_BLEND.spinInSeconds));   // 淡入走满（v2.76/v2.77：旋斩入场 0.6s）：否则读到的是起点姿态
         const idx = g.ignises.activeEntities().findIndex((x) => x.id === window.__E2E_ID__);
         const inst = g.ignisRenderer.instances[idx];
         return inst ? inst.bones.map((b) => b.quaternion.toArray()) : null;
@@ -393,14 +394,18 @@ test.describe('焰魔（Ignis）Tier 4', () => {
       const id = window.__E2E_ID__;
       const rec = [];
       let on = true;
-      // 游戏的 rAF 回调先注册，本回调后注册 ⇒ 同一帧内本回调在游戏渲染（含 sync）之后执行
-      const tick = () => {
+      // 游戏的 rAF 回调先注册，本回调后注册 ⇒ 同一帧内本回调在游戏渲染（含 sync）之后执行。
+      // ⚠️ 时间戳用 rAF 回调收到的**帧时间戳参数 `ts`**，不是回调里的 `performance.now()`：同一帧里所有
+      // rAF 回调拿到同一个 `ts`，与游戏循环喂给 `sync` 的 `nowMs` 同源；而 `performance.now()` 是回调
+      // 实际执行的时刻，相对帧时间有抖动（实测相邻两条记录只差 5.1ms）—— 把角速度虚高约 3 倍，
+      // 窗口一旦覆盖片段自身的快旋段（24.5°/帧，合法动作）就会被放大成假红。
+      const tick = (ts) => {
         const idx = g.ignises.activeEntities().findIndex((x) => x.id === id);
         const inst = idx >= 0 ? g.ignisRenderer.instances[idx] : null;
         const e = g.entities.get(id);
         if (inst && e) {
           rec.push({
-            t: performance.now(),
+            t: ts,
             animT: e.state.attackAnimT,
             kind: e.state.attackKind,
             q: inst.bones.map((b) => b.quaternion.toArray()),
@@ -412,12 +417,12 @@ test.describe('焰魔（Ignis）Tier 4', () => {
       await new Promise((r) => setTimeout(r, 300));          // 先录一小段站定
       const e0 = g.entities.get(id);
       if (e0) e0.state = { ...e0.state, mode: 'attack', attackKind: 'spin', attackAnimT: 0, velocity: [0, 0, 0] };
-      await new Promise((r) => setTimeout(r, 1000));         // 起手后 ~1s：覆盖整个淡入与蓄力段
+      await new Promise((r) => setTimeout(r, 1500));         // 起手后 ~1.5s：覆盖 0.6s 淡入 + 命中帧 0.70s + 快旋段
       on = false;
       return rec;
     });
 
-    // 判据常量全部由真实烘焙产物现算（不写死魔数）：旋斩自身最快的合法角速度 + sword 的 bind
+    // 判据常量全部由真实烘焙产物现算（不写死魔数）：旋斩自身最快的合法角速度 + root 的 bind
     const ref = await page.evaluate(async () => {
       const { loadIgnisAsset, sampleIgnisAttack } = await import('/src/render/ignis-model.js');
       const d = await loadIgnisAsset();
@@ -436,8 +441,8 @@ test.describe('焰魔（Ignis）Tier 4', () => {
         const q = sampleIgnisAttack(spin, t + dt);
         for (const [bi, x] of p) maxStep = Math.max(maxStep, ang(x.rot, q.get(bi).rot));
       }
-      const swordIdx = d.bones.findIndex((b) => b.name === 'sword');
-      return { clipMaxDegPerSec: maxStep / dt, swordIdx, swordBind: d.bones[swordIdx].bindQuaternion };
+      const rootIdx = d.bones.findIndex((b) => b.name === 'root');
+      return { clipMaxDegPerSec: maxStep / dt, rootIdx, rootBind: d.bones[rootIdx].bindQuaternion };
     });
 
     const ang = (a, b) => {
@@ -452,10 +457,13 @@ test.describe('焰魔（Ignis）Tier 4', () => {
     // 起手帧 = 第一条 animT>0 且 kind==='spin'
     const i0 = frames.findIndex((f) => f.animT > 0 && f.kind === 'spin');
     expect(i0, `应录到旋斩起手（共 ${frames.length} 帧）`).toBeGreaterThan(3);
-    const end = Math.min(frames.length - 1, i0 + 40);
-    expect(end - i0, `起手后应至少录到 30 帧（实录 ${frames.length - i0}）`).toBeGreaterThanOrEqual(30);
+    // 观察窗口按**时间**取（不按帧数，帧率不同帧数不同）：起手后 1.2s，覆盖 0.6s 淡入、命中帧 0.70s 与快旋段
+    let end = i0;
+    while (end + 1 < frames.length && frames[end + 1].t - frames[i0].t <= 1200) end++;
+    expect(frames[end].t - frames[i0].t, `起手后应至少录到 1s（实录 ${(frames[end].t - frames[i0].t).toFixed(0)}ms）`)
+      .toBeGreaterThan(1000);
 
-    // 起手前 3 帧 → 起手后 40 帧（≈0.67s）逐对相邻帧的最大骨骼角速度
+    // 起手前 3 帧 → 起手后 1.2s 逐对相邻帧的最大骨骼角速度
     let worst = { speed: 0, i: -1, step: 0, dtMs: 0 };
     for (let i = i0 - 3; i < end; i++) {
       const dtSec = (frames[i + 1].t - frames[i].t) / 1000;
@@ -471,10 +479,12 @@ test.describe('焰魔（Ignis）Tier 4', () => {
       + `间隔 ${worst.dtMs.toFixed(1)}ms）超过旋斩自身合法上限的 2 倍 ${limit.toFixed(0)}°/s —— 站定 → 旋斩仍是硬切换`)
       .toBeLessThan(limit);
 
-    // 非空洞：旋斩真的播了（sword 在淡入后离开 bind > 60°；片段里它在 0.2s 时是 112°）
-    let swordMax = 0;
-    for (let i = i0; i <= end; i++) swordMax = Math.max(swordMax, ang(frames[i].q[ref.swordIdx], ref.swordBind));
-    expect(swordMax, `起手后 sword 最大偏离 bind ${swordMax.toFixed(0)}°：旋斩没真正播出来（判据会空洞地通过）`)
+    // 非空洞：旋斩真的播了。看 `root`（整副身体的偏航）而不是 `sword`：v2.77 起旋斩入场淡入 0.6s，
+    // 淡入期内 sword 只显示到 ~34°（0.5s 后片段里它本就归零），而 root 在命中帧 0.70s 前后已转到 ~132°。
+    // 站定时 root 只有 idle 的呼吸晃动（<1°）。
+    let rootMax = 0;
+    for (let i = i0; i <= end; i++) rootMax = Math.max(rootMax, ang(frames[i].q[ref.rootIdx], ref.rootBind));
+    expect(rootMax, `起手后 root 最大偏离 bind ${rootMax.toFixed(0)}°：旋斩没真正播出来（判据会空洞地通过）`)
       .toBeGreaterThan(60);
   });
 
