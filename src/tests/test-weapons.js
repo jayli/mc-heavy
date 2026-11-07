@@ -805,7 +805,7 @@ test('weapon catalog: 剑的近战冻结数值（伤害/射程/冷却/音效/击
   assertTrue(Object.isFrozen(sword));
 });
 
-test('weapon catalog: 剑的第一人称摆放冻结值（v2.66 反解口径）', () => {
+test('weapon catalog: 剑的第一人称摆放冻结值（v2.70 实测定标口径）', () => {
   const sword = WEAPONS[WEAPON_IDS.SWORD];
   const { position, rotation, scale, rotationOrder } = sword.transform;
   // ⚠️ catalog 的 rotation 单位是**弧度**（与 MAG7 的 -Math.PI/2 同口径）。
@@ -815,9 +815,9 @@ test('weapon catalog: 剑的第一人称摆放冻结值（v2.66 反解口径）'
   // 冻结值（v2.69 反解结果：柄屏 (1050,780) 藏屏下 / 尖 (1216,262) 朝右上，对齐参考图）
   assertEqual(rotationOrder, 'XYZ');
   const deg = rotation.map((r) => +((r * 180) / Math.PI).toFixed(2));
-  assertEqual(deg.join(','), '-87.63,-29.92,-53.74');
-  assertEqual(position.map((v) => +v.toFixed(3)).join(','), '1.093,-0.006,-1.003');
-  assertEqual(+scale[0].toFixed(3), 1.075);
+  assertEqual(deg.join(','), '168.64,10.65,-172.68');
+  assertEqual(position.map((v) => +v.toFixed(3)).join(','), '1.093,-0.206,-1.203');
+  assertEqual(+scale[0].toFixed(3), 1.253);
   // 位置必须在相机前方（相机朝 -Z），否则模型跑到镜头背后
   assertTrue(position[2] < -0.3, '剑必须在相机前方');
   // 挥砍支点 = 剑柄末端（**节点局部**坐标，不乘 scale：挥砍矩阵作用在节点局部点上，
@@ -827,11 +827,14 @@ test('weapon catalog: 剑的第一人称摆放冻结值（v2.66 反解口径）'
   // 柄末端节点局部坐标实测 (0, -0.9375, 0.0996)，与 scale 无关
   assertTrue(pivot[1] < -0.7 && pivot[1] > -1.1, '支点必须在剑柄侧（节点局部柄端 −0.9375）');
   assertTrue(Math.abs(pivot[1] - (-0.9375)) < 0.02, '支点必须等于柄末端节点局部坐标（不乘 scale）');
-  // 挥砍参数（相机空间轴：Z+ 逆时针斜劈 / Y+ 收刀沿屏底拉回 / 剑轴拧腕）
-  assertTrue(sword.swing.roll > sword.swing.windupRoll,
-    '主挥幅度必须大于蓄力幅度（否则看不出砍）');
-  assertTrue(sword.swing.returnSweep > 0, '收刀必须沿屏底拉回（不走原弧翻回屏顶）');
-  assertTrue(sword.swing.wrist > 0, '甩腕要有（滞后拧腕）');
+  // 挥砍参数（两段式扇形；用户澄清：「剑体不绕着剑柄的方向的轴旋转」——禁自转，不是禁挥砍）
+  assertTrue(sword.swing.strikeEnd > 0 && sword.swing.strikeEnd < 1, '挥砍段占比必须在 (0,1)');
+  assertTrue(sword.swing.arc < -0.3, 'arc 必须为负（绕相机 X 负向 = 剑尖向前下方砍出，正向会把剑尖翻向镜头）');
+  // 旧的四段式 / 绕剑轴自转 / 纯平移字段必须已删除
+  for (const dead of ['windupEnd', 'windupRoll', 'roll', 'wrist', 'returnSweep',
+    'chop', 'sweep', 'reach', 'rise', 'offset']) {
+    assertEqual(sword.swing[dead], undefined, `挥砍不得再有 ${dead}（已改为屏幕平面扇形）`);
+  }
 });
 
 test('WeaponController: 剑挥砍命中实体 —— 扣血 + 击退 + melee-hit 事件', () => {

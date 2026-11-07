@@ -7,34 +7,28 @@ import * as THREE from 'three';
 import { WEAPONS, WEAPON_IDS } from '../player/weapons/weapon-catalog.js';
 
 /**
- * 近战挥砍曲线（v2.69 按用户裁定重建：「挥剑是从上向下挥，抡一个半圆，然后收回」）。
+ * 近战挥砍曲线（v2.70：只有「扫向准心 + 收回」两段，且**纯平移、不旋转**）。
  *
- * **挥砍旋转定义在相机空间，不是节点局部欧拉角**（v2.69 的根因修复）：
- * 局部欧拉轴的屏幕语义**随姿态漂移** —— 探针实测旧姿态 `x+ = 剑尖上 / y+ = 左`，
- * 换了静止姿态后变成 `x+ = 右上 / y+ = 右下 / z+ = 左下`，同一组挥砍参数在新姿态下
- * 合成出「直直向下捅」、剑体整把出屏。用户已两次改姿态，第三次必须解耦：
- * 把挥砍旋转 ΔR **前乘**到基础矩阵上（`M = ΔR · M_base · T(c)`），则
- *   · 相机 X− = 下劈（屏幕水平轴，X+ = 上）
- *   · 相机 Y+ = 横扫（屏幕垂直轴，右→左）
- *   · 绕剑身长轴 = 拧腕
- * 永远成立，与姿态无关。`T(c)` 是支点补偿：使握点（catalog `swingPivot`）在相机空间
- * 不动 —— 绕模型中心转是「螺旋桨」，用户 v2.67 已否掉。
+ * **为何是纯平移**（用户 2026-11-06 第三轮）：「不管你怎么设计动画，都要把剑柄藏在
+ * 屏幕下放，剑尖尽量指向十字准心，**剑体不要旋转**，保持跟开始时旋转姿态一致」。
+ * 之前两轮都是靠旋转实现挥砍 —— 旋转必然改变剑的朝向（用户能直接看出来），
+ * 而且绕手的半径会把剑尖甩到屏外。改成平移后，姿态逐位等于 catalog 的基础值，
+ * 只有位置在动：剑柄始终在屏幕下方外，剑尖扫到准心。
  *
- * **半圆的合成**（相机空间，探针实测轴语义）：
- *   · 相机 **Z+ = 屏幕平面内逆时针**（剑尖从右上 → 正上 → 左上 → 左下）
- *   · 蓄力与主挥**同号**（连续逆时针）：右上 → 抬到正上 → 继续斜劈到左下，
- *     这就是右手持剑「从上向下抡一个半圆」
- *   · 收刀不走原弧（单标量 roll 0→A→0 会原路翻回屏顶）：收刀段加相机 **Y+**
- *     把回位路径沿屏底拉回，再归位
- * 甩腕 `whip` 滞后于主挥，收刀时才拧腕。
+ * **两段**（第二轮：「我只需执行两个动作，一个是向前挥砍，一个是挥砍结束后收回」）：
+ * `strike` 单调 0→1（扫向准心），`recover` 单调 1→0（沿原路收回）。
+ * 用 1−(1−t)² 而不用 sin：sin 会 0→1→0 形成一个自动回位的完整弧，
+ * 两段就变成三段；单调曲线才对应「一刀扫出去、再收回来」。
  */
 const SWORD_SWING_CURVES = Object.freeze({
-  /** 主挥：`end` 之后 0→1→0，快出慢收（√ 把峰值前移到 p≈0.44） */
-  sweep: (p, end) => (p <= end ? 0 : Math.sin(Math.sqrt((p - end) / (1 - end)) * Math.PI)),
-  /** 滞后甩腕：峰在 p≈0.707（收刀段） */
-  whip: (p) => Math.sin(p * p * Math.PI),
-  /** 蓄力：前 `end` 段 0→1→0（抬剑后拉），之后归 0 交给主挥 */
-  windup: (p, end) => (p >= end ? 0 : Math.sin((p / end) * Math.PI)),
+  /**
+   * 挥砍段曲线：`end` 之前 0→1 单调递增（砍出去），之后交给收回段。
+   * 用 1−(1−t)² 而不是 sin：sin 会 0→1→0 形成一个「抡出去再自己抽回来」的完整弧，
+   * 两段变三段；单调曲线才对应「一刀砍到底」。
+   */
+  strike: (p, end) => (p >= end ? 1 : 1 - Math.pow(1 - p / end, 2)),
+  /** 收回段曲线：`end` 之后 1→0 单调退回；走平缓的 cos 避免收刀太快像弹回 */
+  recover: (p, end) => (p <= end ? 1 : 1 - Math.sin(((p - end) / (1 - end)) * Math.PI / 2)),
 });
 
 export class ViewWeapon {
@@ -140,41 +134,34 @@ export class ViewWeapon {
       return;
     }
 
-    // ---- 近战：相机空间挥砍（绕握点） ----
+    // ---- 近战：屏幕平面内的挥砍（绕剑柄，**不绕剑身长轴自转**）----
     //
-    // ΔR 前乘到基础矩阵：挥砍轴 = 相机轴（X− 下劈 / Y+ 横扫 / 剑轴拧腕），与姿态解耦。
-    // 支点补偿 T(c)：c = M_base⁻¹ · ΔR⁻¹ · p0 − P（p0 = M_base · P = 握点相机位置），
-    // 使 M · P = p0 恒成立 ⇒ 握点在相机空间不动。
+    // 用户 2026-11-06 路径图（`~/ttt/bug/剑体.png`）：红弧 = 剑尖轨迹
+    // （右上 → 越过上方 → 左下劈到屏底），绿线 = 剑身扫过的扇形。
+    // 澄清：「剑体不要旋转」指的是**不绕剑柄方向的轴自转**（即不做拧腕），
+    // 挥砍本身要有 —— 所以这里在**相机 Z 轴（视线轴）**上像雨刷一样扇，
+    // 支点在剑柄（`swingPivot`），剑柄在相机空间里钉住不动、始终在屏幕下方外。
+    // 轴 = **相机 X（屏幕水平轴）**：负角度把剑尖向前下方砍出（朝屏幕纵深），
+    // 而不是在屏幕平面内左右摆（上一版绕 Z 轴，用户指出「不是向左摆刀」）。
+    //
+    // ⬜ 不写 `wrist`/绕剑轴的分量：那就是用户说的「剑轴自转」，已删除。
     const pivot = weapon.swingPivot ?? [0, 0, 0];
     const swinging = weapon.swing && this._swingElapsed < this._swingDuration;
     if (swinging) {
       this._swingElapsed = Math.min(this._swingDuration, this._swingElapsed + dt);
       const p = this._swingElapsed / this._swingDuration;
       const w = weapon.swing;
-      const windup = SWORD_SWING_CURVES.windup(p, w.windupEnd);
-      const sweep = SWORD_SWING_CURVES.sweep(p, w.windupEnd);
-      const whip = SWORD_SWING_CURVES.whip(p);
-      // 蓄力 = 相机 Z+ 抬剑到右上；主挥 = Z+ 继续逆时针斜劈（右上 → 左 → 左下），
-      // 收刀 = 相机 Y+ 把回位路径沿屏底拉回（不走原弧翻回屏顶）。
-      const roll = windup * w.windupRoll + sweep * w.roll;
-      const chop = sweep * w.chop;      // 相机 X（带一点深度）
-      const sweepYaw = sweep * w.sweep + whip * w.returnSweep; // 相机 Y（横扫横移 + 收刀）
-      const wrist = whip * w.wrist;
+      // 两段：0→strikeEnd 砍出去（strike 0→1），strikeEnd→1 收回（recover 1→0）
+      const amount = p <= w.strikeEnd
+        ? SWORD_SWING_CURVES.strike(p, w.strikeEnd)
+        : SWORD_SWING_CURVES.recover(p, w.strikeEnd);
       const baseM = new THREE.Matrix4().compose(
         new THREE.Vector3(px, py - drawOffset, pz + this._recoil),
         new THREE.Quaternion().setFromEuler(new THREE.Euler(rx, ry, rz, 'XYZ')),
         new THREE.Vector3(sx, sy, sz),
       );
-      // 剑身长轴（相机空间，基础姿态下）= 拧腕轴。模型 +Y 是柄→尖（几何唯一权威），
-      // 用基础四元数旋到相机空间 —— 不在 catalog 写第二份轴常量。
-      const axis = new THREE.Vector3(0, 1, 0)
-        .applyQuaternion(new THREE.Quaternion().setFromEuler(new THREE.Euler(rx, ry, rz, 'XYZ')))
-        .normalize();
-      const dR = new THREE.Matrix4()
-        .makeRotationFromQuaternion(new THREE.Quaternion().setFromAxisAngle(axis, wrist))
-        .multiply(new THREE.Matrix4().makeRotationZ(roll))
-        .multiply(new THREE.Matrix4().makeRotationX(chop))
-        .multiply(new THREE.Matrix4().makeRotationY(sweepYaw));
+      // 绕相机 X（屏幕水平轴）向前劈：负角度 = 剑尖向前下方砍出（实测 tipZ −1.87 → −2.99）
+      const dR = new THREE.Matrix4().makeRotationX(amount * w.arc);
       const P = new THREE.Vector3(...pivot);
       const p0 = P.clone().applyMatrix4(baseM);
       const c = p0.clone().applyMatrix4(dR.clone().invert()).applyMatrix4(baseM.clone().invert()).sub(P);

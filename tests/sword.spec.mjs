@@ -303,7 +303,7 @@ test.describe('近战剑（v2.65）', () => {
     expect(m.armVisible, '持剑时不得显示手臂').toBe(false);
   });
 
-  test('挥砍轨迹（v2.69：右上蓄力 → 自上而下斜劈半圆 → 沿屏底收回，握点不动）', async ({ page }) => {
+  test('挥砍轨迹（v2.70：向前劈砍 —— 剑尖朝纵深挥出、剑柄钉在屏下、不绕剑身自转）', async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.goto('/?vd=4');
     await waitWorldReady(page);
@@ -311,13 +311,15 @@ test.describe('近战剑（v2.65）', () => {
     await page.waitForFunction(() => window.__MC_GAME__.player.viewWeapon.node !== null, null, { timeout: 20_000 });
     await page.waitForTimeout(1000);
 
-    // 用户 2026-11-06：「现在的挥剑的动作非常不自然，是从下向上挥，顺序不对，
-    // 挥剑是从上向下挥，抡一个半圆的形状，然后收回」。
-    // 判据全部是**剑尖屏幕轨迹**（元素中心走真实矩阵链），不是目视：
-    //   ① 蓄力段剑尖必须比静止时**更高**（抬剑，不是压剑）
-    //   ② 主挥段剑尖必须**先向左下**扫过屏幕左半（斜劈半圆，不是原地上下抖）
-    //   ③ 收刀段剑尖回到右半屏（沿屏底拉回，不翻回屏顶）
-    //   ④ 握点（剑柄端）全程几乎不动（支点是手，不是螺旋桨）
+    // 用户 2026-11-06 第五轮：「你要向前挥刀，不是向左摆刀」。
+    // 上一版绕相机 Z 轴在屏幕平面内扇形摆动（像雨刷），被明确否掉。
+    // 现在的实现绕**相机 X（屏幕水平轴）**以剑柄为支点旋转 ⇒ 剑尖朝屏幕纵深砍出。
+    //
+    // 判据全部实测（相机空间坐标 + 主轴夹角），不是目视：
+    //   ① 剑尖必须**朝远离相机的方向**挥出（相机 z 更负），这是「向前」的硬定义
+    //   ② 前段单调劈出、后段单调收回、末帧归位；全程只有 1 个位移峰（两段）
+    //   ③ 剑柄全程钉在屏幕下方外且几乎不动（支点 = 手）
+    //   ④ 不绕剑身长轴自转：剑面法线与剑身长轴的夹角必须恒定
     const m = await page.evaluate(async () => {
       const g = window.__MC_GAME__;
       const THREE = await import('three');
@@ -342,43 +344,63 @@ test.describe('近战剑（v2.65）', () => {
         g.scene.updateMatrixWorld(true); cam.updateMatrixWorld(true);
         const camInv = new THREE.Matrix4().copy(cam.matrixWorld).invert();
         const f = (q) => scr(q.clone().applyMatrix4(node.matrixWorld).applyMatrix4(camInv));
-        return { tip: f(tipL), hilt: f(hiltL) };
+        const tipCam = tipL.clone().applyMatrix4(node.matrixWorld).applyMatrix4(camInv);
+        const long = new THREE.Vector3(0, 1, 0).applyQuaternion(node.quaternion).normalize();
+        const face = new THREE.Vector3(1, 0, 0).applyQuaternion(node.quaternion).normalize();
+        return { tip: f(tipL), hilt: f(hiltL), tipZ: tipCam.z, long: long.toArray(), face: face.toArray() };
       };
       const rest = measure();
       const frames = [];
       for (let i = 0; i <= 20; i++) {
         const p = i / 20;
         vw._swingElapsed = p * 0.3000001; vw._swingDuration = 0.3; vw.update(0, {});
-        frames.push({ p, ...measure() });
+        frames.push({ p: +p.toFixed(2), ...measure() });
       }
       vw._swingElapsed = Infinity; vw.update(0, {});
       return { rest, frames };
     });
 
-    const restTip = m.rest.tip;
-    const windup = m.frames.filter((f) => f.p > 0 && f.p <= 0.2);
-    const slash = m.frames.filter((f) => f.p > 0.25 && f.p <= 0.55);
-    const ret = m.frames.filter((f) => f.p > 0.6 && f.p <= 0.9);
+    const dist = (f) => Math.hypot(f.tip[0] - m.rest.tip[0], f.tip[1] - m.rest.tip[1]);
+    const out = m.frames.filter((f) => f.p > 0 && f.p <= 0.55);
+    const back = m.frames.filter((f) => f.p > 0.55);
 
-    // ① 蓄力：剑尖比静止更高（y 更小）
-    const windupTop = Math.min(...windup.map((f) => f.tip[1]));
-    expect(windupTop, `蓄力段剑尖最高 y=${windupTop.toFixed(0)} 必须高于静止 y=${restTip[1].toFixed(0)}（抬剑）`)
-      .toBeLessThan(restTip[1] - 40);
-    // ② 主挥：剑尖扫到屏幕左半（斜劈半圆）
-    const slashLeft = Math.min(...slash.map((f) => f.tip[0]));
-    expect(slashLeft, `主挥段剑尖最左 x=${slashLeft.toFixed(0)} 必须进入左半屏（<640）`)
-      .toBeLessThan(1280 * 0.5);
-    // ③ 收刀：不翻回屏顶（整段 y > 0；Y3 版的缺陷是收刀沿原弧翻回，y 到 −333），
-    //    且最终回到右半屏归位。
-    const retMinY = Math.min(...ret.map((f) => f.tip[1]));
-    expect(retMinY, `收刀段剑尖最低 y=${retMinY.toFixed(0)} 不得出屏顶（> 0）`).toBeGreaterThan(0);
-    const last = m.frames[m.frames.length - 2]; // p=0.95
-    expect(last.tip[0], `收刀末（p=0.95）剑尖 x=${last.tip[0].toFixed(0)} 必须回到右半屏`)
-      .toBeGreaterThan(1280 * 0.5);
-    // ④ 握点全程几乎不动（支点是手）
+    // ① 向前：剑尖相机 z 必须比静止时更负（远离相机 = 朝屏幕纵深砍出）
+    const deepest = m.frames.reduce((a, f) => (f.tipZ < a.tipZ ? f : a), m.rest);
+    const forwardBy = m.rest.tipZ - deepest.tipZ;
+    expect(forwardBy, `剑尖最远 tipZ=${deepest.tipZ.toFixed(2)} 相对静止 ${m.rest.tipZ.toFixed(2)} `
+      + `只前进了 ${forwardBy.toFixed(2)} 格，必须 > 0.8（向前挥刀，不是屏幕内摆动）`)
+      .toBeGreaterThan(0.8);
+    // ② 两段：前段单调劈出、后段单调收回、末帧归位、只有 1 个位移峰
+    for (let i = 1; i < out.length; i++) {
+      expect(dist(out[i]), `前段 p=${out[i].p} 位移必须大于前一帧（单调劈出）`)
+        .toBeGreaterThan(dist(out[i - 1]) - 1);
+    }
+    // 屏幕位移天然比「横向摆动」小：剑尖朝纵深挥出会被透视压缩（这正是「向前」的特征）。
+    // 所以屏幕位移只要 >300px（有可见幅度），「向前」的硬证据由下面的 tipZ 前进量承担。
+    expect(Math.max(...out.map(dist)), '前段必须有可见挥砍幅度（> 300px）').toBeGreaterThan(300);
+    for (let i = 1; i < back.length; i++) {
+      expect(dist(back[i]), `后段 p=${back[i].p} 位移必须小于前一帧（单调收回）`)
+        .toBeLessThan(dist(back[i - 1]) + 1);
+    }
+    expect(dist(m.frames[m.frames.length - 1]), '收回结束必须精确回到静止姿态').toBeLessThan(1);
+    const ds = m.frames.map(dist);
+    const localMaxima = ds.slice(1, -1).filter((v, i) => v > ds[i] + 1 && v > ds[i + 2] + 1).length;
+    expect(localMaxima, `位移曲线出现 ${localMaxima} 个局部峰，必须恰好 1 个（两段动作）`).toBeLessThanOrEqual(1);
+    // ③ 剑柄钉在屏幕下方外，且几乎不动
+    const minHiltY = Math.min(...m.frames.map((f) => f.hilt[1]));
+    expect(minHiltY, `剑柄最浅 y=${minHiltY.toFixed(0)} 必须 > 视口高 720（全程藏在屏幕下方外）`)
+      .toBeGreaterThan(720);
     const hiltDrift = Math.max(...m.frames.map((f) => Math.hypot(f.hilt[0] - m.rest.hilt[0], f.hilt[1] - m.rest.hilt[1])));
-    expect(hiltDrift, `握点全程漂移 ${hiltDrift.toFixed(1)}px 必须 < 5（手不动、剑身扫）`)
-      .toBeLessThan(5);
+    expect(hiltDrift, `剑柄漂移 ${hiltDrift.toFixed(1)}px 必须 < 5（支点是剑柄，手不动）`).toBeLessThan(5);
+    // ④ 不绕剑身长轴自转
+    const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    const angles = m.frames.map((f) => {
+      const d = Math.max(-1, Math.min(1, dot(f.long, f.face)));
+      return (Math.acos(d) * 180) / Math.PI;
+    });
+    const spread = Math.max(...angles) - Math.min(...angles);
+    expect(spread, `长轴/法线夹角跨度 ${spread.toFixed(2)}° 必须 < 0.5°（不绕剑身长轴自转）`)
+      .toBeLessThan(0.5);
   });
 
   test('剑命中丧尸：扣血 + 红闪 + 击退 + 音效', async ({ page }) => {
