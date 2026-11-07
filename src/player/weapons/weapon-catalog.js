@@ -117,7 +117,7 @@ export const WEAPONS = freeze({
      */
     transform: {
       scale: [SWORD_LENGTH_SCALE, SWORD_LENGTH_SCALE, SWORD_LENGTH_SCALE],
-      position: [1.09287, -0.206, -1.20283],
+      position: [0.99287, -0.206, -1.20283],
       rotation: [SWORD_ROTATION_X, SWORD_ROTATION_Y, SWORD_ROTATION_Z],
       rotationOrder: 'XYZ',
     },
@@ -131,7 +131,7 @@ export const WEAPONS = freeze({
      * 挥砍时绕它转，则**握点（手）在相机空间里不动**、剑身在支点外侧扫弧 —— 这才是挥砍。
      * 绕模型中心转的形态是「螺旋桨」，用户 2026-11-06 已明确否掉。
      */
-    swingPivot: [0, -0.9375, 0.09958],
+    swingPivot: [0, -0.9375, 0.29958],
     // 近战：无 muzzleOffset / localStart / tracer / automatic / scan（枪专属字段）
     entityDamage: 50, entityRange: 3, melee: true,
     hitSound: 'emp_activated', hitVolume: 0.6,
@@ -152,9 +152,38 @@ export const WEAPONS = freeze({
      */
     swing: {
       /** 挥砍段占比：前 55% 劈下去，后 45% 沿原路收回 */
-      strikeEnd: 0.55,
+      strikeEnd: 0.65,
       /** 向前劈砍幅度（弧度，绕相机 X 轴，负 = 剑尖向前下方砍出） */
-      arc: -0.95,
+      arc: -1.15,
+      /**
+       * 挥扫幅度（弧度，绕**相机 Y 轴** = 垂直轴，正 = 剑尖向左扫）。
+       *
+       * 用户 2026-11-06：「挥剑的时候，剑头有一个向左挥的效果，而不是纯纯向前劈，
+       * 挥刀过程中有一个向左挥扫的动作，然后挥刀到最远处再返回」。
+       *
+       * ⚠️ 这是**旋转**而不是平移（上一版 `shift` 是纯平移，剑身姿态不变，
+       * 看起来就是「整把剑横着挪过去」）。绕垂直轴偏航才是真正的挥扫：
+       * 剑尖划弧、剑柄几乎不动，且剑身在空间里真的掉转了方向。
+       *
+       * 与 `arc` 共用同一条 `amount` 曲线，合成 `dR = R_y(amount·yaw) · R_x(amount·arc)`：
+       * 先按 amount 向前劈，同时按 amount 向左扫 —— 即「边向前边向左划弧」。
+       * 实测（`arc=-1.35`、`yaw=0.8`）剑尖：(1058,174) → 距准心最近 **81px** → (580,574)，
+       * 横向左移 478px、向前推进 1.47 格（tipZ −1.331 → −2.799），剑柄只漂 66px。
+       */
+      yaw: 0.8,
+      /**
+       * 劈砍过程中的**左移量**（格，相机空间 x，负 = 屏幕左）。
+       *
+       * 用户 2026-11-06 第二轮问「为什么把 shift 去掉了」，并指出这就是左移参数：
+       * 它和 `yaw` 并不互斥 —— `yaw` 负责让剑尖**划弧扫过去**（旋转，剑身真掉方向），
+       * `shift` 负责把整个挥扫区域**递向左**（平移），包括剑柄一起左移。
+       * 两者叠加才是「先左移到位、再向左挥扫」。
+       *
+       * 与 `arc`/`yaw` 共用同一条 `amount` 曲线：静止 0 → 劈到最深处最大 → 收回归 0。
+       * 装配顺序（view-weapon.js）：`M = T(shift·amount) · R_y(·) · R_x(·) · baseM · T(c)`
+       * —— 平移在**最外层**，所以是在相机空间直接左移，不改变旋转支点的行为。
+       */
+      shift: -0.5,
     },
     /**
      * 击退距离（格）。用户：「挨了一剑后，如果没死的话，就往后退一小步」。
@@ -163,6 +192,6 @@ export const WEAPONS = freeze({
      * 看得见「被推开」又不会像瞬移；且小于丧尸排斥半径 `ZOMBIE_SEPARATION.minDistance`(1.2)，
      * 不会把两只丧尸一次击退到互相排斥的阈值外造成连锁推挤。
      */
-    knockbackDistance: 0.4,
+    knockbackDistance: 0.9,
   },
 });

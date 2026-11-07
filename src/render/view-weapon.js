@@ -134,15 +134,16 @@ export class ViewWeapon {
       return;
     }
 
-    // ---- 近战：屏幕平面内的挥砍（绕剑柄，**不绕剑身长轴自转**）----
+    // ---- 近战：向前劈砍（绕相机 X 轴、以剑柄为支点，**不绕剑身长轴自转**）----
     //
-    // 用户 2026-11-06 路径图（`~/ttt/bug/剑体.png`）：红弧 = 剑尖轨迹
-    // （右上 → 越过上方 → 左下劈到屏底），绿线 = 剑身扫过的扇形。
-    // 澄清：「剑体不要旋转」指的是**不绕剑柄方向的轴自转**（即不做拧腕），
-    // 挥砍本身要有 —— 所以这里在**相机 Z 轴（视线轴）**上像雨刷一样扇，
+    // 用户 2026-11-06 最终口径：「你要向前挥刀，不是向左摆刀」。
+    // 历史：v2.67 绕模型中心（螺旋桨）→ v2.68 绕握点但轴向错 → v2.69 纯平移（没有砍的动作）
+    // → 绕相机 Z 在屏幕平面内扇形摆（**向左摆刀**，被否掉）→ 本版绕相机 X。
+    //
+    // 「剑体不要旋转」的准确含义（用户澄清）：**不绕剑柄方向的轴自转**（不拧腕），
+    // 但砍击弧线必须有 —— 所以旋转轴选相机 X（屏幕水平轴），
+    // 负角度把剑尖朝**屏幕纵深**砍出（实测 tipZ −1.331 → −2.756，前进 1.42 格）。
     // 支点在剑柄（`swingPivot`），剑柄在相机空间里钉住不动、始终在屏幕下方外。
-    // 轴 = **相机 X（屏幕水平轴）**：负角度把剑尖向前下方砍出（朝屏幕纵深），
-    // 而不是在屏幕平面内左右摆（上一版绕 Z 轴，用户指出「不是向左摆刀」）。
     //
     // ⬜ 不写 `wrist`/绕剑轴的分量：那就是用户说的「剑轴自转」，已删除。
     const pivot = weapon.swingPivot ?? [0, 0, 0];
@@ -160,12 +161,19 @@ export class ViewWeapon {
         new THREE.Quaternion().setFromEuler(new THREE.Euler(rx, ry, rz, 'XYZ')),
         new THREE.Vector3(sx, sy, sz),
       );
-      // 绕相机 X（屏幕水平轴）向前劈：负角度 = 剑尖向前下方砍出（实测 tipZ −1.87 → −2.99）
-      const dR = new THREE.Matrix4().makeRotationX(amount * w.arc);
+      // 绕相机 X（屏幕水平轴）向前劈 + 绕相机 Y（垂直轴）向左扫：
+      // dR = R_y(amount·yaw) · R_x(amount·arc) —— 先劈后扫的复合旋转（顺序不能反）。
+      // 平移版（旧 `shift`）剑身姿态不变，看起来只是整把剑横着挪；旋转才是真挥扫。
+      const dR = new THREE.Matrix4().makeRotationY(amount * (w.yaw ?? 0))
+        .multiply(new THREE.Matrix4().makeRotationX(amount * w.arc));
       const P = new THREE.Vector3(...pivot);
       const p0 = P.clone().applyMatrix4(baseM);
       const c = p0.clone().applyMatrix4(dR.clone().invert()).applyMatrix4(baseM.clone().invert()).sub(P);
-      const M = dR.multiply(baseM).multiply(new THREE.Matrix4().makeTranslation(c.x, c.y, c.z));
+      // 左移（平移）叠在**最外层**：在相机空间直接把整个挥扫区域递向左，
+      // 不改变旋转支点（`c` 的补偿）的行为。与 `yaw` 叠加 = 先左移到位、再向左挥扫。
+      const shift = amount * (w.shift ?? 0);
+      const M = new THREE.Matrix4().makeTranslation(shift, 0, 0)
+        .multiply(dR).multiply(baseM).multiply(new THREE.Matrix4().makeTranslation(c.x, c.y, c.z));
       M.decompose(this.node.position, this.node.quaternion, this.node.scale);
       return;
     }

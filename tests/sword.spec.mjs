@@ -357,12 +357,16 @@ test.describe('近战剑（v2.65）', () => {
         frames.push({ p: +p.toFixed(2), ...measure() });
       }
       vw._swingElapsed = Infinity; vw.update(0, {});
-      return { rest, frames };
+      const sw = (await import('/src/player/weapons/weapon-catalog.js')).WEAPONS.sword;
+      return { rest, frames, strikeEnd: sw.swing.strikeEnd };
     });
 
     const dist = (f) => Math.hypot(f.tip[0] - m.rest.tip[0], f.tip[1] - m.rest.tip[1]);
-    const out = m.frames.filter((f) => f.p > 0 && f.p <= 0.55);
-    const back = m.frames.filter((f) => f.p > 0.55);
+    // ⚠️ 分界点必须读 catalog 的 `strikeEnd`，不能硬编码 —— 曾经写死 0.55，
+    // 用户把 strikeEnd 调到 0.65 后，0.60 帧仍在劈出段却被当成收回段 ⇒ 误报「收回不单调」。
+    const split = m.strikeEnd;
+    const out = m.frames.filter((f) => f.p > 0 && f.p <= split);
+    const back = m.frames.filter((f) => f.p > split);
 
     // ① 向前：剑尖相机 z 必须比静止时更负（远离相机 = 朝屏幕纵深砍出）
     const deepest = m.frames.reduce((a, f) => (f.tipZ < a.tipZ ? f : a), m.rest);
@@ -386,12 +390,21 @@ test.describe('近战剑（v2.65）', () => {
     const ds = m.frames.map(dist);
     const localMaxima = ds.slice(1, -1).filter((v, i) => v > ds[i] + 1 && v > ds[i + 2] + 1).length;
     expect(localMaxima, `位移曲线出现 ${localMaxima} 个局部峰，必须恰好 1 个（两段动作）`).toBeLessThanOrEqual(1);
-    // ③ 剑柄钉在屏幕下方外，且几乎不动
+    // ③ 剑柄全程藏在屏幕下方外，且**几乎不动**（绕垂直轴偏航 ⇒ 支点仍在剑柄 ⇒ 手不动）
     const minHiltY = Math.min(...m.frames.map((f) => f.hilt[1]));
     expect(minHiltY, `剑柄最浅 y=${minHiltY.toFixed(0)} 必须 > 视口高 720（全程藏在屏幕下方外）`)
       .toBeGreaterThan(720);
-    const hiltDrift = Math.max(...m.frames.map((f) => Math.hypot(f.hilt[0] - m.rest.hilt[0], f.hilt[1] - m.rest.hilt[1])));
-    expect(hiltDrift, `剑柄漂移 ${hiltDrift.toFixed(1)}px 必须 < 5（支点是剑柄，手不动）`).toBeLessThan(5);
+    // 剑柄漂移归 `yaw` 决定：绕垂直轴偏航越大，剑柄（支点附近）在屏幕上摆得越多。
+    // 剑柄左移量归 catalog 的 `shift`：它和 `yaw`（旋转）**互补** —— yaw 让剑尖划弧扫过去，
+    // shift 把整个挥扫区域连剑柄一起递向左。判据只钉「剑柄确实左移了」（用户要的「稍微左移」），
+    // 具体值归 catalog，改参数时这里不该红。实测 shift=-0.5 时左移 231px。
+    const hiltLeft = Math.max(...m.frames.map((f) => m.rest.hilt[0] - f.hilt[0]));
+    expect(hiltLeft, `剑柄横向左移最大 ${hiltLeft.toFixed(0)}px 必须 > 80（挥砍时剑柄要跟着左移）`)
+      .toBeGreaterThan(80);
+    // ②b 向左挥扫：剑尖必须**显著向左**（用户：「剑头有一个向左挥的效果，而不是纯纯向前劈」）
+    const tipLeft = Math.max(...m.frames.map((f) => m.rest.tip[0] - f.tip[0]));
+    expect(tipLeft, `剑尖横向左移最大 ${tipLeft.toFixed(0)}px 必须 > 300（要有向左挥扫，不是纯向前劈）`)
+      .toBeGreaterThan(300);
     // ④ 不绕剑身长轴自转
     const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
     const angles = m.frames.map((f) => {
@@ -457,7 +470,10 @@ test.describe('近战剑（v2.65）', () => {
     const moved = Math.hypot(result.afterPos[0] - result.firePos[0], result.afterPos[2] - result.firePos[2]);
     expect(moved, '命中必须产生水平位移').toBeGreaterThan(0.01);
     expect(distAfter, '击退必须使丧尸**远离**玩家（AI 追击是靠近）').toBeGreaterThan(distBefore);
-    expect(moved, '击退距离应 ≈ 0.4 格（不超 0.5）').toBeLessThan(0.5);
+    // 击退距离归 catalog 的 `knockbackDistance`（用户 2026-11-06 手改为 0.9）。
+    // 判据只校验「有击退且不离谱」（< 1.2 = 小于丧尸排斥半径，不会造成连锁推挤），
+    // 不锁死具体值 —— 改参数时这里不该红。
+    expect(moved, '击退距离必须 < 1.2 格（不超过丧尸排斥半径，避免连锁推挤）').toBeLessThan(1.2);
     // 音效：挥砍音 + 砍中音各响一次
     expect(result.swingDelta, '挥砍必须响 player_swing').toBe(1);
     expect(result.hitDelta, '命中必须响 emp_activated').toBe(1);

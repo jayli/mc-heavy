@@ -794,7 +794,8 @@ test('weapon catalog: 剑的近战冻结数值（伤害/射程/冷却/音效/击
   assertEqual(sword.cooldown, 0.5);
   assertEqual(sword.sound, 'player_swing', '挥砍音');
   assertEqual(sword.hitSound, 'emp_activated', '砍中音');
-  assertEqual(sword.knockbackDistance, 0.4);
+  // 用户 2026-11-06 手改 0.4 → 0.9（更大的推离感）
+  assertEqual(sword.knockbackDistance, 0.9);
   assertEqual(sword.swingSeconds, 0.3);
   // 剑刻意没有枪的专属字段（曳光/枪口/连射）
   assertFalse(sword.automatic === true, '剑是单发（用户：点击左键挥一刀）');
@@ -816,7 +817,7 @@ test('weapon catalog: 剑的第一人称摆放冻结值（v2.70 实测定标口�
   assertEqual(rotationOrder, 'XYZ');
   const deg = rotation.map((r) => +((r * 180) / Math.PI).toFixed(2));
   assertEqual(deg.join(','), '168.64,10.65,-172.68');
-  assertEqual(position.map((v) => +v.toFixed(3)).join(','), '1.093,-0.206,-1.203');
+  assertEqual(position.map((v) => +v.toFixed(3)).join(','), '0.993,-0.206,-1.203');
   assertEqual(+scale[0].toFixed(3), 1.253);
   // 位置必须在相机前方（相机朝 -Z），否则模型跑到镜头背后
   assertTrue(position[2] < -0.3, '剑必须在相机前方');
@@ -830,6 +831,18 @@ test('weapon catalog: 剑的第一人称摆放冻结值（v2.70 实测定标口�
   // 挥砍参数（两段式扇形；用户澄清：「剑体不绕着剑柄的方向的轴旋转」——禁自转，不是禁挥砍）
   assertTrue(sword.swing.strikeEnd > 0 && sword.swing.strikeEnd < 1, '挥砍段占比必须在 (0,1)');
   assertTrue(sword.swing.arc < -0.3, 'arc 必须为负（绕相机 X 负向 = 剑尖向前下方砍出，正向会把剑尖翻向镜头）');
+  // 向左挥扫（用户 2026-11-06：「剑头有一个向左挥的效果，而不是纯纯向前劈」）：
+  // 绕相机 Y（垂直轴）偏航，正 = 剑尖向左扫；与 arc 共用同一条 amount 曲线。
+  // 刻意**不是**平移（旧 swing.shift）：平移时剑身姿态不变，看起来只是整把剑横着挪。
+  assertTrue(typeof sword.swing.yaw === 'number', 'swing.yaw 必须存在（向左挥扫幅度）');
+  assertTrue(sword.swing.yaw > 0, 'swing.yaw 必须为正（相机 Y 正向 = 剑尖向左扫）');
+  // 左移量（用户 2026-11-06 第二轮：「shift 这个就是左移的参数，加回来是不是就可以做到剑柄挥砍的时候稍微左移一下」）：
+  // 与 yaw **互补而非互斥** —— yaw 让剑尖划弧扫过去（旋转），shift 把整个挥扫区域递向左（平移，剑柄一起左移）。
+  // 必须为负（相机空间 x 负 = 屏幕左），且与 arc/yaw 共用同一条 amount 曲线。
+  assertTrue(typeof sword.swing.shift === 'number', 'swing.shift 必须存在（挥砍时的左移量）');
+  assertTrue(sword.swing.shift < 0, 'swing.shift 必须为负（屏幕左移，靠近准心）');
+  // 上界：shift 过大会把剑柄推过相机中轴（实测 -1.5 时剑柄相机 x = -0.578，整把剑横穿屏幕）
+  assertTrue(sword.swing.shift >= -1, `swing.shift 不得 < -1（当前 ${sword.swing.shift}，会把剑柄推过屏幕中轴）`);
   // 旧的四段式 / 绕剑轴自转 / 纯平移字段必须已删除
   for (const dead of ['windupEnd', 'windupRoll', 'roll', 'wrist', 'returnSweep',
     'chop', 'sweep', 'reach', 'rise', 'offset']) {
