@@ -193,6 +193,17 @@ export class IgnisBossAgent extends BossAgent {
     let leapAttackCooldown = Math.max(0,
       (Number.isFinite(state.leapAttackCooldown) ? state.leapAttackCooldown : 0) - step);
     /**
+     * 连续失败了几次**普通**脱困跳（v2.84）。跨帧累积量，超过
+     * `IGNIS_AI.escapeLeapEscalateAfter` 后下一次起跳改用强化（更高）跳。
+     *
+     * 清零只看两件事（见 `escapeLevelTolerance` 注释）：
+     *   ① 不再处于「卡住」态（`!shouldTrackStuck`）—— 不卡了就不需要记住过去的困境；
+     *   ② 棘轮确认有进展 **且** 玩家不在上方 —— 后者是必需的：深坑底部往往很宽，
+     *     在坑里水平乱走 1.5 格也能刷满棘轮，只看净位移会让计数被反复清零 ⇒ 永远等不到高跳。
+     */
+    let escapeFailCount = Math.max(0,
+      Number.isFinite(state.escapeFailCount) ? state.escapeFailCount : 0);
+    /**
      * 玩家位置的**感知快照**（v2.63）—— chase 的移动与转向一律读它，不读真实位置。
      *
      * `null` = 还没采过（首次感知立即执行，见下方感知块）。
@@ -471,7 +482,31 @@ export class IgnisBossAgent extends BossAgent {
       mode = 'leap';
       leapKind = 'escape';
       leapT = 0;
-      vy = IGNIS_AI.leapJumpForce;
+      escapeFailCount += 1;
+      /**
+       * 本跳是否升级为**强化跳**（v2.84）：前 `escapeLeapEscalateAfter` 次仍是普通跳。
+       *
+       * 顶点 H = `clamp(max(Δy + margin, apexMin), apexMin, apexMax)`，Δy = 玩家脚底 − 自身脚底
+       * —— 正是用户说的「焰魔所在 y 与玩家所在 y 的差」。
+       *
+       * ⚠️ **`max(…, apexMin)` 不是可选项**：玩家不在高处时（被 4 格高围墙困住、Δy ≈ 0）
+       * 纯按高差算会得到与普通跳同高的顶点 ⇒ 强化跳白跳（`tests/ignis.spec.mjs` 的围栏 E2E）。
+       * ⚠️ **不给「玩家必须贴近」这类额外门**：用户的原话是「数次普通脱困跳跃没有成功脱困
+       * 才高跳」，而高跳的高度本来就由高差与保底算出 —— 再叠一个水平距离条件会在「围栏
+       * 困住 + 玩家在远处」这种常见组合下让强化跳永不触发（实测过：只看到 1 次跳）。
+       *
+       * 无玩家时不可能有高差信息 ⇒ Δy 按 0 算（顶点 = `apexMin`），不能猜一个。
+       * 这与「脱困不依赖意图」不矛盾：卡住判据仍然不看玩家，只是强化跳的**高度**需要参照量。
+       */
+      const dyPlayer = player ? Math.max(0, player[1] - py) : 0;
+      if (escapeFailCount > IGNIS_AI.escapeLeapEscalateAfter) {
+        const apex = Math.min(IGNIS_AI.escapeLeapApexMax, Math.max(
+          IGNIS_AI.escapeLeapApexMin, dyPlayer + IGNIS_AI.escapeLeapApexMargin));
+        // 顶点 → 竖直初速（能量守恒，与 `leapJumpForce` 同一套抛物线物理）。
+        vy = Math.sqrt(2 * Math.abs(IGNIS_AI.gravity) * apex);
+      } else {
+        vy = IGNIS_AI.leapJumpForce;
+      }
       // 随机方位角（`rng` 可注入 ⇒ 单测能钉「不同 rng 给不同方向」）
       const theta = this.rng() * Math.PI * 2;
       leapDir = [Math.sin(theta) * IGNIS_AI.leapSpeed, Math.cos(theta) * IGNIS_AI.leapSpeed];
@@ -637,6 +672,8 @@ export class IgnisBossAgent extends BossAgent {
         // 被埋且无解（final review P2-1）/ 或本来就该站着：钉 0，不累计
         stuckT = 0;
         stuckAnchor = [px, pz];
+        // v2.84：不卡了 ⇒ 过去的失败记忆一并清掉（否则上一处困境的记忆会漏到下一次）
+        escapeFailCount = 0;
       } else if (stuckAnchor === null) {
         stuckAnchor = [px, pz];
         stuckT = 0;
@@ -645,6 +682,9 @@ export class IgnisBossAgent extends BossAgent {
         if (net >= IGNIS_AI.stuckNetDist) {
           stuckAnchor = [px, pz];   // 棘轮推进
           stuckT = 0;
+          // v2.84：**真的走开了**才算一次脱困成功 —— 但「玩家还在上方」时不算
+          //（深坑底部够宽，坑里水平乱走也能刷满 `stuckNetDist`）。
+          if (!player || player[1] - py <= IGNIS_AI.escapeLevelTolerance) escapeFailCount = 0;
         } else {
           stuckT += step;
         }
@@ -693,6 +733,7 @@ export class IgnisBossAgent extends BossAgent {
       acquireT,
       stuckT,
       stuckAnchor,
+      escapeFailCount,
       sensedPlayer,
       senseTimer,
       leapKind,

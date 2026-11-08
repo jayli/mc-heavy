@@ -89,7 +89,7 @@ function createState({
   attackAnimT, attackKind, spinCooldown,
   idleTime, attackCooldown, losTimer, losVisible, onGround, attackRequest,
   navDir, navMode, needsPath,
-  acquireT, stuckT, stuckAnchor, sensedPlayer, senseTimer,
+  acquireT, stuckT, stuckAnchor, sensedPlayer, senseTimer, escapeFailCount,
   leapKind, leapDir, leapT, leapTargetY, leapAttackCooldown,
   _physAccum,
 }) {
@@ -210,6 +210,17 @@ function createState({
       && stuckAnchor.every((n) => Number.isFinite(n))
       ? [stuckAnchor[0], stuckAnchor[1]]
       : null,
+    /**
+     * 连续失败了几次**普通**脱困跳（v2.84）。跨帧累积量。
+     *
+     * 超过 `IGNIS_AI.escapeLeapEscalateAfter` 后，下一次脱困跳改用强化（更高）跳 ——
+     * 用户：「只有数次普通脱困跳跃没有成功脱困的时候才进行高跳来脱困」。
+     * ⚠️ **必须在 createState 里保留** —— 丢掉它 ⇒ 每帧归零 ⇒ 强化跳永不升级
+     *（同 `_physAccum` / `senseTimer` 的教训，守卫在 `test-ignis-system.js`）。
+     */
+    escapeFailCount: Number.isFinite(escapeFailCount)
+      ? Math.max(0, escapeFailCount)
+      : 0,
     /**
      * 玩家位置的**感知快照**（v2.63：1~2 秒间隔采样），`[x, y, z]` 或 `null`。
      *

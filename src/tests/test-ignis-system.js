@@ -63,6 +63,7 @@ test('焰魔: createState 保留全部行为新字段（同 _physAccum 的载荷
     position: [0, 10, 0], acquireT: 1.2, stuckT: 3.4, leapKind: 'attack',
     leapDir: [1, 2], leapT: 0.5, leapTargetY: 9, leapAttackCooldown: 7,
     stuckAnchor: [3, 4], sensedPlayer: [5, 6, 7], senseTimer: 1.8,
+    escapeFailCount: 2,
   });
   assertEqual(s.acquireT, 1.2);
   assertEqual(s.stuckT, 3.4);
@@ -76,6 +77,28 @@ test('焰魔: createState 保留全部行为新字段（同 _physAccum 的载荷
   assertEqual(s.sensedPlayer[0], 5);
   assertEqual(s.sensedPlayer[2], 7);
   assertEqual(s.senseTimer, 1.8);
+  // v2.84：丢掉它 ⇒ 每帧重新计数 ⇒ 强化跳永不升级（与 `_physAccum` / `senseTimer` 同一教训）
+  assertEqual(s.escapeFailCount, 2);
+});
+
+test('焰魔(v2.84): 脱困强化跳的常量区间（顶点下限 > 普通跳、上限在滞空安全阀内）', () => {
+  // 用户 2026-11-08：「相差多高，就通过跳跃多高来脱困，只有数次普通脱困跳跃没有成功脱困的
+  // 时候才进行高跳」。两项裁定（`ask_user_question`）：顶点 = clamp(max(Δy+1, 4), 4, 8)；前 3 次普通跳。
+  assertEqual(IGNIS_AI.escapeLeapEscalateAfter, 3);
+  assertEqual(IGNIS_AI.escapeLeapApexMin, 4);
+  assertEqual(IGNIS_AI.escapeLeapApexMax, 8);
+  assertEqual(IGNIS_AI.escapeLeapApexMargin, 1);
+  assertEqual(IGNIS_AI.escapeLevelTolerance, 2);
+  // ⚠️ **下限必须严格高于普通跳的顶点**：否则强化跳等于白跳（「跳更高」这条需求静默失效）
+  const normalApex = IGNIS_AI.leapJumpForce ** 2 / (2 * Math.abs(IGNIS_AI.gravity));
+  assertTrue(IGNIS_AI.escapeLeapApexMin > normalApex,
+    `强化跳下限 ${IGNIS_AI.escapeLeapApexMin} 必须 > 普通跳顶点 ${normalApex.toFixed(2)}`);
+  assertTrue(IGNIS_AI.escapeLeapApexMax > IGNIS_AI.escapeLeapApexMin, '上下限必须区分');
+  // ⚠️ **上限由安全阀推出**：`leapMaxSeconds` 超时会强制回 chase（那一跳直接白跳）。
+  // 滞空 = 2√(2H/|g|) 必须 < 安全阀，否则深坑一跳就被超时打断。
+  const airtime = 2 * Math.sqrt(2 * IGNIS_AI.escapeLeapApexMax / Math.abs(IGNIS_AI.gravity));
+  assertTrue(airtime < IGNIS_AI.leapMaxSeconds,
+    `顶点 ${IGNIS_AI.escapeLeapApexMax} 的滞空 ${airtime.toFixed(2)}s 必须 < leapMaxSeconds(${IGNIS_AI.leapMaxSeconds})`);
 });
 
 test('焰魔: 感知间隔常量在用户裁定的 [1, 2] 秒区间内', () => {

@@ -1288,6 +1288,123 @@ test.describe('焰魔（Ignis）Tier 4', () => {
   });
 
   /**
+   * v2.84 用户需求：「现在的跳跃高度不是很高，如果焰魔掉入了一个很深的深坑……可以计算焰魔被困住
+   * 所在的高度 y 和玩家所在的高度 y 之间的差，相差多高，就通过跳跃多高来脱困，只有数次普通跳跃
+   * 没有成功脱困的时候才进行高跳来脱困」。
+   *
+   * ## 为什么围墙必须是 4 格（Tier 4 首轮实测逼出来的）
+   *
+   * 3 格高的墙**普通跳就能上去**（顶点 2.52 ⇒ 脚底 12.5，而墙顶在 y=12，借 step-up 落地），
+   * 首次跳就脱困了 ⇒ 本用例的前提不成立。4 格墙的墙顶在 y=13，要站上去得脚底 ≥ 14（= 起点 + 4），
+   * 普通跳到不了；而它又超过 `maxStep`(1.0) ⇒ step-up 也上不去。
+   *
+   * ## 判据（三层）
+   *
+   * ① 至少发生 4 次 escape 跳；
+   * ② 前 3 次普通跳的**最高脚底**都在普通跳顶点的量级（≈ 2.5 格）⇒ 爬不上 4 格墙；
+   * ③ 第 4 次的最高脚底 ≥ 起点 + 3.6（强化跳顶点 4 格），且真的出了围。
+   *
+   * ⚠️ **不要断言起跳 vy**：本用例是 100ms 轮询，拿不到起跳那一瞬的值
+   *（采到的是飞行中途已被重力衰减的 vy，实测差 1.2 格/秒）。峰值高度则是采样不敏感的。
+   * ⚠️ 玩家必须移到 `leapAttackMax`(14) 之外：否则焰魔会先尝试跳劈，`escape` 计数不推进。
+   */
+  test('脱困高跳：4 格围墙困住 → 前 3 次普通跳出不去，第 4 次强化跳越出（v2.84）', async ({ page }) => {
+    test.setTimeout(180_000);
+    await page.goto(`/?seed=${SEED}`);
+    await waitWorldReady(page);
+    await teleportToTarnCenter(page);
+    await waitPlayerLanded(page);
+
+    // ---- ① 召焰魔、读它落地后的真实位置，再围着它垒 4 格高的围栏 ----
+    const built = await page.evaluate(async () => {
+      const g = window.__MC_GAME__;
+      const p0 = g.player.physics.pos;
+      const sum = g.ignises.summon('tarn:e2e:9', Math.floor(p0.x), Math.floor(p0.z) + 6, 1, Math.floor(p0.y));
+      if (!sum.ok) return { err: sum.reason };
+      await new Promise((res) => setTimeout(res, 1500));
+      const e = g.entities.get(sum.id);
+      if (!e) return { err: 'despawned' };
+      const [ex, ey, ez] = e.state.position;
+      const cx = Math.floor(ex), cz = Math.floor(ez);
+      const feetY = Math.floor(ey);
+      const stone = g.registry.idOf('stone');
+      // 切比雪夫半径 2 的闭合围栏（理由同上面的 2 格围栏用例：半径 1 会出生即被埋），高 **4** 格
+      let placed = 0;
+      for (let dx = -2; dx <= 2; dx++) {
+        for (let dz = -2; dz <= 2; dz++) {
+          if (Math.max(Math.abs(dx), Math.abs(dz)) !== 2) continue;
+          for (let dy = 0; dy < 4; dy++) {
+            g.editor.setBlock({ x: cx + dx, y: feetY + dy, z: cz + dz, id: stone });
+            placed++;
+          }
+        }
+      }
+      return { id: sum.id, cx, cz, feetY, placed, px: p0.x, py: p0.y, pz: p0.z };
+    });
+    expect(built.err).toBeUndefined();
+    expect(built.placed, '围栏应垒满 16 格 × 4 层 = 64').toBe(64);
+    await page.waitForTimeout(2500);           // 等 remesh / 光照收敛
+
+    // ---- ② 玩家移到 22 格外：> attackRange 与 leapAttackMax ⇒ 只能 chase 走过来 ----
+    await page.evaluate((b) => {
+      window.__MC_GAME__.player.spawn(b.px, b.py, b.cz - 22);
+    }, built);
+    await waitPlayerLanded(page);
+
+    // ---- ③ 观察 25 秒：每 100ms 采一份，记录每次 escape 起跳的 vy 与最高脚底 ----
+    const r = await page.evaluate(async (b) => {
+      const g = window.__MC_GAME__;
+      const hops = [];                 // 每次 escape 起跳的 vy（物理后值）+ "是否越过墙顶"
+      let prevMode = '';
+      let maxY = -Infinity;
+      let escaped = false;
+      const modes = new Set();
+      for (let i = 0; i < 250; i++) {          // 25 秒
+        await new Promise((res) => setTimeout(res, 100));
+        const e = g.entities.get(b.id);
+        if (!e) break;
+        const st = e.state;
+        const tag = st.mode + (st.leapKind ? ':' + st.leapKind : '');
+        modes.add(tag);
+        maxY = Math.max(maxY, st.position[1]);
+        // 新的一次 escape 起跳：failCount 递增且当前在 leap:escape
+        if (st.mode === 'leap' && st.leapKind === 'escape'
+          && hops.length < (st.escapeFailCount || 0)) {
+          hops.push({ vy: st.velocity[1], maxY: st.position[1], fail: st.escapeFailCount });
+        }
+        // 本次跳期间的最高脚底（用于「普通跳越不过墙顶」）
+        if (hops.length && st.position[1] > hops[hops.length - 1].maxY) {
+          hops[hops.length - 1].maxY = st.position[1];
+        }
+        // 脱困：站上墙顶（脚底 ≥ feetY+4）或水平出了围栏
+        const dCheb = Math.max(Math.abs(st.position[0] - (b.cx + 0.5)),
+          Math.abs(st.position[2] - (b.cz + 0.5)));
+        if (st.position[1] >= b.feetY + 4 - 0.05 || dCheb > 2.5) { escaped = true; break; }
+      }
+      return { hops, escaped, maxY, modes: [...modes], feetY: b.feetY };
+    }, built);
+    console.log('[脱困高跳]', JSON.stringify(r));
+
+    // ① 真的发生了多次 escape（否则本用例什么都没测到）
+    expect(r.hops.length, `escape 起跳次数 ${r.hops.length}（应 ≥ 4，modes=${r.modes.join(',')}）`)
+      .toBeGreaterThanOrEqual(4);
+    // ② 前 3 次是普通跳：峰值高度落在「顶点 2.52」的量级，且**必然爬不上 4 格墙**
+    //    （墙顶 = 起点 + 4；普通跳脚底最高只到 起点 + ~2.45）
+    for (let i = 0; i < 3; i++) {
+      const rise = r.hops[i].maxY - r.feetY;
+      expect(rise, `第 ${i + 1} 次普通跳只应升高 ~2.5 格，实测 ${rise.toFixed(2)}`).toBeLessThan(3.0);
+      expect(rise, `第 ${i + 1} 次根本没跳起来（升高 ${rise.toFixed(2)}）`).toBeGreaterThan(1.5);
+    }
+    // ③ 第 4 次是强化跳：顶点 4 格（≥ 3.6 才算真的到了强化档）
+    const rise4 = r.hops[3].maxY - r.feetY;
+    expect(rise4, `第 4 次应是 4 格顶点的强化跳，实测升高 ${rise4.toFixed(2)}`).toBeGreaterThanOrEqual(3.6);
+    // ④ 强化跳真的把它弄出去了
+    expect(r.escaped,
+      `强化跳后仍在围栏内（maxY=${r.maxY.toFixed(2)}, 墙顶=${r.feetY + 4}, modes=${r.modes.join(',')}）`)
+      .toBe(true);
+  });
+
+  /**
    * v2.63 用户第③项：「不是每时每刻都检测玩家位置，而是间隔最快 1 秒检测玩家位置，
    * 根据这个检测到的玩家位置进行位置移动和转向」。
    *

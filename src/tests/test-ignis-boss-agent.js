@@ -773,6 +773,188 @@ test('焰魔 AI: leap 超过 leapMaxSeconds → 安全阀强制结束', () => {
   assertEqual(s.mode, 'chase', '超时应强制回 chase（防异常滞空时永远停在 leap）');
 });
 
+// ==================== 脱困强化跳（v2.84）====================
+//
+// 用户 2026-11-08：「现在的跳跃高度不是很高，如果焰魔掉入了一个很深的深坑……可以计算焰魔被困住
+// 所在的高度 y 和玩家所在的高度 y 之间的差，相差多高，就通过跳跃多高来脱困，只有数次普通脱困跳
+// 跃没有成功脱困的时候才进行高跳来脱困」。两项裁定（`ask_user_question`）：顶点 =
+// `clamp(max(Δy + 1, 4), 4, 8)`；**前 3 次普通跳**，第 4 次起强化。
+//
+// ⚠️ 「深坑」判定必须同时看**高差**与`d < standoffRange`：只看 `py < player[1]` 会把每只焰魔
+// 都判成深坑（玩家站在高台、焰魔站在地面时 Δy 恒为正），于是「普通跳 3 次」这一步被整段跳过。
+
+/** 「深坑」世界：坑底 y∈[4,5] 可站，坑壁之外全是实心（y ≤ 12）⇒ 跳不出去只能喊强化跳 */
+function pitWorld() {
+  return makeWorld((x, y, z) => {
+    if (y <= 3) return true;                       // 坑底
+    if (y > 12) return false;                      // 坑口之上的空间
+    return x <= -3 || x >= 4 || z <= -3 || z >= 4; // 坑壁（高 9~10 格，普通跳 2.52 格过不去）
+  });
+}
+
+/**
+ * 4 格高围栏世界：与 `sealedBoxWorld` 同形但墙高 **4** 格（y=10~13）。
+ *
+ * ⚠️ **必须是 4 格，不能是 3 格**（实测逼出来的）：普通跳顶点 2.52 格 ⇒ 脚底到 12.5，
+ * 而 3 格墙的墙顶在 y=12 ⇒ **第一次普通跳就借着 step-up 爬上去了**（实测第 306 帧就逃出）。
+ * 4 格墙顶在 y=13，要站上去得脚底 ≥ 14（= 起点 + 4）—— 普通跳到不了，强化跳（顶点 4）刚好。
+ * 也超过 `maxStep`(1.0) ⇒ step-up 上不去，只能靠飞跃。
+ */
+function tallFenceWorld() {
+  return makeWorld((x, y, z) => {
+    if (y <= 9) return true;
+    if (y > 13) return false;
+    return x <= -1 || x >= 2 || z <= -1 || z >= 2;
+  });
+}
+
+/**
+ * 让一帧进入 `leap(escape)` 并返回这一帧的 state。
+ *
+ * `stuckT` 塞到阈值（等价于「已经卡住满 4 秒」），`onGround=true`，其余用 `st` 的缺省。
+ * ⚠️ **不能传 `velocity`** —— 顶部的 `vx/vz` 从 state 读，只有 `vy` 会被触发块改写。
+ */
+function triggerEscape(agent, over = {}) {
+  const ctx = {
+    world: OPEN_WORLD, registry: REGISTRY,
+    player: over.player || playerAt(20),
+  };
+  const s = st({
+    position: [0.5, 10, 0.5], mode: 'chase', onGround: true,
+    stuckT: IGNIS_AI.stuckLeapSeconds,
+    ...over.state,
+  });
+  return agent.update(s, 1 / 60, ctx);
+}
+
+/** 从返回的 state 反推本跳的竖直初速（`velocity[1]` 已被物理扣除一步重力） */
+function launchVyOf(s) {
+  return s.velocity[1] - IGNIS_AI.gravity / 60;
+}
+
+/** 顶点高度的解析值（半隐式欧拉实际会低一点点，断言一律用上下界） */
+function apexOf(vy) {
+  return vy * vy / (2 * Math.abs(IGNIS_AI.gravity));
+}
+
+test('焰魔 AI: 脱困跳失败计数 —— 前 3 次是普通跳（vy 仍等于 leapJumpForce）', () => {
+  const a = new IgnisBossAgent({ rng: () => 0.5 });
+  // ⚠️ 水平距取 **6**（> `attackRange`5.5 ⇒ 不会先转 attack；< `leapAttackMin`8 ⇒ 不触发跳劈）
+  const player = { position: [0.5, 16, 0.5 - 6] };
+  for (let n = 0; n < IGNIS_AI.escapeLeapEscalateAfter; n++) {
+    const s = triggerEscape(a, { player });
+    assertEqual(s.mode, 'leap', `第 ${n + 1} 次应进入 leap`);
+    assertEqual(s.leapKind, 'escape');
+    assertEqual(launchVyOf(s), IGNIS_AI.leapJumpForce,
+      `第 ${n + 1} 次应是普通跳（vy=${launchVyOf(s)}），强化跳要等到第 ${IGNIS_AI.escapeLeapEscalateAfter + 1} 次`);
+  }
+});
+
+test('焰魔 AI: 第 4 次脱困跳升级强化跳 —— 顶点 = clamp(max(Δy+1, 4), 4, 8)', () => {
+  // 三条分支各测一遍：高差主导 / 保底下限 / 上限封顶
+  const cases = [
+    { dy: 5.0, expect: 6.0, why: 'Δy=5 ⇒ 顶点 5+1=6 格' },
+    { dy: 0.0, expect: IGNIS_AI.escapeLeapApexMin, why: '玩家同层 ⇒ 走 4 格保底（能过 3 格围墙）' },
+    { dy: 20.0, expect: IGNIS_AI.escapeLeapApexMax, why: 'Δy=20 ⇒ 封顶 8 格（不为了深坑跳 20 格）' },
+  ];
+  for (const c of cases) {
+    // ⚠️ 每例一个独立 agent：`escapeFailCount` 是 state 字段，但 rng 序列要可复现
+    const a = new IgnisBossAgent({ rng: () => 0.5 });
+    const s = triggerEscape(a, {
+      player: { position: [0.5, 10 + c.dy, 0.5 - 6] },
+      state: { escapeFailCount: IGNIS_AI.escapeLeapEscalateAfter },
+    });
+    assertEqual(s.mode, 'leap');
+    const vy = launchVyOf(s);
+    const apex = apexOf(vy);
+    assertTrue(Math.abs(apex - c.expect) < 0.05,
+      `${c.why}，实测顶点 ${apex.toFixed(2)}（vy=${vy.toFixed(2)}）`);
+    // ⚠️ 上界不只是「不给跳太高」：`leapMaxSeconds`(3s) 安全阀按滞空算，顶点过高会超时
+    assertTrue(apex <= IGNIS_AI.escapeLeapApexMax + 0.05, `顶点 ${apex.toFixed(2)} 超过上限`);
+  }
+});
+
+test('焰魔 AI: 每次起跳失败计数 +1（跨帧累积量，非每帧重置）', () => {
+  const a = new IgnisBossAgent({ rng: () => 0.5 });
+  const player = { position: [0.5, 16, 0.5 - 6] };
+  let s = triggerEscape(a, { player });
+  assertEqual(s.escapeFailCount, 1, '第 1 次起跳后应为 1');
+  // 落地回 chase（给地面世界），再触发第二次
+  const w = pitWorld();
+  for (let i = 0; i < 240 && s.mode === 'leap'; i++) {
+    s = a.update(s, 1 / 60, { world: w, registry: REGISTRY, player });
+  }
+  s = { ...s, mode: 'chase', onGround: true, stuckT: IGNIS_AI.stuckLeapSeconds };
+  s = a.update(s, 1 / 60, { world: w, registry: REGISTRY, player });
+  assertEqual(s.escapeFailCount, 2, '第 2 次起跳后应为 2（计数被每帧重置的话这里会是 1）');
+});
+
+test('焰魔 AI: 脱困成功后失败计数清零（棘轮确认进展 + 玩家不再在上方）', () => {
+  const a = new IgnisBossAgent({ rng: () => 0.5 });
+  const w = groundWorld(9);
+  const player = { position: [0.5, 10, 0.5 - 20] };   // 同层 ⇒ 不在上方
+  let s = st({
+    position: [0.5, 10, 0.5], mode: 'chase', onGround: true,
+    stuckT: 0, stuckAnchor: [0.5, 0.5], escapeFailCount: 2,
+  });
+  // 直接给一个「已经走开 2 格」的位置：棘轮判据要求 net ≥ stuckNetDist(1.5)
+  s = { ...s, position: [0.5, 10, 0.5 - 2] };
+  s = a.update(s, 1 / 60, { world: w, registry: REGISTRY, player });
+  assertEqual(s.escapeFailCount, 0, '同层且真的走开了 ⇒ 脱困成功，计数应清零');
+});
+
+test('焰魔 AI: 坑内乱蹦也会刷满净位移，但玩家在上方时不得清零失败计数', () => {
+  // ⚠️ 不加这条附加条件 ⇒ 宽坑里焰魔水平乱走 1.5 格就清零 ⇒ 永远等不到强化跳
+  const a = new IgnisBossAgent({ rng: () => 0.5 });
+  const w = pitWorld();
+  const player = { position: [0.5, 51, 0.5 - 28.5] };   // 高 41 格、水平 28.5 格
+  let s = st({
+    position: [0.5, 4, 0.5], mode: 'chase', onGround: true,
+    stuckT: 0, stuckAnchor: [0.5, 0.5], escapeFailCount: 2,
+  });
+  s = { ...s, position: [0.5, 4, 0.5 - 2] };   // 坑内走了 2 格（≥ stuckNetDist）
+  s = a.update(s, 1 / 60, { world: w, registry: REGISTRY, player });
+  assertEqual(s.escapeFailCount, 2, '玩家还在上方 41 格 ⇒ 不算脱困成功，计数必须保留');
+});
+
+test('焰魔 AI: 离开卡住态（不再追踪 stuckT）→ 失败计数清零', () => {
+  const a = new IgnisBossAgent({ rng: () => 0.5 });
+  const w = groundWorld(9);
+  // 玩家在 sightRange 内 + 视线通 + 站定环内 ⇒ shouldTrackStuck=false（能砍到人的焰魔不算卡住）
+  const player = { position: [0.5, 10, 0.5] };
+  let s = st({
+    position: [0.5, 10, 0.5], mode: 'chase', onGround: true,
+    losVisible: true, losTimer: 999, escapeFailCount: 2,
+  });
+  s = a.update(s, 1 / 60, { world: w, registry: REGISTRY, player });
+  assertEqual(s.escapeFailCount, 0, '不处于卡住态 ⇒ 计数清零（否则上一处困境的记忆会漏到下一次）');
+});
+
+test('焰魔 AI: 4 格高围墙 —— 普通跳永远出不去，强化跳（第 4 次）能越过', () => {
+  const a = new IgnisBossAgent({ rng: () => 0.5 });
+  const w = tallFenceWorld();
+  const player = playerAt(20);   // 同层远处 ⇒ 强化跳走 4 格保底
+  let s = st({ position: [0.5, 10, 0.5], mode: 'chase', onGround: true });
+  const leapApexes = [];
+  let escapedAt = -1;
+  for (let i = 0; i < 60 * 40; i++) {          // 40 秒：4 次 × (4s 卡住 + ~1s 滞空) + 余量
+    s = a.update(s, 1 / 60, { world: w, registry: REGISTRY, player });
+    if (s.mode === 'leap' && s.leapKind === 'escape' && leapApexes.length < s.escapeFailCount) {
+      leapApexes.push(launchVyOf(s));
+    }
+    // 逃出判据：站上墙顶（脚底 ≥ 起点 + 4）或水平出了围栏
+    if (s.position[1] > 13.5 || s.position[2] < -1.5 || s.position[0] > 2.5) { escapedAt = leapApexes.length; break; }
+  }
+  assertEqual(leapApexes.length, IGNIS_AI.escapeLeapEscalateAfter + 1,
+    `应看到 ${IGNIS_AI.escapeLeapEscalateAfter} 次普通跳 + 1 次强化跳，实测 ${leapApexes.length} 次`);
+  for (const vy of leapApexes.slice(0, IGNIS_AI.escapeLeapEscalateAfter)) {
+    assertTrue(Math.abs(vy - IGNIS_AI.leapJumpForce) < 1e-9, `普通跳 vy 应=${IGNIS_AI.leapJumpForce}`);
+  }
+  assertTrue(Math.abs(apexOf(leapApexes[leapApexes.length - 1]) - IGNIS_AI.escapeLeapApexMin) < 0.05,
+    `第 ${leapApexes.length} 次应是 ${IGNIS_AI.escapeLeapApexMin} 格顶点的强化跳`);
+  assertTrue(escapedAt > 0, '强化跳必须真的把焰魔跳出 3 格围墙');
+});
+
 // ==================== 跳跃劈砍（v2.62）====================
 //
 // 用户缺陷⑥：「当焰魔靠近玩家过程中，距离玩家一定的距离，就执行一个飞跃向前的动作，
