@@ -238,9 +238,9 @@ test('Boss E2E: 用枪打龙会掉血并红闪（走真实武器路径）', asyn
     const g = window.__MC_GAME__;
     const e = g.dragons.activeEntities()[0];
     const before = e.state.health;
-    // ⚠️ **玩家必须放在龙的正下方、且在神龛之外**：祭坛中心 7×7 是神龛（铁柱/绿宝/钻石，
-    // 占 y=3..4），把玩家放圆心会让**眼睛所在格本身就是方块** → DDA 起点在方块内 →
-    // `target.dist = 0` → `blockDist = 0`，而实体命中判据是 `hit.dist < blockDist`
+    // ⚠️ **玩家必须放在龙的正下方、且在神龛之外**：祭坛中心是神龛（v2.82 起为 3×3 十字：
+    // 金块/台阶占 y=3、中心钻石占 y=4），把玩家放圆心会让**眼睛所在格本身就是方块** →
+    // DDA 起点在方块内 → `target.dist = 0` → `blockDist = 0`，而实体命中判据是 `hit.dist < blockDist`
     // （严格小于）→ 永远为假 → 打不中（实测血量纹丝不动）。
     // 龙在半径 24 的轨道上，广场半径 28 内地表恒 plateauY=2 → 脚底 y=3、眼高 4.62，
     // 头顶是空气（射线向上无方块命中 → blockDist = Infinity → 实体命中生效）。
@@ -320,7 +320,8 @@ test('Boss E2E: 炮塔能索敌到龙（targets 接线 + bodyOffsetY=0）', asyn
   await pressC(page);
   await waitDragonCount(page, 1);
   const dragonId = await page.evaluate(() => window.__MC_GAME__.dragons.activeEntities()[0].id);
-  // 在祭坛广场放炮塔。⚠️ **不能放正中心**（神龛 7×7 占地 → place 以 'occupied' 拒）。
+  // 在祭坛广场放炮塔。⚠️ **不能放正中心**（神龛占地 → place 以 'occupied' 拒；
+  // v2.82 起神龛是 3×3 十字，但圆心仍在内）。
   // 偏移到广场半径 12 处（神龛外、广场半径 28 内），先探地表 y（从 y=40 向下扫第一个实心格）。
   const placed = await page.evaluate(([cx, cz]) => {
     const g = window.__MC_GAME__;

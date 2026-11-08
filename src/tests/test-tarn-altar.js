@@ -1,26 +1,25 @@
 // src/tests/test-tarn-altar.js — 高台地带祭坛 Tier 1
 //
-// 用户 2026-10-31 在存档里手工修出了一座祭坛（进度包
-// `/Users/bachi/ttt/bug/mc_祭坛/mc-heavy-progress-1249026-*.json`，seed 1249026 的
-// region(0,5) 地带圆心），要求把造型内化进代码：放在**离 City 最近的高台地带**的
-// 圆心广场（设置面板「高台」瞬移到达的那个地带）。
+// 用户 2026-10-31 在存档里手工修出了一座祭坛并内化进代码；2026-11-06 用户在同一存档
+// （进度包 `/Users/bachi/ttt/mc/mc-heavy-progress-1249026-2026-11-06T15-01-30.json`，
+// seed 1249026 的 region(0,-3) 地带圆心 (200,-1000)）**重做了祭坛造型**（v2.82）。
+// 本文件钉住重做后的造型：逐格解码自用户存档，重建比对 0 不符。
 //
-// 祭坛 = 两层（解码自用户存档，逐格核对过）：
-//   · 地表层（y = plateauY，**替换**广场原有的 tuff_bricks/smooth_stone_1，不抬高地面）：
-//     黄金十字（±28、1 格宽）+ 紫水晶对角线（半径 4~20）+ 中心 3×3
-//     （四角 gold、四正 diamond、中心 debris）。
-//   · 神龛（唯一突出地面的区域，7×7 中心）：
-//     dy+1：四角与中心 iron、八位 emerald、四向 planks_step（高侧朝中心）；
-//     dy+2：四角 emerald、中心 diamond。
+// 祭坛 = 两层（见 `tarn-altar.js` 头注释）：
+//   · 地表层（y = plateauY，**替换**广场材质，不抬高地面，565 格）：
+//     中心 7×7 美朵 + 十字轴 gold/amethyst 交替（±29）+ 对角线交替（4~20）
+//     + 外圈 amethyst 环（28<r≤29，带 8 个对称缺口）+ 旧 tuff 十字臂抹平为 smooth_stone_1。
+//   · 神龛（唯一突出地面的区域，v2.82 从 22 格简化为 6 格）：
+//     dy+1：中心 gold_block + 四向 planks_step（高侧朝中心）；dy+2：中心 diamond。
 //
 // ⚠️ **v2.31 起祭坛地带不再生成紫晶柱**（用户 2026-10-31：「只删带有祭坛的高台地形里的
-// 水晶柱，其他高台地带不要动」）⇒ 广场图案 **185 格完整落地**，不再有柱基遮挡的缺口。
-// 这推翻了 v2.30 的「紫晶柱全保留、柱基后写胜」口径 —— 当时用户存档里的缺口正是柱基造成的，
-// 现在柱子没了，缺口自然补全。其他地带的 7 根紫晶柱一根不动
+// 水晶柱，其他高台地带不要动」）⇒ 广场图案完整落地，不再有柱基遮挡的缺口。
+// 其他地带的 7 根紫晶柱一根不动
 // （`test-tarn-zone.js` / `test-tarn-zone-gen.js` 的 `decos.length === 12` 继续钉住）。
 //
 // ⚠️ **`TARN_PLAZA_RADIUS`(28) 不因此改小**：它的标定理由是「紫晶柱真实足迹最远 25.4」，
-// 而其他地带仍有柱子 ⇒ 全局常量必须按最坏情况留。
+// 而其他地带仍有柱子 ⇒ 全局常量必须按最坏情况留。祭坛外环（r≤29）比广场半径大 1 格，
+// 压在冰带内圈上 —— 用户存档原样，刻意保留。
 import { test } from './runner.js';
 import { assertEqual, assertTrue } from './assert.js';
 import {
@@ -58,8 +57,8 @@ async function genColumn(rx, rz, cx, cz, reg) {
 // ==================== 纯函数：地表图案 ====================
 
 test('祭坛纯函数：地表图案完全四向对称', () => {
-  for (let dx = -30; dx <= 30; dx++) {
-    for (let dz = -30; dz <= 30; dz++) {
+  for (let dx = -31; dx <= 31; dx++) {
+    for (let dz = -31; dz <= 31; dz++) {
       const a = altarSurfaceBlockAt(dx, dz);
       const b = altarSurfaceBlockAt(-dx, dz);
       const c = altarSurfaceBlockAt(dx, -dz);
@@ -72,79 +71,99 @@ test('祭坛纯函数：地表图案完全四向对称', () => {
   }
 });
 
-test('祭坛纯函数：地表图案计数与用户存档逐格一致（185 格）', () => {
+test('祭坛纯函数：地表图案计数与用户存档逐格一致（565 格）', () => {
   const counts = {};
   let total = 0;
-  for (let dx = -30; dx <= 30; dx++) {
-    for (let dz = -30; dz <= 30; dz++) {
+  for (let dx = -31; dx <= 31; dx++) {
+    for (let dz = -31; dz <= 31; dz++) {
       const b = altarSurfaceBlockAt(dx, dz);
       if (!b) continue;
       counts[b.type] = (counts[b.type] || 0) + 1;
       total++;
     }
   }
-  // 用户存档 dy=0 层 185 格 = 105 gold + 65 amethyst + 4 diamond + 1 debris + 10 无效编辑；
-  // 对称补全后 = 112 gold（+7 被 spire_01 挡的东臂）+ 68 amethyst（+3 被 spire_02 挡的对角线）。
-  assertEqual(counts.gold_block, 112, 'gold 总数（十字 108 + 3×3 四角 4）');
-  assertEqual(counts.amethyst, 68, 'amethyst 总数（4 条对角线 × 17）');
-  assertEqual(counts.diamond, 4, 'diamond = 3×3 四正');
+  // v2.82 重做后的计数（逐格解码自用户 2026-11-06 存档，重建比对 0 不符）。
+  // 按分支拆（实测）：美朵 41 + 十字轴 104 + 对角线 68 + 外环 160 + 抹平臂 192 = 565。
+  //   amethyst 260 = 美朵 16 + 轴奇数格 52 + 对角线奇数格 32 + 外环 160
+  //   gold 108 = 美朵 20 + 轴偶数格 52 + 对角线偶数格 36
+  //   smooth_stone_1 192 = 抹平旧 tuff 十字臂（|dx|=1 或 |dz|=1，另一轴 4..27，四向）
+  assertEqual(counts.amethyst, 260, 'amethyst 总数');
+  assertEqual(counts.gold_block, 108, 'gold 总数');
+  assertEqual(counts.smooth_stone_1, 192, 'smooth_stone_1 = 抹平的旧 tuff 臂');
+  assertEqual(counts.diamond, 4, 'diamond = 美朵四正');
   assertEqual(counts.debris, 1, 'debris = 中心一格');
-  assertEqual(total, 185, '地表图案总格数');
+  assertEqual(total, 565, '地表图案总格数');
 });
 
-test('祭坛纯函数：臂长与对角线半径的边界', () => {
-  // 十字臂：2..28 是 gold，1 格属于 3×3（diamond），29 起无图案
-  assertEqual(altarSurfaceBlockAt(0, 2)?.type, 'gold_block', '(0,2) 是臂');
-  assertEqual(altarSurfaceBlockAt(0, ALTAR_ARM_LENGTH)?.type, 'gold_block', '(0,28) 是臂的末端');
-  assertEqual(altarSurfaceBlockAt(0, ALTAR_ARM_LENGTH + 1), null, '(0,29) 穿出广场无图案');
-  assertEqual(altarSurfaceBlockAt(2, 0)?.type, 'gold_block', '(2,0) 是臂');
-  // 对角线：4..20 是 amethyst，3 与 21 无图案
-  assertEqual(altarSurfaceBlockAt(ALTAR_DIAG_MIN, ALTAR_DIAG_MIN)?.type, 'amethyst', '(4,4) 是对角线起点');
-  assertEqual(altarSurfaceBlockAt(ALTAR_DIAG_MAX, ALTAR_DIAG_MAX)?.type, 'amethyst', '(20,20) 是对角线末端');
-  assertEqual(altarSurfaceBlockAt(3, 3), null, '(3,3) 在对角线起点内侧无图案');
+test('祭坛纯函数：十字轴 / 对角线 / 外环的边界与交替规则', () => {
+  // 十字轴：2..29，偶数格 gold / 奇数格 amethyst 交替
+  assertEqual(altarSurfaceBlockAt(0, 2)?.type, 'gold_block', '(0,2) 轴偶数格是 gold');
+  assertEqual(altarSurfaceBlockAt(0, 3)?.type, 'amethyst', '(0,3) 轴奇数格是 amethyst');
+  assertEqual(altarSurfaceBlockAt(0, ALTAR_ARM_LENGTH - 1)?.type, 'gold_block', '(0,28) 轴偶数格是 gold');
+  assertEqual(altarSurfaceBlockAt(0, ALTAR_ARM_LENGTH)?.type, 'amethyst', '(0,29) 是轴的末端（奇数 amethyst）');
+  assertEqual(altarSurfaceBlockAt(0, ALTAR_ARM_LENGTH + 1), null, '(0,30) 穿出图案');
+  assertEqual(altarSurfaceBlockAt(2, 0)?.type, 'gold_block', '(2,0) 轴偶数格是 gold');
+  // 对角线：4..20，偶数格 gold / 奇数格 amethyst 交替（t=3 属美朵角，不是对角线）
+  assertEqual(altarSurfaceBlockAt(ALTAR_DIAG_MIN, ALTAR_DIAG_MIN)?.type, 'gold_block', '(4,4) 对角线起点（偶 gold）');
+  assertEqual(altarSurfaceBlockAt(5, 5)?.type, 'amethyst', '(5,5) 对角线奇数格是 amethyst');
+  assertEqual(altarSurfaceBlockAt(ALTAR_DIAG_MAX, ALTAR_DIAG_MAX)?.type, 'gold_block', '(20,20) 是对角线末端（偶 gold）');
+  assertEqual(altarSurfaceBlockAt(3, 3)?.type, 'amethyst', '(3,3) 是美朵角（amethyst，不是对角线）');
   assertEqual(altarSurfaceBlockAt(21, 21), null, '(21,21) 超出对角线末端');
-  // 臂与对角线之间：(2,2) 之类是空（保持广场原材质）
-  assertEqual(altarSurfaceBlockAt(2, 2), null, '(2,2) 无图案');
-  assertEqual(altarSurfaceBlockAt(1, 10), null, '(1,10) 在臂侧一格无图案（用户存档该格未动）');
+  // 外环：28 < r <= 29 是 amethyst，带 8 个对称缺口
+  assertEqual(altarSurfaceBlockAt(28, 1)?.type, 'amethyst', '(28,1) r=28.02 在环上');
+  assertEqual(altarSurfaceBlockAt(1, 28)?.type, 'amethyst', '(1,28) 在环上');
+  assertEqual(altarSurfaceBlockAt(29, 0)?.type, 'amethyst', '(29,0) 轴末端也在环上');
+  for (const [dx, dz] of [[16, 24], [24, 16], [-16, 24], [16, -24], [24, -16], [-24, 16], [-16, -24], [-24, -16]]) {
+    assertEqual(altarSurfaceBlockAt(dx, dz), null, `(${dx},${dz}) 是外环的对称缺口（用户刻意保留）`);
+  }
+  // 臂与对角线之间：图案外保持广场原材质
+  assertEqual(altarSurfaceBlockAt(6, 3), null, '(6,3) 无图案');
+  assertEqual(altarSurfaceBlockAt(15, 8), null, '(15,8) 无图案');
 });
 
-test('祭坛纯函数：中心 3×3 = debris 心 + diamond 边 + gold 角', () => {
+test('祭坛纯函数：中心 7×7 美朵（debris 心 + diamond 十字 + gold/amethyst 点缀）', () => {
   assertEqual(altarSurfaceBlockAt(0, 0)?.type, 'debris', '中心是 debris');
+  // diamond 十字（±1,0),(0,±1)
   for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
     assertEqual(altarSurfaceBlockAt(dx, dz)?.type, 'diamond', `(${dx},${dz}) 是 diamond`);
   }
-  for (const [dx, dz] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+  // gold：(±1,±1)、(±2,0),(0,±2)、(±3,±1),(±1,±3)、(±2,±2)
+  for (const [dx, dz] of [[1, 1], [1, -1], [-1, 1], [-1, -1],
+    [2, 0], [-2, 0], [0, 2], [0, -2],
+    [3, 1], [3, -1], [-3, 1], [-3, -1], [1, 3], [1, -3], [-1, 3], [-1, -3],
+    [2, 2], [2, -2], [-2, 2], [-2, -2]]) {
     assertEqual(altarSurfaceBlockAt(dx, dz)?.type, 'gold_block', `(${dx},${dz}) 是 gold`);
+  }
+  // amethyst：(±3,0),(0,±3)、(±2,±1),(±1,±2)、(±3,±3)
+  for (const [dx, dz] of [[3, 0], [-3, 0], [0, 3], [0, -3],
+    [2, 1], [2, -1], [-2, 1], [-2, -1], [1, 2], [1, -2], [-1, 2], [-1, -2],
+    [3, 3], [3, -3], [-3, 3], [-3, -3]]) {
+    assertEqual(altarSurfaceBlockAt(dx, dz)?.type, 'amethyst', `(${dx},${dz}) 是 amethyst`);
+  }
+  // 美朵的 8 个背景格 (±3,±2),(±2,±3)：不属祭坛，保持广场 smooth_stone_1
+  for (const [dx, dz] of [[3, 2], [3, -2], [-3, 2], [-3, -2], [2, 3], [2, -3], [-2, 3], [-2, -3]]) {
+    assertEqual(altarSurfaceBlockAt(dx, dz), null, `(${dx},${dz}) 是美朵背景格（不属祭坛）`);
   }
 });
 
-test('祭坛纯函数：神龛块表 = 用户存档的突出部分（22 格，台阶高侧朝中心）', () => {
+test('祭坛纯函数：神龛块表 = 用户存档的突出部分（6 格，台阶高侧朝中心）', () => {
   const blocks = altarShrineBlocks();
-  assertEqual(blocks.length, 22, '神龛共 22 格（dy1 十七格 + dy2 五格）');
+  assertEqual(blocks.length, 6, '神龛共 6 格（dy1 五格 + dy2 一格）');
   const at = (dx, dy, dz) => blocks.find((b) => b.dx === dx && b.dy === dy && b.dz === dz);
 
-  // dy=1：四角与中心 iron
-  for (const [dx, dz] of [[3, 3], [3, -3], [-3, 3], [-3, -3], [0, 0]]) {
-    assertEqual(at(dx, 1, dz)?.type, 'iron', `dy1 (${dx},${dz}) 是 iron`);
-  }
-  // dy=1：八位 emerald（7×7 环上贴角的边格）
-  for (const [dx, dz] of [[3, 2], [2, 3], [3, -2], [2, -3], [-3, 2], [-2, 3], [-3, -2], [-2, -3]]) {
-    assertEqual(at(dx, 1, dz)?.type, 'emerald', `dy1 (${dx},${dz}) 是 emerald`);
-  }
+  // dy=1：中心 gold_block
+  assertEqual(at(0, 1, 0)?.type, 'gold_block', 'dy1 中心是 gold_block');
   // dy=1：四向台阶，高侧朝中心（mesher 实测口径：orient 0/1/2/3 高侧 = -X/+Z/+X/-Z）
   assertEqual(at(1, 1, 0)?.type, 'planks_step', 'dy1 (1,0) 是台阶');
   assertEqual(at(1, 1, 0)?.meta, 0, '(1,0) 台阶高侧朝 -X（朝中心）');
   assertEqual(at(-1, 1, 0)?.meta, 2, '(-1,0) 台阶高侧朝 +X（朝中心）');
   assertEqual(at(0, 1, -1)?.meta, 1, '(0,-1) 台阶高侧朝 +Z（朝中心）');
   assertEqual(at(0, 1, 1)?.meta, 3, '(0,1) 台阶高侧朝 -Z（朝中心）');
-  // dy=2：四角 emerald + 中心 diamond
-  for (const [dx, dz] of [[3, 3], [3, -3], [-3, 3], [-3, -3]]) {
-    assertEqual(at(dx, 2, dz)?.type, 'emerald', `dy2 (${dx},${dz}) 是 emerald`);
-  }
+  // dy=2：中心 diamond
   assertEqual(at(0, 2, 0)?.type, 'diamond', 'dy2 中心是 diamond');
-  // 神龛水平范围不得超出 7×7（与紫晶柱的最小实测距离 13 格保持安全余量）
+  // 神龛水平范围不得超出 3×3（v2.82 简化后只占中心十字）
   for (const b of blocks) {
-    assertTrue(Math.abs(b.dx) <= 3 && Math.abs(b.dz) <= 3, `神龛块 (${b.dx},${b.dz}) 在 7×7 内`);
+    assertTrue(Math.abs(b.dx) <= 1 && Math.abs(b.dz) <= 1, `神龛块 (${b.dx},${b.dz}) 在 3×3 内`);
     assertTrue(b.dy === 1 || b.dy === 2, `神龛块 dy=${b.dy} 只突出 1~2 层`);
   }
 });
@@ -200,7 +219,7 @@ test('祭坛接线：layout.altar 标志只在最近地带为 true', () => {
   }
 });
 
-test('祭坛接线：真实 GEN 后地表图案 185 格完整落地（v2.31 起无柱基遮挡）', async () => {
+test('祭坛接线：真实 GEN 后地表图案 565 格完整落地（v2.31 起无柱基遮挡）', async () => {
   const region = findAltarTarnRegion(SEED);
   const lay = computeTarnZone(region.regionX, region.regionZ, SEED);
   const reg = await buildDefaultRegistry();
@@ -221,11 +240,11 @@ test('祭坛接线：真实 GEN 后地表图案 185 格完整落地（v2.31 起�
   };
   const nameAt = (wx, y, wz) => reg.nameOf(blockAt(wx, y, wz));
 
-  // 185 格地表图案：全部由祭坛自己落地（v2.31 起祭坛地带无紫晶柱，不再有柱基覆盖）
+  // 565 格地表图案：全部由祭坛自己落地（v2.31 起祭坛地带无紫晶柱，不再有柱基覆盖）
   let placed = 0;
   const wrong = [];
-  for (let dx = -30; dx <= 30; dx++) {
-    for (let dz = -30; dz <= 30; dz++) {
+  for (let dx = -31; dx <= 31; dx++) {
+    for (let dz = -31; dz <= 31; dz++) {
       const b = altarSurfaceBlockAt(dx, dz);
       if (!b) continue;
       const got = nameAt(lay.cx + dx, lay.plateauY, lay.cz + dz);
@@ -234,10 +253,22 @@ test('祭坛接线：真实 GEN 后地表图案 185 格完整落地（v2.31 起�
     }
   }
   assertEqual(wrong.length, 0, `图案逐格落地：${wrong.slice(0, 5).join('；')}`);
-  // ⚠️ **必须是 185 而不是「placed + overridden」**：v2.30 时柱基压掉 11 格（东臂 7 + 对角线 4），
-  //    故当时 placed 只有 174。删掉紫晶柱后这 11 格归祭坛 ⇒ 185 格逐格都是祭坛方块。
-  //    这条断言同时钉住「柱子真的没了」—— 柱子还在的话 placed 会退回 174。
-  assertEqual(placed, 185, '185 格图案全部由祭坛自己落地（无柱基遮挡）');
+  // ⚠️ **必须是 565**（v2.82 重做后的图案总格数，与上面纯函数计数用例同源）：
+  //    这条断言同时钉住「柱子真的没了」—— 柱子还在的话柱基会压掉外环与轴末端的格。
+  assertEqual(placed, 565, '565 格图案全部由祭坛自己落地（无柱基遮挡）');
+
+  // 广场圆内不得出现 tuff_bricks —— v2.82 的祭坛把广场那个 3 格宽 tuff 十字
+  // 在自己范围内全部抹平成 smooth_stone_1（用户存档实测 tuff 残留 0）。
+  // ⚠️ 这是「抹平臂」分支的唯一接线判据：漏写那个分支时图案计数仍对（smooth_stone_1
+  //    与背景同材质，`placed` 不会变），只有这条能抓到。
+  let tuff = 0;
+  for (let dx = -TARN_PLAZA_RADIUS; dx <= TARN_PLAZA_RADIUS; dx++) {
+    for (let dz = -TARN_PLAZA_RADIUS; dz <= TARN_PLAZA_RADIUS; dz++) {
+      if (Math.hypot(dx, dz) > TARN_PLAZA_RADIUS) continue;
+      if (nameAt(lay.cx + dx, lay.plateauY, lay.cz + dz) === 'tuff_bricks') tuff++;
+    }
+  }
+  assertEqual(tuff, 0, '祭坛地带广场内不得残留 tuff_bricks 十字（v2.82 全部抹平）');
 
   // 广场圆内不得出现紫晶柱材质 —— `block_of_quartz` 是干净标记：
   // 实测祭坛地带 8 座高台最近格距圆心 34.5、5 个拱洞 83.2，都 > TARN_PLAZA_RADIUS(28)
@@ -259,15 +290,14 @@ test('祭坛接线：真实 GEN 后地表图案 185 格完整落地（v2.31 起�
   // 图案之外的广场格保持原材质（祭坛只替换、不扩散）
   //
   // ⚠️ **取样点必须先用 `altarSurfaceBlockAt` 验过是 null，且 d ≤ TARN_PLAZA_RADIUS(28)**：
-  //    初版写了 `(5,5)`（实为紫水晶对角线）与 `(22,22)`（d=31.1 已出广场、属冰带）
-  //    → 断言描述的是想象中的世界（同 AGENTS.md「写断言前先在真实数据上跑一次」）。
-  //    下面 8 点均实测：图案为 null 且 d ∈ [2.8, 26.9]。
-  for (const [dx, dz] of [[2, 2], [1, 10], [10, 1], [6, 3], [3, 6], [15, 8], [8, 15], [25, 10]]) {
+  //    v2.30 的取样点 `(2,2)`（现为美朵 gold）与 `(1,10)`/`(10,1)`（现为抹平臂）在 v2.82
+  //    重做后已变成图案格 ⇒ 断言会描述想象中的世界（同 AGENTS.md「写断言前先在真实数据上
+  //    跑一次」）。下面 8 点均实测：图案为 null 且 d ∈ [5.4, 27.5]。
+  for (const [dx, dz] of [[5, 2], [7, 4], [9, 5], [12, 7], [14, 9], [17, 11], [20, 13], [23, 15]]) {
     assertEqual(altarSurfaceBlockAt(dx, dz), null, `前提：(${dx},${dz}) 不属祭坛图案`);
     const got = nameAt(lay.cx + dx, lay.plateauY, lay.cz + dz);
-    // v2.31 起不再有「柱基占住」这个例外（柱子已删）
-    assertTrue(got === 'smooth_stone_1' || got === 'tuff_bricks',
-      `(${dx},${dz}) 图案外应保持广场材质，实得 ${got}`);
+    // 这些点都不在广场十字上（|dx|>1 且 |dz|>1）⇒ 背景恒为 smooth_stone_1
+    assertEqual(got, 'smooth_stone_1', `(${dx},${dz}) 图案外应保持广场材质`);
   }
 });
 
@@ -305,12 +335,12 @@ test('祭坛接线：非祭坛地带的广场中心没有祭坛方块', async ()
   assertEqual(isAltarTarnZone(rx, rz, SEED), false, '前提：(-6,-2) 不是祭坛地带');
   const lay = computeTarnZone(rx, rz, SEED);
   const reg = await buildDefaultRegistry();
-  const altarIds = new Set(['gold_block', 'diamond', 'debris', 'emerald'].map((n) => reg.idOf(n)));
+  const altarIds = new Set(['gold_block', 'diamond', 'debris'].map((n) => reg.idOf(n)));
   const ccx = Math.floor(lay.cx / 16), ccz = Math.floor(lay.cz / 16);
   const col = await genColumn(rx, rz, ccx, ccz, reg);
   let hits = 0;
-  for (let dx = -30; dx <= 30; dx++) {
-    for (let dz = -30; dz <= 30; dz++) {
+  for (let dx = -31; dx <= 31; dx++) {
+    for (let dz = -31; dz <= 31; dz++) {
       const lx = lay.cx + dx - ccx * 16, lz = lay.cz + dz - ccz * 16;
       if (lx < 0 || lx > 15 || lz < 0 || lz > 15) continue;
       for (let dy = 0; dy <= 3; dy++) {
@@ -318,7 +348,9 @@ test('祭坛接线：非祭坛地带的广场中心没有祭坛方块', async ()
       }
     }
   }
-  assertEqual(hits, 0, '非祭坛地带不得出现祭坛方块（gold/diamond/debris/emerald 均不在自然地形与套件 palette）');
+  // ⚠️ 标记集不含 `amethyst` —— 其他地带的 7 根紫晶柱就用它（v2.82 的祭坛外环也用）。
+  //    `emerald`/`iron` 在 v2.82 已不属祭坛（神龛简化），故从标记集移除。
+  assertEqual(hits, 0, '非祭坛地带不得出现祭坛方块（gold/diamond/debris 均不在自然地形与套件 palette）');
 });
 
 test('祭坛接线：祭坛地带只剩 5 个拱洞，其他地带 12 个装饰件不变', () => {

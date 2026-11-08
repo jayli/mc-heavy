@@ -479,9 +479,10 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
     //    （v2.31 起祭坛地带已无紫晶柱 —— `computeTarnZone` 对 `altar` 地带不放 spire，
     //    故「早于紫晶柱」这条层序不再有实际效果；接线位置不动，若将来加回柱子，
     //    后写胜仍是正确语义。）
-    // ⚠️ **AABB 早退**：祭坛占地 ±`ALTAR_ARM_LENGTH`（28），而每个 column 的查询域里
-    //    3×3 邻域的全部地带 layout 都会进这个循环 —— 不早退会对每个不覆盖祭坛的 column
-    //    白跑 57×57 次 `altarSurfaceBlockAt`（与 tarns/decos 的 `placementIntersects` 同一手法）。
+    // ⚠️ **AABB 早退**：祭坛占地 ±`ALTAR_ARM_LENGTH`（29，v2.82 重做后外环比广场半径大 1 格），
+    //    而每个 column 的查询域里 3×3 邻域的全部地带 layout 都会进这个循环 —— 不早退会对
+    //    每个不覆盖祭坛的 column 白跑 59×59 次 `altarSurfaceBlockAt`
+    //    （与 tarns/decos 的 `placementIntersects` 同一手法）。
     if (tarnLayout.altar &&
         placementIntersects({ x: tarnLayout.cx, z: tarnLayout.cz }, ALTAR_ARM_LENGTH, ALTAR_ARM_LENGTH, column.cx, column.cz)) {
       rasterizeAltar(tarnLayout, setBlock);
