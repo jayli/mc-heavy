@@ -194,6 +194,111 @@ test('焰魔烘焙: bindQuaternion 归一化，localPosition 有限', async () =
   }
 });
 
+// ==================== 盾牌可见性（v2.83，用户 2026-11-08 缺陷）====================
+//
+// 用户报告：「游戏里没见到焰魔携带盾牌」。根因：盾的几何/骨骼/UV 全在产物里，但**主贴图里
+// 没有盾的像素** —— 盾的 UV 落在 `ignis_idle_0.png` 的一块全透明区域，而盾自己的像素在
+// `ignis_shield.png`（原 Mod 的盾是独立 render controller，用第二张贴图）。
+// 缺了它：材质 `alphaTest: 0.5` 把每个盾面判为透明丢弃 ⇒ 盾画了却一个像素也看不见，
+// 而**所有结构判据（骨骼数/顶点数/UV 值域）全部通过** —— 这正是需要内容级断言的原因。
+//
+// 判据口径：在产物 PNG 上按三角面采样 alpha，钉**上下界**（AGENTS.md：只钉「有内容」抓不到
+// 「涂成一片」）。实测：盾骨骼 74.8%，身体 73.3%。
+
+/** 产物的贴图像素（RGBA）—— 浏览器里用 createImageBitmap + canvas 读（同 test-iso-icon） */
+let texPixels = null;
+async function loadTexturePixels() {
+  if (texPixels) return texPixels;
+  const blob = await (await fetch(new URL('../../assets/ignis/ignis.png', import.meta.url))).blob();
+  const bmp = await createImageBitmap(blob);
+  const cv = document.createElement('canvas');
+  cv.width = bmp.width; cv.height = bmp.height;
+  const ctx = cv.getContext('2d');
+  ctx.drawImage(bmp, 0, 0);
+  texPixels = { d: ctx.getImageData(0, 0, bmp.width, bmp.height).data, w: bmp.width, h: bmp.height };
+  return texPixels;
+}
+
+/**
+ * 在 `[0,1]` UV 处采样产物的 alpha。
+ *
+ * ⚠️ **行号是 `(1 − v) × H`**：产物 UV 的 v 是 three 口径（`v_three = 1 − v_px/textureSize`），
+ * 运行时 `TextureLoader.flipY = true` 再翻一次 ⇒ 文件里落回 `v_px`。烘焙器与门禁用同一换算。
+ */
+function texAlpha(tex, u, v) {
+  const x = Math.min(tex.w - 1, Math.max(0, Math.floor(u * tex.w)));
+  const y = Math.min(tex.h - 1, Math.max(0, Math.floor((1 - v) * tex.h)));
+  return tex.d[(y * tex.w + x) * 4 + 3];
+}
+
+/** 对某类骨骼的所有三角面在其 UV 三角形内采样，返回不透明比例 */
+function sampleTriangles(d, tex, boneFilter) {
+  const { uv, skinIndex, index } = d.geometry;
+  const names = d.bones.map((b) => b.name);
+  const S = 4;   // 每边采样数（三角形内 15 个点）
+  let opaque = 0, total = 0;
+  for (let t = 0; t < index.length; t += 3) {
+    const vs = [index[t], index[t + 1], index[t + 2]];
+    if (!boneFilter(names[skinIndex[vs[0] * 4]])) continue;
+    const tri = vs.map((v) => [uv[v * 2], uv[v * 2 + 1]]);
+    for (let i = 0; i <= S; i++) {
+      for (let k = 0; k <= S - i; k++) {
+        const s = i / S, q = k / S, r = 1 - s - q;
+        total++;
+        if (texAlpha(tex, tri[0][0] * r + tri[1][0] * s + tri[2][0] * q,
+          tri[0][1] * r + tri[1][1] * s + tri[2][1] * q) > 128) opaque++;
+      }
+    }
+  }
+  return { ratio: total > 0 ? opaque / total : 0, opaque, total };
+}
+
+test('焰魔烘焙(v2.83 盾牌): 盾骨骼的 UV 在成片贴图上有不透明覆盖（缺盾贴图 ⇒ 0%）', async () => {
+  const d = await loadAsset();
+  const tex = await loadTexturePixels();
+  // 前提：盾的骨骼与顶点确实在产物里（不是「盾被删了所以测不到」）
+  const shieldBones = d.bones.filter((b) => /^shield/.test(b.name)).map((b) => b.name);
+  assertTrue(shieldBones.length >= 4,
+    `产物里盾骨骼只有 ${shieldBones.length} 根（期望 ≥4：shield_root/shield/shield_right/shield_left）`);
+  const r = sampleTriangles(d, tex, (n) => /^shield/.test(n));
+  assertTrue(r.total > 0, '盾没有贡献任何三角面 —— 几何丢了，不是贴图问题');
+  // 下界：盾必须真的有像素（缺盾贴图时实测 0%）
+  assertTrue(r.ratio > 0.40,
+    `盾的 UV 不透明率 ${(100 * r.ratio).toFixed(1)}% ≤ 40% —— `
+    + '盾贴图没合成进产物（形态：结构全对、游戏里看不见盾）');
+  // 上界：钉住「整体被涂满」（真实盾有镂空/边缘，不该是纯实心）
+  assertTrue(r.ratio < 0.95,
+    `盾的 UV 不透明率 ${(100 * r.ratio).toFixed(1)}% ≥ 95% —— 盾被涂成一片实心，合成口径错了`);
+});
+
+test('焰魔烘焙(v2.83 盾牌): 合成没污染身体 —— 非盾骨骼的 UV 区域不含盾贴图像素', async () => {
+  const d = await loadAsset();
+  const tex = await loadTexturePixels();
+  // 身体整体：必须大部分有内容（否则说明主贴图被盾图洗掉了）
+  const body = sampleTriangles(d, tex, (n) => !/^shield/.test(n));
+  assertTrue(body.total > 0, '非盾骨骼没有三角面');
+  assertTrue(body.ratio > 0.55,
+    `身体 UV 不透明率 ${(100 * body.ratio).toFixed(1)}% ≤ 55% —— 主贴图内容丢了`);
+
+  // 逐个「盾以外」的骨骼：不透明率不得比主贴图基线高一截
+  // （合成把盾图涂到身体上时，那一块的不透明率会显著上升）
+  const names = d.bones.map((b) => b.name);
+  const seen = new Set();
+  for (let t = 0; t < d.geometry.index.length && d.geometry.index.length > 0; t += 3) {
+    const bi = d.geometry.skinIndex[d.geometry.index[t] * 4];
+    seen.add(bi);
+  }
+  // ⚠️ 上界只管「明显异常」：真实身体骨骼的不透明率在 44%~87%（实测），全部 < 95%
+  for (const bi of seen) {
+    const name = names[bi];
+    if (/^shield/.test(name)) continue;
+    const r = sampleTriangles(d, tex, (n) => n === name);
+    assertTrue(r.ratio < 0.95,
+      `${name} 的 UV 不透明率 ${(100 * r.ratio).toFixed(1)}% ≥ 95%`
+      + ' —— 疑似被盾贴图涂满（合成口径写成了「整张覆盖」而不是「逐像素 alpha>0」）');
+  }
+});
+
 // ==================== Review Focus 1：模型没炸开 ====================
 
 /**

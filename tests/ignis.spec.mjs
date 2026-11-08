@@ -181,6 +181,98 @@ test.describe('焰魔（Ignis）Tier 4', () => {
     expect(result.rendererVisible, '渲染器实例应可见').toBe(true);
   });
 
+  test('渲染(v2.83)：盾牌真的画出来了（盾骨骼区域像素级，未合成贴图时信号恒为 0）', async ({ page }) => {
+    await page.goto(`/?seed=${SEED}`);
+    await waitWorldReady(page);
+    await teleportToTarnCenter(page);
+    await waitPlayerLanded(page);
+
+    // 召唤焰魔（正对镜头，盾在它自己左侧 = 画面右侧）
+    await page.evaluate(async () => {
+      const g = window.__MC_GAME__;
+      g.player.yaw = Math.PI;   // yaw=π ⇒ 前向 +Z
+      g.player.pitch = -0.15;
+      const p = g.player.physics.pos;
+      const sum = g.ignises.summon('tarn:e2e:shield', Math.floor(p.x), Math.floor(p.z) + 4, 1);
+      window.__E2E_ID__ = sum.ok ? sum.id : null;
+      await new Promise((r) => setTimeout(r, 500));
+    });
+    await page.waitForTimeout(400);
+
+    // ⚠️⚠️ **必须冻结帧循环**（`renderer.setAnimationLoop(null)`）。
+    //
+    // 不冻的版本实测**负向验证通不过**：idle 是 128°/s 的持续呼吸动画，两次截图之间画面
+    // 自然差异就有 1.3~2.0 万像素（同一状态连拍 3 张的噪声底），把「盾约 1.8 万」的信号
+    // 完全盖住 —— 注入缺陷后这条用例仍然绿。冻结后噪声底实测 **0**（渲染是确定性的），
+    // 信号 17797 / 缺陷 0，判别力彻底干净。
+    //
+    // 冻结之后由本用例手动 `sync` + `render`，两次截图之间**只差盾骨骼的 scale 一个变量**。
+    await page.evaluate(() => {
+      const g = window.__MC_GAME__;
+      g.renderer.setAnimationLoop(null);
+    });
+    await page.waitForTimeout(150);
+
+    /** 手动推一次渲染：冻住 AI + 走满姿态衔接 + 渲染一帧 */
+    const renderOnce = () => page.evaluate(() => {
+      const g = window.__MC_GAME__;
+      const list = g.ignises.activeEntities();
+      const e = g.entities.get(window.__E2E_ID__);
+      if (e) e.state = { ...e.state, mode: 'idle', attackAnimT: 0, idleTime: 0, velocity: [0, 0, 0] };
+      let ms = performance.now();
+      for (let i = 0; i < 40; i++) {
+        ms += 1000 / 60;
+        g.ignisRenderer.sync(list, ms);
+      }
+      g.renderer.render(g.scene, g.camera);
+    });
+    /**
+     * 把盾骨骼缩成 0 / 还原。
+     *
+     * ⚠️ **用 `scale` 而不是 `visible`**：`visible` 是 SkinnedMesh（整个身体）级别的，
+     * 会把焰魔整个隐掉；骨骼 `scale = 0` 让盾的 240 个顶点塌到一点 ⇒ 只有盾消失，
+     * 身体、剑、相机、光照一概不变（单变量对照）。
+     */
+    const setShieldScale = (v) => page.evaluate((s) => {
+      const g = window.__MC_GAME__;
+      const inst = g.ignisRenderer.instances[0];
+      const bone = inst && inst.bones.find((b) => b.name === 'shield_root');
+      if (bone) bone.scale.setScalar(s);
+    }, v);
+
+    // ① 前提：盾骨骼在渲染器里真的存在（否则下面的判据只是"测了个不存在的对象"）
+    const boneNames = await page.evaluate(() => {
+      const g = window.__MC_GAME__;
+      return g.ignisRenderer.instances[0].bones.map((b) => b.name).filter((n) => /^shield/.test(n));
+    });
+    expect(boneNames.length, '渲染器里应有盾骨骼（shield_root/shield/shield_right/shield_left）')
+      .toBeGreaterThanOrEqual(4);
+
+    // ② 噪声底：同一状态连拍两张，必须逐位相同（判定渲染确定性成立，阈值可以收到 > 0）
+    await setShieldScale(1); await renderOnce(); const n1 = await shoot(page);
+    await setShieldScale(1); await renderOnce(); const n2 = await shoot(page);
+    const noise = await pixelDiff(page, n1, n2);
+    expect(noise.changed, '冻结帧循环后同状态连拍必须逐位相同（噪声底 = 0）').toBe(0);
+
+    // ③ 信号：盾可见 vs 盾缩成一点
+    await setShieldScale(1); await renderOnce(); const withShield = await shoot(page);
+    await setShieldScale(0); await renderOnce(); const noShield = await shoot(page);
+
+    // 还原（同一浏览器上下文里的后续用例不该受这次改动影响）
+    await setShieldScale(1);
+    await renderOnce();
+    await page.evaluate(() => window.__MC_GAME__.renderer.setAnimationLoop(null));
+
+    const d = await pixelDiff(page, withShield, noShield);
+
+    // **下界**：盾占了可观面积。缺盾贴图时盾完全透明 ⇒ 实测 **0**（就是用户报的那个缺陷）
+    expect(d.changed, '盾应让画面产生可观像素变化（未合成盾贴图时恒为 0）')
+      .toBeGreaterThan(3000);
+    // **上界**：只有盾变了，不该牵连整个画面
+    expect(d.changed / d.total, '盾的变化面积不应超过画面的 1/4').toBeLessThan(0.25);
+    // 变化的包围盒必须落在画面的中下部（盾挂在左臂 ≈ 身体中线高度），不是在屏幕顶上
+    expect(d.minY, '变化不应贴在画面最顶（那里是天空/云）').toBeGreaterThan(d.h * 0.2);
+  });
   test('渲染：焰魔在真实 WebGPU 下画出来了（画面与"没有焰魔"显著不同）+ 像素变化集中在焰魔区域', async ({ page }) => {
     await page.goto(`/?seed=${SEED}`);
     await waitWorldReady(page);

@@ -84,9 +84,10 @@
 //   `duration` 与表达式周期逐位相等（循环接缝恒 0）。详见 spec §4.2。
 import fs from 'node:fs';
 import path from 'node:path';
+import { PNG } from 'pngjs';
 import * as THREE from '../vendor/three/three.core.js';
 import {
-  IGNIS_GEO_SRC, IGNIS_ANIM_SRC, IGNIS_TEX_SRC,
+  IGNIS_GEO_SRC, IGNIS_ANIM_SRC, IGNIS_TEX_SRC, IGNIS_SHIELD_TEX_SRC,
   IGNIS_JSON, IGNIS_PNG, IGNIS_META,
   IGNIS_BAKE_PARAMS, IGNIS_METRICS, IGNIS_ANIM_PERIODS, IGNIS_ANIM_SOURCES,
   IGNIS_ATTACK_ANIM_KEYS,
@@ -184,6 +185,105 @@ function boxUVRects(u, v, dx, dy, dz) {
     // 5 −Z (north): 下条中间格（正面 —— 脸在这里）
     [u + dz, v + dz, u + dz + dx, v + dz + dy],
   ];
+}
+
+/**
+ * 把盾贴图叠到主贴图上（烘焙期的贴图合成，不新增运行时贴图）。
+ *
+ * ## 为什么需要（用户 2026-11-08 缺陷「游戏里没见到焰魔携带盾牌」）
+ *
+ * 盾的几何、骨骼链、UV 全部在产物里，但**主贴图里没有盾的像素**：盾的 240 个顶点
+ * UV 落在一块全透明区域（盾 UV 覆盖的 771 像素里主贴图只有 23 个不透明）。原 Mod 把盾做成
+ * 独立 render controller（`Texture.shield` + `part_visibility: {"*": false, "shield*": true}`），
+ * 即盾从来就用第二张贴图（`ignis_shield.png`）。
+ *
+ * 缺了它：结构判据全部通过，而渲染器材质的 `alphaTest: 0.5` 把每个盾面判为透明 ⇒
+ * 盾画了却一个像素也看不见。
+ *
+ * ## 合成规则（逐像素）
+ *
+ * | 盾图 alpha | 输出 |
+ * |---|---|
+ * | > 0（有任何内容）| 取自盾图（含色）|
+ * | = 0 | 保留主贴图原像素 |
+ *
+ * ⚠️ **用 `> 0` 而不是 `> 128`**：盾边缘的半透明像素带色彩过渡，用 128 会切掉一层
+ * 抗锯齿边（盾缘出现硬边）。盾图在透明处的 RGB 是 0，不会污染主贴图。
+ *
+ * ⚠️ **两张图不透明像素零重叠**（2026-11-08 实测：盾 UV 覆盖区内主贴图 23 个、盾图 346 个，
+ * 交集 0；8 帧 idle 全测也都是 0）⇒ 合成不会覆盖任何身体部位。这条事实由
+ * `assertNoBodyPollution` 在每次烘焙时重新验证（素材换版本时会立刻报错）。
+ *
+ * @param {PNG} base 主贴图（已被读出，会被就地修改）
+ * @param {PNG} shield 盾贴图
+ * @returns {number} 被盾图覆盖的像素数（= 盾图不透明像素数）
+ */
+function compositeShieldTexture(base, shield) {
+  if (base.width !== shield.width || base.height !== shield.height) {
+    fail(`盾贴图尺寸 ${shield.width}×${shield.height} ≠ 主贴图 ${base.width}×${base.height}`);
+  }
+  let painted = 0;
+  for (let i = 0; i < base.data.length; i += 4) {
+    if (shield.data[i + 3] === 0) continue;   // 盾图透明 ⇒ 保留主贴图
+    base.data[i] = shield.data[i];
+    base.data[i + 1] = shield.data[i + 1];
+    base.data[i + 2] = shield.data[i + 2];
+    base.data[i + 3] = shield.data[i + 3];
+    painted++;
+  }
+  return painted;
+}
+
+/**
+ * 在 `[0,1]` 归一化 UV 坐标处采样一张贴图（按**文件像素左上角原点**读）。
+ *
+ * ⚠️ **行号是 `(1 − v) × H`**：产物 UV 的 v 是「three 口径」（`v_three = 1 − v_px/textureSize`，
+ * 见烘焙器的 UV 重映射注释），而 `TextureLoader.flipY = true` 运行时再翻一次 ⇒
+ * 文件里的行号落回 `v_px`。读回贴图验证时必须用同一个换算，否则验的是镜像位置。
+ *
+ * @param {PNG} png @param {number} u @param {number} v
+ * @returns {number} alpha（0..255）
+ */
+function sampleAlpha(png, u, v) {
+  const x = Math.min(png.width - 1, Math.max(0, Math.floor(u * png.width)));
+  const y = Math.min(png.height - 1, Math.max(0, Math.floor((1 - v) * png.height)));
+  return png.data[(y * png.width + x) * 4 + 3];
+}
+
+/**
+ * 预检：**非盾骨骼**的三角面不得采样到盾贴图的不透明像素（否则合成会把盾图涂到身上）。
+ *
+ * 为什么是烘焙期硬错误而不是断言：素材换版本可能重排 UV，那时正确的形态应是
+ * 「重跑后失败并让人去看」，而不是「烘焙成功、游戏里身上多了块盾的花斑」。
+ *
+ * @param {PNG} shield @param {number[]} uv @param {number[]} skinIndex @param {number[]} index
+ * @param {string[]} boneNames
+ */
+function assertNoBodyPollution(shield, uv, skinIndex, index, boneNames) {
+  const SAMPLES = 5;   // 每边的采样数（三角形内 15 个点）—— 足以覆盖面级重叠
+  const offended = new Map();
+  for (let t = 0; t < index.length; t += 3) {
+    const vs = [index[t], index[t + 1], index[t + 2]];
+    const boneName = boneNames[skinIndex[vs[0] * 4]];
+    if (/^shield/.test(boneName)) continue;   // 盾自己的面当然采样得到盾贴图
+    const tri = vs.map((v) => [uv[v * 2], uv[v * 2 + 1]]);
+    let hit = 0;
+    for (let i = 0; i <= SAMPLES; i++) {
+      for (let k = 0; k <= SAMPLES - i; k++) {
+        const s = i / SAMPLES, q = k / SAMPLES, r = 1 - s - q;
+        const u = tri[0][0] * r + tri[1][0] * s + tri[2][0] * q;
+        const vv = tri[0][1] * r + tri[1][1] * s + tri[2][1] * q;
+        if (sampleAlpha(shield, u, vv) > 128) hit++;
+      }
+    }
+    if (hit > 0) offended.set(boneName, (offended.get(boneName) || 0) + hit);
+  }
+  if (offended.size > 0) {
+    const detail = [...offended.entries()].map(([n, c]) => `${n}(${c} 点)`).join(', ');
+    fail(`盾贴图会污染非盾骨骼的 UV：${detail}\n`
+      + '  ⇒ 素材 UV 布局已变，或盾图与主贴图不再是「不相交的两块」——'
+      + '请核对 ignis_shield.png 是否与 ignis_idle_0.png 来自同一版本。');
+  }
 }
 
 /**
@@ -592,9 +692,30 @@ function main() {
   }
   for (const v of uv) if (!(v >= 0 && v <= 1)) fail(`UV 越界 ${v}（应 ∈ [0,1]）`);
 
-  // ==================== 3. 贴图 ====================
-  // 直接拷入库的那份（已经是 256²），不重新编码（避免无谓的 PNG 差异）
-  const pngBuf = fs.readFileSync(IGNIS_TEX_SRC);
+  // ==================== 3. 贴图（主图 + 盾图合成）====================
+  //
+  // ⚠️⚠️ **盾的形状不在主贴图里**（用户 2026-11-08 缺陷「游戏里没见到焰魔携带盾牌」）：
+  // 盾的 240 个顶点 UV 落在 `ignis_idle_0.png` 的一块**全透明区域**，而盾自己的像素在
+  // `ignis_shield.png` 里（原 Mod 的盾是独立 render controller，用第二张贴图）。
+  // 烘焙期把盾图叠到主图上 ⇒ 运行期仍是单贴图单材质、零 draw call 增加、渲染器不必改。
+  // 详细推导与「两张图不透明像素零重叠」的实测数据见 `ignis-fingerprint.mjs` 的
+  // `IGNIS_SHIELD_TEX_SRC` 与 `IGNIS_METRICS.shieldOpaquePixels`。
+  const basePng = PNG.sync.read(fs.readFileSync(IGNIS_TEX_SRC));
+  const shieldPng = PNG.sync.read(fs.readFileSync(IGNIS_SHIELD_TEX_SRC));
+  // 先验「不会涂到身体上」（素材换版本时在这里失败，而不是在画面里出现花斑）
+  assertNoBodyPollution(shieldPng, uv, skinIndex, index, bonesRaw.map((b) => b.name));
+  const shieldPainted = compositeShieldTexture(basePng, shieldPng);
+  // 交叉核对：盾图的不透明像素数必须与冻结度量一致（改了盾图忘了重烘 ⇐ 指纹已经拦住；
+  // 这里是「重烘了但盾图换成了另一张不同内容的图」的语义守卫）。
+  let shieldOpaque = 0;
+  for (let i = 3; i < shieldPng.data.length; i += 4) if (shieldPng.data[i] > 128) shieldOpaque++;
+  if (shieldOpaque !== IGNIS_METRICS.shieldOpaquePixels) {
+    fail(`盾贴图不透明像素 ${shieldOpaque} ≠ 期望 ${IGNIS_METRICS.shieldOpaquePixels}`
+      + '（素材换版本？核对后再重标 IGNIS_METRICS.shieldOpaquePixels）');
+  }
+  const pngBuf = PNG.sync.write(basePng);
+  console.log(`[焰魔烘焙]   贴图合成：盾图叠入 ${shieldPainted} 像素`
+    + `（主图 ${basePng.width}² → 产物 ${basePng.width}²，单贴图单材质）`);
 
   // ==================== 4. 动画 ====================
   const animRoot = JSON.parse(fs.readFileSync(IGNIS_ANIM_SRC, 'utf8'));

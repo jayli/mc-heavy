@@ -39,6 +39,26 @@ export const IGNIS_ANIM_SRC = path.join(IGNIS_SRC_DIR, 'ignis.animation.json');
  * **只取一张静态贴图**（与飞龙同口径）。八帧里第 0 帧是基准姿态，其余是火焰位移。
  */
 export const IGNIS_TEX_SRC = path.join(IGNIS_SRC_DIR, 'ignis_idle_0.png');
+/**
+ * 输入：**盾的贴图**（256²，与主贴图分开的一张）。
+ *
+ * ⚠️⚠️ **主贴图里没有盾的任何像素**（2026-11-08 实测）：盾的 240 个顶点 UV 落在
+ * `ignis_idle_0.png` 的一块**全透明区域**（盾 UV 覆盖的 771 像素里主贴图只有 23 个不透明），
+ * 而同一区域在本文件里是 346 个不透明像素。原 Mod 的 `ignis.render_controllers.json` 把盾做成
+ * **独立 render controller**（`Texture.shield` + `part_visibility: {"*": false, "shield*": true}`），
+ * 即盾从来就用第二张贴图。
+ *
+ * 缺了它的形态：几何/骨骼/UV 全对、`check:data` 的结构判据全绿，但渲染器材质的
+ * `alphaTest: 0.5` 把每个盾面判为透明 ⇒ **盾画了却一个像素也看不见**（用户 2026-11-08 报告
+ * 「游戏里没见到焰魔携带盾牌」的真根因）。
+ *
+ * 烘焙期由 `bake-ignis.mjs` 把它**合成进**主贴图（两张图不透明像素零重叠，实测 8 帧 idle
+ * 全为 0），运行期仍是单贴图单材质 ⇒ 零 draw call 增加、渲染器不必改。
+ *
+ * ⚠️ **只取基础版**：素材另有 `ignis_shield_crack1~3`（破盾裂纹）与 `ignis_soul_shield`
+ * （魂态），本轮「只做视觉」不取；将来做破盾玩法时再加。
+ */
+export const IGNIS_SHIELD_TEX_SRC = path.join(IGNIS_SRC_DIR, 'ignis_shield.png');
 
 /** 烘焙产物：模型 JSON（进运行期，`src/render/ignis-model.js` 加载） */
 export const IGNIS_JSON = path.join(ROOT, 'assets', 'ignis', 'ignis.json');
@@ -172,17 +192,28 @@ export const IGNIS_METRICS = Object.freeze({
   vertexCount: 1920,
   indexCount: 2880,
   scale: 1,
+  /**
+   * 盾贴图（`IGNIS_SHIELD_TEX_SRC`）里的不透明像素数（alpha > 128）= **5816**。
+   *
+   * ⚠️ 这条度量是**内容级**判据：结构判据（骨骼数/顶点数/UV 值域）在「盾不可见」时
+   * **全部通过**，只有「数一数贴图里到底有没有东西」才能抓住它。`check:data` 用它交叉
+   * 核对烘焙产物确实把盾贴图叠了进来（产物 PNG 的盾 UV 区域不透明像素 > 0）。
+   */
+  shieldOpaquePixels: 5816,
 });
 
 /**
- * 烘焙输入指纹：`<三份输入内容 sha 前 16>:<参数 sha 前 16>`。
+ * 烘焙输入指纹：`<四份输入内容 sha 前 16>:<参数 sha 前 16>`。
  *
  * 两个消费方（烘焙脚本写进 meta、`check:data` 重算比对）必须拿到同一格式。
  * 改 `IGNIS_BAKE_PARAMS` / `IGNIS_METRICS` / `IGNIS_ANIM_PERIODS` / 任一输入文件都会改变
  * 指纹 → 门禁报「产物已过期，跑 npm run ignis」，防静默过期。
  *
- * ⚠️ **三份输入串联后取一次 sha**（不是各自取 sha 再拼）：拼接顺序固定（geo → anim → png），
- * 换顺序会换指纹，这是刻意的 —— 指纹描述的是「这一组输入」。
+ * ⚠️ **四份输入串联后取一次 sha**（不是各自取 sha 再拼）：拼接顺序固定
+ * （geo → anim → png → shieldPng），换顺序会换指纹，这是刻意的 —— 指纹描述的是「这一组输入」。
+ *
+ * ⚠️ v2.83（2026-11-08）起**盾贴图也进指纹**：它参与合成产物 PNG，改了它不重烘就是
+ * 「盾的造型静默变了但产物没变」——正是指纹要防的那类过期。
  *
  * 已知盲区（与图标/夜空/巨树/高台/竞技场/中世纪船/龙同口径）：只改**烘焙算法**而不动参数时
  * 指纹不变 —— 那类改动靠 `src/tests/test-ignis-bake.js` 的产物契约与 Tier 4 兜住。
@@ -192,13 +223,14 @@ export const IGNIS_METRICS = Object.freeze({
 export function ignisInputFingerprint() {
   for (const [label, p] of [
     ['几何', IGNIS_GEO_SRC], ['动画', IGNIS_ANIM_SRC], ['贴图', IGNIS_TEX_SRC],
+    ['盾贴图', IGNIS_SHIELD_TEX_SRC],
   ]) {
     if (!fs.existsSync(p)) {
       throw new Error(`[焰魔] 烘焙输入缺失（${label}）：${p}（素材入库，缺失 = 仓库损坏）`);
     }
   }
   const hash = createHash('sha256');
-  for (const p of [IGNIS_GEO_SRC, IGNIS_ANIM_SRC, IGNIS_TEX_SRC]) {
+  for (const p of [IGNIS_GEO_SRC, IGNIS_ANIM_SRC, IGNIS_TEX_SRC, IGNIS_SHIELD_TEX_SRC]) {
     hash.update(fs.readFileSync(p));
   }
   const sourceSha256 = hash.digest('hex');

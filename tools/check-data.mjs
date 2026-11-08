@@ -50,7 +50,7 @@ const {
 // 焰魔（v2.55）的烘焙参数/度量/指纹同理（与 bake-ignis.mjs 同一份逻辑）
 const {
   IGNIS_JSON, IGNIS_PNG, IGNIS_META, IGNIS_BAKE_PARAMS, IGNIS_METRICS, IGNIS_ANIM_PERIODS,
-  IGNIS_ATTACK_ANIM_KEYS,
+  IGNIS_ATTACK_ANIM_KEYS, IGNIS_SHIELD_TEX_SRC,
   ignisInputFingerprint,
 } = await import('./ignis-fingerprint.mjs');
 // v1.26：图标走独立 icons-atlas（不再有 INVENTORY_ICONS 表）。指纹/清单走共享模块
@@ -607,9 +607,54 @@ function checkDragonAsset() {
 // ---------------------------------------------------------------- [焰魔] 契约（v2.55）
 
 /**
+ * 在产物 PNG 上按三角面采样 alpha，返回某类骨骼的**不透明比例**（v2.83）。
+ *
+ * ## 为什么必须有这条（用户 2026-11-08 缺陷「游戏里没见到焰魔携带盾牌」）
+ *
+ * 盾的几何、骨骼链、UV 全在产物里；结构判据（骨骼数/顶点数/UV 值域/索引范围）**全部通过**。
+ * 而盾的 UV 落在主贴图的一块**全透明区域**（盾自己的像素在 `ignis_shield.png` 里，原 Mod 的盾
+ * 是独立 render controller）⇒ 渲染器材质的 `alphaTest: 0.5` 把每个盾面判为透明丢弃 ⇒
+ * **盾画了却一个像素也看不见**。只有「拿 UV 去采样产物 PNG、数不透明像素」能抓住它。
+ *
+ * ⚠️ **行号是 `(1 − v) × H`**：产物 UV 的 v 是 three 口径（`v_three = 1 − v_px/textureSize`，
+ * 见烘焙器的 UV 重映射注释），运行时 `TextureLoader.flipY = true` 再翻一次 ⇒ 文件里落回 `v_px`。
+ * 烘焙器、浏览器单测、本函数三处用同一换算，否则验的是镜像位置。
+ *
+ * @param {{bones:Array<{name:string}>, geometry:{uv:number[], skinIndex:number[], index:number[]}}} asset
+ * @param {{width:number, height:number, data:Uint8Array|Buffer}} png
+ * @param {RegExp} [boneFilter] 默认只统计盾（`/^shield/`）
+ * @returns {{ratio:number, opaque:number, total:number}}
+ */
+function shieldUvOpaqueRatio(asset, png, boneFilter = /^shield/) {
+  const { uv, skinIndex, index } = asset.geometry;
+  const names = asset.bones.map((b) => b.name);
+  const alphaAt = (u, v) => {
+    const x = Math.min(png.width - 1, Math.max(0, Math.floor(u * png.width)));
+    const y = Math.min(png.height - 1, Math.max(0, Math.floor((1 - v) * png.height)));
+    return png.data[(y * png.width + x) * 4 + 3];
+  };
+  const S = 4;   // 每边采样数（三角形内 15 个点）
+  let opaque = 0, total = 0;
+  for (let t = 0; t < index.length; t += 3) {
+    const vs = [index[t], index[t + 1], index[t + 2]];
+    if (!boneFilter.test(names[skinIndex[vs[0] * 4]])) continue;
+    const tri = vs.map((v) => [uv[v * 2], uv[v * 2 + 1]]);
+    for (let i = 0; i <= S; i++) {
+      for (let k = 0; k <= S - i; k++) {
+        const s = i / S, q = k / S, r = 1 - s - q;
+        total++;
+        if (alphaAt(tri[0][0] * r + tri[1][0] * s + tri[2][0] * q,
+          tri[0][1] * r + tri[1][1] * s + tri[2][1] * q) > 128) opaque++;
+      }
+    }
+  }
+  return { ratio: total > 0 ? opaque / total : 0, opaque, total };
+}
+
+/**
  * [焰魔] 契约：① 三个产物存在；② PNG 尺寸 = `IGNIS_BAKE_PARAMS.textureSize`；
  * ③ 产物契约（骨骼数 / 烘焙立方体数 / 顶点数 / 索引数 / 动画清单与帧数）；
- * ④ 指纹匹配（静默过期防护）。
+ * ④ 指纹匹配（静默过期防护）；⑤ **盾贴图已入素材且确实合成了**（v2.83 内容级判据）。
  *
  * ⚠️ **成功行必须涵盖全部判据**（AGENTS.md 已记该坑：新判据只加进 `failures` 而不并进
  * 成功行条件，会同时打印「✗」与「✓」，读者只看 ✓ 就误判通过）。
@@ -617,6 +662,11 @@ function checkDragonAsset() {
  * ⚠️ **`animations.idle.fps` 不是整数**（`idleFrameCount / (2π/128)` ≈ 244.46）：
  * 刻意的，使产物 `duration` 与表达式周期**逐位相等**（循环接缝恒 0）。
  * 这里断言的是 **duration 关系式**，不是 fps 的具体值。
+ *
+ * ⚠️⚠️ **⑤ 是内容级而不是结构级**（用户 2026-11-08 缺陷「游戏里没见到焰魔携带盾牌」）：
+ * 盾的几何、骨骼、UV 全在产物里，结构判据**全部通过**，而主贴图里没有盾的像素
+ *（盾 UV 落在全透明区域）+ 材质 `alphaTest: 0.5` ⇒ 盾画了却一个像素也看不见。
+ * 只有「数一数产物 PNG 在盾 UV 区域到底有多少不透明像素」能抓住它。
  */
 function checkIgnisAsset() {
   // ① 产物存在
@@ -625,6 +675,11 @@ function checkIgnisAsset() {
       failures.push(`[焰魔] assets/ignis/${label} 不存在 —— 跑 npm run ignis`);
       return;
     }
+  }
+  // ①b 盾贴图素材存在（v2.83：它是合成输入，缺失 = 仓库损坏）
+  if (!fs.existsSync(IGNIS_SHIELD_TEX_SRC)) {
+    failures.push(`[焰魔] 盾贴图素材 assets/ignis/src/ignis_shield.png 不存在`
+      + ' —— 盾会渲染成完全透明（结构判据拦不住，见本函数头部注释）');
   }
   // ② PNG 尺寸
   const png = PNG.sync.read(fs.readFileSync(IGNIS_PNG));
@@ -690,10 +745,20 @@ function checkIgnisAsset() {
   if (meta.fingerprints?.input !== current.input) {
     failures.push(`[焰魔] 输入已变但产物未重烘（跑 npm run ignis）\n      期望 ${current.input}\n      实际 ${meta.fingerprints?.input}`);
   }
+  // ⑤ 盾贴图真的合成了（**内容级**，结构判据看不见这一类缺陷）
+  //
+  // 判据：拿产物的 UV 去采样产物 PNG，盾骨骼的三角面必须有显著不透明覆盖。
+  // 实测：正常 74.8%；缺盾贴图（未合成） **0.0%**。
+  const shieldCoverage = shieldUvOpaqueRatio(asset, png);
+  if (!(shieldCoverage.ratio > 0.40)) {
+    failures.push(`[焰魔] 盾的 UV 在产物 PNG 上不透明率仅 ${(100 * shieldCoverage.ratio).toFixed(1)}%`
+      + '（期望 > 40% —— 盾贴图没合成进来，游戏里盾完全不可见）');
+  }
   // 成功行：全部判据都过才打印
   if (!failures.some((f) => f.startsWith('[焰魔]'))) {
     infos.push(`[焰魔] 产物契约与指纹一致（${asset.bones.length} 骨骼 / ${asset.metrics.bakedCubes} 立方体（跳过 ${asset.metrics.skippedCubes} 零尺寸） / ${asset.geometry.position.length / 3} 顶点 / idle ${asset.animations.idle.frameCount} 帧 + `
-      + `${IGNIS_ATTACK_ANIM_KEYS.map((k) => `${k} ${asset.animations[k].frameCount} 帧`).join(' + ')} / scale ${asset.scale}）`);
+      + `${IGNIS_ATTACK_ANIM_KEYS.map((k) => `${k} ${asset.animations[k].frameCount} 帧`).join(' + ')} / scale ${asset.scale}`
+      + ` / 盾 UV 不透明率 ${(100 * shieldCoverage.ratio).toFixed(1)}%）`);
   }
 }
 
