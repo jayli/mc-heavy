@@ -47,6 +47,7 @@ import {
   IGNIS, IGNIS_STEP_LIFT, IGNIS_POSE_BLEND, ignisBlendSeconds,
 } from '../entities/ignis/ignis-config.js';
 import { StepLift } from '../player/step-lift.js';
+import { KnockbackEase } from './knockback-ease.js';
 import { sampleIgnisAnim, sampleIgnisAttack, IgnisPoseTransition } from './ignis-model.js';
 
 /** 红闪色（与丧尸/飞龙 `FLASH_COLOR` 同口径：纯红乘贴图） */
@@ -163,6 +164,11 @@ export class IgnisRenderer {
        */
       lift: new StepLift(),
       /**
+       * 击退视觉补间（v2.81，用户缺陷：「boss 后退是瞬移的，不是缓动的」）。
+       * 权威位置瞬时、只滞后渲染位置（见 `render/knockback-ease.js`）。逐实例一份。
+       */
+      knock: new KnockbackEase(),
+      /**
        * 上一帧的物理 y（`null` = 未对齐）。**首帧必须不触发缓动** —— 实例初值在
        * y=0 附近，把「物理 y − 0」当成抬升量会让每只焰魔出生时都从世界底升上来
        *（丧尸渲染器实测踩过的同一个坑）。
@@ -251,6 +257,10 @@ export class IgnisRenderer {
         inst.entityId = entity.id;
         inst.prevY = null;
         inst.lift.offset = 0;
+        // 击退补间同属「逐实例、隐藏时不清」的状态 —— 不清则新焰魔出生当帧被画在
+        // 「上一只的位置」上（偏移量属于上一只的位移）。
+        inst.knock.offsetX = 0;
+        inst.knock.offsetZ = 0;
         // v2.76：姿态衔接同属「逐实例、隐藏时不清」的状态 —— 不清则新焰魔出生头 0.2s 从上一只的
         // 姿态淡出；骨架也要回 bind，否则上一只死于旋斩中途时，它的 sword/upperbody 会残留在新实体上。
         inst.transition.reset();
@@ -268,6 +278,25 @@ export class IgnisRenderer {
     }
   }
 
+  /**
+   * 登记一次击退（由 `IgnisService.knockback` 经 Game 装配的注入钩子调用）。
+   *
+   * ⚠️ **不能改成「每帧比较渲染位置与物理位置、差得多就补间」**：焰魔 AI 每帧前进约
+   * 0.09 格，而 0.9 格的击退可能被撞墙二分回退成 0.2 格 —— 阈值两侧都会误伤。
+   * 故触发是显式事件，见 `render/knockback-ease.js`。
+   *
+   * @param {string} id 实体 id @param {number} dx @param {number} dz 实际水平位移（格）
+   * @returns {boolean} false = 该 id 当前不在池里（未渲染，无需补间）
+   */
+  noteKnockback(id, dx, dz) {
+    const idx = this._byId.get(id);
+    if (idx === undefined) return false;
+    const inst = this._instances[idx];
+    if (!inst) return false;
+    inst.knock.trigger(dx, dz);
+    return true;
+  }
+
   /** 发布单只焰魔 */
   _syncOne(inst, entity, nowMs, dt = 0) {
     const st = entity.state;
@@ -277,9 +306,15 @@ export class IgnisRenderer {
     //（AABB 状态要精确，否则碰撞/实体射线/台阶净空全部错位）。与玩家的 `StepLift`
     //（`player.js` 消费 `physics.stepLiftAccum`）、丧尸的 `_advanceLift` 同一分工。
     this._advanceLift(inst, st.position[1], dt);
-    // ⚠️ **y 加 `lift.offset`**：上台阶的视觉缓动就落在这一处。写回 `st.position` 会把
-    // 缓动偏移污染成「物理位置」的副本（丧尸渲染器同一注释）。
-    inst.pivot.position.set(st.position[0], st.position[1] + inst.lift.offset, st.position[2]);
+    // ---- 击退视觉补间（v2.81）：只滞后渲染位置（水平），权威 `state.position` 不动 ----
+    inst.knock.update(dt);
+    // ⚠️ **y 加 `lift.offset`、x/z 减 `knock.offset`**：两套缓动就落在这一处。写回 `st.position`
+    // 会把缓动偏移污染成「物理位置」的副本（丧尸渲染器同一注释）。
+    inst.pivot.position.set(
+      st.position[0] - inst.knock.offsetX,
+      st.position[1] + inst.lift.offset,
+      st.position[2] - inst.knock.offsetZ,
+    );
     // ⚠️ **欧拉顺序必须显式 'YXZ'**：three 默认 'XYZ' 下会先绕 X 再绕 Y，两个转动互相耦合。
     // 焰魔没有俯仰（地面实体），但保持与飞龙同一口径以免将来加俯仰时踩坑。
     inst.pivot.rotation.set(0, st.yaw, 0, 'YXZ');
@@ -355,6 +390,24 @@ export class IgnisRenderer {
       else if (dy < 0) inst.lift.offset = 0;                        // ③ 下落
     }
     inst.lift.update(dt);
+  }
+
+  /**
+   * @param {number} index 实例下标
+   * @returns {number} 只读测试钩子：当前 x 击退补间偏移（格，渲染位置 = 物理位置 − 该值）
+   */
+  knockOffsetXOf(index) {
+    const inst = this._instances[index];
+    return inst ? inst.knock.offsetX : 0;
+  }
+
+  /**
+   * @param {number} index 实例下标
+   * @returns {number} 只读测试钩子：当前 z 击退补间偏移（格）
+   */
+  knockOffsetZOf(index) {
+    const inst = this._instances[index];
+    return inst ? inst.knock.offsetZ : 0;
   }
 
   /**

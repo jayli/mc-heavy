@@ -35,6 +35,7 @@ import {
   ZOMBIE_ARM_SWING, ZOMBIE_HEAD_SWAY, ZOMBIE_STEP_LIFT,
 } from '../entities/zombies/zombie-config.js';
 import { StepLift } from '../player/step-lift.js';
+import { KnockbackEase } from './knockback-ease.js';
 import {
   ZOMBIE_MODEL_DEFS, ZOMBIE_SKIN_UV, ZOMBIE_UV_FACES, remapFaceUV,
 } from './zombie-model.js';
@@ -221,6 +222,13 @@ export class ZombieRenderer {
       // 每只丧尸一个实例（共享一份会让多只互相打断）。
       lift: new StepLift(),
       /**
+       * 击退视觉补间（v2.81，用户缺陷：「boss 后退是瞬移的，不是缓动的」）。
+       *
+       * 权威位置瞬时、只滞后**渲染位置**（理由与 `lift` 同一分工，见
+       * `render/knockback-ease.js` 模块注释）。逐实例一份（共享会让多只互相打断）。
+       */
+      knock: new KnockbackEase(),
+      /**
        * 上一帧的物理 y（`null` = 未对齐）。**首帧必须不触发缓动** ——
        * `position` 初值是 `[0,0,0]`，把「physicalY − 0」当成抬升量会让每只丧尸出生时
        * 都从 y=0 升到自己脚下（实现里必然踩到的坑）。
@@ -228,6 +236,25 @@ export class ZombieRenderer {
       prevY: null,
     };
     for (const part of ZOMBIE_PARTS) this.meshes[part].visible = true; // 有丧尸才提交渲染
+  }
+
+  /**
+   * 登记一次击退（由 `ZombieService.knockback` 经 Game 装配的注入钩子调用）。
+   *
+   * ⚠️ **不能改成「每帧比较渲染位置与物理位置、差得多就补间」**：丧尸 AI 每帧 0.02 格、
+   * 击退 0.9 格分三帧走完时每帧只有 0.3 格 —— 阈值两侧都会误伤。故触发是显式事件，
+   * 见 `render/knockback-ease.js`。
+   *
+   * @param {string} id 实体 id @param {number} dx @param {number} dz 实际水平位移（格）
+   * @returns {boolean} false = 该 id 当前没有 slot（未渲染，无需补间）
+   */
+  noteKnockback(id, dx, dz) {
+    const slot = this._slots.get(id);
+    if (slot === undefined) return false;
+    const pose = this._poses[slot];
+    if (!pose) return false;
+    pose.knock.trigger(dx, dz);
+    return true;
   }
 
   /** 归还 slot（由 `ZombieService` 的三条回收路径调用）：清空六部件矩阵，不留残影 */
@@ -308,6 +335,8 @@ export class ZombieRenderer {
         pose.headSway = 0;
       }
       pose.flashing = nowMs < state.flashedUntil;
+      // ---- v2.81 击退视觉补间：只滞后渲染位置（水平），权威 `state.position` 不动 ----
+      pose.knock.update(dt);
       this._writeSlot(slot, pose);
     }
   }
@@ -375,6 +404,18 @@ export class ZombieRenderer {
     pose.lift.update(dt);
   }
 
+  /** @param {number} slot @returns {number} 只读测试接口：当前 x 击退补间偏移（格，渲染位置 − 该值 = 物理位置） */
+  knockOffsetXOf(slot) {
+    const pose = this._poses[slot];
+    return pose ? pose.knock.offsetX : 0;
+  }
+
+  /** @param {number} slot @returns {number} 只读测试接口：当前 z 击退补间偏移（格） */
+  knockOffsetZOf(slot) {
+    const pose = this._poses[slot];
+    return pose ? pose.knock.offsetZ : 0;
+  }
+
   /** @param {number} slot @returns {number} 只读测试接口：当前 y 缓动偏移（格，≤ 0） */
   liftOffsetOf(slot) {
     const pose = this._poses[slot];
@@ -395,7 +436,13 @@ export class ZombieRenderer {
   _writeSlot(slot, pose) {
     // ⚠️ y 加 `lift.offset`：上台阶的视觉缓动就落在这一处（v2.39）。写回 `pose.position`
     // 会把缓动偏移污染成「物理位置」的副本 —— `poseOf()` 的语义是只读发布物理位置。
-    _parent.position.set(pose.position[0], pose.position[1] + pose.lift.offset, pose.position[2]);
+    // 水平减 `knock.offset`：击退的补间同理（v2.81）—— 触发当帧渲染位置仍在**旧位置**，
+    // 再 ease-out 追平。
+    _parent.position.set(
+      pose.position[0] - pose.knock.offsetX,
+      pose.position[1] + pose.lift.offset,
+      pose.position[2] - pose.knock.offsetZ,
+    );
     _parent.rotation.set(0, pose.yaw, 0);
     _parent.updateMatrix();
     const flash = pose.flashing;

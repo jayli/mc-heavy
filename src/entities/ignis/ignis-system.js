@@ -322,13 +322,18 @@ export const ignisDefinition = Object.freeze({
 export class IgnisService {
   /**
    * @param {{entities: import('../entity-manager.js').EntityManager,
-   *          world: object|null, seed: number}} deps
+   *          world: object|null, seed: number,
+   *          onKnockback?: (id: string, dx: number, dz: number) => void}} deps
    *        `world` 用于召唤时扫描地表落点（可为 null —— 那样用兜底高度）
+   *        `onKnockback` 是渲染层缓动的钩子（Game 装配时注入）。注入而非 import render ——
+   *        本层是 Worker 同构层，不得依赖 render/three（依赖方向 §3）。
    */
-  constructor({ entities, world, seed }) {
+  constructor({ entities, world, seed, onKnockback = null }) {
     this.entities = entities;
     this.world = world;
     this.seed = seed;
+    /** 击退发生后的通知（只服务渲染层补间，见 `knockback()` 注释） */
+    this._onKnockback = onKnockback;
     /**
      * 寻路状态（v2.61）：缓存 + 每只焰魔的旅行记忆 + 决策周期累积器。
      * 与 `ZombieService._stepNavigator` 同一套构件，只是体型参数不同。
@@ -654,6 +659,12 @@ export class IgnisService {
    * 一次推开 0.4 格仍在死区（0.75 格宽）内 ⇒ 不会触发「退出死区 → 重新追击」的抖动。
    * 把击退距离调到 > `standoffDeadband` 会让「砍一刀」变成「把它打跑」，观感与裁定相左。
    *
+   * ⚠️ **权威位移是瞬时的**，不允许改成逐帧挪：AABB、实体射线（剑的命中判据）、方块碰撞、
+   * AI 起点全部读 `state.position`，它一滞后就会「按旧位置判命中」「被推进方块里」。
+   * 「后退不要瞬移」这条观感由渲染层补间承担 —— 故成功时经 `onKnockback` 上报**实际**位移
+   * （不是请求位移：撞墙二分回退后可能只走了 0.2 格），渲染层据此把渲染位置滞后一小段再
+   * ease-out 追平（`render/knockback-ease.js`）。
+   *
    * @param {string} id @param {number} dx @param {number} dz 水平位移（格）
    * @returns {boolean} false = 未知 id / 完全走不动
    */
@@ -668,6 +679,10 @@ export class IgnisService {
     // 经 createState 重建（不原地改）：与 Agent / damage 同一契约
     entity.state = createState({ ...state, position: next });
     this.entities.reindexColumn(id);
+    // 上报**实际**发生的水平位移（供渲染层补间，只影响观感）
+    if (this._onKnockback) {
+      this._onKnockback(id, next[0] - state.position[0], next[2] - state.position[2]);
+    }
     return true;
   }
 

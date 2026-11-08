@@ -655,6 +655,10 @@ export class Game {
       pool: this.pool,
       onSpawn: (id, slot) => this.zombieRenderer.acquireSlot(id, slot),
       onDespawn: (id) => this.zombieRenderer.releaseSlot(id),
+      // v2.81 击退视觉补间：服务层知道这一帧确实发生了击退（它刚算完 next − prev），
+      // 渲染层据此把渲染位置滞后一小段再 ease-out 追平。用位置增量猜必然误伤
+      // （丧尸 AI 每帧 0.02 格 vs 0.9 格击退）。
+      onKnockback: (id, dx, dz) => this.zombieRenderer.noteKnockback(id, dx, dz),
     });
     this.entities.registerType('zombie', zombieDefinition);
 
@@ -665,7 +669,12 @@ export class Game {
     // ⚠️ **龙是临时实体**（`persistent: false`）：位置是 seed 的纯函数，进存档就是第二份
     // 权威（红线 2）。v2.43 起**不再有任何东西进存档** —— 永久死亡标记已随「死后可重召」移除。
     this.entities.registerType(DRAGON_TYPE, dragonDefinition);
-    this.dragons = new DragonService({ entities: this.entities, seed: this.seed });
+    this.dragons = new DragonService({
+      entities: this.entities, seed: this.seed,
+      // v2.81 击退视觉补间（与丧尸同口径）。⚠️ 闭包延迟取值 —— 本行早于
+      // `dragonRenderer` 创建，击退发生时它必已就位；加载失败为 null 则跳过。
+      onKnockback: (id, dx, dz) => this.dragonRenderer?.noteKnockback(id, dx, dz),
+    });
     // 渲染器：要 await 产物加载。⚠️ **加载失败不得让整个游戏起不来**（龙是景观，
     // 缺它不该白屏）—— 与 M4 武器模型 / M8 蓝图加载失败同一容错口径。失败则
     // `dragonRenderer = null`，帧循环判空。
@@ -687,6 +696,8 @@ export class Game {
     // `world` 用于召唤时扫描地表落点（spec：不能用 `findSpawnY`，它会把高台地带的巨型云当地面）
     this.ignises = new IgnisService({
       entities: this.entities, world: this.world, seed: this.seed,
+      // v2.81 击退视觉补间（与丧尸/飞龙同口径；闭包延迟取值，理由同上）
+      onKnockback: (id, dx, dz) => this.ignisRenderer?.noteKnockback(id, dx, dz),
     });
     // 渲染器：加载失败不得让整个游戏起不来（与龙/武器模型/蓝图同一容错口径）
     try {

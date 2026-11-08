@@ -49,7 +49,7 @@ export class ViewWeapon {
     this._spinVelocity = 0; // 加特林枪管角速度 rad/s
     // v2.65 近战剑挥砍：_swingElapsed ≥ _swingDuration 表示未在挥砍。
     // ⚠️ 时长**不在这里写字面量**：唯一权威是 catalog 的 `swingSeconds`，由 `onShot()`
-    // 在触发挥砍时写入（写第二份 0.3 就是红线 1，调参时会漂移成「动画与判据不同长」）。
+    // 在触发挥砍时写入（写第二份时长字面量就是红线 1，调参时会漂移成「动画与判据不同长」）。
     this._swingElapsed = Infinity;
     this._swingDuration = Infinity;
   }
@@ -91,9 +91,9 @@ export class ViewWeapon {
   onShot(effect) {
     if (effect.type === 'melee' || effect.type === 'melee-hit') {
       this._swingElapsed = 0;
-      // 时长唯一权威 = catalog 的 `swingSeconds`（缺省 0.3 只作纵深防御，
+      // 时长唯一权威 = catalog 的 `swingSeconds`（缺省 0.225 只作纵深防御，
       // 正常路径下近战武器必定带这个字段）
-      this._swingDuration = WEAPONS[this.selectedId]?.swingSeconds ?? 0.3;
+      this._swingDuration = WEAPONS[this.selectedId]?.swingSeconds ?? 0.225;
       return;
     }
     this._recoil = effect.recoil;

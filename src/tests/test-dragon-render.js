@@ -500,3 +500,59 @@ test('龙渲染: 未传贴图时 loadTexture 走 resourceUrl（不写站点根�
   assertTrue(typeof r.loadTexture === 'function');
   r.dispose();
 });
+
+// ==================== 击退视觉补间（v2.81，用户缺陷：后退是瞬移）====================
+//
+// 权威 `state.position` 瞬时（`DragonService.knockback`），只滞后**渲染位置** ~0.2s ease-out。
+// 触发是显式事件（`noteKnockback` ← 服务层注入钩子上报的实际位移），不是「比位移猜」——
+// 飞龙 chaseSpeed 9 格/秒（60fps 下 0.15 格/帧）与 0.9 格击退同一量级，阈值必然误伤。
+
+const KB_FRAME_MS = 1000 / 60;
+
+test('龙渲染: 击退 → 渲染位置从旧位置缓动追平（不是瞬移）', async () => {
+  const d = await getAsset();
+  const r = new DragonRenderer(new THREE.Scene(), d);
+  const e = makeEntity({ position: [10, 30, 20] });
+  let ms = 0;
+  for (let i = 0; i < 3; i++) { ms += KB_FRAME_MS; r.sync([e], ms); }
+  // 权威位置瞬时后移 0.9 格，随后通知渲染层
+  const moved = makeEntity({ position: [10.9, 30, 20] });
+  r.noteKnockback(e.id, 0.9, 0);
+  ms += KB_FRAME_MS;
+  r.sync([moved], ms);
+  const first = r.instances[0].pivot.position.x;
+  assertTrue(first > 10 && first < 10.35,
+    `击退首帧渲染 x=${first.toFixed(4)}，应只走了不到 35% 的距离（瞬移 = 10.9）`);
+  // 逐帧单调追平且不越过权威位置
+  let prev = r.knockOffsetXOf(0);
+  for (let i = 0; i < 60; i++) {
+    ms += KB_FRAME_MS;
+    r.sync([moved], ms);
+    const cur = r.knockOffsetXOf(0);
+    assertTrue(cur <= prev + 1e-12, `偏移应单调减小（ease-out），${prev} → ${cur}`);
+    assertTrue(r.instances[0].pivot.position.x <= 10.9 + 1e-9, '渲染位置不得越过权威位置');
+    prev = cur;
+  }
+  assertEqual(r.knockOffsetXOf(0), 0, '约 1 秒后偏移应归零');
+  assertTrue(Math.abs(r.instances[0].pivot.position.x - 10.9) < 1e-9,
+    '收敛后渲染 x 应逐位等于物理 x');
+  assertTrue(moved.state.position[0] === 10.9, '权威位置不得被渲染层回写');
+  r.dispose();
+});
+
+test('龙渲染: 实例复用给新龙时重置击退补间', async () => {
+  const d = await getAsset();
+  const r = new DragonRenderer(new THREE.Scene(), d);
+  const a = makeEntity({ position: [10, 30, 20] }, 'dragon:tarn:0:0:0');
+  let ms = 0;
+  for (let i = 0; i < 3; i++) { ms += KB_FRAME_MS; r.sync([a], ms); }
+  r.noteKnockback(a.id, 0.9, 0);
+  ms += KB_FRAME_MS; r.sync([a], ms);
+  assertTrue(r.knockOffsetXOf(0) > 0, '前置：应还有未补完的偏移');
+  ms += KB_FRAME_MS; r.sync([], ms);                       // 龙消失 → 实例隐藏但状态残留
+  const b = makeEntity({ position: [40, 30, 20] }, 'dragon:tarn:1:0:0');
+  ms += KB_FRAME_MS; r.sync([b], ms);
+  assertEqual(r.knockOffsetXOf(0), 0, '新龙不得继承上一条的击退偏移');
+  assertTrue(Math.abs(r.instances[0].pivot.position.x - 40) < 1e-9, '新龙出生当帧渲染位置应等于物理位置');
+  r.dispose();
+});

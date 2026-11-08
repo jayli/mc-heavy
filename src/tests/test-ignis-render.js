@@ -458,6 +458,78 @@ test('焰魔渲染: 实例复用给新实体时重置缓动（不把出生当成
   r.dispose();
 });
 
+// ==================== 击退视觉补间（v2.81，用户缺陷：后退是瞬移）====================
+//
+// 用户 2026-11-08：「玩家挥剑击杀 boss 或者丧尸等敌人的时候，每次击杀都会让敌人向后移动
+// 一个短小的距离 …… 这个后退的逻辑是瞬移的，不是缓动的，我要从现在的瞬移变成缓动」。
+//
+// 分工：权威 `state.position` 仍在击退那一帧**瞬时**移满（AABB/实体射线/方块碰撞/AI 起点
+// 全读它），只有**渲染位置**滞后 ~0.2s ease-out 追平。触发是**显式事件**（`noteKnockback`），
+// 不是「比位移猜」—— 丧尸 AI 每帧 0.02 格与 0.9 格击退分帧后同一量级，阈值必然误伤。
+
+/** 以 60fps 连续 sync 同一状态 n 帧（推进 dt）。传 `null` = 渲染一帧空列表（实体全部消失）。 */
+function run(r, entity, fromMs, n = 1) {
+  let ms = fromMs;
+  for (let i = 0; i < n; i++) {
+    ms += FRAME_MS;
+    r.sync(entity === null ? [] : [entity], ms);
+  }
+  return ms;
+}
+
+test('焰魔渲染: 击退 → 渲染位置从旧位置缓动追平到新位置（不是瞬移）', async () => {
+  const d = await getAsset();
+  const r = new IgnisRenderer(new THREE.Scene(), d);
+  const at = (x, z) => ({ id: 'k', state: { ...IGNIS_BASE, position: [x, 10, z] } });
+  let ms = run(r, at(0, 0), 0, 3);              // 对齐 + 稳定
+  // 权威位置瞬时后移 0.9 格（服务层在同一帧做完），随后通知渲染层
+  const moved = at(0.9, 0);
+  r.noteKnockback('k', 0.9, 0);
+  ms = run(r, moved, ms);
+  const first = r.instances[0].pivot.position.x;
+  // 首帧只吃掉一小段（指数衰减的理论值 = dist × (1 − e^(−12·dt)) ≈ 18% @60fps）。
+  // 瞬移的形态是首帧就到 0.9（100%）—— 这就是本条断言要拆穿的。
+  assertTrue(first > 0 && first < 0.35,
+    `击退首帧渲染 x=${first.toFixed(4)}，应只走了不到 35% 的距离（瞬移 = 0.9）`);
+  // 逐帧单调追平，且始终不超过权威位置
+  let prev = r.knockOffsetXOf(0);
+  for (let i = 0; i < 60; i++) {
+    ms = run(r, moved, ms);
+    const cur = r.knockOffsetXOf(0);
+    assertTrue(cur <= prev + 1e-12, `偏移应单调减小（ease-out），${prev} → ${cur}`);
+    assertTrue(r.instances[0].pivot.position.x <= 0.9 + 1e-9, '渲染位置不得越过权威位置');
+    prev = cur;
+  }
+  assertEqual(r.knockOffsetXOf(0), 0, '约 1 秒后偏移应归零');
+  assertTrue(Math.abs(r.instances[0].pivot.position.x - 0.9) < 1e-9,
+    '收敛后渲染 x 应逐位等于物理 x');
+  r.dispose();
+});
+
+test('焰魔渲染: 击退补间只影响渲染位置，不写回 state.position', async () => {
+  const d = await getAsset();
+  const r = new IgnisRenderer(new THREE.Scene(), d);
+  const e = ignisAt(10);
+  let ms = run(r, e, 0, 3);
+  r.noteKnockback('ignis-lift', 0.9, 0);
+  ms = run(r, e, ms, 5);
+  assertEqual(e.state.position[0], 0, '权威位置必须仍是 0（渲染层不得回写）');
+  assertTrue(r.knockOffsetXOf(0) > 0, '该有未补完的偏移');
+  r.dispose();
+});
+
+test('焰魔渲染: 实例复用给新实体时重置击退补间（不在上一只的偏移上出生）', async () => {
+  const d = await getAsset();
+  const r = new IgnisRenderer(new THREE.Scene(), d);
+  let ms = run(r, { id: 'a', state: ignisAt(10).state }, 0, 3);
+  r.noteKnockback('a', 0.9, 0);
+  ms = run(r, { id: 'a', state: ignisAt(10).state }, ms, 2);
+  assertTrue(r.knockOffsetXOf(0) > 0, '前置：第 1 只应还有偏移');
+  ms = run(r, null, ms);
+  ms = run(r, { id: 'b', state: ignisAt(10).state }, ms);  assertEqual(r.knockOffsetXOf(0), 0, '新实体不得继承上一只的击退偏移');
+  r.dispose();
+});
+
 // ==================== 姿态衔接（v2.76，用户缺陷：旋斩起手一帧硬切）====================
 //
 // 用户 2026-11-07（录像「焰魔旋转.mov」1.13s）：「身体本来是站定的，突然就切换到身体旋转举刀的

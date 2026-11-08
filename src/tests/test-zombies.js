@@ -85,6 +85,8 @@ export function makeZombieFixture({ maxActive = ZOMBIE.maxActive, withRenderer =
     entities, world, maxActive,
     onSpawn: renderer ? (id, slot) => renderer.acquireSlot(id, slot) : null,
     onDespawn: renderer ? (id) => renderer.releaseSlot(id) : null,
+    // v2.81：击退的渲染层补间走同一条注入路径（与 Game 装配逐字同形）
+    onKnockback: renderer ? (id, dx, dz) => renderer.noteKnockback(id, dx, dz) : null,
   });
 
   return { registry, ids, world, entities, zombies, renderer, scene };
@@ -867,6 +869,8 @@ function makeAiFixture({ worldColumns = 8, withRenderer = false } = {}) {
     // 上台阶缓动用例必须走真实「service 分配 slot → renderer 发布 pose」链路。
     onSpawn: withRenderer ? (id, slot) => renderer.acquireSlot(id, slot) : null,
     onDespawn: withRenderer ? (id) => renderer.releaseSlot(id) : null,
+    // v2.81：击退的渲染层补间（与 Game 装配逐字同形）
+    onKnockback: withRenderer ? (id, dx, dz) => renderer.noteKnockback(id, dx, dz) : null,
   });
   const playerPosition = [0.5, 1, 0.5];
 
@@ -1237,6 +1241,68 @@ test('ZombieRenderer: 皮肤 UV 的 v 方向 —— 世界顶部须采到皮肤�
 
 // ---------- v2.39：上台阶视觉缓动（物理仍瞬时，只有渲染层平滑） ----------
 //
+// ==================== 击退视觉补间（v2.81，用户缺陷：后退是瞬移）====================
+//
+// 用户 2026-11-08：「每次击杀都会让敌人向后移动一个短小的距离 …… 这个后退的逻辑是瞬移的，
+// 不是缓动的，我要从现在的瞬移变成缓动」。
+//
+// 分工与上台阶 y 缓动完全一致：权威 `state.position` 瞬时（服务层 `knockback`），只滞后
+// **渲染位置**。触发是显式事件（`noteKnockback`，由 `ZombieService` 的注入钩子上报实际位移），
+// 不能用「比位置增量猜」 —— 丧尸 AI 每帧 0.02 格 vs 0.9 格击退，阈值两侧都会误伤。
+
+test('ZombieRenderer: 击退 → 渲染位置从旧位置缓动追平（不是瞬移）', () => {
+  const { zombies, renderer, ids } = makeAiFixture({ withRenderer: true });
+  const id = zombies.spawn([10.5, 1, .5], { source: 'test' });
+  const slot = renderer.slotOf(id);
+  let nowMs = 0;
+  renderer.sync(zombies, nowMs);
+  // 走真实服务层（不手调 trigger）：`knockback` 改权威位置并经注入钩子通知渲染层
+  const x0 = zombies.get(id).position[0];
+  assertTrue(zombies.knockback(id, 0.9, 0), '前提：击退应成功');
+  assertTrue(zombies.get(id).position[0] > x0 + 0.89, '前提：权威位置必须当帧移满 0.9');
+
+  nowMs += 1000 / 120;
+  renderer.sync(zombies, nowMs);
+  const firstVis = renderer._poses[slot].position[0] - renderer.knockOffsetXOf(slot);
+  // 首帧只吃掉一小段（指数衰减理论值 = 0.9 × (1 − e^(−12/120)) ≈ 8.6%）—— 瞬移的形态是
+  // 首帧就到物理位置。
+  assertTrue(firstVis > x0 && firstVis < x0 + 0.2,
+    `击退首帧渲染 x=${firstVis.toFixed(4)}，应只走了不到 22% 的距离（旧位置 ${x0.toFixed(4)}）`);
+
+  // 逐帧单调追平，收敛到物理位置（CUTOFF=0.004 ⇒ ~460ms；这里走 80 帧 @120Hz = 667ms）
+  let prev = renderer.knockOffsetXOf(slot);
+  for (let i = 0; i < 80; i++) {
+    nowMs += 1000 / 120;
+    renderer.sync(zombies, nowMs);
+    const cur = renderer.knockOffsetXOf(slot);
+    assertTrue(cur <= prev + 1e-12, `偏移应单调减小（ease-out），${prev} → ${cur}`);
+    prev = cur;
+  }
+  assertTrue(prev < 0.02,
+    `约 667ms 后偏移应收敛（实际 ${prev}）；完全归零靠 CUTOFF=0.004`);
+  // ②b **矩阵级断言**：`poseOf` 读的是内部量，「缓动真的发布了」的落点是实例矩阵。
+  // 只断言内部量时，注入「`_writeSlot` 不减去 knock.offset」（= 等价回退到瞬移）仍全绿。
+  const mtx = new THREE.Matrix4();
+  renderer.meshes.body.getMatrixAt(slot, mtx);
+  assertTrue(Math.abs(mtx.elements[12] - zombies.get(id).position[0]) < 0.02,
+    `偏移收敛后实例矩阵 x 应贴近物理 x（矩阵 ${mtx.elements[12]} / 物理 ${zombies.get(id).position[0]}）`);
+});
+
+test('ZombieRenderer: 击退当帧实例矩阵仍在旧位置（断言落在发布路径上）', () => {
+  const { zombies, renderer } = makeAiFixture({ withRenderer: true });
+  const id = zombies.spawn([10.5, 1, .5], { source: 'test' });
+  const slot = renderer.slotOf(id);
+  renderer.sync(zombies, 0);
+  const x0 = zombies.get(id).position[0];
+  zombies.knockback(id, 0.9, 0);
+  renderer.sync(zombies, 1000 / 120);
+  const mtx = new THREE.Matrix4();
+  renderer.meshes.body.getMatrixAt(slot, mtx);
+  assertTrue(mtx.elements[12] > x0 && mtx.elements[12] < x0 + 0.2,
+    `击退首帧实例矩阵 x=${mtx.elements[12].toFixed(3)}，应只走了不到 22% 的距离（旧位置 ${x0.toFixed(3)}）`);
+  assertTrue(mtx.elements[12] < zombies.get(id).position[0] - 0.5, '矩阵必须滞后于物理位置');
+});
+
 // 用户报告「丧尸上台阶是瞬移，下台阶有下落动画」。实测根因：`tryStepUp` 把脚底**一帧**
 // 抬到上一格整数面（物理必须瞬时，AABB 状态要精确），而渲染层把 `state.position` 原样发布成
 // 实例平移 → 画面上就是瞬移。下台阶没这问题，因为重力天然一帧一帧下落（实测 19 帧 / 283ms）。

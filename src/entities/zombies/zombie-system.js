@@ -322,18 +322,25 @@ export class ZombieService {
    *          maxActive?: number,
    *          pool?: import('../../core/worker-pool.js').WorkerPool,
    *          onSpawn?: (id: string, slot: number) => void,
-   *          onDespawn?: (id: string) => void}} deps
+   *          onDespawn?: (id: string) => void,
+   *          onKnockback?: (id: string, dx: number, dz: number) => void}} deps
    *        `onSpawn`/`onDespawn` 是渲染层的对称回收钩子（Game 装配时注入）。注入而非 import
    *        render —— 本层是 Worker 同构层，不得依赖 render/three（依赖方向 §3）。
+   *        `onKnockback` 同理：击退后的渲染层补间通知。
    *        `pool` 缺省时不发 AI RPC（纯 fixture 只测 state/渲染）—— AI 是可选装配。
    */
-  constructor({ entities, world, maxActive = ZOMBIE.maxActive, pool = null, onSpawn = null, onDespawn = null }) {
+  constructor({
+    entities, world, maxActive = ZOMBIE.maxActive, pool = null,
+    onSpawn = null, onDespawn = null, onKnockback = null,
+  }) {
     this.entities = entities;
     this.world = world;
     this.maxActive = maxActive;
     this.pool = pool;
     this._onSpawn = onSpawn;
     this._onDespawn = onDespawn;
+    /** 击退发生后的通知（只服务渲染层补间，见 `knockback()` 注释） */
+    this._onKnockback = onKnockback;
     /**
      * 本地导航（v2.47）：`PathCache` + 每只丧尸的旅行记忆。**常开、零网络**。
      * ⚠️ 历史上这里挂过「在线 AI 编排器」（Jev），已整体删除（用户 2026-11-04 裁定）。
@@ -465,6 +472,10 @@ export class ZombieService {
    * ⚠️ **必须显式 `reindexColumn`**：本方法在 `EntityManager.update` 之外改 `state.position`，
    * 不调它实体就停在旧 column 索引上不自愈（AGENTS.md 已记）。
    *
+   * ⚠️ **权威位移是瞬时的**（不得改成逐帧挪：AABB/实体射线/方块碰撞/AI 起点全读
+   * `state.position`）。「后退不要瞬移」由渲染层补间承担 —— 故成功时经 `onKnockback` 上报
+   * **实际**位移（撞墙二分回退后可能只走了 0.2 格），见 `render/knockback-ease.js`。
+   *
    * @param {string} id @param {number} dx @param {number} dz 水平位移（格，已含距离与方向）
    * @returns {boolean} false = 未知 id / 完全走不动（被墙卡死）
    */
@@ -479,6 +490,10 @@ export class ZombieService {
     // 经 createState 重建（不原地改）：原地改会让跨 column 迁移判据的 before/after 同源
     entity.state = createState({ ...state, position: next });
     this.entities.reindexColumn(id);
+    // 上报**实际**发生的水平位移（供渲染层补间，只影响观感）
+    if (this._onKnockback) {
+      this._onKnockback(id, next[0] - state.position[0], next[2] - state.position[2]);
+    }
     return true;
   }
 

@@ -351,13 +351,17 @@ test.describe('近战剑（v2.65）', () => {
       };
       const rest = measure();
       const frames = [];
+      // ⚠️ 时长读 catalog（唯一权威），不写字面量 —— 硬编码会在调时长时让本条用例的采样密度
+      // 静默偏移（用户 2026-11-08 把 swingSeconds 从 0.3 改为 0.225）。
+      const sw = (await import('/src/player/weapons/weapon-catalog.js')).WEAPONS.sword;
       for (let i = 0; i <= 20; i++) {
         const p = i / 20;
-        vw._swingElapsed = p * 0.3000001; vw._swingDuration = 0.3; vw.update(0, {});
+        vw._swingElapsed = p * (sw.swingSeconds + 1e-7);
+        vw._swingDuration = sw.swingSeconds;
+        vw.update(0, {});
         frames.push({ p: +p.toFixed(2), ...measure() });
       }
       vw._swingElapsed = Infinity; vw.update(0, {});
-      const sw = (await import('/src/player/weapons/weapon-catalog.js')).WEAPONS.sword;
       return { rest, frames, strikeEnd: sw.swing.strikeEnd };
     });
 
@@ -720,6 +724,92 @@ test.describe('近战剑（v2.65）', () => {
     const distAfter = Math.hypot(result.afterPos[0] - px, result.afterPos[2] - pz);
     expect(distAfter, '击退必须使焰魔远离玩家').toBeGreaterThan(distBefore);
     expect(result.effectType).toBe('melee-hit');
+  });
+
+  /**
+   * 击退的渲染层补间（v2.81，用户：「这个 boss 后退的逻辑是瞬移的，不是缓动的」）。
+   *
+   * ⚠️ **必须走真实入口**（剑砍中 → 服务层 `knockback` → 注入钩子 → 渲染器 `noteKnockback`）：
+   * 单测里的 fixture 自己接的钩子，接线断掉时它们不会红。判据落在**实际发布的实例矩阵**上
+   * （`pivot.position`）—— 只断言内部 offset 会漏掉「算对了但没写进矩阵」这个形态。
+   */
+  test('击退是补间：砍中后焰魔的渲染位置滞后于物理位置，~0.2s 内追平', async ({ page }) => {
+    test.setTimeout(180_000);
+    await page.goto('/?seed=12345&vd=6');
+    await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
+    const center = await page.evaluate(async () => {
+      const { findAltarTarnRegion } = await import('/src/gen/structures/tarn-zone.js');
+      const g = window.__MC_GAME__;
+      const a = findAltarTarnRegion(g.seed);
+      if (!a) return null;
+      g.player.spawn(a.cx, 40, a.cz);
+      return { cx: a.cx, cz: a.cz };
+    });
+    expect(center, 'seed=12345 必须有祭坛高台地带').not.toBeNull();
+    await page.waitForTimeout(2500);
+    await page.waitForFunction(() => {
+      const g = window.__MC_GAME__;
+      const p = g.player.physics.pos;
+      return g.world.isSolid(Math.floor(p.x), Math.floor(p.y - 0.5), Math.floor(p.z));
+    }, null, { timeout: 30_000 });
+    await page.waitForTimeout(400);
+
+    const result = await page.evaluate(async () => {
+      const g = window.__MC_GAME__;
+      g.summonBoss();                       // 飞龙 slot 0
+      await new Promise((r) => setTimeout(r, 300));
+      g.summonBoss();                       // 焰魔 slot 1
+      await new Promise((r) => setTimeout(r, 800));
+      const e = g.ignises.activeEntities()[0];
+      if (!e) return { summoned: false };
+      const id = e.id;
+      const [bx, by, bz] = e.state.position;
+      g.player.spawn(bx + 2, by + 1, bz);
+      await new Promise((r) => setTimeout(r, 500));
+      await g.selectWeapon('sword');
+      await new Promise((r) => setTimeout(r, 600));
+      const now = g.entities.get(id).state;
+      const [nx, ny, nz] = now.position;
+      const cam = g.camera.position.toArray();
+      g.player.setTestAim([nx - cam[0], ny + 1.6 - cam[1], nz - cam[2]]);
+
+      const before = g.entities.get(id).state;
+      const idx = g.ignisRenderer._byId.get(id);
+      const readGap = () => {
+        const inst = g.ignisRenderer.instances[idx];
+        const st = g.entities.get(id).state;
+        return {
+          gap: Math.hypot(inst.pivot.position.x - st.position[0], inst.pivot.position.z - st.position[2]),
+          physX: st.position[0],
+        };
+      };
+      const gapBefore = idx === undefined ? -1 : readGap().gap;
+
+      g.fireWeaponOnce();
+      const physAfter = [...g.entities.get(id).state.position];
+      const moved = Math.hypot(physAfter[0] - before.position[0], physAfter[2] - before.position[2]);
+
+      // ⚠️ **不能在同一拍读 pivot**：偏移是在下一次 `_syncOne` 才写进矩阵，而瞬移方案在
+      // 同一拍也不写 —— 那样两方案读数相同，断言没有判别力。故等 ~50ms（3 帧）：
+      // 补间此时约走完 45%（剩余 ~0.5 格），瞬移则恒为 0。
+      await new Promise((r) => setTimeout(r, 50));
+      const mid = idx === undefined ? { gap: -1 } : readGap();
+      // 再等 0.6s：应变回 0（收敛）
+      await new Promise((r) => setTimeout(r, 600));
+      const settled = idx === undefined ? { gap: -1 } : readGap();
+      return { summoned: true, moved, gapBefore, gapMid: mid.gap, gapSettled: settled.gap };
+    });
+
+    expect(result.summoned, '焰魔必须被召出').toBe(true);
+    expect(result.moved, '前提：击退必须产生水平位移').toBeGreaterThan(0.1);
+    expect(result.gapBefore, '击退前渲染位置与物理位置应重合').toBeLessThan(0.05);
+    // 判别力落在**中间态**：瞬移方案的渲染位置恒等于物理位置（gap ≈ 0），
+    // 补间方案在 ~50ms 时必须还欠一段明显未画完的位移（上界 0.15 格）。
+    expect(result.gapMid, `击退后 ~50ms 渲染位置必须滞后于物理位置（实测 gap=${result.gapMid.toFixed(3)}）`)
+      .toBeGreaterThan(0.15);
+    // 下界：必须追平（不得永久错位）
+    expect(result.gapSettled, `0.65s 后渲染位置应已追平物理位置（差 ${result.gapSettled.toFixed(3)}）`)
+      .toBeLessThan(0.06);
   });
 
   /**

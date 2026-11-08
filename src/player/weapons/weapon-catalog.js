@@ -135,7 +135,15 @@ export const WEAPONS = freeze({
     // 近战：无 muzzleOffset / localStart / tracer / automatic / scan（枪专属字段）
     entityDamage: 50, entityRange: 3, melee: true,
     hitSound: 'emp_activated', hitVolume: 0.6,
-    swingSeconds: 0.3,
+    /**
+     * 视图模型挥砍动画时长（秒）。**唯一权威**：`view-weapon.js` 的 `_swingDuration`
+     * 由 `onShot()` 从这里读（写字面量的形态是「动画与判据不同长」）。
+     *
+     * 用户 2026-11-08：「挥刀的时间减少为原来的四分之三」⇒ 0.3 × 3/4 = **0.225**。
+     * 只改时长，`strikeEnd`（两段时间分配比例）与 `SWORD_SWING_CURVES`（缓动形状）不变 ——
+     * 与 v2.74 定的口径一致：「调手感只动幅度/时间，不顺手改缓动」。
+     */
+    swingSeconds: 0.225,
     /**
      * 挥砍：**向前劈劈砍**（用户 2026-11-06：「你要向前挥刀，不是向左摆刀」）。
      *

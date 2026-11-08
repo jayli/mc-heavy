@@ -260,6 +260,9 @@ scheduler/physics）再加 `npm run bench -- --check`。计划里标「冻结」
   放的 TNT 静默不爆。
 - 所有玩法服务在 `EntityManager.update` 之外改 `state.position` 时，必须显式 `reindexColumn(id)`，
   否则实体停在旧 column 索引上不自愈。
+- 击退（剑砍中）的**权威位移必须瞬时**，观感滞后只许落在渲染位置（`render/knockback-ease.js`，
+  与上台阶只缓动渲染 y 同一分工）。触发必须走服务层的**显式上报告诉实际位移**，不能用
+  「渲染位置与物理位置差得多就补间」—— 丧尸 AI 每帧 0.02 格与 0.9 格击退分帧后同一量级，阈值两侧都会误伤。
 - 「绑定在某个 column 的派生 controller」的装配必须早于 `_waitForColumn`，否则首个 ready 回调
   拿不到 service（形态：装置不工作，而锚点、索引、方块全对）。多格结构的 origin 用命中格
   `blockPos`，单格实体（矿车）用 `prevPos`。

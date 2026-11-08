@@ -332,11 +332,16 @@ export const dragonDefinition = Object.freeze({
  */
 export class DragonService {
   /**
-   * @param {{entities: import('../entity-manager.js').EntityManager, seed: number}} deps
+   * @param {{entities: import('../entity-manager.js').EntityManager, seed: number,
+   *          onKnockback?: (id: string, dx: number, dz: number) => void}} deps
+   *        `onKnockback` 是渲染层缓动的钩子（Game 装配时注入）。注入而非 import render ——
+   *        本层是 Worker 同构层，不得依赖 render/three（依赖方向 §3）。
    */
-  constructor({ entities, seed }) {
+  constructor({ entities, seed, onKnockback = null }) {
     this.entities = entities;
     this.seed = seed;
+    /** 击退发生后的通知（只服务渲染层补间，见 `knockback()` 注释） */
+    this._onKnockback = onKnockback;
   }
 
   /**
@@ -436,6 +441,10 @@ export class DragonService {
    *
    * ⚠️ **必须显式 `reindexColumn`**：在 `EntityManager.update` 之外改 `state.position`（AGENTS.md 已记）。
    *
+   * ⚠️ **权威位移是瞬时的**，「后退不要瞬移」由渲染层补间承担（`render/knockback-ease.js`）——
+   * 故成功时经 `onKnockback` 上报实际位移。本方法不做碰撞（与它平时的移动同口径），
+   * 故上报值恒等于请求值。
+   *
    * @param {string} id @param {number} dx @param {number} dz 水平位移（格）
    * @returns {boolean} false = 未知 id / 位移为零
    */
@@ -448,6 +457,8 @@ export class DragonService {
     // 经 createState 重建（不原地改）：与 Agent / damage 同一契约
     entity.state = createState({ ...state, position: [x + dx, y, z + dz] });
     this.entities.reindexColumn(id);
+    // 上报**实际**发生的水平位移（供渲染层补间，只影响观感）
+    if (this._onKnockback) this._onKnockback(id, dx, dz);
     return true;
   }
 

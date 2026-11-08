@@ -796,7 +796,7 @@ test('weapon catalog: 剑的近战冻结数值（伤害/射程/冷却/音效/击
   assertEqual(sword.hitSound, 'emp_activated', '砍中音');
   // 用户 2026-11-06 手改 0.4 → 0.9（更大的推离感）
   assertEqual(sword.knockbackDistance, 0.9);
-  assertEqual(sword.swingSeconds, 0.3);
+  assertEqual(sword.swingSeconds, 0.225);   // 用户 2026-11-08：时长 ×3/4（0.3 → 0.225）
   // 剑刻意没有枪的专属字段（曳光/枪口/连射）
   assertFalse(sword.automatic === true, '剑是单发（用户：点击左键挥一刀）');
   assertEqual(sword.tracer, undefined, '剑不发曳光');

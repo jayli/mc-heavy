@@ -36,6 +36,7 @@ import {
   DRAGON, DRAGON_MODEL_CENTER, DRAGON_MAX_ALIVE,
 } from '../entities/dragons/dragon-config.js';
 import { sampleDragonPose } from './dragon-model.js';
+import { KnockbackEase } from './knockback-ease.js';
 
 /** 红闪色（与丧尸 `FLASH_COLOR` 同口径：纯红乘贴图） */
 const FLASH_COLOR = 0xff0000;
@@ -85,6 +86,11 @@ export class DragonRenderer {
     for (let i = 0; i < DRAGON_MAX_ALIVE; i++) this._instances.push(this._makeInstance());
     /** @type {Map<string, number>} 实体 id → 实例下标 */
     this._byId = new Map();
+    /**
+     * 上次 `sync` 的时间戳（ms）—— 只为算出击退补间用的 dt（调用方传的是时间戳，不是 dt）。
+     * `null` = 首次（dt 给 0，与丧尸/焰魔渲染器同口径）。
+     */
+    this._lastSyncMs = null;
   }
 
   /** 造一个实例：独立骨骼层级 + 独立材质 + SkinnedMesh + yaw 父节点 */
@@ -120,7 +126,13 @@ export class DragonRenderer {
     pivot.add(mesh);
     pivot.visible = false;   // 初始无龙
     this.scene.add(pivot);
-    return { bones, material, mesh, pivot };
+    return {
+      bones, material, mesh, pivot,
+      /** 击退视觉补间（v2.81）：权威位置瞬时，只滞后渲染位置（见 `render/knockback-ease.js`） */
+      knock: new KnockbackEase(),
+      /** 当前占用本实例的实体 id（`null` = 空闲）—— 只为「换实体时重置补间」 */
+      entityId: null,
+    };
   }
 
   /** 加载贴图（构造时未传则调用）。走真实 `TextureLoader` 路径（flipY 口径，见下） */
@@ -159,13 +171,25 @@ export class DragonRenderer {
    */
   sync(entities, nowMs) {
     const list = entities || [];
+    // 缓动用的 dt：调用方传的是时间戳（与丧尸/焰魔渲染器同口径）
+    const dt = this._lastSyncMs === null
+      ? 0
+      : Math.max(0, (nowMs - this._lastSyncMs) / 1000);
+    this._lastSyncMs = nowMs;
     const used = new Set();
     for (let i = 0; i < list.length && i < this._instances.length; i++) {
       const entity = list[i];
       const inst = this._instances[i];
       used.add(i);
       this._byId.set(entity.id, i);
-      this._syncOne(inst, entity, nowMs);
+      // 实例复用给新龙时重置补间（池容量有限，隐藏时不清）——否则新龙出生当帧被画在
+      // 上一只遗留的偏移上。
+      if (inst.entityId !== entity.id) {
+        inst.entityId = entity.id;
+        inst.knock.offsetX = 0;
+        inst.knock.offsetZ = 0;
+      }
+      this._syncOne(inst, entity, nowMs, dt);
     }
     // 未用到的实例一律隐藏（⚠️ draw call 归零，M6 口径）
     for (let i = 0; i < this._instances.length; i++) {
@@ -177,11 +201,36 @@ export class DragonRenderer {
     }
   }
 
+  /**
+   * 登记一次击退（由 `DragonService.knockback` 经 Game 装配的注入钩子调用）。
+   *
+   * ⚠️ **不能改成「每帧比位移、差得多就补间」**：飞龙 chaseSpeed 9 格/秒（60fps 下 0.15 格/帧）
+   * 与 0.9 格击退同一量级，阈值必然误伤。故触发是显式事件，见 `render/knockback-ease.js`。
+   *
+   * @param {string} id 实体 id @param {number} dx @param {number} dz 实际水平位移（格）
+   * @returns {boolean} false = 该 id 当前不在池里（未渲染，无需补间）
+   */
+  noteKnockback(id, dx, dz) {
+    const idx = this._byId.get(id);
+    if (idx === undefined) return false;
+    const inst = this._instances[idx];
+    if (!inst) return false;
+    inst.knock.trigger(dx, dz);
+    return true;
+  }
+
   /** 发布单条龙 */
-  _syncOne(inst, entity, nowMs) {
+  _syncOne(inst, entity, nowMs, dt = 0) {
     const st = entity.state;
     inst.pivot.visible = true;
-    inst.pivot.position.set(st.position[0], st.position[1], st.position[2]);
+    // 击退视觉补间（v2.81）：只滞后渲染位置。⚠️ 写回 `st.position` 会把补间偏移污染成
+    // 「物理位置」的副本（丧尸/焰魔渲染器同一注释）。
+    inst.knock.update(dt);
+    inst.pivot.position.set(
+      st.position[0] - inst.knock.offsetX,
+      st.position[1],
+      st.position[2] - inst.knock.offsetZ,
+    );
     // ⚠️ **欧拉顺序必须显式 'YXZ'**（v2.48 加俯仰时踩到的坑）：three 默认 'XYZ' 下
     // 先绕 X 再绕 Y，两个转动会互相耦合（龙侧着走、低头时 Horizon 也歪）。
     // 'YXZ' = 先绕 Y（偏航）再绕 X（俯仰）—— 与 `dragon-facing.js` 的
@@ -208,6 +257,24 @@ export class DragonRenderer {
     // 红闪：nowMs < flashedUntil → 纯红乘贴图（与丧尸同口径）。
     // ⚠️ 时间基准 performance.now()（Date.now() 会让判定恒真 → 永久红闪）。
     inst.material.color.setHex(nowMs < st.flashedUntil ? FLASH_COLOR : BASE_COLOR);
+  }
+
+  /**
+   * @param {number} index 实例下标
+   * @returns {number} 只读测试接口：当前 x 击退补间偏移（格，渲染位置 = 物理位置 − 该值）
+   */
+  knockOffsetXOf(index) {
+    const inst = this._instances[index];
+    return inst ? inst.knock.offsetX : 0;
+  }
+
+  /**
+   * @param {number} index 实例下标
+   * @returns {number} 只读测试接口：当前 z 击退补间偏移（格）
+   */
+  knockOffsetZOf(index) {
+    const inst = this._instances[index];
+    return inst ? inst.knock.offsetZ : 0;
   }
 
   dispose() {
