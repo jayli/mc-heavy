@@ -67,6 +67,41 @@ import { BURNING_ARENA_HALF } from './burning-arena-data.js';
 export const BURNING_ARENA_HEIGHT = 80;
 
 /**
+ * Boss 召唤点的**脚底**相对 `anchor.floorY` 的竖直偏移（格）—— 唯一权威。
+ *
+ * ## 语义：「房顶下面这一层」的中心可站面（用户 2026-11-09 裁定）
+ *
+ * 用户原话：「不要召唤到房顶上，而是房顶下面的这一层」。
+ *
+ * 实测竖向结构（真实世界中心列，seed 12345、floorY=−1）：
+ *
+ * | 世界 y | 归一化 normY | 内容 |
+ * |---|---|---|
+ * | 69 | 80 | netherrack **房顶**（3717 格平板，脚底 y=70 = 屋顶外表面）|
+ * | 34..68 | 45..79 | **全空**（室内净空 35 格）|
+ * | **33** | **44** | **gold_block —— 室内顶层中心塔顶（脚底 y=34 = 本常量）** |
+ * | 32 | 43 | obsidian（室内主地板）|
+ * | 31..11 | 42..20 | chest / nether_bricks / lava 柱（本仓 lava 是 solid）|
+ *
+ * ## 推导（勿凭直觉改）
+ *
+ * 脚底 normY = 45（gold_block 在 normY=44，脚底 = 其上那一格）；
+ * 世界 y = `floorY + normY − floorRow(10)` ⇒ **脚底 = floorY + 45 − 10 = floorY + 35**。
+ *
+ * ⚠️ **floorRow 是产物冻结值**（`check:data` 指纹 + `test-burning-arena-gen.js` 的 `FLOOR_ROW=10`
+ * 双向钉住），**不能用 `floorRowOf()` 读**：它读主线程模块缓存，而产物只在 GEN Worker 里
+ * 加载过 ⇒ 主线程恒返回兜底值 1（`burning-arena.spec.mjs` 实测踩过同源坑）。
+ * 故本常量是**派生冻结值**，由 `test-burning-arena-gen.js` 从产物重算钉住（红线 1：
+ * 产物是权威，本常量是它的派生；素材/烘焙变了那条用例会红）。
+ *
+ * ⚠️ **曾错取「房顶外表面」**（`floorY + BURNING_ARENA_HEIGHT − 9` = floorY+71）：
+ * 那是屋顶**上面**，焰魔会站在房顶上（用户报告的缺陷）。有意思的是修复后的 y=34 正是
+ * 未传 `summonY` 时 `_findGroundY` 自然选中的位置（中心列只有塔顶 34 / 屋顶 70 两个可站位，
+ * 取「离玩家最近」时玩家在碗内低层 ⇒ 34）。
+ */
+export const BURNING_ARENA_SUMMON_FEET_DY = 35;
+
+/**
  * 占地内地表高差上限（格）—— **渐进放宽**的第一档。
  *
  * 实测（8 seed，城东 ±1600×±900 窗）：85×85 占地在 span≤4（巨型金字塔的标准）下

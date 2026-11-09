@@ -5,7 +5,7 @@
 // ## 为什么只登记「有离散中心」的地标级地图
 //
 // 用户 2026-11-03 裁定：Boss「只能从玩家所在的地图**中心位置**召唤出来」。这要求每张地图
-// 有一个**确定的中心点**。City / 高台地带 / 雪原 / 浅水高台四类都有现成的中心权威；
+// 有一个**确定的中心点**。City / 高台地带 / 大竞技场 / 雪原 / 浅水高台五类都有现成的中心权威；
 // 而 biome 类地图（沙漠 / 森林 / 草地 / 沼泽 / 杜鹃）是噪声生成的**连续区域**，
 // 没有离散中心 —— 等真要给它们加 Boss 时再定中心口径（例如用沙漠金字塔的位置）。
 //
@@ -15,6 +15,7 @@
 // |---|---|
 // | CITY | `getCityBoundsForSeed` + `inCityBounds`（`gen/structures/city-layout.js` / `scatter.js`） |
 // | TARN | `isTarnZone` + `tarnZoneCenter` + `inTarnRadius`（`gen/structures/tarn-zone.js`） |
+// | BURNING_ARENA | `computeBurningArenaAnchor` + `inBurningArenaFootprint`（`gen/structures/burning-arena.js`） |
 // | SNOW | `getRegionSeededCenter` + `LANDMARK_OFFSET.SNOW_LAND_*` + `snowLandSuppressedByTarn` |
 // | SHALLOW_TARN | `computeShallowTarnAnchor` + `inShallowTarnFootprint` |
 //
@@ -23,7 +24,14 @@
 //
 // ## 优先级 = 迷你地图的同一套（先命中者胜）
 //
-// CITY > TARN > SNOW > SHALLOW_TARN。⚠️ 城市必须最前 —— 城市 bounds 内地形被压平、
+// CITY > TARN > BURNING_ARENA > SNOW > SHALLOW_TARN。
+// ⚠️ **BURNING_ARENA 必须在 SNOW 之前**：雪原盒是 region 级包围盒（±28），可伸进竞技场
+// 占地（±42）—— 实测 8 seed 中 2 个命中（1249026 / 8888）；那座雪原已被竞技场压制
+//（`burningArenaSuppressedLandmarks` ⇒ 世界里根本不存在），而 `snowMapAt` 只跳 **tarn** 压制的
+// 雪原 ⇒ 顺序反了会把竞技场内的点误判成 SNOW，按 B 召到几十格外的虚空
+//（修复前实测重叠点 (648,319) 返回 `{kind:'SNOW', cx:676, cz:347}`）。
+// 守卫：`test-boss-map.js` 的「雪原盒伸进竞技场占地」用例。
+// ⚠️ 城市必须最前 —— 城市 bounds 内地形被压平、
 // 可能低于海平面，且它与其它三类在落点判据上互斥（浅水高台的 `CITY_CLEARANCE` 保证
 // 湖与城市 bounds 恒相距 40 格；雪原被 `snowLandSuppressedByTarn` 让路），
 // 所以实际几乎不会同时命中，但保留同一顺序以免将来加地图时出现口径分裂。
@@ -37,13 +45,16 @@ import { getRegionSeededCenter } from '../../gen/structures/region-center.js';
 import {
   computeShallowTarnAnchor, inShallowTarnFootprint,
 } from '../../gen/structures/shallow-water-tarns.js';
+import {
+  computeBurningArenaAnchor, inBurningArenaFootprint, BURNING_ARENA_SUMMON_FEET_DY,
+} from '../../gen/structures/burning-arena.js';
 
 /**
  * 可召唤 Boss 的地图种类（**唯一权威**：名册、单测、文档都从这里派生）。
  *
  * 顺序即判据优先级（见文件头）。
  */
-export const BOSS_MAP_KINDS = Object.freeze(['CITY', 'TARN', 'SNOW', 'SHALLOW_TARN']);
+export const BOSS_MAP_KINDS = Object.freeze(['CITY', 'TARN', 'BURNING_ARENA', 'SNOW', 'SHALLOW_TARN']);
 
 /** 雪原包围盒半宽（与 `minimap-regions.js` 的 `SNOW_HALF_EXTENT` 同推导） */
 const SNOW_HALF_EXTENT = Math.floor(SNOW_LAND_SIZE / 2) + TRANSITION_SIZE.SNOW_LAND;
@@ -55,6 +66,8 @@ const SNOW_HALF_EXTENT = Math.floor(SNOW_LAND_SIZE / 2) + TRANSITION_SIZE.SNOW_L
  *   cx: number,        地图中心 x（Boss 的召唤点）
  *   cz: number,        地图中心 z
  *   key: string,       该地图实例的稳定标识（同一张地图恒同值，跨重启一致）
+ *   summonY?: number,  **强制召唤高度**（脚底 y）。给了就无视玩家所在高度，把 Boss 召到
+ *                      这一层（大竞技场：恒在顶层平台，用户裁定）；不给则按玩家 y 就近取地面。
  * }} BossMap
  */
 
@@ -134,9 +147,33 @@ function shallowTarnMapAt(wx, wz, seed) {
   return { kind: 'SHALLOW_TARN', cx: a.wx, cz: a.wz, key: 'shallowtarn:0' };
 }
 
+/**
+ * 玩家所在的大竞技场（85×85 占地内 —— **任意高度、任意层**，用户裁定）。
+ *
+ * ⚠️ **`summonY` 恒为「房顶下面这一层」的中心可站面，与玩家所在高度无关**：
+ * 用户 2026-11-09 裁定「不要召唤到房顶上，而是房顶下面的这一层」。房顶 = 产物归一化
+ * y=`BURNING_ARENA_HEIGHT`(80) 的平板（脚底 y=floorY+71 = 屋顶**外表面**，曾错召于此）；
+ * 房顶下面 = 室内，顶层中心可站面 = 中心塔顶 gold_block（normY=44）之上，脚底
+ * y = `floorY + BURNING_ARENA_SUMMON_FEET_DY`（=floorY+35）。该常量的推导与守卫在
+ * `burning-arena.js`（产物是权威，红线 1），本处只消费、不复算。
+ *
+ * @returns {BossMap|null}
+ */
+function burningArenaMapAt(wx, wz, seed) {
+  const a = computeBurningArenaAnchor(seed);
+  if (!a || !inBurningArenaFootprint(wx, wz, [a])) return null;
+  return {
+    kind: 'BURNING_ARENA',
+    cx: a.wx,
+    cz: a.wz,
+    key: 'burningarena:0',
+    summonY: a.floorY + BURNING_ARENA_SUMMON_FEET_DY,
+  };
+}
+
 /** 判据表（顺序 = 优先级）。加新地图 = 在这里加一行 + 在 `BOSS_ROSTER` 加一行。 */
 const DETECTORS = Object.freeze([
-  cityMapAt, tarnMapAt, snowMapAt, shallowTarnMapAt,
+  cityMapAt, tarnMapAt, burningArenaMapAt, snowMapAt, shallowTarnMapAt,
 ]);
 
 /**

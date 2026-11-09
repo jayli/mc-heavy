@@ -2428,11 +2428,17 @@ export class Game {
     for (const slotDef of slots) {
       const svc = this[slotDef.service];
       if (!svc || typeof svc.summon !== 'function') continue;
-      // ⚠️ **传玩家 y 作为参考高度**：焰魔的地面扫描据此取「玩家所在那一层」的地面，
-      // 而不是地图中心列上的最低位置。高台地带有多层可站结构（广场地面 / 高台顶 46 /
-      // 拱洞 / 巨云 54~95），不传会让焰魔落到与玩家相距 30+ 格的高度。
+      // ⚠️ **参考高度：地图带 `summonY` 就用它，否则用玩家 y**。
+      // · 无 `summonY`（高台地带）：传玩家 y，焰魔的地面扫描据此取「玩家所在那一层」的
+      //   地面，而不是地图中心列上的最低位置。高台地带有多层可站结构（广场地面 /
+      //   高台顶 46 / 拱洞 / 巨云 54~95），不传会让焰魔落到与玩家相距 30+ 格的高度。
+      // · 有 `summonY`（大竞技场）：**恒召到建筑最高层中心**，与玩家所在高度/层无关
+      //   （用户裁定：「不管玩家在什么高度、在竞技场的哪个层，都可以召唤出 boss」）。
+      //   实测不传的后果：玩家站碗内地板（y≈0）时，`_findGroundY` 取「离玩家最近的可站位置」
+      //   ⇒ 焰魔落在中心熔岩柱顶（y=34）而不是顶层平台（y=70），差 36 格。
       // 飞龙忽略这个多余参数（它恒在轨道高度）。
-      const r = svc.summon(map.key, map.cx, map.cz, slotDef.slot, p.y);
+      const refY = Number.isFinite(map.summonY) ? map.summonY : p.y;
+      const r = svc.summon(map.key, map.cx, map.cz, slotDef.slot, refY);
       if (r.ok) {
         this._bossToast(`已召唤 Boss${slotDef.slot + 1}`);
         // v2.64：召唤音效（用户 2026-11-07：「焰魔和飞龙被创建的时候的音效 ignis_burn.ogg」）。

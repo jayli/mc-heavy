@@ -181,6 +181,108 @@ test.describe('焰魔（Ignis）Tier 4', () => {
     expect(result.rendererVisible, '渲染器实例应可见').toBe(true);
   });
 
+  test('大竞技场：占地内任意层按 B → 焰魔恒召在房顶下面那一层的中心 + Boss BGM 切换', async ({ page }) => {
+    test.setTimeout(300_000);
+    await page.goto(`/?seed=${SEED}`);
+    await waitWorldReady(page);
+
+    // 锚点 + 预期召唤高度（从 gen 层权威读，不自己写一份）
+    const arena = await page.evaluate(async () => {
+      const m = await import('/src/gen/structures/burning-arena.js');
+      const a = m.computeBurningArenaAnchor(window.__MC_GAME__.seed);
+      if (!a) return null;
+      return {
+        wx: a.wx, wz: a.wz, floorY: a.floorY,
+        summonY: a.floorY + m.BURNING_ARENA_SUMMON_FEET_DY,
+        roofFeetY: a.floorY + m.BURNING_ARENA_HEIGHT - 9,
+      };
+    });
+    expect(arena, '前置：seed 12345 必须有大竞技场').not.toBeNull();
+
+    // 把玩家放在**房顶上**（脚底 = roofFeetY）。
+    // ⚠️ 这是**判别力**的关键：中心列只有两个可站候选（塔顶 34 / 屋顶 70）。
+    // 玩家站屋顶时，不传 summonY 的 `_findGroundY` 会取「离玩家最近」= 70（屋顶）；
+    // 传了 summonY 才强制落到 34（房顶下面那一层）。若用例把玩家放低层（y≈0），
+    // `_findGroundY` 自然选 34 = 期望值 ⇒ 用例退化成「测不到 summonY」的假绿。
+    // 这也正是用户要求「不管玩家在什么高度」的最强验证：站在屋顶上按 B，Boss 仍召到屋顶下面。
+    await page.evaluate((a) => {
+      const g = window.__MC_GAME__;
+      const p = g.player.physics.pos;
+      p.x = a.wx; p.y = a.roofFeetY; p.z = a.wz;
+      g.player.physics.vel.x = g.player.physics.vel.y = g.player.physics.vel.z = 0;
+    }, arena);
+
+    // ⚠️ 等的是**召唤点（锚点中心）**那列就绪，不是玩家那列：`_findGroundY` 扫的是
+    // 中心列，它未加载时 `isSolid` 恒假 ⇒ 候选为空 ⇒ 落点兜底成 y=0（静默错召）。
+    await page.waitForFunction((a) => {
+      const g = window.__MC_GAME__;
+      const ccx = Math.floor(a.wx / 16), ccz = Math.floor(a.wz / 16);
+      return g.world.hasColumn(ccx, ccz);
+    }, arena, { timeout: 180_000 });
+    await page.waitForTimeout(800);
+
+    // 真实 B 键路径（不直接调 summonBoss，AGENTS.md M7 教训）
+    await page.evaluate(() => {
+      window.dispatchEvent(new KeyboardEvent('keydown', {
+        code: 'KeyB', repeat: false, bubbles: true, cancelable: true,
+      }));
+      window.dispatchEvent(new KeyboardEvent('keyup', { code: 'KeyB', bubbles: true, cancelable: true }));
+    });
+    await page.waitForFunction(
+      () => window.__MC_GAME__.ignises.activeEntities().length === 1,
+      null, { timeout: 30_000 });
+
+    // ⚠️ **等物理真的站稳**（onGround）再读位置：召唤当帧还没跑过重力积分。
+    // 这一步是载荷性的：若 `summonY` 差一格（悬空），焰魔会开始下落 ⇒ 本等待超时，
+    // 把「落点算错一格」这类缺陷从「y 恰好相等」的假绿里拽出来。
+    await page.waitForFunction(
+      () => window.__MC_GAME__.ignises.activeEntities()[0]?.state.onGround === true,
+      null, { timeout: 15_000 });
+
+    const got = await page.evaluate(() => {
+      const g = window.__MC_GAME__;
+      const e = g.ignises.activeEntities()[0];
+      const [x, y, z] = e.state.position;
+      return {
+        id: e.id,
+        x, y, z,
+        below: g.world.getBlockId(Math.floor(x), Math.floor(y) - 1, Math.floor(z)),
+        self: g.world.getBlockId(Math.floor(x), Math.floor(y), Math.floor(z)),
+        onGround: e.state.onGround,
+        playerY: g.player.physics.pos.y,
+      };
+    });
+    console.log('ARENA BOSS:', JSON.stringify(got), 'expected summonY', arena.summonY);
+
+    // ① 召唤点 = 房顶**下面**那一层的中心（与玩家所在高度无关）
+    // ⚠️ 用户 2026-11-09 裁定：「不要召唤到房顶上，而是房顶下面的这一层」。
+    // 实测竖向结构（真实世界，floorY=−1）：y=69 netherrack = 房顶（脚底 70）、
+    // y=34..68 全空（室内净空 35 格）、y=33 gold_block = 室内顶层中心可站面（脚底 34）。
+    expect(got.y, `焰魔必须站在房顶下面那一层（玩家站在屋顶 y=${got.playerY.toFixed(1)}）`)
+      .toBe(arena.summonY);
+    expect(got.y, '不得站在房顶上（用户裁定）').not.toBe(arena.roofFeetY);
+    expect(Math.floor(got.x), '召唤点 x = 锚点中心').toBe(arena.wx);
+    expect(Math.floor(got.z), '召唤点 z = 锚点中心').toBe(arena.wz);
+    // ② 真的站在室内顶层上（脚下实心、自身空气、onGround）
+    expect(got.below, '脚下应是室内顶层方块（不是悬空）').not.toBe(0);
+    expect(got.self, '自身所在格应是空气（不是埋在方块里）').toBe(0);
+    expect(got.onGround, '焰魔应站在室内顶层上（不是悬空下落）').toBe(true);
+    // ③ id 带本图标识（与高台地带的焰魔不互抢槽位）
+    expect(got.id, '实体 id 必须带 burningarena 地图标识').toContain('burningarena:0');
+
+    // ④ Boss BGM 切换（与高台地带同一逻辑：`_syncBossAudio` 按 IGNIS 计数置意图位）
+    await page.locator('#app-canvas').click({ position: { x: 200, y: 200 } });
+    await page.waitForFunction(
+      () => window.__MC_GAME__.audioManager.debugMusicState().boss.wanted === true,
+      null, { timeout: 15_000 });
+    await page.waitForFunction(
+      () => window.__MC_GAME__.audioManager.debugMusicState().boss.mix >= 1,
+      null, { timeout: 60_000 });
+    const music = await page.evaluate(() => window.__MC_GAME__.audioManager.debugMusicState());
+    expect(music.boss.playing, '战斗曲必须在播').toBe(true);
+    expect(music.playing, '淡变完成后普通曲必须停（不是两首叠播）').toBe(false);
+  });
+
   test('渲染(v2.83)：盾牌真的画出来了（盾骨骼区域像素级，未合成贴图时信号恒为 0）', async ({ page }) => {
     await page.goto(`/?seed=${SEED}`);
     await waitWorldReady(page);

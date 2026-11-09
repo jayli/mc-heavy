@@ -18,7 +18,8 @@ import { assertEqual, assertTrue } from './assert.js';
 import {
   computeBurningArenaAnchor, inBurningArenaFootprint, burningArenaOverlapsRegion,
   burningArenaSuppressedLandmarks, burningArenaCandidateValid,
-  BURNING_ARENA_HALF, BURNING_ARENA_HEIGHT, BURNING_ARENA_SPANS, clearBurningArenaCache,
+  BURNING_ARENA_HALF, BURNING_ARENA_HEIGHT, BURNING_ARENA_SPANS, BURNING_ARENA_SUMMON_FEET_DY,
+  clearBurningArenaCache,
 } from '../gen/structures/burning-arena.js';
 import { computeRegionLayout, neighborRegionKeys } from '../gen/structures/structure-layout.js';
 import { applyStructuresToColumn } from '../gen/structures/apply.js';
@@ -509,6 +510,35 @@ test('大竞技场压制：零回归 —— 非锚点 region 的 layout 与压�
 });
 
 // ==================== 真实 GEN 落位 ====================
+
+test('大竞技场：BURNING_ARENA_SUMMON_FEET_DY 与产物中心列「房顶下面那一层」一致（召唤点守卫）', async () => {
+  // ⚠️ 这条是 `BURNING_ARENA_SUMMON_FEET_DY` 的**唯一独立守卫**（Tier 2，免 TDD）：
+  // 该常量是产物中心列「房顶下面那一层」脚底的派生冻结值 —— `test-boss-map.js` 的用例
+  // 两侧都读同一常量（只钉接线，抓不到常量本身错），只有本条从**产物重算**。
+  //
+  // 背景（用户 2026-11-09 缺陷）：初版错取「房顶外表面」（floorY+71），焰魔站在房顶上；
+  // 用户裁定「不要召唤到房顶上，而是房顶下面的这一层」⇒ 室内顶层中心塔顶（脚底 floorY+35）。
+  // 素材/烘焙变了（房顶挪层 / 中心塔改高）⇒ 本条红，提醒重算常量。
+  const data = await loadStructure('burningArena');
+  // 中心列 (0,0) 的方块（归一化 normY → 类型）
+  const col = new Map();
+  for (const b of data.blocks) if (b.x === 0 && b.z === 0) col.set(b.y, b.type);
+  const roofY = Math.max(...col.keys());
+  assertEqual(roofY, BURNING_ARENA_HEIGHT, '房顶必须是结构最高层（否则「房顶」的定义变了）');
+  // 房顶正下方第一个实心层 = 室内顶层（中心塔顶）
+  let below = null;
+  for (let y = roofY - 1; y >= 1; y--) { if (col.has(y)) { below = y; break; } }
+  assertTrue(below !== null, '房顶下方必须有实心层（否则室内顶层不存在，召唤点无定义）');
+  // 房顶与室内顶层之间必须全空（可站净空；焰魔 3.25 高需 4 格）
+  for (let y = below + 1; y < roofY; y++) {
+    assertTrue(!col.has(y), `房顶与室内顶层之间必须全空（normY=${y} 有 ${col.get(y)}）`);
+  }
+  assertTrue(roofY - (below + 1) >= 4, `净空必须 ≥4 格（实际 ${roofY - (below + 1)}）`);
+  // 脚底 normY = below+1；世界偏移 = 脚底 normY − floorRow
+  const feetDy = (below + 1) - FLOOR_ROW;
+  assertEqual(feetDy, BURNING_ARENA_SUMMON_FEET_DY,
+    `召唤偏移必须等于产物中心列「房顶下面那一层」的脚底（产物重算 ${feetDy}）`);
+});
 
 test('大竞技场 GEN：碗内地板落在 floorY，中心与偏移点方块正确', async () => {
   const a = computeBurningArenaAnchor(SEED);

@@ -15,6 +15,10 @@
 // 3. **按 slot 升序**找第一个空槽（`slotOccupied` 为假）→ 在该地图中心召唤；
 // 4. 全部槽位都占着 → 提示「Boss 都在了」，什么都不召唤。
 //
+// ⚠️ **地图若带 `summonY`（强制召唤高度），落点用它而不是玩家 y**：大竞技场要求
+// 「任意层按 B 都召到最高层中心」；其余地图（高台地带）刻意用玩家 y 就近取地面
+//（那里有多层可站结构，不传会落到与玩家相距 30+ 格的高度）。
+//
 // ⚠️ **「Boss 死掉后再按 B 才会召唤」是这套流程的自然结果，不需要额外状态**：
 // 死亡即 despawn ⇒ `slotOccupied` 变假 ⇒ 该槽位重新可召。故 v2.41 的永久死亡标记
 // （`meta.dragonDead`）已随本次改动移除。
@@ -47,6 +51,13 @@ export const BOSS_ROSTER = Object.freeze({
   TARN: Object.freeze([
     Object.freeze({ slot: 0, type: DRAGON_TYPE, service: 'dragons' }),
     Object.freeze({ slot: 1, type: IGNIS_TYPE, service: 'ignises' }),
+  ]),
+  // 大竞技场（城东沙漠，v2.85 移植）：唯一 Boss = 焰魔（与高台地带的 Boss2 同一实体）。
+  // ⚠️ **slot 0**（不是 1）：本图没有飞龙，焰魔就是这里的 Boss1（toast 文案「已召唤 Boss1」）。
+  // ⚠️ **召唤点恒在顶层平台**：`bossMapAt` 给本图返回 `summonY`，`Game.summonBoss()` 据此
+  //    无视玩家所在高度（用户裁定：任意层按 B 都召到最高层中心）。
+  BURNING_ARENA: Object.freeze([
+    Object.freeze({ slot: 0, type: IGNIS_TYPE, service: 'ignises' }),
   ]),
 });
 
