@@ -12,6 +12,7 @@ import { computeRegionLayout } from '../gen/structures/structure-layout.js';
 import { applyStructuresToColumn } from '../gen/structures/apply.js';
 import { getCityBoundsForSeed } from '../gen/structures/city-layout.js';
 import { computeArenaAnchor } from '../gen/structures/arena.js';
+import { computeBurningArenaAnchor } from '../gen/structures/burning-arena.js';
 import { preloadStructures } from '../gen/structures/structure-json.js';
 import { SCATTER_JSON_TYPES } from '../gen/structures/scatter.js';
 import { loadGiantTrees } from '../gen/structures/giant-trees.js';
@@ -188,6 +189,12 @@ installRpcHandler({
     // 本身不是 GEN 计时路径，但 `computeRegionLayout` 会被 9 个邻域 region 各调一次，
     // 不缓存的话同一个 seed 会重复扫几十遍（缓存键是 seed，预热一次即全命中）。
     computeArenaAnchor(p.seed);
+    // 预热大竞技场锚点（v2.85）：实测首次 ~100ms（要扫城东 ±1600×±900 窗的沙漠粗筛网格
+    // + 逐格精检 85×85 占地）。与上面 `computeArenaAnchor` 同一手法同一理由：
+    // 不预热的话它会在首个 `computeRegionLayout` 里被算（缓存键是 seed，预热一次即全命中）。
+    // ⚠️ 必须留在 layout 入口：`layout` 不是 GEN 计时路径（`structure-gen` 的 genP95 门是 10ms），
+    // 而 GEN 侧只读 `layout.burningArena` 字段、不调本函数 ⇒ 100ms 不会落进 GEN 计时。
+    computeBurningArenaAnchor(p.seed);
     return computeRegionLayout(p.regionX, p.regionZ, p.seed);
   },
 

@@ -17,6 +17,9 @@ import { computeAzaleaTreeCandidates } from './azalea-trees.js';
 import { computeGiantPyramidAnchor } from './giant-pyramid.js';
 import { computeArenaAnchor, arenaOverlapsRegion } from './arena.js';
 import { computeShallowTarnAnchor, shallowTarnOverlapsRegion, shallowTarnSuppressedLandmarks } from './shallow-water-tarns.js';
+import {
+  computeBurningArenaAnchor, burningArenaOverlapsRegion, burningArenaSuppressedLandmarks,
+} from './burning-arena.js';
 import { isTarnZone, computeTarnZone, inTarnRadius } from './tarn-zone.js';
 
 /**
@@ -36,6 +39,7 @@ import { isTarnZone, computeTarnZone, inTarnRadius } from './tarn-zone.js';
  *   azaleaTrees: Int32Array,
  *   giantPyramid: ({wx:number, wz:number, floorY:number}|null),
  *   arena: ({wx:number, wz:number, floorY:number, maxH:number, span:number}|null),
+ *   burningArena: ({wx:number, wz:number, floorY:number, span:number}|null),
  *   tarn: (import('./tarn-zone.js').TarnLayout|null)
  * }}
  */
@@ -66,10 +70,31 @@ export function computeRegionLayout(regionX, regionZ, seed) {
   const suppress = shallowTarnAll
     ? shallowTarnSuppressedLandmarks(shallowTarnAll, regionX, regionZ, seed)
     : null;
-  const suppressPyramid = !!suppress?.pyramid;
-  const suppressFrozenMountain = !!suppress?.frozenMountain;
-  const suppressPlainLand = !!suppress?.plainLand;
-  const suppressIsland = !!suppress?.island;
+  // 大竞技场（burning arena，v2.85）：城东最近的沙漠里**恰好一个**（用户裁定「必须且唯一」）。
+  //
+  // ⚠️ **同样必须早于地标赋值**：它要把落在占地内的地标 / 巨型金字塔 / 空岛压掉。
+  // 为什么是压制而不是避让 —— 见 `burning-arena.js` 文件头：实测把地标/金字塔/空岛当避让项时
+  // seed 12345 在 span≤8 下**一个落点都找不到**（与浅水高台 `fixedBlockers` 记录的是同一个坑），
+  // 而用户要求「必须生成」⇒ 只能压制。改用压制后 8/8 seed 命中 span=5，搜索 2ms。
+  const burningArenaAll = computeBurningArenaAnchor(seed);
+  const burningArena = burningArenaOverlapsRegion(burningArenaAll, regionX, regionZ) ? burningArenaAll : null;
+  const baSuppress = burningArenaAll
+    ? burningArenaSuppressedLandmarks(burningArenaAll, regionX, regionZ, seed)
+    : null;
+
+  // ⚠️ 两个地基级结构（浅水高台 / 大竞技场）的压制项**取并集**：它们彼此已在锚点层互斥
+  // （`fixedBlockerAt` 里互相避让），故同一 region 至多被其中一个压，但判据仍要写成并集 ——
+  // 否则将来放宽互斥时会静默漏压。
+  const suppressPyramid = !!suppress?.pyramid || !!baSuppress?.pyramid;
+  const suppressFrozenMountain = !!suppress?.frozenMountain || !!baSuppress?.frozenMountain;
+  const suppressPlainLand = !!suppress?.plainLand || !!baSuppress?.plainLand;
+  const suppressIsland = !!suppress?.island || !!baSuppress?.island;
+  const suppressGiantPyramid = !!baSuppress?.giantPyramid;
+  // ⚠️ **空岛压制是大竞技场特有的**（浅水高台没有这一项）：它高 80 格（塔顶实测 y=79~84），
+  // 而空岛底 y≥40 ⇒ 水平重叠即相撞。且空岛在 apply 阶段 2.5 光栅化，**晚于**大竞技场的 2.93
+  // ⇒ 不压制的话空岛会反过来打穿竞技场上半部（后写胜）。实测 8 seed 中 7 个需要压制。
+  // 用户 2026-11-09 裁定：「大竞技场上面的空岛可以先不显示，空岛给大竞技场让路」。
+  const suppressSkyIslands = !!baSuppress?.skyIslands;
 
   // ⚠️ `suppress.snowLand` 算出来了但**不在本文件用**：雪原的压制粒度是「这座雪原是否压进湖里」，
   // 走 `apply.js` 阶段 1 的跳过门（与 `snowLandSuppressedByTarn` 同手法），
@@ -116,7 +141,12 @@ export function computeRegionLayout(regionX, regionZ, seed) {
   // skyIslands」不必付第二遍计算成本。
   const skyFull = computeSkyCandidates(regionX, regionZ, seed);
   // 地带里清空空岛（池面上不能插浮岛），云簇保留。
-  const sky = tarn ? { skyIslands: new Int32Array(0), cloudClusters: skyFull.cloudClusters } : skyFull;
+  // 大竞技场占地上空同样清空空岛（`suppressSkyIslands`，理由见上方注释）。
+  // ⚠️ **`cloudClusters` 两种情况都必须保留**：云簇是既有小云，与空岛是两套内容；
+  //    一并清掉会让地带/竞技场上空的云消失（地带那条的既有口径就是只清空岛）。
+  const sky = (tarn || suppressSkyIslands)
+    ? { skyIslands: new Int32Array(0), cloudClusters: skyFull.cloudClusters }
+    : skyFull;
 
   // 撒布候选（M2 欠账补齐）：同为紧凑 Int32Array，GEN 侧按 AABB 裁剪到 column。
   // 城市候选只在持有 city 布局的 region 算（见 computeScatterCandidates 的口径差异①）。
@@ -153,7 +183,7 @@ export function computeRegionLayout(regionX, regionZ, seed) {
   // 巨型金字塔（Giant Pyramid Epic）：region 级候选，与高台同构。
   // 城市/地标/空岛/高台的排除都已在候选层（`giant-pyramid.js` 拿得到 `getCityBoundsForSeed`
   // 与 `computeRegionLocalAnchor`）；撒布结构的剔除在 GEN 侧阶段 2.7（那里拿得到布局）。
-  const giantPyramid = tarn ? null : computeGiantPyramidAnchor(regionX, regionZ, seed);
+  const giantPyramid = (tarn || suppressGiantPyramid) ? null : computeGiantPyramidAnchor(regionX, regionZ, seed);
 
   // 城门竞技场（Arena，2026-10-29）：城南门外**一个**（每个 seed 一个）。
   //
@@ -174,6 +204,7 @@ export function computeRegionLayout(regionX, regionZ, seed) {
   return {
     regionX, regionZ, pyramidRaw, pyramid, frozenMountain, snowLand, plainLand,
     island, city, sky, scatter, giantTrees, azaleaTrees, giantPyramid, arena, tarn, shallowTarn,
+    burningArena,
   };
 }
 

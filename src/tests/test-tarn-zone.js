@@ -6,6 +6,7 @@
 //   · 装饰件叠在高台上 → 拱洞穿进台身
 //   · CITY_REGION 掷到地带 → 全世界唯一的城市消失
 import { computeShallowTarnAnchor, shallowTarnSuppressedLandmarks } from '../gen/structures/shallow-water-tarns.js';
+import { computeBurningArenaAnchor, burningArenaSuppressedLandmarks } from '../gen/structures/burning-arena.js';
 import { test } from './runner.js';
 import { assertEqual, assertTrue, assertFalse } from './assert.js';
 import {
@@ -982,8 +983,13 @@ test('地带接线：非地带且雪原未让路的 region 逐字段零回归（
   //       压制粒度是**逐地标**（`shallowTarnSuppressedLandmarks`）而不是逐 region ——
   //       湖跨 2~3 个 region，按 region 判会压错与漏压两头（见该函数注释）。
   //       不跳过的话，湖区那几个 region 的 `pyramid` 合法为 null 而断言要求非 null → 假 FAIL。
+  //    ④ **跳过被大竞技场压制的字段**（v2.85）：第三张「地基级内容压过地标」的地图，
+  //       同为逐地标粒度（`burningArenaSuppressedLandmarks`）。它比浅水高台多压两项 ——
+  //       `giantPyramid` 与 `skyIslands`（塔高 80 格会撞空岛，用户裁定「空岛给大竞技场让路」），
+  //       故跳过判据要把本用例断言的**全部四个字段**都算上，漏一项就是假 FAIL。
   //    若不收窄，断言「pyramid 非空」在那些 region 上必然 FAIL。
   const shallowAnchor = computeShallowTarnAnchor(SEED);
+  const burningArenaAnchor = computeBurningArenaAnchor(SEED);
   let checked = 0;
   for (let rx = -4; rx <= 4; rx++) {
     for (let rz = -4; rz <= 4; rz++) {
@@ -992,6 +998,10 @@ test('地带接线：非地带且雪原未让路的 region 逐字段零回归（
       if (shallowAnchor) {
         const sup = shallowTarnSuppressedLandmarks(shallowAnchor, rx, rz, SEED);
         if (sup.pyramid || sup.frozenMountain) continue;
+      }
+      if (burningArenaAnchor) {
+        const sup = burningArenaSuppressedLandmarks(burningArenaAnchor, rx, rz, SEED);
+        if (sup.pyramid || sup.frozenMountain || sup.giantPyramid || sup.skyIslands) continue;
       }
       const lay = computeRegionLayout(rx, rz, SEED);
       assertEqual(lay.tarn, null, `非地带 region(${rx},${rz}) 的 tarn 必须是 null`);

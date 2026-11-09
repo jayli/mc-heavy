@@ -2027,6 +2027,181 @@ async function checkArena() {
   }
 }
 
+// ---------------------------------------------------------------- [灾变竞技场] 契约（burning arena，v2.85）
+
+/**
+ * [灾变竞技场] 契约：烘焙输入 / 产物 / 方块映射 / 尺寸与地板层 / 两侧变体清单互相对得上。
+ *
+ * 钉的失效路径（**每条都是静默的**）：
+ *   ① 指纹不匹配 → 改了 BLOCK_MAP / SLAB_BASE / PIECES / FLOOR_ROW / .nbt 却未重烘
+ *      → 世界里是旧竞技场，方块层面看不出差别
+ *   ② palette 含未注册方块 → `makeColumnSetter` 对未注册名字**静默 return**
+ *      → 那格变 air → 碗身出现洞
+ *   ③ `stride !== 5` → 台阶朝向（direction）没写进产物 → **3,479 个台阶全朝 orient=0**
+ *      （格数完全对得上，只有看画面才发现）
+ *   ④ `floorRow` 与产物实际不符 → 整座竞技场沉 9 格或浮 1 格
+ *   ⑤ **地板层出现 lava** → 熔岩分层规则（spec DR-2.1.5）没生效 → 碗内 13% 地面走不过去。
+ *      ⚠️ 这条是**内容级判据**，指纹拓不到它：只改烘焙算法（分层分支）而不动参数时
+ *      指纹不变（AGENTS.md「overlay 静默跳过」同款教训）。
+ *   ⑥ 两侧变体清单不一致（tools vs src）→ 新变体静默不出现
+ *   ⑦ 占地半宽与 `burning-arena-data.js` 不一致 → AABB 早退与产物尺寸是两套口径
+ *
+ * ⚠️ 主流程是逐个显式调用 —— 漏了本行则门禁永不执行（本仓已因此出过两次事故）。
+ */
+async function checkBurningArena() {
+  const fp = await import('./burning-arena-fingerprint.mjs');
+  const dataMod = await import('../src/gen/structures/burning-arena-data.js');
+  const sjMod = await import('../src/gen/structures/structure-json.js');
+  const before = failures.length;
+  const fail = (m) => failures.push(`[灾变竞技场] ${m}`);
+
+  // ① 烘焙输入（8 片）与产物存在性
+  const missing = fp.BURNING_ARENA_PIECES
+    .map((p) => path.join(fp.BURNING_ARENA_SOURCE_DIR, p.file))
+    .filter((f) => !fs.existsSync(f));
+  if (missing.length > 0) {
+    fail(`烘焙输入缺失 ${missing.length}/8 片：${missing.map((f) => path.relative(ROOT, f)).join(', ')}（.nbt 入库，缺失 = 仓库损坏）`);
+    return;
+  }
+  if (!fs.existsSync(fp.BURNING_ARENA_JSON) || !fs.existsSync(fp.BURNING_ARENA_META)) {
+    fail('缺 assets/structures/burning_arena.json 或 burning_arena.meta.json（跑 npm run burningarena）');
+    return;
+  }
+  let meta, json;
+  try {
+    meta = JSON.parse(fs.readFileSync(fp.BURNING_ARENA_META, 'utf8'));
+    json = JSON.parse(fs.readFileSync(fp.BURNING_ARENA_JSON, 'utf8'));
+  } catch { fail('产物不是合法 JSON（重跑 npm run burningarena）'); return; }
+
+  // ② 指纹
+  const cur = fp.burningArenaInputFingerprint();
+  if (meta.fingerprints?.input !== cur.input) {
+    fail(`产物已过期：指纹不匹配（烘焙时 "${meta.fingerprints?.input}" vs 当前 "${cur.input}"）→ 跑 npm run burningarena`);
+  }
+
+  // ⑥ 两侧变体清单必须一致
+  const toolsVariants = [...fp.BURNING_ARENA_VARIANTS].sort().join(',');
+  const srcVariants = [...dataMod.BURNING_ARENA_VARIANTS].sort().join(',');
+  if (toolsVariants !== srcVariants) {
+    fail(`BURNING_ARENA_VARIANTS 两侧不一致（tools: [${toolsVariants}] vs src: [${srcVariants}]）—— 新变体会静默不出现`);
+  }
+
+  // ⑦ 结构名注册与占地半宽
+  if (sjMod.STRUCTURE_FILES.burningArena !== 'burning_arena.json') {
+    fail(`STRUCTURE_FILES.burningArena = ${sjMod.STRUCTURE_FILES.burningArena} ≠ 'burning_arena.json'（漏注册 → rasterizeStructure 静默 0 格）`);
+  }
+
+  const M = fp.BURNING_ARENA_METRICS.burningArena;
+
+  // ③ stride 必验（错的是「朝向」不是「格数」）
+  const STRIDE = Number.isInteger(json.stride) ? json.stride : 4;
+  if (STRIDE !== 5) {
+    fail(`产物 stride=${STRIDE} ≠ 5 —— 台阶朝向（direction）没写进产物 → 3,479 个台阶会全朝 orient=0`);
+  }
+
+  // ④ floorRow
+  if (json.floorRow !== M.floorRow) {
+    fail(`产物 floorRow=${json.floorRow} ≠ METRICS.floorRow ${M.floorRow}（整座竞技场会沉/浮）`);
+  }
+  if (json.floorRow !== fp.FLOOR_ROW) {
+    fail(`产物 floorRow=${json.floorRow} ≠ FLOOR_ROW ${fp.FLOOR_ROW}（烘焙与落位两套口径）`);
+  }
+
+  // 逐格统计
+  const blocks = Array.isArray(json.blocks) ? json.blocks : [];
+  const n = blocks.length / STRIDE;
+  const byType = new Map();
+  let floorCells = 0, floorLava = 0;
+  let mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity, mnz = Infinity, mxz = -Infinity;
+  for (let i = 0; i < blocks.length; i += STRIDE) {
+    const x = blocks[i], y = blocks[i + 1], z = blocks[i + 2];
+    const name = json.palette[blocks[i + 3]];
+    byType.set(name, (byType.get(name) || 0) + 1);
+    if (x < mnx) mnx = x; if (x > mxx) mxx = x;
+    if (y < mny) mny = y; if (y > mxy) mxy = y;
+    if (z < mnz) mnz = z; if (z > mxz) mxz = z;
+    if (y === M.floorRow) {
+      floorCells++;
+      if (name === 'lava') floorLava++;
+    }
+  }
+
+  // ⑤ **地板层不得有 lava**（熔岩分层规则的内容级判据）
+  if (floorLava > 0) {
+    fail(`地板层（y=${M.floorRow}）有 ${floorLava} 格 lava —— 熔岩分层规则（spec DR-2.1.5）未生效；` +
+      '本仓 lava 是 solid:true，碗内那部分地面会走不过去');
+  }
+  // 反向钉：地板层的熔岩必须已变成 netherrack（只钉「没 lava」拓不到「整条分支被删」）
+  if ((byType.get('netherrack') || 0) < M.floorLavaCells) {
+    fail(`netherrack 共 ${byType.get('netherrack') || 0} 格 < METRICS.floorLavaCells ${M.floorLavaCells}` +
+      '（地板熔岩未映射成 netherrack？）');
+  }
+  if ((byType.get('lava') || 0) !== M.lavaCells) {
+    fail(`lava 格数 ${byType.get('lava') || 0} ≠ METRICS.lavaCells ${M.lavaCells}（墙内装饰流/悬空池应保留）`);
+  }
+
+  // 包围盒与格数
+  const W = mxx - mnx + 1, H = mxy - mny + 1, D = mxz - mnz + 1;
+  if (W !== M.width) fail(`产物宽 ${W} ≠ METRICS.width ${M.width}`);
+  if (H !== M.height) fail(`产物高 ${H} ≠ METRICS.height ${M.height}`);
+  if (D !== M.depth) fail(`产物深 ${D} ≠ METRICS.depth ${M.depth}`);
+  if (mny !== 1) fail(`最低点 y=${mny} ≠ 1（归一化约定：rasterizeStructure 按 b.y 落位）`);
+  if (n !== M.contentCells) {
+    fail(`内容格数 ${n} ≠ METRICS.contentCells ${M.contentCells}（源改动？先跑 npm run burningarena -- --census）`);
+  }
+  if (floorCells !== M.floorCells) {
+    fail(`地板层（y=${M.floorRow}）${floorCells} 格 ≠ METRICS.floorCells ${M.floorCells}`);
+  }
+  if (M.sourceCells - M.droppedCells !== M.contentCells) {
+    fail(`METRICS 自相矛盾：sourceCells ${M.sourceCells} − droppedCells ${M.droppedCells} ≠ contentCells ${M.contentCells}`);
+  }
+  // 占地半宽：产物 x/z 跨度必须与 src 侧常量对得上（AABB 早退用的就是它）
+  const half = (W - 1) / 2;
+  if (half !== dataMod.BURNING_ARENA_HALF) {
+    fail(`产物半宽 ${half} ≠ burning-arena-data.js 的 BURNING_ARENA_HALF ${dataMod.BURNING_ARENA_HALF}（AABB 早退会漏/多裁一列）`);
+  }
+  if (mnx !== -half || mnz !== -half) {
+    fail(`产物未以中心对称（mnx=${mnx} mnz=${mnz}，期望 ${-half}）—— 锚点会偏`);
+  }
+
+  // palette：全部已注册 + 不含丢弃类源方块
+  const palette = Array.isArray(json.palette) ? json.palette : [];
+  if (palette.length === 0) fail('产物缺 palette（重跑 npm run burningarena）');
+  if (palette.length !== M.paletteSize) {
+    fail(`palette ${palette.length} 种 ≠ METRICS.paletteSize ${M.paletteSize}`);
+  }
+  for (const name of palette) {
+    if (REGISTRY.idOf(name) === undefined) {
+      fail(`palette 含未注册方块 "${name}"（makeColumnSetter 静默跳过 → 碗身出现洞）`);
+    }
+  }
+  // 丢弃类不得出现在产物里（structure_block / cataclysm:altar_of_fire 映射为空串）
+  for (const [src, target] of Object.entries(fp.BLOCK_MAP)) {
+    if (target === '' && palette.includes(src)) {
+      fail(`产物 palette 含应丢弃的源方块 "${src}"`);
+    }
+  }
+
+  // 通道分布（cutout 是预算关注点，spec DR-5）。直读 blocks-data 的 cullMode（REGISTRY 不暴露该表）
+  let cutout = 0, opaque = 0;
+  const bdSrc = fs.readFileSync(path.join(ROOT, 'src/voxel/blocks-data.js'), 'utf8');
+  const cullOf = {};
+  for (const m of bdSrc.matchAll(/\{"name":"([a-z_0-9]+)"[^}]*?"cullMode":"([a-z]+)"/g)) cullOf[m[1]] = m[2];
+  for (const [name, count] of byType) {
+    if (cullOf[name] === 'cutout') cutout += count; else opaque += count;
+  }
+  if (cutout !== M.cutoutCells) fail(`cutout 格数 ${cutout} ≠ METRICS.cutoutCells ${M.cutoutCells}`);
+  if (opaque !== M.opaqueCells) fail(`opaque 格数 ${opaque} ≠ METRICS.opaqueCells ${M.opaqueCells}`);
+
+  // ⚠️ 成功行的条件必须涵盖**本函数全部判据**
+  if (failures.length === before) {
+    const steps = (byType.get('cobblestone_step') || 0) + (byType.get('cobblestone_step_updown') || 0);
+    infos.push(`[灾变竞技场] ${n} 格 / ${W}×${H}×${D} / floorRow ${json.floorRow}（地板 ${floorCells} 格，无 lava）/ ` +
+      `stride ${STRIDE} + 台阶 ${steps} 个 / ${palette.length} 种全已注册 / ` +
+      `opaque ${opaque} + cutout ${cutout} / 指纹匹配`);
+  }
+}
+
 // ---------------------------------------------------------------- [浅水高台] 契约（v2.11，2026-11-01）
 
 /**
@@ -2847,6 +3022,7 @@ await checkAzaleaTrees();    // 杜鹃树：烘焙产物/方块声明/运行时�
 await checkCloudlandTarnZone(); // 高台地带：35 产物/映射表/通道/台顶材质契约（⚠️ 漏了本行则门禁永不执行）
 await checkGiantPyramid();   // 巨型金字塔：烘焙产物/映射表/通道契约（⚠️ 漏了本行则门禁永不执行）
 await checkArena();          // 竞技场：烘焙产物/栏杆朝向/floorRow/占地尺寸契约（⚠️ 漏了本行则门禁永不执行）
+await checkBurningArena();   // 灾变竞技场：8 片拼合产物/熔岩分层/floorRow/stride/两侧清单契约（⚠️ 漏了本行则门禁永不执行）
 await checkShallowTarns();   // 浅水高台：5 产物/palette 白名单/源方块映射/草基准色/尺寸契约
 await checkMedievalShip();   // 中世纪船：4 旋转变体/朝向自洽/新方块声明/朝向表同源（⚠️ 漏了本行则门禁永不执行）
 checkGrassTextures();        // 草贴图：两个 16×16 产物 + 均值偏差 + 源图未改

@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "width": 85,
+  "height": 80,
+  "depth": 85,
+  "blocks": 115381,
+  "floorRow": 10,
+  "floorCells": 4825,
+  "paletteSize": 19,
+  "stepOrientationCounts": {
+    "cobblestone_step:0": 358,
+    "cobblestone_step:1": 356,
+    "cobblestone_step:2": 356,
+    "cobblestone_step:3": 356,
+    "cobblestone_step_updown:0": 520,
+    "cobblestone_step_updown:1": 504,
+    "cobblestone_step_updown:2": 518,
+    "cobblestone_step_updown:3": 511
+  },
+  "origin": {
+    "cx": 42,
+    "cz": 42
+  },
+  "fingerprints": {
+    "input": "4b375e7a738d17fc:0e3c51d9a1596676",
+    "sourceSha256": "4b375e7a738d17fc1470a35acf3c12b019742038e6969ebdb2f64f259540a171",
+    "paramsSha256": "0e3c51d9a1596676bd3bc54c68cdb5b518f012a838ed2479bdb8e38937bca2c6"
+  }
+}
