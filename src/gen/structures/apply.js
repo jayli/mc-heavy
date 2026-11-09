@@ -26,6 +26,10 @@ import { applyGiantTrees, loadGiantTrees, getGiantTreesSync } from './giant-tree
 import { applyAzaleaTrees, loadAzaleaTrees } from './azalea-trees.js';
 import { PYRAMID_HALF, inGiantPyramidFootprint } from './giant-pyramid.js';
 import { ARENA_HALF_X, ARENA_HALF_Z, ARENA_SUPPORT_MAX_DEPTH, inArenaFootprint } from './arena.js';
+import {
+  BURNING_ARENA_HALF, inBurningArenaFootprint,
+} from './burning-arena.js';
+import { BURNING_ARENA_VARIANTS } from './burning-arena-data.js';
 import { TARN_ZONE_RADIUS, snowLandSuppressedByTarn, TARN_CLOUD_MIN_Y } from './tarn-zone.js';
 import { fillTarnPlateau, tarnSnowCap, tarnPlantAt } from './tarn-terrain.js';
 import { rasterizeAltar, ALTAR_ARM_LENGTH } from './tarn-altar.js';
@@ -183,6 +187,18 @@ function pointContext(wx, wz, layouts, cityLayout, seed) {
       return { kind: 'none' };
     }
   }
+  // 大竞技场占地：同样整片让路（`kind:'none'`，一个分支覆盖上面列出的五个消费者）。
+  //
+  // ⚠️ **与巨型金字塔 / 小竞技场同一个手法、同一个理由**：大竞技场是用户明确要求
+  // 「不要跟其他沙漠建筑重叠」的人工结构；树/植物/巨树/杜鹃长在场地里就是穿模。
+  // 而锚点层**刻意不避让**这些点状内容（实测避让会让部分 seed 找不到落点，见
+  // `burning-arena.js` 文件头「压制 vs 避让」）—— 两条设计是一对，改一条要重评估另一条。
+  //
+  // ⚠️ 判据转调 `inBurningArenaFootprint`（唯一权威，与阶段 2.7 的撒布剔除共用同一份），
+  //    不在此重写一遍 `Math.abs(dx) <= 42`（红线 1）。
+  if (inBurningArenaFootprint(wx, wz, layouts.map((l) => l.burningArena))) {
+    return { kind: 'none' };
+  }
   for (const layout of layouts) {
     if (getPyramidInfo(wx, wz, layout.pyramid)) return { kind: 'none' };
     if (layout.island) {
@@ -309,6 +325,13 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
   if (layouts.some((l) => l.giantPyramid)) needTypes.add('giantPyramid');
   // 城门竞技场：同理（惰性预载，实测 51KB 一个 JSON）
   if (layouts.some((l) => l.arena)) needTypes.add('arenaGrass');
+  // 大竞技场（burning arena，v2.85）：惰性预载 —— 只有与占地相交的 region 才携带锚点。
+  // ⚠️ **本产物 1.4MB，是全部结构里最大的**（115,381 格）—— 无条件预载会让每个新 Worker
+  // 的首个 GEN 都付一次冷 fetch + 解析。从 `BURNING_ARENA_VARIANTS` 派生而不是手写清单
+  // （红线 1：漏一行会让结构**静默不出现** —— `rasterizeStructure` 拿到空 blocks 直接 return）。
+  if (layouts.some((l) => l.burningArena)) {
+    for (const base of BURNING_ARENA_VARIANTS) needTypes.add(base);
+  }
   // 浅水高台：5 个产物。惰性预载 —— 只有整形区相交的 region 才拉。
   // 从 `SHALLOW_TARN_VARIANTS` 派生而不是手写清单（红线 1）。
   if (layouts.some((l) => l.shallowTarn)) {
@@ -591,6 +614,8 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
   const arenaAnchors = layouts.map((l) => l.arena);
   // 浅水高台锚点列表（同上）
   const shallowTarnAnchors = layouts.map((l) => l.shallowTarn);
+  // 大竞技场锚点列表（同上手法，同一判据函数消费）
+  const burningArenaAnchors = layouts.map((l) => l.burningArena);
   for (const arr of scatterCandidates) {
     for (let i = 0; i < arr.length; i += SCATTER_STRIDE) {
       const x = arr[i], y = arr[i + 1], z = arr[i + 2];
@@ -620,6 +645,11 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
       // 本结构已在阶段 2.45 光栅化完毕，而撒布在阶段 2.7 **后写胜** —— 不剔除的话
       // 花坛/亭子/房屋会直接长在湖面或高台上（方块层面看不出是缺了一道门控）。
       if (inShallowTarnFootprint(x, z, shallowTarnAnchors)) continue;
+      // 大竞技场占地内的撒布候选一律不落地（用户 2026-11-09：「不要跟其他沙漠建筑重叠」）。
+      // ⚠️ **只靠阶段 2.93 的后写胜不够**：被埋的沙漠神殿/村落会有一半露在碗身外面
+      // （与巨型金字塔、小竞技场完全同形的缺陷）—— 必须在候选层就剔除。
+      // 判据函数 `inBurningArenaFootprint` 是唯一权威（与 `pointContext` 的植被让路共用同一份）。
+      if (inBurningArenaFootprint(x, z, burningArenaAnchors)) continue;
       const fp = SCATTER_FOOTPRINT[type];
       if (!fp) continue;
       if (!placementIntersects({ x, z }, fp.halfX, fp.halfZ, column.cx, column.cz)) continue;
@@ -767,6 +797,55 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
     //    还会在水池底（归一化 y=1）外再插一圈柱子）
     const floorRow = floorRowOf('arenaGrass');
     rasterizeStructure('arenaGrass', a.wx, a.floorY - (floorRow - 1), a.wz,
+      setBlock, column, registry, seed, false);
+  }
+
+  // ---- 阶段 2.93：大竞技场（burning arena，v2.85，城东沙漠）----
+  // 层序理由：
+  //   · 在小竞技场（2.9）之后、空中结构（2.5）之前 —— 同为「地面级人工结构后写胜」语义；
+  //   · 空岛已在 layout 层被压制（`suppressSkyIslands`），不会与本结构相撞（用户 2026-11-09
+  //     裁定「大竞技场上面的空岛可以先不显示，空岛给大竞技场让路」）。
+  //
+  // 让路已在别处做完（撒布剔除 + `pointContext` 植被让路 + 地标/金字塔/空岛压制），
+  // 这里只做三件事（顺序载荷性，同小竞技场）：
+  //   ① 清空占地内 [floorY+1, naturalH]：不清的话沙漠沙丘会从地板里冒出来；
+  //   ② 补实基座下方的空洞（cave 挖出来的）：不补的话玩家挖穿基座会掉进洞穴；
+  //   ③ 光栅化：落位 y = floorY - (floorRow - 1)，使地板层（归一化 y=floorRow）正好落在 floorY。
+  for (const layout of layouts) {
+    const ba = layout.burningArena;
+    if (!ba) continue;
+    if (!placementIntersects({ x: ba.wx, z: ba.wz }, BURNING_ARENA_HALF, BURNING_ARENA_HALF, column.cx, column.cz)) continue;
+
+    const baFloorRow = floorRowOf('burningArena');
+    const baBaseDepth = baFloorRow - 1;   // 基座层数（归一化 y=1..floorRow-1，实测 9 层）
+
+    const lx0 = Math.max(0, ba.wx - BURNING_ARENA_HALF - column.cx * 16);
+    const lx1 = Math.min(15, ba.wx + BURNING_ARENA_HALF - column.cx * 16);
+    const lz0 = Math.max(0, ba.wz - BURNING_ARENA_HALF - column.cz * 16);
+    const lz1 = Math.min(15, ba.wz + BURNING_ARENA_HALF - column.cz * 16);
+    for (let lx = lx0; lx <= lx1; lx++) {
+      for (let lz = lz0; lz <= lz1; lz++) {
+        const wx = column.cx * 16 + lx;
+        const wz = column.cz * 16 + lz;
+        const naturalH = generateHeight(wx, wz, seed);
+        // ① 清空地板以上、自然地表以下的沙丘凸起（沙漠 span≤5，最多清 5 层）
+        for (let y = ba.floorY + 1; y <= naturalH; y++) {
+          column.blocks[blockIndex(lx, y, lz)] = 0;
+          column.meta[blockIndex(lx, y, lz)] = 0;
+        }
+        // ② 补实基座下方的空洞（基座占 floorY-baBaseDepth .. floorY-1，下方从 floorY-baBaseDepth-1 起）
+        for (let d = 1; d <= ARENA_SUPPORT_MAX_DEPTH; d++) {
+          const y = ba.floorY - baBaseDepth - d;
+          if (y < WORLD_MIN_Y) break;
+          if (column.blocks[blockIndex(lx, y, lz)] !== 0) break;
+          column.blocks[blockIndex(lx, y, lz)] = stoneId;
+          column.meta[blockIndex(lx, y, lz)] = 0;
+        }
+      }
+    }
+
+    // ③ 光栅化（不补 groundSupport：基座 9 层已足够，补柱会在碗底外多插一圈）
+    rasterizeStructure('burningArena', ba.wx, ba.floorY - (baFloorRow - 1), ba.wz,
       setBlock, column, registry, seed, false);
   }
 

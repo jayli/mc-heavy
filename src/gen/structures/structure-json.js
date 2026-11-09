@@ -17,6 +17,9 @@ import { ARENA_VARIANTS } from './arena-variants.js';
 import { SHALLOW_TARN_VARIANTS } from './shallow-water-tarn-data.js';
 // 中世纪船的 4 个旋转变体基名（纯数据、零 node 依赖）
 import { MEDIEVAL_SHIP_VARIANTS } from './medieval-ship-data.js';
+// 灾变竞技场的产物基名（纯数据、零 node 依赖）。
+// ⚠️ 与高台那批同一个理由：**不要 import `tools/burning-arena-fingerprint.mjs`**（依赖 `node:fs`）。
+import { BURNING_ARENA_VARIANTS } from './burning-arena-data.js';
 
 /** placement 类型 → JSON 文件名（mc-lite structureLoaders 映射） */
 const BASE_STRUCTURE_FILES = {
@@ -66,6 +69,11 @@ for (const base of MEDIEVAL_SHIP_VARIANTS) {
 // 方块层面完全看不出是漏了映射）。
 // 命名约定：camelCase 变体名 → snake_case 文件名（`arenaGrass` → `arena_grass.json`）。
 for (const base of ARENA_VARIANTS) {
+  BASE_STRUCTURE_FILES[base] = `${base.replace(/[A-Z]/g, (m) => `_${m.toLowerCase()}`)}.json`;
+}
+// 灾变竞技场（burning arena，v2.85）：从 `BURNING_ARENA_VARIANTS` 派生（同上理由）。
+// 产物是 Cataclysm 模组 burning_arena 的 8 片 nbt 拼合 + 重映射（方案 A：只用现有方块）。
+for (const base of BURNING_ARENA_VARIANTS) {
   BASE_STRUCTURE_FILES[base] = `${base.replace(/[A-Z]/g, (m) => `_${m.toLowerCase()}`)}.json`;
 }
 

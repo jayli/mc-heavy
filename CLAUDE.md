@@ -214,7 +214,7 @@ scheduler/physics）再加 `npm run bench -- --check`。计划里标「冻结」
 - `src/tests/test-*.js` 必须同时出现在 `src/tests/index.html` 的 import 里 —— 漏注册是
   **测试静默不跑**（全绿假象），`check:data` 的 `[测试注册]` 环节双向钉住。
 - Playwright 必须 `channel: 'chromium'`：默认 headless shell 零 flag 拿不到 WebGPU adapter。
-  `playwright.config.mjs` 全局 timeout 120s 必须 ≥ 各 spec 自己的等待窗口（`harness.spec` 等 90s）。
+  `playwright.config.mjs` 全局 timeout 200s 必须 ≥ 各 spec 自己的等待窗口（`harness.spec` 等 150s）。
 - 计时型 spec 在高负载下会贴线 flaky（`m1-acceptance` 放挖 p95、`m3-rain` 截图差分、
   `weapons-world-edit` 计数、bench 的 frameP95）。**判据看交替对照的分布，不看单次红绿**（不改阈值）。
 - 写像素类断言必须**同时钉上下界**（只钉「变暗」抓不到「纯黑」），且先测同状态重复截图的噪声底。
