@@ -31,7 +31,7 @@ import { carveCaves } from '../gen/caves.js';
 import { getBiome } from '../gen/noise.js';
 import { getCityBoundsForSeed } from '../gen/structures/city-layout.js';
 import { computeShallowTarnAnchor, SHALLOW_TARN_OUTER_RADIUS } from '../gen/structures/shallow-water-tarns.js';
-import { computeArenaAnchor, ARENA_HALF_X, ARENA_HALF_Z } from '../gen/structures/arena.js';
+import { computeArenaAnchor, ARENA_HALF_X, ARENA_HALF_Z, railArmSet } from '../gen/structures/arena.js';
 import { isTarnZone, computeTarnZone, TARN_ZONE_RADIUS } from '../gen/structures/tarn-zone.js';
 import { REGION_SIZE, CITY_TRANSITION_SIZE } from '../gen/structures/region-config.js';
 
@@ -101,6 +101,163 @@ function layoutsFor(cx, cz, seed = SEED) {
 test('大竞技场：STRUCTURE_FILES 登记了 burningArena', () => {
   assertEqual(STRUCTURE_FILES.burningArena, 'burning_arena.json',
     'burningArena 必须映射到 burning_arena.json（漏登记 → rasterizeStructure 静默 0 格）');
+});
+
+// ==================== 栏杆朝向（v2.85 初版 3,311 格全 meta=0 的回归防线）====================
+//
+// 背景：素材的栏杆来自 fence/wall/chain 五种源方块，初版烘焙直查 BLOCK_MAP 全映成
+// `handrail` 且 meta=0 ⇒ 3,311 格栏杆**全部渲染成 +X+Z 转角件**，直排栏杆互相拧着。
+// 修复 = 烘焙脚本的栏杆朝向 pass（`computeRailOrientations`）：按邻居连接关系拆成
+// `handrail`（转角件，带 orient）+ `handrailA`（直段件，带 orient）。
+//
+// 用户要求（2026-11-09）：「调整好方向后，绝大多数场景里，栏杆会是首尾相连的；
+// 边缘位置连不上时，尽量让抓手的位置靠内」。
+//
+// ⚠️ 断言里的臂方向一律用 `railArmSet`（mesher 的 TEMPLATES 派生，红线 1），
+// 不手写「orient=1 是 +X-Z」这类朝向表 —— 形状权威改动后这里自动跟上。
+
+/** 产物里的栏杆格（归一化局部坐标，与 `loadStructure` 的 blocks 同口径） */
+async function railBlocks() {
+  const data = await loadStructure('burningArena');
+  return data.blocks.filter((b) => b.type === 'handrail' || b.type === 'handrailA');
+}
+
+test('大竞技场栏杆：总格数不变、无 handrailB、直段件真的存在', async () => {
+  const data = await loadStructure('burningArena');
+  const rails = data.blocks.filter((b) => b.type === 'handrail' || b.type === 'handrailA');
+  const straight = data.blocks.filter((b) => b.type === 'handrailA');
+  const corner = data.blocks.filter((b) => b.type === 'handrail');
+  const pillarB = data.blocks.filter((b) => b.type === 'handrailB');
+
+  assertEqual(rails.length, 3311,
+    '栏杆总格数必须仍是 3311（朝向 pass 只拆分不增删；变了 = pass 增删了格）');
+  assertEqual(pillarB.length, 0,
+    '产物不得含 handrailB —— 它的臂只伸到格中心、接不上邻居（test-arena.js 已钉住这条约束）');
+  assertTrue(straight.length > 0,
+    '必须有 handrailA（直段件）—— 全映回 handrail = 朝向 pass 整条被删，3,311 格会全渲染成 +X+Z 转角');
+  assertTrue(corner.length > 0, '必须有 handrail（转角件）—— 全映成直段件同样不对');
+});
+
+test('大竞技场栏杆：转角件四向俱全，直段件只有 X/Z 两轴', async () => {
+  const rails = await railBlocks();
+  const cornerOrient = new Set(rails.filter((b) => b.type === 'handrail').map((b) => b.direction));
+  const straightOrient = new Set(rails.filter((b) => b.type === 'handrailA').map((b) => b.direction));
+
+  // handrail 是转角件，orient 0~3 四向互不等价，必须俱全
+  for (let o = 0; o < 4; o++) {
+    assertTrue(cornerOrient.has(o), `handrail orient=${o} 必须存在（四向转角件缺一不可）`);
+  }
+  // handrailA 是直段件：0≡2、1≡3（180° 对称，实测顶点多重集合逐位相同），
+  // railPlacementFor 按 orient 升序返回首个命中 ⇒ 恒为 0（X 轴）或 1（Z 轴）
+  assertTrue(straightOrient.has(0) && straightOrient.has(1),
+    `handrailA 必须 X/Z 两轴俱全（实得 ${[...straightOrient].sort().join(',')}）`);
+  for (const o of straightOrient) {
+    assertTrue(o === 0 || o === 1,
+      `handrailA 出现 orient=${o} —— 它与 orient=${o - 2} 几何逐位相同，必须走 railPlacementFor，不得手写朝向`);
+  }
+});
+
+test('大竞技场栏杆：共线邻居用直段件、垂直邻居用转角件（首尾相连的主意图）', async () => {
+  const rails = await railBlocks();
+  const at = new Map(rails.map((b) => [`${b.x},${b.y},${b.z}`, b]));
+  const isRail = (x, y, z) => at.has(`${x},${y},${z}`);
+  const DIRS = [['+X', 1, 0], ['-X', -1, 0], ['+Z', 0, 1], ['-Z', 0, -1]];
+
+  let collinear = 0, collinearStraight = 0, perp = 0, perpCorner = 0;
+  for (const b of rails) {
+    const nb = DIRS.filter(([, dx, dz]) => isRail(b.x + dx, b.y, b.z + dz)).map(([n]) => n);
+    if (nb.length !== 2) continue;
+    const isCollinear = (nb.includes('+X') && nb.includes('-X')) || (nb.includes('+Z') && nb.includes('-Z'));
+    if (isCollinear) {
+      collinear++;
+      if (b.type === 'handrailA') collinearStraight++;
+    } else {
+      perp++;
+      if (b.type === 'handrail') perpCorner++;
+    }
+  }
+
+  // 实测（2026-11-09）：共线对 562 全部用直段件；垂直对 252 里 236 用转角件（93.7%）。
+  // 共线取 100%（算法保证），垂直取 ≥90%（少数被支撑信号带偏，属边缘兜底）。
+  assertTrue(collinear > 400, `共线邻居对应有 ${collinear} 个（实测 562；太少 = 判据失效）`);
+  assertEqual(collinearStraight, collinear,
+    `共线邻居对必须全部用直段件 handrailA（实得 ${collinearStraight}/${collinear}）—— 否则直排栏杆会拧成转角`);
+  assertTrue(perp > 200, `垂直邻居对应有 ${perp} 个（实测 252；太少 = 判据失效）`);
+  assertTrue(perpCorner / perp >= 0.9,
+    `垂直邻居对应用转角件 handrail 的比例 ${(100 * perpCorner / perp).toFixed(1)}% ≥ 90%（实测 93.7%）`);
+});
+
+test('大竞技场栏杆：2 臂格的臂集合覆盖两侧邻居（首尾相连率）', async () => {
+  const rails = await railBlocks();
+  const at = new Map(rails.map((b) => [`${b.x},${b.y},${b.z}`, b]));
+  const isRail = (x, y, z) => at.has(`${x},${y},${z}`);
+  const DIRS = [['+X', 1, 0], ['-X', -1, 0], ['+Z', 0, 1], ['-Z', 0, -1]];
+
+  let two = 0, covered = 0;
+  for (const b of rails) {
+    const nb = DIRS.filter(([, dx, dz]) => isRail(b.x + dx, b.y, b.z + dz)).map(([n]) => n);
+    if (nb.length !== 2) continue;
+    two++;
+    const arms = railArmSet(b.type, b.direction);
+    if (nb.every((a) => arms.includes(a))) covered++;
+  }
+
+  // 实测（2026-11-09）：814 个 2 臂格里 790 个（97.1%）臂集合覆盖两侧邻居。
+  assertTrue(two > 600, `2 臂格应有 ${two} 个（实测 814；太少 = 判据失效）`);
+  assertTrue(covered / two >= 0.95,
+    `2 臂格的臂覆盖两侧邻居比例 ${(100 * covered / two).toFixed(1)}% ≥ 95%（实测 97.1%）—— 这是「首尾相连」的直接口径`);
+});
+
+test('大竞技场栏杆：同一柱段内朝向一致（垂直堆叠的栏杆柱不左右摇摆）', async () => {
+  const rails = await railBlocks();
+  // 按 (x,z) 分柱，柱内按 y 连续切段
+  const columns = new Map();
+  for (const b of rails) {
+    const k = `${b.x},${b.z}`;
+    if (!columns.has(k)) columns.set(k, []);
+    columns.get(k).push(b);
+  }
+  let segs = 0, pure = 0;
+  for (const arr of columns.values()) {
+    arr.sort((a, b) => a.y - b.y);
+    let seg = [arr[0]];
+    const flush = () => {
+      segs++;
+      const s = new Set(seg.map((c) => `${c.type}:${c.direction}`));
+      if (s.size === 1) pure++;
+    };
+    for (let i = 1; i < arr.length; i++) {
+      if (arr[i].y === arr[i - 1].y + 1) seg.push(arr[i]);
+      else { flush(); seg = [arr[i]]; }
+    }
+    flush();
+  }
+
+  // 实测（2026-11-09）：1295 段全部段内朝向一致（100%）。
+  assertTrue(segs > 1000, `柱段应有 ${segs} 个（实测 1295；太少 = 判据失效）`);
+  assertEqual(pure, segs,
+    `同一柱段内朝向必须一致（实得 ${pure}/${segs}）—— 逐格独立算会在柱内左右摇摆，栏杆看起来会拧`);
+});
+
+test('大竞技场栏杆：臂指向栏杆的比例显著高于「全 meta=0」基线', async () => {
+  const rails = await railBlocks();
+  const at = new Map(rails.map((b) => [`${b.x},${b.y},${b.z}`, b]));
+  const isRail = (x, y, z) => at.has(`${x},${y},${z}`);
+  const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+
+  let total = 0, toRail = 0;
+  for (const b of rails) {
+    for (const arm of railArmSet(b.type, b.direction)) {
+      total++;
+      const d = arm === '+X' ? DIRS[0] : arm === '-X' ? DIRS[1] : arm === '+Z' ? DIRS[2] : DIRS[3];
+      if (isRail(b.x + d[0], b.y, b.z + d[1])) toRail++;
+    }
+  }
+
+  // 实测（2026-11-09）：修复后 33.6%，旧「全 handrail meta=0」基线 18.1%。
+  // 取 ≥30% 为下界：既显著高于旧基线，又给算法微调留了余量。
+  assertTrue(toRail / total >= 0.30,
+    `臂指向栏杆的比例 ${(100 * toRail / total).toFixed(1)}% ≥ 30%（实测 33.6%；旧全 meta=0 基线仅 18.1%）`);
 });
 
 test('大竞技场：产物可加载且尺寸/格数/floorRow 与冻结值一致', async () => {

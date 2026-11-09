@@ -2111,12 +2111,17 @@ async function checkBurningArena() {
   const blocks = Array.isArray(json.blocks) ? json.blocks : [];
   const n = blocks.length / STRIDE;
   const byType = new Map();
+  const railOrient = new Map();   // `handrail:2` → 格数（朝向分布）
   let floorCells = 0, floorLava = 0;
   let mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity, mnz = Infinity, mxz = -Infinity;
   for (let i = 0; i < blocks.length; i += STRIDE) {
     const x = blocks[i], y = blocks[i + 1], z = blocks[i + 2];
     const name = json.palette[blocks[i + 3]];
     byType.set(name, (byType.get(name) || 0) + 1);
+    if (name === 'handrail' || name === 'handrailA' || name === 'handrailB') {
+      const k = `${name}:${blocks[i + 4]}`;
+      railOrient.set(k, (railOrient.get(k) || 0) + 1);
+    }
     if (x < mnx) mnx = x; if (x > mxx) mxx = x;
     if (y < mny) mny = y; if (y > mxy) mxy = y;
     if (z < mnz) mnz = z; if (z > mxz) mxz = z;
@@ -2182,13 +2187,61 @@ async function checkBurningArena() {
     }
   }
 
-  // 通道分布（cutout 是预算关注点，spec DR-5）。直读 blocks-data 的 cullMode（REGISTRY 不暴露该表）
+  // ⑧ **栏杆朝向**（v2.85 初版 3,311 格全 meta=0 的回归防线）
+  //
+  // 这一组断言钉的是「朝向 pass 没跑 / 跑了但退化」—— 那类缺陷**格数与类型全对**，
+  // 只有看画面才发现栏杆互相拧着（与台阶朝向同一类静默失效）。
+  if ((byType.get('handrailB') || 0) > 0) {
+    fail(`产物含 ${byType.get('handrailB')} 格 handrailB —— 它的臂只伸到格中心、接不上邻居，不得用作栏杆件`);
+  }
+  const railTotal = (byType.get('handrail') || 0) + (byType.get('handrailA') || 0);
+  if (railTotal !== M.railCells) {
+    fail(`栏杆格数 handrail+handrailA = ${railTotal} ≠ METRICS.railCells ${M.railCells}（朝向 pass 增删了格？）`);
+  }
+  // 直段件必须真的存在：全映回 handrail（转角件）= 朝向 pass 整条被删
+  if ((byType.get('handrailA') || 0) === 0) {
+    fail('产物没有 handrailA（直段件）—— 栏杆朝向 pass 未生效，3,311 格会全渲染成 +X+Z 转角');
+  }
+  // 转角件四向俱全（handrail 的 orient 0~3 互不等价）
+  for (let o = 0; o < 4; o++) {
+    if (!(railOrient.get(`handrail:${o}`) > 0)) {
+      fail(`handrail orient=${o} 一格都没有 —— 转角件四向必须俱全（实得 ${JSON.stringify(Object.fromEntries([...railOrient.entries()].sort()))}）`);
+    }
+  }
+  // 直段件两轴俱全，且**不得出现 orient 2/3**（handrailA 的 0≡2、1≡3 是 180° 对称，
+  // `railPlacementFor` 按 orient 升序返回首个命中 ⇒ 恒为 0 或 1；出现 2/3 = 有代码绕过了它）
+  for (let o = 0; o < 2; o++) {
+    if (!(railOrient.get(`handrailA:${o}`) > 0)) {
+      fail(`handrailA orient=${o} 一格都没有 —— 直段件 X/Z 两轴必须俱全`);
+    }
+  }
+  for (let o = 2; o < 4; o++) {
+    if ((railOrient.get(`handrailA:${o}`) || 0) > 0) {
+      fail(`handrailA orient=${o} 有 ${railOrient.get(`handrailA:${o}`)} 格 —— 它与 orient=${o - 2} 几何逐位相同，` +
+        '必须走 railPlacementFor（恒返回 0/1），不得手写朝向');
+    }
+  }
+  // 逐档比对冻结分布（METRICS.railOrientationCounts 是算法的*产物*，
+  // 部分堵上「只改烘焙算法而 paramsSha256 不变」的已知盲区）
+  const wantRail = M.railOrientationCounts || {};
+  const gotRail = Object.fromEntries([...railOrient.entries()].sort());
+  if (JSON.stringify(gotRail) !== JSON.stringify(Object.fromEntries(Object.entries(wantRail).sort()))) {
+    fail(`栏杆朝向分布 ${JSON.stringify(gotRail)} ≠ METRICS.railOrientationCounts ${JSON.stringify(wantRail)}` +
+      '（改了朝向算法？重跑 npm run burningarena 后按实测值重标基线，不要放宽断言）');
+  }
+  // meta.json 里也必须带这份分布（烘焙脚本漏写 = 门禁拓不到产物与基线的对应关系）
+  if (JSON.stringify(meta.railOrientationCounts || null) !== JSON.stringify(gotRail)) {
+    fail(`meta.json 的 railOrientationCounts ${JSON.stringify(meta.railOrientationCounts || null)} ≠ 产物实测 ${JSON.stringify(gotRail)}`);
+  }
+
+  // 通道分布（cutout 是预算关注点，spec DR-5）。
+  // ⚠️ **用 REGISTRY.cullTable，不要用正则扫 blocks-data 源码**：旧写法的名子正则
+  // `[a-z_0-9]+` 匹配不到带大写的 `handrailA` → 它被归进 opaque，cutout 少算 1,550 格
+  // （而格数、类型、指纹全对，只有通道预算这一项静默偏）。
   let cutout = 0, opaque = 0;
-  const bdSrc = fs.readFileSync(path.join(ROOT, 'src/voxel/blocks-data.js'), 'utf8');
-  const cullOf = {};
-  for (const m of bdSrc.matchAll(/\{"name":"([a-z_0-9]+)"[^}]*?"cullMode":"([a-z]+)"/g)) cullOf[m[1]] = m[2];
   for (const [name, count] of byType) {
-    if (cullOf[name] === 'cutout') cutout += count; else opaque += count;
+    const id = REGISTRY.idOf(name);
+    if (id !== undefined && REGISTRY.cullTable[id] === 1) cutout += count; else opaque += count;
   }
   if (cutout !== M.cutoutCells) fail(`cutout 格数 ${cutout} ≠ METRICS.cutoutCells ${M.cutoutCells}`);
   if (opaque !== M.opaqueCells) fail(`opaque 格数 ${opaque} ≠ METRICS.opaqueCells ${M.opaqueCells}`);
@@ -2197,7 +2250,8 @@ async function checkBurningArena() {
   if (failures.length === before) {
     const steps = (byType.get('cobblestone_step') || 0) + (byType.get('cobblestone_step_updown') || 0);
     infos.push(`[灾变竞技场] ${n} 格 / ${W}×${H}×${D} / floorRow ${json.floorRow}（地板 ${floorCells} 格，无 lava）/ ` +
-      `stride ${STRIDE} + 台阶 ${steps} 个 / ${palette.length} 种全已注册 / ` +
+      `stride ${STRIDE} + 台阶 ${steps} 个 / 栏杆 ${railTotal} 格（转角 ${byType.get('handrail') || 0} + ` +
+      `直段 ${byType.get('handrailA') || 0}，朝向四向俱全）/ ${palette.length} 种全已注册 / ` +
       `opaque ${opaque} + cutout ${cutout} / 指纹匹配`);
   }
 }

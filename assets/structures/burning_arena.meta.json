@@ -6,7 +6,7 @@
   "blocks": 115381,
   "floorRow": 10,
   "floorCells": 4825,
-  "paletteSize": 19,
+  "paletteSize": 20,
   "stepOrientationCounts": {
     "cobblestone_step:0": 358,
     "cobblestone_step:1": 356,
@@ -17,13 +17,21 @@
     "cobblestone_step_updown:2": 518,
     "cobblestone_step_updown:3": 511
   },
+  "railOrientationCounts": {
+    "handrail:0": 453,
+    "handrail:1": 446,
+    "handrail:2": 427,
+    "handrail:3": 435,
+    "handrailA:0": 810,
+    "handrailA:1": 740
+  },
   "origin": {
     "cx": 42,
     "cz": 42
   },
   "fingerprints": {
-    "input": "4b375e7a738d17fc:0e3c51d9a1596676",
+    "input": "4b375e7a738d17fc:c58075e68f9424aa",
     "sourceSha256": "4b375e7a738d17fc1470a35acf3c12b019742038e6969ebdb2f64f259540a171",
-    "paramsSha256": "0e3c51d9a1596676bd3bc54c68cdb5b518f012a838ed2479bdb8e38937bca2c6"
+    "paramsSha256": "c58075e68f9424aaef81219b07f4e428446b52e389ead4b4e70b3e17c1318d75"
   }
 }

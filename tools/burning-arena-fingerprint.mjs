@@ -95,6 +95,11 @@ export const BURNING_ARENA_PIECES = Object.freeze([
  *  - `lantern` / `soul_lantern` → `hanging_lamp`：本仓唯一的吊灯几何（悬挂光源）。
  *  - `nether_brick_fence` / `*_wall` / `chain` → `handrail`：本仓唯一的细件栏杆几何。
  *    ⚠️ 这是 cutout 通道的最大来源（3,311 格），预算保险丝见 spec DR-5。
+ *    ⚠️ **本表只给「基础名」，朝向与直段/转角拆分在烘焙脚本的栏杆朝向 pass 里做**
+ *    （`bake-burning-arena.mjs` 的 `computeRailOrientations`）：pass 把这 3,311 格按邻居
+ *    连接关系改写成 `handrail`（转角件，带 orient）或 `handrailA`（直段件，带 orient）。
+ *    故 `BLOCK_MAP` 的目标值**保持 `handrail` 不动** —— 它是 `RAIL_SOURCES` 的反查依据
+ *    （映射到 handrail 的源方块即栏杆），改它会同时改掉「哪些格参与朝向计算」。
  *  - `twisting_vines(_plant)` / `weeping_vines(_plant)` → `vine`：本仓只有一种藤蔓。
  *  - `structure_block`（3 格，原模组的 Boss 刷怪标记）与 `cataclysm:altar_of_fire`
  *    （1 格，原 Boss 功能块）→ **丢弃**：两者都是功能标记不是美术内容，本仓不移植
@@ -210,6 +215,10 @@ export const FLOOR_LAVA_TARGET = 'netherrack';
  *    ⇒ 任何「中心上方是空气」的断言都会恒红，取样点必须用偏移点（如 (cx+5, cz)）。
  *  - 通道分布：opaque 107,793（93.4%）/ cutout 7,588（6.6%）/ transparent 0。
  *    cutout 是预算关注点（spec DR-5 的保险丝针对它）。
+ *    ⚠️ 栏杆朝向 pass 把 3,311 格拆成 `handrail`（转角件）+ `handrailA`（直段件），
+ *    两者同为 cutout ⇒ **通道分布与 palette 种数以外的一切格数都不变**。
+ *  - ⚠️ **`paletteSize` 是 20 不是 19**：朝向 pass 引入了第二个栏杆方块名 `handrailA`
+ *    （v2.85 初版全部映到 `handrail` 且 meta=0，3,311 格栏杆全渲染成 +X+Z 转角）。
  */
 export const BURNING_ARENA_METRICS = Object.freeze({
   burningArena: Object.freeze({
@@ -221,11 +230,35 @@ export const BURNING_ARENA_METRICS = Object.freeze({
     droppedCells: 4,       // 丢弃的功能标记格（structure_block 3 + altar_of_fire 1）
     contentCells: 115381,  // 产物内容格数 = sourceCells − droppedCells
     floorCells: 4825,      // 地板层（归一化 y=10）的格数（**非满铺**）
-    paletteSize: 19,       // 重映射后的目标方块种数
+    paletteSize: 20,       // 重映射后的目标方块种数（含 handrail + handrailA 两种栏杆件）
     opaqueCells: 107793,
     cutoutCells: 7588,
     lavaCells: 1179,       // 保留为 lava 的格数（非地板层）
     floorLavaCells: 937,   // 地板层被映射成 netherrack 的熔岩格数
+    railCells: 3311,       // 栏杆总格数 = handrail + handrailA（朝向 pass 只拆分不增删）
+
+    /**
+     * 栏杆朝向分布（**冻结实测值**，`npm run burningarena -- --census` 可复现）。
+     *
+     * ⚠️ **这一项部分堵上了「只改烘焙算法指纹不变」的已知盲区**：它是算法的*产物*，
+     * 而 `check:data` 拿它逐档比对产物 meta.json ⇒ 改朝向算法而忘了重烘/重标基线，
+     * 门禁会红（而 paramsSha256 拓不到这类改动）。
+     *
+     * ⚠️ `handrailA` 只有 0/1 两档：其 orient 0≡2、1≡3（180° 对称，实测顶点多重集合
+     * 逐位相同），而 `railPlacementFor` 按 orient 升序返回首个命中 ⇒ 恒为 0（X 轴）或 1（Z 轴）。
+     * `handrail` 是转角件，四向互不等价，四档俱全。
+     *
+     * 算法与吻合率见 `bake-burning-arena.mjs` 的「栏杆朝向」节（用户 2026-11-09 的
+     * 200 格手工修正样例：2 臂格 142/142、整体 186/189 = 98.4%）。
+     */
+    railOrientationCounts: Object.freeze({
+      'handrail:0': 453,
+      'handrail:1': 446,
+      'handrail:2': 427,
+      'handrail:3': 435,
+      'handrailA:0': 810,
+      'handrailA:1': 740,
+    }),
   }),
 });
 

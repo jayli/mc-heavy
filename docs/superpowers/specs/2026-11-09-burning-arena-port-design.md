@@ -84,6 +84,12 @@ rotation=NONE）：
 - **需重映射 36 种**（完整表在 `burning-arena-fingerprint.mjs`，原则见 DR-2）。
 
 **重映射后实测（探针 2026-11-09，完整映射规则跑完 8 片）**：
+
+> ⚠️ **v2.86 修订（2026-11-09）**：本节是 v2.85 设计时的历史实测。v2.86 加了栏杆朝向 pass
+> （见 roadmap v2.86）：palette **19 → 20**（新增 `handrailA` 直段件），`handrail` 3,311 拆成
+> handrail 1,761（转角件）+ handrailA 1,550（直段件）。cutout 总数 7,588 **不变**
+> （两者同为 cutout）。以下数字按 v2.85 口径保留。
+
 - 目标 palette **19** 种，未覆盖项 **0**，facing 缺失 **0**；
 - 通道分布：**opaque 107,793（93.4%）/ cutout 7,588（6.6%）/ transparent 0**；
 - 主要目标格数：nether_bricks 78,913、polished_diorite 9,171、obsidian 7,075、
@@ -212,6 +218,7 @@ rotation=NONE）：
 
 - **实测（非估算）**：cutout **7,588 格**（handrail 3,311 + 台阶 3,479 + sand_slab 504 +
   vine 168 + hanging_lamp 125 + chest 1），占 contentCells 的 **6.6%**；opaque 107,793 格。
+  ⚠️ v2.86 起 handrail 3,311 拆成 handrail 1,761 + handrailA 1,550（同为 cutout，总数不变，见 roadmap v2.86）。
   按 cutout 每格 ≈ opaque 3 倍顶点算 ≈ +23K 顶点量级；opaque 主体 ~9 万面是大头但
   opaque 通道余量充足（active 1800）。
 - **门禁**：`npm run bench -- --check` + `tests/m3-fullscene.spec.mjs`
