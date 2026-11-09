@@ -36,7 +36,7 @@ async function openPanel(page) {
   await expect(page.locator('#settings-modal')).toBeVisible();
 }
 
-test('瞬移：六个按钮都在面板里，同一行不换行，且位于「背景音乐」下方（用户指定落位）', async ({ page }) => {
+test('瞬移：七个按钮都在面板里，同一行不换行，且位于「背景音乐」下方（用户指定落位）', async ({ page }) => {
   test.setTimeout(180_000);
   await page.goto('/?vd=2&seed=12345');
   await page.waitForFunction(READY, null, { timeout: 90_000 });
@@ -44,22 +44,24 @@ test('瞬移：六个按钮都在面板里，同一行不换行，且位于「�
   await openPanel(page);
 
   // v2.10 用户 2026-10-29 指定顺序：「标记，跳转标记，回家，高台，竞技场」；
-  // v2.19 用户 2026-10-30 在本行末尾追加「湖」（浅水高台）。
+  // v2.19 用户 2026-10-30 在本行末尾追加「湖」（浅水高台）；
+  // v2.87 用户 2026-11-09：原「竞技场」（小竞技场）改名「围场」，其后新增指向**大竞技场**的「竞技场」。
   // ⚠️ 「跳转标记」在 v2.19 缩成「跳转」：六个按钮每个只剩 56px（内容宽 44px），
-  //    四字会折行（实测按钮高 33 → 50px）。
+  //    四字会折行（实测按钮高 33 → 50px）。v2.87 加到七个后本行 gap 收到 4px，
+  //    每只 50.1px / 内容宽 38.1px，3 字单行放得下。
   const ORDER = ['btn-mark-position', 'btn-teleport-mark', 'btn-teleport-home',
-    'btn-teleport-tarn', 'btn-teleport-arena', 'btn-teleport-lake'];
-  const LABELS = ['标记', '跳转', '回家', '高台', '竞技场', '湖'];
+    'btn-teleport-tarn', 'btn-teleport-arena', 'btn-teleport-burning-arena', 'btn-teleport-lake'];
+  const LABELS = ['标记', '跳转', '回家', '高台', '围场', '竞技场', '湖'];
   const ids = new Set(ORDER);
   for (const id of ORDER) await expect(page.locator(`#${id}`)).toBeVisible();
-  expect(ids.size).toBe(6);
+  expect(ids.size).toBe(7);
 
   const rowTops = await page.evaluate((order) =>
     order.map((id) => document.getElementById(id).offsetTop), ORDER);
-  // 六个按钮必须**同一行**（`.mc-btn-group` 的 flex:1 等宽）：换成两行会让面板高度涨一档、
+  // 七个按钮必须**同一行**（`.mc-btn-group` 的 flex:1 等宽）：换成两行会让面板高度涨一档、
   // 文案也被压窄。判据用 offsetTop 相等（行内元素基线一致），不能用宽度 —— 宽度本来就相等，
   // 换行也看不出。
-  expect(new Set(rowTops).size, `六个按钮须同一行，实测 offsetTop=${rowTops.join(',')}`).toBe(1);
+  expect(new Set(rowTops).size, `七个按钮须同一行，实测 offsetTop=${rowTops.join(',')}`).toBe(1);
   expect(await page.evaluate((order) => order.map((id) => document.getElementById(id).textContent), ORDER))
     .toEqual(LABELS);
 
@@ -77,7 +79,7 @@ test('瞬移：六个按钮都在面板里，同一行不换行，且位于「�
   }), ORDER);
   for (const o of overflow) {
     expect(o.scrollW, `「${o.text}」超出按钮宽度（${o.scrollW} > ${o.clientW}）`).toBeLessThanOrEqual(o.clientW);
-    expect(o.lines, `「${o.text}」折成了 ${o.lines} 行（按钮高 ${o.h}px）—— 六个按钮平分只剩 44px 内容宽，最多 3 个字`).toBe(1);
+    expect(o.lines, `「${o.text}」折成了 ${o.lines} 行（按钮高 ${o.h}px）—— 七个按钮 + gap:4px 平分只剩 38px 内容宽，最多 3 个字`).toBe(1);
   }
 
   // 顺序必须与 DOM 文档序一致（不能只在视觉上排对了、DOM 序错乱）
@@ -352,34 +354,35 @@ test('瞬移：点「回家」回到 City 出生点（与 game.spawnX/Y/Z 逐值
   }, null, { timeout: 10_000 });
 });
 
-test('瞬移：点「竞技场」落到城南竞技场中心、站得住、且真的传到了（v2.10）', async ({ page }) => {
+test('瞬移：点「围场」落到城南围场（原小竞技场）中心、站得住、且真的传到了（v2.10 / v2.87 改名）', async ({ page }) => {
   test.setTimeout(240_000);
   await page.goto('/?vd=2&seed=12345');
   await page.waitForFunction(READY, null, { timeout: 90_000 });
   await page.waitForFunction(STABLE, null, { timeout: 60_000, polling: 500 });
 
-  // 竞技场落点的唯一权威 = `computeArenaAnchor(seed)`（与 apply.js 阶段 2.9 同源，红线 1）。
+  // 围场落点的唯一权威 = `computeArenaAnchor(seed)`（与 apply.js 阶段 2.9 同源，红线 1）。
   // 这里在**页面里** import 同一份纯函数算期望值，不另写一份落点副本。
   const anchor = await page.evaluate(async () => {
     const m = await import('/src/gen/structures/arena.js');
     const a = m.computeArenaAnchor(window.__MC_GAME__.seed);
     return a ? { wx: a.wx, wz: a.wz, floorY: a.floorY } : null;
   });
-  // 前提：seed 12345 必须真的有竞技场（否则本用例无判别力 —— 先跑真实数据再断言）
-  expect(anchor, 'seed 12345 须生成竞技场').not.toBeNull();
+  // 前提：seed 12345 必须真的有围场（否则本用例无判别力 —— 先跑真实数据再断言）
+  expect(anchor, 'seed 12345 须生成围场').not.toBeNull();
 
   const before = await page.evaluate(POS);
   expect(Math.abs(before.x - anchor.wx) + Math.abs(before.z - anchor.wz),
-    '前提：玩家出生点不在竞技场（否则「传送生效」无判别力）').toBeGreaterThan(50);
+    '前提：玩家出生点不在围场（否则「传送生效」无判别力）').toBeGreaterThan(50);
 
   // 真实按钮点击（不是 game.teleportToArena() —— M7 教训：只测 API 会漏「面板没接线」）
   await openPanel(page);
   await page.locator('#btn-teleport-arena').click();
-  // 文案必须标明是竞技场，不能落进 default 的「已完成：」
-  await expect(page.locator('#mc-toast')).toContainText(/已瞬移到竞技场/, { timeout: 15_000 });
+  // 文案必须标明是围场（v2.87 改名），不能落进 default 的「已完成：」，
+  // 也不能误报成「竞技场」（那是大竞技场的文案）
+  await expect(page.locator('#mc-toast')).toContainText(/已瞬移到围场/, { timeout: 15_000 });
 
   const pos = await page.evaluate(POS);
-  // ① 落点 = 竞技场占地中心（x/z 逐值等于 anchor）
+  // ① 落点 = 围场占地中心（x/z 逐值等于 anchor）
   expect(pos.x).toBe(anchor.wx);
   expect(pos.z).toBe(anchor.wz);
   // ② y = floorY + 1（脚底踩在地板层上方一格）。这是 `apply.js` 阶段 2.9 的落位口径：
@@ -412,6 +415,90 @@ test('瞬移：点「竞技场」落到城南竞技场中心、站得住、且�
   // ④ 相机真的跟过去（防「physics.pos 改了但相机没跟上」）。必须先关面板 —— 模态期
   //    主循环跳过 player.update，相机不更新（v1.92 已踩过这个 setup 坑）。
   //    v2.28 起由「瞬移成功 100ms 后自动关面板」接管（用户 2026-10-30 需求）。
+  await expect(page.locator('#settings-modal'), '瞬移成功后应自动关面板回游戏')
+    .toBeHidden({ timeout: 5000 });
+  await page.waitForFunction(() => {
+    const g = window.__MC_GAME__;
+    const p = g.player.physics.pos;
+    const c = g.player.camera.position;
+    return Math.abs(c.x - p.x) < 1.5 && Math.abs(c.z - p.z) < 1.5;
+  }, null, { timeout: 10_000 });
+});
+
+test('瞬移：点「竞技场」落到大竞技场**西缘外的平地**（不在碗内、站得住、y 与自然地表同源，v2.87）', async ({ page }) => {
+  test.setTimeout(300_000);
+  await page.goto('/?vd=2&seed=12345');
+  await page.waitForFunction(READY, null, { timeout: 90_000 });
+  await page.waitForFunction(STABLE, null, { timeout: 60_000, polling: 500 });
+
+  // 期望值只用**纯函数**算（与 Game 同源，红线 1）：锚点 + 占地半宽 + 缘外净距 + 自然地表。
+  // ⚠️ 不在这里复制 `burningArenaTeleportPoint` 的实现 —— 那会变成第二份落点权威；
+  // 本用例验的是**性质**（在占地外、在西侧、y = 真实地表 + 1），而不是逐值复算。
+  const arena = await page.evaluate(async () => {
+    const m = await import('/src/gen/structures/burning-arena.js');
+    const t = await import('/src/gen/terrain.js');
+    const a = m.computeBurningArenaAnchor(window.__MC_GAME__.seed);
+    if (!a) return null;
+    const p = m.burningArenaTeleportPoint(window.__MC_GAME__.seed);
+    return {
+      wx: a.wx, wz: a.wz, floorY: a.floorY,
+      half: m.BURNING_ARENA_HALF, gap: m.BURNING_ARENA_TELEPORT_GAP,
+      point: p, surfaceY: t.generateHeight(p.x, p.z, window.__MC_GAME__.seed),
+    };
+  });
+  // 前提：seed 12345 必须真有大竞技场（否则本用例无判别力 —— 先跑真实数据再断言）
+  expect(arena, 'seed 12345 须生成大竞技场').not.toBeNull();
+
+  const before = await page.evaluate(POS);
+  expect(Math.abs(before.x - arena.wx) + Math.abs(before.z - arena.wz),
+    '前提：玩家出生点不在大竞技场（否则「传送生效」无判别力）').toBeGreaterThan(100);
+
+  // 真实按钮点击（不是 game.teleportToBurningArena() —— M7 教训：只测 API 会漏「面板没接线」）
+  await openPanel(page);
+  await page.locator('#btn-teleport-burning-arena').click();
+  // 文案必须标明是竞技场，不能落进 default 的「已完成：」，也不能误报成「围场」
+  await expect(page.locator('#mc-toast')).toContainText(/已瞬移到竞技场/, { timeout: 15_000 });
+
+  const pos = await page.evaluate(POS);
+  // ① 落点 = 纯函数给出的那一点（x/z/y 逐值）
+  expect(pos.x).toBe(arena.point.x);
+  expect(pos.z).toBe(arena.point.z);
+  expect(pos.y).toBe(arena.point.y);
+  // ② 「边缘的平地」判据：在占地**外**（不在碗里），且紧贴西缘（用户：「瞬移到大竞技场
+  //    边缘的平地的位置」）。z 取锚点中线 ⇒ 玩家面朝东就能看到整个碗体。
+  expect(Math.abs(pos.x - arena.wx), `落点须在占地外（半宽 ${arena.half}）`).toBeGreaterThan(arena.half);
+  expect(pos.x, '落点须在西侧（City 那一侧）').toBeLessThan(arena.wx);
+  expect(arena.wx - pos.x, `离西缘 ${arena.wx - pos.x - arena.half} 格，须是「边缘」而不是走到沙漠深处`)
+    .toBeLessThanOrEqual(arena.half + arena.gap);
+  expect(pos.z).toBe(arena.wz);
+  // ③ y 与**自然地表**同源（不是碗内地板 floorY —— 缘外沙漠的自然高度与它可能差几格）
+  expect(pos.y, `y 须 = 自然地表 ${arena.surfaceY} + 1`).toBe(arena.surfaceY + 1);
+
+  // ④ 等目标 column GEN 完再验世界（传送当帧目标 region 尚未加载，见 `_teleportTo`）
+  await page.waitForFunction(() => {
+    const g = window.__MC_GAME__;
+    const p = g.player.physics.pos;
+    return g.world.hasColumn(Math.floor(p.x / 16), Math.floor(p.z / 16));
+  }, null, { timeout: 120_000 });
+
+  const ground = await page.evaluate(() => {
+    const g = window.__MC_GAME__;
+    const p = g.player.physics.pos;
+    const fy = Math.round(p.y);
+    return {
+      feetSolid: g.world.isSolid(p.x, fy - 1, p.z),
+      atAir: g.world.isSolid(p.x, fy, p.z),
+      headAir: g.world.isSolid(p.x, fy + 1, p.z),
+      floorBlock: g.world.getBlockId(p.x, fy - 1, p.z),
+      floorName: g.world.getBlockId(p.x, fy - 1, p.z) ? g.registry.nameOf(g.world.getBlockId(p.x, fy - 1, p.z)) : 'air',
+    };
+  });
+  expect(ground.feetSolid, `脚下须是实心平地（floorBlock=${ground.floorName}）`).toBe(true);
+  expect(ground.atAir, '脚所在格须是空气').toBe(false);
+  expect(ground.headAir, '抬头须是空气（不能把头埋进方块里）').toBe(false);
+
+  // ⑤ 相机真的跟过去（防「physics.pos 改了但相机没跟上」）。v2.28 起由「瞬移成功 100ms
+  //    后自动关面板」接管 —— 面板是模态，不关则主循环跳过 player.update、相机不更新。
   await expect(page.locator('#settings-modal'), '瞬移成功后应自动关面板回游戏')
     .toBeHidden({ timeout: 5000 });
   await page.waitForFunction(() => {
@@ -605,10 +692,14 @@ test('解卡：浅埋（下坠不到 1 格时 column 才 ready）也要抬出，
     };
   });
 
-  for (const fn of ['teleportToTarnZone', 'teleportToShallowTarn', 'teleportToArena']) {
+  // ⚠️ 「解卡必须真的被触发」只对**实测会浅埋的三个目标**成立（tarn / lake / 围场，
+  // 探针实测都 raised=1）。大竞技场（v2.87）落在缘外自然地表，y 已是地表+1，不保证浅埋
+  // ⇒ 对它只钉「落地后不被埋」（用户报告的症状本身），不钉「必须触发过」。
+  const MUST_RAISE = new Set(['teleportToTarnZone', 'teleportToShallowTarn', 'teleportToArena']);
+  for (const fn of ['teleportToTarnZone', 'teleportToShallowTarn', 'teleportToArena', 'teleportToBurningArena']) {
     await page.evaluate(() => { window.__MC_GAME__.__stuckLog = []; });
     const r = await page.evaluate((f) => window.__MC_GAME__[f](), fn);
-    if (!r.ok) continue;   // 少数 seed 没有竞技场/湖；本 seed 三个都有，跳过只是防御
+    if (!r.ok) continue;   // 少数 seed 没有围场/湖/大竞技场；本 seed 四个都有，跳过只是防御
     await page.waitForFunction(() => {
       const g = window.__MC_GAME__;
       const p = g.player.physics.pos;
@@ -626,7 +717,9 @@ test('解卡：浅埋（下坠不到 1 格时 column 才 ready）也要抬出，
       };
     });
     expect(state.stuck, `${fn}: 落地后不得被埋（y=${state.y}）`).toBe(false);
-    expect(state.log.length, `${fn}: 解卡必须真的被触发过（探针实测三个目标都浅埋 1 格）`).toBeGreaterThan(0);
+    if (MUST_RAISE.has(fn)) {
+      expect(state.log.length, `${fn}: 解卡必须真的被触发过（探针实测这三个目标都浅埋 1 格）`).toBeGreaterThan(0);
+    }
     expect(state.isInt, `${fn}: 解卡落点须是整数 y（不过冲、不弹跳），实测 ${state.y}`).toBe(true);
   }
 });

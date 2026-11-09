@@ -9,9 +9,10 @@
 // Worker 同构：本文件不得 import three、不得自建 Worker、**不得 fetch**
 // （产物 JSON 由 apply.js 的 `preloadStructures` 统一拉取）。
 //
-// ## 术语
-// **大竞技场** = 本结构（Cataclysm 模组 burning_arena，85×85×80）；
-// **小竞技场** = 既有的城门竞技场（`arena.js`，41×79）。两者互不重叠（见 `fixedBlockers`）。
+// ## 术语（用户 2026-11-09 裁定）
+// **大竞技场 / 「竞技场」** = 本结构（Cataclysm 模组 burning_arena，85×85×80，城东沙漠）；
+// **围场 / 原「小竞技场」** = 既有的城门竞技场（`arena.js`，41×79，城南门外）。
+// 两者互不重叠（见 `fixedBlockers`）。代码层 `arena` 一族命名不改，只有玩家文案用「围场」。
 //
 // ## 为什么是「城东最近的沙漠」（用户 2026-11-09 裁定）
 // 初版把大竞技场放在祭坛高台地带中心（取代祭坛），实测与两个 Boss 硬冲突：
@@ -26,7 +27,7 @@
 // 仍**找不到任何落点**（landmark 1179 + pyramid 607 + sky 1009 次拒绝）—— 与
 // `shallow-water-tarns.js` 的 `fixedBlockers` 注释记录的是同一个坑（那里实测 10 seed 全失效）。
 // 用户要求「城东最近的沙漠**必须且唯一**生成大竞技场」⇒ 落点必须存在，故改为：
-//   · **避让**只留「地基级大结构」：城市 / 高台地带 / 浅水高台 / 小竞技场（四者互斥是既有口径）；
+//   · **避让**只留「地基级大结构」：城市 / 高台地带 / 浅水高台 / 围场（四者互斥是既有口径）；
 //   · **压制**其余内容：地标（金字塔/冰封山/岛/平地/雪原）、巨型金字塔、空岛、撒布、植被
 //     —— 由 `burningArenaSuppressed*` 与 `pointContext` 的 `kind:'none'` 分支承担。
 // 改用压制后实测：8 seed 全部命中 span=5。锚点搜索首次 ~100ms（粗筛网格 + 逐格精检），
@@ -100,6 +101,16 @@ export const BURNING_ARENA_MAX_GAP = 1600;
 const SEARCH_HALF_Z = 900;
 
 /**
+ * 瞬移落点与大竞技场**西缘**的水平净距（格，v2.87）。
+ *
+ * 设置面板「竞技场」按钮的落点 = 占地西缘再向西 `GAP` 格（见 `burningArenaTeleportPoint`）。
+ * 取 6 的理由：碗体基座在西缘向上收分，离缘太近会被碗身挡视线；太远（>10）又失去
+ * 「就在门口」的方位感。6 格在两者之间，且仍在锚点判据保证的「全 DESERT、高于海平面」
+ * 的沙漠腹地内（搜索窗外扩余量远大于它）。
+ */
+export const BURNING_ARENA_TELEPORT_GAP = 6;
+
+/**
  * 粗筛网格步长（格）。
  *
  * ⚠️ **两级筛选是性能关键**：85×85 = 7225 格逐格全检，实测单候选 ~0.6ms；
@@ -151,7 +162,7 @@ function fixedBlockerAt(wx, wz, city, shallow, arena, seed) {
       Math.hypot(shallow.wx - wx, shallow.wz - wz) <= SHALLOW_TARN_OUTER_RADIUS + BURNING_ARENA_HALF) {
     return 'shallowTarn';
   }
-  // ③ 小竞技场（城南门外，全世界一个）
+  // ③ 围场（城南门外，全世界一个）
   if (arena &&
       Math.abs(arena.wx - wx) <= ARENA_HALF_X + BURNING_ARENA_HALF &&
       Math.abs(arena.wz - wz) <= ARENA_HALF_Z + BURNING_ARENA_HALF) {
@@ -183,7 +194,7 @@ function fixedBlockerAt(wx, wz, city, shallow, arena, seed) {
  *   ② 占地内每格 `generateHeight > SEA_Y`（不扎海底）；
  *   ③ 占地内地表高差 ≤ `BURNING_ARENA_SPANS` 的某一档（先严后松，取第一个有解的档）；
  *   ④ 在 City 东侧，且与城市 bounds 净距 ≥ `CITY_TRANSITION_SIZE`；
- *   ⑤ 不与高台地带 / 浅水高台 / 小竞技场重叠；
+ *   ⑤ 不与高台地带 / 浅水高台 / 围场重叠；
  *   ⑥ 在所有满足 ①~⑤ 的点里取**距城市中心最近**的（「城东最近」的口径）。
  *
  * ⚠️ **确定性**：候选按「距城市中心距离 → x → z」排序，tie 用坐标字典序 ⇒ 跨机 / 跨 Worker
@@ -419,7 +430,7 @@ export function burningArenaSuppressedLandmarks(anchor, regionX, regionZ, seed) 
  * ⚠️ 与 `arenaOverlapsRegion` 同手法同理由：锚点是**全局唯一**的，可能落在任何 region，
  * 而每个 column 的查询域只拿 3×3 region 布局 —— 不相交的 region 携带它只会白抬 payload。
  * ⚠️ **不能写成「只在锚点所在 region 携带」**：85×85 占地可跨 2×2 个 region，
- * 只让一个 region 携带会让邻区负责的那部分**缺半边**（与小竞技场 v2.7 踩过的坑同形）。
+ * 只让一个 region 携带会让邻区负责的那部分**缺半边**（与围场 v2.7 踩过的坑同形）。
  */
 export function burningArenaOverlapsRegion(anchor, regionX, regionZ) {
   if (!anchor) return false;
@@ -428,4 +439,35 @@ export function burningArenaOverlapsRegion(anchor, regionX, regionZ) {
   const rMinX = regionX * REGION_SIZE, rMaxX = rMinX + REGION_SIZE - 1;
   const rMinZ = regionZ * REGION_SIZE, rMaxZ = rMinZ + REGION_SIZE - 1;
   return minX <= rMaxX && maxX >= rMinX && minZ <= rMaxZ && maxZ >= rMinZ;
+}
+
+/**
+ * 瞬移到大竞技场的落点（设置面板「竞技场」按钮，v2.87）。
+ *
+ * 落点 = 占地**西缘**（City 那一侧）再向西 `BURNING_ARENA_TELEPORT_GAP` 格、z 取锚点中线：
+ * 玩家面朝东（+X，大竞技场在 City 东侧）就能看到整个碗体。y 用该格**自然地表**
+ * （`generateHeight`）+ 1 —— **不用 `anchor.floorY`**，那是碗内地板层高度，缘外沙漠的
+ * 自然高度与之可能差几格（实测 8 seed 差 0~5 格）。
+ *
+ * ⚠️ **缘外那一点不在锚点判据的保证范围内**（判据只逐格校 ±`BURNING_ARENA_HALF` 的占地）：
+ * 实测 8 seed（12345 / 99999 / 1249026 / 20260101 / 777 / 4242 / 31337 / 8888）该点均为
+ * DESERT、高于海平面、周围 5×5 自然高差 ≤ 1 格，且不在浅水高台整形区 / 城市 bounds 内。
+ * 若将来改 `BURNING_ARENA_TELEPORT_GAP` 或锚点判据，**必须重跑这份普查** ——
+ * 最坑的形态是落点泡进浅水高台的整形区（`fixedBlockerAt` 只保证锚点到湖心
+ * > `SHALLOW_TARN_OUTER_RADIUS + HALF`，减去 48 格后理论上可伸进整形区 ≤ 6 格）。
+ *
+ * ⚠️ **唯一权威（红线 1）**：`Game.teleportToBurningArena` 与 `tests/teleport.spec.mjs`
+ * 都消费本函数，不得各自复算一份落点。
+ *
+ * @param {number} seed
+ * @returns {{x:number, y:number, z:number}|null} 该 seed 没有大竞技场时返回 null
+ */
+export function burningArenaTeleportPoint(seed) {
+  const a = computeBurningArenaAnchor(seed);
+  if (!a) return null;
+  const x = a.wx - BURNING_ARENA_HALF - BURNING_ARENA_TELEPORT_GAP;
+  const z = a.wz;
+  const y = generateHeight(x, z, seed) + 1;   // +1 = 地表方块之上那一格（脚底）
+  if (![x, y, z].every((v) => Number.isFinite(v))) return null;
+  return { x, y, z };
 }

@@ -3,8 +3,8 @@ import { PNG } from 'pngjs';
 
 // 大竞技场（burning arena，v2.85）Tier 4 像素验收。
 //
-// 术语：**大竞技场** = 本结构（Cataclysm burning_arena，85×85×80，城东沙漠）；
-//       **小竞技场** = 既有城门竞技场（城南门外）。
+// 术语（用户 2026-11-09 裁定）：**大竞技场 / 「竞技场」** = 本结构（Cataclysm burning_arena，85×85×80，城东沙漠）；
+//       **围场 / 原「小竞技场」** = 既有城门竞技场（城南门外）。
 //
 // 验三件浏览器单测（test-burning-arena-gen.js）验不到的事：
 //   ① 真实 Worker 池 GEN 路径（不是本地 applyStructuresToColumn）真的写出了大竞技场；

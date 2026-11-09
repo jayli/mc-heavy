@@ -92,6 +92,7 @@ import { pixelRatioFor, normPixelRatioMode } from '../render/pixel-ratio.js';
 import { encodeProgress, decodeProgress } from '../save/progress-codec.js';
 import { computeTarnZone, findNearestTarnZone } from '../gen/structures/tarn-zone.js';
 import { computeArenaAnchor } from '../gen/structures/arena.js';
+import { burningArenaTeleportPoint } from '../gen/structures/burning-arena.js';
 import {
   computeShallowTarnAnchor, SHALLOW_TARN_OUTER_RADIUS,
   BEACH_WIDTH, SLOPE_WIDTH, shallowTarnShapePhase, shallowTarnLakeRadiusAt,
@@ -1826,9 +1827,16 @@ export class Game {
   }
 
   /**
-   * 瞬移到城门竞技场（设置面板「竞技场」按钮，v2.10）。
+   * 瞬移到**围场**（原「小竞技场」= 城门竞技场，设置面板「围场」按钮，v2.10 新增、v2.87 改名）。
    *
-   * 落点 = 竞技场占地**中心**、y = `anchor.floorY + 1`（脚底踩在地板层上方一格）。
+   * ⚠️ **术语（用户 2026-11-09 裁定）**：「围场」= 本方法去的城南门外草地竞技场
+   * （`gen/structures/arena.js`，41×79）；「竞技场」= 城东沙漠的大竞技场
+   * （`burning-arena.js`，85×85×80，见 `teleportToBurningArena`）。两者互不重叠。
+   * 方法名 `teleportToArena` **刻意保留**（与 `arena.js` / `computeArenaAnchor` /
+   * `btn-teleport-arena` 同一族命名，改名会波及 E2E 与单测的 id/函数名），
+   * 只有**玩家可见文案**改成「围场」。
+   *
+   * 落点 = 围场占地**中心**、y = `anchor.floorY + 1`（脚底踩在地板层上方一格）。
    * 这个 y 口径与 `apply.js` 阶段 2.9 的光栅化落位同源：那里 `rasterizeStructure(... ,
    * floorY - (floorRow - 1), ...)` 让**地板层**正好坐落在 `floorY`，故站在 `floorY + 1`
    * 就是站在场地上（与 `tarn` 的 `tarnSurfaceYAt(...) + 1` 同一手法）。
@@ -1836,7 +1844,7 @@ export class Game {
    * ⚠️ **不与 `computeArenaAnchor` 的缓存脱钩**：那个函数带 64 项 seed 缓存、实测中位 56ms，
    * 每次点击算一次完全可接受 —— 不要为它建第二份落点副本（红线 1）。
    *
-   * ⚠️ **没有竞技场时不做任何事**（`computeArenaAnchor` 在少数 seed 会返回 null ——
+   * ⚠️ **没有围场时不做任何事**（`computeArenaAnchor` 在少数 seed 会返回 null ——
    * 南门外 240 格内找不到合法落点），只返回 `no-arena`。
    *
    * ⚠️ **reason 必须与「没找到高台」的 `not-found` 区分开**：两者是完全不同的处境
@@ -1854,6 +1862,30 @@ export class Game {
     // 落地后由帧循环的 `scheduler.update(playerX, playerZ)` 逐片加载（同 `_teleportTo` 的说明）。
     this._teleportTo(x, y, z);
     return { ok: true, kind: 'arena', x, y, z };
+  }
+
+  /**
+   * 瞬移到**大竞技场**（城东沙漠的 burning arena，设置面板「竞技场」按钮，v2.87）。
+   *
+   * ⚠️ **术语**：「竞技场」= 大竞技场（本方法）；「围场」= 原小竞技场（`teleportToArena`）。
+   * 用户 2026-11-09：「原来设置面板中的『竞技场』按钮点击后跳转到现在刚增加的大竞技场，
+   * 瞬移到大竞技场边缘的平地的位置」。
+   *
+   * 落点唯一权威 = `burningArenaTeleportPoint(seed)`（占地西缘外 6 格的沙漠平地，
+   * y = 自然地表 + 1）—— 本方法**不复算**任何坐标（红线 1）。
+   *
+   * ⚠️ **reason 用独立的 `no-burning-arena`**：与围场的 `no-arena` 是两种处境
+   * （大竞技场每 seed 必生成，返回 null 只可能是锚点搜索窗内无解），面板逐 reason 映射。
+   *
+   * @returns {{ok: true, kind: 'burning-arena', x: number, y: number, z: number} | {ok: false, reason: string}}
+   */
+  teleportToBurningArena() {
+    if (!this.player?.physics?.pos) return { ok: false, reason: 'no-player' };
+    const p = burningArenaTeleportPoint(this.seed);
+    if (!p) return { ok: false, reason: 'no-burning-arena' };
+    // 落地后由帧循环的 `scheduler.update(playerX, playerZ)` 逐片加载（同 `_teleportTo` 的说明）。
+    this._teleportTo(p.x, p.y, p.z);
+    return { ok: true, kind: 'burning-arena', ...p };
   }
 
   /**

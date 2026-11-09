@@ -1,5 +1,11 @@
 // src/gen/structures/arena.js — 城门竞技场（Arena）：锚点纯函数 + 栏杆臂方向派生
 //
+// ⚠️ **术语（用户 2026-11-09 裁定）**：本结构在玩家可见文案里叫「**围场**」（原「小竞技场」），
+// 设置面板的瞬移按钮文案也是「围场」；「**竞技场**」专指城东沙漠的大竞技场
+// （`burning-arena.js`，85×85×80）。代码层的 `arena` 一族命名（本文件、`computeArenaAnchor`、
+// `Game.teleportToArena`、`btn-teleport-arena`）**刻意不改** —— 它是结构的技术名，
+// 改了会波及烘焙产物、单测与 E2E 选择器，而玩家看不到任何差别。
+//
 // 权威：docs/superpowers/specs/2026-10-29-arena-design.md
 //
 // 三块职责，刻意放在同一个文件里（都已与 three 无关，Worker 同构）：

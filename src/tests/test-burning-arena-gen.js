@@ -1,13 +1,13 @@
 // src/tests/test-burning-arena-gen.js — 大竞技场（burning arena）Tier 1：锚点纯函数 + 真实 column GEN
 //
-// 术语：**大竞技场** = 本结构（Cataclysm burning_arena，85×85×80，城东沙漠）；
-//       **小竞技场** = 既有城门竞技场（`arena.js`，41×79，城南门外）。两者互不重叠。
+// 术语（用户 2026-11-09 裁定）：**大竞技场 / 「竞技场」** = 本结构（Cataclysm burning_arena，85×85×80，城东沙漠）；
+//       **围场 / 原「小竞技场」** = 既有城门竞技场（`arena.js`，41×79，城南门外）。两者互不重叠。
 //
 // 钉的是这几类缺陷（每条都是静默的）：
 //   · `STRUCTURE_FILES` 漏映射 → `rasterizeStructure` 拿到空 blocks 直接 return（0 格，无报错）
 //   · 锚点不唯一 / 不确定 → 同一 seed 两次算出不同落点（红线 2）
 //   · 落点不在沙漠 / 不平坦 / 压到城市 → 碗身一半坐在草地上、或埋进城市
-//   · 与地基级大结构（高台地带 / 浅水高台 / 小竞技场）重叠 → 两个大结构互相穿插
+//   · 与地基级大结构（高台地带 / 浅水高台 / 围场）重叠 → 两个大结构互相穿插
 //   · apply 阶段 2.93 漏了 / y 差一格 → 结构被地形覆盖或整体沉浮
 //   · 空岛没让路 → 空岛在阶段 2.5 **后写胜**，反过来打穿竞技场上半部
 //
@@ -379,7 +379,7 @@ test('大竞技场锚点：是「最近」的那个（不存在更近的合法�
   }
 });
 
-test('大竞技场锚点：不与地基级大结构重叠（高台地带 / 浅水高台 / 小竞技场）', () => {
+test('大竞技场锚点：不与地基级大结构重叠（高台地带 / 浅水高台 / 围场）', () => {
   for (const seed of SEEDS) {
     const a = computeBurningArenaAnchor(seed);
     // 浅水高台
@@ -389,12 +389,12 @@ test('大竞技场锚点：不与地基级大结构重叠（高台地带 / 浅�
       assertTrue(gap > SHALLOW_TARN_OUTER_RADIUS + BURNING_ARENA_HALF,
         `seed ${seed} 与浅水高台净距 ${gap.toFixed(1)} 必须 > ${SHALLOW_TARN_OUTER_RADIUS + BURNING_ARENA_HALF}`);
     }
-    // 小竞技场
+    // 围场（原小竞技场）
     const ar = computeArenaAnchor(seed);
     if (ar) {
       assertTrue(Math.abs(ar.wx - a.wx) > ARENA_HALF_X + BURNING_ARENA_HALF ||
                  Math.abs(ar.wz - a.wz) > ARENA_HALF_Z + BURNING_ARENA_HALF,
-        `seed ${seed} 与小竞技场 AABB 不得相交`);
+        `seed ${seed} 与围场 AABB 不得相交`);
     }
     // 高台地带（扫占地触及的全部 region）
     const rxLo = Math.floor((a.wx - BURNING_ARENA_HALF) / REGION_SIZE);

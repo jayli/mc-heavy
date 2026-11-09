@@ -75,6 +75,14 @@ export const PROGRESS_ROW_TITLE = '进度管理';
  * 「按钮调整一下：标记，跳转标记，回家，高台，竞技场。尽量在一行摆下这五个按钮」）；
  * v2.19 追加「湖」（用户 2026-10-30：「增加一个瞬移按钮：湖，点击瞬移到浅水高台地图」）
  * 并因它把「跳转标记」缩成「跳转」—— 六个按钮后**上限降到 3 字**（4 字会折行）。
+ * v2.87 追加「围场」（用户 2026-11-09）—— 七个按钮后上限仍是 3 字，但靠**本行专属的
+ * `gap:4px`** 才摆得下（见 `_rowTeleport` 注释里的实测宽度账）。
+ *
+ * ⚠️ **术语（用户 2026-11-09 裁定）**：「**竞技场**」= 城东沙漠的大竞技场
+ * （burning arena，85×85×80）；「**围场**」= 原「小竞技场」（城南门外的草地竞技场，
+ * `gen/structures/arena.js`，41×79）。用户原话：「原来的小竞技场后面我都叫围场」。
+ * 代码层的 `arena` 一族命名（`computeArenaAnchor` / `teleportToArena` / `arena.js`）
+ * **不改**——那是结构的技术名，改了会波及烘焙产物、单测与 E2E；只有玩家可见文案用「围场」。
  *
  * ⚠️ **文案长度是布局载荷的**（实测数据，不是估算）：左列 375px + `.mc-btn-group` 的
  * `gap:8px` ⇒ 五个按钮每个 **69px**、六个只剩 **56px**（`clientWidth` 52，扣 `padding:6px 4px`
@@ -88,7 +96,10 @@ export const TELEPORT_MARK_LABEL = '标记';
 export const TELEPORT_GO_LABEL = '跳转';
 export const TELEPORT_HOME_LABEL = '回家';
 export const TELEPORT_TARN_LABEL = '高台';
+/** 「竞技场」= **大竞技场**（城东沙漠 burning arena，v2.87 起指向它，见上方术语注释） */
 export const TELEPORT_ARENA_LABEL = '竞技场';
+/** 「围场」= **原小竞技场**（城南门外草地竞技场，v2.87 由「竞技场」改名而来） */
+export const TELEPORT_ENCLOSURE_LABEL = '围场';
 export const TELEPORT_LAKE_LABEL = '湖';
 
 /**
@@ -180,6 +191,9 @@ const PANEL_CSS = `
 }
 #settings-modal .mc-title { text-align: left; font-size: 14px; line-height: 1.2; font-weight: bold; }
 #settings-modal .mc-btn-group { display: flex; gap: 8px; width: 100%; }
+/* 瞬移行专属：七个按钮一行摆不下 8px 间距（实测内容宽 34.7px < 3 字 36px ⇒ 折行），
+   收到 4px 后内容宽 38.1px，3 字文案单行放得下。只作用于本行，其余按钮组仍是 8px。 */
+#settings-modal .mc-teleport .mc-btn-group { gap: 4px; }
 #settings-modal button {
   flex: 1; padding: 6px 4px; font-size: 12px;
   background: #8b8b8b; border: 2px solid #fff;
@@ -561,23 +575,30 @@ export class SettingsPanel {
    * v1.98 把雾色+背景音乐合并成一行后，本行落在那个合并盒**下方**，仍在左列。
    *
    * ⚠️ **业务逻辑一律在 Game**（`teleportToTarnZone` / `markPosition` / `teleportToMark` /
-   * `teleportToSpawn` / `teleportToArena` / `teleportToShallowTarn`）：面板只做 DOM 与文案。
+   * `teleportToSpawn` / `teleportToArena`（围场）/ `teleportToBurningArena`（大竞技场）/
+   * `teleportToShallowTarn`）：面板只做 DOM 与文案。
    * 散落进来的话要 import voxel/gen 层，违反依赖方向（§3）。
    *
-   * ⚠️ **六个按钮共享 `.mc-btn-group` 的 `flex:1`** → 同一行、等宽。行数上限取决于左列宽度
+   * ⚠️ **七个按钮共享 `.mc-btn-group` 的 `flex:1`** → 同一行、等宽。行数上限取决于左列宽度
    * （实测 375px）：**五个按钮时每只 69px，六个时只剩 56px**（`clientWidth` 52、
    * 扣掉 `padding:6px 4px` 后内容宽 **44px**）⇒ 12px 字号下**最多 3 个字**（36px）。
    * 第四个按钮的「跳转标记」就是被这一条逼成「跳转」的（v2.19 用户裁定），
    * 四字在 56px 按钮里会折行（实测按钮高 33→50px）。
+   *
+   * ⚠️ **v2.87 加到七个按钮后，本行的 `gap` 从 8px 收到 4px**（`.mc-teleport .mc-btn-group`）：
+   * 7 个按钮 + 6×8px 间距 ⇒ 每只 46.7px、内容宽 34.7px < 3 字（36px）⇒ **三字也会折行**；
+   * 收到 4px 后每只 50.1px、内容宽 38.1px ⇒ 三字单行放得下。文案上限仍是 **3 字**。
    * `teleport.spec` 用 `offsetTop` 钉「不得换行」、用**行盒数**钉「文案不得折行」
    * （`scrollWidth <= clientWidth` 对折行无判别力——折行时两者依然相等，v2.19 实测）。
    *
    * **按钮顺序 = 用户指定**：v2.10（2026-10-29）「标记，跳转标记，回家，高台，竞技场」，
-   * v2.19（2026-10-30）在本行末尾追加「湖」（浅水高台）。
-   * 前三个是「标记相关的三连」（记录 → 跳回 → 回家），后三个是「去某个地标」（高台 / 竞技场 / 湖），
-   * 不要按「先地标后标记」的习惯改回去 —— 那是上一版（v1.92）的顺序，用户明确重排了。
+   * v2.19（2026-10-30）在本行末尾追加「湖」（浅水高台），
+   * v2.87（2026-11-09）把原「竞技场」改名为「围场」、并在其后新增指向**大竞技场**的「竞技场」。
+   * 前三个是「标记相关的三连」（记录 → 跳回 → 回家），后四个是「去某个地标」
+   * （高台 / 围场 / 竞技场 / 湖），不要按「先地标后标记」的习惯改回去 ——
+   * 那是上一版（v1.92）的顺序，用户明确重排了。
    *
-   * ⚠️ **五个「跳转」按钮成功后自动关面板**（v2.28，用户 2026-10-30：「点击其他的按钮完成跳转后，
+   * ⚠️ **六个「跳转」按钮成功后自动关面板**（v2.28，用户 2026-10-30：「点击其他的按钮完成跳转后，
    * 100ms 后把设置面板关掉，自动进入游戏」）：面板一关就解除模态，`player.update` 恢复 → 相机
    * 跟上新位置。**「标记」是唯一的例外** —— 它不跳转（只记录当前位置），关面板会让玩家莫名
    * 回到游戏而坐标提示一闪而过。收尾统一走 `_teleportThenAutoClose()`，不要在按钮里各写一份
@@ -625,12 +646,20 @@ export class SettingsPanel {
       this._teleportThenAutoClose(this.game.teleportToTarnZone());
     });
 
-    // ⑤ 竞技场（城南门外的草地竞技场，v2.10 新增）
-    mk(TELEPORT_ARENA_LABEL, 'btn-teleport-arena', () => {
+    // ⑤ 围场（城南门外的草地竞技场 = 原「小竞技场」，v2.10 新增、v2.87 由「竞技场」改名）
+    //    ⚠️ id 仍是 `btn-teleport-arena`：与 `Game.teleportToArena` / `computeArenaAnchor` 同一族
+    //    技术命名，改 id 会连带改 E2E 选择器而玩家看不到任何差别。
+    mk(TELEPORT_ENCLOSURE_LABEL, 'btn-teleport-arena', () => {
       this._teleportThenAutoClose(this.game.teleportToArena());
     });
 
-    // ⑥ 湖（浅水高台，v2.19 新增）
+    // ⑥ 竞技场（**大竞技场** = 城东沙漠的 burning arena，v2.87 新增）
+    //    落点 = 占地西缘外的沙漠平地（唯一权威 `burningArenaTeleportPoint`，在 Game 侧消费）
+    mk(TELEPORT_ARENA_LABEL, 'btn-teleport-burning-arena', () => {
+      this._teleportThenAutoClose(this.game.teleportToBurningArena());
+    });
+
+    // ⑦ 湖（浅水高台，v2.19 新增）
     mk(TELEPORT_LAKE_LABEL, 'btn-teleport-lake', () => {
       this._teleportThenAutoClose(this.game.teleportToShallowTarn());
     });
@@ -641,7 +670,8 @@ export class SettingsPanel {
   /**
    * 瞬移按钮的统一收尾：先给 toast，**成功**则 `TELEPORT_AUTO_CLOSE_MS` 后自动关面板回游戏。
    *
-   * ⚠️ **只有 `ok === true` 才关面板**：失败（`no-mark` / `no-arena` / `no-lake` / `not-found`）
+   * ⚠️ **只有 `ok === true` 才关面板**：失败（`no-mark` / `no-arena` / `no-burning-arena` /
+   * `no-lake` / `not-found`）
    * 都要求玩家换个按钮或走远点再试，自动关掉只会逼他再按一次 ⚙ 把面板打开。
    *
    * ⚠️ **业务逻辑仍在 `Game`**（这里只消费它的返回值），与 `_teleportMessage` 同一口径 ——
@@ -651,7 +681,7 @@ export class SettingsPanel {
    * 那时不必再 `requestPointerLock` 一次（`close()` 虽然幂等，但会重复申请指针锁）。
    *
    * @param {{ok: boolean, reason?: string, kind?: string, x?: number, y?: number, z?: number, dist?: number}} r
-   *   `Game` 的瞬移返回值（六个入口同一形状）
+   *   `Game` 的瞬移返回值（七个入口同一形状）
    */
   _teleportThenAutoClose(r) {
     this._toast?.show(this._teleportMessage(r), TELEPORT_TOAST_MS);
@@ -663,7 +693,7 @@ export class SettingsPanel {
   }
 
   /**
-   * 把 `Game` 的瞬移返回值翻成玩家可读文案（单一口径：六个按钮共用一份映射）。
+   * 把 `Game` 的瞬移返回值翻成玩家可读文案（单一口径：七个按钮共用一份映射）。
    *
    * ⚠️ **成功分支按 `kind` 区分，不得靠嗅探字段**：v1.92 原实现是「有 dist 就是高台、
    * 有 y 就是记录」，加入「回家」后它同样带 x/y/z 但**没有** dist → 会被写成「已记录位置」
@@ -671,6 +701,7 @@ export class SettingsPanel {
    *
    * ⚠️ **失败分支必须各有独立文案**：`no-mark`（还没标记）与 `not-found`（范围内没有
    * 高台地带）是两种完全不同的处境，合成一句「操作失败」玩家无从判断下一步做什么。
+   * 围场的 `no-arena` 与大竞技场的 `no-burning-arena` 同理分开（v2.87）。
    * @param {{ok: boolean, kind?: string, reason?: string, x?: number, y?: number, z?: number, dist?: number}} r
    * @returns {string}
    */
@@ -681,7 +712,8 @@ export class SettingsPanel {
         case 'mark': return `已记录位置：${r.x}, ${r.y}, ${r.z}`;
         case 'mark-go': return `已跳转到标记位置：${r.x}, ${r.y}, ${r.z}`;
         case 'spawn': return `已回到出生点：${r.x}, ${r.y}, ${r.z}`;
-        case 'arena': return `已瞬移到竞技场：${r.x}, ${r.y}, ${r.z}`;
+        case 'arena': return `已瞬移到围场：${r.x}, ${r.y}, ${r.z}`;
+        case 'burning-arena': return `已瞬移到竞技场：${r.x}, ${r.y}, ${r.z}`;
         case 'lake': return `已瞬移到浅水高台：${r.x}, ${r.y}, ${r.z}`;
         // 未打 kind 的返回值（将来新增入口忘了打）也不得静默变成空提示
         default: return `已完成：${r.x}, ${r.y}, ${r.z}`;
@@ -691,7 +723,8 @@ export class SettingsPanel {
       case 'no-player': return '玩家尚未就绪';
       case 'not-found': return '附近范围内没有找到高台地带';
       case 'no-mark': return '尚未标记位置';
-      case 'no-arena': return '这个世界里没有生成竞技场';
+      case 'no-arena': return '这个世界里没有生成围场';
+      case 'no-burning-arena': return '这个世界里没有生成竞技场';
       case 'no-lake': return '这个世界里没有生成浅水高台';
       default: return '操作失败';
     }

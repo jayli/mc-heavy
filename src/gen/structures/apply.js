@@ -189,7 +189,7 @@ function pointContext(wx, wz, layouts, cityLayout, seed) {
   }
   // 大竞技场占地：同样整片让路（`kind:'none'`，一个分支覆盖上面列出的五个消费者）。
   //
-  // ⚠️ **与巨型金字塔 / 小竞技场同一个手法、同一个理由**：大竞技场是用户明确要求
+  // ⚠️ **与巨型金字塔 / 围场同一个手法、同一个理由**：大竞技场是用户明确要求
   // 「不要跟其他沙漠建筑重叠」的人工结构；树/植物/巨树/杜鹃长在场地里就是穿模。
   // 而锚点层**刻意不避让**这些点状内容（实测避让会让部分 seed 找不到落点，见
   // `burning-arena.js` 文件头「压制 vs 避让」）—— 两条设计是一对，改一条要重评估另一条。
@@ -647,7 +647,7 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
       if (inShallowTarnFootprint(x, z, shallowTarnAnchors)) continue;
       // 大竞技场占地内的撒布候选一律不落地（用户 2026-11-09：「不要跟其他沙漠建筑重叠」）。
       // ⚠️ **只靠阶段 2.93 的后写胜不够**：被埋的沙漠神殿/村落会有一半露在碗身外面
-      // （与巨型金字塔、小竞技场完全同形的缺陷）—— 必须在候选层就剔除。
+      // （与巨型金字塔、围场完全同形的缺陷）—— 必须在候选层就剔除。
       // 判据函数 `inBurningArenaFootprint` 是唯一权威（与 `pointContext` 的植被让路共用同一份）。
       if (inBurningArenaFootprint(x, z, burningArenaAnchors)) continue;
       const fp = SCATTER_FOOTPRINT[type];
@@ -802,12 +802,12 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
 
   // ---- 阶段 2.93：大竞技场（burning arena，v2.85，城东沙漠）----
   // 层序理由：
-  //   · 在小竞技场（2.9）之后、空中结构（2.5）之前 —— 同为「地面级人工结构后写胜」语义；
+  //   · 在围场（2.9）之后、空中结构（2.5）之前 —— 同为「地面级人工结构后写胜」语义；
   //   · 空岛已在 layout 层被压制（`suppressSkyIslands`），不会与本结构相撞（用户 2026-11-09
   //     裁定「大竞技场上面的空岛可以先不显示，空岛给大竞技场让路」）。
   //
   // 让路已在别处做完（撒布剔除 + `pointContext` 植被让路 + 地标/金字塔/空岛压制），
-  // 这里只做三件事（顺序载荷性，同小竞技场）：
+  // 这里只做三件事（顺序载荷性，同围场）：
   //   ① 清空占地内 [floorY+1, naturalH]：不清的话沙漠沙丘会从地板里冒出来；
   //   ② 补实基座下方的空洞（cave 挖出来的）：不补的话玩家挖穿基座会掉进洞穴；
   //   ③ 光栅化：落位 y = floorY - (floorRow - 1)，使地板层（归一化 y=floorRow）正好落在 floorY。
