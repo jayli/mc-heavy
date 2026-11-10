@@ -187,6 +187,13 @@ function exactFootprint(wx, wz, span, seed) {
 
 /**
  * 地基级大结构的 AABB 冲突判定（**只这四类**，理由见文件头「压制 vs 避让」）。
+ *
+ * ⚠️ **避让是单向的**（spec 2026-11-10-ruined-citadel-port §6 风险 5）：废弃堡垒
+ * （`ruined-citadel.js`，城西）的 `fixedBlockerAt` **会**避让本结构，而本函数**不知道**
+ * 废弃堡垒的存在。当前两者分处 City 东西两侧 ⇒ 实测 8/8 seed 无冲突，单向足够。
+ * ⚠️ **将来若把任一结构改到同一侧，必须在这里补上双向避让** —— 否则两个大结构会
+ * 静默互相穿插（锚点层各自都认为对方不存在，而光栅化是后写胜，方块层面看不出是避让漏了）。
+ *
  * @returns {string|null} 冲突原因（诊断用），无冲突返回 null
  */
 function fixedBlockerAt(wx, wz, city, shallow, arena, seed) {

@@ -2256,6 +2256,260 @@ async function checkBurningArena() {
   }
 }
 
+// ---------------------------------------------------------------- [废弃堡垒] 契约（v2.89，2026-11-10）
+
+/**
+ * [废弃堡垒] 契约：18 片拼合产物 / **甲板下空气格**（spec DR-2）/ floorRow / stride /
+ * 两侧清单 / 占地半宽 / 15 个新方块进背包 / 台阶与栏杆朝向分布。
+ *
+ * 钉的失效路径（均为**静默**失败）：
+ *   ① 素材换了但没重烘 → 产物过期（指纹抓）；
+ *   ② **空气格漏写**（DR-2 核心）→ 天然岩层填满 44 层地牢，22.6 万格白搬。
+ *      格数/类型/指纹全对，只有挖下去才发现 ⇒ 必须断言 air 格数 = 27,060；
+ *   ③ 15 个新方块漏注册 → `makeColumnSetter` 静默 return → 堡垒里出现空气洞；
+ *   ④ 新方块漏进背包排除清单 → 玩家挖下来拿不到（用户裁定「新制作的方块加入背包」）；
+ *   ⑤ 产物 bbox / floorRow / stride 不符 → 整座堡垒沉/浮或台阶朝向丢失；
+ *   ⑥ 台阶/栏杆朝向分布漂移 → 部分堵上「只改烘焙算法而指纹不变」的盲区。
+ */
+async function checkRuinedCitadel() {
+  const fp = await import('./ruined-citadel-fingerprint.mjs');
+  const dataMod = await import('../src/gen/structures/ruined-citadel-data.js');
+  const sjMod = await import('../src/gen/structures/structure-json.js');
+  const before = failures.length;
+  const fail = (m) => failures.push(`[废弃堡垒] ${m}`);
+
+  // ① 烘焙输入（18 片）与产物存在性
+  const missing = fp.RUINED_CITADEL_PIECES
+    .map((p) => path.join(fp.RUINED_CITADEL_SOURCE_DIR, p.file))
+    .filter((f) => !fs.existsSync(f));
+  if (missing.length > 0) {
+    fail(`烘焙输入缺失 ${missing.length}/18 片：${missing.map((f) => path.relative(ROOT, f)).join(', ')}（.nbt 入库，缺失 = 仓库损坏）`);
+    return;
+  }
+  if (!fs.existsSync(fp.RUINED_CITADEL_JSON) || !fs.existsSync(fp.RUINED_CITADEL_META)) {
+    fail('缺 assets/structures/ruined_citadel.json 或 ruined_citadel.meta.json（跑 npm run ruinedcitadel）');
+    return;
+  }
+  let meta, json;
+  try {
+    meta = JSON.parse(fs.readFileSync(fp.RUINED_CITADEL_META, 'utf8'));
+    json = JSON.parse(fs.readFileSync(fp.RUINED_CITADEL_JSON, 'utf8'));
+  } catch { fail('产物不是合法 JSON（重跑 npm run ruinedcitadel）'); return; }
+
+  // ② 指纹
+  const cur = fp.ruinedCitadelInputFingerprint();
+  if (meta.fingerprints?.input !== cur.input) {
+    fail(`产物已过期：指纹不匹配（烘焙时 "${meta.fingerprints?.input}" vs 当前 "${cur.input}"）→ 跑 npm run ruinedcitadel`);
+  }
+
+  // ⑫ 两侧变体清单必须一致
+  const toolsVariants = [...fp.RUINED_CITADEL_VARIANTS].sort().join(',');
+  const srcVariants = [...dataMod.RUINED_CITADEL_VARIANTS].sort().join(',');
+  if (toolsVariants !== srcVariants) {
+    fail(`RUINED_CITADEL_VARIANTS 两侧不一致（tools: [${toolsVariants}] vs src: [${srcVariants}]）—— 新变体会静默不出现`);
+  }
+
+  // ⑩ 结构名注册
+  if (sjMod.STRUCTURE_FILES.ruinedCitadel !== 'ruined_citadel.json') {
+    fail(`STRUCTURE_FILES.ruinedCitadel = ${sjMod.STRUCTURE_FILES.ruinedCitadel} ≠ 'ruined_citadel.json'（漏注册 → rasterizeStructure 静默 0 格）`);
+  }
+
+  const M = fp.RUINED_CITADEL_METRICS.ruinedCitadel;
+
+  // ③ stride 必验（错的是「朝向」不是「格数」）
+  const STRIDE = Number.isInteger(json.stride) ? json.stride : 4;
+  if (STRIDE !== 5) {
+    fail(`产物 stride=${STRIDE} ≠ 5 —— 台阶朝向（direction）没写进产物 → 3,916 个台阶会全朝 orient=0`);
+  }
+
+  // ⑦ floorRow（两套口径都要对）
+  if (json.floorRow !== M.floorRow) {
+    fail(`产物 floorRow=${json.floorRow} ≠ METRICS.floorRow ${M.floorRow}（整座堡垒会沉/浮）`);
+  }
+  if (json.floorRow !== fp.FLOOR_ROW) {
+    fail(`产物 floorRow=${json.floorRow} ≠ FLOOR_ROW ${fp.FLOOR_ROW}（烘焙与落位两套口径）`);
+  }
+
+  // 逐格统计
+  const blocks = Array.isArray(json.blocks) ? json.blocks : [];
+  const n = blocks.length / STRIDE;
+  const byType = new Map();
+  const stepOrient = new Map();   // `end_stone_brick_step:2` → 格数（台阶朝向分布）
+  const railOrient = new Map();   // `handrail:2` → 格数（栏杆朝向分布）
+  let airCells = 0, deckCells = 0;
+  let mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity, mnz = Infinity, mxz = -Infinity;
+  // 非空气 bbox（= footprint，AABB 早退用的口径；产物 bbox 含甲板下空气，两者不同）
+  let nmnx = Infinity, nmxx = -Infinity, nmnz = Infinity, nmxz = -Infinity;
+  for (let i = 0; i < blocks.length; i += STRIDE) {
+    const x = blocks[i], y = blocks[i + 1], z = blocks[i + 2];
+    const name = json.palette[blocks[i + 3]];
+    byType.set(name, (byType.get(name) || 0) + 1);
+    if (name === 'air') airCells++;
+    else {
+      if (x < nmnx) nmnx = x; if (x > nmxx) nmxx = x;
+      if (z < nmnz) nmnz = z; if (z > nmxz) nmxz = z;
+    }
+    if (name === 'handrail' || name === 'handrailA') {
+      railOrient.set(`${name}:${blocks[i + 4]}`, (railOrient.get(`${name}:${blocks[i + 4]}`) || 0) + 1);
+    }
+    if (/_step(_updown)?$/.test(name)) {
+      stepOrient.set(`${name}:${blocks[i + 4]}`, (stepOrient.get(`${name}:${blocks[i + 4]}`) || 0) + 1);
+    }
+    if (x < mnx) mnx = x; if (x > mxx) mxx = x;
+    if (y < mny) mny = y; if (y > mxy) mxy = y;
+    if (z < mnz) mnz = z; if (z > mxz) mxz = z;
+    if (y === M.floorRow) deckCells++;
+  }
+
+  // ⑨ **air 格数 = 甲板下空气数**（spec DR-2 唯一内容级守卫）
+  if (airCells !== M.airCells) {
+    fail(`air 格数 ${airCells} ≠ METRICS.airCells ${M.airCells} —— 甲板以下空气没写进产物，` +
+      'fillColumn/carveCaves 会用天然岩层填满 44 层地牢（spec DR-2）');
+  }
+  // ⑤ palette 必须含 air（air 格数 > 0 但 palette 无 air = 自相矛盾，单独钉住便于诊断）
+  const palette = Array.isArray(json.palette) ? json.palette : [];
+  if (!palette.includes('air')) {
+    fail('产物 palette 不含 "air" —— 甲板以下空气没写进产物（spec DR-2）');
+  }
+
+  // 包围盒与格数
+  const W = mxx - mnx + 1, H = mxy - mny + 1, D = mxz - mnz + 1;
+  if (W !== M.width) fail(`产物宽 ${W} ≠ METRICS.width ${M.width}`);
+  if (H !== M.height) fail(`产物高 ${H} ≠ METRICS.height ${M.height}`);
+  if (D !== M.depth) fail(`产物深 ${D} ≠ METRICS.depth ${M.depth}`);
+  if (mny !== 1) fail(`最低点 y=${mny} ≠ 1（归一化约定：rasterizeStructure 按 b.y 落位）`);
+  if (n !== M.contentCells) {
+    fail(`内容格数 ${n} ≠ METRICS.contentCells ${M.contentCells}（源改动？先跑 npm run ruinedcitadel -- --census）`);
+  }
+  if (deckCells !== M.deckCells) {
+    fail(`甲板层（y=${M.floorRow}）${deckCells} 格 ≠ METRICS.deckCells ${M.deckCells}`);
+  }
+  // METRICS 自洽：contentCells = sourceCells − droppedCells + airCells
+  if (M.sourceCells - M.droppedCells + M.airCells !== M.contentCells) {
+    fail(`METRICS 自相矛盾：sourceCells ${M.sourceCells} − droppedCells ${M.droppedCells} + airCells ${M.airCells} ≠ contentCells ${M.contentCells}`);
+  }
+
+  // ⑬ 占地半宽：**非空气 bbox** 必须与 src 侧常量对得上（AABB 早退用的就是它）。
+  //     ⚠️ 不能用产物 bbox（含甲板下空气，107×110）—— footprint 只看非空气部分（106×108）。
+  //     ⚠️ x/z 半宽不同（53/54），必须分开比（本结构不是正方形）。
+  const halfX = Math.max(-nmnx, nmxx);
+  const halfZ = Math.max(-nmnz, nmxz);
+  if (halfX !== dataMod.RUINED_CITADEL_HALF_X) {
+    fail(`非空气 x 半宽 ${halfX} ≠ ruined-citadel-data.js 的 RUINED_CITADEL_HALF_X ${dataMod.RUINED_CITADEL_HALF_X}（AABB 早退会漏/多裁一列）`);
+  }
+  if (halfZ !== dataMod.RUINED_CITADEL_HALF_Z) {
+    fail(`非空气 z 半宽 ${halfZ} ≠ ruined-citadel-data.js 的 RUINED_CITADEL_HALF_Z ${dataMod.RUINED_CITADEL_HALF_Z}（AABB 早退会漏/多裁一列）`);
+  }
+
+  // ④ palette：全部已注册 + 不含丢弃类源方块
+  if (palette.length === 0) fail('产物缺 palette（重跑 npm run ruinedcitadel）');
+  if (palette.length !== M.paletteSize) {
+    fail(`palette ${palette.length} 种 ≠ METRICS.paletteSize ${M.paletteSize}`);
+  }
+  for (const name of palette) {
+    if (REGISTRY.idOf(name) === undefined) {
+      fail(`palette 含未注册方块 "${name}"（makeColumnSetter 静默跳过 → 堡垒出现洞）`);
+    }
+  }
+  for (const [src, target] of Object.entries(fp.BLOCK_MAP)) {
+    if (target === '' && palette.includes(src)) {
+      fail(`产物 palette 含应丢弃的源方块 "${src}"`);
+    }
+  }
+
+  // ⑭ **15 个新方块都在 registry + 都在背包物品集合内**（用户裁定「新制作的方块加入背包」）。
+  //     派生规则（不硬编码清单）：
+  //       · 9 整块/柱 = BLOCK_MAP 里 `cataclysm:X → X`（源基名 == 目标名，即照 mod 贴图新烘的同名块）；
+  //       · 4 台阶 + 2 半砖 = STAIR_TARGETS / SLAB_BOTTOM 里 obsidian_brick / end_stone_brick 族。
+  //     （ochre_froglight / deepslate / obsidian / end_stone_bricks / handrail 是改名映射到既有块，不算新烘。）
+  const newBlocks = new Set();
+  for (const [src, t] of Object.entries(fp.BLOCK_MAP)) {
+    if (src.startsWith('cataclysm:') && t !== '' && src.slice('cataclysm:'.length) === t) newBlocks.add(t);
+  }
+  for (const fam of Object.values(fp.STAIR_TARGETS)) {
+    for (const t of [fam.bottom, fam.top]) if (/^(obsidian_brick|end_stone_brick)_step/.test(t)) newBlocks.add(t);
+  }
+  for (const t of Object.values(fp.SLAB_BOTTOM)) {
+    if (/^(obsidian_brick|end_stone_brick)_slab/.test(t)) newBlocks.add(t);
+  }
+  const items = buildItemNames(REGISTRY);
+  for (const name of newBlocks) {
+    if (REGISTRY.idOf(name) === undefined) fail(`新方块 "${name}" 未注册（makeColumnSetter 静默跳过 → 堡垒出现洞）`);
+    if (!FACES_DATA[name]) fail(`新方块 "${name}" 缺 FACES_DATA 贴图映射（会兜底成 stone）`);
+    if (NON_PLACEABLE_ITEMS.includes(name)) fail(`"${name}" 被塞进 NON_PLACEABLE_ITEMS（用户要求进背包）`);
+    if (HIDDEN_FROM_INVENTORY.includes(name)) fail(`"${name}" 被塞进 HIDDEN_FROM_INVENTORY（用户要求进背包）`);
+    if (!items.includes(name)) fail(`"${name}" 不在物品集合（buildItemNames 派生自 registry − 排除集合）`);
+  }
+
+  // ⑮ 栏杆朝向（同大竞技场口径）：总数不变 + 直段件存在 + 转角四向俱全 + 直段件只有 0/1
+  const railTotal = (byType.get('handrail') || 0) + (byType.get('handrailA') || 0);
+  if (railTotal !== M.railCells) {
+    fail(`栏杆格数 handrail+handrailA = ${railTotal} ≠ METRICS.railCells ${M.railCells}（朝向 pass 增删了格？）`);
+  }
+  if ((byType.get('handrailA') || 0) === 0) {
+    fail('产物没有 handrailA（直段件）—— 栏杆朝向 pass 未生效，708 格会全渲染成 +X+Z 转角');
+  }
+  for (let o = 0; o < 4; o++) {
+    if (!(railOrient.get(`handrail:${o}`) > 0)) {
+      fail(`handrail orient=${o} 一格都没有 —— 转角件四向必须俱全`);
+    }
+  }
+  for (let o = 0; o < 2; o++) {
+    if (!(railOrient.get(`handrailA:${o}`) > 0)) {
+      fail(`handrailA orient=${o} 一格都没有 —— 直段件 X/Z 两轴必须俱全`);
+    }
+  }
+  for (let o = 2; o < 4; o++) {
+    if ((railOrient.get(`handrailA:${o}`) || 0) > 0) {
+      fail(`handrailA orient=${o} 有 ${railOrient.get(`handrailA:${o}`)} 格 —— 它与 orient=${o - 2} 几何逐位相同，` +
+        '必须走 railPlacementFor（恒返回 0/1），不得手写朝向');
+    }
+  }
+  // 逐档比对冻结分布（部分堵上「只改烘焙算法而指纹不变」的盲区）
+  const wantRail = M.railOrientationCounts || {};
+  const gotRail = Object.fromEntries([...railOrient.entries()].sort());
+  if (JSON.stringify(gotRail) !== JSON.stringify(Object.fromEntries(Object.entries(wantRail).sort()))) {
+    fail(`栏杆朝向分布 ${JSON.stringify(gotRail)} ≠ METRICS.railOrientationCounts ${JSON.stringify(wantRail)}` +
+      '（改了朝向算法？重跑 npm run ruinedcitadel 后按实测值重标基线，不要放宽断言）');
+  }
+  if (JSON.stringify(meta.railOrientationCounts || null) !== JSON.stringify(gotRail)) {
+    fail(`meta.json 的 railOrientationCounts ≠ 产物实测（烘焙脚本漏写 = 门禁拓不到产物与基线的对应关系）`);
+  }
+  // 台阶朝向逐档比对（同理；台阶是 3,916 格的大头，half=top 占 39%）
+  const wantSteps = M.stepOrientationCounts || {};
+  const gotSteps = Object.fromEntries([...stepOrient.entries()].sort());
+  if (JSON.stringify(gotSteps) !== JSON.stringify(Object.fromEntries(Object.entries(wantSteps).sort()))) {
+    fail(`台阶朝向分布 ≠ METRICS.stepOrientationCounts（half=top 的 +2 被改了？或改了朝向算法 —— 重跑 --census-orient 核实）`);
+  }
+  if (JSON.stringify(meta.stepOrientationCounts || null) !== JSON.stringify(gotSteps)) {
+    fail(`meta.json 的 stepOrientationCounts ≠ 产物实测（烘焙脚本漏写）`);
+  }
+
+  // ⑪ 通道分布（用 REGISTRY.cullTable，不要用正则扫 blocks-data 源码）。
+  //     air 是 cullMode:'none'（cullTable=3），既非 opaque 也非 cutout，单独计。
+  let cutout = 0, opaque = 0, transparent = 0, none = 0;
+  for (const [name, count] of byType) {
+    const id = REGISTRY.idOf(name);
+    if (id === undefined) continue;
+    const c = REGISTRY.cullTable[id];
+    if (c === 1) cutout += count; else if (c === 2) transparent += count; else if (c === 3) none += count; else opaque += count;
+  }
+  if (cutout !== M.cutoutCells) fail(`cutout 格数 ${cutout} ≠ METRICS.cutoutCells ${M.cutoutCells}`);
+  if (opaque !== M.opaqueCells) fail(`opaque 格数 ${opaque} ≠ METRICS.opaqueCells ${M.opaqueCells}`);
+  if (transparent !== (M.transparentCells ?? 0)) fail(`transparent 格数 ${transparent} ≠ METRICS.transparentCells ${M.transparentCells}`);
+  if (none !== M.airCells) fail(`none（air）格数 ${none} ≠ METRICS.airCells ${M.airCells}`);
+
+  // ⚠️ 成功行的条件必须涵盖**本函数全部判据**
+  if (failures.length === before) {
+    const steps = [...stepOrient.values()].reduce((a, b) => a + b, 0);
+    infos.push(`[废弃堡垒] ${n} 格（含 air ${airCells}）/ ${W}×${H}×${D} / floorRow ${json.floorRow}（甲板 ${deckCells} 格）/ ` +
+      `stride ${STRIDE} + 台阶 ${steps} 个 / 栏杆 ${railTotal} 格（转角 ${byType.get('handrail') || 0} + ` +
+      `直段 ${byType.get('handrailA') || 0}，朝向四向俱全）/ ${palette.length} 种全已注册 / ` +
+      `非空气半宽 ${halfX}×${halfZ} / ${newBlocks.size} 个新方块进背包 / ` +
+      `opaque ${opaque} + cutout ${cutout} + transparent ${transparent} / 指纹匹配`);
+  }
+}
+
 // ---------------------------------------------------------------- [浅水高台] 契约（v2.11，2026-11-01）
 
 /**
@@ -3077,6 +3331,7 @@ await checkCloudlandTarnZone(); // 高台地带：35 产物/映射表/通道/台
 await checkGiantPyramid();   // 巨型金字塔：烘焙产物/映射表/通道契约（⚠️ 漏了本行则门禁永不执行）
 await checkArena();          // 竞技场：烘焙产物/栏杆朝向/floorRow/占地尺寸契约（⚠️ 漏了本行则门禁永不执行）
 await checkBurningArena();   // 灾变竞技场：8 片拼合产物/熔岩分层/floorRow/stride/两侧清单契约（⚠️ 漏了本行则门禁永不执行）
+await checkRuinedCitadel();  // 废弃堡垒：18 片拼合产物/甲板下空气格/floorRow/stride/新方块进背包契约（⚠️ 漏了本行则门禁永不执行）
 await checkShallowTarns();   // 浅水高台：5 产物/palette 白名单/源方块映射/草基准色/尺寸契约
 await checkMedievalShip();   // 中世纪船：4 旋转变体/朝向自洽/新方块声明/朝向表同源（⚠️ 漏了本行则门禁永不执行）
 checkGrassTextures();        // 草贴图：两个 16×16 产物 + 均值偏差 + 源图未改

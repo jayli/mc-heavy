@@ -24,6 +24,7 @@ import {
   PLAYGROUND_ROW_TITLE, PROGRESS_ROW_TITLE, PROGRESS_EXPORT_LABEL, PROGRESS_IMPORT_LABEL, PROGRESS_ERRORS,
   TELEPORT_ROW_TITLE, TELEPORT_TARN_LABEL, TELEPORT_MARK_LABEL, TELEPORT_GO_LABEL,
   TELEPORT_HOME_LABEL, TELEPORT_ARENA_LABEL, TELEPORT_ENCLOSURE_LABEL, TELEPORT_LAKE_LABEL,
+  TELEPORT_CITADEL_LABEL,
   TELEPORT_AUTO_CLOSE_MS,
   RESOLUTION_ROW_TITLE, RESOLUTION_LABELS,
 } from '../ui/settings-panel.js';
@@ -411,18 +412,20 @@ test('浮层的 z-index 必须高于背包与设置面板（否则被面板盖�
     '浮层 CSS 的 z-index 必须引用 TOOLTIP_Z_INDEX 常量（不得另写一份字面量）');
 });
 
-test('瞬移行的标题与七个按钮文案是导出的单一口径常量（v2.87 七按钮：新增围场）', () => {
+test('瞬移行的标题与八个按钮文案是导出的单一口径常量（v2.89 八按钮：新增堡垒，竞技场→竞技）', () => {
   // v2.10 用户 2026-10-29：「操作面板中的瞬移区，按钮调整一下：标记，跳转标记，回家，高台，竞技场」；
   // v2.19 用户 2026-10-30：「增加一个瞬移按钮：湖，点击瞬移到浅水高台地图」；
-  // v2.87 用户 2026-11-09：原「竞技场」（小竞技场）改名「围场」，新增指向**大竞技场**的「竞技场」。
+  // v2.87 用户 2026-11-09：原「竞技场」（小竞技场）改名「围场」，新增指向**大竞技场**的「竞技场」；
+  // v2.89 用户 2026-11-10：末尾追加「堡垒」（城西废弃堡垒），同时「竞技场」缩为「竞技」
+  // （8 个按钮后每只文字可用 31.4px，3 字 36px 会折行 —— 实测，见下方长度断言）。
   //
-  // ⚠️ **文案全部缩短到 ≤ 3 字不是审美而是布局的必然**：左列实测 375px、`.mc-btn-group` 的
-  // `gap:8px` + 按钮 `padding:6px 4px` 下，**六个按钮平分只剩 56px 每个**（`clientWidth` 52、
-  // 内容宽 44px）⇒ 12px 字号下 3 字（36px）刚好、**4 字（48px）就会折行**。
-  // 实测（真游戏页注入第 6 个按钮）：四字的「跳转标记」变成 2 行、按钮高 33 → 50px。
-  // 故 v2.19 把「跳转标记」缩成「跳转」（用户裁定）。
+  // ⚠️ **文案随按钮数递减（六按钮 4 字 → 七按钮 3 字 → 八按钮 2 字）不是审美而是布局的必然**：
+  // 左列实测 375px、`.mc-btn-group` 的 `gap` + 按钮 `padding:6px 4px` 下，按钮越多每只文字可用宽越窄。
   // ⚠️ v2.87 加到七个后本行 `gap` 收到 4px（`.mc-teleport .mc-btn-group`）：每只 50.1px、
-  // 内容宽 38.1px，3 字单行放得下；文案上限仍是 **3 字**。
+  // 内容宽 38.1px，3 字单行放得下；文案上限当时是 **3 字**。
+  // ⚠️ **v2.89 加到八个后上限降到 2 字**（实测）：每只 43.4px、文字可用 31.4px，
+  // 3 字（36px）折行（按钮高 33→50px），即使 `gap` 收到 0px 也只有 34.9px ⇒ 无解。
+  // 故「竞技场」缩为「竞技」（用户 2026-11-10 裁定）。
   // ⚠️ `scrollWidth <= clientWidth` **对折行没有判别力**（折行时两者依然相等），真正的信号是
   // 行盒数 —— 那条断言在 `tests/teleport.spec.mjs` 里（Tier 4，能量真实布局）。
   assertEqual(TELEPORT_ROW_TITLE, '瞬移');
@@ -430,18 +433,24 @@ test('瞬移行的标题与七个按钮文案是导出的单一口径常量（v2
   assertEqual(TELEPORT_GO_LABEL, '跳转');
   assertEqual(TELEPORT_HOME_LABEL, '回家');
   assertEqual(TELEPORT_TARN_LABEL, '高台');
-  // ⚠️ 术语（用户 2026-11-09）：「竞技场」= 城东沙漠的大竞技场（burning arena）；
-  // 「围场」= 原小竞技场（城南门外草地竞技场）。两者文案不得互换。
-  assertEqual(TELEPORT_ARENA_LABEL, '竞技场');
+  // ⚠️ 术语（用户 2026-11-09）：「竞技」= 城东沙漠的大竞技场（burning arena）；
+  // 「围场」= 原小竞技场（城南门外草地竞技场）；「堡垒」= 城西废弃堡垒（v2.89）。
+  // 三者文案不得互换。
+  // ⚠️ 「竞技」是 2 字不是 3 字（v2.89 用户裁定）：8 按钮后每只文字可用 31.4px，
+  // 3 字（36px）折行（实测按钮高 33→50px），即使 gap 收到 0px 也只有 34.9px。
+  assertEqual(TELEPORT_ARENA_LABEL, '竞技');
   assertEqual(TELEPORT_ENCLOSURE_LABEL, '围场');
   assertEqual(TELEPORT_LAKE_LABEL, '湖');
-  // 七个按钮必须互相可区分 —— 否则玩家分不出「标记」与「跳转」哪一个是记录
+  assertEqual(TELEPORT_CITADEL_LABEL, '堡垒');
+  // 八个按钮必须互相可区分 —— 否则玩家分不出「标记」与「跳转」哪一个是记录
   const all = [TELEPORT_MARK_LABEL, TELEPORT_GO_LABEL, TELEPORT_HOME_LABEL,
-    TELEPORT_TARN_LABEL, TELEPORT_ENCLOSURE_LABEL, TELEPORT_ARENA_LABEL, TELEPORT_LAKE_LABEL];
-  assertEqual(new Set(all).size, 7, '七个瞬移按钮文案不得重复');
-  // 文案长度约束（布局）：单行排下七个按钮的前提（实测 3 字 = 36px ≤ 38.1px 可用宽）
+    TELEPORT_TARN_LABEL, TELEPORT_ENCLOSURE_LABEL, TELEPORT_ARENA_LABEL, TELEPORT_LAKE_LABEL,
+    TELEPORT_CITADEL_LABEL];
+  assertEqual(new Set(all).size, 8, '八个瞬移按钮文案不得重复');
+  // 文案长度约束（布局）：单行排下八个按钮的前提（实测 8 按钮每只文字可用 31.4px，
+  // 2 字 = 24px ≤ 31.4px，3 字 = 36px > 31.4px ⇒ 上限 **2 字**）
   for (const label of all) {
-    assertTrue(label.length <= 3, `「${label}」超过 3 个字，七个按钮一行摆不下（会折行）`);
+    assertTrue(label.length <= 2, `「${label}」超过 2 个字，八个按钮一行摆不下（会折行）`);
   }
   assertFalse(TELEPORT_ROW_TITLE === PROGRESS_ROW_TITLE, '瞬移行不得与进度管理行撞名');
 });

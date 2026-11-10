@@ -7,6 +7,7 @@
 //   · CITY_REGION 掷到地带 → 全世界唯一的城市消失
 import { computeShallowTarnAnchor, shallowTarnSuppressedLandmarks } from '../gen/structures/shallow-water-tarns.js';
 import { computeBurningArenaAnchor, burningArenaSuppressedLandmarks } from '../gen/structures/burning-arena.js';
+import { computeRuinedCitadelAnchor, ruinedCitadelSuppressedLandmarks } from '../gen/structures/ruined-citadel.js';
 import { test } from './runner.js';
 import { assertEqual, assertTrue, assertFalse } from './assert.js';
 import {
@@ -987,9 +988,15 @@ test('地带接线：非地带且雪原未让路的 region 逐字段零回归（
   //       同为逐地标粒度（`burningArenaSuppressedLandmarks`）。它比浅水高台多压两项 ——
   //       `giantPyramid` 与 `skyIslands`（塔高 80 格会撞空岛，用户裁定「空岛给大竞技场让路」），
   //       故跳过判据要把本用例断言的**全部四个字段**都算上，漏一项就是假 FAIL。
+  //    ⑤ **跳过被废弃堡垒压制的字段**（v2.89）：第四张同构地图（`ruinedCitadelSuppressedLandmarks`，
+  //       城西）。它压的字段与大竞技场同一组（pyramid/frozenMountain/plainLand/island/giantPyramid/
+  //       skyIslands），本用例只断言 giantPyramid/pyramid/frozenMountain/skyIslands 四项 ⇒ 跳过判据
+  //       覆盖这四项即可。实测 seed 12345 的堡垒占地把 region(-2,-1) 的 pyramid 压成 null
+  //       （pyramid 中心 (-495,-130) 距堡垒矩形仅 5 格 < 半径 28），不加这条会假 FAIL。
   //    若不收窄，断言「pyramid 非空」在那些 region 上必然 FAIL。
   const shallowAnchor = computeShallowTarnAnchor(SEED);
   const burningArenaAnchor = computeBurningArenaAnchor(SEED);
+  const ruinedCitadelAnchor = computeRuinedCitadelAnchor(SEED);
   let checked = 0;
   for (let rx = -4; rx <= 4; rx++) {
     for (let rz = -4; rz <= 4; rz++) {
@@ -1001,6 +1008,10 @@ test('地带接线：非地带且雪原未让路的 region 逐字段零回归（
       }
       if (burningArenaAnchor) {
         const sup = burningArenaSuppressedLandmarks(burningArenaAnchor, rx, rz, SEED);
+        if (sup.pyramid || sup.frozenMountain || sup.giantPyramid || sup.skyIslands) continue;
+      }
+      if (ruinedCitadelAnchor) {
+        const sup = ruinedCitadelSuppressedLandmarks(ruinedCitadelAnchor, rx, rz, SEED);
         if (sup.pyramid || sup.frozenMountain || sup.giantPyramid || sup.skyIslands) continue;
       }
       const lay = computeRegionLayout(rx, rz, SEED);

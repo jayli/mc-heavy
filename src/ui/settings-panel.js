@@ -77,10 +77,14 @@ export const PROGRESS_ROW_TITLE = '进度管理';
  * 并因它把「跳转标记」缩成「跳转」—— 六个按钮后**上限降到 3 字**（4 字会折行）。
  * v2.87 追加「围场」（用户 2026-11-09）—— 七个按钮后上限仍是 3 字，但靠**本行专属的
  * `gap:4px`** 才摆得下（见 `_rowTeleport` 注释里的实测宽度账）。
+ * v2.89 追加「堡垒」（城西废弃堡垒）—— **八个按钮后上限降到 2 字**：实测每只 43.4px、
+ * 文字可用 31.4px < 3 字（36px）⇒ 「竞技场」折成两行（按钮高 33→50px），故缩为「竞技」
+ * （用户 2026-11-10 裁定）。⚠️ 即使 `gap` 收到 0px 也只有 34.9px，**3 字无论如何摆不下**。
  *
- * ⚠️ **术语（用户 2026-11-09 裁定）**：「**竞技场**」= 城东沙漠的大竞技场
+ * ⚠️ **术语（用户 2026-11-09 裁定）**：「**竞技**」= 城东沙漠的大竞技场
  * （burning arena，85×85×80）；「**围场**」= 原「小竞技场」（城南门外的草地竞技场，
- * `gen/structures/arena.js`，41×79）。用户原话：「原来的小竞技场后面我都叫围场」。
+ * `gen/structures/arena.js`，41×79）；「**堡垒**」= 城西干燥沙漠的废弃堡垒
+ * （ruined citadel，107×110，v2.89）。用户原话：「原来的小竞技场后面我都叫围场」。
  * 代码层的 `arena` 一族命名（`computeArenaAnchor` / `teleportToArena` / `arena.js`）
  * **不改**——那是结构的技术名，改了会波及烘焙产物、单测与 E2E；只有玩家可见文案用「围场」。
  *
@@ -88,6 +92,7 @@ export const PROGRESS_ROW_TITLE = '进度管理';
  * `gap:8px` ⇒ 五个按钮每个 **69px**、六个只剩 **56px**（`clientWidth` 52，扣 `padding:6px 4px`
  * 后内容宽 **44px**）⇒ 12px 字号下 3 字（36px）刚好、**4 字（48px）就折成两行**
  * （实测按钮高 33 → 50px）。与 v1.98 的「导入进度→导入」同一个原因。
+ * ⚠️ **八个按钮后上限是 2 字**（v2.89 实测）：每只 43.4px、文字可用 31.4px，3 字（36px）折行。
  * ⚠️ 折行时 `scrollWidth === clientWidth`（浏览器是折行而不是溢出）—— 判断文案排不排得下
  * 必须看**行盒数**，见 `tests/teleport.spec.mjs`。
  */
@@ -96,11 +101,15 @@ export const TELEPORT_MARK_LABEL = '标记';
 export const TELEPORT_GO_LABEL = '跳转';
 export const TELEPORT_HOME_LABEL = '回家';
 export const TELEPORT_TARN_LABEL = '高台';
-/** 「竞技场」= **大竞技场**（城东沙漠 burning arena，v2.87 起指向它，见上方术语注释） */
-export const TELEPORT_ARENA_LABEL = '竞技场';
+/** 「竞技」= **大竞技场**（城东沙漠 burning arena，v2.87 起指向它，见上方术语注释）。
+ *  ⚠️ v2.89 由「竞技场」缩为 2 字：加第 8 个按钮后每只只剩 31.4px 文字宽，3 字（36px）会折行
+ *  （用户 2026-11-10 裁定）。 */
+export const TELEPORT_ARENA_LABEL = '竞技';
 /** 「围场」= **原小竞技场**（城南门外草地竞技场，v2.87 由「竞技场」改名而来） */
 export const TELEPORT_ENCLOSURE_LABEL = '围场';
 export const TELEPORT_LAKE_LABEL = '湖';
+/** 「堡垒」= **废弃堡垒**（城西干燥沙漠 ruined citadel，v2.89 新增） */
+export const TELEPORT_CITADEL_LABEL = '堡垒';
 
 /**
  * v2.27：「分辨率」行的标题与两个档位文案。导出供 `src/tests/test-ui.js` 钉死（单一口径）。
@@ -191,8 +200,9 @@ const PANEL_CSS = `
 }
 #settings-modal .mc-title { text-align: left; font-size: 14px; line-height: 1.2; font-weight: bold; }
 #settings-modal .mc-btn-group { display: flex; gap: 8px; width: 100%; }
-/* 瞬移行专属：七个按钮一行摆不下 8px 间距（实测内容宽 34.7px < 3 字 36px ⇒ 折行），
-   收到 4px 后内容宽 38.1px，3 字文案单行放得下。只作用于本行，其余按钮组仍是 8px。 */
+/* 瞬移行专属：八个按钮一行摆不下 8px 间距（实测每只 43.4px、文字可用 31.4px），
+   收到 4px 后 2 字文案（24px）单行放得下；3 字（36px）无论如何折行（v2.89 实测）。
+   只作用于本行，其余按钮组仍是 8px。 */
 #settings-modal .mc-teleport .mc-btn-group { gap: 4px; }
 #settings-modal button {
   flex: 1; padding: 6px 4px; font-size: 12px;
@@ -587,15 +597,20 @@ export class SettingsPanel {
    *
    * ⚠️ **v2.87 加到七个按钮后，本行的 `gap` 从 8px 收到 4px**（`.mc-teleport .mc-btn-group`）：
    * 7 个按钮 + 6×8px 间距 ⇒ 每只 46.7px、内容宽 34.7px < 3 字（36px）⇒ **三字也会折行**；
-   * 收到 4px 后每只 50.1px、内容宽 38.1px ⇒ 三字单行放得下。文案上限仍是 **3 字**。
+   * 收到 4px 后每只 50.1px、内容宽 38.1px ⇒ 三字单行放得下。
+   *
+   * ⚠️ **v2.89 加到八个按钮后，文案上限降到 2 字**（实测）：每只 43.4px、文字可用 31.4px，
+   * 3 字（36px）仍折行（按钮高 33→50px），即使 `gap` 收到 0px 也只有 34.9px ⇒ 无解。
+   * 故「竞技场」缩为「竞技」（用户 2026-11-10 裁定），其余按钮本就 ≤ 2 字。
    * `teleport.spec` 用 `offsetTop` 钉「不得换行」、用**行盒数**钉「文案不得折行」
    * （`scrollWidth <= clientWidth` 对折行无判别力——折行时两者依然相等，v2.19 实测）。
    *
    * **按钮顺序 = 用户指定**：v2.10（2026-10-29）「标记，跳转标记，回家，高台，竞技场」，
    * v2.19（2026-10-30）在本行末尾追加「湖」（浅水高台），
-   * v2.87（2026-11-09）把原「竞技场」改名为「围场」、并在其后新增指向**大竞技场**的「竞技场」。
-   * 前三个是「标记相关的三连」（记录 → 跳回 → 回家），后四个是「去某个地标」
-   * （高台 / 围场 / 竞技场 / 湖），不要按「先地标后标记」的习惯改回去 ——
+   * v2.87（2026-11-09）把原「竞技场」改名为「围场」、并在其后新增指向**大竞技场**的「竞技」，
+   * v2.89（2026-11-10）在末尾追加「堡垒」（城西废弃堡垒）。
+   * 前三个是「标记相关的三连」（记录 → 跳回 → 回家），后五个是「去某个地标」
+   * （高台 / 围场 / 竞技 / 湖 / 堡垒），不要按「先地标后标记」的习惯改回去 ——
    * 那是上一版（v1.92）的顺序，用户明确重排了。
    *
    * ⚠️ **六个「跳转」按钮成功后自动关面板**（v2.28，用户 2026-10-30：「点击其他的按钮完成跳转后，
@@ -664,6 +679,12 @@ export class SettingsPanel {
       this._teleportThenAutoClose(this.game.teleportToShallowTarn());
     });
 
+    // ⑧ 堡垒（**废弃堡垒** = 城西干燥沙漠的 ruined citadel，v2.89 新增）
+    //    落点 = 占地东缘外的沙漠平地（唯一权威 `ruinedCitadelTeleportPoint`，在 Game 侧消费）
+    mk(TELEPORT_CITADEL_LABEL, 'btn-teleport-ruined-citadel', () => {
+      this._teleportThenAutoClose(this.game.teleportToRuinedCitadel());
+    });
+
     return row;
   }
 
@@ -693,7 +714,7 @@ export class SettingsPanel {
   }
 
   /**
-   * 把 `Game` 的瞬移返回值翻成玩家可读文案（单一口径：七个按钮共用一份映射）。
+   * 把 `Game` 的瞬移返回值翻成玩家可读文案（单一口径：八个按钮共用一份映射）。
    *
    * ⚠️ **成功分支按 `kind` 区分，不得靠嗅探字段**：v1.92 原实现是「有 dist 就是高台、
    * 有 y 就是记录」，加入「回家」后它同样带 x/y/z 但**没有** dist → 会被写成「已记录位置」
@@ -701,7 +722,12 @@ export class SettingsPanel {
    *
    * ⚠️ **失败分支必须各有独立文案**：`no-mark`（还没标记）与 `not-found`（范围内没有
    * 高台地带）是两种完全不同的处境，合成一句「操作失败」玩家无从判断下一步做什么。
-   * 围场的 `no-arena` 与大竞技场的 `no-burning-arena` 同理分开（v2.87）。
+   * 围场的 `no-arena` 与大竞技场的 `no-burning-arena` 同理分开（v2.87），
+   * 废弃堡垒的 `no-ruined-citadel` 又是一种（v2.89）。
+   *
+   * ⚠️ **toast 文案用全名「竞技场」而按钮用「竞技」**：按钮受布局约束（8 个按钮后
+   * 3 字会折行，用户 2026-11-10 裁定缩为 2 字），而 toast 不受宽度约束 ⇒ 用全名更清楚。
+   * `tests/teleport.spec.mjs` 钉的是 toast 文案（`/已瞬移到竞技场/`），改按钮文案不会弄红它。
    * @param {{ok: boolean, kind?: string, reason?: string, x?: number, y?: number, z?: number, dist?: number}} r
    * @returns {string}
    */
@@ -714,6 +740,7 @@ export class SettingsPanel {
         case 'spawn': return `已回到出生点：${r.x}, ${r.y}, ${r.z}`;
         case 'arena': return `已瞬移到围场：${r.x}, ${r.y}, ${r.z}`;
         case 'burning-arena': return `已瞬移到竞技场：${r.x}, ${r.y}, ${r.z}`;
+        case 'ruined-citadel': return `已瞬移到堡垒：${r.x}, ${r.y}, ${r.z}`;
         case 'lake': return `已瞬移到浅水高台：${r.x}, ${r.y}, ${r.z}`;
         // 未打 kind 的返回值（将来新增入口忘了打）也不得静默变成空提示
         default: return `已完成：${r.x}, ${r.y}, ${r.z}`;
@@ -725,6 +752,7 @@ export class SettingsPanel {
       case 'no-mark': return '尚未标记位置';
       case 'no-arena': return '这个世界里没有生成围场';
       case 'no-burning-arena': return '这个世界里没有生成竞技场';
+      case 'no-ruined-citadel': return '这个世界里没有生成堡垒';
       case 'no-lake': return '这个世界里没有生成浅水高台';
       default: return '操作失败';
     }

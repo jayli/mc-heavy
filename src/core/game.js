@@ -93,6 +93,7 @@ import { encodeProgress, decodeProgress } from '../save/progress-codec.js';
 import { computeTarnZone, findNearestTarnZone } from '../gen/structures/tarn-zone.js';
 import { computeArenaAnchor } from '../gen/structures/arena.js';
 import { burningArenaTeleportPoint } from '../gen/structures/burning-arena.js';
+import { ruinedCitadelTeleportPoint } from '../gen/structures/ruined-citadel.js';
 import {
   computeShallowTarnAnchor, SHALLOW_TARN_OUTER_RADIUS,
   BEACH_WIDTH, SLOPE_WIDTH, shallowTarnShapePhase, shallowTarnLakeRadiusAt,
@@ -1886,6 +1887,29 @@ export class Game {
     // 落地后由帧循环的 `scheduler.update(playerX, playerZ)` 逐片加载（同 `_teleportTo` 的说明）。
     this._teleportTo(p.x, p.y, p.z);
     return { ok: true, kind: 'burning-arena', ...p };
+  }
+
+  /**
+   * 瞬移到**废弃堡垒**（城西干燥沙漠的 ruined citadel，设置面板「堡垒」按钮，v2.89）。
+   *
+   * ⚠️ **与大竞技场分居 City 两侧**：大竞技场在城东（`teleportToBurningArena`），本结构在城西。
+   *
+   * 落点唯一权威 = `ruinedCitadelTeleportPoint(seed)`（占地**东缘**外 6 格的沙漠平地，
+   * y = 自然地表 + 1）—— 本方法**不复算**任何坐标（红线 1）。
+   *
+   * ⚠️ **reason 用独立的 `no-ruined-citadel`**：与大竞技场的 `no-burning-arena`、围场的
+   * `no-arena` 是三种处境（本结构每 seed 必生成，返回 null 只可能是锚点搜索窗内无解），
+   * 面板逐 reason 映射。
+   *
+   * @returns {{ok: true, kind: 'ruined-citadel', x: number, y: number, z: number} | {ok: false, reason: string}}
+   */
+  teleportToRuinedCitadel() {
+    if (!this.player?.physics?.pos) return { ok: false, reason: 'no-player' };
+    const p = ruinedCitadelTeleportPoint(this.seed);
+    if (!p) return { ok: false, reason: 'no-ruined-citadel' };
+    // 落地后由帧循环的 `scheduler.update(playerX, playerZ)` 逐片加载（同 `_teleportTo` 的说明）。
+    this._teleportTo(p.x, p.y, p.z);
+    return { ok: true, kind: 'ruined-citadel', ...p };
   }
 
   /**

@@ -30,6 +30,10 @@ import {
   BURNING_ARENA_HALF, inBurningArenaFootprint,
 } from './burning-arena.js';
 import { BURNING_ARENA_VARIANTS } from './burning-arena-data.js';
+import {
+  RUINED_CITADEL_HALF_X, RUINED_CITADEL_HALF_Z, inRuinedCitadelFootprint,
+} from './ruined-citadel.js';
+import { RUINED_CITADEL_VARIANTS } from './ruined-citadel-data.js';
 import { TARN_ZONE_RADIUS, snowLandSuppressedByTarn, TARN_CLOUD_MIN_Y } from './tarn-zone.js';
 import { fillTarnPlateau, tarnSnowCap, tarnPlantAt } from './tarn-terrain.js';
 import { rasterizeAltar, ALTAR_ARM_LENGTH } from './tarn-altar.js';
@@ -199,6 +203,17 @@ function pointContext(wx, wz, layouts, cityLayout, seed) {
   if (inBurningArenaFootprint(wx, wz, layouts.map((l) => l.burningArena))) {
     return { kind: 'none' };
   }
+  // 废弃堡垒占地（城西，v2.89）：同样整片让路（`kind:'none'`）。
+  //
+  // ⚠️ 与大竞技场同一个手法、同一个理由：用户明确要求「不要跟其他沙漠建筑重叠」，
+  // 树/植物/巨树/杜鹃长在堡垒里就是穿模。锚点层**刻意不避让**这些点状内容
+  // （实测避让会让部分 seed 找不到落点）—— 两条设计是一对，改一条要重评估另一条。
+  //
+  // ⚠️ 判据转调 `inRuinedCitadelFootprint`（唯一权威，与阶段 2.7 的撒布剔除共用同一份），
+  //    不在此重写一遍 `Math.abs(dx) <= 53`（红线 1）。
+  if (inRuinedCitadelFootprint(wx, wz, layouts.map((l) => l.ruinedCitadel))) {
+    return { kind: 'none' };
+  }
   for (const layout of layouts) {
     if (getPyramidInfo(wx, wz, layout.pyramid)) return { kind: 'none' };
     if (layout.island) {
@@ -331,6 +346,13 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
   // （红线 1：漏一行会让结构**静默不出现** —— `rasterizeStructure` 拿到空 blocks 直接 return）。
   if (layouts.some((l) => l.burningArena)) {
     for (const base of BURNING_ARENA_VARIANTS) needTypes.add(base);
+  }
+  // 废弃堡垒（Ruined Citadel，v2.89）：惰性预载 —— 只有与占地相交的 region 才携带锚点。
+  // ⚠️ **本产物 3.7MB（288,744 格），超过大竞技场成为全部结构里最大的** —— 无条件预载
+  // 会让每个新 Worker 的首个 GEN 都付一次冷 fetch + 解析。从 `RUINED_CITADEL_VARIANTS`
+  // 派生而不是手写清单（红线 1：漏一行会让结构**静默不出现**）。
+  if (layouts.some((l) => l.ruinedCitadel)) {
+    for (const base of RUINED_CITADEL_VARIANTS) needTypes.add(base);
   }
   // 浅水高台：5 个产物。惰性预载 —— 只有整形区相交的 region 才拉。
   // 从 `SHALLOW_TARN_VARIANTS` 派生而不是手写清单（红线 1）。
@@ -616,6 +638,8 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
   const shallowTarnAnchors = layouts.map((l) => l.shallowTarn);
   // 大竞技场锚点列表（同上手法，同一判据函数消费）
   const burningArenaAnchors = layouts.map((l) => l.burningArena);
+  // 废弃堡垒锚点列表（同上手法，同一判据函数消费）
+  const ruinedCitadelAnchors = layouts.map((l) => l.ruinedCitadel);
   for (const arr of scatterCandidates) {
     for (let i = 0; i < arr.length; i += SCATTER_STRIDE) {
       const x = arr[i], y = arr[i + 1], z = arr[i + 2];
@@ -650,6 +674,11 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
       // （与巨型金字塔、围场完全同形的缺陷）—— 必须在候选层就剔除。
       // 判据函数 `inBurningArenaFootprint` 是唯一权威（与 `pointContext` 的植被让路共用同一份）。
       if (inBurningArenaFootprint(x, z, burningArenaAnchors)) continue;
+      // 废弃堡垒占地内的撒布候选一律不落地（用户裁定：城西堡垒也不与其他沙漠建筑重叠）。
+      // ⚠️ **只靠阶段 2.94 的后写胜不够**：被埋的沙漠神殿/村落会有一半露在堡垒外面
+      // （与巨型金字塔、围场、大竞技场完全同形的缺陷）—— 必须在候选层就剔除。
+      // 判据函数 `inRuinedCitadelFootprint` 是唯一权威（与 `pointContext` 的植被让路共用同一份）。
+      if (inRuinedCitadelFootprint(x, z, ruinedCitadelAnchors)) continue;
       const fp = SCATTER_FOOTPRINT[type];
       if (!fp) continue;
       if (!placementIntersects({ x, z }, fp.halfX, fp.halfZ, column.cx, column.cz)) continue;
@@ -846,6 +875,56 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
 
     // ③ 光栅化（不补 groundSupport：基座 9 层已足够，补柱会在碗底外多插一圈）
     rasterizeStructure('burningArena', ba.wx, ba.floorY - (baFloorRow - 1), ba.wz,
+      setBlock, column, registry, seed, false);
+  }
+
+  // ---- 阶段 2.94：废弃堡垒（Ruined Citadel，v2.89，城西干燥沙漠）----
+  // 层序理由：
+  //   · 在大竞技场（2.93）之后、空中结构（2.5）之前 —— 同为「地面级人工结构后写胜」语义；
+  //   · 空岛已在 layout 层被压制（`suppressSkyIslands`）。⚠️ 本结构塔顶只有 floorY+18
+  //     （世界 y=17~22）而空岛底 y≥40 ⇒ 当前恒不相撞，压制项是「将来加高塔楼」的预留。
+  //
+  // 让路已在别处做完（撒布剔除 + `pointContext` 植被让路 + 地标/金字塔压制），
+  // 这里只做两件事（顺序载荷性，同大竞技场）：
+  //   ① 清空占地内 [floorY+1, naturalH] 的沙丘凸起；
+  //   ② 光栅化：落位 y = floorY - (floorRow - 1)，使甲板层（归一化 y=45）正好落在 floorY。
+  //
+  // ⚠️ **① 是实测必需的，不是照抄大竞技场的保险动作**：甲板在 floorY = 占地**最低**地表，
+  //    而 span≤5 ⇒ 8 个 seed 实测 **88.8%~93.3%** 的列自然地表高出甲板（最多 5 格）。
+  //    又因为甲板覆盖率只有 **71.6%**（8,197/11,448，废墟形态刻意不满铺），那 28.4% 的
+  //    开口处若不清空，沙丘会直接从甲板平面里冒出来 1~5 格。
+  // ⚠️ **必须先清后光栅化**：塔楼在甲板以上（ny=46..63 → 世界 y=floorY+1..floorY+18），
+  //    与沙丘清空区间重叠。反序会把刚写好的塔楼底部清掉。
+  // ⚠️ **不需要「补实基座下方空洞」**（大竞技场的 ②）：本结构甲板以下是 44 层地牢，
+  //    底部为实心 end_stone 锥体，且**后写胜**于 `carveCaves` ⇒ 洞穴已被结构自身覆盖。
+  //    （大竞技场需要补是因为它的碗底只有 9 层基座，下方是 cave 挖空的天然岩层。）
+  for (const layout of layouts) {
+    const rc = layout.ruinedCitadel;
+    if (!rc) continue;
+    // ⚠️ x/z 半宽不同（53/54），必须分开传（本结构不是正方形）
+    if (!placementIntersects({ x: rc.wx, z: rc.wz }, RUINED_CITADEL_HALF_X, RUINED_CITADEL_HALF_Z,
+      column.cx, column.cz)) continue;
+
+    const lx0 = Math.max(0, rc.wx - RUINED_CITADEL_HALF_X - column.cx * 16);
+    const lx1 = Math.min(15, rc.wx + RUINED_CITADEL_HALF_X - column.cx * 16);
+    const lz0 = Math.max(0, rc.wz - RUINED_CITADEL_HALF_Z - column.cz * 16);
+    const lz1 = Math.min(15, rc.wz + RUINED_CITADEL_HALF_Z - column.cz * 16);
+    for (let lx = lx0; lx <= lx1; lx++) {
+      for (let lz = lz0; lz <= lz1; lz++) {
+        const wx = column.cx * 16 + lx;
+        const wz = column.cz * 16 + lz;
+        const naturalH = generateHeight(wx, wz, seed);
+        // ① 清空甲板以上、自然地表以下的沙丘凸起（沙漠 span≤5，最多清 5 层）
+        for (let y = rc.floorY + 1; y <= naturalH; y++) {
+          column.blocks[blockIndex(lx, y, lz)] = 0;
+          column.meta[blockIndex(lx, y, lz)] = 0;
+        }
+      }
+    }
+
+    // ② 光栅化（不补 groundSupport：甲板以下全是实心结构体/地牢房间，补柱会把房间填实）
+    const rcFloorRow = floorRowOf('ruinedCitadel');
+    rasterizeStructure('ruinedCitadel', rc.wx, rc.floorY - (rcFloorRow - 1), rc.wz,
       setBlock, column, registry, seed, false);
   }
 

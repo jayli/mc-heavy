@@ -13,6 +13,7 @@ import { applyStructuresToColumn } from '../gen/structures/apply.js';
 import { getCityBoundsForSeed } from '../gen/structures/city-layout.js';
 import { computeArenaAnchor } from '../gen/structures/arena.js';
 import { computeBurningArenaAnchor } from '../gen/structures/burning-arena.js';
+import { computeRuinedCitadelAnchor } from '../gen/structures/ruined-citadel.js';
 import { preloadStructures } from '../gen/structures/structure-json.js';
 import { SCATTER_JSON_TYPES } from '../gen/structures/scatter.js';
 import { loadGiantTrees } from '../gen/structures/giant-trees.js';
@@ -195,6 +196,14 @@ installRpcHandler({
     // ⚠️ 必须留在 layout 入口：`layout` 不是 GEN 计时路径（`structure-gen` 的 genP95 门是 10ms），
     // 而 GEN 侧只读 `layout.burningArena` 字段、不调本函数 ⇒ 100ms 不会落进 GEN 计时。
     computeBurningArenaAnchor(p.seed);
+    // 预热废弃堡垒锚点（v2.89）：实测首次 63~141ms（城西 ±2400×±900 窗的粗筛网格
+    // + 逐格精检 106×108 占地 + **干燥判据外扩 4 格**，后者是 spec §2.10 的水约束）。
+    // 与上面两个锚点同一手法同一理由（缓存键是 seed，预热一次即全命中）。
+    // ⚠️ **必须排在 `computeBurningArenaAnchor` 之后**：本函数内部要读大竞技场锚点做避让
+    //    （`fixedBlockerAt` 的第 ④ 项），先算它才能命中 memo 而不是重算一遍。
+    // ⚠️ 必须留在 layout 入口：`layout` 不是 GEN 计时路径（`structure-gen` 的 genP95 门是 10ms），
+    //    而 GEN 侧只读 `layout.ruinedCitadel` 字段、不调本函数 ⇒ 141ms 不会落进 GEN 计时。
+    computeRuinedCitadelAnchor(p.seed);
     return computeRegionLayout(p.regionX, p.regionZ, p.seed);
   },
 

@@ -20,6 +20,9 @@ import { computeShallowTarnAnchor, shallowTarnOverlapsRegion, shallowTarnSuppres
 import {
   computeBurningArenaAnchor, burningArenaOverlapsRegion, burningArenaSuppressedLandmarks,
 } from './burning-arena.js';
+import {
+  computeRuinedCitadelAnchor, ruinedCitadelOverlapsRegion, ruinedCitadelSuppressedLandmarks,
+} from './ruined-citadel.js';
 import { isTarnZone, computeTarnZone, inTarnRadius } from './tarn-zone.js';
 
 /**
@@ -40,6 +43,7 @@ import { isTarnZone, computeTarnZone, inTarnRadius } from './tarn-zone.js';
  *   giantPyramid: ({wx:number, wz:number, floorY:number}|null),
  *   arena: ({wx:number, wz:number, floorY:number, maxH:number, span:number}|null),
  *   burningArena: ({wx:number, wz:number, floorY:number, span:number}|null),
+ *   ruinedCitadel: ({wx:number, wz:number, floorY:number, span:number}|null),
  *   tarn: (import('./tarn-zone.js').TarnLayout|null)
  * }}
  */
@@ -81,20 +85,36 @@ export function computeRegionLayout(regionX, regionZ, seed) {
   const baSuppress = burningArenaAll
     ? burningArenaSuppressedLandmarks(burningArenaAll, regionX, regionZ, seed)
     : null;
+  // 废弃堡垒（Ruined Citadel，v2.89）：**城西**最近的干燥沙漠里恰好一个（与大竞技场分居 City 两侧）。
+  //
+  // ⚠️ 同样必须早于地标赋值：它要把落在占地内的地标 / 巨型金字塔 / 空岛压掉。
+  // 为什么是压制而不是避让 —— 见 `ruined-citadel.js` 文件头（与大竞技场同一裁定：
+  // 实测把地标当避让项会让部分 seed 一个落点都找不到，而用户要求「必须生成」）。
+  // 改用压制后 8/8 seed 命中 span=5，搜索 63~141ms（已预热在 world-worker.js 的 layout 入口）。
+  const ruinedCitadelAll = computeRuinedCitadelAnchor(seed);
+  const ruinedCitadel = ruinedCitadelOverlapsRegion(ruinedCitadelAll, regionX, regionZ) ? ruinedCitadelAll : null;
+  const rcSuppress = ruinedCitadelAll
+    ? ruinedCitadelSuppressedLandmarks(ruinedCitadelAll, regionX, regionZ, seed)
+    : null;
 
-  // ⚠️ 两个地基级结构（浅水高台 / 大竞技场）的压制项**取并集**：它们彼此已在锚点层互斥
-  // （`fixedBlockerAt` 里互相避让），故同一 region 至多被其中一个压，但判据仍要写成并集 ——
-  // 否则将来放宽互斥时会静默漏压。
-  const suppressPyramid = !!suppress?.pyramid || !!baSuppress?.pyramid;
-  const suppressFrozenMountain = !!suppress?.frozenMountain || !!baSuppress?.frozenMountain;
-  const suppressPlainLand = !!suppress?.plainLand || !!baSuppress?.plainLand;
-  const suppressIsland = !!suppress?.island || !!baSuppress?.island;
-  const suppressGiantPyramid = !!baSuppress?.giantPyramid;
+  // ⚠️ 三个地基级结构（浅水高台 / 大竞技场 / 废弃堡垒）的压制项**取并集**：它们彼此已在
+  // 锚点层互斥（`fixedBlockerAt` 里互相避让），故同一 region 至多被其中一个压，但判据仍要
+  // 写成并集 —— 否则将来放宽互斥时会静默漏压。
+  const suppressPyramid = !!suppress?.pyramid || !!baSuppress?.pyramid || !!rcSuppress?.pyramid;
+  const suppressFrozenMountain = !!suppress?.frozenMountain || !!baSuppress?.frozenMountain
+    || !!rcSuppress?.frozenMountain;
+  const suppressPlainLand = !!suppress?.plainLand || !!baSuppress?.plainLand || !!rcSuppress?.plainLand;
+  const suppressIsland = !!suppress?.island || !!baSuppress?.island || !!rcSuppress?.island;
+  const suppressGiantPyramid = !!baSuppress?.giantPyramid || !!rcSuppress?.giantPyramid;
   // ⚠️ **空岛压制是大竞技场特有的**（浅水高台没有这一项）：它高 80 格（塔顶实测 y=79~84），
   // 而空岛底 y≥40 ⇒ 水平重叠即相撞。且空岛在 apply 阶段 2.5 光栅化，**晚于**大竞技场的 2.93
   // ⇒ 不压制的话空岛会反过来打穿竞技场上半部（后写胜）。实测 8 seed 中 7 个需要压制。
   // 用户 2026-11-09 裁定：「大竞技场上面的空岛可以先不显示，空岛给大竞技场让路」。
-  const suppressSkyIslands = !!baSuppress?.skyIslands;
+  //
+  // ⚠️ 废弃堡垒也带这一项，但它的塔顶只有 floorY+18（世界 y=17~22）而空岛底 y≥40
+  // ⇒ `bottomY <= topY` 恒假，**当前从不触发**（spec DR-6：保留判据是为了将来加高塔楼时
+  // 不会静默失效）。并集写法使它一旦触发就生效，无需回来改这里。
+  const suppressSkyIslands = !!baSuppress?.skyIslands || !!rcSuppress?.skyIslands;
 
   // ⚠️ `suppress.snowLand` 算出来了但**不在本文件用**：雪原的压制粒度是「这座雪原是否压进湖里」，
   // 走 `apply.js` 阶段 1 的跳过门（与 `snowLandSuppressedByTarn` 同手法），
@@ -204,7 +224,7 @@ export function computeRegionLayout(regionX, regionZ, seed) {
   return {
     regionX, regionZ, pyramidRaw, pyramid, frozenMountain, snowLand, plainLand,
     island, city, sky, scatter, giantTrees, azaleaTrees, giantPyramid, arena, tarn, shallowTarn,
-    burningArena,
+    burningArena, ruinedCitadel,
   };
 }
 

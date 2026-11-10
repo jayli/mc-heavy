@@ -20,6 +20,9 @@ import { MEDIEVAL_SHIP_VARIANTS } from './medieval-ship-data.js';
 // 灾变竞技场的产物基名（纯数据、零 node 依赖）。
 // ⚠️ 与高台那批同一个理由：**不要 import `tools/burning-arena-fingerprint.mjs`**（依赖 `node:fs`）。
 import { BURNING_ARENA_VARIANTS } from './burning-arena-data.js';
+// 废弃堡垒的产物基名（纯数据、零 node 依赖）。
+// ⚠️ 与高台那批同一个理由：**不要 import `tools/ruined-citadel-fingerprint.mjs`**（依赖 `node:fs`）。
+import { RUINED_CITADEL_VARIANTS } from './ruined-citadel-data.js';
 
 /** placement 类型 → JSON 文件名（mc-lite structureLoaders 映射） */
 const BASE_STRUCTURE_FILES = {
@@ -74,6 +77,11 @@ for (const base of ARENA_VARIANTS) {
 // 灾变竞技场（burning arena，v2.85）：从 `BURNING_ARENA_VARIANTS` 派生（同上理由）。
 // 产物是 Cataclysm 模组 burning_arena 的 8 片 nbt 拼合 + 重映射（方案 A：只用现有方块）。
 for (const base of BURNING_ARENA_VARIANTS) {
+  BASE_STRUCTURE_FILES[base] = `${base.replace(/[A-Z]/g, (m) => `_${m.toLowerCase()}`)}.json`;
+}
+// 废弃堡垒（Ruined Citadel Epic，v2.89）：从 `RUINED_CITADEL_VARIANTS` 派生（同上理由）。
+// 产物是 Cataclysm 模组 ruined_citadel 的 18 片 nbt 拼合 + 重映射（含甲板下空气格，spec DR-2）。
+for (const base of RUINED_CITADEL_VARIANTS) {
   BASE_STRUCTURE_FILES[base] = `${base.replace(/[A-Z]/g, (m) => `_${m.toLowerCase()}`)}.json`;
 }
 
