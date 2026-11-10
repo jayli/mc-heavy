@@ -245,4 +245,27 @@ export const BLOCKS = [
   {"name":"giant_cherry_leaves","solid":true,"cullMode":"cutout","opaque":true,"orientationModes":0,"geometry":"box"},
   {"name":"giant_palm_leaves","solid":true,"cullMode":"cutout","opaque":true,"orientationModes":0,"geometry":"box"},
   {"name":"giant_banyan_leaves","solid":true,"cullMode":"cutout","opaque":true,"orientationModes":0,"geometry":"box"},
+  // ---- 废弃堡垒（Ruined Citadel Epic，2026-11-10）----
+  // 照 Cataclysm mod 自带 16×16 贴图烘焙的方块（贴图在 assets/textures/，`npm run atlas` 入图）。
+  // 9 个整块/柱（geometry:box、orientationModes:0）+ 4 个台阶 + 2 个半砖。
+  // ⚠️ end_stone_pillar 是**完整正六面体**（cube_column：顶/底 _top + 四侧 side），不是细柱；
+  //    面序 0:+X 1:-X 2:+Y 3:-Y 4:+Z 5:-Z，六面数组见 faces-data.js。
+  // ⚠️ 台阶/半砖几何**零新增**：复用既有 cobblestone_step / cobblestone_step_updown / half_block
+  //    模板（形状与 UV 唯一权威仍在 mesher.js）；非 box 几何必须显式 opaque:false（同 sand_step 口径）。
+  // ⚠️ 全部进背包（物品集合派生自 registry − 排除集合，自动进入；改贴图/几何后须 `npm run icons`）。
+  {"name":"obsidian_bricks","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
+  {"name":"end_stone_pillar","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
+  {"name":"chiseled_end_stone_bricks","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
+  {"name":"polished_end_stone","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
+  {"name":"chiseled_purpur_block","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
+  {"name":"chorus_planks","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
+  {"name":"chiseled_obsidian_bricks","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
+  {"name":"void_stone","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
+  {"name":"void_infused_end_stone_bricks","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
+  {"name":"obsidian_brick_step","solid":true,"cullMode":"cutout","opaque":false,"orientationModes":4,"geometry":"cobblestone_step"},
+  {"name":"obsidian_brick_step_updown","solid":true,"cullMode":"cutout","opaque":false,"orientationModes":4,"geometry":"cobblestone_step_updown"},
+  {"name":"end_stone_brick_step","solid":true,"cullMode":"cutout","opaque":false,"orientationModes":4,"geometry":"cobblestone_step"},
+  {"name":"end_stone_brick_step_updown","solid":true,"cullMode":"cutout","opaque":false,"orientationModes":4,"geometry":"cobblestone_step_updown"},
+  {"name":"obsidian_brick_slab","solid":true,"cullMode":"cutout","opaque":false,"orientationModes":0,"geometry":"half_block"},
+  {"name":"end_stone_brick_slab","solid":true,"cullMode":"cutout","opaque":false,"orientationModes":0,"geometry":"half_block"},
 ];

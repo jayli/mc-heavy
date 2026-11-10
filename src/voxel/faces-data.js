@@ -179,6 +179,27 @@ export const FACES_DATA = {
   giant_cherry_leaves: 'procedural/giant_cherry_leaves',
   giant_palm_leaves: 'procedural/giant_palm_leaves',
   giant_banyan_leaves: 'procedural/giant_banyan_leaves',
+  // ---- 废弃堡垒（Ruined Citadel Epic，2026-11-10）----
+  // tile 名 = assets/textures/ 下的文件名去 .png（mod 自带贴图，逐字节复制入库）。
+  // ⚠️ end_stone_pillar 是 cube_column（顶/底用 _top、四侧用 side，与原木同语义），
+  //    故用六面数组而不是单 tile 字符串（面序 0:+X 1:-X 2:+Y 3:-Y 4:+Z 5:-Z）。
+  //    axis 实测 1024/1029 是 axis=y ⇒ 只需 y 轴一种形态（orientationModes:0）。
+  // ⚠️ end_stone_brick 族**复用本仓已有 `End_Stone_Bricks` tile**（零新增贴图）。
+  obsidian_bricks: 'obsidian_bricks',
+  end_stone_pillar: ['end_stone_pillar', 'end_stone_pillar', 'end_stone_pillar_top', 'end_stone_pillar_top', 'end_stone_pillar', 'end_stone_pillar'],
+  chiseled_end_stone_bricks: 'chiseled_end_stone_bricks',
+  polished_end_stone: 'polished_end_stone',
+  chiseled_purpur_block: 'chiseled_purpur_block',
+  chorus_planks: 'chorus_planks',
+  chiseled_obsidian_bricks: 'chiseled_obsidian_bricks',
+  void_stone: 'void_stone',
+  void_infused_end_stone_bricks: 'void_infused_end_stone_bricks',
+  obsidian_brick_step: 'obsidian_bricks',
+  obsidian_brick_step_updown: 'obsidian_bricks',
+  end_stone_brick_step: 'End_Stone_Bricks',
+  end_stone_brick_step_updown: 'End_Stone_Bricks',
+  obsidian_brick_slab: 'obsidian_bricks',
+  end_stone_brick_slab: 'End_Stone_Bricks',
 };
 
 /**
