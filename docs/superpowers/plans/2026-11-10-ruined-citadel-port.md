@@ -236,33 +236,47 @@ git commit -m "feat(ruined-citadel): 烘焙素材入库 + 映射表/指纹共享
 - **栏杆朝向 pass**：从 `bake-burning-arena.mjs` 移植 `computeRailOrientations`，
   `inwardArms` 的中心改为结构中心 **(17, 18)**（spec §2.2：中心 x=17 z=18.5 取整）。
 - **输出**：x/z 减中心偏移、y 归一化 minY→1；stride=5 第 5 项写 meta；`floorRow: 45` 写 JSON 顶层。
-- **`--census`**：打印 46 种源名逐名格数、映射结果、未覆盖项（有则 throw）、包围盒、
+- **`--census`**：打印 53 种源名逐名格数、映射结果、未覆盖项（有则 throw）、包围盒、
   **air 格数（甲板以下）**、通道分布（用 `REGISTRY.cullTable`，**不要正则扫 blocks-data 源码**）。
-- **`--census-orient`**：注册探针方块（几何 `cobblestone_step`/`cobblestone_step_updown`/
-  `obsidian_brick_step`/`obsidian_brick_step_updown`），各测 orient 0~3 高侧方向；验证「+2 mod 4」。
+- **`--census-orient`**：用**真实注册的台阶方块**（从 `STAIR_TARGETS` 收集，不手写清单：
+  obsidian_brick_step / _updown、end_stone_brick_step / _updown、stone_diorite_step、
+  cobblestone_step_updown 共 6 个），各测 orient 0~3 高侧方向；验证「+2 mod 4」。
+  ⚠️ 不注册临时探针方块（计划初稿的写法）：Task 1 已把四个新台阶真实注册，直接测它们
+  比测「几何同名的探针」更强（能同时抓到 faces-data/geometry 声明写错）。
 - ⚠️ **必须判 main module**（`import.meta.url === file://${process.argv[1]}`）。
 
 - [ ] **Step 2: 跑 census 与 census-orient，冻结数字**
 
 Run: `npm run ruinedcitadel -- --census` → 预期（探针已实测）：
-- 46 种源名 **0 未覆盖**、facing 缺失 **0**；
-- 包围盒 **106×63×108**、非空气 **261,775**、dropped **11**（structure_block 10 + altar_of_void 1）；
-- **air 格数 = 27,060**（甲板以下）、**contentCells = 288,835**、floorRow **45**；
-- 台阶合计 **3,916**（bottom 2,379 / top 1,537）；半砖合计 **3,277**（bottom 46 / top 1,406 / double 1,875）；
-  ⚠️ 半砖 bottom 精确值 = 2+20+16+8 = **46**（spec §2.7 表内逐族相加）；
-- 墙栏 **708**；甲板层（ny=45）**8,196** 格（覆盖率 72.3%）；
+- 53 种源名 **0 未覆盖**、facing 缺失 **0**；
+- 非空气包围盒 **106×63×108**、非空气 **261,775**、dropped **11**（structure_block 10 + altar_of_void 1）；
+- **air 格数 = 27,060**（甲板以下）、**contentCells = 288,744**、floorRow **45**；
+  ⚠️ contentCells = 261,775 − **91 丢弃**（功能标记 11 + 无几何薄件 80）+ 27,060 空气。
+  spec 初稿 288,835 一个丢弃都没减；中途修订值 288,824 只减了功能标记、漏减 80 个薄件。
+  以 census 实测 288,744 为准；
+- **产物包围盒 107×63×110**（x∈[-36,70]，z∈[-37,72]）—— 甲板下空气比非空气 bbox 各撑出 1 格；
+  ⚠️ **footprint 仍用非空气 bbox 106×108（HALF_X/HALF_Z = 53/54）**，多出的 1 格空气在 y=-45
+  地下，不进 footprint ⇒ §2.5 的 8 seed 锚点表全部有效，无需重测；
+- 台阶合计 **3,916**（bottom 2,379 / top 1,537）；半砖合计 **3,277**（bottom 46 / top **1,356** / double 1,875）；
+  ⚠️ 半砖三态逐族相加（spec §2.7 表）：bottom = 2+20+16+8 = **46**、top = 48+1,076+224+8 = **1,356**、
+  double = 1,801+2+72+0 = **1,875**，三者相加 = 3,277 = 半砖合计（原写 top 1,406 会使相加得 3,327 ≠ 合计）；
+- 墙栏 **708**；甲板层（ny=45）**8,197** 格（产物口径，含 1 格空气竖井；覆盖率 71.6%）；
+- 通道分布（实测）：opaque **256,866** / cutout **4,810** / transparent **8** / none **27,060**（air）；
+- palette **34** 种（含 air + handrail + handrailA）；
 - 新方块格数：obsidian_bricks 9,134 / end_stone_pillar 1,029 / chiseled_end_stone_bricks 451 /
   polished_end_stone 200 / chiseled_purpur_block 156 / chorus_planks 126 /
   chiseled_obsidian_bricks 122 / void_stone 122 / void_infused_end_stone_bricks 81 /
   ochre_froglight 134。
 
 Run: `npm run ruinedcitadel -- --census-orient` → 预期：正台阶与 `FACING_TO_ORIENT` 一致；updown 高侧 = 正台阶 +180°。
+**实测结果（2026-11-10）**：6 个台阶方块 × 4 个 orient 全部 ✓（含 4 个 Task 1 新烘台阶，
+其朝向语义与既有 cobblestone_step 完全一致）。
 **实测与预期不符 → 停下报告**。把 census 输出填进 `RUINED_CITADEL_METRICS`。
 
 - [ ] **Step 3: 烘焙产物**
 
 Run: `npm run ruinedcitadel`
-Expected: 生成 `assets/structures/ruined_citadel.json`（~3.6MB）+ meta。
+Expected: 生成 `assets/structures/ruined_citadel.json`（3.70MB）+ meta。
 抽查：`stride===5`、`floorRow===45`、**palette 含 `air`**、blocks 长度 = contentCells×5、
 palette 全部 `REGISTRY.idOf` 有值。
 
@@ -395,7 +409,7 @@ for (const layout of layouts) {
 本结构甲板以下全是实心/房间，直接光栅化即可；但**要确认**甲板层是否会与沙漠沙丘冲突
 （span≤5 ⇒ 最多 5 格起伏，甲板在 floorY=占地最低高度 ⇒ 沙丘会高出甲板）。
 **实施时实测**：若沙丘从甲板里冒出来，补一段与大竞技场 ① 同款的清空循环（`floorY+1..naturalH`）。
-⚠️ **性能**：每相交 column 遍历 288,835 格，~49 column ⇒ ~14M 次 setBlock，GEN Worker 内每 seed 一次。
+⚠️ **性能**：每相交 column 遍历 288,744 格，~49 column ⇒ ~14M 次 setBlock，GEN Worker 内每 seed 一次。
 
 - [ ] **Step 6: world-worker.js 预热**
 
@@ -426,8 +440,8 @@ git commit -m "feat(ruined-citadel): 城西干燥沙漠生成废弃堡垒，地�
 - [ ] **Step 1: 写 `checkRuinedCitadel()`**（照抄 `checkBurningArena` 骨架）
 
 断言：① 输入 18 片与产物存在；② 指纹匹配；③ `stride === 5`；④ palette 全部 `REGISTRY.idOf` 有值；
-⑤ **palette 含 `air`**；⑥ 包围盒 106×63×108 且 minY=1；⑦ `floorRow === 45` 且甲板层格数 = 8,196；
-⑧ 格数 = contentCells（288,835）；⑨ **air 格数 = 27,060**（DR-2 内容级判据，指纹拓不到）；
+⑤ **palette 含 `air`**；⑥ 产物包围盒 107×63×110 且 minY=1；⑦ `floorRow === 45` 且甲板层格数 = 8,197；
+⑧ 格数 = contentCells（288,744）；⑨ **air 格数 = 27,060**（DR-2 内容级判据，指纹拓不到）；
 ⑩ `STRUCTURE_FILES.ruinedCitadel === 'ruined_citadel.json'`；⑪ 通道分布（用 `REGISTRY.cullTable`）；
 ⑫ 两侧 VARIANTS 一致；⑬ 半宽与 `ruined-citadel-data.js` 一致（**X/Z 分别比**，本结构不是正方形）；
 ⑭ **15 个新方块都在 registry + 都在背包物品集合内**（用户裁定「新制作的方块加入背包」）；

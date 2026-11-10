@@ -97,19 +97,20 @@
 | 非空气包围盒 | **106 × 63 × 108**（x∈[-35,70]，y∈[-45,17]，z∈[-35,72]） |
 | 非空气格 | **261,775** |
 | 显式空气格（nbt 逐格存 air） | 257,265（占包围盒 35.7%） |
-| 其中**甲板以下**（y<0）空气 | **27,060** 格 —— **100% 封闭**（6 邻全在片数据内）⇒ 地牢房间 |
+| 其中**甲板以下**（y<0）空气 | **27,060** 格 ⇒ 地牢房间/走廊的内部空间（判据是 y<0，见 DR-2 修订） |
 | 其中甲板以上（y≥0）空气 | 230,205 格 ⇒ 是天空，**刻意不写进产物** |
-| **产物总格数** | **288,835** = 261,775 实心 + 27,060 空气 |
-| 产物 JSON 体积估算 | ~3.6MB（stride 5；参照 burning_arena 115,381 格 → 1.50MB = 13.0 字节/格） |
-| 源 palette 并集 | **46** 种方块名 |
+| **产物总格数** | **288,744** = 261,775 非空气 − **91 丢弃**（功能标记 11 + 无几何薄件 80）+ 27,060 甲板下空气 |
+| **产物包围盒** | **107 × 63 × 110**（x∈[-36,70]，z∈[-37,72]；甲板下空气把边界比非空气 bbox 各撑出 1 格） |
+| 源 palette 并集 | **53** 种方块名（含 air；不含 air 52 种） |
+| 产物 JSON 体积 | **3.70MB**（stride 5，实测；参照 burning_arena 115,381 格 → 1.50MB） |
 | 暴露面（6 邻域空气） | **74,518**（≈ 298K 顶点下界；大竞技场是 92,802） |
 | `structure_block` 数据标记 | **10** 个（3 `golem` + 4 `mimic` + 3 `sentry`）→ 丢弃 |
 | `cataclysm:altar_of_void` | 1 个（y=-15，末影守卫召唤祭坛）→ 丢弃 |
-| 甲板层（y=-1） | 8,196 格，覆盖率 **72.3%**（非满铺，有缺口） |
+| 甲板层（y=-1） | 8,197 格（产物口径，含 1 格空气竖井；非空气 8,196），覆盖率 **71.6%**（非满铺，有缺口） |
 | `floorRow`（归一化后甲板层 ny） | **45**（= -1 − (-45) + 1） |
 | 归一化总高 | 63（ny ∈ [1,63]） |
 
-⚠️ **甲板覆盖率 72.3% 不是满铺** —— 与大竞技场的 `floorCells` 4,825/7,225 同一情形，
+⚠️ **甲板覆盖率 71.6% 不是满铺** —— 与大竞技场的 `floorCells` 4,825/7,225 同一情形，
 别照抄「满铺」断言（AGENTS.md 已记这条）。
 
 ### 2.3 竖直结构分区
@@ -167,7 +168,7 @@
 要像 `computeBurningArenaAnchor` 一样预热在 `world-worker.js` 的 `layout` 入口
 （不落进 GEN 计时路径，`structure-gen` 的 genP95 门是 10ms）。
 
-### 2.6 方块映射盘点（46 种源名）
+### 2.6 方块映射盘点（52 种源名，另有 air 由 DR-2 分层处理）
 
 **直接命中本仓（5 种）**：`end_stone`、`end_stone_bricks`、`obsidian`、`chest`、`stone`
 
@@ -202,7 +203,7 @@ outer_right 69 ⇒ 转角件仅 318 格（8%），统一按直台阶处理（pyr
 | `cataclysm:obsidian_brick_slab` | 2 | 48 | 1,801 | **1,851** | **新烘焙**（bottom→新半砖，top/double→obsidian_bricks 整块） |
 | `purpur_slab` | 20 | 1,076 | 2 | 1,098 | 映 `sand_slab`/`amethyst`（无贴图） |
 | `end_stone_brick_slab` | 16 | 224 | 72 | **312** | **新烘焙**（bottom→新半砖，top/double→end_stone_bricks 整块） |
-| `cataclysm:polished_end_stone_slab` | 8 | 8 | 0 | 16 | 映 `sand_slab`/`end_stone`（低频） |
+| `cataclysm:polished_end_stone_slab` | 8 | 8 | 0 | 16 | 映 `sand_slab`/`polished_end_stone`（低频；top 用 Task 1 新烘的同材质整块，比 `end_stone` 忠实） |
 
 ⚠️ **`double` 是多数**（1,875 格）⇒ 不得假设「top/double 罕见」。
 ⚠️ **不得用「剥 `_slab` 后缀查 BLOCK_MAP」的写法**：`end_stone_brick_slab` 剥出
@@ -217,8 +218,8 @@ outer_right 69 ⇒ 转角件仅 318 格（8%），统一按直台阶处理（pyr
 
 | 通道 | 估算格数 | 说明 |
 |---|---|---|
-| opaque | ~283,000 | end_stone 系 + obsidian 系 + amethyst 系 + 新烘焙整块 |
-| cutout | ~5,600 | 台阶 3,916 + 半砖(bottom) 26 + 墙栏 708 + vine 85 + allium 9 + chest 12 + hanging_lamp 1 + 新半砖 |
+| opaque | 256,866 | end_stone 系 + obsidian 系 + amethyst 系 + 新烘焙整块（实测） |
+| cutout | 4,810 | 台阶 3,916 + 半砖(bottom) 26 + 墙栏 708 + vine 85 + allium 9 + chest 12 + hanging_lamp 1 + 新半砖（实测） |
 | transparent | 8 | `glass_block`（紫色玻璃板） |
 
 ⚠️ 精确值必须用 `REGISTRY.cullTable` 算（**不要正则扫 blocks-data 源码** —— 大竞技场 v2.86
@@ -316,11 +317,13 @@ rgb 244,230,178 亮奶白，lum 217）。地牢在地下 skylight=0，靠这 134
 
 - **问题**：`rasterizeStructure` 只写产物里的格，而地牢房间在 nbt 里是**显式空气**。
   若不写空气，`fillColumn` + `carveCaves` 生成的天然岩层会**填满整个地牢**。
-- **实测依据**：甲板以下 27,060 格空气 **100% 封闭** ⇒ 全是房间/走廊内部空间。
+- **实测依据**：甲板以下 27,060 格空气全在结构体内（判据是 **y<0 = 地牢内部空间**，
+  不是封闭性 —— 实测仅 19 格六邻全封闭，4,915 格有门窗/走廊侧向开口，22,125 格上方
+  通向甲板层；这些开口正是地牢房间/走廊的连通方式，写空气清出它们正是目的）。
 - **做法**：产物 palette 里加 `"air"` 条目，甲板以下（structure y<0）的空气格写进
   `blocks` 数组。光栅化时 `setBlock(…,'air')` → `makeColumnSetter` 查
   `registry.idOf('air') === 0` → `blocks[idx] = 0`（**实测确认 air 已注册且 id=0**）⇒ 清空格。
-- **甲板以上（y≥0）的 230,205 格空气刻意不写**（天空，写了 JSON 从 3.6MB 涨到 17.3MB）。
+- **甲板以上（y≥0）的 230,205 格空气刻意不写**（天空，写了 JSON 从 3.7MB 涨到 17MB+）。
 - ⚠️ **`rasterizeStructure` 不需要改**：`air` 只是一个恰好 id=0 的普通 palette 条目。
 - ⚠️ **`check:data` 要钉住**：产物 palette 含 `air`，且 air 格数 = 27,060。
 
@@ -378,7 +381,7 @@ rgb 244,230,178 亮奶白，lum 217）。地牢在地下 skylight=0，靠这 134
 | `end_stone_brick_wall` / `cataclysm:obsidian_brick_wall` / `cataclysm:chorus_fence` / `cataclysm:purpur_wall` | 708 | `handrail`（朝向 pass） | 细件 |
 | `cataclysm:polished_end_stone_stairs` | 128 | `stone_diorite_step(_updown)` | 低频 |
 | `cataclysm:chorus_stairs` | 44 | `stone_diorite_step_updown` | 低频（全 top） |
-| `cataclysm:polished_end_stone_slab` | 16 | bottom→`sand_slab`，top→`end_stone` | 低频 |
+| `cataclysm:polished_end_stone_slab` | 16 | bottom→`sand_slab`，top→`polished_end_stone` | 低频（top 用新烘同材质整块） |
 | `chorus_plant` | 85 | `vine` | 紫颂植物 |
 | `chorus_flower` | 9 | `allium` | 紫颂花 |
 | `end_rod` | 30 | `vertical_pillar` | 末地烛细竖件 |
@@ -389,7 +392,7 @@ rgb 244,230,178 亮奶白，lum 217）。地牢在地下 skylight=0，靠这 134
 | `ender_chest` | 3 | `chest` | 末影箱 |
 | `shulker_box` | 2 | `orange_shulker_box` | 本仓已有 |
 | `lantern` | 1 | `hanging_lamp` | 吊灯 |
-| `purple_carpet`/`white_carpet`/`magenta_carpet`/`iron_trapdoor`/`spruce_trapdoor`/`flower_pot`/`lever`/`tripwire_hook`/`barrel` | 81 | 丢弃 | 无对应几何（实测丢弃不造洞） |
+| `purple_carpet`/`white_carpet`/`magenta_carpet`/`iron_trapdoor`/`spruce_trapdoor`/`flower_pot`/`lever`/`tripwire_hook`/`barrel` | 80 | 丢弃 | 无对应几何（实测丢弃不造洞；41+9+7+5+3+4+1+1+9） |
 | `structure_block` / `cataclysm:altar_of_void` | 11 | 丢弃 | 功能标记 |
 
 ### DR-5 落位：城西最近的干燥沙漠
@@ -430,21 +433,21 @@ rgb 244,230,178 亮奶白，lum 217）。地牢在地下 skylight=0，靠这 134
   ⚠️ **阶段层序是载荷性的**（AGENTS.md 已记）。
 - **早退**：`placementIntersects({x,z}, 53, 54, column.cx, column.cz)`（x/z 半宽不同）。
 - **预载**：`if (layouts.some((l) => l.ruinedCitadel)) needTypes.add('ruinedCitadel');`
-  （惰性预载：产物 ~3.6MB 是全部结构里最大的）。
+  （惰性预载：产物 ~3.7MB 是全部结构里最大的）。
 - **撒布剔除**：阶段 2.7 用 `inRuinedCitadelFootprint`。
 - **植被让路**：`pointContext` 对占地返回 `kind:'none'`（转调 `inRuinedCitadelFootprint`，红线 1）。
 - **结构名注册**：`structure-json.js` 从 `RUINED_CITADEL_VARIANTS` 派生（红线 1）。
-- ⚠️ **性能**：`rasterizeStructure` 对每个相交 column 遍历全部 288,835 格，
+- ⚠️ **性能**：`rasterizeStructure` 对每个相交 column 遍历全部 288,744 格，
   相交 column ≈ 7×7=49 ⇒ ~14M 次 setBlock，全在 GEN Worker、每 seed 一次。比大竞技场大 3.4 倍但同构。
 
 ### DR-8 预算
 
 | 项 | 本结构 | 大竞技场（参照） | 判断 |
 |---|---|---|---|
-| 产物格数 | 288,835 | 115,381 | 2.5× |
-| 产物 JSON | ~3.6MB | 1.50MB | 2.4× |
+| 产物格数 | 288,744 | 115,381 | 2.5× |
+| 产物 JSON | 3.70MB | 1.50MB | 2.5× |
 | 暴露面 | 74,518 | 92,802 | **0.8×** |
-| cutout 格 | ~5,600 | 7,588 | **0.74×** |
+| cutout 格 | 4,810 | 7,588 | **0.63×** |
 | 光源（ochre_froglight） | 134 | 942（glowstone） | 0.14× |
 
 ⇒ **渲染压力低于大竞技场**。门禁：`npm run bench -- --check` + `m3-fullscene`（200 MiB）。
@@ -548,8 +551,8 @@ rgb 244,230,178 亮奶白，lum 217）。地牢在地下 skylight=0，靠这 134
 
 ## 6. 风险与开放项
 
-1. **产物体积 3.6MB（最大产物）**：GEN Worker 首次 fetch+解析耗时实测，确认不撞 genP95 10ms 门。
-2. **甲板覆盖率 72.3%（非满铺）**：实施时探针查甲板缺口连通性（能否进地牢）；
+1. **产物体积 3.7MB（最大产物）**：GEN Worker 首次 fetch+解析耗时实测，确认不撞 genP95 10ms 门。
+2. **甲板覆盖率 71.6%（非满铺）**：实施时探针查甲板缺口连通性（能否进地牢）；
    若缺口全在边缘、中心封闭，可能需补入口台阶 —— **开放项，实测后定**。
 3. **134 盏 ochre_froglight 的 blocklight BFS**：129 盏集中 y=-24 单层，实测 GEN 计时不超标。
 4. **瞬移行 8 按钮布局**：2 字文案理论放得下，必须实测（DR-9）。
