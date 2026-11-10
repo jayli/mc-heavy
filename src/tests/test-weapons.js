@@ -89,10 +89,13 @@ test('weapon catalog: 递归冻结，渲染层不得改写玩法目录', () => {
 
 // ---------- policy ----------
 
-test('weapon policy: bedrock/end_stone/创造台不可破坏，水与 end_stone_bricks 可破坏', () => {
+test('weapon policy: bedrock/创造台不可破坏，end_stone/水/end_stone_bricks 可破坏', () => {
   const { registry, ids } = makeRegistryWithWeaponBlocks();
   assertFalse(isWeaponDestructible(ids.bedrock, registry));
-  assertFalse(isWeaponDestructible(ids.endStone, registry));
+  // ⚠️ **v2.90 翻转**：end_stone 的武器专属免疫已按用户要求关闭（「把这个设定去掉」）。
+  // 它现在与 stone 一样可被枪械/MAG7 消除。副作用：end_stone 也是水底层与地标基座底，
+  // 故现在能被打穿（用户要的「也可以被消除」）。
+  assertTrue(isWeaponDestructible(ids.endStone, registry));
   // ⚠️ **M9 翻转**：创造台两项已登记进 indestructibleTable → 枪械打不动平台本体
   // （M8 期间这两条曾是 assertTrue —— 同一事实在两个 Epic 的不同状态，不是矛盾）。
   assertFalse(isWeaponDestructible(ids.playground, registry));
@@ -104,15 +107,20 @@ test('weapon policy: bedrock/end_stone/创造台不可破坏，水与 end_stone_
   // MAG7 候选与枪械破坏同一名单（创造台两项走 indestructibleTable → 不是候选）
   assertFalse(isMag7Candidate(ids.playground, registry));
   assertTrue(isMag7Candidate(ids.water, registry));
+  // end_stone 现在也是 MAG7 候选（isMag7Candidate 转调 isWeaponDestructible）
+  assertTrue(isMag7Candidate(ids.endStone, registry));
 });
 
 // ---------- MAG7 扫描 ----------
 
-test('MAG7: 3×3 扫描先过滤再计 40，水可删且 end_stone/基岩/创造台不可删', () => {
+test('MAG7: 3×3 扫描先过滤再计 40，水可删且基岩/创造台不可删', () => {
   const { registry, ids } = makeRegistryWithWeaponBlocks();
+  // ⚠️ (4,0,0) 用 **bedrock** 而不是 end_stone 作「不可删」样本：v2.90 后 end_stone 已可删，
+  // 本用例要钉的是「indestructibleTable 里的方块不被 MAG7 当候选」，故用真正不可破坏的 bedrock。
+  // （end_stone 现在可删的行为由上方 policy 用例钉住。）
   const query = {
     getBlockId: (x, y, z) => x === 3 && y === 0 && z === 0 ? ids.water
-      : x === 4 && y === 0 && z === 0 ? ids.endStone
+      : x === 4 && y === 0 && z === 0 ? ids.bedrock
       : x === 5 && y === 0 && z === 0 ? ids.playground : ids.stone,
   };
   const changes = collectMag7Changes({
@@ -121,7 +129,7 @@ test('MAG7: 3×3 扫描先过滤再计 40，水可删且 end_stone/基岩/创造
   assertTrue(changes.length <= 40);
   // 水格 (3,0,0) 作为候选并删除（mc-lite 语义）
   assertTrue(changes.some((c) => c.x === 3 && c.y === 0 && c.z === 0 && c.id === 0));
-  // 免疫名单的格位不出现在变更中。注意断言必须落到具体格位而非整个 x 列：
+  // 不可破坏的格位不出现在变更中。注意断言必须落到具体格位而非整个 x 列：
   // 扫描截面覆盖各 x 值的 3×3 邻域，(4,-1,0) 等邻格是 stone、合法入选。
   assertFalse(changes.some((c) => c.x === 4 && c.y === 0 && c.z === 0));
   // ⚠️ **M9 翻转**：playground 已登记进 indestructibleTable → (5,0,0) 不作为候选被删
@@ -294,16 +302,17 @@ test('WeaponController: 开关开启且冷却结束后手枪删首个命中', ()
   assertEqual(editor.lastChange.id, 0);
 });
 
-test('WeaponController: end_stone 命中曳光停在 target.dist 但不写世界', () => {
+test('WeaponController: 不可破坏方块（bedrock）命中曳光停在 target.dist 但不写世界', () => {
   const { registry, ids } = makeRegistryWithWeaponBlocks();
   const editor = {
     singleCalls: 0,
     setBlock() { this.singleCalls++; return { changes: [] }; },
     setBlocks() { return { changes: [] }; },
   };
+  // ⚠️ v2.90 后 end_stone 可破坏，本用例改用 bedrock 钉「不可破坏方块不写世界」这条路径。
   const controller = new WeaponController({
     registry,
-    blockQuery: { getBlockId: () => ids.endStone },
+    blockQuery: { getBlockId: () => ids.bedrock },
     editor,
     onEffect: () => {},
   });
@@ -597,11 +606,12 @@ test('impact: 破坏开启时 destroyed=true，且 id 为被删方块（不是 a
   assertEqual(effect.impacts[0].blockId, controller.registry.idOf('stone'));
 });
 
-test('impact: 打不动的方块（end_stone）不报告 destroyed', () => {
+test('impact: 打不动的方块（bedrock）不报告 destroyed', () => {
   const { registry, ids } = makeRegistryWithWeaponBlocks();
   const editor = { setBlock() { return { changes: [] }; }, setBlocks() { return { changes: [] }; } };
+  // ⚠️ v2.90 后 end_stone 可破坏，本用例改用 bedrock 钉「不可破坏方块不报 destroyed」。
   const controller = new WeaponController({
-    registry, blockQuery: { getBlockId: () => ids.endStone }, editor, onEffect: () => {},
+    registry, blockQuery: { getBlockId: () => ids.bedrock }, editor, onEffect: () => {},
   });
   controller.select('pistol');
   controller.setBlockDamage(true);

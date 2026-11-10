@@ -93,8 +93,11 @@ export const RUINED_CITADEL_PIECES = Object.freeze([
  *  - `cataclysm:void_lantern_block` → `ochre_froglight`：地牢在地下（skylight=0），
  *    134 格灯是唯一的 blocklight 来源；ochre_froglight（亮度档 217 暖白）比 glowstone
  *    （99 暗棕）更接近虚空灯的亮奶白色。**不新烘**（用户裁定：不需要发光新方块）。
- *  - `purpur_block` / `purpur_pillar` / `cataclysm:purpur_void_rune_trap_block` → `amethyst`：
- *    紫珀族本仓无贴图，紫水晶是同色系的既有紫色整块（用户裁定：继续映射不新烘）。
+ *  - `purpur_block` / `purpur_pillar` / `cataclysm:purpur_void_rune_trap_block` → `deepslate`：
+ *    紫珀族本仓无贴图。⚠️ **v2.90 用户裁定从 `amethyst` 改为 `deepslate`**（原裁定是
+ *    「紫水晶是同色系的既有紫色整块，继续映射不新烘」）。只改**本结构**的映射，
+ *    其他用 amethyst 的地方（祭坛 `tarn-altar.js` 的美朵/十字轴/外环、
+ *    `cloudland-kit-fingerprint.mjs` 的紫晶柱）**一律不动** —— 用户明确要求「不是其他所有的」。
  *  - `crying_obsidian` / `cataclysm:obsidian_explosion_trap_bricks` → `obsidian`：
  *    本仓无哭泣黑曜石；陷阱砖映基础砖（同色系，丢泪痕/裂纹细节）。
  *  - `cataclysm:end_stone_teleport_trap_bricks` → `end_stone_bricks`：传送陷阱→基础砖。
@@ -137,10 +140,10 @@ export const BLOCK_MAP = Object.freeze({
   // 照明（不新烘，用户裁定）
   'cataclysm:void_lantern_block': 'ochre_froglight',
 
-  // 紫珀族 → 紫水晶（无贴图，继续映射）
-  purpur_block: 'amethyst',
-  purpur_pillar: 'amethyst',
-  'cataclysm:purpur_void_rune_trap_block': 'amethyst',
+  // 紫珀族 → 深板岩（v2.90 用户裁定，原为 amethyst）
+  purpur_block: 'deepslate',
+  purpur_pillar: 'deepslate',
+  'cataclysm:purpur_void_rune_trap_block': 'deepslate',
 
   // 黑曜石族归并
   crying_obsidian: 'obsidian',
@@ -192,7 +195,7 @@ export const BLOCK_MAP = Object.freeze({
 export const SLAB_BASE = Object.freeze({
   'cataclysm:obsidian_brick_slab': 'obsidian_bricks',
   end_stone_brick_slab: 'end_stone_bricks',
-  purpur_slab: 'amethyst',
+  purpur_slab: 'deepslate',
   'cataclysm:polished_end_stone_slab': 'polished_end_stone',
 });
 
@@ -301,7 +304,7 @@ export const RUINED_CITADEL_METRICS = Object.freeze({
       air: 27060,
       end_stone_bricks: 13655,
       obsidian_bricks: 10983,
-      amethyst: 4210,
+      deepslate: 4210,
       end_stone_brick_step_updown: 1258,
       obsidian_brick_step: 1096,
       end_stone_pillar: 1029,

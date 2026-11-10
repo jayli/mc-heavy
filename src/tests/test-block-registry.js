@@ -181,14 +181,20 @@ test('digBlock 仍可挖掉普通方块（门控不是恒真）', () => {
   player.dispose();
 });
 
-test('isWeaponDestructible 读表而非字面量（end_stone 是武器专属收紧）', () => {
+test('isWeaponDestructible 读表而非字面量（不可破坏走 indestructibleTable 单一权威）', () => {
   const registry = makeRegistry();
   assertEqual(isWeaponDestructible(registry.idOf('bedrock'), registry), false);
   assertEqual(isWeaponDestructible(registry.idOf('stone'), registry), true);
   assertEqual(isWeaponDestructible(registry.idOf('air'), registry), false);
-  // end_stone 不在 indestructibleTable 里（武器专属），须保留排除
+  // ⚠️ **v2.90 翻转**：end_stone 的武器专属免疫已按用户要求关闭
+  // （「end_stone 原来的设定是不可被枪械消灭，把这个设定去掉」）。
+  // 它本来就不在 indestructibleTable 里（那是全局语义），以前靠 `WEAPON_ONLY_IMMUNE`
+  // 名单收紧；名单清空后它回到「普通可破坏方块」。
+  // ⚠️ 副作用面比堡垒大：end_stone 同时是 `fillColumn` 的水底层与地标岩石基础层底
+  // ⇒ 现在枪械/MAG7 能打穿湖海底（用户要的「也可以被消除」）。
   assertEqual(registry.isIndestructible(registry.idOf('end_stone')), false);
-  assertEqual(isWeaponDestructible(registry.idOf('end_stone'), registry), false);
+  assertEqual(isWeaponDestructible(registry.idOf('end_stone'), registry), true);
+  assertEqual(isWeaponDestructible(registry.idOf('end_stone_bricks'), registry), true);
 });
 
 /**
