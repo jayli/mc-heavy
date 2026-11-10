@@ -1,7 +1,19 @@
 # 废弃堡垒移植设计（Cataclysm ruined_citadel → 城西最近沙漠）
 
 日期：2026-11-10（探索与实测数据采于 2026-11-09 ~ 11-10）
-状态：已批准，待实施
+版本：**v2.89**（roadmap 同版本行）
+状态：已实施完成（Task 1~10 全部交付，待用户验收）
+
+> ## ⚠️ 实施期修订（2026-11-10，按 census 实测）
+>
+> 本文初稿有 **6 处冻结数字与实测不符**，已按用户裁定「按实测值更新」修订（详见 §2.2 表与
+> 计划文档 Task 3 Step 2）：contentCells 288,835→**288,744**、产物 bbox 106×63×108→**107×63×110**
+> （106×108 是**非空气** bbox = footprint，HALF 53/54 不变 ⇒ §2.5 的 8 seed 锚点表全部有效）、
+> 源 palette 46→**53**、半砖 top 1,406→**1,356**、甲板层 8,196→**8,197**（产物口径）、
+> cutout ~5,600→**4,810**。
+> 另：DR-2 的「100% 封闭」措辞不准（实测仅 19 格六邻全封闭），判据应是 **y<0 = 地牢内部空间**。
+> 另：DR-4 点名的 `stone_diorite_step_updown` **未注册** ⇒ 三族无贴图台阶的 top（224 格）
+> 改映 `cobblestone_step_updown`。
 参照：大竞技场移植（v2.85~v2.88，`docs/superpowers/specs/2026-11-09-burning-arena-port-design.md`）
 计划文档：`docs/superpowers/plans/2026-11-10-ruined-citadel-port.md`
 
@@ -174,7 +186,7 @@
 
 **v2 新烘焙（15 种，见 §2.9）**：9 个整块/柱 + 6 个台阶/半砖。
 
-**其余重映射**（完整表见 §2.9 映射总表）：紫珀族 → `amethyst`、虚空灯 → `ochre_froglight`、
+**其余重映射**（完整表见 §2.9 映射总表）：紫珀族 → `deepslate`（v2.90 用户裁定，原 `amethyst`）、虚空灯 → `ochre_froglight`、
 哭泣黑曜石 → `obsidian`、墙/栅栏 → `handrail`、紫颂植物 → `vine`、紫颂花 → `allium`、
 地毯/活板门/花盆/拉杆/绊线钩/木桶 → 丢弃、`structure_block`/`altar_of_void` → 丢弃。
 
@@ -201,7 +213,7 @@ outer_right 69 ⇒ 转角件仅 318 格（8%），统一按直台阶处理（pyr
 | 源 | bottom | top | double | 合计 | 处理 |
 |---|---|---|---|---|---|
 | `cataclysm:obsidian_brick_slab` | 2 | 48 | 1,801 | **1,851** | **新烘焙**（bottom→新半砖，top/double→obsidian_bricks 整块） |
-| `purpur_slab` | 20 | 1,076 | 2 | 1,098 | 映 `sand_slab`/`amethyst`（无贴图） |
+| `purpur_slab` | 20 | 1,076 | 2 | 1,098 | 映 `sand_slab`/`deepslate`（无贴图） |
 | `end_stone_brick_slab` | 16 | 224 | 72 | **312** | **新烘焙**（bottom→新半砖，top/double→end_stone_bricks 整块） |
 | `cataclysm:polished_end_stone_slab` | 8 | 8 | 0 | 16 | 映 `sand_slab`/`polished_end_stone`（低频；top 用 Task 1 新烘的同材质整块，比 `end_stone` 忠实） |
 
@@ -218,7 +230,7 @@ outer_right 69 ⇒ 转角件仅 318 格（8%），统一按直台阶处理（pyr
 
 | 通道 | 估算格数 | 说明 |
 |---|---|---|
-| opaque | 256,866 | end_stone 系 + obsidian 系 + amethyst 系 + 新烘焙整块（实测） |
+| opaque | 256,866 | end_stone 系 + obsidian 系 + deepslate 系 + 新烘焙整块（实测） |
 | cutout | 4,810 | 台阶 3,916 + 半砖(bottom) 26 + 墙栏 708 + vine 85 + allium 9 + chest 12 + hanging_lamp 1 + 新半砖（实测） |
 | transparent | 8 | `glass_block`（紫色玻璃板） |
 
@@ -373,10 +385,10 @@ rgb 244,230,178 亮奶白，lum 217）。地牢在地下 skylight=0，靠这 134
 | `cataclysm:obsidian_brick_slab` | 1,851 | bottom→**新 `obsidian_brick_slab`**，top/double→`obsidian_bricks` | DR-3 |
 | `end_stone_brick_slab` | 312 | bottom→**新 `end_stone_brick_slab`**，top/double→`end_stone_bricks` | DR-3 |
 | `cataclysm:void_lantern_block` | 134 | `ochre_froglight` | 照明，不新烘（裁定 ⑧） |
-| `purpur_block` | 2,799 | `amethyst` | 紫珀族，无贴图（裁定：继续映射） |
-| `purpur_pillar` | 263 | `amethyst` | 整块紫，比细柱忠实 |
+| `purpur_block` | 2,799 | `deepslate` | 紫珀族，无贴图（v2.90 用户裁定从 `amethyst` 改为 `deepslate`） |
+| `purpur_pillar` | 263 | `deepslate` | 整块，比细柱忠实 |
 | `purpur_stairs` | 750 | `stone_diorite_step(_updown)` | 无贴图 |
-| `purpur_slab` | 1,098 | bottom→`sand_slab`，top/double→`amethyst` | 无贴图 |
+| `purpur_slab` | 1,098 | bottom→`sand_slab`，top/double→`deepslate` | 无贴图 |
 | `crying_obsidian` | 234 | `obsidian` | 本仓无哭泣黑曜石 |
 | `end_stone_brick_wall` / `cataclysm:obsidian_brick_wall` / `cataclysm:chorus_fence` / `cataclysm:purpur_wall` | 708 | `handrail`（朝向 pass） | 细件 |
 | `cataclysm:polished_end_stone_stairs` | 128 | `stone_diorite_step(_updown)` | 低频 |
@@ -385,7 +397,7 @@ rgb 244,230,178 亮奶白，lum 217）。地牢在地下 skylight=0，靠这 134
 | `chorus_plant` | 85 | `vine` | 紫颂植物 |
 | `chorus_flower` | 9 | `allium` | 紫颂花 |
 | `end_rod` | 30 | `vertical_pillar` | 末地烛细竖件 |
-| `cataclysm:purpur_void_rune_trap_block` | 70 | `amethyst` | 符文陷阱→基础块 |
+| `cataclysm:purpur_void_rune_trap_block` | 70 | `deepslate` | 符文陷阱→基础块 |
 | `cataclysm:obsidian_explosion_trap_bricks` | 53 | `obsidian` | 陷阱砖→基础砖 |
 | `cataclysm:end_stone_teleport_trap_bricks` | 51 | `end_stone_bricks` | 传送陷阱→基础砖 |
 | `purple_stained_glass_pane` | 8 | `glass_block` | transparent 通道 |

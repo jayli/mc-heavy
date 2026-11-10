@@ -14,7 +14,7 @@
 
 现状：第一阶段 M0~M3、第二阶段 M4~M7、第三阶段 M8~M9 全部交付；此后按独立改动推进
 （矿车 / 太阳阴影 / 巨树 / 竞技场 / 浅水高台 / 中世纪船 / 祭坛之龙 + Boss AI / 丧尸本地寻路 /
-音效与 BGM）。**具体做到哪一步、每版改了什么，一律查 `docs/roadmap.md` 的版本表。**
+音效与 BGM / 大竞技场 + 废弃堡垒移植）。**具体做到哪一步、每版改了什么，一律查 `docs/roadmap.md` 的版本表。**
 
 ## 常用命令
 
@@ -81,7 +81,8 @@ npm run turret | zombieskin | dragon | nightsky | validate:weapon-assets
 快速路径，批量走 Worker）→ `enqueueLight` 异步收敛跨列光照 → `_emit` 发 `block-changed` 给装置 controller。
 
 **`apply.js` 的阶段层序是载荷性的**：阶段 1 地形 → 2.45 浅水高台 → 2.4 高台地带 → 2 JSON 结构 →
-2.7 撒布 → 2.75 高台 / 2.76 金字塔 / 2.8 巨树 / 2.85 杜鹃 / 2.9 竞技场 → 2.5 空中结构 → 3 植被。
+2.7 撒布 → 2.75 高台 / 2.76 金字塔 / 2.8 巨树 / 2.85 杜鹃 / 2.9 竞技场 / 2.93 大竞技场 /
+2.94 废弃堡垒 → 2.5 空中结构 → 3 植被。
 调换会让「树冠打穿屋顶」「祭坛被广场材质盖回」这类**方块层面看不出因果**的缺陷复活。
 
 ## 不可违反的重构红线
@@ -152,6 +153,18 @@ scheduler/physics）再加 `npm run bench -- --check`。计划里标「冻结」
   的 bbox 跨度判断高侧），不能从 `orientation.js` 或 Minecraft 定义推。倒置台阶刻意不复用
   `cobblestone_step_updown`（那个是「颠倒 + 水平镜像」，高侧差 180°）。
 - 碰撞类断言必须在两侧实测值之间取阈值（曾写「峰值 < 4」，而自由跳跃本身 3.0 → 注入回退仍全绿）。
+- **地下结构的「空气格」必须写进烘焙产物**（废弃堡垒 v2.89）：nbt 里房间是**显式 air**，
+  而 `rasterizeStructure` 只写产物里的格 ⇒ 不写空气则 `fillColumn`+`carveCaves` 的天然岩层
+  会填满整个地牢（22.6 万格白搬）。做法：palette 加 `air` 条目（id=0、`cullMode:'none'`
+  不渲染任何面），`setBlock(…,'air')` → `blocks[idx]=0` 清空格。**零运行期代码改动**。
+  ⚠️ 失效形态是静默的：格数/类型/指纹全对，只有挖下去才发现 ⇒ 必须用**内容级判据**
+  （air 格数）钉住，指纹拓不到。
+- **产物 bbox ≠ footprint bbox**（废弃堡垒 v2.89）：写进产物的空气会把包围盒撑大
+  （实测 106×63×108 → 107×63×110）。AABB 早退 / 避让 / 压制 / 干燥判据一律用**非空气 bbox**
+  （= footprint，HALF_X/HALF_Z），用产物 bbox 会各多算 1 格。
+- **从 mod 素材看「柱」不能只看外观**：`end_stone_pillar` 在 mod 里是 `cube_column`
+  （顶/底 `_top` + 四侧 side）= **完整正六面体**，不是细柱。用户口述「半粗石柱」是视觉误读，
+  必须读 mod 的 `models/block/*.json` 定几何（本仓按 `geometry:'box'` + 六面贴图数组烘焙）。
 
 **坐标与旋转**
 - 实例原点两套口径：mc-lite 几何以**块中心**为原点（`position.set(x+.5,...)`），本仓模板以**块底角**。
@@ -159,6 +172,11 @@ scheduler/physics）再加 `npm run bench -- --check`。计划里标「冻结」
 - 从实例矩阵反解旋转用 `atan2(m[8], m[0])`，**不能** `Euler.setFromQuaternion`（`asin` 在 |θ|>π/2 折叠）。
   判「相机歪头」读基向量（`up.y`/`right.y`），不能读 `camera.rotation.x/z`（yaw=π 时是等价表示）。
 - 坐标类判据一律非负取模：`wx % 16` 在负坐标返回负值 → 判据恒真。
+- **锚点搜索的「方向」是载荷性的，照抄另一侧的判据会 8/8 seed 全返回 null**（废弃堡垒 v2.89）：
+  大竞技场在城东，城市净距判据是 `wx - HALF <= city.maxX + CLEAR → 拒绝`；废弃堡垒在城西，
+  必须是 `wx + HALF_X >= city.minX - CLEAR → 拒绝`。第一版照抄了城东那行 ⇒ 每个候选都被
+  city 判据拒掉，9ms 就退出（结构永不生成，且**没有任何报错**）。同理瞬移落点：城东结构落在
+  **西**缘外、城西结构落在**东**缘外（都是「靠 City 的那一侧」），照抄 `toBeLessThan` 会恒红。
 - 三层 v 方向翻转（BoxGeometry 各面 `vdir` 符号不同 + `TextureLoader.flipY=true` + 皮肤矩形按图左上
   原点写），调试时必须走**真实加载路径**（`DataTexture` 的 `flipY` 与 `TextureLoader` 相反，用它造探针会得出假结论）。
 - **Bedrock/Java 骨骼旋转的数值 ≠ 标准右手系的 `Euler(x,y,z,'XYZ')`**（焰魔 v2.58，曾误诊为「设计幅度大」）：
@@ -210,6 +228,12 @@ scheduler/physics）再加 `npm run bench -- --check`。计划里标「冻结」
 - 结构写入无占用格守卫（`makeColumnSetter` 后写胜，与 mc-lite 先写胜不同；未注册名字**静默 return**
   → 那格变 air）。**写结构类断言不得假设「每个结构都完整」**。
 
+**UI 布局**
+- **瞬移行的按钮文案上限随按钮数递减**（v2.89 实测）：左列 375px + `.mc-btn-group` 平分，
+  六按钮 4 字、七按钮 3 字（靠本行专属 `gap:4px`）、**八按钮只剩 2 字**（每只文字可用 31.4px，
+  3 字 36px 折行，即使 gap 收到 0px 也只有 34.9px ⇒ 无解）。加按钮前先量真实布局
+  （`Range.getClientRects()` 行盒数），`scrollWidth <= clientWidth` 对折行无判别力（折行时两者仍相等）。
+
 **门禁与测试**
 - `src/tests/test-*.js` 必须同时出现在 `src/tests/index.html` 的 import 里 —— 漏注册是
   **测试静默不跑**（全绿假象），`check:data` 的 `[测试注册]` 环节双向钉住。
@@ -218,6 +242,22 @@ scheduler/physics）再加 `npm run bench -- --check`。计划里标「冻结」
 - 计时型 spec 在高负载下会贴线 flaky（`m1-acceptance` 放挖 p95、`m3-rain` 截图差分、
   `weapons-world-edit` 计数、bench 的 frameP95）。**判据看交替对照的分布，不看单次红绿**（不改阈值）。
 - 写像素类断言必须**同时钉上下界**（只钉「变暗」抓不到「纯黑」），且先测同状态重复截图的噪声底。
+- **像素颜色判据必须带对照组校准**（废弃堡垒 v2.89 实测）：
+  · 「末地石主色」用 `g>=r && g>b*1.25 && lum>60` —— `g>=r` 排除沙漠沙（sand_side 193,183,144
+    是 r>g），否则「只是沙漠没有结构」也命中，断言失去判别力（实测判别力 18×：0.419 vs 0.023）；
+  · 「水体」用 `b>r+25 && g>r+12 && lum∈[95,150]` —— 漏 `g>r+12` 会让**紫色方块**误报
+    （void_stone 120,31,225；v2.90 前 amethyst 141,103,197 也是，现已改映 deepslate 120,120,145
+    —— 但 deepslate 的 g−r 恒为 0，等比缩放后仍被 `g>r+12` 排除），漏亮度门会让**雾化天空**（168,208,216，
+    lum 197；`skybox=0` 的纯天蓝是 135,206,235，±30 容差抓不到它）与**暗 obsidian**（32,72,120，
+    lum 75）误报（实测分别误报 11.83% 与 0.82%）。
+- **A/B 单变量对照要先确认「变量真的被改动了」**：`ocean.js` 的海面平面 mesh **没有 `name`**，
+  用 `scene.traverse` 按名字匹配会一个都找不到 ⇒ 两侧数字相同是假象，会得出「与海面平面无关」
+  的错误结论。必须用 `game.ocean.plane`（`setupOcean` 的返回值）。
+- **烘焙产物的「朝向分布」必须逐档比对，不能只比格数**（废弃堡垒 v2.89）：去掉台阶
+  `half=top` 的 `meta=(orient+2)%4` 时，格数/palette/包围盒/**指纹全部不变**（只改 meta 值），
+  而 `--census-orient` 验的是 mesher 几何语义（「+2 这个假设成立」），不验 classify 有没有用它
+  ⇒ 缺陷静默通过（实测四档 60/54/58/52 → 58/52/60/54，楼梯高侧全差 180°）。
+  既有 4 个烘焙产物都只把 `stepOrientationCounts` 写进 meta 而不断言 —— 新增产物要补上。
 - 断言前先在真实数据上跑一次打印实际值 —— 多处踩坑都是「断言描述想象中的世界」。
 - 对照脚本与被测代码**只差一个变量**：两侧共用同一个错误假设会得出「两者一致」的假结论。
 - `check:arch` 的 `ISOMORPHIC_DECLARED` 正则**扫全文（含注释）**：在 `core/game.js` 这类装配层文件里
@@ -232,7 +272,7 @@ scheduler/physics）再加 `npm run bench -- --check`。计划里标「冻结」
 
 | 要动的东西 | 先读 |
 |---|---|
-| 地形/高台地带/浅水高台/祭坛/拱桥/竞技场/金字塔/中世纪船 | 各自的 `docs/superpowers/specs/<日期>-*design.md` + roadmap 同版本行 |
+| 地形/高台地带/浅水高台/祭坛/拱桥/竞技场/大竞技场/废弃堡垒/金字塔/中世纪船 | 各自的 `docs/superpowers/specs/<日期>-*design.md` + roadmap 同版本行 |
 | 光照 / 阴影 / 天空 / 雾 / 水面 / 色温 | `2026-10-13-sun-shadow-map-design.md`、`2026-10-20-sun-shading-and-skybox-design.md`、`2026-10-24-lighting-realism-design.md` + roadmap「活跃约束详情·光影真实感 / 渲染与容量」 |
 | 结构撒布 / 巨树 / 杜鹃树 / 植被 | roadmap「结构撒布」「巨树」「树叶与镂空遮挡体」段 + `2026-10-23-giant-trees-design.md` |
 | 龙 / Boss / 火球 / 实体伤害 | `2026-11-03-altar-dragon-design.md` + `2026-11-03-dragon-boss-ai-design.md` + roadmap v2.41~v2.48 |

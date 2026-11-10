@@ -1,5 +1,9 @@
 # 废弃堡垒移植实施计划（v2：含水约束 + 新烘焙方块）
 
+> **状态：已实施完成（v2.89，2026-11-10）** —— Task 1~10 全部交付，待用户验收。
+> 实施期按 census 实测修订了 6 处冻结数字（见 Task 3 Step 2 与 spec 头部修订注），
+> 并把版本号从误标的 v2.86 改为 **v2.89**（v2.86/v2.87/v2.88 已被占用）。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 > ## ⚠️ v2 修订（2026-11-10）
@@ -163,7 +167,7 @@ cp /Users/bachi/jaylli/cataclysm1.19.2modding/src/main/resources/data/cataclysm/
 `BLOCK_MAP` 按 **spec DR-4 总表**逐条定稿（每条理由写进注释）。要点：
 - 9 个整块/柱 → Task 1 新注册的同名方块；
 - `cataclysm:void_lantern_block` → `ochre_froglight`（**不新烘**，用户裁定）；
-- `purpur_block`/`purpur_pillar`/`purpur_void_rune_trap_block` → `amethyst`；
+- `purpur_block`/`purpur_pillar`/`purpur_void_rune_trap_block` → `deepslate`（v2.90 用户裁定，原 `amethyst`）；
 - `purpur_stairs`/`polished_end_stone_stairs`/`chorus_stairs` → 走 classify 台阶分支映 `stone_diorite_step`；
 - `crying_obsidian`/`obsidian_explosion_trap_bricks` → `obsidian`；
 - `end_stone_teleport_trap_bricks`/`chiseled_end_stone_bricks`→ 见 DR-4（前者映 end_stone_bricks，后者**新烘**）；
@@ -179,7 +183,7 @@ cp /Users/bachi/jaylli/cataclysm1.19.2modding/src/main/resources/data/cataclysm/
 ```
 cataclysm:obsidian_brick_slab     → obsidian_bricks
 end_stone_brick_slab              → end_stone_bricks
-purpur_slab                       → amethyst
+purpur_slab                       → deepslate
 cataclysm:polished_end_stone_slab → polished_end_stone
 ```
 
@@ -572,5 +576,5 @@ Expected: 全绿。红的 spec 先判是否本改动引起（逐文件回退二�
 - [ ] **Step 4: 汇报**
 
 交付物清单 + 实测数字（contentCells、air 格数、15 个新方块格数、cutout 峰值、截图）+
-已知开放项（甲板入口连通性、purpur 族映 amethyst 的色差、stone_diorite_step 的色差）。
+已知开放项（甲板入口连通性、purpur 族映 deepslate 的色差、stone_diorite_step 的色差）。
 **提交等用户指令**。
