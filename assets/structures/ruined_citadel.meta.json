@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "width": 107,
+  "height": 63,
+  "depth": 110,
+  "blocks": 288744,
+  "floorRow": 45,
+  "deckCells": 8197,
+  "airCells": 27060,
+  "paletteSize": 34,
+  "stepOrientationCounts": {
+    "cobblestone_step_updown:0": 60,
+    "cobblestone_step_updown:1": 54,
+    "cobblestone_step_updown:2": 58,
+    "cobblestone_step_updown:3": 52,
+    "end_stone_brick_step:0": 130,
+    "end_stone_brick_step:1": 157,
+    "end_stone_brick_step:2": 134,
+    "end_stone_brick_step:3": 164,
+    "end_stone_brick_step_updown:0": 282,
+    "end_stone_brick_step_updown:1": 334,
+    "end_stone_brick_step_updown:2": 306,
+    "end_stone_brick_step_updown:3": 336,
+    "obsidian_brick_step:0": 273,
+    "obsidian_brick_step:1": 289,
+    "obsidian_brick_step:2": 272,
+    "obsidian_brick_step:3": 262,
+    "obsidian_brick_step_updown:0": 12,
+    "obsidian_brick_step_updown:1": 14,
+    "obsidian_brick_step_updown:2": 11,
+    "obsidian_brick_step_updown:3": 18,
+    "stone_diorite_step:0": 170,
+    "stone_diorite_step:1": 181,
+    "stone_diorite_step:2": 171,
+    "stone_diorite_step:3": 176
+  },
+  "railOrientationCounts": {
+    "handrail:0": 115,
+    "handrail:1": 102,
+    "handrail:2": 82,
+    "handrail:3": 94,
+    "handrailA:0": 88,
+    "handrailA:1": 227
+  },
+  "origin": {
+    "cx": 17,
+    "cz": 18
+  },
+  "fingerprints": {
+    "input": "fc63229fbaa1d2ee:b0cbfaaabb5dbc92",
+    "sourceSha256": "fc63229fbaa1d2eebb9497883f5457367d49dc6ac74e95ae6ec327b4320e59c9",
+    "paramsSha256": "b0cbfaaabb5dbc921298d6e480864a584bc67d86c70ea568c670b687854cd6f4"
+  }
+}
