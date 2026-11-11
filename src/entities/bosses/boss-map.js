@@ -16,6 +16,7 @@
 // | CITY | `getCityBoundsForSeed` + `inCityBounds`（`gen/structures/city-layout.js` / `scatter.js`） |
 // | TARN | `isTarnZone` + `tarnZoneCenter` + `inTarnRadius`（`gen/structures/tarn-zone.js`） |
 // | BURNING_ARENA | `computeBurningArenaAnchor` + `inBurningArenaFootprint`（`gen/structures/burning-arena.js`） |
+// | RUINED_CITADEL | `computeRuinedCitadelAnchor` + `inRuinedCitadelFootprint`（`gen/structures/ruined-citadel.js`） |
 // | SNOW | `getRegionSeededCenter` + `LANDMARK_OFFSET.SNOW_LAND_*` + `snowLandSuppressedByTarn` |
 // | SHALLOW_TARN | `computeShallowTarnAnchor` + `inShallowTarnFootprint` |
 //
@@ -24,13 +25,18 @@
 //
 // ## 优先级 = 迷你地图的同一套（先命中者胜）
 //
-// CITY > TARN > BURNING_ARENA > SNOW > SHALLOW_TARN。
+// CITY > TARN > BURNING_ARENA > RUINED_CITADEL > SNOW > SHALLOW_TARN。
 // ⚠️ **BURNING_ARENA 必须在 SNOW 之前**：雪原盒是 region 级包围盒（±28），可伸进竞技场
 // 占地（±42）—— 实测 8 seed 中 2 个命中（1249026 / 8888）；那座雪原已被竞技场压制
 //（`burningArenaSuppressedLandmarks` ⇒ 世界里根本不存在），而 `snowMapAt` 只跳 **tarn** 压制的
 // 雪原 ⇒ 顺序反了会把竞技场内的点误判成 SNOW，按 B 召到几十格外的虚空
 //（修复前实测重叠点 (648,319) 返回 `{kind:'SNOW', cx:676, cz:347}`）。
 // 守卫：`test-boss-map.js` 的「雪原盒伸进竞技场占地」用例。
+// ⚠️ **RUINED_CITADEL 同理必须在 SNOW 之前**：雪原盒（±28）可伸进堡垒占地（±53/54），
+// 那座雪原已被堡垒压制（`ruinedCitadelSuppressedLandmarks` ⇒ 世界里根本不存在）。
+// 实测五个 seed（2096/2644/3740/4151/4973）有重叠，其中 2096/4151 那座雪原不存在。
+// ⚠️ **seed 清单不得照搬大竞技场那八个**：它们在堡垒上**零重叠**（净距 64~98 格），
+// 照搬会让用例的 `checked > 0` 直接 FAIL。守卫：同文件的「雪原盒伸进堡垒占地」用例。
 // ⚠️ 城市必须最前 —— 城市 bounds 内地形被压平、
 // 可能低于海平面，且它与其它三类在落点判据上互斥（浅水高台的 `CITY_CLEARANCE` 保证
 // 湖与城市 bounds 恒相距 40 格；雪原被 `snowLandSuppressedByTarn` 让路），
@@ -48,13 +54,17 @@ import {
 import {
   computeBurningArenaAnchor, inBurningArenaFootprint, BURNING_ARENA_SUMMON_FEET_DY,
 } from '../../gen/structures/burning-arena.js';
+import {
+  computeRuinedCitadelAnchor, inRuinedCitadelFootprint,
+  RUINED_CITADEL_SUMMON_FEET_DY, RUINED_CITADEL_SUMMON_DX, RUINED_CITADEL_SUMMON_DZ,
+} from '../../gen/structures/ruined-citadel.js';
 
 /**
  * 可召唤 Boss 的地图种类（**唯一权威**：名册、单测、文档都从这里派生）。
  *
  * 顺序即判据优先级（见文件头）。
  */
-export const BOSS_MAP_KINDS = Object.freeze(['CITY', 'TARN', 'BURNING_ARENA', 'SNOW', 'SHALLOW_TARN']);
+export const BOSS_MAP_KINDS = Object.freeze(['CITY', 'TARN', 'BURNING_ARENA', 'RUINED_CITADEL', 'SNOW', 'SHALLOW_TARN']);
 
 /** 雪原包围盒半宽（与 `minimap-regions.js` 的 `SNOW_HALF_EXTENT` 同推导） */
 const SNOW_HALF_EXTENT = Math.floor(SNOW_LAND_SIZE / 2) + TRANSITION_SIZE.SNOW_LAND;
@@ -171,9 +181,29 @@ function burningArenaMapAt(wx, wz, seed) {
   };
 }
 
+/**
+ * 废弃堡垒（城西沙漠）—— 末影守卫的召唤地图。
+ *
+ * ⚠️ **`cx/cz` 返回的是落点而不是锚点中心**：`summon` 直接拿它当落点列，
+ * 三个偏移的唯一权威在 `ruined-citadel.js`（本文件只消费不复算，红线 1）。
+ * ⚠️ **`summonY` 恒为上层房间**（`floorY − 6`），与玩家所在高度无关：
+ * 三层地牢互不连通，玩家只能走到上层（spec §2.3.1）。
+ */
+function ruinedCitadelMapAt(wx, wz, seed) {
+  const a = computeRuinedCitadelAnchor(seed);
+  if (!a || !inRuinedCitadelFootprint(wx, wz, [a])) return null;
+  return {
+    kind: 'RUINED_CITADEL',
+    cx: a.wx + RUINED_CITADEL_SUMMON_DX,
+    cz: a.wz + RUINED_CITADEL_SUMMON_DZ,
+    key: 'ruinedcitadel:0',
+    summonY: a.floorY + RUINED_CITADEL_SUMMON_FEET_DY,
+  };
+}
+
 /** 判据表（顺序 = 优先级）。加新地图 = 在这里加一行 + 在 `BOSS_ROSTER` 加一行。 */
 const DETECTORS = Object.freeze([
-  cityMapAt, tarnMapAt, burningArenaMapAt, snowMapAt, shallowTarnMapAt,
+  cityMapAt, tarnMapAt, burningArenaMapAt, ruinedCitadelMapAt, snowMapAt, shallowTarnMapAt,
 ]);
 
 /**

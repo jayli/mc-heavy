@@ -118,6 +118,43 @@ export const RUINED_CITADEL_DRY_MARGIN = 4;
 export const RUINED_CITADEL_TELEPORT_GAP = 6;
 
 /**
+ * 末影守卫的召唤落点：脚底相对 `floorY` 的竖直偏移（格）。
+ *
+ * ## 推导（spec §2.3.2，全部产物实测）
+ *
+ * 归一化 ny → 世界 y = `floorY + ny − FLOOR_ROW`（校验：ny45 → floorY、ny63 → floorY+18）。
+ * 上层房间：**地板 ny38**、空气 ny39..43（净空 **5 格**）、天花板 ny44。
+ * ⇒ 脚底 ny39 = `floorY + 39 − 45` = **`floorY − 6`**。
+ *
+ * ## 为何不是最深房间（用户裁定改判，spec §2.3.1）
+ *
+ * 三层地牢在**引擎真实口径**下互不连通：本仓台阶族一律 `solid:true`
+ * ⇒ `isSolid` 恒真 ⇒ 身体不能进入（楼梗是装饰，不可爬）；且 ny30 / ny37 两个分隔层
+ * **全层零空气**（ny37 唯一的 4 格开口是源 `iron_trapdoor`，已被烘焙指纹表丢弃）。
+ * ⇒ 玩家从甲板竖井只能走到**上层房间**；召到最深房间 = 玩家走不下去、守卫也走不出来。
+ *
+ * ⚠️ **本常量与 `GuardianService._findGroundY` 的 `HEADROOM` 耦合**：上层净空只有 5 格，
+ * `HEADROOM` 取 5 会把 ny39 判死 ⇒ 落点静默变成 ny31（中层，差 8 格）。必须取 `ceil(3.8) = 4`。
+ *
+ * ⚠️ **唯一独立守卫是 `test-ruined-citadel-gen.js` 的产物对账用例**：
+ * `test-boss-map.js` 两侧都读本常量（只钉接线），改成 −5 时它仍全绿。
+ */
+export const RUINED_CITADEL_SUMMON_FEET_DY = -6;
+
+/**
+ * 召唤落点相对锚点的水平偏移（格）—— **不是几何中心**。
+ *
+ * 上层房间 air bbox 49×49（x[-22,26] z[-26,22]），几何中心是 `(2,−2)`。
+ * ⚠️⚠️ **几何中心守卫站不住**：它的 3×3 footprint 撞到 `(3,39,−2)` 非空气格。
+ *
+ * `(1,−2)` 是穷举 1114 个可站点的 14 个连通分量后取的最优点：
+ * 「守卫活动范围最大（290 格）+ 全部落在玩家可达集内 + 最靠房间中心（1.00 格）」。
+ */
+export const RUINED_CITADEL_SUMMON_DX = 1;
+/** 召唤落点 z 偏移（推导同 `RUINED_CITADEL_SUMMON_DX`） */
+export const RUINED_CITADEL_SUMMON_DZ = -2;
+
+/**
  * 粗筛网格步长（格）。
  *
  * ⚠️ **两级筛选是性能关键**：106×108 = 11,448 格逐格全检，加上干燥判据外扩 4 格是

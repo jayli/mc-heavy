@@ -24,6 +24,7 @@
 // （`meta.dragonDead`）已随本次改动移除。
 import { DRAGON_TYPE } from '../dragons/dragon-config.js';
 import { IGNIS_TYPE } from '../ignis/ignis-config.js';
+import { GUARDIAN_TYPE } from '../guardian/guardian-config.js';
 
 /**
  * Boss 槽位描述。
@@ -58,6 +59,14 @@ export const BOSS_ROSTER = Object.freeze({
   //    无视玩家所在高度（用户裁定：任意层按 B 都召到最高层中心）。
   BURNING_ARENA: Object.freeze([
     Object.freeze({ slot: 0, type: IGNIS_TYPE, service: 'ignises' }),
+  ]),
+  // 废弃堡垒（城西沙漠）：唯一 Boss = 末影守卫。
+  // ⚠️ **slot 0**：本图只有守卫，它就是这里的 Boss1（toast「已召唤 Boss1」）。
+  // ⚠️ **召唤点恒在地牢上层房间**：`bossMapAt` 给本图返回 `summonY`（= floorY − 6），
+  //    `Game.summonBoss()` 据此无视玩家所在高度（同大竞技场口径）。
+  //    理由：三层地牢在引擎口径下互不连通，玩家从甲板竖井只能走到上层（spec §2.3.1）。
+  RUINED_CITADEL: Object.freeze([
+    Object.freeze({ slot: 0, type: GUARDIAN_TYPE, service: 'guardians' }),
   ]),
 });
 

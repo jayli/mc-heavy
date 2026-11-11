@@ -23,6 +23,7 @@ import {
   ruinedCitadelSuppressedLandmarks, ruinedCitadelCandidateValid, ruinedCitadelTeleportPoint,
   RUINED_CITADEL_HEIGHT, RUINED_CITADEL_MAX_SPAN, RUINED_CITADEL_SPANS,
   RUINED_CITADEL_DRY_MARGIN, RUINED_CITADEL_TELEPORT_GAP,
+  RUINED_CITADEL_SUMMON_FEET_DY, RUINED_CITADEL_SUMMON_DX, RUINED_CITADEL_SUMMON_DZ,
   clearRuinedCitadelCache,
 } from '../gen/structures/ruined-citadel.js';
 import { RUINED_CITADEL_HALF_X, RUINED_CITADEL_HALF_Z } from '../gen/structures/ruined-citadel-data.js';
@@ -647,5 +648,156 @@ test('废弃堡垒：瞬移落点在占地东缘外、y = 自然地表 + 1', () 
     assertEqual(inRuinedCitadelFootprint(p.x, p.z, [a]), false,
       `seed ${seed} 落点必须在占地外（否则玩家瞬移进墙里）`);
     assertEqual(getBiome(p.x, p.z, seed), 'DESERT', `seed ${seed} 落点应在沙漠里`);
+  }
+});
+
+// ==================== 上层房间召唤落点（末影守卫，本次新增）====================
+//
+// ⚠️ **这是三个落点常量的唯一独立守卫**：`test-boss-map.js` 两侧都读同一常量（只钉接线），
+// 实测把 FEET_DY 改成 −5 时它仍全绿，只有本条会红（焰魔 BURNING_ARENA_SUMMON_FEET_DY 的同源坑）。
+//
+// ⚠️ **判据必须用引擎真实口径**（spec §2.3.1 的真缺陷）：本仓台阶族一律 `solid:true`
+// ⇒ `isSolid` 恒真 ⇒ 身体不能进入。把台阶当 air 会算出「27,992 格连通」的假结论；
+// 真实口径下三层房间**互不连通**（ny30/37 全层零 air，ny37 唯一开口是遭丢弃的 iron_trapdoor）。
+// 本用例只验「上层房间内部可达」，**不声称整座地牢连通**。
+
+/** 从产物建一张 (x,y,z) → 是否空气 的查询表（归一化坐标） */
+function citadelAirMap(data) {
+  const m = new Map();
+  for (const b of data.blocks) m.set(`${b.x},${b.y},${b.z}`, b.type === 'air');
+  // 产物没写的格 = 天然岩层 ⇒ 视为非空气（与 fillColumn+carveCaves 后的世界一致）
+  return (x, y, z) => m.get(`${x},${y},${z}`) === true;
+}
+
+test('废弃堡垒: 上层房间落点的三个常量与产物几何对账（Tier 2 独立守卫）', async () => {
+  const data = await loadStructure('ruinedCitadel');
+  const air = citadelAirMap(data);
+  const dx = RUINED_CITADEL_SUMMON_DX, dz = RUINED_CITADEL_SUMMON_DZ;
+  // ny → 世界 y = floorY + ny − FLOOR_ROW；脚底 ny = FLOOR_ROW + FEET_DY
+  const feetNy = FLOOR_ROW + RUINED_CITADEL_SUMMON_FEET_DY;
+  assertEqual(feetNy, 39, '上层房间脚底必须是 ny39（= floorY − 6）');
+  // 地板实心 / 其上连续 5 格空气 / 天花板实心
+  assertTrue(!air(dx, feetNy - 1, dz), `ny${feetNy - 1} 必须是地板（实心）`);
+  for (let dy = 0; dy < 5; dy++) {
+    assertTrue(air(dx, feetNy + dy, dz), `ny${feetNy + dy} 必须是空气（净空 5 格）`);
+  }
+  assertTrue(!air(dx, feetNy + 5, dz), `ny${feetNy + 5} 必须是天花板 ⇒ 净空恰好 5 格`);
+});
+
+test('废弃堡垒: 落点满足守卫体形（3×3 footprint × 4 层空气 + 地板全实心）', async () => {
+  const data = await loadStructure('ruinedCitadel');
+  const air = citadelAirMap(data);
+  const dx = RUINED_CITADEL_SUMMON_DX, dz = RUINED_CITADEL_SUMMON_DZ;
+  const feetNy = FLOOR_ROW + RUINED_CITADEL_SUMMON_FEET_DY;
+  // 守卫 halfWidth 1.25 ⇒ 占 3×3 列；height 3.8 ⇒ 占 4 层
+  for (let ox = -1; ox <= 1; ox++) {
+    for (let oz = -1; oz <= 1; oz++) {
+      assertTrue(!air(dx + ox, feetNy - 1, dz + oz),
+        `footprint (${ox},${oz}) 的地板必须实心`);
+      for (let dy = 0; dy < 4; dy++) {
+        assertTrue(air(dx + ox, feetNy + dy, dz + oz),
+          `footprint (${ox},${oz}) 的 ny${feetNy + dy} 必须是空气`);
+      }
+    }
+  }
+});
+
+test('废弃堡垒: 几何中心 (2,-2) 站不住 —— 钉住「不得图方便用几何中心」', async () => {
+  const data = await loadStructure('ruinedCitadel');
+  const air = citadelAirMap(data);
+  const feetNy = FLOOR_ROW + RUINED_CITADEL_SUMMON_FEET_DY;
+  // 上层房间 air bbox 49×49 ⇒ 几何中心 (2,-2)；它的 3×3 footprint 撞到 (3,39,-2) 非空气
+  assertTrue(!air(3, feetNy, -2),
+    '(3,39,-2) 必须是非空气 —— 若这里变成空气，说明产物换了版本，落点需重新穷举');
+  assertTrue(RUINED_CITADEL_SUMMON_DX !== 2 || RUINED_CITADEL_SUMMON_DZ !== -2,
+    '落点不得取几何中心 (2,-2)（守卫站不住）');
+});
+
+test('废弃堡垒: HEADROOM=4 时上层房间可被选中，=5 时会被判死（判别力守卫）', async () => {
+  const data = await loadStructure('ruinedCitadel');
+  const air = citadelAirMap(data);
+  const dx = RUINED_CITADEL_SUMMON_DX, dz = RUINED_CITADEL_SUMMON_DZ;
+  const refNy = FLOOR_ROW + RUINED_CITADEL_SUMMON_FEET_DY;
+  // 复刻 GuardianService._findGroundY 的候选收集（单列口径）
+  const candidates = (headroom) => {
+    const out = [];
+    for (let y = 1; y < RUINED_CITADEL_HEIGHT; y++) {
+      if (!air(dx, y, dz)) continue;
+      if (air(dx, y - 1, dz)) continue;      // 下方必须实心
+      let clear = true;
+      for (let dy = 1; dy <= headroom; dy++) {
+        if (!air(dx, y + dy, dz)) { clear = false; break; }
+      }
+      if (clear) out.push(y);
+    }
+    return out;
+  };
+  const pick = (list) => list.reduce((a, y) => (Math.abs(y - refNy) < Math.abs(a - refNy) ? y : a), list[0]);
+  const c4 = candidates(4), c5 = candidates(5);
+  assertTrue(c4.includes(refNy), `HEADROOM=4 的候选应含 ny${refNy}，实际 ${JSON.stringify(c4)}`);
+  assertEqual(pick(c4), refNy, 'HEADROOM=4 必须选中上层房间');
+  assertTrue(!c5.includes(refNy),
+    `HEADROOM=5 会把 ny${refNy} 判死（净空只有 5 格）—— 这正是取 4 的理由`);
+  assertTrue(pick(c5) !== refNy,
+    'HEADROOM=5 会静默落到别层（差 8 格）⇒ 本条钉住「不能 +1」');
+});
+
+test('废弃堡垒: 玩家能从甲板竖井底走到落点（上层房间内部可达）', async () => {
+  const data = await loadStructure('ruinedCitadel');
+  const air = citadelAirMap(data);
+  const feetNy = FLOOR_ROW + RUINED_CITADEL_SUMMON_FEET_DY;
+  const dx = RUINED_CITADEL_SUMMON_DX, dz = RUINED_CITADEL_SUMMON_DZ;
+  // 玩家口径：半宽 0.3 / 高 1.8 ⇒ 单列 1×1、占 2 层（脚底格 + 头格）
+  const standable = (x, y, z) => air(x, y, z) && air(x, y + 1, z) && !air(x, y - 1, z);
+  // 甲板唯一竖井 (14,18)：ny45/44 空气 → 落到 ny39（底 ny38 实心）
+  assertTrue(air(14, 45, 18) && air(14, 44, 18), '竖井上端应通甲板');
+  assertTrue(standable(14, feetNy, 18), `竖井底 (${14},${feetNy},18) 应可站`);
+  // BFS：同层四邻 + 上下 1 格（**逐格检查通道，不得穿实心**）
+  // ⚠️ **不在找到落点时 break**：提前退出只能数到「搜索前沿」而不是整个连通分量
+  //（实测：break 得 634、跑完得 2028）—— 两个数都对但语义不同，这里要后者。
+  const key = (x, y, z) => `${x},${y},${z}`;
+  const start = key(14, feetNy, 18);
+  const dist = new Map([[start, 0]]);
+  const queue = [[14, feetNy, 18]];
+  while (queue.length > 0) {
+    const [x, y, z] = queue.shift();
+    const d0 = dist.get(key(x, y, z));
+    const next = [];
+    for (const [ox, oz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      // 同层平移
+      if (standable(x + ox, y, z + oz)) next.push([x + ox, y, z + oz]);
+      // 上一格台阶（头顶要有空间）
+      if (standable(x + ox, y + 1, z + oz) && air(x, y + 2, z)) next.push([x + ox, y + 1, z + oz]);
+      // 下一格（下落途中不得穿实心）
+      if (standable(x + ox, y - 1, z + oz) && air(x + ox, y, z + oz)) next.push([x + ox, y - 1, z + oz]);
+    }
+    for (const n of next) {
+      const k = key(n[0], n[1], n[2]);
+      if (!dist.has(k)) { dist.set(k, d0 + 1); queue.push(n); }
+    }
+  }
+  const target = key(dx, feetNy, dz);
+  assertTrue(dist.has(target),
+    `玩家应能从竖井底走到落点 (${dx},${feetNy},${dz})；实测可达 ${dist.size} 格`);
+  // ⚠️ **最短路径 65 步是审阅实测值**（跑速 8 格/秒 ⇒ ≈ 8.1 秒）。
+  // 它比「可达格数」更有判别力：落点挖到房间另一头时格数不变而步数会剧增。
+  assertEqual(dist.get(target), 65, '竖井底 → 落点的最短路径 = 65 步');
+  assertTrue(dist.size > 1000, `上层房间可达格数应 >1000（实测 ${dist.size}）`);
+});
+
+test('废弃堡垒: 三层房间在引擎口径下互不连通（钉住「不得把台阶当可通行」）', async () => {
+  const data = await loadStructure('ruinedCitadel');
+  const air = citadelAirMap(data);
+  // ny30 / ny37 是两个分隔层：全层零空气 ⇒ 三层互不连通
+  for (const ny of [30, 37]) {
+    let airCount = 0;
+    for (let x = -RUINED_CITADEL_HALF_X; x <= RUINED_CITADEL_HALF_X; x++) {
+      for (let z = -RUINED_CITADEL_HALF_Z; z <= RUINED_CITADEL_HALF_Z; z++) {
+        if (air(x, ny, z)) airCount++;
+      }
+    }
+    assertEqual(airCount, 0,
+      `分隔层 ny${ny} 必须全层零空气（实际 ${airCount}）—— `
+      + '若变成有空气，说明产物补了连通性，那时召唤点裁定需重新评估');
   }
 });
