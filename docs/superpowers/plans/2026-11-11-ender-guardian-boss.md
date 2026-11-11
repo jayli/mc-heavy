@@ -348,7 +348,7 @@ git commit -m "feat(guardian): Java 模型烘焙脚本与产物（20 骨骼 / 24
   - `GUARDIAN_STEERING`：`{probeDistance:1.2, anglesDeg:[22.5,45,67.5,90]}`（**必须与 `ZOMBIE_STEERING` 同值**）
   - `GUARDIAN_STEP_LIFT`：`{epsilon: 1e-4}`（与 `IGNIS_STEP_LIFT` / `ZOMBIE_STEP_LIFT` 同值同依据；衰减参数仍在 `player/step-lift.js`，不写第二份）
   - `GUARDIAN_POSE_BLEND`：`{seconds: 0.2}`（四招入场均用默认值，**不引入焰魔旋斩那个 0.6s 特例**）
-  - `GUARDIAN_CORE_OBB`：`Object.freeze({ halfExtents: Object.freeze([1.2500, 1.2188, 1.0313]), center: Object.freeze([0.0000, 2.5938, -0.4063]) })`
+  - `GUARDIAN_CORE_OBB`：`Object.freeze({ halfExtents: Object.freeze([1.2500, 1.2188, 1.0313]), center: Object.freeze([0.0000, 2.7181, -0.4062]) })`
     （**已用 Java 解析实测**，spec §8；Task 6 的「产物独立复算」用例从烘焙产物重算对账，Task 8 Step 6 跑）
   - `guardianBlendSeconds(sourceKey)` → `number`（读 `GUARDIAN_POSE_BLEND.seconds`；渲染器与测试共用的单一权威）
 
@@ -428,7 +428,7 @@ assertTrue(GUARDIAN_AI.escapeLeapApexMin > GUARDIAN_AI.leapJumpForce ** 2 / (2 *
   '强化跳顶点必须严格 > 普通跳顶点，否则「跳更高」静默失效');
 assertTrue(2 * Math.sqrt(2 * GUARDIAN_AI.escapeLeapApexMax / 24) < GUARDIAN_AI.leapMaxSeconds,
   '强化跳滞空必须显著 < 安全阀，否则那一跳白跳');
-assertTrue(GUARDIAN_AI.overlapEscapeDist >= 1.6131 + 0.3,
+assertTrue(GUARDIAN_AI.overlapEscapeDist >= 1.6205 + 0.3,
   '重叠阈 ≥ 旋转后身体盒最大水平半宽(45°) + 玩家半宽');
 
 // maxStep 必须是 1.0（spec §5 实测：zombieStepUpY 恒抬 1 格，1.75 与 1.0 逐位等价）
@@ -454,10 +454,10 @@ assertTrue(guardianEntityIdFor('ruinedcitadel:0', 0) !== guardianEntityIdFor('ru
 assertEqual(JSON.stringify(GUARDIAN_STEERING.anglesDeg), JSON.stringify([22.5, 45, 67.5, 90]), '偏角档位');
 ```
 
-⚠️ `overlapEscapeDist` 的下界用**旋转后的核心盒最大水平半宽**（1.6131，spec §8 实测）而不是
+⚠️ `overlapEscapeDist` 的下界用**旋转后的核心盒最大水平半宽**（1.6205，spec §8 实测）而不是
 `GUARDIAN.halfWidth`（1.25，碰撞盒）—— 阻挡盒是核心 OBB 绕 yaw 旋转后的轴对齐包围盒，
 45° 时比碰撞盒宽 29%。用 1.25 算会低估阈值，重现焰魔 v2.78 的软锁。
-故断言写：`overlapEscapeDist >= 1.6131 + 0.3`。
+故断言写：`overlapEscapeDist >= 1.6205 + 0.3`。
 
 - [ ] **Step 2: 注册进 `src/tests/index.html`**
 
@@ -481,7 +481,7 @@ Expected: FAIL，报 `test-guardian-config.js` 加载失败（`guardian-config.j
   ⚠️️ **这三个值不得照抄焰魔（5.0 / 0.75 / 5.5）**：守卫最短的一招是踩踏（`hitRange 4.5`），
   照抄会让守卫停在 5.0 格处出踩踏而**永远打不中**，且「`standoffRange ≤ hitRange`」那条断言
   仍全绿（它读的是派生**最大值** 6.25）。推导见 spec §5，不变式按**最小** `hitRange` 写。
-- `overlapEscapeDist: 1.95`（旋转后身体盒最大水平半宽 1.6131 + 玩家半宽 0.3，spec §8）。
+- `overlapEscapeDist: 1.95`（旋转后身体盒最大水平半宽 1.6205 + 玩家半宽 0.3，spec §8）。
 - `attackCooldownMin: 5.0` / `attackCooldownMax: 7.5`（下限必须 > 最长动画 4.5s）。
 - `GUARDIAN_ATTACKS` 四档的 `weight` 与 `cooldownSeconds` 按 Interfaces 表填（普攻各 0.30/冷却 0，上勾拳 0.25/9.0，踩踏 0.15/12.0）。
 - `GUARDIAN_STEP_LIFT.epsilon: 1e-4` / `GUARDIAN_POSE_BLEND.seconds: 0.2` / `guardianBlendSeconds()`（读前者，四招均返回 0.2）。
@@ -645,7 +645,7 @@ assertTrue(Math.abs(box.min[0]) < 5 && Math.abs(box.max[0]) < 5,
   `必须是相对 position 的局部盒，实际 min[0]=${box.min[0]}`);
 
 // 命中盒相对**脚底**（不是身体中心）—— 焰魔 v2.59 的缺陷：盒以脚底为中心 ⇒ 胸口以上全打空
-//   ⚠️ 守卫的核心盒 center.y = 2.5938、halfExtents[1] = 1.2188 ⇒ min[1] ≈ 1.375（**不是 0**）：
+//   ⚠️ 守卫的核心盒 center.y = 2.7181、halfExtents[1] = 1.2188 ⇒ min[1] ≈ 1.4993（**不是 0**）：
 //      它的躯干（含头盔）从脚底往上 1.375 格才开始。故断言写「min[1] > 1.0 且 max[1] ≈ 3.81」，
 //      而不是照抄焰魔的「min[1] ≈ 0」（焰魔核心盒从脚底就开始）。
 assertTrue(box.min[1] > 1.0, `守卫核心盒下沿应 ≈ 1.375（躯干从脚底往上），实际 ${box.min[1]}`);
@@ -654,13 +654,13 @@ assertTrue(box.max[1] > 3.5, `盒必须覆盖到头顶（≈ 3.81），实际 ma
 // 产物独立复算（素材/烘焙器变了会红 —— 这是 GUARDIAN_CORE_OBB 的唯一独立守卫）
 //   从 assets/guardian/guardian.json 的 bind pose 重算核心四骨骼
 //   （lowerbody / upperbody / helmet / head，共 6 个盒）包围盒，与常量逐值对账：
-//   halfExtents [1.2500, 1.2188, 1.0313]、center [0, 2.5938, −0.4063]（spec §8 实测）
+//   halfExtents [1.2500, 1.2188, 1.0313]、center [0, 2.7181, −0.4062]（spec §8 实测）
 //   ⚠️ **复算必须用口径 A**（spec §2.2.1）：骨骼链 `position = localPosition`（pivot 恒零），
 //      顶点已是骨骼局部坐标；脚底基准用 `metrics.feetOffsetY = +1.6243`。
 //      照搬焰魔那套 `pivot − R·pivot` 会让两侧差 1.5 格而对账恒红。
 
 // yaw 旋转现算：yaw=0 与 yaw=π/4 的 AABB 必须不同（固定盒会在它横过来时漏判/误判）
-//   ⚠️ 并钉住 45° 时的最大水平半宽 = 1.6131（overlapEscapeDist 1.95 的依据）
+//   ⚠️ 并钉住 旋转后的最大水平半宽（√(hx²+hz²)，在 39.5° 而非 45°） = 1.6205（overlapEscapeDist 1.95 的依据）
 assertTrue(JSON.stringify(guardianAabbFor({...st, yaw: 0})) !==
            JSON.stringify(guardianAabbFor({...st, yaw: Math.PI / 4})), 'AABB 必须按 yaw 现算');
 
@@ -937,7 +937,7 @@ Expected: FAIL
 
 - [ ] **Step 6: 交叉校验烘焙产物的核心 OBB 与 Task 4 的冻结值**
 
-`GUARDIAN_CORE_OBB` 已在 Task 4 用 **Java 源码解析**实测冻结（halfExtents `[1.2500, 1.2188, 1.0313]`、center `[0, 2.5938, −0.4063]`）。本步验的是**另一条独立路径**：从烘焙产物 `assets/guardian/guardian.json` 的 bind pose 重算同一组值，两者必须逐值对账。
+`GUARDIAN_CORE_OBB` 已在 Task 4 用 **Java 源码解析**实测冻结（halfExtents `[1.2500, 1.2188, 1.0313]`、center `[0, 2.7181, −0.4062]`）。本步验的是**另一条独立路径**：从烘焙产物 `assets/guardian/guardian.json` 的 bind pose 重算同一组值，两者必须逐值对账。
 
 Run: 在 `test-guardian-system.js` 的「产物独立复算」用例里实现（Task 6 Step 1 已列），此时产物已存在 ⇒ 跑它。
 
@@ -989,7 +989,7 @@ git commit -m "feat(guardian): 末影守卫 SkinnedMesh 渲染（4 条攻击片�
 //   ⚠️ 必须测**盒斜角外**的站位（yaw=45° 时阻挡盒变形）——
 //      焰魔 v2.78 的真软锁就出在这里：固定圆盘阈值只盖住重叠区的 54%
 //   ⚠️⚠️ **守卫的盒不对称**（center.z = −0.4063）：yaw45° 时 x ∈ [−1.900, **+1.326**]，
-//      不是 ±1.6131。扫全 yaw × 盒内玩家位置实测「沿 ±X/±Z 推出所需最大距离」= **1.900 格**
+//      不是 ±1.6205。扫全 yaw × 盒内玩家位置实测「沿 ±X/±Z 推出所需最大距离」= **1.900 格**
 //      （焰魔对照 1.376）。故额外钉一条余量断言：
 assertEqual(EJECT_MAX > 1.900, true,
   'EJECT_MAX(2.0) 必须 > 守卫最深陷入 1.900；余量仅 0.100 ⇒ 不得再调大核心盒尺寸');

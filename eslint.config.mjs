@@ -215,8 +215,12 @@ export default [
     // audio-config.js 同理（v2.64）：SOUND_EXT_OVERRIDES / SOUND_VOLUMES 的键是**音效 id**，
     // 而 id 就是磁盘文件名（ignis_die.ogg / dragon_fire.ogg）—— 改成 camelCase 会让
     // `soundFileName(id)` 拼出磁盘上不存在的文件名，形态是**静默无声**（fetch 404 被 catch 吞）。
+    // guardian-config.js 同理：GUARDIAN_ATTACKS 的键就是**烘焙产物的动画键**
+    // （guardian.json 的 animations.strong_right 等，与 GUARDIAN_ANIM_SOURCES 同源）——
+    // 改成 camelCase 会让渲染器按 state.attackKind 取不到动画，形态是**出招时姿态不动**。
     files: ['src/voxel/blocks-data.js', 'src/voxel/faces-data.js', 'src/tests/test-mesher.js',
-      'src/gen/structures/cloudland-kit-data.js', 'src/render/audio-config.js'],
+      'src/gen/structures/cloudland-kit-data.js', 'src/render/audio-config.js',
+      'src/entities/guardian/guardian-config.js'],
     rules: {
       'camelcase': 'off',
     },

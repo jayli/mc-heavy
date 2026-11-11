@@ -502,7 +502,7 @@ chase/attack ──(距 > disengageRange 或视线断)──▶ idle
 
 1. **注入**：`player.physics.guardians = this.guardians`（与 `ignises` 同手法）。
 2. **`_collides()`**：把守卫身体盒并入 `overlapsAabb` 判定（`ignises` 或 `guardians` 任一命中即挡）。
-3. **`overlapEscapeDist` = 1.95**（§8 实测推导：旋转后身体盒最大水平半宽 1.6131 + 玩家半宽 0.3）。
+3. **`overlapEscapeDist` = 1.95**（§8 实测推导：旋转后身体盒最大水平半宽 1.6205 + 玩家半宽 0.3）。
    比焰魔的 1.15 大 70%，因为守卫身体宽 51% 且核心盒更深。
 4. **推出兜底**：`_ejectFromIgnis` 泛化成「对 ignis 与 guardian 两套身体盒都探最近不重叠出口」。
 
@@ -513,20 +513,24 @@ bind pose 的包围盒，**相对脚底**表达：
 ```
 相对脚底 px  x[−20.000, 20.000]  y[22.000, 61.000]  z[−23.000, 10.000]
 GUARDIAN_CORE_OBB.halfExtents = [1.2500, 1.2188, 1.0313]   （格）
-GUARDIAN_CORE_OBB.center      = [0.0000, 2.5938, −0.4063]  （格）
+GUARDIAN_CORE_OBB.center      = [0.0000, 2.7181, −0.4062]  （格）
 ```
 
 ⚠️ **`center.y = 2.59` 远大于焰魔的 1.51**：守卫的核心躯干（含头盔）整体更高，命中盒上沿到
 脚底 3.81 格 ≈ 碰撞盒高 3.8 —— 即**核心盒几乎就是整个碰撞盒的高度**。焰魔 v2.59 那个
 「盒以脚底为中心 ⇒ 胸口以上全打空」的缺陷在这里会以同样形态出现，故 `min[1] ≈ 1.375`
-（= 2.5938 − 1.2188）必须钉住「相对脚底」而不是「相对身体中心」。
+（= 2.7181 − 1.2188 = 1.4993）必须钉住「相对脚底」而不是「相对身体中心」。
+⚠️ **`center[1]` 随 `feetOffsetY` 移动**（Task 3/4 实测）：模型空间中心 y = 1.0938，
+脚底 −1.6243 ⇒ 相对脚底 2.7181。审阅期冻结的 2.5938 是按 feetOffsetY = 1.5 算的，已过期。
+⚠️ **盒顶 3.9369 > 碰撞盒高 3.8**（头盔 + 动画下沉），属素材真实几何，断言上界取 height + 0.2。
 ⚠️ **`center.z = −0.41` 为负**：核心躯干相对脚底轴线偏向身前（−Z，yaw=0 的前向），
 与焰魔同向但幅度更大（头盔向前伸）。`guardianAabbFor` 必须把 center 与半长**一起**绕
 `state.yaw` 旋转。
 
 **旋转后的最大水平半宽（`overlapEscapeDist` 的依据）**：核心盒水平半长 1.25 / 1.0313，
-绕 yaw 旋转后的轴对齐包围盒在 **45° 时最宽 = (1.25 + 1.0313) × √½ = 1.6131**。
-故 `overlapEscapeDist ≈ 1.6131 + 玩家半宽 0.3 = 1.9131` ⇒ 取 **1.95**。
+绕 yaw 旋转后的轴对齐包围盒最大值 = **√(1.25² + 1.0313²) = 1.6205**（在 39.5°，不是 45°；
+45° 的值是 (1.25+1.0313)×√½ = 1.6131，略低估 —— Task 4 实测扫全圈纠正）。
+故 `overlapEscapeDist ≈ 1.6205 + 玩家半宽 0.3 = 1.9205` ⇒ 取 **1.95**。
 （焰魔是 0.8264 + 0.3 ≈ 1.13 → 1.15；守卫的身体宽 51%，这个阈值必须跟着涨，
 否则玩家贴在盒斜角外被转身扫到时自愈永不触发 —— 焰魔 v2.78 的真软锁同源。）
 
@@ -641,7 +645,7 @@ SkinnedMesh 单几何（24 盒合并成一个 BufferGeometry）⇒ 每只守卫 
 |---|---|---|
 | 烘焙产物契约 | 骨骼 20 / 盒 24 / 各动画帧数 60,60,90,48 / bind 包围盒 5.4176×4.2844×2.9017 / `feetOffsetY = +1.6243` 冻结；**眼睛层逐像素全等 2749**（内容级，§9） | Tier 2 |
 | `test-guardian-config.js` | 数值不变式（`attackCooldownMin > attackAnimSeconds`、**`attackRange < min(hitRange)`**、`standoffDeadband > chaseSpeed/60`、**三招锥角逐招钉住**：重击 35° / 上勾拳 30° / 踩踏 180°、四档权重之和=1、每招 `cooldownSeconds > animSeconds`） | Tier 1（TDD） |
-| `test-guardian-system.js` | 命中盒相对脚底（`min[1] ≈ 1.375` / `max[1] ≈ 3.8125`）+ **产物独立复算**（同口径 A）+ yaw 现算 + `EJECT_MAX > 1.900` 余量 + 召唤幂等 | Tier 1 |
+| `test-guardian-system.js` | 命中盒相对脚底（`min[1] ≈ 1.4993` / `max[1] ≈ 3.9369`）+ **产物独立复算**（同口径 A）+ yaw 现算 + `EJECT_MAX > 1.900` 余量 + 召唤幂等 | Tier 1 |
 | `test-boss-map.js` | `RUINED_CITADEL` 判定器：锚点/边缘/外一格/**雪原重叠顺序（seed 2096/2644/3740/4151/4973，§6.1）**/名册 | Tier 1 |
 | `test-ruined-citadel-gen.js` | 从产物重算三个落点常量（DX=1 / DZ=−2 / FEET_DY=−6）与 `HEADROOM ≤ 4` 的净空前提 | Tier 2 |
 | Tier 4 E2E `guardian.spec.mjs` | 玩家进堡垒占地 → 真实 B 键 → 守卫落在**上层房间**（`y = floorY−6`、x/z = `a.wx+1`/`a.wz−2`、`onGround`、脚下实心、自身空气、id 带 `ruinedcitadel:0`）；三招命中扣血；boss 曲淡入；像素验收 | Tier 4（像素/状态实测，不得宣称目视） |
