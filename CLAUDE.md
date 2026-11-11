@@ -191,6 +191,23 @@ scheduler/physics）再加 `npm run bench -- --check`。计划里标「冻结」
   **照搬焰魔的 `pivot − R_current·pivot + delta` 会把模型炸成碎片**（pivot 为零时它退化成「丢掉 localPosition」），
   而骨骼数/盒数/顶点数/指纹全对。哨兵：`root.localPosition === [0,−1.5,0]`（`check:data` 钉住）。
   ⚠️ **`feetOffsetY` 是「相对脚底」的量，会随它变**：核心盒 `center[1]` 同理 —— 改了烘焙器就得重算两者。
+- ⚠️⚠️ **box UV 铺开：Bedrock 与 Citadel（Java）不是同一套表，不得互照**（守卫 v2.92 实测）：
+  把 `bake-ignis` 的 `boxUVRects` 照搬到守卫 ⇒ **576 角中 480 个 UV 错**（±X / ±Z / −Y 全错，+Y 恰好对），
+  而骨骼数/盒数/顶点数/索引数/UV 值域/指纹**全部通过** —— 只有画面能看出（躯干亮面朝下、
+  护甲渐变上下颠倒、侧面整体错位）。权威在 `tools/citadel-box-uv.mjs`，判据在 `test-guardian-uv.js`（逐角）。
+  三条非显然的子坑：
+  · **mirror 的 `positionsIn[j] ↔ positionsIn[i-1-j]` 搬的是整个 `{position, uv}` 元素**
+    ⇒ 「角位置↔UV」配对**不变**（只改绕序）。**只对调 UV 会把 7 个 mirror 盒上下翻转**（168 角）；
+    mirror 对 UV 的真正影响**只来自** `swap(x, f)`。
+  · **面法线必须由角位置推，不能查静态表**：`swap(x,f)` 让标为 EAST(+X) 的四角落在 x **最小**侧
+    ⇒ 静态表会让 7 个 mirror 盒共 80 角失配。
+  · **按角位置查 UV 必须先按法线筛面**：每角被 3 个面共用 ⇒ 24 顶点里同一位置出现 3 次、UV 各不同，
+    在全量里 `find` 会取到别面的 UV（实测 304 个假失配）。角匹配容差取 **1e-6**（负 inflate 盒的浮点往返差 ~1e-16）。
+  ⚠️ **Citadel 源码的 8 角变量名后缀与声明顺序差一**（`...vertex7` 是第 1 个角）—— 手抄索引极易错，
+  用程序化提取（本次调查手抄连错 5 版）。
+- **旋转约定已验证无缺陷，不要“顺手修”**（守卫 v2.92）：口径 A（顶点翻 y + localPosition 翻 y +
+  `Rz(−z)Ry(+y)Rx(−x)`）与「整条链在 Java 空间全正号算完再乘 `F=diag(1,−1,1)`」**逐点等价**
+  （bind/strongR/stomp/uppercut 四姿态 576 顶点最大差 **0.000000**）。形态不对时先查 UV，别动旋转。
 - **Java `move` 关键帧的 y 符号**：Java y 向下，`move(leg,0,−9,−9)` 是**抬腿** 9px
   ⇒ 产物 `pos.y = +0.5625`。转反的形态是「出招时身体往反方向纩」，而计数类判据全对。
 - **动画帧数取「关键帧 tick 合计」而不是 `Animation.create(n)` 的声明值**：守卫上勾拳声明 100
