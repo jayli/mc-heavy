@@ -14,7 +14,7 @@
 
 现状：第一阶段 M0~M3、第二阶段 M4~M7、第三阶段 M8~M9 全部交付；此后按独立改动推进
 （矿车 / 太阳阴影 / 巨树 / 竞技场 / 浅水高台 / 中世纪船 / 祭坛之龙 + Boss AI / 丧尸本地寻路 /
-音效与 BGM / 大竞技场 + 废弃堡垒移植）。**具体做到哪一步、每版改了什么，一律查 `docs/roadmap.md` 的版本表。**
+音效与 BGM / 大竞技场 + 废弃堡垒移植 / 末影守卫 Boss）。**具体做到哪一步、每版改了什么，一律查 `docs/roadmap.md` 的版本表。**
 
 ## 常用命令
 
@@ -45,6 +45,7 @@ npm run grasstextures  # 深/浅草贴图（无 jpeg 解码器，先把源图 si
 npm run tarn           # Cloudland 套件四族（高台/拱洞/紫晶柱/巨型云）
 npm run pyramid | arena | shallowtarns | ship | azaleatrees | gianttrees
 npm run turret | zombieskin | dragon | nightsky | validate:weapon-assets
+npm run guardian       # 末影守卫（Java 模型 → 20 骨骼/24 盒/4 条攻击动画 + 眼睛层合成）
 ```
 
 `pyramid` / `ship` / `arena` / `shallowtarns` / `tarn` 支持 `-- --census`（源方块普查）；
@@ -65,7 +66,7 @@ npm run turret | zombieskin | dragon | nightsky | validate:weapon-assets
 | `src/gen/` | `terrain.js`（`generateHeight` / `fillColumn` / 洞穴）/ `noise.js`（biome、`seededRandom`）/ `structure-index.js` / `structures/*`（`apply.js` = 结构层序总入口，`scatter.js` = 撒布唯一权威） |
 | `src/mesh/` | `mesher.js`（形状与 UV 的唯一权威：`TEMPLATES`/`FACE_VERTICES`/`FACE_UVS`）/ `lighting.js` / `iso-icon.js` |
 | `src/render/` | `render-world.js`（BatchedMesh 三通道发布层）/ `materials.js`（TSL）/ `sun-shade.js` + `hemi-shade.js`（光照标定常数，three-free）/ `ocean*.js` / `shadow-manager.js` / 各实体渲染器 / `audio-config.js`（three-free 清单） |
-| `src/entities/` | `entity-manager.js`（动态实体唯一权威 + AABB raycast）/ `zombies` `turrets` `minecarts` `zombie-nests` `dragons` `bosses` `playground`（全部同构无 three） |
+| `src/entities/` | `entity-manager.js`（动态实体唯一权威 + AABB raycast）/ `zombies` `turrets` `minecarts` `zombie-nests` `dragons` `ignis` `guardian` `bosses` `playground`（全部同构无 three） |
 | `src/player/` | `player.js` / `physics.js` / `raycast.js`（体素 DDA）/ `place-ray.js` / `view-bob.js` |
 | `src/ui/` `src/save/` | HUD / 背包 / 设置面板 / 迷你地图；IndexedDB edits + entities + 进度包编解码 |
 | `src/tests/` `tests/` | 浏览器内单测（`test-*.js`，入口 `src/tests/index.html` 逐条 import）/ Playwright spec（`tests/*.spec.mjs`） |
@@ -184,6 +185,23 @@ scheduler/physics）再加 `npm run bench -- --check`。计划里标「冻结」
   `Rz(−θz)·Ry(+θy)·Rx(−θx)`（`bake-ignis.mjs` 的 `bedrockRotation` 是唯一入口，飞龙是 bbmodel，不适用）。
   **两侧「数值逐帧一致」证明不了姿态一致** —— 症状（蓄力向身后抡、劈砍变尖刺、躯干后仰）只在比对**世界坐标**时现形：
   用 `tools/ignis-java-reference.mjs` + `test-ignis-bake.js` 的冻结表；动画「看着不对」时先比世界坐标，**不要加衰减补丁**。
+- **Java 与 Bedrock 的顶点坐标系不同，渲染器公式也不同**（守卫 v2.91）：Java `addBox` 的 origin 是
+  **骨骼局部**坐标，Bedrock 是**绝对模型**坐标。本仓守卫取口径 A（保留局部顶点 + 仅 `y→−y`）
+  ⇒ `localPosition = pos/16`（y 取反）、`pivot` 恒零、渲染器 `bone.position = localPosition + delta.pos`。
+  **照搬焰魔的 `pivot − R_current·pivot + delta` 会把模型炸成碎片**（pivot 为零时它退化成「丢掉 localPosition」），
+  而骨骼数/盒数/顶点数/指纹全对。哨兵：`root.localPosition === [0,−1.5,0]`（`check:data` 钉住）。
+  ⚠️ **`feetOffsetY` 是「相对脚底」的量，会随它变**：核心盒 `center[1]` 同理 —— 改了烘焙器就得重算两者。
+- **Java `move` 关键帧的 y 符号**：Java y 向下，`move(leg,0,−9,−9)` 是**抬腿** 9px
+  ⇒ 产物 `pos.y = +0.5625`。转反的形态是「出招时身体往反方向纩」，而计数类判据全对。
+- **动画帧数取「关键帧 tick 合计」而不是 `Animation.create(n)` 的声明值**：守卫上勾拳声明 100
+  但关键帧只到 **90** ⇒ 照声明值烘焙会多出 0.5s 静止尾巴。
+- **解析 Java 角度时 `Math.toRadians` 的后缀正则必须大小写都认（`/i`）**：守卫混用 `5f` 与 `32.5F`，
+  而焰魔素材全大写。只写 `F?` 时小写那批解成 **null** → 四元数 NaN（JSON 落 null），
+  实测 1415/2730 个四元数报废而骨骼数/帧数/指纹全对 ⇒ 靠**归一化断言**拓。
+- **程序化 idle 的「空姿态」不会触发过渡器切换**（守卫）：移动→静止时 target 从非空变空 Map，
+  而来源 key 两边都是 'idle' ⇒ 不走淡入 ⇒ 那几根骨骼从输出里消失 ⇒ **永远冻结在最后一个摆臂姿态**。
+  渲染器必须每帧把整副骨架（位置**和旋转**）复位到 bind 再写本帧驱动的骨骼。
+  （焰魔没这问题：它的 idle 是烘焙片段，始终驱动同一批骨骼。）
 
 **UI 层级**（改任一层必须重核这条不等式）：hotbar 40 < 迷你地图 45 < 坐标/性能面板 50 =
 血心 50 < 伤害数字 55 < 设置按钮 60 < 设置面板 70 < 背包 80 < 背包 hover 浮层 85 < toast 90 <
@@ -237,6 +255,24 @@ scheduler/physics）再加 `npm run bench -- --check`。计划里标「冻结」
 **门禁与测试**
 - `src/tests/test-*.js` 必须同时出现在 `src/tests/index.html` 的 import 里 —— 漏注册是
   **测试静默不跑**（全绿假象），`check:data` 的 `[测试注册]` 环节双向钉住。
+- **地牢可达性不得把台阶当可通行**（守卫 v2.91 实测推翻了直觉）：本仓台阶族一律 `solid:true`
+  ⇒ `isSolid` 恒真 ⇒ 身体不能进入（楼梗是装饰，不可爬）。把台阶当 air 会算出「27,992 格连通」
+  的假结论；真实口径下废弃堡垒三层房间**互不连通**（ny30/37 全层零 air，ny37 唯一开口是遭丢弃的
+  `iron_trapdoor`）。另：洪泛探针的竖直移动必须**逐格检查通道**，否则会算出穿墙的假路径。
+- **`HEADROOM` 与房间净空耦合，取 `ceil(height)` 而不是 `+1`**：上层房间净空只有 5 格，
+  守卫高 3.8 ⇒ `ceil(3.8)+1 = 5` 会把落点判死而**静默召到下一层（差 8 格）**，所有计数/状态全对。
+- **`maxStep` 在现有实现下是死值**：`zombieStepUpY(y) = floor(y+0.01)+1` 恒抬 1 格，
+  `maxStep` 只做「抬升量 ≤ maxStep」的门控 ⇒ **1.75 与 1.0 逐位等价**。写 1.75 只得到一个看着生效
+  实际无效的值；「验证 >1 格台阶」的探针两侧都无判别力。真要支持得改 `zombieStepUpY` 本身
+  （影响丧尸/焰魔/玩家三方，是独立改动）。
+- **判定器顺序用例的 seed 清单不能跳结构照搬**：大竞技场那八个 seed 在废弃堡垒上**零重叠**
+  （净距 64~98 格 > 盒半宽 28）⇒ `checked > 0` 直接红。堡垒用 2096/2644/3740/4151/4973。
+- **推出距离不是「最大绝对半宽 + 玩家半宽」**（守卫 `EJECT_MAX` 复核）：推出走**最近的一个面**，
+  四方向取 min 后再对盒内站位取 max。守卫实测 **1.900**（yaw 42°），而「最大绝对半宽 1.905 + 0.3」
+  算出 2.205 会误报超限。核心盒不对称（`center.z ≠ 0`）时两个口径差很多。
+- **`_collides()` 漏加新 Boss 判据的形态很隐蔽**：`_collides` 返 false 而 `overlapsAabb` 返 true
+  ⇒ 玩家走进盒内，再被 `_ejectFromBoss` 每帧外推一点、下一步又走回来 ⇒ 净效果是「停在盒内
+  0.12 格深处」而不是盒外（守卫实测踩到）。新 Boss 必须同时接 `_collides` 顶部与 `_ejectFromBoss`。
 - Playwright 必须 `channel: 'chromium'`：默认 headless shell 零 flag 拿不到 WebGPU adapter。
   `playwright.config.mjs` 全局 timeout 200s 必须 ≥ 各 spec 自己的等待窗口（`harness.spec` 等 150s）。
 - 计时型 spec 在高负载下会贴线 flaky（`m1-acceptance` 放挖 p95、`m3-rain` 截图差分、
@@ -276,6 +312,7 @@ scheduler/physics）再加 `npm run bench -- --check`。计划里标「冻结」
 | 光照 / 阴影 / 天空 / 雾 / 水面 / 色温 | `2026-10-13-sun-shadow-map-design.md`、`2026-10-20-sun-shading-and-skybox-design.md`、`2026-10-24-lighting-realism-design.md` + roadmap「活跃约束详情·光影真实感 / 渲染与容量」 |
 | 结构撒布 / 巨树 / 杜鹃树 / 植被 | roadmap「结构撒布」「巨树」「树叶与镂空遮挡体」段 + `2026-10-23-giant-trees-design.md` |
 | 龙 / Boss / 火球 / 实体伤害 | `2026-11-03-altar-dragon-design.md` + `2026-11-03-dragon-boss-ai-design.md` + roadmap v2.41~v2.48 |
+| 末影守卫（废弃堡垒 Boss） | `2026-11-11-ender-guardian-boss-design.md` + `plans/2026-11-11-ender-guardian-boss.md` + roadmap v2.91（口径 A / 上层房间落点 / HEADROOM=4 / 眼睛层阈值） |
 | 丧尸 AI / 寻路 | `plans/2026-11-04-zombie-pathfinding.md`、`2026-11-02-zombie-obstacle-avoidance-design.md`、`2026-11-04-zombie-model-rebuild-design.md` + roadmap v2.46~v2.50 |
 | 矿车 / 装置（巢穴、炮塔、创造台） | `2026-09-30-minecart-design.md`、M7/M8/M9 spec + roadmap「方块锚定装置」段 |
 | 放置 / 交互 / 玩家物理 | `2026-10-30-place-nearest-first-design.md`、`2026-10-25-player-flight-design.md` |
@@ -314,7 +351,7 @@ scheduler/physics）再加 `npm run bench -- --check`。计划里标「冻结」
 ## 生成物（不要手改）
 
 `assets/atlas.{png,json}`、`assets/icons-atlas.png` + `icons.json`、`assets/structures/*`（烘焙得到的
-那几个）、`assets/{zombie,dragon,turret,giant-trees,azalea-trees,sky/night}/` 里的产物、
+那几个）、`assets/{zombie,dragon,turret,ignis,guardian,giant-trees,azalea-trees,sky/night}/` 里的产物、
 `assets/textures/procedural/*`、`docs/m3-baseline.*`（冻结基线，`npm run bench` 不带 `--check` 会自动
 重写它 —— 诊断后要 `git checkout` 恢复，提交它等于静默放宽门禁）。
 
