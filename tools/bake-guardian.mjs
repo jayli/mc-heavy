@@ -44,6 +44,7 @@ import {
   guardianInputFingerprint,
 } from './guardian-fingerprint.mjs';
 import { parseBones, parseAnimation, evalKeyframes } from './java-model-parse.mjs';
+import { citadelFaceUVs, citadelCorners } from './citadel-box-uv.mjs';
 
 const { scale, pxPerBlock, textureSize, animFps } = GUARDIAN_BAKE_PARAMS;
 /** px → 格（已含 scale 倍）。运行时不再乘 scale */
@@ -81,21 +82,31 @@ function deltaRotation(bindQ, bindRad, animRad) {
 }
 
 /**
- * Minecraft 标准 box UV 铺开：给定起点与尺寸，返回六个面的源矩形 `[u0,v0,u1,v1]`（源像素）。
+ * Minecraft 标准 box UV 铺开 —— **Citadel（Java）口径**，权威在 `citadel-box-uv.mjs`。
  *
- * 数组下标 = `BoxGeometry` 面序（+X, −X, +Y, −Y, +Z, −Z）。
- * Java 的 `setTextureOffset(u,v).addBox(...)` 与 Bedrock 的 box UV 是**同一套**布局，
- * 故本表与 `bake-ignis.mjs` 的 `boxUVRects` 逐字相同（那张表是软件光栅化实测标定的，别推导重排）。
+ * ⚠️⚠️ **不得照搬 `bake-ignis.mjs` 的 `boxUVRects`**（2026-11-11 实测缺陷）：
+ * 焰魔素材是 **Bedrock 附加包**，守卫是 **Java + Citadel**，两者的 box UV 铺开
+ * **不是同一套布局**：面与源矩形的对应关系不同，同一面内四角的 UV 分配也不同。
+ * 照搬的形态：**576 个角里 563 个 UV 错**，而骨骼数/盒数/顶点数/索引数/UV 值域/指纹
+ * **全部通过** —— 只有画面能看出来（躯干亮面朝下、护甲渐变上下颠倒、侧面整体错位）。
+ *
+ * 具体差异（以 upperbody `uv(0,0) size 40×32×20` 为例，源像素 u 区间）：
+ *   面    Bedrock（错）        Citadel（对）
+ *   +X    [60,80] 但 v 反     [60,80]
+ *   −X    [0,20]  但 v 反     [0,20]
+ *   +Y    [60,100]（砖纹）    [20,60]（纯色暗块）  ← 上下颠倒
+ *   −Y    [20,60]             [60,100]
+ *   +Z    [80,120] 但 180°旋   [80,120]
+ *   −Z    [20,60]  但 180°旋   [20,60]
+ *
+ * 本函数不再返回「矩形」而是直接返回**逐角 UV**：矩形不足以定 UV，
+ * 还要知道哪个角配哪个 uv（那正是 Bedrock 与 Citadel 分歧最大的地方）。
+ *
+ * @returns {Array<{face:string, normal:number[], corners:Array<{vi:number,u:number,v:number}>}>}
+ *   顺序对齐 `BoxGeometry` 面序 [+X,−X,+Y,−Y,+Z,−Z]；u/v 是**源像素**（图像左上原点）。
  */
-function boxUVRects(u, v, dx, dy, dz) {
-  return [
-    [u + dz + dx, v + dz, u + dz + dx + dz, v + dz + dy],          // 0 +X east
-    [u, v + dz, u + dz, v + dz + dy],                              // 1 −X west
-    [u + dz + dx, v, u + dz + dx + dx, v + dz],                    // 2 +Y up
-    [u + dz, v, u + dz + dx, v + dz],                              // 3 −Y down
-    [u + dz + dx + dz, v + dz, u + dz + dx + dz + dx, v + dz + dy],// 4 +Z south
-    [u + dz, v + dz, u + dz + dx, v + dz + dy],                    // 5 −Z north（正面）
-  ];
+function boxFaceUVs(cube) {
+  return citadelFaceUVs(cube);
 }
 
 /**
@@ -253,21 +264,40 @@ function main() {
       const gu = g.getAttribute('uv');
       const gi = g.getIndex();
 
-      // UV 重映射（与焰魔逐字相同）。⚠️ y 翻转**不影响 UV**：矩形按源图像素左上原点写，
+      // UV 重映射 —— **逐角**按 Citadel 的角→UV 表写（不是矩形插值）。
+      //
+      // ⚠️⚠️ 为何不能继续用「BoxGeometry 的归一化 uv × 矩形」：
+      // 那只能表达「矩形 + 可选 u 镜像」，而 Citadel 的各面角序不同（有的面 v1>v2），
+      // 矩形插值无法表达那些排列 ⇒ 必须按**角位置**匹配后直接赋值。
+      //
+      // ⚠️ y 翻转**不影响 UV**：源矩形按图像左上原点写，
       // v 换算 `1 − vPx/textureSize`（运行时 TextureLoader.flipY = true 再翻一次）。
-      const rects = boxUVRects(cube.uv[0], cube.uv[1], dx, dy, dz);
-      for (let face = 0; face < 6; face++) {
-        const [u0, v0, u1, v1] = rects[face];
-        for (let k = 0; k < 4; k++) {
-          const vi = face * 4 + k;
-          const bu = gu.getX(vi);
-          const bv = gu.getY(vi);
-          let u = u0 + bu * (u1 - u0);
-          if (cube.mirror === true) u = u0 + u1 - u;
-          const vPx = v0 + (1 - bv) * (v1 - v0);
-          gu.setXY(vi, u / textureSize, 1 - vPx / textureSize);
+      const faces = boxFaceUVs(cube);
+      const corners = citadelCorners(cube);   // Java 空间 px（含 inflate / mirror swap）
+      // 期望角位置（格，y 已翻）→ UV，按面分组
+      const wanted = faces.map((f) => ({
+        normal: f.normal,
+        pts: f.corners.map((c) => ({
+          p: [corners[c.vi][0] * PX2BLOCK, -corners[c.vi][1] * PX2BLOCK, corners[c.vi][2] * PX2BLOCK],
+          uv: [c.u / textureSize, 1 - c.v / textureSize],
+        })),
+      }));
+      let uvWritten = 0;
+      for (let i = 0; i < gp.count; i++) {
+        // 产物顶点（已翻 y）与法线（已翻 y）
+        const px = gp.getX(i), py = -gp.getY(i), pz = gp.getZ(i);
+        const nx = gn.getX(i), ny = -gn.getY(i), nz = gn.getZ(i);
+        const face = wanted.find((f) => f.normal[0] === nx && f.normal[1] === ny && f.normal[2] === nz);
+        if (!face) fail(`盒 ${names[bi]} 的顶点法线 (${nx},${ny},${nz}) 不在六面之列`);
+        const hit = face.pts.find((q) => Math.hypot(q.p[0] - px, q.p[1] - py, q.p[2] - pz) < 1e-6);
+        if (!hit) {
+          fail(`盒 ${names[bi]} 面 ${face.normal} 的角 (${px},${py},${pz}) 在 Citadel 角表里找不到`
+            + '（inflate / mirror 处理不一致？）');
         }
+        gu.setXY(i, hit.uv[0], hit.uv[1]);
+        uvWritten++;
       }
+      if (uvWritten !== 24) fail(`盒 ${names[bi]} 写了 ${uvWritten} 个 UV，应为 24`);
 
       for (let i = 0; i < gp.count; i++) {
         // ⚠️ 口径 A：整体 y → −y（顶点与法线都翻），x/z 不变；**不加绝对 pivot**
