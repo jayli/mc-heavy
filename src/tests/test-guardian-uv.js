@@ -20,6 +20,7 @@
 // ⚠️ 本文件读 `assets/guardian/src/ModelEnder_Guardian.java`（烘焙输入，已入库），
 // 用 `resourceUrl()` 取 —— 站点根绝对路径在子路径部署时会 404。
 import { test } from './runner.js';
+import * as THREE from 'three';
 import { assertEqual, assertTrue } from './assert.js';
 import { resourceUrl } from '../core/resource-url.js';
 import { loadGuardianAsset } from '../render/guardian-model.js';
@@ -140,6 +141,52 @@ async function fixture() {
   return cache;
 }
 
+/**
+ * 把产物顶点转回**骨骼局部**坐标（口径 B 需左乘 bindWorld⁻¹）。
+ *
+ * ⚠️⚠️ UV 判据比的是「**局部**角位置 ↔ UV」（Citadel 的角表是局部的），
+ * 而产物自 2026-11-11 改为口径 B（绝对模型坐标，SkinnedMesh 必需）
+ * ⇒ 必须先反解回局部，否则角位置全部对不上。
+ */
+function localVertices(asset) {
+  const g = asset.geometry;
+  const absolute = asset.metrics.vertexConvention === 'java-model-absolute';
+  if (!absolute) {
+    return Array.from({ length: g.position.length / 3 }, (_, i) => ({
+      p: [g.position[i * 3], g.position[i * 3 + 1], g.position[i * 3 + 2]],
+      uv: [g.uv[i * 2], g.uv[i * 2 + 1]],
+      n: [g.normal[i * 3], g.normal[i * 3 + 1], g.normal[i * 3 + 2]],
+    }));
+  }
+  // bind 世界链
+  const world = [];
+  for (let i = 0; i < asset.bones.length; i++) {
+    const b = asset.bones[i];
+    const local = new THREE.Matrix4().compose(
+      new THREE.Vector3(...b.localPosition),
+      new THREE.Quaternion(...b.bindQuaternion),
+      new THREE.Vector3(1, 1, 1));
+    world[i] = b.parentIndex === -1
+      ? local
+      : new THREE.Matrix4().multiplyMatrices(world[b.parentIndex], local);
+  }
+  const inv = world.map((m) => m.clone().invert());
+  const nrmMat = world.map((m) => new THREE.Matrix3().getNormalMatrix(m).clone().invert());
+  const v = new THREE.Vector3();
+  const n = new THREE.Vector3();
+  return Array.from({ length: g.position.length / 3 }, (_, i) => {
+    const bi = g.skinIndex[i * 4];
+    v.set(g.position[i * 3], g.position[i * 3 + 1], g.position[i * 3 + 2]).applyMatrix4(inv[bi]);
+    n.set(g.normal[i * 3], g.normal[i * 3 + 1], g.normal[i * 3 + 2]).applyMatrix3(nrmMat[bi]).normalize();
+    return {
+      p: [v.x, v.y, v.z],
+      uv: [g.uv[i * 2], g.uv[i * 2 + 1]],
+      // 法线取整到 ±1/0（盒面法线本就是轴对齐，浮点往返后需归一）
+      n: [n.x, n.y, n.z].map((x) => (Math.abs(x) < 0.5 ? 0 : Math.sign(x))),
+    };
+  });
+}
+
 test('守卫 UV: Java 源码解析出 24 个盒（判据的前提）', async () => {
   const { cubes } = await fixture();
   assertEqual(cubes.length, 24, '盒数');
@@ -151,18 +198,12 @@ test('守卫 UV: 逐角与 Citadel 源码映射全等（576 角，Bedrock 表会
   const { cubes, asset } = await fixture();
   const g = asset.geometry;
   assertEqual(g.position.length / 3, 576, '顶点数');
+  const locals = localVertices(asset);
   let checked = 0;
   const bad = [];
   for (let ci = 0; ci < cubes.length; ci++) {
     const base = ci * 24;
-    const pv = [];
-    for (let i = 0; i < 24; i++) {
-      pv.push({
-        p: [g.position[(base + i) * 3], g.position[(base + i) * 3 + 1], g.position[(base + i) * 3 + 2]],
-        uv: [g.uv[(base + i) * 2], g.uv[(base + i) * 2 + 1]],
-        n: [g.normal[(base + i) * 3], g.normal[(base + i) * 3 + 1], g.normal[(base + i) * 3 + 2]],
-      });
-    }
+    const pv = locals.slice(base, base + 24);
     for (const f of expectedFaces(cubes[ci])) {
       const mine = pv.filter((q) => q.n[0] === f.n[0] && q.n[1] === f.n[1] && q.n[2] === f.n[2]);
       assertEqual(mine.length, 4, `${cubes[ci].bone} ${f.face} 应有 4 个顶点`);
@@ -192,19 +233,20 @@ test('守卫 UV: 躯干顶面取「纯色暗块」而不是砖纹（内容级，
   const { cubes, asset } = await fixture();
   const ci = cubes.findIndex((c) => c.bone === 'upperbody');
   assertTrue(ci >= 0, '应有 upperbody');
-  const g = asset.geometry;
+  const locals = localVertices(asset);
   const base = ci * 24;
   // +Y 面：四个角的 (x,z) → 期望源像素 v。
   // Citadel +Y = Java DOWN，uv(f5,f10,f6,f11) ⇒ v ∈ [0,20]，
   // 且 z 小（−Z，模型前方）配 v=20、z 大配 v=0。
   const upVerts = [];
   for (let i = 0; i < 24; i++) {
-    if (g.normal[(base + i) * 3 + 1] !== 1) continue;
+    const q = locals[base + i];
+    if (q.n[1] !== 1) continue;
     upVerts.push({
-      x: g.position[(base + i) * 3],
-      z: g.position[(base + i) * 3 + 2],
-      u: g.uv[(base + i) * 2] * TEX_SIZE,
-      v: (1 - g.uv[(base + i) * 2 + 1]) * TEX_SIZE,
+      x: q.p[0],
+      z: q.p[2],
+      u: q.uv[0] * TEX_SIZE,
+      v: (1 - q.uv[1]) * TEX_SIZE,
     });
   }
   assertEqual(upVerts.length, 4, '+Y 面顶点数');
@@ -226,20 +268,16 @@ test('守卫 UV: 侧面（±X）逐角 UV 全等（Bedrock 表 v 反、角序错
   // ⚠️ 只钉 u 区间零判别力（Bedrock 的 u 区间也对），必须逐角比 u 与 v。
   const { cubes, asset } = await fixture();
   const ci = cubes.findIndex((c) => c.bone === 'upperbody');
-  const g = asset.geometry;
+  const locals = localVertices(asset);
   const base = ci * 24;
   const faces = expectedFaces(cubes[ci]);
   for (const label of ['-X', '+X', '-Z', '+Z']) {
     const f = faces.find((q) => q.face === label);
     const mine = [];
     for (let i = 0; i < 24; i++) {
-      if (g.normal[(base + i) * 3] === f.n[0]
-        && g.normal[(base + i) * 3 + 1] === f.n[1]
-        && g.normal[(base + i) * 3 + 2] === f.n[2]) {
-        mine.push({
-          p: [g.position[(base + i) * 3], g.position[(base + i) * 3 + 1], g.position[(base + i) * 3 + 2]],
-          uv: [g.uv[(base + i) * 2], g.uv[(base + i) * 2 + 1]],
-        });
+      const q = locals[base + i];
+      if (q.n[0] === f.n[0] && q.n[1] === f.n[1] && q.n[2] === f.n[2]) {
+        mine.push({ p: q.p, uv: q.uv });
       }
     }
     assertEqual(mine.length, 4, `${label} 面顶点数`);

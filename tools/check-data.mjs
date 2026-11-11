@@ -873,6 +873,103 @@ function checkGuardianAsset() {
     failures.push('[末影守卫] pivot 必须全零（口径 A）—— 非零意味着换成了 Bedrock 绝对口径，'
       + '渲染器公式会不匹配（模型炸成碎片）');
   }
+  // ⑥b **顶点口径哨兵**（口径 B，2026-11-11 用户实测缺陷）。
+  //
+  // SkinnedMesh 在 bind 姿态下 `bone.matrixWorld · boneInverse ≡ I` ⇒ **顶点原样返回**。
+  // 它只做「相对 bind 的形变」，不做「骨骼局部 → 模型空间」的摆放
+  // ⇒ 顶点必须是**绝对模型坐标**（预乘 bind 世界矩阵）。
+  // 用骨骼局部顶点的形态：24 个盒全堆在原点（腿没分开/头长肚子上/手臂进身体），
+  // 而骨骼数/盒数/顶点数/UV/指纹全部正确 ⇒ 必须用**内容级**判据钉住。
+  //
+  // 判据：取一根**非根、localPosition 非零**的骨骼，其顶点 centroid 必须
+  // 接近该骨骼的 bind 世界位置（而不是接近原点）。
+  if (asset.metrics.vertexConvention !== 'java-model-absolute') {
+    failures.push(`[末影守卫] vertexConvention 应为 'java-model-absolute'，实际 ${asset.metrics.vertexConvention}`
+      + '（骨骼局部顶点与 SkinnedMesh 不兼容：bind 姿态下顶点原样返回 ⇒ 模型塔塌）');
+  } else {
+    // 独立复算 bind 世界链，比对每根骨骼的顶点 centroid
+    const M4 = (q, t) => {
+      const [x, y, z, w] = q;
+      const xx = x * x, yy = y * y, zz = z * z;
+      const xy = x * y, xz = x * z, yz = y * z;
+      const wx = w * x, wy = w * y, wz = w * z;
+      return [
+        1 - 2 * (yy + zz), 2 * (xy - wz), 2 * (xz + wy), t[0],
+        2 * (xy + wz), 1 - 2 * (xx + zz), 2 * (yz - wx), t[1],
+        2 * (xz - wy), 2 * (yz + wx), 1 - 2 * (xx + yy), t[2],
+        0, 0, 0, 1,
+      ];
+    };
+    const mul = (A, B) => {
+      const o = new Array(16);
+      for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) {
+        let s = 0;
+        for (let k = 0; k < 4; k++) s += A[r * 4 + k] * B[k * 4 + c];
+        o[r * 4 + c] = s;
+      }
+      return o;
+    };
+    const bw = [];
+    for (let i = 0; i < asset.bones.length; i++) {
+      const b = asset.bones[i];
+      const local = M4(b.bindQuaternion, b.localPosition);
+      bw[i] = b.parentIndex === -1 ? local : mul(bw[b.parentIndex], local);
+    }
+    const P = asset.geometry.position;
+    const SI = asset.geometry.skinIndex;
+    const acc = asset.bones.map(() => ({ n: 0, s: [0, 0, 0] }));
+    for (let v = 0; v < P.length / 3; v++) {
+      const bi = SI[v * 4];
+      acc[bi].n++;
+      for (let k = 0; k < 3; k++) acc[bi].s[k] += P[v * 3 + k];
+    }
+    // 判据（直接、无歧义）：把产物顶点**左乘 bindWorld⁻¹** 反解回局部，
+    // 再乘 bindWorld 回到绝对 —— 恒等，无判别力。
+    // ⇒ 真正有判别力的是：**顶点是否等于「局部盒几何 × bindWorld」**。
+    // 局部盒几何无法从产物单独得知，但有一个**充分必条件**：
+    //   同一骨骼的全部顶点，在**局部**坐标系下必须构成一个轴对齐盒（法线轴对齐）。
+    //   若顶点已是绝对坐标而骨骼有**bind 旋转**，反解后仍轴对齐；
+    //   若顶点是局部坐标（未预乘），把它当绝对坐标反解后会**多乘一次逆**
+    //   ⇒ 对有 bind 旋转的骨骼（rightarmorspike/leftarmorspike/voidstone）会**不再轴对齐**。
+    // 故取这三根骨骼作哨兵：反解后的顶点必须仍轴对齐（每个坐标只有 2 种取值）。
+    const rotated = asset.bones
+      .map((b, i) => ({ b, i }))
+      .filter(({ b }) => Math.abs(b.bindQuaternion[3] - 1) > 1e-9);
+    if (rotated.length === 0) {
+      failures.push('[末影守卫] 顶点口径 B 哨兵无法执行：产物里没有带 bind 旋转的骨骼');
+    }
+    const invOf = (m) => {
+      // 刚体变换的逆：Rᵀ 与 −Rᵀt
+      const r = [m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10]];
+      const t = [m[3], m[7], m[11]];
+      const rt = [r[0], r[3], r[6], r[1], r[4], r[7], r[2], r[5], r[8]];
+      const nt = [
+        -(rt[0] * t[0] + rt[1] * t[1] + rt[2] * t[2]),
+        -(rt[3] * t[0] + rt[4] * t[1] + rt[5] * t[2]),
+        -(rt[6] * t[0] + rt[7] * t[1] + rt[8] * t[2]),
+      ];
+      return [rt[0], rt[1], rt[2], nt[0], rt[3], rt[4], rt[5], nt[1], rt[6], rt[7], rt[8], nt[2], 0, 0, 0, 1];
+    };
+    for (const { b, i } of rotated) {
+      const inv = invOf(bw[i]);
+      const vals = [[], [], []];
+      for (let v = 0; v < P.length / 3; v++) {
+        if (SI[v * 4] !== i) continue;
+        const p = [P[v * 3], P[v * 3 + 1], P[v * 3 + 2]];
+        for (let k = 0; k < 3; k++) {
+          const x = inv[k * 4] * p[0] + inv[k * 4 + 1] * p[1] + inv[k * 4 + 2] * p[2] + inv[k * 4 + 3];
+          if (!vals[k].some((y) => Math.abs(y - x) < 1e-6)) vals[k].push(x);
+        }
+      }
+      const counts = vals.map((a) => a.length);
+      if (counts.some((c) => c !== 2)) {
+        failures.push(`[末影守卫] 顶点口径 B 哨兵不符：骨骼 ${b.name}（带 bind 旋转）反解回局部后`
+          + `各轴取值数 = ${counts.join('/')}（应全为 2 = 轴对齐盒）`
+          + ' —— 顶点可能仍是骨骼局部坐标，SkinnedMesh 下模型会塔塌');
+        break;
+      }
+    }
+  }
   // ⑦ 眼睛层内容级判据（**指纹拓不到的那类**）
   //
   // ⚠️⚠️ 阈值必须 `alpha > 0`，**不是焰魔的 `> 128`**：layer 的 alpha 只有
@@ -910,7 +1007,7 @@ function checkGuardianAsset() {
   if (!failures.some((f) => f.startsWith('[末影守卫]'))) {
     infos.push(`[末影守卫] 产物契约与指纹一致（${asset.bones.length} 骨骼 / ${asset.metrics.bakedCubes} 立方体`
       + ` / ${asset.geometry.position.length / 3} 顶点 / ${expectNames.map((k) => `${k} ${asset.animations[k].frameCount} 帧`).join(' + ')}`
-      + ` / feetOffsetY ${asset.metrics.feetOffsetY.toFixed(4)} / 口径 A 哨兵✓`
+      + ` / feetOffsetY ${asset.metrics.feetOffsetY.toFixed(4)} / 口径 A 哨兵✓ / 顶点口径 B✓`
       + ` / 眼睛层全等 ${match}・改色 ${changed}・alpha 全 255）`);
   }
 }

@@ -1,8 +1,8 @@
 {
  "fingerprints": {
-  "input": "cc15fcf2e9421e8e:6be2535e02d8acee",
+  "input": "cc15fcf2e9421e8e:771ddc88c024558a",
   "sourceSha256": "cc15fcf2e9421e8e6d4f3e5edf2fee57639a17a50b59a935da1d23f542cb113f",
-  "paramsSha256": "6be2535e02d8acee7c48087deb8ac53fa79ec6b0f3a815238cfc6b472eb65693"
+  "paramsSha256": "771ddc88c024558a48c93ec2c84202bdefd48f103d14291670bea616e2603af8"
  },
  "metrics": {
   "boneCount": 20,
@@ -13,6 +13,7 @@
   "indexCount": 864,
   "scale": 1,
   "mirrorCubes": 7,
+  "vertexConvention": "java-model-absolute",
   "feetOffsetY": 1.6243461480265764
  },
  "textureSize": 256,

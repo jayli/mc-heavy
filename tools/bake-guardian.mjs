@@ -234,7 +234,16 @@ function main() {
     fail(`口径 A 哨兵不符：root.localPosition = ${JSON.stringify(rootLP)}（应为 [0,-1.5,0]）`);
   }
 
-  // ==================== 2. 合并几何（局部顶点 + y 翻转）====================
+  // ==================== 2. 合并几何（口径 B：绝对模型顶点）====================
+  //
+  // bind 世界矩阵（口径 A 链：position = localPosition、pivot 恒零）。
+  // 顶点预乘它 ⇒ 绝对模型坐标，与 SkinnedMesh 的语义匹配（见下方顶点循环的长注释）。
+  const bindWorld = [];
+  for (let i = 0; i < bones.length; i++) {
+    const b = bones[i];
+    const local = trMat(b.bindQuaternion, b.localPosition);
+    bindWorld[i] = b.parentIndex === -1 ? local : mul4(bindWorld[b.parentIndex], local);
+  }
   const position = [], normal = [], uv = [], skinIndex = [], index = [];
   let vOff = 0, bakedCubes = 0, skippedCubes = 0, cubeCount = 0, mirrorCount = 0;
 
@@ -300,9 +309,30 @@ function main() {
       if (uvWritten !== 24) fail(`盒 ${names[bi]} 写了 ${uvWritten} 个 UV，应为 24`);
 
       for (let i = 0; i < gp.count; i++) {
-        // ⚠️ 口径 A：整体 y → −y（顶点与法线都翻），x/z 不变；**不加绝对 pivot**
-        position.push(gp.getX(i), -gp.getY(i), gp.getZ(i));
-        normal.push(gn.getX(i), -gn.getY(i), gn.getZ(i));
+        // 先得到**骨骼局部**顶点（口径 A：整体 y → −y，x/z 不变）
+        const lx = gp.getX(i), ly = -gp.getY(i), lz = gp.getZ(i);
+        const nx = gn.getX(i), ny = -gn.getY(i), nz = gn.getZ(i);
+        // ⚠️⚠️ **口径 B：再左乘该骨骼的 bind 世界矩阵**，变成**绝对模型坐标**。
+        //
+        // 为何必须这么做（2026-11-11 用户实测缺陷：腿没分开/头长肚子上/手臂进身体）：
+        //   skinning = bindMatrixInverse · (bone.matrixWorld · boneInverse) · bindMatrix · p
+        //   **bind 姿态下 bone.matrixWorld · boneInverse ≡ I** ⇒ skinned ≡ p（顶点原样返回）。
+        //   skinning 只做「相对 bind 的**形变**」，**不做「骨骼局部 → 模型空间」的摆放**。
+        //   ⇒ 顶点必须是绝对模型坐标（焰魔的 Bedrock 口径本来就是）；
+        //     用骨骼局部坐标会让 24 个盒全堆在原点（实测最大误差 **3.29 格**）。
+        //   而骨骼数/盒数/顶点数/UV/指纹/**离线轮廓**全部正确 —— 只有真实渲染现形。
+        const w = bindWorld[bi];
+        position.push(
+          w[0] * lx + w[1] * ly + w[2] * lz + w[3],
+          w[4] * lx + w[5] * ly + w[6] * lz + w[7],
+          w[8] * lx + w[9] * ly + w[10] * lz + w[11],
+        );
+        // 法线只旋转不平移（bind 矩阵是刚体变换 ⇒ 无需逆转置，归一化即可）
+        const rx = w[0] * nx + w[1] * ny + w[2] * nz;
+        const ry = w[4] * nx + w[5] * ny + w[6] * nz;
+        const rz = w[8] * nx + w[9] * ny + w[10] * nz;
+        const nl = Math.hypot(rx, ry, rz) || 1;
+        normal.push(rx / nl, ry / nl, rz / nl);
         uv.push(gu.getX(i), gu.getY(i));
         skinIndex.push(bi, 0, 0, 0);
       }
@@ -383,6 +413,8 @@ function main() {
       indexCount: index.length,
       scale,
       mirrorCubes: mirrorCount,
+      // 顶点口径标记（进指纹参数）：绝对模型坐标，与 SkinnedMesh 语义匹配。
+      vertexConvention: GUARDIAN_BAKE_PARAMS.vertexConvention,
     },
   };
 
@@ -391,9 +423,29 @@ function main() {
   // 语义与焰魔相同：**渲染器把 mesh 平移 feetOffsetY**，使动画全程最低点落在
   // `state.position.y`（脚底）。守卫没有武器骨骼 ⇒ 扫全部顶点。
   //
-  // ⚠️⚠️ **骨骼链必须用口径 A**：`position = localPosition + delta.pos`，
-  // **不是** `pivot − R_current·pivot + delta.pos`（那是焰魔的绝对口径公式）。
-  // 用错公式的形态：feetOffsetY 差一个常量（本例 1.5 格），模型整体陷地/悬空。
+  // ⚠️⚠️ **口径 B 的扫描公式：skinned = (world · bindWorld⁻¹) · 绝对顶点**。
+  //
+  // 顶点已含 bindWorld ⇒ 不能再乘完整的 world（会把 bind 位置算两次）。
+  // 正确做法与 SkinnedMesh 一致：先左乘 bindWorld⁻¹ 回到局部，再乘当前 world。
+  // （等价于 skinning 的 `bone.matrixWorld · boneInverse`，因为 boneInverse ≡ bindWorld⁻¹。）
+  //
+  // ⚠️ 骨骼链仍用口径 A：`position = localPosition + delta.pos`，
+  // **不是** `pivot − R_current·pivot + delta.pos`（那是焰魔的 Bedrock 公式）。
+  const bindWorldInv = bindWorld.map((m) => {
+    const M = new THREE.Matrix4().fromArray([
+      m[0], m[4], m[8], m[12],
+      m[1], m[5], m[9], m[13],
+      m[2], m[6], m[10], m[14],
+      m[3], m[7], m[11], m[15],
+    ]).invert();
+    const e = M.elements;
+    return [
+      e[0], e[4], e[8], e[12],
+      e[1], e[5], e[9], e[13],
+      e[2], e[6], e[10], e[14],
+      e[3], e[7], e[11], e[15],
+    ];
+  });
   let lowestY = Infinity;
   const scanAnim = (anim) => {
     for (let f = 0; f < anim.frameCount; f++) {
@@ -417,7 +469,9 @@ function main() {
         world[i] = b.parentIndex === -1 ? local : mul4(world[b.parentIndex], local);
       }
       for (let v = 0; v < vOff; v++) {
-        const w = apply4(world[skinIndex[v * 4]], [position[v * 3], position[v * 3 + 1], position[v * 3 + 2]]);
+        const bi = skinIndex[v * 4];
+        const delta = mul4(world[bi], bindWorldInv[bi]);
+        const w = apply4(delta, [position[v * 3], position[v * 3 + 1], position[v * 3 + 2]]);
         if (w[1] < lowestY) lowestY = w[1];
       }
     }

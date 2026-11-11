@@ -86,8 +86,13 @@ const CORE_BONES = Object.freeze(['lowerbody', 'upperbody', 'helmet', 'head']);
 /**
  * 从烘焙产物**独立复算**核心包围盒（模型空间，格；尚未加 feetOffsetY）。
  *
- * ⚠️ **口径 A**（spec §2.2.1）：骨骼链 `T(localPosition)·R(bindQuaternion)`，
- * **pivot 恒零**、顶点已是骨骼局部坐标。照搬焰魔的 `pivot − R·pivot` 会差 1.5 格而恒红。
+ * ⚠️ **骨骼链口径 A**（spec §2.2.1）：`T(localPosition)·R(bindQuaternion)`，**pivot 恒零**。
+ * 照搬焰魔的 `pivot − R·pivot` 会差 1.5 格而恒红。
+ *
+ * ⚠️⚠️ **顶点口径 B**（`metrics.vertexConvention === 'java-model-absolute'`，2026-11-11）：
+ * 顶点已预乘 bind 世界矩阵（SkinnedMesh 必需 —— 否则 bind 姿态下顶点原样返回，
+ * 24 个盒全堆在原点）。故本函数**不能再乘 world**，否则 bind 位置算两次
+ *（实测 halfExtents[1] 从 1.2188 变成 2.4375）。
  * ⚠️ 用 `Matrix4.compose` 而非手写 4×4（烘焙器用的是手写）—— 两种独立实现得出同一组数才算复核。
  */
 function coreBboxFromAsset(d) {
@@ -103,13 +108,17 @@ function coreBboxFromAsset(d) {
   });
   const core = new Set(CORE_BONES.map((n) => d.bones.findIndex((b) => b.name === n)));
   assertTrue(!core.has(-1), '核心骨骼名在产物里找不到（骨骼改名了？）');
+  const absolute = d.metrics.vertexConvention === 'java-model-absolute';
   const box = new THREE.Box3();
   const v = new THREE.Vector3();
   const P = d.geometry.position;
   for (let i = 0; i < P.length / 3; i++) {
     const bi = d.geometry.skinIndex[i * 4];
     if (!core.has(bi)) continue;
-    box.expandByPoint(v.set(P[i * 3], P[i * 3 + 1], P[i * 3 + 2]).applyMatrix4(world[bi]));
+    v.set(P[i * 3], P[i * 3 + 1], P[i * 3 + 2]);
+    // 口径 B：顶点已是模型空间 bind 位置，直接用；口径 A：需乘世界链
+    if (!absolute) v.applyMatrix4(world[bi]);
+    box.expandByPoint(v);
   }
   return box;
 }

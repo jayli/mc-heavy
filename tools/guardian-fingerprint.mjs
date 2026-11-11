@@ -79,16 +79,26 @@ export const GUARDIAN_META = path.join(ROOT, 'assets', 'guardian', 'guardian.met
  * 骨骼旋转 `R = Rz(−θz) · Ry(+θy) · Rx(−θx)`，关键帧与 bind 欧拉角**逐轴相加**。
  * 标准右手系 `Euler('XYZ')` 会把出招方向拧反，而「关键帧数值与原版一致」证明不了姿态一致。
  *
- * ⚠️⚠️ **`coordinateConvention: 'java-local-flipy'`（本次新增，spec §2.2.1 的口径 A）**：
+ * ⚠️⚠️ **`coordinateConvention: 'java-local-flipy'`（spec §2.2.1 的口径 A）**：
  * Java `addBox` 的 origin 是**骨骼局部**坐标，Bedrock 是**绝对模型**坐标 —— 两者不是一回事。
- * 本仓取口径 A：**保留 Java 的局部顶点**，只做 `y → −y` 翻转；
- * `bones[].localPosition = pos / 16`（y 取反）、`bones[].pivot` 恒为 `[0,0,0]`。
+ * 本仓的**骨骼链**取口径 A：`bones[].localPosition = pos / 16`（y 取反）、`pivot` 恒 `[0,0,0]`，
+ * 渲染器每帧 `bone.position = localPosition + delta.pos`。
+ *
+ * ⚠️⚠️⚠️ **`vertexConvention: 'java-model-absolute'`（口径 B，2026-11-11 修）**：
+ * **顶点**必须预乘该骨骼的 **bind 世界矩阵**，变成绝对模型坐标。
+ * 原因：skinning 公式 `bindMatrixInverse · (bone.matrixWorld · boneInverse) · bindMatrix · p`
+ * 在 bind 姿态下 `bone.matrixWorld · boneInverse ≡ I` ⇒ **顶点原样返回**。
+ * skinning 只做「相对 bind 的形变」，**不做「骨骼局部 → 模型空间」的摆放**。
+ * 用骨骼局部顶点（旧口径 A）会让 24 个盒全堆在原点：实测最大误差 **3.29 格**，
+ * 症状是「腿没分开 / 头长肚子上 / 手臂进身体」（用户 2026-11-11）。
+ * 而骨骼数/盒数/顶点数/UV/指纹/**离线轮廓**全部正确 —— 只有真实渲染现形。
+ * ⇒ 判据必须落在 three 自己的 `SkinnedMesh.applyBoneTransform` 上（`test-guardian-skinning.js`）。
  *
  * 连带影响（三处必须同口径，否则整体差 1.5 格）：
- *  - `metrics.feetOffsetY = −1.5`（root 的 Java pos.y = 24 ⇒ 24/16 = 1.5，翻转后 −1.5）；
+ *  - `metrics.feetOffsetY` 由「`world · bindWorld⁻¹` · 绝对顶点」扫全部动画帧得出；
  *  - `bones[0].localPosition` 逐位 `[0, −1.5, 0]`（口径哨兵，`check:data` 钉住）；
  *  - 渲染器每帧 `bone.position = localPosition + delta.pos`，
- *    **不是**焰魔的 `pivot − R·pivot + delta`（那是绝对坐标口径的公式，用在这里会让模型炸成碎片）。
+ *    **不是**焰魔的 `pivot − R·pivot + delta`（那是 Bedrock 绝对 pivot 的公式）。
  *
  * ⚠️ **两个 convention 都是烘焙「算法」的版本标记，不是可调参数。**
  * 输入指纹只覆盖输入文件与参数，**改烘焙算法而不动参数时指纹不变**（本文件下方已记的盲区）——
@@ -102,6 +112,8 @@ export const GUARDIAN_BAKE_PARAMS = Object.freeze({
   animFps: 20,
   rotationConvention: 'java-zyx-additive',
   coordinateConvention: 'java-local-flipy',
+  /** 顶点口径：绝对模型坐标（预乘 bind 世界矩阵）—— SkinnedMesh 必需，见上方说明 */
+  vertexConvention: 'java-model-absolute',
 });
 
 /**
