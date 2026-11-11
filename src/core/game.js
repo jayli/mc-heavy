@@ -57,6 +57,10 @@ import { IGNIS_TYPE, IGNIS, IGNIS_ATTACKS } from '../entities/ignis/ignis-config
 import { ignisDefinition, IgnisService } from '../entities/ignis/ignis-system.js';
 import { IgnisRenderer } from '../render/ignis-renderer.js';
 import { loadIgnisAsset, IGNIS_DEATH_COLOR } from '../render/ignis-model.js';
+import { GUARDIAN_TYPE, GUARDIAN, GUARDIAN_ATTACKS } from '../entities/guardian/guardian-config.js';
+import { guardianDefinition, GuardianService } from '../entities/guardian/guardian-system.js';
+import { GuardianRenderer } from '../render/guardian-renderer.js';
+import { loadGuardianAsset, GUARDIAN_DEATH_COLOR } from '../render/guardian-model.js';
 import { applyDamage } from '../player/health.js';
 import { FireballRenderer } from '../render/fireball-renderer.js';
 import { playerHitboxLocal } from '../player/physics.js';
@@ -711,6 +715,26 @@ export class Game {
       this.ignisRenderer = null;
     }
 
+    // ---- 末影守卫装配（废弃堡垒的 Boss1）----
+    // ⚠️ **装配位置与龙/焰魔同段**（在 `_waitForColumn` 之前）。
+    // 守卫也是**临时实体**（`persistent: false`）—— 进存档就是第二份权威（红线 2）。
+    this.entities.registerType(GUARDIAN_TYPE, guardianDefinition);
+    // `world` 用于召唤时扫描落点：守卫恒召到**上层房间**（summonY = floorY − 6），
+    // 且 `_findGroundY` 的 HEADROOM = ceil(3.8) = 4（取 5 会静默召到中层，差 8 格）。
+    this.guardians = new GuardianService({
+      entities: this.entities, world: this.world, seed: this.seed,
+      onKnockback: (id, dx, dz) => this.guardianRenderer?.noteKnockback(id, dx, dz),
+    });
+    // 渲染器：加载失败不得让整个游戏起不来（与龙/焰魔/武器模型同一容错口径）
+    try {
+      const guardianAsset = await loadGuardianAsset();
+      this.guardianRenderer = new GuardianRenderer(this.scene, guardianAsset);
+      await this.guardianRenderer.loadTexture();
+    } catch (err) {
+      console.warn('[guardian] 渲染器加载失败，末影守卫不显示（不影响游戏）:', err);
+      this.guardianRenderer = null;
+    }
+
     // ---- 矿车装配 ----
     // 矿车是 M5 持久实体（设计文档 §2.2）：白拿 entities store 写盘 / column 两阶段卸载 /
     // `_discardEdits` 清档。service 装配位置无 `_waitForColumn` 时序约束（矿车没有
@@ -973,6 +997,9 @@ export class Game {
     // 就像撞上实心方块。注入而非让 `player/` import `entities/`（依赖方向 §3，与
     // `physics.minecarts` / `nests` / `turrets` 完全同一手法）。`this.ignises` 在 :665 已建好。
     this.player.physics.ignises = this.ignises;
+    // 守卫同理（本次新增）：玩家撞上守卫身体盒就像撞上实心方块。
+    // `_ejectFromBoss` 对两套 service 各探一次最近出口（双 Boss 同时在场时两套盒都生效）。
+    this.player.physics.guardians = this.guardians;
     // 解卡（出生路径）：恢复的位置可能被埋（玩家上次停在结构/地形边缘，或存档里的 y
     // 与当前生成结果有出入）。常态下这里是一次 `collidesAt` 的 no-op。
     this._resolvePlayerStuck();
@@ -1159,6 +1186,8 @@ export class Game {
       // 反序会让它用上帧的方向走一步（形态：长墙拐角晚一拍、看着像抖动）。
       // 内部 20Hz 节流，且只给 `needsPath` 的焰魔真跑 A\* —— 常态开销为零。
       this.ignises?.update(dt, { playerPosition: [pp.x, pp.y, pp.z], nowMs });
+      // 守卫的寻路拍（同帧序、同节流口径）
+      this.guardians?.update(dt, { playerPosition: [pp.x, pp.y, pp.z], nowMs });
       // ⚠️ **v2.43 起龙不再每帧自动 spawn**（原 `this.dragons.ensure()` 已删）：
       // 龙只在按 B 时召唤（`summonBoss()`）。保留自动生成的形态是「Boss1 已在 → 召唤 Boss2」
       // 永远命中「已在」，而高台地带没有 Boss2 ⇒ B 键对高台地带毫无作用。
@@ -1195,6 +1224,8 @@ export class Game {
       // 位置与龙的火球无关，但同样必须在 `entities.update` 之后 —— Agent 本帧写入的
       // `attackRequest` 才存在。
       this._consumeIgnisAttackRequests();
+      // 守卫的四招命中结算（同口径：必须在 entities.update 之后）
+      this._consumeGuardianAttackRequests();
       // v2.64：Boss 战音频（BGM 交叉淡化 + 焰魔挥刀/跳跃音 + 飞龙随机吼叫）。
       // ⚠️ **必须在 `entities.update` 之后**（Agent 本帧写入的 mode/leapKind 才存在），
       // 且在 `_consumeIgnisAttackRequests` 之后（两者都读焰魔 state，顺序不影响结果但
@@ -1272,6 +1303,8 @@ export class Game {
       if (this.dragonRenderer) this.dragonRenderer.sync(this.dragons.activeEntities(), nowMs);
       // 焰魔（v2.55）：同口径的 pose 发布（池容量 2，含脚底补偿）
       if (this.ignisRenderer) this.ignisRenderer.sync(this.ignises.activeEntities(), nowMs);
+      // 末影守卫：同口径的 pose 发布（池容量 1，含脚底补偿 +1.6243）
+      if (this.guardianRenderer) this.guardianRenderer.sync(this.guardians.activeEntities(), nowMs);
       // 矿车 pose 发布（差集驱动 slot；只读 state）
       this.minecartRenderer.sync(this.entities.entities());
       // M8：炮塔 pose 发布（pivot 世界坐标 + Task 4 插值出的当前 yaw/pitch）。
@@ -2260,6 +2293,14 @@ export class Game {
       // v2.55 焰魔：与龙同形状的 damage 契约（红闪 + 死亡即 despawn）
       if (!this.ignises) return null;
       result = this.ignises.damage(id, amount, nowMs);
+    } else if (entity.type === GUARDIAN_TYPE) {
+      // 末影守卫：同形状契约。受击音是守卫自己的 guardian_hurt
+      //（玩家被打仍走 `_damagePlayer` → ignis_hurt，两条路径不混）。
+      if (!this.guardians) return null;
+      result = this.guardians.damage(id, amount, nowMs);
+      if (result && !result.dead) {
+        this.audioManager?.play('guardian_hurt', SOUND_VOLUMES.guardian_hurt);
+      }
     } else return null;
     // v2.51/v2.64：死亡音效 + 死亡特效。**判断落在 `dead` 上而不是 `amount` 上** ——
     // 打中但没死不该响。音量表在 `audio-config.js`（红线 1，不在装配层写字面量）。
@@ -2314,6 +2355,10 @@ export class Game {
     if (entity.type === 'zombie') return this.zombies.knockback(id, dx, dz);
     if (entity.type === IGNIS_TYPE) return this.ignises ? this.ignises.knockback(id, dx, dz) : false;
     if (entity.type === DRAGON_TYPE) return this.dragons ? this.dragons.knockback(id, dx, dz) : false;
+    // ⚠️ **守卫完全免疫击退**：原版 `KNOCKBACK_RESISTANCE = 1.0`
+    //（`Ender_Guardian_Entity.java` 属性表）—— 与焰魔同值，但用户裁定守卫「不动如山」
+    // 更彻底：它是地牢里的固定 Boss，被剑砍不应被推动。故直接返回 false（不走 service）。
+    if (entity.type === GUARDIAN_TYPE) return false;
     return false;
   }
 
@@ -2361,6 +2406,14 @@ export class Game {
           [x, y + IGNIS.height / 2, z], IGNIS_DEATH_COLOR, nowMs, { burst: IGNIS_DEATH_BURST },
         );
       }
+    } else if (type === GUARDIAN_TYPE) {
+      // 守卫：专属死亡音 + 主题紫碎块爆散（眼睛层主色）。
+      // ⚠️ 锚点同丧尸/焰魔：**身体中心**（脚底 + height/2），用脚底会读作「地面炸了」。
+      this.audioManager?.play('guardian_die', SOUND_VOLUMES.guardian_die);
+      const [x, y, z] = entity.state.position;
+      this.blockHitFx.spawnDeathBurst(
+        [x, y + GUARDIAN.height / 2, z], GUARDIAN_DEATH_COLOR, nowMs, { burst: IGNIS_DEATH_BURST },
+      );
     }
   }
 
@@ -2397,7 +2450,11 @@ export class Game {
       : t === IGNIS_TYPE
         // ⚠️ 焰魔的 `position` 是**脚底**（地面实体）⇒ 头顶 = y + IGNIS.height
         ? baseY + IGNIS.height
-        : baseY + DRAGON_CORE_OBB.halfExtents[1];
+        : t === GUARDIAN_TYPE
+          // ⚠️ 守卫同理（脚底语义）。**漏这一支会落到飞龙口径**（身体中心 +1.875），
+          // 数字飘在胸口而不是头顶（焰魔 v2.59 踩过，health-hud.spec.mjs 有同类用例）。
+          ? baseY + GUARDIAN.height
+          : baseY + DRAGON_CORE_OBB.halfExtents[1];
     const initial = [x, headY(entity.type, y), z];
     const type = entity.type;
     // ⚠️ **捕获 generation**（红线 7 版本协议在实体侧的对应物）：丧尸 id 从 slot 池复用
@@ -2682,7 +2739,8 @@ export class Game {
     if (!am) return;
 
     // ① Boss 战 BGM：有 Boss 在场 → 战斗曲；全灭 → 淡回开局那首。
-    const bossAlive = this.entities.count(DRAGON_TYPE) + this.entities.count(IGNIS_TYPE) > 0;
+    const bossAlive = this.entities.count(DRAGON_TYPE) + this.entities.count(IGNIS_TYPE)
+      + this.entities.count(GUARDIAN_TYPE) > 0;
     am.setBossMusicActive(bossAlive);
     am.update(nowMs);
 
@@ -2721,6 +2779,35 @@ export class Game {
         } else {
           prev.set(ignis.id, {
             mode, leapKind, generation: ignis.generation, seenAt: nowMs, nextShoutAt: null,
+          });
+        }
+      }
+    }
+
+    // ---- 末影守卫：起手 / 跳跃迁移检测 ----
+    // ⚠️ **generation 守卫不可省**（同焰魔）：漏了会让「死了又召」的旧 mode 与新 idle
+    // 构成假迁移（重召那一帧白响一声起手音）。
+    // ⚠️ 四招共用一个起手音 `guardian_attack`（原版只有一个拳击音，不按招分）。
+    if (this.guardians && this.entities.count(GUARDIAN_TYPE) > 0) {
+      for (const g of this.guardians.activeEntities()) {
+        const { mode, leapKind } = g.state;
+        const old = prev.get(g.id);
+        const isNew = !old || old.generation !== g.generation;
+        if (!isNew) {
+          if (old.mode !== 'attack' && mode === 'attack') {
+            am.play('guardian_attack', SOUND_VOLUMES.guardian_attack);
+          }
+          if (old.mode !== 'leap' && mode === 'leap') {
+            // 守卫只有脱困跳（无跳劈），沿用焰魔的跳跃音（不为它开第二个素材）
+            am.play('ignis_jump', SOUND_VOLUMES.ignis_jump);
+          }
+        }
+        if (old) {
+          old.mode = mode; old.leapKind = leapKind;
+          old.generation = g.generation; old.seenAt = nowMs;
+        } else {
+          prev.set(g.id, {
+            mode, leapKind, generation: g.generation, seenAt: nowMs, nextShoutAt: null,
           });
         }
       }
@@ -3027,6 +3114,12 @@ export class Game {
     for (const ignis of this.ignises?.activeEntities() ?? []) {
       targets.push({ id: ignis.id, position: [...ignis.state.position] });
     }
+    // 炮塔也打末影守卫（本次新增）。⚠️ **光加 WEAPON_HITTABLE_TYPES 不够** ——
+    // 那张表只管「能不能被打中」，炮塔索敌是本处这份独立清单。
+    // 守卫的 position 是脚底 ⇒ 用缺省 bodyOffsetY（抬到胸部），同丧尸/焰魔。
+    for (const g of this.guardians?.activeEntities() ?? []) {
+      targets.push({ id: g.id, position: [...g.state.position] });
+    }
     const { updates } = computeTurretUpdates({
       turrets, targets, world: this.world, registry: this.registry,
     });
@@ -3174,6 +3267,44 @@ export class Game {
       if (!hasLineOfSight({ world: this.world, registry: this.registry, from, to })) continue;
       // 三条全过 → 扣血（钳制在 applyDamage 里）
       this._damagePlayer(IGNIS.attackDamage);
+    }
+  }
+
+  /**
+   * 末影守卫的四招命中结算（本次新增）。
+   *
+   * 与 `_consumeIgnisAttackRequests` 逐条对应，**两处不同**：
+   * ① 档案读 `GUARDIAN_ATTACKS[req.kind]`（**四档**，射程/锥角各不相同）；
+   * ② 视线起点用 `GUARDIAN.height * 0.5`。
+   *
+   * ⚠️ **踩踏的 hitConeDeg = 180**（全向）—— 不得加「半角必须 < 180」的守卫
+   *（那是焰魔旋斩的口径，守卫踩踏是环形近战，spec §4.3）。
+   * ⚠️ **只在该帧判定一次**：`attackRequest` 是瞬态，Agent 下一帧自动置 null。
+   * ⚠️ **常态零分配门控**：`activeEntities()` 会新建数组，而本方法每帧都跑。
+   */
+  _consumeGuardianAttackRequests() {
+    if (!this.guardians || !this.player) return;
+    if (this.entities.count(GUARDIAN_TYPE) === 0) return;
+    const p = this.player.physics?.pos;
+    if (!p) return;
+    for (const g of this.guardians.activeEntities()) {
+      const req = g.state.attackRequest;
+      if (!req) continue;
+      const [ex, ey, ez] = req.at;
+      // ⚠️ **按招取档案**，不读 `GUARDIAN_AI.hitRange/hitConeDeg`（那是四招的派生
+      // 最大值 6.25 / **180°**）—— 用它判定重击会把锥从 35° 扩到 180°，
+      // 玩家绕到背后也被打中，而数据层完全正常。
+      const profile = GUARDIAN_ATTACKS[req.kind] || GUARDIAN_ATTACKS.strong_right;
+      const dx = p.x - ex;
+      const dz = p.z - ez;
+      if (Math.hypot(dx, dz) > profile.hitRange) continue;
+      const toPlayerYaw = Math.atan2(-dx, -dz);
+      const cone = profile.hitConeDeg * Math.PI / 180;
+      if (Math.abs(shortestAngleDiff(req.yaw, toPlayerYaw)) > cone) continue;
+      const from = [ex, ey + GUARDIAN.height * 0.5, ez];
+      const to = [p.x, p.y + 1.0, p.z];
+      if (!hasLineOfSight({ world: this.world, registry: this.registry, from, to })) continue;
+      this._damagePlayer(GUARDIAN.attackDamage);
     }
   }
 
@@ -3353,6 +3484,9 @@ export class Game {
     // 焰魔（v2.55）：同口径（service 回收实体后释放渲染器）
     this.ignises?.dispose();
     this.ignisRenderer?.dispose();
+    // 末影守卫：同口径（service 回收实体后释放渲染器）
+    this.guardians?.dispose();
+    this.guardianRenderer?.dispose();
     // 矿车：service 回收实体后释放渲染器（与启动顺序相反）
     this.minecarts?.dispose();
     this.minecartRenderer?.dispose();

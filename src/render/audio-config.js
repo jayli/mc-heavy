@@ -58,7 +58,11 @@ export const SOUND_IDS = Object.freeze(['gun_load', 'gun_fire', 'mag7_fire', 'mi
   // v2.65：近战剑音效（.ogg，见 SOUND_EXT_OVERRIDES）
   'player_swing', 'emp_activated',
   // v2.79：焰魔旋斩（.ogg，见 SOUND_EXT_OVERRIDES 与 IGNIS_ATTACK_SOUNDS）
-  'ignis_attack_circle']);
+  'ignis_attack_circle',
+  // 末影守卫（本次新增）：三个文件已在 Task 1 拷入 assets/sounds/。
+  // ⚠️ 受击/死亡音源头是原版的 golemhurt / golemdeath（已查 sounds.json 链路，
+  //    不是按名字猜）；拳击音是专属的 ender_guardian_fist_attack。
+  'guardian_attack', 'guardian_hurt', 'guardian_die']);
 
 /**
  * 音效文件的扩展名覆盖表（v2.64）。
@@ -84,6 +88,10 @@ export const SOUND_EXT_OVERRIDES = Object.freeze({
   emp_activated: 'ogg',
   // v2.79：焰魔旋斩
   ignis_attack_circle: 'ogg',
+  // 末影守卫：三个都是 .ogg。⚠️ **漏加本表 = 静默无声**（按 .mp3 去 fetch ⇒ 404 被 catch 吞）
+  guardian_attack: 'ogg',
+  guardian_hurt: 'ogg',
+  guardian_die: 'ogg',
 });
 
 /**
@@ -122,6 +130,10 @@ export const SOUND_VOLUMES = Object.freeze({
   // v2.79：与 `ignis_attack_swing` 同档。实测素材峰值 circle −0.3 dB / swing −0.9 dB
   //（平均能量 circle 高约 9 dB）—— 初值取同档，嫌响/嫌轻只改这一个数，不动触发点。
   ignis_attack_circle: 0.5,
+  // 末影守卫：照焰魔 0.5 同档（嫌响/嫌轻只改这三个数，不动触发点）
+  guardian_attack: 0.5,
+  guardian_hurt: 0.5,
+  guardian_die: 0.5,
 });
 
 /**

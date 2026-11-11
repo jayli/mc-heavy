@@ -53,6 +53,12 @@ const {
   IGNIS_ATTACK_ANIM_KEYS, IGNIS_SHIELD_TEX_SRC,
   ignisInputFingerprint,
 } = await import('./ignis-fingerprint.mjs');
+// 末影守卫（本次新增）同理：与 bake-guardian.mjs 共用同一份参数/度量/指纹
+const {
+  GUARDIAN_JSON, GUARDIAN_PNG, GUARDIAN_META, GUARDIAN_TEX_SRC, GUARDIAN_LAYER_TEX_SRC,
+  GUARDIAN_BAKE_PARAMS, GUARDIAN_METRICS, GUARDIAN_ANIM_SOURCES,
+  guardianInputFingerprint,
+} = await import('./guardian-fingerprint.mjs');
 // v1.26：图标走独立 icons-atlas（不再有 INVENTORY_ICONS 表）。指纹/清单走共享模块
 // （红线 1：与烘焙脚本同一份逻辑，两处漂移会让指纹比对得出错误结论）。
 const { iconFingerprintFor, FLAT_BLOCKS, FLAT_ICON_TILE } = await import('./icon-fingerprint.mjs');
@@ -759,6 +765,153 @@ function checkIgnisAsset() {
     infos.push(`[焰魔] 产物契约与指纹一致（${asset.bones.length} 骨骼 / ${asset.metrics.bakedCubes} 立方体（跳过 ${asset.metrics.skippedCubes} 零尺寸） / ${asset.geometry.position.length / 3} 顶点 / idle ${asset.animations.idle.frameCount} 帧 + `
       + `${IGNIS_ATTACK_ANIM_KEYS.map((k) => `${k} ${asset.animations[k].frameCount} 帧`).join(' + ')} / scale ${asset.scale}`
       + ` / 盾 UV 不透明率 ${(100 * shieldCoverage.ratio).toFixed(1)}%）`);
+  }
+}
+
+// ---------------------------------------------------------------- [末影守卫] 契约
+
+/**
+ * [末影守卫] 产物契约（本次新增）。照 `[焰魔]` 同口径，但有三处守卫特有的判据：
+ *
+ * ① **坐标口径哨兵**：`bones[0].localPosition === [0,−1.5,0]` 且 `pivot` 全零。
+ *   口径 A（Java 局部顶点 + 仅 y 翻转）与焰魔的 Bedrock 绝对口径不同；
+ *   换口径会改变每个顶点与 feetOffsetY，而骨骼数/盒数/顶点数全对。
+ * ② **眼睛层内容级判据**（指纹拓不到的那类）：详下方注释。
+ * ③ **真正改色像素数**：与②互补，拓「抬阈值把改色像素全丢了」。
+ */
+function checkGuardianAsset() {
+  // ① 产物存在
+  for (const [p, label] of [
+    [GUARDIAN_JSON, 'guardian.json'], [GUARDIAN_PNG, 'guardian.png'],
+    [GUARDIAN_META, 'guardian.meta.json'],
+  ]) {
+    if (!fs.existsSync(p)) {
+      failures.push(`[末影守卫] assets/guardian/${label} 不存在 —— 跑 npm run guardian`);
+      return;
+    }
+  }
+  // ①b 两张输入贴图存在（它们是合成输入，缺失 = 仓库损坏）
+  for (const [p, label] of [
+    [GUARDIAN_TEX_SRC, 'ender_guardian.png'], [GUARDIAN_LAYER_TEX_SRC, 'ender_guardian_layer.png'],
+  ]) {
+    if (!fs.existsSync(p)) {
+      failures.push(`[末影守卫] 烘焙输入 assets/guardian/src/${label} 不存在`);
+      return;
+    }
+  }
+  // ② PNG 尺寸
+  const png = PNG.sync.read(fs.readFileSync(GUARDIAN_PNG));
+  const TS = GUARDIAN_BAKE_PARAMS.textureSize;
+  if (png.width !== TS || png.height !== TS) {
+    failures.push(`[末影守卫] PNG ${png.width}×${png.height} ≠ 期望 ${TS}²（烘焙到一半失败？）`);
+  }
+  // ③ 产物契约
+  const asset = JSON.parse(fs.readFileSync(GUARDIAN_JSON, 'utf8'));
+  const meta = JSON.parse(fs.readFileSync(GUARDIAN_META, 'utf8'));
+  const M = GUARDIAN_METRICS;
+  if (asset.bones.length !== M.boneCount) {
+    failures.push(`[末影守卫] 骨骼数 ${asset.bones.length} ≠ 期望 ${M.boneCount}（烘焙漏了骨骼 → 静默缺肉）`);
+  }
+  for (const [key, want] of [
+    ['cubeCount', M.cubeCount], ['bakedCubes', M.bakedCubes],
+    ['vertexCount', M.vertexCount], ['indexCount', M.indexCount],
+  ]) {
+    if (asset.metrics[key] !== want) {
+      failures.push(`[末影守卫] metrics.${key} ${asset.metrics[key]} ≠ 期望 ${want}`);
+    }
+  }
+  if (asset.geometry.position.length !== M.vertexCount * 3) {
+    failures.push(`[末影守卫] 顶点数组长度 ${asset.geometry.position.length} ≠ ${M.vertexCount * 3}`);
+  }
+  if (asset.geometry.index.length !== M.indexCount) {
+    failures.push(`[末影守卫] 索引数组长度 ${asset.geometry.index.length} ≠ ${M.indexCount}`);
+  }
+  // ④ 动画清单与帧数（清单的唯一权威 = GUARDIAN_ANIM_SOURCES）
+  const animNames = Object.keys(asset.animations).sort();
+  const expectNames = Object.keys(GUARDIAN_ANIM_SOURCES).sort();
+  if (animNames.join(',') !== expectNames.join(',')) {
+    failures.push(`[末影守卫] 动画清单 ${animNames.join(',')} ≠ 期望 ${expectNames.join(',')}`);
+  } else {
+    for (const key of expectNames) {
+      const a = asset.animations[key];
+      if (a.frameCount !== M.animTicks[key]) {
+        failures.push(`[末影守卫] ${key} 帧数 ${a.frameCount} ≠ 期望 ${M.animTicks[key]}`
+          + '（关键帧 tick 合计，**不是** Animation.create 的声明值）');
+      }
+      if (a.fps !== GUARDIAN_BAKE_PARAMS.animFps) {
+        failures.push(`[末影守卫] ${key} fps ${a.fps} ≠ ${GUARDIAN_BAKE_PARAMS.animFps}`);
+      }
+      if (a.frames.length !== a.frameCount * a.boneIndices.length * 7) {
+        failures.push(`[末影守卫] ${key} frames 扁平数组长度不符（${a.frames.length}）`);
+      }
+      // 四元数必须归一化：实测过的真缺陷 —— 解析器漏认小写 `5f` 后缀时
+      // 1415/2730 个四元数是 NaN（JSON 落成 null），而骨骼数/帧数/指纹全对。
+      let badQuat = 0;
+      for (let i = 0; i < a.frames.length; i += 7) {
+        const q = a.frames.slice(i, i + 4);
+        if (q.some((v) => !Number.isFinite(v)) || Math.abs(Math.hypot(...q) - 1) > 1e-6) badQuat++;
+      }
+      if (badQuat > 0) {
+        failures.push(`[末影守卫] ${key} 有 ${badQuat} 个非归一化/非有限四元数`
+          + '（解析器漏认 Math.toRadians 的小写 f 后缀？姿态会全坏）');
+      }
+    }
+  }
+  // ⑤ 指纹
+  const current = guardianInputFingerprint();
+  if (meta.fingerprints?.input !== current.input) {
+    failures.push('[末影守卫] 输入已变但产物未重烘（跑 npm run guardian）'
+      + `\n      期望 ${current.input}\n      实际 ${meta.fingerprints?.input}`);
+  }
+  // ⑥ 坐标口径哨兵（口径 A，spec §2.2.1）
+  const rootLP = asset.bones[0]?.localPosition;
+  if (!rootLP || rootLP[0] !== 0 || Math.abs(rootLP[1] + 1.5) > 1e-12 || rootLP[2] !== 0) {
+    failures.push(`[末影守卫] 口径 A 哨兵不符：root.localPosition = ${JSON.stringify(rootLP)}`
+      + '（应为 [0,-1.5,0]）—— 换坐标口径会改变每个顶点与 feetOffsetY，而计数类判据全对');
+  }
+  if (!asset.bones.every((b) => Array.isArray(b.pivot) && b.pivot.every((v) => v === 0))) {
+    failures.push('[末影守卫] pivot 必须全零（口径 A）—— 非零意味着换成了 Bedrock 绝对口径，'
+      + '渲染器公式会不匹配（模型炸成碎片）');
+  }
+  // ⑦ 眼睛层内容级判据（**指纹拓不到的那类**）
+  //
+  // ⚠️⚠️ 阈值必须 `alpha > 0`，**不是焰魔的 `> 128`**：layer 的 alpha 只有
+  // {0:62787, 1:145, 255:2604}，而 **alpha=1 的 145 个恰好就是全部真正改色的像素**
+  //（alpha=255 的 2604 个与主图 RGB 逐位相同）。用 >128 只能数到 2604，
+  // 而那 2604 个在**漏合成时就已经全等** ⇒ 那个口径的断言零判别力。
+  //
+  // ⚠️ **不得写成「紫色像素 > 0」**：主贴图自身就有 2885 个紫像素（漏合成 2885 / 正确 2880）。
+  // ⚠️ **alpha 全 255 那条不可省**：原样拷 alpha=1 会被渲染器 alphaTest:0.5 在片元阶段 discard，
+  // RGB 全等但画面上仍等同于没合成。
+  const base = PNG.sync.read(fs.readFileSync(GUARDIAN_TEX_SRC));
+  const layer = PNG.sync.read(fs.readFileSync(GUARDIAN_LAYER_TEX_SRC));
+  let match = 0, changed = 0, badAlpha = 0, layerPixels = 0;
+  for (let i = 0; i < layer.data.length; i += 4) {
+    if (layer.data[i + 3] === 0) continue;
+    layerPixels++;
+    if (png.data[i] === layer.data[i] && png.data[i + 1] === layer.data[i + 1]
+      && png.data[i + 2] === layer.data[i + 2]) match++;
+    if (png.data[i + 3] !== 255) badAlpha++;
+    if (png.data[i] !== base.data[i] || png.data[i + 1] !== base.data[i + 1]
+      || png.data[i + 2] !== base.data[i + 2] || base.data[i + 3] !== 255) changed++;
+  }
+  if (match !== M.layerOpaquePixels) {
+    failures.push(`[末影守卫] 眼睛层未完整合成：与 layer RGB 逐像素全等 ${match} ≠ 期望 ${M.layerOpaquePixels}`
+      + '（漏合成时实测为 2604）—— 守卫眼睛不发光，而几何/骨骼/UV/指纹全对');
+  }
+  if (badAlpha > 0) {
+    failures.push(`[末影守卫] 眼睛层区域有 ${badAlpha} 个像素 alpha ≠ 255`
+      + '（会被渲染器 alphaTest:0.5 discard，效果等同于没合成）');
+  }
+  if (changed !== M.layerChangedPixels) {
+    failures.push(`[末影守卫] 眼睛层真正改色像素 ${changed} ≠ 期望 ${M.layerChangedPixels}`
+      + '（为 0 说明合成退化成空操作 —— 检查 alpha 阈值是不是写成了 >128）');
+  }
+  if (!failures.some((f) => f.startsWith('[末影守卫]'))) {
+    infos.push(`[末影守卫] 产物契约与指纹一致（${asset.bones.length} 骨骼 / ${asset.metrics.bakedCubes} 立方体`
+      + ` / ${asset.geometry.position.length / 3} 顶点 / ${expectNames.map((k) => `${k} ${asset.animations[k].frameCount} 帧`).join(' + ')}`
+      + ` / feetOffsetY ${asset.metrics.feetOffsetY.toFixed(4)} / 口径 A 哨兵✓`
+      + ` / 眼睛层全等 ${match}・改色 ${changed}・alpha 全 255）`);
   }
 }
 
@@ -3322,6 +3475,7 @@ checkStructureJsonOrphans();   // 2026-09-30：tall_well 悬空宝箱回归防�
 checkZombieSkinTexture();
 checkDragonAsset();          // v2.41：祭坛飞龙烘焙产物契约与指纹（⚠️ 漏了本行则门禁永不执行）
 checkIgnisAsset();           // v2.55：焰魔烘焙产物契约与指纹（⚠️ 同上）
+checkGuardianAsset();        // 末影守卫产物契约与指纹（⚠️ 漏了本行则门禁永不执行）
 checkTurretArmorTexture();
 checkSkyboxAssets();         // v1.58：天空盒立方图完整性（⚠️ 漏了本行则门禁永不执行）
 await checkNightSkyFreshness(); // v1.60：夜空烘焙产物指纹（⚠️ 漏了本行则门禁永不执行）

@@ -52,10 +52,19 @@ export const IGNIS_EJECT_SPEED = 9;
 /** 推出探测：沿 ±X / ±Z 逐 `EJECT_PROBE` 格找「第一个不再重叠」的平移量（精度 0.02 格，随后每步继续收敛） */
 const EJECT_PROBE = 0.02;
 /**
- * 推出探测的最大平移（格）。须 > 最深的陷入：身体盒单边最大 1.236（yaw=45°）+ 玩家半宽 0.3 = 1.54
- *（玩家被传送到盒正中的最坏情形），留余量取 2.0。
+ * 推出探测的最大平移（格）。须 > 最深的陷入。
+ *
+ * 焰魔：身体盒单边最大 1.236（yaw=45°）+ 玩家半宽 0.3 = 1.54，留余量取 2.0。
+ * 守卫（本次新增）：核心盒更大且 `center.z = −0.4062` 使旋转后 AABB **不对称**
+ *（yaw45° 时 x ∈ [−1.900, +1.326]，不是 ±1.6205）。实测扫全 yaw × 盒内玩家位置，
+ * 「沿 ±X/±Z 推出所需最大距离」= **1.900 格**（焰魔对照 1.376）。
+ *
+ * ⚠️ **值保持 2.0 不变**：1.900 < 2.0 够用，但余量只剩 **0.100**
+ *⇒ **不得再调大守卫核心盒尺寸**（`test-guardian-collision.js` 有余量断言钉住）。
+ * 也不得因为「余量小」就调大本值 —— 调大会让玩家被顶得更远。
+ * 导出供测试读同一份权威（红线 1，同 `IGNIS_EJECT_SPEED` 已导出的先例）。
  */
-const EJECT_MAX = 2.0;
+export const EJECT_MAX = 2.0;
 const EJECT_DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 /** 探测用的临时盒（复用同一个对象，避免重叠期每步分配几百个 —— `overlapsAabb` 不持有入参） */
 const _probeBox = { minX: 0, maxX: 0, minY: 0, maxY: 0, minZ: 0, maxZ: 0 };
@@ -124,13 +133,24 @@ export class PlayerPhysics {
      * v2.62 的自愈在 Agent 侧：`_ringIntent` 的「真重叠例外后退」档（`d < overlapEscapeDist`
      * = 1.15，仅 chase 态）。**它覆盖不全**（v2.78 用户缺陷「跑太近就卡死」）：盒子随焰魔朝向变形
      * （重叠区单边 1.13 ~ 1.54），斜角站位被盒子扫到时 `d ≈ 1.4`，固定距离阈值永不触发。
-     * 故 v2.78 起由**玩家物理自己兜底**：`step()` 开头 `_ejectFromIgnis` 用同一判据
+     * 故 v2.78 起由**玩家物理自己兜底**：`step()` 开头 `_ejectFromBoss` 用同一判据
      * `overlapsAabb` 探出最近的出口并有界速度推出（不论盒子为何扫到玩家）。Agent 侧的后退保留，
      * 只是不再是唯一防线。⚠️ **不能只靠「玩家等焰魔走开」**—— 去退让后焰魔在贴近时站定、
      * 永不主动离开，那是个真软锁（详见 spec §2.7）。
      * @type {import('../entities/ignis/ignis-system.js').IgnisService|null}
      */
     this.ignises = null;
+    /**
+     * 末影守卫服务（装配层注入，同 `ignises` 手法 —— physics 不 import entities/）。
+     *
+     * 语义与焰魔完全一致：非 null 时 `_collides` 把**守卫身体盒**视为实心（「不动如山」），
+     * 且 `_ejectFromBoss` 对两套 service 各探一次最近出口。
+     * 原版佐证：守卫的 `KNOCKBACK_RESISTANCE = 1.0`（完全免疫击退）。
+     * ⚠️ 守卫的盒比焰魔大得多（核心半宽 1.25 vs 0.83）且不对称，故推出余量更紧
+     *（见 `EJECT_MAX` 注释）。
+     * @type {import('../entities/guardian/guardian-system.js').GuardianService|null}
+     */
+    this.guardians = null;
   }
 
   /** 开/关飞行（边沿由调用方保证 —— `player.js` 的 `!e.repeat`）。同时清零竖直速度： */
@@ -152,7 +172,7 @@ export class PlayerPhysics {
   }
 
   /**
-   * 玩家被焰魔身体盒「罩住」时，把玩家推出盒外（v2.78，用户缺陷：跑太近就卡死）。
+   * 玩家被 **Boss 身体盒**「罩住」时，把玩家推出盒外（v2.78 焰魔；本次泛化到双 Boss）。
    *
    * ## 问题
    *
@@ -178,11 +198,14 @@ export class PlayerPhysics {
    * - 不改「不动如山」：朝盒子里走仍被 `_collides()` 挡住，本方法只处理「已经在里面」。
    * @param {number} dt 秒
    */
-  _ejectFromIgnis(dt) {
-    const svc = this.ignises;
-    if (!svc) return;
+  _ejectFromBoss(dt) {
+    const services = [];
+    if (this.ignises) services.push(this.ignises);
+    if (this.guardians) services.push(this.guardians);
+    if (services.length === 0) return;
     const box = this.aabb();
-    if (!svc.overlapsAabb(box)) return;           // 绝大多数帧到此为止
+    const inside = services.filter((svc) => svc.overlapsAabb(box));
+    if (inside.length === 0) return;              // 绝大多数帧到此为止
     const { x, y, z } = this.pos;
     let best = null;
     for (let d = 0; d < EJECT_DIRS.length; d++) {
@@ -192,8 +215,9 @@ export class PlayerPhysics {
         _probeBox.minX = box.minX + dx * s; _probeBox.maxX = box.maxX + dx * s;
         _probeBox.minZ = box.minZ + dz * s; _probeBox.maxZ = box.maxZ + dz * s;
         _probeBox.minY = box.minY; _probeBox.maxY = box.maxY;
-        if (svc.overlapsAabb(_probeBox)) continue;
-        // 这个方向第一个不与焰魔相交的位置：嵌进方块就放弃这个方向（再往外只会更深）
+        // ⚠️ **双 Boss 同时在场时两套盒都不得重叠**才算出口（只判一套会推进另一只里）
+        if (inside.some((svc) => svc.overlapsAabb(_probeBox))) continue;
+        // 这个方向第一个不与任何 Boss 相交的位置：嵌进方块就放弃这个方向（再往外只会更深）
         if (!this.collidesAt(x + dx * s, y, z + dz * s)) best = { s, dx, dz };
         break;
       }
@@ -206,8 +230,8 @@ export class PlayerPhysics {
 
   /** 单步积分（调用方按 60Hz 定步长驱动） */
   step(dt) {
-    // 先把玩家从焰魔身体盒里推出来（若被罩住）：否则下面的移动会因 `_collides()` 恒真而四轴冻结
-    this._ejectFromIgnis(dt);
+    // 先把玩家从 Boss 身体盒里推出来（若被罩住）：否则下面的移动会因 `_collides()` 恒真而四轴冻结
+    this._ejectFromBoss(dt);
     if (this.flying) { this._stepFlying(dt); return; }
     const w = this.world;
     this.inWater = w.getBlockId(Math.floor(this.pos.x), Math.floor(this.pos.y + 0.5), Math.floor(this.pos.z)) === w.registry.idOf('water');
@@ -335,6 +359,12 @@ export class PlayerPhysics {
     // ⚠️ **尺寸权威不互拷**（红线 1）：玩家盒由本文件的 `PLAYER_WIDTH/HEIGHT` 给出
     //（经 `aabb()`），焰魔盒由 `IgnisService.overlapsAabb` 内部的 `ignisAabbFor` 给出。
     if (this.ignises && this.ignises.overlapsAabb(this.aabb())) return true;
+    // 守卫同理（本次新增）：两套盒都在**顶部**判 ⇒ `_moveAxis` 与 `_tryStepUp`
+    // 两处调用自动生效（玩家爬不上任何一个 Boss）。
+    // ⚠️ **漏这一行的形态**：`_collides()` 返回 false 而 `overlapsAabb()` 返回 true
+    //⇒ 玩家直接走进守卫身体盒，然后被 `_ejectFromBoss` 每帧往外推一点、下一步又走回来
+    //⇒ 净效果是「停在盒内 0.12 格深处」而不是盒外（实测踩到）。
+    if (this.guardians && this.guardians.overlapsAabb(this.aabb())) return true;
     const w = this.world;
     const hw = PLAYER_WIDTH / 2;
     const x0 = Math.floor(this.pos.x - hw), x1 = Math.floor(this.pos.x + hw);

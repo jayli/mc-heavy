@@ -27,8 +27,12 @@ export const PROBE_AABB = Object.freeze({
  *
  * v2.55 加 `ignis`（焰魔）：它**应该**可被武器与炮塔击中（用户可建炮塔助战），
  * 故加入本表即可 —— `turret-system.js` 会自动开始索敌它（消费同一份表）。
+ *
+ * 本次加 `guardian`（末影守卫）：同理可被武器/炮塔击中。
+ * ⚠️ **光加本表不够**：本表只管「能不能被打中」，**炮塔索敌是另一份清单**
+ *（`game.js` 的 `_runTurretAi` 构造 `targets`）—— 两处都要加，否则炮塔看不见守卫。
  */
-export const WEAPON_HITTABLE_TYPES = Object.freeze(['zombie', 'dragon', 'ignis']);
+export const WEAPON_HITTABLE_TYPES = Object.freeze(['zombie', 'dragon', 'ignis', 'guardian']);
 
 /**
  * position 合法性：必须是 3 个有限数。
