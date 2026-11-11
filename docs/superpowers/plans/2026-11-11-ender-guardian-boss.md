@@ -54,7 +54,8 @@ spec 隐含但没有任何 Task 的测试天然覆盖的五类失效，按「最
   - `GUARDIAN_JSON` / `GUARDIAN_PNG` / `GUARDIAN_META`：产物绝对路径常量
   - `GUARDIAN_BAKE_PARAMS`：`Object.freeze({ scale: 1, pxPerBlock: 16, textureSize: 256, animFps: 20, rotationConvention: 'java-zyx-additive', coordinateConvention: 'java-local-flipy' })`
   - `GUARDIAN_ANIM_SOURCES`：`Object.freeze({ strong_right: 'GUARDIAN_RIGHT_STRONG_ATTACK', strong_left: 'GUARDIAN_LEFT_STRONG_ATTACK', uppercut: 'GUARDIAN_UPPERCUT_AND_BULLET', stomp: 'GUARDIAN_STOMP' })`
-  - `GUARDIAN_METRICS`：`Object.freeze({ boneCount: 20, cubeCount: 24, bakedCubes: 24, vertexCount: 576, indexCount: 864, layerOpaquePixels: 2749, animTicks: Object.freeze({ strong_right: 60, strong_left: 60, uppercut: 90, stomp: 48 }) })`
+  - `GUARDIAN_METRICS`：`Object.freeze({ boneCount: 20, cubeCount: 24, bakedCubes: 24, vertexCount: 576, indexCount: 864, layerOpaquePixels: 2749, layerChangedPixels: 145, animTicks: Object.freeze({ strong_right: 60, strong_left: 60, uppercut: 90, stomp: 48 }) })`
+    ⚠️ **`layerOpaquePixels` 的阈值是 `alpha > 0`，不是焰魔的 `> 128`**（Task 1 实施时实测）：layer 的 alpha 只有 `{0:62787, 1:145, 255:2604}`，**alpha=1 的 145 个恰好就是全部真正改色的像素**；`>128` 只数到 2604，而那 2604 个与主图逐位相同 ⇒ 那个口径下合成是空操作。
   - `guardianInputFingerprint()`：`→ { input: string, sourceSha256: string, paramsSha256: string }`（**与 `ignisInputFingerprint()` 同形状**，`input = sourceSha前16:paramsSha前16`）
 
 - [ ] **Step 1: 复制模型与贴图入库**
@@ -105,7 +106,9 @@ cp "$S/golemdeath.ogg"                 assets/sounds/guardian_die.ogg
 
 Run: `node -e "import('./tools/guardian-fingerprint.mjs').then(m=>console.log(m.GUARDIAN_METRICS, m.guardianInputFingerprint().input))"`
 
-Expected: 打印 `{ boneCount: 20, cubeCount: 24, bakedCubes: 24, vertexCount: 576, indexCount: 864, layerOpaquePixels: 2749, animTicks: {...} }` + `xxxxxxxxxxxxxxxx:yyyyyyyyyyyyyyyy`。若报 `Cannot find module` ⇒ Step 1 的路径没复制对。
+Expected: 打印 `{ boneCount: 20, cubeCount: 24, bakedCubes: 24, vertexCount: 576, indexCount: 864, layerOpaquePixels: 2749, layerChangedPixels: 145, animTicks: {...} }` + `xxxxxxxxxxxxxxxx:yyyyyyyyyyyyyyyy`。若报 `Cannot find module` ⇒ Step 1 的路径没复制对。
+
+⚠️ **两条像素度量必须独立重数一遍**（不能只信写死的数）：用 pngjs 数 `alpha>0` 得 2749、数「RGB 或 alpha 与主图不同」得 145。实测教训：照焰魔写 `alpha>128` 会数出 **2604**，与冻结值不符 —— 那不是冻结值错了，而是**阈值口径错了**（见 Task 3）。
 
 另跑一行确认三个音效到位：`ls -l assets/sounds/guardian_*.ogg`
 Expected: 三个文件均非空。
@@ -251,7 +254,8 @@ git commit -m "refactor(tools): Citadel Java 模型解析抽成共享模块，�
 - **零尺寸立方体跳过**（守卫实测 24 盒全部非零，但保留这道守卫 —— `BoxGeometry` 对 0 尺寸产出退化三角形，法线 NaN）。
 - **动画**：对每条动画，`frameCount = animTicks`（Task 1 的 `GUARDIAN_METRICS.animTicks`）、`fps = GUARDIAN_BAKE_PARAMS.animFps`（20，原版 1 tick = 1/20 s）。逐帧 `evalKeyframes(stmts, tau)` → 每骨总旋转 = `bedrockRotation(bind欧拉 + 关键帧欧拉)`，产物存**相对 bind 的增量** `delta = bind⁻¹ · 总旋转`；平移通道存 `关键帧 pos / 16`（px→格，**y 取反**，因为 Java y 向下而产物 y 向上）。
 - **`move` 的 y 符号有实测锚点**：踩踏的 `move(left_leg, 0, −9, −9)` 是「抬腿 9px」（Java y 向下，减小 = 抬高）⇒ 产物 `pos.y = **+0.5625**` 格。实测验证：`left_leg` cube 的 `y_java` 从 bind 的 `[2, 24]` 变为 `[−7, 15]`（−9px）。转错的形态是「出招时身体往反方向窜」，而格数/骨骼数/指纹全对。
-- ⚠️⚠️ **眼睛层合成：直接覆盖，不得照搬焰魔的「零重叠预检」**。实测：主图不透明 23,752、layer 不透明 2,749、**交集 2,749（100% 重叠）**、layer 落在主图透明区 **0**。因为它是原版 `RenderType.eyes` 的**叠加层**，本就画在身体上；而焰魔盾是「两块不相交的 UV 区」。故：① 写 `compositeLayerTexture(base, layer)`，`layer.alpha > 0` 的像素**直接取 layer 的 RGBA**，否则保留主图（逻辑与 `compositeShieldTexture` 相同）；② **不写 `assertNoBodyPollution`、也不做零重叠断言** —— 那会在正确实现上报错（原计划的「若不为零停下来报告」必然触发）；③ 合成后**实际变色 145 像素**（其余 2,604 与主图同色）—— 这就是眼睛的全部可见差异。
+- ⚠️⚠️ **眼睛层合成：直接覆盖，不得照搬焰魔的「零重叠预检」**。实测：主图不透明 23,752、layer 非透明（alpha>0）2,749、**交集 2,749（100% 重叠）**、layer 落在主图透明区 **0**。因为它是原版 `RenderType.eyes` 的**叠加层**，本就画在身体上；而焰魔盾是「两块不相交的 UV 区」。故：① 写 `compositeLayerTexture(base, layer)`，`layer.alpha > 0` 的像素取 layer 的 RGB **并强制 alpha = 255**，否则保留主图；② **不写 `assertNoBodyPollution`、也不做零重叠断言** —— 那会在正确实现上报错（原计划的「若不为零停下来报告」必然触发）；③ 合成后**实际变色 145 像素**（其余 2,604 与主图同色）—— 这就是眼睛的全部可见差异。
+  ⚠️⚠️⚠️ **阈值必须 `alpha > 0`，拷贝时必须把 alpha 抬到 255**（Task 1 实施时实测新增，原文照焰魔写 `>128` 是错的）：layer 的 alpha 只有 `{0:62787, 1:145, 255:2604}`，**alpha=1 的那 145 个恰好就是全部真正改色的像素**（alpha=255 的 2604 个与主图 RGB 逐位相同）。双重陷阱：用 `>128` 筛 ⇒ 丢掉全部改色像素，合成退化成空操作；原样拷 alpha=1 ⇒ 渲染器 `alphaTest: 0.5` 在片元阶段 discard，效果等同于没合成。两种形态下骨骼数/顶点数/UV/指纹**全绿**。
 - **`feetOffsetY`**：扫 4 条动画**全部帧**的最低顶点，`feetOffsetY = −lowestY`。实测应为 **−1.5**（四条动画各自最低点也都是 −1.5，均在末帧）。⚠️ 扫描时的骨骼链必须用**口径 A**：`position = localPosition + delta.pos`，**不是** `pivot − R·pivot + delta.pos`。
 - **`meta.json`**：度量 + `guardianInputFingerprint()` 的 `{input, sourceSha256, paramsSha256}`（与焰魔 meta 同形状）。
 - 未知/解析失败一律 `throw`（防静默产出残缺产物）。
@@ -299,7 +303,7 @@ for(let i=0;i<out.data.length;i+=4){
 console.log('layer 不透明',layOpaque,'实际变色',changed,'与 layer 逐像素全等',match);"
 ```
 
-Expected: `layer 不透明 2749`、`实际变色 **145**`、`与 layer 逐像素全等 **2749**`。
+Expected: `layer 非透明(alpha>0) 2749`、`实际变色 **145**`、`与 layer RGB 逐像素全等 **2749**`、`这 2749 个像素的 alpha 全为 255`。
 
 ⚠️ **判据是「全等 2749」而不是「变色 > 0」**：漏合成时全等数仍有 **2604**（主图与 layer 本就大面积同色），故阈值必须取满值 2749。实测对照：漏合成 2604 / 正确 2749。
 ⚠️ **不得用「产物紫色像素 > 0」作判据**：主贴图自身就有 2,885 个紫像素，漏合成也恒真（实测 2885 vs 2880）。
@@ -1103,9 +1107,11 @@ git commit -m "feat(guardian): 装配末影守卫 + 玩家物理身体盒阻挡�
 5. **输入指纹匹配**：`guardianInputFingerprint().input` 与 `guardian.meta.json` 的 `fingerprints.input` 逐位相同（Review Focus #5 —— 改了 Java 源码/贴图/坐标口径参数但没重烘 ⇒ 红）。
 6. **坐标口径哨兵**：`bones[0].localPosition` 逐位等于 `[0, −1.5, 0]` 且所有 `bones[].pivot` 全零。
    ⚠️ 这条钉住口径 A（spec §2.2.1）—— 换口径会改变每个顶点与 `feetOffsetY`，而骨骼数/盒数/顶点数全对。
-7. **内容级断言（指纹拓不到的那类）**：`guardian.png` 在 layer 不透明处与 `ender_guardian_layer.png` **逐像素全等的像素数 === `GUARDIAN_METRICS.layerOpaquePixels`（2749）**。
+7. **内容级断言（指纹拓不到的那类）**：`guardian.png` 在 layer **非透明（alpha>0）**处与 `ender_guardian_layer.png` **RGB 逐像素全等的像素数 === `GUARDIAN_METRICS.layerOpaquePixels`（2749）**，且这 2749 个像素的 **alpha 全为 255**；另钉**真正改色像素数 === `GUARDIAN_METRICS.layerChangedPixels`（145）**。
    ⚠️⚠️ **不得写成「紫色像素 > 0」**（原计划的写法，**无判别力**）：实测主贴图自身就有 2,885 个紫像素，漏合成时也有 2885（正确合成 2880）⇒ 两侧都 >0。
    ⚠️ **阈值必须取满值 2749而不是「>0」或「接近 2749」**：漏合成时全等数仍有 **2604**（主图与 layer 本就大面积同色，只差 145 像素）。实测对照：漏合成 **2604** / 正确 **2749**。
+   ⚠️⚠️⚠️ **计数阈值必须是 `alpha > 0`，不是焰魔的 `> 128`**（Task 1 实施时实测）：`>128` 只能数到 2604，而那 2604 个在**漏合成时就已经全等** ⇒ 那个口径的断言零判别力。
+   ⚠️ **alpha 全 255 那条不可省**：原样拷 alpha=1 会被渲染器 `alphaTest: 0.5` 在片元阶段 discard，RGB 全等但画面上仍等同于没合成。
    ⚠️ **为何必须有这条**：与焰魔「盾画了却一个像素也看不见」同源 —— 漏合成眼睛层时，几何/骨骼/UV/指纹全对，只有数贴图才发现。
 
 - [ ] **Step 2: 验证环节真的会红（负向验证）**
