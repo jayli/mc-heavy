@@ -185,6 +185,20 @@ scheduler/physics）再加 `npm run bench -- --check`。计划里标「冻结」
   `Rz(−θz)·Ry(+θy)·Rx(−θx)`（`bake-ignis.mjs` 的 `bedrockRotation` 是唯一入口，飞龙是 bbmodel，不适用）。
   **两侧「数值逐帧一致」证明不了姿态一致** —— 症状（蓄力向身后抡、劈砍变尖刺、躯干后仰）只在比对**世界坐标**时现形：
   用 `tools/ignis-java-reference.mjs` + `test-ignis-bake.js` 的冻结表；动画「看着不对」时先比世界坐标，**不要加衰减补丁**。
+- ⚠️⚠️⚠️ **SkinnedMesh 的顶点必须是「绝对模型坐标」，不能用骨骼局部坐标**（守卫 v2.93 实测）：
+  skinning 公式 `bindMatrixInverse · (bone.matrixWorld · boneInverse) · bindMatrix · p`，
+  **bind 姿态下 `bone.matrixWorld · boneInverse ≡ I`** ⇒ **顶点原样返回**。
+  skinning 只做「相对 bind 的**形变**」，**不做「骨骼局部 → 模型空间」的摆放**。
+  用局部顶点的形态：24 个盒全堆在原点 —— 用户描述是「**腿没分开 / 脑袋长到肚子上 / 手臂进入身体**」
+  （实测最大误差 **3.29 格**、两腿间隙 **−0.5**、正面宽高比 **0.877** 而不是 1.26）。
+  修法：烘焙时顶点**预乘该骨骼的 bind 世界矩阵**（`vertexConvention: 'java-model-absolute'`）。
+  焰魔的 Bedrock 顶点本来就是绝对的，所以它没这个问题 —— **不是 bind 时序问题**
+  （`bind()` 内部已 `updateMatrixWorld(true)` + `calculateInverses()`，两种时序结果逐位相同）。
+  ⚠️ **离线轮廓光栅化对这类缺陷零判别力**（它直接乘世界链，绕过了 skinning）：
+  判据必须落在 three 自己的 `SkinnedMesh.applyBoneTransform` 上（`test-guardian-skinning.js`），
+  且要钉**解剖学关系**（腿间隙/头高/臂位置）而不只是顶点数。
+  ⚠️ 探针里 `mesh.bind()` 必须在**bind 姿态**下调用（先摆回 bind → bind → 再摆到目标帧），
+  否则 boneInverses 把动画姿态当 bind，造成 3.5 格假失配。
 - **Java 与 Bedrock 的顶点坐标系不同，渲染器公式也不同**（守卫 v2.91）：Java `addBox` 的 origin 是
   **骨骼局部**坐标，Bedrock 是**绝对模型**坐标。本仓守卫取口径 A（保留局部顶点 + 仅 `y→−y`）
   ⇒ `localPosition = pos/16`（y 取反）、`pivot` 恒零、渲染器 `bone.position = localPosition + delta.pos`。
