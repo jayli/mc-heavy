@@ -14,7 +14,7 @@
 
 - **提交须等用户明确指令**（AGENTS.md）：每个 Task 的 commit 步骤写好命令与 message，但执行前等用户发话；未发话时累积到最后一起问。
 - **工作区可能有别的会话未提交的改动**：不碰、不暂存、`git add` 只按文件名加本任务文件。**禁用 `git stash`（含 `git stash list`）**。
-- **坐标口径统一取 A（仅翻转 + 局部顶点）**（spec §2.2.1）：顶点 `y → −y`、`localPosition = pos/16`、`feetOffsetY = −1.5`。烘焙器 / 渲染器 / 产物复算用例 **三处必须同口径**，混用的形态是整体陷地/悬空 1.5 格而所有计数全对。
+- **坐标口径统一取 A（仅翻转 + 局部顶点）**（spec §2.2.1）：顶点 `y → −y`、`localPosition = pos/16`（y 取反）、`feetOffsetY = +1.6243`。烘焙器 / 渲染器 / 产物复算用例 **三处必须同口径**，混用的形态是整体陷地/悬空 1.5 格而所有计数全对。
 - **单测基线 1882/1882**（审阅时实跑确认）；harness 窗口 150s / 全局 timeout 200s **不需改**。
 - **负向验证撤销注入用 `cp` 副本还原，禁止对含未提交改动的文件用 `git checkout`/`restore`**（已发生过真实数据丢失）。
 - **同构层（红线 8）**：`src/entities/**` 不得 import three、不得碰 DOM、不得自建 Worker、不得碰音频。音频一律在 `core/game.js`。
@@ -164,8 +164,10 @@ Expected: PASS。记下 `window.__MC_TEST_RESULTS__` 的 total（当前 1882）�
 
 4. **`evalKeyframes`**：在 `rotate` 之外**新增 `move` 分支** —— `move(bone, x, y, z)` 的三个数是 px 平移，与 `rotate` 同样**逐轴累加**进当前关键帧，缓动同 `sin(frac·π/2)`；返回值的每骨条目从 `[rx,ry,rz]` 变成 `{rot:[...], pos:[...]}`。`javaWorld` 同步消费 `pos`（`T(b.pos + a.pos)`），并**兼容旧的裸数组 `anim` 条目**（防漏改调用处时静默拿到 undefined）。
 
+5. ⚠️⚠️ **`Math.toRadians` 的后缀正则必须大小写都认（`/i`），且解出非数值要 throw**（Task 3 实施时实测发现的**既有缺陷**）：原正则 `Math\.toRadians\((-?[\d.]+)F?\)` 只认大写 `F`，而守卫混用 `Math.toRadians(5f)` 与 `(32.5F)`（焰魔素材全用大写，所以从未暴露）。形态：小写那批解成 **null** → 一路传到四元数变成 NaN（JSON 里落成 `null`），而**骨骼数/盒数/帧数/指纹全对**。实测：修前 2730 个四元数里 **1415 个是零四元数**（模长偏差 1.0），修后最大偏差 **3.33e-16**。另：`feetOffsetY` 也被 NaN 污染（修前 1.5 / 修后 1.6243）。
+
 ⚠️ **旋转约定不得改**（spec §9）：`M = T(pos)·Rz·Ry·Rx`，关键帧欧拉角与 bind **逐轴相加**。这是焰魔 v2.58 用「蓄力向身后抡」的缺陷换来的实测结论。
-⚠️ **`bindPoseBBoxBlocks` 改收 `bones` Map 而不是文件路径**（共享模块不读文件）；它内部的 `q = [p[0], -p[1], p[2]]` 就是口径 A（仅翻转），**不要改成 `24 - p[1]`**（那会把 `feetOffsetY` 从 −1.5 变成 0，spec §2.2.1）。
+⚠️ **`bindPoseBBoxBlocks` 改收 `bones` Map 而不是文件路径**（共享模块不读文件）；它内部的 `q = [p[0], -p[1], p[2]]` 就是口径 A（仅翻转），**不要改成 `24 - p[1]`**（那会让 `feetOffsetY` 整体差 1.5 格，spec §2.2.1）。
 
 - [ ] **Step 3: 把 `ignis-java-reference.mjs` 改成薄消费者**
 
@@ -256,7 +258,7 @@ git commit -m "refactor(tools): Citadel Java 模型解析抽成共享模块，�
 - **`move` 的 y 符号有实测锚点**：踩踏的 `move(left_leg, 0, −9, −9)` 是「抬腿 9px」（Java y 向下，减小 = 抬高）⇒ 产物 `pos.y = **+0.5625**` 格。实测验证：`left_leg` cube 的 `y_java` 从 bind 的 `[2, 24]` 变为 `[−7, 15]`（−9px）。转错的形态是「出招时身体往反方向窜」，而格数/骨骼数/指纹全对。
 - ⚠️⚠️ **眼睛层合成：直接覆盖，不得照搬焰魔的「零重叠预检」**。实测：主图不透明 23,752、layer 非透明（alpha>0）2,749、**交集 2,749（100% 重叠）**、layer 落在主图透明区 **0**。因为它是原版 `RenderType.eyes` 的**叠加层**，本就画在身体上；而焰魔盾是「两块不相交的 UV 区」。故：① 写 `compositeLayerTexture(base, layer)`，`layer.alpha > 0` 的像素取 layer 的 RGB **并强制 alpha = 255**，否则保留主图；② **不写 `assertNoBodyPollution`、也不做零重叠断言** —— 那会在正确实现上报错（原计划的「若不为零停下来报告」必然触发）；③ 合成后**实际变色 145 像素**（其余 2,604 与主图同色）—— 这就是眼睛的全部可见差异。
   ⚠️⚠️⚠️ **阈值必须 `alpha > 0`，拷贝时必须把 alpha 抬到 255**（Task 1 实施时实测新增，原文照焰魔写 `>128` 是错的）：layer 的 alpha 只有 `{0:62787, 1:145, 255:2604}`，**alpha=1 的那 145 个恰好就是全部真正改色的像素**（alpha=255 的 2604 个与主图 RGB 逐位相同）。双重陷阱：用 `>128` 筛 ⇒ 丢掉全部改色像素，合成退化成空操作；原样拷 alpha=1 ⇒ 渲染器 `alphaTest: 0.5` 在片元阶段 discard，效果等同于没合成。两种形态下骨骼数/顶点数/UV/指纹**全绿**。
-- **`feetOffsetY`**：扫 4 条动画**全部帧**的最低顶点，`feetOffsetY = −lowestY`。实测应为 **−1.5**（四条动画各自最低点也都是 −1.5，均在末帧）。⚠️ 扫描时的骨骼链必须用**口径 A**：`position = localPosition + delta.pos`，**不是** `pivot − R·pivot + delta.pos`。
+- **`feetOffsetY`**：扫 4 条动画**全部帧**的最低顶点，`feetOffsetY = −lowestY`。实测 lowestY = **−1.6243** ⇒ `feetOffsetY = **+1.6243**`（Task 3 实施时纠正：早前写的 −1.5 是 root.localPosition.y 那个数，符号与语义都相反；且 1.5 只是 bind 值，出招时腿再下沉）。⚠️ 扫描时的骨骼链必须用**口径 A**：`position = localPosition + delta.pos`，**不是** `pivot − R·pivot + delta.pos`。
 - **`meta.json`**：度量 + `guardianInputFingerprint()` 的 `{input, sourceSha256, paramsSha256}`（与焰魔 meta 同形状）。
 - 未知/解析失败一律 `throw`（防静默产出残缺产物）。
 
@@ -280,7 +282,7 @@ console.log('pivot 全零?', d.bones.every(b=>b.pivot.every(v=>v===0)));
 console.log('root localPosition', JSON.stringify(d.bones[0].localPosition));"
 ```
 
-Expected: `bones 20`；4 条动画名恰为 `strong_right/strong_left/uppercut/stomp`；`fps 20`；`frameCount` 依次 **60/60/90/48**；`vals/bone/frame` 恒为 **7**（四元数4+平移3）；`metrics.boneCount 20`、`cubeCount 24`、`vertexCount 576`、`indexCount 864`、`feetOffsetY` ≈ **−1.5**；`pivot 全零? true`；`root localPosition` = **`[0,−1.5,0]`**（Java `root.setPos(0,24,0)` ⇒ y 取反除 16）。
+Expected: `bones 20`；4 条动画名恰为 `strong_right/strong_left/uppercut/stomp`；`fps 20`；`frameCount` 依次 **60/60/90/48**；`vals/bone/frame` 恒为 **7**（四元数4+平移3）；`metrics.boneCount 20`、`cubeCount 24`、`vertexCount 576`、`indexCount 864`、`feetOffsetY` ≈ **+1.6243**；`pivot 全零? true`；`root localPosition` = **`[0,−1.5,0]`**（Java `root.setPos(0,24,0)` ⇒ y 取反除 16）。
 
 ⚠️ **最后那一条是口径 A 的哨兵**：若得到 `[0,0,0]` 或 `[0,1.5,0]`，说明把 Java 的 24px 地面基准当成了 Bedrock pivot、或忘了 y 取反 ⇒ 整体陷地/悬空 1.5 格，而骨骼数/盒数/顶点数全对。
 
@@ -654,7 +656,7 @@ assertTrue(box.max[1] > 3.5, `盒必须覆盖到头顶（≈ 3.81），实际 ma
 //   （lowerbody / upperbody / helmet / head，共 6 个盒）包围盒，与常量逐值对账：
 //   halfExtents [1.2500, 1.2188, 1.0313]、center [0, 2.5938, −0.4063]（spec §8 实测）
 //   ⚠️ **复算必须用口径 A**（spec §2.2.1）：骨骼链 `position = localPosition`（pivot 恒零），
-//      顶点已是骨骼局部坐标；脚底基准用 `metrics.feetOffsetY = −1.5`。
+//      顶点已是骨骼局部坐标；脚底基准用 `metrics.feetOffsetY = +1.6243`。
 //      照搬焰魔那套 `pivot − R·pivot` 会让两侧差 1.5 格而对账恒红。
 
 // yaw 旋转现算：yaw=0 与 yaw=π/4 的 AABB 必须不同（固定盒会在它横过来时漏判/误判）
@@ -897,7 +899,7 @@ git commit -m "feat(guardian): 废弃堡垒进 Boss 召唤框架，按 B 召到�
 //   断言：把某骨的 delta.pos 置零时，`bone.position` 逐位等于产物的 `localPosition`；
 //   若实现照搬焰魔的 `pivot − R·pivot + delta`，在非零 bind 旋转的骨骼上两者不同 ⇒ 真红。
 //   （守卫有 3 根非零 bind 旋转骨骼：rightarmorspike / leftarmorspike / voidstone）
-// 脚底对齐：mesh.position.y === metrics.feetOffsetY（−1.5），**不得**用核心盒中心
+// 脚底对齐：mesh.position.y === metrics.feetOffsetY（+1.6243），**不得**用核心盒中心
 ```
 
 - [ ] **Step 2: 注册进 `src/tests/index.html`**
@@ -918,7 +920,7 @@ Expected: FAIL
 以 `src/render/ignis-renderer.js` 为模板。改四处：
 
 1. 池容量 = `GUARDIAN.maxAlive`（1）；
-2. 脚底补偿用产物 `metrics.feetOffsetY`（−1.5 格）；
+2. 脚底补偿用产物 `metrics.feetOffsetY`（+1.6243 格）；
 3. 动画来源选择按 `state.attackKind` 在 4 条片段间选（焰魔是 2 条）；
 4. ⚠️⚠️ **骨骼位置公式改成 `bone.position = localPosition + delta.pos`**。
    焰魔那行是 `pivot − R_current·pivot + delta.pos`（Bedrock 绝对顶点才需要它）；

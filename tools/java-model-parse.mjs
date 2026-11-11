@@ -33,7 +33,7 @@ const NUM = '(-?[\\d.]+)F?';
  * @param {string} text Java 源码全文
  * @param {string} ctorName 构造函数名，如 `'ModelIgnis'` / `'ModelEnder_Guardian'`
  * @returns {Map<string, {pos:number[], rot:number[], parent:string|null, cubes:Array}>}
- *   `rot` 是弧度；`cubes[]` 含 `{origin, size, inflate, mirror}`（px）
+ *   `rot` 是弧度；`cubes[]` 含 `{uv, origin, size, inflate, mirror}`（px）
  */
 export function parseBones(text, ctorName) {
   const ctorStart = text.indexOf(`public ${ctorName}()`);
@@ -53,6 +53,7 @@ export function parseBones(text, ctorName) {
     // 第 8 个参数是 mirror（true/false）。守卫实测 7 个镜像件；缺省 false。
     const mirror = raw.length > 7 ? raw[7] === 'true' : false;
     bones.get(m[1]).cubes.push({
+      uv: [Number(m[2]), Number(m[3])],
       origin: a.slice(0, 3), size: a.slice(3, 6), inflate: a[6] || 0, mirror,
     });
   }
@@ -109,8 +110,15 @@ export function parseAnimation(text, animConstName, { branch = null } = {}) {
     if (m[1] === 'rotate' || m[1] === 'move') {
       const parts = m[2].split(/,(?![^(]*\))/).map((s) => s.trim());
       const vals = parts.slice(1).map((p) => {
-        const r = p.match(/Math\.toRadians\((-?[\d.]+)F?\)/);
-        return r ? num(r[1]) * Math.PI / 180 : num(p);
+        // ⚠️ 后缀必须大小写都认（`/i`）：守卫混用 `Math.toRadians(5f)` 与 `(32.5F)`，
+        // 而焰魔素材全用大写 —— 只写 `F?` 时小写那批会解成 **null**，
+        // 一路传到四元数变成 NaN（JSON 里落成 null），而骨骼数/帧数/指纹全对。
+        const r = p.match(/Math\.toRadians\((-?[\d.]+)F?\)/i);
+        const v = r ? num(r[1]) * Math.PI / 180 : num(p);
+        if (!Number.isFinite(v)) {
+          throw new Error(`[java-model-parse] 动画 ${animConstName} 的 ${m[1]}(${parts[0]}) 解出非数值："${p}"`);
+        }
+        return v;
       });
       // rotate → 弧度；move → px 平移（不做角度换算）
       if (m[1] === 'rotate') stmts.push({ kind: 'rotate', name: parts[0], ang: vals });

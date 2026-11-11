@@ -89,12 +89,16 @@
 bbox  x[−43.34, 43.34]  y[−24.00, 44.55]  z[−23.70, 22.73]  px
       （**仅翻转** 口径：y_bedrock = −y_java）
 bbox  宽 × 高 × 深 = 5.4176 × 4.2844 × 2.9017 格
-feetOffsetY = −1.5 格（动画全程最低点在模型空间 y = −24px，扫遍 4 条动画全部帧实测）
+feetOffsetY = +1.6243 格（动画全程最低点在模型空间 y = −1.6243，扫遍 4 条动画全部帧实测）
 ```
 
 - 模型视觉高 ≈ **4.28 格**（含外张的手臂/肩甲尖刺）；**碰撞盒**取原版 `sized(2.5F, 3.8F)`
   = 宽 2.5 / 高 3.8（见 §5）。
-- `feetOffsetY = −1.5` 格：渲染器把 mesh 抬高 1.5 格，让「最低顶点」落在 `state.position.y`
+- `feetOffsetY = +1.6243` 格：渲染器把 mesh **上移** 1.6243 格，让「最低顶点」落在 `state.position.y`。
+  ⚠️ **符号是正的**（Task 3 实施时实测纠正）：`feetOffsetY = −lowestY`，而口径 A 下
+  `root.localPosition = [0,−1.5,0]` 把整条链压低 ⇒ lowestY 为负 ⇒ 补偿量为正。
+  早前写的 −1.5 其实是 **root.localPosition.y** 那个数，与 feetOffsetY 语义相反。
+  另：1.5 只是 bind 站立时的值，出招时腿会再下沉 ⇒ 全程最低点是 1.6243 而不是 1.5。
   （脚底），与焰魔同口径（焰魔是 −0.2656）。
 
 #### ⚠️ 2.2.1 两套坐标系必须选定一套（本设计选 **A：仅翻转**）
@@ -118,7 +122,7 @@ cube origin `(−4, 0, −8)` ⇒ 脚的绝对 `y_java = 2 + 0 = 2`，加 root �
 - 产物的 `pivot` 字段在口径 A 下**语义变了**：不再是「绝对旋转中心」而是**零**（旋转已由
   骨骼层级天然绕局部原点发生）⇒ `guardian-renderer.js` **不得**照搬焰魔那行
   `bone.position = pivot − R_current·pivot + delta`，而是 `bone.position = localPosition + delta.pos`。
-- `feetOffsetY = −1.5`（口径 A）；若选口径 B（Bedrock 绝对 `24 − y_java`）则为 **0**，
+- `feetOffsetY = +1.6243`（口径 A）；若选口径 B（Bedrock 绝对 `24 − y_java`）则整体差 1.5 格，
   且顶点需 `origin + 绝对pivot`、`localPosition = pivot − R·pivot`。**两者差整整 1.5 格**，
   混用的形态是模型整体陷地或悬空 1.5 格，而骨骼数/盒数/顶点数/指纹全对。
 
@@ -580,7 +584,7 @@ GUARDIAN_CORE_OBB.center      = [0.0000, 2.5938, −0.4063]  （格）
   两种形态下骨骼数/顶点数/UV/指纹**全绿**。故合成语义定义为：
   `layer.alpha > 0` 处取 layer 的 RGB **并强制 alpha = 255**，否则保留主图。
   合成后实际变色 **145 像素**（其余 2,604 像素与主图同色），这就是眼睛的全部可见差异。
-- **`feetOffsetY`**：扫 4 条动画全部帧的最低顶点（实测 −1.5 格，四条动画各自最低点也是 −1.5），
+- **`feetOffsetY`**：扫 4 条动画全部帧的最低顶点（实测 lowestY = −1.6243 ⇒ 补偿量 **+1.6243**），
   写进 `metrics`，渲染器据此把脚底对齐 `position.y`。⚠️ 此值随坐标口径变（§2.2.1）。
 
 **门禁**：`guardian-fingerprint.mjs` 记输入指纹 + 度量（骨骼数 20 / 盒数 24 / 各动画帧数 /
@@ -635,7 +639,7 @@ SkinnedMesh 单几何（24 盒合并成一个 BufferGeometry）⇒ 每只守卫 
 
 | 层 | 内容 | 级别 |
 |---|---|---|
-| 烘焙产物契约 | 骨骼 20 / 盒 24 / 各动画帧数 60,60,90,48 / bind 包围盒 5.4176×4.2844×2.9017 / `feetOffsetY = −1.5` 冻结；**眼睛层逐像素全等 2749**（内容级，§9） | Tier 2 |
+| 烘焙产物契约 | 骨骼 20 / 盒 24 / 各动画帧数 60,60,90,48 / bind 包围盒 5.4176×4.2844×2.9017 / `feetOffsetY = +1.6243` 冻结；**眼睛层逐像素全等 2749**（内容级，§9） | Tier 2 |
 | `test-guardian-config.js` | 数值不变式（`attackCooldownMin > attackAnimSeconds`、**`attackRange < min(hitRange)`**、`standoffDeadband > chaseSpeed/60`、**三招锥角逐招钉住**：重击 35° / 上勾拳 30° / 踩踏 180°、四档权重之和=1、每招 `cooldownSeconds > animSeconds`） | Tier 1（TDD） |
 | `test-guardian-system.js` | 命中盒相对脚底（`min[1] ≈ 1.375` / `max[1] ≈ 3.8125`）+ **产物独立复算**（同口径 A）+ yaw 现算 + `EJECT_MAX > 1.900` 余量 + 召唤幂等 | Tier 1 |
 | `test-boss-map.js` | `RUINED_CITADEL` 判定器：锚点/边缘/外一格/**雪原重叠顺序（seed 2096/2644/3740/4151/4973，§6.1）**/名册 | Tier 1 |
