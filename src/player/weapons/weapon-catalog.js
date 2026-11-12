@@ -19,9 +19,9 @@ export const WEAPON_IDS = Object.freeze({
  * 后面的人一眼看出它是角度换算 —— v2.65 的缺陷就是「度/弧度」混用。
  */
 const SWORD_LENGTH_SCALE = 1.2534;
-const SWORD_ROTATION_X = (168.639 * Math.PI) / 180;
-const SWORD_ROTATION_Y = (10.654 * Math.PI) / 180;
-const SWORD_ROTATION_Z = (-172.683 * Math.PI) / 180;
+const SWORD_ROTATION_X = (163.639 * Math.PI) / 180;
+const SWORD_ROTATION_Y = (20.654 * Math.PI) / 180;
+const SWORD_ROTATION_Z = (-168.683 * Math.PI) / 180;
 
 /** 曳光池上限：池满时丢弃最旧的纯视觉曳光，绝不丢弃命中或世界编辑（M4 规格 §4.2） */
 export const MAX_ACTIVE_TRACERS = 32;
@@ -160,7 +160,7 @@ export const WEAPONS = freeze({
      */
     swing: {
       /** 挥砍段占比：前 65% 劈下去，后 35% 沿原路收回 */
-      strikeEnd: 0.65,
+      strikeEnd: 0.25,
       /**
        * 向前劈砍幅度（弧度，绕相机 X 轴，负 = 剑尖向前下方砍出）。
        *
@@ -172,7 +172,7 @@ export const WEAPONS = freeze({
        * 实测最远点剑尖 y 从 478 压到 **~630**、tipZ −2.687 → −2.78，即「劈得更深」；
        * 再深（1.75× ≈ −2.01）剑尖会甩到 y=783 并逼近屏底，且距准心恶化到 445px。
        */
-      arc: -1.95,
+      arc: -2.95,
       /**
        * 挥扫幅度（弧度，绕**相机 Y 轴** = 垂直轴，正 = 剑尖向左扫）。
        *
@@ -188,7 +188,7 @@ export const WEAPONS = freeze({
        * 实测（`arc=-1.35`、`yaw=0.8`）剑尖：(1058,174) → 距准心最近 **81px** → (580,574)，
        * 横向左移 478px、向前推进 1.47 格（tipZ −1.331 → −2.799），剑柄只漂 66px。
        */
-      yaw: 0.8,
+      yaw: 0.4,
       /**
        * 劈砍过程中的**左移量**（格，相机空间 x，负 = 屏幕左）。
        *
@@ -201,7 +201,7 @@ export const WEAPONS = freeze({
        * 装配顺序（view-weapon.js）：`M = T(shift·amount) · R_y(·) · R_x(·) · baseM · T(c)`
        * —— 平移在**最外层**，所以是在相机空间直接左移，不改变旋转支点的行为。
        */
-      shift: -0.5,
+      shift: -1.5,
     },
     /**
      * 击退距离（格）。用户：「挨了一剑后，如果没死的话，就往后退一小步」。

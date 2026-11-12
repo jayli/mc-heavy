@@ -826,10 +826,13 @@ test('weapon catalog: 剑的第一人称摆放冻结值（v2.70 实测定标口�
   // v2.65 曾把度数直填进来 → 被当成 -3437°，剑体朝向完全无从预期。
   assertTrue(Math.abs(rotation[0]) <= Math.PI && Math.abs(rotation[1]) <= Math.PI
     && Math.abs(rotation[2]) <= Math.PI, 'rotation 必须是弧度（绝对值 ≤ π），填度数会让剑体乱转');
-  // 冻结值（v2.69 反解结果：柄屏 (1050,780) 藏屏下 / 尖 (1216,262) 朝右上，对齐参考图）
+  // 冻结值（**2026-11-12 用户调参后重标**：旧值 `168.64,10.65,-172.68` → 当前 `163.64,20.65,-168.68`）
+  // 实测（`tests/tmp-sword-probe.spec.mjs` 口径，1280×720）：柄屏 (1035,1018) 藏屏下 / 尖 (1066,182) 朝上，
+  // 剑刃屏幕跨度 836px = 对角线 56.9%，在窗内占比 60.9%，无顶点跑到相机背后（`vertsBehindCamera 0`）。
+  // ⚠️ **重标而不是放宽**：只改期望值以匹配用户选定的新姿态，判据的语义与上下界一个未动。
   assertEqual(rotationOrder, 'XYZ');
   const deg = rotation.map((r) => +((r * 180) / Math.PI).toFixed(2));
-  assertEqual(deg.join(','), '168.64,10.65,-172.68');
+  assertEqual(deg.join(','), '163.64,20.65,-168.68');
   assertEqual(position.map((v) => +v.toFixed(3)).join(','), '0.993,-0.206,-1.203');
   assertEqual(+scale[0].toFixed(3), 1.253);
   // 位置必须在相机前方（相机朝 -Z），否则模型跑到镜头背后
@@ -854,8 +857,12 @@ test('weapon catalog: 剑的第一人称摆放冻结值（v2.70 实测定标口�
   // 必须为负（相机空间 x 负 = 屏幕左），且与 arc/yaw 共用同一条 amount 曲线。
   assertTrue(typeof sword.swing.shift === 'number', 'swing.shift 必须存在（挥砍时的左移量）');
   assertTrue(sword.swing.shift < 0, 'swing.shift 必须为负（屏幕左移，靠近准心）');
-  // 上界：shift 过大会把剑柄推过相机中轴（实测 -1.5 时剑柄相机 x = -0.578，整把剑横穿屏幕）
-  assertTrue(sword.swing.shift >= -1, `swing.shift 不得 < -1（当前 ${sword.swing.shift}，会把剑柄推过屏幕中轴）`);
+  // ⚠️ **下界 2026-11-12 从 −1 改到 −1.5**（用户调参值）：原注释写「实测 −1.5 时剑柄相机 x = −0.578，
+  // 整把剑横穿屏幕」—— 那是配旧的 base 姿态（rotation X 168.639°）得出的结论。
+  // 新姿态（163.639°）下实测：柄屏 (1035,1018) 仍在**屏幕右侧**（> 1280×0.6 = 768），未穿中轴；
+  // 剑刃跨度 56.9% 对角线、在窗内 60.9%。故下界按实测重标，只钉住「剑柄不得越过屏幕中轴」。
+  assertTrue(sword.swing.shift >= -1.5,
+    `swing.shift 不得 < -1.5（当前 ${sword.swing.shift}，会把剑柄推过屏幕中轴；新姿态实测下界 = −1.5）`);
   // 旧的四段式 / 绕剑轴自转 / 纯平移字段必须已删除
   for (const dead of ['windupEnd', 'windupRoll', 'roll', 'wrist', 'returnSweep',
     'chop', 'sweep', 'reach', 'rise', 'offset']) {
