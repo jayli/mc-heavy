@@ -19,9 +19,11 @@ import { computeArenaAnchor, arenaOverlapsRegion } from './arena.js';
 import { computeShallowTarnAnchor, shallowTarnOverlapsRegion, shallowTarnSuppressedLandmarks } from './shallow-water-tarns.js';
 import {
   computeBurningArenaAnchor, burningArenaOverlapsRegion, burningArenaSuppressedLandmarks,
+  snowLandSuppressedByBurningArena,
 } from './burning-arena.js';
 import {
   computeRuinedCitadelAnchor, ruinedCitadelOverlapsRegion, ruinedCitadelSuppressedLandmarks,
+  snowLandSuppressedByRuinedCitadel,
 } from './ruined-citadel.js';
 import { isTarnZone, computeTarnZone, inTarnRadius } from './tarn-zone.js';
 
@@ -134,7 +136,20 @@ export function computeRegionLayout(regionX, regionZ, seed) {
   // 是不是地带」。那个判定在 `snowLandSuppressedByTarn()`（tarn-zone.js），由 apply.js
   // 阶段 1 的跳过门消费。若在此处置 null，会连带打断 6 处消费方（test-structure-layout /
   // test-landmarks / test-giant-trees-gen / structure-gen.html 等直接解引用 `.snowLand.cx`）。
-  const snowLand = {
+  //
+  // ## 大竞技场 / 废弃堡垒占地的雪压（v2.94）
+  // **这里不一样：置 null**。理由是消费者语义变了：一座被占地压掉的雪原应在**地图**
+  // （`minimap-regions.js`）与 **Boss 定位**（`boss-map.js`）上一起消失，否则会出现
+  // 「地图上有片雪白块、飞过去却是沙漠」—— 与 `snowLandSuppressedByTarn` 的既有处置
+  // （那两个消费者各自调它过滤）一致，只是那两条各自写了一份过滤，这里直接给「不存在」。
+  //
+  // ⚠️ **与地带那条不矛盾**：地带压制是「被邻域地带圆波及」的**跨 region** 判定，
+  // 与 region 身份无关；而这里是「**本 region 的雪原中心**是否与某个占地相交」——
+  // 雪原盒归属恰好由 `getRegionSeededCenter(regionX, regionZ)` 唯一确定，故可以就地判。
+  // 两个判据不互推，各自独立生效（两个都真时任一个都会让它不生成，幂等）。
+  const snowSuppressedHere = snowLandSuppressedByBurningArena(regionX, regionZ, seed) ||
+                             snowLandSuppressedByRuinedCitadel(regionX, regionZ, seed);
+  const snowLand = snowSuppressedHere ? null : {
     cx: raw.centerX + LANDMARK_OFFSET.SNOW_LAND_X,
     cz: raw.centerZ + LANDMARK_OFFSET.SNOW_LAND_Z,
   };

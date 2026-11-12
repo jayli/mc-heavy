@@ -447,6 +447,26 @@ export function inRuinedCitadelFootprint(wx, wz, anchors) {
 }
 
 /**
+ * 本 region 的雪原是否被**废弃堡垒占地**让路（v2.94）。
+ *
+ * 与大竞技场的 `snowLandSuppressedByBurningArena` 完全同构（含为何是「整座压掉」而不是
+ * 「只擦占地内几格」的理由）。唯一差别：占地是 106×108 的**非正方形** ⇒ 两轴分开比。
+ *
+ * @param {number} regionX @param {number} regionZ @param {number} seed
+ * @returns {boolean} true = 该 region 的雪原要整座让路
+ */
+export function snowLandSuppressedByRuinedCitadel(regionX, regionZ, seed) {
+  const a = computeRuinedCitadelAnchor(seed);
+  if (!a) return false;
+  const raw = getRegionSeededCenter(regionX, regionZ, seed);
+  const snowCx = raw.centerX + LANDMARK_OFFSET.SNOW_LAND_X;
+  const snowCz = raw.centerZ + LANDMARK_OFFSET.SNOW_LAND_Z;
+  // 方↔方相交；⚠️ x/z 半宽不同，两个方向分开比
+  return Math.abs(a.wx - snowCx) <= RUINED_CITADEL_HALF_X + LANDMARK_CLEARANCE.snowLand &&
+         Math.abs(a.wz - snowCz) <= RUINED_CITADEL_HALF_Z + LANDMARK_CLEARANCE.snowLand;
+}
+
+/**
  * 本 region 的**哪些地标**被废弃堡垒压掉（与 `burningArenaSuppressedLandmarks` 同构）。
  *
  * 判据是「该地标圆是否与占地矩形相交」，**不是**「本 region 是不是锚点所在 region」。

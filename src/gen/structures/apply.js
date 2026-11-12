@@ -300,6 +300,24 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
   // column 坐标（16 格一格），两者差 25 倍。
   const snowSuppressed = layouts.map((l) => snowLandSuppressedByTarn(l.regionX, l.regionZ, seed));
 
+  // 大竞技场 / 废弃堡垒占地内的雪原（v2.94，用户 2026-11-11 实玩报告）。
+  //
+  // ## 为何读 `layout.snowLand === null` 而不是在这里再算一份判据
+  // 判据本身住 `structure-layout.js`（`snowLandSuppressedByBurningArena` /
+  // `snowLandSuppressedByRuinedCitadel`，在 layout 阶段算一次并置 null）。本阶段**只消费**：
+  //   · 纯函数、事实单一（红线 1）：两处各算一件事 = 两条路径可能漂移；
+  //   · **`apply` 在 GEN 计时路径上**：`snowLandSuppressedByBurningArena` 内部要调
+  //     `computeBurningArenaAnchor`（锚点搜索，首个调用 ~100ms）—— 生产路径它在
+  //     `world-worker.js` 的 layout 入口已预热，但任何**不经 layout** 的 GEN 调用（例如
+  //     `test-structure-gen.html` 的预算 fixture 直接下发 layouts）会现场付这笔钱。
+  //     实测（浏览器，3 轮）：加上它后 `genP95` 从门禁内的数 ms 涨到 **102~126ms**，
+  //     交替对照确认是真实回归而不是负载抖动。
+  //   · 本循环的 `layout` 是查询域里的**任意邻域 region**，`getSnowLandInfo` 接受任何
+  //     region 的 `snowLand` —— 只要 `structure-layout.js` 把被压的那个置成了 null，
+  //     下一行的 `getSnowLandInfo` 就自然返回 null（它自带 null 守卫），整个雪原跳过。
+  const snowLandAbsent = layouts.map((l) => l.snowLand === null);
+  const snowBlocked = (li) => snowLandAbsent[li];
+
   const cityLayout = layouts.find((l) => l.city)?.city || null;
   // 预载清单按布局内容确定：城市建筑 / 海岛中心塔 / 平地金字塔岛 / 植被树
   // （跨 column 光栅化要求凡查询域内出现对应地标即载入，否则 rasterize 静默跳过）
@@ -425,7 +443,9 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
 
         // 雪原：被邻域地带压进圆内时整座跳过（`snowSuppressed[li]`），否则照旧。
         // 跳过的形态必须是「当作这里没有雪原」而不是「continue 整列」—— 后面的冰封山仍要判。
-        if (!snowSuppressed[li]) {
+        // ⚠️ 另两道是 v2.94 的大竞技场 / 废弃堡垒占地雪压（`snowBlocked`，即 layout 里
+        // `snowLand === null`，同上「整座跳过」语义）。
+        if (!snowSuppressed[li] && !snowBlocked(li)) {
           const slInfo = getSnowLandInfo(wx, wz, layout.snowLand, seed);
           if (slInfo) { generateSnowLand(wx, wz, h, slInfo, setBlock, seed); handled = true; break; }
         }

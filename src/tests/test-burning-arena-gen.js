@@ -19,7 +19,7 @@ import {
   computeBurningArenaAnchor, inBurningArenaFootprint, burningArenaOverlapsRegion,
   burningArenaSuppressedLandmarks, burningArenaCandidateValid,
   BURNING_ARENA_HALF, BURNING_ARENA_HEIGHT, BURNING_ARENA_SPANS, BURNING_ARENA_SUMMON_FEET_DY,
-  clearBurningArenaCache,
+  clearBurningArenaCache, snowLandSuppressedByBurningArena,
 } from '../gen/structures/burning-arena.js';
 import { computeRegionLayout, neighborRegionKeys } from '../gen/structures/structure-layout.js';
 import { applyStructuresToColumn } from '../gen/structures/apply.js';
@@ -34,7 +34,10 @@ import { getCityBoundsForSeed } from '../gen/structures/city-layout.js';
 import { computeShallowTarnAnchor, SHALLOW_TARN_OUTER_RADIUS } from '../gen/structures/shallow-water-tarns.js';
 import { computeArenaAnchor, ARENA_HALF_X, ARENA_HALF_Z, railArmSet } from '../gen/structures/arena.js';
 import { isTarnZone, computeTarnZone, TARN_ZONE_RADIUS } from '../gen/structures/tarn-zone.js';
-import { REGION_SIZE, CITY_TRANSITION_SIZE } from '../gen/structures/region-config.js';
+import {
+  REGION_SIZE, CITY_TRANSITION_SIZE, LANDMARK_OFFSET, SNOW_LAND_SIZE, TRANSITION_SIZE,
+} from '../gen/structures/region-config.js';
+import { getRegionSeededCenter } from '../gen/structures/region-center.js';
 
 const SEED = 12345;
 /** 多 seed 判别力集合（锚点存在性 / 唯一性 / 沙漠判据都要跨 seed 成立） */
@@ -491,6 +494,36 @@ test('大竞技场压制：空岛让路（用户 2026-11-09 裁定）', () => {
   }
 });
 
+test('大竞技场压制：占地内的雪原在 layout 里被置 null（地图/Boss 定位看不到它）', () => {
+  // ⚠️ **这条钉住的是“字段层面”的那个消费者，与上面 GEN 级用例互补**：
+  // GEN 用例证明“世界里没写入雪原”，但 `minimap-regions.js` 与 `boss-map.js`
+  // 是读 `layout.snowLand` / `getRegionSeededCenter` 判区域的 —— 若字段仍指向一座
+  // 已不存在的雪原，地图会画一片雪白块、指引到一个空地方向。
+  // 既有测绘（±6 的 169 region）里 seed 1249026 / 8888 各有 1 个 region 命中，
+  // 其余 6 个 seed 为 0 ⇒ 用这两个有判别力的 seed，并先断言覆盖面。
+  const SNOW_SEEDS = [1249026, 8888];
+  let suppressedRegions = 0;
+  for (const seed of SNOW_SEEDS) {
+    const a = computeBurningArenaAnchor(seed);
+    assertTrue(a !== null, `seed ${seed} 必须有大竞技场锚点`);
+    const rxLo = Math.floor((a.wx - BURNING_ARENA_HALF) / REGION_SIZE) - 1;
+    const rxHi = Math.floor((a.wx + BURNING_ARENA_HALF) / REGION_SIZE) + 1;
+    const rzLo = Math.floor((a.wz - BURNING_ARENA_HALF) / REGION_SIZE) - 1;
+    const rzHi = Math.floor((a.wz + BURNING_ARENA_HALF) / REGION_SIZE) + 1;
+    for (let rx = rxLo; rx <= rxHi; rx++) {
+      for (let rz = rzLo; rz <= rzHi; rz++) {
+        if (!snowLandSuppressedByBurningArena(rx, rz, seed)) continue;
+        suppressedRegions++;
+        const l = computeRegionLayout(rx, rz, seed);
+        assertEqual(l.snowLand, null,
+          `seed ${seed} region(${rx},${rz}) 的雪原与占地相交 ⇒ layout.snowLand 必须为 null`);
+      }
+    }
+  }
+  assertTrue(suppressedRegions > 0,
+    '前提：至少有一个 region 的雪原与大竞技场占地相交（为 0 说明 seed 清单或判据失效了）');
+});
+
 test('大竞技场压制：null 锚点返回全 false（不抛、不误压）', () => {
   const sup = burningArenaSuppressedLandmarks(null, 0, 0, SEED);
   for (const [k, v] of Object.entries(sup)) assertEqual(v, false, `${k} 必须 false`);
@@ -538,6 +571,75 @@ test('大竞技场：BURNING_ARENA_SUMMON_FEET_DY 与产物中心列「房顶下
   const feetDy = (below + 1) - FLOOR_ROW;
   assertEqual(feetDy, BURNING_ARENA_SUMMON_FEET_DY,
     `召唤偏移必须等于产物中心列「房顶下面那一层」的脚底（产物重算 ${feetDy}）`);
+});
+
+test('大竞技场 GEN：占地内不得残留雪原地表（雪原必须整座让路）', async () => {
+  // ⚠️ **这是「雪原压制」的唯一判别力守卫 —— 在没有雪压的 seed 上写这条会假绿**：
+  // 既有 8 个 SEEDS 里 12345 / 99999 / 7 / 5150 / 2024 的占地与任何雪原都不相交，
+  // 在那 5 个 seed 上本条只能证明「沙漠占了上风」，证不了雪原真的被压掉。
+  // 所以下面**显式列出实测有雪压的 seed**，并先断言覆盖面 > 0。
+  //
+  // 缺陷形态（用户 2026-11-11 实玩报告）：「大竞技场跟冰原地块重叠，进去后看得到
+  // 冰原的地表雪草方块和 short_grass」。根因：`burningArenaSuppressedLandmarks`
+  // 算出了 `snowLand` 却**没有任何消费方接线** —— spec 要求走 apply 阶段 1 的跳过门，
+  // 那条门只接了 tarn（`snowLandSuppressedByTarn`），大竞技场/堡垒的雪压静默漏了。
+  // 雪原地表高出 floorY 1~4 格 ⇒ 清沙丘的 `[floorY+1, naturalH]` 也擦不到它。
+  //
+  // ⚠️ **判据只钉「雪原专属方块」`snow_grass` / `snow`，不钉 `short_grass` / `leaves` /
+  // `planks`**：实测（浏览器内，双侧完整 GEN）那些是**撒布结构**（沙漠神殿/村落）的方块，
+  // 与本缺陷无关 —— 把它们列进来会让本条依赖另一个未修的缺陷（撒布剔除只判锚点、
+  // 不判占地盒），而 `snow_grass` 在本占地内**只可能**来自 `generateSnowLand` /
+  // `generateFrozenMountain`（两者都是被压制的项）⇒ 判别力完整且单一。
+  const SNOW_SEEDS = [240, 78, 1, 424242, 1249026];
+  const reg = await buildDefaultRegistry();
+  const SNOW_IDS = new Set(['snow_grass', 'snow'].map((n) => reg.idOf(n)));
+  let coveredSeeds = 0;
+  for (const seed of SNOW_SEEDS) {
+    const a = computeBurningArenaAnchor(seed);
+    if (!a) continue;
+    // 前提：该 seed 的占地确实与一座雪原相交（否则本条对它零判别力）
+    const HALF = Math.floor(SNOW_LAND_SIZE / 2) + TRANSITION_SIZE.SNOW_LAND;
+    let overlapping = false;
+    const rxLo = Math.floor((a.wx - BURNING_ARENA_HALF) / REGION_SIZE) - 1;
+    const rxHi = Math.floor((a.wx + BURNING_ARENA_HALF) / REGION_SIZE) + 1;
+    const rzLo = Math.floor((a.wz - BURNING_ARENA_HALF) / REGION_SIZE) - 1;
+    const rzHi = Math.floor((a.wz + BURNING_ARENA_HALF) / REGION_SIZE) + 1;
+    for (let rx = rxLo; rx <= rxHi && !overlapping; rx++) {
+      for (let rz = rzLo; rz <= rzHi && !overlapping; rz++) {
+        const raw = getRegionSeededCenter(rx, rz, seed);
+        const cx = raw.centerX + LANDMARK_OFFSET.SNOW_LAND_X;
+        const cz = raw.centerZ + LANDMARK_OFFSET.SNOW_LAND_Z;
+        overlapping = Math.abs(a.wx - cx) <= BURNING_ARENA_HALF + HALF &&
+                     Math.abs(a.wz - cz) <= BURNING_ARENA_HALF + HALF;
+      }
+    }
+    assertTrue(overlapping, `seed ${seed} 的占地应与某座雪原相交（seed 清单失效了）`);
+    coveredSeeds++;
+    // 真实 GEN：生成该 seed 占地跨的全部 column（不缓存 —— 每个 seed 只有一次）
+    const ccx = Math.floor(a.wx / 16), ccz = Math.floor(a.wz / 16);
+    const rCols = Math.ceil((BURNING_ARENA_HALF + 2) / 16);
+    const found = [];
+    for (let dcx = -rCols; dcx <= rCols; dcx++) {
+      for (let dcz = -rCols; dcz <= rCols; dcz++) {
+        const cx = ccx + dcx, cz = ccz + dcz;
+        const col = await genColumn(reg, cx, cz, seed);
+        for (let lx = 0; lx < 16; lx++) {
+          for (let lz = 0; lz < 16; lz++) {
+            const wx = cx * 16 + lx, wz = cz * 16 + lz;
+            if (Math.abs(wx - a.wx) > BURNING_ARENA_HALF || Math.abs(wz - a.wz) > BURNING_ARENA_HALF) continue;
+            for (let y = 0; y < 96; y++) {
+              const id = col.blocks[blockIndex(lx, y, lz)];
+              if (!SNOW_IDS.has(id)) continue;
+              if (found.length < 5) found.push(`${wx},${y},${wz}:${reg.nameOf(id)}`);
+            }
+          }
+        }
+      }
+    }
+    assertEqual(found.length, 0,
+      `seed ${seed} 占地内不得有任何雪原方块（实测前 5 个：${found.join(' | ')}）`);
+  }
+  assertTrue(coveredSeeds >= 4, `有判别力的 seed 只有 ${coveredSeeds} 个（应 ≥4）—— 雪原压制未被覆盖`);
 });
 
 test('大竞技场 GEN：碗内地板落在 floorY，中心与偏移点方块正确', async () => {

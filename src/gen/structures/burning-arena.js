@@ -384,6 +384,39 @@ export function inBurningArenaFootprint(wx, wz, anchors) {
 }
 
 /**
+ * 本 region 的雪原是否被**大竞技场占地**让路（v2.94）。
+ *
+ * ## 语义：与 `snowLandSuppressedByTarn` 完全同构 —— “整座雪原不生成”
+ * 判据是“雪原盒（±28）× 占地矩形（±42）相交”，**不是**“雪原中心在占地内”：
+ * 雪原在 `getSnowLandInfo` 里是切比雪夫方形（±20 核心 + ±8 过渡带 = ±28），
+ * 用圆心距近似会漏掉**角部擦入**（同 `snowLandSuppressedByTarn` 的实测教训）。
+ *
+ * ## 为何不是“只擦占地内那几格”
+ * ① 地图与 Boss 定位粒度是“整座雪原”（`boss-map.js` 的 `snowMapAt` / `minimap-regions.js`
+ *    的 `snows`）—— 部分侵入会留下一座“半截还在地图上、却已不存在”的雪原；
+ * ② `layout.snowLand` 是 region 级字段，部分压制在数据模型里表达不了（除非引入第二份权威）。
+ * 与大竞技场其余压制项（地标/金字塔/空岛）同口径：**整座压掉**。
+ *
+ * ## 三个消费者（单一权威，红线 1）
+ *   ① `apply.js` 阶段 1 的 `generateSnowLand` 跳过门（与 `snowLandSuppressedByTarn` 并列）；
+ *   ② `structure-layout.js` 把 `layout.snowLand` 置 null（地图/Boss 定位不再看到它）；
+ *   ③ 单测直接驱动。
+ *
+ * @param {number} regionX @param {number} regionZ @param {number} seed
+ * @returns {boolean} true = 该 region 的雪原要整座让路
+ */
+export function snowLandSuppressedByBurningArena(regionX, regionZ, seed) {
+  const a = computeBurningArenaAnchor(seed);
+  if (!a) return false;
+  const raw = getRegionSeededCenter(regionX, regionZ, seed);
+  const snowCx = raw.centerX + LANDMARK_OFFSET.SNOW_LAND_X;
+  const snowCz = raw.centerZ + LANDMARK_OFFSET.SNOW_LAND_Z;
+  // 方↔方相交（两轴都需相交才是真相交）
+  return Math.abs(a.wx - snowCx) <= BURNING_ARENA_HALF + LANDMARK_CLEARANCE.snowLand &&
+         Math.abs(a.wz - snowCz) <= BURNING_ARENA_HALF + LANDMARK_CLEARANCE.snowLand;
+}
+
+/**
  * 本 region 的**哪些地标**被大竞技场压掉（与 `shallowTarnSuppressedLandmarks` 同构）。
  *
  * 判据是「该地标中心是否落在大竞技场占地内」，**不是**「本 region 是不是锚点所在 region」。

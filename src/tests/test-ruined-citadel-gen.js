@@ -41,7 +41,8 @@ import { computeShallowTarnAnchor, SHALLOW_TARN_OUTER_RADIUS } from '../gen/stru
 import { computeArenaAnchor, ARENA_HALF_X, ARENA_HALF_Z } from '../gen/structures/arena.js';
 import { computeBurningArenaAnchor, BURNING_ARENA_HALF } from '../gen/structures/burning-arena.js';
 import { isTarnZone, computeTarnZone, TARN_ZONE_RADIUS } from '../gen/structures/tarn-zone.js';
-import { REGION_SIZE, CITY_TRANSITION_SIZE } from '../gen/structures/region-config.js';
+import { REGION_SIZE, CITY_TRANSITION_SIZE, LANDMARK_OFFSET, SNOW_LAND_SIZE, TRANSITION_SIZE } from '../gen/structures/region-config.js';
+import { getRegionSeededCenter } from '../gen/structures/region-center.js';
 
 const SEED = 12345;
 
@@ -575,6 +576,72 @@ test('废弃堡垒 GEN：占地内不得长出树/植被（pointContext 让路�
     }
   }
   assertEqual(found.length, 0, `占地内不得有植被（实测前 5 个：${found.slice(0, 5).join(' | ')}）`);
+});
+
+test('废弃堡垒 GEN：占地内不得残留雪原地表（雪原必须整座让路）', async () => {
+  // ⚠️ **实测有雪压的 seed 与上面 8 个冻结 SEEDS 零重叠**（那 8 个的雪原中心到占地
+  // 净距 64~98 格 > 盒半宽 28，见 `test-boss-map.js` 同源记录）⇒ 必须用独立的 seed 清单，
+  // 否则本条在 8 个「无雪压」seed 上恒绿（空断言）。
+  //
+  // 缺陷形态与修法与大竞技场完全同形（用户 2026-11-11 报告的竞技场缺陷）：
+  // `ruinedCitadelSuppressedLandmarks` 算出 `snowLand` 却无消费方接线 ——
+  // spec DR-6 要求走 apply 阶段 1 的跳过门，而那条门只接了 tarn。
+  //
+  // ⚠️ **判据只钉 `snow_grass` / `snow`**（理由同 `test-burning-arena-gen.js` 同名用例）：
+  // `short_grass` / `leaves` / `planks` 会随被压制的**撒布结构**变化，而撒布剔除是另一条
+  // 判据（锚点 vs 占地盒），属于独立缺陷，不属于本条要钉的雪原压制。
+  const SNOW_SEEDS = [240, 424242];
+  const reg = await buildDefaultRegistry();
+  const snowIds = new Set(['snow_grass', 'snow'].map((n) => reg.idOf(n)));
+  const HALF = Math.floor(SNOW_LAND_SIZE / 2) + TRANSITION_SIZE.SNOW_LAND;
+  let coveredSeeds = 0;
+  for (const seed of SNOW_SEEDS) {
+    const a = computeRuinedCitadelAnchor(seed);
+    if (!a) continue;
+    // 前提：该 seed 的占地确实与一座雪原相交（否则本条对它零判别力）
+    let overlapping = false;
+    const rxLo = Math.floor((a.wx - RUINED_CITADEL_HALF_X) / REGION_SIZE) - 1;
+    const rxHi = Math.floor((a.wx + RUINED_CITADEL_HALF_X) / REGION_SIZE) + 1;
+    const rzLo = Math.floor((a.wz - RUINED_CITADEL_HALF_Z) / REGION_SIZE) - 1;
+    const rzHi = Math.floor((a.wz + RUINED_CITADEL_HALF_Z) / REGION_SIZE) + 1;
+    for (let rx = rxLo; rx <= rxHi && !overlapping; rx++) {
+      for (let rz = rzLo; rz <= rzHi && !overlapping; rz++) {
+        const raw = getRegionSeededCenter(rx, rz, seed);
+        const cx = raw.centerX + LANDMARK_OFFSET.SNOW_LAND_X;
+        const cz = raw.centerZ + LANDMARK_OFFSET.SNOW_LAND_Z;
+        overlapping = Math.abs(a.wx - cx) <= RUINED_CITADEL_HALF_X + HALF &&
+                     Math.abs(a.wz - cz) <= RUINED_CITADEL_HALF_Z + HALF;
+      }
+    }
+    assertTrue(overlapping, `seed ${seed} 的占地应与某座雪原相交（seed 清单失效了）`);
+    coveredSeeds++;
+    // 真实 GEN：只扫占地自身的 column（雪原地表只可能长在地面以上，不进地牢）
+    const ccx0 = Math.floor((a.wx - RUINED_CITADEL_HALF_X) / 16);
+    const ccx1 = Math.floor((a.wx + RUINED_CITADEL_HALF_X) / 16);
+    const ccz0 = Math.floor((a.wz - RUINED_CITADEL_HALF_Z) / 16);
+    const ccz1 = Math.floor((a.wz + RUINED_CITADEL_HALF_Z) / 16);
+    const found = [];
+    for (let cx = ccx0; cx <= ccx1; cx++) {
+      for (let cz = ccz0; cz <= ccz1; cz++) {
+        const col = await genColumn(reg, cx, cz, seed);
+        for (let lx = 0; lx < 16; lx++) {
+          for (let lz = 0; lz < 16; lz++) {
+            const wx = cx * 16 + lx, wz = cz * 16 + lz;
+            if (Math.abs(wx - a.wx) > RUINED_CITADEL_HALF_X ||
+                Math.abs(wz - a.wz) > RUINED_CITADEL_HALF_Z) continue;
+            for (let y = 0; y < 96; y++) {
+              const id = col.blocks[blockIndex(lx, y, lz)];
+              if (!snowIds.has(id)) continue;
+              if (found.length < 5) found.push(`${wx},${y},${wz}:${reg.nameOf(id)}`);
+            }
+          }
+        }
+      }
+    }
+    assertEqual(found.length, 0,
+      `seed ${seed} 占地内不得有任何雪原方块（实测前 5 个：${found.join(' | ')}）`);
+  }
+  assertTrue(coveredSeeds >= 2, `有判别力的 seed 只有 ${coveredSeeds} 个（应 ≥2）—— 雪原压制未被覆盖`);
 });
 
 test('废弃堡垒 GEN：干燥区内不得有 water 方块（水约束的 GEN 级守卫）', async () => {
