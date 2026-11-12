@@ -180,7 +180,7 @@ export class Player {
     this.keys = new Set();
     /**
      * 背包 = 物品权威（§4.5.4 M3.1）。创造模式无限背包：122 项全量入包、
-     * 每格 count=1500 占位不消耗。快捷栏是 `slots[0..4]` 的视图，不是独立容器。
+     * 每格 count=1500 占位不消耗。快捷栏是 `slots[0..HOTBAR_SIZE-1]` 的视图，不是独立容器。
      */
     this.inventory = createCreativeInventory(registry);
     this.target = null; // 当前射线命中
@@ -239,6 +239,7 @@ export class Player {
       this.keys.add(e.code);
       if (e.code.startsWith('Digit')) {
         const n = Number(e.code.slice(5)) - 1;
+        // 上限派生自 HOTBAR_ITEMS（v2.96 起 9 格）—— 与 `ui/hotbar.js` 的 DOM 格数同源
         if (n >= 0 && n < HOTBAR.length) this.hotbarIndex = n;
       }
       // M4：KeyR 循环切武器（徒手→手枪→MAG7→加特林）。非重复事件才触发，

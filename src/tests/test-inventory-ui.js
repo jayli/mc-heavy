@@ -229,7 +229,7 @@ test('键盘 Escape：背包关着时不误清设置面板门控', async () => {
   });
 });
 
-test('键盘数字 1-5：仅打开态改选中槽（关态由 Player 负责）', async () => {
+test('键盘数字 1~HOTBAR_SIZE：仅打开态改选中槽（关态由 Player 负责）', async () => {
   await withPanel((panel, game) => {
     press('Digit3');
     assertEqual(game.player.inventory.selectedSlot, 0, '关态面板不处理数字键');
@@ -239,6 +239,12 @@ test('键盘数字 1-5：仅打开态改选中槽（关态由 Player 负责）',
     assertEqual(game.player.hotbarIndex, 2, '别名同源');
     press('Digit5');
     assertEqual(game.player.inventory.selectedSlot, 4);
+    // v2.96：快捷栏 5 → 9 格，数字键上限同步扩到 9
+    press('Digit9');
+    assertEqual(game.player.inventory.selectedSlot, 8, 'Digit9 选中第 9 格');
+    // 越界键不改变选中（快捷栏只有 9 格，Digit0 无对应格）
+    press('Digit0');
+    assertEqual(game.player.inventory.selectedSlot, 8, 'Digit0 不产生选中');
     press('Digit1');
     assertEqual(game.player.inventory.selectedSlot, 0);
     // 数字键改选中后高亮同步
@@ -263,20 +269,20 @@ test('键盘：dispose 后不再响应（监听器已摘除）', async () => {
   assertEqual(document.getElementById('inventory-modal'), null, 'DOM 已移除');
 });
 
-// --- 点击槽位选中（selectedSlot 可越出快捷栏 5 格） ---
+// --- 点击槽位选中（selectedSlot 可越出快捷栏 9 格） ---
 
-test('点击槽位：改 selectedSlot 并移动高亮（含第 6 格以外）', async () => {
+test('点击槽位：改 selectedSlot 并移动高亮（含第 9 格以外的槽）', async () => {
   await withPanel((panel, game) => {
     panel.open();
     const slots = () => document.querySelectorAll('#inventory-grid .mc-slot');
-    slots()[7].click();
-    assertEqual(game.player.inventory.selectedSlot, 7, '可越出 5 格');
-    assertEqual(game.player.hotbarIndex, 7);
+    slots()[12].click();
+    assertEqual(game.player.inventory.selectedSlot, 12, '可越出 9 格');
+    assertEqual(game.player.hotbarIndex, 12);
     assertEqual(document.querySelectorAll('#inventory-grid .mc-slot.selected').length, 1);
-    assertTrue(slots()[7].classList.contains('selected'));
+    assertTrue(slots()[12].classList.contains('selected'));
     assertFalse(slots()[0].classList.contains('selected'));
     assertEqual(game.player.inventory.getSelected().item,
-      game.player.inventory.slots[7].item);
+      game.player.inventory.slots[12].item);
   });
 });
 

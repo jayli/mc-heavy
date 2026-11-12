@@ -3226,8 +3226,9 @@ M4 玩家武器先行实现，也同时是 TNT/爆炸的共享入口；M4 的范
 **4.5.4 背包/快捷栏（M3.1，v1.16 定稿）**
 
 创造模式无限背包。**权威数据只有一份**：`player.inventory`（`src/player/inventory.js`），
-快捷栏不是独立容器，而是背包前 5 格的视图。mc-lite 同构（`HUD.renderHotbar()` 读
-`inventory.slots[i]`，i < 5），本设计不引入第二份物品状态。
+快捷栏不是独立容器，而是背包前 9 格的视图（v2.96 起；M3.1 定稿时为 5 格）。mc-lite 同构
+（`HUD.renderHotbar()` 读 `inventory.slots[i]`，i < 5）—— 格数有意多于 mc-lite，见下方槽位语义。
+**权威数据只有一份**：`player.inventory`，本设计不引入第二份物品状态。
 
 物品模型照搬 mc-lite `src/actors/player/Slots.js` 语义：
 
@@ -3251,8 +3252,8 @@ Inventory(size)  // slots[]、selectedSlot、add/remove/has/getSelected/selectSl
 
 槽位语义（与 mc-lite 一致）：
 
-- **快捷栏 = `slots[0..4]`**，数字键 1-5 → `selectSlot(0..4)`；
-- `selectedSlot` **可越出 5**：背包面板点击任意非空槽即选中，此时快捷栏 5 格**无高亮**
+- **快捷栏 = `slots[0..HOTBAR_SIZE-1]`**（v2.96 起 9 格，对齐原版 1~9），数字键 1-9 → `selectSlot(0..8)`；
+- `selectedSlot` **可越出 9**：背包面板点击任意非空槽即选中，此时快捷栏 9 格**无高亮**
   （mc-lite 同行为），放块取 `getSelected()` 的物品；
 - `Player.placeBlock()` 从 `inventory.getSelected().item` 解析方块 ID，**不再索引常量数组**。
 
@@ -3334,14 +3335,20 @@ mesher 无其几何模板 → 等轴测不适用）。
 > ⚠️ 该段引用的 mc-lite 侧计数须实测复核（`Game.js:206-321` 实测 107 行匹配、其中 2 行被
 > 注释掉 → **有效 105 项**）；此处保留历史原文不追改。
 
-**物品顺序（冻结）**：`slots[0..4]` = `stone`、`dirt`、`grass`、`sand`、`cobblestone`
-（即 M3-4 既有 `HOTBAR_ITEMS`，保持快捷栏默认观感与既有测试断言不变），
-其余 113 项按 `registry.all()` 注册顺序追加（确定性构建，不依赖 Map 迭代顺序以外的因素）。
+**物品顺序（冻结）**：`slots[0..8]` = `stone`、`dirt`、`grass`、`sand`、`cobblestone`、
+`wood`、`glass_block`、`tnt`、`mine_cart`（即 v2.96 起的 `HOTBAR_ITEMS`，保持快捷栏默认观感与
+既有测试断言稳定），其余 135 项按 `registry.all()` 注册顺序追加（确定性构建，不依赖 Map
+迭代顺序以外的因素）。
 理由：`blocks-data.js` 注册序前几位是 `water`/`swamp_water`/`cloud`/`glass_block`/
-`glass_blink`（非玩家常用建材），纯注册序会让快捷栏前 5 格变成这些，既不合理也破坏
-M3-4 视觉基线。mc-lite 用 `Game.js:206+` 手工列举 107 条（`stone` 居首）达到同样效果；
-本设计以「5 项前置常量 + 注册序补全」表达，集合成员与 mc-lite 的差集为 v1.16 起的
+`glass_blink`（非玩家常用建材），纯注册序会让快捷栏第 6~9 格变成
+`water`/`swamp_water`/`cloud`/`glass_block`，既不合理也破坏视觉基线。mc-lite 用
+`Game.js:206+` 手工列举 107 条（`stone` 居首）达到同样效果；
+本设计以「前置常量 + 注册序补全」表达，集合成员与 mc-lite 的差集为 v1.16 起的
 BlockRegistry 新增方块（如 `sky_stone`/`sky_grass`），属预期扩展。
+
+> **v2.96 修订**：快捷栏由 5 格扩到 9 格（用户 2026-11-12：「把游戏底部默认的显示的可选择的方块的数量
+> 从五个调整成 9 个」），对齐原版 1~9 键位。前置冻结序随之从 5 项扩到 9 项（后 4 项是用户选定的
+> 常用物品，不是注册序的自然延伸）；物品集合总成员不变（仍是 registry − 排除集合），只有顺序变。
 
 背包面板（`src/ui/inventory.js`，DOM 方案照搬 mc-lite `src/style/global.css`）：
 

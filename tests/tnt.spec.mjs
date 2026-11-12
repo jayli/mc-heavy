@@ -206,9 +206,18 @@ test('背包选中路径：从背包选 tnt 右键放块，再左键挖块引爆
     // 右键放块：origin = prevPos（空气格），命中方块 = 脚下支撑格
     g.player.target = { blockPos: [bx, by - 1, bz], prevPos: [bx, by, bz], normal: [0, 1, 0], dist: 2 };
     g.player.placeBlock();
-    return { bx, by, bz, slotIndex: idx, id: g.world.getBlockId(bx, by, bz) };
+    return {
+      bx, by, bz, slotIndex: idx, id: g.world.getBlockId(bx, by, bz),
+      selectedItem: g.player.inventory.getSelected()?.item ?? null,
+      hotbarIndex: g.player.hotbarIndex,
+    };
   });
-  expect(placed.slotIndex).toBeGreaterThan(4);       // tnt 不在快捷栏前 5 格
+  // ⚠️ 这条要保留判别力（M7 教训）：只要 tnt 能被**快捷栏数字键**一键选到，就测不到那条缺陷（先 shortcut 后成功，遮蔽了面板分流路径）。
+  // v2.96 把 tnt 放到了快捷栏第 8 格（index 7）⇒ 旧断言 `> 4` 失效、`>= 9` 也不成立。
+  // 改为钉「选中槽确实被换成 tnt 那一槽、且 hotbarIndex 别名同步」（证明走的是 selectSlot 而非原来的首槽 stone）。
+  expect(placed.slotIndex).toBeGreaterThan(0);           // 不是首槽 stone
+  expect(placed.selectedItem).toBe('tnt');                // 选中槽确实切到了 tnt
+  expect(placed.hotbarIndex).toBe(placed.slotIndex);      // hotbarIndex 是 selectedSlot 的别名（单一权威）
   expect(placed.id).toBe(await page.evaluate(() => window.__MC_GAME__.registry.idOf('tnt')));
 
   // 左键挖块命中 tnt → 引爆（**不是**把它当普通方块挖掉）

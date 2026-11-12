@@ -2,7 +2,7 @@
 // 照搬 mc-lite `src/actors/player/Slots.js` 的语义（Slot / Inventory），无 three / DOM 依赖，
 // 主线程与浏览器内单测同构可用。
 //
-// 权威数据只有一份：`player.inventory`。**快捷栏不是独立容器**，而是 `slots[0..4]` 的视图
+// 权威数据只有一份：`player.inventory`。**快捷栏不是独立容器**，而是 `slots[0..HOTBAR_SIZE-1]` 的视图
 // （mc-lite `HUD.renderHotbar()` 同构）。禁止再引入第二份物品状态或选中态。
 //
 // 两个数字不要混淆（v1.16 勘误：原 §4.5.4 曾写「mc-lite 默认 1500 格语义」）：
@@ -163,12 +163,12 @@ export class Inventory {
 
 /**
  * 构建物品名集合（§4.5.4 冻结顺序）：
- *   ① 前 5 项 = `HOTBAR_ITEMS`（stone/dirt/grass/sand/cobblestone）—— 快捷栏默认观感
- *      与既有测试断言不变；
+ *   ① 前 `HOTBAR_SIZE` 项 = `HOTBAR_ITEMS`（v2.96：stone/dirt/grass/sand/cobblestone/
+ *      wood/glass_block/tnt/mine_cart）—— 快捷栏默认观感固定；
  *   ② 其余按 `registry.all()` 注册顺序补全。
  *
  * **为什么不能纯注册序**：`blocks-data.js` 注册序前几位是 water/swamp_water/cloud/
- * glass_block/glass_blink（非常用建材），会让快捷栏前 5 格变成这些。mc-lite 用
+ * glass_block/glass_blink（非常用建材），会让快捷栏前几格变成这些。mc-lite 用
  * `Game.js:206+` 手工列举 107 条、`stone` 居首达到同样效果。
  *
  * 确定性：只依赖 `registry.all()`（注册顺序），无随机、无 Map 迭代顺序以外的因素
@@ -179,7 +179,7 @@ export class Inventory {
 *          `npm run check:data` 的 `[物品集合]` 输出为准，勿在此硬编码）
  */
 export function buildItemNames(registry) {
-  const front = HOTBAR_ITEMS.slice(); // 前置 5 项（快捷栏）
+  const front = HOTBAR_ITEMS.slice(); // 前置项（快捷栏，v2.96 起 9 项）
   const frontSet = new Set(front);
   const rest = registry.all()
     .map((e) => e.name)

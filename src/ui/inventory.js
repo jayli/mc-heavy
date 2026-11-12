@@ -9,6 +9,8 @@
 //   ③ 关闭时 pointer lock 回 **canvas**，不是 mc-lite 的 document.body——本仓库 Player 的
 //      `document.pointerLockElement !== this.canvas` 守卫会令锁 body 时视角与放挖全失效。
 // 模态门控走 game.pushModal/popModal（M3.1 模态栈，收口原可写布尔的多面板竞争）。
+import { HOTBAR_SIZE } from '../player/hotbar-items.js';
+
 const STYLE_ID = 'mc-inventory-style';
 /** 模态栈 owner 标识（game.popModal 只移除自己，不误清设置面板的门控） */
 const MODAL_OWNER = 'inventory';
@@ -146,7 +148,7 @@ export class InventoryPanel {
     // 点击遮罩空白处关闭（mc-lite settingsModal.onclick 同语义；点在内容框/槽位不关）
     this.el.addEventListener('click', (e) => { if (e.target === this.el) this.close(); });
 
-    // 键盘：Z toggle / Escape 关闭 / 数字键 1-5（仅打开态处理——关态由 Player 负责，
+    // 键盘：Z toggle / Escape 关闭 / 数字键 1~HOTBAR_SIZE（仅打开态处理——关态由 Player 负责，
     // 二者不重复：Player 的 keydown 有 uiModal 守卫，打开时被拦截）
     this._onKeyDown = (e) => this._handleKey(e);
     window.addEventListener('keydown', this._onKeyDown);
@@ -238,8 +240,9 @@ export class InventoryPanel {
     if (!this.isOpen) return; // 关态数字键交回 Player（它有 uiModal 守卫，不会双写）
     if (e.code.startsWith('Digit')) {
       const n = Number(e.code.slice(5)) - 1;
-      // 数字键只在快捷栏 5 格内选中（背包面板点击才可越出）
-      if (n >= 0 && n < 5) { this.game.player.inventory.selectSlot(n); this.render(); }
+      // 数字键只在快捷栏格数内选中（HOTBAR_SIZE 与 `ui/hotbar.js` 的 DOM 格数同源；
+      // 越出栏外的槽只能靠面板点击选中）
+      if (n >= 0 && n < HOTBAR_SIZE) { this.game.player.inventory.selectSlot(n); this.render(); }
     }
   }
 

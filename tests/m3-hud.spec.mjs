@@ -28,22 +28,30 @@ test('M3-4：HUD 元素可见（坐标/快捷栏/设置按钮/perf 面板）', a
   });
   expect(biome).toBe('CITY'); // 出生点 = 城市中心（M2-2 语义）
 
-  // 快捷栏：5 格，图标背景已裁剪（atlas background-size 非默认）
+  // 快捷栏：9 格（v2.96），图标背景已裁剪（atlas background-size 非默认）
   const hotbar = await page.evaluate(() => {
     const el = document.getElementById('mc-hotbar');
     const cells = el.querySelectorAll(':scope > div');
     const icons = [...cells].map((c) => c.querySelector('div').style.backgroundSize);
     return { count: cells.length, icons };
   });
-  expect(hotbar.count).toBe(5);
+  expect(hotbar.count).toBe(9);
   for (const ic of hotbar.icons) expect(ic).toMatch(/^\d+px \d+px$/);
 
-  // 数字键切换 hotbar（Player 既有逻辑，UI 同步高亮）
+  // 数字键切换 hotbar（Player 既有逻辑，UI 同步高亮）—— 顺便钉 v2.96 的 9 格上限：
+  // Digit9 必须生效（旧 5 格口径下它越界、选中槽不变），Digit0 必须不产生选中。
   await page.evaluate(() => window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Digit3' })));
   await page.waitForFunction(() => window.__MC_GAME__.player.hotbarIndex === 2, null, { timeout: 5_000 });
   const border = await page.evaluate(() =>
     document.getElementById('mc-hotbar').children[2].style.borderColor);
   expect(border).not.toBe(''); // 选中格边框高亮已应用
+
+  await page.evaluate(() => window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Digit9' })));
+  await page.waitForFunction(() => window.__MC_GAME__.player.hotbarIndex === 8, null, { timeout: 5_000 });
+  expect(await page.evaluate(() =>
+    document.getElementById('mc-hotbar').children[8].style.borderColor)).not.toBe('');
+  await page.evaluate(() => window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Digit0' })));
+  expect(await page.evaluate(() => window.__MC_GAME__.player.hotbarIndex)).toBe(8);
 
   // ⚙ 设置按钮 + perf 面板可见
   await expect(page.locator('#settings-btn')).toBeVisible();
@@ -185,14 +193,26 @@ test('M3-4：新世界（seed 变化 + edits 清空 + 重启读回确定性）',
     const p2 = await ctx.newPage();
     await p2.goto('/?vd=2&seed=777');
     await p2.waitForFunction(READY, null, { timeout: 90_000 });
-    await p2.waitForFunction(() => window.__MC_GAME__.world.columns.size >= 20, null, { timeout: 60_000 });
+    // ⚠️ **采样前必须等 column 数量停止增长**（2026-11-12 实测的 flake 根因）：
+    // 原来只等 `columns.size >= 20` 就读，而 GEN 流仍在灌列 —— 同一 seed 的两次采样实测分别
+    // 停在 `columns: 23` 与 `25`（采样和 13639 vs 14781），`a.sum === b.sum` 必然红。
+    // 等「列数连续 1s 不变」后实测 4/4 次读数逐位相同（都是 25 列 / 14781）。
+    // 这不是放宽断言 —— 断言仍是逐位相等，只是把采样点挪到世界稳定之后。
+    await p2.waitForFunction(() => {
+      const g = window.__MC_GAME__;
+      if (!g?.world) return false;
+      const n = g.world.columns.size;
+      const mark = window.__COL_STABLE__;
+      if (!mark || mark.n !== n) { window.__COL_STABLE__ = { n, since: performance.now() }; return false; }
+      return n >= 20 && performance.now() - mark.since > 1000;
+    }, null, { timeout: 60_000, polling: 100 });
     const fp = await p2.evaluate(() => {
       const g = window.__MC_GAME__;
       let sum = 0;
       for (const [, col] of g.world.columns) {
         for (let i = 0; i < col.blocks.length; i += 997) sum += col.blocks[i];
       }
-      return { seed: g.seed, sum };
+      return { seed: g.seed, sum, columns: g.world.columns.size };
     });
     await ctx.close();
     return fp;
@@ -201,5 +221,7 @@ test('M3-4：新世界（seed 变化 + edits 清空 + 重启读回确定性）',
   const b = await fpOf();
   expect(a.seed).toBe(777);
   expect(b.seed).toBe(777);
+  // 采样覆盖面必须一致（否则 sum 不同就不能归因于「同 seed 世界不同」）
+  expect(a.columns).toBe(b.columns);
   expect(a.sum).toBe(b.sum); // 同 seed 两次启动逐格一致
 });

@@ -1,6 +1,6 @@
 // src/tests/test-inventory.js — M3.1 背包物品模型（设计文档 §4.5.4，v1.16 定稿）
 // 覆盖：Slot/Inventory 数据模型（照搬 mc-lite Slots.js 语义）、BlockRegistry.all() 遍历接口、
-// 物品集合构建（126 排除 4 个功能性方块 + chimney → 121 项；前 5 项顺序冻结 = HOTBAR_ITEMS）、
+// 物品集合构建（126 排除 4 个功能性方块 + chimney → 121 项；前 HOTBAR_SIZE 项顺序冻结 = HOTBAR_ITEMS）、
 // 创造模式无限背包填充（count=1500 占位、不消耗）。
 import { test } from './runner.js';
 import {
@@ -8,7 +8,7 @@ import {
 } from './assert.js';
 import { createRegistry } from '../voxel/block-registry.js';
 import { BLOCKS } from '../voxel/blocks-data.js';
-import { HOTBAR_ITEMS } from '../player/hotbar-items.js';
+import { HOTBAR_ITEMS, HOTBAR_SIZE } from '../player/hotbar-items.js';
 import {
   Slot, Inventory, DEFAULT_INVENTORY_COUNT, NON_PLACEABLE_ITEMS, HIDDEN_FROM_INVENTORY,
   buildItemNames, createCreativeInventory,
@@ -203,23 +203,24 @@ test('buildItemNames: 144 项（154 - 4 功能性 - 6 可放置但不进背包�
   }
 });
 
-test('buildItemNames: 前 5 项 = HOTBAR_ITEMS（快捷栏顺序冻结，§4.5.4）', () => {
+test('buildItemNames: 前 HOTBAR_SIZE 项 = HOTBAR_ITEMS（快捷栏顺序冻结，§4.5.4）', () => {
   const names = buildItemNames(makeRegistry());
-  assertDeepEqual(names.slice(0, 5), ['stone', 'dirt', 'grass', 'sand', 'cobblestone']);
-  assertDeepEqual(names.slice(0, 5), HOTBAR_ITEMS, '与既有快捷栏常量同源');
+  assertEqual(HOTBAR_SIZE, 9, 'v2.96：快捷栏 5 → 9 格（对齐原版 1~9）');
+  assertEqual(HOTBAR_ITEMS.length, HOTBAR_SIZE, '清单长度必须与格数一致（否则尾部格恒空）');
+  assertDeepEqual(names.slice(0, HOTBAR_SIZE), HOTBAR_ITEMS, '与既有快捷栏常量同源');
   // 注册序前 5 项是 water/swamp_water/cloud/… —— 证明本函数不是纯注册序
   assertFalse(names[0] === 'water', '不应让 water 占据快捷栏首格');
 });
 
-test('buildItemNames: 第 6 项起按注册顺序补全且不再重复前 5 项', () => {
+test('buildItemNames: 第 HOTBAR_SIZE+1 项起按注册顺序补全且不再重复前置项', () => {
   const names = buildItemNames(makeRegistry());
-  const rest = names.slice(5);
-  assertEqual(rest.length, 139, '144 - 5');
+  const rest = names.slice(HOTBAR_SIZE);
+  assertEqual(rest.length, 135, '144 - 9');
   const reg = makeRegistry();
   const registered = reg.all().map((e) => e.name)
     .filter((n) => !NON_PLACEABLE_ITEMS.includes(n)
       && !HIDDEN_FROM_INVENTORY.includes(n) && !HOTBAR_ITEMS.includes(n));
-  assertDeepEqual(rest, registered, '其余项 = 注册序（排除功能性方块、chimney 与前 5 项）');
+  assertDeepEqual(rest, registered, '其余项 = 注册序（排除功能性方块、chimney 与前置项）');
 });
 
 test('buildItemNames: 含 mine_cart（mc-lite 背包包含，保留玩法可用性）；不含床方块', () => {
@@ -267,9 +268,11 @@ test('createCreativeInventory: 槽序 = buildItemNames，selectedSlot=0 选中 s
   assertEqual(inv.getSelected().item, 'stone', '放块默认取 stone（与 M3-4 行为一致）');
 });
 
-test('createCreativeInventory: 快捷栏视图 = slots[0..4]（单一权威，无第二份物品状态）', () => {
+test('createCreativeInventory: 快捷栏视图 = slots[0..HOTBAR_SIZE-1]（单一权威，无第二份物品状态）', () => {
   const inv = createCreativeInventory(makeRegistry());
-  assertDeepEqual(inv.slots.slice(0, 5).map((s) => s.item), HOTBAR_ITEMS);
+  assertDeepEqual(inv.slots.slice(0, HOTBAR_SIZE).map((s) => s.item), HOTBAR_ITEMS);
+  // v2.96：后 4 项是用户指定的常用物品，不是注册序的自然延伸（water/cloud 不得占位）
+  assertDeepEqual(HOTBAR_ITEMS.slice(5), ['wood', 'glass_block', 'tnt', 'mine_cart']);
 });
 
 test('createCreativeInventory: 创造模式不消耗——模拟放块 200 次后 count 不变', () => {

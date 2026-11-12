@@ -1,6 +1,6 @@
 // tests/m3-1-inventory.spec.mjs — M3.1 背包（设计文档 §4.5.4，v1.16 定稿）
 // 真实游戏内集成验证（单测用的是 Game 替身，此处走完整 Game/Player/UI 装配）：
-//   ① 物品模型：背包集合数（关系式）、快捷栏 = slots[0..4] 视图（无第二份物品状态）
+//   ① 物品模型：背包集合数（关系式）、快捷栏 = slots[0..8] 视图（无第二份物品状态）
 //   ② Z 键 toggle + 模态栈 + keydown 守卫（背包开着按 W/数字键无效）
 //   ③ 点击第 6 格以外的槽位 → 放块用该方块（世界实际写入 ID 校验）
 //   ④ 模态栈不误清设置面板门控（原可写布尔的竞争根因）
@@ -32,7 +32,7 @@ async function boot(page) {
   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 60_000 });
 }
 
-test('M3.1：物品模型 — 背包集合与 buildItemNames 一致、快捷栏是 slots[0..4] 的视图', async ({ page }) => {
+test('M3.1：物品模型 — 背包集合与 buildItemNames 一致、快捷栏是 slots[0..8] 的视图', async ({ page }) => {
   await boot(page);
   // 排除集合作为参数传入浏览器上下文（page.evaluate 里不能直接访问 Node 侧 import 的标识符）
   const excludedNames = [...NON_PLACEABLE_ITEMS, ...HIDDEN_FROM_INVENTORY];
@@ -48,9 +48,9 @@ test('M3.1：物品模型 — 背包集合与 buildItemNames 一致、快捷栏�
       firstCount: inv.slots[0].count,
       selectedSlot: inv.selectedSlot,
       selectedIsAliasOfHotbarIndex: g.player.hotbarIndex === inv.selectedSlot,
-      // 快捷栏 DOM 是背包前 5 格的视图：图标数 = 5，前 5 槽物品名
+      // 快捷栏 DOM 是背包前 HOTBAR_SIZE 格的视图：图标数 = 9（v2.96），前 9 槽物品名
       hotbarCells: document.getElementById('mc-hotbar').children.length,
-      front5: inv.slots.slice(0, 5).map((s) => s.item),
+      front9: inv.slots.slice(0, 9).map((s) => s.item),
       // 排除集合的每一项都不在物品集合内（集合口径由传入常量驱动，勿在此手写清单）
       excluded: excluded.filter((n) => items.includes(n)),
       // mine_cart 保留（mc-lite 背包包含）；bed_alias_block 已移出背包（规避床渲染问题）
@@ -64,13 +64,14 @@ test('M3.1：物品模型 — 背包集合与 buildItemNames 一致、快捷栏�
   // **两侧独立计算比对**：Node 侧 buildItemNames() 与浏览器侧真实背包装配必须算出同一集合。
   // 这是真断言而非恒等式——两条路径任一处偏离（如浏览器侧漏了排除逻辑）都会失配。
   expect(r.nonEmpty).toBe(EXPECTED_COUNT);
-  expect(r.items).toEqual(EXPECTED_ITEMS); // 顺序也一致（前 5 项冻结 + 其余注册序）
+  expect(r.items).toEqual(EXPECTED_ITEMS); // 顺序也一致（前 9 项冻结 + 其余注册序）
   expect(r.firstCount).toBe(1500);
   expect(r.selectedSlot).toBe(0);
   expect(r.selectedIsAliasOfHotbarIndex).toBe(true);
-  expect(r.hotbarCells).toBe(5);
-  // 前 5 项冻结（§4.5.4：快捷栏观感与既有断言不变，纯注册序会让前 5 格变成 water/cloud）
-  expect(r.front5).toEqual(['stone', 'dirt', 'grass', 'sand', 'cobblestone']);
+  expect(r.hotbarCells).toBe(9);
+  // 前 9 项冻结（§4.5.4 + v2.96：快捷栏观感固定；纯注册序会让第 6~9 格变成 water/swamp_water/cloud/glass_block）
+  expect(r.front9).toEqual(['stone', 'dirt', 'grass', 'sand', 'cobblestone',
+    'wood', 'glass_block', 'tnt', 'mine_cart']);
   expect(r.excluded).toEqual([]);
   expect(r.hasBedAlias).toBe(false); // bed_alias_block 已移出背包（规避床渲染问题）
   expect(r.hasMineCart).toBe(true); // mine_cart 保留（mc-lite 背包包含）
@@ -132,27 +133,28 @@ test('M3.1：Z 键 toggle + 模态栈 + keydown 守卫（背包开着 W 不进 k
   await page.waitForFunction(() => window.__MC_GAME__.uiModal === false, null, { timeout: 5_000 });
 });
 
-test('M3.1：点击第 6 格外的槽位 → 放块用该方块（世界实际写入 ID 校验）', async ({ page }) => {
+test('M3.1：点击第 9 格外的槽位 → 放块用该方块（世界实际写入 ID 校验）', async ({ page }) => {
   await boot(page);
 
-  // 打开背包并点击第 8 个渲染槽（selectedSlot 越出快捷栏 5 格）
+  // 打开背包并点击第 13 个渲染槽（index 12 → selectedSlot 越出快捷栏 9 格）
   await page.evaluate(() => window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyZ' })));
   await page.waitForFunction(() => document.getElementById('inventory-modal').style.display === 'flex', null, { timeout: 5_000 });
   const picked = await page.evaluate(() => {
     const slots = document.querySelectorAll('#inventory-grid .mc-slot');
-    const target = slots[7];
+    const target = slots[12];
     const idx = Number(target.dataset.index);
     target.click();
     return { idx, item: window.__MC_GAME__.player.inventory.slots[idx].item };
   });
-  expect(picked.idx).toBe(7);
-  expect(await page.evaluate(() => window.__MC_GAME__.player.inventory.selectedSlot)).toBe(7);
-  // 快捷栏 5 格无高亮（selectedSlot > 4，mc-lite 同行为）。
+  expect(picked.idx).toBe(12);
+  expect(await page.evaluate(() => window.__MC_GAME__.player.inventory.selectedSlot)).toBe(12);
+  // 快捷栏 9 格无高亮（selectedSlot ≥ 9，mc-lite 同行为）。
   // ⚠️ **必须等帧、不能点完立即读**（v2.54 修 flaky）：`selectedSlot` 是点击同步写入的，
   // 但快捷栏高亮由帧循环里的 `hotbar.update()` 刷新（`game.js`，且它 `sel === lastSelected`
-  // 时早退）—— 点击那一帧之前 cell 0 仍是 `#fff`。单独跑时下一帧赶得上、批量回归负载下
-  // 帧间隔变长，同步读会抢在刷新之前（实测 2026-11-05：批量连跑概率性读到 `#fff` → 红）。
-  // 改用条件轮询（不是 `waitForTimeout` 硬等）：超时即真失败，语义仍是「5 格无高亮」。
+  // 时早退）—— 点击那一帧之前 cell 0 仍是白色。单独跑时下一帧赶得上、批量回归负载下
+  // 帧间隔变长，同步读会抢在刷新之前（实测 2026-11-05：批量连跑概率性读到白色 → 红）。
+  // 改用条件轮询（不是 `waitForTimeout` 硬等）：超时即真失败，语义仍是「无高亮」。
+  // v2.96：选中色常量仍是 `#fff`，未选中格是 `#373737`（原版箱子描边）。
   await page.waitForFunction(() => {
     const borders = [...document.getElementById('mc-hotbar').children].map((c) => c.style.borderColor);
     return borders.every((b) => b !== 'rgb(255, 255, 255)' && b !== '#fff');

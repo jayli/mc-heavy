@@ -1075,7 +1075,7 @@ export class Game {
     // 两套尺寸档：hotbar=40px / inventory=32px —— 按显示尺寸烘焙，运行时零缩放。
     // 取代此前的 atlasTiles/atlasSize/tileOfName/atlasUrl 四个参数 + 运行时裁剪数学。
     const iconManifest = await loadIconManifest();
-    // M3.1：快捷栏是背包前 5 格的视图（§4.5.4），内容/高亮都读 inventory，
+    // M3.1：快捷栏是背包前 HOTBAR_SIZE 格的视图（§4.5.4，v2.96 起 9 格），内容/高亮都读 inventory，
     // 不再有第二份物品状态
     this._hotbar = createHotbar(this._hudRoot, {
       inventory: this.player.inventory,
