@@ -44,13 +44,15 @@ async function boot(page) {
 }
 
 /**
- * 在玩家附近搭一个 TNT 测试场：一片 stone 平台（y = by−1）+ 中心一格 tnt（y = by）。
+ * 在玩家附近搭一个 TNT 测试场：一片 stone 平台（y = by−1）+ 按 tntOffsets 放 TNT。
+ *
+ * `tntOffsets` 的每项是 **[dx, dy, dz]**（v2.97 前是两元 [dx, dz]，后者会把 dz 当 dy 用）。
  *
  * ⚠️ 平台必须铺在 **by−1** 而不是 by：`ZombieService.spawn()` 的门控是「脚格与头格必须是
  * 空气 + 脚下必须 solid」（`zombie-system.js:362-365`）。铺在 by 会占住丧尸脚格 →
  * `spawn()` 返回 null → 断言恒真（testing-policy §2.7：无效盲区）。
  */
-async function setupField(page, { tntOffsets = [[0, 0]] } = {}) {
+async function setupField(page, { tntOffsets = [[0, 0, 0]] } = {}) {
   return page.evaluate((offsets) => {
     const g = window.__MC_GAME__;
     const p = g.player.physics.pos;
@@ -69,8 +71,8 @@ async function setupField(page, { tntOffsets = [[0, 0]] } = {}) {
         g.editor.setBlock({ x: bx + dx, y: by + 1, z: bz + dz, id: 0 });
       }
     }
-    for (const [ox, oz] of offsets) {
-      g.editor.setBlock({ x: bx + ox, y: by, z: bz + oz, id: tntId });
+    for (const [ox, oy, oz] of offsets) {
+      g.editor.setBlock({ x: bx + ox, y: by + oy, z: bz + oz, id: tntId });
     }
     // 半径内一只（距中心约 2.04 格）+ 半径外一只（距中心约 6 格）
     const inner = g.zombies.spawn([bx + 2.5, by, bz + 0.5], { source: 'tnt-spec' });
@@ -137,7 +139,7 @@ test('连锁 TNT 依次引爆，且同格不重复引爆（去重生效）', asy
   test.setTimeout(120_000);
   await boot(page);
   // 两格相距 2 的 tnt → 引爆第一格 → pending 队列 1 项
-  const setup = await setupField(page, { tntOffsets: [[0, 0], [2, 0]] });
+  const setup = await setupField(page, { tntOffsets: [[0, 0, 0], [2, 0, 0]] });
   const ignited = await page.evaluate((c) => window.__MC_GAME__.explodeTnt(c.bx, c.by, c.bz), setup);
   expect(ignited).toBe(true);
   const rightAfter = await page.evaluate(() => window.__MC_GAME__.tntChainDebugState());
@@ -169,7 +171,7 @@ test('破坏开关开启时，爆炸事务不删掉待爆的连锁 TNT（mc-lite
   test.setTimeout(120_000);
   await boot(page);
   // 两格相距 1：既在 3×3×3 破坏范围内，也在 5×5×5 连锁范围内 → 破坏事务会碰到待爆 TNT
-  const setup = await setupField(page, { tntOffsets: [[0, 0], [1, 0]] });
+  const setup = await setupField(page, { tntOffsets: [[0, 0, 0], [1, 0, 0]] });
   await page.evaluate(() => window.__MC_GAME__.setTntBlockDamage(true));
   await page.evaluate((c) => window.__MC_GAME__.explodeTnt(c.bx, c.by, c.bz), setup);
   // 待爆的那格**仍在**（若没被过滤，它会被自己的破坏事务删掉 → 连锁静默丢失）
@@ -187,6 +189,110 @@ test('破坏开关开启时，爆炸事务不删掉待爆的连锁 TNT（mc-lite
   const neighborGone = await page.evaluate((c) =>
     window.__MC_GAME__.world.getBlockId(c.bx + 1, c.by - 1, c.bz) === 0, setup);
   expect(neighborGone).toBe(true);
+});
+
+test('v2.97 回归：TNT 团组连锁后每格都消失，且不留去重键（用户报告「有些 TNT 没消失」）', async ({ page }) => {
+  test.setTimeout(120_000);
+  await boot(page);
+  // 2×2×2 八连通团组：每一格都在别人的 5×5×5 里，也是首爆 3×3×3 的破坏对象。
+  // 这是链式重复入队与「待爆 TNT 被自身破坏事务删掉」两件事同时压到的形态。
+  const offsets = [];
+  for (let ox = 0; ox < 2; ox++) {
+    for (let oy = 0; oy < 2; oy++) {
+      for (let oz = 0; oz < 2; oz++) offsets.push([ox, oy, oz]);
+    }
+  }
+  const setup = await setupField(page, { tntOffsets: offsets });
+  // 前置自检：八格必须真的都放上了 TNT（放不上 = 断言无效盲区）
+  const placed = await page.evaluate(({ c, off }) => {
+    const g = window.__MC_GAME__;
+    const tntId = g.registry.idOf('tnt');
+    return off.filter(([ox, oy, oz]) =>
+      g.world.getBlockId(c.bx + ox, c.by + oy, c.bz + oz) === tntId).length;
+  }, { c: setup, off: offsets });
+  expect(placed).toBe(offsets.length);
+
+  // 走玩家真实入口（左键命中 TNT → 引爆），不用测试 API 直接点火
+  const ignited = await page.evaluate((c) => {
+    const g = window.__MC_GAME__;
+    g.player.target = { blockPos: [c.bx, c.by, c.bz], prevPos: [c.bx, c.by + 1, c.bz], normal: [0, 1, 0], dist: 2 };
+    g.player.digBlock();
+    return g.tntChainDebugState();
+  }, setup);
+  expect(ignited.exploded, '左键命中 TNT 必须引爆').toBe(1);
+
+  await page.waitForFunction(() => window.__MC_GAME__.tntChainDebugState().pending === 0,
+    null, { timeout: 10_000, polling: 100 });
+
+  const after = await page.evaluate(({ c, off }) => {
+    const g = window.__MC_GAME__;
+    const tntId = g.registry.idOf('tnt');
+    return {
+      remain: off.filter(([ox, oy, oz]) =>
+        g.world.getBlockId(c.bx + ox, c.by + oy, c.bz + oz) !== 0).length,
+      tnt: off.filter(([ox, oy, oz]) =>
+        g.world.getBlockId(c.bx + ox, c.by + oy, c.bz + oz) === tntId).length,
+      ...g.tntChainDebugState(),
+    };
+  }, { c: setup, off: offsets });
+  // 核心断言：八格必须全部消失（旧实现下会残留 TNT 格）
+  expect(after.tnt, '连锁后不得有任何 TNT 格残留').toBe(0);
+  // exploded 必须是 8 而不是更多 —— >8 即「同一格被炸两次」（幽灵爆炸）
+  expect(after.exploded, '八格 TNT 恰好 8 次爆炸（多出即重复引爆）').toBe(8);
+  // 队列排空且不再增长（旧实现会不断重复入队）
+  expect(after.pending).toBe(0);
+});
+
+test('v2.97 回归：同一弹坑重建 TNT 再引爆仍能炸掉（去重键不泄漏）', async ({ page }) => {
+  test.setTimeout(120_000);
+  await boot(page);
+  const offsets = [[0, 0, 0], [1, 0, 0], [2, 0, 0]];
+  const setup = await setupField(page, { tntOffsets: offsets });
+  const ignite = () => page.evaluate((c) => {
+    const g = window.__MC_GAME__;
+    g.player.target = { blockPos: [c.bx, c.by, c.bz], prevPos: [c.bx, c.by + 1, c.bz], normal: [0, 1, 0], dist: 2 };
+    g.player.digBlock();
+    return g.tntChainDebugState();
+  }, setup);
+  const cellIds = () => page.evaluate(({ c, off }) => {
+    const g = window.__MC_GAME__;
+    const tntId = g.registry.idOf('tnt');
+    return {
+      ids: off.map(([ox, oy, oz]) => g.world.getBlockId(c.bx + ox, c.by + oy, c.bz + oz)),
+      tntRemain: off.filter(([ox, oy, oz]) =>
+        g.world.getBlockId(c.bx + ox, c.by + oy, c.bz + oz) === tntId).length,
+      ...g.tntChainDebugState(),
+    };
+  }, { c: setup, off: offsets });
+  const settleChain = () => page.waitForFunction(
+    () => window.__MC_GAME__.tntChainDebugState().pending === 0, null, { timeout: 10_000, polling: 100 });
+
+  // 第一轮
+  await ignite();
+  await settleChain();
+  const round1 = await cellIds();
+  expect(round1.tntRemain, '第一轮三连 TNT 必须全部消失').toBe(0);
+  expect(round1.exploded, '三连 = 3 次爆炸（多出即幽灵爆炸）').toBe(3);
+
+  // 第二轮：玩家会在同一弹坑里重新放 TNT 继续玩 —— 旧实现下第三格会静默拒爆、永远留在原地。
+  // 放块走 `editor.setBlock`（= `WorldEditor` 唯一写入口，玩家右键的 `placeBlock()` 也落到它）：
+  // 本用例要验的是「引爆链路不因旧键而拒爆」，放块本身已有专项用例覆盖。
+  const round2Ignite = await page.evaluate(({ c, off }) => {
+    const g = window.__MC_GAME__;
+    const tntId = g.registry.idOf('tnt');
+    for (const [ox, oy, oz] of off) {
+      const x = c.bx + ox, y = c.by + oy, z = c.bz + oz;
+      g.editor.setBlock({ x, y, z, id: tntId });
+    }
+    g.player.target = { blockPos: [c.bx, c.by, c.bz], prevPos: [c.bx, c.by + 1, c.bz], normal: [0, 1, 0], dist: 2 };
+    g.player.digBlock();
+    return g.tntChainDebugState();
+  }, { c: setup, off: offsets });
+  expect(round2Ignite.exploded, '第二轮的首格必须能引爆（旧实现这里返回 false 静默不动）').toBe(4);
+  await settleChain();
+  const round2 = await cellIds();
+  expect(round2.tntRemain, '第二轮三连也必须全部消失').toBe(0);
+  expect(round2.exploded, '第二轮总数 6（3 + 3）').toBe(6);
 });
 
 test('背包选中路径：从背包选 tnt 右键放块，再左键挖块引爆（不是挖掉）', async ({ page }) => {

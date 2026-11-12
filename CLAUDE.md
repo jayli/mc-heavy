@@ -366,6 +366,14 @@ scheduler/physics）再加 `npm run bench -- --check`。计划里标「冻结」
   火球遮挡只看 `solidTable`（玻璃挡得住）。混用任一侧都会撕裂。
 - 火球爆炸走 `_applyExplosion`，**不走 `explodeTnt`** —— 后者的按格去重集合会被污染，导致之后同格
   放的 TNT 静默不爆。
+- **`_ignitingTnt` 的键必须在 `explodeTnt` 出口无条件释放**（v2.97）：只在该格「确实是 tnt」时删
+  会让连锁幽灵项 / 枪击落空 / column 未加载的分支把键永久留下 —— 该格之后放的 TNT 被
+  `has(key)` 静默拒爆（方块永远炸不掉、也永远不消失，用户报告的正是这条）。
+  另外连锁入队必须按格去重，且去重不能只扫 `_tntChain`：`_updateTntChain` 逐项引爆前把本帧到期的
+  项**整批**抽走 ⇒ 同批两项互相看不见。权威集合是 `_tntScheduled`（「已排期未引爆」），
+  `explodeTnt` 若命中已排期格要撤掉它的排期项（否则多一次空爆炸）。
+  ⚠️ **不要用「到期时先验证该格仍是 TNT」来替代去重** —— 那是 mc-lite 刻意没有的偏离，且会顺带变成
+  「玩家能在延迟窗口内拆引信」这个没被要求的玩法变更。
 - 所有玩法服务在 `EntityManager.update` 之外改 `state.position` 时，必须显式 `reindexColumn(id)`，
   否则实体停在旧 column 索引上不自愈。
 - 击退（剑砍中）的**权威位移必须瞬时**，观感滞后只许落在渲染位置（`render/knockback-ease.js`，

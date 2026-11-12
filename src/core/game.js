@@ -835,6 +835,16 @@ export class Game {
     this._ignitingTnt = new Set();
     /** 连锁引爆队列：Array<{x,y,z,dueAt}>，dueAt 是 `performance.now()` 基准（禁止 Date.now()） */
     this._tntChain = [];
+    /**
+     * 「已排期、尚未引爆」的格键集合（v2.97）。
+     * ⚠️ **不能合并进 `_ignitingTnt`**：后者的语义是「引爆进行中」，在 `explodeTnt` 出口就
+     * 无条件释放（否则键残留 → 该格以后永远炸不掉）。而排期项要活到 500~1100ms 后真正引爆。
+     * ⚠️ **也不能用「扫 `_tntChain` 查重」代替**：`_updateTntChain` 在逐项引爆前把本帧到期的项
+     * **整批**从队列里抽走 ⇒ 同批两项互相看不见，去重失效（v2.97 实测：三连仍重复入队，
+     * 多出一次幽灵爆炸 —— `exploded` 计数 4 而非 3）。
+     * @type {Set<string>}
+     */
+    this._tntScheduled = new Set();
     /** 爆炸计数（只读测试钩子） */
     this._tntExploded = 0;
     /** 爆炸球体特效池（独立 InstancedMesh；无活跃实例时 visible=false） */
@@ -2589,6 +2599,18 @@ export class Game {
    * 被引爆的 TNT 方块永不消失 → 连锁链永不终止（这是 mc-lite 的链能终止的原因：
    * `:620` 先 removeBlock 再 explode）。
    *
+   * ⚠️ **去重键的生命周期 = 一次引爆的进行中**（v2.97 修，用户报告「相邻 TNT 连锁后有些方块
+   * 没消失、再点也没反应」）。键在**每次调用的出口无条件释放**，**包括中心格已经不含 TNT 的
+   * 早退路径**（连锁幽灵项 / 枪击命中的格已被别处删掉 / column 暂时卸载导致写不进世界）。
+   * 曾经的写法把 `delete(key)` 放在 `if (中心格是 tnt)` 之内 ⇒ 中心格是空气时键永久残留 ⇒
+   * ① 该格**未来**放的 TNT 被 `has(key)` 静默拒绝引爆（方块永远炸不掉也永远不消失）；
+   * ② 残留键参与 `_applyExplosion` 的 `pending` 过滤，把真 TNT 排除出破坏事务。
+   *
+   * ⚠️ **不在此加「中心格必须仍是 TNT 才引爆」的门控**（v2.97 曾试过、已回退）：① mc-lite 的
+   * 到期回调也不重新校验（`PlayerInteraction.js:619-623`），本仓 `_updateTntChain` 的注释
+   * 明确禁止这个偏离；② 它会顺带把语义改成「玩家可以在 500~1100ms 窗口内拆掉引信」——
+   * 那是没被要求的玩法变更。**重复引爆靠第 ⑤ 步的入队去重解决**，不靠到期时重验。
+   *
    * @param {number} x @param {number} y @param {number} z
    * @returns {boolean} false = 去重命中（已引爆过），零世界写入
    */
@@ -2597,14 +2619,23 @@ export class Game {
     const key = `${Math.floor(x)},${Math.floor(y)},${Math.floor(z)}`;
     if (this._ignitingTnt.has(key)) return false;
     this._ignitingTnt.add(key);
+    // ①b 这一格若已在连锁队列里排期（玩家在 500~1100ms 窗口内抢先引爆）：撤掉排期项。
+    //     不撤的话它到期时会再炸一次「空爆炸」—— 方块一格不少，却多一发音效/伤害/特效
+    //     （v2.97 实测：三连 TNT 的 exploded 计数为 4 而非 3，就是重项造成的）。
+    if (this._tntScheduled.delete(key)) {
+      this._tntChain = this._tntChain.filter((t) => `${t.x},${t.y},${t.z}` !== key);
+    }
 
     const result = computeExplosion({ world: this.world, registry: this.registry, center: [x, y, z] });
     const tntId = this.registry.idOf('tnt');
     // ③ 移除引爆格自身（**不受破坏开关影响** —— 见上方 ⚠️）
     if (this.world.getBlockId(result.center[0], result.center[1], result.center[2]) === tntId) {
       this.editor.setBlock({ x: result.center[0], y: result.center[1], z: result.center[2], id: 0 });
-      this._ignitingTnt.delete(key);   // mc-lite `:687` 同口径：移除后释放去重键（该格已非 tnt）
     }
+    // ③b 键存活期到此结束 —— **无条件释放**（mc-lite `:687` 只在该格确实是 tnt 时删，
+    //     但那正是「键永久残留」的来源，见开头 ⚠️）。中心格非 TNT 时键也必须走，
+    //     否则该格之后再也炸不掉。
+    this._ignitingTnt.delete(key);
     this._applyExplosion(result);
     return true;
   }
@@ -2642,8 +2673,20 @@ export class Game {
     }
     // ⑤ 入队连锁。**performance 基准 —— 禁止 Date.now()**（Global Constraints：
     //    两者相差约 17 亿毫秒，混用会让到期判定恒真 → 连锁立即全炸）
+    //
+    // ⚠️ **同格必须去重**（v2.97 修）：`computeExplosion` 只在**引爆的那一帧**枚举 5×5×5。
+    //    首爆把 B、C 一起入队后，B 先炸时又把仍是 TNT 的 C 搜进了 chain ⇒ 队列里 C 有两项。
+    //    C 被 B 那一项引爆后，**它自己的那一项到期时中心格已是空气** → 一次幽灵爆炸
+    //    （计数 +1、音效/伤害/特效各多一次），且那一步的早退路径当年还泄了去重键。
+    //    去重集合在 ③ 已释放（键生命周期只覆盖「进行中」），所以这里必须自己按格去重 ——
+    //    判据是 `_tntScheduled`（「已排期、尚未引爆」的格集合），**不是 `_tntChain`**：
+    //    `_updateTntChain` 在逐项引爆前把本帧到期的项**整批**从队列里抽走 ⇒ 只查
+    //    `_tntChain` 时同批的两个项互相看不见，去重会失效（v2.97 实测：三连仍重复入队）。
     const now = performance.now();
     for (const t of result.chain) {
+      const chainKey = `${t.x},${t.y},${t.z}`;
+      if (this._tntScheduled.has(chainKey)) continue;
+      this._tntScheduled.add(chainKey);
       this._tntChain.push({ x: t.x, y: t.y, z: t.z, dueAt: now + t.delayMs });
     }
     // ⑥ 半径 4 格内丧尸受 50 伤害
@@ -2868,7 +2911,11 @@ export class Game {
     const due = this._tntChain.filter((t) => nowMs >= t.dueAt);
     if (due.length === 0) return;
     this._tntChain = this._tntChain.filter((t) => nowMs < t.dueAt);
-    for (const t of due) this.explodeTnt(t.x, t.y, t.z);
+    for (const t of due) {
+      // 本批已从队列抽走 —— 同步释放排期键，该格以后才能重新排期（v2.97）
+      this._tntScheduled.delete(`${t.x},${t.y},${t.z}`);
+      this.explodeTnt(t.x, t.y, t.z);
+    }
   }
 
   /** 设置 TNT 是否破坏地形（默认 false）。@returns {boolean} */
@@ -2877,8 +2924,10 @@ export class Game {
     return this.canTntDestroyBlocks;
   }
 
-  /** 只读连锁队列状态（测试钩子）。@returns {{pending: number, exploded: number}} */
-  tntChainDebugState() { return { pending: this._tntChain.length, exploded: this._tntExploded }; }
+  /** 只读连锁队列状态（测试钩子）。@returns {{pending: number, exploded: number, scheduled: number}} */
+  tntChainDebugState() {
+    return { pending: this._tntChain.length, exploded: this._tntExploded, scheduled: this._tntScheduled.size };
+  }
 
   // ---- M6 调试键（X 键生成丧尸，对齐 mc-lite `Game.js:155-202`）----
 
