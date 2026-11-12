@@ -2355,10 +2355,24 @@ export class Game {
     if (entity.type === 'zombie') return this.zombies.knockback(id, dx, dz);
     if (entity.type === IGNIS_TYPE) return this.ignises ? this.ignises.knockback(id, dx, dz) : false;
     if (entity.type === DRAGON_TYPE) return this.dragons ? this.dragons.knockback(id, dx, dz) : false;
-    // ⚠️ **守卫完全免疫击退**：原版 `KNOCKBACK_RESISTANCE = 1.0`
-    //（`Ender_Guardian_Entity.java` 属性表）—— 与焰魔同值，但用户裁定守卫「不动如山」
-    // 更彻底：它是地牢里的固定 Boss，被剑砍不应被推动。故直接返回 false（不走 service）。
-    if (entity.type === GUARDIAN_TYPE) return false;
+    /**
+     * 末影守卫：**与焰魔同口径**（用户 2026-11-11 裁定）。
+     *
+     * ⚠️⚠️ 这里曾经是硬早退 `return false`（v2.91 按原版 `KNOCKBACK_RESISTANCE = 1.0`
+     * 判「完全免疫击退」）。已撤销 —— 那条判断把**两件不同的事**混成了一件：
+     *
+     * · **不动如山**（`guardian-boss-agent.js` 的 `_ringIntent` 死区站定）：玩家贴身推它时
+     *   它**不主动退让**。这是每帧的走位策略，与击退无关，本次未碰。
+     * · **受击后退**（本方法）：挨了一剑没死就往后退一小步。这是一次性位移反馈 ——
+     *   用户要的「回退动作」正是这一条（焰魔 v2.65 的同口径实现）。
+     *
+     * 原版 `KNOCKBACK_RESISTANCE = 1.0` 指的是**击退附魔/爆炸的位移**（本仓无该机制），
+     * 而不是「被剑砍有无受击反馈」—— 后者在焰魔那边已经定为「一律后退一小步」。
+     *
+     * 服务层 `GuardianService.knockback()` 与渲染层 `GuardianRenderer.noteKnockback()`
+     * 早就齐备（v2.91 装配时就接了 `onKnockback` 钩子），只有这一行挡着。
+     */
+    if (entity.type === GUARDIAN_TYPE) return this.guardians ? this.guardians.knockback(id, dx, dz) : false;
     return false;
   }
 

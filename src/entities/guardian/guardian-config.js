@@ -20,8 +20,10 @@
 // | 站定环 / 脱困 / 感知间隔 | 本仓标定（沿用焰魔的同名语义，体形相关项另标） |
 //
 // ⚠️ **原版 `maxUpStep 1.75F` 刻意不取**，见 `GUARDIAN_AI.maxStep` 的注释。
-// ⚠️ **原版 `ARMOR 20` / `KNOCKBACK_RESISTANCE 1.0` 不引入**：本仓无护甲减伤系统，
-// 击退抵抗由「只扣血不碰玩家物理」的用户裁定覆盖（spec §1）。
+// ⚠️ **原版 `ARMOR 20` / `KNOCKBACK_RESISTANCE 1.0` 不引入**：本仓无护甲减伤系统。
+// ⚠️ **后者的另一层语义（v2.95 已裁定）**：原版该属性只指击退附魔/爆炸位移（本仓无此机制），
+// **不包含**「被剑砍有无受击反馈」—— 守卫被砍会后退一小步（与焰魔同口径，走 `GuardianService.knockback`）。
+// 它与「不动如山」（`_ringIntent` 死区站定：玩家贴身推它时不主动退让）是两件事，不矛盾。
 
 /** 实体 type（`EntityManager` 的注册键，也是 id 前缀） */
 export const GUARDIAN_TYPE = 'guardian';

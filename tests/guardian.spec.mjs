@@ -564,4 +564,186 @@ test.describe('末影守卫 E2E', () => {
     expect(withStats.purpleA, '守卫在场时紫像素应多于无守卫（眼睛/虚空石主题色）')
       .toBeGreaterThan(withoutStats.purpleA);
   });
+
+  /**
+   * 受击后退（用户 2026-11-11：「末影守卫没有被砍到击中时的回退动作，焰魔有这个动作」）。
+   *
+   * ⚠️ **焰魔那个「后退」不是动画帧，是位置位移 + 渲染层缓动**：
+   * 剑命中 → `Game.knockbackEntity()` → service `knockback()` 瞬时改权威 `state.position`
+   * → 注入钩子 `onKnockback` → 渲染器 `noteKnockback()` → 渲染位置滞后 ~0.2s ease-out 追平。
+   * 守卫的 `GuardianService.knockback` / `GuardianRenderer.noteKnockback` 早已齐备，
+   * 唯一缺的是 `knockbackEntity` 里对守卫的硬早退（v2.91 判「完全免疫击退」）。
+   *
+   * ⚠️ **与「不动如山」的区分**（别把这两条混成一条）：
+   *   · 不动如山 = 玩家贴身推它时**不主动退让**（每帧的走位策略，`_ringIntent` 死区站定）；
+   *   · 本用例 = 被砍一刀的**一次性受击反馈**（焰魔 v2.65 同口径）。
+   *
+   * ⚠️ **必须同步读**（同焰魔/飞龙用例的理由）：击退是同步写入，让出一帧就会把 0.9 格
+   * 淹没在守卫自己的 `chaseSpeed` 5.4 位移里。而**渲染补间**必须隔 50ms 再读
+   *（偏移在下一次 `_syncOne` 才写进矩阵，同拍读两侧都是 0 ⇒ 无判别力）。
+   */
+  test('受击后退：剑砍中守卫 → 扣血 + 沿背离玩家方向后退 + 渲染位置滞后补间', async ({ page }) => {
+    test.setTimeout(300_000);
+    await page.goto(`/?seed=${SEED}`);
+    await waitWorldReady(page);
+    const a = await citadelAnchor(page);
+    expect(a).not.toBeNull();
+    await putPlayer(page, a.wx + 0.5, a.floorY + 1, a.wz + 0.5);
+    await waitColumn(page, a.wx + a.dx, a.wz + a.dz);
+    await pressB(page);
+    await page.waitForFunction(
+      () => window.__MC_GAME__.guardians.activeEntities()[0]?.state.onGround === true,
+      null, { timeout: 30_000 });
+
+    // ⚠️ **先选剑、等模型，再读基线**（同焰魔用例）：模型加载期间守卫会自己走动，
+    // 拿选武器之前的位置当基线会把 AI 位移混进判据。
+    const result = await page.evaluate(async () => {
+      const g = window.__MC_GAME__;
+      await g.selectWeapon('sword');
+      await new Promise((r) => setTimeout(r, 600));
+      const e = g.guardians.activeEntities()[0];
+      if (!e) return { summoned: false };
+      const id = e.id;
+      const [gx, gy, gz] = g.entities.get(id).state.position;
+      // 玩家站到守卫正前方 2 格、同高（剑射程 3 内）
+      g.player.spawn(gx, gy + 1, gz - 2);
+      await new Promise((r) => setTimeout(r, 500));
+      // 瞄准守卫身体中心（脚底 + 1.6）
+      const now = g.entities.get(id).state;
+      const [nx, ny, nz] = now.position;
+      const cam = g.camera.position.toArray();
+      g.player.setTestAim([nx - cam[0], ny + 1.6 - cam[1], nz - cam[2]]);
+      const before = g.entities.get(id).state;
+      const beforeHealth = before.health;
+      const beforeFlash = before.flashedUntil;
+      const firePos = [...before.position];
+      const px = g.player.physics.pos.x;
+      const pz = g.player.physics.pos.z;
+      const idx = g.guardianRenderer._byId.get(id);
+      const readGap = () => {
+        const inst = g.guardianRenderer.instances[idx];
+        const st = g.entities.get(id).state;
+        return Math.hypot(
+          inst.pivot.position.x - st.position[0],
+          inst.pivot.position.z - st.position[2],
+        );
+      };
+      // ⚠️ **基准必须在挥砍之前读**：`fireWeaponOnce()` 同步触发 `noteKnockback()`，
+      // 偏移当场登记 0.9 格 ⇒ 砍后再当「基准」会把击退本身量成 0.9。
+      const gapBefore = idx === undefined ? -1 : readGap();
+      const effects = g.fireWeaponOnce();
+      // 同步读权威位置（让出帧就会被 Agent 自己的移动污染）
+      const after = g.entities.get(id).state;
+      const physAfter = [...after.position];
+      await new Promise((r) => setTimeout(r, 50));
+      const gapMid = idx === undefined ? -1 : readGap();
+      await new Promise((r) => setTimeout(r, 600));
+      const gapSettled = idx === undefined ? -1 : readGap();
+      return {
+        summoned: true,
+        beforeHealth,
+        afterHealth: after.health,
+        beforeFlash,
+        afterFlash: after.flashedUntil,
+        effectType: effects[0]?.type ?? null,
+        firePos,
+        physAfter,
+        playerPos: [px, pz],
+        inPool: idx !== undefined,
+        gapBefore, gapMid, gapSettled,
+      };
+    });
+
+    expect(result.summoned, '守卫必须被召出').toBe(true);
+    expect(result.effectType, '这一刀必须砍中（melee-hit，不是挥空）').toBe('melee-hit');
+    expect(result.afterHealth, '剑砍中守卫必须扣血 50').toBe(result.beforeHealth - 50);
+    expect(result.afterFlash, '命中必须置红闪').toBeGreaterThan(result.beforeFlash);
+
+    // ① 权威位置：沿**背离玩家**的方向后退（守卫 AI 自己也在动 ⇒ 用距离判据而不是纯位移）
+    const [px, pz] = result.playerPos;
+    const distBefore = Math.hypot(result.firePos[0] - px, result.firePos[2] - pz);
+    const distAfter = Math.hypot(result.physAfter[0] - px, result.physAfter[2] - pz);
+    expect(distAfter, `击退必须使守卫远离玩家（${distBefore.toFixed(3)} → ${distAfter.toFixed(3)}）`)
+      .toBeGreaterThan(distBefore + 0.5);
+
+    // ② 渲染补间：中间态滞后、末态追平（同时钉上下界，防「瞬移」与「永久错位」）
+    expect(result.inPool, '守卫应在渲染池里（否则补间无从测）').toBe(true);
+    expect(result.gapBefore, '击退前渲染位置应与物理位置重合').toBeLessThan(0.05);
+    expect(result.gapMid,
+      `击退后 ~50ms 渲染位置必须滞后于物理位置（实测 gap=${result.gapMid.toFixed(3)}，"瞬移"缺陷下恒为 0）`)
+      .toBeGreaterThan(0.15);
+    expect(result.gapSettled,
+      `0.65s 后渲染位置应已追平物理位置（差 ${result.gapSettled.toFixed(3)}）`)
+      .toBeLessThan(0.06);
+  });
+
+  /**
+   * 上一条的**真负向锚点**：拆掉服务层的击退接线 → 守卫不再后退，而血量照掉。
+   *
+   * ⚠️ 只拆 `knockback` 一个注入项（`raycast`/`damage`/`isHittable` 全留），
+   * 故两侧只差一个变量。若上一条的「距离变大」其实来自守卫自己的 AI 追击，
+   * 这条会红 —— 只有它能拆穿那种假阳性。
+   */
+  test('负向对照：拆掉 knockback 注入 → 守卫不后退（血量仍掉，证明上一条不是 AI 位移的假阳性）', async ({ page }) => {
+    test.setTimeout(300_000);
+    await page.goto(`/?seed=${SEED}`);
+    await waitWorldReady(page);
+    const a = await citadelAnchor(page);
+    expect(a).not.toBeNull();
+    await putPlayer(page, a.wx + 0.5, a.floorY + 1, a.wz + 0.5);
+    await waitColumn(page, a.wx + a.dx, a.wz + a.dz);
+    await pressB(page);
+    await page.waitForFunction(
+      () => window.__MC_GAME__.guardians.activeEntities()[0]?.state.onGround === true,
+      null, { timeout: 30_000 });
+
+    const result = await page.evaluate(async () => {
+      const g = window.__MC_GAME__;
+      await g.selectWeapon('sword');
+      await new Promise((r) => setTimeout(r, 600));
+      const e = g.guardians.activeEntities()[0];
+      if (!e) return { summoned: false };
+      const id = e.id;
+      const [gx, gy, gz] = g.entities.get(id).state.position;
+      g.player.spawn(gx, gy + 1, gz - 2);
+      await new Promise((r) => setTimeout(r, 500));
+      // 拆掉击退接线（保留其余三项）
+      const q = g.player.weaponController.entityQuery;
+      g.player.weaponController.setEntityQuery({
+        raycast: q.raycast, damage: q.damage, isHittable: q.isHittable,
+      });
+      const now = g.entities.get(id).state;
+      const [nx, ny, nz] = now.position;
+      const cam = g.camera.position.toArray();
+      g.player.setTestAim([nx - cam[0], ny + 1.6 - cam[1], nz - cam[2]]);
+      const before = g.entities.get(id).state;
+      const beforeHealth = before.health;
+      const firePos = [...before.position];
+      const px = g.player.physics.pos.x;
+      const pz = g.player.physics.pos.z;
+      const effects = g.fireWeaponOnce();
+      const after = g.entities.get(id).state;
+      return {
+        summoned: true,
+        beforeHealth,
+        afterHealth: after.health,
+        effectType: effects[0]?.type ?? null,
+        firePos,
+        afterPos: [...after.position],
+        playerPos: [px, pz],
+        knockbackWired: typeof g.player.weaponController.entityQuery.knockback === 'function',
+      };
+    });
+
+    expect(result.summoned, '守卫必须被召出').toBe(true);
+    expect(result.knockbackWired, '前提：击退注入必须真的被拆掉').toBe(false);
+    expect(result.effectType, '破坏接线后这一刀仍应命中').toBe('melee-hit');
+    expect(result.afterHealth, '拆掉击退不得影响伤害').toBe(result.beforeHealth - 50);
+    const [px, pz] = result.playerPos;
+    const distBefore = Math.hypot(result.firePos[0] - px, result.firePos[2] - pz);
+    const distAfter = Math.hypot(result.afterPos[0] - px, result.afterPos[2] - pz);
+    // 无击退 ⇒ 距离只能由守卫自己的 AI 改变；砍的当帧它是同步冻结的，故距离逐位不变
+    expect(Math.abs(distAfter - distBefore),
+      `拆掉击退后不得有瞬时位移（${distBefore.toFixed(3)} → ${distAfter.toFixed(3)}）`).toBeLessThan(0.02);
+  });
 });

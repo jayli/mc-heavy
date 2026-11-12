@@ -207,7 +207,7 @@ floorY − (floorRow − 1), wz, …)`，内部落在 `y + b.y − 1` ⇒ `ny` �
 | `FOLLOW_RANGE` | 50 | 同上 |
 | `MOVEMENT_SPEED` | 0.27 格/tick × 20 = **5.4 格/秒** | 同上 |
 | `ARMOR` | 20 | 同上（本仓无护甲机制，仅记录） |
-| `KNOCKBACK_RESISTANCE` | 1.0（完全免疫击退） | 同上 |
+| `KNOCKBACK_RESISTANCE` | 1.0 | 同上。**⚠️ 本仓不引入**（v2.95）：原版该属性指击退附魔/爆炸位移（本仓无此机制），而「被剑砍后不后退」是另一件事 —— 用户 2026-11-11 要求守卫也要有受击后退（与焰魔同口径） |
 | `maxUpStep` | 1.75（**本仓取 1.0**，见 §5 的实测） | 构造函数 |
 | 碰撞盒 | `sized(2.5F, 3.8F)` | `ModEntities.java:41` |
 

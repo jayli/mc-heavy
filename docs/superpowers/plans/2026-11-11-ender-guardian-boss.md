@@ -1041,7 +1041,7 @@ try {
 - 帧循环：`this.guardians?.update(dt, {playerPosition:[pp.x,pp.y,pp.z], nowMs})`（在 `ignises.update` 旁）
 - `this._consumeGuardianAttackRequests()`（在 `_consumeIgnisAttackRequests()` 旁）
 - `if (this.guardianRenderer) this.guardianRenderer.sync(this.guardians.activeEntities(), nowMs);`
-- `damageEntity` 路由加 `GUARDIAN_TYPE` 分支；`knockbackEntity` 同（⚠️ 守卫 `KNOCKBACK_RESISTANCE = 1.0` 完全免疫击退 ⇒ **`knockbackEntity` 对守卫直接返回 false**，并在注释里写明原版依据）
+- `damageEntity` 路由加 `GUARDIAN_TYPE` 分支；`knockbackEntity` 同（⚠️ **v2.95 已改判**：守卫**受击后退与焰魔同口径**，走 `this.guardians.knockback(id, dx, dz)`。原文写的「`KNOCKBACK_RESISTANCE = 1.0` 完全免疫击退 ⇒ 直接返回 false」已被撤销 —— 原版那个属性指击退附魔/爆炸位移，不是「被剑砍有无受击反馈」；且它与「不动如山」（`_ringIntent` 死区站定，本次未改）是两件事。守卫的 `GuardianService.knockback` / `GuardianRenderer.noteKnockback` / `onKnockback` 钩子在 v2.91 就已齐备）
 - `_onEntityDeath` 的死亡音/爆散色按类型分型：守卫用 `GUARDIAN_DEATH_COLOR` + `guardian_die`（爆散锚点 = 脚底 + `GUARDIAN.height / 2`，与焰魔同口径）
 - `damageEntity` 的守卫分支里播 `guardian_hurt`（守卫自己挨打；玩家被打仍走 `_damagePlayer` → `ignis_hurt`）
 - `_syncBossAudio` 的 `bossAlive` 加 `+ this.entities.count(GUARDIAN_TYPE)`；同方法内加守卫的「起手音 `guardian_attack` / 跳跃音」迁移差分（照焰魔那段的 `generation` 守卫 —— 漏了会让「死了又召」的旧 mode 与新 idle 构成假迁移）
