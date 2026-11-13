@@ -272,7 +272,10 @@ test('createCreativeInventory: 快捷栏视图 = slots[0..HOTBAR_SIZE-1]（单�
   const inv = createCreativeInventory(makeRegistry());
   assertDeepEqual(inv.slots.slice(0, HOTBAR_SIZE).map((s) => s.item), HOTBAR_ITEMS);
   // v2.96：后 4 项是用户指定的常用物品，不是注册序的自然延伸（water/cloud 不得占位）
-  assertDeepEqual(HOTBAR_ITEMS.slice(5), ['wood', 'glass_block', 'tnt', 'mine_cart']);
+  // 2026-11-14：第 9 项按用户裁定 `mine_cart` → `leaves`（矿车仍在背包，只是不在快捷栏）
+  assertDeepEqual(HOTBAR_ITEMS.slice(5), ['wood', 'glass_block', 'tnt', 'leaves']);
+  // 反向：leaves 必须在物品集合内（否则快捷栏第 9 格图标会缺失）
+  assertIncludes(HOTBAR_ITEMS, 'leaves', '快捷栏第 9 格是 leaves');
 });
 
 test('createCreativeInventory: 创造模式不消耗——模拟放块 200 次后 count 不变', () => {

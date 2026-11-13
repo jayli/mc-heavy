@@ -1042,7 +1042,9 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
         } else if (tree.type === 'birchTreeWithSnow') {
           rasterizeStructure('birchTreeWithSnow', wx, baseY, wz, setBlock, column, registry, seed, false);
         } else {
-          generateTree(wx, baseY, wz, setBlock, seed, tree.type, tree.customLog || null, tree.customLeaf || null);
+          // `leafMix` 是树叶混表档位（由 `rollVegetation` 按 biome 判定，城市/海岛/天空树恒缺省）：
+          // 权重与掷签的唯一权威在 `vegetation.js` 的 `pickLeaf` / `leafTypeFor`，此处只透传。
+          generateTree(wx, baseY, wz, setBlock, seed, tree.type, tree.customLog || null, tree.customLeaf || null, tree.leafMix || null);
         }
       }
     }

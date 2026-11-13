@@ -3336,9 +3336,12 @@ mesher 无其几何模板 → 等轴测不适用）。
 > 注释掉 → **有效 105 项**）；此处保留历史原文不追改。
 
 **物品顺序（冻结）**：`slots[0..8]` = `stone`、`dirt`、`grass`、`sand`、`cobblestone`、
-`wood`、`glass_block`、`tnt`、`mine_cart`（即 v2.96 起的 `HOTBAR_ITEMS`，保持快捷栏默认观感与
+`wood`、`glass_block`、`tnt`、`leaves`（即 `HOTBAR_ITEMS`，保持快捷栏默认观感与
 既有测试断言稳定），其余 135 项按 `registry.all()` 注册顺序追加（确定性构建，不依赖 Map
 迭代顺序以外的因素）。
+> **2026-11-14 变更**：第 9 项 `mine_cart` → `leaves`（用户裁定「第九号方块中放的是矿车，
+> 我不要放矿车，换成 leaves 方块」）。`mine_cart` **仍在背包集合内**（它由注册序带入，不在
+> 排除集合），矿车玩法入口按物品名在背包里找槽，不受影响。
 理由：`blocks-data.js` 注册序前几位是 `water`/`swamp_water`/`cloud`/`glass_block`/
 `glass_blink`（非玩家常用建材），纯注册序会让快捷栏第 6~9 格变成
 `water`/`swamp_water`/`cloud`/`glass_block`，既不合理也破坏视觉基线。mc-lite 用

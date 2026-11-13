@@ -55,7 +55,9 @@ test('M3.1：物品模型 — 背包集合与 buildItemNames 一致、快捷栏�
       excluded: excluded.filter((n) => items.includes(n)),
       // mine_cart 保留（mc-lite 背包包含）；bed_alias_block 已移出背包（规避床渲染问题）
       hasBedAlias: items.includes('bed_alias_block'),
+      // 2026-11-14：mine_cart 已不在快捷栏（改成 leaves），但必须在背包里（矿车玩法的选槽入口）
       hasMineCart: items.includes('mine_cart'),
+      hasMineCartInHotbar: inv.slots.slice(0, 9).some((s) => s.item === 'mine_cart'),
       registryCount: g.registry.all().length,
     };
   }, excludedNames);
@@ -70,11 +72,13 @@ test('M3.1：物品模型 — 背包集合与 buildItemNames 一致、快捷栏�
   expect(r.selectedIsAliasOfHotbarIndex).toBe(true);
   expect(r.hotbarCells).toBe(9);
   // 前 9 项冻结（§4.5.4 + v2.96：快捷栏观感固定；纯注册序会让第 6~9 格变成 water/swamp_water/cloud/glass_block）
+  // 第 9 项（2026-11-14，用户裁定）：`mine_cart` → `leaves`（矿车仍在背包里，只是不在快捷栏）
   expect(r.front9).toEqual(['stone', 'dirt', 'grass', 'sand', 'cobblestone',
-    'wood', 'glass_block', 'tnt', 'mine_cart']);
+    'wood', 'glass_block', 'tnt', 'leaves']);
   expect(r.excluded).toEqual([]);
   expect(r.hasBedAlias).toBe(false); // bed_alias_block 已移出背包（规避床渲染问题）
-  expect(r.hasMineCart).toBe(true); // mine_cart 保留（mc-lite 背包包含）
+  expect(r.hasMineCart).toBe(true); // mine_cart 保留（mc-lite 背包包含，矿车玩法的选槽入口）
+  expect(r.hasMineCartInHotbar).toBe(false); // 2026-11-14：第 9 格改成 leaves，矿车不在快捷栏
   // registry 与物品集合的关系：注册表 = 物品集合 + 排除集合（排除项确实是注册过的方块）
   expect(r.registryCount).toBe(r.nonEmpty + excludedNames.length);
 });

@@ -14,9 +14,17 @@ export const HOTBAR_SIZE = 9;
 /**
  * 快捷栏默认内容（**顺序冻结**，也是 `inventory.js` 的 `buildItemNames` 前置项）。
  *
- * 前 5 项是 M3-4 的既有冻结序（stone/dirt/grass/sand/cobblestone），v2.96 只在其后追加
- * 第 6~9 项：wood / glass_block / tnt / mine_cart —— 都是玩家开局就会用的建材/工具，
- * **不是注册序的自然延伸**。
+ * 前 5 项是 M3-4 的既有冻结序（stone/dirt/grass/sand/cobblestone），v2.96 追加
+ * 第 6~8 项：wood / glass_block / tnt。
+ *
+ * 第 9 项（2026-11-14，用户裁定）：`mine_cart` → `leaves`。用户原话「第九号方块中放的是矿车，
+ * 我不要放矿车，换成 leaves 方块」。它同时服务于同期上线的「树叶混表」—— 四种巨树叶
+ * （`giant_*_leaves`）已在背包里，但 `leaves` 是混表里权重最高的那种（矮树 80% / 高树 50%），
+ * 放它才能直接验看新生成结果。
+ *
+ * ⚠️ `mine_cart` **仍在背包里**（它由 `buildItemNames` 的注册序项带入，不在排除集合），
+ * 只是不在快捷栏 —— 矿车玩法的入口（`tests/minecarts.spec.mjs`）按物品名在背包里找槽，不受影响。
+ * 图标已存在（`assets/icons.json` 的 hotbar 档含 `leaves`），**不需要重跑烘焙**。
  *
  * ⚠️ **为什么不能直接取注册序前 9 项**：`blocks-data.js` 的注册序第 6~9 位实测是
  * `water / swamp_water / cloud / glass_block`（三个流体/纯观赏方块），开局快捷栏会变成
@@ -25,5 +33,5 @@ export const HOTBAR_SIZE = 9;
  */
 export const HOTBAR_ITEMS = [
   'stone', 'dirt', 'grass', 'sand', 'cobblestone',
-  'wood', 'glass_block', 'tnt', 'mine_cart',
+  'wood', 'glass_block', 'tnt', 'leaves',
 ];

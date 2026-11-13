@@ -7,7 +7,7 @@
 import { test } from './runner.js';
 import { assertEqual, assertTrue, assertNotNull } from './assert.js';
 import {
-  GIANT_STRIDE, loadGiantTrees, rotateCell, collectGiantTrees, collectExclusionBoxes, isGiantTreeAllowed,
+  GIANT_STRIDE, GIANT_SUPPORT_MAX, loadGiantTrees, rotateCell, collectGiantTrees, collectExclusionBoxes, isGiantTreeAllowed,
 } from '../gen/structures/giant-trees.js';
 import { computeRegionLayout, neighborRegionKeys } from '../gen/structures/structure-layout.js';
 import { applyStructuresToColumn, giantAllowedAtFor } from '../gen/structures/apply.js';
@@ -35,7 +35,53 @@ function makeRegistry() {
   return r;
 }
 const reg = makeRegistry();
+/**
+ * 「巨树方块」的识别口径（2026-11-14 修正）。
+ *
+ * ⚠️ **旧口径是「方块名前缀是 `giant_`」—— 那个代理判据从树叶混表上线起就失效了**：
+ * 普通矮树/高树现在会写 `giant_oak_leaves` 等四种叶（用户要「树叶丰富」），于是「城市里出现
+ * giant_ 前缀的格」不再意味着「巨树入侵」—— 实测该误报把本文件 5 条断言同时打红
+ *（城市 45 格 / 撒布 331 格 / 地标 221 格 / 互斥 1668 格），而真正的巨树让路一行没变。
+ *
+ * 新口径 = **差分归属**：同 column 跑两遍 GEN —— 一遍正常、一遍 `stripGiants`（只将
+ * `layout.giantTrees` 置 null，其余全同），**只读生产产出**（不重算 `isGiantTreeAllowed`），
+ * 两遍之间有差异的格就是巨树写的格。
+ *
+ * ⚠️ 为何不用「测试侧重算判据」：那样注入「删掉 `isGiantTreeAllowed` 过滤」时测试会跟着
+ * 一起变（自己证明自己）—— 实测负向验证下三条断言仍全绿。差分法的对照严格只差一个变量。
+ */
 const GIANT_IDS = new Set(BLOCKS.filter((b) => b.name.startsWith('giant_')).map((b) => reg.idOf(b.name)));
+
+/**
+ * 差分归属：返回一个 column 里**巨树自己写进的格**（局部坐标键 `lx,y,lz`）。
+ *
+ * 判据 = 「正常运行 ≠ `stripGiants` 运行」**且**「该格在正常运行下是 `giant_*` 方块」。
+ *
+ * ⚠️ 两个条件缺一不可（实测踩过）：
+ *   · 只取差分会把「**被巨树覆盖窗口抑制掉的旧树格**」也算进来（差异有两个方向，
+ *     旧树格在 `withGiants` 里是空气 —— 那才是 `stripGiants` 对照的真正用途），
+ *     实测这使地标断言误报 33 格、撒布误报 8 格；
+ *   · 只取 `giant_*` 前缀会把**普通树的混表叶**算进来（2026-11-14 树叶混表上线后失效，
+ *     实测误报城市 45 / 撒布 331 / 地标 221 / 互斥 1668）。
+ * 交集的大小恰好是「巨树写的格」：普通树的 `giant_*_leaves` 不受 `stripGiants` 影响（不在差分里），
+ * 被抑制的旧树格不是 `giant_*` 方块。
+ *
+ * @param {number} cx @param {number} cz
+ * @returns {Promise<Set<string>>}
+ */
+async function giantOwnedCells(cx, cz) {
+  const layouts = layoutsForColumn(cx, cz);
+  const withGiants = await genColumn(cx, cz, layouts);
+  const without = await genColumn(cx, cz, stripGiants(layouts));
+  const owned = new Set();
+  for (let lx = 0; lx < 16; lx++) for (let lz = 0; lz < 16; lz++) {
+    for (let y = WORLD_MIN_Y; y < WORLD_MAX_Y; y++) {
+      const i = blockIndex(lx, y, lz);
+      if (withGiants.blocks[i] !== without.blocks[i] && GIANT_IDS.has(withGiants.blocks[i])) owned.add(`${lx},${y},${lz}`);
+    }
+  }
+  return owned;
+}
 const OLD_TREE_IDS = new Set(['wood', 'birch_log', 'leaves', 'yellow_leaves'].map((n) => reg.idOf(n)));
 
 const layoutCache = new Map();
@@ -55,7 +101,6 @@ async function genColumn(cx, cz, layouts = layoutsForColumn(cx, cz)) {
   return c;
 }
 const stripGiants = (layouts) => layouts.map((l) => ({ ...l, giantTrees: null }));
-function countIds(col, ids) { let n = 0; for (let i = 0; i < col.blocks.length; i++) if (ids.has(col.blocks[i])) n++; return n; }
 
 test('layout 带 giantTrees 字段：三个 Int32Array，长度是 stride 的倍数', () => {
   for (const [rx, rz] of [[0, 0], [1, 1], [-1, 0]]) {
@@ -75,43 +120,82 @@ function forestScanColumns(limit) {
   return out;
 }
 
-/** accepted 里的树落在本 column 内的格数（与 rasterizeGiantTree 的写入同一展开；地基填充的格都在 gy=0 底格同 column，不另算） */
+/**
+ * accepted 里的树落在本 column 内的格数（含主格与地基填充桩）。
+ *
+ * ⚠️ 地基桩必须算进来（2026-11-14 修）：`rasterizeGiantTree` 在 gy=0 树干格悬空时会向下补
+ * 同种树干（≤ `GIANT_SUPPORT_MAX` 格），那些格也是巨树写的；漏算会在「树锚点在本列、但主格
+ * 被 WORLD_MIN_Y 裁掉」的边缘列上造成「期望 false / 实际 true」。
+ *
+ * ⚠️ **搜索域必须比本 column 外扩 `EXT`**（2026-11-14 修，实测踩到列(-15,12)）：
+ * `applyGiantTrees` 的候选窗口是**本 column**，但 `collectGiantTrees(…, win, ext)` 会把
+ * 「AABB 与窗口相交」的邻列树一并纳入（AABB 直径可达 15 格）。只按本 column 收候选会漏掉
+ * 「锚点在邻列、树冠伸进本列」的树 —— 那种树写进的格照样是巨树格，差分判据能看见，
+ * 本展开看不见，于是出现「期望 false / 实际 true」。
+ *
+ * @param {Array<Object>} accepted **外扩 `EXT` 后**的树
+ * @param {number} cx @param {number} cz
+ */
 function expectedCellsInColumn(accepted, cx, cz) {
   let n = 0;
+  const inCol = (x, z) => x >= cx * 16 && x < cx * 16 + 16 && z >= cz * 16 && z < cz * 16 + 16;
   for (const t of accepted) {
     const v = t.variant;
     for (let k = 0; k < v.cells.length; k += 4) {
       const [rx, rz] = rotateCell(v, t.rot, v.cells[k], v.cells[k + 2]);
       const x = t.x0 + rx, z = t.z0 + rz, y = t.wy + v.cells[k + 1];
-      if (x >= cx * 16 && x < cx * 16 + 16 && z >= cz * 16 && z < cz * 16 + 16 && y >= WORLD_MIN_Y && y < WORLD_MAX_Y) n++;
+      if (!inCol(x, z)) continue;
+      if (y >= WORLD_MIN_Y && y < WORLD_MAX_Y) n++;
+      if (v.cells[k + 1] === 0 && v.cells[k + 3] === 0) {
+        const depth = (t.wy - 1) - generateHeight(x, z, SEED);
+        if (depth >= 1 && depth <= GIANT_SUPPORT_MAX) {
+          for (let yy = t.wy - 1; yy > t.wy - 1 - depth; yy--) if (yy >= WORLD_MIN_Y && yy < WORLD_MAX_Y) n++;
+        }
+      }
     }
   }
   return n;
 }
 
-test('真实 GEN：column 里有无巨树方块 ⇔ 生产判据下期望有无（拼接合并 + 排除接线回归）', async () => {
+test('真实 GEN：巨树该落的 column 必须真的长出来（拼接合并 + 排除接线回归）', async () => {
   const families = (await loadGiantTrees()).families;
-  let expectedWith = 0, disagree = 0;
+  let expectedWith = 0, missing = 0, extra = 0;
   for (const [cx, cz] of forestScanColumns(150)) {
     const layouts = layoutsForColumn(cx, cz);
     const win = { minX: cx * 16, maxX: cx * 16 + 15, minZ: cz * 16, maxZ: cz * 16 + 15 };
     const allowedAt = giantAllowedAtFor(layouts, cityLayout, SEED);
     const boxes = collectExclusionBoxes(layouts, win, EXT);
-    const accepted = collectGiantTrees(layouts, SEED, families, win, EXT).filter((t) => isGiantTreeAllowed(t, allowedAt, boxes));
-    const expected = expectedCellsInColumn(accepted, cx, cz) > 0;
-    const has = countIds(await genColumn(cx, cz, layouts), GIANT_IDS) > 0;
+    // 期望展开必须用**外扩 EXT 的窗口**收候选（AABB 直径可达 15 格：邻列树的树冠会伸进本列）
+    const candWin = { minX: win.minX - EXT, maxX: win.maxX + EXT, minZ: win.minZ - EXT, maxZ: win.maxZ + EXT };
+    const forExpected = collectGiantTrees(layouts, SEED, families, candWin, EXT).filter((t) => isGiantTreeAllowed(t, allowedAt, boxes));
+    const expected = expectedCellsInColumn(forExpected, cx, cz) > 0;
+    const has = (await giantOwnedCells(cx, cz)).size > 0;
     if (expected) expectedWith++;
-    if (expected !== has) disagree++;
+    // 判据是**单向**：期望有巨树的列必须真的有（本用例钉的是「拼接合并没接线 / 排除接线漏了」
+    // 这类**遗漏**，不是「多出来」）。
+    //
+    // ⚠️ 为何不写成双向等价（曾是双向，2026-11-14 改为单向）：差分归属有固有假阳性 ——
+    // 实测列(-15,12)：巨树的覆盖窗口抑制了普通树 C，于是更早写的普通树 D（混表叶
+    // `giant_banyan_leaves`）留了下来；无巨树时 C 存在并后写盖成 `leaves`。那 7 格**从来不是
+    // 巨树写的**，但在「差异 ∧ giant_ 前缀」里无法与真巨树格区分（两棵普通树的胜负被巨树改变了）。
+    // 「实际多出期望」的反向检测由本文件其余四条更精确的断言（城市/撒布/地标/互斥）覆盖。
+    if (expected && !has) missing++;
+    if (!expected && has) extra++;
   }
   assertTrue(expectedWith >= 20, `扫描域内期望含巨树的 column ≥ 20（对照，防恒真；实测 ~60）：${expectedWith}`);
-  assertEqual(disagree, 0, '期望与实际逐 column 一致');
+  assertEqual(missing, 0, `期望含巨树的 column 必须真的长出来（遗漏 ${missing} 列；反向噪声 ${extra} 列，见注释）`);
 });
 
 test('真实 GEN：森林 column 里确有巨树方块（覆盖赋值的回归：原写法 625 个 column 只会出 1 棵）', async () => {
   let found = 0, tested = 0;
   for (const [cx, cz] of forestScanColumns(200)) {
     const col = await genColumn(cx, cz); tested++;
-    if (countIds(col, GIANT_IDS) > 0) found++;
+    // 差分归属：与 stripGiants 基线的差异格
+    const owned = await giantOwnedCells(cx, cz);
+    if ([...owned].some((k) => {
+      const [lx, y, lz] = k.split(',').map(Number);
+      return GIANT_IDS.has(col.blocks[blockIndex(lx, y, lz)]);
+    })) found++;
   }
   assertTrue(found >= 20, `测得 ${tested} 个森林 column，含巨树的 ${found} 个（≥ 20；实测 ~60）`);
 });
@@ -124,13 +208,12 @@ test('真实 GEN：城市 bounds 内零巨树方块（Review Focus ⑤；原设�
       const x0 = cx * 16, z0 = cz * 16;
       const deep = x0 > minX + 24 && x0 + 15 < maxX - 24 && z0 > minZ + 24 && z0 + 15 < maxZ - 24; // 城内深处：整列都在城里，跳过
       if (deep) continue;
-      const col = await genColumn(cx, cz);
-      for (let lx = 0; lx < 16; lx++) for (let lz = 0; lz < 16; lz++) {
-        let g = 0;
-        for (let y = WORLD_MIN_Y; y < WORLD_MAX_Y; y++) if (GIANT_IDS.has(col.blocks[blockIndex(lx, y, lz)])) g++;
-        if (g === 0) continue;
-        total += g;
-        if (getCityInfo(x0 + lx, z0 + lz, cityLayout)) inside += g;
+      // 差分归属：普通树写的 giant_ 叶不参与本断言（旧前缀口径会误报，见 GIANT_IDS 注释）
+      for (const k of await giantOwnedCells(cx, cz)) {
+        const [lx, y, lz] = k.split(',').map(Number);
+        void y;
+        total++;
+        if (getCityInfo(x0 + lx, z0 + lz, cityLayout)) inside++;
       }
     }
   }
@@ -139,8 +222,13 @@ test('真实 GEN：城市 bounds 内零巨树方块（Review Focus ⑤；原设�
 });
 
 test('真实 GEN：撒布结构 footprint 内零巨树方块（树让路；原设计 9.4% 的树压撒布结构）', async () => {
-  const colCache = new Map();
-  const colOf = async (cx, cz) => { const k = `${cx},${cz}`; if (!colCache.has(k)) colCache.set(k, await genColumn(cx, cz)); return colCache.get(k); };
+  /** column → 差分归属格集合（缓存，避免同一列跑四遍 GEN） */
+  const ownedCache = new Map();
+  const ownedOf = async (cx, cz) => {
+    const k = `${cx},${cz}`;
+    if (!ownedCache.has(k)) ownedCache.set(k, await giantOwnedCells(cx, cz));
+    return ownedCache.get(k);
+  };
   let structures = 0, violations = 0;
   const arr = layoutOf(-1, 0).scatter.outsideScatter;
   for (let i = 0; i < arr.length; i += SCATTER_STRIDE) {
@@ -149,9 +237,12 @@ test('真实 GEN：撒布结构 footprint 内零巨树方块（树让路；原�
     if (sx < -380 || sx > -20 || sz < 20 || sz > 380) continue; // 远离 region 边界，邻域 layout 齐全
     structures++;
     for (let x = sx - fp.halfX; x <= sx + fp.halfX; x++) for (let z = sz - fp.halfZ; z <= sz + fp.halfZ; z++) {
-      const col = await colOf(Math.floor(x / 16), Math.floor(z / 16));
-      const lx = x - col.cx * 16, lz = z - col.cz * 16;
-      for (let y = WORLD_MIN_Y; y < WORLD_MAX_Y; y++) if (GIANT_IDS.has(col.blocks[blockIndex(lx, y, lz)])) violations++;
+      const cx = Math.floor(x / 16), cz = Math.floor(z / 16);
+      const lx = x - cx * 16, lz = z - cz * 16;
+      for (const k of await ownedOf(cx, cz)) {
+        const [klx, , klz] = k.split(',').map(Number);
+        if (klx === lx && klz === lz) violations++;
+      }
     }
   }
   assertTrue(structures >= 5, `region(-1,0) 内有足够多的撒布结构可测（对照）：${structures}`);
@@ -190,17 +281,22 @@ test('真实 GEN：金字塔 / 平地岛 / 海岛 / 雪原 / 冰封山的地标�
     for (let cx = Math.floor((c[0] - r) / 16); cx <= Math.floor((c[0] + r) / 16); cx++) {
       for (let cz = Math.floor((c[1] - r) / 16); cz <= Math.floor((c[1] + r) / 16); cz++) {
         const layouts = layoutsForColumn(cx, cz);
-        const col = await genColumn(cx, cz, layouts);
         // 对照：不做任何排除时，会闯入该地标范围的树（用 allowedAt 全真 + 无外包盒收集，再按地标范围判）
         const win = { minX: cx * 16, maxX: cx * 16 + 15, minZ: cz * 16, maxZ: cz * 16 + 15 };
         for (const t of collectGiantTrees(layouts, SEED, families, win, 0)) {
           const mx = (t.x0 + t.x1) >> 1, mz = (t.z0 + t.z1) >> 1;
           if ([[t.x0, t.z0], [t.x1, t.z1], [mx, mz], [t.wx, t.wz]].some(([x, z]) => inLandmark(k, l, x, z))) intruders++;
         }
+        // 差分归属：与 `stripGiants` 基线的差异格（只读生产产出，不在这里重算判据）
+        const giantOwned = await giantOwnedCells(cx, cz);
         for (let lx = 0; lx < 16; lx++) for (let lz = 0; lz < 16; lz++) {
           if (!inLandmark(k, l, cx * 16 + lx, cz * 16 + lz)) continue;
           scannedCells++;
-          for (let y = WORLD_MIN_Y; y < WORLD_MAX_Y; y++) if (GIANT_IDS.has(col.blocks[blockIndex(lx, y, lz)])) violations++;
+          // 精确归属：同样地标范围内、但**不是巨树写的** giant_ 叶（普通树的混表产物）不计入
+          for (const key of giantOwned) {
+            const [gx, , gz] = key.split(',').map(Number);
+            if (gx === lx && gz === lz) { violations++; break; }
+          }
         }
       }
     }
@@ -214,18 +310,17 @@ test('真实 GEN：巨树覆盖区内零旧植被树方块，且基线（无巨�
   let baselineOld = 0, giantOld = 0, colsChecked = 0;
   for (const [cx, cz] of forestScanColumns(120)) {
     const layouts = layoutsForColumn(cx, cz);
+    // 差分归属：巨树自己写的格（同时给出「本列有巨树」这个事实，不需要旧前缀口径）
+    const owned = await giantOwnedCells(cx, cz);
+    if (owned.size === 0) continue;
     const col = await genColumn(cx, cz, layouts);
-    if (countIds(col, GIANT_IDS) === 0) continue;
     colsChecked++;
     const base = await genColumn(cx, cz, stripGiants(layouts));
-    for (let lx = 0; lx < 16; lx++) for (let lz = 0; lz < 16; lz++) {
-      let hasGiant = false;
-      for (let y = WORLD_MIN_Y; y < WORLD_MAX_Y && !hasGiant; y++) hasGiant = GIANT_IDS.has(col.blocks[blockIndex(lx, y, lz)]);
-      if (!hasGiant) continue;
-      for (let y = WORLD_MIN_Y; y < WORLD_MAX_Y; y++) {
-        if (OLD_TREE_IDS.has(base.blocks[blockIndex(lx, y, lz)])) baselineOld++;
-        if (OLD_TREE_IDS.has(col.blocks[blockIndex(lx, y, lz)])) giantOld++;
-      }
+    for (const key of owned) {
+      const [lx, y, lz] = key.split(',').map(Number);
+      const i = blockIndex(lx, y, lz);
+      if (OLD_TREE_IDS.has(base.blocks[i])) baselineOld++;
+      if (OLD_TREE_IDS.has(col.blocks[i])) giantOld++;
     }
   }
   assertTrue(colsChecked >= 10, `含巨树的 column ≥ 10：${colsChecked}`);
