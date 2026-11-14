@@ -1,8 +1,8 @@
 {
  "fingerprints": {
-  "input": "1d00d91348b5c645:a4c70ef37578c5d1",
+  "input": "1d00d91348b5c645:23c1a837ee4a1f1e",
   "sourceSha256": "1d00d91348b5c645dd22c0c0003747c2391fd70c3384bf289b4d76ab72bc33d2",
-  "paramsSha256": "a4c70ef37578c5d188b93d8a3dd27739f69335a952d5143bef6b308d1e72790a"
+  "paramsSha256": "23c1a837ee4a1f1ecdd73c48661ac924157eca5be04a0fd203ec3f08345c4dbe"
  },
  "metrics": {
   "boneCount": 53,
@@ -13,13 +13,14 @@
   "vertexCount": 1920,
   "indexCount": 2880,
   "scale": 1,
-  "feetOffsetY": -0.265625
+  "feetOffsetY": -0.22286009723275266
  },
  "textureSize": 256,
  "animPeriods": {
   "idle": 2.8125,
   "attack": 2.75,
-  "spin": 1.9
+  "spin": 1.9,
+  "shieldSmash": 3.5
  },
  "animSources": {
   "idle": [
@@ -31,6 +32,9 @@
   ],
   "spin": [
    "attack8a3"
+  ],
+  "shieldSmash": [
+   "attack1"
   ]
  }
 }
