@@ -289,11 +289,11 @@ test('傍晚④：可辨认的傍晚（比正午暗一档，但远亮于夜）',
   expect(dusk.lum / night.lum, `傍晚须远亮于深夜：${(dusk.lum / night.lum).toFixed(2)}`).toBeGreaterThan(1.8);
 });
 
-test('傍晚⑤：其余三种风格零回归（uDuskBlend=0 + 色温中性白）', async ({ page }) => {
+test('傍晚⑤：morning/noon 零回归；night 为月光冷色（v3.00）；auto 随小时走', async ({ page }) => {
   test.setTimeout(240_000);
   await boot(page);
   const seen = [];
-  for (const style of ['morning', 'noon', 'night', null]) {
+  for (const style of ['morning', 'noon', 'night']) {
     await page.evaluate((s) => window.__MC_GAME__.setVisualStyle(s), style);
     await page.waitForTimeout(300);
     const u = await page.evaluate(() => {
@@ -312,10 +312,19 @@ test('傍晚⑤：其余三种风格零回归（uDuskBlend=0 + 色温中性白�
 
   for (const s of seen) {
     expect(s.duskBlend, `风格 ${s.style} 的 uDuskBlend 必须为 0`).toBe(0);
-    expect(s.sunColor, `风格 ${s.style} 的 sunColor 须中性白`).toEqual([1, 1, 1]);
-    expect(s.ambientColor, `风格 ${s.style} 的 ambientColor 须中性白`).toEqual([1, 1, 1]);
-    // 中性色温下灯光色逐位等于 mc-lite 原值 0xfffaf0
-    expect(s.sunLight, `风格 ${s.style} 的太阳灯须回到原色`).toEqual([1, 0.9804, 0.9412]);
+    if (s.style === 'night') {
+      // v3.00：夜间改为月光冷色（均值 1.0600）。判据落在**色相方向**上，不是具体数值
+      // —— 具体数值由 test-daynight.js 的均值区间 [1.04,1.08] 钉住。
+      expect(s.sunColor[2], `night 直射须偏冷（B > R）：${s.sunColor}`)
+        .toBeGreaterThan(s.sunColor[0] + 0.4);
+      expect(s.ambientColor[2], `night 环境须偏冷（B > R）：${s.ambientColor}`)
+        .toBeGreaterThan(s.ambientColor[0] + 0.15);
+    } else {
+      expect(s.sunColor, `风格 ${s.style} 的 sunColor 须中性白`).toEqual([1, 1, 1]);
+      expect(s.ambientColor, `风格 ${s.style} 的 ambientColor 须中性白`).toEqual([1, 1, 1]);
+      // 中性色温下灯光色逐位等于 mc-lite 原值 0xfffaf0
+      expect(s.sunLight, `风格 ${s.style} 的太阳灯须回到原色`).toEqual([1, 0.9804, 0.9412]);
+    }
   }
 });
 
