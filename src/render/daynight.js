@@ -169,7 +169,15 @@ export const VISUAL_STYLES = {
     // mc-lite 用 0.95 是为了压暗，本仓用更高曝光达到「压暗暗部、保住亮部」的同一个**意图**。
     toneMappingExposure: 1.6,
     moonDirection: [-0.32, 0.58, -0.75], moonVisible: true, moonSize: 34,
-    sunColor: NEUTRAL_COLOR, ambientColor: NEUTRAL_COLOR, duskBlend: 0,
+    // 月光色温（v3.00）：冷蓝直射 + 更冷的环境。**均值 1.0600，不是 1.0** ——
+    // 均值恰为 1.000 的同色相候选实测六面平均 luma 97.14（−3.3%），因为 ACES 在迎光面
+    // 已进肩部、B 通道压缩率高于 R/G。1.06 是「把肩部吃掉的亮度补回来」的标定值。
+    // 屏幕口径实测（基色 0.5 × shade × skyDim 0.25 × 曝光 1.6 → ACES → sRGB）：
+    // 六面平均 luma 100.50 → 100.84（+0.3%）、迎光面 R−B 0 → −32、背光面 0 → −15、
+    // 迎光/背光比 1.91 → 1.87（朝向对比不得被抹平，守 ≥1.8）。
+    sunColor: Object.freeze([0.795, 0.954, 1.431]),
+    ambientColor: Object.freeze([0.954, 1.018, 1.208]),
+    duskBlend: 0,
     // 水面亮度 **0.39**（v2.2）—— 四风格里最暗的一档。
     //
     // ⚠️ **v2.1 的 0.62 已作废**（那时 tint 乘在雾混合之前，远景海面恒定不吃乘数）。
