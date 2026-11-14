@@ -303,12 +303,12 @@ export class IgnisBossAgent extends BossAgent {
         // ---- 抽签选招（v2.75 用户裁定「每次起手按权重随机」）----
         // ⚠️ **旋斩冷却未好时降级**（不白放冷却）：`spinCooldown > 0` 时只从
         // 非旋斩的档案里抽 —— 否则玩家跑掉不命中的旋斩会反复浪费掉新鲜冷却。
-        // ⚠️ v3.01 二次裁定（用户 2026-11-14 实玩后）：**贴身门已删** —— 盾击与另两招
+        // ⚠️ v3.01 二次裁定（用户 2026-11-14 实玩后）：**贴身门已删** —— 持盾冲撞与另两招
         // 共用同一个起手门槛（本分支的 `hDist <= attackRange`），不再按距离排除。
         // 原裁定②的 `smashEngageRange`（3.0）已作废：用户实测认为「触发条件过于苛刻」。
         attackKind = this._rollAttackKind(spinCooldown > 0);
         // ⚠️ **起手当帧就置冷却**（不是命中帧）：否则玩家跑掉不命中时旋斩可以连抽。
-        // ⚠️ 盾击**不置独立冷却**：全局 `attackCooldownMin`（4.0）已控住节奏。本行不动。
+        // ⚠️ 持盾冲撞**不置独立冷却**：全局 `attackCooldownMin`（4.0）已控住节奏。本行不动。
         if (attackKind === 'spin') spinCooldown = IGNIS_AI.spinCooldownSeconds;
         // ⚠️ **v2.63：起手当帧把 yaw 立即对准真实玩家**（不走 turnRate 缓动、不用快照）。
         // 快照最多陈旧 2 秒，玩家 8 格/秒能跑 16 格 —— 用陈旧朝向起手会让命中锥
@@ -773,7 +773,7 @@ export class IgnisBossAgent extends BossAgent {
    *
    * ⚠️ **v3.01 二次裁定：本函数回到单参**。初版曾加过第二参 `smashAllowed`（贴身门），
    * 用户 2026-11-14 实玩后裁定「不要限制在严格 3 格内，改成和其他两个攻击技能一样的生效距离」
-   * ⇒ 盾击**无条件参与抽签**，距离门槛完全交给调用点的 `hDist <= attackRange`（三招共用）。
+   * ⇒ 持盾冲撞**无条件参与抽签**，距离门槛完全交给调用点的 `hDist <= attackRange`（三招共用）。
    *
    * @param {boolean} spinBlocked 旋斩冷却是否未好
    * @returns {'swing'|'spin'|'shieldSmash'} 选中的档案键

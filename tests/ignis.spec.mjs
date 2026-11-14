@@ -808,9 +808,9 @@ test.describe('焰魔（Ignis）Tier 4', () => {
     expect(r.swingSide, '侧方 80° 不得被横扫打中（半角 35°）').toBe(20);
   });
 
-  // ==================== 第三招：盾击（v3.01）====================
+  // ==================== 第三招：持盾冲撞（v3.01）====================
 
-  test('渲染(v3.01)：盾击 vs 横扫 vs 旋斩 三两不同姿态（像素级 + 骨骼层双判据）', async ({ page }) => {
+  test('渲染(v3.01)：持盾冲撞 vs 横扫 vs 旋斩 三两不同姿态（像素级 + 骨骼层双判据）', async ({ page }) => {
     await page.goto(`/?seed=${SEED}`);
     await waitWorldReady(page);
     await teleportToTarnCenter(page);
@@ -876,7 +876,7 @@ test.describe('焰魔（Ignis）Tier 4', () => {
     const noise = await pixelDiff(page, n1, n2);
     expect(noise.changed, '冻结帧循环后同状态连拍必须逐位相同（噪声底 = 0）').toBe(0);
 
-    // ② 骨骼层：**同一时刻 1.0s**（盾击蓄力到位）下三招必须是三个不同姿态。
+    // ② 骨骼层：**同一时刻 1.0s**（持盾冲撞蓄力到位）下三招必须是三个不同姿态。
     // ⚠️ 不能只用像素作判据：时刻不同本身就足以让画面不同，注入「恒播 attack」后仍绿。
     const swingBones = await bonePoseAt('swing', 1.0);
     const spinBones = await bonePoseAt('spin', 1.0);
@@ -884,9 +884,9 @@ test.describe('焰魔（Ignis）Tier 4', () => {
     expect(smashBones, '取不到焰魔实例的骨骼').not.toBeNull();
     const dSmashSwing = poseDist(smashBones, swingBones);
     const dSmashSpin = poseDist(smashBones, spinBones);
-    expect(dSmashSwing, `盾击与横扫在 1.0s 的骨骼姿态差 ${dSmashSwing.toFixed(3)}（应显著不同）`)
+    expect(dSmashSwing, `持盾冲撞与横扫在 1.0s 的骨骼姿态差 ${dSmashSwing.toFixed(3)}（应显著不同）`)
       .toBeGreaterThan(0.3);
-    expect(dSmashSpin, `盾击与旋斩在 1.0s 的骨骼姿态差 ${dSmashSpin.toFixed(3)}（应显著不同）`)
+    expect(dSmashSpin, `持盾冲撞与旋斩在 1.0s 的骨骼姿态差 ${dSmashSpin.toFixed(3)}（应显著不同）`)
       .toBeGreaterThan(0.3);
 
     // ③ 像素层：同一时刻 1.0s 下三两截图两两不同
@@ -895,15 +895,15 @@ test.describe('焰魔（Ignis）Tier 4', () => {
     const spinPix = await poseAt('spin', 1.0);
     const dSS = await pixelDiff(page, smashPix, swingPix);
     const dSP = await pixelDiff(page, smashPix, spinPix);
-    expect(dSS.changed, `盾击与横扫的像素差 ${dSS.changed}（应远大于噪声底 0）`).toBeGreaterThan(1500);
-    expect(dSP.changed, `盾击与旋斩的像素差 ${dSP.changed}（应远大于噪声底 0）`).toBeGreaterThan(1500);
+    expect(dSS.changed, `持盾冲撞与横扫的像素差 ${dSS.changed}（应远大于噪声底 0）`).toBeGreaterThan(1500);
+    expect(dSP.changed, `持盾冲撞与旋斩的像素差 ${dSP.changed}（应远大于噪声底 0）`).toBeGreaterThan(1500);
 
     // 还原帧循环（同一浏览器上下文里的后续用例不该受影响）
     await page.evaluate(() => window.__MC_GAME__.renderer.setAnimationLoop(null));
   });
 
   /**
-   * v3.01 盾击的**真实射程多点取样**。
+   * v3.01 持盾冲撞的**真实射程多点取样**。
    *
    * ⚠️ **用户 2026-11-14 二次裁定后本表整段重写**：射程从原版 4.85 改成 **6.5**（与另两招同值），
    * 贴身门（3.0）已删。旧版「5.0 格打不中」的判据现在**必须反过来**（它正是用户报的「苛刻」）。
@@ -920,7 +920,7 @@ test.describe('焰魔（Ignis）Tier 4', () => {
    *
    * ⚠️ 焰魔朝向**钉死 yaw=0**（照 v2.78 的教训：靠 AI 自然转身制造前提是非确定性的）。
    */
-  test('战斗(v3.01)：盾击射程与另两招同值 6.5 —— 5.0/6.0 格命中，7.0 格打不中', async ({ page }) => {
+  test('战斗(v3.01)：持盾冲撞射程与另两招同值 6.5 —— 5.0/6.0 格命中，7.0 格打不中', async ({ page }) => {
     await page.goto(`/?seed=${SEED}`);
     await waitWorldReady(page);
     await teleportToTarnCenter(page);
@@ -973,13 +973,13 @@ test.describe('焰魔（Ignis）Tier 4', () => {
     });
 
     expect(r.err).toBeUndefined();
-    expect(r.smashRange, '盾击射程（用户裁定：与另两招同值）').toBe(6.5);
+    expect(r.smashRange, '持盾冲撞射程（用户裁定：与另两招同值）').toBe(6.5);
     expect(r.swingRange, '横扫射程').toBe(6.5);
     expect(r.damage, '三招同伤害').toBe(14);
 
-    expect(r.smash25, '2.5 格盾击必须命中：20 → 6').toBe(6);
+    expect(r.smash25, '2.5 格持盾冲撞必须命中：20 → 6').toBe(6);
     // ⚠️ 本用例的核心：旧版这里是盲区（> 4.85），用户裁定后必须命中
-    expect(r.smash50, '5.0 格（站定环外沿）盾击必须命中 —— 旧版的射程盲区已消除').toBe(6);
+    expect(r.smash50, '5.0 格（站定环外沿）持盾冲撞必须命中 —— 旧版的射程盲区已消除').toBe(6);
     expect(r.smash60, '6.0 格仍在射程内（6.0 < 6.5）⇒ 必须命中').toBe(6);
     expect(r.smash70, '7.0 格超出射程 6.5 ⇒ 打不中').toBe(20);
     // 对照组：证明这些位置本身是可判定的（LOS 通、y 对），而非假命中/假落空
@@ -988,13 +988,13 @@ test.describe('焰魔（Ignis）Tier 4', () => {
   });
 
   /**
-   * v3.01 盾击的**锥宽**：半角 22.5°，比横扫的 35° 更窄、远窄于旋斩的 155°。
+   * v3.01 持盾冲撞的**锥宽**：半角 22.5°，比横扫的 35° 更窄、远窄于旋斩的 155°。
    *
-   * 取样 **40°**：它同时落在「盾击半角 22.5 之外」与「旋斩半角 155 之内」⇒ 同一位置对照
+   * 取样 **40°**：它同时落在「持盾冲撞半角 22.5 之外」与「旋斩半角 155 之内」⇒ 同一位置对照
    * 就能证明锥宽真的按招取（而不是所有招共用派生最大值 155）。
    * 另取 0°（三招都该中）与 170°（旋斩的背向死角，三招都不该中）做两侧锚点。
    */
-  test('战斗(v3.01)：盾击锥宽半角 22.5° —— 侧向 40° 打不中，而旋斩打得到（同位置对照）', async ({ page }) => {
+  test('战斗(v3.01)：持盾冲撞锥宽半角 22.5° —— 侧向 40° 打不中，而旋斩打得到（同位置对照）', async ({ page }) => {
     await page.goto(`/?seed=${SEED}`);
     await waitWorldReady(page);
     await teleportToTarnCenter(page);
@@ -1037,15 +1037,15 @@ test.describe('焰魔（Ignis）Tier 4', () => {
     });
 
     expect(r.err).toBeUndefined();
-    expect(r.smashCone, '盾击半角').toBe(22.5);
+    expect(r.smashCone, '持盾冲撞半角').toBe(22.5);
     expect(r.spinCone, '旋斩半角').toBe(155);
 
-    expect(r.smashFront, '正面 0° 盾击必须命中').toBe(6);
-    expect(r.smashSide40, '侧向 40° 超出盾击半角 22.5° ⇒ 打不中').toBe(20);
-    expect(r.smashBack, '背后 170° 盾击打不中').toBe(20);
+    expect(r.smashFront, '正面 0° 持盾冲撞必须命中').toBe(6);
+    expect(r.smashSide40, '侧向 40° 超出持盾冲撞半角 22.5° ⇒ 打不中').toBe(20);
+    expect(r.smashBack, '背后 170° 持盾冲撞打不中').toBe(20);
     // 同位置对照：证明 40° 这个位置本身可命中，且锥宽真的按招取
     expect(r.spinSide40, '对照组：侧向 40° 旋斩（半角 155°）必须命中').toBe(6);
-    expect(r.swingSide40, '对照组：侧向 40° 横扫（半角 35°）也打不中 —— 盾击比它更窄').toBe(20);
+    expect(r.swingSide40, '对照组：侧向 40° 横扫（半角 35°）也打不中 —— 持盾冲撞比它更窄').toBe(20);
   });
 
   /**

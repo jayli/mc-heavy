@@ -133,8 +133,8 @@ test('焰魔: 近战判据取自 AreaAttack(6.5, 6, 70, ...)（arc 是总角度 
   assertEqual(IGNIS_AI.hitConeDeg, 155);
 });
 
-test('焰魔: 命中帧派生值 = 各招最大者（v3.01 盾击 tick 34 / 20 = 1.70 秒）', () => {
-  // ⚠️ v3.01 从 1.20 重标：盾击的 tick 34 ÷ 20 = 1.70 是新的最大者。
+test('焰魔: 命中帧派生值 = 各招最大者（v3.01 持盾冲撞 tick 34 / 20 = 1.70 秒）', () => {
+  // ⚠️ v3.01 从 1.20 重标：持盾冲撞的 tick 34 ÷ 20 = 1.70 是新的最大者。
   // **单招值没变**：横扫仍是 1.20（下面单独钉住）—— 变的只是「取最大」的结果。
   assertEqual(IGNIS_AI.hitFrameSeconds, 1.70);
   assertEqual(IGNIS_ATTACKS.swing.hitFrameSeconds, 1.20,
@@ -187,7 +187,7 @@ test('焰魔(v3.01): 三招档案的形状一致（缺字段的招式在命中�
   assertEqual(IGNIS.attackDamage, 14);
 });
 
-// ==================== 第三招：盾击（v3.01）====================
+// ==================== 第三招：持盾冲撞（v3.01）====================
 //
 // 数值全部取自 `Ignis_Entity.java` 的 `SHIELD_SMASH_ATTACK` 分支（第 884~897 行）：
 //   `AreaAttack(4.85f, 2.5f, 45, 1.5f, 0.15f, …)` + `getAnimationTick() == 34` + `Animation.create(70)`。
@@ -195,22 +195,22 @@ test('焰魔(v3.01): 三招档案的形状一致（缺字段的招式在命中�
 // ⚠️ **其中「贴身才抽」已被用户 2026-11-14 实玩后推翻**（「触发条件过于苛刻」）⇒
 // 射程改成与另两招同值 6.5、贴身门删除、权重与横扫平分（各 0.35）。
 
-test('焰魔(v3.01): 盾击档案 —— 射程与横扫同为 6.5（用户裁定：去掉贴身门），半角 22.5 且必须 < 45', () => {
+test('焰魔(v3.01): 持盾冲撞档案 —— 射程与横扫同为 6.5（用户裁定：去掉贴身门），半角 22.5 且必须 < 45', () => {
   const a = IGNIS_ATTACKS.shieldSmash;
   // ⚠️ 用户 2026-11-14 实玩后裁定：「触发条件过于苛刻……改成和其他两个攻击技能一样的生效距离」
   // ⇒ 从原版 4.85 改成与横扫/旋斩同值 **6.5**（不再靠贴身门保证命中）。
   assertEqual(a.hitRange, 6.5);
   assertEqual(a.hitRange, IGNIS_ATTACKS.swing.hitRange,
-    '盾击射程必须与横扫一致（用户裁定：砍的动作几格内生效，盾击就几格内生效）');
+    '持盾冲撞射程必须与横扫一致（用户裁定：砍的动作几格内生效，盾击就几格内生效）');
   assertEqual(a.hitConeDeg, 22.5);
   // ⚠️⚠️ **半角守卫**：写成 45 会让扇面变成 90°，而没有任何其他断言会红
   //（它只是「打得更宽」）。与横扫的 <70、旋斩的 <180 同口径。
   // ⚠️ 用户只要求改「生效距离」，**未要求改锥宽** ⇒ 22.5 半角保留。
   assertTrue(a.hitConeDeg < 45,
-    `盾击半角 ${a.hitConeDeg}° 不得 ≥ 45° —— 那是把 arc 原值当半角填，扇面会静默变成 90°`);
+    `持盾冲撞半角 ${a.hitConeDeg}° 不得 ≥ 45° —— 那是把 arc 原值当半角填，扇面会静默变成 90°`);
 });
 
-test('焰魔(v3.01): 盾击命中帧 = tick 34 / 20 = 1.70 秒，时长 = 70 tick / 20 = 3.50 秒', () => {
+test('焰魔(v3.01): 持盾冲撞命中帧 = tick 34 / 20 = 1.70 秒，时长 = 70 tick / 20 = 3.50 秒', () => {
   const a = IGNIS_ATTACKS.shieldSmash;
   assertEqual(a.hitFrameSeconds, 1.70);
   assertEqual(a.animSeconds, 3.5);
@@ -225,27 +225,27 @@ test('焰魔(v3.01): 贴身门已删除（用户裁定：不再限制 3 格）',
     'smashEngageRange 必须删除 —— 贴身门已被用户裁定作废');
 });
 
-test('焰魔(v3.01): 盾击权重与横扫严格平分（用户裁定），旋斩不变，三档和 = 1', () => {
+test('焰魔(v3.01): 持盾冲撞权重与横扫严格平分（用户裁定），旋斩不变，三档和 = 1', () => {
   const sw = IGNIS_ATTACKS.swing.weight;
   const sm = IGNIS_ATTACKS.shieldSmash.weight;
   const sp = IGNIS_ATTACKS.spin.weight;
-  // 用户：「生效比例平分挥砍的动作的发生概率」⇒ swing 与盾击各拿原挥砍概率的一半
+  // 用户：「生效比例平分挥砍的动作的发生概率」⇒ swing 与持盾冲撞各拿原挥砍概率的一半
   assertEqual(sw, 0.35, '横扫权重 = 原 0.7 的一半');
-  assertEqual(sm, 0.35, '盾击权重 = 原挥砍 0.7 的一半（与横扫平分）');
+  assertEqual(sm, 0.35, '持盾冲撞权重 = 原挥砍 0.7 的一半（与横扫平分）');
   assertEqual(sp, 0.30, '旋斩权重不动（用户未要求改它）');
-  assertTrue(Math.abs(sw - sm) < 1e-12, `横扫 ${sw} 与盾击 ${sm} 必须严格相等（平分）`);
+  assertTrue(Math.abs(sw - sm) < 1e-12, `横扫 ${sw} 与持盾冲撞 ${sm} 必须严格相等（平分）`);
   const sum = sw + sm + sp;
   assertTrue(Math.abs(sum - 1) < 1e-9, `三档权重和 ${sum} ≠ 1`);
 });
 
-test('焰魔(v3.01): 盾击射程覆盖整个站定环（含外沿 5.0）—— 不再有盲区', () => {
+test('焰魔(v3.01): 持盾冲撞射程覆盖整个站定环（含外沿 5.0）—— 不再有盲区', () => {
   const r = IGNIS_ATTACKS.shieldSmash.hitRange;
-  // 去掉贴身门后，盾击必须在玩家站环上任何位置都够得到（否则又会「抽中却落空」）。
+  // 去掉贴身门后，持盾冲撞必须在玩家站环上任何位置都够得到（否则又会「抽中却落空」）。
   // 原版 4.85 < standoffRange 5.0 会在 [4.85, 5.0] 留一段盲区 ⇒ 改成 6.5 后盲区消失。
   assertTrue(r >= IGNIS_AI.standoffRange,
-    `盾击射程 ${r} 必须 ≥ 站定环半径 ${IGNIS_AI.standoffRange}（否则环外沿仍是盲区）`);
+    `持盾冲撞射程 ${r} 必须 ≥ 站定环半径 ${IGNIS_AI.standoffRange}（否则环外沿仍是盲区）`);
   assertTrue(r >= IGNIS_AI.attackRange,
-    `盾击射程 ${r} 必须 ≥ 起手距离 ${IGNIS_AI.attackRange}（否则起手了却够不到）`);
+    `持盾冲撞射程 ${r} 必须 ≥ 起手距离 ${IGNIS_AI.attackRange}（否则起手了却够不到）`);
   assertEqual(r, IGNIS_ATTACKS.spin.hitRange, '三招射程同值');
 });
 
@@ -329,8 +329,8 @@ test('焰魔: 命中盒实测度量（改烘焙器/素材后必须同步这里�
   // （模型空间 px，由下方 `coreBboxFromAsset` 复算）：x[−13.222, 13.222] y[5, 51.84] z[−14.753, 8.048]
   //   → 半长 (0.8264, 1.4637, 0.7125) 格；模型空间中心 (0, 1.7762, −0.2095) 格；
   //   → 渲染器把 mesh 下移 |feetOffsetY|（v3.01 实测 0.2228601 格），故相对脚底的中心 = (0, 1.5534, −0.2095)。
-  // ⚠️ v3.01 重标 center[1] 1.5106 → 1.5534：feetOffsetY 扫全部招式动画，加入盾击 attack1 后
-  // 从 −0.265625 变成 −0.2228601（盾击下蹲幅度比另两招浅 ⇒ 最低点上移）。halfExtents 来自 bind pose，不变。
+  // ⚠️ v3.01 重标 center[1] 1.5106 → 1.5534：feetOffsetY 扫全部招式动画，加入持盾冲撞 attack1 后
+  // 从 −0.265625 变成 −0.2228601（持盾冲撞下蹲幅度比另两招浅 ⇒ 最低点上移）。halfExtents 来自 bind pose，不变。
   // 旧值 halfExtents [0.8264, 1.421, 0.777] / MODEL_CENTER [0, 1.7335, 0.0895] 是 v2.58 之前
   // （错误旋转约定下的 bind pose）的实测，且 center 沿用「position = 核心中心」的旧语义。
   assertEqual(IGNIS_CORE_OBB.halfExtents[0], 0.8264);

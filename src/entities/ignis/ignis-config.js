@@ -23,14 +23,14 @@
 // `IGNIS_AI` 保留的四项是**派生最大值**（语义：最远/最宽能打到多远、最迟那一刀落在何时、
 // 最长的一招多长）。同一事实只有一份权威（红线 1），命中结算必须按 `req.kind` 取本招的值。
 //
-// ⚠️ **v3.01 盾击（`attack1`）加入后四项派生值的变化**：`hitRange` 6.5（不变）、
+// ⚠️ **v3.01 持盾冲撞（`attack1`）加入后四项派生值的变化**：`hitRange` 6.5（不变）、
 // `hitConeDeg` 155（不变）、`hitFrameSeconds` **1.20 → 1.70**、`attackAnimSeconds` **2.75 → 3.50**。
 // 因此 `attackCooldownMin` 必须同步 3.5 → 4.0（见它自己的注释）。
 //
 // ⚠️ **动画配对依据**（spec §2.0 的 tick 表）：Java `SWING_ATTACK` 是 55 tick，
 // 对应 Bedrock 的 **`attack6a`**（2.75 秒），**不是** `attack1`（70 tick = `SHIELD_SMASH_ATTACK`）。
 // 交叉证据：`attack6a` 的 `root.rotation.y` 到 −65°（配得上 arc 70° 的横扫），`attack1` 只到 +30°。
-// ⇒ v3.01 把 `attack1` 接成第三招**盾击**（与上表一致：70 tick / 小幅右拧 30°）。
+// ⇒ v3.01 把 `attack1` 接成第三招**持盾冲撞**（与上表一致：70 tick / 小幅右拧 30°）。
 //
 // ⚠️ 本文件**不 import 任何模块**：纯常量表。几何度量（`IGNIS_CORE_OBB` /
 // `IGNIS_MODEL_CENTER`）是烘焙产物 bind pose 的包围盒实测值，与 `tools/ignis-fingerprint.mjs` 的烘焙度量
@@ -126,7 +126,7 @@ export const IGNIS = Object.freeze({
  * 那是玩家绕到背后时唯一的安全位。写成 180 会让它消失，而**没有任何断言会红**
  * （它只是「打得更宽」）。守卫：`test-ignis-system.js` 的 `spin.hitConeDeg < 180`。
  *
- * 同理盾击的 `arc 45` ⇒ 半角 **22.5°**，**不是 45°**：写成 45 会让扇面变成 90°，
+ * 同理持盾冲撞的 `arc 45` ⇒ 半角 **22.5°**，**不是 45°**：写成 45 会让扇面变成 90°，
  * 同样没有任何断言会红。守卫：`test-ignis-system.js` 的 `shieldSmash.hitConeDeg < 45`。
  *
  * ⚠️ **伤害刻意不在这张表里**：用户 2026-11-07 裁定「照原版：同伤害」，三招共用
@@ -139,7 +139,7 @@ export const IGNIS_ATTACKS = Object.freeze({
     hitConeDeg: 35,
     hitFrameSeconds: 1.20,
     animSeconds: 2.75,
-    /** 抽签权重（三招之和 = 1）。v3.01 二次裁定：与盾击**严格平分**原挥砍的 0.7 ⇒ 各 0.35 */
+    /** 抽签权重（三招之和 = 1）。v3.01 二次裁定：与持盾冲撞**严格平分**原挥砍的 0.7 ⇒ 各 0.35 */
     weight: 0.35,
   }),
   /** 旋斩：身体绕竖轴扫一整圈（v2.75）。素材 `root.y` 净转角 ≈ 282° */
@@ -152,7 +152,7 @@ export const IGNIS_ATTACKS = Object.freeze({
     weight: 0.3,
   }),
   /**
-   * 盾击：盾臂抡砸（v3.01，用户 2026-11-13「我要把盾击招式整合进焰魔的招式里」）。
+   * 持盾冲撞（v3.01；初版曾命名「盾击」，用户 2026-11-14 裁定改名 —— 见下方「命名」段）。
    *
    * ## 四项数值的来源（`Ignis_Entity.aiStep()` 的 `SHIELD_SMASH_ATTACK` 分支，第 884~897 行）
    *
@@ -176,16 +176,31 @@ export const IGNIS_ATTACKS = Object.freeze({
    *
    * ⚠️ **锥宽未改**：仍是半角 22.5°（用户只要求改「生效距离」，未要求改扇面）。
    *
+   * ## 命名：为什么叫「持盾冲撞」而不是「盾击」（用户 2026-11-14 裁定 A）
+   *
+   * 用户实玩录像后指出「完全没有盾牌砸地的动作」，要求核实是否迁移错了。**实测结论：
+   * 迁移正确，是「盾击」这个名字与原版动作不符。** 用原版 Java 求 `SHIELD_SMASH_ATTACK`
+   * 的世界坐标，与产物逐点比（口径复用 `test-ignis-bake.js` 的 `probePoints`）：
+   * bind pose **0.00px**、关键帧点 t=1.0/1.5 **0.44px**、收势 t=3.5 **1.64px**；
+   * 中段最大 20.07px（t=0.5 剑尖）来自**线性插值 vs 原版 `sin(frac·π/2)` 缓动**，非迁移缺陷。
+   *
+   * 原版盾尖 y 轨迹（px，y 向上，焰魔总高约 65px）：起手 21.2 → 蓄力峰值 **57.4** →
+   * 压下 **38.9** → 收势 21.2。**最低只到 38.9px = 2.43 格（自己的胸腰高度），从未触地。**
+   * 头顶全程稳在 49~51px。蓄力→压下的位移：盾尖 1.286 格 vs 头顶 1.594 格 ⇒ **头动得比盾多**
+   * （比值 0.81）。所以原版动作是「举盾过顶 → 连人带盾向前下方压过去」= **持盾冲撞**。
+   *
+   * ⚠️ 本注释此前写的「盾砸到脚前地面 y 3.47→0.98、位移是头的 5.94 倍」**是错的**：
+   * 那组数字出自一个漏了 `−R·pivot` 项、原点口径也未对齐的临时探针。已按上述实测纠正。
+   *
    * ## 刻意不取的原版行为（用户裁定③「只扣血」，本轮仍成立）
    *
    * - `damage=1.5` 与 `hpdamage=0.15` 两项都**不取**（同另两招：用 `IGNIS.attackDamage`）；
    * - tick 34/37/40 的三段 `ShieldSmashDamage`（掠飞石 + `Cm_Falling_Block_Entity`）**不取**；
    * - `ScreenShake_Entity`（屏幕震动）与 `ShieldSmashparticle`（碎石特效）**不取**。
    *
-   * ⚠️ **观感后果（实测）**：原版这一招是「上半身前扑 + 盾砸向地面」，靠飞石/震屏/
-   * 范围伤害给出「砸地」的反馈。去掉这些后，画面上只剩全身前扑（upperbody 前倾 −83.6°、
-   * head −52.3°），而盾是往下砸到脚前地上（y 3.47→0.98）—— 用户因此描述为「头部撞击」。
-   * 盾的位移实测是头的 **5.94 倍**，动画本身未接错。要改得像「盾往人身上砌」需另开改动。
+   * ⚠️ **观感后果**：原版靠飞石/震屏/范围伤害告诉玩家「这一下撞中了」。裁定③去掉这些后
+   * 只剩身体前压，用户因此读作「头部撞击」。用户裁定 **A：保留动作、只改名**，
+   * 不补反馈也不改动画（补反馈或改动画各自是独立改动）。
    */
   shieldSmash: Object.freeze({
     hitRange: 6.5,
@@ -203,7 +218,7 @@ export const IGNIS_ATTACKS = Object.freeze({
   }),
 });
 
-/** 合法的攻击档案键（`attackKind` 的取值域）。顺序 = 抽签顺序（⚠️ 载荷性：盾击必须排最后） */
+/** 合法的攻击档案键（`attackKind` 的取值域）。顺序 = 抽签顺序（⚠️ 载荷性：持盾冲撞必须排最后） */
 export const IGNIS_ATTACK_IDS = Object.freeze(Object.keys(IGNIS_ATTACKS));
 
 /**
@@ -272,7 +287,7 @@ export const IGNIS_AI = Object.freeze({
    * 横扫：作者在 `SWING_ATTACK` 的 **tick 24** 结算（`Ignis_Entity.java` 的 `aiStep()`：
    * `getAnimationTick() == 24` → `AreaAttack(...)`），24 ÷ 20 = **1.20 秒**；
    * 旋斩：`SPIN_ATTACK` 的 **tick 14** ⇒ **0.70 秒**；
-   * 盾击（v3.01）：`SHIELD_SMASH_ATTACK` 的 **tick 34** ⇒ **1.70 秒**。取最大 ⇒ 1.70。
+   * 持盾冲撞（v3.01）：`SHIELD_SMASH_ATTACK` 的 **tick 34** ⇒ **1.70 秒**。取最大 ⇒ 1.70。
    */
   hitFrameSeconds: ATTACK_MAX.hitFrameSeconds,
   /**
@@ -280,7 +295,7 @@ export const IGNIS_AI = Object.freeze({
    *
    * 横扫 = Java `SWING_ATTACK` 的 55 tick = **2.75 秒**（↔ Bedrock `attack6a`）；
    * 旋斩 = `SPIN_ATTACK` 的 38 tick = **1.90 秒**（↔ `attack8a3`）；
-   * 盾击（v3.01）= `SHIELD_SMASH_ATTACK` 的 70 tick = **3.50 秒**（↔ `attack1`）。
+   * 持盾冲撞（v3.01）= `SHIELD_SMASH_ATTACK` 的 70 tick = **3.50 秒**（↔ `attack1`）。
    * 与烘焙产物各条动画的 `frameCount / fps` 同源。
    *
    * ⚠️ 派生取最大值是载荷性的：`attackCooldownMin > attackAnimSeconds` 这条不变式
@@ -369,8 +384,8 @@ export const IGNIS_AI = Object.freeze({
    *
    * ## v3.01：3.5 → 4.0（用户裁定④）
    *
-   * 加入盾击后 `attackAnimSeconds` 派生成 **3.50**，与旧下限 3.5 **恰好相等** ⇒ 不变式破。
-   * 盾击命中后动画还剩 `3.50 − 1.70 = 1.80` 秒；取 4.0 留 `4.0 − 1.80 = 2.20` 秒余量。
+   * 加入持盾冲撞后 `attackAnimSeconds` 派生成 **3.50**，与旧下限 3.5 **恰好相等** ⇒ 不变式破。
+   * 持盾冲撞命中后动画还剩 `3.50 − 1.70 = 1.80` 秒；取 4.0 留 `4.0 − 1.80 = 2.20` 秒余量。
    *
    * **代价（用户已接受）**：普攻与旋斩的命中间隔也一起从 [3.5, 6.0] 变成 [4.0, 6.0]，
    * Boss 压迫感略降。
@@ -683,8 +698,8 @@ export const IGNIS_STEERING = Object.freeze({
 export const IGNIS_CORE_OBB = Object.freeze({
   halfExtents: Object.freeze([0.8264, 1.4637, 0.7125]),
   // v3.01 重标（**不是放宽**）：`center[1] = MODEL_CENTER[1] + feetOffsetY`，
-  // 而 `feetOffsetY` 是烘焙器扫**全部招式动画**算出的全程最低点 —— 加入盾击 `attack1`
-  // 后它从 −0.265625 变成 **−0.2228601**（盾击的下蹲幅度比另两招浅 ⇒ 最低点上移 0.0428 格）。
+  // 而 `feetOffsetY` 是烘焙器扫**全部招式动画**算出的全程最低点 —— 加入持盾冲撞 `attack1`
+  // 后它从 −0.265625 变成 **−0.2228601**（持盾冲撞的下蹲幅度比另两招浅 ⇒ 最低点上移 0.0428 格）。
   // 旧值 1.5106 = 1.7762 + (−0.265625)。`halfExtents` 与 `MODEL_CENTER` 来自 bind pose，与动画无关 ⇒ 不变。
   center: Object.freeze([0, 1.5534, -0.2095]),
 });
@@ -799,13 +814,13 @@ export const IGNIS_POSE_BLEND = Object.freeze({
  * 测试不得各自再写一份映射。⚠️ 按**目标来源**取值 —— 淡入旋斩用 `spinInSeconds`，
  * 旋斩收招回 idle 的时长取决于 `'idle'`，不是 `'spin'`。
  *
- * ## v3.01 盾击走默认 0.2s（不新增常量）
+ * ## v3.01 持盾冲撞走默认 0.2s（不新增常量）
  *
- * 依据：盾击起手是「身体右拧 30° + 盾臂后收」，**没有旋斩那种 177° 的单帧硬切**
- * （旋斩的问题是 `sword` 一帧甲 177°，盾击的 `root.y` 只到 30°、且是 1.0 秒缓入）。
+ * 依据：持盾冲撞起手是「身体右拧 30° + 盾臂后收」，**没有旋斩那种 177° 的单帧硬切**
+ * （旋斩的问题是 `sword` 一帧甲 177°，持盾冲撞的 `root.y` 只到 30°、且是 1.0 秒缓入）。
  * 硬约束「淡入必须在命中帧之前走完」：0.2 ≪ 1.70 ✓，余量极大。
  * ⚠️ 单帧角仍要实测（spec §5.4 明确要求不凭推理宣称通过）：守卫在
- * `test-ignis-render.js` 的「盾击淡入在命中帧之前走完」用例，阈值由 `clipMaxStepDeg` 现算。
+ * `test-ignis-render.js` 的「持盾冲撞淡入在命中帧之前走完」用例，阈值由 `clipMaxStepDeg` 现算。
  */
 export function ignisBlendSeconds(sourceKey) {
   return sourceKey === 'spin' ? IGNIS_POSE_BLEND.spinInSeconds : IGNIS_POSE_BLEND.seconds;

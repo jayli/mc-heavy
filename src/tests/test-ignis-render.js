@@ -245,7 +245,7 @@ test('焰魔渲染(v2.75): attackKind="spin" 时用 spin 动画（不是 attack�
   r.dispose();
 });
 
-// ==================== 第三招：盾击（v3.01）====================
+// ==================== 第三招：持盾冲撞（v3.01）====================
 
 test('焰魔渲染(v3.01): attackKind="shieldSmash" 时用 shieldSmash 动画（三招姿态互不相同）', async () => {
   const d = await getAsset();
@@ -262,15 +262,15 @@ test('焰魔渲染(v3.01): attackKind="shieldSmash" 时用 shieldSmash 动画（
     for (let i = 0; i < p.length; i++) for (let k = 0; k < 4; k++) s += Math.abs(p[i][k] - q[i][k]);
     return s;
   };
-  // 取 1.0s：盾击此时蓄力到位（盾臂 −30°），与另两招形态差别最大
+  // 取 1.0s：持盾冲撞此时蓄力到位（盾臂 −30°），与另两招形态差别最大
   const swing = poseOf({ attackAnimT: 1.0, attackKind: 'swing' });
   const spin = poseOf({ attackAnimT: 1.0, attackKind: 'spin' });
   const smash = poseOf({ attackAnimT: 1.0, attackKind: 'shieldSmash' });
   assertTrue(dist(smash, swing) > 0.2,
-    `盾击与横扫在 1.0s 的姿态差仅 ${dist(smash, swing).toFixed(4)}`
-    + ' —— 渲染器没按 attackKind 选动画（形态是把盾击播成横扫，而「有动画在播」的断言全绿）');
+    `持盾冲撞与横扫在 1.0s 的姿态差仅 ${dist(smash, swing).toFixed(4)}`
+    + ' —— 渲染器没按 attackKind 选动画（形态是把持盾冲撞播成横扫，而「有动画在播」的断言全绿）');
   assertTrue(dist(smash, spin) > 0.2,
-    `盾击与旋斩在 1.0s 的姿态差仅 ${dist(smash, spin).toFixed(4)}`);
+    `持盾冲撞与旋斩在 1.0s 的姿态差仅 ${dist(smash, spin).toFixed(4)}`);
   // 反向：缺 attackKind 仍回落 attack（swing）—— 与既有口径一致
   const legacy = poseOf({ attackAnimT: 1.0 });
   assertTrue(dist(legacy, swing) < 1e-9, '缺 attackKind 时应回落 attack（swing）动画');
@@ -885,13 +885,13 @@ test('焰魔姿态衔接(v2.76): 站定 → 挥砍起手同样平滑（挥砍首
   assertTrue(worst <= limit, `挥砍入场补间单帧最大骨骼角 ${worst.toFixed(1)}° 超过合法上限 ${limit.toFixed(1)}°`);
 });
 
-test('焰魔姿态衔接(v3.01): 盾击淡入在命中帧之前走完，且补间单帧角不超片段自身上限', async () => {
+test('焰魔姿态衔接(v3.01): 持盾冲撞淡入在命中帧之前走完，且补间单帧角不超片段自身上限', async () => {
   const d = await getAsset();
-  assertEqual(ignisBlendSeconds('shieldSmash'), 0.2, '盾击入场用默认档（与横扫同）');
+  assertEqual(ignisBlendSeconds('shieldSmash'), 0.2, '持盾冲撞入场用默认档（与横扫同）');
   assertTrue(ignisBlendSeconds('shieldSmash') < IGNIS_ATTACKS.shieldSmash.hitFrameSeconds,
-    '淡入必须在命中帧之前走完 —— 命中那一刻画面要是完整盾击姿态');
+    '淡入必须在命中帧之前走完 —— 命中那一刻画面要是完整持盾冲撞姿态');
   // ⚠️ limit **必须实测**，不得照抄旋斩的 24.5°（那是旋斩片段的值）。
-  // 依据：盾击起手是 1.0s 缓入（root.y 只到 30°），没有旋斩那种 177° 的单帧硬切。
+  // 依据：持盾冲撞起手是 1.0s 缓入（root.y 只到 30°），没有旋斩那种 177° 的单帧硬切。
   const limit = clipMaxStepDeg(d.animations.shieldSmash);
   const period = d.animations.idle.frameCount / d.animations.idle.fps;
   let worst = 0;
@@ -903,9 +903,9 @@ test('焰魔姿态衔接(v3.01): 盾击淡入在命中帧之前走完，且补�
     hardWorst = Math.max(hardWorst, poseStepDeg(seq[0], sampleIgnisAttack(d.animations.shieldSmash, 1 / 60)));
   }
   // 判别力自检：硬切换确实比淡入后更糟（只钉「变小」拓不到「数据变了、根本没有跳变」的退化）。
-  // 盾击首帧几乎就是 bind（起手静止）⇒ 硬切换本身也很小，这里不拿 100° 阀值（那是旋斩的）。
+  // 持盾冲撞首帧几乎就是 bind（起手静止）⇒ 硬切换本身也很小，这里不拿 100° 阀值（那是旋斩的）。
   assertTrue(worst <= limit,
-    `盾击入场补间单帧最大角 ${worst.toFixed(1)}° 超过片段自身上限 ${limit.toFixed(1)}°`
+    `持盾冲撞入场补间单帧最大角 ${worst.toFixed(1)}° 超过片段自身上限 ${limit.toFixed(1)}°`
     + `（硬切换对照 ${hardWorst.toFixed(1)}°）`);
 });
 

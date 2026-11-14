@@ -59,8 +59,8 @@ export const SOUND_IDS = Object.freeze(['gun_load', 'gun_fire', 'mag7_fire', 'mi
   'player_swing', 'emp_activated',
   // v2.79：焰魔旋斩（.ogg，见 SOUND_EXT_OVERRIDES 与 IGNIS_ATTACK_SOUNDS）
   'ignis_attack_circle',
-  // v3.01：焰魔**盾击**起手音。文件来自 mod 的 `sword_stomp.ogg`（强化砸地踏步音），
-  // 逐字节拷入、未转码。⚠️ **这是近似替代，不是原版盾击音** —— 原版
+  // v3.01：焰魔**持盾冲撞**起手音。文件来自 mod 的 `sword_stomp.ogg`（强化砸地踏步音），
+  // 逐字节拷入、未转码。⚠️ **这是近似替代，不是原版该招的音** —— 原版
   // `SHIELD_SMASH_ATTACK` 分支播的是 Minecraft 原版 `SoundEvents.TOTEM_USE`，本仓没有那个文件。
   // 将来对照原版时不要把本条当作「原音」（用户裁定⑤选它作近似）。
   'ignis_attack_smash',
@@ -93,7 +93,7 @@ export const SOUND_EXT_OVERRIDES = Object.freeze({
   emp_activated: 'ogg',
   // v2.79：焰魔旋斩
   ignis_attack_circle: 'ogg',
-  // v3.01：焰魔盾击（mod sword_stomp.ogg 的近似替代）。漏加本表 = 静默无声
+  // v3.01：焰魔持盾冲撞（mod sword_stomp.ogg 的近似替代）。漏加本表 = 静默无声
   ignis_attack_smash: 'ogg',
   // 末影守卫：三个都是 .ogg。⚠️ **漏加本表 = 静默无声**（按 .mp3 去 fetch ⇒ 404 被 catch 吞）
   guardian_attack: 'ogg',
@@ -137,7 +137,7 @@ export const SOUND_VOLUMES = Object.freeze({
   // v2.79：与 `ignis_attack_swing` 同档。实测素材峰值 circle −0.3 dB / swing −0.9 dB
   //（平均能量 circle 高约 9 dB）—— 初值取同档，嫌响/嫌轻只改这一个数，不动触发点。
   ignis_attack_circle: 0.5,
-  // v3.01：盾击与另两招同档（嫌响/嫌轻只改这一个数，不动触发点）
+  // v3.01：持盾冲撞与另两招同档（嫌响/嫌轻只改这一个数，不动触发点）
   ignis_attack_smash: 0.5,
   // 末影守卫：照焰魔 0.5 同档（嫌响/嫌轻只改这三个数，不动触发点）
   guardian_attack: 0.5,
@@ -162,7 +162,7 @@ export const SOUND_VOLUMES = Object.freeze({
 export const IGNIS_ATTACK_SOUNDS = Object.freeze({
   swing: 'ignis_attack_swing',
   spin: 'ignis_attack_circle',
-  /** v3.01：盾击（mod `sword_stomp.ogg` 的近似替代，非原版 TOTEM_USE） */
+  /** v3.01：持盾冲撞（mod `sword_stomp.ogg` 的近似替代，非原版 TOTEM_USE） */
   shieldSmash: 'ignis_attack_smash',
 });
 

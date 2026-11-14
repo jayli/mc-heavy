@@ -38,12 +38,12 @@ async function loadSource() {
 
 // ==================== 结构性契约 ====================
 
-test('焰魔烘焙: 产物存在且动画清单是 idle + attack + spin + shieldSmash（第三招盾击，v3.01）', async () => {
+test('焰魔烘焙: 产物存在且动画清单是 idle + attack + spin + shieldSmash（第三招持盾冲撞，v3.01）', async () => {
   const d = await loadAsset();
   assertEqual(Object.keys(d.animations).sort().join(','), 'attack,idle,shieldSmash,spin');
 });
 
-// ==================== 第三招：盾击（v3.01）====================
+// ==================== 第三招：持盾冲撞（v3.01）====================
 //
 // 素材鉴别（2026-11-13 实测扫描全部 82 条 ignis 动画，见 spec §2.2）：
 // **`attack1`** 与 Java `SHIELD_SMASH_ATTACK` 的共有骨骼关键帧最大逐轴差 **15.000°**，
@@ -75,7 +75,7 @@ test('焰魔烘焙(v3.01): shieldSmash 帧数 = round(3.5 × 30) = 105，fps 30�
   assertEqual(a.frameCount / a.fps, 3.5);
 });
 
-test('焰魔烘焙(v3.01): shieldSmash 是盾臂抡砸 —— left_arm_joint 绕 X 行程 ≥ 60°', async () => {
+test('焰魔烘焙(v3.01): shieldSmash 是举盾过顶再压下 —— left_arm_joint 绕 X 行程 ≥ 60°', async () => {
   const d = await loadAsset();
   const a = d.animations.shieldSmash;
   const idx = d.bones.findIndex((b) => b.name === 'left_arm_joint');
@@ -88,7 +88,7 @@ test('焰魔烘焙(v3.01): shieldSmash 是盾臂抡砸 —— left_arm_joint 绕
     return [a.frames[o], a.frames[o + 1], a.frames[o + 2], a.frames[o + 3]];
   };
   const swingDeg = quatAngleDeg(quatAt(1.0), quatAt(1.75));
-  // ⚠️ 判据落在盾臂行程，不是 root.y 幅度：盾击 root.y 只到 30°，
+  // ⚠️ 判据落在盾臂行程，不是 root.y 幅度：持盾冲撞 root.y 只到 30°，
   // 用「root 转角大」会把它误判成小横扫（spec §6.3）
   assertTrue(swingDeg >= 60,
     `盾臂行程只有 ${swingDeg.toFixed(1)}°（< 60°）—— 接成了别的动画`);

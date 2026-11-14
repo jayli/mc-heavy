@@ -151,7 +151,8 @@ export const IGNIS_ANIM_SOURCES = Object.freeze({
    */
   spin: Object.freeze(['attack8a3']),
   /**
-   * 盾击（v3.01）：盾臂抡砸（Java 的 `SHIELD_SMASH_ATTACK`，70 tick）。
+   * 持盾冲撞（v3.01）：举盾过顶后连人带盾向前下方压（Java 的 `SHIELD_SMASH_ATTACK`，70 tick）。
+   * ⚠️ 不是「盾砸地」：实测盾尖最低只到 2.43 格（自己的胸腰高度），从未触地。
    *
    * ⚠️⚠️ **是 `attack1`，不是 `attack1_2`**：后者是 3s / 11 骨骼的另一招，
    * 同一探针下与 `SHIELD_SMASH_ATTACK` 差 **72.5°**（而 `attack1` 只差 15.0°）。

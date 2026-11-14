@@ -415,7 +415,7 @@ test('audio-config: ignisAttackSound 缺省/非法 attackKind 回落 swing（不
   assertEqual(ignisAttackSound('swing'), 'ignis_attack_swing');
 });
 
-test('audio-config(v3.01): 盾击起手音是 ignis_attack_smash（近似替代，不是原版 TOTEM_USE）', () => {
+test('audio-config(v3.01): 持盾冲撞起手音是 ignis_attack_smash（近似替代，不是原版 TOTEM_USE）', () => {
   assertEqual(IGNIS_ATTACK_SOUNDS.shieldSmash, 'ignis_attack_smash');
   assertEqual(ignisAttackSound('shieldSmash'), 'ignis_attack_smash');
   assertEqual(soundFileName('ignis_attack_smash'), 'ignis_attack_smash.ogg');
