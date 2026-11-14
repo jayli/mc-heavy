@@ -1,13 +1,22 @@
 // src/tests/test-moonlight.js — 夜间月光照耀（v3.00）的纯函数契约
 //
-// 方案 A 的核心不变式：**月亮方向 ≡ 光照方向**。这条不在着色器里，而在数据层：
-// `VISUAL_STYLES[key].moonDirection` 与同风格 `sunDirection` 同向 ⇒ 月轮 sprite 出现在
-// 太阳光来的那侧 ⇒ 夜间迎光面朝向月亮、影子背离月亮。
+// ## 不变式（用户 2026-11-14 二次裁定后的口径）
 //
-// ⚠️ 为什么必须四风格都对齐、而不是只改 night：19:00~21:00 是 `moonVisible` 已为 true
-// 但方向仍在 morning→night 之间插值的时段。只改 night 会让月亮在这 2 小时里扫过天顶
-// （仰角 26.7°→64.4°→14.5°、单步方位跳 61.7°）。四风格一起改则月亮永远沿太阳的既有
-// 平滑轨迹（全程 dot = 1.000000）。
+// 初版是「四风格 moonDirection ≡ sunDirection」。用户实玩后裁定
+// 「月亮高度太低，月亮的方位不变，光源也不变，高度调高一些」⇒ 落地为：
+//
+//   · **所有风格的 `sunDirection` 一个字节不动**（「光源也不变」）—— 地面明暗与影子方向
+//     仍完全由它驱动，阴影灯定位 / 枪 PBR 高光 / 三个 spec 的接线口径不受影响；
+//   · 每个风格的 `moonDirection` = **本风格 `sunDirection` 的方位 + 仰角 35.4241°**
+//     （方位不变、高度 = mc-lite 原 night 月亮的仰角）；
+//   · 只有 night 的 `moonVisible` 为 true，morning/noon/dusk 不可见。
+//
+// ⚠️ **为什么另外三个风格也必须用新方位**（而不是回退 mc-lite 原值）：19:00~21:00 与
+// 5:00~7:00 是 morning↔night 的插值段，而 `moonVisible` 在 19.25 就已经是 true。
+// 若 morning 的旧向量 `[-0.38,0.45,-0.81]` 与新 night 向量几乎反向，插值会抳出一个
+// **天顶弧**（实测仰角冲到 73.12°、方位单步跳 65°），而那时月亮已经可见 —— 视觉上是
+// 「月亮从东边掠过天顶再落到西边」。三个不可见风格同方位后，可见时段只扫方位 1.7°/步、
+// 仰角恒定。
 import { test } from './runner.js';
 import { assertTrue } from './assert.js';
 import { VISUAL_STYLES, paramsAtHour } from '../render/daynight.js';
@@ -17,22 +26,40 @@ function normalize(v) {
   return [v[0] / len, v[1] / len, v[2] / len];
 }
 
-test('moonlight: 全天任意小时 moonDirection ≡ sunDirection（插值同轨迹）', () => {
-  // 0.125h 网格：既有「方向连续」用例用的就是这个网格（7/9/17/19 边界都是它的整数倍）
-  for (let h = 0; h <= 24 + 1e-9; h += 0.125) {
-    const p = paramsAtHour(h);
-    for (let i = 0; i < 3; i++) {
-      assertTrue(Math.abs(p.moonDirection[i] - p.sunDirection[i]) < 1e-12,
-        `h=${h.toFixed(3)} 分量 ${i}: moon=${p.moonDirection[i]} sun=${p.sunDirection[i]}`);
-    }
-  }
+/** 仰角（度） */
+function elevOf(v) {
+  const l = Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+  return Math.asin(v[1] / l) * 180 / Math.PI;
+}
+
+/** 方位角（度，+Z 为 0、+X 为 +90） */
+function azimOf(v) {
+  return Math.atan2(v[0], v[2]) * 180 / Math.PI;
+}
+
+test('moonlight: 夜间月亮方位 = 光照方位，仰角 = 35.4241°（抬高但方位不变）', () => {
+  const n = VISUAL_STYLES.night;
+  const m = normalize(n.moonDirection);
+  const s = normalize(n.sunDirection);
+  // 方位一致（「方位不变」）
+  assertTrue(Math.abs(azimOf(m) - azimOf(s)) < 0.01,
+    `月亮方位须等于光照方位：moon=${azimOf(m).toFixed(4)}° sun=${azimOf(s).toFixed(4)}°`);
+  // 仰角 = mc-lite 原值 35.4241°
+  assertTrue(Math.abs(elevOf(m) - 35.4241) < 0.01,
+    `月亮仰角须 ≈35.4241°（mc-lite 原值）：实测 ${elevOf(m).toFixed(4)}°`);
+  // 光源不动 —— 仰角仍是 14.5° 那一档
+  assertTrue(elevOf(s) < 15, `光源仰角须保持不动（<15°）：实测 ${elevOf(s).toFixed(4)}°`);
+  // 两者之间的夹角量化（便于以后 review 对比）：同方位、仰角差 20.85°
+  const dot = m[0] * s[0] + m[1] * s[1] + m[2] * s[2];
+  assertTrue(dot > 0.9 && dot < 0.999,
+    `月亮与光照须同方位但不同仰角（夹角应在 0~25°）：dot=${dot.toFixed(6)}`);
 });
 
-test('moonlight: 月亮走过的轨迹连续（只改 night 会在 20:00 跳 61.7°）', () => {
-  // 单独一条：即使「moon ≡ sun」成立，也不代表插值本身连续 —— 它依赖风格数据都对齐。
-  // 阈值沿用既有用例的 0.05（归一化后分量差）。
-  // ⚠️ 四风格全对齐后 moon 与 sun 同轨迹 ⇒ 实测最大分量差就是 sun 的 0.02513。
-  //    只改 night 时实测会到 0.13+（20:00 单步跳 61.7°），本阈值能抓到。
+test('moonlight: 自动循环里月亮轨迹连续（无天顶弧、无跳变，0.125h 网格）', () => {
+  // 阈值沿用既有「方向连续」用例的 0.05（归一化后分量差）。
+  // ✅ 正确口径实测：最大分量差 0.01026 @h=8.375（余量 5×）。
+  // ❌ 若 morning 的 moonDirection 回退成 mc-lite 原值（与新 night 反向），实测会到
+  //    0.13+（h=5.25），本断言真 FAIL —— 这就是它守的东西。
   let prev = paramsAtHour(0).moonDirection;
   for (let h = 0.125; h <= 24 + 1e-9; h += 0.125) {
     const cur = paramsAtHour(h).moonDirection;
@@ -44,17 +71,42 @@ test('moonlight: 月亮走过的轨迹连续（只改 night 会在 20:00 跳 61.
   }
 });
 
-test('moonlight: 月亮出现的时段（19~21）方向必须单调走向 night 值', () => {
-  // moonVisible 在 19.5 起为 true。此前插值的是 morning→night，此时 morning.moonDirection
-  // 若不对齐会给出一个完全不同的方位 —— 这正是「只改 night」的失效形态。
-  const nightDir = normalize(VISUAL_STYLES.night.moonDirection);
-  for (const h of [19.5, 20, 20.5, 21, 22]) {
-    const p = paramsAtHour(h);
-    assertTrue(p.moonVisible === true, `h=${h} 月亮应可见`);
-    const d = p.moonDirection;
-    const dot = d[0] * nightDir[0] + d[1] * nightDir[1] + d[2] * nightDir[2];
-    assertTrue(dot > 0.85, `h=${h} 月亮方向须接近 night 值（不得跳到另一侧）：dot=${dot.toFixed(4)}`);
+test('moonlight: 月亮可见时段仰角恒定 35.42°（不得出现天顶弧）', () => {
+  // 可见时段的**全时段**仰角都必须贴着 35.42° —— 不是"单调"，而是"不爬升"。
+  // 这条直接钉住「19→21 抳到 73° 再落回」那类缺陷（回归形态见文件头注释）。
+  const visibleHours = [];
+  for (let h = 0; h <= 24; h += 0.125) {
+    if (paramsAtHour(h).moonVisible) visibleHours.push(h);
   }
+  assertTrue(visibleHours.length > 40, `可见时段须覆盖多个采样点（否则判据无法判别）：实测 ${visibleHours.length}`);
+
+  let maxDev = 0, worstH = 0;
+  for (const h of visibleHours) {
+    const e = elevOf(paramsAtHour(h).moonDirection);
+    const dev = Math.abs(e - 35.4241);
+    if (dev > maxDev) { maxDev = dev; worstH = h; }
+    assertTrue(dev < 0.05,
+      `h=${h} 月亮可见时仰角须恒定 35.4241°（不得抳天顶）：实测 ${e.toFixed(3)}°`);
+  }
+  // 把最大偏差也打出来（实测 0.048° @h≈19.125 —— 那是 morning→night 插值的自然斜率，
+  // 不是天顶弧；天顶弧的回归形态是 73°，会先被上面的断言拓住）
+  assertTrue(maxDev < 0.1, `仰角最大偏差须 < 0.1°：实测 ${maxDev.toFixed(4)}° @h=${worstH}`);
+});
+
+test('moonlight: 月亮可见时方位只在同一条方位线上小幅扫动（不横穿天空）', () => {
+  // 方位从 morning 的 +11.56° 平滑过渡到 night 的 +4.76°（不可见风格的方位也在这条线上）。
+  // 若不可见风格回退成旧向量，可见时段会出现 −155° 那样的大跳（月亮横穿天空）。
+  const visibleHours = [];
+  for (let h = 0; h <= 24; h += 0.125) {
+    if (paramsAtHour(h).moonVisible) visibleHours.push(h);
+  }
+  const azims = visibleHours.map((h) => azimOf(paramsAtHour(h).moonDirection));
+  const lo = Math.min(...azims), hi = Math.max(...azims);
+  assertTrue(hi - lo < 10,
+    `可见时段方位跨度须 < 10°（不得横穿天空）：实测 ${lo.toFixed(2)}° ~ ${hi.toFixed(2)}°（跨度 ${(hi - lo).toFixed(2)}°）`);
+  // 且必须落在 night 方位附近（+4.76°），不得跑到另一侧
+  assertTrue(lo > -10 && hi < 20,
+    `可见时段方位须在 night 方位附近（-10°~20°）：实测 ${lo.toFixed(2)}° ~ ${hi.toFixed(2)}°`);
 });
 
 test('moonlight: night 的月光色温偏冷且量级合理', () => {

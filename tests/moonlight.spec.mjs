@@ -6,16 +6,15 @@ import { PNG } from 'pngjs';
  *
  * ## 本轮到底改了什么（这决定判据能测什么）
  *
- * 方案 A **不动 `uSunDirection`**（它仍等于 `sunDirection`）⇒ 体素世界的 N·L 几何**逐位不变**。
- * 所以「切光照方向看亮度差」测的是既有行为，**不是**本轮改动 —— 那种判据会假绿。
- * 本轮两个可观测变化：
- *   ① 月轮 sprite 搬到了光照方向那侧（几何）；
+ * **`uSunDirection` 一个字节不动**（它仍等于 `sunDirection`）⇒ 体素世界的 N·L 几何
+ * **逐位不变**，地面明暗与影子方向也完全不变。本轮两个可观测变化：
+ *   ① 月轮 sprite 的**仰角从 14.55° 抬到 35.42°**（方位不变）；
  *   ② 夜间色温变冷（像素）。
  *
  * ## 判据
- *   ① 月轮方向 ≡ `uSunDirection`（几何，dot > 0.999）—— 本轮的核心断言；
+ *   ① 月轮方位 = 光照方位、仰角 ≈35.42°、且光源仰角保持 14.5°（几何）；
  *   ② 夜间地面偏冷（像素），亮度不变 —— 同页 A/B 交替对照，唯一变量是两个色温 uniform；
- *   ③ 隔离：只改 `moonDirectory` 重摆月轮 ⇒ 地面像素逐位不变（钉住"不经过光照通路"）；
+ *   ③ 隔离：只改 sprite 位置重摆月轮 ⇒ 地面像素逐位不变（钉住"不经过光照通路"）；
  *   ④ 白天零回归：`?style=noon` 的月轮不可见、色温中性。
  *
  * ⚠️ HUD 必须隐藏、阴影必须关（`setShadowsEnabled(false)`）—— `sun-shadow`/`dusk-style` 的既有教训：
@@ -50,35 +49,55 @@ async function boot(page, style) {
   });
 }
 
-test('月光①：月轮方向必须等于光照方向（dot > 0.999）', async ({ page }) => {
+test('月光①：月轮方位 = 光照方位、仰角擡高到 35.42°（光源一个字节不动）', async ({ page }) => {
   test.setTimeout(180_000);
   await boot(page, 'night');
   const s = await page.evaluate(() => {
     const g = window.__MC_GAME__;
-    g._updateCelestial(); // 保证 sprite 已按当前 params 摆好
+    // `_updateCelestial()` 只在重定位时机被调（移动 >5 格 / 方向过门控）。
+    // 这里���接摆，并用**真实的 placeCelestial 同款公式**（距离 = far × 0.55）——
+    // 拿 sprite 相对相机的方向，而不是读参数 —— 才能验到真实接线。
     const cam = g.camera.position;
     const m = g.sky.moonSprite.position;
     const dx = m.x - cam.x, dy = m.y - cam.y, dz = m.z - cam.z;
     const len = Math.hypot(dx, dy, dz);
     const u = g.renderWorld.materials.dayNight.uSunDirection.value;
     return {
-      moon: [dx / len, dy / len, dz / len],
-      sun: [u.x, u.y, u.z],
+      moonDir: [dx / len, dy / len, dz / len],
+      sunDir: [u.x, u.y, u.z],
       sunLen: Math.hypot(u.x, u.y, u.z),
-      visible: g.sky.moonSprite.visible,
+      paramsMoon: g.dayNight.params.moonDirection,
+      paramsSun: g.dayNight.params.sunDirection,
     };
   });
-  const dot = s.moon[0] * s.sun[0] + s.moon[1] * s.sun[1] + s.moon[2] * s.sun[2];
+  const elev = (v) => Math.asin(v[1]) * 180 / Math.PI;
+  const azim = (v) => Math.atan2(v[0], v[2]) * 180 / Math.PI;
+  // sprite 位置 = 相机 + params.moonDirection × dist ⇒ 归一化后应与 params 逐位一致
+  const dotParams = s.moonDir[0] * s.paramsMoon[0] + s.moonDir[1] * s.paramsMoon[1] + s.moonDir[2] * s.paramsMoon[2];
   console.log('MOONLIGHT DIR:', JSON.stringify({
-    dot: +dot.toFixed(6),
-    moon: s.moon.map((v) => +v.toFixed(4)),
-    sun: s.sun.map((v) => +v.toFixed(4)),
+    moonElev: +elev(s.moonDir).toFixed(4), moonAzim: +azim(s.moonDir).toFixed(4),
+    sunElev: +elev(s.sunDir).toFixed(4), sunAzim: +azim(s.sunDir).toFixed(4),
+    dotParams: +dotParams.toFixed(6),
   }));
 
-  expect(s.visible, '夜间月轮须可见（moonVisible 驱动）').toBe(true);
-  expect(s.sunLen, 'uSunDirection 须是单位向量（否则 dot 无意义）').toBeGreaterThan(0.999);
-  expect(dot, `月轮方向须与光照方向一致（月亮在光来的那侧），实测 dot=${dot.toFixed(6)}`)
-    .toBeGreaterThan(0.999);
+  expect(s.sunLen, 'uSunDirection 须是单位向量').toBeGreaterThan(0.999);
+  // ① sprite 真的按 params 摆的（接线正确，而不是恰好碰对）
+  expect(dotParams, `月轮位置须与 params.moonDirection 一致（接线正确）：dot=${dotParams.toFixed(6)}`)
+    .toBeGreaterThan(0.9999);
+  // ② 方位不变（用户「月亮的方位不变」）
+  expect(Math.abs(azim(s.moonDir) - azim(s.sunDir)),
+    `月亮方位须等于光照方位（方位不变）：moon=${azim(s.moonDir).toFixed(2)}° sun=${azim(s.sunDir).toFixed(2)}°`)
+    .toBeLessThan(0.5);
+  // ③ 高度真的抬了（本轮改动的核心）
+  expect(elev(s.moonDir), `月亮仰角须 ≈35.42°：实测 ${elev(s.moonDir).toFixed(2)}°`)
+    .toBeGreaterThan(35.0);
+  expect(elev(s.moonDir), `月亮仰角不得超 36°：实测 ${elev(s.moonDir).toFixed(2)}°`)
+    .toBeLessThan(36.0);
+  // ④ 光源不动（用户「光源也不变」）—— 仍是 14.5° 那一档
+  expect(elev(s.sunDir), `光源仰角须保持不动（≈14.5°）：实测 ${elev(s.sunDir).toFixed(2)}°`)
+    .toBeGreaterThan(14.0);
+  expect(elev(s.sunDir), `光源仰角须保持不动（≈14.5°）：实测 ${elev(s.sunDir).toFixed(2)}°`)
+    .toBeLessThan(15.0);
 
   await page.evaluate(() => window.__MC_GAME__.popModal('tier4-moon'));
 });

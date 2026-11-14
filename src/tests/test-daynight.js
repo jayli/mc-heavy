@@ -170,17 +170,45 @@ test('nightBlendOf：钳制在 [0,1]（skyDim 越界不得溢出）', async () =
   assertEqual(nightBlendOf({ skyDim: -1 }), 1, 'skyDim < night 夹到 1');
 });
 
-test('四风格 moonDirection ≡ sunDirection（v3.00 月光照耀：月亮在光来的那侧）', () => {
+test('四风格 moonDirection：方位各随本风格 sunDirection，仰角统一 35.4241°（v3.00）', () => {
+  // 用户 2026-11-14 二次裁定：「月亮高度太低，月亮的方位不变，光源也不变，高度调高一些」。
+  // 落地口径：
+  //   · **所有风格的 `sunDirection` 一个字节不动**（光源不变）；
+  //   · 每个风格的 `moonDirection` = 「本风格 sunDirection 的方位 + 仰角 35.4241°」；
+  //   · 只有 night 是 `moonVisible: true`，其余三风格不可见 —— 但它们必须与 night 同方位，
+  //     否则 19→21 / 5→7 的插值段会抳出一个天顶弧（实测可达 73°）。
   for (const key of Object.keys(VISUAL_STYLES)) {
     const s = VISUAL_STYLES[key];
-    const a = normalize(s.sunDirection), b = normalize(s.moonDirection);
-    const dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-    assertTrue(Math.abs(dot - 1) < 1e-12,
-      `${key}: moonDirection 必须与 sunDirection 同向，实测 dot=${dot}`);
+    const m = normalize(s.moonDirection), sd = normalize(s.sunDirection);
+    const mAz = Math.atan2(m[0], m[2]) * 180 / Math.PI;
+    const sAz = Math.atan2(sd[0], sd[2]) * 180 / Math.PI;
+    const mElev = Math.asin(m[1]) * 180 / Math.PI;
+    assertTrue(Math.abs(mElev - 35.4241) < 0.01,
+      `${key}: 月亮仰角须统一 35.4241°（mc-lite 原 night 值）：实测 ${mElev.toFixed(4)}°`);
+    assertTrue(Math.abs(mAz - sAz) < 0.01,
+      `${key}: 月亮方位须等于本风格 sunDirection 的方位（方位不变）：moon=${mAz.toFixed(4)}° sun=${sAz.toFixed(4)}°`);
   }
-  // 原值溯源：sunDirection 仍是 mc-lite 原值（本轮一个字节不动）
-  const k = VISUAL_STYLES[VISUAL_STYLE_KEYS.NIGHT].sunDirection;
-  assertEqual(k.join(','), '0.08,0.25,0.96', 'night.sunDirection 须仍是 mc-lite 原值');
+
+  // 光源方向全部一个字节未动（用户「光源也不变」）
+  assertEqual(VISUAL_STYLES.morning.sunDirection.join(','), '0.18,0.45,0.88', 'morning 光源不动');
+  assertEqual(VISUAL_STYLES.noon.sunDirection.join(','), '0,0.8,0.6', 'noon 光源不动');
+  assertEqual(VISUAL_STYLES.dusk.sunDirection.join(','), '0.665,0.208,0.688', 'dusk 光源不动');
+  assertEqual(VISUAL_STYLES.night.sunDirection.join(','), '0.08,0.25,0.96', 'night 光源不动');
+
+  // night：月亮必须明显高于光照方向（抬高这件事真的生效了）
+  const n = VISUAL_STYLES[VISUAL_STYLE_KEYS.NIGHT];
+  const nm = normalize(n.moonDirection), ns = normalize(n.sunDirection);
+  const nElev = Math.asin(nm[1]) * 180 / Math.PI;
+  const sElev = Math.asin(ns[1]) * 180 / Math.PI;
+  assertTrue(nElev > sElev + 20,
+    `月亮须明显高于光照方向（抬高了）：moon=${nElev.toFixed(2)}° sun=${sElev.toFixed(2)}°`);
+
+  // 只有 night 月亮可见
+  assertTrue(n.moonVisible === true, 'night 月亮须可见');
+  for (const key of ['morning', 'noon', 'dusk']) {
+    assertTrue(VISUAL_STYLES[key].moonVisible === false, `${key} 月亮须不可见`);
+  }
+
   for (const h of [0, 4, 7.5, 12, 18.5, 23]) {
     const d = paramsAtHour(h).moonDirection;
     const len = Math.sqrt(d[0] ** 2 + d[1] ** 2 + d[2] ** 2);
