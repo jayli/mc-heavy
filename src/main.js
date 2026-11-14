@@ -3,8 +3,10 @@ import { Game } from './core/game.js';
 import { buildDefaultRegistry } from './voxel/block-registry.js';
 import { setDebugFlags } from './core/debug-config.js';
 import { loadStoredSettings, resolveSettings } from './ui/settings.js';
+import { LoadWatchdog } from './core/load-watchdog.js';
+import { createProgressReporter, p1Fraction, p2DisplayFraction, formatPercent, shouldShowStallPanel } from './core/load-progress.js';
 
-window.__MC_BOOT__ = { webgpu: false, rendererReady: false, error: null };
+window.__MC_BOOT__ = { webgpu: false, rendererReady: false, error: null, loading: { percent: 0, phase: 'p1', stalled: false } };
 
 // ---- 启动 loading 占位（v2.51）----
 // DOM 是 `index.html` 里的静态节点（**不在 JS 里创建**）：它要在模块还没解析完时就可见。
@@ -22,6 +24,173 @@ function setLoadingStage(text) {
   if (el) el.textContent = text;
 }
 
+// ---- 启动进度（v2.99）----
+//
+// 三阶段（设计文档 DR-2）：P1 脚本与资源下载 45% / P2 世界生成 45% / P3 首帧渲染 10%。
+//
+// ⚠️ **采集器在 `index.html` 的内联脚本里**（`window.__MC_LOADING__`），不在本文件：
+// 本文件是模块图的根，它执行时 874 个模块请求已经挂出去了。见 index.html 的注释。
+//
+// ⚠️ **唯一的 `LoadWatchdog` 实例在这里创建**，然后经 `new Game({ watchdog })` 传给
+// Scheduler → StructureIndex。全仓不得有第二处 `new LoadWatchdog`（fixture 页的兜底除外），
+// 否则 `main.js` 看到的 stalled 与等待循环用的那份脱钩，诊断面板永不出现。
+const reporter = createProgressReporter();
+const watchdog = new LoadWatchdog();
+
+/** 当前阶段：'p1' 脚本下载 / 'p2' 世界生成 / 'p3' 首帧渲染 */
+let loadingPhase = 'p1';
+/** 100ms 刷新计时器（`hideLoading` 里清） */
+let loadingTimer = 0;
+/**
+ * 判 stall 那一刻的已下载脚本数（`null` = 从未判过 stall）。
+ * ⚠️ 用它而不是布尔标志：网络恢复后 js 会继续增长，面板必须**自动**收起 ——
+ * 只在玩家点按钮时才复位的布尔标志会留下一句过时的「网络似乎已断开」（见
+ * `load-progress.js` 的 `shouldShowStallPanel` 注释）。
+ */
+let stallAtJsCount = null;
+
+/** 把当前进度写进 DOM（幂等，可高频调用）。末尾同步 `__MC_BOOT__.loading` 供测试读取。 */
+function paintLoading() {
+  const fill = document.getElementById('loading-bar-fill');
+  const bar = document.getElementById('loading-bar');
+  const stat = document.getElementById('loading-stat');
+  const text = document.getElementById('loading-text');
+  const pct = reporter.percent();
+  const label = formatPercent(pct);
+  if (fill) fill.style.width = label;
+  if (bar) bar.setAttribute('aria-valuenow', String(Math.round(Math.max(0, Math.min(100, pct)))));
+  if (stat) stat.textContent = reporter.detail();
+  if (text) {
+    text.textContent = loadingPhase === 'p1' ? 'Loading'
+      : loadingPhase === 'p2' ? 'Generating world' : 'Finishing';
+  }
+  window.__MC_BOOT__.loading = {
+    percent: pct, phase: loadingPhase, stalled: watchdog.state().stalled,
+  };
+}
+
+/**
+ * 读内联采集器并上报 P1。
+ * ⚠️ **采集器缺失必须静默降级**（CSP / 扩展 / 老浏览器）：不得抛、不得中断启动。
+ * @returns {{js: number, total: number}|null}
+ */
+function reportP1() {
+  const st = window.__MC_LOADING__;
+  if (!st) { reporter.report('p1', 0, '正在加载…'); return null; }
+  reporter.report('p1', p1Fraction(st.js), '已加载 ' + st.js + ' 个脚本');
+  return { js: st.js, total: st.total };
+}
+
+/**
+ * 零进展面板：展示可诊断信息 + 两个自救入口，**不自动失败**。
+ *
+ * ⚠️ 文案里**不得出现「超时」「timeout」**：那些词把「网络慢」误导成「功能坏了」，
+ * 而本 Epic 要消灭的正是这条误导（旧文案 `column (9,8) 加载超时` 会让玩家去换浏览器）。
+ * ⚠️ 也不得调用 `showError` —— 那会盖掉 loading 并让游戏彻底起不来。
+ * @param {'stall'|'hard-cap'} verdict
+ */
+function showStall(verdict, jsNow) {
+  if (stallAtJsCount !== null) return;   // 同一个 stall 事件只记一次快照
+  stallAtJsCount = jsNow;
+  const stat = document.getElementById('loading-stat');
+  const actions = document.getElementById('loading-actions');
+  const st = watchdog.state();
+  const secs = Math.round(st.sinceProgressMs / 1000);
+  const head = verdict === 'hard-cap' ? '加载时间较长' : '网络似乎已断开';
+  if (stat) stat.textContent = head + ' · 已等待 ' + secs + ' 秒无进展 · 已加载 ' + jsNow + ' 个脚本';
+  if (actions) actions.hidden = false;
+}
+
+/**
+ * 按 `shouldShowStallPanel` 同步面板可见性（每次 tick 都调）。
+ * 网络恢复（js 增长）⇒ 自动收起，不留过时文案。
+ */
+function syncStallPanel(jsNow) {
+  if (stallAtJsCount === null) return;
+  const show = shouldShowStallPanel({
+    stalled: watchdog.state().stalled,
+    jsGrewSinceStall: jsNow > stallAtJsCount,
+  });
+  if (!show) {
+    const actions = document.getElementById('loading-actions');
+    if (actions) actions.hidden = true;
+    stallAtJsCount = null;
+  }
+}
+
+/** 当前正在启动的 Game 实例（`new Game()` 之后立刻赋值，**不**等 `start()` 完成）。 */
+let bootingGame = null;
+/** 上一次 tick 的 JS 资源计数（判「资源还在下载」用，喂 watchdog 的进展信号） */
+let lastJsCount = -1;
+
+/**
+ * 每 100ms 的刷新：判 stall、按阶段上报、重写 DOM。
+ *
+ * ⚠️ **P1 的下载进展在 P2 阶段仍然要参与计算**（v2.99 实测修正）：`new Game()` 之后
+ * 到 `game.start()` 结束之间，Worker 的 874 个模块还在陆续到达 —— 若这时只算 P2
+ * （`scheduler.stats().ready`，慢网络下长期为 0），进度条会**冻在 39.2%** 一动不动，
+ * 而资源其实一直在下载（实测 200KB/s：js 从 161 涨到 852，进度条一个字没动）。
+ * 这正是本 Epic 要消灭的「进度不可观测」。
+ *
+ * 规则：`reporter.report('p2', x)` 的 x **取 P1 与 P2 的较大者** —— P1 的渐近值在慢网络下
+ * 会持续爬升（0.44→0.6→0.8…），P2 就绪列数在网络好的时候先满。两者都是「已经完成多少」，
+ * 取大者既单调又不撒谎。
+ */
+function tickLoading() {
+  const st = window.__MC_LOADING__;
+  // 资源条目增加 = 真的有进展（唯一可信的 P1 进展信号）
+  if (st && st.js > lastJsCount) {
+    if (lastJsCount >= 0) watchdog.notifyProgress();
+    lastJsCount = st.js;
+  }
+  // ⚠️ 整段用 try 包住：`tickLoading` 由 setInterval 驱动，**抛一次异常不会停掉计时器，
+  // 但会跳过后面所有代码**（实测踩到：`bootingGame.scheduler` 在 `new Game()` 构造完成前
+  // 是 undefined，每 100ms 抛一次 `Cannot read properties of undefined (reading 'stats')`，
+  // 于是 `reportP1()` 永远跑不到、进度条冻在 39.2% 而 js 已从 161 涨到 695）。
+  // 进度显示的任何内部错误都不得让启动流程或进度更新中断 —— 宁可少更新一帧。
+  try {
+    if (loadingPhase === 'p1') {
+      reportP1();
+    } else if (loadingPhase === 'p2') {
+      const jsLoaded = st ? st.js : 0;
+      const stats = bootingGame?.scheduler?.stats?.();
+      if (stats) {
+        const total = (2 * bootingGame.viewDistance + 1) ** 2;
+        // 取「已下载」与「已就绪」的较大者 —— 推导与实测缺陷见 p2DisplayFraction 的注释
+        const frac = p2DisplayFraction({ jsLoaded, readyColumns: stats.ready, totalColumns: total });
+        reporter.report('p2', frac, '正在生成世界 ' + stats.ready + '/' + total
+          + ' · 已加载 ' + jsLoaded + ' 个脚本');
+      } else {
+        reporter.report('p2', p2DisplayFraction({ jsLoaded, readyColumns: 0, totalColumns: 1 }),
+          '正在加载 ' + jsLoaded + ' 个脚本');
+      }
+    }
+    const jsNow = st ? st.js : 0;
+    const verdict = watchdog.poll();
+    if (verdict !== 'ok') showStall(verdict, jsNow);
+    syncStallPanel(jsNow);
+    paintLoading();
+  } catch (err) {
+    // 只记一次，避免每 100ms 刷屏（本仓口径：控制台噪音会掩盖真信号）
+    if (!tickLoading._warned) {
+      tickLoading._warned = true;
+      console.warn('[loading] 进度刷新异常（已忽略，不影响启动）：', err);
+    }
+  }
+}
+
+/** 绑定 stall 面板的两个按钮（只绑一次，模块顶层）。 */
+function bindStallButtons() {
+  document.getElementById('loading-continue')?.addEventListener('click', () => {
+    watchdog.reset();
+    stallAtJsCount = null;
+    const actions = document.getElementById('loading-actions');
+    if (actions) actions.hidden = true;
+    paintLoading();
+  });
+  document.getElementById('loading-reload')?.addEventListener('click', () => location.reload());
+}
+
 /**
  * 移除 loading 遮罩（幂等）。
  *
@@ -33,6 +202,8 @@ function setLoadingStage(text) {
 function hideLoading() {
   const el = document.getElementById('loading-overlay');
   if (!el || el.classList.contains('mc-loading-done')) return;
+  // 进度刷新到此为止（世界可玩后不需要再写 DOM）
+  if (loadingTimer) { clearInterval(loadingTimer); loadingTimer = 0; }
   el.classList.add('mc-loading-done');
   setTimeout(() => { el.style.display = 'none'; }, LOADING_FADE_MS);
 }
@@ -47,6 +218,11 @@ function showError(detail) {
 
 async function boot() {
   setLoadingStage('正在检查 WebGPU…');
+  // 启动进度：绑按钮 + 起 100ms 刷新（采集器自己的 onChange 也会推，但 UI 需要统一出口）
+  bindStallButtons();
+  reporter.report('p1', 0, '正在启动…');
+  paintLoading();
+  loadingTimer = setInterval(tickLoading, 100);
   // WebGPU 仅在安全上下文暴露（http://localhost 与 HTTPS）；
   // http://<局域网IP> 下 navigator.gpu 为 undefined，需单独提示，避免误判为浏览器不支持
   if (!window.isSecureContext) {
@@ -64,6 +240,7 @@ async function boot() {
 
   setLoadingStage('正在加载方块注册表…');
   const registry = await buildDefaultRegistry();
+  reportP1();
   const params = new URLSearchParams(location.search);
   // 调试开关 URL 覆盖：?stats=0 关闭世界数据看板统计（对照基线用），?stats=1 强制开
   if (params.get('stats') === '0') setDebugFlags({ worldStats: false });
@@ -94,6 +271,7 @@ async function boot() {
   const skybox = params.get('skybox') !== '0';
   const shadows = params.get('shadows') !== '0';
   setLoadingStage('正在生成世界…');
+  loadingPhase = 'p2';
   const game = new Game({
     canvas: document.getElementById('app-canvas'),
     registry, seed,
@@ -106,11 +284,27 @@ async function boot() {
     shadows,
     skybox,
     settings,
+    // 启动进展计时器的唯一实例（见文件头注释：全仓只允许一个）
+    watchdog,
   });
+  // ⚠️ **必须在这里**（不是 `await game.start()` 之后）：P2 阶段要读
+  // `game.scheduler.stats()`，而 `start()` 在慢网络下要跑几分钟 —— 只认
+  // `window.__MC_GAME__`（start 完才赋值）会让整个 P2 阶段的进度条冻住。
+  bootingGame = game;
   await game.start();
   window.__MC_BOOT__.rendererReady = true;
   window.__MC_GAME__ = game; // 测试钩子
-  hideLoading();
+  // P3 首帧渲染：**必须在真的画完一帧之后**才置 100% 并淡出。
+  // `game.start()` 只到 `setAnimationLoop` 注册为止，那一刻还没有任何一帧被画出来 ——
+  // 在它下一行直接 hideLoading 会让慢 GPU 上先黑一瞬，也让「首帧渲染」这个阶段名不副实。
+  loadingPhase = 'p3';
+  reporter.report('p3', 0, '正在绘制首帧');
+  paintLoading();
+  requestAnimationFrame(() => {
+    reporter.report('p3', 1, '准备完成');
+    paintLoading();
+    hideLoading();
+  });
 }
 
 boot().catch((err) => {

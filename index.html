@@ -46,6 +46,31 @@
     }
     #loading-overlay .mc-loading-sub { margin: 0; font-size: 12px; color: #9aa3b2; min-height: 16px; }
     /*
+     * 进度条（v2.99）。三阶段合成一个总百分比，见 `src/core/load-progress.js`。
+     * ⚠️ `transition` 只在 `width` 上：进度由 100ms 的 setInterval 驱动，转场太慢会追不上采样。
+     */
+    #loading-overlay .mc-loading-bar {
+      width: min(420px, 72vw); height: 8px; border-radius: 4px;
+      background: #262b36; overflow: hidden;
+    }
+    #loading-overlay .mc-loading-bar-fill {
+      height: 100%; width: 0%; background: #7fc253; border-radius: 4px;
+      transition: width 0.2s linear;
+    }
+    #loading-overlay .mc-loading-stat {
+      margin: 0; font-size: 11px; color: #6f7887; min-height: 15px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    /* stall 面板：默认 hidden（CSS 也钉一次，防 `hidden` 属性被 display:flex 盖掉） */
+    #loading-overlay .mc-loading-actions { display: flex; gap: 10px; }
+    #loading-overlay .mc-loading-actions[hidden] { display: none; }
+    #loading-overlay .mc-loading-actions button {
+      padding: 6px 14px; font-size: 13px; border-radius: 4px; cursor: pointer;
+      border: 1px solid #4a5160; background: #2b3140; color: #e8e8e8;
+      font-family: inherit;
+    }
+    #loading-overlay .mc-loading-actions button:hover { background: #363d4e; }
+    /*
      * 准心由 `src/ui/crosshair.js` 在运行时创建并挂到 body 下（v1.64）：
      * 它需要按准心背后的画面亮度在白色/黑色之间切色（固定白在雪地/白墙上会消失）。
      * 结构、样式与采样逻辑的唯一权威在那个模块，这里不再保留 DOM 占位。
@@ -58,6 +83,58 @@
       line-height: 1.8; padding: 24px;
     }
   </style>
+  <script>
+    /*
+     * 启动进度采集器（v2.99）—— **必须在 index.html 内联，不能放 src/main.js**。
+     *
+     * main.js 自身是模块图的根：它执行时首页 151 个模块请求（加上 14 个 Worker 各自 52 个，
+     * 合计 874 个）已经全部挂出去了。由 JS 创建的采集器会漏掉最关键的一段，进度条从 0
+     * 开始跳得很晚。这与 v2.51 把 loading 占位图写成静态 HTML 是同一条理由。
+     *
+     * ⚠️ **用 PerformanceObserver 而不是 performance.getEntriesByType()**：后者受资源
+     * 时间线缓冲区上限截断（本仓实测只返 250 条，而实际 874 个模块请求）→ 进度条会在 30%
+     * 处永久冻住。PerformanceObserver 的回调是增量推送，不受缓冲区限制。
+     *
+     * ⚠️ **刷新由 setInterval 驱动，不用 requestAnimationFrame**：后台标签页里 rAF 会停摆，
+     * 玩家切走再切回来会看到一个冻住的进度条（看起来像卡死）。
+     *
+     * 只做采集，不做展示：百分比怎么算、阶段怎么切、什么时候算卡住，全在 `src/core/`
+     * 的两个模块里（可单测）。这里暴露一个纯数据对象 + 一个回调槽。
+     */
+    (function () {
+      var t0 = performance.now();
+      var onChange = null;
+      var state = {
+        js: 0,          // 已完成的 .js/.mjs 资源条目数
+        other: 0,       // 其它资源（png/json/audio/mp3/ogg…）
+        total: 0,       // = js + other
+        /** 自本脚本执行起的毫秒数（只读；不给 P1 进度用，仅供诊断/测试） */
+        get sinceMs() { return performance.now() - t0; },
+        /** UI 层注册的回调（单槽）。采集器出错时不会因它抛而中断启动。 */
+        get onChange() { return onChange; },
+        set onChange(fn) { onChange = typeof fn === 'function' ? fn : null; },
+      };
+      function count(name) {
+        state.total++;
+        if (/\.(js|mjs)(\?|$)/.test(name)) state.js++;
+        else state.other++;
+        if (onChange) { try { onChange(state); } catch (e) { /* 观察者出错不得打断启动 */ } }
+      }
+      try {
+        new PerformanceObserver(function (list) {
+          var es = list.getEntries();
+          for (var i = 0; i < es.length; i++) count(es[i].name);
+        }).observe({ type: 'resource' });
+      } catch (e) {
+        // 老浏览器没有 resource 观测：进度会停在 0，但启动不受影响
+      }
+      window.__MC_LOADING__ = state;
+      // 兜底 tick：即便没有新资源也保证 sinceMs 与 UI 有东西可读（100ms 与 UI 刷新同频）
+      setInterval(function () {
+        if (onChange) { try { onChange(state); } catch (e) {} }
+      }, 100);
+    })();
+  </script>
   <script type="importmap">
   {
     "imports": {
@@ -71,12 +148,21 @@
 </head>
 <body>
   <canvas id="app-canvas"></canvas>
-  <!-- 启动 loading 占位：静态节点，见 <head> 里的注释 -->
+  <!-- 启动 loading 占位：静态节点 + 内联采集器，见 <head> 里的注释 -->
   <div id="loading-overlay">
     <img class="mc-loading-logo" src="./assets/ui/Minecraft-Logo.png" alt="Minecraft Logo">
     <div class="mc-loading-spinner"></div>
-    <p class="mc-loading-text">Loading</p>
+    <p class="mc-loading-text" id="loading-text">Loading</p>
     <p class="mc-loading-sub" id="loading-sub">正在加载资源…</p>
+    <div class="mc-loading-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100"
+         aria-valuenow="0" aria-label="加载进度" id="loading-bar">
+      <div class="mc-loading-bar-fill" id="loading-bar-fill"></div>
+    </div>
+    <p class="mc-loading-stat" id="loading-stat"></p>
+    <div class="mc-loading-actions" id="loading-actions" hidden>
+      <button type="button" id="loading-continue">继续等待</button>
+      <button type="button" id="loading-reload">重新加载页面</button>
+    </div>
   </div>
   <div id="webgpu-error">
     <div>

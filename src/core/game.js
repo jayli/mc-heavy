@@ -7,6 +7,7 @@ import { WorkerPool } from './worker-pool.js';
 import { PerfMonitor } from './perf.js';
 import { PerfHUD } from './perf-hud.js';
 import { BudgetConfig } from './budget.js';
+import { LoadWatchdog } from './load-watchdog.js';
 import { DEBUG_FLAGS } from './debug-config.js';
 import { resourceUrl } from './resource-url.js';
 import { RenderWorld } from '../render/render-world.js';
@@ -193,9 +194,25 @@ export class Game {
    * @param {boolean} [opts.skybox] 天空盒开关（v1.58，默认 true）。false = 完全不加载、退回纯色天空
    *   （`?skybox=0` URL 入口）——既有 Tier 4 spec 用「±30 内等于 0x87ceeb」判纯色天空来数地形
    *   像素，照片天空会让那个判据失去意义，故它们 pin 该开关。
+   * @param {import('./load-watchdog.js').LoadWatchdog} [opts.watchdog] 启动进展计时器（v2.99）。
+   *   ⚠️ **全仓唯一实例**：`main.js` 建好后传进来，本类再传给 `Scheduler` → `StructureIndex`。
+   *   缺省（fixture 页直建 Game）自建一个 —— 那些页面不启动 loading UI，自建只保证内部不必判空。
    */
-  constructor({ canvas, registry, seed = null, viewDistance = 8, hudRoot, blurMipmap = false, budgetProfile = 'auto', chunkPace = 8, startWeather = null, shadows = true, skybox = true, settings = null }) {
+  constructor({ canvas, registry, seed = null, viewDistance = 8, hudRoot, blurMipmap = false, budgetProfile = 'auto', chunkPace = 8, startWeather = null, shadows = true, skybox = true, settings = null, watchdog = null }) {
     this._settings = settings;
+    /**
+     * 启动进展计时器（v2.99）。**全仓唯一实例**，见 `core/load-watchdog.js` 的「单一权威」段。
+     *
+     * ⚠️ 两个实例会让 `main.js` 看到的 stalled 与等待循环用的那份脱钩 ——
+     * 症状是「面板永不出现」或「等待循环放弃而 UI 还在转」，两者都不由任何断言覆盖。
+     */
+    this._watchdog = watchdog || new LoadWatchdog();
+    /**
+     * 零进展时的 UI 通知回调（单槽，由 `main.js` 赋值）。
+     * ⚠️ **只通知，不中断等待** —— 出生点的 column 等待永不因零进展结束（见 `_waitForColumn`）。
+     * @type {((verdict: 'stall'|'hard-cap') => void) | null}
+     */
+    this.onLoadStalled = null;
     /**
      * 生效设置：main.js 已 resolve（存储+URL）传入；缺省自行合并（fixture 页直建 Game 时）。
      *
@@ -520,8 +537,12 @@ export class Game {
       seed: this.seed, viewDistance: this.viewDistance, perf: this.perf,
       renderWorld: this.renderWorld, budget: this.budget,
       getEdits: (key) => this.persistence.getEditsSync(key),
+      watchdog: this._watchdog,
     });
     this.scheduler._atlasMeta = atlasMeta; // 快速路径主线程 mesh 用（与 broadcast 同一份）
+    // 布局等待的零进展通知：与 column 等待共用同一条 UI 出口（main.js 赋值 onLoadStalled）。
+    // ⚠️ 只转发，不在这里做任何计时判断（判据的唯一权威是 LoadWatchdog）。
+    this.scheduler.structureIndex.onStalled = (verdict) => { this.onLoadStalled?.(verdict); };
     // M4-0：世界编辑协调器 —— 唯一世界写入入口（remesh/light/event）。
     // 玩家挖放、武器破坏、未来 TNT 全部经此，不持有第二份体素真相。
     // M7：注入 persistence —— `setBlockEntity`（巢穴锚点纯 entity 写）靠它记入 edits 并调度落盘。
@@ -933,7 +954,7 @@ export class Game {
       await this.persistence.preloadEdits([...keys]);
     }
     this.scheduler.update(this.spawnX, this.spawnZ);
-    await this._waitForColumn(Math.floor(this.spawnX / 16), Math.floor(this.spawnZ / 16), 10000);
+    await this._waitForColumn(Math.floor(this.spawnX / 16), Math.floor(this.spawnZ / 16));
     // 首次阴影渲染：autoUpdate=false 下 map 是空的，不置 needsUpdate 则第一帧无影
     // （后续刷新由 shadowScheduler 按需放行）。
     this.sunLight.shadow.needsUpdate = true;
@@ -946,7 +967,7 @@ export class Game {
     if (!this.world.hasColumn(rcx, rcz)) {
       this.scheduler.update(startX, startZ);
       try {
-        await this._waitForColumn(rcx, rcz, 10000, startX, startZ);
+        await this._waitForColumnOrTimeout(rcx, rcz, 10000, startX, startZ);
       } catch (err) {
         console.warn('[game] 恢复位置加载失败，回落 City 出生点：', err);
         startX = this.spawnX; startY = this.spawnY; startZ = this.spawnZ;
@@ -1385,20 +1406,45 @@ export class Game {
    * @param {number} [driveX] 调度中心 x（缺省 = 出生点）
    * @param {number} [driveZ] 调度中心 z
    */
-  _waitForColumn(cx, cz, timeoutMs, driveX, driveZ) {
+  _waitForColumn(cx, cz, driveX, driveZ) {
     const dx = driveX ?? this.spawnX, dz = driveZ ?? this.spawnZ;
-    return new Promise((resolve, reject) => {
-      const t0 = performance.now();
+    return new Promise((resolve) => {
+      // 进展基线：**真的多了一列**才算进展（不是「GEN 在途」）
+      let lastReady = this.world.columns.size;
       const timer = setInterval(() => {
-        if (this.world.hasColumn(cx, cz)) { clearInterval(timer); resolve(); }
-        else if (performance.now() - t0 > timeoutMs) {
-          clearInterval(timer);
-          reject(new Error(`column (${cx},${cz}) 加载超时`));
-        }
+        const nowReady = this.world.columns.size;
+        if (nowReady > lastReady) { lastReady = nowReady; this._watchdog?.notifyProgress(); }
+        if (this.world.hasColumn(cx, cz)) { clearInterval(timer); resolve(); return; }
+        const verdict = this._watchdog ? this._watchdog.poll() : 'ok';
+        // 零进展只通知 UI（弹诊断面板 + 自救按钮），**不中断等待**。
+        // 旧实现在这里 reject(`column (...) 加载超时`) —— 实测慢网络下 worker 首个回包要
+        // 90.9 秒，而预算 10 秒，于是「网络慢」被误报成「初始化失败」，游戏根本起不来。
+        if ((verdict === 'stall' || verdict === 'hard-cap') && this.onLoadStalled) this.onLoadStalled(verdict);
         // 布局门控后 GEN 需后续帧驱动（启动期动画循环尚未启动；瞬移期目标远离玩家，
         // 也必须把调度中心推到目标附近，否则它永远不进入加载半径）
-        else this.scheduler.update(dx, dz);
+        this.scheduler.update(dx, dz);
       }, 50);
+    });
+  }
+
+  /**
+   * 带硬超时的 `_waitForColumn`：**只给「恢复位置」那条路径用**。
+   *
+   * 恢复位置与出生点是两种语义（不要合并）：
+   *   · 出生点**必须到** —— 等多久都认，零进展只提示（玩家长时间等也比进不去好）；
+   *   · 恢复位置去不了就**回落 City 出生点** —— 它已有 `try/catch` 兜底，无限等会让玩家
+   *     卡在 loading 里永远进不去（这正是 v1.92 修过的形态）。
+   *
+   * @param {number} cx @param {number} cz @param {number} timeoutMs
+   * @param {number} [driveX] @param {number} [driveZ]
+   */
+  _waitForColumnOrTimeout(cx, cz, timeoutMs, driveX, driveZ) {
+    return new Promise((resolve, reject) => {
+      const t = setTimeout(
+        () => reject(new Error(`恢复位置 column (${cx},${cz}) ${timeoutMs}ms 内未就绪`)),
+        timeoutMs,
+      );
+      this._waitForColumn(cx, cz, driveX, driveZ).then(() => { clearTimeout(t); resolve(); });
     });
   }
 

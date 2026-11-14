@@ -188,6 +188,77 @@ test('StructureIndex: mock pool — 布局就绪前 gate，就绪后放行', asy
   assertEqual(layouts.length, needed.length);
 });
 
+/**
+ * v2.99：`waitForRegion` 的判据从「绝对超时 5s」改成「零进展才提示」，且**永不以 stall 结束等待**。
+ *
+ * 为什么它必须是「不 reject」：慢网络下 worker 模块图（每 worker 52 个模块，池 14 个）实测要
+ * **90.9 秒**才回第一个包，而旧预算 5 秒。若 stall 时 reject，`boot()` 会落到 `showError` →
+ * 玩家看到「无法启动渲染」错误遮罩、游戏根本没起来 —— 那正是本 Epic 要消灭的形态。
+ * 用户的原话：「只要网络不断，就一个个的把脚本加载完成」。
+ */
+test('StructureIndex: watchdog 报 stall 时不得 reject（慢网络必须仍能启动）', async () => {
+  const resolvers = new Map();
+  const fakePool = {
+    call(method, payload) {
+      let resolve;
+      const promise = new Promise((r) => { resolve = r; });
+      resolvers.set(`${payload.regionX},${payload.regionZ}`, resolve);
+      return { id: resolvers.size, promise };
+    },
+  };
+  const index = new StructureIndex({ pool: fakePool, seed: SEED });
+  // 假 watchdog：poll 恒报 stall（模拟「零进展 60s」）
+  const stalledWatchdog = {
+    poll: () => 'stall',
+    notifyProgress: () => {},
+    state: () => ({ sinceProgressMs: 61_000, elapsedMs: 61_000 }),
+  };
+  let stalledCalls = 0;
+  index.onStalled = () => { stalledCalls++; };
+  let settled = null;
+  const p = index.waitForRegion(0, 0, stalledWatchdog)
+    .then(() => { settled = 'resolved'; }, () => { settled = 'rejected'; });
+  await new Promise((r) => setTimeout(r, 200)); // 若干个 20ms tick
+  assertEqual(settled, null, 'watchdog 报 stall 不得让 waitForRegion 落定（必须继续等）');
+  assertTrue(stalledCalls > 0, 'stall 必须经 onStalled 通知 UI，否则玩家看不到任何诊断');
+  // 资源终于到了 → 必须正常 resolve，启动继续
+  for (const [k, resolve] of resolvers) {
+    const [rx, rz] = k.split(',').map(Number);
+    resolve(computeRegionLayout(rx, rz, SEED));
+  }
+  await p;
+  assertEqual(settled, 'resolved', '布局到了必须继续启动');
+});
+
+test('StructureIndex: 只在「布局真的到达」时喂 notifyProgress（在途任务不算进展）', async () => {
+  // 失效形态：拿 `_inflight.size > 0` 当进展 → 挂死的请求每 20ms 喂一次 watchdog，
+  // stall 永不触发，玩家对着一根冻住的进度条无限等（实施计划 Review Focus 第 6 条）。
+  const resolvers = new Map();
+  const fakePool = {
+    call(method, payload) {
+      let resolve;
+      const promise = new Promise((r) => { resolve = r; });
+      resolvers.set(`${payload.regionX},${payload.regionZ}`, resolve);
+      return { id: resolvers.size, promise };
+    },
+  };
+  let progressCalls = 0;
+  const indexPath = new StructureIndex({ pool: fakePool, seed: SEED });
+  indexPath._watchdog = { notifyProgress: () => { progressCalls++; }, poll: () => 'ok' };
+  // 驱动下发但**不** resolve：一次进展都不该被上报
+  indexPath.ensureForColumn(0, 0);
+  for (let i = 0; i < 5; i++) indexPath.dispatch();
+  await new Promise((r) => setTimeout(r, 50));
+  assertEqual(progressCalls, 0, '在途任务不是进展');
+  // resolve 一个 → 必须喂一次
+  for (const [k, resolve] of resolvers) {
+    const [rx, rz] = k.split(',').map(Number);
+    resolve(computeRegionLayout(rx, rz, SEED));
+  }
+  await new Promise((r) => setTimeout(r, 50));
+  assertTrue(progressCalls > 0, '布局真的到了才算进展');
+});
+
 test('getPyramidInfo: 中心 layerHeight 与 mc-lite 公式一致', () => {
   const layout = computeRegionLayout(0, 0, SEED);
   const { cx, cz } = layout.pyramid;

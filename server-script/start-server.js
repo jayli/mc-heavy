@@ -3,6 +3,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -21,6 +22,25 @@ function getLocalIP() {
 }
 
 const ROOT = path.join(__dirname, '..');
+
+/**
+ * gzip 结果缓存：`<路径>:<mtime>` → 压缩后的 Buffer。
+ *
+ * ⚠️ **键必须含 mtime**：只按路径缓存会让改了文件后的请求继续拿到旧内容
+ * （dev server 的核心价值就是改完立刻生效）。
+ * 不设上限是刻意的：本地开发最多几百个模块，且 mtime 变了旧条目自然淘汰。
+ */
+const gzipCache = new Map();
+
+/** 统一的 gzip 响应写出（压缩路径与缓存命中路径共用，避免两处漂移） */
+function sendGzip(res, contentType, zipped) {
+  res.writeHead(200, {
+    'Content-Type': contentType,
+    'Content-Encoding': 'gzip',
+    'Vary': 'Accept-Encoding',
+  });
+  res.end(zipped);
+}
 
 const MIME_TYPES = {
   '.html': 'text/html',
@@ -60,7 +80,32 @@ const server = http.createServer((req, res) => {
   const extname = String(path.extname(filePath)).toLowerCase();
   const contentType = MIME_TYPES[extname] || 'application/octet-stream';
 
-  fs.readFile(filePath, (error, content) => {
+  /*
+   * 静态文本资源 gzip（v2.99）。只改 dev server，生产部署（js-perf.cn）走自己的配置。
+   *
+   * **为什么值得做**：本仓无构建步骤，874 个模块源码直传。实测真实部署
+   * （js-perf.cn 的 performance trace）**196 个响应全部没有 `content-encoding`**，
+   * 而慢网络下这 6.63 MiB 正是启动超时的根因（`worker` 模块图 52 个模块要 90.9 秒）。
+   *
+   * **只压文本类**：PNG/JPEG/WAV/GLB 已是压缩格式，再压只烧 CPU 且体积可能变大。
+   *
+   * **不加 `Cache-Control`**：本地 dev 无缓存更能立刻看到改动；且缓存头对
+   * 「首次冷启动」这个被测场景没有帮助（spec DR-6 已裁定）。
+   */
+  const COMPRESSIBLE = new Set(['.js', '.mjs', '.json', '.html', '.css', '.svg']);
+  const gzipOk = /\bgzip\b/.test(String(req.headers['accept-encoding'] || ''));
+  const compress = gzipOk && COMPRESSIBLE.has(extname);
+
+  // 先取 mtime（缓存键要用），再读内容。两次 syscall 对 dev server 可忽略。
+  fs.stat(filePath, (serr, stat) => {
+    const mtimeMs = serr || !stat ? 0 : stat.mtimeMs;
+    fs.readFile(filePath, (error, content) => {
+      handleFile(error, content, mtimeMs);
+    });
+  });
+
+  /** 实际响应（`stat` 失败时 mtimeMs=0，等价于不缓存 —— 反正 readFile 也会失败） */
+  function handleFile(error, content, mtimeMs) {
     if (error) {
       if (error.code === 'ENOENT') {
         res.writeHead(404);
@@ -69,11 +114,35 @@ const server = http.createServer((req, res) => {
         res.writeHead(500);
         res.end('500 Internal Server Error: ' + error.code);
       }
+    } else if (compress) {
+      // ⚠️ **必须用异步 gzip，不能用 `gzipSync`**（v2.99 实测教训）：
+      // 同步版本阻塞 Node 单线程事件循环，模块图是**并发**拉的（14 个 Worker 各自拉
+      // 52 个模块），40 个并发请求实测从 11~28ms 劣化到 37~43ms（2~3 倍）——
+      // 而这笔延迟会直接叠加到 Worker 任务的往返时间上，把 `gen p95 < 8ms` 这类
+      // 计时断言顶过线（实测 4.2ms → 11ms，8 轮稳定复现）。
+      //
+      // 缓存按「路径 + mtime」索引：dev server 的文件会被改，只用路径会把旧内容发出去。
+      const key = `${filePath}:${mtimeMs}`;
+      const cached = gzipCache.get(key);
+      if (cached) {
+        sendGzip(res, contentType, cached);
+        return;
+      }
+      zlib.gzip(content, (zerr, zipped) => {
+        if (zerr) {
+          // 压缩失败不能变成 500：退回明文，内容仍然正确
+          res.writeHead(200, { 'Content-Type': contentType });
+          res.end(content, 'utf-8');
+          return;
+        }
+        gzipCache.set(key, zipped);
+        sendGzip(res, contentType, zipped);
+      });
     } else {
       res.writeHead(200, { 'Content-Type': contentType });
       res.end(content, 'utf-8');
     }
-  });
+  }
 });
 
 server.listen(PORT, () => {

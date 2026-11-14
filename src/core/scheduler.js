@@ -41,8 +41,11 @@ export class Scheduler {
    *        发布层；缺省（GEN-only 模式，Task 4 测试）则跳过 MESH 段
    * @param {import('./budget.js').BudgetConfig} [opts.budget]
    *        帧预算双档配置（M3-2）；缺省自建一个（auto，未定档按 high 口径 3ms/64）
+   * @param {import('./load-watchdog.js').LoadWatchdog} [opts.watchdog]
+   *        启动进展计时器（v2.99）。**全仓唯一实例**，由 `Game` 传入并透传给 `StructureIndex`
+   *        ——本类**不得**另建一个（两个实例会让 stall 状态分裂，见 load-watchdog.js）。
    */
-  constructor({ world, pool, registry, seed, viewDistance = 8, perf, getEdits, renderWorld, budget }) {
+  constructor({ world, pool, registry, seed, viewDistance = 8, perf, getEdits, renderWorld, budget, watchdog = null }) {
     this.world = world;
     this.pool = pool;
     this.registry = registry;
@@ -53,7 +56,7 @@ export class Scheduler {
     this.renderWorld = renderWorld || null;
     this.budget = budget || new BudgetConfig();
     /** 结构布局缓存 + GEN 门控（§4.2 DR-13：布局 Worker 算一次，主线程转发） */
-    this.structureIndex = new StructureIndex({ pool, seed });
+    this.structureIndex = new StructureIndex({ pool, seed, watchdog });
     /** @type {Map<string, {callId: number}>} 在途 GEN 任务 */
     this._inflightGen = new Map();
     this._columnReadyCallbacks = [];
