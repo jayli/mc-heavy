@@ -54,8 +54,27 @@ export const SUN_LIGHT_BASE_HEX = (0xff << 16) | (0xfa << 8) | 0xf0;
  * 自动日夜循环的关键帧只引用 morning/noon/night（见 `KEYFRAMES`）→ 循环里 duskBlend 恒为 0
  * （「傍晚」是纯手动风格，不会混进循环）。这是本次改动最重要的不变式，单测钉死。
  *
- * ⚠️ **`sunColor` / `ambientColor` 是色温乘数（均值 ≈1），不是绝对颜色**：只改色相、
- * 不改总曝光。三种既有风格全是 `[1,1,1]` → 材质着色**逐位回到** v1.70。
+ * ⚠️ **`sunColor` / `ambientColor` 是色温乘数，不是绝对颜色**：只改色相、不改总曝光。
+ * morning / noon 全是 `[1,1,1]`（中性）；dusk / night 有各自标定值
+ * （均值分别 1.0333 / 1.0600，见各风格字段注释）。
+ *
+ * ⚠️ **`moonDirection` 与 `sunDirection` 的关系（v3.00）**
+ *
+ * 初版裁定「把月亮搬到光照方向那侧」（四风格 moonDirection ≡ sunDirection）。用户 2026-11-14
+ * 实玩后：「月亮高度太低，月亮的方位不变，光源也不变，高度调高一些」⇒ 改成：
+ *
+ *   · **`sunDirection` 一个字节不动**（「光源也不变」）—— 阴影灯定位、枪 PBR 高光、
+ *     以及 sun-shadow / hemisphere-ambient / dusk-style 三个 spec 的接线口径全部不受影响；
+ *   · 只有 **night 的 `moonDirection`** 抬高：**方位 = `sunDirection` 的方位**（+4.7636°，
+ *     「方位不变」），**仰角 = 35.4241°**（mc-lite 原 `night.moonDirection` 的仰角）；
+ *   · morning/noon/dusk 的 `moonDirection` 是 mc-lite 原值（它们的 `moonVisible` 本是 false）。
+ *
+ * 于是夜里月亮站在 35.4°、光从 14.55° 来（同方位、仰角差 20.85°）：月亮看得更高，
+ * 而地面明暗与影子方向**完全不变**（影子仍由 `sunDirection` 驱动）。
+ *
+ * ⚠️ **必须两份字面量都写**（而非在定义后循环派生）：`VISUAL_STYLES` 是纯数据表，
+ * 派生赋值会让「表里写的值」与「实际生效的值」不一致。代价是一行改漏就漂移 ——
+ * 由 `src/tests/test-moonlight.js` 的仰角/方位断言立即拓住（不是靠注释约定）。
  */
 export const VISUAL_STYLES = {
   morning: {
@@ -70,7 +89,10 @@ export const VISUAL_STYLES = {
     // 晨昏感由**既有数据**提供：skyDim 0.8 + 晨光天空色 0xb7c6f7 —— 不靠曝光重复表达。
     toneMappingExposure: 1.0,
     // 月亮方向 / 可见性 / 尺寸：mc-lite Engine.js:75,109,111 原值（未归一化，消费前统一归一化）
-    moonDirection: [-0.38, 0.45, -0.81], moonVisible: false, moonSize: 20,
+    // 月亮方向（v3.00）：**方位 = 本风格 sunDirection 的方位，仰角统一 35.4241°**
+    // （mc-lite 原 night 月亮的仰角）。moonVisible=false ⇒ 不可见，但仍要与 night 同方位 ——
+    // 否则 19→21 / 5→7 的插值段会抳出天顶弧（实测仰角 73.12°、方位单步跳 65°）。
+    moonDirection: [0.1633, 0.579624, 0.798354], moonVisible: false, moonSize: 20,
     // 色温中性 + 不用黄昏天空盒（零回归锚点：着色器逐位回到 v1.70）
     sunColor: NEUTRAL_COLOR, ambientColor: NEUTRAL_COLOR, duskBlend: 0,
     // 水面亮度：早晨用户明确说「没问题」→ 中性（零回归）
@@ -86,7 +108,8 @@ export const VISUAL_STYLES = {
     // 与本仓 unlit 管线不同）—— 照搬上游参数前须检查它是否在补偿另一个差异（v1.45 的
     // `shadow.radius` 同教训）。
     toneMappingExposure: 1.0,
-    moonDirection: [-0.25, 0.5, -0.82], moonVisible: false, moonSize: 18,
+    // 月亮方向（v3.00）：方位 0°（本风格太阳在 +Z 正南）、仰角 35.4241°，不可见
+    moonDirection: [0, 0.579624, 0.814884], moonVisible: false, moonSize: 18,
     sunColor: NEUTRAL_COLOR, ambientColor: NEUTRAL_COLOR, duskBlend: 0,
     // 水面亮度：正午是用户裁定的基准态（「正午的水面波纹颜色没问题」）→ 必须中性
     waterTint: NEUTRAL_WATER_TINT,
@@ -129,7 +152,9 @@ export const VISUAL_STYLES = {
     // 只需补到「暗部不死黑」（实测影面 lum 135 vs 正午 145）。
     toneMappingExposure: 1.20,
     // 贴图里没有月亮（落日前后天边不该有月亮）→ 与 morning/noon 同口径不画
-    moonDirection: [-0.32, 0.5, -0.8], moonVisible: false, moonSize: 22,
+    // 贴图里没有月亮（落日前后天边不该有月亮）→ moonVisible=false。
+    // 方位 44.03°（= 本风格太阳方位）、仰角 35.4241°（v3.00 统一口径）。
+    moonDirection: [0.566333, 0.579624, 0.585921], moonVisible: false, moonSize: 22,
     // 色温：直射暖橙（R 1.50 / G 1.02 / B 0.58，均值 1.033）、环境冷蓝紫（均值 0.997）
     sunColor: Object.freeze([1.50, 1.02, 0.58]),
     ambientColor: Object.freeze([0.86, 0.93, 1.20]),
@@ -168,8 +193,20 @@ export const VISUAL_STYLES = {
     // 1.6 让夜间「平均亮度回到现状」却把动态范围拉开 —— 这正是「夜该暗，但不是糊成一片」。
     // mc-lite 用 0.95 是为了压暗，本仓用更高曝光达到「压暗暗部、保住亮部」的同一个**意图**。
     toneMappingExposure: 1.6,
-    moonDirection: [-0.32, 0.58, -0.75], moonVisible: true, moonSize: 34,
-    sunColor: NEUTRAL_COLOR, ambientColor: NEUTRAL_COLOR, duskBlend: 0,
+    // 月亮方向（v3.00，用户 2026-11-14 二次裁定）：「方位不变、光源不变、高度调高」——
+    // **方位 = sunDirection 的方位（+4.7636°）**，**仰角 35.4241°**（mc-lite 原 night 月亮值）。
+    // ❗ `sunDirection` 一个字节未动 —— 影子方向与地面明暗完全不变，只有月轮 sprite 被抬高。
+    // 改前两者同向（仰角 14.55°，月亮贴着地平线）；现在月亮高 20.85°、方位不变。
+    moonDirection: [0.067672, 0.579624, 0.812069], moonVisible: true, moonSize: 34,
+    // 月光色温（v3.00）：冷蓝直射 + 更冷的环境。**均值 1.0600，不是 1.0** ——
+    // 均值恰为 1.000 的同色相候选实测六面平均 luma 97.14（−3.3%），因为 ACES 在迎光面
+    // 已进肩部、B 通道压缩率高于 R/G。1.06 是「把肩部吃掉的亮度补回来」的标定值。
+    // 屏幕口径实测（基色 0.5 × shade × skyDim 0.25 × 曝光 1.6 → ACES → sRGB）：
+    // 六面平均 luma 100.50 → 100.84（+0.3%）、迎光面 R−B 0 → −32、背光面 0 → −15、
+    // 迎光/背光比 1.91 → 1.87（朝向对比不得被抹平，守 ≥1.8）。
+    sunColor: Object.freeze([0.795, 0.954, 1.431]),
+    ambientColor: Object.freeze([0.954, 1.018, 1.208]),
+    duskBlend: 0,
     // 水面亮度 **0.39**（v2.2）—— 四风格里最暗的一档。
     //
     // ⚠️ **v2.1 的 0.62 已作废**（那时 tint 乘在雾混合之前，远景海面恒定不吃乘数）。

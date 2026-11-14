@@ -170,13 +170,45 @@ test('nightBlendOf：钳制在 [0,1]（skyDim 越界不得溢出）', async () =
   assertEqual(nightBlendOf({ skyDim: -1 }), 1, 'skyDim < night 夹到 1');
 });
 
-test('三风格 moonDirection 是 mc-lite 原值，且插值后仍是单位向量', () => {
-  const m = VISUAL_STYLES[VISUAL_STYLE_KEYS.MORNING].moonDirection;
-  const n = VISUAL_STYLES[VISUAL_STYLE_KEYS.NOON].moonDirection;
-  const k = VISUAL_STYLES[VISUAL_STYLE_KEYS.NIGHT].moonDirection;
-  assertEqual(m.join(','), '-0.38,0.45,-0.81');
-  assertEqual(n.join(','), '-0.25,0.5,-0.82');
-  assertEqual(k.join(','), '-0.32,0.58,-0.75');
+test('四风格 moonDirection：方位各随本风格 sunDirection，仰角统一 35.4241°（v3.00）', () => {
+  // 用户 2026-11-14 二次裁定：「月亮高度太低，月亮的方位不变，光源也不变，高度调高一些」。
+  // 落地口径：
+  //   · **所有风格的 `sunDirection` 一个字节不动**（光源不变）；
+  //   · 每个风格的 `moonDirection` = 「本风格 sunDirection 的方位 + 仰角 35.4241°」；
+  //   · 只有 night 是 `moonVisible: true`，其余三风格不可见 —— 但它们必须与 night 同方位，
+  //     否则 19→21 / 5→7 的插值段会抳出一个天顶弧（实测可达 73°）。
+  for (const key of Object.keys(VISUAL_STYLES)) {
+    const s = VISUAL_STYLES[key];
+    const m = normalize(s.moonDirection), sd = normalize(s.sunDirection);
+    const mAz = Math.atan2(m[0], m[2]) * 180 / Math.PI;
+    const sAz = Math.atan2(sd[0], sd[2]) * 180 / Math.PI;
+    const mElev = Math.asin(m[1]) * 180 / Math.PI;
+    assertTrue(Math.abs(mElev - 35.4241) < 0.01,
+      `${key}: 月亮仰角须统一 35.4241°（mc-lite 原 night 值）：实测 ${mElev.toFixed(4)}°`);
+    assertTrue(Math.abs(mAz - sAz) < 0.01,
+      `${key}: 月亮方位须等于本风格 sunDirection 的方位（方位不变）：moon=${mAz.toFixed(4)}° sun=${sAz.toFixed(4)}°`);
+  }
+
+  // 光源方向全部一个字节未动（用户「光源也不变」）
+  assertEqual(VISUAL_STYLES.morning.sunDirection.join(','), '0.18,0.45,0.88', 'morning 光源不动');
+  assertEqual(VISUAL_STYLES.noon.sunDirection.join(','), '0,0.8,0.6', 'noon 光源不动');
+  assertEqual(VISUAL_STYLES.dusk.sunDirection.join(','), '0.665,0.208,0.688', 'dusk 光源不动');
+  assertEqual(VISUAL_STYLES.night.sunDirection.join(','), '0.08,0.25,0.96', 'night 光源不动');
+
+  // night：月亮必须明显高于光照方向（抬高这件事真的生效了）
+  const n = VISUAL_STYLES[VISUAL_STYLE_KEYS.NIGHT];
+  const nm = normalize(n.moonDirection), ns = normalize(n.sunDirection);
+  const nElev = Math.asin(nm[1]) * 180 / Math.PI;
+  const sElev = Math.asin(ns[1]) * 180 / Math.PI;
+  assertTrue(nElev > sElev + 20,
+    `月亮须明显高于光照方向（抬高了）：moon=${nElev.toFixed(2)}° sun=${sElev.toFixed(2)}°`);
+
+  // 只有 night 月亮可见
+  assertTrue(n.moonVisible === true, 'night 月亮须可见');
+  for (const key of ['morning', 'noon', 'dusk']) {
+    assertTrue(VISUAL_STYLES[key].moonVisible === false, `${key} 月亮须不可见`);
+  }
+
   for (const h of [0, 4, 7.5, 12, 18.5, 23]) {
     const d = paramsAtHour(h).moonDirection;
     const len = Math.sqrt(d[0] ** 2 + d[1] ** 2 + d[2] ** 2);
@@ -302,12 +334,32 @@ test('dusk：太阳仰角与 mc-lite skyBox2 贴图里的方位一致（贴图�
   assertTrue(elevDeg < 26.6, `必须比早晨更低（morning 26.6°）：实测 ${elevDeg.toFixed(2)}°`);
 });
 
-test('dusk：三种既有风格的色温字段保持中性（默认白 ⇒ 其余风格逐位不变）', () => {
-  for (const key of ['morning', 'noon', 'night']) {
+test('dusk：morning/noon 色温保持中性，night 为月光冷色（v3.00）', () => {
+  for (const key of ['morning', 'noon']) {
     const s = VISUAL_STYLES[key];
     assertEqual(s.sunColor.join(','), '1,1,1', `${key}.sunColor 须为中性白`);
     assertEqual(s.ambientColor.join(','), '1,1,1', `${key}.ambientColor 须为中性白`);
   }
+  const n = VISUAL_STYLES.night;
+  assertTrue(n.sunColor[2] > n.sunColor[0] + 0.4, `night 直射光须偏冷（B 明显大于 R）：R=${n.sunColor[0]} B=${n.sunColor[2]}`);
+  assertTrue(n.ambientColor[2] > n.ambientColor[0] + 0.15, `night 环境光须偏冷：R=${n.ambientColor[0]} B=${n.ambientColor[2]}`);
+});
+
+// —— 夜月色温标定（v3.00 月光照耀）——
+//
+// ⚠️ **均值是 1.0600，不是 1.0**。这是 ACES 肩部标定值，不得"顺手归一"：
+// 均值恰为 1.000 的同色相候选（sun [0.75,0.90,1.35] / amb [0.90,0.96,1.14]）实测
+// 六面平均 luma 是 **97.14（−3.3%）** —— 因为 ACES 在迎光面（线性 shade 1.13 ×
+// skyDim 0.25 × 曝光 1.6 = 0.45）已进肩部，而 B 通道被抬到 1.44 后压缩率高于 R/G。
+// 1.06 是把肩部吃掉的亮度补回来的标定值（实测 100.50 → 100.84，+0.3%）。
+test('夜月色温：均值必须是 1.0600（ACES 肩部标定值，不得归一到 1.0）', () => {
+  const n = VISUAL_STYLES.night;
+  const mean = (v) => (v[0] + v[1] + v[2]) / 3;
+  const sm = mean(n.sunColor), am = mean(n.ambientColor);
+  assertTrue(sm > 1.04 && sm < 1.08, `night.sunColor 均值须 ≈1.060（ACES 肩部标定）：实测 ${sm.toFixed(4)}`);
+  assertTrue(am > 1.04 && am < 1.08, `night.ambientColor 均值须 ≈1.060：实测 ${am.toFixed(4)}`);
+  // ⚠️ 归一到 1.000 会让六面平均 luma 从 100.84 掉到 97.14（−3.3%），违反"保持现状亮度"
+  assertTrue(Math.abs(sm - 1.0) > 0.03, `均值不得被归一到 1.0（那会掉 3.3% 亮度）：实测 ${sm.toFixed(4)}`);
 });
 
 test('dusk：所有风格都有 sunColor/ambientColor（插值路径不得读 undefined）', () => {
@@ -322,8 +374,20 @@ test('不变式：自动日夜循环全程 duskBlend=0（傍晚只能手动选�
   for (let h = 0; h <= 24; h += 0.25) {
     const p = paramsAtHour(h);
     assertEqual(p.duskBlend, 0, `h=${h} 的 duskBlend 必须为 0`);
-    assertEqual(p.sunColor.join(','), '1,1,1', `h=${h} 的 sunColor 必须中性（自动循环逐位不变）`);
-    assertEqual(p.ambientColor.join(','), '1,1,1', `h=${h} 的 ambientColor 必须中性`);
+    // v3.00：night 段已不是中性白（月光冷色）。
+    // ⚠️ **判据不能写成「moonVisible 为 false ⇒ 中性」**：h∈(5,7) 是 night→morning 的插值段，
+    // `moonVisible` 在那里已取右端（false），而色温仍在插值、**不是**逐位中性（实测 h=6 时
+    // sunColor=[0.897,0.977,1.216]）。故判据落在**色相方向**上：中性平台段必须逐位等于 1，
+    // 其余时段只要求「B ≥ R」（冷色或中性，绝不允许偏暖）。
+    if (p.sunColor[2] < p.sunColor[0]) {
+      assertTrue(false, `h=${h} 的 sunColor 不得偏暖（B < R）：${p.sunColor.join(',')}`);
+    }
+  }
+  // 中性平台段（KEYFRAMES 里 noon→morning→noon 的纯白天段）仍须逐位中性 —— 零回归锚点
+  for (const h of [8, 9, 12, 17, 18]) {
+    const p = paramsAtHour(h);
+    assertEqual(p.sunColor.join(','), '1,1,1', `h=${h}（白天平台段）的 sunColor 必须逐位中性`);
+    assertEqual(p.ambientColor.join(','), '1,1,1', `h=${h}（白天平台段）的 ambientColor 必须逐位中性`);
   }
 });
 
