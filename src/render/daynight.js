@@ -57,8 +57,7 @@ export const SUN_LIGHT_BASE_HEX = (0xff << 16) | (0xfa << 8) | 0xf0;
  * ⚠️ **`sunColor` / `ambientColor` 是色温乘数，不是绝对颜色**：只改色相、不改总曝光。
  * morning / noon 全是 `[1,1,1]`（中性）；dusk / night 有各自标定值
  * （均值分别 1.0333 / 1.0600，见各风格字段注释）。
- */
-/**
+ *
  * ⚠️ **不变式：`moonDirection` 恒等于同风格 `sunDirection`**（v3.00 夜间月光照耀）。
  *
  * 用户的裁定是「把月亮的位置改成跟太阳的位置一样」—— 因为体素材质的 N·L 方向光用的是
@@ -70,7 +69,9 @@ export const SUN_LIGHT_BASE_HEX = (0xff << 16) | (0xfa << 8) | 0xf0;
  * （实测仰角 26.7°→64.4°→14.5°、单步方位跳 61.7°）。morning/noon/dusk 的
  * `moonVisible` 本来就是 false，对齐它们在视觉上零影响。
  *
- * 判据：`src/tests/test-moonlight.js`（dot = 1）与 `test-daynight.js`。
+ * ⚠️ **两份字面量是刻意保留的**（而非在定义后循环派生）：`VISUAL_STYLES` 是纯数据表，
+ * 派生赋值会让「表里写的值」与「实际生效的值」不一致。代价是一行改漏就漂移 ——
+ * 由 `src/tests/test-moonlight.js` 的 dot = 1 断言立即拓住（不是靠注释约定）。
  */
 export const VISUAL_STYLES = {
   morning: {
@@ -84,7 +85,8 @@ export const VISUAL_STYLES = {
     // 本仓不移植那层 CSS 分级（用户要「真实感」而非「鲜艳」）。
     // 晨昏感由**既有数据**提供：skyDim 0.8 + 晨光天空色 0xb7c6f7 —— 不靠曝光重复表达。
     toneMappingExposure: 1.0,
-    // 月亮方向 / 可见性 / 尺寸：mc-lite Engine.js:75,109,111 原值（未归一化，消费前统一归一化）
+    // 月亮方向 / 可见性 / 尺寸：**moonDirection 自 v3.00 起与 sunDirection 同值**（月亮搬到光来
+    // 的那侧，见文件头的不变式）；moonVisible/moonSize 仍是 mc-lite Engine.js:75,109,111 原值。
     moonDirection: [0.18, 0.45, 0.88], moonVisible: false, moonSize: 20,
     // 色温中性 + 不用黄昏天空盒（零回归锚点：着色器逐位回到 v1.70）
     sunColor: NEUTRAL_COLOR, ambientColor: NEUTRAL_COLOR, duskBlend: 0,
@@ -101,6 +103,7 @@ export const VISUAL_STYLES = {
     // 与本仓 unlit 管线不同）—— 照搬上游参数前须检查它是否在补偿另一个差异（v1.45 的
     // `shadow.radius` 同教训）。
     toneMappingExposure: 1.0,
+    // moonDirection 与 sunDirection 同值（v3.00，见文件头不变式）
     moonDirection: [0, 0.8, 0.6], moonVisible: false, moonSize: 18,
     sunColor: NEUTRAL_COLOR, ambientColor: NEUTRAL_COLOR, duskBlend: 0,
     // 水面亮度：正午是用户裁定的基准态（「正午的水面波纹颜色没问题」）→ 必须中性
@@ -143,7 +146,8 @@ export const VISUAL_STYLES = {
     // ACES 曝光 1.20：v1.70 给 night 1.6 是因为 ACES 在低亮度区压缩最陡；傍晚远比夜亮，
     // 只需补到「暗部不死黑」（实测影面 lum 135 vs 正午 145）。
     toneMappingExposure: 1.20,
-    // 贴图里没有月亮（落日前后天边不该有月亮）→ 与 morning/noon 同口径不画
+    // 贴图里没有月亮（落日前后天边不该有月亮）→ 与 morning/noon 同口径不画。
+    // moonDirection 仍与 sunDirection 同值（v3.00 不变式），moonVisible=false 使其不可见。
     moonDirection: [0.665, 0.208, 0.688], moonVisible: false, moonSize: 22,
     // 色温：直射暖橙（R 1.50 / G 1.02 / B 0.58，均值 1.033）、环境冷蓝紫（均值 0.997）
     sunColor: Object.freeze([1.50, 1.02, 0.58]),
@@ -183,6 +187,8 @@ export const VISUAL_STYLES = {
     // 1.6 让夜间「平均亮度回到现状」却把动态范围拉开 —— 这正是「夜该暗，但不是糊成一片」。
     // mc-lite 用 0.95 是为了压暗，本仓用更高曝光达到「压暗暗部、保住亮部」的同一个**意图**。
     toneMappingExposure: 1.6,
+    // moonDirection 与 sunDirection 同值（v3.00）—— **这是本轮改动的核心**：月亮搬到光照
+    // 方向那侧，于是夜间迎光面朝月亮、影子背离月亮。改前两者夹角 127°（dot −0.6031）。
     moonDirection: [0.08, 0.25, 0.96], moonVisible: true, moonSize: 34,
     // 月光色温（v3.00）：冷蓝直射 + 更冷的环境。**均值 1.0600，不是 1.0** ——
     // 均值恰为 1.000 的同色相候选实测六面平均 luma 97.14（−3.3%），因为 ACES 在迎光面
