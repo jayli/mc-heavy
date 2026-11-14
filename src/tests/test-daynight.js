@@ -170,13 +170,17 @@ test('nightBlendOf：钳制在 [0,1]（skyDim 越界不得溢出）', async () =
   assertEqual(nightBlendOf({ skyDim: -1 }), 1, 'skyDim < night 夹到 1');
 });
 
-test('三风格 moonDirection 是 mc-lite 原值，且插值后仍是单位向量', () => {
-  const m = VISUAL_STYLES[VISUAL_STYLE_KEYS.MORNING].moonDirection;
-  const n = VISUAL_STYLES[VISUAL_STYLE_KEYS.NOON].moonDirection;
-  const k = VISUAL_STYLES[VISUAL_STYLE_KEYS.NIGHT].moonDirection;
-  assertEqual(m.join(','), '-0.38,0.45,-0.81');
-  assertEqual(n.join(','), '-0.25,0.5,-0.82');
-  assertEqual(k.join(','), '-0.32,0.58,-0.75');
+test('四风格 moonDirection ≡ sunDirection（v3.00 月光照耀：月亮在光来的那侧）', () => {
+  for (const key of Object.keys(VISUAL_STYLES)) {
+    const s = VISUAL_STYLES[key];
+    const a = normalize(s.sunDirection), b = normalize(s.moonDirection);
+    const dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    assertTrue(Math.abs(dot - 1) < 1e-12,
+      `${key}: moonDirection 必须与 sunDirection 同向，实测 dot=${dot}`);
+  }
+  // 原值溯源：sunDirection 仍是 mc-lite 原值（本轮一个字节不动）
+  const k = VISUAL_STYLES[VISUAL_STYLE_KEYS.NIGHT].sunDirection;
+  assertEqual(k.join(','), '0.08,0.25,0.96', 'night.sunDirection 须仍是 mc-lite 原值');
   for (const h of [0, 4, 7.5, 12, 18.5, 23]) {
     const d = paramsAtHour(h).moonDirection;
     const len = Math.sqrt(d[0] ** 2 + d[1] ** 2 + d[2] ** 2);
