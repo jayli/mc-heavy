@@ -13,6 +13,7 @@
 import { test } from './runner.js';
 import {
   assertEqual, assertTrue, assertFalse, assertNotNull, assertNull, assertUndefined,
+  assertDeepEqual,
 } from './assert.js';
 import * as THREE from 'three';
 import {
@@ -21,6 +22,8 @@ import {
   staggerTimes, heatDecay,
   // v2.64：宿主实体死亡爆散（丧尸 / 焰魔）
   DEATH_BURST, IGNIS_DEATH_BURST, createDeathBurstSeeds, BlockHitFxRenderer,
+  // v3.04：焰魔砸击碎石圆环（复用同一个碎块池）
+  IGNIS_SMASH_DEBRIS, smashRingCenter, smashDebrisRing,
 } from '../render/block-hit-fx.js';
 
 /** 确定性 LCG：同一 seed 产出同一序列（特效是随机的，测试必须可复现） */
@@ -453,6 +456,198 @@ test('ignis death burst: 渲染器入口按 burst 参数出块（缺省仍是丧
     fx.update(1000 + IMPACT_FX.debris.lifeMs + 1);
     assertEqual(fx.activeDebrisCount, 0, '到期全部回收');
     assertFalse(fx.debrisMesh.visible, '回收后回到不可见');
+  } finally {
+    fx.dispose();
+  }
+});
+
+// ---------- 焰魔砸击碎石圆环（v3.04）----------
+//
+// 原版 `ShieldSmashparticle`（`Ignis_Entity.java:1665-1690`）是**前方环心 + 整圆**：
+//   环心 = 身体 + 正前方×vec(2.75) + 侧向×math(−0.1)，环上半径 radius。
+// ⚠️ **不是「脚下弧形」**：`i1` 直接当弧度用（绕多圈）只是圆环的密度不均采样，整体是圆环。
+// 断言的圆心必须是**前移后的环心** —— 以脚底为圆心写会恒红。
+// ⚠️ **radius 已从原版 1.3 翻倍到 2.6**（用户 v3.04b：「碎石圆环的面积也有点太小了，
+// 把碎石圆环的面积扩大一倍」）⇒ 直径 2.6 → **5.2 格**。
+
+test('ignis smash ring: 环心前移 forward，侧向偏 lateral（唯一权威 smashRingCenter）', () => {
+  const at = [10, 5, 20];
+  // yaw=0 ⇒ 正前方 (0,0,−1)、侧向 (1,0,0)
+  const c = smashRingCenter(at, 0);
+  assertTrue(Math.abs(c[0] - (10 + IGNIS_SMASH_DEBRIS.lateral)) < 1e-9, `环心 x：${c[0]}`);
+  assertTrue(Math.abs(c[1] - 5) < 1e-9, '环心 y 不含 lift（lift 只加在碎块上）');
+  assertTrue(Math.abs(c[2] - (20 - IGNIS_SMASH_DEBRIS.forward)) < 1e-9, `环心 z：${c[2]}`);
+  // yaw=π/2 ⇒ 正前方 (−1,0,0)、侧向 (0,0,−1)
+  const c2 = smashRingCenter([0, 0, 0], Math.PI / 2);
+  assertTrue(Math.abs(c2[0] - (-IGNIS_SMASH_DEBRIS.forward)) < 1e-9, `yaw=π/2 环心 x：${c2[0]}`);
+  assertTrue(Math.abs(c2[2] - (-IGNIS_SMASH_DEBRIS.lateral)) < 1e-9, `yaw=π/2 环心 z：${c2[2]}`);
+});
+
+test('ignis smash ring: 半径已翻倍到 2.6（用户 v3.04b：面积扩大一倍）', () => {
+  // 原版 1.3 ⇒ 直径 2.6 格；用户实玩报「太小」⇒ 半径×2 ⇒ 直径 5.2 格。
+  // ⚠️ 取**半径翻倍**而不是字面面积×2（那只使半径×√2≈1.84、直径 3.68 格，
+  // 观感变化很小，不符「太小了」的诉求）—— 已在汇报里说明这个取舍。
+  assertEqual(IGNIS_SMASH_DEBRIS.radius, 2.6);
+  // 负向锚点：退回原版 1.3 ⇒ 本条 FAIL。
+});
+
+test('ignis smash ring: 全部碎块落在「前移后环心」半径 radius 的圆上', () => {
+  const at = [10, 5, 20];
+  const yaw = 0;
+  const pts = smashDebrisRing(at, yaw, IGNIS_SMASH_DEBRIS, makeRand(7));
+  assertEqual(pts.length, IGNIS_SMASH_DEBRIS.count);
+  // ⚠️ 不写死块数：v3.04c 用户要求 +50%（28 → 42），写死字面量会让调参时这条假红。
+  // 具体数值的判据在「v3.04c: 数量 42」那条。
+  const c = smashRingCenter(at, yaw);
+  for (const p of pts) {
+    const r = Math.hypot(p.position[0] - c[0], p.position[2] - c[2]);
+    assertTrue(Math.abs(r - IGNIS_SMASH_DEBRIS.radius) < 1e-9, `到环心距离须 = radius：${r}`);
+    assertTrue(Math.abs(p.position[1] - (at[1] + IGNIS_SMASH_DEBRIS.lift)) < 1e-9,
+      `碎块 y = 脚底 + lift：${p.position[1]}`);
+    assertDeepEqual(p.normal, [0, 1, 0]);
+  }
+  // 负向锚点：若环心**没有前移**（center = at），则每一点到脚底的距离**恒等于 radius**。
+  // ⚠️ 不能只查 `pts[0]`：i=0 时 `angle = yaw`，该点恰好落在离脚底 `forward − radius` 处，
+  // 旧半径时那是 1.45、与 radius 1.3 太近 ⇒ 那条写法**没有判别力**（实测踩过）。
+  // 改取**全部点的最大值**：前移后它应 ≈ forward + radius（现 2.75+2.6=5.35）；
+  // 未前移则恒为 radius。阈值 radius+2 两侧仍分得开（5.35 > 4.6）。
+  let maxFromFeet = 0;
+  for (const p of pts) {
+    const r = Math.hypot(p.position[0] - at[0], p.position[2] - at[2]);
+    if (r > maxFromFeet) maxFromFeet = r;
+  }
+  assertTrue(maxFromFeet > IGNIS_SMASH_DEBRIS.radius + 2,
+    `到脚底的最大距离须远大于 radius（否则环心没前移）：${maxFromFeet}`);
+});
+
+test('ignis smash ring: 绕整圆（不是朝前的扇弧）', () => {
+  const pts = smashDebrisRing([0, 0, 0], 0, IGNIS_SMASH_DEBRIS, makeRand(11));
+  const c = smashRingCenter([0, 0, 0], 0);
+  // 相对环心的方位角须覆盖四个象限（原版 i1 当弧度绕多圈 ⇒ 整圆）
+  const quadrants = new Set();
+  for (const p of pts) {
+    const dx = p.position[0] - c[0];
+    const dz = p.position[2] - c[2];
+    quadrants.add(`${dx >= 0 ? '+' : '-'}${dz >= 0 ? '+' : '-'}`);
+  }
+  assertEqual(quadrants.size, 4, `须覆盖四象限，实得 ${[...quadrants].join(',')}`);
+});
+
+test('ignis smash ring: 池容量安全（与焰魔死亡爆散并发不互相覆盖）', () => {
+  // FIFO 绕回会让「一次爆散自己覆盖自己」⇒ 观感「只炸出半边」（DEATH_BURST 注释记过）
+  assertTrue(IGNIS_SMASH_DEBRIS.count + IGNIS_DEATH_BURST.count <= IMPACT_FX.debris.maxActive,
+    `${IGNIS_SMASH_DEBRIS.count} + ${IGNIS_DEATH_BURST.count} 须 ≤ ${IMPACT_FX.debris.maxActive}`);
+});
+
+test('ignis smash ring: 渲染器入口真的入池、可见、到期回收（复用同一个池）', () => {
+  const scene = new THREE.Scene();
+  const fx = new BlockHitFxRenderer({ scene });
+  try {
+    fx.reset();
+    fx.spawnSmashRing([10, 5, 20], 0, [0.5, 0.5, 0.5], 1000, { rand: makeRand(3) });
+    assertEqual(fx.activeDebrisCount, IGNIS_SMASH_DEBRIS.count);
+    assertTrue(fx.debrisMesh.visible, '有碎块时必须可见');
+    // ⚠️ 复用既有池：不是第二个 InstancedMesh
+    assertEqual(scene.children.length, 1 + IMPACT_FX.whiteFlash.maxActive,
+      '不得新开池（碎块 1 个 + 白闪池）');
+    fx.update(1000 + IMPACT_FX.debris.lifeMs + 1);
+    assertEqual(fx.activeDebrisCount, 0, '到期全部回收');
+    assertFalse(fx.debrisMesh.visible, '回收后回到不可见');
+  } finally {
+    fx.dispose();
+  }
+});
+
+test('ignis smash ring: NaN 入参不入池（防污染整个实例矩阵）', () => {
+  const scene = new THREE.Scene();
+  const fx = new BlockHitFxRenderer({ scene });
+  try {
+    fx.reset();
+    fx.spawnSmashRing([NaN, 5, 20], 0, [0.5, 0.5, 0.5], 1000);
+    assertEqual(fx.activeDebrisCount, 0);
+    fx.spawnSmashRing([10, 5, 20], NaN, [0.5, 0.5, 0.5], 1000);
+    assertEqual(fx.activeDebrisCount, 0);
+  } finally {
+    fx.dispose();
+  }
+});
+
+// ---------- v3.04c 用户裁定：碎石更「厉害」（数量 +50% / 尺寸 ×2 / 弹跳高度 ×2）----------
+//
+// 用户 2026-11-15 原话：「碎石的方块有点过于小，震动起来的幅度也不高，感觉不厉害，
+// 就好像一圈小石子蹦起来一样，每次动画方块数量增加50%，方块大小增加两倍。方块跳起的高度增加两倍。」
+//
+// ⚠️ **高度不是直接常量**：`debrisOffset` 是 `vy·t − ½·g·t²`（g = DEBRIS_GRAVITY 18，
+// 与枪击/死亡爆散**共享**，不得为本招改它）。峰高 `h = vy²/(2g)` ⇒ **高度 ×2 ⇔ vy ×√2**。
+// 直接把 speed ×2 会让高度变 **4 倍**（那是「高度增加两倍」的常见误读，本用例钉住 √2 口径）。
+
+test('ignis smash debris v3.04c: 数量 42（28 的 +50%）', () => {
+  assertEqual(IGNIS_SMASH_DEBRIS.count, 42);
+  // 池容量：与焰魔死亡爆散并发仍安全（FIFO 绕回会让一次爆散自己覆盖自己）
+  assertTrue(IGNIS_SMASH_DEBRIS.count + IGNIS_DEATH_BURST.count <= IMPACT_FX.debris.maxActive,
+    `${IGNIS_SMASH_DEBRIS.count} + ${IGNIS_DEATH_BURST.count} 须 ≤ ${IMPACT_FX.debris.maxActive}`);
+});
+
+test('ignis smash debris v3.04c: 尺寸翻倍到 [0.28, 0.48]', () => {
+  assertDeepEqual(IGNIS_SMASH_DEBRIS.size, [0.28, 0.48]);
+  // 负向锚点：退回 [0.14,0.24] ⇒ 本条 FAIL
+});
+
+test('ignis smash debris v3.04c: 弹跳峰高恰好翻倍（vy ×√2，不是 speed ×2）', () => {
+  const G = 18;   // DEBRIS_GRAVITY（模块私有，此处按契约取值；下面用真实 debrisOffset 复核）
+  // 半球抽样的 u ∈ [0.35, 1]，法线 [0,1,0] ⇒ vy = u × speed
+  const peak = (speed) => {
+    const vy = 1.0 * speed;          // u=1 的最坏（最高）情形
+    return (vy * vy) / (2 * G);
+  };
+  const oldPeak = peak(2.6);         // v3.04b 的 speed 上界
+  const newPeak = peak(IGNIS_SMASH_DEBRIS.speed[1]);
+  assertTrue(Math.abs(newPeak / oldPeak - 2) < 1e-3,
+    `峰高须恰好 ×2：旧 ${oldPeak.toFixed(5)} → 新 ${newPeak.toFixed(5)}（比 ${(newPeak / oldPeak).toFixed(4)}）`);
+  // 下界同比例（整条区间一起缩放，分布形状不变）
+  const ratioLo = IGNIS_SMASH_DEBRIS.speed[0] / 1.2;
+  const ratioHi = IGNIS_SMASH_DEBRIS.speed[1] / 2.6;
+  assertTrue(Math.abs(ratioLo - ratioHi) < 1e-9, '上下界须同比例缩放');
+  assertTrue(Math.abs(ratioHi - Math.SQRT2) < 1e-3, `缩放系数须为 √2，实得 ${ratioHi}`);
+});
+
+test('ignis smash debris v3.04c: 真实抛物线复核峰高翻倍（不靠公式自证）', () => {
+  // ⚠️ 上一条用的是 h=vy²/2g 公式；这条走**真实的 debrisOffset**，
+  // 两侧只差 speed 这一个变量 —— 防「公式与实现共用同一个错误假设」。
+  const peakOf = (speed) => {
+    const seed = { velocity: [0, speed, 0], size: 0.3, spinRate: 0, spinAxis: [0, 1, 0], tone: 1 };
+    let max = -Infinity;
+    const out = [0, 0, 0];
+    for (let ms = 0; ms <= 620; ms += 2) {
+      debrisOffset(seed, ms, out);
+      if (out[1] > max) max = out[1];
+    }
+    return max;
+  };
+  const oldPeak = peakOf(2.6);
+  const newPeak = peakOf(IGNIS_SMASH_DEBRIS.speed[1]);
+  assertTrue(Math.abs(newPeak / oldPeak - 2) < 0.02,
+    `真实抛物线峰高须 ×2：${oldPeak.toFixed(5)} → ${newPeak.toFixed(5)}`);
+});
+
+test('ignis smash debris v3.04c: 到峰时刻仍在缩零之前（否则看不到弹起就被缩掉）', () => {
+  const G = 18;
+  const tPeak = IGNIS_SMASH_DEBRIS.speed[1] / G;
+  const tShrink = (IMPACT_FX.debris.shrinkFrom * IMPACT_FX.debris.lifeMs) / 1000;
+  assertTrue(tPeak < tShrink,
+    `到峰 ${tPeak.toFixed(3)}s 须早于缩零起点 ${tShrink.toFixed(3)}s`);
+});
+
+test('ignis smash debris v3.04c: 渲染器真的出 42 块（真实入口，非纯函数）', () => {
+  const scene = new THREE.Scene();
+  const fx = new BlockHitFxRenderer({ scene });
+  try {
+    fx.reset();
+    fx.spawnSmashRing([10, 5, 20], 0, [0.5, 0.5, 0.5], 1000, { rand: makeRand(3) });
+    assertEqual(fx.activeDebrisCount, 42);
+    assertTrue(fx.debrisMesh.visible);
+    // 仍是同一个池（不新开）
+    assertEqual(scene.children.length, 1 + IMPACT_FX.whiteFlash.maxActive);
   } finally {
     fx.dispose();
   }

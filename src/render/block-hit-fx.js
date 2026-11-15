@@ -151,6 +151,57 @@ export const IGNIS_DEATH_BURST = freezeDeep({
 });
 
 /**
+ * 焰魔砸击碎石圆环（v3.04）—— 原版 `ShieldSmashparticle`
+ * （`Ignis_Entity.java:1665-1690`）的本仓标定口径。
+ *
+ * ## 形状：**前方环心 + 整圆**（不是「脚下弧形」）
+ *
+ * 原版：`angle = yBodyRot·(π/180) + i1`（**`i1` 直接当弧度**，80~92 个粒子绕约 12.7 圈）、
+ * `extraX = radius·sin(π+angle)`、`extraZ = radius·cos(angle)`，落点再加
+ * `vec·vecX`（正前方前移）与 `f·math`（侧向偏移）⇒ **环心在身体前方 `vec` 处**。
+ *
+ * ⚠️ 本仓只取形状语义，**不照抄那 80~92 粒**：原版密度会吃掉碎块池 128 的 62~72%，
+ * 与枪击碎块 / 焰魔死亡爆散并发时 FIFO 绕回互相覆盖（观感「只炸出半边」，
+ * `DEATH_BURST` 注释记过同一个坑）。取 **28 块**（≈原版 1/3），
+ * 28 + 焰魔死亡爆散 32 = 60 < 128，安全区。
+ *
+ * ⚠️ **radius 已从原版 1.3 翻倍到 2.6**（用户 2026-11-15 实玩后裁定：「碎石圆环的面积也
+ * 有点太小了，把碎石圆环的面积扩大一倍」）⇒ 直径 2.6 → **5.2 格**。
+ * 取**半径翻倍**而不是字面面积×2（那使半径只×√2≈1.84、直径 3.68 格，观感变化很小）。
+ * 连带效果：环最近点到脚底 `2.75 − 2.6 = 0.15` 格（几乎贴脚）、最远 `5.35` 格
+ * ⇒ 玩家对打时碎石就在眼前，与法阵首段落到脚底的裁定同向。
+ *
+ * ⚠️ **初速比枪击碎块低**：原版三轴各 `nextGaussian() × 0.07` 是「原地溅起」，
+ * 不是「四散飞射」。v3.04b 取 `[1.2, 2.6]`（枪击是 `[2.5, 4.6]`）。
+ *
+ * ## v3.04c：用户实玩后要求「更厉害」（2026-11-15）
+ *
+ * 用户原话：「碎石的方块有点过于小，震动起来的幅度也不高，感觉不厉害，就好像一圈
+ * 小石子蹦起来一样，每次动画方块数量增加50%，方块大小增加两倍。方块跳起的高度增加两倍。」
+ *
+ * 三项落地：
+ *   · `count` 28 → **42**（+50%）；池容量核对 42 + 死亡爆散 32 = 74 ≤ 128 ✓
+ *   · `size` `[0.14,0.24]` → **`[0.28,0.48]`**（边长 ×2）
+ *   · `speed` `[1.2,2.6]` → **`[1.697,3.677]`**（×√2）
+ *
+ * ⚠️⚠️ **为什么高度×2 是 speed ×√2 而不是 ×2**：`debrisOffset` 的竖直项是
+ * `vy·t − ½·g·t²`，峰高 **`h = vy²/(2g)`** ⇒ h 与 vy 是**平方**关系。
+ * 直接 speed ×2 会让高度变 **4 倍**（超出用户要求的两倍）。
+ * `DEBRIS_GRAVITY = 18` 与枪击/死亡爆散**共享**，不得为本招改它（否则枪击手感一起变）。
+ * 实测：峰高 0.18778 → **0.37556 格**（恰 2.0000×）；到峰时刻 0.204s < 缩零起点 0.484s ✓
+ */
+export const IGNIS_SMASH_DEBRIS = freezeDeep({
+  count: 42,             // v3.04c：28 的 +50%（用户裁定）；42 + 32 = 74 ≤ 池 128
+  radius: 2.6,           // 原版 1.3 翻倍（用户 v3.04b，见上）
+  forward: 2.75,         // 原版 `vec=2.75`：环心前移量（`Ignis_Entity.java:889`）
+  lateral: -0.1,         // 原版 `math=-0.1`：环心侧向偏移
+  lift: 0.3,             // 原版 `extraY = 0.3`：碎块相对脚底的抬高
+  size: [0.28, 0.48],    // v3.04c：边长 ×2（用户「方块大小增加两倍」）
+  speed: [1.6970562748477143, 3.6769552621700474],   // v3.04c：×√2 ⇒ 峰高恰 ×2（h ∝ vy²）
+  spin: [4, 10],
+});
+
+/**
  * 死亡爆散配置 → `createDebrisSeeds` 的 profile 形状（与 `IMPACT_PROFILES` 的碎块项一致）。
  * ⚠️ 逐字段派生而不是共享引用：`createDebrisSeeds` 只读这四个字段，形状对齐即可。
  */
@@ -183,6 +234,69 @@ export function createDeathBurstSeeds(rand, count, cfg = DEATH_BURST) {
   const seeds = up > 0 ? createDebrisSeeds(profile, [0, 1, 0], rand, up) : [];
   if (down > 0) seeds.push(...createDebrisSeeds(profile, [0, -1, 0], rand, down));
   return seeds;
+}
+
+/**
+ * 碎石圆环的**环心**（世界坐标，y = 脚底 y，不含 lift）。
+ *
+ * ⚠️ **环心公式只此一份**（红线 1）：`smashDebrisRing` 算落点用它，
+ * `Game._consumeIgnisFxRequests` 取「环心脚下那一格」的颜色也用它。
+ * 两处各写一遍就是第二份权威 ⇒ 碎石颜色会取自错误的格（观感：石地上炸出绿色碎块）。
+ *
+ * yaw 用**本仓口径**：正前方 = `(−sin yaw, −cos yaw)`
+ * （同 `entities/bosses/dragon-boss-agent.js:127-128`）；侧向 = 正前方绕 Y 转 90°
+ * = `(cos yaw, −sin yaw)`（yaw=0 时为 `(1,0,0)`，与原版 `f=cos(yBodyRot)` 同位）。
+ *
+ * @param {number[]} at 焰魔身体位置 `[x,y,z]`（脚底）
+ * @param {number} yaw 本仓 yaw（弧度）
+ * @param {object} [cfg] 缺省 `IGNIS_SMASH_DEBRIS`
+ * @returns {number[]} `[x,y,z]`
+ */
+export function smashRingCenter(at, yaw, cfg = IGNIS_SMASH_DEBRIS) {
+  const fx = -Math.sin(yaw);
+  const fz = -Math.cos(yaw);
+  const sx = Math.cos(yaw);
+  const sz = -Math.sin(yaw);
+  return [
+    at[0] + fx * cfg.forward + sx * cfg.lateral,
+    at[1],
+    at[2] + fz * cfg.forward + sz * cfg.lateral,
+  ];
+}
+
+/**
+ * 碎石圆环的逐块落点与法线（纯函数）。
+ *
+ * 落点是**确定性几何**（原版 `angle = yBodyRot + i1`，无随机项）；
+ * `i1` 当弧度用绕多圈 ⇒ 整圆上密度不均的采样，整体形状仍是圆环。
+ * 随机性全部来自复用 `createDebrisSeeds` 的**速度/尺寸/自旋**抽样
+ * （与原版 `nextGaussian()×0.07` 同位）。
+ *
+ * ⚠️ `rand` 保留在签名里但**本函数不消费它** —— 落点无随机项，
+ * 传它只为与 `createDeathBurstSeeds(rand, count, cfg)` 的调用形状一致。
+ * 想改变落点分布得改 `cfg`，不是换 rand。
+ *
+ * @param {number[]} at 焰魔身体位置（脚底）
+ * @param {number} yaw 本仓 yaw
+ * @param {object} [cfg]
+ * @param {() => number} [_rand] 未消费（见上）
+ * @returns {Array<{position:number[], normal:number[]}>}
+ */
+export function smashDebrisRing(at, yaw, cfg = IGNIS_SMASH_DEBRIS, _rand = Math.random) {
+  const c = smashRingCenter(at, yaw, cfg);
+  const points = [];
+  for (let i = 0; i < cfg.count; i++) {
+    const angle = yaw + i;   // 原版：i 直接当弧度
+    points.push({
+      position: [
+        c[0] - cfg.radius * Math.sin(angle),
+        at[1] + cfg.lift,
+        c[2] + cfg.radius * Math.cos(angle),
+      ],
+      normal: [0, 1, 0],     // 向上溅起
+    });
+  }
+  return points;
 }
 
 /**
@@ -654,6 +768,39 @@ export class BlockHitFxRenderer {
     }
     if (this._debrisMesh.instanceColor) this._debrisMesh.instanceColor.needsUpdate = true;
     this._debrisMesh.visible = true;
+  }
+
+  /**
+   * 焰魔砸击碎石圆环（v3.04）：在**身体前方的环心**一圈溅起碎块。
+   *
+   * 与 `spawnFromEffect`（枪击）/ `spawnDeathBurst`（死亡爆散）**共用同一个碎块池与同一套
+   * 推进曲线**（`update`），差别只有三处：
+   *   · **位置**：圆环（`smashDebrisRing`，确定性几何），不是命中面半球 / 全球面；
+   *   · **法线**：恒 `[0,1,0]`（向上溅起）；
+   *   · **初速更低**（原版 `gaussian×0.07` 是原地溅起，不是四散飞射）。
+   *
+   * ⚠️ **不开第二个池**（红线自检：不绕过统一管线新开子系统）。
+   * 池满时覆盖最旧 slot 的语义与其它两处一致（纯视觉，丢弃无副作用）。
+   *
+   * @param {number[]} at 焰魔身体位置（脚底）
+   * @param {number} yaw 本仓 yaw（弧度）
+   * @param {number[]} colorRgb 0..1 三分量（取环心脚下那一格的平均色，由调用方给）
+   * @param {number} nowMs `performance.now()` 基准（**禁止 `Date.now()`**）
+   * @param {{rand?: () => number, cfg?: object}} [opts] `rand` 只影响速度/尺寸/自旋，
+   *   不影响落点（见 `smashDebrisRing` 注释）
+   */
+  spawnSmashRing(at, yaw, colorRgb, nowMs, { rand = Math.random, cfg = IGNIS_SMASH_DEBRIS } = {}) {
+    // 入参校验照 `spawnDeathBurst`：NaN 会污染整个实例矩阵
+    if (!Array.isArray(at) || at.length !== 3 || !at.every((n) => Number.isFinite(n))) return;
+    if (!Number.isFinite(yaw)) return;
+    const color = Array.isArray(colorRgb) && colorRgb.length === 3 && colorRgb.every(Number.isFinite)
+      ? colorRgb : [0.5, 0.5, 0.5];   // 缺色退回中性灰（不阻断特效）
+    const points = smashDebrisRing(at, yaw, cfg);
+    for (const p of points) {
+      // `IGNIS_SMASH_DEBRIS` 直接当 profile：`_spawnDebris` 只读 speed/size/spin，
+      // count 显式传 1（每点一块）—— 不需再派生一份 profile 形状。
+      this._spawnDebris(p.position, p.normal, cfg, color, rand, 1, nowMs, false);
+    }
   }
 
   /**

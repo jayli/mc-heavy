@@ -28,7 +28,8 @@ import { ViewArm } from '../render/view-arm.js';
 import { WEAPON_IDS } from '../player/weapons/weapon-catalog.js';
 import { TracerRenderer } from '../render/tracer-renderer.js';
 import { ExplosionRenderer } from '../render/explosion-renderer.js';
-import { BlockHitFxRenderer, IGNIS_DEATH_BURST } from '../render/block-hit-fx.js';
+import { BlockHitFxRenderer, IGNIS_DEATH_BURST, smashRingCenter } from '../render/block-hit-fx.js';
+import { FlameSigilRenderer, loadFlameSigilTexture, sigilSpawnPoints } from '../render/flame-sigil.js';
 import { createAtlasColorResolver } from '../render/block-color.js';
 import {
   ExplosionSpriteRenderer, loadExplosionSpriteTexture,
@@ -305,6 +306,12 @@ export class Game {
     // 爆炸特效只是观感，缺了退回「只有球体扩张层」（`explosion-renderer.js`）即可。
     this._explosionSpriteTexture = await loadExplosionSpriteTexture().catch((e) => {
       console.warn('[game] 爆炸序列帧图集加载失败，退回只有球体扩张层：', e);
+      return null;
+    });
+    // v3.04：焰魔地面火焰法阵贴图（mod 既有素材逐字节拷入，非新画美术资源）。
+    // 同上容错口径：加载失败不阻断启动 —— 法阵只是观感，缺了仍有碎石反馈。
+    this._flameSigilTexture = await loadFlameSigilTexture().catch((e) => {
+      console.warn('[game] 焰魔法阵贴图加载失败，本轮不装配法阵层：', e);
       return null;
     });
     const atlasMeta = await (await fetch(resourceUrl('assets/atlas.json'))).json();
@@ -907,6 +914,13 @@ export class Game {
       blockNameOf: (id) => this.registry.nameOf(id),
     });
 
+    // v3.04：焰魔举盾砸击的地面火焰法阵（原版 Flame_Strike_Entity 的视觉层）。
+    // ⚠️ 贴图缺失时**跳过装配**（置 null）—— 下游一律 `?.` 调用，
+    // 不拿空贴图建一个永远看不见却占 draw call 的池。
+    this.flameSigil = this._flameSigilTexture
+      ? new FlameSigilRenderer({ scene: this.scene, texture: this._flameSigilTexture })
+      : null;
+
     // 出生点（mc-lite 语义：优先 City 中心出生，保证出生即见城市天际线，§7 M2 验收）
     const regionLayout = await this.scheduler.structureIndex.waitForRegion(0, 0);
     // 水面遮罩的城市门控 bounds（城市全世界唯一，固定 region [0,0]）。
@@ -1257,6 +1271,9 @@ export class Game {
       this._consumeIgnisAttackRequests();
       // 守卫的四招命中结算（同口径：必须在 entities.update 之后）
       this._consumeGuardianAttackRequests();
+      // v3.04：焰魔砸击特效（地面火焰法阵 / 碎石圆环）。读的是 `attackFxRequest`，
+      // 与伤害结算分开 —— 特效不受命中帧的新鲜视线复查影响（原版同口径）。
+      this._consumeIgnisFxRequests(nowMs);
       // v2.64：Boss 战音频（BGM 交叉淡化 + 焰魔挥刀/跳跃音 + 飞龙随机吼叫）。
       // ⚠️ **必须在 `entities.update` 之后**（Agent 本帧写入的 mode/leapKind 才存在），
       // 且在 `_consumeIgnisAttackRequests` 之后（两者都读焰魔 state，顺序不影响结果但
@@ -1356,6 +1373,8 @@ export class Game {
       this.explosionSprite.update(nowMs);
       // 枪击方块命中特效推进（碎块抛物线/自旋、白闪的保持与淡出）
       this.blockHitFx.update(nowMs);
+      // v3.04：焰魔法阵推进（递延点亮 / 自转 / 末段淡出；全部结束后 visible=false）
+      this.flameSigil?.update(nowMs);
       // DR-5 按需刷新：节流放行时才置 needsUpdate（必须在 render 之前 —— ShadowNode 的
       // updateBefore 在本帧渲染前读它）。tick 内部已消费 pending 并记录时刻。
       // ⚠️ **`tick()` 必须在前、`castShadow` 在后**，两侧顺序是**载荷性的，勿交换**：
@@ -3380,6 +3399,89 @@ export class Game {
   }
 
   /**
+   * 焰魔四招的**命中特效**结算（v3.04）。
+   *
+   * 与 `_consumeIgnisAttackRequests`（伤害）**刻意分开**：后者只在命中帧的
+   * `freshLos` 新鲜视线复查通过时才有 `attackRequest`，而原版
+   * `Ignis_Entity.aiStep()` 的特效调用（`ShieldSmashparticle` / `spawnFlameStrike`）
+   * **不看视线** ⇒ 玩家侧移出锥/隔墙时仍看得到 Boss 大招的规模。
+   *
+   * ⚠️ **纯视觉，不带伤害**：原版法阵每 5 tick 扣血 + 叠燃烧 debuff，
+   * 本轮按用户裁定③「只扣血」全部不取 —— 四招伤害仍走 `IGNIS.attackDamage`。
+   *
+   * ⚠️ **招式过滤在这里，不在 Agent 里**：Agent 四招都产请求，
+   * 「哪些招出哪种特效」是装配层的决定（同构层不做装配层的事）。
+   * `swing` / `spin` 本轮不出特效（原版它们的特效是剑尖拖焰，未选）。
+   *
+   * ⚠️ **常态零分配门控**：`activeEntities()` 会新建数组，而本方法每帧都跑。
+   *
+   * @param {number} nowMs 帧循环的 `performance.now()` 基准时间戳。
+   *   ⚠️ **必须由调用方传入，不得在方法内新取 `performance.now()`** ——
+   *   同帧两个时基会让特效的 `bornAt` 与 `update(nowMs)` 的基准错开一截
+   *   （帧内耗时），寿命判定与递延点亮都跟着漂。同 `_syncBossAudio` / `_updateTntChain` 口径。
+   */
+  _consumeIgnisFxRequests(nowMs) {
+    if (!this.ignises) return;
+    if (this.entities.count(IGNIS_TYPE) === 0) return;
+    for (const ignis of this.ignises.activeEntities()) {
+      const req = ignis.state.attackFxRequest;
+      if (!req) continue;
+      if (req.kind !== 'shieldSmash' && req.kind !== 'shieldBash') continue;
+
+      // ---- 碎石圆环（两招都出）----
+      // 颜色取自**环心脚下那一格**（原版取的也是 `hit.below()`，不是 Boss 脚下）。
+      // ⚠️ 环心走 `smashRingCenter` —— 与 `smashDebrisRing` 内部同一份公式（红线 1）。
+      // 在 game.js 重写一遍就是第二份权威 ⇒ 颜色会取自错误的格。
+      const center = smashRingCenter(req.at, req.yaw);
+      const gx = Math.floor(center[0]);
+      const gy = Math.floor(req.at[1]) - 1;
+      const gz = Math.floor(center[2]);
+      let rgb = null;
+      const resolver = this.blockHitFx?.colorResolver;
+      if (resolver && this.world) {
+        const name = this.registry.nameOf(this.world.getBlockId(gx, gy, gz));
+        if (name && name !== 'air') rgb = resolver(name, null);
+      }
+      // 缺色（未加载列 / resolver 构造失败）退中性灰，不阻断特效
+      this.blockHitFx.spawnSmashRing(req.at, req.yaw, rgb || [0.5, 0.5, 0.5], nowMs);
+
+      // ---- 地面火焰法阵（仅举盾砸击）----
+      if (req.kind !== 'shieldBash' || !this.flameSigil || !this.world) continue;
+      const points = [];
+      for (const p of sigilSpawnPoints(req.at, req.yaw)) {
+        const y = this._findSigilGroundY(p.x, p.z, req.at[1]);
+        // 扫不到地面（未加载列 / 悬崖外）⇒ **跳过该段**，与原版「flag 为假则不生成」同语义。
+        // 不得回落到 y=0 或世界底 —— 那会在空中/地底凭空出一个法阵。
+        if (y === null) continue;
+        points.push({ x: p.x, y, z: p.z, delayMs: p.delayMs });
+      }
+      if (points.length > 0) this.flameSigil.spawn(points, nowMs);
+    }
+  }
+
+  /**
+   * 法阵落点的地面顶面 y（原版 `spawnFlameStrike` 的向下扫描，`Ignis_Entity.java:2163-2189`）。
+   *
+   * ⚠️ **从 Boss 上方起扫，不是从脚底起扫**：前方有凸起地形时脚底高度已低于前方地表，
+   * 从脚底扫会把法阵放进山体内部。窗口 `脚底+4 → 脚底−8`（共 12 格）。
+   *
+   * ⚠️ 未加载列 `getBlockId` 恒返 0（air）⇒ 扫完无地面 ⇒ 返回 null，调用方跳过该段。
+   *
+   * @param {number} wx @param {number} wz 世界 x/z（可为小数，内部 floor）
+   * @param {number} feetY 焰魔脚底 y
+   * @returns {number|null} 地面顶面 y（= 实心格 y + 1），无地面时 null
+   */
+  _findSigilGroundY(wx, wz, feetY) {
+    const x = Math.floor(wx);
+    const z = Math.floor(wz);
+    const base = Math.floor(feetY);
+    for (let y = base + 4; y >= base - 8; y--) {
+      if (this.world.isSolid(x, y, z) && !this.world.isSolid(x, y + 1, z)) return y + 1;
+    }
+    return null;
+  }
+
+  /**
    * 末影守卫的四招命中结算（本次新增）。
    *
    * 与 `_consumeIgnisAttackRequests` 逐条对应，**两处不同**：
@@ -3607,6 +3709,10 @@ export class Game {
     this.explosionRenderer?.dispose();
     this.explosionSprite?.dispose();
     this.blockHitFx?.dispose();
+    this.flameSigil?.dispose();
+    // v3.04：法阵贴图由 **Game 加载并持有**（渲染器只消费，不像 ignis/fireball 那样
+    // 自己造纹理后 `_ownsTexture` 释放）⇒ 谁创建谁释放，不释会在换世界时泄漏。
+    this._flameSigilTexture?.dispose();
     this.entities?.dispose();
     this.pool.dispose();
     this.renderer.dispose();

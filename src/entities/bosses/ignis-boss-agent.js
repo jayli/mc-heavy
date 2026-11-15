@@ -238,6 +238,21 @@ export class IgnisBossAgent extends BossAgent {
     let attackCooldown = Math.max(0,
       (Number.isFinite(state.attackCooldown) ? state.attackCooldown : 0) - step);
     let attackRequest = null;
+    /**
+     * 特效触发请求（v3.04）。与 `attackRequest` **同帧同点**产生，差别只有一处：
+     * **不受 `freshLos` 影响**。
+     *
+     * 原版 `Ignis_Entity.aiStep()` 的特效调用（`ScreenShake` / `ShieldSmashparticle` /
+     * `spawnFlameStrike`）都在命中帧的 `getAnimationTick() == N` 分支里、**不看视线**
+     * ⇒ 玩家侧移出锥/隔墙时仍看得到 Boss 大招的规模。
+     *
+     * ⚠️ **但不绕过「招式中止门」**（本文件 `mode === 'attack'` 时 `!losVisible` 即回 chase）：
+     * 招式被中止 ⇒ 本来就没有「砸中」这件事，播特效反而误导。原版动画是 goal 驱动、
+     * 不会因 LOS 丢失而中止 —— 那条门是**本仓既有玩法**，不是原版语义，本轮不动它。
+     *
+     * ⚠️ 瞬态：不进 snapshot（同 `attackRequest`），由 game.js 消费后 Agent 下一帧自动清 null。
+     */
+    let attackFxRequest = null;
 
     // ---- 视线缓存（倒计时；<=0 重查并重置）----
     let losTimer = (Number.isFinite(state.losTimer) ? state.losTimer : 0) - step;
@@ -723,6 +738,8 @@ export class IgnisBossAgent extends BossAgent {
       // 写成 `current >= hit` 会每帧都触发（连续扣血）；写成 `current === hit` 在
       // dt 不是 1/fps 整数倍时永远不触发（帧率无关性丢失）。
       if (prevAnimT < profile.hitFrameSeconds && attackAnimT >= profile.hitFrameSeconds) {
+        // 特效请求：**无条件**产生（不看视线）—— 见上面 `attackFxRequest` 的注释。
+        attackFxRequest = { at: [px, py, pz], yaw, kind: attackKind };
         // 新鲜视线复查（不用 10Hz 缓存）—— 否则会隔着墙打人
         const freshLos = player !== null && this._queryLos([px, py, pz], ctx);
         if (freshLos) {
@@ -771,6 +788,7 @@ export class IgnisBossAgent extends BossAgent {
       losVisible,
       onGround,
       attackRequest,
+      attackFxRequest,
       // ⚠️ **`navDir` 原样透传**（不在 Agent 里改）：它属于寻路层的结果，由
       // `IgnisService` 写入。Agent 只是消费方与 `needsPath` 的判定方。
       navDir: state.navDir ?? null,

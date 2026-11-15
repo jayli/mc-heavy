@@ -87,7 +87,7 @@ const LEAP_KINDS = Object.freeze(['escape', 'attack']);
 function createState({
   position, velocity, yaw, health, flashedUntil, mode,
   attackAnimT, attackKind, spinCooldown,
-  idleTime, attackCooldown, losTimer, losVisible, onGround, attackRequest,
+  idleTime, attackCooldown, losTimer, losVisible, onGround, attackRequest, attackFxRequest,
   navDir, navMode, needsPath,
   acquireT, stuckT, stuckAnchor, sensedPlayer, senseTimer, escapeFailCount,
   leapKind, leapDir, leapT, leapTargetY, leapAttackKind, leapAttackCooldown,
@@ -162,6 +162,19 @@ function createState({
      * 因为命中判据是「玩家的水平距 + 相对角」由结算方算。
      */
     attackRequest: attackRequest || null,
+    /**
+     * ⚠️ **瞬态**（v3.04）：本帧要播一次砸击特效（地面火焰法阵 / 碎石圆环）。
+     *
+     * 与 `attackRequest` 分开的原因：后者只在**命中帧的新鲜视线复查通过**时产生，
+     * 而原版特效不看视线 ⇒ 玩家侧移出锥/隔墙时仍要看到 Boss 大招的规模。
+     * 形状 `{at: [x,y,z], yaw: number, kind: string}`（`at` 是焰魔**脚底**位置）。
+     *
+     * ⚠️ **不进 snapshot**（同 `attackRequest`）：写进快照的形态是「陈旧请求复活」
+     * ⇒ 重进世界/读档时凭空播一次特效。
+     * ⚠️ **招式被中止时不会有它**：中止门在命中帧块之前就把 mode 切回 chase，
+     * 命中帧块根本不跑 ⇒ 两个请求都是 null（`test-ignis-boss-agent.js` 钉住）。
+     */
+    attackFxRequest: attackFxRequest || null,
     /**
      * 寻路给出的**单位方向**（`[vx, vz]`），或 `null` = 当前不需要绕行（v2.61）。
      *

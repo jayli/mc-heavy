@@ -18,6 +18,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { PNG } from 'pngjs'; // 读 icons-atlas.png 校验尺寸（ESM：不能用 require）
 
@@ -687,6 +688,27 @@ function checkIgnisAsset() {
   if (!fs.existsSync(IGNIS_SHIELD_TEX_SRC)) {
     failures.push(`[焰魔] 盾贴图素材 assets/ignis/src/ignis_shield.png 不存在`
       + ' —— 盾会渲染成完全透明（结构判据拦不住，见本函数头部注释）');
+  }
+  // ①c 法阵贴图（v3.04）—— **拷入素材，不是烘焙产物**：
+  // 从 mod 的 `flame_strike_sigil.png` 逐字节拷入（未转码、未重编码），
+  // 所以用**字节 sha256 + 字节数**钉，而不是烘焙指纹（没有烘焙参数可进指纹）。
+  // 缺失/被换 ⇒ 法阵静默不装配（game.js 容错退 null），碎石仍在 ⇒ 计数类判据全绿。
+  {
+    const sigilPath = path.join(ROOT, 'assets', 'ignis', 'flame_sigil.png');
+    const SIGIL_SHA256 = 'adc9d07f88cf031c9cacb1917a92cb8f34020dd68d6c4523eeae6b18d33a26e6';
+    const SIGIL_BYTES = 3114;
+    if (!fs.existsSync(sigilPath)) {
+      failures.push('[焰魔] 法阵贴图 assets/ignis/flame_sigil.png 不存在'
+        + ' —— 举盾砸击的地面法阵会静默不装配（只有碎石反馈）');
+    } else {
+      const buf = fs.readFileSync(sigilPath);
+      const sha = createHash('sha256').update(buf).digest('hex');
+      if (buf.length !== SIGIL_BYTES || sha !== SIGIL_SHA256) {
+        failures.push(`[焰魔] 法阵贴图字节不符（${buf.length} 字节 / ${sha.slice(0, 16)}）`
+          + ` —— 期望 ${SIGIL_BYTES} 字节 / ${SIGIL_SHA256.slice(0, 16)}`
+          + '（mod 原素材逐字节拷入，不得转码或重编码）');
+      }
+    }
   }
   // ② PNG 尺寸
   const png = PNG.sync.read(fs.readFileSync(IGNIS_PNG));
