@@ -459,7 +459,7 @@ test.describe('焰魔（Ignis）Tier 4', () => {
       const e = g.entities.get(window.__E2E_ID__);
       if (e) e.state = { ...e.state, attackAnimT: IGNIS_AI.hitFrameSeconds, velocity: [0, 0, 0] };
       g.ignisRenderer.sync(g.ignises.activeEntities(), performance.now());
-      window.__e2eSettle(Math.max(IGNIS_POSE_BLEND.seconds, IGNIS_POSE_BLEND.spinInSeconds));   // idle → attack 的淡入走满（v2.76）
+      window.__e2eSettle(Math.max(IGNIS_POSE_BLEND.seconds, IGNIS_POSE_BLEND.spinInSeconds, IGNIS_POSE_BLEND.bashInSeconds));   // idle → attack 的淡入走满（v2.76）
     });
     const attack = await shoot(page);
 
@@ -497,7 +497,7 @@ test.describe('焰魔（Ignis）Tier 4', () => {
         // ⚠️ `mode` 必须是 attack 且 `attackAnimT` 非零，否则渲染器会去播 idle
         if (e) e.state = { ...e.state, mode: 'attack', attackKind: k, attackAnimT: tt, velocity: [0, 0, 0] };
         g.ignisRenderer.sync(g.ignises.activeEntities(), performance.now());
-        window.__e2eSettle(Math.max(IGNIS_POSE_BLEND.seconds, IGNIS_POSE_BLEND.spinInSeconds));   // 淡入走满（v2.76/v2.77：旋斩入场 0.6s），截到的才是这一招这一刻的稳态
+        window.__e2eSettle(Math.max(IGNIS_POSE_BLEND.seconds, IGNIS_POSE_BLEND.spinInSeconds, IGNIS_POSE_BLEND.bashInSeconds));   // 淡入走满（v2.76/v2.77：旋斩入场 0.6s），截到的才是这一招这一刻的稳态
       }, [kind, t]);
       return shoot(page);
     };
@@ -517,7 +517,7 @@ test.describe('焰魔（Ignis）Tier 4', () => {
         const e = g.entities.get(window.__E2E_ID__);
         if (e) e.state = { ...e.state, mode: 'attack', attackKind: k, attackAnimT: tt, velocity: [0, 0, 0] };
         g.ignisRenderer.sync(g.ignises.activeEntities(), performance.now());
-        window.__e2eSettle(Math.max(IGNIS_POSE_BLEND.seconds, IGNIS_POSE_BLEND.spinInSeconds));   // 淡入走满（v2.76/v2.77：旋斩入场 0.6s）：否则读到的是起点姿态
+        window.__e2eSettle(Math.max(IGNIS_POSE_BLEND.seconds, IGNIS_POSE_BLEND.spinInSeconds, IGNIS_POSE_BLEND.bashInSeconds));   // 淡入走满（v2.76/v2.77：旋斩入场 0.6s）：否则读到的是起点姿态
         const idx = g.ignises.activeEntities().findIndex((x) => x.id === window.__E2E_ID__);
         const inst = g.ignisRenderer.instances[idx];
         return inst ? inst.bones.map((b) => b.quaternion.toArray()) : null;
@@ -846,7 +846,7 @@ test.describe('焰魔（Ignis）Tier 4', () => {
         const e = g.entities.get(window.__E2E_ID__);
         if (e) e.state = { ...e.state, mode: 'attack', attackKind: k, attackAnimT: tt, velocity: [0, 0, 0] };
         g.ignisRenderer.sync(g.ignises.activeEntities(), performance.now());
-        window.__e2eSettle(Math.max(IGNIS_POSE_BLEND.seconds, IGNIS_POSE_BLEND.spinInSeconds));
+        window.__e2eSettle(Math.max(IGNIS_POSE_BLEND.seconds, IGNIS_POSE_BLEND.spinInSeconds, IGNIS_POSE_BLEND.bashInSeconds));
         g.renderer.render(g.scene, g.camera);
       }, [kind, t]);
       return shoot(page);
@@ -859,7 +859,7 @@ test.describe('焰魔（Ignis）Tier 4', () => {
       const e = g.entities.get(window.__E2E_ID__);
       if (e) e.state = { ...e.state, mode: 'attack', attackKind: k, attackAnimT: tt, velocity: [0, 0, 0] };
       g.ignisRenderer.sync(g.ignises.activeEntities(), performance.now());
-      window.__e2eSettle(Math.max(IGNIS_POSE_BLEND.seconds, IGNIS_POSE_BLEND.spinInSeconds));
+      window.__e2eSettle(Math.max(IGNIS_POSE_BLEND.seconds, IGNIS_POSE_BLEND.spinInSeconds, IGNIS_POSE_BLEND.bashInSeconds));
       const idx = g.ignises.activeEntities().findIndex((x) => x.id === window.__E2E_ID__);
       const inst = g.ignisRenderer.instances[idx];
       return inst ? inst.bones.map((b) => b.quaternion.toArray()) : null;
@@ -1046,6 +1046,111 @@ test.describe('焰魔（Ignis）Tier 4', () => {
     // 同位置对照：证明 40° 这个位置本身可命中，且锥宽真的按招取
     expect(r.spinSide40, '对照组：侧向 40° 旋斩（半角 155°）必须命中').toBe(6);
     expect(r.swingSide40, '对照组：侧向 40° 横扫（半角 35°）也打不中 —— 持盾冲撞比它更窄').toBe(20);
+  });
+
+  /**
+   * v3.03 举盾砸击的**射程 + 锥宽 + 砸下段画面**三合一验收。
+   *
+   * 前三项照 v3.01 持盾冲撞的同口径（四招射程同值 6.5 / 半角 22.5）；
+   * 第四项是本招特有的：**砸下段真的在画面上发生**（t=1.59 峰值 → t=1.89 砸到底）。
+   * 它守的是「时间重映射真的生效」—— 只测最终姿态时，warp 写成恒等也会全绿。
+   */
+  test('战斗/渲染(v3.03)：举盾砸击射程 6.5 / 半角 22.5，且砸下段在画面上真的发生', async ({ page }) => {
+    await page.goto(`/?seed=${SEED}`);
+    await waitWorldReady(page);
+    await teleportToTarnCenter(page);
+    await waitPlayerLanded(page);
+
+    const r = await page.evaluate(async () => {
+      const g = window.__MC_GAME__;
+      const { IGNIS, IGNIS_ATTACKS } = await import('/src/entities/ignis/ignis-config.js');
+      const p = g.player.physics.pos;
+      const sum = g.ignises.summon('tarn:e2e:bash', Math.floor(p.x), Math.floor(p.z) + 3, 1, Math.floor(p.y));
+      if (!sum.ok) return { err: sum.reason };
+      const id = sum.id;
+      await new Promise((res) => setTimeout(res, 600));
+      const e0 = g.entities.get(id);
+      if (!e0) return { err: 'entity gone' };
+      const ex = e0.state.position[0], ey = e0.state.position[1], ez = e0.state.position[2];
+      // 同 v3.01 口径：只改 x/z，y 保持玩家真实落地高度（否则 LOS 被地形挡 ⇒ 假落空）
+      const hitAt = (dist, kind) => {
+        g.player.physics.pos.x = ex;
+        g.player.physics.pos.z = ez - dist;
+        g.player.health = 20;
+        const e = g.entities.get(id);
+        e.state = { ...e.state, yaw: 0, attackRequest: { at: [ex, ey, ez], yaw: 0, kind } };
+        g._consumeIgnisAttackRequests();
+        return g.player.health;
+      };
+      const hitAngle = (deg, kind) => {
+        const rad = deg * Math.PI / 180, dist = 3.0;
+        g.player.physics.pos.x = ex + Math.sin(rad) * dist;
+        g.player.physics.pos.z = ez - Math.cos(rad) * dist;
+        g.player.health = 20;
+        const e = g.entities.get(id);
+        e.state = { ...e.state, yaw: 0, attackRequest: { at: [ex, ey, ez], yaw: 0, kind } };
+        g._consumeIgnisAttackRequests();
+        return g.player.health;
+      };
+      const out = {
+        bash25: hitAt(2.5, 'shieldBash'),
+        bash50: hitAt(5.0, 'shieldBash'),
+        bash60: hitAt(6.0, 'shieldBash'),
+        bash70: hitAt(7.0, 'shieldBash'),
+        bashFront: hitAngle(0, 'shieldBash'),
+        bashSide40: hitAngle(40, 'shieldBash'),
+        bashBack: hitAngle(170, 'shieldBash'),
+        // 对照组：同位置下旋斩（半角 155）必须命中，证明 40° 本身可判定
+        spinSide40: hitAngle(40, 'spin'),
+        bashRange: IGNIS_ATTACKS.shieldBash.hitRange,
+        bashCone: IGNIS_ATTACKS.shieldBash.hitConeDeg,
+        damage: IGNIS.attackDamage,
+      };
+      window.__E2E_ID__ = id;
+      return out;
+    });
+
+    expect(r.err).toBeUndefined();
+    expect(r.bashRange, '举盾砸击射程（四招同值）').toBe(6.5);
+    expect(r.bashCone, '举盾砸击半角（arc 45 的一半）').toBe(22.5);
+    expect(r.damage, '四招同伤害').toBe(14);
+    expect(r.bash25, '2.5 格必须命中：20 → 6').toBe(6);
+    expect(r.bash50, '5.0 格（站定环外沿）必须命中').toBe(6);
+    expect(r.bash60, '6.0 格仍在射程内').toBe(6);
+    expect(r.bash70, '7.0 格超出射程 6.5 ⇒ 打不中').toBe(20);
+    expect(r.bashFront, '正面 0° 必须命中').toBe(6);
+    expect(r.bashSide40, '侧向 40° 超出半角 22.5° ⇒ 打不中').toBe(20);
+    expect(r.bashBack, '背后 170° 打不中').toBe(20);
+    expect(r.spinSide40, '对照组：侧向 40° 旋斩必须命中').toBe(6);
+
+    // ---- 砸下段的像素实测（冻结帧循环 + 手动 render，同 v3.01 口径）----
+    await page.evaluate(() => window.__MC_GAME__.renderer.setAnimationLoop(null));
+    await page.waitForTimeout(150);
+    await installSettle(page);
+    const poseAt = async (kind, t) => {
+      await page.evaluate(async ([k, tt]) => {
+        const g = window.__MC_GAME__;
+        const { IGNIS_POSE_BLEND } = await import('/src/entities/ignis/ignis-config.js');
+        const e = g.entities.get(window.__E2E_ID__);
+        if (e) e.state = { ...e.state, mode: 'attack', attackKind: k, attackAnimT: tt, velocity: [0, 0, 0] };
+        g.ignisRenderer.sync(g.ignises.activeEntities(), performance.now());
+        window.__e2eSettle(Math.max(IGNIS_POSE_BLEND.seconds, IGNIS_POSE_BLEND.spinInSeconds, IGNIS_POSE_BLEND.bashInSeconds));
+        g.renderer.render(g.scene, g.camera);
+      }, [kind, t]);
+      return shoot(page);
+    };
+    // 噪声底：同状态连拍必须逐位相同
+    const n1 = await poseAt('shieldBash', 1.89);
+    const n2 = await poseAt('shieldBash', 1.89);
+    expect((await pixelDiff(page, n1, n2)).changed, '噪声底必须为 0').toBe(0);
+    // 峰值（1.59s）vs 砸到底（1.89s）：画面必须显著不同
+    const peakPix = await poseAt('shieldBash', 1.59);
+    const slamPix = await poseAt('shieldBash', 1.89);
+    const dSlam = await pixelDiff(page, peakPix, slamPix);
+    expect(dSlam.changed, `砸下段像素差 ${dSlam.changed}（应远大于噪声底 0）`).toBeGreaterThan(1500);
+    // 上界：不得整屏变（那是相机/场景挂了，不是动作）
+    expect(dSlam.changed, `砸下段像素差 ${dSlam.changed} 过大（整屏重绘？）`).toBeLessThan(400000);
+    await page.evaluate(() => window.__MC_GAME__.renderer.setAnimationLoop(null));
   });
 
   /**

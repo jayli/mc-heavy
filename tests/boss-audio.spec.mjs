@@ -173,8 +173,33 @@ test('焰魔：挥刀播 ignis_attack_swing、跳跃播 ignis_jump、死亡播 i
   });
   expect(sum.ok, `前置：焰魔召唤成功（${sum.reason ?? ''}）`).toBe(true);
 
-  // ---- ① 挥刀音：等焰魔自然进入 attack（迁移检测在装配层，走真实帧循环）----
+  // ---- ① 挥刀音：钉住 `attackKind='swing'` 起手，不赌自然抽签 ----
+  //
+  // ⚠️⚠️ **v3.03 改写：原来是「等焰魔自然进入 attack」**（等 `ignis_attack_swing` 计数上涨）。
+  // 四招权重改成 0.25/0.30/0.25/0.20 后，swing 从 0.35 降到 0.25，
+  // 命中间隔 [4.0,6.0] ⇒ 30s 窗口约 6 次起手，**一次都抽不到 swing 的概率从 7.5% 升到 17.8%**
+  //（实测超时）。这不是 flaky 阈值问题，是用例本身在赌运气。
+  //
+  // 修法：**去掉随机性**而不是放宽超时 —— 直接把 state 钉到 `mode='attack'` +
+  // `attackKind='swing'` + `attackAnimT=0`，让真实帧循环自己推进到命中帧。
+  // 起手音的迁移检测在装配层（`_syncBossAudio`），走的仍是**真实帧循环 + 真实音表**，
+  // 只是不再依赖抽签结果 —— 判据强度不降（它验的是「swing 起手→对应音」这条映射）。
+  //
+  // ⚠️⚠️ **必须先等 mode 稳定在非 attack 再注入**（实测踩到，两轮结果不同）：
+  // 迁移检测的条件是 `old.mode !== 'attack' && mode === 'attack'`（`game.js:2867`）。
+  // 若注入时焰魔**已在 attack 态**（自然起手了另一招），条件不成立 ⇒ 永不播音 ⇒ 超时。
+  // 第一轮侥幸赶上非 attack 窗口（9.8s ✓），第二轮赶上 attack 中（30s ✗）——
+  // 去掉抽签随机性后还残留着「注入时机」这个随机源，必须一并消除。
+  await page.waitForFunction((id) => {
+    const s = window.__MC_GAME__.entities.get(id)?.state;
+    return !!s && s.mode !== 'attack';
+  }, sum.id, { timeout: 60_000 });
   const swingBase = (await counts(page)).ignis_attack_swing ?? 0;
+  await page.evaluate((id) => {
+    const g = window.__MC_GAME__;
+    const e = g.entities.get(id);
+    if (e) e.state = { ...e.state, mode: 'attack', attackKind: 'swing', attackAnimT: 0, velocity: [0, 0, 0] };
+  }, sum.id);
   await page.waitForFunction((base) =>
     (window.__MC_GAME__.audioDebugState().playRequests.ignis_attack_swing ?? 0) > base,
     swingBase, { timeout: 30_000 });
@@ -225,7 +250,7 @@ test('焰魔：旋斩起手播 ignis_attack_circle、普攻起手播 ignis_attac
   // 要么两件都已完成，不会读到半帧。
   await page.evaluate((id) => {
     const g = window.__MC_GAME__;
-    const ids = ['ignis_attack_swing', 'ignis_attack_circle', 'ignis_attack_smash'];
+    const ids = ['ignis_attack_swing', 'ignis_attack_circle', 'ignis_attack_smash', 'ignis_attack_bash'];
     const snap = {};
     for (const k of ids) snap[k] = g.audioDebugState().playRequests[k] ?? 0;
     /** @type {Array<{kind: string|null, frame: number, played: Record<string, number>}>} */
@@ -249,7 +274,7 @@ test('焰魔：旋斩起手播 ignis_attack_circle、普攻起手播 ignis_attac
         events.push({
           kind: g.entities.get(id)?.state?.attackKind ?? null, frame, played,
         });
-      } else if (played.ignis_attack_swing + played.ignis_attack_circle + played.ignis_attack_smash > 0) {
+      } else if (ids.reduce((sum, k) => sum + played[k], 0) > 0) {
         stray.push({ mode, frame, played });
       }
       prevMode = mode;
@@ -271,8 +296,9 @@ test('焰魔：旋斩起手播 ignis_attack_circle、普攻起手播 ignis_attac
   const spins = events.filter((e) => e.kind === 'spin');
   const swings = events.filter((e) => e.kind === 'swing');
   const smashes = events.filter((e) => e.kind === 'shieldSmash');
+  const bashes = events.filter((e) => e.kind === 'shieldBash');
   const summary = events.map((e) =>
-    `${e.kind}:swing=${e.played.ignis_attack_swing},circle=${e.played.ignis_attack_circle},smash=${e.played.ignis_attack_smash}`).join(' | ');
+    `${e.kind}:swing=${e.played.ignis_attack_swing},circle=${e.played.ignis_attack_circle},smash=${e.played.ignis_attack_smash},bash=${e.played.ignis_attack_bash}`).join(' | ');
 
   // 前置：两类招式都真的出现过（只采到普攻时，下面「旋斩播 circle」那条测的是空集）
   expect(events.length, '前置：必须采到多个起手（实际没有 → 焰魔一直没起手）')
@@ -303,6 +329,15 @@ test('焰魔：旋斩起手播 ignis_attack_circle、普攻起手播 ignis_attac
     expect(e.played.ignis_attack_smash, `持盾冲撞起手必须播 ignis_attack_smash（实际：${summary}）`).toBe(1);
     expect(e.played.ignis_attack_swing, '持盾冲撞起手不得播挥刀音').toBe(0);
     expect(e.played.ignis_attack_circle, '持盾冲撞起手不得播旋斩音').toBe(0);
+  }
+  // ⑤ v3.03 举盾砸击（权重 0.20）同口径：若出了它，必须只播自己的音。
+  //   不断言「必须出现」（12 个样本下 20% 权重仍可能一次也没抽到）——
+  //   「必须出现」交给下面那条确定性用例。
+  for (const e of bashes) {
+    expect(e.played.ignis_attack_bash, `举盾砸击起手必须播 ignis_attack_bash（实际：${summary}）`).toBe(1);
+    expect(e.played.ignis_attack_swing, '举盾砸击起手不得播挥刀音').toBe(0);
+    expect(e.played.ignis_attack_circle, '举盾砸击起手不得播旋斩音').toBe(0);
+    expect(e.played.ignis_attack_smash, '举盾砸击起手不得播持盾冲撞音').toBe(0);
   }
 });
 
@@ -335,7 +370,7 @@ test('焰魔(v3.01)：持盾冲撞起手播 ignis_attack_smash，且不播另两
 
   await page.evaluate((id) => {
     const g = window.__MC_GAME__;
-    const ids = ['ignis_attack_swing', 'ignis_attack_circle', 'ignis_attack_smash'];
+    const ids = ['ignis_attack_swing', 'ignis_attack_circle', 'ignis_attack_smash', 'ignis_attack_bash'];
     const snap = {};
     for (const k of ids) snap[k] = g.audioDebugState().playRequests[k] ?? 0;
     const events = [];
@@ -362,7 +397,7 @@ test('焰魔(v3.01)：持盾冲撞起手播 ignis_attack_smash，且不播另两
       const started = prevMode !== 'attack' && mode === 'attack';
       if (started) {
         events.push({ kind: g.entities.get(id)?.state?.attackKind ?? null, frame, played });
-      } else if (played.ignis_attack_swing + played.ignis_attack_circle + played.ignis_attack_smash > 0) {
+      } else if (ids.reduce((sum, k) => sum + played[k], 0) > 0) {
         stray.push({ mode, frame, played });
       }
       prevMode = mode;
@@ -408,6 +443,96 @@ test('焰魔(v3.01)：持盾冲撞起手播 ignis_attack_smash，且不播另两
   }
   // ③ 不得有游离音
   expect(stray, `不得有游离的起手音（实际：${JSON.stringify(stray)}）`).toHaveLength(0);
+});
+
+/**
+ * v3.03 举盾砸击起手音的分流（**确定性版**）。
+ *
+ * 为什么不靠自然抽签：权重只有 **0.20**，等它自然出现要赌运气
+ *（同上面持盾冲撞那条的教训，以及本轮实测到的 swing 超时）。
+ * 本用例直接把 state 钉到 `attackKind='shieldBash'` 起手，走**真实帧循环 + 真实音表**，
+ * 只去掉抽签随机性 —— 判据强度不降（验的是「shieldBash 起手 → 只播 bash 音」这条映射）。
+ *
+ * 负向锚点：同一只焰魔再钉一次 `swing` 起手，必须改播 swing 音且**不播 bash** ——
+ * 两条成对才钉得住「按招分流」（恒播 bash 时第一条绿、第二条红）。
+ */
+test('焰魔(v3.03)：举盾砸击起手播 ignis_attack_bash，且不播另三个音', async ({ page }) => {
+  test.setTimeout(180_000);
+  await page.goto(`/?vd=2&seed=${SEED}`);
+  await waitWorldReady(page);
+  await gotoOpenField(page);
+
+  const sum = await page.evaluate(() => {
+    const g = window.__MC_GAME__;
+    const p = g.player.physics.pos;
+    return g.ignises.summon('audio-spec:0:bash', Math.floor(p.x), Math.floor(p.z) + 4, 1, Math.floor(p.y));
+  });
+  expect(sum.ok, `前置：焰魔召唤成功（${sum.reason ?? ''}）`).toBe(true);
+
+  const IDS = ['ignis_attack_swing', 'ignis_attack_circle', 'ignis_attack_smash', 'ignis_attack_bash'];
+  /**
+   * 钉一次起手，等它的音落地，返回本次各音的增量。
+   *
+   * ⚠️⚠️ **取基线与注入必须在**一次** `page.evaluate` 里完成**（实测踩到两次）：
+   * 分两次 evaluate 时，中间隔着 CDP 往返（数十毫秒 = 多帧），而焰魔在冷却已好时
+   * 会在那个间隙**自然起手另一招**（实测混进过 swing 与 circle）⇒ 那次音被算进增量
+   * ⇒ 误报「bash 起手同时播了别的音」。
+   * 逐帧探针实测：同一帧内取基线+注入时，增量是 **bash:1、其余全 0**
+   * ⇒ 装配层无缺陷（`game.js:2870` 一次迁移只 `am.play` 一个音）。
+   *
+   * ⚠️ **还必须先等 mode 稳定在非 attack**：迁移检测条件是
+   * `old.mode !== 'attack' && mode === 'attack'`（`game.js:2867`），
+   * 若注入时已在 attack 态则永不播音。
+   */
+  const fire = async (kind, waitId) => {
+    // ⚠️⚠️ **整个「等非 attack → 取基线 → 注入」必须在**浏览器侧一次 evaluate** 内完成。
+    // 实测：即使把取基线+注入合并，只要「等 mode」还是单独的 waitForFunction，
+    // 它返回到下一次 evaluate 之间仍有 CDP 往返间隙 ⇒ 焰魔仍可能在间隙里自然起手
+    //（三轮实测：原子化后 2/3 通过，第 1 轮仍混进别的音）。
+    // 在页内用 rAF 逐帧等，条件满足的**那一帧**立即取基线并注入 ⇒ 零间隙。
+    const before = await page.evaluate(async ([id, k, ids]) => {
+      const g = window.__MC_GAME__;
+      const waitNonAttack = () => new Promise((resolve, reject) => {
+        const t0 = performance.now();
+        const tick = () => {
+          const e = g.entities.get(id);
+          if (!e) { reject(new Error('entity gone')); return; }
+          if (e.state.mode !== 'attack') { resolve(e); return; }
+          if (performance.now() - t0 > 60_000) { reject(new Error('等 mode 非 attack 超时')); return; }
+          requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+      });
+      const e = await waitNonAttack();
+      const c = g.audioDebugState().playRequests;
+      const snap = Object.fromEntries(ids.map((x) => [x, c[x] ?? 0]));
+      e.state = { ...e.state, mode: 'attack', attackKind: k, attackAnimT: 0, velocity: [0, 0, 0] };
+      return snap;
+    }, [sum.id, kind, IDS]);
+    await page.waitForFunction(([base, key]) =>
+      (window.__MC_GAME__.audioDebugState().playRequests[key] ?? 0) > base,
+    [before[waitId], waitId], { timeout: 30_000 });
+    const after = await page.evaluate((ids) => {
+      const c = window.__MC_GAME__.audioDebugState().playRequests;
+      return Object.fromEntries(ids.map((k) => [k, c[k] ?? 0]));
+    }, IDS);
+    return Object.fromEntries(IDS.map((k) => [k, after[k] - before[k]]));
+  };
+
+  // ① 举盾砸击起手 → 只播 bash
+  const bash = await fire('shieldBash', 'ignis_attack_bash');
+  expect(bash.ignis_attack_bash, `举盾砸击起手必须播 ignis_attack_bash（实际 ${JSON.stringify(bash)}）`).toBe(1);
+  expect(bash.ignis_attack_swing, '举盾砸击起手不得播挥刀音').toBe(0);
+  expect(bash.ignis_attack_circle, '举盾砸击起手不得播旋斩音').toBe(0);
+  expect(bash.ignis_attack_smash, '举盾砸击起手不得播持盾冲撞音').toBe(0);
+
+  // ② 负向锚点：同一只焰魔改钉 swing 起手 → 改播 swing 且不播 bash
+  // ⚠️ **不在这里额外等「播完回 chase」**：`fire()` 内部已经先等 mode 稳定在非 attack。
+  // 实测踩到：多写一道 30s 等待反而超时 —— 本招 3.89s + 冷却 [4,6]s，若玩家跑开导致
+  // 它进了 idle/chase 循环，两道等待的语义重叠但窗口各自计时，白白多一个失败点。
+  const swing = await fire('swing', 'ignis_attack_swing');
+  expect(swing.ignis_attack_swing, `普攻起手必须播 swing（实际 ${JSON.stringify(swing)}）`).toBe(1);
+  expect(swing.ignis_attack_bash, '普攻起手不得播举盾砸击音（否则是恒播 bash）').toBe(0);
 });
 
 test('焰魔：脱困飞跃播 ignis_jump（2 格高围栏困住 → 卡住后跳出）', async ({ page }) => {
