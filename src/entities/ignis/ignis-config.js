@@ -10,7 +10,7 @@
 //
 // | 本仓常量 | 作者原值 | 出处 |
 // |---|---|---|
-// | `IGNIS.health` | 450 → **1000**（用户 2026-11-07 裁定） | `Attributes.MAX_HEALTH` |
+// | `IGNIS.health` | 450 → **1000**（2026-11-07）→ **3500**（2026-11-15 用户裁定） | `Attributes.MAX_HEALTH` |
 // | `IGNIS.attackDamage` | 14 | `Attributes.ATTACK_DAMAGE` |
 // | `IGNIS_AI.sightRange` | 50 | `Attributes.FOLLOW_RANGE` |
 // | `IGNIS_AI.chaseSpeed` | 6.6 → **4.4**（v2.62 用户裁定降 1/3） | `MOVEMENT_SPEED 0.33` 格/tick × 20 |
@@ -71,10 +71,10 @@ export function ignisEntityIdFor(mapKey, slot) {
 export const IGNIS = Object.freeze({
   /**
    * 生命。⚠️ **有意偏离作者原值**（作者 `MAX_HEALTH` = 450）：用户 2026-11-07 要求
-   * 「Boss 的血量改为 1000」，作为 Boss 战的耐久标定。下方头表的「数值来源」
-   * 仍然成立 —— 其余数值均照原作，只有这一项是用户裁定。
+   * 「Boss 的血量改为 1000」，2026-11-15 再要求「焰魔的血量增加到 3500」，作为 Boss 战的
+   * 耐久标定。下方头表的「数值来源」仍然成立 —— 其余数值均照原作，只有这一项是用户裁定。
    */
-  health: 1000,
+  health: 3500,
   /** AABB 半宽（Bedrock `collision_box.width: 1`） */
   halfWidth: 0.5,
   /** AABB 高（Bedrock `collision_box.height: 3.25`） */
