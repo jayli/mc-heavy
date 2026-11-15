@@ -16,7 +16,7 @@
 //    ⇒ 单测钉不住，靠 Tier 4 像素实测（`tests/ignis.spec.mjs`）；本文件只钉 UV 值域与
 //    「每个立方体的六个面各自覆盖一个非零面积矩形」。
 import { test } from './runner.js';
-import { assertEqual, assertTrue } from './assert.js';
+import { assertEqual, assertTrue, assertNotNull } from './assert.js';
 import { sampleIgnisAttack, multiplyQuat } from '../render/ignis-model.js';
 
 let asset = null;
@@ -38,9 +38,9 @@ async function loadSource() {
 
 // ==================== 结构性契约 ====================
 
-test('焰魔烘焙: 产物存在且动画清单是 idle + attack + spin + shieldSmash（第三招持盾冲撞，v3.01）', async () => {
+test('焰魔烘焙: 产物存在且动画清单是 idle + attack + spin + shieldSmash + shieldBash（第四招举盾砸击，v3.03）', async () => {
   const d = await loadAsset();
-  assertEqual(Object.keys(d.animations).sort().join(','), 'attack,idle,shieldSmash,spin');
+  assertEqual(Object.keys(d.animations).sort().join(','), 'attack,idle,shieldBash,shieldSmash,spin');
 });
 
 // ==================== 第三招：持盾冲撞（v3.01）====================
@@ -1108,4 +1108,79 @@ test('焰魔烘焙(v2.58 约定): 劈砍 1.50s 剑横扫到身体对侧（不是
   assertTrue(p.sword_tip[0] > 30,
     `剑尖 x=${p.sword_tip[0].toFixed(1)} 应越过中线到 +x 侧（>30）—— 劈砍变成了向前尖刺`);
   assertTrue(p.sword_tip[1] < 30, `剑尖 y=${p.sword_tip[1].toFixed(1)} 应已劈到低处（<30px）`);
+});
+
+// ==================== 第四招：举盾砸击（v3.03）====================
+//
+// 素材鉴别（2026-11-15 全量扫描 40 条 Java 动画，见 spec §2）：**`attack11`** ↔ `ULTIMATE_ATTACK`。
+// 关键帧级比对 108 个共有分量中 107 个逐轴 0 差（唯一差异 t=3.70 的 sword.y 2.5°）。
+// ⚠️ 选招依据是**原版语义**（独立 goal / 首帧 startKeyframe(18) / tick 74 结算 / 盾面转正前），
+// 不是「盾的最低最高」—— 后者是 v3.02 失败的根因（失败报告 §4.0）。
+//
+// ⚠️ 本招有**三段时间重映射**（用户裁定②「保留但压缩蓄力段」）：
+//   源 0~3.35 压缩 ×1/2.5 → 1.34s；源 3.35~3.60 原速 0.25s；
+//   源 3.60~3.70 拉长 ×3 → 0.30s；源 3.70~5.70 原速 2.00s。
+// 产物总时长 3.89s ⇒ 帧数 round(3.89 × 30) = 117。
+
+test('焰魔烘焙(v3.03): shieldBash 产物时长 = 三段 warp 后的 3.89s，帧数 117，fps 30', async () => {
+  const d = await loadAsset();
+  const a = d.animations.shieldBash;
+  assertNotNull(a, '产物缺 shieldBash —— 烘焙器没取 attack11');
+  assertEqual(a.fps, 30);
+  assertEqual(a.frameCount, 117);
+  // 117/30 = 3.90（帧数取整的必然结果）；warp 目标总时长 3.89
+  assertTrue(Math.abs(a.frameCount / a.fps - 3.90) < 1e-9,
+    `duration ${(a.frameCount / a.fps).toFixed(6)} ≠ 3.90（warp 参数或帧数算错）`);
+  // 10 根骨骼（attack11 实测；接成 attack1 的 9 根或 attack10Sa 的 9 根会在这里红）
+  assertEqual(a.boneIndices.length, 10);
+});
+
+// ⚠️⚠️ **首关键帧不在 t=0 的通道不得反向外插**（v3.03 实测缺陷）
+//
+// `attack11` 是入库素材里**第一条带 `position` 通道、且首关键帧不在 t=0** 的招式动画：
+// `right_hand.position` 的首键是 **3.6s**（另三招 attack6a/attack8a3/attack1 完全没有 position 通道）。
+// 烘焙器的 `sampleChannel3` 在 `t < times[0]` 时取 `i=0`、`t1=times[1]`，于是 `u` 变成大负数
+// ⇒ 从 `[0,0,0]` 朝 `[2,-4,-2]px` **反向外插**：t=0 得 `[-72,144,72]px = [-4.5,9,4.5] 格`（u=−36）。
+// 后果：`right_big_guantlet` 在 t=0.367s 掉到 **−4.02 格** ⇒ `feetOffsetY` 从 −0.2229 变成 **+4.0185**
+// ⇒ 整个模型被抬到天上 4 格，而骨骼数/顶点数/帧数/四元数归一化**全部通过**。
+//
+// 判据：**任何招式的 position 分量都必须落在素材关键帧的值域内**（clamp 语义），
+// 且 `feetOffsetY` 必须让身体最低点落在脚底附近（|值| < 0.5 格）。
+test('焰魔烘焙(v3.03): 首关键帧不在 t=0 的 position 通道不得反向外插（值域必须在素材内）', async () => {
+  const d = await loadAsset();
+  const anims = await (await fetch(new URL('../../assets/ignis/src/ignis.animation.json', import.meta.url))).json();
+  const SRC_OF = { attack: 'attack6a', spin: 'attack8a3', shieldSmash: 'attack1', shieldBash: 'attack11' };
+  for (const [key, short] of Object.entries(SRC_OF)) {
+    const a = d.animations[key];
+    const bones = anims.animations[`animation.null.ignis.${short}`].bones;
+    for (let s = 0; s < a.boneIndices.length; s++) {
+      const name = d.bones[a.boneIndices[s]].name;
+      const raw = bones[name]?.position;
+      if (!raw || Array.isArray(raw)) continue;
+      // 素材该通道的全部分量值域（px → 格）
+      let lo = Infinity, hi = -Infinity;
+      for (const v of Object.values(raw)) {
+        const t = Array.isArray(v) ? v : (v.post ?? v.pre);
+        for (const c of t) { lo = Math.min(lo, c / 16); hi = Math.max(hi, c / 16); }
+      }
+      for (let f = 0; f < a.frameCount; f++) {
+        const o = (f * a.boneIndices.length + s) * 7;
+        for (let k = 0; k < 3; k++) {
+          const got = a.frames[o + 4 + k];
+          assertTrue(got >= lo - 1e-9 && got <= hi + 1e-9,
+            `${key}.${name}.position[${k}] 在 t=${(f / a.fps).toFixed(3)}s 为 ${got.toFixed(4)} 格，`
+            + `超出素材值域 [${lo.toFixed(4)}, ${hi.toFixed(4)}] —— 首关键帧前反向外插`);
+        }
+      }
+    }
+  }
+});
+
+test('焰魔烘焙(v3.03): feetOffsetY 让身体最低点贴在脚底（|值| < 0.5 格，不是把模型抬到天上）', async () => {
+  const d = await loadAsset();
+  const feet = d.metrics.feetOffsetY;
+  assertTrue(Number.isFinite(feet), 'feetOffsetY 非有限');
+  assertTrue(Math.abs(feet) < 0.5,
+    `feetOffsetY = ${feet.toFixed(4)} 格，绝对值超过 0.5 —— 身体最低点被某帧的异常姿态拉走`
+    + '（v3.03 实测缺陷：position 反向外插让它变成 +4.0185）');
 });

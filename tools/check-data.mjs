@@ -51,6 +51,7 @@ const {
 const {
   IGNIS_JSON, IGNIS_PNG, IGNIS_META, IGNIS_BAKE_PARAMS, IGNIS_METRICS, IGNIS_ANIM_PERIODS,
   IGNIS_ATTACK_ANIM_KEYS, IGNIS_SHIELD_TEX_SRC,
+  ignisAnimOutputPeriod,
   ignisInputFingerprint,
 } = await import('./ignis-fingerprint.mjs');
 // 末影守卫（本次新增）同理：与 bake-guardian.mjs 共用同一份参数/度量/指纹
@@ -729,10 +730,13 @@ function checkIgnisAsset() {
     if (Math.abs(idleDuration - IGNIS_ANIM_PERIODS.idle) > 1e-12) {
       failures.push(`[焰魔] idle duration ${idleDuration} ≠ 表达式周期 ${IGNIS_ANIM_PERIODS.idle}（接缝会跳变）`);
     }
-    // 每招：帧数 = round(period × fps)，fps 固定
+    // 每招：帧数 = round(**产物时长** × fps)，fps 固定
+    // ⚠️ v3.03：必须用 `ignisAnimOutputPeriod` 而不是 `IGNIS_ANIM_PERIODS`——
+    // 有时间重映射的招两者不同（shieldBash 源 5.7 / 产物 3.89）。
+    // 用源时长算帧数会让正确烘焙的新招必红，而红的原因看起来像产物错。
     for (const key of IGNIS_ATTACK_ANIM_KEYS) {
       const a = asset.animations[key];
-      const expectFrames = Math.round(IGNIS_ANIM_PERIODS[key] * IGNIS_BAKE_PARAMS.defaultFps);
+      const expectFrames = Math.round(ignisAnimOutputPeriod(key) * IGNIS_BAKE_PARAMS.defaultFps);
       if (a.frameCount !== expectFrames) {
         failures.push(`[焰魔] ${key} 帧数 ${a.frameCount} ≠ 期望 ${expectFrames}（period×fps）`);
       }
