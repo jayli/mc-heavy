@@ -59,6 +59,11 @@ export const SOUND_IDS = Object.freeze(['gun_load', 'gun_fire', 'mag7_fire', 'mi
   'player_swing', 'emp_activated',
   // v2.79：焰魔旋斩（.ogg，见 SOUND_EXT_OVERRIDES 与 IGNIS_ATTACK_SOUNDS）
   'ignis_attack_circle',
+  // v3.01：焰魔**持盾冲撞**起手音。文件来自 mod 的 `sword_stomp.ogg`（强化砸地踏步音），
+  // 逐字节拷入、未转码。⚠️ **这是近似替代，不是原版该招的音** —— 原版
+  // `SHIELD_SMASH_ATTACK` 分支播的是 Minecraft 原版 `SoundEvents.TOTEM_USE`，本仓没有那个文件。
+  // 将来对照原版时不要把本条当作「原音」（用户裁定⑤选它作近似）。
+  'ignis_attack_smash',
   // 末影守卫（本次新增）：三个文件已在 Task 1 拷入 assets/sounds/。
   // ⚠️ 受击/死亡音源头是原版的 golemhurt / golemdeath（已查 sounds.json 链路，
   //    不是按名字猜）；拳击音是专属的 ender_guardian_fist_attack。
@@ -88,6 +93,8 @@ export const SOUND_EXT_OVERRIDES = Object.freeze({
   emp_activated: 'ogg',
   // v2.79：焰魔旋斩
   ignis_attack_circle: 'ogg',
+  // v3.01：焰魔持盾冲撞（mod sword_stomp.ogg 的近似替代）。漏加本表 = 静默无声
+  ignis_attack_smash: 'ogg',
   // 末影守卫：三个都是 .ogg。⚠️ **漏加本表 = 静默无声**（按 .mp3 去 fetch ⇒ 404 被 catch 吞）
   guardian_attack: 'ogg',
   guardian_hurt: 'ogg',
@@ -130,6 +137,8 @@ export const SOUND_VOLUMES = Object.freeze({
   // v2.79：与 `ignis_attack_swing` 同档。实测素材峰值 circle −0.3 dB / swing −0.9 dB
   //（平均能量 circle 高约 9 dB）—— 初值取同档，嫌响/嫌轻只改这一个数，不动触发点。
   ignis_attack_circle: 0.5,
+  // v3.01：持盾冲撞与另两招同档（嫌响/嫌轻只改这一个数，不动触发点）
+  ignis_attack_smash: 0.5,
   // 末影守卫：照焰魔 0.5 同档（嫌响/嫌轻只改这三个数，不动触发点）
   guardian_attack: 0.5,
   guardian_hurt: 0.5,
@@ -139,13 +148,13 @@ export const SOUND_VOLUMES = Object.freeze({
 /**
  * 焰魔「哪一招 → 哪个起手音」的唯一权威（v2.79）。
  *
- * **为什么需要这张表**：v2.75 起焰魔有两招（`attackKind = 'swing' | 'spin'`），起手音的
- * 选择必须与招式一一对应 —— 在触发点写 `if (kind === 'spin') am.play('ignis_attack_circle')
- * else am.play('ignis_attack_swing')` 就是红线 1 禁止的第二份分支：将来加第三招时漏改一处
+ * **为什么需要这张表**：v2.75 起焰魔有多招（v3.01 起三招：`'swing' | 'spin' | 'shieldSmash'`），
+ * 起手音的选择必须与招式一一对应 —— 在触发点写 `if (kind === 'spin') am.play('ignis_attack_circle')
+ * else am.play('ignis_attack_swing')` 就是红线 1 禁止的第二份分支：将来加第四招时漏改一处
  * 的形态是**该招静默沿用普攻音**（而所有数据层指标都正常）。
  *
- * 覆盖度由 `check:data` 的 `[音效]` 环节之外的单测钉住（`test-bgm.js`：两键齐全、
- * 每个 id 都在 `SOUND_IDS` 里且走 ogg、`attackKind` 的取值域与键集合一致）。
+ * 覆盖度由 `check:data` 的 `[音效]` 环节之外的单测钉住（`test-bgm.js`：三键齐全、
+ * 每个 id 都在 `SOUND_IDS` 里且走 ogg、`attackKind` 的取值域与键集合一致、三音两两不同）。
  *
  * ⚠️ **缺省回落 `swing`**：`attackKind` 为 `null`/缺失时（旧 state、非攻击态）与渲染器
  * 选片段的口径一致 —— 两处都是「缺了就当作普攻」，不各自造一套默认。
@@ -153,11 +162,13 @@ export const SOUND_VOLUMES = Object.freeze({
 export const IGNIS_ATTACK_SOUNDS = Object.freeze({
   swing: 'ignis_attack_swing',
   spin: 'ignis_attack_circle',
+  /** v3.01：持盾冲撞（mod `sword_stomp.ogg` 的近似替代，非原版 TOTEM_USE） */
+  shieldSmash: 'ignis_attack_smash',
 });
 
 /**
  * `attackKind` → 起手音效 id（缺省/非法值回落 `swing`，`IGNIS_ATTACK_SOUNDS` 的唯一读取口）。
- * @param {string|null|undefined} kind 焰魔本招档案键（`'swing'` / `'spin'`）
+ * @param {string|null|undefined} kind 焰魔本招档案键（`'swing'` / `'spin'` / `'shieldSmash'`）
  * @returns {string} 音效 id
  */
 export function ignisAttackSound(kind) {

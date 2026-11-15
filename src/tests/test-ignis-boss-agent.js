@@ -10,9 +10,9 @@
 //
 // Tier 1（状态机 + 热路径）⇒ 必须 TDD。
 import { test } from './runner.js';
-import { assertEqual, assertTrue, assertNotNull, assertFalse } from './assert.js';
+import { assertEqual, assertTrue, assertNotNull, assertNull, assertFalse } from './assert.js';
 import { IgnisBossAgent } from '../entities/bosses/ignis-boss-agent.js';
-import { IGNIS, IGNIS_AI, IGNIS_ATTACKS } from '../entities/ignis/ignis-config.js';
+import { IGNIS, IGNIS_AI, IGNIS_ATTACKS, IGNIS_ATTACK_IDS } from '../entities/ignis/ignis-config.js';
 
 /**
  * 假注册表：`hasLineOfSight`（炮塔的唯一权威）需要 `solidTable` / `opaqueTable`。
@@ -214,9 +214,13 @@ test('焰魔 AI: attackRequest 只在命中帧出现一次（不是每帧）', (
     if (s.attackRequest) hits.push(s.attackAnimT);
   }
   assertEqual(hits.length, 1, `命中次数 ${hits.length}（应恰为 1）：${JSON.stringify(hits)}`);
-  // 命中时刻应逼近 hitFrameSeconds（1/60 帧粒度）
-  assertTrue(Math.abs(hits[0] - IGNIS_AI.hitFrameSeconds) < 0.03,
-    `命中帧 ${hits[0].toFixed(4)}s，期望 ${IGNIS_AI.hitFrameSeconds}s`);
+  // 命中时刻应逼近**本招**的 hitFrameSeconds（1/60 帧粒度）。
+  // ⚠️ v3.01 修正：本夹具**不传 attackKind** ⇒ agent 回落 swing（line 699 的
+  // `IGNIS_ATTACKS[attackKind] || IGNIS_ATTACKS.swing`），所以该比的是 swing 档案的 1.20，
+  // **不是派生最大值 `IGNIS_AI.hitFrameSeconds`**。旧值时两者恰为同一个数（1.20），
+  // 加入持盾冲撞后派生值变 1.70 ⇒ 分裂。读派生值会让这条恒红（而不是发现真缺陷）。
+  assertTrue(Math.abs(hits[0] - IGNIS_ATTACKS.swing.hitFrameSeconds) < 0.03,
+    `命中帧 ${hits[0].toFixed(4)}s，期望 swing 的 ${IGNIS_ATTACKS.swing.hitFrameSeconds}s`);
 });
 
 test('焰魔 AI: attackRequest 带上身体位置与 yaw（结算方要用）', () => {
@@ -260,18 +264,99 @@ function runToAttackStart(agent, state, ctx) {
   return s;
 }
 
-test('焰魔 AI(v2.75): rng=0 ⇒ 恒选普攻（swing），rng→1 ⇒ 恒选旋斩（spin）', () => {
+test('焰魔 AI(v2.75): rng=0 ⇒ 恒选普攻（swing），rng→1 ⇒ 恒选末档（v3.01 起 = 持盾冲撞）', () => {
   const ctx = { ...OPEN_CTX, player: playerAt(IGNIS_AI.attackRange - 1) };
   const swingAgent = new IgnisBossAgent({ rng: () => 0 });
   const s1 = runToAttackStart(swingAgent, st({ mode: 'chase', onGround: true }), ctx);
   assertEqual(s1.mode, 'attack');
   assertEqual(s1.attackKind, 'swing', 'rng=0 应抽中第一个档案（swing）');
 
-  // rng 恒 1：落在最后一档（spin）。用 0.999999 而不是 1（有些实现把 1 当越界）
-  const spinAgent = new IgnisBossAgent({ rng: () => 0.999999 });
-  const s2 = runToAttackStart(spinAgent, st({ mode: 'chase', onGround: true }), ctx);
+  // rng 恒 1：落在**声明顺序的最后一档**。用 0.999999 而不是 1（有些实现把 1 当越界）。
+  // ⚠️ v3.01 起末档是 **shieldSmash**（贴身门已删，持盾冲撞无条件参与抽签）。
+  // 旧口径下这里是 spin —— 若它又变回 spin，说明持盾冲撞被排到了 spin 之前（顺序载荷性）。
+  const lastAgent = new IgnisBossAgent({ rng: () => 0.999999 });
+  const s2 = runToAttackStart(lastAgent, st({ mode: 'chase', onGround: true }), ctx);
   assertEqual(s2.mode, 'attack');
-  assertEqual(s2.attackKind, 'spin', 'rng≈1 应抽中最后一档（spin）');
+  assertEqual(s2.attackKind, 'shieldSmash', 'rng≈1 应抽中最后一档（持盾冲撞）');
+  // 旋斩必须在中间（否则上面的“末档”判据拓不到顺序）：权重累计 swing 0.35 ⇒ spin 区间 [0.35, 0.65)
+  const spinAgent = new IgnisBossAgent({ rng: () => 0.5 });
+  const s3 = runToAttackStart(spinAgent, st({ mode: 'chase', onGround: true }), ctx);
+  assertEqual(s3.attackKind, 'spin', 'rng=0.5 应落在中间档（旋斩）');
+});
+
+// ==================== 第三招：持盾冲撞（v3.01）====================
+//
+// 用户 2026-11-13 初版裁定②是「玩家贴近（<3 格）时才抽」。
+// **2026-11-14 实玩后推翻**：「触发条件过于苛刻，不要限制在严格 3 格内，
+// 改成和其他两个攻击技能一样的生效距离……生效比例平分挥砍的动作的发生概率」。
+// ⇒ 贴身门删除（`smashEngageRange` 常量不存在），三招共用既有的 `attackRange` 起手门槛；
+//   权重 swing 0.35 / spin 0.30 / shieldSmash 0.35（横扫与持盾冲撞严格平分，旋斩不动）。
+
+test('焰魔 AI(v3.01): 任何起手距离都可能抽到持盾冲撞（贴身门已删）—— 4.5 / 5.0 / 2.5 格各验', () => {
+  // rng≈1 ⇒ 落在声明顺序的最后一档 = shieldSmash（三招无距离门）
+  for (const dist of [2.5, 4.0, 4.5, 5.0]) {
+    const ctx = { ...OPEN_CTX, player: playerAt(dist) };
+    const a = new IgnisBossAgent({ rng: () => 0.999999 });
+    const s = runToAttackStart(a, st({ mode: 'chase', onGround: true }), ctx);
+    assertEqual(s.mode, 'attack', `${dist} 格应起手（attackRange 5.5 内）`);
+    assertEqual(s.attackKind, 'shieldSmash',
+      `${dist} 格 + rng≈1 应抽中最后一档（持盾冲撞）—— 贴身门已删，不得再按距离排除`);
+  }
+});
+
+test('焰魔 AI(v3.01): 权重平分 —— rng 扫描下横扫与持盾冲撞各占 35%，旋斩 30%', () => {
+  // 用固定 rng 扫 1000 档，统计三招出现次数（总权重归一后的真实分布）。
+  // ⚠️ 这不是「断言常量等于 0.35」（那条在 test-ignis-system），而是验**抽签器真的按它分**。
+  const counts = { swing: 0, spin: 0, shieldSmash: 0 };
+  const ctx = { ...OPEN_CTX, player: playerAt(4.5) };
+  const N = 1000;
+  for (let i = 0; i < N; i++) {
+    const r = i / N;                       // 均匀扫 [0,1)
+    const a = new IgnisBossAgent({ rng: () => r });
+    const s = runToAttackStart(a, st({ mode: 'chase', onGround: true }), ctx);
+    counts[s.attackKind] += 1;
+  }
+  const pct = (k) => counts[k] / N;
+  // 区间边界：swing [0,0.35) / spin [0.35,0.65) / shieldSmash [0.65,1)
+  assertTrue(Math.abs(pct('swing') - 0.35) < 0.01, `横扫占比 ${pct('swing')} 应 ≈0.35`);
+  assertTrue(Math.abs(pct('spin') - 0.30) < 0.01, `旋斩占比 ${pct('spin')} 应 ≈0.30`);
+  assertTrue(Math.abs(pct('shieldSmash') - 0.35) < 0.01, `持盾冲撞占比 ${pct('shieldSmash')} 应 ≈0.35`);
+  // ⚠️ **不得要求「次数严格相等」**：权重浮点和是 0.9999999999999999（不是 1），
+  // 使 rng=0.35 / 0.65 两个**恰好落在档位边界**的样本各偏一档 ⇒ 实测 351 / 300 / 349。
+  // 这是浮点抽签的固有性质（总权重归一的代价），不是实现缺陷。
+  // 判据取「两者占比之差 ≤ 0.3%」（= 最多 3 个边界样本），而不是逐位相等。
+  assertTrue(Math.abs(pct('swing') - pct('shieldSmash')) <= 0.003,
+    `横扫 ${counts.swing} 与持盾冲撞 ${counts.shieldSmash} 的占比差超过 0.3%（平分失效）`);
+  // 且两者必须明显多于旋斩（否则“平分挥砍”变成了“三招平分”）
+  assertTrue(counts.swing > counts.spin && counts.shieldSmash > counts.spin,
+    `横扫/持盾冲撞应各多于旋斩：${JSON.stringify(counts)}`);
+});
+
+test('焰魔 AI(v3.01): 旋斩冷却未好时，横扫与持盾冲撞仍各占一半', () => {
+  // 候选集去掉 spin 后剩 swing 0.35 / shieldSmash 0.35 ⇒ 归一后各 50%
+  const ctx = { ...OPEN_CTX, player: playerAt(4.5) };
+  const a = new IgnisBossAgent({ rng: () => 0.999999 });
+  const s = runToAttackStart(a, st({ mode: 'chase', onGround: true, spinCooldown: 5 }), ctx);
+  assertEqual(s.attackKind, 'shieldSmash', '旋斩被屏蔽后最后一档是持盾冲撞（候选集去掉，不是抽中再改判）');
+  const b = new IgnisBossAgent({ rng: () => 0 });
+  const s2 = runToAttackStart(b, st({ mode: 'chase', onGround: true, spinCooldown: 5 }), ctx);
+  assertEqual(s2.attackKind, 'swing', 'rng=0 仍落第一档（横扫）');
+  // 边界：屏蔽旋斩后候选集归一为 swing/shieldSmash 各 50% ⇒ rng=0.5 恰好落在交界
+  // （实测 0.5 × 0.7 = 0.35000000000000003，减 0.35 后为正 ⇒ 取第二档持盾冲撞）。
+  const c = new IgnisBossAgent({ rng: () => 0.5 });
+  const s3 = runToAttackStart(c, st({ mode: 'chase', onGround: true, spinCooldown: 5 }), ctx);
+  assertEqual(s3.attackKind, 'shieldSmash', '屏蔽旋斩后 rng=0.5 应落持盾冲撞（浮点边界取后一档）');
+});
+
+test('焰魔 AI(v3.01): 持盾冲撞命中后冷却正常置位（玩家跑开也不连砸）', () => {
+  const a = new IgnisBossAgent({ rng: () => 0.999999 });
+  const ctx = { ...OPEN_CTX, player: playerAt(2.5) };
+  let s = st({ mode: 'attack', attackAnimT: 0, attackKind: 'shieldSmash', onGround: true });
+  for (let i = 0; i < 200 && !s.attackRequest; i++) s = a.update(s, 1 / 60, ctx);
+  assertNotNull(s.attackRequest);
+  assertEqual(s.attackRequest.kind, 'shieldSmash');
+  assertTrue(s.attackCooldown >= IGNIS_AI.attackCooldownMin - 1 / 60 - 1e-9,
+    `持盾冲撞命中后冷却 ${s.attackCooldown} 未按 [${IGNIS_AI.attackCooldownMin}, ${IGNIS_AI.attackCooldownMax}] 置位`);
 });
 
 test('焰魔 AI(v2.75): 旋斩的命中帧 = 0.70s（不是普攻的 1.20s）', () => {
@@ -309,17 +394,26 @@ test('焰魔 AI(v2.75): 旋斩播完回 chase 且 attackKind 清空（否则下�
   if (s.mode !== 'attack') assertEqual(s.attackKind, null, '离开 attack 后 attackKind 必须清空');
 });
 
-test('焰魔 AI(v2.75): 旋斩冷却期间即使抽中 spin 也降级为普攻（不白放冷却）', () => {
-  const a = new IgnisBossAgent({ rng: () => 0.999999 });
-  const ctx = { ...OPEN_CTX, player: playerAt(IGNIS_AI.attackRange - 1) };
-  let s = st({ mode: 'chase', onGround: true, spinCooldown: IGNIS_AI.spinCooldownSeconds });
-  s = runToAttackStart(a, s, ctx);
-  assertEqual(s.mode, 'attack');
-  assertEqual(s.attackKind, 'swing', '冷却未好时抽中 spin 应降级为 swing');
+test('焰魔 AI(v2.75): 旋斩冷却期间抽中 spin 的 rng 必须降级（不白放冷却）', () => {
+  // ⚠️ v3.01：权重改成 0.35/0.30/0.35 后，rng≈1 落在**持盾冲撞**而不是旋斩。
+  // 本用例要的是「旋斩区间内的 rng」⇒ 用 [0.35, 0.65) 两端（旧口径是 rng≈1）。
+  // 判据是「结果不是 spin」（候选集把 spin 去掉，而不是抽中再改判）——
+  // 具体落 swing 还是 shieldSmash 由归一后的位置决定，不得写死。
+  for (const r of [0.36, 0.5, 0.64]) {
+    const a = new IgnisBossAgent({ rng: () => r });
+    const ctx = { ...OPEN_CTX, player: playerAt(IGNIS_AI.attackRange - 1) };
+    const s = runToAttackStart(a, st({ mode: 'chase', onGround: true, spinCooldown: IGNIS_AI.spinCooldownSeconds }), ctx);
+    assertEqual(s.mode, 'attack');
+    assertTrue(s.attackKind !== 'spin',
+      `冷却未好时 rng=${r} 仍抽到了旋斩（降级失效，会白放冷却）`);
+    assertTrue(s.attackKind === 'swing' || s.attackKind === 'shieldSmash',
+      `rng=${r} 应落到 swing 或 shieldSmash，实为 ${s.attackKind}`);
+  }
 });
 
 test('焰魔 AI(v2.75): 旋斩起手后写 spinCooldown（独立于 attackCooldown）', () => {
-  const a = new IgnisBossAgent({ rng: () => 0.999999 });
+  // ⚠️ v3.01：同上，用 rng=0.5 落在旋斩区间（rng≈1 现在是持盾冲撞）。
+  const a = new IgnisBossAgent({ rng: () => 0.5 });
   const ctx = { ...OPEN_CTX, player: playerAt(IGNIS_AI.attackRange - 1) };
   const s = runToAttackStart(a, st({ mode: 'chase', onGround: true }), ctx);
   assertEqual(s.attackKind, 'spin');
@@ -979,6 +1073,90 @@ test('焰魔 AI: 8~14 格 + 冷却好 + 视线通 → leap(attack)，朝玩家�
   assertTrue(s.leapDir[1] < 0, `应朝玩家（-Z）飞，实际 leapDir=${s.leapDir}`);
   assertTrue(s.leapAttackCooldown > 0, '起跳后应进冷却');
   assertTrue(Number.isFinite(s.leapTargetY), '应记下预判落点 y');
+});
+
+// ==================== 跳跃落地携带招式种类 ====================
+//
+// ⚠️⚠️ **修掉一个遗留缺陷**：旧实现的 leap 落地分支**不设 `attackKind`**
+// ⇒ 沿用进入 leap 前的残值（通常 null）⇒ 渲染器回落 `attack`
+// ⇒ **跳跃劈砍永远播横扫**，即使权重抽中别的招。
+//
+// 招式在**起跳时**就抽定、落地时写进 `attackKind`：若在落地时才抽，
+// 起跳与落地两次抽签可能不一致 ⇒「跳起来却勈了一刀」。
+
+test('焰魔 AI: 起跳时抽签并携带 leapAttackKind（rng≈1 ⇒ 末档持盾冲撞）', () => {
+  const a = new IgnisBossAgent({ rng: () => 0.999999 });
+  const w = groundWorld(9);
+  const player = { position: [0, 10, -11], velocity: [0, 0, 0] };
+  let s = st({
+    position: [0, 10, 0], mode: 'chase', onGround: true,
+    losVisible: true, losTimer: 999, leapAttackCooldown: 0,
+  });
+  s = a.update(s, 1 / 60, { world: w, registry: REGISTRY, player });
+  assertEqual(s.mode, 'leap');
+  assertEqual(s.leapKind, 'attack');
+  assertEqual(s.leapAttackKind, 'shieldSmash', '起跳当帧就应抽定这次落地用哪一招');
+});
+
+test('焰魔 AI: 跳跃落地播起跳时抽中的招，不再恒播 swing', () => {
+  const a = new IgnisBossAgent({ rng: () => 0.999999 });
+  const w = groundWorld(9);
+  const player = { position: [0, 10, -6.4], velocity: [0, 0, 0] };
+  let s = st({
+    position: [0, 12, -4], mode: 'leap', leapKind: 'attack',
+    leapDir: [0, -8], leapTargetY: 10, onGround: false, velocity: [0, -5, 0],
+    leapAttackKind: 'shieldSmash',
+  });
+  for (let i = 0; i < 60 && s.mode === 'leap'; i++) {
+    s = a.update(s, 1 / 60, { world: w, registry: REGISTRY, player });
+  }
+  assertEqual(s.mode, 'attack');
+  assertEqual(s.attackKind, 'shieldSmash',
+    '落地应播起跳时抽中的招（旧实现不设 attackKind ⇒ 恒回落 swing）');
+  assertNull(s.leapAttackKind, '落地后必须清空（不残留）');
+});
+
+test('焰魔 AI: 落地抽中 spin 时也置 spinCooldown（与平地起手同口径）', () => {
+  const a = new IgnisBossAgent({ rng: () => 0.3 });
+  const w = groundWorld(9);
+  const player = { position: [0, 10, -6.4], velocity: [0, 0, 0] };
+  let s = st({
+    position: [0, 12, -4], mode: 'leap', leapKind: 'attack',
+    leapDir: [0, -8], leapTargetY: 10, onGround: false, velocity: [0, -5, 0],
+    leapAttackKind: 'spin',
+  });
+  for (let i = 0; i < 60 && s.mode === 'leap'; i++) {
+    s = a.update(s, 1 / 60, { world: w, registry: REGISTRY, player });
+  }
+  assertEqual(s.attackKind, 'spin');
+  assertTrue(s.spinCooldown > 0, '落地抽中旋斩也要置独立冷却（否则可连抽）');
+});
+
+test('焰魔 AI: 旧存档缺 leapAttackKind / 非法值 ⇒ 不崩且回落合法招', () => {
+  const w = groundWorld(9);
+  const player = { position: [0, 10, -6.4], velocity: [0, 0, 0] };
+  for (const bad of [undefined, null, 'nonsense', 42, {}]) {
+    const a = new IgnisBossAgent({ rng: () => 0.5 });
+    let s = st({
+      position: [0, 12, -4], mode: 'leap', leapKind: 'attack',
+      leapDir: [0, -8], leapTargetY: 10, onGround: false, velocity: [0, -5, 0],
+      leapAttackKind: bad,
+    });
+    for (let i = 0; i < 60 && s.mode === 'leap'; i++) {
+      s = a.update(s, 1 / 60, { world: w, registry: REGISTRY, player });
+    }
+    assertTrue(IGNIS_ATTACK_IDS.includes(s.attackKind),
+      `非法 leapAttackKind=${JSON.stringify(bad)} 产出了非法 attackKind=${JSON.stringify(s.attackKind)}`);
+  }
+});
+
+test('焰魔 AI: 非 leap 态不残留 leapAttackKind', () => {
+  const a = new IgnisBossAgent({ rng: () => 0.5 });
+  const w = groundWorld(9);
+  const player = { position: [0, 10, -2], velocity: [0, 0, 0] };
+  const s = a.update(st({ mode: 'chase', onGround: true, leapAttackKind: 'shieldSmash' }),
+    1 / 60, { world: w, registry: REGISTRY, player });
+  assertNull(s.leapAttackKind, '非飞跃态不得残留上一跳的招式');
 });
 
 test('焰魔 AI: 静止玩家 → 落点在玩家外侧「站定环内缘」（跳完砍得到）', () => {

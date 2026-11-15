@@ -1,4 +1,15 @@
-# 焰魔盾击（Shield Smash）Implementation Plan
+# 焰魔持盾冲撞（Shield Smash）Implementation Plan
+
+> ⚠️ **本文是历史实施记录，两处已被后续裁定推翻，正文保留原样不改**：
+> ① **贴身门（Task 3）已删除** —— 用户 2026-11-14 实玩后裁定「生效距离与另两招一致、
+>    概率与挥砍平分」⇒ `smashEngageRange` 常量不存在，`hitRange` 4.85 → 6.5，
+>    权重 0.56/0.24/0.20 → 0.35/0.30/0.35。
+> ② **招式名「盾击」→「持盾冲撞」** —— 用户 2026-11-14 看录像后裁定 A（只改文案、保留动作）。
+>    实测证明原版 `SHIELD_SMASH_ATTACK` 是「举盾过顶 → 连人带盾向前下方压」，盾尖最低只到
+>    2.43 格（自己胸腰高度）、从未触地 ⇒ 不是「盾砸地」。**代码标识符 `shieldSmash` 等全部保留。**
+>
+> 现行口径以 `docs/superpowers/specs/2026-11-13-ignis-shield-smash-design.md` §1.1/§1.2
+> 与 `docs/roadmap.md` 的 v3.01 行为准。
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

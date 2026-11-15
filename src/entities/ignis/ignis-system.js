@@ -90,7 +90,7 @@ function createState({
   idleTime, attackCooldown, losTimer, losVisible, onGround, attackRequest,
   navDir, navMode, needsPath,
   acquireT, stuckT, stuckAnchor, sensedPlayer, senseTimer, escapeFailCount,
-  leapKind, leapDir, leapT, leapTargetY, leapAttackCooldown,
+  leapKind, leapDir, leapT, leapTargetY, leapAttackKind, leapAttackCooldown,
   _physAccum,
 }) {
   const p = normalizePosition(position);
@@ -254,6 +254,16 @@ function createState({
      * 「快触地时起劈」的判据：下落中且 `py ≤ leapTargetY + IGNIS_AI.leapSlashLead`。
      */
     leapTargetY: Number.isFinite(leapTargetY) ? leapTargetY : null,
+    /**
+     * 这次跳跃落地要用哪一招（仅 `leapKind === 'attack'`），或 `null`。
+     *
+     * ⚠️⚠️ **必须在这里登记**：`createState` 是白名单式重建，漏了它 ⇒ 起跳时
+     * 抽定的招式每帧被抹掉 ⇒ 落地恒回落 `swing`（真实踩到过：单测直接调
+     * `agent.update` 所以绿，E2E 走真实 service 就红）。
+     */
+    leapAttackKind: leapKind === 'attack' && IGNIS_ATTACK_IDS.includes(leapAttackKind)
+      ? leapAttackKind
+      : null,
     /** 跳跃劈砍的冷却剩余秒数（**独立于** `attackCooldown`） */
     leapAttackCooldown: Number.isFinite(leapAttackCooldown) ? leapAttackCooldown : 0,
   };

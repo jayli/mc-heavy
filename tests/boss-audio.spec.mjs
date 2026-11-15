@@ -225,7 +225,7 @@ test('焰魔：旋斩起手播 ignis_attack_circle、普攻起手播 ignis_attac
   // 要么两件都已完成，不会读到半帧。
   await page.evaluate((id) => {
     const g = window.__MC_GAME__;
-    const ids = ['ignis_attack_swing', 'ignis_attack_circle'];
+    const ids = ['ignis_attack_swing', 'ignis_attack_circle', 'ignis_attack_smash'];
     const snap = {};
     for (const k of ids) snap[k] = g.audioDebugState().playRequests[k] ?? 0;
     /** @type {Array<{kind: string|null, frame: number, played: Record<string, number>}>} */
@@ -249,7 +249,7 @@ test('焰魔：旋斩起手播 ignis_attack_circle、普攻起手播 ignis_attac
         events.push({
           kind: g.entities.get(id)?.state?.attackKind ?? null, frame, played,
         });
-      } else if (played.ignis_attack_swing + played.ignis_attack_circle > 0) {
+      } else if (played.ignis_attack_swing + played.ignis_attack_circle + played.ignis_attack_smash > 0) {
         stray.push({ mode, frame, played });
       }
       prevMode = mode;
@@ -270,8 +270,9 @@ test('焰魔：旋斩起手播 ignis_attack_circle、普攻起手播 ignis_attac
   const { events, stray } = probe;
   const spins = events.filter((e) => e.kind === 'spin');
   const swings = events.filter((e) => e.kind === 'swing');
+  const smashes = events.filter((e) => e.kind === 'shieldSmash');
   const summary = events.map((e) =>
-    `${e.kind}:swing=${e.played.ignis_attack_swing},circle=${e.played.ignis_attack_circle}`).join(' | ');
+    `${e.kind}:swing=${e.played.ignis_attack_swing},circle=${e.played.ignis_attack_circle},smash=${e.played.ignis_attack_smash}`).join(' | ');
 
   // 前置：两类招式都真的出现过（只采到普攻时，下面「旋斩播 circle」那条测的是空集）
   expect(events.length, '前置：必须采到多个起手（实际没有 → 焰魔一直没起手）')
@@ -292,6 +293,120 @@ test('焰魔：旋斩起手播 ignis_attack_circle、普攻起手播 ignis_attac
   }
   // ③ 不得有游离音：每次播放都必须对得上一次起手（否则计数被别处悄悄写到，
   //   ① 、② 可能描的是一个与真实起手无关的分支）
+  expect(stray, `不得有游离的起手音（实际：${JSON.stringify(stray)}）`).toHaveLength(0);
+  // ④ **v3.01 二次裁定（用户 2026-11-14）：贴身门已删** ⇒ 本用例的 4 格距离下
+  //   持盾冲撞**也可能起手**（权重 0.35）。旧版的「非贴身不得出现持盾冲撞音」负向锚点**已作废**。
+  //   现在的判据是「若出了持盾冲撞，它必须只播自己的音」（与①②同口径的分流判据）。
+  //   不断言「必须出现」：本用例只等 12 个样本，35% 权重下仍可能一次也没抽到，
+  //   「必须出现」交给下面那条专门等持盾冲撞的用例。
+  for (const e of smashes) {
+    expect(e.played.ignis_attack_smash, `持盾冲撞起手必须播 ignis_attack_smash（实际：${summary}）`).toBe(1);
+    expect(e.played.ignis_attack_swing, '持盾冲撞起手不得播挥刀音').toBe(0);
+    expect(e.played.ignis_attack_circle, '持盾冲撞起手不得播旋斩音').toBe(0);
+  }
+});
+
+/**
+ * v3.01 持盾冲撞起手音的分流（确定性版：把玩家钉在焰魔前方）。
+ *
+ * ## v3.01 二次裁定后的变化
+ *
+ * 初版靠「贴身门」才能出持盾冲撞，所以必须把玩家钉进 3 格。用户 2026-11-14 裁定删掉贴身门后，
+ * **任何起手距离都可能出持盾冲撞**（权重 0.35）。仍把玩家钉在 2.5 格的理由变成纯粋的**确定性**：
+ * ① 保证 LOS 通、玩家不跑开（否则可能因看不见而不起手）；② 命中率高 ⇒ 样本密。
+ * ⚠️ **只改 x/z 不改 y**（同 Tier 4 射程用例的教训：摩 y 会把玩家塞进地形）。
+ *
+ * ## 窗口
+ *
+ * 持盾冲撞权重 0.35 ⇒ 等到出现至少一次持盾冲撞起手，上限 40 个样本 / 180s；0.65^40 ≈ 3e-8 ⇒ 不依赖运气。
+ */
+test('焰魔(v3.01)：持盾冲撞起手播 ignis_attack_smash，且不播另两个音', async ({ page }) => {
+  test.setTimeout(300_000);
+  await page.goto(`/?vd=2&seed=${SEED}`);
+  await waitWorldReady(page);
+  await gotoOpenField(page);
+
+  const sum = await page.evaluate(() => {
+    const g = window.__MC_GAME__;
+    const p = g.player.physics.pos;
+    return g.ignises.summon('audio-spec:0:7', Math.floor(p.x), Math.floor(p.z) + 4, 1, Math.floor(p.y));
+  });
+  expect(sum.ok, `前置：焰魔召唤成功（${sum.reason ?? ''}）`).toBe(true);
+
+  await page.evaluate((id) => {
+    const g = window.__MC_GAME__;
+    const ids = ['ignis_attack_swing', 'ignis_attack_circle', 'ignis_attack_smash'];
+    const snap = {};
+    for (const k of ids) snap[k] = g.audioDebugState().playRequests[k] ?? 0;
+    const events = [];
+    const stray = [];
+    let frame = 0;
+    const modeOf = () => g.entities.get(id)?.state?.mode ?? null;
+    let prevMode = modeOf();
+    const tick = () => {
+      frame += 1;
+      // 每帧把玩家钉在焰魔前方 2.5 格（保证 LOS 与命中密度）—— 只改 x/z，y 保持玩家真实高度
+      const e = g.entities.get(id);
+      if (e) {
+        const [ex, , ez] = e.state.position;
+        g.player.physics.pos.x = ex;
+        g.player.physics.pos.z = ez - 2.5;
+      }
+      const countsNow = g.audioDebugState().playRequests;
+      const played = {};
+      for (const k of ids) {
+        played[k] = (countsNow[k] ?? 0) - snap[k];
+        snap[k] = countsNow[k] ?? 0;
+      }
+      const mode = modeOf();
+      const started = prevMode !== 'attack' && mode === 'attack';
+      if (started) {
+        events.push({ kind: g.entities.get(id)?.state?.attackKind ?? null, frame, played });
+      } else if (played.ignis_attack_swing + played.ignis_attack_circle + played.ignis_attack_smash > 0) {
+        stray.push({ mode, frame, played });
+      }
+      prevMode = mode;
+      window.__SMASH_AUDIO_PROBE__ = { events, stray };
+      if (events.length < 40) requestAnimationFrame(tick);
+    };
+    window.__SMASH_AUDIO_PROBE__ = { events, stray };
+    requestAnimationFrame(tick);
+  }, sum.id);
+
+  // 等到出现至少一次持盾冲撞起手（而不是固定样本数）
+  await page.waitForFunction(() => {
+    const p = window.__SMASH_AUDIO_PROBE__;
+    return (p?.events ?? []).some((e) => e.kind === 'shieldSmash') || (p?.events.length ?? 0) >= 40;
+  }, null, { timeout: 180_000 }).catch(() => {});
+
+  const probe = await page.evaluate(() => window.__SMASH_AUDIO_PROBE__);
+  const { events, stray } = probe;
+  const smashes = events.filter((e) => e.kind === 'shieldSmash');
+  const swings = events.filter((e) => e.kind === 'swing');
+  const spins = events.filter((e) => e.kind === 'spin');
+  const summary = events.map((e) =>
+    `${e.kind}:swing=${e.played.ignis_attack_swing},circle=${e.played.ignis_attack_circle},smash=${e.played.ignis_attack_smash}`).join(' | ');
+
+  // 前置：持盾冲撞起手必须非空（否则下面两条测的是空集，会假绿）
+  expect(smashes.length, `前置：必须抽到持盾冲撞起手（实际 ${events.length} 个起手：${summary}）`)
+    .toBeGreaterThan(0);
+
+  // ① 持盾冲撞起手 → 只播 ignis_attack_smash
+  for (const e of smashes) {
+    expect(e.played.ignis_attack_smash, `持盾冲撞起手必须播 ignis_attack_smash（实际：${summary}）`).toBe(1);
+    expect(e.played.ignis_attack_swing, '持盾冲撞起手不得播挥刀音').toBe(0);
+    expect(e.played.ignis_attack_circle, '持盾冲撞起手不得播旋斩音').toBe(0);
+  }
+  // ② 负向锚点：另两招仍各自播自己的音（证明分流真的按招，而不是恒播 smash）
+  for (const e of swings) {
+    expect(e.played.ignis_attack_swing, `普攻起手仍须播 swing（实际：${summary}）`).toBe(1);
+    expect(e.played.ignis_attack_smash, '普攻起手不得播持盾冲撞音').toBe(0);
+  }
+  for (const e of spins) {
+    expect(e.played.ignis_attack_circle, `旋斩起手仍须播 circle（实际：${summary}）`).toBe(1);
+    expect(e.played.ignis_attack_smash, '旋斩起手不得播持盾冲撞音').toBe(0);
+  }
+  // ③ 不得有游离音
   expect(stray, `不得有游离的起手音（实际：${JSON.stringify(stray)}）`).toHaveLength(0);
 });
 

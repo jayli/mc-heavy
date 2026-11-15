@@ -123,11 +123,18 @@ export const IGNIS_BAKE_PARAMS = Object.freeze({
  *   ⚠️ 38 tick 在素材里有 4 条候选，**只有 `attack8a3`** 在 t=0.0 / 0.5 的九根骨骼上与
  *   `SPIN_ATTACK` 非破盾分支逐位相等（`attack8b3` = 破盾变体，`attack8a2/b2` =
  *   `HORIZONTAL_SMALL_SWING_ALT_ATTACK2`）。详见 `ignis-config.js` 的 `IGNIS_ATTACKS`。
+ * - `shieldSmash`（v3.01）：素材 `attack1` 的 `animation_length` = 3.5 秒（70 tick），
+ *   ↔ Java `SHIELD_SMASH_ATTACK`（`Animation.create(70)`）。
+ *   ⚠️ 2026-11-13 实测扫描全部 82 条 ignis 动画：`attack1` 与 `SHIELD_SMASH_ATTACK`
+ *   共有骨骼关键帧最大逐轴差 **15.000°**（对照组 `attack6a ↔ SWING_ATTACK` 12.462°，同量级），
+ *   第二名 30° 已是 2 倍。且 3.5s 的候选只有 4 条，其余三条是阶段转换（`phase_soul*`）。
  */
 export const IGNIS_ANIM_PERIODS = Object.freeze({
   idle: 360 / 128,
   attack: 2.75,
   spin: 1.9,
+  /** v3.01：Java `Animation.create(70)` ÷ 20 = 3.5 秒（素材 `attack1`） */
+  shieldSmash: 3.5,
 });
 
 /** 素材里的动画键名（`animation.null.<name>`），烘焙脚本按此取 */
@@ -143,6 +150,17 @@ export const IGNIS_ANIM_SOURCES = Object.freeze({
    * 只取了 2 条（idle + attack）；本键让烘焙器多取一条，**输入文件与贴图逐字节不变**。
    */
   spin: Object.freeze(['attack8a3']),
+  /**
+   * 持盾冲撞（v3.01）：举盾过顶后连人带盾向前下方压（Java 的 `SHIELD_SMASH_ATTACK`，70 tick）。
+   * ⚠️ 不是「盾砸地」：实测盾尖最低只到 2.43 格（自己的胸腰高度），从未触地。
+   *
+   * ⚠️⚠️ **是 `attack1`，不是 `attack1_2`**：后者是 3s / 11 骨骼的另一招，
+   * 同一探针下与 `SHIELD_SMASH_ATTACK` 差 **72.5°**（而 `attack1` 只差 15.0°）。
+   * 键名只差三个字符，写错会烘焙出另一招而部分计数类判据仍通过。
+   * 鉴别依据与完整扫描表见 spec §2.2（`2026-11-13-ignis-shield-smash-design.md`）。
+   * 同旋斩：**零新增资源**，只是让烘焙器多取一条已入库的动画。
+   */
+  shieldSmash: Object.freeze(['attack1']),
 });
 
 /**

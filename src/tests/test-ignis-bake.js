@@ -38,9 +38,72 @@ async function loadSource() {
 
 // ==================== 结构性契约 ====================
 
-test('焰魔烘焙: 产物存在且动画清单是 idle + attack + spin（第二招旋斩，v2.75）', async () => {
+test('焰魔烘焙: 产物存在且动画清单是 idle + attack + spin + shieldSmash（第三招持盾冲撞，v3.01）', async () => {
   const d = await loadAsset();
-  assertEqual(Object.keys(d.animations).sort().join(','), 'attack,idle,spin');
+  assertEqual(Object.keys(d.animations).sort().join(','), 'attack,idle,shieldSmash,spin');
+});
+
+// ==================== 第三招：持盾冲撞（v3.01）====================
+//
+// 素材鉴别（2026-11-13 实测扫描全部 82 条 ignis 动画，见 spec §2.2）：
+// **`attack1`** 与 Java `SHIELD_SMASH_ATTACK` 的共有骨骼关键帧最大逐轴差 **15.000°**，
+// 与已确认的对照组 `attack6a ↔ SWING_ATTACK`（12.462°）同量级；第二名 30° 已是 2 倍。
+// ⚠️ **不是 `attack1_2`**（那是 3s / 11 骨骼的另一招，扫描差 72.5°）—— 键名相近，
+// 写错一个字符会烘焙出另一招，而部分计数类判据可能仍通过。
+
+/**
+ * 两个四元数之间的最小夹角（度）。
+ *
+ * ⚠️ **本文件自带一份**（`test-ignis-render.js` 里有同名辅助，但两文件不互相 import，
+ * 保持各自独立）。取 `|dot|` 是因为 q 与 −q 是同一个旋转，不取绝对值会在符号翻转处
+ * 报出 ~360° 的假差。
+ */
+function quatAngleDeg(a, b) {
+  let dot = 0;
+  for (let i = 0; i < 4; i++) dot += a[i] * b[i];
+  const c = Math.min(1, Math.max(0, Math.abs(dot)));
+  return 2 * Math.acos(c) * 180 / Math.PI;
+}
+
+test('焰魔烘焙(v3.01): shieldSmash 帧数 = round(3.5 × 30) = 105，fps 30，驱动 9 根骨骼', async () => {
+  const d = await loadAsset();
+  const a = d.animations.shieldSmash;
+  assertEqual(a.fps, 30);
+  assertEqual(a.frameCount, 105);
+  // ⚠️ 9 根是 attack1 的实测骨骼数；接成 attack1_2（11 根）会在这里红
+  assertEqual(a.boneIndices.length, 9);
+  assertEqual(a.frameCount / a.fps, 3.5);
+});
+
+test('焰魔烘焙(v3.01): shieldSmash 是举盾过顶再压下 —— left_arm_joint 绕 X 行程 ≥ 60°', async () => {
+  const d = await loadAsset();
+  const a = d.animations.shieldSmash;
+  const idx = d.bones.findIndex((b) => b.name === 'left_arm_joint');
+  const slot = a.boneIndices.indexOf(idx);
+  assertTrue(slot >= 0, 'shieldSmash 没有驱动 left_arm_joint（盾臂）—— 接错动画了');
+  // 取 t=1.0（蓄力到位，素材 −30°）与 t=1.75（砸下，素材 +35°）两帧的增量四元数夹角
+  const quatAt = (t) => {
+    const f = Math.round(t * a.fps);
+    const o = (f * a.boneIndices.length + slot) * 7;
+    return [a.frames[o], a.frames[o + 1], a.frames[o + 2], a.frames[o + 3]];
+  };
+  const swingDeg = quatAngleDeg(quatAt(1.0), quatAt(1.75));
+  // ⚠️ 判据落在盾臂行程，不是 root.y 幅度：持盾冲撞 root.y 只到 30°，
+  // 用「root 转角大」会把它误判成小横扫（spec §6.3）
+  assertTrue(swingDeg >= 60,
+    `盾臂行程只有 ${swingDeg.toFixed(1)}°（< 60°）—— 接成了别的动画`);
+  assertTrue(swingDeg <= 90,
+    `盾臂行程 ${swingDeg.toFixed(1)}° 超过 90°（素材实测 65°，接错动画？）`);
+});
+
+test('焰魔烘焙(v3.01): shieldSmash 的命中帧（tick 34）落在动画内', async () => {
+  const d = await loadAsset();
+  const a = d.animations.shieldSmash;
+  // Java 在 tick 34 结算 ⇒ 1.70s ⇒ 第 round(1.70 × 30) = 51 帧，必须 < 105
+  const hitFrame = Math.round(1.70 * a.fps);
+  assertEqual(hitFrame, 51);
+  assertTrue(hitFrame < a.frameCount,
+    `命中帧 ${hitFrame} 超出动画帧数 ${a.frameCount} —— 结算时动画已播完`);
 });
 
 // ==================== 第二招：整圈旋斩（v2.75）====================

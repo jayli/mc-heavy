@@ -189,6 +189,14 @@ export class IgnisBossAgent extends BossAgent {
     let leapT = Number.isFinite(state.leapT) ? state.leapT : 0;
     /** 跳跃劈砍的预判落点 y（Task 6 用），非 attack 飞跃为 null */
     let leapTargetY = Number.isFinite(state.leapTargetY) ? state.leapTargetY : null;
+    /**
+     * 这次跳跃落地要用哪一招。非 attack 飞跃为 null。
+     *
+     * 招式在**起跳时**就定下：若在落地时才抽签，起跳与落地两次抽签可能不一致 ⇒「跳起来却劈了一刀」。
+     *
+     * ⚠️ 旧存档没有这个字段（或值非法）⇒ 回落 null，落地时再回落 `'swing'`。
+     */
+    let leapAttackKind = IGNIS_ATTACK_IDS.includes(state.leapAttackKind) ? state.leapAttackKind : null;
     /** 跳跃劈砍的冷却剩余秒数（Task 6 用），独立于 attackCooldown */
     let leapAttackCooldown = Math.max(0,
       (Number.isFinite(state.leapAttackCooldown) ? state.leapAttackCooldown : 0) - step);
@@ -301,10 +309,14 @@ export class IgnisBossAgent extends BossAgent {
         mode = 'attack';
         attackAnimT = 0;   // 起手：动画从头播
         // ---- 抽签选招（v2.75 用户裁定「每次起手按权重随机」）----
-        // ⚠️ **旋斩冷却未好时降级为普攻**（不白放冷却）：`spinCooldown > 0` 时只从
+        // ⚠️ **旋斩冷却未好时降级**（不白放冷却）：`spinCooldown > 0` 时只从
         // 非旋斩的档案里抽 —— 否则玩家跑掉不命中的旋斩会反复浪费掉新鲜冷却。
+        // ⚠️ v3.01 二次裁定（用户 2026-11-14 实玩后）：**贴身门已删** —— 持盾冲撞与另两招
+        // 共用同一个起手门槛（本分支的 `hDist <= attackRange`），不再按距离排除。
+        // 原裁定②的 `smashEngageRange`（3.0）已作废：用户实测认为「触发条件过于苛刻」。
         attackKind = this._rollAttackKind(spinCooldown > 0);
         // ⚠️ **起手当帧就置冷却**（不是命中帧）：否则玩家跑掉不命中时旋斩可以连抽。
+        // ⚠️ 持盾冲撞**不置独立冷却**：全局 `attackCooldownMin`（4.0）已控住节奏。本行不动。
         if (attackKind === 'spin') spinCooldown = IGNIS_AI.spinCooldownSeconds;
         // ⚠️ **v2.63：起手当帧把 yaw 立即对准真实玩家**（不走 turnRate 缓动、不用快照）。
         // 快照最多陈旧 2 秒，玩家 8 格/秒能跑 16 格 —— 用陈旧朝向起手会让命中锥
@@ -556,6 +568,9 @@ export class IgnisBossAgent extends BossAgent {
       vy = Math.max(8, Math.min(14, (landY - py + 0.5 * g * T * T) / T));
       leapTargetY = landY;
       leapKind = 'attack';
+      // **起跳时就抽定这次落地用哪一招**，落地时写进 attackKind，
+      // 不在落地重抽 —— 否则起跳与落地可能不一致。
+      leapAttackKind = this._rollAttackKind(spinCooldown > 0);
       leapT = 0;
       mode = 'leap';
       leapAttackCooldown = IGNIS_AI.leapAttackCooldown;
@@ -628,7 +643,13 @@ export class IgnisBossAgent extends BossAgent {
           && py <= leapTargetY + IGNIS_AI.leapSlashLead;
         if (nearGround || landed || timedOut) {
           mode = 'attack';
-          attackAnimT = 0;                       // 从头播劈砍动画
+          attackAnimT = 0;                       // 从头播本招动画
+          // ⚠️⚠️ **必须显式设 attackKind**。旧实现不设 ⇒ 沿用进入 leap 前的残值
+          //（通常 null）⇒ 渲染器回落 attack ⇒ **跳跃劈砍永远播横扫**（遗留缺陷，已修）。
+          attackKind = leapAttackKind || 'swing';
+          // 旋斩的独立冷却与平地起手同口径：落地抽中也要置，否则可连抽。
+          if (attackKind === 'spin') spinCooldown = IGNIS_AI.spinCooldownSeconds;
+          leapAttackKind = null;
           if (player) yaw = this._angleTo([px, py, pz], player);   // 立即对准玩家（不走 turnRate 缓动）
           leapKind = null;
           leapDir = null;                        // 水平动量交回 attack（意图为 0，落地即停）
@@ -643,6 +664,7 @@ export class IgnisBossAgent extends BossAgent {
         leapDir = null;
         leapT = 0;
         leapTargetY = null;
+        leapAttackKind = null;   // 脱困跳不携带招式，不得残留
         stuckT = 0;
       }
     }
@@ -740,6 +762,8 @@ export class IgnisBossAgent extends BossAgent {
       leapDir,
       leapT,
       leapTargetY,
+      // 只在 attack 飞跃期间携带招式；其余一律 null（与 leapTargetY 同口径）。
+      leapAttackKind: leapKind === 'attack' ? leapAttackKind : null,
       leapAttackCooldown,
       idleTime,
       attackCooldown,
@@ -767,8 +791,12 @@ export class IgnisBossAgent extends BossAgent {
    * ⚠️ **`spinBlocked` 时只从非旋斩的候选里抽**：冷却未好就把旋斩从候选集里去掉，
    * 而不是「抽中了再改判」—— 后者会让剩余概率全部堆到第一个档案上，权重语义变味。
    *
+   * ⚠️ **v3.01 二次裁定：本函数回到单参**。初版曾加过第二参 `smashAllowed`（贴身门），
+   * 用户 2026-11-14 实玩后裁定「不要限制在严格 3 格内，改成和其他两个攻击技能一样的生效距离」
+   * ⇒ 持盾冲撞**无条件参与抽签**，距离门槛完全交给调用点的 `hDist <= attackRange`（三招共用）。
+   *
    * @param {boolean} spinBlocked 旋斩冷却是否未好
-   * @returns {'swing'|'spin'} 选中的档案键
+   * @returns {'swing'|'spin'|'shieldSmash'} 选中的档案键
    */
   _rollAttackKind(spinBlocked) {
     const ids = spinBlocked ? IGNIS_ATTACK_IDS.filter((id) => id !== 'spin') : IGNIS_ATTACK_IDS;

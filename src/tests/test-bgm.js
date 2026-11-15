@@ -415,6 +415,18 @@ test('audio-config: ignisAttackSound 缺省/非法 attackKind 回落 swing（不
   assertEqual(ignisAttackSound('swing'), 'ignis_attack_swing');
 });
 
+test('audio-config(v3.01): 持盾冲撞起手音是 ignis_attack_smash（近似替代，不是原版 TOTEM_USE）', () => {
+  assertEqual(IGNIS_ATTACK_SOUNDS.shieldSmash, 'ignis_attack_smash');
+  assertEqual(ignisAttackSound('shieldSmash'), 'ignis_attack_smash');
+  assertEqual(soundFileName('ignis_attack_smash'), 'ignis_attack_smash.ogg');
+  assertTrue(SOUND_IDS.includes('ignis_attack_smash'), '必须进预载清单，否则静默无声');
+  assertEqual(SOUND_EXT_OVERRIDES.ignis_attack_smash, 'ogg', '漏加扩展名表 ⇒ 按 .mp3 fetch 404 被 catch 吞');
+  assertTrue(SOUND_VOLUMES.ignis_attack_smash > 0, '必须有正音量');
+  // 三招两两不同（共用 = 加了招式却没接音，而数据层全绿）
+  const ids = Object.values(IGNIS_ATTACK_SOUNDS);
+  assertEqual(new Set(ids).size, ids.length, '三招起手音必须两两不同');
+});
+
 // ==================== v2.64：Boss 战 BGM 交叉淡化状态机 ====================
 
 /**
