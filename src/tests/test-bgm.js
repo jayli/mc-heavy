@@ -559,3 +559,18 @@ test('boss bgm: 懒加载只在首次激活时发起一次（重复激活不重�
     teardown(mgr);
   }
 });
+
+test('audio-config(v3.03): 举盾砸击起手音是 ignis_attack_bash（mod ignis_impact.ogg 逐字节副本）', () => {
+  assertEqual(IGNIS_ATTACK_SOUNDS.shieldBash, 'ignis_attack_bash');
+  assertEqual(ignisAttackSound('shieldBash'), 'ignis_attack_bash');
+  assertEqual(soundFileName('ignis_attack_bash'), 'ignis_attack_bash.ogg');
+  assertTrue(SOUND_IDS.includes('ignis_attack_bash'), '必须进预载清单，否则静默无声');
+  assertEqual(SOUND_EXT_OVERRIDES.ignis_attack_bash, 'ogg',
+    '漏加扩展名表 ⇒ 按 .mp3 fetch 404 被 catch 吞成一句 warn');
+  assertTrue(SOUND_VOLUMES.ignis_attack_bash > 0, '必须有正音量');
+  // ⚠️ **四招两两不同**（按 IGNIS_ATTACK_IDS 全量算，不是写死三招）：
+  // 共用同一个音 = 加了招式却没接音，而数据层全绿。
+  const ids = IGNIS_ATTACK_IDS.map((k) => IGNIS_ATTACK_SOUNDS[k]);
+  assertEqual(ids.length, 4, '四招都要有起手音映射');
+  assertEqual(new Set(ids).size, ids.length, `四招起手音必须两两不同，实为 ${ids.join(',')}`);
+});

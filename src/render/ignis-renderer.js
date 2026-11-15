@@ -319,8 +319,8 @@ export class IgnisRenderer {
     // 焰魔没有俯仰（地面实体），但保持与飞龙同一口径以免将来加俯仰时踩坑。
     inst.pivot.rotation.set(0, st.yaw, 0, 'YXZ');
 
-    // 动画：按 `attackKind` 选片段（v2.75 二元，v3.01 扩成三招）—— 三招形态完全不同，
-    // 播错一支的形态是「旋斩演成横扫」/「持盾冲撞演成横扫」，而「有动画在播」类断言全绿。
+    // 动画：按 `attackKind` 选片段（v2.75 二元，v3.01 三招，v3.03 四招）—— 四招形态完全不同，
+    // 播错一支的形态是「旋斩演成横扫」/「举盾砸击演成持盾冲撞」，而「有动画在播」类断言全绿。
     //
     // ⚠️ **缺 `attackKind`（旧调用方）回落 `attack`**；`attackAnimT > 0` 仍是「是否在攻击」
     // 的判据 —— 两者不是同一件事：`attackKind` 只说哪一招，不表示现在在打。
@@ -328,7 +328,8 @@ export class IgnisRenderer {
     // 直接采样会 TypeError 或给出空姿态 ⇒ 回落 `attack`，不抛错（`test-ignis-render.js` 钉住）。
     const attackT = Number.isFinite(st.attackAnimT) ? st.attackAnimT : 0;
     const wantClip = st.attackKind === 'spin' ? 'spin'
-      : st.attackKind === 'shieldSmash' ? 'shieldSmash' : 'attack';
+      : st.attackKind === 'shieldSmash' ? 'shieldSmash'
+        : st.attackKind === 'shieldBash' ? 'shieldBash' : 'attack';
     const clipKey = this.asset.animations[wantClip] ? wantClip : 'attack';
     const sourceKey = attackT > 0 ? clipKey : 'idle';
     const target = attackT > 0

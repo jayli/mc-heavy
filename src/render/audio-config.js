@@ -64,6 +64,14 @@ export const SOUND_IDS = Object.freeze(['gun_load', 'gun_fire', 'mag7_fire', 'mi
   // `SHIELD_SMASH_ATTACK` 分支播的是 Minecraft 原版 `SoundEvents.TOTEM_USE`，本仓没有那个文件。
   // 将来对照原版时不要把本条当作「原音」（用户裁定⑤选它作近似）。
   'ignis_attack_smash',
+  // v3.03：焰魔**举盾砸击**起手音。文件来自 mod 的 `ignis_impact.ogg`（焰魔撞击音，
+  // `sounds.json:161` 的 `ignis_impact` 事件引用它），逐字节拷入、未转码（9023 字节）。
+  // ⚠️ **这是近似替代，不是原版该招的音** —— 原版 `ULTIMATE_ATTACK` 在 tick 74 播
+  // `ModSounds.STRONGSWING` + `earthquakesound(10f)`（后者是原版 `SoundEvents.TOTEM_USE`，
+  // 本仓与 mod 素材里都没有那个文件）。
+  // ⚠️ **不取 `ignis_earthquake.ogg`**：`ModSounds.IGNIS_EARTHQUAKE` 虽已注册，
+  // 但全仓**无任何调用点**（程序化扫描确认）⇒ 它是未使用素材，不能声称是这招的原音。
+  'ignis_attack_bash',
   // 末影守卫（本次新增）：三个文件已在 Task 1 拷入 assets/sounds/。
   // ⚠️ 受击/死亡音源头是原版的 golemhurt / golemdeath（已查 sounds.json 链路，
   //    不是按名字猜）；拳击音是专属的 ender_guardian_fist_attack。
@@ -95,6 +103,8 @@ export const SOUND_EXT_OVERRIDES = Object.freeze({
   ignis_attack_circle: 'ogg',
   // v3.01：焰魔持盾冲撞（mod sword_stomp.ogg 的近似替代）。漏加本表 = 静默无声
   ignis_attack_smash: 'ogg',
+  // v3.03：焰魔举盾砸击（mod ignis_impact.ogg 的近似替代）。漏加本表 = 静默无声
+  ignis_attack_bash: 'ogg',
   // 末影守卫：三个都是 .ogg。⚠️ **漏加本表 = 静默无声**（按 .mp3 去 fetch ⇒ 404 被 catch 吞）
   guardian_attack: 'ogg',
   guardian_hurt: 'ogg',
@@ -139,6 +149,8 @@ export const SOUND_VOLUMES = Object.freeze({
   ignis_attack_circle: 0.5,
   // v3.01：持盾冲撞与另两招同档（嫌响/嫌轻只改这一个数，不动触发点）
   ignis_attack_smash: 0.5,
+  // v3.03：举盾砸击与另三招同档（嫌响/嫌轻只改这一个数，不动触发点）
+  ignis_attack_bash: 0.5,
   // 末影守卫：照焰魔 0.5 同档（嫌响/嫌轻只改这三个数，不动触发点）
   guardian_attack: 0.5,
   guardian_hurt: 0.5,
@@ -164,6 +176,13 @@ export const IGNIS_ATTACK_SOUNDS = Object.freeze({
   spin: 'ignis_attack_circle',
   /** v3.01：持盾冲撞（mod `sword_stomp.ogg` 的近似替代，非原版 TOTEM_USE） */
   shieldSmash: 'ignis_attack_smash',
+  /**
+   * v3.03：举盾砸击（mod `ignis_impact.ogg` 的近似替代）。
+   * 原版是 `STRONGSWING` + `TOTEM_USE`，后者无文件 ⇒ 取语义最近的「焰魔撞击」音。
+   * ⚠️ 必须与另三招不同音（`test-bgm.js` 按 `IGNIS_ATTACK_IDS` 全量钉住）——
+   * 共用同一个音就是「加了招式却没接音」，而数据层全绿。
+   */
+  shieldBash: 'ignis_attack_bash',
 });
 
 /**

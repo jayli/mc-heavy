@@ -875,10 +875,32 @@ export const IGNIS_POSE_BLEND = Object.freeze({
   seconds: 0.2,
   /** 淡入「旋斩」的时长（秒）：用户 2026-11-07 裁定 0.2 → 0.6 */
   spinInSeconds: 0.6,
+  /**
+   * 淡入「举盾砸击」的时长（秒）—— **v3.03 实测标定 0.8**。
+   *
+   * ## 为什么不能用默认 0.2s（实测，不是凭感觉）
+   *
+   * 本招片段自身最快单帧只有 **7.17°**（`left_arm_joint` @t≈0.117s）—— 比旋斩的 24.5°
+   * 低得多，所以「合法快动作」的天花板很低。而淡入的 smoothstep 在中段导数是 **1.5/D**，
+   * 它与片段自身的速度**叠加**：片段快段（0.1~0.2s）恰好落在淡入窗口内时，两者同相相加。
+   *
+   * 实测（8 档 idle 相位取最坏，片段上限 7.17°）：
+   *
+   *   D(s)     0.20   0.25   0.30   0.40   0.50   0.60   **0.80**   1.00
+   *   最坏单帧   11.08  10.99  10.75  10.20   9.15   7.84   **5.45**   3.89
+   *
+   * ⇒ **D ≤ 0.6 全部超限**（加长到 0.5 也只降到 9.15），因为片段快段始终在窗口内；
+   * **D = 0.8 起才满足**（5.45 ≤ 7.17）。取 0.8 而不是更大：余量已足（1.3×），
+   * 且越长的淡入越吃掉「举盾蓄力」的观感（同旋斩 0.6 的取舍）。
+   *
+   * ⚠️ **硬约束仍成立**：0.8s ≪ 命中帧 **1.89s**（余量 1.09s）⇒ 命中那一刻画面是完整姿态。
+   * 守卫：`test-ignis-render.js` 的「举盾砸击淡入在命中帧之前走完」用例（阈值由 `clipMaxStepDeg` 现算）。
+   */
+  bashInSeconds: 0.8,
 });
 
 /**
- * 淡入来源 `sourceKey`（`'idle' | 'attack' | 'spin' | 'shieldSmash'`）的时长（秒）。
+ * 淡入来源 `sourceKey`（`'idle' | 'attack' | 'spin' | 'shieldSmash' | 'shieldBash'`）的时长（秒）。
  *
  * **渲染器与测试共用的单一权威**（红线 1）：「哪个来源用哪个时长」的策略只写在这里，
  * 测试不得各自再写一份映射。⚠️ 按**目标来源**取值 —— 淡入旋斩用 `spinInSeconds`，
@@ -891,7 +913,15 @@ export const IGNIS_POSE_BLEND = Object.freeze({
  * 硬约束「淡入必须在命中帧之前走完」：0.2 ≪ 1.70 ✓，余量极大。
  * ⚠️ 单帧角仍要实测（spec §5.4 明确要求不凭推理宣称通过）：守卫在
  * `test-ignis-render.js` 的「持盾冲撞淡入在命中帧之前走完」用例，阈值由 `clipMaxStepDeg` 现算。
+ *
+ * ## v3.03 举盾砸击走 **0.8s**（实测标定，推导见 `IGNIS_POSE_BLEND.bashInSeconds`）
+ *
+ * 它的片段自身上限只有 **7.17°**（比旋斩的 24.5° 低得多），而淡入的 smoothstep 中段导数
+ * 与片段快段（0.1~0.2s）**叠加** ⇒ D ≤ 0.6 全部超限（实测 11.08 → 7.84），
+ * **D = 0.8 才降到 5.45°**。硬约束 0.8 ≪ 命中帧 1.89 ✓。
  */
 export function ignisBlendSeconds(sourceKey) {
-  return sourceKey === 'spin' ? IGNIS_POSE_BLEND.spinInSeconds : IGNIS_POSE_BLEND.seconds;
+  if (sourceKey === 'spin') return IGNIS_POSE_BLEND.spinInSeconds;
+  if (sourceKey === 'shieldBash') return IGNIS_POSE_BLEND.bashInSeconds;
+  return IGNIS_POSE_BLEND.seconds;
 }
