@@ -139,8 +139,8 @@ export const IGNIS_ATTACKS = Object.freeze({
     hitConeDeg: 35,
     hitFrameSeconds: 1.20,
     animSeconds: 2.75,
-    /** 抽签权重（三招之和 = 1）。v3.01 二次裁定：与持盾冲撞**严格平分**原挥砍的 0.7 ⇒ 各 0.35 */
-    weight: 0.35,
+    /** 抽签权重（四招之和 = 1）。v3.03：0.35 → **0.25**（让出 0.10 给举盾砸击，与持盾冲撞仍严格平分） */
+    weight: 0.25,
   }),
   /** 旋斩：身体绕竖轴扫一整圈（v2.75）。素材 `root.y` 净转角 ≈ 282° */
   spin: Object.freeze({
@@ -208,17 +208,86 @@ export const IGNIS_ATTACKS = Object.freeze({
     hitFrameSeconds: 1.70,
     animSeconds: 3.50,
     /**
-     * 抽签权重。三档和 = 1（0.35 + 0.30 + 0.35）。
+     * 抽签权重。四档和 = 1（0.25 + 0.30 + 0.35→0.25 + 0.20）。
      *
      * ⚠️ **v3.01 二次裁定：无距离门**（原贴身门 `smashEngageRange` 已删除），
-     * 与横扫**严格平分**原挥砍的概率 ⇒ 各 0.35。任何起手距离都可能抽到它。
+     * 与横扫**严格平分**概率。任何起手距离都可能抽到它。
+     * ⚠️ **v3.03：0.35 → 0.25**（让出 0.10 给举盾砸击，与横扫仍严格平分）。
      * ⚠️ **仍不加独立冷却**：全局 `attackCooldownMin`（4.0）已经控住节奏。
      */
-    weight: 0.35,
+    weight: 0.25,
+  }),
+  /**
+   * 举盾砸击（v3.03）—— 用户 2026-11-15：「我希望进一步引入焰魔的持盾攻击的动作」。
+   *
+   * ## 为什么是 `ULTIMATE_ATTACK` 而不是另几招（选招依据 = 原版语义，不是几何形状）
+   *
+   * 前三轮尝试都选错了对象（见 `docs/ignis-shield-slam-migration-failure-report.md`）。
+   * 本轮全量扫描 40 条 Java 动画，用**真实 80 角点**盾几何 + 四条语义判据筛出唯一候选：
+   *
+   * | 判据 | shieldBash | shieldSmash | smash（废弃） | strike |
+   * |---|---|---|---|---|
+   * | 盾顶过头顶 | **2.26 格** | 1.48 | 1.63 | 0.98 |
+   * | 盾面法线前方分量峰 | **0.97** | 0.36 | 0.14 | 0.87 |
+   * | 峰后 0.6s 前推 | **1.15 格** | 0.20 | **−1.31**（后退） | 4.18 |
+   * | 峰后 0.6s 下降 | **2.58 格** | 0.50 | 2.84 | **0.51**（横扫） |
+   * | 首关键帧 | `startKeyframe(18)` ✓ | 同 | **`startKeyframe(0)`** ✗ | **同** ✗ |
+   *
+   * ⇒ **三条几何判据的交集只有本招**：单看「面朝前」会放进 spin（0.99），
+   * 单看「前推」会放进 strike（4.18），单看「下降」会放进 smash（2.84）。
+   *
+   * 原版触发：`goalSelector.addGoal(1, new AttackAnimationGoal1<>(this, ULTIMATE_ATTACK, 72, true))`
+   *（`Ignis_Entity.java:242`）—— **独立 goal**，不是接在其他动画后面。
+   * 对照 `REINFORCED_SMASH` 由 `REINFORCED_SMASH_IN_AIR` 落地时 `sendAnimationMessage` 触发
+   *（:2518）⇒ 与废弃的 `SMASH` 同一个坑，独立成招会起手突兀。
+   *
+   * ## 四项数值的来源
+   *
+   * - `hitRange 6.5`：原版 `AreaAttack(6f, 6f, 45, …)` 第一参是 **6.0**，
+   *   本仓取 **6.5** 与另三招同值（沿用 v3.01 二次裁定「不要窄距离门」）。
+   * - `hitConeDeg 22.5`：`arc 45` 的**半角**（同另三招口径）。
+   *   ⚠️ 写成 45 会让扇面静默变成 90°，而没有任何其他断言会红。
+   * - `hitFrameSeconds 1.89`：原版 tick **74** ÷ 20 = 3.70s 是「盾刚砸到底」那一帧；
+   *   经三段时间重映射后落在产物的 **1.89s**（= 蓄力 1.34 + 峰值静止 0.25 + 砸下 0.30）。
+   *   **语义位置与原版一致**，只是到达它的墙钟时间变短。
+   * - `animSeconds 3.89`：三段 warp 后的产物时长（源 5.70s）。帧数 117 @30fps。
+   *   权威在 `tools/ignis-fingerprint.mjs` 的 `ignisAnimOutputPeriod('shieldBash')`。
+   *
+   * ## 时间重映射（用户裁定②「保留但压缩蓄力段」）
+   *
+   * 原版前 3.35s 是举盾/举剑蓄力（配火焰柱 + 震屏，按裁定③全部去掉）⇒ 纯举盾显得空；
+   * 而真正的砸下段只有 `startKeyframe(2)` = **100ms**（3 帧 @30fps），叠加淡入后几乎看不见。
+   * ⇒ 蓄力 ×1/2.5、砸下 ×3，其余段原速。实测可见砸下段 **500ms**。
+   *
+   * ⚠️ **不抬全局冷却**：3.89 < `attackCooldownMin` 4.0（余量 0.11s），不变式仍成立。
+   * 若当初选「原样保留 5.70s」就得把冷却抬到 6.0，普攻节奏一起变慢。
+   *
+   * ## 刻意不取的原版行为（沿用裁定③「只扣血」）
+   *
+   * tick 74 的 `ScreenShake_Entity`、`spawnFlameStrike` × 8 段、
+   * 34×10 次 `UltimateAttack(...)`、`earthquakesound(10f)` 全部**不取**；
+   * `damage=2.0` / `hpdamage=0.25` 也不取（四招共用 `IGNIS.attackDamage`）。
+   */
+  shieldBash: Object.freeze({
+    hitRange: 6.5,
+    hitConeDeg: 22.5,
+    hitFrameSeconds: 1.89,
+    animSeconds: 3.89,
+    /**
+     * 抽签权重。四档和 = 1（0.25 + 0.30 + 0.25 + 0.20）。
+     *
+     * 用户 2026-11-15 批准的分配：横扫与持盾冲撞**各让出 0.10**（0.35 → 0.25），
+     * 旋斩 **不动**（0.30，历次裁定都未要求改它），新招拿 0.20。
+     * ⇒ 横扫与持盾冲撞仍严格平分（v3.01 裁定的语义保留）。
+     *
+     * ⚠️ **本仓标定，不是原版数值**：原版 ULTIMATE 有 1200 tick = 60s 独立冷却，
+     * 本仓不引入这么长的冷却 —— 全局 `attackCooldownMin` 4.0 已控住节奏（同 shieldSmash）。
+     */
+    weight: 0.20,
   }),
 });
 
-/** 合法的攻击档案键（`attackKind` 的取值域）。顺序 = 抽签顺序（⚠️ 载荷性：持盾冲撞必须排最后） */
+/** 合法的攻击档案键（`attackKind` 的取值域）。顺序 = 抽签顺序（⚠️ 载荷性：举盾砸击必须排最后） */
 export const IGNIS_ATTACK_IDS = Object.freeze(Object.keys(IGNIS_ATTACKS));
 
 /**
@@ -697,11 +766,12 @@ export const IGNIS_STEERING = Object.freeze({
  */
 export const IGNIS_CORE_OBB = Object.freeze({
   halfExtents: Object.freeze([0.8264, 1.4637, 0.7125]),
-  // v3.01 重标（**不是放宽**）：`center[1] = MODEL_CENTER[1] + feetOffsetY`，
-  // 而 `feetOffsetY` 是烘焙器扫**全部招式动画**算出的全程最低点 —— 加入持盾冲撞 `attack1`
-  // 后它从 −0.265625 变成 **−0.2228601**（持盾冲撞的下蹲幅度比另两招浅 ⇒ 最低点上移 0.0428 格）。
-  // 旧值 1.5106 = 1.7762 + (−0.265625)。`halfExtents` 与 `MODEL_CENTER` 来自 bind pose，与动画无关 ⇒ 不变。
-  center: Object.freeze([0, 1.5534, -0.2095]),
+  // v3.03 重标（**不是放宽**）：`center[1] = MODEL_CENTER[1] + feetOffsetY`，
+  // 而 `feetOffsetY` 是烘焙器扫**全部招式动画**算出的全程最低点 —— 加入举盾砸击 `attack11`
+  // 后它从 −0.2228601 变成 **−0.048089811**（砸到底那一帧 `right_fist` 探到 y=0.0481，
+  // 比另三招的 `lowerbody2` 最低点更低 ⇒ 补偿量变小）。
+  // 旧值 1.5534 = 1.7762 + (−0.2228601)。`halfExtents` 与 `MODEL_CENTER` 来自 bind pose，与动画无关 ⇒ 不变。
+  center: Object.freeze([0, 1.7281, -0.2095]),
 });
 
 /**

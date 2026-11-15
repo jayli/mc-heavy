@@ -272,13 +272,13 @@ test('焰魔 AI(v2.75): rng=0 ⇒ 恒选普攻（swing），rng→1 ⇒ 恒选�
   assertEqual(s1.attackKind, 'swing', 'rng=0 应抽中第一个档案（swing）');
 
   // rng 恒 1：落在**声明顺序的最后一档**。用 0.999999 而不是 1（有些实现把 1 当越界）。
-  // ⚠️ v3.01 起末档是 **shieldSmash**（贴身门已删，持盾冲撞无条件参与抽签）。
-  // 旧口径下这里是 spin —— 若它又变回 spin，说明持盾冲撞被排到了 spin 之前（顺序载荷性）。
+  // ⚠️ v3.03 起末档是 **shieldBash**（举盾砸击）；v3.01~v3.02 是 shieldSmash。
+  // 若它变回 spin，说明新招被排到了 spin 之前（顺序载荷性）。
   const lastAgent = new IgnisBossAgent({ rng: () => 0.999999 });
   const s2 = runToAttackStart(lastAgent, st({ mode: 'chase', onGround: true }), ctx);
   assertEqual(s2.mode, 'attack');
-  assertEqual(s2.attackKind, 'shieldSmash', 'rng≈1 应抽中最后一档（持盾冲撞）');
-  // 旋斩必须在中间（否则上面的“末档”判据拓不到顺序）：权重累计 swing 0.35 ⇒ spin 区间 [0.35, 0.65)
+  assertEqual(s2.attackKind, 'shieldBash', 'rng≈1 应抽中最后一档（举盾砸击）');
+  // 旋斩必须在中间（否则上面的“末档”判据拓不到顺序）：权重累计 swing 0.25 ⇒ spin 区间 [0.25, 0.55)
   const spinAgent = new IgnisBossAgent({ rng: () => 0.5 });
   const s3 = runToAttackStart(spinAgent, st({ mode: 'chase', onGround: true }), ctx);
   assertEqual(s3.attackKind, 'spin', 'rng=0.5 应落在中间档（旋斩）');
@@ -289,25 +289,26 @@ test('焰魔 AI(v2.75): rng=0 ⇒ 恒选普攻（swing），rng→1 ⇒ 恒选�
 // 用户 2026-11-13 初版裁定②是「玩家贴近（<3 格）时才抽」。
 // **2026-11-14 实玩后推翻**：「触发条件过于苛刻，不要限制在严格 3 格内，
 // 改成和其他两个攻击技能一样的生效距离……生效比例平分挥砍的动作的发生概率」。
-// ⇒ 贴身门删除（`smashEngageRange` 常量不存在），三招共用既有的 `attackRange` 起手门槛；
-//   权重 swing 0.35 / spin 0.30 / shieldSmash 0.35（横扫与持盾冲撞严格平分，旋斩不动）。
+// ⇒ 贴身门删除（`smashEngageRange` 常量不存在），四招共用既有的 `attackRange` 起手门槛；
+//   权重（v3.03）swing 0.25 / spin 0.30 / shieldSmash 0.25 / shieldBash 0.20
+//   （横扫与持盾冲撞仍严格平分，旋斩不动，新招拿 0.20）。
 
-test('焰魔 AI(v3.01): 任何起手距离都可能抽到持盾冲撞（贴身门已删）—— 4.5 / 5.0 / 2.5 格各验', () => {
-  // rng≈1 ⇒ 落在声明顺序的最后一档 = shieldSmash（三招无距离门）
+test('焰魔 AI(v3.01/v3.03): 任何起手距离都可能抽到末档招式（贴身门已删）—— 4.5 / 5.0 / 2.5 格各验', () => {
+  // rng≈1 ⇒ 落在声明顺序的最后一档 = shieldBash（四招无距离门）
   for (const dist of [2.5, 4.0, 4.5, 5.0]) {
     const ctx = { ...OPEN_CTX, player: playerAt(dist) };
     const a = new IgnisBossAgent({ rng: () => 0.999999 });
     const s = runToAttackStart(a, st({ mode: 'chase', onGround: true }), ctx);
     assertEqual(s.mode, 'attack', `${dist} 格应起手（attackRange 5.5 内）`);
-    assertEqual(s.attackKind, 'shieldSmash',
-      `${dist} 格 + rng≈1 应抽中最后一档（持盾冲撞）—— 贴身门已删，不得再按距离排除`);
+    assertEqual(s.attackKind, 'shieldBash',
+      `${dist} 格 + rng≈1 应抽中最后一档（举盾砸击）—— 贴身门已删，不得再按距离排除`);
   }
 });
 
-test('焰魔 AI(v3.01): 权重平分 —— rng 扫描下横扫与持盾冲撞各占 35%，旋斩 30%', () => {
-  // 用固定 rng 扫 1000 档，统计三招出现次数（总权重归一后的真实分布）。
-  // ⚠️ 这不是「断言常量等于 0.35」（那条在 test-ignis-system），而是验**抽签器真的按它分**。
-  const counts = { swing: 0, spin: 0, shieldSmash: 0 };
+test('焰魔 AI(v3.03): 四招权重扫描 —— 25% / 30% / 25% / 20%，横扫与持盾冲撞仍平分', () => {
+  // 用固定 rng 扫 1000 档，统计四招出现次数（总权重归一后的真实分布）。
+  // ⚠️ 这不是「断言常量等于 0.25」（那条在 test-ignis-system），而是验**抽签器真的按它分**。
+  const counts = { swing: 0, spin: 0, shieldSmash: 0, shieldBash: 0 };
   const ctx = { ...OPEN_CTX, player: playerAt(4.5) };
   const N = 1000;
   for (let i = 0; i < N; i++) {
@@ -317,35 +318,35 @@ test('焰魔 AI(v3.01): 权重平分 —— rng 扫描下横扫与持盾冲撞�
     counts[s.attackKind] += 1;
   }
   const pct = (k) => counts[k] / N;
-  // 区间边界：swing [0,0.35) / spin [0.35,0.65) / shieldSmash [0.65,1)
-  assertTrue(Math.abs(pct('swing') - 0.35) < 0.01, `横扫占比 ${pct('swing')} 应 ≈0.35`);
+  // 区间边界：swing [0,0.25) / spin [0.25,0.55) / shieldSmash [0.55,0.80) / shieldBash [0.80,1)
+  assertTrue(Math.abs(pct('swing') - 0.25) < 0.01, `横扫占比 ${pct('swing')} 应 ≈0.25`);
   assertTrue(Math.abs(pct('spin') - 0.30) < 0.01, `旋斩占比 ${pct('spin')} 应 ≈0.30`);
-  assertTrue(Math.abs(pct('shieldSmash') - 0.35) < 0.01, `持盾冲撞占比 ${pct('shieldSmash')} 应 ≈0.35`);
-  // ⚠️ **不得要求「次数严格相等」**：权重浮点和是 0.9999999999999999（不是 1），
-  // 使 rng=0.35 / 0.65 两个**恰好落在档位边界**的样本各偏一档 ⇒ 实测 351 / 300 / 349。
-  // 这是浮点抽签的固有性质（总权重归一的代价），不是实现缺陷。
-  // 判据取「两者占比之差 ≤ 0.3%」（= 最多 3 个边界样本），而不是逐位相等。
+  assertTrue(Math.abs(pct('shieldSmash') - 0.25) < 0.01, `持盾冲撞占比 ${pct('shieldSmash')} 应 ≈0.25`);
+  assertTrue(Math.abs(pct('shieldBash') - 0.20) < 0.01, `举盾砸击占比 ${pct('shieldBash')} 应 ≈0.20`);
+  // ⚠️ 本组权重浮点和恰好是 1（实测 1000 档得 250/300/250/200，无 v3.01 那次的边界偏移），
+  // 但仍不要求逐位相等 —— 浮点抽签的边界样本归属是实现细节，不是契约。
   assertTrue(Math.abs(pct('swing') - pct('shieldSmash')) <= 0.003,
     `横扫 ${counts.swing} 与持盾冲撞 ${counts.shieldSmash} 的占比差超过 0.3%（平分失效）`);
-  // 且两者必须明显多于旋斩（否则“平分挥砍”变成了“三招平分”）
-  assertTrue(counts.swing > counts.spin && counts.shieldSmash > counts.spin,
-    `横扫/持盾冲撞应各多于旋斩：${JSON.stringify(counts)}`);
+  // 新招必须比另三招都少（否则「让出 0.10」变成了「三招平分」）
+  assertTrue(counts.shieldBash < counts.swing && counts.shieldBash < counts.spin,
+    `举盾砸击应少于横扫与旋斩：${JSON.stringify(counts)}`);
 });
 
-test('焰魔 AI(v3.01): 旋斩冷却未好时，横扫与持盾冲撞仍各占一半', () => {
-  // 候选集去掉 spin 后剩 swing 0.35 / shieldSmash 0.35 ⇒ 归一后各 50%
+test('焰魔 AI(v3.03): 旋斩冷却未好时，末档仍是举盾砸击（候选集去掉，不是抽中再改判）', () => {
+  // 候选集去掉 spin 后剩 swing 0.25 / shieldSmash 0.25 / shieldBash 0.20（总 0.70）
+  // ⇒ 归一后 35.7% / 35.7% / 28.6%，区间 [0,0.357) / [0.357,0.714) / [0.714,1)
   const ctx = { ...OPEN_CTX, player: playerAt(4.5) };
   const a = new IgnisBossAgent({ rng: () => 0.999999 });
   const s = runToAttackStart(a, st({ mode: 'chase', onGround: true, spinCooldown: 5 }), ctx);
-  assertEqual(s.attackKind, 'shieldSmash', '旋斩被屏蔽后最后一档是持盾冲撞（候选集去掉，不是抽中再改判）');
+  assertEqual(s.attackKind, 'shieldBash', '旋斩被屏蔽后最后一档是举盾砸击');
   const b = new IgnisBossAgent({ rng: () => 0 });
   const s2 = runToAttackStart(b, st({ mode: 'chase', onGround: true, spinCooldown: 5 }), ctx);
   assertEqual(s2.attackKind, 'swing', 'rng=0 仍落第一档（横扫）');
-  // 边界：屏蔽旋斩后候选集归一为 swing/shieldSmash 各 50% ⇒ rng=0.5 恰好落在交界
-  // （实测 0.5 × 0.7 = 0.35000000000000003，减 0.35 后为正 ⇒ 取第二档持盾冲撞）。
+  // rng=0.5：0.5 × 0.70 = 0.35，减 swing 0.25 后剩 0.10 > 0 ⇒ 落第二档 shieldSmash。
+  // ⚠️ v3.01 时这里的理由是「浮点边界取后一档」，v3.03 不再是边界而是稳稳落在档内。
   const c = new IgnisBossAgent({ rng: () => 0.5 });
   const s3 = runToAttackStart(c, st({ mode: 'chase', onGround: true, spinCooldown: 5 }), ctx);
-  assertEqual(s3.attackKind, 'shieldSmash', '屏蔽旋斩后 rng=0.5 应落持盾冲撞（浮点边界取后一档）');
+  assertEqual(s3.attackKind, 'shieldSmash', '屏蔽旋斩后 rng=0.5 应落持盾冲撞');
 });
 
 test('焰魔 AI(v3.01): 持盾冲撞命中后冷却正常置位（玩家跑开也不连砸）', () => {
@@ -395,24 +396,24 @@ test('焰魔 AI(v2.75): 旋斩播完回 chase 且 attackKind 清空（否则下�
 });
 
 test('焰魔 AI(v2.75): 旋斩冷却期间抽中 spin 的 rng 必须降级（不白放冷却）', () => {
-  // ⚠️ v3.01：权重改成 0.35/0.30/0.35 后，rng≈1 落在**持盾冲撞**而不是旋斩。
-  // 本用例要的是「旋斩区间内的 rng」⇒ 用 [0.35, 0.65) 两端（旧口径是 rng≈1）。
+  // ⚠️ v3.03：权重改成 0.25/0.30/0.25/0.20 后，rng≈1 落在**举盾砸击**而不是旋斩。
+  // 本用例要的是「旋斩区间内的 rng」⇒ v3.03 区间是 [0.25, 0.55)，取两端与中点。
   // 判据是「结果不是 spin」（候选集把 spin 去掉，而不是抽中再改判）——
-  // 具体落 swing 还是 shieldSmash 由归一后的位置决定，不得写死。
-  for (const r of [0.36, 0.5, 0.64]) {
+  // 具体落哪一招由归一后的位置决定，不得写死。
+  for (const r of [0.26, 0.4, 0.54]) {
     const a = new IgnisBossAgent({ rng: () => r });
     const ctx = { ...OPEN_CTX, player: playerAt(IGNIS_AI.attackRange - 1) };
     const s = runToAttackStart(a, st({ mode: 'chase', onGround: true, spinCooldown: IGNIS_AI.spinCooldownSeconds }), ctx);
     assertEqual(s.mode, 'attack');
     assertTrue(s.attackKind !== 'spin',
       `冷却未好时 rng=${r} 仍抽到了旋斩（降级失效，会白放冷却）`);
-    assertTrue(s.attackKind === 'swing' || s.attackKind === 'shieldSmash',
-      `rng=${r} 应落到 swing 或 shieldSmash，实为 ${s.attackKind}`);
+    assertTrue(['swing', 'shieldSmash', 'shieldBash'].includes(s.attackKind),
+      `rng=${r} 应落到非旋斩的三招之一，实为 ${s.attackKind}`);
   }
 });
 
 test('焰魔 AI(v2.75): 旋斩起手后写 spinCooldown（独立于 attackCooldown）', () => {
-  // ⚠️ v3.01：同上，用 rng=0.5 落在旋斩区间（rng≈1 现在是持盾冲撞）。
+  // ⚠️ v3.03：用 rng=0.4 落在旋斩区间 [0.25,0.55)（rng≈1 现在是举盾砸击）。
   const a = new IgnisBossAgent({ rng: () => 0.5 });
   const ctx = { ...OPEN_CTX, player: playerAt(IGNIS_AI.attackRange - 1) };
   const s = runToAttackStart(a, st({ mode: 'chase', onGround: true }), ctx);
@@ -1095,7 +1096,7 @@ test('焰魔 AI: 起跳时抽签并携带 leapAttackKind（rng≈1 ⇒ 末档持
   s = a.update(s, 1 / 60, { world: w, registry: REGISTRY, player });
   assertEqual(s.mode, 'leap');
   assertEqual(s.leapKind, 'attack');
-  assertEqual(s.leapAttackKind, 'shieldSmash', '起跳当帧就应抽定这次落地用哪一招');
+  assertEqual(s.leapAttackKind, 'shieldBash', '起跳当帧就应抽定这次落地用哪一招（rng≈1 ⇒ 末档举盾砸击）');
 });
 
 test('焰魔 AI: 跳跃落地播起跳时抽中的招，不再恒播 swing', () => {
@@ -1105,13 +1106,13 @@ test('焰魔 AI: 跳跃落地播起跳时抽中的招，不再恒播 swing', () 
   let s = st({
     position: [0, 12, -4], mode: 'leap', leapKind: 'attack',
     leapDir: [0, -8], leapTargetY: 10, onGround: false, velocity: [0, -5, 0],
-    leapAttackKind: 'shieldSmash',
+    leapAttackKind: 'shieldBash',
   });
   for (let i = 0; i < 60 && s.mode === 'leap'; i++) {
     s = a.update(s, 1 / 60, { world: w, registry: REGISTRY, player });
   }
   assertEqual(s.mode, 'attack');
-  assertEqual(s.attackKind, 'shieldSmash',
+  assertEqual(s.attackKind, 'shieldBash',
     '落地应播起跳时抽中的招（旧实现不设 attackKind ⇒ 恒回落 swing）');
   assertNull(s.leapAttackKind, '落地后必须清空（不残留）');
 });
