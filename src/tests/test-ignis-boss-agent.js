@@ -1748,3 +1748,120 @@ test('焰魔 AI: 看不见玩家且玩家已贴近 → 站定不采纳寻路方�
   assertTrue(s.position[2] >= before - 1e-6,
     `贴近时应站定（不采纳朝玩家的 navDir），实际 z 从 ${before} 变成 ${s.position[2].toFixed(3)}`);
 });
+
+// ==================== 特效触发点 attackFxRequest（v3.04）====================
+//
+// **为什么需要独立字段**：`attackRequest` 只在 `freshLos` 通过时产生
+// （命中帧的新鲜视线复查），而原版 `Ignis_Entity.aiStep()` 的特效调用**不看视线** ——
+// 玩家侧移出锥/隔墙时仍要看到 Boss 大招的规模。故 FX 走自己的瞬态字段。
+//
+// ⚠️ **但既有的「招式中止门」（本文件 `mode === 'attack'` 时 `!losVisible` 即回 chase）
+// 一行不改**：招式被中止 ⇒ 本来就没有「砸中」这件事，播特效反而误导。
+// 下面第 2 条用例就是钉这个（防实施时误改中止门）。
+
+test('焰魔 AI: freshLos 失败（玩家躲墙后）⇒ 特效请求仍产生，伤害请求不产生', () => {
+  // 夹具（探针实测确认）：墙在 z=−14 高 4 格，玩家在墙后 (0,10,−24)，
+  // `losTimer: 999` 冻结缓存 ⇒ `losVisible` 恒真 ⇒ **招式不被中止**
+  //（实测 attackAnimT 推到 3.88 ≈ animSeconds 3.89，不是 0）；
+  // 而命中帧那一刻 `_queryLos` 因墙返回 false ⇒ `attackRequest` 不产生。
+  const w = wallWorld();
+  const a = new IgnisBossAgent({ rng: () => 0.5 });
+  const ctx = { world: w, registry: REGISTRY, player: { position: [0, 10, -24] } };
+  let s = st({
+    position: [0, 10, 0], mode: 'attack', attackKind: 'shieldBash',
+    attackAnimT: 0, onGround: true, losTimer: 999, losVisible: true,
+  });
+  const frames = Math.ceil((IGNIS_ATTACKS.shieldBash.animSeconds + 0.3) * 60);
+  let fxFrames = 0;
+  let fxFrames2 = 0;
+  for (let i = 0; i < frames; i++) {
+    s = a.update(s, 1 / 60, ctx);
+    if (s.attackRequest) fxFrames += 1;
+    if (s.attackFxRequest) fxFrames2 += 1;
+  }
+  assertEqual(s.losVisible, true, '夹具前提：LOS 缓存须恒为真（否则招式被中止，测的就不是这件事）');
+  assertEqual(fxFrames, 0, '墙后 freshLos 为假 ⇒ 伤害请求一次都不该出现');
+  assertEqual(fxFrames2, 1, `特效请求须恰好出现一次（命中帧），实得 ${fxFrames2}`);
+});
+
+test('焰魔 AI: 特效请求带 at/yaw/kind（渲染侧要按它算落点）', () => {
+  const w = wallWorld();
+  const a = new IgnisBossAgent({ rng: () => 0.5 });
+  const ctx = { world: w, registry: REGISTRY, player: { position: [0, 10, -24] } };
+  let s = st({
+    position: [0, 10, 0], mode: 'attack', attackKind: 'shieldBash',
+    attackAnimT: 0, onGround: true, losTimer: 999, losVisible: true, yaw: 0.7,
+  });
+  const frames = Math.ceil((IGNIS_ATTACKS.shieldBash.animSeconds + 0.3) * 60);
+  let req = null;
+  for (let i = 0; i < frames && !req; i++) {
+    s = a.update(s, 1 / 60, ctx);
+    if (s.attackFxRequest) req = s.attackFxRequest;
+  }
+  assertNotNull(req);
+  assertEqual(req.at.length, 3);
+  assertTrue(req.at.every(Number.isFinite), `at 须全为有限数：${req.at}`);
+  assertTrue(Math.abs(req.yaw - 0.7) < 1e-9, `yaw 须透传起手值：${req.yaw}`);
+  assertEqual(req.kind, 'shieldBash');
+});
+
+test('焰魔 AI: 招式被中止（LOS 缓存为假）⇒ 伤害与特效请求都不产生', () => {
+  // 这条钉住「中止门一行未改」：玩家在墙后且缓存 LOS 为假 ⇒ 第一帧就回 chase、
+  // attackAnimT 归零 ⇒ 命中帧块根本不跑 ⇒ 两个请求都必须是 null。
+  // 若实施时为了让特效「无条件播」而放宽中止门，这条会 FAIL。
+  const w = wallWorld();
+  const a = new IgnisBossAgent({ rng: () => 0.5 });
+  const ctx = { world: w, registry: REGISTRY, player: { position: [0, 10, -24] } };
+  let s = st({
+    position: [0, 10, 0], mode: 'attack', attackKind: 'shieldBash',
+    attackAnimT: 0, onGround: true, losTimer: 999, losVisible: false,
+  });
+  const frames = Math.ceil((IGNIS_ATTACKS.shieldBash.animSeconds + 0.3) * 60);
+  let anyReq = 0;
+  let anyFx = 0;
+  for (let i = 0; i < frames; i++) {
+    s = a.update(s, 1 / 60, ctx);
+    if (s.attackRequest) anyReq += 1;
+    if (s.attackFxRequest) anyFx += 1;
+  }
+  assertEqual(s.mode, 'chase', '招式须被中止');
+  assertEqual(anyReq, 0);
+  assertEqual(anyFx, 0, '招式中止 ⇒ 特效也不播（本来就没有「砸中」这件事）');
+});
+
+test('焰魔 AI: 四招都产特效请求（招式过滤在 game.js 侧，Agent 不分支）', () => {
+  // Agent 不该只给 shieldBash/shieldSmash 产请求 —— 「哪些招出哪种特效」是渲染侧的决定
+  //（红线：同构层不做装配层的事）。用 OPEN_CTX（视线通）逐招跑一遍。
+  for (const kind of IGNIS_ATTACK_IDS) {
+    const a = new IgnisBossAgent({ rng: () => 0.5 });
+    const ctx = { ...OPEN_CTX, player: playerAt(IGNIS_AI.attackRange - 1) };
+    let s = st({ mode: 'attack', attackKind: kind, attackAnimT: 0, onGround: true });
+    const frames = Math.ceil((IGNIS_ATTACKS[kind].animSeconds + 0.3) * 60);
+    let fx = 0;
+    for (let i = 0; i < frames; i++) {
+      s = a.update(s, 1 / 60, ctx);
+      if (s.attackFxRequest) fx += 1;
+    }
+    assertEqual(fx, 1, `${kind} 须恰好产生一次特效请求，实得 ${fx}`);
+  }
+});
+
+test('焰魔 AI: 特效请求是瞬态（下一帧自动清 null，不会重复播）', () => {
+  const a = new IgnisBossAgent({ rng: () => 0.5 });
+  const ctx = { ...OPEN_CTX, player: playerAt(IGNIS_AI.attackRange - 1) };
+  let s = st({ mode: 'attack', attackKind: 'shieldBash', attackAnimT: 0, onGround: true });
+  let seen = false;
+  for (let i = 0; i < 400; i++) {
+    s = a.update(s, 1 / 60, ctx);
+    if (s.attackFxRequest) seen = true;
+    else if (seen) { assertNull(s.attackFxRequest); break; }
+  }
+  assertTrue(seen, '须先看到一次特效请求');
+  // 命中帧之后仍在 attack 态的帧里必须恒为 null（不是每帧重发）
+  let stale = 0;
+  for (let i = 0; i < 30; i++) {
+    s = a.update(s, 1 / 60, ctx);
+    if (s.attackFxRequest) stale += 1;
+  }
+  assertEqual(stale, 0, '特效请求不得重复出现');
+});
