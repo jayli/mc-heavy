@@ -13,7 +13,8 @@ import { test } from './runner.js';
 import { assertEqual, assertTrue, assertNull, assertNotNull, assertFalse } from './assert.js';
 // config 与 system 分开 import（system 只 re-export 它需要的东西，不是全部）
 import {
-  IGNIS_TYPE, IGNIS, IGNIS_AI, IGNIS_ATTACKS, IGNIS_CORE_OBB, IGNIS_MODEL_CENTER, ignisEntityIdFor,
+  IGNIS_TYPE, IGNIS, IGNIS_AI, IGNIS_ATTACKS, IGNIS_ATTACK_IDS, IGNIS_CORE_OBB, IGNIS_MODEL_CENTER,
+  ignisEntityIdFor,
 } from '../entities/ignis/ignis-config.js';
 import { ignisDefinition, IgnisService, ignisAabbFor } from '../entities/ignis/ignis-system.js';
 import { EntityManager } from '../entities/entity-manager.js';
@@ -149,12 +150,14 @@ test('焰魔: 近战判据取自 AreaAttack(6.5, 6, 70, ...)（arc 是总角度 
   assertEqual(IGNIS_AI.hitConeDeg, 155);
 });
 
-test('焰魔: 命中帧派生值 = 各招最大者（v3.01 持盾冲撞 tick 34 / 20 = 1.70 秒）', () => {
-  // ⚠️ v3.01 从 1.20 重标：持盾冲撞的 tick 34 ÷ 20 = 1.70 是新的最大者。
-  // **单招值没变**：横扫仍是 1.20（下面单独钉住）—— 变的只是「取最大」的结果。
-  assertEqual(IGNIS_AI.hitFrameSeconds, 1.70);
+test('焰魔: 命中帧派生值 = 各招最大者（v3.03 举盾砸击 warp 后 1.89 秒）', () => {
+  // ⚠️ v3.03 从 1.70 重标：举盾砸击的命中帧（原版 tick 74 经三段 warp 后）= 1.89 是新的最大者。
+  // **单招值没变**：横扫仍是 1.20、持盾冲撞仍是 1.70 —— 变的只是「取最大」的结果。
+  assertEqual(IGNIS_AI.hitFrameSeconds, 1.89);
   assertEqual(IGNIS_ATTACKS.swing.hitFrameSeconds, 1.20,
     '横扫自己的命中帧仍是 SWING_ATTACK 的 tick 24 / 20 = 1.20（派生值变了，单招值没变）');
+  assertEqual(IGNIS_ATTACKS.shieldSmash.hitFrameSeconds, 1.70,
+    '持盾冲撞自己的命中帧仍是 tick 34 / 20 = 1.70');
   // 必须落在攻击动画时长之内，否则永远不会触发
   assertTrue(IGNIS_AI.hitFrameSeconds < IGNIS_AI.attackAnimSeconds,
     `命中帧 ${IGNIS_AI.hitFrameSeconds} 超出动画 ${IGNIS_AI.attackAnimSeconds}`);
@@ -187,9 +190,9 @@ test('焰魔(v2.75): 旋斩命中帧 = SPIN_ATTACK 的 tick 14 / 20 = 0.70 秒�
   assertEqual(spin.animSeconds, 1.9);
 });
 
-test('焰魔(v3.01): 三招档案的形状一致（缺字段的招式在命中帧会静默不触发）', () => {
+test('焰魔(v3.01/v3.03): 四招档案的形状一致（缺字段的招式在命中帧会静默不触发）', () => {
   const KEYS = ['hitRange', 'hitConeDeg', 'hitFrameSeconds', 'animSeconds', 'weight'];
-  assertEqual(Object.keys(IGNIS_ATTACKS).sort().join(','), 'shieldSmash,spin,swing');
+  assertEqual(Object.keys(IGNIS_ATTACKS).sort().join(','), 'shieldBash,shieldSmash,spin,swing');
   for (const [name, a] of Object.entries(IGNIS_ATTACKS)) {
     for (const k of KEYS) {
       assertTrue(Number.isFinite(a[k]), `${name}.${k} 不是有限数（缺字段 ⇒ 命中/时长判定会静默失效）`);
@@ -241,17 +244,19 @@ test('焰魔(v3.01): 贴身门已删除（用户裁定：不再限制 3 格）',
     'smashEngageRange 必须删除 —— 贴身门已被用户裁定作废');
 });
 
-test('焰魔(v3.01): 持盾冲撞权重与横扫严格平分（用户裁定），旋斩不变，三档和 = 1', () => {
+test('焰魔(v3.01/v3.03): 横扫与持盾冲撞仍严格平分（用户裁定），旋斩不变，四档和 = 1', () => {
   const sw = IGNIS_ATTACKS.swing.weight;
   const sm = IGNIS_ATTACKS.shieldSmash.weight;
   const sp = IGNIS_ATTACKS.spin.weight;
-  // 用户：「生效比例平分挥砍的动作的发生概率」⇒ swing 与持盾冲撞各拿原挥砍概率的一半
-  assertEqual(sw, 0.35, '横扫权重 = 原 0.7 的一半');
-  assertEqual(sm, 0.35, '持盾冲撞权重 = 原挥砍 0.7 的一半（与横扫平分）');
-  assertEqual(sp, 0.30, '旋斩权重不动（用户未要求改它）');
+  const sb = IGNIS_ATTACKS.shieldBash.weight;
+  // v3.03 用户批准的分配：横扫与持盾冲撞各让出 0.10（0.35 → 0.25），旋斩不动，新招 0.20
+  assertEqual(sw, 0.25, '横扫权重 0.35 → 0.25（让出 0.10 给举盾砸击）');
+  assertEqual(sm, 0.25, '持盾冲撞同步让出 0.10（与横扫仍严格平分）');
+  assertEqual(sp, 0.30, '旋斩权重不动（用户历次裁定都未要求改它）');
+  assertEqual(sb, 0.20, '举盾砸击拿 0.20');
   assertTrue(Math.abs(sw - sm) < 1e-12, `横扫 ${sw} 与持盾冲撞 ${sm} 必须严格相等（平分）`);
-  const sum = sw + sm + sp;
-  assertTrue(Math.abs(sum - 1) < 1e-9, `三档权重和 ${sum} ≠ 1`);
+  const sum = sw + sm + sp + sb;
+  assertTrue(Math.abs(sum - 1) < 1e-9, `四档权重和 ${sum} ≠ 1`);
 });
 
 test('焰魔(v3.01): 持盾冲撞射程覆盖整个站定环（含外沿 5.0）—— 不再有盲区', () => {
@@ -344,16 +349,17 @@ test('焰魔: 命中盒实测度量（改烘焙器/素材后必须同步这里�
   // v2.59 重标（**不是放宽**，容差仍是精确相等）。依据 = 产物七根核心骨骼 bind pose 的包围盒
   // （模型空间 px，由下方 `coreBboxFromAsset` 复算）：x[−13.222, 13.222] y[5, 51.84] z[−14.753, 8.048]
   //   → 半长 (0.8264, 1.4637, 0.7125) 格；模型空间中心 (0, 1.7762, −0.2095) 格；
-  //   → 渲染器把 mesh 下移 |feetOffsetY|（v3.01 实测 0.2228601 格），故相对脚底的中心 = (0, 1.5534, −0.2095)。
-  // ⚠️ v3.01 重标 center[1] 1.5106 → 1.5534：feetOffsetY 扫全部招式动画，加入持盾冲撞 attack1 后
-  // 从 −0.265625 变成 −0.2228601（持盾冲撞下蹲幅度比另两招浅 ⇒ 最低点上移）。halfExtents 来自 bind pose，不变。
+  //   → 渲染器把 mesh 下移 |feetOffsetY|（v3.03 实测 0.0480898 格），故相对脚底的中心 = (0, 1.7281, −0.2095)。
+  // ⚠️ v3.03 重标 center[1] 1.5534 → 1.7281：feetOffsetY 扫全部招式动画，加入举盾砸击 attack11 后
+  // 从 −0.2228601 变成 −0.0480898（砸到底那一帧 right_fist 探到 y=0.0481，比另三招的 lowerbody2 更低
+  // ⇒ 补偿量变小）。halfExtents 来自 bind pose，不变。
   // 旧值 halfExtents [0.8264, 1.421, 0.777] / MODEL_CENTER [0, 1.7335, 0.0895] 是 v2.58 之前
   // （错误旋转约定下的 bind pose）的实测，且 center 沿用「position = 核心中心」的旧语义。
   assertEqual(IGNIS_CORE_OBB.halfExtents[0], 0.8264);
   assertEqual(IGNIS_CORE_OBB.halfExtents[1], 1.4637);
   assertEqual(IGNIS_CORE_OBB.halfExtents[2], 0.7125);
   assertEqual(IGNIS_CORE_OBB.center[0], 0);
-  assertEqual(IGNIS_CORE_OBB.center[1], 1.5534);
+  assertEqual(IGNIS_CORE_OBB.center[1], 1.7281);
   assertEqual(IGNIS_CORE_OBB.center[2], -0.2095);
   assertEqual(IGNIS_MODEL_CENTER[0], 0);
   assertEqual(IGNIS_MODEL_CENTER[1], 1.7762);
@@ -697,11 +703,16 @@ function horizontalRayT(st, dyFromFeet) {
   return ignisDefinition.raycastAabb(st, origin, [0, 0, 1], 20);
 }
 
-test('焰魔(命中盒相对脚底): 脚底 +0.1 … +2.9 格的水平射线都命中核心躯干', () => {
+test('焰魔(命中盒相对脚底): 脚底 +0.3 … +2.9 格的水平射线都命中核心躯干', () => {
   const st = summonedState();
-  // 核心躯干在脚底 +0.047 ~ +2.974 格（见上方「实测度量」）；这些高度都严格落在其内。
+  // 核心躯干在脚底 **+0.2644 … +3.1918** 格（v3.03 重标，见上方「实测度量」）；
+  // 这些高度都严格落在其内。
+  // ⚠️ **v3.03 把最低取样从 0.1 抬到 0.3**：加入举盾砸击后 feetOffsetY 从 −0.2229 变成 −0.0481，
+  // 盒底随之从 0.0897 抬到 **0.2644**。实测画面（CPU 蒙皮的核心躯干）bind pose 下最低点
+  // 恰好就是 **0.2644** ⇒ 新盒底与画面一致，而旧值 0.0897 反而比画面低 0.17 格。
+  // 故 +0.1 的射线现在落在**真实躯干之下**，不该命中 —— 重标取样高度，不是放宽断言。
   // 旧缺陷：盒子以脚底为中心（−1.421 ~ +1.421），≥ 1.5 的高度全部打空 —— 玩家打胸口 / 头部毫无反应。
-  for (const dy of [0.1, 0.5, 1.0, 1.5, 2.0, 2.5, 2.9]) {
+  for (const dy of [0.3, 0.5, 1.0, 1.5, 2.0, 2.5, 2.9]) {
     assertNotNull(horizontalRayT(st, dy), `脚底 +${dy} 格的水平射线应命中核心躯干`);
   }
 });
@@ -709,7 +720,9 @@ test('焰魔(命中盒相对脚底): 脚底 +0.1 … +2.9 格的水平射线都�
 test('焰魔(命中盒相对脚底): 脚底之下与头顶之上的水平射线不命中（地下 / 半空没有幻影命中）', () => {
   const st = summonedState();
   // 旧缺陷的另一半：盒子下半截在地下，脚底以下 1.4 格内的射线也会「命中」。
-  for (const dy of [-1.0, -0.2, 3.2, 3.5, 5.0]) {
+  // ⚠️ v3.03 补上 **+0.1**：盒底抬到 0.2644 后，它落在真实躯干之下，属于「不应命中」区。
+  // 这条与上一条的 +0.3 夹住盒底 0.2644，才有判别力（只测负数拓不到盒底上移）。
+  for (const dy of [-1.0, -0.2, 0.1, 3.2, 3.5, 5.0]) {
     assertNull(horizontalRayT(st, dy), `脚底 ${dy >= 0 ? '+' : ''}${dy} 格的水平射线不应命中`);
   }
 });
@@ -880,4 +893,46 @@ test('IgnisService + 焰魔 Agent 闭环：长墙挡路时真的绕过去走到�
   // ③ 从没落进墙体（穿墙的形态是「直线到玩家」）
   assertTrue(!w.isSolid(Math.floor(p[0]), Math.floor(p[1]), Math.floor(p[2])),
     `最终位置 (${p.map((n) => n.toFixed(2))}) 在方块内部`);
+});
+
+// ==================== 第四招：举盾砸击（v3.03）====================
+//
+// 数值取自 `Ignis_Entity.java` 的 `ULTIMATE_ATTACK` 分支（第 1303~1348 行）：
+//   `AreaAttack(6f, 6f, 45, 2.0f, 0.25f, …)` + `getAnimationTick() == 74` + `Animation.create(114)`。
+// 用户 2026-11-15 三项裁定：选 ULTIMATE_ATTACK / 保留但压缩蓄力段 / 保留 shieldSmash 作第四招。
+// 沿用 v3.01：只扣血、不做击退/碎石/破盾/眩晕/震屏/火焰柱。
+
+test('焰魔(v3.03): 举盾砸击档案 —— 射程与另三招同为 6.5，半角 22.5 且必须 < 45', () => {
+  const a = IGNIS_ATTACKS.shieldBash;
+  // 原版 AreaAttack 第一参是 6.0；本仓取 6.5 与另三招同值（沿用「不要窄距离门」裁定）
+  assertEqual(a.hitRange, 6.5);
+  assertEqual(a.hitRange, IGNIS_ATTACKS.swing.hitRange, '四招射程同值（不留盲区）');
+  assertEqual(a.hitConeDeg, 22.5);
+  // ⚠️ 半角守卫：写成 45 会让扇面静默变成 90°，没有任何其他断言会红
+  assertTrue(a.hitConeDeg < 45,
+    `举盾砸击半角 ${a.hitConeDeg}° 不得 ≥ 45° —— 那是把 arc 原值当半角填`);
+  assertTrue(a.hitRange >= IGNIS_AI.standoffRange,
+    `射程 ${a.hitRange} 必须 ≥ 站定环半径 ${IGNIS_AI.standoffRange}（否则环外沿是盲区）`);
+});
+
+test('焰魔(v3.03): 举盾砸击命中帧 1.89s / 时长 3.89s（三段 warp 后，语义位置 = 原版 tick 74）', () => {
+  const a = IGNIS_ATTACKS.shieldBash;
+  // 原版 tick 74 ÷ 20 = 3.70s 是「盾刚砸到底」那一帧；warp 后落在产物 1.89s
+  // = 蓄力 1.34（源 3.35 压缩 ×1/2.5）+ 峰值静止 0.25 + 砸下 0.30（源 0.10 拉长 ×3）
+  assertEqual(a.hitFrameSeconds, 1.89);
+  assertEqual(a.animSeconds, 3.89);
+  assertTrue(a.hitFrameSeconds < a.animSeconds,
+    `命中帧 ${a.hitFrameSeconds} 超出动画 ${a.animSeconds}`);
+  // ⚠️ **冷却不变式**：animSeconds 必须 < attackCooldownMin，否则冷却被动画吃掉、数值上不起作用
+  assertTrue(a.animSeconds < IGNIS_AI.attackCooldownMin,
+    `举盾砸击时长 ${a.animSeconds} 必须 < 冷却下限 ${IGNIS_AI.attackCooldownMin}`
+    + '（这就是选「压缩蓄力」而不是「原样保留 5.70s」的原因：后者要把冷却抬到 6.0）');
+});
+
+test('焰魔(v3.03): 举盾砸击是抽签的最后一档（顺序载荷性），且不设独立冷却', () => {
+  assertEqual(IGNIS_ATTACK_IDS[IGNIS_ATTACK_IDS.length - 1], 'shieldBash',
+    '举盾砸击必须排最后 —— 既有「rng≈1 落末档」用例的语义依赖它');
+  // 与 shieldSmash 同口径：全局 attackCooldownMin 已控住节奏，不加独立冷却常量
+  assertEqual(IGNIS_AI.bashCooldownSeconds, undefined,
+    '不得新增独立冷却常量（原版 1200 tick = 60s 不引入本仓）');
 });

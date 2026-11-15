@@ -128,6 +128,11 @@ export const IGNIS_BAKE_PARAMS = Object.freeze({
  *   ⚠️ 2026-11-13 实测扫描全部 82 条 ignis 动画：`attack1` 与 `SHIELD_SMASH_ATTACK`
  *   共有骨骼关键帧最大逐轴差 **15.000°**（对照组 `attack6a ↔ SWING_ATTACK` 12.462°，同量级），
  *   第二名 30° 已是 2 倍。且 3.5s 的候选只有 4 条，其余三条是阶段转换（`phase_soul*`）。
+ * - `shieldBash`（v3.03）：素材 `attack11` 的 `animation_length` = 5.7 秒（114 tick），
+ *   ↔ Java `ULTIMATE_ATTACK`（`Animation.create(114)`）。
+ *   ⚠️ 这是**源时长**，不是产物时长 —— 本招有三段时间重映射（见 `IGNIS_ANIM_TIME_WARP`），
+ *   产物时长由 `ignisAnimOutputPeriod('shieldBash')` 给出（3.89s）。
+ *   ⚠️ 关键帧级比对：108 个共有分量中 **107 个逐轴 0 差**（唯一差异 t=3.70 的 `sword.y` 2.5°）。
  */
 export const IGNIS_ANIM_PERIODS = Object.freeze({
   idle: 360 / 128,
@@ -135,7 +140,114 @@ export const IGNIS_ANIM_PERIODS = Object.freeze({
   spin: 1.9,
   /** v3.01：Java `Animation.create(70)` ÷ 20 = 3.5 秒（素材 `attack1`） */
   shieldSmash: 3.5,
+  /** v3.03：Java `Animation.create(114)` ÷ 20 = 5.7 秒（素材 `attack11`）—— **源**时长 */
+  shieldBash: 5.7,
 });
+
+/**
+ * 招式的**分段时间重映射**（v3.03，用户裁定②「保留但压缩蓄力段」）。
+ *
+ * ## 为什么需要它（不是为了让测试通过而调参）
+ *
+ * 原版 `ULTIMATE_ATTACK` 全长 5.70s，其中 **3.35s 是举盾/举剑蓄力**（原版这段配火焰柱 +
+ * 震屏 + 8 段火焰喷射，按「只扣血」裁定全部去掉）⇒ 去掉特效后 3.35s 纯举盾显得空。
+ * 而真正的砸下段是 `startKeyframe(2)` = **2 tick = 100ms = 3 帧 @30fps**，
+ * 在 60fps 画面上只有 6 帧，叠加淡入后几乎看不见（v3.02 两次实玩都报「只有一个起手式」）。
+ *
+ * ⇒ **蓄力压缩、砸下拉长**，其余段原速。这是用户明确选择的取舍，
+ * 与 v3.02 失败的第 3 轮调参的区别：那次是在**错误的招式**上拉长时间，这次是在正确的招式上按裁定压缩。
+ *
+ * ## 四段语义（源时间轴，秒）
+ *
+ * | 段 | 源区间 | 产物时长 | 倍率 |
+ * |---|---|---|---|
+ * | A 蓄力 | `0 ~ chargeEnd` | `chargeEnd / chargeScale` | 压缩 |
+ * | B 峰值静止 | `chargeEnd ~ slamStart` | 原速 | ×1 |
+ * | C 砸下 | `slamStart ~ slamEnd` | `dstSlamSeconds` | 拉长 |
+ * | D 砸后 + 收势 | `slamEnd ~ period` | 原速 | ×1 |
+ *
+ * ⚠️ **命中帧的语义位置不变**：仍是「盾刚砸到底」那一刻（源 tick 74），
+ * 只是到达它的墙钟时间变短 ⇒ `hitFrameSeconds` = A+B+C = 1.89s。
+ *
+ * ⚠️ **参数进指纹**（`ignisInputFingerprint` 的 params 哈希）⇒ 改这里必须重烘，
+ * 否则是「warp 参数变了但产物还是旧节奏」的静默过期。
+ */
+export const IGNIS_ANIM_TIME_WARP = Object.freeze({
+  shieldBash: Object.freeze({
+    /** 蓄力段结束（源秒）= 盾二次举到最高点前的最后一次缓入终点 */
+    chargeEnd: 3.35,
+    /** 蓄力段压缩倍率（源时长 ÷ 此值 = 产物时长）。2.5 ⇒ 3.35s → 1.34s */
+    chargeScale: 2.5,
+    /** 砸下段起点（源秒）= 峰值静止段结束 */
+    slamStart: 3.60,
+    /** 砸下段终点（源秒）= 盾砸到底，也是原版 tick 74 的结算时刻 */
+    slamEnd: 3.70,
+    /** 砸下段的产物时长（秒）。0.30 ⇒ 源 100ms 拉长 ×3，画面可见过程实测 500ms */
+    dstSlamSeconds: 0.30,
+  }),
+});
+
+/**
+ * 某招的**产物时长**（秒）—— 烘焙器定帧数与 `check:data` 校验帧数的**唯一权威**（红线 1）。
+ *
+ * ⚠️⚠️ **不能直接用 `IGNIS_ANIM_PERIODS[key]`**：有 warp 的招两者不同
+ *（`shieldBash` 源 5.7 / 产物 3.89）。两侧各写一份换算的形态是
+ * 「产物对了但门禁按源时长算帧数 ⇒ 新招必红」，而红的原因看起来像产物错。
+ *
+ * ⚠️ **参数非法必须 throw，不得静默返回原 period**：静默回落会让「warp 写错了」
+ * 表现为「动画没压缩」——那是观感缺陷，而所有计数类判据仍然自洽。
+ *
+ * @param {string} key 招式键（`IGNIS_ANIM_PERIODS` 的键）
+ * @returns {number} 产物时长（秒）
+ */
+export function ignisAnimOutputPeriod(key) {
+  const period = IGNIS_ANIM_PERIODS[key];
+  if (!Number.isFinite(period) || period <= 0) {
+    throw new Error(`[焰魔] 招式 "${key}" 缺合法的 IGNIS_ANIM_PERIODS`);
+  }
+  const w = IGNIS_ANIM_TIME_WARP[key];
+  if (!w) return period;
+  const { chargeEnd, chargeScale, slamStart, slamEnd, dstSlamSeconds } = w;
+  const bad = (why) => {
+    throw new Error(`[焰魔] 招式 "${key}" 的 IGNIS_ANIM_TIME_WARP 非法：${why}`);
+  };
+  if (!(chargeEnd > 0)) bad(`chargeEnd ${chargeEnd} 必须 > 0`);
+  if (!(chargeScale > 0)) bad(`chargeScale ${chargeScale} 必须 > 0`);
+  if (!(slamStart >= chargeEnd)) bad(`slamStart ${slamStart} 必须 ≥ chargeEnd ${chargeEnd}`);
+  if (!(slamEnd > slamStart)) bad(`slamEnd ${slamEnd} 必须 > slamStart ${slamStart}`);
+  if (!(slamEnd <= period)) bad(`slamEnd ${slamEnd} 必须 ≤ 源时长 ${period}`);
+  if (!(dstSlamSeconds > 0)) bad(`dstSlamSeconds ${dstSlamSeconds} 必须 > 0`);
+  return chargeEnd / chargeScale + (slamStart - chargeEnd) + dstSlamSeconds + (period - slamEnd);
+}
+
+/**
+ * 构造某招的「产物时间 → 源时间」映射（分段线性、单调、段界连续）。
+ *
+ * 无 warp 的招返回 `null`（烘焙器按恒等处理）。
+ *
+ * @param {string} key 招式键
+ * @returns {{toSource: (tOut: number) => number}|null}
+ */
+export function ignisAnimTimeWarp(key) {
+  const w = IGNIS_ANIM_TIME_WARP[key];
+  if (!w) return null;
+  const period = ignisAnimOutputPeriod(key);   // 顺带做参数合法性校验
+  const { chargeEnd, chargeScale, slamStart, slamEnd, dstSlamSeconds } = w;
+  const a = chargeEnd / chargeScale;           // 段 A 产物终点
+  const b = a + (slamStart - chargeEnd);       // 段 B 产物终点
+  const c = b + dstSlamSeconds;                // 段 C 产物终点（= 命中帧）
+  const slamScale = (slamEnd - slamStart) / dstSlamSeconds;
+  return {
+    toSource: (tOut) => {
+      if (tOut <= a) return tOut * chargeScale;
+      if (tOut <= b) return chargeEnd + (tOut - a);
+      if (tOut <= c) return slamStart + (tOut - b) * slamScale;
+      return slamEnd + (tOut - c);
+    },
+    /** 段界（产物秒）—— 供判据核对单调性与连续性，不参与采样 */
+    bounds: Object.freeze({ chargeEndOut: a, slamStartOut: b, slamEndOut: c, total: period }),
+  };
+}
 
 /** 素材里的动画键名（`animation.null.<name>`），烘焙脚本按此取 */
 export const IGNIS_ANIM_SOURCES = Object.freeze({
@@ -161,6 +273,21 @@ export const IGNIS_ANIM_SOURCES = Object.freeze({
    * 同旋斩：**零新增资源**，只是让烘焙器多取一条已入库的动画。
    */
   shieldSmash: Object.freeze(['attack1']),
+  /**
+   * 举盾砸击（v3.03）：举盾过顶 2.26 格 → 盾面转正前 → 向前 1.03 格 + 向下 2.61 格砸下
+   *（Java 的 `ULTIMATE_ATTACK`，114 tick）。
+   *
+   * ⚠️ **选招依据是原版语义，不是几何形状**（v3.02 失败报告 §4.0 的教训）：
+   * 独立 goal（`AttackAnimationGoal1`, look1=72）/ 首帧 `startKeyframe(18)` 能独立成招 /
+   * tick 74 结算 `AreaAttack(6f, 6f, 45, …)` 恰好落在盾砸到底那一帧 / 盾面法线前方分量峰值 0.97。
+   * 对照：`SHIELD_SMASH_ATTACK` 峰后前推仅 0.14 格而头前推 0.76（用户读作「头撞」）；
+   * `SMASH` 峰后前推 **−1.31**（后退）；`STRIKE` 前推 4.18 但只降 0.51（是盾横扫）。
+   *
+   * ⚠️ **不是 `attack11` 之外的键**：`attack12`/`attack12T` 是 COMBO1 系（5.1/6.3s），
+   * `attack10Sa` 是 REINFORCED_SMASH（5.75s，首帧 `startKeyframe(0)` 的连招下半段）。
+   * 同旋斩/持盾冲撞：**零新增资源**，只是让烘焙器多取一条已入库的动画。
+   */
+  shieldBash: Object.freeze(['attack11']),
 });
 
 /**
@@ -253,7 +380,11 @@ export function ignisInputFingerprint() {
   }
   const sourceSha256 = hash.digest('hex');
   const paramsSha256 = createHash('sha256')
-    .update(JSON.stringify({ IGNIS_BAKE_PARAMS, IGNIS_METRICS, IGNIS_ANIM_PERIODS, IGNIS_ANIM_SOURCES }))
+    .update(JSON.stringify({
+      IGNIS_BAKE_PARAMS, IGNIS_METRICS, IGNIS_ANIM_PERIODS, IGNIS_ANIM_SOURCES,
+      // v3.03：warp 参数必须进指纹 —— 否则「改了压缩倍率但没重烘」是静默过期
+      IGNIS_ANIM_TIME_WARP,
+    }))
     .digest('hex');
   return {
     input: `${sourceSha256.slice(0, 16)}:${paramsSha256.slice(0, 16)}`,

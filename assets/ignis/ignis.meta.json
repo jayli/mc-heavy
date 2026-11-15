@@ -1,8 +1,8 @@
 {
  "fingerprints": {
-  "input": "1d00d91348b5c645:23c1a837ee4a1f1e",
+  "input": "1d00d91348b5c645:7426b3dcf852f2c0",
   "sourceSha256": "1d00d91348b5c645dd22c0c0003747c2391fd70c3384bf289b4d76ab72bc33d2",
-  "paramsSha256": "23c1a837ee4a1f1ecdd73c48661ac924157eca5be04a0fd203ec3f08345c4dbe"
+  "paramsSha256": "7426b3dcf852f2c0425498eda6176d94870df7a21d76a73ef0a2dbba217155bd"
  },
  "metrics": {
   "boneCount": 53,
@@ -13,14 +13,15 @@
   "vertexCount": 1920,
   "indexCount": 2880,
   "scale": 1,
-  "feetOffsetY": -0.22286009723275266
+  "feetOffsetY": -0.048089811082653866
  },
  "textureSize": 256,
  "animPeriods": {
   "idle": 2.8125,
   "attack": 2.75,
   "spin": 1.9,
-  "shieldSmash": 3.5
+  "shieldSmash": 3.5,
+  "shieldBash": 5.7
  },
  "animSources": {
   "idle": [
@@ -35,6 +36,24 @@
   ],
   "shieldSmash": [
    "attack1"
+  ],
+  "shieldBash": [
+   "attack11"
   ]
+ },
+ "animOutputPeriods": {
+  "attack": 2.75,
+  "spin": 1.9,
+  "shieldSmash": 3.5,
+  "shieldBash": 3.89
+ },
+ "animTimeWarp": {
+  "shieldBash": {
+   "chargeEnd": 3.35,
+   "chargeScale": 2.5,
+   "slamStart": 3.6,
+   "slamEnd": 3.7,
+   "dstSlamSeconds": 0.3
+  }
  }
 }

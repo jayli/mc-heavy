@@ -16,7 +16,7 @@
 //    ⇒ 单测钉不住，靠 Tier 4 像素实测（`tests/ignis.spec.mjs`）；本文件只钉 UV 值域与
 //    「每个立方体的六个面各自覆盖一个非零面积矩形」。
 import { test } from './runner.js';
-import { assertEqual, assertTrue } from './assert.js';
+import { assertEqual, assertTrue, assertNotNull } from './assert.js';
 import { sampleIgnisAttack, multiplyQuat } from '../render/ignis-model.js';
 
 let asset = null;
@@ -38,9 +38,9 @@ async function loadSource() {
 
 // ==================== 结构性契约 ====================
 
-test('焰魔烘焙: 产物存在且动画清单是 idle + attack + spin + shieldSmash（第三招持盾冲撞，v3.01）', async () => {
+test('焰魔烘焙: 产物存在且动画清单是 idle + attack + spin + shieldSmash + shieldBash（第四招举盾砸击，v3.03）', async () => {
   const d = await loadAsset();
-  assertEqual(Object.keys(d.animations).sort().join(','), 'attack,idle,shieldSmash,spin');
+  assertEqual(Object.keys(d.animations).sort().join(','), 'attack,idle,shieldBash,shieldSmash,spin');
 });
 
 // ==================== 第三招：持盾冲撞（v3.01）====================
@@ -1108,4 +1108,266 @@ test('焰魔烘焙(v2.58 约定): 劈砍 1.50s 剑横扫到身体对侧（不是
   assertTrue(p.sword_tip[0] > 30,
     `剑尖 x=${p.sword_tip[0].toFixed(1)} 应越过中线到 +x 侧（>30）—— 劈砍变成了向前尖刺`);
   assertTrue(p.sword_tip[1] < 30, `剑尖 y=${p.sword_tip[1].toFixed(1)} 应已劈到低处（<30px）`);
+});
+
+// ==================== 第四招：举盾砸击（v3.03）====================
+//
+// 素材鉴别（2026-11-15 全量扫描 40 条 Java 动画，见 spec §2）：**`attack11`** ↔ `ULTIMATE_ATTACK`。
+// 关键帧级比对 108 个共有分量中 107 个逐轴 0 差（唯一差异 t=3.70 的 sword.y 2.5°）。
+// ⚠️ 选招依据是**原版语义**（独立 goal / 首帧 startKeyframe(18) / tick 74 结算 / 盾面转正前），
+// 不是「盾的最低最高」—— 后者是 v3.02 失败的根因（失败报告 §4.0）。
+//
+// ⚠️ 本招有**三段时间重映射**（用户裁定②「保留但压缩蓄力段」）：
+//   源 0~3.35 压缩 ×1/2.5 → 1.34s；源 3.35~3.60 原速 0.25s；
+//   源 3.60~3.70 拉长 ×3 → 0.30s；源 3.70~5.70 原速 2.00s。
+// 产物总时长 3.89s ⇒ 帧数 round(3.89 × 30) = 117。
+
+test('焰魔烘焙(v3.03): shieldBash 产物时长 = 三段 warp 后的 3.89s，帧数 117，fps 30', async () => {
+  const d = await loadAsset();
+  const a = d.animations.shieldBash;
+  assertNotNull(a, '产物缺 shieldBash —— 烘焙器没取 attack11');
+  assertEqual(a.fps, 30);
+  assertEqual(a.frameCount, 117);
+  // 117/30 = 3.90（帧数取整的必然结果）；warp 目标总时长 3.89
+  assertTrue(Math.abs(a.frameCount / a.fps - 3.90) < 1e-9,
+    `duration ${(a.frameCount / a.fps).toFixed(6)} ≠ 3.90（warp 参数或帧数算错）`);
+  // 10 根骨骼（attack11 实测；接成 attack1 的 9 根或 attack10Sa 的 9 根会在这里红）
+  assertEqual(a.boneIndices.length, 10);
+});
+
+// ⚠️⚠️ **首关键帧不在 t=0 的通道不得反向外插**（v3.03 实测缺陷）
+//
+// `attack11` 是入库素材里**第一条带 `position` 通道、且首关键帧不在 t=0** 的招式动画：
+// `right_hand.position` 的首键是 **3.6s**（另三招 attack6a/attack8a3/attack1 完全没有 position 通道）。
+// 烘焙器的 `sampleChannel3` 在 `t < times[0]` 时取 `i=0`、`t1=times[1]`，于是 `u` 变成大负数
+// ⇒ 从 `[0,0,0]` 朝 `[2,-4,-2]px` **反向外插**：t=0 得 `[-72,144,72]px = [-4.5,9,4.5] 格`（u=−36）。
+// 后果：`right_big_guantlet` 在 t=0.367s 掉到 **−4.02 格** ⇒ `feetOffsetY` 从 −0.2229 变成 **+4.0185**
+// ⇒ 整个模型被抬到天上 4 格，而骨骼数/顶点数/帧数/四元数归一化**全部通过**。
+//
+// 判据：**任何招式的 position 分量都必须落在素材关键帧的值域内**（clamp 语义），
+// 且 `feetOffsetY` 必须让身体最低点落在脚底附近（|值| < 0.5 格）。
+test('焰魔烘焙(v3.03): 首关键帧不在 t=0 的 position 通道不得反向外插（值域必须在素材内）', async () => {
+  const d = await loadAsset();
+  const anims = await (await fetch(new URL('../../assets/ignis/src/ignis.animation.json', import.meta.url))).json();
+  const SRC_OF = { attack: 'attack6a', spin: 'attack8a3', shieldSmash: 'attack1', shieldBash: 'attack11' };
+  for (const [key, short] of Object.entries(SRC_OF)) {
+    const a = d.animations[key];
+    const bones = anims.animations[`animation.null.ignis.${short}`].bones;
+    for (let s = 0; s < a.boneIndices.length; s++) {
+      const name = d.bones[a.boneIndices[s]].name;
+      const raw = bones[name]?.position;
+      if (!raw || Array.isArray(raw)) continue;
+      // 素材该通道的全部分量值域（px → 格）
+      let lo = Infinity, hi = -Infinity;
+      for (const v of Object.values(raw)) {
+        const t = Array.isArray(v) ? v : (v.post ?? v.pre);
+        for (const c of t) { lo = Math.min(lo, c / 16); hi = Math.max(hi, c / 16); }
+      }
+      for (let f = 0; f < a.frameCount; f++) {
+        const o = (f * a.boneIndices.length + s) * 7;
+        for (let k = 0; k < 3; k++) {
+          const got = a.frames[o + 4 + k];
+          assertTrue(got >= lo - 1e-9 && got <= hi + 1e-9,
+            `${key}.${name}.position[${k}] 在 t=${(f / a.fps).toFixed(3)}s 为 ${got.toFixed(4)} 格，`
+            + `超出素材值域 [${lo.toFixed(4)}, ${hi.toFixed(4)}] —— 首关键帧前反向外插`);
+        }
+      }
+    }
+  }
+});
+
+test('焰魔烘焙(v3.03): feetOffsetY 让身体最低点贴在脚底（|值| < 0.5 格，不是把模型抬到天上）', async () => {
+  const d = await loadAsset();
+  const feet = d.metrics.feetOffsetY;
+  assertTrue(Number.isFinite(feet), 'feetOffsetY 非有限');
+  assertTrue(Math.abs(feet) < 0.5,
+    `feetOffsetY = ${feet.toFixed(4)} 格，绝对值超过 0.5 —— 身体最低点被某帧的异常姿态拉走`
+    + '（v3.03 实测缺陷：position 反向外插让它变成 +4.0185）');
+});
+
+// ==================== 举盾砸击的语义判据（v3.03，真实 80 角点）====================
+//
+// ⚠️⚠️ **判据必须同时约束「举盾 / 盾面朝前 / 向前 + 向下」三条**（失败报告 §4.3 的教训）：
+// 单看「面朝前」会放进 spin（0.98），单看「前推」会放进 strike（4.18），单看「下降」会放进 smash（2.84）。
+// **三条交集只有 shieldBash** —— 那才是「举起盾牌向前砸向玩家」的完整语义。
+//
+// ⚠️ **盾几何是 80 角点**（`shield` / `shield_root` / `shield_right` / `shield_left` 四根骨骼）。
+// 失败报告 §2.2 只取了 32 角点（漏两块副盾板），把 SHIELD_SMASH_ATTACK 的盾顶少报 0.47 格。
+// **禁止单点探针**：那个虚构点 `[0,+16,−3]` 落在盾体外 8px，是整条错误链的起点。
+
+/** 盾的四根骨骼（含两块副盾板）—— 80 角点的来源 */
+const SHIELD_BONES = ['shield', 'shield_root', 'shield_right', 'shield_left'];
+
+/**
+ * 取某组骨骼的全部非零立方体角点（**模型绝对坐标**，格）。
+ * Bedrock 的 cube origin 是绝对模型空间值 ⇒ 直接乘该骨骼的世界矩阵。
+ */
+function cornersOfBones(src, names) {
+  const out = [];
+  for (const b of src['geometry.null.ignis'].bones) {
+    if (!names.includes(b.name)) continue;
+    for (const c of b.cubes || []) {
+      if (c.size.some((v) => v === 0)) continue;
+      const inf = c.inflate || 0;
+      for (const x of [c.origin[0] - inf, c.origin[0] + c.size[0] + inf]) {
+        for (const y of [c.origin[1] - inf, c.origin[1] + c.size[1] + inf]) {
+          for (const z of [c.origin[2] - inf, c.origin[2] + c.size[2] + inf]) {
+            out.push([b.name, [x / 16, y / 16, z / 16]]);
+          }
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * 产物在某招某时刻的骨骼世界矩阵表（`Map<boneName, m4>`）。
+ * 与 `probePoints` / 渲染器**逐式同口径**：`R = bind·delta`，`position = pivot − R·pivot + deltaPos`。
+ */
+function boneWorldAt(d, animKey, t) {
+  const deltas = t === null ? new Map() : sampleIgnisAttack(d.animations[animKey], t);
+  const mats = [];
+  d.bones.forEach((b, i) => {
+    const dd = deltas.get(i);
+    const q = dd ? multiplyQuat(b.bindQuaternion, dd.rot) : b.bindQuaternion;
+    const dp = dd ? dd.pos : [0, 0, 0];
+    const rp = quatRot(q, b.pivot);
+    const local = m4FromQuat(q, [
+      b.pivot[0] - rp[0] + dp[0], b.pivot[1] - rp[1] + dp[1], b.pivot[2] - rp[2] + dp[2],
+    ]);
+    mats[i] = b.parentIndex === -1 ? local : m4mul(mats[b.parentIndex], local);
+  });
+  return new Map(d.bones.map((b, i) => [b.name, mats[i]]));
+}
+
+/** 一组角点在某世界矩阵表下的包围盒（格） */
+function bboxOfCorners(world, corners) {
+  const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  for (const [name, p] of corners) {
+    const q = m4Apply(world.get(name), p);
+    for (let k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], q[k]); hi[k] = Math.max(hi[k], q[k]); }
+  }
+  return { lo, hi };
+}
+
+/**
+ * 盾面法线的**前方分量**（1 = 盾面完全正对玩家）。
+ *
+ * 盾板是 x 方向 2px 厚的薄板 ⇒ 局部 `+x` 即盾面朝向。取 `shield` 骨骼局部两点
+ * `(29, 19.1, 4)` 与 `(37, 19.1, 4)`（+8px 沿 x）变换后作差归一。
+ * 前方 = −z ⇒ 前方分量 = `−normal.z`。
+ */
+function shieldFaceForwardAt(world) {
+  const m = world.get('shield');
+  const a = m4Apply(m, [29 / 16, 19.1 / 16, 4 / 16]);
+  const b = m4Apply(m, [37 / 16, 19.1 / 16, 4 / 16]);
+  const v = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+  const len = Math.hypot(...v);
+  return -v[2] / len;
+}
+
+/** 逐帧扫某招的盾/头几何（每帧一次，30fps ⇒ 与产物帧对齐） */
+function shieldTrack(d, src, animKey) {
+  const sh = cornersOfBones(src, SHIELD_BONES);
+  const hd = cornersOfBones(src, ['head']);
+  const a = d.animations[animKey];
+  const rows = [];
+  for (let f = 0; f < a.frameCount; f++) {
+    const t = f / a.fps;
+    const w = boneWorldAt(d, animKey, t);
+    const sb = bboxOfCorners(w, sh), hb = bboxOfCorners(w, hd);
+    rows.push({
+      t, top: sb.hi[1], bottom: sb.lo[1], front: sb.lo[2],
+      cy: (sb.lo[1] + sb.hi[1]) / 2, cz: (sb.lo[2] + sb.hi[2]) / 2,
+      headTop: hb.hi[1], faceFwd: shieldFaceForwardAt(w),
+    });
+  }
+  return rows;
+}
+
+/** 峰值 + 峰后 0.6s 的位移（「砸向玩家」发生的位置） */
+function peakAndAfter(rows, fps) {
+  let pi = 0;
+  rows.forEach((r, i) => { if (r.top > rows[pi].top) pi = i; });
+  const p = rows[pi];
+  const q = rows[Math.min(rows.length - 1, pi + Math.round(0.6 * fps))];
+  return { peak: p, after: q, fwd: p.cz - q.cz, drop: p.cy - q.cy };
+}
+
+test('焰魔烘焙(v3.03): shieldBash 举盾过顶 > 1.5 格（真实 80 角点，不是单点探针）', async () => {
+  const d = await loadAsset();
+  const src = await loadSource();
+  const rows = shieldTrack(d, src, 'shieldBash');
+  assertEqual(cornersOfBones(src, SHIELD_BONES).length, 80,
+    '盾角点数应为 80（四根骨骼）—— 少于 80 说明漏了副盾板，判据会少报盾高');
+  const { peak } = peakAndAfter(rows, d.animations.shieldBash.fps);
+  const above = peak.top - peak.headTop;
+  assertTrue(above > 1.5,
+    `盾顶只过头顶 ${above.toFixed(3)} 格（需 > 1.5）—— 接成了别的招`
+    + '（shieldSmash 1.47 / spin 1.19 / strike 0.98 都不满足）');
+  assertTrue(above < 3.0,
+    `盾顶过头顶 ${above.toFixed(3)} 格超过 3.0 —— 数据异常或接错动画`);
+});
+
+test('焰魔烘焙(v3.03): shieldBash 盾面转向正前 —— 法线前方分量峰值 > 0.85', async () => {
+  const d = await loadAsset();
+  const src = await loadSource();
+  const rows = shieldTrack(d, src, 'shieldBash');
+  const best = Math.max(...rows.map((r) => r.faceFwd));
+  assertTrue(best > 0.85,
+    `盾面法线前方分量峰值仅 ${best.toFixed(3)}（需 > 0.85）—— 盾始终侧着，不是「拿盾面砸向玩家」`
+    + '（shieldSmash 0.36 / smash 0.14 都不满足）');
+  assertTrue(best <= 1.0 + 1e-9, `法线分量 ${best} 超过 1（归一化错了）`);
+});
+
+test('焰魔烘焙(v3.03): shieldBash 向前砸 —— 峰后 0.6s 前推 > 0.6 格 且 下降 > 1.5 格', async () => {
+  const d = await loadAsset();
+  const src = await loadSource();
+  const rows = shieldTrack(d, src, 'shieldBash');
+  const { peak, fwd, drop } = peakAndAfter(rows, d.animations.shieldBash.fps);
+  // ⚠️ **必须同时约束 y 与 z**：只量 y 会把「砸地板」当成「砸向玩家」（失败报告 §4.3）
+  assertTrue(fwd > 0.6,
+    `峰(${peak.t.toFixed(2)}s)后 0.6s 盾心前推仅 ${fwd.toFixed(3)} 格（需 > 0.6）`
+    + ' —— 不是向前砸（shieldSmash 0.14 / smash −1.31 后退）');
+  assertTrue(drop > 1.5,
+    `峰后 0.6s 盾心下降仅 ${drop.toFixed(3)} 格（需 > 1.5）`
+    + ' —— 是横扫不是砸（strike 前推 4.18 但只降 0.51 / spin 降 0.69）');
+  assertTrue(fwd < 3.0 && drop < 4.0,
+    `前推 ${fwd.toFixed(2)} / 下降 ${drop.toFixed(2)} 超出合理范围（接错动画？）`);
+});
+
+test('焰魔烘焙(v3.03): shieldBash 可见砸下段 ≥ 250ms（盾顶从峰值跌到 <2.0 格）', async () => {
+  const d = await loadAsset();
+  const src = await loadSource();
+  const rows = shieldTrack(d, src, 'shieldBash');
+  let pi = 0;
+  rows.forEach((r, i) => { if (r.top > rows[pi].top) pi = i; });
+  let end = null;
+  for (let i = pi; i < rows.length; i++) { if (rows[i].top < 2.0) { end = rows[i].t; break; } }
+  assertNotNull(end, '盾顶从未跌到 2.0 格以下 —— 没有砸下动作');
+  const ms = (end - rows[pi].t) * 1000;
+  // ⚠️ 量**过程时长**而不是最终位置：后者对「太快看不见」零判别力（失败报告 §4.1）
+  assertTrue(ms >= 250,
+    `可见砸下段仅 ${ms.toFixed(0)}ms（需 ≥ 250）—— 原版未 warp 时约 167ms，肉眼看不见`);
+  assertTrue(ms <= 1200, `可见砸下段 ${ms.toFixed(0)}ms 超过 1.2s（warp 倍率写错？）`);
+});
+
+test('焰魔烘焙(v3.03): shieldBash 从 bind 起手（t=0 增量全零）—— 能独立成招，不是连招下半段', async () => {
+  const d = await loadAsset();
+  const a = d.animations.shieldBash;
+  // 原版 ULTIMATE_ATTACK 首关键帧是 startKeyframe(18)（从静止缓入），
+  // 而 SMASH / REINFORCED_SMASH / STRIKE 都是 startKeyframe(0)（连招衔接姿态，独立成招会突兀）
+  for (let s = 0; s < a.boneIndices.length; s++) {
+    const o = s * 7;
+    const q = [a.frames[o], a.frames[o + 1], a.frames[o + 2], a.frames[o + 3]];
+    const ang = quatAngleDeg(q, [0, 0, 0, 1]);
+    assertTrue(ang < 0.01,
+      `${d.bones[a.boneIndices[s]].name} 在 t=0 的增量角 ${ang.toFixed(3)}° ≠ 0`
+      + ' —— 接成了 startKeyframe(0) 的连招下半段');
+    for (let k = 0; k < 3; k++) {
+      assertTrue(Math.abs(a.frames[o + 4 + k]) < 1e-9,
+        `${d.bones[a.boneIndices[s]].name} 在 t=0 有位移 ${a.frames[o + 4 + k]}`);
+    }
+  }
 });

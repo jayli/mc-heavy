@@ -90,6 +90,7 @@ import {
   IGNIS_GEO_SRC, IGNIS_ANIM_SRC, IGNIS_TEX_SRC, IGNIS_SHIELD_TEX_SRC,
   IGNIS_JSON, IGNIS_PNG, IGNIS_META,
   IGNIS_BAKE_PARAMS, IGNIS_METRICS, IGNIS_ANIM_PERIODS, IGNIS_ANIM_SOURCES,
+  IGNIS_ANIM_TIME_WARP, ignisAnimOutputPeriod, ignisAnimTimeWarp,
   IGNIS_ATTACK_ANIM_KEYS,
   ignisInputFingerprint,
 } from './ignis-fingerprint.mjs';
@@ -292,6 +293,17 @@ function assertNoBodyPollution(shield, uv, skinIndex, index, boneNames) {
  * 与 `bake-dragon.mjs` 的 `toPeriodic` 同手法：loop 动画首末值相同时去掉末帧，
  * 邻居环绕取，这样 t=0 的前一帧是末帧而不是重复值。
  *
+ * ⚠️⚠️ **`closed` 必须额外要求「首键在 t=0」**（v3.03 实测缺陷）：
+ * 只比「首末值相同 + 末键 == length」会把**首键不在 0 的片段**误判成循环。
+ * 实测：`attack11` 的 `right_hand.position` 首键 **3.6s** 值 `[0,0,0]`、末键 5.7s 值 `[0,0,0]`
+ * ⇒ 旧判据认为 closed ⇒ `clamp:false` ⇒ 采样走环绕分支，在 `t < 3.6` 时从首帧朝次帧**反向外插**
+ *（t=0 得 `u=−36` ⇒ `[−72,144,72]px`）⇒ `feetOffsetY` 变成 +4.0185，模型被抬到天上 4 格。
+ * 全量扫描 84 条素材共 **3 条**通道命中这个形态（`attack5a`/`attack5b` 的 `sword.rotation`
+ * 首键在 1.0s，本仓暂未取用那两招）⇒ 这是通用缺陷，不是 `attack11` 特例。
+ *
+ * 首键不在 0 的片段语义上就不是循环（它描述的是「从某个时刻开始才有的偏移」），
+ * 必须走 `clamp:true`，由 `sampleChannel3` 在首帧前保持首帧值。
+ *
  * @param {Array<{time: number, value: number[]}>} kfs 已按 time 升序
  * @param {number} length 动画时长
  */
@@ -300,6 +312,7 @@ function toPeriodic(kfs, length) {
   const first = kfs[0].value;
   const last = kfs[kfs.length - 1].value;
   const closed = kfs.length >= 2
+    && Math.abs(kfs[0].time) < 1e-9
     && Math.abs(kfs[kfs.length - 1].time - length) < 1e-9
     && first.every((v, i) => Math.abs(v - last[i]) < 1e-9);
   if (closed) {
@@ -322,11 +335,28 @@ function toPeriodic(kfs, length) {
  * 曾经用 Catmull-Rom（v2.58 改掉）：它按「关键帧序号」而不是时间做均匀参数化，蓄力保持段（一段 0.4s）
  * 与运动段（一段 0.05s）混在一起时，会在本该纹丝不动的保持区间里漂移，剑尖处最大 ≈1.3px。
  * 原版 Java 的 `setStaticKeyframe` 是一动不动。
+ *
+ * ⚠️⚠️ **`clamp` 序列必须钳制 `u` 而不只是钳制索引**（v3.03 实测缺陷）：
+ * 当通道的**首关键帧不在 t=0** 时，`t < times[0]` 会落到 `i=0` 段而 `u` 为负。
+ * 只钳索引（`at(k)`）拦不住它 —— 于是从首帧值朝次帧值**反向外插**。
+ * 实测：`attack11` 的 `right_hand.position` 首键在 **3.6s**（值 `[0,0,0]`）、次键 3.7s（`[2,-4,-2]`px），
+ * t=0 时 `u = −36` ⇒ 得 `[−72,144,72]px = [−4.5, 9, 4.5] 格`，`right_big_guantlet` 掉到 −4.02 格
+ * ⇒ `feetOffsetY` 从 −0.2229 变成 **+4.0185**（整个模型被抬到天上 4 格），
+ * 而骨骼数/顶点数/帧数/四元数归一化**全部通过**。
+ * 另三招（attack6a / attack8a3 / attack1）**完全没有 position 通道**，所以这个缺陷潜伏至今。
+ *
+ * 正确语义：非循环片段在首帧之前**保持首帧值**、末帧之后保持末帧值（Bedrock 的 clamp）。
+ * 循环片段（`clamp:false`，如 idle 的 Molang 通道）仍按周期环绕取，不受本钳制影响。
  */
 function sampleChannel3(seq, t) {
   const n = seq.times.length;
   if (n === 0) return [0, 0, 0];
   if (n === 1) return seq.values[0].slice();
+  // 非循环片段：首帧之前 / 末帧之后一律保持端点值（不参与插值，杜绝外插）
+  if (seq.clamp) {
+    if (t <= seq.times[0]) return seq.values[0].slice();
+    if (t >= seq.times[n - 1]) return seq.values[n - 1].slice();
+  }
   let i = 0;
   while (i < n - 1 && seq.times[i + 1] <= t) i++;
   const t0 = seq.times[i];
@@ -423,9 +453,11 @@ function collectChannel(bone, channel, length) {
  * @param {number} fps 帧率（idle 是导出的非整数）
  * @param {Map<string, number>} boneNameToIndex
  * @param {{deg: number[][], quat: THREE.Quaternion[]}} bind 每根骨骼（按下标）的 bind 欧拉角与四元数
+ * @param {{toSource: (tOut: number) => number}|null} [timeWarp] 可选的分段时间重映射
+ *   （v3.03，只 `shieldBash` 用；其余招 null ⇒ 恒等）。把**产物时间**映回**源素材时间**。
  * @returns {{fps: number, frameCount: number, boneIndices: number[], frames: number[]}}
  */
-function resampleAnimation(anims, names, frameCount, fps, boneNameToIndex, bind) {
+function resampleAnimation(anims, names, frameCount, fps, boneNameToIndex, bind, timeWarp = null) {
   // 合并多条动画：同一骨骼在两条里都出现时，后者的通道覆盖前者（实测只有 generala/b 的
   // 骨骼集合互斥，故「覆盖」实际不会发生 —— 但语义明确比隐式合并安全）。
   const perBone = new Map();   // boneIndex → {rot: seq|null, pos: seq|null, length}
@@ -458,7 +490,11 @@ function resampleAnimation(anims, names, frameCount, fps, boneNameToIndex, bind)
   const frames = new Array(frameCount * boneIndices.length * 7);
 
   for (let f = 0; f < frameCount; f++) {
-    const t = f / fps;
+    // ⚠️ v3.03：可选的**分段时间重映射**（只 shieldBash 用，其余招 timeWarp=null ⇒ 恒等）。
+    // 蓄力段被压缩、砸下段被拉长，其余段原速顺移。映射的唯一权威在
+    // `ignis-fingerprint.mjs` 的 `ignisAnimTimeWarp`（参数进指纹，改它必须重烘）。
+    const tOut = f / fps;
+    const t = timeWarp ? timeWarp.toSource(tOut) : tOut;
     for (const bi of boneIndices) {
       const ch = perBone.get(bi);
       const o = (f * boneIndices.length + slotOf.get(bi)) * 7;
@@ -743,12 +779,20 @@ function main() {
     if (!Number.isFinite(period) || period <= 0) {
       fail(`招式 "${key}" 缺 IGNIS_ANIM_PERIODS（无法定帧数）`);
     }
-    const frames = Math.round(period * ATTACK_FPS);
+    // ⚠️ **帧数按产物时长而不是源时长**（v3.03）：有 warp 的招两者不同
+    //（shieldBash 源 5.7 / 产物 3.89）。`check:data` 读同一个函数，不写第二份换算。
+    const outPeriod = ignisAnimOutputPeriod(key);
+    const timeWarp = ignisAnimTimeWarp(key);
+    const frames = Math.round(outPeriod * ATTACK_FPS);
     animations[key] = resampleAnimation(
-      anims, IGNIS_ANIM_SOURCES[key], frames, ATTACK_FPS, boneNameToIndex, bind);
+      anims, IGNIS_ANIM_SOURCES[key], frames, ATTACK_FPS, boneNameToIndex, bind, timeWarp);
     console.log(`[焰魔烘焙]   动画 ${key}: ${animations[key].frameCount} 帧 × `
       + `${animations[key].boneIndices.length} 骨骼 @ ${ATTACK_FPS}fps`
-      + `（${IGNIS_ANIM_SOURCES[key].join('+')}）`);
+      + `（${IGNIS_ANIM_SOURCES[key].join('+')}）`
+      + (timeWarp
+        ? ` [warp 源 ${period}s → 产物 ${outPeriod.toFixed(2)}s，`
+          + `命中帧 ${timeWarp.bounds.slamEndOut.toFixed(2)}s]`
+        : ''));
   }
 
   // ==================== 5. 写产物 ====================
@@ -899,6 +943,10 @@ function main() {
     textureSize,
     animPeriods: IGNIS_ANIM_PERIODS,
     animSources: IGNIS_ANIM_SOURCES,
+    // v3.03：产物时长与 warp 参数（诊断用；门禁读共享模块而不是这份副本）
+    animOutputPeriods: Object.fromEntries(
+      IGNIS_ATTACK_ANIM_KEYS.map((k) => [k, ignisAnimOutputPeriod(k)])),
+    animTimeWarp: IGNIS_ANIM_TIME_WARP,
   }, null, 1));
 
   const rel = (p) => path.relative(process.cwd(), p);

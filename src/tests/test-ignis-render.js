@@ -1078,3 +1078,99 @@ test('焰魔姿态衔接(v2.76): 多实例的衔接互不干扰（逐实例独�
   solo.dispose();
   pair.dispose();
 });
+
+// ==================== 第四招：举盾砸击（v3.03）====================
+
+test('焰魔渲染(v3.03): attackKind="shieldBash" 时用 shieldBash 动画（四招姿态互不相同）', async () => {
+  const d = await getAsset();
+  const r = new IgnisRenderer(new THREE.Scene(), d);
+  const base = { position: [0, 0, 0], yaw: 0, health: 1000, flashedUntil: 0, attackCooldown: 0 };
+  let clock = 0;
+  const poseOf = (state) => {
+    clock = settle(r, { id: 'a', state: { ...base, ...state } }, clock);
+    return r.instances[0].bones.map((b) => b.quaternion.toArray());
+  };
+  const dist = (p, q) => {
+    let s = 0;
+    for (let i = 0; i < p.length; i++) for (let k = 0; k < 4; k++) s += Math.abs(p[i][k] - q[i][k]);
+    return s;
+  };
+  // 取 1.3s：举盾砸击此时蓄力刚到位（盾举过头顶 2.26 格），与另三招形态差别最大
+  const t = 1.3;
+  const swing = poseOf({ attackAnimT: t, attackKind: 'swing' });
+  const spin = poseOf({ attackAnimT: t, attackKind: 'spin' });
+  const smash = poseOf({ attackAnimT: t, attackKind: 'shieldSmash' });
+  const bash = poseOf({ attackAnimT: t, attackKind: 'shieldBash' });
+  for (const [name, other] of [['横扫', swing], ['旋斩', spin], ['持盾冲撞', smash]]) {
+    assertTrue(dist(bash, other) > 0.2,
+      `举盾砸击与${name}在 ${t}s 的姿态差仅 ${dist(bash, other).toFixed(4)}`
+      + ' —— 渲染器没按 attackKind 选动画（形态是把举盾砸击播成别的招，而「有动画在播」的断言全绿）');
+  }
+  r.dispose();
+});
+
+test('焰魔渲染(v3.03): 产物缺 shieldBash 键时不抛错、回落 attack（旧产物 + 新代码）', async () => {
+  const d = await getAsset();
+  const stripped = { ...d, animations: { ...d.animations } };
+  delete stripped.animations.shieldBash;
+  assertEqual(stripped.animations.shieldBash, undefined, '剥离失败 —— 产物里仍有 shieldBash');
+  assertNotNull(stripped.animations.attack, 'attack 片段不得一起被剥掉');
+
+  const r = new IgnisRenderer(new THREE.Scene(), stripped);
+  const base = { position: [0, 0, 0], yaw: 0, health: 1000, flashedUntil: 0, attackCooldown: 0 };
+  settle(r, { id: 'a', state: { ...base, attackAnimT: 1.3, attackKind: 'shieldBash' } }, 0);
+  const got = r.instances[0].bones.map((b) => b.quaternion.toArray());
+  r.dispose();
+
+  const r2 = new IgnisRenderer(new THREE.Scene(), stripped);
+  settle(r2, { id: 'a', state: { ...base, attackAnimT: 1.3, attackKind: 'swing' } }, 0);
+  const want = r2.instances[0].bones.map((b) => b.quaternion.toArray());
+  r2.dispose();
+  let gap = 0;
+  for (let i = 0; i < got.length; i++) for (let k = 0; k < 4; k++) gap += Math.abs(got[i][k] - want[i][k]);
+  assertTrue(gap < 1e-9, `缺键时应回落 attack 片段，姿态差 ${gap.toFixed(6)}`);
+});
+
+test('焰魔姿态衔接(v3.03): 举盾砸击淡入在命中帧之前走完，且补间单帧角不超片段自身上限', async () => {
+  const d = await getAsset();
+  // ⚠️ **0.8s 是实测标定而不是默认档**：本招片段自身上限只有 7.17°（比旋斩 24.5° 低得多），
+  // 淡入的 smoothstep 中段导数与片段快段（0.1~0.2s）叠加 ⇒ D ≤ 0.6 全部超限
+  //（实测 0.2s → 11.08°、0.5s → 9.15°、0.6s → 7.84°），**0.8s 才降到 5.45°**。
+  assertEqual(ignisBlendSeconds('shieldBash'), 0.8, '举盾砸击入场用实测标定的 0.8s');
+  assertEqual(ignisBlendSeconds('shieldSmash'), 0.2, '持盾冲撞不受影响');
+  assertEqual(ignisBlendSeconds('spin'), 0.6, '旋斩不受影响');
+  assertTrue(ignisBlendSeconds('shieldBash') < IGNIS_ATTACKS.shieldBash.hitFrameSeconds,
+    '淡入必须在命中帧之前走完 —— 命中那一刻画面要是完整的举盾砸击姿态');
+  // ⚠️ limit **必须实测**，不得照抄旋斩的 24.5° 或持盾冲撞的值
+  const limit = clipMaxStepDeg(d.animations.shieldBash);
+  const period = d.animations.idle.frameCount / d.animations.idle.fps;
+  let worst = 0;
+  for (let i = 0; i < 8; i++) {
+    const seq = simulateEntry(d, 'shieldBash', (i / 8) * period,
+      Math.ceil(ignisBlendSeconds('shieldBash') * 60) + 6);
+    for (let k = 1; k < seq.length; k++) worst = Math.max(worst, poseStepDeg(seq[k - 1], seq[k]));
+  }
+  assertTrue(worst <= limit,
+    `举盾砸击入场补间单帧最大骨骼角 ${worst.toFixed(1)}° 超过片段自身合法上限 ${limit.toFixed(1)}°`);
+  // 判别力自检：默认 0.2s 确实更糟（只钉「变小」拓不到「数据变了、根本没有跳变」）
+  let worstShort = 0;
+  for (let i = 0; i < 8; i++) {
+    const tr = new IgnisPoseTransition(0.2);
+    const dt = 1 / 60;
+    let t = (i / 8) * period;
+    let out = null;
+    for (let k = 0; k < 60; k++) {
+      t += dt;
+      out = tr.step('idle', sampleIgnisAnim(d.animations.idle, t), dt, 0.2);
+    }
+    let prev = out;
+    for (let k = 1; k <= Math.ceil(0.2 * 60) + 6; k++) {
+      const cur = tr.step('shieldBash', sampleIgnisAttack(d.animations.shieldBash, k * dt), dt, 0.2);
+      worstShort = Math.max(worstShort, poseStepDeg(prev, cur));
+      prev = cur;
+    }
+  }
+  assertTrue(worstShort > limit,
+    `判别力自检：0.2s 淡入的最坏单帧 ${worstShort.toFixed(1)}° 应超过上限 ${limit.toFixed(1)}°`
+    + '（否则本用例的 0.8s 标定失去意义）');
+});
