@@ -10,9 +10,9 @@
 //
 // Tier 1（状态机 + 热路径）⇒ 必须 TDD。
 import { test } from './runner.js';
-import { assertEqual, assertTrue, assertNotNull, assertFalse } from './assert.js';
+import { assertEqual, assertTrue, assertNotNull, assertNull, assertFalse } from './assert.js';
 import { IgnisBossAgent } from '../entities/bosses/ignis-boss-agent.js';
-import { IGNIS, IGNIS_AI, IGNIS_ATTACKS } from '../entities/ignis/ignis-config.js';
+import { IGNIS, IGNIS_AI, IGNIS_ATTACKS, IGNIS_ATTACK_IDS } from '../entities/ignis/ignis-config.js';
 
 /**
  * 假注册表：`hasLineOfSight`（炮塔的唯一权威）需要 `solidTable` / `opaqueTable`。
@@ -1073,6 +1073,90 @@ test('焰魔 AI: 8~14 格 + 冷却好 + 视线通 → leap(attack)，朝玩家�
   assertTrue(s.leapDir[1] < 0, `应朝玩家（-Z）飞，实际 leapDir=${s.leapDir}`);
   assertTrue(s.leapAttackCooldown > 0, '起跳后应进冷却');
   assertTrue(Number.isFinite(s.leapTargetY), '应记下预判落点 y');
+});
+
+// ==================== 跳跃落地携带招式种类 ====================
+//
+// ⚠️⚠️ **修掉一个遗留缺陷**：旧实现的 leap 落地分支**不设 `attackKind`**
+// ⇒ 沿用进入 leap 前的残值（通常 null）⇒ 渲染器回落 `attack`
+// ⇒ **跳跃劈砍永远播横扫**，即使权重抽中别的招。
+//
+// 招式在**起跳时**就抽定、落地时写进 `attackKind`：若在落地时才抽，
+// 起跳与落地两次抽签可能不一致 ⇒「跳起来却勈了一刀」。
+
+test('焰魔 AI: 起跳时抽签并携带 leapAttackKind（rng≈1 ⇒ 末档持盾冲撞）', () => {
+  const a = new IgnisBossAgent({ rng: () => 0.999999 });
+  const w = groundWorld(9);
+  const player = { position: [0, 10, -11], velocity: [0, 0, 0] };
+  let s = st({
+    position: [0, 10, 0], mode: 'chase', onGround: true,
+    losVisible: true, losTimer: 999, leapAttackCooldown: 0,
+  });
+  s = a.update(s, 1 / 60, { world: w, registry: REGISTRY, player });
+  assertEqual(s.mode, 'leap');
+  assertEqual(s.leapKind, 'attack');
+  assertEqual(s.leapAttackKind, 'shieldSmash', '起跳当帧就应抽定这次落地用哪一招');
+});
+
+test('焰魔 AI: 跳跃落地播起跳时抽中的招，不再恒播 swing', () => {
+  const a = new IgnisBossAgent({ rng: () => 0.999999 });
+  const w = groundWorld(9);
+  const player = { position: [0, 10, -6.4], velocity: [0, 0, 0] };
+  let s = st({
+    position: [0, 12, -4], mode: 'leap', leapKind: 'attack',
+    leapDir: [0, -8], leapTargetY: 10, onGround: false, velocity: [0, -5, 0],
+    leapAttackKind: 'shieldSmash',
+  });
+  for (let i = 0; i < 60 && s.mode === 'leap'; i++) {
+    s = a.update(s, 1 / 60, { world: w, registry: REGISTRY, player });
+  }
+  assertEqual(s.mode, 'attack');
+  assertEqual(s.attackKind, 'shieldSmash',
+    '落地应播起跳时抽中的招（旧实现不设 attackKind ⇒ 恒回落 swing）');
+  assertNull(s.leapAttackKind, '落地后必须清空（不残留）');
+});
+
+test('焰魔 AI: 落地抽中 spin 时也置 spinCooldown（与平地起手同口径）', () => {
+  const a = new IgnisBossAgent({ rng: () => 0.3 });
+  const w = groundWorld(9);
+  const player = { position: [0, 10, -6.4], velocity: [0, 0, 0] };
+  let s = st({
+    position: [0, 12, -4], mode: 'leap', leapKind: 'attack',
+    leapDir: [0, -8], leapTargetY: 10, onGround: false, velocity: [0, -5, 0],
+    leapAttackKind: 'spin',
+  });
+  for (let i = 0; i < 60 && s.mode === 'leap'; i++) {
+    s = a.update(s, 1 / 60, { world: w, registry: REGISTRY, player });
+  }
+  assertEqual(s.attackKind, 'spin');
+  assertTrue(s.spinCooldown > 0, '落地抽中旋斩也要置独立冷却（否则可连抽）');
+});
+
+test('焰魔 AI: 旧存档缺 leapAttackKind / 非法值 ⇒ 不崩且回落合法招', () => {
+  const w = groundWorld(9);
+  const player = { position: [0, 10, -6.4], velocity: [0, 0, 0] };
+  for (const bad of [undefined, null, 'nonsense', 42, {}]) {
+    const a = new IgnisBossAgent({ rng: () => 0.5 });
+    let s = st({
+      position: [0, 12, -4], mode: 'leap', leapKind: 'attack',
+      leapDir: [0, -8], leapTargetY: 10, onGround: false, velocity: [0, -5, 0],
+      leapAttackKind: bad,
+    });
+    for (let i = 0; i < 60 && s.mode === 'leap'; i++) {
+      s = a.update(s, 1 / 60, { world: w, registry: REGISTRY, player });
+    }
+    assertTrue(IGNIS_ATTACK_IDS.includes(s.attackKind),
+      `非法 leapAttackKind=${JSON.stringify(bad)} 产出了非法 attackKind=${JSON.stringify(s.attackKind)}`);
+  }
+});
+
+test('焰魔 AI: 非 leap 态不残留 leapAttackKind', () => {
+  const a = new IgnisBossAgent({ rng: () => 0.5 });
+  const w = groundWorld(9);
+  const player = { position: [0, 10, -2], velocity: [0, 0, 0] };
+  const s = a.update(st({ mode: 'chase', onGround: true, leapAttackKind: 'shieldSmash' }),
+    1 / 60, { world: w, registry: REGISTRY, player });
+  assertNull(s.leapAttackKind, '非飞跃态不得残留上一跳的招式');
 });
 
 test('焰魔 AI: 静止玩家 → 落点在玩家外侧「站定环内缘」（跳完砍得到）', () => {

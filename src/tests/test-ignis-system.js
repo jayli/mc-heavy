@@ -64,6 +64,7 @@ test('焰魔: createState 保留全部行为新字段（同 _physAccum 的载荷
     leapDir: [1, 2], leapT: 0.5, leapTargetY: 9, leapAttackCooldown: 7,
     stuckAnchor: [3, 4], sensedPlayer: [5, 6, 7], senseTimer: 1.8,
     escapeFailCount: 2,
+    leapAttackKind: 'shieldSmash',
   });
   assertEqual(s.acquireT, 1.2);
   assertEqual(s.stuckT, 3.4);
@@ -79,6 +80,21 @@ test('焰魔: createState 保留全部行为新字段（同 _physAccum 的载荷
   assertEqual(s.senseTimer, 1.8);
   // v2.84：丢掉它 ⇒ 每帧重新计数 ⇒ 强化跳永不升级（与 `_physAccum` / `senseTimer` 同一教训）
   assertEqual(s.escapeFailCount, 2);
+  // ⚠️⚠️ 丢掉它 ⇒ 起跳时抽定的招式每帧被抹掉 ⇒ 落地恒回落 swing。
+  // 真实踩到过：单测直接调 agent.update 所以绿，E2E 走真实 service 就红
+  //（createState 是**白名单式**重建，新字段必须在这里登记）。
+  assertEqual(s.leapAttackKind, 'shieldSmash',
+    'leapAttackKind 必须被 createState 保留 —— 丢掉它跳跃落地就恒播横扫');
+});
+
+test('焰魔: createState 对非法/缺失的 leapAttackKind 回落 null', () => {
+  for (const bad of [undefined, null, 'nonsense', 42, {}]) {
+    const s = ignisDefinition.create({ position: [0, 10, 0], leapKind: 'attack', leapAttackKind: bad });
+    assertNull(s.leapAttackKind, `非法值 ${JSON.stringify(bad)} 应回落 null`);
+  }
+  // 非 attack 飞跃不得携带招式
+  const esc = ignisDefinition.create({ position: [0, 10, 0], leapKind: 'escape', leapAttackKind: 'shieldSmash' });
+  assertNull(esc.leapAttackKind, 'escape 飞跃不携带招式');
 });
 
 test('焰魔(v2.84): 脱困强化跳的常量区间（顶点下限 > 普通跳、上限在滞空安全阀内）', () => {
