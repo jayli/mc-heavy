@@ -16,6 +16,10 @@
 // 4. **体形**：站定环 3.5（焰魔 5.0）、重叠阈 1.95（焰魔 1.15）。
 //    环半径按**最短的一招**（踩踏 4.5）定，照抄 5.0 会让踩踏永远打不中。
 //
+// ⚠️ **冷却口径自 v3.10 与焰魔一致**：`attackCooldown = 本招收势剩余 + [min,max]`。
+// 四招收势差异很大（0.80~3.15s），旧口径把收势算在冷却里 ⇒ 四招空档各不相同，
+// 且上一招刚打完就走回玩家身旁时要干等几秒（用户 2026-11-17 报告）。
+//
 // ## 三条载荷性约定（与焰魔/飞龙同）
 //
 // 1. **只读 state 与 ctx，返回全新 state 各字段**（plain 对象）。不得原地改写 ——
@@ -384,8 +388,23 @@ export class GuardianBossAgent extends BossAgent {
           // ⚠️ kind 必须装进 request：结算方按招取射程/半角，回读 state 会在切回 chase 后读到错值
           attackRequest = { at: [px, py, pz], yaw, kind: attackKind };
           const { attackCooldownMin: lo, attackCooldownMax: hi } = GUARDIAN_AI;
-          // 减去本帧 step：顶部已统一扣过一次 dt，不补扣会让实际间隔多出一帧
-          attackCooldown = lo + this.rng() * (hi - lo) - step;
+          /**
+           * v3.10：冷却 = **本招收势剩余** + [min, max]（用户裁定，焰魔 v3.07 同口径）。
+           *
+           * 用户 2026-11-17：「末影守卫移动到玩家身旁，应当立即展开攻击，
+           * 而不是等几秒钟再开始攻击」。
+           *
+           * ⚠️⚠️ **`tail` 不是可选项**：`attackCooldownMin/Max` 的语义是
+           * 「动画播完之后还要站多久」。只写 `lo + rng*(hi-lo)` 就是旧语义（从命中帧起算），
+           * 而命中帧到动画结束还有一段收势（四招 **0.80~3.15s** 各不相同）⇒ 同一份常量
+           * 在四招上换算出 **3.45~6.70s** 四种空档（离线实测）；上一招刚打完就走回玩家身旁时，
+           * 到位后还要干等 **0~4.75s**（中位 2.52s）才起手 —— 正是用户报的形态。
+           *
+           * ⚠️ 字段本身仍从命中帧开始倒数（装配层无需改动），只是把收势那一段计进去。
+           * ⚠️ 减去本帧 step：顶部已统一扣过一次 dt，不补扣会让实际间隔多出一帧。
+           */
+          const tail = Math.max(0, profile.animSeconds - attackAnimT);
+          attackCooldown = tail + lo + this.rng() * (hi - lo) - step;
         }
       }
       if (attackAnimT >= profile.animSeconds) {

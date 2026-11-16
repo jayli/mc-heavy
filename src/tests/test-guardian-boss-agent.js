@@ -153,7 +153,7 @@ test('守卫 AI: chase 进入 attackRange 后起手（冷却好 + 视线通）',
   assertNotNull(s.attackKind, '起手必须选定一招');
 });
 
-test('守卫 AI: 冷却未到不起手（attackCooldown 真的参与判断）', () => {
+test('守卫 AI: 冷却未到不起手（attackCooldown 真的参与判断，不是死字段）', () => {
   const a = new GuardianBossAgent({ rng: () => 0.5 });
   const ctx = { ...OPEN_CTX, player: playerAt(GUARDIAN_AI.attackRange - 0.5) };
   const s = a.update(st({ mode: 'chase', losVisible: true, losTimer: 1, attackCooldown: 3 }), 1 / 60, ctx);
@@ -318,17 +318,138 @@ test('守卫 AI: 命中帧做新鲜视线复查（隔墙不打人）', () => {
   assertNull(s.attackRequest, '新鲜视线不通 ⇒ 不产生命中');
 });
 
-test('守卫 AI: 攻击冷却落在 [min,max] 区间（rng 两端）', () => {
+// ==================== 攻击节奏：收势后空档（v3.10 用户缺陷）====================
+//
+// 用户 2026-11-17：「末影守卫移动到玩家身旁，应当立即展开攻击，而不是等几秒钟再开始攻击」。
+//
+// 根因（离线实测）：旧口径的冷却是**从命中帧起算** [5.0, 7.5]，而命中帧到动画结束还有
+// 一段收势（四招 0.80~3.15s）⇒ 玩家看到的「两招之间站着不动」是 **3.45~6.70s 四种长度**；
+// 上一招刚打完就走回玩家身旁时，到位后还要干等 **0~4.75s**（中位 2.52s）才起手。
+// 焰魔 v3.07 已改成「收势后空档」口径，守卫照同一口径修（用户裁定取 [1.0, 1.5]）。
+
+/** 本招在「命中帧那一帧」之后还剩多少收势（秒） */
+function tailAtHit(kind, animTAfterStep) {
+  return Math.max(0, GUARDIAN_ATTACKS[kind].animSeconds - animTAfterStep);
+}
+
+test('守卫 AI: 冷却 = 本招收势剩余 + [min,max]（rng 两端 × 四招）', () => {
   const ctx = { ...OPEN_CTX, player: playerAt(3) };
-  for (const [r, expect] of [[0, GUARDIAN_AI.attackCooldownMin], [1, GUARDIAN_AI.attackCooldownMax]]) {
-    const a = new GuardianBossAgent({ rng: () => r });
-    const s = a.update(st({
-      mode: 'attack', attackKind: 'strong_right',
-      attackAnimT: GUARDIAN_ATTACKS.strong_right.hitFrameSeconds - 0.005,
-      losVisible: true, losTimer: 1,
-    }), 1 / 60, ctx);
-    assertTrue(Math.abs(s.attackCooldown - (expect - 1 / 60)) < 1e-6,
-      `rng=${r} 冷却应 ≈${expect}−dt，实际 ${s.attackCooldown}`);
+  for (const kind of GUARDIAN_ATTACK_IDS) {
+    const prof = GUARDIAN_ATTACKS[kind];
+    for (const [r, expect] of [[0, GUARDIAN_AI.attackCooldownMin], [1, GUARDIAN_AI.attackCooldownMax]]) {
+      const a = new GuardianBossAgent({ rng: () => r });
+      const s = a.update(st({
+        mode: 'attack', attackKind: kind,
+        attackAnimT: prof.hitFrameSeconds - 0.005,
+        losVisible: true, losTimer: 1,
+      }), 1 / 60, ctx);
+      const tail = tailAtHit(kind, s.attackAnimT);
+      assertTrue(Math.abs(s.attackCooldown - (tail + expect - 1 / 60)) < 1e-6,
+        `${kind} rng=${r} 冷却应 ≈收势${tail.toFixed(3)}+${expect}−dt，实际 ${s.attackCooldown}`);
+    }
+  }
+});
+
+/**
+ * 量「本招收势播完 → 下一次起手」的空档（秒）。
+ *
+ * ⚠️ **判据必须落在「收势之后」而不是「命中之后」**：命中帧到动画结束还有一段收势
+ *（四招 0.80~3.15s），玩家看到的「两招之间站着不动」只是收势之后那一截。
+ *
+ * ⚠️⚠️ **必须直接钉 `attackKind`，不能靠 rng 锁定招式**（实测踩到）：
+ * 上勾拳/踩踏有独立冷却（9/12s），跑几十秒后它们会被排除出候选集 ⇒ 同一个 rng
+ * 在不同时刻抽到不同招 ⇒ 「kinds 恒等于某招」的断言在**正确实现**上也红。
+ * 而空档只取决于**上一招**的收势，钉住它就已足够（焰魔 `measureIdleGap` 同手法）。
+ *
+ * 夹具：玩家钉在 3.2 格（`attackRange` 4.25 内、站定环死区 [2.75,3.5] 内 ⇒ 守卫站定），
+ * `losTimer:999` + `losVisible:true` ⇒ 缓存永不过期、动画不被中断。
+ */
+function measureIdleGap(kind, rngValue = 0.5) {
+  const a = new GuardianBossAgent({ rng: () => rngValue });
+  const ctx = { world: groundWorld(9), registry: REGISTRY, player: playerAt(3.2) };
+  let s = st({
+    mode: 'attack', attackKind: kind, attackAnimT: 0,
+    onGround: true, losTimer: 999, losVisible: true, attackCooldown: 0,
+  });
+  let endT = -1;
+  for (let i = 0; i < 2000; i++) {
+    s = a.update(s, 1 / 60, ctx);
+    const t = (i + 1) / 60;
+    if (endT < 0 && s.mode !== 'attack') endT = t;
+    else if (endT > 0 && s.mode === 'attack') return t - endT;
+  }
+  return Infinity;
+}
+
+test('守卫 AI: 收势后的空档取用户裁定的 [1.0, 1.5] 秒（四招 × rng 两端）', () => {
+  // ⚠️ 断言用**字面量**而不是从被测常量派生（否则改常量时判据跟着漂）。
+  // ⚠️ 容差 0.04s（≈2.4 帧）：帧量子化使实测值比常量短 1~2 帧（同焰魔 v3.07）。
+  // 旧实现的 **3.45~6.70s** 远在容差外 ⇒ 判别力充足。
+  const TOL = 0.04;
+  for (const kind of GUARDIAN_ATTACK_IDS) {
+    for (const [r, want] of [[0, 1.0], [0.999999, 1.5]]) {
+      const gap = measureIdleGap(kind, r);
+      assertTrue(Math.abs(gap - want) <= TOL,
+        `${kind} rng=${r} 的收势后空档 ${gap.toFixed(3)}s，应 ≈${want}s（±0.04s；旧口径 3.45~6.70）`);
+    }
+  }
+});
+
+test('守卫 AI: 四招的观感节奏一致 —— 空档不再随招式长短漂移', () => {
+  // 旧实现的缺陷形态：同一份冷却常量在四招上是 3.45 / 4.57 / 3.58 / 6.68s。
+  // ⚠️ **四招必须用同一个 rng**：不同 rng 比的是「随机区间宽度」而不是「招式漂移」（实测踩到）。
+  // ⚠️ 极差容差取 1 帧：帧量子化对四招是同一个常量偏移，不会拉开极差。
+  const gaps = GUARDIAN_ATTACK_IDS.map((k) => measureIdleGap(k, 0.5));
+  const spread = Math.max(...gaps) - Math.min(...gaps);
+  assertTrue(spread <= 1 / 60 + 1e-9,
+    `四招空档极差 ${spread.toFixed(3)}s（应 ≤1 帧）：${gaps.map((g) => g.toFixed(3)).join(' / ')}`);
+});
+
+test('守卫 AI: 空档真的参与起手判断（不是算出来不用）', () => {
+  // 负向锚点：把冷却门去掉时「收势一播完就立即起手」⇒ 空档 ≈0。
+  // 与上一条的数值判据成对，防「常量对了但没人读」。
+  for (const kind of GUARDIAN_ATTACK_IDS) {
+    const gap = measureIdleGap(kind, 0);
+    assertTrue(gap >= 1.0 - 1 / 60 - 1e-9,
+      `${kind} 收势后只隔 ${gap.toFixed(3)}s 就起手（< 1s ⇒ 冷却门没生效）`);
+  }
+});
+
+test('守卫 AI: 上一招刚打完 → 走回玩家身旁时到位即起手（不干等几秒）', () => {
+  // ⚠️ 起始距取 14 格：走到 attackRange(4.25) 需 (14−4.25)/5.4 ≈ 1.81s > 空档上限 1.5s
+  // ⇒ 到位时冷却**必已到期**，「到位即起手」是被测语义而不是夹具巧合。
+  // 旧口径冷却余 4.7s ⇒ 到位后干等 ≈2.9s，本用例红。
+  const START = 14;
+  for (const rng of [0, 0.35, 0.7, 0.999999]) {
+    const a = new GuardianBossAgent({ rng: () => rng });
+    const ctx = { world: groundWorld(9), registry: REGISTRY, player: playerAt(START) };
+    let s = st({ mode: 'chase', onGround: true, losVisible: true, losTimer: 1 });
+    // ① 先让它打完第一招（动画结束那一帧）
+    let prevMode = s.mode;
+    let firstDone = false;
+    for (let i = 0; i < 900 && !firstDone; i++) {
+      s = a.update(s, 1 / 60, ctx);
+      if (prevMode === 'attack' && s.mode !== 'attack') firstDone = true;
+      prevMode = s.mode;
+    }
+    assertTrue(firstDone, `rng=${rng} 应先打完一招`);
+    // ② 玩家跑到 14 格外（仍在 disengageRange 内 ⇒ 守卫继续 chase）
+    const [gx, gy, gz] = s.position;
+    const runCtx = { world: groundWorld(9), registry: REGISTRY,
+      player: { position: [gx, gy, gz - START] } };
+    let arriveT = null;
+    let attackT = null;
+    for (let i = 0; i < 900; i++) {
+      const t = i / 60;
+      const d = Math.hypot(s.position[0] - gx, s.position[2] - (gz - START));
+      if (arriveT === null && d <= GUARDIAN_AI.attackRange) arriveT = t;
+      s = a.update(s, 1 / 60, runCtx);
+      if (arriveT !== null && attackT === null && s.mode === 'attack') { attackT = t; break; }
+    }
+    assertNotNull(arriveT, `rng=${rng} 应走到玩家身旁`);
+    assertNotNull(attackT, `rng=${rng} 到位后应起手`);
+    assertTrue(attackT - arriveT <= 3 / 60,
+      `rng=${rng} 到位后干等 ${(attackT - arriveT).toFixed(3)}s，必须 ≤3 帧（旧口径实测 2.9s）`);
   }
 });
 

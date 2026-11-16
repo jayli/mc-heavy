@@ -68,13 +68,19 @@ test('守卫: 四档权重之和 = 1 且逐档钉住', () => {
 });
 
 test('守卫: 每招独立冷却的两条约束（0 = 无额外冷却）', () => {
+  // ⚠️ **v3.10：第二条的参系改成「普攻周期」而不是空档常量**（焰魔 v3.07 同口径）。
+  // 旧写法 `cooldownSeconds >= attackCooldownMin` 在旧语义下比的是「命中间隔 5.0」；
+  // 新语义下那个常量只是 1.0 秒的空档 ⇒ 直接比变成恒真（失去判别力）。
+  // 独立冷却从**起手帧**置位，要与它比的是「一次完整普攻周期」= 最短招动画 + 空档下限。
+  const shortestAnim = Math.min(...GUARDIAN_ATTACK_IDS.map((id) => GUARDIAN_ATTACKS[id].animSeconds));
+  const attackCycle = shortestAnim + GUARDIAN_AI.attackCooldownMin;
   for (const id of GUARDIAN_ATTACK_IDS) {
     const a = GUARDIAN_ATTACKS[id];
     if (a.cooldownSeconds === 0) continue;
     assertTrue(a.cooldownSeconds > a.animSeconds,
       `${id} 的独立冷却必须 > 本招动画时长，否则被动画吃掉（数值上不起作用）`);
-    assertTrue(a.cooldownSeconds >= GUARDIAN_AI.attackCooldownMin,
-      `${id} 的独立冷却必须 ≥ attackCooldownMin，否则比普攻还频繁`);
+    assertTrue(a.cooldownSeconds >= attackCycle,
+      `${id} 的独立冷却 ${a.cooldownSeconds} 必须 ≥ 普攻周期 ${attackCycle.toFixed(2)}s，否则比普攻还频繁`);
   }
   assertEqual(GUARDIAN_ATTACKS.strong_right.cooldownSeconds, 0, '右重击无额外冷却');
   assertEqual(GUARDIAN_ATTACKS.strong_left.cooldownSeconds, 0, '左重击无额外冷却');
@@ -89,12 +95,18 @@ test('守卫: GUARDIAN_AI 的三个派生值是各招最大者', () => {
   assertEqual(GUARDIAN_AI.hitFrameSeconds, 1.70, 'hitFrameSeconds = 最晚的左重击');
 });
 
-test('守卫: 冷却下限 > 最长动画（否则无间隔连招）', () => {
-  assertTrue(GUARDIAN_AI.attackCooldownMin > GUARDIAN_AI.attackAnimSeconds,
-    '冷却下限必须 > 最长动画，否则冷却被动画吃掉');
-  assertEqual(GUARDIAN_AI.attackCooldownMin, 5.0, '冷却下限');
-  assertEqual(GUARDIAN_AI.attackCooldownMax, 7.5, '冷却上限');
+test('守卫: 空档取用户裁定的 [1.0, 1.5]（v3.10 收势后空档口径）', () => {
+  // 用户 2026-11-17：「移动到玩家身旁应当立即展开攻击，而不是等几秒钟再开始攻击」。
+  // ⚠️ 断言用**字面量**而不是从被测常量派生（否则改常量时判据跟着漂）。
+  assertEqual(GUARDIAN_AI.attackCooldownMin, 1.0, '空档下限 = 用户裁定 1.0s');
+  assertEqual(GUARDIAN_AI.attackCooldownMax, 1.5, '空档上限 = 用户裁定 1.5s');
   assertTrue(GUARDIAN_AI.attackCooldownMax > GUARDIAN_AI.attackCooldownMin, '上限 > 下限');
+  assertTrue(GUARDIAN_AI.attackCooldownMin > 0, '下限不得取 0（=0 就是无间隔连招）');
+  // ⚠️ **旧不变式 `attackCooldownMin > attackAnimSeconds` 已作废**：那条约束存在的理由是
+  // 「冷却不能被收势吃掉」，而现在收势是**显式加数**，结构上不可能被吃掉。
+  // 这里反向钉住「不得重新引入耦合」（同焰魔 test-ignis-system 的那一条）。
+  assertTrue(GUARDIAN_AI.attackAnimSeconds > GUARDIAN_AI.attackCooldownMax,
+    '最长招的动画已应长于空档上限（耦合解除的事实）');
 });
 
 test('守卫: 站定环必须按**最小** hitRange 定（照抄焰魔会让踩踏永远打不中）', () => {

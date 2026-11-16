@@ -374,8 +374,48 @@ standoffRange − standoffDeadband > 身体盒半宽(1.25) + 玩家半宽(0.3) =
    校验：2.75 > 1.55 ✓ ；4.25 ≥ 3.59 ✓ ；4.25 < 4.5 ✓
 ```
 
-`attackCooldownMin` 必须 > `attackAnimSeconds`（= 最长的上勾拳 4.5s）⇒ 取 **5.0**，
+`attackCooldownMin/Max` —— ⚠️ **本段已被 v3.10 取代，读下方「v3.10 修订」**。
+原设计（v2.91）：`attackCooldownMin` 必须 > `attackAnimSeconds`（= 最长的上勾拳 4.5s）⇒ 取 **5.0**，
 `attackCooldownMax` 取 **7.5**（命中间隔 [5.0, 7.5] 秒，动画 4.5 已含在内）。
+
+### 5.1 v3.10 修订：冷却口径改成「收势后空档 [1.0, 1.5]」
+
+**用户 2026-11-17**：「末影守卫的攻击时机太晚了，末影守卫移动到玩家身旁，应当立即展开攻击，
+而不是等几秒钟再开始攻击」。
+
+**根因不是「常量太大」而是「语义错位」**（与焰魔 v3.07 同源）：冷却记在**命中帧**上，
+而命中帧到动画结束还有一段**收势**（`animSeconds − hitFrameSeconds`，四招各不同）：
+
+| 招式 | 命中帧 | 动画 | 收势 | 旧口径的实际空档 |
+|---|---|---|---|---|
+| strong_right | 1.45 | 3.00 | 1.55 | 3.45~5.95 |
+| strong_left | 1.70 | 3.00 | 1.30 | 3.70~6.20 |
+| uppercut | 1.35 | 4.50 | 3.15 | 1.85~4.35 |
+| stomp | 1.60 | 2.40 | 0.80 | 4.20~6.70 |
+
+离线实测（真实 Agent，60Hz）：玩家站定 3.2 格时四招的空档是 **3.45 / 4.57 / 3.58~5.45 / 4.32~6.68s**；
+上一招刚打完、守卫从 8~30 格外走回玩家身旁时，**到位（进入 `attackRange` 4.25）后还要干等
+0~4.75s（40 组随机中位 2.52s、p90 4.25s）**才起手 —— 正是用户报告的形态。
+⚠️ **冷启动（无上一招）本来就是到位即起手**（实测干等 0.00s）⇒ 缺陷只在「冷却在跑时到位」这条路径上。
+
+**改法（两处，与焰魔 v3.07 逐条同口径）**：
+① `guardian-boss-agent.js` 命中帧：`attackCooldown = max(0, animSeconds − attackAnimT) + lo + rng×(hi−lo) − step`；
+② `guardian-config.js`：`attackCooldownMin 5.0 → 1.0`、`attackCooldownMax 7.5 → 1.5`（用户裁定与焰魔同值）。
+
+**实测修后**：到位干等恒 **0s**（走 14 格需 1.81s > 空档上限 1.5s）；四招空档 **0.983 / 1.150 / 1.333 / 1.467s**
+（帧量子化短 1~2 帧，±0.04s 容差，**不加取整补丁** —— 焰魔试过 `ceil(tail*60)` 反而弄坏一致性）；
+40 秒内出招从 5~7 次升到 8~11 次。
+
+**不变式随之变更**：
+- 旧 `attackCooldownMin > attackAnimSeconds` **作废**（收势现在是显式加数，结构上不可能被吃掉）；
+  新不变式只有 `attackCooldownMin > 0`。反向钉住「不得重新引入耦合」：`attackAnimSeconds > attackCooldownMax`。
+- 每招独立冷却的第②条参系从 `attackCooldownMin` 改成 **一次完整普攻周期**
+  （最短招动画 2.40 + 空档下限 1.0 = **3.40**）—— 直接与新常量比会恒真、失去判别力。
+  `uppercut 9.0` / `stomp 12.0` **数值未动**（普攻变快 ⇒ 大招相对频率自然下降，属预期内连带效应）。
+
+**本轮刻意不动**：四招 `hitFrameSeconds`（原版 Java tick 27/29/32/34 换算的 1.35~1.70s **蓄力帧保留** ——
+用户裁定；那是抬手到落拳的原版语义，也是玩家躲开的窗口）、伤害 16、射程/锥角/权重/动画时长、
+`turnDelay 1.5`（idle→chase 的重新锁定，另一件事）、站定环与 `attackRange`。
 
 **抽签权重（本仓标定，四档之和 = 1）**：`strong_right 0.3` / `strong_left 0.3` /
 `uppercut 0.25` / `stomp 0.15`。理由：左右重击是主手段（共 60%，与焰魔「普攻为主」同口径），
@@ -386,8 +426,9 @@ standoffRange − standoffDeadband > 身体盒半宽(1.25) + 玩家半宽(0.3) =
 `attackCooldownMin/Max` 约束）/ `uppercut 9.0` / `stomp 12.0`。
 取值约束（照焰魔 `spinCooldownSeconds` 的三条）：
 ① 必须 > 本招 `animSeconds`（否则冷却被动画吃掉，数值上不起作用）；
-② 必须 ≥ `attackCooldownMin`（5.0），否则比普攻还频繁；
-③ 取命中间隔中位数（6.25）的 1.4~1.9 倍 ⇒ 玩家能读出「砍两下、插一下大招」的节奏。
+② 必须 ≥ **一次完整普攻周期**（最短招动画 + 空档下限；**v3.10 修订**，原为「≥ `attackCooldownMin` 5.0」，
+   新语义下那个常量只是 1.0s 空档 ⇒ 直接比恒真）；
+③ 取命中间隔中位数的 1.4~1.9 倍 ⇒ 玩家能读出「砍两下、插一下大招」的节奏。
 ⚠️ **起手当帧就置位**（不是命中帧）：玩家跑掉不命中时，按命中帧计会让同一招反复抽中。
 ⚠️ **冷却未好时降级而不是白放**：抽签只在「冷却已好」的档里按权重归一化抽（焰魔同手法）。
 
@@ -484,8 +525,9 @@ chase/attack ──(距 > disengageRange 或视线断)──▶ idle
 - **站定环**：追到「玩家外侧 `standoffRange` 格」的环即停、只转向；死区内不移动。守卫体形
   更宽，`standoffRange` / `overlapEscapeDist` 按 §8 重算。
 - **攻击抽签**：三招按权重抽（左右重击各占一档 ⇒ 共 4 个抽签档位），每招独立冷却沿用焰魔
-  「`attackCooldownMin > attackAnimSeconds`」的不变式（防冷却被动画吃掉）。
-  ⚠️ 冷却下限必须按**最长的动画**（上勾拳 4.5s）定，否则上勾拳的冷却会被自己的动画吃掉。
+  「冷却不得被动画吃掉」的不变式。
+  ⚠️ **v3.10：那条不变式的形式已变** —— 不再是 `attackCooldownMin > attackAnimSeconds`，
+  而是「每招 `cooldownSeconds > 本招 animSeconds`」+「≥ 一次完整普攻周期」（见 §5.1）。
 - **脱困技能（用户点名要）**：完整照搬焰魔的 `stuckLeap`（卡住 `stuckLeapSeconds` 秒 →
   脱困飞跃）+ `escapeLeap*`（连续 N 次普通跳失败后按玩家高差强化跳）。
   ⚠️ **在上层房间里它跳不起来**（净空 5 格 − 身高 3.8 = 只能升 1.2 格，§2.3.3）——
@@ -644,7 +686,8 @@ SkinnedMesh 单几何（24 盒合并成一个 BufferGeometry）⇒ 每只守卫 
 | 层 | 内容 | 级别 |
 |---|---|---|
 | 烘焙产物契约 | 骨骼 20 / 盒 24 / 各动画帧数 60,60,90,48 / bind 包围盒 5.4176×4.2844×2.9017 / `feetOffsetY = +1.6243` 冻结；**眼睛层逐像素全等 2749**（内容级，§9） | Tier 2 |
-| `test-guardian-config.js` | 数值不变式（`attackCooldownMin > attackAnimSeconds`、**`attackRange < min(hitRange)`**、`standoffDeadband > chaseSpeed/60`、**三招锥角逐招钉住**：重击 35° / 上勾拳 30° / 踩踏 180°、四档权重之和=1、每招 `cooldownSeconds > animSeconds`） | Tier 1（TDD） |
+| `test-guardian-config.js` | 数值不变式（**v3.10：空档 [1.0,1.5] 字面量 + `attackAnimSeconds > attackCooldownMax`（耦合已解除）+ 独立冷却 ≥ 普攻周期**、**`attackRange < min(hitRange)`**、`standoffDeadband > chaseSpeed/60`、**三招锥角逐招钉住**：重击 35° / 上勾拳 30° / 踩踏 180°、四档权重之和=1、每招 `cooldownSeconds > animSeconds`） | Tier 1（TDD） |
+| `test-guardian-boss-agent.js`（v3.10 新增 5 条） | 冷却 = 收势剩余 + [min,max]（四招 × rng 两端）、收势后空档 ≈[1.0,1.5]（±0.04s）、四招空档极差 ≤1 帧、空档真的参与起手判断（负向锚点）、**上一招刚打完→走回玩家身旁时到位即起手 ≤3 帧** | Tier 1（TDD） |
 | `test-guardian-system.js` | 命中盒相对脚底（`min[1] ≈ 1.4993` / `max[1] ≈ 3.9369`）+ **产物独立复算**（同口径 A）+ yaw 现算 + `EJECT_MAX > 1.900` 余量 + 召唤幂等 | Tier 1 |
 | `test-boss-map.js` | `RUINED_CITADEL` 判定器：锚点/边缘/外一格/**雪原重叠顺序（seed 2096/2644/3740/4151/4973，§6.1）**/名册 | Tier 1 |
 | `test-ruined-citadel-gen.js` | 从产物重算三个落点常量（DX=1 / DZ=−2 / FEET_DY=−6）与 `HEADROOM ≤ 4` 的净空前提 | Tier 2 |
