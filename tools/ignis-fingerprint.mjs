@@ -142,6 +142,14 @@ export const IGNIS_ANIM_PERIODS = Object.freeze({
   shieldSmash: 3.5,
   /** v3.03：Java `Animation.create(114)` ÷ 20 = 5.7 秒（素材 `attack11`）—— **源**时长 */
   shieldBash: 5.7,
+  /**
+   * v3.06：Java `EARTH_SHUDDERS_ATTACK` = `Animation.create(138)` ÷ 20 = 6.9 秒
+   *（素材 `attack3a`）—— **源**时长。两条产物共用同一源，段表不同。
+   * ⚠️ 配对依据是**关键帧级实测**：全量扫描 84 条素材 × 139 tick × 9 骨骼 × 3 轴 = 3753 个分量，
+   * `attack3a` 平均差 **1.053°**，第二名 `attack3b` **10.004°**（10 倍）⇒ 唯一候选。
+   */
+  spikeSlash: 6.9,
+  spikeSlash2: 6.9,
 });
 
 /**
@@ -188,6 +196,79 @@ export const IGNIS_ANIM_TIME_WARP = Object.freeze({
 });
 
 /**
+ * 招式的**多段时间重映射**（v3.06）—— 比 `IGNIS_ANIM_TIME_WARP` 的四段形态更通用。
+ *
+ * ## 为什么需要它（四段 warp 装不下本招）
+ *
+ * `shieldBash` 的四段 A/B/C/D 是**源时间轴上连续**的四段（只改倍率，不跳跃）。
+ * 而尖刺攻击要**跳过源素材的中间一整段**：
+ * 原版 `EARTH_SHUDDERS_ATTACK` 三刀是「下劈(tick32) → **上撩**(tick74) → 下劈(tick118)」，
+ * 用户要的是「劈两次」⇒ 取第一刀与第三刀，**上撩整段去掉**。
+ * 实测剑身轴竖直分量：第一/三刀 **−0.915**（剑尖朝下），第二刀 **+0.851**（朝上）。
+ * ⇒ 源时间轴必须从 2.75 **跳到** 4.70，四段连续 warp 表达不了。
+ *
+ * ## 段表语义
+ *
+ * 每段 `{srcStart, srcEnd, scale, blendIn?}`：产物时长 = `(srcEnd − srcStart) × scale`，
+ * 段内线性映射回源时间。段与段之间**源时间可以不连续**（那就是拼接接缝）。
+ *
+ * `blendIn`（秒，产物时间）标在**接缝后的那一段**上：该段前 `blendIn` 秒内，
+ * 把「上一段末源时刻的姿态」与「本段实时采样」按 smoothstep 混合，消除接缝跳变。
+ * ⚠️ **补间在烘焙期做**（产物帧已含补间）⇒ 渲染器与 `sampleIgnisAttack` 零改动。
+ * ⚠️ 首段不得有 `blendIn`（没有「上一段」）。
+ *
+ * ## 倍率取值（同 shieldBash 的手法：蓄力压缩、劈下拉长）
+ *
+ * 举起 ×0.5 / 举剑保持 ×1/3 / **劈下 ×2** / 劈底保持与收势 ×0.5。
+ * 源劈下段只有 0.20s（第一刀）/ 0.15s（第三刀），×2 后是 0.40s / 0.30s ⇒ 肉眼可见。
+ * 压缩后单刀 1.716667s / 双刀 2.75s，都 < `attackCooldownMin` 4.0（冷却不变式保住）。
+ *
+ * ⚠️ **参数进指纹** ⇒ 改这里必须重烘。
+ */
+export const IGNIS_ANIM_SEGMENTS = Object.freeze({
+  /** 单刀：第一刀 + 收势（玩家 > 4 格时播这条） */
+  spikeSlash: Object.freeze([
+    Object.freeze({ srcStart: 0.00, srcEnd: 0.75, scale: 0.5 }),      // 举起
+    Object.freeze({ srcStart: 0.75, srcEnd: 1.40, scale: 1 / 3 }),    // 举剑保持
+    Object.freeze({ srcStart: 1.40, srcEnd: 1.60, scale: 2.0 }),      // 劈下（命中帧在末）
+    Object.freeze({ srcStart: 1.60, srcEnd: 2.55, scale: 0.5 }),      // 劈底保持
+    // 收势：源 2.55 → 6.40 是接缝（逐骨差 35.0° @upperbody）⇒ 补间。
+    //
+    // ⚠️⚠️ **收势段不压缩（×1）且 blendIn 只取 0.1**（实测缺陷，同双刀那一段）：
+    // 源 [6.40,6.90] 里 sword.x 从 **180° 转到 0°**（整个翻回）。
+    // 初版 ×0.5 ⇒ 0.25s = 7.5 帧要转 180°（24°/帧），而 blendIn 0.2 又占掉 6 帧
+    // ⇒ 180° 被挤进最后 1.5 帧，实测单帧 **22.64°** > 片段上限 15.58°。
+    // ×1 ⇒ 0.5s = 15 帧（12°/帧），blendIn 0.1 只占 3 帧 ⇒ 剩下 12 帧做旋转。
+    Object.freeze({ srcStart: 6.40, srcEnd: 6.90, scale: 1.0, blendIn: 0.1 }),
+  ]),
+  /** 双刀：第一刀 + 剑回正 + 第三刀 + 收势（玩家 ≤ 4 格时播这条） */
+  spikeSlash2: Object.freeze([
+    Object.freeze({ srcStart: 0.00, srcEnd: 0.75, scale: 0.5 }),      // 第一刀举起
+    Object.freeze({ srcStart: 0.75, srcEnd: 1.40, scale: 1 / 3 }),    // 第一刀举剑保持
+    Object.freeze({ srcStart: 1.40, srcEnd: 1.60, scale: 2.0 }),      // 第一刀劈下
+    Object.freeze({ srcStart: 1.60, srcEnd: 2.55, scale: 0.5 }),      // 第一刀劈底保持
+    Object.freeze({ srcStart: 2.55, srcEnd: 2.75, scale: 0.5 }),      // 剑回正（前段）
+    // 第三刀举起 + 举剑保持（合成一段）：源 2.75 → 4.70 是接缝（逐骨差 17.8°）⇒ 补间。
+    //
+    // ⚠️⚠️ **必须把「举起」与「保持」合成一段，不能拆开**（实测缺陷）：
+    // 初版拆成 [4.70,4.90]×0.5（3 帧）+ [4.90,5.75]×1/3，并给前者 blendIn 0.1。
+    // 但前者自身就要转 54.4°（sword.x 125.6 → 180）—— 3 帧里既要做完 54.4° 旋转
+    // 又要释放 17.8° 接缝跳变 ⇒ smoothstep 把变化挤进最后一帧，实测单帧 **30.11°**
+    //（片段自身上限 14.93° 的 2 倍）。且 blendIn 不得超本段时长，3 帧段装不下更长的补间。
+    //
+    // 合成后：源 [4.70,5.75] × 1/3 = 0.35s = **10 帧**，blendIn 0.35 铺满整段
+    // ⇒ 权重每帧只降 ~0.1，接缝跳变被摊到 10 帧上。
+    // 代价：举剑保持段从 0.283s 缩到 0.217s（观感上仍是「举起来停一下」）。
+    Object.freeze({ srcStart: 4.70, srcEnd: 5.75, scale: 1 / 3, blendIn: 0.35 }),
+    Object.freeze({ srcStart: 5.75, srcEnd: 5.90, scale: 2.0 }),      // 第三刀劈下
+    Object.freeze({ srcStart: 5.90, srcEnd: 6.40, scale: 0.5 }),      // 第三刀劈底保持
+    // 收势（源连续，无接缝）—— ⚠️ **同样不压缩**：该段 sword 要转 180°，
+    // ×0.5 会得 24°/帧（超片段上限）。与单刀收势段保持同一倍率。
+    Object.freeze({ srcStart: 6.40, srcEnd: 6.90, scale: 1.0 }),
+  ]),
+});
+
+/**
  * 某招的**产物时长**（秒）—— 烘焙器定帧数与 `check:data` 校验帧数的**唯一权威**（红线 1）。
  *
  * ⚠️⚠️ **不能直接用 `IGNIS_ANIM_PERIODS[key]`**：有 warp 的招两者不同
@@ -204,6 +285,31 @@ export function ignisAnimOutputPeriod(key) {
   const period = IGNIS_ANIM_PERIODS[key];
   if (!Number.isFinite(period) || period <= 0) {
     throw new Error(`[焰魔] 招式 "${key}" 缺合法的 IGNIS_ANIM_PERIODS`);
+  }
+  // v3.06：多段段表优先（源时间轴可跳跃，四段 warp 表达不了）
+  const segs = IGNIS_ANIM_SEGMENTS[key];
+  if (segs) {
+    const bad = (why) => {
+      throw new Error(`[焰魔] 招式 "${key}" 的 IGNIS_ANIM_SEGMENTS 非法：${why}`);
+    };
+    if (!Array.isArray(segs) || segs.length === 0) bad('段表为空');
+    let total = 0;
+    for (let i = 0; i < segs.length; i++) {
+      const s = segs[i];
+      if (!(s.srcEnd > s.srcStart)) bad(`seg${i} srcEnd ${s.srcEnd} 必须 > srcStart ${s.srcStart}`);
+      if (!(s.scale > 0)) bad(`seg${i} scale ${s.scale} 必须 > 0`);
+      if (!(s.srcStart >= 0 && s.srcEnd <= period)) bad(`seg${i} 源区间 [${s.srcStart},${s.srcEnd}] 超出 [0,${period}]`);
+      const dur = (s.srcEnd - s.srcStart) * s.scale;
+      if (s.blendIn !== undefined) {
+        if (i === 0) bad('首段不得有 blendIn（没有「上一段」可混）');
+        if (!(s.blendIn >= 0)) bad(`seg${i} blendIn ${s.blendIn} 必须 ≥ 0`);
+        // ⚠️ 容差 1e-9：`(5.75−4.70)×(1/3)` 的浮点结果是 0.3499999999999999，
+        // 而人写的 blendIn 是 0.35 —— 严格比较会把「铺满整段」这个合法写法判非法。
+        if (!(s.blendIn <= dur + 1e-9)) bad(`seg${i} blendIn ${s.blendIn} 超过本段产物时长 ${dur}`);
+      }
+      total += dur;
+    }
+    return total;
   }
   const w = IGNIS_ANIM_TIME_WARP[key];
   if (!w) return period;
@@ -229,6 +335,63 @@ export function ignisAnimOutputPeriod(key) {
  * @returns {{toSource: (tOut: number) => number}|null}
  */
 export function ignisAnimTimeWarp(key) {
+  // v3.06：多段段表（优先于四段 warp）
+  const segs = IGNIS_ANIM_SEGMENTS[key];
+  if (segs) {
+    const total = ignisAnimOutputPeriod(key);   // 顺带做参数合法性校验
+    // 预计算每段的产物区间与「上一段末源时刻」（补间的混合起点）
+    const rows = [];
+    let acc = 0;
+    for (let i = 0; i < segs.length; i++) {
+      const s = segs[i];
+      const dur = (s.srcEnd - s.srcStart) * s.scale;
+      rows.push({
+        a: acc, b: acc + dur, s0: s.srcStart, s1: s.srcEnd, k: s.scale,
+        blendIn: s.blendIn || 0,
+        prevSrcEnd: i > 0 ? segs[i - 1].srcEnd : null,
+      });
+      acc += dur;
+    }
+    const segAt = (tOut) => {
+      // ⚠️⚠️ **容差 1e-9 是载荷性的**（实测缺陷）：段界是累加出来的浮点数
+      //（1.5666666666666669），而帧时刻是 `f/fps`（47/30 = 1.5666666666666667）——
+      // 两者差 **2.2e-16**，严格 `<` 会把接缝首帧归到**上一段**⇒ 那一帧完全不补间，
+      // 观感就是「补间没生效」（实测单帧 30.11°，片段上限 14.93° 的 2 倍）。
+      for (let i = 0; i < rows.length; i++) {
+        if (tOut < rows[i].b - 1e-9 || i === rows.length - 1) return i;
+      }
+      return rows.length - 1;
+    };
+    return {
+      toSource: (tOut) => {
+        const r = rows[segAt(tOut)];
+        return r.s0 + (tOut - r.a) / r.k;
+      },
+      /**
+       * 接缝补间权重（1 = 完全取上一段末姿态，0 = 完全取本段实时采样）。
+       * 不在补间窗口内返回 `null`（烘焙器据此走零开销路径）。
+       * ⚠️ 用 **smoothstep** 而不是线性：与 `IgnisPoseTransition` 同口径，端点导数为 0
+       * ⇒ 补间起止处不产生新的速度跳变。
+       */
+      blendAt: (tOut) => {
+        const r = rows[segAt(tOut)];
+        if (!(r.blendIn > 0) || r.prevSrcEnd === null) return null;
+        const u = (tOut - r.a) / r.blendIn;
+        if (!(u >= 0 && u < 1)) return null;
+        const s = u * u * (3 - 2 * u);   // smoothstep 0→1
+        return 1 - s;
+      },
+      /** 上一段末源时刻（补间的混合起点）；无补间时 null */
+      blendFromSource: (tOut) => {
+        const r = rows[segAt(tOut)];
+        return r.blendIn > 0 ? r.prevSrcEnd : null;
+      },
+      bounds: Object.freeze({
+        seams: Object.freeze(rows.slice(1).map((r) => r.a)),
+        total,
+      }),
+    };
+  }
   const w = IGNIS_ANIM_TIME_WARP[key];
   if (!w) return null;
   const period = ignisAnimOutputPeriod(key);   // 顺带做参数合法性校验
@@ -288,6 +451,19 @@ export const IGNIS_ANIM_SOURCES = Object.freeze({
    * 同旋斩/持盾冲撞：**零新增资源**，只是让烘焙器多取一条已入库的动画。
    */
   shieldBash: Object.freeze(['attack11']),
+  /**
+   * 尖刺攻击（v3.06）：举剑过顶 → 向下劈地（Java 的 `EARTH_SHUDDERS_ATTACK`，138 tick）。
+   *
+   * ⚠️ **两条产物共用同一源 `attack3a`**，差别只在段表（`IGNIS_ANIM_SEGMENTS`）：
+   * 单刀取第一刀 + 收势；双刀取第一刀 + 剑回正 + 第三刀 + 收势。
+   * 原版三刀里**第二刀是上撩**（剑身轴竖直分量 +0.851），用户要「再劈一次」⇒ 取第三刀。
+   *
+   * ⚠️ **不是 `attack3b`**：那是同一招的破盾变体，与 Java 非破盾分支平均差 10.004°
+   *（`attack3a` 只差 1.053°，10 倍差距）。键名只差一个字符，写错会烘焙出另一套姿态。
+   * 同旋斩/持盾冲撞：**零新增资源**，只是让烘焙器多取一条已入库的动画。
+   */
+  spikeSlash: Object.freeze(['attack3a']),
+  spikeSlash2: Object.freeze(['attack3a']),
 });
 
 /**
@@ -384,6 +560,8 @@ export function ignisInputFingerprint() {
       IGNIS_BAKE_PARAMS, IGNIS_METRICS, IGNIS_ANIM_PERIODS, IGNIS_ANIM_SOURCES,
       // v3.03：warp 参数必须进指纹 —— 否则「改了压缩倍率但没重烘」是静默过期
       IGNIS_ANIM_TIME_WARP,
+      // v3.06：多段段表同理（含 blendIn —— 改补间时长不重烘 = 接缝跳变静默复活）
+      IGNIS_ANIM_SEGMENTS,
     }))
     .digest('hex');
   return {

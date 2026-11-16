@@ -1,8 +1,8 @@
 {
  "fingerprints": {
-  "input": "1d00d91348b5c645:7426b3dcf852f2c0",
+  "input": "1d00d91348b5c645:7d75ce497b2e12d7",
   "sourceSha256": "1d00d91348b5c645dd22c0c0003747c2391fd70c3384bf289b4d76ab72bc33d2",
-  "paramsSha256": "7426b3dcf852f2c0425498eda6176d94870df7a21d76a73ef0a2dbba217155bd"
+  "paramsSha256": "7d75ce497b2e12d70d4463d8def3119be414be1613e8096551cbfacc0f8139c6"
  },
  "metrics": {
   "boneCount": 53,
@@ -21,7 +21,9 @@
   "attack": 2.75,
   "spin": 1.9,
   "shieldSmash": 3.5,
-  "shieldBash": 5.7
+  "shieldBash": 5.7,
+  "spikeSlash": 6.9,
+  "spikeSlash2": 6.9
  },
  "animSources": {
   "idle": [
@@ -39,13 +41,21 @@
   ],
   "shieldBash": [
    "attack11"
+  ],
+  "spikeSlash": [
+   "attack3a"
+  ],
+  "spikeSlash2": [
+   "attack3a"
   ]
  },
  "animOutputPeriods": {
   "attack": 2.75,
   "spin": 1.9,
   "shieldSmash": 3.5,
-  "shieldBash": 3.89
+  "shieldBash": 3.89,
+  "spikeSlash": 1.9666666666666668,
+  "spikeSlash2": 2.9666666666666677
  },
  "animTimeWarp": {
   "shieldBash": {
@@ -55,5 +65,83 @@
    "slamEnd": 3.7,
    "dstSlamSeconds": 0.3
   }
+ },
+ "animSegments": {
+  "spikeSlash": [
+   {
+    "srcStart": 0,
+    "srcEnd": 0.75,
+    "scale": 0.5
+   },
+   {
+    "srcStart": 0.75,
+    "srcEnd": 1.4,
+    "scale": 0.3333333333333333
+   },
+   {
+    "srcStart": 1.4,
+    "srcEnd": 1.6,
+    "scale": 2
+   },
+   {
+    "srcStart": 1.6,
+    "srcEnd": 2.55,
+    "scale": 0.5
+   },
+   {
+    "srcStart": 6.4,
+    "srcEnd": 6.9,
+    "scale": 1,
+    "blendIn": 0.1
+   }
+  ],
+  "spikeSlash2": [
+   {
+    "srcStart": 0,
+    "srcEnd": 0.75,
+    "scale": 0.5
+   },
+   {
+    "srcStart": 0.75,
+    "srcEnd": 1.4,
+    "scale": 0.3333333333333333
+   },
+   {
+    "srcStart": 1.4,
+    "srcEnd": 1.6,
+    "scale": 2
+   },
+   {
+    "srcStart": 1.6,
+    "srcEnd": 2.55,
+    "scale": 0.5
+   },
+   {
+    "srcStart": 2.55,
+    "srcEnd": 2.75,
+    "scale": 0.5
+   },
+   {
+    "srcStart": 4.7,
+    "srcEnd": 5.75,
+    "scale": 0.3333333333333333,
+    "blendIn": 0.35
+   },
+   {
+    "srcStart": 5.75,
+    "srcEnd": 5.9,
+    "scale": 2
+   },
+   {
+    "srcStart": 5.9,
+    "srcEnd": 6.4,
+    "scale": 0.5
+   },
+   {
+    "srcStart": 6.4,
+    "srcEnd": 6.9,
+    "scale": 1
+   }
+  ]
  }
 }

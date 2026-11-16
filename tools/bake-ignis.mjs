@@ -90,7 +90,7 @@ import {
   IGNIS_GEO_SRC, IGNIS_ANIM_SRC, IGNIS_TEX_SRC, IGNIS_SHIELD_TEX_SRC,
   IGNIS_JSON, IGNIS_PNG, IGNIS_META,
   IGNIS_BAKE_PARAMS, IGNIS_METRICS, IGNIS_ANIM_PERIODS, IGNIS_ANIM_SOURCES,
-  IGNIS_ANIM_TIME_WARP, ignisAnimOutputPeriod, ignisAnimTimeWarp,
+  IGNIS_ANIM_TIME_WARP, IGNIS_ANIM_SEGMENTS, ignisAnimOutputPeriod, ignisAnimTimeWarp,
   IGNIS_ATTACK_ANIM_KEYS,
   ignisInputFingerprint,
 } from './ignis-fingerprint.mjs';
@@ -161,6 +161,13 @@ function deltaRotation(bindQ, bindDeg, animDeg) {
   const total = bedrockRotation(bindDeg[0] + animDeg[0], bindDeg[1] + animDeg[1], bindDeg[2] + animDeg[2]);
   return bindQ.clone().invert().multiply(total);
 }
+
+/**
+ * 接缝补间的 slerp 目标（模块级复用，烘焙期零分配）。
+ * ⚠️ **必须独立于被混合的两个四元数**：three 的 `slerpQuaternions` 是
+ * `this.copy(qa).slerp(qb, t)`，`this` 与 `qb` 同一对象时 qb 会被 qa 覆写。
+ */
+const _blendQuat = new THREE.Quaternion();
 
 /**
  * Bedrock 的 box UV 铺开：给定起点与尺寸，返回六个面的源矩形 `[u0,v0,u1,v1]`（源像素）。
@@ -495,6 +502,14 @@ function resampleAnimation(anims, names, frameCount, fps, boneNameToIndex, bind,
     // `ignis-fingerprint.mjs` 的 `ignisAnimTimeWarp`（参数进指纹，改它必须重烘）。
     const tOut = f / fps;
     const t = timeWarp ? timeWarp.toSource(tOut) : tOut;
+    // ⚠️⚠️ v3.06：**接缝补间**（多段段表的招才有）。源时间轴在接缝处**跳跃**
+    //（尖刺攻击从源 2.75 跳到 4.70，跳过中间的上撩段），两侧姿态差 17.8~35.0°
+    // ⇒ 不补间就是一个可见的瞬移。在本段前 `blendIn` 秒内把「上一段末源时刻的姿态」
+    // 与「本段实时采样」按权重混合（权重由 smoothstep 给出，端点导数 0）。
+    // ⚠️ **混合起点是「上一段的 srcEnd」而不是 `toSource(tOut)` 的左极限** ——
+    // 后者在接缝处等于本段 srcStart（源时间不连续，左极限不存在）。
+    const blendW = timeWarp && timeWarp.blendAt ? timeWarp.blendAt(tOut) : null;
+    const tPrev = blendW !== null && blendW > 0 ? timeWarp.blendFromSource(tOut) : null;
     for (const bi of boneIndices) {
       const ch = perBone.get(bi);
       const o = (f * boneIndices.length + slotOf.get(bi)) * 7;
@@ -504,10 +519,29 @@ function resampleAnimation(anims, names, frameCount, fps, boneNameToIndex, bind,
       const rot = ch.rot ? sampleChannel3(ch.rot, t) : [0, 0, 0];
       const pos = ch.pos ? sampleChannel3(ch.pos, t) : [0, 0, 0];
       const quat = deltaRotation(bind.quat[bi], bind.deg[bi], rot);
+      let px = pos[0] * PX2BLOCK;
+      let py = pos[1] * PX2BLOCK;
+      let pz = pos[2] * PX2BLOCK;
+      if (tPrev !== null) {
+        const rotP = ch.rot ? sampleChannel3(ch.rot, tPrev) : [0, 0, 0];
+        const posP = ch.pos ? sampleChannel3(ch.pos, tPrev) : [0, 0, 0];
+        const quatP = deltaRotation(bind.quat[bi], bind.deg[bi], rotP);
+        // ⚠️⚠️ **不能写 `quat.slerpQuaternions(quatP, quat, t)`**（实测缺陷）：
+        // three 的实现是 `this.copy(qa).slerp(qb, t)` —— `this` 就是 `quat`，
+        // `copy(qa)` 先把 `quat` 覆写成 quatP，于是 `qb` 也变成了 quatP
+        // ⇒ slerp 退化成 quatP→quatP，**整段恒等于上一段末姿态**，
+        // 接缝跳变被推到段界那一帧（实测单帧 30.11°，权重明明已降到 0.0066）。
+        // 故用独立的目标对象 `_blendQuat`（模块级复用，烘焙期零分配）。
+        _blendQuat.slerpQuaternions(quatP, quat, 1 - blendW);
+        quat.copy(_blendQuat);
+        px = (posP[0] * blendW + pos[0] * (1 - blendW)) * PX2BLOCK;
+        py = (posP[1] * blendW + pos[1] * (1 - blendW)) * PX2BLOCK;
+        pz = (posP[2] * blendW + pos[2] * (1 - blendW)) * PX2BLOCK;
+      }
       frames[o] = quat.x; frames[o + 1] = quat.y; frames[o + 2] = quat.z; frames[o + 3] = quat.w;
-      frames[o + 4] = pos[0] * PX2BLOCK;
-      frames[o + 5] = pos[1] * PX2BLOCK;
-      frames[o + 6] = pos[2] * PX2BLOCK;
+      frames[o + 4] = px;
+      frames[o + 5] = py;
+      frames[o + 6] = pz;
     }
   }
   return { fps, frameCount, boneIndices, frames };
@@ -791,7 +825,11 @@ function main() {
       + `（${IGNIS_ANIM_SOURCES[key].join('+')}）`
       + (timeWarp
         ? ` [warp 源 ${period}s → 产物 ${outPeriod.toFixed(2)}s，`
-          + `命中帧 ${timeWarp.bounds.slamEndOut.toFixed(2)}s]`
+          // ⚠️ v3.06：多段段表的 bounds 没有 `slamEndOut`（那是四段 warp 特有的字段）
+          // ⇒ 直接读会 TypeError。接缝位置改读 `seams`。
+          + (timeWarp.bounds.slamEndOut !== undefined
+            ? `命中帧 ${timeWarp.bounds.slamEndOut.toFixed(2)}s]`
+            : `接缝 ${timeWarp.bounds.seams.map((s) => s.toFixed(3)).join('/')}s]`)
         : ''));
   }
 
@@ -947,6 +985,8 @@ function main() {
     animOutputPeriods: Object.fromEntries(
       IGNIS_ATTACK_ANIM_KEYS.map((k) => [k, ignisAnimOutputPeriod(k)])),
     animTimeWarp: IGNIS_ANIM_TIME_WARP,
+    // v3.06：多段段表（诊断用；门禁读共享模块而不是这份副本）
+    animSegments: IGNIS_ANIM_SEGMENTS,
   }, null, 1));
 
   const rel = (p) => path.relative(process.cwd(), p);
