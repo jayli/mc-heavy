@@ -88,6 +88,7 @@ function createState({
   position, velocity, yaw, health, flashedUntil, mode,
   attackAnimT, attackKind, spinCooldown,
   idleTime, attackCooldown, losTimer, losVisible, onGround, attackRequest, attackFxRequest,
+  spikeSecond,
   navDir, navMode, needsPath,
   acquireT, stuckT, stuckAnchor, sensedPlayer, senseTimer, escapeFailCount,
   leapKind, leapDir, leapT, leapTargetY, leapAttackKind, leapAttackCooldown,
@@ -175,6 +176,15 @@ function createState({
      * 命中帧块根本不跑 ⇒ 两个请求都是 null（`test-ignis-boss-agent.js` 钉住）。
      */
     attackFxRequest: attackFxRequest || null,
+    /**
+     * ⚠️ **跨帧保持的玩法字段**（v3.06）：尖刺攻击是否接第二刀。
+     *
+     * 与 `attackRequest` / `attackFxRequest` 的「本帧消费即清」不同 —— 它在第一刀命中帧
+     * 置位后要保持到本招结束（渲染器按它选片段、Agent 按它定第二命中帧与时长）。
+     * ⚠️ **漏透传的形态是「第二刀永远不播」**，而第一刀与尖刺全对（计数类断言看不出）。
+     * ⚠️ **不进 snapshot**（同 `attackRequest`）：写进快照的形态是「陈旧第二刀门复活」。
+     */
+    spikeSecond: spikeSecond === true,
     /**
      * 寻路给出的**单位方向**（`[vx, vz]`），或 `null` = 当前不需要绕行（v2.61）。
      *

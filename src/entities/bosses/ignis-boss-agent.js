@@ -31,7 +31,7 @@
 // 3. **命中只在一帧触发**：`attackAnimT` 越过 `hitFrameSeconds` 的那一帧（不是每帧）。
 
 import { BossAgent } from './boss-agent.js';
-import { IGNIS, IGNIS_AI, IGNIS_ATTACKS, IGNIS_ATTACK_IDS, IGNIS_STEERING }
+import { IGNIS, IGNIS_AI, IGNIS_ATTACKS, IGNIS_ATTACK_IDS, IGNIS_STEERING, IGNIS_SPIKE }
   from '../ignis/ignis-config.js';
 import { aabbCollidesAt, steerIntentAabb } from '../zombies/zombie-navigation.js';
 
@@ -253,6 +253,20 @@ export class IgnisBossAgent extends BossAgent {
      * ⚠️ 瞬态：不进 snapshot（同 `attackRequest`），由 game.js 消费后 Agent 下一帧自动清 null。
      */
     let attackFxRequest = null;
+    /**
+     * 尖刺攻击的「接第二刀」门（v3.06）。
+     *
+     * 用户草图：「玩家距离 4 格以内就连续再劈第二刀，玩家在 4 格以外就不再劈第二刀」。
+     *
+     * ⚠️⚠️ **在「第一刀命中帧」那一帧判定并锁存**，不是起手帧、也不是每帧重判：
+     * · 起手帧判 ⇒ 玩家跑开后仍被追劈（用户明确不要）；
+     * · 每帧重判 ⇒ 玩家在两刀之间跑远会让第二刀「取消」，而动画已经举起来了。
+     *
+     * ⚠️ **跨帧保持**（不是「本帧消费即清」的瞬态）：`createState` 必须透传它，
+     * 漏透传的形态是「第二刀永远不播」而第一刀与尖刺全对。
+     * ⚠️ **离开 attack 态一律复位 false**（同 `attackKind`）。
+     */
+    let spikeSecond = state.spikeSecond === true;
 
     // ---- 视线缓存（倒计时；<=0 重查并重置）----
     let losTimer = (Number.isFinite(state.losTimer) ? state.losTimer : 0) - step;
@@ -343,6 +357,7 @@ export class IgnisBossAgent extends BossAgent {
         mode = 'chase';
         attackAnimT = 0;   // 中断：动画放弃
         attackKind = null;   // 离开 attack 一律复位（渲染器/结算都不该看到残留）
+        spikeSecond = false;   // v3.06：同理（否则下一招会继承上一招的第二刀门）
       }
     }
 
@@ -734,28 +749,48 @@ export class IgnisBossAgent extends BossAgent {
       attackAnimT += step;
       // 本招的档案 —— 命中帧 / 时长都按招取（两招不同：1.20/2.75 vs 0.70/1.90）
       const profile = IGNIS_ATTACKS[attackKind] || IGNIS_ATTACKS.swing;
-      // ⚠️ **只在「越过」的那一帧触发一次**：`prev < hit <= now`。
-      // 写成 `current >= hit` 会每帧都触发（连续扣血）；写成 `current === hit` 在
-      // dt 不是 1/fps 整数倍时永远不触发（帧率无关性丢失）。
-      if (prevAnimT < profile.hitFrameSeconds && attackAnimT >= profile.hitFrameSeconds) {
-        // 特效请求：**无条件**产生（不看视线）—— 见上面 `attackFxRequest` 的注释。
+      /**
+       * 命中帧结算（两个命中帧共用同一套口径）。
+       * ⚠️ FX **无条件**产生（不看视线）；伤害看 `freshLos` 新鲜复查。
+       */
+      const fireHitFrame = () => {
         attackFxRequest = { at: [px, py, pz], yaw, kind: attackKind };
-        // 新鲜视线复查（不用 10Hz 缓存）—— 否则会隔着墙打人
         const freshLos = player !== null && this._queryLos([px, py, pz], ctx);
         if (freshLos) {
-          // ⚠️ **`kind` 必须装进 request**（v2.75）：结算方按招取射程/半角。
-          // 回读 `state.attackKind` 会在「下一帧 state 已切回 chase」时读到错值。
           attackRequest = { at: [px, py, pz], yaw, kind: attackKind };
           const { attackCooldownMin: lo, attackCooldownMax: hi } = IGNIS_AI;
           // ⚠️ 减去本帧 step：顶部已统一扣过一次 dt，不补扣会让实际间隔多出一帧
           attackCooldown = lo + this.rng() * (hi - lo) - step;
         }
+      };
+      // ⚠️ **只在「越过」的那一帧触发一次**：`prev < hit <= now`。
+      // 写成 `current >= hit` 会每帧都触发（连续扣血）；写成 `current === hit` 在
+      // dt 不是 1/fps 整数倍时永远不触发（帧率无关性丢失）。
+      if (prevAnimT < profile.hitFrameSeconds && attackAnimT >= profile.hitFrameSeconds) {
+        fireHitFrame();
+        // v3.06：尖刺攻击的第二刀门 —— **就在这一帧判并锁存**（见 `spikeSecond` 注释）。
+        // ⚠️ 用真实玩家水平距 `hDist`（顶部已算），不用感知快照 ——
+        // 快照最多陈旧 2 秒，玩家 8 格/秒能跑 16 格（同起手帧对准真实玩家的口径）。
+        if (attackKind === 'spikeSlash' && player !== null && hDist <= IGNIS_SPIKE.secondRange) {
+          spikeSecond = true;
+        }
+      }
+      // v3.06：第二刀命中帧（仅尖刺攻击 + 已锁存第二刀门）
+      if (attackKind === 'spikeSlash' && spikeSecond
+        && prevAnimT < IGNIS_SPIKE.secondHitFrame && attackAnimT >= IGNIS_SPIKE.secondHitFrame) {
+        fireHitFrame();
       }
       // 动画播完 → 回 chase
-      if (attackAnimT >= profile.animSeconds) {
+      // ⚠️ v3.06：尖刺攻击的时长取决于是否接了第二刀（单刀 1.966667 / 双刀 2.966667）。
+      // 其余招仍读 `profile.animSeconds`（一行不改）。
+      const animEnd = attackKind === 'spikeSlash'
+        ? (spikeSecond ? IGNIS_SPIKE.doubleSeconds : IGNIS_SPIKE.soloSeconds)
+        : profile.animSeconds;
+      if (attackAnimT >= animEnd) {
         mode = 'chase';
         attackAnimT = 0;
         attackKind = null;      // 非 attack 态不得残留上一刀的档案
+        spikeSecond = false;    // v3.06：同理
       }
     }
 
@@ -789,6 +824,8 @@ export class IgnisBossAgent extends BossAgent {
       onGround,
       attackRequest,
       attackFxRequest,
+      // v3.06：尖刺攻击的第二刀门（跨帧保持，离开 attack 复位）
+      spikeSecond,
       // ⚠️ **`navDir` 原样透传**（不在 Agent 里改）：它属于寻路层的结果，由
       // `IgnisService` 写入。Agent 只是消费方与 `needsPath` 的判定方。
       navDir: state.navDir ?? null,
