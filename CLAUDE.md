@@ -275,6 +275,32 @@ scheduler/physics）再加 `npm run bench -- --check`。计划里标「冻结」
   烘焙输入放各自的 `assets/<topic>/src/`，UI 素材放 `assets/ui/`。
 - 被 node 工具 import 的路径常量（如 `sky-config.js` 的 `SKY_DIR`）保持仓库相对字符串，URL 转换只在消费端。
 
+**丧尸行为层（v3.11，全部是静默失效型）**
+- ⚠️⚠️ **「离墙太近就退开」的几何判据没有判别力**（实测推翻直觉）：贴墙滑行与 L 形墙角的
+  侧向净空**逐位相同（都 0.60 格）**，而 1 格宽门洞只有 **0.10** ⇒ 任何「净空小于阈值就后退」
+  都会让丧尸**不敢进门**。「该不该退」只能由**时间维度（走没走动）**判定。
+- ⚠️⚠️ **卡住判据必须带「到达门」**（`ZOMBIE_BEHAVIOR.arriveDistance`）：丧尸**成功追到玩家
+  身边后本来就零位移**（贴身时 `steerIntent` 判 blocked）。没这道门 ⇒ 把「追到了」误判成
+  「卡住了」⇒ **每只追上玩家的丧尸都开始后退**（实测开阔地 191 帧误触发）。正常抵达距离
+  恒 **0.48~0.67**、真卡死 **11.59**，门取 1.5。它要写在**状态机入口**（三个信号之前），
+  只写在信号 A 里则 B/C 仍会在贴身时误触发。
+- **转身限速只能接 `_applyIntent`，不得接 `setIntent`**（与 v2.40「避障探针只能接 `_applyIntent`」
+  同一条边界）：后者是通用意图写入口，物理用例/调试代码直接下令，限速长在里面会偷换
+  「想让它朝哪就朝哪」的语义。dt 用 `aiPeriod`（0.05s）**不用帧 dt**（它由 20Hz 导航驱动）。
+- **行为层的 `nowMs` 必须由 `update()` 一路转发**：不转发时 `_stepNavigator` 落回
+  `performance.now()`，与单测的仿真时间**混用两个时基** ⇒ 滚动窗口永铺不满、卡住判据恒不成立
+  （纯函数全绿而接线完全失效）。同理：**单测里循环调 `update()` 必须同时推进 `nowMs`**，
+  否则 N 拍在同一毫秒内跑完 ⇒ 起步加速因子恒 0 ⇒ 速度永远起不来。
+- **速度包络只乘导航分量，排斥力全额叠加**；乘到「导航+排斥力」合成向量上会把排斥力一起缩小
+  ⇒ 20 只同点生成散不开。**转向减速每拍独立算，不得累乘**（累乘会让丧尸在连续绕行中越来越慢）。
+- **写「倍率不累积」类断言要用绝对值，不能用比值**：比值会约掉衰减（实测：注入「lastDir 只设一次」
+  后倍率 0.999→0.874→0.749→0.699 逐拍下滑，而比值判据仍全绿）。且**用例不得自己写 `b.lastDir`**
+  —— 那会掩盖「生产代码是否每拍更新它」这个被测行为。
+- **判「replan 真的清了缓存」不能用 `cachedPathOf(id) === null`**：不可达场景的 `_path` 本就是 null
+  ⇒ 清与不清都读到 null（恒真）。用 `pathCache.debugState().size === 0`。
+- ⚠️ **`cruiseScaleMin` 不被既有 12s 绕墙 E2E 守住**（实测 0.92→0.70 仍 PASS）：那个探针量的是
+  「**全程恒定倍率**」，而真实包络是正弦漂移×起步×转向，只在波谷瞬时接近下界。调它要自己重测。
+
 **确定性**
 - `seededRandom` 的 salt 占用必须**程序化扫描**，grep 字面量抓不到 `seed + N` 形式的区间占用。
   已占 1020~1040 段（1028 是被跳过的洞，保守避开）。用错 salt 是静默的确定性污染。
@@ -395,6 +421,7 @@ scheduler/physics）再加 `npm run bench -- --check`。计划里标「冻结」
 | 龙 / Boss / 火球 / 实体伤害 | `2026-11-03-altar-dragon-design.md` + `2026-11-03-dragon-boss-ai-design.md` + roadmap v2.41~v2.48 |
 | 末影守卫（废弃堡垒 Boss） | `2026-11-11-ender-guardian-boss-design.md` + `plans/2026-11-11-ender-guardian-boss.md` + roadmap v2.91（口径 A / 上层房间落点 / HEADROOM=4 / 眼睛层阈值） |
 | 丧尸 AI / 寻路 | `plans/2026-11-04-zombie-pathfinding.md`、`2026-11-02-zombie-obstacle-avoidance-design.md`、`2026-11-04-zombie-model-rebuild-design.md` + roadmap v2.46~v2.50 |
+| **丧尸行为层（犹豫/后退/徘徊/速度包络/转身限速）** | `2026-11-16-zombie-behavior-realism-design.md` + roadmap v3.11（到达门 / 侧向净空无判别力 / 两个时基 / 限速接 `_applyIntent`） |
 | 矿车 / 装置（巢穴、炮塔、创造台） | `2026-09-30-minecart-design.md`、M7/M8/M9 spec + roadmap「方块锚定装置」段 |
 | 放置 / 交互 / 玩家物理 | `2026-10-30-place-nearest-first-design.md`、`2026-10-25-player-flight-design.md` |
 | 面板 / HUD / 小地图 / 音效 | roadmap「面板与 UI」「渲染分辨率档位」段 + `plans/2026-10-29-minimap.md` |

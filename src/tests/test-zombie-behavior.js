@@ -660,7 +660,7 @@ test('speedScale b: 巡航倍率 ∈ [0.92,1.0]，恒 ≤ 1', () => {
     const s = speedScale({ behavior: b, id: 'z0', nowMs: t, dir: [0, -1], moving: true });
     assertTrue(s >= 0.92 - 1e-9 && s <= 1.0 + 1e-9,
       `巡航倍率须在 [0.92,1.0]，t=${t} 实际 ${s}`);
-    b.lastDir = [0, -1];   // 方向不变 ⇒ 无转向减速
+    // 方向不变 ⇒ 无转向减速（lastDir 由生产代码自己维护）
   }
 });
 
@@ -689,35 +689,46 @@ test('speedScale o1: 转向那一拍减速，但不累积', () => {
   const b = behaviorFor(memoryFor(new Map(), 'z0'), 0);
   b.movingSince = -10000;
   // 每拍都转 45°：第 1 拍与第 20 拍的倍率必须相同（不累乘）
-  // ⚠️ 先建立 lastDir（首拍无参照 ⇒ turn=1 是正确的，不能拿它当「转向拍」基准）
-  b.lastDir = [0, -1];
+  // ⚠️ **用例不得自己写 `b.lastDir`**：那是生产代码维护的状态，手动赋值会掩盖
+  // 「生产代码是否真的每拍更新它」这个被测行为（实测：注入「只设一次不更新」仍全绿）。
+  // 先用一拍直走让生产代码自己建立 lastDir（首拍无参照 ⇒ turn=1 是正确的）。
+  speedScale({ behavior: b, id: 'z0', nowMs: 5000, dir: [0, -1], moving: true });
   const scales = [];
   for (let i = 0; i < 20; i++) {
     // 每拍都相对上拍转 45°（而不是相对固定轴），这样每拍的转向量恒定
     const th = ((i + 1) * 45 * Math.PI) / 180;
     const dir = [Math.sin(th), -Math.cos(th)];
     scales.push(speedScale({ behavior: b, id: 'z0', nowMs: 5000, dir, moving: true }));
-    b.lastDir = dir;
   }
   // 巡航项随时间漂移，故比「转向因子」而非绝对值：用同 nowMs 的直走值做基准
   const b2 = behaviorFor(memoryFor(new Map(), 'z0'), 0);
   b2.movingSince = -10000;
-  b2.lastDir = [0, -1];
+  speedScale({ behavior: b2, id: 'z0', nowMs: 5000, dir: [0, -1], moving: true });
   const straight = speedScale({ behavior: b2, id: 'z0', nowMs: 5000, dir: [0, -1], moving: true });
   const ratioFirst = scales[0] / straight;
   assertTrue(ratioFirst < 1, `转向那一拍须减速（比值 ${ratioFirst}）`);
   assertTrue(ratioFirst >= 0.7 - 1e-9, `转向减速不得低于 floor 0.7（比值 ${ratioFirst}）`);
+  // ⚠️ **必须钉绝对值不衰减**：只比「首拍/直走」的比值会约掉累积衰减 ——
+  // 注入「lastDir 只设一次」时倍率实测 0.999→0.874→0.749→0.699 逐拍下滑，
+  // 而比值判据仍全绿（实测踩到）。这里钉住 20 拍的倍率**逐位相同**。
+  for (let i = 1; i < scales.length; i++) {
+    assertClose(scales[i], scales[0], 1e-12,
+      `第 ${i} 拍的转向减速不得累积（首拍 ${scales[0]}，本拍 ${scales[i]}）`);
+  }
   // 第 20 拍与第 1 拍的转向角度相同（都是 45°）⇒ 减速幅度须一致（±巡航漂移的 8%）
   const b3 = behaviorFor(memoryFor(new Map(), 'z0'), 0);
   b3.movingSince = -10000;
   const th19 = (19 * 45 * Math.PI) / 180, th18 = (18 * 45 * Math.PI) / 180;
-  b3.lastDir = [Math.sin(th18), -Math.cos(th18)];
+  // 同上：让生产代码自己建立 lastDir，不手动写
+  speedScale({ behavior: b3, id: 'z0', nowMs: 5000, dir: [Math.sin(th18), -Math.cos(th18)], moving: true });
   const s19 = speedScale({
     behavior: b3, id: 'z0', nowMs: 5000, dir: [Math.sin(th19), -Math.cos(th19)], moving: true,
   });
+  const straightBehavior = behaviorFor(memoryFor(new Map(), 'z0'), 0);
+  straightBehavior.movingSince = -10000;
+  speedScale({ behavior: straightBehavior, id: 'z0', nowMs: 5000, dir: [0, -1], moving: true });
   const straightSame = speedScale({
-    behavior: (() => { const x = behaviorFor(memoryFor(new Map(), 'z0'), 0); x.movingSince = -10000; x.lastDir = [0, -1]; return x; })(),
-    id: 'z0', nowMs: 5000, dir: [0, -1], moving: true,
+    behavior: straightBehavior, id: 'z0', nowMs: 5000, dir: [0, -1], moving: true,
   });
   assertClose(s19 / straightSame, ratioFirst, 1e-9, '同样转 45° 的减速幅度须逐位相同（不累积）');
 });
@@ -728,7 +739,6 @@ test('speedScale o2: 三项相乘后仍 ≤ 1 且 ≥ 0', () => {
     const th = (t / 100) % (Math.PI * 2);
     const s = speedScale({ behavior: b, id: 'z3', nowMs: t, dir: [Math.sin(th), Math.cos(th)], moving: true });
     assertTrue(s >= 0 && s <= 1 + 1e-12, `倍率须在 [0,1]，t=${t} 实际 ${s}`);
-    b.lastDir = [Math.sin(th), Math.cos(th)];
   }
 });
 
@@ -736,7 +746,7 @@ test('speedScale 相位: 不同 id 不同步（避免全场齐步走）', () => 
   const mk = (id) => {
     const b = behaviorFor(memoryFor(new Map(), id), 0);
     b.movingSince = -10000;
-    b.lastDir = [0, -1];
+    speedScale({ behavior: b, id, nowMs: 3000, dir: [0, -1], moving: true });
     return speedScale({ behavior: b, id, nowMs: 3000, dir: [0, -1], moving: true });
   };
   const a = mk('z0'), c = mk('z7');
@@ -747,7 +757,7 @@ test('speedScale 确定性: 同 id 同 nowMs ⇒ 逐位相同', () => {
   const mk = () => {
     const b = behaviorFor(memoryFor(new Map(), 'z5'), 0);
     b.movingSince = -10000;
-    b.lastDir = [0, -1];
+    speedScale({ behavior: b, id: 'z5', nowMs: 4321, dir: [0, -1], moving: true });
     return speedScale({ behavior: b, id: 'z5', nowMs: 4321, dir: [0, -1], moving: true });
   };
   assertEqual(mk(), mk());
@@ -965,4 +975,39 @@ test('行为诊断: debugNavigator 暴露五个 phase 计数且随决策增长',
   // 只读快照：改返回值不得影响内部状态
   after.chase = 9999;
   assertEqual(zombies.debugNavigator().behaviorPhases.chase, 1, '须返回快照而非内部引用');
+});
+
+test('行为层接线 j2: replan 拍真的清了 PathCache（不只是返回 replan=true）', () => {
+  // ⚠️ 用例 j 只断言行为层**返回值** replan=true，那与「service 是否真的调 forget」无关
+  // ⇒ 注入「service 不清缓存」时 j 仍全绿（实测踩到，testing-policy §2.7 第 12 类）。
+  // 这条把判据落在**真实缓存状态**上：replan 发生后该 id 的缓存条目必须消失。
+  const { world, set } = makeFlat();
+  for (let x = 0; x < 64; x++) for (let dy = 0; dy < 3; dy++) set(x, 1 + dy, 30);
+  const entities = new EntityManager();
+  entities.registerType('zombie', zombieDefinition);
+  const zombies = new ZombieService({ entities, world, rng: () => 0 });
+  const id = zombies.spawn([32.5, 1, 33.5], { source: 'test' });
+  const playerPosition = [32.5, 1, 20.5];
+  const dt = 1 / 60;
+  let t = 0;
+  let sawReplanWithCache = false, cacheClearedOnReplan = false;
+  let prevPhase = 'chase';
+  while (t < 20) {
+    // 逐拍观察：进入 replan 的那一拍之后，缓存里不得再有该 id 的条目
+    zombies.update(dt, { playerPosition, nowMs: t * 1000 });
+    entities.update(dt, { world });
+    const b = zombies._navMemory.get(id)?.behavior;
+    const phase = b?.phase ?? 'chase';
+    if (phase === 'replan' && prevPhase !== 'replan') {
+      sawReplanWithCache = true;
+      // ⚠️ **不能用 `cachedPathOf(id) === null`**：整图封死时 planStep 返回
+      // reachable=false，其 `_path` 本就是 null ⇒ 清与不清都读到 null ⇒ 判据恒真
+      // （实测踩到）。改用**缓存条目数**：forget 后该 id 的条目必须消失。
+      if (zombies._pathCache.debugState().size === 0) cacheClearedOnReplan = true;
+    }
+    prevPhase = phase;
+    t += dt;
+  }
+  assertTrue(sawReplanWithCache, '前提：须真的进过 replan');
+  assertTrue(cacheClearedOnReplan, 'replan 拍须真的清掉该 id 的路径缓存（否则会走回墙边）');
 });
