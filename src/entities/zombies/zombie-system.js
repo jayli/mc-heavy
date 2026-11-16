@@ -15,6 +15,7 @@ import {
   ZOMBIE, ZOMBIE_FLASH_MS, ZOMBIE_MAX_STEP, ZOMBIE_MOVING_EPSILON, ZOMBIE_SEPARATION,
 } from './zombie-config.js';
 import { zombieCollidesAt, zombieStepUpY, steerIntent, displaceGroundEntity } from './zombie-navigation.js';
+import { behaviorFor, recordSample, decideBehavior } from './zombie-behavior.js';
 import { PathCache } from './zombie-pathfinder.js';
 import { decideStep, memoryFor } from './zombie-navigator.js';
 import { normalizePosition, raycastAabbSlab } from '../entity-types.js';
@@ -127,14 +128,20 @@ export function computeAiUpdates(p) {
 }
 
 /**
- * state.mode 的白名单（v2.40 加入 `'blocked'`）。
+ * state.mode 的白名单（v2.40 加入 `'blocked'`；v3.11 加入行为层三态）。
  *
  * ⚠️ **必须是单一实现**：`createState()` 与 `setIntent()` 都消费它。写两份三元表达式会让其中一处
- * 漏掉 `'blocked'`，形态是「速度与位置都对（都是零）、只有 mode 错」—— 任何只看「它没动」的
+ * 漏掉新值，形态是「速度与位置都对、只有 mode 错」—— 任何只看「它没动」的
  * 断言都抓不到（实测：注入旧式三元后 k 用例真红）。
+ * ⚠️ **白名单须与 `zombie-behavior.js` 的 `PHASE_MODE` 一致**（单向依赖：
+ * 本层不 import 行为层的映射表，避免循环 import；一致性由单测钉住）。
  */
+const MODE_WHITELIST = new Set([
+  'chasing', 'blocked', 'hesitating', 'backing', 'wandering',
+]);
+
 function normalizeMode(mode) {
-  return mode === 'chasing' || mode === 'blocked' ? mode : 'idle';
+  return MODE_WHITELIST.has(mode) ? mode : 'idle';
 }
 
 /** 新建一份合法 state（形状即 M6 规格 §2 口径，少 generation） */
@@ -331,7 +338,7 @@ export class ZombieService {
    */
   constructor({
     entities, world, maxActive = ZOMBIE.maxActive, pool = null,
-    onSpawn = null, onDespawn = null, onKnockback = null,
+    onSpawn = null, onDespawn = null, onKnockback = null, rng = Math.random,
   }) {
     this.entities = entities;
     this.world = world;
@@ -353,6 +360,15 @@ export class ZombieService {
     /** 诊断计数 */
     this._navDecisions = 0;
     this._navBlocked = 0;
+    /**
+     * 行为层随机源（v3.11）。**可注入**，与 `BossAgent` 同一既有手法
+     * （`dragon-boss-agent.js` / `ignis-boss-agent.js` / `guardian-boss-agent.js` 都是 `rng = Math.random`）。
+     * 单测注入定值 rng 即可钉住具体数值；它不参与世界生成，不污染存档确定性
+     * （丧尸是临时实体、不入存档）。
+     */
+    this._rng = rng;
+    /** @type {{chase:number, hesitate:number, backoff:number, replan:number, wander:number}} 相位计数（诊断） */
+    this._behaviorPhases = { chase: 0, hesitate: 0, backoff: 0, replan: 0, wander: 0 };
     // ---- AI 编排状态（Task 2）----
     /** accumulator：累计到 `ZOMBIE.aiPeriod` 才发一条 RPC（20Hz，M6 规格 §2） */
     this._aiAccum = 0;
@@ -555,10 +571,16 @@ export class ZombieService {
    *
    * @param {number[]} playerPosition 玩家脚底 [x, y, z]
    */
-  _stepNavigator(playerPosition) {
+  _stepNavigator(playerPosition, nowMsHint = undefined) {
     const world = this.world;
-    const nowMs = this._nowMs
-      ?? (typeof performance !== 'undefined' ? performance.now() : Date.now());
+    // 时间基准：调用方传的 `nowMs` 优先，其次显式注入的 `_nowMs`，最后才取全局。
+    // ⚠️ **必须尊重调用方的 nowMs**（v3.11 实测）：行为层的窗口与相位计时全靠它。
+    // 不接它时，单测传仿真时间（0…20000）而采样存的是 `performance.now()`（几十 ms）
+    // ⇒ 两个时基混用 ⇒ 滚动窗口永远铺不满 ⇒ 卡住判据恒不成立（实测：
+    // hist 首尾 [28.2, …] 与 [257.8, …]，而 nowMs 已到 19000）。
+    const nowMs = Number.isFinite(nowMsHint)
+      ? nowMsHint
+      : (this._nowMs ?? (typeof performance !== 'undefined' ? performance.now() : Date.now()));
     // 格坐标可走性判据：**直接复用 `zombieCollidesAt`**（唯一权威，与物理同源）。
     // 丧尸脚底在 y，AABB 高 1.8 → 占 y..y+1 两层；站在该格 = AABB 不碰撞。
     // 一层台阶算可走：抬一格后也不碰撞即可（与物理 `tryStepUp` 同口径）。
@@ -590,6 +612,19 @@ export class ZombieService {
       });
       this._navDecisions++;
       if (step.blocked) this._navBlocked++;
+      // ---- 行为层（v3.11）：这一拍到底怎么走 ----
+      // 插在 `decideStep`（哪个方向有路）之后、`_applyIntent`（那个方向真的走得通吗）之前。
+      // ⇒ 后退/踱步的方向仍会过 `steerIntent`（退路也得能走），但不会被它吞掉。
+      const behavior = behaviorFor(mem, nowMs);
+      recordSample(behavior, st.position, nowMs);
+      const acted = decideBehavior({
+        behavior, position: st.position, playerPosition,
+        step, nowMs, rng: this._rng,
+      });
+      // 重新寻路：**必须清缓存**。`PathCache` 缓存可达路径 4 秒，不清则后退完
+      // 又命中旧路径走回墙边（v2.49「绕过障碍后回头」的同类根因）。
+      if (acted.replan) this._pathCache.forget(entity.id);
+      this._behaviorPhases[acted.phase] = (this._behaviorPhases[acted.phase] ?? 0) + 1;
       // **实体排斥力**（v2.47 从已删除的离线 RPC 路径搬过来）：
       // 20 只丧尸朝同一目标走会收敛成一个点。原来由 `computeAiUpdates` 无条件叠加，
       // 该路径删掉后必须在这里补回 —— 否则「强制同点生成后必须散开」的观感直接消失
@@ -613,17 +648,21 @@ export class ZombieService {
       // `Cannot read properties of undefined (reading '0')` —— 而那个异常在遍历里被吞掉，
       // 表现为「只有第一只丧尸在动、其余速度恒 0」（实测踩到）。
       const sep = separationForce({ id: entity.id, position: st.position }, allZombies);
+      // ⚠️⚠️ **速度包络只乘导航分量，排斥力全额叠加**（spec §4.5）：
+      // 把包络乘到「导航+排斥力」合成向量上会把排斥力一起缩小 ⇒ 20 只同点生成时
+      // 散不开（既有互斥 E2E 的 min>0.4 会红）。hesitate 的「零速度」同理指**导航分量为零**，
+      // 排斥力仍可推开它 —— 与 v2.40 `blocked` 的既有语义完全一致。
       this._applyIntent({
         id: entity.id,
         generation: entity.generation,
-        vx: step.vx * ZOMBIE.speed + sep.x,
-        vz: step.vz * ZOMBIE.speed + sep.z,
-        mode: step.mode,
+        vx: acted.vx * ZOMBIE.speed + sep.x,
+        vz: acted.vz * ZOMBIE.speed + sep.z,
+        mode: acted.mode,
       });
     }
   }
 
-  update(dt, { playerPosition } = {}) {
+  update(dt, { playerPosition, nowMs = undefined } = {}) {
     // ---- 本地导航（v2.47）：**常开、零网络、不受任何开关控制** ----
     // ⚠️ **这是本轮最重要的不变式**：寻路一度只挂在「在线 AI 开关」下，而那个开关默认关闭
     // ⇒ 玩家实玩时寻路一行都没执行（实测 `plannerEnabled: false, decided: 0`），
@@ -631,7 +670,7 @@ export class ZombieService {
     this._navAccum += dt;
     if (this._navAccum >= ZOMBIE.aiPeriod) {
       this._navAccum = 0;
-      this._stepNavigator(playerPosition);
+      this._stepNavigator(playerPosition, nowMs);
     }
     // ⚠️ **离线 RPC 决策分支已整体删除**（v2.47，用户 2026-11-04 裁定「只依赖本地计算」）。
     // 历史：这里曾走 `pool.call('ai', …)` 让 worker 算「直线朝玩家」的意图。它与本地导航
@@ -677,7 +716,8 @@ export class ZombieService {
 
   /**
    * 本地导航的只读诊断（测试/调试用）。**没有开关** —— 寻路常开。
-   * @returns {{memorySize: number, pathCache: object, navDecisions: number, navBlocked: number}}
+   * @returns {{memorySize: number, pathCache: object, navDecisions: number, navBlocked: number,
+   *            behaviorPhases: object}}
    */
   debugNavigator() {
     return {
@@ -685,6 +725,8 @@ export class ZombieService {
       pathCache: this._pathCache.debugState(),
       navDecisions: this._navDecisions,
       navBlocked: this._navBlocked,
+      /** 行为层相位计数（v3.11）—— Tier 4 用它判「真的进过犹豫/后退/徘徊」 */
+      behaviorPhases: { ...this._behaviorPhases },
     };
   }
 

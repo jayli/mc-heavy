@@ -8,7 +8,7 @@
 import { test } from './runner.js';
 import { assertEqual, assertTrue, assertFalse } from './assert.js';
 import { ZOMBIE_BEHAVIOR, ZOMBIE_MAX_STEP } from '../entities/zombies/zombie-config.js';
-import { behaviorFor, recordSample, detectStuck } from '../entities/zombies/zombie-behavior.js';
+import { behaviorFor, recordSample, detectStuck, decideBehavior } from '../entities/zombies/zombie-behavior.js';
 import { memoryFor, decideStep, DIRECTION_VECTORS } from '../entities/zombies/zombie-navigator.js';
 import { PathCache } from '../entities/zombies/zombie-pathfinder.js';
 import { zombieCollidesAt, zombieStepUpY } from '../entities/zombies/zombie-navigation.js';
@@ -18,6 +18,16 @@ import { createRegistry } from '../voxel/block-registry.js';
 import { ChunkColumn } from '../voxel/chunk-column.js';
 import { WorldData } from '../voxel/world-data.js';
 import { WORLD_MIN_Y } from '../voxel/constants.js';
+
+/**
+ * 浮点比较（本文件局部）。⚠️ `assert.js` 没有 `assertClose`（它是 `test-zombies.js`
+ * 的文件内局部函数）—— 本文件自己定义一份。
+ */
+function assertClose(actual, expected, tolerance, message = '') {
+  if (!(Math.abs(actual - expected) <= tolerance)) {
+    throw new Error(`${message ? message + ': ' : ''}Expected ~${expected} (±${tolerance}), got ${actual}`);
+  }
+}
 
 /**
  * 平地世界（与 test-zombie-pathfinder.js 的 makeFlat 同手法）。
@@ -298,4 +308,335 @@ test('detectStuck m: 1格宽门洞与2格高走廊全程不触发卡住，且真
     assertEqual(triggers, 0, `${fx.label}: 全程不得触发卡住（实际 ${triggers} 次）`);
     assertTrue(endZ < 30, `${fx.label}: 须真的走过去（末 z=${endZ.toFixed(2)}，起点 40.5）`);
   }
+});
+// ==================== Task 3：状态机 ====================
+
+/** 造一个「远且走不动」的 behavior（信号 A 会触发） */
+function stuckBehavior(nowMs) {
+  const b = behaviorFor(memoryFor(new Map(), 'z0'), nowMs);
+  b.hist.length = 0;
+  b.hist.push([nowMs - 1500, 32.5, 32.5]);
+  b.hist.push([nowMs, 32.5, 32.5]);
+  return b;
+}
+
+/** 朝北的 decideStep 结果（玩家在正北） */
+const NORTH_STEP = { vx: 0, vz: -1, mode: 'chasing', plannedDirection: 'north', blocked: false };
+const FAR_PLAYER = [32.5, 1, 20.5];
+const FAR_POS = [32.5, 1, 32.5];
+
+test('decideBehavior 前置门: 距玩家0.48格 ⇒ 恒 chase，不进任何新状态', () => {
+  const nowMs = 10000;
+  const b = stuckBehavior(nowMs);
+  // 位置改到玩家跟前（0.48 格），hist 也同点 ⇒ 净位移 0 但已抵达
+  b.hist.length = 0;
+  b.hist.push([nowMs - 1500, 32.5, 20.98]);
+  b.hist.push([nowMs, 32.5, 20.98]);
+  const r = decideBehavior({
+    behavior: b, position: [32.5, 1, 20.98], playerPosition: FAR_PLAYER,
+    step: NORTH_STEP, nowMs, rng: () => 0,
+  });
+  assertEqual(r.phase, 'chase', '已抵达 ⇒ 不得进犹豫/后退/徘徊');
+  assertEqual(r.mode, 'chasing');
+  assertFalse(r.replan);
+});
+
+test('decideBehavior n: blocked（四面围死）⇒ mode=blocked，不进犹豫', () => {
+  const nowMs = 10000;
+  const b = stuckBehavior(nowMs);
+  const r = decideBehavior({
+    behavior: b, position: FAR_POS, playerPosition: FAR_PLAYER,
+    step: { vx: 0, vz: 0, mode: 'blocked', plannedDirection: null, blocked: true },
+    nowMs, rng: () => 0,
+  });
+  assertEqual(r.mode, 'blocked', '围死须保持既有 blocked 语义');
+  assertEqual(r.vx, 0);
+  assertEqual(r.vz, 0);
+  assertFalse(r.phase === 'hesitate' || r.phase === 'backoff' || r.phase === 'wander',
+    '围死不得进犹豫循环');
+});
+
+test('decideBehavior f: 状态序 chase→hesitate→backoff→replan（rng 两端）', () => {
+  for (const rngVal of [0, 1]) {
+    const rng = () => rngVal;
+    let nowMs = 10000;
+    const b = stuckBehavior(nowMs);
+    const phases = [];
+    let hesitateStart = null, hesitateEnd = null;
+    // 逐拍推进 6 秒（20Hz），位置固定不动（持续卡住）
+    for (let i = 0; i < 120; i++) {
+      const r = decideBehavior({
+        behavior: b, position: FAR_POS, playerPosition: FAR_PLAYER,
+        step: NORTH_STEP, nowMs, rng,
+      });
+      phases.push(r.phase);
+      if (r.phase === 'hesitate' && hesitateStart === null) hesitateStart = nowMs;
+      if (hesitateStart !== null && hesitateEnd === null && r.phase !== 'hesitate') hesitateEnd = nowMs;
+      recordSample(b, FAR_POS, nowMs);
+      nowMs += 50;
+    }
+    assertTrue(phases.includes('hesitate'), `rng=${rngVal}: 须出现 hesitate`);
+    assertTrue(phases.includes('backoff'), `rng=${rngVal}: 须出现 backoff`);
+    assertTrue(phases.indexOf('hesitate') < phases.indexOf('backoff'),
+      `rng=${rngVal}: hesitate 须早于 backoff`);
+    assertTrue(phases.includes('replan'), `rng=${rngVal}: 须出现 replan`);
+    // hesitate 时长落在配置区间（±一个决策周期 50ms 的量子化容差）
+    const dur = (hesitateEnd - hesitateStart) / 1000;
+    assertTrue(dur >= 0.6 - 0.05 && dur <= 1.2 + 0.05,
+      `rng=${rngVal}: hesitate 时长须在 [0.6,1.2]，实际 ${dur}`);
+  }
+});
+
+test('decideBehavior g: hesitate 期间 vx=vz=0（愣住）', () => {
+  let nowMs = 10000;
+  const b = stuckBehavior(nowMs);
+  let sawHesitate = false;
+  for (let i = 0; i < 40; i++) {
+    const r = decideBehavior({
+      behavior: b, position: FAR_POS, playerPosition: FAR_PLAYER,
+      step: NORTH_STEP, nowMs, rng: () => 0,
+    });
+    if (r.phase === 'hesitate') {
+      sawHesitate = true;
+      assertEqual(r.vx, 0, 'hesitate 须零速度');
+      assertEqual(r.vz, 0, 'hesitate 须零速度');
+      assertEqual(r.mode, 'hesitating');
+    }
+    recordSample(b, FAR_POS, nowMs);
+    nowMs += 50;
+  }
+  assertTrue(sawHesitate, '前提：须真的进过 hesitate');
+});
+
+test('decideBehavior h: backoff 方向背离玩家，mode=backing', () => {
+  let nowMs = 10000;
+  const b = stuckBehavior(nowMs);
+  let sawBackoff = false;
+  for (let i = 0; i < 60; i++) {
+    const r = decideBehavior({
+      behavior: b, position: FAR_POS, playerPosition: FAR_PLAYER,
+      step: NORTH_STEP, nowMs, rng: () => 0.5,
+    });
+    if (r.phase === 'backoff') {
+      sawBackoff = true;
+      assertEqual(r.mode, 'backing');
+      // 玩家在正北 ⇒ 背离玩家 = 正南 ⇒ vz > 0
+      assertTrue(r.vz > 0, `后退须背离玩家（vz=${r.vz}）`);
+      assertClose(Math.abs(r.vx), 0, 1e-9, '正南后退时 vx 须为 0');
+    }
+    recordSample(b, FAR_POS, nowMs);
+    nowMs += 50;
+  }
+  assertTrue(sawBackoff, '前提：须真的进过 backoff');
+});
+
+test('decideBehavior i: backoff 背后撞墙 ⇒ 立即结束（不硬顶）', () => {
+  // 夹具：丧尸 [32.5,1,32.5] 关在一条**东西向封死**的夹缝里：
+  //   z=31 与 z=34 各一道 3 格高墙（挡住北面的玩家与南面的退路），
+  //   x=31 与 x=34 再各一道墙把东西两端也封上。
+  // ⚠️ **东西两端必须封**（实测踩到）：只建 z 方向两道墙时丧尸会沿夹缝横向跑
+  //   到墙端外绕过去 ⇒ 它一直「走得动」⇒ 信号 A 永不触发 ⇒ 根本进不了 backoff，
+  //   用例的前提断言直接红（那是夹具缺陷，不是实现缺陷）。
+  // 玩家在正北 ⇒ 后退正南；退 1.0 格可走、退 1.5 格撞墙。
+  const { world, set } = makeFlat();
+  for (let x = 31; x <= 34; x++) {
+    for (let dy = 0; dy < 3; dy++) { set(x, 1 + dy, 31); set(x, 1 + dy, 34); }
+  }
+  for (let z = 31; z <= 34; z++) {
+    for (let dy = 0; dy < 3; dy++) { set(31, 1 + dy, z); set(34, 1 + dy, z); }
+  }
+  // 前提断言：夹具真的是「退 1.0 可走、退 1.5 撞墙」
+  assertFalse(zombieCollidesAt(world, 32.5, 1, 33.5), '前提：退 1.0 格须可走');
+  assertTrue(zombieCollidesAt(world, 32.5, 1, 34.0), '前提：退 1.5 格须撞墙');
+
+  const entities = new EntityManager();
+  entities.registerType('zombie', zombieDefinition);
+  const zombies = new ZombieService({ entities, world });
+  const id = zombies.spawn([32.5, 1, 32.5], { source: 'test' });
+  assertTrue(id !== null, '前提：夹缝内须能生成');
+  const mem = memoryFor(new Map(), id);
+  const b = behaviorFor(mem, 0);
+  const cache = new PathCache();
+  const isWalkable = makeWalkable();
+  const dt = 1 / 60;
+  let t = 0, backoffTicks = 0, maxSouthDisp = 0;
+  const startZ = 32.5;
+  while (t < 12) {
+    zombies.update(dt, { playerPosition: FAR_PLAYER, nowMs: t * 1000 });
+    entities.update(dt, { world });
+    const st = zombies.get(id);
+    const nowMs = t * 1000;
+    const step = decideStep({
+      world, position: st.position, playerPosition: FAR_PLAYER, memory: mem,
+      pathCache: cache, nowMs, isWalkable,
+    });
+    recordSample(b, st.position, nowMs);
+    const r = decideBehavior({
+      behavior: b, position: st.position, playerPosition: FAR_PLAYER,
+      step, nowMs, rng: () => 1,   // 取后退距离上界 2.0 格
+    });
+    if (r.phase === 'backoff') backoffTicks++;
+    maxSouthDisp = Math.max(maxSouthDisp, st.position[2] - startZ);
+    t += dt;
+  }
+  assertTrue(backoffTicks > 0, '前提：须真的进过 backoff');
+  // 退够 2.0 格需要撞穿 z=34 的墙 ⇒ 实际最大南移必须明显小于 2.0
+  assertTrue(maxSouthDisp < 1.5,
+    `背后撞墙时不得硬顶到目标距离（实际南移 ${maxSouthDisp.toFixed(3)} 格）`);
+});
+
+test('decideBehavior j: replan 拍返回 replan=true', () => {
+  let nowMs = 10000;
+  const b = stuckBehavior(nowMs);
+  let sawReplan = false;
+  for (let i = 0; i < 120; i++) {
+    const r = decideBehavior({
+      behavior: b, position: FAR_POS, playerPosition: FAR_PLAYER,
+      step: NORTH_STEP, nowMs, rng: () => 0,
+    });
+    if (r.phase === 'replan') { sawReplan = true; assertTrue(r.replan, 'replan 拍须要求清缓存'); }
+    recordSample(b, FAR_POS, nowMs);
+    nowMs += 50;
+  }
+  assertTrue(sawReplan, '前提：须真的进过 replan');
+});
+
+test('decideBehavior k: 连续失败3次 ⇒ wander，且 wander 有非零位移', () => {
+  let nowMs = 10000;
+  const b = stuckBehavior(nowMs);
+  let sawWander = false, wanderMoving = 0;
+  // 跑 40 秒：每轮 hesitate+backoff+replan 约 2~3 秒，3 次失败后应进 wander
+  for (let i = 0; i < 800; i++) {
+    const r = decideBehavior({
+      behavior: b, position: FAR_POS, playerPosition: FAR_PLAYER,
+      step: NORTH_STEP, nowMs, rng: () => 0,
+    });
+    if (r.phase === 'wander') {
+      sawWander = true;
+      assertEqual(r.mode, 'wandering');
+      if (Math.hypot(r.vx, r.vz) > 1e-6) wanderMoving++;
+    }
+    recordSample(b, FAR_POS, nowMs);
+    nowMs += 50;
+  }
+  assertTrue(sawWander, '连续失败后须进 wander');
+  assertTrue(wanderMoving > 0, 'wander 不得是原地站死（须有非零速度拍）');
+});
+
+test('decideBehavior l: wander 中有路 ⇒ 回 chase', () => {
+  let nowMs = 10000;
+  const b = stuckBehavior(nowMs);
+  // 先跑到 wander
+  for (let i = 0; i < 800; i++) {
+    decideBehavior({
+      behavior: b, position: FAR_POS, playerPosition: FAR_PLAYER,
+      step: NORTH_STEP, nowMs, rng: () => 0,
+    });
+    recordSample(b, FAR_POS, nowMs);
+    nowMs += 50;
+  }
+  assertEqual(b.phase, 'wander', '前提：须已在 wander');
+  // 现在「有路了」：hist 显示真的在移动（净位移足够）⇒ 下一拍应回 chase
+  b.hist.length = 0;
+  b.hist.push([nowMs - 1500, 32.5, 32.5]);
+  b.hist.push([nowMs, 32.5, 30.0]);
+  const r = decideBehavior({
+    behavior: b, position: [32.5, 1, 30.0], playerPosition: FAR_PLAYER,
+    step: NORTH_STEP, nowMs, rng: () => 0,
+  });
+  assertEqual(r.phase, 'chase', '有路后须回 chase');
+  assertEqual(r.mode, 'chasing');
+});
+
+test('decideBehavior r: 同 rng 同输入 ⇒ 逐位同输出（确定性）', () => {
+  const run = () => {
+    let nowMs = 10000;
+    const b = stuckBehavior(nowMs);
+    const out = [];
+    for (let i = 0; i < 100; i++) {
+      const r = decideBehavior({
+        behavior: b, position: FAR_POS, playerPosition: FAR_PLAYER,
+        step: NORTH_STEP, nowMs, rng: () => 0.37,
+      });
+      out.push([r.vx, r.vz, r.mode, r.phase, r.replan]);
+      recordSample(b, FAR_POS, nowMs);
+      nowMs += 50;
+    }
+    return out;
+  };
+  const a = run(), c = run();
+  assertEqual(a.length, c.length);
+  for (let i = 0; i < a.length; i++) {
+    assertEqual(a[i][0], c[i][0], `第 ${i} 拍 vx 须逐位相同`);
+    assertEqual(a[i][1], c[i][1], `第 ${i} 拍 vz 须逐位相同`);
+    assertEqual(a[i][3], c[i][3], `第 ${i} 拍 phase 须相同`);
+  }
+});
+
+test('decideBehavior: chase 时原样透传 decideStep 的方向（不改方向）', () => {
+  const nowMs = 10000;
+  const b = behaviorFor(memoryFor(new Map(), 'z0'), nowMs);
+  // 净位移足够 ⇒ 不卡住
+  b.hist.push([nowMs - 1500, 32.5, 34.0]);
+  b.hist.push([nowMs, 32.5, 32.5]);
+  const r = decideBehavior({
+    behavior: b, position: FAR_POS, playerPosition: FAR_PLAYER,
+    step: NORTH_STEP, nowMs, rng: () => 0.5,
+  });
+  assertEqual(r.phase, 'chase');
+  assertEqual(r.mode, 'chasing');
+  assertEqual(r.vz, -1, 'chase 时方向须原样透传（速度倍率在 Task 4 才引入）');
+  assertEqual(r.vx, 0);
+});
+
+// ==================== Task 3：接线（只测纯函数会漏「没接线」，M7 教训）====================
+
+test('行为层接线: 整图封死时真 service 会进 hesitate/backoff（不是只测纯函数）', () => {
+  // 夹具（写计划阶段实测）：整张图 z=30 一道 3 格高墙 ⇒ 真不可达。
+  // 现状实测：20s 净位移 2.12 格、朝向翻转 354 次、mode 全程 chasing。
+  const { world, set } = makeFlat();
+  for (let x = 0; x < 64; x++) for (let dy = 0; dy < 3; dy++) set(x, 1 + dy, 30);
+  const entities = new EntityManager();
+  entities.registerType('zombie', zombieDefinition);
+  const zombies = new ZombieService({ entities, world, rng: () => 0 });
+  const id = zombies.spawn([32.5, 1, 33.5], { source: 'test' });
+  assertTrue(id !== null, '前提：须能生成');
+  const playerPosition = [32.5, 1, 20.5];
+  const dt = 1 / 60;
+  let t = 0;
+  const modes = new Set();
+  while (t < 20) {
+    zombies.update(dt, { playerPosition, nowMs: t * 1000 });
+    entities.update(dt, { world });
+    modes.add(zombies.get(id).mode);
+    t += dt;
+  }
+  const phases = zombies.debugNavigator().behaviorPhases;
+  assertTrue(phases.hesitate > 0, `真 service 须进过 hesitate（实际 ${phases.hesitate}）`);
+  assertTrue(phases.backoff > 0, `真 service 须进过 backoff（实际 ${phases.backoff}）`);
+  assertTrue(modes.has('hesitating'), 'state.mode 须真的出现过 hesitating（白名单接线）');
+  assertTrue(modes.has('backing'), 'state.mode 须真的出现过 backing');
+});
+
+test('行为层接线: 开阔地正常追逐不进犹豫（零回归）', () => {
+  const { world } = makeFlat();
+  const entities = new EntityManager();
+  entities.registerType('zombie', zombieDefinition);
+  const zombies = new ZombieService({ entities, world, rng: () => 0.5 });
+  const id = zombies.spawn([32.5, 1, 44.5], { source: 'test' });
+  const playerPosition = [32.5, 1, 20.5];
+  const dt = 1 / 60;
+  let t = 0;
+  while (t < 18) {
+    zombies.update(dt, { playerPosition, nowMs: t * 1000 });
+    entities.update(dt, { world });
+    t += dt;
+  }
+  const st = zombies.get(id);
+  const phases = zombies.debugNavigator().behaviorPhases;
+  assertEqual(phases.hesitate, 0, '开阔地直追不得犹豫');
+  assertEqual(phases.backoff, 0, '开阔地直追不得后退');
+  // 真的追到了（18s × 1.2 = 21.6 格 > 24 格距离的大部分）
+  const dist = Math.hypot(st.position[0] - playerPosition[0], st.position[2] - playerPosition[2]);
+  assertTrue(dist < 3, `须追到玩家附近（实际距 ${dist.toFixed(2)} 格）`);
 });

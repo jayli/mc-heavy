@@ -1684,3 +1684,21 @@ test('避障 l) 四面围死 → 原地站住；拆墙后下一周期恢复 chas
   for (let i = 0; i < 120; i++) entities.update(1 / 60, { world });
   assertTrue(zombies.get(id).position[0] > xBefore + 0.1, `拆墙后须继续前进（x=${zombies.get(id).position[0]}）`);
 });
+
+// ==================== v3.11：行为层的 mode 白名单 ====================
+//
+// ⚠️ **两条路径都要测**：`setIntent`（AI 意图写入）与 `createState`（damage 重建 state）。
+// v2.40 的教训：`normalizeMode` 曾是两处各写一份三元表达式，漏改一处的形态是
+// 「速度与位置全对、只有 mode 错」—— 任何只看「它没动」的断言都抓不到。
+
+test('v3.11 行为层 mode 白名单: hesitating/backing/wandering 不被规范化成 idle', () => {
+  const { zombies } = makeAiFixture();
+  const id = zombies.spawn([10.5, 1, .5], { source: 'test' });
+  for (const mode of ['hesitating', 'backing', 'wandering']) {
+    zombies.setIntent(id, { vx: 0, vz: 0, mode });
+    assertEqual(zombies.get(id).mode, mode, `setIntent 路径须保留 ${mode}`);
+    // damage 走 createState 重建 state —— 另一条消费 normalizeMode 的路径
+    zombies.damage(id, 1, 0);
+    assertEqual(zombies.get(id).mode, mode, `createState 路径也须保留 ${mode}`);
+  }
+});

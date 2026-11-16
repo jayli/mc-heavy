@@ -204,6 +204,16 @@ export const ZOMBIE_BEHAVIOR = Object.freeze({
   backoffDistanceMax: 2.0,
   /** 后退速度倍率（后退该比前进慢） */
   backoffSpeedScale: 0.55,
+  /**
+   * backoff 的「撞墙判据」宽限期（秒）。
+   *
+   * ⚠️⚠️ **不得取 0**（实测踩到）：进入 backoff 的那一拍才刚把速度写进意图，
+   * 60Hz 物理还没积分 ⇒ 下一拍位置必然没动。宽限期为 0 时「本拍没动 ⇒ 撞墙」
+   * 立即成立 ⇒ **backoff 永远只持续 1 拍**，后退根本不会发生。
+   * 取 0.2s：远大于一个决策周期（0.05s）与几个物理步，又远小于后退 1~2 格
+   * 所需时间（1.0 格 ÷ (1.2×0.55) ≈ 1.5s）。
+   */
+  backoffGraceSeconds: 0.2,
   /** 重新寻路前的踱步步数下界 */
   paceStepsMin: 1,
   /** 重新寻路前的踱步步数上界 */
