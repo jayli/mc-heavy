@@ -397,7 +397,14 @@ export class GuardianBossAgent extends BossAgent {
 
     return {
       position: [px, py, pz],
-      velocity: [0, vy, 0],
+      // v3.09：水平意图写回 velocity（渲染层程序化步态据此判「在移动」）。
+      // ⚠️ 与丧尸/焰魔同口径：意图写进 `state.velocity`，**不另设 intent 容器** ——
+      // 另设会让「渲染看到的移动」与「物理实际的移动」分家（zombie-system.js 文件头②）。
+      // 旧实现恒返 `[0, vy, 0]` ⇒ 渲染器的原版 walk() 摆腿分支**从未执行过**
+      //（用户 2026-11-16：「移动的过程中双腿没有踱步的动作」）。
+      // ⚠️ 本 Agent 顶部只读 `state.velocity[1]`（vy）、**不读水平分量** ⇒ 写回无反馈回路。
+      // attack / idle / 死区站定的 want 本就是 0 ⇒ 静止时仍回 bind，语义不变。
+      velocity: [wantVx, vy, wantVz],
       yaw,
       health: state.health,
       flashedUntil: state.flashedUntil,

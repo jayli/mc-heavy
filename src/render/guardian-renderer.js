@@ -33,7 +33,8 @@
 import * as THREE from 'three';
 import { resourceUrl } from '../core/resource-url.js';
 import {
-  GUARDIAN, GUARDIAN_ATTACK_IDS, GUARDIAN_STEP_LIFT, GUARDIAN_POSE_BLEND, guardianBlendSeconds,
+  GUARDIAN, GUARDIAN_ATTACK_IDS, GUARDIAN_STEP_LIFT, GUARDIAN_POSE_BLEND, GUARDIAN_GAIT,
+  guardianBlendSeconds,
 } from '../entities/guardian/guardian-config.js';
 import { StepLift } from '../player/step-lift.js';
 import { KnockbackEase } from './knockback-ease.js';
@@ -46,18 +47,8 @@ const FLASH_COLOR = 0xff0000;
 /** 常态基色（白 —— 有贴图时基色必须白，否则「深色 × 纹理」变暗） */
 const BASE_COLOR = 0xffffff;
 
-/**
- * 程序化 idle 的参数 —— 取自原版 `ModelEnder_Guardian.setupAnim`：
- * `walkSpeed = 0.5F`、`walkDegree = 0.5F`，四肢用 `walkDegree × 1.2`、root 用 `× 0.2`。
- *
- * ⚠️ 原版的 `limbSwing` 是「肢体摆动相位」（由移动距离驱动），`limbSwingAmount` 是幅度包络。
- * 本仓用 `idleTime × WALK_SPEED` 作相位、按是否在移动给幅度（与丧尸渲染器同口径）。
- */
-const IDLE_WALK_SPEED = 0.5 * 4;      // 原版 limbSwing 每格约推进 4 弧度量级，取 2 rad/s 的观感
-const IDLE_LIMB_AMPLITUDE = 0.5 * 1.2;   // 四肢摆幅（弧度）
-const IDLE_ROOT_AMPLITUDE = 0.5 * 0.2;   // root 起伏摆幅（弧度）
-/** 「在移动」的速度阈（与丧尸 `ZOMBIE_MOVING_EPSILON` 同量级） */
-const MOVING_EPSILON = 0.001;
+// 程序化步态的幅度与相位常量全在 `GUARDIAN_GAIT`（entities/guardian/guardian-config.js）——
+// 渲染层不写第二份（红线 1）。v3.09 前这里有四个本地常量，已删。
 
 const _tmpQuat = new THREE.Quaternion();
 
@@ -161,8 +152,13 @@ export class GuardianRenderer {
       prevY: null,
       /** 姿态衔接（逐实例一份，有状态） */
       transition: new GuardianPoseTransition(GUARDIAN_POSE_BLEND.seconds),
-      /** 程序化 idle 的相位累积（秒）—— 逐实例，静止时归零 */
+      /** 程序化步态的相位累积（**弧度**，v3.09 按移动距离推）—— 逐实例，真停下时归零 */
       idlePhase: 0,
+      /** 连续「有意图但零位移」的累计秒数（超 `stopGraceSeconds` 才归零相位） */
+      idleStillSeconds: 0,
+      /** 上一帧的**物理** x/z（null = 未对齐）。首帧必须不摆腿，同 `prevY` 口径 */
+      prevX: null,
+      prevZ: null,
     };
   }
 
@@ -225,6 +221,11 @@ export class GuardianRenderer {
         inst.knock.offsetZ = 0;
         inst.transition.reset();
         inst.idlePhase = 0;
+        inst.idleStillSeconds = 0;
+        // ⚠️ 位移基准也要重置：不重置会把「上一只在旧图的位置 → 新实体在另一张图」
+        // 当成一次几十格的大步 ⇒ 新实体出生首帧就摆到随机相位。
+        inst.prevX = null;
+        inst.prevZ = null;
         this._restoreBindPose(inst);
       }
       this._syncOne(inst, entity, nowMs, dt);
@@ -270,6 +271,18 @@ export class GuardianRenderer {
     // ⚠️ 欧拉顺序显式 'YXZ'（守卫无俯仰，但与飞龙/焰魔同口径）
     inst.pivot.rotation.set(0, st.yaw, 0, 'YXZ');
 
+    // ---- 本帧真实水平位移（v3.09 步态相位的唯一驱动量）----
+    // ⚠️ 用**物理** `st.position`，不是上面加了 lift/knock 偏移的渲染位置 ——
+    // 用渲染位置会把击退补间与上台阶缓动当成「移动」而摆腿。
+    // ⚠️ 首帧 prevX===null ⇒ moved=0 ⇒ 不摆（同 `prevY` 口径）。
+    // ⚠️ **攻击期也要更新基准**：否则招式结束回 chase 那一帧会把整段攻击期的位移
+    // 一次性算成一大步。
+    const movedX = inst.prevX === null ? 0 : st.position[0] - inst.prevX;
+    const movedZ = inst.prevZ === null ? 0 : st.position[2] - inst.prevZ;
+    inst.prevX = st.position[0];
+    inst.prevZ = st.position[2];
+    const moved = Math.hypot(movedX, movedZ);
+
     // ---- 动画来源：四条攻击片段 or 程序化 idle ----
     const attackT = Number.isFinite(st.attackAnimT) ? st.attackAnimT : 0;
     const clipKey = GUARDIAN_ATTACK_IDS.includes(st.attackKind)
@@ -278,7 +291,7 @@ export class GuardianRenderer {
     const sourceKey = attacking ? clipKey : 'idle';
     const target = attacking
       ? sampleGuardianAttack(this.asset.animations[clipKey], attackT)
-      : this._idlePose(inst, st, dt);
+      : this._idlePose(inst, st, moved, dt);
     // ⚠️ 来源切换不得硬切：过渡器持有上一帧发布的姿态，在 guardianBlendSeconds(key) 内淡入。
     // 纯视觉层 —— 权威 state（attackAnimT / 命中帧）仍瞬时。
     const deltas = inst.transition.step(sourceKey, target, dt, guardianBlendSeconds(sourceKey));
@@ -314,27 +327,53 @@ export class GuardianRenderer {
   }
 
   /**
-   * 程序化 idle 姿态（产物里没有 idle 片段）。
+   * 程序化步态姿态（产物里没有 idle / walk 片段）。
    *
    * 复刻原版 `setupAnim` 的 `walk()` / `flap()`：四肢绕 X 轴反相摆动、root 轻微起伏。
-   * ⚠️ **静止时相位归零、幅度归零**（不是冻结在上一个摆幅）—— 与丧尸渲染器同口径。
+   * 幅度取原版一半（用户 2026-11-16「稍微有一个踱步的动作」），常量在 `GUARDIAN_GAIT`。
+   *
+   * ⚠️⚠️ **相位按本帧真实水平位移推进，不按 dt**（v3.09）：原版 `limbSwing` 由
+   * `walkAnimation(distance)` 驱动。按 dt 推会得到两个缺陷：
+   * ① 撞墙 / 飞跃期贴近玩家（物理步水平意图被清零）时**腿仍摆** = 滑步；
+   * ② 步频与步幅随帧率脱钩（旧实现 2 rad/s ⇒ 3.14s 一周期、走 17 格，是慢动作）。
+   *
+   * ⚠️ **两条门都要**：意图为假（idle/attack/死区站定）**立即**归零；
+   * 意图真但位移≈ 0 要**连续超 `stopGraceSeconds`** 才归零（见下方实测注释）。
    * ⚠️ 只在非攻击态调用（攻击期间叠加会让两套打架）。
    *
+   * @param {object} inst 实例
+   * @param {object} st 实体 state（读 `velocity` 的水平意图）
+   * @param {number} moved 本帧**物理**水平位移（格）
+   * @param {number} dt 距上一帧的秒数（只用于「真的停下了」的宽限计时）
    * @returns {Map<number, {rot:number[], pos:number[]}>} 增量姿态
    */
-  _idlePose(inst, st, dt) {
+  _idlePose(inst, st, moved, dt = 0) {
     const v = Array.isArray(st.velocity) ? st.velocity : [0, 0, 0];
-    const moving = Math.abs(v[0]) > MOVING_EPSILON || Math.abs(v[2]) > MOVING_EPSILON;
-    if (moving) {
-      inst.idlePhase += dt * IDLE_WALK_SPEED;
-    } else {
+    const eps = GUARDIAN_GAIT.movingEpsilon;
+    const intentMoving = Math.abs(v[0]) > eps || Math.abs(v[2]) > eps;
+    if (!intentMoving) {
+      // idle / attack / 死区站定：立即归零（原版 limbSwingAmount 为 0）
       inst.idlePhase = 0;
+      inst.idleStillSeconds = 0;
+    } else if (moved > eps) {
+      inst.idlePhase += moved * GUARDIAN_GAIT.radiansPerBlock;
+      inst.idleStillSeconds = 0;
+    } else {
+      // ⚠️⚠️ **零位移不得立即归零相位**（实测真缺陷）：物理是 60Hz 固定步长 accumulator，
+      // 与渲染帧率不整除 ⇒ 移动中近半数帧本帧没摊到物理步（实测 0.09/0/0.09/0 交替）。
+      // 立即归零会让腿永远在 0 ↔ 0.0497 之间抖（峰值到不了 0.3），观感是高频抖动。
+      // 只有**连续**零位移超过 `stopGraceSeconds` 才判「真停下了」（撞墙 / 飞跃期贴近玩家）。
+      inst.idleStillSeconds += Math.max(0, dt);
+      if (inst.idleStillSeconds >= GUARDIAN_GAIT.stopGraceSeconds) {
+        inst.idlePhase = 0;
+        inst.idleStillSeconds = 0;
+      }
     }
     const out = new Map();
-    if (!moving) return out;   // 静止 = bind 姿态（原版 limbSwingAmount 为 0）
+    if (inst.idlePhase === 0) return out;   // 静止 / 真走不动 = bind 姿态
     const s = Math.sin(inst.idlePhase);
     for (const limb of this._idleLimbs) {
-      const ang = s * IDLE_LIMB_AMPLITUDE * limb.sign;
+      const ang = s * GUARDIAN_GAIT.limbAmplitude * limb.sign;
       // 绕 X 轴的增量四元数
       out.set(limb.index, {
         rot: [Math.sin(ang / 2), 0, 0, Math.cos(ang / 2)],
@@ -342,7 +381,7 @@ export class GuardianRenderer {
       });
     }
     if (this._idleRoot >= 0) {
-      const ang = s * IDLE_ROOT_AMPLITUDE;
+      const ang = s * GUARDIAN_GAIT.rootAmplitude;
       out.set(this._idleRoot, {
         rot: [Math.sin(ang / 2), 0, 0, Math.cos(ang / 2)],
         pos: [0, 0, 0],

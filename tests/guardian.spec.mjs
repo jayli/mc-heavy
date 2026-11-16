@@ -57,6 +57,22 @@ async function waitColumn(page, wx, wz, timeout = 180_000) {
   await page.waitForTimeout(800);
 }
 
+/**
+ * 等世界稳定：上传队列排空 + sections 连续两次相同（**不能只看队列瞬时归零**）。
+ * draw call 类断言必须先过这道门 —— 地形加载期的读数与守卫无关。
+ */
+async function waitWorldStable(page, timeout = 120_000) {
+  await page.waitForFunction(() => {
+    const g = window.__MC_GAME__;
+    const s = g.scheduler.stats();
+    const n = g.renderStats().sections;
+    const ok = s.genInflight === 0 && s.meshInflight === 0 && s.uploadQueue === 0
+      && window.__LAST_SECTIONS__ === n;
+    window.__LAST_SECTIONS__ = n;
+    return ok;
+  }, null, { timeout, polling: 500 });
+}
+
 /** 派真实 KeyB（keydown + keyup，与玩家按键同一条路径） */
 async function pressB(page) {
   await page.evaluate(() => {
@@ -745,5 +761,150 @@ test.describe('末影守卫 E2E', () => {
     // 无击退 ⇒ 距离只能由守卫自己的 AI 改变；砍的当帧它是同步冻结的，故距离逐位不变
     expect(Math.abs(distAfter - distBefore),
       `拆掉击退后不得有瞬时位移（${distBefore.toFixed(3)} → ${distAfter.toFixed(3)}）`).toBeLessThan(0.02);
+  });
+
+  /**
+   * v3.09：围场（用户口中的「围栏」）占地内按 B → 召出末影守卫。
+   *
+   * ⚠️ **判别力在玩家高度**：把玩家放在占地内**最高自然地表上方 2 格**（土壁之上）。
+   * 围场是下沉式场地，若 `summonY` 没接线，`_findGroundY` 会取「离玩家最近」的土壁层
+   * ⇒ `got.y` 断言红。玩家放最低层则用例退化成假绿。
+   * ⚠️ 量 draw call 前**关阴影**（VSM 下 receiveShadow 对象也进阴影 pass，会让读数无关波动）。
+   */
+  test('围场：占地内按 B → 守卫落在场地中心地板上，且在栏杆环内', async ({ page }) => {
+    test.setTimeout(300_000);
+    await page.goto(`/?seed=${SEED}`);
+    await waitWorldReady(page);
+    const a = await page.evaluate(async () => {
+      const m = await import('/src/gen/structures/arena.js');
+      const anchor = m.computeArenaAnchor(window.__MC_GAME__.seed);
+      return anchor && {
+        wx: anchor.wx, wz: anchor.wz, floorY: anchor.floorY, maxH: anchor.maxH,
+        dy: m.ARENA_SUMMON_FEET_DY, hx: m.ARENA_HALF_X, hz: m.ARENA_HALF_Z,
+      };
+    });
+    expect(a, '前提：seed 12345 必须有围场').not.toBeNull();
+    await page.evaluate(() => window.__MC_GAME__.setShadowsEnabled(false));
+    await page.waitForTimeout(300);
+    await putPlayer(page, a.wx + 0.5, a.maxH + 2, a.wz + 0.5);
+    await waitColumn(page, a.wx, a.wz);
+    // ⚠️ **必须等世界真的稳定再读 draw 基线**（实测：传送后 draw 118→343→464 才稳，
+    // sections 494→1593、uploadQueue 1790→0，约 3s）。召唤前读到的数是「世界还在加载」
+    // 的读数 ⇒ 与 despawn 后比会把地形加载误判成守卫留了常驻 draw。
+    await waitWorldStable(page);
+    const drawBefore = await page.evaluate(() => window.__MC_GAME__.renderStats().drawCalls);
+    await pressB(page);
+    await page.waitForFunction(() => window.__MC_GAME__.guardians.activeEntities().length === 1,
+      null, { timeout: 30_000 });
+    await page.waitForFunction(() => window.__MC_GAME__.guardians.activeEntities()[0]?.state.onGround === true,
+      null, { timeout: 15_000 });
+    const got = await page.evaluate(() => {
+      const g = window.__MC_GAME__;
+      const e = g.guardians.activeEntities()[0];
+      const [x, y, z] = e.state.position;
+      return {
+        id: e.id, x, y, z,
+        below: g.world.getBlockId(Math.floor(x), Math.floor(y) - 1, Math.floor(z)),
+        self: g.world.getBlockId(Math.floor(x), Math.floor(y), Math.floor(z)),
+        playerY: g.player.physics.pos.y,
+      };
+    });
+    console.log('ARENA GUARDIAN SPAWN:', JSON.stringify(got), 'expect y', a.floorY + a.dy);
+    expect(got.id, 'id 必须带围场标识').toContain('arena:0');
+    expect(got.y, '脚底 = 地板层上方一格（不是土壁那一层）').toBe(a.floorY + a.dy);
+    expect(Math.floor(got.x), '落点 x = 场地中心').toBe(a.wx);
+    expect(Math.floor(got.z), '落点 z = 场地中心').toBe(a.wz);
+    expect(got.below, '脚下应实心').not.toBe(0);
+    expect(got.self, '自身所在格应是空气').toBe(0);
+    expect(Math.abs(got.x - a.wx), '必须在栏杆环内（X）').toBeLessThan(a.hx);
+    expect(Math.abs(got.z - a.wz), '必须在栏杆环内（Z）').toBeLessThan(a.hz);
+    // 击杀后 draw call 回基线（守卫池扩到 2 仍不得留常驻 draw）
+    await page.evaluate(() => {
+      const g = window.__MC_GAME__;
+      const e = g.guardians.activeEntities()[0];
+      g.guardians.damage(e.id, 999999, performance.now());
+    });
+    await waitWorldStable(page);
+    const drawAfter = await page.evaluate(() => window.__MC_GAME__.renderStats().drawCalls);
+    expect(drawAfter, `守卫 despawn 后 draw call 须回基线（before=${drawBefore}）`)
+      .toBeLessThanOrEqual(drawBefore);
+  });
+
+  /**
+   * v3.09：守卫移动时双腿真的交替踱步（Tier 4，判据落在**真实骨骼四元数**上）。
+   *
+   * 用户 2026-11-16：「移动的过程中，双腿没有踱步的动作，感觉不真实」。
+   * 两处缺陷：① Agent 恒返回 velocity[0,vy,0] ⇒ 摆腿分支从未执行；② 相位按 dt 推 ⇒ 慢动作。
+   *
+   * ⚠️ **不能只断言「角度有变化」**：那对「按 dt 推」的退化零判别力。故同时钉
+   * 幅度上下界（从 GUARDIAN_GAIT 派生）+ 左右反相 + 站定后回 bind。
+   * ⚠️ 前提断言 `totalDisplacement > 2`：守卫没真走起来时用例必须红，不能空跑。
+   */
+  test('踱步：守卫追击时双腿真的交替摆动，站定后回 bind（Tier 4 真实骨骼）', async ({ page }) => {
+    test.setTimeout(300_000);
+    await page.goto(`/?seed=${SEED}&vd=3`);
+    await waitWorldReady(page);
+    // 开阔地（远离城市，建筑遮挡会让 AI 抖动）——同 ignis-fx.spec 的 gotoOpenField 手法
+    await page.evaluate(async () => {
+      const g = window.__MC_GAME__;
+      const p = g.player.physics.pos;
+      g._teleportTo(Math.floor(p.x) + 600, 45, Math.floor(p.z) + 600);
+      await new Promise((r) => setTimeout(r, 2500));
+    });
+    const r = await page.evaluate(async () => {
+      const g = window.__MC_GAME__;
+      const { GUARDIAN_GAIT } = await import('/src/entities/guardian/guardian-config.js');
+      const p = g.player.physics.pos;
+      const sum = g.guardians.summon('gait:e2e', Math.floor(p.x), Math.floor(p.z) - 14, 0, Math.floor(p.y));
+      if (!sum.ok) return { err: sum.reason };
+      await new Promise((res) => setTimeout(res, 1500));
+      const d = g.guardianRenderer.asset;
+      const li = d.bones.findIndex((b) => b.name === 'left_leg');
+      const ri = d.bones.findIndex((b) => b.name === 'right_leg');
+      const ang = (i) => {
+        const q = g.guardianRenderer.instances[0].bones[i].quaternion;
+        return 2 * Math.atan2(q.x, q.w);
+      };
+      const frames = [];
+      // ⚠️ **只采「非攻击态」的帧**：守卫追到 4.25 格就起手，攻击片段自己也驱动双腿
+      //（实测 strong_right 腿摆 12.5~17.5°）⇒ 混进来会让「幅度上界」判据测的是片段而不是步态。
+      // 步态只在 idle/chase 生效，故按 mode 过滤（这是被测语义本身，不是放宽断言）。
+      let prev = g.entities.get(sum.id).state.position.slice();
+      for (let k = 0; k < 300; k++) {
+        await new Promise((res) => requestAnimationFrame(res));
+        const cur = g.entities.get(sum.id)?.state.position;
+        if (!cur) break;
+        const mode = g.entities.get(sum.id).state.mode;
+        frames.push({ mode, moved: Math.hypot(cur[0] - prev[0], cur[2] - prev[2]), l: ang(li), rr: ang(ri) });
+        prev = cur.slice();
+      }
+      const moving = frames.filter((f) => f.moved > 0.01 && f.mode !== 'attack');
+      const opposed = moving.filter((f) => f.l * f.rr < -1e-8).length;
+      const peak = Math.max(...moving.map((f) => Math.abs(f.l)), 0);
+      // ⚠️ **把玩家挪到 disengageRange 之外**让它回 idle（真静止）。
+      // 不能用「贴近到死区」：那会触发起手，攻击片段自己驱动双腿 ⇒ 测的不是「静止回 bind」。
+      const e = g.entities.get(sum.id);
+      const gp = e.state.position;
+      const pp = g.player.physics.pos;
+      pp.x = gp[0]; pp.z = gp[2] + 80; pp.y = gp[1];
+      g.player.physics.vel.x = g.player.physics.vel.y = g.player.physics.vel.z = 0;
+      for (let k = 0; k < 180; k++) await new Promise((res) => requestAnimationFrame(res));
+      const st = g.entities.get(sum.id).state;
+      return {
+        movingFrames: moving.length, opposed, peak, amp: GUARDIAN_GAIT.limbAmplitude,
+        restAngle: Math.abs(ang(li)), restMode: st.mode,
+        restDist: Math.hypot(g.player.physics.pos.x - st.position[0], g.player.physics.pos.z - st.position[2]),
+        totalDisplacement: frames.reduce((s, f) => s + f.moved, 0),
+      };
+    });
+    console.log('GUARDIAN GAIT:', JSON.stringify(r));
+    expect(r.err).toBeUndefined();
+    expect(r.totalDisplacement, '前提：守卫须真的走起来（否则用例空跑）').toBeGreaterThan(2);
+    expect(r.movingFrames, '须有足够移动帧').toBeGreaterThan(20);
+    expect(r.opposed, `左右腿须反相（${r.opposed}/${r.movingFrames}）`).toBeGreaterThan(r.movingFrames * 0.4);
+    expect(r.peak, '摆幅须接近标定值').toBeGreaterThan(r.amp * 0.5);
+    expect(r.peak, '摆幅不得超标定值').toBeLessThanOrEqual(r.amp + 1e-6);
+    expect(r.restMode, '前提：玩家挪远后守卫须回 idle（真静止）').toBe('idle');
+    expect(r.restAngle, `静止且淡入走完后腿须回 bind（mode=${r.restMode}）`).toBeLessThan(1e-3);
   });
 });

@@ -17,6 +17,7 @@
 // | TARN | `isTarnZone` + `tarnZoneCenter` + `inTarnRadius`（`gen/structures/tarn-zone.js`） |
 // | BURNING_ARENA | `computeBurningArenaAnchor` + `inBurningArenaFootprint`（`gen/structures/burning-arena.js`） |
 // | RUINED_CITADEL | `computeRuinedCitadelAnchor` + `inRuinedCitadelFootprint`（`gen/structures/ruined-citadel.js`） |
+// | ARENA | `computeArenaAnchor` + `inArenaFootprint`（`gen/structures/arena.js`，v3.09） |
 // | SNOW | `getRegionSeededCenter` + `LANDMARK_OFFSET.SNOW_LAND_*` + `snowLandSuppressedByTarn` |
 // | SHALLOW_TARN | `computeShallowTarnAnchor` + `inShallowTarnFootprint` |
 //
@@ -25,7 +26,7 @@
 //
 // ## 优先级 = 迷你地图的同一套（先命中者胜）
 //
-// CITY > TARN > BURNING_ARENA > RUINED_CITADEL > SNOW > SHALLOW_TARN。
+// CITY > TARN > BURNING_ARENA > RUINED_CITADEL > ARENA > SNOW > SHALLOW_TARN。
 // ⚠️ **BURNING_ARENA 必须在 SNOW 之前**：雪原盒是 region 级包围盒（±28），可伸进竞技场
 // 占地（±42）—— 实测 8 seed 中 2 个命中（1249026 / 8888）；那座雪原已被竞技场压制
 //（`burningArenaSuppressedLandmarks` ⇒ 世界里根本不存在），而 `snowMapAt` 只跳 **tarn** 压制的
@@ -58,13 +59,16 @@ import {
   computeRuinedCitadelAnchor, inRuinedCitadelFootprint,
   RUINED_CITADEL_SUMMON_FEET_DY, RUINED_CITADEL_SUMMON_DX, RUINED_CITADEL_SUMMON_DZ,
 } from '../../gen/structures/ruined-citadel.js';
+import {
+  computeArenaAnchor, inArenaFootprint, ARENA_SUMMON_FEET_DY,
+} from '../../gen/structures/arena.js';
 
 /**
  * 可召唤 Boss 的地图种类（**唯一权威**：名册、单测、文档都从这里派生）。
  *
  * 顺序即判据优先级（见文件头）。
  */
-export const BOSS_MAP_KINDS = Object.freeze(['CITY', 'TARN', 'BURNING_ARENA', 'RUINED_CITADEL', 'SNOW', 'SHALLOW_TARN']);
+export const BOSS_MAP_KINDS = Object.freeze(['CITY', 'TARN', 'BURNING_ARENA', 'RUINED_CITADEL', 'ARENA', 'SNOW', 'SHALLOW_TARN']);
 
 /** 雪原包围盒半宽（与 `minimap-regions.js` 的 `SNOW_HALF_EXTENT` 同推导） */
 const SNOW_HALF_EXTENT = Math.floor(SNOW_LAND_SIZE / 2) + TRANSITION_SIZE.SNOW_LAND;
@@ -201,9 +205,35 @@ function ruinedCitadelMapAt(wx, wz, seed) {
   };
 }
 
+/**
+ * 围场（城南门外草地竞技场）—— 末影守卫的第二张地图。
+ *
+ * 用户 2026-11-16：「在围栏内增加一个 boss 就是末影守卫，在围栏处按 B 召唤围栏 boss」。
+ * 「围栏」= **围场**（`gen/structures/arena.js`，41×79，外圈 236 格闭合栏杆环）——
+ * 本仓只有它有闭合栏杆环；大竞技场（burning arena）与创造台都不是。
+ *
+ * ⚠️ **判据转调 `inArenaFootprint`**（唯一权威），不自写 `Math.abs(dx) <= 20`。
+ * ⚠️ **`summonY` 恒为场地地板上方一格**，与玩家所在高度无关：围场是下沉式场地，
+ *    玩家可能站在靠高一侧的土壁上，不传会召到土壁那一层（同大竞技场口径）。
+ * ⚠️ 排在 SNOW **之前**：雪原盒是 region 级包围盒（±28），口径与另两个地面级结构一致。
+ *    实测 8 seed × 整个占地零重叠（结构层互相避让），本顺序是防御性的。
+ */
+function arenaMapAt(wx, wz, seed) {
+  const a = computeArenaAnchor(seed);
+  if (!a || !inArenaFootprint(wx, wz, [a])) return null;
+  return {
+    kind: 'ARENA',
+    cx: a.wx,
+    cz: a.wz,
+    key: 'arena:0',
+    summonY: a.floorY + ARENA_SUMMON_FEET_DY,
+  };
+}
+
 /** 判据表（顺序 = 优先级）。加新地图 = 在这里加一行 + 在 `BOSS_ROSTER` 加一行。 */
 const DETECTORS = Object.freeze([
-  cityMapAt, tarnMapAt, burningArenaMapAt, ruinedCitadelMapAt, snowMapAt, shallowTarnMapAt,
+  cityMapAt, tarnMapAt, burningArenaMapAt, ruinedCitadelMapAt, arenaMapAt,
+  snowMapAt, shallowTarnMapAt,
 ]);
 
 /**

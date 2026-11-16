@@ -11,7 +11,7 @@ import {
 } from '../render/guardian-model.js';
 import { GuardianRenderer } from '../render/guardian-renderer.js';
 import {
-  GUARDIAN, GUARDIAN_ATTACKS, GUARDIAN_ATTACK_IDS, GUARDIAN_POSE_BLEND, guardianBlendSeconds,
+  GUARDIAN, GUARDIAN_ATTACKS, GUARDIAN_ATTACK_IDS, GUARDIAN_POSE_BLEND, GUARDIAN_GAIT, guardianBlendSeconds,
 } from '../entities/guardian/guardian-config.js';
 
 /** 造一条挂在守卫上的 entity（脚底 y=10） */
@@ -378,12 +378,14 @@ test('守卫渲染: attackAnimT=0 时走程序化 idle（按移动相位摆臂�
   const d = await loadGuardianAsset();
   const r = new GuardianRenderer(new THREE.Scene(), d);
   try {
-    // ⚠️ 程序化 idle 由**速度**驱动（原版 `limbSwingAmount` 是移动包络，静止时为 0），
-    // 与丧尸渲染器同口径；不是焰魔那种「idleTime 相位」（焰魔有 idle 片段，守卫没有）。
-    const moving = { velocity: [0, 0, -5.4], attackAnimT: 0, attackKind: null };
-    r.sync([ent(moving)], 1000);
+    // ⚠️ 程序化步态由**速度意图 + 真实位移**共同驱动（原版 `limbSwing` 由移动距离推、
+    // `limbSwingAmount` 是移动包络）；不是焰魔那种「idleTime 相位」（焰魔有 idle 片段，守卫没有）。
+    // ⚠️ **v3.09：夹具必须真的改 position** —— 旧夹具只推 dt、位置钉死，
+    // 那在新口径下是「滑步」形态（应该不摆），故不改夹具会得到假红。
+    const moving = (z) => ({ position: [0, 10, z], velocity: [0, 0, -5.4], attackAnimT: 0, attackKind: null });
+    r.sync([ent(moving(0))], 1000);
     const q0 = r.instances[0].bones.map((b) => b.quaternion.clone());
-    r.sync([ent(moving)], 1400);   // dt=0.4s ⇒ 相位推进
+    r.sync([ent(moving(-2.16))], 1400);   // dt=0.4s × 5.4 格/秒 = 2.16 格 ⇒ 相位推进
     let moved = false;
     for (let i = 0; i < q0.length; i++) {
       if (Math.abs(q0[i].x - r.instances[0].bones[i].quaternion.x) > 1e-6) moved = true;
@@ -559,4 +561,198 @@ test('守卫渲染: dispose 后全部实例从 scene 摘除且几何/材质已�
   r.dispose();
   assertEqual(scene.children.length, 0, '全部摘除');
   assertEqual(r.instances.length, 0);
+});
+
+// ==================== 程序化步态（v3.09：按位移推相位）====================
+//
+// 用户 2026-11-16：「移动的过程中，双腿没有踱步的动作，感觉不真实」。
+// 两处缺陷叠加：① Agent 恒返回 velocity[0,vy,0] ⇒ 摆腿分支从未执行（Task 2 已修）；
+// ② 相位按 dt 推进（2 rad/s ⇒ 3.14s 一周期，5.4 格/秒时一周期走 17 格）⇒ 慢动作。
+// 本组判据全部落在**真实骨骼四元数**上（bind 是单位四元数 ⇒ 增量角 = 2·atan2(x, w)）。
+
+/** 从骨骼四元数反解绕 X 的增量角（弧度，带符号）——四肢与 root 的 bind 实测均为 [0,0,0,1] */
+function legAngle(inst, boneIndex) {
+  const q = inst.bones[boneIndex].quaternion;
+  return 2 * Math.atan2(q.x, q.w);
+}
+
+/** 让守卫沿 −Z 走 frames 帧，每帧位移 dz 格；返回逐帧的 [左腿角, 右腿角] */
+function walkFrames(r, li, ri, frames, dz, startMs = 1000) {
+  const out = [];
+  let z = 0;
+  for (let i = 0; i < frames; i++) {
+    z -= dz;
+    r.sync([ent({ position: [0, 10, z], velocity: [0, 0, -5.4], attackAnimT: 0, attackKind: null })],
+      startMs + i * 16);
+    out.push([legAngle(r.instances[0], li), legAngle(r.instances[0], ri)]);
+  }
+  return out;
+}
+
+test('守卫步态: 移动中双腿反相摆动，幅度不超过 limbAmplitude', async () => {
+  const d = await loadGuardianAsset();
+  const r = new GuardianRenderer(new THREE.Scene(), d);
+  try {
+    const li = d.bones.findIndex((b) => b.name === 'left_leg');
+    const ri = d.bones.findIndex((b) => b.name === 'right_leg');
+    const seq = walkFrames(r, li, ri, 40, 0.09);   // 5.4 格/秒 @60Hz
+    const peak = Math.max(...seq.map(([l]) => Math.abs(l)));
+    assertTrue(peak > GUARDIAN_GAIT.limbAmplitude * 0.5,
+      `摆幅须接近标定值，实测峰值 ${peak.toFixed(4)}`);
+    assertTrue(peak <= GUARDIAN_GAIT.limbAmplitude + 1e-6,
+      `摆幅不得超标定值，实测 ${peak.toFixed(4)}`);
+    const opposed = seq.filter(([l, rr]) => l * rr < -1e-8).length;
+    assertTrue(opposed > seq.length * 0.5, `左右腿须反相，实测 ${opposed}/${seq.length}`);
+  } finally { r.dispose(); }
+});
+
+test('守卫步态: 相位按**位移**推进而非时间（同 dt 下位移 10 倍 ⇒ 相位 10 倍）', async () => {
+  const d = await loadGuardianAsset();
+  const li = d.bones.findIndex((b) => b.name === 'left_leg');
+  // ⚠️ 两档位移都取**小角度**（sin 近线性）：0.02 与 0.2 格 × 1.85 rad/格
+  // ⇒ 相位 0.037 / 0.37 rad，sin 偏离线性 0.02% / 2.3% ⇒ 比值容差取 0.3（不是 0.05）。
+  // 旧实现按 dt 推 ⇒ 两档位移给**同一个角度**（比值 1.0）⇒ 判别距 8.8，远离容差。
+  const angles = [];
+  for (const dz of [0.02, 0.2]) {
+    const r = new GuardianRenderer(new THREE.Scene(), d);
+    // 两帧：首帧建立 prevX/prevZ 基准（不摆），第二帧的位移唯一决定相位
+    r.sync([ent({ position: [0, 10, 0], velocity: [0, 0, -5.4] })], 1000);
+    r.sync([ent({ position: [0, 10, -dz], velocity: [0, 0, -5.4] })], 1016);
+    angles.push(legAngle(r.instances[0], li));
+    r.dispose();
+  }
+  const want = Math.sin(0.2 * GUARDIAN_GAIT.radiansPerBlock) * GUARDIAN_GAIT.limbAmplitude;
+  assertTrue(Math.abs(angles[1] - want) < 1e-6,
+    `大位移帧角度须等于解析值 ${want}，实测 ${angles[1]}`);
+  const ratio = angles[1] / angles[0];
+  assertTrue(Math.abs(ratio - 10) < 0.3,
+    `位移 10 倍 ⇒ 相位 10 倍（按 dt 推时比值恒为 1），实测比 ${ratio.toFixed(3)}`);
+});
+
+test('守卫步态: 撞墙不滑步（意图非零但位置不变 ⇒ 淡入走完后腿回 bind）', async () => {
+  const d = await loadGuardianAsset();
+  const r = new GuardianRenderer(new THREE.Scene(), d);
+  try {
+    const li = d.bones.findIndex((b) => b.name === 'left_leg');
+    walkFrames(r, li, li, 20, 0.09);            // 先真的走一段，腿摆起来
+    for (let i = 0; i < 30; i++) {               // 位置钉死，意图仍非零（飞跃期贴近玩家的真实形态）
+      r.sync([ent({ position: [0, 10, -1.8], velocity: [0, 0, -5.4] })], 2000 + i * 16);
+    }
+    assertTrue(Math.abs(legAngle(r.instances[0], li)) < 1e-6,
+      `撞墙后腿须回 bind，实测 ${legAngle(r.instances[0], li)}`);
+  } finally { r.dispose(); }
+});
+
+test('守卫步态: 实例复用给新实体时相位与位移基准重置（首帧不摆）', async () => {
+  const d = await loadGuardianAsset();
+  const r = new GuardianRenderer(new THREE.Scene(), d);
+  try {
+    const li = d.bones.findIndex((b) => b.name === 'left_leg');
+    walkFrames(r, li, li, 20, 0.09);
+    const e2 = {
+      id: 'guardian:arena:0', type: 'guardian',
+      state: { ...ent({ position: [40, 10, 40], velocity: [0, 0, -5.4] }).state },
+    };
+    r.sync([e2], 3000);
+    assertTrue(Math.abs(legAngle(r.instances[0], li)) < 1e-6,
+      '新实体首帧不得继承上一只的相位（也不得把跨图位移当一大步）');
+  } finally { r.dispose(); }
+});
+
+test('守卫步态: 攻击期间不叠加步态（腿姿态 == 零速度对照）', async () => {
+  const d = await loadGuardianAsset();
+  const r = new GuardianRenderer(new THREE.Scene(), d);
+  const r2 = new GuardianRenderer(new THREE.Scene(), d);
+  try {
+    const li = d.bones.findIndex((b) => b.name === 'left_leg');
+    const T = 0.5;
+    const mk = (pos, vel) => ent({ position: pos, velocity: vel, attackAnimT: T, attackKind: 'strong_right' });
+    r.sync([mk([0, 10, 0], [0, 0, -5.4])], 1000);
+    r.sync([mk([0, 10, -0.09], [0, 0, -5.4])], 1016);
+    r2.sync([mk([0, 10, 0], [0, 0, 0])], 1000);
+    r2.sync([mk([0, 10, 0], [0, 0, 0])], 1016);
+    const a = r.instances[0].bones[li].quaternion;
+    const b = r2.instances[0].bones[li].quaternion;
+    assertTrue(Math.abs(a.x - b.x) < 1e-9 && Math.abs(a.w - b.w) < 1e-9,
+      '攻击期间腿不得被步态改写（两套打架）');
+  } finally { r.dispose(); r2.dispose(); }
+});
+
+test('守卫步态: 物理步与帧率不整除造成的零位移帧不得打断相位（60Hz 交替夹具）', async () => {
+  const d = await loadGuardianAsset();
+  const r = new GuardianRenderer(new THREE.Scene(), d);
+  try {
+    const li = d.bones.findIndex((b) => b.name === 'left_leg');
+    // ⚠️ 这是**真实帧序**（实测探针拓到）：物理 60Hz accumulator 与渲染帧率不整除
+    // ⇒ 移动中近半数帧位移为 0。若「位移 0 立即归零相位」，峰值只到 0.098 而不是 0.3。
+    let z = 0;
+    let peak = 0;
+    const angles = [];
+    for (let i = 0; i < 60; i++) {
+      if (i % 2 === 0) z -= 0.09;          // 偶数帧摊到一个物理步，奇数帧没摊到
+      r.sync([ent({ position: [0, 10, z], velocity: [0, 0, -5.4] })], 1000 + i * 16);
+      const a = legAngle(r.instances[0], li);
+      angles.push(a);
+      peak = Math.max(peak, Math.abs(a));
+    }
+    assertTrue(peak > GUARDIAN_GAIT.limbAmplitude * 0.9,
+      `交替零位移帧下相位须持续累积到满摆幅，实测峰值 ${peak.toFixed(4)}`);
+    // 相位单调推进的证据：角度必须走完一个完整周期（出现正负两侧）
+    assertTrue(Math.min(...angles) < -GUARDIAN_GAIT.limbAmplitude * 0.5
+      && Math.max(...angles) > GUARDIAN_GAIT.limbAmplitude * 0.5,
+      '腿须走完完整步周期（正负两侧都到），而不是一直抖在小角度');
+  } finally { r.dispose(); }
+});
+
+test('守卫步态: 连续零位移超过 stopGraceSeconds 后相位归零（真停下不滑步）', async () => {
+  const d = await loadGuardianAsset();
+  const r = new GuardianRenderer(new THREE.Scene(), d);
+  try {
+    const li = d.bones.findIndex((b) => b.name === 'left_leg');
+    const seq = walkFrames(r, li, li, 20, 0.09);
+    assertTrue(Math.abs(seq[seq.length - 1][0]) > 1e-6, '夹具前提：先真的摆起来');
+    // ⚠️ **时间戳必须接着 walkFrames 的末尾继续**（1000 + 19×16 = 1304）：
+    // 跳到 2000 会让首帧 dt = 0.696s 一帧就超宽限 ⇒ 测不到「宽限期内保持」。
+    const t0 = 1000 + 19 * 16;
+    const graceFrames = Math.floor(GUARDIAN_GAIT.stopGraceSeconds / 0.016);
+    for (let i = 1; i <= graceFrames - 2; i++) {
+      r.sync([ent({ position: [0, 10, -1.8], velocity: [0, 0, -5.4] })], t0 + i * 16);
+    }
+    const duringGrace = Math.abs(legAngle(r.instances[0], li));
+    for (let i = 0; i < 40; i++) {
+      r.sync([ent({ position: [0, 10, -1.8], velocity: [0, 0, -5.4] })], t0 + 1000 + i * 16);
+    }
+    assertTrue(duringGrace > 1e-6, `宽限期内不得立刻归零（实测 ${duringGrace}）`);
+    assertTrue(Math.abs(legAngle(r.instances[0], li)) < 1e-6,
+      `超过宽限后腿须回 bind，实测 ${legAngle(r.instances[0], li)}`);
+  } finally { r.dispose(); }
+});
+
+test('守卫步态: 两只在场时一只走一只站，姿态互不干扰（maxAlive=2 的真实场景）', async () => {
+  const d = await loadGuardianAsset();
+  const r = new GuardianRenderer(new THREE.Scene(), d);
+  try {
+    const li = d.bones.findIndex((b) => b.name === 'left_leg');
+    const mk = (id, z, vel) => ({
+      id, type: 'guardian',
+      state: { ...ent({ position: [0, 10, z], velocity: vel }).state },
+    });
+    let za = 0;
+    for (let i = 0; i < 40; i++) {
+      za -= 0.09;
+      r.sync([
+        mk('guardian:arena:0', za, [0, 0, -5.4]),          // A 在走
+        mk('guardian:ruinedcitadel:0', 100, [0, 0, 0]),     // B 站定（另一张图）
+      ], 1000 + i * 16);
+    }
+    assertTrue(Math.abs(legAngle(r.instances[0], li)) > 1e-6, 'A 在走 ⇒ 腿须摆');
+    assertTrue(Math.abs(legAngle(r.instances[1], li)) < 1e-6,
+      'B 站定 ⇒ 腿须在 bind（共享相位会让它跟着摆）');
+    assertTrue(r.instances[0].pivot.visible && r.instances[1].pivot.visible, '两只都须可见');
+    // 一只 despawn ⇒ 另一个实例必须隐藏（否则恒增 draw call）
+    r.sync([mk('guardian:arena:0', za, [0, 0, -5.4])], 2000);
+    assertTrue(r.instances[1].pivot.visible === false, 'B 消失后其实例须隐藏');
+    r.sync([], 2100);
+    for (const inst of r.instances) assertTrue(inst.pivot.visible === false, '零实体时全部隐藏');
+  } finally { r.dispose(); }
 });

@@ -68,6 +68,15 @@ export const BOSS_ROSTER = Object.freeze({
   RUINED_CITADEL: Object.freeze([
     Object.freeze({ slot: 0, type: GUARDIAN_TYPE, service: 'guardians' }),
   ]),
+  // 围场（城南门外草地竞技场，v3.09）：唯一 Boss = 末影守卫（与废弃堡垒同一实体）。
+  // 用户 2026-11-16：「在围栏内增加一个 boss 就是末影守卫，在围栏处按 B 召唤」。
+  // ⚠️ slot 0：本图只有守卫（toast「已召唤 Boss1」）。
+  // ⚠️ 召唤点恒在场地中心地板上方一格（`bossMapAt` 给本图返回 summonY）。
+  // ⚠️ **两张图各一只 ⇒ `GUARDIAN.maxAlive` 必须 ≥ 2**，否则先在堡垒召了守卫
+  //    再来围场按 B 会得「Boss 数量已达上限」（功能直接不可用）。
+  ARENA: Object.freeze([
+    Object.freeze({ slot: 0, type: GUARDIAN_TYPE, service: 'guardians' }),
+  ]),
 });
 
 /** 每张地图的 Boss 槽位上限（用户裁定「最多两个」） */

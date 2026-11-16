@@ -744,7 +744,8 @@ export class Game {
       this.ignisRenderer = null;
     }
 
-    // ---- 末影守卫装配（废弃堡垒的 Boss1）----
+    // ---- 末影守卫装配（废弃堡垒的 Boss1 + **围场的 Boss1**，v3.09）----
+    // ⚠️ 两张图各一只 ⇒ `GUARDIAN.maxAlive = 2`（渲染池容量从它派生）。
     // ⚠️ **装配位置与龙/焰魔同段**（在 `_waitForColumn` 之前）。
     // 守卫也是**临时实体**（`persistent: false`）—— 进存档就是第二份权威（红线 2）。
     this.entities.registerType(GUARDIAN_TYPE, guardianDefinition);
@@ -3433,24 +3434,32 @@ export class Game {
     for (const ignis of this.ignises.activeEntities()) {
       const req = ignis.state.attackFxRequest;
       if (!req) continue;
-      if (req.kind !== 'shieldSmash' && req.kind !== 'shieldBash' && req.kind !== 'spikeSlash') continue;
+      // v3.09：旋斩也要进特效消费（它要铺地面法阵）。
+      // ⚠️ **入口 gate 与下面的法阵段必须一起放行**：只改法阵段的形态是
+      // 「改了却一点效果也没有」（spin 在这里就被 continue 掉，实测拓到）。
+      if (req.kind !== 'shieldSmash' && req.kind !== 'shieldBash'
+        && req.kind !== 'spikeSlash' && req.kind !== 'spin') continue;
 
-      // ---- 碎石圆环（两招都出）----
+      // ---- 碎石圆环（**仅持盾冲撞 / 举盾砸击**）----
+      // ⚠️ 旋斩刻意**不出碎石**（用户 2026-11-16 裁定「只加法阵」）；
+      // 尖刺攻击也不出（它有自己的火焰尖锥）。
       // 颜色取自**环心脚下那一格**（原版取的也是 `hit.below()`，不是 Boss 脚下）。
       // ⚠️ 环心走 `smashRingCenter` —— 与 `smashDebrisRing` 内部同一份公式（红线 1）。
       // 在 game.js 重写一遍就是第二份权威 ⇒ 颜色会取自错误的格。
-      const center = smashRingCenter(req.at, req.yaw);
-      const gx = Math.floor(center[0]);
-      const gy = Math.floor(req.at[1]) - 1;
-      const gz = Math.floor(center[2]);
-      let rgb = null;
-      const resolver = this.blockHitFx?.colorResolver;
-      if (resolver && this.world) {
-        const name = this.registry.nameOf(this.world.getBlockId(gx, gy, gz));
-        if (name && name !== 'air') rgb = resolver(name, null);
+      if (req.kind === 'shieldSmash' || req.kind === 'shieldBash') {
+        const center = smashRingCenter(req.at, req.yaw);
+        const gx = Math.floor(center[0]);
+        const gy = Math.floor(req.at[1]) - 1;
+        const gz = Math.floor(center[2]);
+        let rgb = null;
+        const resolver = this.blockHitFx?.colorResolver;
+        if (resolver && this.world) {
+          const name = this.registry.nameOf(this.world.getBlockId(gx, gy, gz));
+          if (name && name !== 'air') rgb = resolver(name, null);
+        }
+        // 缺色（未加载列 / resolver 构造失败）退中性灰，不阻断特效
+        this.blockHitFx.spawnSmashRing(req.at, req.yaw, rgb || [0.5, 0.5, 0.5], nowMs);
       }
-      // 缺色（未加载列 / resolver 构造失败）退中性灰，不阻断特效
-      this.blockHitFx.spawnSmashRing(req.at, req.yaw, rgb || [0.5, 0.5, 0.5], nowMs);
 
       // ---- 火焰尖锥（仅尖刺攻击，v3.06）----
       // ⚠️ **带伤害**（`IGNIS_SPIKE.damage = 18`）：与法阵的「纯视觉」不同 ——
@@ -3483,8 +3492,12 @@ export class Game {
         continue;
       }
 
-      // ---- 地面火焰法阵（仅举盾砸击）----
-      if (req.kind !== 'shieldBash' || !this.flameSigil || !this.world) continue;
+      // ---- 地面火焰法阵（举盾砸击 + 旋斩）----
+      // v3.09：旋斩也铺法阵（用户 2026-11-16「旋转攻击也要加上法阵的图案，跟盾击攻击一样，
+      // 图案的位置也跟盾击攻击一样」）。
+      // ⚠️ **复用同一套 `sigilSpawnPoints` + `_findSigilGroundY`**，不得为旋斩另写落点公式 ——
+      // 第二份权威会让两招位置漂移，而段数/间距/延迟/寿命全部仍然正确（静默失效）。
+      if ((req.kind !== 'shieldBash' && req.kind !== 'spin') || !this.flameSigil || !this.world) continue;
       const points = [];
       for (const p of sigilSpawnPoints(req.at, req.yaw)) {
         const y = this._findSigilGroundY(p.x, p.z, req.at[1]);

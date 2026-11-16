@@ -49,8 +49,16 @@ export const GUARDIAN = Object.freeze({
   attackDamage: 16,
   /** 红闪时长（ms），与焰魔/丧尸同口径 */
   flashMs: 200,
-  /** 同时存活上限 —— 废弃堡垒只有一个 */
-  maxAlive: 1,
+  /**
+   * 同时存活上限 —— **两张地图各一只**（废弃堡垒 + 围场，v3.09），
+   * 与 `IGNIS.maxAlive` 同口径。用户 2026-11-16 给围场也加了守卫。
+   *
+   * ⚠️ **不得回到 1**：那会让「先在堡垒召了守卫，再走到围场按 B」得到
+   * `{ok:false, reason:'limit'}` ⇒ toast「Boss 数量已达上限」，用户要的功能直接不可用。
+   * ⚠️ 渲染池容量从本常量派生 ⇒ 2 个 SkinnedMesh（几何/贴图共享，骨骼与材质逐实例独立）；
+   * 零实例时 `pivot.visible=false` ⇒ **常驻 draw call 不增**。
+   */
+  maxAlive: 2,
 });
 
 /**
@@ -296,6 +304,45 @@ export const GUARDIAN_STEP_LIFT = Object.freeze({
  */
 export const GUARDIAN_POSE_BLEND = Object.freeze({
   seconds: 0.2,
+});
+
+/**
+ * 程序化步态（v3.09）—— 渲染层与单测共用的唯一权威。
+ *
+ * 原版 `ModelEnder_Guardian.setupAnim`：四肢 `walkDegree×1.2 = 0.6 rad`、root `×0.2 = 0.1 rad`。
+ * 用户 2026-11-16 裁定「稍微有一个踱步的动作」⇒ **两者都取原版一半**。
+ *
+ * ⚠️ **相位按移动距离推进，不按时间**：原版 `limbSwing` 由 `walkAnimation(distance)` 驱动。
+ * 按 dt 推的形态是「撞墙 / 被玩家挡住时腿仍摆」（滑步），且步频与步幅随帧率脱钩。
+ * `radiansPerBlock = 1.85` ⇒ 一步周期 2π/1.85 ≈ 3.40 格；chaseSpeed 5.4 格/秒 ⇒ **1.59 周期/秒**。
+ * （原版 walkSpeed 0.5 配原版移速 0.27 格/tick 换算约 2.7 rad/格；本仓取 1.85 是观感标定值。）
+ *
+ * ⚠️ 四个字段都是**观感旋钮**，实玩觉得快/慢/大/小可微调；判据从常量派生 ⇒ 不用改断言。
+ */
+export const GUARDIAN_GAIT = Object.freeze({
+  /** 四肢摆幅（rad）= 原版 0.6 的一半（用户裁定 ≈17°） */
+  limbAmplitude: 0.3,
+  /** root 起伏摆幅（rad）= 原版 0.1 的一半，保持原版 1:6 比例 */
+  rootAmplitude: 0.05,
+  /** 相位推进（rad/格）—— 一步周期 2π/1.85 ≈ 3.40 格 */
+  radiansPerBlock: 1.85,
+  /** 「在移动」的判定阈（与 `ZOMBIE_MOVING_EPSILON` 同值） */
+  movingEpsilon: 0.001,
+  /**
+   * 「真的停下了」的宽限时长（秒）。
+   *
+   * ⚠️⚠️ **这一项是载荷性的，不得改成 0**（实测拓到的真缺陷）：
+   * 物理是 **60Hz 固定步长 accumulator**，而渲染帧率与之不整除
+   * ⇒ 移动中也有**近半数帧本帧没摊到物理步、位移为 0**
+   *（实测：0.09 / 0 / 0.09 / 0 …交替）。若「位移 0 就立即归零相位」，
+   * 腿永远在 0 ↔ sin(0.1665)×0.3 之间抖（峰值实测 **0.098** 而不是 0.3），
+   * 观感是高频抖动而不是踱步。
+   *
+   * 取 0.15s：远大于一个物理步（1/60 = 0.0167）与常见帧间隔，
+   * 又远小于人眼能读作「停下了还滑步」的时长。真撞墙 / 飞跃期贴近玩家时
+   * 连续零位移超过它 ⇒ 相位归零、腿回 bind。
+   */
+  stopGraceSeconds: 0.15,
 });
 
 /**

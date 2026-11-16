@@ -665,3 +665,64 @@ test('守卫 AI: navDir 原样透传（Agent 不改寻路层的结果）', () =>
   assertEqual(JSON.stringify(s.navDir), JSON.stringify([1, 0]));
   assertEqual(s.navMode, 'astar');
 });
+
+// ==================== 水平意图写回 velocity（v3.09 步态接线）====================
+//
+// **为什么需要**：渲染器的程序化步态判「在移动」读的是 `state.velocity[0]/[2]`，
+// 而旧实现恒返回 `[0, vy, 0]` ⇒ 那套原版 walk() 摆腿代码**从未执行过**
+// （用户 2026-11-16 实玩报告「移动时双腿没有踱步的动作」）。
+// 与丧尸/焰魔同口径：AI 意图写进 `state.velocity`，**不另设 intent 容器**。
+
+test('守卫 AI: chase 追击时把水平意图写回 velocity（渲染步态据此判「在移动」）', () => {
+  const a = new GuardianBossAgent({ rng: () => 0.5 });
+  const ctx = { world: groundWorld(9), registry: REGISTRY, player: playerAt(12) };
+  const s = a.update(st({ mode: 'chase', onGround: true, losVisible: true, losTimer: 1 }), 1 / 60, ctx);
+  assertEqual(s.mode, 'chase', '前提：12 格外不该起手');
+  assertTrue(Math.hypot(s.velocity[0], s.velocity[2]) > 1,
+    `水平意图须写回 velocity，实际 ${JSON.stringify(s.velocity)}`);
+  assertTrue(s.velocity[2] < 0, '玩家在 −Z ⇒ vz 须为负');
+});
+
+test('守卫 AI: attack / idle / 死区站定时水平 velocity 恒 0（静止不摆腿）', () => {
+  const a = new GuardianBossAgent({ rng: () => 0.5 });
+  const world = groundWorld(9);
+  const cases = [
+    { mode: 'idle', player: playerAt(12) },
+    { mode: 'attack', player: playerAt(3), over: { attackKind: 'stomp', attackAnimT: 0.1 } },
+    { mode: 'chase', player: playerAt(3.2) },      // 站定环 3.5 死区 0.75 ⇒ 站定
+  ];
+  for (const c of cases) {
+    const s = a.update(st({ onGround: true, losVisible: true, losTimer: 1, mode: c.mode, ...(c.over || {}) }),
+      1 / 60, { world, registry: REGISTRY, player: c.player });
+    assertEqual(s.velocity[0], 0, `${c.mode} 水平 vx 须 0`);
+    assertEqual(s.velocity[2], 0, `${c.mode} 水平 vz 须 0`);
+  }
+});
+
+test('守卫 AI: 飞跃期贴近玩家时意图非零而净位移为 0（渲染层据此判「不滑步」）', () => {
+  const a = new GuardianBossAgent({ rng: () => 0.5 });
+  // 这是「意图非零但走不动」的**真实可构造路径**：物理步里的「防穿玩家」门
+  //（水平距 < standoffRange − deadband = 2.75）把本步 stepVx/stepVz 清零，
+  // 而 `wantVx/wantVz`（= leapDir）保留 ⇒ 写回的 velocity 非零、位置不动。
+  // ⚠️ 不得改用「四面墙围住」夹具：实测那样 `steerIntentAabb` 会把意图**归零**
+  //（或沿墙侧滑仍有位移），两侧都测不到「意图非零 + 位移 0」。
+  const ctx = { world: groundWorld(9), registry: REGISTRY, player: { position: [0, 10, -1.0] } };
+  let s = st({
+    mode: 'leap', leapKind: 'escape', leapDir: [0, -GUARDIAN_AI.leapSpeed], leapT: 0,
+    onGround: true, losVisible: false, losTimer: 999, attackCooldown: 999,
+  });
+  const p0 = s.position.slice();
+  let minIntent = Infinity;
+  let maxDisp = 0;
+  let prev = s.position.slice();
+  for (let i = 0; i < 40; i++) {
+    s = a.update(s, 1 / 60, ctx);
+    minIntent = Math.min(minIntent, Math.hypot(s.velocity[0], s.velocity[2]));
+    maxDisp = Math.max(maxDisp, Math.hypot(s.position[0] - prev[0], s.position[2] - prev[2]));
+    prev = s.position.slice();
+  }
+  assertEqual(s.mode, 'leap', '夹具前提：40 帧内不得离开 leap（否则测的不是这件事）');
+  assertTrue(minIntent > 1, `意图不得被清零，实测最小 ${minIntent}`);
+  assertTrue(maxDisp < 1e-6, `贴近玩家时逐帧位移须为 0，实测最大 ${maxDisp}`);
+  assertTrue(Math.hypot(s.position[0] - p0[0], s.position[2] - p0[2]) < 1e-6, '净位移须为 0');
+});

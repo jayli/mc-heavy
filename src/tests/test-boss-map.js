@@ -32,8 +32,11 @@ import {
   RUINED_CITADEL_HALF_X, RUINED_CITADEL_HALF_Z,
   RUINED_CITADEL_SUMMON_FEET_DY, RUINED_CITADEL_SUMMON_DX, RUINED_CITADEL_SUMMON_DZ,
 } from '../gen/structures/ruined-citadel.js';
+import {
+  computeArenaAnchor, inArenaFootprint, ARENA_HALF_X, ARENA_HALF_Z, ARENA_SUMMON_FEET_DY,
+} from '../gen/structures/arena.js';
 
-const SEED = 12345;   // 默认 seed：实测五类地标级地图全部存在
+const SEED = 12345;   // 默认 seed：实测六类地标级地图全部存在
 
 // ==================== bossMapAt：五类地图 ====================
 
@@ -363,4 +366,69 @@ test('bossMapAt: 堡垒落点与占地判据同源（inRuinedCitadelFootprint �
     assertEqual(m !== null && m.kind === 'RUINED_CITADEL', inFoot,
       `(${dx},${dz}) 判定器与 inRuinedCitadelFootprint 必须一致`);
   }
+});
+
+// ==================== 围场（ARENA，末影守卫的第二张地图，v3.09）====================
+//
+// 用户 2026-11-16：「在围栏内增加一个 boss 就是末影守卫，在围栏处按 B 召唤」。
+// 「围栏」= 围场（城南门外草地竞技场，41×79，外圈 236 格闭合栏杆环）——
+// 本仓只有它有闭合栏杆环；大竞技场与创造台都不是。
+
+test('bossMapAt: 围场锚点 → ARENA，落点 = 场地中心地板上方一格', () => {
+  const a = computeArenaAnchor(SEED);
+  assertTrue(a !== null, `前提：seed ${SEED} 应有围场锚点`);
+  const m = bossMapAt(a.wx, a.wz, SEED);
+  assertTrue(m !== null && m.kind === 'ARENA', `应判 ARENA，实际 ${JSON.stringify(m)}`);
+  assertEqual(m.cx, a.wx);
+  assertEqual(m.cz, a.wz);
+  assertEqual(m.key, 'arena:0');
+  // ⚠️ 本用例只钉**接线**（boss-map 用结构层的权威常量，不自己写字面量）；
+  // 常量本身对不对由 arena 的产物用例与 E2E 落点断言钉住（红线 1，两边不重复）。
+  assertEqual(m.summonY, a.floorY + ARENA_SUMMON_FEET_DY, 'summonY = 地板层上方一格');
+});
+
+test('bossMapAt: 围场四缘也判 ARENA，外一格不判（转调 inArenaFootprint，不自写 AABB）', () => {
+  const a = computeArenaAnchor(SEED);
+  for (const [dx, dz] of [[ARENA_HALF_X, 0], [-ARENA_HALF_X, 0], [0, ARENA_HALF_Z], [0, -ARENA_HALF_Z]]) {
+    const m = bossMapAt(a.wx + dx, a.wz + dz, SEED);
+    assertTrue(m !== null && m.kind === 'ARENA', `缘 (${dx},${dz}) 应命中，实际 ${JSON.stringify(m)}`);
+    assertEqual(inArenaFootprint(a.wx + dx, a.wz + dz, [a]), true, '判定器与占地权威须一致');
+  }
+  for (const [dx, dz] of [[ARENA_HALF_X + 1, 0], [0, ARENA_HALF_Z + 1]]) {
+    const m = bossMapAt(a.wx + dx, a.wz + dz, SEED);
+    assertTrue(m === null || m.kind !== 'ARENA', `外一格 (${dx},${dz}) 不得判 ARENA`);
+  }
+});
+
+test('bossMapAt: ARENA 在 BOSS_MAP_KINDS 里且排在 SNOW 之前', () => {
+  assertTrue(BOSS_MAP_KINDS.includes('ARENA'), 'kinds 应含 ARENA');
+  assertTrue(BOSS_MAP_KINDS.indexOf('ARENA') < BOSS_MAP_KINDS.indexOf('SNOW'),
+    '地面级人工结构统一排在 region 级雪原盒之前（与另两个竞技场同口径）');
+});
+
+test('名册: 围场登记了唯一 Boss（slot 0 = 末影守卫）', () => {
+  const slots = bossSlotsFor('ARENA');
+  assertEqual(slots.length, 1, '围场只有守卫一个 Boss');
+  assertEqual(slots[0].slot, 0, 'slot 0（toast「已召唤 Boss1」）');
+  assertEqual(slots[0].type, 'guardian');
+  assertEqual(slots[0].service, 'guardians');
+});
+
+test('bossMapAt: 围场占地内的点不得被别的地图抢走（多 seed 互斥）', () => {
+  // 结构层本来互斥（arena.fixedBlockers 避地标；shallow-tarns / ruined-citadel 反过来避围场）。
+  // ⚠️ **扫整个占地而不只是中心**：中心不重叠不代表边缘不重叠（雪原盒是 region 级 ±28）。
+  let checked = 0;
+  for (const seed of [12345, 42, 2096, 424242, 777, 1000, 8919, 16838]) {
+    const a = computeArenaAnchor(seed);
+    if (!a) continue;
+    for (let dx = -ARENA_HALF_X; dx <= ARENA_HALF_X; dx += 5) {
+      for (let dz = -ARENA_HALF_Z; dz <= ARENA_HALF_Z; dz += 5) {
+        checked++;
+        const m = bossMapAt(a.wx + dx, a.wz + dz, seed);
+        assertTrue(m !== null && m.kind === 'ARENA',
+          `seed ${seed} 占地内 (${dx},${dz}) 应判 ARENA，实际 ${JSON.stringify(m)}`);
+      }
+    }
+  }
+  assertTrue(checked > 0, '前提：至少一个 seed 有围场锚点（否则本用例空跑）');
 });

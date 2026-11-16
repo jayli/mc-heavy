@@ -46,6 +46,19 @@ export const ARENA_HALF_X = (ARENA_WIDTH - 1) / 2;
 export const ARENA_HALF_Z = (ARENA_DEPTH - 1) / 2;
 
 /**
+ * 召唤落点脚底相对 `floorY` 的偏移（格）—— 与 `BURNING_ARENA_SUMMON_FEET_DY` 同手法。
+ *
+ * `apply.js` 阶段 2.9 用 `floorY - (floorRow - 1)` 落位，使**地板层正好坐落在 floorY**
+ * ⇒ 站在它上面一格 = `floorY + 1`（与 `Game.teleportToArena` 同口径）。
+ *
+ * ⚠️ 中心格是水池的 `glass_block` 盖（`solid:true`），可站；产物实测中心 **15 格**半径内
+ * 无实心装饰（干草柱在 x=±16、树在 z≈±28、chest 在 x=±16），守卫半宽 1.25 / 高 3.8 站得下。
+ * ⚠️ **不得改成读 `floorRowOf('arenaGrass')`**：它读主线程模块缓存，而产物只在 GEN Worker
+ * 里加载过 ⇒ 主线程恒返兜底值 1（大竞技场与废弃堡垒踩过同源坑）。故这里是派生冻结值。
+ */
+export const ARENA_SUMMON_FEET_DY = 1;
+
+/**
  * 占地内允许的最大自然地形高差（格）。
  *
  * 地板铺在占地内**最低**点（`floorY`），所以高差直接等于「靠高一侧露出的土壁高度」

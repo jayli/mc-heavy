@@ -282,10 +282,10 @@ test('守卫 service: summon 幂等（同槽重召不产生第二条）', () => 
   assertTrue(a.ok);
   const b = svc.summon('ruinedcitadel:0', 10, 20, 0, 11);
   assertFalse(b.ok);
-  // ⚠️ **maxAlive = 1 ⇒ count 检查先命中，返回 'limit' 而不是 'exists'**
-  //（焰魔 maxAlive=2 时同槽重召才走到 id 检查）。两者都是「拒绍且零副作用」，
+  // ⚠️ **v3.09：maxAlive 1 → 2（围场也要一只）⇒ 同槽重召现在先命中 id 检查，
+  // 返回 'exists' 而不是 'limit'**（与焰魔 maxAlive=2 同形）。两者都是「拒绍且零副作用」，
   // 关键判据是**场上仍只有一条**；这里钉住真实 reason，不写成想象中应该的那个。
-  assertEqual(b.reason, 'limit', 'maxAlive=1 时上限检查先命中');
+  assertEqual(b.reason, 'exists', 'maxAlive=2 时同槽重召先命中 id 检查');
   assertEqual(svc.activeEntities().length, 1);
 });
 
@@ -301,12 +301,17 @@ test('守卫 service: 死后重召复用同 id 且场上只有一条（Review Fo
   assertEqual(svc.activeEntities().length, 1);
 });
 
-test('守卫 service: 超出 maxAlive 返回 limit', () => {
+test('守卫 service: 两张地图各召一只成功，第三张才 limit（围场 Boss 的前提）', () => {
   const { svc } = mkSvc();
-  assertTrue(svc.summon('ruinedcitadel:0', 10, 20, 0, 11).ok);
-  const b = svc.summon('ruinedcitadel:1', 30, 40, 0, 11);
+  // ⚠️ 从常量派生而不是写死 2：旧实现 maxAlive=1 时第一只就成功、第二只即 limit
+  // ⇒ 本用例在旧实现下真红（这正是用户要的「先在堡垒召了再去围场按 B」不能失败）。
+  for (let i = 0; i < GUARDIAN.maxAlive; i++) {
+    assertTrue(svc.summon(`map:${i}`, 10 + i * 10, 20, 0, 11).ok, `第 ${i} 只应成功`);
+  }
+  const b = svc.summon('map:extra', 90, 90, 0, 11);
   assertFalse(b.ok);
-  assertEqual(b.reason, 'limit', '守卫上限 1 ⇒ 第二张图也召不出');
+  assertEqual(b.reason, 'limit');
+  assertEqual(svc.activeEntities().length, GUARDIAN.maxAlive);
 });
 
 test('守卫 service: 空世界（isSolid 恒 false）也能召唤（兜底落点，不抛）', () => {

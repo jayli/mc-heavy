@@ -21,7 +21,7 @@ test('守卫: 体形与伤害取自原版（血量按用户裁定 2000）', () =
   assertEqual(GUARDIAN.attackDamage, 16, '伤害 = 原版 ATTACK_DAMAGE');
   assertEqual(GUARDIAN.halfWidth, 1.25, '半宽 = 原版 sized(2.5)/2');
   assertEqual(GUARDIAN.height, 3.8, '高 = 原版 sized(3.8)');
-  assertEqual(GUARDIAN.maxAlive, 1, '废弃堡垒只有一个');
+  assertEqual(GUARDIAN.maxAlive, 2, '两张地图各一只（废弃堡垒 + 围场，v3.09）');
   assertEqual(GUARDIAN.flashMs, 200, '红闪时长与焰魔/丧尸同口径');
 });
 

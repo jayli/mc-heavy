@@ -198,6 +198,15 @@ test('焰魔特效 Tier 4：地面火焰法阵真的画出来了（金黄像素�
     return { spawned: points.length, beforeActive, ys: points.map((p) => p.y) };
   }, id);
   expect(injected.spawned, '四段都该找到地面（开阔地夹具）').toBe(4);
+  // ⚠️ **采样前钉大冷却，防它在等待回收期间自然再起手**（v3.09 实测污染）：
+  // 焰魔此刻是 idle，约 1.5s 后会自然起手；旋斩现在也铺法阵（本轮新增）⇒ 第二串 4 段
+  // 会让下面「寿命结束须全部回收」读到 4 而不是 0。探针实测 t=1570ms 起手 spin、t=2295ms 命中帧。
+  // 这不是放宽断言 —— 断言一字未改，只是把「焰魔又打了一招」这个无关变量排除掉。
+  await page.evaluate((eid) => {
+    const g = window.__MC_GAME__;
+    const e = g.entities.get(eid);
+    e.state = { ...e.state, attackCooldown: 999 };
+  }, id);
 
   // 等最后一段的延迟（200ms）过去 + 若干帧渲染
   await page.waitForTimeout(500);
@@ -370,4 +379,94 @@ test('焰魔特效 Tier 4：碎石圆环走真实命中帧路径（不受 freshL
   });
   expect(end.debris, '碎石到期须回收').toBe(0);
   expect(end.sigil, '法阵到期须回收').toBe(0);
+});
+
+/**
+ * v3.09：旋斩（spin）也要铺地面法阵，**位置与举盾砸击逐字相同**
+ * （用户 2026-11-16：「旋转攻击也要加上法阵的图案，跟盾击攻击一样，位置也跟盾击一样」）。
+ *
+ * 走**真实帧循环**到命中帧 0.70s（不是直接调 spawn）⇒ 能抓装配层的招式过滤缺陷。
+ * 判据与举盾砸击那条同口径：藏掉焰魔本体 → 噪声底 → 金黄像素上下界 + 首段矩阵位移。
+ *
+ * ⚠️ **采样后必须把 attackCooldown 钉大**：旋斩动画只 1.90s、收势后空档 1.0~1.5s
+ * ⇒ 约 3s 后它会再起手，若那一招是举盾砸击就会再铺一串法阵，让「到期回收」断言 flaky。
+ */
+test('焰魔特效 Tier 4：旋斩命中帧铺法阵，位置与举盾砸击同源（首段在脚底）', async ({ page }) => {
+  test.setTimeout(200_000);
+  await page.goto(`/?vd=3&seed=${SEED}&stats=0`);
+  await waitWorldReady(page);
+  await gotoOpenField(page);
+  const id = await setupScene(page);
+
+  // 单变量对照：藏掉焰魔本体（它自带火焰橙、idle 波动 ±18000 像素会淹没判据）
+  const hid = await page.evaluate((eid) => {
+    const g = window.__MC_GAME__;
+    const idx = g.ignises.activeEntities().findIndex((x) => x.id === eid);
+    const inst = g.ignisRenderer.instances?.[idx];
+    if (!inst?.mesh) return false;
+    inst.mesh.visible = false;
+    return true;
+  }, id);
+  expect(hid, '前置：须能藏掉焰魔渲染实例').toBe(true);
+  await page.waitForTimeout(300);
+
+  const baseCounts = [];
+  for (let i = 0; i < 3; i++) {
+    baseCounts.push(goldenCount(PNG.sync.read(await shoot(page))));
+    await page.waitForTimeout(120);
+  }
+  const noiseFloor = Math.max(...baseCounts);
+
+  // 钉旋斩起手，让真实帧循环推进到命中帧（同一次 evaluate 内注入，零 CDP 间隙）
+  await page.evaluate((eid) => {
+    const g = window.__MC_GAME__;
+    const e = g.entities.get(eid);
+    e.state = {
+      ...e.state, mode: 'attack', attackKind: 'spin', attackAnimT: 0,
+      yaw: 0, velocity: [0, 0, 0], losVisible: true, losTimer: 999,
+    };
+  }, id);
+  await page.waitForFunction(() => window.__MC_GAME__.flameSigil.activeCount > 0,
+    null, { timeout: 15_000 });
+  await page.waitForTimeout(400);   // 等最后一段延迟（200ms）过去再读 visible
+
+  const lit = await page.evaluate(() => ({
+    visible: window.__MC_GAME__.flameSigil.mesh.visible,
+    active: window.__MC_GAME__.flameSigil.activeCount,
+  }));
+  const onShot = PNG.sync.read(await shoot(page));
+  const onCount = goldenCount(onShot);
+  const onWhite = nearWhiteCount(onShot);
+  // 首段实例矩阵位移 == 焰魔脚底（真实 three.Matrix4，不自己造 stub）
+  const geo = await page.evaluate(async (eid) => {
+    const THREE = await import('three');
+    const g = window.__MC_GAME__;
+    const at = g.entities.get(eid).state.position;
+    const m = new THREE.Matrix4();
+    g.flameSigil.mesh.getMatrixAt(0, m);
+    return { firstSegmentDist: Math.hypot(m.elements[12] - at[0], m.elements[14] - at[2]) };
+  }, id);
+  // 采样完毕：钉大冷却，防它在等待回收期间再起手铺第二串（见文件头 ⚠️）
+  await page.evaluate((eid) => {
+    const g = window.__MC_GAME__;
+    const e = g.entities.get(eid);
+    e.state = { ...e.state, attackCooldown: 999 };
+  }, id);
+
+  console.log('FX_SPIN_SIGIL', JSON.stringify({ baseCounts, noiseFloor, onCount, onWhite, lit, geo }));
+
+  expect(lit.active, '旋斩须铺 4 段法阵').toBe(4);
+  expect(lit.visible, '延迟过后法阵须真的提交渲染').toBe(true);
+  expect(geo.firstSegmentDist, '首段必须落在焰魔脚底（与举盾砸击同口径）').toBeLessThan(0.01);
+  expect(onCount, `金黄像素须显著高于噪声底（base=${baseCounts}）`).toBeGreaterThan(noiseFloor + 900);
+  expect(onCount, '不得 additive 叠成一片过曝').toBeLessThan(294000 * 0.08);
+  expect(onWhite, '不得出现大面积近白').toBeLessThan(294000 * 0.02);
+
+  await page.waitForTimeout(3600);
+  const end = await page.evaluate(() => ({
+    active: window.__MC_GAME__.flameSigil.activeCount,
+    visible: window.__MC_GAME__.flameSigil.mesh.visible,
+  }));
+  expect(end.active, '寿命结束须回收').toBe(0);
+  expect(end.visible, '回收后 draw call 回基线').toBe(false);
 });
