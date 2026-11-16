@@ -659,6 +659,8 @@ export class ZombieService {
         vx: acted.vx * ZOMBIE.speed + sep.x,
         vz: acted.vz * ZOMBIE.speed + sep.z,
         mode: acted.mode,
+        // 后退时面朝玩家（用户 2026-11-16：「直接面朝前方，后退走几步退出来」）
+        faceYaw: acted.faceYaw,
       });
     }
   }
@@ -693,7 +695,7 @@ export class ZombieService {
    * @param {{id: string, generation: number, vx: number, vz: number, mode?: string}} update
    * @returns {boolean} false = 过期/未知，已丢弃
    */
-  _applyIntent({ id, generation, vx, vz, mode }) {
+  _applyIntent({ id, generation, vx, vz, mode, faceYaw = null }) {
     const entity = this.entities.get(id);
     if (!entity || entity.type !== 'zombie') return false;
     if (entity.generation !== generation) return false; // 过期意图
@@ -710,6 +712,12 @@ export class ZombieService {
       vx: steered.vx, vz: steered.vz,
       mode: steered.blocked ? 'blocked' : mode,
     });
+    // ---- 朝向覆写（v3.11b，用户 2026-11-16：「你直接面朝前方，后退走几步退出来」）----
+    // 后退时若仍由速度派生朝向，丧尸会**背对玩家倒着走**（实测 903/1628 帧背对）。
+    // 行为层在 backoff 相位传 `faceYaw`（= 朝玩家方向），这里把它当成限速目标，
+    // 于是丧尸**面朋玩家、身体往后退** —— 这正是用户要的观感。
+    // ⚠️ 仍走下面的限速（不瞬时跳），且 `setIntent` 本身契约不变（通用写入口仍由速度派生）。
+    const facingTarget = Number.isFinite(faceYaw) ? faceYaw : null;
     // ---- 转身限速（v3.11，用户裁定「只限速转身」）----
     // ⚠️ **只能接在这里（AI 决策路径），不得接进 `setIntent`**：后者是通用意图
     // 写入口（物理用例、调试代码直接下令），限速长在里面会偷换「想让它朝哪就朝哪」
@@ -719,15 +727,22 @@ export class ZombieService {
     // ⚠️ **静止时不转**：`setIntent` 已在零速时保持原朝向，这里同步不动。
     const moving = Math.abs(steered.vx) > ZOMBIE_MOVING_EPSILON
       || Math.abs(steered.vz) > ZOMBIE_MOVING_EPSILON;
-    if (ok && moving) {
+    if (ok && (moving || facingTarget !== null)) {
       const cur = this.entities.get(id);
       if (cur && cur.type === 'zombie') {
-        const targetYaw = cur.state.yaw;   // setIntent 刚算出的瞬时目标
+        const targetYaw = facingTarget !== null ? facingTarget : cur.state.yaw;
         const limited = steerYawLimited(
           prevYaw, targetYaw,
           ZOMBIE_BEHAVIOR.turnRateDegPerSec * Math.PI / 180 * ZOMBIE.aiPeriod,
         );
-        if (limited !== targetYaw) {
+        // ⚠️⚠️ **必须无条件覆写（只要与 state 里当前值不同）**（v3.11b 两次实测才改对）：
+        // `setIntent` 已先把 yaw 写成**速度派生值**（后退时背离玩家 = 180°，
+        // 而且被 steerIntent 修成沿墙侧滑后每拍在 ±60° 之间摆）。
+        // ① 旧写法 `limited !== targetYaw`：限速一步到位时跳过写入 ⇒ 脏值留下（实测跳 180°）；
+        // ② 改成 `limited !== prevYaw` 仍错：当限速结果**恰好等于旧朝向**（如后退时
+        //    faceYaw 就是当前朝向）也不写 ⇒ setIntent 的 180° 仍留在 state（实测仍跳 180°）。
+        // ⇒ 正确判据是与**state 当前值**比：只要限速结果不等于它，就必须写回去。
+        if (limited !== cur.state.yaw) {
           // 经 createState 重建（不原地改）—— 距 column 迁移判据的 before/after 不能同源
           cur.state = createState({ ...cur.state, yaw: limited });
         }

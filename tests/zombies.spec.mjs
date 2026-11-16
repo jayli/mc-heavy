@@ -1233,3 +1233,84 @@ test('v3.11：贴脸隔墙时也会犹豫（不是立刻全速沿墙跑）', asy
   expect(result.phases.hesitate, `贴脸没路时须犹豫（实测 ${result.phases.hesitate}）`).toBeGreaterThan(0);
   expect(result.modes).toContain('hesitating');
 });
+
+test('v3.11b：死胡同里的一群丧尸必须退出来并重新寻路（用户实玩缺陷）', async ({ page }) => {
+  // 用户 2026-11-16 视频 ~/ttt/bug/丧尸不会脱困.mov：一群丧尸卡在石柱胡同里，
+  // 「转身后没有正确形成寻路路径……退出来后又返回这个死胡同，一直循环」。
+  //
+  // 实测根因（Node 侧复现）：封闭口袋里 backoff 的两个退出判据**同时失效** ——
+  // 退 1.27 格就撞墙（walked 卡在 1.268 < target 1.5），而 steerIntent 把撞墙意图
+  // 修成沿墙侧滑 ⇒ 每拍都在动 ⇒ hitWall 也不成立 ⇒ backoff 持续 27.13s、占 94% 帧。
+  // 修法：backoff 硬超时 3.0s + 后退时面朝玩家（faceYaw）。
+  test.setTimeout(180_000);
+  await page.goto('/?vd=4&seed=12345');
+  await waitWorldReady(page);
+  await installHelpers(page);
+  const result = await page.evaluate(async () => {
+    const g = window.__MC_GAME__;
+    const pos = window.__ZT__.legalSpawnNear(10);
+    const stone = g.registry.idOf('stone');
+    const cx = Math.floor(pos[0]), cz = Math.floor(pos[2]), y0 = Math.floor(pos[1]);
+    // 封闭 5×5 口袋（内空 3×3），四面 3 格高墙 + 顶盖 ⇒ A* 必判不可达
+    for (let dx = -2; dx <= 2; dx++) {
+      for (let dz = -2; dz <= 2; dz++) {
+        const edge = Math.abs(dx) === 2 || Math.abs(dz) === 2;
+        if (edge) for (let dy = 0; dy < 3; dy++) g.editor.setBlock({ x: cx + dx, y: y0 + dy, z: cz + dz, id: stone });
+        g.editor.setBlock({ x: cx + dx, y: y0 + 3, z: cz + dz, id: stone });
+      }
+    }
+    // 先造墙后 spawn；一群 5 只挤在口袋中心
+    const ids = [];
+    for (let i = 0; i < 5; i++) {
+      const id = g.zombies.spawn([cx + 0.5, y0, cz + 0.5], { source: 'deadend' });
+      if (id) ids.push(id);
+    }
+    if (!ids.length) return { error: 'spawn rejected', cx, cz, y0 };
+    // 逐帧采样：单只 backoff 连续时长 + 是否出现过 wander + 后退时是否背对玩家
+    const wrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
+    const p = g.player.physics.pos;
+    let maxBackoffSec = 0, sawWander = false, facingAwayTicks = 0, backoffTicks = 0;
+    const runLen = new Map();
+    const t0 = performance.now();
+    while (performance.now() - t0 < 30000) {
+      await new Promise((r) => setTimeout(r, 100));
+      for (const id of ids) {
+        const st = g.zombies.get(id);
+        if (!st) continue;
+        if (st.mode === 'wandering') sawWander = true;
+        if (st.mode === 'backing') {
+          backoffTicks++;
+          const since = (runLen.get(id) ?? 0) + 0.1;
+          runLen.set(id, since);
+          maxBackoffSec = Math.max(maxBackoffSec, since);
+          const toP = Math.atan2(p.x - st.position[0], p.z - st.position[2]);
+          // ⚠️ **必须跳过转身过渡帧**（实测标定，不是放宽）：进入 backoff 那一拍朝向
+          // 可能本来就背对玩家（chase 时正朝墙走），540°/s 转 180° 需 0.33s。
+          // 实测残留的背对帧**全部落在进入 backoff 后 ≤0.1s 内**且角度单调收敛
+          // （137.7°→110.7°）⇒ 那是限速正在转身，不是「背对玩家倒着走」。
+          // 判据改为「稳定后退段（>0.5s）不得背对」——0.5s > 0.33s 的理论转身时间。
+          if (since > 0.5 && Math.abs(wrap(st.yaw - toP)) > Math.PI / 2) facingAwayTicks++;
+        } else {
+          runLen.set(id, 0);
+        }
+      }
+    }
+    const phases = g.zombies.debugNavigator().behaviorPhases;
+    return {
+      spawned: ids.length, maxBackoffSec: +maxBackoffSec.toFixed(2),
+      sawWander, phases, backoffTicks, facingAwayTicks,
+      count: g.zombies.count(),
+    };
+  });
+  expect(result.error, JSON.stringify(result)).toBeUndefined();
+  expect(result.spawned).toBeGreaterThan(0);
+  // ① backoff 不得无限持续（缺陷态实测 27.13s；正常退 2 格 ÷ 0.66 ≈ 3.0s）
+  expect(result.maxBackoffSec, `单次后退最长须 ≤6s（实测 ${result.maxBackoffSec}s）`).toBeLessThanOrEqual(6);
+  // ② 必须真的走到「重新寻路 / 徘徊」而不是永远后退循环
+  expect(result.phases.replan, '须进过 replan（重新寻路）').toBeGreaterThan(0);
+  expect(result.sawWander || result.phases.wander > 0, '封闭口袋里须进过 wander').toBe(true);
+  // ③ 后退时面朝玩家（用户明确要求「面朝前方后退走几步」）
+  expect(result.backoffTicks, '前提：须真的后退过').toBeGreaterThan(0);
+  expect(result.facingAwayTicks, `稳定后退段不得背对玩家（实测 ${result.facingAwayTicks}/${result.backoffTicks}）`).toBe(0);
+  expect(result.count).toBe(result.spawned);
+});

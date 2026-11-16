@@ -250,7 +250,16 @@ export function decideBehavior({ behavior, position, playerPosition, step, nowMs
   const dx = playerPosition[0] - position[0];
   const dz = playerPosition[2] - position[2];
   const dist = Math.hypot(dx, dz);
-  const out = (vx, vz, phase, replan = false) => ({ vx, vz, mode: PHASE_MODE[phase], phase, replan });
+  // 朝向玩家的 yaw（本仓口径 yaw = atan2(vx, vz)，故直接用「朝玩家向量」求）
+  const yawToPlayer = Math.atan2(dx, dz);
+  /**
+   * `faceYaw` 非 null 时，调用方把它当朝向目标（而不是由速度派生）。
+   * 后退时用它实现用户要的「面朋前方倒着退」（v3.11b）。
+   */
+  const out = (vx, vz, phase, replan = false) => ({
+    vx, vz, mode: PHASE_MODE[phase], phase, replan,
+    faceYaw: phase === 'backoff' ? yawToPlayer : null,
+  });
   /** 包络后的输出（方向 × 倍率）；fixedScale 非 null 时用固定倍率 */
   /**
    * 给一个方向乘上本相位的速度倍率。
@@ -318,7 +327,7 @@ export function decideBehavior({ behavior, position, playerPosition, step, nowMs
       const walked = b.backoffStart
         ? Math.hypot(position[0] - b.backoffStart[0], position[2] - b.backoffStart[1])
         : 0;
-      // ④ 退够目标 **或** 撞墙（本拍没动）⇒ 立即结束
+      // ④ 退够目标 **或** 撞墙（本拍没动）**或** 硬超时 ⇒ 立即结束
       // ⚠️ **撞墙判据必须先给一个宽限期**（`backoffGraceSeconds`）：进入 backoff 的
       // 那一拍才刚把速度发出去，物理还没积分 ⇒ 下一拍位置必然没动。
       // 不给宽限期的形态是「backoff 永远只持续 1 拍」（实测踩到）。
@@ -326,7 +335,12 @@ export function decideBehavior({ behavior, position, playerPosition, step, nowMs
       const hitWall = b.backoffStart !== null
         && backing >= B.backoffGraceSeconds * 1000
         && movedThisTick <= 1e-6;
-      if (walked >= b.backoffTarget || hitWall) {
+      // ⚠️⚠️ **硬超时是封闭死胡同的唯一出路**（用户 2026-11-16 实玩缺陷）：
+      // 口袋里「退够 target」与「本拍没动」会**同时失效** —— 退 1.27 格就撞墙（walked 卡住），
+      // 而 `steerIntent` 把撞墙意图修成沿墙侧滑 ⇒ 每拍都在动（vx ±0.66 交替）。
+      // 实测：无超时时 backoff 持续 **27.13s**、占 94% 帧，永远进不了 replan/wander。
+      const timedOut = backing >= B.backoffTimeoutSeconds * 1000;
+      if (walked >= b.backoffTarget || hitWall || timedOut) {
         enterReplan(b, nowMs, rng);
         break;
       }

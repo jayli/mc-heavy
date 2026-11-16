@@ -1102,3 +1102,108 @@ test('行为层: 进 wander 后仍会周期重试，玩家拆墙后恢复追逐'
   assertTrue(recovered, '拆墙后须恢复 chasing');
   assertTrue(distAfter < distBefore, `须靠近玩家（${distBefore.toFixed(2)} → ${distAfter.toFixed(2)}）`);
 });
+
+// ==================== 用户实玩缺陷（2026-11-16）：死胡同里退不出来 ====================
+//
+// 用户原话：「碰到死胡同的时候，虽然会停止转身移动，但还是原路撞到死胡同，转身后没有正确的
+// 形成寻路路径，导致后退出来这个死胡同，然后又返回这个死胡同……退出来后就应该重新计算和
+// 玩家的寻路路径，而不是再次返回一头钻进刚才的死胡同。」（视频 ~/ttt/bug/丧尸不会脱困.mov）
+//
+// **实测复现**（封闭 3×3 口袋，玩家在北墙外 14 格）：`backoff` 占 **2528/2701 帧 = 94%**，
+// 只在 3 个格子间振荡，8.87 秒都没退出 backoff。两个根因：
+// ① 退出只看「离起点直线距离 ≥ target」：口袋里退 1.27 格就撞墙 ⇒ walked 卡在 1.268 < 1.5 ⇒ 永不满足；
+// ② `hitWall` 要求「本拍位移 ≤1e-6」，但 `steerIntent` 把撞墙的意图修成**沿墙侧滑**
+//    ⇒ 每拍都在动（实测 vx 在 ±0.66 之间交替）⇒ 撞墙判据也永不成立。
+// ⇒ 既不 replan 也不 wander，用户看到的就是「原地循环、退不出来」。
+
+/** 封闭 3×3 口袋（四面 3 格高墙，内空 x,z ∈ 31..33），玩家在北墙外 */
+function makePocket() {
+  const { world, set } = makeFlat();
+  for (let x = 30; x <= 34; x++) {
+    for (let dy = 0; dy < 3; dy++) { set(x, 1 + dy, 30); set(x, 1 + dy, 34); }
+  }
+  for (let z = 30; z <= 34; z++) {
+    for (let dy = 0; dy < 3; dy++) { set(30, 1 + dy, z); set(34, 1 + dy, z); }
+  }
+  return { world, set };
+}
+
+test('死胡同: backoff 不得无限持续（撞墙侧滑时也要按时结束）', () => {
+  const { world } = makePocket();
+  const entities = new EntityManager();
+  entities.registerType('zombie', zombieDefinition);
+  const zombies = new ZombieService({ entities, world, rng: () => 0.5 });
+  const id = zombies.spawn([32.5, 1, 32.5], { source: 'test' });
+  const playerPosition = [32.5, 1, 20.5];
+  const dt = 1 / 60;
+  let t = 0;
+  let maxBackoffRun = 0, run = 0;
+  while (t < 30) {
+    zombies.update(dt, { playerPosition, nowMs: t * 1000 });
+    entities.update(dt, { world });
+    const ph = zombies._navMemory.get(id)?.behavior?.phase ?? '?';
+    if (ph === 'backoff') { run++; maxBackoffRun = Math.max(maxBackoffRun, run); }
+    else run = 0;
+    t += dt;
+  }
+  // 退 2 格 ÷ (1.2×0.55) ≈ 3.0s 是理论上限；给 2 倍余量 = 6s。
+  // 实测缺陷态是 8.87s 仍未退出（且 30s 内 backoff 占 94%）。
+  assertTrue(maxBackoffRun / 60 <= 6,
+    `单次 backoff 最长不得超过 6 秒（实测 ${(maxBackoffRun / 60).toFixed(2)}s）`);
+});
+
+test('死胡同: 封闭口袋里最终必须进 wander（而不是永远 backoff 循环）', () => {
+  const { world } = makePocket();
+  const entities = new EntityManager();
+  entities.registerType('zombie', zombieDefinition);
+  const zombies = new ZombieService({ entities, world, rng: () => 0.5 });
+  const id = zombies.spawn([32.5, 1, 32.5], { source: 'test' });
+  const playerPosition = [32.5, 1, 20.5];
+  const dt = 1 / 60;
+  let t = 0;
+  let sawWander = false, maxFail = 0;
+  while (t < 30) {
+    zombies.update(dt, { playerPosition, nowMs: t * 1000 });
+    entities.update(dt, { world });
+    const b = zombies._navMemory.get(id)?.behavior;
+    if (b) { maxFail = Math.max(maxFail, b.failCount); if (b.phase === 'wander') sawWander = true; }
+    t += dt;
+  }
+  const phases = zombies.debugNavigator().behaviorPhases;
+  assertTrue(maxFail >= 3, `失败计数须攒到 3（实测峰值 ${maxFail}）`);
+  assertTrue(sawWander, `30s 内须进 wander（相位统计 ${JSON.stringify(phases)}）`);
+});
+
+test('死胡同: 后退期间朝向不翻转（面朝前方倒着退，用户明确要求）', () => {
+  const { world } = makePocket();
+  const entities = new EntityManager();
+  entities.registerType('zombie', zombieDefinition);
+  const zombies = new ZombieService({ entities, world, rng: () => 0.5 });
+  const id = zombies.spawn([32.5, 1, 32.5], { source: 'test' });
+  const playerPosition = [32.5, 1, 20.5];
+  const dt = 1 / 60;
+  let t = 0;
+  const wrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
+  let flips = 0, backoffTicks = 0, sinceBackoff = 0;
+  while (t < 30) {
+    zombies.update(dt, { playerPosition, nowMs: t * 1000 });
+    entities.update(dt, { world });
+    const st = zombies.get(id);
+    const b = zombies._navMemory.get(id)?.behavior;
+    if (b?.phase === 'backoff') {
+      backoffTicks++;
+      sinceBackoff += dt;
+      // 后退时「面朝玩家」= yaw 与「朝玩家方向」的夹角小；
+      // 若朝向跟着后退速度派生，就会转成背对玩家（夹角 ~180°）。
+      // ⚠️ 跳过转身过渡段（>0.5s 才算稳定后退）：540°/s 转 180° 需 0.33s，
+      // 实测残留背对帧全在 ≤0.1s 内且角度单调收敛 ⇒ 那是限速在转身，不是缺陷。
+      const toPlayer = Math.atan2(playerPosition[0] - st.position[0], playerPosition[2] - st.position[2]);
+      if (sinceBackoff > 0.5 && Math.abs(wrap(st.yaw - toPlayer)) > Math.PI / 2) flips++;
+    } else {
+      sinceBackoff = 0;
+    }
+    t += dt;
+  }
+  assertTrue(backoffTicks > 0, '前提：须真的进过 backoff');
+  assertEqual(flips, 0, `后退期间不得背对玩家（实测 ${flips}/${backoffTicks} 帧背对）`);
+});

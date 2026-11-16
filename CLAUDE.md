@@ -298,6 +298,16 @@ scheduler/physics）再加 `npm run bench -- --check`。计划里标「冻结」
   —— 那会掩盖「生产代码是否每拍更新它」这个被测行为。
 - **判「replan 真的清了缓存」不能用 `cachedPathOf(id) === null`**：不可达场景的 `_path` 本就是 null
   ⇒ 清与不清都读到 null（恒真）。用 `pathCache.debugState().size === 0`。
+- ⚠️⚠️ **`backoff` 必须有硬超时，两个「自然」退出判据在封闭死胡同里会同时失效**（v3.11b 用户实玩）：
+  ① 「退够目标距离」—— 口袋里退 1.27 格就撞墙，`walked` 永远卡在 1.268 < 1.5；
+  ② 「本拍没动 ⇒ 撞墙」—— `steerIntent` 把撞墙意图修成**沿墙侧滑**，每拍都在动（vx ±0.66 交替）。
+  实测 backoff 持续 **27.13s**、占 94% 帧，永不 replan/wander ⇒ 用户看到「一群丧尸卡在胡同里循环」。
+- **后退要「面朝玩家倒着退」**（用户明确要求）：行为层 backoff 相位给 `faceYaw`，`_applyIntent` 拿它当限速目标。
+  ⚠️ **yaw 覆写判据只能与 `cur.state.yaw` 比**：`setIntent` 已先把 yaw 写成速度派生值（后退时 180°、侧滑时 ±60° 摆），
+  用 `limited !== targetYaw`（一步到位时跳过写入）或 `limited !== prevYaw`（结果等于旧朝向时跳过）**都会把脏值留下**，
+  实测两种写法都仍单帧跳 180°。这条我改了两次才对。
+- **朝向类判据要跳过转身过渡段**：540°/s 转 180° 需 0.33s，进入 backoff 首帧本来就背对；
+  实测残留背对帧全在 ≤0.1s 内且角度单调收敛 ⇒ 判「稳定段（>0.5s）不得背对」，不是从第一帧就要 0。
 - ⚠️⚠️ **「N 轮失败后进入某状态」的功能必须直接钉那个状态真的出现过**（v3.11 final review 实测）：
   `behaviorPhases.hesitate/backoff > 0` 全绿，而 **wander 从未发生**（40s 相位 wander=0、failCount 恒 0）。
   根因：replan 结算紧跟 backoff，backoff 自己刚走 1~2 格 ⇒ 滚动窗口仍显示「在动」⇒ 误判「有路」⇒ 计数归零。
