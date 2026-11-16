@@ -953,7 +953,7 @@ test('行为诊断: debugNavigator 暴露五个 phase 计数且随决策增长',
   const entities = new EntityManager();
   entities.registerType('zombie', zombieDefinition);
   const zombies = new ZombieService({ entities, world });
-  const id = zombies.spawn([32.5, 1, 40.5], { source: 'test' });
+  zombies.spawn([32.5, 1, 40.5], { source: 'test' });
   const before = zombies.debugNavigator().behaviorPhases;
   assertEqual(typeof before, 'object', '须暴露 behaviorPhases');
   for (const k of ['chase', 'hesitate', 'backoff', 'replan', 'wander']) {
