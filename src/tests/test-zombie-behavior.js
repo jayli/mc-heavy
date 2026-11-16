@@ -8,7 +8,7 @@
 import { test } from './runner.js';
 import { assertEqual, assertTrue, assertFalse } from './assert.js';
 import { ZOMBIE_BEHAVIOR, ZOMBIE_MAX_STEP } from '../entities/zombies/zombie-config.js';
-import { behaviorFor, recordSample, detectStuck, decideBehavior } from '../entities/zombies/zombie-behavior.js';
+import { behaviorFor, recordSample, detectStuck, decideBehavior, speedScale } from '../entities/zombies/zombie-behavior.js';
 import { memoryFor, decideStep, DIRECTION_VECTORS } from '../entities/zombies/zombie-navigator.js';
 import { PathCache } from '../entities/zombies/zombie-pathfinder.js';
 import { zombieCollidesAt, zombieStepUpY } from '../entities/zombies/zombie-navigation.js';
@@ -573,20 +573,26 @@ test('decideBehavior r: 同 rng 同输入 ⇒ 逐位同输出（确定性）', (
   }
 });
 
-test('decideBehavior: chase 时原样透传 decideStep 的方向（不改方向）', () => {
+test('decideBehavior: chase 时方向与 decideStep 一致（行为层不改方向，只改速度）', () => {
   const nowMs = 10000;
   const b = behaviorFor(memoryFor(new Map(), 'z0'), nowMs);
-  // 净位移足够 ⇒ 不卡住
+  // 净位移足够 ⇒ 不卡住；且早已完成起步加速（隔离包络的 accel 项）
   b.hist.push([nowMs - 1500, 32.5, 34.0]);
   b.hist.push([nowMs, 32.5, 32.5]);
+  b.movingSince = nowMs - 10000;
   const r = decideBehavior({
     behavior: b, position: FAR_POS, playerPosition: FAR_PLAYER,
     step: NORTH_STEP, nowMs, rng: () => 0.5,
   });
   assertEqual(r.phase, 'chase');
   assertEqual(r.mode, 'chasing');
-  assertEqual(r.vz, -1, 'chase 时方向须原样透传（速度倍率在 Task 4 才引入）');
-  assertEqual(r.vx, 0);
+  // ⚠️ 钉的是**方向**（单位化后与 decideStep 一致），不是长度 ——
+  // 长度由 Task 4 的速度包络决定（巡航×起步×转向），那是本轮的目的。
+  const len = Math.hypot(r.vx, r.vz);
+  assertTrue(len > 0, '已完成起步加速后须有非零速度');
+  assertClose(r.vx / len, 0, 1e-9, 'vx 方向须与 decideStep 一致');
+  assertClose(r.vz / len, -1, 1e-9, 'vz 方向须与 decideStep 一致（朝北）');
+  assertTrue(len <= 1 + 1e-9, '倍率不得超过 1');
 });
 
 // ==================== Task 3：接线（只测纯函数会漏「没接线」，M7 教训）====================
@@ -627,7 +633,10 @@ test('行为层接线: 开阔地正常追逐不进犹豫（零回归）', () => 
   const playerPosition = [32.5, 1, 20.5];
   const dt = 1 / 60;
   let t = 0;
-  while (t < 18) {
+  // ⚠️ 窗口取 24s 而不是 18s：巡航均值 0.96 ⇒ 18s 只走 20.7 格 < 24 格距离。
+  // 24s × 1.2 × 0.96 ≈ 27.6 格 > 24 ⇒ 能追到。（Task 3 时速度恒 1.2，18s 走 21.6 格勉强够，
+  // 引入包络后必须同步延长窗口 —— 这是判据随新语义重标，不是放宽。）
+  while (t < 24) {
     zombies.update(dt, { playerPosition, nowMs: t * 1000 });
     entities.update(dt, { world });
     t += dt;
@@ -636,7 +645,159 @@ test('行为层接线: 开阔地正常追逐不进犹豫（零回归）', () => 
   const phases = zombies.debugNavigator().behaviorPhases;
   assertEqual(phases.hesitate, 0, '开阔地直追不得犹豫');
   assertEqual(phases.backoff, 0, '开阔地直追不得后退');
-  // 真的追到了（18s × 1.2 = 21.6 格 > 24 格距离的大部分）
   const dist = Math.hypot(st.position[0] - playerPosition[0], st.position[2] - playerPosition[2]);
   assertTrue(dist < 3, `须追到玩家附近（实际距 ${dist.toFixed(2)} 格）`);
+});
+
+// ==================== Task 4：速度包络 ====================
+
+test('speedScale b: 巡航倍率 ∈ [0.92,1.0]，恒 ≤ 1', () => {
+  const b = behaviorFor(memoryFor(new Map(), 'z0'), 0);
+  b.movingSince = -10000;   // 早已完成起步加速，只考察巡航项
+  for (let t = 0; t <= 10000; t += 50) {
+    const s = speedScale({ behavior: b, id: 'z0', nowMs: t, dir: [0, -1], moving: true });
+    assertTrue(s >= 0.92 - 1e-9 && s <= 1.0 + 1e-9,
+      `巡航倍率须在 [0.92,1.0]，t=${t} 实际 ${s}`);
+    b.lastDir = [0, -1];   // 方向不变 ⇒ 无转向减速
+  }
+});
+
+test('speedScale c: 静止起步前 0.35s 递增，之后达巡航', () => {
+  const b = behaviorFor(memoryFor(new Map(), 'z0'), 0);
+  // 首拍 moving=true ⇒ movingSince 置为 nowMs ⇒ 加速因子 0
+  const s0 = speedScale({ behavior: b, id: 'z0', nowMs: 1000, dir: [0, -1], moving: true });
+  b.lastDir = [0, -1];
+  const s1 = speedScale({ behavior: b, id: 'z0', nowMs: 1175, dir: [0, -1], moving: true });
+  b.lastDir = [0, -1];
+  const s2 = speedScale({ behavior: b, id: 'z0', nowMs: 1350, dir: [0, -1], moving: true });
+  assertTrue(s0 < s1 && s1 < s2, `起步须递增（${s0} → ${s1} → ${s2}）`);
+  assertClose(s0, 0, 1e-9, '首拍加速因子为 0');
+  assertTrue(s2 >= 0.92 - 1e-9, `0.35s 后须达巡航（实际 ${s2}）`);
+});
+
+test('speedScale c2: moving=false 时清 movingSince（下次重新起步）', () => {
+  const b = behaviorFor(memoryFor(new Map(), 'z0'), 0);
+  speedScale({ behavior: b, id: 'z0', nowMs: 1000, dir: [0, -1], moving: true });
+  assertTrue(b.movingSince !== null, '前提：移动中须记起点');
+  speedScale({ behavior: b, id: 'z0', nowMs: 2000, dir: [0, 0], moving: false });
+  assertEqual(b.movingSince, null, '静止须清起点');
+});
+
+test('speedScale o1: 转向那一拍减速，但不累积', () => {
+  const b = behaviorFor(memoryFor(new Map(), 'z0'), 0);
+  b.movingSince = -10000;
+  // 每拍都转 45°：第 1 拍与第 20 拍的倍率必须相同（不累乘）
+  // ⚠️ 先建立 lastDir（首拍无参照 ⇒ turn=1 是正确的，不能拿它当「转向拍」基准）
+  b.lastDir = [0, -1];
+  const scales = [];
+  for (let i = 0; i < 20; i++) {
+    // 每拍都相对上拍转 45°（而不是相对固定轴），这样每拍的转向量恒定
+    const th = ((i + 1) * 45 * Math.PI) / 180;
+    const dir = [Math.sin(th), -Math.cos(th)];
+    scales.push(speedScale({ behavior: b, id: 'z0', nowMs: 5000, dir, moving: true }));
+    b.lastDir = dir;
+  }
+  // 巡航项随时间漂移，故比「转向因子」而非绝对值：用同 nowMs 的直走值做基准
+  const b2 = behaviorFor(memoryFor(new Map(), 'z0'), 0);
+  b2.movingSince = -10000;
+  b2.lastDir = [0, -1];
+  const straight = speedScale({ behavior: b2, id: 'z0', nowMs: 5000, dir: [0, -1], moving: true });
+  const ratioFirst = scales[0] / straight;
+  assertTrue(ratioFirst < 1, `转向那一拍须减速（比值 ${ratioFirst}）`);
+  assertTrue(ratioFirst >= 0.7 - 1e-9, `转向减速不得低于 floor 0.7（比值 ${ratioFirst}）`);
+  // 第 20 拍与第 1 拍的转向角度相同（都是 45°）⇒ 减速幅度须一致（±巡航漂移的 8%）
+  const b3 = behaviorFor(memoryFor(new Map(), 'z0'), 0);
+  b3.movingSince = -10000;
+  const th19 = (19 * 45 * Math.PI) / 180, th18 = (18 * 45 * Math.PI) / 180;
+  b3.lastDir = [Math.sin(th18), -Math.cos(th18)];
+  const s19 = speedScale({
+    behavior: b3, id: 'z0', nowMs: 5000, dir: [Math.sin(th19), -Math.cos(th19)], moving: true,
+  });
+  const straightSame = speedScale({
+    behavior: (() => { const x = behaviorFor(memoryFor(new Map(), 'z0'), 0); x.movingSince = -10000; x.lastDir = [0, -1]; return x; })(),
+    id: 'z0', nowMs: 5000, dir: [0, -1], moving: true,
+  });
+  assertClose(s19 / straightSame, ratioFirst, 1e-9, '同样转 45° 的减速幅度须逐位相同（不累积）');
+});
+
+test('speedScale o2: 三项相乘后仍 ≤ 1 且 ≥ 0', () => {
+  const b = behaviorFor(memoryFor(new Map(), 'z3'), 0);
+  for (let t = 0; t <= 5000; t += 50) {
+    const th = (t / 100) % (Math.PI * 2);
+    const s = speedScale({ behavior: b, id: 'z3', nowMs: t, dir: [Math.sin(th), Math.cos(th)], moving: true });
+    assertTrue(s >= 0 && s <= 1 + 1e-12, `倍率须在 [0,1]，t=${t} 实际 ${s}`);
+    b.lastDir = [Math.sin(th), Math.cos(th)];
+  }
+});
+
+test('speedScale 相位: 不同 id 不同步（避免全场齐步走）', () => {
+  const mk = (id) => {
+    const b = behaviorFor(memoryFor(new Map(), id), 0);
+    b.movingSince = -10000;
+    b.lastDir = [0, -1];
+    return speedScale({ behavior: b, id, nowMs: 3000, dir: [0, -1], moving: true });
+  };
+  const a = mk('z0'), c = mk('z7');
+  assertFalse(a === c, `不同 id 的巡航倍率须不同（z0=${a}, z7=${c}）`);
+});
+
+test('speedScale 确定性: 同 id 同 nowMs ⇒ 逐位相同', () => {
+  const mk = () => {
+    const b = behaviorFor(memoryFor(new Map(), 'z5'), 0);
+    b.movingSince = -10000;
+    b.lastDir = [0, -1];
+    return speedScale({ behavior: b, id: 'z5', nowMs: 4321, dir: [0, -1], moving: true });
+  };
+  assertEqual(mk(), mk());
+});
+
+test('decideBehavior 速度包络: chase 时不再是二值速度（distinct > 5）', () => {
+  const { world } = makeFlat();
+  const entities = new EntityManager();
+  entities.registerType('zombie', zombieDefinition);
+  const zombies = new ZombieService({ entities, world, rng: () => 0.5 });
+  const id = zombies.spawn([32.5, 1, 44.5], { source: 'test' });
+  const playerPosition = [32.5, 1, 20.5];
+  const dt = 1 / 60;
+  let t = 0;
+  const speeds = new Set();
+  while (t < 12) {
+    zombies.update(dt, { playerPosition, nowMs: t * 1000 });
+    entities.update(dt, { world });
+    const st = zombies.get(id);
+    speeds.add(Math.round(Math.hypot(st.velocity[0], st.velocity[2]) * 1000) / 1000);
+    t += dt;
+  }
+  assertTrue(speeds.size > 5, `速度取值须多于 5 种（现状实测恰好 2 种，实际 ${speeds.size}）`);
+  // 硬上限不变式：任何一帧都不得超过 1.2
+  for (const s of speeds) assertTrue(s <= 1.2 + 1e-9, `速度不得超过 1.2（实际 ${s}）`);
+});
+
+test('行为层不缩放排斥力: 20只同点生成仍散开', () => {
+  const { world } = makeFlat();
+  const entities = new EntityManager();
+  entities.registerType('zombie', zombieDefinition);
+  const zombies = new ZombieService({ entities, world, rng: () => 0.5 });
+  const ids = [];
+  for (let i = 0; i < 20; i++) ids.push(zombies.spawn([32.5, 1, 32.5], { source: 'test' }));
+  assertEqual(ids.filter(Boolean).length, 20, '前提：20 只须全部生成');
+  const playerPosition = [32.5, 1, 20.5];
+  const dt = 1 / 60;
+  let t = 0;
+  while (t < 3) {
+    zombies.update(dt, { playerPosition, nowMs: t * 1000 });
+    entities.update(dt, { world });
+    t += dt;
+  }
+  const zs = zombies.activeEntities();
+  let min = Infinity;
+  for (let i = 0; i < zs.length; i++) {
+    for (let j = i + 1; j < zs.length; j++) {
+      min = Math.min(min, Math.hypot(
+        zs[i].state.position[0] - zs[j].state.position[0],
+        zs[i].state.position[2] - zs[j].state.position[2],
+      ));
+    }
+  }
+  assertTrue(min > 0.4, `20 只同点须散开（最小间距 ${min.toFixed(3)}，判据 >0.4）`);
 });

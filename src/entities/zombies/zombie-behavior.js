@@ -53,6 +53,8 @@ import { DIRECTION_VECTORS } from './zombie-navigator.js';
 export function behaviorFor(memory, nowMs) {
   if (!memory.behavior) {
     memory.behavior = {
+      /** 所属实体 id（巡航漂移的相位派生用；与 `memoryFor` 的 `__id` 同源） */
+      __id: memory.__id ?? 'z',
       /** 滚动位置窗口 `[[nowMs, x, z], …]`（信号 A 的唯一输入） */
       hist: [],
       /** 信号 B 的持续计时起点（ms）；背离角回落时清 null */
@@ -249,6 +251,30 @@ export function decideBehavior({ behavior, position, playerPosition, step, nowMs
   const dz = playerPosition[2] - position[2];
   const dist = Math.hypot(dx, dz);
   const out = (vx, vz, phase, replan = false) => ({ vx, vz, mode: PHASE_MODE[phase], phase, replan });
+  /** 包络后的输出（方向 × 倍率）；fixedScale 非 null 时用固定倍率 */
+  /**
+   * 给一个方向乘上本相位的速度倍率。
+   * chase / replan 走完整包络（巡航×起步×转向）；
+   * backoff / wander 用各自的固定倍率（**不叠巡航漂移** —— 那三个状态的
+   * 速度语义是独立的：后退就是后退的速度，不应随巡航正弦时快时慢）。
+   */
+  const scaled = (vx, vz, fixedScale = null) => {
+    const len = Math.hypot(vx, vz);
+    if (len <= 1e-9) {
+      speedScale({ behavior: b, id: b.__id, nowMs, dir: [0, 0], moving: false });
+      return [0, 0];
+    }
+    const u = [vx / len, vz / len];
+    const s = fixedScale !== null
+      ? fixedScale
+      : speedScale({ behavior: b, id: b.__id, nowMs, dir: u, moving: true });
+    return [u[0] * s, u[1] * s];
+  };
+
+  const outScaled = (vx, vz, phase, replan = false, fixedScale = null) => {
+    const [sx, sz] = scaled(vx, vz, fixedScale);
+    return out(sx, sz, phase, replan);
+  };
 
   // 本拍相对上拍是否真的动了（backoff 撞墙判据 / 失败计数归零判据）
   const movedThisTick = b.lastPos === null
@@ -261,7 +287,7 @@ export function decideBehavior({ behavior, position, playerPosition, step, nowMs
     b.phase = 'chase';
     b.failCount = 0;
     b.awaySince = null;
-    return out(step.vx, step.vz, 'chase');
+    return outScaled(step.vx, step.vz, 'chase');
   }
   // ---- ② 围死：保持既有 blocked 语义 ----
   if (step.blocked === true) {
@@ -274,6 +300,7 @@ export function decideBehavior({ behavior, position, playerPosition, step, nowMs
     plannedDirection: step.plannedDirection, blocked: step.blocked, nowMs,
   });
 
+
   switch (b.phase) {
     case 'hesitate': {
       if (nowMs < b.phaseUntil) return out(0, 0, 'hesitate');
@@ -285,7 +312,7 @@ export function decideBehavior({ behavior, position, playerPosition, step, nowMs
       b.backoffStart = [position[0], position[2]];
       b.backoffSince = nowMs;
       b.backoffTarget = B.backoffDistanceMin + rng() * (B.backoffDistanceMax - B.backoffDistanceMin);
-      return out(dir[0], dir[1], 'backoff');
+      return outScaled(dir[0], dir[1], 'backoff', false, B.backoffSpeedScale);
     }
     case 'backoff': {
       const walked = b.backoffStart
@@ -304,7 +331,7 @@ export function decideBehavior({ behavior, position, playerPosition, step, nowMs
         break;
       }
       const dir = b.backoffDir ?? unit2(-dx, -dz) ?? [0, 0];
-      return out(dir[0], dir[1], 'backoff');
+      return outScaled(dir[0], dir[1], 'backoff', false, B.backoffSpeedScale);
     }
     case 'wander': {
       // ⑦ 有路了（不再卡住）⇒ 回 chase
@@ -313,7 +340,7 @@ export function decideBehavior({ behavior, position, playerPosition, step, nowMs
         b.failCount = 0;
         b.wanderAnchor = null;
         b.wanderTarget = null;
-        return out(step.vx, step.vz, 'chase');
+        return outScaled(step.vx, step.vz, 'chase');
       }
       // 周期重试寻路（拆墙后最迟这么久恢复）
       let replan = false;
@@ -332,7 +359,7 @@ export function decideBehavior({ behavior, position, playerPosition, step, nowMs
         ];
       }
       const dir = unit2(b.wanderTarget[0] - position[0], b.wanderTarget[1] - position[2]) ?? [0, 0];
-      return out(dir[0], dir[1], 'wander', replan);
+      return outScaled(dir[0], dir[1], 'wander', replan, B.wanderSpeedScale);
     }
     default: break;   // chase / replan 落到下面统一处理
   }
@@ -344,7 +371,7 @@ export function decideBehavior({ behavior, position, playerPosition, step, nowMs
       if (!stuck.stuck) {
         b.phase = 'chase';
         b.failCount = 0;
-        return out(step.vx, step.vz, 'chase');
+        return outScaled(step.vx, step.vz, 'chase');
       }
       b.failCount += 1;
       if (b.failCount >= B.wanderAfterAttempts) {
@@ -369,7 +396,7 @@ export function decideBehavior({ behavior, position, playerPosition, step, nowMs
       b.paceStart = [position[0], position[2]];
       b.paceLeft -= 1;
     }
-    return out(b.paceDir[0], b.paceDir[1], 'replan', true);
+    return outScaled(b.paceDir[0], b.paceDir[1], 'replan', true);
   }
 
   // ---- chase ----
@@ -381,5 +408,67 @@ export function decideBehavior({ behavior, position, playerPosition, step, nowMs
   }
   // ⑥ 真的在前进 ⇒ 失败计数归零
   if (movedThisTick > 1e-6) b.failCount = 0;
-  return out(step.vx, step.vz, 'chase');
+  return outScaled(step.vx, step.vz, 'chase');
+}
+
+/**
+ * id 散列（复用 `separationForce` 的 charCode 求和手法，确定且不同步）。
+ * 用它派生巡航漂移的周期与相位 ⇒ 20 只丧尸不会齐步走。
+ */
+function idHash(id) {
+  let sum = 0;
+  const s = String(id ?? '');
+  for (let i = 0; i < s.length; i++) sum += s.charCodeAt(i);
+  return sum;
+}
+
+/**
+ * 速度倍率（0~1）：巡航漂移 × 起步加速 × 转向减速，三项相乘后钳到 [0,1]。
+ *
+ * ⚠️ **上限权威不在这里**：本函数只给 0~1 的倍率，`ZOMBIE.speed` 仍是唯一速度上限
+ * （调用方乘它，`_applyIntent` 再钳一次）。红线 1：不复制第二份速度权威。
+ *
+ * ⚠️⚠️ **转向减速每拍独立算，绝不累乘**（实测踩过的坑）：写成「每帧乘一次」会让丧尸
+ * 在连续绕行中越来越慢直到停住 —— 本轮探针第一版就是每物理帧缩放，一个 AI 周期缩了
+ * 3 次（0.85³=0.614），量出来的是「更慢的另一个东西」。
+ *
+ * ⚠️ **巡航下界 0.92 是实测约束**：既有 12s 绕墙 E2E 在倍率 0.80 时跨墙 11.5s（贴线）、
+ * 0.70 直接 FAIL。改 `cruiseScaleMin` 前必须重跑那条 E2E。
+ *
+ * @param {{behavior: object, id: string, nowMs: number,
+ *          dir: [number, number], moving: boolean}} p
+ * @returns {number} 0~1
+ */
+export function speedScale({ behavior, id, nowMs, dir, moving }) {
+  const B = ZOMBIE_BEHAVIOR;
+  const b = behavior;
+  if (!moving) {
+    b.movingSince = null;
+    b.lastDir = null;
+    return 0;
+  }
+  // ---- 巡航漂移（慢正弦，周期与相位由 id 派生）----
+  const h = idHash(id);
+  const period = B.cruisePeriodSecondsMin
+    + (h % 1000) / 1000 * (B.cruisePeriodSecondsMax - B.cruisePeriodSecondsMin);
+  const phase = (h * 0.6180339887498949) % (Math.PI * 2);
+  const wave = 0.5 + 0.5 * Math.sin((2 * Math.PI * (nowMs / 1000)) / period + phase);
+  const cruise = B.cruiseScaleMin + (B.cruiseScaleMax - B.cruiseScaleMin) * wave;
+  // ---- 起步加速 ----
+  if (b.movingSince === null || b.movingSince === undefined) b.movingSince = nowMs;
+  const accel = Math.min(1, Math.max(0, (nowMs - b.movingSince) / (B.accelSeconds * 1000)));
+  // ---- 转向减速（本拍与上拍方向的夹角）----
+  let turn = 1;
+  const prev = b.lastDir;
+  const len = Math.hypot(dir[0], dir[1]);
+  if (prev && len > 1e-9) {
+    const pl = Math.hypot(prev[0], prev[1]);
+    if (pl > 1e-9) {
+      const dot = (dir[0] / len) * (prev[0] / pl) + (dir[1] / len) * (prev[1] / pl);
+      const theta = Math.acos(Math.max(-1, Math.min(1, dot)));
+      turn = Math.max(B.turnSlowFloor, 1 - (theta / Math.PI) * 0.5);
+    }
+  }
+  if (len > 1e-9) b.lastDir = [dir[0] / len, dir[1] / len];
+  return Math.min(1, Math.max(0, cruise * accel * turn));
 }
