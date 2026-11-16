@@ -472,3 +472,33 @@ export function speedScale({ behavior, id, nowMs, dir, moving }) {
   if (len > 1e-9) b.lastDir = [dir[0] / len, dir[1] / len];
   return Math.min(1, Math.max(0, cruise * accel * turn));
 }
+
+/**
+ * 朝目标 yaw **限速逼近**（走最短弧）。纯函数。
+ *
+ * **为什么需要**：`setIntent` 的 `yaw = atan2(vx, vz)` 是瞬时派生 ⇒ 方向突变时
+ * 单帧甩头 **135°**（实测 2.3562 rad）。限速 540°/s 后单帧最大 **27°**（改善 5 倍），
+ * 朝向滞后位移的均值仅 **0.7°**（max 108° 只持续 ~0.17s）。
+ *
+ * ⚠️ **必须走最短弧**：+179° → −179° 的真实转角是 **2°**，不 wrap 会绕 358° 转一圈。
+ * ⚠️ **已达目标时逐位原样返回**（不做任何重建）—— 与 `steerIntent` 的 0° 分支同一理由：
+ * 浮点往返不保证逐位回到原值，而无障碍时的零回归是硬判据。
+ *
+ * @param {number} current 当前 yaw（rad）
+ * @param {number} target 目标 yaw（rad）
+ * @param {number} maxStep 本拍最大转角（rad，> 0）
+ * @returns {number} 新 yaw（wrap 到 ±π）
+ */
+export function steerYawLimited(current, target, maxStep) {
+  // 最短弧角差：atan2(sin Δ, cos Δ) ∈ (−π, π]
+  const delta = Math.atan2(Math.sin(target - current), Math.cos(target - current));
+  if (delta === 0) return current;
+  const step = Number.isFinite(maxStep) && maxStep > 0 ? maxStep : 0;
+  const clamped = Math.max(-step, Math.min(step, delta));
+  if (clamped === delta) {
+    // 一步到位：直接返回目标（但 wrap 到 ±π，保持值域一致）
+    return Math.atan2(Math.sin(target), Math.cos(target));
+  }
+  const next = current + clamped;
+  return Math.atan2(Math.sin(next), Math.cos(next));
+}

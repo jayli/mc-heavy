@@ -13,9 +13,10 @@
 //    驱动步态与移动。另设 intent 会让「渲染看到的移动」与「物理实际的移动」分家。
 import {
   ZOMBIE, ZOMBIE_FLASH_MS, ZOMBIE_MAX_STEP, ZOMBIE_MOVING_EPSILON, ZOMBIE_SEPARATION,
+  ZOMBIE_BEHAVIOR,
 } from './zombie-config.js';
 import { zombieCollidesAt, zombieStepUpY, steerIntent, displaceGroundEntity } from './zombie-navigation.js';
-import { behaviorFor, recordSample, decideBehavior } from './zombie-behavior.js';
+import { behaviorFor, recordSample, decideBehavior, steerYawLimited } from './zombie-behavior.js';
 import { PathCache } from './zombie-pathfinder.js';
 import { decideStep, memoryFor } from './zombie-navigator.js';
 import { normalizePosition, raycastAabbSlab } from '../entity-types.js';
@@ -703,10 +704,36 @@ export class ZombieService {
     const steered = steerIntent({
       world: this.world, position: entity.state.position, vx: outVx, vz: outVz,
     });
-    return this.setIntent(id, {
+    // 转身限速（v3.11）所需的「限速前旧 yaw」—— 必须在 setIntent 覆写它之前取。
+    const prevYaw = entity.state.yaw;
+    const ok = this.setIntent(id, {
       vx: steered.vx, vz: steered.vz,
       mode: steered.blocked ? 'blocked' : mode,
     });
+    // ---- 转身限速（v3.11，用户裁定「只限速转身」）----
+    // ⚠️ **只能接在这里（AI 决策路径），不得接进 `setIntent`**：后者是通用意图
+    // 写入口（物理用例、调试代码直接下令），限速长在里面会偷换「想让它朝哪就朝哪」
+    // 的语义 —— 与 v2.40「避障探针只能接 _applyIntent」是同一条边界。
+    // ⚠️ **dt 用 `ZOMBIE.aiPeriod`（0.05s）而不是渲染帧 dt**：本方法由 20Hz 导航驱动，
+    // 用帧 dt 会让限速随帧率漂移。
+    // ⚠️ **静止时不转**：`setIntent` 已在零速时保持原朝向，这里同步不动。
+    const moving = Math.abs(steered.vx) > ZOMBIE_MOVING_EPSILON
+      || Math.abs(steered.vz) > ZOMBIE_MOVING_EPSILON;
+    if (ok && moving) {
+      const cur = this.entities.get(id);
+      if (cur && cur.type === 'zombie') {
+        const targetYaw = cur.state.yaw;   // setIntent 刚算出的瞬时目标
+        const limited = steerYawLimited(
+          prevYaw, targetYaw,
+          ZOMBIE_BEHAVIOR.turnRateDegPerSec * Math.PI / 180 * ZOMBIE.aiPeriod,
+        );
+        if (limited !== targetYaw) {
+          // 经 createState 重建（不原地改）—— 距 column 迁移判据的 before/after 不能同源
+          cur.state = createState({ ...cur.state, yaw: limited });
+        }
+      }
+    }
+    return ok;
   }
 
   /** @returns {{calls: number, lastBatchSize: number, pending: number}} 只读测试钩子（已废弃，恒 0） */

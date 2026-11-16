@@ -8,7 +8,9 @@
 import { test } from './runner.js';
 import { assertEqual, assertTrue, assertFalse } from './assert.js';
 import { ZOMBIE_BEHAVIOR, ZOMBIE_MAX_STEP } from '../entities/zombies/zombie-config.js';
-import { behaviorFor, recordSample, detectStuck, decideBehavior, speedScale } from '../entities/zombies/zombie-behavior.js';
+import {
+  behaviorFor, recordSample, detectStuck, decideBehavior, speedScale, steerYawLimited,
+} from '../entities/zombies/zombie-behavior.js';
 import { memoryFor, decideStep, DIRECTION_VECTORS } from '../entities/zombies/zombie-navigator.js';
 import { PathCache } from '../entities/zombies/zombie-pathfinder.js';
 import { zombieCollidesAt, zombieStepUpY } from '../entities/zombies/zombie-navigation.js';
@@ -800,4 +802,88 @@ test('行为层不缩放排斥力: 20只同点生成仍散开', () => {
     }
   }
   assertTrue(min > 0.4, `20 只同点须散开（最小间距 ${min.toFixed(3)}，判据 >0.4）`);
+});
+
+// ==================== Task 5：转身限速 ====================
+
+test('steerYawLimited p1: 单拍不超过限速上限', () => {
+  const maxStep = 540 * Math.PI / 180 * 0.05;   // 字面量：540°/s × 0.05s = 27°
+  const out = steerYawLimited(0, Math.PI / 2, maxStep);
+  assertTrue(Math.abs(out) <= maxStep + 1e-12, `单拍转角须 ≤ 上限（实际 ${out}）`);
+  assertClose(out, maxStep, 1e-12, '0→90° 该拍恰好用满上限');
+});
+
+test('steerYawLimited p2: 走最短弧（+179°→−179° 只转 2°，不绕 358°）', () => {
+  const cur = 179 * Math.PI / 180;
+  const tgt = -179 * Math.PI / 180;
+  const out = steerYawLimited(cur, tgt, Math.PI);   // 上限足够大 ⇒ 应一步到位
+  // 目标 −179° 与 +181° 等价，故比「归一化后的角差」
+  const diff = Math.abs(Math.atan2(Math.sin(out - tgt), Math.cos(out - tgt)));
+  assertTrue(diff < 1e-9, `须走最短弧一步到位（角差 ${diff}）`);
+});
+
+test('steerYawLimited p3: 反向也走最短弧（−179°→+179°）', () => {
+  const cur = -179 * Math.PI / 180;
+  const tgt = 179 * Math.PI / 180;
+  const out = steerYawLimited(cur, tgt, 540 * Math.PI / 180 * 0.05);
+  // 最短弧是 −2° 方向 ⇒ 单拍走 −27° 上限，但方向必须是「往负方向」
+  const moved = Math.atan2(Math.sin(out - cur), Math.cos(out - cur));
+  assertTrue(moved < 0, `须往负方向转（实际 ${moved}）`);
+  assertTrue(Math.abs(moved) <= 540 * Math.PI / 180 * 0.05 + 1e-12);
+});
+
+test('steerYawLimited: 已达目标则原样返回（逐位）', () => {
+  for (const y of [0, 1.234, -2.5, Math.PI - 0.01]) {
+    assertEqual(steerYawLimited(y, y, 0.47), y, '已达目标须逐位原样返回');
+  }
+});
+
+test('steerYawLimited: 返回值 wrap 到 ±π', () => {
+  const out = steerYawLimited(3.0, -3.0, Math.PI);
+  assertTrue(out >= -Math.PI - 1e-12 && out <= Math.PI + 1e-12, `须 wrap 到 ±π（实际 ${out}）`);
+});
+
+test('转身限速接线: 真 service 单拍 yaw 变化 ≤ 27°（现状实测 135°）', () => {
+  const { world, set } = makeFlat();
+  // 造一个需要大角度转向的场景：先朝北走，再让玩家跳到正南
+  const entities = new EntityManager();
+  entities.registerType('zombie', zombieDefinition);
+  const zombies = new ZombieService({ entities, world, rng: () => 0.5 });
+  const id = zombies.spawn([32.5, 1, 32.5], { source: 'test' });
+  const dt = 1 / 60;
+  let t = 0;
+  // 先朝北走 2 秒（建立朝向）
+  while (t < 2) {
+    zombies.update(dt, { playerPosition: [32.5, 1, 20.5], nowMs: t * 1000 });
+    entities.update(dt, { world });
+    t += dt;
+  }
+  // 玩家瞬移到正南 ⇒ 需要 180° 转向
+  let prevYaw = zombies.get(id).yaw;
+  let maxJump = 0;
+  const t0 = t;
+  while (t < t0 + 3) {
+    zombies.update(dt, { playerPosition: [32.5, 1, 44.5], nowMs: t * 1000 });
+    entities.update(dt, { world });
+    const y = zombies.get(id).yaw;
+    const d = Math.abs(Math.atan2(Math.sin(y - prevYaw), Math.cos(y - prevYaw)));
+    maxJump = Math.max(maxJump, d);
+    prevYaw = y;
+    t += dt;
+  }
+  const maxDeg = maxJump * 180 / Math.PI;
+  assertTrue(maxDeg <= 27 + 1e-6, `单帧转身须 ≤27°（实际 ${maxDeg.toFixed(2)}°，现状 135°）`);
+  assertTrue(maxDeg > 1, '前提：须真的发生过转身（否则断言恒真）');
+});
+
+test('转身限速接线: 直接 setIntent 仍瞬时朝向（通用写入口契约不动）', () => {
+  const { world } = makeFlat();
+  const entities = new EntityManager();
+  entities.registerType('zombie', zombieDefinition);
+  const zombies = new ZombieService({ entities, world });
+  const id = zombies.spawn([32.5, 1, 32.5], { source: 'test' });
+  // 直接下令朝 +X（yaw 应为 π/2），一次到位 —— 不经 _applyIntent 的限速
+  zombies.setIntent(id, { vx: 1.2, vz: 0, mode: 'chasing' });
+  assertClose(zombies.get(id).yaw, Math.PI / 2, 1e-9,
+    'setIntent 是通用写入口，朝向须瞬时（限速只接 AI 决策路径）');
 });
