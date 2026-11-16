@@ -844,8 +844,8 @@ test('steerYawLimited: 返回值 wrap 到 ±π', () => {
 });
 
 test('转身限速接线: 真 service 单拍 yaw 变化 ≤ 27°（现状实测 135°）', () => {
-  const { world, set } = makeFlat();
-  // 造一个需要大角度转向的场景：先朝北走，再让玩家跳到正南
+  const { world } = makeFlat();
+  // 场景：先朝北走建立朝向，再让玩家跳到正南 ⇒ 需要 180° 转向
   const entities = new EntityManager();
   entities.registerType('zombie', zombieDefinition);
   const zombies = new ZombieService({ entities, world, rng: () => 0.5 });
