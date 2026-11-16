@@ -329,7 +329,11 @@ export class IgnisRenderer {
     const attackT = Number.isFinite(st.attackAnimT) ? st.attackAnimT : 0;
     const wantClip = st.attackKind === 'spin' ? 'spin'
       : st.attackKind === 'shieldSmash' ? 'shieldSmash'
-        : st.attackKind === 'shieldBash' ? 'shieldBash' : 'attack';
+        : st.attackKind === 'shieldBash' ? 'shieldBash'
+          // v3.06：尖刺攻击按 `spikeSecond` 选单刀/双刀两条产物。
+          // 两条的前 44 帧逐位相同 ⇒ 第一刀命中帧切换时姿态连续（无跳变）。
+          : st.attackKind === 'spikeSlash' ? (st.spikeSecond ? 'spikeSlash2' : 'spikeSlash')
+            : 'attack';
     const clipKey = this.asset.animations[wantClip] ? wantClip : 'attack';
     const sourceKey = attackT > 0 ? clipKey : 'idle';
     const target = attackT > 0

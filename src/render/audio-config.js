@@ -72,6 +72,11 @@ export const SOUND_IDS = Object.freeze(['gun_load', 'gun_fire', 'mag7_fire', 'mi
   // ⚠️ **不取 `ignis_earthquake.ogg`**：`ModSounds.IGNIS_EARTHQUAKE` 虽已注册，
   // 但全仓**无任何调用点**（程序化扫描确认）⇒ 它是未使用素材，不能声称是这招的原音。
   'ignis_attack_bash',
+  // v3.06：焰魔**尖刺攻击**起手音。文件来自 mod 的 `ignis_impact2.ogg`（焰魔撞击音第二帧），
+  // 逐字节拷入、未转码（11686 字节）。
+  // ⚠️ **这是近似替代，不是原版该招的音** —— 原版 `EARTH_SHUDDERS_ATTACK` 三刀各播
+  // Minecraft 原版 `SoundEvents.TOTEM_USE`（本仓与 mod 素材里都没有那个文件）。
+  'ignis_attack_spike',
   // 末影守卫（本次新增）：三个文件已在 Task 1 拷入 assets/sounds/。
   // ⚠️ 受击/死亡音源头是原版的 golemhurt / golemdeath（已查 sounds.json 链路，
   //    不是按名字猜）；拳击音是专属的 ender_guardian_fist_attack。
@@ -105,6 +110,8 @@ export const SOUND_EXT_OVERRIDES = Object.freeze({
   ignis_attack_smash: 'ogg',
   // v3.03：焰魔举盾砸击（mod ignis_impact.ogg 的近似替代）。漏加本表 = 静默无声
   ignis_attack_bash: 'ogg',
+  // v3.06：焰魔尖刺攻击（mod ignis_impact2.ogg 的近似替代）。漏加本表 = 静默无声
+  ignis_attack_spike: 'ogg',
   // 末影守卫：三个都是 .ogg。⚠️ **漏加本表 = 静默无声**（按 .mp3 去 fetch ⇒ 404 被 catch 吞）
   guardian_attack: 'ogg',
   guardian_hurt: 'ogg',
@@ -151,6 +158,8 @@ export const SOUND_VOLUMES = Object.freeze({
   ignis_attack_smash: 0.5,
   // v3.03：举盾砸击与另三招同档（嫌响/嫌轻只改这一个数，不动触发点）
   ignis_attack_bash: 0.5,
+  // v3.06：尖刺攻击与另四招同档（嫌响/嫌轻只改这一个数，不动触发点）
+  ignis_attack_spike: 0.5,
   // 末影守卫：照焰魔 0.5 同档（嫌响/嫌轻只改这三个数，不动触发点）
   guardian_attack: 0.5,
   guardian_hurt: 0.5,
@@ -183,6 +192,15 @@ export const IGNIS_ATTACK_SOUNDS = Object.freeze({
    * 共用同一个音就是「加了招式却没接音」，而数据层全绿。
    */
   shieldBash: 'ignis_attack_bash',
+  /**
+   * v3.06：尖刺攻击（mod `ignis_impact2.ogg` 逐字节拷入，11686 字节）。
+   * 原版 `EARTH_SHUDDERS_ATTACK` 在三刀各播 `SoundEvents.TOTEM_USE`（本仓无该文件）
+   * ⇒ 取语义最近的「焰魔撞击」音的第二帧（`ignis_impact.ogg` 已被举盾砸击占用）。
+   * ⚠️ **不取 `ignis_earthquake.ogg`**：`ModSounds.IGNIS_EARTHQUAKE` 虽已注册，
+   * 但全仓**无任何调用点**（程序化扫描确认）⇒ 它是未使用素材，不能声称是这招的原音。
+   * ⚠️ 必须与另四招不同音（`test-bgm.js` 按 `IGNIS_ATTACK_IDS` 全量钉住）。
+   */
+  spikeSlash: 'ignis_attack_spike',
 });
 
 /**

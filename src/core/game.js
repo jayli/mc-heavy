@@ -30,6 +30,7 @@ import { TracerRenderer } from '../render/tracer-renderer.js';
 import { ExplosionRenderer } from '../render/explosion-renderer.js';
 import { BlockHitFxRenderer, IGNIS_DEATH_BURST, smashRingCenter } from '../render/block-hit-fx.js';
 import { FlameSigilRenderer, loadFlameSigilTexture, sigilSpawnPoints } from '../render/flame-sigil.js';
+import { SpikeFxRenderer, spikeSpawnPoints } from '../render/spike-fx.js';
 import { createAtlasColorResolver } from '../render/block-color.js';
 import {
   ExplosionSpriteRenderer, loadExplosionSpriteTexture,
@@ -55,7 +56,7 @@ import { computeTurretUpdates, hasLineOfSight, shortestAngleDiff } from '../enti
 import { DRAGON_TYPE, FIREBALL_TYPE, FIREBALL, DRAGON_CORE_OBB } from '../entities/dragons/dragon-config.js';
 import { dragonDefinition, DragonService } from '../entities/dragons/dragon-system.js';
 import { fireballDefinition, judgeFireball } from '../entities/dragons/fireball-system.js';
-import { IGNIS_TYPE, IGNIS, IGNIS_ATTACKS } from '../entities/ignis/ignis-config.js';
+import { IGNIS_TYPE, IGNIS, IGNIS_ATTACKS, IGNIS_SPIKE } from '../entities/ignis/ignis-config.js';
 import { ignisDefinition, IgnisService } from '../entities/ignis/ignis-system.js';
 import { IgnisRenderer } from '../render/ignis-renderer.js';
 import { loadIgnisAsset, IGNIS_DEATH_COLOR } from '../render/ignis-model.js';
@@ -921,6 +922,10 @@ export class Game {
       ? new FlameSigilRenderer({ scene: this.scene, texture: this._flameSigilTexture })
       : null;
 
+    // v3.06：焰魔尖刺攻击的火焰尖锥（程序化几何，**无贴图依赖** ⇒ 恒装配）。
+    // 原版无尖刺素材（它是把地面方块整块掀飞），本仓新建几何 —— 用户裁定「火焰尖锥」。
+    this.spikeFx = new SpikeFxRenderer({ scene: this.scene });
+
     // 出生点（mc-lite 语义：优先 City 中心出生，保证出生即见城市天际线，§7 M2 验收）
     const regionLayout = await this.scheduler.structureIndex.waitForRegion(0, 0);
     // 水面遮罩的城市门控 bounds（城市全世界唯一，固定 region [0,0]）。
@@ -1375,6 +1380,8 @@ export class Game {
       this.blockHitFx.update(nowMs);
       // v3.04：焰魔法阵推进（递延点亮 / 自转 / 末段淡出；全部结束后 visible=false）
       this.flameSigil?.update(nowMs);
+      // v3.06：焰魔尖刺推进（递延升起 / 保持 / 缩回；全部结束后 visible=false）
+      this.spikeFx?.update(nowMs);
       // DR-5 按需刷新：节流放行时才置 needsUpdate（必须在 render 之前 —— ShadowNode 的
       // updateBefore 在本帧渲染前读它）。tick 内部已消费 pending 并记录时刻。
       // ⚠️ **`tick()` 必须在前、`castShadow` 在后**，两侧顺序是**载荷性的，勿交换**：
@@ -3426,7 +3433,7 @@ export class Game {
     for (const ignis of this.ignises.activeEntities()) {
       const req = ignis.state.attackFxRequest;
       if (!req) continue;
-      if (req.kind !== 'shieldSmash' && req.kind !== 'shieldBash') continue;
+      if (req.kind !== 'shieldSmash' && req.kind !== 'shieldBash' && req.kind !== 'spikeSlash') continue;
 
       // ---- 碎石圆环（两招都出）----
       // 颜色取自**环心脚下那一格**（原版取的也是 `hit.below()`，不是 Boss 脚下）。
@@ -3444,6 +3451,37 @@ export class Game {
       }
       // 缺色（未加载列 / resolver 构造失败）退中性灰，不阻断特效
       this.blockHitFx.spawnSmashRing(req.at, req.yaw, rgb || [0.5, 0.5, 0.5], nowMs);
+
+      // ---- 火焰尖锥（仅尖刺攻击，v3.06）----
+      // ⚠️ **带伤害**（`IGNIS_SPIKE.damage = 18`）：与法阵的「纯视觉」不同 ——
+      // 那是 v3.04 对法阵的裁定，本轮用户明确要尖刺带 18。
+      // ⚠️ **不看视线**：原版 `ShieldSmashDamage` / `UltimateAttack` 都不查 LOS，
+      // 而 `attackFxRequest` 本身已绕过 `freshLos` ⇒ 结算侧不得再查。
+      // ⚠️ **一次命中帧只扣一次**：命中即 break（不是逐根累加）。
+      // 去重靠「`attackFxRequest` 是瞬态」：Agent 下一帧自动清 null ⇒ 天然只消费一次。
+      if (req.kind === 'spikeSlash') {
+        if (!this.world) continue;
+        const spikes = [];
+        for (const p of spikeSpawnPoints(req.at, req.yaw)) {
+          const y = this._findSigilGroundY(p.x, p.z, req.at[1]);
+          // 扫不到地面（未加载列 / 悬崖外）⇒ **跳过该根**，同法阵口径。
+          if (y === null) continue;
+          spikes.push({ x: p.x, y, z: p.z, delayMs: p.delayMs });
+        }
+        if (spikes.length > 0) this.spikeFx?.spawn(spikes, nowMs);
+        // 伤害：玩家 AABB 与任一根尖刺的**那一格**正体积重叠
+        //（尺寸权威走 `PlayerPhysics.overlapsBlock`，不在这里重算一遍）。
+        const phys = this.player?.physics;
+        if (phys) {
+          for (const s of spikes) {
+            if (phys.overlapsBlock(Math.floor(s.x), Math.floor(s.y), Math.floor(s.z))) {
+              this._damagePlayer(IGNIS_SPIKE.damage);
+              break;
+            }
+          }
+        }
+        continue;
+      }
 
       // ---- 地面火焰法阵（仅举盾砸击）----
       if (req.kind !== 'shieldBash' || !this.flameSigil || !this.world) continue;
@@ -3710,6 +3748,7 @@ export class Game {
     this.explosionSprite?.dispose();
     this.blockHitFx?.dispose();
     this.flameSigil?.dispose();
+    this.spikeFx?.dispose();
     // v3.04：法阵贴图由 **Game 加载并持有**（渲染器只消费，不像 ignis/fireball 那样
     // 自己造纹理后 `_ownsTexture` 释放）⇒ 谁创建谁释放，不释会在换世界时泄漏。
     this._flameSigilTexture?.dispose();
