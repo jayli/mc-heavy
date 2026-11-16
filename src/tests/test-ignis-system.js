@@ -14,7 +14,7 @@ import { assertEqual, assertTrue, assertNull, assertNotNull, assertFalse } from 
 // config 与 system 分开 import（system 只 re-export 它需要的东西，不是全部）
 import {
   IGNIS_TYPE, IGNIS, IGNIS_AI, IGNIS_ATTACKS, IGNIS_ATTACK_IDS, IGNIS_CORE_OBB, IGNIS_MODEL_CENTER,
-  ignisEntityIdFor,
+  IGNIS_SPIKE, ignisEntityIdFor,
 } from '../entities/ignis/ignis-config.js';
 import { ignisDefinition, IgnisService, ignisAabbFor } from '../entities/ignis/ignis-system.js';
 import { EntityManager } from '../entities/entity-manager.js';
@@ -191,9 +191,9 @@ test('焰魔(v2.75): 旋斩命中帧 = SPIN_ATTACK 的 tick 14 / 20 = 0.70 秒�
   assertEqual(spin.animSeconds, 1.9);
 });
 
-test('焰魔(v3.01/v3.03): 四招档案的形状一致（缺字段的招式在命中帧会静默不触发）', () => {
+test('焰魔(v3.01/v3.03/v3.06): 五招档案的形状一致（缺字段的招式在命中帧会静默不触发）', () => {
   const KEYS = ['hitRange', 'hitConeDeg', 'hitFrameSeconds', 'animSeconds', 'weight'];
-  assertEqual(Object.keys(IGNIS_ATTACKS).sort().join(','), 'shieldBash,shieldSmash,spin,swing');
+  assertEqual(Object.keys(IGNIS_ATTACKS).sort().join(','), 'shieldBash,shieldSmash,spikeSlash,spin,swing');
   for (const [name, a] of Object.entries(IGNIS_ATTACKS)) {
     for (const k of KEYS) {
       assertTrue(Number.isFinite(a[k]), `${name}.${k} 不是有限数（缺字段 ⇒ 命中/时长判定会静默失效）`);
@@ -245,19 +245,22 @@ test('焰魔(v3.01): 贴身门已删除（用户裁定：不再限制 3 格）',
     'smashEngageRange 必须删除 —— 贴身门已被用户裁定作废');
 });
 
-test('焰魔(v3.01/v3.03): 横扫与持盾冲撞仍严格平分（用户裁定），旋斩不变，四档和 = 1', () => {
+test('焰魔(v3.01/v3.03/v3.06): 横扫与持盾冲撞仍严格平分（用户裁定），旋斩不变，五档和 = 1', () => {
   const sw = IGNIS_ATTACKS.swing.weight;
   const sm = IGNIS_ATTACKS.shieldSmash.weight;
   const sp = IGNIS_ATTACKS.spin.weight;
   const sb = IGNIS_ATTACKS.shieldBash.weight;
-  // v3.03 用户批准的分配：横扫与持盾冲撞各让出 0.10（0.35 → 0.25），旋斩不动，新招 0.20
-  assertEqual(sw, 0.25, '横扫权重 0.35 → 0.25（让出 0.10 给举盾砸击）');
-  assertEqual(sm, 0.25, '持盾冲撞同步让出 0.10（与横扫仍严格平分）');
+  const ss = IGNIS_ATTACKS.spikeSlash.weight;
+  // v3.06 用户批准的分配：新招 0.20；横扫与持盾冲撞各让 0.075（0.25 → 0.175，仍严格平分）；
+  // 举盾砸击让 0.05（0.20 → 0.15）；旋斩不动（历次裁定都未要求改它）。
+  assertEqual(sw, 0.175, '横扫权重 0.25 → 0.175（让出 0.075 给尖刺攻击）');
+  assertEqual(sm, 0.175, '持盾冲撞同步让出 0.075（与横扫仍严格平分）');
   assertEqual(sp, 0.30, '旋斩权重不动（用户历次裁定都未要求改它）');
-  assertEqual(sb, 0.20, '举盾砸击拿 0.20');
+  assertEqual(sb, 0.15, '举盾砸击 0.20 → 0.15');
+  assertEqual(ss, 0.20, '尖刺攻击拿 0.20');
   assertTrue(Math.abs(sw - sm) < 1e-12, `横扫 ${sw} 与持盾冲撞 ${sm} 必须严格相等（平分）`);
-  const sum = sw + sm + sp + sb;
-  assertTrue(Math.abs(sum - 1) < 1e-9, `四档权重和 ${sum} ≠ 1`);
+  const sum = sw + sm + sp + sb + ss;
+  assertTrue(Math.abs(sum - 1) < 1e-9, `五档权重和 ${sum} ≠ 1`);
 });
 
 test('焰魔(v3.01): 持盾冲撞射程覆盖整个站定环（含外沿 5.0）—— 不再有盲区', () => {
@@ -930,10 +933,59 @@ test('焰魔(v3.03): 举盾砸击命中帧 1.89s / 时长 3.89s（三段 warp �
     + '（这就是选「压缩蓄力」而不是「原样保留 5.70s」的原因：后者要把冷却抬到 6.0）');
 });
 
-test('焰魔(v3.03): 举盾砸击是抽签的最后一档（顺序载荷性），且不设独立冷却', () => {
-  assertEqual(IGNIS_ATTACK_IDS[IGNIS_ATTACK_IDS.length - 1], 'shieldBash',
-    '举盾砸击必须排最后 —— 既有「rng≈1 落末档」用例的语义依赖它');
+test('焰魔(v3.03/v3.06): 尖刺攻击是抽签的最后一档（顺序载荷性），且两招都不设独立冷却', () => {
+  assertEqual(IGNIS_ATTACK_IDS[IGNIS_ATTACK_IDS.length - 1], 'spikeSlash',
+    '尖刺攻击必须排最后 —— 既有「rng≈1 落末档」用例的语义依赖它');
   // 与 shieldSmash 同口径：全局 attackCooldownMin 已控住节奏，不加独立冷却常量
   assertEqual(IGNIS_AI.bashCooldownSeconds, undefined,
     '不得新增独立冷却常量（原版 1200 tick = 60s 不引入本仓）');
+  assertEqual(IGNIS_AI.spikeCooldownSeconds, undefined,
+    '尖刺攻击同理：不加独立冷却（原版 EARTH_SHUDDERS_COOLDOWN 不引入）');
+});
+
+// ==================== 第五招：尖刺攻击（v3.06）====================
+//
+// 数值来源：Java `EARTH_SHUDDERS_ATTACK`（138 tick）的 `AreaAttack(4f, 6, 80, …)`
+// ⇒ 半角 **40**（arc 80 的一半）；射程取 6.5 与另四招同值（沿用 v3.01 「不要窄距离门」裁定）。
+// 命中帧与时长来自**产物段表**（`IGNIS_ANIM_SEGMENTS`），不是源 tick。
+
+test('焰魔(v3.06): spikeSlash 档案取设计文档标定值', () => {
+  const a = IGNIS_ATTACKS.spikeSlash;
+  assertEqual(a.hitRange, 6.5);
+  assertEqual(a.hitConeDeg, 40);
+  // ⚠️ 半角不是全角：写成 80 会让扇面静默变 160°，而没有任何其他断言会红
+  assertTrue(a.hitConeDeg < 80, `半角 ${a.hitConeDeg} 必须是 arc 80 的一半，不是 80 本身`);
+  assertTrue(Math.abs(a.hitFrameSeconds - 0.9916666666666667) < 1e-9,
+    `第一刀命中帧 ${a.hitFrameSeconds} ≠ 产物 0.991667`);
+  assertEqual(a.animSeconds, 2.9666666666666677);
+  assertTrue(a.hitFrameSeconds < a.animSeconds);
+  assertTrue(a.animSeconds < IGNIS_AI.attackCooldownMin,
+    `尖刺攻击时长 ${a.animSeconds} 必须 < 冷却下限 ${IGNIS_AI.attackCooldownMin}`);
+});
+
+test('焰魔(v3.06): IGNIS_SPIKE 常量取用户裁定值', () => {
+  assertEqual(IGNIS_SPIKE.count, 5, '用户裁定「5 根，隔格一根」');
+  assertEqual(IGNIS_SPIKE.spacing, 2);
+  assertEqual(IGNIS_SPIKE.firstOffset, 2, '首根在正前方 2 格，不在脚底');
+  assertEqual(IGNIS_SPIKE.damage, 18, '用户草图「伤害 18 点」');
+  assertEqual(IGNIS_SPIKE.secondRange, 4, '用户草图「距离 4 格以内就连续再劈第二刀」');
+  assertTrue(IGNIS_SPIKE.soloSeconds < IGNIS_SPIKE.doubleSeconds);
+  assertTrue(Math.abs(IGNIS_SPIKE.soloSeconds - 1.9666666666666668) < 1e-9);
+  assertEqual(IGNIS_SPIKE.doubleSeconds, IGNIS_ATTACKS.spikeSlash.animSeconds,
+    '双刀时长必须与档案 animSeconds 同值（同一事实不得两份）');
+  assertTrue(IGNIS_SPIKE.secondHitFrame > IGNIS_ATTACKS.spikeSlash.hitFrameSeconds,
+    '第二刀命中帧必须晚于第一刀');
+  assertTrue(IGNIS_SPIKE.secondHitFrame < IGNIS_SPIKE.doubleSeconds,
+    '第二刀命中帧必须落在双刀动画内');
+  assertTrue(IGNIS_SPIKE.count * 4 <= IGNIS_SPIKE.maxActive,
+    `池容量 ${IGNIS_SPIKE.maxActive} 装不下并发 4 招 × ${IGNIS_SPIKE.count} 根`);
+  assertTrue(Object.isFrozen(IGNIS_SPIKE), '常量须冻结');
+});
+
+test('焰魔(v3.06): 尖刺伤害与刀砍伤害是两份独立权威（刀砍仍 14）', () => {
+  // 用户裁定「只尖刺 18，刀砍仍 14」⇒ 不得把 IGNIS.attackDamage 改成 18
+  assertEqual(IGNIS.attackDamage, 14, '刀砍伤害不变（另四招共用它）');
+  assertEqual(IGNIS_SPIKE.damage, 18);
+  assertTrue(IGNIS_SPIKE.damage !== IGNIS.attackDamage,
+    '两个数必须不同 —— 相等时「只尖刺 18」的裁定看不出是否生效');
 });

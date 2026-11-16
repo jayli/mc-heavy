@@ -568,9 +568,19 @@ test('audio-config(v3.03): 举盾砸击起手音是 ignis_attack_bash（mod igni
   assertEqual(SOUND_EXT_OVERRIDES.ignis_attack_bash, 'ogg',
     '漏加扩展名表 ⇒ 按 .mp3 fetch 404 被 catch 吞成一句 warn');
   assertTrue(SOUND_VOLUMES.ignis_attack_bash > 0, '必须有正音量');
-  // ⚠️ **四招两两不同**（按 IGNIS_ATTACK_IDS 全量算，不是写死三招）：
+  // ⚠️ **五招两两不同**（按 IGNIS_ATTACK_IDS 全量算，不是写死三招）：
   // 共用同一个音 = 加了招式却没接音，而数据层全绿。
   const ids = IGNIS_ATTACK_IDS.map((k) => IGNIS_ATTACK_SOUNDS[k]);
-  assertEqual(ids.length, 4, '四招都要有起手音映射');
-  assertEqual(new Set(ids).size, ids.length, `四招起手音必须两两不同，实为 ${ids.join(',')}`);
+  assertEqual(ids.length, 5, '五招都要有起手音映射');
+  assertEqual(new Set(ids).size, ids.length, `五招起手音必须两两不同，实为 ${ids.join(',')}`);
+});
+
+test('audio-config(v3.06): 尖刺攻击起手音是 ignis_attack_spike（mod ignis_impact2.ogg 逐字节副本）', () => {
+  assertEqual(IGNIS_ATTACK_SOUNDS.spikeSlash, 'ignis_attack_spike');
+  assertEqual(ignisAttackSound('spikeSlash'), 'ignis_attack_spike');
+  assertEqual(soundFileName('ignis_attack_spike'), 'ignis_attack_spike.ogg');
+  assertTrue(SOUND_IDS.includes('ignis_attack_spike'), '必须进预载清单，否则静默无声');
+  assertEqual(SOUND_EXT_OVERRIDES.ignis_attack_spike, 'ogg',
+    '漏加扩展名表 ⇒ 按 .mp3 fetch 404 被 catch 吞成一句 warn');
+  assertTrue(SOUND_VOLUMES.ignis_attack_spike > 0, '必须有正音量');
 });

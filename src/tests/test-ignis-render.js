@@ -1174,3 +1174,59 @@ test('焰魔姿态衔接(v3.03): 举盾砸击淡入在命中帧之前走完，�
     `判别力自检：0.2s 淡入的最坏单帧 ${worstShort.toFixed(1)}° 应超过上限 ${limit.toFixed(1)}°`
     + '（否则本用例的 0.8s 标定失去意义）');
 });
+
+// ==================== 第五招：尖刺攻击的片段选择（v3.06）====================
+//
+// ⚠️ **`spikeSecond` 决定播哪条产物**：单刀 `spikeSlash`（59 帧）/ 双刀 `spikeSlash2`（89 帧）。
+// 播错的形态是「玩家贴近了却只劈一刀」，而「有动画在播」类断言全绿。
+
+test('焰魔渲染(v3.06): spikeSecond 决定播 spikeSlash 还是 spikeSlash2', async () => {
+  const d = await getAsset();
+  assertNotNull(d.animations.spikeSlash, '产物缺 spikeSlash');
+  assertNotNull(d.animations.spikeSlash2, '产物缺 spikeSlash2');
+  const r = new IgnisRenderer(new THREE.Scene(), d);
+  try {
+    // 双刀末段（t=2.5）在单刀里已越界（单刀只有 1.733s）⇒ 两条的姿态必须不同
+    const solo = sampleIgnisAttack(d.animations.spikeSlash, 2.5);
+    const dbl = sampleIgnisAttack(d.animations.spikeSlash2, 2.5);
+    let differs = false;
+    for (const [bi, dd] of dbl) {
+      const s = solo.get(bi);
+      if (!s) { differs = true; break; }
+      if (quatAngleDeg(s.rot, dd.rot) > 1) { differs = true; break; }
+    }
+    assertTrue(differs, '两条动画在 t=2.5 的姿态须不同（否则判据没有判别力）');
+
+    // 渲染器按 spikeSecond 选片段：发布后比对骨骼四元数。
+    // ⚠️ **必须逐帧推进 ms**（同既有 `settle` 手法）：`sync(entities, nowMs)` 只收两参，
+    // dt 由它内部从 nowMs 差分得出。恒传同一个 ms ⇒ dt=0 ⇒ 过渡器永不推进，
+    // 两侧都停在同一个起点姿态 ⇒ 实测差 0.000°（假阴性）。
+    const settlePose = (spikeSecond) => {
+      const st = {
+        position: [0, 10, 0], yaw: 0, health: 100, flashedUntil: 0,
+        mode: 'attack', attackKind: 'spikeSlash', attackAnimT: 2.5,
+        idleTime: 0, spikeSecond, attackCooldown: 0,
+      };
+      let ms = 0;
+      for (let i = 0; i < SETTLE_FRAMES; i++) {
+        ms += FRAME_MS;
+        r.sync([{ id: 'ignis:t:0', state: st }], ms);
+      }
+      return r.instances[0].bones.map((b) => b.quaternion.toArray());
+    };
+    const a = settlePose(false);
+    const b = settlePose(true);
+    const maxDiff = boneStepDeg(a, b);
+    assertTrue(maxDiff > 1,
+      `spikeSecond 切换后骨骼姿态最大差仅 ${maxDiff.toFixed(3)}° —— 渲染器没按它选片段`);
+  } finally {
+    r.dispose();
+  }
+});
+
+test('焰魔渲染(v3.06): 尖刺攻击走默认 0.2s 淡入（首帧 = bind，无硬切）', async () => {
+  assertEqual(ignisBlendSeconds('spikeSlash'), IGNIS_POSE_BLEND.seconds,
+    '尖刺攻击首帧是 bind（attack3a t=0 全通道为 0）⇒ 不需要旋斩/举盾砸击那种长淡入');
+  assertTrue(ignisBlendSeconds('spikeSlash') < IGNIS_ATTACKS.spikeSlash.hitFrameSeconds,
+    '淡入必须在命中帧之前走完');
+});

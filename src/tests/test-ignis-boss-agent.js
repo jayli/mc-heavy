@@ -12,7 +12,7 @@
 import { test } from './runner.js';
 import { assertEqual, assertTrue, assertNotNull, assertNull, assertFalse } from './assert.js';
 import { IgnisBossAgent } from '../entities/bosses/ignis-boss-agent.js';
-import { IGNIS, IGNIS_AI, IGNIS_ATTACKS, IGNIS_ATTACK_IDS } from '../entities/ignis/ignis-config.js';
+import { IGNIS, IGNIS_AI, IGNIS_ATTACKS, IGNIS_ATTACK_IDS, IGNIS_SPIKE } from '../entities/ignis/ignis-config.js';
 
 /**
  * 假注册表：`hasLineOfSight`（炮塔的唯一权威）需要 `solidTable` / `opaqueTable`。
@@ -264,7 +264,7 @@ function runToAttackStart(agent, state, ctx) {
   return s;
 }
 
-test('焰魔 AI(v2.75): rng=0 ⇒ 恒选普攻（swing），rng→1 ⇒ 恒选末档（v3.01 起 = 持盾冲撞）', () => {
+test('焰魔 AI(v2.75): rng=0 ⇒ 恒选普攻（swing），rng→1 ⇒ 恒选末档（v3.06 起 = 尖刺攻击）', () => {
   const ctx = { ...OPEN_CTX, player: playerAt(IGNIS_AI.attackRange - 1) };
   const swingAgent = new IgnisBossAgent({ rng: () => 0 });
   const s1 = runToAttackStart(swingAgent, st({ mode: 'chase', onGround: true }), ctx);
@@ -272,16 +272,16 @@ test('焰魔 AI(v2.75): rng=0 ⇒ 恒选普攻（swing），rng→1 ⇒ 恒选�
   assertEqual(s1.attackKind, 'swing', 'rng=0 应抽中第一个档案（swing）');
 
   // rng 恒 1：落在**声明顺序的最后一档**。用 0.999999 而不是 1（有些实现把 1 当越界）。
-  // ⚠️ v3.03 起末档是 **shieldBash**（举盾砸击）；v3.01~v3.02 是 shieldSmash。
+  // ⚠️ v3.06 起末档是 **spikeSlash**（尖刺攻击）；v3.03~v3.04 是 shieldBash。
   // 若它变回 spin，说明新招被排到了 spin 之前（顺序载荷性）。
   const lastAgent = new IgnisBossAgent({ rng: () => 0.999999 });
   const s2 = runToAttackStart(lastAgent, st({ mode: 'chase', onGround: true }), ctx);
   assertEqual(s2.mode, 'attack');
-  assertEqual(s2.attackKind, 'shieldBash', 'rng≈1 应抽中最后一档（举盾砸击）');
-  // 旋斩必须在中间（否则上面的“末档”判据拓不到顺序）：权重累计 swing 0.25 ⇒ spin 区间 [0.25, 0.55)
-  const spinAgent = new IgnisBossAgent({ rng: () => 0.5 });
+  assertEqual(s2.attackKind, 'spikeSlash', 'rng≈1 应抽中最后一档（尖刺攻击）');
+  // 旋斩必须在中间（否则上面的“末档”判据拓不到顺序）：权重累计 swing 0.175 ⇒ spin 区间 [0.175, 0.475)
+  const spinAgent = new IgnisBossAgent({ rng: () => 0.3 });
   const s3 = runToAttackStart(spinAgent, st({ mode: 'chase', onGround: true }), ctx);
-  assertEqual(s3.attackKind, 'spin', 'rng=0.5 应落在中间档（旋斩）');
+  assertEqual(s3.attackKind, 'spin', 'rng=0.3 应落在中间档（旋斩）');
 });
 
 // ==================== 第三招：持盾冲撞（v3.01）====================
@@ -293,22 +293,22 @@ test('焰魔 AI(v2.75): rng=0 ⇒ 恒选普攻（swing），rng→1 ⇒ 恒选�
 //   权重（v3.03）swing 0.25 / spin 0.30 / shieldSmash 0.25 / shieldBash 0.20
 //   （横扫与持盾冲撞仍严格平分，旋斩不动，新招拿 0.20）。
 
-test('焰魔 AI(v3.01/v3.03): 任何起手距离都可能抽到末档招式（贴身门已删）—— 4.5 / 5.0 / 2.5 格各验', () => {
-  // rng≈1 ⇒ 落在声明顺序的最后一档 = shieldBash（四招无距离门）
+test('焰魔 AI(v3.01/v3.03/v3.06): 任何起手距离都可能抽到末档招式（贴身门已删）—— 4.5 / 5.0 / 2.5 格各验', () => {
+  // rng≈1 ⇒ 落在声明顺序的最后一档 = spikeSlash（五招无距离门）
   for (const dist of [2.5, 4.0, 4.5, 5.0]) {
     const ctx = { ...OPEN_CTX, player: playerAt(dist) };
     const a = new IgnisBossAgent({ rng: () => 0.999999 });
     const s = runToAttackStart(a, st({ mode: 'chase', onGround: true }), ctx);
     assertEqual(s.mode, 'attack', `${dist} 格应起手（attackRange 5.5 内）`);
-    assertEqual(s.attackKind, 'shieldBash',
-      `${dist} 格 + rng≈1 应抽中最后一档（举盾砸击）—— 贴身门已删，不得再按距离排除`);
+    assertEqual(s.attackKind, 'spikeSlash',
+      `${dist} 格 + rng≈1 应抽中最后一档（尖刺攻击）—— 贴身门已删，不得再按距离排除`);
   }
 });
 
-test('焰魔 AI(v3.03): 四招权重扫描 —— 25% / 30% / 25% / 20%，横扫与持盾冲撞仍平分', () => {
-  // 用固定 rng 扫 1000 档，统计四招出现次数（总权重归一后的真实分布）。
-  // ⚠️ 这不是「断言常量等于 0.25」（那条在 test-ignis-system），而是验**抽签器真的按它分**。
-  const counts = { swing: 0, spin: 0, shieldSmash: 0, shieldBash: 0 };
+test('焰魔 AI(v3.06): 五招权重扫描 —— 17.5% / 30% / 17.5% / 15% / 20%，横扫与持盾冲撞仍平分', () => {
+  // 用固定 rng 扫 1000 档，统计五招出现次数（总权重归一后的真实分布）。
+  // ⚠️ 这不是「断言常量等于 0.175」（那条在 test-ignis-system），而是验**抽签器真的按它分**。
+  const counts = { swing: 0, spin: 0, shieldSmash: 0, shieldBash: 0, spikeSlash: 0 };
   const ctx = { ...OPEN_CTX, player: playerAt(4.5) };
   const N = 1000;
   for (let i = 0; i < N; i++) {
@@ -318,35 +318,34 @@ test('焰魔 AI(v3.03): 四招权重扫描 —— 25% / 30% / 25% / 20%，横扫
     counts[s.attackKind] += 1;
   }
   const pct = (k) => counts[k] / N;
-  // 区间边界：swing [0,0.25) / spin [0.25,0.55) / shieldSmash [0.55,0.80) / shieldBash [0.80,1)
-  assertTrue(Math.abs(pct('swing') - 0.25) < 0.01, `横扫占比 ${pct('swing')} 应 ≈0.25`);
+  // 区间边界：swing [0,.175) / spin [.175,.475) / shieldSmash [.475,.65) / shieldBash [.65,.80) / spikeSlash [.80,1)
+  assertTrue(Math.abs(pct('swing') - 0.175) < 0.01, `横扫占比 ${pct('swing')} 应 ≈0.175`);
   assertTrue(Math.abs(pct('spin') - 0.30) < 0.01, `旋斩占比 ${pct('spin')} 应 ≈0.30`);
-  assertTrue(Math.abs(pct('shieldSmash') - 0.25) < 0.01, `持盾冲撞占比 ${pct('shieldSmash')} 应 ≈0.25`);
-  assertTrue(Math.abs(pct('shieldBash') - 0.20) < 0.01, `举盾砸击占比 ${pct('shieldBash')} 应 ≈0.20`);
-  // ⚠️ 本组权重浮点和恰好是 1（实测 1000 档得 250/300/250/200，无 v3.01 那次的边界偏移），
-  // 但仍不要求逐位相等 —— 浮点抽签的边界样本归属是实现细节，不是契约。
+  assertTrue(Math.abs(pct('shieldSmash') - 0.175) < 0.01, `持盾冲撞占比 ${pct('shieldSmash')} 应 ≈0.175`);
+  assertTrue(Math.abs(pct('shieldBash') - 0.15) < 0.01, `举盾砸击占比 ${pct('shieldBash')} 应 ≈0.15`);
+  assertTrue(Math.abs(pct('spikeSlash') - 0.20) < 0.01, `尖刺攻击占比 ${pct('spikeSlash')} 应 ≈0.20`);
   assertTrue(Math.abs(pct('swing') - pct('shieldSmash')) <= 0.003,
     `横扫 ${counts.swing} 与持盾冲撞 ${counts.shieldSmash} 的占比差超过 0.3%（平分失效）`);
-  // 新招必须比另三招都少（否则「让出 0.10」变成了「三招平分」）
+  // 举盾砸击必须比横扫与旋斩都少（否则「让出 0.05」变成了「三招平分」）
   assertTrue(counts.shieldBash < counts.swing && counts.shieldBash < counts.spin,
     `举盾砸击应少于横扫与旋斩：${JSON.stringify(counts)}`);
 });
 
-test('焰魔 AI(v3.03): 旋斩冷却未好时，末档仍是举盾砸击（候选集去掉，不是抽中再改判）', () => {
-  // 候选集去掉 spin 后剩 swing 0.25 / shieldSmash 0.25 / shieldBash 0.20（总 0.70）
-  // ⇒ 归一后 35.7% / 35.7% / 28.6%，区间 [0,0.357) / [0.357,0.714) / [0.714,1)
+test('焰魔 AI(v3.03/v3.06): 旋斩冷却未好时，末档仍是尖刺攻击（候选集去掉，不是抽中再改判）', () => {
+  // 候选集去掉 spin 后剩 swing .175 / shieldSmash .175 / shieldBash .15 / spikeSlash .20（总 0.70）
+  // ⇒ 归一后 25% / 25% / 21.4% / 28.6%，区间 [0,.25) / [.25,.50) / [.50,.714) / [.714,1)
   const ctx = { ...OPEN_CTX, player: playerAt(4.5) };
   const a = new IgnisBossAgent({ rng: () => 0.999999 });
   const s = runToAttackStart(a, st({ mode: 'chase', onGround: true, spinCooldown: 5 }), ctx);
-  assertEqual(s.attackKind, 'shieldBash', '旋斩被屏蔽后最后一档是举盾砸击');
+  assertEqual(s.attackKind, 'spikeSlash', '旋斩被屏蔽后最后一档是尖刺攻击');
   const b = new IgnisBossAgent({ rng: () => 0 });
   const s2 = runToAttackStart(b, st({ mode: 'chase', onGround: true, spinCooldown: 5 }), ctx);
   assertEqual(s2.attackKind, 'swing', 'rng=0 仍落第一档（横扫）');
-  // rng=0.5：0.5 × 0.70 = 0.35，减 swing 0.25 后剩 0.10 > 0 ⇒ 落第二档 shieldSmash。
-  // ⚠️ v3.01 时这里的理由是「浮点边界取后一档」，v3.03 不再是边界而是稳稳落在档内。
-  const c = new IgnisBossAgent({ rng: () => 0.5 });
+  // rng=0.6：0.6 × 0.70 = 0.42，减 swing .175 剩 .245，减 shieldSmash .175 剩 .07 > 0
+  // ⇒ 落第三档 shieldBash。
+  const c = new IgnisBossAgent({ rng: () => 0.6 });
   const s3 = runToAttackStart(c, st({ mode: 'chase', onGround: true, spinCooldown: 5 }), ctx);
-  assertEqual(s3.attackKind, 'shieldSmash', '屏蔽旋斩后 rng=0.5 应落持盾冲撞');
+  assertEqual(s3.attackKind, 'shieldBash', '屏蔽旋斩后 rng=0.6 应落举盾砸击');
 });
 
 test('焰魔 AI(v3.01): 持盾冲撞命中后冷却正常置位（玩家跑开也不连砸）', () => {
@@ -396,25 +395,25 @@ test('焰魔 AI(v2.75): 旋斩播完回 chase 且 attackKind 清空（否则下�
 });
 
 test('焰魔 AI(v2.75): 旋斩冷却期间抽中 spin 的 rng 必须降级（不白放冷却）', () => {
-  // ⚠️ v3.03：权重改成 0.25/0.30/0.25/0.20 后，rng≈1 落在**举盾砸击**而不是旋斩。
-  // 本用例要的是「旋斩区间内的 rng」⇒ v3.03 区间是 [0.25, 0.55)，取两端与中点。
+  // ⚠️ v3.06：权重改成 .175/.30/.175/.15/.20 后，旋斩区间是 **[0.175, 0.475)**。
+  // 本用例要的是「旋斩区间内的 rng」⇒ 取两端与中点。
   // 判据是「结果不是 spin」（候选集把 spin 去掉，而不是抽中再改判）——
   // 具体落哪一招由归一后的位置决定，不得写死。
-  for (const r of [0.26, 0.4, 0.54]) {
+  for (const r of [0.19, 0.32, 0.46]) {
     const a = new IgnisBossAgent({ rng: () => r });
     const ctx = { ...OPEN_CTX, player: playerAt(IGNIS_AI.attackRange - 1) };
     const s = runToAttackStart(a, st({ mode: 'chase', onGround: true, spinCooldown: IGNIS_AI.spinCooldownSeconds }), ctx);
     assertEqual(s.mode, 'attack');
     assertTrue(s.attackKind !== 'spin',
       `冷却未好时 rng=${r} 仍抽到了旋斩（降级失效，会白放冷却）`);
-    assertTrue(['swing', 'shieldSmash', 'shieldBash'].includes(s.attackKind),
-      `rng=${r} 应落到非旋斩的三招之一，实为 ${s.attackKind}`);
+    assertTrue(['swing', 'shieldSmash', 'shieldBash', 'spikeSlash'].includes(s.attackKind),
+      `rng=${r} 应落到非旋斩的四招之一，实为 ${s.attackKind}`);
   }
 });
 
 test('焰魔 AI(v2.75): 旋斩起手后写 spinCooldown（独立于 attackCooldown）', () => {
-  // ⚠️ v3.03：用 rng=0.4 落在旋斩区间 [0.25,0.55)（rng≈1 现在是举盾砸击）。
-  const a = new IgnisBossAgent({ rng: () => 0.5 });
+  // ⚠️ v3.06：用 rng=0.3 落在旋斩区间 [0.175,0.475)（rng≈1 现在是尖刺攻击）。
+  const a = new IgnisBossAgent({ rng: () => 0.3 });
   const ctx = { ...OPEN_CTX, player: playerAt(IGNIS_AI.attackRange - 1) };
   const s = runToAttackStart(a, st({ mode: 'chase', onGround: true }), ctx);
   assertEqual(s.attackKind, 'spin');
@@ -1085,7 +1084,7 @@ test('焰魔 AI: 8~14 格 + 冷却好 + 视线通 → leap(attack)，朝玩家�
 // 招式在**起跳时**就抽定、落地时写进 `attackKind`：若在落地时才抽，
 // 起跳与落地两次抽签可能不一致 ⇒「跳起来却勈了一刀」。
 
-test('焰魔 AI: 起跳时抽签并携带 leapAttackKind（rng≈1 ⇒ 末档持盾冲撞）', () => {
+test('焰魔 AI: 起跳时抽签并携带 leapAttackKind（rng≈1 ⇒ 末档尖刺攻击）', () => {
   const a = new IgnisBossAgent({ rng: () => 0.999999 });
   const w = groundWorld(9);
   const player = { position: [0, 10, -11], velocity: [0, 0, 0] };
@@ -1096,7 +1095,7 @@ test('焰魔 AI: 起跳时抽签并携带 leapAttackKind（rng≈1 ⇒ 末档持
   s = a.update(s, 1 / 60, { world: w, registry: REGISTRY, player });
   assertEqual(s.mode, 'leap');
   assertEqual(s.leapKind, 'attack');
-  assertEqual(s.leapAttackKind, 'shieldBash', '起跳当帧就应抽定这次落地用哪一招（rng≈1 ⇒ 末档举盾砸击）');
+  assertEqual(s.leapAttackKind, 'spikeSlash', '起跳当帧就应抽定这次落地用哪一招（rng≈1 ⇒ 末档尖刺攻击）');
 });
 
 test('焰魔 AI: 跳跃落地播起跳时抽中的招，不再恒播 swing', () => {
@@ -1864,4 +1863,143 @@ test('焰魔 AI: 特效请求是瞬态（下一帧自动清 null，不会重复�
     if (s.attackFxRequest) stale += 1;
   }
   assertEqual(stale, 0, '特效请求不得重复出现');
+});
+
+// ==================== 第五招：尖刺攻击的双刀推进（v3.06）====================
+//
+// 用户草图：「玩家距离 4 格以内就连续再劈第二刀，玩家在 4 格以外，就不再劈第二刀」。
+//
+// ⚠️⚠️ **距离门必须用「第一刀命中帧时刻」的水平距，不是起手时刻**：
+// 后者会让玩家跑开后仍被追劈。下面第 4 条用例专测这个（起手 3 格 → 命中帧前移到 8 格）。
+//
+// ⚠️ **`spikeSecond` 必须跨帧保持**：`createState` 漏透传它的形态是「第二刀永远不播」，
+// 而第一刀与尖刺全对（计数类断言看不出来）。
+
+/** 跑完一整招，收集每帧的 request 与 spikeSecond */
+function runSpikeSlash(a, ctx, over = {}) {
+  let s = st({
+    position: [0, 10, 0], mode: 'attack', attackKind: 'spikeSlash',
+    attackAnimT: 0, onGround: true, losTimer: 999, losVisible: true,
+    ...over,
+  });
+  const frames = Math.ceil((IGNIS_SPIKE.doubleSeconds + 0.5) * 60);
+  let fx = 0;
+  let dmg = 0;
+  let peakT = 0;
+  let secondSeen = false;
+  const fxTimes = [];
+  for (let i = 0; i < frames; i++) {
+    s = a.update(s, 1 / 60, ctx);
+    if (s.attackFxRequest) { fx += 1; fxTimes.push(s.attackAnimT); }
+    if (s.attackRequest) dmg += 1;
+    if (s.spikeSecond === true) secondSeen = true;
+    if (s.mode === 'attack') peakT = Math.max(peakT, s.attackAnimT);
+    else if (peakT > 0) break;
+  }
+  return { s, fx, dmg, peakT, secondSeen, fxTimes };
+}
+
+test('焰魔 AI(v3.06): 玩家 > 4 格 ⇒ 只一刀（spikeSecond 恒 false）', () => {
+  const a = new IgnisBossAgent({ rng: () => 0.5 });
+  const ctx = { ...OPEN_CTX, player: playerAt(IGNIS_SPIKE.secondRange + 1) };
+  const r = runSpikeSlash(a, ctx);
+  assertEqual(r.fx, 1, `特效请求须恰好 1 次，实得 ${r.fx}`);
+  assertEqual(r.dmg, 1, `伤害请求须恰好 1 次，实得 ${r.dmg}`);
+  assertEqual(r.secondSeen, false, '玩家 > 4 格不得接第二刀');
+  assertEqual(r.s.spikeSecond, false, '离开 attack 后 spikeSecond 须复位');
+});
+
+test('焰魔 AI(v3.06): 玩家 ≤ 4 格 ⇒ 接第二刀（两次请求）', () => {
+  const a = new IgnisBossAgent({ rng: () => 0.5 });
+  const ctx = { ...OPEN_CTX, player: playerAt(IGNIS_SPIKE.secondRange - 0.1) };
+  const r = runSpikeSlash(a, ctx);
+  assertEqual(r.fx, 2, `特效请求须 2 次（两刀），实得 ${r.fx}`);
+  assertEqual(r.dmg, 2, `伤害请求须 2 次，实得 ${r.dmg}`);
+  assertEqual(r.secondSeen, true, '玩家 ≤ 4 格须接第二刀');
+  // 两次请求的时刻必须分别落在两个命中帧附近（±1 帧）
+  assertTrue(Math.abs(r.fxTimes[0] - IGNIS_ATTACKS.spikeSlash.hitFrameSeconds) < 1 / 60 + 1e-9,
+    `第一刀请求时刻 ${r.fxTimes[0]} 偏离命中帧 ${IGNIS_ATTACKS.spikeSlash.hitFrameSeconds}`);
+  assertTrue(Math.abs(r.fxTimes[1] - IGNIS_SPIKE.secondHitFrame) < 1 / 60 + 1e-9,
+    `第二刀请求时刻 ${r.fxTimes[1]} 偏离命中帧 ${IGNIS_SPIKE.secondHitFrame}`);
+});
+
+test('焰魔 AI(v3.06): 距离门两侧都测（3.9 格接 / 4.1 格不接）', () => {
+  for (const [d, want] of [[3.9, 2], [4.1, 1]]) {
+    const a = new IgnisBossAgent({ rng: () => 0.5 });
+    const ctx = { ...OPEN_CTX, player: playerAt(d) };
+    const r = runSpikeSlash(a, ctx);
+    assertEqual(r.fx, want, `玩家 ${d} 格时特效请求数`);
+  }
+});
+
+test('焰魔 AI(v3.06): 距离门用命中帧时刻而不是起手时刻', () => {
+  const a = new IgnisBossAgent({ rng: () => 0.5 });
+  // 起手时玩家 3 格（≤4）；第一刀命中帧前把玩家移到 8 格（>4）⇒ 不得接第二刀
+  let ctx = { ...OPEN_CTX, player: playerAt(3) };
+  let s = st({
+    position: [0, 10, 0], mode: 'attack', attackKind: 'spikeSlash',
+    attackAnimT: 0, onGround: true, losTimer: 999, losVisible: true,
+  });
+  let fx = 0;
+  let moved = false;
+  const frames = Math.ceil((IGNIS_SPIKE.doubleSeconds + 0.5) * 60);
+  for (let i = 0; i < frames; i++) {
+    // 在命中帧前 3 帧把玩家移远
+    if (!moved && s.attackAnimT >= IGNIS_ATTACKS.spikeSlash.hitFrameSeconds - 3 / 60) {
+      ctx = { ...OPEN_CTX, player: playerAt(8) };
+      moved = true;
+    }
+    s = a.update(s, 1 / 60, ctx);
+    if (s.attackFxRequest) fx += 1;
+    if (s.mode !== 'attack' && fx > 0) break;
+  }
+  assertEqual(moved, true, '夹具前提：须在命中帧前移动玩家');
+  assertEqual(fx, 1, `命中帧时玩家已在 8 格 ⇒ 只一刀，实得 ${fx}`);
+  assertEqual(s.spikeSecond, false);
+});
+
+test('焰魔 AI(v3.06): spikeSecond 跨帧保持（命中帧后连续 30 帧恒 true）', () => {
+  const a = new IgnisBossAgent({ rng: () => 0.5 });
+  const ctx = { ...OPEN_CTX, player: playerAt(3) };
+  let s = st({
+    position: [0, 10, 0], mode: 'attack', attackKind: 'spikeSlash',
+    attackAnimT: 0, onGround: true, losTimer: 999, losVisible: true,
+  });
+  // 跑到第一刀命中帧
+  for (let i = 0; i < Math.ceil(IGNIS_ATTACKS.spikeSlash.hitFrameSeconds * 60) + 2; i++) {
+    s = a.update(s, 1 / 60, ctx);
+  }
+  assertEqual(s.spikeSecond, true, '第一刀命中帧后须置位');
+  for (let i = 0; i < 30; i++) {
+    s = a.update(s, 1 / 60, ctx);
+    assertEqual(s.spikeSecond, true, `第 ${i} 帧 spikeSecond 被重置了（createState 漏透传）`);
+  }
+});
+
+test('焰魔 AI(v3.06): 单刀 1.966667s 结束 / 双刀 2.966667s 结束', () => {
+  for (const [d, want] of [[6, IGNIS_SPIKE.soloSeconds], [3, IGNIS_SPIKE.doubleSeconds]]) {
+    const a = new IgnisBossAgent({ rng: () => 0.5 });
+    const ctx = { ...OPEN_CTX, player: playerAt(d) };
+    const r = runSpikeSlash(a, ctx);
+    assertTrue(Math.abs(r.peakT - want) < 2 / 60,
+      `玩家 ${d} 格时 attackAnimT 峰值 ${r.peakT.toFixed(4)} 偏离期望 ${want.toFixed(4)}`);
+    assertEqual(r.s.mode, 'chase', '播完须回 chase');
+  }
+});
+
+test('焰魔 AI(v3.06): 招式被中止 ⇒ spikeSecond 复位、两个请求都不产生', () => {
+  const a = new IgnisBossAgent({ rng: () => 0.5 });
+  const ctx = { ...OPEN_CTX, player: playerAt(3) };
+  let s = st({
+    position: [0, 10, 0], mode: 'attack', attackKind: 'spikeSlash',
+    attackAnimT: 0, onGround: true, losTimer: 999, losVisible: false, spikeSecond: true,
+  });
+  let any = 0;
+  for (let i = 0; i < 60; i++) {
+    s = a.update(s, 1 / 60, ctx);
+    if (s.attackRequest || s.attackFxRequest) any += 1;
+  }
+  assertEqual(s.mode, 'chase', '招式须被中止');
+  assertEqual(any, 0);
+  assertEqual(s.spikeSecond, false, '中止时 spikeSecond 须复位');
 });

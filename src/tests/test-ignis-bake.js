@@ -16,7 +16,7 @@
 //    ⇒ 单测钉不住，靠 Tier 4 像素实测（`tests/ignis.spec.mjs`）；本文件只钉 UV 值域与
 //    「每个立方体的六个面各自覆盖一个非零面积矩形」。
 import { test } from './runner.js';
-import { assertEqual, assertTrue, assertNotNull } from './assert.js';
+import { assertEqual, assertTrue, assertNotNull, assertDeepEqual } from './assert.js';
 import { sampleIgnisAttack, multiplyQuat } from '../render/ignis-model.js';
 
 let asset = null;
@@ -38,9 +38,10 @@ async function loadSource() {
 
 // ==================== 结构性契约 ====================
 
-test('焰魔烘焙: 产物存在且动画清单是 idle + attack + spin + shieldSmash + shieldBash（第四招举盾砸击，v3.03）', async () => {
+test('焰魔烘焙: 产物存在且动画清单是 idle + 五招（v3.06 新增尖刺攻击两条）', async () => {
   const d = await loadAsset();
-  assertEqual(Object.keys(d.animations).sort().join(','), 'attack,idle,shieldBash,shieldSmash,spin');
+  assertEqual(Object.keys(d.animations).sort().join(','),
+    'attack,idle,shieldBash,shieldSmash,spikeSlash,spikeSlash2,spin');
 });
 
 // ==================== 第三招：持盾冲撞（v3.01）====================
@@ -1368,6 +1369,137 @@ test('焰魔烘焙(v3.03): shieldBash 从 bind 起手（t=0 增量全零）—�
     for (let k = 0; k < 3; k++) {
       assertTrue(Math.abs(a.frames[o + 4 + k]) < 1e-9,
         `${d.bones[a.boneIndices[s]].name} 在 t=0 有位移 ${a.frames[o + 4 + k]}`);
+    }
+  }
+});
+
+// ==================== 第五招：尖刺攻击（v3.06）====================
+//
+// 源素材 `attack3a` = Java `EARTH_SHUDDERS_ATTACK`（138 tick）。原版三刀是
+// 「下劈(tick32) → **上撩**(tick74) → 下劈(tick118)」，用户要「劈两次」⇒ 取第一刀与第三刀。
+// 两条产物共用同一源，差别只在段表（`IGNIS_ANIM_SEGMENTS`）：
+//   · spikeSlash  单刀 5 段 → 59 帧（玩家 > 4 格）
+//   · spikeSlash2 双刀 9 段 → 89 帧（玩家 ≤ 4 格）
+//
+// ⚠️ **判据必须落在「剑身轴竖直分量」而不是「剑最低点 y」**：后者对上撩也有负值
+//（上撩时剑柄低、剑尖高，bbox 底仍在下方）⇒ 分不出下劈与上撩。
+// 实测：第一/三刀 **−0.915**（剑尖朝下），第二刀 **+0.851**（朝上）。
+
+/**
+ * 剑身轴（`sword` 局部 −z）的世界方向单位向量。
+ * 取柄端 (−21, 12.6, 4) 与尖端 (−21, 12.6, −36) 两点变换后作差归一（px→格）。
+ */
+function swordAxisAt(world) {
+  const m = world.get('sword');
+  const a = m4Apply(m, [-21 / 16, 12.6 / 16, 4 / 16]);
+  const b = m4Apply(m, [-21 / 16, 12.6 / 16, -36 / 16]);
+  const v = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+  const len = Math.hypot(...v);
+  return [v[0] / len, v[1] / len, v[2] / len];
+}
+
+test('焰魔烘焙(v3.06): spikeSlash/spikeSlash2 帧数 59/89，fps 30，驱动 9 根骨骼含 sword', async () => {
+  const d = await loadAsset();
+  assertNotNull(d.animations.spikeSlash, '产物缺 spikeSlash —— 烘焙器没取 attack3a');
+  assertNotNull(d.animations.spikeSlash2, '产物缺 spikeSlash2');
+  assertEqual(d.animations.spikeSlash.frameCount, 59);
+  assertEqual(d.animations.spikeSlash2.frameCount, 89);
+  assertEqual(d.animations.spikeSlash.fps, 30);
+  assertEqual(d.animations.spikeSlash2.fps, 30);
+  for (const key of ['spikeSlash', 'spikeSlash2']) {
+    const names = d.animations[key].boneIndices.map((i) => d.bones[i].name);
+    assertEqual(names.length, 9, `${key} 驱动骨骼数`);
+    assertTrue(names.includes('sword'), `${key} 必须驱动 sword（剑的 0↔180 翻转是本招的核心）`);
+  }
+});
+
+test('焰魔烘焙(v3.06): 两刀都是下劈（剑身轴竖直分量 < −0.8），不是上撩', async () => {
+  const d = await loadAsset();
+  // 第一刀命中帧 0.991667（两条逐位相同）；第二刀 2.25（仅双刀）
+  const w1 = boneWorldAt(d, 'spikeSlash', 0.9916666666666667);
+  const a1 = swordAxisAt(w1);
+  assertTrue(a1[1] < -0.8,
+    `单刀命中帧剑身轴竖直分量 ${a1[1].toFixed(3)}（需 < −0.8）—— 接成了上撩（原版第二刀 +0.851）`);
+  const w2 = boneWorldAt(d, 'spikeSlash2', 0.9916666666666667);
+  const a2 = swordAxisAt(w2);
+  assertTrue(a2[1] < -0.8, `双刀第一命中帧竖直分量 ${a2[1].toFixed(3)}`);
+  const w3 = boneWorldAt(d, 'spikeSlash2', 2.2166666666666677);
+  const a3 = swordAxisAt(w3);
+  assertTrue(a3[1] < -0.8,
+    `双刀第二命中帧竖直分量 ${a3[1].toFixed(3)}（需 < −0.8）—— 取错了刀（上撩是 +0.851）`);
+});
+
+test('焰魔烘焙(v3.06): 两条动画的第一刀段逐位相同（spikeSecond 切换无跳变）', async () => {
+  const d = await loadAsset();
+  const s = d.animations.spikeSlash;
+  const t = d.animations.spikeSlash2;
+  assertDeepEqual(s.boneIndices, t.boneIndices, '两条驱动骨骼集合须相同');
+  // 前 4 段产物时长 1.466667s ⇒ 帧 0..44（44/30 = 1.4667）
+  const sharedFrames = 44;
+  const stride = s.boneIndices.length * 7;
+  for (let f = 0; f < sharedFrames; f++) {
+    for (let k = 0; k < stride; k++) {
+      const a = s.frames[f * stride + k];
+      const b = t.frames[f * stride + k];
+      assertTrue(Math.abs(a - b) < 1e-12,
+        `第一刀段第 ${f} 帧第 ${k} 分量不等（${a} vs ${b}）—— 切换时会跳变`);
+    }
+  }
+});
+
+test('焰魔烘焙(v3.06): 接缝补间后单帧角 ≤ 片段自身上限（**两条都测**）', async () => {
+  const d = await loadAsset();
+  // ⚠️⚠️ **必须两条都测**（自审发现的覆盖缺口）：初版只测双刀，而单刀的收势接缝
+  // 同样超限（实测 22.64° > 上限 15.58°）—— 收势段 7.5 帧要转 180°，blendIn 0.2 又占 6 帧。
+  // 修法：收势段不压缩（×1 ⇒ 15 帧）+ blendIn 缩到 0.1（只占 3 帧）。
+  for (const [key, seam, blendIn] of [
+    ['spikeSlash', 1.4666666666666668, 0.1],
+    ['spikeSlash2', 1.5666666666666669, 0.35],
+  ]) {
+  const a = d.animations[key];
+  const dt = 1 / 60;
+  const dur = a.frameCount / a.fps;
+  const inWindow = (t) => t >= seam - 1e-9 && t < seam + blendIn;
+  /** 某时刻各骨骼的**增量四元数**（真正进蒙皮矩阵的那份） */
+  const quatsAt = (t) => {
+    const deltas = sampleIgnisAttack(a, t);
+    const out = new Map();
+    for (const [bi, dd] of deltas) out.set(bi, dd.rot);
+    return out;
+  };
+  let limit = 0;      // 片段自身合法上限（排除补间窗口）
+  let worst = 0;      // 全程最坏（含补间窗口）
+  let hardWorst = 0;  // 补间窗口内的最坏
+  for (let t = 0; t + dt <= dur; t += dt) {
+    const p = quatsAt(t), q = quatsAt(t + dt);
+    let step = 0;
+    for (const [bi, pa] of p) {
+      const qa = q.get(bi);
+      if (!qa) continue;
+      step = Math.max(step, quatAngleDeg(pa, qa));
+    }
+    worst = Math.max(worst, step);
+    if (inWindow(t) || inWindow(t + dt)) hardWorst = Math.max(hardWorst, step);
+    else limit = Math.max(limit, step);
+  }
+  assertTrue(limit > 5, `${key} 片段自身上限仅 ${limit.toFixed(2)}° —— 数据异常`);
+  assertTrue(worst <= limit + 1e-6,
+    `${key} 全程最坏单帧 ${worst.toFixed(2)}° 超过片段自身上限 ${limit.toFixed(2)}°`
+    + ' —— 接缝补间没生效（观感：剑突然瞬移）');
+  assertTrue(hardWorst <= limit + 1e-6,
+    `${key} 补间窗口内最坏单帧 ${hardWorst.toFixed(2)}° 仍超上限 ${limit.toFixed(2)}°`);
+  }
+});
+
+test('焰魔烘焙(v3.06): spikeSlash 从 bind 起手（t=0 增量全零）—— 能独立成招', async () => {
+  const d = await loadAsset();
+  for (const key of ['spikeSlash', 'spikeSlash2']) {
+    const a = d.animations[key];
+    for (let s = 0; s < a.boneIndices.length; s++) {
+      const o = s * 7;
+      const q = [a.frames[o], a.frames[o + 1], a.frames[o + 2], a.frames[o + 3]];
+      assertTrue(quatAngleDeg(q, [0, 0, 0, 1]) < 0.01,
+        `${key} 的 ${d.bones[a.boneIndices[s]].name} 在 t=0 增量角 ≠ 0`);
     }
   }
 });
