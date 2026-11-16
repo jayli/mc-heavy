@@ -910,7 +910,14 @@ test('v2.47 ZombieService: 默认设置下导航**真的在跑**（本轮核心�
   const { zombies, playerPosition } = makeAiFixture();
   const id = zombies.spawn([10.5, 1, .5], { source: 'test' });
   // 玩家在丧尸正西 → 导航应给出朝西的速度
-  zombies.update(ZOMBIE.aiPeriod, { playerPosition: [0.5, 1, 0.5] });
+  // ⚠️ v3.11：行为层引入起步加速（`accelSeconds` 0.35s），**首拍速度恰为 0** 是设计而非缺陷。
+  // 故推进 8 拍（0.4s > 0.35s）让加速完成后再断言 —— 不变式仍是「默认必须写出速度」，
+  // 只是观察窗口从 1 拍改为加速完成后（判据随新语义重标，不是放宽）。
+  // ⚠️ 必须同时推进 nowMs：不传时每拍都取 performance.now()，8 拍在同一毫秒内跑完
+  // ⇒ 加速因子恒 0 ⇒ 速度永远起不来（实测踩到）。
+  for (let i = 0; i < 8; i++) {
+    zombies.update(ZOMBIE.aiPeriod, { playerPosition: [0.5, 1, 0.5], nowMs: 1000 + i * 50 });
+  }
   const st = zombies.get(id);
   assertTrue(zombies.debugNavigator().navDecisions > 0, '默认就必须有导航决策');
   assertTrue(Math.hypot(st.velocity[0], st.velocity[2]) > 0, `默认就必须写出速度，实际 ${st.velocity}`);
@@ -923,7 +930,11 @@ test('v2.47 ZombieService: 朝向从速度派生（移动跟随、静止保持�
   const id = zombies.spawn([10.5, 1, .5], { source: 'test' });
   assertEqual(zombies.get(id).yaw, 0, '出生朝向为 0');
   // 玩家在正东 → 朝 +X → yaw = atan2(vx, 0) = π/2
-  zombies.update(ZOMBIE.aiPeriod, { playerPosition: [30.5, 1, 0.5] });
+  // ⚠️ v3.11：起步加速首拍速度为 0 ⇒ 推进 8 拍（0.4s）越过加速段再断言。
+  // ⚠️ 必须同时推进 nowMs（同上：不传则 8 拍同毫秒，加速段走不完）。
+  for (let i = 0; i < 8; i++) {
+    zombies.update(ZOMBIE.aiPeriod, { playerPosition: [30.5, 1, 0.5], nowMs: 1000 + i * 50 });
+  }
   const st = zombies.get(id);
   assertTrue(st.velocity[0] > 0, `应朝东，实际 vx=${st.velocity[0]}`);
   assertClose(st.yaw, Math.atan2(st.velocity[0], st.velocity[2]), 1e-9, '朝向须由速度派生');
@@ -943,7 +954,11 @@ test('v2.47 ZombieService: 导航绕墙（端到端，不是只测纯函数）',
     }
   }
   const id = zombies.spawn([10.5, 1, 10.5], { source: 'test' });
-  zombies.update(ZOMBIE.aiPeriod, { playerPosition });
+  // ⚠️ v3.11：起步加速首拍速度为 0 ⇒ 推进 8 拍（0.4s）越过加速段再断言。
+  // ⚠️ 必须同时推进 nowMs（同上）。
+  for (let i = 0; i < 8; i++) {
+    zombies.update(ZOMBIE.aiPeriod, { playerPosition, nowMs: 1000 + i * 50 });
+  }
   const st = zombies.get(id);
   assertTrue(Math.hypot(st.velocity[0], st.velocity[2]) > 0, '必须有移动意图');
   assertTrue(Math.abs(st.velocity[0]) > 0.3,
@@ -1681,6 +1696,31 @@ test('避障 l) 四面围死 → 原地站住；拆墙后下一周期恢复 chas
   zombies.update(ZOMBIE.aiPeriod, { playerPosition, nowMs: 1050 });
   assertEqual(zombies.get(id).mode, 'chasing', '拆墙后须恢复 chasing（导航无缓存阻塞记忆）');
   const xBefore = zombies.get(id).position[0];
-  for (let i = 0; i < 120; i++) entities.update(1 / 60, { world });
+  // ⚠️ v3.11：行为层的起步加速在「从静止重新走」时首拍速度为 0，且意图每
+  // `aiPeriod` 才刷一次。原先只发一拍意图、随后跑 120 帧物理（不再刷意图）
+  // ⇒ 整个 2 秒都用首拍的零速度 ⇒ 永不动。改成**逐帧推进导航 + 物理**
+  // （与真实帧循环同形）—— 不变式仍是「拆墙后须继续前进」，只是驱动方式变正确。
+  for (let i = 0; i < 120; i++) {
+    zombies.update(1 / 60, { playerPosition, nowMs: 1050 + (i + 1) * (1000 / 60) });
+    entities.update(1 / 60, { world });
+  }
   assertTrue(zombies.get(id).position[0] > xBefore + 0.1, `拆墙后须继续前进（x=${zombies.get(id).position[0]}）`);
+});
+
+// ==================== v3.11：行为层的 mode 白名单 ====================
+//
+// ⚠️ **两条路径都要测**：`setIntent`（AI 意图写入）与 `createState`（damage 重建 state）。
+// v2.40 的教训：`normalizeMode` 曾是两处各写一份三元表达式，漏改一处的形态是
+// 「速度与位置全对、只有 mode 错」—— 任何只看「它没动」的断言都抓不到。
+
+test('v3.11 行为层 mode 白名单: hesitating/backing/wandering 不被规范化成 idle', () => {
+  const { zombies } = makeAiFixture();
+  const id = zombies.spawn([10.5, 1, .5], { source: 'test' });
+  for (const mode of ['hesitating', 'backing', 'wandering']) {
+    zombies.setIntent(id, { vx: 0, vz: 0, mode });
+    assertEqual(zombies.get(id).mode, mode, `setIntent 路径须保留 ${mode}`);
+    // damage 走 createState 重建 state —— 另一条消费 normalizeMode 的路径
+    zombies.damage(id, 1, 0);
+    assertEqual(zombies.get(id).mode, mode, `createState 路径也须保留 ${mode}`);
+  }
 });

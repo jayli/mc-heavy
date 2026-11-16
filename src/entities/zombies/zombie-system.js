@@ -13,8 +13,10 @@
 //    驱动步态与移动。另设 intent 会让「渲染看到的移动」与「物理实际的移动」分家。
 import {
   ZOMBIE, ZOMBIE_FLASH_MS, ZOMBIE_MAX_STEP, ZOMBIE_MOVING_EPSILON, ZOMBIE_SEPARATION,
+  ZOMBIE_BEHAVIOR,
 } from './zombie-config.js';
 import { zombieCollidesAt, zombieStepUpY, steerIntent, displaceGroundEntity } from './zombie-navigation.js';
+import { behaviorFor, recordSample, decideBehavior, steerYawLimited } from './zombie-behavior.js';
 import { PathCache } from './zombie-pathfinder.js';
 import { decideStep, memoryFor } from './zombie-navigator.js';
 import { normalizePosition, raycastAabbSlab } from '../entity-types.js';
@@ -127,14 +129,20 @@ export function computeAiUpdates(p) {
 }
 
 /**
- * state.mode 的白名单（v2.40 加入 `'blocked'`）。
+ * state.mode 的白名单（v2.40 加入 `'blocked'`；v3.11 加入行为层三态）。
  *
  * ⚠️ **必须是单一实现**：`createState()` 与 `setIntent()` 都消费它。写两份三元表达式会让其中一处
- * 漏掉 `'blocked'`，形态是「速度与位置都对（都是零）、只有 mode 错」—— 任何只看「它没动」的
+ * 漏掉新值，形态是「速度与位置都对、只有 mode 错」—— 任何只看「它没动」的
  * 断言都抓不到（实测：注入旧式三元后 k 用例真红）。
+ * ⚠️ **白名单须与 `zombie-behavior.js` 的 `PHASE_MODE` 一致**（单向依赖：
+ * 本层不 import 行为层的映射表，避免循环 import；一致性由单测钉住）。
  */
+const MODE_WHITELIST = new Set([
+  'chasing', 'blocked', 'hesitating', 'backing', 'wandering',
+]);
+
 function normalizeMode(mode) {
-  return mode === 'chasing' || mode === 'blocked' ? mode : 'idle';
+  return MODE_WHITELIST.has(mode) ? mode : 'idle';
 }
 
 /** 新建一份合法 state（形状即 M6 规格 §2 口径，少 generation） */
@@ -331,7 +339,7 @@ export class ZombieService {
    */
   constructor({
     entities, world, maxActive = ZOMBIE.maxActive, pool = null,
-    onSpawn = null, onDespawn = null, onKnockback = null,
+    onSpawn = null, onDespawn = null, onKnockback = null, rng = Math.random,
   }) {
     this.entities = entities;
     this.world = world;
@@ -353,6 +361,15 @@ export class ZombieService {
     /** 诊断计数 */
     this._navDecisions = 0;
     this._navBlocked = 0;
+    /**
+     * 行为层随机源（v3.11）。**可注入**，与 `BossAgent` 同一既有手法
+     * （`dragon-boss-agent.js` / `ignis-boss-agent.js` / `guardian-boss-agent.js` 都是 `rng = Math.random`）。
+     * 单测注入定值 rng 即可钉住具体数值；它不参与世界生成，不污染存档确定性
+     * （丧尸是临时实体、不入存档）。
+     */
+    this._rng = rng;
+    /** @type {{chase:number, hesitate:number, backoff:number, replan:number, wander:number}} 相位计数（诊断） */
+    this._behaviorPhases = { chase: 0, hesitate: 0, backoff: 0, replan: 0, wander: 0 };
     // ---- AI 编排状态（Task 2）----
     /** accumulator：累计到 `ZOMBIE.aiPeriod` 才发一条 RPC（20Hz，M6 规格 §2） */
     this._aiAccum = 0;
@@ -555,10 +572,16 @@ export class ZombieService {
    *
    * @param {number[]} playerPosition 玩家脚底 [x, y, z]
    */
-  _stepNavigator(playerPosition) {
+  _stepNavigator(playerPosition, nowMsHint = undefined) {
     const world = this.world;
-    const nowMs = this._nowMs
-      ?? (typeof performance !== 'undefined' ? performance.now() : Date.now());
+    // 时间基准：调用方传的 `nowMs` 优先，其次显式注入的 `_nowMs`，最后才取全局。
+    // ⚠️ **必须尊重调用方的 nowMs**（v3.11 实测）：行为层的窗口与相位计时全靠它。
+    // 不接它时，单测传仿真时间（0…20000）而采样存的是 `performance.now()`（几十 ms）
+    // ⇒ 两个时基混用 ⇒ 滚动窗口永远铺不满 ⇒ 卡住判据恒不成立（实测：
+    // hist 首尾 [28.2, …] 与 [257.8, …]，而 nowMs 已到 19000）。
+    const nowMs = Number.isFinite(nowMsHint)
+      ? nowMsHint
+      : (this._nowMs ?? (typeof performance !== 'undefined' ? performance.now() : Date.now()));
     // 格坐标可走性判据：**直接复用 `zombieCollidesAt`**（唯一权威，与物理同源）。
     // 丧尸脚底在 y，AABB 高 1.8 → 占 y..y+1 两层；站在该格 = AABB 不碰撞。
     // 一层台阶算可走：抬一格后也不碰撞即可（与物理 `tryStepUp` 同口径）。
@@ -590,6 +613,19 @@ export class ZombieService {
       });
       this._navDecisions++;
       if (step.blocked) this._navBlocked++;
+      // ---- 行为层（v3.11）：这一拍到底怎么走 ----
+      // 插在 `decideStep`（哪个方向有路）之后、`_applyIntent`（那个方向真的走得通吗）之前。
+      // ⇒ 后退/踱步的方向仍会过 `steerIntent`（退路也得能走），但不会被它吞掉。
+      const behavior = behaviorFor(mem, nowMs);
+      recordSample(behavior, st.position, nowMs);
+      const acted = decideBehavior({
+        behavior, position: st.position, playerPosition,
+        step, nowMs, rng: this._rng,
+      });
+      // 重新寻路：**必须清缓存**。`PathCache` 缓存可达路径 4 秒，不清则后退完
+      // 又命中旧路径走回墙边（v2.49「绕过障碍后回头」的同类根因）。
+      if (acted.replan) this._pathCache.forget(entity.id);
+      this._behaviorPhases[acted.phase] = (this._behaviorPhases[acted.phase] ?? 0) + 1;
       // **实体排斥力**（v2.47 从已删除的离线 RPC 路径搬过来）：
       // 20 只丧尸朝同一目标走会收敛成一个点。原来由 `computeAiUpdates` 无条件叠加，
       // 该路径删掉后必须在这里补回 —— 否则「强制同点生成后必须散开」的观感直接消失
@@ -613,17 +649,23 @@ export class ZombieService {
       // `Cannot read properties of undefined (reading '0')` —— 而那个异常在遍历里被吞掉，
       // 表现为「只有第一只丧尸在动、其余速度恒 0」（实测踩到）。
       const sep = separationForce({ id: entity.id, position: st.position }, allZombies);
+      // ⚠️⚠️ **速度包络只乘导航分量，排斥力全额叠加**（spec §4.5）：
+      // 把包络乘到「导航+排斥力」合成向量上会把排斥力一起缩小 ⇒ 20 只同点生成时
+      // 散不开（既有互斥 E2E 的 min>0.4 会红）。hesitate 的「零速度」同理指**导航分量为零**，
+      // 排斥力仍可推开它 —— 与 v2.40 `blocked` 的既有语义完全一致。
       this._applyIntent({
         id: entity.id,
         generation: entity.generation,
-        vx: step.vx * ZOMBIE.speed + sep.x,
-        vz: step.vz * ZOMBIE.speed + sep.z,
-        mode: step.mode,
+        vx: acted.vx * ZOMBIE.speed + sep.x,
+        vz: acted.vz * ZOMBIE.speed + sep.z,
+        mode: acted.mode,
+        // 后退时面朝玩家（用户 2026-11-16：「直接面朝前方，后退走几步退出来」）
+        faceYaw: acted.faceYaw,
       });
     }
   }
 
-  update(dt, { playerPosition } = {}) {
+  update(dt, { playerPosition, nowMs = undefined } = {}) {
     // ---- 本地导航（v2.47）：**常开、零网络、不受任何开关控制** ----
     // ⚠️ **这是本轮最重要的不变式**：寻路一度只挂在「在线 AI 开关」下，而那个开关默认关闭
     // ⇒ 玩家实玩时寻路一行都没执行（实测 `plannerEnabled: false, decided: 0`），
@@ -631,7 +673,7 @@ export class ZombieService {
     this._navAccum += dt;
     if (this._navAccum >= ZOMBIE.aiPeriod) {
       this._navAccum = 0;
-      this._stepNavigator(playerPosition);
+      this._stepNavigator(playerPosition, nowMs);
     }
     // ⚠️ **离线 RPC 决策分支已整体删除**（v2.47，用户 2026-11-04 裁定「只依赖本地计算」）。
     // 历史：这里曾走 `pool.call('ai', …)` 让 worker 算「直线朝玩家」的意图。它与本地导航
@@ -653,7 +695,7 @@ export class ZombieService {
    * @param {{id: string, generation: number, vx: number, vz: number, mode?: string}} update
    * @returns {boolean} false = 过期/未知，已丢弃
    */
-  _applyIntent({ id, generation, vx, vz, mode }) {
+  _applyIntent({ id, generation, vx, vz, mode, faceYaw = null }) {
     const entity = this.entities.get(id);
     if (!entity || entity.type !== 'zombie') return false;
     if (entity.generation !== generation) return false; // 过期意图
@@ -664,10 +706,49 @@ export class ZombieService {
     const steered = steerIntent({
       world: this.world, position: entity.state.position, vx: outVx, vz: outVz,
     });
-    return this.setIntent(id, {
+    // 转身限速（v3.11）所需的「限速前旧 yaw」—— 必须在 setIntent 覆写它之前取。
+    const prevYaw = entity.state.yaw;
+    const ok = this.setIntent(id, {
       vx: steered.vx, vz: steered.vz,
       mode: steered.blocked ? 'blocked' : mode,
     });
+    // ---- 朝向覆写（v3.11b，用户 2026-11-16：「你直接面朝前方，后退走几步退出来」）----
+    // 后退时若仍由速度派生朝向，丧尸会**背对玩家倒着走**（实测 903/1628 帧背对）。
+    // 行为层在 backoff 相位传 `faceYaw`（= 朝玩家方向），这里把它当成限速目标，
+    // 于是丧尸**面朋玩家、身体往后退** —— 这正是用户要的观感。
+    // ⚠️ 仍走下面的限速（不瞬时跳），且 `setIntent` 本身契约不变（通用写入口仍由速度派生）。
+    const facingTarget = Number.isFinite(faceYaw) ? faceYaw : null;
+    // ---- 转身限速（v3.11，用户裁定「只限速转身」）----
+    // ⚠️ **只能接在这里（AI 决策路径），不得接进 `setIntent`**：后者是通用意图
+    // 写入口（物理用例、调试代码直接下令），限速长在里面会偷换「想让它朝哪就朝哪」
+    // 的语义 —— 与 v2.40「避障探针只能接 _applyIntent」是同一条边界。
+    // ⚠️ **dt 用 `ZOMBIE.aiPeriod`（0.05s）而不是渲染帧 dt**：本方法由 20Hz 导航驱动，
+    // 用帧 dt 会让限速随帧率漂移。
+    // ⚠️ **静止时不转**：`setIntent` 已在零速时保持原朝向，这里同步不动。
+    const moving = Math.abs(steered.vx) > ZOMBIE_MOVING_EPSILON
+      || Math.abs(steered.vz) > ZOMBIE_MOVING_EPSILON;
+    if (ok && (moving || facingTarget !== null)) {
+      const cur = this.entities.get(id);
+      if (cur && cur.type === 'zombie') {
+        const targetYaw = facingTarget !== null ? facingTarget : cur.state.yaw;
+        const limited = steerYawLimited(
+          prevYaw, targetYaw,
+          ZOMBIE_BEHAVIOR.turnRateDegPerSec * Math.PI / 180 * ZOMBIE.aiPeriod,
+        );
+        // ⚠️⚠️ **必须无条件覆写（只要与 state 里当前值不同）**（v3.11b 两次实测才改对）：
+        // `setIntent` 已先把 yaw 写成**速度派生值**（后退时背离玩家 = 180°，
+        // 而且被 steerIntent 修成沿墙侧滑后每拍在 ±60° 之间摆）。
+        // ① 旧写法 `limited !== targetYaw`：限速一步到位时跳过写入 ⇒ 脏值留下（实测跳 180°）；
+        // ② 改成 `limited !== prevYaw` 仍错：当限速结果**恰好等于旧朝向**（如后退时
+        //    faceYaw 就是当前朝向）也不写 ⇒ setIntent 的 180° 仍留在 state（实测仍跳 180°）。
+        // ⇒ 正确判据是与**state 当前值**比：只要限速结果不等于它，就必须写回去。
+        if (limited !== cur.state.yaw) {
+          // 经 createState 重建（不原地改）—— 距 column 迁移判据的 before/after 不能同源
+          cur.state = createState({ ...cur.state, yaw: limited });
+        }
+      }
+    }
+    return ok;
   }
 
   /** @returns {{calls: number, lastBatchSize: number, pending: number}} 只读测试钩子（已废弃，恒 0） */
@@ -677,7 +758,8 @@ export class ZombieService {
 
   /**
    * 本地导航的只读诊断（测试/调试用）。**没有开关** —— 寻路常开。
-   * @returns {{memorySize: number, pathCache: object, navDecisions: number, navBlocked: number}}
+   * @returns {{memorySize: number, pathCache: object, navDecisions: number, navBlocked: number,
+   *            behaviorPhases: object}}
    */
   debugNavigator() {
     return {
@@ -685,6 +767,8 @@ export class ZombieService {
       pathCache: this._pathCache.debugState(),
       navDecisions: this._navDecisions,
       navBlocked: this._navBlocked,
+      /** 行为层相位计数（v3.11）—— Tier 4 用它判「真的进过犹豫/后退/徘徊」 */
+      behaviorPhases: { ...this._behaviorPhases },
     };
   }
 

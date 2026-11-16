@@ -976,3 +976,341 @@ test('v2.40：四面围死时原地站住（blocked），不消失', async ({ pa
   expect(result.mode).toBe('blocked');
   expect(result.count).toBe(1);   // 没被 column 卸载或上限回收
 });
+
+// ==================== v3.11：丧尸行为拟真度（真游戏页） ====================
+//
+// 分工：纯函数与状态机在 `src/tests/test-zombie-behavior.js`（47 条）。这里只测**真游戏页**
+// 才成立的部分 —— 真实地形、真实列调度、真实 60Hz 物理与渲染层步态的叠加。
+//
+// ⚠️ 每条判据的「现状读数」都在写设计前实测过（spec §1.2 / §6.3）：
+//   · 整图封死：20s 净位移 2.12 格、朝向翻转 354 次、mode 全程 chasing、零犹豫
+//   · 速度取值集合：恰好 {0, 1.2} 两个值
+//   · 单帧 yaw 变化：最大 135°
+// 故下列阈值两侧都有真实判别力，不是凭想象写的。
+//
+// ⚠️ 造墙夹具**先造墙后 spawn**（spawn 校验脚/头格必须 air）。
+
+/** 在开阔地建一道横跨整张已加载区域的 3 格高长墙（真不可达） */
+async function buildSealedWall(page, zLine) {
+  return page.evaluate((z) => {
+    const g = window.__MC_GAME__;
+    const stone = g.registry.idOf('stone');
+    const p = g.player.physics.pos;
+    const y0 = Math.floor(p.y);
+    // 横跨 ±64 格（远超寻路半径 24）⇒ 绕不过去
+    for (let x = Math.floor(p.x) - 64; x <= Math.floor(p.x) + 64; x++) {
+      for (let dy = 0; dy < 3; dy++) g.editor.setBlock({ x, y: y0 + dy, z, id: stone });
+    }
+    return { z, y0 };
+  }, zLine);
+}
+
+test('v3.11：走不动时真的会犹豫 + 后退（不再全程贴墙 chasing）', async ({ page }) => {
+  test.setTimeout(180_000);
+  await page.goto('/?vd=4&seed=12345');
+  await waitWorldReady(page);
+  await installHelpers(page);
+  const result = await page.evaluate(async () => {
+    const g = window.__MC_GAME__;
+    const p = g.player.physics.pos;
+    // 丧尸落在玩家南侧 8~20 格，墙建在两者之间且横跨 ±64 格 ⇒ 真不可达
+    const pos = window.__ZT__.legalSpawnNear(8);
+    const southZ = Math.floor(Math.max(p.z, pos[2])) + 2;
+    const stone = g.registry.idOf('stone');
+    const y0 = Math.floor(pos[1]);
+    // 先造墙（spawn 校验脚/头格 air）
+    for (let x = Math.floor(p.x) - 64; x <= Math.floor(p.x) + 64; x++) {
+      for (let dy = 0; dy < 3; dy++) g.editor.setBlock({ x, y: y0 + dy, z: southZ, id: stone });
+    }
+    // 丧尸放在墙的**南侧**（玩家在北），确保墙真的挡在中间
+    const spawnPos = [pos[0], pos[1], southZ + 3.5];
+    const id = g.zombies.spawn(spawnPos, { source: 'test' });
+    if (!id) return { error: 'spawn rejected', spawnPos };
+    const before = { phases: g.zombies.debugNavigator().behaviorPhases, pos: [...g.zombies.get(id).position] };
+    const modes = new Set();
+    let sawAwayDisp = false;
+    let prev = [...g.zombies.get(id).position];
+    // 20 秒：足够跑完 hesitate(0.6~1.2s) + backoff(1~2格) + replan 若干轮
+    const t0 = performance.now();
+    while (performance.now() - t0 < 20000) {
+      await new Promise((r) => setTimeout(r, 100));
+      const st = g.zombies.get(id);
+      if (!st) break;
+      modes.add(st.mode);
+      // 「背离玩家的位移」：本段位移与「朝玩家方向」点积 < 0
+      const dx = p.x - st.position[0], dz = p.z - st.position[2];
+      const d = Math.hypot(dx, dz) || 1;
+      const mx = st.position[0] - prev[0], mz = st.position[2] - prev[2];
+      if ((mx * dx + mz * dz) / d < -0.02) sawAwayDisp = true;
+      prev = [...st.position];
+    }
+    const after = g.zombies.debugNavigator().behaviorPhases;
+    return {
+      id, before, after,
+      modes: [...modes],
+      sawAwayDisp,
+      count: g.zombies.count(),
+    };
+  });
+  expect(result.error, JSON.stringify(result)).toBeUndefined();
+  // 核心：真的进过犹豫与后退（现状实测两者恒 0）
+  expect(result.after.hesitate, `须进过 hesitate（实测 ${result.after.hesitate}）`).toBeGreaterThan(0);
+  expect(result.after.backoff, `须进过 backoff（实测 ${result.after.backoff}）`).toBeGreaterThan(0);
+  // state.mode 真的出现过新状态（白名单接线，不只是内部相位）
+  expect(result.modes).toContain('hesitating');
+  // 真的发生过背离玩家的位移（后退的可观测证据）
+  expect(result.sawAwayDisp, '须出现过背离玩家的位移（后退）').toBe(true);
+  expect(result.count).toBe(1);
+});
+
+test('v3.11：速度不再是二值（现状恰好 {0,1.2} 两个值）', async ({ page }) => {
+  test.setTimeout(180_000);
+  await page.goto('/?vd=4&seed=12345');
+  await waitWorldReady(page);
+  await installHelpers(page);
+  const result = await page.evaluate(async () => {
+    const g = window.__MC_GAME__;
+    const pos = window.__ZT__.legalSpawnNear(16);
+    const id = g.zombies.spawn(pos, { source: 'test' });
+    if (!id) return { error: 'spawn rejected' };
+    const speeds = new Set();
+    let maxSpeed = 0;
+    const t0 = performance.now();
+    while (performance.now() - t0 < 12000) {
+      await new Promise((r) => setTimeout(r, 50));
+      const st = g.zombies.get(id);
+      if (!st) break;
+      const sp = Math.hypot(st.velocity[0], st.velocity[2]);
+      speeds.add(Math.round(sp * 1000) / 1000);
+      maxSpeed = Math.max(maxSpeed, sp);
+    }
+    return { distinct: speeds.size, maxSpeed, sample: [...speeds].slice(0, 12) };
+  });
+  expect(result.error, JSON.stringify(result)).toBeUndefined();
+  // 现状实测恰好 2 种（0 与 1.2）⇒ 判据 >5 有真实判别力
+  expect(result.distinct, `速度取值须多于 5 种（实测 ${result.distinct}）`).toBeGreaterThan(5);
+  // 硬上限不变式：任何一帧都不得超过 ZOMBIE.speed = 1.2
+  expect(result.maxSpeed).toBeLessThanOrEqual(1.2 + 1e-6);
+});
+
+test('v3.11：转身有过程（单帧 yaw 变化 ≤30°，现状 135°）', async ({ page }) => {
+  test.setTimeout(180_000);
+  await page.goto('/?vd=4&seed=12345');
+  await waitWorldReady(page);
+  await installHelpers(page);
+  const result = await page.evaluate(async () => {
+    const g = window.__MC_GAME__;
+    const pos = window.__ZT__.legalSpawnNear(10);
+    const id = g.zombies.spawn(pos, { source: 'test' });
+    if (!id) return { error: 'spawn rejected' };
+    const wrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
+    let prevYaw = g.zombies.get(id).yaw;
+    let maxJump = 0;
+    // 先让它朝玩家走 2 秒建立朝向
+    const t0 = performance.now();
+    while (performance.now() - t0 < 2000) {
+      await new Promise((r) => setTimeout(r, 50));
+      const st = g.zombies.get(id);
+      if (!st) break;
+      prevYaw = st.yaw;
+    }
+    // 把玩家瞬移到丧尸的反方向 ⇒ 需要大角度转向
+    const st0 = g.zombies.get(id);
+    const p = g.player.physics.pos;
+    const dx = st0.position[0] - p.x, dz = st0.position[2] - p.z;
+    const d = Math.hypot(dx, dz) || 1;
+    const targetX = st0.position[0] + (dx / d) * 12;
+    const targetZ = st0.position[2] + (dz / d) * 12;
+    g._teleportTo(targetX, Math.floor(st0.position[1]) + 1, targetZ);
+    const t1 = performance.now();
+    while (performance.now() - t1 < 4000) {
+      await new Promise((r) => setTimeout(r, 16));
+      const st = g.zombies.get(id);
+      if (!st) break;
+      maxJump = Math.max(maxJump, Math.abs(wrap(st.yaw - prevYaw)));
+      prevYaw = st.yaw;
+    }
+    return { maxJumpDeg: (maxJump * 180) / Math.PI };
+  });
+  expect(result.error, JSON.stringify(result)).toBeUndefined();
+  // 现状实测单帧最大 135° ⇒ ≤30° 有真实判别力（540°/s × 0.05s = 27°）
+  expect(result.maxJumpDeg, `单帧转身须 ≤30°（实测 ${result.maxJumpDeg.toFixed(2)}°）`)
+    .toBeLessThanOrEqual(30);
+  // 前提：须真的发生过转身（否则断言恒真）
+  expect(result.maxJumpDeg).toBeGreaterThan(1);
+});
+
+test('v3.11：徘徊中拆墙 ⇒ 恢复追逐并靠近玩家（不是永久站死）', async ({ page }) => {
+  test.setTimeout(180_000);
+  await page.goto('/?vd=4&seed=12345');
+  await waitWorldReady(page);
+  await installHelpers(page);
+  const result = await page.evaluate(async () => {
+    const g = window.__MC_GAME__;
+    const p = g.player.physics.pos;
+    const pos = window.__ZT__.legalSpawnNear(8);
+    const stone = g.registry.idOf('stone');
+    const y0 = Math.floor(pos[1]);
+    const wallZ = Math.floor(Math.max(p.z, pos[2])) + 2;
+    const x0 = Math.floor(p.x) - 64, x1 = Math.floor(p.x) + 64;
+    for (let x = x0; x <= x1; x++) {
+      for (let dy = 0; dy < 3; dy++) g.editor.setBlock({ x, y: y0 + dy, z: wallZ, id: stone });
+    }
+    const id = g.zombies.spawn([pos[0], pos[1], wallZ + 3.5], { source: 'test' });
+    if (!id) return { error: 'spawn rejected' };
+    // 跑 14 秒让它失败若干轮（wanderAfterAttempts=3）
+    const t0 = performance.now();
+    while (performance.now() - t0 < 14000) await new Promise((r) => setTimeout(r, 100));
+    const phasesBefore = g.zombies.debugNavigator().behaviorPhases;
+    const distBefore = Math.hypot(
+      g.zombies.get(id).position[0] - p.x, g.zombies.get(id).position[2] - p.z,
+    );
+    // 拆墙：开一条 3 格宽 × 3 格高的通道（丧尸宽 0.6，够过）
+    const gapX = Math.floor(g.zombies.get(id).position[0]);
+    for (let x = gapX - 1; x <= gapX + 1; x++) {
+      for (let dy = 0; dy < 3; dy++) g.editor.setBlock({ x, y: y0 + dy, z: wallZ, id: 0 });
+    }
+    // 恢复窗口：wanderRetrySeconds=2 ⇒ 最迟 2s 重试；给 6s 余量
+    const t1 = performance.now();
+    let recoveredChasing = false;
+    while (performance.now() - t1 < 6000) {
+      await new Promise((r) => setTimeout(r, 100));
+      const st = g.zombies.get(id);
+      if (!st) break;
+      if (st.mode === 'chasing') recoveredChasing = true;
+    }
+    const st = g.zombies.get(id);
+    const distAfter = st ? Math.hypot(st.position[0] - p.x, st.position[2] - p.z) : Infinity;
+    return {
+      phasesBefore, recoveredChasing,
+      distBefore: +distBefore.toFixed(2), distAfter: +distAfter.toFixed(2),
+      mode: st?.mode ?? null,
+    };
+  });
+  expect(result.error, JSON.stringify(result)).toBeUndefined();
+  // 前提：拆墙前确实失败过若干轮（否则测的不是「从徘徊恢复」）
+  expect(result.phasesBefore.hesitate, '前提：拆墙前须已犹豫过').toBeGreaterThan(0);
+  expect(result.recoveredChasing, '拆墙后须恢复 chasing').toBe(true);
+  expect(result.distAfter, `须靠近玩家（${result.distBefore} → ${result.distAfter}）`)
+    .toBeLessThan(result.distBefore);
+});
+
+test('v3.11：贴脸隔墙时也会犹豫（不是立刻全速沿墙跑）', async ({ page }) => {
+  test.setTimeout(180_000);
+  await page.goto('/?vd=4&seed=12345');
+  await waitWorldReady(page);
+  await installHelpers(page);
+  const result = await page.evaluate(async () => {
+    const g = window.__MC_GAME__;
+    const p = g.player.physics.pos;
+    const stone = g.registry.idOf('stone');
+    // 在玩家正南 2 格处建一道长墙，丧尸紧贴墙南侧 ⇒ 距玩家 ~3 格但没路
+    const wallZ = Math.floor(p.z) + 2;
+    const y0 = Math.floor(p.y);
+    for (let x = Math.floor(p.x) - 40; x <= Math.floor(p.x) + 40; x++) {
+      for (let dy = 0; dy < 3; dy++) g.editor.setBlock({ x, y: y0 + dy, z: wallZ, id: stone });
+    }
+    const spawnPos = [Math.floor(p.x) + 0.5, y0, wallZ + 1.5];
+    const id = g.zombies.spawn(spawnPos, { source: 'test' });
+    if (!id) return { error: 'spawn rejected', spawnPos };
+    const startDist = Math.hypot(spawnPos[0] - p.x, spawnPos[2] - p.z);
+    const modes = new Set();
+    const t0 = performance.now();
+    while (performance.now() - t0 < 12000) {
+      await new Promise((r) => setTimeout(r, 100));
+      const st = g.zombies.get(id);
+      if (!st) break;
+      modes.add(st.mode);
+    }
+    return {
+      startDist: +startDist.toFixed(2),
+      phases: g.zombies.debugNavigator().behaviorPhases,
+      modes: [...modes],
+    };
+  });
+  expect(result.error, JSON.stringify(result)).toBeUndefined();
+  // 现状实测：贴脸隔墙时立刻全速沿墙跑 16 格、零迟疑
+  expect(result.phases.hesitate, `贴脸没路时须犹豫（实测 ${result.phases.hesitate}）`).toBeGreaterThan(0);
+  expect(result.modes).toContain('hesitating');
+});
+
+test('v3.11b：死胡同里的一群丧尸必须退出来并重新寻路（用户实玩缺陷）', async ({ page }) => {
+  // 用户 2026-11-16 视频 ~/ttt/bug/丧尸不会脱困.mov：一群丧尸卡在石柱胡同里，
+  // 「转身后没有正确形成寻路路径……退出来后又返回这个死胡同，一直循环」。
+  //
+  // 实测根因（Node 侧复现）：封闭口袋里 backoff 的两个退出判据**同时失效** ——
+  // 退 1.27 格就撞墙（walked 卡在 1.268 < target 1.5），而 steerIntent 把撞墙意图
+  // 修成沿墙侧滑 ⇒ 每拍都在动 ⇒ hitWall 也不成立 ⇒ backoff 持续 27.13s、占 94% 帧。
+  // 修法：backoff 硬超时 3.0s + 后退时面朝玩家（faceYaw）。
+  test.setTimeout(180_000);
+  await page.goto('/?vd=4&seed=12345');
+  await waitWorldReady(page);
+  await installHelpers(page);
+  const result = await page.evaluate(async () => {
+    const g = window.__MC_GAME__;
+    const pos = window.__ZT__.legalSpawnNear(10);
+    const stone = g.registry.idOf('stone');
+    const cx = Math.floor(pos[0]), cz = Math.floor(pos[2]), y0 = Math.floor(pos[1]);
+    // 封闭 5×5 口袋（内空 3×3），四面 3 格高墙 + 顶盖 ⇒ A* 必判不可达
+    for (let dx = -2; dx <= 2; dx++) {
+      for (let dz = -2; dz <= 2; dz++) {
+        const edge = Math.abs(dx) === 2 || Math.abs(dz) === 2;
+        if (edge) for (let dy = 0; dy < 3; dy++) g.editor.setBlock({ x: cx + dx, y: y0 + dy, z: cz + dz, id: stone });
+        g.editor.setBlock({ x: cx + dx, y: y0 + 3, z: cz + dz, id: stone });
+      }
+    }
+    // 先造墙后 spawn；一群 5 只挤在口袋中心
+    const ids = [];
+    for (let i = 0; i < 5; i++) {
+      const id = g.zombies.spawn([cx + 0.5, y0, cz + 0.5], { source: 'deadend' });
+      if (id) ids.push(id);
+    }
+    if (!ids.length) return { error: 'spawn rejected', cx, cz, y0 };
+    // 逐帧采样：单只 backoff 连续时长 + 是否出现过 wander + 后退时是否背对玩家
+    const wrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
+    const p = g.player.physics.pos;
+    let maxBackoffSec = 0, sawWander = false, facingAwayTicks = 0, backoffTicks = 0;
+    const runLen = new Map();
+    const t0 = performance.now();
+    while (performance.now() - t0 < 30000) {
+      await new Promise((r) => setTimeout(r, 100));
+      for (const id of ids) {
+        const st = g.zombies.get(id);
+        if (!st) continue;
+        if (st.mode === 'wandering') sawWander = true;
+        if (st.mode === 'backing') {
+          backoffTicks++;
+          const since = (runLen.get(id) ?? 0) + 0.1;
+          runLen.set(id, since);
+          maxBackoffSec = Math.max(maxBackoffSec, since);
+          const toP = Math.atan2(p.x - st.position[0], p.z - st.position[2]);
+          // ⚠️ **必须跳过转身过渡帧**（实测标定，不是放宽）：进入 backoff 那一拍朝向
+          // 可能本来就背对玩家（chase 时正朝墙走），540°/s 转 180° 需 0.33s。
+          // 实测残留的背对帧**全部落在进入 backoff 后 ≤0.1s 内**且角度单调收敛
+          // （137.7°→110.7°）⇒ 那是限速正在转身，不是「背对玩家倒着走」。
+          // 判据改为「稳定后退段（>0.5s）不得背对」——0.5s > 0.33s 的理论转身时间。
+          if (since > 0.5 && Math.abs(wrap(st.yaw - toP)) > Math.PI / 2) facingAwayTicks++;
+        } else {
+          runLen.set(id, 0);
+        }
+      }
+    }
+    const phases = g.zombies.debugNavigator().behaviorPhases;
+    return {
+      spawned: ids.length, maxBackoffSec: +maxBackoffSec.toFixed(2),
+      sawWander, phases, backoffTicks, facingAwayTicks,
+      count: g.zombies.count(),
+    };
+  });
+  expect(result.error, JSON.stringify(result)).toBeUndefined();
+  expect(result.spawned).toBeGreaterThan(0);
+  // ① backoff 不得无限持续（缺陷态实测 27.13s；正常退 2 格 ÷ 0.66 ≈ 3.0s）
+  expect(result.maxBackoffSec, `单次后退最长须 ≤6s（实测 ${result.maxBackoffSec}s）`).toBeLessThanOrEqual(6);
+  // ② 必须真的走到「重新寻路 / 徘徊」而不是永远后退循环
+  expect(result.phases.replan, '须进过 replan（重新寻路）').toBeGreaterThan(0);
+  expect(result.sawWander || result.phases.wander > 0, '封闭口袋里须进过 wander').toBe(true);
+  // ③ 后退时面朝玩家（用户明确要求「面朝前方后退走几步」）
+  expect(result.backoffTicks, '前提：须真的后退过').toBeGreaterThan(0);
+  expect(result.facingAwayTicks, `稳定后退段不得背对玩家（实测 ${result.facingAwayTicks}/${result.backoffTicks}）`).toBe(0);
+  expect(result.count).toBe(result.spawned);
+});
