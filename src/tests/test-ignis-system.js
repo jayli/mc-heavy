@@ -214,6 +214,7 @@ test('焰魔(v3.01/v3.03/v3.06): 五招档案的形状一致（缺字段的招�
 // 用户 2026-11-13 五项裁定：只加这一招 / 贴身才抽 / 只扣血 / 冷却下限 4.0 / 起手音入库。
 // ⚠️ **其中「贴身才抽」已被用户 2026-11-14 实玩后推翻**（「触发条件过于苛刻」）⇒
 // 射程改成与另两招同值 6.5、贴身门删除、权重与横扫平分（各 0.35）。
+// ⚠️ **「冷却下限 4.0」已被 v3.07 取代**：冷却改成「本招收势剩余 + [1.0,1.5] 空档」。
 
 test('焰魔(v3.01): 持盾冲撞档案 —— 射程与横扫同为 6.5（用户裁定：去掉贴身门），半角 22.5 且必须 < 45', () => {
   const a = IGNIS_ATTACKS.shieldSmash;
@@ -279,19 +280,40 @@ test('焰魔(v2.75): IGNIS_AI 的四项是各招的派生最大值（既有断�
   assertEqual(IGNIS_AI.hitRange, max('hitRange'));
   assertEqual(IGNIS_AI.hitConeDeg, max('hitConeDeg'));
   // ⚠️ 命中帧与时长**取最大值**而不是取某一招的值：语义是「最迟那一刀落在何时」/「最长的一招多长」。
-  // 冷却不变式 `attackCooldownMin > attackAnimSeconds` 就靠这个派生值保护。
+  // ⚠️ v3.07：旧注释说「冷却不变式 attackCooldownMin > attackAnimSeconds 靠它保护」已作废 ——
+  // 冷却现在按「收势后空档」计（收势是显式加数），不再与动画时长耦合。
   assertEqual(IGNIS_AI.hitFrameSeconds, max('hitFrameSeconds'));
   assertEqual(IGNIS_AI.attackAnimSeconds, max('animSeconds'));
+});
+
+test('焰魔(v3.07): 两招空档取用户裁定的 [1.0, 1.5] 秒，且不再与动画时长耦合', () => {
+  // 用户 2026-11-16：「1 秒到 1.5 秒间隔就可以」+「最短间隔 1 秒吧」。
+  assertEqual(IGNIS_AI.attackCooldownMin, 1.0);
+  assertEqual(IGNIS_AI.attackCooldownMax, 1.5);
+  // 下限必须 > 0：=0 时「播完就立即起手」与常量无关，数值上看不出差别
+  assertTrue(IGNIS_AI.attackCooldownMin > 0, '空档下限不得为 0（那就是无间隔连砍）');
+  assertTrue(IGNIS_AI.attackCooldownMax > IGNIS_AI.attackCooldownMin,
+    '上限必须 > 下限，否则 rng 两端的判据失去判别力');
+  // ⚠️ **旧不变式已作废**：现在冷却 = 收势剩余 + 空档，长招不再挤压普攻节奏。
+  // 这里反向钉住「不得重新引入耦合」：最长招（3.89）已远大于空档上限，若哪天又要求
+  // min > animSeconds，本条会红 ⇒ 提醒先读 `attackCooldownMin` 的 v3.07 注释。
+  assertTrue(IGNIS_AI.attackAnimSeconds > IGNIS_AI.attackCooldownMax,
+    '最长招的动画已应长于空档上限（耦合解除的事实）');
 });
 
 test('焰魔(v2.75): 旋斩冷却独立于普攻冷却（否则权重会被普攻高频放大成「连着放」）', () => {
   assertTrue(Number.isFinite(IGNIS_AI.spinCooldownSeconds), '缺 spinCooldownSeconds');
   assertTrue(IGNIS_AI.spinCooldownSeconds > IGNIS_ATTACKS.spin.animSeconds,
     `spinCooldownSeconds(${IGNIS_AI.spinCooldownSeconds}) 必须 > 旋斩动画 ${IGNIS_ATTACKS.spin.animSeconds}`
-    + '（同 attackCooldownMin 的教训：冷却短于动画会被动画吃掉，数值上不起作用）');
-  // 与普攻命中间隔 [3.5, 6.0] 同量级：约两次普攻一次旋斩
-  assertTrue(IGNIS_AI.spinCooldownSeconds >= IGNIS_AI.attackCooldownMin,
-    '旋斩冷却不应短于普攻冷却下限（否则旋斩比普攻还频繁）');
+    + '（冷却短于动画会被动画吃掉，数值上不起作用）');
+  // ⚠️ **v3.07：参系改成「普攻周期」而不是空档常量**。旧写法 `spinCooldown >= attackCooldownMin`
+  // 在旧语义下比的是「命中间隔 4.0」；新语义下那个常量只是 1.0 秒的空档 ⇒ 直接比变成恒真。
+  // 旋斩冷却从**起手帧**置位，要与它比的是「一次完整普攻周期」= 最短招动画 + 空档下限。
+  const shortestAnim = Math.min(...IGNIS_ATTACK_IDS.map((k) => IGNIS_ATTACKS[k].animSeconds));
+  const attackCycle = shortestAnim + IGNIS_AI.attackCooldownMin;
+  assertTrue(IGNIS_AI.spinCooldownSeconds >= attackCycle,
+    `旋斩冷却 ${IGNIS_AI.spinCooldownSeconds} 不应短于普攻周期 ${attackCycle.toFixed(2)}s`
+    + '（否则旋斩比普攻还频繁）');
 });
 
 test('焰魔: 碰撞盒取自 Bedrock collision_box（1.0 × 3.25）', () => {
@@ -927,10 +949,12 @@ test('焰魔(v3.03): 举盾砸击命中帧 1.89s / 时长 3.89s（三段 warp �
   assertEqual(a.animSeconds, 3.89);
   assertTrue(a.hitFrameSeconds < a.animSeconds,
     `命中帧 ${a.hitFrameSeconds} 超出动画 ${a.animSeconds}`);
-  // ⚠️ **冷却不变式**：animSeconds 必须 < attackCooldownMin，否则冷却被动画吃掉、数值上不起作用
-  assertTrue(a.animSeconds < IGNIS_AI.attackCooldownMin,
-    `举盾砸击时长 ${a.animSeconds} 必须 < 冷却下限 ${IGNIS_AI.attackCooldownMin}`
-    + '（这就是选「压缩蓄力」而不是「原样保留 5.70s」的原因：后者要把冷却抬到 6.0）');
+  // ⚠️ **v3.07：旧的「animSeconds < attackCooldownMin」不变式已作废**。
+  // 冷却现在 = 本招收势剩余 + [1.0,1.5]，长招不再挤压普攻节奏 ⇒ 3.89s 本身合法。
+  // 当时选「压缩蓄力」而不是「原样保留 5.70s」仍成立（理由变成观感：纯举盾显得空），
+  // 但不再是冷却逐招耦合的硬约束。真正要钉的是「命中帧在动画内」（上一条）。
+  assertTrue(a.animSeconds > IGNIS_AI.attackCooldownMax,
+    '本招时长已应长于空档上限（v3.07 解除耦合的事实）');
 });
 
 test('焰魔(v3.03/v3.06): 尖刺攻击是抽签的最后一档（顺序载荷性），且两招都不设独立冷却', () => {
@@ -959,8 +983,12 @@ test('焰魔(v3.06): spikeSlash 档案取设计文档标定值', () => {
     `第一刀命中帧 ${a.hitFrameSeconds} ≠ 产物 0.991667`);
   assertEqual(a.animSeconds, 2.9666666666666677);
   assertTrue(a.hitFrameSeconds < a.animSeconds);
-  assertTrue(a.animSeconds < IGNIS_AI.attackCooldownMin,
-    `尖刺攻击时长 ${a.animSeconds} 必须 < 冷却下限 ${IGNIS_AI.attackCooldownMin}`);
+  // ⚠️ v3.07：旧的「时长 < 冷却下限」已作废（冷却按收势后空档计，与时长解耦）。
+  // 真正要钉的是「两个命中帧都在各自的动画时长内」—— 否则那刀永远不触发。
+  assertTrue(IGNIS_SPIKE.soloSeconds > a.hitFrameSeconds,
+    `单刀时长 ${IGNIS_SPIKE.soloSeconds} 必须 > 第一刀命中帧 ${a.hitFrameSeconds}`);
+  assertTrue(IGNIS_SPIKE.doubleSeconds > IGNIS_SPIKE.secondHitFrame,
+    `双刀时长 ${IGNIS_SPIKE.doubleSeconds} 必须 > 第二刀命中帧 ${IGNIS_SPIKE.secondHitFrame}`);
 });
 
 test('焰魔(v3.06): IGNIS_SPIKE 常量取用户裁定值', () => {

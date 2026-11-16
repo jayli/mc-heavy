@@ -237,9 +237,16 @@ test('焰魔 AI: 动画播完后回到 chase', () => {
   const a = new IgnisBossAgent({ rng: () => 0.5 });
   const ctx = { ...OPEN_CTX, player: playerAt(IGNIS_AI.attackRange - 1) };
   let s = st({ mode: 'attack', attackAnimT: 0, onGround: true });
-  const frames = Math.ceil((IGNIS_AI.attackAnimSeconds + 0.2) * 60);
-  for (let i = 0; i < frames; i++) s = a.update(s, 1 / 60, ctx);
-  assertTrue(s.mode !== 'attack', `动画播完仍在 ${s.mode}`);
+  // ⚠️ **v3.07：观察窗口必须盯「最长动画 + 最大空档」**。旧写法只给 `animSeconds + 0.2`，
+  // 在旧冷却（4~6s）下恰好落在「已回 chase 且还未再起手」的窗口里；空档降到 1~1.5s 后
+  // 那个时刻已经又起手了 ⇒ 误报「动画播完仍在 attack」。改成逐帧观察「是否曾经离开 attack」。
+  const frames = Math.ceil((IGNIS_AI.attackAnimSeconds + IGNIS_AI.attackCooldownMax + 0.5) * 60);
+  let leftAttack = false;
+  for (let i = 0; i < frames; i++) {
+    s = a.update(s, 1 / 60, ctx);
+    if (s.mode !== 'attack') leftAttack = true;
+  }
+  assertTrue(leftAttack, '整个「动画 + 空档」窗口内从未离开 attack');
 });
 
 test('焰魔 AI: 玩家跑出 disengageRange → attack 中断回 chase', () => {
@@ -1656,25 +1663,119 @@ test('焰魔 AI: 四面围死 → 不产生 NaN、不穿墙（blocked 时站住�
 
 // ==================== 攻击冷却 ====================
 
-test('焰魔 AI: 攻击冷却按 attackCooldownMin/Max 区间随机', () => {
-  const a = new IgnisBossAgent({ rng: () => 0 });        // 取下限
-  const b = new IgnisBossAgent({ rng: () => 0.999999 }); // 取上限
+/**
+ * 量「本招收势播完 → 下一次起手」的空档（秒）。
+ *
+ * ⚠️ **判据必须落在「收势之后」而不是「命中之后」**：命中帧到动画结束还有一段收势
+ * （swing 1.55s / shieldBash 2.00s），玩家看到的「两招之间站着不动」只是收势之后那一截。
+ * 旧实现把冷却记在命中帧上，于是同一份 `attackCooldownMin` 在五招上换算出
+ * **2.00~3.25s** 五种不同空档（尖刺单刀甚至 3.02~5.03）—— 数值看着统一，观感不统一。
+ *
+ * 夹具：玩家钉在 4.5 格（`attackRange` 5.5 内、站定环死区 [4.25,5.0] 内 ⇒ 焰魔站定），
+ * `losTimer:999` + `losVisible:true` ⇒ 缓存永不过期、动画不被中断，招式直接钉到 `attackKind`。
+ *
+ * ⚠️ **三个夹具陷坑（都实测踩到）**：
+ * ① `losTimer:0` 会让视线下帧就重查，中断动画后门控又拦住起手 ⇒ 量到的「空档」
+ *   把「等视线恢复」也计进去；
+ * ② 不钉 `losVisible` 时第一帧就可能被中断；
+ * ③ **帧量子化使空档比常量短 1 帧**（实测五招一致为 0.9833 / 1.4833）：
+ *   动画结束判据 `attackAnimT >= animEnd` 在 ceil 那一帧触发，而冷却到期也在某一帧触发，
+ *   两个边界差一帧。**不为了凑整去加取整补丁**（试过 `ceil(tail*60)`：它把 shieldBash
+ *   括到 1.5 而另四招仍 1.4833，反而把「五招一致」弄坏）—— 判据取 ±1 帧容差。
+ */
+function measureIdleGap(kind, rngValue = 0.5, playerDist = 4.5) {
+  const a = new IgnisBossAgent({ rng: () => rngValue });
+  const ctx = {
+    world: groundWorld(9), registry: REGISTRY, player: playerAt(playerDist),
+  };
+  let s = st({
+    position: [0, 10, 0], mode: 'attack', attackKind: kind, attackAnimT: 0,
+    onGround: true, losTimer: 999, losVisible: true, attackCooldown: 0, spinCooldown: 0,
+  });
+  let endT = -1;
+  for (let i = 0; i < 2000; i++) {
+    s = a.update(s, 1 / 60, ctx);
+    const t = (i + 1) / 60;
+    if (endT < 0 && s.mode !== 'attack') endT = t;
+    else if (endT > 0 && s.mode === 'attack') return { gap: t - endT, endT, nextT: t };
+  }
+  return { gap: Infinity, endT, nextT: -1 };
+}
+
+test('焰魔 AI(v3.07): 收势后的空档取用户裁定的 [1.0, 1.5] 秒（rng 两端）', () => {
+  // 用户 2026-11-16：「连续两个攻击招式之间的间隔时间稍微有点长……1 秒到 1.5 秒间隔就可以」，
+  // 追加「最短间隔 1 秒吧」。⚠️ 断言用**字面量**而不是从被测常量派生（否则改常量时判据跟着漂）。
+  //
+  // ⚠️ **容差取 0.04s（≈2.4 帧）**：实测五招落在 **0.9833 / 1.4667 / 1.4833**，比常量短 1~2 帧。
+  // 根因是三个帧边界叠加：动画结束判据 `>= animEnd` 落在 ceil 帧、冷却到期落在另一帧、
+  // 减 step 的补扣又占一帧。**不为了凑整加取整补丁**（试过 `ceil(tail*60)`：它只把 shieldBash
+  // 括到 1.5、另四招仍 1.4667，把「五招一致」弄得更坏）。对「1~1.5 秒」这个观感尺度，40ms 无意义；
+  // 而旧实现的 **2.43~4.25s** 远在容差外 ⇒ 判别力充足（最小距离 0.95s）。
+  const TOL = 0.04;
+  for (const kind of IGNIS_ATTACK_IDS) {
+    for (const [r, want] of [[0, 1.0], [0.999999, 1.5]]) {
+      const { gap } = measureIdleGap(kind, r);
+      assertTrue(Math.abs(gap - want) <= TOL,
+        `${kind} rng=${r} 的收势后空档 ${gap.toFixed(3)}s，应 ≈${want}s（±0.04s）`);
+    }
+  }
+});
+
+test('焰魔 AI(v3.07): 尖刺双刀的空档从**第二刀**的收势起算（不是第一刀）', () => {
+  // ⚠️ 双刀有两个命中帧：若冷却仍停在第一刀那次置位，第二刀播完时空档已被吃掉一截
+  //（实测差 1.225s）⇒ 观感是「劈完两刀立刻接下一招」，而单刀那条用例全绿。
+  const TOL = 0.04;
+  for (const [dist, want] of [[3.0, 1.0], [4.5, 1.0]]) {
+    const { gap } = measureIdleGap('spikeSlash', 0, dist);
+    assertTrue(Math.abs(gap - want) <= TOL,
+      `玩家 ${dist} 格（${dist <= IGNIS_SPIKE.secondRange ? '双刀' : '单刀'}）空档 ${gap.toFixed(3)}s，应 ≈${want}s`);
+  }
+  const { gap: hi } = measureIdleGap('spikeSlash', 0.999999, 3.0);
+  assertTrue(Math.abs(hi - 1.5) <= TOL, `双刀 rng≈1 空档 ${hi.toFixed(3)}s，应 ≈1.5s`);
+});
+
+test('焰魔 AI(v3.07): 五招的观感节奏一致 —— 空档不再随招式长短漂移', () => {
+  // 旧实现的缺陷形态：同一份冷却常量在五招上是 2.00 / 2.20 / 2.45 / 2.80 / 3.02s 五种空档。
+  // 现在五招（含尖刺双形态）必须落在同一个 [1.0, 1.5] 带里。
+  // ⚠️ 极差容差取 1 帧：帧量子化对五招是同一个常量偏移（实测全为 0.9833），不会拉开极差。
+  const gaps = IGNIS_ATTACK_IDS.map((k) => measureIdleGap(k, 0.5).gap);
+  const spread = Math.max(...gaps) - Math.min(...gaps);
+  assertTrue(spread <= 1 / 60 + 1e-9,
+    `五招空档极差 ${spread.toFixed(3)}s（应 ≤1 帧）：${gaps.map((g) => g.toFixed(3)).join(' / ')}`);
+});
+
+test('焰魔 AI(v3.07): 空档真的参与起手判断（不是算出来不用）', () => {
+  // 负向锚点：把冷却门去掉时「收势一播完就立刻起手」⇒ 空档 ≈0。
+  // 本条从**行为**侧钉住空档存在（与上一条的数值判据成对，防「常量对了但没人读」）。
+  for (const kind of IGNIS_ATTACK_IDS) {
+    const { gap } = measureIdleGap(kind, 0);
+    assertTrue(gap >= 1.0 - 1 / 60 - 1e-9,
+      `${kind} 收势后只隔 ${gap.toFixed(3)}s 就起手（< 1s ⇒ 冷却门没生效）`);
+  }
+});
+
+test('焰魔 AI: 攻击冷却 = 本招收势剩余 + [min,max]（v3.07 口径，rng 两端）', () => {
+  // ⚠️ **v3.07：不再直接拿 `attackCooldown` 与 [min,max] 比**。旧口径下冷却就是命中间隔，
+  // 现在它是「收势剩余 + 空档」（字段仍从命中帧倒数，装配层无需改）⇒ 必须减掉收势那一段。
+  // 只钉「在 [min,max] 内」会恒红（实测 2.53），而把上限放宽到 4 又会把旧语义放过去。
+  const profile = IGNIS_ATTACKS.swing;
+  const tail = profile.animSeconds - profile.hitFrameSeconds;
   const ctx = { ...OPEN_CTX, player: playerAt(IGNIS_AI.attackRange - 1) };
-
-  let sa = st({ mode: 'attack', attackAnimT: 0, onGround: true });
-  for (let i = 0; i < 400 && sa.attackCooldown === 0; i++) sa = a.update(sa, 1 / 60, ctx);
-  assertTrue(sa.attackCooldown > 0, '命中后应进入冷却');
-
-  let sb = st({ mode: 'attack', attackAnimT: 0, onGround: true });
-  for (let i = 0; i < 400 && sb.attackCooldown === 0; i++) sb = b.update(sb, 1 / 60, ctx);
-  assertTrue(sb.attackCooldown > 0, '命中后应进入冷却');
-
-  // 下限注入应得较短冷却，上限注入得较长；两者都不超过 [min, max] + 一帧
-  assertTrue(sa.attackCooldown <= IGNIS_AI.attackCooldownMin + 1 / 60 + 1e-9,
-    `rng=0 的冷却 ${sa.attackCooldown} 超出下限`);
-  assertTrue(sb.attackCooldown > sa.attackCooldown, 'rng 上限应得比下限更长的冷却');
-  assertTrue(sb.attackCooldown <= IGNIS_AI.attackCooldownMax + 1e-6,
-    `rng=1 的冷却 ${sb.attackCooldown} 超出上限`);
+  const cooldownOf = (r) => {
+    const a = new IgnisBossAgent({ rng: () => r });
+    let s = st({ mode: 'attack', attackKind: 'swing', attackAnimT: 0, onGround: true, attackCooldown: 0 });
+    for (let i = 0; i < 400 && s.attackCooldown === 0; i++) s = a.update(s, 1 / 60, ctx);
+    assertTrue(s.attackCooldown > 0, '命中后应进入冷却');
+    // 冷却在命中帧置位时已减过本帧 step，回补一帧才是「完整冷却长」
+    return s.attackCooldown + 1 / 60 - tail;
+  };
+  const lo = cooldownOf(0);
+  const hi = cooldownOf(0.999999);
+  assertTrue(Math.abs(lo - IGNIS_AI.attackCooldownMin) <= 1 / 60,
+    `rng=0 的空档部分 ${lo.toFixed(4)}s，应 ≈${IGNIS_AI.attackCooldownMin}`);
+  assertTrue(Math.abs(hi - IGNIS_AI.attackCooldownMax) <= 1 / 60,
+    `rng≈1 的空档部分 ${hi.toFixed(4)}s，应 ≈${IGNIS_AI.attackCooldownMax}`);
+  assertTrue(hi > lo, 'rng 上限应得比下限更长的空档');
 });
 
 // ==================== 视线缓存 ====================
@@ -1703,26 +1804,30 @@ test('焰魔 AI: 攻击冷却真的生效（不会无间隔连砍）', () => {
   const a = new IgnisBossAgent({ rng: () => 0.5 });
   const ctx = { ...OPEN_CTX, player: playerAt(IGNIS_AI.attackRange - 1) };
   let s = st({ mode: 'attack', attackAnimT: 0, onGround: true });
-  const strikes = [];
-  // 跑 20 秒（远超一个「动画 + 冷却」周期）
+  const starts = [];
+  let prevMode = s.mode;
+  // 跑 20 秒（远超一个「动画 + 空档」周期）
   const frames = 20 * 60;
   for (let i = 0; i < frames; i++) {
     s = a.update(s, 1 / 60, ctx);
-    if (s.attackRequest) strikes.push(i / 60);
+    if (prevMode !== 'attack' && s.mode === 'attack') starts.push(i / 60);
+    prevMode = s.mode;
   }
-  assertTrue(strikes.length >= 2, `20 秒内只命中 ${strikes.length} 次（应有多次）`);
-  // ⚠️ **冷却从「命中时刻」起算**，故命中间隔 == cooldown（不是「动画 + 冷却」）。
-  // 「无冷却门」时命中间隔 = 动画时长 = 2.75s。
-  // ⇒ `attackCooldownMin` 必须**严格大于** `attackAnimSeconds`，否则两种行为在数值上
-  //   重合、断言没有判别力（实测踩到：min 写 2.75 时注入缺陷也不变红，现已改为 3.5）。
-  assertTrue(IGNIS_AI.attackCooldownMin > IGNIS_AI.attackAnimSeconds,
-    `attackCooldownMin(${IGNIS_AI.attackCooldownMin}) 必须 > 动画时长(${IGNIS_AI.attackAnimSeconds})，`
-    + '否则冷却会被动画吃掉、失去判别力');
-  const minGap = IGNIS_AI.attackCooldownMin;
-  for (let i = 1; i < strikes.length; i++) {
-    const gap = strikes[i] - strikes[i - 1];
-    assertTrue(gap >= minGap - 1e-6,
-      `第 ${i} 次与上一次间隔 ${gap.toFixed(2)}s < 下限 ${minGap}s（冷却没生效）`);
+  assertTrue(starts.length >= 2, `20 秒内只起手 ${starts.length} 次（应有多次）`);
+  /**
+   * ⚠️ **v3.07：判据从「命中间隔」改成「起手间隔」**。
+   *
+   * 旧口径靠「命中间隔 == cooldown」+ 「min > animSeconds」保证判别力；新口径下
+   * 命中间隔 = 上一招收势 + 空档 + 本招命中帧，**逐招不同**，拿单一常量比会恒红。
+   * 起手间隔则干净：**≥ 最短招的动画时长 + 空档下限**（旋斩 1.90 + 1.0 = 2.90）。
+   * 去掉冷却门时它退化成「最短招动画时长」= 1.90 ⇒ 两侧差 1 秒，判别力成立。
+   */
+  const shortestAnim = Math.min(...IGNIS_ATTACK_IDS.map((k) => IGNIS_ATTACKS[k].animSeconds));
+  const minStartGap = shortestAnim + IGNIS_AI.attackCooldownMin;
+  for (let i = 1; i < starts.length; i++) {
+    const gap = starts[i] - starts[i - 1];
+    assertTrue(gap >= minStartGap - 2 / 60,
+      `第 ${i} 次与上一次起手间隔 ${gap.toFixed(2)}s < 下限 ${minStartGap.toFixed(2)}s（冷却没生效）`);
   }
 });
 
@@ -2002,4 +2107,49 @@ test('焰魔 AI(v3.06): 招式被中止 ⇒ spikeSecond 复位、两个请求都
   assertEqual(s.mode, 'chase', '招式须被中止');
   assertEqual(any, 0);
   assertEqual(s.spikeSecond, false, '中止时 spikeSecond 须复位');
+});
+
+test('焰魔 AI(v3.07): 粗 dt 下一帧跳过两个命中帧，双刀空档仍按双刀时长算', () => {
+  /**
+   * 守的是一个自查拓到的**帧率相关缺陷**：`spikeSecond` 在第一刀 `fireHitFrame()`
+   * **之后**才锁存。若把 `animEnd` 快照成命中帧之前的常量，第一刀的冷却会按**单刀**
+   * 时长算收势（60Hz 下被第二刀重置掩盖，看不出来）。
+   * dt 粗到一帧同时越过两个命中帧时，第二刀分支的 `prevAnimT < secondHitFrame` 不成立
+   * ⇒ 不再重置冷却 ⇒ 双刀播完却只等了单刀那份冷却。
+   *
+   * ⚠️ 判据落在**冷却值**而不是空档秒数：粗 dt 下墙钟空档本身被帧量子化支配（dt=1.5 时
+   * 只能取 0 / 1.5 / 3.0），拿它比 1.0 无判别力。冷却值则是纯数值，不受帧边界影响。
+   */
+  /**
+   * ⚠️ **dt 必须落在 (2.2167, 2.9667) 且使单刀收势仍为正**，否则判别力自检不成立：
+   * 取 2.5 时单刀收势已被 `max(0,…)` 钳成 0（solo 1.9667 < 2.5）⇒ 两侧只差 0.4667 而不是 1.0。
+   * 2.3 同时满足：越过两个命中帧（>2.2167）、未到双刀末尾（<2.9667）、单刀收势也仍为正
+   *（animT=2.3 时 solo tail = max(0, 1.9667−2.3) = 0）—— 故判别力自检改成**直接比两种口径的冷却**。
+   */
+  const dt = 2.3;
+  const a = new IgnisBossAgent({ rng: () => 0 });
+  const ctx = { world: groundWorld(9), registry: REGISTRY, player: playerAt(3) };
+  let s = st({
+    position: [0, 10, 0], mode: 'attack', attackKind: 'spikeSlash', attackAnimT: 0,
+    onGround: true, losTimer: 999, losVisible: true, attackCooldown: 0,
+  });
+  s = a.update(s, dt, ctx);
+  assertEqual(s.spikeSecond, true, '夹具前提：本帧已锁存第二刀');
+  assertNotNull(s.attackRequest, '夹具前提：本帧已结算命中（否则冷却根本不会置位）');
+  /**
+   * ⚠️ **不能断言 `attackCooldown > 0`**：粗 dt 下「减本帧 step」的补扣（−2.3）会把字段
+   * 压成负数（实测 −0.633）—— 那是对的：下一帧顶部 `Math.max(0, …)` 会钳回 0，
+   * 语义上就是「冷却已走完」。判据要落在**回补 step 后的完整冷却长**上。
+   */
+  const wantTail = Math.max(0, IGNIS_SPIKE.doubleSeconds - s.attackAnimT);
+  const got = s.attackCooldown + dt;
+  assertTrue(Math.abs(got - (wantTail + IGNIS_AI.attackCooldownMin)) < 1e-9,
+    `粗 dt 下冷却 ${got.toFixed(4)}s，应 = 双刀收势 ${wantTail.toFixed(4)} + 空档 ${IGNIS_AI.attackCooldownMin}`
+    + '（若按单刀时长算会短 1.0s）');
+  // 判别力自检：注入「命中帧前快照 animEnd」时，tail 会用单刀时长 ⇒ cd+dt 实测从
+  // **1.6667 变 0.6667**（差整 1.0s）。这里直接钉住「两种口径必须不同」，
+  // 而不是钉「差 1.0s」—— dt 变大时单刀收势会被 max(0,…) 钳零，差值不再是 1.0。
+  const soloTail = Math.max(0, IGNIS_SPIKE.soloSeconds - s.attackAnimT);
+  assertTrue(Math.abs(wantTail - soloTail) > 0.5,
+    `单/双刀收势必须显著不同（判别力前提），实得双 ${wantTail.toFixed(4)} / 单 ${soloTail.toFixed(4)}`);
 });

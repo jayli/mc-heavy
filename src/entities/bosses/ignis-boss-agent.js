@@ -345,7 +345,7 @@ export class IgnisBossAgent extends BossAgent {
         // 原裁定②的 `smashEngageRange`（3.0）已作废：用户实测认为「触发条件过于苛刻」。
         attackKind = this._rollAttackKind(spinCooldown > 0);
         // ⚠️ **起手当帧就置冷却**（不是命中帧）：否则玩家跑掉不命中时旋斩可以连抽。
-        // ⚠️ 持盾冲撞**不置独立冷却**：全局 `attackCooldownMin`（4.0）已控住节奏。本行不动。
+        // ⚠️ 持盾冲撞**不置独立冷却**：全局空档（`attackCooldownMin/Max`）已控住节奏。本行不动。
         if (attackKind === 'spin') spinCooldown = IGNIS_AI.spinCooldownSeconds;
         // ⚠️ **v2.63：起手当帧把 yaw 立即对准真实玩家**（不走 turnRate 缓动、不用快照）。
         // 快照最多陈旧 2 秒，玩家 8 格/秒能跑 16 格 —— 用陈旧朝向起手会让命中锥
@@ -750,6 +750,19 @@ export class IgnisBossAgent extends BossAgent {
       // 本招的档案 —— 命中帧 / 时长都按招取（两招不同：1.20/2.75 vs 0.70/1.90）
       const profile = IGNIS_ATTACKS[attackKind] || IGNIS_ATTACKS.swing;
       /**
+       * 本招的动画总时长（秒）—— **写成函数而不是常量，因为尖刺双刀门会在本帧中途置位**。
+       * ⚠️ v3.06：尖刺攻击取决于是否接了第二刀（单刀 1.966667 / 双刀 2.966667）。
+       *
+       * ⚠️⚠️ **不得在命中帧之前快照成常量**（实测自查拓到）：`spikeSecond` 是在第一刀
+       * `fireHitFrame()` **之后**才锁存的，快照会让第一刀的冷却按**单刀**时长算收势。
+       * 60Hz 下看不出来（冷却随后被第二刀重置），但 dt 粗到一帧跳过两个命中帧时
+       *（后台切回 / 低帧率）第二刀不再触发 ⇒ 双刀播完却只等了单刀那份冷却 ⇒ 立即接下一招。
+       * 写成函数后两处读取（冷却 / 动画结束）都拿当下最新值，与帧率无关。
+       */
+      const animEndNow = () => (attackKind === 'spikeSlash'
+        ? (spikeSecond ? IGNIS_SPIKE.doubleSeconds : IGNIS_SPIKE.soloSeconds)
+        : profile.animSeconds);
+      /**
        * 命中帧结算（两个命中帧共用同一套口径）。
        * ⚠️ FX **无条件**产生（不看视线）；伤害看 `freshLos` 新鲜复查。
        */
@@ -759,8 +772,21 @@ export class IgnisBossAgent extends BossAgent {
         if (freshLos) {
           attackRequest = { at: [px, py, pz], yaw, kind: attackKind };
           const { attackCooldownMin: lo, attackCooldownMax: hi } = IGNIS_AI;
-          // ⚠️ 减去本帧 step：顶部已统一扣过一次 dt，不补扣会让实际间隔多出一帧
-          attackCooldown = lo + this.rng() * (hi - lo) - step;
+          /**
+           * v3.07：冷却 = **本招收势剩余** + [min, max]（用户裁定「两招之间隔 1~1.5 秒」）。
+           *
+           * ⚠️⚠️ **`tail` 不是可选项**：`IGNIS_AI.attackCooldownMin/Max` 的语义是
+           * 「动画播完之后还要站多久」。只写 `lo + rng*(hi-lo)` 就退回旧语义（从命中帧起算），
+           * 于是同一份常量在五招上换算出 2.00~3.25s 五种空档 —— 观感不统一，而常量看着全对。
+           *
+           * ⚠️ **第二刀会重置冷却**（本函数被调两次）：这正是需要的 ——
+           * 双刀的空档必须从**第二刀**的收势起算，否则第二刀播完时冷却已被吃掉一截
+           * （实测差 1.225s），观感是「劈完两刀立刻接下一招」。
+           *
+           * ⚠️ 减去本帧 step：顶部已统一扣过一次 dt，不补扣会让实际间隔多出一帧。
+           */
+          const tail = Math.max(0, animEndNow() - attackAnimT);
+          attackCooldown = tail + lo + this.rng() * (hi - lo) - step;
         }
       };
       // ⚠️ **只在「越过」的那一帧触发一次**：`prev < hit <= now`。
@@ -780,13 +806,8 @@ export class IgnisBossAgent extends BossAgent {
         && prevAnimT < IGNIS_SPIKE.secondHitFrame && attackAnimT >= IGNIS_SPIKE.secondHitFrame) {
         fireHitFrame();
       }
-      // 动画播完 → 回 chase
-      // ⚠️ v3.06：尖刺攻击的时长取决于是否接了第二刀（单刀 1.966667 / 双刀 2.966667）。
-      // 其余招仍读 `profile.animSeconds`（一行不改）。
-      const animEnd = attackKind === 'spikeSlash'
-        ? (spikeSecond ? IGNIS_SPIKE.doubleSeconds : IGNIS_SPIKE.soloSeconds)
-        : profile.animSeconds;
-      if (attackAnimT >= animEnd) {
+      // 动画播完 → 回 chase（时长与冷却读同一个 `animEndNow()`，不得各算一份）
+      if (attackAnimT >= animEndNow()) {
         mode = 'chase';
         attackAnimT = 0;
         attackKind = null;      // 非 attack 态不得残留上一刀的档案
