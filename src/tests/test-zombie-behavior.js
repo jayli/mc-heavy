@@ -323,7 +323,9 @@ function stuckBehavior(nowMs) {
 }
 
 /** 朝北的 decideStep 结果（玩家在正北） */
-const NORTH_STEP = { vx: 0, vz: -1, mode: 'chasing', plannedDirection: 'north', blocked: false };
+const NORTH_STEP = { vx: 0, vz: -1, mode: 'chasing', plannedDirection: 'north', blocked: false, reachable: true };
+/** 「A* 判不可达但仍给出沿墙方向」——徘徊类用例必须用它，否则语义自相矛盾 */
+const UNREACHABLE_STEP = { ...NORTH_STEP, reachable: false };
 const FAR_PLAYER = [32.5, 1, 20.5];
 const FAR_POS = [32.5, 1, 32.5];
 
@@ -511,7 +513,7 @@ test('decideBehavior k: 连续失败3次 ⇒ wander，且 wander 有非零位移
   for (let i = 0; i < 800; i++) {
     const r = decideBehavior({
       behavior: b, position: FAR_POS, playerPosition: FAR_PLAYER,
-      step: NORTH_STEP, nowMs, rng: () => 0,
+      step: UNREACHABLE_STEP, nowMs, rng: () => 0,
     });
     if (r.phase === 'wander') {
       sawWander = true;
@@ -528,26 +530,40 @@ test('decideBehavior k: 连续失败3次 ⇒ wander，且 wander 有非零位移
 test('decideBehavior l: wander 中有路 ⇒ 回 chase', () => {
   let nowMs = 10000;
   const b = stuckBehavior(nowMs);
-  // 先跑到 wander
+  // 先跑到 wander（持续不可达）
   for (let i = 0; i < 800; i++) {
     decideBehavior({
       behavior: b, position: FAR_POS, playerPosition: FAR_PLAYER,
-      step: NORTH_STEP, nowMs, rng: () => 0,
+      step: UNREACHABLE_STEP, nowMs, rng: () => 0,
     });
     recordSample(b, FAR_POS, nowMs);
     nowMs += 50;
   }
   assertEqual(b.phase, 'wander', '前提：须已在 wander');
-  // 现在「有路了」：hist 显示真的在移动（净位移足够）⇒ 下一拍应回 chase
+  // 现在「有路了」= **A* 报可达**（`step.reachable === true`）。
+  // ⚠️ 不能只用「hist 显示在移动」伪造有路：wander 自己就在小范围踱步，
+  // 净位移天然可能很小 ⇒ 那不是「有路」的证据（final review 实测纠正）。
   b.hist.length = 0;
   b.hist.push([nowMs - 1500, 32.5, 32.5]);
   b.hist.push([nowMs, 32.5, 30.0]);
   const r = decideBehavior({
     behavior: b, position: [32.5, 1, 30.0], playerPosition: FAR_PLAYER,
-    step: NORTH_STEP, nowMs, rng: () => 0,
+    step: { ...NORTH_STEP, reachable: true }, nowMs, rng: () => 0,
   });
-  assertEqual(r.phase, 'chase', '有路后须回 chase');
+  assertEqual(r.phase, 'chase', 'A* 报可达后须回 chase');
   assertEqual(r.mode, 'chasing');
+  // 反向：仍不可达时不得退出徘徊（哪怕这几秒在动）
+  const b2 = behaviorFor(memoryFor(new Map(), 'z1'), nowMs);
+  b2.phase = 'wander';
+  b2.wanderAnchor = [32.5, 32.5];
+  b2.wanderNextRetry = nowMs + 2000;
+  b2.hist.push([nowMs - 1500, 32.5, 32.5]);
+  b2.hist.push([nowMs, 32.5, 30.0]);
+  const r2 = decideBehavior({
+    behavior: b2, position: [32.5, 1, 30.0], playerPosition: FAR_PLAYER,
+    step: { ...NORTH_STEP, reachable: false }, nowMs, rng: () => 0,
+  });
+  assertEqual(r2.phase, 'wander', '仍不可达时须留在徘徊');
 });
 
 test('decideBehavior r: 同 rng 同输入 ⇒ 逐位同输出（确定性）', () => {
@@ -1010,4 +1026,79 @@ test('行为层接线 j2: replan 拍真的清了 PathCache（不只是返回 rep
   }
   assertTrue(sawReplanWithCache, '前提：须真的进过 replan');
   assertTrue(cacheClearedOnReplan, 'replan 拍须真的清掉该 id 的路径缓存（否则会走回墙边）');
+});
+
+// ==================== Final review 修正：失败计数必须能攒到徘徊阈值 ====================
+
+test('行为层: 长墙不可达时 eventually 进 wander（失败计数不得被后退自身的位移清零）', () => {
+  // ⚠️ 这条来自 final review 的实测缺陷：小室/长墙场景 40s 内**从未进 wander**
+  // （相位统计 chase 1281 / hesitate 285 / backoff 680 / replan 153 / wander 0）。
+  // 根因：replan 结算紧跟在 backoff 之后，而 backoff 自己走了 1~2 格 ⇒ 1.5s 窗口
+  // 仍显示「在动」⇒ stuck=false ⇒ 判「有路」⇒ failCount 归零 ⇒ 永远攒不到 3。
+  // 用户裁定的是「几轮之后原地徘徊等玩家」，故必须真的能进 wander。
+  const { world, set } = makeFlat();
+  for (let x = 0; x < 64; x++) for (let dy = 0; dy < 3; dy++) set(x, 1 + dy, 30);
+  const entities = new EntityManager();
+  entities.registerType('zombie', zombieDefinition);
+  const zombies = new ZombieService({ entities, world, rng: () => 0.5 });
+  const id = zombies.spawn([32.5, 1, 31.5], { source: 'test' });
+  const playerPosition = [32.5, 1, 20.5];
+  const dt = 1 / 60;
+  let t = 0;
+  let sawWander = false, maxFail = 0;
+  while (t < 40) {
+    zombies.update(dt, { playerPosition, nowMs: t * 1000 });
+    entities.update(dt, { world });
+    const b = zombies._navMemory.get(id)?.behavior;
+    if (b) {
+      maxFail = Math.max(maxFail, b.failCount);
+      if (b.phase === 'wander') sawWander = true;
+    }
+    t += dt;
+  }
+  const phases = zombies.debugNavigator().behaviorPhases;
+  assertTrue(maxFail >= 3, `失败计数须能攒到 3（实际峰值 ${maxFail}）`);
+  assertTrue(sawWander, `40s 内须真的进过 wander（相位计数 ${JSON.stringify(phases)}）`);
+  assertTrue(phases.wander > 0, 'wander 相位计数须 > 0');
+});
+
+test('行为层: 进 wander 后仍会周期重试，玩家拆墙后恢复追逐', () => {
+  const { world, set } = makeFlat();
+  for (let x = 0; x < 64; x++) for (let dy = 0; dy < 3; dy++) set(x, 1 + dy, 30);
+  const entities = new EntityManager();
+  entities.registerType('zombie', zombieDefinition);
+  const zombies = new ZombieService({ entities, world, rng: () => 0.5 });
+  const id = zombies.spawn([32.5, 1, 31.5], { source: 'test' });
+  const playerPosition = [32.5, 1, 20.5];
+  const dt = 1 / 60;
+  let t = 0;
+  while (t < 40) {
+    zombies.update(dt, { playerPosition, nowMs: t * 1000 });
+    entities.update(dt, { world });
+    t += dt;
+  }
+  assertEqual(zombies._navMemory.get(id).behavior.phase, 'wander', '前提：须已在 wander');
+  // 拆一条 3 格宽通道
+  const gapX = Math.floor(zombies.get(id).position[0]);
+  for (let x = gapX - 1; x <= gapX + 1; x++) {
+    for (let dy = 0; dy < 3; dy++) world.setBlock(x, 1 + dy, 30, 0);
+  }
+  const distBefore = Math.hypot(
+    zombies.get(id).position[0] - playerPosition[0],
+    zombies.get(id).position[2] - playerPosition[2],
+  );
+  let recovered = false;
+  const t0 = t;
+  while (t < t0 + 8) {
+    zombies.update(dt, { playerPosition, nowMs: t * 1000 });
+    entities.update(dt, { world });
+    if (zombies.get(id).mode === 'chasing') recovered = true;
+    t += dt;
+  }
+  const distAfter = Math.hypot(
+    zombies.get(id).position[0] - playerPosition[0],
+    zombies.get(id).position[2] - playerPosition[2],
+  );
+  assertTrue(recovered, '拆墙后须恢复 chasing');
+  assertTrue(distAfter < distBefore, `须靠近玩家（${distBefore.toFixed(2)} → ${distAfter.toFixed(2)}）`);
 });

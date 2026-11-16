@@ -334,8 +334,13 @@ export function decideBehavior({ behavior, position, playerPosition, step, nowMs
       return outScaled(dir[0], dir[1], 'backoff', false, B.backoffSpeedScale);
     }
     case 'wander': {
-      // ⑦ 有路了（不再卡住）⇒ 回 chase
-      if (!stuck.stuck) {
+      // ⑦ 有路了 ⇒ 回 chase
+      // ⚠️⚠️ **只看「规划可达」，不能再叠 `!stuck.stuck`**（final review 实测）：
+      // wander 自己就在小范围踱步，1.5s 窗口净位移天然可能 < 0.35 ⇒ stuck 恒真
+      // ⇒ 叠上它会让丧尸**拆墙后也永远出不来**（实测：decideStep 已报 reachable=true，
+      // 相位仍 481 帧全 wander）。「几何上有没有路」才是退出徘徊的唯一问题；
+      // 「这几秒动没动」在徘徊态下本来就是小的，不能作为判据。
+      if (step.reachable === true) {
         b.phase = 'chase';
         b.failCount = 0;
         b.wanderAnchor = null;
@@ -367,8 +372,17 @@ export function decideBehavior({ behavior, position, playerPosition, step, nowMs
   // ---- replan：清缓存 + 侧向踱几步，然后按新规划决定去向 ----
   if (b.phase === 'replan') {
     if (b.paceLeft <= 0) {
-      // 踱步走完 ⇒ 结算这一轮：仍有路就追，没路就计一次失败
-      if (!stuck.stuck) {
+      // 踱步走完 ⇒ 结算这一轮：仍有路就追，没路就计一次失败。
+      //
+      // ⚠️⚠️ **判据必须用「规划可达性」而不是 `stuck.stuck`**（final review 实测缺陷）：
+      // 结算紧跟在 backoff 之后，而 backoff 自己刚走了 1~2 格 ⇒ 1.5s 滚动窗口仍显示
+      // 「在动」⇒ `stuck=false` ⇒ 被误判成「有路了」⇒ failCount 归零 ⇒ **永远攒不到 3、
+      // 永远进不了 wander**（实测：长墙场景 40s 内 chase 1281 / hesitate 285 / backoff 680 /
+      // replan 153 / **wander 0**，failCount 恒 0）—— 用户裁定的「几轮之后原地徘徊等玩家」
+      // 直接不生效。`step.reachable` 是 A* 的**几何可达性**，与「这几秒动没动」无关，
+      // 正是这里该问的问题。
+      const hasWay = step.reachable === true && !stuck.stuck;
+      if (hasWay) {
         b.phase = 'chase';
         b.failCount = 0;
         return outScaled(step.vx, step.vz, 'chase');

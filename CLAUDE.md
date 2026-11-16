@@ -298,6 +298,11 @@ scheduler/physics）再加 `npm run bench -- --check`。计划里标「冻结」
   —— 那会掩盖「生产代码是否每拍更新它」这个被测行为。
 - **判「replan 真的清了缓存」不能用 `cachedPathOf(id) === null`**：不可达场景的 `_path` 本就是 null
   ⇒ 清与不清都读到 null（恒真）。用 `pathCache.debugState().size === 0`。
+- ⚠️⚠️ **「N 轮失败后进入某状态」的功能必须直接钉那个状态真的出现过**（v3.11 final review 实测）：
+  `behaviorPhases.hesitate/backoff > 0` 全绿，而 **wander 从未发生**（40s 相位 wander=0、failCount 恒 0）。
+  根因：replan 结算紧跟 backoff，backoff 自己刚走 1~2 格 ⇒ 滚动窗口仍显示「在动」⇒ 误判「有路」⇒ 计数归零。
+  ⇒ **「有没有路」要问 A\* 的 `step.reachable`（几何可达性），不能问「这几秒动没动」**；
+  同理 wander 的退出判据**不得叠 `!stuck.stuck`** —— 它自身小范围踱步 ⇒ 净位移天然 <0.35 ⇒ 永远出不来。
 - ⚠️ **`cruiseScaleMin` 不被既有 12s 绕墙 E2E 守住**（实测 0.92→0.70 仍 PASS）：那个探针量的是
   「**全程恒定倍率**」，而真实包络是正弦漂移×起步×转向，只在波谷瞬时接近下界。调它要自己重测。
 
