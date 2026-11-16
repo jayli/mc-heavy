@@ -78,6 +78,7 @@ npm run atlas        # 重新生成 assets/atlas.png + atlas.json（世界渲染
 | 文档 | 说明 |
 |---|---|
 | [docs/roadmap.md](docs/roadmap.md) | **项目进度唯一总览**（里程碑总表 + 依赖链 + 扩展点 + 去哪找细节） |
+| [docs/tectonic-terrain-migration-survey.md](docs/tectonic-terrain-migration-survey.md) | **下阶段 TODO「丰富地图多样性」的选型依据** —— Tectonic 地形模块可抽离部分的调研报告（三档分级 + 与 `genP95`/红线 1 的冲突实测） |
 | [docs/phase-1-engine-design.md](docs/phase-1-engine-design.md) | **架构唯一权威**；历次口径变更见其修订说明（v1.1~v1.30） |
 | [docs/testing-policy.md](docs/testing-policy.md) | **测试分级唯一权威**（Tier 1~4 判据 + 门禁分层） |
 | [CLAUDE.md](CLAUDE.md) | 协作规范（重构红线 / 对标 mc-lite 取舍 / 技术约束 / 活跃约束） |

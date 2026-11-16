@@ -16,6 +16,10 @@
 （矿车 / 太阳阴影 / 巨树 / 竞技场 / 浅水高台 / 中世纪船 / 祭坛之龙 + Boss AI / 丧尸本地寻路 /
 音效与 BGM / 大竞技场 + 废弃堡垒移植 / 末影守卫 Boss）。**具体做到哪一步、每版改了什么，一律查 `docs/roadmap.md` 的版本表。**
 
+**下阶段 TODO：丰富地图的多样性。** 选型依据（哪些地形能力可从上游 Tectonic 抽离、拿过来的真实代价、
+哪些不要碰）已调研成文：`docs/tectonic-terrain-migration-survey.md`。**动地形生成前先读它** ——
+尤其是与 `genP95` 冻结预算、红线 1（水面遮罩 TSL 同构）、40 个 `generateHeight` 消费方的冲突实测。
+
 ## 常用命令
 
 全部在仓库根目录执行。前置：Node v26、`npm install`（只装 playwright / eslint / pngjs 三个 devDependency）。
@@ -384,6 +388,7 @@ scheduler/physics）再加 `npm run bench -- --check`。计划里标「冻结」
 
 | 要动的东西 | 先读 |
 |---|---|
+| **地形高度公式 / biome 判定 / 地图多样性（含从 Tectonic 迁移）** | `docs/tectonic-terrain-migration-survey.md`（三档可移植性 + `genP95` 预算与红线 1 冲突）+ `src/gen/terrain.js` 的 `TERRAIN_HEIGHT_PARAMS` 注释 + `src/render/ocean.js` 的 `getTerrainHeight` TSL 同构实现 |
 | 地形/高台地带/浅水高台/祭坛/拱桥/竞技场/大竞技场/废弃堡垒/金字塔/中世纪船 | 各自的 `docs/superpowers/specs/<日期>-*design.md` + roadmap 同版本行 |
 | 光照 / 阴影 / 天空 / 雾 / 水面 / 色温 | `2026-10-13-sun-shadow-map-design.md`、`2026-10-20-sun-shading-and-skybox-design.md`、`2026-10-24-lighting-realism-design.md` + roadmap「活跃约束详情·光影真实感 / 渲染与容量」 |
 | 结构撒布 / 巨树 / 杜鹃树 / 植被 | roadmap「结构撒布」「巨树」「树叶与镂空遮挡体」段 + `2026-10-23-giant-trees-design.md` |
