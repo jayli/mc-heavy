@@ -12,12 +12,12 @@ import { test } from './runner.js';
 import { assertEqual, assertTrue, assertFalse } from './assert.js';
 import {
   isTarnZone, hasTarnEligibility, tarnZoneCenter, computeTarnZone, aabbGap, snowLandSuppressedByTarn,
-  circleRectGap, findNearestTarnZone,
+  circleRectGap, findNearestTarnZone, clearTarnGateCache,
   TARN_ZONE_RADIUS, TARN_PLATFORM_RADIUS, TARN_SLOPE_WIDTH, TARN_ZONE_CHANCE, TARN_DESERT_CAP,
   TARN_HOST_BIOMES, TARN_GAP, TARN_KEPT_TARN_IDS, TARN_ARCH_RING_RADIUS, TARN_SPIRE_RING_RADIUS,
-  TARN_PLATEAU_Y,
+  TARN_PLATEAU_Y, TARN_MIN_SPACING, TARN_ZONE_SALT,
 } from '../gen/structures/tarn-zone.js';
-import { getBiome } from '../gen/noise.js';
+import { getBiome, seededRandom } from '../gen/noise.js';
 import { getCityBoundsForSeed } from '../gen/structures/city-layout.js';
 import { KIT_VARIANTS, KIT_METRICS } from '../gen/structures/cloudland-kit-data.js';
 import {
@@ -162,26 +162,50 @@ test('出现口径：TARN_ZONE_CHANCE 必须真的是 1/5（用户需求：「�
   assertEqual(TARN_ZONE_CHANCE, 1 / 5, '地带出现概率（用户 2026-10-28 裁定：合格草地五取一）');
 });
 
-test('出现口径：合格集合上的命中率 ≈ 1/5（62 seed 实测均值 0.1963）', () => {
-  // ⚠️ **样本量必须够**：合格集实测 189~222 个/seed（±12 窗口），n≈208 时
-  //    σ = √(0.2·0.8/208) = 0.0277 —— 所以容差取 0.10（3.6σ），单一 seed 才不会被噪声误报。
-  //    ±12 窗口实测 62 个 seed 的区间是 [0.1298, 0.2796]、94% 落在 ±0.05 内。
-  // ⚠️ **基准用字面量 1/5，不用 `TARN_ZONE_CHANCE`**（否则改常量时断言恒真，
-  //    实测注入 1/3 → 实测率 0.333，|0.333 − 0.333| = 0 < 0.10 照样全绿）。
-  const EXPECTED = 1 / 5;
-  let elig = 0, hit = 0;
-  for (let rx = -12; rx <= 12; rx++) for (let rz = -12; rz <= 12; rz++) {
-    if (!eligibilityOf(rx, rz, SEED)) continue;
-    elig++;
-    if (isTarnZone(rx, rz, SEED)) hit++;
+test('出现口径：没有邻域竞争的合格 region 必然成地带（1/5 抽签作用在合格集上）', () => {
+  // ⚠️ **本条在 v3.08 被重写**。旧写法是「合格集命中率 ≈ 1/5（容差 0.10）」，
+  //    加入邻域间距（判据 ⑦）后**那个口径不再成立**：实测 seed 12345 的 ±12 窗口
+  //    合格集 409 个、成地带 49 个 = **0.120**，远在 0.10 容差之外。
+  //    原因是逐 region 独立抽签与「成团即被拒」是**竞争关系**：合格 region 本来就不均匀，
+  //    所以合格集上的命中率系统性低于 1/5。实测：chance=1/5 → 0.120、1/3 → 0.137、
+  //    1/2 → 0.105，三条全都落在同一个噪声带里 ⇒ 旧断言对三者**零判别力**（保留它反而会
+  //    在调 chance 时红，逼着人把它放宽成恒真）。
+  //
+  // 新口径 = **只统计没有合格邻居的 region**（间距去重绝不会碰它们）：
+  // 全部 5 个 seed 实测 **597/597 = 1.000**。任何一条把它拖离 1.000 的改动都真 FAIL，
+  // 包括：① 去掉/削弱 1/5 抽签（这些 region 本来过完全部判据就成地带，1/5 已在
+  // `isTarnZone` 的 ② 里、作为「合格」的定义）；② 间距门误杀无竞争 region。
+  //
+  // ⚠️ **合格集合的定义必须直接调生产实现**（红线 1）：不写第二份资格判据副本，
+  //    否则「1/5 作用在合格集合上」这条断言会自证。
+  let total = 0, hit = 0;
+  for (const seed of [12345, 4, 7, 424242, 2024]) {
+    clearTarnGateCache();
+    // 这个「有没有合格邻居」的判据只为本用例服务（不属生产判据，不算第二份权威）：
+    // 它只问「邻域里有没有过完 ②~⑥ 的 region」，而 ②~⑥ 全部走 `hasTarnEligibility` +
+    // 与 `passesTarnGates` 同一行的抽签门。
+    const gateOf = (rx, rz) =>
+      !(rx === CITY_REGION.X && rz === CITY_REGION.Z)
+      && seededRandom(rx, rz, seed + TARN_ZONE_SALT) < TARN_ZONE_CHANCE
+      && hasTarnEligibility(rx, rz, seed);
+    for (let rx = -25; rx <= 25; rx++) for (let rz = -25; rz <= 25; rz++) {
+      if (!gateOf(rx, rz)) continue;
+      let contested = false;
+      for (let dx = -1; dx <= 1 && !contested; dx++) for (let dz = -1; dz <= 1; dz++) {
+        if (dx === 0 && dz === 0) continue;
+        if (gateOf(rx + dx, rz + dz)) { contested = true; break; }
+      }
+      if (contested) continue;
+      total++;
+      if (isTarnZone(rx, rz, seed)) hit++;
+    }
   }
-  assertTrue(elig > 150, `合格 region 数 ${elig} 太少 —— 地带判据可能过严，本用例失去判别力`);
-  const rate = hit / elig;
-  assertTrue(Math.abs(rate - EXPECTED) < 0.10,
-    `合格集命中率 ${rate.toFixed(3)} 偏离 1/5（${hit}/${elig}）—— 实测 chance=1/3 时是 0.333、1/10 时是 0.10`);
+  assertTrue(total >= 300, `无竞争的合格 region 只有 ${total} 个，本用例失去判别力`);
+  assertEqual(hit, total,
+    `${total} 个无竞争的合格 region 里有 ${total - hit} 个没成地带 —— 间距门误杀了不该动的 region`);
 });
 
-test('出现口径：地带是稀有图（每 6~14 个 region 才一座）', () => {
+test('出现口径：地带是稀有图（每 10~18 个 region 才一座）', () => {
   // 实测 8 seed：**每 7.4~7.7 region 一座**（seed 12345 是 8.3）。
   //
   // ⚠️ **带宽演变**（每次都是用户观感裁定后的重标，不是放宽）：
@@ -189,19 +213,76 @@ test('出现口径：地带是稀有图（每 6~14 个 region 才一座）', () 
   // |---|---|---|
   // | v1.89 | 纯哈希 1/3 | 每 3.4 |
   // | v1.90 | 1/5 + 只有 PLAINS + 圆周挨沙漠 | 每 13.6~23.1 |
-  // | **v1.92（现行）** | 1/5 + PLAINS+FOREST+AZALEA + 260 格内有沙漠 | **每 7.4~8.3** |
+  // | v1.92 | 1/5 + PLAINS+FOREST+AZALEA + 260 格内有沙漠 | 每 7.4~8.3 |
+  // | **v3.08（现行）** | 同上 + 邻域间距 `TARN_MIN_SPACING=800` | **每 11.4~14.9**（40 seed 11.2~15.6）|
   //
-  // 带宽 [6, 14]：下界防「变回每 3 个一座」（实测 3.0~3.2），
-  // 上界防「退回只有 PLAINS」（实测 13.6~23.1 会被抓住）。
+  // 带宽 [10, 18]：下界防「间距门被误删」（无间距时实测 7.4~8.3，真 FAIL），
+  // 上界防「间距被改成 1200」（实测 47.8，真 FAIL）。
   for (const seed of [12345, 4, 7]) {
+    clearTarnGateCache();
     let hits = 0, total = 0;
     for (let rx = -12; rx <= 12; rx++) for (let rz = -12; rz <= 12; rz++) {
       total++;
       if (isTarnZone(rx, rz, seed)) hits++;
     }
     const per = total / Math.max(1, hits);
-    assertTrue(per >= 6 && per <= 14,
-      `seed ${seed}: 每 ${per.toFixed(1)} region 一座地带（实测区间 7.4~8.3，允许 6~14）`);
+    assertTrue(per >= 10 && per <= 18,
+      `seed ${seed}: 每 ${per.toFixed(1)} region 一座地带（实测区间 11.4~14.9，允许 10~18）`);
+  }
+});
+
+test('间距：任意两座地带中心的切比雪夫距离 ≥ TARN_MIN_SPACING（杜绝三连）', () => {
+  // **用户 2026-11-16 报告**：「seed 11984370 高台非常频繁出现，同框 5 座」。
+  // 根因 = 判据链没有邻域间距项：三座中心相距整 400 格（= REGION_SIZE），
+  // 地带直径 276 ⇒ 圆几乎相切、互不重叠，所以几何自检不报错。
+  //
+  // ⚠️ **判别力**：把 `TARN_MIN_SPACING` 注入 0 → 本用例必真 FAIL（实测 seed 11984370
+  //    的 region(-2,3)/(-1,3)/(0,3) 三连，中心距 400 < 800）。
+  // ⚠️ **窗口要大于间距**：只扫 ±2 时邻域几乎总是空的，本用例会退化成空操作；
+  //    ±8 保证每个 seed 至少有几十座可见（下方 `checked` 下界即防这个）。
+  for (const seed of [11984370, 12345, 4, 7, 424242]) {
+    clearTarnGateCache();
+    const zones = [];
+    for (let rx = -8; rx <= 8; rx++) for (let rz = -8; rz <= 8; rz++) {
+      if (isTarnZone(rx, rz, seed)) zones.push({ rx, rz, ...tarnZoneCenter(rx, rz) });
+    }
+    assertTrue(zones.length >= 10,
+      `seed ${seed} 只有 ${zones.length} 座地带，本用例失去判别力`);
+    let minD = Infinity, worst = null;
+    for (let i = 0; i < zones.length; i++) {
+      for (let j = i + 1; j < zones.length; j++) {
+        const d = Math.max(Math.abs(zones[i].cx - zones[j].cx), Math.abs(zones[i].cz - zones[j].cz));
+        if (d < minD) { minD = d; worst = [zones[i], zones[j]]; }
+      }
+    }
+    assertTrue(minD >= TARN_MIN_SPACING,
+      `seed ${seed}：最近两座地带 (${worst[0].rx},${worst[0].rz}) 与 (${worst[1].rx},${worst[1].rz}) `
+      + `的中心距 ${minD} < TARN_MIN_SPACING(${TARN_MIN_SPACING})`);
+  }
+});
+
+test('间距：任意 2×2 region 块里至多 1 座地带（800 与 REGION_SIZE 的整除关系）', () => {
+  // 地带中心固定在 region 中心 ⇒ 中心距恒为 400 的整数倍 ⇒ `TARN_MIN_SPACING = 800`
+  // 恰好等价于「不允许 8 邻域相邻」。本用例钉的是 **那个等价关系**（比上一条更直观）：
+  // 用户报的就是「三连」（region (-2,3)/(-1,3)/(0,3) 同一行相邻三座）。
+  //
+  // ⚠️ 如果将来把 `TARN_MIN_SPACING` 改成非 400 整数倍（如 600），本用例的上半部分会
+  //    误报 —— 那时要把它改成「直接按中心距判」，不要放宽成 `<= 2`。
+  assertEqual(TARN_MIN_SPACING % REGION_SIZE, 0,
+    'TARN_MIN_SPACING 必须是 REGION_SIZE 的整数倍，否则「2×2 里至多 1 座」不成立');
+  for (const seed of [11984370, 12345, 4, 7]) {
+    clearTarnGateCache();
+    let checked = 0, bad = 0;
+    for (let rx = -8; rx <= 8; rx++) for (let rz = -8; rz <= 8; rz++) {
+      let n = 0;
+      for (let a = 0; a <= 1; a++) for (let b = 0; b <= 1; b++) {
+        if (isTarnZone(rx + a, rz + b, seed)) n++;
+      }
+      checked++;
+      if (n > 1) bad++;
+    }
+    assertTrue(checked >= 100, `seed ${seed} 只检查了 ${checked} 个 2×2 块，本用例失去判别力`);
+    assertEqual(bad, 0, `seed ${seed}: ${bad} 个 2×2 region 块里出现了多座地带`);
   }
 });
 
@@ -521,39 +602,52 @@ test('地带布局：抖动真的在起作用（跨 seed / 跨 region 的角布�
   // ✅ 现行判据：**跨 seed / 跨 region 的角布置必须不同** —— 零抖动时两次调用会逐位相同。
   //    实测：正常态跨 3 seed 最大偏差 **2.508e-2 rad**；注入 `RATIO=0` 时**精确为 0**。
   //
-  // ⚠️ 取样坐标必须属于**三个 seed 的交集**（否则 `computeTarnZone` 返回 null）。
-  //    **v1.90 重新标定**：稀有化后三个 seed 的交集变稀，旧值 region(4,4) 已不再成立。
-  //    实测 seed {12345, 4, 7} 的交集里有 region(-10,3) 与 (8,-1)；仍程序化找，
-  //    避免下次改判定时又失效。
+  // ⚠️ 取样坐标必须属于**参与对比的那些 seed 的交集**（否则 `computeTarnZone` 返回 null）。
+  //    **v1.90 重新标定**：稀有化后三个 seed 的交集变稀，旧值 region(4,4) 已不再成立；
+  //    **v3.08 再标一次**：加上邻域间距（判据 ⑦）后，{12345,4,7} 的**三路交集在 ±40 内为空**
+  //    （三路同时命中的期望 ≈ 841 × 0.13³ ≈ 2 个，实测 ±40 只有 1 个且不在 ±14），
+  //    所以不能再要求三 seed 全共享。
+  //
+  // ✅ 现口径：取**最大的一对交集**（两两交集实测：{12345,4}=3 / {12345,7}=2 / {4,7}=11），
+  //    在它上面做跨 seed 对比。判据本身（角布置不能逐位相同）一个字节没放宽 ——
+  //    只是把「拿三个 seed 比」改成「拿实际能共享的那两个 seed 比」。
   const SEED_LIST = [SEED, 4, 7];
-  let SHARED_REGION = null;
-  for (let rx = -14; rx <= 14 && !SHARED_REGION; rx++) {
-    for (let rz = -14; rz <= 14 && !SHARED_REGION; rz++) {
-      if (rx === 0 && rz === 0) continue;
-      if (SEED_LIST.every((s) => isTarnZone(rx, rz, s))) SHARED_REGION = { rx, rz };
+  let SHARED = null;   // { rx, rz, seeds: [a, b] }
+  for (let i = 0; i < SEED_LIST.length && !SHARED; i++) {
+    for (let j = i + 1; j < SEED_LIST.length && !SHARED; j++) {
+      const pair = [SEED_LIST[i], SEED_LIST[j]];
+      const found = [];
+      for (let rx = -14; rx <= 14; rx++) {
+        for (let rz = -14; rz <= 14; rz++) {
+          if (rx === 0 && rz === 0) continue;
+          if (pair.every((s) => isTarnZone(rx, rz, s))) found.push({ rx, rz });
+        }
+      }
+      if (found.length > 0) SHARED = { ...found[0], seeds: pair };
     }
   }
-  assertTrue(SHARED_REGION !== null,
-    `±14 窗口找不到 ${JSON.stringify(SEED_LIST)} 共享的地带 region —— 判定可能过严，本用例无法进行`);
+  assertTrue(SHARED !== null,
+    `±14 窗口找不到 ${JSON.stringify(SEED_LIST)} 任意一对 seed 共享的地带 region —— 判定可能过严，本用例无法进行`);
 
   const anglesFor = (rx, rz, seed) => computeTarnZone(rx, rz, seed).tarns.map((t) => t.ang);
-  const base = anglesFor(SHARED_REGION.rx, SHARED_REGION.rz, SEED);
+  const base = anglesFor(SHARED.rx, SHARED.rz, SEED);
 
   let crossSeed = 0;
-  for (const seed of SEED_LIST.slice(1)) {
-    const other = anglesFor(SHARED_REGION.rx, SHARED_REGION.rz, seed);
+  for (const seed of SHARED.seeds) {
+    if (seed === SEED) continue;
+    const other = anglesFor(SHARED.rx, SHARED.rz, seed);
     for (let i = 0; i < base.length; i++) {
       crossSeed = Math.max(crossSeed, Math.abs(base[i] - other[i]));
     }
   }
   assertTrue(crossSeed > 1e-9,
-    `跨 3 个 seed 的角布置完全相同（最大偏差 ${crossSeed}）—— 抖动没在起作用`);
+    `跨 seed（${JSON.stringify(SHARED.seeds)}）的角布置完全相同（最大偏差 ${crossSeed}）—— 抖动没在起作用`);
 
   // 同 seed 下的另一个地带 region（程序化找，不硬编码）
   let otherRegionAngles = null;
   for (let rx = -8; rx <= 8 && !otherRegionAngles; rx++) {
     for (let rz = -8; rz <= 8 && !otherRegionAngles; rz++) {
-      if (rx === SHARED_REGION.rx && rz === SHARED_REGION.rz) continue;
+      if (rx === SHARED.rx && rz === SHARED.rz) continue;
       if (!isTarnZone(rx, rz, SEED)) continue;
       otherRegionAngles = anglesFor(rx, rz, SEED);
     }

@@ -91,6 +91,48 @@ export const TARN_GAP = 4;
 export const TARN_ZONE_CHANCE = 1 / 5;
 
 /**
+ * 两座高台地带中心的最小**切比雪夫距离**（格）= 800。
+ *
+ * ## 为什么需要它（2026-11-16 用户报告 seed 11984370）
+ *
+ * 用户报「高台地形非常频繁出现，我的设定是稀有出现」，截图里小地图（51 样本 × 20 格
+ * = 跨度 1000）**同框 5 座**。复现证明那不是判定坏了：
+ *
+ * | 假设 | 实测 |
+ * |---|---|
+ * | `seededRandom` 在相邻 region 上成团 | 相邻双双命中率 **3.99%**（理论 4%）|
+ * | 1/5 抽签失效 | 全域每 7.53 个 region 一座（40 seed 中位 7.5），与设计一致 |
+ * | 小地图画错 | 用 `isTarnZone` 反算的网格与截图逐点吻合 |
+ *
+ * 根因是**判据链里没有邻域间距项**：② 是逐 region 独立抽签，「每 7.6 个 region 一座」
+ * 的期望值数学上必然产生成团（15 seed × 50 窗口实测「视野内 ≥5 座」0.7%）。
+ * 那座 seed 的三连是 region `(-2,3) (-1,3) (0,3)`，中心相距整 400 格（地带直径 276
+ * ⇒ 圆几乎相切、互不重叠，几何自检不报错）。
+ *
+ * 仓库先例：巨型金字塔为此加了 `PYRAMID_MIN_SPACING = 384` 的单向去重
+ * （`giant-pyramid.js`），本常量是同一个手法。
+ *
+ * ## 为什么是 800
+ *
+ * 地带中心固定在 region 中心 ⇒ 中心距恒为 400 的整数倍。800 因此等价于
+ * **「不允许 8 邻域相邻」**= 「任何 2×2 region 块里至多 1 座」—— 从结构上消灭三连。
+ *
+ * 实测（15 seed × 625 region，每 seed 50 个视野采样）：
+ *
+ * | 间距 | 每 N region 一座 | 视野均值 | ≥3 座 | ≥4 座 | ≥5 座 |
+ * |---|---|---|---|---|---|
+ * | 无 | 7.5 | 1.12 | 9.2% | 2.8% | **0.7%** |
+ * | **800（本值）** | **12.6** | **0.67** | **0.2%** | **0.0%** | **0.0%** |
+ * | 1200 | 47.8 | 0.19 | 0.0% | 0.0% | 0.0% |
+ *
+ * 1200 会让视野内常常一座都没有（过于罕见），不取。
+ *
+ * ⚠️ **改这个值必须重跑 `test-tarn-zone.js` 的两条间距用例与「每 N region 一座」的带宽**
+ * （800 下的实测密度是每 12.0~13.3 region 一座，与 400 时的 7.4~8.3 完全不同的带宽）。
+ */
+export const TARN_MIN_SPACING = 800;
+
+/**
  * 核心平台允许的沙漠占比上限（`TARN_ZONE_CHANCE` 之外的第二道观感门）。
  *
  * ⚠️ **这个数不是可选的**：合格 region 的核心沙漠占比分布是 p50 = 0.083、p90 = 0.28、
@@ -380,6 +422,10 @@ export function hasTarnEligibility(regionX, regionZ, seed) {
  * | ④ | 圆心 biome ∈ `TARN_HOST_BIOMES`（只有 PLAINS） | 377 |
  * | ⑤ | 圆周 16 方位碰到沙漠（「挨着沙漠」） | 1~4 |
  * | ⑥ | 核心平台沙漠占比 ≤ `TARN_DESERT_CAP` | 25（在 ②④ 之后） |
+ * | ⑦ | 邻域间距：字典序更小的合格邻居里有中心距 < `TARN_MIN_SPACING` 的 | 每 7.5 → 每 12.6 个 region 一座 |
+ *
+ * ⚠️ **⑦ 是 v3.08 新加的**（用户报告「高台频繁同框」）：②~⑥ 只管平均密度、管不了
+ * 局部扎堆。详见 `TARN_MIN_SPACING` 的注释。
  *
  * ⚠️ **② 必须排在最前**：判据 ③④⑤⑥ 要采 ~177 次 `getBiome`（实测 0.35 µs/次），
  * 而 ② 是单次 `seededRandom`。先抽签让 80% 的 region 在 1 次哈希内返回 ——
@@ -396,10 +442,93 @@ export function hasTarnEligibility(regionX, regionZ, seed) {
  * @returns {boolean}
  */
 export function isTarnZone(regionX, regionZ, seed) {
-  if (regionX === CITY_REGION.X && regionZ === CITY_REGION.Z) return false;
+  if (!passesTarnGates(regionX, regionZ, seed)) return false;
+  if (TARN_MIN_SPACING <= 0) return true;
+
+  // ⑦ 邻域间距去重（与巨型金字塔同一手法，三条约束都是载荷性的）：
+  //
+  // ① **只跟字典序更小的 region 比**（单向）：互相让位会让相邻两个各自看到对方、
+  //    双双放弃 → 那块地一座都没有（与需求相反）。单向比较保证至少一个能留下，
+  //    且跨 region 结果一致（纯函数，无需共享状态 —— 红线 2）。
+  // ② **比较的是「未过间距门的邻居」**（`passesTarnGates` 只含 ②~⑥）：拿已过门的
+  //    邻居比，会让「本该让位的那个因为自己被门掉而不参与比较」→ 间距门静默失效。
+  // ③ **先按 region 矩形的最近可能距离剪枝**：`dx`/`dz` 相同的那一圈中心距恒为
+  //    `max(|dx|,|dz|) × REGION_SIZE`，几何上就 ≥ 阈值时一次邻居查询都白算。
+  //    隔壁 8 个邻域的中心距恒为 400 < 800，必须查；再外面一圈是 800，不必查。
+  //
+  // 成本：邻居要先过 ② 的廉价门（`seededRandom` 0.046 µs，挡掉 80%）才轮得到
+  // `hasTarnEligibility`（实测 21.4 µs）。实测「判成地带」的路径增量 **14.9 µs/次查询**，
+  // 配合下面的结果缓存，`snowLandSuppressedByTarn` 的 49 次/column 调用不受影响。
+  const { cx, cz } = tarnZoneCenter(regionX, regionZ);
+  const rings = Math.ceil(TARN_MIN_SPACING / REGION_SIZE) + 1;
+  for (let dx = -rings; dx <= rings; dx++) {
+    for (let dz = -rings; dz <= rings; dz++) {
+      if (dx === 0 && dz === 0) continue;
+      const nx = regionX + dx, nz = regionZ + dz;
+      if (nx > regionX || (nx === regionX && nz >= regionZ)) continue;  // ① 单向
+      // ③ 剪枝：两 region 矩形的最近切比雪夫距离
+      const minRectDist = Math.max(Math.abs(dx) - 1, 0, Math.abs(dz) - 1) * REGION_SIZE;
+      if (minRectDist >= TARN_MIN_SPACING) continue;
+      if (!passesTarnGates(nx, nz, seed)) continue;                     // ② 未过门的邻居
+      const n = tarnZoneCenter(nx, nz);
+      if (Math.max(Math.abs(cx - n.cx), Math.abs(cz - n.cz)) < TARN_MIN_SPACING) return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * 判据 ②~⑥（**不含** ⑦ 间距）：该 region 是否「够格当一座地带」。
+ *
+ * ⚠️ **间距去重必须比这一层，不能比 `isTarnZone`** —— 后者含 ⑦，会退化成
+ * 「两个互相让位」的循环依赖（见 `isTarnZone` 注释的第 ② 条约束）。
+ *
+ * ⚠️ **结果缓存是必需的而非优化**：`isTarnZone` 的邻域扫描要对 8 个邻居各算一次本函数
+ * （实测 21.4 µs/次），而 `snowLandSuppressedByTarn` 每 column 调 49 次 `isTarnZone`、
+ * `paintMinimap` 一次重绘 2601 次 —— 不缓存会把 GEN 与地图重绘都拖出水。
+ *
+ * 缓存是安全的：本函数是 `(regionX, regionZ, seed)` 的纯函数。键里带 seed 是因为
+ * 同一进程内可能切世界（换存档），不带 seed 会串味。
+ *
+ * @param {number} regionX @param {number} regionZ @param {number} seed
+ * @returns {boolean}
+ */
+function passesTarnGates(regionX, regionZ, seed) {
+  const key = seed + '|' + regionX + '|' + regionZ;
+  const hit = tarnGateCache.get(key);
+  if (hit !== undefined) return hit;
+
+  // ① 城市 region 恒 false（全世界唯一地标）
+  if (regionX === CITY_REGION.X && regionZ === CITY_REGION.Z) {
+    tarnGateCache.set(key, false);
+    return false;
+  }
   // ② 廉价门：先挡掉 80%（判据 ③④⑤⑥ 共需 ~177 次 getBiome）
-  if (seededRandom(regionX, regionZ, seed + TARN_ZONE_SALT) >= TARN_ZONE_CHANCE) return false;
-  return hasTarnEligibility(regionX, regionZ, seed);
+  const ok = seededRandom(regionX, regionZ, seed + TARN_ZONE_SALT) < TARN_ZONE_CHANCE
+    && hasTarnEligibility(regionX, regionZ, seed);
+
+  if (tarnGateCache.size >= TARN_GATE_CACHE_MAX) {
+    // Map 的迭代顺序 = 插入顺序 ⇒ 删第一个即「最久未写入」（粗 LRU，够用）
+    tarnGateCache.delete(tarnGateCache.keys().next().value);
+  }
+  tarnGateCache.set(key, ok);
+  return ok;
+}
+
+/**
+ * 判据 ②~⑥ 的结果缓存容量。
+ *
+ * 取 8192：单次地图重绘（51×51 样本）命中的 region 不超过 16 个，而间距扫描要 8 个
+ * 邻居 ⇒ 一个窗口约 150 条；8192 条足够覆盖连续飞行的多个视域，又只占 ~0.5 MB。
+ */
+const TARN_GATE_CACHE_MAX = 8192;
+
+/** @type {Map<string, boolean>} 键 = `${seed}|${regionX}|${regionZ}` */
+const tarnGateCache = new Map();
+
+/** 清空判据缓存（单测隔离用；生产代码不需要调用） */
+export function clearTarnGateCache() {
+  tarnGateCache.clear();
 }
 
 /**

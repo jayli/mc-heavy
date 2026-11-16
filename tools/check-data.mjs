@@ -1594,9 +1594,12 @@ async function checkTarnPlacementRules(fail) {
   } else {
     fail('扫不到任何一个地带 region —— 出现口径可能被改成了永不命中');
   }
-  // ⑥ 密度不跑飞（v1.92 实测 8 seed：每 7.4~8.3 region 一座；带宽 6~14）
-  //    ⚠️ 下界 6 抓住「变回每 3 个一座」（实测 3.0~3.2）；
-  //       上界 14 抓住「退回只有 PLAINS」（实测 13.6~23.1）。
+  // ⑥ 密度不跑飞（v3.08 加上邻域间距 `TARN_MIN_SPACING=800` 后实测 3 seed：每 11.4~14.9；
+  //    40 seed 带宽 11.2~15.6。**v1.92 不带间距时是每 7.4~8.3**，带宽 6~14）
+  //    ⚠️ 下界 10 抓住「间距门被误删 / 被改小」（无间距时实测 7.4~8.3，会被抓住）；
+  //       上界 18 抓住「间距被改成 1200」（实测 47.8）。
+  //    ⚠️ **不要只看宽度就放宽成本来的 6~14**：7.4~8.3 与 11.4~14.9 是两个完全不同的口径，
+  //       旧带宽下「间距门整条删掉」会静默通过（7.4 ≥ 6）。
   for (const seed of [12345, 4, 7]) {
     let hits = 0, total = 0;
     for (let rx = -12; rx <= 12; rx++) for (let rz = -12; rz <= 12; rz++) {
@@ -1604,8 +1607,29 @@ async function checkTarnPlacementRules(fail) {
       if (tz.isTarnZone(rx, rz, seed)) hits++;
     }
     const per = total / Math.max(1, hits);
-    if (!(per >= 6 && per <= 14)) {
-      fail(`seed ${seed} 每 ${per.toFixed(1)} region 一座地带（实测区间 7.4~8.3，允许 6~14）`);
+    if (!(per >= 10 && per <= 18)) {
+      fail(`seed ${seed} 每 ${per.toFixed(1)} region 一座地带（v3.08 实测 11.4~14.9，允许 10~18）`);
+    }
+  }
+
+  // ⑥b 邻域间距硬约束（v3.08）：任意两座地带中心的切比雪夫距离 ≥ `TARN_MIN_SPACING`。
+  //   ⚠️ **与 ⑥ 是两个不同口径**：⑥ 只管平均密度，间距为 0 时 ⑥ 仍可能在带宽内
+  //     而「三连相邻」照样存在（用户 2026-11-16 报告 seed 11984370 同框 5 座就是这个形态）。
+  if (!(tz.TARN_MIN_SPACING > 0)) {
+    fail(`TARN_MIN_SPACING 必须是正数（现为 ${tz.TARN_MIN_SPACING}）—— 否则地带会成团`);
+  }
+  for (const seed of [11984370, 12345, 4, 7]) {
+    const zones = [];
+    for (let rx = -8; rx <= 8; rx++) for (let rz = -8; rz <= 8; rz++) {
+      if (tz.isTarnZone(rx, rz, seed)) zones.push(tz.tarnZoneCenter(rx, rz));
+    }
+    let minD = Infinity;
+    for (let i = 0; i < zones.length; i++) for (let j = i + 1; j < zones.length; j++) {
+      const d = Math.max(Math.abs(zones[i].cx - zones[j].cx), Math.abs(zones[i].cz - zones[j].cz));
+      if (d < minD) minD = d;
+    }
+    if (minD < tz.TARN_MIN_SPACING) {
+      fail(`seed ${seed} 最近两座地带中心距 ${minD} < TARN_MIN_SPACING(${tz.TARN_MIN_SPACING}) —— 地带会成团`);
     }
   }
 
