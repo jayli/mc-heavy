@@ -887,3 +887,82 @@ test('转身限速接线: 直接 setIntent 仍瞬时朝向（通用写入口契�
   assertClose(zombies.get(id).yaw, Math.PI / 2, 1e-9,
     'setIntent 是通用写入口，朝向须瞬时（限速只接 AI 决策路径）');
 });
+
+// ==================== Task 6：记忆回收与诊断 ====================
+
+test('行为记忆 q: despawn 后回收，id 复用不带旧状态', () => {
+  // 夹具：整图封死 ⇒ 会进 hesitate/backoff，记忆里有非空 hist 与 failCount
+  const { world, set } = makeFlat();
+  for (let x = 0; x < 64; x++) for (let dy = 0; dy < 3; dy++) set(x, 1 + dy, 30);
+  const entities = new EntityManager();
+  entities.registerType('zombie', zombieDefinition);
+  const zombies = new ZombieService({ entities, world, rng: () => 0 });
+  const id = zombies.spawn([32.5, 1, 33.5], { source: 'test' });
+  const playerPosition = [32.5, 1, 20.5];
+  const dt = 1 / 60;
+  let t = 0;
+  while (t < 6) {
+    zombies.update(dt, { playerPosition, nowMs: t * 1000 });
+    entities.update(dt, { world });
+    t += dt;
+  }
+  // 前提：记忆里确实攒了状态（否则「回收」无从谈起，断言恒真）
+  const memBefore = zombies._navMemory.get(id);
+  assertTrue(!!(memBefore && memBefore.behavior), '前提：须已建立行为记忆');
+  assertTrue(memBefore.behavior.hist.length > 0, '前提：hist 须非空');
+  assertTrue(memBefore.behavior.phase !== 'chase' || memBefore.behavior.failCount > 0,
+    `前提：须已攒下非初始状态（phase=${memBefore.behavior.phase}, failCount=${memBefore.behavior.failCount}）`);
+
+  // 一击致死 → 回收路径①
+  zombies.damage(id, 999, 1000);
+  assertEqual(zombies.get(id), null, '前提：须已死亡回收');
+  assertFalse(zombies._navMemory.has(id), 'despawn 须回收导航记忆（含 behavior）');
+
+  // 同 slot 同 id 重新生成 ⇒ 不得带上一只的状态
+  const id2 = zombies.spawn([32.5, 1, 33.5], { source: 'test' });
+  assertEqual(id2, id, '前提：slot 低位优先 ⇒ id 复用');
+  const memAfter = zombies._navMemory.get(id2);
+  // 记忆是懒建的：spawn 后还没跑导航时可能尚未建立，那也是「不带旧状态」
+  if (memAfter && memAfter.behavior) {
+    assertEqual(memAfter.behavior.phase, 'chase', 'id 复用不得继承旧 phase');
+    assertEqual(memAfter.behavior.hist.length, 0, 'id 复用不得继承旧 hist');
+    assertEqual(memAfter.behavior.failCount, 0, 'id 复用不得继承旧 failCount');
+  }
+  // 再跑一拍，确认新建的记忆是干净的初始态
+  zombies.update(0.05, { playerPosition, nowMs: 7000 });
+  const fresh = zombies._navMemory.get(id2).behavior;
+  assertEqual(fresh.failCount, 0, '新建记忆的 failCount 须为 0');
+  assertTrue(fresh.hist.length <= 1, '新建记忆的 hist 须从零开始');
+});
+
+test('行为记忆 q2: dispose 回收全部行为记忆（回收路径③）', () => {
+  const { world } = makeFlat();
+  const entities = new EntityManager();
+  entities.registerType('zombie', zombieDefinition);
+  const zombies = new ZombieService({ entities, world });
+  for (let i = 0; i < 5; i++) zombies.spawn([10.5 + i * 2, 1, 10.5], { source: 'test' });
+  zombies.update(0.05, { playerPosition: [10.5, 1, 2.5], nowMs: 1000 });
+  assertTrue(zombies._navMemory.size > 0, '前提：须已建立记忆');
+  zombies.dispose();
+  assertEqual(zombies._navMemory.size, 0, 'dispose 须清空导航记忆');
+  assertEqual(zombies.count(), 0);
+});
+
+test('行为诊断: debugNavigator 暴露五个 phase 计数且随决策增长', () => {
+  const { world } = makeFlat();
+  const entities = new EntityManager();
+  entities.registerType('zombie', zombieDefinition);
+  const zombies = new ZombieService({ entities, world });
+  const id = zombies.spawn([32.5, 1, 40.5], { source: 'test' });
+  const before = zombies.debugNavigator().behaviorPhases;
+  assertEqual(typeof before, 'object', '须暴露 behaviorPhases');
+  for (const k of ['chase', 'hesitate', 'backoff', 'replan', 'wander']) {
+    assertEqual(before[k], 0, `初始 ${k} 计数须为 0`);
+  }
+  zombies.update(0.05, { playerPosition: [32.5, 1, 20.5], nowMs: 1000 });
+  const after = zombies.debugNavigator().behaviorPhases;
+  assertTrue(after.chase > 0, '开阔地追逐须累加 chase 计数');
+  // 只读快照：改返回值不得影响内部状态
+  after.chase = 9999;
+  assertEqual(zombies.debugNavigator().behaviorPhases.chase, 1, '须返回快照而非内部引用');
+});
