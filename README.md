@@ -130,3 +130,4 @@ mc-heavy/
 依赖方向单向：`voxel ← gen ← mesh ← render`（`npm run check:arch` 静态门守）。
 `src/workers/`、`src/gen/`、`src/mesh/`、`src/voxel/` 不得 import three（Worker 同构约束；
 唯一例外 `mesh/atlas-loader.js` 见门禁白名单）。`core/` 是装配层，依赖任何层合法。
+
