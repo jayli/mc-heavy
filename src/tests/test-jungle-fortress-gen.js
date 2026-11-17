@@ -360,10 +360,10 @@ test('丛林要塞整形：边缘与区内相邻高差 ≤ 1（无悬崖）', ()
   assertTrue(inJump <= 1, `整形区内相邻高差必须 ≤1（实际 ${inJump}）`);
 });
 
-test('丛林要塞整形：surfaceYAt 与 fillJungleFortressGround 写入的地表逐格一致', () => {
+test('丛林要塞整形：surfaceYAt 与 fillJungleFortressGround 写入的地表逐格一致', async () => {
   const seed = 12345;
   const a = computeJungleFortressAnchor(seed);
-  const reg = buildDefaultRegistry();
+  const reg = await buildDefaultRegistry();   // ⚠️ 它是 async（延迟 import 避循环依赖）
   // 取一个横跨占地边缘的 column（既有整形列也有未整形列）
   const cx = Math.floor((a.wx + JUNGLE_FORTRESS_HALF_X) / 16);
   const cz = Math.floor(a.wz / 16);
