@@ -23,6 +23,9 @@ import { BURNING_ARENA_VARIANTS } from './burning-arena-data.js';
 // 废弃堡垒的产物基名（纯数据、零 node 依赖）。
 // ⚠️ 与高台那批同一个理由：**不要 import `tools/ruined-citadel-fingerprint.mjs`**（依赖 `node:fs`）。
 import { RUINED_CITADEL_VARIANTS } from './ruined-citadel-data.js';
+// 丛林要塞的产物基名（纯数据、零 node 依赖）。
+// ⚠️ 同上：**不要 import `tools/jungle-fortress-fingerprint.mjs`**（依赖 `node:fs`）。
+import { JUNGLE_FORTRESS_VARIANTS } from './jungle-fortress-data.js';
 
 /** placement 类型 → JSON 文件名（mc-lite structureLoaders 映射） */
 const BASE_STRUCTURE_FILES = {
@@ -82,6 +85,12 @@ for (const base of BURNING_ARENA_VARIANTS) {
 // 废弃堡垒（Ruined Citadel Epic，v2.89）：从 `RUINED_CITADEL_VARIANTS` 派生（同上理由）。
 // 产物是 Cataclysm 模组 ruined_citadel 的 18 片 nbt 拼合 + 重映射（含甲板下空气格，spec DR-2）。
 for (const base of RUINED_CITADEL_VARIANTS) {
+  BASE_STRUCTURE_FILES[base] = `${base.replace(/[A-Z]/g, (m) => `_${m.toLowerCase()}`)}.json`;
+}
+// 丛林要塞（Jungle Fortress，v3.13）：从 `JUNGLE_FORTRESS_VARIANTS` 派生（同上理由）。
+// 产物是 Repurposed Structures 模组 fortress_jungle 的 17 片 jigsaw **离线拼装定版布局**
+// + 重映射（含房间内腔空气格，spec DR-2）。
+for (const base of JUNGLE_FORTRESS_VARIANTS) {
   BASE_STRUCTURE_FILES[base] = `${base.replace(/[A-Z]/g, (m) => `_${m.toLowerCase()}`)}.json`;
 }
 

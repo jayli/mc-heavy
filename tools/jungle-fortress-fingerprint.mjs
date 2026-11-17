@@ -30,6 +30,13 @@ export const JUNGLE_FORTRESS_META = path.join(ROOT, 'assets', 'structures', 'jun
 export const JUNGLE_FORTRESS_VARIANTS = Object.freeze(['jungleFortress']);
 
 /**
+ * 地板层在**归一化坐标**里的 y（= 产物 JSON 的 floorRow）。
+ * 结构 y=6（center_room 满铺实心层）− minY(−6) + 1 = 13。
+ * 与 `src/gen/structures/jungle-fortress-data.js` 的同名常量同源（产物是权威）。
+ */
+export const FLOOR_ROW = 13;
+
+/**
  * 17 片素材（顺序固定 —— 指纹按此顺序合并，调换顺序会改指纹）。
  * 逐字来自源仓库 `structure/fortresses/jungle/`，字母序。
  */
@@ -144,6 +151,49 @@ export const JUNGLE_FORTRESS_METRICS = Object.freeze({
       'terminator_4': 2,
       'turn_inside': 8,
       'turn_inside_chest': 2,
+    }),
+
+    // ---- 产物指标（Task 2 实测冻结，无藤蔓基线；Task 3 重标）----
+    width: 159,
+    height: 33,
+    depth: 155,
+    floorRow: FLOOR_ROW,
+    contentCells: 80031,
+    airCells: 16358,
+    paletteSize: 11,
+    skyAirDropped: 13445,
+    pillarRoots: 6498,
+    pillarCells: 6446,
+    pillarMaxLen: 10,
+
+    /** 逐目标方块格数 */
+    targetCounts: Object.freeze({
+      mossy_stone: 30503,
+      air: 16358,
+      cobblestone: 15085,
+      stone_bricks: 12092,
+      tuff_bricks: 3012,
+      vertical_pillar: 2682,
+      cobblestone_step: 156,
+      dirt: 60,
+      red_mushroom: 60,
+      chest: 18,
+      water: 5,
+    }),
+
+    /**
+     * 台阶朝向分布（**产物口径**，只算最终存活的 156 格）。
+     *
+     * ⚠️ spec §2.4 写的 24/54/69/12 合计 **159**，那是探针的「逐件累加」口径：
+     * 源里 159 个台阶格次有 **3 个被后写件覆盖**（makeColumnSetter 后写胜），
+     * 产物只剩 156 格。故以产物为准：:1 是 **51** 不是 54。
+     * （AGENTS.md：写结构类断言不得假设「每个结构都完整」。）
+     */
+    stepOrientationCounts: Object.freeze({
+      'cobblestone_step:0': 24,
+      'cobblestone_step:1': 51,
+      'cobblestone_step:2': 69,
+      'cobblestone_step:3': 12,
     }),
   }),
 });

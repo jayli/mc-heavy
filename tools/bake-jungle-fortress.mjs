@@ -26,13 +26,31 @@ import { NbtReader } from './nbt-reader.mjs';
 import {
   JUNGLE_FORTRESS_SOURCE_DIR, JUNGLE_FORTRESS_PIECES,
   JUNGLE_FORTRESS_ASSEMBLE, JUNGLE_FORTRESS_POOL_WEIGHTS, JUNGLE_FORTRESS_POOL_FALLBACK,
-  JUNGLE_FORTRESS_METRICS, jungleFortressInputFingerprint,
+  JUNGLE_FORTRESS_METRICS, jungleFortressInputFingerprint, FACING_TO_ORIENT,
+  JUNGLE_FORTRESS_JSON, JUNGLE_FORTRESS_META,
 } from './jungle-fortress-fingerprint.mjs';
 
-/** 确定性 PRNG（不用 Math.random —— 定版布局必须可复现） */
-function mulberry32(seed) {
+/**
+ * 拼装器 PRNG：LCG（与探针逐位一致，冻结值 193 件由它产出）。
+ * ⚠️ **不要换成 mulberry32**：换 PRNG 会换掉整个布局（实测 193→38 件）。
+ */
+function lcg(seed) {
   let s = seed >>> 0;
   return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; };
+}
+
+/**
+ * 变体分配 PRNG：mulberry32（与探针的石砖族抽签逐位一致）。
+ * ⚠️ **与拼装器的 LCG 是两条独立流**，不得共用一个函数 ——
+ * 实测共用 LCG 会让 mossy_stone 从 30503 变 30235（268 格静默漂移，总数不变）。
+ */
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
 }
 
 /** 读一片 nbt → {size, cells, jigs}（cells 含 props；jigs 保留 feature 池供 Task 3） */
@@ -119,7 +137,7 @@ const isConnector = (j) => j.target === 'connection';
  */
 export function assembleJungleFortress() {
   const { seed, size: maxDepth, boxRange, startPiece } = JUNGLE_FORTRESS_ASSEMBLE;
-  const rand = mulberry32(seed);
+  const rand = lcg(seed);
   const ri = (n) => Math.floor(rand() * n);
 
   const placed = [];
@@ -260,6 +278,246 @@ export function placedBBox(placed) {
   return { mnx, mxx, mny, mxy, mnz, mxz, w: mxx - mnx + 1, h: mxy - mny + 1, d: mxz - mnz + 1 };
 }
 
+// ---------------------------------------------------------------- 物化（空气分层 / 支撑柱 / 变体）
+
+/** 源方块名 → 目标方块名。空串 = 丢弃。未收录的名字一律 throw（不静默变 air） */
+export const BLOCK_MAP = Object.freeze({
+  stone_bricks: 'stone_bricks',       // 后续由 STONE_VARIANTS 四色分配
+  iron_bars: 'vertical_pillar',       // 0.3² 通高细柱，4 向对称 ⇒ orient 恒 0，无朝向 pass
+  stone_brick_stairs: 'cobblestone_step',
+  mossy_stone_brick_stairs: 'cobblestone_step',
+  coarse_dirt: 'dirt',
+  red_mushroom: 'red_mushroom',
+  brown_mushroom: 'red_mushroom',
+  chest: 'chest',
+  water: 'water',
+  cave_air: 'air',
+  air: 'air',
+  red_stained_glass: 'stone_bricks',  // pillar_processor 的占位符
+  spawner: '',                        // 本仓无刷怪笼系统
+  structure_void: '',
+});
+
+/**
+ * 石砖族四色分配（把上游 jungle_main.json 的生成期随机固化成确定性）。
+ * 上游概率：mossy 50% / cracked 25% / chiseled 5% / 纯石砖 20%。
+ * 本仓无 mossy_stone_bricks / cracked / chiseled 贴图 ⇒ 映到同色系既有方块。
+ * 加权均色 113,116,107（g−r=3 略偏绿）—— 对照纯石砖 122,122,122。
+ */
+export const STONE_VARIANTS = Object.freeze({
+  seed: 20261117,
+  bands: Object.freeze([
+    { p: 0.50, block: 'mossy_stone' },
+    { p: 0.25, block: 'cobblestone' },
+    { p: 0.05, block: 'tuff_bricks' },
+    { p: 0.20, block: 'stone_bricks' },
+  ]),
+});
+
+/** 地板层在**结构坐标**里的 y（center_room 的满铺实心层）。归一化后 = 13。 */
+export const STRUCT_FLOOR_Y = 6;
+
+const SOLID_SRC = (nm) => nm !== undefined && nm !== 'cave_air' && nm !== 'air'
+  && nm !== 'structure_void' && nm !== 'red_stained_glass';
+const isAirSrc = (nm) => nm === 'cave_air' || nm === 'air';
+
+/** 把已拼装的件展平成世界格 Map（含 jigsaw 的 final_state 落格） */
+export function materializeRaw(placed) {
+  const map = new Map();
+  for (const p of placed) {
+    const proto = PIECES.get(p.name);
+    for (const c of proto.cells) {
+      const w = rotPos(c.pos, p.rot, proto.size).map((v, k) => v + p.o[k]);
+      map.set(w.join(','), c.nm);
+    }
+    // vanilla：组装后 jigsaw 被 final_state 替换；structure_void = 不放置
+    for (const j of proto.jigs) {
+      const w = rotPos(j.pos, p.rot, proto.size).map((v, k) => v + p.o[k]);
+      const fin = j.final || 'cave_air';
+      if (fin === 'structure_void') continue;
+      map.set(w.join(','), fin);
+    }
+  }
+  return map;
+}
+
+/** 格 Map 的包围盒 */
+function cellBBox(map) {
+  let mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity, mnz = Infinity, mxz = -Infinity;
+  for (const k of map.keys()) {
+    const [x, y, z] = k.split(',').map(Number);
+    if (x < mnx) mnx = x; if (x > mxx) mxx = x;
+    if (y < mny) mny = y; if (y > mxy) mxy = y;
+    if (z < mnz) mnz = z; if (z > mxz) mxz = z;
+  }
+  return [mnx, mxx, mny, mxy, mnz, mxz];
+}
+
+/**
+ * 空气分层判据 D：**同 y 层水平洪泛**。
+ *
+ * 从「贴 bbox 边界的空气格」起洪泛，可通 = 空气格 或 nbt 未写格（都是天空），
+ * 遇实心停。洪泛到的 = 天空（丢弃）；没到的 = 房间内腔（写 air）。
+ *
+ * ⚠️ **只在同 y 层做，竖直不传播**：屋顶破洞（breakage feature）若让洪泛竖直传播，
+ * 会把整间房判成天空 ⇒ 房间被天然岩层填实。
+ *
+ * 四档对照实测（含 final_state，空气总 29,803）：
+ *   A 全写 29,803 / B 顶盖 10,599 / C 四向8格 5,681 / **D 16,358**。
+ */
+export function floodAir(map, bbox) {
+  const [mnx, mxx, , , mnz, mxz] = bbox;
+  const keep = new Set();
+  let sky = 0;
+  const byLayer = new Map();
+  for (const [k, nm] of map) {
+    if (!isAirSrc(nm)) continue;
+    const [x, y, z] = k.split(',').map(Number);
+    if (!byLayer.has(y)) byLayer.set(y, []);
+    byLayer.get(y).push([x, z, k]);
+  }
+  for (const [y, arr] of byLayer) {
+    const seen = new Set();
+    const stack = [];
+    for (const [x, z, k] of arr) {
+      if (x === mnx || x === mxx || z === mnz || z === mxz) { seen.add(k); stack.push([x, z]); }
+    }
+    while (stack.length) {
+      const [x, z] = stack.pop();
+      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nx = x + dx, nz = z + dz;
+        if (nx < mnx || nx > mxx || nz < mnz || nz > mxz) continue;
+        const kk = `${nx},${y},${nz}`;
+        if (seen.has(kk)) continue;
+        const v = map.get(kk);
+        if (v !== undefined && !isAirSrc(v)) continue;   // 实心 ⇒ 不通
+        seen.add(kk); stack.push([nx, nz]);
+      }
+    }
+    for (const [, , k] of arr) { if (seen.has(k)) sky++; else keep.add(k); }
+  }
+  return { keep, sky };
+}
+
+/**
+ * 支撑柱（pillar_processor 语义）：红玻璃 → 石砖，并向下补到地板层。
+ *
+ * ⚠️ **「遇保留空气即停」是载荷性的**：不停的话柱子会穿过房间地板插进室内
+ * （实测 seed=263 有 414 格穿房间）。加上这条后 0 格穿房间。
+ */
+function addPillars(out, raw, keep) {
+  let roots = 0, cells = 0, maxLen = 0, intoRoom = 0;
+  for (const [k, nm] of raw) {
+    if (nm !== 'red_stained_glass') continue;
+    const [x, y, z] = k.split(',').map(Number);
+    roots++;
+    let n = 0;
+    for (let yy = y - 1; yy >= STRUCT_FLOOR_Y; yy--) {
+      const kk = `${x},${yy},${z}`;
+      if (SOLID_SRC(raw.get(kk))) break;
+      if (keep.has(kk)) { break; }        // 不穿房间地板
+      if (!out.has(kk) || out.get(kk) === 'air') { out.set(kk, 'stone_bricks'); n++; }
+    }
+    cells += n;
+    if (n > maxLen) maxLen = n;
+  }
+  return { roots, cells, maxLen, intoRoom };
+}
+
+/**
+ * 石砖族四色分配（确定性）—— 作用在**已映射的目标名** `stone_bricks` 上。
+ *
+ * ⚠️ **阈值用累加后的字面量，不用浮点累加值**：0.5+0.25+0.05 在 IEEE754 下
+ * 是 0.80000000000000004441，与 0.8 不同；而 `r < t` 的边界格会因此归档不同。
+ * 实测两种写法差 **268 格**（mossy 30235 vs 30503）—— 总数相同、分布不同，
+ * 是静默的确定性漂移。故阈值先 toFixed(10) 归整再比。
+ */
+function assignStoneVariants(cells) {
+  const rand = mulberry32(STONE_VARIANTS.seed);
+  const cum = [];
+  let acc = 0;
+  for (const b of STONE_VARIANTS.bands) {
+    acc += b.p;
+    cum.push({ t: Number(acc.toFixed(10)), block: b.block });
+  }
+  for (const [, c] of cells) {
+    if (c.block !== 'stone_bricks') continue;
+    const r = rand();
+    let pick = cum[cum.length - 1].block;
+    for (const b of cum) { if (r < b.t) { pick = b.block; break; } }
+    c.block = pick;
+  }
+}
+
+/** facing 随件旋转后再查 FACING_TO_ORIENT */
+const FACING_VEC = Object.freeze({ west: [-1, 0], east: [1, 0], south: [0, 1], north: [0, -1] });
+function rotatedFacing(facing, rot) {
+  const d = FACING_VEC[facing];
+  if (!d) throw new Error(`台阶 facing 未知：${facing}`);
+  const [dx, dz] = [d[0], d[1]];
+  let r;
+  switch (rot) {
+    case 1: r = [-dz, dx]; break;
+    case 2: r = [-dx, -dz]; break;
+    case 3: r = [dz, -dx]; break;
+    default: r = [dx, dz];
+  }
+  return r[0] === -1 ? 'west' : r[0] === 1 ? 'east' : r[1] === 1 ? 'south' : 'north';
+}
+
+/**
+ * 物化：拼装结果 → 目标方块格 Map（含空气分层 / 支撑柱 / 变体 / 台阶朝向）。
+ * @returns {{cells:Map<string,{block:string,meta:number}>, stats:object}}
+ */
+export function materialize(placed) {
+  const raw = materializeRaw(placed);
+  const bbox = cellBBox(raw);
+  const { keep, sky } = floodAir(raw, bbox);
+
+  const out = new Map();
+  for (const [k, nm] of raw) {
+    if (isAirSrc(nm)) { if (keep.has(k)) out.set(k, 'air'); continue; }
+    if (nm === 'structure_void' || nm === 'spawner') continue;
+    out.set(k, nm === 'red_stained_glass' ? 'stone_bricks' : nm);
+  }
+  const pillarStats = addPillars(out, raw, keep);
+
+  // 顺序载荷性：① 映射到目标名 → ② 算台阶朝向（此时台阶还是 cobblestone_step）
+  // → ③ 石砖族四色分配（只改 block === 'stone_bricks'，不碰台阶）。
+  // 把③提到②之前会让台阶被改名后再统计 ⇒ 朝向直方图出现 mossy_stone:1 这类假档。
+  const cells = new Map();
+  for (const [k, block] of out) {
+    const mapped = BLOCK_MAP[block];
+    if (mapped === undefined) throw new Error(`未映射的源方块：${block}`);
+    cells.set(k, { block: mapped, meta: 0 });
+  }
+  // 台阶朝向：逐件逐格算（facing 要随件旋转）。
+  // ⚠️ **只统计「最终仍是台阶」的格**：makeColumnSetter 后写胜，实测 159 个台阶格次里
+  // 有 3 个被后写件盖掉 ⇒ 产物只剩 156。逐件累加会把那 3 个也计入，
+  // 且它们的 cur.block 已是别人的方块 ⇒ 直方图出现 stone_bricks:1 这类假档。
+  const stepOrient = new Map();
+  for (const p of placed) {
+    const proto = PIECES.get(p.name);
+    for (const c of proto.cells) {
+      if (!/_stairs$/.test(c.nm)) continue;
+      const w = rotPos(c.pos, p.rot, proto.size).map((v, k) => v + p.o[k]);
+      const k = w.join(',');
+      const cur = cells.get(k);
+      if (!cur || cur.block !== 'cobblestone_step') continue;   // 被后写胜盖掉 ⇒ 不计
+      const orient = FACING_TO_ORIENT[rotatedFacing(c.props.facing, p.rot)];
+      cur.meta = orient;
+      const hk = `${cur.block}:${orient}`;
+      stepOrient.set(hk, (stepOrient.get(hk) || 0) + 1);
+    }
+  }
+  assignStoneVariants(cells);
+
+  return {
+    cells, bbox, keep, sky,
+    stats: { ...pillarStats, stepOrient: Object.fromEntries([...stepOrient.entries()].sort()) },
+  };
+}
+
 // ---------------------------------------------------------------- 普查
 
 function census() {
@@ -307,6 +565,31 @@ function census() {
   }
   if (Math.max(bb.w, bb.d) > 161) failures.push(`水平跨度 ${Math.max(bb.w, bb.d)} > 161（boxRange 失效？）`);
 
+  // ---- 产物统计（Task 2 起）----
+  const m = materialize(placed);
+  const cnt = new Map();
+  for (const [, c] of m.cells) cnt.set(c.block, (cnt.get(c.block) || 0) + 1);
+  const [mnx, mxx, mny, mxy, mnz, mxz] = m.bbox;
+  console.log("\n=== 产物 ===");
+  console.log(`格数 ${m.cells.size}  air ${cnt.get("air")}  palette ${cnt.size}`);
+  console.log(`bbox ${mxx-mnx+1}×${mxy-mny+1}×${mxz-mnz+1}  x[${mnx},${mxx}] y[${mny},${mxy}] z[${mnz},${mxz}]`);
+  console.log(`天空空气丢弃 ${m.sky}  柱 ${m.stats.roots} 根 / ${m.stats.cells} 格（最长 ${m.stats.maxLen}）`);
+  console.log("palette:", JSON.stringify([...cnt.entries()].sort((a,b)=>b[1]-a[1])));
+  console.log("台阶朝向:", JSON.stringify(m.stats.stepOrient));
+  if (M.contentCells !== undefined) {
+    if (m.cells.size !== M.contentCells) failures.push(`产物格数 ${m.cells.size} ≠ ${M.contentCells}`);
+    if ((cnt.get("air")||0) !== M.airCells) failures.push(`air 格数 ${cnt.get("air")||0} ≠ ${M.airCells}`);
+    if (cnt.size !== M.paletteSize) failures.push(`palette ${cnt.size} ≠ ${M.paletteSize}`);
+    for (const [k,v] of Object.entries(M.targetCounts||{})) {
+      const got = cnt.get(k)||0;
+      if (got !== v) failures.push(`"${k}" ${got} ≠ ${v}`);
+    }
+    const ws = Object.fromEntries(Object.entries(M.stepOrientationCounts||{}).sort());
+    if (JSON.stringify(m.stats.stepOrient) !== JSON.stringify(ws)) {
+      failures.push(`台阶朝向 ${JSON.stringify(m.stats.stepOrient)} ≠ ${JSON.stringify(ws)}`);
+    }
+  }
+
   console.log(`\n指纹 ${jungleFortressInputFingerprint().input}`);
   if (failures.length) {
     console.log(`\n✗ ${failures.length} 项不符：`);
@@ -317,14 +600,168 @@ function census() {
   }
 }
 
+// ---------------------------------------------------------------- orient 现场校验
+
+/**
+ * 现场重测 orient → 台阶高侧方向（**真实 mesher**，不从任何定义推）。
+ * AGENTS.md：台阶朝向只能用真实 mesher 实测定。
+ */
+async function censusOrient() {
+  const { buildSectionMesh } = await import('../src/mesh/mesher.js');
+  const { createRegistry } = await import('../src/voxel/block-registry.js');
+  const { BLOCKS } = await import('../src/voxel/blocks-data.js');
+  const reg = createRegistry();
+  for (const d of BLOCKS) reg.register(d.name, d);
+  reg.freeze();
+
+  const VIEW = 18;
+  const atlasMeta = { tiles: new Proxy({}, { get: () => ({ u0: 0, v0: 0, u1: 1, v1: 1 }) }) };
+  const idx = (x, y, z) => x + z * VIEW + y * VIEW * VIEW;
+  const L = 8;
+  const short = (s) => s.split('(')[0];
+  const expected = Object.fromEntries(Object.entries(FACING_TO_ORIENT).map(([f, o]) => [o, f]));
+
+  // 本结构实际用到的台阶方块（从 BLOCK_MAP 收集，不手写清单）
+  const stepBlocks = [...new Set(Object.values(BLOCK_MAP).filter((b) => /_step$/.test(b)))].sort();
+  let bad = 0;
+  for (const name of stepBlocks) {
+    const id = reg.idOf(name);
+    if (id === undefined) { console.log(`✗ ${name} 未注册`); bad++; continue; }
+    console.log(`\n=== ${name} ===`);
+    const found = {};
+    for (let orient = 0; orient < 4; orient++) {
+      const data = new Uint16Array(VIEW ** 3);
+      const meta = new Uint8Array(VIEW ** 3);
+      const light = new Uint8Array(VIEW ** 3).fill(0xFF);
+      data[idx(L + 1, L + 1, L + 1)] = id;
+      meta[idx(L + 1, L + 1, L + 1)] = orient;
+      const g = buildSectionMesh({ data, light, meta }, reg, atlasMeta, 0, 0, 0).cutout;
+      let mnx = Infinity, mxx = -Infinity, mnz = Infinity, mxz = -Infinity;
+      for (let i = 0; i < g.positions.length; i += 3) {
+        const x = g.positions[i], y = g.positions[i + 1], z = g.positions[i + 2];
+        if (y <= L + 0.5 + 1e-6) continue;      // 只取上半部（高侧）
+        if (x < mnx) mnx = x; if (x > mxx) mxx = x;
+        if (z < mnz) mnz = z; if (z > mxz) mxz = z;
+      }
+      const spanX = mxx - mnx, spanZ = mxz - mnz;
+      let side;
+      if (spanX < 0.75 && spanZ > 0.75) side = ((mnx + mxx) / 2 - L) < 0.5 ? 'west(-X)' : 'east(+X)';
+      else if (spanZ < 0.75 && spanX > 0.75) side = ((mnz + mxz) / 2 - L) < 0.5 ? 'north(-Z)' : 'south(+Z)';
+      else side = `不确定(spanX=${spanX.toFixed(2)} spanZ=${spanZ.toFixed(2)})`;
+      found[orient] = side;
+      console.log(`  orient=${orient} → 高侧 ${side}`);
+    }
+    for (let o = 0; o < 4; o++) {
+      if (short(found[o]) !== expected[o]) {
+        console.log(`  ✗ orient=${o} 实测 ${found[o]}，FACING_TO_ORIENT 声明 ${expected[o]}`);
+        bad++;
+      }
+    }
+  }
+  if (bad) { console.log(`\n✗ ${bad} 项不符`); process.exitCode = 1; }
+  else console.log('\n✓ 全部与 FACING_TO_ORIENT 一致');
+}
+
+// ---------------------------------------------------------------- 烘焙
+
+/**
+ * 写产物：palette 索引压缩 + 逐格朝向（stride 5）。
+ *
+ * 归一化：x/z 相对结构中心（已是），y 从 minY 变 1。
+ * ⚠️ **第 5 项 direction 必填**：台阶靠它携带 orient（stride 4 会静默丢朝向）。
+ */
+function bake() {
+  const { placed } = assembleJungleFortress();
+  const M = JUNGLE_FORTRESS_METRICS.jungleFortress;
+  const m = materialize(placed);
+  const [mnx, mxx, mny, mxy, mnz, mxz] = m.bbox;
+
+  const palette = [];
+  const paletteIndex = new Map();
+  const blocks = [];
+  const counts = new Map();
+
+  // 按 y→z→x 排序保证 palette 首次出现顺序确定
+  const sorted = [...m.cells.entries()].sort((a, b) => {
+    const [ax, ay, az] = a[0].split(',').map(Number);
+    const [bx, by, bz] = b[0].split(',').map(Number);
+    return ay - by || az - bz || ax - bx;
+  });
+  for (const [k, c] of sorted) {
+    const [x, y, z] = k.split(',').map(Number);
+    if (c.block === '') continue;                 // 丢弃项
+    let tpi = paletteIndex.get(c.block);
+    if (tpi === undefined) { tpi = palette.length; palette.push(c.block); paletteIndex.set(c.block, tpi); }
+    blocks.push(x, y - mny + 1, z, tpi, c.meta);
+    counts.set(c.block, (counts.get(c.block) || 0) + 1);
+  }
+
+  const STRIDE = 5;
+  const n = blocks.length / STRIDE;
+  const W = mxx - mnx + 1, H = mxy - mny + 1, D = mxz - mnz + 1;
+  const floorRow = STRUCT_FLOOR_Y - mny + 1;
+
+  // ---- 产物契约断言（与 check:data 同口径，这里先自守一道）----
+  const fail = [];
+  if (n !== M.contentCells) fail.push(`格数 ${n} ≠ ${M.contentCells}`);
+  if (palette.length !== M.paletteSize) fail.push(`palette ${palette.length} ≠ ${M.paletteSize}`);
+  if (!palette.includes('air')) fail.push('palette 不含 air —— 房间会被天然岩层填满（DR-2）');
+  if ((counts.get('air') || 0) !== M.airCells) fail.push(`air 格数 ${counts.get('air') || 0} ≠ ${M.airCells}`);
+  if (W !== M.width || H !== M.height || D !== M.depth) fail.push(`bbox ${W}×${H}×${D} ≠ ${M.width}×${M.height}×${M.depth}`);
+  if (floorRow !== M.floorRow) fail.push(`floorRow ${floorRow} ≠ ${M.floorRow}`);
+  for (const [k, v] of Object.entries(M.targetCounts)) {
+    const got = counts.get(k) || 0;
+    if (got !== v) fail.push(`"${k}" 格数 ${got} ≠ 冻结 ${v}`);
+  }
+  const wantSteps = Object.fromEntries(Object.entries(M.stepOrientationCounts).sort());
+  if (JSON.stringify(m.stats.stepOrient) !== JSON.stringify(wantSteps)) {
+    fail.push(`台阶朝向 ${JSON.stringify(m.stats.stepOrient)} ≠ ${JSON.stringify(wantSteps)}`);
+  }
+  if (fail.length) {
+    console.log('✗ 产物契约不符，不写盘：');
+    for (const f of fail) console.log(`  - ${f}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  const json = { version: 1, stride: STRIDE, floorRow, palette, blocks };
+  const fp = jungleFortressInputFingerprint();
+  const meta = {
+    version: 1,
+    width: W, height: H, depth: D,
+    blocks: n,
+    floorRow,
+    airCells: counts.get('air') || 0,
+    paletteSize: palette.length,
+    pillarRoots: m.stats.roots,
+    pillarCells: m.stats.cells,
+    pillarMaxLen: m.stats.maxLen,
+    skyAirDropped: m.sky,
+    stepOrientationCounts: m.stats.stepOrient,
+    pieceCount: placed.length,
+    pieceHist: pieceHistogram(placed),
+    origin: { minY: mny },
+    fingerprints: fp,
+  };
+  fs.mkdirSync(path.dirname(JUNGLE_FORTRESS_JSON), { recursive: true });
+  fs.writeFileSync(JUNGLE_FORTRESS_JSON, JSON.stringify(json));
+  fs.writeFileSync(JUNGLE_FORTRESS_META, `${JSON.stringify(meta, null, 2)}\n`);
+  const mb = (fs.statSync(JUNGLE_FORTRESS_JSON).size / 1048576).toFixed(2);
+  console.log(`丛林要塞 JSON ${mb} MB，${n} 格（含 air ${meta.airCells}），${W}×${H}×${D}，`);
+  console.log(`palette ${palette.length} 种，floorRow ${floorRow}，柱 ${meta.pillarRoots} 根/${meta.pillarCells} 格（最长 ${meta.pillarMaxLen}）`);
+  console.log(`台阶朝向：${JSON.stringify(meta.stepOrientationCounts)}`);
+  console.log(`指纹 ${fp.input}`);
+}
+
 // ---------------------------------------------------------------- 入口
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const args = process.argv.slice(2);
   if (args.includes('--census')) {
     census();
+  } else if (args.includes('--census-orient')) {
+    await censusOrient();
   } else {
-    console.log('产物烘焙在 Task 2 实现；当前只支持 --census');
-    process.exitCode = 1;
+    bake();
   }
 }

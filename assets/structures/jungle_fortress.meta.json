@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "width": 159,
+  "height": 33,
+  "depth": 155,
+  "blocks": 80031,
+  "floorRow": 13,
+  "airCells": 16358,
+  "paletteSize": 11,
+  "pillarRoots": 6498,
+  "pillarCells": 6446,
+  "pillarMaxLen": 10,
+  "skyAirDropped": 13445,
+  "stepOrientationCounts": {
+    "cobblestone_step:0": 24,
+    "cobblestone_step:1": 51,
+    "cobblestone_step:2": 69,
+    "cobblestone_step:3": 12
+  },
+  "pieceCount": 193,
+  "pieceHist": {
+    "4_way_inside": 7,
+    "4_way_outside": 26,
+    "4_way_outside_large": 14,
+    "balcony": 5,
+    "center_room": 1,
+    "spawner": 15,
+    "stairs_inside": 3,
+    "stairs_inside_plants": 3,
+    "stairs_outside": 28,
+    "straight_inside": 22,
+    "straight_outside": 44,
+    "terminator_1": 5,
+    "terminator_2": 7,
+    "terminator_3": 1,
+    "terminator_4": 2,
+    "turn_inside": 8,
+    "turn_inside_chest": 2
+  },
+  "origin": {
+    "minY": -6
+  },
+  "fingerprints": {
+    "input": "267ff30d44e2a00c:644fb33f78e9b857",
+    "sourceSha256": "267ff30d44e2a00c464ebb32c16950bee43215a18f4b8b7d4eb29e93d1d90705",
+    "paramsSha256": "644fb33f78e9b857adcad8be8779fc67f91b8ae390a6ffa0f36f76c701a3afab"
+  }
+}
