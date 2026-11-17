@@ -131,12 +131,13 @@ test('DEFAULT_INVENTORY_COUNT = 1500（对齐 mc-lite GameConfig）', () => {
 
 // --- BlockRegistry.all()：遍历接口（§4.1 v1.16 补记，冷路径专用） ---
 
-test('registry.all(): 按注册顺序返回 154 条 {id,name}，与 idOf/nameOf 一致', () => {
+test('registry.all(): 按注册顺序返回 155 条 {id,name}，与 idOf/nameOf 一致', () => {
   const reg = makeRegistry();
   const all = reg.all();
-  assertEqual(all.length, 154);  // 126 + 巨树 8 + 金字塔 2 + 浅水高台 2（dark_grass/light_grass）− 已删 realistic_oak_leaves
+  assertEqual(all.length, 155);  // 126 + 巨树 8 + 金字塔 2 + 浅水高台 2（dark_grass/light_grass）− 已删 realistic_oak_leaves
                                   // + 中世纪船 2（planks_step_updown/half_block_updown）
                                   // + 废弃堡垒 15（9 整块/柱 + 4 台阶 + 2 半砖，2026-11-10）
+                                  // + 矮草丛 1（bush_grass，2026-11-17）
   assertEqual(all[0].name, 'air', '注册序首项 = air（ID 0）');
   assertEqual(all[0].id, 0);
   for (const e of all) {
@@ -178,7 +179,7 @@ test('HIDDEN_FROM_INVENTORY = chimney + 三个床方块 + 创造台两项（6 �
   }
 });
 
-test('buildItemNames: 144 项（154 - 4 功能性 - 6 可放置但不进背包）', () => {
+test('buildItemNames: 145 项（155 - 4 功能性 - 6 可放置但不进背包）', () => {
   const names = buildItemNames(makeRegistry());
   // ⚠️ M9：HIDDEN_FROM_INVENTORY 4 → 6（追加创造台两项）→ 物品集合 118 → 116。
   // 巨树景观：registry 126 → 134、HIDDEN 6 → 14（8 个 giant_* 全部不进背包）→ 仍是 116。
@@ -188,9 +189,11 @@ test('buildItemNames: 144 项（154 - 4 功能性 - 6 可放置但不进背包�
   //    （用户明确要求「新烘焙出来的方块要加到背包里」）。
   // ⚠️ 废弃堡垒（2026-11-10）：15 个新方块全部进背包 → 129 → 144
   //    （用户同一裁定：「新制作的方块加入背包里」）。
+  // ⚠️ 矮草丛（v3.12，2026-11-17）：bush_grass 进背包 → 144 → 145
+  //    （用户同一裁定：新方块默认进背包）。
   // 改数字须连算式注释一起改（否则注释与断言漂移）。
-  assertEqual(names.length, 144, '154 - 4 - 6 = 144');
-  assertEqual(new Set(names).size, 144, '无重复');
+  assertEqual(names.length, 145, '155 - 4 - 6 = 145');
+  assertEqual(new Set(names).size, 145, '无重复');
   for (const bad of NON_PLACEABLE_ITEMS) {
     assertFalse(names.includes(bad), `${bad} 不应在物品集合内`);
   }
@@ -215,7 +218,7 @@ test('buildItemNames: 前 HOTBAR_SIZE 项 = HOTBAR_ITEMS（快捷栏顺序冻结
 test('buildItemNames: 第 HOTBAR_SIZE+1 项起按注册顺序补全且不再重复前置项', () => {
   const names = buildItemNames(makeRegistry());
   const rest = names.slice(HOTBAR_SIZE);
-  assertEqual(rest.length, 135, '144 - 9');
+  assertEqual(rest.length, 136, '145 - 9');
   const reg = makeRegistry();
   const registered = reg.all().map((e) => e.name)
     .filter((n) => !NON_PLACEABLE_ITEMS.includes(n)
@@ -240,16 +243,17 @@ test('buildItemNames: 确定性——两次构建逐项一致（红线 2：无�
 
 // --- 创造模式无限背包填充 ---
 
-test('createCreativeInventory: 144 槽全部非空且 count=DEFAULT_INVENTORY_COUNT', () => {
+test('createCreativeInventory: 145 槽全部非空且 count=DEFAULT_INVENTORY_COUNT', () => {
   const inv = createCreativeInventory(makeRegistry());
   const filled = inv.slots.filter((s) => !s.isEmpty());
   // ⚠️ M9：物品集合 118 → 116（创造台两项移出）→ 填充槽数随之变，首个空槽 = 下标 116
   // ⚠️ 中世纪船 Epic：128 → 130（两个新方块进背包），首个空槽 = 下标 130
   // ⚠️ 废弃堡垒（2026-11-10）：129 → 144（15 个新方块进背包），首个空槽 = 下标 144
-  assertEqual(filled.length, 144, '物品集合全量入包');
+  // ⚠️ 矮草丛（v3.12，2026-11-17）：144 → 145（bush_grass），首个空槽 = 下标 145
+  assertEqual(filled.length, 145, '物品集合全量入包');
   for (const s of filled) assertEqual(s.count, DEFAULT_INVENTORY_COUNT, `${s.item} count=1500`);
-  // 剩余槽位保持空（未来生存 Epic 的掉落/拾取可用）；首个空槽 = 下标 144
-  assertTrue(inv.slots[144].isEmpty());
+  // 剩余槽位保持空（未来生存 Epic 的掉落/拾取可用）；首个空槽 = 下标 145
+  assertTrue(inv.slots[145].isEmpty());
   assertEqual(inv.slots.length, 1000);
   // 不入包的 6 项（= HIDDEN_FROM_INVENTORY 全量）
   for (const n of HIDDEN_FROM_INVENTORY) {

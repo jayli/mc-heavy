@@ -352,6 +352,7 @@ test('台地：草地上长 short_grass 与 azure_bluet，密度对齐 PLAINS', 
   const { cx, cz, platformRadius: flatR, plateauRadius: R } = lay;
 
   let grass = 0, sg = 0, az = 0, offGrass = 0;
+  let bg = 0;
   for (let dx = -R; dx <= R; dx++) for (let dz = -R; dz <= R; dz++) {
     const wx = cx + dx, wz = cz + dz;
     const p = tarnPlantAt(wx, wz, SEED, lay);
@@ -359,6 +360,7 @@ test('台地：草地上长 short_grass 与 azure_bluet，密度对齐 PLAINS', 
       grass++;
       if (p === 'short_grass') sg++;
       else if (p === 'azure_bluet') az++;
+      else if (p === 'bush_grass') bg++;
     } else if (p !== null) offGrass++;
   }
 
@@ -375,6 +377,13 @@ test('台地：草地上长 short_grass 与 azure_bluet，密度对齐 PLAINS', 
     `azure_bluet 占草地 ${(azRate * 100).toFixed(2)}%（PLAINS 目标 1.67%）`);
   // ③ **非草地上一株都不长**（冰/雪/黏土/缓坡）—— 用户说的是「草地上」
   assertEqual(offGrass, 0, '冰/雪/黏土/缓坡上不得长植被');
+  // ④ 矮草丛（v3.12）：与 short_grass **同等概率**（用户裁定「各 5%，草总量翻倍」）。
+  //    阈值除空档占比 (1−0.05)×(1−0.016667)=0.934167 ⇒ 逐格恰 5%。
+  //    实测 8806 草地格上 4.781%（抽样波动，故容差与 short_grass 同口径 ±1.5 点）。
+  assertTrue(bg > 100, `bush_grass 只有 ${bg} 株`);
+  const bgRate = bg / grass;
+  assertTrue(Math.abs(bgRate - 0.05) < 0.015,
+    `bush_grass 占草地 ${(bgRate * 100).toFixed(2)}%（目标 5%，与 short_grass 同等）`);
 });
 
 test('台地：草地的植被是确定性的（同 seed 两次调用逐点相同）', () => {

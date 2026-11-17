@@ -21,6 +21,28 @@ function treeRand(x, z, seed, salt) {
 export const SAPLING_LEAF_SALT = 1041;
 export const TALL_LEAF_SALT = 1042;
 
+/**
+ * 矮草丛（`bush_grass`）的盐（v3.12）。
+ *
+ * **程序化扫描确认空闲**：扫 `src/**` + `tools/**` + `tests/**` 的
+ * `seed + N` / `seed + CONST` / `*SALT = N`，1041/1042 已被上面两个占，1043 是第一个空档。
+ * ⚠️ grep 字面量抓不到 `seed + CONST` 形式的区间占用，必须程序化扫。
+ */
+export const BUSH_GRASS_SALT = 1043;
+
+/**
+ * PLAINS 分支的**空档占比**（既有档位全部没命中的概率）。
+ *
+ * ⚠️ **不是名义上的 0.87**：`randPlant >= 0.13` 名义占 87%，但树抽签
+ * （`seed + 1 < 0.005`）是**独立盐**、会与之重叠。
+ * **实测 40 万格（seed 12345）空档 = 86.611%**。
+ *
+ * 用途：把「在空档里抽 p」换算成「逐格概率恰 5%」—— 阈值取 `0.05 / 本值`。
+ * 直接写 0.05 会得到 4.33%（偏 −13%）；用名义 0.87 会得到 4.978%（偏 −0.4%）。
+ * 改任何既有档位后必须重测本值（`test-bush-grass-gen.js` 的密度用例会拓）。
+ */
+export const PLAINS_EMPTY_SHARE = 0.86611;
+
 /** 四种巨树叶（矮树 / 高树的混表共用同一批候选，只有权重不同） */
 const GIANT_LEAF_SPECIES = Object.freeze([
   'giant_oak_leaves', 'giant_spruce_leaves', 'giant_palm_leaves', 'giant_banyan_leaves',
@@ -217,6 +239,12 @@ export function rollVegetation(wx, wz, biome, seed) {
   if (randPlant < 0.11) return { plant: 'oxeye_daisy' };
   if (randPlant < 0.115) return { plant: 'red_mushroom' };
   if (randPlant < 0.13) return { plant: 'dead_bush' };
+  // 矮草丛（v3.12）—— **必须放在所有既有 return 之后**。
+  // 插进 0.05~0.10 之间会静默吃掉花的份额（用户没要求的玩法变更）。
+  // 阈值除空档占比，使逐格概率恰 5%（= short_grass 同概率，用户裁定「草总量翻倍」）。
+  if (seededRandom(wx, wz, seed + BUSH_GRASS_SALT) < 0.05 / PLAINS_EMPTY_SHARE) {
+    return { plant: 'bush_grass' };
+  }
   return {};
 }
 

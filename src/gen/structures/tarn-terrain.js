@@ -435,6 +435,13 @@ const SLOPE_SMOOTH_RADIUS = 8;
 const TARN_GRASS_SALT = 1032;
 /** `azure_bluet` 的盐。与上面同一段空闲带，取相邻的 1033。 */
 const TARN_FLOWER_SALT = 1033;
+/**
+ * 矮草丛（`bush_grass`）的盐（v3.12）。
+ * 程序化扫描：1034 虽空但紧邻已占段，1035/1036/1037/1038/1039/1040 已被
+ * shallow-water / medieval-ship / dragon 占，1041/1042 被树叶混表占 ⇒ 取 **1044**
+ * （与 PLAINS 侧的 `BUSH_GRASS_SALT = 1043` 相邻，两者不同盐 ⇒ 两处分布独立）。
+ */
+const BUSH_GRASS_TARN_SALT = 1044;
 
 /**
  * 地带草地上是否长一株单格植物（v1.93，用户 2026-10-29：「高台地图的草地上随机生成
@@ -462,6 +469,11 @@ export function tarnPlantAt(wx, wz, seed, layout) {
   if (tarnSurfaceBlock(wx, wz, seed, cx, cz, platformRadius, plateauRadius) !== 'grass') return null;
   if (seededRandom(wx, wz, seed + TARN_GRASS_SALT) < TARN_GRASS_CHANCE) return 'short_grass';
   if (seededRandom(wx, wz, seed + TARN_FLOWER_SALT) < TARN_FLOWER_CHANCE) return 'azure_bluet';
+  // 矮草丛（v3.12）—— 追加在既有两档之后，逐格概率恰 5%（与 short_grass 同等）。
+  // 两档是**独立盐** ⇒ 空档占比可解析：(1−p1)×(1−p2)，不需实测。
+  if (seededRandom(wx, wz, seed + BUSH_GRASS_TARN_SALT) < TARN_GRASS_CHANCE / TARN_EMPTY_SHARE) {
+    return 'bush_grass';
+  }
   return null;
 }
 
@@ -469,6 +481,17 @@ export function tarnPlantAt(wx, wz, seed, layout) {
 const TARN_GRASS_CHANCE = 0.05;
 /** `azure_bluet` 的逐格概率（= PLAINS 花档 0.05 × 花档内 1/3 ≈ 0.0167）。 */
 const TARN_FLOWER_CHANCE = 0.05 / 3;
+
+/**
+ * 地带草地的**空档占比**（既有两档都没命中）。
+ *
+ * 两档用**独立盐**（1032 / 1033）⇒ 概率相乘，**由既有常量派生而不写字面量**（红线 1）：
+ * `(1−0.05)×(1−0.016667) = 0.934167`。改任何一档本值自动跟上。
+ *
+ * 用途：把「在空档里抽」换算成「逐格概率恰 5%」—— 阈值 `0.05 / 本值 = 0.053524`。
+ * ⚠️ PLAINS 侧不能这么算（那里的树抽签与植物档重叠，必须用实测值）。
+ */
+const TARN_EMPTY_SHARE = (1 - TARN_GRASS_CHANCE) * (1 - TARN_FLOWER_CHANCE);
 
 /**
  * 地带内任意点的**地表高度**（纯函数，v1.92）。

@@ -118,9 +118,11 @@ test('浅水高台 GEN：缓坡草地上真的长出了植物（接线通了，�
   assertTrue((kinds.get('red_mushroom') || 0) > 0, `red_mushroom 必须出现（实得 ${kinds.get('red_mushroom') || 0}）`);
   const flowers = (kinds.get('allium') || 0) + (kinds.get('flower') || 0) + (kinds.get('azure_bluet') || 0);
   assertTrue(flowers > 20, `花只有 ${flowers} 株`);
-  // 物种必须**全在** PLAINS 允许集合内（防止接线到别的 biome 分支）
+  // 物种必须**全在** PLAINS 允许集合内（防止接线到别的 biome 分支）。
+  // ⚠️ 本图逐格转调 `rollVegetation(..., 'PLAINS', ...)`（shallow-water-terrain.js:518），
+  // 故 PLAINS 新增物种会自动出现在这里 —— 集合要跟着上游加（v3.12 加 bush_grass）。
   const allowed = new Set([
-    'short_grass', 'allium', 'flower', 'azure_bluet', 'oxeye_daisy', 'red_mushroom', 'dead_bush',
+    'short_grass', 'bush_grass', 'allium', 'flower', 'azure_bluet', 'oxeye_daisy', 'red_mushroom', 'dead_bush',
   ]);
   for (const name of kinds.keys()) {
     assertTrue(allowed.has(name), `缓坡上出现了 PLAINS 分支之外的方块 "${name}"`);
