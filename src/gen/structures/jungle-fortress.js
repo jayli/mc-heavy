@@ -18,16 +18,28 @@
 //
 // Worker 同构：本文件不得 import three、不得自建 Worker、**不得 fetch**。
 import { getBiome } from '../noise.js';
+import { jungleFortressSurfaceYAt } from './jungle-fortress-terrain.js';
 import { generateHeight } from '../terrain.js';
 import { SEA_Y } from '../../voxel/constants.js';
 import { getCityBoundsForSeed } from './city-layout.js';
-import { REGION_SIZE, CITY_TRANSITION_SIZE } from './region-config.js';
+import { REGION_SIZE, CITY_TRANSITION_SIZE, LANDMARK_OFFSET } from './region-config.js';
 import { isTarnZone, computeTarnZone, TARN_ZONE_RADIUS } from './tarn-zone.js';
 import { computeShallowTarnAnchor, SHALLOW_TARN_OUTER_RADIUS } from './shallow-water-tarns.js';
 import { computeArenaAnchor, ARENA_HALF_X, ARENA_HALF_Z } from './arena.js';
 import { computeBurningArenaAnchor, BURNING_ARENA_HALF } from './burning-arena.js';
 import { computeRuinedCitadelAnchor, RUINED_CITADEL_HALF_X, RUINED_CITADEL_HALF_Z } from './ruined-citadel.js';
-import { JUNGLE_FORTRESS_HALF_X, JUNGLE_FORTRESS_HALF_Z } from './jungle-fortress-data.js';
+import {
+  JUNGLE_FORTRESS_HALF_X, JUNGLE_FORTRESS_HALF_Z,
+  JUNGLE_FORTRESS_HEIGHT, JUNGLE_FORTRESS_FLOOR_ROW,
+} from './jungle-fortress-data.js';
+import { getRegionSeededCenter } from './region-center.js';
+import { LANDMARK_CLEARANCE } from './landmark-circles.js';
+import { computeSkyCandidates } from './sky-structures.js';
+import {
+  getPyramidCenterInRegion, getFrozenMountainCenterInRegion,
+  getPlainLandCenterInRegion, getIslandCenterInRegion,
+} from './landmarks.js';
+import { computeRegionLocalGiantPyramid, PYRAMID_HALF } from './giant-pyramid.js';
 
 export { JUNGLE_FORTRESS_HALF_X, JUNGLE_FORTRESS_HALF_Z } from './jungle-fortress-data.js';
 
@@ -267,4 +279,133 @@ export function inJungleFortressFootprint(wx, wz, anchors) {
         Math.abs(wz - a.wz) <= JUNGLE_FORTRESS_HALF_Z) return true;
   }
   return false;
+}
+/**
+ * 丛林要塞占地 AABB 是否与本 region 相交（layout 层裁剪用）。
+ *
+ * ⚠️ **不能写成「只在锚点所在 region 携带」**：161×155 占地可跨 2×2 个 region，
+ * 只让一个 region 携带会让邻区负责的那部分**缺半边**（围场 v2.7 踩过同形坑）。
+ * ⚠️ x/z 半宽不同（80/77），两个方向分开比。
+ */
+export function jungleFortressOverlapsRegion(anchor, regionX, regionZ) {
+  if (!anchor) return false;
+  const minX = anchor.wx - JUNGLE_FORTRESS_HALF_X, maxX = anchor.wx + JUNGLE_FORTRESS_HALF_X;
+  const minZ = anchor.wz - JUNGLE_FORTRESS_HALF_Z, maxZ = anchor.wz + JUNGLE_FORTRESS_HALF_Z;
+  const rMinX = regionX * REGION_SIZE, rMaxX = rMinX + REGION_SIZE - 1;
+  const rMinZ = regionZ * REGION_SIZE, rMaxZ = rMinZ + REGION_SIZE - 1;
+  return minX <= rMaxX && maxX >= rMinX && minZ <= rMaxZ && maxZ >= rMinZ;
+}
+
+/**
+ * 本 region 的雪原是否被丛林要塞占地让路（与 `snowLandSuppressedByRuinedCitadel` 同构）。
+ *
+ * 粒度是「整座雪原压掉」而不是「只擦占地内几格」：一座被占地压掉的雪原应在
+ * 地图（minimap-regions）与 Boss 定位（boss-map）上一起消失。
+ */
+export function snowLandSuppressedByJungleFortress(regionX, regionZ, seed) {
+  const a = computeJungleFortressAnchor(seed);
+  if (!a) return false;
+  const raw = getRegionSeededCenter(regionX, regionZ, seed);
+  const snowCx = raw.centerX + LANDMARK_OFFSET.SNOW_LAND_X;
+  const snowCz = raw.centerZ + LANDMARK_OFFSET.SNOW_LAND_Z;
+  return Math.abs(a.wx - snowCx) <= JUNGLE_FORTRESS_HALF_X + LANDMARK_CLEARANCE.snowLand &&
+         Math.abs(a.wz - snowCz) <= JUNGLE_FORTRESS_HALF_Z + LANDMARK_CLEARANCE.snowLand;
+}
+
+/**
+ * 本 region 的**哪些地标**被丛林要塞压掉（与 `ruinedCitadelSuppressedLandmarks` 同构）。
+ *
+ * ⚠️ **廉价距离门（性能关键）**：本函数对**每个** region 都会被 `computeRegionLayout`
+ * 调用，而内部要调 `computeRegionLocalGiantPyramid`（扫全区沙漠）与 `computeSkyCandidates`
+ * 两个重函数。大竞技场 v2.85 实测不加门会让 layout 从 7.81→8.57ms/region，
+ * 而 layout 在 GEN 计时路径上被 9 个邻域各调一次。
+ * ⚠️ x/z 半宽不同 ⇒ gapX/gapZ 分别用 HX/HZ 算。
+ *
+ * ⚠️ **必须用「圆↔矩形相交」而不是「地标中心在占地内」**：地标是圆、占地是矩形。
+ * 大竞技场 seed 12345 的 plainLand 中心在占地外 1 格但半径 15 伸进占地 ⇒
+ * 中心判据漏压，实测 16 格植被穿模。
+ */
+export function jungleFortressSuppressedLandmarks(anchor, regionX, regionZ, seed) {
+  const out = {
+    pyramid: false, frozenMountain: false, plainLand: false, island: false,
+    snowLand: false, giantPyramid: false, skyIslands: false,
+  };
+  if (!anchor) return out;
+  const HX = JUNGLE_FORTRESS_HALF_X, HZ = JUNGLE_FORTRESS_HALF_Z;
+
+  const MAX_REACH = Math.max(...Object.values(LANDMARK_CLEARANCE)) + PYRAMID_HALF;
+  const regionMinX = regionX * REGION_SIZE, regionMaxX = regionMinX + REGION_SIZE - 1;
+  const regionMinZ = regionZ * REGION_SIZE, regionMaxZ = regionMinZ + REGION_SIZE - 1;
+  const gapX = Math.max(0, (anchor.wx - HX) - regionMaxX, regionMinX - (anchor.wx + HX));
+  const gapZ = Math.max(0, (anchor.wz - HZ) - regionMaxZ, regionMinZ - (anchor.wz + HZ));
+  if (Math.hypot(gapX, gapZ) > MAX_REACH) return out;
+
+  const hits = (cx, cz, r) => {
+    const dx = Math.max(0, Math.abs(cx - anchor.wx) - HX);
+    const dz = Math.max(0, Math.abs(cz - anchor.wz) - HZ);
+    return Math.hypot(dx, dz) <= r;
+  };
+
+  const py = getPyramidCenterInRegion(regionX, regionZ, seed);
+  if (py && hits(py.cx, py.cz, LANDMARK_CLEARANCE.pyramid)) out.pyramid = true;
+  const fm = getFrozenMountainCenterInRegion(regionX, regionZ, seed);
+  if (fm && hits(fm.cx, fm.cz, LANDMARK_CLEARANCE.frozenMountain)) out.frozenMountain = true;
+  const plain = getPlainLandCenterInRegion(regionX, regionZ, seed);
+  if (plain && hits(plain.cx, plain.cz, LANDMARK_CLEARANCE.plainLand)) out.plainLand = true;
+  const isl = getIslandCenterInRegion(regionX, regionZ, seed);
+  if (isl && hits(isl.islandCx, isl.islandCz, LANDMARK_CLEARANCE.island)) out.island = true;
+  const raw = getRegionSeededCenter(regionX, regionZ, seed);
+  if (hits(raw.centerX + LANDMARK_OFFSET.SNOW_LAND_X, raw.centerZ + LANDMARK_OFFSET.SNOW_LAND_Z,
+    LANDMARK_CLEARANCE.snowLand)) {
+    out.snowLand = true;
+  }
+  const gp = computeRegionLocalGiantPyramid(regionX, regionZ, seed);
+  if (gp && Math.abs(gp.wx - anchor.wx) <= PYRAMID_HALF + HX &&
+      Math.abs(gp.wz - anchor.wz) <= PYRAMID_HALF + HZ) out.giantPyramid = true;
+  // 空岛：本结构塔顶 = floorY + (HEIGHT − FLOOR_ROW) = floorY + 20（世界 y≈19~20），
+  // 空岛底 y≥40 ⇒ 当前恒不相撞。⚠️ 仍保留判据：将来加高塔楼时它会自动生效。
+  const topY = anchor.floorY + (JUNGLE_FORTRESS_HEIGHT - JUNGLE_FORTRESS_FLOOR_ROW);
+  const sky = computeSkyCandidates(regionX, regionZ, seed).skyIslands;
+  for (let i = 0; i < sky.length; i += 5) {
+    const ox = sky[i] * 16 + 8, oz = sky[i + 1] * 16 + 8;
+    const bottomY = sky[i + 2], radius = sky[i + 3];
+    if (Math.abs(ox - anchor.wx) > radius + HX) continue;
+    if (Math.abs(oz - anchor.wz) > radius + HZ) continue;
+    if (bottomY <= topY) { out.skyIslands = true; break; }
+  }
+  return out;
+}
+
+/**
+ * 瞬移落点与占地**东缘**的水平净距（格）。
+ *
+ * 结构在城西 ⇒ 落点在其**东**缘（靠 City 那一侧），玩家面朝西就能看到整个要塞。
+ * 取 6 的理由同废弃堡垒/大竞技场：离缘太近会被结构挡视线，太远失去「就在门口」的方位感。
+ */
+export const JUNGLE_FORTRESS_TELEPORT_GAP = 6;
+
+/**
+ * 瞬移到丛林要塞的落点（设置面板「丛林」按钮）。
+ *
+ * 落点 = 占地**东缘**再向东 `JUNGLE_FORTRESS_TELEPORT_GAP` 格、z 取锚点中线。
+ *
+ * ⚠️ **y 必须用「整形后」地表 + 1，不能用自然高度**：落点在缓坡带内（e=6），
+ * 8/8 seed 都被整形改写 —— 实测自然 h 4~5 而整形后 1~2，用自然值会让玩家**悬空 2~3 格**。
+ * 判据转调 `jungleFortressSurfaceYAt`（整形唯一权威，红线 1），不在此复算插值。
+ *
+ * ⚠️ **唯一权威**：`Game.teleportToJungleFortress` 与 E2E 都消费本函数，不得各自复算。
+ *
+ * @param {number} seed
+ * @returns {{x:number, y:number, z:number}|null} 该 seed 没有要塞时返回 null
+ */
+export function jungleFortressTeleportPoint(seed) {
+  const a = computeJungleFortressAnchor(seed);
+  if (!a) return null;
+  const x = a.wx + JUNGLE_FORTRESS_HALF_X + JUNGLE_FORTRESS_TELEPORT_GAP;
+  const z = a.wz;
+  // 落点在缓坡带内 ⇒ 恒有整形值；?? 兜底只为「将来改 GAP 超出带宽」时不崩
+  const surface = jungleFortressSurfaceYAt(x, z, seed, a) ?? generateHeight(x, z, seed);
+  const y = surface + 1;
+  if (![x, y, z].every((v) => Number.isFinite(v))) return null;
+  return { x, y, z };
 }

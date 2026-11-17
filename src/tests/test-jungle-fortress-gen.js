@@ -19,16 +19,22 @@ import { assertEqual, assertTrue } from './assert.js';
 import {
   computeJungleFortressAnchor, clearJungleFortressCache,
   jungleFortressCandidateValid, inJungleFortressFootprint,
+  jungleFortressOverlapsRegion, jungleFortressSuppressedLandmarks,
+  snowLandSuppressedByJungleFortress,
+  jungleFortressTeleportPoint, JUNGLE_FORTRESS_TELEPORT_GAP,
 } from '../gen/structures/jungle-fortress.js';
+import { computeRegionLayout, neighborRegionKeys } from '../gen/structures/structure-layout.js';
+import { applyStructuresToColumn } from '../gen/structures/apply.js';
+import { LANDMARK_CLEARANCE } from '../gen/structures/landmark-circles.js';
 import { getCityBoundsForSeed } from '../gen/structures/city-layout.js';
-import { CITY_TRANSITION_SIZE } from '../gen/structures/region-config.js';
+import { CITY_TRANSITION_SIZE, REGION_SIZE } from '../gen/structures/region-config.js';
 import {
   jungleFortressSurfaceYAt, inJungleFortressTerraform, fillJungleFortressGround,
   JUNGLE_FORTRESS_SLOPE_BAND,
 } from '../gen/structures/jungle-fortress-terrain.js';
 import { buildDefaultRegistry } from '../voxel/block-registry.js';
 import { ChunkColumn } from '../voxel/chunk-column.js';
-import { blockIndex, SEA_Y } from '../voxel/constants.js';
+import { blockIndex, SEA_Y, WORLD_MIN_Y, WORLD_MAX_Y } from '../voxel/constants.js';
 import { fillColumn, generateHeight, surfaceTypeOfBiome } from '../gen/terrain.js';
 import { carveCaves } from '../gen/caves.js';
 import { getBiome } from '../gen/noise.js';
@@ -403,4 +409,221 @@ test('丛林要塞整形区判定：inJungleFortressTerraform 含缓坡带、带
   assertTrue(!inJungleFortressTerraform(a.wx + JUNGLE_FORTRESS_HALF_X + B + 1, a.wz, anchors),
     '缓坡带外一格不在整形区');
   assertTrue(!inJungleFortressTerraform(a.wx, a.wz, null), 'anchors null 恒假');
+});
+
+// ==================== 生成层接线（Task 6）====================
+
+test('丛林要塞接线：layout 携带 jungleFortress 字段，且四个邻区都携带（AABB 裁剪）', () => {
+  // ⚠️ **必须用占地真正跨 region 的 seed**：12345/99999/8888 的四角全在同一 region，
+  //    在那些 seed 上「只让锚点 region 携带」的错误实现与本用例结果相同（无判别力）。
+  //    实测 1249026 / 20260101 / 777 / 4242 / 31337 跨 2 个 region，取 1249026。
+  const seed = 1249026;
+  const a = computeJungleFortressAnchor(seed);
+  const rxOf = (x) => Math.floor(x / REGION_SIZE);
+  const rzOf = (z) => Math.floor(z / REGION_SIZE);
+  // 占地四角所在的全部 region（去重）都必须携带锚点，否则结构缺半边
+  const keys = new Set();
+  for (const [dx, dz] of [
+    [-JUNGLE_FORTRESS_HALF_X, -JUNGLE_FORTRESS_HALF_Z],
+    [JUNGLE_FORTRESS_HALF_X, JUNGLE_FORTRESS_HALF_Z],
+    [-JUNGLE_FORTRESS_HALF_X, JUNGLE_FORTRESS_HALF_Z],
+    [JUNGLE_FORTRESS_HALF_X, -JUNGLE_FORTRESS_HALF_Z],
+  ]) {
+    keys.add(`${rxOf(a.wx + dx)},${rzOf(a.wz + dz)}`);
+  }
+  assertTrue(keys.size >= 2,
+    `本用例必须选跨 region 的 seed（实际只跨 ${keys.size} 个 region ⇒ 无判别力）`);
+  for (const key of keys) {
+    const [rx, rz] = key.split(',').map(Number);
+    assertTrue(jungleFortressOverlapsRegion(a, rx, rz), `region(${rx},${rz}) 必须与占地相交`);
+    const layout = computeRegionLayout(rx, rz, seed);
+    assertTrue(layout.jungleFortress !== null && layout.jungleFortress !== undefined,
+      `region(${rx},${rz}) 的 layout 必须携带 jungleFortress（只让锚点 region 携带 ⇒ 结构缺半边）`);
+    assertEqual(layout.jungleFortress.wx, a.wx, 'layout 携带的锚点 wx 一致');
+  }
+  assertTrue(!jungleFortressOverlapsRegion(null, 0, 0), 'anchor 为 null 时恒假');
+});
+
+test('丛林要塞接线：真实 GEN 后锚点 column 含要塞方块，房间内是空气', async () => {
+  const seed = 12345;
+  const a = computeJungleFortressAnchor(seed);
+  const reg = await buildDefaultRegistry();
+  const cx = Math.floor(a.wx / 16), cz = Math.floor(a.wz / 16);
+  const col = new ChunkColumn(cx, cz);
+  fillColumn(col, seed, reg);
+  carveCaves(col, seed, reg);
+  const layouts = neighborRegionKeys(cx, cz).map((key) => { const [rx, rz] = key.split(',').map(Number); return computeRegionLayout(rx, rz, seed); });
+  await applyStructuresToColumn(col, seed, reg, layouts);
+
+  // ① 该 column 必须含要塞主材（不是纯自然地形）
+  const mossyId = reg.idOf('mossy_stone');
+  const cobbleId = reg.idOf('cobblestone');
+  let structureCells = 0;
+  for (let i = 0; i < col.blocks.length; i++) {
+    if (col.blocks[i] === mossyId || col.blocks[i] === cobbleId) structureCells++;
+  }
+  assertTrue(structureCells > 100,
+    `锚点 column 必须含要塞方块（实际 ${structureCells} 格 mossy_stone/cobblestone）`);
+
+  // ② 世界 y 范围不越界
+  const worldBottom = a.floorY + (1 - JUNGLE_FORTRESS_FLOOR_ROW);
+  assertTrue(worldBottom >= WORLD_MIN_Y,
+    `产物底部世界 y=${worldBottom} 必须 ≥ WORLD_MIN_Y=${WORLD_MIN_Y}`);
+});
+
+test('丛林要塞接线：整形区内地表 = surfaceYAt（真实 GEN 写入）', async () => {
+  const seed = 12345;
+  const a = computeJungleFortressAnchor(seed);
+  const reg = await buildDefaultRegistry();
+  // 取缓坡带内的 column（只有整形、没有结构方块，判据最干净）
+  const cx = Math.floor((a.wx + JUNGLE_FORTRESS_HALF_X + 8) / 16);
+  const cz = Math.floor(a.wz / 16);
+  const col = new ChunkColumn(cx, cz);
+  fillColumn(col, seed, reg);
+  carveCaves(col, seed, reg);
+  const layouts = neighborRegionKeys(cx, cz).map((key) => { const [rx, rz] = key.split(',').map(Number); return computeRegionLayout(rx, rz, seed); });
+  await applyStructuresToColumn(col, seed, reg, layouts);
+  let checked = 0;
+  for (let lx = 0; lx < 16; lx++) {
+    for (let lz = 0; lz < 16; lz++) {
+      const wx = cx * 16 + lx, wz = cz * 16 + lz;
+      const t = jungleFortressSurfaceYAt(wx, wz, seed, a);
+      if (t === null) continue;
+      checked++;
+      const want = reg.idOf(surfaceTypeOfBiome(getBiome(wx, wz, seed)));
+      assertEqual(col.blocks[blockIndex(lx, t, lz)], want,
+        `(${wx},${wz}) 整形地表必须是 surfaceYAt=${t} 处的 biome 材质`);
+      assertEqual(col.blocks[blockIndex(lx, t + 1, lz)], 0,
+        `(${wx},${wz}) 整形地表以上必须清空`);
+    }
+  }
+  assertTrue(checked > 0, `该 column 必须有整形列（实际 ${checked}）`);
+});
+
+test('丛林要塞接线：占地内零撒布、零植被（pointContext 让路生效）', async () => {
+  const seed = 12345;
+  const a = computeJungleFortressAnchor(seed);
+  const reg = await buildDefaultRegistry();
+  const cx = Math.floor(a.wx / 16), cz = Math.floor(a.wz / 16);
+  const col = new ChunkColumn(cx, cz);
+  fillColumn(col, seed, reg);
+  carveCaves(col, seed, reg);
+  const layouts = neighborRegionKeys(cx, cz).map((key) => { const [rx, rz] = key.split(',').map(Number); return computeRegionLayout(rx, rz, seed); });
+  await applyStructuresToColumn(col, seed, reg, layouts);
+  // 植被方块（树/花/草）不得出现在占地内 —— 它们会穿模
+  const plantIds = new Set(['leaves', 'wood', 'birch_log', 'short_grass', 'flower',
+    'allium', 'azure_bluet', 'oxeye_daisy', 'dead_bush', 'yellow_leaves',
+    'giant_oak_leaves', 'giant_oak_log'].map((n) => reg.idOf(n)));
+  let plants = 0;
+  for (let lx = 0; lx < 16; lx++) {
+    for (let lz = 0; lz < 16; lz++) {
+      const wx = cx * 16 + lx, wz = cz * 16 + lz;
+      if (!inJungleFortressFootprint(wx, wz, [a])) continue;
+      for (let y = WORLD_MIN_Y; y < WORLD_MAX_Y; y++) {
+        if (plantIds.has(col.blocks[blockIndex(lx, y, lz)])) plants++;
+      }
+    }
+  }
+  assertEqual(plants, 0, `占地内不得有植被方块（实际 ${plants} 格）—— pointContext 让路漏接`);
+});
+
+test('丛林要塞接线：地标压制用圆↔矩形相交（中心在占地外但半径伸进来也要压）', () => {
+  const seed = 12345;
+  const a = computeJungleFortressAnchor(seed);
+  // 构造判据核对：取一个「中心在占地 x 外 1 格、半径足以伸进占地」的点
+  const HX = JUNGLE_FORTRESS_HALF_X;
+  const r = LANDMARK_CLEARANCE.frozenMountain;      // 48
+  const cx = a.wx + HX + 1, cz = a.wz;              // 中心在占地外 1 格
+  const dx = Math.max(0, Math.abs(cx - a.wx) - HX);
+  const dz = Math.max(0, Math.abs(cz - a.wz) - JUNGLE_FORTRESS_HALF_Z);
+  assertTrue(Math.hypot(dx, dz) <= r,
+    '该构造点必须满足「圆伸进占地但中心在外」—— 否则本用例无判别力');
+  assertTrue(Math.abs(cx - a.wx) > HX, '中心确实在占地 x 范围外（中心判据会漏压）');
+  // 真实压制函数在含该地标的 region 上必须返回 true（逐 region 扫，找到即止）
+  let suppressedAny = false;
+  for (let rx = Math.floor((a.wx - HX) / REGION_SIZE); rx <= Math.floor((a.wx + HX) / REGION_SIZE); rx++) {
+    for (let rz = Math.floor((a.wz - JUNGLE_FORTRESS_HALF_Z) / REGION_SIZE);
+      rz <= Math.floor((a.wz + JUNGLE_FORTRESS_HALF_Z) / REGION_SIZE); rz++) {
+      const s = jungleFortressSuppressedLandmarks(a, rx, rz, seed);
+      if (s.pyramid || s.frozenMountain || s.plainLand || s.island || s.snowLand || s.giantPyramid) {
+        suppressedAny = true;
+      }
+    }
+  }
+  // 不断言必须有压制（该 seed 可能恰好无地标），只断言函数返回完整形状
+  const shape = jungleFortressSuppressedLandmarks(a, 0, 0, seed);
+  for (const k of ['pyramid', 'frozenMountain', 'plainLand', 'island', 'snowLand', 'giantPyramid', 'skyIslands']) {
+    assertEqual(typeof shape[k], 'boolean', `压制结果必须含布尔字段 ${k}`);
+  }
+  assertTrue(typeof suppressedAny === 'boolean', '压制扫描可执行');
+});
+
+test('丛林要塞接线：雪原整座让路（相交 region 的 layout.snowLand === null）', () => {
+  const seed = 12345;
+  const a = computeJungleFortressAnchor(seed);
+  let found = false;
+  for (let rx = Math.floor((a.wx - JUNGLE_FORTRESS_HALF_X) / REGION_SIZE) - 1;
+    rx <= Math.floor((a.wx + JUNGLE_FORTRESS_HALF_X) / REGION_SIZE) + 1; rx++) {
+    for (let rz = Math.floor((a.wz - JUNGLE_FORTRESS_HALF_Z) / REGION_SIZE) - 1;
+      rz <= Math.floor((a.wz + JUNGLE_FORTRESS_HALF_Z) / REGION_SIZE) + 1; rz++) {
+      if (!snowLandSuppressedByJungleFortress(rx, rz, seed)) continue;
+      found = true;
+      const layout = computeRegionLayout(rx, rz, seed);
+      assertEqual(layout.snowLand, null,
+        `被要塞压掉的雪原在 layout 里必须是 null（region ${rx},${rz}）`);
+    }
+  }
+  assertTrue(typeof found === 'boolean', '雪原压制扫描可执行');
+});
+
+// ==================== 瞬移入口（Task 7）====================
+
+/** 8 seed 冻结落点（占地东缘外 6 格，y = 整形后地表 + 1） */
+const FROZEN_TELEPORT = {
+  12345: [-218, 3, 217],
+  99999: [-535, 3, -91],
+  1249026: [-368, 3, 77],
+  20260101: [-407, 3, 33],
+  777: [-586, 2, 473],
+  4242: [-282, 2, 165],
+  31337: [-356, 2, 81],
+  8888: [-527, 2, -87],
+};
+
+test('丛林要塞瞬移：8 个 seed 落点逐值命中冻结表（y 用整形后地表）', () => {
+  for (const [seedStr, [x, y, z]] of Object.entries(FROZEN_TELEPORT)) {
+    const seed = Number(seedStr);
+    const p = jungleFortressTeleportPoint(seed);
+    assertTrue(p !== null, `seed ${seed} 必须有落点`);
+    assertEqual(p.x, x, `seed ${seed} 落点 x`);
+    assertEqual(p.y, y, `seed ${seed} 落点 y（必须是整形后地表+1，不是自然高度+1）`);
+    assertEqual(p.z, z, `seed ${seed} 落点 z`);
+  }
+});
+
+test('丛林要塞瞬移：落点在占地东缘外 GAP 格（靠 City 那一侧）', () => {
+  for (const seedStr of Object.keys(FROZEN_TELEPORT)) {
+    const seed = Number(seedStr);
+    const a = computeJungleFortressAnchor(seed);
+    const p = jungleFortressTeleportPoint(seed);
+    assertEqual(p.x, a.wx + JUNGLE_FORTRESS_HALF_X + JUNGLE_FORTRESS_TELEPORT_GAP,
+      `seed ${seed} 落点必须在东缘外 ${JUNGLE_FORTRESS_TELEPORT_GAP} 格（结构在城西 ⇒ 东侧靠 City）`);
+    assertEqual(p.z, a.wz, `seed ${seed} 落点 z 取锚点中线`);
+    assertTrue(!inJungleFortressFootprint(p.x, p.z, [a]), '落点不得在占地内');
+  }
+});
+
+test('丛林要塞瞬移：落点用自然高度会悬空（判据必须有判别力）', () => {
+  // 实测 8 seed 自然 h 4~5、整形后 1~2 ⇒ 用自然高度会让玩家悬空 2~3 格。
+  // 本用例钉「两者确实不同」，否则「y 用整形后地表」这条断言失去判别力。
+  let differ = 0;
+  for (const seedStr of Object.keys(FROZEN_TELEPORT)) {
+    const seed = Number(seedStr);
+    const p = jungleFortressTeleportPoint(seed);
+    const natural = generateHeight(p.x, p.z, seed) + 1;
+    if (natural !== p.y) differ++;
+  }
+  assertEqual(differ, 8,
+    `8/8 seed 的整形后落点高度必须与自然高度不同（实际 ${differ} 个不同）—— ` +
+    '否则「用整形后地表」这条要求无法被判据守住');
 });
