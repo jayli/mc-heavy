@@ -3698,7 +3698,190 @@ await checkCloudlandTarnZone(); // 高台地带：35 产物/映射表/通道/台
 await checkGiantPyramid();   // 巨型金字塔：烘焙产物/映射表/通道契约（⚠️ 漏了本行则门禁永不执行）
 await checkArena();          // 竞技场：烘焙产物/栏杆朝向/floorRow/占地尺寸契约（⚠️ 漏了本行则门禁永不执行）
 await checkBurningArena();   // 灾变竞技场：8 片拼合产物/熔岩分层/floorRow/stride/两侧清单契约（⚠️ 漏了本行则门禁永不执行）
+// ---------------------------------------------------------------- [丛林要塞] 契约（v3.13，2026-11-17）
+
+/**
+ * [丛林要塞] 契约：17 片 jigsaw 离线拼装产物 / **房间内腔空气格**（spec DR-2）/
+ * 藤蔓三判据 / floorRow 三处一致 / stride / 两侧清单 / 占地半宽 / 台阶朝向分布 / 件数直方图。
+ *
+ * 钉的失效路径（均为**静默**失败）：
+ *   ① 素材换了但没重烘 → 产物过期（指纹抓）；
+ *   ② **空气格漏写**（DR-2 核心）→ 天然岩层填满全部房间。格数/类型/指纹全对，
+ *      只有走进去才发现 ⇒ 必须断言 air 格数 = 15,536；
+ *   ③ **藤蔓漏长 / 悬空 / 埋石** → 观感退化或藤蔓浮空，格数判据拓不到 ⇒ 单独钉 vine 格数；
+ *   ④ 目标方块漏注册 → `makeColumnSetter` 静默 return → 要塞里出现空气洞；
+ *   ⑤ 产物 bbox / floorRow / stride 不符 → 整座沉/浮或台阶朝向丢失；
+ *   ⑥ 台阶朝向分布漂移 / 件数直方图漂移 → 部分堵上「只改烘焙算法而指纹不变」的盲区；
+ *   ⑦ **floorRow 三处不一致** → 主线程读 floorRowOf() 恒得 1（产物只在 Worker 加载过）。
+ */
+async function checkJungleFortress() {
+  const fp = await import('./jungle-fortress-fingerprint.mjs');
+  const dataMod = await import('../src/gen/structures/jungle-fortress-data.js');
+  const sjMod = await import('../src/gen/structures/structure-json.js');
+  const before = failures.length;
+  const fail = (m) => failures.push(`[丛林要塞] ${m}`);
+
+  // ① 烘焙输入（17 片）与产物存在性
+  const missing = fp.JUNGLE_FORTRESS_PIECES
+    .map((f) => path.join(fp.JUNGLE_FORTRESS_SOURCE_DIR, f))
+    .filter((f) => !fs.existsSync(f));
+  if (missing.length > 0) {
+    fail(`烘焙输入缺失 ${missing.length}/17 片：${missing.map((f) => path.relative(ROOT, f)).join(', ')}（.nbt 入库，缺失 = 仓库损坏）`);
+    return;
+  }
+  if (!fs.existsSync(fp.JUNGLE_FORTRESS_JSON) || !fs.existsSync(fp.JUNGLE_FORTRESS_META)) {
+    fail('缺 assets/structures/jungle_fortress.json 或 .meta.json（跑 npm run junglefortress）');
+    return;
+  }
+  let meta, json;
+  try {
+    meta = JSON.parse(fs.readFileSync(fp.JUNGLE_FORTRESS_META, 'utf8'));
+    json = JSON.parse(fs.readFileSync(fp.JUNGLE_FORTRESS_JSON, 'utf8'));
+  } catch { fail('产物不是合法 JSON（重跑 npm run junglefortress）'); return; }
+
+  // ② 指纹
+  const cur = fp.jungleFortressInputFingerprint();
+  if (meta.fingerprints?.input !== cur.input) {
+    fail(`产物已过期：指纹不匹配（烘焙时 "${meta.fingerprints?.input}" vs 当前 "${cur.input}"）→ 跑 npm run junglefortress`);
+  }
+
+  // ③ 两侧变体清单必须一致（漏一行 ⇒ 结构静默不出现）
+  const toolsVariants = [...fp.JUNGLE_FORTRESS_VARIANTS].sort().join(',');
+  const srcVariants = [...dataMod.JUNGLE_FORTRESS_VARIANTS].sort().join(',');
+  if (toolsVariants !== srcVariants) {
+    fail(`JUNGLE_FORTRESS_VARIANTS 两侧不一致（tools: [${toolsVariants}] vs src: [${srcVariants}]）`);
+  }
+  if (sjMod.STRUCTURE_FILES.jungleFortress !== 'jungle_fortress.json') {
+    fail(`STRUCTURE_FILES.jungleFortress = ${sjMod.STRUCTURE_FILES.jungleFortress} ≠ 'jungle_fortress.json'（漏注册 → rasterizeStructure 静默 0 格）`);
+  }
+
+  const M = fp.JUNGLE_FORTRESS_METRICS.jungleFortress;
+
+  // ④ stride 必验（错的是「朝向」不是「格数」）
+  const STRIDE = Number.isInteger(json.stride) ? json.stride : 4;
+  if (STRIDE !== 5) {
+    fail(`产物 stride=${STRIDE} ≠ 5 —— 台阶朝向没写进产物 → 156 个台阶会全朝 orient=0`);
+  }
+
+  // ⑤ floorRow **三处一致**（产物 JSON / fingerprint / -data.js 派生常量）
+  if (json.floorRow !== M.floorRow) fail(`产物 floorRow=${json.floorRow} ≠ METRICS ${M.floorRow}（整座会沉/浮）`);
+  if (json.floorRow !== fp.FLOOR_ROW) fail(`产物 floorRow=${json.floorRow} ≠ fingerprint FLOOR_ROW ${fp.FLOOR_ROW}`);
+  if (dataMod.JUNGLE_FORTRESS_FLOOR_ROW !== json.floorRow) {
+    fail(`-data.js 的 JUNGLE_FORTRESS_FLOOR_ROW=${dataMod.JUNGLE_FORTRESS_FLOOR_ROW} ≠ 产物 ${json.floorRow}`
+      + '（主线程不能用 floorRowOf() 读，它恒返回 1）');
+  }
+  if (dataMod.JUNGLE_FORTRESS_HEIGHT !== M.height) {
+    fail(`-data.js HEIGHT=${dataMod.JUNGLE_FORTRESS_HEIGHT} ≠ METRICS ${M.height}`);
+  }
+
+  // ⑥ 逐格统计
+  const n = json.blocks.length / STRIDE;
+  const byType = new Map();
+  const stepOrient = new Map();
+  let mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity, mnz = Infinity, mxz = -Infinity;
+  let fmnx = Infinity, fmxx = -Infinity, fmnz = Infinity, fmxz = -Infinity;
+  for (let i = 0; i < json.blocks.length; i += STRIDE) {
+    const x = json.blocks[i], y = json.blocks[i + 1], z = json.blocks[i + 2];
+    const name = json.palette[json.blocks[i + 3]];
+    const dir = json.blocks[i + 4];
+    byType.set(name, (byType.get(name) || 0) + 1);
+    if (name === 'cobblestone_step') {
+      const k = `${name}:${dir}`;
+      stepOrient.set(k, (stepOrient.get(k) || 0) + 1);
+    }
+    if (x < mnx) mnx = x; if (x > mxx) mxx = x;
+    if (y < mny) mny = y; if (y > mxy) mxy = y;
+    if (z < mnz) mnz = z; if (z > mxz) mxz = z;
+    if (name !== 'air') {
+      if (x < fmnx) fmnx = x; if (x > fmxx) fmxx = x;
+      if (z < fmnz) fmnz = z; if (z > fmxz) fmxz = z;
+    }
+  }
+  if (n !== M.contentCells) fail(`格数 ${n} ≠ METRICS ${M.contentCells}`);
+  if (json.palette.length !== M.paletteSize) fail(`palette ${json.palette.length} ≠ ${M.paletteSize}`);
+  if (mny !== 1) fail(`归一化最低层 y=${mny} ≠ 1`);
+  if (mxx - mnx + 1 !== M.width || mxy - mny + 1 !== M.height || mxz - mnz + 1 !== M.depth) {
+    fail(`bbox ${mxx - mnx + 1}×${mxy - mny + 1}×${mxz - mnz + 1} ≠ ${M.width}×${M.height}×${M.depth}`);
+  }
+
+  // ⑦ 非空气 footprint 半宽 = -data.js 常量（AABB 裁剪/避让/压制的口径）
+  const halfX = Math.max(-fmnx, fmxx), halfZ = Math.max(-fmnz, fmxz);
+  if (halfX !== dataMod.JUNGLE_FORTRESS_HALF_X) {
+    fail(`非空气 x 半宽 ${halfX} ≠ -data.js HALF_X ${dataMod.JUNGLE_FORTRESS_HALF_X}（藤蔓撑大 footprint？）`);
+  }
+  if (halfZ !== dataMod.JUNGLE_FORTRESS_HALF_Z) {
+    fail(`非空气 z 半宽 ${halfZ} ≠ -data.js HALF_Z ${dataMod.JUNGLE_FORTRESS_HALF_Z}`);
+  }
+
+  // ⑧ **空气格内容级判据**（DR-2 唯一守卫，指纹拓不到）
+  if (!json.palette.includes('air')) {
+    fail('palette 不含 "air" —— 房间内腔没写进产物，会被 fillColumn/carveCaves 填满（spec DR-2）');
+  }
+  if ((byType.get('air') || 0) !== M.airCells) {
+    fail(`air 格数 ${byType.get('air') || 0} ≠ METRICS ${M.airCells}（DR-2 内容级判据）`);
+  }
+  // ⑨ 藤蔓格数（漏长/多长都静默）
+  if ((byType.get('vine') || 0) !== M.vineCells) {
+    fail(`vine 格数 ${byType.get('vine') || 0} ≠ METRICS ${M.vineCells}`);
+  }
+
+  // ⑩ 逐目标方块格数
+  for (const [k, v] of Object.entries(M.targetCounts)) {
+    const got = byType.get(k) || 0;
+    if (got !== v) fail(`"${k}" 格数 ${got} ≠ 冻结 ${v}`);
+  }
+
+  // ⑪ 台阶朝向逐档比对（产物口径 156 格，不是逐件累加的 159）
+  const wantSteps = Object.fromEntries(Object.entries(M.stepOrientationCounts).sort());
+  const gotSteps = Object.fromEntries([...stepOrient.entries()].sort());
+  if (JSON.stringify(gotSteps) !== JSON.stringify(wantSteps)) {
+    fail(`台阶朝向分布 ${JSON.stringify(gotSteps)} ≠ ${JSON.stringify(wantSteps)}`
+      + '（facing 旋转被改了？重跑 --census-orient 核实后按实测重标，不要放宽断言）');
+  }
+
+  // ⑫ 件数直方图（拼装器算法的产物，部分堵「只改算法指纹不变」盲区）
+  const wantPieces = Object.fromEntries(Object.entries(M.pieceHist).sort());
+  const gotPieces = Object.fromEntries(Object.entries(meta.pieceHist || {}).sort());
+  if (JSON.stringify(gotPieces) !== JSON.stringify(wantPieces)) {
+    fail(`件数直方图不符\n    产物 ${JSON.stringify(gotPieces)}\n    冻结 ${JSON.stringify(wantPieces)}`);
+  }
+  if (meta.pieceCount !== M.pieceCount) fail(`件数 ${meta.pieceCount} ≠ ${M.pieceCount}`);
+
+  // ⑬ 目标方块全已注册（漏注册 ⇒ makeColumnSetter 静默 return ⇒ 空气洞）
+  const { createRegistry } = await import('../src/voxel/block-registry.js');
+  const { BLOCKS } = await import('../src/voxel/blocks-data.js');
+  const reg = createRegistry();
+  for (const d of BLOCKS) reg.register(d.name, d);
+  reg.freeze();
+  const channels = [0, 0, 0, 0];
+  for (const [name, count] of byType) {
+    const id = reg.idOf(name);
+    if (id === undefined) { fail(`目标方块 "${name}" 未注册 —— makeColumnSetter 会静默把那格变 air`); continue; }
+    channels[reg.cullTable[id]] += count;
+  }
+
+  // ⑭ 零新增方块（用户裁定：全部用既有方块）—— palette 必须全在 v3.12 既有集合内
+  //    判据：palette 里不得出现本轮新注册的名字。本轮**没有**新注册任何方块，
+  //    故这条等价于「palette ⊆ 既有 126 方块」，由 ⑬ 的注册检查覆盖；
+  //    这里额外钉「不含 iron / handrail / stone_diorite_step」三个被实测否决的候选。
+  for (const banned of ['iron', 'handrail', 'handrailA', 'stone_diorite_step']) {
+    if (json.palette.includes(banned)) {
+      fail(`palette 含被否决的候选 "${banned}"（iron 堵死窗洞 / handrail cutout ×2.8 / diorite 亮 76）`);
+    }
+  }
+
+  if (failures.length === before) {
+    const CULL = ['opaque', 'cutout', 'transparent', 'none'];
+    infos.push(`[丛林要塞] ${n} 格 / ${M.width}×${M.height}×${M.depth} / floorRow ${json.floorRow}`
+      + `（三处一致）/ air ${byType.get('air')} / vine ${byType.get('vine')}`
+      + ` / ${json.palette.length} 种全已注册 / 件数 ${meta.pieceCount}（17 种件）`
+      + ` / 台阶 ${[...stepOrient.values()].reduce((a, b) => a + b, 0)} 个四档`
+      + ` / 柱 ${meta.pillarRoots} 根 ${meta.pillarCells} 格 / ${CULL.map((c, i) => `${c} ${channels[i]}`).join(' ')}`
+      + ` / 指纹匹配`);
+  }
+}
 await checkRuinedCitadel();  // 废弃堡垒：18 片拼合产物/甲板下空气格/floorRow/stride/新方块进背包契约（⚠️ 漏了本行则门禁永不执行）
+await checkJungleFortress(); // 丛林要塞：17 片 jigsaw 定版产物/房间空气格/藤蔓/floorRow 三处一致/台阶朝向（⚠️ 漏了本行则门禁永不执行）
 await checkShallowTarns();   // 浅水高台：5 产物/palette 白名单/源方块映射/草基准色/尺寸契约
 await checkMedievalShip();   // 中世纪船：4 旋转变体/朝向自洽/新方块声明/朝向表同源（⚠️ 漏了本行则门禁永不执行）
 checkGrassTextures();        // 草贴图：两个 16×16 产物 + 均值偏差 + 源图未改
