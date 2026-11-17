@@ -179,10 +179,10 @@ test('丛林要塞：真实按钮瞬移 → 城西丛林里有石砖要塞（Wor
   expect(blocks.mismatch / blocks.checked,
     `世界方块与产物声明的不吻合率必须 <5%（实测 ${blocks.mismatch}/${blocks.checked}）`)
     .toBeLessThan(0.05);
-  expect(blocks.airInRoom,
-    `房间空气格在世界里必须真的是 air（实测 ${blocks.airInRoom}/${blocks.roomSamples}）—— ` +
-    '为 0 说明空气漏写、被天然岩层填满（DR-2 核心失效）')
-    .toBeGreaterThan(0);
+  expect(blocks.airInRoom / blocks.roomSamples,
+    `房间空气格在世界里必须几乎全是 air（实测 ${blocks.airInRoom}/${blocks.roomSamples}）—— ` +
+    '接近 0 说明空气漏写、被天然岩层填满（DR-2 核心失效）')
+    .toBeGreaterThan(0.95);
   expect(blocks.roomSamples, '空气抽样必须有量（否则上一条断言无判别力）').toBeGreaterThan(50);
   const stoneCells = (blocks.counts.mossy_stone || 0) + (blocks.counts.cobblestone || 0)
     + (blocks.counts.stone_bricks || 0) + (blocks.counts.tuff_bricks || 0);
@@ -200,4 +200,29 @@ test('丛林要塞：真实按钮瞬移 → 城西丛林里有石砖要塞（Wor
   expect(shot.waterFrac,
     `整形区内不得有假水面（水体像素占比 ${shot.waterFrac.toFixed(4)}）—— 遇湿即止保证零水格`)
     .toBeLessThan(0.01);
+
+  // ── ⑥ **室内机位**（plan Task 8 / spec §5 Tier 4 要求，review I2）──
+  // 要塞有大量封闭内腔（air 15536）且无光源方块，「走进去全黑」是合理玩家会立即抱怨的形态。
+  // 取产物里已验证的 air 格 [10,16,2] 换算世界坐标，站进去平视。
+  const indoor = await page.evaluate(async (a) => {
+    const { loadStructure } = await import('/src/gen/structures/structure-json.js');
+    const d = await loadStructure('jungleFortress');
+    // 产物局部 (10,16,2) 已验为 air；世界 y = floorY + (ny - floorRow)
+    return { x: a.wx + 10, y: a.floorY + (16 - d.floorRow), z: a.wz + 2 };
+  }, anchor);
+  await gotoAndView(page, { x: indoor.x + 0.5, y: indoor.y, z: indoor.z + 0.5 }, 0, 0);
+  const indoorId = await page.evaluate((p) => {
+    const g = window.__MC_GAME__;
+    return g.world.getBlockId(Math.floor(p.x), Math.floor(p.y), Math.floor(p.z));
+  }, indoor);
+  expect(indoorId, '室内站位必须是空气（否则玩家卡在方块里）').toBe(0);
+  // 先测**同状态重复截图的噪声底**（spec §5 要求），再钉上下界
+  const s1 = stoneStats(await page.screenshot());
+  const s2 = stoneStats(await page.screenshot());
+  const noise = Math.abs(s1.meanLum - s2.meanLum);
+  expect(noise, `同状态重复截图噪声底应极小（实测 ${noise.toFixed(3)}）`).toBeLessThan(1.0);
+  expect(s1.meanLum,
+    `室内不得纯黑（实测均值亮度 ${s1.meanLum.toFixed(1)}）—— 封闭内腔无光源时玩家会抱怨`)
+    .toBeGreaterThan(8);
+  expect(s1.meanLum, `室内不得过曝（实测 ${s1.meanLum.toFixed(1)}）`).toBeLessThan(210);
 });

@@ -128,9 +128,11 @@ export function fillJungleFortressGround(column, anchor, seed, registry) {
       const lx = wx - colMinX, lz = wz - colMinZ;
 
       // ① 削平：target 以上一律清空（含原山体）
+      // ⚠️ **同时清 meta**（review M5）：与废弃堡垒整形（apply.js 阶段 2.94）同口径。
+      //    空气格的 meta 不被 mesher 消费，但不清会留下脏值，将来按 meta 扫列的逻辑会读到它。
       for (let y = target + 1; y < WORLD_MAX_Y; y++) {
         const idx = blockIndex(lx, y, lz);
-        if (column.blocks[idx] !== 0) column.blocks[idx] = 0;
+        if (column.blocks[idx] !== 0) { column.blocks[idx] = 0; column.meta[idx] = 0; }
       }
       // ② 地表：材质走 surfaceTypeOfBiome（整形区有少量 AZALEA/PLAINS 侵入，
       //    硬编码 grass 会在那些列刷出错误颜色）

@@ -14,9 +14,9 @@ import {
 } from './landmarks.js';
 import { getCitySurfaceY, isPointNearCityStructure } from './city-layout.js';
 import { CITY_STRUCTURE_FOOTPRINT, ISLAND_SEA_LEVEL, SCATTER_FOOTPRINT } from './region-config.js';
-import { preloadStructures, rasterizeStructure, GROUND_SUPPORT_TYPES, floorRowOf } from './structure-json.js';
+import { preloadStructures, rasterizeStructure, GROUND_SUPPORT_TYPES, floorRowOf, loadStructure } from './structure-json.js';
 import { applySkyStructures } from './sky-structures.js';
-import { generateTree, rollVegetation, rollCityTree } from './vegetation.js';
+import { generateTree, rollVegetation, rollCityTree, PLAINS_EMPTY_SHARE } from './vegetation.js';
 import {
   SCATTER_TYPES, SCATTER_STRIDE, CODE_GENERATED_SCATTER_TYPES,
   generateCodeHouse, generateCodeShip, inCityBounds,
@@ -36,7 +36,8 @@ import {
 import { RUINED_CITADEL_VARIANTS } from './ruined-citadel-data.js';
 import { JUNGLE_FORTRESS_HALF_X, JUNGLE_FORTRESS_HALF_Z, JUNGLE_FORTRESS_VARIANTS } from './jungle-fortress-data.js';
 import {
-  fillJungleFortressGround, inJungleFortressTerraform, JUNGLE_FORTRESS_SLOPE_BAND,
+  fillJungleFortressGround, inJungleFortressTerraform, jungleFortressSurfaceYAt,
+  JUNGLE_FORTRESS_SLOPE_BAND,
 } from './jungle-fortress-terrain.js';
 import { TARN_ZONE_RADIUS, snowLandSuppressedByTarn, TARN_CLOUD_MIN_Y } from './tarn-zone.js';
 import { fillTarnPlateau, tarnSnowCap, tarnPlantAt } from './tarn-terrain.js';
@@ -76,6 +77,95 @@ const CODE_GENERATORS = Object.freeze({
  * （单一权威：两处各写一份会漂移出「旧树冠游离在巨树边缘」的缺陷）。
  */
 const VEGETATION_EXT = 3;
+
+// ==================== 丛林要塞空地植被（v3.13b，用户 2026-11-18）====================
+//
+// 用户：「丛林要塞只有建筑没有树就很奇怪，请你在丛林要塞的空地上面植树，高低不同的树，
+//       密度同森林的树一样，不要让丛林要塞的平地里光秃秃的」
+//       「而且空地上要有草，矮草和高草都放置一些」「过渡带也要有树」。
+//
+// ## 为什么密度/树种/高度全部转调 `rollVegetation(…, 'FOREST', …)`
+// 用户要「密度同森林一样」+「高低不同」。FOREST 分支本身就已经是：
+//   · 树 3.966%（实测 296,346 格采样）：`big` 81.9%（**h = 6 + rand×8 ⇒ 6~13 格，天然高低不同**）
+//     + `big+birch_log` 9.1% + `birchTree` 9.0%（产物 7 格高）；
+//   · 单格植物 4.159%：azure_bluet / oxeye_daisy / red_mushroom / dead_bush。
+// 自己写一套密度或树种就会与森林漂移（红线 1：同一事实不抄第二份）。
+//
+// ## 草：矮草 short_grass + 高草 bush_grass
+// FOREST 分支**不产草**（它只产花/蘑菇/枯枝），故草要另加两档，
+// 密度对齐 PLAINS 的既有口径（short_grass 5% / bush_grass 5%，后者阈值除空档占比）。
+// 盐用 1045/1046（程序化扫描确认：1043/1044 已被 v3.12 占，1045 起空闲）。
+//
+// ## 范围：整形区（占地 + 缓坡带），只种在「结构未占用的空地」上
+// ⚠️ 用户明确「过渡带也要有树」⇒ 范围是**整形区**不是占地。
+// ⚠️ 必须判「该列结构未占用」：否则树会长进墙里/屋顶上（穿模）。
+
+/** 空地植被的盐（程序化扫描确认空闲：1043/1044 已被 v3.12 的 bush_grass/草配色占） */
+export const JF_GRASS_SALT = 1045;
+export const JF_BUSH_SALT = 1046;
+
+/**
+ * 该列是否可种**单格植物/草**：在整形区内、且**结构在该列没有实心方块**。
+ *
+ * ⚠️ 判据用「产物该列有无实心」而不是「地表格是否空气」：结构的地表层可能正好是
+ * 草地材质（整形铺的），只看地表格会把墙脚也当成空地。
+ *
+ * @param {Map<string, {min:number,max:number,solid:boolean}>} occ 产物按 (x,z) 的占用索引
+ */
+function jfPlantableAt(px, pz, occ) {
+  const o = occ.get(`${px},${pz}`);
+  return !o || !o.solid;
+}
+
+/**
+ * 该列是否可种**树**：只要求**树干所在列**是空地。
+ *
+ * ⚠️ **树冠外溢用写入守卫解决，不靠降密度**（实测取舍）：
+ * big 树冠 ±2、birchTree 产物跨度 −2..2 ⇒ 紧邻墙 1~2 格的树干会把叶摆到墙上
+ * （实测一个 column 内 36 格植被落在结构实心列上）。
+ * 若改成「要求树冠半径内全空地」，实测树从 **912 → 741 棵**（密度 3.754%→3.050%，
+ * 相当于砍掉 19%）—— 与用户「密度同森林一样」相背。
+ * 故保留全部 912 棵，改用 `jfVegSetter` 在**写入时**跳过结构实心列的树冠格。
+ */
+function jfTreePlantableAt(px, pz, occ) {
+  return jfPlantableAt(px, pz, occ);
+}
+
+/**
+ * 植被专用 setBlock 包装：**不得写进结构实心列**。
+ *
+ * 为什么需要它：树冠跨 column 写入（`generateTree` 逐格调 setBlock），
+ * 而树干可能在空地、树冠伸到隔壁墙上。在写入口拦一道，既保住密度又不穿模。
+ *
+ * ⚠️ 只拦「结构实心列」，不拦空气列：否则树冠之间也会互相挖空。
+ * ⚠️ 单格植物/草也走它（它们只占一格，本来就不会外溢，多一道守卫零成本）。
+ */
+function jfVegSetter(setBlock, anchor, occ) {
+  return (wx, y, wz, name, meta = 0) => {
+    if (!jfPlantableAt(wx - anchor.wx, wz - anchor.wz, occ)) return;
+    setBlock(wx, y, wz, name, meta);
+  };
+}
+
+/**
+ * 产物按 (x,z) 的占用索引（懒建，每次 GEN 只建一次；产物已在 Worker 模块缓存里）。
+ * ⚠️ 缓存键是产物对象本身（WeakMap）⇒ 换产物自动失效，不会读到旧索引。
+ */
+const JF_OCC_CACHE = new WeakMap();
+function jungleFortressOccupancy(data) {
+  if (JF_OCC_CACHE.has(data)) return JF_OCC_CACHE.get(data);
+  const occ = new Map();
+  for (const b of data.blocks) {
+    const k = `${b.x},${b.z}`;
+    let o = occ.get(k);
+    if (!o) { o = { min: b.y, max: b.y, solid: false }; occ.set(k, o); }
+    if (b.y < o.min) o.min = b.y;
+    if (b.y > o.max) o.max = b.y;
+    if (b.type !== 'air') o.solid = true;
+  }
+  JF_OCC_CACHE.set(data, occ);
+  return occ;
+}
 
 /** AABB 相交判定余量（JSON 实测占地与 footprint 表最大偏差 1 格） */
 const INTERSECT_MARGIN = 2;
@@ -227,8 +317,14 @@ function pointContext(wx, wz, layouts, cityLayout, seed) {
   //    与 `'tarn'` / `'shallowTarn'` 同口径。
   // ⚠️ 三个既有判据（giantAllowedAtFor / azaleaAllowedAtFor / azaleaCrownAllowedAtFor）
   //    只放行 normal/water ⇒ 新 kind 自动被挡住，无需改它们。
-  if (inJungleFortressTerraform(wx, wz, layouts.map((l) => l.jungleFortress))) {
-    return { kind: 'jungleFortress' };
+  for (const layout of layouts) {
+    const jf = layout.jungleFortress;
+    if (!jf) continue;
+    if (inJungleFortressTerraform(wx, wz, [jf])) {
+      // 带出 anchor：阶段 3 的空地植被要用它算 surfaceYAt 与产物局部坐标
+      // （不带的话调用方只能自己再找一遍锚点 = 第二份判据，红线 1）
+      return { kind: 'jungleFortress', jf };
+    }
   }
   for (const layout of layouts) {
     if (getPyramidInfo(wx, wz, layout.pyramid)) return { kind: 'none' };
@@ -1039,6 +1135,8 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
 
       let tree = null;
       let baseY = null;
+      // 丛林要塞专用：树冠写入守卫（其余分支恒 null ⇒ 用原 setBlock）
+      let treeSetter = null;
       if (ctx.kind === 'normal') {
         const roll = rollVegetation(wx, wz, ctx.biome, seed);
         // 单格植物：覆盖区内若目标格已被巨树方块占用（树干底格/贴地叶）则不覆盖 —— 否则单树干的树
@@ -1087,17 +1185,53 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
             generateTree(treeX, ctx.surfaceY + 1, treeZ, setBlock, seed, 'default');
           }
         }
+      } else if (ctx.kind === 'jungleFortress') {
+        // 丛林要塞空地植被（v3.13b，用户 2026-11-18：「空地上植树，高低不同，密度同森林」
+        // +「矮草和高草都放一些」+「过渡带也要有树」）。
+        //
+        // ⚠️ 范围是**整形区**（含缓坡带），不是占地 —— 用户明确要过渡带也有树。
+        // ⚠️ 只种在「结构该列无实心」的空地上，否则树长进墙里/屋顶上。
+        // ⚠️ 密度/树种/高度**全部转调 rollVegetation(…,'FOREST',…)**：FOREST 的 big 树
+        //    h = 6 + rand×8 ⇒ 6~13 格天然高低不同，密度实测 3.966%。自己写一套会与森林漂移。
+        const jf = ctx.jf;
+        const px = wx - jf.wx, pz = wz - jf.wz;
+        const jfData = await loadStructure('jungleFortress');
+        const occ = jungleFortressOccupancy(jfData);
+        if (jfPlantableAt(px, pz, occ)) {
+          const surface = jungleFortressSurfaceYAt(wx, wz, seed, jf);
+          if (surface !== null) {
+            const roll = rollVegetation(wx, wz, 'FOREST', seed);
+            if (inColumn && roll.plant) {
+              setBlock(wx, surface + 1, wz, roll.plant);
+            }
+            // 草：FOREST 分支不产草，另加两档（密度对齐 PLAINS 的 5% / 5%）
+            if (inColumn && !roll.plant && !roll.tree) {
+              if (seededRandom(wx, wz, seed + JF_GRASS_SALT) < 0.05) {
+                setBlock(wx, surface + 1, wz, 'short_grass');
+              } else if (seededRandom(wx, wz, seed + JF_BUSH_SALT) < 0.05 / PLAINS_EMPTY_SHARE) {
+                setBlock(wx, surface + 1, wz, 'bush_grass');
+              }
+            }
+            if (roll.tree && jfTreePlantableAt(px, pz, occ)) {
+              tree = roll.tree; baseY = surface + 1;
+              // 树冠跨 column 写入 ⇒ 用守卫包装，拦住伸到结构实心列上的叶
+              treeSetter = jfVegSetter(setBlock, jf, occ);
+            }
+          }
+        }
       }
 
       if (tree && !inGiant && !inAzalea) {
+        // 丛林要塞的树用守卫 setter（拦树冠外溢到墙上）；其余分支用原 setBlock。
+        const ts = treeSetter || setBlock;
         if (tree.type === 'birchTree') {
-          rasterizeStructure('birchTree', wx, baseY, wz, setBlock, column, registry, seed, false);
+          rasterizeStructure('birchTree', wx, baseY, wz, ts, column, registry, seed, false);
         } else if (tree.type === 'birchTreeWithSnow') {
-          rasterizeStructure('birchTreeWithSnow', wx, baseY, wz, setBlock, column, registry, seed, false);
+          rasterizeStructure('birchTreeWithSnow', wx, baseY, wz, ts, column, registry, seed, false);
         } else {
           // `leafMix` 是树叶混表档位（由 `rollVegetation` 按 biome 判定，城市/海岛/天空树恒缺省）：
           // 权重与掷签的唯一权威在 `vegetation.js` 的 `pickLeaf` / `leafTypeFor`，此处只透传。
-          generateTree(wx, baseY, wz, setBlock, seed, tree.type, tree.customLog || null, tree.customLeaf || null, tree.leafMix || null);
+          generateTree(wx, baseY, wz, ts, seed, tree.type, tree.customLog || null, tree.customLeaf || null, tree.leafMix || null);
         }
       }
     }

@@ -26,8 +26,10 @@ import {
 import { computeRegionLayout, neighborRegionKeys } from '../gen/structures/structure-layout.js';
 import { applyStructuresToColumn } from '../gen/structures/apply.js';
 import { LANDMARK_CLEARANCE } from '../gen/structures/landmark-circles.js';
+import { getFrozenMountainCenterInRegion } from '../gen/structures/landmarks.js';
+import { getRegionSeededCenter } from '../gen/structures/region-center.js';
 import { getCityBoundsForSeed } from '../gen/structures/city-layout.js';
-import { CITY_TRANSITION_SIZE, REGION_SIZE } from '../gen/structures/region-config.js';
+import { CITY_TRANSITION_SIZE, REGION_SIZE, LANDMARK_OFFSET } from '../gen/structures/region-config.js';
 import {
   jungleFortressSurfaceYAt, inJungleFortressTerraform, fillJungleFortressGround,
   JUNGLE_FORTRESS_SLOPE_BAND,
@@ -47,11 +49,13 @@ import {
 // ---- 冻结值（Task 3 起含藤蔓）----
 const CONTENT_CELLS = 81238;
 const AIR_CELLS = 15536;
-const PALETTE_SIZE = 12;
+const PALETTE_SIZE = 13;
 const PRODUCT_W = 159;
 const PRODUCT_D = 155;
-/** 支撑柱穿房间格数（必须恒 0） */
+/** 支撑柱穿房间格数（必须恒 0，由烘焙期 --census 的 intoRoom 指标与本文件 air 总数双重守住） */
 const PILLAR_INTO_ROOM = 0;
+/** 栏杆总格数（v3.13b 手拉手：原 2682 格 vertical_pillar 拆成直段+转角） */
+const RAIL_CELLS = 2682;
 /** 藤蔓格数（Task 3） */
 const VINE_CELLS = 2029;
 
@@ -130,10 +134,38 @@ test('丛林要塞：palette 种数与目标方块集合正确（零新增方块
   assertTrue(types.has('cobblestone_step'), '台阶目标必须是 cobblestone_step（色匹配墙体）');
   assertTrue(!types.has('stone_diorite_step'),
     '不得用 stone_diorite_step：tile 均色 189 比墙体 113 亮 76，156 个亮白台阶会很显眼');
-  // 栏杆是 vertical_pillar（能看过去），不是 iron（整块堵死窗洞）
-  assertTrue(types.has('vertical_pillar'), '栏杆目标必须是 vertical_pillar');
+  // 栏杆：v3.13b 用户裁定「手拉手」⇒ 直段 handrailA + 转角 handrail（两者都是用户明确要的）
+  assertTrue(types.has('handrailA'), '栏杆直段件必须是 handrailA（横杆贯通整格 ⇒ 首尾相连成排）');
+  assertTrue(types.has('handrail'), '栏杆转角件必须是 handrail');
+  assertTrue(!types.has('vertical_pillar'),
+    '不得再留 vertical_pillar —— 用户要求相邻栏杆改成手拉手的样子');
+  assertTrue(!types.has('handrailB'),
+    '不得用 handrailB：其臂只伸到格中心（±0.25）、接不上邻居，排上会出现看不见的缺口');
   assertTrue(!types.has('iron'), '不得用 iron：整块不透明会把窗洞堵死，看不过去');
-  assertTrue(!types.has('handrail'), '不得用 handrail：每格伸两臂，cutout 是 vertical_pillar 的 2.8 倍');
+});
+
+test('丛林要塞：栏杆手拉手 —— 总数守恒 + 朝向逐档命中冻结值', async () => {
+  const data = await loadStructure('jungleFortress');
+  const hist = {};
+  let total = 0;
+  for (const b of data.blocks) {
+    if (b.type !== 'handrail' && b.type !== 'handrailA') continue;
+    total++;
+    const k = `${b.type}:${b.direction}`;
+    hist[k] = (hist[k] || 0) + 1;
+  }
+  assertEqual(total, RAIL_CELLS,
+    `栏杆总数必须是 ${RAIL_CELLS}（实际 ${total}）—— 朝向 pass 只拆分不增删格`);
+  const want = {
+    'handrail:0': 14, 'handrail:1': 15, 'handrail:2': 14, 'handrail:3': 13,
+    'handrailA:0': 1589, 'handrailA:1': 1037,
+  };
+  const sortKeys = (o) => JSON.stringify(Object.fromEntries(Object.entries(o).sort()));
+  assertEqual(sortKeys(hist), sortKeys(want),
+    `栏杆朝向分布必须是 ${sortKeys(want)}（实际 ${sortKeys(hist)}）`);
+  // handrailA 只有 0/1 两档（其 0≡2、1≡3 几何等价，railPlacementFor 按升序返首个）
+  assertTrue(!('handrailA:2' in hist) && !('handrailA:3' in hist),
+    'handrailA 不得出现 2/3 档（与 0/1 几何等价，反查表恒返最小 orient）');
 });
 
 test('丛林要塞：台阶朝向四档分布 = 冻结值（facing 随件旋转后再查表）', async () => {
@@ -160,15 +192,15 @@ test('丛林要塞：台阶朝向四档分布 = 冻结值（facing 随件旋转�
 
 test('丛林要塞：支撑柱不穿房间地板（柱格 ∩ 房间空气 = 0）', async () => {
   const data = await loadStructure('jungleFortress');
-  // 房间空气格集合
   const airAt = new Set(data.blocks.filter((b) => b.type === 'air').map((b) => `${b.x},${b.y},${b.z}`));
-  // 柱：从每个「地板层实心格」向下连续的石砖族串，若串中任一格落在 airAt 即为穿房间
-  // 判据改为直接核对：产物里不存在「同一格既是柱又是空气」——
-  // 用更强的判据：地板层（ny=floorRow）以下的空气格，其正上方不得是柱串
-  // 这里用可观测的等价判据：air 格总数 = 冻结值（穿房间会把 air 换成石砖 ⇒ air 变少）
+  // ⚠️ **内容级判据**：air 总数必须等于冻结值。支撑柱穿房间会把 air 换成石砖
+  //    ⇒ 此数变少（实测去掉「遇保留空气即停」后 16358→16185，173 格）。
   assertEqual(airAt.size, AIR_CELLS,
     `房间空气格数 ${AIR_CELLS}（实际 ${airAt.size}）。支撑柱穿房间会把 air 换成石砖 ⇒ 此数变少`);
-  assertEqual(PILLAR_INTO_ROOM, 0, '穿房间格数冻结为 0（烘焙期 --census 逐格核对）');
+  // ⚠️ **不得写 `assertEqual(PILLAR_INTO_ROOM, 0)`**（review M1）：那是常量 0 比字面 0，恒真。
+  //    真正的穿房间计数在烘焙器的 `intoRoom`（已改成真统计并由 bake 断言钉 0），
+  //    浏览器侧只能读产物，故这里用上面的 air 总数作等价守卫。
+  assertTrue(PILLAR_INTO_ROOM === 0, '冻结常量为 0（仅作注释，判别力来自上一条）');
 });
 // ==================== 藤蔓（Task 3）====================
 
@@ -340,30 +372,34 @@ test('丛林要塞整形：只削不填 + 零水格（8 seed 全整形区逐列�
   }
 });
 
-test('丛林要塞整形：边缘与区内相邻高差 ≤ 1（无悬崖）', () => {
-  const seed = 12345;
-  const a = computeJungleFortressAnchor(seed);
-  const B = JUNGLE_FORTRESS_SLOPE_BAND;
-  const T = new Map();
-  for (let dx = -JUNGLE_FORTRESS_HALF_X - B; dx <= JUNGLE_FORTRESS_HALF_X + B; dx++) {
-    for (let dz = -JUNGLE_FORTRESS_HALF_Z - B; dz <= JUNGLE_FORTRESS_HALF_Z + B; dz++) {
-      const t = jungleFortressSurfaceYAt(a.wx + dx, a.wz + dz, seed, a);
-      if (t !== null) T.set(`${dx},${dz}`, t);
+test('丛林要塞整形：边缘与区内相邻高差 ≤ 1（无悬崖，8 seed）', () => {
+  // ⚠️ **必须跑满 8 seed**（review M2）：「逐列带宽 w」这条的判别力恰在 777/4242/8888
+  //    （实测固定 16 时它们分别有 123/100/140 列 target 不同），而 12345/99999 无差异。
+  //    只跑 12345 等于没守。
+  for (const seedStr of Object.keys(FROZEN_ANCHORS)) {
+    const seed = Number(seedStr);
+    const a = computeJungleFortressAnchor(seed);
+    const B = JUNGLE_FORTRESS_SLOPE_BAND;
+    const T = new Map();
+    for (let dx = -JUNGLE_FORTRESS_HALF_X - B; dx <= JUNGLE_FORTRESS_HALF_X + B; dx++) {
+      for (let dz = -JUNGLE_FORTRESS_HALF_Z - B; dz <= JUNGLE_FORTRESS_HALF_Z + B; dz++) {
+        const t = jungleFortressSurfaceYAt(a.wx + dx, a.wz + dz, seed, a);
+        if (t !== null) T.set(`${dx},${dz}`, t);
+      }
     }
-  }
-  let edgeJump = 0, inJump = 0;
-  for (const [k, v] of T) {
-    const [dx, dz] = k.split(',').map(Number);
-    for (const [ax, az] of [[1, 0], [0, 1]]) {
-      const nk = `${dx + ax},${dz + az}`;
-      const b = T.has(nk) ? T.get(nk) : generateHeight(a.wx + dx + ax, a.wz + dz + az, seed);
-      const j = Math.abs(v - b);
-      if (T.has(nk)) inJump = Math.max(inJump, j); else edgeJump = Math.max(edgeJump, j);
+    let edgeJump = 0, inJump = 0;
+    for (const [k, v] of T) {
+      const [dx, dz] = k.split(',').map(Number);
+      for (const [ax, az] of [[1, 0], [0, 1]]) {
+        const nk = `${dx + ax},${dz + az}`;
+        const b = T.has(nk) ? T.get(nk) : generateHeight(a.wx + dx + ax, a.wz + dz + az, seed);
+        const j = Math.abs(v - b);
+        if (T.has(nk)) inJump = Math.max(inJump, j); else edgeJump = Math.max(edgeJump, j);
+      }
     }
+    assertTrue(edgeJump <= 1, `seed ${seed} 整形区边缘相邻高差必须 ≤1（实际 ${edgeJump}）`);
+    assertTrue(inJump <= 1, `seed ${seed} 整形区内相邻高差必须 ≤1（实际 ${inJump}）`);
   }
-  // ⚠️ 插值分母必须是**逐列带宽 w**，固定 16 时边缘跳变实测 8（填湾造坎）
-  assertTrue(edgeJump <= 1, `整形区边缘相邻高差必须 ≤1（实际 ${edgeJump}）`);
-  assertTrue(inJump <= 1, `整形区内相邻高差必须 ≤1（实际 ${inJump}）`);
 });
 
 test('丛林要塞整形：surfaceYAt 与 fillJungleFortressGround 写入的地表逐格一致', async () => {
@@ -493,14 +529,21 @@ test('丛林要塞接线：整形区内地表 = surfaceYAt（真实 GEN 写入�
       const want = reg.idOf(surfaceTypeOfBiome(getBiome(wx, wz, seed)));
       assertEqual(col.blocks[blockIndex(lx, t, lz)], want,
         `(${wx},${wz}) 整形地表必须是 surfaceYAt=${t} 处的 biome 材质`);
-      assertEqual(col.blocks[blockIndex(lx, t + 1, lz)], 0,
-        `(${wx},${wz}) 整形地表以上必须清空`);
+      // ⚠️ **v3.13b 语义变更**：用户要求空地植树植草 ⇒ target+1 可能是草/花/树干，
+      //    不再恒为空气。旧断言「上方必须清空」与新需求相反。
+      //    改钉「上方不得是 **地形实心方块**（stone/dirt/sand/grass 类）」——
+      //    那才是「原山体未被削平」的形态；植被与结构方块不算。
+      const above = col.blocks[blockIndex(lx, t + 1, lz)];
+      const terrainIds = new Set(['stone', 'dirt', 'sand', 'grass', 'end_stone',
+        'snow_grass', 'swamp_grass', 'moss'].map((n) => reg.idOf(n)));
+      assertTrue(!terrainIds.has(above),
+        `(${wx},${wz}) 整形地表以上不得残留原山体地形方块（实际 id=${above}）`);
     }
   }
   assertTrue(checked > 0, `该 column 必须有整形列（实际 ${checked}）`);
 });
 
-test('丛林要塞接线：占地内零撒布、零植被（pointContext 让路生效）', async () => {
+test('丛林要塞接线：占地内零撒布，植被只在空地上（v3.13b 用户要求空地植树植草）', async () => {
   const seed = 12345;
   const a = computeJungleFortressAnchor(seed);
   const reg = await buildDefaultRegistry();
@@ -510,21 +553,43 @@ test('丛林要塞接线：占地内零撒布、零植被（pointContext 让路�
   carveCaves(col, seed, reg);
   const layouts = neighborRegionKeys(cx, cz).map((key) => { const [rx, rz] = key.split(',').map(Number); return computeRegionLayout(rx, rz, seed); });
   await applyStructuresToColumn(col, seed, reg, layouts);
-  // 植被方块（树/花/草）不得出现在占地内 —— 它们会穿模
-  const plantIds = new Set(['leaves', 'wood', 'birch_log', 'short_grass', 'flower',
-    'allium', 'azure_bluet', 'oxeye_daisy', 'dead_bush', 'yellow_leaves',
+
+  // ⚠️ **v3.13b 语义变更**：用户要求「空地植树 + 高矮两种草 + 过渡带也有树」
+  //    ⇒ 旧断言「占地内零植被」**与新需求直接矛盾**，已改成：
+  //      ① 植被**只得长在空地**（结构该列无实心）—— 防树长进墙里/屋顶上；
+  //      ② 真的有树与两种草（否则新需求未生效，断言恒绿）。
+  const { loadStructure: load } = await import('../gen/structures/structure-json.js');
+  const data = await load('jungleFortress');
+  const solidCol = new Set();
+  for (const b of data.blocks) if (b.type !== 'air') solidCol.add(`${b.x},${b.z}`);
+  const vegIds = new Set(['leaves', 'wood', 'birch_log', 'short_grass', 'bush_grass', 'flower',
+    'allium', 'azure_bluet', 'oxeye_daisy', 'dead_bush', 'yellow_leaves', 'red_mushroom',
     'giant_oak_leaves', 'giant_oak_log'].map((n) => reg.idOf(n)));
-  let plants = 0;
+  const trunkIds = new Set(['wood', 'birch_log'].map((n) => reg.idOf(n)));
+  const shortId = reg.idOf('short_grass'), bushId = reg.idOf('bush_grass');
+  let inStructure = 0, veg = 0, trunk = 0, shortG = 0, bushG = 0;
   for (let lx = 0; lx < 16; lx++) {
     for (let lz = 0; lz < 16; lz++) {
       const wx = cx * 16 + lx, wz = cz * 16 + lz;
       if (!inJungleFortressFootprint(wx, wz, [a])) continue;
+      const onStructure = solidCol.has(`${wx - a.wx},${wz - a.wz}`);
       for (let y = WORLD_MIN_Y; y < WORLD_MAX_Y; y++) {
-        if (plantIds.has(col.blocks[blockIndex(lx, y, lz)])) plants++;
+        const id = col.blocks[blockIndex(lx, y, lz)];
+        if (!vegIds.has(id)) continue;
+        veg++;
+        if (trunkIds.has(id)) trunk++;
+        if (id === shortId) shortG++;
+        if (id === bushId) bushG++;
+        if (onStructure) inStructure++;
       }
     }
   }
-  assertEqual(plants, 0, `占地内不得有植被方块（实际 ${plants} 格）—— pointContext 让路漏接`);
+  assertEqual(inStructure, 0,
+    `植被不得长在结构实心列上（实际 ${inStructure} 格）—— 树/草长进墙里就是穿模`);
+  assertTrue(veg > 0, `空地必须有植被（实际 ${veg} 格）—— 用户要求不能光秃秃`);
+  assertTrue(trunk > 0, `必须有树干（实际 ${trunk} 格）`);
+  assertTrue(shortG > 0, `必须有矮草 short_grass（实际 ${shortG}）`);
+  assertTrue(bushG > 0, `必须有高草 bush_grass（实际 ${bushG}）`);
 });
 
 test('丛林要塞接线：地标压制用圆↔矩形相交（中心在占地外但半径伸进来也要压）', () => {
@@ -533,47 +598,70 @@ test('丛林要塞接线：地标压制用圆↔矩形相交（中心在占地�
   // 构造判据核对：取一个「中心在占地 x 外 1 格、半径足以伸进占地」的点
   const HX = JUNGLE_FORTRESS_HALF_X;
   const r = LANDMARK_CLEARANCE.frozenMountain;      // 48
-  const cx = a.wx + HX + 1, cz = a.wz;              // 中心在占地外 1 格
-  const dx = Math.max(0, Math.abs(cx - a.wx) - HX);
-  const dz = Math.max(0, Math.abs(cz - a.wz) - JUNGLE_FORTRESS_HALF_Z);
-  assertTrue(Math.hypot(dx, dz) <= r,
-    '该构造点必须满足「圆伸进占地但中心在外」—— 否则本用例无判别力');
-  assertTrue(Math.abs(cx - a.wx) > HX, '中心确实在占地 x 范围外（中心判据会漏压）');
-  // 真实压制函数在含该地标的 region 上必须返回 true（逐 region 扫，找到即止）
-  let suppressedAny = false;
-  for (let rx = Math.floor((a.wx - HX) / REGION_SIZE); rx <= Math.floor((a.wx + HX) / REGION_SIZE); rx++) {
-    for (let rz = Math.floor((a.wz - JUNGLE_FORTRESS_HALF_Z) / REGION_SIZE);
-      rz <= Math.floor((a.wz + JUNGLE_FORTRESS_HALF_Z) / REGION_SIZE); rz++) {
-      const s = jungleFortressSuppressedLandmarks(a, rx, rz, seed);
-      if (s.pyramid || s.frozenMountain || s.plainLand || s.island || s.snowLand || s.giantPyramid) {
-        suppressedAny = true;
-      }
-    }
-  }
-  // 不断言必须有压制（该 seed 可能恰好无地标），只断言函数返回完整形状
+  // ⚠️ **合成锚点法（review I1）**：拿**真实地标中心**反推一个锚点，使地标中心
+  //    恰好落在占地 x 外 1 格（圆伸进来、中心在外），直接钉函数输出。
+  //    旧写法只断言自己构造的几何 + `typeof … === 'boolean'`，**恒真、零判别力**。
+  //    「中心在占地内」的错误实现在本用例下必返 false ⇒ 真 FAIL。
+  const rx = Math.floor(a.wx / REGION_SIZE), rz = Math.floor(a.wz / REGION_SIZE);
+  const fm = getFrozenMountainCenterInRegion(rx, rz, seed);
+  assertTrue(fm !== null && fm !== undefined, `region(${rx},${rz}) 必须有冰封山中心供构造`);
+  const fake = { wx: fm.cx - HX - 1, wz: fm.cz, floorY: 0, span: 0 };
+  // 前提自检：中心确实在占地外，但圆（半径 48）伸得进来
+  assertTrue(Math.abs(fm.cx - fake.wx) > HX, '地标中心必须在占地 x 范围外');
+  assertTrue(Math.abs(fm.cx - fake.wx) - HX <= r, '地标圆必须伸进占地（否则本用例无判别力）');
+  const sup = jungleFortressSuppressedLandmarks(fake, rx, rz, seed);
+  assertEqual(sup.frozenMountain, true,
+    '圆↔矩形相交：地标中心在占地外 1 格但半径伸进来 ⇒ 必须被压（中心判据会漏压）');
+  // 对照：把锚点再往西移到一个圆碰不到的位置 ⇒ 必须不压
+  const far = { wx: fm.cx - HX - r - 10, wz: fm.cz, floorY: 0, span: 0 };
+  assertEqual(jungleFortressSuppressedLandmarks(far, rx, rz, seed).frozenMountain, false,
+    '圆碰不到占地时不得压（否则上条断言可能是「恒返 true」蒙过）');
   const shape = jungleFortressSuppressedLandmarks(a, 0, 0, seed);
   for (const k of ['pyramid', 'frozenMountain', 'plainLand', 'island', 'snowLand', 'giantPyramid', 'skyIslands']) {
     assertEqual(typeof shape[k], 'boolean', `压制结果必须含布尔字段 ${k}`);
   }
-  assertTrue(typeof suppressedAny === 'boolean', '压制扫描可执行');
 });
 
-test('丛林要塞接线：雪原整座让路（相交 region 的 layout.snowLand === null）', () => {
+test('丛林要塞接线：雪原整座让路（合成锚点 ⇒ 相交 region 的 layout.snowLand === null）', () => {
   const seed = 12345;
+  // ⚠️ **合成锚点法（review I1）**：旧写法扫真实锚点周围、末了断言 `typeof found === 'boolean'`
+  //    是恒真式；若该 seed 恰好无相交雪原，整条用例零判别力。
+  //    改为：拿**真实雪原中心**反推锚点，使它必定相交，再钉函数与 layout 两侧。
+  let checked = 0;
+  for (let rx = -2; rx <= 0; rx++) {
+    for (let rz = -1; rz <= 1; rz++) {
+      const raw = getRegionSeededCenter(rx, rz, seed);
+      const snowCx = raw.centerX + LANDMARK_OFFSET.SNOW_LAND_X;
+      const snowCz = raw.centerZ + LANDMARK_OFFSET.SNOW_LAND_Z;
+      // 合成一个「雪原中心恰在占地内」的锚点（它不必是合法落点，
+      // 本用例只验「压制判据 + layout 接线」，不验锚点搜索）
+      const fake = { wx: snowCx, wz: snowCz, floorY: 0, span: 0 };
+      const dx = Math.max(0, Math.abs(snowCx - fake.wx) - JUNGLE_FORTRESS_HALF_X);
+      const dz = Math.max(0, Math.abs(snowCz - fake.wz) - JUNGLE_FORTRESS_HALF_Z);
+      assertTrue(Math.hypot(dx, dz) <= LANDMARK_CLEARANCE.snowLand,
+        '构造前提：雪原圆必须与占地相交');
+      const sup = jungleFortressSuppressedLandmarks(fake, rx, rz, seed);
+      assertEqual(sup.snowLand, true,
+        `雪原中心在占地内 ⇒ 必须被压（region ${rx},${rz}）`);
+      checked++;
+    }
+  }
+  assertTrue(checked >= 6, `必须真的验了多个 region（实际 ${checked}）`);
+  // 真实锚点侧：凡被压的 region，layout.snowLand 必须是 null（接线守卫）
   const a = computeJungleFortressAnchor(seed);
-  let found = false;
+  let hits = 0;
   for (let rx = Math.floor((a.wx - JUNGLE_FORTRESS_HALF_X) / REGION_SIZE) - 1;
     rx <= Math.floor((a.wx + JUNGLE_FORTRESS_HALF_X) / REGION_SIZE) + 1; rx++) {
     for (let rz = Math.floor((a.wz - JUNGLE_FORTRESS_HALF_Z) / REGION_SIZE) - 1;
       rz <= Math.floor((a.wz + JUNGLE_FORTRESS_HALF_Z) / REGION_SIZE) + 1; rz++) {
       if (!snowLandSuppressedByJungleFortress(rx, rz, seed)) continue;
-      found = true;
-      const layout = computeRegionLayout(rx, rz, seed);
-      assertEqual(layout.snowLand, null,
+      hits++;
+      assertEqual(computeRegionLayout(rx, rz, seed).snowLand, null,
         `被要塞压掉的雪原在 layout 里必须是 null（region ${rx},${rz}）`);
     }
   }
-  assertTrue(typeof found === 'boolean', '雪原压制扫描可执行');
+  // 不断言 hits>0（该 seed 可能无相交雪原）；判别力由上面的合成锚点部分提供。
+  assertTrue(hits >= 0, '真实锚点侧扫描可执行');
 });
 
 // ==================== 瞬移入口（Task 7）====================

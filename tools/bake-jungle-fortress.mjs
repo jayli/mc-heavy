@@ -23,6 +23,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { NbtReader } from './nbt-reader.mjs';
+// 臂方向 ↔ (方块, 朝向) 的**唯一权威**在 arena.js（从 mesher 的 TEMPLATES 派生，红线 1）。
+import { railPlacementFor, railArmSet } from '../src/gen/structures/arena.js';
 import {
   JUNGLE_FORTRESS_SOURCE_DIR, JUNGLE_FORTRESS_PIECES,
   JUNGLE_FORTRESS_ASSEMBLE, JUNGLE_FORTRESS_POOL_WEIGHTS, JUNGLE_FORTRESS_POOL_FALLBACK,
@@ -278,6 +280,126 @@ export function placedBBox(placed) {
   return { mnx, mxx, mny, mxy, mnz, mxz, w: mxx - mnx + 1, h: mxy - mny + 1, d: mxz - mnz + 1 };
 }
 
+// ---------------------------------------------------------------- 栏杆朝向（手拉手）
+
+/**
+ * 栏杆朝向 pass —— 用户 2026-11-18 裁定：
+ * 「只要是能手拉手的相邻栏杆，就换成我修改的样子……请注意栏杆的方向，让他们方向正确，做到手拉手」。
+ *
+ * 用户手工样例（进度包 seed 3183162，43 格）反推出的规则，**43/43 几何吻合**：
+ *   · **共线两臂** → `handrailA`（直段件，横杆贯通整格 ⇒ 首尾相连成排）；
+ *   · **垂直两臂** → `handrail`（转角件）；
+ *   · **单臂**（排的端头）→ **沿自身轴延伸成直段**，不在端头拐角
+ *     （第一版按「支撑信号配垂直臂」会在端头出转角，与用户样例 2 格不符）；
+ *   · **孤立**（0 臂，窗内竖条）→ 支撑信号里的共线对，否则该轴直段。
+ *
+ * ⚠️ **按 (x,z) 分柱、柱内 y 连续切段，段内共用一个朝向**：逐格独立算会在竖直柱内
+ * 左右摇摆（同 `bake-ruined-citadel.mjs` 的既有口径）。
+ *
+ * ⚠️ **臂方向 ↔ (方块, 朝向) 的唯一权威是 `arena.js` 的 `railPlacementFor`**
+ * （从 mesher 的 TEMPLATES 派生）。不得在本脚本手写「orient=1 是 +X-Z」这类表 ——
+ * 形状权威改动后这里会自动跟上，手写表会静默漂移（红线 1）。
+ *
+ * ⚠️ **`handrailA` 的 0≡2、1≡3 几何等价**（臂集合都是 ±X 或 ±Z，实测 `railArmSet` 逐位相同）。
+ * 故与用户样例比对必须按**臂集合**而不是 orient 数值，否则会把等价写法误判成不符。
+ *
+ * ⚠️ **刻意不用 `handrailB`**：其臂只伸到 ±0.25（格中心），与邻居在格边界断开 ⇒ 排上出现
+ * 看不见的缺口（`test-arena.js` / `test-medieval-ship.js` 已钉住这条约束）。
+ */
+const RAIL_DIRS = Object.freeze([['+X', 1, 0], ['-X', -1, 0], ['+Z', 0, 1], ['-Z', 0, -1]]);
+const RAIL_ARMS = Object.freeze(['+X', '-X', '+Z', '-Z']);
+const RAIL_OPP = Object.freeze({ '+X': '-X', '-X': '+X', '+Z': '-Z', '-Z': '+Z' });
+const railAxis = (a) => (a === '+X' || a === '-X' ? 'X' : 'Z');
+
+/**
+ * 算出每个栏杆格的 (方块, 朝向)。
+ *
+ * @param {Map<string,{block:string,meta:number}>} cells 已映射的产物（栏杆此时是 vertical_pillar）
+ * @returns {Map<string,{name:string,orient:number}>}
+ */
+export function computeRailOrientations(cells) {
+  const isRail = (x, y, z) => cells.get(`${x},${y},${z}`)?.block === 'vertical_pillar';
+  // ⚠️ 实心邻居判据必须排除 air 与 vine（藤蔓不是支撑）
+  const isSolid = (x, y, z) => {
+    const b = cells.get(`${x},${y},${z}`)?.block;
+    return b !== undefined && b !== 'air' && b !== 'vine';
+  };
+
+  // 按 (x,z) 分柱，柱内按 y 连续切段
+  const columns = new Map();
+  for (const [k, c] of cells) {
+    if (c.block !== 'vertical_pillar') continue;
+    const [x, y, z] = k.split(',').map(Number);
+    const ck = `${x},${z}`;
+    if (!columns.has(ck)) columns.set(ck, []);
+    columns.get(ck).push(y);
+  }
+  const segments = [];
+  for (const [ck, ys] of columns) {
+    const [x, z] = ck.split(',').map(Number);
+    ys.sort((a, b) => a - b);
+    let cur = [ys[0]];
+    for (let i = 1; i < ys.length; i++) {
+      if (ys[i] === ys[i - 1] + 1) cur.push(ys[i]);
+      else { segments.push({ x, z, ys: cur }); cur = [ys[i]]; }
+    }
+    segments.push({ x, z, ys: cur });
+  }
+
+  const out = new Map();
+  for (const seg of segments) {
+    const conn = { '+X': 0, '-X': 0, '+Z': 0, '-Z': 0 };
+    const sup = { '+X': 0, '-X': 0, '+Z': 0, '-Z': 0 };
+    for (const y of seg.ys) {
+      for (const [a, dx, dz] of RAIL_DIRS) {
+        if (isRail(seg.x + dx, y, seg.z + dz)) conn[a] += 1;
+        if (isSolid(seg.x + dx, y, seg.z + dz)) sup[a] += 1;
+      }
+    }
+    const connArms = RAIL_ARMS.filter((a) => conn[a] > 0);
+    let hit = null;
+    if (connArms.length === 1) {
+      // 单臂 = 排的端头 ⇒ 沿自身轴延伸成直段（手拉手），不拐角
+      const a = connArms[0];
+      hit = railPlacementFor([a, RAIL_OPP[a]]);
+    } else if (connArms.length >= 2) {
+      const order = connArms.slice().sort((a, b) => conn[b] - conn[a] || RAIL_ARMS.indexOf(a) - RAIL_ARMS.indexOf(b));
+      for (const a of order) {
+        if (conn[RAIL_OPP[a]] > 0) { hit = railPlacementFor([a, RAIL_OPP[a]]); break; }
+      }
+      if (!hit) {
+        outer: for (let i = 0; i < order.length; i++) {
+          for (let j = i + 1; j < order.length; j++) {
+            if (railAxis(order[i]) === railAxis(order[j])) continue;
+            hit = railPlacementFor([order[i], order[j]]);
+            break outer;
+          }
+        }
+      }
+    } else {
+      // 孤立（窗内竖条）：支撑信号里的共线对，否则该轴直段
+      const order = RAIL_ARMS.filter((a) => sup[a] > 0)
+        .sort((a, b) => sup[b] - sup[a] || RAIL_ARMS.indexOf(a) - RAIL_ARMS.indexOf(b));
+      for (const a of order) {
+        if (sup[RAIL_OPP[a]] > 0) { hit = railPlacementFor([a, RAIL_OPP[a]]); break; }
+      }
+      if (!hit && order.length) hit = railPlacementFor([order[0], RAIL_OPP[order[0]]]);
+      if (!hit) hit = railPlacementFor(['+X', '-X']);
+    }
+    for (const y of seg.ys) out.set(`${seg.x},${y},${seg.z}`, hit);
+  }
+  return out;
+}
+
+/** 栏杆朝向分布直方图（写进 meta.json 供门禁逐档比对） */
+function railHistogram(orient) {
+  const h = new Map();
+  for (const { name, orient: o } of orient.values()) {
+    const k = `${name}:${o}`;
+    h.set(k, (h.get(k) || 0) + 1);
+  }
+  return Object.fromEntries([...h.entries()].sort());
+}
 // ---------------------------------------------------------------- 物化（空气分层 / 支撑柱 / 变体）
 
 /** 源方块名 → 目标方块名。空串 = 丢弃。未收录的名字一律 throw（不静默变 air） */
@@ -428,8 +550,14 @@ function addPillars(out, raw, keep) {
     for (let yy = y - 1; yy >= STRUCT_FLOOR_Y; yy--) {
       const kk = `${x},${yy},${z}`;
       if (SOLID_SRC(raw.get(kk))) break;
-      if (keep.has(kk)) { break; }        // 不穿房间地板
-      if (!out.has(kk) || out.get(kk) === 'air') { out.set(kk, 'stone_bricks'); n++; }
+      // ⚠️ **不穿房间地板**：去掉这条会有 173 格柱格落进 keep（实测）。
+      //    `intoRoom` 统计「**已写入的柱格** ∈ keep」（review M1：旧版声明后从未累加，
+      //    是死指标）。注意不能统计「停住的那一格」—— 它本就没被写，永远不算穿房间。
+      if (keep.has(kk)) break;
+      if (!out.has(kk) || out.get(kk) === 'air') {
+        out.set(kk, 'stone_bricks'); n++;
+        if (keep.has(kk)) intoRoom++;
+      }
     }
     cells += n;
     if (n > maxLen) maxLen = n;
@@ -595,12 +723,26 @@ export function materialize(placed) {
   // 但必须在台阶朝向之后，否则藤蔓可能盖掉台阶格）
   const vineStats = addVines(cells, keep, bbox, placed);
 
+  // 栏杆朝向 pass（**必须在藤蔓之后**：支撑邻居判据要排除 vine，
+  // 先算朝向会把还没长出的藤蔓当空气 ⇒ 孤立段兜底方向不同）。
+  const railOrient = computeRailOrientations(cells);
+  for (const [k, hit] of railOrient) {
+    const cur = cells.get(k);
+    if (!cur || cur.block !== 'vertical_pillar') {
+      throw new Error(`栏杆朝向 pass 命中了非 vertical_pillar：${k} → ${cur?.block}`);
+    }
+    cur.block = hit.name;
+    cur.meta = hit.orient;
+  }
+
   return {
     cells, bbox, keep, sky,
     stats: {
       ...pillarStats,
       stepOrient: Object.fromEntries([...stepOrient.entries()].sort()),
       vine: vineStats,
+      rail: railHistogram(railOrient),
+      railTotal: railOrient.size,
     },
   };
 }
@@ -660,9 +802,10 @@ function census() {
   console.log("\n=== 产物 ===");
   console.log(`格数 ${m.cells.size}  air ${cnt.get("air")}  palette ${cnt.size}`);
   console.log(`bbox ${mxx-mnx+1}×${mxy-mny+1}×${mxz-mnz+1}  x[${mnx},${mxx}] y[${mny},${mxy}] z[${mnz},${mxz}]`);
-  console.log(`天空空气丢弃 ${m.sky}  柱 ${m.stats.roots} 根 / ${m.stats.cells} 格（最长 ${m.stats.maxLen}）`);
+  console.log(`天空空气丢弃 ${m.sky}  柱 ${m.stats.roots} 根 / ${m.stats.cells} 格（最长 ${m.stats.maxLen}，穿房间 ${m.stats.intoRoom}）`);
   console.log("palette:", JSON.stringify([...cnt.entries()].sort((a,b)=>b[1]-a[1])));
   console.log("台阶朝向:", JSON.stringify(m.stats.stepOrient));
+  console.log(`栏杆 ${m.stats.railTotal} 格：${JSON.stringify(m.stats.rail)}`);
   console.log(`藤蔓 ${m.stats.vine.count} 格（keep 内 ${m.stats.vine.intoKeep} / 天空 ${m.stats.vine.sky}），源点 ${m.stats.vine.spots}`);
   if (M.contentCells !== undefined) {
     if (m.cells.size !== M.contentCells) failures.push(`产物格数 ${m.cells.size} ≠ ${M.contentCells}`);
@@ -805,6 +948,17 @@ function bake() {
   if (JSON.stringify(m.stats.stepOrient) !== JSON.stringify(wantSteps)) {
     fail.push(`台阶朝向 ${JSON.stringify(m.stats.stepOrient)} ≠ ${JSON.stringify(wantSteps)}`);
   }
+  // 栏杆：朝向 pass 把 2682 格 vertical_pillar 拆成 handrailA（直段）+ handrail（转角），
+  // 各自格数随算法浮动但**总数不变**（只改朝向不增删格）。
+  const railTotal = (counts.get('handrail') || 0) + (counts.get('handrailA') || 0);
+  if (railTotal !== M.railCells) fail.push(`栏杆总数 ${railTotal} ≠ ${M.railCells}（朝向 pass 增删了格？）`);
+  if (m.stats.intoRoom !== 0) fail.push(`支撑柱穿房间 ${m.stats.intoRoom} 格 ≠ 0（「遇保留空气即停」被去掉？）`);
+  if (palette.includes('handrailB')) fail.push('产物含 handrailB —— 其臂只伸到格中心、接不上邻居');
+  if (palette.includes('vertical_pillar')) fail.push('产物仍含 vertical_pillar —— 栏杆朝向 pass 未生效');
+  const wantRail = Object.fromEntries(Object.entries(M.railOrientationCounts).sort());
+  if (JSON.stringify(m.stats.rail) !== JSON.stringify(wantRail)) {
+    fail.push(`栏杆朝向 ${JSON.stringify(m.stats.rail)} ≠ ${JSON.stringify(wantRail)}`);
+  }
   if (fail.length) {
     console.log('✗ 产物契约不符，不写盘：');
     for (const f of fail) console.log(`  - ${f}`);
@@ -826,6 +980,8 @@ function bake() {
     pillarMaxLen: m.stats.maxLen,
     skyAirDropped: m.sky,
     stepOrientationCounts: m.stats.stepOrient,
+    railOrientationCounts: m.stats.rail,
+    railCells: m.stats.railTotal,
     pieceCount: placed.length,
     pieceHist: pieceHistogram(placed),
     origin: { minY: mny },

@@ -3860,20 +3860,40 @@ async function checkJungleFortress() {
     channels[reg.cullTable[id]] += count;
   }
 
-  // ⑭ 零新增方块（用户裁定：全部用既有方块）—— palette 必须全在 v3.12 既有集合内
-  //    判据：palette 里不得出现本轮新注册的名字。本轮**没有**新注册任何方块，
-  //    故这条等价于「palette ⊆ 既有 126 方块」，由 ⑬ 的注册检查覆盖；
-  //    这里额外钉「不含 iron / handrail / stone_diorite_step」三个被实测否决的候选。
-  for (const banned of ['iron', 'handrail', 'handrailA', 'stone_diorite_step']) {
+  // ⑧ 零新增方块（用户裁定：全部用既有方块）—— palette 必须全已注册（由 ⑦ 覆盖）。
+  //    额外钉「不含被实测否决的候选」：
+  //      · `iron`：整块不透明会把窗洞堵死（玩法级差异）；
+  //      · `stone_diorite_step`：tile 均色 189 比墙体 113 亮 76；
+  //      · `handrailB`：臂只伸到格中心、接不上邻居（排上出现看不见的缺口）；
+  //      · `vertical_pillar`：v3.13b 用户裁定改成手拉手栏杆后它不应再出现。
+  //    ⚠️ **`handrail` / `handrailA` 是用户明确要的**（「只要能能手拉手的相邻栏杆，
+  //    就换成我修改的样子」）—— 不得把它们列入禁单（初版门禁曾禁，与用户裁定相反）。
+  for (const banned of ['iron', 'stone_diorite_step', 'handrailB', 'vertical_pillar']) {
     if (json.palette.includes(banned)) {
-      fail(`palette 含被否决的候选 "${banned}"（iron 堵死窗洞 / handrail cutout ×2.8 / diorite 亮 76）`);
+      fail(`palette 含被否决的候选 "${banned}"（iron 堵死窗洞 / diorite 亮 76 / handrailB 接不上 / vertical_pillar 未转手拉手）`);
     }
+  }
+  // ⑨ 栏杆朝向逐档 + 总数守恒（手拉手 pass 只拆分不增删格）
+  const railHist = new Map();
+  for (let i = 0; i < json.blocks.length; i += STRIDE) {
+    const name = json.palette[json.blocks[i + 3]];
+    if (name !== 'handrail' && name !== 'handrailA') continue;
+    const k = `${name}:${json.blocks[i + 4]}`;
+    railHist.set(k, (railHist.get(k) || 0) + 1);
+  }
+  const railTotal = [...railHist.values()].reduce((a, b) => a + b, 0);
+  if (railTotal !== M.railCells) fail(`栏杆总格数 ${railTotal} ≠ ${M.railCells}`);
+  const wantRail = Object.fromEntries(Object.entries(M.railOrientationCounts).sort());
+  const gotRail = Object.fromEntries([...railHist.entries()].sort());
+  if (JSON.stringify(gotRail) !== JSON.stringify(wantRail)) {
+    fail(`栏杆朝向分布 ${JSON.stringify(gotRail)} ≠ ${JSON.stringify(wantRail)}`);
   }
 
   if (failures.length === before) {
     const CULL = ['opaque', 'cutout', 'transparent', 'none'];
     infos.push(`[丛林要塞] ${n} 格 / ${M.width}×${M.height}×${M.depth} / floorRow ${json.floorRow}`
       + `（三处一致）/ air ${byType.get('air')} / vine ${byType.get('vine')}`
+      + ` / 栏杆 ${railTotal}（直段 ${byType.get('handrailA') || 0} + 转角 ${byType.get('handrail') || 0}）`
       + ` / ${json.palette.length} 种全已注册 / 件数 ${meta.pieceCount}（17 种件）`
       + ` / 台阶 ${[...stepOrient.values()].reduce((a, b) => a + b, 0)} 个四档`
       + ` / 柱 ${meta.pillarRoots} 根 ${meta.pillarCells} 格 / ${CULL.map((c, i) => `${c} ${channels[i]}`).join(' ')}`

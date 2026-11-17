@@ -178,7 +178,7 @@ export const JUNGLE_FORTRESS_METRICS = Object.freeze({
     floorRow: FLOOR_ROW,
     contentCells: 81238,
     airCells: 15536,
-    paletteSize: 12,
+    paletteSize: 13,
     skyAirDropped: 13445,
     pillarRoots: 6498,
     pillarCells: 6446,
@@ -187,6 +187,8 @@ export const JUNGLE_FORTRESS_METRICS = Object.freeze({
     /** 藤蔓分解：822 格占走 keep 空气（不增格数）+ 1207 格长在天空（新增格） */
     vineIntoKeep: 822,
     vineSky: 1207,
+    /** 栏杆总格数（= 原 2682 格 vertical_pillar，朝向 pass 只拆分不增删） */
+    railCells: 2682,
 
     /** 逐目标方块格数 */
     targetCounts: Object.freeze({
@@ -195,13 +197,32 @@ export const JUNGLE_FORTRESS_METRICS = Object.freeze({
       cobblestone: 15085,
       stone_bricks: 12092,
       tuff_bricks: 3012,
-      vertical_pillar: 2682,
+      handrailA: 2626,
       vine: 2029,
       cobblestone_step: 156,
       dirt: 60,
       red_mushroom: 60,
+      handrail: 56,
       chest: 18,
       water: 5,
+    }),
+
+    /**
+     * 栏杆朝向分布（v3.13b 用户裁定「手拉手」，**冻结实测值**）。
+     *
+     * ⚠️ `handrailA` 只有 0/1 两档：其 0≡2、1≡3（180° 对称，臂集合逐位相同），
+     * `railPlacementFor` 按 orient 升序返回首个命中 ⇒ 恒为 0（X 轴）或 1（Z 轴）。
+     * `handrail` 是转角件，四向俱全。
+     *
+     * 与用户手工样例（进度包 seed 3183162，43 格）**43/43 几何吻合**。
+     */
+    railOrientationCounts: Object.freeze({
+      'handrail:0': 14,
+      'handrail:1': 15,
+      'handrail:2': 14,
+      'handrail:3': 13,
+      'handrailA:0': 1589,
+      'handrailA:1': 1037,
     }),
 
     /**
