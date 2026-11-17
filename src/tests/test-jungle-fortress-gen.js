@@ -22,14 +22,16 @@ import {
   JUNGLE_FORTRESS_FLOOR_ROW, JUNGLE_FORTRESS_HEIGHT,
 } from '../gen/structures/jungle-fortress-data.js';
 
-// ---- 冻结值（Task 2 = 无藤蔓基线；Task 3 重标为 81238 / 15536 / 12）----
-const CONTENT_CELLS = 80031;
-const AIR_CELLS = 16358;
-const PALETTE_SIZE = 11;
+// ---- 冻结值（Task 3 起含藤蔓）----
+const CONTENT_CELLS = 81238;
+const AIR_CELLS = 15536;
+const PALETTE_SIZE = 12;
 const PRODUCT_W = 159;
 const PRODUCT_D = 155;
 /** 支撑柱穿房间格数（必须恒 0） */
 const PILLAR_INTO_ROOM = 0;
+/** 藤蔓格数（Task 3） */
+const VINE_CELLS = 2029;
 
 // ==================== 产物注册与加载 ====================
 
@@ -145,4 +147,64 @@ test('丛林要塞：支撑柱不穿房间地板（柱格 ∩ 房间空气 = 0�
   assertEqual(airAt.size, AIR_CELLS,
     `房间空气格数 ${AIR_CELLS}（实际 ${airAt.size}）。支撑柱穿房间会把 air 换成石砖 ⇒ 此数变少`);
   assertEqual(PILLAR_INTO_ROOM, 0, '穿房间格数冻结为 0（烘焙期 --census 逐格核对）');
+});
+// ==================== 藤蔓（Task 3）====================
+
+test('丛林要塞：藤蔓格数 = 冻结值，且 air 相应减少（air→vine 替换不增格数）', async () => {
+  const data = await loadStructure('jungleFortress');
+  const vine = data.blocks.filter((b) => b.type === 'vine');
+  assertEqual(vine.length, VINE_CELLS,
+    `藤蔓格数必须是 ${VINE_CELLS}（实际 ${vine.length}）`);
+  // 2029 = 822（占走 keep 空气）+ 1207（长在天空，新增格）
+  // 故 air 16358 − 822 = 15536，总格 80031 + 1207 = 81238
+  assertEqual(CONTENT_CELLS - 80031, 1207, '天空藤蔓新增 1207 格');
+  assertEqual(16358 - AIR_CELLS, 822, 'keep 空气被藤蔓占走 822 格');
+  assertEqual(VINE_CELLS, 822 + 1207, '藤蔓 = keep 内 822 + 天空 1207');
+});
+
+test('丛林要塞：零悬空藤蔓（每格至少一个水平实心邻居）', async () => {
+  const data = await loadStructure('jungleFortress');
+  const at = new Map(data.blocks.map((b) => [`${b.x},${b.y},${b.z}`, b.type]));
+  const solid = (x, y, z) => {
+    const t = at.get(`${x},${y},${z}`);
+    return t !== undefined && t !== 'air' && t !== 'vine';
+  };
+  let orphan = 0;
+  for (const b of data.blocks) {
+    if (b.type !== 'vine') continue;
+    const ok = [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dz]) => solid(b.x + dx, b.y, b.z + dz));
+    if (!ok) orphan++;
+  }
+  assertEqual(orphan, 0,
+    `悬空藤蔓必须为 0（实际 ${orphan}）—— 无水平依附的藤蔓会浮在空中`);
+});
+
+test('丛林要塞：地板层以下的藤蔓全在房间内（不被整形填石埋掉）', async () => {
+  const data = await loadStructure('jungleFortress');
+  const airAt = new Set(data.blocks.filter((b) => b.type === 'air').map((b) => `${b.x},${b.y},${b.z}`));
+  // 地板层 ny=13；其下的藤蔓若不在「原本是房间内腔」的位置，就会被整形填实埋掉。
+  // 判据：地下藤蔓所在列的同层必须有空气邻居（说明它在房间腔体内，而非实心岩层里的孤格）
+  let buried = 0;
+  for (const b of data.blocks) {
+    if (b.type !== 'vine' || b.y >= JUNGLE_FORTRESS_FLOOR_ROW) continue;
+    const near = [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dz]) => airAt.has(`${b.x + dx},${b.y},${b.z + dz}`));
+    if (!near) buried++;
+  }
+  assertEqual(buried, 0,
+    `地板层以下的藤蔓必须贴着房间腔体（实际 ${buried} 格孤立）—— 否则被整形填石埋掉`);
+});
+
+test('丛林要塞：藤蔓不撑大 footprint（HALF_X/HALF_Z 不变）', async () => {
+  const data = await loadStructure('jungleFortress');
+  let mnx = Infinity, mxx = -Infinity, mnz = Infinity, mxz = -Infinity;
+  for (const b of data.blocks) {
+    if (b.type === 'air') continue;
+    if (b.x < mnx) mnx = b.x; if (b.x > mxx) mxx = b.x;
+    if (b.z < mnz) mnz = b.z; if (b.z > mxz) mxz = b.z;
+  }
+  // 藤蔓的 xz±3 偏移会伸到 footprint 外 ⇒ 必须钳制，否则 bbox 159→160、HALF_X 80→81
+  assertEqual(Math.max(-mnx, mxx), JUNGLE_FORTRESS_HALF_X,
+    `加藤蔓后 x 半宽仍须 = ${JUNGLE_FORTRESS_HALF_X}（实际 ${Math.max(-mnx, mxx)}）`);
+  assertEqual(Math.max(-mnz, mxz), JUNGLE_FORTRESS_HALF_Z,
+    `加藤蔓后 z 半宽仍须 = ${JUNGLE_FORTRESS_HALF_Z}（实际 ${Math.max(-mnz, mxz)}）`);
 });

@@ -27,7 +27,7 @@ import {
   JUNGLE_FORTRESS_SOURCE_DIR, JUNGLE_FORTRESS_PIECES,
   JUNGLE_FORTRESS_ASSEMBLE, JUNGLE_FORTRESS_POOL_WEIGHTS, JUNGLE_FORTRESS_POOL_FALLBACK,
   JUNGLE_FORTRESS_METRICS, jungleFortressInputFingerprint, FACING_TO_ORIENT,
-  JUNGLE_FORTRESS_JSON, JUNGLE_FORTRESS_META,
+  JUNGLE_FORTRESS_JSON, JUNGLE_FORTRESS_META, JUNGLE_FORTRESS_VINE,
 } from './jungle-fortress-fingerprint.mjs';
 
 /**
@@ -317,6 +317,19 @@ export const STONE_VARIANTS = Object.freeze({
 /** 地板层在**结构坐标**里的 y（center_room 的满铺实心层）。归一化后 = 13。 */
 export const STRUCT_FLOOR_Y = 6;
 
+/**
+ * 藤蔓参数（spec §6 开放项 → 用户裁定纳入本期）。
+ *
+ * 上游 `StructureVineAndLeaves`：attempts 10 / length 3 / xz_range 3 / y = ri(4)−1。
+ *
+ * ⚠️ **有意偏离**：上游的 `vine_breakage` 是**另一个算法**
+ * （`StructureVineBreakage`：attempts 15 / length 4 / y = ri(5)−1，且要求起点是实心块
+ * 并**把它打成 cave_air**——实测会打掉 265 格石砖 + 21 格栏杆）。
+ * 本仓**不移植破洞语义**（那超出「加藤蔓」范围、会破坏墙体完整性），
+ * 两个池统一用 vines 的参数只长藤蔓。要破洞观感需独立改动。
+ */
+const VINE_PARAMS = JUNGLE_FORTRESS_VINE;
+
 const SOLID_SRC = (nm) => nm !== undefined && nm !== 'cave_air' && nm !== 'air'
   && nm !== 'structure_void' && nm !== 'red_stained_glass';
 const isAirSrc = (nm) => nm === 'cave_air' || nm === 'air';
@@ -449,6 +462,72 @@ function assignStoneVariants(cells) {
   }
 }
 
+/**
+ * 藤蔓（忠实复刻 StructureVineAndLeaves 的生长部分）。
+ *
+ * 三个钳制**都是载荷性的**，缺一条就静默退化（实测）：
+ *   ① footprint 钳制：xz±3 偏移会伸到占地外 ⇒ bbox 159→160、HALF_X 80→81
+ *     （AGENTS.md「产物 bbox ≠ footprint bbox」同形坑）；
+ *   ② 地下 keep 约束：地板层以下的天空藤蔓会被地形整形填石埋掉（实测 582 格）；
+ *   ③ 允许在**天空空气**里长（只要有水平实心邻居可依附）：
+ *     只允许 keep 内生长 ⇒ vine 从 2029 掉到 829；更严的写法只出 218。
+ *     藤蔓本来就长在墙外天空里（498 个 vines 点里 317 个在天空）。
+ *
+ * @param {Map} cells 基线产物（目标名，含 air / 实心 / 柱）
+ * @param {Set} keep 房间内腔空气集合（结构坐标键）
+ * @param {number[]} bbox [mnx,mxx,mny,mxy,mnz,mxz]
+ */
+function addVines(cells, keep, bbox, placed) {
+  const [mnx, mxx, , , mnz, mxz] = bbox;
+  const rand = mulberry32(VINE_PARAMS.seed);
+  const ri = (n) => Math.floor(rand() * n);
+  const { attempts, length, xzRange, ySpan, pools } = VINE_PARAMS;
+
+  const solidAt = (x, y, z) => {
+    const c = cells.get(`${x},${y},${z}`);
+    return c !== undefined && c.block !== 'air' && c.block !== 'vine';
+  };
+  const freeAt = (x, y, z) => {
+    const c = cells.get(`${x},${y},${z}`);
+    return c === undefined || c.block === 'air';
+  };
+  const hasWall = (x, y, z) =>
+    [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dz]) => solidAt(x + dx, y, z + dz));
+
+  const spots = [];
+  for (const p of placed) {
+    const proto = PIECES.get(p.name);
+    for (const j of proto.jigs) {
+      if (!pools.includes(j.pool)) continue;
+      spots.push(rotPos(j.pos, p.rot, proto.size).map((v, k) => v + p.o[k]));
+    }
+  }
+
+  let count = 0, intoKeep = 0, sky = 0;
+  for (const [ox, oy, oz] of spots) {
+    for (let i = 0; i < attempts; i++) {
+      const x = ox + ri(2 * xzRange + 1) - xzRange;
+      const y = oy + ri(ySpan) - 1;
+      const z = oz + ri(2 * xzRange + 1) - xzRange;
+      if (x < mnx || x > mxx || z < mnz || z > mxz) continue;      // ① footprint 钳制
+      if (y < STRUCT_FLOOR_Y && !keep.has(`${x},${y},${z}`)) continue;  // ② 地下只在房间内
+      if (!freeAt(x, y, z)) continue;
+      // 偏向上界（同上游）：length - ri(ri(length)+1)
+      const maxLen = length - ri(ri(length) + 1);
+      for (let yy = y; yy > y - maxLen; yy--) {
+        if (yy < STRUCT_FLOOR_Y && !keep.has(`${x},${yy},${z}`)) break;
+        if (!freeAt(x, yy, z)) break;
+        if (!hasWall(x, yy, z)) break;                            // canSurvive
+        const kk = `${x},${yy},${z}`;
+        if (keep.has(kk)) intoKeep++; else sky++;
+        cells.set(kk, { block: 'vine', meta: 0 });                // ③ 天空也可长
+        count++;
+      }
+    }
+  }
+  return { spots: spots.length, count, intoKeep, sky };
+}
+
 /** facing 随件旋转后再查 FACING_TO_ORIENT */
 const FACING_VEC = Object.freeze({ west: [-1, 0], east: [1, 0], south: [0, 1], north: [0, -1] });
 function rotatedFacing(facing, rot) {
@@ -512,9 +591,17 @@ export function materialize(placed) {
   }
   assignStoneVariants(cells);
 
+  // 藤蔓（在变体分配之后：它只占 air/天空，不碰石砖族，顺序不敏感；
+  // 但必须在台阶朝向之后，否则藤蔓可能盖掉台阶格）
+  const vineStats = addVines(cells, keep, bbox, placed);
+
   return {
     cells, bbox, keep, sky,
-    stats: { ...pillarStats, stepOrient: Object.fromEntries([...stepOrient.entries()].sort()) },
+    stats: {
+      ...pillarStats,
+      stepOrient: Object.fromEntries([...stepOrient.entries()].sort()),
+      vine: vineStats,
+    },
   };
 }
 
@@ -576,6 +663,7 @@ function census() {
   console.log(`天空空气丢弃 ${m.sky}  柱 ${m.stats.roots} 根 / ${m.stats.cells} 格（最长 ${m.stats.maxLen}）`);
   console.log("palette:", JSON.stringify([...cnt.entries()].sort((a,b)=>b[1]-a[1])));
   console.log("台阶朝向:", JSON.stringify(m.stats.stepOrient));
+  console.log(`藤蔓 ${m.stats.vine.count} 格（keep 内 ${m.stats.vine.intoKeep} / 天空 ${m.stats.vine.sky}），源点 ${m.stats.vine.spots}`);
   if (M.contentCells !== undefined) {
     if (m.cells.size !== M.contentCells) failures.push(`产物格数 ${m.cells.size} ≠ ${M.contentCells}`);
     if ((cnt.get("air")||0) !== M.airCells) failures.push(`air 格数 ${cnt.get("air")||0} ≠ ${M.airCells}`);

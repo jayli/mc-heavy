@@ -114,6 +114,24 @@ export const JUNGLE_FORTRESS_POOL_WEIGHTS = Object.freeze({
   ]),
 });
 
+/**
+ * 藤蔓参数（唯一权威，进指纹）。
+ *
+ * ⚠️ **有意偏离上游**：`vine_breakage` 在上游是另一个算法
+ * （`StructureVineBreakage`：attempts 15 / length 4 / y=ri(5)−1，且要求起点是实心块
+ * 并**把它打成 cave_air** —— 实测会打掉 265 格石砖 + 21 格栏杆）。
+ * 本仓**不移植破洞语义**（超出「加藤蔓」范围、会破坏墙体完整性），
+ * 两个池统一用 vines 的参数只长藤蔓。要破洞观感需独立改动。
+ */
+export const JUNGLE_FORTRESS_VINE = Object.freeze({
+  seed: 20261118,
+  attempts: 10,
+  length: 3,
+  xzRange: 3,
+  ySpan: 4,
+  pools: Object.freeze(['vines', 'vine_breakage']),
+});
+
 /** 池的 fallback（源 JSON 的 `fallback` 字段） */
 export const JUNGLE_FORTRESS_POOL_FALLBACK = Object.freeze({
   outside: 'terminator',
@@ -153,27 +171,32 @@ export const JUNGLE_FORTRESS_METRICS = Object.freeze({
       'turn_inside_chest': 2,
     }),
 
-    // ---- 产物指标（Task 2 实测冻结，无藤蔓基线；Task 3 重标）----
+    // ---- 产物指标（Task 3 实测冻结，**含藤蔓**）----
     width: 159,
     height: 33,
     depth: 155,
     floorRow: FLOOR_ROW,
-    contentCells: 80031,
-    airCells: 16358,
-    paletteSize: 11,
+    contentCells: 81238,
+    airCells: 15536,
+    paletteSize: 12,
     skyAirDropped: 13445,
     pillarRoots: 6498,
     pillarCells: 6446,
     pillarMaxLen: 10,
+    vineCells: 2029,
+    /** 藤蔓分解：822 格占走 keep 空气（不增格数）+ 1207 格长在天空（新增格） */
+    vineIntoKeep: 822,
+    vineSky: 1207,
 
     /** 逐目标方块格数 */
     targetCounts: Object.freeze({
       mossy_stone: 30503,
-      air: 16358,
+      air: 15536,
       cobblestone: 15085,
       stone_bricks: 12092,
       tuff_bricks: 3012,
       vertical_pillar: 2682,
+      vine: 2029,
       cobblestone_step: 156,
       dirt: 60,
       red_mushroom: 60,
@@ -228,6 +251,7 @@ export function jungleFortressInputFingerprint() {
       JUNGLE_FORTRESS_POOL_WEIGHTS,
       JUNGLE_FORTRESS_POOL_FALLBACK,
       JUNGLE_FORTRESS_METRICS,
+      JUNGLE_FORTRESS_VINE,
       FACING_TO_ORIENT,
     }))
     .digest('hex');

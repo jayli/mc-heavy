@@ -3,10 +3,10 @@
   "width": 159,
   "height": 33,
   "depth": 155,
-  "blocks": 80031,
+  "blocks": 81238,
   "floorRow": 13,
-  "airCells": 16358,
-  "paletteSize": 11,
+  "airCells": 15536,
+  "paletteSize": 12,
   "pillarRoots": 6498,
   "pillarCells": 6446,
   "pillarMaxLen": 10,
@@ -41,8 +41,8 @@
     "minY": -6
   },
   "fingerprints": {
-    "input": "267ff30d44e2a00c:644fb33f78e9b857",
+    "input": "267ff30d44e2a00c:a9ff2e1aba211471",
     "sourceSha256": "267ff30d44e2a00c464ebb32c16950bee43215a18f4b8b7d4eb29e93d1d90705",
-    "paramsSha256": "644fb33f78e9b857adcad8be8779fc67f91b8ae390a6ffa0f36f76c701a3afab"
+    "paramsSha256": "a9ff2e1aba2114719b82a5e1cd12c809b00d7addaedace23c4bbfdbba039988f"
   }
 }
