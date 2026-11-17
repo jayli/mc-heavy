@@ -442,3 +442,195 @@ test('LOS 被实心不透明方块阻挡时不索敌；透明方块不阻挡', a
     return c && Math.abs(c.targetRotation - Math.PI / 2) < 0.3;
   }, setup.id, { timeout: 5_000, polling: 100 });
 });
+
+/**
+ * 造一处「3×3 实心地面 + 中心一株草」的场地，并把玩家飞到斜上方（避开 player-overlap）。
+ *
+ * ⚠️ **地面要自己铺平**：出生点周围是山地/森林，天然地形里找不到「3×3 同高实心 + 上方三格
+ * 只有植物」的场地（实测扫 ±24 格零命中）。铺平后**唯一变量就是中心那一格草**，
+ * 两侧对照才只差一个变量（AGENTS.md：对照脚本与被测代码只差一个变量）。
+ *
+ * ⚠️ 玩家用 `physics.flying = true` 悬停：不飞就会掉到地面上，站位随机 → 射线姿态不可控。
+ */
+async function makeFlatSiteWithPlant(page, plantName) {
+  return page.evaluate(async (plant) => {
+    const g = window.__MC_GAME__;
+    const pl = g.player;
+    const R = g.registry;
+    const px = Math.floor(pl.physics.pos.x);
+    const pz = Math.floor(pl.physics.pos.z);
+    const nameAt = (x, y, z) => R.nameOf(g.world.getBlockId(x, y, z)) ?? 'air';
+    // 找一处 3×3 已加载、且上方三格没有实心障碍的位置（植物可清）
+    let site = null;
+    for (let ox = px + 4; ox <= px + 12 && !site; ox++) {
+      for (let oz = pz - 12; oz <= pz + 12 && !site; oz++) {
+        let ok = true;
+        let groundY = null;
+        for (let dx = -1; dx <= 1 && ok; dx++) {
+          for (let dz = -1; dz <= 1 && ok; dz++) {
+            const x = ox + dx, z = oz + dz;
+            if (!g.world.hasColumn(Math.floor(x / 16), Math.floor(z / 16))) { ok = false; break; }
+            let top = null;
+            for (let y = 90; y > -32; y--) if (g.world.getBlockId(x, y, z) !== 0) { top = y; break; }
+            if (top === null) { ok = false; break; }
+            // 该列的地面 = 最高实心格；它上方只允许空气/植物
+            let gy = null;
+            for (let y = top; y > top - 6; y--) if (g.world.isSolid(x, y, z)) { gy = y; break; }
+            if (gy === null) { ok = false; break; }
+            if (groundY === null) groundY = gy;
+            if (gy !== groundY) { ok = false; break; }
+            for (let y = gy + 1; y <= gy + 3; y++) {
+              const n = nameAt(x, y, z);
+              if (n !== 'air' && !R.isPlant(R.idOf(n))) { ok = false; break; }
+            }
+          }
+        }
+        if (ok && groundY !== null) site = { ox, oz, groundY };
+      }
+    }
+    if (!site) return null;
+    // 铺平 3×3 地面 + 清空上方三格，只在中心种一株植物（plant=null 则不种）
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dz = -1; dz <= 1; dz++) {
+        const x = site.ox + dx, z = site.oz + dz;
+        g.editor.setBlock({ x, y: site.groundY, z, id: R.idOf('stone') });
+        for (let dy = 1; dy <= 3; dy++) g.editor.setBlock({ x, y: site.groundY + dy, z, id: 0 });
+      }
+    }
+    if (plant) {
+      g.editor.setBlock({ x: site.ox, y: site.groundY + 1, z: site.oz, id: R.idOf(plant) });
+    }
+    // 玩家飞到斜上方 3 格（水平离 2.5 格 → 结构 AABB 不相交）
+    pl.physics.flying = true;
+    pl.physics.pos.x = site.ox - 2.5;
+    pl.physics.pos.y = site.groundY + 3;
+    pl.physics.pos.z = site.oz + 0.5;
+    pl.physics.vel.x = 0; pl.physics.vel.y = 0; pl.physics.vel.z = 0;
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    return site;
+  }, plantName);
+}
+
+/**
+ * 真实姿态瞄准某格中心 → 等一帧让 update() 重算 target → 真实 placeBlock()。
+ * ⚠️ **不手塞 target**：本缺陷的落点正是「真实 DDA 命中草格」，手塞会把它测没。
+ */
+async function aimAndPlaceTurret(page, site, aimY) {
+  return page.evaluate(async ({ site, aimY }) => {
+    const g = window.__MC_GAME__;
+    const pl = g.player;
+    const eye = [pl.physics.pos.x, pl.physics.pos.y + 1.62, pl.physics.pos.z];
+    const aim = [site.ox + 0.5, aimY + 0.5, site.oz + 0.5];
+    pl.setTestAim([aim[0] - eye[0], aim[1] - eye[1], aim[2] - eye[2]]);
+    await new Promise((r) => requestAnimationFrame(r));
+    const t = pl.target;
+    const target = t ? {
+      blockPos: [...t.blockPos],
+      name: g.registry.nameOf(g.world.getBlockId(t.blockPos[0], t.blockPos[1], t.blockPos[2])),
+    } : null;
+    const before = g.turrets.count();
+    pl.placeBlock();
+    const after = g.turrets.count();
+    const anchor = after > before ? g.turrets.anchorOf(`turret-${after}`) : null;
+    const baseY = anchor ? anchor[1] - 2 : null;
+    return {
+      target, before, after, anchor, baseY,
+      baseName: anchor
+        ? g.registry.nameOf(g.world.getBlockId(anchor[0], baseY, anchor[2])) : null,
+      plantCellName: g.registry.nameOf(g.world.getBlockId(site.ox, site.groundY + 1, site.oz)),
+      groundName: g.registry.nameOf(g.world.getBlockId(site.ox, site.groundY, site.oz)),
+      pivotY: anchor ? g.turrets.controllers().get(`turret-${after}`)?.pivot()[1] ?? null : null,
+    };
+  }, { site, aimY });
+}
+
+test('地面长草时放炮塔：底座贴地、草被覆盖（与无草对照逐位同高）', async ({ page }) => {
+  test.setTimeout(240_000);
+  await boot(page);
+  // 真实背包点击路径选中炮塔（M7 教训：只走测试 API 会漏背包分流缺陷）
+  await page.evaluate(() => window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyZ' })));
+  await page.waitForFunction(() =>
+    document.getElementById('inventory-modal').style.display === 'flex', null, { timeout: 5_000 });
+  const picked = await page.evaluate(() => {
+    const slots = [...document.querySelectorAll('#inventory-grid .mc-slot')];
+    const slot = slots.find((s) => s.querySelector('.mc-item-name')?.textContent === 'turret_alias_block');
+    if (!slot) return null;
+    slot.click();
+    return window.__MC_GAME__.player.inventory.selectedSlot;
+  });
+  expect(picked).not.toBe(null);
+  await page.evaluate(() => window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Escape' })));
+  await page.waitForFunction(() => window.__MC_GAME__.uiModal === false, null, { timeout: 5_000 });
+
+  // ---- A 侧：中心一株 short_grass ----
+  const siteA = await makeFlatSiteWithPlant(page, 'short_grass');
+  expect(siteA, '须造出 3×3 平地场地').not.toBe(null);
+  const withPlant = await aimAndPlaceTurret(page, siteA, siteA.groundY + 1);
+  // 前提：主射线真的命中了那株草（否则本用例测不到缺陷）
+  expect(withPlant.target.blockPos).toEqual([siteA.ox, siteA.groundY + 1, siteA.oz]);
+  expect(withPlant.target.name).toBe('short_grass');
+  expect(withPlant.after).toBe(withPlant.before + 1);
+
+  // ---- B 侧：同一场地清掉草（唯一变量），再放一座 ----
+  const siteB = await page.evaluate((s) => {
+    const g = window.__MC_GAME__;
+    // 清掉上一座炮塔的 11 格，回到「裸地」初态
+    const a = g.turrets.anchorOf(`turret-${g.turrets.count()}`);
+    for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) {
+      g.editor.setBlock({ x: a[0] + dx, y: a[1] - 2, z: a[2] + dz, id: 0 });
+    }
+    g.editor.setBlock({ x: a[0], y: a[1] - 1, z: a[2], id: 0 });
+    g.editor.setBlock({ x: a[0], y: a[1], z: a[2], id: 0 });
+    g.editor.setBlock({ x: s.ox, y: s.groundY + 1, z: s.oz, id: 0 });
+    return s;
+  }, siteA);
+  const noPlant = await aimAndPlaceTurret(page, siteB, siteB.groundY);
+  expect(noPlant.target.name).toBe('stone');
+  expect(noPlant.after).toBe(noPlant.before + 1);
+
+  // ⚠️ **判据是两侧绝对高度相等**，不是「有草侧低于某个数」：只看单侧时
+  // 「整座炮塔上移一格」在内部一致（锚点/底座/柱同步偏移），断言会全绿 —— 缺陷正是该形态。
+  expect(withPlant.baseY, '有草与无草的底座必须同高').toBe(noPlant.baseY);
+  expect(withPlant.baseY).toBe(siteA.groundY + 1);          // 底座 = 地面之上第一格
+  expect(withPlant.anchor[1]).toBe(siteA.groundY + 3);
+  expect(withPlant.baseName).toBe('iron_ore');
+  expect(withPlant.plantCellName, '草格被底座覆盖').toBe('iron_ore');
+  expect(withPlant.groundName, '地面格本身不被替换').toBe('stone');
+  // pivot 由 blockEntity.origin 派生 ⇒ 它也必须与无草侧同高（否则渲染/炮口整体高一格）
+  expect(withPlant.pivotY).toBe(noPlant.pivotY);
+});
+
+test('3×3 底座里另有一株草：整座炮塔仍放得下且那株草被覆盖', async ({ page }) => {
+  test.setTimeout(240_000);
+  await boot(page);
+  const site = await makeFlatSiteWithPlant(page, null);
+  expect(site).not.toBe(null);
+  expect(await page.evaluate(() => {
+    const inv = window.__MC_GAME__.player.inventory;
+    const idx = inv.slots.findIndex((s) => s.item === 'turret_alias_block');
+    inv.selectSlot(idx);
+    return idx;
+  })).toBeGreaterThanOrEqual(0);
+  // 中心是裸地（origin 合法），但底座另一格长草 —— 旧 occupied 判据会整座拒放
+  const r = await page.evaluate(async (s) => {
+    const g = window.__MC_GAME__;
+    g.editor.setBlock({ x: s.ox + 1, y: s.groundY + 1, z: s.oz + 1, id: g.registry.idOf('bush_grass') });
+    const before = g.turrets.count();
+    const res = g.placeTurret([s.ox, s.groundY, s.oz]);
+    const anchor = res.ok ? res.anchor : null;
+    let iron = 0;
+    if (anchor) {
+      for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) {
+        if (g.world.getBlockId(anchor[0] + dx, anchor[1] - 2, anchor[2] + dz) === g.registry.idOf('iron_ore')) iron++;
+      }
+    }
+    return {
+      ok: res.ok, reason: res.reason ?? null, grew: g.turrets.count() - before, iron,
+      cornerName: g.registry.nameOf(g.world.getBlockId(s.ox + 1, s.groundY + 1, s.oz + 1)),
+    };
+  }, site);
+  expect(r.ok, `邻格有草不得拒放（reason=${r.reason}）`).toBe(true);
+  expect(r.grew).toBe(1);
+  expect(r.iron).toBe(9);
+  expect(r.cornerName).toBe('iron_ore');
+});

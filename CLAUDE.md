@@ -474,6 +474,12 @@ scheduler/physics）再加 `npm run bench -- --check`。计划里标「冻结」
 - 「绑定在某个 column 的派生 controller」的装配必须早于 `_waitForColumn`，否则首个 ready 回调
   拿不到 service（形态：装置不工作，而锚点、索引、方块全对）。多格结构的 origin 用命中格
   `blockPos`，单格实体（矿车）用 `prevPos`。
+- **多格结构的 origin 必须先归一到地面格**（v3.13 炮塔悬空）：主射线对「非空气且非水」一律命中
+  ⇒ 地面长草时 `blockPos` 是**草格**，直接当 origin 会让底座落在「草格+1」= 地面+2 而悬空。
+  归一（`isPlant` 则下沉一格，**只一格**）与「蓝图格允许覆盖植物」都写在**服务层** `place()` 入口，
+  不写 `Player.placeBlock()` —— `game.placeTurret()` 与背包分流是两个入口，写 player 里只修一条。
+  `registry.isPlant` 派生自 `solidTable=0 && cullTable=cutout`（不写名字白名单，新植物自动纳入）；
+  水与 alias 刻意不算（否则炮塔会沉到水底）。⚠️ 巢穴的同类判据尚未改。
 - 玩家位置/设置的持久化字段写进既有 `meta` 行并 **merge** 后整行 put；`_discardEdits()` 必须把
   「位置写盘」置为未启用，否则换世界/清档后 `beforeunload` 会把旧世界坐标写回新世界。
 - 翻转一个设置的**默认值**时要带 `settingsVersion` 迁移：旧存档里那个值是「默认值为旧值时顺带写下的」，

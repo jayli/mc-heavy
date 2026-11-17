@@ -56,43 +56,62 @@ export class TurretService {
    * 为什么放不下去）；且三种位置原因互不掩盖，便于逐条断言。
    * 任何失败都在调 editor **之前**返回 —— 失败路径零世界写入。
    *
+   * ⚠️ **origin 先归一到地面格**（`_groundOrigin`）：命中格是草/花时下沉一格，
+   * 否则底座会落在「草格 +1」而悬空（用户 2026-11-18 报告）。归一在**服务层**而不是
+   * `Player.placeBlock()`：`game.placeTurret()` 与背包分流是两个入口，写在 player 里
+   * 只修一条（M7「两条放置路径一测一用」的同类撕裂）。
+   *
    * @param {{origin:[number,number,number],
    *          playerAabb: {minX,maxX,minY,maxY,minZ,maxZ}|null, rotation?: number}} req
    * @returns {{ok:true, id:string, anchor:[number,number,number]} |
    *           {ok:false, reason:'limit'|'bounds'|'occupied'|'player-overlap'}}
    */
   place({ origin, playerAabb, rotation = 0 }) {
-    // ① bounds：任一格越界或目标 column 未加载
-    if (!this.blueprint.inWorldBounds(origin)) return { ok: false, reason: 'bounds' };
-    const changes = this.blueprint.changesAt(origin);
+    // ① 归一 origin：命中格是地表植物（草/花/藤…）时下沉一格到它脚下的地面格。
+    //
+    // ⚠️ **这条是用户 2026-11-18 报告的「炮塔悬空」缺陷的根因修点**：主射线的命中判据是
+    // 「非空气且非水即命中」⇒ 地面上长着一株草时命中的是**草格**，`placeBlock()` 把它当
+    // origin 传进来，蓝图 `BASE_DY=1` 于是把底座放到「草格 +1」= 地面 +2 → 炮塔与地面之间
+    // 空一格（实测 seed 12345 地面 (287,5,104)：有草底座 y=7 / 无草 y=6）。
+    //
+    // **只下沉一格**，不做「一路向下找实心」：后者会把叠放的植物/装饰一次穿透好几层，
+    // 且会在水面上把炮塔沉到水底（`isPlant` 刻意不含水，见 block-registry）。
+    // 下沉后的地面格本身仍可能是植物（连着两株），那属于「原地放置」的既有语义，不多管。
+    const base = this._groundOrigin(origin);
+    // ② bounds：任一格越界或目标 column 未加载
+    if (!this.blueprint.inWorldBounds(base)) return { ok: false, reason: 'bounds' };
+    const changes = this.blueprint.changesAt(base);
     for (const c of changes) {
       if (!this.world.hasColumn(Math.floor(c.x / 16), Math.floor(c.z / 16))) {
         return { ok: false, reason: 'bounds' };
       }
     }
-    // ② occupied：所有蓝图位置必须为空
+    // ③ occupied：蓝图位置必须是空气**或可被覆盖的植物**。
+    // ⚠️ 旧判据是「11 格全为空气」⇒ 3×3 底座里只要有一格长草，整座炮塔就放不下去
+    // （玩家看到的是「点了没反应」）。植物无碰撞、可被方块覆盖，与单格放置同口径。
     for (const c of changes) {
-      if (this.world.getBlockId(c.x, c.y, c.z) !== 0) return { ok: false, reason: 'occupied' };
+      const id = this.world.getBlockId(c.x, c.y, c.z);
+      if (id !== 0 && !this.registry.isPlant(id)) return { ok: false, reason: 'occupied' };
     }
-    // ③ player-overlap：结构 AABB 与玩家 AABB 相交（不得把玩家埋进结构里）
+    // ④ player-overlap：结构 AABB 与玩家 AABB 相交（不得把玩家埋进结构里）
     if (playerAabb) {
-      const b = this.blueprint.boundsAt(origin);
+      const b = this.blueprint.boundsAt(base);
       if (playerAabb.minX < b.maxX && playerAabb.maxX > b.minX &&
           playerAabb.minY < b.maxY && playerAabb.maxY > b.minY &&
           playerAabb.minZ < b.maxZ && playerAabb.maxZ > b.minZ) {
         return { ok: false, reason: 'player-overlap' };
       }
     }
-    // ④ limit：全局最多 20 个（跨 column 卸载与重启仍有效 —— 索引来自 edits store）
+    // ⑤ limit：全局最多 20 个（跨 column 卸载与重启仍有效 —— 索引来自 edits store）
     if (this._index.size >= TURRET.maxTurrets) return { ok: false, reason: 'limit' };
 
     // ---- 全部预检通过：构造一次事务 ----
-    const critical = this.blueprint.criticalAt(origin);
+    const critical = this.blueprint.criticalAt(base);
     const id = this._nextId();
     const anchorEntity = {
       kind: 'turret',
       id,
-      origin: [origin[0], origin[1], origin[2]],
+      origin: [base[0], base[1], base[2]],
       critical: { x: critical.x, y: critical.y, z: critical.z, id: critical.id },
       // 放置时的默认朝向（无目标时回归它）。⚠️ 这是装置运行态，存在 blockEntity 里 ——
       // 与「单格方块的 meta 朝向不看玩家 yaw」那条约束不是同一事实（规格 §3.1）。
@@ -123,6 +142,19 @@ export class TurretService {
     // 放置成功 → 通知装配层创建 controller（见构造函数注释：没有这条路径则新炮塔永不工作）
     if (this._onPlaced) this._onPlaced(id, [critical.x, critical.y, critical.z]);
     return { ok: true, id, anchor: [critical.x, critical.y, critical.z] };
+  }
+
+  /**
+   * origin 归一：命中格是地表植物时取它脚下那一格当地面。
+   *
+   * **只下沉一格**（不循环）：循环会穿透叠放的多层植物，把炮塔放到远低于玩家瞄准的位置。
+   * 判据走 `registry.isPlant`（派生自 solid/cull 两张表）—— 不在此写植物名字白名单，
+   * 否则新增植物（如 v3.12 的 `bush_grass`）会静默漏掉。
+   * @param {[number,number,number]} origin @returns {[number,number,number]}
+   */
+  _groundOrigin(origin) {
+    const [x, y, z] = origin;
+    return this.registry.isPlant(this.world.getBlockId(x, y, z)) ? [x, y - 1, z] : [x, y, z];
   }
 
   /**

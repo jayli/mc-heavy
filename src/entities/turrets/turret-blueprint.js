@@ -31,6 +31,11 @@ const PILLAR_BLOCK = 'obsidian';
  * `target.blockPos` 入参），又与 mc-lite 的几何**完全等价** —— mc-lite 的 pivot =
  * 空气格 y + `PIVOT_HEIGHT_OFFSET` = `origin.y + 1 + 3.3`，与本仓库
  * `origin.y + BASE_DY + 3.3` 逐位相同。
+ *
+ * ⚠️ **本注释里的「origin 是 solid 地面格」有一个前提**（v3.13）：`TurretService.place()`
+ * 入口会先把 origin 归一到地面格（`_groundOrigin`）—— 主射线对「非空气且非水」一律命中，
+ * 地面上长草时传进来的是**草格**，不下沉就会把底座放到「草格+1」而悬空
+ * （用户 2026-11-18 报告）。蓝图本身不变，归一只在服务层。
  */
 export const BASE_DY = 1;
 /** 柱子高度 2 格 → 锚点在 origin.y + BASE_DY + 2 */

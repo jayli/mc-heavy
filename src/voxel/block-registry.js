@@ -138,6 +138,26 @@ export function createRegistry() {
     castsShadow(id) {
       return Number.isInteger(id) && id >= 0 && id < MAX_BLOCKS ? shadowCastTable[id] === 1 : false;
     },
+    /**
+     * 该方块是否是「可被覆盖的地表植物」（草 / 花 / 蘑菇 / 藤 / 睡莲）。
+     *
+     * 判据 = **非实心 + cutout 通道**（`solidTable=0 && cullTable=1`），不是名字白名单：
+     * 新增植物只要按既有口径声明（`solid:false` + `cullMode:'cutout'`）就自动纳入，
+     * 不需要改任何消费者（与 `hollowOccluderTable` 同一「派生而非声明」手法，红线 1）。
+     *
+     * ⚠️ **水与 alias 刻意不算**：水/沼泽水是 `transparent` 通道、`mine_cart`/`bed_alias_block`
+     * 是 `none` 通道。把水算进来会让「炮塔/结构的地面」下沉到水底（用户没要求的语义变更）。
+     * ⚠️ `hanging_lamp`（吊灯）也落在 cutout + 非实心，故它同样被判为可覆盖 —— 它是装饰件、
+     * 无碰撞，与花草同类；若将来要保住它，须给它单独的声明位而不是在此加名字例外。
+     *
+     * 消费方：`TurretService.place()`（origin 归一 + 蓝图格占用判据）。
+     * @param {number} id @returns {boolean}
+     */
+    isPlant(id) {
+      return Number.isInteger(id) && id >= 0 && id < MAX_BLOCKS
+        ? solidTable[id] === 0 && cullTable[id] === CULL_MODES.cutout
+        : false;
+    },
   };
 }
 
