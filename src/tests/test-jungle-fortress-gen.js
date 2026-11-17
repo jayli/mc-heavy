@@ -16,6 +16,22 @@
 // ⚠️ 断言落点一律是**真实 applyStructuresToColumn 写出的世界方块**，不是纯函数返回值。
 import { test } from './runner.js';
 import { assertEqual, assertTrue } from './assert.js';
+import {
+  computeJungleFortressAnchor, clearJungleFortressCache,
+  jungleFortressCandidateValid, inJungleFortressFootprint,
+} from '../gen/structures/jungle-fortress.js';
+import { getCityBoundsForSeed } from '../gen/structures/city-layout.js';
+import { CITY_TRANSITION_SIZE } from '../gen/structures/region-config.js';
+import {
+  jungleFortressSurfaceYAt, inJungleFortressTerraform, fillJungleFortressGround,
+  JUNGLE_FORTRESS_SLOPE_BAND,
+} from '../gen/structures/jungle-fortress-terrain.js';
+import { buildDefaultRegistry } from '../voxel/block-registry.js';
+import { ChunkColumn } from '../voxel/chunk-column.js';
+import { blockIndex, SEA_Y } from '../voxel/constants.js';
+import { fillColumn, generateHeight, surfaceTypeOfBiome } from '../gen/terrain.js';
+import { carveCaves } from '../gen/caves.js';
+import { getBiome } from '../gen/noise.js';
 import { STRUCTURE_FILES, loadStructure, floorRowOf } from '../gen/structures/structure-json.js';
 import {
   JUNGLE_FORTRESS_HALF_X, JUNGLE_FORTRESS_HALF_Z,
@@ -207,4 +223,184 @@ test('丛林要塞：藤蔓不撑大 footprint（HALF_X/HALF_Z 不变）', async
     `加藤蔓后 x 半宽仍须 = ${JUNGLE_FORTRESS_HALF_X}（实际 ${Math.max(-mnx, mxx)}）`);
   assertEqual(Math.max(-mnz, mxz), JUNGLE_FORTRESS_HALF_Z,
     `加藤蔓后 z 半宽仍须 = ${JUNGLE_FORTRESS_HALF_Z}（实际 ${Math.max(-mnz, mxz)}）`);
+});
+
+// ==================== 落点搜索（Task 4）====================
+
+/** 8 seed 冻结锚点表（City 西方第一个丛林地带，spec 用户裁定 2026-11-17） */
+const FROZEN_ANCHORS = {
+  12345: { wx: -304, wz: 217, floorY: 0 },
+  99999: { wx: -621, wz: -91, floorY: 0 },
+  1249026: { wx: -454, wz: 77, floorY: 0 },
+  20260101: { wx: -493, wz: 33, floorY: 0 },
+  777: { wx: -672, wz: 473, floorY: -1 },
+  4242: { wx: -368, wz: 165, floorY: -1 },
+  31337: { wx: -442, wz: 81, floorY: -1 },
+  8888: { wx: -613, wz: -87, floorY: -1 },
+};
+
+test('丛林要塞锚点：8 个 seed 逐值命中冻结表（城西第一个丛林）', () => {
+  for (const [seedStr, want] of Object.entries(FROZEN_ANCHORS)) {
+    const seed = Number(seedStr);
+    const a = computeJungleFortressAnchor(seed);
+    assertTrue(a !== null, `seed ${seed} 必须有落点（null = 判据写反或窗口太窄）`);
+    assertEqual(a.wx, want.wx, `seed ${seed} wx`);
+    assertEqual(a.wz, want.wz, `seed ${seed} wz`);
+    assertEqual(a.floorY, want.floorY, `seed ${seed} floorY`);
+  }
+});
+
+test('丛林要塞锚点：整个占地在 City 西方且净距 ≥ CITY_TRANSITION_SIZE', () => {
+  for (const seedStr of Object.keys(FROZEN_ANCHORS)) {
+    const seed = Number(seedStr);
+    const a = computeJungleFortressAnchor(seed);
+    const city = getCityBoundsForSeed(seed);
+    // ⚠️ 方向是城西：判据用占地**东缘** wx+HALF_X 对城市**西界** city.minX。
+    //    照抄大竞技场那行（城东）会让每个候选都被拒 ⇒ 8/8 返回 null 且无报错。
+    assertTrue(a.wx + JUNGLE_FORTRESS_HALF_X < city.minX - CITY_TRANSITION_SIZE,
+      `seed ${seed} 占地东缘 ${a.wx + JUNGLE_FORTRESS_HALF_X} 必须 < 城西界 ${city.minX} − ${CITY_TRANSITION_SIZE}`);
+  }
+});
+
+test('丛林要塞锚点：确定性（memo 命中同一对象，清缓存后重算逐值相同）', () => {
+  const seed = 12345;
+  const a1 = computeJungleFortressAnchor(seed);
+  const a2 = computeJungleFortressAnchor(seed);
+  assertEqual(a1, a2, 'memo 必须返回同一对象（红线 2：同 seed 结果恒一致）');
+  clearJungleFortressCache();
+  const a3 = computeJungleFortressAnchor(seed);
+  assertEqual(a3.wx, a1.wx, '清缓存后 wx 不变');
+  assertEqual(a3.wz, a1.wz, '清缓存后 wz 不变');
+  assertEqual(a3.floorY, a1.floorY, '清缓存后 floorY 不变');
+});
+
+test('丛林要塞锚点：是「西方第一个」——8 格网格上无更东/同 x 更优 z 的合法候选', () => {
+  // ⚠️ 断言限定在 **8 格粗筛网格**上：1 格粒度下 x=-303/-302/-301 在 z=-411 处也合法
+  //    （只是不在网格上），逐格断言会正确实现下也 FAIL。
+  const seed = 12345;
+  const a = computeJungleFortressAnchor(seed);
+  const city = getCityBoundsForSeed(seed);
+  const cityCz = Math.round((city.minZ + city.maxZ) / 2);
+  const xHi = city.minX - JUNGLE_FORTRESS_HALF_X - CITY_TRANSITION_SIZE;
+  let better = 0;
+  for (let x = a.wx + 8; x <= xHi; x += 8) {
+    for (let z = cityCz - 900; z <= cityCz + 900; z += 8) {
+      if (jungleFortressCandidateValid(x, z, seed).ok) better++;
+    }
+  }
+  assertEqual(better, 0, `不得存在更东的合法候选（实际 ${better} 个）`);
+  let betterZ = 0;
+  for (let z = cityCz - 900; z <= cityCz + 900; z += 8) {
+    if (Math.abs(z - cityCz) >= Math.abs(a.wz - cityCz)) continue;
+    if (jungleFortressCandidateValid(a.wx, z, seed).ok) betterZ++;
+  }
+  assertEqual(betterZ, 0, `同 x 上不得存在 |z−cityCz| 更小的合法候选（实际 ${betterZ} 个）`);
+});
+
+test('丛林要塞占地判定：inJungleFortressFootprint 与 HALF_X/HALF_Z 一致', () => {
+  const a = computeJungleFortressAnchor(12345);
+  const anchors = [a];
+  assertTrue(inJungleFortressFootprint(a.wx, a.wz, anchors), '中心在占地内');
+  assertTrue(inJungleFortressFootprint(a.wx + JUNGLE_FORTRESS_HALF_X, a.wz + JUNGLE_FORTRESS_HALF_Z, anchors), '东上角在占地内（闭区间）');
+  assertTrue(!inJungleFortressFootprint(a.wx + JUNGLE_FORTRESS_HALF_X + 1, a.wz, anchors), '东缘外一格不在占地内');
+  assertTrue(!inJungleFortressFootprint(a.wx, a.wz + JUNGLE_FORTRESS_HALF_Z + 1, anchors), '上缘外一格不在占地内');
+  assertTrue(!inJungleFortressFootprint(a.wx, a.wz, null), 'anchors 为 null 时恒假');
+  assertTrue(!inJungleFortressFootprint(a.wx, a.wz, [null]), 'anchors 含 null 时跳过');
+});
+
+// ==================== 地形整形（Task 5）====================
+
+test('丛林要塞整形：只削不填 + 零水格（8 seed 全整形区逐列）', () => {
+  for (const seedStr of Object.keys(FROZEN_ANCHORS)) {
+    const seed = Number(seedStr);
+    const a = computeJungleFortressAnchor(seed);
+    let fill = 0, water = 0, cols = 0;
+    for (let dx = -JUNGLE_FORTRESS_HALF_X - JUNGLE_FORTRESS_SLOPE_BAND;
+      dx <= JUNGLE_FORTRESS_HALF_X + JUNGLE_FORTRESS_SLOPE_BAND; dx++) {
+      for (let dz = -JUNGLE_FORTRESS_HALF_Z - JUNGLE_FORTRESS_SLOPE_BAND;
+        dz <= JUNGLE_FORTRESS_HALF_Z + JUNGLE_FORTRESS_SLOPE_BAND; dz++) {
+        const wx = a.wx + dx, wz = a.wz + dz;
+        const t = jungleFortressSurfaceYAt(wx, wz, seed, a);
+        if (t === null) continue;
+        cols++;
+        const h = generateHeight(wx, wz, seed);
+        if (t > h) fill++;
+        if (t <= SEA_Y) water++;
+      }
+    }
+    assertEqual(fill, 0, `seed ${seed} 整形必须只削不填（实际 ${fill} 列需填方）`);
+    assertEqual(water, 0, `seed ${seed} 整形区必须零水格（实际 ${water} 列 ≤ SEA_Y）`);
+    assertTrue(cols > 30000, `seed ${seed} 整形列数应 > 30000（实际 ${cols}）`);
+  }
+});
+
+test('丛林要塞整形：边缘与区内相邻高差 ≤ 1（无悬崖）', () => {
+  const seed = 12345;
+  const a = computeJungleFortressAnchor(seed);
+  const B = JUNGLE_FORTRESS_SLOPE_BAND;
+  const T = new Map();
+  for (let dx = -JUNGLE_FORTRESS_HALF_X - B; dx <= JUNGLE_FORTRESS_HALF_X + B; dx++) {
+    for (let dz = -JUNGLE_FORTRESS_HALF_Z - B; dz <= JUNGLE_FORTRESS_HALF_Z + B; dz++) {
+      const t = jungleFortressSurfaceYAt(a.wx + dx, a.wz + dz, seed, a);
+      if (t !== null) T.set(`${dx},${dz}`, t);
+    }
+  }
+  let edgeJump = 0, inJump = 0;
+  for (const [k, v] of T) {
+    const [dx, dz] = k.split(',').map(Number);
+    for (const [ax, az] of [[1, 0], [0, 1]]) {
+      const nk = `${dx + ax},${dz + az}`;
+      const b = T.has(nk) ? T.get(nk) : generateHeight(a.wx + dx + ax, a.wz + dz + az, seed);
+      const j = Math.abs(v - b);
+      if (T.has(nk)) inJump = Math.max(inJump, j); else edgeJump = Math.max(edgeJump, j);
+    }
+  }
+  // ⚠️ 插值分母必须是**逐列带宽 w**，固定 16 时边缘跳变实测 8（填湾造坎）
+  assertTrue(edgeJump <= 1, `整形区边缘相邻高差必须 ≤1（实际 ${edgeJump}）`);
+  assertTrue(inJump <= 1, `整形区内相邻高差必须 ≤1（实际 ${inJump}）`);
+});
+
+test('丛林要塞整形：surfaceYAt 与 fillJungleFortressGround 写入的地表逐格一致', () => {
+  const seed = 12345;
+  const a = computeJungleFortressAnchor(seed);
+  const reg = buildDefaultRegistry();
+  // 取一个横跨占地边缘的 column（既有整形列也有未整形列）
+  const cx = Math.floor((a.wx + JUNGLE_FORTRESS_HALF_X) / 16);
+  const cz = Math.floor(a.wz / 16);
+  const col = new ChunkColumn(cx, cz);
+  fillColumn(col, seed, reg);
+  carveCaves(col, seed, reg);
+  fillJungleFortressGround(col, a, seed, reg);
+  let checked = 0;
+  for (let lx = 0; lx < 16; lx++) {
+    for (let lz = 0; lz < 16; lz++) {
+      const wx = cx * 16 + lx, wz = cz * 16 + lz;
+      const t = jungleFortressSurfaceYAt(wx, wz, seed, a);
+      if (t === null) continue;
+      checked++;
+      // ① target 层是地表方块（非空气）
+      assertTrue(col.blocks[blockIndex(lx, t, lz)] !== 0,
+        `(${wx},${wz}) target=${t} 层必须是地表方块`);
+      // ② target 以上全空
+      assertEqual(col.blocks[blockIndex(lx, t + 1, lz)], 0,
+        `(${wx},${wz}) target 以上必须清空`);
+      // ③ target 层材质 = surfaceTypeOfBiome
+      const want = reg.idOf(surfaceTypeOfBiome(getBiome(wx, wz, seed)));
+      assertEqual(col.blocks[blockIndex(lx, t, lz)], want,
+        `(${wx},${wz}) 地表材质必须是 surfaceTypeOfBiome（唯一权威）`);
+    }
+  }
+  assertTrue(checked > 0, `该 column 必须有整形列（实际 ${checked}）`);
+});
+
+test('丛林要塞整形区判定：inJungleFortressTerraform 含缓坡带、带外恒假', () => {
+  const a = computeJungleFortressAnchor(12345);
+  const anchors = [a];
+  assertTrue(inJungleFortressTerraform(a.wx, a.wz, anchors), '中心在整形区');
+  const B = JUNGLE_FORTRESS_SLOPE_BAND;
+  assertTrue(inJungleFortressTerraform(a.wx + JUNGLE_FORTRESS_HALF_X + B, a.wz, anchors),
+    '缓坡带最外缘在整形区（闭区间）');
+  assertTrue(!inJungleFortressTerraform(a.wx + JUNGLE_FORTRESS_HALF_X + B + 1, a.wz, anchors),
+    '缓坡带外一格不在整形区');
+  assertTrue(!inJungleFortressTerraform(a.wx, a.wz, null), 'anchors null 恒假');
 });
