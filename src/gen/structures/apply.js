@@ -34,6 +34,10 @@ import {
   RUINED_CITADEL_HALF_X, RUINED_CITADEL_HALF_Z, inRuinedCitadelFootprint,
 } from './ruined-citadel.js';
 import { RUINED_CITADEL_VARIANTS } from './ruined-citadel-data.js';
+import { JUNGLE_FORTRESS_HALF_X, JUNGLE_FORTRESS_HALF_Z, JUNGLE_FORTRESS_VARIANTS } from './jungle-fortress-data.js';
+import {
+  fillJungleFortressGround, inJungleFortressTerraform, JUNGLE_FORTRESS_SLOPE_BAND,
+} from './jungle-fortress-terrain.js';
 import { TARN_ZONE_RADIUS, snowLandSuppressedByTarn, TARN_CLOUD_MIN_Y } from './tarn-zone.js';
 import { fillTarnPlateau, tarnSnowCap, tarnPlantAt } from './tarn-terrain.js';
 import { rasterizeAltar, ALTAR_ARM_LENGTH } from './tarn-altar.js';
@@ -214,6 +218,18 @@ function pointContext(wx, wz, layouts, cityLayout, seed) {
   if (inRuinedCitadelFootprint(wx, wz, layouts.map((l) => l.ruinedCitadel))) {
     return { kind: 'none' };
   }
+  // 丛林要塞**整形区**（城西，v3.13）：整片让路，用**专属 kind**。
+  //
+  // ⚠️ 判据用「整形区」而不是「占地」：缓坡带的地表也被改写过，
+  //    树/撒布长在缓坡上会穿模（与浅水高台同一理由）。
+  // ⚠️ **不用 `kind:'none'`**：那个语义是「这里什么都不长」，而本结构的缓坡带
+  //    将来可能要长草（它是自然地表）。专属 kind 保留那个扩展位，
+  //    与 `'tarn'` / `'shallowTarn'` 同口径。
+  // ⚠️ 三个既有判据（giantAllowedAtFor / azaleaAllowedAtFor / azaleaCrownAllowedAtFor）
+  //    只放行 normal/water ⇒ 新 kind 自动被挡住，无需改它们。
+  if (inJungleFortressTerraform(wx, wz, layouts.map((l) => l.jungleFortress))) {
+    return { kind: 'jungleFortress' };
+  }
   for (const layout of layouts) {
     if (getPyramidInfo(wx, wz, layout.pyramid)) return { kind: 'none' };
     if (layout.island) {
@@ -371,6 +387,11 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
   // 派生而不是手写清单（红线 1：漏一行会让结构**静默不出现**）。
   if (layouts.some((l) => l.ruinedCitadel)) {
     for (const base of RUINED_CITADEL_VARIANTS) needTypes.add(base);
+  }
+  // 丛林要塞（v3.13）：惰性预载 —— 只有与占地相交的 region 才携带锚点。
+  // 产物 1.01MB（81,238 格），无条件预载会让每个新 Worker 的首个 GEN 付冷 fetch + 解析。
+  if (layouts.some((l) => l.jungleFortress)) {
+    for (const base of JUNGLE_FORTRESS_VARIANTS) needTypes.add(base);
   }
   // 浅水高台：5 个产物。惰性预载 —— 只有整形区相交的 region 才拉。
   // 从 `SHALLOW_TARN_VARIANTS` 派生而不是手写清单（红线 1）。
@@ -660,6 +681,8 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
   const burningArenaAnchors = layouts.map((l) => l.burningArena);
   // 废弃堡垒锚点列表（同上手法，同一判据函数消费）
   const ruinedCitadelAnchors = layouts.map((l) => l.ruinedCitadel);
+  // 丛林要塞锚点列表（同上手法，同一判据函数消费）
+  const jungleFortressAnchors = layouts.map((l) => l.jungleFortress);
   for (const arr of scatterCandidates) {
     for (let i = 0; i < arr.length; i += SCATTER_STRIDE) {
       const x = arr[i], y = arr[i + 1], z = arr[i + 2];
@@ -699,6 +722,9 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
       // （与巨型金字塔、围场、大竞技场完全同形的缺陷）—— 必须在候选层就剔除。
       // 判据函数 `inRuinedCitadelFootprint` 是唯一权威（与 `pointContext` 的植被让路共用同一份）。
       if (inRuinedCitadelFootprint(x, z, ruinedCitadelAnchors)) continue;
+      // 丛林要塞**整形区**内的撒布候选一律不落地（同废弃堡垒：后写胜盖不住，
+      // 被埋的神殿/村落会有一半露在外面）。判据用整形区（含缓坡带）而不是占地。
+      if (inJungleFortressTerraform(x, z, jungleFortressAnchors)) continue;
       const fp = SCATTER_FOOTPRINT[type];
       if (!fp) continue;
       if (!placementIntersects({ x, z }, fp.halfX, fp.halfZ, column.cx, column.cz)) continue;
@@ -945,6 +971,33 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
     // ② 光栅化（不补 groundSupport：甲板以下全是实心结构体/地牢房间，补柱会把房间填实）
     const rcFloorRow = floorRowOf('ruinedCitadel');
     rasterizeStructure('ruinedCitadel', rc.wx, rc.floorY - (rcFloorRow - 1), rc.wz,
+      setBlock, column, registry, seed, false);
+  }
+
+  // ---- 阶段 2.95：丛林要塞（Jungle Fortress，v3.13）----
+  //
+  // 层序：在废弃堡垒（2.94）之后、空中结构（2.5）之前 —— 保持「地面级内容先于
+  // 空中内容」的既有层序；与废弃堡垒已在锚点层互斥，先后不影响结果。
+  //
+  // 两件事的顺序是**载荷性的**：
+  //   ① fillJungleFortressGround：整形（削平 + 铺地表 + 填实）
+  //   ② rasterizeStructure：光栅化
+  // 倒过来（先光栅化再整形）会把结构底部削掉 —— 整形的「target 以上写 0」不认结构方块。
+  //
+  // ⚠️ **不补 groundSupport**：支撑柱已在烘焙期固化（6,446 格，遇房间地板即停），
+  //    运行期再补会把房间填实。
+  for (const layout of layouts) {
+    const jf = layout.jungleFortress;
+    if (!jf) continue;
+    // 整形范围含缓坡带，故用整形区的半宽做裁剪（不是占地）
+    const jfBX = JUNGLE_FORTRESS_HALF_X + JUNGLE_FORTRESS_SLOPE_BAND;
+    const jfBZ = JUNGLE_FORTRESS_HALF_Z + JUNGLE_FORTRESS_SLOPE_BAND;
+    if (!placementIntersects({ x: jf.wx, z: jf.wz }, jfBX, jfBZ, column.cx, column.cz)) continue;
+    // ① 地形整形（内部自己按 column 交集裁剪）
+    fillJungleFortressGround(column, jf, seed, registry);
+    // ② 光栅化：floorRow 层坐在 floorY 上
+    const jfFloorRow = floorRowOf('jungleFortress');
+    rasterizeStructure('jungleFortress', jf.wx, jf.floorY - (jfFloorRow - 1), jf.wz,
       setBlock, column, registry, seed, false);
   }
 
