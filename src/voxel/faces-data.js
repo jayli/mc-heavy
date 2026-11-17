@@ -138,6 +138,9 @@ export const FACES_DATA = {
   // ---- 植被（cross/水平 quad 模板，tile 取 face4 条目）----
   flower: 'procedural/flower',
   short_grass: 'double_plant_grass_carried',
+  // 矮草丛（v3.12）：vanilla `short_grass` 灰度图 × GRASS_TINT 的烘焙产物
+  // （`npm run grasstextures`）—— 与新草方块顶面同色调。
+  bush_grass: 'procedural/bush_grass',
   allium: 'flower_Allium',
   azure_bluet: 'Azure_Bluet',
   dead_bush: 'Dead_Bush',

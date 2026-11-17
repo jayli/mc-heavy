@@ -83,7 +83,7 @@ function alphaModeOf(def) {
  * 一起映射到手工图，**绕过** `HUD.generateIcon()` 的立方体生成。
  */
 export const FLAT_BLOCKS = [
-  'water', 'swamp_water', 'cloud', 'flower', 'short_grass', 'allium', 'azure_bluet',
+  'water', 'swamp_water', 'cloud', 'flower', 'short_grass', 'bush_grass', 'allium', 'azure_bluet',
   'dead_bush', 'oxeye_daisy', 'red_mushroom', 'vine', 'lilypad', 'mine_cart', 'hanging_lamp',
   'zombie_nest_alias_block', 'turret_alias_block',
 ];

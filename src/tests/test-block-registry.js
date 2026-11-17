@@ -14,17 +14,18 @@ test('BlockRegistry: air 恒为 ID 0', () => {
   assertEqual(reg.idOf('air'), 0);
 });
 
-test('BlockRegistry: 154 方块全部注册且 ID 唯一', () => {
+test('BlockRegistry: 155 方块全部注册且 ID 唯一', () => {
   const reg = createRegistry();
   for (const def of BLOCKS) reg.register(def.name, def);
   // 126 + 巨树景观 8 个 giant_* + 巨型金字塔 2 个 sand_step/sand_slab
   // + 浅水高台 2 个 dark_grass/light_grass
   // + 中世纪船 2 个 planks_step_updown/half_block_updown
   // + 废弃堡垒 15 个（9 整块/柱 + 4 台阶 + 2 半砖，2026-11-10）= 154
-  assertEqual(reg.count, 154);
+  // + 矮草丛 bush_grass（v3.12，2026-11-17）= 155
+  assertEqual(reg.count, 155);
   const ids = new Set();
   for (const def of BLOCKS) ids.add(reg.idOf(def.name));
-  assertEqual(ids.size, 154);
+  assertEqual(ids.size, 155);
 });
 
 test('BlockRegistry: sky_stone/sky_grass 注册且 solid+opaque（M2-7 空岛）', () => {
@@ -291,8 +292,9 @@ test('BlockRegistry: shadowCastTable 默认 1（漏写 register 会让全部方�
 test('BlockRegistry: cloud/花草/藤/灯/创造台不投影（mc-lite isShadowEnabled:false 口径）', () => {
   const reg = makeRegistry();
   // 落在 opaque/cutout 通道、mc-lite 不投影、故 mc-heavy 须声明 shadowCast:false 的 13 项
+  // + 矮草丛 bush_grass（v3.12，与 short_grass 同口径）
   const NO_CAST = [
-    'cloud', 'flower', 'short_grass', 'allium', 'azure_bluet', 'dead_bush',
+    'cloud', 'flower', 'short_grass', 'bush_grass', 'allium', 'azure_bluet', 'dead_bush',
     'oxeye_daisy', 'red_mushroom', 'vine', 'lilypad',
     'playground_block', 'playground_center_block', 'hanging_lamp',
   ];

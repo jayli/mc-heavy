@@ -55,11 +55,164 @@
       ]
     }
   },
+  "tinted": {
+    "grass_carried": {
+      "source": "grass_block_top.png",
+      "sourceSha256": "52f44b64ce884a13dfe35e4b4da2e35898b790dd4d7a5ea536f1b0c0d56d29b4",
+      "base": null,
+      "baseSha256": null,
+      "out": "grass_carried.png",
+      "mode": "tint",
+      "tint": [
+        119.2,
+        186.6,
+        101.5
+      ],
+      "outMean": [
+        68.95,
+        107.88,
+        58.71
+      ],
+      "targetMean": [
+        68.95,
+        107.88,
+        58.71
+      ],
+      "untouchedDiff": 0
+    },
+    "grass_side_carried": {
+      "source": "grass_block_side_overlay.png",
+      "sourceSha256": "872056682c3b059c04aba88f8b4e706f2526b907e1acef12626a9f912f573a85",
+      "base": "grass_side_base.png",
+      "baseSha256": "dedaa0171af63df63a6cf7e3e6c7078d4d5830fd93923f3005302ed0f02104c5",
+      "out": "grass_side_carried.png",
+      "mode": "fringe",
+      "tint": [
+        119.2,
+        186.6,
+        101.5
+      ],
+      "outMean": [
+        119.53,
+        96.41,
+        64.05
+      ],
+      "targetMean": [
+        119.53,
+        96.41,
+        64.05
+      ],
+      "untouchedDiff": 0
+    },
+    "double_plant_grass_carried": {
+      "source": "tall_grass_top.png",
+      "sourceSha256": "16cfd90e32fb04756fd0cfbd652ae358d545a069a9ed22cbb390ec5bf3f17f1a",
+      "base": null,
+      "baseSha256": null,
+      "out": "double_plant_grass_carried.png",
+      "mode": "tint",
+      "tint": [
+        119.2,
+        186.6,
+        101.5
+      ],
+      "outMean": [
+        70.44,
+        109.13,
+        60.02
+      ],
+      "targetMean": [
+        70.44,
+        109.13,
+        60.02
+      ],
+      "untouchedDiff": 0
+    },
+    "bush_grass": {
+      "source": "short_grass.png",
+      "sourceSha256": "40e2ad5d034d0ffc58b4c496c0badfa2104e0fc1888fc92c5f9bd79dcd84cb20",
+      "base": null,
+      "baseSha256": null,
+      "out": "procedural/bush_grass.png",
+      "mode": "tint",
+      "tint": [
+        119.2,
+        186.6,
+        101.5
+      ],
+      "outMean": [
+        68.16,
+        106.29,
+        58.12
+      ],
+      "targetMean": [
+        68.16,
+        106.29,
+        58.12
+      ],
+      "untouchedDiff": 0
+    },
+    "sand_side": {
+      "source": "sand.png",
+      "sourceSha256": "3be385d7e4402f24327dacbf7557d622e7d0cef4650e582457d144d90476f106",
+      "base": null,
+      "baseSha256": null,
+      "out": "sand_side.png",
+      "mode": "copy",
+      "tint": [
+        119.2,
+        186.6,
+        101.5
+      ],
+      "outMean": [
+        219.16,
+        207.22,
+        163.1
+      ],
+      "targetMean": [
+        219.16,
+        207.22,
+        163.1
+      ],
+      "untouchedDiff": 0
+    },
+    "Light_Gray_Cloth": {
+      "source": "light_gray_wool.png",
+      "sourceSha256": "127108dea091a93bf28f075e312021ed95cc19c3816ce7436c5cec1d65588c13",
+      "base": null,
+      "baseSha256": null,
+      "out": "Light_Gray_Cloth.png",
+      "mode": "copy",
+      "tint": [
+        119.2,
+        186.6,
+        101.5
+      ],
+      "outMean": [
+        142.03,
+        142.16,
+        134.6
+      ],
+      "targetMean": [
+        142.03,
+        142.16,
+        134.6
+      ],
+      "untouchedDiff": 0
+    }
+  },
   "fingerprints": {
-    "input": "b00f9ce45639ac375a0d0ee795e55c3ce65b12f30782c0dd3734a44edc1c7488",
+    "input": "ba5ffde793d970a4000dcc581080518ffd320adee91b1525dc785fdf812b14bc",
     "sources": {
       "dark_grass": "0b64554c9f9b630e0c3e61991474afd707f8237985a9c38e1b7997924ee24529",
-      "light_grass": "2df1d383c24172faced4207c4a6249991c5d3568e7273d1c79b84b05cb434926"
+      "light_grass": "2df1d383c24172faced4207c4a6249991c5d3568e7273d1c79b84b05cb434926",
+      "grass_carried": "52f44b64ce884a13dfe35e4b4da2e35898b790dd4d7a5ea536f1b0c0d56d29b4",
+      "grass_side_carried": "872056682c3b059c04aba88f8b4e706f2526b907e1acef12626a9f912f573a85",
+      "grass_side_carried:base": "dedaa0171af63df63a6cf7e3e6c7078d4d5830fd93923f3005302ed0f02104c5",
+      "double_plant_grass_carried": "16cfd90e32fb04756fd0cfbd652ae358d545a069a9ed22cbb390ec5bf3f17f1a",
+      "bush_grass": "40e2ad5d034d0ffc58b4c496c0badfa2104e0fc1888fc92c5f9bd79dcd84cb20",
+      "sand_side": "3be385d7e4402f24327dacbf7557d622e7d0cef4650e582457d144d90476f106",
+      "Light_Gray_Cloth": "127108dea091a93bf28f075e312021ed95cc19c3816ce7436c5cec1d65588c13"
     }
   }
 }

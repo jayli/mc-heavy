@@ -268,4 +268,14 @@ export const BLOCKS = [
   {"name":"end_stone_brick_step_updown","solid":true,"cullMode":"cutout","opaque":false,"orientationModes":4,"geometry":"cobblestone_step_updown"},
   {"name":"obsidian_brick_slab","solid":true,"cullMode":"cutout","opaque":false,"orientationModes":0,"geometry":"half_block"},
   {"name":"end_stone_brick_slab","solid":true,"cullMode":"cutout","opaque":false,"orientationModes":0,"geometry":"half_block"},
+  // 矮草丛（v3.12，用户 2026-11-17：「样子类似 short_grass，只是稍微比 short_grass 更大一些」）。
+  // 逐项与 short_grass 同口径（非实心 / cutout / 4 向朝向 / 不投影），只有 geometry 指向
+  // 自己的稍大模板。`opaque` 不写 ⇒ opaqueTable=0（不遮光、不剔邻居面、不挡炮塔 LOS）。
+  //
+  // ⚠️ **必须追加在数组末尾，不能插在 short_grass 旁边**（final review 实测）：
+  // 方块 id = 本数组下标，而 **IndexedDB 的 edits 存的是数字 id**
+  // （`persistence.js` 的 `{index,id,meta}`）。插在中间会把它之后所有方块的 id 整体 +1
+  // ⇒ **旧存档里的方块被静默重新解释成别的方块**（插在下标 20 时影响 134 个方块）。
+  // 历次 Epic（巨树/金字塔/废弃堡垒 15 个）均追加在末尾，此处沿用同一口径。
+  {"name":"bush_grass","solid":false,"cullMode":"cutout","orientationModes":4,"geometry":"bush_grass","shadowCast":false},
 ];

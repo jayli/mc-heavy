@@ -1139,9 +1139,9 @@ function checkIndestructibleContract() {
  * → 通道级已排除，故只声明 13 项）。
  */
 function checkShadowCastContract() {
-  // mc-lite isShadowEnabled:false 中落在 opaque/cutout 通道的 13 项（唯一权威清单）
+  // mc-lite isShadowEnabled:false 中落在 opaque/cutout 通道的 13 项 + 矮草丛 1（v3.12）
   const EXPECTED_NO_CAST = new Set([
-    'cloud', 'flower', 'short_grass', 'allium', 'azure_bluet', 'dead_bush',
+    'cloud', 'flower', 'short_grass', 'bush_grass', 'allium', 'azure_bluet', 'dead_bush',
     'oxeye_daisy', 'red_mushroom', 'vine', 'lilypad',
     'playground_block', 'playground_center_block', 'hanging_lamp',
   ]);
@@ -3300,8 +3300,74 @@ function checkGrassTextures() {
     sizes.push(`${name} ${got.map((v) => v.toFixed(0)).join('/')}`);
   }
 
+  // ---- 着色类产物（v3.12）----
+  // 判据与上面不同：着色就是要改均值，故钉「目标均值」而不是「与源图的偏差」。
+  const T = GRASS_TEX.GRASS_TINT;
+  for (const [name, def] of Object.entries(GRASS_TEX.TINTED_TEXTURES)) {
+    const out = GRASS_TEX.tintedOutputPath(name);
+    if (!fs.existsSync(out)) { fail(`缺着色产物 ${def.out}（跑 npm run grasstextures）`); continue; }
+    const png = PNG.sync.read(fs.readFileSync(out));
+    if (png.width !== GRASS_TEX.GRASS_TILE_SIZE || png.height !== GRASS_TEX.GRASS_TILE_SIZE) {
+      fail(`${name}: 产物尺寸 ${png.width}×${png.height} ≠ 16×16`);
+    }
+    const rec = meta.tinted?.[name];
+    if (!rec) { fail(`${name}: meta.tinted 里没有记录（跑 npm run grasstextures）`); continue; }
+    // 不透明像素均值（植被贴图有大量全透明格，算进去会把均值拉向 0）
+    let r = 0, g = 0, b = 0, n = 0;
+    for (let i = 0; i < png.data.length; i += 4) {
+      if (png.data[i + 3] < 8) continue;
+      r += png.data[i]; g += png.data[i + 1]; b += png.data[i + 2]; n++;
+    }
+    const got = n ? [r / n, g / n, b / n] : [0, 0, 0];
+    const target = GRASS_TEX.TINTED_TARGET_MEAN[name];
+    const dev = got.map((v, i) => Math.abs(v - target[i]));
+    if (dev.some((d) => d > 0.5)) {
+      fail(`${name}: 均值 ${got.map((v) => v.toFixed(2)).join('/')} 偏离目标 ${target.join('/')} > 0.5/通道`);
+    }
+    if (rec.sourceSha256 !== GRASS_TEX.fileSha256(GRASS_TEX.tintedSourcePath(name))) {
+      fail(`${name}: vanilla 源图字节变了但未重烘（跑 npm run grasstextures）`);
+    }
+    if (JSON.stringify(rec.tint) !== JSON.stringify([...T])) {
+      fail(`${name}: meta 里的 tint ${rec.tint} ≠ 当前 GRASS_TINT ${[...T]}（改 T 忘重烘）`);
+    }
+    if (def.mode === 'fringe') {
+      const basePath = GRASS_TEX.tintedBasePath(name);
+      if (rec.baseSha256 !== GRASS_TEX.fileSha256(basePath)) {
+        fail(`${name}: base 字节变了但未重烘`);
+      }
+      // **内容级判据**：非草沿区逐字节不变。指纹与均值都拓不到它 ——
+      // 实测用 dirt.png 当 base 会改动 48 个字节，而那 48 字节对全图均值只影响 3.4。
+      const base = PNG.sync.read(fs.readFileSync(basePath));
+      const ov = PNG.sync.read(fs.readFileSync(GRASS_TEX.tintedSourcePath(name)));
+      let diff = 0, fringeN = 0;
+      let fr = 0, fg = 0, fb = 0;
+      for (let i = 0; i < png.data.length; i += 4) {
+        if (ov.data[i + 3] === 255) {
+          fringeN++;
+          fr += png.data[i]; fg += png.data[i + 1]; fb += png.data[i + 2];
+          continue;
+        }
+        if (ov.data[i + 3] > 0) continue;
+        for (let c = 0; c < 3; c++) if (png.data[i + c] !== base.data[i + c]) diff++;
+      }
+      if (diff !== 0) fail(`${name}: 非草沿区被改动了 ${diff} 个字节（base 用错？不能用 dirt.png）`);
+      if (fringeN !== GRASS_TEX.FRINGE_TEXEL_COUNT) {
+        fail(`${name}: 草沿 texel 数 ${fringeN} ≠ ${GRASS_TEX.FRINGE_TEXEL_COUNT}（遮罩用错？）`);
+      }
+      const fgot = [fr / fringeN, fg / fringeN, fb / fringeN];
+      const fdev = fgot.map((v, i) => Math.abs(v - GRASS_TEX.FRINGE_TARGET_MEAN[i]));
+      if (fdev.some((d) => d > 0.5)) {
+        fail(`${name}: 草沿均值 ${fgot.map((v) => v.toFixed(2)).join('/')} 偏离目标 `
+          + `${GRASS_TEX.FRINGE_TARGET_MEAN.join('/')} > 0.5/通道`);
+      }
+      sizes.push(`${name} 草沿 ${fgot.map((v) => v.toFixed(0)).join('/')}`);
+    } else {
+      sizes.push(`${name} ${got.map((v) => v.toFixed(0)).join('/')}`);
+    }
+  }
+
   if (failures.length === before) {
-    infos.push(`[草贴图] ${sizes.join(' · ')}（16×16，源图 46×46 盒式平均，均值偏差 ≤2）`);
+    infos.push(`[草贴图] ${sizes.join(' · ')}（${Object.keys(GRASS_TEX.GRASS_TEXTURES).length} 张盒式平均 + ${Object.keys(GRASS_TEX.TINTED_TEXTURES).length} 张着色 T=${[...T].join('/')}）`);
   }
 }
 

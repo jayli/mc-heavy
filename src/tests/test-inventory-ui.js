@@ -140,7 +140,7 @@ test('背包 open：显示 + pushModal + 清空按键', async () => {
   });
 });
 
-test('背包 open：渲染 144 个非空槽且首槽选中', async () => {
+test('背包 open：渲染 145 个非空槽且首槽选中', async () => {
   await withPanel((panel) => {
     panel.open();
     const slots = document.querySelectorAll('#inventory-grid .mc-slot');
@@ -149,7 +149,8 @@ test('背包 open：渲染 144 个非空槽且首槽选中', async () => {
     // ⚠️ 浅水高台（v2.11）：两个草方块进背包 → 126 → 128
     // ⚠️ 中世纪船 Epic：两个新方块（倒置台阶 / 倒置半砖）进背包 → 128 → 130
     // ⚠️ 废弃堡垒（2026-11-10）：15 个新方块进背包 → 129 → 144
-    assertEqual(slots.length, 144, '物品集合全量入包 = 144 槽（6 项不入包）');
+    // ⚠️ 矮草丛（v3.12，2026-11-17）：bush_grass 进背包 → 144 → 145
+    assertEqual(slots.length, 145, '物品集合全量入包 = 145 槽（6 项不入包）');
     assertEqual(document.querySelectorAll('#inventory-grid .mc-slot.selected').length, 1);
     assertTrue(slots[0].classList.contains('selected'), 'selectedSlot=0 高亮首槽');
     assertEqual(slots[0].dataset.index, '0');
@@ -401,14 +402,14 @@ test('渲染：异形方块槽位图标裁剪参数互不相同（9 项等轴测
 test('渲染：空槽不列出（只渲染非空槽，mc-lite 同行为）', async () => {
   await withPanel((panel, game) => {
     panel.open();
-    assertEqual(document.querySelectorAll('#inventory-grid .mc-slot').length, 144);
-    game.player.inventory.slots[143].clear(); // 清空末槽（144 项 → 下标 143）
+    assertEqual(document.querySelectorAll('#inventory-grid .mc-slot').length, 145);
+    game.player.inventory.slots[144].clear(); // 清空末槽（145 项 → 下标 144）
     game.player.inventory.slots[5].clear();
     panel.render();
-    assertEqual(document.querySelectorAll('#inventory-grid .mc-slot').length, 142);
+    assertEqual(document.querySelectorAll('#inventory-grid .mc-slot').length, 143);
     const idxs = [...document.querySelectorAll('#inventory-grid .mc-slot')]
       .map((el) => Number(el.dataset.index));
-    assertFalse(idxs.includes(143), '空槽不在列');
+    assertFalse(idxs.includes(144), '空槽不在列');
     assertFalse(idxs.includes(5));
     assertEqual(idxs[0], 0, 'data-index 仍是背包真实槽索引（非渲染序号）');
     assertEqual(idxs[5], 6, '跳过空槽后索引连续但值跳号');

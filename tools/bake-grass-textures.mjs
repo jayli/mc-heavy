@@ -25,7 +25,10 @@ import { PNG } from 'pngjs';
 import {
   GRASS_TEXTURES, GRASS_TILE_SIZE, GRASS_META, ROOT,
   sourcePath, outputPath, fileSha256, grassTextureInputFingerprint,
+  GRASS_TINT, TINTED_TEXTURES, tintedSourcePath, tintedBasePath, tintedOutputPath,
+  TINTED_TARGET_MEAN,
 } from './grass-textures-fingerprint.mjs';
+import { applyTint, retintFringe } from '../src/voxel/tint-math.js';
 
 const SIZE = GRASS_TILE_SIZE;
 
@@ -85,12 +88,15 @@ export function boxDownsample(src) {
   return dst;
 }
 
-/** PNG 逐通道均值（门禁与自检共用） */
+/** PNG 逐通道均值（门禁与自检共用）。只算不透明像素（alpha>=8）——
+ *  植被贴图有大量全透明格，把它们算进去会把均值拉向 0。 */
 export function meanRgb(png) {
-  let r = 0, g = 0, b = 0;
-  const n = png.width * png.height;
-  for (let i = 0; i < png.data.length; i += 4) { r += png.data[i]; g += png.data[i + 1]; b += png.data[i + 2]; }
-  return [r / n, g / n, b / n];
+  let r = 0, g = 0, b = 0, n = 0;
+  for (let i = 0; i < png.data.length; i += 4) {
+    if (png.data[i + 3] < 8) continue;
+    r += png.data[i]; g += png.data[i + 1]; b += png.data[i + 2]; n++;
+  }
+  return n ? [r / n, g / n, b / n] : [0, 0, 0];
 }
 
 /**
@@ -117,6 +123,7 @@ function loadSourcePixels(jpgPath) {
 function bake() {
   fs.mkdirSync(path.dirname(GRASS_META), { recursive: true });
   const records = {};
+  const tintedRecords = {};
   for (const name of Object.keys(GRASS_TEXTURES)) {
     const jpg = sourcePath(name);
     if (!fs.existsSync(jpg)) throw new Error(`源图不存在：${GRASS_TEXTURES[name].source}`);
@@ -146,9 +153,76 @@ function bake() {
       + `(×${src.width / SIZE} 盒式平均)  均值 ${outMean.map((v) => v.toFixed(0)).join('/')}  `
       + `偏差 ${delta.map((v) => v.toFixed(2)).join('/')}`);
   }
+  // ---- 着色类产物（v3.12）----
+  // 与上面的盒式平均是**两条不同路径**：这里的均值必然偏离源图（那就是着色），
+  // 故**不能复用「偏差 ≤2/通道」那条断言** —— 它会把正常着色判成算法错误。
+  // 判据改为「产物均值 == 预先标定的目标值」（TINTED_TARGET_MEAN，与门禁共用）。
+  for (const [name, def] of Object.entries(TINTED_TEXTURES)) {
+    const srcFile = tintedSourcePath(name);
+    if (!fs.existsSync(srcFile)) throw new Error(`vanilla 源图不存在：${def.source}`);
+    const src = PNG.sync.read(fs.readFileSync(srcFile));
+    if (src.width !== SIZE || src.height !== SIZE) {
+      throw new Error(`${name}: vanilla 源图 ${src.width}×${src.height} ≠ ${SIZE}×${SIZE}`);
+    }
+    let pixels;
+    let baseSha;
+    if (def.mode === 'tint') {
+      pixels = applyTint(src, GRASS_TINT).data;
+    } else if (def.mode === 'fringe') {
+      const baseFile = tintedBasePath(name);
+      if (!fs.existsSync(baseFile)) throw new Error(`${name}: 缺 base ${def.base}`);
+      const base = PNG.sync.read(fs.readFileSync(baseFile));
+      pixels = retintFringe(base, src, GRASS_TINT).data;
+      baseSha = fileSha256(baseFile);
+    } else if (def.mode === 'copy') {
+      pixels = src.data;
+    } else {
+      throw new Error(`${name}: 未知 mode ${def.mode}`);
+    }
+    const out = new PNG({ width: SIZE, height: SIZE });
+    out.data.set(pixels);
+    const outFile = tintedOutputPath(name);
+    fs.mkdirSync(path.dirname(outFile), { recursive: true });
+    fs.writeFileSync(outFile, PNG.sync.write(out));
+
+    const outMean = meanRgb(out);
+    const target = TINTED_TARGET_MEAN[name];
+    const dev = outMean.map((v, i) => Math.abs(v - target[i]));
+    if (dev.some((d) => d > 0.05)) {
+      throw new Error(`${name}: 产物均值 ${outMean.map((v) => v.toFixed(2)).join('/')}`
+        + ` 偏离目标 ${target.join('/')} 达 ${dev.map((d) => d.toFixed(2)).join('/')} > 0.05/通道`);
+    }
+    // fringe 模式的内容级判据：非草沿区必须逐字节不变（指纹拓不到这条）
+    let untouchedDiff = 0;
+    if (def.mode === 'fringe') {
+      const base = PNG.sync.read(fs.readFileSync(tintedBasePath(name)));
+      for (let i = 0; i < pixels.length; i += 4) {
+        if (src.data[i + 3] > 0) continue;
+        for (let c = 0; c < 3; c++) if (pixels[i + c] !== base.data[i + c]) untouchedDiff++;
+      }
+      if (untouchedDiff !== 0) {
+        throw new Error(`${name}: 非草沿区被改动了 ${untouchedDiff} 个字节 —— base 用错了（不能用 dirt.png）`);
+      }
+    }
+    tintedRecords[name] = {
+      source: def.source,
+      sourceSha256: fileSha256(srcFile),
+      base: def.base ?? null,
+      baseSha256: baseSha ?? null,
+      out: def.out,
+      mode: def.mode,
+      tint: [...GRASS_TINT],
+      outMean: outMean.map((v) => +v.toFixed(2)),
+      targetMean: target,
+      untouchedDiff,
+    };
+    console.log(`${name.padEnd(28)} ${def.mode.padEnd(6)} 均值 ${outMean.map((v) => v.toFixed(2)).join('/')}`
+      + (def.mode === 'fringe' ? `  非草沿区改动 ${untouchedDiff} 字节` : ''));
+  }
+
   const fp = grassTextureInputFingerprint();
   fs.writeFileSync(GRASS_META, `${JSON.stringify({
-    version: 1, tileSize: SIZE, textures: records, fingerprints: fp,
+    version: 1, tileSize: SIZE, textures: records, tinted: tintedRecords, fingerprints: fp,
   }, null, 2)}\n`);
   console.log(`指纹 ${fp.input}`);
   console.log(`meta → ${path.relative(ROOT, GRASS_META)}`);
