@@ -105,52 +105,46 @@ export const JF_GRASS_SALT = 1045;
 export const JF_BUSH_SALT = 1046;
 
 /**
- * 该列是否可种**单格植物/草**：在整形区内、且**结构在该列没有实心方块**。
+ * 该**格**能不能长植被（v3.13d 定稿）。
  *
- * ⚠️ 判据用「产物该列有无实心」而不是「地表格是否空气」：结构的地表层可能正好是
- * 草地材质（整形铺的），只看地表格会把墙脚也当成空地。
+ * 用户裁定的让位语义：「树叶的位置被城堡方块占位了，这时才让位」⇒ **逐格**判。
+ * 但「产物里是 air」不等于「可以长树」—— 分三种情形：
+ *   ① 产物该格是**实心** ⇒ 让位（渲染要塞方块）；
+ *   ② 产物该格是**显式 air** 且**上方有屋顶** ⇒ 那是**室内房间**，不得长树
+ *      （实测：不判屋顶会让 28/205 个房间格被树叶/树干填掉 ⇒ 地牢里长树）；
+ *   ③ 产物该格是 air 且**上方直通天空**，或产物根本未覆盖 ⇒ 室外，可长。
  *
- * ⚠️ **本判据只用于「树干/草的落点」**（它们贴地，列内有实心就意味着那里是建筑）。
- *    **树冠不得用它** —— 树冠在高处，要用逐格的 `jfCellFreeAt`（v3.13c）。
- *
- * @param {Map<string, {min:number,max:number,solid:boolean}>} occ 产物按 (x,z) 的占用索引
- */
-function jfPlantableAt(px, pz, occ) {
-  const o = occ.get(`${px},${pz}`);
-  return !o || !o.solid;
-}
-
-/**
- * 该**格**是否没被要塞占位（产物在该 (x,y,z) 是空气，或产物根本没覆盖到它）。
- *
- * ⚠️⚠️ **v3.13c 用户裁定的让位语义**：「当树叶、树干和建筑体碑撞时，树叶的位置被
- * 城堡方块占位了，这时才让位」⇒ 让位必须是**逐格**的，不是逐列。
- *
- * 失效形态（上一版用列级判据的后果，用户截图可见）：矮墙/台阶列的**高处本是空气**，
- * 却因「该列任何一格有实心」而整列禁写 ⇒ 树冠贴墙那侧被**垂直切一刀**。
- * 实测（seed 12345 全整形区）：树冠 69012 格中 **误杀 3837 格（5.56%）**，
- * 而真正被要塞占位的只有 **503 格** ⇒ 误杀是真占位的 7.6 倍。
+ * ⚠️⚠️ **不得用列级判据**（用户两次报「树叶被切割」的根因）：
+ * 列级判据把矮墙/台阶列的**高处室外空气**也禁写 ⇒ 树冠被垂直切一刀
+ * （实测误杀 3837 格 / 5.56%，真占位仅 503 格）；树干落点用列级则会让 313 棵树整棵不生成。
  *
  * ⚠️ `ny` 是**产物局部 y**（已归一化，最低点=1），不是世界 y：
  *    调用方必须用 `wy - anchor.floorY + floorRow` 换算（与阶段 2.95 光栅化同口径）。
- *    拿世界 y 直接查会让每一格都查不到 ⇒ 退化成「全部放行」（树叶穿墙）。
+ *
+ * @param {Map<string,string>} cellType 产物非空气格索引
+ * @param {Map<string,number>} roofTop 每列最高实心格的 ny（判「上方有无屋顶」）
  */
-function jfCellFreeAt(px, ny, pz, cellType) {
-  const t = cellType.get(`${px},${ny},${pz}`);
-  return t === undefined || t === 'air';
+function jfCellFreeAt(px, ny, pz, cellType, roofTop) {
+  if (cellType.has(`${px},${ny},${pz}`)) return false;      // ① 真占位 ⇒ 让位
+  const top = roofTop.get(`${px},${pz}`);
+  if (top !== undefined && ny < top) return false;          // ② 屋顶下方 ⇒ 室内
+  return true;                                             // ③ 室外 / 未覆盖
 }
 
 /**
- * 该列是否可种**树**：只要求**树干所在列**是空地。
+ * 该位置是否可种**树干**：**逐格**判树干那一格有没有被要塞占位（v3.13d）。
  *
- * ⚠️ **树冠外溢用逐格写入守卫解决，不靠降密度**（实测取舍）：
- * big 树冠 ±2、birchTree 产物跨度 −2..2 ⇒ 紧邻墙 1~2 格的树干会把叶摆到墙上。
- * 若改成「要求树冠半径内全空地」，实测树从 **912 → 741 棵**（密度 3.754%→3.050%，
- * 相当于砍掉 19%）—— 与用户「密度同森林一样」相背。
- * 故保留全部 912 棵，改用 `jfVegSetter` 在**写入时逐格**跳过要塞真占位的格（v3.13c）。
+ * ⚠️⚠️ **不得用列级判据**（v3.13c 只改了树冠、漏了这里，用户第二次报同一症状）：
+ * 列级判据把「贴着墙但树干格是空气」的树**整棵挡掉** ⇒ 邻居树的树冠伸过来时
+ * 被「缺一棵树」的空洞切平 —— 画面上与「树冠被切」一模一样。
+ * 实测（seed 12345）：抽签命中 1334 棵，列级判据只种 912 棵，**422 棵被挡**；
+ * 其中 **313 棵的树干格完全是空气**（纯误挡），它们的树冠本能填 **21644 格**叶。
+ *
+ * ⚠️ 树干只需判**它自己那一格**：树干上方的格由 `jfVegSetter` 逐格守（同口径）。
+ *    若树干中段的某格被要塞占位，那一格让位、上下继续长（用户要的「只在占位格让位」）。
  */
-function jfTreePlantableAt(px, pz, occ) {
-  return jfPlantableAt(px, pz, occ);
+function jfTreePlantableAt(px, ny, pz, cellType, roofTop) {
+  return jfCellFreeAt(px, ny, pz, cellType, roofTop);
 }
 
 /**
@@ -166,51 +160,38 @@ function jfTreePlantableAt(px, pz, occ) {
  * ⚠️ `floorRow` 由调用方传入（`floorRowOf('jungleFortress')`，唯一权威），
  *    不在此硬编码 13 —— 重烘改层时硬编码会静默错位。
  */
-function jfVegSetter(setBlock, anchor, cellType, floorRow) {
+function jfVegSetter(setBlock, anchor, cellType, floorRow, roofTop) {
   return (wx, y, wz, name, meta = 0) => {
     const ny = y - anchor.floorY + floorRow;
-    if (!jfCellFreeAt(wx - anchor.wx, ny, wz - anchor.wz, cellType)) return;
+    if (!jfCellFreeAt(wx - anchor.wx, ny, wz - anchor.wz, cellType, roofTop)) return;
     setBlock(wx, y, wz, name, meta);
   };
 }
 
 /**
- * 产物按 (x,z) 的占用索引（懒建，每次 GEN 只建一次；产物已在 Worker 模块缓存里）。
- * ⚠️ 缓存键是产物对象本身（WeakMap）⇒ 换产物自动失效，不会读到旧索引。
- */
-const JF_OCC_CACHE = new WeakMap();
-function jungleFortressOccupancy(data) {
-  if (JF_OCC_CACHE.has(data)) return JF_OCC_CACHE.get(data);
-  const occ = new Map();
-  for (const b of data.blocks) {
-    const k = `${b.x},${b.z}`;
-    let o = occ.get(k);
-    if (!o) { o = { min: b.y, max: b.y, solid: false }; occ.set(k, o); }
-    if (b.y < o.min) o.min = b.y;
-    if (b.y > o.max) o.max = b.y;
-    if (b.type !== 'air') o.solid = true;
-  }
-  JF_OCC_CACHE.set(data, occ);
-  return occ;
-}
-
-/**
- * 产物按 (x,y,z) 的**逐格**类型索引（v3.13c 树叶逐格让位用）。
+ * 产物按 (x,y,z) 的**逐格**类型索引（v3.13c/d 逐格让位的唯一权威）。
  *
  * ⚠️ 只存**非空气**格：空气与「产物未覆盖」在让位语义上等价（都该放行），
  *    合并后索引从 81238 降到 65702 条，且 `get()===undefined` 就是「可写」。
- * ⚠️ 缓存同样用 WeakMap（换产物自动失效），与列级索引同口径。
+ * ⚠️ 缓存用 WeakMap（换产物自动失效）。
+ * ⚠️ **不要再建列级 (x,z) 索引**（v3.13d 删掉了 `jungleFortressOccupancy`）：
+ *    两套口径共存就会有人误用列级那套，而那正是用户两次报「树叶被切割」的根因。
  */
 const JF_CELL_CACHE = new WeakMap();
 function jungleFortressCells(data) {
   if (JF_CELL_CACHE.has(data)) return JF_CELL_CACHE.get(data);
   const cells = new Map();
+  const roof = new Map();
   for (const b of data.blocks) {
     if (b.type === 'air') continue;
     cells.set(`${b.x},${b.y},${b.z}`, b.type);
+    const ck = `${b.x},${b.z}`;
+    const prev = roof.get(ck);
+    if (prev === undefined || b.y > prev) roof.set(ck, b.y);
   }
-  JF_CELL_CACHE.set(data, cells);
-  return cells;
+  const entry = { cells, roof };
+  JF_CELL_CACHE.set(data, entry);
+  return entry;
 }
 
 /** AABB 相交判定余量（JSON 实测占地与 footprint 表最大偏差 1 格） */
@@ -1242,27 +1223,33 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
         const jf = ctx.jf;
         const px = wx - jf.wx, pz = wz - jf.wz;
         const jfData = await loadStructure('jungleFortress');
-        const occ = jungleFortressOccupancy(jfData);
-        if (jfPlantableAt(px, pz, occ)) {
-          const surface = jungleFortressSurfaceYAt(wx, wz, seed, jf);
-          if (surface !== null) {
+        const { cells: jfCells, roof: jfRoof } = jungleFortressCells(jfData);
+        const jfFloorRow = floorRowOf('jungleFortress');
+        const surface = jungleFortressSurfaceYAt(wx, wz, seed, jf);
+        if (surface !== null) {
+          // 地表之上一格（草/花/树干基点）的世界 y 与产物 ny
+          const groundY = surface + 1;
+          const groundNy = groundY - jf.floorY + jfFloorRow;
+          // ⚠️⚠️ **逐格判这一格能不能写**，不是逐列（v3.13d）：
+          //    列级判据会把「贴着矮墙但上方是空气」的位置整列禁写 ⇒ 贴墙的树整棵不生成，
+          //    邻居树冠伸过来时被「缺一棵树」的空洞切平（用户第二次报的就是这个）。
+          if (jfCellFreeAt(px, groundNy, pz, jfCells, jfRoof)) {
             const roll = rollVegetation(wx, wz, 'FOREST', seed);
             if (inColumn && roll.plant) {
-              setBlock(wx, surface + 1, wz, roll.plant);
+              setBlock(wx, groundY, wz, roll.plant);
             }
             // 草：FOREST 分支不产草，另加两档（密度对齐 PLAINS 的 5% / 5%）
             if (inColumn && !roll.plant && !roll.tree) {
               if (seededRandom(wx, wz, seed + JF_GRASS_SALT) < 0.05) {
-                setBlock(wx, surface + 1, wz, 'short_grass');
+                setBlock(wx, groundY, wz, 'short_grass');
               } else if (seededRandom(wx, wz, seed + JF_BUSH_SALT) < 0.05 / PLAINS_EMPTY_SHARE) {
-                setBlock(wx, surface + 1, wz, 'bush_grass');
+                setBlock(wx, groundY, wz, 'bush_grass');
               }
             }
-            if (roll.tree && jfTreePlantableAt(px, pz, occ)) {
-              tree = roll.tree; baseY = surface + 1;
-              // 树冠跨 column 写入 ⇒ 用**逐格**守卫包装：只在要塞真占位那一格让位
-              // （v3.13c；列级守卫会把矮墙列的高处空气也禁写 ⇒ 树冠被垂直切割）
-              treeSetter = jfVegSetter(setBlock, jf, jungleFortressCells(jfData), floorRowOf('jungleFortress'));
+            if (roll.tree && jfTreePlantableAt(px, groundNy, pz, jfCells, jfRoof)) {
+              tree = roll.tree; baseY = groundY;
+              // 树干与树冠逐格写入 ⇒ 只在要塞真占位那一格让位（v3.13c/d）
+              treeSetter = jfVegSetter(setBlock, jf, jfCells, jfFloorRow, jfRoof);
             }
           }
         }

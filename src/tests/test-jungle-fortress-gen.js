@@ -565,12 +565,23 @@ test('丛林要塞：树叶只在要塞真占位的格让位（逐格，不是�
   const data = await loadStructure('jungleFortress');
   const cellType = new Map();
   const colSolid = new Set();
+  const roofTop = new Map();
   for (const b of data.blocks) {
     if (b.type !== 'air') {
       cellType.set(`${b.x},${b.y},${b.z}`, b.type);
       colSolid.add(`${b.x},${b.z}`);
+      const ck = `${b.x},${b.z}`;
+      const prev = roofTop.get(ck);
+      if (prev === undefined || b.y > prev) roofTop.set(ck, b.y);
     }
   }
+  // 「室外可长」与生产代码 jfCellFreeAt 同口径：非实心 且 不在屋顶下方。
+  // ⚠️ **屋顶下方的 air 是室内房间**，那里本就不应长树 ⇒ 不得计入「误杀」。
+  const isOutdoor = (px, ny, pz) => {
+    if (cellType.has(`${px},${ny},${pz}`)) return false;
+    const top = roofTop.get(`${px},${pz}`);
+    return top === undefined || ny >= top;
+  };
   const floorRow = floorRowOf('jungleFortress');
   const B = JUNGLE_FORTRESS_SLOPE_BAND;
   // 树冠意图：把整形区所有空地列的树按真实 generateTree 收集一遍（含稀疏化与包围剔除）
@@ -593,12 +604,15 @@ test('丛林要塞：树叶只在要塞真占位的格让位（逐格，不是�
     const [wx, y, wz] = k.split(',').map(Number);
     const px = wx - a.wx, pz = wz - a.wz;
     if (!colSolid.has(`${px},${pz}`)) continue;
-    const occupied = cellType.has(`${px},${y - a.floorY + floorRow},${pz}`);
+    const ny = y - a.floorY + floorRow;
+    const occupied = cellType.has(`${px},${ny},${pz}`);
+    // 屋顶下方的室内格本就不应长树 ⇒ 排除，否则把「正确拒写」误报成切割
+    if (!occupied && !isOutdoor(px, ny, pz)) continue;
     probe.push({ wx, y, wz, name, occupied });
   }
   const freeProbes = probe.filter((p) => !p.occupied);
   assertTrue(freeProbes.length > 100,
-    `必须有足量「列内有实心但该格是空气」的树冠意图格（实际 ${freeProbes.length}）—— ` +
+    `必须有足量「列内有实心但该格室外可长」的树冠意图格（实际 ${freeProbes.length}）—— ` +
     '否则本用例对列级/逐格之差无判别力');
   // 逐格读真实 GEN 结果（按 column 分组，避免重复构建）
   const byCol = new Map();
@@ -610,15 +624,19 @@ test('丛林要塞：树叶只在要塞真占位的格让位（逐格，不是�
   }
   let wrongDrop = 0, keptFree = 0, yielded = 0;
   // 树叶种类集合：两棵树的树冠重叠时**后写胜**（与结构写入同口径）⇒
-  // 判「该格有没有树叶」而不是「是不是同一品种的叶」。
-  // ⚠️ 拿品种相等作判据会把「邻居树的叶覆盖了本树」误报成切割（实测 1 格：
-  //    giant_spruce_leaves 位置上是另一棵树的 leaves）。
+  // 判「该格有没有树叶/树干」而不是「是不是同一品种的叶」。
+  // ⚠️ **叶种名单必须从权威源派生，不得手写**：手写漏了 giant_palm/banyan（id 138 等）
+  //    会把 20 格合法树叶误报成切割（实测）。
+  // ⚠️ **树干也算「未被切割」**：新种的贴墙树树干会穿过邻居树冠（后写胜），
+  //    那是用户要的「只在占位格让位」的自然交叠，不是空洞。
+  //    判据的真正目标：**该格不得是空气**（airCount 才是切割）。
   const leafNames = new Set(['leaves', 'yellow_leaves', 'realistic_yellow_leaves',
     'azalea_leaves', 'azalea_flowers', 'swamp_leaves', 'snow_leaves', 'sky_leaves',
-    'giant_oak_leaves', 'giant_spruce_leaves', 'giant_birch_leaves', 'giant_jungle_leaves',
-    'giant_acacia_leaves', 'giant_dark_oak_leaves']);
-  const leafIds = new Set([...leafNames].map((n) => reg.idOf(n)).filter((v) => v !== undefined));
-  const isLeafIntent = (n) => leafNames.has(n);
+    'giant_oak_leaves', 'giant_spruce_leaves', 'giant_palm_leaves', 'giant_banyan_leaves',
+    'giant_birch_leaves']);
+  const trunkNames = new Set(['wood', 'birch_log', 'giant_oak_log']);
+  const solidVegIds = new Set([...leafNames, ...trunkNames]
+    .map((n) => reg.idOf(n)).filter((v) => v !== undefined && v !== null));
   for (const [ck, list] of byCol) {
     const [cx, cz] = ck.split(',').map(Number);
     const col = new ChunkColumn(cx, cz);
@@ -631,8 +649,8 @@ test('丛林要塞：树叶只在要塞真占位的格让位（逐格，不是�
       const lx = ((p.wx % 16) + 16) % 16, lz = ((p.wz % 16) + 16) % 16;
       const id = col.blocks[blockIndex(lx, p.y, lz)];
       if (p.occupied) { if (id !== reg.idOf(p.name)) yielded++; continue; }
-      // 叶意图格：只要那里是**任何一种树叶**就算未被切割
-      if (isLeafIntent(p.name) ? leafIds.has(id) : id === reg.idOf(p.name)) keptFree++;
+      // 意图格未被要塞占位 ⇒ 那里必须是**植被实体**（叶或树干），不得是空气
+      if (solidVegIds.has(id)) keptFree++;
       else wrongDrop++;
     }
   }
@@ -640,6 +658,74 @@ test('丛林要塞：树叶只在要塞真占位的格让位（逐格，不是�
   assertEqual(wrongDrop, 0,
     `产物在该格是空气时树叶必须照常写入：实测 ${wrongDrop} 格被误杀` +
     `（正常写入 ${keptFree}）—— 列级守卫把矮墙列的高处空气也禁写了，树冠被垂直切割`);
+});
+
+test('丛林要塞：树干落点也逐格判 —— 贴墙但树干格是空气时必须种树（v3.13d）', async () => {
+  const seed = 12345;
+  const a = computeJungleFortressAnchor(seed);
+  const reg = await buildDefaultRegistry();
+  const data = await loadStructure('jungleFortress');
+  const cellSolid = new Set();
+  const colSolid = new Set();
+  const roofTop = new Map();
+  for (const b of data.blocks) {
+    if (b.type === 'air') continue;
+    cellSolid.add(`${b.x},${b.y},${b.z}`);
+    colSolid.add(`${b.x},${b.z}`);
+    const ck = `${b.x},${b.z}`;
+    const prev = roofTop.get(ck);
+    if (prev === undefined || b.y > prev) roofTop.set(ck, b.y);
+  }
+  // 「室外可长」= 该格非实心 且 不在屋顶下方（与生产代码 jfCellFreeAt 同口径）
+  const isOutdoor = (px, ny, pz) => {
+    if (cellSolid.has(`${px},${ny},${pz}`)) return false;
+    const top = roofTop.get(`${px},${pz}`);
+    return top === undefined || ny >= top;
+  };
+  const floorRow = floorRowOf('jungleFortress');
+  const B = JUNGLE_FORTRESS_SLOPE_BAND;
+  const trunkIds = new Set(['wood', 'birch_log', 'giant_oak_log'].map((n) => reg.idOf(n)));
+  // 收集「抽签命中树 + 列内有实心 + 但树干那一格是空气」的列
+  // —— 列级落点判据会把这些树整棵挡掉，而用户要的是「只在真占位那一格让位」。
+  const probe = [];
+  for (let dx = -JUNGLE_FORTRESS_HALF_X - B; dx <= JUNGLE_FORTRESS_HALF_X + B; dx++) {
+    for (let dz = -JUNGLE_FORTRESS_HALF_Z - B; dz <= JUNGLE_FORTRESS_HALF_Z + B; dz++) {
+      const wx = a.wx + dx, wz = a.wz + dz;
+      const s = jungleFortressSurfaceYAt(wx, wz, seed, a);
+      if (s === null) continue;
+      const roll = rollVegetation(wx, wz, 'FOREST', seed);
+      if (!roll.tree) continue;
+      if (!colSolid.has(`${dx},${dz}`)) continue;               // 只看贴墙列
+      if (!isOutdoor(dx, s + 1 - a.floorY + floorRow, dz)) continue;  // 树干格必须室外可长
+      probe.push({ wx, wz, y: s + 1 });
+    }
+  }
+  assertTrue(probe.length > 50,
+    `必须有足量「贴墙但树干格是空气」的候选列（实际 ${probe.length}）—— 否则无判别力`);
+  const byCol = new Map();
+  for (const q of probe) {
+    const ck = `${Math.floor(q.wx / 16)},${Math.floor(q.wz / 16)}`;
+    if (!byCol.has(ck)) byCol.set(ck, []);
+    byCol.get(ck).push(q);
+  }
+  let missingTrunk = 0, hasTrunk = 0;
+  for (const [ck, list] of byCol) {
+    const [cx, cz] = ck.split(',').map(Number);
+    const col = new ChunkColumn(cx, cz);
+    fillColumn(col, seed, reg);
+    carveCaves(col, seed);
+    const layouts = neighborRegionKeys(cx, cz)
+      .map((k) => { const [rx, rz] = k.split(',').map(Number); return computeRegionLayout(rx, rz, seed); });
+    await applyStructuresToColumn(col, seed, reg, layouts);
+    for (const q of list) {
+      const lx = ((q.wx % 16) + 16) % 16, lz = ((q.wz % 16) + 16) % 16;
+      const id = col.blocks[blockIndex(lx, q.y, lz)];
+      if (trunkIds.has(id)) hasTrunk++; else missingTrunk++;
+    }
+  }
+  assertEqual(missingTrunk, 0,
+    `树干格未被要塞占位时必须种树：实测 ${missingTrunk} 列没树干（已种 ${hasTrunk}）—— ` +
+    '落点判据仍是列级，贴墙的树整棵不生成 ⇒ 邻居树冠伸过来时被「缺一棵树」的空洞切平');
 });
 
 test('丛林要塞接线：占地内零撒布，植被只在空地上（v3.13b 用户要求空地植树植草）', async () => {
