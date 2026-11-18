@@ -480,9 +480,11 @@ test('BlockRegistry: fingerprintOfPrefix 对非法 n 抛错（越界/负数/非�
   const reg = createRegistry();
   for (const def of BLOCKS) reg.register(def.name, def);
   reg.freeze();
-  assertThrows(() => reg.fingerprintOfPrefix(reg.count + 1), '越界');
-  assertThrows(() => reg.fingerprintOfPrefix(-1), '负数');
-  assertThrows(() => reg.fingerprintOfPrefix(1.5), '非整数');
+  // ⚠️ 三种非法输入共用一条报错文案（「越界或非整数」）⇒ 子串只能匹它，
+  //    写「负数」/「非整数」这类分类词会假红（实测踩过）。
+  assertThrows(() => reg.fingerprintOfPrefix(reg.count + 1), '越界或非整数');
+  assertThrows(() => reg.fingerprintOfPrefix(-1), '越界或非整数');
+  assertThrows(() => reg.fingerprintOfPrefix(1.5), '越界或非整数');
 });
 
 test('BlockRegistry: 生产 registry 的 fingerprint 是 8 位十六进制串', () => {

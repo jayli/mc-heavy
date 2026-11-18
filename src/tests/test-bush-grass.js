@@ -9,7 +9,7 @@
 // 按 quad 尺寸等比放大 15%，实际草高只 +0.6%（几乎看不出），宽度却 +31%。
 // 故本用例的判据落在 **quad 跨度 × 贴图不透明 bbox 占比** 上。
 import { test } from './runner.js';
-import { assertEqual, assertTrue, assertNotNull } from './assert.js';
+import { assertEqual, assertTrue, assertNotNull, assertDeepEqual } from './assert.js';
 import { TEMPLATES } from '../mesh/mesher.js';
 import { BLOCKS } from '../voxel/blocks-data.js';
 import { FACES_DATA } from '../voxel/faces-data.js';
@@ -134,5 +134,14 @@ test('新方块必须追加在 BLOCKS 末尾（id 不得位移，否则旧存档
     assertEqual(at, id, `${name} 的 id 必须恒为 ${id}（旧存档按数字 id 读）`);
   }
   // 新方块在末尾
-  assertEqual(BLOCKS[BLOCKS.length - 1].name, 'bush_grass', 'bush_grass 必须是数组最后一项');
+  // ⚠️ **v3.19 改写而不是放宽**：本条的真意图是「bush_grass 的 id 不得因后续新增而位移」，
+  //    不是「它永远是最后一项」—— 后者会被任何一次正当的末尾追加推翻。
+  //    故钉它的**绝对下标**（154）+ 新增项必须在它**之后**。
+  assertEqual(BLOCKS.findIndex((b) => b.name === 'bush_grass'), 154,
+    'bush_grass 的 id 恒为 154（后续新方块只能追加在它之后）');
+  // v3.19：石砖三变体 + 紫珀 4 项追加在末尾
+  assertEqual(BLOCKS.length, 159, '155 既有 + 4 新增');
+  assertDeepEqual(BLOCKS.slice(155).map((b) => b.name),
+    ['mossy_stone_bricks', 'cracked_stone_bricks', 'chiseled_stone_bricks', 'purpur_block'],
+    '新增 4 项按序追加在末尾');
 });

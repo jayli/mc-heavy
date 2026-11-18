@@ -403,14 +403,14 @@ test('渲染：异形方块槽位图标裁剪参数互不相同（9 项等轴测
 test('渲染：空槽不列出（只渲染非空槽，mc-lite 同行为）', async () => {
   await withPanel((panel, game) => {
     panel.open();
-    assertEqual(document.querySelectorAll('#inventory-grid .mc-slot').length, 145);
-    game.player.inventory.slots[144].clear(); // 清空末槽（145 项 → 下标 144）
+    assertEqual(document.querySelectorAll('#inventory-grid .mc-slot').length, 149);
+    game.player.inventory.slots[148].clear(); // 清空末槽（149 项 → 下标 148）
     game.player.inventory.slots[5].clear();
     panel.render();
-    assertEqual(document.querySelectorAll('#inventory-grid .mc-slot').length, 143);
+    assertEqual(document.querySelectorAll('#inventory-grid .mc-slot').length, 147);
     const idxs = [...document.querySelectorAll('#inventory-grid .mc-slot')]
       .map((el) => Number(el.dataset.index));
-    assertFalse(idxs.includes(144), '空槽不在列');
+    assertFalse(idxs.includes(148), '空槽不在列');
     assertFalse(idxs.includes(5));
     assertEqual(idxs[0], 0, 'data-index 仍是背包真实槽索引（非渲染序号）');
     assertEqual(idxs[5], 6, '跳过空槽后索引连续但值跳号');
