@@ -33,7 +33,7 @@ import { getCityBoundsForSeed } from '../gen/structures/city-layout.js';
 import { CITY_TRANSITION_SIZE, REGION_SIZE, LANDMARK_OFFSET } from '../gen/structures/region-config.js';
 import {
   jungleFortressSurfaceYAt, inJungleFortressTerraform,
-  jungleFortressGeometry, jungleFortressSkirtField,
+  jungleFortressGeometry, jungleFortressSkirtField, noteJungleFortressData,
   JUNGLE_FORTRESS_SLOPE_BAND,
   JUNGLE_FORTRESS_SKIRT_INNER, JUNGLE_FORTRESS_SKIRT_OUTER,
 } from '../gen/structures/jungle-fortress-terrain.js';
@@ -1490,6 +1490,7 @@ const FROZEN_SKIRT = {
 async function jfSkirtFixture(seed) {
   const a = computeJungleFortressAnchor(seed);
   const data = await loadStructure('jungleFortress');
+  noteJungleFortressData(data);      // 纯查询路径也要能拿到 T（不依赖 GEN 跑过）
   const field = jungleFortressSkirtField(a, seed, data);
   return { a, data, field };
 }
@@ -1666,3 +1667,150 @@ test('丛林要塞裙边：surfaceYAt 就是包络场 T（唯一权威，内部�
   assertTrue(checkedLift > 0, `抽样必须含抬升列（实际 ${checkedLift}）`);
   assertTrue(checkedInner > 100, `抽样必须含内部非带列（实际 ${checkedInner}）`);
 });
+
+// ==================== 植被让位含墩+裙边（v3.16 DR-3 / DR-10）====================
+
+/**
+ * 墩格 / 裙边格集合（判据用，从产物 + 包络场派生）。
+ *
+ * ⚠️ 这是**判据侧的独立派生**，不读生产代码的让位索引 ——
+ *    两边共用同一份索引会让「索引漏含墩/裙边」恒真（同口径陷阱）。
+ */
+async function jfVegObstacleCells(seed) {
+  const a = computeJungleFortressAnchor(seed);
+  const data = await loadStructure('jungleFortress');
+  noteJungleFortressData(data);
+  const G = jungleFortressGeometry(data);
+  const field = jungleFortressSkirtField(a, seed, data);
+  const { T, nat, isBuilding } = field;
+  // ⚠️ 裙边扫描范围必须用 **BW=22**，不是植被管理区的 16：
+  //    用 16 会漏掉外圈 6 格的裙边（实测样本从 123 掉到 11）。
+  const B = JUNGLE_FORTRESS_SKIRT_OUTER;
+  const pier = new Set(), skirt = new Set();
+  for (const [ck, minNy] of G.colMinNy) {
+    const [px, pz] = ck.split(',').map(Number);
+    const baseWy = a.floorY + (minNy - G.floorRow);
+    const h = nat(px, pz);
+    for (let wy = baseWy - 1; wy > h; wy--) pier.add(`${px},${wy - a.floorY + G.floorRow},${pz}`);
+  }
+  for (let x = -JUNGLE_FORTRESS_HALF_X - B; x <= JUNGLE_FORTRESS_HALF_X + B; x++) {
+    for (let z = -JUNGLE_FORTRESS_HALF_Z - B; z <= JUNGLE_FORTRESS_HALF_Z + B; z++) {
+      if (isBuilding(x, z)) continue;
+      const top = T(x, z), h = nat(x, z);
+      for (let wy = h + 1; wy <= top; wy++) skirt.add(`${x},${wy - a.floorY + G.floorRow},${z}`);
+    }
+  }
+  return { a, data, G, field, pier, skirt };
+}
+
+test('丛林要塞植被：树冠意图格落在墩/裙边上时，真实 GEN 不得写入植被', async () => {
+  const seed = 12345;
+  const { a, G, pier, skirt } = await jfVegObstacleCells(seed);
+  const reg = await buildDefaultRegistry();
+  const B = JUNGLE_FORTRESS_SLOPE_BAND;
+  // 用**真实 generateTree** 收集意图格（v3.13c 口径），并同步稀疏抽签（v3.13e）
+  const intent = new Map();
+  for (let dx = -JUNGLE_FORTRESS_HALF_X - B; dx <= JUNGLE_FORTRESS_HALF_X + B; dx++) {
+    for (let dz = -JUNGLE_FORTRESS_HALF_Z - B; dz <= JUNGLE_FORTRESS_HALF_Z + B; dz++) {
+      const wx = a.wx + dx, wz = a.wz + dz;
+      const s = jungleFortressSurfaceYAt(wx, wz, seed, a);
+      const roll = rollVegetation(wx, wz, 'FOREST', seed);
+      if (!roll.tree || roll.tree.type === 'birchTree' || roll.tree.type === 'birchTreeWithSnow') continue;
+      if (!jfTreeKept(wx, wz, seed)) continue;
+      generateTree(wx, s + 1, wz, (x, y, z, name) => intent.set(`${x},${y},${z}`, name),
+        seed, roll.tree.type, roll.tree.customLog || null, roll.tree.customLeaf || null, roll.tree.leafMix || null);
+    }
+  }
+  assertTrue(intent.size > 10000, `树冠意图格必须有量（实际 ${intent.size}）`);
+  const probe = [];
+  for (const k of intent.keys()) {
+    const [wx, y, wz] = k.split(',').map(Number);
+    const ck = `${wx - a.wx},${y - a.floorY + G.floorRow},${wz - a.wz}`;
+    if (pier.has(ck)) probe.push({ wx, y, wz, isPier: true });
+    else if (skirt.has(ck)) probe.push({ wx, y, wz, isPier: false });
+  }
+  // 样本量下界（修复 surfaceYAt 后的**正确态**实测，seed 12345）：
+  //   意图∩墩 = 763（树冠从旁边伸进墩身）、意图∩裙边 = 11。
+  // ⚠️ 裙边交集小是**正确行为**：树已种在裙边顶面之上（surfaceYAt=T），
+  //    只有邻列树冠横伸过来才会落在裙边格上。
+  //    （缺陷态下 surfaceYAt 返 nat ⇒ 树种在填土里 ⇒ 交集虚高到 123。）
+  assertTrue(probe.filter((p) => p.isPier).length > 300,
+    `必须有足量「意图格落在墩上」样本（实际 ${probe.filter((p) => p.isPier).length}）`);
+  assertTrue(probe.filter((p) => !p.isPier).length > 5,
+    `必须有「意图格落在裙边上」样本（实际 ${probe.filter((p) => !p.isPier).length}）`);
+  const vegIds = new Set(['leaves', 'yellow_leaves', 'realistic_yellow_leaves',
+    'azalea_leaves', 'azalea_flowers', 'swamp_leaves', 'snow_leaves', 'sky_leaves',
+    'giant_oak_leaves', 'giant_spruce_leaves', 'giant_palm_leaves', 'giant_banyan_leaves',
+    'giant_birch_leaves', 'wood', 'birch_log', 'giant_oak_log']
+    .map((n) => reg.idOf(n)).filter((v) => v != null));
+  const byCol = new Map();
+  for (const p of probe) {
+    const ck = `${Math.floor(p.wx / 16)},${Math.floor(p.wz / 16)}`;
+    if (!byCol.has(ck)) byCol.set(ck, []);
+    byCol.get(ck).push(p);
+  }
+  let vegInPier = 0, vegInSkirt = 0;
+  for (const [ck, list] of byCol) {
+    const [cx, cz] = ck.split(',').map(Number);
+    const col = new ChunkColumn(cx, cz);
+    fillColumn(col, seed, reg);
+    carveCaves(col, seed, reg);
+    const layouts = neighborRegionKeys(cx, cz)
+      .map((k) => { const [rx, rz] = k.split(',').map(Number); return computeRegionLayout(rx, rz, seed); });
+    await applyStructuresToColumn(col, seed, reg, layouts);
+    for (const p of list) {
+      const lx = ((p.wx % 16) + 16) % 16, lz = ((p.wz % 16) + 16) % 16;
+      const id = col.blocks[blockIndex(lx, p.y, lz)];
+      if (!vegIds.has(id)) continue;
+      if (p.isPier) vegInPier++; else vegInSkirt++;
+    }
+  }
+  assertEqual(vegInPier, 0, `树冠/树干不得穿墩（实测 ${vegInPier} 格）`);
+  assertEqual(vegInSkirt, 0, `树冠/树干不得穿裙边填土（实测 ${vegInSkirt} 格）`);
+}, { tier: 'slow' });
+
+test('丛林要塞植被：草/树干落点 y = surfaceYAt + 1（裙边后地面，不是 nat）', async () => {
+  const seed = 12345;
+  const { a, field } = await jfVegObstacleCells(seed);
+  const { T, nat, isBuilding } = field;
+  const reg = await buildDefaultRegistry();
+  const B = JUNGLE_FORTRESS_SLOPE_BAND;
+  // 取「裙边抬升且抽签命中草」的列：用 nat+1 会把草埋在填土里
+  const spots = [];
+  for (let dx = -JUNGLE_FORTRESS_HALF_X - B; dx <= JUNGLE_FORTRESS_HALF_X + B; dx++) {
+    for (let dz = -JUNGLE_FORTRESS_HALF_Z - B; dz <= JUNGLE_FORTRESS_HALF_Z + B; dz++) {
+      if (isBuilding(dx, dz)) continue;
+      if (T(dx, dz) <= nat(dx, dz)) continue;
+      const wx = a.wx + dx, wz = a.wz + dz;
+      const roll = rollVegetation(wx, wz, 'FOREST', seed);
+      if (!roll.plant) continue;
+      spots.push({ wx, wz, top: T(dx, dz), h: nat(dx, dz), name: roll.plant });
+    }
+  }
+  assertTrue(spots.length > 20, `必须有足量「裙边抬升列 + 抽签命中植物」样本（实际 ${spots.length}）`);
+  const byCol = new Map();
+  for (const p of spots) {
+    const ck = `${Math.floor(p.wx / 16)},${Math.floor(p.wz / 16)}`;
+    if (!byCol.has(ck)) byCol.set(ck, []);
+    byCol.get(ck).push(p);
+  }
+  let onTop = 0, buried = 0;
+  for (const [ck, list] of byCol) {
+    const [cx, cz] = ck.split(',').map(Number);
+    const col = new ChunkColumn(cx, cz);
+    fillColumn(col, seed, reg);
+    carveCaves(col, seed, reg);
+    const layouts = neighborRegionKeys(cx, cz)
+      .map((k) => { const [rx, rz] = k.split(',').map(Number); return computeRegionLayout(rx, rz, seed); });
+    await applyStructuresToColumn(col, seed, reg, layouts);
+    for (const p of list) {
+      const lx = ((p.wx % 16) + 16) % 16, lz = ((p.wz % 16) + 16) % 16;
+      const want = reg.idOf(p.name);
+      if (col.blocks[blockIndex(lx, p.top + 1, lz)] === want) onTop++;
+      // 用 nat+1 的错误口径：那一格已被裙边填土占掉 ⇒ 植物不得在那里
+      if (p.h + 1 <= p.top && col.blocks[blockIndex(lx, p.h + 1, lz)] === want) buried++;
+    }
+  }
+  assertTrue(onTop > 0, `裙边顶面之上必须真的种了植物（实际 ${onTop}）`);
+  assertEqual(buried, 0, `植物不得被埋在裙边填土里（实测 ${buried} 格用了 nat+1 口径）`);
+}, { tier: 'slow' });

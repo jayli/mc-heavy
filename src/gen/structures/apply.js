@@ -37,7 +37,7 @@ import { RUINED_CITADEL_VARIANTS } from './ruined-citadel-data.js';
 import { JUNGLE_FORTRESS_HALF_X, JUNGLE_FORTRESS_HALF_Z, JUNGLE_FORTRESS_VARIANTS } from './jungle-fortress-data.js';
 import {
   inJungleFortressTerraform, jungleFortressSurfaceYAt, fillJungleFortressPiers,
-  fillJungleFortressSkirt,
+  fillJungleFortressSkirt, noteJungleFortressData, jungleFortressSkirtField,
   JUNGLE_FORTRESS_SLOPE_BAND,
 } from './jungle-fortress-terrain.js';
 import { TARN_ZONE_RADIUS, snowLandSuppressedByTarn, TARN_CLOUD_MIN_Y } from './tarn-zone.js';
@@ -206,10 +206,24 @@ function jfVegSetter(setBlock, anchor, cellType, floorRow, roofTop, roomAir) {
  * ⚠️ 缓存用 WeakMap（换产物自动失效）。
  * ⚠️ **不要再建列级 (x,z) 索引**（v3.13d 删掉了 `jungleFortressOccupancy`）：
  *    两套口径共存就会有人误用列级那套，而那正是用户两次报「树叶被切割」的根因。
+ *
+ * ⚠️⚠️ **v3.16：索引必须含裙边填土格**（DR-10）：裙边抬升了地表，
+ *    邻列树冠横伸过来会落在填土格上（实测 seed 12345 有 1 格穿模）。
+ *    墩格不需单独加：它们恒在「该列屋顶下方」，已被 `jfCellFreeAt` 的②挡住
+ *    （实测 763 个意图∩墩格零穿模）。
+ * @param {{blocks:Array}} data
+ * @param {{wx:number,wz:number,floorY:number}} [anchor] 传入时额外索引裙边格
+ * @param {number} [seed]
  */
 const JF_CELL_CACHE = new WeakMap();
-function jungleFortressCells(data) {
-  if (JF_CELL_CACHE.has(data)) return JF_CELL_CACHE.get(data);
+const JF_SKIRT_CELL_CACHE = new WeakMap();
+function jungleFortressCells(data, anchor, seed) {
+  if (anchor === undefined) {
+    if (JF_CELL_CACHE.has(data)) return JF_CELL_CACHE.get(data);
+  } else {
+    const hit = JF_SKIRT_CELL_CACHE.get(anchor);
+    if (hit && hit.data === data && hit.seed === seed) return hit.entry;
+  }
   const cells = new Map();
   const roof = new Map();
   const floorRow = floorRowOf('jungleFortress');
@@ -225,8 +239,23 @@ function jungleFortressCells(data) {
     const prev = roof.get(ck);
     if (prev === undefined || b.y > prev) roof.set(ck, b.y);
   }
+  // 裙边填土格：按锚点派生（依赖 seed），写进同一份索引⇒ 让位判据无需第二套口径
+  if (anchor !== undefined) {
+    const field = jungleFortressSkirtField(anchor, seed, data);
+    const { T, nat, isBuilding, bounds } = field;
+    for (let x = bounds.x0; x <= bounds.x1; x++) {
+      for (let z = bounds.z0; z <= bounds.z1; z++) {
+        if (isBuilding(x, z)) continue;
+        const top = T(x, z), h = nat(x, z);
+        for (let wy = h + 1; wy <= top; wy++) {
+          cells.set(`${x},${wy - anchor.floorY + floorRow},${z}`, 'skirt');
+        }
+      }
+    }
+  }
   const entry = { cells, roof, roomAir };
-  JF_CELL_CACHE.set(data, entry);
+  if (anchor === undefined) JF_CELL_CACHE.set(data, entry);
+  else JF_SKIRT_CELL_CACHE.set(anchor, { data, seed, entry });
   return entry;
 }
 
@@ -1149,6 +1178,9 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
   //    先光栅化能确保产物已写入的格（含显式 air）不被墩覆盖。
   const jfAnchors = layouts.map((l) => l.jungleFortress).filter(Boolean);
   const jfData = jfAnchors.length ? await loadStructure('jungleFortress') : null;
+  // ⚠️ 产物一加载就登记：`jungleFortressSurfaceYAt` 的**纯查询路径**（瞬移/单测/
+  //    还没写到裙边的 column）也要能拿到包络场 T，不能依赖 fillSkirt 跑过。
+  if (jfData) noteJungleFortressData(jfData);
   for (const jf of jfAnchors) {
     // 裁剪用植被管理区半宽（含 16 格外延）：后续墩/裙边也在这一带写
     const jfBX = JUNGLE_FORTRESS_HALF_X + JUNGLE_FORTRESS_SLOPE_BAND;
@@ -1263,7 +1295,7 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
         const jf = ctx.jf;
         const px = wx - jf.wx, pz = wz - jf.wz;
         const jfData = await loadStructure('jungleFortress');
-        const { cells: jfCells, roof: jfRoof, roomAir: jfRoomAir } = jungleFortressCells(jfData);
+        const { cells: jfCells, roof: jfRoof, roomAir: jfRoomAir } = jungleFortressCells(jfData, jf, seed);
         const jfFloorRow = floorRowOf('jungleFortress');
         const surface = jungleFortressSurfaceYAt(wx, wz, seed, jf);
         {

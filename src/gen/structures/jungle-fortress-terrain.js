@@ -384,11 +384,27 @@ export function jungleFortressSkirtField(anchor, seed, data) {
  *
  * ⚠️ 缓存键是 anchor 对象（`computeJungleFortressAnchor` 用 Object.freeze + memo，
  *    同 seed 恒同一对象）⇒ WeakMap 天然随锚点失效。
- * ⚠️ 产物未加载时返回 null（`jungleFortressSurfaceYAt` 退回自然高度）：
- *    GEN 的 `preloadStructures` 先于阶段 2.95，故真实路径恒有值。
+ *
+ * ⚠️⚠️ **不得依赖「fillSkirt 跑过」才有值**（实测踩过的真缺陷）：
+ *    第一版把产物引用写在 `fillJungleFortressSkirt` 里，于是**纯查询路径**
+ *    （瞬移落点、单测、还没跑到那个 column 的 GEN）拿到的是 **nat 而不是 T**
+ *    ⇒ 同一函数两种返回值 = 第二份权威（红线 1）。
+ *    修法：产物引用由**加载入口统一登记**（`noteJungleFortressData`），
+ *    与 GEN 写到哪一 column 无关。
  */
 const JF_SKIRT_CACHE = new WeakMap();
 let jfSkirtData = null;
+
+/**
+ * 登记已加载的丛林要塞产物（供 `jungleFortressSurfaceYAt` 的纯查询路径用）。
+ *
+ * 调用方：`apply.js` 在 `await loadStructure('jungleFortress')` 后立即调一次。
+ * 幂等；同一份产物不重算包络。
+ */
+export function noteJungleFortressData(data) {
+  if (data && data.blocks && data.blocks.length) jfSkirtData = data;
+}
+
 function jfSkirtFieldCached(anchor, seed) {
   if (!anchor || !jfSkirtData) return null;
   const hit = JF_SKIRT_CACHE.get(anchor);
@@ -416,7 +432,7 @@ function jfSkirtFieldCached(anchor, seed) {
  */
 export function fillJungleFortressSkirt(column, anchor, seed, registry, data) {
   if (!data || !data.blocks.length) return;
-  jfSkirtData = data;                       // 供 surfaceYAt 的缓存路径用（同一份产物）
+  noteJungleFortressData(data);
   const field = jfSkirtFieldCached(anchor, seed);
   if (!field) return;
   const { T, nat, isBuilding, bounds } = field;
