@@ -198,3 +198,131 @@ test('存档：方块清单指纹不匹配时丢弃旧改动并修复 meta（ID 
   expect(after.fp, '① meta.blockFp 必须修成当前值（不修则每次启动重复清档）').toBe(after.cur);
   expect(warns.length, '③ 必须给出 console.warn（玩家要知道手工改动没了）').toBeGreaterThan(0);
 });
+
+/**
+ * **末尾追加方块不得清档**（v3.19）。
+ *
+ * 背景：本期在 `BLOCKS` 末尾追加 4 个方块（石砖三变体 + 紫珀）。
+ * 既有 155 个 id **逐位未变**（实测），但全量指纹 fc6212f5 → 16d99151
+ * ⇒ 旧判据（全等）会把玩家手工建造全清掉，而它们本来完全可读。
+ *
+ * 判据三层：
+ *   ① edits **保留**（不清）；
+ *   ② meta.blockFp / blockCount 修成当前值（不修则每次启动重算）；
+ *   ③ 走的是「追加兼容」分支（console.info）而**不是**清档警告。
+ *
+ * ⚠️ **伪造的是真实旧指纹**（前 155 项的前缀指纹），不是随便一个字符串 ——
+ *    否则本用例与上一条「不匹配就清档」没区别，零判别力。
+ * ⚠️ 同样要先停写盘（理由见上一条）。
+ */
+test('存档：末尾追加方块（前缀指纹匹配）保留旧改动，不清档', async ({ page }) => {
+  test.setTimeout(180_000);
+  const warns = [];
+  const infos = [];
+  page.on('console', (m) => {
+    if (m.text().includes('方块清单已变')) warns.push(m.text());
+    if (m.text().includes('末尾追加')) infos.push(m.text());
+  });
+
+  await page.goto('/?vd=2');
+  await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
+
+  const faked = await page.evaluate(async () => {
+    const g = window.__MC_GAME__;
+    g.persistence.cancelPendingFlush();
+    g._lastSavedPos = null;
+    g.persistence.flushNow = () => {};
+    // 旧清单 = 当前清单去掉末尾 4 项（本期新增的那 4 个）
+    const oldCount = g.registry.count - 4;
+    const oldFp = g.registry.fingerprintOfPrefix(oldCount);
+    const db = g.persistence.db;
+    const col = g.world.columns.keys().next().value;
+    await new Promise((res, rej) => {
+      const tx = db.transaction(['meta', 'edits'], 'readwrite');
+      tx.objectStore('edits').put({ columnKey: col, edits: [{ index: 12345, id: 2, meta: 0 }] });
+      const store = tx.objectStore('meta');
+      const get = store.get('main');
+      get.onsuccess = () => {
+        const row = get.result;
+        row.blockFp = oldFp;
+        row.blockCount = oldCount;
+        store.put(row);
+      };
+      tx.oncomplete = res; tx.onerror = rej;
+    });
+    return { col, oldCount, oldFp, cur: g.registry.fingerprint(), curCount: g.registry.count };
+  });
+  expect(faked.oldFp, '前提：旧前缀指纹确实不同于当前全量指纹').not.toBe(faked.cur);
+  expect(faked.oldCount, '前提：旧方块数少于当前').toBeLessThan(faked.curCount);
+
+  await page.reload();
+  await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
+
+  const after = await page.evaluate(async () => {
+    const g = window.__MC_GAME__;
+    const db = g.persistence.db;
+    const rows = await new Promise((res) => { const tx = db.transaction('edits'); const q = tx.objectStore('edits').getAll(); q.onsuccess = () => res(q.result); });
+    const meta = await new Promise((res) => { const tx = db.transaction('meta'); const q = tx.objectStore('meta').get('main'); q.onsuccess = () => res(q.result); });
+    return {
+      cells: rows.reduce((s, r) => s + r.edits.length, 0),
+      fp: meta.blockFp,
+      count: meta.blockCount,
+      cur: g.registry.fingerprint(),
+      curCount: g.registry.count,
+    };
+  });
+  expect(after.cells, '① 末尾追加时旧改动必须保留（清掉 = 白白丢玩家建造）').toBe(1);
+  expect(after.fp, '② meta.blockFp 必须修成当前值').toBe(after.cur);
+  expect(after.count, '② meta.blockCount 必须修成当前方块数').toBe(after.curCount);
+  expect(infos.length, '③ 必须走「追加兼容」分支（console.info）').toBeGreaterThan(0);
+  expect(warns.length, '③ 不得走清档警告分支').toBe(0);
+});
+
+/**
+ * **中间插入仍必须清档**（v3.19 负向）—— 防止兼容判据被放宽成「什么都不清」。
+ *
+ * 造法：伪造 `blockCount = 当前方块数`（不是更小）+ 一个错的 blockFp。
+ * 此时前缀指纹 = 全量指纹 ≠ 伪造值 ⇒ appendOnly 为假 ⇒ 走清档。
+ * 另造一例：`blockCount` 比当前**大**（降级场景）⇒ 也必须清档。
+ */
+test('存档：blockCount 不小于当前或前缀指纹不匹配时仍清档（兼容判据没被放宽）', async ({ page }) => {
+  test.setTimeout(180_000);
+  const warns = [];
+  page.on('console', (m) => { if (m.text().includes('方块清单已变')) warns.push(m.text()); });
+
+  await page.goto('/?vd=2');
+  await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
+
+  await page.evaluate(async () => {
+    const g = window.__MC_GAME__;
+    g.persistence.cancelPendingFlush();
+    g._lastSavedPos = null;
+    g.persistence.flushNow = () => {};
+    const db = g.persistence.db;
+    const col = g.world.columns.keys().next().value;
+    await new Promise((res, rej) => {
+      const tx = db.transaction(['meta', 'edits'], 'readwrite');
+      tx.objectStore('edits').put({ columnKey: col, edits: [{ index: 12345, id: 2, meta: 0 }] });
+      const store = tx.objectStore('meta');
+      const get = store.get('main');
+      get.onsuccess = () => {
+        const row = get.result;
+        // 前缀长度 = 当前方块数 ⇒ 前缀指纹就是全量指纹，与伪造值不等
+        row.blockFp = 'deadbeef';
+        row.blockCount = g.registry.count;
+        store.put(row);
+      };
+      tx.oncomplete = res; tx.onerror = rej;
+    });
+  });
+
+  await page.reload();
+  await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
+  const after = await page.evaluate(async () => {
+    const g = window.__MC_GAME__;
+    const rows = await new Promise((res) => { const tx = g.persistence.db.transaction('edits'); const q = tx.objectStore('edits').getAll(); q.onsuccess = () => res(q.result); });
+    return { cells: rows.reduce((s, r) => s + r.edits.length, 0) };
+  });
+  expect(after.cells, '前缀指纹不匹配时必须清档（真位移不得放行）').toBe(0);
+  expect(warns.length, '必须给出清档警告').toBeGreaterThan(0);
+});
