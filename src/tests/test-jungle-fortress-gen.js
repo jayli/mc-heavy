@@ -34,6 +34,7 @@ import {
   jungleFortressSurfaceYAt, inJungleFortressTerraform, fillJungleFortressGround,
   JUNGLE_FORTRESS_SLOPE_BAND,
 } from '../gen/structures/jungle-fortress-terrain.js';
+import { rollVegetation, generateTree } from '../gen/structures/vegetation.js';
 import { buildDefaultRegistry } from '../voxel/block-registry.js';
 import { ChunkColumn } from '../voxel/chunk-column.js';
 import { blockIndex, SEA_Y, WORLD_MIN_Y, WORLD_MAX_Y } from '../voxel/constants.js';
@@ -543,6 +544,104 @@ test('丛林要塞接线：整形区内地表 = surfaceYAt（真实 GEN 写入�
   assertTrue(checked > 0, `该 column 必须有整形列（实际 ${checked}）`);
 });
 
+// ==================== 树叶让位语义（v3.13c，用户实玩：「树叶被切割」）====================
+//
+// 用户裁定：**只有当要塞方块真的占位那一格时才让位**，那一格渲染成要塞方块；
+// 其余位置树叶照常长 ⇒ 不得把树冠「垂直切一刀」。
+// ⚠️ 判据必须是**逐格**（产物在该 (x,y,z) 是否非空气），不是**逐列**（该列任何一格有实心）。
+//    列级判据的失效形态：矮墙/台阶列的**高处本是空气**，却因列内有实心而整列禁写
+//    ⇒ 树冠贴墙那侧出现平直切口。
+//
+// ⚠️⚠️ **判据必须拿「树生成器本来要写哪些格」当基准，不能拿「紧邻有树叶的空格」当基准**：
+//    generateTree 自己会稀疏化（default 树 rand>0.3 才写）且 _addOptimized 会跳过
+//    「六面全被树块包围」的叶 ⇒ 树冠内部本来就有合法空洞。第一版用「紧邻有叶」判据
+//    在**修好之后反而从 297 涨到 414**（补上的叶让更多空格变成"紧邻有叶"）⇒ 零判别力。
+//    正确做法：用同一个 generateTree 收集意图格，逐格比对世界里的实际结果。
+
+test('丛林要塞：树叶只在要塞真占位的格让位（逐格，不是逐列垂直切割）', async () => {
+  const seed = 12345;
+  const a = computeJungleFortressAnchor(seed);
+  const reg = await buildDefaultRegistry();
+  const data = await loadStructure('jungleFortress');
+  const cellType = new Map();
+  const colSolid = new Set();
+  for (const b of data.blocks) {
+    if (b.type !== 'air') {
+      cellType.set(`${b.x},${b.y},${b.z}`, b.type);
+      colSolid.add(`${b.x},${b.z}`);
+    }
+  }
+  const floorRow = floorRowOf('jungleFortress');
+  const B = JUNGLE_FORTRESS_SLOPE_BAND;
+  // 树冠意图：把整形区所有空地列的树按真实 generateTree 收集一遍（含稀疏化与包围剔除）
+  const intent = new Map();   // "wx,y,wz" -> 方块名
+  for (let dx = -JUNGLE_FORTRESS_HALF_X - B; dx <= JUNGLE_FORTRESS_HALF_X + B; dx++) {
+    for (let dz = -JUNGLE_FORTRESS_HALF_Z - B; dz <= JUNGLE_FORTRESS_HALF_Z + B; dz++) {
+      const wx = a.wx + dx, wz = a.wz + dz;
+      const s = jungleFortressSurfaceYAt(wx, wz, seed, a);
+      if (s === null || colSolid.has(`${dx},${dz}`)) continue;
+      const roll = rollVegetation(wx, wz, 'FOREST', seed);
+      if (!roll.tree || roll.tree.type === 'birchTree' || roll.tree.type === 'birchTreeWithSnow') continue;
+      generateTree(wx, s + 1, wz, (x, y, z, name) => intent.set(`${x},${y},${z}`, name),
+        seed, roll.tree.type, roll.tree.customLog || null, roll.tree.customLeaf || null, roll.tree.leafMix || null);
+    }
+  }
+  assertTrue(intent.size > 10000, `树冠意图格必须有量（实际 ${intent.size}）`);
+  // 只看「意图格落在含实心的列里」那批 —— 那正是列级守卫会误杀的范围
+  const probe = [];
+  for (const [k, name] of intent) {
+    const [wx, y, wz] = k.split(',').map(Number);
+    const px = wx - a.wx, pz = wz - a.wz;
+    if (!colSolid.has(`${px},${pz}`)) continue;
+    const occupied = cellType.has(`${px},${y - a.floorY + floorRow},${pz}`);
+    probe.push({ wx, y, wz, name, occupied });
+  }
+  const freeProbes = probe.filter((p) => !p.occupied);
+  assertTrue(freeProbes.length > 100,
+    `必须有足量「列内有实心但该格是空气」的树冠意图格（实际 ${freeProbes.length}）—— ` +
+    '否则本用例对列级/逐格之差无判别力');
+  // 逐格读真实 GEN 结果（按 column 分组，避免重复构建）
+  const byCol = new Map();
+  for (const p of probe) {
+    const cx = Math.floor(p.wx / 16), cz = Math.floor(p.wz / 16);
+    const ck = `${cx},${cz}`;
+    if (!byCol.has(ck)) byCol.set(ck, []);
+    byCol.get(ck).push(p);
+  }
+  let wrongDrop = 0, keptFree = 0, yielded = 0;
+  // 树叶种类集合：两棵树的树冠重叠时**后写胜**（与结构写入同口径）⇒
+  // 判「该格有没有树叶」而不是「是不是同一品种的叶」。
+  // ⚠️ 拿品种相等作判据会把「邻居树的叶覆盖了本树」误报成切割（实测 1 格：
+  //    giant_spruce_leaves 位置上是另一棵树的 leaves）。
+  const leafNames = new Set(['leaves', 'yellow_leaves', 'realistic_yellow_leaves',
+    'azalea_leaves', 'azalea_flowers', 'swamp_leaves', 'snow_leaves', 'sky_leaves',
+    'giant_oak_leaves', 'giant_spruce_leaves', 'giant_birch_leaves', 'giant_jungle_leaves',
+    'giant_acacia_leaves', 'giant_dark_oak_leaves']);
+  const leafIds = new Set([...leafNames].map((n) => reg.idOf(n)).filter((v) => v !== undefined));
+  const isLeafIntent = (n) => leafNames.has(n);
+  for (const [ck, list] of byCol) {
+    const [cx, cz] = ck.split(',').map(Number);
+    const col = new ChunkColumn(cx, cz);
+    fillColumn(col, seed, reg);
+    carveCaves(col, seed);
+    const layouts = neighborRegionKeys(cx, cz)
+      .map((k) => { const [rx, rz] = k.split(',').map(Number); return computeRegionLayout(rx, rz, seed); });
+    await applyStructuresToColumn(col, seed, reg, layouts);
+    for (const p of list) {
+      const lx = ((p.wx % 16) + 16) % 16, lz = ((p.wz % 16) + 16) % 16;
+      const id = col.blocks[blockIndex(lx, p.y, lz)];
+      if (p.occupied) { if (id !== reg.idOf(p.name)) yielded++; continue; }
+      // 叶意图格：只要那里是**任何一种树叶**就算未被切割
+      if (isLeafIntent(p.name) ? leafIds.has(id) : id === reg.idOf(p.name)) keptFree++;
+      else wrongDrop++;
+    }
+  }
+  assertTrue(yielded > 0, `真占位的格必须让位给要塞方块（实际让位 ${yielded}）`);
+  assertEqual(wrongDrop, 0,
+    `产物在该格是空气时树叶必须照常写入：实测 ${wrongDrop} 格被误杀` +
+    `（正常写入 ${keptFree}）—— 列级守卫把矮墙列的高处空气也禁写了，树冠被垂直切割`);
+});
+
 test('丛林要塞接线：占地内零撒布，植被只在空地上（v3.13b 用户要求空地植树植草）', async () => {
   const seed = 12345;
   const a = computeJungleFortressAnchor(seed);
@@ -556,15 +655,18 @@ test('丛林要塞接线：占地内零撒布，植被只在空地上（v3.13b �
 
   // ⚠️ **v3.13b 语义变更**：用户要求「空地植树 + 高矮两种草 + 过渡带也有树」
   //    ⇒ 旧断言「占地内零植被」**与新需求直接矛盾**，已改成：
-  //      ① 植被**只得长在空地**（结构该列无实心）—— 防树长进墙里/屋顶上；
-  //      ② 真的有树与两种草（否则新需求未生效，断言恒绿）。
+  //      ① 植被**不得占要塞真占位的格**；② 真的有树与两种草。
+  // ⚠️⚠️ **v3.13c 再改：判据从「逐列」改成「逐格」**。用户裁定「只在被城堡方块
+  //    占位那一格让位」⇒ 矮墙列的**高处空气**里长树叶是**合法**的。
+  //    旧的逐列判据会把这 15 格合法树叶误报成穿模（它正是用户要的「不被切割」）。
   const { loadStructure: load } = await import('../gen/structures/structure-json.js');
   const data = await load('jungleFortress');
-  const solidCol = new Set();
-  for (const b of data.blocks) if (b.type !== 'air') solidCol.add(`${b.x},${b.z}`);
+  const floorRow = floorRowOf('jungleFortress');
+  const solidCell = new Set();
+  for (const b of data.blocks) if (b.type !== 'air') solidCell.add(`${b.x},${b.y},${b.z}`);
   const vegIds = new Set(['leaves', 'wood', 'birch_log', 'short_grass', 'bush_grass', 'flower',
     'allium', 'azure_bluet', 'oxeye_daisy', 'dead_bush', 'yellow_leaves', 'red_mushroom',
-    'giant_oak_leaves', 'giant_oak_log'].map((n) => reg.idOf(n)));
+    'giant_oak_leaves', 'giant_oak_log', 'giant_spruce_leaves'].map((n) => reg.idOf(n)));
   const trunkIds = new Set(['wood', 'birch_log'].map((n) => reg.idOf(n)));
   const shortId = reg.idOf('short_grass'), bushId = reg.idOf('bush_grass');
   let inStructure = 0, veg = 0, trunk = 0, shortG = 0, bushG = 0;
@@ -572,7 +674,6 @@ test('丛林要塞接线：占地内零撒布，植被只在空地上（v3.13b �
     for (let lz = 0; lz < 16; lz++) {
       const wx = cx * 16 + lx, wz = cz * 16 + lz;
       if (!inJungleFortressFootprint(wx, wz, [a])) continue;
-      const onStructure = solidCol.has(`${wx - a.wx},${wz - a.wz}`);
       for (let y = WORLD_MIN_Y; y < WORLD_MAX_Y; y++) {
         const id = col.blocks[blockIndex(lx, y, lz)];
         if (!vegIds.has(id)) continue;
@@ -580,12 +681,13 @@ test('丛林要塞接线：占地内零撒布，植被只在空地上（v3.13b �
         if (trunkIds.has(id)) trunk++;
         if (id === shortId) shortG++;
         if (id === bushId) bushG++;
-        if (onStructure) inStructure++;
+        // 逐格：产物在**这一格**有实心才是穿模
+        if (solidCell.has(`${wx - a.wx},${y - a.floorY + floorRow},${wz - a.wz}`)) inStructure++;
       }
     }
   }
   assertEqual(inStructure, 0,
-    `植被不得长在结构实心列上（实际 ${inStructure} 格）—— 树/草长进墙里就是穿模`);
+    `植被不得占要塞真占位的格（实际 ${inStructure} 格）—— 那才是穿模`);
   assertTrue(veg > 0, `空地必须有植被（实际 ${veg} 格）—— 用户要求不能光秃秃`);
   assertTrue(trunk > 0, `必须有树干（实际 ${trunk} 格）`);
   assertTrue(shortG > 0, `必须有矮草 short_grass（实际 ${shortG}）`);
