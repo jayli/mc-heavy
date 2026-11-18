@@ -46,6 +46,7 @@ import { ZombieRenderer } from '../render/zombie-renderer.js';
 import { loadZombieSkinTexture } from '../render/zombie-skin-texture.js';
 import { TurretRenderer } from '../render/turret-renderer.js';
 import { loadTurretArmorTexture } from '../render/turret-armor-texture.js';
+import { loadTurretTopGeometry } from '../render/turret-top-geometry.js';
 import { loadNestBlueprint } from '../entities/zombie-nests/nest-blueprint.js';
 import { ZombieNestService } from '../entities/zombie-nests/zombie-nest-service.js';
 import { ZombieNestController } from '../entities/zombie-nests/zombie-nest-controller.js';
@@ -296,13 +297,21 @@ export class Game {
       console.warn('[game] 丧尸皮肤加载失败，退回纯色：', e);
       return null;
     });
-    // M8：炮塔装甲纹理（三区并排）。与 atlas 一并 await（保持 TurretRenderer 构造器同步 →
-    // 首帧不闪纯色）。加载失败不阻断启动 —— 装甲只是观感，缺了退回纯色炮塔即可
-    // （与丧尸头部、M4 武器模型同一容错口径）。
-    this._turretArmorTexture = await loadTurretArmorTexture().catch((e) => {
-      console.warn('[game] 炮塔装甲纹理加载失败，退回纯色炮塔：', e);
-      return null;
-    });
+    // M8：炮塔装甲纹理（三区并排）+ 塔顶几何产物。**并行加载**（串行会延长启动）。
+    // 与 atlas 一并 await（保持 TurretRenderer 构造器同步 → 首帧不闪纯色）。
+    // 加载失败不阻断启动：装甲缺了退回纯色；几何缺了不装配外观（玩法仍正常）。
+    const [turretArmor, turretTop] = await Promise.all([
+      loadTurretArmorTexture().catch((e) => {
+        console.warn('[game] 炮塔装甲纹理加载失败，退回纯色炮塔：', e);
+        return null;
+      }),
+      loadTurretTopGeometry().catch((e) => {
+        console.warn('[game] 炮塔塔顶几何加载失败，本局不装配炮塔外观：', e);
+        return null;
+      }),
+    ]);
+    this._turretArmorTexture = turretArmor;
+    this._turretTopGeometry = turretTop;
     // 爆炸序列帧图集（500×200，5×2 = 10 帧）。同上口径：加载失败不阻断启动 ——
     // 爆炸特效只是观感，缺了退回「只有球体扩张层」（`explosion-renderer.js`）即可。
     this._explosionSpriteTexture = await loadExplosionSpriteTexture().catch((e) => {
@@ -643,6 +652,7 @@ export class Game {
     // slot 池是为高频 spawn/despawn 的丧尸设计的，炮塔低频放置，不需要那套记账。
     this.turretRenderer = new TurretRenderer({
       scene: this.scene, armorTexture: this._turretArmorTexture,
+      topGeometry: this._turretTopGeometry,
     });
     // M8 Task 6：弹丸是 **M5 临时实体**（roadmap 指定接入点：EntityManager + 实体 raycast），
     // 不是渲染节点 —— 命中真相由实体逻辑 AABB 给出，渲染层只发布 pose。

@@ -32,7 +32,8 @@
     "zombieskin": "node tools/bake-zombie-skin.mjs",
     "dragon": "node tools/bake-dragon.mjs",
     "ignis": "node tools/bake-ignis.mjs",
-    "guardian": "node tools/bake-guardian.mjs"
+    "guardian": "node tools/bake-guardian.mjs",
+    "turretop": "node tools/bake-turret-top.mjs"
   },
   "author": "jayli",
   "repository": "git@github.com:jayli/mc-heavy.git",

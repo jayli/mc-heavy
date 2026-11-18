@@ -69,6 +69,16 @@ const {
   ARMOR_PNG, ARMOR_JSON, ARMOR_WIDTH, ARMOR_HEIGHT, ARMOR_TEXTURE_CONFIG,
   armorInputFingerprint, readArmorPng,
 } = await import('./turret-armor-fingerprint.mjs');
+// 炮塔塔顶几何产物的参数/指标/指纹（同上口径）
+const {
+  TURRET_TOP_JSON: TOP_JSON, TURRET_TOP_META: TOP_META,
+  TURRET_TOP_METRICS: TOP_METRICS, TURRET_TOP_ARMOR: TOP_ARMOR, TURRET_TOP_SOLID: TOP_SOLID,
+  TURRET_TOP_SRC: TOP_SRC,
+  turretTopInputFingerprint, readTurretTopJson,
+  parseObj: topParseObj, splitParts: topSplitParts,
+  buildPartGeometry: topBuildPartGeometry, geomNormal: topGeomNormal,
+  TURRET_TOP_PARAMS: TOP_PARAMS,
+} = await import('./turret-top-fingerprint.mjs');
 // 渲染侧的区序与部件定义（同为同构模块，无 three）—— 门禁据此断言两侧区序一致
 const {
   ARMOR_ZONES, TURRET_PARTS, TURRET_PART_DEFS,
@@ -1073,8 +1083,11 @@ function checkTurretArmorTexture() {
     failures.push(`[炮塔装甲] 区序漂移：渲染层 ${ARMOR_ZONES.join('/')} ≠ 烘焙侧 `
       + `${ARMOR_TEXTURE_CONFIG.zones.join('/')}（改区序须两侧同步）`);
   }
-  // ④ 部件 zone ⊆ 区序：每个装甲部件的 zone 必须是 ARMOR_ZONES 之一，否则
-  //    `applyZoneUV(geometry, ARMOR_ZONES.indexOf(zone))` 会传 -1 → UV 映射到区外。
+  // ④ 部件 zone ⊆ 区序。
+  //    ⚠️ **塔顶模型换成烘焙几何后，部件级 zone 恒为 null**（逐面跨区，UV 已在烘焙侧压好）
+  //    ⇒ 本循环对新部件永不进入，**判别力已转移到 [炮塔塔顶] 环节**
+  //    （textured 集合关系式 + 各区面数冻结表 + 逐面拆顶点）。保留本循环只为兼容
+  //    「将来又出现部件级单区贴图」的情形，不得把它当成塔顶贴图的护栏。
   for (const part of TURRET_PARTS) {
     const zone = TURRET_PART_DEFS[part].zone;
     if (zone !== null && !ARMOR_ZONES.includes(zone)) {
@@ -1083,6 +1096,224 @@ function checkTurretArmorTexture() {
   }
   if (!failures.some((f) => f.startsWith('[炮塔装甲]'))) {
     infos.push(`[炮塔装甲] ${png.width}×${png.height} 三区并排（${ARMOR_ZONES.join('/')}）+ 指纹匹配 + ${TURRET_PARTS.length} 部件`);
+  }
+}
+
+// ---------------------------------------------------------------- [炮塔塔顶] 契约
+
+/**
+ * 从**产物几何**反推每个原面的区（独立真值，不经过烘焙侧 zoneOf）。
+ *
+ * ⚠️ **单位是「面」不是「三角」**（实施期实测踩过）：冻结表记的是原四边形面数
+ * （cheek 140），而产物是三角（280）⇒ 按三角数会全部翻倍。
+ * 装甲部件逐面拆顶点且源面全是四边形（实测 5 个部件 615 面全符合扇形模式）
+ * ⇒ **每 4 个顶点 = 1 个原面**，用整面 4 点算 Newell 法线（与烘焙侧同口径）。
+ */
+function turretTopFacesFromProduct(json) {
+  const out = {};
+  const TH = TOP_PARAMS.zoneNyThreshold;
+  for (const key of TOP_ARMOR) {
+    const g = json.parts[key];
+    if (!g) continue;
+    const list = [];
+    const nv = g.position.length / 3;
+    for (let base = 0; base + 3 < nv; base += 4) {
+      const p = [0, 1, 2, 3].map((k) => [
+        g.position[(base + k) * 3], g.position[(base + k) * 3 + 1], g.position[(base + k) * 3 + 2],
+      ]);
+      // Newell（与烘焙侧 geomNormal 同口径，对非平面四边形也稳）
+      let nx = 0, ny = 0, nz = 0;
+      for (let i = 1; i < p.length - 1; i++) {
+        const a = p[0], b = p[i], c = p[i + 1];
+        const e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        const e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+        nx += e1[1] * e2[2] - e1[2] * e2[1];
+        ny += e1[2] * e2[0] - e1[0] * e2[2];
+        nz += e1[0] * e2[1] - e1[1] * e2[0];
+      }
+      const l = Math.hypot(nx, ny, nz) || 1;
+      // ⚠️ **|nx| 与 |nz| 相等时要用容差归 side**（实施期实测）：nose 有 4 个恰好 45° 的倒角面
+      // （|nx|=|nz|=0.707107），烘焙侧用 Float64 模型坐标算出的大小关系，与产物 Float32
+      // 世界坐标算出的可能相反 ⇒ 严格 `>=` 会让这 4 面在两侧分到不同区（实测 219/58 vs 215/62）。
+      // 取 1e-6 容差：相等时归 side，与烘焙侧的 `>=` 语义一致。
+      const ax = Math.abs(nx / l), az = Math.abs(nz / l);
+      const zone = (ny / l > TH || ny / l < -TH) ? 'top'
+        : (ax >= az - 1e-6 ? 'side' : 'front');
+      list.push({ zone });
+    }
+    out[key] = list;
+  }
+  return out;
+}
+
+/**
+ * 用**当前算法**从源 OBJ 重算八部件几何（堆「改算法未重烘焙」盲区）。
+ * 源文件缺失时返回 null（由指纹环节报缺失，本项不重复报）。
+ */
+function rebuildTurretTopFromSource() {
+  if (!fs.existsSync(TOP_SRC)) return null;
+  const parts = topSplitParts(topParseObj(fs.readFileSync(TOP_SRC, 'utf8')));
+  const out = {};
+  for (const key of [...TOP_ARMOR, ...TOP_SOLID]) {
+    out[key] = topBuildPartGeometry(parts[key], key, TOP_PARAMS);
+  }
+  return out;
+}
+
+/**
+ * [炮塔塔顶] 契约：烘焙几何产物的存在性 / 指纹 / 部件集合关系式 / **内容级判据**。
+ *
+ * ⚠️ **内容级判据不可省**：指纹只覆盖源 OBJ 与烘焙参数，**只改算法而不动参数时
+ * 指纹不变**（与废弃堡垒 air 格、守卫眼睛层同一条失效路径）。故必须钉：
+ *   · 炮口 z === 3.5（弹道零改动的唯一防线）
+ *   · 装甲部件 UV 零退化（OBJ 原始 UV 有 89% 退化）
+ *   · 装甲部件逐面拆顶点（顶点数 == 三角数×3 不成立，用 vertices 冻结表）
+ *   · 各区面数冻结表
+ */
+function checkTurretTopGeometry() {
+  const json = readTurretTopJson();
+  if (!json) {
+    failures.push('[炮塔塔顶] assets/turret/turret-top.json 不存在 —— 跑 npm run turretop');
+    return;
+  }
+  // ① 指纹
+  if (!fs.existsSync(TOP_META)) {
+    failures.push('[炮塔塔顶] assets/turret/turret-top.meta.json 不存在 —— 跑 npm run turretop');
+  } else {
+    const meta = JSON.parse(fs.readFileSync(TOP_META, 'utf8'));
+    const current = turretTopInputFingerprint();
+    if (meta.fingerprints?.input !== current) {
+      failures.push('[炮塔塔顶] 指纹不匹配 —— 源模型或烘焙参数变了但产物未重烘焙（跑 npm run turretop）'
+        + `\n      期望 ${current}\n      实际 ${meta.fingerprints?.input}`);
+    }
+  }
+  // ② 部件集合关系式：产物 keys ≡ TURRET_PARTS（两侧漂移即红）
+  const gotKeys = Object.keys(json.parts).sort();
+  const wantKeys = [...TURRET_PARTS].sort();
+  if (gotKeys.join(',') !== wantKeys.join(',')) {
+    failures.push(`[炮塔塔顶] 部件集合漂移：产物 ${gotKeys.join('/')} ≠ config ${wantKeys.join('/')}`);
+  }
+  // ③ textured 集合关系式（渲染层贴图/纯色分支的唯一依据）
+  const gotTextured = TURRET_PARTS.filter((p) => json.parts[p]?.textured).sort();
+  const wantTextured = [...TOP_ARMOR].sort();
+  if (gotTextured.join(',') !== wantTextured.join(',')) {
+    failures.push(`[炮塔塔顶] textured 集合漂移：产物 ${gotTextured.join('/')} ≠ 烘焙侧 ${wantTextured.join('/')}`);
+  }
+  const gotSolid = TURRET_PARTS.filter((p) => json.parts[p] && !json.parts[p].textured).sort();
+  if (gotSolid.join(',') !== [...TOP_SOLID].sort().join(',')) {
+    failures.push(`[炮塔塔顶] 纯色集合漂移：${gotSolid.join('/')} ≠ ${[...TOP_SOLID].sort().join('/')}`);
+  }
+  // ③b **config 侧的 textured 也要比**（final review Important 1）：
+  //     只比产物↔烘焙侧时，config 里翻转 textured 门禁不红（而渲染层正是读 config）。
+  const cfgTextured = TURRET_PARTS.filter((p) => TURRET_PART_DEFS[p].textured).sort();
+  if (cfgTextured.join(',') !== wantTextured.join(',')) {
+    failures.push(`[炮塔塔顶] config 的 textured 集合漂移：${cfgTextured.join('/')} ≠ 烘焙侧 ${wantTextured.join('/')}`);
+  }
+  // ④ 冻结规模
+  let tris = 0, verts = 0;
+  for (const [key, g] of Object.entries(json.parts)) {
+    const nt = g.index.length / 3, nv = g.position.length / 3;
+    tris += nt; verts += nv;
+    if (TOP_METRICS.triangles[key] !== undefined && nt !== TOP_METRICS.triangles[key]) {
+      failures.push(`[炮塔塔顶] ${key} 三角数 ${nt} ≠ 冻结 ${TOP_METRICS.triangles[key]}`);
+    }
+    if (TOP_METRICS.vertices[key] !== undefined && nv !== TOP_METRICS.vertices[key]) {
+      failures.push(`[炮塔塔顶] ${key} 顶点数 ${nv} ≠ 冻结 ${TOP_METRICS.vertices[key]}`);
+    }
+    if (g.position.length !== g.normal.length || g.uv.length / 2 !== nv) {
+      failures.push(`[炮塔塔顶] ${key} 属性长度不一致（position/normal/uv）`);
+    }
+    for (const u of g.uv) {
+      if (u < -1e-6 || u > 1 + 1e-6) { failures.push(`[炮塔塔顶] ${key} UV 越界：${u}`); break; }
+    }
+  }
+  if (tris !== TOP_METRICS.triangleCount) failures.push(`[炮塔塔顶] 总三角数 ${tris} ≠ ${TOP_METRICS.triangleCount}`);
+  if (verts !== TOP_METRICS.vertexCount) failures.push(`[炮塔塔顶] 总顶点数 ${verts} ≠ ${TOP_METRICS.vertexCount}`);
+  // ⑤ 内容级：炮口 z
+  const barrel = json.parts.barrel;
+  if (barrel) {
+    let mz = -Infinity;
+    for (let i = 2; i < barrel.position.length; i += 3) mz = Math.max(mz, barrel.position[i]);
+    if (Math.abs(mz - TOP_METRICS.muzzleZ) > 1e-6) {
+      failures.push(`[炮塔塔顶] 炮口 z=${mz} ≠ ${TOP_METRICS.muzzleZ} —— 弹道会偏离（渲染与 muzzle() 不同源）`);
+    }
+  }
+  // ⑥ 内容级：装甲部件 UV 零退化
+  let degenerate = 0;
+  for (const key of TOP_ARMOR) {
+    const g = json.parts[key];
+    if (!g) continue;
+    for (let i = 0; i < g.index.length; i += 3) {
+      const a = g.index[i], b = g.index[i + 1], c = g.index[i + 2];
+      const u = (j) => [g.uv[j * 2], g.uv[j * 2 + 1]];
+      const A = u(a), B = u(b), C = u(c);
+      const area = Math.abs((B[0] - A[0]) * (C[1] - A[1]) - (C[0] - A[0]) * (B[1] - A[1])) / 2;
+      if (area <= 1e-6) degenerate++;
+    }
+  }
+  if (degenerate !== 0) {
+    failures.push(`[炮塔塔顶] 装甲部件有 ${degenerate} 个退化 UV 三角（直接用了 OBJ 原始 UV？）`);
+  }
+  // ⑦ 内容级：**从产物几何实测各区面数**，与冻结表比。
+  //    ⚠️⚠️ **不得拿 `meta.metrics.zoneFaces` 比冻结表**（final review Important 1）：
+  //    meta 那一标正是烘焙脚本从**同一个常量**写入的 ⇒ 永远相等，对产物实际 UV 零判别力。
+  //    正确做法：拿产物 position 算几何法线 → 独立分区 → 数面数。
+  {
+    const faces = turretTopFacesFromProduct(json);
+    for (const key of TOP_ARMOR) {
+      const want = TOP_METRICS.zoneFaces[key];
+      const got = { front: 0, side: 0, top: 0 };
+      for (const f of faces[key] || []) got[f.zone]++;
+      for (const z of ['front', 'side', 'top']) {
+        if (got[z] !== want[z]) {
+          failures.push(`[炮塔塔顶] ${key}.${z} 实测面数 ${got[z]} ≠ 冻结 ${want[z]}（分区退化）`);
+        }
+      }
+    }
+  }
+  // ⑧ 内容级：**重算几何并与产物逐位比对**（含 normal）。
+  //    ⚠️ 指纹不含**算法** ⇒ 改 UV 投影轴/法线来源而不动参数时，上面各项全绿
+  //    （final review Important 2）。本项拿**当前算法的输出**比落盘产物，堆住那个盲区。
+  {
+    const rebuilt = rebuildTurretTopFromSource();
+    if (rebuilt) {
+      for (const [key, g] of Object.entries(json.parts)) {
+        const want = rebuilt[key];
+        if (!want) { failures.push(`[炮塔塔顶] 产物多出部件 ${key}`); continue; }
+        for (const attr of ['position', 'normal', 'uv', 'index']) {
+          const a = g[attr], b = want[attr];
+          if (a.length !== b.length) {
+            failures.push(`[炮塔塔顶] ${key}.${attr} 长度 ${a.length} ≠ 重算 ${b.length} —— 跑 npm run turretop`);
+            break;
+          }
+          for (let i = 0; i < a.length; i++) {
+            if (Math.abs(a[i] - b[i]) > 1e-9) {
+              failures.push(`[炮塔塔顶] ${key}.${attr}[${i}] ${a[i]} ≠ 重算 ${b[i]}`
+                + ' —— 烘焙算法改了但产物未重烘焙（跑 npm run turretop）');
+              break;
+            }
+          }
+        }
+      }
+    }
+  }
+  // ⑨ 内容级：炮管尾端埋入鼻段（防尾部前移造成真实缝隙，final review Important 3）
+  {
+    const np = json.parts.nose?.position, bp = json.parts.barrel?.position;
+    if (np && bp) {
+      let noseFront = -Infinity, barrelTail = Infinity;
+      for (let i = 2; i < np.length; i += 3) noseFront = Math.max(noseFront, np[i]);
+      for (let i = 2; i < bp.length; i += 3) barrelTail = Math.min(barrelTail, bp[i]);
+      const embed = noseFront - barrelTail;
+      if (!(embed > TOP_METRICS.minBarrelEmbed)) {
+        failures.push(`[炮塔塔顶] 炮管尾端埋入鼻段 ${embed.toFixed(4)} 格 ≤ ${TOP_METRICS.minBarrelEmbed}`
+          + ' —— 炮管与塔身会出现缝隙');
+      }
+    }
+  }
+  if (!failures.some((f) => f.startsWith('[炮塔塔顶]'))) {
+    infos.push(`[炮塔塔顶] ${gotKeys.length} 部件 / ${tris} 三角 / ${verts} 顶点`
+      + ` + 指纹匹配 + 炮口 z=${TOP_METRICS.muzzleZ} + UV 零退化`);
   }
 }
 
@@ -3690,6 +3921,7 @@ checkDragonAsset();          // v2.41：祭坛飞龙烘焙产物契约与指纹�
 checkIgnisAsset();           // v2.55：焰魔烘焙产物契约与指纹（⚠️ 同上）
 checkGuardianAsset();        // 末影守卫产物契约与指纹（⚠️ 漏了本行则门禁永不执行）
 checkTurretArmorTexture();
+checkTurretTopGeometry();    // 炮塔塔顶几何产物契约与指纹（⚠️ 漏了本行则门禁永不执行）
 checkSkyboxAssets();         // v1.58：天空盒立方图完整性（⚠️ 漏了本行则门禁永不执行）
 await checkNightSkyFreshness(); // v1.60：夜空烘焙产物指纹（⚠️ 漏了本行则门禁永不执行）
 await checkGiantTrees();     // 巨树景观：方块/烘焙产物/贴图三方契约（⚠️ 漏了本行则门禁永不执行）

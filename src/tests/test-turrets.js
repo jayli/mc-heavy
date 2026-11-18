@@ -19,9 +19,10 @@ import { BLOCKS } from '../voxel/blocks-data.js';
 import { createTurretBlueprint } from '../entities/turrets/turret-blueprint.js';
 import {
   TURRET, TURRET_ALIAS_BLOCK, defaultTurretRotation,
-  TURRET_PARTS, TURRET_PART_DEFS, ARMOR_ZONES, TURRET_TOWER_COLOR,
+  TURRET_PARTS, TURRET_PART_DEFS, TURRET_TOWER_COLOR,
 } from '../entities/turrets/turret-config.js';
 import { TurretRenderer } from '../render/turret-renderer.js';
+import { resourceUrl } from '../core/resource-url.js';
 import { TurretService } from '../entities/turrets/turret-service.js';
 import { TurretController } from '../entities/turrets/turret-controller.js';
 import {
@@ -433,14 +434,19 @@ test('controller.update：失效后不开火', () => {
   assertEqual(controller.update(1000, 1 / 60), false);
 });
 
-test('controller.muzzle：方向与渲染矩阵**交叉比对**（pitch 符号同源）', () => {
+test('controller.muzzle：方向与渲染矩阵**交叉比对**（pitch 符号同源）', async () => {
   // ⚠️ **这条是红线 1 漂移的真实判据**（实测踩坑）：上一版 `muzzle()` 的 pitch 符号写反，
   // 炮塔朝下瞄准时弹丸往天上飞（E2E 实测：丧尸恒 100 血、弹丸从未命中）。
   // 只读渲染矩阵的单测**测不到**它（渲染层的 `Rx(-pitch)` 是对的，错的是 muzzle 自己那套公式）。
   // 故断言落在「muzzle 方向 == 渲染矩阵变换出的炮口位置」这条交叉比对上。
   const scene = new THREE.Scene();
-  const renderer = new TurretRenderer({ scene });
+  const renderer = new TurretRenderer({ scene, topGeometry: await topGeoFixture() });
   const { controller } = makeTurretControllerFixture();
+  const geo = await topGeoFixture();
+  const bp = geo.parts.barrel.position;
+  let zmax = -Infinity;
+  for (let i = 2; i < bp.length; i += 3) zmax = Math.max(zmax, bp[i]);
+  const muzzleLocal = new THREE.Vector3(0, 0, zmax);   // 轴上炮口
   // 覆盖正/负 pitch 与折叠区 yaw（只测 [-π/2, π/2] 会侥幸通过 —— CLAUDE.md 活跃约束）
   for (const [yaw, pitch] of [[0, 0], [0, -0.4], [0, 0.4], [2.48, -0.3], [-2.48, 0.3]]) {
     controller.currentRotation = yaw;
@@ -450,7 +456,8 @@ test('controller.muzzle：方向与渲染矩阵**交叉比对**（pitch 符号�
     }]]));
     const m = new THREE.Matrix4();
     renderer.meshes.barrel.getMatrixAt(0, m);
-    const barrelPos = new THREE.Vector3().setFromMatrixPosition(m);
+    // ⚠️ 刚性一体下矩阵位置恒等于 pivot ⇒ 必须变换**炮口顶点**才测得到方向
+    const barrelPos = muzzleLocal.clone().applyMatrix4(m);
     const pivot = controller.pivot();
     const muzzle = controller.muzzle();
     // 炮口方向（归一化）应与「渲染出的炮管末端 − pivot」方向一致
@@ -487,6 +494,19 @@ test('controller.muzzle：方向随朝向变化（与视觉旋转同源）', () 
 
 // ---------- M8 Task 5：炮塔渲染（8 部件实例池 + UV 分区） ----------
 
+/**
+ * 塔顶几何产物 fixture（渲染层用例共用）。
+ * ⚠️ 几何是造型的唯一来源 ⇒ 渲染层用例**必须**传 topGeometry，否则不建 mesh。
+ * 用 async 加载 + 模块级缓存（只 fetch 一次）。
+ */
+let _topGeoFixture = null;
+async function topGeoFixture() {
+  if (_topGeoFixture === null) {
+    _topGeoFixture = await (await fetch(resourceUrl('assets/turret/turret-top.json'))).json();
+  }
+  return _topGeoFixture;
+}
+
 /** 假纹理（只需是 THREE.Texture 实例，让渲染层走贴图路径） */
 function makeFakeTexture() {
   const tex = new THREE.DataTexture(new Uint8Array(4), 1, 1);
@@ -494,9 +514,9 @@ function makeFakeTexture() {
   return tex;
 }
 
-test('TurretRenderer：8 个部件 InstancedMesh，无炮塔时全部 visible=false', () => {
+test('TurretRenderer：8 个部件 InstancedMesh，无炮塔时全部 visible=false', async () => {
   const scene = new THREE.Scene();
-  const renderer = new TurretRenderer({ scene, maxActive: TURRET.maxTurrets });
+  const renderer = new TurretRenderer({ scene, maxActive: TURRET.maxTurrets, topGeometry: await topGeoFixture() });
   // 8 部件（5 装甲板 + 炮管 + 根部 + 瞄准器）—— 部件顺序的单一权威在 config
   assertEqual(Object.keys(renderer.meshes).length, TURRET_PARTS.length);
   assertEqual(TURRET_PARTS.length, 8);
@@ -504,70 +524,60 @@ test('TurretRenderer：8 个部件 InstancedMesh，无炮塔时全部 visible=fa
     assertEqual(renderer.meshes[part].visible, false, `${part} 无炮塔时不可见`);
     assertEqual(renderer.meshes[part].count, TURRET.maxTurrets, `${part} 容量`);
   }
-  // 几何类型：炮管是圆柱（mc-lite `CylinderGeometry` + `rotateX(π/2)`），其余是盒
-  assertEqual(renderer.meshes.front.geometry.type, 'BoxGeometry');
-  assertEqual(renderer.meshes.barrel.geometry.type, 'CylinderGeometry');
+  // 几何来自烘焙产物 ⇒ 全部是 BufferGeometry（不再是参数化 Box/Cylinder）
+  for (const part of TURRET_PARTS) {
+    assertEqual(renderer.meshes[part].geometry.type, 'BufferGeometry', `${part} 几何来自产物`);
+    assertTrue(renderer.meshes[part].geometry.getIndex() !== null, `${part} 索引化`);
+  }
   renderer.dispose();
 });
 
-test('TurretRenderer：缺省容量从 TURRET.maxTurrets 派生（非硬编码字面量）', () => {
+test('TurretRenderer：缺省容量从 TURRET.maxTurrets 派生（非硬编码字面量）', async () => {
   // ⚠️ 不传 maxActive —— fixture 显式传会覆盖默认参数 → 注入「默认写死 30」全绿
   // （M6 实测踩过同一坑，见 test-zombies.js 的同款断言）
-  const renderer = new TurretRenderer({ scene: new THREE.Scene() });
+  const renderer = new TurretRenderer({ scene: new THREE.Scene(), topGeometry: await topGeoFixture() });
   assertEqual(renderer.maxActive, TURRET.maxTurrets);
   for (const part of TURRET_PARTS) assertEqual(renderer.meshes[part].count, TURRET.maxTurrets);
   renderer.dispose();
 });
 
-test('TurretRenderer：UV 分区把五块装甲板映射到对应区，纯色部件不改 UV', () => {
-  const renderer = new TurretRenderer({ scene: new THREE.Scene(), armorTexture: makeFakeTexture() });
-  const n = ARMOR_ZONES.length;
-  for (const part of ['front', 'left', 'right', 'top', 'back']) {
-    const def = TURRET_PART_DEFS[part];
-    const expectedZone = ARMOR_ZONES.indexOf(def.zone);
-    assertTrue(expectedZone >= 0, `${part} 的 zone=${def.zone} 必须在 ARMOR_ZONES 内`);
+test('TurretRenderer：UV 原样取自产物（烘焙侧已分区，渲染层不得改写）', async () => {
+  const geo = await topGeoFixture();
+  const renderer = new TurretRenderer({ scene: new THREE.Scene(), armorTexture: makeFakeTexture(), topGeometry: geo });
+  // ⚠️ **权威在烘焙侧**：新几何逐面分区（同一部件内不同面属不同区），
+  // 部件级 zone 恒 null ⇒ 旧「整块几何一个区」的断言失去意义。
+  // 本用例只钉「渲染层不改写」；分区正确性由 test-turret-top-bake.js 在烘焙侧钉住。
+  for (const part of TURRET_PARTS) {
     const uv = renderer.meshes[part].geometry.getAttribute('uv');
-    const lo = expectedZone / n, hi = (expectedZone + 1) / n;
-    for (let i = 0; i < uv.count; i++) {
-      const u = uv.getX(i);
-      // ⚠️ 容差 1e-6 而非 1e-9：UV 存 Float32（`0.3333333432674408` vs 1/3 的 IEEE754 双精度），
-      // 1e-9 会因存储精度假失败（实测踩过）。
-      assertTrue(u >= lo - 1e-6 && u <= hi + 1e-6, `${part} 顶点 ${i} 的 u=${u} 不在区 ${expectedZone}`);
+    const src = geo.parts[part].uv;
+    assertEqual(uv.count * 2, src.length, `${part} uv 长度`);
+    for (let i = 0; i < src.length; i++) {
+      // ⚠️ 容差 1e-6：UV 存 Float32，1e-9 会因存储精度假失败
+      assertTrue(Math.abs(uv.array[i] - src[i]) <= 1e-6,
+        `${part} uv[${i}] 被改写了：${uv.array[i]} vs 产物 ${src[i]}`);
     }
   }
-  // ⚠️ 三个不同区的装甲板 u 范围必须互不相同（否则注入「zoneIndex 恒 0」全绿）
-  const uOf = (part) => renderer.meshes[part].geometry.getAttribute('uv').getX(0);
-  assertTrue(uOf('front') !== uOf('left'), 'front 与 left 的区不同');
-  assertTrue(uOf('left') !== uOf('top'), 'left 与 top 的区不同');
-  assertEqual(uOf('left'), uOf('right'), 'left 与 right 同区（都用 side 贴图）');
-  assertEqual(uOf('top'), uOf('back'), 'top 与 back 同区（mc-lite BACK 也用 pic3）');
-  // 纯色部件（炮管/根部/瞄准器）**不**改写 UV，且 zone 为 null
-  for (const part of ['barrel', 'root', 'sight']) {
-    assertEqual(TURRET_PART_DEFS[part].zone, null, `${part} 是纯色部件`);
-    const uv = renderer.meshes[part].geometry.getAttribute('uv');
-    // 原始 BoxGeometry/CylinderGeometry 的 u 覆盖 [0,1]（未被压进 1/3 区间）
-    let maxU = 0;
-    for (let i = 0; i < uv.count; i++) maxU = Math.max(maxU, uv.getX(i));
-    assertTrue(maxU > 1 / n + 1e-9, `${part} 的 UV 未被改写（maxU=${maxU}）`);
-  }
   renderer.dispose();
 });
 
-test('TurretRenderer：无纹理时退回纯色（材质不带 map）', () => {
-  const renderer = new TurretRenderer({ scene: new THREE.Scene(), armorTexture: null });
-  for (const part of ['front', 'left', 'right', 'top', 'back']) {
+test('TurretRenderer：无纹理时退回纯色（材质不带 map）', async () => {
+  const renderer = new TurretRenderer({ scene: new THREE.Scene(), armorTexture: null, topGeometry: await topGeoFixture() });
+  const armor = TURRET_PARTS.filter((p) => TURRET_PART_DEFS[p].textured);
+  const solid = TURRET_PARTS.filter((p) => !TURRET_PART_DEFS[p].textured);
+  for (const part of armor) {
     assertEqual(renderer.meshes[part].material.map, null, `${part} 无纹理时不带 map`);
+    // ⚠️ 新 8 部件没有「后板」语义 ⇒ 装甲统一退回 MAIN（DARK 已无消费点）
+    assertEqual(renderer.meshes[part].material.color.getHex(), TURRET_TOWER_COLOR.MAIN, `${part} 退回 MAIN`);
   }
-  // back 用 DARK 色，其余装甲板用 MAIN 色（mc-lite `TURRET_TOWER_COLOR`）
-  assertEqual(renderer.meshes.back.material.color.getHex(), TURRET_TOWER_COLOR.DARK);
-  assertEqual(renderer.meshes.front.material.color.getHex(), TURRET_TOWER_COLOR.MAIN);
-  // 炮管/根部/瞄准器各自的专属色（不是装甲色）
-  assertEqual(renderer.meshes.sight.material.color.getHex(), 0x3366cc);
+  // 纯色部件不受纹理缺失影响
+  for (const part of solid) {
+    assertEqual(renderer.meshes[part].material.color.getHex(), TURRET_PART_DEFS[part].color, `${part} 专属色`);
+  }
   renderer.dispose();
 });
 
-test('TurretRenderer：sync 差集驱动 —— 新增分配 slot、消失归还', () => {
-  const renderer = new TurretRenderer({ scene: new THREE.Scene() });
+test('TurretRenderer：sync 差集驱动 —— 新增分配 slot、消失归还', async () => {
+  const renderer = new TurretRenderer({ scene: new THREE.Scene(), topGeometry: await topGeoFixture() });
   const poses = new Map([['turret-1', { position: [10.5, 7.3, 10.5], yaw: 0, pitch: 0 }]]);
   renderer.sync(poses);
   assertEqual(renderer.slotCount(), 1);
@@ -583,29 +593,34 @@ test('TurretRenderer：sync 差集驱动 —— 新增分配 slot、消失归还
   renderer.dispose();
 });
 
-test('TurretRenderer：pose 矩阵反映 yaw/pitch（渲染真的消费朝向，非恒 0）', () => {
-  const renderer = new TurretRenderer({ scene: new THREE.Scene() });
+test('TurretRenderer：pose 矩阵反映 yaw/pitch（渲染真的消费朝向，非恒 0）', async () => {
+  const renderer = new TurretRenderer({ scene: new THREE.Scene(), topGeometry: await topGeoFixture() });
   const pos = [10.5, 7.3, 10.5];
   renderer.sync(new Map([['t1', { position: pos, yaw: 0, pitch: 0 }]]));
   const m0 = new THREE.Matrix4();
-  renderer.meshes.front.getMatrixAt(0, m0);
-  const p0 = new THREE.Vector3().setFromMatrixPosition(m0);
+  renderer.meshes.mantlet.getMatrixAt(0, m0);
 
-  // yaw = π/2 → 部件绕 Y 转 90°，位置应随之变化
+  // ⚠️ **判据必须落在旋转部分，不能落在矩阵位置**：刚性一体下 8 部件共用 pivot 矩阵
+  // ⇒ 矩阵位置恒等于 pivot，**不随 yaw 变化**（旧参数化几何里各部件有局部平移，
+  // 位置才会随 yaw 转）。用「部件几何的一个顶点经矩阵变换后的世界位置」才有判别力。
+  const geo = await topGeoFixture();
+  const local = new THREE.Vector3(...geo.parts.mantlet.position.slice(0, 3));
+  const p0 = local.clone().applyMatrix4(m0);
+
+  // yaw = π/2 → 部件绕 Y 转 90°，顶点世界位置应随之变化
   renderer.sync(new Map([['t1', { position: pos, yaw: Math.PI / 2, pitch: 0 }]]));
   const m1 = new THREE.Matrix4();
-  renderer.meshes.front.getMatrixAt(0, m1);
-  const p1 = new THREE.Vector3().setFromMatrixPosition(m1);
-  assertTrue(p0.distanceTo(p1) > 0.1, 'yaw 改变 → 部件位置改变');
+  renderer.meshes.mantlet.getMatrixAt(0, m1);
+  const p1 = local.clone().applyMatrix4(m1);
+  assertTrue(p0.distanceTo(p1) > 0.1, 'yaw 改变 → 部件顶点世界位置改变');
 
   // ⚠️ **折叠区取值**（CLAUDE.md 活跃约束：只在 [-π/2, π/2] 内取值会侥幸通过）。
   // 从实例矩阵反解 yaw 必须用 atan2(elements[8], elements[0])，不能用 Euler。
   renderer.sync(new Map([['t1', { position: pos, yaw: 2.48, pitch: 0 }]]));
   const m2 = new THREE.Matrix4();
-  // ⚠️ **必须用无 `rotX` 的部件**（top）：`front` 的局部变换含 `rotX: -π/8`，其矩阵不是
-  // 纯 Y 旋转 → 从它反解 yaw 会失真（实测：2.48 反解出 2.518）。`top` 的局部变换是纯平移，
-  // 旋转部分恰好 = pivot 旋转。
-  renderer.meshes.top.getMatrixAt(0, m2);
+  // ⚠️ 新几何**所有部件的局部变换都是恒等**（刚性一体）⇒ 任一部件的旋转部分
+  // 都恰好 = pivot 旋转，不再有「front 含 rotX 会失真」的问题。这里取 ring。
+  renderer.meshes.ring.getMatrixAt(0, m2);
   const e = m2.elements;
   const yawFromMatrix = Math.atan2(e[8], e[0]);
   assertTrue(Math.abs(yawFromMatrix - 2.48) < 0.02, `反解 yaw=${yawFromMatrix}（须 ≈2.48）`);
@@ -615,35 +630,42 @@ test('TurretRenderer：pose 矩阵反映 yaw/pitch（渲染真的消费朝向，
   renderer.dispose();
 });
 
-test('TurretRenderer：pitch 取反（mc-lite pitchObject.rotation.x = -pitch）', () => {
-  const renderer = new TurretRenderer({ scene: new THREE.Scene() });
+test('TurretRenderer：pitch 取反（mc-lite pitchObject.rotation.x = -pitch）', async () => {
+  const renderer = new TurretRenderer({ scene: new THREE.Scene(), topGeometry: await topGeoFixture() });
   const pos = [10.5, 7.3, 10.5];
   // 俯视（pitch < 0，瞄准下方丧尸）→ 炮管应向下倾斜
   renderer.sync(new Map([['t1', { position: pos, yaw: 0, pitch: -0.4 }]]));
   const m = new THREE.Matrix4();
   renderer.meshes.barrel.getMatrixAt(0, m);
-  const barrelPos = new THREE.Vector3().setFromMatrixPosition(m);
+  // ⚠️ 同上：矩阵位置恒等于 pivot ⇒ 必须变换**炮口顶点**（z 最大处）才测得到俯仰
+  const geo = await topGeoFixture();
+  const bp = geo.parts.barrel.position;
+  let zi = 2;
+  for (let i = 2; i < bp.length; i += 3) if (bp[i] > bp[zi]) zi = i;
+  const muzzleLocal = new THREE.Vector3(0, 0, bp[zi]);   // 轴上炮口（x/y 轴心为 0）
+  const barrelPos = muzzleLocal.clone().applyMatrix4(m);
   const pivotY = pos[1];
   // pitch = -0.4（俯视）→ 炮管末端 y 低于 pivot
   assertTrue(barrelPos.y < pivotY, `俯视时炮管向下：barrelY=${barrelPos.y} pivotY=${pivotY}`);
   // 仰视（pitch > 0）→ 炮管向上
   renderer.sync(new Map([['t1', { position: pos, yaw: 0, pitch: 0.4 }]]));
   renderer.meshes.barrel.getMatrixAt(0, m);
-  const upPos = new THREE.Vector3().setFromMatrixPosition(m);
+  const upPos = muzzleLocal.clone().applyMatrix4(m);
   assertTrue(upPos.y > pivotY, `仰视时炮管向上：barrelY=${upPos.y}`);
   renderer.dispose();
 });
 
-test('TurretRenderer：部件数值对齐 mc-lite（防数值漂移）', () => {
-  // 逐项钉住 mc-lite `Turret.js` 的实测值 —— 改错任一项即 FAIL
-  assertEqual(TURRET_PART_DEFS.front.size[0], 1.6);
-  assertEqual(TURRET_PART_DEFS.front.rotX, -Math.PI / 8);
-  assertEqual(TURRET_PART_DEFS.barrel.length, 3.0);
-  assertEqual(TURRET_PART_DEFS.barrel.diameter, 0.3);
-  assertEqual(TURRET_PART_DEFS.barrel.pos[2], 2.0);   // GUN_POS.BARREL_Z
-  assertEqual(TURRET_PART_DEFS.sight.pos[1], 0.5);    // GUN_POS.SIGHT_Y
-  assertEqual(TURRET_PART_DEFS.top.zone, 'top');
-  assertEqual(TURRET_PART_DEFS.back.zone, 'top');     // mc-lite BACK 也用 pic3
+test('TurretRenderer：几何规模与产物一致（防产物过期/部件错配）', async () => {
+  const geo = await topGeoFixture();
+  const renderer = new TurretRenderer({ scene: new THREE.Scene(), topGeometry: geo });
+  // 旧「逐项钉住 mc-lite 盒尺寸」的断言随参数化几何一同删除 —— 几何不再参数化。
+  // 改为钉「渲染层建出的几何与产物逐位一致」，这才是新架构下的漂移防线。
+  for (const part of TURRET_PARTS) {
+    const g = renderer.meshes[part].geometry;
+    assertEqual(g.getAttribute('position').count, geo.parts[part].position.length / 3, `${part} 顶点数`);
+    assertEqual(g.getIndex().count, geo.parts[part].index.length, `${part} 索引数`);
+  }
+  renderer.dispose();
 });
 
 // ---------- 开火门控：无目标不得射击（实玩反馈缺陷） ----------
