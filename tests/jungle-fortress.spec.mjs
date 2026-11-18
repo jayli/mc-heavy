@@ -129,10 +129,10 @@ test('丛林要塞：真实按钮瞬移 → 城西丛林里有石砖要塞（Wor
     const p = window.__MC_GAME__.player.physics.pos;
     return { x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z) };
   });
-  // 冻结落点（seed 12345）：(-218, 3, 217)
+  // 冻结落点（seed 12345）：(-218, 6, 217) —— v3.16 地形不再削平，y = 自然地表+1
   expect(landed.x, '落点 x 必须是冻结值').toBe(-218);
   expect(landed.z, '落点 z 必须是冻结值').toBe(217);
-  expect(landed.y, '落点 y 必须是整形后地表+1（用自然高度会悬空 3 格）').toBe(3);
+  expect(landed.y, '落点 y 必须是自然地表+1（用 baseY+1=10 会悬空 4 格）').toBe(6);
 
   // ── ④ 飞到要塞上方俯瞰，读**真实世界方块** ──
   await gotoAndView(page, { x: anchor.wx, y: anchor.floorY + 45, z: anchor.wz }, 0, -Math.PI / 2);

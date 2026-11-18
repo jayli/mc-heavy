@@ -413,9 +413,10 @@ export const JUNGLE_FORTRESS_TELEPORT_GAP = 6;
  *
  * 落点 = 占地**东缘**再向东 `JUNGLE_FORTRESS_TELEPORT_GAP` 格、z 取锚点中线。
  *
- * ⚠️ **y 必须用「整形后」地表 + 1，不能用自然高度**：落点在缓坡带内（e=6），
- * 8/8 seed 都被整形改写 —— 实测自然 h 4~5 而整形后 1~2，用自然值会让玩家**悬空 2~3 格**。
- * 判据转调 `jungleFortressSurfaceYAt`（整形唯一权威，红线 1），不在此复算插值。
+ * ⚠️ **y 必须用「地表权威」+ 1，不能用 baseY**（v3.16）：
+ * 落点在东缘外 6 格 = 裙边带外缘，那里 T = 自然高度（实测 8 seed nat+1 = 5~6）。
+ * 用 baseY+1 = 10 会让玩家**悬空 4~5 格**（要塞地板比玩家高 3~4 格，抬头看才宏伟）。
+ * 判据转调 `jungleFortressSurfaceYAt`（地表唯一权威，红线 1），不在此复算包络。
  *
  * ⚠️ **唯一权威**：`Game.teleportToJungleFortress` 与 E2E 都消费本函数，不得各自复算。
  *
@@ -427,8 +428,9 @@ export function jungleFortressTeleportPoint(seed) {
   if (!a) return null;
   const x = a.wx + JUNGLE_FORTRESS_HALF_X + JUNGLE_FORTRESS_TELEPORT_GAP;
   const z = a.wz;
-  // 落点在缓坡带内 ⇒ 恒有整形值；?? 兜底只为「将来改 GAP 超出带宽」时不崩
-  const surface = jungleFortressSurfaceYAt(x, z, seed, a) ?? generateHeight(x, z, seed);
+  // v3.16：surfaceYAt 恒返回数值（包络场 T）⇒ 不再需 ?? 兜底。
+  // 保留 generateHeight 直调作为「产物未预热」的退化路径（与 surfaceYAt 内部同口径）。
+  const surface = jungleFortressSurfaceYAt(x, z, seed, a);
   const y = surface + 1;
   if (![x, y, z].every((v) => Number.isFinite(v))) return null;
   return { x, y, z };

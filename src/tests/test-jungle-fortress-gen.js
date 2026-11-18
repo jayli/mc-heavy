@@ -1104,25 +1104,30 @@ test('丛林要塞接线：雪原整座让路（合成锚点 ⇒ 相交 region �
 
 // ==================== 瞬移入口（Task 7）====================
 
-/** 8 seed 冻结落点（占地东缘外 6 格，y = 整形后地表 + 1） */
+/**
+ * 8 seed 冻结落点（占地东缘外 6 格，y = **自然地表 + 1**）。
+ *
+ * ⚠️ v3.16：地形不再削平，落点在裙边带外缘（T=nat）⇒ y 从 2~3 变为 5~6。
+ *    要塞地板（baseY=9）比玩家高 3~4 格 ⇒ 抬头看要塞，正是「宏伟」的观感。
+ */
 const FROZEN_TELEPORT = {
-  12345: [-218, 3, 217],
-  99999: [-535, 3, -91],
-  1249026: [-368, 3, 77],
-  20260101: [-407, 3, 33],
-  777: [-586, 2, 473],
-  4242: [-282, 2, 165],
-  31337: [-356, 2, 81],
-  8888: [-527, 2, -87],
+  12345: [-218, 6, 217],
+  99999: [-535, 6, -91],
+  1249026: [-368, 6, 77],
+  20260101: [-407, 5, 33],
+  777: [-586, 5, 473],
+  4242: [-282, 5, 165],
+  31337: [-356, 5, 81],
+  8888: [-527, 5, -87],
 };
 
-test('丛林要塞瞬移：8 个 seed 落点逐值命中冻结表（y 用整形后地表）', () => {
+test('丛林要塞瞬移：8 个 seed 落点逐值命中冻结表（y 用自然地表+1）', () => {
   for (const [seedStr, [x, y, z]] of Object.entries(FROZEN_TELEPORT)) {
     const seed = Number(seedStr);
     const p = jungleFortressTeleportPoint(seed);
     assertTrue(p !== null, `seed ${seed} 必须有落点`);
     assertEqual(p.x, x, `seed ${seed} 落点 x`);
-    assertEqual(p.y, y, `seed ${seed} 落点 y（必须是整形后地表+1，不是自然高度+1）`);
+    assertEqual(p.y, y, `seed ${seed} 落点 y（v3.16 = 自然地表+1，不是 baseY+1）`);
     assertEqual(p.z, z, `seed ${seed} 落点 z`);
   }
 });
@@ -1139,19 +1144,26 @@ test('丛林要塞瞬移：落点在占地东缘外 GAP 格（靠 City 那一侧
   }
 });
 
-test('丛林要塞瞬移：落点用自然高度会悬空（判据必须有判别力）', () => {
-  // 实测 8 seed 自然 h 4~5、整形后 1~2 ⇒ 用自然高度会让玩家悬空 2~3 格。
-  // 本用例钉「两者确实不同」，否则「y 用整形后地表」这条断言失去判别力。
-  let differ = 0;
+test('丛林要塞瞬移：落点用 baseY+1 会悬空（判据必须有判别力）', () => {
+  // ⚠️ v3.16 语义反转：旧用例钉「整形后 ≠ 自然」（那时地形被削平）；
+  //    现在地形保留自然 ⇒ 落点 y **就是** 自然地表+1，而 baseY+1 会悬空。
+  //    实测 8 seed：nat+1 = 5~6、baseY+1 = 10 ⇒ 悬空 4~5 格。
+  let differ = 0, minGap = Infinity;
   for (const seedStr of Object.keys(FROZEN_TELEPORT)) {
     const seed = Number(seedStr);
+    const a = computeJungleFortressAnchor(seed);
     const p = jungleFortressTeleportPoint(seed);
-    const natural = generateHeight(p.x, p.z, seed) + 1;
-    if (natural !== p.y) differ++;
+    const wrong = a.floorY + 1;
+    if (wrong !== p.y) differ++;
+    minGap = Math.min(minGap, wrong - p.y);
+    assertEqual(p.y, generateHeight(p.x, p.z, seed) + 1,
+      `seed ${seed} 落点 y 必须等于自然地表+1（落点在裙边带外缘，T=nat）`);
   }
   assertEqual(differ, 8,
-    `8/8 seed 的整形后落点高度必须与自然高度不同（实际 ${differ} 个不同）—— ` +
-    '否则「用整形后地表」这条要求无法被判据守住');
+    `8/8 seed 的 baseY+1 必须与正确落点不同（实际 ${differ} 个不同）—— ` +
+    '否则「不得用 baseY+1」这条要求无法被判据守住');
+  assertTrue(minGap >= 4,
+    `用 baseY+1 至少悬空 4 格（实测最小差 ${minGap}）—— 低于它说明判据余量不够`);
 });
 
 // ==================== 石墩与漏底修补（v3.16 DR-3 / DR-4）====================
