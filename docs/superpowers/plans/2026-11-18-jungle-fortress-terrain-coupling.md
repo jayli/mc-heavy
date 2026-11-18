@@ -8,7 +8,7 @@
 
 **Tech Stack:** Node v26、原生 ES module、浏览器内单测（`src/tests/`）、Playwright（E2E，`channel:'chromium'`）。不碰 three / 烘焙 / 产物 / 高度公式 / 水面遮罩。
 
-**Spec:** `docs/superpowers/specs/2026-11-18-jungle-fortress-terrain-coupling-design.md`（v3.16，已批准；DR-1~DR-10 + §9 冻结表）
+**Spec:** `docs/superpowers/specs/2026-11-18-jungle-fortress-terrain-coupling-design.md`（v3.18，已批准；DR-1~DR-10 + §9 冻结表）
 
 ## Global Constraints
 
@@ -106,7 +106,7 @@ git commit -m "feat(jungle-fortress): anchor floorY 改为 75 分位 baseY + per
 - Test: `src/tests/test-jungle-fortress-gen.js`（整形类用例行 352~449 改写）
 
 **Interfaces:**
-- Produces: `jungleFortressSurfaceYAt(wx,wz,seed,anchor)` 暂返回 `generateHeight(wx,wz,seed)`（Task 5 再改为裙边后地面 T）；`fillJungleFortressGround` 删除（或保留空函数体 + 注释「v3.16 移除削平」）。
+- Produces: `jungleFortressSurfaceYAt(wx,wz,seed,anchor)` 暂返回 `generateHeight(wx,wz,seed)`（Task 5 再改为裙边后地面 T）；`fillJungleFortressGround` 删除（或保留空函数体 + 注释「v3.18 移除削平」）。
 - Consumes: Task 1 的 `anchor.floorY = baseY`。
 
 - [ ] **Step 1: 改写整形用例为「内部地形零改动」**
@@ -417,10 +417,10 @@ git commit -m "test(jungle-fortress): Tier 4 六机位像素验收（含接壤�
 ### Task 9: 文档收尾（roadmap + CLAUDE.md）
 
 **Files:**
-- Modify: `docs/roadmap.md`（v3.16 行）
+- Modify: `docs/roadmap.md`（v3.18 行）
 - Modify: `CLAUDE.md`（高频坑：墩语义/漏底口径/层序/percentile75 派生/裙边三屏障）
 
-- [ ] **Step 1: 写 roadmap v3.16 行**
+- [ ] **Step 1: 写 roadmap v3.18 行**
 
 按既有版本表格式，记：用户裁定（保留自然+抬升+石墩+接壤阶梯）、实测冻结值（墩 13601/裙边 2972/可见率 45.8%/带内高差 0）、验证证据（单测/spec/check 输出）、顺带修上层件悬空。
 
@@ -437,7 +437,7 @@ git commit -m "test(jungle-fortress): Tier 4 六机位像素验收（含接壤�
 
 ```bash
 git add docs/roadmap.md CLAUDE.md
-git commit -m "docs(jungle-fortress): v3.16 roadmap + 高频坑"
+git commit -m "docs(jungle-fortress): v3.18 roadmap + 高频坑"
 ```
 
 ---
