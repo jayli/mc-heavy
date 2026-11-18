@@ -30,7 +30,10 @@ import {
   JUNGLE_FORTRESS_ASSEMBLE, JUNGLE_FORTRESS_POOL_WEIGHTS, JUNGLE_FORTRESS_POOL_FALLBACK,
   JUNGLE_FORTRESS_METRICS, jungleFortressInputFingerprint, FACING_TO_ORIENT,
   JUNGLE_FORTRESS_JSON, JUNGLE_FORTRESS_META, JUNGLE_FORTRESS_VINE,
+  STONE_VARIANTS,
 } from './jungle-fortress-fingerprint.mjs';
+// 石砖族四档的目标名住在指纹模块（它必须进参数指纹）—— 此处再导出保持导出面不变。
+export { STONE_VARIANTS };
 
 /**
  * 拼装器 PRNG：LCG（与探针逐位一致，冻结值 193 件由它产出）。
@@ -44,7 +47,8 @@ function lcg(seed) {
 /**
  * 变体分配 PRNG：mulberry32（与探针的石砖族抽签逐位一致）。
  * ⚠️ **与拼装器的 LCG 是两条独立流**，不得共用一个函数 ——
- * 实测共用 LCG 会让 mossy_stone 从 30503 变 30235（268 格静默漂移，总数不变）。
+ * 实测共用 LCG 会让苔藓档从 30503 变 30235（268 格静默漂移，总数不变）。
+ * （v3.19 前该档目标名是 `mossy_stone`，现在是 `mossy_stone_bricks`，格数不变。）
  */
 function mulberry32(a) {
   return function () {
@@ -418,22 +422,6 @@ export const BLOCK_MAP = Object.freeze({
   red_stained_glass: 'stone_bricks',  // pillar_processor 的占位符
   spawner: '',                        // 本仓无刷怪笼系统
   structure_void: '',
-});
-
-/**
- * 石砖族四色分配（把上游 jungle_main.json 的生成期随机固化成确定性）。
- * 上游概率：mossy 50% / cracked 25% / chiseled 5% / 纯石砖 20%。
- * 本仓无 mossy_stone_bricks / cracked / chiseled 贴图 ⇒ 映到同色系既有方块。
- * 加权均色 113,116,107（g−r=3 略偏绿）—— 对照纯石砖 122,122,122。
- */
-export const STONE_VARIANTS = Object.freeze({
-  seed: 20261117,
-  bands: Object.freeze([
-    { p: 0.50, block: 'mossy_stone' },
-    { p: 0.25, block: 'cobblestone' },
-    { p: 0.05, block: 'tuff_bricks' },
-    { p: 0.20, block: 'stone_bricks' },
-  ]),
 });
 
 /** 地板层在**结构坐标**里的 y（center_room 的满铺实心层）。归一化后 = 13。 */

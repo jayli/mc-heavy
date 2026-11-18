@@ -16,7 +16,6 @@ import { createHash } from 'node:crypto';
 // 台阶 facing→orient 的唯一权威在巨型金字塔那侧（同一事实不抄第二份，红线 1）。
 export { FACING_TO_ORIENT } from './giant-pyramid-fingerprint.mjs';
 import { FACING_TO_ORIENT } from './giant-pyramid-fingerprint.mjs';
-
 const ROOT = path.resolve(import.meta.dirname, '..');
 
 /** 烘焙输入目录（入库，不是渲染资源） */
@@ -28,6 +27,33 @@ export const JUNGLE_FORTRESS_META = path.join(ROOT, 'assets', 'structures', 'jun
 
 /** placement 类型名 → 产物基名（`structure-json.js` 的 STRUCTURE_FILES 从这里派生） */
 export const JUNGLE_FORTRESS_VARIANTS = Object.freeze(['jungleFortress']);
+
+/**
+ * 石砖族四档分配（**唯一权威**，进参数指纹）。
+ *
+ * 把上游 `processor_list/fortresses/jungle_main.json` 的生成期随机固化成确定性：
+ * mossy 50% / cracked 25% / chiseled 5% / 纯石砖 20%。
+ *
+ * ## v3.19（2026-11-19 用户裁定）：四档全部用原版方块
+ * 此前三个档是替身（mossy_stone = 苔石**圆石** / cobblestone = **圆石** /
+ * tuff_bricks = **凝灰岩砖**），现在换成新烘的三个同名原版方块。
+ *
+ * ⚠️ **概率 / seed / 阈值口径一字未动** ⇒ 四档格数逐档不变
+ *    （30503 / 15085 / 3012 / 12092，实测）。
+ * ⚠️ **必须住在本模块而不是烘焙器**（v3.19 从烘焙器搬过来）：它先前不在指纹参数里
+ *    ⇒ 改目标名而指纹不变，正是「只改算法不动参数」盲区。烘焙器 import 后再导出。
+ * ⚠️ **台阶不在本期范围**（用户点名除外）：BLOCK_MAP 里两个 `*_stairs` 仍映 cobblestone_step。
+ * ⚠️ **墩材质跟着改**：`jungle-fortress-terrain.js` 的石墩写建筑主材（本表第一档）。
+ */
+export const STONE_VARIANTS = Object.freeze({
+  seed: 20261117,
+  bands: Object.freeze([
+    Object.freeze({ p: 0.50, block: 'mossy_stone_bricks' }),
+    Object.freeze({ p: 0.25, block: 'cracked_stone_bricks' }),
+    Object.freeze({ p: 0.05, block: 'chiseled_stone_bricks' }),
+    Object.freeze({ p: 0.20, block: 'stone_bricks' }),
+  ]),
+});
 
 /**
  * 地板层在**归一化坐标**里的 y（= 产物 JSON 的 floorRow）。
@@ -190,13 +216,19 @@ export const JUNGLE_FORTRESS_METRICS = Object.freeze({
     /** 栏杆总格数（= 原 2682 格 vertical_pillar，朝向 pass 只拆分不增删） */
     railCells: 2682,
 
-    /** 逐目标方块格数 */
+    /**
+     * 逐目标方块格数。
+     *
+     * ⚠️ **v3.19 换名不换数**：三个替身换成原版同名方块
+     * （mossy_stone→mossy_stone_bricks / cobblestone→cracked_stone_bricks /
+     *  tuff_bricks→chiseled_stone_bricks），概率与 seed 未动 ⇒ 格数逐档不变。
+     */
     targetCounts: Object.freeze({
-      mossy_stone: 30503,
+      mossy_stone_bricks: 30503,
       air: 15536,
-      cobblestone: 15085,
+      cracked_stone_bricks: 15085,
       stone_bricks: 12092,
-      tuff_bricks: 3012,
+      chiseled_stone_bricks: 3012,
       handrailA: 2626,
       vine: 2029,
       cobblestone_step: 156,
@@ -274,6 +306,9 @@ export function jungleFortressInputFingerprint() {
       JUNGLE_FORTRESS_METRICS,
       JUNGLE_FORTRESS_VINE,
       FACING_TO_ORIENT,
+      // ⚠️ **v3.19 补入**：此前漏了它 —— 改石砖族目标名（烘焙输入）而指纹不变
+      //    就是「只改算法不动参数」盲区。现在改 bands 会当场报「产物过期」。
+      STONE_VARIANTS,
     }))
     .digest('hex');
   return {

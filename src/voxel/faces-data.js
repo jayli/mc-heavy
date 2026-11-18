@@ -203,6 +203,17 @@ export const FACES_DATA = {
   end_stone_brick_step_updown: 'End_Stone_Bricks',
   obsidian_brick_slab: 'obsidian_bricks',
   end_stone_brick_slab: 'End_Stone_Bricks',
+  // ---- 原版石砖三变体 + 紫珀方块（v3.19，2026-11-19）----
+  // tile 名 = assets/textures/ 下的文件名去 .png（`npm run stonebricks` 烘焙）。
+  // 四项都是**单 tile 字符串 = 六面同一张图**：
+  //   · 三张石砖在 vanilla 里本就是 cube_all（六面同图）；
+  //   · purpur_block 是用户明确要求「六个面都用这个图」。
+  // ⚠️ purpur_block 的配色来自**用户提供的 512×512 图**（比 vanilla 暗一档），
+  //    不是 blockrender 的 vanilla 版 —— 不得“顺手换成原版配色”。
+  mossy_stone_bricks: 'mossy_stone_bricks',
+  cracked_stone_bricks: 'cracked_stone_bricks',
+  chiseled_stone_bricks: 'chiseled_stone_bricks',
+  purpur_block: 'purpur_block',
 };
 
 /**

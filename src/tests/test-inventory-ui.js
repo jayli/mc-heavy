@@ -140,7 +140,7 @@ test('背包 open：显示 + pushModal + 清空按键', async () => {
   });
 });
 
-test('背包 open：渲染 145 个非空槽且首槽选中', async () => {
+test('背包 open：渲染 149 个非空槽且首槽选中', async () => {
   await withPanel((panel) => {
     panel.open();
     const slots = document.querySelectorAll('#inventory-grid .mc-slot');
@@ -150,7 +150,8 @@ test('背包 open：渲染 145 个非空槽且首槽选中', async () => {
     // ⚠️ 中世纪船 Epic：两个新方块（倒置台阶 / 倒置半砖）进背包 → 128 → 130
     // ⚠️ 废弃堡垒（2026-11-10）：15 个新方块进背包 → 129 → 144
     // ⚠️ 矮草丛（v3.12，2026-11-17）：bush_grass 进背包 → 144 → 145
-    assertEqual(slots.length, 145, '物品集合全量入包 = 145 槽（6 项不入包）');
+    // ⚠️ 石砖三变体 + 紫珀（v3.19，2026-11-19）：4 个全进背包 → 145 → 149
+    assertEqual(slots.length, 149, '物品集合全量入包 = 149 槽（6 项不入包）');
     assertEqual(document.querySelectorAll('#inventory-grid .mc-slot.selected').length, 1);
     assertTrue(slots[0].classList.contains('selected'), 'selectedSlot=0 高亮首槽');
     assertEqual(slots[0].dataset.index, '0');

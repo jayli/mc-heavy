@@ -189,6 +189,30 @@ test('废弃堡垒：非空气 footprint 半宽 = HALF_X/HALF_Z（锚点搜索�
     `非空气 z 半宽必须 = HALF_Z ${RUINED_CITADEL_HALF_Z}（实际 z∈[${mnz},${mxz}]）`);
 });
 
+// ==================== v3.19：紫珀族换成新烘的 purpur_block ====================
+
+/**
+ * 用户 2026-11-19：「末日地堡里的 deepslate 方块都替换成紫色方块，Purpur Block」。
+ *
+ * ⚠️ **内容级判据，不能只比总格数**：换名不增删格 ⇒ 总格数 / palette 种数 / bbox
+ *    全部不变，只有逐目标名计数能分辨「真的换了」与「没换」。
+ * ⚠️ 台阶（stone_diorite_step / cobblestone_step_updown）与 bottom 半砖（sand_slab）
+ *    **不在本期范围**，不得把它们也算进紫珀计数。
+ */
+test('废弃堡垒：紫珀族 4210 格全是 purpur_block，deepslate 零残留（v3.19）', async () => {
+  const data = await loadStructure('ruinedCitadel');
+  const counts = new Map();
+  for (const b of data.blocks) counts.set(b.type, (counts.get(b.type) || 0) + 1);
+  assertEqual(counts.get('purpur_block') || 0, 4210,
+    `purpur_block 必须 4210 格（实际 ${counts.get('purpur_block') || 0}）`);
+  assertEqual(counts.get('deepslate') || 0, 0,
+    `deepslate 必须零残留（实际 ${counts.get('deepslate') || 0}）—— 用户要求全换成紫珀方块`);
+  // 临界对照：本期**不动**的三类必须原数保留（防止“顺手”把台阶/半砖也改了）
+  assertEqual(counts.get('stone_diorite_step') || 0, 698, 'purpur/polished/chorus 正置台阶仍映 stone_diorite_step');
+  assertEqual(counts.get('cobblestone_step_updown') || 0, 224, '倒置台阶仍映 cobblestone_step_updown');
+  assertEqual(counts.get('sand_slab') || 0, 28, 'bottom 半砖仍映 sand_slab');
+});
+
 // ==================== DR-2：空气格必须写进产物（本结构特有的核心守卫）====================
 
 test('废弃堡垒：palette 含 air 且 air 格数 = 27,060（spec DR-2 唯一守卫）', async () => {

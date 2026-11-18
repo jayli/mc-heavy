@@ -2987,7 +2987,16 @@ async function checkRuinedCitadel() {
     }
   }
 
-  // ⑭ **15 个新方块都在 registry + 都在背包物品集合内**（用户裁定「新制作的方块加入背包」）。
+  // ⚠️ **v3.19 内容级判据**：紫珀族必须真的换成 purpur_block，**deepslate 不得再出现**。
+  //    只比 targetCounts 会把「产物里又混回 deepslate」放行（只要总数对得上）。
+  if (palette.includes('deepslate')) {
+    fail('palette 含 deepslate —— v3.19 用户裁定紫珀族换 purpur_block（只改本结构，其他结构不动）');
+  }
+  if (!palette.includes('purpur_block')) {
+    fail('palette 缺 purpur_block —— 映射未生效？跑 npm run ruinedcitadel');
+  }
+
+  // ⑭ **16 个新方块都在 registry + 都在背包物品集合内**（用户裁定「新制作的方块加入背包」）。
   //     派生规则（不硬编码清单）：
   //       · 9 整块/柱 = BLOCK_MAP 里 `cataclysm:X → X`（源基名 == 目标名，即照 mod 贴图新烘的同名块）；
   //       · 4 台阶 + 2 半砖 = STAIR_TARGETS / SLAB_BOTTOM 里 obsidian_brick / end_stone_brick 族。
@@ -3002,6 +3011,10 @@ async function checkRuinedCitadel() {
   for (const t of Object.values(fp.SLAB_BOTTOM)) {
     if (/^(obsidian_brick|end_stone_brick)_slab/.test(t)) newBlocks.add(t);
   }
+  // ⚠️ **v3.19 补充**：`purpur_block` 是 vanilla 名，上面三条派生规则一条都不命中
+  //    （它不是 `cataclysm:X→X`、也不是 obsidian_brick/end_stone_brick 族）⇒ 显式列入，
+  //    否则它会静默逃过「已注册 / 有 faces / 在背包」三道判据。清单住在指纹模块（红线 1）。
+  for (const t of fp.RUINED_CITADEL_EXTRA_NEW_BLOCKS) newBlocks.add(t);
   const items = buildItemNames(REGISTRY);
   for (const name of newBlocks) {
     if (REGISTRY.idOf(name) === undefined) fail(`新方块 "${name}" 未注册（makeColumnSetter 静默跳过 → 堡垒出现洞）`);
@@ -4231,6 +4244,21 @@ async function checkJungleFortress() {
   for (const banned of ['iron', 'stone_diorite_step', 'handrailB', 'vertical_pillar']) {
     if (json.palette.includes(banned)) {
       fail(`palette 含被否决的候选 "${banned}"（iron 堵死窗洞 / diorite 亮 76 / handrailB 接不上 / vertical_pillar 未转手拉手）`);
+    }
+  }
+  // ⚠️ **v3.19 用户裁定：石砖族必须全是原版方块**（「除了台阶方块之外……用原版里
+  //    提供的方块重新烘焙出来」）。三个替身不得再出现 —— 这是本期意图的直接判据：
+  //    只比格数会把「换了名字但贴图仍是圆石」放行。
+  //    ⚠️ `cobblestone_step`（台阶）**不在禁单**：用户点名台阶除外。
+  for (const stand of ['mossy_stone', 'cobblestone', 'tuff_bricks']) {
+    if (json.palette.includes(stand)) {
+      fail(`palette 含石砖族替身 "${stand}"（v3.19 已换成原版同名方块：`
+        + 'mossy_stone→mossy_stone_bricks / cobblestone→cracked_stone_bricks / tuff_bricks→chiseled_stone_bricks）');
+    }
+  }
+  for (const need of ['mossy_stone_bricks', 'cracked_stone_bricks', 'chiseled_stone_bricks']) {
+    if (!json.palette.includes(need)) {
+      fail(`palette 缺原版石砖方块 "${need}"（映射未生效？跑 npm run junglefortress）`);
     }
   }
   // ⑨ 栏杆朝向逐档 + 总数守恒（手拉手 pass 只拆分不增删格）

@@ -129,8 +129,12 @@ export function jungleFortressGeometry(data) {
  * 石墩托底 + 地下房间漏底修补（DR-3 / DR-4，原版 `pillar_processor` 语义）。
  *
  * ## 墩
- * 逐列从「该列最低产物实心的下一格」向下写 `mossy_stone`，直到自然地表。
- * 材质选建筑主材（46%）⇒ 观感是「建筑自己的基座加高」而不是外来土墩。
+ * 逐列从「该列最低产物实心的下一格」向下写 `mossy_stone_bricks`，直到自然地表。
+ * 材质选建筑主材（50%）⇒ 观感是「建筑自己的基座加高」而不是外来土墩。
+ *
+ * ⚠️ **v3.19 跟着主材换名**：石砖族苔藓档从替身 `mossy_stone`（苔石**圆石**）
+ *    换成原版 `mossy_stone_bricks`。墩必须同步 —— 否则墩与墙是两种石头（方块层面看不出）。
+ *    格数 / 列数 / 最大墩高与材质名无关 ⇒ 8 seed 冻结表逐位不变（实测）。
  *
  * ## 漏底修补
  * 不削平后 `carveCaves` 的洞可能正在地下房间下方 ⇒ 地板漏空。
@@ -156,7 +160,7 @@ export function fillJungleFortressPiers(column, anchor, seed, registry, data) {
   if (!data || !data.blocks.length) return;
   const { colMinNy, solid, air, roomAir, roomFloor, floorRow } = jungleFortressGeometry(data);
   const colMinX = column.cx * 16, colMinZ = column.cz * 16;
-  const mossyId = registry.idOf('mossy_stone');
+  const mossyId = registry.idOf('mossy_stone_bricks');
   const stoneId = registry.idOf('stone');
   const baseY = anchor.floorY;
 
@@ -432,7 +436,7 @@ function jfSkirtFieldCached(anchor, seed) {
  * 对过渡带内**非建筑列**，`T > nat` 时从 `nat+1` 到 `T` 逐格写：
  * 顶格 `surfaceTypeOfBiome(getBiome)`（FOREST→grass），下方 `dirt`。
  *
- * ⚠️ 材质是**自然地形阶梯**，不是 mossy_stone —— 观感是「要塞坐在逐级抬升的台地上」。
+ * ⚠️ 材质是**自然地形阶梯**，不是 mossy_stone_bricks —— 观感是「要塞坐在逐级抬升的台地上」。
  * ⚠️ 守卫 `blocks[idx] === 0`：永不覆盖产物/墩/已有地形。
  * ⚠️ 必须在光栅化与墩之后调（DR-8 层序）。
  *
