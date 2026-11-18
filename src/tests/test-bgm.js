@@ -78,6 +78,38 @@ function teardown(mgr) {
   mgr._counts.clear();
 }
 
+/**
+ * 等「音频时钟推进 ≥ seconds」而不是等墙钟。
+ *
+ * ⚠️ **为什么不能用 `setTimeout(200)`**（2026-11-18 实测定位的间歇失败根因）：
+ * three 的 `setVolume()` 是 `gain.setTargetAtTime(v, context.currentTime, 0.01)`
+ * （`vendor/three/three.core.js:51692`）—— **指数逼近，走 AudioContext 时钟**，
+ * 误差 `0.85·e^(-t/0.01)`，容差 0.02 ⇒ 需音频时间 **≥ 0.0375s**。
+ * 而 `setTimeout` 走主线程任务队列：整页套件跑重 GEN 时主线程被长时间占住，
+ * 实测过 **`setTimeout(200)` 实际 53790ms 才回调**（同页采样）。
+ * 定时器被饿死 ⇒ 读音量时斜坡还没走完 ⇒ 断言以**错误的原因**失败。
+ *
+ * 改按音频时钟判定后：音频线程独立于主线程推进（实测高负载下 200ms 墙钟内
+ * 音频钟推进 0.19~53.8s，12/12 采样都 ≥ 0.05s）⇒ 条件恒能满足，不再赌定时器。
+ *
+ * **判别力两侧实测**（不是放宽阈值）：正确实现 actual **0.152413** PASS；
+ * 注入「只改意图不写 setVolume」actual **0.203870** FAIL。容差 0.02 一字未改。
+ *
+ * @param {AudioContext} ctx @param {number} seconds 需要的音频时间
+ * @param {number} capMs 墙钟上限（防 context 真的被挂起时无限等）
+ */
+async function waitAudioClock(ctx, seconds, capMs = 5000) {
+  const t0 = ctx.currentTime;
+  const w0 = performance.now();
+  while (ctx.currentTime - t0 < seconds) {
+    if (performance.now() - w0 > capMs) {
+      throw new Error(`音频时钟 ${capMs}ms 内只推进 ${(ctx.currentTime - t0).toFixed(4)}s`
+        + `（state=${ctx.state}）—— context 可能被挂起，本用例前提不成立`);
+    }
+    await new Promise((r) => setTimeout(r, 8));
+  }
+}
+
 /** 断言「条件未齐时不播、齐了才播」的公共骨架：始终释放监听器与音乐实例。 */
 async function withManager(opts, body) {
   const mgr = makeManager(opts);
@@ -269,8 +301,10 @@ test('bgm: playLoop 重复调用不重建实例，但真的改了音频音量', 
     assertEqual(mgr.debugLoops().running_land.target, 0.15, '意图音量已更新');
     // ⚠️ **不能同步读 `getVolume()`**：three 的 `setVolume()` 走 `setTargetAtTime`（0.01s 时间常数），
     // 刚调完那一瞬读到的还是斜坡起点（实测：刚 `play()` 的 gain 默认 1，同步读回 **1**）。
-    // 等斜坡收敛后再判（200ms 已远超 5 个时间常数）。
-    await new Promise((r) => setTimeout(r, 200));
+    // ⚠️ **等的是音频时钟，不是墙钟**（见 `waitAudioClock` 的根因说明）：
+    // 原先写 `setTimeout(200)`，在整页高负载下定时器被饿死（实测 53790ms）⇒ 间歇假失败。
+    // 0.05s 音频时间 = 5 个时间常数 ⇒ 误差 0.85·e^-5 ≈ 0.0057 < 容差 0.02。
+    await waitAudioClock(mgr.listener.context, 0.05);
     const actual = inst.getVolume();
     assertTrue(Math.abs(actual - 0.15) < 0.02,
       `**真实 THREE.Audio 音量必须跟着改**（缺陷 ①：只改意图）—— 实测 ${actual}`);

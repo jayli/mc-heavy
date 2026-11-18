@@ -621,8 +621,25 @@ test('废弃堡垒 GEN：占地内不得残留雪原地表（雪原必须整座�
     const ccz0 = Math.floor((a.wz - RUINED_CITADEL_HALF_Z) / 16);
     const ccz1 = Math.floor((a.wz + RUINED_CITADEL_HALF_Z) / 16);
     const found = [];
+    // ⚡ **几何无损筛**（v3.15，与 `test-burning-arena-gen.js` 同名用例同手法）：
+    // 只生成「16×16 范围与某座雪原盒（含过渡带）相交」的 column。
+    // 不相交的 column **结构上不可能**有雪原方块 ⇒ 判别力逐格不变，不是抽样。
+    // ⚠️ 雪原中心收**全部**候选 region（不能像上面 overlapping 那样找到一个就 break）。
+    const snowCenters = [];
+    for (let rx = rxLo; rx <= rxHi; rx++) {
+      for (let rz = rzLo; rz <= rzHi; rz++) {
+        const raw = getRegionSeededCenter(rx, rz, seed);
+        snowCenters.push([raw.centerX + LANDMARK_OFFSET.SNOW_LAND_X, raw.centerZ + LANDMARK_OFFSET.SNOW_LAND_Z]);
+      }
+    }
+    const hitsSnow = (cx, cz) => {
+      const x0 = cx * 16, x1 = x0 + 15, z0 = cz * 16, z1 = z0 + 15;
+      return snowCenters.some(([sx, sz]) =>
+        x0 <= sx + HALF && x1 >= sx - HALF && z0 <= sz + HALF && z1 >= sz - HALF);
+    };
     for (let cx = ccx0; cx <= ccx1; cx++) {
       for (let cz = ccz0; cz <= ccz1; cz++) {
+        if (!hitsSnow(cx, cz)) continue;   // 几何上不可能有雪块 ⇒ 无需 GEN
         const col = await genColumn(reg, cx, cz, seed);
         for (let lx = 0; lx < 16; lx++) {
           for (let lz = 0; lz < 16; lz++) {

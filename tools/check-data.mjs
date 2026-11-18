@@ -331,6 +331,58 @@ function checkTestRegistration() {
 }
 
 
+// ---------------------------------------------------------------- [7b] 测试分档完整性（v3.15）
+
+/**
+ * 分档清单（`tools/test-tiers.mjs`）必须与磁盘上的文件**双向一致**。
+ *
+ * **为什么按文件清单分档而不是打 @tag**：`--grep` 对未打标签的用例默认全跑
+ * ⇒ 漏标一个文件就静默回到全量。文件清单是闭合集合，能做这道双向门。
+ *
+ * 三条判据：
+ *   ① spec 归档无重复、无死引用、无漏归档（`tmp-*` 不计，它们不进正式门）
+ *   ② Node 白名单 ⊆ 单测全集，且每个都仍在 index.html 注册（零覆盖损失）
+ *   ③ 重 GEN 清单 ⊆ 白名单（否则「轻档 = 白名单 − 重」会算错）
+ *
+ * ⚠️ **不钉例数**（policy §3.2）：例数每天在长，写 `toBe(2065)` 就是「改动放大器」。
+ * 这里只钉**集合关系**，新增文件只需归档一次。
+ */
+async function checkTestTiers() {
+  const { SPEC_TIERS, UNIT_NODE_SAFE, UNIT_HEAVY } = await import('./test-tiers.mjs');
+  const archived = Object.values(SPEC_TIERS).flat();
+  const dup = archived.filter((n, i) => archived.indexOf(n) !== i);
+  if (dup.length) failures.push(`[测试分档] 同一 spec 被归入多档：${[...new Set(dup)].join(', ')}`);
+
+  const specActual = fs.readdirSync(path.join(ROOT, 'tests'))
+    .filter((f) => f.endsWith('.spec.mjs') && !f.startsWith('tmp-'))
+    .map((f) => f.replace(/\.spec\.mjs$/, ''));
+  const missing = specActual.filter((f) => !archived.includes(f));
+  const dangling = archived.filter((f) => !specActual.includes(f));
+  if (missing.length) failures.push(`[测试分档] spec 漏归档（= 分档入口静默不跑它）：${missing.join(', ')}`);
+  if (dangling.length) failures.push(`[测试分档] 归档了但文件不存在（死引用）：${dangling.join(', ')}`);
+
+  const unitDir = path.join(ROOT, 'src', 'tests');
+  const unitActual = fs.readdirSync(unitDir).filter((f) => /^test-.*\.js$/.test(f));
+  const html = fs.readFileSync(path.join(unitDir, 'index.html'), 'utf8');
+  const bad = UNIT_NODE_SAFE.filter((f) => !unitActual.includes(f));
+  if (bad.length) failures.push(`[测试分档] Node 白名单里的文件不存在：${bad.join(', ')}`);
+  // 白名单文件必须仍在整页注册里 —— Node 快档是「额外的更快入口」，不是替代
+  const notRegistered = UNIT_NODE_SAFE.filter((f) => !html.includes(`'./${f}'`));
+  if (notRegistered.length) {
+    failures.push(`[测试分档] Node 白名单文件未在 index.html 注册（浏览器侧会丢覆盖）：${notRegistered.join(', ')}`);
+  }
+  const heavyBad = UNIT_HEAVY.filter((f) => !UNIT_NODE_SAFE.includes(f));
+  if (heavyBad.length) failures.push(`[测试分档] 重 GEN 清单不在白名单内：${heavyBad.join(', ')}`);
+
+  if (!failures.some((f) => f.startsWith('[测试分档]'))) {
+    const browserOnly = unitActual.length - UNIT_NODE_SAFE.length;
+    infos.push(`[测试分档] spec ${archived.length} 个分 ${Object.keys(SPEC_TIERS).length} 档`
+      + `（${Object.entries(SPEC_TIERS).map(([k, v]) => `${k}:${v.length}`).join(' ')}）`
+      + ` / 单测 ${unitActual.length} 个：Node 可跑 ${UNIT_NODE_SAFE.length}`
+      + `（含重 GEN ${UNIT_HEAVY.length}）+ 留浏览器 ${browserOnly}`);
+  }
+}
+
 // ---------------------------------------------------------------- [8] 撒布结构引用完整性
 
 /**
@@ -3898,6 +3950,7 @@ checkIconManifestCoverage();
 checkIconAtlasArtifacts();
 checkIconFreshness();
 checkTestRegistration();
+await checkTestTiers();      // v3.15：分档清单双向一致（⚠️ 漏了本行则门禁永不执行）
 checkGeometryAuthority();
 await checkScatterStructureIntegrity();
 checkStructureJsonOrphans();   // 2026-09-30：tall_well 悬空宝箱回归防线（⚠️ 漏了本行则门禁永不执行）

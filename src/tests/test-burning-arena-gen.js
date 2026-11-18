@@ -615,13 +615,32 @@ test('大竞技场 GEN：占地内不得残留雪原地表（雪原必须整座�
     }
     assertTrue(overlapping, `seed ${seed} 的占地应与某座雪原相交（seed 清单失效了）`);
     coveredSeeds++;
-    // 真实 GEN：生成该 seed 占地跨的全部 column（不缓存 —— 每个 seed 只有一次）
+    // 真实 GEN：生成该 seed 占地跨的 column（不缓存 —— 每个 seed 只有一次）
     const ccx = Math.floor(a.wx / 16), ccz = Math.floor(a.wz / 16);
     const rCols = Math.ceil((BURNING_ARENA_HALF + 2) / 16);
     const found = [];
+    // ⚡ **几何无损筛**（v3.15）：只生成「16×16 范围与某座雪原盒（含过渡带）相交」的 column。
+    // 不相交的 column **结构上不可能**出现雪原方块（`generateSnowLand` 只写自己盒内）
+    // ⇒ 跳过它们**判别力逐格不变**，不是抽样。
+    // 实测：5 seed × 49 = **245 → 67 个 column（省 72.7%）**，逐 seed 20/16/15/6/10。
+    // ⚠️ 雪原中心要收**全部**候选 region（不能像上面 overlapping 那样找到一个就 break）——
+    // 漏一个中心就会把「真会写雪块的 column」筛掉，那才是真丢判别力。
+    const snowCenters = [];
+    for (let rx = rxLo; rx <= rxHi; rx++) {
+      for (let rz = rzLo; rz <= rzHi; rz++) {
+        const raw = getRegionSeededCenter(rx, rz, seed);
+        snowCenters.push([raw.centerX + LANDMARK_OFFSET.SNOW_LAND_X, raw.centerZ + LANDMARK_OFFSET.SNOW_LAND_Z]);
+      }
+    }
+    const hitsSnow = (cx, cz) => {
+      const x0 = cx * 16, x1 = x0 + 15, z0 = cz * 16, z1 = z0 + 15;
+      return snowCenters.some(([sx, sz]) =>
+        x0 <= sx + HALF && x1 >= sx - HALF && z0 <= sz + HALF && z1 >= sz - HALF);
+    };
     for (let dcx = -rCols; dcx <= rCols; dcx++) {
       for (let dcz = -rCols; dcz <= rCols; dcz++) {
         const cx = ccx + dcx, cz = ccz + dcz;
+        if (!hitsSnow(cx, cz)) continue;   // 几何上不可能有雪块 ⇒ 无需 GEN
         const col = await genColumn(reg, cx, cz, seed);
         for (let lx = 0; lx < 16; lx++) {
           for (let lz = 0; lz < 16; lz++) {

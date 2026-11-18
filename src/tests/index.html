@@ -175,10 +175,16 @@
     import './test-boss-hit-sound.js';
     // 玩家血心（生命系统显示层）：血量 → 10 颗心形态的纯函数契约
     import './test-health.js';
+    // 分档执行器自身的契约（v3.15）：文件归属 / only/tier 过滤 / 失配硬失败
+    import './test-runner-tiers.js';
 
     runAndExpose().then((r) => {
       document.getElementById('report').textContent =
         `passed=${r.passed} failed=${r.failed} total=${r.total} passRate=${r.passRate}%`;
+    }).catch((err) => {
+      // 分档参数失配时 runAndExpose 会抛（并写 selectionError）——
+      // 不接住的话页面只剩一个未处理 rejection，报错看不出是配置拼错。
+      document.getElementById('report').textContent = `分档参数错误：${err && err.message || err}`;
     });
   </script>
 </body>

@@ -202,12 +202,17 @@ test('真实 GEN：森林 column 里确有巨树方块（覆盖赋值的回归�
 
 test('真实 GEN：城市 bounds 内零巨树方块（Review Focus ⑤；原设计 16% 的树进城）', async () => {
   const { minX, maxX, minZ, maxZ } = cityLayout; let total = 0, inside = 0;
+  const families = (await loadGiantTrees()).families;
   // 城市外环带：与「城市 bounds 外扩 24」相交、且靠近边界线的 column
   for (let cx = Math.floor((minX - 24) / 16); cx <= Math.floor((maxX + 24) / 16); cx++) {
     for (let cz = Math.floor((minZ - 24) / 16); cz <= Math.floor((maxZ + 24) / 16); cz++) {
       const x0 = cx * 16, z0 = cz * 16;
       const deep = x0 > minX + 24 && x0 + 15 < maxX - 24 && z0 > minZ + 24 && z0 + 15 < maxZ - 24; // 城内深处：整列都在城里，跳过
       if (deep) continue;
+      // ⚡ **几何无损筛**（v3.15，与地标那条同手法）：无巨树候选 ⇒ 差格必为空
+      // ⇒ total/inside 都不会变，跳过双 GEN 零判别力损失。
+      const win = { minX: x0, maxX: x0 + 15, minZ: z0, maxZ: z0 + 15 };
+      if (collectGiantTrees(layoutsForColumn(cx, cz), SEED, families, win, 0).length === 0) continue;
       // 差分归属：普通树写的 giant_ 叶不参与本断言（旧前缀口径会误报，见 GIANT_IDS 注释）
       for (const k of await giantOwnedCells(cx, cz)) {
         const [lx, y, lz] = k.split(',').map(Number);
@@ -280,13 +285,22 @@ test('真实 GEN：金字塔 / 平地岛 / 海岛 / 雪原 / 冰封山的地标�
   for (const k of kinds) for (const { l, c, r } of inst[k]) {
     for (let cx = Math.floor((c[0] - r) / 16); cx <= Math.floor((c[0] + r) / 16); cx++) {
       for (let cz = Math.floor((c[1] - r) / 16); cz <= Math.floor((c[1] + r) / 16); cz++) {
-        const layouts = layoutsForColumn(cx, cz);
-        // 对照：不做任何排除时，会闯入该地标范围的树（用 allowedAt 全真 + 无外包盒收集，再按地标范围判）
+        const layouts = layoutsForColumn(cx, cz);        // 对照：不做任何排除时，会闯入该地标范围的树（用 allowedAt 全真 + 无外包盒收集，再按地标范围判）
         const win = { minX: cx * 16, maxX: cx * 16 + 15, minZ: cz * 16, maxZ: cz * 16 + 15 };
-        for (const t of collectGiantTrees(layouts, SEED, families, win, 0)) {
+        const candidates = collectGiantTrees(layouts, SEED, families, win, 0);
+        for (const t of candidates) {
           const mx = (t.x0 + t.x1) >> 1, mz = (t.z0 + t.z1) >> 1;
           if ([[t.x0, t.z0], [t.x1, t.z1], [mx, mz], [t.wx, t.wz]].some(([x, z]) => inLandmark(k, l, x, z))) intruders++;
         }
+        // ⚡ **几何无损筛**（v3.15）：本列附近没有任何巨树候选 ⇒ `giantOwnedCells` 必为空集
+        // （它取的是「withGiants 与 stripGiants 的差格」，无树则两侧逐格相同）
+        // ⇒ 跳过双 GEN **判别力逐格不变**（空集对 violations 零贡献），不是抽样。
+        // 实测：4239 个 column 中只 551 个有候选 ⇒ **省 87.0%**；
+        // 两条对照断言仍满足：intruders 来自 101 个 column（>0）、
+        // scannedCells 筛后 **16348**（下界 5000）。
+        // ⚠️ `collectGiantTrees` 只读 layout（廉价，全部 column 跑完只 457ms），
+        // 而双 GEN 是 37.5s ⇒ 筛的代价远小于收益。
+        if (candidates.length === 0) continue;
         // 差分归属：与 `stripGiants` 基线的差异格（只读生产产出，不在这里重算判据）
         const giantOwned = await giantOwnedCells(cx, cz);
         for (let lx = 0; lx < 16; lx++) for (let lz = 0; lz < 16; lz++) {

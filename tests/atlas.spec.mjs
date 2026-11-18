@@ -19,7 +19,10 @@ function pngCount(prefix) {
 }
 
 test('atlas 覆盖全部纹理 PNG 且 UV 合法（关系型断言，取代硬编码计数）', async ({ page }) => {
-  await page.goto('/src/tests/index.html'); // 任意页面，只为同源 fetch
+  // 只为同源 fetch（v3.15 改空白夹具页）—— 原先 goto index.html 会触发整页 2400+ 例，
+  // 而本用例只需要一个能 `fetch('/assets/atlas.json')` 的同源页面。
+  // 实测两侧 fetch 结果逐位相同（tiles 174 / size 2048），而就绪 19ms vs 147723ms。
+  await page.goto('/src/tests/fixture-blank.html');
   const report = await page.evaluate(async () => {
     const meta = await (await fetch('/assets/atlas.json')).json();
     const names = Object.keys(meta.tiles);

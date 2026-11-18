@@ -716,6 +716,93 @@ test('丛林要塞：树密度减半（只降树、不降草，不改全地图 F
     if (!byCol.has(ck)) byCol.set(ck, []);
     byCol.get(ck).push(q);
   }
+  // ⚡ **有原理抽样**（v3.15）：本条是伯努利比值判据，没有「几何上不可能」的 column 可筛
+  // （每个候选列都可能长树）⇒ 只能抽样，全量版另存一条 `tier:'slow'`。
+  //
+  // **抽样口径（无偏）**：按 column key 字典序排序后**等步长取**，而不是按 spot 数降序。
+  // ⚠️ 按 spot 数降序会**系统性偏向密列** ⇒ ratio 有偏，那是「选了一个好看的样本」。
+  // 等步长 + 字典序与树的空间分布无关（key 是坐标，与抽签独立）⇒ 无偏。
+  //
+  // **N 的统计依据**：判据半宽 0.10（ratio ∈ [0.40,0.60]），p≈0.5 时 σ=√(0.25/n)。
+  // 实测全量：可种列 29277 / 基准树 1128 棵 / 跨 **146 个 column**（每列 1~17 个 spot，中位 8）。
+  // 取步长 2 ⇒ 约 73 列 / 约 **560 个 spot** ⇒ σ≈0.021、4σ≈0.084 < 0.10 ⇒ 不会因抽样噪声 flaky。
+  // **判据区间一字不改**（不是放宽阈值）；抽样后实测 ratio 见下方断言的报错文案。
+  const SAMPLE_STRIDE = 2;
+  const sampledKeys = [...byCol.keys()].sort().filter((_, i) => i % SAMPLE_STRIDE === 0);
+  let actualTree = 0, sampledWould = 0;
+  for (const ck of sampledKeys) {
+    const list = byCol.get(ck);
+    sampledWould += list.length;
+    const [cx, cz] = ck.split(',').map(Number);
+    const col = new ChunkColumn(cx, cz);
+    fillColumn(col, seed, reg);
+    carveCaves(col, seed);
+    const layouts = neighborRegionKeys(cx, cz)
+      .map((k) => { const [rx, rz] = k.split(',').map(Number); return computeRegionLayout(rx, rz, seed); });
+    await applyStructuresToColumn(col, seed, reg, layouts);
+    for (const q of list) {
+      const lx = ((q.wx % 16) + 16) % 16, lz = ((q.wz % 16) + 16) % 16;
+      if (trunkIds.has(col.blocks[blockIndex(lx, q.y, lz)])) actualTree++;
+    }
+  }
+  // 样本量下界：低于它时 σ 太大，判据会 flaky ⇒ 宁可硬失败也不静默放宽
+  assertTrue(sampledWould >= 400,
+    `抽样样本量太小（${sampledWould} 个 spot）—— σ 会超出判据半宽，请减小 SAMPLE_STRIDE`);
+  const ratio = actualTree / sampledWould;
+  assertTrue(ratio >= 0.40 && ratio <= 0.60,
+    `树密度必须大致减半：抽样基准 ${sampledWould} 棵 → 实际 ${actualTree} 棵（比值 ${ratio.toFixed(3)}，应在 0.40~0.60）`);
+});
+
+/**
+ * 全量版（慢档，v3.15）：与上面抽样版**判据完全相同**，只是跑全部 146 个 column。
+ *
+ * 为什么要保留：抽样版的置信区间靠统计论证，而全量版是**确定性**的 ——
+ * 「零判别力损失」要求它在提交前门（`npm test` → harness-slow.spec）仍然跑。
+ * 实测全量约 11.3s。
+ */
+test('丛林要塞：树密度减半（全量 146 column，慢档）', async () => {
+  const seed = 12345;
+  const a = computeJungleFortressAnchor(seed);
+  const reg = await buildDefaultRegistry();
+  const data = await loadStructure('jungleFortress');
+  const cellSolid = new Set();
+  const roofTop = new Map();
+  for (const b of data.blocks) {
+    if (b.type === 'air') continue;
+    cellSolid.add(`${b.x},${b.y},${b.z}`);
+    const ck = `${b.x},${b.z}`;
+    const prev = roofTop.get(ck);
+    if (prev === undefined || b.y > prev) roofTop.set(ck, b.y);
+  }
+  const floorRow = floorRowOf('jungleFortress');
+  const B = JUNGLE_FORTRESS_SLOPE_BAND;
+  const outdoor = (px, ny, pz) => {
+    if (cellSolid.has(`${px},${ny},${pz}`)) return false;
+    const top = roofTop.get(`${px},${pz}`);
+    return top === undefined || ny >= top;
+  };
+  let plantable = 0, wouldTree = 0;
+  const spots = [];
+  for (let dx = -JUNGLE_FORTRESS_HALF_X - B; dx <= JUNGLE_FORTRESS_HALF_X + B; dx++) {
+    for (let dz = -JUNGLE_FORTRESS_HALF_Z - B; dz <= JUNGLE_FORTRESS_HALF_Z + B; dz++) {
+      const wx = a.wx + dx, wz = a.wz + dz;
+      const s = jungleFortressSurfaceYAt(wx, wz, seed, a);
+      if (s === null) continue;
+      const ny = s + 1 - a.floorY + floorRow;
+      if (!outdoor(dx, ny, dz)) continue;
+      plantable++;
+      if (rollVegetation(wx, wz, 'FOREST', seed).tree) { wouldTree++; spots.push({ wx, wz, y: s + 1 }); }
+    }
+  }
+  assertTrue(plantable > 10000 && wouldTree > 400,
+    `取样必须有量（可种 ${plantable} 列 / 基准树 ${wouldTree} 棵）`);
+  const trunkIds = new Set(['wood', 'birch_log', 'giant_oak_log'].map((n) => reg.idOf(n)));
+  const byCol = new Map();
+  for (const q of spots) {
+    const ck = `${Math.floor(q.wx / 16)},${Math.floor(q.wz / 16)}`;
+    if (!byCol.has(ck)) byCol.set(ck, []);
+    byCol.get(ck).push(q);
+  }
   let actualTree = 0;
   for (const [ck, list] of byCol) {
     const [cx, cz] = ck.split(',').map(Number);
@@ -733,7 +820,7 @@ test('丛林要塞：树密度减半（只降树、不降草，不改全地图 F
   const ratio = actualTree / wouldTree;
   assertTrue(ratio >= 0.40 && ratio <= 0.60,
     `树密度必须大致减半：基准 ${wouldTree} 棵 → 实际 ${actualTree} 棵（比值 ${ratio.toFixed(3)}，应在 0.40~0.60）`);
-});
+}, { tier: 'slow' });
 
 test('丛林要塞：树干落点也逐格判 —— 贴墙但树干格是空气时必须种树（v3.13d）', async () => {
   const seed = 12345;

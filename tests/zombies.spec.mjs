@@ -658,15 +658,14 @@ test('M6：30 只压力 fixture（M7 联调用，非默认配置）', async ({ p
   // M6 规格 §4：30 是 M7 联调压力 fixture，**报告须明示它不是默认配置**。
   // 纯 fixture 用 `new ZombieService({maxActive:30})` 验证容量可扩，不碰真游戏页。
   //
-  // ⚠️ **窗口 120s（was 60s）**：本用例要先等整页浏览器内单测跑完（`__MC_TEST_RESULTS__`），
-  // 而整页实测已 **70.5~72.2s**（2026-11-04 交替对照：HEAD 与本分支两侧读数在噪声内一致，
-  // 与丧尸模型改动无关）⇒ 60s 在任何机器上都恒红。
-  // 这与 `harness.spec.mjs` 在 v2.7 把等待窗口从 30s 提到 90s 是同一类问题，当时漏了本用例。
-  // 取 120s = 实测 72s × ~1.7，容得下负载波动又不至让真卡死的用例长跑。
-  // **断言一个字未动**，改的只是等待窗口。
-  test.setTimeout(120_000);
-  await page.goto('/src/tests/index.html');
-  await page.waitForFunction(() => window.__MC_TEST_RESULTS__ !== undefined, null, { timeout: 100_000 });
+  // ⚠️ **不再等整页单测**（v3.15）：本用例的真判据是「30 容量可扩 + 第 31 只被拒」，
+  // 它自建 fixture（`new ZombieService({maxActive:30})`），**完全不依赖整页**。
+  // 原先 goto index.html + 等 `__MC_TEST_RESULTS__` 纯属搭便车：实测整页 **147723ms**，
+  // 而空白夹具页 **19ms**（7775 倍），且下面五个读数两侧**逐位相同**
+  // （spawned/count/activeSlots/meshCapacity 均 30、over null）。
+  // 另：原窗口 100s **小于**整页实测 150s+ ⇒ 那条等待本身还是「结构上必红」的。
+  // **断言一个字未动**，改的只是取一个能 import 的同源页面（带 import map）。
+  await page.goto('/src/tests/fixture-blank.html');
   const result = await page.evaluate(async () => {
     const { ZombieService, zombieDefinition } = await import('/src/entities/zombies/zombie-system.js');
     const { ZombieRenderer } = await import('/src/render/zombie-renderer.js');

@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"><title>blank fixture（同源 + import map，不跑任何单测）</title>
+  <link rel="icon" href="data:,">
+  <!--
+    空白夹具页（v3.15）：**只为「同源 + 能 import three」而存在**。
+
+    为什么需要它：`tests/zombies.spec.mjs` 的「30 只压力 fixture」与 `tests/atlas.spec.mjs`
+    原先都 goto 整页单测入口 —— 前者只为拿一个能 import 的页面，后者只为
+    同源 fetch。但那个入口一加载就无条件跑**整页 2400+ 例**：
+      · 实测整页 **147723ms**，而本页 **19ms**（7775 倍）；
+      · 两侧「30 只压力」的五个读数与 atlas fetch 结果**逐位相同**
+        （spawned/count/activeSlots/meshCapacity 均 30、over null；tiles 174 / size 2048）。
+    ⇒ 那两处等整页纯属搭便车，换成本页零判别力损失。
+
+    ⚠️ **import map 不可省**：用例里 `await import('three')` 靠它解析。
+    ⚠️ **路径必须相对**（`../../vendor/...`）：`check:arch` 静态禁止 src/** 里出现
+    站点根绝对路径（子路径部署会全 404）。本页在 `src/tests/` 下，故上溯两级。
+    ⚠️ **不要在这里 import 任何 test-*.js**：那就退化成整页单测入口了。
+  -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "../../vendor/three/three.webgpu.js",
+      "three/tsl": "../../vendor/three/three.tsl.js",
+      "three/webgpu": "../../vendor/three/three.webgpu.js",
+      "three/addons/": "../../vendor/three/addons/"
+    }
+  }
+  </script>
+</head>
+<body></body>
+</html>

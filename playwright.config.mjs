@@ -2,6 +2,15 @@ import { defineConfig } from 'playwright/test';
 
 export default defineConfig({
   testDir: './tests',
+  // ⚠️ **`tmp-*` 探针不进正式门**（v3.15）。`.gitignore` 只忽略**入库**，不影响 playwright
+  // 收集 ⇒ 实测 `tests/tmp-*.spec.mjs` 一度有 7 个且**全部 `goto('/src/tests/index.html')`**，
+  // 其中一个窗口 420s ⇒ `npm test` 里藏着 7 次额外的整页重跑（每次 150s+）。
+  // 文件**一个不删**（用户裁定本轮不清 tmp）。
+  // ⚠️ **必须留显式单跑的逗口**：实测 `testIgnore: 'tmp-*'` 会让
+  // `npx playwright test tests/tmp-x.spec.mjs` 也变成 0 tests（位置参数**不**优先于它）
+  // ⇒ 探针彻底跑不了，与「文件不动、仍可单跑」的承诺相背。
+  // 故用环境变量开门：`MC_ALLOW_TMP=1 npx playwright test tests/tmp-x.spec.mjs`。
+  testIgnore: process.env.MC_ALLOW_TMP ? undefined : 'tmp-*',
   // ⚠️ **全局超时必须 ≥ 最长的那个 spec 自身的 `setTimeout` / `waitForFunction` 超时**。
   // v2.7 把 `harness.spec` 的等待窗口从 30s 提到 **90s**（因浏览器内全量单测实测已 43.9s），
   // 却漏了同步这里 → 全局 60s **先触发**，spec 内的 90s 永远没机会生效，

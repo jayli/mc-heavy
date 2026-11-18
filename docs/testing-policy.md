@@ -409,13 +409,22 @@ cutout（`opaqueTable=0`）下跳过省 6 面/格，opaque（`opaqueTable=1`）�
 
 ## 6. 门禁分层与执行时机
 
-| 层 | 命令 | 耗时（本机实测 2026-09-03） | 何时必须跑 |
+> ⚠️ **v3.15 执行编排已分档**（分级判据本文不变，只是「该跑哪些」有了可直接执行的命令）。
+> 设计与实测：`docs/superpowers/specs/2026-11-18-test-tiering-and-runtime-design.md`。
+> 分档清单的**唯一权威**是 `tools/test-tiers.mjs`，`check:data` 的 `[测试分档]` 门双向钉住它。
+
+| 层 | 命令 | 耗时（本机实测） | 何时必须跑 |
 |---|---|---|---|
-| **静态架构门** | `npm run check:arch` | 285ms（扫 51 个源文件） | **每次改 `src/**`**（红线回退当场拦住） |
-| **数据契约门** | `npm run check:data` | 307ms（7 项检查） | 改了 `faces-data` / `inventory` / `tools/` / atlas / 背包内方块的贴图或几何 |
+| **静态架构门** | `npm run check:arch` | 285ms | **每次改 `src/**`**（红线回退当场拦住） |
+| **数据契约门** | `npm run check:data` | ~2s | 改了 `faces-data` / `inventory` / `tools/` / atlas / 背包内方块的贴图或几何 / **分档清单** |
 | **lint** | `npm run lint` | 1.1s | 每次改 `src/**/*.js`（0 error，warning 可接受） |
-| **单测** | `npm test`（`tests/harness.spec.mjs` 跑全部浏览器单测） | ~10s | 改了 Tier 1 对象 |
-| **全量 E2E** | `npm test`（27 spec） | ~2.8min | 里程碑收尾、提交前 |
+| **Node 单测轻档** | `npm run test:unit` | **39.6s**（94 文件 1909 例） | 改了 Tier 1 纯函数/协议/数据模型（**不需浏览器**） |
+| **Node 单测全量** | `npm run test:unit:all` | **170.5s**（100 文件 2064 例） | 改了 `gen/**` 等重 GEN 对象 |
+| **浏览器轻档** | `npx playwright test tests/unit-fast.spec.mjs` | **26.8s** | 需要真浏览器语义时（DOM/Canvas 那 17 个文件） |
+| **浏览器默认档全集** | `npx playwright test tests/harness.spec.mjs` | 见 §6.2 | 里程碑收尾 |
+| **浏览器慢档**（全量 GEN） | `npm run test:slow` | — | 改了 `gen/**`；**`npm test` 已含它** |
+| **分档 E2E** | `npm run test:core` / `:ui` / `:entity` / `:struct` / `:pixel` | — | 按改动区域选（见 §6.1） |
+| **全量门** | `npm test` | — | 提交前。**= Node 全量单测 + 全部 spec**（含慢档）⇒ 覆盖只增不减 |
 | **性能门禁** | `npm run bench -- --check` | ~5min | **碰了热路径**（mesher / materials / render-world / scheduler / physics） |
 
 **便利入口**：`npm run check` = `check:arch` + `check:data` + `lint`（**2.6s 实测**，日常改动的最小门）。
@@ -424,14 +433,32 @@ cutout（`opaqueTable=0`）下跳过省 6 面/格，opaque（`opaqueTable=1`）�
 
 | 改动类型 | 最小必跑门禁 |
 |---|---|
-| 改贴图地址 / alias / 文案（Tier 3） | `npm run check` |
+| 改贴图地址 / alias / **文案**（Tier 3） | `npm run check`（**就这一条**，不跑任何 spec） |
 | 改物品集合 / `FLAT_BLOCKS` / atlas（Tier 2） | `npm run check` |
-| 改纯函数算法 / 协议 / 数据模型（Tier 1） | `npm run check` + `npm test` |
+| 改纯函数算法 / 协议 / 数据模型（Tier 1） | `npm run check` + `npm run test:unit` |
+| 改 UI / 面板 / HUD / 存档交互 | `npm run check` + `npm run test:ui` |
+| 改实体玩法 / AI / 武器 | `npm run check` + `npm run test:unit` + `npm run test:entity` |
+| 改地形 / 结构生成（`gen/**`） | `npm run check` + `npm run test:unit:all` + `npm run test:struct` |
 | 改热路径（mesher/materials/render/scheduler/physics） | 上述 + `npm run bench -- --check` |
-| 改 GPU 材质效果（Tier 4） | 上述 + 像素级实测 |
+| 改 GPU 材质效果（Tier 4） | 上述 + `npm run test:pixel`（像素级实测） |
+| 改分档清单 / runner / 门禁脚本 | `npm run check` + `node tools/test-unit-node-runner.mjs` + `test-runner-tiers.js` |
 
 **不要**：为了改一个贴图地址而跑 5 分钟 bench 或全量 E2E。
 **也不要**：改了 mesher 几何却只跑 `check`（热路径必须跑 bench）。
+
+### 6.2 为何需要分档（v3.15 实测动机）
+
+改前：**最慢 6 条用例吃掉整页 59% 时间**（98.8s / 167.5s），而其余 2345 条只占 4.4%；
+整页还被 **4 份 spec 重复跑**（其中 3 份的等待窗口小于整页耗时 ⇒ 结构上必红）。
+改后：日常改文案只跑 `check`（2.6s）；需单测时跑 `test:unit`（39.6s，无浏览器）。
+
+⚠️ **慢档仍进提交前门**：`harness-slow.spec.mjs` 是 `tests/` 下的普通 spec，
+`playwright test` 天然收集 ⇒ 全量 GEN 判据在 `npm test` 里**一条不少**。
+本仓有先例：`giant-tree-budget.spec` 静默红六天，就因为 `npm run check` 不跑它 ——
+**把重判据搬进一个默认不跑的入口，等于删掉它**。
+
+⚠️ **`tmp-*` 探针不进正式门**（`testIgnore`），但文件不删；显式单跑要加逗口：
+`MC_ALLOW_TMP=1 npx playwright test tests/tmp-x.spec.mjs`（实测：位置参数**不**优先于 `testIgnore`）。
 
 ---
 

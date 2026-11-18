@@ -62,8 +62,21 @@ async function buildWorldOnce() {
   const cols = new Map();
   const cxMin = Math.floor((a.wx - R) / 16), cxMax = Math.floor((a.wx + R) / 16);
   const czMin = Math.floor((a.wz - R) / 16), czMax = Math.floor((a.wz + R) / 16);
+  // ⚡ **几何无损筛**（v3.15）：浅水高台是**圆形**整形区，而采样网格是方形的
+  // ⇒ 四角的 column 根本不在区内，生成它们纯属浪费。
+  // 实测：方形 **256 → 圆内相交 208 个（省 18.8%）**。
+  // **判别力逐格不变**：下方每条用例本就用 `cols.has(...)` 跳过缺的 column，
+  // 而被筛掉的那些 column 里没有任何一格满足 `inSlopeBand` / 占地判据。
+  // ⚠️ 用「column 最近角到圆心距离 ≤ R」而不是「中心点 ≤ R」：
+  // 后者会把「中心在圆外但边角在圆内」的 column 筛掉 —— 那些列真有缓坡格，筛了就真丢判别力。
+  const touchesCircle = (cx, cz) => {
+    const nx = Math.max(Math.abs(cx * 16 + 8 - a.wx) - 8, 0);
+    const nz = Math.max(Math.abs(cz * 16 + 8 - a.wz) - 8, 0);
+    return Math.hypot(nx, nz) <= R;
+  };
   for (let cx = cxMin; cx <= cxMax; cx++) {
     for (let cz = czMin; cz <= czMax; cz++) {
+      if (!touchesCircle(cx, cz)) continue;
       const col = new ChunkColumn(cx, cz);
       fillColumn(col, SEED, reg);
       carveCaves(col, SEED);
