@@ -7,7 +7,6 @@
     "start": "node server-script/start-server.js",
     "icons": "node tools/bake-icon-atlas.mjs",
     "nightsky": "node tools/bake-night-sky.mjs",
-    "turret": "node tools/bake-turret-armor.mjs",
     "gianttrees": "node tools/bake-giant-trees.mjs",
     "azaleatrees": "node tools/bake-azalea-trees.mjs",
     "tarn": "node tools/bake-cloudland-kit.mjs",

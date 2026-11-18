@@ -1,16 +1,18 @@
 // tools/bake-turret-top.mjs — 把坦克 OBJ 的塔顶总成烘焙成 JSON 几何产物（确定性）
 //
-// **烘焙 = 数据格式转换，不产生新美术资源**：只把 OBJ 的顶点/法线转成本仓 JSON，
-// 贴图复用既有 `assets/turret/armor.png`（三张源图早已入库），不新增方块/贴图。
+// **烘焙 = 数据格式转换，不产生新美术资源**：只把 OBJ 的顶点/法线转成本仓 JSON。
+// v3.14 起**零贴图**：装甲部件改走三档冷灰金属颜色渲染（色值在
+// `turret-config.js` 的 `TURRET_TONE_COLOR`），旧的 armor.png 管线整套删除。
 //
 // 产物：`assets/turret/turret-top.json` + `turret-top.meta.json`（指纹 + 指标）
 // 用法：node tools/bake-turret-top.mjs（或 npm run turretop）
 //
-// ⚠️ **UV 权威在本脚本**：装甲部件的 UV 已按面压进 1/3 区，渲染层**不得再调 applyZoneUV**
-// （再压一次会把 u' = z/3 + (z/3+u/3)/3 ⇒ 全部采到 front 区左侧）。
+// ⚠️ **UV 权威在本脚本**：装甲部件的 UV 已按面压进 1/3 区，渲染层**不得再调 applyZoneUV**。
+// v3.14 后 UV **不再被采样**，但刻意保留：它是「UV 零退化 / 各区面数 / 逐面拆顶点」
+// 三条内容级判据的载体，而那三条正是「切口看穿」缺陷的防线。
 //
 // ⚠️ **内容级断言不可省**：指纹只覆盖源文件与参数，改算法而不动参数时指纹不变
-// ⇒ 必须用炮口 z / UV 零退化 / 逐面拆顶点 / 各区面数这些内容判据钉住。
+// ⇒ 必须用炮口 z / UV 零退化 / 逐面拆顶点 / 各区面数 / **三档顶点数**这些内容判据钉住。
 import fs from 'node:fs';
 import path from 'node:path';
 import {
@@ -66,11 +68,11 @@ function main() {
     if (nTri !== TURRET_TOP_METRICS.triangles[key]) fail(`${key} 三角数 ${nTri} ≠ ${TURRET_TOP_METRICS.triangles[key]}`);
     if (nVert !== TURRET_TOP_METRICS.vertices[key]) fail(`${key} 顶点数 ${nVert} ≠ ${TURRET_TOP_METRICS.vertices[key]}`);
     const entry = {
-      position: g.position, normal: g.normal, uv: g.uv, index: g.index,
+      position: g.position, normal: g.normal, uv: g.uv, index: g.index, tone: g.tone,
       zone: null,                       // 逐面跨区 ⇒ 部件级无单一 zone，UV 已是最终值
-      textured: TURRET_TOP_ARMOR.includes(key),
+      toned: TURRET_TOP_ARMOR.includes(key),
     };
-    if (!entry.textured) entry.color = SOLID_COLORS[key];
+    if (!entry.toned) entry.color = SOLID_COLORS[key];
     out[key] = entry;
     tris += nTri; verts += nVert;
   }
@@ -142,6 +144,21 @@ function main() {
   for (const [key, g] of Object.entries(out)) {
     for (const u of g.uv) if (u < -1e-6 || u > 1 + 1e-6) fail(`${key} UV 越界：${u}`);
   }
+  // ⑦ 三档色调（v3.14）：长度 + 值域 + **三档顶点数冻结表**。
+  //    ⚠️ 前两条在「tone 恒 1」下全绿，第三条才有判别力。
+  for (const [key, g] of Object.entries(out)) {
+    const nv = g.position.length / 3;
+    if (g.tone.length !== nv) fail(`${key} tone 长度 ${g.tone.length} ≠ 顶点数 ${nv}`);
+    const c = [0, 0, 0];
+    for (const t of g.tone) {
+      if (t !== 0 && t !== 1 && t !== 2) fail(`${key} tone 值非法：${t}`);
+      else c[t]++;
+    }
+    const want = TURRET_TOP_METRICS.toneVertices[key];
+    if (c.join(',') !== want.join(',')) {
+      fail(`${key} 三档顶点数 ${c.join('/')} ≠ 冻结 ${want.join('/')}`);
+    }
+  }
   if (tris !== TURRET_TOP_METRICS.triangleCount) fail(`总三角数 ${tris}`);
   if (verts !== TURRET_TOP_METRICS.vertexCount) fail(`总顶点数 ${verts}`);
 
@@ -163,10 +180,11 @@ function main() {
       triangles: TURRET_TOP_METRICS.triangles,
       vertices: TURRET_TOP_METRICS.vertices,
       zoneFaces: TURRET_TOP_METRICS.zoneFaces,
+      toneVertices: TURRET_TOP_METRICS.toneVertices,
     },
   }, null, 2));
   console.log(`[turret-top] 烘焙完成 ${keys.length} 部件 / ${tris} 三角 / ${verts} 顶点`
-    + `（炮口 z=${muzzleZ.toFixed(6)}，UV 零退化，逐面拆顶点）`);
+    + `（炮口 z=${muzzleZ.toFixed(6)}，UV 零退化，逐面拆顶点，三档色调冻结表吻合）`);
 }
 
 main();

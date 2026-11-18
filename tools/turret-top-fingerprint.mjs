@@ -1,7 +1,7 @@
 // tools/turret-top-fingerprint.mjs — 炮塔塔顶几何烘焙的参数、指标与输入指纹
 //
 // 唯一权威（红线 1）：烘焙脚本 `bake-turret-top.mjs` 与数据契约门 `check-data.mjs` 都从
-// 这里 import，不得各写一份。手法照 `turret-armor-fingerprint.mjs` / `guardian-fingerprint.mjs`。
+// 这里 import，不得各写一份。手法照 `guardian-fingerprint.mjs` / `zombie-skin-fingerprint.mjs`。
 //
 // 素材**入库**（`assets/turret/src/TankCannon.obj`）⇒ 指纹不依赖仓库外文件，
 // 任何机器 `npm run check` 结果一致。
@@ -14,12 +14,12 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import {
   TURRET_TOP_PARAMS, TURRET_TOP_ARMOR, TURRET_TOP_SOLID,
-  parseObj, splitParts, buildPartGeometry, zoneOf, geomNormal, partOf,
+  parseObj, splitParts, buildPartGeometry, zoneOf, toneOf, toneOfNy, geomNormal, partOf,
 } from './turret-top-parse.mjs';
 
 export {
   TURRET_TOP_PARAMS, TURRET_TOP_ARMOR, TURRET_TOP_SOLID,
-  parseObj, splitParts, buildPartGeometry, zoneOf, geomNormal, partOf,
+  parseObj, splitParts, buildPartGeometry, zoneOf, toneOf, toneOfNy, geomNormal, partOf,
 };
 
 const ROOT = path.resolve(import.meta.dirname, '..');
@@ -77,6 +77,28 @@ export const TURRET_TOP_METRICS = Object.freeze({
   /** 炮口世界 z（= TURRET.muzzleOffsetZ，弹道零改动的判据） */
   muzzleZ: 3.5,
   /**
+   * 逐部件三档色调的**顶点数**（v3.14，内容级判据）。
+   *
+   * ⚠️⚠️ **tone 的长度与值域判据不够**：注入「tone 恒 1」时它们全绿，
+   * 而画面是整机一片均匀灰（用户否决的形态）。本表是独立真值：
+   * 离线从源 OBJ 的**面几何法线** + **封口环平面法线**实测得出，不经过 toneOf。
+   *
+   * 索引语义：[0]=顶面档（ny>0.85）/ [1]=侧面档 / [2]=底面档（ny<−0.85）。
+   * ⚠️ **cheek/mantlet/ring 的档 2 全来自封口面**：源模型那些部件没有底面
+   * （ny 全 ≥ −0.39）⇒ 不得要求「每个部件三档齐全」，那会让正确实现 FAIL。
+   */
+  toneVertices: Object.freeze({
+    cheek: Object.freeze([256, 304, 30]),
+    mantlet: Object.freeze([116, 112, 21]),
+    deckMid: Object.freeze([82, 0, 0]),
+    ring: Object.freeze([81, 452, 79]),
+    nose: Object.freeze([8, 1206, 8]),
+    skirt: Object.freeze([131, 2015, 64]),
+    barrel: Object.freeze([80, 1120, 132]),
+    podR: Object.freeze([64, 832, 64]),
+    podL: Object.freeze([32, 416, 32]),
+  }),
+  /**
    * 炮管尾端埋入鼻段的最小量（格）。实测 0.3106；阈值取 0.2（低于实测、远高于 0）。
    * ⚠️ 这条是「炮管尾部前移造成真实缝隙」的唯一防线 —— 那种改动下
    * 顶点数 / zmax / UV 全不变，只有埋入量会掉。
@@ -100,6 +122,8 @@ export function turretTopInputFingerprint() {
       pivotY: TURRET_TOP_PARAMS.pivotY,
       zoneNyThreshold: TURRET_TOP_PARAMS.zoneNyThreshold,
       zones: TURRET_TOP_PARAMS.zones,
+      // v3.14：色调阈值进指纹 ⇒ 改阈值会触发重烘焙（否则产物静默过期）。
+      toneNyThreshold: TURRET_TOP_PARAMS.toneNyThreshold,
       armor: TURRET_TOP_ARMOR,
       solid: TURRET_TOP_SOLID,
     }))

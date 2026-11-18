@@ -1,27 +1,28 @@
-// src/render/turret-renderer.js — 炮塔渲染（8 部件固定容量实例池）
+// src/render/turret-renderer.js — 炮塔渲染（9 部件固定容量实例池）
 //
-// **为什么是每部件一个 InstancedMesh 而不是每炮塔 8 个 mesh**：mc-lite 每炮塔创建 8 个
+// **为什么是每部件一个 InstancedMesh 而不是每炮塔 9 个 mesh**：mc-lite 每炮塔创建 8 个
 // `THREE.Mesh` 挂在两级 Object3D 上；20 炮塔 = 160 个 scene 节点 + 160 个 draw call。
-// 本仓库用 8 个固定容量 20 的 InstancedMesh，每实例矩阵 =
+// 本仓库用 9 个固定容量 20 的 InstancedMesh，每实例矩阵 =
 // `T(pivot) × R_y(yaw) × R_x(-pitch)`，等价 mc-lite 的层级但不产生 per-turret 节点。
 //
 // ⚠️⚠️ **几何来自烘焙产物**（`assets/turret/turret-top.json`，`npm run turretop` 生成）：
 // 塔顶换成了坦克模型的楔形颊舱 + 中央炮座 + 转台环 + 车体鼻段 + 主炮管 + 两组副武器。
 // 顶点**已含世界化坐标**（定标 + pivot 平移烘进产物）⇒ **部件局部变换是恒等**，
-// 8 个部件乘同一个 pivot 矩阵。这是用户裁定的**刚性一体**：炮管与炮头一起转，
+// 9 个部件乘同一个 pivot 矩阵。这是用户裁定的**刚性一体**：炮管与炮头一起转，
 // 不得给任何部件加独立旋转轴/俯仰轴（实测分层会让炮管在 ±45° 时飞出塔身）。
 //
-// ⚠️⚠️ **UV 权威在烘焙侧，本文件不得改写 UV**：产物 uv 已按面压进三区
-// （`u' = zoneIndex/3 + u/3`）。旧版本这里有 `applyZoneUV`，若保留会把已压区的 u
-// 再压一次（`z/3 + (z/3+u/3)/3`）⇒ 全部采到 front 区左侧，而顶点数/指纹全对（静默失效）。
+// ⚠️⚠️ **零贴图（v3.14）**：用户裁定把炮头贴图去掉、改颜色渲染。装甲 6 部件走
+// **三档冷灰金属**（逐顶点 `tone` 属性选基色），炮管/副武器走单一深灰金属。
+// 旧的 `armorTexture` 参数与贴图分支**已删除** —— 不得重新引入。
 //
-// ⚠️ **贴图/纯色分支靠 `def.textured`，不是 `def.zone`**：新几何逐面分区，
-// 部件级 `zone` 恒 null ⇒ 旧判据 `!!def.zone` 恒假，会让装甲全部退化成纯色。
+// ⚠️ **UV 仍在几何里但不再被采样**：保留它是为了烘焙侧三条内容级判据的载体
+// （UV 零退化 / 各区面数 / 逐面拆顶点 —— 「切口看穿」缺陷的防线）。
+// **本文件不得改写 UV**：产物 uv 已按面压进三区，再压一次会全部采到 front 区左侧。
 //
-// ⚠️ 无活跃炮塔时 8 个 mesh 全部 `visible=false`（否则恒增 8 个 draw call）。
+// ⚠️ 无活跃炮塔时 9 个 mesh 全部 `visible=false`（否则恒增 9 个 draw call）。
 import * as THREE from 'three';
 import {
-  TURRET, TURRET_PARTS, TURRET_PART_DEFS, TURRET_TOWER_COLOR,
+  TURRET, TURRET_PARTS, TURRET_PART_DEFS, TURRET_TONED_PARTS, TURRET_TONE_COLOR,
 } from '../entities/turrets/turret-config.js';
 import { createTurretMetalMaterial } from './turret-metal.js';
 
@@ -33,34 +34,44 @@ const _pos = new THREE.Vector3();
 const _scale = new THREE.Vector3(1, 1, 1);
 const _zero = new THREE.Matrix4().makeScale(0, 0, 0);
 
+/**
+ * 三档基色的**有序**三元组（顶 / 侧 / 底）—— 与产物 `tone` 的 0/1/2 逐位对应。
+ * ⚠️ **顺序是载荷性的**：写反会让顶面拿到最暗档、底面拿到最亮档，
+ * 而三档顶点数/值域/长度判据全绿（只有像素能看出）。
+ */
+const TONE_TRIPLE = Object.freeze([
+  TURRET_TONE_COLOR.TOP, TURRET_TONE_COLOR.SIDE, TURRET_TONE_COLOR.BOTTOM,
+]);
+
 /** 从产物数据建 BufferGeometry（照 guardian-renderer.js 的 setAttribute 手法）。 */
 function buildPartGeometry(data) {
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(data.position, 3));
   g.setAttribute('normal', new THREE.Float32BufferAttribute(data.normal, 3));
   g.setAttribute('uv', new THREE.Float32BufferAttribute(data.uv, 2));
+  // 三档色调（v3.14）：标量属性，金属材质用 select 链据此选基色。
+  // ⚠️ **原样上传，不得在本层重算**：权威在烘焙侧（面几何法线 + 封口环法线）。
+  g.setAttribute('tone', new THREE.Float32BufferAttribute(data.tone, 1));
   g.setIndex(data.index);
   return g;
 }
 
 export class TurretRenderer {
   /**
-   * @param {{scene: THREE.Scene, maxActive?: number, armorTexture?: THREE.Texture|null,
+   * @param {{scene: THREE.Scene, maxActive?: number,
    *          topGeometry?: {parts: Record<string, object>}|null}} deps
    *        `topGeometry` = `loadTurretTopGeometry()` 的返回值。**缺失时不建 mesh**
    *        （几何是造型的唯一来源，没有它就没有可画的东西）；`sync` 空转并 warn 一次。
-   *        `armorTexture` 可选：有则装甲部件走贴图；无则退回 `TURRET_TOWER_COLOR.MAIN`。
    *        `sunDirection` 可选但**强烈建议传**：`materials.dayNight.uSunDirection` 句柄。
-   *        传了炮管/副武器走金属 TSL 材质（随太阳方向反光）；不传退回纯色 MeshBasic
-   *        （单测 fixture 与几何加载失败路径）。
+   *        传了全部 9 部件走金属 TSL（随太阳方向反光）；不传退回纯色 MeshBasic
+   *        （单测 fixture 与几何加载失败路径）—— 装甲退回**中档灰**而不是旧的浅灰。
    */
   constructor({
-    scene, maxActive = TURRET.maxTurrets, armorTexture = null, topGeometry = null,
+    scene, maxActive = TURRET.maxTurrets, topGeometry = null,
     sunDirection = null, sunStrength = null, sunColor = null,
   }) {
     this.scene = scene;
     this.maxActive = maxActive;
-    this._armorTexture = armorTexture;
     this.meshes = {};
     this._geometries = {};
     this._materials = {};
@@ -80,21 +91,21 @@ export class TurretRenderer {
           continue;
         }
         const geometry = buildPartGeometry(data);
-        // ⚠️ 判据是 def.textured（不是 def.zone —— 后者恒 null）
-        const useMap = def.textured && !!armorTexture;
+        // ⚠️ 判据是 **TURRET_TONED_PARTS**（v3.14）—— 旧的 `def.textured` 已删除。
+        const toned = TURRET_TONED_PARTS.includes(part);
         let material;
-        if (useMap) {
-          material = new THREE.MeshBasicMaterial({
-            color: 0xffffff, map: armorTexture, side: THREE.DoubleSide,
-          });
-        } else if (!def.textured && sunDirection) {
-          // 炮管/副武器：深灰金属，随太阳方向反光（用户 2026-11-18 要求）
+        if (sunDirection) {
+          // 全部 9 部件走金属：装甲传三档色，炮管/副武器传单一色。
           material = createTurretMetalMaterial({
-            color: def.color, sunDirection, sunStrength, sunColor,
+            color: def.color,
+            tones: toned ? TONE_TRIPLE : undefined,
+            sunDirection, sunStrength, sunColor,
           });
         } else {
+          // 退回纯色（无太阳 uniform）：装甲取**中档**，炮管取自己的基色。
+          // ⚠️ 不得退回 `TURRET_TOWER_COLOR.MAIN`（0xcccccc 浅灰）—— 那正是用户否决的观感。
           material = new THREE.MeshBasicMaterial({
-            color: def.color ?? TURRET_TOWER_COLOR.MAIN, side: THREE.DoubleSide,
+            color: toned ? TURRET_TONE_COLOR.SIDE : def.color, side: THREE.DoubleSide,
           });
         }
         const mesh = new THREE.InstancedMesh(geometry, material, maxActive);
@@ -170,7 +181,6 @@ export class TurretRenderer {
       this._materials[part].dispose();   // InstancedMesh.dispose 不释放材质
       mesh.dispose();
     }
-    if (this._armorTexture) this._armorTexture.dispose();
     this._slots.clear();
   }
 }

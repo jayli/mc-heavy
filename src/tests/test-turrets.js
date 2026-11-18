@@ -19,7 +19,7 @@ import { BLOCKS } from '../voxel/blocks-data.js';
 import { createTurretBlueprint } from '../entities/turrets/turret-blueprint.js';
 import {
   TURRET, TURRET_ALIAS_BLOCK, defaultTurretRotation,
-  TURRET_PARTS, TURRET_PART_DEFS, TURRET_TOWER_COLOR,
+  TURRET_PARTS, TURRET_PART_DEFS, TURRET_TONED_PARTS, TURRET_TONE_COLOR,
 } from '../entities/turrets/turret-config.js';
 import { TurretRenderer } from '../render/turret-renderer.js';
 import { resourceUrl } from '../core/resource-url.js';
@@ -507,17 +507,17 @@ async function topGeoFixture() {
   return _topGeoFixture;
 }
 
-/** 假纹理（只需是 THREE.Texture 实例，让渲染层走贴图路径） */
+/** 假纹理（历史 fixture）—— v3.14 零贴图后**渲染层不再消费它**，保留仅供删除验证。 */
 function makeFakeTexture() {
   const tex = new THREE.DataTexture(new Uint8Array(4), 1, 1);
   tex.needsUpdate = true;
   return tex;
 }
 
-test('TurretRenderer：8 个部件 InstancedMesh，无炮塔时全部 visible=false', async () => {
+test('TurretRenderer：9 个部件 InstancedMesh，无炮塔时全部 visible=false', async () => {
   const scene = new THREE.Scene();
   const renderer = new TurretRenderer({ scene, maxActive: TURRET.maxTurrets, topGeometry: await topGeoFixture() });
-  // 8 部件（5 装甲板 + 炮管 + 根部 + 瞄准器）—— 部件顺序的单一权威在 config
+  // 9 部件（6 装甲件 + 炮管 + 两组副武器）—— 部件顺序的单一权威在 config
   assertEqual(Object.keys(renderer.meshes).length, TURRET_PARTS.length);
   assertEqual(TURRET_PARTS.length, 9);
   for (const part of TURRET_PARTS) {
@@ -543,10 +543,11 @@ test('TurretRenderer：缺省容量从 TURRET.maxTurrets 派生（非硬编码�
 
 test('TurretRenderer：UV 原样取自产物（烘焙侧已分区，渲染层不得改写）', async () => {
   const geo = await topGeoFixture();
-  const renderer = new TurretRenderer({ scene: new THREE.Scene(), armorTexture: makeFakeTexture(), topGeometry: geo });
+  const renderer = new TurretRenderer({ scene: new THREE.Scene(), topGeometry: geo });
   // ⚠️ **权威在烘焙侧**：新几何逐面分区（同一部件内不同面属不同区），
   // 部件级 zone 恒 null ⇒ 旧「整块几何一个区」的断言失去意义。
   // 本用例只钉「渲染层不改写」；分区正确性由 test-turret-top-bake.js 在烘焙侧钉住。
+  // ⚠️ v3.14 后 UV 不再被采样（零贴图），但仍是烘焙侧三条内容级判据的载体。
   for (const part of TURRET_PARTS) {
     const uv = renderer.meshes[part].geometry.getAttribute('uv');
     const src = geo.parts[part].uv;
@@ -560,16 +561,30 @@ test('TurretRenderer：UV 原样取自产物（烘焙侧已分区，渲染层不
   renderer.dispose();
 });
 
-test('TurretRenderer：无纹理时退回纯色（材质不带 map）', async () => {
-  const renderer = new TurretRenderer({ scene: new THREE.Scene(), armorTexture: null, topGeometry: await topGeoFixture() });
-  const armor = TURRET_PARTS.filter((p) => TURRET_PART_DEFS[p].textured);
-  const solid = TURRET_PARTS.filter((p) => !TURRET_PART_DEFS[p].textured);
-  for (const part of armor) {
-    assertEqual(renderer.meshes[part].material.map, null, `${part} 无纹理时不带 map`);
-    // ⚠️ 新 8 部件没有「后板」语义 ⇒ 装甲统一退回 MAIN（DARK 已无消费点）
-    assertEqual(renderer.meshes[part].material.color.getHex(), TURRET_TOWER_COLOR.MAIN, `${part} 退回 MAIN`);
+test('TurretRenderer：零贴图 —— 即使传入纹理也不得带 map（v3.14）', async () => {
+  // ⚠️ **这条是「贴图路径已彻底删除」的防线**：旧实现只要传 armorTexture
+  // 就会给装甲部件挂 map。现在阿段参数已删，传了也必须被忽略。
+  const renderer = new TurretRenderer({
+    scene: new THREE.Scene(), topGeometry: await topGeoFixture(),
+    armorTexture: makeFakeTexture(),   // 故意传旧参数：应被忽略
+  });
+  for (const part of TURRET_PARTS) {
+    assertEqual(renderer.meshes[part].material.map, null, `${part} 不得带 map`);
   }
-  // 纯色部件不受纹理缺失影响
+  renderer.dispose();
+});
+
+test('TurretRenderer：无太阳 uniform 时退回纯色（装甲中档灰 / 炮管专属色）', async () => {
+  const renderer = new TurretRenderer({ scene: new THREE.Scene(), topGeometry: await topGeoFixture() });
+  const armor = TURRET_PARTS.filter((p) => TURRET_TONED_PARTS.includes(p));
+  const solid = TURRET_PARTS.filter((p) => !TURRET_TONED_PARTS.includes(p));
+  for (const part of armor) {
+    assertEqual(renderer.meshes[part].material.map, null, `${part} 不带 map`);
+    // ⚠️ v3.14：退回取**三档的中档**，不是旧的 TURRET_TOWER_COLOR.MAIN 浅灰
+    // （浅灰正是用户否决的观感；MAIN/DARK 已无消费点）。
+    assertEqual(renderer.meshes[part].material.color.getHex(), TURRET_TONE_COLOR.SIDE,
+      `${part} 退回中档灰`);
+  }
   for (const part of solid) {
     assertEqual(renderer.meshes[part].material.color.getHex(), TURRET_PART_DEFS[part].color, `${part} 专属色`);
   }

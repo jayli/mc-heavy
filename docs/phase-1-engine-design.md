@@ -3818,7 +3818,7 @@ mc-heavy/
    ├─ gen/         # noise.js biome.js terrain.js structure-index.js structures/*.js（Worker 同构）
    ├─ mesh/        # mesher.js（Worker/主线程同构） lighting.js section-mesh.js atlas.js
    ├─ render/      # render-world.js sky.js water.js shadows.js materials.js
-   │               # M8：turret-armor-texture.js turret-renderer.js projectile-renderer.js explosion-renderer.js
+   │               # M8：turret-renderer.js turret-metal.js turret-top-geometry.js projectile-renderer.js explosion-renderer.js
    ├─ player/      # player.js physics.js raycast.js interaction.js inventory.js
    ├─ save/        # persistence.js codec.js
    ├─ ui/          # hud.js hotbar.js inventory-ui.js toast.js（M9 非模态提示）
@@ -3828,10 +3828,15 @@ mc-heavy/
 **第二/三阶段新增的顶层产物**（§4 子系统之外的资产与工具）：
 
 - `assets/sounds/`（M4 起）+ M8 新增 `explosion.mp3` / `turret_gun_fire.mp3`（从 mc-lite 拷入）；
-- `assets/turret/`（**M8 新增**）：三张装甲源贴图（从 mc-lite `src/assets/turret/` 拷入）+
-  烘焙产物 `armor.png` / `armor.json`（伴随 JSON 存参数与指纹，供门禁比对过期）；
-- `tools/bake-turret-armor.mjs`（**M8 新增**，`npm run turret`）+ `tools/turret-armor-fingerprint.mjs`
-  （图案参数与指纹的单一权威，烘焙脚本与 `check:data` 门禁共用）；
+- `assets/turret/`（**M8 新增**）：源模型 `src/TankCannon.obj` + 烘焙几何产物
+  `turret-top.json` / `turret-top.meta.json`（伴随 JSON 存参数与指纹，供门禁比对过期）。
+  ⚠️ **v3.14 删除了整套 armor 贴图管线**（三张源图 / `armor.png` / `armor.json`）：
+  炮头改走**三档冷灰金属颜色渲染**（色值在 `turret-config.js` 的 `TURRET_TONE_COLOR`，
+  逐顶点 `tone` 属性选档），零贴图；
+- `tools/bake-turret-top.mjs`（`npm run turretop`）+ `tools/turret-top-fingerprint.mjs`
+  + `tools/turret-top-parse.mjs`（纯函数，浏览器单测可 import）—— 烘焙参数/指标/指纹的
+  单一权威，烘焙脚本与 `check:data` 门禁共用。
+  （旧的 `bake-turret-armor.mjs` / `turret-armor-fingerprint.mjs` / `npm run turret` 已随 v3.14 删除）；
 - `src/entities/`（M5 起）+ **M8 新增 `src/entities/turrets/`**：
   `turret-config.js` / `turret-blueprint.js` / `turret-service.js` / `turret-controller.js` /
   `turret-system.js`（同构纯函数索敌）/ `projectile-system.js`；

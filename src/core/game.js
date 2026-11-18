@@ -45,7 +45,6 @@ import { ZombieService, zombieDefinition } from '../entities/zombies/zombie-syst
 import { ZombieRenderer } from '../render/zombie-renderer.js';
 import { loadZombieSkinTexture } from '../render/zombie-skin-texture.js';
 import { TurretRenderer } from '../render/turret-renderer.js';
-import { loadTurretArmorTexture } from '../render/turret-armor-texture.js';
 import { loadTurretTopGeometry } from '../render/turret-top-geometry.js';
 import { loadNestBlueprint } from '../entities/zombie-nests/nest-blueprint.js';
 import { ZombieNestService } from '../entities/zombie-nests/zombie-nest-service.js';
@@ -298,20 +297,12 @@ export class Game {
       console.warn('[game] 丧尸皮肤加载失败，退回纯色：', e);
       return null;
     });
-    // M8：炮塔装甲纹理（三区并排）+ 塔顶几何产物。**并行加载**（串行会延长启动）。
-    // 与 atlas 一并 await（保持 TurretRenderer 构造器同步 → 首帧不闪纯色）。
-    // 加载失败不阻断启动：装甲缺了退回纯色；几何缺了不装配外观（玩法仍正常）。
-    const [turretArmor, turretTop] = await Promise.all([
-      loadTurretArmorTexture().catch((e) => {
-        console.warn('[game] 炮塔装甲纹理加载失败，退回纯色炮塔：', e);
-        return null;
-      }),
-      loadTurretTopGeometry().catch((e) => {
-        console.warn('[game] 炮塔塔顶几何加载失败，本局不装配炮塔外观：', e);
-        return null;
-      }),
-    ]);
-    this._turretArmorTexture = turretArmor;
+    // M8：炮塔塔顶几何产物。**零贴图**（v3.14）：装甲改走三档冷灰金属颜色渲染，
+    // 旧的 armor.png 加载已整套删除。几何缺了不装配外观（玩法仍正常）。
+    const turretTop = await loadTurretTopGeometry().catch((e) => {
+      console.warn('[game] 炮塔塔顶几何加载失败，本局不装配炮塔外观：', e);
+      return null;
+    });
     this._turretTopGeometry = turretTop;
     // 爆炸序列帧图集（500×200，5×2 = 10 帧）。同上口径：加载失败不阻断启动 ——
     // 爆炸特效只是观感，缺了退回「只有球体扩张层」（`explosion-renderer.js`）即可。
@@ -652,10 +643,10 @@ export class Game {
     // 回收路径，差集驱动即可覆盖全部回收场景（column 卸载 / 失效 / 放置）。M6 的 service 侧
     // slot 池是为高频 spawn/despawn 的丧尸设计的，炮塔低频放置，不需要那套记账。
     this.turretRenderer = new TurretRenderer({
-      scene: this.scene, armorTexture: this._turretArmorTexture,
+      scene: this.scene,
       topGeometry: this._turretTopGeometry,
-      // 炮管/副武器的金属高光**复用体素材质的同一个太阳 uniform**（红线 1）：
-      // 自己 new 一个会让日夜变了而炮管高光钉在正午方向。
+      // 金属高光（装甲三档 + 炮管单色）**复用体素材质的同一个太阳 uniform**（红线 1）：
+      // 自己 new 一个会让日夜变了而炮塔高光钉在正午方向。
       sunDirection: this.renderWorld.materials.dayNight.uSunDirection,
       sunStrength: this.renderWorld.materials.dayNight.uSunStrength,
       sunColor: this.renderWorld.materials.dayNight.uSunColor,

@@ -64,11 +64,6 @@ const {
 // v1.26：图标走独立 icons-atlas（不再有 INVENTORY_ICONS 表）。指纹/清单走共享模块
 // （红线 1：与烘焙脚本同一份逻辑，两处漂移会让指纹比对得出错误结论）。
 const { iconFingerprintFor, FLAT_BLOCKS, FLAT_ICON_TILE } = await import('./icon-fingerprint.mjs');
-// 炮塔装甲纹理的参数与指纹走共享模块（红线 1：与烘焙脚本同一份逻辑）
-const {
-  ARMOR_PNG, ARMOR_JSON, ARMOR_WIDTH, ARMOR_HEIGHT, ARMOR_TEXTURE_CONFIG,
-  armorInputFingerprint, readArmorPng,
-} = await import('./turret-armor-fingerprint.mjs');
 // 炮塔塔顶几何产物的参数/指标/指纹（同上口径）
 const {
   TURRET_TOP_JSON: TOP_JSON, TURRET_TOP_META: TOP_META,
@@ -81,7 +76,7 @@ const {
 } = await import('./turret-top-fingerprint.mjs');
 // 渲染侧的区序与部件定义（同为同构模块，无 three）—— 门禁据此断言两侧区序一致
 const {
-  ARMOR_ZONES, TURRET_PARTS, TURRET_PART_DEFS,
+  TURRET_PARTS, TURRET_PART_DEFS, TURRET_TONED_PARTS, TURRET_TONE_COLOR, TURRET_GUN_COLOR,
 } = await import('../src/entities/turrets/turret-config.js');
 // 创造台冻结数据与锚点 kind（M9）—— 门禁据此断言 service 侧与 config 单一权威一致（红线 1）
 const {
@@ -1048,57 +1043,6 @@ function checkGuardianAsset() {
   }
 }
 
-// ---------------------------------------------------------------- [炮塔装甲] 契约（M8）
-
-/**
- * [炮塔装甲] 契约：① 产物存在 + 尺寸正确 + 指纹匹配当前源图（静默过期防护，与丧尸头部
- * 同口径）；② **两侧区序一致** + **部件 zone ⊆ 区序**（关系型断言 —— 渲染层与烘焙脚本
- * 的区序漂移会让 UV 整体错位，渲染出错图案而肉眼只觉得「贴图怪怪的」）。
- *
- * ⚠️ **已知盲区**（照丧尸头部同口径）：改**烘焙算法**而不动源图/参数时指纹不变 →
- * 这类改动须靠 Tier 4 像素实测兜住。
- */
-function checkTurretArmorTexture() {
-  // ① 产物存在 + 尺寸
-  const png = readArmorPng();
-  if (!png) { failures.push('[炮塔装甲] assets/turret/armor.png 不存在 —— 跑 npm run turret'); return; }
-  if (png.width !== ARMOR_WIDTH || png.height !== ARMOR_HEIGHT) {
-    failures.push(`[炮塔装甲] PNG ${png.width}×${png.height} 与期望 ${ARMOR_WIDTH}×${ARMOR_HEIGHT} 不符`);
-  }
-  // ② 指纹（armor.json 缺失 = 从没跑过 npm run turret）
-  if (!fs.existsSync(ARMOR_JSON)) {
-    failures.push('[炮塔装甲] assets/turret/armor.json 不存在 —— 跑 npm run turret');
-  } else {
-    const meta = JSON.parse(fs.readFileSync(ARMOR_JSON, 'utf8'));
-    const current = armorInputFingerprint();
-    if (meta.fingerprint !== current) {
-      failures.push('[炮塔装甲] 指纹不匹配 —— 源贴图或区参数变了但产物未重烘焙（跑 npm run turret）'
-        + `\n      期望 ${current}\n      实际 ${meta.fingerprint}`);
-    }
-  }
-  // ③ 区序两侧一致：渲染层的 ARMOR_ZONES 与烘焙侧的 ARMOR_TEXTURE_CONFIG.zones 须逐位相同。
-  //    漂移 = 烘焙区序改了而渲染层没改（或反之）→ UV 整体错位（第二份副本的失效路径）。
-  if (ARMOR_ZONES.length !== ARMOR_TEXTURE_CONFIG.zones.length ||
-      ARMOR_ZONES.some((z, i) => z !== ARMOR_TEXTURE_CONFIG.zones[i])) {
-    failures.push(`[炮塔装甲] 区序漂移：渲染层 ${ARMOR_ZONES.join('/')} ≠ 烘焙侧 `
-      + `${ARMOR_TEXTURE_CONFIG.zones.join('/')}（改区序须两侧同步）`);
-  }
-  // ④ 部件 zone ⊆ 区序。
-  //    ⚠️ **塔顶模型换成烘焙几何后，部件级 zone 恒为 null**（逐面跨区，UV 已在烘焙侧压好）
-  //    ⇒ 本循环对新部件永不进入，**判别力已转移到 [炮塔塔顶] 环节**
-  //    （textured 集合关系式 + 各区面数冻结表 + 逐面拆顶点）。保留本循环只为兼容
-  //    「将来又出现部件级单区贴图」的情形，不得把它当成塔顶贴图的护栏。
-  for (const part of TURRET_PARTS) {
-    const zone = TURRET_PART_DEFS[part].zone;
-    if (zone !== null && !ARMOR_ZONES.includes(zone)) {
-      failures.push(`[炮塔装甲] 部件 "${part}" 的 zone="${zone}" 不在 ARMOR_ZONES 内（UV 会映射到区外）`);
-    }
-  }
-  if (!failures.some((f) => f.startsWith('[炮塔装甲]'))) {
-    infos.push(`[炮塔装甲] ${png.width}×${png.height} 三区并排（${ARMOR_ZONES.join('/')}）+ 指纹匹配 + ${TURRET_PARTS.length} 部件`);
-  }
-}
-
 // ---------------------------------------------------------------- [炮塔塔顶] 契约
 
 /**
@@ -1173,21 +1117,31 @@ function checkTurretTopGeometry() {
   if (gotKeys.join(',') !== wantKeys.join(',')) {
     failures.push(`[炮塔塔顶] 部件集合漂移：产物 ${gotKeys.join('/')} ≠ config ${wantKeys.join('/')}`);
   }
-  // ③ textured 集合关系式（渲染层贴图/纯色分支的唯一依据）
-  const gotTextured = TURRET_PARTS.filter((p) => json.parts[p]?.textured).sort();
-  const wantTextured = [...TOP_ARMOR].sort();
-  if (gotTextured.join(',') !== wantTextured.join(',')) {
-    failures.push(`[炮塔塔顶] textured 集合漂移：产物 ${gotTextured.join('/')} ≠ 烘焙侧 ${wantTextured.join('/')}`);
+  // ③ toned 集合关系式（渲染层三档色调 / 单色分支的唯一依据，v3.14）
+  const gotToned = TURRET_PARTS.filter((p) => json.parts[p]?.toned).sort();
+  const wantToned = [...TOP_ARMOR].sort();
+  if (gotToned.join(',') !== wantToned.join(',')) {
+    failures.push(`[炮塔塔顶] toned 集合漂移：产物 ${gotToned.join('/')} ≠ 烘焙侧 ${wantToned.join('/')}`);
   }
-  const gotSolid = TURRET_PARTS.filter((p) => json.parts[p] && !json.parts[p].textured).sort();
+  const gotSolid = TURRET_PARTS.filter((p) => json.parts[p] && !json.parts[p].toned).sort();
   if (gotSolid.join(',') !== [...TOP_SOLID].sort().join(',')) {
     failures.push(`[炮塔塔顶] 纯色集合漂移：${gotSolid.join('/')} ≠ ${[...TOP_SOLID].sort().join('/')}`);
   }
-  // ③b **config 侧的 textured 也要比**（final review Important 1）：
-  //     只比产物↔烘焙侧时，config 里翻转 textured 门禁不红（而渲染层正是读 config）。
-  const cfgTextured = TURRET_PARTS.filter((p) => TURRET_PART_DEFS[p].textured).sort();
-  if (cfgTextured.join(',') !== wantTextured.join(',')) {
-    failures.push(`[炮塔塔顶] config 的 textured 集合漂移：${cfgTextured.join('/')} ≠ 烘焙侧 ${wantTextured.join('/')}`);
+  // ③b **config 侧的 toned 集合也要比**：只比产物↔烘焙侧时，config 漂移门禁不红
+  //     （而渲染层正是读 config）。
+  if ([...TURRET_TONED_PARTS].sort().join(',') !== wantToned.join(',')) {
+    failures.push(`[炮塔塔顶] config 的 TURRET_TONED_PARTS 漂移：`
+      + `${[...TURRET_TONED_PARTS].sort().join('/')} ≠ 烘焙侧 ${wantToned.join('/')}`);
+  }
+  // ③c 贴图分支已删除（v3.14）：textured 字段不得残留在 config 或产物里。
+  //     残留会让渲染层可能又走回贴图路径，而三档色调判据全绿。
+  for (const p of TURRET_PARTS) {
+    if (TURRET_PART_DEFS[p].textured !== undefined) {
+      failures.push(`[炮塔塔顶] config 的 ${p} 仍有 textured 字段（贴图路径已删除）`);
+    }
+    if (json.parts[p]?.textured !== undefined) {
+      failures.push(`[炮塔塔顶] 产物 ${p} 仍有 textured 字段 —— 跑 npm run turretop`);
+    }
   }
   // ④ 冻结规模
   let tris = 0, verts = 0;
@@ -1260,7 +1214,7 @@ function checkTurretTopGeometry() {
       for (const [key, g] of Object.entries(json.parts)) {
         const want = rebuilt[key];
         if (!want) { failures.push(`[炮塔塔顶] 产物多出部件 ${key}`); continue; }
-        for (const attr of ['position', 'normal', 'uv', 'index']) {
+        for (const attr of ['position', 'normal', 'uv', 'index', 'tone']) {
           const a = g[attr], b = want[attr];
           if (a.length !== b.length) {
             failures.push(`[炮塔塔顶] ${key}.${attr} 长度 ${a.length} ≠ 重算 ${b.length} —— 跑 npm run turretop`);
@@ -1291,9 +1245,60 @@ function checkTurretTopGeometry() {
       }
     }
   }
+  // ⑩ 内容级（v3.14）：**逐顶点三档色调**。
+  //    ⚠️⚠️ **长度与值域两条不够**：注入「tone 恒 1」时它们全绿（长度对、值域对），
+  //    而画面是整机一片均匀灰 —— 正是用户否决的形态。故必须钉**三档顶点数冻结表**。
+  //    ⚠️ 冻结表是**独立真值**（离线从源 OBJ 面法线 + 封口环法线实测），不经过 toneOf。
+  for (const [key, g] of Object.entries(json.parts)) {
+    const nv = g.position.length / 3;
+    if (!Array.isArray(g.tone)) {
+      failures.push(`[炮塔塔顶] ${key} 缺 tone 数组 —— 跑 npm run turretop`);
+      continue;
+    }
+    if (g.tone.length !== nv) {
+      failures.push(`[炮塔塔顶] ${key} tone 长度 ${g.tone.length} ≠ 顶点数 ${nv}`);
+      continue;
+    }
+    const got = [0, 0, 0];
+    let bad = 0;
+    for (const t of g.tone) {
+      if (t !== 0 && t !== 1 && t !== 2) bad++;
+      else got[t]++;
+    }
+    if (bad !== 0) failures.push(`[炮塔塔顶] ${key} 有 ${bad} 个 tone 值不在 {0,1,2}`);
+    const want = TOP_METRICS.toneVertices[key];
+    if (want && got.join(',') !== want.join(',')) {
+      failures.push(`[炮塔塔顶] ${key} 三档顶点数 ${got.join('/')} ≠ 冻结 ${want.join('/')}`
+        + '（色调分类退化 / 阈值漂移 / 照抄 zoneOf）');
+    }
+  }
+  // ⑪ 内容级（v3.14）：三档色值 ≡ config（渲染层与烘焙侧不得各写一份）
+  {
+    const keys = ['TOP', 'SIDE', 'BOTTOM'];
+    const rgb = keys.map((k) => {
+      const c = TURRET_TONE_COLOR[k];
+      return [(c >> 16) & 255, (c >> 8) & 255, c & 255];
+    });
+    for (let i = 0; i < 3; i++) {
+      if (!(rgb[i][2] > rgb[i][0])) {
+        failures.push(`[炮塔塔顶] ${keys[i]} 档不是冷调（B≤R）：${rgb[i].join(',')}`
+          + ' —— 参考图实测 B−R = +10.7~16.4，暖色是用户否决的形态');
+      }
+    }
+    const lum = rgb.map((c) => (c[0] + c[1] + c[2]) / 3);
+    if (!(lum[0] > lum[1] && lum[1] > lum[2])) {
+      failures.push(`[炮塔塔顶] 三档亮度须严格递减 top>side>bottom，实际 ${lum.join(' > ')}`);
+    }
+    const b = TURRET_GUN_COLOR.BARREL;
+    const barrelLum = (((b >> 16) & 255) + ((b >> 8) & 255) + (b & 255)) / 3;
+    if (!(lum[2] > barrelLum)) {
+      failures.push(`[炮塔塔顶] 装甲最暗档 ${lum[2]} 须亮于炮管基色 ${barrelLum}`
+        + ' —— 否则炮头与炮管同色，失去层次');
+    }
+  }
   if (!failures.some((f) => f.startsWith('[炮塔塔顶]'))) {
     infos.push(`[炮塔塔顶] ${gotKeys.length} 部件 / ${tris} 三角 / ${verts} 顶点`
-      + ` + 指纹匹配 + 炮口 z=${TOP_METRICS.muzzleZ} + UV 零退化`);
+      + ` + 指纹匹配 + 炮口 z=${TOP_METRICS.muzzleZ} + UV 零退化 + 三档色调冻结表`);
   }
 }
 
@@ -3900,7 +3905,6 @@ checkZombieSkinTexture();
 checkDragonAsset();          // v2.41：祭坛飞龙烘焙产物契约与指纹（⚠️ 漏了本行则门禁永不执行）
 checkIgnisAsset();           // v2.55：焰魔烘焙产物契约与指纹（⚠️ 同上）
 checkGuardianAsset();        // 末影守卫产物契约与指纹（⚠️ 漏了本行则门禁永不执行）
-checkTurretArmorTexture();
 checkTurretTopGeometry();    // 炮塔塔顶几何产物契约与指纹（⚠️ 漏了本行则门禁永不执行）
 checkSkyboxAssets();         // v1.58：天空盒立方图完整性（⚠️ 漏了本行则门禁永不执行）
 await checkNightSkyFreshness(); // v1.60：夜空烘焙产物指纹（⚠️ 漏了本行则门禁永不执行）

@@ -48,9 +48,12 @@ npm run gianttextures  # 巨树贴图 → procedural/giant_*.png（之后要 atl
 npm run grasstextures  # 深/浅草贴图（无 jpeg 解码器，先把源图 sips 转 PNG）
 npm run tarn           # Cloudland 套件四族（高台/拱洞/紫晶柱/巨型云）
 npm run pyramid | arena | shallowtarns | ship | azaleatrees | gianttrees
-npm run turret | zombieskin | dragon | nightsky | validate:weapon-assets
+npm run turretop | zombieskin | dragon | nightsky | validate:weapon-assets
 npm run guardian       # 末影守卫（Java 模型 → 20 骨骼/24 盒/4 条攻击动画 + 眼睛层合成）
 ```
+
+⚠️ **`npm run turret`（装甲贴图烘焙）已随 v3.14 删除** —— 炮头改走三档冷灰金属颜色渲染，
+零贴图。炮塔只剩 `npm run turretop`（几何 + 逐顶点 `tone` 档位）。
 
 `pyramid` / `ship` / `arena` / `shallowtarns` / `tarn` 支持 `-- --census`（源方块普查）；
 `pyramid` / `ship` 另有 `-- --census-orient`（用真实 mesher 重测台阶朝向映射）。
@@ -246,6 +249,25 @@ scheduler/physics）再加 `npm run bench -- --check`。计划里标「冻结」
 （可能飘到面板底色上方）、低于一切交互元素。
 
 **渲染与 GPU**
+- ⚠️⚠️ **`vec3(new THREE.Color(hex))` 在 WebGPU 后端输出纯黑且零报错零警告**（炮塔三档色调 v3.14 实测）：
+  装甲 6 部件**整片消失**，而 tone 属性/长度/值域/冻结表/材质无 map/有 colorNode/集合关系式/指纹
+  **全部通过**。根因：`vec3` 单参数走「转成 vec3」路径，而 `getValueType(Color)` 返回 `'color'`
+  不是 `'vec3'`（`three.webgpu.js:1146`）⇒ 转换拿不到分量。**正解：显式拆分量 `vec3(c.r, c.g, c.b)`**
+  （`color(hex)` / `uniform(Color)` / `vec3(...C)` 也都可用）。逐写法实测非黑像素数：
+  `vec3(Color)` **0** / 其余四种均 **10455**。⇒ **凡新增 TSL 常量色必须配像素实测**，
+  节点构造类判据对这类缺陷零判别力。
+- ⚠️⚠️ **多档着色的像素亮度判据对「分类退化」与「色值全等」都零判别力**（v3.14 负向验证实测）：
+  三个取样面**法线不同**，即使 tone 全相同或三档色值全等，N·L/环境/菲涅尔仍造出
+  亮度差（实测顶−侧 24.6 / 侧−底 29.5，均 >20 ⇒ 仍绿）。必须另加两道：
+  （a）**不依赖光照的内容级判据** —— 从 GPU 上传的几何属性读三档分布比冻结表；
+  （b）**同法线单变量对照** —— 把同一个面的 tone 依次改 0/1/2（几何/相机/太阳全不动），
+  色值全等时三个读数逐位相同。基线实测差 28.59/24.48。
+- ⚠️ **多档色调部件的「关方向光后是均匀色」判据不成立**（v3.14）：单色炮管关光后 p90==median，
+  而三档装甲即使关掉方向光，三档基色仍不同（实测差 23.3）—— 那是正确行为。
+  装甲侧要钉「max−p90 < 3（无超出三档的高光尖）」+「p90−median > 5（层次仍在）」。
+- ⚠️ **「高光随太阳方向变」不能只看 p90**（v3.14）：大平面集合（颊舱）换太阳方向时高光带位置
+  滑动但 p90 几乎不变（187→186.7），而 median 差 36.7；曲面（炮管）p90 差 7。
+  取 **median 与 p90 的最大差**，两类几何才有判别力。
 - 阴影只能用 **VSM**：three r185.1 WebGPU 的 depth-compare 路径（PCF/PCFSoft/Basic）会
   `GPUValidationError` → 画面全黑。transparent 必须 cast + receive **双 false**。
 - BatchedMesh 的主 pass 与阴影 pass 共用一份 multi-draw 列表 → 每次阴影刷新会让阴影视锥外的几何

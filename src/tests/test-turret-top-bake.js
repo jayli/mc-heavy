@@ -15,7 +15,7 @@ import { test } from './runner.js';
 import { assertEqual, assertTrue, assertDeepEqual } from './assert.js';
 import { resourceUrl } from '../core/resource-url.js';
 import {
-  parseObj, splitParts, buildPartGeometry, zoneOf, TURRET_TOP_PARAMS,
+  parseObj, splitParts, buildPartGeometry, zoneOf, toneOf, geomNormal, TURRET_TOP_PARAMS,
   TURRET_TOP_ARMOR, TURRET_TOP_SOLID,
 } from '../../tools/turret-top-parse.mjs';
 
@@ -271,14 +271,14 @@ test('turret-top: 烘焙产物与实时构造逐位一致（防产物过期）',
   }
 });
 
-test('turret-top: 产物的 textured 标记与色值', async () => {
+test('turret-top: 产物的 toned 标记与色值', async () => {
   const json = await (await fetch(resourceUrl('assets/turret/turret-top.json'))).json();
   for (const k of TURRET_TOP_ARMOR) {
-    assertEqual(json.parts[k].textured, true, `${k} 走贴图`);
-    assertEqual(json.parts[k].color, undefined, `${k} 不带纯色`);
+    assertEqual(json.parts[k].toned, true, `${k} 走三档色调`);
+    assertEqual(json.parts[k].color, undefined, `${k} 不带单一色值（三档在 config）`);
   }
   for (const k of TURRET_TOP_SOLID) {
-    assertEqual(json.parts[k].textured, false, `${k} 走纯色`);
+    assertEqual(json.parts[k].toned, false, `${k} 走单色`);
     assertTrue(typeof json.parts[k].color === 'number', `${k} 有色值`);
   }
   // 炮管深灰炮钢（用户 2026-11-18：浅灰不好看，改深灰 + 金属光泽）。
@@ -293,8 +293,8 @@ test('turret-top: 产物的 textured 标记与色值', async () => {
 // ==================== config 部件定义（Task 4） ====================
 
 test('turret-top: config 部件集合与刚性一体约束', async () => {
-  const { TURRET, TURRET_PARTS, TURRET_PART_DEFS, TURRET_GUN_COLOR, TURRET_TOP_SCALE } =
-    await import('../entities/turrets/turret-config.js');
+  const { TURRET, TURRET_PARTS, TURRET_PART_DEFS, TURRET_GUN_COLOR, TURRET_TOP_SCALE,
+    TURRET_TONED_PARTS } = await import('../entities/turrets/turret-config.js');
   assertEqual(TURRET_PARTS.length, 9, '9 个部件（旧 8 语义 + skirt 过渡段）');
   assertDeepEqual([...TURRET_PARTS].sort(),
     ['barrel', 'cheek', 'deckMid', 'mantlet', 'nose', 'podL', 'podR', 'ring', 'skirt'], '新部件名');
@@ -306,11 +306,11 @@ test('turret-top: config 部件集合与刚性一体约束', async () => {
     assertTrue(d.pitchAxis === undefined, `${k} 不得有独立 pitch 轴`);
     assertTrue(d.geo === undefined, `${k} 几何来自产物，不再是参数化盒/圆柱`);
   }
-  // textured 是渲染层贴图/纯色分支的唯一依据（zone 恒 null，旧判据 !!def.zone 恒假）
-  assertDeepEqual(TURRET_PARTS.filter((k) => TURRET_PART_DEFS[k].textured).sort(),
-    ['cheek', 'deckMid', 'mantlet', 'nose', 'ring', 'skirt'], 'textured 集合');
-  assertDeepEqual(TURRET_PARTS.filter((k) => !TURRET_PART_DEFS[k].textured).sort(),
-    ['barrel', 'podL', 'podR'], '纯色集合');
+  // 三档色调 / 单色的分支依据是 TURRET_TONED_PARTS（v3.14，取代旧的 textured）
+  assertDeepEqual([...TURRET_TONED_PARTS].sort(),
+    ['cheek', 'deckMid', 'mantlet', 'nose', 'ring', 'skirt'], 'toned 集合');
+  assertDeepEqual(TURRET_PARTS.filter((k) => !TURRET_TONED_PARTS.includes(k)).sort(),
+    ['barrel', 'podL', 'podR'], '单色集合');
   assertEqual(TURRET_GUN_COLOR.BARREL, 0x434952, '炮管深灰炮钢（用户 2026-11-18 要求）');
   assertEqual(TURRET_GUN_COLOR.POD, 0x353b43, '副武器更深一档');
   // 定标常量与 muzzleOffsetZ 的关系式（不是字面量副本）
@@ -343,9 +343,9 @@ test('turret-top: 渲染层不改写 UV（权威在烘焙侧，禁二次压区�
   const THREE = await import('three');
   const { TurretRenderer } = await import('../render/turret-renderer.js');
   const geo = await topGeometry();
-  const tex = new THREE.DataTexture(new Uint8Array(4), 1, 1);
-  tex.needsUpdate = true;
-  const r = new TurretRenderer({ scene: new THREE.Scene(), topGeometry: geo, armorTexture: tex });
+  // ⚠️ v3.14 后 UV **不再被采样**（零贴图），但仍不得改写：它是烘焙侧
+  // 「UV 零退化 / 各区面数 / 逐面拆顶点」三条内容级判据的载体。
+  const r = new TurretRenderer({ scene: new THREE.Scene(), topGeometry: geo });
   for (const k of TURRET_TOP_ARMOR) {
     const uv = r.meshes[k].geometry.getAttribute('uv');
     const src = geo.parts[k].uv;
@@ -423,31 +423,31 @@ test('turret-top: 刚性一体 —— 8 部件共用同一 pivot 旋转（无独
   r.dispose();
 });
 
-test('turret-top: 材质分支靠 textured —— 装甲带 map、纯色不带', async () => {
+test('turret-top: 材质分支靠 TURRET_TONED_PARTS —— 零贴图，均走金属', async () => {
   const THREE = await import('three');
+  const { uniform } = await import('three/tsl');
   const { TurretRenderer } = await import('../render/turret-renderer.js');
-  const { TURRET_PART_DEFS, TURRET_GUN_COLOR, TURRET_TOWER_COLOR } =
+  const { TURRET_PART_DEFS, TURRET_GUN_COLOR, TURRET_TONE_COLOR } =
     await import('../entities/turrets/turret-config.js');
   const geo = await topGeometry();
-  const tex = new THREE.DataTexture(new Uint8Array(4), 1, 1);
-  tex.needsUpdate = true;
-  const r = new TurretRenderer({ scene: new THREE.Scene(), topGeometry: geo, armorTexture: tex });
+  const sunDirection = uniform(new THREE.Vector3(0, 0.8, 0.6));
+  const r = new TurretRenderer({ scene: new THREE.Scene(), topGeometry: geo, sunDirection });
+  // ⚠️ **装甲不再带 map**（v3.14 用户裁定去贴图）—— 旧判据「装甲须带 map」已按新语义改写。
+  for (const k of [...TURRET_TOP_ARMOR, ...TURRET_TOP_SOLID]) {
+    assertEqual(r.meshes[k].material.map, null, `${k} 零贴图`);
+    assertTrue(r.meshes[k].material.colorNode !== null, `${k} 走金属 TSL`);
+  }
+  r.dispose();
+  // 无太阳 uniform 的退回路径：装甲用**中档灰**，单色部件仍用各自色值
+  const r2 = new TurretRenderer({ scene: new THREE.Scene(), topGeometry: geo });
   for (const k of TURRET_TOP_ARMOR) {
-    assertTrue(r.meshes[k].material.map !== null, `${k} 须带 map（textured=true）`);
+    assertEqual(r2.meshes[k].material.map, null, `${k} 退回路径不带 map`);
+    assertEqual(r2.meshes[k].material.color.getHex(), TURRET_TONE_COLOR.SIDE, `${k} 退回中档灰`);
   }
   for (const k of TURRET_TOP_SOLID) {
-    assertEqual(r.meshes[k].material.map, null, `${k} 不带 map`);
-    assertEqual(r.meshes[k].material.color.getHex(), TURRET_PART_DEFS[k].color, `${k} 纯色`);
+    assertEqual(r2.meshes[k].material.color.getHex(), TURRET_PART_DEFS[k].color, `${k} 单色不受影响`);
   }
-  assertEqual(r.meshes.barrel.material.color.getHex(), TURRET_GUN_COLOR.BARREL, '炮管中灰');
-  r.dispose();
-  // 无纹理退回：装甲用 MAIN，纯色仍用各自色值
-  const r2 = new TurretRenderer({ scene: new THREE.Scene(), topGeometry: geo, armorTexture: null });
-  for (const k of TURRET_TOP_ARMOR) {
-    assertEqual(r2.meshes[k].material.map, null, `${k} 无纹理时不带 map`);
-    assertEqual(r2.meshes[k].material.color.getHex(), TURRET_TOWER_COLOR.MAIN, `${k} 退回 MAIN`);
-  }
-  assertEqual(r2.meshes.barrel.material.color.getHex(), TURRET_GUN_COLOR.BARREL, '纯色不受影响');
+  assertEqual(r2.meshes.barrel.material.color.getHex(), TURRET_GUN_COLOR.BARREL, '炮管深灰炮钢');
   r2.dispose();
 });
 
@@ -611,4 +611,244 @@ test('turret-top: 八部件组装后不得有开放边（部件间接缝也要�
   // ⚠️ 炮管尾/副武器管口是原模型设计的开口，允许；但**装甲件之间**不得有缝。
   // 这里先钉住总数上界（实测修复前 184），修复后应显著下降。
   assertTrue(open <= 184, `组装体开放边 ${open}（修复前 184，不得增加）`);
+});
+
+// ==================== 三档色调（v3.14：炮头去贴图改颜色渲染） ====================
+//
+// 设计：docs/superpowers/specs/2026-11-18-turret-head-color-shading-design.md
+//
+// ⚠️⚠️ **色调档与 UV 区不是同一套语义，不得互推**：
+//   · UV 区 `zoneOf` = front/side/top，按**主轴**分，**底面归 top**；
+//   · 色调档 `toneOf` = 0(top)/1(side)/2(bottom)，按 **ny 符号**分。
+// 两者阈值同为 0.85 但分类不同 —— 实测 nose 的 front 区 215 面而色调 side 档 277 面。
+// 照抄 zoneOf 会让所有底面被当成顶面（最亮档），裙板底面在仰视时发白。
+
+test('turret-top: toneOf 三档分类 —— 阈值两侧与底面归属', async () => {
+  // 造面：水平面（ny=±1）与竖直面（ny=0），不依赖 OBJ 数据 ⇒ 纯函数判据。
+  // ⚠️ **绕序必须用 geomNormal 实测核准，不能凭直觉标 up/down**：
+  // Newell 叉积下 `[[0,0,0],[1,0,0],[1,0,1],[0,0,1]]` 的 ny 是 **−1**（朝下），
+  // 与字面直觉相反 —— 初版夹具就这么标反了，得到 toneOf(up)=2 的假红。
+  // 真值参系：真实 deckMid（全朝上平台）首面 ny=+1.0000 ⇒ 档 0。
+  const down = [[0, 0, 0], [1, 0, 0], [1, 0, 1], [0, 0, 1]];    // geomNormal ny = −1
+  const up = [[0, 0, 0], [0, 0, 1], [1, 0, 1], [1, 0, 0]];      // geomNormal ny = +1
+  const sideX = [[0, 0, 0], [0, 1, 0], [0, 1, 1], [0, 0, 1]];   // ny = 0
+  assertClose(geomNormal(up).n[1], 1, 1e-9, '夹具 up 面真的朝上');
+  assertClose(geomNormal(down).n[1], -1, 1e-9, '夹具 down 面真的朝下');
+  assertEqual(toneOf(up), 0, '朝上面 → 档 0（最亮）');
+  assertEqual(toneOf(down), 2, '朝下面 → 档 2（最暗）');
+  assertEqual(toneOf(sideX), 1, '竖直面 → 档 1（中）');
+  // ⚠️ **这条是与 zoneOf 的分界判据**：zoneOf(down) === 'top'，而 toneOf(down) === 2。
+  // 注入「toneOf 照抄 zoneOf」会让这里得 0 ⇒ 红。
+  assertEqual(zoneOf(down), 'top', 'UV 区把底面归 top（两套语义刻意不同）');
+  assertTrue(toneOf(down) !== toneOf(up), '底面与顶面不得同档');
+});
+
+test('turret-top: toneOf 阈值边界 —— 0.85 两侧紧邻值分属不同档', async () => {
+  // 造一个 ny 恰好可控的斜面：法线 (0, ny, sqrt(1-ny²))
+  const faceWithNy = (ny) => {
+    const nz = Math.sqrt(Math.max(0, 1 - ny * ny));
+    // 面内两向量 e1=(1,0,0)、e2=(0,nz,-ny) ⇒ 叉积 (0, ny, nz)
+    return [[0, 0, 0], [1, 0, 0], [1, nz, -ny], [0, nz, -ny]];
+  };
+  const TH = TURRET_TOP_PARAMS.toneNyThreshold;
+  assertEqual(TH, 0.85, '色调阈值（与 UV 区同值，实测标定）');
+  assertEqual(toneOf(faceWithNy(0.86)), 0, 'ny=0.86 > 阈值 → 档 0');
+  assertEqual(toneOf(faceWithNy(0.84)), 1, 'ny=0.84 < 阈值 → 档 1');
+  assertEqual(toneOf(faceWithNy(-0.86)), 2, 'ny=−0.86 → 档 2');
+  assertEqual(toneOf(faceWithNy(-0.84)), 1, 'ny=−0.84 → 档 1');
+  // 恰好等于阈值归 side（判据是严格 >，与 zoneOf 同口径）
+  assertEqual(toneOf(faceWithNy(0.85)), 1, 'ny 恰等阈值 → 档 1（严格大于）');
+});
+
+test('turret-top: 产物逐顶点 tone —— 长度等于顶点数、值域 {0,1,2}', async () => {
+  const geo = await topGeometry();
+  for (const k of [...TURRET_TOP_ARMOR, ...TURRET_TOP_SOLID]) {
+    const g = geo.parts[k];
+    assertTrue(Array.isArray(g.tone), `${k} 产物须带 tone 数组`);
+    assertEqual(g.tone.length, g.position.length / 3, `${k} tone 长度 == 顶点数`);
+    for (const t of g.tone) {
+      assertTrue(t === 0 || t === 1 || t === 2, `${k} tone 值须 ∈ {0,1,2}，实际 ${t}`);
+    }
+  }
+});
+
+test('turret-top: tone 冻结表 —— 逐部件三档顶点数（不经 toneOf 的独立真值）', async () => {
+  const geo = await topGeometry();
+  // ⚠️ **这条是对「tone 长度/值域」那条的补充**：那两条在「tone 恒 1」下仍全绿
+  // （长度对、值域对）。本条把三档顶点数**冻结成字面量**，不经过 toneOf
+  // ⇒ 分类退化 / 阈值漂移 / 照抄 zoneOf 直接红。
+  // 实测来源：源 OBJ 面几何法线 + 封口环法线，装甲逐面拆顶点、纯色按坐标+法线焊接。
+  const TONE_VERTS = {
+    cheek: [256, 304, 30], mantlet: [116, 112, 21], deckMid: [82, 0, 0],
+    ring: [81, 452, 79], nose: [8, 1206, 8], skirt: [131, 2015, 64],
+    barrel: [80, 1120, 132], podR: [64, 832, 64], podL: [32, 416, 32],
+  };
+  for (const [k, want] of Object.entries(TONE_VERTS)) {
+    const got = [0, 0, 0];
+    for (const t of geo.parts[k].tone) got[t]++;
+    assertDeepEqual(got, want, `${k} 三档顶点数`);
+  }
+  // 划分恒等式：三档之和 ≡ 冻结总顶点数
+  const total = Object.values(TONE_VERTS).reduce((a, c) => a + c[0] + c[1] + c[2], 0);
+  assertEqual(total, 7737, '三档顶点数之和 = 总顶点数');
+});
+
+test('turret-top: 装甲部件三档都真的出现（防退化成一档）', async () => {
+  const geo = await topGeometry();
+  // ⚠️ cheek/mantlet/ring 源模型没有底面（ny 全 ≥ −0.39），它们的档 2 全部来自**封口面**。
+  // 故不能对每个部件都要求三档齐全 —— 那会让正确实现 FAIL。
+  // 判据落在**全体装甲**上：三档各自都必须有可观数量的顶点。
+  const sum = [0, 0, 0];
+  for (const k of TURRET_TOP_ARMOR) for (const t of geo.parts[k].tone) sum[t]++;
+  assertTrue(sum[0] > 500, `装甲顶面档顶点数 ${sum[0]}（实测 674）`);
+  assertTrue(sum[1] > 3000, `装甲侧面档顶点数 ${sum[1]}（实测 4089）`);
+  assertTrue(sum[2] > 100, `装甲底面档顶点数 ${sum[2]}（实测 202）`);
+  // deckMid 是纯水平平台 ⇒ 全档 0（含封口，实测环 ny=0.979）
+  const dm = [0, 0, 0];
+  for (const t of geo.parts.deckMid.tone) dm[t]++;
+  assertDeepEqual(dm, [82, 0, 0], 'deckMid 全顶面档');
+});
+
+test('turret-top: 实时构造的 tone 与产物逐位一致（防产物过期）', async () => {
+  const built = await builtParts();
+  const geo = await topGeometry();
+  for (const k of [...TURRET_TOP_ARMOR, ...TURRET_TOP_SOLID]) {
+    assertTrue(Array.isArray(built[k].tone), `${k} 实时构造须产出 tone`);
+    assertDeepEqual(geo.parts[k].tone, built[k].tone, `${k} tone 逐位一致`);
+  }
+});
+
+test('turret-top: 三档色值 —— config 单一权威、冷调、亮度递减', async () => {
+  const { TURRET_TONE_COLOR } = await import('../entities/turrets/turret-config.js');
+  const keys = ['TOP', 'SIDE', 'BOTTOM'];
+  assertDeepEqual(Object.keys(TURRET_TONE_COLOR), keys, '三档键序');
+  const rgb = keys.map((k) => {
+    const c = TURRET_TONE_COLOR[k];
+    return [(c >> 16) & 255, (c >> 8) & 255, c & 255];
+  });
+  // ① 冷调：每一档 B > R（参考图实测 B−R = +10.7 ~ +16.4）
+  for (let i = 0; i < 3; i++) {
+    assertTrue(rgb[i][2] > rgb[i][0],
+      `${keys[i]} 须冷调（B>R）：${rgb[i].join(',')}（参考图无暖色）`);
+  }
+  // ② 亮度严格递减：顶 > 侧 > 底（注入「三档同色」⇒ 红）
+  const lum = rgb.map((c) => (c[0] + c[1] + c[2]) / 3);
+  assertTrue(lum[0] > lum[1], `顶档须亮于侧档：${lum[0]} vs ${lum[1]}`);
+  assertTrue(lum[1] > lum[2], `侧档须亮于底档：${lum[1]} vs ${lum[2]}`);
+  // ③ 深灰身份：最亮档不得接近白（参考图物体均值 131，基色经金属项会提亮约 2×）
+  assertTrue(lum[0] < 190, `顶档基色不得过亮（实测 148）：${lum[0]}`);
+  assertTrue(lum[2] > 60, `底档基色不得近黑：${lum[2]}`);
+  // ④ 装甲整体亮于炮管（炮头/炮管的层次，参考图炮管更暗）
+  const { TURRET_GUN_COLOR } = await import('../entities/turrets/turret-config.js');
+  const b = TURRET_GUN_COLOR.BARREL;
+  const barrelLum = (((b >> 16) & 255) + ((b >> 8) & 255) + (b & 255)) / 3;
+  assertTrue(lum[2] > barrelLum,
+    `装甲最暗档仍须亮于炮管基色：${lum[2]} vs ${barrelLum}`);
+});
+
+test('turret-top: toned 集合三方一致（config / 烘焙侧 / 产物）', async () => {
+  const { TURRET_TONED_PARTS, TURRET_PART_DEFS, TURRET_PARTS } =
+    await import('../entities/turrets/turret-config.js');
+  const geo = await topGeometry();
+  assertDeepEqual([...TURRET_TONED_PARTS].sort(), [...TURRET_TOP_ARMOR].sort(),
+    'config 的 toned 集合 ≡ 烘焙侧 TURRET_TOP_ARMOR');
+  const productToned = TURRET_PARTS.filter((p) => geo.parts[p].toned).sort();
+  assertDeepEqual(productToned, [...TURRET_TOP_ARMOR].sort(), '产物 toned 集合');
+  // 贴图分支已删除：textured 字段不得残留（否则渲染层可能又走回贴图）
+  for (const p of TURRET_PARTS) {
+    assertEqual(TURRET_PART_DEFS[p].textured, undefined, `${p} config 不再有 textured`);
+    assertEqual(geo.parts[p].textured, undefined, `${p} 产物不再有 textured`);
+  }
+  // 装甲部件不带单一 color（三档色在 TURRET_TONE_COLOR），纯色部件带
+  for (const k of TURRET_TOP_ARMOR) {
+    assertEqual(geo.parts[k].color, undefined, `${k} 装甲不带单一色值`);
+  }
+  for (const k of TURRET_TOP_SOLID) {
+    assertTrue(typeof geo.parts[k].color === 'number', `${k} 纯色部件带色值`);
+  }
+});
+
+test('turret-top: 渲染层把 tone 原样上传为几何属性（不改写）', async () => {
+  const THREE = await import('three');
+  const { TurretRenderer } = await import('../render/turret-renderer.js');
+  const geo = await topGeometry();
+  const r = new TurretRenderer({ scene: new THREE.Scene(), topGeometry: geo, maxActive: 1 });
+  for (const k of [...TURRET_TOP_ARMOR, ...TURRET_TOP_SOLID]) {
+    const attr = r.meshes[k].geometry.getAttribute('tone');
+    assertTrue(attr !== undefined, `${k} 几何须带 tone 属性`);
+    assertEqual(attr.count, geo.parts[k].tone.length, `${k} tone 属性长度`);
+    assertEqual(attr.itemSize, 1, `${k} tone 是标量属性`);
+    for (let i = 0; i < attr.count; i++) {
+      assertEqual(attr.array[i], geo.parts[k].tone[i], `${k} tone[${i}] 未被改写`);
+    }
+  }
+  r.dispose();
+});
+
+test('turret-top: 装甲材质走三档金属（无 map、有 colorNode）', async () => {
+  const THREE = await import('three');
+  const { uniform } = await import('three/tsl');
+  const { TurretRenderer } = await import('../render/turret-renderer.js');
+  const geo = await topGeometry();
+  const sunDir = uniform(new THREE.Vector3(0, 0.8, 0.6));
+  const r = new TurretRenderer({
+    scene: new THREE.Scene(), topGeometry: geo, maxActive: 1, sunDirection: sunDir,
+  });
+  for (const k of TURRET_TOP_ARMOR) {
+    assertEqual(r.meshes[k].material.map, null, `${k} 装甲不再带贴图`);
+    assertTrue(r.meshes[k].material.colorNode !== null, `${k} 装甲须走金属 TSL`);
+  }
+  // 纯色部件同样走金属（现状不变）
+  for (const k of TURRET_TOP_SOLID) {
+    assertEqual(r.meshes[k].material.map, null, `${k} 不带贴图`);
+    assertTrue(r.meshes[k].material.colorNode !== null, `${k} 走金属 TSL`);
+  }
+  r.dispose();
+});
+
+test('turret-top: 无太阳 uniform 时装甲退回纯色（不崩、无 map）', async () => {
+  const THREE = await import('three');
+  const { TurretRenderer } = await import('../render/turret-renderer.js');
+  const { TURRET_TONE_COLOR } = await import('../entities/turrets/turret-config.js');
+  const geo = await topGeometry();
+  // 单测 fixture / 几何加载失败路径：不传 sunDirection
+  const r = new TurretRenderer({ scene: new THREE.Scene(), topGeometry: geo, maxActive: 1 });
+  for (const k of TURRET_TOP_ARMOR) {
+    assertEqual(r.meshes[k].material.map, null, `${k} 退回路径不带 map`);
+    // 退回色取**中档**（不是旧的 TURRET_TOWER_COLOR.MAIN 浅灰）
+    assertEqual(r.meshes[k].material.color.getHex(), TURRET_TONE_COLOR.SIDE,
+      `${k} 退回中档灰`);
+  }
+  r.dispose();
+});
+
+test('turret-top: 三档基色节点不得是 vec3(Color)（那种写法在 GPU 上出黑）', async () => {
+  const THREE = await import('three');
+  const { vec3, color, uniform } = await import('three/tsl');
+  // ⚠️⚠️ **实测缺陷（v3.14）**：`vec3(new THREE.Color(hex))` 在 WebGPU 后端
+  // **输出纯黑**，而且**零报错零警告** —— 装甲 6 部件整片消失，
+  // 而 tone 属性/值域/冻结表/材质类型判据**全绿**。
+  //
+  // 根因：`vec3` 单参数走「转成 vec3」路径，而 `getValueType(Color)` 返回 `'color'`
+  // （不是 `'vec3'`）⇒ 转换拿不到分量。逐写法实测（同一几何同一相机）：
+  //   vec3(Color)        非黑像素 **0**
+  //   vec3(c.r,c.g,c.b)  非黑像素 10455，均值 118,124,132
+  //   color(hex)         同上
+  //   uniform(Color)     同上
+  //
+  // 本用例钉住「可用写法的节点形状」，防后人把 `vec3(...)` 改回单参数形式。
+  // 真正的像素判据在 tests/turret-render.spec.mjs（三档各采到对应色）。
+  const C = new THREE.Color(0x767c84);
+  const bad = vec3(C);
+  const goodRGB = vec3(C.r, C.g, C.b);
+  const goodColor = color(0x767c84);
+  // 单参数形式：内部 ConstNode 直接持有 Color 对象（拿不到分量）
+  assertTrue(bad.node?.value instanceof THREE.Color,
+    'vec3(Color) 的内部常量仍是 Color（这就是出黑的形态）');
+  // 可用形式：要么内部是 Vector3（已拆分量），要么是 UniformNode
+  assertTrue(goodRGB.node?.value instanceof THREE.Vector3,
+    'vec3(r,g,b) 的内部常量是 Vector3（分量已展开）');
+  assertTrue(goodColor.node?.value instanceof THREE.Color || goodColor.isUniformNode === true,
+    'color(hex) 走专用 color 类型路径');
+  assertTrue(uniform(C).isUniformNode === true, 'uniform(Color) 是 UniformNode');
 });

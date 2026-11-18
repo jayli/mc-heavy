@@ -1,6 +1,6 @@
 // src/render/turret-top-geometry.js — 加载烘焙的炮塔塔顶几何产物
 //
-// 照 `turret-armor-texture.js` 的容错口径：加载失败返回 null，不阻断启动。
+// 容错口径照丧尸皮肤加载器：加载失败返回 null，不阻断启动。
 // ⚠️ **本模块只做数据加载，不建 BufferGeometry** —— 那样它就能被无 three 的单测消费，
 // three 依赖留给渲染层（`turret-renderer.js`）。
 //

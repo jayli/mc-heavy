@@ -87,31 +87,62 @@ export function defaultTurretRotation(playerPos, blockPos) {
 // --------------------------------------------------------------------------
 
 /**
- * 装甲纹理的**区序**（UV 分区的唯一权威）。
+ * 纯色部件的退回色（mc-lite `TURRET_TOWER_COLOR`，`Turret.js:98-101`）。
  *
- * ⚠️ **必须横向三区并排**（CLAUDE.md 活跃约束：上下分区会把图案压成 N×(N/3) → 比例失真）。
- * ⚠️ **不在渲染层写字面量副本** —— 上一版审查发现 `turret-renderer.js` 里写
- * `const ZONES = ['front','side','top']` 是第二份副本（注释写「同源」但没有任何机制保证），
- * 改了烘焙侧区序而忘改渲染层 → UV 整体错位（渲染出错图案，肉眼只觉得「贴图怪怪的」）。
- * 提到本文件后，渲染层 / 烘焙脚本 / `check:data` 三方都从同一处派生，门禁可断言
- * `TURRET_PART_DEFS[].zone ⊆ ARMOR_ZONES`。
- */
-export const ARMOR_ZONES = Object.freeze(['front', 'side', 'top']);
-
-/**
- * 纯色部件的颜色（mc-lite `TURRET_TOWER_COLOR`，`Turret.js:98-101`）。
- * ⚠️ 收进 config 而非在渲染层写死字面量 —— 上一版审查发现渲染层注释写「退回纯色
- * `TURRET_TOWER_COLOR.MAIN/DARK`」但代码写死 `0xcccccc`/`0xbbbbbb`（红线 1：两个副本）。
- *
- * ⚠️ **`DARK` 自塔顶模型替换后无消费点**：旧实现靠 `back` 部件的 `color: DARK`
- * 区分后板，而新 8 部件里**没有「后板」这个语义**（装甲部件全部走贴图）。
+ * ⚠️ **自 v3.14 起两个值都无消费点**：装甲部件改成三档色调后，无太阳 uniform 的
+ * 退回路径取 `TURRET_TONE_COLOR.SIDE`（中档灰）而不是 MAIN 浅灰 —— 浅灰正是用户否决的观感。
  * 保留常量仅作 mc-lite 出处记录（与「床材质的 offset/rotation 是死字段」同类）。
- * **不得为了“用上 DARK”而给某个新部件硬塞 color** —— 那会让它在有纹理时也不走贴图。
+ * **不得为了“用上它们”而把退回色改回浅灰**。
  */
 export const TURRET_TOWER_COLOR = Object.freeze({
-  MAIN: 0xcccccc,   // 浅灰色主体（无纹理时的退回色）
-  DARK: 0xbbbbbb,   // 中灰色后板（**无消费点**，见上方注释）
+  MAIN: 0xcccccc,   // 浅灰色主体（**无消费点**，见上方注释）
+  DARK: 0xbbbbbb,   // 中灰色后板（**无消费点**）
 });
+
+/**
+ * 装甲三档色调的基色（v3.14，用户裁定「按面朝向分三档」）。
+ *
+ * 用户 2026-11-18：「把现在炮塔的炮头贴图去掉，改成颜色渲染……都是偏深灰色的
+ * 有金属光泽的样式」。参考图：`/Users/bachi/ttt/bug/炮塔参考着色.jpeg` 与 `…-机枪.jpg`。
+ *
+ * ## 为何不直接抄参考图的 hex（实测反解）
+ *
+ * 参考图物体像素分三档：暗 (40,44,51) / 中 (91,96,103) / 亮 (198,209,214)，
+ * 全部**冷调**（B−R = +10.7~16.4）。但那是**最终像素**，而本仓的基色要经
+ * `turret-metal.js` 的四项叠加（漫反射 + 高光 + 环境反射 + 菲涅尔，**提亮约 2×**），
+ * 真实游戏再过一道 **ACES 色调映射**（`game.js` 的 renderer）。
+ * ⇒ 直接抄 hex 会得到银白一片（塑料感，正是 `turret-metal.js` 文件头记的反例）。
+ *
+ * **反解口径**：装甲面积加权的三档权重实测 **top 18.9% / side 55.7% / bottom 25.4%**，
+ * 令加权均值 ≈ 参考图物体均值 (124,131,137)，线性空间比例取 1.5 : 1 : 0.65。
+ *
+ * **CPU 参考实测**（正午太阳 [0,0.8,0.6]，含 ACES）：
+ *   TOP    顶面 183,191,201 / +X 138,146,156 / 底面 141,148,155
+ *   SIDE   顶面 158,167,179 / +X 111,118,128 / 底面 113,119,128
+ *   BOTTOM 顶面 129,139,155 / +X  85,92,103  / 底面  87,93,102
+ * ⇒ 像素范围 85~200、B−R 恒 +15~20，对齐参考图的冷调深灰。
+ *
+ * ⚠️ **基色不是最终观感**：判「颜色对不对」必须看像素（Tier 4），不能只看这三个字面量。
+ * ⚠️ **三档都亮于炮管基色**（`TURRET_GUN_COLOR.BARREL`）—— 炮头亮 / 炮管暗的层次
+ * 正是参考图的观感；门禁钉住这条关系式。
+ */
+export const TURRET_TONE_COLOR = Object.freeze({
+  TOP: 0x8c949c,      // 顶面 / 上表面（几何法线 ny > 0.85）
+  SIDE: 0x767c84,     // 侧壁 / 斜面（|ny| ≤ 0.85），也是无太阳 uniform 时的退回色
+  BOTTOM: 0x626870,   // 底面 / 下表面（ny < −0.85）
+});
+
+/**
+ * 走三档色调的装甲部件（v3.14，取代旧的 `textured` 字段）。
+ *
+ * ⚠️ **与 UV 三区不是同一套语义**：UV 区是 front/side/top（按主轴，底面归 top），
+ * 色调档是 top/side/bottom（按 ny 符号）。两者阈值同为 0.85 但分类不同。
+ * ⚠️ **本集合是单一权威**：`tools/turret-top-parse.mjs` 的 `TURRET_TOP_ARMOR`
+ * 从这里派生（那是纯函数模块，已被浏览器单测 import，可以 import config）。
+ */
+export const TURRET_TONED_PARTS = Object.freeze([
+  'cheek', 'mantlet', 'deckMid', 'ring', 'nose', 'skirt',
+]);
 
 /**
  * 炮管系统颜色。
@@ -156,32 +187,32 @@ export const TURRET_PARTS = Object.freeze([
 ]);
 
 /**
- * 8 个部件的渲染定义。
+ * 9 个部件的渲染定义。
  *
  * ⚠️⚠️ **几何全在烘焙产物里**（`assets/turret/turret-top.json`），本表**不再有**
- * `geo`/`size`/`pos`/`rotX` —— 部件局部变换是**恒等**，8 个部件乘同一个 pivot 矩阵
+ * `geo`/`size`/`pos`/`rotX` —— 部件局部变换是**恒等**，9 个部件乘同一个 pivot 矩阵
  * `T(pivot) × R_y(yaw) × R_x(-pitch)`。这是用户裁定的**刚性一体**：炮管与炮头一起转，
  * 不得给任何部件加独立旋转轴或俯仰轴（实测分层会让炮管在 ±45° 时飞出塔身）。
  *
- * ⚠️⚠️ **`textured` 是贴图/纯色分支的唯一依据**，不是 `zone`：
- * 新几何是**逐面分区**（同一部件内不同面属不同区），部件级 `zone` 恒为 null。
- * 旧判据 `!!def.zone` 在新表下**恒假** ⇒ 不改会让装甲全部退化成纯色，
- * 而顶点数/三角数/指纹全对（静默失效）。
+ * ⚠️⚠️ **三档色调 / 单色的分支依据是 `TURRET_TONED_PARTS`**（v3.14）。
+ * 旧的 `textured` 字段已**删除**：贴图路径整套移除后它失去意义，而残留字段会让
+ * 渲染层可能又走回贴图（而三档色调判据全绿）。门禁钉住两侧都不得有它。
  *
- * ⚠️ **UV 权威在烘焙侧**：产物 uv 已按面压进 1/3 区，渲染层**不得再调 applyZoneUV**
- * （再压一次 = z/3 + (z/3+u/3)/3 ⇒ 全部采到 front 区左侧）。
+ * ⚠️ **UV 仍在产物里但不再被采样**：保留它是为了「UV 零退化 / 各区面数 /
+ * 逐面拆顶点」三条内容级判据的载体 —— 那三条正是「切口看穿」缺陷的防线。
+ * 渲染层仍不得改写 UV（权威在烘焙侧）。
  */
 export const TURRET_PART_DEFS = Object.freeze({
-  mantlet: Object.freeze({ zone: null, textured: true }),
-  cheek: Object.freeze({ zone: null, textured: true }),
-  nose: Object.freeze({ zone: null, textured: true }),
-  ring: Object.freeze({ zone: null, textured: true }),
-  deckMid: Object.freeze({ zone: null, textured: true }),
-  barrel: Object.freeze({ zone: null, textured: false, color: TURRET_GUN_COLOR.BARREL }),
-  podR: Object.freeze({ zone: null, textured: false, color: TURRET_GUN_COLOR.POD }),
-  podL: Object.freeze({ zone: null, textured: false, color: TURRET_GUN_COLOR.POD }),
+  mantlet: Object.freeze({ zone: null }),
+  cheek: Object.freeze({ zone: null }),
+  nose: Object.freeze({ zone: null }),
+  ring: Object.freeze({ zone: null }),
+  deckMid: Object.freeze({ zone: null }),
+  barrel: Object.freeze({ zone: null, color: TURRET_GUN_COLOR.BARREL }),
+  podR: Object.freeze({ zone: null, color: TURRET_GUN_COLOR.POD }),
+  podL: Object.freeze({ zone: null, color: TURRET_GUN_COLOR.POD }),
   // ⚠️ **skirt（车体上层裙板）不可省**：塔身最低点 y=0.341 而 obsidian 柱顶 y=−0.3，
   // 中间 0.64 格若空缺，斜下仰视会看穿到天空（用户实玩缺陷 2）。skirt 的 y 范围
   // [−0.453, 0.416] 正好补上这段过渡。它同样乘 pivot 矩阵（刚性一体）。
-  skirt: Object.freeze({ zone: null, textured: true }),
+  skirt: Object.freeze({ zone: null }),
 });

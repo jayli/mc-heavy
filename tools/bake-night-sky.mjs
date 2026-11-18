@@ -118,7 +118,7 @@ function blendWeight(u, v) {
 
 // ------------------------------------------------------------------ 源图解码
 
-/** node 无原生 JPEG 解码器 → 借 chromium canvas（同 bake-turret-armor 的既有手法） */
+/** node 无原生 JPEG 解码器 → 借 chromium canvas（本仓既有手法，同 bake-zombie-skin） */
 async function decodeSources() {
   const browser = await chromium.launch();
   const page = await browser.newPage();

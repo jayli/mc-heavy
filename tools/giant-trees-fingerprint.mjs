@@ -1,6 +1,6 @@
 // tools/giant-trees-fingerprint.mjs — 巨树烘焙的参数与输入指纹
 //
-// **两个消费者共用同一份逻辑**（红线 1），沿用 `turret-armor-fingerprint.mjs` 的模式：
+// **两个消费者共用同一份逻辑**（红线 1），沿用 `zombie-skin-fingerprint.mjs` 的模式：
 //   - `tools/bake-giant-trees.mjs` 烘焙时按本参数生成并写进 `assets/giant-trees/trees.meta.json`
 //   - `tools/check-data.mjs` 用当前参数重算并比对 → 不匹配即报「跑 npm run gianttrees」
 //

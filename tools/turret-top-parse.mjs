@@ -10,6 +10,8 @@
 //
 // 素材：`assets/turret/src/TankCannon.obj`（整辆坦克，2128 面 / 2192 顶点）。
 // 设计：docs/superpowers/specs/2026-11-18-turret-top-model-replacement-design.md §2.2
+// 三档色调（v3.14）：docs/superpowers/specs/2026-11-18-turret-head-color-shading-design.md
+import { TURRET_TONED_PARTS } from '../src/entities/turrets/turret-config.js';
 
 /**
  * 解析 Wavefront OBJ 的 `v` / `vn` / `vt` / `g` / `f` 五种行。
@@ -136,17 +138,27 @@ export const TURRET_TOP_PARAMS = Object.freeze({
   pivotY: 14.667,
   zoneNyThreshold: 0.85,
   zones: Object.freeze(['front', 'side', 'top']),
+  /**
+   * 三档色调的 ny 阈值（v3.14）。**与 `zoneNyThreshold` 同值但语义不同**：
+   * UV 区把底面归 top，色调档把底面归最暗档（见 `toneOf`）。
+   * 写成独立字段而不复用：将来谁调 UV 分区阈值时不会连带改色调分层。
+   */
+  toneNyThreshold: 0.85,
 });
 
 /**
- * 走三区贴图的装甲部件（顺序即产物键序的一部分，与 config 的 textured 集合须一致）。
+ * 走三档色调的装甲部件（顺序即产物键序的一部分）。
+ *
+ * ⚠️ **从 config 派生，不写第二份字面量**（红线 1）：渲染层读
+ * `TURRET_TONED_PARTS`，烘焙侧读本常量，两处各写一份会漂移出「烘焙给了 tone
+ * 而渲染层不认该部件」的静默失效。本模块是纯函数（无 node: 依赖），可以 import config。
  *
  * ⚠️⚠️ **`skirt`（车体上层裙板）必须在内**（用户实玩缺陷 2，2026-11-18）：
  * 塔身最低点 y=0.341，而 obsidian 柱顶在 y=−0.3 ⇒ 中间 **0.64 格完全空缺**，
  * 斜下仰视时射线直接穿过去看到天空（实测 20 条斜射有 5 条穿过），
  * 观感是「塔身浮空一片薄板」。skirt 的世界 y 范围 [−0.453, 0.416] 正好补上这段。
  */
-export const TURRET_TOP_ARMOR = Object.freeze(['cheek', 'mantlet', 'deckMid', 'ring', 'nose', 'skirt']);
+export const TURRET_TOP_ARMOR = TURRET_TONED_PARTS;
 /** 走纯色的部件（炮管 + 两组副武器；用户明确允许炮管是灰色而非黑色） */
 export const TURRET_TOP_SOLID = Object.freeze(['barrel', 'podR', 'podL']);
 
@@ -186,6 +198,42 @@ export function zoneOf(p, threshold = TURRET_TOP_PARAMS.zoneNyThreshold) {
   const { n } = geomNormal(p);
   if (n[1] > threshold || n[1] < -threshold) return 'top';
   return Math.abs(n[0]) >= Math.abs(n[2]) ? 'side' : 'front';
+}
+
+/**
+ * 面归属哪个**色调档**（v3.14，按几何法线的 ny 符号）。
+ *
+ * ⚠️⚠️ **与 `zoneOf` 不是同一套语义，不得互推**：
+ *   · `zoneOf`（UV 区）：front/side/top，按**主轴**分，**底面归 top**
+ *     （照 mc-lite「BACK 也用 pic3」的同口径，那时底面没有专属贴图）；
+ *   · `toneOf`（色调档）：0=顶 / 1=侧 / 2=底，按 **ny 符号**分。
+ * 照抄 `zoneOf` 会让所有底面拿到**最亮档** ⇒ 裙板底面在仰视时发白（而顶点数/
+ * 值域/长度判据全绿）。实测 nose 的 front 区 215 面而色调 side 档 277 面。
+ *
+ * 阈值与 UV 区同为 0.85（实测标定），但读独立字段 `toneNyThreshold`。
+ * 判据是**严格大于**：ny 恰等阈值归 side（与 `zoneOf` 同口径）。
+ *
+ * @param {number[][]} p 面的顶点坐标
+ * @param {number} [threshold]
+ * @returns {0|1|2} 0=顶面（最亮）/ 1=侧面（中）/ 2=底面（最暗）
+ */
+export function toneOf(p, threshold = TURRET_TOP_PARAMS.toneNyThreshold) {
+  const { n } = geomNormal(p);
+  if (n[1] > threshold) return 0;
+  if (n[1] < -threshold) return 2;
+  return 1;
+}
+
+/**
+ * 法线向量直接判档（封口面的环平面法线已算好，不必再造面）。
+ * ⚠️ 与 `toneOf` **共用同一阈值与同一严格大于口径** —— 两处各写一份会让
+ * 封口面与源面在阈值附近分档不一致。
+ * @param {number} ny @param {number} [threshold] @returns {0|1|2}
+ */
+export function toneOfNy(ny, threshold = TURRET_TOP_PARAMS.toneNyThreshold) {
+  if (ny > threshold) return 0;
+  if (ny < -threshold) return 2;
+  return 1;
 }
 
 /**
@@ -335,6 +383,11 @@ function capCutOpenings(g, modelPts, params) {
       const u = (q[ua] - umin) / (umax - umin || 1);
       const v = (q[va] - vmin) / (vmax - vmin || 1);
       g.uv.push(zi / params.zones.length + u / params.zones.length, v);
+      // 色调档按**环平面法线**判（与源面同口径，共用 toneOfNy）。
+      // ⚠️ 不能拿 `zone` 映成档：zone 把底面归 'top'，映过去会让切口底面拿到最亮档。
+      // 实测：cheek/mantlet 的封口环 ny=−1 ⇒ 档 2；deckMid 的 ny=0.979 ⇒ 档 0；
+      // nose 的四个环 ny≈0 ⇒ 档 1。三者各不相同，按 zone 映会全错。
+      g.tone.push(toneOfNy(n[1], params.toneNyThreshold));
       return vi;
     };
     const ci = push(lc);
@@ -376,29 +429,34 @@ function capCutOpenings(g, modelPts, params) {
 
 export function buildPartGeometry(faces, key, params = TURRET_TOP_PARAMS) {
   const k = params.scale, py = params.pivotY;
-  const position = [], normal = [], uv = [], index = [];
-  const textured = TURRET_TOP_ARMOR.includes(key);
+  const position = [], normal = [], uv = [], index = [], tone = [];
+  const toned = TURRET_TOP_ARMOR.includes(key);
   /** 纯色部件的焊接表：模型坐标+法线 → 顶点下标 */
   const weld = new Map();
 
-  /** 追加一个顶点（世界化坐标 + 原样法线 + 给定 UV），返回下标 */
-  const pushVertex = (q, n, u, v) => {
+  /** 追加一个顶点（世界化坐标 + 原样法线 + 给定 UV + 色调档），返回下标 */
+  const pushVertex = (q, n, u, v, t) => {
     const vi = position.length / 3;
     position.push(q[0] * k, (q[1] - py) * k, q[2] * k);
     normal.push(n[0], n[1], n[2]);
     uv.push(u, v);
+    tone.push(t);
     return vi;
   };
 
   for (const face of faces) {
     const { n: gn } = geomNormal(face.p);
+    // 色调档：**每个面一个值**（逐顶点写同一值）。
+    // ⚠️ 不能用顶点法线 face.n 判：那是平滑法线，同一面四角各不相同
+    // ⇒ 一个面内会出现多个档，平面被拆成色斑（与着色分类用几何法线同一理由）。
+    const faceTone = toneOfNy(gn[1], params.toneNyThreshold);
     // UV 投影：丢弃几何法线的主轴，另两轴在**该面自身 bbox** 内归一化
     let axis = 0;
     for (let j = 1; j < 3; j++) if (Math.abs(gn[j]) > Math.abs(gn[axis])) axis = j;
     const [ua, va] = [0, 1, 2].filter((j) => j !== axis);
     let umin = Infinity, umax = -Infinity, vmin = Infinity, vmax = -Infinity;
     let zoneIndex = 0;
-    if (textured) {
+    if (toned) {
       zoneIndex = params.zones.indexOf(zoneOf(face.p));
       for (const q of face.p) {
         if (q[ua] < umin) umin = q[ua];
@@ -410,18 +468,21 @@ export function buildPartGeometry(faces, key, params = TURRET_TOP_PARAMS) {
     const base = [];
     for (let i = 0; i < face.p.length; i++) {
       const q = face.p[i], n = face.n[i];
-      if (textured) {
+      if (toned) {
         const u = (q[ua] - umin) / (umax - umin || 1);
         const v = (q[va] - vmin) / (vmax - vmin || 1);
         // 只改 u 压进对应区，不碰 v（沿用现有 applyZoneUV 的口径）
         base.push(pushVertex(q, n,
-          zoneIndex / params.zones.length + u / params.zones.length, v));
+          zoneIndex / params.zones.length + u / params.zones.length, v, faceTone));
       } else {
         const wkey = `${q[0].toFixed(4)},${q[1].toFixed(4)},${q[2].toFixed(4)}|`
           + `${n[0].toFixed(4)},${n[1].toFixed(4)},${n[2].toFixed(4)}`;
         let vi = weld.get(wkey);
         if (vi === undefined) {
-          vi = pushVertex(q, n, 0, 0);
+          // 焊接顶点的档由**首次出现的面**定（与焊接键同口径）。
+          // 纯色部件不消费 tone（渲染层走单一基色），但仍写齐 ⇒ 产物形状统一、
+          // 门禁的「tone 长度 == 顶点数」对九部件一致成立。
+          vi = pushVertex(q, n, 0, 0, faceTone);
           weld.set(wkey, vi);
         }
         base.push(vi);
@@ -429,9 +490,9 @@ export function buildPartGeometry(faces, key, params = TURRET_TOP_PARAMS) {
     }
     for (let i = 1; i < base.length - 1; i++) index.push(base[0], base[i], base[i + 1]);
   }
-  const out = { position, normal, uv, index };
+  const out = { position, normal, uv, index, tone };
   // ⚠️ 装甲部件的切口必须封口，否则成开放壳、从切口看穿（用户实玩缺陷）。
   //    纯色部件（炮管/副武器）的开口是原模型设计，不封。
-  if (textured) capCutOpenings(out, faces.flatMap((f) => f.p), params);
+  if (toned) capCutOpenings(out, faces.flatMap((f) => f.p), params);
   return out;
 }

@@ -1,4 +1,9 @@
-// src/render/turret-metal.js — 炮管/副武器的金属材质（深灰炮钢 + 随光照反光）
+// src/render/turret-metal.js — 炮塔金属材质（深灰炮钢 + 随光照反光）
+//
+// 两类消费方（v3.14）：
+//   · **炮管 / 副武器**：单一基色（`TURRET_GUN_COLOR`）；
+//   · **装甲 6 部件**：三档基色（`TURRET_TONE_COLOR`），由逐顶点 `tone` 属性选。
+// 两者共用同一套四项叠加，只差「基色怎么选」—— 故 draw call 与材质数不变。
 //
 // **为什么不用 MeshStandardMaterial**：本仓全场景是 unlit 设计，场景灯光只为 PBR 武器
 // 模型标定（`game.js` 的 sunLight 那套）。实体若吃那套灯光会偏亮且随日夜漂移
@@ -26,7 +31,7 @@
 // 逐顶点法线才能出连续高光带；用面索引会退化成 6 个色块。
 import * as THREE from 'three';
 import {
-  float, vec3, uniform, mix, dot, max, normalize, pow, clamp,
+  float, vec3, uniform, mix, dot, max, normalize, pow, clamp, select, attribute,
   cameraPosition, positionWorld, normalWorld,
 } from 'three/tsl';
 
@@ -62,13 +67,44 @@ export const TURRET_METAL = Object.freeze({
  * 造一个金属材质。
  *
  * @param {{color: number, sunDirection: object, sunStrength?: object,
- *          sunColor?: object}} deps
+ *          sunColor?: object, tones?: readonly number[]}} deps
  *        `sunDirection` **必须**传 `renderWorld.materials.dayNight.uSunDirection`。
  *        `sunStrength` / `sunColor` 可选（传入则跟随日夜强度与色温）。
+ *        `tones` 可选：三档基色 `[顶, 侧, 底]`（v3.14 装甲部件）。
+ *        传了则基色由逐顶点 `tone` 属性（0/1/2）选；不传则用单一 `color`
+ *        （炮管/副武器走这条，**逐位回到现状**）。
  * @returns {THREE.MeshBasicNodeMaterial}
  */
-export function createTurretMetalMaterial({ color, sunDirection, sunStrength, sunColor }) {
-  const base = uniform(new THREE.Color(color));
+export function createTurretMetalMaterial({ color, sunDirection, sunStrength, sunColor, tones }) {
+  // 基色：单一色 or 三档选色。
+  //
+  // ⚠️⚠️ **不能用 `vertexColors: true` + `color` 属性代替**（设计文档 §6.1 否决项 B）：
+  // three 把顶点色乘在 `colorNode` **之后**（`three.webgpu.js` 的 setupDiffuseColor）
+  // ⇒ 本函数的高光/环境/菲涅尔项会用**材质基色**而不是顶点色去染色，
+  // 三档的反射色调全错（而亮度层次看上去「像是生效了」）。
+  // 故基色必须在**进入四项叠加之前**就选好。
+  //
+  // ⚠️⚠️ **不得写 `vec3(new THREE.Color(hex))`**（v3.14 实测缺陷）：
+  // 那种单参数形式在 WebGPU 后端**输出纯黑且零报错** —— 装甲 6 部件整片消失，
+  // 而 tone 属性/值域/冻结表/材质类型判据全绿。根因：`vec3` 单参数走「转成 vec3」
+  // 路径，而 `getValueType(Color)` 返回 `'color'` 不是 `'vec3'` ⇒ 转换拿不到分量。
+  // 逐写法实测（同一几何同一相机，非黑像素数）：
+  //   vec3(Color) **0** / vec3(c.r,c.g,c.b) 10455 / color(hex) 10455 / uniform(Color) 10455
+  // 正解：**显式拆分量** `vec3(c.r, c.g, c.b)`。
+  //
+  // ⚠️ **用 `select` 链而不是查表数组**：照 `materials.js` 的面法线解码同手法
+  // （GLSL 无动态索引常量数组的便携写法）。tone 是逐顶点常量 ⇒ 编译期可折叠。
+  let base;
+  if (tones) {
+    const t = attribute('tone');
+    const nodes = tones.map((hex) => {
+      const c = new THREE.Color(hex);
+      return vec3(c.r, c.g, c.b);
+    });
+    base = nodes.slice(1).reduce((acc, n, i) => select(t.equal(i + 1), n, acc), nodes[0]);
+  } else {
+    base = uniform(new THREE.Color(color));
+  }
   const shine = float(TURRET_METAL.shininess);
   const specK = float(TURRET_METAL.specular);
   const envK = float(TURRET_METAL.envStrength);

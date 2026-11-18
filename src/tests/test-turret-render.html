@@ -17,54 +17,53 @@
 <body>
 <script type="module">
   import * as THREE from 'three';
+  import { uniform } from 'three/tsl';
   import { TurretRenderer } from '../render/turret-renderer.js';
-  import { loadTurretArmorTexture } from '../render/turret-armor-texture.js';
   import { loadTurretTopGeometry } from '../render/turret-top-geometry.js';
-  import { TURRET_PARTS, TURRET_PART_DEFS } from '../entities/turrets/turret-config.js';
+  import { TURRET_PARTS, TURRET_TONED_PARTS } from '../entities/turrets/turret-config.js';
+  import { NOON_SUN_DIR } from '../render/sun-shade.js';
 
-  // Tier 4 像素实测场景（M8 Task 5：炮塔装甲 UV 分区）。
+  // Tier 4 像素实测场景（v3.14：炮头去贴图 → 三档冷灰金属）。
   //
-  // **为什么必须像素实测**：纹理采样在 GPU 求值，单测读不到片元输出（testing-policy §5.1）。
-  // 单测只能钉住 UV 属性数值，无法证明 GPU 真的按那个 UV 采到了对应区 —— 区序错了、
-  // 纹理没加载、map 没生效，单测全绿而渲染是错的。
+  // **为什么必须像素实测**：TSL 的 select 链与四项叠加都在 GPU 求值，单测读不到片元输出
+  // （testing-policy §5.1）。单测只能钉住 tone 属性数值，无法证明 GPU 真的按那个档选了色。
   //
   // 单个炮塔 + 隔离场景（黑背景，无地形/光照干扰）。**渲染由 spec 驱动**（一个相机只能看
   // 一个方向，截图只有最后一帧 —— 多次渲染会互相覆盖）。
   //
-  // ⚠️ **取样点从实例矩阵反解，不硬编码世界坐标**：部件的局部变换（含前装甲板的
-  // `rotX: -π/8`）在矩阵里，硬编码位置会在倾斜部件上取偏（testing-policy §2.7 第 9 类：
-  // 取样点没对准被测部件 → 注入仍全绿）。
+  // ⚠️ **取样点从实例矩阵反解，不硬编码世界坐标**：yaw/pitch 非零时硬编码会取偏。
+  //
+  // ⚠️⚠️ **toneMapping 用 NoToneMapping**（与本夹具历史口径一致），而真实游戏是 ACES
+  // ⇒ spec 的阈值按**无 tone mapping** 的实测值标定，不得混用两套数。
   async function run() {
     const renderer = new THREE.WebGPURenderer({ antialias: false });
     renderer.setSize(400, 300);
     document.body.appendChild(renderer.domElement);
     await renderer.init();
     renderer.toneMapping = THREE.NoToneMapping;
-    // outputColorSpace 用 SRGBColorSpace（真实游戏口径，game.js 的 renderer 同款）——
-    // 用 SRGB 输出则读到的值接近原始纹理参数，阈值可对着烘焙产物读（zombie-model 同款理由）。
     renderer.outputColorSpace = THREE.SRGBColorSpace;
 
-    const [texture, topGeometry] = await Promise.all([loadTurretArmorTexture(), loadTurretTopGeometry()]);
+    const topGeometry = await loadTurretTopGeometry();
+    if (!topGeometry) throw new Error('塔顶几何加载失败');
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x000000);   // 黑背景：落到背景的取样点会是纯黑
-    const tr = new TurretRenderer({ scene, maxActive: 1, armorTexture: texture, topGeometry });
+    // ⚠️ **必须传太阳 uniform**：不传会走纯色退回路径（MeshBasic），
+    // 那样量到的是基色本身而不是金属着色结果 —— 判据会失去对「三档真的生效」的判别力。
+    const sunDir = uniform(new THREE.Vector3(...NOON_SUN_DIR));
+    const sunStr = uniform(1.0);
+    const tr = new TurretRenderer({
+      scene, maxActive: 1, topGeometry,
+      sunDirection: sunDir, sunStrength: sunStr,
+    });
 
-    // 一个炮塔在原点、yaw=0/pitch=0（正面朝 +Z）。直接写 pose —— 本 fixture 只验渲染，
-    // 玩法层不参与（绕开放置门控与地形依赖）。
     const pose = { position: [0, 0, 0], yaw: 0, pitch: 0 };
     tr.sync(new Map([['probe', pose]]));
 
     // ---------- 取样点：按「面积降序 + 射线无遮挡」从产物几何反解 ----------
     //
-    // ⚠️⚠️ **不能直接取最大面，也不能只查近邻遮挡**（spec §9 实测）：
-    //   · mantlet.side 最大面（A=545）被 cheek 在 1.885 格处挡住 → 要跳到第 3 个；
-    //   · nose.side 最大面（A=354）被 podL 在 1.031 格处挡住 → 第 7 个；
-    //   · nose.top 最大面（A=354）是中央腔内顶面（炮管通道）→ 第 3 个。
+    // ⚠️⚠️ **不能直接取最大面**：mantlet/nose 的最大面被别的部件挡住或是内腔面。
     // 故用 Möller–Trumbore 射线：相机置面心 + 法线×DIST，向面心发射，
     // 首个命中距离 ≥ DIST−1e-4 才算可见。
-    //
-    // ⚠️ **仍从实例矩阵反解**：下面算的是**局部**面心与法线，渲染时经 getMatrixAt 变换。
-    // yaw/pitch 非零时硬编码世界坐标会取偏。
     const DIST = 2.4;
     const allTris = [];
     for (const [part, g] of Object.entries(topGeometry.parts)) {
@@ -96,7 +95,6 @@
       const tt = dot3(e2, qv) * inv;
       return tt > 1e-7 ? tt : null;
     }
-    /** 该面在「相机沿法线外置 DIST」时是否可见（首个命中就是自己） */
     function faceVisible(center, n) {
       const eye = [center[0] + n[0] * DIST, center[1] + n[1] * DIST, center[2] + n[2] * DIST];
       const dir = [-n[0], -n[1], -n[2]];
@@ -108,58 +106,60 @@
       return best >= DIST - 1e-4;
     }
     /**
-     * 面所属区 —— ⚠️ **必须按几何法线独立判定，不能从 UV 的 u 反推**。
+     * 面所属**色调档** —— ⚠️⚠️ **必须按几何法线独立判定，不能读产物的 tone 属性**。
      *
-     * 从 u 反推会与被测代码**共用同一个错误假设**：注入「side 区的面改采 front 区」后，
-     * u 反推会把那些面认成 front，于是 fixture 去挑**别的**面做 side 取样
-     * ⇒ 像素判据仍全绿（2026-11-18 实测踩到）。
-     * 用法线判定则取样面固定，UV 错了就直接采到错区 → 判据红。
+     * 读 tone 会与被测代码**共用同一个错误假设**：注入「tone 恒 1」后，fixture 会
+     * 把所有面都认成档 1，于是去挑别的面做档 0/2 的取样（或根本挑不到）
+     * ⇒ 像素判据可能仍全绿。用法线判定则取样面固定，tone 错了就直接采到错色 → 判据红。
      *
-     * 口径与烘焙侧 `zoneOf` 一致（阈值 0.85，底面也归 top）。
+     * 口径与烘焙侧 `toneOf` 一致（阈值 0.85，**底面独立成档**，不像 zoneOf 归 top）。
      */
-    function faceZoneByNormal(v) {
-      const n = triNormal(v);
-      if (n[1] > 0.85 || n[1] < -0.85) return 'top';
-      return Math.abs(n[0]) >= Math.abs(n[2]) ? 'side' : 'front';
+    function faceToneByNormal(v) {
+      const ny = triNormal(v)[1];
+      if (ny > 0.85) return 0;
+      if (ny < -0.85) return 2;
+      return 1;
     }
-    /**
-     * 选一个「指定部件 + 指定区」的可见面，返回局部面心与法线。
-     * 按面积降序试，取第一个可见的。
-     */
-    function pickFace(part, zone) {
+    /** 选一个「指定部件 + 指定档」的可见面，返回局部面心与法线（按面积降序试）。 */
+    function pickFace(part, tone) {
       const g = topGeometry.parts[part];
       const cands = [];
       for (let i = 0; i < g.index.length; i += 3) {
-        const v = [g.index[i], g.index[i + 1], g.index[i + 2]].map((j) => [
+        const ids = [g.index[i], g.index[i + 1], g.index[i + 2]];
+        const v = ids.map((j) => [
           g.position[j * 3], g.position[j * 3 + 1], g.position[j * 3 + 2],
         ]);
-        if (zone !== null && faceZoneByNormal(v) !== zone) continue;
-        cands.push({ v, area: triArea(v), n: triNormal(v) });
+        if (tone !== null && faceToneByNormal(v) !== tone) continue;
+        cands.push({ v, area: triArea(v), n: triNormal(v), tone: g.tone[ids[0]] });
       }
       cands.sort((a, b) => b.area - a.area);
       for (const c of cands) {
         const cen = [0, 1, 2].map((j) => (c.v[0][j] + c.v[1][j] + c.v[2][j]) / 3);
-        if (faceVisible(cen, c.n)) return { center: cen, normal: c.n, area: c.area };
+        if (faceVisible(cen, c.n)) {
+          return { center: cen, normal: c.n, area: c.area, productTone: c.tone };
+        }
       }
       return null;
     }
-    // 三区主判据（spec §9 实测：这三个都是第 1 候选即可见，最稳）
+    // 三档主判据的取样部件（实测：这三个部件在对应档都有可见面）
+    //   档 0（顶）：cheek 的大斜面 ny=0.967，面积最大且无遮挡
+    //   档 1（侧）：cheek 的大侧壁 ny=0.273
+    //   档 2（底）：skirt 的底面 ny=−1（车体裙板下表面）
     const SAMPLES = {
-      front: { part: 'cheek', zone: 'front' },
-      side: { part: 'cheek', zone: 'side' },
-      top: { part: 'mantlet', zone: 'top' },
+      top: { part: 'cheek', tone: 0 },
+      side: { part: 'cheek', tone: 1 },
+      bottom: { part: 'skirt', tone: 2 },
     };
     const picked = {};
     for (const [view, s2] of Object.entries(SAMPLES)) {
-      picked[view] = pickFace(s2.part, s2.zone);
-      if (!picked[view]) throw new Error(`取样面不可见：${s2.part}.${s2.zone}`);
+      picked[view] = pickFace(s2.part, s2.tone);
+      if (!picked[view]) throw new Error(`取样面不可见：${s2.part} 档 ${s2.tone}`);
     }
     const barrelPick = pickFace('barrel', null);
     if (!barrelPick) throw new Error('炮管取样面不可见');
 
     const _m = new THREE.Matrix4();
     const _nm = new THREE.Matrix3();
-    /** 局部面心/法线 → 世界（经该部件的实例矩阵） */
     function worldFace(part, pick) {
       tr.meshes[part].getMatrixAt(0, _m);
       const c = new THREE.Vector3(...pick.center).applyMatrix4(_m);
@@ -172,7 +172,6 @@
       const v = new THREE.Vector3(wx, wy, wz).project(camera);
       return { x: Math.round((v.x * 0.5 + 0.5) * 400), y: Math.round((-v.y * 0.5 + 0.5) * 300) };
     };
-    /** 相机沿被测面的外法线外置 DIST，看向面心 */
     function camFor(wf) {
       const c = mkCam();
       c.position.set(
@@ -184,18 +183,22 @@
       return c;
     }
 
-    /** spec 调用：切到指定区视角渲染一帧，返回取样点 + 部件名 */
+    /** spec 调用：切到指定档的视角渲染一帧，返回取样点 + 部件名 + 产物记录的档 */
     window.__TT_RENDER__ = (view) => {
       if (!SAMPLES[view]) throw new Error(`unknown view: ${view}`);
       const wf = worldFace(SAMPLES[view].part, picked[view]);
       const cam = camFor(wf);
-      // 渲染两帧：WebGPU 首帧可能还在编译 shader，第二帧才是稳定结果
       renderer.render(scene, cam);
-      renderer.render(scene, cam);
-      return { point: project(cam, ...wf.center), part: SAMPLES[view].part, zone: SAMPLES[view].zone };
+      renderer.render(scene, cam);   // 首帧可能在编译 shader
+      return {
+        point: project(cam, ...wf.center),
+        part: SAMPLES[view].part,
+        tone: SAMPLES[view].tone,
+        productTone: picked[view].productTone,
+      };
     };
 
-    /** 炮管视角（纯色部件对照：不带 map → 渲染为纯色而非贴图） */
+    /** 炮管视角（单色部件对照：比装甲暗） */
     window.__TT_RENDER_BARREL__ = () => {
       const wf = worldFace('barrel', barrelPick);
       const cam = camFor(wf);
@@ -205,17 +208,74 @@
     };
 
     /**
+     * 同法线对照（v3.14）：把指定部件的 tone 属性**整体改成指定档**，其余不动。
+     *
+     * ⚠️⚠️ **这是「三档色值真的不同」的唯一判据**（负向验证实测）：
+     * 三个取样面法线不同 ⇒ 即使三档色值全等，N·L / 环境 / 菲涅尔仍造出亮度差
+     * （实测顶−侧 24.6 / 侧−底 29.5）⇒ 「三档亮度递减」对色值全等**零判别力**。
+     * 本接口把**同一个面**的 tone 依次改成 0/1/2，几何与相机完全不动
+     * ⇒ 唯一变量就是档位，亮度差只能来自色值。
+     *
+     * @param {string} part @param {number|null} tone null = 恢复产物原值
+     * @returns 该部件当前 tone 分布（供自检）
+     */
+    window.__TT_SET_TONE__ = (part, tone) => {
+      const attr = tr.meshes[part].geometry.getAttribute('tone');
+      const src = topGeometry.parts[part].tone;
+      for (let i = 0; i < attr.count; i++) {
+        attr.array[i] = tone === null ? src[i] : tone;
+      }
+      attr.needsUpdate = true;
+      const c = [0, 0, 0];
+      for (let i = 0; i < attr.count; i++) c[attr.array[i]]++;
+      return c;
+    };
+
+    /** 重新渲染指定档的取样视角（配合 __TT_SET_TONE__ 做单变量对照） */
+    window.__TT_RESHOOT__ = (view) => {
+      const wf = worldFace(SAMPLES[view].part, picked[view]);
+      const cam = camFor(wf);
+      renderer.render(scene, cam);
+      renderer.render(scene, cam);
+      return project(cam, ...wf.center);
+    };
+
+    /** 只留指定部件渲染（金属高光判据用：藏掉同色宿主，避免统计被淹没） */
+    window.__TT_RENDER_SOLO__ = (part, a) => {
+      sunDir.value.set(a.sun[0], a.sun[1], a.sun[2]).normalize();
+      sunStr.value = a.strength;
+      tr.sync(new Map([['probe', { position: [0, 0, 0], yaw: 0, pitch: 0 }]]));
+      for (const k of Object.keys(tr.meshes)) tr.meshes[k].visible = (k === part);
+      const cam = new THREE.PerspectiveCamera(45, 400 / 300, 0.05, 100);
+      // 看向该部件的 bbox 中心
+      const g = topGeometry.parts[part];
+      const mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
+      for (let i = 0; i < g.position.length; i += 3) {
+        for (let c = 0; c < 3; c++) {
+          mn[c] = Math.min(mn[c], g.position[i + c]);
+          mx[c] = Math.max(mx[c], g.position[i + c]);
+        }
+      }
+      const cen = [0, 1, 2].map((c) => (mn[c] + mx[c]) / 2);
+      cam.position.set(
+        cen[0] + a.dist * Math.cos(a.camPitch) * Math.sin(a.camYaw),
+        cen[1] + a.dist * Math.sin(a.camPitch),
+        cen[2] + a.dist * Math.cos(a.camPitch) * Math.cos(a.camYaw),
+      );
+      cam.lookAt(...cen);
+      renderer.render(scene, cam);
+      renderer.render(scene, cam);
+    };
+
+    /**
      * 刚性姿态视角：指定 pitch 渲染一帧，返回「炮管与鼻段连接处」的屏幕坐标。
      * 判据用：该处不得出现背景色像素（炮管分离的直接证据）。
-     * 连接处取 nose 的 z 最小面心与 barrel 的 z 最小面心之中点（两者刚性相连）。
      */
     window.__TT_RENDER_POSE__ = (pitchDeg) => {
+      // 恢复全部部件可见（__TT_RENDER_SOLO__ 会隐藏它们）
       tr.sync(new Map([['probe', { position: [0, 0, 0], yaw: 0, pitch: pitchDeg * Math.PI / 180 }]]));
-      // ⚠️⚠️ **取样点必须落在炮管表面，不能取轴上中点**（final review Important 3）：
-      // 旧写法 (0,0,(noseZmin+barrelZmin)/2) ≈ (0,0,1.425) 落在 nose **中央腔内**
+      // ⚠️⚠️ **取样点必须落在炮管表面，不能取轴上中点**：轴上点落在 nose 中央腔内
       // （炮管通道），侧视相机看到的是 nose 外壁 ⇒ 与炮管是否在位无关，零判别力。
-      // 改为：炮管尾端截面（z = barrelZmin）上**径向最外**的一点 —— 它在炮管表面上，
-      // 炮管若脱离该处立刻露出背景。
       const bp = topGeometry.parts.barrel.position;
       let barrelZmin = Infinity;
       for (let i = 2; i < bp.length; i += 3) barrelZmin = Math.min(barrelZmin, bp[i]);
@@ -223,12 +283,10 @@
       for (let i = 0; i < bp.length; i += 3) {
         if (Math.abs(bp[i + 2] - barrelZmin) > 1e-6) continue;
         const r = Math.hypot(bp[i], bp[i + 1]);
-        // 取 +X 侧最外点（侧视相机在 +X，正对相机）
         if (r > bestR && bp[i] > 0) { bestR = r; jointLocal = [bp[i], bp[i + 1], bp[i + 2]]; }
       }
       tr.meshes.barrel.getMatrixAt(0, _m);
       const j = new THREE.Vector3(...jointLocal).applyMatrix4(_m);
-      // 侧视相机（沿 +X 看），距离 5 格，看向连接处
       const cam = mkCam();
       cam.position.set(j.x + 5, j.y + 0.6, j.z);
       cam.lookAt(j.x, j.y, j.z);
@@ -239,17 +297,39 @@
 
     /** 取样面的实测信息（spec 可打印核对，防「取样点没对准被测部件」） */
     window.__TT_SAMPLES__ = Object.fromEntries(Object.entries(SAMPLES).map(([view, s2]) => [
-      view, { part: s2.part, zone: s2.zone, area: picked[view].area, center: picked[view].center, normal: picked[view].normal },
+      view, {
+        part: s2.part, tone: s2.tone, area: picked[view].area,
+        center: picked[view].center, normal: picked[view].normal,
+        productTone: picked[view].productTone,
+      },
     ]));
 
-    // 前提：渲染器确实拿到纹理（spec 断言此值，防「加载失败 → 退回纯色」静默缺失）
     window.__TT_INFO__ = {
-      textureLoaded: !!texture,
-      textureSize: [texture?.image?.width, texture?.image?.height],
-      armorPartsHaveMap: TURRET_PARTS.filter((p) => !!tr.meshes[p]?.material.map),
-      solidPartsHaveMap: TURRET_PARTS.filter((p) => !TURRET_PART_DEFS[p].textured && !!tr.meshes[p]?.material.map),
-      meshNames: TURRET_PARTS.map((p) => tr.meshes[p]?.name),
       topGeometryLoaded: !!topGeometry,
+      // 贴图路径已删除：**全部 9 部件都不得带 map**
+      partsWithMap: TURRET_PARTS.filter((p) => !!tr.meshes[p]?.material.map),
+      // 全部 9 部件都走金属 TSL（有 colorNode）
+      partsWithColorNode: TURRET_PARTS.filter((p) => !!tr.meshes[p]?.material.colorNode),
+      tonedParts: [...TURRET_TONED_PARTS],
+      // 每部件的 tone 属性都真的上传了
+      partsWithToneAttr: TURRET_PARTS.filter((p) => !!tr.meshes[p]?.geometry.getAttribute('tone')),
+      meshNames: TURRET_PARTS.map((p) => tr.meshes[p]?.name),
+      toneMapping: renderer.toneMapping,
+      /**
+       * 逐部件三档顶点数 —— **从 GPU 上传的几何属性读**，不是从 JSON 读。
+       *
+       * ⚠️⚠️ **这条是「tone 恒 1」分类退化的唯一像素层防线**（负向验证实测）：
+       * 三个取样面的**法线不同**，即使 tone 全相同，四项叠加的 N·L / 环境 / 菲涅尔
+       * 仍会造出亮度差 ⇒ 「三档亮度递减」判据在注入后**仍绿**
+       * （实测顶−侧 24.6 / 侧−底 29.5，均 >20）。
+       * 故必须直接钉「上传的 tone 分布」—— 它不依赖光照，退化即红。
+       */
+      toneCounts: Object.fromEntries(TURRET_PARTS.map((p) => {
+        const attr = tr.meshes[p]?.geometry.getAttribute('tone');
+        const c = [0, 0, 0];
+        if (attr) for (let i = 0; i < attr.count; i++) c[attr.array[i]]++;
+        return [p, c];
+      })),
     };
     /** 无炮塔时的可见性（draw call 回基线的前提断言） */
     window.__TT_CLEAR__ = () => { tr.sync(new Map()); return TURRET_PARTS.filter((p) => tr.meshes[p]?.visible); };

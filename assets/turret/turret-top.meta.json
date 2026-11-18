@@ -1,6 +1,6 @@
 {
   "fingerprints": {
-    "input": "b349851cb57aa044:dcd6cdcf905eabd3"
+    "input": "b349851cb57aa044:ce04cb23e7345217"
   },
   "metrics": {
     "productFaces": 2128,
@@ -62,6 +62,53 @@
         "side": 194,
         "top": 25
       }
+    },
+    "toneVertices": {
+      "cheek": [
+        256,
+        304,
+        30
+      ],
+      "mantlet": [
+        116,
+        112,
+        21
+      ],
+      "deckMid": [
+        82,
+        0,
+        0
+      ],
+      "ring": [
+        81,
+        452,
+        79
+      ],
+      "nose": [
+        8,
+        1206,
+        8
+      ],
+      "skirt": [
+        131,
+        2015,
+        64
+      ],
+      "barrel": [
+        80,
+        1120,
+        132
+      ],
+      "podR": [
+        64,
+        832,
+        64
+      ],
+      "podL": [
+        32,
+        416,
+        32
+      ]
     }
   }
 }
