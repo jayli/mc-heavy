@@ -33,6 +33,7 @@ import { getCityBoundsForSeed } from '../gen/structures/city-layout.js';
 import { CITY_TRANSITION_SIZE, REGION_SIZE, LANDMARK_OFFSET } from '../gen/structures/region-config.js';
 import {
   jungleFortressSurfaceYAt, inJungleFortressTerraform,
+  jungleFortressGeometry,
   JUNGLE_FORTRESS_SLOPE_BAND,
 } from '../gen/structures/jungle-fortress-terrain.js';
 import { rollVegetation, generateTree } from '../gen/structures/vegetation.js';
@@ -1343,3 +1344,109 @@ test('丛林要塞漏底：修补格不得填死产物 air（房间竖井），�
   assertEqual(shaftFilled, 0, `产物 air（房间竖井）不得被填死（实际被填 ${shaftFilled} 格）`);
   assertTrue(patched > 0, `seed 4242 必须真的有补格（实际 ${patched}）—— 否则本用例无判别力`);
 });
+
+// ==================== 观感验收：地下可见率 / 地上被埋率（v3.16 DR-5）====================
+//
+// 用户诉求：「地下部分可以一部分裸露，让地上部分因高低差更真实宏伟」。
+// 这组用例是**诉求本身的验收**：若 baseY 退回 minH（不抬升），可见率全归 0。
+//
+// ⚠️ 钉**区间**不钉精确值（逐列几何判定换 seed 会漂）；区间取自 8 seed 实测极值外扩。
+// ⚠️ 可见判据必须含**水平四邻至少一侧地表低于它**：只判「高于地表」会把被邻列
+//    地形挡住的格也算成可见（本仓地形相邻高差恒 ≤1 时两者相等，换公式后失效）。
+
+/** 产物分类冻结格数（spec §2.4，红坡无关 —— 只依赖产物） */
+const JF_CAT = { base: 30227, shell: 1321, roomAir: 1017, shaft: 577, above: 29165 };
+
+/**
+ * 把产物逐格分为五类（纯产物几何，不依赖 seed）：
+ *   base    地下实心且不邻地下房间 air（纯基座/柱）
+ *   shell   地下实心且六邻有地下房间 air（房间外壳）
+ *   roomAir 地下 air 且上方有顶盖（封闭房间内腔）
+ *   shaft   地下 air 且上方无顶盖（露天竖井）
+ *   above   地上实心 dy>0（真埋墙口径，dy0 地板层不算）
+ */
+function jfCategories(data, G) {
+  const cat = new Map();
+  const counts = { base: 0, shell: 0, roomAir: 0, shaft: 0, above: 0 };
+  for (const b of data.blocks) {
+    const k = `${b.x},${b.y},${b.z}`;
+    if (b.type === 'air') {
+      if (b.y >= G.floorRow) continue;
+      const hasRoof = G.colMaxNy.get(`${b.x},${b.z}`) > b.y;
+      const c = hasRoof ? 'roomAir' : 'shaft';
+      cat.set(k, c); counts[c]++;
+      continue;
+    }
+    if (b.y >= G.floorRow) {
+      if (b.y > G.floorRow) { cat.set(k, 'above'); counts.above++; }
+      continue;
+    }
+    let adj = false;
+    for (const d of [[1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, 1, 0], [0, -1, 0]]) {
+      if (G.roomAir.has(`${b.x + d[0]},${b.y + d[1]},${b.z + d[2]}`)) { adj = true; break; }
+    }
+    const c = adj ? 'shell' : 'base';
+    cat.set(k, c); counts[c]++;
+  }
+  return { cat, counts };
+}
+
+test('丛林要塞观感：产物五类格数命中冻结值（分类口径自身的守卫）', async () => {
+  const data = await loadStructure('jungleFortress');
+  const G = jungleFortressGeometry(data);
+  const { counts } = jfCategories(data, G);
+  for (const [k, want] of Object.entries(JF_CAT)) {
+    assertEqual(counts[k], want, `分类 ${k} 格数`);
+  }
+});
+
+test('丛林要塞观感：地下基座/外壳可见率、房间/竖井露出率、地上墙被埋率均在冻结区间（8 seed）', async () => {
+  const data = await loadStructure('jungleFortress');
+  const G = jungleFortressGeometry(data);
+  const { cat, counts } = jfCategories(data, G);
+  for (const seedStr of Object.keys(FROZEN_PIERS)) {
+    const seed = Number(seedStr);
+    const fx = await jfPierFixture(seed);
+    const { a, FR, readWorld } = fx;
+    const hC = new Map();
+    const nat = (px, pz) => {
+      const k = `${px},${pz}`;
+      let v = hC.get(k);
+      if (v === undefined) { v = generateHeight(a.wx + px, a.wz + pz, seed); hC.set(k, v); }
+      return v;
+    };
+    const isVis = (px, wy, pz) => wy > nat(px, pz) &&
+      (nat(px + 1, pz) < wy || nat(px - 1, pz) < wy || nat(px, pz + 1) < wy || nat(px, pz - 1) < wy);
+    let visBase = 0, visShell = 0, expRoom = 0, expShaft = 0, burAbove = 0;
+    for (const [k, c] of cat) {
+      const [px, ny, pz] = k.split(',').map(Number);
+      const wy = a.floorY + (ny - FR);
+      const h = nat(px, pz);
+      if (c === 'above') { if (wy <= h) burAbove++; continue; }
+      if (c === 'roomAir' || c === 'shaft') {
+        if (wy > h) { if (c === 'roomAir') expRoom++; else expShaft++; }
+        continue;
+      }
+      if (wy <= h) continue;
+      // 世界里那一格必须真的非空（未被墩/植被改写）
+      const id = readWorld(a.wx + px, wy, a.wz + pz);
+      if (!id) continue;
+      if (!isVis(px, wy, pz)) continue;
+      if (c === 'base') visBase++; else visShell++;
+    }
+    const pct = (n, d) => n / d * 100;
+    const inRange = (v, lo, hi, label) => assertTrue(v >= lo && v <= hi,
+      `seed ${seed} ${label} = ${v.toFixed(1)}% 应在 [${lo},${hi}]`);
+    // 区间取自 8 seed 实测极值外扩（基座 41.7~48.7 / 外壳 31.3~37.2 /
+    // 房间 20.3~29.8 / 竖井 47.3~71.6 / 埋墙 8.1~15.7）
+    inRange(pct(visBase, counts.base), 40, 50, '地下基座可见率');
+    inRange(pct(visShell, counts.shell), 30, 39, '地下房间外壳可见率');
+    inRange(pct(expRoom, counts.roomAir), 19, 31, '封闭房间 air 露出率');
+    inRange(pct(expShaft, counts.shaft), 45, 75, '露天竖井 air 露出率');
+    // ⚠️ 埋墙分母是 **dy>0 的 29165 格**（spec DR-5 的 9.7% 用的是含 dy0 的 34154，
+    //    两个口径不同）；本用例用前者，实测 8.1~15.7% ⇒ 区间 [7,17]。
+    inRange(pct(burAbove, counts.above), 7, 17, '地上墙真被埋率(dy>0)');
+    // 下界守卫：抬升真的发生了（baseY=minH 时这五项全 0）
+    assertTrue(visBase > 10000, `seed ${seed} 可见基座格数必须 >10000（实际 ${visBase}）`);
+  }
+}, { tier: 'slow' });
