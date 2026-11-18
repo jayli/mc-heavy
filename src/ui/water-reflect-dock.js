@@ -291,6 +291,25 @@ export class WaterReflectDock {
     this._presetIndex = 0;
     this._syncToggle();
     this.reset();
+    // ⚠️ **默认折起**（用户 2026-11-18 裁定：「水面倒影的 HUD 面板默认关闭」）：
+    // 只留标题条（12px 高的「水面倒影」+ 开关点），不占地、不遮水。
+    // ⚠️ **不做成彻底隐藏**：彻底隐藏后玩家找不回这个开关（无任何入口）——
+    // 标题条是它的唯一入口，保留它才能「默认关闭」与「可重新打开」同时成立。
+    // ⚠️ 必须放在 `reset()` **之后**：`reset()` 会调 `_refreshStat` 但不碰折叠态，
+    // 放在前面也能工作；放后面是为了让「折叠」成为构造的最后一步（不会被后续写覆盖）。
+    this.setFolded(true);
+  }
+
+  /**
+   * 设置折叠态（默认折起，见构造器注释）。
+   * 用方法而不是直接写 `_folded`：`foldBtn` 的文案与 class 必须与状态同步，
+   * 三处（`_folded` / class / 图标）分开写就会漂出「图标说 ＋ 而面板是展开的」这类静默不一致。
+   * @param {boolean} folded
+   */
+  setFolded(folded) {
+    this._folded = !!folded;
+    this.el.classList.toggle('rd-folded', this._folded);
+    this.foldBtn.textContent = this._folded ? '+' : '−';
   }
 
   _makeSlider(def) {
@@ -403,9 +422,7 @@ export class WaterReflectDock {
   }
 
   toggleFold() {
-    this._folded = !this._folded;
-    this.el.classList.toggle('rd-folded', this._folded);
-    this.foldBtn.textContent = this._folded ? '+' : '−';
+    this.setFolded(!this._folded);
   }
 
   /** 读数刷新（250ms 节流；RT 尺寸与有效刷新率） */

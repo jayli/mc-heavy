@@ -62,7 +62,7 @@ export const REFLECT_REFRESH_EVERY = 2;
  * 0.5 是「看得见倒影但水还是水」的交点：水面基色仍占一半，
  * 既有 Blinn-Phong 高光与雾色不受影响（它们在 mix 的左端里已经算完）。
  */
-export const REFLECT_STRENGTH = 0.5;
+export const REFLECT_STRENGTH = 0.6;
 
 /**
  * 倒影的**反射率乘数**（水面不是完美镜子）。
@@ -106,7 +106,8 @@ export const REFLECT_STRENGTH = 0.5;
  * 晨/午 waterTint 中性 1 ⇒ 回升项 0 ⇒ 本常量在那两档逐位生效。
  * 修正后 night 从 65 → **73**（入带），而晨/午读数不变。
  */
-export const REFLECT_TINT = 0.26;
+export const REFLECT_TINT = 0.4;
+
 
 /**
  * 随波扰动幅度（UV 空间）。

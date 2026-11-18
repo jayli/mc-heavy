@@ -407,9 +407,7 @@ export function setupOcean(scene) {
     // ⚠️ **晨/午 uWaterTint 恒中性 1** ⇒ 回升项 ≡ 0 ⇒ 有效反射率逐位等于 uReflectTint
     //（故本项不会动摇已验收的 morning/noon = 113）。
     // ⚠️ 上限 min(1.0)：超了就是「夜里水面比天空还亮」= 发光（用户 v2.1 报过的缺陷）。
-    const tintMean = uWaterTint.x.add(uWaterTint.y).add(uWaterTint.z).div(3.0);
-    const darkEnv = float(1.0).sub(tintMean).max(0.0);
-    const albedo = uReflectTint.add(darkEnv.mul(float(1.0).sub(uReflectTint))).min(1.0);
+    const albedo = uReflectTint;
     const reflLit = reflColor.mul(albedo);
     // ---- 高度 + 掠射衰减（v3.17b，用户：「距离水面一定高度后倒影越来越弱甚至消失」）----
     //

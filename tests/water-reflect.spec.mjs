@@ -267,9 +267,30 @@ test('水面倒影：常驻调参坞九个控件实时生效', async ({ page }) 
       }),
       buttons: ['rd-toggle', 'rd-reset', 'rd-preset'].map((id) => !!document.getElementById(id)),
       zIndex: Number(getComputedStyle(el).zIndex),
+      folded: el.classList.contains('rd-folded'),
+      foldMark: el.querySelector('.rd-fold').textContent,
     };
   });
   expect(dock, '常驻调参坞必须存在').not.toBeNull();
+  // ⚠️ **默认折起**（用户 2026-11-18 裁定「水面倒影的 HUD 面板默认关闭」）。
+  // 但它必须**仍在场且可点开** —— 彻底隐藏会让这个功能失去唯一入口。
+  expect(dock.folded, '坞启动时必须默认折起').toBe(true);
+  expect(dock.foldMark, '折起时图标必须是 ＋').toBe('+');
+  const collapsedH = dock.rect.h;
+  expect(collapsedH, `折起时只应剩标题条（实测 ${collapsedH}px），不得仍是完整面板`)
+    .toBeLessThan(60);
+  // 展开后才是完整面板（后续用例都在展开态下量）
+  await page.evaluate(() => document.querySelector('#mc-reflect-dock .rd-head').click());
+  await page.waitForTimeout(500);
+  const expanded = await page.evaluate(() => {
+    const el = document.getElementById('mc-reflect-dock');
+    return { folded: el.classList.contains('rd-folded'), h: el.getBoundingClientRect().height,
+      mark: el.querySelector('.rd-fold').textContent };
+  });
+  expect(expanded.folded, '点标题条必须能展开').toBe(false);
+  expect(expanded.mark).toBe('−');
+  expect(expanded.h, '展开后面板必须真的长开').toBeGreaterThan(collapsedH * 2);
+
   expect(dock.sliders.filter(Boolean).length, '必须有九个滑块').toBe(9);
   expect(dock.buttons.every(Boolean), '开关/复位/换档三个按钮都必须在').toBe(true);
   // 层级：50（常驻信息层），必须低于设置面板 70 与背包 80
@@ -427,15 +448,18 @@ test('水面倒影：常驻调参坞九个控件实时生效', async ({ page }) 
   // 折叠 / 展开
   const fold = await page.evaluate(() => {
     const el = document.getElementById('mc-reflect-dock');
+    // 进入时是展开态（本用例开头已展开）⇒ 第一次点击应折起，第二次展开
     el.querySelector('.rd-head').click();
     const a = { folded: el.classList.contains('rd-folded'), mark: el.querySelector('.rd-fold').textContent };
     el.querySelector('.rd-head').click();
     a.unfolded = !el.classList.contains('rd-folded');
+    a.markAfter = el.querySelector('.rd-fold').textContent;
     return a;
   });
   expect(fold.folded).toBe(true);
   expect(fold.mark).toBe('+');
   expect(fold.unfolded).toBe(true);
+  expect(fold.markAfter).toBe('−');
 
   // 换档：三档循环，每档都真的改了参数
   const preset = await page.evaluate(() => {
