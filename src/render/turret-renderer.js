@@ -23,6 +23,7 @@ import * as THREE from 'three';
 import {
   TURRET, TURRET_PARTS, TURRET_PART_DEFS, TURRET_TOWER_COLOR,
 } from '../entities/turrets/turret-config.js';
+import { createTurretMetalMaterial } from './turret-metal.js';
 
 // 复用的临时对象（避免每帧分配）—— 20 炮塔 × 60fps 若在循环内 `new` 会产生大量小对象。
 const _matrix = new THREE.Matrix4();
@@ -49,8 +50,14 @@ export class TurretRenderer {
    *        `topGeometry` = `loadTurretTopGeometry()` 的返回值。**缺失时不建 mesh**
    *        （几何是造型的唯一来源，没有它就没有可画的东西）；`sync` 空转并 warn 一次。
    *        `armorTexture` 可选：有则装甲部件走贴图；无则退回 `TURRET_TOWER_COLOR.MAIN`。
+   *        `sunDirection` 可选但**强烈建议传**：`materials.dayNight.uSunDirection` 句柄。
+   *        传了炮管/副武器走金属 TSL 材质（随太阳方向反光）；不传退回纯色 MeshBasic
+   *        （单测 fixture 与几何加载失败路径）。
    */
-  constructor({ scene, maxActive = TURRET.maxTurrets, armorTexture = null, topGeometry = null }) {
+  constructor({
+    scene, maxActive = TURRET.maxTurrets, armorTexture = null, topGeometry = null,
+    sunDirection = null, sunStrength = null, sunColor = null,
+  }) {
     this.scene = scene;
     this.maxActive = maxActive;
     this._armorTexture = armorTexture;
@@ -75,9 +82,21 @@ export class TurretRenderer {
         const geometry = buildPartGeometry(data);
         // ⚠️ 判据是 def.textured（不是 def.zone —— 后者恒 null）
         const useMap = def.textured && !!armorTexture;
-        const material = new THREE.MeshBasicMaterial(useMap
-          ? { color: 0xffffff, map: armorTexture, side: THREE.DoubleSide }
-          : { color: def.color ?? TURRET_TOWER_COLOR.MAIN, side: THREE.DoubleSide });
+        let material;
+        if (useMap) {
+          material = new THREE.MeshBasicMaterial({
+            color: 0xffffff, map: armorTexture, side: THREE.DoubleSide,
+          });
+        } else if (!def.textured && sunDirection) {
+          // 炮管/副武器：深灰金属，随太阳方向反光（用户 2026-11-18 要求）
+          material = createTurretMetalMaterial({
+            color: def.color, sunDirection, sunStrength, sunColor,
+          });
+        } else {
+          material = new THREE.MeshBasicMaterial({
+            color: def.color ?? TURRET_TOWER_COLOR.MAIN, side: THREE.DoubleSide,
+          });
+        }
         const mesh = new THREE.InstancedMesh(geometry, material, maxActive);
         mesh.name = `turret:${part}`;      // 受控标识：测试与调试据此定位节点
         // 实例池的包围球按 slot 0 的零 scale 算 → 会被误剔除；炮塔须无条件提交

@@ -45,24 +45,24 @@ export const TURRET_TOP_METRICS = Object.freeze({
   sourcePositions: 2192,
   sourceNormals: 1131,
   sourceUvs: 1194,
-  /** 被排除的车体裙板面数 */
-  hullFaces: 519,
+  /** 车体上层裙板面数（**纳入总成**，补塔身与柱之间的过渡段） */
+  skirtFaces: 519,
   /** 产物八部件合计 */
-  productFaces: 1609,
-  triangleCount: 3434,
-  vertexCount: 5527,
+  productFaces: 2128,
+  triangleCount: 4602,
+  vertexCount: 7737,
   /**
    * 逐部件三角数（**含切口封口面**）。
    * ⚠️ 装甲部件比「原面数×2」多出来的三角就是封口：源 TankBase 闭合，按 bbox 切开后
    * 切口必须补面，否则成开放壳、渲染时从切口看穿（用户实玩缺陷，2026-11-18）。
    */
   triangles: Object.freeze({
-    cheek: 308, mantlet: 134, deckMid: 52, ring: 364, nose: 656,
+    cheek: 308, mantlet: 134, deckMid: 52, ring: 364, nose: 656, skirt: 1168,
     podR: 576, podL: 632, barrel: 712,
   }),
   /** 逐部件顶点数 */
   vertices: Object.freeze({
-    cheek: 590, mantlet: 249, deckMid: 82, ring: 612, nose: 1222,
+    cheek: 590, mantlet: 249, deckMid: 82, ring: 612, nose: 1222, skirt: 2210,
     podR: 960, podL: 480, barrel: 1332,
   }),
   /** 逐部件各区面数（内容级判据，不经过 zoneOf 自身 ⇒ 分类退化直接红） */
@@ -72,6 +72,7 @@ export const TURRET_TOP_METRICS = Object.freeze({
     deckMid: Object.freeze({ front: 0, side: 0, top: 14 }),
     ring: Object.freeze({ front: 75, side: 38, top: 10 }),
     nose: Object.freeze({ front: 215, side: 62, top: 4 }),
+    skirt: Object.freeze({ front: 300, side: 194, top: 25 }),
   }),
   /** 炮口世界 z（= TURRET.muzzleOffsetZ，弹道零改动的判据） */
   muzzleZ: 3.5,

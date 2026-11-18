@@ -519,7 +519,7 @@ test('TurretRenderer：8 个部件 InstancedMesh，无炮塔时全部 visible=fa
   const renderer = new TurretRenderer({ scene, maxActive: TURRET.maxTurrets, topGeometry: await topGeoFixture() });
   // 8 部件（5 装甲板 + 炮管 + 根部 + 瞄准器）—— 部件顺序的单一权威在 config
   assertEqual(Object.keys(renderer.meshes).length, TURRET_PARTS.length);
-  assertEqual(TURRET_PARTS.length, 8);
+  assertEqual(TURRET_PARTS.length, 9);
   for (const part of TURRET_PARTS) {
     assertEqual(renderer.meshes[part].visible, false, `${part} 无炮塔时不可见`);
     assertEqual(renderer.meshes[part].count, TURRET.maxTurrets, `${part} 容量`);

@@ -1,11 +1,11 @@
 {
   "fingerprints": {
-    "input": "b349851cb57aa044:d50b153c9877f284"
+    "input": "b349851cb57aa044:dcd6cdcf905eabd3"
   },
   "metrics": {
-    "productFaces": 1609,
-    "triangleCount": 3434,
-    "vertexCount": 5527,
+    "productFaces": 2128,
+    "triangleCount": 4602,
+    "vertexCount": 7737,
     "muzzleZ": 3.5,
     "degenerateUvTriangles": 0,
     "barrelEmbed": 0.31061451429791265,
@@ -15,6 +15,7 @@
       "deckMid": 52,
       "ring": 364,
       "nose": 656,
+      "skirt": 1168,
       "podR": 576,
       "podL": 632,
       "barrel": 712
@@ -25,6 +26,7 @@
       "deckMid": 82,
       "ring": 612,
       "nose": 1222,
+      "skirt": 2210,
       "podR": 960,
       "podL": 480,
       "barrel": 1332
@@ -54,6 +56,11 @@
         "front": 215,
         "side": 62,
         "top": 4
+      },
+      "skirt": {
+        "front": 300,
+        "side": 194,
+        "top": 25
       }
     }
   }

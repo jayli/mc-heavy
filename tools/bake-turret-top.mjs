@@ -54,9 +54,9 @@ function main() {
   if (parsed.uvs.length !== TURRET_TOP_METRICS.sourceUvs) fail(`vt 行数 ${parsed.uvs.length}`);
   const totalFaces = Object.values(parts).reduce((a, f) => a + f.length, 0);
   if (totalFaces !== TURRET_TOP_METRICS.sourceFaces) fail(`全模型面数 ${totalFaces}`);
-  if (parts.hull.length !== TURRET_TOP_METRICS.hullFaces) fail(`hull 面数 ${parts.hull.length}`);
+  if (parts.skirt.length !== TURRET_TOP_METRICS.skirtFaces) fail(`skirt 面数 ${parts.skirt.length}`);
 
-  // ---- 逐部件构造（**丢弃 hull**）----
+  // ---- 逐部件构造（**含 skirt 过渡段**，全模型无丢弃）----
   const keys = [...TURRET_TOP_ARMOR, ...TURRET_TOP_SOLID];
   const out = {};
   let tris = 0, verts = 0;
@@ -123,9 +123,9 @@ function main() {
       if (got[z] !== want[z]) fail(`${key}.${z} 面数 ${got[z]} ≠ ${want[z]}`);
     }
   }
-  // ⑤ 划分恒等式：产物面数 = 全模型 − hull（漏排 hull 会多出 519）
+  // ⑤ 划分恒等式：产物面数 = 全模型（**skirt 已纳入**，不再有丢弃项）
   const productFaces = keys.reduce((a, k) => a + parts[k].length, 0);
-  if (productFaces !== totalFaces - parts.hull.length) fail('产物面数 ≠ 全模型 − hull');
+  if (productFaces !== totalFaces) fail(`产物面数 ${productFaces} ≠ 全模型 ${totalFaces}`);
   if (productFaces !== TURRET_TOP_METRICS.productFaces) fail(`产物面数 ${productFaces}`);
   // ⑤b 炮管尾端埋入鼻段（防尾部前移造成真实缝隙）
   {
