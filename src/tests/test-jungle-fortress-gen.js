@@ -391,11 +391,17 @@ test('丛林要塞占地判定：inJungleFortressFootprint 与 HALF_X/HALF_Z 一
 
 // ==================== 地形：自然起伏保留（v3.16 DR-2）====================
 
-test('丛林要塞地形：surfaceYAt 内部恒等自然高度 + 零水格（8 seed 全区逐列）', () => {
+test('丛林要塞地形：surfaceYAt 内部非带列恒等自然高度 + 占地零水格（8 seed）', async () => {
+  const data = await loadStructure('jungleFortress');
+  noteJungleFortressData(data);
   for (const seedStr of Object.keys(FROZEN_ANCHORS)) {
     const seed = Number(seedStr);
     const a = computeJungleFortressAnchor(seed);
-    let mismatch = 0, water = 0, cols = 0;
+    // ⚠️⚠️ **必须先登记产物**（v3.16 Task 8 实测踩过的假绿）：
+    //    不登记时 `surfaceYAt` 退回 nat，于是「全区恒等 nat」恒真 ——
+    //    即使裙边真的在抬土也拓不到（单文件跑绿、全量跑红就是这么来的）。
+    const field = jungleFortressSkirtField(a, seed, data);
+    let mismatch = 0, water = 0, cols = 0, lifted = 0;
     for (let dx = -JUNGLE_FORTRESS_HALF_X - JUNGLE_FORTRESS_SLOPE_BAND;
       dx <= JUNGLE_FORTRESS_HALF_X + JUNGLE_FORTRESS_SLOPE_BAND; dx++) {
       for (let dz = -JUNGLE_FORTRESS_HALF_Z - JUNGLE_FORTRESS_SLOPE_BAND;
@@ -405,32 +411,47 @@ test('丛林要塞地形：surfaceYAt 内部恒等自然高度 + 零水格（8 s
         assertTrue(t !== null, `(${wx},${wz}) surfaceYAt 不得返回 null（v3.16 恒有值）`);
         cols++;
         const h = generateHeight(wx, wz, seed);
-        // 本 Task 只验内部（裙边 Task 5 才加）：全区应恒 = 自然高度
-        if (t !== h) mismatch++;
-        // ⚠️ 零水格只对**占地内**成立（落点干燥判据保证）；16 格外延里本就有自然水域
-        //    （v3.13 的「遇湿即止」正是为了不碰它们）。对外延钉零水会误报 1696 列。
+        // ① **内部非过渡带且非建筑列**：恒 = 自然高度（基座可见率不降的前提）
+        if (!field.inBand(dx, dz) && !field.isBuilding(dx, dz)) {
+          if (t !== h) mismatch++;
+        }
+        // ② 过渡带只抬不削（裙边语义）
+        assertTrue(t >= h, `(${wx},${wz}) 裙边只抬不削：T=${t} < nat=${h}`);
+        if (t > h) lifted++;
+        // ③ 零水格只对**占地内**成立（落点干燥判据保证）；16 格外延里本就有自然水域。
         if (Math.abs(dx) <= JUNGLE_FORTRESS_HALF_X && Math.abs(dz) <= JUNGLE_FORTRESS_HALF_Z
             && t <= SEA_Y) water++;
       }
     }
-    assertEqual(mismatch, 0, `seed ${seed} 地形必须零改动（实际 ${mismatch} 列 ≠ generateHeight）`);
+    assertEqual(mismatch, 0, `seed ${seed} 内部非带列地形必须零改动（实际 ${mismatch} 列 ≠ generateHeight）`);
     assertEqual(water, 0, `seed ${seed} 占地内必须零水格（实际 ${water} 列 ≤ SEA_Y）`);
+    assertTrue(lifted > 100, `seed ${seed} 过渡带必须真的抬了土（实际 ${lifted} 列）—— 否则本用例对裙边无判别力`);
     assertTrue(cols > 30000, `seed ${seed} 管理区列数应 > 30000（实际 ${cols}）`);
   }
 });
 
-test('丛林要塞地形：自然起伏保留 —— 区内相邻高差 ≤1 且确存起伏（8 seed）', () => {
+test('丛林要塞地形：自然起伏保留 —— 内部非带区相邻高差 ≤1 且确存起伏（8 seed）', async () => {
   // ⚠️ 旧用例钉「削平后高差≤1」，削平后恒 0 ⇒ 无判别力。
-  //    新语义：高差≤1 是**自然地形自带的**，同时要钉「不是平地」（存在 ≠0 的相邻对），
-  //    否则注入削平后两侧都绿。
+  // ⚠️⚠️ **v3.16 Task 8 修正口径**：裙边过渡带内本来就可能有「建筑列 T=nat
+  //    紧邻抬升列」的跳变（那是建筑立面，不是地形悬崖）⇒ 相邻高差判据
+  //    必须限定在**内部非带区**（那里恒 = nat，相邻高差就是自然地形的）。
+  //    过渡带自身的平滑度由裙边专题用例（带内/带缝/外侧 ≤1）钉。
+  const data = await loadStructure('jungleFortress');
+  noteJungleFortressData(data);
   for (const seedStr of Object.keys(FROZEN_ANCHORS)) {
     const seed = Number(seedStr);
     const a = computeJungleFortressAnchor(seed);
-    const B = JUNGLE_FORTRESS_SLOPE_BAND;
-    let maxJump = 0, nonFlat = 0;
-    for (let dx = -JUNGLE_FORTRESS_HALF_X - B; dx <= JUNGLE_FORTRESS_HALF_X + B; dx++) {
-      for (let dz = -JUNGLE_FORTRESS_HALF_Z - B; dz <= JUNGLE_FORTRESS_HALF_Z + B; dz++) {
+    const field = jungleFortressSkirtField(a, seed, data);
+    const HX = JUNGLE_FORTRESS_HALF_X, HZ = JUNGLE_FORTRESS_HALF_Z;
+    const R = JUNGLE_FORTRESS_SKIRT_INNER;
+    let maxJump = 0, nonFlat = 0, checked = 0;
+    // 内部非带区 = 占地内缩 R 格
+    for (let dx = -HX + R; dx <= HX - R; dx++) {
+      for (let dz = -HZ + R; dz <= HZ - R; dz++) {
         const v = jungleFortressSurfaceYAt(a.wx + dx, a.wz + dz, seed, a);
+        checked++;
+        assertEqual(v, generateHeight(a.wx + dx, a.wz + dz, seed),
+          `(${dx},${dz}) 内部非带区必须恒等自然高度`);
         for (const [ax, az] of [[1, 0], [0, 1]]) {
           const b = jungleFortressSurfaceYAt(a.wx + dx + ax, a.wz + dz + az, seed, a);
           const j = Math.abs(v - b);
@@ -439,8 +460,10 @@ test('丛林要塞地形：自然起伏保留 —— 区内相邻高差 ≤1 且
         }
       }
     }
-    assertTrue(maxJump <= 1, `seed ${seed} 相邻高差必须 ≤1（实际 ${maxJump}）`);
+    assertTrue(checked > 10000, `seed ${seed} 内部非带区样本量（实际 ${checked}）`);
+    assertTrue(maxJump <= 1, `seed ${seed} 内部相邻高差必须 ≤1（实际 ${maxJump}）`);
     assertTrue(nonFlat > 1000, `seed ${seed} 必须保留自然起伏（实际非平相邻对 ${nonFlat}）`);
+    assertTrue(field.inBand(HX, 0), '边缘列必须在过渡带内（口径自检）');
   }
 });
 
