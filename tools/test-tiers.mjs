@@ -135,6 +135,7 @@ const PIXEL = [
   'render-terrain',
   'water-visual',
   'water-order',
+  'water-reflect',
   'lake-ripple',
   'm3-rain',
 ];
@@ -193,7 +194,7 @@ export const UNIT_NODE_SAFE = [
   'test-structure-json.js', 'test-structure-layout.js', 'test-sun-shade.js', 'test-tarn-altar.js',
   'test-tarn-terrain.js', 'test-tarn-zone-gen.js', 'test-tarn-zone.js', 'test-terrain.js',
   'test-tnt-chain.js', 'test-turret-top-bake.js', 'test-vegetation-leaves.js', 'test-vegetation.js',
-  'test-view-bob.js', 'test-weapons.js', 'test-world-editor.js', 'test-zombie-behavior.js',
+  'test-view-bob.js', 'test-water-reflect.js', 'test-water-reflect-height.js', 'test-weapons.js', 'test-world-editor.js', 'test-zombie-behavior.js',
   'test-zombie-model.js', 'test-zombie-pathfinder.js', 'test-zombies.js',
 ];
 

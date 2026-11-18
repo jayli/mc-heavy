@@ -12,7 +12,12 @@ import { DEBUG_FLAGS } from './debug-config.js';
 import { resourceUrl } from './resource-url.js';
 import { RenderWorld } from '../render/render-world.js';
 import { setupFog } from '../render/materials.js';
-import { setupOcean } from '../render/ocean.js';
+import { setupOcean, WATER_LEVEL_OFFSET } from '../render/ocean.js';
+import {
+  ReflectScheduler, reflectVisible, reflectHeightFade,
+  REFLECT_STRENGTH, REFLECT_DISTORT, REFLECT_MIP_LEVEL, REFLECT_REFRESH_EVERY,
+  REFLECT_HEIGHT_FULL, REFLECT_HEIGHT_ZERO, REFLECT_GRAZE, REFLECT_RESOLUTION_SCALE, REFLECT_TINT,
+} from '../render/water-reflect-config.js';
 import { setupSky, placeCelestial } from '../render/sky.js';
 import { DayNight, SUN_LIGHT_BASE_HEX, SUN_LIGHT_BASE_RGB } from '../render/daynight.js';
 import { ShadowScheduler, SUN_DIR_GATE_DEG, sunDirectionChanged, texelSnapOffset } from '../render/shadow-manager.js';
@@ -87,6 +92,7 @@ import { CoordsHUD } from '../ui/coords-hud.js';
 import { HealthHUD } from '../ui/health-hud.js';
 import { DamageNumbers } from '../ui/damage-numbers.js';
 import { Minimap } from '../ui/minimap.js';
+import { WaterReflectDock } from '../ui/water-reflect-dock.js';
 import { BossHintHUD } from '../ui/boss-hint.js';
 import { Crosshair } from '../ui/crosshair.js';
 import { SettingsPanel } from '../ui/settings-panel.js';
@@ -198,11 +204,13 @@ export class Game {
    * @param {boolean} [opts.skybox] 天空盒开关（v1.58，默认 true）。false = 完全不加载、退回纯色天空
    *   （`?skybox=0` URL 入口）——既有 Tier 4 spec 用「±30 内等于 0x87ceeb」判纯色天空来数地形
    *   像素，照片天空会让那个判据失去意义，故它们 pin 该开关。
+   * @param {boolean} [opts.reflect] 水面倒影开关（v3.17，默认 true）。false = 不跑反射 pass
+   *   且混合强度恒 0（逐位回到无倒影的原式）—— `?reflect=0` URL 入口，Tier 4 单变量 A/B 用。
    * @param {import('./load-watchdog.js').LoadWatchdog} [opts.watchdog] 启动进展计时器（v2.99）。
    *   ⚠️ **全仓唯一实例**：`main.js` 建好后传进来，本类再传给 `Scheduler` → `StructureIndex`。
    *   缺省（fixture 页直建 Game）自建一个 —— 那些页面不启动 loading UI，自建只保证内部不必判空。
    */
-  constructor({ canvas, registry, seed = null, viewDistance = 8, hudRoot, blurMipmap = false, budgetProfile = 'auto', chunkPace = 8, startWeather = null, shadows = true, skybox = true, settings = null, watchdog = null }) {
+  constructor({ canvas, registry, seed = null, viewDistance = 8, hudRoot, blurMipmap = false, budgetProfile = 'auto', chunkPace = 8, startWeather = null, shadows = true, skybox = true, reflect = true, settings = null, watchdog = null }) {
     this._settings = settings;
     /**
      * 启动进展计时器（v2.99）。**全仓唯一实例**，见 `core/load-watchdog.js` 的「单一权威」段。
@@ -229,6 +237,7 @@ export class Game {
     this.settings = settings || resolveSettings(loadStoredSettings(), new URLSearchParams(location.search));
     this._shadowsOption = shadows;
     this._skyboxOption = skybox;
+    this._reflectOption = reflect;
     this.registry = registry;
     this.seed = seed; // null → start() 中无存档时 randomSeed()（有存档恒读存档）
     this.viewDistance = viewDistance;
@@ -288,7 +297,7 @@ export class Game {
     this._applyPixelRatio(this.settings.pixelRatio);
     await this.renderer.init();
 
-    // atlas：纹理 + tileRect 元数据（broadcast 给 Worker 供 mesher 查 UV）
+    // atlas：纹理 + tileRect 元数据(broadcast 给 Worker 供 mesher 查 UV)
     const { texture } = await loadAtlas({ mipmap: this.blurMipmap });
     this._atlasTexture = texture; // 调试/测试引用
     // 丧尸全身皮肤（标准 64×64）：与 atlas 一并 await（保持 ZombieRenderer 构造器同步 →
@@ -395,6 +404,14 @@ export class Game {
     // 三个请求源：① editor 订阅（世界编辑）② 帧循环移动阈值（光源重定位）
     // ③ DayNight 的 onSunDirection（日夜方向变化）。
     this.shadowScheduler = new ShadowScheduler();
+    // 水面倒影（v3.17）：刷新节流器 + 四个参数快照。
+    // 默认开（用户要的就是这个效果）；`?reflect=0` 与面板可关，关掉逐位回到原式。
+    this.reflectScheduler = new ReflectScheduler({ every: REFLECT_REFRESH_EVERY });
+    this._reflectEnabled = true;
+    this._reflectStrength = REFLECT_STRENGTH;
+    // 高度衰减的两个阈值（调参坞可改）
+    this._reflectHeightFull = REFLECT_HEIGHT_FULL;
+    this._reflectHeightZero = REFLECT_HEIGHT_ZERO;
     // target 必须入场景，否则其 matrixWorld 不更新 → 阴影相机朝向错。
     this.scene.add(sunLight.target);
     this.scene.add(sunLight);
@@ -443,6 +460,8 @@ export class Game {
     // ⚠️ 海面必须先于 DayNight 创建：它的 `uWaterTint`（v2.1 环境亮度乘数）由 DayNight._apply
     // 写入，而构造器末尾就会立即 apply 一次 —— 晚于构造就接不到启动那一帧。
     this.ocean = setupOcean(this.scene);
+    // 反射 pass 需要 renderer 句柄（此时 `renderer.init()` 已 await 完）。
+    this.ocean.setRenderer(this.renderer);
     // ⚠️ 灯光创建必须在 RenderWorld 之前：材质的 shadow() 节点在构建时固定 light 引用。
     this.renderWorld = new RenderWorld({ scene: this.scene, atlasTexture: texture, viewDistance: this.viewDistance, sunLight });
     // 日夜循环（M2-6）：正午起步（与 M1 视觉口径一致），1200s 一天
@@ -1127,6 +1146,9 @@ export class Game {
     this._minimap = new Minimap(this._hudRoot, this);
     // 城市布局此刻已就绪（上面 `structureIndex.waitForRegion(0,0)` 已 await）→ 首帧就能画出城市。
     this._minimap.redraw();
+    // 水面倒影常驻调参坞（v3.17，右下角）—— 七个滑块实时生效。
+    // 不进设置面板：面板是全屏黑遮罩，开着它根本看不见水面 ⇒ 无法边看边调。
+    this._reflectDock = new WaterReflectDock(this._hudRoot, this);
     // v3.16：「这里可以召唤 Boss」常驻提示（用户 2026-11-18）。
     // 判据转调按 B 的同一份权威（`bossMapAt` + `nextSummonableBoss`）⇒ 提示与召唤结果
     // 结构上不会分裂；本层只负责把它接进帧循环。
@@ -1177,6 +1199,10 @@ export class Game {
     // ⚠️ 此处默认开（不无条件调用）：`setShadowsEnabled(true)` 会置 `needsUpdate = true`，
     // 而「默认开」路径的重渲早已由 start() 中段的首次 needsUpdate 覆盖。
     if (!this._shadowsOption) this.setShadowsEnabled(false);
+    // 水面倒影开关（v3.17）：`?reflect=0` 时关掉。无条件走一道——把坞的按钮文案与
+    // uniform 同步到真实生效值（只写字段不写 uniform 会留下「坞显示已开而实际没倒影」）。
+    this.setReflectEnabled(this._reflectOption);
+    this._reflectDock?._syncToggle();
     // 启动应用雾色模式（默认**开**，用户 2026-10-25 裁定）。
     // ⚠️ 必须在 sky 就绪之后（此处已是 start() 尾部）；`?skybox=0` 时 sky 为 null → 静默保持关。
     // 两条都要显式走：材质初值 `uFogColorMix` 恒 0（= 关闭，`materials.js` 的 mix 左端），
@@ -1359,6 +1385,8 @@ export class Game {
       this._coordsHud.update(nowMs);
       // 迷你地图（v2.8）：内部 10Hz / 20Hz 双节流，每帧调用零成本（未到期直接 return）
       this._minimap.update(nowMs);
+      // 倒影调参坞的读数（内部 250ms 节流，未到期只有一次时间比较）
+      this._reflectDock?.update();
       this._hotbar.update(this.player.hotbarIndex);
       // 玩家血心：血量没变时内部直接 return（当前阶段恒满 → 每帧一次数值比较）
       this._healthHud.update(nowMs);
@@ -1423,6 +1451,9 @@ export class Game {
       if (this.shadowScheduler.tick(nowMs) && this.sunLight.castShadow) {
         this.sunLight.shadow.needsUpdate = true;
       }
+      // 水面倒影（v3.17）：**必须在主 render 之前** —— 后置会让 BatchedMesh 的
+      // indirect 索引表被反射相机覆写 → 天空整片撕成黑多边形（详见 ocean.js 反射段）。
+      this._renderWaterReflection();
       this.renderer.render(this.scene, this.camera);
       // 准心配色（v1.64）：**必须在 render 之后** —— WebGPU canvas 在 render 前不可读
       // （实测读到恒为 0，会让准心永远判为暗背景而恒白）。内部 100ms 节流 + 迟滞。
@@ -1654,6 +1685,150 @@ export class Game {
     placeCelestial(this.sky.moonSprite, this.camera, p.moonDirection, p.moonSize);
     this.sky.sunSprite.visible = p.sunVisible === true;
     this.sky.moonSprite.visible = p.moonVisible === true;
+  }
+
+  /**
+   * 水面倒影的反射 pass（v3.17）—— **主 `renderer.render()` 之前的唯一调用点**。
+   *
+   * ## 为什么在这里而不是让节点自动触发
+   * 见 `ocean.js` 反射段的载荷性约束：reflector 自动触发时会在 transparent 队列末尾跑，
+   * 而 BatchedMesh 的 instance 索引走 GPU 纹理、一帧内最后一次写入胜出 ⇒ 主画面天空被撕碎。
+   *
+   * ## 三道成本门（用户口径「几乎不影响性能」）
+   *   ① **开关**：`?reflect=0` / 面板关掉 → 直接 return（零开销）；
+   *   ② **可见性**：相机在水下 / 抬头看天 → 跳过（`reflectVisible`，纯函数可单测）；
+   *   ③ **节流**：每 N 帧刷一次（`ReflectScheduler`）—— 这是成本主杠杆，
+   *      实测 vd16 每帧 +0.93ms → 每 2 帧 +0.36ms。
+   *
+   * ⚠️ **第一人称手臂/武器必须临时隐身**：它们挂在 camera 下，反射用的是镜像虚拟相机
+   * ⇒ 不藏的话水里会出现一条巨大手臂倒影。恢复在 `ocean.renderReflection` 的 finally 里。
+   */
+  _renderWaterReflection() {
+    if (!this._reflectEnabled || !this.ocean || !this.player) return;
+    const cam = this.camera;
+    // 前向 y 分量：与 `player.js` 的相机姿态同口径（局部 −Z 经 camera 世界旋转）。
+    // ⚠️ 用 `getWorldDirection` 而不是读 `camera.rotation.x`：后者在 yaw=π 时是等价表示，
+    // 直读 pitch 会得出反向结论（AGENTS.md 已记的「判相机歪头读基向量」同一条教训）。
+    const fwd = this._reflectForward || (this._reflectForward = new THREE.Vector3());
+    cam.getWorldDirection(fwd);
+    const halfFov = (cam.fov * Math.PI / 180) / 2;
+    const visible = reflectVisible(cam.position.y, WATER_LEVEL_OFFSET, fwd.y, halfFov);
+    // 高度衰减（v3.17b）—— **兼任性能门**：飞到 REFLECT_HEIGHT_ZERO 之上时 fade=0，
+    // 此时整个反射 pass 不跑（而不是「跑了再把强度乘 0」—— 后者白付全部成本）。
+    // ⚠️ **uniform 必须先写再判门**：否则飞高时 uniform 停在旧值（比如 0.6），
+    // 水面仍混着 60% 的**旧 RT**（冻在低空那一帧的画面）—— 比「倒影不衰减」更坏。
+    const fade = reflectHeightFade(cam.position.y, WATER_LEVEL_OFFSET,
+      this._reflectHeightFull, this._reflectHeightZero);
+    if (this.ocean.uReflectHeightFade) this.ocean.uReflectHeightFade.value = fade;
+    if (!this.reflectScheduler.tick(visible && fade > 0.001)) return;
+    const hidden = this._reflectHidden || (this._reflectHidden = []);
+    hidden.length = 0;
+    if (this.viewArm?.mesh) hidden.push(this.viewArm.mesh);
+    if (this.viewWeapon?.node) hidden.push(this.viewWeapon.node);
+    this.ocean.renderReflection(cam, this.ocean.plane.material, hidden);
+  }
+
+  /**
+   * 水面倒影开关（面板与 `?reflect=0|1` 共用此入口）。
+   *
+   * 关掉时把混合强度置 0 → 水面颜色**逐位**回到无倒影的原式（mix 取左端），
+   * 而不是只停掉 pass 却留着上一帧的旧 RT（那会让倒影冻在旧画面上）。
+   * @param {boolean} enabled @returns {boolean} 实际生效值
+   */
+  setReflectEnabled(enabled) {
+    this._reflectEnabled = !!enabled;
+    const u = this.ocean?.uReflectStrength;
+    if (u) u.value = this._reflectEnabled ? this._reflectStrength : 0;
+    // 重新打开时强制下一帧刷新，避免显示关闭前的旧倒影
+    if (this._reflectEnabled) this.reflectScheduler.invalidate();
+    return this._reflectEnabled;
+  }
+
+  /** 倒影强度（0~1）。关闭状态下只存值不写 uniform（否则会把倒影偷偷打开）。 */
+  setReflectStrength(v) {
+    const n = Number(v);
+    this._reflectStrength = Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : REFLECT_STRENGTH;
+    if (this._reflectEnabled && this.ocean?.uReflectStrength) {
+      this.ocean.uReflectStrength.value = this._reflectStrength;
+    }
+    return this._reflectStrength;
+  }
+
+  /** 随波扰动幅度（0~0.08）。 */
+  setReflectDistort(v) {
+    const n = Number(v);
+    const d = Number.isFinite(n) ? Math.max(0, Math.min(0.08, n)) : REFLECT_DISTORT;
+    if (this.ocean?.uReflectDistort) this.ocean.uReflectDistort.value = d;
+    return d;
+  }
+
+  /** 倒影朦胧度（mip 级别 0~4）。 */
+  setReflectBlur(v) {
+    const n = Math.round(Number(v));
+    const b = Number.isFinite(n) ? Math.max(0, Math.min(4, n)) : REFLECT_MIP_LEVEL;
+    if (this.ocean?.uReflectMip) this.ocean.uReflectMip.value = b;
+    return b;
+  }
+
+  /** 倒影刷新节奏（每 N 帧）。 */
+  setReflectEvery(v) {
+    this.reflectScheduler.setEvery(v);
+    this.reflectScheduler.invalidate();
+    return this.reflectScheduler.every;
+  }
+
+  /**
+   * 倒影开始衰减的高度（格，相对水面）。与归零高度互相钳制，
+   * 保证 `full < zero`（否则 smoothstep 两个边界重合 → 除零）。
+   * @returns {number} 实际生效值
+   */
+  setReflectHeightFull(v) {
+    const n = Number(v);
+    const want = Number.isFinite(n) ? Math.max(1, Math.min(200, n)) : REFLECT_HEIGHT_FULL;
+    this._reflectHeightFull = Math.min(want, this._reflectHeightZero - 1);
+    if (this.ocean?.uReflectHeightFade) this.reflectScheduler.invalidate();
+    return this._reflectHeightFull;
+  }
+
+  /** 倒影完全消失的高度（格）。超过它反射 pass 整个不跑。 */
+  setReflectHeightZero(v) {
+    const n = Number(v);
+    const want = Number.isFinite(n) ? Math.max(2, Math.min(240, n)) : REFLECT_HEIGHT_ZERO;
+    this._reflectHeightZero = Math.max(want, this._reflectHeightFull + 1);
+    if (this.ocean?.uReflectHeightFade) this.reflectScheduler.invalidate();
+    return this._reflectHeightZero;
+  }
+
+  /**
+   * 掠射（视角）项权重 0~1。0 = 关掉该项（倒影不随俯仰变）。
+   * ⚠️ 改它需重建材质节点（它是编译期常量进了 mix 的左端），故走 uniform 路径。
+   */
+  setReflectGraze(v) {
+    const n = Number(v);
+    const g = Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : REFLECT_GRAZE;
+    if (this.ocean?.uReflectGraze) this.ocean.uReflectGraze.value = g;
+    return g;
+  }
+
+  /**
+   * 反射 RT 分辨率倍率（0.1~1）。**不是性能旋钮**（实测 0.125 与 0.5 只差 0.1ms），
+   * 它改的是显存与倒影锐度。改完强制下一帧刷新（RT 要重建）。
+   */
+  setReflectScale(v) {
+    const s = this.ocean?.setReflectScale ? this.ocean.setReflectScale(v) : REFLECT_RESOLUTION_SCALE;
+    this.reflectScheduler.invalidate();
+    return s;
+  }
+
+  /**
+   * 倒影反射率（0.1~1）—— 水面吸收。1 = 理想镜面（会把水面抬到天空亮度）。
+   * 与强度是两个独立自由度：降它保留倒影形体、只压亮度。
+   */
+  setReflectTint(v) {
+    const n = Number(v);
+    const t = Number.isFinite(n) ? Math.max(0.1, Math.min(1, n)) : REFLECT_TINT;
+    if (this.ocean?.uReflectTint) this.ocean.uReflectTint.value = t;
+    return t;
   }
 
   /**
@@ -3780,6 +3955,7 @@ export class Game {
     this.inventoryPanel?.dispose();
     // 迷你地图（v2.8）：纯 DOM，摘除节点即可（无 GPU 资源、无事件监听）
     this._minimap?.dispose();
+    this._reflectDock?.dispose();
     // v3.16：Boss 召唤提示（同口径：纯 DOM）
     this._bossHint?.dispose();
     // M4：反向释放武器运行时（Player → Audio → ModelLoader → WorkerPool → renderer）

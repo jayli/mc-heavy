@@ -3,12 +3,17 @@
 // 水面高度 = SEA_Y + 0.5（mc-lite WATER_LEVEL_OFFSET 语义）。
 import * as THREE from 'three';
 import {
-  uniform, Fn, float, vec3, sin, cos, max, pow, dot, normalize, length, floor,
+  uniform, Fn, float, vec2, vec3, sin, cos, max, pow, dot, normalize, length, floor,
   smoothstep, mix, positionWorld, cameraPosition, Discard, and, select,
+  reflector, screenUV,
 } from 'three/tsl';
 import {
   OCEAN_MASK_THRESHOLD, OCEAN_MASK_OFFSET, OCEAN_MASK_NO_CITY, OCEAN_MASK_NO_LAKE,
 } from './ocean-mask.js';
+import {
+  REFLECT_RESOLUTION_SCALE, REFLECT_MIP_LEVEL, REFLECT_STRENGTH, REFLECT_DISTORT,
+  REFLECT_DISTORT_NEAR, REFLECT_DISTORT_FAR, REFLECT_GRAZE, REFLECT_TINT,
+} from './water-reflect-config.js';
 import { TERRAIN_HEIGHT_PARAMS } from '../gen/terrain.js';
 import { BIOME_PARAMS } from '../gen/noise.js';
 
@@ -86,6 +91,40 @@ const WATER_EDGE_FADE_BAND = 15;
 const WATER_FOG_COLOR = 0x6b9cc0;
 
 /**
+ * 波纹场的**唯一公式**（红线 1）—— 水面高光与倒影扰动共用它。
+ *
+ * ⚠️ **为什么必须共享而不是各写一份**：倒影的 UV 偏移若用另一套 sin 参数或另一个时间
+ * uniform，倒影会与水纹**错相位** —— 水纹往左涌时倒影往右晃。那类缺陷所有数值判据
+ * （uniform 值、draw call、帧时、像素亮度带）全对，只有盯着画面看才发现。
+ *
+ * 返回 `{ waves, detailMask }`：`waves` 是标量波高（既有高光用它算法线），
+ * `detailMask` 是远景 LOD 衰减（两处都要，避免远景各算一遍 smoothstep）。
+ *
+ * @param {*} pos `positionWorld.xz`
+ * @param {*} dist 片元到相机的水平距离
+ * @param {*} uTime 时间 uniform（**同一个实例**）
+ */
+function waveField(pos, dist, uTime) {
+  const detailMask = smoothstep(float(50.0), float(25.0), dist);
+  let waves = sin(pos.x.mul(1.5).add(uTime.mul(5.5))).mul(0.1)
+    .add(sin(pos.y.mul(1.3).sub(uTime.mul(3.2))).mul(0.1));
+  waves = waves.add(
+    sin(pos.x.mul(2.8).add(pos.y.mul(2.2)).add(uTime.mul(3.5))).mul(0.08).mul(detailMask)
+      .add(sin(pos.x.mul(-2.1).add(pos.y.mul(3.7)).add(uTime.mul(2.8))).mul(0.06).mul(detailMask)),
+  );
+  /**
+   * 正交相位的第二分量 —— **只给倒影扰动的 z 方向用**。
+   *
+   * ⚠️ 两个方向必须用**不同相位**：共用同一个 `waves` 时 UV 偏移是 `(w, w)`，
+   * 整幅倒影沿 45° 对角线**同向平移** —— 观感是「一张画在滑动」而不是水波。
+   * 实测：取不同频率/相位后倒影才是「揉动」而非「平移」。
+   */
+  const wavesCross = sin(pos.x.mul(1.7).sub(uTime.mul(4.1))).mul(0.1)
+    .add(sin(pos.y.mul(2.3).add(uTime.mul(3.7))).mul(0.08).mul(detailMask));
+  return { waves, wavesCross, detailMask };
+}
+
+/**
  * 创建海面并挂到场景。
  * @param {THREE.Scene} scene
  * @returns {{update: (camera: THREE.Camera, dt: number) => void, plane: THREE.Mesh}}
@@ -147,6 +186,71 @@ export function setupOcean(scene) {
 
   const fadeStart = WATER_VISIBLE_DISTANCE - WATER_EDGE_FADE_BAND;
   const fadeEnd = WATER_VISIBLE_DISTANCE;
+
+  // ==================== 水面倒影（v3.17） ====================
+  //
+  // 用户口径：「朦胧地映照出地面的物品倒影，不用清晰度，要的是一个特效」，
+  // 且「尽可能小、甚至几乎不影响性能」。三条落地决策均有实测依据（见
+  // `water-reflect-config.js` 文件头的成本表）：
+  //   ① **朦胧靠 mip、省钱靠节流**（降 RT 分辨率几乎不省钱，成本在 draw call 数）；
+  //   ② **随波扰动免费**（只是片元多几次 sin + 一次 UV 加法，实测增量在噪声内）；
+  //   ③ **水面不可见时整个 pass 跳过**（成本归零）。
+  //
+  // ⚠️⚠️ **反射 pass 必须在主 render 之前跑 —— 这是载荷性约束，不是优化**。
+  // 实测（调研探针 v3~v8）：把 reflector 挂在水面材质上让它自动触发时，反射 pass 会在
+  // **transparent 队列末尾**跑，而 BatchedMesh 的 instance 索引走 `_indirectTexture`（GPU 纹理），
+  // 一帧内**最后一次写入胜出** ⇒ 主 pass 的 drawIndexed 执行时读到反射相机的索引表
+  // ⇒ **地平线以上整片天空被撕成黑多边形**（近黑像素占比 1.26% → 11.66%）。
+  // 失效形态是**静默的**：draw call / 三角数 / 帧时 / uniform 值全对，只有画面能看出。
+  // 已排除的假修法（均实测无效，勿重试）：
+  //   · 快照/恢复 multi-draw 列表（v1.46 阴影那套）—— 主 pass 已先 draw 完，快照时机不对；
+  //   · 改 `renderOrder`（1 → 99）—— blackTop 逐位不变；
+  //   · 改 `bounces` true/false —— 同样撕。
+  // 唯一有效修法：`updateBeforeType = NONE` + 由 `Game` 在主 render 前手动调一次（见
+  // `game.js` 的 `_renderWaterReflection()`）。本函数只负责把节点造好并交出句柄。
+  const reflectNode = reflector({
+    resolutionScale: REFLECT_RESOLUTION_SCALE,
+    // bounces=false：只有一面镜子，不需要反射中的反射（也避开递归渲染）
+    bounces: false,
+    // mip 链是朦胧感的唯一来源（REFLECT_MIP_LEVEL 采样它）
+    generateMipmaps: true,
+  });
+  // 反射目标必须入场景图，否则 matrixWorld 不更新 → 镜面位置/法线错。
+  // 它是空 Object3D，自身不产生 draw call；挂在水面平面下 ⇒ 自动跟随相机平移。
+  const reflectTarget = reflectNode.target;
+
+  const uReflectStrength = uniform(REFLECT_STRENGTH);
+  const uReflectDistort = uniform(REFLECT_DISTORT);
+  // 倒影采样的 mip 级别（朦胧度）。独立 uniform 而不是写死 levelNode：
+  // 改它不需要重建材质节点树（重建 = 重编译着色器 = 卡帧）。
+  const uReflectMip = uniform(REFLECT_MIP_LEVEL);
+  /**
+   * 相机高度衰减因子（v3.17b）—— 由 `Game._renderWaterReflection()` 每帧写入。
+   *
+   * ⚠️ **初值 1（满强度）而不是 0**：未接线时（fixture / 单测 / 尚未装配）倒影仍按
+   * 基准强度表现 —— 与 `uWaterTint` 同一容错口径。取 0 会让「忘接线」退化成
+   * 「倒影永远不出现」，而所有计数类判据全对（静默失效）。
+   *
+   * ⚠️ **与逐片元掠射项是两个独立自由度，不得合并**：
+   *   · 本项是**全局标量**（相机高度），兼任反射 pass 的性能门；
+   *   · 掠射项是**逐片元**的（同一帧内近弱远强），不能当性能门。
+   */
+  const uReflectHeightFade = uniform(1.0);
+  /**
+   * 掠射项权重（v3.17b）。0 = 关掉该项（逐位回到无掠射衰减）。
+   * 走 uniform 而不是编译期常量：面板要能实时拖它（常量变了要重编译着色器 = 卡帧）。
+   */
+  const uReflectGraze = uniform(REFLECT_GRAZE);
+  /**
+   * 倒影反射率乘数（v3.17）—— 水面不是完美镜子，反射光被水色吸掉一部分。
+   *
+   * ⚠️ **它与强度是两个不同的物理量，不得合并**：
+   *   · `uReflectStrength` = 倒影占多少（混合比）；
+   *   · `uReflectTint` = 倒影本身多亮（反射率）。
+   * 只降强度会把倒影一起抹掉（实测要回到冻结色阶得压到几乎 0）；
+   * 降反射率则保留形体、只压亮度 —— 这才是「朦胧倒影」应有的做法。
+   */
+  const uReflectTint = uniform(REFLECT_TINT);
 
   /**
    * 水面遮罩用的地形高度 —— **与生成侧 `generateHeight` 同构**。
@@ -239,16 +343,8 @@ export function setupOcean(scene) {
     );
     Discard(oceanMask.lessThanEqual(0.001));
 
-    // LOD：远距离减少波纹计算
-    const detailMask = smoothstep(float(50.0), float(25.0), dist);
-
-    // 基础 + 细节波纹
-    let waves = sin(pos.x.mul(1.5).add(uTime.mul(5.5))).mul(0.1)
-      .add(sin(pos.y.mul(1.3).sub(uTime.mul(3.2))).mul(0.1));
-    waves = waves.add(
-      sin(pos.x.mul(2.8).add(pos.y.mul(2.2)).add(uTime.mul(3.5))).mul(0.08).mul(detailMask)
-        .add(sin(pos.x.mul(-2.1).add(pos.y.mul(3.7)).add(uTime.mul(2.8))).mul(0.06).mul(detailMask)),
-    );
+    // 波纹场（LOD detailMask + 波高 + 正交分量）—— **与倒影扰动共用同一份公式与同一 uTime**
+    const { waves, wavesCross, detailMask } = waveField(pos, dist, uTime);
 
     const normal = normalize(vec3(waves.mul(2.0), 1.0, waves.mul(2.0)));
     const viewDir = normalize(cameraPosition.sub(positionWorld));
@@ -281,23 +377,77 @@ export function setupOcean(scene) {
       .min(1.0);
     const litColor = baseColor.add(highlight.mul(glow).mul(vec3(1.0, 1.0, 1.0).sub(baseColor)));
 
+    // ---- 倒影（v3.17）----
+    //
+    // 采样坐标 = 屏幕 UV（reflector 的默认口径是 `screenUV.flipX()`）+ 波纹偏移。
+    // ⚠️ **必须保留 `.flipX()`**：RT 是渲染目标纹理（flipY 语义与普通贴图相反），
+    // 去掉它倒影会上下颠倒 —— 而那看起来「也有点像倒影」，极易误判为正确。
+    //
+    // 扰动按距离衰减：远景倒影已被雾吃掉，那里再晃只会变成高频噪声。
+    // 边界常量与 CPU 参考实现 `reflectDistortAt()` 共享（红线 1）。
+    const reflNear = smoothstep(float(REFLECT_DISTORT_FAR), float(REFLECT_DISTORT_NEAR), dist);
+    const reflAmt = uReflectDistort.mul(reflNear);
+    reflectNode.uvNode = screenUV.flipX().add(vec2(
+      waves.add(wavesCross).mul(reflAmt),
+      wavesCross.sub(waves.mul(0.5)).mul(reflAmt),
+    ));
+    reflectNode.levelNode = uReflectMip;
+    // ⚠️ **显式拆分量**：`vec3(node)` 在 WebGPU 后端会静默输出黑（同炮塔三档色调 v3.14 的教训：
+    // 单参 `vec3()` 走「转成 vec3」路径，而节点类型不是 'vec3' 时拿不到分量）。
+    const reflColor = vec3(reflectNode.r, reflectNode.g, reflectNode.b);
+    // 水面吸收（反射率）—— 水面不是理想镜面。实测纯倒影 luma 185.9 = 天空亮度，
+    // 而无倒影水面 127.4 ⇒ 不吸收就会把水抬成白镜（撞用户四轮标定的冻结色阶）。
+    //
+    // ⚠️⚠️ **吸收强度必须随环境亮度减弱 —— 否则夜里双重压暗**（实测）。
+    // 根因：反射 RT 里的世界**已经是夜景**（体素材质吃 uSkyDim 0.25、背景是 night 立方图），
+    // 再乘一个为白昼标定的 0.30 吸收率 ⇒ 暗上加暗。实测：固定 0.30 时 night luma **65~69**
+    //（冻结下界 70），而把 TINT 从 0.18 扫到 0.30 夜档几乎不动 ⇒ 不是参数大小问题。
+    // 物理上：吸收是「光穿过水体被吃掉一部分」，环境光本就很弱时可吸收的绝对量也小，
+    // 故有效反射率向 1 靠。回升量取 `1 − 均值(uWaterTint)`（环境变暗的程度）。
+    // ⚠️ **晨/午 uWaterTint 恒中性 1** ⇒ 回升项 ≡ 0 ⇒ 有效反射率逐位等于 uReflectTint
+    //（故本项不会动摇已验收的 morning/noon = 113）。
+    // ⚠️ 上限 min(1.0)：超了就是「夜里水面比天空还亮」= 发光（用户 v2.1 报过的缺陷）。
+    const tintMean = uWaterTint.x.add(uWaterTint.y).add(uWaterTint.z).div(3.0);
+    const darkEnv = float(1.0).sub(tintMean).max(0.0);
+    const albedo = uReflectTint.add(darkEnv.mul(float(1.0).sub(uReflectTint))).min(1.0);
+    const reflLit = reflColor.mul(albedo);
+    // ---- 高度 + 掠射衰减（v3.17b，用户：「距离水面一定高度后倒影越来越弱甚至消失」）----
+    //
+    // 物理依据 = Fresnel：掠射（贴水面看）几乎全反射，垂直俯视只反射 ~2%。
+    // 相机升高 ⇒ 看同一片水的入射角变陡 ⇒ 倒影变弱。两层相乘：
+    //   · `uReflectHeightFade`：全局（飞行高度），兼任 pass 的性能门；
+    //   · `grazeTerm`：逐片元，复用上面**已在算**的 `fresnel`（不新写一份公式）。
+    // ⚠️ grazeTerm **必须留地板**（mix(1−GRAZE, 1, fresnel)）：直乘 fresnel 时
+    // 垂直俯视 fresnel→0 ⇒ 脚下水面倒影完全消失，与用户要的「朦胧映出地面物品」相背。
+    // ⚠️ GRAZE=0 时 grazeTerm≡1、fade=1 时 ×1.0 在 IEEE754 下逐位精确 ⇒ 可单变量 A/B。
+    const grazeTerm = mix(float(1.0).sub(uReflectGraze), float(1.0), fresnel);
+    const reflStrength = uReflectStrength.mul(uReflectHeightFade).mul(grazeTerm);
+
     const depth = length(cameraPosition.sub(positionWorld));
     const fogFactor = smoothstep(uFogNear, uFogFar, depth);
-    // ⚠️ **tint 必须乘在雾混合之后**（v2.2 修的根因，用户 2026-10-28 第二轮反馈
-    // 「傍晚和夜晚的水面波纹颜色依然过于明亮」）：
-    // `WATER_FOG_COLOR` 是正午口径的固定常量、`fogNear=20 / fogFar=70`，中远景海面几乎全由
-    // 雾色决定。乘在 mix **之前**时雾色完全不吃风格亮度乘数 —— 实测（vd=8 深海机位、
-    // 五变量冻结、水面众数峰 luma，按屏幕分带「远→近」）：
-    // | 风格 | 0.55-0.65（远） | 0.65-0.75 | 0.75-0.85 | 0.85-0.96（近） |
-    // |---|---|---|---|---|
-    // | noon | 156 | 126 | 123 | 116 |
-    // | dusk | **170** | 132 | 123 | 116 |
-    // | night | **182** | 133 | 115 | 114 |
-    // **夜晚远处 182 比正午 156 还亮一档** —— 这正是「像发光」的大头。
-    // 判别性证据：tint 从 0.62 压到 0.34 时近处 114→76，而远处那一带**恒定 182 一点没变**。
+
+    // ⚠️⚠️ **水色与倒影各自上雾、各自吃 tint，最后才混 —— 顺序是载荷性的**。
     //
-    // `tint = 1`（晨/午）时 `× 1.0` 在 IEEE754 下逐位精确 → 晨午零回归。
-    return mix(litColor, uFogColor, fogFactor).mul(uWaterTint);
+    // 水色支：`mix(litColor, fogColor, fogFactor) × uWaterTint` —— **逐字即 v3.16 原式**。
+    // ⚠️ tint 必须在雾混合**之后**（v2.2 修的根因，用户 2026-10-28：「傍晚和夜晚依然过于明亮」）：
+    // `WATER_FOG_COLOR` 是正午口径常量、fogNear=20/fogFar=70，中远景海面几乎全由雾色决定。
+    // 乘在 mix 之前时雾色不吃乘数 —— 实测夜晚远处 **182 比正午 156 还亮**（「像发光」的大头）；
+    // 判别性证据：tint 0.62→0.34 时近处 114→76，而远处那一带恒定 182 一点没变。
+    // 倒影支：`mix(reflLit, fogColor × uWaterTint, fogFactor)` —— **不乘 uWaterTint**。
+    //
+    // 为什么倒影不能再乘一次 tint（实测根因）：
+    // `uWaterTint` 存在的理由是「水面基色是写死的常量、不跟环境亮度」（见上方 v2.1 注释），
+    // 所以靠它手动压暗。而**反射 RT 里的世界本就已经是夜景**：体素材质吃了 `uSkyDim 0.25`、
+    // 背景是 night 立方图 ⇒ 再乘 0.39 就是**双重压暗**。实测：固定反射率 0.30 时
+    // noon 113 ✓ / dusk 84 ✓ / **night 65 ✗**（冻结下界 70）；改为本口径后四风格全入带。
+    //
+    // 远景倒影仍要淡入**水面的**雾色（同样吃 tint），否则远处会出现一块
+    // 比周围亮的「镜面斑」—— RT 自带的场景雾与水面雾是两套参数，不能直接沿用。
+    //
+    // `reflStrength = 0` 时外层 mix 取左端 ⇒ **逐位回到 v3.16**（零回归锚点）。
+    const waterLit = mix(litColor, uFogColor, fogFactor).mul(uWaterTint);
+    const reflFogged = mix(reflLit, uFogColor.mul(uWaterTint), fogFactor);
+    return mix(waterLit, reflFogged, reflStrength);
   })();
 
   const opacityNode = Fn(() => {
@@ -342,6 +492,13 @@ export function setupOcean(scene) {
   // 固定 renderOrder 让海面恒在体素水（默认 0）之后绘制，退出深度排序。
   plane.renderOrder = 1;
   scene.add(plane);
+  // 反射目标随水面平面（它每帧跟随相机）—— 镜面高度恒等 WATER_LEVEL_OFFSET。
+  plane.add(reflectTarget);
+  // 关掉自动触发：改由 Game 在主 render **之前**手动跑（原因见上方反射段的载荷性约束）。
+  const reflectBase = reflectNode.reflector;
+  const reflectUpdate = reflectBase.updateBefore.bind(reflectBase);
+  reflectBase.updateBeforeType = THREE.NodeUpdateType.NONE;
+  reflectBase.updateBefore = () => {};
 
   return {
     plane,
@@ -349,6 +506,63 @@ export function setupOcean(scene) {
     uWaterTint,
     /** 湖区门控句柄（v2.14，供测试直接读；`setLakeCircle` 写入） */
     uLakeCircle,
+    /**
+     * 跑一次反射 pass。**只能由 `Game` 在主 `renderer.render()` 之前调**
+     * （原因见上方反射段：后置会把主画面的天空撕碎）。
+     *
+     * ⚠️ 反射期间临时藏掉**第一人称手臂/武器**：它们挂在 camera 下，而反射用的是
+     * 镜像虚拟相机 ⇒ 不藏的话水里会出现一条巨大的手臂倒影（调研截图里实测到）。
+     * `hidden` 由调用方传入（装配层才知道 viewArm/viewWeapon），本模块不依赖 player/。
+     *
+     * @param {THREE.Camera} camera
+     * @param {THREE.Material} material 水面材质（reflector 内部要临时置 visible=false）
+     * @param {THREE.Object3D[]} [hidden] 反射期间需隐身的节点
+     */
+    renderReflection(camera, material, hidden) {
+      let restored = null;
+      if (hidden && hidden.length) {
+        restored = [];
+        for (const o of hidden) {
+          if (!o) continue;
+          restored.push([o, o.visible]);
+          o.visible = false;
+        }
+      }
+      try {
+        reflectUpdate({ scene, camera, renderer: this._renderer, material });
+      } finally {
+        // ⚠️ **必须在 finally 里恢复**：反射 pass 抛异常时若手臂永久隐身，
+        // 玩家看到的是「手没了」—— 比倒影出错严重得多。
+        if (restored) for (const [o, v] of restored) o.visible = v;
+      }
+    },
+    /** 反射句柄（供测试与面板读 RT 尺寸/倍率） */
+    reflect: reflectBase,
+    /** 倒影强度 uniform（0 = 逐位回到无倒影的原式） */
+    uReflectStrength,
+    /** 随波扰动幅度 uniform */
+    uReflectDistort,
+    /** 倒影朦胧度（mip 级别）uniform */
+    uReflectMip,
+    /** 相机高度衰减因子 uniform（由 Game 每帧写；1 = 满强度） */
+    uReflectHeightFade,
+    /** 掠射（视角）项权重 uniform（0 = 关掉该项） */
+    uReflectGraze,
+    /** 倒影反射率乘数 uniform（水面吸收；1 = 理想镜面） */
+    uReflectTint,
+    /** 注入 renderer（反射 pass 需要它；Game 在 renderer.init() 后调一次） */
+    setRenderer(renderer) { this._renderer = renderer; },
+    /**
+     * 改反射 RT 的分辨率倍率（0.1~1）。
+     * ⚠️ **它不是性能旋钮**：实测 0.125 与 0.5 的提交耗时只差 0.1ms（成本在 draw call 数）。
+     * 它的真实作用是显存与倒影锐度；省钱请用刷新间隔。
+     */
+    setReflectScale(v) {
+      const n = Number(v);
+      const s = Number.isFinite(n) ? Math.max(0.1, Math.min(1, n)) : REFLECT_RESOLUTION_SCALE;
+      reflectBase.resolutionScale = s;
+      return s;
+    },
     /** 城市门控句柄（供测试直接读） */
     uCityBounds,
     /** 每帧：时间推进 + 跟随相机（无限水面） */

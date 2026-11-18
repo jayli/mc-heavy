@@ -270,6 +270,10 @@ async function boot() {
   // 不进设置面板，故不过 resolveSettings，直接作构造选项传入。
   const skybox = params.get('skybox') !== '0';
   const shadows = params.get('shadows') !== '0';
+  // ?reflect=0 关闭水面倒影（v3.17）。与 ?shadows / ?skybox 同一反向口径：
+  // 默认开，只有显式 '0' 关。不进 resolveSettings（不持久化）—— 它是 Tier 4 做
+  // 单变量 A/B 的隔离入口，玩家侧的开关在右下角常驻调参坞。
+  const reflect = params.get('reflect') !== '0';
   setLoadingStage('正在生成世界…');
   loadingPhase = 'p2';
   const game = new Game({
@@ -283,6 +287,7 @@ async function boot() {
     startWeather,
     shadows,
     skybox,
+    reflect,
     settings,
     // 启动进展计时器的唯一实例（见文件头注释：全仓只允许一个）
     watchdog,
