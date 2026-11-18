@@ -37,6 +37,7 @@ import { RUINED_CITADEL_VARIANTS } from './ruined-citadel-data.js';
 import { JUNGLE_FORTRESS_HALF_X, JUNGLE_FORTRESS_HALF_Z, JUNGLE_FORTRESS_VARIANTS } from './jungle-fortress-data.js';
 import {
   inJungleFortressTerraform, jungleFortressSurfaceYAt, fillJungleFortressPiers,
+  fillJungleFortressSkirt,
   JUNGLE_FORTRESS_SLOPE_BAND,
 } from './jungle-fortress-terrain.js';
 import { TARN_ZONE_RADIUS, snowLandSuppressedByTarn, TARN_CLOUD_MIN_Y } from './tarn-zone.js';
@@ -1159,6 +1160,8 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
       setBlock, column, registry, seed, false);
     // ② 石墩托底 + 地下房间漏底修补
     fillJungleFortressPiers(column, jf, seed, registry, jfData);
+    // ③ 接壤阶梯过渡裙边（DR-10）—— 必须在墩之后（它读墩顶作为包络源）
+    fillJungleFortressSkirt(column, jf, seed, registry, jfData);
   }
 
   // ---- 阶段 2.5：空中结构（M2-7：Y=55 单云 + 空岛，层序先云后岛；mc-lite 空中内容后写）----

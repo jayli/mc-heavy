@@ -33,8 +33,9 @@ import { getCityBoundsForSeed } from '../gen/structures/city-layout.js';
 import { CITY_TRANSITION_SIZE, REGION_SIZE, LANDMARK_OFFSET } from '../gen/structures/region-config.js';
 import {
   jungleFortressSurfaceYAt, inJungleFortressTerraform,
-  jungleFortressGeometry,
+  jungleFortressGeometry, jungleFortressSkirtField,
   JUNGLE_FORTRESS_SLOPE_BAND,
+  JUNGLE_FORTRESS_SKIRT_INNER, JUNGLE_FORTRESS_SKIRT_OUTER,
 } from '../gen/structures/jungle-fortress-terrain.js';
 import { rollVegetation, generateTree } from '../gen/structures/vegetation.js';
 import { buildDefaultRegistry } from '../voxel/block-registry.js';
@@ -1450,3 +1451,206 @@ test('丛林要塞观感：地下基座/外壳可见率、房间/竖井露出率
     assertTrue(visBase > 10000, `seed ${seed} 可见基座格数必须 >10000（实际 ${visBase}）`);
   }
 }, { tier: 'slow' });
+
+// ==================== 接壤阶梯过渡裙边（v3.16 DR-10，用户追加裁定）====================
+//
+// 用户：「最终丛林要塞的地界和旁边的地图接壤的地方，都要有一个接壤区域的阶梯过渡，
+// 不要出现陡峭的悬崖突变。」
+//
+// ⚠️ 三屏障（建筑列/保护列/湿列）缺一即静默退化：
+//    只外侧 ⇒ 内侧自然列与外侧裙边间留 9~11 格沟槽；
+//    只内部 ⇒ 基座被埋回去（可见率 45.8%→22.2%）；
+//    抬保护列 ⇒ 露出地下 air 被埋；抬湿列 ⇒ 假水面（红线 1）。
+
+/** 8 seed 裙边填方冻结：[填内格, 填内列, 填外格, 填外列, 总格]（spec §9） */
+const FROZEN_SKIRT = {
+  12345: [546, 151, 1950, 504, 2496],
+  99999: [648, 167, 2450, 595, 3098],
+  777: [605, 161, 1988, 498, 2593],
+  4242: [723, 183, 2554, 551, 3277],
+  31337: [695, 176, 2306, 554, 3001],
+  20260101: [654, 169, 2361, 576, 3015],
+  1249026: [645, 166, 2440, 596, 3085],
+  8888: [725, 183, 2489, 579, 3214],
+};
+
+/** 裙边判据夹具：取包络场 + 三类屏障集合（与生产代码共用同一份派生） */
+async function jfSkirtFixture(seed) {
+  const a = computeJungleFortressAnchor(seed);
+  const data = await loadStructure('jungleFortress');
+  const field = jungleFortressSkirtField(a, seed, data);
+  return { a, data, field };
+}
+
+test('丛林要塞裙边：常量冻结 R=12 / BW=22（换地形公式后需重标，不得静默改）', () => {
+  assertEqual(JUNGLE_FORTRESS_SKIRT_INNER, 12, '内侧宽度 R');
+  assertEqual(JUNGLE_FORTRESS_SKIRT_OUTER, 22, '外侧宽度 BW');
+});
+
+test('丛林要塞裙边：带内/带缝/外侧地面相邻高差 ≤1（8 seed）', async () => {
+  const HX = JUNGLE_FORTRESS_HALF_X, HZ = JUNGLE_FORTRESS_HALF_Z;
+  const BW = JUNGLE_FORTRESS_SKIRT_OUTER;
+  for (const seedStr of Object.keys(FROZEN_SKIRT)) {
+    const seed = Number(seedStr);
+    const { field } = await jfSkirtFixture(seed);
+    const { T, nat, inBand, inFootprint, isBuilding, isProtected, isWet } = field;
+    let bandMax = 0, seamMax = 0, outMax = 0;
+    // ① 带内：非建筑非保护非湿列相邻
+    for (let x = -HX - BW; x <= HX + BW; x++) {
+      for (let z = -HZ - BW; z <= HZ + BW; z++) {
+        if (!inBand(x, z)) continue;
+        for (const [dx, dz] of [[1, 0], [0, 1]]) {
+          const nx = x + dx, nz = z + dz;
+          if (!inBand(nx, nz)) continue;
+          if (isBuilding(x, z) || isBuilding(nx, nz)) continue;
+          if (isProtected(x, z) || isProtected(nx, nz) || isWet(x, z) || isWet(nx, nz)) continue;
+          bandMax = Math.max(bandMax, Math.abs(T(x, z) - T(nx, nz)));
+        }
+      }
+    }
+    // ② 带缝：带内缘 ↔ 内部自然列
+    for (let x = -HX; x <= HX; x++) {
+      for (let z = -HZ; z <= HZ; z++) {
+        if (!inBand(x, z)) continue;
+        for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = x + dx, nz = z + dz;
+          if (!inFootprint(nx, nz) || inBand(nx, nz)) continue;
+          if (isBuilding(x, z) || isBuilding(nx, nz)) continue;
+          if (isProtected(x, z) || isProtected(nx, nz) || isWet(x, z) || isWet(nx, nz)) continue;
+          seamMax = Math.max(seamMax, Math.abs(T(x, z) - nat(nx, nz)));
+        }
+      }
+    }
+    // ③ 外侧：占地外非湿列相邻
+    for (let x = -HX - BW; x <= HX + BW; x++) {
+      for (let z = -HZ - BW; z <= HZ + BW; z++) {
+        if (inFootprint(x, z)) continue;
+        for (const [dx, dz] of [[1, 0], [0, 1]]) {
+          const nx = x + dx, nz = z + dz;
+          if (nx > HX + BW || nz > HZ + BW || inFootprint(nx, nz)) continue;
+          if (isWet(x, z) || isWet(nx, nz)) continue;
+          outMax = Math.max(outMax, Math.abs(T(x, z) - T(nx, nz)));
+        }
+      }
+    }
+    assertTrue(bandMax <= 1, `seed ${seed} 带内相邻高差必须 ≤1（实际 ${bandMax}）`);
+    assertTrue(seamMax <= 1, `seed ${seed} 带缝相邻高差必须 ≤1（实际 ${seamMax}）`);
+    assertTrue(outMax <= 1, `seed ${seed} 外侧相邻高差必须 ≤1（实际 ${outMax}）`);
+  }
+}, { tier: 'slow' });
+
+test('丛林要塞裙边：不盖建筑、保护列零抬升、湿列零抬升（8 seed）', async () => {
+  for (const seedStr of Object.keys(FROZEN_SKIRT)) {
+    const seed = Number(seedStr);
+    const { field } = await jfSkirtFixture(seed);
+    const { T, nat, isBuilding, isProtected, isWet, bounds } = field;
+    let buildLift = 0, protLift = 0, wetLift = 0, checked = 0;
+    for (let x = bounds.x0; x <= bounds.x1; x++) {
+      for (let z = bounds.z0; z <= bounds.z1; z++) {
+        checked++;
+        const d = T(x, z) - nat(x, z);
+        if (isBuilding(x, z) && d > 0) buildLift++;
+        if (isProtected(x, z) && d > 0) protLift++;
+        if (isWet(x, z) && d > 0) wetLift++;
+      }
+    }
+    assertTrue(checked > 30000, `样本量（实际 ${checked}）`);
+    assertEqual(buildLift, 0, `seed ${seed} 建筑列零抬升（裙边不盖建筑）`);
+    assertEqual(protLift, 0, `seed ${seed} 保护列零抬升（不埋露出地下 air）`);
+    assertEqual(wetLift, 0, `seed ${seed} 湿列零抬升（防假水面，红线 1）`);
+  }
+}, { tier: 'slow' });
+
+test('丛林要塞裙边：露出地下 air 零被埋（8 seed，均 602 格仍露）', async () => {
+  for (const seedStr of Object.keys(FROZEN_SKIRT)) {
+    const seed = Number(seedStr);
+    const { a, data, field } = await jfSkirtFixture(seed);
+    const G = jungleFortressGeometry(data);
+    const { T, nat } = field;
+    let stillExp = 0, buried = 0;
+    for (const k of G.roomAir) {
+      const [x, ny, z] = k.split(',').map(Number);
+      const wy = a.floorY + (ny - G.floorRow);
+      if (wy <= nat(x, z)) continue;                 // 本来就埋着，不算裙边埋的
+      if (T(x, z) < wy) stillExp++; else buried++;
+    }
+    assertEqual(buried, 0, `seed ${seed} 裙边不得埋掉任何本来露出的地下 air`);
+    assertTrue(stillExp > 500, `seed ${seed} 仍露出的地下 air 应 >500 格（实际 ${stillExp}）`);
+  }
+}, { tier: 'slow' });
+
+test('丛林要塞裙边：填方格数/列数逐值命中冻结表（8 seed）', async () => {
+  for (const [seedStr, want] of Object.entries(FROZEN_SKIRT)) {
+    const seed = Number(seedStr);
+    const { field } = await jfSkirtFixture(seed);
+    const { T, nat, inFootprint, bounds } = field;
+    let fi = 0, fic = 0, fo = 0, foc = 0;
+    for (let x = bounds.x0; x <= bounds.x1; x++) {
+      for (let z = bounds.z0; z <= bounds.z1; z++) {
+        const d = T(x, z) - nat(x, z);
+        if (d <= 0) continue;
+        if (inFootprint(x, z)) { fi += d; fic++; } else { fo += d; foc++; }
+      }
+    }
+    assertEqual(fi, want[0], `seed ${seed} 填内格数`);
+    assertEqual(fic, want[1], `seed ${seed} 填内列数`);
+    assertEqual(fo, want[2], `seed ${seed} 填外格数`);
+    assertEqual(foc, want[3], `seed ${seed} 填外列数`);
+    assertEqual(fi + fo, want[4], `seed ${seed} 裙边总格数`);
+  }
+}, { tier: 'slow' });
+
+test('丛林要塞裙边：真实 GEN 写入 —— 顶面 biome 材质 / 下方 dirt（FOREST）', async () => {
+  const seed = 12345;
+  const { a, field } = await jfSkirtFixture(seed);
+  const reg = await buildDefaultRegistry();
+  const { T, nat, inFootprint, isBuilding } = field;
+  const dirt = reg.idOf('dirt');
+  // 取一个含外侧裙边抬升列的 column（东缘外）
+  const HX = JUNGLE_FORTRESS_HALF_X;
+  let target = null;
+  for (let x = HX + 1; x <= HX + JUNGLE_FORTRESS_SKIRT_OUTER && !target; x++) {
+    for (let z = -20; z <= 20; z++) {
+      if (T(x, z) > nat(x, z) && !isBuilding(x, z)) { target = { x, z }; break; }
+    }
+  }
+  assertTrue(target !== null, '必须找到外侧裙边抬升列（否则无判别力）');
+  const wx = a.wx + target.x, wz = a.wz + target.z;
+  const cx = Math.floor(wx / 16), cz = Math.floor(wz / 16);
+  const col = new ChunkColumn(cx, cz);
+  fillColumn(col, seed, reg);
+  carveCaves(col, seed, reg);
+  const layouts = neighborRegionKeys(cx, cz)
+    .map((k) => { const [rx, rz] = k.split(',').map(Number); return computeRegionLayout(rx, rz, seed); });
+  await applyStructuresToColumn(col, seed, reg, layouts);
+  const lx = ((wx % 16) + 16) % 16, lz = ((wz % 16) + 16) % 16;
+  const top = T(target.x, target.z), h = nat(target.x, target.z);
+  assertTrue(top > h, '该列必须真的被抬升');
+  assertEqual(col.blocks[blockIndex(lx, top, lz)],
+    reg.idOf(surfaceTypeOfBiome(getBiome(wx, wz, seed))),
+    `裙边顶面必须是 biome 地表材质（不是 mossy_stone）`);
+  for (let y = h + 1; y < top; y++) {
+    assertEqual(col.blocks[blockIndex(lx, y, lz)], dirt, `裙边下方 y=${y} 必须是 dirt`);
+  }
+  assertTrue(!inFootprint(target.x, target.z), '本用例取的是外侧列');
+});
+
+test('丛林要塞裙边：surfaceYAt 就是包络场 T（唯一权威，内部非带列仍 = nat）', async () => {
+  const seed = 12345;
+  const { a, field } = await jfSkirtFixture(seed);
+  const { T, nat, inBand, isBuilding } = field;
+  let checkedLift = 0, checkedInner = 0;
+  for (let x = -JUNGLE_FORTRESS_HALF_X; x <= JUNGLE_FORTRESS_HALF_X; x += 7) {
+    for (let z = -JUNGLE_FORTRESS_HALF_Z; z <= JUNGLE_FORTRESS_HALF_Z; z += 7) {
+      const s = jungleFortressSurfaceYAt(a.wx + x, a.wz + z, seed, a);
+      assertEqual(s, T(x, z), `(${x},${z}) surfaceYAt 必须等于包络场 T`);
+      if (T(x, z) > nat(x, z)) checkedLift++;
+      if (!inBand(x, z) && !isBuilding(x, z)) {
+        assertEqual(s, nat(x, z), `(${x},${z}) 内部非带列必须仍是自然高度`);
+        checkedInner++;
+      }
+    }
+  }
+  assertTrue(checkedLift > 0, `抽样必须含抬升列（实际 ${checkedLift}）`);
+  assertTrue(checkedInner > 100, `抽样必须含内部非带列（实际 ${checkedInner}）`);
+});
