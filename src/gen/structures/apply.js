@@ -36,7 +36,7 @@ import {
 import { RUINED_CITADEL_VARIANTS } from './ruined-citadel-data.js';
 import { JUNGLE_FORTRESS_HALF_X, JUNGLE_FORTRESS_HALF_Z, JUNGLE_FORTRESS_VARIANTS } from './jungle-fortress-data.js';
 import {
-  inJungleFortressTerraform, jungleFortressSurfaceYAt,
+  inJungleFortressTerraform, jungleFortressSurfaceYAt, fillJungleFortressPiers,
   JUNGLE_FORTRESS_SLOPE_BAND,
 } from './jungle-fortress-terrain.js';
 import { TARN_ZONE_RADIUS, snowLandSuppressedByTarn, TARN_CLOUD_MIN_Y } from './tarn-zone.js';
@@ -145,9 +145,16 @@ export function jfTreeKept(wx, wz, seed) {
  *
  * @param {Map<string,string>} cellType 产物非空气格索引
  * @param {Map<string,number>} roofTop 每列最高实心格的 ny（判「上方有无屋顶」）
+ * @param {Set<string>} [roomAir] 地下房间/竖井的 air 格（v3.16）
  */
-function jfCellFreeAt(px, ny, pz, cellType, roofTop) {
-  if (cellType.has(`${px},${ny},${pz}`)) return false;      // ① 真占位 ⇒ 让位
+function jfCellFreeAt(px, ny, pz, cellType, roofTop, roomAir) {
+  const key = `${px},${ny},${pz}`;
+  if (cellType.has(key)) return false;                      // ① 真占位 ⇒ 让位
+  // ①b **地下房间/竖井的 air ⇒ 让位**（v3.16）：
+  //    抬升后露天竖井会高出自然地表，旧判据把它当「室外空地」⇒ 草/树干长进坑口
+  //    （实测 seed 4242 有 9 格竖井被 short_grass/bush_grass/wood/dead_bush 填掉）。
+  //    用户要的是「露天坑」，不是「坑里长草」⇒ 这一格属建筑内部，让位。
+  if (roomAir && roomAir.has(key)) return false;
   const top = roofTop.get(`${px},${pz}`);
   if (top !== undefined && ny < top) return false;          // ② 屋顶下方 ⇒ 室内
   return true;                                             // ③ 室外 / 未覆盖
@@ -165,8 +172,8 @@ function jfCellFreeAt(px, ny, pz, cellType, roofTop) {
  * ⚠️ 树干只需判**它自己那一格**：树干上方的格由 `jfVegSetter` 逐格守（同口径）。
  *    若树干中段的某格被要塞占位，那一格让位、上下继续长（用户要的「只在占位格让位」）。
  */
-function jfTreePlantableAt(px, ny, pz, cellType, roofTop) {
-  return jfCellFreeAt(px, ny, pz, cellType, roofTop);
+function jfTreePlantableAt(px, ny, pz, cellType, roofTop, roomAir) {
+  return jfCellFreeAt(px, ny, pz, cellType, roofTop, roomAir);
 }
 
 /**
@@ -182,10 +189,10 @@ function jfTreePlantableAt(px, ny, pz, cellType, roofTop) {
  * ⚠️ `floorRow` 由调用方传入（`floorRowOf('jungleFortress')`，唯一权威），
  *    不在此硬编码 13 —— 重烘改层时硬编码会静默错位。
  */
-function jfVegSetter(setBlock, anchor, cellType, floorRow, roofTop) {
+function jfVegSetter(setBlock, anchor, cellType, floorRow, roofTop, roomAir) {
   return (wx, y, wz, name, meta = 0) => {
     const ny = y - anchor.floorY + floorRow;
-    if (!jfCellFreeAt(wx - anchor.wx, ny, wz - anchor.wz, cellType, roofTop)) return;
+    if (!jfCellFreeAt(wx - anchor.wx, ny, wz - anchor.wz, cellType, roofTop, roomAir)) return;
     setBlock(wx, y, wz, name, meta);
   };
 }
@@ -204,14 +211,20 @@ function jungleFortressCells(data) {
   if (JF_CELL_CACHE.has(data)) return JF_CELL_CACHE.get(data);
   const cells = new Map();
   const roof = new Map();
+  const floorRow = floorRowOf('jungleFortress');
+  const roomAir = new Set();
   for (const b of data.blocks) {
-    if (b.type === 'air') continue;
+    // 地下房间/竖井的 air：它不是「可长植被的室外空地」（v3.16）
+    if (b.type === 'air') {
+      if (b.y < floorRow) roomAir.add(`${b.x},${b.y},${b.z}`);
+      continue;
+    }
     cells.set(`${b.x},${b.y},${b.z}`, b.type);
     const ck = `${b.x},${b.z}`;
     const prev = roof.get(ck);
     if (prev === undefined || b.y > prev) roof.set(ck, b.y);
   }
-  const entry = { cells, roof };
+  const entry = { cells, roof, roomAir };
   JF_CELL_CACHE.set(data, entry);
   return entry;
 }
@@ -1130,17 +1143,22 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
   //
   // ⚠️ **不补 groundSupport**（第 9 参仍 false）：那套是「贴地层向下探 ≤5 格」，
   //    与墩的「逐列补到自然地表」语义不同（墩高最大 22 > 5），两者叠加会重复写且探不到底。
-  for (const layout of layouts) {
-    const jf = layout.jungleFortress;
-    if (!jf) continue;
+  //
+  // ⚠️ **墩必须在光栅化之后**（DR-8）：墩逐格守 `blocks[idx]===0`，
+  //    先光栅化能确保产物已写入的格（含显式 air）不被墩覆盖。
+  const jfAnchors = layouts.map((l) => l.jungleFortress).filter(Boolean);
+  const jfData = jfAnchors.length ? await loadStructure('jungleFortress') : null;
+  for (const jf of jfAnchors) {
     // 裁剪用植被管理区半宽（含 16 格外延）：后续墩/裙边也在这一带写
     const jfBX = JUNGLE_FORTRESS_HALF_X + JUNGLE_FORTRESS_SLOPE_BAND;
     const jfBZ = JUNGLE_FORTRESS_HALF_Z + JUNGLE_FORTRESS_SLOPE_BAND;
     if (!placementIntersects({ x: jf.wx, z: jf.wz }, jfBX, jfBZ, column.cx, column.cz)) continue;
-    // 光栅化：floorRow 层坐在 baseY 上
+    // ① 光栅化：floorRow 层坐在 baseY 上
     const jfFloorRow = floorRowOf('jungleFortress');
     rasterizeStructure('jungleFortress', jf.wx, jf.floorY - (jfFloorRow - 1), jf.wz,
       setBlock, column, registry, seed, false);
+    // ② 石墩托底 + 地下房间漏底修补
+    fillJungleFortressPiers(column, jf, seed, registry, jfData);
   }
 
   // ---- 阶段 2.5：空中结构（M2-7：Y=55 单云 + 空岛，层序先云后岛；mc-lite 空中内容后写）----
@@ -1242,7 +1260,7 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
         const jf = ctx.jf;
         const px = wx - jf.wx, pz = wz - jf.wz;
         const jfData = await loadStructure('jungleFortress');
-        const { cells: jfCells, roof: jfRoof } = jungleFortressCells(jfData);
+        const { cells: jfCells, roof: jfRoof, roomAir: jfRoomAir } = jungleFortressCells(jfData);
         const jfFloorRow = floorRowOf('jungleFortress');
         const surface = jungleFortressSurfaceYAt(wx, wz, seed, jf);
         {
@@ -1252,7 +1270,7 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
           // ⚠️⚠️ **逐格判这一格能不能写**，不是逐列（v3.13d）：
           //    列级判据会把「贴着矮墙但上方是空气」的位置整列禁写 ⇒ 贴墙的树整棵不生成，
           //    邻居树冠伸过来时被「缺一棵树」的空洞切平（用户第二次报的就是这个）。
-          if (jfCellFreeAt(px, groundNy, pz, jfCells, jfRoof)) {
+          if (jfCellFreeAt(px, groundNy, pz, jfCells, jfRoof, jfRoomAir)) {
             const roll = rollVegetation(wx, wz, 'FOREST', seed);
             if (inColumn && roll.plant) {
               setBlock(wx, groundY, wz, roll.plant);
@@ -1266,10 +1284,10 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
               }
             }
             if (roll.tree && jfTreeKept(wx, wz, seed)
-                && jfTreePlantableAt(px, groundNy, pz, jfCells, jfRoof)) {
+                && jfTreePlantableAt(px, groundNy, pz, jfCells, jfRoof, jfRoomAir)) {
               tree = roll.tree; baseY = groundY;
               // 树干与树冠逐格写入 ⇒ 只在要塞真占位那一格让位（v3.13c/d）
-              treeSetter = jfVegSetter(setBlock, jf, jfCells, jfFloorRow, jfRoof);
+              treeSetter = jfVegSetter(setBlock, jf, jfCells, jfFloorRow, jfRoof, jfRoomAir);
             }
           }
         }

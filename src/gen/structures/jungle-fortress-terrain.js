@@ -14,10 +14,9 @@
 //   ③ `fillJungleFortressPiers` / `fillJungleFortressSkirt`（后续 Task 加）
 //
 // Worker 同构：本文件不得 import three。
-//
-// ⚠️ 本 Task（T2）删削平后地形函数暂时无体素写入，故只留高度/biome 查询依赖；
-//    T3（墩）与 T5（裙边）会重新用到 blockIndex / surfaceTypeOfBiome / SEA_Y 等。
 import { generateHeight } from '../terrain.js';
+import { WORLD_MIN_Y, WORLD_MAX_Y, blockIndex } from '../../voxel/constants.js';
+import { floorRowOf } from './structure-json.js';
 import { JUNGLE_FORTRESS_HALF_X, JUNGLE_FORTRESS_HALF_Z } from './jungle-fortress-data.js';
 
 /**
@@ -64,3 +63,140 @@ export function inJungleFortressTerraform(wx, wz, anchors) {
   }
   return false;
 }
+
+/**
+ * 产物的逐列竖直构成（墩 / 裙边 / 漏底修补共用的**唯一派生源**）。
+ *
+ * 红线 1：这是**可重建的派生数据**，不是第二份体素权威。按产物对象 WeakMap 缓存
+ * （同 `apply.js` 的 `jungleFortressCells` 手法）；它只依赖产物，不依赖 seed/锚点。
+ *
+ * @param {{blocks:Array<{x:number,y:number,z:number,type:string}>}} data 已加载产物
+ * @returns {{
+ *   colMinNy: Map<string,number>,   // "px,pz" → 该列最低实心 ny
+ *   colMaxNy: Map<string,number>,   // "px,pz" → 该列最高实心 ny
+ *   solid: Set<string>,             // "px,ny,pz" 产物实心
+ *   air: Set<string>,               // "px,ny,pz" 产物显式 air
+ *   roomAir: Set<string>,           // 地下（ny < floorRow）air
+ *   roomFloor: Set<string>,         // 实心且正上方是地下房间 air
+ *   floorRow: number,
+ * }}
+ */
+const JF_GEOM_CACHE = new WeakMap();
+export function jungleFortressGeometry(data) {
+  if (JF_GEOM_CACHE.has(data)) return JF_GEOM_CACHE.get(data);
+  const floorRow = floorRowOf('jungleFortress');
+  const colMinNy = new Map(), colMaxNy = new Map();
+  const solid = new Set(), air = new Set();
+  for (const b of data.blocks) {
+    const k3 = `${b.x},${b.y},${b.z}`;
+    if (b.type === 'air') { air.add(k3); continue; }
+    solid.add(k3);
+    const ck = `${b.x},${b.z}`;
+    const lo = colMinNy.get(ck);
+    if (lo === undefined || b.y < lo) colMinNy.set(ck, b.y);
+    const hi = colMaxNy.get(ck);
+    if (hi === undefined || b.y > hi) colMaxNy.set(ck, b.y);
+  }
+  const roomAir = new Set();
+  for (const k of air) if (Number(k.split(',')[1]) < floorRow) roomAir.add(k);
+  const roomFloor = new Set();
+  for (const k of solid) {
+    const [x, ny, z] = k.split(',').map(Number);
+    if (roomAir.has(`${x},${ny + 1},${z}`)) roomFloor.add(k);
+  }
+  const entry = { colMinNy, colMaxNy, solid, air, roomAir, roomFloor, floorRow };
+  JF_GEOM_CACHE.set(data, entry);
+  return entry;
+}
+
+/**
+ * 石墩托底 + 地下房间漏底修补（DR-3 / DR-4，原版 `pillar_processor` 语义）。
+ *
+ * ## 墩
+ * 逐列从「该列最低产物实心的下一格」向下写 `mossy_stone`，直到自然地表。
+ * 材质选建筑主材（46%）⇒ 观感是「建筑自己的基座加高」而不是外来土墩。
+ *
+ * ## 漏底修补
+ * 不削平后 `carveCaves` 的洞可能正在地下房间下方 ⇒ 地板漏空。
+ * 对每个「地下房间 air 格」与「房间地板格」，检查正下方第一格：
+ * 若它既非产物实心、也非产物 air、且是洞穴空气 ⇒ 写 `stone`，并对补的格迭代同样检查。
+ *
+ * ⚠️ **必须排除「下方是产物 air」**：那是房间内部竖井（正常），
+ *    不排除会多补 116 格（seed 4242 实测）把竖井填死。
+ * ⚠️ **不得用「逐列向下填到连续 2 格实心」的粗口径**：实测要填 36026 格（486 倍）。
+ *
+ * ⚠️ **必须在光栅化之后调**（DR-8 层序），且逐格守 `blocks[idx] === 0`
+ *    ⇒ 永不覆盖产物（含产物 air，保护房间内腔）。
+ *
+ * @param {import('../../voxel/chunk-column.js').ChunkColumn} column
+ * @param {{wx:number, wz:number, floorY:number}} anchor floorY = baseY
+ * @param {number} seed
+ * @param {import('../../voxel/block-registry.js').BlockRegistry} registry
+ * @param {{blocks:Array}} data 已加载产物（调用方在异步上下文 await 后传入）
+ *   ⚠️ 不在此自己 `loadStructure`：它返 Promise，同步拿不到值；
+ *      而 GEN 阶段 2.95 本就是 async（植被分支已在 await loadStructure）。
+ */
+export function fillJungleFortressPiers(column, anchor, seed, registry, data) {
+  if (!data || !data.blocks.length) return;
+  const { colMinNy, solid, air, roomAir, roomFloor, floorRow } = jungleFortressGeometry(data);
+  const colMinX = column.cx * 16, colMinZ = column.cz * 16;
+  const mossyId = registry.idOf('mossy_stone');
+  const stoneId = registry.idOf('stone');
+  const baseY = anchor.floorY;
+
+  /** 本 column 内的格写入（只写空气，且只写世界边界内） */
+  const put = (wx, wy, wz, id) => {
+    if (wy < WORLD_MIN_Y || wy >= WORLD_MAX_Y) return false;
+    const lx = wx - colMinX, lz = wz - colMinZ;
+    if (lx < 0 || lx > 15 || lz < 0 || lz > 15) return false;
+    const idx = blockIndex(lx, wy, lz);
+    if (column.blocks[idx] !== 0) return false;
+    column.blocks[idx] = id;
+    return true;
+  };
+
+  // ---- ① 墩：逐列从最低实心下一格补到自然地表 ----
+  for (const [ck, minNy] of colMinNy) {
+    const [px, pz] = ck.split(',').map(Number);
+    const wx = anchor.wx + px, wz = anchor.wz + pz;
+    if (wx < colMinX || wx > colMinX + 15 || wz < colMinZ || wz > colMinZ + 15) continue;
+    const baseWy = baseY + (minNy - floorRow);
+    const h = generateHeight(wx, wz, seed);
+    for (let wy = baseWy - 1; wy > h; wy--) put(wx, wy, wz, mossyId);
+  }
+
+  // ---- ② 漏底修补：迭代到「补的格下方也是实心」（实测 ≤9 轮）----
+  //
+  // ⚠️⚠️ **判据用「世界里真的是空气」，不用 noise3D 阀值重算**（实测踩过）：
+  //    `carveCaves` 挖两类洞 —— 3D 噪声大洞 **与 rooms 空腔**（LCG 逐 column 确定性）。
+  //    只查 noise3D > CAVE_THRESHOLD 会漏掉 rooms 那类：seed 777 的 (38,6,-5) 下方
+  //    noise=0.4378 < 0.72 但世界确实是 air（rooms 挖的）⇒ 地板仍漏空。
+  //
+  // ⚠️⚠️ **不得加「wy ≤ h−4」范围门**（实测踩过）：那个门是 carveCaves 的挖洞上限，
+  //    不是「漏底格的位置上限」。房间地板可能**高于自然地表**（半埋房间，正是用户要的）：
+  //    seed 777 的 (69,9,-56) nat=2、地板 wy=5、漏底格 wy=4 > h−4=−2 ⇒ 加门会静默漏补。
+  //    真意图是「房间正下方第一格是空气就补实」，与它在地下多深无关。
+  //    下界仍守 WORLD_MIN_Y（世界底部基岩之上）。
+  let pending = [];
+  for (const k of roomAir) pending.push(k);
+  for (const k of roomFloor) pending.push(k);
+  for (let round = 0; round < 24 && pending.length; round++) {
+    const next = [];
+    for (const k of pending) {
+      const [px, ny, pz] = k.split(',').map(Number);
+      const belowNy = ny - 1;
+      const bk = `${px},${belowNy},${pz}`;
+      // 产物实心 ⇒ 已有支撑；产物 air ⇒ 房间竖井（正常，不得填）
+      if (solid.has(bk) || air.has(bk)) continue;
+      const wx = anchor.wx + px, wz = anchor.wz + pz;
+      const lx = wx - colMinX, lz = wz - colMinZ;
+      if (lx < 0 || lx > 15 || lz < 0 || lz > 15) continue;
+      const wy = baseY + (belowNy - floorRow);
+      if (wy <= WORLD_MIN_Y || wy >= WORLD_MAX_Y) continue;
+      if (column.blocks[blockIndex(lx, wy, lz)] !== 0) continue;   // 已是实心 ⇒ 无需补
+      if (put(wx, wy, wz, stoneId)) next.push(bk);
+    }
+    pending = next;
+  }
+}
+

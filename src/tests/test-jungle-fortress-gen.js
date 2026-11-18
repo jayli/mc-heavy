@@ -623,10 +623,16 @@ test('丛林要塞：树叶只在要塞真占位的格让位（逐格，不是�
       if (prev === undefined || b.y > prev) roofTop.set(ck, b.y);
     }
   }
-  // 「室外可长」与生产代码 jfCellFreeAt 同口径：非实心 且 不在屋顶下方。
+  // 「室外可长」与生产代码 jfCellFreeAt 同口径：非实心 且 不在屋顶下方 且 非地下房间/竖井 air。
   // ⚠️ **屋顶下方的 air 是室内房间**，那里本就不应长树 ⇒ 不得计入「误杀」。
+  // ⚠️ v3.16：抬升后**露天竖井**会高出自然地表，它同属建筑内部（坑里不长草）。
+  const jfRoomAir = new Set();
+  for (const b of data.blocks) {
+    if (b.type === 'air' && b.y < floorRowOf('jungleFortress')) jfRoomAir.add(`${b.x},${b.y},${b.z}`);
+  }
   const isOutdoor = (px, ny, pz) => {
-    if (cellType.has(`${px},${ny},${pz}`)) return false;
+    const k = `${px},${ny},${pz}`;
+    if (cellType.has(k) || jfRoomAir.has(k)) return false;
     const top = roofTop.get(`${px},${pz}`);
     return top === undefined || ny >= top;
   };
@@ -735,8 +741,14 @@ test('丛林要塞：树密度减半（只降树、不降草，不改全地图 F
   }
   const floorRow = floorRowOf('jungleFortress');
   const B = JUNGLE_FORTRESS_SLOPE_BAND;
+  // v3.16：地下房间/竖井 air 属建筑内部（与生产代码 jfCellFreeAt 同口径）
+  const jfRoomAir = new Set();
+  for (const b of data.blocks) {
+    if (b.type === 'air' && b.y < floorRow) jfRoomAir.add(`${b.x},${b.y},${b.z}`);
+  }
   const outdoor = (px, ny, pz) => {
-    if (cellSolid.has(`${px},${ny},${pz}`)) return false;
+    const k = `${px},${ny},${pz}`;
+    if (cellSolid.has(k) || jfRoomAir.has(k)) return false;
     const top = roofTop.get(`${px},${pz}`);
     return top === undefined || ny >= top;
   };
@@ -824,8 +836,14 @@ test('丛林要塞：树密度减半（全量 146 column，慢档）', async () 
   }
   const floorRow = floorRowOf('jungleFortress');
   const B = JUNGLE_FORTRESS_SLOPE_BAND;
+  // v3.16：地下房间/竖井 air 属建筑内部（与生产代码 jfCellFreeAt 同口径）
+  const jfRoomAir = new Set();
+  for (const b of data.blocks) {
+    if (b.type === 'air' && b.y < floorRow) jfRoomAir.add(`${b.x},${b.y},${b.z}`);
+  }
   const outdoor = (px, ny, pz) => {
-    if (cellSolid.has(`${px},${ny},${pz}`)) return false;
+    const k = `${px},${ny},${pz}`;
+    if (cellSolid.has(k) || jfRoomAir.has(k)) return false;
     const top = roofTop.get(`${px},${pz}`);
     return top === undefined || ny >= top;
   };
@@ -886,9 +904,16 @@ test('丛林要塞：树干落点也逐格判 —— 贴墙但树干格是空气
     const prev = roofTop.get(ck);
     if (prev === undefined || b.y > prev) roofTop.set(ck, b.y);
   }
-  // 「室外可长」= 该格非实心 且 不在屋顶下方（与生产代码 jfCellFreeAt 同口径）
+  // 「室外可长」= 该格非实心 且 不在屋顶下方 且 不是地下房间/竖井 air
+  // （与生产代码 jfCellFreeAt 同口径；v3.16 补上最后一项 —— 抬升后露天竖井
+  //   会高出自然地表，它属建筑内部而不是可长树的空地）
+  const roomAir = new Set();
+  for (const b of data.blocks) {
+    if (b.type === 'air' && b.y < floorRowOf('jungleFortress')) roomAir.add(`${b.x},${b.y},${b.z}`);
+  }
   const isOutdoor = (px, ny, pz) => {
-    if (cellSolid.has(`${px},${ny},${pz}`)) return false;
+    const k = `${px},${ny},${pz}`;
+    if (cellSolid.has(k) || roomAir.has(k)) return false;
     const top = roofTop.get(`${px},${pz}`);
     return top === undefined || ny >= top;
   };
@@ -1125,4 +1150,196 @@ test('丛林要塞瞬移：落点用自然高度会悬空（判据必须有判�
   assertEqual(differ, 8,
     `8/8 seed 的整形后落点高度必须与自然高度不同（实际 ${differ} 个不同）—— ` +
     '否则「用整形后地表」这条要求无法被判据守住');
+});
+
+// ==================== 石墩与漏底修补（v3.16 DR-3 / DR-4）====================
+
+/**
+ * 8 seed 墩冻结表：[墩格数, 墩列数, 单列最大墩高, 最密 column 墩格]
+ * （spec §9，先用 t3-calib 在真实数据上逐值核对过）
+ */
+const FROZEN_PIERS = {
+  12345: [12332, 3145, 21, 1069],
+  99999: [13554, 3471, 21, 1433],
+  777: [12748, 3208, 21, 1019],
+  4242: [14339, 3686, 21, 1483],
+  31337: [14220, 3614, 22, 1115],
+  20260101: [13663, 3495, 22, 1234],
+  1249026: [13462, 3439, 21, 861],
+  8888: [14491, 3708, 22, 1005],
+};
+
+/**
+ * 墩/漏底判据的共用夹具：真实 GEN 跑完占地全部 column，收集墩格与补格。
+ *
+ * ⚠️ 墩格认定用**位置**而不是材质：从产物逐列最低实心 ny 推出理论墩区间，
+ *    再读世界方块确认。只用「mossy_stone 且不在产物格」会把建筑自身的 mossy_stone
+ *    误计入（建筑主材就是它，46%）。
+ */
+async function jfPierFixture(seed) {
+  const a = computeJungleFortressAnchor(seed);
+  const reg = await buildDefaultRegistry();
+  const data = await loadStructure('jungleFortress');
+  const FR = floorRowOf('jungleFortress');
+  const prodSolid = new Set(), prodAir = new Set();
+  const colMinNy = new Map();
+  for (const b of data.blocks) {
+    const k3 = `${b.x},${b.y},${b.z}`;
+    if (b.type === 'air') { prodAir.add(k3); continue; }
+    prodSolid.add(k3);
+    const ck = `${b.x},${b.z}`;
+    const prev = colMinNy.get(ck);
+    if (prev === undefined || b.y < prev) colMinNy.set(ck, b.y);
+  }
+  const roomAir = new Set();
+  for (const k of prodAir) { const ny = Number(k.split(',')[1]); if (ny < FR) roomAir.add(k); }
+  const roomFloor = new Set();
+  for (const k of prodSolid) {
+    const [x, ny, z] = k.split(',').map(Number);
+    if (roomAir.has(`${x},${ny + 1},${z}`)) roomFloor.add(k);
+  }
+  // 真实 GEN：占地 + 1 圈的全部 column
+  const cx0 = Math.floor((a.wx - JUNGLE_FORTRESS_HALF_X) / 16);
+  const cx1 = Math.floor((a.wx + JUNGLE_FORTRESS_HALF_X) / 16);
+  const cz0 = Math.floor((a.wz - JUNGLE_FORTRESS_HALF_Z) / 16);
+  const cz1 = Math.floor((a.wz + JUNGLE_FORTRESS_HALF_Z) / 16);
+  const world = new Map();   // "cx,cz" → ChunkColumn
+  for (let cx = cx0; cx <= cx1; cx++) {
+    for (let cz = cz0; cz <= cz1; cz++) {
+      const col = new ChunkColumn(cx, cz);
+      fillColumn(col, seed, reg);
+      carveCaves(col, seed, reg);
+      const layouts = neighborRegionKeys(cx, cz)
+        .map((k) => { const [rx, rz] = k.split(',').map(Number); return computeRegionLayout(rx, rz, seed); });
+      await applyStructuresToColumn(col, seed, reg, layouts);
+      world.set(`${cx},${cz}`, col);
+    }
+  }
+  const readWorld = (wx, wy, wz) => {
+    const cx = Math.floor(wx / 16), cz = Math.floor(wz / 16);
+    const col = world.get(`${cx},${cz}`);
+    if (!col) return undefined;
+    return col.blocks[blockIndex(((wx % 16) + 16) % 16, wy, ((wz % 16) + 16) % 16)];
+  };
+  return { a, reg, data, FR, prodSolid, prodAir, roomAir, roomFloor, colMinNy, world, readWorld };
+}
+
+test('丛林要塞墩：8 seed 墩格数/列数/max/最密col 逐值命中冻结表', async () => {
+  for (const [seedStr, want] of Object.entries(FROZEN_PIERS)) {
+    const seed = Number(seedStr);
+    const fx = await jfPierFixture(seed);
+    const { a, reg, FR, colMinNy, readWorld } = fx;
+    const mossy = reg.idOf('mossy_stone');
+    let cells = 0, cols = 0, maxH = 0;
+    const perColumn = new Map();
+    for (const [ck, minNy] of colMinNy) {
+      const [px, pz] = ck.split(',').map(Number);
+      const wx = a.wx + px, wz = a.wz + pz;
+      const baseWy = a.floorY + (minNy - FR);
+      const h = generateHeight(wx, wz, seed);
+      let n = 0;
+      for (let wy = baseWy - 1; wy > h; wy--) {
+        assertEqual(readWorld(wx, wy, wz), mossy,
+          `seed ${seed} (${wx},${wy},${wz}) 墩格必须是 mossy_stone`);
+        n++;
+        const colKey = `${Math.floor(wx / 16)},${Math.floor(wz / 16)}`;
+        perColumn.set(colKey, (perColumn.get(colKey) || 0) + 1);
+      }
+      if (n > 0) { cells += n; cols++; maxH = Math.max(maxH, n); }
+    }
+    const topCol = Math.max(...perColumn.values());
+    assertEqual(cells, want[0], `seed ${seed} 墩格数`);
+    assertEqual(cols, want[1], `seed ${seed} 墩列数`);
+    assertEqual(maxH, want[2], `seed ${seed} 单列最大墩高`);
+    assertEqual(topCol, want[3], `seed ${seed} 最密 column 墩格数`);
+  }
+}, { tier: 'slow' });
+
+test('丛林要塞墩：不覆盖产物（含 air）、不穿地下房间、顶被建筑盖住、底坐实地表', async () => {
+  const seed = 12345;
+  const fx = await jfPierFixture(seed);
+  const { a, reg, FR, prodSolid, prodAir, roomAir, colMinNy, readWorld } = fx;
+  const mossy = reg.idOf('mossy_stone');
+  let checked = 0, topCovered = 0, botOnGround = 0, pierCols = 0;
+  for (const [ck, minNy] of colMinNy) {
+    const [px, pz] = ck.split(',').map(Number);
+    const wx = a.wx + px, wz = a.wz + pz;
+    const baseWy = a.floorY + (minNy - FR);
+    const h = generateHeight(wx, wz, seed);
+    if (baseWy - 1 <= h) continue;
+    pierCols++;
+    for (let wy = baseWy - 1; wy > h; wy--) {
+      const ny = wy - a.floorY + FR;
+      const k3 = `${px},${ny},${pz}`;
+      checked++;
+      assertTrue(!prodSolid.has(k3) && !prodAir.has(k3),
+        `墩格 (${px},${ny},${pz}) 不得与产物任何格重叠（含 air）`);
+      assertTrue(!roomAir.has(k3), `墩格 (${px},${ny},${pz}) 不得穿地下房间`);
+    }
+    // 顶：墩顶正上方必须是产物实心（从上方看不到墩顶）
+    if (prodSolid.has(`${px},${minNy},${pz}`)) topCovered++;
+    // 底：墩底正下方 = 自然地表那格，且它是实心（carveCaves top=h−4 ⇒ 地表恒实心）
+    assertEqual(readWorld(wx, h, wz) !== 0, true,
+      `(${wx},${wz}) 墩底下方地表 h=${h} 必须是实心`);
+    botOnGround++;
+    // 墩底下一格不得是墩（不多补）
+    assertTrue(readWorld(wx, h, wz) !== mossy || prodSolid.has(`${px},${h - a.floorY + FR},${pz}`),
+      `(${wx},${h},${wz}) 地表那格不得是多补的墩`);
+  }
+  assertTrue(checked > 10000, `墩格样本量（实际 ${checked}）`);
+  assertEqual(topCovered, pierCols, `全部墩列顶面必须被建筑盖住（${topCovered}/${pierCols}）`);
+  assertEqual(botOnGround, pierCols, '全部墩列必须坐在自然地表上');
+});
+
+test('丛林要塞漏底：修补后地下房间 air / 房间地板下方第一格恒实心（8 seed）', async () => {
+  for (const seedStr of Object.keys(FROZEN_PIERS)) {
+    const seed = Number(seedStr);
+    const fx = await jfPierFixture(seed);
+    const { a, FR, prodSolid, prodAir, roomAir, roomFloor, readWorld } = fx;
+    let leak = 0, checked = 0;
+    for (const k of [...roomAir, ...roomFloor]) {
+      const [px, ny, pz] = k.split(',').map(Number);
+      const belowKey = `${px},${ny - 1},${pz}`;
+      // 下方是产物格（实心或 air）⇒ 不属于漏底口径（air 是房间竖井，正常）
+      if (prodSolid.has(belowKey) || prodAir.has(belowKey)) continue;
+      checked++;
+      const wy = a.floorY + (ny - 1 - FR);
+      assertTrue(readWorld(a.wx + px, wy, a.wz + pz) !== 0,
+        `seed ${seed} 房间格 (${px},${ny},${pz}) 下方 wy=${wy} 必须被补实（否则地板漏空）`);
+      if (readWorld(a.wx + px, wy, a.wz + pz) === 0) leak++;
+    }
+    assertEqual(leak, 0, `seed ${seed} 零漏底`);
+    assertTrue(checked > 0, `seed ${seed} 必须有非产物下方的房间格样本（实际 ${checked}）`);
+  }
+}, { tier: 'slow' });
+
+test('丛林要塞漏底：修补格不得填死产物 air（房间竖井），且补的那一格材质是 stone', async () => {
+  // seed 4242 是漏底最深的 seed（实测迭代 9 轮 / 49 格）⇒ 判别力最强
+  const seed = 4242;
+  const fx = await jfPierFixture(seed);
+  const { a, reg, FR, prodSolid, prodAir, roomAir, roomFloor, readWorld } = fx;
+  const stone = reg.idOf('stone');
+  let patched = 0, shaftSeen = 0, shaftFilled = 0;
+  for (const k of [...roomAir, ...roomFloor]) {
+    const [px, ny, pz] = k.split(',').map(Number);
+    const bk = `${px},${ny - 1},${pz}`;
+    if (prodSolid.has(bk)) continue;
+    const wy = a.floorY + (ny - 1 - FR);
+    const id = readWorld(a.wx + px, wy, a.wz + pz);
+    if (prodAir.has(bk)) {
+      // 竖井：正常。判据是「它仍是空气（没被填死）」，
+      // ⚠️ **不是「没遇到竖井」**：产物里本就有 1101 处「房间格下方是产物 air」
+      //    的相邻关系（实测），钉「零遇到」在正确实现下也恒红。
+      shaftSeen++;
+      if (id !== 0) shaftFilled++;
+      continue;
+    }
+    // ⚠️ **只钉「房间正下方第一格」**，不往下逐层遍历：
+    //    往下走会穿过整个天然岩层（fillColumn 的 stone/end_stone 交替），
+    //    把那些本来就在的地层方块误当成「补格」⇒ 材质断言假红（实测 id=37 end_stone）。
+    if (id === stone) patched++;
+  }
+  assertTrue(shaftSeen > 100, `必须真的遇到足量竖井相邻关系（实际 ${shaftSeen}）—— 否则无判别力`);
+  assertEqual(shaftFilled, 0, `产物 air（房间竖井）不得被填死（实际被填 ${shaftFilled} 格）`);
+  assertTrue(patched > 0, `seed 4242 必须真的有补格（实际 ${patched}）—— 否则本用例无判别力`);
 });
