@@ -86,10 +86,33 @@ function main() {
     for (let i = 0; i < g.index.length; i += 3) if (uvTriArea(g, i) <= 1e-6) degenerate++;
   }
   if (degenerate !== 0) fail(`装甲部件有 ${degenerate} 个退化 UV 三角`);
-  // ③ 装甲部件逐面拆顶点（顶点数 == 角数）
+  // ③ 装甲部件逐面拆顶点（封口会追加顶点 ⇒ 断言「不少于角数」；全焊接会少于角数）
   for (const key of TURRET_TOP_ARMOR) {
     const corners = parts[key].reduce((a, f) => a + f.p.length, 0);
-    if (out[key].position.length / 3 !== corners) fail(`${key} 未逐面拆顶点`);
+    if (out[key].position.length / 3 < corners) fail(`${key} 未逐面拆顶点`);
+  }
+  // ③b **装甲部件必须闭合**（切口封口）—— 用户实玩缺陷的内容级判据。
+  //     开放壳在 FrontSide/DoubleSide 下都会从切口看穿，而顶点数/UV/法线全对。
+  for (const key of TURRET_TOP_ARMOR) {
+    const g = out[key];
+    const wIdx = new Map();
+    const idOf = (vi) => {
+      const k2 = [0, 1, 2].map((q) => g.position[vi * 3 + q].toFixed(4)).join(',');
+      if (!wIdx.has(k2)) wIdx.set(k2, wIdx.size);
+      return wIdx.get(k2);
+    };
+    const edges = new Map();
+    for (let i = 0; i < g.index.length; i += 3) {
+      const ids = [g.index[i], g.index[i + 1], g.index[i + 2]].map(idOf);
+      for (let e = 0; e < 3; e++) {
+        const a = ids[e], b = ids[(e + 1) % 3];
+        const ek = Math.min(a, b) + '_' + Math.max(a, b);
+        edges.set(ek, (edges.get(ek) || 0) + 1);
+      }
+    }
+    let open = 0;
+    for (const c of edges.values()) if (c === 1) open++;
+    if (open !== 0) fail(`${key} 有 ${open} 条开放边（切口未封口 ⇒ 渲染看穿）`);
   }
   // ④ 各区面数（不经过 zoneOf 自身的独立冻结表）
   for (const key of TURRET_TOP_ARMOR) {

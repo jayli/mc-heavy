@@ -49,16 +49,20 @@ export const TURRET_TOP_METRICS = Object.freeze({
   hullFaces: 519,
   /** 产物八部件合计 */
   productFaces: 1609,
-  triangleCount: 3150,
-  vertexCount: 5232,
-  /** 逐部件三角数 */
+  triangleCount: 3434,
+  vertexCount: 5527,
+  /**
+   * 逐部件三角数（**含切口封口面**）。
+   * ⚠️ 装甲部件比「原面数×2」多出来的三角就是封口：源 TankBase 闭合，按 bbox 切开后
+   * 切口必须补面，否则成开放壳、渲染时从切口看穿（用户实玩缺陷，2026-11-18）。
+   */
   triangles: Object.freeze({
-    cheek: 280, mantlet: 114, deckMid: 28, ring: 246, nose: 562,
+    cheek: 308, mantlet: 134, deckMid: 52, ring: 364, nose: 656,
     podR: 576, podL: 632, barrel: 712,
   }),
   /** 逐部件顶点数 */
   vertices: Object.freeze({
-    cheek: 560, mantlet: 228, deckMid: 56, ring: 492, nose: 1124,
+    cheek: 590, mantlet: 249, deckMid: 82, ring: 612, nose: 1222,
     podR: 960, podL: 480, barrel: 1332,
   }),
   /** 逐部件各区面数（内容级判据，不经过 zoneOf 自身 ⇒ 分类退化直接红） */
