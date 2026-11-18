@@ -1116,7 +1116,12 @@ function turretTopFacesFromProduct(json) {
     const g = json.parts[key];
     if (!g) continue;
     const list = [];
-    const nv = g.position.length / 3;
+    // ⚠️ **只统计原面，不含封口面**：封口是修复「切口看穿」时追加的，
+    // 其法线朝向由环平面决定，不属于原模型的 front/side/top 分类。
+    // 原面数 = 该部件在源模型里的面数（冻结在 zoneFaces 各项之和）。
+    const zf = TOP_METRICS.zoneFaces[key];
+    const origFaces = zf.front + zf.side + zf.top;
+    const nv = Math.min(g.position.length / 3, origFaces * 4);
     for (let base = 0; base + 3 < nv; base += 4) {
       const p = [0, 1, 2, 3].map((k) => [
         g.position[(base + k) * 3], g.position[(base + k) * 3 + 1], g.position[(base + k) * 3 + 2],

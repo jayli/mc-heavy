@@ -76,8 +76,8 @@ export class TurretRenderer {
         // ⚠️ 判据是 def.textured（不是 def.zone —— 后者恒 null）
         const useMap = def.textured && !!armorTexture;
         const material = new THREE.MeshBasicMaterial(useMap
-          ? { color: 0xffffff, map: armorTexture }
-          : { color: def.color ?? TURRET_TOWER_COLOR.MAIN });
+          ? { color: 0xffffff, map: armorTexture, side: THREE.DoubleSide }
+          : { color: def.color ?? TURRET_TOWER_COLOR.MAIN, side: THREE.DoubleSide });
         const mesh = new THREE.InstancedMesh(geometry, material, maxActive);
         mesh.name = `turret:${part}`;      // 受控标识：测试与调试据此定位节点
         // 实例池的包围球按 slot 0 的零 scale 算 → 会被误剔除；炮塔须无条件提交

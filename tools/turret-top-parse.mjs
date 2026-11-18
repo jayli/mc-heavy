@@ -197,6 +197,176 @@ export function zoneOf(p, threshold = TURRET_TOP_PARAMS.zoneNyThreshold) {
  * @param {string} key @param {typeof TURRET_TOP_PARAMS} params
  * @returns {{position:number[], normal:number[], uv:number[], index:number[]}}
  */
+/**
+ * 给切口补封口面（**用户实玩缺陷修复**，2026-11-18）。
+ *
+ * ⚠️⚠️ **为什么必须补**：源 `TankBase` 是闭合流形（2268 条边全被 2 面共用），
+ * 但本模块按 bbox 窗口把它切成 cheek/mantlet/deckMid/ring/nose/hull 六块，
+ * **切口处没有面** ⇒ 每块成了单侧开放壳。渲染时从切口方向看进去是空的，
+ * 观感是「塔身变纸片、鼻段只剩空框」（用户截图实测）。
+ *
+ * ⚠️ **只封装甲部件**：barrel/podR/podL 的开放边是**原模型设计**（炮管尾端埋进鼻段、
+ * 副武器管口本就是通的），封上会把炮口堵死。它们的内壁可见性靠材质的 DoubleSide。
+ *
+ * 做法：按位置焊接 → 找只被 1 个三角用的边（边界边）→ 串成环 →
+ * 用**环质心扇形**三角化（切口环都是轴对齐平面上的星形多边形，质心扇形稳）→
+ * 法线取环平面法线并朝**部件外侧**（远离部件质心）。
+ *
+ * @param {{position:number[], normal:number[], uv:number[], index:number[]}} g 就地追加
+ * @param {number[][]} modelPts 该部件全部模型坐标（算质心用，判法线朝向）
+ * @param {typeof TURRET_TOP_PARAMS} params
+ * @returns {number} 新增三角数
+ */
+function capCutOpenings(g, modelPts, params) {
+  // ① 按位置焊接，收集边界边（只被一个三角用）
+  const weld = new Map();
+  const idOf = (vi) => {
+    const key = [0, 1, 2].map((q) => g.position[vi * 3 + q].toFixed(4)).join(',');
+    if (!weld.has(key)) weld.set(key, { id: weld.size, vi });
+    return weld.get(key).id;
+  };
+  const edgeUse = new Map();
+  for (let i = 0; i < g.index.length; i += 3) {
+    const ids = [g.index[i], g.index[i + 1], g.index[i + 2]].map(idOf);
+    for (let e = 0; e < 3; e++) {
+      const a = ids[e], b = ids[(e + 1) % 3];
+      const k = Math.min(a, b) + '_' + Math.max(a, b);
+      const rec = edgeUse.get(k) || { n: 0, a, b };
+      rec.n++;
+      edgeUse.set(k, rec);
+    }
+  }
+  const boundary = [...edgeUse.values()].filter((e) => e.n === 1);
+  if (boundary.length === 0) return 0;
+
+  // ② 串成环（每个边界顶点恰有 2 条边界边）
+  const adj = new Map();
+  for (const e of boundary) {
+    if (!adj.has(e.a)) adj.set(e.a, []);
+    if (!adj.has(e.b)) adj.set(e.b, []);
+    adj.get(e.a).push(e.b);
+    adj.get(e.b).push(e.a);
+  }
+  const seen = new Set();
+  const loops = [];
+  for (const start of adj.keys()) {
+    if (seen.has(start)) continue;
+    const loop = [];
+    let cur = start, prev = -1;
+    for (;;) {
+      seen.add(cur);
+      loop.push(cur);
+      const nb = (adj.get(cur) || []).filter((x) => x !== prev);
+      const next = nb.find((x) => !seen.has(x));
+      if (next === undefined) break;
+      prev = cur; cur = next;
+    }
+    if (loop.length >= 3) loops.push(loop);
+  }
+
+  // ③ 部件质心（模型坐标 → 世界，判封口法线朝外）
+  const k = params.scale, py = params.pivotY;
+  const cen = [0, 1, 2].map((j) => {
+    let s = 0;
+    for (const q of modelPts) s += q[j];
+    const m = s / modelPts.length;
+    return j === 1 ? (m - py) * k : m * k;
+  });
+  const posOf = (id) => {
+    const vi = [...weld.values()].find((w) => w.id === id).vi;
+    return [g.position[vi * 3], g.position[vi * 3 + 1], g.position[vi * 3 + 2]];
+  };
+  // id → 代表顶点下标（一次性建表，避免环内反复线性查找）
+  const repVi = new Map();
+  for (const w of weld.values()) repVi.set(w.id, w.vi);
+  const ptOf = (id) => {
+    const vi = repVi.get(id);
+    return [g.position[vi * 3], g.position[vi * 3 + 1], g.position[vi * 3 + 2]];
+  };
+
+  let added = 0;
+  for (const loop of loops) {
+    const pts = loop.map(ptOf);
+    // 环质心
+    const lc = [0, 1, 2].map((j) => pts.reduce((s, q) => s + q[j], 0) / pts.length);
+    // Newell 求环平面法线
+    let nx = 0, ny = 0, nz = 0;
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i], b = pts[(i + 1) % pts.length];
+      nx += (a[1] - b[1]) * (a[2] + b[2]);
+      ny += (a[2] - b[2]) * (a[0] + b[0]);
+      nz += (a[0] - b[0]) * (a[1] + b[1]);
+    }
+    const nl = Math.hypot(nx, ny, nz) || 1;
+    let n = [nx / nl, ny / nl, nz / nl];
+    // 朝外：法线应指向远离部件质心的一侧
+    const outward = [lc[0] - cen[0], lc[1] - cen[1], lc[2] - cen[2]];
+    if (n[0] * outward[0] + n[1] * outward[1] + n[2] * outward[2] < 0) n = n.map((x) => -x);
+    // UV：按封口法线主轴投影（与装甲面同口径），区按同一阈值判
+    const zone = (n[1] > params.zoneNyThreshold || n[1] < -params.zoneNyThreshold) ? 'top'
+      : (Math.abs(n[0]) >= Math.abs(n[2]) ? 'side' : 'front');
+    const zi = params.zones.indexOf(zone);
+    // ⚠️⚠️ **切口环可能非平面且自触**（实测 nose 有一个 58 点环，含多组共线点对）：
+    // 质心扇形在这种环上**必然**产生若干零面积三角，且**没有任何投影轴能全部避开**
+    // （实测三轴都试过）。故：投影取「丢跨度最小的轴」（保留信息量最大的两轴），
+    // 再**跳过 UV 退化的扇形三角** —— 那些三角在投影平面上本就无面积，
+    // 不画它们不影响封口的几何闭合（相邻三角仍覆盖该区域）。
+    const all = [...pts, lc];
+    const spans = [0, 1, 2].map((j) => {
+      const vs = all.map((q) => q[j]);
+      return Math.max(...vs) - Math.min(...vs);
+    });
+    let axis = 0;
+    for (let j = 1; j < 3; j++) if (spans[j] < spans[axis]) axis = j;
+    const [ua, va] = [0, 1, 2].filter((j) => j !== axis);
+    const umin = Math.min(...all.map((q) => q[ua])), umax = Math.max(...all.map((q) => q[ua]));
+    const vmin = Math.min(...all.map((q) => q[va])), vmax = Math.max(...all.map((q) => q[va]));
+    const push = (q) => {
+      const vi = g.position.length / 3;
+      g.position.push(q[0], q[1], q[2]);
+      g.normal.push(n[0], n[1], n[2]);
+      const u = (q[ua] - umin) / (umax - umin || 1);
+      const v = (q[va] - vmin) / (vmax - vmin || 1);
+      g.uv.push(zi / params.zones.length + u / params.zones.length, v);
+      return vi;
+    };
+    const ci = push(lc);
+    const ring = pts.map(push);
+    for (let i = 0; i < ring.length; i++) {
+      const a = ring[i], b = ring[(i + 1) % ring.length];
+      // 绕序与法线一致：法线朝外时，从外看应逆时针
+      const pa = pts[i], pb = pts[(i + 1) % pts.length];
+      const e1 = [pa[0] - lc[0], pa[1] - lc[1], pa[2] - lc[2]];
+      const e2 = [pb[0] - lc[0], pb[1] - lc[1], pb[2] - lc[2]];
+      const cx = e1[1] * e2[2] - e1[2] * e2[1];
+      const cy2 = e1[2] * e2[0] - e1[0] * e2[2];
+      const cz = e1[0] * e2[1] - e1[1] * e2[0];
+      const same = cx * n[0] + cy2 * n[1] + cz * n[2] > 0;
+      // ⚠️ **UV 退化的扇形三角不能跳过**（实测跳过会让 nose 重新出现 12 条开放边，
+      // 等于把「看穿」缺陷放回去）。改为**给该三角的三点微移 UV**，撑出非零面积：
+      // 沿投影平面内该三角的长边方向给两端各挪 ±UV_EPS，几何位置不动。
+      // 封口面用的是斑驳/花纹贴图，1e-3 量级的 UV 偏移在观感上不可见。
+      const uvi = (vi) => [g.uv[vi * 2], g.uv[vi * 2 + 1]];
+      const UC = uvi(ci), UA = uvi(a), UB = uvi(b);
+      const uvAr = Math.abs((UA[0] - UC[0]) * (UB[1] - UC[1]) - (UB[0] - UC[0]) * (UA[1] - UC[1])) / 2;
+      if (uvAr <= 1e-6) {
+        const EPS = 2e-3;
+        const zi2 = params.zones.indexOf(zone);
+        const lo = zi2 / params.zones.length + EPS, hi = (zi2 + 1) / params.zones.length - EPS;
+        const clampU = (x) => Math.max(lo, Math.min(hi, x));
+        // 沿 v 方向撑开（v 不分区，随便挪；u 夹在本区内防跨区）
+        g.uv[a * 2] = clampU(UA[0]);
+        g.uv[b * 2] = clampU(UB[0]);
+        g.uv[a * 2 + 1] = Math.max(0, Math.min(1, UA[1] - EPS));
+        g.uv[b * 2 + 1] = Math.max(0, Math.min(1, UB[1] + EPS));
+      }
+      if (same) g.index.push(ci, a, b); else g.index.push(ci, b, a);
+      added++;
+    }
+  }
+  return added;
+}
+
 export function buildPartGeometry(faces, key, params = TURRET_TOP_PARAMS) {
   const k = params.scale, py = params.pivotY;
   const position = [], normal = [], uv = [], index = [];
@@ -252,5 +422,9 @@ export function buildPartGeometry(faces, key, params = TURRET_TOP_PARAMS) {
     }
     for (let i = 1; i < base.length - 1; i++) index.push(base[0], base[i], base[i + 1]);
   }
-  return { position, normal, uv, index };
+  const out = { position, normal, uv, index };
+  // ⚠️ 装甲部件的切口必须封口，否则成开放壳、从切口看穿（用户实玩缺陷）。
+  //    纯色部件（炮管/副武器）的开口是原模型设计，不封。
+  if (textured) capCutOpenings(out, faces.flatMap((f) => f.p), params);
+  return out;
 }

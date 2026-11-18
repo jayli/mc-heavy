@@ -198,18 +198,21 @@ test('turret-top: 装甲部件逐面拆顶点（顶点数 == 角数，不得焊�
   // 正确判据：逐面拆分 ⇔ **顶点数 == 角数**；全焊接会让顶点数 < 角数。
   for (const k of TURRET_TOP_ARMOR) {
     const corners = parts[k].reduce((a, f) => a + f.p.length, 0);
-    assertEqual(built[k].position.length / 3, corners, `${k} 逐面拆顶点`);
+    // 封口会追加顶点 ⇒ 断言「不少于角数」（全焊接会少于角数，仍有判别力）
+    assertTrue(built[k].position.length / 3 >= corners,
+      `${k} 逐面拆顶点（含封口）：${built[k].position.length / 3} >= ${corners}`);
   }
 });
 
 test('turret-top: 冻结规模 —— 八部件的三角数与顶点数', async () => {
   const built = await builtParts();
+  // ⚠️ 装甲部件含**切口封口面**（源网格闭合，切开后必须补面，否则渲染看穿）
   const TRIS = {
-    cheek: 280, mantlet: 114, deckMid: 28, ring: 246, nose: 562,
+    cheek: 308, mantlet: 134, deckMid: 52, ring: 364, nose: 656,
     podR: 576, podL: 632, barrel: 712,
   };
   const VERTS = {
-    cheek: 560, mantlet: 228, deckMid: 56, ring: 492, nose: 1124,
+    cheek: 590, mantlet: 249, deckMid: 82, ring: 612, nose: 1222,
     podR: 960, podL: 480, barrel: 1332,
   };
   for (const k of Object.keys(TRIS)) {
@@ -218,8 +221,8 @@ test('turret-top: 冻结规模 —— 八部件的三角数与顶点数', async 
   }
   const totalTris = Object.values(TRIS).reduce((a, b) => a + b, 0);
   const totalVerts = Object.values(VERTS).reduce((a, b) => a + b, 0);
-  assertEqual(totalTris, 3150, '总三角数');
-  assertEqual(totalVerts, 5232, '总顶点数');
+  assertEqual(totalTris, 3434, '总三角数');
+  assertEqual(totalVerts, 5527, '总顶点数');
 });
 
 test('turret-top: 车体裙板被排除 —— 八部件不含 hull，且无 hull 面', async () => {
@@ -527,4 +530,35 @@ test('turret-top: 炮管尾端埋入鼻段的关系式（防尾部前移造成�
   // ⚠️ 这条是「炮管尾部前移」的唯一防线：顶点数/zmax/UV 全不变时也能抓到。
   // 实测埋入量 0.3106 格；阈值取 0.2（低于实测、远高于 0）。
   assertTrue(embed > 0.2, `炮管尾端须埋入鼻段 > 0.2 格，实测 ${embed.toFixed(4)}`);
+});
+
+// ==================== 用户实玩缺陷：塔身破缺（开放壳 + FrontSide） ====================
+
+test('turret-top: 装甲部件必须是闭合壳（切口要有封口，否则从内部看穿成纸片）', async () => {
+  const geo = await topGeometry();
+  // ⚠️ **这条是用户实玩发现的缺陷**（2026-11-18 截图：塔身变纸片、能看穿）。
+  // 根因：源 TankBase 是闭合流形（2268 边全被 2 面共用），但按 bbox 窗口切成
+  // 6 块后**切口处没有封口面** ⇒ 每块成单侧开放壳，FrontSide 材质下从切口看进去是空的。
+  // 顶点数/三角数/UV/法线/绕序/有向体积全部正确 ⇒ 那些判据都拓不到它。
+  for (const k of TURRET_TOP_ARMOR) {
+    const g = geo.parts[k];
+    const idx = new Map();
+    const idOf = (j) => {
+      const key = [0, 1, 2].map((q) => g.position[j * 3 + q].toFixed(4)).join(',');
+      if (!idx.has(key)) idx.set(key, idx.size);
+      return idx.get(key);
+    };
+    const edges = new Map();
+    for (let i = 0; i < g.index.length; i += 3) {
+      const ids = [g.index[i], g.index[i + 1], g.index[i + 2]].map(idOf);
+      for (let e = 0; e < 3; e++) {
+        const a = ids[e], b = ids[(e + 1) % 3];
+        const key = Math.min(a, b) + '_' + Math.max(a, b);
+        edges.set(key, (edges.get(key) || 0) + 1);
+      }
+    }
+    let open = 0;
+    for (const c of edges.values()) if (c === 1) open++;
+    assertEqual(open, 0, `${k} 有 ${open} 条开放边（切口未封口 ⇒ 从内部看穿）`);
+  }
 });
