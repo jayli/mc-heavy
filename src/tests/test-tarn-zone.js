@@ -8,6 +8,7 @@
 import { computeShallowTarnAnchor, shallowTarnSuppressedLandmarks } from '../gen/structures/shallow-water-tarns.js';
 import { computeBurningArenaAnchor, burningArenaSuppressedLandmarks } from '../gen/structures/burning-arena.js';
 import { computeRuinedCitadelAnchor, ruinedCitadelSuppressedLandmarks } from '../gen/structures/ruined-citadel.js';
+import { computeJungleFortressAnchor, jungleFortressSuppressedLandmarks } from '../gen/structures/jungle-fortress.js';
 import { test } from './runner.js';
 import { assertEqual, assertTrue, assertFalse } from './assert.js';
 import {
@@ -1087,10 +1088,15 @@ test('地带接线：非地带且雪原未让路的 region 逐字段零回归（
   //       skyIslands），本用例只断言 giantPyramid/pyramid/frozenMountain/skyIslands 四项 ⇒ 跳过判据
   //       覆盖这四项即可。实测 seed 12345 的堡垒占地把 region(-2,-1) 的 pyramid 压成 null
   //       （pyramid 中心 (-495,-130) 距堡垒矩形仅 5 格 < 半径 28），不加这条会假 FAIL。
+  //    ⑥ **跳过被丛林要塞压制的字段**（v3.13）：第五张同构地图
+  //       （`jungleFortressSuppressedLandmarks`，城西第一个丛林地带）。它压的字段与废弃堡垒
+  //       同一组。实测 seed 12345 的要塞占地把 region(-1,0) 的 frozenMountain 压成 null
+  //       （冰封山中心 (-235,245) **就在占地矩形内**，距离 0 < 半径 48），不加这条会假 FAIL。
   //    若不收窄，断言「pyramid 非空」在那些 region 上必然 FAIL。
   const shallowAnchor = computeShallowTarnAnchor(SEED);
   const burningArenaAnchor = computeBurningArenaAnchor(SEED);
   const ruinedCitadelAnchor = computeRuinedCitadelAnchor(SEED);
+  const jungleFortressAnchor = computeJungleFortressAnchor(SEED);
   let checked = 0;
   for (let rx = -4; rx <= 4; rx++) {
     for (let rz = -4; rz <= 4; rz++) {
@@ -1106,6 +1112,10 @@ test('地带接线：非地带且雪原未让路的 region 逐字段零回归（
       }
       if (ruinedCitadelAnchor) {
         const sup = ruinedCitadelSuppressedLandmarks(ruinedCitadelAnchor, rx, rz, SEED);
+        if (sup.pyramid || sup.frozenMountain || sup.giantPyramid || sup.skyIslands) continue;
+      }
+      if (jungleFortressAnchor) {
+        const sup = jungleFortressSuppressedLandmarks(jungleFortressAnchor, rx, rz, SEED);
         if (sup.pyramid || sup.frozenMountain || sup.giantPyramid || sup.skyIslands) continue;
       }
       const lay = computeRegionLayout(rx, rz, SEED);

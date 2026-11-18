@@ -25,6 +25,10 @@ import {
   computeRuinedCitadelAnchor, ruinedCitadelOverlapsRegion, ruinedCitadelSuppressedLandmarks,
   snowLandSuppressedByRuinedCitadel,
 } from './ruined-citadel.js';
+import {
+  computeJungleFortressAnchor, jungleFortressOverlapsRegion, jungleFortressSuppressedLandmarks,
+  snowLandSuppressedByJungleFortress,
+} from './jungle-fortress.js';
 import { isTarnZone, computeTarnZone, inTarnRadius } from './tarn-zone.js';
 
 /**
@@ -99,15 +103,28 @@ export function computeRegionLayout(regionX, regionZ, seed) {
     ? ruinedCitadelSuppressedLandmarks(ruinedCitadelAll, regionX, regionZ, seed)
     : null;
 
+  // 丛林要塞（Jungle Fortress，v3.13）：城西第一个丛林地带，全世界唯一一处。
+  // 与废弃堡垒同构：锚点层已避让五类地基级结构，这里只做「压制地标 + AABB 裁剪携带」。
+  const jungleFortressAll = computeJungleFortressAnchor(seed);
+  const jungleFortress = jungleFortressOverlapsRegion(jungleFortressAll, regionX, regionZ)
+    ? jungleFortressAll : null;
+  const jfSuppress = jungleFortressAll
+    ? jungleFortressSuppressedLandmarks(jungleFortressAll, regionX, regionZ, seed)
+    : null;
+
   // ⚠️ 三个地基级结构（浅水高台 / 大竞技场 / 废弃堡垒）的压制项**取并集**：它们彼此已在
   // 锚点层互斥（`fixedBlockerAt` 里互相避让），故同一 region 至多被其中一个压，但判据仍要
   // 写成并集 —— 否则将来放宽互斥时会静默漏压。
-  const suppressPyramid = !!suppress?.pyramid || !!baSuppress?.pyramid || !!rcSuppress?.pyramid;
+  const suppressPyramid = !!suppress?.pyramid || !!baSuppress?.pyramid || !!rcSuppress?.pyramid
+    || !!jfSuppress?.pyramid;
   const suppressFrozenMountain = !!suppress?.frozenMountain || !!baSuppress?.frozenMountain
-    || !!rcSuppress?.frozenMountain;
-  const suppressPlainLand = !!suppress?.plainLand || !!baSuppress?.plainLand || !!rcSuppress?.plainLand;
-  const suppressIsland = !!suppress?.island || !!baSuppress?.island || !!rcSuppress?.island;
-  const suppressGiantPyramid = !!baSuppress?.giantPyramid || !!rcSuppress?.giantPyramid;
+    || !!rcSuppress?.frozenMountain || !!jfSuppress?.frozenMountain;
+  const suppressPlainLand = !!suppress?.plainLand || !!baSuppress?.plainLand || !!rcSuppress?.plainLand
+    || !!jfSuppress?.plainLand;
+  const suppressIsland = !!suppress?.island || !!baSuppress?.island || !!rcSuppress?.island
+    || !!jfSuppress?.island;
+  const suppressGiantPyramid = !!baSuppress?.giantPyramid || !!rcSuppress?.giantPyramid
+    || !!jfSuppress?.giantPyramid;
   // ⚠️ **空岛压制是大竞技场特有的**（浅水高台没有这一项）：它高 80 格（塔顶实测 y=79~84），
   // 而空岛底 y≥40 ⇒ 水平重叠即相撞。且空岛在 apply 阶段 2.5 光栅化，**晚于**大竞技场的 2.93
   // ⇒ 不压制的话空岛会反过来打穿竞技场上半部（后写胜）。实测 8 seed 中 7 个需要压制。
@@ -116,7 +133,8 @@ export function computeRegionLayout(regionX, regionZ, seed) {
   // ⚠️ 废弃堡垒也带这一项，但它的塔顶只有 floorY+18（世界 y=17~22）而空岛底 y≥40
   // ⇒ `bottomY <= topY` 恒假，**当前从不触发**（spec DR-6：保留判据是为了将来加高塔楼时
   // 不会静默失效）。并集写法使它一旦触发就生效，无需回来改这里。
-  const suppressSkyIslands = !!baSuppress?.skyIslands || !!rcSuppress?.skyIslands;
+  const suppressSkyIslands = !!baSuppress?.skyIslands || !!rcSuppress?.skyIslands
+    || !!jfSuppress?.skyIslands;
 
   // ⚠️ `suppress.snowLand` 算出来了但**不在本文件用**：雪原的压制粒度是「这座雪原是否压进湖里」，
   // 走 `apply.js` 阶段 1 的跳过门（与 `snowLandSuppressedByTarn` 同手法），
@@ -148,7 +166,8 @@ export function computeRegionLayout(regionX, regionZ, seed) {
   // 雪原盒归属恰好由 `getRegionSeededCenter(regionX, regionZ)` 唯一确定，故可以就地判。
   // 两个判据不互推，各自独立生效（两个都真时任一个都会让它不生成，幂等）。
   const snowSuppressedHere = snowLandSuppressedByBurningArena(regionX, regionZ, seed) ||
-                             snowLandSuppressedByRuinedCitadel(regionX, regionZ, seed);
+                             snowLandSuppressedByRuinedCitadel(regionX, regionZ, seed) ||
+                             snowLandSuppressedByJungleFortress(regionX, regionZ, seed);
   const snowLand = snowSuppressedHere ? null : {
     cx: raw.centerX + LANDMARK_OFFSET.SNOW_LAND_X,
     cz: raw.centerZ + LANDMARK_OFFSET.SNOW_LAND_Z,
@@ -239,7 +258,7 @@ export function computeRegionLayout(regionX, regionZ, seed) {
   return {
     regionX, regionZ, pyramidRaw, pyramid, frozenMountain, snowLand, plainLand,
     island, city, sky, scatter, giantTrees, azaleaTrees, giantPyramid, arena, tarn, shallowTarn,
-    burningArena, ruinedCitadel,
+    burningArena, ruinedCitadel, jungleFortress,
   };
 }
 

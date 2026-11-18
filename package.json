@@ -33,7 +33,8 @@
     "dragon": "node tools/bake-dragon.mjs",
     "ignis": "node tools/bake-ignis.mjs",
     "guardian": "node tools/bake-guardian.mjs",
-    "turretop": "node tools/bake-turret-top.mjs"
+    "turretop": "node tools/bake-turret-top.mjs",
+    "junglefortress": "node tools/bake-jungle-fortress.mjs"
   },
   "author": "jayli",
   "repository": "git@github.com:jayli/mc-heavy.git",

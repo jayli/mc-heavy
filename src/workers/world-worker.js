@@ -14,6 +14,7 @@ import { getCityBoundsForSeed } from '../gen/structures/city-layout.js';
 import { computeArenaAnchor } from '../gen/structures/arena.js';
 import { computeBurningArenaAnchor } from '../gen/structures/burning-arena.js';
 import { computeRuinedCitadelAnchor } from '../gen/structures/ruined-citadel.js';
+import { computeJungleFortressAnchor } from '../gen/structures/jungle-fortress.js';
 import { preloadStructures } from '../gen/structures/structure-json.js';
 import { SCATTER_JSON_TYPES } from '../gen/structures/scatter.js';
 import { loadGiantTrees } from '../gen/structures/giant-trees.js';
@@ -204,6 +205,12 @@ installRpcHandler({
     // ⚠️ 必须留在 layout 入口：`layout` 不是 GEN 计时路径（`structure-gen` 的 genP95 门是 10ms），
     //    而 GEN 侧只读 `layout.ruinedCitadel` 字段、不调本函数 ⇒ 141ms 不会落进 GEN 计时。
     computeRuinedCitadelAnchor(p.seed);
+    // 预热丛林要塞锚点（v3.13）：实测本结构自身 ~20ms（网格 8.4 + 粗筛排序 3.5 + 精检 7.9）。
+    // ⚠️ **必须排在 `computeRuinedCitadelAnchor` 之后**：本函数内部要读废弃堡垒锚点
+    //    做避让（`fixedBlockerAt` 的第 ⑥ 项），先算它才能命中 memo 而不是重算一遍。
+    // ⚠️ 必须留在 layout 入口：GEN 侧只读 `layout.jungleFortress` 字段、不调本函数
+    //    ⇒ 20ms 不会落进 GEN 计时（genP95 门 10ms）。
+    computeJungleFortressAnchor(p.seed);
     return computeRegionLayout(p.regionX, p.regionZ, p.seed);
   },
 

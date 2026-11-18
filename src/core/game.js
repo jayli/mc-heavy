@@ -102,6 +102,7 @@ import { computeTarnZone, findNearestTarnZone } from '../gen/structures/tarn-zon
 import { computeArenaAnchor } from '../gen/structures/arena.js';
 import { burningArenaTeleportPoint } from '../gen/structures/burning-arena.js';
 import { ruinedCitadelTeleportPoint } from '../gen/structures/ruined-citadel.js';
+import { jungleFortressTeleportPoint } from '../gen/structures/jungle-fortress.js';
 import {
   computeShallowTarnAnchor, SHALLOW_TARN_OUTER_RADIUS,
   BEACH_WIDTH, SLOPE_WIDTH, shallowTarnShapePhase, shallowTarnLakeRadiusAt,
@@ -2036,6 +2037,27 @@ export class Game {
     // 落地后由帧循环的 `scheduler.update(playerX, playerZ)` 逐片加载（同 `_teleportTo` 的说明）。
     this._teleportTo(p.x, p.y, p.z);
     return { ok: true, kind: 'ruined-citadel', ...p };
+  }
+
+  /**
+   * 瞬移到**丛林要塞**（城西第一个丛林地带的 jungle fortress，面板「丛林」按钮，v3.13）。
+   *
+   * 落点唯一权威 = `jungleFortressTeleportPoint(seed)`（占地**东缘**外 6 格，
+   * y = **整形后**地表 + 1）—— 本方法**不复算**任何坐标（红线 1）。
+   *
+   * ⚠️ **y 不能用自然高度**：落点在缓坡带内，8/8 seed 自然 h 4~5 而整形后 1~2
+   * ⇒ 用自然值会让玩家悬空 2~3 格（判据已在单测里钉住）。
+   *
+   * ⚠️ **reason 用独立的 `no-jungle-fortress`**：与其余六个入口各自一种处境，面板逐 reason 映射。
+   *
+   * @returns {{ok: true, kind: 'jungle-fortress', x: number, y: number, z: number} | {ok: false, reason: string}}
+   */
+  teleportToJungleFortress() {
+    if (!this.player?.physics?.pos) return { ok: false, reason: 'no-player' };
+    const p = jungleFortressTeleportPoint(this.seed);
+    if (!p) return { ok: false, reason: 'no-jungle-fortress' };
+    this._teleportTo(p.x, p.y, p.z);
+    return { ok: true, kind: 'jungle-fortress', ...p };
   }
 
   /**
