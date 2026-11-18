@@ -272,7 +272,7 @@ test('丛林要塞：藤蔓不撑大 footprint（HALF_X/HALF_Z 不变）', async
 /**
  * 8 seed 冻结锚点表（City 西方第一个丛林地带，spec 用户裁定 2026-11-17）
  *
- * ⚠️ v3.16（地形耦合）：`floorY` 语义从「占地最低自然高度」改为 **baseY（占地自然高度
+ * ⚠️ v3.18（地形耦合）：`floorY` 语义从「占地最低自然高度」改为 **baseY（占地自然高度
  *    的 75 分位数）**，8 seed 实测恒 9；`minH` 保留旧语义（0 或 −1）供判据用。
  */
 const FROZEN_ANCHORS = {
@@ -303,7 +303,7 @@ test('丛林要塞锚点：8 个 seed 逐值命中冻结表（城西第一个丛
     assertTrue(a !== null, `seed ${seed} 必须有落点（null = 判据写反或窗口太窄）`);
     assertEqual(a.wx, want.wx, `seed ${seed} wx`);
     assertEqual(a.wz, want.wz, `seed ${seed} wz`);
-    assertEqual(a.floorY, want.floorY, `seed ${seed} floorY（v3.16 = baseY 75 分位，不是 minH）`);
+    assertEqual(a.floorY, want.floorY, `seed ${seed} floorY（v3.18 = baseY 75 分位，不是 minH）`);
     assertEqual(a.minH, want.minH, `seed ${seed} minH（占地最低自然高度，旧 floorY 语义保留）`);
   }
 });
@@ -389,7 +389,7 @@ test('丛林要塞占地判定：inJungleFortressFootprint 与 HALF_X/HALF_Z 一
   assertTrue(!inJungleFortressFootprint(a.wx, a.wz, [null]), 'anchors 含 null 时跳过');
 });
 
-// ==================== 地形：自然起伏保留（v3.16 DR-2）====================
+// ==================== 地形：自然起伏保留（v3.18 DR-2）====================
 
 test('丛林要塞地形：surfaceYAt 内部非带列恒等自然高度 + 占地零水格（8 seed）', async () => {
   const data = await loadStructure('jungleFortress');
@@ -397,7 +397,7 @@ test('丛林要塞地形：surfaceYAt 内部非带列恒等自然高度 + 占地
   for (const seedStr of Object.keys(FROZEN_ANCHORS)) {
     const seed = Number(seedStr);
     const a = computeJungleFortressAnchor(seed);
-    // ⚠️⚠️ **必须先登记产物**（v3.16 Task 8 实测踩过的假绿）：
+    // ⚠️⚠️ **必须先登记产物**（v3.18 Task 8 实测踩过的假绿）：
     //    不登记时 `surfaceYAt` 退回 nat，于是「全区恒等 nat」恒真 ——
     //    即使裙边真的在抬土也拓不到（单文件跑绿、全量跑红就是这么来的）。
     const field = jungleFortressSkirtField(a, seed, data);
@@ -408,7 +408,7 @@ test('丛林要塞地形：surfaceYAt 内部非带列恒等自然高度 + 占地
         dz <= JUNGLE_FORTRESS_HALF_Z + JUNGLE_FORTRESS_SLOPE_BAND; dz++) {
         const wx = a.wx + dx, wz = a.wz + dz;
         const t = jungleFortressSurfaceYAt(wx, wz, seed, a);
-        assertTrue(t !== null, `(${wx},${wz}) surfaceYAt 不得返回 null（v3.16 恒有值）`);
+        assertTrue(t !== null, `(${wx},${wz}) surfaceYAt 不得返回 null（v3.18 恒有值）`);
         cols++;
         const h = generateHeight(wx, wz, seed);
         // ① **内部非过渡带且非建筑列**：恒 = 自然高度（基座可见率不降的前提）
@@ -432,7 +432,7 @@ test('丛林要塞地形：surfaceYAt 内部非带列恒等自然高度 + 占地
 
 test('丛林要塞地形：自然起伏保留 —— 内部非带区相邻高差 ≤1 且确存起伏（8 seed）', async () => {
   // ⚠️ 旧用例钉「削平后高差≤1」，削平后恒 0 ⇒ 无判别力。
-  // ⚠️⚠️ **v3.16 Task 8 修正口径**：裙边过渡带内本来就可能有「建筑列 T=nat
+  // ⚠️⚠️ **v3.18 Task 8 修正口径**：裙边过渡带内本来就可能有「建筑列 T=nat
   //    紧邻抬升列」的跳变（那是建筑立面，不是地形悬崖）⇒ 相邻高差判据
   //    必须限定在**内部非带区**（那里恒 = nat，相邻高差就是自然地形的）。
   //    过渡带自身的平滑度由裙边专题用例（带内/带缝/外侧 ≤1）钉。
@@ -650,7 +650,7 @@ test('丛林要塞：树叶只在要塞真占位的格让位（逐格，不是�
   }
   // 「室外可长」与生产代码 jfCellFreeAt 同口径：非实心 且 不在屋顶下方 且 非地下房间/竖井 air。
   // ⚠️ **屋顶下方的 air 是室内房间**，那里本就不应长树 ⇒ 不得计入「误杀」。
-  // ⚠️ v3.16：抬升后**露天竖井**会高出自然地表，它同属建筑内部（坑里不长草）。
+  // ⚠️ v3.18：抬升后**露天竖井**会高出自然地表，它同属建筑内部（坑里不长草）。
   const jfRoomAir = new Set();
   for (const b of data.blocks) {
     if (b.type === 'air' && b.y < floorRowOf('jungleFortress')) jfRoomAir.add(`${b.x},${b.y},${b.z}`);
@@ -766,7 +766,7 @@ test('丛林要塞：树密度减半（只降树、不降草，不改全地图 F
   }
   const floorRow = floorRowOf('jungleFortress');
   const B = JUNGLE_FORTRESS_SLOPE_BAND;
-  // v3.16：地下房间/竖井 air 属建筑内部（与生产代码 jfCellFreeAt 同口径）
+  // v3.18：地下房间/竖井 air 属建筑内部（与生产代码 jfCellFreeAt 同口径）
   const jfRoomAir = new Set();
   for (const b of data.blocks) {
     if (b.type === 'air' && b.y < floorRow) jfRoomAir.add(`${b.x},${b.y},${b.z}`);
@@ -861,7 +861,7 @@ test('丛林要塞：树密度减半（全量 146 column，慢档）', async () 
   }
   const floorRow = floorRowOf('jungleFortress');
   const B = JUNGLE_FORTRESS_SLOPE_BAND;
-  // v3.16：地下房间/竖井 air 属建筑内部（与生产代码 jfCellFreeAt 同口径）
+  // v3.18：地下房间/竖井 air 属建筑内部（与生产代码 jfCellFreeAt 同口径）
   const jfRoomAir = new Set();
   for (const b of data.blocks) {
     if (b.type === 'air' && b.y < floorRow) jfRoomAir.add(`${b.x},${b.y},${b.z}`);
@@ -930,7 +930,7 @@ test('丛林要塞：树干落点也逐格判 —— 贴墙但树干格是空气
     if (prev === undefined || b.y > prev) roofTop.set(ck, b.y);
   }
   // 「室外可长」= 该格非实心 且 不在屋顶下方 且 不是地下房间/竖井 air
-  // （与生产代码 jfCellFreeAt 同口径；v3.16 补上最后一项 —— 抬升后露天竖井
+  // （与生产代码 jfCellFreeAt 同口径；v3.18 补上最后一项 —— 抬升后露天竖井
   //   会高出自然地表，它属建筑内部而不是可长树的空地）
   const roomAir = new Set();
   for (const b of data.blocks) {
@@ -962,7 +962,7 @@ test('丛林要塞：树干落点也逐格判 —— 贴墙但树干格是空气
   }
   assertTrue(probe.length > 50,
     `必须有足量「贴墙但树干格是空气」的候选列（实际 ${probe.length}）—— 否则无判别力`);
-  // ⚠️⚠️ **v3.16 阀值重标**：地表从「削平到 floorY」改为自然高度后，贴墙候选列
+  // ⚠️⚠️ **v3.18 阀值重标**：地表从「削平到 floorY」改为自然高度后，贴墙候选列
   //    从数百缩到 **78**（实测 seed 12345），其中 `jfTreeKept`（密度减半）命中 **43**。
   //    旧阀值 `>100` 在新语义下**正确实现也恒红**（它钉的是旧候选池规模）。
   //    真意图仍是「贴墙树不被**整类**禁写」（列级缺陷下 hasTrunk === 0），
@@ -1130,7 +1130,7 @@ test('丛林要塞接线：雪原整座让路（合成锚点 ⇒ 相交 region �
 /**
  * 8 seed 冻结落点（占地东缘外 6 格，y = **自然地表 + 1**）。
  *
- * ⚠️ v3.16：地形不再削平，落点在裙边带外缘（T=nat）⇒ y 从 2~3 变为 5~6。
+ * ⚠️ v3.18：地形不再削平，落点在裙边带外缘（T=nat）⇒ y 从 2~3 变为 5~6。
  *    要塞地板（baseY=9）比玩家高 3~4 格 ⇒ 抬头看要塞，正是「宏伟」的观感。
  */
 const FROZEN_TELEPORT = {
@@ -1150,7 +1150,7 @@ test('丛林要塞瞬移：8 个 seed 落点逐值命中冻结表（y 用自然�
     const p = jungleFortressTeleportPoint(seed);
     assertTrue(p !== null, `seed ${seed} 必须有落点`);
     assertEqual(p.x, x, `seed ${seed} 落点 x`);
-    assertEqual(p.y, y, `seed ${seed} 落点 y（v3.16 = 自然地表+1，不是 baseY+1）`);
+    assertEqual(p.y, y, `seed ${seed} 落点 y（v3.18 = 自然地表+1，不是 baseY+1）`);
     assertEqual(p.z, z, `seed ${seed} 落点 z`);
   }
 });
@@ -1168,7 +1168,7 @@ test('丛林要塞瞬移：落点在占地东缘外 GAP 格（靠 City 那一侧
 });
 
 test('丛林要塞瞬移：落点用 baseY+1 会悬空（判据必须有判别力）', () => {
-  // ⚠️ v3.16 语义反转：旧用例钉「整形后 ≠ 自然」（那时地形被削平）；
+  // ⚠️ v3.18 语义反转：旧用例钉「整形后 ≠ 自然」（那时地形被削平）；
   //    现在地形保留自然 ⇒ 落点 y **就是** 自然地表+1，而 baseY+1 会悬空。
   //    实测 8 seed：nat+1 = 5~6、baseY+1 = 10 ⇒ 悬空 4~5 格。
   let differ = 0, minGap = Infinity;
@@ -1189,7 +1189,7 @@ test('丛林要塞瞬移：落点用 baseY+1 会悬空（判据必须有判别�
     `用 baseY+1 至少悬空 4 格（实测最小差 ${minGap}）—— 低于它说明判据余量不够`);
 });
 
-// ==================== 石墩与漏底修补（v3.16 DR-3 / DR-4）====================
+// ==================== 石墩与漏底修补（v3.18 DR-3 / DR-4）====================
 
 /**
  * 8 seed 墩冻结表：[墩格数, 墩列数, 单列最大墩高, 最密 column 墩格]
@@ -1381,7 +1381,7 @@ test('丛林要塞漏底：修补格不得填死产物 air（房间竖井），�
   assertTrue(patched > 0, `seed 4242 必须真的有补格（实际 ${patched}）—— 否则本用例无判别力`);
 });
 
-// ==================== 观感验收：地下可见率 / 地上被埋率（v3.16 DR-5）====================
+// ==================== 观感验收：地下可见率 / 地上被埋率（v3.18 DR-5）====================
 //
 // 用户诉求：「地下部分可以一部分裸露，让地上部分因高低差更真实宏伟」。
 // 这组用例是**诉求本身的验收**：若 baseY 退回 minH（不抬升），可见率全归 0。
@@ -1487,7 +1487,7 @@ test('丛林要塞观感：地下基座/外壳可见率、房间/竖井露出率
   }
 }, { tier: 'slow' });
 
-// ==================== 接壤阶梯过渡裙边（v3.16 DR-10，用户追加裁定）====================
+// ==================== 接壤阶梯过渡裙边（v3.18 DR-10，用户追加裁定）====================
 //
 // 用户：「最终丛林要塞的地界和旁边的地图接壤的地方，都要有一个接壤区域的阶梯过渡，
 // 不要出现陡峭的悬崖突变。」
@@ -1691,7 +1691,7 @@ test('丛林要塞裙边：surfaceYAt 就是包络场 T（唯一权威，内部�
   assertTrue(checkedInner > 100, `抽样必须含内部非带列（实际 ${checkedInner}）`);
 });
 
-// ==================== 植被让位含墩+裙边（v3.16 DR-3 / DR-10）====================
+// ==================== 植被让位含墩+裙边（v3.18 DR-3 / DR-10）====================
 
 /**
  * 墩格 / 裙边格集合（判据用，从产物 + 包络场派生）。

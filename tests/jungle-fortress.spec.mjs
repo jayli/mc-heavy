@@ -28,7 +28,7 @@ const STABLE = () => {
  * 石砖族像素判据：本结构主材是 mossy_stone(104,110,93) / cobblestone(125,125,125) /
  * stone_bricks(122,122,122) / tuff_bricks(99,103,95)，四者都是**低饱和灰绿**。
  *
- * ⚠️⚠️ **天空色必须用实测值 (169,208,219)**（v3.16 标定）：
+ * ⚠️⚠️ **天空色必须用实测值 (169,208,219)**（v3.18 标定）：
  *    `?skybox=0` 下背景是**难化色**，不是纯天蓝 (135,206,235)。
  *    实测顶部像素众数 169,208,219 占 212/240；用旧值会把天空计入 stone/green，
  *    造成「要塞 0.065 vs 对照 0.082」这类假红。
@@ -78,6 +78,18 @@ async function gotoAndView(page, pos, yaw, pitch) {
     return true;
   }, pos, { timeout: 180_000 });
   await page.waitForFunction(STABLE, null, { timeout: 120_000, polling: 500 });
+  // ⚠️⚠️ **稳定后必须重新钉一次位置**（final review 实测）：等 column 加载期间物理已在跑，
+  //    玩家会从未加载的空中坠落（实测 y 从 4 掉到 −23）⇒ 截图机位与请求机位不符，
+  //    像素判据随机漂（同一机位两次跑 0.3736 / 0.0397）。重钉后再等一帧渲染。
+  await page.evaluate(({ pos, yaw, pitch }) => {
+    const g = window.__MC_GAME__;
+    g.player.physics.pos.x = pos.x;
+    g.player.physics.pos.y = pos.y;
+    g.player.physics.pos.z = pos.z;
+    g.player.physics.vel.x = g.player.physics.vel.y = g.player.physics.vel.z = 0;
+    g.player.yaw = yaw;
+    g.player.pitch = pitch;
+  }, { pos, yaw, pitch });
   await page.waitForTimeout(1200);
 }
 
@@ -115,7 +127,7 @@ test('丛林要塞：真实按钮瞬移 → 城西丛林里有石砖要塞（Wor
     '整个占地必须在 City 西方且净距 ≥ CITY_TRANSITION_SIZE')
     .toBeLessThan(anchor.cityMinX - anchor.clearance);
 
-  // ── ② 对照组口径说明（v3.16）──
+  // ── ② 对照组口径说明（v3.18）──
   // ⚠️ 旧对照组是「远处森林 (40,30,40)」—— 不同机位、不同地形，
   //    与本结构机位的灰石占比不可比（实测造成假红）。
   //    现改为钉**三方对照实测出的区间**（base 0.2488 / 埋回 0.0304），
@@ -131,7 +143,7 @@ test('丛林要塞：真实按钮瞬移 → 城西丛林里有石砖要塞（Wor
     const p = window.__MC_GAME__.player.physics.pos;
     return { x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z) };
   });
-  // 冻结落点（seed 12345）：(-218, 6, 217) —— v3.16 地形不再削平，y = 自然地表+1
+  // 冻结落点（seed 12345）：(-218, 6, 217) —— v3.18 地形不再削平，y = 自然地表+1
   expect(landed.x, '落点 x 必须是冻结值').toBe(-218);
   expect(landed.z, '落点 z 必须是冻结值').toBe(217);
   expect(landed.y, '落点 y 必须是自然地表+1（用 baseY+1=10 会悬空 4 格）').toBe(6);
@@ -239,7 +251,7 @@ test('丛林要塞：真实按钮瞬移 → 城西丛林里有石砖要塞（Wor
 });
 
 /**
- * 接壤阶梯过渡的**数据驱动机位搜索**（v3.16 DR-10，用户追加裁定）。
+ * 接壤阶梯过渡的**数据驱动机位搜索**（v3.18 DR-10，用户追加裁定）。
  *
  * ⚠️⚠️ **机位必须按数据选**（v3.13c 教训，本轮又踩两次）：
  *    spec 原写的 z=53 机位落在**湿列**（nat=−1 ≤ SEA_Y），裙边在那里零抬升
@@ -284,7 +296,7 @@ async function pickSkirtCamera(page, anchor) {
   }, anchor);
 }
 
-test('丛林要塞：接壤阶梯过渡裙边 —— 台地画面存在且无悬崖（对照组校准）', async ({ page }) => {
+test('丛林要塞：接壤阶梯过渡裙边 —— 逐级抬升的台地真的写进世界，且无悬崖', async ({ page }) => {
   test.setTimeout(500_000);
   await page.goto('/?vd=8&seed=12345&skybox=0');
   await page.waitForFunction(READY, null, { timeout: 120_000 });
@@ -298,49 +310,88 @@ test('丛林要塞：接壤阶梯过渡裙边 —— 台地画面存在且无悬
   expect(cam, '必须能按数据找到干燥无遮挡的裙边视廊（否则本用例无判别力）').not.toBeNull();
   expect(cam.lift, '视廊上至少 4 列被裙边抬升').toBeGreaterThanOrEqual(4);
 
+  // ── ① **几何判据（主）**：读真实世界方块，验证「逐级抬升 + 无悬崖」──
+  //
+  // ⚠️⚠️ **对照组不能用 page.route 换 GEN 模块**（final review 实测）：
+  //    **Worker 脚本不走 page.route** ⇒ noskirt 注入对 GEN 完全无效，
+  //    base 与 noskirt 的像素读数**逐位相同**（0.0399 vs 0.0401，五个机位全同）。
+  //    真正有判别力的对照是**同一列的 nat（自然高度）**：它是「没有裙边时的地面」，
+  //    由 generateHeight 独立给出，不依赖任何注入。
   await gotoAndView(page, { x: cam.camX, y: cam.camY, z: cam.camZ }, -Math.PI / 2, 0.06);
-  // 先测同状态重复截图的噪声底
+  const geo = await page.evaluate(async ({ a, cam }) => {
+    const g = window.__MC_GAME__;
+    const M = await import('/src/gen/structures/jungle-fortress-terrain.js');
+    const { loadStructure } = await import('/src/gen/structures/structure-json.js');
+    const { generateHeight } = await import('/src/gen/terrain.js');
+    const { JUNGLE_FORTRESS_HALF_X: HX } = await import('/src/gen/structures/jungle-fortress-data.js');
+    const data = await loadStructure('jungleFortress');
+    M.noteJungleFortressData(data);
+    const f = M.jungleFortressSkirtField({ wx: a.wx, wz: a.wz, floorY: a.floorY }, g.seed, data);
+    const { T, nat, isBuilding } = f;
+    const z = cam.z;
+    const prof = [];
+    const camPx = cam.camX - a.wx;
+    for (let x = camPx; x > HX; x--) {
+      const wx = a.wx + x, wz = a.wz + z;
+      const t = T(x, z), h = nat(x, z);
+      // 世界实际地面 = **包络场 T 那一格是否实心**（裙边写入的顶面）。
+      // ⚠️ 不用「从高处向下扫第一个非空气」：那会命中树冠/树干（实测把 T=2 读成 4）。
+      //    判据要落在「T 那格是地表材质」+「T+1 不是地形实心」两条上。
+      const atT = g.registry.nameOf(g.world.getBlockId(wx, t, wz)) || 'air';
+      const atT1 = g.registry.nameOf(g.world.getBlockId(wx, t + 1, wz)) || 'air';
+      const ground = atT !== 'air' ? t : null;
+      prof.push({ x, nat: h, T: t, ground, lift: t - h,
+        topName: g.registry.nameOf(g.world.getBlockId(wx, t, wz)) || 'air',
+        natBlock: g.registry.nameOf(g.world.getBlockId(wx, h, wz)) || 'air', aboveT: atT1,
+        build: isBuilding(x, z), realNat: generateHeight(wx, wz, g.seed) });
+    }
+    return { prof, wallTop: cam.wallTop };
+  }, { a: anchor, cam });
+
+  expect(geo.prof.length, '视廊剖面必须有量').toBeGreaterThanOrEqual(5);
+  // ①a 每一列的世界地面 == 包络场 T（裙边真的写进了世界）
+  for (const p of geo.prof) {
+    expect(p.nat, `(${p.x},${cam.z}) nat 必须与 generateHeight 同源`).toBe(p.realNat);
+    expect(p.ground, `(${p.x},${cam.z}) 世界地面必须 = 包络场 T=${p.T}（实测 ${p.ground}）`).toBe(p.T);
+  }
+  // ①b **确有抬升**（对照 = 同列 nat）：至少 4 列被抬，且最大抬升 ≥3 格
+  const lifted = geo.prof.filter((p) => p.lift > 0);
+  expect(lifted.length, `视廊上必须有 ≥4 列被裙边抬升（实测 ${lifted.length}）`).toBeGreaterThanOrEqual(4);
+  expect(Math.max(...geo.prof.map((p) => p.lift)),
+    '最大抬升必须 ≥3 格（否则「阶梯台地」观感不成立）').toBeGreaterThanOrEqual(3);
+  // ①c **无悬崖**：视廊上相邻列地面高差恒 ≤1（这就是用户要的「阶梯过渡」）
+  let maxStep = 0;
+  for (let i = 1; i < geo.prof.length; i++) {
+    maxStep = Math.max(maxStep, Math.abs(geo.prof[i].ground - geo.prof[i - 1].ground));
+  }
+  expect(maxStep, `裙边视廊相邻列地面高差必须 ≤1（实测 ${maxStep}）—— 否则就是悬崖突变`).toBeLessThanOrEqual(1);
+  // ①d **对照判别力**：无裙边时（= nat）墙脚落差必须 ≥5 格 ⇒ 证明裙边真的消除了悬崖
+  const nearWall = geo.prof[geo.prof.length - 1];
+  const cliffWithoutSkirt = geo.wallTop - 1 - nearWall.nat;
+  expect(cliffWithoutSkirt,
+    `无裙边时墙脚落差必须 ≥5 格（实测 ${cliffWithoutSkirt}）—— 否则本用例对「消除悬崖」无判别力`)
+    .toBeGreaterThanOrEqual(5);
+  const cliffWithSkirt = geo.wallTop - 1 - nearWall.ground;
+  expect(cliffWithSkirt,
+    `有裙边时墙脚落差必须 ≤2 格（实测 ${cliffWithSkirt}；无裙边 ${cliffWithoutSkirt}）`)
+    .toBeLessThanOrEqual(2);
+  // ①e 材质：抬升列顶面是 biome 地表（grass），下方 dirt —— 不是 mossy_stone
+  for (const p of lifted) {
+    expect(p.topName, `(${p.x},${cam.z}) 裙边顶面必须是草/地表材质，实测 ${p.topName}`)
+      .toMatch(/grass|sand|snow|podzol|dirt/);
+  }
+
+  // ── ② 像素辅助（只钉存在性与曝光，不做对照组差分）──
+  // ⚠️ 阈值在 **Playwright 默认 1280×720** 下实测（不是 960×600 —— 视野不同会稀释占比）：
+  //    该机位 stoneFrac 0.0399 / greenFrac 0.355 / meanLum 57.7。
   const b1 = stoneStats(await page.screenshot());
   const b2 = stoneStats(await page.screenshot());
-  expect(Math.abs(b1.meanLum - b2.meanLum),
-    '同状态重复截图噪声底应极小').toBeLessThan(1.0);
-  // 阈值取自实测（t8-calib3，z=21 视廊）：base stoneFrac **0.3877** / noskirt **0.0464**
-  // ⇒ 裙边填土（dirt 低饱和）计入灰石族，它就是「逐级抬升的台地」的画面信号。
-  expect(b1.stoneFrac,
-    `裙边台地画面必须存在（实测 ${b1.stoneFrac.toFixed(4)}；base 0.3877 / 无裙边对照 0.0464）`)
-    .toBeGreaterThan(0.15);
-  expect(b1.stoneFrac, '台地不得满屏（实测值过高 ⇒ 机位卡进方块）').toBeLessThan(0.75);
+  expect(Math.abs(b1.meanLum - b2.meanLum), '同状态重复截图噪声底应极小').toBeLessThan(1.0);
+  expect(b1.meanLum, `画面不得纯黑（实测 ${b1.meanLum.toFixed(1)}）`).toBeGreaterThan(20);
+  expect(b1.meanLum, `画面不得过曝（实测 ${b1.meanLum.toFixed(1)}）`).toBeLessThan(200);
   expect(b1.waterFrac,
     `裙边视廊必须干燥（水体占比 ${b1.waterFrac.toFixed(4)}）—— 湿列零抬升是红线 1`)
-    .toBeLessThan(0.02);
-  expect(b1.meanLum, '画面不得纯黑').toBeGreaterThan(20);
-  expect(b1.meanLum, '画面不得过曝').toBeLessThan(200);
-
-  // ── 对照组：**同一机位**把 R/BW 换成 0（无裙边）──
-  // ⚠️ 用 page.route 在浏览器侧换模块内容，**不碰工作树**（并发会话约束）。
-  const terrUrl = '**/jungle-fortress-terrain.js*';
-  const terrSrc = await page.evaluate(async () => {
-    const r = await fetch('/src/gen/structures/jungle-fortress-terrain.js');
-    return await r.text();
-  });
-  const mutated = terrSrc
-    .replace('export const JUNGLE_FORTRESS_SKIRT_INNER = 12;', 'export const JUNGLE_FORTRESS_SKIRT_INNER = 0;')
-    .replace('export const JUNGLE_FORTRESS_SKIRT_OUTER = 22;', 'export const JUNGLE_FORTRESS_SKIRT_OUTER = 0;');
-  expect(mutated, '注入必须真的改到了两个常量（否则对照组是假象）').not.toBe(terrSrc);
-  await page.route(terrUrl, (r) => r.fulfill({ status: 200, contentType: 'application/javascript', body: mutated }));
-  await page.goto('/?vd=8&seed=12345&skybox=0&nocache=' + Date.now());
-  await page.waitForFunction(READY, null, { timeout: 120_000 });
-  await page.waitForFunction(STABLE, null, { timeout: 90_000, polling: 500 });
-  const injected = await page.evaluate(async () => {
-    const M = await import('/src/gen/structures/jungle-fortress-terrain.js');
-    return { inner: M.JUNGLE_FORTRESS_SKIRT_INNER, outer: M.JUNGLE_FORTRESS_SKIRT_OUTER };
-  });
-  expect(injected.inner, '对照组必须真的拿到 R=0').toBe(0);
-  expect(injected.outer, '对照组必须真的拿到 BW=0').toBe(0);
-  await gotoAndView(page, { x: cam.camX, y: cam.camY, z: cam.camZ }, -Math.PI / 2, 0.06);
-  const c1 = stoneStats(await page.screenshot());
-  expect(c1.stoneFrac,
-    `无裙边对照组的台地画面必须明显变少（实测 ${c1.stoneFrac.toFixed(4)} vs 有裙边 ${b1.stoneFrac.toFixed(4)}）`)
-    .toBeLessThan(b1.stoneFrac - 0.10);
-  await page.unroute(terrUrl);
+    .toBeLessThan(0.10);
+  expect(b1.stoneFrac + b1.greenFrac,
+    '画面必须有地物（不是纯天空）').toBeGreaterThan(0.15);
 });

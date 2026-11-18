@@ -89,7 +89,7 @@ export function percentile75(sortedArr) {
  * ⚠️ 干燥判据与 `fillColumn` 的水体判据同源（红线 1）：`h > SEA_Y` ⟺ 不填体素水；
  * 同时海面平面遮罩（`ocean-mask.js`）也读 `generateHeight` ⇒ 一条判据堵住两处水源。
  *
- * ⚠️ v3.16：顺带收集逐格高度（供 `percentile75` 算 baseY），避免二次扫 24955 格。
+ * ⚠️ v3.18：顺带收集逐格高度（供 `percentile75` 算 baseY），避免二次扫 24955 格。
  *    数组**未排序**（谁要分位数自己 sort）；jungleFortressCandidateValid 不消费它。
  *
  * @returns {{minH:number, maxH:number, span:number, heights:number[]}|null}
@@ -194,7 +194,7 @@ export function jungleFortressCandidateValid(wx, wz, seed) {
  *
  * @param {number} seed
  * @returns {{wx:number, wz:number, floorY:number, minH:number, span:number}|null} 找不到返回 null
- *   ⚠️ v3.16：`floorY` = **baseY**（占地自然高度 75 分位，结构地板层世界 y）；
+ *   ⚠️ v3.18：`floorY` = **baseY**（占地自然高度 75 分位，结构地板层世界 y）；
  *      `minH` = 占地最低自然高度（v3.13 旧 floorY 语义，判据用）。
  */
 export function computeJungleFortressAnchor(seed) {
@@ -413,7 +413,7 @@ export const JUNGLE_FORTRESS_TELEPORT_GAP = 6;
  *
  * 落点 = 占地**东缘**再向东 `JUNGLE_FORTRESS_TELEPORT_GAP` 格、z 取锚点中线。
  *
- * ⚠️ **y 必须用「地表权威」+ 1，不能用 baseY**（v3.16）：
+ * ⚠️ **y 必须用「地表权威」+ 1，不能用 baseY**（v3.18）：
  * 落点在东缘外 6 格 = 裙边带外缘，那里 T = 自然高度（实测 8 seed nat+1 = 5~6）。
  * 用 baseY+1 = 10 会让玩家**悬空 4~5 格**（要塞地板比玩家高 3~4 格，抬头看才宏伟）。
  * 判据转调 `jungleFortressSurfaceYAt`（地表唯一权威，红线 1），不在此复算包络。
@@ -428,7 +428,7 @@ export function jungleFortressTeleportPoint(seed) {
   if (!a) return null;
   const x = a.wx + JUNGLE_FORTRESS_HALF_X + JUNGLE_FORTRESS_TELEPORT_GAP;
   const z = a.wz;
-  // v3.16：surfaceYAt 恒返回数值（包络场 T）⇒ 不再需 ?? 兜底。
+  // v3.18：surfaceYAt 恒返回数值（包络场 T）⇒ 不再需 ?? 兜底。
   // 保留 generateHeight 直调作为「产物未预热」的退化路径（与 surfaceYAt 内部同口径）。
   const surface = jungleFortressSurfaceYAt(x, z, seed, a);
   const y = surface + 1;

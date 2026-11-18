@@ -1,10 +1,10 @@
-// src/gen/structures/jungle-fortress-terrain.js — 丛林要塞地形耦合（v3.16）
+// src/gen/structures/jungle-fortress-terrain.js — 丛林要塞地形耦合（v3.18）
 //
 // 权威：docs/superpowers/specs/2026-11-18-jungle-fortress-terrain-coupling-design.md DR-2/3/4/10
 //
-// ## v3.16 语义变更（与 v3.13 相反）
+// ## v3.18 语义变更（与 v3.13 相反）
 // v3.13 把占地 161×155 **整片削平**到 floorY（挖 17.7 万格）+ 16 格遇湿即止缓坡。
-// v3.16 改为原版 RepurposedStructures 语义：**地形保留自然起伏**，结构整体抬到
+// v3.18 改为原版 RepurposedStructures 语义：**地形保留自然起伏**，结构整体抬到
 // 占地自然高度的 75 分位（`anchor.floorY` = baseY），底面悬空处逐列补石墩。
 // ⇒ 削平/铺地表/填实三步与 16 格插值缓坡**全部删除**。
 //
@@ -23,7 +23,7 @@ import { JUNGLE_FORTRESS_HALF_X, JUNGLE_FORTRESS_HALF_Z } from './jungle-fortres
 /**
  * 植被管理区的外延宽度（格）。
  *
- * ⚠️ v3.16：**不再用于地形整形**（削平与插值缓坡已删）。保留它只为了
+ * ⚠️ v3.18：**不再用于地形整形**（削平与插值缓坡已删）。保留它只为了
  *    `inJungleFortressTerraform` 的植被管理范围 —— 用户 v3.13b 裁定「过渡带也要有树」。
  */
 export const JUNGLE_FORTRESS_SLOPE_BAND = 16;
@@ -46,7 +46,7 @@ export const JUNGLE_FORTRESS_SKIRT_OUTER = 22;
  * ⚠️ 不得在别处再写一份 —— 两份漂移会让瞬移落点与真实地表差几格
  * （浅水高台踩过完全同形的坑：玩家悬空或埋进土里）。
  *
- * ⚠️ v3.16：**恒返回数值，不再返回 null**（旧语义的 null = 「在自适应带外不整形」，
+ * ⚠️ v3.18：**恒返回数值，不再返回 null**（旧语义的 null = 「在自适应带外不整形」，
  *    现在全区都有定义）。返回 **过渡带处理后的地面 T**：
  *    内部非带列 = `generateHeight`；过渡带 = DR-10 包络值；建筑列 = nat。
  *
@@ -63,7 +63,7 @@ export function jungleFortressSurfaceYAt(wx, wz, seed, anchor) {
 /**
  * 点是否落在**植被管理区**内（占地 + 16 格的外接方形）。
  *
- * ⚠️ v3.16 语义改为「植被管理区」（旧名「整形区」保留以免改全部调用方）：
+ * ⚠️ v3.18 语义改为「植被管理区」（旧名「整形区」保留以免改全部调用方）：
  *    地形不再被削平，但这片区的植被由本结构的专属分支接管（密度/让位/树种）。
  *    范围与 v3.13 逐位相同 ⇒ 用户「过渡带也要有树」的裁定仍成立。
  *
@@ -298,6 +298,21 @@ const jfInBand = (x, z) => {
  * @param {{blocks:Array}} data 已加载产物
  */
 export function jungleFortressSkirtField(anchor, seed, data) {
+  // ⚠️⚠️ **入口就走缓存**（final review 实测修）：本函数被两处调用
+  //    （`surfaceYAt` 与 `apply.js` 的 `jungleFortressCells`），若只在 surfaceYAt 侧缓存，
+  //    索引侧会**再全量重算一次**（实测 40ms）⇒ 首个 GEN 残留 ~52ms 一次性成本。
+  //    缓存键 = anchor 对象（同 seed 恒同一对象）+ seed/data 双重校验。
+  const hit = JF_SKIRT_FIELD_CACHE.get(anchor);
+  if (hit && hit.seed === seed && hit.data === data) return hit.field;
+  const field = buildJungleFortressSkirtField(anchor, seed, data);
+  JF_SKIRT_FIELD_CACHE.set(anchor, { seed, data, field });
+  return field;
+}
+
+/** 包络场缓存（按锚点；与 surfaceYAt / 让位索引共用同一份） */
+const JF_SKIRT_FIELD_CACHE = new WeakMap();
+
+function buildJungleFortressSkirtField(anchor, seed, data) {
   const G = jungleFortressGeometry(data);
   const FR = G.floorRow;
   const baseY = anchor.floorY;
@@ -380,10 +395,7 @@ export function jungleFortressSkirtField(anchor, seed, data) {
 }
 
 /**
- * 按锚点缓存的包络场。
- *
- * ⚠️ 缓存键是 anchor 对象（`computeJungleFortressAnchor` 用 Object.freeze + memo，
- *    同 seed 恒同一对象）⇒ WeakMap 天然随锚点失效。
+ * 已登记的丛林要塞产物（供 `jungleFortressSurfaceYAt` 的纯查询路径用）。
  *
  * ⚠️⚠️ **不得依赖「fillSkirt 跑过」才有值**（实测踩过的真缺陷）：
  *    第一版把产物引用写在 `fillJungleFortressSkirt` 里，于是**纯查询路径**
@@ -391,14 +403,18 @@ export function jungleFortressSkirtField(anchor, seed, data) {
  *    ⇒ 同一函数两种返回值 = 第二份权威（红线 1）。
  *    修法：产物引用由**加载入口统一登记**（`noteJungleFortressData`），
  *    与 GEN 写到哪一 column 无关。
+ *
+ * ⚠️ 包络场本身的缓存只有**一份**：`JF_SKIRT_FIELD_CACHE`（在
+ *    `jungleFortressSkirtField` 入口）。本处不再建第二份 —— 两份缓存会让
+ *    「索引侧绕过缓存重算」这类缺陷隐形（final review 实测过）。
  */
-const JF_SKIRT_CACHE = new WeakMap();
 let jfSkirtData = null;
 
 /**
  * 登记已加载的丛林要塞产物（供 `jungleFortressSurfaceYAt` 的纯查询路径用）。
  *
- * 调用方：`apply.js` 在 `await loadStructure('jungleFortress')` 后立即调一次。
+ * 调用方：`apply.js` 在 `await loadStructure('jungleFortress')` 后立即调一次；
+ * `world-worker.js` 的 layout 入口也调（预热，把包络成本移出 GEN 计时）。
  * 幂等；同一份产物不重算包络。
  */
 export function noteJungleFortressData(data) {
@@ -407,11 +423,7 @@ export function noteJungleFortressData(data) {
 
 function jfSkirtFieldCached(anchor, seed) {
   if (!anchor || !jfSkirtData) return null;
-  const hit = JF_SKIRT_CACHE.get(anchor);
-  if (hit && hit.seed === seed) return hit.field;
-  const field = jungleFortressSkirtField(anchor, seed, jfSkirtData);
-  JF_SKIRT_CACHE.set(anchor, { seed, field });
-  return field;
+  return jungleFortressSkirtField(anchor, seed, jfSkirtData);
 }
 
 /**
@@ -463,3 +475,68 @@ export function fillJungleFortressSkirt(column, anchor, seed, registry, data) {
     }
   }
 }
+
+/**
+ * 产物按 (x,y,z) 的**逐格**类型索引（v3.13c/d 逐格让位的唯一权威）。
+ *
+ * ⚠️ v3.18 从 apply.js 搬到本模块：它与裙边包络场同处一层，预热入口
+ *    （world-worker 的 layout）能一次把两者都算好，避免残留成本落进首个 GEN。
+ *
+ * ⚠️ 只存**非空气**格：空气与「产物未覆盖」在让位语义上等价（都该放行），
+ *    合并后索引从 81238 降到 65702 条，且 `get()===undefined` 就是「可写」。
+ * ⚠️ 缓存用 WeakMap（换产物自动失效）。
+ * ⚠️ **不要再建列级 (x,z) 索引**（v3.13d 删掉了 `jungleFortressOccupancy`）：
+ *    两套口径共存就会有人误用列级那套，而那正是用户两次报「树叶被切割」的根因。
+ *
+ * ⚠️⚠️ **v3.18：索引必须含裙边填土格**（DR-10）：裙边抬升了地表，
+ *    邻列树冠横伸过来会落在填土格上（实测 seed 12345 有 1 格穿模）。
+ *    墩格不需单独加：它们恒在「该列屋顶下方」，已被 `jfCellFreeAt` 的②挡住
+ *    （实测 763 个意图∩墩格零穿模）。
+ * @param {{blocks:Array}} data
+ * @param {{wx:number,wz:number,floorY:number}} [anchor] 传入时额外索引裙边格
+ * @param {number} [seed]
+ */
+const JF_CELL_CACHE = new WeakMap();
+const JF_SKIRT_CELL_CACHE = new WeakMap();
+export function jungleFortressVegIndex(data, anchor, seed) {
+  if (anchor === undefined) {
+    if (JF_CELL_CACHE.has(data)) return JF_CELL_CACHE.get(data);
+  } else {
+    const hit = JF_SKIRT_CELL_CACHE.get(anchor);
+    if (hit && hit.data === data && hit.seed === seed) return hit.entry;
+  }
+  const cells = new Map();
+  const roof = new Map();
+  const floorRow = floorRowOf('jungleFortress');
+  const roomAir = new Set();
+  for (const b of data.blocks) {
+    // 地下房间/竖井的 air：它不是「可长植被的室外空地」（v3.18）
+    if (b.type === 'air') {
+      if (b.y < floorRow) roomAir.add(`${b.x},${b.y},${b.z}`);
+      continue;
+    }
+    cells.set(`${b.x},${b.y},${b.z}`, b.type);
+    const ck = `${b.x},${b.z}`;
+    const prev = roof.get(ck);
+    if (prev === undefined || b.y > prev) roof.set(ck, b.y);
+  }
+  // 裙边填土格：按锚点派生（依赖 seed），写进同一份索引⇒ 让位判据无需第二套口径
+  if (anchor !== undefined) {
+    const field = jungleFortressSkirtField(anchor, seed, data);
+    const { T, nat, isBuilding, bounds } = field;
+    for (let x = bounds.x0; x <= bounds.x1; x++) {
+      for (let z = bounds.z0; z <= bounds.z1; z++) {
+        if (isBuilding(x, z)) continue;
+        const top = T(x, z), h = nat(x, z);
+        for (let wy = h + 1; wy <= top; wy++) {
+          cells.set(`${x},${wy - anchor.floorY + floorRow},${z}`, 'skirt');
+        }
+      }
+    }
+  }
+  const entry = { cells, roof, roomAir };
+  if (anchor === undefined) JF_CELL_CACHE.set(data, entry);
+  else JF_SKIRT_CELL_CACHE.set(anchor, { data, seed, entry });
+  return entry;
+}
+
