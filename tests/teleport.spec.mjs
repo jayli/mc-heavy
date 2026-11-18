@@ -47,14 +47,15 @@ test('瞬移：九个按钮都在面板里，同一行不换行，且位于「�
   // v2.19 用户 2026-10-30 在本行末尾追加「湖」（浅水高台）；
   // v2.87 用户 2026-11-09：原「竞技场」（小竞技场）改名「围场」，其后新增指向**大竞技场**的「竞技场」；
   // v2.89 用户 2026-11-10：末尾追加「堡垒」（城西废弃堡垒），同时「竞技场」缩为「竞技」。
-  // v3.13 用户 2026-11-17：末尾追加「丛林」（城西第一个丛林地带的丛林要塞）。
+  // v3.13 用户 2026-11-17：末尾追加「丛林」（城西第一个丛林地带的丛林要塞）；
+  //    v3.14 用户 2026-11-18 把该按钮文案改为「要塞」（同为 2 字，布局不变）。
   //    实测第 9 个后每只宽 **38.1px**、高 33px、行盒数 1（2 字 24px 放得下）。
   // ⚠️ 文案上限随按钮数递减：六按钮 4 字、七按钮 3 字、**八按钮 2 字**（实测每只文字可用
   //    31.4px，3 字 36px 折行，即使 gap 收到 0px 也只有 34.9px）。
   const ORDER = ['btn-mark-position', 'btn-teleport-mark', 'btn-teleport-home',
     'btn-teleport-tarn', 'btn-teleport-arena', 'btn-teleport-burning-arena', 'btn-teleport-lake',
     'btn-teleport-ruined-citadel', 'btn-teleport-jungle-fortress'];
-  const LABELS = ['标记', '跳转', '回家', '高台', '围场', '竞技', '湖', '堡垒', '丛林'];
+  const LABELS = ['标记', '跳转', '回家', '高台', '围场', '竞技', '湖', '堡垒', '要塞'];
   const ids = new Set(ORDER);
   for (const id of ORDER) await expect(page.locator(`#${id}`)).toBeVisible();
   expect(ids.size).toBe(9);

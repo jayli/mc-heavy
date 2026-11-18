@@ -110,11 +110,12 @@ export const TELEPORT_ENCLOSURE_LABEL = '围场';
 export const TELEPORT_LAKE_LABEL = '湖';
 /** 「堡垒」= **废弃堡垒**（城西干燥沙漠 ruined citadel，v2.89 新增） */
 export const TELEPORT_CITADEL_LABEL = '堡垒';
-/** 「丛林」= **丛林要塞**（城西第一个丛林地带 jungle fortress，v3.13 新增）。
+/** 「要塞」= **丛林要塞**（城西第一个丛林地带 jungle fortress，v3.13 新增；
+ *  v3.14 用户 2026-11-18 把文案由「丛林」改为「要塞」）。
  *  ⚠️ **第 9 个按钮**：八按钮时每只文字可用 31.4px（2 字上限），第九个后降到 ≈26px
  *  ⇒ **仍只能 2 字**，gap 保持 4px。若实测行盒数 >1 或按钮换行，**停下报告**，
  *  不擅自缩文案到 1 字或改布局（计划 DR-10）。 */
-export const TELEPORT_JUNGLE_LABEL = '丛林';
+export const TELEPORT_JUNGLE_LABEL = '要塞';
 
 /**
  * v2.27：「分辨率」行的标题与两个档位文案。导出供 `src/tests/test-ui.js` 钉死（单一口径）。
@@ -690,7 +691,7 @@ export class SettingsPanel {
       this._teleportThenAutoClose(this.game.teleportToRuinedCitadel());
     });
 
-    // ⑨ 丛林（**丛林要塞** = 城西第一个丛林地带的 jungle fortress，v3.13 新增）
+    // ⑨ 要塞（**丛林要塞** = 城西第一个丛林地带的 jungle fortress，v3.13 新增）
     //    落点 = 占地东缘外的**整形后**平地（唯一权威 `jungleFortressTeleportPoint`）
     mk(TELEPORT_JUNGLE_LABEL, 'btn-teleport-jungle-fortress', () => {
       this._teleportThenAutoClose(this.game.teleportToJungleFortress());

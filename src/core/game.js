@@ -2036,7 +2036,7 @@ export class Game {
   }
 
   /**
-   * 瞬移到**丛林要塞**（城西第一个丛林地带的 jungle fortress，面板「丛林」按钮，v3.13）。
+   * 瞬移到**丛林要塞**（城西第一个丛林地带的 jungle fortress，面板「要塞」按钮，v3.13）。
    *
    * 落点唯一权威 = `jungleFortressTeleportPoint(seed)`（占地**东缘**外 6 格，
    * y = **整形后**地表 + 1）—— 本方法**不复算**任何坐标（红线 1）。
