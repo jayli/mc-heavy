@@ -1,0 +1,60 @@
+{
+  "fingerprints": {
+    "input": "b349851cb57aa044:d50b153c9877f284"
+  },
+  "metrics": {
+    "productFaces": 1609,
+    "triangleCount": 3150,
+    "vertexCount": 5232,
+    "muzzleZ": 3.5,
+    "degenerateUvTriangles": 0,
+    "barrelEmbed": 0.31061451429791265,
+    "triangles": {
+      "cheek": 280,
+      "mantlet": 114,
+      "deckMid": 28,
+      "ring": 246,
+      "nose": 562,
+      "podR": 576,
+      "podL": 632,
+      "barrel": 712
+    },
+    "vertices": {
+      "cheek": 560,
+      "mantlet": 228,
+      "deckMid": 56,
+      "ring": 492,
+      "nose": 1124,
+      "podR": 960,
+      "podL": 480,
+      "barrel": 1332
+    },
+    "zoneFaces": {
+      "cheek": {
+        "front": 8,
+        "side": 68,
+        "top": 64
+      },
+      "mantlet": {
+        "front": 16,
+        "side": 12,
+        "top": 29
+      },
+      "deckMid": {
+        "front": 0,
+        "side": 0,
+        "top": 14
+      },
+      "ring": {
+        "front": 75,
+        "side": 38,
+        "top": 10
+      },
+      "nose": {
+        "front": 215,
+        "side": 62,
+        "top": 4
+      }
+    }
+  }
+}

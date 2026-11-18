@@ -19,6 +19,7 @@
   import * as THREE from 'three';
   import { TurretRenderer } from '../render/turret-renderer.js';
   import { loadTurretArmorTexture } from '../render/turret-armor-texture.js';
+  import { loadTurretTopGeometry } from '../render/turret-top-geometry.js';
   import { TURRET_PARTS, TURRET_PART_DEFS } from '../entities/turrets/turret-config.js';
 
   // Tier 4 像素实测场景（M8 Task 5：炮塔装甲 UV 分区）。
@@ -43,83 +44,215 @@
     // 用 SRGB 输出则读到的值接近原始纹理参数，阈值可对着烘焙产物读（zombie-model 同款理由）。
     renderer.outputColorSpace = THREE.SRGBColorSpace;
 
-    const texture = await loadTurretArmorTexture();
+    const [texture, topGeometry] = await Promise.all([loadTurretArmorTexture(), loadTurretTopGeometry()]);
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x000000);   // 黑背景：落到背景的取样点会是纯黑
-    const tr = new TurretRenderer({ scene, maxActive: 1, armorTexture: texture });
+    const tr = new TurretRenderer({ scene, maxActive: 1, armorTexture: texture, topGeometry });
 
     // 一个炮塔在原点、yaw=0/pitch=0（正面朝 +Z）。直接写 pose —— 本 fixture 只验渲染，
     // 玩法层不参与（绕开放置门控与地形依赖）。
     const pose = { position: [0, 0, 0], yaw: 0, pitch: 0 };
     tr.sync(new Map([['probe', pose]]));
 
-    // 每个部件的「被测面中心」= 部件盒的局部面中心点，经该部件的实例矩阵变换到世界。
-    // 局部面中心取自部件尺寸的一半（盒几何以原点为中心，矩阵已含平移与 rotX）。
-    const faceCenterLocal = {
-      // ⚠️ **front 取样点必须偏离中心**（实测踩坑）：根部部件（root，pos z=0.85、深 0.4 →
-      // z ∈ [0.65,1.05]）比前装甲板的 +Z 面（z=0.95）更靠前，且颜色是白色 0xeeeeee。
-      // 取中心点会被根部**遮挡** → 读到 (238,238,238) 而不是装甲贴图（注入 UV 错位仍全绿，
-      // testing-policy §2.7 第 9 类盲区）。故取 x=+0.5：在前装甲板宽度内（半宽 0.8）、
-      // 又在根部宽度外（半宽 0.3）。
-      front: [0.5, 0, TURRET_PART_DEFS.front.size[2] / 2],   // 前装甲板的 +Z 面（倾斜板，偏离中心避开根部遮挡）
-      right: [TURRET_PART_DEFS.right.size[0] / 2, 0, 0],   // 右侧板的 +X 面
-      top: [0, TURRET_PART_DEFS.top.size[1] / 2, 0],       // 顶板的 +Y 面
-      barrel: [0, 0, TURRET_PART_DEFS.barrel.length / 2],  // 炮管前端（纯色，无贴图）
-    };
-    const _m = new THREE.Matrix4();
-    const worldPointOf = (part) => {
-      tr.meshes[part].getMatrixAt(0, _m);
-      const local = faceCenterLocal[part];
-      const v = new THREE.Vector3(local[0], local[1], local[2]).applyMatrix4(_m);
-      return [v.x, v.y, v.z];
-    };
-
+    // ---------- 取样点：按「面积降序 + 射线无遮挡」从产物几何反解 ----------
+    //
+    // ⚠️⚠️ **不能直接取最大面，也不能只查近邻遮挡**（spec §9 实测）：
+    //   · mantlet.side 最大面（A=545）被 cheek 在 1.885 格处挡住 → 要跳到第 3 个；
+    //   · nose.side 最大面（A=354）被 podL 在 1.031 格处挡住 → 第 7 个；
+    //   · nose.top 最大面（A=354）是中央腔内顶面（炮管通道）→ 第 3 个。
+    // 故用 Möller–Trumbore 射线：相机置面心 + 法线×DIST，向面心发射，
+    // 首个命中距离 ≥ DIST−1e-4 才算可见。
+    //
+    // ⚠️ **仍从实例矩阵反解**：下面算的是**局部**面心与法线，渲染时经 getMatrixAt 变换。
+    // yaw/pitch 非零时硬编码世界坐标会取偏。
     const DIST = 2.4;
+    const allTris = [];
+    for (const [part, g] of Object.entries(topGeometry.parts)) {
+      for (let i = 0; i < g.index.length; i += 3) {
+        const v = [g.index[i], g.index[i + 1], g.index[i + 2]].map((j) => [
+          g.position[j * 3], g.position[j * 3 + 1], g.position[j * 3 + 2],
+        ]);
+        allTris.push({ part, v });
+      }
+    }
+    const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+    const dot3 = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    const norm3 = (a) => { const l = Math.hypot(...a) || 1; return a.map((x) => x / l); };
+    function triNormal(v) { return norm3(cross(sub(v[1], v[0]), sub(v[2], v[0]))); }
+    function triArea(v) { return Math.hypot(...cross(sub(v[1], v[0]), sub(v[2], v[0]))) / 2; }
+    function rayHit(o, d, t) {
+      const e1 = sub(t.v[1], t.v[0]), e2 = sub(t.v[2], t.v[0]);
+      const pv = cross(d, e2);
+      const det = dot3(e1, pv);
+      if (Math.abs(det) < 1e-12) return null;
+      const inv = 1 / det;
+      const tv = sub(o, t.v[0]);
+      const u = dot3(tv, pv) * inv;
+      if (u < -1e-9 || u > 1 + 1e-9) return null;
+      const qv = cross(tv, e1);
+      const vv = dot3(d, qv) * inv;
+      if (vv < -1e-9 || u + vv > 1 + 1e-9) return null;
+      const tt = dot3(e2, qv) * inv;
+      return tt > 1e-7 ? tt : null;
+    }
+    /** 该面在「相机沿法线外置 DIST」时是否可见（首个命中就是自己） */
+    function faceVisible(center, n) {
+      const eye = [center[0] + n[0] * DIST, center[1] + n[1] * DIST, center[2] + n[2] * DIST];
+      const dir = [-n[0], -n[1], -n[2]];
+      let best = Infinity;
+      for (const t of allTris) {
+        const tt = rayHit(eye, dir, t);
+        if (tt !== null && tt < best) best = tt;
+      }
+      return best >= DIST - 1e-4;
+    }
+    /**
+     * 面所属区 —— ⚠️ **必须按几何法线独立判定，不能从 UV 的 u 反推**。
+     *
+     * 从 u 反推会与被测代码**共用同一个错误假设**：注入「side 区的面改采 front 区」后，
+     * u 反推会把那些面认成 front，于是 fixture 去挑**别的**面做 side 取样
+     * ⇒ 像素判据仍全绿（2026-11-18 实测踩到）。
+     * 用法线判定则取样面固定，UV 错了就直接采到错区 → 判据红。
+     *
+     * 口径与烘焙侧 `zoneOf` 一致（阈值 0.85，底面也归 top）。
+     */
+    function faceZoneByNormal(v) {
+      const n = triNormal(v);
+      if (n[1] > 0.85 || n[1] < -0.85) return 'top';
+      return Math.abs(n[0]) >= Math.abs(n[2]) ? 'side' : 'front';
+    }
+    /**
+     * 选一个「指定部件 + 指定区」的可见面，返回局部面心与法线。
+     * 按面积降序试，取第一个可见的。
+     */
+    function pickFace(part, zone) {
+      const g = topGeometry.parts[part];
+      const cands = [];
+      for (let i = 0; i < g.index.length; i += 3) {
+        const v = [g.index[i], g.index[i + 1], g.index[i + 2]].map((j) => [
+          g.position[j * 3], g.position[j * 3 + 1], g.position[j * 3 + 2],
+        ]);
+        if (zone !== null && faceZoneByNormal(v) !== zone) continue;
+        cands.push({ v, area: triArea(v), n: triNormal(v) });
+      }
+      cands.sort((a, b) => b.area - a.area);
+      for (const c of cands) {
+        const cen = [0, 1, 2].map((j) => (c.v[0][j] + c.v[1][j] + c.v[2][j]) / 3);
+        if (faceVisible(cen, c.n)) return { center: cen, normal: c.n, area: c.area };
+      }
+      return null;
+    }
+    // 三区主判据（spec §9 实测：这三个都是第 1 候选即可见，最稳）
+    const SAMPLES = {
+      front: { part: 'cheek', zone: 'front' },
+      side: { part: 'cheek', zone: 'side' },
+      top: { part: 'mantlet', zone: 'top' },
+    };
+    const picked = {};
+    for (const [view, s2] of Object.entries(SAMPLES)) {
+      picked[view] = pickFace(s2.part, s2.zone);
+      if (!picked[view]) throw new Error(`取样面不可见：${s2.part}.${s2.zone}`);
+    }
+    const barrelPick = pickFace('barrel', null);
+    if (!barrelPick) throw new Error('炮管取样面不可见');
+
+    const _m = new THREE.Matrix4();
+    const _nm = new THREE.Matrix3();
+    /** 局部面心/法线 → 世界（经该部件的实例矩阵） */
+    function worldFace(part, pick) {
+      tr.meshes[part].getMatrixAt(0, _m);
+      const c = new THREE.Vector3(...pick.center).applyMatrix4(_m);
+      _nm.getNormalMatrix(_m);
+      const n = new THREE.Vector3(...pick.normal).applyMatrix3(_nm).normalize();
+      return { center: [c.x, c.y, c.z], normal: [n.x, n.y, n.z] };
+    }
     const mkCam = () => new THREE.PerspectiveCamera(50, 400 / 300, 0.05, 100);
     const project = (camera, wx, wy, wz) => {
       const v = new THREE.Vector3(wx, wy, wz).project(camera);
       return { x: Math.round((v.x * 0.5 + 0.5) * 400), y: Math.round((-v.y * 0.5 + 0.5) * 300) };
     };
-    // 三个视角：相机沿被测面的外法线方向，看向该面中心
-    const cams = {
-      front: (() => { const p = worldPointOf('front'); const c = mkCam();
-        c.position.set(p[0], p[1], p[2] + DIST); c.lookAt(p[0], p[1], p[2]); return c; })(),
-      side: (() => { const p = worldPointOf('right'); const c = mkCam();
-        c.position.set(p[0] + DIST, p[1], p[2]); c.lookAt(p[0], p[1], p[2]); return c; })(),
-      top: (() => { const p = worldPointOf('top'); const c = mkCam();
-        c.position.set(p[0], p[1] + DIST, p[2]); c.lookAt(p[0], p[1], p[2]); return c; })(),
-    };
-    const samplePart = { front: 'front', side: 'right', top: 'top' };
+    /** 相机沿被测面的外法线外置 DIST，看向面心 */
+    function camFor(wf) {
+      const c = mkCam();
+      c.position.set(
+        wf.center[0] + wf.normal[0] * DIST,
+        wf.center[1] + wf.normal[1] * DIST,
+        wf.center[2] + wf.normal[2] * DIST,
+      );
+      c.lookAt(...wf.center);
+      return c;
+    }
 
-    /** spec 调用：切到指定视角渲染一帧，返回取样点 + 该视角的部件名 */
+    /** spec 调用：切到指定区视角渲染一帧，返回取样点 + 部件名 */
     window.__TT_RENDER__ = (view) => {
-      const cam = cams[view];
-      if (!cam) throw new Error(`unknown view: ${view}`);
+      if (!SAMPLES[view]) throw new Error(`unknown view: ${view}`);
+      const wf = worldFace(SAMPLES[view].part, picked[view]);
+      const cam = camFor(wf);
       // 渲染两帧：WebGPU 首帧可能还在编译 shader，第二帧才是稳定结果
       renderer.render(scene, cam);
       renderer.render(scene, cam);
-      return { point: project(cam, ...worldPointOf(samplePart[view])), part: samplePart[view] };
+      return { point: project(cam, ...wf.center), part: SAMPLES[view].part, zone: SAMPLES[view].zone };
     };
 
     /** 炮管视角（纯色部件对照：不带 map → 渲染为纯色而非贴图） */
     window.__TT_RENDER_BARREL__ = () => {
-      const p = worldPointOf('barrel');
-      const c = mkCam(); c.position.set(p[0], p[1], p[2] + DIST); c.lookAt(p[0], p[1], p[2]);
-      renderer.render(scene, c);
-      renderer.render(scene, c);
-      return project(c, p[0], p[1], p[2]);
+      const wf = worldFace('barrel', barrelPick);
+      const cam = camFor(wf);
+      renderer.render(scene, cam);
+      renderer.render(scene, cam);
+      return project(cam, ...wf.center);
     };
+
+    /**
+     * 刚性姿态视角：指定 pitch 渲染一帧，返回「炮管与鼻段连接处」的屏幕坐标。
+     * 判据用：该处不得出现背景色像素（炮管分离的直接证据）。
+     * 连接处取 nose 的 z 最小面心与 barrel 的 z 最小面心之中点（两者刚性相连）。
+     */
+    window.__TT_RENDER_POSE__ = (pitchDeg) => {
+      tr.sync(new Map([['probe', { position: [0, 0, 0], yaw: 0, pitch: pitchDeg * Math.PI / 180 }]]));
+      // ⚠️⚠️ **取样点必须落在炮管表面，不能取轴上中点**（final review Important 3）：
+      // 旧写法 (0,0,(noseZmin+barrelZmin)/2) ≈ (0,0,1.425) 落在 nose **中央腔内**
+      // （炮管通道），侧视相机看到的是 nose 外壁 ⇒ 与炮管是否在位无关，零判别力。
+      // 改为：炮管尾端截面（z = barrelZmin）上**径向最外**的一点 —— 它在炮管表面上，
+      // 炮管若脱离该处立刻露出背景。
+      const bp = topGeometry.parts.barrel.position;
+      let barrelZmin = Infinity;
+      for (let i = 2; i < bp.length; i += 3) barrelZmin = Math.min(barrelZmin, bp[i]);
+      let bestR = -1, jointLocal = [0, 0, barrelZmin];
+      for (let i = 0; i < bp.length; i += 3) {
+        if (Math.abs(bp[i + 2] - barrelZmin) > 1e-6) continue;
+        const r = Math.hypot(bp[i], bp[i + 1]);
+        // 取 +X 侧最外点（侧视相机在 +X，正对相机）
+        if (r > bestR && bp[i] > 0) { bestR = r; jointLocal = [bp[i], bp[i + 1], bp[i + 2]]; }
+      }
+      tr.meshes.barrel.getMatrixAt(0, _m);
+      const j = new THREE.Vector3(...jointLocal).applyMatrix4(_m);
+      // 侧视相机（沿 +X 看），距离 5 格，看向连接处
+      const cam = mkCam();
+      cam.position.set(j.x + 5, j.y + 0.6, j.z);
+      cam.lookAt(j.x, j.y, j.z);
+      renderer.render(scene, cam);
+      renderer.render(scene, cam);
+      return { point: project(cam, j.x, j.y, j.z), joint: [j.x, j.y, j.z] };
+    };
+
+    /** 取样面的实测信息（spec 可打印核对，防「取样点没对准被测部件」） */
+    window.__TT_SAMPLES__ = Object.fromEntries(Object.entries(SAMPLES).map(([view, s2]) => [
+      view, { part: s2.part, zone: s2.zone, area: picked[view].area, center: picked[view].center, normal: picked[view].normal },
+    ]));
 
     // 前提：渲染器确实拿到纹理（spec 断言此值，防「加载失败 → 退回纯色」静默缺失）
     window.__TT_INFO__ = {
       textureLoaded: !!texture,
       textureSize: [texture?.image?.width, texture?.image?.height],
-      armorPartsHaveMap: TURRET_PARTS.filter((p) => !!tr.meshes[p].material.map),
-      solidPartsHaveMap: TURRET_PARTS.filter((p) => !TURRET_PART_DEFS[p].zone && !!tr.meshes[p].material.map),
-      meshNames: TURRET_PARTS.map((p) => tr.meshes[p].name),
+      armorPartsHaveMap: TURRET_PARTS.filter((p) => !!tr.meshes[p]?.material.map),
+      solidPartsHaveMap: TURRET_PARTS.filter((p) => !TURRET_PART_DEFS[p].textured && !!tr.meshes[p]?.material.map),
+      meshNames: TURRET_PARTS.map((p) => tr.meshes[p]?.name),
+      topGeometryLoaded: !!topGeometry,
     };
     /** 无炮塔时的可见性（draw call 回基线的前提断言） */
-    window.__TT_CLEAR__ = () => { tr.sync(new Map()); return TURRET_PARTS.filter((p) => tr.meshes[p].visible); };
+    window.__TT_CLEAR__ = () => { tr.sync(new Map()); return TURRET_PARTS.filter((p) => tr.meshes[p]?.visible); };
     window.__TT_READY__ = true;
   }
   run().catch((e) => { window.__TT_ERROR__ = String(e?.stack || e); });

@@ -102,68 +102,79 @@ export const ARMOR_ZONES = Object.freeze(['front', 'side', 'top']);
  * 纯色部件的颜色（mc-lite `TURRET_TOWER_COLOR`，`Turret.js:98-101`）。
  * ⚠️ 收进 config 而非在渲染层写死字面量 —— 上一版审查发现渲染层注释写「退回纯色
  * `TURRET_TOWER_COLOR.MAIN/DARK`」但代码写死 `0xcccccc`/`0xbbbbbb`（红线 1：两个副本）。
+ *
+ * ⚠️ **`DARK` 自塔顶模型替换后无消费点**：旧实现靠 `back` 部件的 `color: DARK`
+ * 区分后板，而新 8 部件里**没有「后板」这个语义**（装甲部件全部走贴图）。
+ * 保留常量仅作 mc-lite 出处记录（与「床材质的 offset/rotation 是死字段」同类）。
+ * **不得为了“用上 DARK”而给某个新部件硬塞 color** —— 那会让它在有纹理时也不走贴图。
  */
 export const TURRET_TOWER_COLOR = Object.freeze({
-  MAIN: 0xcccccc,   // 浅灰色主体
-  DARK: 0xbbbbbb,   // 中灰色后板
+  MAIN: 0xcccccc,   // 浅灰色主体（无纹理时的退回色）
+  DARK: 0xbbbbbb,   // 中灰色后板（**无消费点**，见上方注释）
 });
 
-/** 炮管系统颜色（mc-lite `GUN_COLOR`，`Turret.js:139-143`） */
+/**
+ * 炮管系统颜色。
+ *
+ * 塔顶模型替换后只有两类纯色部件：主炮管与两组副武器。
+ * 用户明确「枪管可以不是黑的，可以是灰色的」⇒ 炮管从旧 `0x222222` 改为中灰，
+ * 与 side 区贴图均值 125 同量级，不抢塔身；副武器再暗一档以区分主次武器。
+ * （旧 ROOT/SIGHT 两个色值随旧部件一同删除 —— 新模型没有根部/瞄准器这两个部件。）
+ */
 export const TURRET_GUN_COLOR = Object.freeze({
-  BARREL: 0x222222,   // 黑色炮管
-  ROOT: 0xeeeeee,     // 白色根部
-  SIGHT: 0x3366cc,    // 蓝色瞄准器
+  BARREL: 0x8a8a8a,   // 中灰主炮管
+  POD: 0x6e6e6e,      // 深灰副武器（左右两组共用）
 });
 
-/** 部件顺序（8 个 = 5 装甲板 + 炮管 + 根部 + 瞄准器；mc-lite `createTurretTopBlocks` 同序） */
+/**
+ * 塔顶模型的定标与 pivot（**溯源用**，运行期不消费 —— 两者已烘进产物顶点）。
+ *
+ * ⚠️ `scale` 的判据是**炮口对齐 `TURRET.muzzleOffsetZ`**：模型炮口 z=113.3627
+ * （实测精确值，用四舍五入的 113.36 会让炮口落在 3.5000834）。
+ * 这样 `controller.muzzle()` 与弹道**零改动**。
+ * ⚠️ `pivotY` 取**炮管轴心**，不是模型原点也不是塔身底面 —— 炮管绕自身轴俯仰
+ * 才符合「炮管与炮头刚性一体」的观感。
+ */
+export const TURRET_TOP_SCALE = 3.5 / 113.3627;
+export const TURRET_TOP_PIVOT_Y = 14.667;
+
+/**
+ * 部件顺序（8 个，与旧 8 部件一一对应 ⇒ draw call 与现状持平）。
+ *
+ * 旧→新映射按**语义职责**而非几何相似：
+ * front→mantlet（中央炮座）/ left→cheek（左右颊舱合并为一个）/ right→nose（车体鼻段）
+ * / top→ring（转台环）/ back→deckMid（平台中段）/ barrel→barrel / root→podR / sight→podL。
+ *
+ * ⚠️ 旧 `left`/`right` 是两块对称侧板，新 `cheek` 是**一个**包含左右两侧的部件
+ * ⇒ 「左右对称」那类旧断言失去意义，必须删除而不是改名保留。
+ */
 export const TURRET_PARTS = Object.freeze([
-  'front', 'left', 'right', 'top', 'back', 'barrel', 'root', 'sight',
+  'mantlet', 'cheek', 'nose', 'ring', 'deckMid', 'barrel', 'podR', 'podL',
 ]);
 
 /**
- * 8 个部件的几何与变换定义。数值**逐项实测自 mc-lite** `Turret.js`：
- * - 尺寸 = `TURRET_TOWER_SIZE`（`:94-99`）/ `GUN_BARREL_SIZE`（`:127-130`）/
- *   `GUN_ROOT_SIZE`（`:131`）/ `GUN_SIGHT_SIZE`（`:132`）；
- * - 位置 = `TURRET_TOWER_POS`（`:105-111`）/ `GUN_POS`（`:133-138`）；
- * - 前装甲板的倾斜 `rotX: -π/8` = `createTurretTopBlocks()` 的 `rotX`（`:275`）；
- * - 区归属 = `ARMOR_TEXTURES`（`:114-119`）：front→pic1、left/right→pic2、top→pic3、
- *   **back→pic3**（TOP 与 BACK 都指向 pic3，故 `back` 的 zone 也是 `'top'`）。
+ * 8 个部件的渲染定义。
  *
- * ⚠️ 这是**纯数据**（无 three 依赖）→ 放在本同构模块，渲染层只做「几何构造 + UV 改写 +
- * 矩阵合成」。`zone: null` = 纯色部件（不改写 UV）。
+ * ⚠️⚠️ **几何全在烘焙产物里**（`assets/turret/turret-top.json`），本表**不再有**
+ * `geo`/`size`/`pos`/`rotX` —— 部件局部变换是**恒等**，8 个部件乘同一个 pivot 矩阵
+ * `T(pivot) × R_y(yaw) × R_x(-pitch)`。这是用户裁定的**刚性一体**：炮管与炮头一起转，
+ * 不得给任何部件加独立旋转轴或俯仰轴（实测分层会让炮管在 ±45° 时飞出塔身）。
+ *
+ * ⚠️⚠️ **`textured` 是贴图/纯色分支的唯一依据**，不是 `zone`：
+ * 新几何是**逐面分区**（同一部件内不同面属不同区），部件级 `zone` 恒为 null。
+ * 旧判据 `!!def.zone` 在新表下**恒假** ⇒ 不改会让装甲全部退化成纯色，
+ * 而顶点数/三角数/指纹全对（静默失效）。
+ *
+ * ⚠️ **UV 权威在烘焙侧**：产物 uv 已按面压进 1/3 区，渲染层**不得再调 applyZoneUV**
+ * （再压一次 = z/3 + (z/3+u/3)/3 ⇒ 全部采到 front 区左侧）。
  */
 export const TURRET_PART_DEFS = Object.freeze({
-  front: Object.freeze({
-    geo: 'box', size: Object.freeze([1.6, 1.2, 0.4]),
-    pos: Object.freeze([0, -0.05, 0.75]), rotX: -Math.PI / 8, zone: 'front',
-  }),
-  left: Object.freeze({
-    geo: 'box', size: Object.freeze([1, 1.0, 1.7]),
-    pos: Object.freeze([-0.8, -0.1, -0.1]), zone: 'side',
-  }),
-  right: Object.freeze({
-    geo: 'box', size: Object.freeze([1, 1.0, 1.7]),
-    pos: Object.freeze([0.8, -0.1, -0.1]), zone: 'side',
-  }),
-  top: Object.freeze({
-    geo: 'box', size: Object.freeze([1.6, 0.3, 1.5]),
-    pos: Object.freeze([0, 0.6, -0.2]), zone: 'top',
-  }),
-  back: Object.freeze({
-    geo: 'box', size: Object.freeze([1.6, 1.2, 0.3]),
-    pos: Object.freeze([0, -0.2, -0.95]), zone: 'top',   // mc-lite BACK 也用 pic3
-    color: TURRET_TOWER_COLOR.DARK,                      // 无纹理时的退回色（中灰）
-  }),
-  barrel: Object.freeze({
-    geo: 'cylinder', diameter: 0.3, length: 3.0,
-    pos: Object.freeze([0, 0, 2.0]), zone: null, color: TURRET_GUN_COLOR.BARREL,
-  }),
-  root: Object.freeze({
-    geo: 'box', size: Object.freeze([0.6, 0.6, 0.4]),
-    pos: Object.freeze([0, 0, 0.85]), zone: null, color: TURRET_GUN_COLOR.ROOT,
-  }),
-  sight: Object.freeze({
-    geo: 'box', size: Object.freeze([0.3, 0.3, 0.4]),
-    pos: Object.freeze([0, 0.5, 0.65]), zone: null, color: TURRET_GUN_COLOR.SIGHT,
-  }),
+  mantlet: Object.freeze({ zone: null, textured: true }),
+  cheek: Object.freeze({ zone: null, textured: true }),
+  nose: Object.freeze({ zone: null, textured: true }),
+  ring: Object.freeze({ zone: null, textured: true }),
+  deckMid: Object.freeze({ zone: null, textured: true }),
+  barrel: Object.freeze({ zone: null, textured: false, color: TURRET_GUN_COLOR.BARREL }),
+  podR: Object.freeze({ zone: null, textured: false, color: TURRET_GUN_COLOR.POD }),
+  podL: Object.freeze({ zone: null, textured: false, color: TURRET_GUN_COLOR.POD }),
 });

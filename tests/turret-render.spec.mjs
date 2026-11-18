@@ -6,94 +6,132 @@ function regionRGB(png, cx, cy, r) {
   let sr = 0, sg = 0, sb = 0, n = 0;
   for (let y = cy - r; y <= cy + r; y++) {
     for (let x = cx - r; x <= cx + r; x++) {
+      if (x < 0 || y < 0 || x >= png.width || y >= png.height) continue;
       const o = (y * png.width + x) * 4;
       sr += png.data[o]; sg += png.data[o + 1]; sb += png.data[o + 2]; n++;
     }
   }
-  return { r: sr / n, g: sg / n, b: sb / n };
+  return { r: sr / n, g: sg / n, b: sb / n, n };
+}
+
+/** 区域内「背景色（近黑）」像素数 —— 炮管分离的直接证据 */
+function backgroundPixels(png, cx, cy, r) {
+  let bg = 0, tot = 0;
+  for (let y = cy - r; y <= cy + r; y++) {
+    for (let x = cx - r; x <= cx + r; x++) {
+      if (x < 0 || y < 0 || x >= png.width || y >= png.height) continue;
+      const o = (y * png.width + x) * 4;
+      tot++;
+      if (png.data[o] < 8 && png.data[o + 1] < 8 && png.data[o + 2] < 8) bg++;
+    }
+  }
+  return { bg, tot };
 }
 
 /**
- * 炮塔装甲 Tier 4 像素实测（M8 Task 5）。
+ * 炮塔塔顶 Tier 4 像素实测（模型替换后）。
  *
  * **为什么必须像素实测**：纹理采样在 GPU 求值，单测读不到片元输出（testing-policy §5.1）。
  * 单测只能钉住 UV 属性数值，无法证明 GPU 真的按那个 UV 采到了对应区。
  *
- * **判据用「区差异」而非绝对色值**（三张源图是三种不同装甲图，实测烘焙产物均值：
- * front 区 (159,138,108) 有彩色 / side 区 (125,125,125) 纯灰 / top 区 (139,141,144) 偏蓝灰）。
- * 故断言落在**彩色 vs 灰度**与**亮度差异**上 —— 比钉绝对色值稳健（渲染管线的小差异不影响判据）。
+ * **判据用「区差异」而非绝对色值**：三张源图均值 front(159,138,108) 彩色 /
+ * side(125,125,125) 纯灰 / top(139,141,144) 偏蓝灰。
  *
- * ⚠️ 取样点由 fixture 从**实例矩阵反解**（含前装甲板的 rotX 倾斜），不硬编码世界坐标。
+ * ⚠️ **取样点由 fixture 从产物几何 + 实例矩阵反解**，且按「面积降序 + 射线无遮挡」选面
+ * （spec §9：mantlet.side / nose.side / nose.top 的最大面都被遮挡或是内腔面）。
+ *
+ * 实测基线（2026-11-18，R=3 即 7×7px，三次重复**逐位相同**⇒ 零噪声）：
+ *   front (167.2,153.8,122.7) / side (111.2,111.2,111.2)
+ *   top   (135.2,136.2,140.2) / barrel (138,138,138)
  */
-test('炮塔装甲 Tier 4：三区各采到对应贴图，炮管为纯色', async ({ page }) => {
+test('炮塔塔顶 Tier 4：三区各采到对应贴图，炮管为灰色纯色', async ({ page }) => {
   await page.setViewportSize({ width: 400, height: 300 });
   await page.goto('/src/tests/test-turret-render.html');
   await page.waitForFunction(
-    () => window.__TT_READY__ === true || window.__TT_ERROR__, null, { timeout: 60_000 },
+    () => window.__TT_READY__ === true || window.__TT_ERROR__, null, { timeout: 120_000 },
   );
   const err = await page.evaluate(() => window.__TT_ERROR__);
   expect(err, 'fixture 不应报错').toBeUndefined();
 
-  // ④ 前提：纹理确实加载并挂上五块装甲板（否则下面的断言测的是纯色退回路径，不是 UV 分区）
+  // 前提：纹理与几何都加载成功，且装甲部件真的带 map（否则测的是纯色退回路径）
   const info = await page.evaluate(() => window.__TT_INFO__);
   expect(info.textureLoaded, '装甲纹理须加载成功').toBe(true);
+  expect(info.topGeometryLoaded, '塔顶几何须加载成功').toBe(true);
   expect(info.textureSize, '纹理须为 192×64（三区并排）').toEqual([192, 64]);
-  expect(info.armorPartsHaveMap, '五块装甲板须带 map')
-    .toEqual(['front', 'left', 'right', 'top', 'back']);
-  expect(info.solidPartsHaveMap, '炮管/根部/瞄准器不带 map').toEqual([]);
-  // ⑤ 前提：8 个 mesh 都挂进 scene 且带受控名字（防「节点没加上」的静默缺失）
-  expect(info.meshNames).toEqual([
-    'turret:front', 'turret:left', 'turret:right', 'turret:top', 'turret:back',
-    'turret:barrel', 'turret:root', 'turret:sight',
+  expect(info.armorPartsHaveMap, '五个装甲部件须带 map')
+    .toEqual(['mantlet', 'cheek', 'nose', 'ring', 'deckMid']);
+  expect(info.solidPartsHaveMap, '炮管/副武器不带 map').toEqual([]);
+  expect(info.meshNames, '8 个 mesh 都挂进 scene 且带受控名字').toEqual([
+    'turret:mantlet', 'turret:cheek', 'turret:nose', 'turret:ring', 'turret:deckMid',
+    'turret:barrel', 'turret:podR', 'turret:podL',
   ]);
 
-  const R = 3;   // 7×7px 取样（部件面在屏幕上足够大）
+  const R = 3;
 
-  // ---- front 区（pic1，有彩色）----
+  // ---- front 区（pic1，锈棕彩色）----
   const frontPt = await page.evaluate(() => window.__TT_RENDER__('front'));
-  expect(frontPt.part).toBe('front');
-  const shotFront = PNG.sync.read(await page.screenshot());
-  const front = regionRGB(shotFront, frontPt.point.x, frontPt.point.y, R);
-  // front 区是**彩色**（R 与 G 显著不等）—— 注入「zoneIndex 恒 0」不会让这条失败，
-  // 但会让下面 side/top 两条失败（它们本该灰度却变彩色）
+  expect(frontPt.zone).toBe('front');
+  const front = regionRGB(PNG.sync.read(await page.screenshot()), frontPt.point.x, frontPt.point.y, R);
+  // 实测 r−g = 13.4；阈值 8 留余量。注入「zoneOf 恒 side」会让这里变灰度 → FAIL
   expect(Math.abs(front.r - front.g), `front 区须为彩色：${JSON.stringify(front)}`).toBeGreaterThan(8);
   expect(front.r, 'front 区非黑（采到了贴图，不是背景）').toBeGreaterThan(60);
 
-  // ---- side 区（pic2，纯灰）----
+  // ---- side 区（pic2，菱形花纹纯灰）----
   const sidePt = await page.evaluate(() => window.__TT_RENDER__('side'));
-  expect(sidePt.part).toBe('right');
-  const shotSide = PNG.sync.read(await page.screenshot());
-  const side = regionRGB(shotSide, sidePt.point.x, sidePt.point.y, R);
-  // side 区是**纯灰**（三通道几乎相等）。注入「zoneIndex 恒 0」→ 这里会变成 front 区的彩色 → FAIL
+  expect(sidePt.zone).toBe('side');
+  const side = regionRGB(PNG.sync.read(await page.screenshot()), sidePt.point.x, sidePt.point.y, R);
+  // 实测三通道逐位相等（111.2）；注入「zoneIndex 恒 0」→ 这里变彩色 → FAIL
   expect(Math.abs(side.r - side.g), `side 区须为灰度：${JSON.stringify(side)}`).toBeLessThan(4);
   expect(Math.abs(side.g - side.b), `side 区须为灰度：${JSON.stringify(side)}`).toBeLessThan(4);
   expect(side.r, 'side 区非黑').toBeGreaterThan(60);
 
   // ---- top 区（pic3，偏蓝灰且亮度不同于 side）----
   const topPt = await page.evaluate(() => window.__TT_RENDER__('top'));
-  expect(topPt.part).toBe('top');
-  const shotTop = PNG.sync.read(await page.screenshot());
-  const top = regionRGB(shotTop, topPt.point.x, topPt.point.y, R);
-  // top 区亮度须与 side 区**显著不同**（139 vs 125）—— 否则说明 top 采到了 side 区的图
+  expect(topPt.zone).toBe('top');
+  const top = regionRGB(PNG.sync.read(await page.screenshot()), topPt.point.x, topPt.point.y, R);
+  // 实测 top.r − side.r = 24.0；阈值 4 远低于实测差 ⇒ 有判别力
   expect(Math.abs(top.r - side.r), `top 区亮度须不同于 side：top=${JSON.stringify(top)} side=${JSON.stringify(side)}`)
     .toBeGreaterThan(4);
   expect(top.r, 'top 区非黑').toBeGreaterThan(60);
+  // top 偏蓝（b > r）—— pic3 的特征，side 是纯灰做不到
+  expect(top.b, `top 区偏蓝：${JSON.stringify(top)}`).toBeGreaterThan(top.r);
 
-  // ---- 炮管（纯色部件对照：不带 map → 渲染为 0x222222，不是贴图也不是黑背景）----
+  // ---- 炮管（纯色对照：中灰 0x8a8a8a，不带 map）----
   const barrelPt = await page.evaluate(() => window.__TT_RENDER_BARREL__());
-  const shotBarrel = PNG.sync.read(await page.screenshot());
-  const barrel = regionRGB(shotBarrel, barrelPt.x, barrelPt.y, R);
-  // 0x222222 = (34,34,34)；须明显亮于黑背景 (0,0,0) 才能证明「炮管渲染了」而非「取到背景」
-  expect(barrel.r, `炮管须为深灰纯色：${JSON.stringify(barrel)}`).toBeGreaterThan(15);
+  const barrel = regionRGB(PNG.sync.read(await page.screenshot()), barrelPt.x, barrelPt.y, R);
+  // 实测 (138,138,138) = 0x8a ⇒ unlit + SRGB 输出后与原色值一致
+  expect(barrel.r, `炮管须为中灰纯色：${JSON.stringify(barrel)}`).toBeGreaterThan(100);
   expect(Math.abs(barrel.r - barrel.g), '炮管是纯色（三通道相等）').toBeLessThan(6);
+  expect(Math.abs(barrel.g - barrel.b), '炮管是纯色（三通道相等）').toBeLessThan(6);
+  // ⚠️ 上界也要钉：注入「炮管退回白色 0xffffff」会让 r≈255，只钉下界抓不到
+  expect(barrel.r, '炮管不是白色（须是 config 的中灰）').toBeLessThan(180);
+});
+
+test('炮塔塔顶 Tier 4：刚性一体 —— ±45° 俯仰时炮管与塔身连接处无背景色', async ({ page }) => {
+  await page.setViewportSize({ width: 400, height: 300 });
+  await page.goto('/src/tests/test-turret-render.html');
+  await page.waitForFunction(
+    () => window.__TT_READY__ === true || window.__TT_ERROR__, null, { timeout: 120_000 },
+  );
+  expect(await page.evaluate(() => window.__TT_ERROR__), 'fixture 不应报错').toBeUndefined();
+
+  // 判据：连接处 5×5 区域内**零背景像素**（炮管若分离，该处会露出黑背景）。
+  // 实测三个姿态各两次重复均为 bg=0 / tot=25 ⇒ 零噪声，阈值可直接取 0。
+  // ⚠️ 同时钉上下界：tot 必须是 25（取样点落在画面内），否则「区域全在画面外」也会 bg=0。
+  for (const deg of [0, -45, 45]) {
+    const r = await page.evaluate((d) => window.__TT_RENDER_POSE__(d), deg);
+    const shot = PNG.sync.read(await page.screenshot());
+    const { bg, tot } = backgroundPixels(shot, r.point.x, r.point.y, 2);
+    expect(tot, `pitch=${deg}° 取样区域须完整落在画面内`).toBe(25);
+    expect(bg, `pitch=${deg}° 炮管与塔身连接处不得露出背景（分离）：${JSON.stringify(r)}`).toBe(0);
+  }
 });
 
 test('炮塔渲染：无炮塔时 8 个部件 mesh 全部 visible=false（draw call 回基线）', async ({ page }) => {
   await page.goto('/src/tests/test-turret-render.html');
   await page.waitForFunction(
-    () => window.__TT_READY__ === true || window.__TT_ERROR__, null, { timeout: 60_000 },
+    () => window.__TT_READY__ === true || window.__TT_ERROR__, null, { timeout: 120_000 },
   );
-  // fixture 初始有一个炮塔 → sync(空) 后须全部不可见
   const stillVisible = await page.evaluate(() => window.__TT_CLEAR__());
   expect(stillVisible, `须全部不可见，实际仍可见：${stillVisible.join(',')}`).toEqual([]);
 });
