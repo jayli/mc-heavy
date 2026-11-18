@@ -70,16 +70,33 @@ export function clearJungleFortressCache() {
 }
 
 /**
+ * 已排序数组的 75 分位数（取下标，不做线性插值）。
+ *
+ * 为何导出：它是 `baseY`（结构地板层世界 y）的**唯一旋钮**，单测要能用合成数组
+ * 直接钉它的语义（写死 9 会在合成数组上红）。
+ *
+ * @param {number[]} sortedArr 已升序排序的高度数组
+ * @returns {number} 空数组返回 0
+ */
+export function percentile75(sortedArr) {
+  if (!sortedArr.length) return 0;
+  return sortedArr[Math.floor(0.75 * (sortedArr.length - 1))];
+}
+
+/**
  * 占地内逐格全检：全 FOREST + 全干燥（`generateHeight > SEA_Y`）。
  *
  * ⚠️ 干燥判据与 `fillColumn` 的水体判据同源（红线 1）：`h > SEA_Y` ⟺ 不填体素水；
  * 同时海面平面遮罩（`ocean-mask.js`）也读 `generateHeight` ⇒ 一条判据堵住两处水源。
- * 这是「遇湿即止」缓坡带能做到零水格、零门控改动的前提。
  *
- * @returns {{minH:number, maxH:number, span:number}|null}
+ * ⚠️ v3.18：顺带收集逐格高度（供 `percentile75` 算 baseY），避免二次扫 24955 格。
+ *    数组**未排序**（谁要分位数自己 sort）；jungleFortressCandidateValid 不消费它。
+ *
+ * @returns {{minH:number, maxH:number, span:number, heights:number[]}|null}
  */
 function exactFootprint(wx, wz, seed) {
   let minH = Infinity, maxH = -Infinity;
+  const heights = [];
   for (let dz = -JUNGLE_FORTRESS_HALF_Z; dz <= JUNGLE_FORTRESS_HALF_Z; dz++) {
     for (let dx = -JUNGLE_FORTRESS_HALF_X; dx <= JUNGLE_FORTRESS_HALF_X; dx++) {
       const x = wx + dx, z = wz + dz;
@@ -88,9 +105,10 @@ function exactFootprint(wx, wz, seed) {
       if (h <= SEA_Y) return null;
       if (h < minH) minH = h;
       if (h > maxH) maxH = h;
+      heights.push(h);
     }
   }
-  return { minH, maxH, span: maxH - minH };
+  return { minH, maxH, span: maxH - minH, heights };
 }
 
 /**
@@ -175,7 +193,9 @@ export function jungleFortressCandidateValid(wx, wz, seed) {
  * ⚠️ **确定性**：tie 用坐标字典序 ⇒ 跨机 / 跨 Worker 结果恒一致（红线 2）。
  *
  * @param {number} seed
- * @returns {{wx:number, wz:number, floorY:number, span:number}|null} 找不到返回 null
+ * @returns {{wx:number, wz:number, floorY:number, minH:number, span:number}|null} 找不到返回 null
+ *   ⚠️ v3.18：`floorY` = **baseY**（占地自然高度 75 分位，结构地板层世界 y）；
+ *      `minH` = 占地最低自然高度（v3.13 旧 floorY 语义，判据用）。
  */
 export function computeJungleFortressAnchor(seed) {
   if (anchorMemo.has(seed)) return anchorMemo.get(seed);
@@ -255,7 +275,11 @@ export function computeJungleFortressAnchor(seed) {
     if (fixedBlockerAt(wx, wz, city, shallow, arena, burningArena, citadel, seed)) continue;
     const f = exactFootprint(wx, wz, seed);
     if (!f) continue;
-    result = Object.freeze({ wx, wz, floorY: f.minH, span: f.span });
+    // baseY = 占地自然高度的 75 分位（DR-1）。不用 minH：那会把地下部分全埋（可见率 0%）。
+    f.heights.sort((a, b) => a - b);
+    result = Object.freeze({
+      wx, wz, floorY: percentile75(f.heights), minH: f.minH, span: f.span,
+    });
     break;
   }
   if (anchorMemo.size >= ANCHOR_MEMO_MAX) anchorMemo.delete(anchorMemo.keys().next().value);
@@ -389,9 +413,10 @@ export const JUNGLE_FORTRESS_TELEPORT_GAP = 6;
  *
  * 落点 = 占地**东缘**再向东 `JUNGLE_FORTRESS_TELEPORT_GAP` 格、z 取锚点中线。
  *
- * ⚠️ **y 必须用「整形后」地表 + 1，不能用自然高度**：落点在缓坡带内（e=6），
- * 8/8 seed 都被整形改写 —— 实测自然 h 4~5 而整形后 1~2，用自然值会让玩家**悬空 2~3 格**。
- * 判据转调 `jungleFortressSurfaceYAt`（整形唯一权威，红线 1），不在此复算插值。
+ * ⚠️ **y 必须用「地表权威」+ 1，不能用 baseY**（v3.18）：
+ * 落点在东缘外 6 格 = 裙边带外缘，那里 T = 自然高度（实测 8 seed nat+1 = 5~6）。
+ * 用 baseY+1 = 10 会让玩家**悬空 4~5 格**（要塞地板比玩家高 3~4 格，抬头看才宏伟）。
+ * 判据转调 `jungleFortressSurfaceYAt`（地表唯一权威，红线 1），不在此复算包络。
  *
  * ⚠️ **唯一权威**：`Game.teleportToJungleFortress` 与 E2E 都消费本函数，不得各自复算。
  *
@@ -403,8 +428,9 @@ export function jungleFortressTeleportPoint(seed) {
   if (!a) return null;
   const x = a.wx + JUNGLE_FORTRESS_HALF_X + JUNGLE_FORTRESS_TELEPORT_GAP;
   const z = a.wz;
-  // 落点在缓坡带内 ⇒ 恒有整形值；?? 兜底只为「将来改 GAP 超出带宽」时不崩
-  const surface = jungleFortressSurfaceYAt(x, z, seed, a) ?? generateHeight(x, z, seed);
+  // v3.18：surfaceYAt 恒返回数值（包络场 T）⇒ 不再需 ?? 兜底。
+  // 保留 generateHeight 直调作为「产物未预热」的退化路径（与 surfaceYAt 内部同口径）。
+  const surface = jungleFortressSurfaceYAt(x, z, seed, a);
   const y = surface + 1;
   if (![x, y, z].every((v) => Number.isFinite(v))) return null;
   return { x, y, z };

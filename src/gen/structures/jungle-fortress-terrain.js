@@ -1,76 +1,73 @@
-// src/gen/structures/jungle-fortress-terrain.js — 丛林要塞地形整形（遇湿即止缓坡）
+// src/gen/structures/jungle-fortress-terrain.js — 丛林要塞地形耦合（v3.18）
 //
-// 权威：docs/superpowers/specs/2026-11-17-jungle-fortress-port-design.md DR-7
+// 权威：docs/superpowers/specs/2026-11-18-jungle-fortress-terrain-coupling-design.md DR-2/3/4/10
 //
-// ## 为什么需要整形
-// FOREST 地表起伏 span 14~16（DESERT 有 0.5 压平系数只有 5）。不整形则 5,425 格
-// 地上城墙空气被天然岩层埋掉、458 列墙脚露空。整形后两者都归零。
+// ## v3.18 语义变更（与 v3.13 相反）
+// v3.13 把占地 161×155 **整片削平**到 floorY（挖 17.7 万格）+ 16 格遇湿即止缓坡。
+// v3.18 改为原版 RepurposedStructures 语义：**地形保留自然起伏**，结构整体抬到
+// 占地自然高度的 75 分位（`anchor.floorY` = baseY），底面悬空处逐列补石墩。
+// ⇒ 削平/铺地表/填实三步与 16 格插值缓坡**全部删除**。
 //
-// ## 「遇湿即止」自适应带宽（本结构的关键设计）
-// 固定 16 格缓坡带会触水：193×187 范围内**全干燥候选 = 0**（8/8 seed）。
-// 六档方案实测后只有这一档同时做到：零水格 / 零假水面 / 零无波纹 / 边缘跳变 1，
-// 且**不需要改 ocean-mask.js / ocean.js**（红线 1 零风险）。
-//
-// 算法：逐列从占地边缘 outward 走，遇第一个 `generateHeight <= SEA_Y` 的列就停，
-// 该列及其外侧一律不整形；插值分母用**该列自己的带宽 w**（不是固定 16），
-// 于是带末 e=w 时 target = 自然 h ⇒ 与自然地形连续。
+// ## 本文件现在只做三件事
+//   ① `jungleFortressSurfaceYAt`：地表唯一权威（内部 = generateHeight）
+//   ② `inJungleFortressTerraform`：植被管理区（占地 + 16，范围与 v3.13 相同）
+//   ③ `fillJungleFortressPiers` / `fillJungleFortressSkirt`（后续 Task 加）
 //
 // Worker 同构：本文件不得 import three。
 import { getBiome } from '../noise.js';
 import { generateHeight, surfaceTypeOfBiome } from '../terrain.js';
 import { SEA_Y, WORLD_MIN_Y, WORLD_MAX_Y, blockIndex } from '../../voxel/constants.js';
+import { floorRowOf } from './structure-json.js';
 import { JUNGLE_FORTRESS_HALF_X, JUNGLE_FORTRESS_HALF_Z } from './jungle-fortress-data.js';
 
-/** 缓坡带最大宽度（格）。逐列实际带宽 w ≤ 此值（遇湿即止） */
+/**
+ * 植被管理区的外延宽度（格）。
+ *
+ * ⚠️ v3.18：**不再用于地形整形**（削平与插值缓坡已删）。保留它只为了
+ *    `inJungleFortressTerraform` 的植被管理范围 —— 用户 v3.13b 裁定「过渡带也要有树」。
+ */
 export const JUNGLE_FORTRESS_SLOPE_BAND = 16;
 
-/** 该列到占地矩形的切比雪夫距离与两轴分量 */
-function offsets(wx, wz, anchor) {
-  const dx = wx - anchor.wx, dz = wz - anchor.wz;
-  const ex = Math.max(0, Math.abs(dx) - JUNGLE_FORTRESS_HALF_X);
-  const ez = Math.max(0, Math.abs(dz) - JUNGLE_FORTRESS_HALF_Z);
-  return { dx, dz, ex, ez, e: Math.max(ex, ez) };
-}
+/**
+ * 接壤阶梯过渡裙边的内侧宽度（格，DR-10）。
+ *
+ * 最大源值抬升 11 格（墙脚基座顶−nat），每步降 1 ⇒ 12 步内降到 nat。
+ * 实测 R=10 与 R=14 结果逐位相同（带内突变都已 0），取 12 为冻结值。
+ * ⚠️ 换地形公式后若抬升 >12 需重标 R/BW。
+ */
+export const JUNGLE_FORTRESS_SKIRT_INNER = 12;
+
+/** 接壤阶梯过渡裙边的外侧宽度（格，DR-10）。留余量，实测实际带宽 11。 */
+export const JUNGLE_FORTRESS_SKIRT_OUTER = 22;
 
 /**
- * 某列整形后的地表高度（**唯一权威**：整形、瞬移落点、单测三处共用）。
+ * 某列的地表高度（**唯一权威**：墩/裙边/瞬移落点/植被/单测共用）。
  *
- * ⚠️ 不得在别处再写一份插值 —— 两份漂移会让瞬移落点与真实地表差几格
+ * ⚠️ 不得在别处再写一份 —— 两份漂移会让瞬移落点与真实地表差几格
  * （浅水高台踩过完全同形的坑：玩家悬空或埋进土里）。
+ *
+ * ⚠️ v3.18：**恒返回数值，不再返回 null**（旧语义的 null = 「在自适应带外不整形」，
+ *    现在全区都有定义）。返回 **过渡带处理后的地面 T**：
+ *    内部非带列 = `generateHeight`；过渡带 = DR-10 包络值；建筑列 = nat。
  *
  * @param {number} wx @param {number} wz @param {number} seed
  * @param {{wx:number, wz:number, floorY:number}} anchor
- * @returns {number|null} null = 该列不整形（在自适应带外）
+ * @returns {number}
  */
 export function jungleFortressSurfaceYAt(wx, wz, seed, anchor) {
-  const { dx, dz, ex, ez, e } = offsets(wx, wz, anchor);
-  const h = generateHeight(wx, wz, seed);
-  if (e === 0) return anchor.floorY;
-  if (e > JUNGLE_FORTRESS_SLOPE_BAND) return null;
-
-  // 沿该列的 outward 路径找第一个湿列 ⇒ 带宽 w = k−1
-  // ⚠️ ex >= ez 时走 X（保持 dz 不变），否则走 Z —— 与 offsets 的分量口径一致
-  let w = JUNGLE_FORTRESS_SLOPE_BAND;
-  for (let k = 1; k <= JUNGLE_FORTRESS_SLOPE_BAND; k++) {
-    const sx = ex >= ez ? Math.sign(dx) * (JUNGLE_FORTRESS_HALF_X + k) : dx;
-    const sz = ez > ex ? Math.sign(dz) * (JUNGLE_FORTRESS_HALF_Z + k) : dz;
-    if (generateHeight(anchor.wx + sx, anchor.wz + sz, seed) <= SEA_Y) { w = k - 1; break; }
-  }
-  if (e > w) return null;
-  if (w === 0) return anchor.floorY;
-  // ⚠️ 分母是**逐列带宽 w**：固定 16 时带末 target ≠ 自然 h ⇒ 边缘 8 格悬崖（实测）
-  // ⚠️ min(…, h) 保证**只削不填**（填方恒 0，不需要「填实基座下方」那套逻辑）
-  return Math.min(Math.round(anchor.floorY + (h - anchor.floorY) * (e / w)), h);
+  const field = jfSkirtFieldCached(anchor, seed);
+  if (!field) return generateHeight(wx, wz, seed);   // 产物未加载（预热前）⇒ 自然高度
+  return field.T(wx - anchor.wx, wz - anchor.wz);
 }
 
 /**
- * 点是否落在**整形区**内（含缓坡带的外接方形）。
+ * 点是否落在**植被管理区**内（占地 + 16 格的外接方形）。
  *
- * ⚠️ 这是「让路」判据的范围（`pointContext` 用它）：缓坡带的地表也被改写过，
- * 树/撒布长在缓坡上会穿模。**不是占地** —— 用占地会漏掉缓坡带那 1.1 万列。
+ * ⚠️ v3.18 语义改为「植被管理区」（旧名「整形区」保留以免改全部调用方）：
+ *    地形不再被削平，但这片区的植被由本结构的专属分支接管（密度/让位/树种）。
+ *    范围与 v3.13 逐位相同 ⇒ 用户「过渡带也要有树」的裁定仍成立。
  *
- * ⚠️ 用外接方形而不是逐列 `surfaceYAt !== null`：让路是「整片保守让」，
- * 方形比自适应带略大（多让几列树），方向安全且 O(1)（逐列判要算 16 次高度）。
+ * ⚠️ **不是占地**：撒布剔除用 `inJungleFortressFootprint`（占地），两个判据分开。
  */
 export function inJungleFortressTerraform(wx, wz, anchors) {
   if (!anchors) return false;
@@ -84,65 +81,462 @@ export function inJungleFortressTerraform(wx, wz, anchors) {
 }
 
 /**
- * 把一个 column 的地形整形到锚点指定的高度。
+ * 产物的逐列竖直构成（墩 / 裙边 / 漏底修补共用的**唯一派生源**）。
  *
- * 三件事的顺序是**载荷性的**：① 削平 → ② 铺地表 → ③ 向下填实。
- * 反序会把刚铺的地表削掉。
+ * 红线 1：这是**可重建的派生数据**，不是第二份体素权威。按产物对象 WeakMap 缓存
+ * （同 `apply.js` 的 `jungleFortressCells` 手法）；它只依赖产物，不依赖 seed/锚点。
  *
- * ⚠️ **不填水**：整形区恒干燥（`surfaceYAt` 的遇湿即止保证 target > SEA_Y），
- * 故本函数与 transparent 通道完全无关，也不需要动海面遮罩。
+ * @param {{blocks:Array<{x:number,y:number,z:number,type:string}>}} data 已加载产物
+ * @returns {{
+ *   colMinNy: Map<string,number>,   // "px,pz" → 该列最低实心 ny
+ *   colMaxNy: Map<string,number>,   // "px,pz" → 该列最高实心 ny
+ *   solid: Set<string>,             // "px,ny,pz" 产物实心
+ *   air: Set<string>,               // "px,ny,pz" 产物显式 air
+ *   roomAir: Set<string>,           // 地下（ny < floorRow）air
+ *   roomFloor: Set<string>,         // 实心且正上方是地下房间 air
+ *   floorRow: number,
+ * }}
+ */
+const JF_GEOM_CACHE = new WeakMap();
+export function jungleFortressGeometry(data) {
+  if (JF_GEOM_CACHE.has(data)) return JF_GEOM_CACHE.get(data);
+  const floorRow = floorRowOf('jungleFortress');
+  const colMinNy = new Map(), colMaxNy = new Map();
+  const solid = new Set(), air = new Set();
+  for (const b of data.blocks) {
+    const k3 = `${b.x},${b.y},${b.z}`;
+    if (b.type === 'air') { air.add(k3); continue; }
+    solid.add(k3);
+    const ck = `${b.x},${b.z}`;
+    const lo = colMinNy.get(ck);
+    if (lo === undefined || b.y < lo) colMinNy.set(ck, b.y);
+    const hi = colMaxNy.get(ck);
+    if (hi === undefined || b.y > hi) colMaxNy.set(ck, b.y);
+  }
+  const roomAir = new Set();
+  for (const k of air) if (Number(k.split(',')[1]) < floorRow) roomAir.add(k);
+  const roomFloor = new Set();
+  for (const k of solid) {
+    const [x, ny, z] = k.split(',').map(Number);
+    if (roomAir.has(`${x},${ny + 1},${z}`)) roomFloor.add(k);
+  }
+  const entry = { colMinNy, colMaxNy, solid, air, roomAir, roomFloor, floorRow };
+  JF_GEOM_CACHE.set(data, entry);
+  return entry;
+}
+
+/**
+ * 石墩托底 + 地下房间漏底修补（DR-3 / DR-4，原版 `pillar_processor` 语义）。
  *
- * ⚠️ **target 以上必须显式写 0**：`fillColumn` 已按自然地形填过整列，
- * 不清掉就会在平地上方留下原山体 —— 观感是「要塞长在山里」，
- * 而方块层面完全看不出是整形漏了（地形本来就在那）。
+ * ## 墩
+ * 逐列从「该列最低产物实心的下一格」向下写 `mossy_stone`，直到自然地表。
+ * 材质选建筑主材（46%）⇒ 观感是「建筑自己的基座加高」而不是外来土墩。
+ *
+ * ## 漏底修补
+ * 不削平后 `carveCaves` 的洞可能正在地下房间下方 ⇒ 地板漏空。
+ * 对每个「地下房间 air 格」与「房间地板格」，检查正下方第一格：
+ * 若它既非产物实心、也非产物 air、且是洞穴空气 ⇒ 写 `stone`，并对补的格迭代同样检查。
+ *
+ * ⚠️ **必须排除「下方是产物 air」**：那是房间内部竖井（正常），
+ *    不排除会多补 116 格（seed 4242 实测）把竖井填死。
+ * ⚠️ **不得用「逐列向下填到连续 2 格实心」的粗口径**：实测要填 36026 格（486 倍）。
+ *
+ * ⚠️ **必须在光栅化之后调**（DR-8 层序），且逐格守 `blocks[idx] === 0`
+ *    ⇒ 永不覆盖产物（含产物 air，保护房间内腔）。
  *
  * @param {import('../../voxel/chunk-column.js').ChunkColumn} column
- * @param {{wx:number, wz:number, floorY:number}} anchor
+ * @param {{wx:number, wz:number, floorY:number}} anchor floorY = baseY
  * @param {number} seed
  * @param {import('../../voxel/block-registry.js').BlockRegistry} registry
+ * @param {{blocks:Array}} data 已加载产物（调用方在异步上下文 await 后传入）
+ *   ⚠️ 不在此自己 `loadStructure`：它返 Promise，同步拿不到值；
+ *      而 GEN 阶段 2.95 本就是 async（植被分支已在 await loadStructure）。
  */
-export function fillJungleFortressGround(column, anchor, seed, registry) {
+export function fillJungleFortressPiers(column, anchor, seed, registry, data) {
+  if (!data || !data.blocks.length) return;
+  const { colMinNy, solid, air, roomAir, roomFloor, floorRow } = jungleFortressGeometry(data);
   const colMinX = column.cx * 16, colMinZ = column.cz * 16;
-  const bx = JUNGLE_FORTRESS_HALF_X + JUNGLE_FORTRESS_SLOPE_BAND;
-  const bz = JUNGLE_FORTRESS_HALF_Z + JUNGLE_FORTRESS_SLOPE_BAND;
-  // 只扫「本 column 与整形区外接方形」的交集 —— 区外一格都不碰
-  const x0 = Math.max(colMinX, anchor.wx - bx);
-  const x1 = Math.min(colMinX + 15, anchor.wx + bx);
-  const z0 = Math.max(colMinZ, anchor.wz - bz);
-  const z1 = Math.min(colMinZ + 15, anchor.wz + bz);
-  if (x0 > x1 || z0 > z1) return;
-
+  const mossyId = registry.idOf('mossy_stone');
   const stoneId = registry.idOf('stone');
-  const idCache = new Map();
-  const idOfName = (name) => {
-    if (idCache.has(name)) return idCache.get(name);
-    const id = registry.idOf(name);
-    idCache.set(name, id);
-    return id;
+  const baseY = anchor.floorY;
+
+  /** 本 column 内的格写入（只写空气，且只写世界边界内） */
+  const put = (wx, wy, wz, id) => {
+    if (wy < WORLD_MIN_Y || wy >= WORLD_MAX_Y) return false;
+    const lx = wx - colMinX, lz = wz - colMinZ;
+    if (lx < 0 || lx > 15 || lz < 0 || lz > 15) return false;
+    const idx = blockIndex(lx, wy, lz);
+    if (column.blocks[idx] !== 0) return false;
+    column.blocks[idx] = id;
+    return true;
   };
 
+  // ---- ① 墩：逐列从最低实心下一格补到自然地表 ----
+  for (const [ck, minNy] of colMinNy) {
+    const [px, pz] = ck.split(',').map(Number);
+    const wx = anchor.wx + px, wz = anchor.wz + pz;
+    if (wx < colMinX || wx > colMinX + 15 || wz < colMinZ || wz > colMinZ + 15) continue;
+    const baseWy = baseY + (minNy - floorRow);
+    const h = generateHeight(wx, wz, seed);
+    for (let wy = baseWy - 1; wy > h; wy--) put(wx, wy, wz, mossyId);
+  }
+
+  // ---- ② 漏底修补：迭代到「补的格下方也是实心」（实测 ≤9 轮）----
+  //
+  // ⚠️⚠️ **判据用「世界里真的是空气」，不用 noise3D 阀值重算**（实测踩过）：
+  //    `carveCaves` 挖两类洞 —— 3D 噪声大洞 **与 rooms 空腔**（LCG 逐 column 确定性）。
+  //    只查 noise3D > CAVE_THRESHOLD 会漏掉 rooms 那类：seed 777 的 (38,6,-5) 下方
+  //    noise=0.4378 < 0.72 但世界确实是 air（rooms 挖的）⇒ 地板仍漏空。
+  //
+  // ⚠️⚠️ **不得加「wy ≤ h−4」范围门**（实测踩过）：那个门是 carveCaves 的挖洞上限，
+  //    不是「漏底格的位置上限」。房间地板可能**高于自然地表**（半埋房间，正是用户要的）：
+  //    seed 777 的 (69,9,-56) nat=2、地板 wy=5、漏底格 wy=4 > h−4=−2 ⇒ 加门会静默漏补。
+  //    真意图是「房间正下方第一格是空气就补实」，与它在地下多深无关。
+  //    下界仍守 WORLD_MIN_Y（世界底部基岩之上）。
+  let pending = [];
+  for (const k of roomAir) pending.push(k);
+  for (const k of roomFloor) pending.push(k);
+  for (let round = 0; round < 24 && pending.length; round++) {
+    const next = [];
+    for (const k of pending) {
+      const [px, ny, pz] = k.split(',').map(Number);
+      const belowNy = ny - 1;
+      const bk = `${px},${belowNy},${pz}`;
+      // 产物实心 ⇒ 已有支撑；产物 air ⇒ 房间竖井（正常，不得填）
+      if (solid.has(bk) || air.has(bk)) continue;
+      const wx = anchor.wx + px, wz = anchor.wz + pz;
+      const lx = wx - colMinX, lz = wz - colMinZ;
+      if (lx < 0 || lx > 15 || lz < 0 || lz > 15) continue;
+      const wy = baseY + (belowNy - floorRow);
+      if (wy <= WORLD_MIN_Y || wy >= WORLD_MAX_Y) continue;
+      if (column.blocks[blockIndex(lx, wy, lz)] !== 0) continue;   // 已是实心 ⇒ 无需补
+      if (put(wx, wy, wz, stoneId)) next.push(bk);
+    }
+    pending = next;
+  }
+}
+
+
+// ==================== 接壤阶梯过渡裙边（DR-10，用户 2026-11-18 追加裁定）====================
+//
+// 用户：「最终丛林要塞的地界和旁边的地图接壤的地方，都要有一个接壤区域的阶梯过渡，
+// 不要出现陡峭的悬崖突变。」
+//
+// 结构抬升后边缘墙脚基座顶高于周边自然地面 10~13 格 ⇒ 不做过渡就是垂直悬崖。
+// 方案：以**边缘环（占地最外圈）的地面顶**为源，向**内外两侧**做 Lipschitz 阶梯包络
+// （每步降 1 格），只抬不削。
+//
+// ⚠️⚠️ **为什么必须两侧**（实测否决两条弯路）：
+//   · 只抬外侧：内侧自然边缘列（nat=0）紧邻外侧裙边（9~11）⇒ 9~11 格沟槽（8 seed max 9~10）
+//   · 全域抬内部：基座被埋回去（可见率 45.8% → 22.2%），违背「地下部分裸露」诉求
+//   本方案只动「边缘环 + 内侧 R 格 + 外侧 BW 格」，内部非带列一律 nat ⇒ 基座可见率不降。
+//
+// ⚠️⚠️ **三屏障缺一即静默退化**：
+//   · 建筑列（baseTop.has）：不抬（裙边不盖建筑，基座照露）；但它是源
+//   · 保护列（露出地下房间/竖井 air 所在列）：不抬（否则埋掉用户要的裸露）
+//   · 湿列（nat ≤ SEA_Y）：不抬也不传播（防假水面，红线 1）
+
+/** 值降序二叉堆（max-plus Dijkstra 用：值大的先出队） */
+class JfMaxHeap {
+  constructor() { this.a = []; }
+  get size() { return this.a.length; }
+  push(it) {
+    const a = this.a;
+    a.push(it);
+    let i = a.length - 1;
+    while (i > 0) {
+      const p = (i - 1) >> 1;
+      if (a[i][0] > a[p][0]) { [a[i], a[p]] = [a[p], a[i]]; i = p; } else break;
+    }
+  }
+  pop() {
+    const a = this.a;
+    const top = a[0];
+    const last = a.pop();
+    if (a.length) {
+      a[0] = last;
+      let i = 0;
+      for (;;) {
+        const l = 2 * i + 1, r = l + 1;
+        let m = i;
+        if (l < a.length && a[l][0] > a[m][0]) m = l;
+        if (r < a.length && a[r][0] > a[m][0]) m = r;
+        if (m === i) break;
+        [a[i], a[m]] = [a[m], a[i]];
+        i = m;
+      }
+    }
+    return top;
+  }
+}
+
+const jfInFootprint = (x, z) =>
+  Math.abs(x) <= JUNGLE_FORTRESS_HALF_X && Math.abs(z) <= JUNGLE_FORTRESS_HALF_Z;
+const jfIsEdge = (x, z) => jfInFootprint(x, z) &&
+  (Math.abs(x) === JUNGLE_FORTRESS_HALF_X || Math.abs(z) === JUNGLE_FORTRESS_HALF_Z);
+const jfInBand = (x, z) => {
+  const HX = JUNGLE_FORTRESS_HALF_X, HZ = JUNGLE_FORTRESS_HALF_Z;
+  const BW = JUNGLE_FORTRESS_SKIRT_OUTER, R = JUNGLE_FORTRESS_SKIRT_INNER;
+  if (x < -HX - BW || x > HX + BW || z < -HZ - BW || z > HZ + BW) return false;
+  if (jfInFootprint(x, z)) return Math.abs(x) >= HX - R || Math.abs(z) >= HZ - R;
+  return true;
+};
+
+/**
+ * 裙边包络场（**纯函数**，返回过渡带处理后的地面 T 与判据用的屏障集合）。
+ *
+ * 算法：源 = 边缘环列，`source = 建筑列 ? baseTop−1 : (pierTop ?? nat)`；
+ * `T(x,z) = max(nat, max_e(source(e) − dist4(e,(x,z))))`，dist4 为 4 邻域最短路，
+ * 建筑列/保护列/湿列**不可穿越也不被抬**；建筑列 T = nat。
+ *
+ * ⚠️ 用**值降序**优先队列（max-plus Dijkstra）：值大的先定型，settled 防重复松弛。
+ * ⚠️ 实测成本（8 seed 均）：nat 预填 121ms + solve 20ms，**按锚点缓存一次**，
+ *    不进 GEN 逐 column 热路径（genP95 门 10ms）。
+ *
+ * @param {{wx:number,wz:number,floorY:number}} anchor
+ * @param {number} seed
+ * @param {{blocks:Array}} data 已加载产物
+ */
+export function jungleFortressSkirtField(anchor, seed, data) {
+  // ⚠️⚠️ **入口就走缓存**（final review 实测修）：本函数被两处调用
+  //    （`surfaceYAt` 与 `apply.js` 的 `jungleFortressCells`），若只在 surfaceYAt 侧缓存，
+  //    索引侧会**再全量重算一次**（实测 40ms）⇒ 首个 GEN 残留 ~52ms 一次性成本。
+  //    缓存键 = anchor 对象（同 seed 恒同一对象）+ seed/data 双重校验。
+  const hit = JF_SKIRT_FIELD_CACHE.get(anchor);
+  if (hit && hit.seed === seed && hit.data === data) return hit.field;
+  const field = buildJungleFortressSkirtField(anchor, seed, data);
+  JF_SKIRT_FIELD_CACHE.set(anchor, { seed, data, field });
+  return field;
+}
+
+/** 包络场缓存（按锚点；与 surfaceYAt / 让位索引共用同一份） */
+const JF_SKIRT_FIELD_CACHE = new WeakMap();
+
+function buildJungleFortressSkirtField(anchor, seed, data) {
+  const G = jungleFortressGeometry(data);
+  const FR = G.floorRow;
+  const baseY = anchor.floorY;
+  const HX = JUNGLE_FORTRESS_HALF_X, HZ = JUNGLE_FORTRESS_HALF_Z;
+  const BW = JUNGLE_FORTRESS_SKIRT_OUTER;
+  const bounds = { x0: -HX - BW, x1: HX + BW, z0: -HZ - BW, z1: HZ + BW };
+
+  const hC = new Map();
+  const nat = (x, z) => {
+    const k = `${x},${z}`;
+    let v = hC.get(k);
+    if (v === undefined) { v = generateHeight(anchor.wx + x, anchor.wz + z, seed); hC.set(k, v); }
+    return v;
+  };
+  // 预填高度缓存：一次扫带内全部列，避免 Dijkstra 里逐次 Map miss 的抖动
+  for (let x = bounds.x0; x <= bounds.x1; x++) {
+    for (let z = bounds.z0; z <= bounds.z1; z++) nat(x, z);
+  }
+
+  // baseTop = 该列最低产物实心的世界 y；pierTop = 墩顶（只在高于 nat 时存在）
+  const baseTop = new Map(), pierTop = new Map();
+  for (const [ck, minNy] of G.colMinNy) {
+    const [x, z] = ck.split(',').map(Number);
+    const bt = baseY + (minNy - FR);
+    baseTop.set(ck, bt);
+    if (bt - 1 > nat(x, z)) pierTop.set(ck, bt - 1);
+  }
+  // 保护列：露出地表的下地下 air 所在列
+  const prot = new Set();
+  for (const k of G.roomAir) {
+    const [x, ny, z] = k.split(',').map(Number);
+    if (baseY + (ny - FR) > nat(x, z)) prot.add(`${x},${z}`);
+  }
+  const isWet = (x, z) => nat(x, z) <= SEA_Y;
+  const isBuilding = (x, z) => baseTop.has(`${x},${z}`);
+  const isProtected = (x, z) => prot.has(`${x},${z}`);
+  const blocked = (x, z) => isProtected(x, z) || isWet(x, z);
+
+  const best = new Map();
+  const heap = new JfMaxHeap();
+  for (let x = -HX; x <= HX; x++) {
+    for (let z = -HZ; z <= HZ; z++) {
+      if (!jfIsEdge(x, z)) continue;
+      const key = `${x},${z}`;
+      const bt = baseTop.get(key);
+      const v = bt !== undefined ? bt - 1 : (pierTop.get(key) ?? nat(x, z));
+      best.set(key, { v, d: 0 });
+      heap.push([v, key, 0]);
+    }
+  }
+  const settled = new Set();
+  while (heap.size) {
+    const [v, key, d] = heap.pop();
+    if (settled.has(key)) continue;
+    const rec = best.get(key);
+    if (!rec || rec.v !== v || rec.d !== d) continue;
+    settled.add(key);
+    const [x, z] = key.split(',').map(Number);
+    const nd = d + 1, nv = v - 1;
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const nx = x + dx, nz = z + dz;
+      if (!jfInBand(nx, nz)) continue;
+      if (blocked(nx, nz) || isBuilding(nx, nz)) continue;
+      const nk = `${nx},${nz}`;
+      const prev = best.get(nk);
+      if (!prev || nv > prev.v || (nv === prev.v && nd < prev.d)) {
+        best.set(nk, { v: nv, d: nd });
+        heap.push([nv, nk, nd]);
+      }
+    }
+  }
+  const T = (x, z) => {
+    if (isBuilding(x, z)) return nat(x, z);      // 建筑列地面恒 nat（基座可见性按 nat 判）
+    const r = best.get(`${x},${z}`);
+    return r === undefined ? nat(x, z) : Math.max(nat(x, z), r.v);
+  };
+  return { T, nat, baseTop, pierTop, prot, bounds,
+    inBand: jfInBand, inFootprint: jfInFootprint, isEdge: jfIsEdge,
+    isBuilding, isProtected, isWet };
+}
+
+/**
+ * 已登记的丛林要塞产物（供 `jungleFortressSurfaceYAt` 的纯查询路径用）。
+ *
+ * ⚠️⚠️ **不得依赖「fillSkirt 跑过」才有值**（实测踩过的真缺陷）：
+ *    第一版把产物引用写在 `fillJungleFortressSkirt` 里，于是**纯查询路径**
+ *    （瞬移落点、单测、还没跑到那个 column 的 GEN）拿到的是 **nat 而不是 T**
+ *    ⇒ 同一函数两种返回值 = 第二份权威（红线 1）。
+ *    修法：产物引用由**加载入口统一登记**（`noteJungleFortressData`），
+ *    与 GEN 写到哪一 column 无关。
+ *
+ * ⚠️ 包络场本身的缓存只有**一份**：`JF_SKIRT_FIELD_CACHE`（在
+ *    `jungleFortressSkirtField` 入口）。本处不再建第二份 —— 两份缓存会让
+ *    「索引侧绕过缓存重算」这类缺陷隐形（final review 实测过）。
+ */
+let jfSkirtData = null;
+
+/**
+ * 登记已加载的丛林要塞产物（供 `jungleFortressSurfaceYAt` 的纯查询路径用）。
+ *
+ * 调用方：`apply.js` 在 `await loadStructure('jungleFortress')` 后立即调一次；
+ * `world-worker.js` 的 layout 入口也调（预热，把包络成本移出 GEN 计时）。
+ * 幂等；同一份产物不重算包络。
+ */
+export function noteJungleFortressData(data) {
+  if (data && data.blocks && data.blocks.length) jfSkirtData = data;
+}
+
+function jfSkirtFieldCached(anchor, seed) {
+  if (!anchor || !jfSkirtData) return null;
+  return jungleFortressSkirtField(anchor, seed, jfSkirtData);
+}
+
+/**
+ * 写入接壤阶梯过渡裙边（DR-10）。
+ *
+ * 对过渡带内**非建筑列**，`T > nat` 时从 `nat+1` 到 `T` 逐格写：
+ * 顶格 `surfaceTypeOfBiome(getBiome)`（FOREST→grass），下方 `dirt`。
+ *
+ * ⚠️ 材质是**自然地形阶梯**，不是 mossy_stone —— 观感是「要塞坐在逐级抬升的台地上」。
+ * ⚠️ 守卫 `blocks[idx] === 0`：永不覆盖产物/墩/已有地形。
+ * ⚠️ 必须在光栅化与墩之后调（DR-8 层序）。
+ *
+ * @param {import('../../voxel/chunk-column.js').ChunkColumn} column
+ * @param {{wx:number,wz:number,floorY:number}} anchor
+ * @param {number} seed
+ * @param {import('../../voxel/block-registry.js').BlockRegistry} registry
+ * @param {{blocks:Array}} data 已加载产物
+ */
+export function fillJungleFortressSkirt(column, anchor, seed, registry, data) {
+  if (!data || !data.blocks.length) return;
+  noteJungleFortressData(data);
+  const field = jfSkirtFieldCached(anchor, seed);
+  if (!field) return;
+  const { T, nat, isBuilding, bounds } = field;
+  const colMinX = column.cx * 16, colMinZ = column.cz * 16;
+  const x0 = Math.max(colMinX, anchor.wx + bounds.x0);
+  const x1 = Math.min(colMinX + 15, anchor.wx + bounds.x1);
+  const z0 = Math.max(colMinZ, anchor.wz + bounds.z0);
+  const z1 = Math.min(colMinZ + 15, anchor.wz + bounds.z1);
+  if (x0 > x1 || z0 > z1) return;
+  const dirtId = registry.idOf('dirt');
+  const surfCache = new Map();
   for (let wx = x0; wx <= x1; wx++) {
     for (let wz = z0; wz <= z1; wz++) {
-      const target = jungleFortressSurfaceYAt(wx, wz, seed, anchor);
-      if (target === null) continue;                 // 自适应带外 ⇒ 不动
+      const px = wx - anchor.wx, pz = wz - anchor.wz;
+      if (isBuilding(px, pz)) continue;       // 裙边不盖建筑
+      const top = T(px, pz), h = nat(px, pz);
+      if (top <= h) continue;
+      const biome = getBiome(wx, wz, seed);
+      let surfId = surfCache.get(biome);
+      if (surfId === undefined) { surfId = registry.idOf(surfaceTypeOfBiome(biome)); surfCache.set(biome, surfId); }
       const lx = wx - colMinX, lz = wz - colMinZ;
-
-      // ① 削平：target 以上一律清空（含原山体）
-      // ⚠️ **同时清 meta**（review M5）：与废弃堡垒整形（apply.js 阶段 2.94）同口径。
-      //    空气格的 meta 不被 mesher 消费，但不清会留下脏值，将来按 meta 扫列的逻辑会读到它。
-      for (let y = target + 1; y < WORLD_MAX_Y; y++) {
-        const idx = blockIndex(lx, y, lz);
-        if (column.blocks[idx] !== 0) { column.blocks[idx] = 0; column.meta[idx] = 0; }
-      }
-      // ② 地表：材质走 surfaceTypeOfBiome（整形区有少量 AZALEA/PLAINS 侵入，
-      //    硬编码 grass 会在那些列刷出错误颜色）
-      column.blocks[blockIndex(lx, target, lz)] =
-        idOfName(surfaceTypeOfBiome(getBiome(wx, wz, seed)));
-      // ③ 向下填实：只填空气（防玩家挖开地表掉进 carveCaves 的洞）
-      for (let y = WORLD_MIN_Y + 1; y < target; y++) {
-        const idx = blockIndex(lx, y, lz);
-        if (column.blocks[idx] === 0) column.blocks[idx] = stoneId;
+      for (let wy = h + 1; wy <= top; wy++) {
+        if (wy < WORLD_MIN_Y || wy >= WORLD_MAX_Y) continue;
+        const idx = blockIndex(lx, wy, lz);
+        if (column.blocks[idx] !== 0) continue;
+        column.blocks[idx] = wy === top ? surfId : dirtId;
       }
     }
   }
 }
+
+/**
+ * 产物按 (x,y,z) 的**逐格**类型索引（v3.13c/d 逐格让位的唯一权威）。
+ *
+ * ⚠️ v3.18 从 apply.js 搬到本模块：它与裙边包络场同处一层，预热入口
+ *    （world-worker 的 layout）能一次把两者都算好，避免残留成本落进首个 GEN。
+ *
+ * ⚠️ 只存**非空气**格：空气与「产物未覆盖」在让位语义上等价（都该放行），
+ *    合并后索引从 81238 降到 65702 条，且 `get()===undefined` 就是「可写」。
+ * ⚠️ 缓存用 WeakMap（换产物自动失效）。
+ * ⚠️ **不要再建列级 (x,z) 索引**（v3.13d 删掉了 `jungleFortressOccupancy`）：
+ *    两套口径共存就会有人误用列级那套，而那正是用户两次报「树叶被切割」的根因。
+ *
+ * ⚠️⚠️ **v3.18：索引必须含裙边填土格**（DR-10）：裙边抬升了地表，
+ *    邻列树冠横伸过来会落在填土格上（实测 seed 12345 有 1 格穿模）。
+ *    墩格不需单独加：它们恒在「该列屋顶下方」，已被 `jfCellFreeAt` 的②挡住
+ *    （实测 763 个意图∩墩格零穿模）。
+ * @param {{blocks:Array}} data
+ * @param {{wx:number,wz:number,floorY:number}} [anchor] 传入时额外索引裙边格
+ * @param {number} [seed]
+ */
+const JF_CELL_CACHE = new WeakMap();
+const JF_SKIRT_CELL_CACHE = new WeakMap();
+export function jungleFortressVegIndex(data, anchor, seed) {
+  if (anchor === undefined) {
+    if (JF_CELL_CACHE.has(data)) return JF_CELL_CACHE.get(data);
+  } else {
+    const hit = JF_SKIRT_CELL_CACHE.get(anchor);
+    if (hit && hit.data === data && hit.seed === seed) return hit.entry;
+  }
+  const cells = new Map();
+  const roof = new Map();
+  const floorRow = floorRowOf('jungleFortress');
+  const roomAir = new Set();
+  for (const b of data.blocks) {
+    // 地下房间/竖井的 air：它不是「可长植被的室外空地」（v3.18）
+    if (b.type === 'air') {
+      if (b.y < floorRow) roomAir.add(`${b.x},${b.y},${b.z}`);
+      continue;
+    }
+    cells.set(`${b.x},${b.y},${b.z}`, b.type);
+    const ck = `${b.x},${b.z}`;
+    const prev = roof.get(ck);
+    if (prev === undefined || b.y > prev) roof.set(ck, b.y);
+  }
+  // 裙边填土格：按锚点派生（依赖 seed），写进同一份索引⇒ 让位判据无需第二套口径
+  if (anchor !== undefined) {
+    const field = jungleFortressSkirtField(anchor, seed, data);
+    const { T, nat, isBuilding, bounds } = field;
+    for (let x = bounds.x0; x <= bounds.x1; x++) {
+      for (let z = bounds.z0; z <= bounds.z1; z++) {
+        if (isBuilding(x, z)) continue;
+        const top = T(x, z), h = nat(x, z);
+        for (let wy = h + 1; wy <= top; wy++) {
+          cells.set(`${x},${wy - anchor.floorY + floorRow},${z}`, 'skirt');
+        }
+      }
+    }
+  }
+  const entry = { cells, roof, roomAir };
+  if (anchor === undefined) JF_CELL_CACHE.set(data, entry);
+  else JF_SKIRT_CELL_CACHE.set(anchor, { data, seed, entry });
+  return entry;
+}
+

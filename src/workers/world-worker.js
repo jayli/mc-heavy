@@ -15,7 +15,10 @@ import { computeArenaAnchor } from '../gen/structures/arena.js';
 import { computeBurningArenaAnchor } from '../gen/structures/burning-arena.js';
 import { computeRuinedCitadelAnchor } from '../gen/structures/ruined-citadel.js';
 import { computeJungleFortressAnchor } from '../gen/structures/jungle-fortress.js';
-import { preloadStructures } from '../gen/structures/structure-json.js';
+import {
+  noteJungleFortressData, jungleFortressSurfaceYAt, jungleFortressVegIndex,
+} from '../gen/structures/jungle-fortress-terrain.js';
+import { preloadStructures, loadStructure } from '../gen/structures/structure-json.js';
 import { SCATTER_JSON_TYPES } from '../gen/structures/scatter.js';
 import { loadGiantTrees } from '../gen/structures/giant-trees.js';
 import { loadAzaleaTrees } from '../gen/structures/azalea-trees.js';
@@ -211,6 +214,25 @@ installRpcHandler({
     // ⚠️ 必须留在 layout 入口：GEN 侧只读 `layout.jungleFortress` 字段、不调本函数
     //    ⇒ 20ms 不会落进 GEN 计时（genP95 门 10ms）。
     computeJungleFortressAnchor(p.seed);
+    // 预热丛林要塞的**接壤阶梯包络场**（v3.18 DR-10）：实测首次 **130~209ms**
+    // （nat 预填 205×199 格 ≈121ms + max-plus Dijkstra ≈20ms + 索引构建）。
+    // ⚠️⚠️ **不预热就会落进首个 GEN 的计时**（genP95 门 10ms）—— 实测逐 column
+    //    首次 130.2ms / 后续 7~10ms，首列直接撞破预算。
+    // 与上面四个锚点同一手法同一理由：`layout` 不是 GEN 计时路径，而包络场按锚点
+    // WeakMap 缓存（键是 anchor 对象 + seed 校验）⇒ 预热一次即全命中。
+    // ⚠️ 必须先 `noteJungleFortressData`：包络场需要产物，而本函数也是 `surfaceYAt`
+    //    纯查询路径的产物登记入口（不登记会退回 nat = 第二份权威）。
+    const jfAnchor = computeJungleFortressAnchor(p.seed);
+    if (jfAnchor) {
+      const jfData = await loadStructure('jungleFortress');
+      if (jfData && jfData.blocks.length) {
+        noteJungleFortressData(jfData);
+        jungleFortressSurfaceYAt(jfAnchor.wx, jfAnchor.wz, p.seed, jfAnchor);
+        // 让位索引（含裙边填土格）也要预热：它要遍历 205×199 列建索引，
+        // 实测残留 ~21ms 一次性成本。预热后首个 GEN 的一次性成本降到 ~7ms。
+        jungleFortressVegIndex(jfData, jfAnchor, p.seed);
+      }
+    }
     return computeRegionLayout(p.regionX, p.regionZ, p.seed);
   },
 

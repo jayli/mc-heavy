@@ -1,7 +1,7 @@
 # 丛林要塞地形耦合改造：保留自然起伏 + 整体抬升 + 石墩托底
 
 日期：2026-11-18（全部实测数据采于 2026-11-18，8 seed 全集）
-版本：**v3.16**（roadmap 同版本行）
+版本：**v3.18**（roadmap 同版本行）
 状态：**已批准**（用户 2026-11-18 批准，追加裁定「接壤处必须阶梯过渡、无悬崖」已纳入 DR-10）
 上游依据：`~/jaylli/RepurposedStructures`（fortress_jungle）+ `~/jaylli/tectonic`
 前序：`2026-11-17-jungle-fortress-port-design.md`（v3.13 移植，已验收）
@@ -445,7 +445,7 @@ src/tests/test-jungle-fortress-gen.js
 tests/jungle-fortress.spec.mjs
   · 冻结落点 y 3→6；像素机位按新几何重选（见 §6 Tier 4）
   · 新增机位⑥：接壤阶梯过渡平视（验证无悬崖）
-docs/roadmap.md  + v3.16 行 + TODO（执行本计划）
+docs/roadmap.md  + v3.18 行 + TODO（执行本计划）
 CLAUDE.md        + 高频坑（墩语义/漏底口径/层序/percentile75 派生/裙边三屏障）
 ```
 
