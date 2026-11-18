@@ -25,8 +25,11 @@ const STABLE = () => {
 };
 
 /**
- * 石砖族像素判据：本结构主材是 mossy_stone(104,110,93) / cobblestone(125,125,125) /
- * stone_bricks(122,122,122) / tuff_bricks(99,103,95)，四者都是**低饱和灰绿**。
+ * 石砖族像素判据：本结构主材是 **v3.19 的原版四档**
+ * mossy_stone_bricks(113,119,103) / cracked_stone_bricks(116,115,116) /
+ * stone_bricks(122,122,122) / chiseled_stone_bricks(117,116,117)，四者都是**低饱和灰绿**。
+ * （v3.19 前是替身 mossy_stone(104,110,93) / cobblestone(125,125,125) / tuff_bricks(99,103,95)，
+ *   新均值仍落在下面 `lum∈[55,175]` 且极差≤30 的口径内 ⇒ 阈值无需重标。）
  *
  * ⚠️⚠️ **天空色必须用实测值 (169,208,219)**（v3.18 标定）：
  *    `?skybox=0` 下背景是**难化色**，不是纯天蓝 (135,206,235)。
@@ -198,9 +201,15 @@ test('丛林要塞：真实按钮瞬移 → 城西丛林里有石砖要塞（Wor
     '接近 0 说明空气漏写、被天然岩层填满（DR-2 核心失效）')
     .toBeGreaterThan(0.95);
   expect(blocks.roomSamples, '空气抽样必须有量（否则上一条断言无判别力）').toBeGreaterThan(50);
-  const stoneCells = (blocks.counts.mossy_stone || 0) + (blocks.counts.cobblestone || 0)
-    + (blocks.counts.stone_bricks || 0) + (blocks.counts.tuff_bricks || 0);
+  // ⚠️ v3.19：主材换名（三个替身 → 原版同名方块）。旧名计数恒 0 ⇒ 不改这里会假红。
+  const stoneCells = (blocks.counts.mossy_stone_bricks || 0) + (blocks.counts.cracked_stone_bricks || 0)
+    + (blocks.counts.stone_bricks || 0) + (blocks.counts.chiseled_stone_bricks || 0);
   expect(stoneCells, `占地地表层必须有大量石砖族方块（实测 ${stoneCells}）`).toBeGreaterThan(200);
+  // 内容级判据：三个替身不得再出现在占地地表层（只数总量会把「没换」放行）
+  for (const stand of ['mossy_stone', 'cobblestone', 'tuff_bricks']) {
+    expect(blocks.counts[stand] || 0,
+      `占地地表层不得再有替身 ${stand}（v3.19 已换成原版同名方块）`).toBe(0);
+  }
 
   // ── ⑤ 画面：俯瞰机位的灰石占比 / 植被占比 / 零假水面 ──
   //
@@ -375,7 +384,7 @@ test('丛林要塞：接壤阶梯过渡裙边 —— 逐级抬升的台地真的
   expect(cliffWithSkirt,
     `有裙边时墙脚落差必须 ≤2 格（实测 ${cliffWithSkirt}；无裙边 ${cliffWithoutSkirt}）`)
     .toBeLessThanOrEqual(2);
-  // ①e 材质：抬升列顶面是 biome 地表（grass），下方 dirt —— 不是 mossy_stone
+  // ①e 材质：抬升列顶面是 biome 地表（grass），下方 dirt —— 不是 mossy_stone_bricks
   for (const p of lifted) {
     expect(p.topName, `(${p.x},${cam.z}) 裙边顶面必须是草/地表材质，实测 ${p.topName}`)
       .toMatch(/grass|sand|snow|podzol|dirt/);

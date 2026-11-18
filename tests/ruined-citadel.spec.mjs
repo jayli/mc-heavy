@@ -53,6 +53,24 @@ const STABLE = () => {
 
 /** 末地石主色判据（见文件头校准说明） */
 const isEndStone = (r, g, b) => g >= r && g > b * 1.25 && (r + g + b) / 3 > 60;
+
+/**
+ * **紫珀方块判据（v3.19）**：`r > g+18 && b > g+18 && |r−b| ≤ 14`。
+ *
+ * 标定依据（tile 均值，实测）：
+ *   · purpur_block **135.5 / 100.3 / 135.3** ⇒ r≈b、g 低 35 ⇒ 命中；
+ *   · deepslate 120.4 / 119.8 / 145.1 ⇒ r−g 只 0.6 ⇒ **不**命中（旧配色）；
+ *   · amethyst 140.9 / 103.5 / 196.7 ⇒ |r−b|=55.8 > 14 ⇒ 排除；
+ *   · void_stone 119.5 / 30.6 / 225.4 ⇒ |r−b|=105.9 ⇒ 排除；
+ *   · end_stone 218/221/157（g≥r）⇒ 排除；天空 169/208/219（g 最大）⇒ 排除。
+ *
+ * ⚠️ **`|r−b| ≤ 14` 是载荷性的**：去掉它就变成「任何紫/蓝方块」，amethyst 与 void_stone
+ *    会一起命中（它们本来就在产物里）⇒ 判据失去判别力。
+ * ⚠️ **对照组已实测**（同机位单变量，`page.route` 把 atlas 里的 purpur tile 换成
+ *    Deepslate 字节）：base **0.1815** vs deepslate **0.0173**（**10.5×**），
+ *    噪声底 0.00000（同状态重复截图逐位相同）。阈值取两侧之间。
+ */
+const isPurpur = (r, g, b) => r > g + 18 && b > g + 18 && Math.abs(r - b) <= 14;
 /** 水体判据（带亮度门 + g>r，见文件头校准说明） */
 const WATER_LUMA_MIN = 95;
 const WATER_LUMA_MAX = 150;
@@ -72,7 +90,7 @@ function stats(pngBuffer) {
   const n = png.width * png.height;
   let sr = 0, sg = 0, sb = 0, s2 = 0, nonSky = 0;
   let nsR = 0, nsG = 0, nsB = 0, nsS2 = 0;
-  let water = 0, endStone = 0;
+  let water = 0, endStone = 0, purpur = 0;
   for (let i = 0; i < n; i++) {
     const o = i * 4;
     const r = png.data[o], g = png.data[o + 1], b = png.data[o + 2];
@@ -82,6 +100,7 @@ function stats(pngBuffer) {
 
     if (isWater(r, g, b)) water++;
     if (isEndStone(r, g, b)) endStone++;
+    if (isPurpur(r, g, b)) purpur++;
 
     // 天空蓝 0x87ceeb=(135,206,235)，容差 30（与 city-visual / burning-arena 同口径）
     if (Math.abs(r - 135) > 30 || Math.abs(g - 206) > 30 || Math.abs(b - 235) > 30) {
@@ -99,6 +118,7 @@ function stats(pngBuffer) {
     nsStdLum: nonSky > 0 ? Math.sqrt(Math.max(0, nsS2 / nonSky - nsMeanLum * nsMeanLum)) : 0,
     waterRatio: water / n,
     endStoneRatio: endStone / n,
+    purpurRatio: purpur / n,
   };
 }
 
@@ -272,4 +292,44 @@ test('废弃堡垒：城西沙漠里生成了末地石堡垒 + 地牢有光无�
   // 地牢墙体是末地石系（房间挖出来了，不是实心岩层）
   expect(sB.endStoneRatio, '地牢内末地石主色占比下界（实测 0.085；为 ~0 说明房间没挖出来）')
     .toBeGreaterThan(0.02);
+
+  // ── ⑦ **画面 C：紫珀墙机位（v3.19）** ──
+  //
+  // 机位**按产物数据选**（AGENTS.md：凭感觉选机位会得到假阴性）：
+  // 产物里 x=33 那面墙朝 **+X**，ny47~52 每层 13 格 purpur，且外侧 6 格全空气
+  // （实测：960 个 purpur 面有 6 深开阔空气，其中 ny51 层 186 个）。
+  // 相机站东墙外 8 格、ny50 高，面朝西（yaw=π/2 ⇒ forward=(-1,0,0)）平视。
+  const viewC = toWorld(41, 50, 8);
+  await gotoAndView(page, viewC, Math.PI / 2, 0);
+  const sC = stats(await page.screenshot());
+  const sC2 = stats(await page.screenshot());
+  console.log('CITADEL VIEW C (紫珀东墙):', JSON.stringify(sC));
+  expect(Math.abs(sC.purpurRatio - sC2.purpurRatio),
+    '同状态重复截图的紫珀占比噪声底必须极小').toBeLessThan(0.001);
+  // 上下界双钉：下界取 base 0.1815 与对照 0.0173 之间，上界防「整屏紫」（机位错了）
+  expect(sC.purpurRatio,
+    `紫珀墙机位的紫珀像素占比下界（实测 base 0.1815 / 换回 deepslate 贴图对照 0.0173，10.5×）`)
+    .toBeGreaterThan(0.08);
+  expect(sC.purpurRatio, '紫珀占比上界（不得整屏紫 = 机位错或贴图铺满）').toBeLessThan(0.45);
+  expect(sC.nsMeanLum, '紫珀机位不得纯黑').toBeGreaterThan(20);
+  expect(sC.nsMeanLum, '紫珀机位不得过曝').toBeLessThan(240);
+
+  // 世界方块侧的内容级证据（与像素判据互相独立）
+  const purpurWorld = await page.evaluate(async (a) => {
+    const g = window.__MC_GAME__;
+    let purpur = 0, deep = 0;
+    for (let dx = -60; dx <= 60; dx += 2) {
+      for (let dz = -60; dz <= 60; dz += 2) {
+        for (let dy = -5; dy <= 12; dy += 2) {
+          const n = g.registry.nameOf(g.world.getBlockId(a.wx + dx, a.floorY + dy, a.wz + dz));
+          if (n === 'purpur_block') purpur++;
+          if (n === 'deepslate') deep++;
+        }
+      }
+    }
+    return { purpur, deep };
+  }, anchor);
+  expect(purpurWorld.purpur, `锚点邻域必须有大量 purpur_block（实测 ${purpurWorld.purpur}）`)
+    .toBeGreaterThan(200);
+  expect(purpurWorld.deep, `锚点邻域不得再有 deepslate（实测 ${purpurWorld.deep}）`).toBe(0);
 });

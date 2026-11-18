@@ -278,4 +278,21 @@ export const BLOCKS = [
   // ⇒ **旧存档里的方块被静默重新解释成别的方块**（插在下标 20 时影响 134 个方块）。
   // 历次 Epic（巨树/金字塔/废弃堡垒 15 个）均追加在末尾，此处沿用同一口径。
   {"name":"bush_grass","solid":false,"cullMode":"cutout","orientationModes":4,"geometry":"bush_grass","shadowCast":false},
+  // ---- 原版石砖三变体 + 紫珀方块（v3.19，2026-11-19）----
+  // 用户：「除了台阶方块之外，其他的方块都用原版里提供的方块重新烘焙出来，并加到背包里」
+  // + 「末日地堡里的 deepslate 方块都替换成紫色方块 Purpur Block……六个面都用这个图」。
+  //
+  // 四项与 `stone` 逐项同口径（solid + opaque + box + orientationModes:0）——
+  // **零新增几何、零 mesher 改动**，只是四张新贴图（`npm run stonebricks` 烘焙）。
+  // ⚠️ 必须追加在数组末尾（同 bush_grass 行的理由：id = 下标，旧存档存数字 id）。
+  // ⚠️ 全部进背包（物品集合派生自 registry − 排除集合，自动进入；改贴图后须 `npm run icons`）。
+  //
+  // 前三项替掉丛林要塞石砖族的三个替身（mossy_stone / cobblestone / tuff_bricks）；
+  // purpur_block 替掉废弃堡垒紫珀族的 deepslate（4210 格）。
+  // ⚠️ **其他结构的 deepslate / mossy_stone / cobblestone / tuff_bricks 一律不动**
+  //    （用户只点名这两个结构；高台/拱洞/大竞技场那批是另一套语义）。
+  {"name":"mossy_stone_bricks","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
+  {"name":"cracked_stone_bricks","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
+  {"name":"chiseled_stone_bricks","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
+  {"name":"purpur_block","solid":true,"cullMode":"opaque","orientationModes":0,"geometry":"box"},
 ];

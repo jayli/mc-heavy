@@ -14,7 +14,7 @@ test('BlockRegistry: air 恒为 ID 0', () => {
   assertEqual(reg.idOf('air'), 0);
 });
 
-test('BlockRegistry: 155 方块全部注册且 ID 唯一', () => {
+test('BlockRegistry: 159 方块全部注册且 ID 唯一', () => {
   const reg = createRegistry();
   for (const def of BLOCKS) reg.register(def.name, def);
   // 126 + 巨树景观 8 个 giant_* + 巨型金字塔 2 个 sand_step/sand_slab
@@ -22,10 +22,11 @@ test('BlockRegistry: 155 方块全部注册且 ID 唯一', () => {
   // + 中世纪船 2 个 planks_step_updown/half_block_updown
   // + 废弃堡垒 15 个（9 整块/柱 + 4 台阶 + 2 半砖，2026-11-10）= 154
   // + 矮草丛 bush_grass（v3.12，2026-11-17）= 155
-  assertEqual(reg.count, 155);
+  // + 原版石砖三变体 + 紫珀方块（v3.19，2026-11-19）= 159
+  assertEqual(reg.count, 159);
   const ids = new Set();
   for (const def of BLOCKS) ids.add(reg.idOf(def.name));
-  assertEqual(ids.size, 155);
+  assertEqual(ids.size, 159);
 });
 
 test('BlockRegistry: sky_stone/sky_grass 注册且 solid+opaque（M2-7 空岛）', () => {
@@ -416,6 +417,74 @@ test('BlockRegistry: fingerprint 不把方块属性算进去（改属性不该�
   // 只改渲染/物理属性（cullMode / opaque / emissive）→ 已存 edits 的解释不变 → 不得清档
   assertEqual(mk({ cullMode: 'opaque' }).fingerprint(), mk({ cullMode: 'cutout', opaque: true, emissive: 15 }).fingerprint(),
     '属性变化不影响指纹（只有「名字的有序清单」进指纹）');
+});
+
+// --- v3.19：前缀指纹（末尾追加方块不得清档）---
+
+/**
+ * 为什么需要它：本期在 `BLOCKS` **末尾追加** 4 个方块（石砖三变体 + 紫珀）。
+ * 既有 155 个 id **逐位未变**（实测），但全量指纹从 fc6212f5 变成 16d99151
+ * ⇒ 原判据（全等）会把玩家手工建造全清掉，而它们本来完全可读。
+ *
+ * 判据 = 「旧清单是当前清单的**前缀**」：前 n 项的指纹相等 ⇒ 前 n 个 id 语义未变。
+ * ⚠️ **中间插入 / 删除 / 换序仍必须判不兼容** —— 否则放宽成了「什么都不清」。
+ */
+test('BlockRegistry: fingerprintOfPrefix(count) ≡ fingerprint()（同一份哈希，不得两份实现）', () => {
+  const reg = createRegistry();
+  for (const def of BLOCKS) reg.register(def.name, def);
+  reg.freeze();
+  assertEqual(reg.fingerprintOfPrefix(reg.count), reg.fingerprint(), 'n=count 时逐位相等');
+  assertTrue(/^[0-9a-f]{8}$/.test(reg.fingerprintOfPrefix(1)), '前缀指纹也是 8 位十六进制');
+});
+
+test('BlockRegistry: 末尾追加后方块的前缀指纹 == 追加前的全量指纹（旧存档可读）', () => {
+  const mk = (names) => {
+    const r = createRegistry();
+    for (const n of names) r.register(n, { solid: true });
+    r.freeze();
+    return r;
+  };
+  const names = BLOCKS.map((b) => b.name);
+  const old = mk(names.slice(0, 155));       // 本期之前的 155 项
+  const now = mk(names);                     // 追加 4 项后
+  assertTrue(old.fingerprint() !== now.fingerprint(), '全量指纹必须变（否则本用例无判别力）');
+  assertEqual(now.fingerprintOfPrefix(155), old.fingerprint(),
+    '前 155 项的指纹必须与旧全量指纹相等 ⇒ 既有 id 语义未变，不得清档');
+});
+
+test('BlockRegistry: 中间插入/删除/换序后前缀指纹必须不等（真位移仍清档）', () => {
+  const mk = (names) => {
+    const r = createRegistry();
+    for (const n of names) r.register(n, { solid: true });
+    r.freeze();
+    return r;
+  };
+  const names = BLOCKS.map((b) => b.name);
+  const oldFp = mk(names.slice(0, 155)).fingerprint();
+  // ① 中间插入一项（在下标 20）⇒ 后面全部 +1
+  const inserted = names.slice(0, 155);
+  inserted.splice(20, 0, 'probe_block');
+  assertTrue(mk(inserted).fingerprintOfPrefix(155) !== oldFp, '中间插入后前缀指纹必须变');
+  // ② 删中间一项
+  const removed = names.slice(0, 155);
+  removed.splice(20, 1);
+  removed.push('probe_block');
+  assertTrue(mk(removed).fingerprintOfPrefix(155) !== oldFp, '删中间项后前缀指纹必须变');
+  // ③ 换序（集合相同）
+  const swapped = names.slice(0, 155);
+  [swapped[20], swapped[21]] = [swapped[21], swapped[20]];
+  assertTrue(mk(swapped).fingerprintOfPrefix(155) !== oldFp, '换序后前缀指纹必须变');
+});
+
+test('BlockRegistry: fingerprintOfPrefix 对非法 n 抛错（越界/负数/非整数）', () => {
+  const reg = createRegistry();
+  for (const def of BLOCKS) reg.register(def.name, def);
+  reg.freeze();
+  // ⚠️ 三种非法输入共用一条报错文案（「越界或非整数」）⇒ 子串只能匹它，
+  //    写「负数」/「非整数」这类分类词会假红（实测踩过）。
+  assertThrows(() => reg.fingerprintOfPrefix(reg.count + 1), '越界或非整数');
+  assertThrows(() => reg.fingerprintOfPrefix(-1), '越界或非整数');
+  assertThrows(() => reg.fingerprintOfPrefix(1.5), '越界或非整数');
 });
 
 test('BlockRegistry: 生产 registry 的 fingerprint 是 8 位十六进制串', () => {

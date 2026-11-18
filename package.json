@@ -42,7 +42,8 @@
     "ignis": "node tools/bake-ignis.mjs",
     "guardian": "node tools/bake-guardian.mjs",
     "turretop": "node tools/bake-turret-top.mjs",
-    "junglefortress": "node tools/bake-jungle-fortress.mjs"
+    "junglefortress": "node tools/bake-jungle-fortress.mjs",
+    "stonebricks": "node tools/bake-stone-bricks.mjs"
   },
   "author": "jayli",
   "repository": "git@github.com:jayli/mc-heavy.git",

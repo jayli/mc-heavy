@@ -1,0 +1,140 @@
+{
+  "version": 1,
+  "tileSize": 16,
+  "textures": {
+    "mossy_stone_bricks": {
+      "source": "mossy_stone_bricks.png",
+      "sourceSha256": "fe683558b728495db02c2d53160cdabd0bbf93170ec2b81d0ee5e82c8d97ec4c",
+      "out": "mossy_stone_bricks.png",
+      "mode": "remap",
+      "outSize": 16,
+      "outMean": [
+        113.0703,
+        118.6523,
+        103.0078
+      ],
+      "targetMean": [
+        113.0703,
+        118.6523,
+        103.0078
+      ],
+      "colors": 12,
+      "reference": "Mossy_Stone_Bricks_JE3_BE2.png",
+      "referenceSha256": "ced2ec360bc0881f40a2baaef4af57058616de02d4261fd8dbc1e1dfbe335f32",
+      "colorMap": {
+        "106,109,106": "104,107,104",
+        "115,133,82": "113,130,80",
+        "120,118,120": "118,116,118",
+        "122,143,85": "120,140,83",
+        "127,127,127": "124,124,124",
+        "139,137,139": "136,134,136",
+        "156,153,156": "153,150,153",
+        "82,93,57": "80,91,56",
+        "90,109,65": "88,107,64",
+        "90,89,90": "88,87,88",
+        "98,121,65": "96,119,64",
+        "99,99,99": "97,97,97"
+      },
+      "patternColors": 12
+    },
+    "cracked_stone_bricks": {
+      "source": "cracked_stone_bricks.png",
+      "sourceSha256": "eb8ba94381d27de90102e3effd16fede4a78106120563b02caff4c2ee597f3a2",
+      "out": "cracked_stone_bricks.png",
+      "mode": "remap",
+      "outSize": 16,
+      "outMean": [
+        115.8789,
+        115.2148,
+        115.8789
+      ],
+      "targetMean": [
+        115.8789,
+        115.2148,
+        115.8789
+      ],
+      "colors": 7,
+      "reference": "Cracked_Stone_Bricks_JE3_BE2.png",
+      "referenceSha256": "ad70078b32beeebf83f47b07bbde7a7d83d3fbfdabaa2d7c6ca139dc44e613b6",
+      "colorMap": {
+        "106,109,106": "104,107,104",
+        "120,118,120": "118,116,118",
+        "127,127,127": "124,124,124",
+        "139,137,139": "136,134,136",
+        "156,153,156": "153,150,153",
+        "90,89,90": "88,87,88",
+        "99,99,99": "97,97,97"
+      },
+      "patternColors": 7
+    },
+    "chiseled_stone_bricks": {
+      "source": "chiseled_stone_bricks.png",
+      "sourceSha256": "fbd59c309a861f63cfbb1f0f2348316d16bafa3bdd1ef81550357e1b5778df8f",
+      "out": "chiseled_stone_bricks.png",
+      "mode": "remap",
+      "outSize": 16,
+      "outMean": [
+        117.3125,
+        116.4375,
+        117.3125
+      ],
+      "targetMean": [
+        117.3125,
+        116.4375,
+        117.3125
+      ],
+      "colors": 7,
+      "reference": "Chiseled_Stone_Bricks_JE3_BE2.png",
+      "referenceSha256": "9e934910d05227a17d5a5cbee7dc0caf547285db688770a25d30b215f6769679",
+      "colorMap": {
+        "106,109,106": "104,107,104",
+        "120,118,120": "118,116,118",
+        "127,127,127": "124,124,124",
+        "139,137,139": "136,134,136",
+        "156,153,156": "153,150,153",
+        "90,89,90": "88,87,88",
+        "99,99,99": "97,97,97"
+      },
+      "patternColors": 7
+    },
+    "purpur_block": {
+      "source": "purpur_block.png",
+      "sourceSha256": "3f71c2366cc61ee92eb363b2d4d7b7378e00ccd7e242558e97dc25b299877468",
+      "out": "purpur_block.png",
+      "mode": "texel",
+      "outSize": 16,
+      "outMean": [
+        135.5273,
+        100.3398,
+        135.2891
+      ],
+      "targetMean": [
+        135.5273,
+        100.3398,
+        135.2891
+      ],
+      "colors": 7,
+      "downsample": {
+        "origin": 25,
+        "span": 462,
+        "size": 16
+      },
+      "sourceSize": [
+        512,
+        512
+      ]
+    }
+  },
+  "fingerprints": {
+    "input": "0bd098da083e635c593b500657960df3a570558a3e9f32e96278f86c36bbf510",
+    "sources": {
+      "mossy_stone_bricks": "fe683558b728495db02c2d53160cdabd0bbf93170ec2b81d0ee5e82c8d97ec4c",
+      "mossy_stone_bricks:reference": "ced2ec360bc0881f40a2baaef4af57058616de02d4261fd8dbc1e1dfbe335f32",
+      "cracked_stone_bricks": "eb8ba94381d27de90102e3effd16fede4a78106120563b02caff4c2ee597f3a2",
+      "cracked_stone_bricks:reference": "ad70078b32beeebf83f47b07bbde7a7d83d3fbfdabaa2d7c6ca139dc44e613b6",
+      "chiseled_stone_bricks": "fbd59c309a861f63cfbb1f0f2348316d16bafa3bdd1ef81550357e1b5778df8f",
+      "chiseled_stone_bricks:reference": "9e934910d05227a17d5a5cbee7dc0caf547285db688770a25d30b215f6769679",
+      "purpur_block": "3f71c2366cc61ee92eb363b2d4d7b7378e00ccd7e242558e97dc25b299877468"
+    }
+  }
+}

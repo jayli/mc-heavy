@@ -7,7 +7,15 @@ import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PORT = 8081;
+/**
+ * 端口（默认 8081，与历史行为逐位相同）。
+ *
+ * ⚠️ **为什么可配**：worktree 里跑浏览器验证时，8081 每每已被**主仓**的服务占用
+ *    （`playwright.config.mjs` 的 `reuseExistingServer: true` 会直接复用它）
+ *    ⇒ 对着别人的代码跑测试，形态是「该结构的用例数 0」而**零报错**（AGENTS.md 已记）。
+ *    用 `MC_PORT=8082 npm start` 开本 worktree 自己的服务，spec 侧同源切 baseURL。
+ */
+const PORT = Number(process.env.MC_PORT) || 8081;
 
 function getLocalIP() {
   const interfaces = os.networkInterfaces();

@@ -1,5 +1,14 @@
 import { defineConfig } from 'playwright/test';
 
+/**
+ * 端口（默认 8081，与历史行为逐位相同）。
+ *
+ * ⚠️ **为什么可配**：`reuseExistingServer: true` + 固定 8081 在 worktree 里会
+ *    **静默连到主仓或别的 worktree 的服务**（AGENTS.md 已记：形态是「该结构的用例数 0」
+ *    而零报错）。用 `MC_PORT=8082` 同时切 baseURL 与 webServer.port，两侧必须同源。
+ */
+const PORT = Number(process.env.MC_PORT) || 8081;
+
 export default defineConfig({
   testDir: './tests',
   // ⚠️ **`tmp-*` 探针不进正式门**（v3.15）。`.gitignore` 只忽略**入库**，不影响 playwright
@@ -26,7 +35,7 @@ export default defineConfig({
   // suite 很小（6 spec ~4s），串行化消除整类计时抖动。
   workers: 1,
   use: {
-    baseURL: 'http://localhost:8081',
+    baseURL: `http://localhost:${PORT}`,
     browserName: 'chromium',
     headless: true,
     // channel: 'chromium' 是必需项：默认的 headless shell 在零 flag 下拿不到 WebGPU
@@ -47,8 +56,9 @@ export default defineConfig({
   },
   webServer: {
     command: 'npm start',
-    port: 8081,
+    port: PORT,
     reuseExistingServer: true,
     timeout: 30_000,
+    env: { MC_PORT: String(PORT) },
   },
 });

@@ -130,10 +130,20 @@ test('丛林要塞：中央大厅内部是 air（房间可进入，不是被岩�
 
 // ==================== 映射与朝向 ====================
 
-test('丛林要塞：palette 种数与目标方块集合正确（零新增方块）', async () => {
+test('丛林要塞：palette 种数与目标方块集合正确（石砖族全是原版方块）', async () => {
   const data = await loadStructure('jungleFortress');
   const types = new Set(data.blocks.map((b) => b.type));
   assertEqual(types.size, PALETTE_SIZE, `palette 种数 ${PALETTE_SIZE}（实际 ${types.size}）`);
+  // v3.19（用户：「除了台阶方块之外，其他的方块都用原版里提供的方块重新烘焙出来」）：
+  // 石砖族四档必须全是原版同名方块，**三个替身不得再出现**。
+  // ⚠️ 这是本期意图的**直接判据**：只改格数名字会把「换了贴图但仍是圆石」放行。
+  for (const n of ['mossy_stone_bricks', 'cracked_stone_bricks', 'chiseled_stone_bricks', 'stone_bricks']) {
+    assertTrue(types.has(n), `石砖族必须含原版方块 ${n}`);
+  }
+  for (const n of ['mossy_stone', 'cobblestone', 'tuff_bricks']) {
+    assertTrue(!types.has(n),
+      `不得再用替身 ${n}（mossy_stone=苔石圆石 / cobblestone=圆石 / tuff_bricks=凝灰岩砖）`);
+  }
   // 台阶必须是 cobblestone_step 不是 stone_diorite_step（tile 均色 125 vs 189，墙体 113）
   assertTrue(types.has('cobblestone_step'), '台阶目标必须是 cobblestone_step（色匹配墙体）');
   assertTrue(!types.has('stone_diorite_step'),
@@ -567,14 +577,15 @@ test('丛林要塞接线：真实 GEN 后锚点 column 含要塞方块，房间�
   await applyStructuresToColumn(col, seed, reg, layouts);
 
   // ① 该 column 必须含要塞主材（不是纯自然地形）
-  const mossyId = reg.idOf('mossy_stone');
-  const cobbleId = reg.idOf('cobblestone');
+  // ⚠️ v3.19：主材换名（mossy_stone→mossy_stone_bricks / cobblestone→cracked_stone_bricks）
+  const mossyId = reg.idOf('mossy_stone_bricks');
+  const cobbleId = reg.idOf('cracked_stone_bricks');
   let structureCells = 0;
   for (let i = 0; i < col.blocks.length; i++) {
     if (col.blocks[i] === mossyId || col.blocks[i] === cobbleId) structureCells++;
   }
   assertTrue(structureCells > 100,
-    `锚点 column 必须含要塞方块（实际 ${structureCells} 格 mossy_stone/cobblestone）`);
+    `锚点 column 必须含要塞方块（实际 ${structureCells} 格 mossy_stone_bricks/cracked_stone_bricks）`);
 
   // ② 世界 y 范围不越界
   const worldBottom = a.floorY + (1 - JUNGLE_FORTRESS_FLOOR_ROW);
@@ -1210,8 +1221,8 @@ const FROZEN_PIERS = {
  * 墩/漏底判据的共用夹具：真实 GEN 跑完占地全部 column，收集墩格与补格。
  *
  * ⚠️ 墩格认定用**位置**而不是材质：从产物逐列最低实心 ny 推出理论墩区间，
- *    再读世界方块确认。只用「mossy_stone 且不在产物格」会把建筑自身的 mossy_stone
- *    误计入（建筑主材就是它，46%）。
+ *    再读世界方块确认。只用「mossy_stone_bricks 且不在产物格」会把建筑自身的
+ *    mossy_stone_bricks 误计入（建筑主材就是它，50%）。
  */
 async function jfPierFixture(seed) {
   const a = computeJungleFortressAnchor(seed);
@@ -1266,7 +1277,7 @@ test('丛林要塞墩：8 seed 墩格数/列数/max/最密col 逐值命中冻结
     const seed = Number(seedStr);
     const fx = await jfPierFixture(seed);
     const { a, reg, FR, colMinNy, readWorld } = fx;
-    const mossy = reg.idOf('mossy_stone');
+    const mossy = reg.idOf('mossy_stone_bricks');
     let cells = 0, cols = 0, maxH = 0;
     const perColumn = new Map();
     for (const [ck, minNy] of colMinNy) {
@@ -1277,7 +1288,7 @@ test('丛林要塞墩：8 seed 墩格数/列数/max/最密col 逐值命中冻结
       let n = 0;
       for (let wy = baseWy - 1; wy > h; wy--) {
         assertEqual(readWorld(wx, wy, wz), mossy,
-          `seed ${seed} (${wx},${wy},${wz}) 墩格必须是 mossy_stone`);
+          `seed ${seed} (${wx},${wy},${wz}) 墩格必须是 mossy_stone_bricks（与建筑主材同一种石头）`);
         n++;
         const colKey = `${Math.floor(wx / 16)},${Math.floor(wz / 16)}`;
         perColumn.set(colKey, (perColumn.get(colKey) || 0) + 1);
@@ -1296,7 +1307,7 @@ test('丛林要塞墩：不覆盖产物（含 air）、不穿地下房间、顶�
   const seed = 12345;
   const fx = await jfPierFixture(seed);
   const { a, reg, FR, prodSolid, prodAir, roomAir, colMinNy, readWorld } = fx;
-  const mossy = reg.idOf('mossy_stone');
+  const mossy = reg.idOf('mossy_stone_bricks');
   let checked = 0, topCovered = 0, botOnGround = 0, pierCols = 0;
   for (const [ck, minNy] of colMinNy) {
     const [px, pz] = ck.split(',').map(Number);
@@ -1664,7 +1675,7 @@ test('丛林要塞裙边：真实 GEN 写入 —— 顶面 biome 材质 / 下方
   assertTrue(top > h, '该列必须真的被抬升');
   assertEqual(col.blocks[blockIndex(lx, top, lz)],
     reg.idOf(surfaceTypeOfBiome(getBiome(wx, wz, seed))),
-    `裙边顶面必须是 biome 地表材质（不是 mossy_stone）`);
+    `裙边顶面必须是 biome 地表材质（不是 mossy_stone_bricks）`);
   for (let y = h + 1; y < top; y++) {
     assertEqual(col.blocks[blockIndex(lx, y, lz)], dirt, `裙边下方 y=${y} 必须是 dirt`);
   }

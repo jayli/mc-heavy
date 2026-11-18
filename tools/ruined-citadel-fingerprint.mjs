@@ -93,11 +93,12 @@ export const RUINED_CITADEL_PIECES = Object.freeze([
  *  - `cataclysm:void_lantern_block` → `ochre_froglight`：地牢在地下（skylight=0），
  *    134 格灯是唯一的 blocklight 来源；ochre_froglight（亮度档 217 暖白）比 glowstone
  *    （99 暗棕）更接近虚空灯的亮奶白色。**不新烘**（用户裁定：不需要发光新方块）。
- *  - `purpur_block` / `purpur_pillar` / `cataclysm:purpur_void_rune_trap_block` → `deepslate`：
- *    紫珀族本仓无贴图。⚠️ **v2.90 用户裁定从 `amethyst` 改为 `deepslate`**（原裁定是
- *    「紫水晶是同色系的既有紫色整块，继续映射不新烘」）。只改**本结构**的映射，
- *    其他用 amethyst 的地方（祭坛 `tarn-altar.js` 的美朵/十字轴/外环、
- *    `cloudland-kit-fingerprint.mjs` 的紫晶柱）**一律不动** —— 用户明确要求「不是其他所有的」。
+ *  - `purpur_block` / `purpur_pillar` / `cataclysm:purpur_void_rune_trap_block` → `purpur_block`：
+ *    ⚠️ **v3.19 用户裁定新烘紫珀方块**（提供了 512×512 贴图，六面同图）。
+ *    历史：v2.89 映 amethyst → v2.90 改映 deepslate（当时「本仓无紫珀贴图」）→ v3.19 新烘。
+ *    只改**本结构**的映射：其他用 amethyst 的地方（祭坛 `tarn-altar.js`、
+ *    `cloudland-kit-fingerprint.mjs` 的紫晶柱）与其他用 deepslate 的地方（高台/拱洞/
+ *    大竞技场）**一律不动** —— 用户明确要求「不是其他所有的」。
  *  - `crying_obsidian` / `cataclysm:obsidian_explosion_trap_bricks` → `obsidian`：
  *    本仓无哭泣黑曜石；陷阱砖映基础砖（同色系，丢泪痕/裂纹细节）。
  *  - `cataclysm:end_stone_teleport_trap_bricks` → `end_stone_bricks`：传送陷阱→基础砖。
@@ -140,10 +141,17 @@ export const BLOCK_MAP = Object.freeze({
   // 照明（不新烘，用户裁定）
   'cataclysm:void_lantern_block': 'ochre_froglight',
 
-  // 紫珀族 → 深板岩（v2.90 用户裁定，原为 amethyst）
-  purpur_block: 'deepslate',
-  purpur_pillar: 'deepslate',
-  'cataclysm:purpur_void_rune_trap_block': 'deepslate',
+  // 紫珀族 → **新烘的 purpur_block**（v3.19 用户裁定，原为 deepslate / 更早是 amethyst）
+  // 用户：「末日地堡里的 deepslate 方块都替换成紫色方块，Purpur Block，这是一个新方块，
+  // 面用的图是 /Users/bachi/ttt/b/purpur_block.png，六个面都用这个图」。
+  // ⚠️ **只改本结构**：高台/拱洞（cloudland-kit）与大竞技场（burning-arena）的 deepslate
+  //    一律不动 —— 用户只点名了末日地堡（= 废弃堡垒）。
+  // ⚠️ **台阶/半砖不在本期范围**：STAIR_TARGETS.purpur_stairs 与 SLAB_BOTTOM.purpur_slab
+  //    仍映既有台阶/沙半砖（用户只对丛林要塞点名了台阶除外，本结构未要求新烘台阶）。
+  //    但 SLAB_BASE.purpur_slab（top/double → **整块**）必须跟着换成 purpur_block。
+  purpur_block: 'purpur_block',
+  purpur_pillar: 'purpur_block',
+  'cataclysm:purpur_void_rune_trap_block': 'purpur_block',
 
   // 黑曜石族归并
   crying_obsidian: 'obsidian',
@@ -195,7 +203,7 @@ export const BLOCK_MAP = Object.freeze({
 export const SLAB_BASE = Object.freeze({
   'cataclysm:obsidian_brick_slab': 'obsidian_bricks',
   end_stone_brick_slab: 'end_stone_bricks',
-  purpur_slab: 'deepslate',
+  purpur_slab: 'purpur_block',
   'cataclysm:polished_end_stone_slab': 'polished_end_stone',
 });
 
@@ -242,6 +250,19 @@ export const SLAB_BOTTOM = Object.freeze({
   purpur_slab: 'sand_slab',
   'cataclysm:polished_end_stone_slab': 'sand_slab',
 });
+
+/**
+ * **本期之外新烘的方块**（v3.19）——  supplement 到门禁的「新方块进背包」集合。
+ *
+ * 为什么需要它：`check:data` 原本用**派生规则**认新烘方块
+ * （`cataclysm:X → X` 同名直通 + obsidian_brick/end_stone_brick 族的台阶/半砖）。
+ * `purpur_block` 是 **vanilla 名**，三条派生规则一条都不命中 ⇒ 它会静默逃过
+ * 「已注册 / 有 faces / 在背包」三道判据。故显式列出，两侧共用这一份（红线 1）。
+ *
+ * ⚠️ 不得把它写成「所有 palette 里不在 mc-lite 124 项里的方块」：那会把既有替身
+ *    （ochre_froglight / deepslate / handrail ……）也拉进来，语义就散了。
+ */
+export const RUINED_CITADEL_EXTRA_NEW_BLOCKS = Object.freeze(['purpur_block']);
 
 /**
  * 甲板层在**归一化坐标**里的 y（= 产物 JSON 的 `floorRow`）。
@@ -304,7 +325,8 @@ export const RUINED_CITADEL_METRICS = Object.freeze({
       air: 27060,
       end_stone_bricks: 13655,
       obsidian_bricks: 10983,
-      deepslate: 4210,
+      // v3.19：紫珀族 4210 格从 deepslate 换成新烘的 purpur_block（格数不变）
+      purpur_block: 4210,
       end_stone_brick_step_updown: 1258,
       obsidian_brick_step: 1096,
       end_stone_pillar: 1029,
@@ -424,7 +446,7 @@ export function ruinedCitadelInputFingerprint() {
   const paramsSha256 = createHash('sha256')
     .update(JSON.stringify({
       BLOCK_MAP, SLAB_BASE, STAIR_TARGETS, SLAB_BOTTOM, RUINED_CITADEL_PIECES, FLOOR_ROW,
-      RUINED_CITADEL_METRICS, FACING_TO_ORIENT,
+      RUINED_CITADEL_METRICS, FACING_TO_ORIENT, RUINED_CITADEL_EXTRA_NEW_BLOCKS,
     }))
     .digest('hex');
   return {

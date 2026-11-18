@@ -49,6 +49,7 @@ npm run grasstextures  # 深/浅草贴图（无 jpeg 解码器，先把源图 si
 npm run tarn           # Cloudland 套件四族（高台/拱洞/紫晶柱/巨型云）
 npm run pyramid | arena | shallowtarns | ship | azaleatrees | gianttrees
 npm run turretop | zombieskin | dragon | nightsky | validate:weapon-assets
+npm run stonebricks    # 原版石砖三变体 + 紫珀方块贴图（v3.19；之后要 atlas + icons）
 npm run guardian       # 末影守卫（Java 模型 → 20 骨骼/24 盒/4 条攻击动画 + 眼睛层合成）
 ```
 
@@ -322,6 +323,28 @@ scheduler/physics）再加 `npm run bench -- --check`。计划里标「冻结」
 - 极简预算门 = `tests/m3-fullscene.spec.mjs` 的 `gpuVertexBytes < 200 MiB`。
 
 **资源与目录**
+- ⚠️ **「新方块必须是数组最后一项」这类断言会被下一次正当追加推翻（v3.19）**：
+  真意图是「旧方块的 id 不得位移」⇒ 钉**绝对下标**（如 bush_grass ≡ 154）+ 「新增项在它之后」，
+  而不是钉「它是最后一项」。同形坑：背包槽数类断言在 `test-inventory-ui.js` 里还有第二处
+  （「空槽不列出」用例的 145/144/143）—— **该文件不在 Node 白名单**（需 DOM），
+  只跑 `run-unit-node` 拓不到它 ⇒ 改方块数后必须跑一次 `tests/unit-fast.spec.mjs`。
+- ⚠️⚠️ **末尾追加方块不得清档（v3.19）**：`registry.fingerprint()` 是「名字有序清单」的哈希，
+  在 `BLOCKS` **末尾追加**时既有 id 逐位未变（旧 edits 完全可读）而指纹会变
+  （实测 155→159 项：`fc6212f5 → 16d99151`）⇒ 旧判据（全等）会白白清掉玩家手工建造。
+  正解：meta 行记 `blockCount`，用 `registry.fingerprintOfPrefix(oldCount)` 判「旧清单是当前清单的前缀」。
+  **中间插入/删除/换序仍必须清档**（前缀指纹会变，单测逐条钉）；旧存档无 `blockCount` → 回落全等口径。
+  哈希算法只得一份（`fingerprint()` 转调 `fingerprintOfPrefix(count)`）。
+- ⚠️⚠️ **从放大图还原 16×16 贴图必须带「众数一致性」自检（v3.19）**：用户给的 512×512 图
+  不透明 bbox 是 `[25,486]²`（462×462，每 texel **28.875px 非整数**）。origin/span 取错时
+  产物仍是「16×16 的紫色图」，**尺寸/色数/均值都可能看着合理**而图案整体错位。
+  判据 = 逐 texel「中心取样色 == 该区域不透明像素众数」（实测 0/256 不符，区域纯度 98.29%）。
+  ⚠️ **单测里用整数 step 造「错一格」拓不到**（step=8 时 origin+4 仍是每格正中心，分区跟着平移）
+  ⇒ 要用**奇数 step** 造半格漂移。
+- ⚠️ **「等色重映射」类烘焙要钉图案分区签名，不能只比色数（v3.19）**：blockrender 的 vanilla
+  贴图与 wiki 现版渲染图**图案逐格一致、色板差一层**（mossy 的 `8b898b` vs `888688`）。
+  反解口径：wiki 300×300 等轴测图的**顶面**三角 `tv=(148,0) / rv=(282,66) / lv=(14,66)`
+  （实测拟合；换成「看着对」的 (150,2)/(284,76)/(16,76) 会让每个源色映到 9~24 个渲染色）。
+  判据两条：① 每个源色**只能映到一个**渲染色（否则 throw）；② 重映射前后 `patternSignature` 逐格相等。
 - **资源路径只能走 `resourceUrl()`**（`src/core/resource-url.js`），禁止站点根绝对路径（`'/assets/`、
   `'/src/`、`'/vendor/`）—— 仓库挂子路径部署时会全 404，而本机 dev server 恒为根路径所以测不出来。
   HTML 的 import map 无法调函数：`index.html` 写 `./vendor/...`，`src/tests/*.html` 写 `../../vendor/...`。
@@ -440,6 +463,10 @@ scheduler/physics）再加 `npm run bench -- --check`。计划里标「冻结」
   于是我对着别人的代码跑测试。形态是「该结构的用例数 0、单测总数 2382→2380」而**零报错**
   （对面代码里根本没这些用例）。核法：`lsof -ti:<port>` 拿 PID → `lsof -p <pid>` 看 cwd，
   再 `curl …/<新用例文件> | grep -c <关键字>` 核内容。优先用本仓 `npm start`（**不发缓存头**）。
+  ⚠️ **v3.19 起端口可配**：`MC_PORT=8082 npm start` + `MC_PORT=8082 npx playwright test …`
+  （`playwright.config.mjs` 的 baseURL 与 webServer.port 同源切，默认仍 8081）。
+  不加它时 `reuseExistingServer: true` 会**直接复用主仓的 8081 服务** ⇒ 在 worktree 里跑测试
+  却对着主仓代码（本轮实测：8081 的 PID cwd = `~/jaylli/mc-heavy`）。
 - ⚠️⚠️ **通用静态服务器的 `max-age=3600` 会让用户「修了看不到」**（v3.13d）：
   本仓 `server-script/start-server.js` 刻意**不发 `Cache-Control`**（注释写明「本地 dev 无缓存
   更能立刻看到改动」）；而 http-server 类工具发 1 小时强缓存 ⇒ 服务端已更新但浏览器仍跑旧模块。
@@ -680,7 +707,8 @@ scheduler/physics）再加 `npm run bench -- --check`。计划里标「冻结」
 
 `assets/atlas.{png,json}`、`assets/icons-atlas.png` + `icons.json`、`assets/structures/*`（烘焙得到的
 那几个）、`assets/{zombie,dragon,turret,ignis,guardian,giant-trees,azalea-trees,sky/night}/` 里的产物、
-`assets/textures/procedural/*`、`docs/m3-baseline.*`（冻结基线，`npm run bench` 不带 `--check` 会自动
+`assets/textures/procedural/*`、`assets/textures/{mossy_stone_bricks,cracked_stone_bricks,chiseled_stone_bricks,purpur_block}.png`
++ `stone_bricks.meta.json`（v3.19，`npm run stonebricks`）、`docs/m3-baseline.*`（冻结基线，`npm run bench` 不带 `--check` 会自动
 重写它 —— 诊断后要 `git checkout` 恢复，提交它等于静默放宽门禁）。
 
 每个烘焙产物都有伴随 JSON 指纹 + `check:data` 的环节守住过期。**已知盲区：只改烘焙算法而不动参数时

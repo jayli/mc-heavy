@@ -92,8 +92,30 @@ export function createRegistry() {
      * @returns {string} 32bit 十六进制串
      */
     fingerprint() {
+      return this.fingerprintOfPrefix(count);
+    },
+
+    /**
+     * **前 n 项**的清单指纹（v3.19）—— 存档兼容判据的另一半。
+     *
+     * ## 为什么需要它
+     * 在 `BLOCKS` **末尾追加**新方块时，既有 id 逐位未变（旧 edits 完全可读），
+     * 但全量指纹会变 ⇒ 原判据（全等）会把玩家手工建造白白清掉。
+     * 判据改成「旧清单是当前清单的**前缀**」：前 n 项指纹相等 ⇒ 前 n 个 id 语义未变。
+     *
+     * ⚠️ **中间插入 / 删除 / 换序仍必须判不兼容**：那三种都会让前缀指纹变
+     *    （单测逐条钉住）。不得把兼容判据放宽成「只看集合」或「什么都不清」。
+     * ⚠️ **哈希算法只有一份**（红线 1）：`fingerprint()` 转调本方法，不得另写一个循环。
+     *
+     * @param {number} n 前缀长度（0 ≤ n ≤ count 的整数）
+     * @returns {string} 32bit 十六进制串
+     */
+    fingerprintOfPrefix(n) {
+      if (!Number.isInteger(n) || n < 0 || n > count) {
+        throw new Error(`fingerprintOfPrefix: n 越界或非整数（${n}，count=${count}）`);
+      }
       let h = 0x811c9dc5;
-      for (let id = 0; id < count; id++) {
+      for (let id = 0; id < n; id++) {
         const s = `${idToName[id]}\u0000`;
         for (let i = 0; i < s.length; i++) {
           h ^= s.charCodeAt(i);
