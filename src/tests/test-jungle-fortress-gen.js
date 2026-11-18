@@ -22,6 +22,7 @@ import {
   jungleFortressOverlapsRegion, jungleFortressSuppressedLandmarks,
   snowLandSuppressedByJungleFortress,
   jungleFortressTeleportPoint, JUNGLE_FORTRESS_TELEPORT_GAP,
+  percentile75,
 } from '../gen/structures/jungle-fortress.js';
 import { computeRegionLayout, neighborRegionKeys } from '../gen/structures/structure-layout.js';
 import { applyStructuresToColumn, jfTreeKept } from '../gen/structures/apply.js';
@@ -266,26 +267,65 @@ test('丛林要塞：藤蔓不撑大 footprint（HALF_X/HALF_Z 不变）', async
 
 // ==================== 落点搜索（Task 4）====================
 
-/** 8 seed 冻结锚点表（City 西方第一个丛林地带，spec 用户裁定 2026-11-17） */
+/**
+ * 8 seed 冻结锚点表（City 西方第一个丛林地带，spec 用户裁定 2026-11-17）
+ *
+ * ⚠️ v3.16（地形耦合）：`floorY` 语义从「占地最低自然高度」改为 **baseY（占地自然高度
+ *    的 75 分位数）**，8 seed 实测恒 9；`minH` 保留旧语义（0 或 −1）供判据用。
+ */
 const FROZEN_ANCHORS = {
-  12345: { wx: -304, wz: 217, floorY: 0 },
-  99999: { wx: -621, wz: -91, floorY: 0 },
-  1249026: { wx: -454, wz: 77, floorY: 0 },
-  20260101: { wx: -493, wz: 33, floorY: 0 },
-  777: { wx: -672, wz: 473, floorY: -1 },
-  4242: { wx: -368, wz: 165, floorY: -1 },
-  31337: { wx: -442, wz: 81, floorY: -1 },
-  8888: { wx: -613, wz: -87, floorY: -1 },
+  12345: { wx: -304, wz: 217, floorY: 9, minH: 0 },
+  99999: { wx: -621, wz: -91, floorY: 9, minH: 0 },
+  1249026: { wx: -454, wz: 77, floorY: 9, minH: 0 },
+  20260101: { wx: -493, wz: 33, floorY: 9, minH: 0 },
+  777: { wx: -672, wz: 473, floorY: 9, minH: -1 },
+  4242: { wx: -368, wz: 165, floorY: 9, minH: -1 },
+  31337: { wx: -442, wz: 81, floorY: 9, minH: -1 },
+  8888: { wx: -613, wz: -87, floorY: 9, minH: -1 },
 };
 
-test('丛林要塞锚点：8 个 seed 逐值命中冻结表（城西第一个丛林）', () => {
+test('丛林要塞 percentile75：合成数组逐值（不依赖 generateHeight，钉「是分位数不是硬编码 9」）', () => {
+  // ⚠️ 期望值先实测算过：floor(0.75*(n−1)) 取下标，不做线性插值。
+  assertEqual(percentile75([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), 6, 'n=10 ⇒ idx 6');
+  assertEqual(percentile75([5]), 5, '单元素');
+  assertEqual(percentile75([]), 0, '空数组不得返回 undefined');
+  assertEqual(percentile75([1, 1, 1, 9]), 1, 'n=4 ⇒ idx 2（低位众数）');
+  assertEqual(percentile75([0, 0, 0, 0, 9, 9, 9, 9]), 9, 'n=8 ⇒ idx 5（高位众数）');
+  assertEqual(percentile75([-9, -1, 0, 3, 9]), 3, '含负数');
+});
+
+test('丛林要塞锚点：8 个 seed 逐值命中冻结表（城西第一个丛林，floorY=baseY 75 分位）', () => {
   for (const [seedStr, want] of Object.entries(FROZEN_ANCHORS)) {
     const seed = Number(seedStr);
     const a = computeJungleFortressAnchor(seed);
     assertTrue(a !== null, `seed ${seed} 必须有落点（null = 判据写反或窗口太窄）`);
     assertEqual(a.wx, want.wx, `seed ${seed} wx`);
     assertEqual(a.wz, want.wz, `seed ${seed} wz`);
-    assertEqual(a.floorY, want.floorY, `seed ${seed} floorY`);
+    assertEqual(a.floorY, want.floorY, `seed ${seed} floorY（v3.16 = baseY 75 分位，不是 minH）`);
+    assertEqual(a.minH, want.minH, `seed ${seed} minH（占地最低自然高度，旧 floorY 语义保留）`);
+  }
+});
+
+test('丛林要塞锚点：baseY 由占地逐格自然高度的 75 分位派生（不是硬编码 9）', () => {
+  // ⚠️ 判据真值独立于被测代码：这里自己扫 161×155 逐格 generateHeight 排序，
+  //    再按 floor(0.75*(n−1)) 取下标，与 anchor.floorY 比对。
+  //    若生产代码写死 9，本用例在换地形公式后会红（且 n=24955 的 idx 也钉住）。
+  for (const seedStr of Object.keys(FROZEN_ANCHORS)) {
+    const seed = Number(seedStr);
+    const a = computeJungleFortressAnchor(seed);
+    const hs = [];
+    for (let dz = -JUNGLE_FORTRESS_HALF_Z; dz <= JUNGLE_FORTRESS_HALF_Z; dz++) {
+      for (let dx = -JUNGLE_FORTRESS_HALF_X; dx <= JUNGLE_FORTRESS_HALF_X; dx++) {
+        hs.push(generateHeight(a.wx + dx, a.wz + dz, seed));
+      }
+    }
+    hs.sort((p, q) => p - q);
+    assertEqual(hs.length, (2 * JUNGLE_FORTRESS_HALF_X + 1) * (2 * JUNGLE_FORTRESS_HALF_Z + 1),
+      `seed ${seed} 占地格数`);
+    assertEqual(a.floorY, hs[Math.floor(0.75 * (hs.length - 1))],
+      `seed ${seed} floorY 必须等于占地自然高度的 75 分位`);
+    assertEqual(a.minH, hs[0], `seed ${seed} minH 必须等于占地最低自然高度`);
+    assertTrue(a.floorY > a.minH, `seed ${seed} baseY 必须高于 minH（抬升才有地下裸露）`);
   }
 });
 
