@@ -32,7 +32,7 @@ import { getRegionSeededCenter } from '../gen/structures/region-center.js';
 import { getCityBoundsForSeed } from '../gen/structures/city-layout.js';
 import { CITY_TRANSITION_SIZE, REGION_SIZE, LANDMARK_OFFSET } from '../gen/structures/region-config.js';
 import {
-  jungleFortressSurfaceYAt, inJungleFortressTerraform, fillJungleFortressGround,
+  jungleFortressSurfaceYAt, inJungleFortressTerraform,
   JUNGLE_FORTRESS_SLOPE_BAND,
 } from '../gen/structures/jungle-fortress-terrain.js';
 import { rollVegetation, generateTree } from '../gen/structures/vegetation.js';
@@ -387,104 +387,113 @@ test('丛林要塞占地判定：inJungleFortressFootprint 与 HALF_X/HALF_Z 一
   assertTrue(!inJungleFortressFootprint(a.wx, a.wz, [null]), 'anchors 含 null 时跳过');
 });
 
-// ==================== 地形整形（Task 5）====================
+// ==================== 地形：自然起伏保留（v3.16 DR-2）====================
 
-test('丛林要塞整形：只削不填 + 零水格（8 seed 全整形区逐列）', () => {
+test('丛林要塞地形：surfaceYAt 内部恒等自然高度 + 零水格（8 seed 全区逐列）', () => {
   for (const seedStr of Object.keys(FROZEN_ANCHORS)) {
     const seed = Number(seedStr);
     const a = computeJungleFortressAnchor(seed);
-    let fill = 0, water = 0, cols = 0;
+    let mismatch = 0, water = 0, cols = 0;
     for (let dx = -JUNGLE_FORTRESS_HALF_X - JUNGLE_FORTRESS_SLOPE_BAND;
       dx <= JUNGLE_FORTRESS_HALF_X + JUNGLE_FORTRESS_SLOPE_BAND; dx++) {
       for (let dz = -JUNGLE_FORTRESS_HALF_Z - JUNGLE_FORTRESS_SLOPE_BAND;
         dz <= JUNGLE_FORTRESS_HALF_Z + JUNGLE_FORTRESS_SLOPE_BAND; dz++) {
         const wx = a.wx + dx, wz = a.wz + dz;
         const t = jungleFortressSurfaceYAt(wx, wz, seed, a);
-        if (t === null) continue;
+        assertTrue(t !== null, `(${wx},${wz}) surfaceYAt 不得返回 null（v3.16 恒有值）`);
         cols++;
         const h = generateHeight(wx, wz, seed);
-        if (t > h) fill++;
-        if (t <= SEA_Y) water++;
+        // 本 Task 只验内部（裙边 Task 5 才加）：全区应恒 = 自然高度
+        if (t !== h) mismatch++;
+        // ⚠️ 零水格只对**占地内**成立（落点干燥判据保证）；16 格外延里本就有自然水域
+        //    （v3.13 的「遇湿即止」正是为了不碰它们）。对外延钉零水会误报 1696 列。
+        if (Math.abs(dx) <= JUNGLE_FORTRESS_HALF_X && Math.abs(dz) <= JUNGLE_FORTRESS_HALF_Z
+            && t <= SEA_Y) water++;
       }
     }
-    assertEqual(fill, 0, `seed ${seed} 整形必须只削不填（实际 ${fill} 列需填方）`);
-    assertEqual(water, 0, `seed ${seed} 整形区必须零水格（实际 ${water} 列 ≤ SEA_Y）`);
-    assertTrue(cols > 30000, `seed ${seed} 整形列数应 > 30000（实际 ${cols}）`);
+    assertEqual(mismatch, 0, `seed ${seed} 地形必须零改动（实际 ${mismatch} 列 ≠ generateHeight）`);
+    assertEqual(water, 0, `seed ${seed} 占地内必须零水格（实际 ${water} 列 ≤ SEA_Y）`);
+    assertTrue(cols > 30000, `seed ${seed} 管理区列数应 > 30000（实际 ${cols}）`);
   }
 });
 
-test('丛林要塞整形：边缘与区内相邻高差 ≤ 1（无悬崖，8 seed）', () => {
-  // ⚠️ **必须跑满 8 seed**（review M2）：「逐列带宽 w」这条的判别力恰在 777/4242/8888
-  //    （实测固定 16 时它们分别有 123/100/140 列 target 不同），而 12345/99999 无差异。
-  //    只跑 12345 等于没守。
+test('丛林要塞地形：自然起伏保留 —— 区内相邻高差 ≤1 且确存起伏（8 seed）', () => {
+  // ⚠️ 旧用例钉「削平后高差≤1」，削平后恒 0 ⇒ 无判别力。
+  //    新语义：高差≤1 是**自然地形自带的**，同时要钉「不是平地」（存在 ≠0 的相邻对），
+  //    否则注入削平后两侧都绿。
   for (const seedStr of Object.keys(FROZEN_ANCHORS)) {
     const seed = Number(seedStr);
     const a = computeJungleFortressAnchor(seed);
     const B = JUNGLE_FORTRESS_SLOPE_BAND;
-    const T = new Map();
+    let maxJump = 0, nonFlat = 0;
     for (let dx = -JUNGLE_FORTRESS_HALF_X - B; dx <= JUNGLE_FORTRESS_HALF_X + B; dx++) {
       for (let dz = -JUNGLE_FORTRESS_HALF_Z - B; dz <= JUNGLE_FORTRESS_HALF_Z + B; dz++) {
-        const t = jungleFortressSurfaceYAt(a.wx + dx, a.wz + dz, seed, a);
-        if (t !== null) T.set(`${dx},${dz}`, t);
+        const v = jungleFortressSurfaceYAt(a.wx + dx, a.wz + dz, seed, a);
+        for (const [ax, az] of [[1, 0], [0, 1]]) {
+          const b = jungleFortressSurfaceYAt(a.wx + dx + ax, a.wz + dz + az, seed, a);
+          const j = Math.abs(v - b);
+          if (j > maxJump) maxJump = j;
+          if (j !== 0) nonFlat++;
+        }
       }
     }
-    let edgeJump = 0, inJump = 0;
-    for (const [k, v] of T) {
-      const [dx, dz] = k.split(',').map(Number);
-      for (const [ax, az] of [[1, 0], [0, 1]]) {
-        const nk = `${dx + ax},${dz + az}`;
-        const b = T.has(nk) ? T.get(nk) : generateHeight(a.wx + dx + ax, a.wz + dz + az, seed);
-        const j = Math.abs(v - b);
-        if (T.has(nk)) inJump = Math.max(inJump, j); else edgeJump = Math.max(edgeJump, j);
-      }
-    }
-    assertTrue(edgeJump <= 1, `seed ${seed} 整形区边缘相邻高差必须 ≤1（实际 ${edgeJump}）`);
-    assertTrue(inJump <= 1, `seed ${seed} 整形区内相邻高差必须 ≤1（实际 ${inJump}）`);
+    assertTrue(maxJump <= 1, `seed ${seed} 相邻高差必须 ≤1（实际 ${maxJump}）`);
+    assertTrue(nonFlat > 1000, `seed ${seed} 必须保留自然起伏（实际非平相邻对 ${nonFlat}）`);
   }
 });
 
-test('丛林要塞整形：surfaceYAt 与 fillJungleFortressGround 写入的地表逐格一致', async () => {
+test('丛林要塞地形：真实 GEN 后非建筑列地表逐格 == generateHeight（零削平）', async () => {
   const seed = 12345;
   const a = computeJungleFortressAnchor(seed);
-  const reg = await buildDefaultRegistry();   // ⚠️ 它是 async（延迟 import 避循环依赖）
-  // 取一个横跨占地边缘的 column（既有整形列也有未整形列）
+  const reg = await buildDefaultRegistry();
+  const data = await loadStructure('jungleFortress');
+  // 产物含实心的列（这些列的地表会被建筑抬高，不属于「地形」口径）
+  const builtCols = new Set();
+  for (const b of data.blocks) {
+    if (b.type !== 'air') builtCols.add(`${b.x},${b.z}`);
+  }
+  // 取横跨占地东缘的 column：既有建筑列也有纯自然列
   const cx = Math.floor((a.wx + JUNGLE_FORTRESS_HALF_X) / 16);
   const cz = Math.floor(a.wz / 16);
   const col = new ChunkColumn(cx, cz);
   fillColumn(col, seed, reg);
   carveCaves(col, seed, reg);
-  fillJungleFortressGround(col, a, seed, reg);
+  const layouts = neighborRegionKeys(cx, cz)
+    .map((k) => { const [rx, rz] = k.split(',').map(Number); return computeRegionLayout(rx, rz, seed); });
+  await applyStructuresToColumn(col, seed, reg, layouts);
+  const terrainIds = new Set(['stone', 'dirt', 'sand', 'grass', 'end_stone',
+    'snow_grass', 'swamp_grass', 'moss'].map((n) => reg.idOf(n)));
   let checked = 0;
   for (let lx = 0; lx < 16; lx++) {
     for (let lz = 0; lz < 16; lz++) {
       const wx = cx * 16 + lx, wz = cz * 16 + lz;
-      const t = jungleFortressSurfaceYAt(wx, wz, seed, a);
-      if (t === null) continue;
+      if (builtCols.has(`${wx - a.wx},${wz - a.wz}`)) continue;
       checked++;
-      // ① target 层是地表方块（非空气）
-      assertTrue(col.blocks[blockIndex(lx, t, lz)] !== 0,
-        `(${wx},${wz}) target=${t} 层必须是地表方块`);
-      // ② target 以上全空
-      assertEqual(col.blocks[blockIndex(lx, t + 1, lz)], 0,
-        `(${wx},${wz}) target 以上必须清空`);
-      // ③ target 层材质 = surfaceTypeOfBiome
-      const want = reg.idOf(surfaceTypeOfBiome(getBiome(wx, wz, seed)));
-      assertEqual(col.blocks[blockIndex(lx, t, lz)], want,
-        `(${wx},${wz}) 地表材质必须是 surfaceTypeOfBiome（唯一权威）`);
+      const h = generateHeight(wx, wz, seed);
+      // ① 自然地表那格仍是 biome 材质（未被削掉、未被铺成其他材质）
+      assertEqual(col.blocks[blockIndex(lx, h, lz)],
+        reg.idOf(surfaceTypeOfBiome(getBiome(wx, wz, seed))),
+        `(${wx},${wz}) 自然地表 h=${h} 处必须是 biome 材质`);
+      // ② 地表以上不得有地形实心方块（削平不完全 / 填土都会在这里现形）
+      for (let y = h + 1; y < WORLD_MAX_Y; y++) {
+        const id = col.blocks[blockIndex(lx, y, lz)];
+        assertTrue(!terrainIds.has(id),
+          `(${wx},${wz}) y=${y} 不得有地形实心方块（实际 id=${id}）`);
+      }
     }
   }
-  assertTrue(checked > 0, `该 column 必须有整形列（实际 ${checked}）`);
+  assertTrue(checked > 0, `该 column 必须有非建筑列（实际 ${checked}）`);
 });
 
-test('丛林要塞整形区判定：inJungleFortressTerraform 含缓坡带、带外恒假', () => {
+test('丛林要塞植被管理区判定：inJungleFortressTerraform 含 16 格外延、区外恒假', () => {
   const a = computeJungleFortressAnchor(12345);
   const anchors = [a];
-  assertTrue(inJungleFortressTerraform(a.wx, a.wz, anchors), '中心在整形区');
+  assertTrue(inJungleFortressTerraform(a.wx, a.wz, anchors), '中心在管理区');
   const B = JUNGLE_FORTRESS_SLOPE_BAND;
   assertTrue(inJungleFortressTerraform(a.wx + JUNGLE_FORTRESS_HALF_X + B, a.wz, anchors),
-    '缓坡带最外缘在整形区（闭区间）');
+    '16 格外延最外缘在管理区（闭区间）');
   assertTrue(!inJungleFortressTerraform(a.wx + JUNGLE_FORTRESS_HALF_X + B + 1, a.wz, anchors),
-    '缓坡带外一格不在整形区');
+    '外延外一格不在管理区');
   assertTrue(!inJungleFortressTerraform(a.wx, a.wz, null), 'anchors null 恒假');
 });
 
@@ -548,11 +557,11 @@ test('丛林要塞接线：真实 GEN 后锚点 column 含要塞方块，房间�
     `产物底部世界 y=${worldBottom} 必须 ≥ WORLD_MIN_Y=${WORLD_MIN_Y}`);
 });
 
-test('丛林要塞接线：整形区内地表 = surfaceYAt（真实 GEN 写入）', async () => {
+test('丛林要塞接线：管理区内地表 = surfaceYAt（真实 GEN 写入）', async () => {
   const seed = 12345;
   const a = computeJungleFortressAnchor(seed);
   const reg = await buildDefaultRegistry();
-  // 取缓坡带内的 column（只有整形、没有结构方块，判据最干净）
+  // 取 16 格外延内的 column（只有自然地表 + 植被，没有结构方块，判据最干净）
   const cx = Math.floor((a.wx + JUNGLE_FORTRESS_HALF_X + 8) / 16);
   const cz = Math.floor(a.wz / 16);
   const col = new ChunkColumn(cx, cz);
@@ -565,23 +574,22 @@ test('丛林要塞接线：整形区内地表 = surfaceYAt（真实 GEN 写入�
     for (let lz = 0; lz < 16; lz++) {
       const wx = cx * 16 + lx, wz = cz * 16 + lz;
       const t = jungleFortressSurfaceYAt(wx, wz, seed, a);
-      if (t === null) continue;
+      assertTrue(t !== null, `(${wx},${wz}) surfaceYAt 恒有值`);
       checked++;
       const want = reg.idOf(surfaceTypeOfBiome(getBiome(wx, wz, seed)));
       assertEqual(col.blocks[blockIndex(lx, t, lz)], want,
-        `(${wx},${wz}) 整形地表必须是 surfaceYAt=${t} 处的 biome 材质`);
-      // ⚠️ **v3.13b 语义变更**：用户要求空地植树植草 ⇒ target+1 可能是草/花/树干，
-      //    不再恒为空气。旧断言「上方必须清空」与新需求相反。
-      //    改钉「上方不得是 **地形实心方块**（stone/dirt/sand/grass 类）」——
-      //    那才是「原山体未被削平」的形态；植被与结构方块不算。
+        `(${wx},${wz}) 地表必须是 surfaceYAt=${t} 处的 biome 材质`);
+      // ⚠️ **v3.13b 语义**：用户要求空地植树植草 ⇒ target+1 可能是草/花/树干，
+      //    不再恒为空气。钉「上方不得是 **地形实心方块**」——
+      //    那才是「原山体未被削平 / 多填了土」的形态；植被与结构方块不算。
       const above = col.blocks[blockIndex(lx, t + 1, lz)];
       const terrainIds = new Set(['stone', 'dirt', 'sand', 'grass', 'end_stone',
         'snow_grass', 'swamp_grass', 'moss'].map((n) => reg.idOf(n)));
       assertTrue(!terrainIds.has(above),
-        `(${wx},${wz}) 整形地表以上不得残留原山体地形方块（实际 id=${above}）`);
+        `(${wx},${wz}) 地表以上不得有地形实心方块（实际 id=${above}）`);
     }
   }
-  assertTrue(checked > 0, `该 column 必须有整形列（实际 ${checked}）`);
+  assertTrue(checked > 0, `该 column 必须有管理区列（实际 ${checked}）`);
 });
 
 // ==================== 树叶让位语义（v3.13c，用户实玩：「树叶被切割」）====================
@@ -904,13 +912,19 @@ test('丛林要塞：树干落点也逐格判 —— 贴墙但树干格是空气
   }
   assertTrue(probe.length > 50,
     `必须有足量「贴墙但树干格是空气」的候选列（实际 ${probe.length}）—— 否则无判别力`);
+  // ⚠️⚠️ **v3.16 阀值重标**：地表从「削平到 floorY」改为自然高度后，贴墙候选列
+  //    从数百缩到 **78**（实测 seed 12345），其中 `jfTreeKept`（密度减半）命中 **43**。
+  //    旧阀值 `>100` 在新语义下**正确实现也恒红**（它钉的是旧候选池规模）。
+  //    真意图仍是「贴墙树不被**整类**禁写」（列级缺陷下 hasTrunk === 0），
+  //    故改钉「命中稀疏抽签的候选全部种下了」+ 「种下数量 >30」。
+  const keptCount = probe.filter((q) => jfTreeKept(q.wx, q.wz, seed)).length;
   const byCol = new Map();
   for (const q of probe) {
     const ck = `${Math.floor(q.wx / 16)},${Math.floor(q.wz / 16)}`;
     if (!byCol.has(ck)) byCol.set(ck, []);
     byCol.get(ck).push(q);
   }
-  let missingTrunk = 0, hasTrunk = 0;
+  let missingTrunk = 0, hasTrunk = 0, missingKept = 0;
   for (const [ck, list] of byCol) {
     const [cx, cz] = ck.split(',').map(Number);
     const col = new ChunkColumn(cx, cz);
@@ -922,16 +936,19 @@ test('丛林要塞：树干落点也逐格判 —— 贴墙但树干格是空气
     for (const q of list) {
       const lx = ((q.wx % 16) + 16) % 16, lz = ((q.wz % 16) + 16) % 16;
       const id = col.blocks[blockIndex(lx, q.y, lz)];
-      if (trunkIds.has(id)) hasTrunk++; else missingTrunk++;
+      if (trunkIds.has(id)) hasTrunk++;
+      else { missingTrunk++; if (jfTreeKept(q.wx, q.wz, seed)) missingKept++; }
     }
   }
-  // ⚠️ **v3.13e 语义更新**：用户要求树密度减半 ⇒ 不能再钉「每个候选列都有树」。
+  // ⚠️ **v3.13e 语义**：用户要求树密度减半 ⇒ 不能钉「每个候选列都有树」。
   //    本用例的真意图是「贴墙的树不被**整类**禁写」（列级判据的缺陷形态是 **hasTrunk === 0**）。
-  //    改钉「贴墙树确实种下了相当数量」：列级缺陷下恒为 0，减半后仍应有几百棵。
-  //    「减半比例」由上一条独立用例钉，两条分工不重叠。
-  assertTrue(hasTrunk > 100,
-    `贴墙的树必须真的种下（实际 ${hasTrunk} 棵，未种 ${missingTrunk}）—— ` +
-    '为 0 说明落点判据退回列级，贴墙树整棵不生成 ⇒ 邻居树冠被空洞切平');
+  //    「减半比例」由上两条独立用例钉，三条分工不重叠。
+  assertEqual(missingKept, 0,
+    `命中稀疏抽签的贴墙候选必须全部种下（实际漏种 ${missingKept} 棵）—— ` +
+    '非零说明落点/让位判据把贴墙树挡掉了（与密度抽签无关）');
+  assertTrue(hasTrunk > 30,
+    `贴墙的树必须真的种下（实际 ${hasTrunk} 棵 / 抽签命中 ${keptCount}，未种 ${missingTrunk}）—— ` +
+    '接近 0 说明落点判据退回列级，贴墙树整棵不生成 ⇒ 邻居树冠被空洞切平');
 });
 
 test('丛林要塞接线：占地内零撒布，植被只在空地上（v3.13b 用户要求空地植树植草）', async () => {

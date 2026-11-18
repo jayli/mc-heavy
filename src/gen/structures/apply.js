@@ -36,7 +36,7 @@ import {
 import { RUINED_CITADEL_VARIANTS } from './ruined-citadel-data.js';
 import { JUNGLE_FORTRESS_HALF_X, JUNGLE_FORTRESS_HALF_Z, JUNGLE_FORTRESS_VARIANTS } from './jungle-fortress-data.js';
 import {
-  fillJungleFortressGround, inJungleFortressTerraform, jungleFortressSurfaceYAt,
+  inJungleFortressTerraform, jungleFortressSurfaceYAt,
   JUNGLE_FORTRESS_SLOPE_BAND,
 } from './jungle-fortress-terrain.js';
 import { TARN_ZONE_RADIUS, snowLandSuppressedByTarn, TARN_CLOUD_MIN_Y } from './tarn-zone.js';
@@ -1119,28 +1119,25 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
       setBlock, column, registry, seed, false);
   }
 
-  // ---- 阶段 2.95：丛林要塞（Jungle Fortress，v3.13）----
+  // ---- 阶段 2.95：丛林要塞（Jungle Fortress，v3.13 移植 / v3.16 地形耦合）----
   //
   // 层序：在废弃堡垒（2.94）之后、空中结构（2.5）之前 —— 保持「地面级内容先于
   // 空中内容」的既有层序；与废弃堡垒已在锚点层互斥，先后不影响结果。
   //
-  // 两件事的顺序是**载荷性的**：
-  //   ① fillJungleFortressGround：整形（削平 + 铺地表 + 填实）
-  //   ② rasterizeStructure：光栅化
-  // 倒过来（先光栅化再整形）会把结构底部削掉 —— 整形的「target 以上写 0」不认结构方块。
+  // ⚠️ **v3.16 删除了削平整形**（旧① `fillJungleFortressGround`）：地形保留自然起伏，
+  //    结构整体抬到 `jf.floorY`（= baseY，占地自然高度 75 分位），底面悬空处由石墩托底。
+  //    旧层序约束「不得先整形后光栅化」自动满足（无整形）。
   //
-  // ⚠️ **不补 groundSupport**：支撑柱已在烘焙期固化（6,446 格，遇房间地板即停），
-  //    运行期再补会把房间填实。
+  // ⚠️ **不补 groundSupport**（第 9 参仍 false）：那套是「贴地层向下探 ≤5 格」，
+  //    与墩的「逐列补到自然地表」语义不同（墩高最大 22 > 5），两者叠加会重复写且探不到底。
   for (const layout of layouts) {
     const jf = layout.jungleFortress;
     if (!jf) continue;
-    // 整形范围含缓坡带，故用整形区的半宽做裁剪（不是占地）
+    // 裁剪用植被管理区半宽（含 16 格外延）：后续墩/裙边也在这一带写
     const jfBX = JUNGLE_FORTRESS_HALF_X + JUNGLE_FORTRESS_SLOPE_BAND;
     const jfBZ = JUNGLE_FORTRESS_HALF_Z + JUNGLE_FORTRESS_SLOPE_BAND;
     if (!placementIntersects({ x: jf.wx, z: jf.wz }, jfBX, jfBZ, column.cx, column.cz)) continue;
-    // ① 地形整形（内部自己按 column 交集裁剪）
-    fillJungleFortressGround(column, jf, seed, registry);
-    // ② 光栅化：floorRow 层坐在 floorY 上
+    // 光栅化：floorRow 层坐在 baseY 上
     const jfFloorRow = floorRowOf('jungleFortress');
     rasterizeStructure('jungleFortress', jf.wx, jf.floorY - (jfFloorRow - 1), jf.wz,
       setBlock, column, registry, seed, false);
@@ -1248,7 +1245,7 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
         const { cells: jfCells, roof: jfRoof } = jungleFortressCells(jfData);
         const jfFloorRow = floorRowOf('jungleFortress');
         const surface = jungleFortressSurfaceYAt(wx, wz, seed, jf);
-        if (surface !== null) {
+        {
           // 地表之上一格（草/花/树干基点）的世界 y 与产物 ny
           const groundY = surface + 1;
           const groundNy = groundY - jf.floorY + jfFloorRow;
