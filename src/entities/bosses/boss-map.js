@@ -239,9 +239,13 @@ const DETECTORS = Object.freeze([
 /**
  * 玩家站在哪张地标级地图里（Boss 召唤的定位入口）。
  *
- * 纯函数（`(wx, wz, seed)` 决定结果），且**只在按 B 时调用一次** —— 不进帧循环，
- * 故 `getCityBoundsForSeed` / `computeShallowTarnAnchor` 的冷调用成本无关紧要
- * （两者各自带 seed 级缓存，且都已在 `Game.start()` 里被预热过）。
+ * 纯函数（`(wx, wz, seed)` 决定结果）。v2.43~v3.15 **只在按 B 时调用一次**；
+ * v3.16 起「这里可以召唤 Boss」提示（`ui/boss-hint.js`）也调它，但是**250ms 节流**
+ * 且启动期已经 `warmBossAnchors()` 预热 ⇒ 实测最坏 0.13ms / 中位 0.004ms。
+ *
+ * ⚠️ **进帧循环前必须先预热**：未预热时首次远点调用实测 **111ms**
+ *（`computeArenaAnchor` 的候选扫描，它不在主线程的 layout 路径上 —— Worker 自己算一份），
+ * 那一下就是一帧卡顿。见 `warmBossAnchors`。
  *
  * @param {number} wx @param {number} wz 玩家世界坐标
  * @param {number} seed
@@ -254,4 +258,34 @@ export function bossMapAt(wx, wz, seed) {
     if (map) return map;
   }
   return null;
+}
+
+/**
+ * 预热本 seed 的全部地标级锚点缓存（v3.16，**启动期调一次**）。
+ *
+ * ## 为什么需要它
+ *
+ * 上面各 `compute*Anchor` 都带 seed 级 memo，但**主线程的 memo 与 Worker 的是两份**
+ *（Worker 在 `world-worker.js` 的 layout 入口自己预热，不回传锚点）。主线程只在
+ * 「按 B」与「点瞬移按钮」时才碰它们 ⇒ 未预热时首次调用实测：
+ * `computeArenaAnchor` **22~88ms**（候选扫描）、整个 `bossMapAt` 远点首调 **111ms**。
+ * 按 B 时那一下没人计较（玩家刚按键），但提示要**每 250ms 跑一次** ⇒ 必须先把这笔
+ * 一次性成本付在启动期（那里已经在 await 列加载，多 150ms 无感）。
+ *
+ * ⚠️ **这不是第二份权威**（红线 1）：它不缓存任何结果，只是把既有函数各调一次
+ * 让它们自己的 memo 填上。判据仍然只有 `bossMapAt` 一条路。
+ *
+ * ⚠️ **顺序是载荷性的**：围场 → 大竞技场 → 废弃堡垒。后两者内部要读前者的锚点做避让，
+ * 倒序不会错（它们自己会调）但会把同一个扫描拆成两次计时，与 `world-worker.js` 的
+ * layout 入口保持同一顺序便于对照。
+ *
+ * @param {number} seed
+ */
+export function warmBossAnchors(seed) {
+  if (!Number.isFinite(seed)) return;
+  getCityBoundsForSeed(seed);
+  computeShallowTarnAnchor(seed);
+  computeArenaAnchor(seed);
+  computeBurningArenaAnchor(seed);
+  computeRuinedCitadelAnchor(seed);
 }

@@ -67,7 +67,7 @@ import { loadGuardianAsset, GUARDIAN_DEATH_COLOR } from '../render/guardian-mode
 import { applyDamage } from '../player/health.js';
 import { FireballRenderer } from '../render/fireball-renderer.js';
 import { playerHitboxLocal } from '../player/physics.js';
-import { bossMapAt } from '../entities/bosses/boss-map.js';
+import { bossMapAt, warmBossAnchors } from '../entities/bosses/boss-map.js';
 import { bossSlotsFor } from '../entities/bosses/boss-registry.js';
 import { DragonRenderer } from '../render/dragon-renderer.js';
 import { loadDragonAsset } from '../render/dragon-model.js';
@@ -87,6 +87,7 @@ import { CoordsHUD } from '../ui/coords-hud.js';
 import { HealthHUD } from '../ui/health-hud.js';
 import { DamageNumbers } from '../ui/damage-numbers.js';
 import { Minimap } from '../ui/minimap.js';
+import { BossHintHUD } from '../ui/boss-hint.js';
 import { Crosshair } from '../ui/crosshair.js';
 import { SettingsPanel } from '../ui/settings-panel.js';
 import { createHotbar } from '../ui/hotbar.js';
@@ -1126,6 +1127,19 @@ export class Game {
     this._minimap = new Minimap(this._hudRoot, this);
     // 城市布局此刻已就绪（上面 `structureIndex.waitForRegion(0,0)` 已 await）→ 首帧就能画出城市。
     this._minimap.redraw();
+    // v3.16：「这里可以召唤 Boss」常驻提示（用户 2026-11-18）。
+    // 判据转调按 B 的同一份权威（`bossMapAt` + `nextSummonableBoss`）⇒ 提示与召唤结果
+    // 结构上不会分裂；本层只负责把它接进帧循环。
+    //
+    // ⚠️ **必须先 `warmBossAnchors(seed)`**：主线程的锚点 memo 与 Worker 的是两份，
+    // 未预热时首次远点 `bossMapAt` 实测 **111ms**（computeArenaAnchor 的候选扫描）。
+    // 按 B 时那一下没人计较，但提示要每 250ms 跑一次 ⇒ 把这笔一次性成本付在启动期
+    //（此处已在等列加载之后，实测共 ~150ms）。预热后最坏 0.13ms / 中位 0.004ms。
+    warmBossAnchors(this.seed);
+    this._bossHint = new BossHintHUD(this._hudRoot, this);
+    // 显式算一次（同迷你地图的 redraw 口径）：不寄望于「首帧恰好跑到节流分支」。
+    // 恢复存档时玩家可能直接落在高台地带/围场里 ⇒ 开局就该看得到提示。
+    this._bossHint.update(performance.now());
     // 准心配色自适应（v1.64）：按准心背后画面亮度在白色/黑色间切 —— 固定白在雪地/白墙上消失。
     // 挂在 `_hudRoot` 下（与其他 HUD 同层），但**独立于 HUD 的显示/隐藏**：它是准心不是 HUD。
     this.crosshair = new Crosshair(document.body, this);
@@ -1348,6 +1362,9 @@ export class Game {
       this._hotbar.update(this.player.hotbarIndex);
       // 玩家血心：血量没变时内部直接 return（当前阶段恒满 → 每帧一次数值比较）
       this._healthHud.update(nowMs);
+      // v3.16：Boss 召唤提示（内部 250ms 节流，未到期直接 return = 一次时间比较）。
+      // 放在血心之后、实体发布之前：它只读 player.pos 与 entities，与渲染无关。
+      this._bossHint.update(nowMs);
       // M5 帧序最后一步：把实体 pose 发布成 scene 节点（scheduler 可能已卸载/恢复实体，
       // 用最新集合 sync，节点数恒等于实体数 —— 生命周期对称）
       this.entityLayer.sync(this.entities.entities());
@@ -3763,6 +3780,8 @@ export class Game {
     this.inventoryPanel?.dispose();
     // 迷你地图（v2.8）：纯 DOM，摘除节点即可（无 GPU 资源、无事件监听）
     this._minimap?.dispose();
+    // v3.16：Boss 召唤提示（同口径：纯 DOM）
+    this._bossHint?.dispose();
     // M4：反向释放武器运行时（Player → Audio → ModelLoader → WorkerPool → renderer）
     this.player?.dispose();
     this.audioManager?.dispose();
