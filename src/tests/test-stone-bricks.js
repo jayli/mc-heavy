@@ -153,7 +153,6 @@ test('stone-bricks: downsampleByTexelCenter 无损还原放大图（含 alpha �
 
 test('stone-bricks: downsampleByTexelCenter 在 origin 错半格时 throw（相位判据有判别力）', () => {
   const cells = [[159, 134, 159], [115, 80, 115], [137, 98, 137], [148, 119, 148]];
-  const src = magnify(cells, 2, 8, 3);
   // ⚠️ **错整一格抓不到**（实测）：step=8 时 origin+4 仍是每个 texel 的正中心，
   //    分区边界跟着平移 ⇒ 中心色与众数仍一致。真实源图的 step 是 **28.875（非整数）**，
   //    相位漂移半格就会让中心落进邻格 ⇒ 这里用 step=7（奇数）造半格漂移。
@@ -227,8 +226,8 @@ test('stone-bricks: 4 个新方块都在背包物品集合内（用户明确要�
 test('stone-bricks: 新方块追加在 BLOCKS 末尾，既有 155 个 id 逐位不变（旧存档按数字 id 读）', () => {
   // 既有方块 id 冻结表（与 test-bush-grass.js / test-block-registry.js 同口径）
   const FROZEN_IDS = {
-    air: 0, water: 2, short_grass: 19, stone: 50, grass: 69, deepslate: 86,
-    end_stone_brick_slab: 153, bush_grass: 154,
+    'air': 0, 'water': 2, 'short_grass': 19, 'stone': 50, 'grass': 69, 'deepslate': 86,
+    'end_stone_brick_slab': 153, 'bush_grass': 154,
   };
   for (const [name, id] of Object.entries(FROZEN_IDS)) {
     assertEqual(BLOCKS.findIndex((b) => b.name === name), id, `${name} 的 id 必须恒为 ${id}`);

@@ -99,6 +99,8 @@ const SKYBOX = await import('../src/render/sky-config.js');
 const SHALLOW = await import('./shallow-tarns-fingerprint.mjs');
 // 两个草方块的贴图烘焙参数与指纹（同上）
 const GRASS_TEX = await import('./grass-textures-fingerprint.mjs');
+// 原版石砖三变体 + 紫珀方块的贴图烘焙参数与指纹（v3.19，同上）
+const STONE_TEX = await import('./stone-bricks-fingerprint.mjs');
 // 跨湖拱桥的材质契约（v2.24）：六种必须都是已注册的 opaque 方块
 const BRIDGE = await import('../src/gen/structures/shallow-water-bridge.js');
 const atlasMeta = JSON.parse(fs.readFileSync(path.join(ROOT, 'assets', 'atlas.json'), 'utf8'));
@@ -3639,6 +3641,95 @@ function checkGrassTextures() {
   }
 }
 
+// ---------------------------------------------------------------- [石砖贴图] 契约（v3.19）
+
+/**
+ * [石砖贴图] 契约：4 张 16×16 产物 / 指纹 / 均值 / **两条内容级判据**。
+ *
+ * 钉的失效路径（均为静默失败）：
+ *   ① 素材或参考渲染图换了但没重烘 → 指纹抓；
+ *   ② **重映射把图案打乱了**（只比色数拓不到）→ `patternSignature` 逐格比；
+ *   ③ **purpur 取样相位错半格**（尺寸/色数/均值都可能看着合理）→ 众数一致性；
+ *   ④ 产物尺寸不是 16 → atlas 里变成异常 tile（大图会被降到 128）。
+ *
+ * ⚠️ 成功行的条件必须涵盖本函数全部判据。
+ */
+function checkStoneBrickTextures() {
+  const before = failures.length;
+  const fail = (m) => failures.push(`[石砖贴图] ${m}`);
+  const S = STONE_TEX;
+
+  if (!fs.existsSync(S.STONE_BRICKS_META)) { fail('缺 meta（跑 npm run stonebricks）'); return; }
+  let meta;
+  try { meta = JSON.parse(fs.readFileSync(S.STONE_BRICKS_META, 'utf8')); }
+  catch { fail('meta 不是合法 JSON（重跑 npm run stonebricks）'); return; }
+  const fp = S.stoneBricksInputFingerprint();
+  if (meta.fingerprints?.input !== fp.input) {
+    fail(`产物已过期：指纹不匹配（烘焙时 "${meta.fingerprints?.input?.slice(0, 12)}…" vs 当前 "${fp.input.slice(0, 12)}…"）→ 跑 npm run stonebricks`);
+  }
+
+  const summary = [];
+  for (const [name, def] of Object.entries(S.STONE_BRICK_TEXTURES)) {
+    const outFile = S.stoneBrickOutputPath(name);
+    if (!fs.existsSync(outFile)) { fail(`缺产物 ${def.out}（跑 npm run stonebricks）`); continue; }
+    const png = PNG.sync.read(fs.readFileSync(outFile));
+    if (png.width !== S.STONE_BRICK_TILE_SIZE || png.height !== S.STONE_BRICK_TILE_SIZE) {
+      fail(`${name}: 产物尺寸 ${png.width}×${png.height} ≠ ${S.STONE_BRICK_TILE_SIZE}²`);
+      continue;
+    }
+    const rec = meta.textures?.[name];
+    if (!rec) { fail(`${name}: meta 里没有该贴图的记录`); continue; }
+    // 均值（与烘焙器同口径）
+    const got = S.meanRgb(png);
+    const want = S.STONE_BRICK_TARGET_MEAN[name];
+    const dev = got.map((v, i) => Math.abs(v - want[i]));
+    if (dev.some((d) => d > 0.05)) {
+      fail(`${name}: 均值 ${got.map((v) => v.toFixed(2)).join('/')} 偏离标定 ${want.join('/')} > 0.05/通道`);
+    }
+    // 源图字节未改
+    if (rec.sourceSha256 !== S.fileSha256(S.stoneBrickSourcePath(name))) {
+      fail(`${name}: 源图字节变了但未重烘（跑 npm run stonebricks）`);
+    }
+    const src = PNG.sync.read(fs.readFileSync(S.stoneBrickSourcePath(name)));
+    if (def.mode === 'remap') {
+      // 参考图字节未改（它决定配色）
+      const refFile = S.stoneBrickReferencePath(name);
+      if (rec.referenceSha256 !== S.fileSha256(refFile)) {
+        fail(`${name}: 参考渲染图字节变了但未重烘`);
+      }
+      // **内容级①**：重算映射 → 图案分区必须与源图逐格一致
+      const render = PNG.sync.read(fs.readFileSync(refFile));
+      let map;
+      try { map = S.topFaceColorMap(render, src, S.TOP_FACE_GEOM); }
+      catch (e) { fail(`${name}: 顶面配色反解失败 —— ${String(e.message).split('\n')[0]}`); continue; }
+      const expect = S.remapPalette(src, map);
+      if (JSON.stringify(S.patternSignature(png)) !== JSON.stringify(S.patternSignature(src))) {
+        fail(`${name}: 产物图案分区与源图不一致 —— 重映射只允许换色值，不得动图案`);
+      }
+      // 逐字节比产物与「现算的应然产物」（拓「只改算法不动参数」盲区）
+      let diff = 0;
+      for (let i = 0; i < png.data.length; i++) if (png.data[i] !== expect.data[i]) diff++;
+      if (diff !== 0) fail(`${name}: 产物与现算结果有 ${diff} 个字节差 —— 算法改了但未重烘`);
+    } else {
+      // **内容级②**：purpur 逐 texel 中心色 == 区域众数（相位判据）
+      let expect;
+      try { expect = S.downsampleByTexelCenter(src, S.PURPUR_DOWNSAMPLE); }
+      catch (e) { fail(`${name}: texel 降采样自检失败 —— ${String(e.message).split('\n')[0]}`); continue; }
+      let diff = 0;
+      for (let i = 0; i < png.data.length; i++) if (png.data[i] !== expect.data[i]) diff++;
+      if (diff !== 0) fail(`${name}: 产物与现算结果有 ${diff} 个字节差 —— 取样参数或算法改了但未重烘`);
+      let translucent = 0;
+      for (let i = 3; i < png.data.length; i += 4) if (png.data[i] !== 255) translucent++;
+      if (translucent !== 0) fail(`${name}: 产物含 ${translucent} 个非全不透明像素（方块贴图必须不透明）`);
+    }
+    summary.push(`${name} ${got.map((v) => v.toFixed(0)).join('/')}`);
+  }
+
+  if (failures.length === before) {
+    infos.push(`[石砖贴图] ${summary.join(' · ')}（3 张等色重映射 + 1 张 texel 降采样，图案分区与众数一致性均已核）`);
+  }
+}
+
 // ---------------------------------------------------------------- [树叶剔除] 契约（v1.70）
 
 /**
@@ -4174,6 +4265,7 @@ await checkJungleFortress(); // 丛林要塞：17 片 jigsaw 定版产物/房间
 await checkShallowTarns();   // 浅水高台：5 产物/palette 白名单/源方块映射/草基准色/尺寸契约
 await checkMedievalShip();   // 中世纪船：4 旋转变体/朝向自洽/新方块声明/朝向表同源（⚠️ 漏了本行则门禁永不执行）
 checkGrassTextures();        // 草贴图：两个 16×16 产物 + 均值偏差 + 源图未改
+checkStoneBrickTextures();   // 石砖贴图（v3.19）：4 张 16×16 + 指纹 + 图案分区/众数一致性（⚠️ 漏了本行则门禁永不执行）
 checkLeafCullingContract();  // v1.70：镂空遮挡体派生表与树叶族声明的一致性（⚠️ 漏了本行则门禁永不执行）
 
 console.log('[check:data] 数据契约检查');
