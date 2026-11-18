@@ -607,3 +607,149 @@ test('玩家受击：焰魔砍中玩家 → 扣血 + 播 ignis_hurt', async ({ p
   expect(r.health, '前置：玩家真的被砍到了（血量下降）').toBeLessThan(20);
   expect(r.hurt, '玩家被击中必须播 ignis_hurt').toBeGreaterThan(hurtBase);
 });
+
+/**
+ * 焰魔受击音（用户 2026-11-18）：「焰魔被击中的时候没有被击中的声音……都用 gun_hit.ogg」。
+ *
+ * ⚠️ **必须走玩家真实开火路径**（`setTestAim` + `fireWeaponOnce`），不能直接调
+ * `damageEntity()`：后者只能证明「装配层播了音」，证明不了「枪打中焰魔时那条路真的经过它」
+ * （AGENTS.md M7 教训：接线类测试必须从玩家真实入口进入）。
+ *
+ * ⚠️ 判据同时钉三件事，缺一就有假绿：
+ *   ① 这一枪真的命中（effect `entity-hit` + 扣血 25）—— 否则测的是「挥空」；
+ *   ② `gun_hit` 计数 +1 —— 只钉「有声音」的话接错 id 也会通过；
+ *   ③ 枪声 `gun_fire` 也在 —— 证明受击音是**叠加**而不是把枪声顶掉。
+ */
+test('焰魔：枪击中播 gun_hit（受击音，与守卫统一）', async ({ page }) => {
+  test.setTimeout(180_000);
+  await page.goto(`/?vd=2&seed=${SEED}`);
+  await waitWorldReady(page);
+  await gotoOpenField(page);
+
+  const sum = await page.evaluate(() => {
+    const g = window.__MC_GAME__;
+    const p = g.player.physics.pos;
+    return g.ignises.summon('audio-spec:0:hit', Math.floor(p.x), Math.floor(p.z) + 6, 1, Math.floor(p.y));
+  });
+  expect(sum.ok, `前置：焰魔召唤成功（${sum.reason ?? ''}）`).toBe(true);
+  await page.waitForFunction((id) =>
+    window.__MC_GAME__.entities.get(id)?.state.onGround === true, sum.id, { timeout: 30_000 });
+
+  const r = await page.evaluate(async (id) => {
+    const g = window.__MC_GAME__;
+    await g.selectWeapon('pistol');
+    await new Promise((res) => setTimeout(res, 600));   // 等视图模型（与既有剑用例同口径）
+    const st = g.entities.get(id).state;
+    const [bx, by, bz] = st.position;
+    // 玩家挪到焰魔正前方 6 格、同高（手枪射程 40，开阔地无遮挡）
+    const p = g.player.physics.pos;
+    p.x = bx; p.y = by; p.z = bz - 6;
+    g.player.physics.vel.x = g.player.physics.vel.y = g.player.physics.vel.z = 0;
+    await new Promise((res) => setTimeout(res, 300));
+    // ⚠️ 瞄准用**当下**位置（焰魔 AI 每帧在动），且瞄身体中心（脚底 + 1.6）
+    const now = g.entities.get(id).state;
+    const [nx, ny, nz] = now.position;
+    const cam = g.camera.position.toArray();
+    g.player.setTestAim([nx - cam[0], ny + 1.6 - cam[1], nz - cam[2]]);
+    const c = g.audioDebugState().playRequests;
+    const before = { hit: c.gun_hit ?? 0, fire: c.gun_fire ?? 0, health: now.health };
+    const effects = g.fireWeaponOnce();
+    const after = g.audioDebugState().playRequests;
+    return {
+      effectType: effects[0]?.type ?? null,
+      healthAfter: g.entities.get(id)?.state.health ?? -1,
+      healthBefore: before.health,
+      hitDelta: (after.gun_hit ?? 0) - before.hit,
+      fireDelta: (after.gun_fire ?? 0) - before.fire,
+      decoded: g.audioManager._buffers.has('gun_hit'),
+    };
+  }, sum.id);
+
+  expect(r.effectType, '前置：这一枪必须命中实体（entity-hit）').toBe('entity-hit');
+  expect(r.healthAfter, '前置：手枪必须扣血 25').toBe(r.healthBefore - 25);
+  expect(r.decoded, 'gun_hit 必须已预载解码（否则只涨计数、永远不出声）').toBe(true);
+  expect(r.hitDelta, '枪击中焰魔必须播一次 gun_hit').toBe(1);
+  expect(r.fireDelta, '受击音是叠加，枪声不得被顶掉').toBe(1);
+});
+
+/**
+ * 末影守卫受击音统一（同上用户裁定）：守卫原来播 `guardian_hurt`，现在也播 `gun_hit`。
+ *
+ * ⚠️ 守卫只在**废弃堡垒占地内**能按 B 召出（`bossMapAt`），故夹具与 guardian.spec 同源：
+ * 传送到堡垒甲板 → 等落点列 → 真实 KeyB。开阔地里 `guardians.summon` 虽然也能造出实体，
+ * 但那样就绕过了「玩家真能召出它」这条真实入口。
+ *
+ * ⚠️ 负向锚点：`guardian_hurt` 计数必须**不变** —— 只钉 gun_hit 上涨的话，
+ * 「两个音一起播」也会通过（用户要的是统一，不是叠加）。
+ */
+test('末影守卫：枪击中播 gun_hit，不再播 guardian_hurt', async ({ page }) => {
+  test.setTimeout(300_000);
+  await page.goto(`/?vd=2&seed=${SEED}`);
+  await waitWorldReady(page);
+  const a = await page.evaluate(async () => {
+    const m = await import('/src/gen/structures/ruined-citadel.js');
+    const g = window.__MC_GAME__;
+    const an = m.computeRuinedCitadelAnchor(g.seed);
+    if (!an) return null;
+    return {
+      wx: an.wx, wz: an.wz, floorY: an.floorY,
+      dx: m.RUINED_CITADEL_SUMMON_DX, dz: m.RUINED_CITADEL_SUMMON_DZ,
+    };
+  });
+  expect(a, '前置：seed 12345 必须有废弃堡垒').not.toBeNull();
+  await page.evaluate(([x, y, z]) => {
+    const g = window.__MC_GAME__;
+    const p = g.player.physics.pos;
+    p.x = x; p.y = y; p.z = z;
+    g.player.physics.vel.x = g.player.physics.vel.y = g.player.physics.vel.z = 0;
+  }, [a.wx + 0.5, a.floorY + 1, a.wz + 0.5]);
+  await page.waitForFunction(([x, z]) => {
+    const g = window.__MC_GAME__;
+    return g.world.hasColumn(Math.floor(x / 16), Math.floor(z / 16));
+  }, [a.wx + a.dx, a.wz + a.dz], { timeout: 120_000 });
+  await page.evaluate(() => {
+    window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyB', repeat: false, bubbles: true, cancelable: true }));
+    window.dispatchEvent(new KeyboardEvent('keyup', { code: 'KeyB', bubbles: true, cancelable: true }));
+  });
+  await page.waitForFunction(
+    () => window.__MC_GAME__.guardians.activeEntities()[0]?.state.onGround === true,
+    null, { timeout: 30_000 });
+
+  const r = await page.evaluate(async () => {
+    const g = window.__MC_GAME__;
+    await g.selectWeapon('pistol');
+    await new Promise((res) => setTimeout(res, 600));
+    const e = g.guardians.activeEntities()[0];
+    if (!e) return { summoned: false };
+    const id = e.id;
+    const [gx, gy, gz] = g.entities.get(id).state.position;
+    // 玩家站到守卫正前方 4 格、同高（上层房间内，与 guardian.spec 的命中用例同手法）
+    const p = g.player.physics.pos;
+    p.x = gx; p.y = gy; p.z = gz - 4;
+    g.player.physics.vel.x = g.player.physics.vel.y = g.player.physics.vel.z = 0;
+    await new Promise((res) => setTimeout(res, 300));
+    const now = g.entities.get(id).state;
+    const [nx, ny, nz] = now.position;
+    const cam = g.camera.position.toArray();
+    // 守卫核心盒从脚底 +1.5 起 ⇒ 瞄 +2.6（照抄焰魔的 +1.6 会打在盒下沿之下）
+    g.player.setTestAim([nx - cam[0], ny + 2.6 - cam[1], nz - cam[2]]);
+    const c = g.audioDebugState().playRequests;
+    const before = { hit: c.gun_hit ?? 0, old: c.guardian_hurt ?? 0, health: now.health };
+    const effects = g.fireWeaponOnce();
+    const after = g.audioDebugState().playRequests;
+    return {
+      summoned: true,
+      effectType: effects[0]?.type ?? null,
+      healthBefore: before.health,
+      healthAfter: g.entities.get(id)?.state.health ?? -1,
+      hitDelta: (after.gun_hit ?? 0) - before.hit,
+      oldDelta: (after.guardian_hurt ?? 0) - before.old,
+    };
+  });
+
+  expect(r.summoned, '前置：守卫必须被召出').toBe(true);
+  expect(r.effectType, '前置：这一枪必须命中守卫（entity-hit）').toBe('entity-hit');
+  expect(r.healthAfter, '前置：手枪必须扣血 25').toBe(r.healthBefore - 25);
+  expect(r.hitDelta, '枪击中守卫必须播一次 gun_hit').toBe(1);
+  expect(r.oldDelta, '不得再播 guardian_hurt（统一，不是叠加）').toBe(0);
+});

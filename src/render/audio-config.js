@@ -45,6 +45,13 @@
  *      ⚠️ **上游无对应音**：原版 `Ignis_Entity.java` 里普攻与旋斩都播 `ModSounds.STRONGSWING`
  *      （没有独立的「旋斩音」），所以这条是用户新增的音，没有 Java 口径可对照。
  *
+ * v3.15 追加 Boss 受击音（用户 2026-11-18）：
+ *   `gun_hit` — **焰魔 / 末影守卫被打中（没死）**。用户：「末影守卫被枪击中的时候会有击中
+ *      声音，焰魔被击中的时候没有被击中的声音……都用 gun_hit.ogg 这个声音」。
+ *      唯一权威 = 下面的 `BOSS_HIT_SOUND`；触发点在 `Game.damageEntity()` 的两个分支。
+ *      ⚠️ `guardian_hurt` 仍在清单里但**已无消费方**（保留素材，不是遗漏）——
+ *      守卫的死亡音 `guardian_die` 与拳击音 `guardian_attack` 一字未改。
+ *
  * ⚠️ **循环类音效（rain / running_*）也在这份清单里**：`play()` 的语义（事件触发、播完即止）
  * 不变，循环走独立的 `playLoop()` / `stopLoop()`。与 BGM 分成两份清单的理由是**生命周期**，
  * 不是「能否循环」（BGM 是单槽 + 开关意图 + 跨手势对齐，循环效果音是事件驱动的短生命）。
@@ -80,7 +87,12 @@ export const SOUND_IDS = Object.freeze(['gun_load', 'gun_fire', 'mag7_fire', 'mi
   // 末影守卫（本次新增）：三个文件已在 Task 1 拷入 assets/sounds/。
   // ⚠️ 受击/死亡音源头是原版的 golemhurt / golemdeath（已查 sounds.json 链路，
   //    不是按名字猜）；拳击音是专属的 ender_guardian_fist_attack。
-  'guardian_attack', 'guardian_hurt', 'guardian_die']);
+  'guardian_attack', 'guardian_hurt', 'guardian_die',
+  // v3.15：**Boss 受击音**（用户 2026-11-18：「末影守卫被枪击中的时候会有击中声音，
+  // 焰魔被击中的时候没有被击中的声音……都用 gun_hit.ogg 这个声音」）。
+  // 文件早已在 assets/sounds/ 里（未入清单 ⇒ 从来没被预载过），本次只是接进来，
+  // **零新增美术资源**。唯一权威见下面的 `BOSS_HIT_SOUND`。
+  'gun_hit']);
 
 /**
  * 音效文件的扩展名覆盖表（v2.64）。
@@ -116,6 +128,8 @@ export const SOUND_EXT_OVERRIDES = Object.freeze({
   guardian_attack: 'ogg',
   guardian_hurt: 'ogg',
   guardian_die: 'ogg',
+  // v3.15 Boss 受击音：磁盘上是 .ogg。漏加本表 = 静默无声（按 .mp3 fetch ⇒ 404 被 catch 吞）
+  gun_hit: 'ogg',
 });
 
 /**
@@ -164,7 +178,29 @@ export const SOUND_VOLUMES = Object.freeze({
   guardian_attack: 0.5,
   guardian_hurt: 0.5,
   guardian_die: 0.5,
+  // v3.15 Boss 受击音：与守卫原受击音同档 0.5（嫌响/嫌轻只改这一个数，不动触发点）。
+  // ⚠️ 素材实测 0.750s，比原 `guardian_hurt`（2.579s）短得多 ⇒ 机枪连射时不会叠成长鸣。
+  gun_hit: 0.5,
 });
+
+/**
+ * 焰魔 / 末影守卫「被打中（没死）」的受击音 id（v3.15，用户 2026-11-18）。
+ *
+ * 用户原话：「末影守卫被枪击中的时候会有击中声音，焰魔被击中的时候没有被击中的声音，
+ * 那我就让焰魔和末影守卫被击中的时候用的声音统一掉，都用 gun_hit.ogg 这个声音。」
+ *
+ * ⚠️ **为什么抽成常量而不是在两个分支各写一次字面量**：这次需求的本体就是「两者用同一个音」。
+ * 写两份字面量的形态是将来改一侧忘另一侧 ⇒ 又退回「两个 Boss 声音不一致」，而所有
+ * 计数类指标都正常（红线 1：同一事实只有一份权威）。
+ *
+ * ⚠️ **只覆盖焰魔与守卫**：丧尸与飞龙刻意保持无受击音（用户只点名这两个 Boss；
+ * 给丧尸加音会把机枪连射的听感整段改掉）。玩家自己被打仍走 `_damagePlayer` → `ignis_hurt`，
+ * 三条路径互不相干。
+ *
+ * ⚠️ **致死一击不播它**：那一下由 `_onEntityDeath` 播各自的死亡音
+ *（`ignis_die` / `guardian_die`），叠加会变成两声。
+ */
+export const BOSS_HIT_SOUND = 'gun_hit';
 
 /**
  * 焰魔「哪一招 → 哪个起手音」的唯一权威（v2.79）。

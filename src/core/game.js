@@ -21,7 +21,7 @@ import { WeatherState, RAIN } from '../render/weather.js';
 import { WeaponModelLoader } from '../render/weapon-model-loader.js';
 import { AudioManager } from '../render/audio-manager.js';
 // v2.64：音量表 / 飞龙吼叫间隔 / 死亡爆散配色的唯一权威在各自 config（红线 1：不在装配层写字面量）。
-import { SOUND_VOLUMES, DRAGON_SHOUT, ignisAttackSound } from '../render/audio-config.js';
+import { SOUND_VOLUMES, DRAGON_SHOUT, ignisAttackSound, BOSS_HIT_SOUND } from '../render/audio-config.js';
 import { ZOMBIE_MODEL_DEFS } from '../render/zombie-model.js';
 import { ViewWeapon } from '../render/view-weapon.js';
 import { ViewArm } from '../render/view-arm.js';
@@ -2413,13 +2413,19 @@ export class Game {
       // v2.55 焰魔：与龙同形状的 damage 契约（红闪 + 死亡即 despawn）
       if (!this.ignises) return null;
       result = this.ignises.damage(id, amount, nowMs);
+      // v3.15：焰魔受击音（用户 2026-11-18）。**这里原来一行都没有** ⇒ 焰魔挨枪只有枪声、
+      // 没有受击反馈（扣血/红闪/伤害数字全对，纯静默缺陷）。与守卫共用 BOSS_HIT_SOUND。
+      if (result && !result.dead) {
+        this.audioManager?.play(BOSS_HIT_SOUND, SOUND_VOLUMES[BOSS_HIT_SOUND]);
+      }
     } else if (entity.type === GUARDIAN_TYPE) {
-      // 末影守卫：同形状契约。受击音是守卫自己的 guardian_hurt
-      //（玩家被打仍走 `_damagePlayer` → ignis_hurt，两条路径不混）。
+      // 末影守卫：同形状契约。v3.15 起受击音与焰魔**统一**为 `BOSS_HIT_SOUND`
+      //（原来是守卫专属的 `guardian_hurt`，用户 2026-11-18 裁定统一掉）。
+      // 玩家被打仍走 `_damagePlayer` → ignis_hurt，两条路径不混。
       if (!this.guardians) return null;
       result = this.guardians.damage(id, amount, nowMs);
       if (result && !result.dead) {
-        this.audioManager?.play('guardian_hurt', SOUND_VOLUMES.guardian_hurt);
+        this.audioManager?.play(BOSS_HIT_SOUND, SOUND_VOLUMES[BOSS_HIT_SOUND]);
       }
     } else return null;
     // v2.51/v2.64：死亡音效 + 死亡特效。**判断落在 `dead` 上而不是 `amount` 上** ——
