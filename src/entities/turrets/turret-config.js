@@ -117,13 +117,16 @@ export const TURRET_TOWER_COLOR = Object.freeze({
  * 炮管系统颜色。
  *
  * 塔顶模型替换后只有两类纯色部件：主炮管与两组副武器。
- * 用户明确「枪管可以不是黑的，可以是灰色的」⇒ 炮管从旧 `0x222222` 改为中灰，
- * 与 side 区贴图均值 125 同量级，不抢塔身；副武器再暗一档以区分主次武器。
+ * 用户 2026-11-18 裁定：浅灰不好看，改**深灰 + 金属光泽（随光照反光）**。
+ * 故基色取冷调深灰（带一点蓝，像炮钢），高光由 `turret-metal.js` 的 TSL 材质
+ * 按太阳方向实时算 —— 基色暗、高光亮的反差正是金属感来源。
+ * ⚠️ **基色不是最终观感**：漫反射地板 + Blinn-Phong 高光 + 菲涅尔边缘会把它提亮，
+ * 迎光面高光处接近 0xb0。判「颜色对不对」必须看像素，不能只看这个字面量。
  * （旧 ROOT/SIGHT 两个色值随旧部件一同删除 —— 新模型没有根部/瞄准器这两个部件。）
  */
 export const TURRET_GUN_COLOR = Object.freeze({
-  BARREL: 0x8a8a8a,   // 中灰主炮管
-  POD: 0x6e6e6e,      // 深灰副武器（左右两组共用）
+  BARREL: 0x434952,   // 深灰炮钢（冷调带蓝；高光/环境反射把它提到 ~0xb0）
+  POD: 0x353b43,      // 更深一档的副武器（左右两组共用）
 });
 
 /**
@@ -139,7 +142,7 @@ export const TURRET_TOP_SCALE = 3.5 / 113.3627;
 export const TURRET_TOP_PIVOT_Y = 14.667;
 
 /**
- * 部件顺序（8 个，与旧 8 部件一一对应 ⇒ draw call 与现状持平）。
+ * 部件顺序（9 个 = 旧 8 个语义映射 + skirt 过渡段）。
  *
  * 旧→新映射按**语义职责**而非几何相似：
  * front→mantlet（中央炮座）/ left→cheek（左右颊舱合并为一个）/ right→nose（车体鼻段）
@@ -149,7 +152,7 @@ export const TURRET_TOP_PIVOT_Y = 14.667;
  * ⇒ 「左右对称」那类旧断言失去意义，必须删除而不是改名保留。
  */
 export const TURRET_PARTS = Object.freeze([
-  'mantlet', 'cheek', 'nose', 'ring', 'deckMid', 'barrel', 'podR', 'podL',
+  'mantlet', 'cheek', 'nose', 'ring', 'deckMid', 'barrel', 'podR', 'podL', 'skirt',
 ]);
 
 /**
@@ -177,4 +180,8 @@ export const TURRET_PART_DEFS = Object.freeze({
   barrel: Object.freeze({ zone: null, textured: false, color: TURRET_GUN_COLOR.BARREL }),
   podR: Object.freeze({ zone: null, textured: false, color: TURRET_GUN_COLOR.POD }),
   podL: Object.freeze({ zone: null, textured: false, color: TURRET_GUN_COLOR.POD }),
+  // ⚠️ **skirt（车体上层裙板）不可省**：塔身最低点 y=0.341 而 obsidian 柱顶 y=−0.3，
+  // 中间 0.64 格若空缺，斜下仰视会看穿到天空（用户实玩缺陷 2）。skirt 的 y 范围
+  // [−0.453, 0.416] 正好补上这段过渡。它同样乘 pivot 矩阵（刚性一体）。
+  skirt: Object.freeze({ zone: null, textured: true }),
 });

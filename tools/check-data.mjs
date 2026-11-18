@@ -76,7 +76,7 @@ const {
   TURRET_TOP_SRC: TOP_SRC,
   turretTopInputFingerprint, readTurretTopJson,
   parseObj: topParseObj, splitParts: topSplitParts,
-  buildPartGeometry: topBuildPartGeometry, geomNormal: topGeomNormal,
+  buildPartGeometry: topBuildPartGeometry, geomNormal: topGeomNormal, zoneOf: topZoneOf,
   TURRET_TOP_PARAMS: TOP_PARAMS,
 } = await import('./turret-top-fingerprint.mjs');
 // 渲染侧的区序与部件定义（同为同构模块，无 three）—— 门禁据此断言两侧区序一致
@@ -1102,51 +1102,26 @@ function checkTurretArmorTexture() {
 // ---------------------------------------------------------------- [炮塔塔顶] 契约
 
 /**
- * 从**产物几何**反推每个原面的区（独立真值，不经过烘焙侧 zoneOf）。
+ * 各部件各区面数 —— **从源 OBJ 用几何法线独立重算**。
  *
- * ⚠️ **单位是「面」不是「三角」**（实施期实测踩过）：冻结表记的是原四边形面数
- * （cheek 140），而产物是三角（280）⇒ 按三角数会全部翻倍。
- * 装甲部件逐面拆顶点且源面全是四边形（实测 5 个部件 615 面全符合扇形模式）
- * ⇒ **每 4 个顶点 = 1 个原面**，用整面 4 点算 Newell 法线（与烘焙侧同口径）。
+ * ⚠️⚠️ **不能从产物的 Float32 世界坐标反推**（实测两版都失败）：
+ * nose 有 4 个 45° 倒角面（|nx|=|nz|=0.707107）、skirt 有 4 个立方角面
+ * （三轴分量都 0.577350）。这些**恰好相等**的分量在 Float64 模型坐标与
+ * Float32 世界坐标下大小关系会翻转 ⇒ 严格 `>=` 与加容差**都无法让两侧一致**
+ * （实测 nose 219/58 vs 215/62、skirt 296/198 与 302/192 vs 300/194）。
+ *
+ * 正解：本环节从**源 OBJ 的模型坐标**算法线并分类（与烘焙同一数值口径），
+ * 与冻结表比 —— 这仍是独立真值（不读 meta、不读产物 UV），能抓分区退化。
+ * 产物本身是否与该算法一致，由下面的「重算逐位比对」环节保证。
  */
-function turretTopFacesFromProduct(json) {
+function turretTopZoneFaceCounts() {
+  if (!fs.existsSync(TOP_SRC)) return null;
+  const parts = topSplitParts(topParseObj(fs.readFileSync(TOP_SRC, 'utf8')));
   const out = {};
-  const TH = TOP_PARAMS.zoneNyThreshold;
   for (const key of TOP_ARMOR) {
-    const g = json.parts[key];
-    if (!g) continue;
-    const list = [];
-    // ⚠️ **只统计原面，不含封口面**：封口是修复「切口看穿」时追加的，
-    // 其法线朝向由环平面决定，不属于原模型的 front/side/top 分类。
-    // 原面数 = 该部件在源模型里的面数（冻结在 zoneFaces 各项之和）。
-    const zf = TOP_METRICS.zoneFaces[key];
-    const origFaces = zf.front + zf.side + zf.top;
-    const nv = Math.min(g.position.length / 3, origFaces * 4);
-    for (let base = 0; base + 3 < nv; base += 4) {
-      const p = [0, 1, 2, 3].map((k) => [
-        g.position[(base + k) * 3], g.position[(base + k) * 3 + 1], g.position[(base + k) * 3 + 2],
-      ]);
-      // Newell（与烘焙侧 geomNormal 同口径，对非平面四边形也稳）
-      let nx = 0, ny = 0, nz = 0;
-      for (let i = 1; i < p.length - 1; i++) {
-        const a = p[0], b = p[i], c = p[i + 1];
-        const e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-        const e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
-        nx += e1[1] * e2[2] - e1[2] * e2[1];
-        ny += e1[2] * e2[0] - e1[0] * e2[2];
-        nz += e1[0] * e2[1] - e1[1] * e2[0];
-      }
-      const l = Math.hypot(nx, ny, nz) || 1;
-      // ⚠️ **|nx| 与 |nz| 相等时要用容差归 side**（实施期实测）：nose 有 4 个恰好 45° 的倒角面
-      // （|nx|=|nz|=0.707107），烘焙侧用 Float64 模型坐标算出的大小关系，与产物 Float32
-      // 世界坐标算出的可能相反 ⇒ 严格 `>=` 会让这 4 面在两侧分到不同区（实测 219/58 vs 215/62）。
-      // 取 1e-6 容差：相等时归 side，与烘焙侧的 `>=` 语义一致。
-      const ax = Math.abs(nx / l), az = Math.abs(nz / l);
-      const zone = (ny / l > TH || ny / l < -TH) ? 'top'
-        : (ax >= az - 1e-6 ? 'side' : 'front');
-      list.push({ zone });
-    }
-    out[key] = list;
+    const got = { front: 0, side: 0, top: 0 };
+    for (const f of parts[key] || []) got[topZoneOf(f.p)]++;
+    out[key] = got;
   }
   return out;
 }
@@ -1264,14 +1239,14 @@ function checkTurretTopGeometry() {
   //    meta 那一标正是烘焙脚本从**同一个常量**写入的 ⇒ 永远相等，对产物实际 UV 零判别力。
   //    正确做法：拿产物 position 算几何法线 → 独立分区 → 数面数。
   {
-    const faces = turretTopFacesFromProduct(json);
-    for (const key of TOP_ARMOR) {
-      const want = TOP_METRICS.zoneFaces[key];
-      const got = { front: 0, side: 0, top: 0 };
-      for (const f of faces[key] || []) got[f.zone]++;
-      for (const z of ['front', 'side', 'top']) {
-        if (got[z] !== want[z]) {
-          failures.push(`[炮塔塔顶] ${key}.${z} 实测面数 ${got[z]} ≠ 冻结 ${want[z]}（分区退化）`);
+    const counts = turretTopZoneFaceCounts();
+    if (counts) {
+      for (const key of TOP_ARMOR) {
+        const want = TOP_METRICS.zoneFaces[key], got = counts[key];
+        for (const z of ['front', 'side', 'top']) {
+          if (got[z] !== want[z]) {
+            failures.push(`[炮塔塔顶] ${key}.${z} 实测面数 ${got[z]} ≠ 冻结 ${want[z]}（分区退化）`);
+          }
         }
       }
     }

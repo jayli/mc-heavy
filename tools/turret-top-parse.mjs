@@ -69,7 +69,7 @@ export function parseObj(text) {
  * 鼻段起点 z=40.85。取整会让相邻部件互相吞面。
  *
  * @param {string} groupName @param {number[][]} p 面的顶点坐标
- * @returns {'cheek'|'mantlet'|'deckMid'|'ring'|'nose'|'podR'|'podL'|'barrel'|'hull'}
+ * @returns {'cheek'|'mantlet'|'deckMid'|'ring'|'nose'|'podR'|'podL'|'barrel'|'skirt'}
  */
 export function partOf(groupName, p) {
   let ymin = Infinity, ymax = -Infinity, xmax = 0, zmin = Infinity;
@@ -84,7 +84,7 @@ export function partOf(groupName, p) {
   if (groupName === 'Secondary1') return 'podR';
   if (groupName === 'Secondary2') return 'podL';
   if (ymin >= 29.99) return xmax >= 16 ? 'cheek' : (xmax <= 13.6 ? 'mantlet' : 'deckMid');
-  if (ymax <= 28.2) return zmin >= 40.5 ? 'nose' : 'hull';
+  if (ymax <= 28.2) return zmin >= 40.5 ? 'nose' : 'skirt';
   return 'ring';
 }
 
@@ -138,8 +138,15 @@ export const TURRET_TOP_PARAMS = Object.freeze({
   zones: Object.freeze(['front', 'side', 'top']),
 });
 
-/** 走三区贴图的装甲部件（顺序即产物键序的一部分，与 config 的 textured 集合须一致） */
-export const TURRET_TOP_ARMOR = Object.freeze(['cheek', 'mantlet', 'deckMid', 'ring', 'nose']);
+/**
+ * 走三区贴图的装甲部件（顺序即产物键序的一部分，与 config 的 textured 集合须一致）。
+ *
+ * ⚠️⚠️ **`skirt`（车体上层裙板）必须在内**（用户实玩缺陷 2，2026-11-18）：
+ * 塔身最低点 y=0.341，而 obsidian 柱顶在 y=−0.3 ⇒ 中间 **0.64 格完全空缺**，
+ * 斜下仰视时射线直接穿过去看到天空（实测 20 条斜射有 5 条穿过），
+ * 观感是「塔身浮空一片薄板」。skirt 的世界 y 范围 [−0.453, 0.416] 正好补上这段。
+ */
+export const TURRET_TOP_ARMOR = Object.freeze(['cheek', 'mantlet', 'deckMid', 'ring', 'nose', 'skirt']);
 /** 走纯色的部件（炮管 + 两组副武器；用户明确允许炮管是灰色而非黑色） */
 export const TURRET_TOP_SOLID = Object.freeze(['barrel', 'podR', 'podL']);
 

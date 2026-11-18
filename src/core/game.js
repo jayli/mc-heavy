@@ -654,6 +654,11 @@ export class Game {
     this.turretRenderer = new TurretRenderer({
       scene: this.scene, armorTexture: this._turretArmorTexture,
       topGeometry: this._turretTopGeometry,
+      // 炮管/副武器的金属高光**复用体素材质的同一个太阳 uniform**（红线 1）：
+      // 自己 new 一个会让日夜变了而炮管高光钉在正午方向。
+      sunDirection: this.renderWorld.materials.dayNight.uSunDirection,
+      sunStrength: this.renderWorld.materials.dayNight.uSunStrength,
+      sunColor: this.renderWorld.materials.dayNight.uSunColor,
     });
     // M8 Task 6：弹丸是 **M5 临时实体**（roadmap 指定接入点：EntityManager + 实体 raycast），
     // 不是渲染节点 —— 命中真相由实体逻辑 AABB 给出，渲染层只发布 pose。

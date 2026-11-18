@@ -81,7 +81,7 @@ test('turret-top: 部件切分 —— 九部件面数逐项钉住', async () => 
   // spec §2.2 冻结表。⚠️ 判定顺序载荷性：先判组名，再判 y 窗口，最后兜底 ring。
   const FACES = {
     cheek: 140, mantlet: 57, deckMid: 14, ring: 123, nose: 281,
-    podR: 288, podL: 332, barrel: 374, hull: 519,
+    podR: 288, podL: 332, barrel: 374, skirt: 519,
   };
   for (const [k, n] of Object.entries(FACES)) {
     assertEqual(parts[k].length, n, `${k} 面数`);
@@ -181,6 +181,7 @@ test('turret-top: 分区冻结表 —— 每部件各区面数（不依赖 zoneO
     deckMid: { front: 0, side: 0, top: 14 },
     ring: { front: 75, side: 38, top: 10 },
     nose: { front: 215, side: 62, top: 4 },
+    skirt: { front: 300, side: 194, top: 25 },
   };
   for (const [k, want] of Object.entries(ZONE_FACES)) {
     const got = { front: 0, side: 0, top: 0 };
@@ -208,11 +209,11 @@ test('turret-top: 冻结规模 —— 八部件的三角数与顶点数', async 
   const built = await builtParts();
   // ⚠️ 装甲部件含**切口封口面**（源网格闭合，切开后必须补面，否则渲染看穿）
   const TRIS = {
-    cheek: 308, mantlet: 134, deckMid: 52, ring: 364, nose: 656,
+    cheek: 308, mantlet: 134, deckMid: 52, ring: 364, nose: 656, skirt: 1168,
     podR: 576, podL: 632, barrel: 712,
   };
   const VERTS = {
-    cheek: 590, mantlet: 249, deckMid: 82, ring: 612, nose: 1222,
+    cheek: 590, mantlet: 249, deckMid: 82, ring: 612, nose: 1222, skirt: 2210,
     podR: 960, podL: 480, barrel: 1332,
   };
   for (const k of Object.keys(TRIS)) {
@@ -221,18 +222,17 @@ test('turret-top: 冻结规模 —— 八部件的三角数与顶点数', async 
   }
   const totalTris = Object.values(TRIS).reduce((a, b) => a + b, 0);
   const totalVerts = Object.values(VERTS).reduce((a, b) => a + b, 0);
-  assertEqual(totalTris, 3434, '总三角数');
-  assertEqual(totalVerts, 5527, '总顶点数');
+  assertEqual(totalTris, 4602, '总三角数');
+  assertEqual(totalVerts, 7737, '总顶点数');
 });
 
 test('turret-top: 车体裙板被排除 —— 八部件不含 hull，且无 hull 面', async () => {
   const parts = await partsOfObj();
   const built = await builtParts();
   assertDeepEqual(Object.keys(built).sort(),
-    ['barrel', 'cheek', 'deckMid', 'mantlet', 'nose', 'podL', 'podR', 'ring'],
-    '产物部件集合（不含 hull）');
-  assertEqual(parts.hull.length, 519, 'hull 被切分识别出来（519 面）');
-  assertTrue(!('hull' in built), 'hull 不在产物里');
+    ['barrel', 'cheek', 'deckMid', 'mantlet', 'nose', 'podL', 'podR', 'ring', 'skirt'],
+    '产物部件集合（含 skirt 过渡段）');
+  assertEqual(parts.skirt.length, 519, 'skirt 面数');
   // ⚠️ **内容级判据用「划分恒等式」，不能用几何区域判**：
   // 试过两版区域判据都误报 —— 逐顶点判误报 260（副武器/炮管/转台环的 y、z 本来就
   // 跨 hull 区域）；整面判误报 128（podR/podL 按**组名**优先归类，zmin 22~27 但归属正确）。
@@ -241,8 +241,8 @@ test('turret-top: 车体裙板被排除 —— 八部件不含 hull，且无 hul
   const totalFaces = Object.values(parts).reduce((a, f) => a + f.length, 0);
   const productFaces = [...TURRET_TOP_ARMOR, ...TURRET_TOP_SOLID]
     .reduce((a, k) => a + parts[k].length, 0);
-  assertEqual(productFaces, totalFaces - parts.hull.length, '产物面数 = 全模型 − hull');
-  assertEqual(productFaces, 1609, '产物面数冻结值');
+  assertEqual(productFaces, totalFaces, '产物面数 = 全模型（无丢弃）');
+  assertEqual(productFaces, 2128, '产物面数冻结值');
 });
 
 // ==================== 产物契约（Task 2 Step 7） ====================
@@ -281,10 +281,13 @@ test('turret-top: 产物的 textured 标记与色值', async () => {
     assertEqual(json.parts[k].textured, false, `${k} 走纯色`);
     assertTrue(typeof json.parts[k].color === 'number', `${k} 有色值`);
   }
-  // 炮管是灰色而非黑色（用户明确允许）：0x8a8a8a 的三通道相等且远亮于 0x222222
+  // 炮管深灰炮钢（用户 2026-11-18：浅灰不好看，改深灰 + 金属光泽）。
+  // ⚠️ **基色不是最终观感**：金属材质的高光/环境反射会把它提到 ~136，
+  // 判「颜色对不对」的像素判据在 tests/turret-render.spec.mjs。
   const c = json.parts.barrel.color;
-  assertEqual(c, 0x8a8a8a, '炮管中灰');
-  assertTrue((c & 0xff) > 0x40, '炮管不是深色');
+  assertEqual(c, 0x434952, '炮管深灰炮钢基色');
+  assertTrue((c & 0xff) > 0x30, '不是纯黑（要能看出形体）');
+  assertTrue((c & 0xff) < 0x80, '基色是深灰而非浅灰');
 });
 
 // ==================== config 部件定义（Task 4） ====================
@@ -292,9 +295,9 @@ test('turret-top: 产物的 textured 标记与色值', async () => {
 test('turret-top: config 部件集合与刚性一体约束', async () => {
   const { TURRET, TURRET_PARTS, TURRET_PART_DEFS, TURRET_GUN_COLOR, TURRET_TOP_SCALE } =
     await import('../entities/turrets/turret-config.js');
-  assertEqual(TURRET_PARTS.length, 8, '仍是 8 个部件（draw call 与现状持平）');
+  assertEqual(TURRET_PARTS.length, 9, '9 个部件（旧 8 语义 + skirt 过渡段）');
   assertDeepEqual([...TURRET_PARTS].sort(),
-    ['barrel', 'cheek', 'deckMid', 'mantlet', 'nose', 'podL', 'podR', 'ring'], '新部件名');
+    ['barrel', 'cheek', 'deckMid', 'mantlet', 'nose', 'podL', 'podR', 'ring', 'skirt'], '新部件名');
   // ⚠️ 刚性一体（用户裁定）：任何部件都不得带独立旋转/位移/俯仰轴
   for (const k of TURRET_PARTS) {
     const d = TURRET_PART_DEFS[k];
@@ -305,11 +308,11 @@ test('turret-top: config 部件集合与刚性一体约束', async () => {
   }
   // textured 是渲染层贴图/纯色分支的唯一依据（zone 恒 null，旧判据 !!def.zone 恒假）
   assertDeepEqual(TURRET_PARTS.filter((k) => TURRET_PART_DEFS[k].textured).sort(),
-    ['cheek', 'deckMid', 'mantlet', 'nose', 'ring'], 'textured 集合');
+    ['cheek', 'deckMid', 'mantlet', 'nose', 'ring', 'skirt'], 'textured 集合');
   assertDeepEqual(TURRET_PARTS.filter((k) => !TURRET_PART_DEFS[k].textured).sort(),
     ['barrel', 'podL', 'podR'], '纯色集合');
-  assertEqual(TURRET_GUN_COLOR.BARREL, 0x8a8a8a, '炮管中灰（用户允许非黑）');
-  assertEqual(TURRET_GUN_COLOR.POD, 0x6e6e6e, '副武器深灰');
+  assertEqual(TURRET_GUN_COLOR.BARREL, 0x434952, '炮管深灰炮钢（用户 2026-11-18 要求）');
+  assertEqual(TURRET_GUN_COLOR.POD, 0x353b43, '副武器更深一档');
   // 定标常量与 muzzleOffsetZ 的关系式（不是字面量副本）
   assertClose(TURRET_TOP_SCALE * 113.3627, TURRET.muzzleOffsetZ, 1e-9, '定标对齐炮口');
 });
@@ -561,4 +564,51 @@ test('turret-top: 装甲部件必须是闭合壳（切口要有封口，否则�
     for (const c of edges.values()) if (c === 1) open++;
     assertEqual(open, 0, `${k} 有 ${open} 条开放边（切口未封口 ⇒ 从内部看穿）`);
   }
+});
+
+// ==================== 用户实玩缺陷 2：塔身下方看穿（丢了过渡段） ====================
+
+test('turret-top: 塔身必须盖住 obsidian 柱顶（下方不得有空洞）', async () => {
+  const geo = await topGeometry();
+  const { TURRET } = await import('../entities/turrets/turret-config.js');
+  // obsidian 柱顶面在 pivot 下方 (pivotHeightOffset - 3) = 0.3 格
+  // （pivot = origin.y + BASE_DY + 3.3，柱顶 = origin.y + BASE_DY + 2 + 1 = +3）
+  const pillarTop = -(TURRET.pivotHeightOffset - 3);   // = -0.3
+  // 柱是 1×1 格，中心在 pivot 正下方 ⇒ 水平足迹 |x|<=0.5, |z|<=0.5
+  // 判据：塔身在该足迹内必须有几何**下探到柱顶或更低**，否则从下方看穿到天空。
+  // ⚠️ **判据用「最低点」而非「柱足迹内有顶点」**：原模型车体中心本就是空心
+  // （真坦克那里是炮塔座圈），柱足迹内**没有任何顶点**，顶点判据恒不成立。
+  let lowest = Infinity;
+  for (const g of Object.values(geo.parts)) {
+    for (let i = 1; i < g.position.length; i += 3) lowest = Math.min(lowest, g.position[i]);
+  }
+  assertTrue(lowest <= pillarTop + 1e-6,
+    `总成最低点 ${lowest.toFixed(3)} 须 ≤ 柱顶 ${pillarTop}（否则塔身与柱之间看穿）`);
+});
+
+test('turret-top: 八部件组装后不得有开放边（部件间接缝也要封）', async () => {
+  const geo = await topGeometry();
+  const idx = new Map();
+  const idOf = (x, y, z) => {
+    const k = [x, y, z].map((v) => v.toFixed(4)).join(',');
+    if (!idx.has(k)) idx.set(k, idx.size);
+    return idx.get(k);
+  };
+  const edges = new Map();
+  for (const g of Object.values(geo.parts)) {
+    for (let i = 0; i < g.index.length; i += 3) {
+      const ids = [g.index[i], g.index[i + 1], g.index[i + 2]]
+        .map((j) => idOf(g.position[j * 3], g.position[j * 3 + 1], g.position[j * 3 + 2]));
+      for (let e = 0; e < 3; e++) {
+        const a = ids[e], b = ids[(e + 1) % 3];
+        const k = Math.min(a, b) + '_' + Math.max(a, b);
+        edges.set(k, (edges.get(k) || 0) + 1);
+      }
+    }
+  }
+  let open = 0;
+  for (const c of edges.values()) if (c === 1) open++;
+  // ⚠️ 炮管尾/副武器管口是原模型设计的开口，允许；但**装甲件之间**不得有缝。
+  // 这里先钉住总数上界（实测修复前 184），修复后应显著下降。
+  assertTrue(open <= 184, `组装体开放边 ${open}（修复前 184，不得增加）`);
 });
