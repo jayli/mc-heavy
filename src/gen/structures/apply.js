@@ -103,6 +103,28 @@ const VEGETATION_EXT = 3;
 /** 空地植被的盐（程序化扫描确认空闲：1043/1044 已被 v3.12 的 bush_grass/草配色占） */
 export const JF_GRASS_SALT = 1045;
 export const JF_BUSH_SALT = 1046;
+/**
+ * 树密度稀疏抽签的盐（v3.13e，程序化扫描确认 1047 空闲；
+ * 扫描时必需解析 `seed + 常量名` 形式，只匹字面量会误判 1045/1046 也空闲）。
+ */
+export const JF_TREE_THIN_SALT = 1047;
+/**
+ * 树密度保留比例（v3.13e 用户：「丛林要塞里的树密度过于高了，密度减半」）。
+ *
+ * ⚠️ **只在本结构分支稀疏，不改 `rollVegetation` 的 FOREST 概率**：
+ *    后者是全地图森林的共享权威，改它会把世界各处森林一起砍半（超出请求范围）。
+ * ⚠️ **只降树，不降草/花**：用户只说树密度高。
+ * ⚠️ 用**独立盐的逐列抽签**而不是「隔一列种一棵」：后者会在地图上留下规则条纹。
+ */
+export const JF_TREE_KEEP_SHARE = 0.5;
+
+/**
+ * 该列的树是否保留（单一权威：生产代码与单测共用，避免第二份判据漂移）。
+ * @returns {boolean}
+ */
+export function jfTreeKept(wx, wz, seed) {
+  return seededRandom(wx, wz, seed + JF_TREE_THIN_SALT) < JF_TREE_KEEP_SHARE;
+}
 
 /**
  * 该**格**能不能长植被（v3.13d 定稿）。
@@ -1246,7 +1268,8 @@ export async function applyStructuresToColumn(column, seed, registry, layouts) {
                 setBlock(wx, groundY, wz, 'bush_grass');
               }
             }
-            if (roll.tree && jfTreePlantableAt(px, groundNy, pz, jfCells, jfRoof)) {
+            if (roll.tree && jfTreeKept(wx, wz, seed)
+                && jfTreePlantableAt(px, groundNy, pz, jfCells, jfRoof)) {
               tree = roll.tree; baseY = groundY;
               // 树干与树冠逐格写入 ⇒ 只在要塞真占位那一格让位（v3.13c/d）
               treeSetter = jfVegSetter(setBlock, jf, jfCells, jfFloorRow, jfRoof);

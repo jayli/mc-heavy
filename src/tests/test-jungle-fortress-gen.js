@@ -24,7 +24,7 @@ import {
   jungleFortressTeleportPoint, JUNGLE_FORTRESS_TELEPORT_GAP,
 } from '../gen/structures/jungle-fortress.js';
 import { computeRegionLayout, neighborRegionKeys } from '../gen/structures/structure-layout.js';
-import { applyStructuresToColumn } from '../gen/structures/apply.js';
+import { applyStructuresToColumn, jfTreeKept } from '../gen/structures/apply.js';
 import { LANDMARK_CLEARANCE } from '../gen/structures/landmark-circles.js';
 import { getFrozenMountainCenterInRegion } from '../gen/structures/landmarks.js';
 import { getRegionSeededCenter } from '../gen/structures/region-center.js';
@@ -593,6 +593,9 @@ test('丛林要塞：树叶只在要塞真占位的格让位（逐格，不是�
       if (s === null || colSolid.has(`${dx},${dz}`)) continue;
       const roll = rollVegetation(wx, wz, 'FOREST', seed);
       if (!roll.tree || roll.tree.type === 'birchTree' || roll.tree.type === 'birchTreeWithSnow') continue;
+      // ⚠️ **意图集必须同步稀疏抽签**（v3.13e 密度减半）：否则把「被稀疏掉的树」
+      //    的叶当成「被切割」（实测假红 1739 格）。转调生产代码的同一权威函数。
+      if (!jfTreeKept(wx, wz, seed)) continue;
       generateTree(wx, s + 1, wz, (x, y, z, name) => intent.set(`${x},${y},${z}`, name),
         seed, roll.tree.type, roll.tree.customLog || null, roll.tree.customLeaf || null, roll.tree.leafMix || null);
     }
@@ -660,6 +663,78 @@ test('丛林要塞：树叶只在要塞真占位的格让位（逐格，不是�
     `（正常写入 ${keptFree}）—— 列级守卫把矮墙列的高处空气也禁写了，树冠被垂直切割`);
 });
 
+// ==================== 树密度减半（v3.13e，用户：「密度过于高了，密度减半」）====================
+//
+// ⚠️ **只降树，不降草**：用户只说树密度高。草/花仍照旧档。
+// ⚠️ **不得改 `rollVegetation` 的 FOREST 概率**：那是全地图森林的共享权威，
+//    改它会把世界各处森林一起砍半（超出请求范围）。只能在本结构分支加一道稀疏抽签。
+// ⚠️ **判据要钉「大致减半」而不是「精确 50%」**：稀疏是逐列独立伯努利抽样，
+//    有限样本下会在 50% 附近波动；钉精确值会 flaky。取 [0.40, 0.60] 区间。
+
+test('丛林要塞：树密度减半（只降树、不降草，不改全地图 FOREST 概率）', async () => {
+  const seed = 12345;
+  const a = computeJungleFortressAnchor(seed);
+  const reg = await buildDefaultRegistry();
+  const data = await loadStructure('jungleFortress');
+  const cellSolid = new Set();
+  const roofTop = new Map();
+  for (const b of data.blocks) {
+    if (b.type === 'air') continue;
+    cellSolid.add(`${b.x},${b.y},${b.z}`);
+    const ck = `${b.x},${b.z}`;
+    const prev = roofTop.get(ck);
+    if (prev === undefined || b.y > prev) roofTop.set(ck, b.y);
+  }
+  const floorRow = floorRowOf('jungleFortress');
+  const B = JUNGLE_FORTRESS_SLOPE_BAND;
+  const outdoor = (px, ny, pz) => {
+    if (cellSolid.has(`${px},${ny},${pz}`)) return false;
+    const top = roofTop.get(`${px},${pz}`);
+    return top === undefined || ny >= top;
+  };
+  // 基准：不加稀疏时应该有多少棵（直接问 rollVegetation）
+  let plantable = 0, wouldTree = 0;
+  const spots = [];
+  for (let dx = -JUNGLE_FORTRESS_HALF_X - B; dx <= JUNGLE_FORTRESS_HALF_X + B; dx++) {
+    for (let dz = -JUNGLE_FORTRESS_HALF_Z - B; dz <= JUNGLE_FORTRESS_HALF_Z + B; dz++) {
+      const wx = a.wx + dx, wz = a.wz + dz;
+      const s = jungleFortressSurfaceYAt(wx, wz, seed, a);
+      if (s === null) continue;
+      const ny = s + 1 - a.floorY + floorRow;
+      if (!outdoor(dx, ny, dz)) continue;
+      plantable++;
+      if (rollVegetation(wx, wz, 'FOREST', seed).tree) { wouldTree++; spots.push({ wx, wz, y: s + 1 }); }
+    }
+  }
+  assertTrue(plantable > 10000 && wouldTree > 400,
+    `取样必须有量（可种 ${plantable} 列 / 基准树 ${wouldTree} 棵）`);
+  // 真实 GEN：数树干列（只数「本来会种树」的那些列，口径与基准一致）
+  const trunkIds = new Set(['wood', 'birch_log', 'giant_oak_log'].map((n) => reg.idOf(n)));
+  const byCol = new Map();
+  for (const q of spots) {
+    const ck = `${Math.floor(q.wx / 16)},${Math.floor(q.wz / 16)}`;
+    if (!byCol.has(ck)) byCol.set(ck, []);
+    byCol.get(ck).push(q);
+  }
+  let actualTree = 0;
+  for (const [ck, list] of byCol) {
+    const [cx, cz] = ck.split(',').map(Number);
+    const col = new ChunkColumn(cx, cz);
+    fillColumn(col, seed, reg);
+    carveCaves(col, seed);
+    const layouts = neighborRegionKeys(cx, cz)
+      .map((k) => { const [rx, rz] = k.split(',').map(Number); return computeRegionLayout(rx, rz, seed); });
+    await applyStructuresToColumn(col, seed, reg, layouts);
+    for (const q of list) {
+      const lx = ((q.wx % 16) + 16) % 16, lz = ((q.wz % 16) + 16) % 16;
+      if (trunkIds.has(col.blocks[blockIndex(lx, q.y, lz)])) actualTree++;
+    }
+  }
+  const ratio = actualTree / wouldTree;
+  assertTrue(ratio >= 0.40 && ratio <= 0.60,
+    `树密度必须大致减半：基准 ${wouldTree} 棵 → 实际 ${actualTree} 棵（比值 ${ratio.toFixed(3)}，应在 0.40~0.60）`);
+});
+
 test('丛林要塞：树干落点也逐格判 —— 贴墙但树干格是空气时必须种树（v3.13d）', async () => {
   const seed = 12345;
   const a = computeJungleFortressAnchor(seed);
@@ -723,9 +798,13 @@ test('丛林要塞：树干落点也逐格判 —— 贴墙但树干格是空气
       if (trunkIds.has(id)) hasTrunk++; else missingTrunk++;
     }
   }
-  assertEqual(missingTrunk, 0,
-    `树干格未被要塞占位时必须种树：实测 ${missingTrunk} 列没树干（已种 ${hasTrunk}）—— ` +
-    '落点判据仍是列级，贴墙的树整棵不生成 ⇒ 邻居树冠伸过来时被「缺一棵树」的空洞切平');
+  // ⚠️ **v3.13e 语义更新**：用户要求树密度减半 ⇒ 不能再钉「每个候选列都有树」。
+  //    本用例的真意图是「贴墙的树不被**整类**禁写」（列级判据的缺陷形态是 **hasTrunk === 0**）。
+  //    改钉「贴墙树确实种下了相当数量」：列级缺陷下恒为 0，减半后仍应有几百棵。
+  //    「减半比例」由上一条独立用例钉，两条分工不重叠。
+  assertTrue(hasTrunk > 100,
+    `贴墙的树必须真的种下（实际 ${hasTrunk} 棵，未种 ${missingTrunk}）—— ` +
+    '为 0 说明落点判据退回列级，贴墙树整棵不生成 ⇒ 邻居树冠被空洞切平');
 });
 
 test('丛林要塞接线：占地内零撒布，植被只在空地上（v3.13b 用户要求空地植树植草）', async () => {
