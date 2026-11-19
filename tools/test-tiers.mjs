@@ -98,6 +98,7 @@ const ENTITY = [
   'weapon-assets',
   'weapon-view',
   'sword',
+  'storm-lance',
   'tracer-water-occlusion',
 ];
 
@@ -185,7 +186,8 @@ export const UNIT_NODE_SAFE = [
   'test-ignis-collision.js', 'test-ignis-render.js', 'test-ignis-system.js', 'test-inventory.js',
   'test-jungle-fortress-gen.js', 'test-knockback-ease.js', 'test-landmarks.js', 'test-light-writeback.js',
   'test-lighting.js', 'test-load-progress.js', 'test-load-watchdog.js', 'test-medieval-ship.js',
-  'test-mesher.js', 'test-minimap.js', 'test-molang.js', 'test-moonlight.js', 'test-ocean-mask.js',
+  'test-mesher.js', 'test-minimap.js', 'test-molang.js', 'test-moonlight.js', 'test-storm-lance.js',
+  'test-ocean-mask.js',
   'test-orientation.js', 'test-physics.js', 'test-pixel-ratio.js', 'test-place-ray.js',
   'test-playground.js', 'test-progress.js', 'test-projectiles.js', 'test-rain.js', 'test-raycast.js',
   'test-ruined-citadel-gen.js', 'test-runner-tiers.js', 'test-scatter.js', 'test-shadow-manager.js',

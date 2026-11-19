@@ -150,6 +150,8 @@ export class Player {
     this.audioManager = weaponRuntime?.audioManager ?? null;
     /** 命中方块的特效渲染器（v1.64，Game 装配后注入；fixture 里可为 null） */
     this.blockHitFx = weaponRuntime?.blockHitFx ?? null;
+    /** Storm Lance 渲染器（v3.20，Game 注入；缺省 null ⇒ 只扣血不出视觉） */
+    this.stormLanceRenderer = weaponRuntime?.stormLanceRenderer ?? null;
     /** @type {WeaponController | null} */
     this.weaponController = null;
     /**
@@ -300,7 +302,9 @@ export class Player {
     };
     const onMouseUp = (e) => {
       if (document.pointerLockElement !== this.canvas) return;
-      if (e.button === 0) this.weaponController.pointerUp();
+      // v3.20：传 aim —— 蓄满时 controller 靠它施放 Storm Lance。
+      // （无 aim 的 `pointerUp()` 仍合法：只清状态不施法，既有单测/spec 这么调。）
+      if (e.button === 0) this.weaponController.pointerUp(this._buildAim());
     };
     const onContextMenu = (e) => e.preventDefault();
     window.addEventListener('keydown', onKeyDown);
@@ -579,6 +583,23 @@ export class Player {
 
   /** 效果事件统一出口：视图模型后坐 → 曳光 → 音效 → 命中特效（顺序固定，M4 规格 §4.2）。 */
   _applyWeaponEffect(effect) {
+    // v3.20 Storm Lance：三种新事件在这里分流，**都不调 `viewWeapon.onShot`**。
+    // ⚠️ 理由：`onShot` 对非 melee 事件写 `this._recoil = effect.recoil`，而蓄力事件
+    // 本不应产生后坐；就算 controller 已给 recoil:0，让剑体在蓄力/施放时跑一遗后坐衰减
+    // 也是错的观感。分流后剑体姿态完全由挥砍动画控制。
+    if (effect.type === 'storm-charge-start' || effect.type === 'storm-charge-ready') {
+      if (this.audioManager) this.audioManager.play(effect.sound, effect.volume);
+      return;
+    }
+    if (effect.type === 'storm-lance') {
+      if (this.audioManager) this.audioManager.play(effect.sound, effect.volume);
+      if (this.stormLanceRenderer) this.stormLanceRenderer.fire(effect, performance.now());
+      // 落点音（与 TNT 爆炸同一条素材）—— 只在真的有落点时响
+      if (this.audioManager && effect.impactSound && effect.length > 0) {
+        this.audioManager.play(effect.impactSound, effect.impactVolume ?? 0.4);
+      }
+      return;
+    }
     if (this.viewWeapon) this.viewWeapon.onShot(effect);
     // v2.65 近战剑：effect 无 `tracer`（剑不发曳光）—— 判存在才 spawn，枪行为逐位不变
     if (this.tracerRenderer && effect.tracer) this.tracerRenderer.spawn(effect);

@@ -7,6 +7,10 @@
 // 开火瞬间的世界空间（v1.33），玩家奔跑时残影钉在原地不动 → 全长（接近原值）会在身后
 // 连成一排射向远方残余的火线。缩短到 1/4 后残影只闪一下即消隐；其余参数（颜色/粗细）不变。
 
+// v3.20 Nova Beam：伤害**派生**自爆炸常量（红线 1）—— 用户裁定「掉血幅度等同被炸弹炸到」。
+// 在本文件再写一份 50 就是第二份权威，将来调炸弹伤害时光柱会静默不跟。
+import { EXPLOSION_DAMAGE } from '../../voxel/explosion.js';
+
 export const WEAPON_IDS = Object.freeze({
   ARM: 'arm', PISTOL: 'pistol', MAG7: 'mag7', MINIGUN: 'minigun', SWORD: 'sword',
 });
@@ -211,5 +215,69 @@ export const WEAPONS = freeze({
      * 不会把两只丧尸一次击退到互相排斥的阈值外造成连锁推挤。
      */
     knockbackDistance: 0.9,
+    /**
+     * 蓄力大招 Storm Lance（v3.20，用户 2026-11-19）。
+     *
+     * 用户原话：「长按鼠标后松开时触发这个特效，短按鼠标就是普通的挥剑攻击……掉血的幅度
+     * 等同于被炸弹炸到的效果。」实玩 Nova Beam 后改口径：「干脆改成 storm lance 算了，
+     * 这个是最简单的特效……我们从最简单的开始实现。」
+     * 视觉来自上游 `ThunderAbility.js` + `LightningMaterial.js`（**2 个 pass**，零贴图）。
+     *
+     * ## 五条用户裁定
+     * ① 伤害 = **每个实体扣一次 50** ⇒ `damage` 派生自 `EXPLOSION_DAMAGE`（红线 1）；
+     * ② **不破坏方块**（与剑一致，遇墙按 DDA 截断）；
+     * ③ 不做调参坞，只加准心蓄力环；
+     * ④ **按下 1 秒后才开始蓄力，蓄力 1 秒**（总 2s）—— 静默期零蓄力视觉，
+     *    否则「我只需要挥刀的时候也会触发蓄力的动画，画面就太乱了」；
+     * ⑤ **碰到实体立即在该处爆炸**，不穿身炸到后面的方块上。
+     *
+     * ## `cooldown = 2.0` 是推导出来的，不是拍的
+     * 释放后总视觉时长 = travel(`range/speed`) + hold + fade
+     *   = 24/105 + 0.45 + 0.5 = **1.179s**
+     * 两次施法最少间隔 = `chargeDelaySeconds + chargeSeconds` = **2.0s**。
+     * `2.0 > 1.179` ⇒ **两道闪电在时间上不可能重叠** ⇒ 渲染器只需 **1 个槽位**。
+     * ⚠️ 这条推导是**载荷性的**：抬 `range` 或 `holdSeconds` 会让总时长超过 2.0s，
+     * 必须同时抬冷却或改多槽位。`test-storm-lance.js` 用关系式钉住它。
+     *
+     * ## 单发伤害与剑相同，价值在射程与范围
+     * 50 伤害 / 24 格 / 一次打多个；蓄力 2s + 冷却 2s ⇒ 4 秒一发 = 12.5 DPS，
+     * 远低于剑的 100 DPS。它是「安全距离的范围清场」，不是「更强的单体输出」。
+     */
+    stormLance: {
+      /**
+       * 按下后的**静默期**（秒）。这段时间只挥刀，**零蓄力视觉**。
+       * 用户：「按下一秒后开始启动蓄力……不然我只需要挥刀的时候也会触发蓄力的动画」。
+       */
+      chargeDelaySeconds: 1.0,
+      /** 蓄力时长（秒）—— 静默期之后再蓄 1 秒，总计按下 2 秒 */
+      chargeSeconds: 1.0,
+      /** 最远射程（格）—— 上游 `settings.thunder.range` */
+      range: 24,
+      /**  strike 前沿推进速度（格/秒）—— 上游 `speed` */
+      speed: 105,
+      /** 命中后保持（秒）—— 上游 `lifetime` */
+      holdSeconds: 0.45,
+      /** 熄灭（秒）—— 上游 `fadeTime` */
+      fadeSeconds: 0.5,
+      /** 施法冷却（秒）—— 推导见上 */
+      cooldown: 2.0,
+      /** 每个实体的伤害 = 一颗炸弹（红线 1：派生不复制） */
+      damage: EXPLOSION_DAMAGE,
+      /** 远端束半宽（格）—— 上游 `spread`；同时是十字射线的偏移量 */
+      radius: 0.75,
+      /**
+       * 出射点相对相机的偏移 `[right, up, forward]`（格）。
+       * ⚠️ 不用上游的 `handHeight/endHeight`（那是离地板的绝对米数，本仓地形起伏）。
+       */
+      handOffset: [0.28, -0.22, 0.55],
+      /** 蓄力起手音（既有素材，零新增） */
+      chargeSound: 'emp_activated', chargeVolume: 0.3,
+      /** 蓄满提示音（既有素材）—— 玩家不看环也能知道 2 秒到了 */
+      readySound: 'gun_load', readyVolume: 0.4,
+      /** 释放音（既有素材） */
+      fireSound: 'dragon_fire', fireVolume: 0.5,
+      /** 落点音（既有素材，与 TNT 爆炸同一条） */
+      impactSound: 'explosion', impactVolume: 0.4,
+    },
   },
 });
