@@ -563,12 +563,13 @@ test('storm mat: 六个 pass 的 fog/depthWrite/renderOrder 口径一致', async
   assertEqual(FX.renderOrder, 3);
 });
 
-test('storm renderer: 六个 mesh 空闲全隐藏，且名字带 storm: 前缀', async () => {
+test('storm renderer: 全部 mesh 空闲全隐藏，且名字带 storm: 前缀', async () => {
   const THREE = await import('three');
   const { StormLanceRenderer } = await import('../render/storm-lance-renderer.js');
   const scene = new THREE.Scene();
-  const r = new StormLanceRenderer({ scene });
-  assertEqual(r.meshes.length, 6);
+  const r = new StormLanceRenderer({ scene, haloTexture: new THREE.DataTexture(new Uint8Array(4), 1, 1) });
+  // v3.20b：六个 pass + 蓄力光晕 = 7
+  assertEqual(r.meshes.length, 7);
   for (const m of r.meshes) {
     assertEqual(m.visible, false, `${m.name} 空闲必须隐藏（否则恒增 draw call）`);
     assertEqual(m.frustumCulled, false);
@@ -584,7 +585,7 @@ test('storm renderer: 爆壳走 outQuint 猛扩（R4 的判别力所在）', asy
   const THREE = await import('three');
   const { StormLanceRenderer } = await import('../render/storm-lance-renderer.js');
   const { STORM_LANCE_FX: FX } = await import('../render/storm-lance-config.js');
-  const r = new StormLanceRenderer({ scene: new THREE.Scene() });
+  const r = new StormLanceRenderer({ scene: new THREE.Scene(), haloTexture: new THREE.DataTexture(new Uint8Array(4), 1, 1) });
   const args = {
     origin: [0, 5, 0], target: [0, 5, -20], side: [1, 0, 0],
     length: 20, seed: 3, impactKind: 'entity',
@@ -610,7 +611,7 @@ test('storm renderer: 冲击环朝向按 impactKind 分流（R2）', async () =>
   const THREE = await import('three');
   const { StormLanceRenderer } = await import('../render/storm-lance-renderer.js');
   const mk = async (kind) => {
-    const r = new StormLanceRenderer({ scene: new THREE.Scene() });
+    const r = new StormLanceRenderer({ scene: new THREE.Scene(), haloTexture: new THREE.DataTexture(new Uint8Array(4), 1, 1) });
     r.fire({
       origin: [0, 5, 0], target: [0, 5, -20], side: [1, 0, 0],
       length: 20, seed: 3, impactKind: kind,
@@ -632,4 +633,85 @@ test('storm renderer: 冲击环朝向按 impactKind 分流（R2）', async () =>
   assertTrue(blk.y > 0.8, `命中地面时环应贴地（+Y），实测 y=${blk.y}`);
   assertTrue(Math.abs(ent.z - blk.z) > 0.5,
     '两种朝向必须可区分，否则本判据对「一律贴地」零判别力');
+});
+
+// ---------------------------------------------------------------- ⑥ 蓄力球朦胧化（v3.20b）
+//
+// 用户 2026-11-19 实玩：「蓄力时的光球，边界太清晰，就有点像一个发光的鸡蛋……
+// 要朦胧一些，可以让这个光球再小一点，然后让他发出光，有一层光晕覆盖在光球上」。
+//
+// ⚠️ **闭合网格的几何边界是硬边，调参数消不掉** —— 必须另加一层屏幕对齐的
+// billboard 光晕（alpha 从中心径向连续衰减到 0，无几何轮廓）。下面三条判据
+// 分别钉住「更小」「有独立光晕层」「核心不再是实心+亮边」。
+
+test('storm orb: 核心比 v3.20 更小（用户「再小一点」）', async () => {
+  const { STORM_LANCE_FX: FX } = await import('../render/storm-lance-config.js');
+  // v3.20 是 0.20，用户仍嫌大 ⇒ 必须显著更小
+  assertTrue(FX.orbSize < 0.20 * 0.85,
+    `orbSize 必须明显小于 0.20，实测 ${FX.orbSize}`);
+  assertTrue(FX.orbSize > 0.04, '仍要肉眼可见');
+});
+
+test('storm orb: 光晕比核心大（覆盖在光球上），衰减够羽化', async () => {
+  const { STORM_LANCE_FX: FX } = await import('../render/storm-lance-config.js');
+  assertTrue(FX.orbHaloScale > 1.5,
+    `光晕必须明显大于核心，实测倍率 ${FX.orbHaloScale}`);
+});
+
+test('storm orb: 核心不得再是「实心 + 亮轮廓边」（发光鸡蛋的两个成因）', async () => {
+  const { STORM_LANCE_FX: FX } = await import('../render/storm-lance-config.js');
+  // ① 基础 alpha（整球不透明 ⇒ 实心蛋）必须压到很低
+  assertTrue(FX.orbBaseAlpha <= 0.06,
+    `核心基础 alpha 必须 <=0.06（旧 0.2 ⇒ 实心蛋），实测 ${FX.orbBaseAlpha}`);
+  // ② rim 提亮权重（轮廓边比中心亮 ⇒ 硬边）必须大幅降低
+  assertTrue(FX.orbRimAlpha <= 0.25,
+    `rim 的 alpha 权重必须 <=0.25（旧 0.9 ⇒ 亮轮廓边），实测 ${FX.orbRimAlpha}`);
+  // ③ 噪声沿法线位移（把球捏成蛋形）必须减小
+  assertTrue(FX.orbTurbulence <= 0.12,
+    `法线位移必须 <=0.12（旧 0.24 ⇒ 蛋形凹凸），实测 ${FX.orbTurbulence}`);
+});
+
+test('storm renderer: 蓄力时核心与光晕都可见，静默期都隐藏', async () => {
+  const THREE = await import('three');
+  const { StormLanceRenderer } = await import('../render/storm-lance-renderer.js');
+  const r = new StormLanceRenderer({ scene: new THREE.Scene(), haloTexture: new THREE.DataTexture(new Uint8Array(4), 1, 1) });
+  assertTrue(!!r.haloMesh, '渲染器必须持有 haloMesh');
+  assertEqual(r.haloMesh.visible, false, '空闲时光晕必须隐藏');
+  assertEqual(r.orbMesh.visible, false, '空闲时核心必须隐藏');
+  r.setCharge(0.6, [0, 5, 0], [1, 0, 0], 1000);
+  assertEqual(r.orbMesh.visible, true, '蓄力时核心可见');
+  assertEqual(r.haloMesh.visible, true, '蓄力时光晕可见');
+  // 光晕必须比核心大（世界尺度）
+  assertTrue(r.haloMesh.scale.x > r.orbMesh.scale.x * 1.5,
+    `光晕尺度必须 >核心×1.5，实测 halo ${r.haloMesh.scale.x} vs orb ${r.orbMesh.scale.x}`);
+  // 静默期（progress=0）两者都必须熄灭
+  r.setCharge(0, null, null, 1100);
+  assertEqual(r.orbMesh.visible, false);
+  assertEqual(r.haloMesh.visible, false);
+  r.dispose();
+});
+
+test('storm renderer: mesh 数 7（新增光晕层），dispose 清空', async () => {
+  const THREE = await import('three');
+  const { StormLanceRenderer } = await import('../render/storm-lance-renderer.js');
+  const scene = new THREE.Scene();
+  const r = new StormLanceRenderer({ scene, haloTexture: new THREE.DataTexture(new Uint8Array(4), 1, 1) });
+  assertEqual(r.meshes.length, 7, '六个 pass + 蓄力光晕 = 7');
+  assertEqual(scene.children.length, 7);
+  for (const m of r.meshes) assertEqual(m.visible, false, `${m.name} 空闲必须隐藏`);
+  r.dispose();
+  assertEqual(scene.children.length, 0);
+});
+
+test('storm halo: billboard 靠写入相机四元数（照火球分工）', async () => {
+  const res = await fetch(new URL('../render/storm-lance-renderer.js', import.meta.url));
+  const src = await res.text();
+  assertTrue(src.includes('setCharge(progress, origin, side, nowMs, cameraQuat'),
+    'setCharge 必须收 cameraQuat（渲染器不持有相机，由装配层传入）');
+  assertTrue(src.includes('this.haloMesh.quaternion.copy(cameraQuat)'),
+    '必须把相机朝向写进光晕 ⇒ 永远正对镜头');
+  const g = await fetch(new URL('../core/game.js', import.meta.url));
+  const gs = await g.text();
+  assertTrue(gs.includes('this.camera.quaternion'),
+    '装配层必须真的传了相机四元数（否则光晕是一张斜卡片）');
 });

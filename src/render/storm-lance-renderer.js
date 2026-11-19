@@ -70,9 +70,44 @@ class RateAcc {
   }
 }
 
+/**
+ * 蓄力球光晕贴图 —— **照祭坛飞龙火球的手法**（`fireball-renderer.js:57`）。
+ *
+ * 用户 2026-11-19：「你看看祭坛飞龙吐的火球的外围一圈光晕是怎么加的，就那样加就行，
+ * 很简单，不要搞得太复杂」。火球用的就是**canvas 径向渐变 + MeshBasicMaterial + billboard**，
+ * 零 shader。渐变最后一停 alpha=0 ⇒ 边缘天然柔和，不需要任何噪声/衰减指数去调。
+ *
+ * 配色取 Storm Lance 的冷蓝白（火球是暖橙）：白热中心 → 淡蓝 → 蓝 → 透明。
+ *
+ * ⚠️ **主线程专用**（canvas 2D）—— 本文件归属 `render/`，不在同构目录。
+ *
+ * @param {number} [size=64] 贴图边长（64 足够：光晕是低频渐变，大尺寸无收益）
+ * @returns {THREE.CanvasTexture}
+ */
+export function makeStormHaloTexture(size = 64) {
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  g.addColorStop(0.0, 'rgba(255, 255, 255, 1.0)');    // 白热中心
+  g.addColorStop(0.3, 'rgba(201, 236, 255, 0.85)');   // 淡蓝（colorInner）
+  g.addColorStop(0.65, 'rgba(58, 160, 255, 0.32)');   // 蓝外圈（colorOuter）
+  g.addColorStop(1.0, 'rgba(11, 63, 200, 0.0)');      // 透明边缘（colorHalo）
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
 export class StormLanceRenderer {
-  /** @param {{scene: THREE.Scene}} deps */
-  constructor({ scene }) {
+  /**
+   * @param {{scene: THREE.Scene, haloTexture?: THREE.Texture|null}} deps
+   *        `haloTexture` 可注入（单测传假纹理免 canvas，照 FireballRenderer 同手法）；
+   *        缺省内部生成。
+   */
+  constructor({ scene, haloTexture = null }) {
     this.scene = scene;
     const mats = createStormLanceMaterials();
     this.uniforms = mats.uniforms;
@@ -82,6 +117,7 @@ export class StormLanceRenderer {
     ribbon.instanceCount = FX.strands;
     const spark = createSparkGeometry(FX.sparkCapacity);
     const orb = new THREE.IcosahedronGeometry(1, 3);
+
     const burst = createBurstGeometry();
     const shock = createShockGeometry();
 
@@ -98,6 +134,28 @@ export class StormLanceRenderer {
     this.glowMesh = mk('glow', ribbon, mats.glow);
     this.coreMesh = mk('core', ribbon, mats.core);
     this.sparkMesh = mk('spark', spark, mats.spark);
+    // v3.20c：光晕照**祭坛飞龙火球**的手法 —— 径向渐变贴图 + MeshBasicMaterial
+    // + billboard，零 shader（用户「就那样加就行，很简单，不要搞得太复杂」）。
+    // ⚠️ 尺寸给 1×1，实际大小由 setCharge 按 orbSize×orbHaloScale 缩放（与核心同源）。
+    this._haloTexture = haloTexture || makeStormHaloTexture();
+    this._ownsHaloTexture = haloTexture === null;
+    const halo = new THREE.PlaneGeometry(1, 1);
+    const haloMaterial = new THREE.MeshBasicMaterial({
+      map: this._haloTexture,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      depthTest: true,
+      side: THREE.DoubleSide,
+      fog: false,
+    });
+    this._haloMaterial = haloMaterial;
+    this.haloMesh = new THREE.Mesh(halo, haloMaterial);
+    this.haloMesh.name = 'storm:halo';
+    this.haloMesh.frustumCulled = false;
+    this.haloMesh.renderOrder = FX.renderOrder;
+    this.haloMesh.visible = false;
+    scene.add(this.haloMesh);
     this.orbMesh = mk('orb', orb, mats.orb);
     this.burstMesh = mk('burst', burst, mats.burst);
     this.shockMesh = mk('shock', shock, mats.shock);
@@ -105,12 +163,12 @@ export class StormLanceRenderer {
     /** 六个 mesh（供水面倒影的 hidden 列表展开） */
     this.meshes = [
       this.glowMesh, this.coreMesh, this.sparkMesh,
-      this.orbMesh, this.burstMesh, this.shockMesh,
+      this.haloMesh, this.orbMesh, this.burstMesh, this.shockMesh,
     ];
     /** 束身两个 pass（travel/hold/fade 期可见） */
     this._bolt = [this.glowMesh, this.coreMesh];
 
-    this._geos = [ribbon, spark, orb, burst, shock];
+    this._geos = [ribbon, spark, orb, halo, burst, shock];
     this._sparkGeo = spark;
     this._sparkSlot = 0;
 
@@ -148,13 +206,17 @@ export class StormLanceRenderer {
    * @param {number[]} origin 手点世界坐标
    * @param {number[]} side 束的横向基
    * @param {number} nowMs `performance.now()` 基准
+   * @param {THREE.Quaternion|null} [cameraQuat] 相机朝向 —— 光晕 billboard 用
+   *        （照 `fireballRenderer.sync(entities, camera.quaternion, nowMs)` 的分工：
+   *        渲染器不持有相机，由装配层每帧传入）。缺省 null ⇒ 面向 +Z。
    */
-  setCharge(progress, origin, side, nowMs) {
+  setCharge(progress, origin, side, nowMs, cameraQuat = null) {
     const p = Number.isFinite(progress) ? sat(progress) : 0;
     this._charge = p;
     if (!Number.isFinite(nowMs)) return;
     if (p <= 0) {
       this.orbMesh.visible = false;
+      this.haloMesh.visible = false;
       this.uniforms.uCharge.value = 0;
       this._intakeAcc.reset();
       return;
@@ -168,6 +230,19 @@ export class StormLanceRenderer {
     this.orbMesh.position.copy(this._hand);
     this.orbMesh.scale.setScalar(Math.max(0.01, size));
     this.orbMesh.visible = true;
+    // v3.20b：光晕跟随核心，但大一圈（orbHaloScale）。
+    // 它的呼吸相位与核心**错开**（×0.7 频率）—— 同相呼吸会让两层读作一个硬物体。
+    const haloSwell = 1 + FX.orbThrob * 1.6
+      * Math.sin((nowMs / 1000) * FX.orbThrobSpeed * 0.7 * Math.PI * 2);
+    this.haloMesh.position.copy(this._hand);
+    this.haloMesh.scale.setScalar(Math.max(0.01, size * FX.orbHaloScale * haloSwell));
+    // billboard：把相机朝向写进光晕（火球同手法）⇒ 永远正对镜头，不会看成一张斜卡片
+    if (cameraQuat) {
+      this.haloMesh.quaternion.copy(cameraQuat);
+      this._lastCamQuat = this._lastCamQuat || new THREE.Quaternion();
+      this._lastCamQuat.copy(cameraQuat);
+    }
+    this.haloMesh.visible = true;
     this.uniforms.uTime.value = nowMs / 1000;
   }
 
@@ -251,9 +326,17 @@ export class StormLanceRenderer {
     if (this._orbFade > 0) {
       this.orbMesh.visible = true;
       this.orbMesh.position.copy(this._origin);
-      this.orbMesh.scale.setScalar(Math.max(0.01, FX.orbSize * this._orbFade));
+      const s = Math.max(0.01, FX.orbSize * this._orbFade);
+      this.orbMesh.scale.setScalar(s);
+      // 光晕同步淡出，但**扩张**（光散开而不是缩成一团）
+      this.haloMesh.visible = true;
+      this.haloMesh.position.copy(this._origin);
+      this.haloMesh.scale.setScalar(
+        Math.max(0.01, FX.orbSize * FX.orbHaloScale * (1 + (1 - this._orbFade) * 0.8)));
+      if (this._lastCamQuat) this.haloMesh.quaternion.copy(this._lastCamQuat);
     } else {
       this.orbMesh.visible = false;
+      this.haloMesh.visible = false;
     }
 
     if (this._phase === 'travel') {
@@ -294,6 +377,8 @@ export class StormLanceRenderer {
     for (const key of ['glow', 'core', 'spark', 'orb', 'burst', 'shock']) {
       this._mats[key].dispose();
     }
+    this._haloMaterial.dispose();
+    if (this._ownsHaloTexture) this._haloTexture.dispose();
     this.meshes.length = 0;
     this._bolt.length = 0;
     this._phase = 'idle';

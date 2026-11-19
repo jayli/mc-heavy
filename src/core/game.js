@@ -980,7 +980,7 @@ export class Game {
 
     // v3.20：持剑蓄力大招 Storm Lance（程序化几何 + TSL，**零贴图依赖** ⇒ 恒装配）。
     // 单槽：总视觉时长 1.773s < 蓄力 2.0s ⇒ 两道闪电不可能重叠（推导见渲染器文件头）。
-    // 空闲时九个 mesh 全部 visible=false ⇒ 0 draw call，bench 冻结基线逐位不变。
+    // 空闲时七个 mesh 全部 visible=false ⇒ 0 draw call，bench 冻结基线逐位不变。
     this.stormLance = new StormLanceRenderer({ scene: this.scene });
 
     // 出生点（mc-lite 语义：优先 City 中心出生，保证出生即见城市天际线，§7 M2 验收）
@@ -1484,7 +1484,7 @@ export class Game {
         if (p > 0) {
           const aim = this.player._buildAim();
           const axis = stormLanceAxis(aim, cfg);
-          this.stormLance.setCharge(p, axis.origin, axis.side, nowMs);
+          this.stormLance.setCharge(p, axis.origin, axis.side, nowMs, this.camera.quaternion);
         } else {
           this.stormLance.setCharge(0, null, null, nowMs);
         }
@@ -1780,8 +1780,8 @@ export class Game {
     hidden.length = 0;
     if (this.viewArm?.mesh) hidden.push(this.viewArm.mesh);
     if (this.viewWeapon?.node) hidden.push(this.viewWeapon.node);
-    // v3.20：闪电的六个 mesh 也隐掉 —— 反射 pass 的成本主杠杆是 draw call 数（v3.17 实测），
-    // 多 6 个是白付；且 additive 特效在镜像相机下的观感未标定。与第一人称物件同手法。
+    // v3.20：闪电的七个 mesh 也隐掉 —— 反射 pass 的成本主杠杆是 draw call 数（v3.17 实测），
+    // 多 7 个是白付；且 additive 特效在镜像相机下的观感未标定。与第一人称物件同手法。
     if (this.stormLance) hidden.push(...this.stormLance.meshes);
     this.ocean.renderReflection(cam, this.ocean.plane.material, hidden);
   }

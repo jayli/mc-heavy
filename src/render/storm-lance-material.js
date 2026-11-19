@@ -408,7 +408,21 @@ function makeSparkPass(uniforms) {
   return tune(mat, uniforms);
 }
 
-/** 蓄力光球（噪声侵蚀 + 丝状纹 + rim）。R5：尺寸由 FX.orbSize 缩小 */
+/**
+ * 蓄力光球核心。
+ *
+ * ⚠️⚠️ **v3.20b 朝胧化**（用户：「边界太清晰，就有点像一个发光的鸡蛋」）。
+ * 「发光鸡蛋」有三个可定位的成因，旧实现三个都中了：
+ *   ① `alpha = 0.2 + rim·0.9 + …` 的**基础项 0.2** ⇒ 整球不透明 ⇒ 实心蛋；
+ *   ② **rim·0.9** 把轮廓边提得比中心还亮 ⇒ 一条亮硬边；
+ *   ③ 噪声沿法线位移 **0.24** ⇒ 把球捏成凹凸的蛋形。
+ * 现在：基础项 0.04、rim 降到 0.18、位移 0.08，并新增**中心热区**
+ * （`pow(facing, orbCoreSharp)`）把亮度从轮廓搬到中心 —— 发光体应当中心最亮。
+ *
+ * ⚠️ **但光靠这三项仍消不掉硬边**：闭合网格的几何轮廓本身就是硬截断。
+ * 真正让它朝胧的是另加的 **径向渐变贴图 billboard 光晕**
+ * （`makeStormHaloTexture` + `MeshBasicMaterial`，照祭坛飞龙火球的手法）。
+ */
 function makeOrbPass(uniforms) {
   const vDisp = varyingProperty('float', 'vSlOrbDisp');
   const vFacing = varyingProperty('float', 'vSlOrbFacing');
@@ -430,15 +444,21 @@ function makeOrbPass(uniforms) {
   });
 
   const color = Fn(() => {
-    const rim = pow(oneMinus(clamp(vFacing, 0, 1)), float(FX.orbRim));
+    const facing = clamp(vFacing, 0, 1);
+    const rim = pow(oneMinus(facing), float(FX.orbRim));
+    // 中心热区：正对视线（facing→1）最亮 ⇒ 读作「从里向外发光」
+    const core = pow(facing, float(FX.orbCoreSharp));
     const heat = clamp(vDisp.mul(0.5).add(0.5), 0, 1);
     const fil = smoothstep(float(0.74), float(0.98),
       ridgedFbm(vNrm.mul(FX.orbBands)
         .add(vec3(0, U.uTime.mul(FX.orbFlow * 2), 0)).add(U.uSeed)));
     const col = mix(rgb(FX.colorOuter), rgb(FX.colorInner), heat)
-      .mix(rgb(FX.colorCore), clamp(fil.add(rim.mul(0.35)), 0, 1))
+      .mix(rgb(FX.colorCore), clamp(fil.add(core.mul(0.6)), 0, 1))
       .add(rgb(FX.colorCore).mul(fil).mul(1.6));
-    const a = float(0.2).add(rim.mul(0.9)).add(fil.mul(0.75))
+    const a = float(FX.orbBaseAlpha)
+      .add(rim.mul(FX.orbRimAlpha))
+      .add(core.mul(FX.orbCoreAlpha))
+      .add(fil.mul(FX.orbFilAlpha))
       .mul(U.uCharge).mul(FX.orbOpacity);
     Discard(a.lessThanEqual(0.003));
     return vec4(col.mul(U.uGain).mul(FX.orbGlow), a);

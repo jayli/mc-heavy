@@ -183,6 +183,65 @@ function streakAspect(before, after, { minSeed = 90, maxClusters = 400 } = {}) {
   };
 }
 
+/**
+ * 边界锐度 —— **只量「亮区外缘那一带」的梯度**（不需要找中心，确定性）。
+ *
+ * 用户抱怨的是「边界太清晰」：亮度在几个像素内从峰值掉到背景 ⇒ 外缘一圈高梯度。
+ * 柔和衰减则外缘梯度很低。
+ *
+ * ⚠️⚠️ **不能取整场梯度分位数**（本轮实测推翻）：光晕直径实测约 **454px**
+ * （占屏高 63%，litCount 6~7 万），内部平缓区的样本数远多于边界带
+ * ⇒ 分位数被内部主导，柔和态 0.098~0.139 与退化态 0.096~0.143 **完全重叠**（零判别力）。
+ * 正解：先用增量阈值圈出亮区，只在**亮区与其外邻域的交界像素**上取梯度。
+ *
+ * ⚠️ 也不能用「径向剖面」（本轮实测三次推翻）：任何径向统计量都要先定中心，而
+ *   ① 找最亮像素会被吸入粒子抢走原点；
+ *   ② 相机投影会撞上 viewBob 每帧重写姿态（player.js:380）⇒ 新姿态配旧手点，实测偏 59/96px。
+ * 本法**完全不需要中心**。
+ *
+ * @returns peak 峰值增量 / edgeGrad 边界带梯度均值 / sharpRatio = edgeGrad/peak
+ *          （硬边 ⇒ 高；柔和 ⇒ 低）/ edgeCount 边界像素数 / litCount 亮区像素数
+ */
+function edgeSharpness(before, after, { litThresh = 30 } = {}) {
+  const a = PNG.sync.read(before);
+  const b = PNG.sync.read(after);
+  const W = a.width, H = a.height;
+  const d = new Float32Array(W * H);
+  let peak = 0;
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = (y * W + x) * 4;
+      const v = (b.data[i] - a.data[i]) + (b.data[i + 1] - a.data[i + 1]) + (b.data[i + 2] - a.data[i + 2]);
+      d[y * W + x] = v;
+      if (v > peak) peak = v;
+    }
+  }
+  if (peak <= 0) return { found: false, peak: 0, edgeGrad: 0, sharpRatio: 0, edgeCount: 0, litCount: 0 };
+  const lit = (x, y) => d[y * W + x] > litThresh;
+  let litCount = 0;
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (lit(x, y)) litCount++;
+  // 边界带：自己是亮的、但四邻里至少有一个不亮（= 亮区外缘）
+  let sum = 0, n = 0, mx = 0;
+  for (let y = 1; y < H - 1; y++) {
+    for (let x = 1; x < W - 1; x++) {
+      if (!lit(x, y)) continue;
+      if (lit(x + 1, y) && lit(x - 1, y) && lit(x, y + 1) && lit(x, y - 1)) continue;
+      const c = d[y * W + x];
+      const gx = d[y * W + x + 1] - d[y * W + x - 1];
+      const gy = d[(y + 1) * W + x] - d[(y - 1) * W + x];
+      const g = Math.hypot(gx, gy) * 0.5;
+      sum += g; n++;
+      if (g > mx) mx = g;
+    }
+  }
+  const edgeGrad = n ? sum / n : 0;
+  return {
+    found: true, peak, edgeGrad, edgeCount: n, litCount,
+    sharpRatio: edgeGrad / peak,
+    edgeMaxRatio: mx / peak,
+  };
+}
+
 test.describe('Storm Lance（v3.20）', () => {
   test('R1 蓄力环：静默期不出现；1s 后出现并递减；2s 转就绪；松开消失', async ({ page }) => {
     await page.goto(`/?seed=${SEED}&vd=4`);
@@ -579,7 +638,7 @@ test.describe('Storm Lance（v3.20）', () => {
       expect(rd.fired, `第 ${i + 1} 次必须施放成功`).toBe(true);
       expect(rd.phase, `第 ${i + 1} 次必须回到 idle`).toBe('idle');
       expect(rd.lit, `第 ${i + 1} 次结束后不得有可见 mesh`).toBe(0);
-      expect(rd.meshes, 'mesh 数恒为 6').toBe(6);
+      expect(rd.meshes, 'mesh 数恒为 7（六 pass + 蓄力光晕）').toBe(7);
       expect(Math.abs(rd.dc - r.idle0), `第 ${i + 1} 次 draw call 必须回基线`).toBeLessThanOrEqual(2);
     }
   });
@@ -737,5 +796,112 @@ test.describe('Storm Lance 观感身份（R3 / R4）', () => {
     expect(ratio(r.s10),
       `10% 寿命时应 >35%（outQuint 0.410 / outCubic 0.271），实测 ${ratio(r.s10).toFixed(3)}`)
       .toBeGreaterThan(0.35);
+  });
+});
+
+// ---------------------------------------------------------------- 蓄力球朦胧化（v3.20b）
+//
+// 用户 2026-11-19 实玩：「蓄力时的光球，边界太清晰，就有点像一个发光的鸡蛋……
+// 要朦胧一些，可以让这个光球再小一点，然后让他发出光，有一层光晕覆盖在光球上」。
+//
+// ⚠️ 判据不是「变亮了」而是**径向亮度剖面是否连续衰减**：
+// 「发光鸡蛋」= 亮度在轮廓处仍高然后突然截断；「朦胧光球」= 从中心平滑降到背景。
+
+test.describe('Storm Lance 蓄力球朦胧化（v3.20b）', () => {
+  /** 进入满蓄力态（不释放），返回基线帧 / 特效帧 / 状态 */
+  async function chargeOnly(page, { oldEgg = false } = {}) {
+    await page.setViewportSize({ width: 1280, height: 720 });
+    if (oldEgg) {
+      // ⚠️⚠️ **负向对照必须还原「旧的三个参数」，不是只藏光晕**（实测推翻首版）：
+      // 核心本身也已被软化（baseAlpha 0.04 / rim 0.18 / turbulence 0.08），
+      // 只藏光晕留下的仍是个柔和核心 ⇒ 边界锐度与正向**重叠**（0.147~0.223 vs 0.157~0.160），
+      // 复现不出用户看到的「发光鸡蛋」。
+      // ⚠️ 常量编译进 shader ⇒ 浏览器侧改 FX 对象无效，必须用 page.route 换模块内容。
+      await page.route('**/src/render/storm-lance-config.js', async (route) => {
+        const res = await route.fetch();
+        let body = await res.text();
+        body = body
+          .replace(/orbSize: [\d.]+/, 'orbSize: 0.20')
+          .replace(/orbTurbulence: [\d.]+/, 'orbTurbulence: 0.24')
+          .replace(/orbBaseAlpha: [\d.]+/, 'orbBaseAlpha: 0.2')
+          .replace(/orbRimAlpha: [\d.]+/, 'orbRimAlpha: 0.9')
+          .replace(/orbCoreAlpha: [\d.]+/, 'orbCoreAlpha: 0')
+          .replace(/orbHaloScale: [\d.]+/, 'orbHaloScale: 0.0001');
+        await route.fulfill({ response: res, body, headers: { ...res.headers(), 'content-type': 'application/javascript' } });
+      });
+    }
+    await page.goto(`/?seed=${SEED}&vd=6&shadows=0&reflect=0`);
+    await waitWorldReady(page);
+    await gotoOpenField(page);
+    await setupVisual(page);
+    // 关掉吸入粒子：本组只量光球本身的边界柔和度（粒子有独立判据 R3）。
+    // 留着它们会把增量场铺满整个手点周围，稀释梯度分位数。
+    await page.evaluate(() => { window.__MC_GAME__.stormLance._emitIntake = () => {}; });
+    const base = await page.screenshot();
+    await page.evaluate(async (holdMs) => {
+      const g = window.__MC_GAME__;
+      g.player.weaponController.pointerDown(g.player._buildAim());
+      await new Promise((r) => setTimeout(r, holdMs));
+    }, HOLD_MS);
+    await page.waitForTimeout(200);
+    const shot = await page.screenshot();
+    const state = await page.evaluate(() => {
+      const g = window.__MC_GAME__;
+      const r = g.stormLance;
+      return {
+        charge: g.stormLanceDebugState().charge,
+        orbVisible: r.orbMesh.visible,
+        haloVisible: r.haloMesh.visible,
+        orbScale: r.orbMesh.scale.x,
+        haloScale: r.haloMesh.scale.x,
+      };
+    });
+    await page.evaluate(() => {
+      const g = window.__MC_GAME__;
+      g.player.weaponController.pointerUp(g.player._buildAim());
+    });
+    return { base, shot, state };
+  }
+
+  test('蓄力球：核心+光晕都上屏，边界柔和（梯度锐度低）', async ({ page }) => {
+    test.setTimeout(180_000);
+    const errs = [];
+    page.on('console', (m) => { if (m.type() === 'error') errs.push(m.text()); });
+    page.on('pageerror', (e) => errs.push(String(e)));
+    const { base, shot, state } = await chargeOnly(page);
+    const sh = edgeSharpness(base, shot);
+    console.log('ORB_SOFT', JSON.stringify({ state, sh }));
+
+    expect(errs.length, `不得有 TSL/GPU 报错：${errs.slice(0, 3).join(' | ')}`).toBe(0);
+    expect(state.charge, '必须停在满蓄力').toBe(1);
+    expect(state.orbVisible, '核心必须可见').toBe(true);
+    expect(state.haloVisible, '光晕必须可见').toBe(true);
+    expect(state.haloScale, '光晕必须明显大于核心')
+      .toBeGreaterThan(state.orbScale * 1.5);
+    expect(sh.found, '必须真的画出了东西').toBe(true);
+    expect(sh.litCount, '光球+光晕必须占一块屏幕').toBeGreaterThan(200);
+    expect(sh.edgeCount, '必须采到边界像素').toBeGreaterThan(100);
+    // 边界锐度 = 梯度95分位 / 峰值。硬边在几像素内掉完 ⇒ 比值高；柔和衰减 ⇒ 低。
+    // ⚠️ **判据取绝对 edgeGrad 而不是 edgeGrad/peak**：呼吸相位会让 peak 在 372~709 之间摆，
+    // 比值被小峰值放大（实测柔和态第二轮 sharpRatio 0.235 与旧鸡蛋 0.234 撞车）。
+    // v3.20c 改用火球式渐变贴图后，柔和态实测 **11.6~12.5**（旧自写 shader 是 87~111），
+    // 旧「发光鸡蛋」**193~194** ⇒ 相差 16 倍。阈值取 60：柔和侧留 5 倍余量，退化侧留 3 倍。
+    expect(sh.edgeGrad,
+      `边界必须柔和（外缘梯度 ${sh.edgeGrad.toFixed(1)}）`).toBeLessThan(60);
+  });
+
+  test('负向对照：还原旧参数（发光鸡蛋）⇒ 边界锐度更高', async ({ page }) => {
+    test.setTimeout(180_000);
+    const { base, shot, state } = await chargeOnly(page, { oldEgg: true });
+    const sh = edgeSharpness(base, shot);
+    console.log('ORB_EGG', JSON.stringify({ state, sh }));
+    expect(state.orbVisible, '旧参数下核心仍在').toBe(true);
+    expect(sh.found).toBe(true);
+    expect(sh.edgeCount, '必须采到边界像素').toBeGreaterThan(100);
+    // 旧参数：实心 + 亮 rim + 蛋形位移 + 无光晕 ⇒ 外缘梯度必须显著更高。
+    // 阈值由两侧实测标定（见 console 输出）。
+    expect(sh.edgeGrad,
+      `旧「发光鸡蛋」的外缘梯度必须 >60（实测 ${sh.edgeGrad.toFixed(1)}）`)
+      .toBeGreaterThan(60);
   });
 });
