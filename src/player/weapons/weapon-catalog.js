@@ -9,7 +9,7 @@
 
 // v3.20 Nova Beam：伤害**派生**自爆炸常量（红线 1）—— 用户裁定「掉血幅度等同被炸弹炸到」。
 // 在本文件再写一份 50 就是第二份权威，将来调炸弹伤害时光柱会静默不跟。
-import { EXPLOSION_DAMAGE } from '../../voxel/explosion.js';
+import { EXPLOSION_DAMAGE, EXPLOSION_DAMAGE_RADIUS } from '../../voxel/explosion.js';
 
 export const WEAPON_IDS = Object.freeze({
   ARM: 'arm', PISTOL: 'pistol', MAG7: 'mag7', MINIGUN: 'minigun', SWORD: 'sword',
@@ -275,6 +275,91 @@ export const WEAPONS = freeze({
       /** 蓄满提示音（既有素材）—— 玩家不看环也能知道 2 秒到了 */
       readySound: 'gun_load', readyVolume: 0.4,
       /** 释放音（既有素材） */
+      fireSound: 'dragon_fire', fireVolume: 0.5,
+      /** 落点音（既有素材，与 TNT 爆炸同一条） */
+      impactSound: 'explosion', impactVolume: 0.4,
+    },
+    /**
+     * 第三秒大招 Cinder Fall（v3.21，用户 2026-11-19）。
+     *
+     * 用户原话：「按住第一秒时只计时不蓄力，按到第二秒时松开是发送 storm lance 动作，
+     * 按到第三秒时发出时，执行 cinder fall 的攻击动作，**蓄力球跟 storm lance 一样**」
+     * 「扔出去的球只要碰到实体方块（和 storm lance 一样）或者碰到丧尸或者 boss 都爆炸」。
+     *
+     * 视觉来自上游 `MeteorAbility.js` + `MeteorMaterial.js`（`ELEMENT_META.meteor.label`
+     * = 'Cinder Fall'）。**只移植身份三件**：程序化岩石 + 火焰光晕（照火球贴图手法）
+     * + 落点爆壳/冲击环/碎块。上游的体积火焰 raymarch（35 步/像素）、熔岩裂缝网络、
+     * 焦痕贴花、动态光、震屏闪白**全部不做**（用户既有裁定「从最简单的开始」）。
+     *
+     * ## 阶段门：「进入那一秒就能发」（用户在两个读法里明确选了它）
+     * 1~2s 松手 → Storm Lance；≥2s 松手 → Cinder Fall。**不必蓄满**。
+     * ⇒ Storm Lance 最快 1 秒就能发（v3.20 必须蓄满 2s），这是用户裁定的新手感。
+     *
+     * ## 与 Storm Lance 的分工（三者不重叠）
+     * 剑 = 贴身单体 100 DPS；Storm Lance = 直线穿透多个；Cinder Fall = **范围清场**
+     * （落点半径 4 格内全部实体各扣 50）。8.3 DPS 单体，价值在范围与抛物线的越过掩体。
+     */
+    cinderFall: {
+      /** 第二段蓄力时长（秒）—— 第三秒。第一段（静默 1s + 蓄力 1s）沿用 stormLance */
+      chargeSeconds: 1.0,
+      /** 最远射程（格）—— 上游 `settings.meteor.range` */
+      range: 20,
+      /**
+       * 飞行速度（格/秒）。上游 21，本仓取 18：地形起伏 + 逐步判定的步长更稳
+       * （18 × 0.2s 尖峰 = 3.6 格，判定线段取本步实际穿越段故仍不穿墙）。
+       */
+      speed: 18,
+      /**
+       * 中段拱起（格）。上游 `arc` 2.6 是**平地沙盒**（地板恒 y=0）的量；
+       * 本仓地形起伏，取 1.5 让抛物线读得出来又不至于飞过山头。
+       * ⚠️ 它是**叠加在 origin→target 直线上的拱起**，不是独立弹道 ——
+       * 故仰视/俯视时末端仍落在准心瞄准点（瞄准手感不变）。
+       */
+      arc: 1.5,
+      /** 拱起形状指数（上游 `arcCurve`，<1 压平顶部） */
+      arcCurve: 0.85,
+      /** 岩石半径 = 命中盒半边长（格）。上游 0.8，本仓略小 */
+      radius: 0.5,
+      /** 自旋速率（弧度/秒）—— 上游 `spin` */
+      spin: 3.4,
+      /**
+       * 施法冷却（秒）—— **推导出来的，不是拍的**：
+       *   飞行 range/speed = 20/18 = 1.111s；落点余烬保守取 1.5s
+       *   ⇒ 单次最长视觉 ≈ 2.611s
+       *   最小施法间隔 = chargeDelay(1) + charge(1) + charge2(1) = 3.0s
+       *   3.0 > 2.611 ⇒ **落点特效单槽成立**（岩石本体是实体，另用实例池）。
+       * ⚠️ 载荷性：抬 range / 降 speed / 抬余烬寿命必须同步抬冷却或改多槽。
+       * `test-cinder-fall.js` 用关系式钉住它。
+       */
+      cooldown: 3.0,
+      /** 每个实体的伤害 = 一颗炸弹（红线 1：派生不复制） */
+      damage: EXPLOSION_DAMAGE,
+      /** 落点溅射半径（格）= 炸弹的伤害半径（红线 1：派生不复制） */
+      blastRadius: EXPLOSION_DAMAGE_RADIUS,
+      /**
+       * 岩石渲染池容量。冷却 3.0s、单发最长飞 1.111s ⇒ 理论同时最多 1 发；
+       * 取 4 = 4 倍余量（照 `FIREBALL.poolSize` 对理论峰值留 3 倍余量的手法）。
+       * 装不下时回收最早 slot，形态是「岩石半路消失」（静默），故留足。
+       */
+      poolSize: 4,
+      /**
+       * 落点碎块数（上游 `chunkCount` 18）。**复用 `block-hit-fx` 碎块池**，不新开池。
+       * ⚠️ 池账（容量 `IMPACT_FX.debris.maxActive` = 128）：
+       *   Cinder 18 + 焰魔死亡爆散 32 + 焰魔砸击圆环 42 = **92 ≤ 128** ✓
+       * 抬这个数必须重算该账 —— 超池会 FIFO 绕回，观感「只炸出半边」且静默。
+       */
+      debrisCount: 18,
+      /**
+       * 出射点相对相机的偏移 `[right, up, forward]`（格）。
+       * **与 stormLance 同一个手点** —— 两招共用蓄力球，出射点分裂会让球在手里
+       * 而岩石从别处飞出。⚠️ 不用上游 `handHeight/endHeight`（离地板绝对米数）。
+       */
+      handOffset: [0.28, -0.22, 0.55],
+      /** 第二段起手音（既有素材，零新增） */
+      chargeSound: 'emp_activated', chargeVolume: 0.3,
+      /** 第二段蓄满提示音（既有素材） */
+      readySound: 'gun_load', readyVolume: 0.4,
+      /** 抛出音（既有素材，与飞龙喷火球同一条） */
       fireSound: 'dragon_fire', fireVolume: 0.5,
       /** 落点音（既有素材，与 TNT 爆炸同一条） */
       impactSound: 'explosion', impactVolume: 0.4,

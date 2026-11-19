@@ -45,6 +45,82 @@ export function stormChargeProgress(elapsedSeconds, cfg) {
 }
 
 /**
+ * 边界容差（秒）—— **载荷性，不是装饰**。
+ *
+ * dt 逐帧累加会在边界两侧漂：实测 `60 × 0.05 = 2.9999999999999973`（落在 3 下方）、
+ * `40 × 0.05 = 2.000000000000001`（落在 2 上方）。裸 `elapsed >= 3` 会把「已蓄满」判成
+ * 「还差一点」，而 controller 的跨越标志（`was < full && now >= full`）已经判满 ⇒ **两侧分裂**。
+ * 1e-9 远小于一帧（120fps 下 8.3e-3 秒），不会把真的未到边界误判成已到。
+ */
+const CHARGE_EPS = 1e-9;
+
+/** 读联合蓄力时序的三个时长（非法值一律归 0，不抛异常）。 */
+function chargeTimings(seq) {
+  const num = (v) => (Number.isFinite(v) && v >= 0 ? v : 0);
+  const delay = num(seq?.chargeDelaySeconds);
+  const first = num(seq?.chargeSeconds);
+  const second = num(seq?.cinderChargeSeconds);
+  return { delay, first, second };
+}
+
+/**
+ * 第二段蓄力进度（0..1）—— **第三秒**（v3.21 Cinder Fall）。
+ *
+ * 用户：「按到第三秒时发出时，执行 cinder fall 的攻击动作，蓄力球跟 storm lance 一样」
+ * ⇒ 第二段只是「同一段蓄力再走一遍」，**视觉完全复用**（只换色，见渲染层 `warm`）。
+ *
+ * 前 `chargeDelaySeconds + chargeSeconds` 秒恒 0（静默期 + 第一段期间不得有第二段视觉）。
+ *
+ * ⚠️ **入参是「联合时序」而不是 stormLance 配置**：第二段时长住在 `cinderFall.chargeSeconds`，
+ * 调用方传 `{...stormLance, cinderChargeSeconds: cinderFall.chargeSeconds}`。
+ * 不在本函数里 import catalog —— 保持纯函数（单测可喂合成时序钉住边界）。
+ *
+ * @param {number} elapsedSeconds 自按下左键起的秒数
+ * @param {{chargeDelaySeconds:number, chargeSeconds:number, cinderChargeSeconds:number}} seq
+ * @returns {number}
+ */
+export function cinderChargeProgress(elapsedSeconds, seq) {
+  const t = Number.isFinite(elapsedSeconds) ? elapsedSeconds : 0;
+  const { delay, first, second } = chargeTimings(seq);
+  if (!(second > 0)) return 0;
+  const start = delay + first;
+  if (t + CHARGE_EPS <= start) return 0;
+  return Math.max(0, Math.min(1, (t - start) / second));
+}
+
+/**
+ * 松手时刻 → 发哪招（v3.21，**阶段门的唯一纯函数口径**）。
+ *
+ * 用户裁定「**进入那一秒就能发**」：
+ *   `< delay`            → 'none'（普通挥剑，已在 pointerDown 发生）
+ *   `[delay, delay+first)` → 'lance'
+ *   `≥ delay+first`      → 'cinder'
+ *
+ * ⚠️ **与进度函数的边界语义刻意不同**：`stormChargeProgress(1.0) === 0`（刚到边界还没蓄）
+ * 而本函数 `(1.0) === 'lance'`（已进入该秒）。进度是「蓄了多少」，阶段是「松手发哪招」。
+ * **不得为了「看着一致」把其中一个改成闭区间另一侧**（单测两侧各钉一条）。
+ *
+ * ⚠️ **controller 不直接拿它当唯一判据**：它另有 `_novaStartFired` / `_cinderStartFired`
+ * 两个**跨越标志**（对 dt 累积免疫）。本函数供 UI / 诊断 / 单测，两者必须一致 ——
+ * `CHARGE_EPS` 就是为此而设（见它的注释）。
+ *
+ * @param {number} elapsedSeconds @param {object} seq 同 `cinderChargeProgress`
+ * @returns {'none'|'lance'|'cinder'}
+ */
+export function chargeStageAt(elapsedSeconds, seq) {
+  if (!Number.isFinite(elapsedSeconds)) return 'none';
+  const { delay, first, second } = chargeTimings(seq);
+  // 没有第一段配置 ⇒ 根本没有蓄力招式（fixture / 旧调用方）
+  if (!(first > 0)) return 'none';
+  if (elapsedSeconds + CHARGE_EPS < delay) return 'none';
+  // 第二段缺席时退化成 v3.20 行为：蓄满才能发 lance
+  if (!(second > 0)) {
+    return elapsedSeconds + CHARGE_EPS >= delay + first ? 'lance' : 'none';
+  }
+  return elapsedSeconds + CHARGE_EPS >= delay + first ? 'cinder' : 'lance';
+}
+
+/**
  * 闪电的轴线几何（**不含遮挡** —— 那由 `stormLanceSweep` 覆盖 `length`）。
  *
  * `origin` = 相机位置 + right·handOffset[0] + up·handOffset[1] + forward·handOffset[2]，

@@ -28,6 +28,9 @@
 const RADIUS = 18;
 const STROKE = 3;
 const CIRC = 2 * Math.PI * RADIUS;
+/** v3.21：第二圈（Cinder Fall 段）—— 外侧 4px，不压住准心 20px 笔画 */
+const RADIUS2 = 22;
+const CIRC2 = 2 * Math.PI * RADIUS2;
 /** 进度变化小于它就不写 DOM（1px 级不可见） */
 const EPS = 0.005;
 
@@ -68,6 +71,13 @@ const CSS = `
   filter: drop-shadow(0 0 6px rgba(255, 215, 94, 0.95));
   animation: mc-nc-breathe 1.2s ease-in-out infinite;
 }
+#${CHARGE_RING_ID} .mc-nc-arc2 {
+  fill: none; stroke: #ff8a3c; stroke-width: ${STROKE}; stroke-linecap: round;
+  transform: rotate(-90deg); transform-origin: 24px 24px;
+  filter: drop-shadow(0 0 4px rgba(255, 138, 60, 0.9));
+  opacity: 0; transition: opacity .12s ease-out;
+}
+#${CHARGE_RING_ID}.mc-nc-warm .mc-nc-arc2 { opacity: 1; }
 @keyframes mc-nc-breathe {
   0%, 100% { filter: drop-shadow(0 0 4px rgba(255, 215, 94, 0.7)); }
   50%      { filter: drop-shadow(0 0 9px rgba(255, 215, 94, 1)); }
@@ -94,33 +104,47 @@ export class ChargeRing {
       + `<circle class="mc-nc-track" cx="24" cy="24" r="${RADIUS}"/>`
       + `<circle class="mc-nc-arc" cx="24" cy="24" r="${RADIUS}"`
       + ` stroke-dasharray="${CIRC.toFixed(3)}" stroke-dashoffset="${CIRC.toFixed(3)}"/>`
+      + `<circle class="mc-nc-arc2" cx="24" cy="24" r="${RADIUS2}"`
+      + ` stroke-dasharray="${CIRC2.toFixed(3)}" stroke-dashoffset="${CIRC2.toFixed(3)}"/>`
       + '</svg>';
     this.arc = this.el.querySelector('.mc-nc-arc');
+    this.arc2 = this.el.querySelector('.mc-nc-arc2');
     root.appendChild(this.el);
     this._last = -1;
     this._ready = false;
+    this._warm = false;
   }
 
   /**
    * 每帧调用。`p<=0` 隐藏；`p>=1` 转就绪态。
    * @param {number} progress 0..1
+   * @param {number} [warm=0] v3.21：1 = 第二段（Cinder Fall）—— 主环满格 + 第二圈暖橙扫过。
+   *        缺省 0 ⇒ 既有单参调用逐位回到 v3.20 行为。
    */
-  update(progress) {
+  update(progress, warm = 0) {
     const p = Number.isFinite(progress) ? Math.max(0, Math.min(1, progress)) : 0;
-    if (p <= 0) {
+    const w = Number.isFinite(warm) && warm > 0.5;
+    if (p <= 0 && !w) {
       if (this._last !== 0) {
         this._last = 0;
-        this.el.classList.remove('mc-nc-on', 'mc-nc-ready');
+        this.el.classList.remove('mc-nc-on', 'mc-nc-ready', 'mc-nc-warm');
         this._ready = false;
+        this._warm = false;
         this.arc.setAttribute('stroke-dashoffset', CIRC.toFixed(3));
+        this.arc2.setAttribute('stroke-dashoffset', CIRC2.toFixed(3));
       }
       return;
     }
-    if (Math.abs(p - this._last) < EPS && (p >= 1) === this._ready) return;
+    if (Math.abs(p - this._last) < EPS && (p >= 1) === this._ready && w === this._warm) return;
     this._last = p;
+    this._warm = w;
     this.el.classList.add('mc-nc-on');
-    this.arc.setAttribute('stroke-dashoffset', (CIRC * (1 - p)).toFixed(3));
-    const ready = p >= 1;
+    this.el.classList.toggle('mc-nc-warm', w);
+    // 第二段：主环恒满格（读作「第一段已满」），第二圈扫当前进度
+    const mainP = w ? 1 : p;
+    this.arc.setAttribute('stroke-dashoffset', (CIRC * (1 - mainP)).toFixed(3));
+    this.arc2.setAttribute('stroke-dashoffset', (CIRC2 * (1 - (w ? p : 0))).toFixed(3));
+    const ready = mainP >= 1;
     if (ready !== this._ready) {
       this._ready = ready;
       this.el.classList.toggle('mc-nc-ready', ready);
@@ -129,7 +153,11 @@ export class ChargeRing {
 
   /** 当前 dashoffset（E2E 判「进度单调递减」用） */
   get dashOffset() { return Number(this.arc.getAttribute('stroke-dashoffset')); }
+  /** v3.21：第二圈的 dashoffset（E2E 判第二段进度） */
+  get dashOffset2() { return Number(this.arc2.getAttribute('stroke-dashoffset')); }
   get ready() { return this._ready; }
+  /** v3.21：是否处于第二段（暖橙） */
+  get warm() { return this._warm; }
 
   dispose() { this.el.remove(); }
 }

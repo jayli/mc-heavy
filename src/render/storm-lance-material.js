@@ -48,6 +48,8 @@ import {
   PI2,
 } from 'three/tsl';
 import { STORM_LANCE_FX as FX } from './storm-lance-config.js';
+// v3.21：蓄力球第二段的暖色端取 Cinder 的火焰色阶（单一权威，不在这里另写一套橙）
+import { CINDER_FX as CF } from './cinder-fall-config.js';
 
 /** hex → 显式分量 vec3（口径 ④，禁 `vec3(Color)`） */
 function rgb(hex) {
@@ -161,6 +163,13 @@ function makeUniforms() {
     uBurstAge: uniform(0),
     uShockFade: uniform(0),
     uShockAge: uniform(0),
+    /**
+     * v3.21：蓄力球的**暖色程度**（0 = Storm Lance 冷蓝白，1 = Cinder Fall 暖橙白）。
+     * 用户：「蓄力球跟 storm lance 一样…蓄力的动作是完全一样的」⇒ **只换色，不换形**。
+     * ⚠️ 光晕是贴图不是 shader，它的换色靠切 `material.map`（渲染器侧），
+     * 本 uniform 只管核心球。只改一侧的形态是「球变暖了但光晕还是蓝的」。
+     */
+    uWarm: uniform(0),
   };
 }
 
@@ -455,13 +464,19 @@ function makeOrbPass(uniforms) {
     const col = mix(rgb(FX.colorOuter), rgb(FX.colorInner), heat)
       .mix(rgb(FX.colorCore), clamp(fil.add(core.mul(0.6)), 0, 1))
       .add(rgb(FX.colorCore).mul(fil).mul(1.6));
+    // v3.21：第二段换暖橙（只换色，形状/尺寸/呼吸全不变 —— 用户 R4）。
+    // 暖色端取 Cinder 的火焰色阶；mix 在**最终颜色**上做 ⇒ 冷蓝态（uWarm=0）逐位不变。
+    const warmCol = mix(rgb(CF.colorFlameEdge), rgb(CF.colorFlameMid), heat)
+      .mix(rgb(CF.colorHot), clamp(fil.add(core.mul(0.6)), 0, 1))
+      .add(rgb(CF.colorHot).mul(fil).mul(1.6));
+    const finalCol = mix(col, warmCol, clamp(U.uWarm, 0, 1));
     const a = float(FX.orbBaseAlpha)
       .add(rim.mul(FX.orbRimAlpha))
       .add(core.mul(FX.orbCoreAlpha))
       .add(fil.mul(FX.orbFilAlpha))
       .mul(U.uCharge).mul(FX.orbOpacity);
     Discard(a.lessThanEqual(0.003));
-    return vec4(col.mul(U.uGain).mul(FX.orbGlow), a);
+    return vec4(finalCol.mul(U.uGain).mul(FX.orbGlow), a);
   });
 
   const mat = new THREE.MeshBasicNodeMaterial();

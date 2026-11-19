@@ -43,7 +43,9 @@ const HELP_LINES = [
   'Ctrl+鼠标左键：点燃TNT，矿车启动',
   // v3.20：持剑蓄力大招。行宽必须 < 内容区可用 310px（330 − 20 padding），
   // 否则撑宽面板 ⇒ tests/player-flight.spec.mjs 的「面板宽 330 + 无横向溢出」会红。
+  // v3.21：补第三秒大招（行宽已实测，见 player-flight.spec）。
   '剑长戉2秒：Storm Lance',
+  '剑长戉3秒：Cinder Fall',
 ];
 
 export class PerfHUD {

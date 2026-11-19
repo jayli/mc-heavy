@@ -26,8 +26,21 @@ import { test, expect } from 'playwright/test';
 import { PNG } from 'pngjs';
 
 const SEED = 12345;
-/** 按下 → 静默 1s → 蓄力 1s ⇒ 2s 后可发射。留 100ms 余量 */
-const HOLD_MS = 2100;
+/**
+ * 蓄力时长：**第二秒内**松手 ⇒ Storm Lance。
+ *
+ * ⚠️⚠️ **v3.21 从 2100 改成 1500**（阶段门新语义，不是放宽断言）：
+ * 用户裁定「进入那一秒就能发」⇒ **≥2.0s 松手已经是 Cinder Fall**。
+ * 继续用 2100 会让本文件全部用例打到第三秒招上（实测：整组红）。
+ * 真意图是「蓄力完成后发闪电」⇒ 取第二秒内的 1.5s。
+ */
+const HOLD_MS = 1500;
+/**
+ * 蓄力球像素用例专用：**第三秒的满蓄力态**。
+ * 那两组要的是「球长到最大」，而 1.5s 时进度只有 0.5 ⇒ 单独保留 2100。
+ * （球的形状与第一段完全相同，只是配色转暖 —— 用户 R4。）
+ */
+const HOLD_ORB_MS = 2100;
 /** 总视觉 1.179s + 火花衰亡窗口 1.0s ⇒ 2.4s 后应完全回基线 */
 const SETTLE_MS = 2600;
 
@@ -842,14 +855,18 @@ test.describe('Storm Lance 蓄力球朦胧化（v3.20b）', () => {
       const g = window.__MC_GAME__;
       g.player.weaponController.pointerDown(g.player._buildAim());
       await new Promise((r) => setTimeout(r, holdMs));
-    }, HOLD_MS);
+    }, HOLD_ORB_MS);
     await page.waitForTimeout(200);
     const shot = await page.screenshot();
     const state = await page.evaluate(() => {
       const g = window.__MC_GAME__;
       const r = g.stormLance;
       return {
+        // v3.21：2.1s 已在**第二段**⇒ 第一段的 charge 恒 1（已满），
+        // 球的尺寸进度走 max(p1,p2) ⇒ 仍是满尺寸。两个都读出来便于诊断。
         charge: g.stormLanceDebugState().charge,
+        cinderCharge: g.cinderDebugState().charge,
+        warm: r.uniforms.uWarm.value,
         orbVisible: r.orbMesh.visible,
         haloVisible: r.haloMesh.visible,
         orbScale: r.orbMesh.scale.x,

@@ -41,8 +41,12 @@ import {
   ExplosionSpriteRenderer, loadExplosionSpriteTexture,
 } from '../render/explosion-sprite.js';
 import { computeExplosion, EXPLOSION_DAMAGE_RADIUS, EXPLOSION_DAMAGE } from '../voxel/explosion.js';
-import { stormLanceSweep, stormLanceAxis, stormChargeProgress } from '../player/weapons/storm-lance.js';
+import { stormLanceSweep, stormLanceAxis, stormChargeProgress, cinderChargeProgress } from '../player/weapons/storm-lance.js';
 import { StormLanceRenderer } from '../render/storm-lance-renderer.js';
+// v3.21：第三秒大招 Cinder Fall（飞行的燃烧岩石）
+import { CINDER_TYPE, cinderDefinition, judgeCinder } from '../entities/cinder/cinder-system.js';
+import { CinderFallRenderer } from '../render/cinder-fall-renderer.js';
+import { CINDER_DEBRIS_COLOR } from '../render/cinder-fall-config.js';
 import { ChargeRing } from '../ui/charge-ring.js';
 import { ZOMBIE } from '../entities/zombies/zombie-config.js';
 import { WorldEditor } from './world-editor.js';
@@ -706,6 +710,12 @@ export class Game {
     this.entities.registerType(FIREBALL_TYPE, fireballDefinition);
     /** 火球 id 序号（确定性派生 —— 红线 2：不用 Math.random） */
     this._fireballSeq = 0;
+    // v3.21：Cinder Fall 的岩石也是 M5 临时实体（与火球同构但刻意独立：
+    // 抛物线 vs 直线、打丧尸/Boss vs 打玩家、只扣血 vs 破坏方块）。
+    // ⚠️ **不复用 'fireball' type**：两个渲染器都按 type 过滤，共用会让岩石被画成火球。
+    this.entities.registerType(CINDER_TYPE, cinderDefinition);
+    /** 岩石 id 序号（确定性派生 —— 红线 2） */
+    this._cinderSeq = 0;
     // ---- v2.64：Boss 战音效与 BGM 状态（用户 2026-11-07）----
     /**
      * 焰魔/飞龙的表现层状态快照（帧间差分用）。
@@ -983,6 +993,11 @@ export class Game {
     // 空闲时七个 mesh 全部 visible=false ⇒ 0 draw call，bench 冻结基线逐位不变。
     this.stormLance = new StormLanceRenderer({ scene: this.scene });
 
+    // v3.21：第三秒大招 Cinder Fall（程序化岩石 + 火球式光晕，**零新增贴图** ⇒ 恒装配）。
+    // 岩石是实体池（可多发在飞），落点特效单槽（最长视觉 2.611s < 最小间隔 3.0s）。
+    // 空闲时四个 mesh 全部 visible=false ⇒ 0 draw call。
+    this.cinderFall = new CinderFallRenderer({ scene: this.scene });
+
     // 出生点（mc-lite 语义：优先 City 中心出生，保证出生即见城市天际线，§7 M2 验收）
     const regionLayout = await this.scheduler.structureIndex.waitForRegion(0, 0);
     // 水面遮罩的城市门控 bounds（城市全世界唯一，固定 region [0,0]）。
@@ -1079,6 +1094,8 @@ export class Game {
         blockHitFx: this.blockHitFx,
         // v3.20：Storm Lance 渲染器（上面刚装配）—— 玩家松手施放时由它出视觉
         stormLanceRenderer: this.stormLance,
+        // v3.21：Cinder Fall 的岩石生成（装配层职责，player/ 不持有 EntityManager）
+        onCinderLaunch: (launch) => this.launchCinder(launch),
       },
       // M3.1 模态守卫（§4.5.4）：面板打开时 Player 的 keydown 全部拦截。
       // 谓词注入而非传 Game 本身，保持 player/ 不反向依赖 core/（依赖方向 §3）
@@ -1354,6 +1371,9 @@ export class Game {
       // 可能误判命中龙自己脚下的方块）。下一帧 entities.update 推进后才判定，与弹丸同口径。
       this._consumeDragonFireRequests();
       this._updateFireballs(dt);
+      // v3.21：Cinder Fall 的岩石判定（**只判定 + 爆炸 + despawn，不再推进**）。
+      // 位置推进已由 cinderDefinition.update 经 entities.update 驱动；两处推进会让速度翻倍。
+      this._updateCinders(nowMs);
       // v2.55：焰魔的挥剑命中结算（消费 attackRequest）。
       // 位置与龙的火球无关，但同样必须在 `entities.update` 之后 —— Agent 本帧写入的
       // `attackRequest` 才存在。
@@ -1437,6 +1457,11 @@ export class Game {
       // v2.44：火球 pose 发布（同手法；无火球时 visible=false → draw call 归零）。
       // v2.45：传相机四元数（光晕 billboard 朝向）+ nowMs（光晕脉动闪烁）。
       this.fireballRenderer.sync(this.entities.entities(), this.camera.quaternion, nowMs);
+      // v3.21：岩石 pose 发布（同手法；传相机四元数作光晕 billboard、相机位置作冲击环朝向）。
+      // ⚠️ **先告知岩石数**：它是 sync 的常态零分配早退门（count() 零分配）。
+      this.cinderFall.setRockCount(this.entities.count(CINDER_TYPE));
+      this.cinderFall.sync(this.entities.entities(), this.camera.quaternion, nowMs, this.camera.position);
+      this.cinderFall.update(nowMs, dt);
       // M6：丧尸六部件实例发布（只读 pose → 位置/朝向 + 步态 + 200ms 红闪）。
       // 传时间戳而非 dt —— renderer 自己算 dt 累积步态相位（mc-lite `_walkTime` 口径）。
       this.zombieRenderer.sync(this.zombies, nowMs);
@@ -1478,13 +1503,25 @@ export class Game {
       {
         const wc = this.player.weaponController;
         const cfg = WEAPONS[WEAPON_IDS.SWORD].stormLance;
-        const p = wc.selectedId === WEAPON_IDS.SWORD
-          ? stormChargeProgress(wc.novaChargeElapsed, cfg) : 0;
-        this._chargeRing?.update(p);
-        if (p > 0) {
+        const cf = WEAPONS[WEAPON_IDS.SWORD].cinderFall;
+        const seq = { ...cfg, cinderChargeSeconds: cf.chargeSeconds };
+        const onSword = wc.selectedId === WEAPON_IDS.SWORD;
+        const p1 = onSword ? stormChargeProgress(wc.novaChargeElapsed, cfg) : 0;
+        const p2 = onSword ? cinderChargeProgress(wc.novaChargeElapsed, seq) : 0;
+        // 阶段优先读 controller 的**跨越标志**（对 dt 累积误差免疫）
+        const warm = onSword && wc._cinderStartFired ? 1 : 0;
+        this._chargeRing?.update(warm ? p2 : p1, warm);
+        /**
+         * ⚠️⚠️ **尺寸进度取 max(p1,p2)，不是直接拿 p2**：
+         * 第二段起步那一帧 p2 恰好是 0，而 `setCharge(0,…)` 会熄灭球
+         * ⇒ 第三秒开始时球**闪断一下**（静默观感缺陷，数值判据拓不到）。
+         * 用户 R4：「蓄力的动作是完全一样的」⇒ 球不得因换段而重置。
+         */
+        const size = Math.max(p1, p2);
+        if (size > 0) {
           const aim = this.player._buildAim();
           const axis = stormLanceAxis(aim, cfg);
-          this.stormLance.setCharge(p, axis.origin, axis.side, nowMs, this.camera.quaternion);
+          this.stormLance.setCharge(size, axis.origin, axis.side, nowMs, this.camera.quaternion, warm);
         } else {
           this.stormLance.setCharge(0, null, null, nowMs);
         }
@@ -1783,6 +1820,8 @@ export class Game {
     // v3.20：闪电的七个 mesh 也隐掉 —— 反射 pass 的成本主杠杆是 draw call 数（v3.17 实测），
     // 多 7 个是白付；且 additive 特效在镜像相机下的观感未标定。与第一人称物件同手法。
     if (this.stormLance) hidden.push(...this.stormLance.meshes);
+    // v3.21：岩石与落点特效同理（四个 mesh）—— 反射 pass 的成本主杠杆是 draw call 数。
+    if (this.cinderFall) hidden.push(...this.cinderFall.meshes);
     this.ocean.renderReflection(cam, this.ocean.plane.material, hidden);
   }
 
@@ -3112,6 +3151,134 @@ export class Game {
   }
 
   /**
+   * 抛出一颗 Cinder Fall 岩石（v3.21，装配层）。
+   *
+   * ⚠️ **生成实体是装配层职责**（entities/ 同构层不得碰 EntityManager 的写接口），
+   * 与 `fireFireball` / 矿车 `pendingPlayerLift` 同一先例。
+   *
+   * @param {object} launch `cinderLaunch` 的产物（controller 已算好并冻结）
+   * @returns {boolean} false = 实体池满额
+   */
+  launchCinder(launch) {
+    this._cinderSeq += 1;
+    const id = `cinder-${this._cinderSeq}`;
+    const spawned = this.entities.spawn({
+      id, type: CINDER_TYPE,
+      state: { launch, traveled: 0, source: 'sword' },
+      persistent: false,   // 临时实体：随 column 卸载回收，不进存档
+    });
+    if (!spawned) {
+      // ⚠️ 不得静默吞掉（照 fireFireball）：否则形态是「招放了但天上没东西」
+      this._cinderSpawnFailed = (this._cinderSpawnFailed ?? 0) + 1;
+      if (this._cinderSpawnFailed === 1) {
+        console.warn('[cinder] 岩石 spawn 失败（实体池满额？）—— 见 cinderDebugState().spawnFailed');
+      }
+    }
+    return spawned !== null;
+  }
+
+  /**
+   * 帧循环内判定岩石（放在 `entities.update` 之后）。
+   *
+   * ⚠️ **推进不能做两遍**（同 `_updateFireballs` / `_updateProjectiles`）：
+   * 位置推进已由 `cinderDefinition.update` 经 `entities.update(dt, ctx)` 驱动；
+   * 本方法**只调 `judgeCinder`（纯谓词）+ 爆炸 + despawn**。
+   *
+   * ⚠️ **常态零分配门控**：没岩石时（绝大多数帧）直接早退，不快照实体集合。
+   * （AGENTS.md：`_updateFireballs` 无门控时把 fastRemeshP95 从 1.1 抬到 4.5。）
+   *
+   * @param {number} nowMs `performance.now()` 基准
+   */
+  _updateCinders(nowMs) {
+    if (this.entities.count(CINDER_TYPE) === 0) return;
+    for (const entity of [...this.entities.entities()]) {   // 快照：despawn 会改底层集合
+      if (entity.type !== CINDER_TYPE) continue;
+      const { reason, at, hitId } = judgeCinder({
+        next: entity.state, world: this.world, registry: this.registry,
+        entities: this.entities,
+      });
+      if (!reason) continue;
+      /**
+       * 三种终结理由都爆炸，但**冲击环朝向不同**：
+       *   entity        → 环面朝玩家（读作「炸在它身上」）
+       *   block         → 贴地
+       *   end-of-flight → 飞满射程的**空中自爆**，也贴地口径（环在落点高度）
+       * ⚠️ `end-of-flight` 是本轮实测新增的：旧口径照搬直线弹丸的「超距不爆」，
+       * 会让**抵达瞄准点的最后一步被静默吃掉**（球飞到了但没炸）。
+       */
+      if (at) this._cinderBlast(at, reason === 'entity' ? 'entity' : 'block', hitId, nowMs);
+      this.entities.despawn(entity.id, reason);
+    }
+  }
+
+  /**
+   * 岩石落点结算（v3.21）：直接命中者 + 半径内实体**各扣一次 50** + 视觉。
+   *
+   * ⚠️⚠️ **必须走 `damageEntity`，不得用 `_damageEntitiesInRadius`**：
+   * 后者只遍历 `zombies.activeEntities()` ⇒ **Boss 压根打不到**，而用户明确要
+   * 「碰到丧尸或者 boss 都爆炸」。`damageEntity` 按类型分发，红闪/伤害数字/死亡特效全跟上。
+   *
+   * ⚠️ **去重**：直接命中者已在半径内，不得扣两次（用户：一次施法每实体只扣一次）。
+   * ⚠️ **不破坏方块、不击退、不走 `_applyExplosion`**（后者会破坏方块 + 引爆连锁 TNT）。
+   *
+   * @param {number[]} at 世界坐标（block 给格坐标，entity 给命中点）
+   * @param {'block'|'entity'} kind @param {string|null} hitId @param {number} nowMs
+   */
+  _cinderBlast(at, kind, hitId, nowMs) {
+    const cfg = WEAPONS[WEAPON_IDS.SWORD].cinderFall;
+    // 度量中心：block 给的是格坐标（要 +0.5 换块中心），entity 给的是真实命中点
+    const cx = kind === 'block' ? at[0] + 0.5 : at[0];
+    const cy = kind === 'block' ? at[1] + 0.5 : at[1];
+    const cz = kind === 'block' ? at[2] + 0.5 : at[2];
+    const damaged = new Set();
+    if (hitId) {
+      this.damageEntity(hitId, cfg.damage, nowMs);
+      damaged.add(hitId);
+    }
+    // 半径内溅射（枚举全量实体 + 可击中类型过滤，不写第二份「类型→高度」表）
+    for (const entity of [...this.entities.entities()]) {
+      if (!WEAPON_HITTABLE_TYPES.includes(entity.type)) continue;
+      if (damaged.has(entity.id)) continue;
+      const [ex, ey, ez] = entity.state.position;
+      // 中心 y 按类型取：丧尸/焰魔/守卫是**脚底**语义，飞龙是**身体中心**
+      // （与 `_emitDamageNumber` 的 headY 同一套口径，常量均来自各自 config）
+      const half = entity.type === 'zombie' ? ZOMBIE.height / 2
+        : entity.type === IGNIS_TYPE ? IGNIS.height / 2
+          : entity.type === GUARDIAN_TYPE ? GUARDIAN.height / 2
+            : 0;
+      if (Math.hypot(ex - cx, ey + half - cy, ez - cz) > cfg.blastRadius) continue;
+      this.damageEntity(entity.id, cfg.damage, nowMs);
+      damaged.add(entity.id);
+    }
+    // 视觉：爆壳 + 冲击环（朝向按 kind 分流）+ 碎块（复用既有池，不新开）
+    this.cinderFall.burst([cx, cy, cz], nowMs, kind, this.camera.position.toArray());
+    this.blockHitFx?.spawnDeathBurst([cx, cy, cz], CINDER_DEBRIS_COLOR, nowMs, {
+      count: cfg.debrisCount,
+    });
+    this.audioManager?.play(cfg.impactSound, cfg.impactVolume);
+    this._cinderBlasts = (this._cinderBlasts ?? 0) + 1;
+  }
+
+  /**
+   * 只读 Cinder Fall 诊断状态（E2E 与调试用）。
+   * @returns {{rocks:number, active:boolean, blasts:number, spawnFailed:number,
+   *            charge:number, charged:boolean, stage:string, meshes:number}}
+   */
+  cinderDebugState() {
+    const ws = this.player?.weaponDebugState?.() ?? {};
+    return {
+      rocks: this.entities.count(CINDER_TYPE),
+      active: this.cinderFall?.active ?? false,
+      blasts: this._cinderBlasts ?? 0,
+      spawnFailed: this._cinderSpawnFailed ?? 0,
+      charge: ws.cinderCharge ?? 0,
+      charged: ws.cinderCharged ?? false,
+      stage: ws.chargeStage ?? 'none',
+      meshes: this.cinderFall?.meshes.length ?? 0,
+    };
+  }
+
+  /**
    * 半径内丧尸伤害。枚举 `ZombieService.activeEntities()`（slot 表是单一权威），
    * **不扫 EntityManager 全量集合** —— 那会把未来其它实体类型（弹丸/炮塔）也炸伤。
    * @param {[number,number,number]} center @param {number} radius
@@ -4096,6 +4263,7 @@ export class Game {
     this.spikeFx?.dispose();
     // v3.20：Storm Lance 渲染器与蓄力环（与启动顺序相反）
     this.stormLance?.dispose();
+    this.cinderFall?.dispose();
     this._chargeRing?.dispose();
     // v3.04：法阵贴图由 **Game 加载并持有**（渲染器只消费，不像 ignis/fireball 那样
     // 自己造纹理后 `_ownsTexture` 释放）⇒ 谁创建谁释放，不释会在换世界时泄漏。

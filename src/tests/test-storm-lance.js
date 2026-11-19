@@ -12,6 +12,7 @@ import { WEAPONS, WEAPON_IDS } from '../player/weapons/weapon-catalog.js';
 import { EXPLOSION_DAMAGE } from '../voxel/explosion.js';
 import {
   stormChargeProgress, stormLanceAxis, stormLanceOffsets, stormLanceSweep,
+  cinderChargeProgress, chargeStageAt,
 } from '../player/weapons/storm-lance.js';
 
 /** assert.js 没有 assertClose，本文件自带（AGENTS.md 已记） */
@@ -21,6 +22,14 @@ function assertClose(actual, expected, eps, msg) {
 }
 
 const CFG = () => WEAPONS[WEAPON_IDS.SWORD].stormLance;
+/** v3.21 第三秒大招（Cinder Fall）的玩法配置 */
+const CINDER = () => WEAPONS[WEAPON_IDS.SWORD].cinderFall;
+/**
+ * 两招的**联合蓄力时序**（阶段判定与第二段进度都读它）。
+ * ⚠️ 不在测试里另拼一份 `{delay, charge, charge2}` —— 那就是第二份权威，
+ * 生产侧改了字段名而测试拼的对象没跟上时会静默全绿。
+ */
+const SEQ = () => ({ ...CFG(), cinderChargeSeconds: CINDER().chargeSeconds });
 
 // ---------------------------------------------------------------- ① 蓄力时序
 
@@ -78,6 +87,97 @@ test('storm: 单槽前提 —— 视觉总时长 < 最小施法间隔（载荷�
   const gap = c.chargeDelaySeconds + c.chargeSeconds;
   assertTrue(visual < gap,
     `视觉 ${visual} 必须 < 最小间隔 ${gap}，否则两道闪电重叠、单槽渲染器不成立`);
+});
+
+// ------------------------------------------------- ①b 分段蓄力（v3.21 Cinder Fall）
+//
+// 用户 2026-11-19：「按住第一秒时只计时不蓄力，按到第二秒时松开是发送 storm lance 动作，
+// 按到第三秒时发出时，执行 cinder fall 的攻击动作，蓄力球跟 storm lance 一样」。
+// 阶段门取「**进入那一秒就能发**」（用户在两个读法里明确选了它）。
+
+test('cinder catalog: 第二段 1s，总按下 3s；伤害与半径都派生（红线 1）', () => {
+  const c = CINDER();
+  assertTrue(!!c, '剑必须带 cinderFall 配置');
+  assertEqual(c.chargeSeconds, 1.0);
+  assertClose(CFG().chargeDelaySeconds + CFG().chargeSeconds + c.chargeSeconds, 3.0, 1e-9,
+    '按下到第三段满必须 3s');
+  assertEqual(c.damage, EXPLOSION_DAMAGE, '伤害不得写第二份 50');
+});
+
+test('cinder charge: 前两段（<2s）进度恒 0，第三秒才爬', () => {
+  const s = SEQ();
+  for (const t of [0, 0.5, 0.99, 1.0, 1.5, 1.99]) {
+    assertEqual(cinderChargeProgress(t, s), 0, `t=${t} 还没进第三秒`);
+  }
+  assertClose(cinderChargeProgress(2.0, s), 0, 1e-9, '刚到 2s 时为 0');
+  assertClose(cinderChargeProgress(2.5, s), 0.5, 1e-9, '2.5s 时半程');
+  assertClose(cinderChargeProgress(3.0, s), 1, 1e-9, '3s 蓄满');
+  assertClose(cinderChargeProgress(9.0, s), 1, 1e-9, '超过后钳在 1');
+});
+
+test('cinder charge: 非法输入钳到 0（静默失效比崩溃更难查）', () => {
+  const s = SEQ();
+  for (const bad of [NaN, Infinity, -Infinity, undefined, null, -5]) {
+    assertEqual(cinderChargeProgress(bad, s), 0, `bad=${bad}`);
+  }
+  assertEqual(cinderChargeProgress(2.5, null), 0);
+  assertEqual(cinderChargeProgress(2.5, {}), 0);
+});
+
+test('charge stage: 真值表逐格（进入那一秒就能发）', () => {
+  const s = SEQ();
+  const table = [
+    [0, 'none'], [0.5, 'none'], [0.99, 'none'], [0.999, 'none'],
+    [1.0, 'lance'], [1.2, 'lance'], [1.99, 'lance'],
+    [2.0, 'cinder'], [2.5, 'cinder'], [3.0, 'cinder'], [10, 'cinder'],
+  ];
+  for (const [t, want] of table) {
+    assertEqual(chargeStageAt(t, s), want, `t=${t} 的松手招式`);
+  }
+});
+
+test('charge stage: 非法输入 → none；缺配置 → none', () => {
+  const s = SEQ();
+  for (const bad of [NaN, Infinity, -Infinity, undefined, null, -5]) {
+    assertEqual(chargeStageAt(bad, s), 'none', `bad=${bad}`);
+  }
+  assertEqual(chargeStageAt(2.5, null), 'none');
+  assertEqual(chargeStageAt(2.5, {}), 'none');
+});
+
+test('charge stage: 边界对 dt 累积误差免疫（实测 60×0.05 = 2.9999999999999973）', () => {
+  const s = SEQ();
+  // ⚠️ 这条不是理论风险：`hold(f, 3.0)` 走 60 次 0.05 累加，实测落在 3 的**下方**。
+  // 裸 `elapsed >= 3` 会判「还没蓄满」⇒ 与 controller 的跨越标志分裂。
+  let acc = 0;
+  for (let i = 0; i < 60; i++) acc += 0.05;
+  assertTrue(acc < 3.0, '前提：累加值确实落在边界下方（否则本用例无判别力）');
+  assertClose(cinderChargeProgress(acc, s), 1, 1e-9, '累加到 3s 必须算蓄满');
+  assertEqual(chargeStageAt(acc, s), 'cinder');
+  let acc2 = 0;
+  for (let i = 0; i < 40; i++) acc2 += 0.05;
+  assertEqual(chargeStageAt(acc2, s), 'cinder', '累加到 2s 必须已进第三秒');
+});
+
+test('charge stage: 与进度语义刻意不同（刚到边界进度 0、阶段已进入）', () => {
+  const s = SEQ();
+  // 进度 = 「蓄了多少」；阶段 = 「松手发哪招」。不得为了看着一致把一侧改成另一侧。
+  assertClose(stormChargeProgress(1.0, s), 0, 1e-9);
+  assertEqual(chargeStageAt(1.0, s), 'lance');
+  assertClose(cinderChargeProgress(2.0, s), 0, 1e-9);
+  assertEqual(chargeStageAt(2.0, s), 'cinder');
+});
+
+test('cinder: 第一段进度逐位不变（负向：加第二段不得改坏 Storm Lance）', () => {
+  const s = SEQ();
+  // 冻结表：v3.20 的既有口径，加了第二段之后必须逐位相同
+  const frozen = [
+    [0, 0], [0.5, 0], [0.99, 0], [1.0, 0], [1.25, 0.25],
+    [1.5, 0.5], [1.75, 0.75], [2.0, 1], [3.0, 1],
+  ];
+  for (const [t, want] of frozen) {
+    assertClose(stormChargeProgress(t, s), want, 1e-12, `t=${t} 第一段进度`);
+  }
 });
 
 // ---------------------------------------------------------------- ② 命中截断
@@ -415,10 +515,11 @@ test('storm ctrl: 越过 1s 才发起手事件，2s 蓄满', () => {
   assertEqual(ofType(f, 'storm-charge-ready').length, 1, '蓄满音只一次');
 });
 
-test('storm ctrl: 按住 2s 松开恰好一个 storm-lance，且截到实体（R2）', () => {
+test('storm ctrl: 按住 1.5s 松开恰好一个 storm-lance，且截到实体（R2）', () => {
   const f = fixture({ entities: [zombieAt('z0', 0, 0, -8)] });
   f.controller.pointerDown(f.aim);
-  hold(f, 2.0);
+  // v3.21：阶段门改成「进入那一秒就能发」⇒ 第二秒内松手才是 lance（2.0s 已是 cinder）
+  hold(f, 1.5);
   f.controller.pointerUp(f.aim);
   const beams = ofType(f, 'storm-lance');
   assertEqual(beams.length, 1);
@@ -432,7 +533,7 @@ test('storm ctrl: 按住 2s 松开恰好一个 storm-lance，且截到实体（R
 test('storm ctrl: 每个实体只扣一次 50，不破坏方块不击退', () => {
   const f = fixture({ entities: [zombieAt('z0', 0, 0, -8), zombieAt('z1', 0.5, 0, -10)] });
   f.controller.pointerDown(f.aim);
-  hold(f, 2.0);
+  hold(f, 1.5);
   f.controller.pointerUp(f.aim);
   // 燃烧期再推 2 秒，确认不重复结算
   hold(f, 2.0);
@@ -472,26 +573,31 @@ test('storm ctrl: select 切武器清蓄力', () => {
 
 test('storm ctrl: 冷却未到期不得再施法', () => {
   const f = fixture();
-  f.controller.pointerDown(f.aim); hold(f, 2.0); f.controller.pointerUp(f.aim);
+  f.controller.pointerDown(f.aim); hold(f, 1.5); f.controller.pointerUp(f.aim);
   assertEqual(ofType(f, 'storm-lance').length, 1);
   f.controller.cooldown = 5;
-  f.controller.pointerDown(f.aim); hold(f, 2.0); f.controller.pointerUp(f.aim);
+  f.controller.pointerDown(f.aim); hold(f, 1.5); f.controller.pointerUp(f.aim);
   assertEqual(ofType(f, 'storm-lance').length, 1, '冷却未到期不得再施法');
 });
 
 test('storm ctrl: pointerUp() 无 aim 不抛错不施法（向后兼容）', () => {
   const f = fixture();
   f.controller.pointerDown(f.aim);
-  hold(f, 2.0);
+  hold(f, 1.5);
   f.controller.pointerUp();
   assertEqual(ofType(f, 'storm-lance').length, 0);
   assertEqual(f.controller.debugState().novaCharge, 0);
+  // v3.21：第三段同理 —— 无 aim 时 cinder 也不得抛出
+  f.controller.pointerDown(f.aim);
+  hold(f, 2.5);
+  f.controller.pointerUp();
+  assertEqual(ofType(f, 'cinder-fall').length, 0, '无 aim 时 cinder 也不得施放');
 });
 
 test('storm ctrl: 未注入 sweepLance 仍发视觉但零伤害（fixture 兼容）', () => {
   const f = fixture({ entities: [zombieAt('z0', 0, 0, -8)], withSweep: false });
   f.controller.pointerDown(f.aim);
-  hold(f, 2.0);
+  hold(f, 1.5);
   f.controller.pointerUp(f.aim);
   const beams = ofType(f, 'storm-lance');
   assertEqual(beams.length, 1, '仍发视觉');
@@ -502,11 +608,128 @@ test('storm ctrl: 未注入 sweepLance 仍发视觉但零伤害（fixture 兼容
 test('storm ctrl: 三种新事件的 recoil 恒 0（防 onShot 写出 NaN 让剑消失）', () => {
   const f = fixture();
   f.controller.pointerDown(f.aim);
-  hold(f, 2.0);
+  hold(f, 1.5);
   f.controller.pointerUp(f.aim);
   for (const t of ['storm-charge-start', 'storm-charge-ready', 'storm-lance']) {
     for (const e of ofType(f, t)) {
       assertEqual(e.recoil, 0, `${t} 的 recoil 必须是 0 而不是缺席`);
+      assertDeepEqual(e.impacts, [], `${t} 不得带方块命中记录`);
+    }
+  }
+});
+
+// ------------------------------------------------ ④b 分段施放（v3.21 Cinder Fall）
+
+test('cinder ctrl: 1.5s 松手发 lance、2.5s 松手发 cinder（阶段门）', () => {
+  const a = fixture();
+  a.controller.pointerDown(a.aim); hold(a, 1.5); a.controller.pointerUp(a.aim);
+  assertEqual(ofType(a, 'storm-lance').length, 1, '第二秒松手 → Storm Lance');
+  assertEqual(ofType(a, 'cinder-fall').length, 0);
+
+  const b = fixture();
+  b.controller.pointerDown(b.aim); hold(b, 2.5); b.controller.pointerUp(b.aim);
+  assertEqual(ofType(b, 'cinder-fall').length, 1, '第三秒松手 → Cinder Fall');
+  assertEqual(ofType(b, 'storm-lance').length, 0, '不得两招都发');
+});
+
+test('cinder ctrl: 恰好 2.0s（40×0.05 累加）必须已进第三段（与纯函数一致）', () => {
+  const f = fixture();
+  f.controller.pointerDown(f.aim);
+  hold(f, 2.0);
+  f.controller.pointerUp(f.aim);
+  assertEqual(ofType(f, 'cinder-fall').length, 1, '跨越标志与 chargeStageAt 必须同侧');
+  assertEqual(chargeStageAt(2.0, SEQ()), 'cinder');
+});
+
+test('cinder ctrl: 短按（0.5s）只挥剑，两招都不发', () => {
+  const f = fixture();
+  f.controller.pointerDown(f.aim); hold(f, 0.5); f.controller.pointerUp(f.aim);
+  assertEqual(ofType(f, 'melee').length, 1);
+  assertEqual(ofType(f, 'storm-lance').length, 0);
+  assertEqual(ofType(f, 'cinder-fall').length, 0);
+});
+
+test('cinder ctrl: 第二段起手/蓄满音各只一次，且不在第一段重复', () => {
+  const f = fixture();
+  f.controller.pointerDown(f.aim);
+  hold(f, 1.9);
+  assertEqual(ofType(f, 'cinder-charge-start').length, 0, '第一秒内不得发第二段起手');
+  hold(f, 0.2);
+  assertEqual(ofType(f, 'cinder-charge-start').length, 1, '越过 2s 发一次');
+  hold(f, 3.0);
+  assertEqual(ofType(f, 'cinder-charge-start').length, 1, '不得每帧重复');
+  assertEqual(ofType(f, 'cinder-charge-ready').length, 1, '3s 蓄满音只一次');
+  // 第一段的事件也不得被第二段重复触发
+  assertEqual(ofType(f, 'storm-charge-start').length, 1);
+  assertEqual(ofType(f, 'storm-charge-ready').length, 1);
+});
+
+test('cinder ctrl: 蓄满不松开不施法（两招都是）', () => {
+  const f = fixture();
+  f.controller.pointerDown(f.aim);
+  hold(f, 6.0);
+  assertEqual(ofType(f, 'cinder-fall').length, 0, '必须松开才招');
+  assertEqual(ofType(f, 'storm-lance').length, 0);
+  assertTrue(f.controller.debugState().cinderCharged, '第二段已蓄满');
+});
+
+test('cinder ctrl: 切武器丢弃两段蓄力', () => {
+  const f = fixture();
+  f.controller.pointerDown(f.aim);
+  hold(f, 2.5);
+  assertTrue(f.controller.debugState().cinderCharge > 0);
+  f.controller.select('pistol');
+  assertEqual(f.controller.debugState().cinderCharge, 0);
+  f.controller.select('sword');
+  f.controller.pointerUp(f.aim);
+  assertEqual(ofType(f, 'cinder-fall').length, 0, '切武器后不得凭空抛一发');
+});
+
+test('cinder ctrl: 冷却未到期不得抛出', () => {
+  const f = fixture();
+  f.controller.pointerDown(f.aim); hold(f, 2.5); f.controller.pointerUp(f.aim);
+  assertEqual(ofType(f, 'cinder-fall').length, 1);
+  f.controller.cooldown = 5;
+  f.controller.pointerDown(f.aim); hold(f, 2.5); f.controller.pointerUp(f.aim);
+  assertEqual(ofType(f, 'cinder-fall').length, 1, '冷却未到期不得再抛');
+});
+
+test('cinder ctrl: 事件带弹道与 recoil 0（装配层靠它 spawn 实体）', () => {
+  const f = fixture();
+  f.controller.pointerDown(f.aim); hold(f, 2.5);
+  const evs = f.controller.pointerUp(f.aim);
+  const ev = evs.find((e) => e.type === 'cinder-fall');
+  assertTrue(!!ev, '必须有 cinder-fall 事件');
+  assertEqual(ev.weaponId, 'sword');
+  assertEqual(ev.recoil, 0, 'recoil 必须是 0 而不是缺席（否则剑体 NaN 消失）');
+  assertDeepEqual(ev.impacts, []);
+  assertTrue(!!ev.launch, '必须带弹道参数');
+  assertTrue(Number.isFinite(ev.launch.distance) && ev.launch.distance > 0);
+  assertTrue(Number.isFinite(ev.seed));
+  assertTrue(ev.launch.origin.every(Number.isFinite));
+  assertTrue(ev.launch.target.every(Number.isFinite));
+});
+
+test('cinder ctrl: 未注入 aimDistance 时回落射程（fixture 兼容，不抛错）', () => {
+  const f = fixture();
+  f.controller.pointerDown(f.aim); hold(f, 2.5);
+  const evs = f.controller.pointerUp(f.aim);
+  const ev = evs.find((e) => e.type === 'cinder-fall');
+  assertTrue(!!ev, '无 aim.target 仍须抛出');
+  assertClose(ev.launch.distance, CINDER().range, 1e-9);
+});
+
+test('cinder ctrl: 四种蓄力/施放事件的 recoil 恒 0', () => {
+  const f = fixture();
+  f.controller.pointerDown(f.aim);
+  // 蓄到 3.2s：越过第二段蓄满点（否则 cinder-charge-ready 根本不会出现）
+  hold(f, 3.2);
+  f.controller.pointerUp(f.aim);
+  for (const t of ['cinder-charge-start', 'cinder-charge-ready', 'cinder-fall']) {
+    const list = ofType(f, t);
+    assertTrue(list.length > 0, `${t} 必须真的出现过（否则本例恒真）`);
+    for (const e of list) {
+      assertEqual(e.recoil, 0, `${t} 的 recoil`);
       assertDeepEqual(e.impacts, [], `${t} 不得带方块命中记录`);
     }
   }
@@ -714,4 +937,80 @@ test('storm halo: billboard 靠写入相机四元数（照火球分工）', asyn
   const gs = await g.text();
   assertTrue(gs.includes('this.camera.quaternion'),
     '装配层必须真的传了相机四元数（否则光晕是一张斜卡片）');
+});
+
+// ------------------------------------------------ ⑥ 蓄力球换色（v3.21 R4）
+//
+// 用户：「蓄力球跟 storm lance 一样，也就是说，蓄力的动作是完全一样的」
+// ⇒ **同一个球、同一套尺寸/呼吸/吸入粒子**，只换颜色。不得新建第二个球 mesh。
+
+test('cinder orb: warm=1 时球仍可见且**尺寸与冷蓝态逐位相同**（R4）', async () => {
+  const THREE = await import('three');
+  const { StormLanceRenderer } = await import('../render/storm-lance-renderer.js');
+  const tex = () => new THREE.DataTexture(new Uint8Array(4), 1, 1);
+  const r = new StormLanceRenderer({ scene: new THREE.Scene(), haloTexture: tex(), warmHaloTexture: tex() });
+  r.setCharge(0.6, [0, 5, 0], [1, 0, 0], 1000, null, 0);
+  const coldOrb = r.orbMesh.scale.x;
+  const coldHalo = r.haloMesh.scale.x;
+  r.setCharge(0.6, [0, 5, 0], [1, 0, 0], 1000, null, 1);
+  assertTrue(r.orbMesh.visible, '暖色态核心仍须可见');
+  assertTrue(r.haloMesh.visible, '暖色态光晕仍须可见');
+  assertClose(r.orbMesh.scale.x, coldOrb, 1e-12, '核心尺寸不得因换色而变');
+  assertClose(r.haloMesh.scale.x, coldHalo, 1e-12, '光晕尺寸不得因换色而变');
+  r.dispose();
+});
+
+test('cinder orb: warm 真的改了颜色（uniform 与光晕贴图两侧都要）', async () => {
+  const THREE = await import('three');
+  const { StormLanceRenderer } = await import('../render/storm-lance-renderer.js');
+  const cold = new THREE.DataTexture(new Uint8Array(4), 1, 1);
+  const warm = new THREE.DataTexture(new Uint8Array(4), 1, 1);
+  const r = new StormLanceRenderer({ scene: new THREE.Scene(), haloTexture: cold, warmHaloTexture: warm });
+  r.setCharge(0.6, [0, 5, 0], [1, 0, 0], 1000, null, 0);
+  assertEqual(r.uniforms.uWarm.value, 0, '冷蓝态 uWarm=0');
+  assertEqual(r.haloMesh.material.map, cold, '冷蓝态用冷色光晕贴图');
+  r.setCharge(0.6, [0, 5, 0], [1, 0, 0], 1100, null, 1);
+  assertEqual(r.uniforms.uWarm.value, 1, '暖橙态 uWarm=1');
+  assertEqual(r.haloMesh.material.map, warm,
+    '光晕是**贴图**不是 shader ⇒ 换色必须真的换 map（只改 uniform 拓不到它）');
+  r.dispose();
+});
+
+test('cinder orb: 缺省 warm 参数时逐位回到 v3.20 行为（向后兼容）', async () => {
+  const THREE = await import('three');
+  const { StormLanceRenderer } = await import('../render/storm-lance-renderer.js');
+  const cold = new THREE.DataTexture(new Uint8Array(4), 1, 1);
+  const r = new StormLanceRenderer({ scene: new THREE.Scene(), haloTexture: cold });
+  // 既有五参调用（spec 与装配层都这么写）
+  r.setCharge(0.6, [0, 5, 0], [1, 0, 0], 1000);
+  assertEqual(r.uniforms.uWarm.value, 0, '不传第六参 ⇒ 冷蓝（v3.20 行为）');
+  assertEqual(r.haloMesh.material.map, cold);
+  r.dispose();
+});
+
+test('cinder orb: 第二段起步（p2=0）不得闪断 —— 尺寸进度取 max(p1,p2)', async () => {
+  const THREE = await import('three');
+  const { StormLanceRenderer } = await import('../render/storm-lance-renderer.js');
+  const tex = () => new THREE.DataTexture(new Uint8Array(4), 1, 1);
+  const r = new StormLanceRenderer({ scene: new THREE.Scene(), haloTexture: tex(), warmHaloTexture: tex() });
+  // 第二秒末：p1=1
+  r.setCharge(1, [0, 5, 0], [1, 0, 0], 2000, null, 0);
+  const before = r.orbMesh.scale.x;
+  // 第三秒首帧：p2 恰好是 0。若直接拿它当尺寸进度，球会**闪断一下**（静默观感缺陷）。
+  // 装配层传 max(p1,p2)=1 ⇒ 尺寸不变。
+  r.setCharge(Math.max(1, 0), [0, 5, 0], [1, 0, 0], 2016, null, 1);
+  assertTrue(r.orbMesh.visible, '第二段起步时球不得消失');
+  assertTrue(r.orbMesh.scale.x > before * 0.8, '尺寸不得塌下去');
+  r.dispose();
+});
+
+test('cinder orb: 换色不新增 mesh（仍是 7 个，两个球必然漂移）', async () => {
+  const THREE = await import('three');
+  const { StormLanceRenderer } = await import('../render/storm-lance-renderer.js');
+  const tex = () => new THREE.DataTexture(new Uint8Array(4), 1, 1);
+  const scene = new THREE.Scene();
+  const r = new StormLanceRenderer({ scene, haloTexture: tex(), warmHaloTexture: tex() });
+  assertEqual(r.meshes.length, 7, '不得为暖色态另开一个球/光晕 mesh');
+  assertEqual(scene.children.length, 7);
+  r.dispose();
 });

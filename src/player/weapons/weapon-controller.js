@@ -5,7 +5,8 @@
 import { WEAPON_IDS, WEAPONS } from './weapon-catalog.js';
 import { isWeaponDestructible } from './weapon-target-policy.js';
 import { collectMag7Changes } from './mag7-pattern.js';
-import { stormChargeProgress, stormLanceAxis } from './storm-lance.js';
+import { stormChargeProgress, stormLanceAxis, cinderChargeProgress, chargeStageAt } from './storm-lance.js';
+import { cinderLaunch } from './cinder-fall.js';
 
 /** 无 DDA 命中时曳光延伸距离（mc-lite 40 格 hitscan 语义） */
 const MISS_RANGE = 40;
@@ -60,6 +61,17 @@ export class WeaponController {
     /** 蓄满音是否已响过（防每帧重复响） */
     this._novaReadyFired = false;
     /**
+     * v3.21 Cinder Fall：**第二段的两个跨越标志**。
+     *
+     * ⚠️⚠️ **阶段判定优先读它们，而不是对 `novaChargeElapsed` 取浮点边界**：
+     * dt 逐帧累加会在边界两侧漂（实测 `60×0.05 = 2.9999999999999973` 落在 3 下方）。
+     * 跨越比较（`was < 边界 && now >= 边界`）对累积误差免疫 —— 与既有
+     * `_novaStartFired` / `_novaReadyFired` 同手法。纯函数 `chargeStageAt` 另有 1e-9
+     * 容差供 UI/诊断，两者必须同侧（单测钉住）。
+     */
+    this._cinderStartFired = false;
+    this._cinderReadyFired = false;
+    /**
      * M6 实体查询（Game 装配时注入）。**缺省 null → 不查实体**：徒手/无丧尸场景照常开火，
      * 向后兼容（既有 M4 测试与交互不受影响）。注入而非 import entities —— controller 是纯
      * 逻辑层，不依赖 entities/render（依赖方向 §3）。
@@ -109,6 +121,9 @@ export class WeaponController {
     this.novaChargeElapsed = 0;
     this._novaStartFired = false;
     this._novaReadyFired = false;
+    // v3.21：第二段同理
+    this._cinderStartFired = false;
+    this._cinderReadyFired = false;
     return true;
   }
 
@@ -140,6 +155,8 @@ export class WeaponController {
       this.novaChargeElapsed = 0;
       this._novaStartFired = false;
       this._novaReadyFired = false;
+      this._cinderStartFired = false;
+      this._cinderReadyFired = false;
     }
     return effects;
   }
@@ -147,9 +164,13 @@ export class WeaponController {
   /**
    * 左键抬起。
    *
-   * v3.20：**新增可选 `aim`** —— 蓄满且冷却已到期时施放 Nova Beam。
+   * v3.20：**新增可选 `aim`** —— 蓄满且冷却已到期时施放 Storm Lance。
    * ⚠️ **无 aim 时只清状态，不施法也不抛错**：既有 5 处单测/spec 都是 `pointerUp()` 无参调用，
    * 改成必填会让它们全部报错（向后兼容）。
+   *
+   * v3.21：**按阶段分流**（用户裁定「进入那一秒就能发」）：
+   *   第二秒松手 → `storm-lance`；第三秒松手 → `cinder-fall`。
+   * ⚠️ 阶段优先读**跨越标志**（对 dt 累积误差免疫，见 `_cinderStartFired` 注释）。
    *
    * @param {AimSnapshot} [aim] @returns {object[]}
    */
@@ -157,12 +178,33 @@ export class WeaponController {
     this.triggerHeld = false;
     const weapon = WEAPONS[this.selectedId];
     const cfg = weapon?.stormLance;
-    const charged = cfg && this.novaChargeElapsed >= cfg.chargeDelaySeconds + cfg.chargeSeconds;
+    // 先取阶段再清状态（清完就读不到了）
+    const stage = this._chargeStage();
     this.novaChargeElapsed = 0;
     this._novaStartFired = false;
     this._novaReadyFired = false;
-    if (!charged || !aim || this.cooldown > 0) return [];
+    this._cinderStartFired = false;
+    this._cinderReadyFired = false;
+    if (!cfg || stage === 'none' || !aim || this.cooldown > 0) return [];
+    if (stage === 'cinder' && weapon.cinderFall) return [this._fireCinderFall(aim, weapon)];
     return [this._fireStormLance(aim, weapon)];
+  }
+
+  /**
+   * 当前蓄力阶段（v3.21）—— **跨越标志优先**。
+   *
+   * 标志没置上时才回落纯函数（fixture 直接写 `novaChargeElapsed` 而不跑 update 的情形）。
+   * @returns {'none'|'lance'|'cinder'}
+   */
+  _chargeStage() {
+    const weapon = WEAPONS[this.selectedId];
+    const cfg = weapon?.stormLance;
+    if (!cfg) return 'none';
+    if (this._cinderStartFired) return 'cinder';
+    if (this._novaStartFired) return 'lance';
+    return chargeStageAt(this.novaChargeElapsed, {
+      ...cfg, cinderChargeSeconds: weapon.cinderFall?.chargeSeconds ?? 0,
+    });
   }
 
   /**
@@ -198,6 +240,31 @@ export class WeaponController {
           sound: cfg.readySound, volume: cfg.readyVolume,
         }));
       }
+      /**
+       * v3.21：第二段（第三秒）的起手与蓄满。
+       * ⚠️ **第二段的边界是 `full`（= delay + charge）**，与第一段的蓄满点同一个时刻 ——
+       * 那一刻既是「Storm Lance 蓄满」也是「Cinder Fall 起手」，两个事件同帧发是**正确的**
+       * （一声提示「可以发 lance 了」+ 一声提示「开始蓄第二招」）。
+       * ⚠️ 同样用**跨越比较**，不用 `elapsed >= 边界`（dt 累积误差，见字段注释）。
+       */
+      const c2 = weapon.cinderFall;
+      if (c2) {
+        const full2 = full + c2.chargeSeconds;
+        if (!this._cinderStartFired && was < full && this.novaChargeElapsed >= full) {
+          this._cinderStartFired = true;
+          effects.push(this._emitNova({
+            type: 'cinder-charge-start', weapon,
+            sound: c2.chargeSound, volume: c2.chargeVolume,
+          }));
+        }
+        if (!this._cinderReadyFired && was < full2 && this.novaChargeElapsed >= full2) {
+          this._cinderReadyFired = true;
+          effects.push(this._emitNova({
+            type: 'cinder-charge-ready', weapon,
+            sound: c2.readySound, volume: c2.readyVolume,
+          }));
+        }
+      }
     }
     if (!weapon || !weapon.automatic) return effects;
     return effects.concat(this._tryFire(aim));
@@ -216,7 +283,10 @@ export class WeaponController {
    *            shotsFired: number, lastEffect: object | null}}
    */
   debugState() {
-    const cfg = WEAPONS[this.selectedId]?.stormLance;
+    const weapon = WEAPONS[this.selectedId];
+    const cfg = weapon?.stormLance;
+    const c2 = weapon?.cinderFall;
+    const seq = cfg ? { ...cfg, cinderChargeSeconds: c2?.chargeSeconds ?? 0 } : null;
     return {
       selectedId: this.selectedId,
       cooldown: this.cooldown,
@@ -229,6 +299,10 @@ export class WeaponController {
       novaCharge: cfg ? stormChargeProgress(this.novaChargeElapsed, cfg) : 0,
       novaCharged: !!cfg
         && this.novaChargeElapsed >= cfg.chargeDelaySeconds + cfg.chargeSeconds,
+      // v3.21：第二段进度与阶段（装配层每帧读轻量字段，不调本方法 —— 它是调试 API）
+      cinderCharge: seq ? cinderChargeProgress(this.novaChargeElapsed, seq) : 0,
+      cinderCharged: !!c2 && this._cinderReadyFired,
+      chargeStage: this._chargeStage(),
     };
   }
 
@@ -278,6 +352,44 @@ export class WeaponController {
       impactKind: sweep.impactKind ?? 'air',
       hits: sweep.hits,
       // 纯视觉随机种子（不入存档，与上游 `_seed` 同口径）：让两次施放不画完全相同的形状
+      seed: Math.random() * 100,
+      impactSound: cfg.impactSound,
+      impactVolume: cfg.impactVolume,
+    };
+    this.lastEffect = effect;
+    this.onEffect(effect);
+    return effect;
+  }
+
+  /**
+   * v3.21：抛出 Cinder Fall 的燃烧岩石。
+   *
+   * 与 Storm Lance 的关键差别：**本方法不做命中判定也不扣血** —— 岩石是飞行实体，
+   * 命中在后续帧由 `Game._updateCinders()` 逐步判定（用户：「扔出去的球只要碰到…都爆炸」）。
+   * 在招的瞬间就扫一遍射线 = 上游那套闭式弧线的做法，与「飞行中碰到就爆」相背。
+   *
+   * ⚠️ **`recoil` 必须是 0 而不是缺席**（同 `_emitNova`）：`view-weapon.js:onShot` 对非 melee
+   * 事件写 `this._recoil = effect.recoil`，undefined 会让剑体位置 NaN ⇒ 剑从画面上消失。
+   * ⚠️ **不写方块、不击退**（用户裁定：等同炸弹，而炸弹不击退）。
+   *
+   * @param {AimSnapshot} aim @param {object} weapon @returns {object}
+   */
+  _fireCinderFall(aim, weapon) {
+    const cfg = weapon.cinderFall;
+    // 准心命中距离（无命中 ⇒ 回落射程）—— 岩石末端仍落在准心瞄准点
+    const aimDistance = aim?.target?.hit ? aim.target.dist : cfg.range;
+    const launch = cinderLaunch(aim, cfg, aimDistance);
+    this.cooldown = cfg.cooldown;
+    this.shotsFired++;
+    const effect = {
+      type: 'cinder-fall',
+      weaponId: weapon.id,
+      sound: cfg.fireSound,
+      volume: cfg.fireVolume,
+      recoil: 0,
+      impacts: [],
+      launch,
+      // 纯视觉随机种子（不入存档，与 Storm Lance 同口径）：自旋轴/熔岩缝形状不重复
       seed: Math.random() * 100,
       impactSound: cfg.impactSound,
       impactVolume: cfg.impactVolume,

@@ -152,6 +152,13 @@ export class Player {
     this.blockHitFx = weaponRuntime?.blockHitFx ?? null;
     /** Storm Lance 渲染器（v3.20，Game 注入；缺省 null ⇒ 只扣血不出视觉） */
     this.stormLanceRenderer = weaponRuntime?.stormLanceRenderer ?? null;
+    /**
+     * Cinder Fall 的岩石生成回调（v3.21，Game 注入）。
+     * ⚠️ **注入而非 import**：player/ 不持有 EntityManager，也不依赖装配层（依赖方向 §3）。
+     * 缺省 null ⇒ 只放音效不生岩石（fixture / 旧单测不注入则走缺省，不报错）。
+     * @type {((launch:object)=>boolean)|null}
+     */
+    this.onCinderLaunch = weaponRuntime?.onCinderLaunch ?? null;
     /** @type {WeaponController | null} */
     this.weaponController = null;
     /**
@@ -587,8 +594,22 @@ export class Player {
     // ⚠️ 理由：`onShot` 对非 melee 事件写 `this._recoil = effect.recoil`，而蓄力事件
     // 本不应产生后坐；就算 controller 已给 recoil:0，让剑体在蓄力/施放时跑一遗后坐衰减
     // 也是错的观感。分流后剑体姿态完全由挥砍动画控制。
-    if (effect.type === 'storm-charge-start' || effect.type === 'storm-charge-ready') {
+    if (effect.type === 'storm-charge-start' || effect.type === 'storm-charge-ready'
+      || effect.type === 'cinder-charge-start' || effect.type === 'cinder-charge-ready') {
       if (this.audioManager) this.audioManager.play(effect.sound, effect.volume);
+      return;
+    }
+    /**
+     * v3.21：第三秒大招 —— 抛出飞行岩石。
+     * ⚠️ **命中不在这里判**：岩石是实体，后续帧由 `Game._updateCinders()` 逐步判定
+     * （用户：「扔出去的球只要碰到实体方块…或者丧尸或者 boss 都爆炸」）。
+     * ⚠️ **同样不调 `viewWeapon.onShot`**（蓄力类招式不应产生后坐）。
+     * ⚠️ **漏这一支的形态是静默的**：事件发了、音效响了、但天上没岩石
+     * （落到下面的通用分支，而它只认 tracer/impacts）—— 本轮实测踩到。
+     */
+    if (effect.type === 'cinder-fall') {
+      if (this.audioManager) this.audioManager.play(effect.sound, effect.volume);
+      if (this.onCinderLaunch) this.onCinderLaunch(effect.launch);
       return;
     }
     if (effect.type === 'storm-lance') {

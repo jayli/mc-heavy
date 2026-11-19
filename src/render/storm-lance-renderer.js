@@ -38,6 +38,9 @@ import {
   createBoltRibbonGeometry, createSparkGeometry, createBurstGeometry, createShockGeometry,
 } from './storm-lance-geometry.js';
 import { createStormLanceMaterials } from './storm-lance-material.js';
+// v3.21：第二段蓄力球的暖橙光晕——**直接用 Cinder 的那张**（同一个手法与色阶，
+// 不在这里另写一份渐变）。它归属 render/，与本模块同层。
+import { makeCinderHaloTexture } from './cinder-fall-renderer.js';
 
 const _v = new THREE.Vector3();
 const _pos = new THREE.Vector3();
@@ -103,11 +106,15 @@ export function makeStormHaloTexture(size = 64) {
 
 export class StormLanceRenderer {
   /**
-   * @param {{scene: THREE.Scene, haloTexture?: THREE.Texture|null}} deps
+   * @param {{scene: THREE.Scene, haloTexture?: THREE.Texture|null,
+   *          warmHaloTexture?: THREE.Texture|null}} deps
    *        `haloTexture` 可注入（单测传假纹理免 canvas，照 FireballRenderer 同手法）；
    *        缺省内部生成。
+   *        v3.21 `warmHaloTexture` = 第二段（Cinder Fall）的暖橙光晕，同样可注入。
+   *        ⚠️ **光晕是贴图不是 shader** ⇒ 换色必须切 `material.map`，
+   *        只改 `uWarm` uniform 拓不到它（形态：球变暖了而光晕还是蓝的）。
    */
-  constructor({ scene, haloTexture = null }) {
+  constructor({ scene, haloTexture = null, warmHaloTexture = null }) {
     this.scene = scene;
     const mats = createStormLanceMaterials();
     this.uniforms = mats.uniforms;
@@ -139,6 +146,16 @@ export class StormLanceRenderer {
     // ⚠️ 尺寸给 1×1，实际大小由 setCharge 按 orbSize×orbHaloScale 缩放（与核心同源）。
     this._haloTexture = haloTexture || makeStormHaloTexture();
     this._ownsHaloTexture = haloTexture === null;
+    /**
+     * v3.21：第二段（Cinder Fall）的暖橙光晕。**惰初始化**。
+     *
+     * ⚠️⚠️ **不得在构造器里直接 `makeCinderHaloTexture()`**（实测踩到）：
+     * 它要 canvas，而本渲染器在 **Node 轻档单测**里也会被构造（只查对象图）。
+     *  eager 构造会让 6 个既有用例全部 `ReferenceError: document is not defined`。
+     * 惰初始化后：注入假纹理的测试永不碰 canvas，真实浏览器里第一次进第二段才生成。
+     */
+    this._warmHaloTexture = warmHaloTexture;
+    this._ownsWarmHaloTexture = warmHaloTexture === null;
     const halo = new THREE.PlaneGeometry(1, 1);
     const haloMaterial = new THREE.MeshBasicMaterial({
       map: this._haloTexture,
@@ -209,10 +226,25 @@ export class StormLanceRenderer {
    * @param {THREE.Quaternion|null} [cameraQuat] 相机朝向 —— 光晕 billboard 用
    *        （照 `fireballRenderer.sync(entities, camera.quaternion, nowMs)` 的分工：
    *        渲染器不持有相机，由装配层每帧传入）。缺省 null ⇒ 面向 +Z。
+   * @param {number} [warm=0] v3.21：0 = Storm Lance 冷蓝白，1 = Cinder Fall 暖橙白。
+   *        **只换色不换形**（用户 R4：「蓄力的动作是完全一样的」）。
+   *        缺省 0 ⇒ 既有五参调用逐位回到 v3.20 行为。
+   *        ⚠️ **尺寸进度由装配层传 `max(p1,p2)`**：第二段起步时 p2 恰好是 0，
+   *        直接拿它当进度会让球**闪断一下**（静默观感缺陷，数值判据拓不到）。
    */
-  setCharge(progress, origin, side, nowMs, cameraQuat = null) {
+  setCharge(progress, origin, side, nowMs, cameraQuat = null, warm = 0) {
     const p = Number.isFinite(progress) ? sat(progress) : 0;
+    const w = Number.isFinite(warm) ? sat(warm) : 0;
     this._charge = p;
+    this.uniforms.uWarm.value = w;
+    // 光晕是贴图：换色靠切 map（uniform 只管核心球）。
+    // 暖色贴图**惰生成**（只在真的进第二段时碰 canvas，见构造器注释）。
+    if (w > 0.5 && !this._warmHaloTexture) this._warmHaloTexture = makeCinderHaloTexture();
+    const wantMap = w > 0.5 ? this._warmHaloTexture : this._haloTexture;
+    if (wantMap && this.haloMesh.material.map !== wantMap) {
+      this.haloMesh.material.map = wantMap;
+      this.haloMesh.material.needsUpdate = true;
+    }
     if (!Number.isFinite(nowMs)) return;
     if (p <= 0) {
       this.orbMesh.visible = false;
@@ -379,6 +411,7 @@ export class StormLanceRenderer {
     }
     this._haloMaterial.dispose();
     if (this._ownsHaloTexture) this._haloTexture.dispose();
+    if (this._ownsWarmHaloTexture && this._warmHaloTexture) this._warmHaloTexture.dispose();
     this.meshes.length = 0;
     this._bolt.length = 0;
     this._phase = 'idle';
