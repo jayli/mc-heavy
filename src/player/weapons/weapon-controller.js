@@ -5,6 +5,7 @@
 import { WEAPON_IDS, WEAPONS } from './weapon-catalog.js';
 import { isWeaponDestructible } from './weapon-target-policy.js';
 import { collectMag7Changes } from './mag7-pattern.js';
+import { stormChargeProgress, stormLanceAxis } from './storm-lance.js';
 
 /** 无 DDA 命中时曳光延伸距离（mc-lite 40 格 hitscan 语义） */
 const MISS_RANGE = 40;
@@ -45,6 +46,19 @@ export class WeaponController {
     this.shotsFired = 0;
     this.blockDamageEnabled = false; // 保留 mc-lite 的安全默认值
     this.lastEffect = null;
+    /**
+     * v3.20 Storm Lance：自按下左键起的秒数（**含前 1s 静默期**）。
+     * 只对带 `stormLance` 的武器（剑）推进。
+     * ⚠️ **按下边沿仍照旧路径挥一刀**（用户：「短按鼠标就是普通的挥剑攻击」）——
+     * 蓄力是**叠加**在既有行为上的，不是取代它。
+     * ⚠️ **静默期内不得发任何蓄力事件**（用户：「不然我只需要挥刀的时候也会触发
+     * 蓄力的动画，画面就太乱了」）—— 起手事件推到越过 `chargeDelaySeconds` 那一帧。
+     */
+    this.novaChargeElapsed = 0;
+    /** 起手事件是否已发（防每帧重复） */
+    this._novaStartFired = false;
+    /** 蓄满音是否已响过（防每帧重复响） */
+    this._novaReadyFired = false;
     /**
      * M6 实体查询（Game 装配时注入）。**缺省 null → 不查实体**：徒手/无丧尸场景照常开火，
      * 向后兼容（既有 M4 测试与交互不受影响）。注入而非 import entities —— controller 是纯
@@ -91,6 +105,10 @@ export class WeaponController {
     this.selectedId = id;
     this.cooldown = 0;
     this.triggerHeld = false;
+    // v3.20：切武器丢弃蓄力（否则「持剑蓄一半 → 切枪 → 切回剑 → 松手」会凭空放一发）
+    this.novaChargeElapsed = 0;
+    this._novaStartFired = false;
+    this._novaReadyFired = false;
     return true;
   }
 
@@ -110,16 +128,41 @@ export class WeaponController {
 
   /**
    * 左键按下边沿。手枪/加特林立即尝试一次并进入按住连射；MAG7 只在边沿射一发。
+   * v3.20：带 `stormLance` 的武器（剑）**仍照旧路径挥一刀**，蓄力从下一帧开始计时；
+   * **起手事件不在这里发** —— 前 `chargeDelaySeconds` 秒是静默期（R1）。
    * @param {AimSnapshot} aim @returns {object[]} 本次产生的效果事件
    */
   pointerDown(aim) {
     this.triggerHeld = true;
-    return this._tryFire(aim);
+    const effects = this._tryFire(aim);
+    const weapon = WEAPONS[this.selectedId];
+    if (weapon?.stormLance) {
+      this.novaChargeElapsed = 0;
+      this._novaStartFired = false;
+      this._novaReadyFired = false;
+    }
+    return effects;
   }
 
-  /** 左键抬起。 */
-  pointerUp() {
+  /**
+   * 左键抬起。
+   *
+   * v3.20：**新增可选 `aim`** —— 蓄满且冷却已到期时施放 Nova Beam。
+   * ⚠️ **无 aim 时只清状态，不施法也不抛错**：既有 5 处单测/spec 都是 `pointerUp()` 无参调用，
+   * 改成必填会让它们全部报错（向后兼容）。
+   *
+   * @param {AimSnapshot} [aim] @returns {object[]}
+   */
+  pointerUp(aim) {
     this.triggerHeld = false;
+    const weapon = WEAPONS[this.selectedId];
+    const cfg = weapon?.stormLance;
+    const charged = cfg && this.novaChargeElapsed >= cfg.chargeDelaySeconds + cfg.chargeSeconds;
+    this.novaChargeElapsed = 0;
+    this._novaStartFired = false;
+    this._novaReadyFired = false;
+    if (!charged || !aim || this.cooldown > 0) return [];
+    return [this._fireStormLance(aim, weapon)];
   }
 
   /**
@@ -131,8 +174,33 @@ export class WeaponController {
     this.cooldown = Math.max(0, this.cooldown - dt);
     if (!this.triggerHeld) return [];
     const weapon = WEAPONS[this.selectedId];
-    if (!weapon || !weapon.automatic) return [];
-    return this._tryFire(aim);
+    // v3.20：蓄力推进必须在 `automatic` 早退**之前** —— 剑无 `automatic`，
+    // 放在后面的形态是「蓄力永不推进」而所有既有剑用例仍全绿（静默失效）。
+    const effects = [];
+    const cfg = weapon?.stormLance;
+    if (cfg) {
+      const was = this.novaChargeElapsed;
+      this.novaChargeElapsed = was + dt;
+      const full = cfg.chargeDelaySeconds + cfg.chargeSeconds;
+      // 起手：越过静默期那一帧（**不在 pointerDown**，R1）
+      if (!this._novaStartFired && was <= cfg.chargeDelaySeconds
+        && this.novaChargeElapsed > cfg.chargeDelaySeconds) {
+        this._novaStartFired = true;
+        effects.push(this._emitNova({
+          type: 'storm-charge-start', weapon,
+          sound: cfg.chargeSound, volume: cfg.chargeVolume,
+        }));
+      }
+      if (!this._novaReadyFired && was < full && this.novaChargeElapsed >= full) {
+        this._novaReadyFired = true;
+        effects.push(this._emitNova({
+          type: 'storm-charge-ready', weapon,
+          sound: cfg.readySound, volume: cfg.readyVolume,
+        }));
+      }
+    }
+    if (!weapon || !weapon.automatic) return effects;
+    return effects.concat(this._tryFire(aim));
   }
 
   /**
@@ -148,13 +216,75 @@ export class WeaponController {
    *            shotsFired: number, lastEffect: object | null}}
    */
   debugState() {
+    const cfg = WEAPONS[this.selectedId]?.stormLance;
     return {
       selectedId: this.selectedId,
       cooldown: this.cooldown,
       triggerHeld: this.triggerHeld,
       shotsFired: this.shotsFired,
       lastEffect: this.lastEffect,
+      // v3.20：蓄力进度（0..1，**静默期恒 0**）与「已蓄满」—— HUD 蓄力环与渲染器都读它。
+      // 字段名沿用 novaCharge/novaCharged：它们是「蓄力」的通用诊断口径，
+      // 改名会白白推翻既有 spec 与装配层的消费点。
+      novaCharge: cfg ? stormChargeProgress(this.novaChargeElapsed, cfg) : 0,
+      novaCharged: !!cfg
+        && this.novaChargeElapsed >= cfg.chargeDelaySeconds + cfg.chargeSeconds,
     };
+  }
+
+  /**
+   * v3.20：组装蓄力类事件（起手/蓄满）。
+   *
+   * ⚠️ **`recoil` 必须是 0而不是缺席**：`view-weapon.js:onShot` 对非 melee 事件写
+   * `this._recoil = effect.recoil`，undefined 会让它变 NaN ⇒ 剑体位置 NaN ⇒ **剑从画面上消失**，
+   * 而蓄力/光柱本身的判据全绿。（装配层另有一道分流不调 onShot，这里是纵深防御。）
+   */
+  _emitNova({ type, weapon, sound, volume }) {
+    const effect = {
+      type, weaponId: weapon.id, sound, volume, recoil: 0, impacts: [],
+    };
+    this.lastEffect = effect;
+    this.onEffect(effect);
+    return effect;
+  }
+
+  /**
+   * v3.20：施放 Storm Lance。
+   *
+   * 命中与几何经注入的 `entityQuery.sweepLance(aim, cfg)`（Game 侧调纯函数 + 逐个 `damageEntity`）。
+   * ⚠️ **未注入时仍发闪电但 `hits: []`**（fixture / 旧单测不注入则走缺省，不扣血也不报错）。
+   * ⚠️ **不写方块、不击退**（用户裁定：等同炸弹，而炸弹不击退）。
+   * ⚠️ **`impactKind` 必须透传**：渲染层靠它判「炸在实体身上」还是「炸在地上」
+   * —— 丢掉它会让打 Boss 时冲击环画在脚下地面上（R2）。
+   */
+  _fireStormLance(aim, weapon) {
+    const cfg = weapon.stormLance;
+    const sweep = typeof this.entityQuery?.sweepLance === 'function'
+      ? this.entityQuery.sweepLance(aim, cfg)
+      : { ...stormLanceAxis(aim, cfg), impactKind: 'air', hits: [] };
+    this.cooldown = cfg.cooldown;
+    this.shotsFired++;
+    const effect = {
+      type: 'storm-lance',
+      weaponId: weapon.id,
+      sound: cfg.fireSound,
+      volume: cfg.fireVolume,
+      recoil: 0,
+      impacts: [],
+      origin: sweep.origin,
+      target: sweep.target,
+      side: sweep.side,
+      length: sweep.length,
+      impactKind: sweep.impactKind ?? 'air',
+      hits: sweep.hits,
+      // 纯视觉随机种子（不入存档，与上游 `_seed` 同口径）：让两次施放不画完全相同的形状
+      seed: Math.random() * 100,
+      impactSound: cfg.impactSound,
+      impactVolume: cfg.impactVolume,
+    };
+    this.lastEffect = effect;
+    this.onEffect(effect);
+    return effect;
   }
 
   /** 内部：冷却未结束或徒手 → 无效果。 */

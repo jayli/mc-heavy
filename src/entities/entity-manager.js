@@ -339,6 +339,42 @@ export class EntityManager {
     };
   }
 
+  /**
+   * 实体 AABB 射线的**全量版**（v3.20 Nova Beam）：返回射程内全部命中，按 dist 升序。
+   *
+   * 与 `raycast()` **共用同一份** `definition.raycastAabb` 与归一化逻辑（红线 1）——
+   * 各类型的盒由自己的 `xxxAabbFor(state)` 给出（焰魔/守卫还随 yaw 旋转），
+   * 在这里写第二份几何必然漂移。
+   *
+   * ⚠️ **既有 `raycast()` 一行不改** ⇒ 武器/弹丸/炮塔的命中行为逐位不变。
+   * 新增方法而不是给 `raycast` 加参数：后者的三个消费方都只要最近一个，
+   * 改签名会让它们白付一次排序。
+   *
+   * @param {number[]} origin @param {number[]} dir @param {number} maxDist
+   * @param {(entity: Entity) => boolean} [predicate]
+   * @returns {Array<{id: string, type: string, dist: number, point: number[]}>} 空集合返回 []
+   */
+  raycastAll(origin, dir, maxDist, predicate) {
+    const len = Math.hypot(dir[0], dir[1], dir[2]);
+    if (!(len > 0) || !Number.isFinite(maxDist) || maxDist < 0) return [];
+    const unit = [dir[0] / len, dir[1] / len, dir[2] / len];
+    const out = [];
+    for (const entity of this._entities.values()) {
+      if (predicate && !predicate(entity)) continue;
+      const definition = this._types.get(entity.type);
+      const dist = definition.raycastAabb(entity.state, origin, unit, maxDist);
+      if (dist === null || dist < 0 || dist > maxDist) continue;
+      out.push({
+        id: entity.id,
+        type: entity.type,
+        dist,
+        point: [origin[0] + unit[0] * dist, origin[1] + unit[1] * dist, origin[2] + unit[2] * dist],
+      });
+    }
+    out.sort((a, b) => a.dist - b.dist);
+    return out;
+  }
+
   // ---------- 派生 column 索引 ----------
 
   /** @param {Entity} entity @param {string} [key] */

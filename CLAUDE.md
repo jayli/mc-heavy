@@ -282,8 +282,41 @@ scheduler/physics）再加 `npm run bench -- --check`。计划里标「冻结」
 - ⚠️ **用众数峰量「参数敏感性」会得出假结论**（v3.17）：强度 0.5→0.18 时众数 luma 只从 160 降到 142，
   看着「几乎不敏感」——那是直方图**跳档**（不同强度下选中不同簇）。改**固定掩膜均值**
   （用基准帧选像素、两侧量同一批）后严格单调：155.4 / 146 / 137.5 / 133 / 127.4。
-- ⚠️⚠️ **`vec3(new THREE.Color(hex))` 在 WebGPU 后端输出纯黑且零报错零警告**（炮塔三档色调 v3.14 实测）：
-  装甲 6 部件**整片消失**，而 tone 属性/长度/值域/冻结表/材质无 map/有 colorNode/集合关系式/指纹
+- ⚠️⚠️ **上游 raw GLSL `ShaderMaterial` 在本仓一行都不能用**（Nova Beam v3.20 实测）：
+  `three.webgpu.js:86728-86740` 的 NodeMaterial 库只注册 12 种内置材质，**没有 ShaderMaterial**
+  ⇒ `fromMaterial()` 返 null → `:53536` 报 `Material "ShaderMaterial" is not compatible.` 并回落空材质
+  （画面什么都没有）。移植任何 WebGL 特效项目必须先确认这一点，**用 TSL 重写**。
+  配套三条：① **`toneMapped` 在 WebGPU 后端不存在**（全文出现次数实测 **0**）—— 色调映射在
+  `_renderOutput` 的全屏 output pass 上做，上游的高 glow 值会被 ACES 削成白 ⇒ 增益必须按像素重标；
+  ② **参数化几何用 `vertexNode` 而不是 `positionNode`**（后者的返回值会被 `modelViewMatrix` 再乘一次，
+  依赖「mesh 矩阵恒等」这个隐式前提）；③ **逐 pass 的 varying 用 `varyingProperty` 在顶点写、片元读**，
+  不得在 `colorNode` 里直读 `positionGeometry` —— instanced 属性（`aStrand`/`aRing`）在片元阶段读不到，静默拿 0。
+- ⚠️⚠️⚠️ **`Fn` 返回多键对象会被包成 SplitNode，自定义键全部 undefined**（Storm Lance v3.20 实测）：
+  `const f = Fn(() => ({dir, n1, n2, span}))` 的返回值走 **swizzle** 路径，只认 `x/y/z/w`。
+  实测：返 `{a,b}` 碰巧能用（映到通道），而返 `{dir,n1,n2,span}` 时 **四个键全 undefined**
+  ⇒ `n1.mul(...)` 抛 `Cannot read properties of undefined (reading 'mul')` ⇒ **整片 pass 不上屏**
+  （实测 lit=0 / blue=0），而材质构造、uniform 清单、Node 单测**全绿**。
+  **正解：「把几行节点表达式装起来」用普通 JS 函数，不要用 `Fn`**（它本来就不需要是 shader 函数）。
+- ⚠️⚠️ **`Loop(5, ({i}) => …)` 拿不到 `i`**（Storm Lance v3.20 实测）：裸数字 `5` 被 `nodeArray`
+  包成 ConstNode（`isNode===true`），而 `LoopNode.getProperties` **只对 `isNode!==true` 的 param
+  建 `inputs` 键** ⇒ `inputs={}` ⇒ 解构的 `i` 是 **undefined** ⇒ `float(i)` 抛错、整片 pass 不上屏。
+  **正解：`Loop({start:0, end:5, type:'int'}, ({i}) => …)`**。
+  ⇒ 上面两条的共同教训：**TSL 节点构造类缺陷只能靠真实 GPU 像素探针抓**。
+  写一个最小探针（建 renderer → 摆两个 mesh → render → 回读像素 + 收集 console error），
+  比在完整游戏页里猜快得多；它会直接把出错的**文件:行号**报出来。
+- ⚠️⚠️ **`viewportDepthTexture()` / `viewportTexture()` 会重开 render pass**（v3.20 读源确认）：
+  它们是 `ViewportTextureNode`，`updateBefore` 里 `currentPass.end()` + `copyTextureToTexture` +
+  `beginRenderPass`（`three.webgpu.js:86491`）—— 正是 v3.17 水面倒影撕天空那一类时机缺陷。
+  想做「深度软相交」的特效请改用 `depthTest: true` 硬遮挡（曳光既有口径），不要引这两个节点。
+- ⚠️⚠️ **多时基写同一个 instanced 属性 = 静默全灭**（v3.20 自己踩的）：
+  火花 `aSpawn` 在蓄力期写绝对秒、施放期写相对秒，而 `uTime` 在施放时切成相对秒
+  ⇒ `age = uTime − aSpawn` 变负（实测 **−5**）⇒ **蓄力吸入粒子在释放瞬间全部消失**，
+  而相位/可见性/draw call 判据全绿。正解：**全局单一时钟**（uTime 恒绝对秒），
+  需要「施放内时间」的噪声另开一个 uniform（`uAge`）。判据要落在**真实属性值**上。
+- ⚠️ **量额外特效的 draw call 必须关水面倒影**（v3.20 实测）：不关时 idle 275 → firing **518**
+  （+243），关掉后 276 → **292**（**+16**）—— 前者把倒影 pass 算进了同一个计数。
+  写 draw call 判据的 spec 一律带 `?shadows=0&reflect=0`。
+- ⚠️⚠️ **`vec3(new THREE.Color(hex))` 在 WebGPU 后端输出纯黑且零报错零警告**（炮塔三档色调 v3.14 实测）：  装甲 6 部件**整片消失**，而 tone 属性/长度/值域/冻结表/材质无 map/有 colorNode/集合关系式/指纹
   **全部通过**。根因：`vec3` 单参数走「转成 vec3」路径，而 `getValueType(Color)` 返回 `'color'`
   不是 `'vec3'`（`three.webgpu.js:1146`）⇒ 转换拿不到分量。**正解：显式拆分量 `vec3(c.r, c.g, c.b)`**
   （`color(hex)` / `uniform(Color)` / `vec3(...C)` 也都可用）。逐写法实测非黑像素数：
@@ -580,6 +613,27 @@ scheduler/physics）再加 `npm run bench -- --check`。计划里标「冻结」
     —— 但 deepslate 的 g−r 恒为 0，等比缩放后仍被 `g>r+12` 排除），漏亮度门会让**雾化天空**（168,208,216，
     lum 197；`skybox=0` 的纯天蓝是 135,206,235，±30 容差抓不到它）与**暗 obsidian**（32,72,120，
     lum 75）误报（实测分别误报 11.83% 与 0.82%）。
+- ⚠️⚠️ **命中实体类招式的「落点」必须截到实体表面，不能只看方块 DDA**（Storm Lance v3.20 用户实玩）：
+  旧口径 `length = 轴线方块 DDA 距离`、实体命中只用于扣血 ⇒ 光柱/闪电**穿过 Boss 身体**、
+  在它身后的方块上炸（用户原话：「而不是穿过身体到 boss 身体后方的方块触碰处爆炸」）。
+  正解：`length = min(轴线方块距离, **五条射线全部命中里最小的实体 dist**)`。
+  ⚠️ **必须取五条最小值而不是只查轴线**：Boss 盒大且随 yaw 旋转，偏移射线常更早碰到它。
+  ⚠️ **落点仍取轴线上的截断点**（拿偏移射线自己的命中点会让爆壳画歪到束的一侧）。
+  另需透传 `impactKind`（entity/block/air）—— **冲击环朝向要按它分流**（命中实体时环面法线朝玩家，
+  否则贴地），丢掉它会让打 Boss 时环画在脚下地面上。判据要钉「落点到相机距离 ≈ 实体到相机距离」，
+  并配一条**拆掉截断的负向对照**（否则「只看方块」的旧写法也可能碰巧绿）。
+- ⚠️⚠️ **火花/曳光的「形状」是观感身份，圆形羽化 quad 会被读作「冒爆米花」**（Storm Lance v3.20）：
+  上游 `ParticleShape.STREAK` + `stretch:true` 是**沿速度方向拉伸的细条**
+  （`dir=normalize(velView.xy)`、`stretch=1+k·|vel|`、轮廓 `core·len` 而不是圆形 mask）。
+  **拉伸与条状轮廓缺一都退回圆点**：只拉伸不改轮廓 = 拉长的圆斑；只改轮廓不拉伸 = 竖直细条（不跟速度）。
+  另：沿束撒火花要**分多批**（上游 SPARK_BATCHES=6），单点发射会让每批读作「定点星爆」。
+- ⚠️⚠️ **爆炸的「冲击力」来自扩张曲线与硬阈值电弧，不是亮度**（Storm Lance v3.20）：
+  ① 扩张必须 **outQuint**（`1−(1−t)^5`，t=0.2 时已 **0.672**）而不是 outCubic（0.488）
+  —— 后者读作「慢慢胀」，用户描述是「软绵绵」；且起始半径取终值的 0.2 而不是 0.18 慢胀。
+  ② 壳上的电弧阈值必须**硬**（上游 0.80~0.97）—— 上游注释原文：放宽后
+  「fills the shell in and it immediately reads as a rock」（实心球）。
+  ③ 爆壳与冲击环**各自一个 fade/age uniform**，不得共用束身的（后者在保持期恒 1
+  ⇒ 只缩不淡、寿命到时在满亮度上硬 pop）。
 - ⚠️⚠️ **发光特效的像素判据：必须先把「自带同色的宿主」藏掉**（焰魔法阵 v3.04 实测）：
   焰魔本体是**火焰橙皮肤**，自己就满足「金黄 = `r>g && r−b>100`」，且 idle 动画让它在 1.5s 内
   波动 **±18000 像素**，而法阵真实贡献只有 **≈2833** ⇒ 判据被宿主噪声淹没。

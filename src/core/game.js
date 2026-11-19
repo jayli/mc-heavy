@@ -30,7 +30,7 @@ import { SOUND_VOLUMES, DRAGON_SHOUT, ignisAttackSound, BOSS_HIT_SOUND } from '.
 import { ZOMBIE_MODEL_DEFS } from '../render/zombie-model.js';
 import { ViewWeapon } from '../render/view-weapon.js';
 import { ViewArm } from '../render/view-arm.js';
-import { WEAPON_IDS } from '../player/weapons/weapon-catalog.js';
+import { WEAPON_IDS, WEAPONS } from '../player/weapons/weapon-catalog.js';
 import { TracerRenderer } from '../render/tracer-renderer.js';
 import { ExplosionRenderer } from '../render/explosion-renderer.js';
 import { BlockHitFxRenderer, IGNIS_DEATH_BURST, smashRingCenter } from '../render/block-hit-fx.js';
@@ -41,6 +41,9 @@ import {
   ExplosionSpriteRenderer, loadExplosionSpriteTexture,
 } from '../render/explosion-sprite.js';
 import { computeExplosion, EXPLOSION_DAMAGE_RADIUS, EXPLOSION_DAMAGE } from '../voxel/explosion.js';
+import { stormLanceSweep, stormLanceAxis, stormChargeProgress } from '../player/weapons/storm-lance.js';
+import { StormLanceRenderer } from '../render/storm-lance-renderer.js';
+import { ChargeRing } from '../ui/charge-ring.js';
 import { ZOMBIE } from '../entities/zombies/zombie-config.js';
 import { WorldEditor } from './world-editor.js';
 import { EntityManager } from '../entities/entity-manager.js';
@@ -975,6 +978,11 @@ export class Game {
     // 原版无尖刺素材（它是把地面方块整块掀飞），本仓新建几何 —— 用户裁定「火焰尖锥」。
     this.spikeFx = new SpikeFxRenderer({ scene: this.scene });
 
+    // v3.20：持剑蓄力大招 Storm Lance（程序化几何 + TSL，**零贴图依赖** ⇒ 恒装配）。
+    // 单槽：总视觉时长 1.773s < 蓄力 2.0s ⇒ 两道闪电不可能重叠（推导见渲染器文件头）。
+    // 空闲时九个 mesh 全部 visible=false ⇒ 0 draw call，bench 冻结基线逐位不变。
+    this.stormLance = new StormLanceRenderer({ scene: this.scene });
+
     // 出生点（mc-lite 语义：优先 City 中心出生，保证出生即见城市天际线，§7 M2 验收）
     const regionLayout = await this.scheduler.structureIndex.waitForRegion(0, 0);
     // 水面遮罩的城市门控 bounds（城市全世界唯一，固定 region [0,0]）。
@@ -1069,6 +1077,8 @@ export class Game {
         tracerRenderer: this.tracerRenderer,
         audioManager: this.audioManager,
         blockHitFx: this.blockHitFx,
+        // v3.20：Storm Lance 渲染器（上面刚装配）—— 玩家松手施放时由它出视觉
+        stormLanceRenderer: this.stormLance,
       },
       // M3.1 模态守卫（§4.5.4）：面板打开时 Player 的 keydown 全部拦截。
       // 谓词注入而非传 Game 本身，保持 player/ 不反向依赖 core/（依赖方向 §3）
@@ -1121,6 +1131,8 @@ export class Game {
       isHittable: (entity) => WEAPON_HITTABLE_TYPES.includes(entity.type),
       // v2.65 近战剑：击退（方向由 Game 用玩家位置算，controller 只传 id 与距离）
       knockback: (id, dist) => this.knockbackEntity(id, dist),
+      // v3.20 Storm Lance：五射线扫描 + 逐个扣血。controller 不持有 world/entities（依赖方向 §3）。
+      sweepLance: (aim, cfg) => this._stormLanceSweep(aim, cfg),
     });
 
     // 天气 + 雨效（M3-3）：状态机自动周期（晴 60~180s → 雨 30~90s，5s 过渡），
@@ -1186,6 +1198,9 @@ export class Game {
     // 准心配色自适应（v1.64）：按准心背后画面亮度在白色/黑色间切 —— 固定白在雪地/白墙上消失。
     // 挂在 `_hudRoot` 下（与其他 HUD 同层），但**独立于 HUD 的显示/隐藏**：它是准心不是 HUD。
     this.crosshair = new Crosshair(document.body, this);
+    // v3.20：Storm Lance 蓄力环。⚠️ **挂 document.body，不是 #crosshair** ——
+    // `tests/crosshair.spec.mjs` 钉死准心只有两笔 2px 笔画，往里加子节点会让它红。
+    this._chargeRing = new ChargeRing(document.body);
     // v1.26：图标走预生成的 CSS 串（`npm run icons` → assets/icons.json）。
     // 两套尺寸档：hotbar=40px / inventory=32px —— 按显示尺寸烘焙，运行时零缩放。
     // 取代此前的 atlasTiles/atlasSize/tileOfName/atlasUrl 四个参数 + 运行时裁剪数学。
@@ -1456,6 +1471,25 @@ export class Game {
       this.flameSigil?.update(nowMs);
       // v3.06：焰魔尖刺推进（递延升起 / 保持 / 缩回；全部结束后 visible=false）
       this.spikeFx?.update(nowMs);
+      // v3.20：Storm Lance 蓄力环 + 闪电推进。
+      // ⚠️ **读 controller 的轻量字段，不调 `weaponDebugState()`** —— 后者是调试 API，
+      // 它每帧遍历全部音频计数 Map + 构造两个对象，把它放进帧循环是白付热路径成本（红线 3 精神）。
+      // 蓄力进度的唯一权威仍是 controller（`stormChargeProgress`），这里不重算时长。
+      {
+        const wc = this.player.weaponController;
+        const cfg = WEAPONS[WEAPON_IDS.SWORD].stormLance;
+        const p = wc.selectedId === WEAPON_IDS.SWORD
+          ? stormChargeProgress(wc.novaChargeElapsed, cfg) : 0;
+        this._chargeRing?.update(p);
+        if (p > 0) {
+          const aim = this.player._buildAim();
+          const axis = stormLanceAxis(aim, cfg);
+          this.stormLance.setCharge(p, axis.origin, axis.side, nowMs);
+        } else {
+          this.stormLance.setCharge(0, null, null, nowMs);
+        }
+        this.stormLance.update(nowMs, dt);
+      }
       // DR-5 按需刷新：节流放行时才置 needsUpdate（必须在 render 之前 —— ShadowNode 的
       // updateBefore 在本帧渲染前读它）。tick 内部已消费 pending 并记录时刻。
       // ⚠️ **`tick()` 必须在前、`castShadow` 在后**，两侧顺序是**载荷性的，勿交换**：
@@ -1746,6 +1780,9 @@ export class Game {
     hidden.length = 0;
     if (this.viewArm?.mesh) hidden.push(this.viewArm.mesh);
     if (this.viewWeapon?.node) hidden.push(this.viewWeapon.node);
+    // v3.20：闪电的六个 mesh 也隐掉 —— 反射 pass 的成本主杠杆是 draw call 数（v3.17 实测），
+    // 多 6 个是白付；且 additive 特效在镜像相机下的观感未标定。与第一人称物件同手法。
+    if (this.stormLance) hidden.push(...this.stormLance.meshes);
     this.ocean.renderReflection(cam, this.ocean.plane.material, hidden);
   }
 
@@ -3030,6 +3067,51 @@ export class Game {
   }
 
   /**
+   * Storm Lance 的五射线扫描 + 伤害结算（v3.20，装配层）。
+   *
+   * 几何与命中走纯函数 `stormLanceSweep`（`player/weapons/storm-lance.js`），本方法只加扣血。
+   *
+   * ⚠️⚠️ **必须走 `damageEntity`，不得复用 `_damageEntitiesInRadius`**：
+   * 后者只遍历 `zombies.activeEntities()` ⇒ **Boss 压根打不到**，而用户明确要
+   * 「boss 或者丧尸」都掉血。`damageEntity` 按类型分发到 zombie/dragon/ignis/guardian，
+   * 红闪 / 伤害数字 / 死亡音效 / 死亡爆散全部自动跟上。
+   *
+   * ⚠️ **一次施法每个实体只扣一次**（用户裁定）：燃烧期不重复结算 ——
+   * 本方法只在 `pointerUp` 那一帧被调一次，天然不重复。
+   * ⚠️ **不写方块、不击退**（炸弹不击退，用户要「等同被炸弹炸到」）。
+   *
+   * @param {object} aim @param {object} cfg
+   * @returns {{origin:number[], target:number[], side:number[], length:number, hits:Array}}
+   */
+  _stormLanceSweep(aim, cfg) {
+    const res = stormLanceSweep({
+      world: this.world,
+      entities: this.entities,
+      isHittable: (entity) => WEAPON_HITTABLE_TYPES.includes(entity.type),
+      aim,
+      cfg,
+    });
+    const now = performance.now();
+    for (const hit of res.hits) this.damageEntity(hit.id, cfg.damage, now);
+    return res;
+  }
+
+  /**
+   * 只读 Storm Lance 诊断状态（E2E 与调试用）。
+   * @returns {{active:boolean, phase:string, charge:number, charged:boolean, meshes:number}}
+   */
+  stormLanceDebugState() {
+    const ws = this.player?.weaponDebugState?.() ?? { novaCharge: 0, novaCharged: false };
+    return {
+      active: this.stormLance?.active ?? false,
+      phase: this.stormLance?.phase ?? 'idle',
+      charge: ws.novaCharge,
+      charged: ws.novaCharged,
+      meshes: this.stormLance?.meshes.length ?? 0,
+    };
+  }
+
+  /**
    * 半径内丧尸伤害。枚举 `ZombieService.activeEntities()`（slot 表是单一权威），
    * **不扫 EntityManager 全量集合** —— 那会把未来其它实体类型（弹丸/炮塔）也炸伤。
    * @param {[number,number,number]} center @param {number} radius
@@ -4012,6 +4094,9 @@ export class Game {
     this.blockHitFx?.dispose();
     this.flameSigil?.dispose();
     this.spikeFx?.dispose();
+    // v3.20：Storm Lance 渲染器与蓄力环（与启动顺序相反）
+    this.stormLance?.dispose();
+    this._chargeRing?.dispose();
     // v3.04：法阵贴图由 **Game 加载并持有**（渲染器只消费，不像 ignis/fireball 那样
     // 自己造纹理后 `_ownsTexture` 释放）⇒ 谁创建谁释放，不释会在换世界时泄漏。
     this._flameSigilTexture?.dispose();
