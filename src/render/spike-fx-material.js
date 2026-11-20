@@ -38,9 +38,9 @@ import {
   Fn, float, vec2, vec3, vec4, uniform, attribute,
   varyingProperty, mx_noise_float as perlin,
   cameraProjectionMatrix, modelViewMatrix,
-  positionGeometry, positionLocal, uv, texture,
+  positionGeometry,
   abs, pow, mix, smoothstep, oneMinus, clamp, max, min, step,
-  normalize, length, fract, Discard,
+  normalize, length, Discard,
 } from 'three/tsl';
 import { SPIKE_SPARK_FX as FX } from './spike-fx-config.js';
 
@@ -235,126 +235,53 @@ export function createSpikeEmberMaterial() {
   return { ember: makeParticlePass(uniforms, false), uniforms };
 }
 // ============================================================================
-// v3.24：锥面剑纹材质（用户 2026-11-20）
+// v3.27：剑体材质（用户 2026-11-21）
 // ============================================================================
 //
-// 「纹理的颜色图案类比焰魔的剑的图案贴图，可以随机一些，不要是单纯的没有纹理的锥体」
+// 「剑体贴图就跟焰魔手里拿着的剑一模一样……现在的圆锥体的带有纹路的尖刺模型不要了」。
 //
-// ## 为什么不能直接用 `MeshBasicMaterial({ map })`
+// ## 为什么这里**不需要** TSL（v3.24 那套重映射整体退场）
 //
-// 锥体现状是 **additive + 逐实例 `instanceColor` 淡出**（逐根亮度只能走 instanceColor，
-// v3.04b 实测）。换成 `map` 得到的是「纹理 × instanceColor」的纯乘法 —— 而剑纹样的
-// 金 `#ffea90` 与暗紫 `#281216` 在暖橙底色上被乘完只剩深浅不同的橙，读不出「纹章」。
-// ⇒ 用 TSL 显式做「亮度 → 色相」映射（`charcoalRamp`），这是本材质的全部理由。
+// v3.24 的锥面之所以要「亮度 → 炭火色阶」，是因为**锥面 UV 与剑的 UV 语义不对应**：
+// 锥面是环绕 0..1，只能取剑纹的一条带（[90,128,82,7]）再重复铺贴。
+// 现在几何本身就是剑（`spike-blade-geometry.js` 从产物抽剑身两盒），
+// **UV 天然对齐**，且剑身六个面实测 **100% 不透明** ⇒ 直接 `map` 就是原色。
 //
-// ⚠️ **v3.24 定稿是「烧炭」**（用户 2026-11-20 第三轮）：「有黑色的暗区，但整体是红色的
-// 烧着的纹理……让纹理里的暗条纹也变亮一些」。前两轮写 `tex.rgb × 基色`，贴图的暗紫底
-// `#512930` 乘完是**近乎黑的暗紫**（读作「脏」）—— 与「炭的暗区仍发光」相悖。
-// 现在贴图**只贡献亮度**（一个标量），色相全由 `charcoalRamp` 给。
+// ⚠️ 引入 TSL 只会把 v3.24 的重映射问题带回来（色相被色阶接管、金纹读不出）。
 //
-// ## 五条载荷性口径（每条都对应一条已实测的静默失效）
-//
-//   ① **逐实例参数必须走 instanced attribute + `varyingProperty`**：片元阶段读不到
-//      instanced 属性（v3.20 Storm Lance 实测）⇒ 直读会静默拿 0 ⇒ 每根刺纹理一模一样。
-//   ② **`uv()` 在锥体上是「绕一圈 0..1」而不是环形**：`ConeGeometry` 侧面 6 段各占 1/6。
-//      环绕重复只能靠 `fract(u × tiles + phase)`。
-//   ③ **常量色显式拆分量** `vec3(c.r,c.g,c.b)` —— `vec3(new THREE.Color(hex))`
-//      在 WebGPU 输出**纯黑且零报错**（v3.14 实测：非黑像素 0 vs 10455）。
-//   ④ **节点不得与裸 JS 数字做算术**（生成 `NaN.0` 废掉整条管线），一律 `.mul()`。
-//   ⑤ **多层 mix 要嵌套**，不得链式 `.mix()`（v3.21 实测：链式让暖色像素几乎全灭）。
+// ⚠️ **逐根淡出靠 `instanceColor`**：three 的 `setupDiffuseColor` 自动
+// `instanceColor.mul(colorNode)`（`three.webgpu.js:21619` 已核）⇒ 材质里**不得再乘一次**
+// （否则淡出变平方衰减）。故基色必须**白** —— 非白基色会把纹理乘暗。
 
 /**
- * 逐实例纹理参数的属性名。**几何与材质共用这一份字面量**（各写一次会漂移成静默失效）。
- */
-export const SPIKE_TEX_ATTR = Object.freeze({
-  tiles: 'aTexTiles',
-  reps: 'aTexReps',
-  phase: 'aTexPhase',
-  mirror: 'aTexMirror',
-});
-
-/** 数组 → 显式分量 vec3（口径③） */
-function vec3arr(a) {
-  return vec3(a[0], a[1], a[2]);
-}
-
-/**
- * 造锥面剑纹材质。
+ * 造剑体材质（原色直采焰魔贴图）。
  *
- * ⚠️ **必须传贴图**：装配层在贴图缺失时退回既有的纯色材质（`createSpikePlainMaterial`，
- * 由 `spike-fx.js` 调用），
+ * ⚠️ **必须传贴图**：贴图缺失时由 `spike-fx.js` 退回 `createSpikePlainMaterial`。
  * 本函数刻意不写「无贴图兜底」—— 兜底会让「贴图没加载上」退化得和「本来就没纹理」一样，
  * 两者在画面上分不开（静默失效）。
  *
- * @param {object} deps
- * @param {THREE.Texture} deps.texture 焰魔贴图（`ignis.png`）
- * @param {{u0:number,v0:number,u1:number,v1:number}} deps.uvRect 剑纹带 UV 子区
- * @returns {THREE.MeshBasicNodeMaterial}
+ * @param {{texture: THREE.Texture}} deps
+ * @returns {THREE.MeshBasicMaterial}
  */
-export function createSpikeConeMaterial({ texture: tex, uvRect }) {
-  const { u0, v0, u1, v1 } = uvRect;
-  const mat = new THREE.MeshBasicNodeMaterial();
-
-  // ---- 逐实例参数 → varying（口径①）----
-  const vTiles = varyingProperty('float', 'vSpikeTiles');
-  const vReps = varyingProperty('float', 'vSpikeReps');
-  const vPhase = varyingProperty('float', 'vSpikePhase');
-  const vMirror = varyingProperty('float', 'vSpikeMirror');
-  const vUv = varyingProperty('vec2', 'vSpikeUv');
-
-  mat.positionNode = Fn(() => {
-    vTiles.assign(attribute(SPIKE_TEX_ATTR.tiles, 'float'));
-    vReps.assign(attribute(SPIKE_TEX_ATTR.reps, 'float'));
-    vPhase.assign(attribute(SPIKE_TEX_ATTR.phase, 'float'));
-    vMirror.assign(attribute(SPIKE_TEX_ATTR.mirror, 'float'));
-    vUv.assign(uv());
-    return positionLocal;
-  })();
-
-  mat.colorNode = Fn(() => {
-    // ---- 环绕/纵向重复 + 逐根相位（口径②）----
-    const uu = fract(vUv.x.mul(vTiles).add(vPhase));
-    // mirror 用 mix 而不是 select：select 要求两枝同类型，WebGPU 下类型推断易冲突
-    const uMix = mix(uu, oneMinus(uu), vMirror);
-    const vv = fract(vUv.y.mul(vReps).add(vPhase.mul(3.0)));
-
-    // ---- 重映射到剑纹带的 UV 子区（flipY 已在 uvRect 里折算）----
-    const mapU = mix(float(u0), float(u1), uMix);
-    const mapV = mix(float(v0), float(v1), vv);
-    const texNode = texture(tex, vec2(mapU, mapV));
-
-    // ---- 烧炭着色：纹理只贡献「亮度」，色相由炭火色阶决定 ----
-    //
-    // ⚠️⚠️ **不再写 `tex.rgb × 基色`**（v3.24 首版）：贴图暗紫底 `#512930` 乘完是
-    // **近乎黑的暗紫**，读作「脏」；用户要的是「暗区也发光的烧炭」（2026-11-20 第二轮）。
-    // 现在贴图只回答「这一格是暗纹还是金纹」（一个标量），颜色由 `charcoalRamp` 给。
-    const lum = texNode.rgb.dot(vec3(0.30, 0.55, 0.15));
-    // 亮度 → 色阶位置；窗口下沿压住暗底（见 config 的 charcoalWindow 注释）
-    const t = clamp(
-      lum.sub(float(FX.charcoalWindow[0])).div(float(FX.charcoalWindow[1] - FX.charcoalWindow[0])),
-      0, 1,
-    );
-    // 三段色阶用**嵌套 mix**（口径⑤：链式 .mix() 会让暖色几乎全灭）
-    const [c0, c1, c2] = FX.charcoalRamp;
-    const warm = mix(vec3arr(c0), vec3arr(c1), smoothstep(float(0), float(0.55), t));
-    const hot = mix(warm, vec3arr(c2), smoothstep(float(0.50), float(1), t));
-    // ⚠️ 逐实例淡出由 three 自动乘 `instanceColor`（setupDiffuseColor 的
-    // `instanceColor.mul(colorNode)`）⇒ 这里不要再乘一次，否则淡出变平方衰减。
-    const out = hot.mul(float(FX.charcoalGain));
-    return vec4(out, float(FX.opacity));
-  })();
-
-  mat.transparent = true;
-  // ⚠️⚠️ **正常混合，不是 additive** —— additive 在亮天空前必然钳白（见 config 的推导）。
-  mat.blending = THREE.NormalBlending;
-  // ⚠️ 仍**不写深度**：与破土火星/余烬共处一层，写深度会让锥体挡住刚迸出的粒子
-  //（粒子在锥体表面外侧，深度更近，靠 depthTest 共存）。半透明面写深度也会遮住同根刺的背面。
-  mat.depthWrite = false;
-  mat.depthTest = true;
-  mat.side = THREE.DoubleSide;
-  // ⚠️ scene.fogNode 存在 ⇒ 不关掉的话远处尖刺被雾洗成天空色（同两个粒子 pass）
-  mat.fog = false;
-  return mat;
+export function createSpikeBladeMaterial({ texture: tex }) {
+  return new THREE.MeshBasicMaterial({
+    // 有贴图时基色必须白（否则「深色 × 纹理」变暗，且与 instanceColor 淡出叠成平方衰减）
+    color: 0xffffff,
+    map: tex,
+    // 剑身 UV 实测 100% 不透明 ⇒ 不需要 alphaTest 也无黑洞；保留它是「换素材后出现镂空」的兜底
+    alphaTest: 0.5,
+    // 0.0625 格厚的薄片，单面会从侧面看穿
+    side: THREE.DoubleSide,
+    transparent: true,
+    // ⚠️ 正常混合，不是 additive —— additive 在亮天空前必然钳白（v3.24 实测）
+    blending: THREE.NormalBlending,
+    // ⚠️ 仍不写深度：与破土火星/余烬共处一层，写深度会让剑体挡住刚迸出的粒子
+    depthWrite: false,
+    depthTest: true,
+    // ⚠️ scene.fogNode 存在 ⇒ 不关掉的话远处剑体被雾洗成天空色（同两个粒子 pass）
+    fog: false,
+    toneMapped: false,
+  });
 }
 
 /**

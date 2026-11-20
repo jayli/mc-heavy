@@ -812,11 +812,16 @@ export class Game {
     // 渲染器：加载失败不得让整个游戏起不来（与龙/武器模型/蓝图同一容错口径）
     try {
       const ignisAsset = await loadIgnisAsset();
+      // v3.27：产物另存一份给尖刺的剑体几何（零重烘 —— 剑的顶点已在产物里）。
+      // ⚠️ 漏了这行的形态是「剑体静默退回锥体」：Node 单测自己传 asset 所以全绿，
+      // 只有浏览器里才现形（本轮 Tier 4 实测拓到）。
+      this._ignisAsset = ignisAsset;
       this.ignisRenderer = new IgnisRenderer(this.scene, ignisAsset);
       await this.ignisRenderer.loadTexture();
     } catch (err) {
       console.warn('[ignis] 渲染器加载失败，焰魔不显示（不影响游戏）:', err);
       this.ignisRenderer = null;
+      this._ignisAsset = null;
     }
 
     // ---- 末影守卫装配（废弃堡垒的 Boss1 + **围场的 Boss1**，v3.09）----
@@ -1002,12 +1007,16 @@ export class Game {
     // 原版无尖刺素材（它是把地面方块整块掀飞），本仓新建几何 —— 用户裁定「火焰尖锥」。
     // v3.23：同一渲染器另带**破土火星 + 上浮余烬**两个 GPU 粒子池（共 3 个 mesh）。
     // v3.24：锥面挂**剑纹**（用户 2026-11-20）—— 直接复用已加载的焰魔贴图，零新增资源。
+    // v3.27：几何换成**焰魔宝剑的剑身**（从产物抽两盒立起来，露出 1.6 格、护手全埋），
+    //   贴图**原色直采**（剑身 UV 六面实测 100% 不透明）；落点扩成**五向各 6 根 = 30 根**半圆阵列。
+    //   ⚠️ `asset` 缺失时退回锥体（形状退化）但**阵列不回落** —— 两者可分辨。
     //   ⚠️ 贴图在 `ignisRenderer.loadTexture()` 里加载，而它**在本行之前**完成（同段上方）⇒
     //   这里能拿到已加载的实例。加载失败时 `ignisRenderer === null` ⇒ 传 null ⇒
-    //   退回纯色锥（尖刺不应因贴图缺失而整体消失）。
+    //   退回纯色（尖刺不应因贴图缺失而整体消失）。
     this.spikeFx = new SpikeFxRenderer({
       scene: this.scene,
       texture: this.ignisRenderer?.texture ?? null,
+      asset: this._ignisAsset ?? null,
     });
 
     // v3.22：持盾冲撞 / 举盾砸击的**扩散火圈**（程序化几何 + TSL，零贴图依赖 ⇒ 恒装配）。
@@ -4125,7 +4134,7 @@ export class Game {
           const y = this._findSigilGroundY(p.x, p.z, req.at[1]);
           // 扫不到地面（未加载列 / 悬崖外）⇒ **跳过该根**，同法阵口径。
           if (y === null) continue;
-          spikes.push({ x: p.x, y, z: p.z, delayMs: p.delayMs });
+          spikes.push({ x: p.x, y, z: p.z, delayMs: p.delayMs, yaw: p.yaw });
         }
         if (spikes.length > 0) this.spikeFx?.spawn(spikes, nowMs);
         // 伤害：玩家 AABB 与任一根尖刺的**那一格**正体积重叠

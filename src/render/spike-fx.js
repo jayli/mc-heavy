@@ -1,16 +1,16 @@
-// src/render/spike-fx.js — 焰魔尖刺攻击的火焰尖锥（v3.06）
+// src/render/spike-fx.js — 焰魔尖刺攻击：**剑体刺出地面 + 五向半圆阵列**（v3.27）
 //
 // ⚠️⚠️ **原版没有尖刺几何**：`Ignis_Entity.java` 的 `ShieldSmashDamage` / `UltimateAttack`
 // 都是生成 `Cm_Falling_Block_Entity`（把地面方块**整块掀飞**，真实体方块）+ 对该格 AABB
-// 内的生物扣血。本仓的火焰尖锥是**新建的程序化几何**（用户 2026-11-15 裁定「火焰尖锥，
-// 橙红发光」）—— 零新增贴图文件，颜色走逐实例 `instanceColor`。
+// 内的生物扣血。本仓的尖刺是**新建几何**：v3.06~v3.24 是程序化火焰锥，
+// **v3.27 改成从产物抽焰魔宝剑的剑身**（用户 2026-11-21）—— 仍是零新增贴图文件。
 //
 // 与 `flame-sigil.js`（地面火焰法阵）的三处刻意差异：
-//   ① **首根在正前方 2 格，不在脚底**（法阵 `firstOffset = 0`）：用户要「向**前** 10 格内
-//      放出尖刺」，首根长在自己脚下读不出「向前」。落点 = 2/4/6/8/10 格。
-//   ② **几何是竖直锥体而不是贴地 quad**：读作「从地里刺出来」。
-//   ③ **带伤害**（`IGNIS_SPIKE.damage = 18`，在 `game.js` 结算）：法阵是纯视觉（v3.04 裁定），
-//      本轮用户明确要尖刺带 18 ⇒ 新招新口径，不改法阵。
+//   ① **首根在前方 2 格，不在脚底**（法阵 `firstOffset = 0`）：首根长在自己脚下读不出「向前」。
+//      v3.27 落点 = **五向（前/左前/右前/左/右）各 6 根**，每向 2/4/6/8/10/12 格。
+//   ② **几何是竖直剑体而不是贴地 quad**：读作「剑从地里刺出来」（剑尖朝上、护手全埋）。
+//   ③ **带伤害**（`IGNIS_SPIKE.damage = 18`，在 `game.js` 结算）：法阵是纯视觉（v3.04 裁定）。
+//      ⚠️ 阵列扩到 30 根后命中面积变大，但**一次命中帧仍只扣一次 18**（命中即 break）。
 //
 // ⚠️ 三条池化硬约束（与 flame-sigil / explosion-renderer 同口径，M6 实测教训）：
 //   · 空闲 slot 零 scale，且**零活跃时 `visible=false`** —— 否则恒增 draw call，
@@ -19,8 +19,11 @@
 //   · 时间基准 `performance.now()`，禁止 `Date.now()`。
 //
 // ⚠️⚠️ **逐根亮度必须走 `instanceColor`，不能写共享 `material.opacity`**（v3.04b 实测教训）：
-// 5 根延迟只差 0~200ms，材质取「活跃根 opacity 最大值」会让**先缩回的根被后根拖着满亮**
+// 逐根延迟只差 0~250ms，材质取「活跃根 opacity 最大值」会让**先缩回的根被后根拖着满亮**
 // ⇒ `spikeScaleAt` 的包络在画面上基本不生效（纯函数单测全绿，只有逐实例判据能抓）。
+// ☠️☠️ **但剑体路径的 instanceColor 必须是中性灰**（v3.27 自审实测）：three 把它
+// **乘到 colorNode（含 map）**（`three.webgpu.js:21619`）⇒ 写火焰橙会把剑贴图**染成橙色**，
+// 违背用户「贴图跟剑一模一样」。锥体回落（无 map）仍用火焰橙。
 //
 // ## v3.23：破土火星 + 上浮余烬（用户 2026-11-20）
 //
@@ -40,21 +43,15 @@ import * as THREE from 'three';
 import { IGNIS_SPIKE } from '../entities/ignis/ignis-config.js';
 import {
   SPIKE_SPARK_FX as SPARK, spikeSparkQuotaAt, spikeSparkSeeds,
-  spikeTexUvRect, spikeTexPattern,
 } from './spike-fx-config.js';
 import {
   createSpikeSparkMaterial, createSpikeEmberMaterial, createSpikeSparkGeometry,
-  createSpikeConeMaterial, createSpikePlainMaterial, SPIKE_TEX_ATTR,
+  createSpikeBladeMaterial, createSpikePlainMaterial,
 } from './spike-fx-material.js';
+import { buildSpikeBladeGeometry } from './spike-blade-geometry.js';
 
 /**
- * 纹样贴图边长 —— 与 `ignis.png` 一致（`IGNIS_BAKE_PARAMS.textureSize`）。
- * ⚠️ 换贴图尺寸时必须同步这个数与 `SPIKE_SPARK_FX.textureRect`（后者是**像素**坐标）。
- */
-const SPIKE_TEX_SIZE = 256;
-
-/**
- * 尖锥的节奏与容量（冻结，渲染层不得改写）。
+ * 尖刺的节奏与容量（冻结，渲染层不得改写）。
  *
  * ⚠️ **几何/节奏/容量全部从 `IGNIS_SPIKE` 派生**（红线 1：同一事实只有一份权威）——
  * 玩法侧与渲染侧各写一份的形态是「伤害判定用的格与画出来的刺不在同一处」。
@@ -67,6 +64,8 @@ export const SPIKE_FX = Object.freeze({
   lifeMs: IGNIS_SPIKE.lifeMs,
   height: IGNIS_SPIKE.height,
   radius: IGNIS_SPIKE.radius,
+  /** v3.27：剑体露出地面的高度（几何侧读它） */
+  exposeHeight: IGNIS_SPIKE.exposeHeight,
   maxActive: IGNIS_SPIKE.maxActive,
   /** 寿命进度到此开始缩零（前 70% 保持满尺寸，含升起段）；火星同时停发 */
   shrinkFrom: SPARK.shrinkFrom,
@@ -80,34 +79,63 @@ export const SPIKE_FX = Object.freeze({
 const _matrix = new THREE.Matrix4();
 const _zero = new THREE.Matrix4().makeScale(0, 0, 0);
 const _color = new THREE.Color();
+/** 实例缩放的临时载体（每帧零分配） */
+const _scaleVec = new THREE.Vector3();
 /** 粒子出生数据的临时载体（每帧零分配，不新建对象） */
 const _spikeAt = { x: 0, y: 0, z: 0 };
 
 /**
- * 5 根尖刺的落点（**不含 y** —— 渲染层不查体素，地面高度由调用方算，
+ * **五向半圆阵列**的落点（**不含 y** —— 渲染层不查体素，地面高度由调用方算，
  * 与 `flame-sigil.js` / `block-hit-fx.js` 同口径）。
  *
- * ⚠️ **yaw 用本仓口径**：正前方 = `(−sin yaw, −cos yaw)`
- * （与 `entities/bosses/dragon-boss-agent.js` 的移动方向同一份语义）。
- * **不得照抄原版 `cos(yaw+90°)/sin(yaw+90°)`** —— 原版 yaw 定义不同，照抄会整排偏 90°，
- * 而根数/间距/延迟全部仍然正确（静默失效）。
+ * 用户 2026-11-21：「增加四个方向，分别是焰魔的左侧、右侧、左前侧、右前侧，
+ * 各有六个尖刺冒出来，把焰魔围成一个半圆圈……先内圈，再逐渐外圈出现」。
+ *
+ * ## 三条载荷性口径
+ *
+ * ① **yaw 用本仓口径**：正前方 = `(−sin yaw, −cos yaw)`
+ *    （与 `entities/bosses/dragon-boss-agent.js` 的移动方向同一份语义）。
+ *    **不得照抄原版 `cos(yaw+90°)/sin(yaw+90°)`** —— 原版 yaw 定义不同，照抄会整排偏 90°，
+ *    而根数/间距/延迟全部仍然正确（静默失效）。
+ *
+ * ② **左侧 = −90°**（`IGNIS_SPIKE.directionsDeg[3]`）—— 实测：`deg = −90` 的方向与
+ *    模型 **+X**（`left_arm` / 盾所在侧）点积恒 **+1.00**。本仓 yaw 顺时针增长，
+ *    `+90` 在数学直觉里是「左转」但实际落在模型**右手侧** ⇒ 写反会让整个阵列左右镜像，
+ *    而根数/间距/延迟/半圆轮廓全部仍正确。
+ *
+ * ③ **延迟只跟半径序号 `i`**（不跟方向）⇒ 同一半径的 5 根**同帧**破土
+ *    = 天然的「先内圈再外圈」，不需要新时序机制。
+ *
+ * ## 逐根朝向：宽面朝焰魔
+ *
+ * 剑体宽沿局部 X（0.4375）、厚沿局部 Z（0.0625）⇒ 宽面法线 = 局部 ±Z。
+ * 实例 `rotation.y = θ` 后法线 = `(sin θ, cos θ)`；径向 outward = `(−sin ang, −cos ang)`
+ * ⇒ 取 **θ = ang + π** 时法线与径向点积恒 **+1.000**（五个方向逐一实测）。
+ * 不加 π 的形态是从焰魔/玩家方向看到 **0.0625 厚的窄边**而不是宽面
+ *（投影面积差 **7.8 倍**），而 `DoubleSide` 让正视图几乎一样 ⇒ 静默失效。
  *
  * @param {number[]} at 焰魔身体位置 `[x,y,z]`（脚底）
  * @param {number} yaw 本仓 yaw（弧度）
  * @param {object} [cfg] 缺省 `IGNIS_SPIKE`
- * @returns {Array<{x:number, z:number, delayMs:number}>}
+ * @returns {Array<{x:number, z:number, delayMs:number, yaw:number}>}
+ *   长度 = `cfg.count × cfg.directionsDeg.length`（30）；顺序 = 方向外层、半径内层。
+ *   `yaw` 是该根的**实例朝向**（弧度，已含 +π）。
  */
 export function spikeSpawnPoints(at, yaw, cfg = IGNIS_SPIKE) {
-  const fx = -Math.sin(yaw);
-  const fz = -Math.cos(yaw);
   const points = [];
-  for (let i = 0; i < cfg.count; i++) {
-    const d = cfg.spacing * (i + 1) + (cfg.firstOffset - cfg.spacing);
-    points.push({
-      x: at[0] + fx * d,
-      z: at[2] + fz * d,
-      delayMs: i * cfg.delayPerSegmentMs,
-    });
+  for (const deg of cfg.directionsDeg) {
+    const ang = yaw + deg * Math.PI / 180;
+    const dx = -Math.sin(ang);
+    const dz = -Math.cos(ang);
+    for (let i = 0; i < cfg.count; i++) {
+      const d = cfg.spacing * (i + 1) + (cfg.firstOffset - cfg.spacing);
+      points.push({
+        x: at[0] + dx * d,
+        z: at[2] + dz * d,
+        delayMs: i * cfg.delayPerSegmentMs,
+        yaw: ang + Math.PI,
+      });
+    }
   }
   return points;
 }
@@ -158,56 +186,57 @@ const _env = { scale: 0, visible: false, done: false };
 export class SpikeFxRenderer {
   /**
    * @param {{scene: THREE.Scene, maxActive?: number, rand?: () => number,
-   *          texture?: THREE.Texture|null}} deps
-   *   `texture` 是焰魔贴图（`ignis.png`）：**给了才挂剑纹**，缺省退回纯色锥（旧观感）。
-   *   ⚠️ 缺贴图时**不得抛错**：贴图加载失败不该让尖刺整个不见（与法阵/龙的容错口径一致）。
+   *          texture?: THREE.Texture|null, asset?: object|null}} deps
+   *   `asset` 是焰魔烘焙产物（`loadIgnisAsset()` 的结果）：**给了才走剑体几何**，
+   *   缺省退回锥体（§6.2 回落）。⚠️ **阵列不回落** —— 落点是玩法常量，与产物无关。
+   *   `texture` 是焰魔贴图（`ignis.png`）：**给了才原色直采**，缺省退回纯色。
+   *   ⚠️ 两者**独立判断**：几何看 asset、贴图看 texture。
+   *   ⚠️ 缺任一个时**不得抛错**：加载失败不该让尖刺整个不见（与法阵/龙的容错口径一致）。
    *   `rand` 可注入（单测要可复现，同 FireRingRenderer）。
    */
-  constructor({ scene, maxActive = SPIKE_FX.maxActive, rand = Math.random, texture = null }) {
+  constructor({
+    scene, maxActive = SPIKE_FX.maxActive, rand = Math.random, texture = null, asset = null,
+  }) {
     this.scene = scene;
     this.maxActive = maxActive;
     this._rand = rand;
 
-    // 6 棱锥（像素风）；`translate` 把底面移到 y=0 ⇒ 实例 position 就是地面顶面
-    const geometry = new THREE.ConeGeometry(SPIKE_FX.radius, SPIKE_FX.height, 6);
-    geometry.translate(0, SPIKE_FX.height / 2, 0);
     /**
-     * v3.24：锥面剑纹的**逐实例参数**（用户要「可以随机一些」）。
+     * v3.27：几何二选一 —— **有产物走剑体，无产物退回锥体**。
      *
-     * ⚠️ 属性必须在这里就建好（即使当前走纯色回退）—— 否则材质一旦切到剑纹版，
-     * shader 会因缺属性而静默读到全 0 ⇒ 每根纹理完全一样（Storm Lance v3.20 同类坑）。
+     * ⚠️ **几何看 `asset`、贴图看 `texture`，两者独立判断**：
+     * 贴图加载失败不应让剑体退回锥体（那会把两个无关的失败绑在一起）。
+     *
+     * ⚠️ **阵列不回落**：30 根五向落点是玩法侧常量（`IGNIS_SPIKE`），与产物无关
+     * ⇒ 产物挂了仍是 30 根锥体。这样「产物没加载」表现为**形状退化**而不是**招式消失**，可分辨。
+     *
+     * `blade` 度量供单测与 Tier 4 断言（null = 走了锥体回落）。
      */
-    const mkInst = (name) => {
-      const a = new THREE.InstancedBufferAttribute(new Float32Array(maxActive), 1);
-      a.setUsage(THREE.DynamicDrawUsage);
-      geometry.setAttribute(name, a);
-      return a;
-    };
-    this._texTiles = mkInst(SPIKE_TEX_ATTR.tiles);
-    this._texReps = mkInst(SPIKE_TEX_ATTR.reps);
-    this._texPhase = mkInst(SPIKE_TEX_ATTR.phase);
-    this._texMirror = mkInst(SPIKE_TEX_ATTR.mirror);
-    for (let i = 0; i < maxActive; i++) {
-      const pat = spikeTexPattern(rand, SPARK);
-      this._texTiles.setX(i, pat.tiles);
-      this._texReps.setX(i, pat.reps);
-      this._texPhase.setX(i, pat.phase);
-      this._texMirror.setX(i, pat.mirror);
-    }
-    for (const a of [this._texTiles, this._texReps, this._texPhase, this._texMirror]) {
-      a.needsUpdate = true;
+    let geometry;
+    if (asset) {
+      const blade = buildSpikeBladeGeometry(asset, IGNIS_SPIKE.exposeHeight);
+      this.blade = blade.metrics;
+      geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.Float32BufferAttribute(blade.position, 3));
+      geometry.setAttribute('normal', new THREE.Float32BufferAttribute(blade.normal, 3));
+      geometry.setAttribute('uv', new THREE.Float32BufferAttribute(blade.uv, 2));
+      geometry.setIndex(blade.index);
+    } else {
+      this.blade = null;
+      // 回落：6 棱锥（像素风）；`translate` 把底面移到 y=0 ⇒ 实例 position 就是地面顶面。
+      // ⚠️ `SPIKE_FX.radius` 已是**剑体半宽**（0.21875）⇒ 回落锥比旧观感细，
+      // 这是可接受的退化形态（产物没加载本就是异常路径）。
+      geometry = new THREE.ConeGeometry(SPIKE_FX.radius, SPIKE_FX.height, 6);
+      geometry.translate(0, SPIKE_FX.height / 2, 0);
     }
 
     /**
-     * 材质：有贴图走剑纹版，否则退回纯色版（旧观感）。
-     * `textured` 标志供单测与 Tier 4 断言 —— 剑纹版没有 `map`，不要靠「有没有 map」去猜。
+     * 材质：有贴图走**原色直采**（v3.27），否则退回纯色版。
+     * `textured` 标志供单测与 Tier 4 断言。
      */
     this.textured = texture !== null && texture !== undefined;
     const material = this.textured
-      ? createSpikeConeMaterial({
-        texture,
-        uvRect: spikeTexUvRect(SPARK.textureRect, SPIKE_TEX_SIZE),
-      })
+      ? createSpikeBladeMaterial({ texture })
       : createSpikePlainMaterial(SPIKE_FX.color);
     this.mesh = new THREE.InstancedMesh(geometry, material, maxActive);
     this.mesh.name = 'ignis:spike-fx';
@@ -232,7 +261,7 @@ export class SpikeFxRenderer {
     this.mesh.instanceColor.needsUpdate = true;
     this.scene.add(this.mesh);
 
-    /** @type {Array<{slot:number, x:number, y:number, z:number, delayMs:number, bornAt:number, sparkEmitted:number, emberEmitted:number}>} */
+    /** @type {Array<{slot:number, x:number, y:number, z:number, yaw:number, delayMs:number, bornAt:number, sparkEmitted:number, emberEmitted:number}>} */
     this._active = [];
     this._nextSlot = 0;
     this._geometry = geometry;
@@ -288,10 +317,12 @@ export class SpikeFxRenderer {
       if (existing !== -1) this._active.splice(existing, 1);
       this._active.push({
         slot, x: p.x, y: p.y, z: p.z,
+        // v3.27：逐根朝向（宽面朝焰魔）—— 缺省 0 而不是 NaN（NaN 会污染整个实例矩阵）
+        yaw: Number.isFinite(p.yaw) ? p.yaw : 0,
         delayMs: Number.isFinite(p.delayMs) ? p.delayMs : 0,
         bornAt: nowMs,
         // v3.23：逐根的累计发射量（配额差值的基准）—— 不得共享一个全局计数器，
-        // 否则 5 根只有第一根会喷火星（其余四根的配额被它吃掉）。
+        // 否则只有第一根会喷火星（其余根的配额被它吃掉）。
         sparkEmitted: 0,
         emberEmitted: 0,
       });
@@ -366,17 +397,50 @@ export class SpikeFxRenderer {
         continue;
       }
       anyVisible = true;
-      // 三轴同比例缩放 ⇒ 读作「整根从地里长出来」（而不是只拔高变细）。
-      // 底面已在几何里 translate 到 y=0 ⇒ 缩放不会把底面抬离地面。
-      _matrix.makeScale(env.scale, env.scale, env.scale);
-      // ⚠️ makeScale 会清掉位移 ⇒ 必须最后 setPosition
-      //（`explosion-renderer.js` 记过这个坑：照抄 makeTranslation 会丢位置）
-      _matrix.setPosition(s.x, s.y, s.z);
+      /**
+       * v3.27b：**剑体尺寸恒定，靠竖直位移从地下伸出**（用户实玩裁定）。
+       *
+       * ☠️☠️ 用户原话：「剑体保持大小不变（即不要缩放），直接从地下伸出来
+       * ……不要膨胀着冒出来好像从小涨到大似的」。
+       * 旧实现用三轴等比 `scale` ⇒ 升起段整根剑在**膨胀**（录像里读作小剑长成大剑）。
+       *
+       * 正解：实例缩放恒为 **1**，只把整根剑沿 y 平移：
+       *   `y = groundY − (buried + exposeHeight) × (1 − progress)`
+       * ⇒ progress=0 时整根埋在地下（剑尖恰在地面），progress=1 时露出 exposeHeight。
+       * 缩回段同公式反向 ⇒ 读作「沉回地里」而不是「缩小」。
+       *
+       * ⚠️ **锥体回落仍用缩放**：那条路径的几何底面在 y=0、没有埋入段，
+       * 平移会让它整根浮在空中 ⇒ 保留旧观感（它只在产物加载失败时出现）。
+       *
+       * ☠️ `makeRotationY` 会清掉位移 ⇒ `setPosition` 必须在它之后。
+       */
+      _matrix.makeRotationY(s.yaw);
+      if (this.blade) {
+        const travel = this.blade.buriedDepth + this.blade.exposeHeight;
+        _matrix.setPosition(s.x, s.y - travel * (1 - env.scale), s.z);
+      } else {
+        _matrix.scale(_scaleVec.set(env.scale, env.scale, env.scale));
+        _matrix.setPosition(s.x, s.y, s.z);
+      }
       this.mesh.setMatrixAt(s.slot, _matrix);
-      // ⚠️⚠️ **逐根亮度走 instanceColor，不写共享 material.opacity**（见文件头）：
-      // additive 下「颜色 × 系数」等价调亮度 ⇒ 用它做逐根淡出。
-      const k = env.scale;
-      _color.setRGB(SPIKE_FX.color[0] * k, SPIKE_FX.color[1] * k, SPIKE_FX.color[2] * k);
+      /**
+       * ⚠️⚠️ **逐根亮度走 instanceColor，不写共享 material.opacity**（见文件头）。
+       *
+       * ☠️☠️ **剑体路径必须用中性灰，不能用火焰橙**（v3.27 自审抓到的真缺陷）：
+       * three 的 `setupDiffuseColor` 把 `instanceColor` **乘到 colorNode（含 map）**
+       *（`three.webgpu.js:21619`）⇒ 写 `(1.0, 0.45, 0.12)` 会把剑贴图**染成橙色**，
+       * 违背用户「剑体贴图就跟焰魔手里拿着的剑一模一样」。
+       *
+       * ⚠️ **剑体不做亮度淡出**（v3.27b）：既然尺寸恒定、靠位移进出地面，
+       * 再叠一层变暗会读作「剑在地下就发黑」—— 恒白即可（进出由地形遮住）。
+       * 锥体回落（无 map）仍用火焰橙 × scale（additive 下等价调亮度，旧观感）。
+       */
+      if (this.textured && this.blade) {
+        _color.setRGB(1, 1, 1);          // 恒白：不改色相、不变暗
+      } else {
+        const k = env.scale;
+        _color.setRGB(SPIKE_FX.color[0] * k, SPIKE_FX.color[1] * k, SPIKE_FX.color[2] * k);
+      }
       this.mesh.setColorAt(s.slot, _color);
       colorDirty = true;
 

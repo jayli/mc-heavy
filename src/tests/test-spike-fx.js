@@ -11,6 +11,7 @@
 import { test } from './runner.js';
 import {
   assertEqual, assertTrue, assertFalse, assertDeepEqual, AssertionError,
+  assertNotNull, assertNull,
 } from './assert.js';
 import * as THREE from 'three';
 import { IGNIS_SPIKE, IGNIS_TYPE } from '../entities/ignis/ignis-config.js';
@@ -19,9 +20,20 @@ import {
   SPIKE_FX, spikeSpawnPoints, spikeScaleAt, SpikeFxRenderer,
 } from '../render/spike-fx.js';
 import {
-  SPIKE_SPARK_FX, spikeTexUvRect, spikeTexPattern,
+  SPIKE_SPARK_FX,
 } from '../render/spike-fx-config.js';
-import { SPIKE_TEX_ATTR } from '../render/spike-fx-material.js';
+
+/** 烘焙产物（剑体几何的输入）—— Node 快档有 file:// 垫片 */
+let ignisAssetCache = null;
+async function loadIgnisAssetForTest() {
+  if (ignisAssetCache) return ignisAssetCache;
+  const r = await fetch(new URL('../../assets/ignis/ignis.json', import.meta.url));
+  ignisAssetCache = await r.json();
+  return ignisAssetCache;
+}
+
+/** 1×1 白贴图（只为验「map 真的挂上了」，不验像素） */
+const fakeTex = () => new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
 
 /** 浮点比较（经 sin/cos 后无法精确等于字面量）。同 `test-flame-sigil.js` 的同名局部工具。 */
 function assertClose(actual, expected, tolerance, message = '') {
@@ -45,44 +57,123 @@ test('spike fx: 渲染常量与玩法常量一致（同一事实不得两份）'
 
 // ---------- 落点与朝向 ----------
 
-test('spike fx: 5 根落点 = 正前方 2/4/6/8/10 格（本仓 yaw 口径）', () => {
+test('spike fx: 30 根落点 = 五向 × 2/4/6/8/10/12 格（本仓 yaw 口径）', () => {
   const pts = spikeSpawnPoints([10, 5, 20], 0);
-  assertEqual(pts.length, 5);
-  for (let i = 0; i < 5; i++) {
-    const d = 2 + 2 * i;
-    // yaw=0 ⇒ 正前方 = (−sin0, −cos0) = (0, −1) ⇒ 只动 z
-    assertClose(pts[i].x, 10, 1e-9, `第 ${i} 根 x`);
-    assertClose(pts[i].z, 20 - d, 1e-9, `第 ${i} 根 z`);
-  }
+  assertEqual(pts.length, 30);
+  // yaw=0：正前方 = (0,−1)，左侧(−90°) = (+1,0)，右侧(+90°) = (−1,0)
+  // ⇒ 只有正前方那一排的 x 恒 = 10（左右两排 z 恒 = 20、x 在变）
+  const front = pts.filter((p) => Math.abs(p.x - 10) < 1e-9);
+  assertEqual(front.length, 6);
+  assertDeepEqual(front.map((p) => +(20 - p.z).toFixed(6)), [2, 4, 6, 8, 10, 12]);
   // yaw = π/2 ⇒ 正前方 = (−1, 0) ⇒ 只动 x
   const p2 = spikeSpawnPoints([10, 5, 20], Math.PI / 2);
-  assertClose(p2[0].x, 8, 1e-9, 'yaw=π/2 首根 x');
-  assertClose(p2[0].z, 20, 1e-9, 'yaw=π/2 首根 z');
+  const front2 = p2.filter((p) => Math.abs(p.z - 20) < 1e-9);
+  assertEqual(front2.length, 6);
+  assertClose(10 - front2[0].x, 2, 1e-9, 'yaw=π/2 首根 x');
 });
 
-test('spike fx: 首根在正前方 2 格，不在脚底（Review Focus 5）', () => {
-  const pts = spikeSpawnPoints([0, 0, 0], 0);
-  assertTrue(Math.hypot(pts[0].x, pts[0].z) >= 2 - 1e-9,
-    `首根距脚底 ${Math.hypot(pts[0].x, pts[0].z)} 格 —— 不得长在自己脚下`);
-  // 最远一根 = 10 格（用户草图「向前 10 格内」）
-  const last = pts[pts.length - 1];
-  assertClose(Math.hypot(last.x, last.z), 10, 1e-9, '最远一根');
+test('spike fx: 左侧方向落在模型左手侧（RF-1，符号写反会整阵镜像）', () => {
+  // ☠️ **几何锚点必须独立于 `directionsDeg`**：从那张表推导方向的判据是自证循环
+  // （把表改成左右镜像后，「表里的左侧」与「表算出的方向」仍一致 ⇒ 恒绿）。
+  // 模型左向量由 **three 的 yaw 旋转**独立算出（与落点公式不同源）。
+  const modelLeftOf = (yaw) => {
+    const v = new THREE.Vector3(1, 0, 0).applyEuler(new THREE.Euler(0, yaw, 0, 'YXZ'));
+    return [v.x, v.z];
+  };
+  for (const yaw of [0, 0.7, Math.PI / 2, 2.3]) {
+    const modelLeft = modelLeftOf(yaw);
+    const pts = spikeSpawnPoints([0, 0, 0], yaw);
+    const sideOf = (p) => {
+      const r = Math.hypot(p.x, p.z);
+      return (p.x / r) * modelLeft[0] + (p.z / r) * modelLeft[1];
+    };
+    const leftPts = pts.filter((p) => sideOf(p) > 0.99);
+    const rightPts = pts.filter((p) => sideOf(p) < -0.99);
+    assertEqual(leftPts.length, 6, `yaw=${yaw} 模型左手侧须恰有 6 根`);
+    assertEqual(rightPts.length, 6, `yaw=${yaw} 模型右手侧须恰有 6 根`);
+    // 左前 / 右前 各 6 根（与左向量点积 ≈ ±cos45°）
+    const c45 = Math.SQRT1_2;
+    assertEqual(pts.filter((p) => Math.abs(sideOf(p) - c45) < 1e-6).length, 6,
+      `yaw=${yaw} 左前 45° 须有 6 根`);
+    assertEqual(pts.filter((p) => Math.abs(sideOf(p) + c45) < 1e-6).length, 6,
+      `yaw=${yaw} 右前 45° 须有 6 根`);
+    // 正前方 6 根（与左向量垂直）
+    assertEqual(pts.filter((p) => Math.abs(sideOf(p)) < 1e-6).length, 6,
+      `yaw=${yaw} 正前方须有 6 根`);
+    // 方向表的左侧项必须是 −90（实测：与模型 +X 点积 +1.00）
+    assertEqual(IGNIS_SPIKE.directionsDeg[3], -90);
+    assertEqual(IGNIS_SPIKE.directionsDeg[4], 90);
+  }
 });
 
-test('spike fx: 延迟序列 0/50/100/150/200ms（递延点亮）', () => {
+test('spike fx: 首根在正前方 2 格，不在脚底；最外圈 12 格', () => {
   const pts = spikeSpawnPoints([0, 0, 0], 0);
-  assertDeepEqual(pts.map((p) => p.delayMs), [0, 50, 100, 150, 200]);
+  const radii = pts.map((p) => Math.hypot(p.x, p.z));
+  assertTrue(Math.min(...radii) >= 2 - 1e-9,
+    `最近一根距脚底 ${Math.min(...radii)} 格 —— 不得长在自己脚下`);
+  assertClose(Math.max(...radii), 12, 1e-9, '最外圈（v3.27 从 10 扩到 12）');
+});
+
+test('spike fx: 同一半径的 5 根同延迟（先内圈再外圈）', () => {
+  const pts = spikeSpawnPoints([0, 0, 0], 0.4);
+  for (let i = 0; i < 6; i++) {
+    const ring = pts.filter((p) => Math.abs(Math.hypot(p.x, p.z) - 2 * (i + 1)) < 1e-6);
+    assertEqual(ring.length, 5, `半径 ${2 * (i + 1)} 那一圈须有 5 根`);
+    const delays = new Set(ring.map((p) => p.delayMs));
+    assertEqual(delays.size, 1, `同圈延迟必须相同，实得 ${[...delays]}`);
+    assertEqual([...delays][0], i * IGNIS_SPIKE.delayPerSegmentMs);
+  }
+  // 负向锚点：延迟若按「方向 × 6 + 半径」递增，同圈会有 5 个不同值 ⇒ 上面必红
+});
+
+test('spike fx: 延迟序列每方向 0/50/100/150/200/250ms', () => {
+  const pts = spikeSpawnPoints([0, 0, 0], 0);
+  const front = pts.filter((p) => Math.abs(p.x) < 1e-9 && p.z < 0);
+  assertDeepEqual(front.map((p) => p.delayMs), [0, 50, 100, 150, 200, 250]);
+});
+
+test('spike fx: 30 根占 30 个互不相同的格，最近两点不穿模', () => {
+  const pts = spikeSpawnPoints([0.5, 0, 0.5], 0);
+  const cells = new Set(pts.map((p) => `${Math.floor(p.x)},${Math.floor(p.z)}`));
+  assertEqual(cells.size, 30, '落点不得共格（共格会让两根剑叠在一起）');
+  let min = Infinity;
+  for (let i = 0; i < pts.length; i++) {
+    for (let j = i + 1; j < pts.length; j++) {
+      min = Math.min(min, Math.hypot(pts[i].x - pts[j].x, pts[i].z - pts[j].z));
+    }
+  }
+  assertClose(min, 1.530734, 1e-4, '最近两点间距（实测）');
+  assertTrue(min > IGNIS_SPIKE.radius * 2, '间距须大于剑面宽，否则穿模');
+});
+
+test('spike fx: 逐根 yaw 让剑宽面朝焰魔（RF-4）', () => {
+  const yaw = 0.9;
+  const pts = spikeSpawnPoints([0, 0, 0], yaw);
+  for (const p of pts) {
+    // 剑宽沿局部 X、厚沿局部 Z ⇒ 宽面法线 = 局部 ±Z
+    // 实例 rotation.y = p.yaw 后，局部 +Z 的世界方向 = (sin p.yaw, cos p.yaw)
+    const n = [Math.sin(p.yaw), Math.cos(p.yaw)];
+    const r = Math.hypot(p.x, p.z);
+    const radial = [p.x / r, p.z / r];
+    const dot = n[0] * radial[0] + n[1] * radial[1];
+    assertTrue(dot > 0.999, `(${p.x.toFixed(2)},${p.z.toFixed(2)}) 宽面法线 · 径向 = ${dot}，须 ≈1`);
+  }
+  // 负向锚点：yaw 不加 π ⇒ dot ≈ −1 ⇒ 上面必红
 });
 
 test('spike fx: 落点随 yaw 旋转等变（不是固定 −Z）', () => {
   const yaw = 0.7;
-  const pts = spikeSpawnPoints([3, 0, -4], yaw);
-  const fx = -Math.sin(yaw);
-  const fz = -Math.cos(yaw);
-  for (let i = 0; i < pts.length; i++) {
-    const d = 2 + 2 * i;
-    assertClose(pts[i].x, 3 + fx * d, 1e-9, `第 ${i} 根 x`);
-    assertClose(pts[i].z, -4 + fz * d, 1e-9, `第 ${i} 根 z`);
+  const a = spikeSpawnPoints([3, 0, -4], 0);
+  const b = spikeSpawnPoints([3, 0, -4], yaw);
+  // 逐点绕 y 旋转 yaw 后必须与 b 重合（等变性，比逐根算公式更难写错）
+  for (let i = 0; i < a.length; i++) {
+    const dx = a[i].x - 3;
+    const dz = a[i].z + 4;
+    const rx = dx * Math.cos(yaw) + dz * Math.sin(yaw);
+    const rz = -dx * Math.sin(yaw) + dz * Math.cos(yaw);
+    assertClose(b[i].x, 3 + rx, 1e-9, `第 ${i} 根 x`);
+    assertClose(b[i].z, -4 + rz, 1e-9, `第 ${i} 根 z`);
+    assertClose(b[i].yaw - a[i].yaw, yaw, 1e-9, '朝向也要跟着转');
   }
 });
 
@@ -139,28 +230,185 @@ test('spike fx: 延迟平移整条包络（不是只平移可见性）', () => {
 
 // ---------- 池化 ----------
 
-test('spike fx: 几何是 6 棱锥，基准高度/半径取常量', () => {
-  const r = new SpikeFxRenderer({ scene: new THREE.Scene() });
+test('spike fx: 给了产物就走剑体几何，尺寸取剑体度量', async () => {
+  const asset = await loadIgnisAssetForTest();
+  const r = new SpikeFxRenderer({ scene: new THREE.Scene(), asset, texture: fakeTex() });
   try {
-    const p = r.mesh.geometry.parameters;
-    // ⚠️ **ConeGeometry.parameters 的键是 `radius`**（不是 CylinderGeometry 的
-    // `radiusBottom`/`radiusTop`）—— three 源码重写了 parameters。
-    // 锥顶恒为尖（ConeGeometry 内部向 super 传 radiusTop=0），故不需要断言 radiusTop。
-    assertEqual(r.mesh.geometry.type, 'ConeGeometry', '必须是锥体而不是柱体');
-    assertEqual(p.radialSegments, 6, '6 棱锥（像素风）');
-    assertEqual(p.height, SPIKE_FX.height);
-    assertEqual(p.radius, SPIKE_FX.radius);
+    assertEqual(r.mesh.geometry.getAttribute('position').count, 48);
+    assertEqual(r.mesh.geometry.getIndex().count, 72);
+    assertNotNull(r.blade, '有产物时 blade 度量不得为 null');
+    assertClose(r.blade.exposeHeight, IGNIS_SPIKE.exposeHeight, 1e-6);
+    assertClose(r.blade.width, 0.4375, 1e-6);
+    assertClose(r.blade.halfWidth, IGNIS_SPIKE.radius, 1e-9,
+      '玩法侧 radius 必须与几何半宽同源（两份会漂）');
+    // RF-2：几何 y 极值 —— 剑尖 1.6、埋入 −1.055625
+    const pos = r.mesh.geometry.getAttribute('position');
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (let i = 0; i < pos.count; i++) {
+      minY = Math.min(minY, pos.getY(i));
+      maxY = Math.max(maxY, pos.getY(i));
+    }
+    assertClose(maxY, 1.6, 1e-6, '剑尖高度');
+    assertClose(minY, -1.055625, 1e-6, '埋入深度（护手不得进几何）');
   } finally {
     r.dispose();
   }
 });
 
-test('spike fx: additive 混合 + 不写深度（发光语义）', () => {
-  const r = new SpikeFxRenderer({ scene: new THREE.Scene() });
+test('spike fx: 剑体逐实例色不得把贴图染橙（用户「贴图跟剑一模一样」）', async () => {
+  const r = new SpikeFxRenderer({
+    scene: new THREE.Scene(), asset: await loadIgnisAssetForTest(), texture: fakeTex(),
+  });
   try {
-    assertEqual(r.mesh.material.blending, THREE.AdditiveBlending);
+    const pts = spikeSpawnPoints([0, 5, 0], 0).map((p) => ({ ...p, y: 5 }));
+    r.spawn(pts, 1000);
+    r.update(1000 + 250 + SPIKE_FX.riseMs);   // 全部升满（scale=1）
+    const c = new THREE.Color();
+    for (let i = 0; i < pts.length; i++) {
+      r.mesh.getColorAt(i, c);
+      // ☠️ three 的 setupDiffuseColor 把 instanceColor **乘到 colorNode（含 map）**
+      //（`three.webgpu.js:21619`）⇒ 写火焰橙 (1.0,0.45,0.12) 会把剑贴图染成橙色，
+      // 违背用户「剑体贴图就跟焰魔手里拿着的剑一模一样」。满尺寸时必须是白。
+      assertClose(c.r, 1, 1e-5, `第 ${i} 根 instanceColor.r`);
+      assertClose(c.g, 1, 1e-5, `第 ${i} 根 instanceColor.g`);
+      assertClose(c.b, 1, 1e-5, `第 ${i} 根 instanceColor.b`);
+    }
+    // ☠️ **剑体不做亮度淡出**（v3.27b 用户裁定「尺寸恒定、直接从地下伸出」）：
+    // 进出地面靠**竖直位移**，再叠变暗会读作「剑在地下就发黑」⇒ 恒白。
+    // （旧断言「缩回段须真的淡出」属缩放语义，已被新需求推翻。）
+    const shrinkMid = SPIKE_FX.lifeMs * SPIKE_FX.shrinkFrom
+      + (SPIKE_FX.lifeMs - SPIKE_FX.lifeMs * SPIKE_FX.shrinkFrom) * 0.5;
+    r.update(1000 + shrinkMid);
+    r.mesh.getColorAt(0, c);
+    assertClose(c.r, 1, 1e-5, '缩回段仍恒白（不靠变暗做退场）');
+    assertClose(c.g, 1, 1e-5);
+    assertClose(c.b, 1, 1e-5);
+    // 退场靠位移：缩回中段必须已沉下去
+    const m = new THREE.Matrix4();
+    r.mesh.getMatrixAt(0, m);
+    assertTrue(m.elements[13] < 5 - 1e-3,
+      `退场靠下沉而不是变暗（实得 y=${m.elements[13]}）`);
+  } finally {
+    r.dispose();
+  }
+});
+
+test('spike fx: 剑体**尺寸恒定**地从地下伸出（不缩放，用户 2026-11-21 实玩裁定）', async () => {
+  const r = new SpikeFxRenderer({
+    scene: new THREE.Scene(), asset: await loadIgnisAssetForTest(), texture: fakeTex(),
+  });
+  try {
+    const pts = [{ x: 0.5, y: 5, z: -2, delayMs: 0, yaw: 0 }];
+    r.spawn(pts, 1000);
+    const m = new THREE.Matrix4();
+    const colLen = (e, c) => Math.hypot(e[c], e[c + 1], e[c + 2]);
+    const rise = SPIKE_FX.riseMs;
+    const H = IGNIS_SPIKE.exposeHeight;
+    const buried = r.blade.buriedDepth;
+    /**
+     * ☠️☠️ **用户实玩裁定：剑不能「从小涨到大」**。
+     * 旧实现用三轴等比 `scale` ⇒ 剑体在升起段整体膨胀（录像里读作「小剑长成大剑」）。
+     * 正解：**尺寸恒为 1**，靠**竖直位移**从地下伸出 ——
+     *   y = groundY − (buried + H) × (1 − progress)
+     * ⇒ progress=0 时整根在地下（剑尖恰在地面），progress=1 时露出 H。
+     */
+    for (const p of [0.15, 0.4, 0.7, 1]) {
+      r.update(1000 + rise * p);
+      r.mesh.getMatrixAt(0, m);
+      const e = m.elements;
+      // ① 三个基向量长度恒为 1（零缩放）—— 膨胀实现下这里是 p
+      assertClose(colLen(e, 0), 1, 1e-5, `progress=${p} 的 X 基向量长`);
+      assertClose(colLen(e, 4), 1, 1e-5, `progress=${p} 的 Y 基向量长`);
+      assertClose(colLen(e, 8), 1, 1e-5, `progress=${p} 的 Z 基向量长`);
+      // ② 竖直位移按公式走（水平不动）
+      assertClose(e[12], 0.5, 1e-6, 'x 不得变');
+      assertClose(e[14], -2, 1e-6, 'z 不得变');
+      assertClose(e[13], 5 - (buried + H) * (1 - p), 1e-5,
+        `progress=${p} 的竖直位置`);
+    }
+    // ③ 升起完成后的保持段：位置与尺寸都不再变
+    r.update(1000 + rise + 100);
+    r.mesh.getMatrixAt(0, m);
+    assertClose(m.elements[13], 5, 1e-6, '保持段剑体底座回到地面 y');
+    assertClose(colLen(m.elements, 4), 1, 1e-5);
+    // ④ 缩回段：**沉回去**而不是缩小
+    const shrinkFrom = SPIKE_FX.lifeMs * SPIKE_FX.shrinkFrom;
+    const mid = shrinkFrom + (SPIKE_FX.lifeMs - shrinkFrom) * 0.5;
+    r.update(1000 + mid);
+    r.mesh.getMatrixAt(0, m);
+    assertClose(colLen(m.elements, 4), 1, 1e-5, '缩回段也不得缩放');
+    assertTrue(m.elements[13] < 5 - 1e-3,
+      `缩回段须往下沉（实得 y=${m.elements[13]}）`);
+  } finally {
+    r.dispose();
+  }
+});
+
+test('spike fx: 无产物时退回锥体且不抛错，阵列不回落（§6.2）', () => {
+  const r = new SpikeFxRenderer({ scene: new THREE.Scene(), asset: null, texture: null });
+  try {
+    assertNull(r.blade, '无产物时 blade 度量须为 null（可分辨「形状退化」与「招式消失」）');
+    assertEqual(r.mesh.geometry.type, 'ConeGeometry');
+    // 阵列仍是 30 根（落点是玩法常量，与产物无关）
+    r.spawn(spikeSpawnPoints([0, 5, 0], 0).map((p) => ({ ...p, y: 5 })), 1000);
+    r.update(1000 + SPIKE_FX.riseMs);
+    assertEqual(r.activeCount, 30);
+    assertTrue(r.mesh.visible);
+  } finally {
+    r.dispose();
+  }
+});
+
+test('spike fx: 剑体是正常混合 + 原色贴图 + 不写深度', async () => {
+  const r = new SpikeFxRenderer({
+    scene: new THREE.Scene(), asset: await loadIgnisAssetForTest(), texture: fakeTex(),
+  });
+  try {
+    assertEqual(r.mesh.material.blending, THREE.NormalBlending,
+      'additive 在亮天空前必然钳白，金纹出不来（v3.24 实测）');
+    assertNotNull(r.mesh.material.map, '剑体贴图必须真的挂上（原色直采）');
+    assertEqual(r.mesh.material.alphaTest, 0.5);
+    assertEqual(r.mesh.material.side, THREE.DoubleSide, '0.0625 厚薄片必须双面');
     assertFalse(r.mesh.material.depthWrite);
+    assertTrue(r.mesh.material.depthTest);
     assertTrue(r.mesh.material.transparent);
+    assertFalse(r.mesh.material.fog, '远处不得被雾洗成天空色');
+    // 基色必须白：有贴图时非白基色会把纹理乘暗（且与 instanceColor 淡出叠成平方衰减）
+    const c = r.mesh.material.color;
+    assertClose(c.r, 1, 1e-6, '基色 r');
+    assertClose(c.g, 1, 1e-6, '基色 g');
+    assertClose(c.b, 1, 1e-6, '基色 b');
+  } finally {
+    r.dispose();
+  }
+});
+
+test('spike fx: 实例矩阵真的带朝向（RF-4，只写 position 会全部同向）', async () => {
+  const r = new SpikeFxRenderer({
+    scene: new THREE.Scene(), asset: await loadIgnisAssetForTest(), texture: fakeTex(),
+  });
+  try {
+    const pts = spikeSpawnPoints([0, 5, 0], 0.9).map((p) => ({ ...p, y: 5 }));
+    r.spawn(pts, 1000);
+    r.update(1000 + 250 + SPIKE_FX.riseMs);   // 最后一根（延迟 250）也升满 ⇒ 全池 scale=1
+    const m = new THREE.Matrix4();
+    for (let i = 0; i < pts.length; i++) {
+      r.mesh.getMatrixAt(i, m);
+      const e = m.elements;
+      // 局部 +Z 基向量（第三列）在世界的 xz 投影 = (sin yaw, cos yaw)
+      const n = [e[8], e[10]];
+      const len = Math.hypot(n[0], n[1]);
+      assertClose(len, 1, 1e-5, `第 ${i} 根满尺寸时基向量须单位长`);
+      const want = [Math.sin(pts[i].yaw), Math.cos(pts[i].yaw)];
+      assertClose(n[0] / len, want[0], 1e-5, `第 ${i} 根朝向 x`);
+      assertClose(n[1] / len, want[1], 1e-5, `第 ${i} 根朝向 z`);
+      // 位置也要对（makeRotationY 会清位移 ⇒ 必须最后 setPosition）
+      assertClose(e[12], pts[i].x, 1e-6, `第 ${i} 根位置 x`);
+      assertClose(e[13], 5, 1e-6, `第 ${i} 根位置 y`);
+      assertClose(e[14], pts[i].z, 1e-6, `第 ${i} 根位置 z`);
+    }
+    // 负向锚点：只 makeScale + setPosition（旧写法）⇒ 所有 n = (0,1) ⇒ 上面必红
   } finally {
     r.dispose();
   }
@@ -183,29 +431,37 @@ test('spike fx: 零活跃 visible=false，spawn 后 true，寿命结束后回 fa
   }
 });
 
-test('spike fx: 5 根一次 spawn，逐根延迟到点后可见数递增', () => {
+test('spike fx: 30 根一次 spawn，逐圈延迟到点后可见数递增', () => {
   const r = new SpikeFxRenderer({ scene: new THREE.Scene() });
   try {
     const pts = spikeSpawnPoints([0, 5, 0], 0).map((p) => ({ ...p, y: 5 }));
     r.spawn(pts, 1000);
-    assertEqual(r.activeCount, 5);
-    // t=1000+60：只有前两根（延迟 0/50）已过延迟期
-    r.update(1000 + 60);
-    let visible = 0;
+    assertEqual(r.activeCount, 30);
     const m = new THREE.Matrix4();
-    for (let i = 0; i < 5; i++) {
-      r.mesh.getMatrixAt(i, m);
-      if (Math.abs(m.elements[0]) > 1e-9) visible++;
-    }
-    assertEqual(visible, 2, `t=60ms 时应只有 2 根可见，实得 ${visible}`);
-    // t=1000+250：全部过延迟期
-    r.update(1000 + 250);
-    visible = 0;
-    for (let i = 0; i < 5; i++) {
-      r.mesh.getMatrixAt(i, m);
-      if (Math.abs(m.elements[0]) > 1e-9) visible++;
-    }
-    assertEqual(visible, 5, '全部延迟过后 5 根都可见');
+    /**
+     * ☠️ **不能用 `|m.elements[0]| > 0` 判可见**（旧写法）：加了朝向后
+     * `e[0] = cos(yaw) × scale`，而左右两排的 yaw ≈ ±90° ⇒ cos ≈ 6e-17
+     * ⇒ 那 12 根**永远被判不可见**（实测 t=60 读到 6 而不是 10）。
+     * 改用**行列式**：旋转不改变它，等比缩放下 det = scale³ ⇒ 旋转无关。
+     */
+    const countVisible = () => {
+      let n = 0;
+      for (let i = 0; i < pts.length; i++) {
+        r.mesh.getMatrixAt(i, m);
+        if (Math.abs(m.determinant()) > 1e-12) n++;
+      }
+      return n;
+    };
+    // t=1000+60：延迟 0 的那圈已破土（scale 60/180），延迟 50 的那圈刚破土（scale 10/180）
+    // ⇒ 10 根可见（五向 × 2 圈）—— 可见数按**圈的整倍数**长，不是逐根
+    r.update(1000 + 60);
+    assertEqual(countVisible(), 10, 't=60ms 时最内两圈共 10 根可见');
+    // t=1000+120：延迟 0/50/100 三圈 ⇒ 15 根
+    r.update(1000 + 120);
+    assertEqual(countVisible(), 15, 't=120ms 时前三圈共 15 根可见');
+    // t=1000+300：全部过延迟期（最大 250）
+    r.update(1000 + 300);
+    assertEqual(countVisible(), 30, '全部延迟过后 30 根都可见');
   } finally {
     r.dispose();
   }
@@ -341,12 +597,26 @@ test('spike fx 结算: 尖刺伤害不看视线（与原版 ShieldSmashDamage �
   assertDeepEqual(f.damages, [18], '隔墙仍扣（原版特效与 AoE 都不看视线）');
 });
 
-test('spike fx 结算: 5 根都找到地面并 spawn（开阔地夹具）', () => {
-  const f = spikeGameFixture({ playerPos: [0.5, 10, -20] });
+test('spike fx 结算: 30 根都找到地面并 spawn（开阔地夹具）', () => {
+  const f = spikeGameFixture({ playerPos: [0.5, 10, -40] });
   f.state.attackFxRequest = { at: [0.5, 10, 0.5], yaw: 0, kind: 'spikeSlash' };
   f.game._consumeIgnisFxRequests(1000);
-  assertEqual(f.spawned.length, 5, `应 spawn 5 根，实得 ${f.spawned.length}`);
+  assertEqual(f.spawned.length, 30, `应 spawn 30 根，实得 ${f.spawned.length}`);
   for (const p of f.spawned) assertEqual(p.y, 10, '每根都贴地面顶面');
+});
+
+test('spike fx 结算: 逐根朝向透传到 spikeFx.spawn（漏了会全部同向）', () => {
+  const f = spikeGameFixture({ playerPos: [0.5, 10, -40] });
+  f.state.attackFxRequest = { at: [0.5, 10, 0.5], yaw: 0.9, kind: 'spikeSlash' };
+  f.game._consumeIgnisFxRequests(1000);
+  assertEqual(f.spawned.length, 30);
+  const want = spikeSpawnPoints([0.5, 10, 0.5], 0.9);
+  for (let i = 0; i < f.spawned.length; i++) {
+    assertClose(f.spawned[i].yaw, want[i].yaw, 1e-9, `第 ${i} 根朝向须透传`);
+  }
+  // 负向锚点：装配层漏写 `yaw: p.yaw` ⇒ undefined ⇒ 上面必红
+  assertTrue(new Set(f.spawned.map((p) => p.yaw)).size >= 5,
+    '30 根不得全部同向（五向至少 5 个不同朝向）');
 });
 
 test('spike fx 结算: 另两招不出尖刺（招式过滤在装配层）', () => {
@@ -359,117 +629,53 @@ test('spike fx 结算: 另两招不出尖刺（招式过滤在装配层）', () 
   }
 });
 
-// ---------- v3.24：锥面剑纹（用户 2026-11-20）----------
+// ---------- v3.27：剑体原色直采（用户 2026-11-21）----------
 //
-// 「纹理的颜色图案类比焰魔的剑的图案贴图，可以随机一些，不要是单纯的没有纹理的锥体」。
+// 「剑体贴图就跟焰魔手里拿着的剑一模一样……现在的圆锥体的带有纹路的尖刺模型不要了」。
 //
-// 这些用例钉的是「改坏了肉眼看不出来」的部分：UV 子区是否真的落在剑纹带上（flipY 折算）、
-// 逐根随机参数是否真的变化、贴图缺失时是否静默退回纯色、以及水面遮挡那条回归。
-// 观感本身由 `tests/ignis-spike.spec.mjs` 的 Tier 4 像素实测兜住。
+// v3.24 的四条剑纹用例（UV 子区 / 逐根随机 / 矩形内容 / 逐实例属性）**整体退场** ——
+// 不是放宽，是那套机制不存在了：剑体几何自带正确 UV（六面实测 100% 不透明），
+// 原色直采就够了，不需要亮度→色阶重映射、不需要环绕铺贴随机。
+// 剑体几何本身的契约在 `test-spike-blade.js`；观感由 `tests/ignis-spike.spec.mjs` 的 Tier 4 兜住。
 
-test('spike tex: UV 子区落在剑身嵌纹带内，且 flipY 已折算', () => {
-  const { u0, v0, u1, v1 } = spikeTexUvRect(SPIKE_SPARK_FX.textureRect, 256);
-  assertTrue(u0 >= 0 && u1 <= 1 && v0 >= 0 && v1 <= 1, 'UV 必须落在 [0,1]');
-  assertTrue(v0 < v1, `v0(${v0}) 必须小于 v1(${v1})（矩形要正向）`);
-  // 像素矩形 [90,128,82,7] / 256
-  assertClose(u0, 90 / 256, 1e-12, 'u0');
-  assertClose(u1, 172 / 256, 1e-12, 'u1');
-  // flipY：图片行 128..135 ⇒ v 从 1−135/256 到 1−128/256
-  assertClose(v0, 1 - 135 / 256, 1e-12, 'v0 必须按 flipY 折算（写反会让纹样上下颠倒）');
-  assertClose(v1, 1 - 128 / 256, 1e-12, 'v1');
-});
-
-test('spike tex: 逐根随机参数真的在变（不是全池同一套）', () => {
-  // 注入确定性 rand（黄金比例序列，分布良好且可复现）
-  let i = 0;
-  const rand = () => ((i++ * 0.6180339887) % 1);
-  const seen = new Set();
-  const phases = [];
-  for (let k = 0; k < 24; k++) {
-    const p = spikeTexPattern(rand);
-    assertTrue(p.tiles >= SPIKE_SPARK_FX.wrapTiles[0] && p.tiles < SPIKE_SPARK_FX.wrapTiles[1],
-      `tiles ${p.tiles} 越界（区间 ${SPIKE_SPARK_FX.wrapTiles}）`);
-    assertTrue(p.reps >= SPIKE_SPARK_FX.riseTiles[0] && p.reps < SPIKE_SPARK_FX.riseTiles[1],
-      `reps ${p.reps} 越界（区间 ${SPIKE_SPARK_FX.riseTiles}）`);
-    assertTrue(p.phase >= 0 && p.phase < 1, 'phase 必须在 [0,1)');
-    assertTrue(p.mirror === 0 || p.mirror === 1, 'mirror 只能是 0/1');
-    // 整数化：shader 里 tiles/reps 直接参与 fract，非整数会让同一根刺首尾接不上
-    assertEqual(p.tiles, Math.round(p.tiles), 'tiles 必须是整数');
-    assertEqual(p.reps, Math.round(p.reps), 'reps 必须是整数');
-    seen.add(`${p.tiles}|${p.reps}|${p.mirror}`);
-    phases.push(p.phase);
-  }
-  assertTrue(seen.size >= 4, `24 次抽样只出现 ${seen.size} 种组合 —— 逐根随机没生效`);
-  assertTrue(new Set(phases).size >= 20, `相位几乎不变（${new Set(phases).size} 种）—— 每根纹理会长得一样`);
-});
-
-test('spike tex: 矩形必须落在剑身嵌纹带上（内容级判断的 Node 部分）', () => {
-  // ⚠️ **本用例只能钉结构约束**（真正的「不透明率」在 `check:data` 的 `[焰魔]` 环节用 pngjs 量，
-  // 下一条用例里声明了它）。这里钉的是**换矩形时容易错位的那三件事**：
-  //   ① 必须整体落在 256×256 内（越界会采到相邻骨骼的纹样）；
-  //   ② 不得包含剑身平面的**透明镂空区**（那个矩形实测不透明率只有 61.7%）；
-  //   ③ 必须是「宽 >> 高」的横带（剑脊嵌纹带是 82×7）。
-  const [x0, y0, w, h] = SPIKE_SPARK_FX.textureRect;
-  assertTrue(x0 >= 0 && y0 >= 0, '矩形原点必须在贴图内');
-  assertTrue(x0 + w <= 256 && y0 + h <= 256, `矩形 ${SPIKE_SPARK_FX.textureRect} 超出 256² 贴图`);
-  assertTrue(w > h * 4, `纹样带应是横带（宽 ${w} / 高 ${h}）`);
-  // 剑身平面（49,74,40,13）的不透明率只有 61.7%（实测）⇒ 那个矩形已在本仓实测为不可用。
-  // 钉住「不能是它」这个负面事实：换矩形时若换回它，这条会红。
-  const isBladePlane = x0 < 89 && x0 + w > 49 && y0 < 87 && y0 + h > 74;
-  assertFalse(isBladePlane, '剑身平面 (49,74,40,13) 有透明镂空（61.7%）—— 采到会在锥面出黑洞');
-});
-
-test('spike tex: 给了贴图就走剑纹材质，没给就退回纯色锥（不抛错）', () => {
-  const tex = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
-  const withTex = new SpikeFxRenderer({ scene: new THREE.Scene(), texture: tex });
+test('spike fx: 给了贴图就走原色剑体材质，没给就退回纯色（不抛错）', async () => {
+  const asset = await loadIgnisAssetForTest();
+  const withTex = new SpikeFxRenderer({ scene: new THREE.Scene(), asset, texture: fakeTex() });
   try {
-    assertTrue(withTex.textured, '给了贴图必须走剑纹版');
-    assertEqual(withTex.mesh.material.type, 'MeshBasicNodeMaterial',
-      `剑纹版须是 TSL 材质（实得 ${withTex.mesh.material.type}）`);
+    assertTrue(withTex.textured, '给了贴图必须声称有纹理');
+    assertNotNull(withTex.mesh.material.map, '原色直采 ⇒ map 必须挂上');
+    assertEqual(withTex.mesh.material.type, 'MeshBasicMaterial',
+      '剑体不再需要 TSL（UV 已正确，引入 TSL 只会把重映射问题带回来）');
   } finally { withTex.dispose(); }
 
-  const noTex = new SpikeFxRenderer({ scene: new THREE.Scene(), texture: null });
+  const noTex = new SpikeFxRenderer({ scene: new THREE.Scene(), asset, texture: null });
   try {
     assertFalse(noTex.textured, '没给贴图不得声称有纹理');
-    assertEqual(noTex.mesh.material.type, 'MeshBasicMaterial', '退回纯色版');
-    // ⚠️ 退回时也必须能正常出刺（贴图加载失败不该让尖刺整个消失）
-    noTex.spawn([{ x: 0, y: 5, z: -2, delayMs: 0 }], 1000);
+    assertNull(noTex.mesh.material.map);
+    // ⚠️ 贴图缺失不得影响几何（几何看 asset、贴图看 texture，两者独立）
+    assertNotNull(noTex.blade, '贴图缺失时剑体几何仍在');
+    // 退回时也必须能正常出刺（贴图加载失败不该让尖刺整个消失）
+    noTex.spawn([{ x: 0, y: 5, z: -2, delayMs: 0, yaw: 0 }], 1000);
     noTex.update(1000 + SPIKE_FX.riseMs);
     assertTrue(noTex.mesh.visible, '纯色回退路径也必须能画出来');
   } finally { noTex.dispose(); }
 });
 
-test('spike tex: 逐实例纹理参数属性在两种材质下都存在（缺了会静默全 0）', () => {
-  for (const texture of [null, new THREE.DataTexture(new Uint8Array(4), 1, 1)]) {
-    const r = new SpikeFxRenderer({ scene: new THREE.Scene(), texture, maxActive: 6 });
-    try {
-      for (const name of Object.values(SPIKE_TEX_ATTR)) {
-        const a = r.mesh.geometry.getAttribute(name);
-        assertTrue(!!a, `几何缺属性 ${name} —— shader 会静默读到全 0（每根纹理一样）`);
-        assertEqual(a.count, 6, `${name} 的实例数须 = 池容量`);
-        assertTrue(a.isInstancedBufferAttribute, `${name} 必须是 instanced 属性（否则每顶点一份）`);
-      }
-      // 池里必须真的填了不同的值（初始化循环不能白跑）
-      const phases = new Set();
-      for (let i = 0; i < 6; i++) phases.add(r.mesh.geometry.getAttribute(SPIKE_TEX_ATTR.phase).getX(i));
-      assertTrue(phases.size >= 4, `6 个 slot 只有 ${phases.size} 种相位 —— 初始化没生效`);
-    } finally { r.dispose(); }
-  }
-});
-
-test('spike fx: 锥体必须排在海面之后绘制（水面遮挡回归，v3.24 实测）', () => {
-  const r = new SpikeFxRenderer({ scene: new THREE.Scene() });
+test('spike fx: 剑体必须排在海面之后绘制（水面遮挡回归，v3.24 实测）', async () => {
+  const r = new SpikeFxRenderer({
+    scene: new THREE.Scene(), asset: await loadIgnisAssetForTest(), texture: fakeTex(),
+  });
   try {
     // ⚠️ 这是**实测标定**的耦合约定，不是预防性常数：
-    // 只改海面 renderOrder 的单变量对照里，水面区域内锥体的发光增量 p50 从 11.6（海面后画）
+    // 只改海面 renderOrder 的单变量对照里，水面区域内尖刺的发光增量 p50 从 11.6（海面后画）
     // 涨到 20.5（海面先画）—— 被水色冲淡 1.77 倍。
-    // 海面在 `ocean.js:491` 固定 renderOrder = 1 ⇒ 锥体必须 > 1。
+    // 海面在 `ocean.js` 固定 renderOrder = 1 ⇒ 剑体必须 > 1。
     assertTrue(r.mesh.renderOrder > 1,
-      `锥体 renderOrder=${r.mesh.renderOrder}，必须 > 1（海面是 1）`);
+      `剑体 renderOrder=${r.mesh.renderOrder}，必须 > 1（海面是 1）`);
     assertEqual(r.mesh.renderOrder, SPIKE_SPARK_FX.renderOrder,
-      '锥体与它自己的粒子池同档（两者都是焰魔尖刺的可视部分）');
+      '剑体与它自己的粒子池同档（两者都是焰魔尖刺的可视部分）');
     // 深度语义不得被这次改动碰坏：不写深度（否则会挡住它身后的粒子/其他特效）
-    assertFalse(r.mesh.material.depthWrite, 'additive 半透明不得写深度');
+    assertFalse(r.mesh.material.depthWrite, '半透明不得写深度');
     assertTrue(r.mesh.material.depthTest, '深度测试保留（否则会画到地形前面）');
   } finally { r.dispose(); }
 });

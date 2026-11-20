@@ -145,23 +145,28 @@ test('spike spark: 余烬数量少于火星（用户裁定「少量上浮余烬�
 });
 
 test('spike spark: 池账 —— 按**真实重叠窗口**算容量（不是拍一个数）', () => {
+  // ☠️ **总根数 = count × 方向数**（v3.27）—— `IGNIS_SPIKE.count` 是**每方向**根数（6）。
+  // 按 count 算的形态是「账按 6 根算而实际喷 30 根」，把容量改小也仍然绿（判别力丢失）。
+  const totalSpikes = IGNIS_SPIKE.count * IGNIS_SPIKE.directionsDeg.length;
   // 同一只焰魔两刀的最小间隔 = 第二命中帧 − 第一命中帧
   const gapMs = (IGNIS_SPIKE.secondHitFrame - IGNIS_ATTACKS.spikeSlash.hitFrameSeconds) * 1000;
   // 一次 spawn 的粒子最长命 = 最后一根的延迟 + 缩回起点 + 最长余烬寿命
+  // ⚠️ 延迟只跟**半径序号**挂钩（同圈 5 根同帧）⇒ 最大延迟仍是 (count−1)×50，
+  // **不要乘方向数** —— 乘了会把最长命算成 1.5s+，池账虚高。
   const longestMs = (IGNIS_SPIKE.count - 1) * IGNIS_SPIKE.delayPerSegmentMs
     + FX.lifeMs * FX.shrinkFrom + FX.emberLifetime * 1.3 * 1000;
-  // ☠️ 实测：最长命 2065ms **大于**两刀间隔 1225ms ⇒ 两批确实会重叠
+  // ☠️ 实测：最长命 2115ms **大于**两刀间隔 1225ms ⇒ 两批确实会重叠
   // ⇒ 池容量必须按「重叠批数」算，不能只算一次 spawn。
   assertTrue(longestMs > gapMs,
     '本招两批粒子确实重叠（若将来不重叠了，该简化池账而不是留着多余的容量）');
   const overlap = Math.ceil(longestMs / gapMs);
-  const perCast = IGNIS_SPIKE.count
+  const perCast = totalSpikes
     * (spikeSparkQuotaAt(FX.lifeMs * FX.shrinkFrom, 'spark')
       + spikeSparkQuotaAt(FX.lifeMs * FX.shrinkFrom, 'ember'));
   assertTrue(perCast * overlap <= FX.capacity,
     `重叠 ${overlap} 批 × 每批 ${perCast} 颗 = ${perCast * overlap} 须 ≤ 池容量 ${FX.capacity}`);
   // 单类也要各自装得下（两个池容量相同）
-  const perCastSpark = IGNIS_SPIKE.count * spikeSparkQuotaAt(FX.lifeMs * FX.shrinkFrom, 'spark');
+  const perCastSpark = totalSpikes * spikeSparkQuotaAt(FX.lifeMs * FX.shrinkFrom, 'spark');
   assertTrue(perCastSpark * overlap <= FX.capacity,
     `火星单独也要装得下：${perCastSpark * overlap} ≤ ${FX.capacity}`);
 });
