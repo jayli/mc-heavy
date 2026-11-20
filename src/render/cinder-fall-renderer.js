@@ -37,6 +37,9 @@ const _spinAxis = new THREE.Vector3();
 const _zero = new THREE.Matrix4().makeScale(0, 0, 0);
 const _up = new THREE.Vector3(0, 1, 0);
 const _toCam = new THREE.Vector3();
+// 冲击环定向用的两个固定轴（模块级复用，不在 burst 里新建 Vector3）
+const _zAxis = new THREE.Vector3(0, 0, 1);
+const _xAxis = new THREE.Vector3(1, 0, 0);
 
 const sat = (x) => Math.max(0, Math.min(1, x));
 /** outQuint —— **冲击力的来源**（前 20% 冲掉 2/3）；outCubic 读作慢胀 */
@@ -256,11 +259,13 @@ export class CinderFallRenderer {
    * 命中实体 ⇒ 环面法线朝玩家（读作「炸在它身上」）；否则贴地。
    * 共用一套会让打 Boss 时环画在脚下地面上。
    *
-   * @param {number[]} at 世界坐标
+   * @param {number[]} at 世界坐标的**表面接触点**
    * @param {number} nowMs @param {'block'|'entity'|'air'} kind
    * @param {number[]} [cameraPos] 命中实体时的朝向参考（缺省用最近一次 sync 传入的）
+   * @param {number[]} [normal] 命中面法线（block）—— 环要贴在**那个面**上，
+   *        而不是恒贴地（撞墙时恒贴地会把环画进墙里）。
    */
-  burst(at, nowMs, kind = 'block', cameraPos = null) {
+  burst(at, nowMs, kind = 'block', cameraPos = null, normal = null) {
     if (!Array.isArray(at) || at.length !== 3 || !at.every(Number.isFinite)) return;
     if (!Number.isFinite(nowMs)) return;
     if (cameraPos && cameraPos.every(Number.isFinite)) {
@@ -279,11 +284,16 @@ export class CinderFallRenderer {
       _toCam.subVectors(this._lastCamPos, this.shockMesh.position);
       if (_toCam.lengthSq() > 1e-8) {
         _toCam.normalize();
-        this.shockMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), _toCam);
+        this.shockMesh.quaternion.setFromUnitVectors(_zAxis, _toCam);
       }
+    } else if (Array.isArray(normal) && normal.length === 3
+      && normal.some((v) => v !== 0)) {
+      // 贴**命中面**：地面 [0,1,0] / 墙面 [±1,0,0]、[0,0,±1] / 天花板 [0,-1,0]
+      _toCam.set(normal[0], normal[1], normal[2]).normalize();
+      this.shockMesh.quaternion.setFromUnitVectors(_zAxis, _toCam);
     } else {
-      // 贴地：把 XY 平面转到 XZ（法线 +Y）
-      this.shockMesh.quaternion.setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2);
+      // 无法线信息（旧调用方/空气）⇒ 沿用贴地
+      this.shockMesh.quaternion.setFromAxisAngle(_xAxis, -Math.PI / 2);
     }
     this.shockMesh.visible = true;
     this.uniforms.uBurstAge.value = 0;

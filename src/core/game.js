@@ -3193,20 +3193,22 @@ export class Game {
     if (this.entities.count(CINDER_TYPE) === 0) return;
     for (const entity of [...this.entities.entities()]) {   // 快照：despawn 会改底层集合
       if (entity.type !== CINDER_TYPE) continue;
-      const { reason, at, hitId } = judgeCinder({
+      const { reason, at, hitId, normal } = judgeCinder({
         next: entity.state, world: this.world, registry: this.registry,
         entities: this.entities,
       });
       if (!reason) continue;
       /**
-       * 三种终结理由都爆炸，但**冲击环朝向不同**：
-       *   entity        → 环面朝玩家（读作「炸在它身上」）
-       *   block         → 贴地
-       *   end-of-flight → 飞满射程的**空中自爆**，也贴地口径（环在落点高度）
-       * ⚠️ `end-of-flight` 是本轮实测新增的：旧口径照搬直线弹丸的「超距不爆」，
-       * 会让**抵达瞄准点的最后一步被静默吃掉**（球飞到了但没炸）。
+       * 两种爆炸理由，**冲击环朝向不同**：
+       *   entity → 环面朝玩家（读作「炸在它身上」）
+       *   block  → 贴**命中面**（地面/墙面/天花板，按 DDA 法线）
+       * ⚠️⚠️ **没有「末端空中自爆」这回事**（用户 2026-11-19：「碰到地面才爆炸」）。
+       * 飞满瞄准点后岩石转重力下落，落地自然给 `block`；
+       * 掉出世界底/下落超时给 `void`（**无 at ⇒ 不爆不出视觉**，防实体泄漏）。
        */
-      if (at) this._cinderBlast(at, reason === 'entity' ? 'entity' : 'block', hitId, nowMs);
+      if (at) {
+        this._cinderBlast(at, reason === 'entity' ? 'entity' : 'block', hitId, nowMs, normal);
+      }
       this.entities.despawn(entity.id, reason);
     }
   }
@@ -3221,15 +3223,19 @@ export class Game {
    * ⚠️ **去重**：直接命中者已在半径内，不得扣两次（用户：一次施法每实体只扣一次）。
    * ⚠️ **不破坏方块、不击退、不走 `_applyExplosion`**（后者会破坏方块 + 引爆连锁 TNT）。
    *
-   * @param {number[]} at 世界坐标（block 给格坐标，entity 给命中点）
+   * @param {number[]} at **表面接触点**（世界坐标；block 与 entity 同口径，不再 +0.5）
    * @param {'block'|'entity'} kind @param {string|null} hitId @param {number} nowMs
    */
-  _cinderBlast(at, kind, hitId, nowMs) {
+  _cinderBlast(at, kind, hitId, nowMs, normal = null) {
     const cfg = WEAPONS[WEAPON_IDS.SWORD].cinderFall;
-    // 度量中心：block 给的是格坐标（要 +0.5 换块中心），entity 给的是真实命中点
-    const cx = kind === 'block' ? at[0] + 0.5 : at[0];
-    const cy = kind === 'block' ? at[1] + 0.5 : at[1];
-    const cz = kind === 'block' ? at[2] + 0.5 : at[2];
+    /**
+     * ⚠️⚠️ **`at` 已是世界坐标的表面接触点，不得再 +0.5**
+     * （用户 2026-11-19：「碰到方块表面就爆炸，而不是跑到方块内部爆炸」）。
+     * 旧写法对 block 加 0.5 把格坐标转块心 ⇒ 爆壳/冲击环/碎块全在**实心内部**
+     * （实测 `centerInsideSolid: true`，离顶面 0.5 格），用户看到的就是「钻进地里炸」。
+     * 现在 block 与 entity 同一口径（都是接触点），溅射度量也直接用它。
+     */
+    const [cx, cy, cz] = at;
     const damaged = new Set();
     if (hitId) {
       this.damageEntity(hitId, cfg.damage, nowMs);
@@ -3250,8 +3256,8 @@ export class Game {
       this.damageEntity(entity.id, cfg.damage, nowMs);
       damaged.add(entity.id);
     }
-    // 视觉：爆壳 + 冲击环（朝向按 kind 分流）+ 碎块（复用既有池，不新开）
-    this.cinderFall.burst([cx, cy, cz], nowMs, kind, this.camera.position.toArray());
+    // 视觉：爆壳 + 冲击环（朝向按 kind/法线分流）+ 碎块（复用既有池，不新开）
+    this.cinderFall.burst([cx, cy, cz], nowMs, kind, this.camera.position.toArray(), normal);
     this.blockHitFx?.spawnDeathBurst([cx, cy, cz], CINDER_DEBRIS_COLOR, nowMs, {
       count: cfg.debrisCount,
     });

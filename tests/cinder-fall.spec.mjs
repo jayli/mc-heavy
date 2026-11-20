@@ -149,6 +149,81 @@ test.describe('Cinder Fall（v3.21）', () => {
     expect(r.rocksAfterCinder, 'Cinder Fall 必须真的生成了飞行岩石').toBeGreaterThan(0);
   });
 
+  /**
+   * ⚠️⚠️ 用户 2026-11-19：「火球要求**碰到地面才爆炸**，而不是空中爆炸」。
+   *
+   * 旧口径在瞄准点 `end-of-flight` 自爆，实测离地 **4.76 格**（平视）/
+   * **10.39 格**（仰视）—— 而 `blasts=1` / `rocks=0` / draw call 回基线 **全绿**。
+   * ⇒ 判据必须落在**落点高度 vs 该列地面高度**上，计数类对这类缺陷零判别力。
+   * 三个机位都要测：平视/仰视是缺陷形态，俯视是本来就对的对照。
+   */
+  test('落地才爆：平视/仰视/俯视三个机位的落点都贴地（不空中自爆）', async ({ page }) => {
+    test.setTimeout(180_000);
+    await page.goto(`/?seed=${SEED}&vd=4&shadows=0&reflect=0`);
+    await waitWorldReady(page);
+    await gotoOpenField(page);
+    await installHelpers(page);
+    const runs = await page.evaluate(async (holdMs) => {
+      const g = window.__MC_GAME__;
+      await g.selectWeapon('sword');
+      await new Promise((r) => setTimeout(r, 900));
+      const rec = [];
+      const origBlast = g._cinderBlast.bind(g);
+      g._cinderBlast = (at, kind, hitId, nowMs, normal) => {
+        rec.push({ at: [...at], kind, normal: normal ? [...normal] : null });
+        return origBlast(at, kind, hitId, nowMs, normal);
+      };
+      const out = [];
+      for (const aim of [[0, -0.08, -1], [0, 0.25, -1], [0, -0.35, -1]]) {
+        rec.length = 0;
+        g.player.setTestAim(aim);
+        await new Promise((r) => setTimeout(r, 500));
+        const b0 = g.cinderDebugState().blasts;
+        const ev = await window.__CF__.chargeAndFire(holdMs);
+        // 飞 1.1s + 下落最多 ~2s ⇒ 给 5s
+        await new Promise((r) => setTimeout(r, 5000));
+        const blast = rec.find((x) => x.at);
+        let groundTop = null;
+        if (blast) {
+          const x = Math.floor(blast.at[0]), z = Math.floor(blast.at[2]);
+          for (let y = Math.floor(blast.at[1]) + 2; y >= -32; y--) {
+            if (g.world.isSolid(x, y, z)) { groundTop = y + 1; break; }
+          }
+        }
+        out.push({
+          aim, fired: !!ev, kind: blast?.kind ?? null,
+          blasts: g.cinderDebugState().blasts - b0,
+          rocks: g.cinderDebugState().rocks,
+          blastY: blast ? blast.at[1] : null, groundTop,
+          gap: blast && groundTop !== null ? blast.at[1] - groundTop : null,
+          // ⚠️ 爆炸中心本身不得在实心内（用户：「不是跑到方块内部爆炸」）
+          centerInsideSolid: blast
+            ? g.world.isSolid(Math.floor(blast.at[0]), Math.floor(blast.at[1]), Math.floor(blast.at[2]))
+            : null,
+          normal: blast?.normal ?? null,
+        });
+        await new Promise((r) => setTimeout(r, 3200));   // 等冷却
+      }
+      return out;
+    }, HOLD_CINDER_MS);
+    console.log('CF_GROUND ' + JSON.stringify(runs));
+    for (const r of runs) {
+      const tag = `aim=${JSON.stringify(r.aim)}`;
+      expect(r.fired, `${tag} 必须真的抛出`).toBe(true);
+      expect(r.blasts, `${tag} 必须炸了一次`).toBe(1);
+      expect(r.rocks, `${tag} 结束后不得残留岩石`).toBe(0);
+      expect(r.kind, `${tag} 必须是贴地/命中口径，不得是空中自爆`).toBe('block');
+      expect(r.groundTop, `${tag} 落点下方必须有地面`).not.toBeNull();
+      // ⚠️⚠️ 落点必须是**表面接触点**：旧口径给格坐标、装配层 +0.5 ⇒ 爆心在块内
+      //（实测 centerInsideSolid=true）。现在 at 已是世界坐标接触点，不得再 +0.5。
+      expect(r.centerInsideSolid, `${tag} 爆炸中心不得在实心方块内部`).toBe(false);
+      expect(r.normal, `${tag} 必须给命中面法线`).not.toBeNull();
+      // 落点贴面：高度与地面顶面差 ≤ 1 格（墙面命中时 y 可低于顶面，故取区间）
+      expect(r.gap, `${tag} 落点离地高度实测 ${r.gap} 格`).toBeLessThanOrEqual(1);
+      expect(r.gap, `${tag} 落点不得钻到地面以下过深 ${r.gap}`).toBeGreaterThanOrEqual(-1);
+    }
+  });
+
   test('接线：事件真的走到装配层（不是只发了事件就完事）', async ({ page }) => {
     await page.goto(`/?seed=${SEED}&vd=4&shadows=0&reflect=0`);
     await waitWorldReady(page);

@@ -11,21 +11,24 @@
 //    玻璃那条是判别性用例（炮塔的 solid && opaque 会放过它）。
 // ④ **实体命中走 entities.raycastAll**（丧尸 + 三种 Boss）——
 //    只遍历丧尸的写法打不到 Boss，而计数类判据全绿。
-// ⑤ 超距**不爆炸**（没撞到东西就消失）。
+// ⑤ **飞满瞄准点后转重力下落，碰到地面才爆**（用户裁定，不得空中自爆）。
+//    旧口径 `end-of-flight` 在末端空中自爆，实测离地 **4.76 格**（平视）/ **10.39 格**（仰视）。
 // ⑥ 派生关系式：伤害/半径来自爆炸常量、单槽前提、碎块池账。
 //
 // ⚠️ fixture 用**真实 WorldData + registry**（不是桩件）：`raycastVoxel` 内部读
 // `world.registry.idOf('water')`，桩件缺它会让 DDA 直接抛错。
 // ⚠️ 本文件同时在 Node 轻档与浏览器整页跑 ⇒ 不得 import node:* 模块。
 import { test } from './runner.js';
-import { assertEqual, assertTrue, assertNull, assertNotNull, assertDeepEqual } from './assert.js';
+import { assertEqual, assertTrue, assertFalse, assertNull, assertNotNull, assertDeepEqual } from './assert.js';
 import { createRegistry } from '../voxel/block-registry.js';
 import { BLOCKS } from '../voxel/blocks-data.js';
 import { ChunkColumn } from '../voxel/chunk-column.js';
 import { WorldData } from '../voxel/world-data.js';
 import { WEAPONS, WEAPON_IDS } from '../player/weapons/weapon-catalog.js';
 import { EXPLOSION_DAMAGE, EXPLOSION_DAMAGE_RADIUS } from '../voxel/explosion.js';
-import { WEAPON_HITTABLE_TYPES } from '../entities/entity-types.js';
+import { WEAPON_HITTABLE_TYPES, raycastAabbSlab } from '../entities/entity-types.js';
+import { ZOMBIE } from '../entities/zombies/zombie-config.js';
+import { WORLD_MIN_Y } from '../voxel/constants.js';
 import {
   cinderLaunch, cinderArcPoint, cinderAdvance, CINDER_TYPE,
 } from '../player/weapons/cinder-fall.js';
@@ -289,12 +292,17 @@ test('cinder 推进: 沿抛物线走 —— 中段 y 高于两端连线', () => 
     `飞行中必须真的拱起（峰值 ${maxY}）`);
 });
 
-test('cinder 推进: 到达末端后不再前进（traveled 钳在 distance）', () => {
+test('cinder 推进: 到达末端后 traveled 钳在 distance（弹道参数不再增长）', () => {
   let st = makeState(aimFlat(), 6);
   for (let i = 0; i < 200; i++) st = cinderDefinition.update({ state: st }, 1 / 60, {});
   assertTrue(st.traveled <= st.launch.distance + 1e-9, `traveled=${st.traveled} 超过射程`);
+  // ⚠️ **真意图是「弹道参数不越界」，不是「位置停在末端」**。
+  // 旧写法还钉了 position ≡ 末端，那是「末端空中自爆」时代的副产品；
+  // 用户裁定「碰到地面才爆」后岩石必须继续往下掉 ⇒ 位置必然离开末端。
+  // （渲染层的 heat 读 traveled/distance，钳住它才能让下落段保持满受热。）
+  assertTrue(st.falling === true, '飞满后必须转下落');
   const end = cinderArcPoint(st.launch, 1);
-  for (let i = 0; i < 3; i++) assertClose(st.position[i], end[i], 1e-6, `末端分量 ${i}`);
+  assertTrue(st.position[1] < end[1], '下落段必须低于末端高度');
 });
 
 // ==================== ④ 判定：方块 / 实体 / 超距 ====================
@@ -343,7 +351,7 @@ test('cinder 判定: 无遮挡时一路不爆（reason=null）', () => {
   assertNull(r.reason);
 });
 
-test('cinder 判定: 撞实心方块 → block，at = 那个 blockPos', () => {
+test('cinder 判定: 撞实心方块 → block，at = **表面接触点**（不是块中心）', () => {
   const { world, registry } = makeWorld();
   // 墙摆在**真实弹道经过的那一格**（pathPointAtZ，不凭直觉拿相机 y）
   const p = pathPointAtZ(-6);
@@ -351,7 +359,23 @@ test('cinder 判定: 撞实心方块 → block，at = 那个 blockPos', () => {
   world.setBlock(cell[0], cell[1], cell[2], registry.idOf('stone'));
   const { r } = stepAndJudge({ seconds: 0.4, world, registry, entities: fakeEntities([]) });
   assertEqual(r.reason, 'block');
-  assertDeepEqual(r.at, cell);
+  // ⚠️⚠️ 用户 2026-11-19：「碰到**方块表面**就爆炸，而不是跑到方块内部爆炸」。
+  // 旧写法返回 blockPos（格坐标），装配层再 +0.5 ⇒ 爆炸中心在**块心**（实测
+  // centerInsideSolid=true，离顶面 0.5 格）。现在 at 是世界坐标的接触点。
+  assertNotNull(r.at);
+  // 接触点必须落在**命中格的外表面**上（至少一个分量贴格边界）
+  const onFace = [0, 1, 2].some((i) => {
+    const f = r.at[i] - cell[i];
+    return Math.abs(f) < 1e-6 || Math.abs(f - 1) < 1e-6;
+  });
+  assertTrue(onFace, `接触点必须在格的面上，实测 at=${JSON.stringify(r.at)} cell=${JSON.stringify(cell)}`);
+  // 另两个分量必须在该格跨度内（不能跑到旁边格）
+  for (let i = 0; i < 3; i++) {
+    assertTrue(r.at[i] >= cell[i] - 1e-6 && r.at[i] <= cell[i] + 1 + 1e-6,
+      `分量 ${i} 越出命中格：${r.at[i]} vs [${cell[i]}, ${cell[i] + 1}]`);
+  }
+  // 接触点不得在实心内部（沿法线往内推一点点才是块内）
+  assertNotNull(r.normal, '必须给表面法线（渲染层要靠它定向）');
 });
 
 test('cinder 判定: 撞玻璃（solid 但 opaqueTable=0）→ block（**判别性用例**）', () => {
@@ -412,6 +436,40 @@ test('cinder 判定: 命中丧尸 → entity，at = 命中点（不是它身后�
   assertTrue(r.at[2] > -18, '落点必须在丧尸身上而不是远处墙上');
 });
 
+test('cinder 判定: 起点已埋在实心内（穿坡）⇒ 回退到**真实 exposed 表面**', () => {
+  const { world, registry } = makeWorld();
+  // 造一座实心山：z ∈ [-12,-5]、y ∈ [0,6] 全填石头
+  for (let z = -12; z <= -5; z++) {
+    for (let y = 0; y <= 6; y++) {
+      for (let x = -1; x <= 1; x++) world.setBlock(x, y, z, registry.idOf('stone'));
+    }
+  }
+  // 手点高度在 y≈5，弹道会飞进山体 ⇒ 构造「上一帧末点已在土里」的 state
+  const launch = cinderLaunch(aimFlat(), CFG(), CFG().range);
+  let st = cinderDefinition.create({ launch, traveled: 0 });
+  let saw = null;
+  let buriedStart = false;
+  const isSolidAt = (p) => world.isSolid(Math.floor(p[0]), Math.floor(p[1]), Math.floor(p[2]));
+  for (let i = 0; i < 200; i++) {
+    st = cinderDefinition.update({ state: st }, 1 / 60, {});
+    const r = judgeCinder({ next: st, world, registry, entities: fakeEntities([]) });
+    if (r.reason) {
+      saw = r;
+      buriedStart = isSolidAt(st.prevPosition);
+      break;
+    }
+  }
+  assertNotNull(saw, '撞山必须爆');
+  assertEqual(saw.reason, 'block');
+  assertTrue(buriedStart, 'sanity：本例必须真的走到「起点已埋在实心内」（否则零判别力）');
+  assertNotNull(saw.normal);
+  // 沿法线往外的邻域必须是空气（= 真的在 exposed 表面上）
+  const eps = 1e-3;
+  const outward = saw.at.map((v, i) => v + saw.normal[i] * eps);
+  assertFalse(isSolidAt(outward),
+    `接触点沿法线外侧必须是空气：at=${JSON.stringify(saw.at)} n=${JSON.stringify(saw.normal)}`);
+});
+
 test('cinder 判定: 三种 Boss 都能命中（只遍历丧尸的写法打不到它们）', () => {
   const { world, registry } = makeWorld();
   const at = pathPointAtZ(-6);
@@ -424,6 +482,56 @@ test('cinder 判定: 三种 Boss 都能命中（只遍历丧尸的写法打不�
     assertEqual(r.reason, 'entity', `${type} 必须被命中`);
     assertEqual(r.hitId, `b-${type}`);
   }
+});
+
+/**
+ * ⚠️⚠️ 用户 2026-11-19：「触碰到 boss 或者丧尸**接触的时候**就爆炸」。
+ *
+ * 判据要钉两件事：
+ * ① 命中点必须在**盒表面**上（而不是盒心/脚底）；
+ * ② 岩石**不得先钻进盒内才结算** —— 逐步判定下，命中那一帧的起点应在盒外。
+ *
+ * ⚠️ **本例的夹具必须真的走到命中**：首版把盒摆在 z=−6 而只跑 0.6s，
+ * 实测 `raycastAll` 只被调到 1 次且 tEnter 恒 >0 ⇒ 对「重叠」零判别力（已用探针证伪）。
+ * 现在用**真实 slab 函数**作几何权威，并额外钉住「命中帧起点在盒外」。
+ */
+test('cinder 判定: 命中实体时 at 在**盒表面**，且命中帧起点仍在盒外（不钻进身体）', () => {
+  const { world, registry } = makeWorld();
+  const half = ZOMBIE.width / 2;
+  const boxAt = pathPointAtZ(-6);
+  const feet = [boxAt[0], boxAt[1] - 0.9, boxAt[2]];
+  const zombieBox = { min: [-half, 0, -half], max: [half, ZOMBIE.height, half] };
+  const insideBox = (p) => [0, 1, 2].every((i) => {
+    const r = p[i] - feet[i];
+    return r >= zombieBox.min[i] && r <= zombieBox.max[i];
+  });
+  let calls = 0;
+  const ents = {
+    raycastAll(origin, dir, maxDist, predicate) {
+      const e = { id: 'z0', type: 'zombie', state: { position: feet } };
+      if (predicate && !predicate(e)) return [];
+      const d = raycastAabbSlab(e.state, origin, dir, maxDist, zombieBox);
+      if (d === null) return [];
+      calls++;
+      return [{
+        id: 'z0', type: 'zombie', dist: d,
+        point: [origin[0] + dir[0] * d, origin[1] + dir[1] * d, origin[2] + dir[2] * d],
+      }];
+    },
+  };
+  const { r, st } = stepAndJudge({ seconds: 0.6, world, registry, entities: ents });
+  assertEqual(r.reason, 'entity');
+  assertTrue(calls > 0, '必须真的发生过射线查询（否则本例零判别力）');
+  assertNotNull(r.at);
+  const rel = [r.at[0] - feet[0], r.at[1] - feet[1], r.at[2] - feet[2]];
+  const onBoxFace = [0, 1, 2].some((i) => {
+    const lo = zombieBox.min[i], hi = zombieBox.max[i];
+    return Math.abs(rel[i] - lo) < 1e-6 || Math.abs(rel[i] - hi) < 1e-6;
+  });
+  assertTrue(onBoxFace,
+    `接触点必须在盒表面：at=${JSON.stringify(r.at)} feet=${JSON.stringify(feet)}`);
+  assertFalse(insideBox(st.prevPosition),
+    `命中帧起点不得已在盒内（那就是「钻进身体才爆」）：prev=${JSON.stringify(st.prevPosition)}`);
 });
 
 test('cinder 判定: 不可击中的类型（矿车/弹丸）不参与命中', () => {
@@ -442,17 +550,76 @@ test('cinder 判定: 不可击中的类型（矿车/弹丸）不参与命中', (
   assertNull(r.reason, '矿车/弹丸不得挡下岩石');
 });
 
-test('cinder 判定: 飞满射程 ⇒ end-of-flight 且**给 at**（在末端自爆）', () => {
+test('cinder 判定: 飞满瞄准点且下方无地面 ⇒ **转下落而不爆**（不得空中自爆）', () => {
   const { world, registry } = makeWorld();
-  const { r } = stepAndJudge({
+  const { r, st } = stepAndJudge({
     dist: CFG().range, seconds: CFG().range / CFG().speed + 0.2,
     world, registry, entities: fakeEntities([]),
   });
-  // ⚠️ 新语义（本轮实测修正）：本招的 distance 是**瞄准点**而不是安全上限，
-  // 飞到了就该炸（用户：「扔出去的球只要碰到…都爆炸」）。
-  // 旧写法照搬直线弹丸的「超距不爆」⇒ 最后一步被静默吃掉（球飞到了但没炸）。
-  assertEqual(r.reason, 'end-of-flight');
-  assertNotNull(r.at, '末端自爆必须给落点');
+  // ⚠️ 新语义（用户 2026-11-19：「碰到地面才爆炸，而不是空中爆炸」）：
+  // 全空气世界里没有地面可碰 ⇒ 它必须**还在飞**（往下掉），而不是在末端自爆。
+  // 旧写法给 `end-of-flight` + at ⇒ 实测在离地 4.76~10.39 格的高度炸。
+  assertNull(r.reason, '下方无地面时不得爆炸（必须继续下落）');
+  assertTrue(st.falling === true, '飞满瞄准点后必须进入下落相位');
+});
+
+test('cinder 判定: 开阔地飞满瞄准点 ⇒ **落到地面才爆**（落点贴地）', () => {
+  const { world, registry } = makeWorld();
+  // 在瞄准点下方铺一层地板（y=0）⇒ 岩石必须掉到它上面才爆。
+  // ⚠️ 地板要铺**够宽**：交接时保留了水平速度，下落期间会继续往前飘几格
+  // （只铺瞄准点那一格 ⇒ 岩石飘出地板继续掉，用例会误报「没落地」）。
+  const launch = cinderLaunch(aimFlat(), CFG(), 6);
+  const end = cinderArcPoint(launch, 1);
+  const gx = Math.floor(end[0]), gz = Math.floor(end[2]);
+  for (let dx = -3; dx <= 3; dx++) {
+    for (let dz = -14; dz <= 3; dz++) world.setBlock(gx + dx, 0, gz + dz, registry.idOf('stone'));
+  }
+  let st = cinderDefinition.create({ launch, traveled: 0 });
+  let saw = null;
+  for (let i = 0; i < 600; i++) {
+    st = cinderDefinition.update({ state: st }, 1 / 60, {});
+    const r = judgeCinder({ next: st, world, registry, entities: fakeEntities([]) });
+    if (r.reason) { saw = r; break; }
+  }
+  assertNotNull(saw, '有地面时必须爆');
+  assertEqual(saw.reason, 'block', '落地必须是 block（不是空中自爆）');
+  // ⚠️ at 是**表面接触点**（世界坐标）⇒ 地板 y=0 的顶面是 **y=1**，不是 0。
+  assertClose(saw.at[1], 1, 1e-6, '必须炸在地板**顶面**（y=1）而不是块心 0.5');
+  assertDeepEqual(saw.normal, [0, 1, 0], '落地法线必须朗上');
+  // 落点高度必须贴着地面，而不是停在瞄准点高度
+  assertTrue(st.position[1] < end[1] - 1, '必须真的掉下去过（不是原地爆）');
+});
+
+test('cinder 下落: 飞满瞄准点时速度连续（位置不跳变）', () => {
+  const { world, registry } = makeWorld();
+  const launch = cinderLaunch(aimFlat(), CFG(), 6);
+  let st = cinderDefinition.create({ launch, traveled: 0 });
+  let prev = null, maxJump = 0, sawFall = false;
+  for (let i = 0; i < 240; i++) {
+    prev = st.position;
+    st = cinderDefinition.update({ state: st }, 1 / 60, {});
+    const jump = Math.hypot(st.position[0] - prev[0], st.position[1] - prev[1], st.position[2] - prev[2]);
+    maxJump = Math.max(maxJump, jump);
+    if (st.falling) sawFall = true;
+    if (judgeCinder({ next: st, world, registry, entities: fakeEntities([]) }).reason) break;
+  }
+  assertTrue(sawFall, '必须进入下落相位');
+  // 正常步长 0.3 格；下落加速后单步不得突变（阈值取 1.2 = 4×步长）
+  assertTrue(maxJump < 1.2, `交接处不得跳变（实测最大单步 ${maxJump}）`);
+});
+
+test('cinder 下落: 一直往下掉到世界底 ⇒ 兵底回收（不得无限飞）', () => {
+  const { world, registry } = makeWorld();
+  let st = makeState(aimFlat(), CFG().range);
+  let saw = null;
+  // 全空气世界：一直掉到 WORLD_MIN_Y 以下 ⇒ 必须给一个终结理由
+  for (let i = 0; i < 2000; i++) {
+    st = cinderDefinition.update({ state: st }, 1 / 60, {});
+    const r = judgeCinder({ next: st, world, registry, entities: fakeEntities([]) });
+    if (r.reason) { saw = r; break; }
+  }
+  assertNotNull(saw, '掉出世界底必须被回收（否则岩石泄漏）');
+  assertTrue(st.position[1] <= WORLD_MIN_Y + 1, '回收时必已到世界底');
 });
 
 test('cinder 判定: 顺序 —— 途中命中优先于末端自爆', () => {
@@ -510,7 +677,7 @@ test('cinder 判定: 抵达末端时命中实体也要爆（最后一步不得�
   assertEqual(saw.hitId, 'zEnd');
 });
 
-test('cinder 判定: 开阔地抵达末端 ⇒ 空中自爆（用户「扔出去的球…都爆炸」）', () => {
+test('cinder 判定: 开阔地抵达末端后继续下落（不在瞄准点高度自爆）', () => {
   const { world, registry } = makeWorld();
   const launch = cinderLaunch(aimFlat(), CFG(), 6);
   let st = cinderDefinition.create({ launch, traveled: 0 });
@@ -520,11 +687,12 @@ test('cinder 判定: 开阔地抵达末端 ⇒ 空中自爆（用户「扔出去
     const r = judgeCinder({ next: st, world, registry, entities: fakeEntities([]) });
     if (r.reason) { saw = r; break; }
   }
-  assertNotNull(saw);
-  assertEqual(saw.reason, 'end-of-flight');
-  assertNotNull(saw.at, '末端自爆必须给落点（否则渲染层不知道在哪炸）');
+  // 6 格射程 ⇒ 0.33s 飞完；再跑 60 帧（1s）足够掉很 5 格。
+  // 无地面 ⇒ 不得爆；且高度必须已明显低于瞄准点。
+  assertNull(saw, '无地面时不得在末端自爆');
   const end = cinderArcPoint(launch, 1);
-  for (let i = 0; i < 3; i++) assertClose(saw.at[i], end[i], 1e-6, `落点分量 ${i}`);
+  assertTrue(st.position[1] < end[1] - 1,
+    `必须掉到瞄准点下方（end=${end[1]}, now=${st.position[1]}）`);
 });
 
 test('cinder 判定: 零位移帧（prevPosition == position）不抛异常', () => {
