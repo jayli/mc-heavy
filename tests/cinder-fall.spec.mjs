@@ -24,8 +24,13 @@ const SEED = 12345;
 const HOLD_CINDER_MS = 2400;
 /** 第二秒内松手 ⇒ Storm Lance（v3.21 阶段门：进入那一秒就能发） */
 const HOLD_LANCE_MS = 1500;
-/** 飞行 20/18≈1.11s + 落点视觉 ⇒ 3s 后应完全回基线 */
-const SETTLE_MS = 3400;
+/**
+ * 飞行 20/18≈1.11s + 下落（最多 ~1.5s）+ **粒子自然衰亡窗口 3.2s**
+ * ⇒ 取 7.5s 后应完全回基线。
+ * ⚠️ v3.21b 加了火星/余烬/烟三个 GPU 池，它们**不随爆壳硬切**（否则尾巴上的
+ * 火星凭空消失）⇒ 旧的 3.4s 不够，会在粒子仍在飞时就断言 draw call 回基线。
+ */
+const SETTLE_MS = 7500;
 
 async function waitWorldReady(page) {
   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
@@ -390,7 +395,7 @@ test.describe('Cinder Fall（v3.21）', () => {
       expect(rd.fired, `第 ${i + 1} 次必须抛出`).toBe(true);
       expect(rd.rocks, `第 ${i + 1} 次结束后不得残留岩石`).toBe(0);
       expect(rd.lit, `第 ${i + 1} 次结束后不得有可见 mesh`).toBe(0);
-      expect(rd.meshes, 'mesh 数恒为 4（岩石+光晕+爆壳+冲击环）').toBe(4);
+      expect(rd.meshes, 'mesh 数恒为 8（岩石+光晕+火焰尾巴+火星+余烬+烟+爆壳+冲击环）').toBe(8);
       expect(Math.abs(rd.dc - r.idle0), `第 ${i + 1} 次 draw call 必须回基线`)
         .toBeLessThanOrEqual(2);
     }
@@ -400,6 +405,292 @@ test.describe('Cinder Fall（v3.21）', () => {
 // ---------------------------------------------------------------- Tier 4 像素判据
 
 test.describe('Cinder Fall 观感身份（Tier 4）', () => {
+  /**
+   * ⚠️⚠️ 用户 2026-11-19：「他的实现是一个**黑色的燃烧的火球**，有**拖拽的一个火焰尾巴**，
+   * 爆炸的时候**蹦出的火星粒子很多**，是爆炸的样子，而不是现在一样像烟花」。
+   *
+   * 本组用例钉的就是这三件。它们全部是**像素级**的 —— 本轮实测证明：
+   * 链式 `.mix()` 让暖色像素从 78620 崩到 88、`float(x)*1.40` 生成 `NaN.0` 直接
+   * 废掉整个粒子管线，而 **visible / 存活计数 / draw call / 单测全绿**。
+   */
+  test('火焰尾巴 + 火星：飞行中尾巴与粒子都上屏，且是暖色（不是白/青）', async ({ page }) => {
+    test.setTimeout(180_000);
+    const errs = [];
+    page.on('console', (m) => { if (m.type() === 'error') errs.push(m.text()); });
+    page.on('pageerror', (e) => errs.push(String(e)));
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.goto(`/?seed=${SEED}&vd=6&shadows=0&reflect=0`);
+    await waitWorldReady(page);
+    await gotoOpenField(page);
+    await setupVisual(page);
+    await installHelpers(page);
+
+    const baseline = await page.screenshot();
+    const st = await page.evaluate(async (holdMs) => {
+      const g = window.__MC_GAME__;
+      // 平视略俯 ⇒ 岩石真的飞一段（俯视太狠会 0.2s 就落地，拍不到尾巴）
+      g.player.setTestAim([0, -0.05, -1]);
+      await new Promise((r) => setTimeout(r, 300));
+      const ev = await window.__CF__.chargeAndFire(holdMs);
+      await new Promise((r) => setTimeout(r, 560));
+      const lit = {};
+      for (const m of g.cinderFall.meshes) lit[m.name] = m.visible;
+      const sp = g.cinderFall._sparkGeo.getAttribute('aSpawn');
+      const vel = g.cinderFall._sparkGeo.getAttribute('aVel');
+      let liveSpark = 0;
+      let moving = 0;
+      for (let i = 0; i < sp.count; i++) {
+        if (sp.getX(i) > 0) liveSpark++;
+        if (Math.hypot(vel.getX(i), vel.getY(i), vel.getZ(i)) > 0.1) moving++;
+      }
+      const u = g.cinderFall.uniforms;
+      return {
+        fired: !!ev, rocks: g.cinderDebugState().rocks, lit, liveSpark, moving,
+        tail: u.uTail.value.toArray(), head: u.uHead.value.toArray(),
+        trailFade: u.uTrailFade.value,
+      };
+    }, HOLD_CINDER_MS);
+    const shot = await page.screenshot();
+    const s = diffStats(baseline, shot);
+    console.log('CINDER_TRAIL', JSON.stringify({ st, s }));
+
+    expect(errs.length, `不得有 TSL/GPU 报错：${errs.slice(0, 3).join(' | ')}`).toBe(0);
+    expect(st.fired).toBe(true);
+    expect(st.rocks, '截图时岩石必须在飞').toBeGreaterThan(0);
+    expect(st.lit['cinder:flame'], '火焰尾巴必须上屏（用户点名要的）').toBe(true);
+    expect(st.lit['cinder:spark'], '火星必须上屏').toBe(true);
+    expect(st.lit['cinder:ember'], '余烬必须上屏').toBe(true);
+    // 尾巴两端必须真的分开（否则退化成一个点）
+    const tailLen = Math.hypot(st.head[0] - st.tail[0], st.head[1] - st.tail[1], st.head[2] - st.tail[2]);
+    expect(tailLen, `尾巴长度实测 ${tailLen}`).toBeGreaterThan(1);
+    expect(st.liveSpark, `飞行中必须已撒出火星（实测 ${st.liveSpark}）`).toBeGreaterThan(20);
+    // ⚠️ aVel 非零是 STREAK 拉伸的输入：零速度 ⇒ 全部退回圆点（用户读作爆米花）
+    expect(st.moving, `火星必须带速度（实测 ${st.moving}）`).toBeGreaterThan(20);
+    /**
+     * 像素色相判据：**冻结全局后只切 flame 一个变量**。
+     *
+     * ⚠️⚠️ 三个假红陷阱已实测排除（勿重试）：
+     * ① `warm/diff` 比值 —— diff 含烟的压暗（实测 9.4% 但画面正确）；
+     * ② 基于差分判青 —— 烟遮蓝水使 dr/dg 负得比 db 多（cyan≈warm）；
+     * ③ 绝对色+变亮 —— additive 把背后蓝天抬亮，仍满足 b>r。
+     * ④ **不冻结就拍两张** —— 岩石在飞、粒子在动，两张图差的是**整个场景**
+     *    （实测 coolAbs 138398，而画面里没青）。
+     *
+     * ⇒ 正解：先停掉岩石/粒子/相机的一切推进（冻住），再拍「flame 开/关」两张，
+     * 两张**只差 flame 这一个变量**（AGENTS.md：对照组必须同机位单变量）。
+     */
+    const hue = await page.evaluate(async () => {
+      const g = window.__MC_GAME__;
+      // 冻住：岩石不再推进、渲染器不再改 uniform/矩阵、粒子不再发射
+      g.entities.update = () => {};
+      g.cinderFall.update = () => {};
+      g.cinderFall.sync = () => {};
+      g._updateCinders = () => {};
+      const flame = g.cinderFall.meshes.find((m) => m.name === 'cinder:flame');
+      for (const m of g.cinderFall.meshes) m.visible = false;
+      // ⚠️ 冻住后 `uTime` 不再推进 ⇒ 火焰噪声停在某一帧，可能正好很细。
+      // 手动把它推到一个**中游时刻**（与基准帧同一时钟）⇒ 两张图只差 flame 开关。
+      const u = g.cinderFall.uniforms;
+      u.uTime.value = performance.now() / 1000;
+      u.uTrailFade.value = 1;
+      u.uTrailBurn.value = 0;
+      await new Promise((r) => setTimeout(r, 150));
+      window.__FLAME__ = flame;
+      return true;
+    });
+    expect(hue).toBe(true);
+    const offShot = await page.screenshot();
+    await page.evaluate(() => { window.__FLAME__.visible = true; });
+    await page.waitForTimeout(150);
+    const onShot = await page.screenshot();
+    let warmAbs = 0;
+    let coolAbs = 0;
+    {
+      const a = PNG.sync.read(offShot);
+      const b = PNG.sync.read(onShot);
+      for (let i = 0; i < a.data.length; i += 4) {
+        const dr = b.data[i] - a.data[i];
+        const dg = b.data[i + 1] - a.data[i + 1];
+        const db = b.data[i + 2] - a.data[i + 2];
+        if (Math.abs(dr) + Math.abs(dg) + Math.abs(db) < 20) continue;
+        const r = b.data[i], g2 = b.data[i + 1], bl = b.data[i + 2];
+        if (r > bl + 30 && r > 90) warmAbs++;
+        else if (bl > r + 30 && g2 > r + 15) coolAbs++;
+      }
+    }
+    console.log('CINDER_TRAIL_HUE', JSON.stringify({ warmAbs, coolAbs, warm: s.warm }));
+    expect(s.warm, `暖色像素实测 ${s.warm}`).toBeGreaterThan(3000);
+    /**
+     * 判据取**暖:冷 比例**，不钉绝对像素下限。
+     *
+     * ⚠️ 冻结后火焰噪声停在某一帧，绝对像素数随那一帧的肥瘦漂
+     * （实测 149 / 96 / 97）—— 钉任何硬下限都是 flaky。
+     * 而**色相比例稳定**（实测 74× / 96×）；链式 .mix() 缺陷下 flame 自身
+     * warmPct 仅 **0.4%**（冷色占主导）⇒ 比例判据两侧有判别力。
+     * 「尾巴真的上屏了吗」已由上方 `s.warm > 3000` 回答，不重复钉。
+     */
+    expect(warmAbs, `尾巴自身必须是暖色主导（warm=${warmAbs} cool=${coolAbs}）`)
+      .toBeGreaterThan(Math.max(20, coolAbs * 3));
+  });
+
+  /**
+   * ⚠️⚠️ 用户 2026-11-19：「火焰球的前进方向侧，前面是平的，而不是尖的，
+   * 平的不好看，希望从平头改成椭圆头或者尖头」。
+   *
+   * 判据落在**真实 ribbon 几何的半宽序列**上（而不是目视）：
+   * 平头 = 末端半宽仍接近最大值后突然截断；椭圆头 = 单调收拢到 ~0。
+   * 在 CPU 侧复算顶点（读真实几何属性 + uniform），与 shader 同公式。
+   */
+  test('鼻锥：火焰尾巴前端是椭圆尖头（半宽单调收拢到 0，不是平截）', async ({ page }) => {
+    test.setTimeout(180_000);
+    const errs = [];
+    page.on('console', (m) => { if (m.type() === 'error') errs.push(m.text()); });
+    page.on('pageerror', (e) => errs.push(String(e)));
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.goto(`/?seed=${SEED}&vd=6&shadows=0&reflect=0`);
+    await waitWorldReady(page);
+    await gotoOpenField(page);
+    await setupVisual(page);
+    await installHelpers(page);
+
+    const r = await page.evaluate(async (holdMs) => {
+      const g = window.__MC_GAME__;
+      g.player.setTestAim([0, -0.05, -1]);
+      await new Promise((res) => setTimeout(res, 300));
+      await window.__CF__.chargeAndFire(holdMs);
+      await new Promise((res) => setTimeout(res, 520));
+      // 冻住推进（否则量到的是下一帧的几何）
+      g.entities.update = () => {};
+      g._updateCinders = () => {};
+      const cf = g.cinderFall;
+      cf.update = () => {};
+      cf.sync = () => {};
+      const THREE = await import('three');
+      const { CINDER_FX: FX } = await import('/src/render/cinder-fall-config.js');
+      const u = cf.uniforms;
+      const tail = u.uTail.value.clone();
+      const head = u.uHead.value.clone();
+      const axis = head.clone().sub(tail);
+      const axisLen = Math.max(axis.length(), 1e-4);
+      const dir = axis.clone().divideScalar(axisLen);
+      const noseLen = FX.trailNoseLength;
+      const noseStart = axisLen / (axisLen + noseLen);
+      const sm = (a, b, v) => {
+        const k = Math.min(1, Math.max(0, (v - a) / (b - a)));
+        return k * k * (3 - 2 * k);
+      };
+      const radiusProfile = (x) => {
+        const body = (0.34 + 0.66 * Math.pow(x, 0.55))
+          * (1 + FX.trailWakeSpread * Math.pow(1 - x, 1.8));
+        return body * (1 + (FX.trailHeadSize - 1) * sm(0.62, 1, x));
+      };
+      const pos = cf.flameMesh.geometry.getAttribute('position');
+      const samples = [];
+      for (let i = 0; i < pos.count; i += 2) {
+        const t = pos.getX(i);
+        const inNose = t >= noseStart;
+        const bodyT = Math.min(1, Math.max(0, t / Math.max(noseStart, 1e-4)));
+        const s = Math.min(1, Math.max(0, (t - noseStart) / Math.max(1 - noseStart, 1e-4)));
+        const taper = inNose ? Math.sqrt(Math.max(0, 1 - s * s)) : FX.trailNoseJoin;
+        const halfWidth = FX.trailWidth * radiusProfile(bodyT) * taper;
+        const center = inNose
+          ? head.clone().add(dir.clone().multiplyScalar(noseLen * s))
+          : tail.clone().add(axis.clone().multiplyScalar(bodyT));
+        samples.push({
+          fwd: center.clone().sub(tail).dot(dir),
+          halfWidth, inNose,
+        });
+      }
+      const nose = samples.filter((x) => x.inNose);
+      const last = samples[samples.length - 1];
+      return {
+        visible: cf.flameMesh.visible,
+        axisLen, noseStart, noseLen,
+        noseRings: nose.length,
+        tipHalfWidth: last.halfWidth,
+        tipFwd: last.fwd,
+        headFwd: axisLen,
+        maxHalfWidth: Math.max(...samples.map((x) => x.halfWidth)),
+        noseWidths: nose.map((x) => +x.halfWidth.toFixed(4)),
+      };
+    }, HOLD_CINDER_MS);
+    console.log('CINDER_NOSE', JSON.stringify(r));
+
+    expect(errs.length, `不得有 TSL/GPU 报错：${errs.slice(0, 3).join(' | ')}`).toBe(0);
+    expect(r.visible, '尾巴必须上屏').toBe(true);
+    // ① 尖端必须真的收到零（平头的特征是末端半宽≈最大值）
+    expect(r.tipHalfWidth, `尖端半宽实测 ${r.tipHalfWidth}`).toBeLessThan(0.02);
+    expect(r.tipHalfWidth / r.maxHalfWidth, '尖端不得超过最大宽的 2%')
+      .toBeLessThan(0.02);
+    // ② 尖端必须**前伸过岩石中心**（否则仍在球心处被直边截断）
+    expect(r.tipFwd - r.headFwd, `前伸量实测 ${(r.tipFwd - r.headFwd).toFixed(3)}`)
+      .toBeGreaterThan(0.8);
+    // ③ 鼻锥内采样要够密（否则椭圆退化成多边形斜切面）
+    expect(r.noseRings, `鼻锥环数实测 ${r.noseRings}`).toBeGreaterThanOrEqual(8);
+    // ④ 半宽必须**单调不增**（台阶/回升 = 接缝处有平边）
+    for (let i = 1; i < r.noseWidths.length; i++) {
+      expect(r.noseWidths[i], `鼻锥半宽必须单调收拢（i=${i}）`)
+        .toBeLessThanOrEqual(r.noseWidths[i - 1] + 1e-6);
+    }
+  });
+
+  test('落点爆炸：火星大量喷出（≥150）且带速度，不是只有一圈光环', async ({ page }) => {
+    test.setTimeout(180_000);
+    const errs = [];
+    page.on('console', (m) => { if (m.type() === 'error') errs.push(m.text()); });
+    page.on('pageerror', (e) => errs.push(String(e)));
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.goto(`/?seed=${SEED}&vd=6&shadows=0&reflect=0`);
+    await waitWorldReady(page);
+    await gotoOpenField(page);
+    await setupVisual(page);
+    await installHelpers(page);
+
+    const r = await page.evaluate(async (holdMs) => {
+      const g = window.__MC_GAME__;
+      // 俯视近处地面：落点必须在相机视野内（远处水下的落点会被地形遮住 ⇒ 零判别力）
+      g.player.setTestAim([0, -0.55, -1]);
+      await new Promise((res) => setTimeout(res, 300));
+      const b0 = g.cinderDebugState().blasts;
+      const ev = await window.__CF__.chargeAndFire(holdMs);
+      // 等真的炸了（不猜毫秒：岩石飞满瞄准点后还要下落一段）
+      const t0 = performance.now();
+      while (g.cinderDebugState().blasts === b0 && performance.now() - t0 < 12000) {
+        await new Promise((res) => setTimeout(res, 50));
+      }
+      const sp = g.cinderFall._sparkGeo.getAttribute('aSpawn');
+      const vel = g.cinderFall._sparkGeo.getAttribute('aVel');
+      let liveSpark = 0;
+      let fast = 0;
+      for (let i = 0; i < sp.count; i++) {
+        if (sp.getX(i) > 0) liveSpark++;
+        if (Math.hypot(vel.getX(i), vel.getY(i), vel.getZ(i)) > 3) fast++;
+      }
+      const em = g.cinderFall._emberGeo.getAttribute('aSpawn');
+      let liveEmber = 0;
+      for (let i = 0; i < em.count; i++) if (em.getX(i) > 0) liveEmber++;
+      const lit = {};
+      for (const m of g.cinderFall.meshes) lit[m.name] = m.visible;
+      return {
+        fired: !!ev, blasts: g.cinderDebugState().blasts - b0,
+        liveSpark, fast, liveEmber, lit,
+      };
+    }, HOLD_CINDER_MS);
+    const shot = await page.screenshot();
+    console.log('CINDER_BLAST_SPARKS', JSON.stringify(r));
+
+    expect(errs.length, `不得有 TSL/GPU 报错：${errs.slice(0, 3).join(' | ')}`).toBe(0);
+    expect(r.fired).toBe(true);
+    expect(r.blasts, '必须真的炸了').toBe(1);
+    // 上游 burstSparks 180 / burstEmbers 260 ⇒ 环形缓冲里至少留这么多
+    expect(r.liveSpark, `落点火星数实测 ${r.liveSpark}`).toBeGreaterThanOrEqual(150);
+    expect(r.liveEmber, `落点余烬数实测 ${r.liveEmber}`).toBeGreaterThanOrEqual(200);
+    // ⚠️ **高速**是「爆炸」与「烟花」的分界：慢速圆点飘散读作烟花
+    expect(r.fast, `高速火星数实测 ${r.fast}（速度 >3 格/秒）`).toBeGreaterThan(100);
+    expect(r.lit['cinder:smoke'], '烟必须上屏（遮挡 = 爆炸的层次）').toBe(true);
+    expect(shot.length).toBeGreaterThan(1000);
+  });
+
   test('岩石真的上屏，且是暖橙簇（不是纯黑 / 不是雾色）', async ({ page }) => {
     test.setTimeout(180_000);
     const errs = [];

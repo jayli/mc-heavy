@@ -117,9 +117,10 @@ test('cinder catalog: 手点与 Storm Lance 同一个（蓄力球在手里，岩
   assertDeepEqual(CFG().handOffset, SL().handOffset);
 });
 
-test('cinder: 落点特效单槽前提 —— 最长视觉 < 最小施法间隔（载荷性推导）', () => {
+test('cinder: 落点特效单槽前提 —— 最长视觉 < 最小施法间隔（载荷性推导）', async () => {
   const c = CFG();
   const s = SL();
+  const { CINDER_FX } = await import('../render/cinder-fall-config.js');
   // 飞行 + 落点余烬（保守 1.5s，碎块寿命 620ms 之上留余量）
   const visual = c.range / c.speed + 1.5;
   const gap = s.chargeDelaySeconds + s.chargeSeconds + c.chargeSeconds;
@@ -127,6 +128,14 @@ test('cinder: 落点特效单槽前提 —— 最长视觉 < 最小施法间隔�
     `视觉 ${visual.toFixed(3)} 必须 < 最小间隔 ${gap}，否则两次爆炸重叠、单槽不成立`);
   assertTrue(c.cooldown >= gap,
     `冷却 ${c.cooldown} 必须 ≥ 最小施法间隔 ${gap}（否则连发时冷却先于蓄力结束）`);
+  /**
+   * ⚠️ **火焰尾巴也是单槽**（v3.21b）⇒ 它的「飞行 + 烧回」也得装进同一个间隔。
+   * 不钉这条的形态：连发时前一发的尾巴被后一发**抢走 head/tail**，
+   * 读作尾巴瞬间跳到新岩石上（而计数类判据全绿）。
+   */
+  const trailVisual = c.range / c.speed + CINDER_FX.trailBurnout;
+  assertTrue(trailVisual < gap,
+    `尾巴视觉 ${trailVisual.toFixed(3)}（飞行+烧回）必须 < 最小间隔 ${gap}`);
 });
 
 test('cinder: 碎块池账 —— Cinder + 焰魔死亡 + 焰魔砸击 ≤ 池容量', async () => {

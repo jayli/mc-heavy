@@ -27,6 +27,10 @@
 import * as THREE from 'three';
 import { CINDER_FX as FX } from './cinder-fall-config.js';
 import { createCinderMaterials } from './cinder-fall-material.js';
+import {
+  createFlameRibbonGeometry, createCinderParticleGeometry,
+} from './cinder-fall-geometry.js';
+import { cinderArcPoint } from '../player/weapons/cinder-fall.js';
 import { CINDER_TYPE } from '../entities/cinder/cinder-system.js';
 
 const _mat = new THREE.Matrix4();
@@ -37,9 +41,30 @@ const _spinAxis = new THREE.Vector3();
 const _zero = new THREE.Matrix4().makeScale(0, 0, 0);
 const _up = new THREE.Vector3(0, 1, 0);
 const _toCam = new THREE.Vector3();
+const _vel = new THREE.Vector3();
+const _emitAt = new THREE.Vector3();
+const _back = new THREE.Vector3();
+const _head = new THREE.Vector3();
+const _tail = new THREE.Vector3();
+const _prevHead = new THREE.Vector3();
 // 冲击环定向用的两个固定轴（模块级复用，不在 burst 里新建 Vector3）
 const _zAxis = new THREE.Vector3(0, 0, 1);
 const _xAxis = new THREE.Vector3(1, 0, 0);
+
+/**
+ * 分数速率累加器（照 Storm Lance 的 `RateAcc` / 上游 `RateEmitter`）。
+ * 直接 `Math.round(rate*dt)` 在低速率下会因取整而永不发射或恒发射。
+ */
+class RateAcc {
+  constructor() { this.acc = 0; }
+  reset() { this.acc = 0; }
+  tick(dt, rate) {
+    this.acc += rate * dt;
+    const n = Math.floor(this.acc);
+    this.acc -= n;
+    return n;
+  }
+}
 
 const sat = (x) => Math.max(0, Math.min(1, x));
 /** outQuint —— **冲击力的来源**（前 20% 冲掉 2/3）；outCubic 读作慢胀 */
@@ -130,8 +155,60 @@ export class CinderFallRenderer {
     this.shockMesh = new THREE.Mesh(shockGeo, mats.shock);
     this.shockMesh.name = 'cinder:shock';
 
-    /** 四个 mesh（供水面倒影的 hidden 列表展开） */
-    this.meshes = [this.rockMesh, this.haloMesh, this.burstMesh, this.shockMesh];
+    /**
+     * ⑤ 火焰尾巴（相机朝向 ribbon，单槽）。
+     * ⚠️ 单槽与爆壳同理：冷却 3.0s > 飞行 1.11s + 烧回 1.2s（关系式单测钉）。
+     * 多发同时在飞时尾巴只跟**最新那一发**（最早那发仍有自己的光晕）。
+     */
+    const flameGeo = createFlameRibbonGeometry(FX.trailNodes);
+    this._geos.push(flameGeo);
+    this.flameMesh = new THREE.Mesh(flameGeo, mats.flame);
+    this.flameMesh.name = 'cinder:flame';
+
+    // ---- ⑥⑦⑧ GPU 粒子池：火星（条状）/ 余烬（圆点）/ 烟（遮挡）----
+    const sparkGeo = createCinderParticleGeometry(FX.sparkCapacity);
+    const emberGeo = createCinderParticleGeometry(FX.sparkCapacity);
+    const smokeGeo = createCinderParticleGeometry(FX.smokeCapacity);
+    this._geos.push(sparkGeo, emberGeo, smokeGeo);
+    this._sparkGeo = sparkGeo;
+    this._emberGeo = emberGeo;
+    this._smokeGeo = smokeGeo;
+    this._sparkSlot = 0;
+    this._emberSlot = 0;
+    this._smokeSlot = 0;
+    /**
+     * ⚠️⚠️ **粒子用 `THREE.Mesh` + InstancedBufferGeometry，不能用 `InstancedMesh`**
+     * （照 `storm-lance-renderer.js:131` 的 `mk()`，已验证的做法）。
+     *
+     * `InstancedMesh` 会在 shader 里额外乘上它自己的 `instanceMatrix`（此处恒为单位阵，
+     * 因为位置全由 `aOrigin` 给）—— 而 `modelViewMatrix` 已被它接管，
+     * 导致粒子全部塌到原点附近。实测形态：落点变成**一条白色竖糊**而不是爆炸，
+     * 而 `visible` / 存活计数 / draw call / 零 console 错误 **全绿**。
+     */
+    this.sparkMesh = new THREE.Mesh(sparkGeo, mats.spark);
+    this.sparkMesh.name = 'cinder:spark';
+    this.emberMesh = new THREE.Mesh(emberGeo, mats.ember);
+    this.emberMesh.name = 'cinder:ember';
+    this.smokeMesh = new THREE.Mesh(smokeGeo, mats.smoke);
+    this.smokeMesh.name = 'cinder:smoke';
+    // 粒子自己管 boundingSphere（1e4），但 InstancedMesh 另算一份 ⇒ 关掉剔除
+    this._sparkAcc = new RateAcc();
+    this._emberAcc = new RateAcc();
+    this._smokeAcc = new RateAcc();
+    /** 粒子最后一次发射时刻（空闲两个寿命后隐藏 mesh，让在飞的自然衰亡） */
+    this._particleLastEmit = -1;
+    /** 尾巴烧回：岩石消失时刻（-1 = 还在飞） */
+    this._trailGoneAt = -1;
+    this._trailLaunch = null;
+    this._trailProg = 0;
+    this._lastTrailT = -1;
+
+    /** 八个 mesh（供水面倒影的 hidden 列表展开） */
+    this.meshes = [
+      this.rockMesh, this.haloMesh, this.flameMesh,
+      this.sparkMesh, this.emberMesh, this.smokeMesh,
+      this.burstMesh, this.shockMesh,
+    ];
     for (const m of this.meshes) {
       m.frustumCulled = false;
       m.renderOrder = FX.renderOrder;
@@ -160,7 +237,9 @@ export class CinderFallRenderer {
   }
 
   get active() {
-    return this._slots.size > 0 || this._burstAt >= 0 || this._shockAt >= 0;
+    return this._slots.size > 0 || this._burstAt >= 0 || this._shockAt >= 0
+      || this.flameMesh.visible || this.sparkMesh.visible
+      || this.emberMesh.visible || this.smokeMesh.visible;
   }
 
   /** 只读 slot 数（测试钩子：验证三条回收路径都归还了 slot） */
@@ -201,10 +280,16 @@ export class CinderFallRenderer {
      */
     if (this._countKnown && this._rockCount === 0 && this._slots.size === 0) {
       if (this.rockMesh.visible) { this.rockMesh.visible = false; this.haloMesh.visible = false; }
+      /**
+       * ⚠️ **早退也必须启动尾巴烧回**：`void` 回收路径（掉出世界底/超时）**不走 burst()**，
+       * 若只靠 burst 置 `_trailGoneAt`，那条路径下尾巴会**永远停在满亮度**（泄漏）。
+       */
+      if (this.flameMesh.visible && this._trailGoneAt < 0) this._trailGoneAt = tSec;
       return;
     }
     const live = new Set();
     let maxHeat = 0;
+    let headFound = false;
     for (const entity of entities) {
       if (entity.type !== CINDER_TYPE) continue;
       const p = entity.state?.position;
@@ -237,6 +322,34 @@ export class CinderFallRenderer {
       _scale.setScalar(haloSize);
       _mat.compose(_pos, cameraQuat || _quat.identity(), _scale);
       this.haloMesh.setMatrixAt(slot, _mat);
+
+      /**
+       * 火焰尾巴：中心线**从弹道推导**而不是记录历史（上游 `_updateTrail` 同口径）。
+       * ⇒ 尾巴天然贴着抛物线弯，而不是一条直线。
+       * 取「最新那一发」作头（多发时只有一条尾巴，单槽前提见构造器）。
+       */
+      const lc = entity.state.launch;
+      if (lc && Array.isArray(lc.origin) && Array.isArray(lc.target)) {
+        const d = lc.distance > 0 ? lc.distance : 1;
+        const prog = sat((entity.state.traveled ?? 0) / d);
+        _head.set(p[0], p[1], p[2]);
+        // 尾端：沿弹道往回 trailSpan 格（不越过手点）
+        const spanT = Math.min(prog, FX.trailSpan / d);
+        const tailP = cinderArcPoint(lc, Math.max(0, prog - spanT));
+        _tail.set(tailP[0], tailP[1], tailP[2]);
+        this._trailLaunch = lc;
+        this._trailProg = prog;
+        headFound = true;
+        this._trailGoneAt = -1;
+        this.uniforms.uTail.value.copy(_tail);
+        this.uniforms.uHead.value.copy(_head);
+        this.uniforms.uTrailFade.value = 1;
+        this.uniforms.uTrailBurn.value = 0;
+        // 尾巴方向（向后）—— 粒子沿它喷
+        _back.subVectors(_tail, _head);
+        if (_back.lengthSq() < 1e-8) _back.set(0, 0, 1);
+        _back.normalize();
+      }
     }
     for (const [id, slot] of [...this._slots]) {
       if (live.has(id)) continue;
@@ -250,6 +363,107 @@ export class CinderFallRenderer {
     this.rockMesh.visible = any;
     this.haloMesh.visible = any;
     this.uniforms.uHeat.value = maxHeat;
+    // 岩石没了 ⇒ 尾巴开始烧回头（不硬切，上游 trailBurnout）
+    if (!headFound && this.flameMesh.visible && this._trailGoneAt < 0) {
+      this._trailGoneAt = tSec;
+    }
+    if (headFound) this.flameMesh.visible = true;
+    // 沿弧撒粒子（仅在真的在飞时）
+    if (headFound) this._emitTrailParticles(tSec);
+  }
+
+  /**
+   * 沿本帧走过的弧段撒火星 / 余烬 / 烟。
+   *
+   * ⚠️⚠️ **必须分多批沿弧撒**（上游 `TRAIL_BATCHES = 3`）：岩石 18 格/秒，
+   * 一帧跑 0.3 格 ⇒ 全部从头部发射会让尾巴读作**一串 beads**（上游注释明确点出）。
+   *
+   * ⚠️ 零分配：用模块级 `_emitAt` / `_vel`，不新建 Vector3。
+   * @param {number} tSec 绝对秒
+   */
+  _emitTrailParticles(tSec) {
+    const dt = this._lastTrailT >= 0 ? Math.min(0.1, Math.max(0, tSec - this._lastTrailT)) : 0;
+    this._lastTrailT = tSec;
+    if (dt <= 0) return;
+    const lc = this._trailLaunch;
+    if (!lc) return;
+    const d = lc.distance > 0 ? lc.distance : 1;
+    const prog = sat(this._trailProg ?? 0);
+    const spanT = Math.min(prog, FX.trailSpan / d);
+    const lo = Math.max(0, prog - spanT);
+
+    const nSpark = this._sparkAcc.tick(dt, FX.sparkRate);
+    if (nSpark > 0) {
+      const batches = Math.min(nSpark, FX.trailBatches);
+      const per = Math.ceil(nSpark / batches);
+      let left = nSpark;
+      while (left > 0) {
+        const p = cinderArcPoint(lc, lo + (prog - lo) * Math.random());
+        _emitAt.set(p[0], p[1], p[2]);
+        const n = Math.min(per, left);
+        this._emitCone(n, _emitAt, _back, FX.sparkSpeed, FX.sparkLifetime,
+          FX.sparkSize, tSec, 'spark', 0.95);
+        left -= n;
+      }
+    }
+    const nEmber = this._emberAcc.tick(dt, FX.emberRate);
+    if (nEmber > 0) {
+      const batches = Math.min(nEmber, FX.trailBatches);
+      const per = Math.ceil(nEmber / batches);
+      let left = nEmber;
+      while (left > 0) {
+        const p = cinderArcPoint(lc, lo + (prog - lo) * Math.random());
+        _emitAt.set(p[0], p[1], p[2]);
+        const n = Math.min(per, left);
+        this._emitCone(n, _emitAt, _back, FX.emberSpeed, FX.emberLifetime,
+          FX.emberSize, tSec, 'ember', 0.85);
+        left -= n;
+      }
+    }
+    const nSmoke = this._smokeAcc.tick(dt, FX.smokeRate);
+    if (nSmoke > 0) {
+      const p = cinderArcPoint(lc, lo + (prog - lo) * Math.random());
+      _emitAt.set(p[0], p[1], p[2]);
+      this._emitCone(nSmoke, _emitAt, _back, FX.smokeSpeed, FX.smokeLifetime,
+        FX.smokeSize, tSec, 'smoke', 0.75);
+    }
+  }
+
+  /**
+   * 写一个粒子 slot。CPU 只写出生数据，运动全在 GPU。
+   * `aSpawn` 与 `uTime` **同一个时钟**（绝对秒）。
+   */
+  _push(kind, pos, vel, life, size, tSec) {
+    const g = kind === 'spark' ? this._sparkGeo : kind === 'ember' ? this._emberGeo : this._smokeGeo;
+    const cap = kind === 'smoke' ? FX.smokeCapacity : FX.sparkCapacity;
+    const key = kind === 'spark' ? '_sparkSlot' : kind === 'ember' ? '_emberSlot' : '_smokeSlot';
+    const i = this[key];
+    this[key] = (i + 1) % cap;
+    g.getAttribute('aOrigin').setXYZ(i, pos.x, pos.y, pos.z);
+    g.getAttribute('aVel').setXYZ(i, vel.x, vel.y, vel.z);
+    g.getAttribute('aSpawn').setX(i, tSec);
+    g.getAttribute('aLife').setX(i, life);
+    g.getAttribute('aSize').setX(i, size);
+    g.getAttribute('aSeed').setX(i, Math.random() * 100);
+    for (const name of ['aOrigin', 'aVel', 'aSpawn', 'aLife', 'aSize', 'aSeed']) {
+      g.getAttribute(name).needsUpdate = true;
+    }
+    this._particleLastEmit = tSec;
+  }
+
+  /** 一簇粒子（给定中心与主方向，锥形散布）。零分配：用模块级 _vel。 */
+  _emitCone(count, center, dir, speed, life, size, tSec, kind, spread) {
+    for (let i = 0; i < count; i++) {
+      _vel.set(
+        dir.x + (Math.random() - 0.5) * spread,
+        dir.y + (Math.random() - 0.5) * spread + 0.25,
+        dir.z + (Math.random() - 0.5) * spread,
+      ).normalize().multiplyScalar(speed * (0.6 + Math.random() * 0.8));
+      this._push(kind, center, _vel, life * (0.7 + Math.random() * 0.6),
+        size * (0.6 + Math.random() * 0.8), tSec);
+    }
+    const mesh = kind === 'spark' ? this.sparkMesh : kind === 'ember' ? this.emberMesh : this.smokeMesh;
+    mesh.visible = true;
   }
 
   /**
@@ -295,11 +509,50 @@ export class CinderFallRenderer {
       // 无法线信息（旧调用方/空气）⇒ 沿用贴地
       this.shockMesh.quaternion.setFromAxisAngle(_xAxis, -Math.PI / 2);
     }
+    /**
+     * ⚠️⚠️ **环必须沿法线抬离表面一点点**（实测：不抬时它渲染 **0 像素**）。
+     *
+     * v3.21 把落点改成了**真实表面接触点**，而环是贴在那个面上的平面：
+     * 与地面**共面** ⇒ `depthTest:true` 下被地面完全遮住（z-fight 全输）。
+     * 形态：`shockMesh.visible=true` / age / fade 全对而**画面上什么都没有**。
+     * 上游同类贴花均带高度偏移（`DecalType.SCORCH` 的 `height: 0.015`）。
+     * 取 0.03 格（远小于一个体素，读不出浮空）。
+     */
+    _toCam.set(0, 0, 1).applyQuaternion(this.shockMesh.quaternion);
+    this.shockMesh.position.addScaledVector(_toCam, FX.shockLift);
     this.shockMesh.visible = true;
     this.uniforms.uBurstAge.value = 0;
     this.uniforms.uBurstFade.value = 1;
     this.uniforms.uShockAge.value = 0;
     this.uniforms.uShockFade.value = 1;
+
+    /**
+     * ⚠️⚠️ **落点大喷发**（用户 2026-11-19：「爆炸的时候蹦出的火星粒子很多，
+     * 是爆炸的样子，而不是现在一样像烟花」）。
+     *
+     * 上游 `MeteorAbility.onImpact` 一次喷：embers 260 / sparks 180 / smoke 70，
+     * 速度分别是飞行期的 2.6 / 2.4 / 2.6 倍，主方向**向上**（setY(0.6) / (0,1,0)）。
+     * 旧实现零火星 ⇒ 只有一圈光环扩开 = 烟花。
+     *
+     * ⚠️ 三类分工不能合并：火星是**条状高速**（爆炸的锐利感），
+     * 余烬是**圆点上浮**（燃烧感），烟是**遮挡**（层次感）。
+     */
+    const tSec = nowMs / 1000;
+    _emitAt.set(at[0], at[1] + FX.burstSize * 0.12, at[2]);
+    _back.set(0, 0.6, 0).normalize();
+    this._emitCone(FX.burstSparks, _emitAt, _back,
+      FX.sparkSpeed * FX.sparkBurstSpeedMul, FX.sparkLifetime * 1.6,
+      FX.sparkSize * 1.5, tSec, 'spark', 2.0);
+    this._emitCone(FX.burstEmbers, _emitAt, _back,
+      FX.emberSpeed * FX.emberBurstSpeedMul, FX.emberLifetime * 1.5,
+      FX.emberSize * 1.4, tSec, 'ember', 2.0);
+    _emitAt.set(at[0], at[1] + 0.2, at[2]);
+    _back.set(0, 1, 0);
+    this._emitCone(FX.burstSmoke, _emitAt, _back,
+      FX.smokeSpeed * 2.6, FX.smokeLifetime * 1.6,
+      FX.smokeSize * 1.5, tSec, 'smoke', 1.0);
+    // 岩石已炸 ⇒ 尾巴从头部烧回去
+    if (this._trailGoneAt < 0) this._trailGoneAt = tSec;
   }
 
   /**
@@ -310,7 +563,45 @@ export class CinderFallRenderer {
   update(nowMs, _dt = 0) {
     if (!Number.isFinite(nowMs)) return;
     const u = this.uniforms;
-    u.uTime.value = nowMs / 1000;
+    const tSec = nowMs / 1000;
+    u.uTime.value = tSec;
+
+    /**
+     * 尾巴烧回（上游 `trailBurnout`）：岩石没了之后尾巴**从头部往尾端吃掉**
+     * 并变细变冷，而不是直接 invisible（硬切会让尾巴凭空消失）。
+     */
+    if (this.flameMesh.visible) {
+      if (this._trailGoneAt >= 0) {
+        const burn = sat((tSec - this._trailGoneAt) / Math.max(0.05, FX.trailBurnout));
+        u.uTrailBurn.value = burn;
+        u.uTrailFade.value = 1 - burn * burn;
+        if (burn >= 1) {
+          this.flameMesh.visible = false;
+          u.uTrailFade.value = 0;
+          this._trailGoneAt = -1;
+          this._trailLaunch = null;
+          this._lastTrailT = -1;
+          this._sparkAcc.reset();
+          this._emberAcc.reset();
+          this._smokeAcc.reset();
+        }
+      } else {
+        u.uTrailBurn.value = 0;
+        u.uTrailFade.value = 1;
+      }
+    }
+
+    /**
+     * 粒子池：最后一次发射后过两个最长寿命才隐藏 —— 让已在飞的**自然衰亡**。
+     * 硬切会让尾巴上的火星凭空消失（与 Storm Lance 同口径）。
+     */
+    if (this._particleLastEmit >= 0
+      && tSec - this._particleLastEmit > FX.particleIdleSeconds) {
+      this.sparkMesh.visible = false;
+      this.emberMesh.visible = false;
+      this.smokeMesh.visible = false;
+      this._particleLastEmit = -1;
+    }
     if (this._burstAt >= 0) {
       const k = (nowMs - this._burstAt) / (FX.burstLifeSeconds * 1000);
       if (k >= 1) {
@@ -340,7 +631,9 @@ export class CinderFallRenderer {
   dispose() {
     for (const m of this.meshes) this.scene.remove(m);
     for (const g of this._geos) g.dispose();
-    for (const key of ['rock', 'burst', 'shock']) this._mats[key].dispose();
+    for (const key of ['rock', 'flame', 'spark', 'ember', 'smoke', 'burst', 'shock']) {
+      this._mats[key].dispose();
+    }
     this._haloMaterial.dispose();
     if (this._ownsHaloTexture) this._haloTexture.dispose();
     this.rockMesh.dispose();
@@ -349,5 +642,7 @@ export class CinderFallRenderer {
     this._slots.clear();
     this._burstAt = -1;
     this._shockAt = -1;
+    this._trailGoneAt = -1;
+    this._particleLastEmit = -1;
   }
 }
