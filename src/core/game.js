@@ -33,9 +33,11 @@ import { ViewArm } from '../render/view-arm.js';
 import { WEAPON_IDS, WEAPONS } from '../player/weapons/weapon-catalog.js';
 import { TracerRenderer } from '../render/tracer-renderer.js';
 import { ExplosionRenderer } from '../render/explosion-renderer.js';
-import { BlockHitFxRenderer, IGNIS_DEATH_BURST, smashRingCenter } from '../render/block-hit-fx.js';
+import { BlockHitFxRenderer, IGNIS_DEATH_BURST } from '../render/block-hit-fx.js';
 import { FlameSigilRenderer, loadFlameSigilTexture, sigilSpawnPoints } from '../render/flame-sigil.js';
 import { SpikeFxRenderer, spikeSpawnPoints } from '../render/spike-fx.js';
+// v3.22：持盾冲撞 / 举盾砸击的扩散火圈（取代原碎石圆环）
+import { FireRingRenderer } from '../render/fire-ring-renderer.js';
 import { createAtlasColorResolver } from '../render/block-color.js';
 import {
   ExplosionSpriteRenderer, loadExplosionSpriteTexture,
@@ -988,6 +990,11 @@ export class Game {
     // 原版无尖刺素材（它是把地面方块整块掀飞），本仓新建几何 —— 用户裁定「火焰尖锥」。
     this.spikeFx = new SpikeFxRenderer({ scene: this.scene });
 
+    // v3.22：持盾冲撞 / 举盾砸击的**扩散火圈**（程序化几何 + TSL，零贴图依赖 ⇒ 恒装配）。
+    // 用户 2026-11-20：「把地上扬起的碎石块的特效改为扩散火圈……以焰魔为中心」。
+    // 空闲时全部 mesh visible=false ⇒ 0 draw call，bench 冻结基线逐位不变。
+    this.fireRing = new FireRingRenderer({ scene: this.scene });
+
     // v3.20：持剑蓄力大招 Storm Lance（程序化几何 + TSL，**零贴图依赖** ⇒ 恒装配）。
     // 单槽：总视觉时长 1.773s < 蓄力 2.0s ⇒ 两道闪电不可能重叠（推导见渲染器文件头）。
     // 空闲时七个 mesh 全部 visible=false ⇒ 0 draw call，bench 冻结基线逐位不变。
@@ -1496,6 +1503,8 @@ export class Game {
       this.flameSigil?.update(nowMs);
       // v3.06：焰魔尖刺推进（递延升起 / 保持 / 缩回；全部结束后 visible=false）
       this.spikeFx?.update(nowMs);
+      // v3.22：焰魔扩散火圈推进（半径外扩 / 末段淡出 / 环缘撒火星；结束后 visible=false）
+      this.fireRing?.update(nowMs);
       // v3.20：Storm Lance 蓄力环 + 闪电推进。
       // ⚠️ **读 controller 的轻量字段，不调 `weaponDebugState()`** —— 后者是调试 API，
       // 它每帧遍历全部音频计数 Map + 构造两个对象，把它放进帧循环是白付热路径成本（红线 3 精神）。
@@ -1822,6 +1831,8 @@ export class Game {
     if (this.stormLance) hidden.push(...this.stormLance.meshes);
     // v3.21：岩石与落点特效同理（四个 mesh）—— 反射 pass 的成本主杠杆是 draw call 数。
     if (this.cinderFall) hidden.push(...this.cinderFall.meshes);
+    // v3.22：焰魔火圈同理（环 + 火星）—— 反射 pass 的成本主杠杆是 draw call 数。
+    if (this.fireRing) hidden.push(...this.fireRing.meshes);
     this.ocean.renderReflection(cam, this.ocean.plane.material, hidden);
   }
 
@@ -3921,7 +3932,7 @@ export class Game {
    *
    * ⚠️ **招式过滤在这里，不在 Agent 里**：Agent 四招都产请求，
    * 「哪些招出哪种特效」是装配层的决定（同构层不做装配层的事）。
-   * `swing` / `spin` 本轮不出特效（原版它们的特效是剑尖拖焰，未选）。
+   * `swing` 本轮不出特效（原版它的特效是剑尖拖焰，未选）。
    *
    * ⚠️ **常态零分配门控**：`activeEntities()` 会新建数组，而本方法每帧都跑。
    *
@@ -3942,25 +3953,20 @@ export class Game {
       if (req.kind !== 'shieldSmash' && req.kind !== 'shieldBash'
         && req.kind !== 'spikeSlash' && req.kind !== 'spin') continue;
 
-      // ---- 碎石圆环（**仅持盾冲撞 / 举盾砸击**）----
-      // ⚠️ 旋斩刻意**不出碎石**（用户 2026-11-16 裁定「只加法阵」）；
+      // ---- 扩散火圈（**仅持盾冲撞 / 举盾砸击**，v3.22）----
+      // 用户 2026-11-20：「把地上扬起的碎石块的特效改为扩散火圈……以焰魔为中心来散出
+      // 一个逐渐向外燃烧的火圈，不需要外加声音，只实现视觉特效」。
+      // ⚠️ **圆心 = 焰魔脚底**，不是原碎石那个「正前方 2.75 格」的偏心环
+      //（`smashRingCenter` 已随本轮删除）。
+      // ⚠️ 旋斩刻意**不出火圈**（用户 2026-11-16 裁定「只加法阵」）；
       // 尖刺攻击也不出（它有自己的火焰尖锥）。
-      // 颜色取自**环心脚下那一格**（原版取的也是 `hit.below()`，不是 Boss 脚下）。
-      // ⚠️ 环心走 `smashRingCenter` —— 与 `smashDebrisRing` 内部同一份公式（红线 1）。
-      // 在 game.js 重写一遍就是第二份权威 ⇒ 颜色会取自错误的格。
+      // ⚠️ **纯视觉、无伤害、无音效**：两招伤害仍走 `IGNIS.attackDamage`。
+      // 地面高度复用 `_findSigilGroundY`（与法阵/尖刺同一份权威，不在这里重写扫描）。
       if (req.kind === 'shieldSmash' || req.kind === 'shieldBash') {
-        const center = smashRingCenter(req.at, req.yaw);
-        const gx = Math.floor(center[0]);
-        const gy = Math.floor(req.at[1]) - 1;
-        const gz = Math.floor(center[2]);
-        let rgb = null;
-        const resolver = this.blockHitFx?.colorResolver;
-        if (resolver && this.world) {
-          const name = this.registry.nameOf(this.world.getBlockId(gx, gy, gz));
-          if (name && name !== 'air') rgb = resolver(name, null);
-        }
-        // 缺色（未加载列 / resolver 构造失败）退中性灰，不阻断特效
-        this.blockHitFx.spawnSmashRing(req.at, req.yaw, rgb || [0.5, 0.5, 0.5], nowMs);
+        const y = this.world ? this._findSigilGroundY(req.at[0], req.at[2], req.at[1]) : null;
+        // 扫不到地面（未加载列 / 悬崖外）⇒ **跳过**，同法阵口径。
+        // 不得回落到脚底 y 或世界底 —— 那会在空中/地底凭空出一个火圈。
+        if (y !== null) this.fireRing?.spawn({ x: req.at[0], y, z: req.at[2] }, nowMs);
       }
 
       // ---- 火焰尖锥（仅尖刺攻击，v3.06）----
@@ -4267,6 +4273,7 @@ export class Game {
     this.blockHitFx?.dispose();
     this.flameSigil?.dispose();
     this.spikeFx?.dispose();
+    this.fireRing?.dispose();
     // v3.20：Storm Lance 渲染器与蓄力环（与启动顺序相反）
     this.stormLance?.dispose();
     this.cinderFall?.dispose();

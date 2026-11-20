@@ -277,7 +277,9 @@ function spikeGameFixture({ playerPos, groundY = 10 }) {
   };
   const spawned = [];
   game.spikeFx = { spawn: (pts) => spawned.push(...pts) };
-  game.blockHitFx = { spawnSmashRing: () => {}, colorResolver: () => [0.5, 0.5, 0.5] };
+  // v3.22：碎石圆环已换成扩散火圈 ⇒ 壳里注入的是 fireRing（不再是 spawnSmashRing）
+  game.fireRing = { spawn: () => {} };
+  game.blockHitFx = { colorResolver: () => [0.5, 0.5, 0.5] };
   game.flameSigil = null;
   const state = { attackFxRequest: null };
   game.ignises = { activeEntities: () => [{ id: 'ignis:t:0', state }] };

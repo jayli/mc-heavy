@@ -138,10 +138,11 @@ test('cinder: 落点特效单槽前提 —— 最长视觉 < 最小施法间隔�
     `尾巴视觉 ${trailVisual.toFixed(3)}（飞行+烧回）必须 < 最小间隔 ${gap}`);
 });
 
-test('cinder: 碎块池账 —— Cinder + 焰魔死亡 + 焰魔砸击 ≤ 池容量', async () => {
-  const { IMPACT_FX, IGNIS_DEATH_BURST, IGNIS_SMASH_DEBRIS } =
-    await import('../render/block-hit-fx.js');
-  const total = CFG().debrisCount + IGNIS_DEATH_BURST.count + IGNIS_SMASH_DEBRIS.count;
+test('cinder: 碎块池账 —— Cinder + 焰魔死亡 ≤ 池容量', async () => {
+  // ⚠️ v3.22：焰魔砸击碎石圆环已删除（换成扩散火圈，它不用碎块池）
+  // ⇒ 池账里去掉一项。**不是放宽断言**：并发源真的少了一个，剩下两项仍须装进池。
+  const { IMPACT_FX, IGNIS_DEATH_BURST } = await import('../render/block-hit-fx.js');
+  const total = CFG().debrisCount + IGNIS_DEATH_BURST.count;
   assertTrue(total <= IMPACT_FX.debris.maxActive,
     `碎块并发上限 ${total} 必须 ≤ 池容量 ${IMPACT_FX.debris.maxActive}`
     + '（超池会 FIFO 绕回，观感「只炸出半边」且静默）');

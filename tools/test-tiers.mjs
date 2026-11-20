@@ -178,7 +178,7 @@ export const UNIT_NODE_SAFE = [
   'test-bush-grass.js', 'test-caves.js', 'test-chunk-column.js', 'test-cinder-fall.js', 'test-cinder-render.js', 'test-daynight.js',
   'test-dragon-bake.js', 'test-dragon-boss-agent.js', 'test-dragon-facing.js', 'test-dragon-render.js',
   'test-dragon-system.js', 'test-entity-manager.js', 'test-explosion-sprite.js', 'test-explosion.js',
-  'test-fireball-render.js', 'test-fireball.js', 'test-flame-sigil.js', 'test-fog-sky-direction.js',
+  'test-fireball-render.js', 'test-fireball.js', 'test-fire-ring.js', 'test-flame-sigil.js', 'test-fog-sky-direction.js',
   'test-giant-pyramid-gen.js', 'test-giant-pyramid.js', 'test-giant-trees-column.js',
   'test-giant-trees-gen.js', 'test-giant-trees.js', 'test-grass-tint.js',
   'test-guardian-boss-agent.js', 'test-guardian-collision.js', 'test-guardian-config.js',
