@@ -10,7 +10,7 @@
 // Tier 1（数据模型 + 状态机地基）⇒ 必须 TDD。
 import * as THREE from 'three';
 import { test } from './runner.js';
-import { assertEqual, assertTrue, assertNull, assertNotNull, assertFalse } from './assert.js';
+import { assertEqual, assertTrue, assertNull, assertNotNull, assertFalse, assertDeepEqual, AssertionError } from './assert.js';
 // config 与 system 分开 import（system 只 re-export 它需要的东西，不是全部）
 import {
   IGNIS_TYPE, IGNIS, IGNIS_AI, IGNIS_ATTACKS, IGNIS_ATTACK_IDS, IGNIS_CORE_OBB, IGNIS_MODEL_CENTER,
@@ -21,6 +21,14 @@ import { EntityManager } from '../entities/entity-manager.js';
 // 命中盒 ↔ 画面的交叉用例要用真实渲染器 + 烘焙产物（`test-ignis-render.js` 同款装配）
 import { IgnisRenderer } from '../render/ignis-renderer.js';
 import { loadIgnisAsset } from '../render/ignis-model.js';
+
+/** 浮点比较（`assert.js` 里没有 assertClose，同 test-spike-blade.js 的局部工具） */
+function assertClose(actual, expected, tolerance, message = '') {
+  if (!(Math.abs(actual - expected) <= tolerance)) {
+    throw new AssertionError(
+      `${message ? message + ': ' : ''}Expected ~${expected} (±${tolerance}), got ${actual}`);
+  }
+}
 
 /** 造一个只含空气的世界（落点扫描会一路向下找到兜底） */
 function emptyWorld() {
@@ -991,8 +999,13 @@ test('焰魔(v3.06): spikeSlash 档案取设计文档标定值', () => {
     `双刀时长 ${IGNIS_SPIKE.doubleSeconds} 必须 > 第二刀命中帧 ${IGNIS_SPIKE.secondHitFrame}`);
 });
 
-test('焰魔(v3.06): IGNIS_SPIKE 常量取用户裁定值', () => {
-  assertEqual(IGNIS_SPIKE.count, 5, '用户裁定「5 根，隔格一根」');
+test('焰魔(v3.26): IGNIS_SPIKE 常量取用户裁定值', () => {
+  assertEqual(IGNIS_SPIKE.count, 6, '用户 2026-11-21 裁定「五排各 6 根」');
+  assertDeepEqual([...IGNIS_SPIKE.directionsDeg], [0, -45, 45, -90, 90],
+    '五向：前 / 左前 / 右前 / 左 / 右（左侧 = −90，见 spec §4.1 实测）');
+  assertEqual(IGNIS_SPIKE.directionsDeg.length, 5);
+  assertTrue(Object.isFrozen(IGNIS_SPIKE.directionsDeg), '方向表须冻结');
+  assertEqual(IGNIS_SPIKE.exposeHeight, 1.6, '露出高度与原锥体一致');
   assertEqual(IGNIS_SPIKE.spacing, 2);
   assertEqual(IGNIS_SPIKE.firstOffset, 2, '首根在正前方 2 格，不在脚底');
   assertEqual(IGNIS_SPIKE.damage, 18, '用户草图「伤害 18 点」');
@@ -1005,9 +1018,21 @@ test('焰魔(v3.06): IGNIS_SPIKE 常量取用户裁定值', () => {
     '第二刀命中帧必须晚于第一刀');
   assertTrue(IGNIS_SPIKE.secondHitFrame < IGNIS_SPIKE.doubleSeconds,
     '第二刀命中帧必须落在双刀动画内');
-  assertTrue(IGNIS_SPIKE.count * 4 <= IGNIS_SPIKE.maxActive,
-    `池容量 ${IGNIS_SPIKE.maxActive} 装不下并发 4 招 × ${IGNIS_SPIKE.count} 根`);
+  // ⚠️ 池容量按**总根数**（count × 方向数）算，不是每方向根数 ——
+  // 写 count * 4 的形态是「6×4=24 ≤ 120 恒绿」，把 maxActive 改回 20 也仍然绿（判别力丢失）。
+  const total = IGNIS_SPIKE.count * IGNIS_SPIKE.directionsDeg.length;
+  assertEqual(total, 30, '五向 × 6 根 = 30');
+  assertTrue(total * 4 <= IGNIS_SPIKE.maxActive,
+    `池容量 ${IGNIS_SPIKE.maxActive} 装不下并发 4 招 × ${total} 根`);
   assertTrue(Object.isFrozen(IGNIS_SPIKE), '常量须冻结');
+});
+
+test('焰魔(v3.26): 尖刺半径 = 剑体半宽（不是锥底半径）', () => {
+  // radius 语义已从「锥底半径 0.35」改成「剑面宽 0.4375 的一半」——
+  // 破土环半径由它派生（spikeSparkSeeds 的 ringR = radius × ringSpread）。
+  assertClose(IGNIS_SPIKE.radius, 0.4375 / 2, 1e-9,
+    'radius 须是剑面宽的一半');
+  assertTrue(IGNIS_SPIKE.radius !== 0.35, '不得留着旧锥底半径');
 });
 
 test('焰魔(v3.06): 尖刺伤害与刀砍伤害是两份独立权威（刀砍仍 14）', () => {
