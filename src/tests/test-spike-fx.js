@@ -18,6 +18,10 @@ import { Game } from '../core/game.js';
 import {
   SPIKE_FX, spikeSpawnPoints, spikeScaleAt, SpikeFxRenderer,
 } from '../render/spike-fx.js';
+import {
+  SPIKE_SPARK_FX, spikeTexUvRect, spikeTexPattern,
+} from '../render/spike-fx-config.js';
+import { SPIKE_TEX_ATTR } from '../render/spike-fx-material.js';
 
 /** 浮点比较（经 sin/cos 后无法精确等于字面量）。同 `test-flame-sigil.js` 的同名局部工具。 */
 function assertClose(actual, expected, tolerance, message = '') {
@@ -353,4 +357,119 @@ test('spike fx 结算: 另两招不出尖刺（招式过滤在装配层）', () 
     assertEqual(f.spawned.length, 0, `${kind} 不得出尖刺`);
     assertDeepEqual(f.damages, [], `${kind} 不得走尖刺伤害`);
   }
+});
+
+// ---------- v3.24：锥面剑纹（用户 2026-11-20）----------
+//
+// 「纹理的颜色图案类比焰魔的剑的图案贴图，可以随机一些，不要是单纯的没有纹理的锥体」。
+//
+// 这些用例钉的是「改坏了肉眼看不出来」的部分：UV 子区是否真的落在剑纹带上（flipY 折算）、
+// 逐根随机参数是否真的变化、贴图缺失时是否静默退回纯色、以及水面遮挡那条回归。
+// 观感本身由 `tests/ignis-spike.spec.mjs` 的 Tier 4 像素实测兜住。
+
+test('spike tex: UV 子区落在剑身嵌纹带内，且 flipY 已折算', () => {
+  const { u0, v0, u1, v1 } = spikeTexUvRect(SPIKE_SPARK_FX.textureRect, 256);
+  assertTrue(u0 >= 0 && u1 <= 1 && v0 >= 0 && v1 <= 1, 'UV 必须落在 [0,1]');
+  assertTrue(v0 < v1, `v0(${v0}) 必须小于 v1(${v1})（矩形要正向）`);
+  // 像素矩形 [90,128,82,7] / 256
+  assertClose(u0, 90 / 256, 1e-12, 'u0');
+  assertClose(u1, 172 / 256, 1e-12, 'u1');
+  // flipY：图片行 128..135 ⇒ v 从 1−135/256 到 1−128/256
+  assertClose(v0, 1 - 135 / 256, 1e-12, 'v0 必须按 flipY 折算（写反会让纹样上下颠倒）');
+  assertClose(v1, 1 - 128 / 256, 1e-12, 'v1');
+});
+
+test('spike tex: 逐根随机参数真的在变（不是全池同一套）', () => {
+  // 注入确定性 rand（黄金比例序列，分布良好且可复现）
+  let i = 0;
+  const rand = () => ((i++ * 0.6180339887) % 1);
+  const seen = new Set();
+  const phases = [];
+  for (let k = 0; k < 24; k++) {
+    const p = spikeTexPattern(rand);
+    assertTrue(p.tiles >= SPIKE_SPARK_FX.wrapTiles[0] && p.tiles < SPIKE_SPARK_FX.wrapTiles[1],
+      `tiles ${p.tiles} 越界（区间 ${SPIKE_SPARK_FX.wrapTiles}）`);
+    assertTrue(p.reps >= SPIKE_SPARK_FX.riseTiles[0] && p.reps < SPIKE_SPARK_FX.riseTiles[1],
+      `reps ${p.reps} 越界（区间 ${SPIKE_SPARK_FX.riseTiles}）`);
+    assertTrue(p.phase >= 0 && p.phase < 1, 'phase 必须在 [0,1)');
+    assertTrue(p.mirror === 0 || p.mirror === 1, 'mirror 只能是 0/1');
+    // 整数化：shader 里 tiles/reps 直接参与 fract，非整数会让同一根刺首尾接不上
+    assertEqual(p.tiles, Math.round(p.tiles), 'tiles 必须是整数');
+    assertEqual(p.reps, Math.round(p.reps), 'reps 必须是整数');
+    seen.add(`${p.tiles}|${p.reps}|${p.mirror}`);
+    phases.push(p.phase);
+  }
+  assertTrue(seen.size >= 4, `24 次抽样只出现 ${seen.size} 种组合 —— 逐根随机没生效`);
+  assertTrue(new Set(phases).size >= 20, `相位几乎不变（${new Set(phases).size} 种）—— 每根纹理会长得一样`);
+});
+
+test('spike tex: 矩形必须落在剑身嵌纹带上（内容级判断的 Node 部分）', () => {
+  // ⚠️ **本用例只能钉结构约束**（真正的「不透明率」在 `check:data` 的 `[焰魔]` 环节用 pngjs 量，
+  // 下一条用例里声明了它）。这里钉的是**换矩形时容易错位的那三件事**：
+  //   ① 必须整体落在 256×256 内（越界会采到相邻骨骼的纹样）；
+  //   ② 不得包含剑身平面的**透明镂空区**（那个矩形实测不透明率只有 61.7%）；
+  //   ③ 必须是「宽 >> 高」的横带（剑脊嵌纹带是 82×7）。
+  const [x0, y0, w, h] = SPIKE_SPARK_FX.textureRect;
+  assertTrue(x0 >= 0 && y0 >= 0, '矩形原点必须在贴图内');
+  assertTrue(x0 + w <= 256 && y0 + h <= 256, `矩形 ${SPIKE_SPARK_FX.textureRect} 超出 256² 贴图`);
+  assertTrue(w > h * 4, `纹样带应是横带（宽 ${w} / 高 ${h}）`);
+  // 剑身平面（49,74,40,13）的不透明率只有 61.7%（实测）⇒ 那个矩形已在本仓实测为不可用。
+  // 钉住「不能是它」这个负面事实：换矩形时若换回它，这条会红。
+  const isBladePlane = x0 < 89 && x0 + w > 49 && y0 < 87 && y0 + h > 74;
+  assertFalse(isBladePlane, '剑身平面 (49,74,40,13) 有透明镂空（61.7%）—— 采到会在锥面出黑洞');
+});
+
+test('spike tex: 给了贴图就走剑纹材质，没给就退回纯色锥（不抛错）', () => {
+  const tex = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
+  const withTex = new SpikeFxRenderer({ scene: new THREE.Scene(), texture: tex });
+  try {
+    assertTrue(withTex.textured, '给了贴图必须走剑纹版');
+    assertEqual(withTex.mesh.material.type, 'MeshBasicNodeMaterial',
+      `剑纹版须是 TSL 材质（实得 ${withTex.mesh.material.type}）`);
+  } finally { withTex.dispose(); }
+
+  const noTex = new SpikeFxRenderer({ scene: new THREE.Scene(), texture: null });
+  try {
+    assertFalse(noTex.textured, '没给贴图不得声称有纹理');
+    assertEqual(noTex.mesh.material.type, 'MeshBasicMaterial', '退回纯色版');
+    // ⚠️ 退回时也必须能正常出刺（贴图加载失败不该让尖刺整个消失）
+    noTex.spawn([{ x: 0, y: 5, z: -2, delayMs: 0 }], 1000);
+    noTex.update(1000 + SPIKE_FX.riseMs);
+    assertTrue(noTex.mesh.visible, '纯色回退路径也必须能画出来');
+  } finally { noTex.dispose(); }
+});
+
+test('spike tex: 逐实例纹理参数属性在两种材质下都存在（缺了会静默全 0）', () => {
+  for (const texture of [null, new THREE.DataTexture(new Uint8Array(4), 1, 1)]) {
+    const r = new SpikeFxRenderer({ scene: new THREE.Scene(), texture, maxActive: 6 });
+    try {
+      for (const name of Object.values(SPIKE_TEX_ATTR)) {
+        const a = r.mesh.geometry.getAttribute(name);
+        assertTrue(!!a, `几何缺属性 ${name} —— shader 会静默读到全 0（每根纹理一样）`);
+        assertEqual(a.count, 6, `${name} 的实例数须 = 池容量`);
+        assertTrue(a.isInstancedBufferAttribute, `${name} 必须是 instanced 属性（否则每顶点一份）`);
+      }
+      // 池里必须真的填了不同的值（初始化循环不能白跑）
+      const phases = new Set();
+      for (let i = 0; i < 6; i++) phases.add(r.mesh.geometry.getAttribute(SPIKE_TEX_ATTR.phase).getX(i));
+      assertTrue(phases.size >= 4, `6 个 slot 只有 ${phases.size} 种相位 —— 初始化没生效`);
+    } finally { r.dispose(); }
+  }
+});
+
+test('spike fx: 锥体必须排在海面之后绘制（水面遮挡回归，v3.24 实测）', () => {
+  const r = new SpikeFxRenderer({ scene: new THREE.Scene() });
+  try {
+    // ⚠️ 这是**实测标定**的耦合约定，不是预防性常数：
+    // 只改海面 renderOrder 的单变量对照里，水面区域内锥体的发光增量 p50 从 11.6（海面后画）
+    // 涨到 20.5（海面先画）—— 被水色冲淡 1.77 倍。
+    // 海面在 `ocean.js:491` 固定 renderOrder = 1 ⇒ 锥体必须 > 1。
+    assertTrue(r.mesh.renderOrder > 1,
+      `锥体 renderOrder=${r.mesh.renderOrder}，必须 > 1（海面是 1）`);
+    assertEqual(r.mesh.renderOrder, SPIKE_SPARK_FX.renderOrder,
+      '锥体与它自己的粒子池同档（两者都是焰魔尖刺的可视部分）');
+    // 深度语义不得被这次改动碰坏：不写深度（否则会挡住它身后的粒子/其他特效）
+    assertFalse(r.mesh.material.depthWrite, 'additive 半透明不得写深度');
+    assertTrue(r.mesh.material.depthTest, '深度测试保留（否则会画到地形前面）');
+  } finally { r.dispose(); }
 });

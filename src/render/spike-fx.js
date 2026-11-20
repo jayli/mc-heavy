@@ -40,10 +40,18 @@ import * as THREE from 'three';
 import { IGNIS_SPIKE } from '../entities/ignis/ignis-config.js';
 import {
   SPIKE_SPARK_FX as SPARK, spikeSparkQuotaAt, spikeSparkSeeds,
+  spikeTexUvRect, spikeTexPattern,
 } from './spike-fx-config.js';
 import {
   createSpikeSparkMaterial, createSpikeEmberMaterial, createSpikeSparkGeometry,
+  createSpikeConeMaterial, createSpikePlainMaterial, SPIKE_TEX_ATTR,
 } from './spike-fx-material.js';
+
+/**
+ * 纹样贴图边长 —— 与 `ignis.png` 一致（`IGNIS_BAKE_PARAMS.textureSize`）。
+ * ⚠️ 换贴图尺寸时必须同步这个数与 `SPIKE_SPARK_FX.textureRect`（后者是**像素**坐标）。
+ */
+const SPIKE_TEX_SIZE = 256;
 
 /**
  * 尖锥的节奏与容量（冻结，渲染层不得改写）。
@@ -149,11 +157,13 @@ const _env = { scale: 0, visible: false, done: false };
 
 export class SpikeFxRenderer {
   /**
-   * @param {{scene: THREE.Scene, maxActive?: number, rand?: () => number}} deps
-   *   **无贴图依赖**（程序化几何 + 逐实例颜色 + TSL 粒子）⇒ 恒装配，不像法阵那样可能退 null。
+   * @param {{scene: THREE.Scene, maxActive?: number, rand?: () => number,
+   *          texture?: THREE.Texture|null}} deps
+   *   `texture` 是焰魔贴图（`ignis.png`）：**给了才挂剑纹**，缺省退回纯色锥（旧观感）。
+   *   ⚠️ 缺贴图时**不得抛错**：贴图加载失败不该让尖刺整个不见（与法阵/龙的容错口径一致）。
    *   `rand` 可注入（单测要可复现，同 FireRingRenderer）。
    */
-  constructor({ scene, maxActive = SPIKE_FX.maxActive, rand = Math.random }) {
+  constructor({ scene, maxActive = SPIKE_FX.maxActive, rand = Math.random, texture = null }) {
     this.scene = scene;
     this.maxActive = maxActive;
     this._rand = rand;
@@ -161,14 +171,57 @@ export class SpikeFxRenderer {
     // 6 棱锥（像素风）；`translate` 把底面移到 y=0 ⇒ 实例 position 就是地面顶面
     const geometry = new THREE.ConeGeometry(SPIKE_FX.radius, SPIKE_FX.height, 6);
     geometry.translate(0, SPIKE_FX.height / 2, 0);
-    const material = new THREE.MeshBasicMaterial({
-      transparent: true,
-      blending: THREE.AdditiveBlending,   // 发光：读作「烧红的刺」
-      depthWrite: false,                  // 不写深度：不挡地面、根间不互相挡
-      toneMapped: false,
-    });
+    /**
+     * v3.24：锥面剑纹的**逐实例参数**（用户要「可以随机一些」）。
+     *
+     * ⚠️ 属性必须在这里就建好（即使当前走纯色回退）—— 否则材质一旦切到剑纹版，
+     * shader 会因缺属性而静默读到全 0 ⇒ 每根纹理完全一样（Storm Lance v3.20 同类坑）。
+     */
+    const mkInst = (name) => {
+      const a = new THREE.InstancedBufferAttribute(new Float32Array(maxActive), 1);
+      a.setUsage(THREE.DynamicDrawUsage);
+      geometry.setAttribute(name, a);
+      return a;
+    };
+    this._texTiles = mkInst(SPIKE_TEX_ATTR.tiles);
+    this._texReps = mkInst(SPIKE_TEX_ATTR.reps);
+    this._texPhase = mkInst(SPIKE_TEX_ATTR.phase);
+    this._texMirror = mkInst(SPIKE_TEX_ATTR.mirror);
+    for (let i = 0; i < maxActive; i++) {
+      const pat = spikeTexPattern(rand, SPARK);
+      this._texTiles.setX(i, pat.tiles);
+      this._texReps.setX(i, pat.reps);
+      this._texPhase.setX(i, pat.phase);
+      this._texMirror.setX(i, pat.mirror);
+    }
+    for (const a of [this._texTiles, this._texReps, this._texPhase, this._texMirror]) {
+      a.needsUpdate = true;
+    }
+
+    /**
+     * 材质：有贴图走剑纹版，否则退回纯色版（旧观感）。
+     * `textured` 标志供单测与 Tier 4 断言 —— 剑纹版没有 `map`，不要靠「有没有 map」去猜。
+     */
+    this.textured = texture !== null && texture !== undefined;
+    const material = this.textured
+      ? createSpikeConeMaterial({
+        texture,
+        uvRect: spikeTexUvRect(SPARK.textureRect, SPIKE_TEX_SIZE),
+      })
+      : createSpikePlainMaterial(SPIKE_FX.color);
     this.mesh = new THREE.InstancedMesh(geometry, material, maxActive);
     this.mesh.name = 'ignis:spike-fx';
+    /**
+     * ⚠️⚠️ **必须排在海水之前**（v3.24 实测的回归，不是预防性改动）。
+     *
+     * 锥体 `depthWrite=false` + `renderOrder=0`，而海面 `ocean.js` 是 `renderOrder=1`
+     * 且 `depthWrite=true` —— 水后画时按自己的 alpha 把锥体混掉。实测（只改海面
+     * `renderOrder` 的单变量对照，水面区域内锥体的发光增量 p50）：
+     * 默认（海面后画）**11.6** / 海面先画 **20.5** ⇒ 被冲淡 **1.77 倍**。
+     * 与 `tracer-renderer.js`（曳光 2）、本文件粒子池（`SPARK.renderOrder = 3`）同口径：
+     * 特效一律排在海面之后。`ocean.js:477` 已声明这组三重顺序是耦合约定。
+     */
+    this.mesh.renderOrder = SPARK.renderOrder;
     // 实例包围球按零 scale 算会被误剔除；特效须无条件提交（同 tracer / explosion 池）
     this.mesh.frustumCulled = false;
     this.mesh.visible = false;            // ⚠️ 零活跃时不提交渲染

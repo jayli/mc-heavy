@@ -222,6 +222,14 @@ export class IgnisRenderer {
   get instances() { return this._instances; }
   /** 池容量（= draw call 上限） */
   get capacity() { return this._instances.length; }
+  /**
+   * 焰魔贴图（`ignis.png`）。
+   *
+   * v3.24：尖刺剑纹直接复用这一张（零新增贴图）。**不得返回 null 以外的兜底值** ——
+   * 调用方（`game.js` 的尖刺装配）靠 `?? null` 区分「有贴图」与「没加载上」，
+   * 兜底一个占位贴图会把「贴图没加载」退化成「就是没纹理」而不可分辨。
+   */
+  get texture() { return this._texture; }
 
   /**
    * 每帧发布全部焰魔的 pose（game 帧循环在 `entities.update` 之后调）。

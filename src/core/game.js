@@ -986,10 +986,17 @@ export class Game {
       ? new FlameSigilRenderer({ scene: this.scene, texture: this._flameSigilTexture })
       : null;
 
-    // v3.06：焰魔尖刺攻击的火焰尖锥（程序化几何，**无贴图依赖** ⇒ 恒装配）。
+    // v3.06：焰魔尖刺攻击的火焰尖锥（程序化几何）。
     // 原版无尖刺素材（它是把地面方块整块掀飞），本仓新建几何 —— 用户裁定「火焰尖锥」。
     // v3.23：同一渲染器另带**破土火星 + 上浮余烬**两个 GPU 粒子池（共 3 个 mesh）。
-    this.spikeFx = new SpikeFxRenderer({ scene: this.scene });
+    // v3.24：锥面挂**剑纹**（用户 2026-11-20）—— 直接复用已加载的焰魔贴图，零新增资源。
+    //   ⚠️ 贴图在 `ignisRenderer.loadTexture()` 里加载，而它**在本行之前**完成（同段上方）⇒
+    //   这里能拿到已加载的实例。加载失败时 `ignisRenderer === null` ⇒ 传 null ⇒
+    //   退回纯色锥（尖刺不应因贴图缺失而整体消失）。
+    this.spikeFx = new SpikeFxRenderer({
+      scene: this.scene,
+      texture: this.ignisRenderer?.texture ?? null,
+    });
 
     // v3.22：持盾冲撞 / 举盾砸击的**扩散火圈**（程序化几何 + TSL，零贴图依赖 ⇒ 恒装配）。
     // 用户 2026-11-20：「把地上扬起的碎石块的特效改为扩散火圈……以焰魔为中心」。

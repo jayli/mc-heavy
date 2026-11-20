@@ -146,10 +146,14 @@ test('焰魔尖刺 Tier 4：火焰尖锥真的画出来了（橙红像素，带�
       idleVisible: g.spikeFx?.mesh?.visible ?? null,
       idleActive: g.spikeFx?.activeCount ?? null,
       blending: g.spikeFx?.mesh?.material?.blending ?? null,
-      additiveConst: 2,   // THREE.AdditiveBlending
+      normalConst: 1,      // THREE.NormalBlending
+      textured: g.spikeFx?.textured ?? null,
+      materialType: g.spikeFx?.mesh?.material?.type ?? null,
+      renderOrder: g.spikeFx?.mesh?.renderOrder ?? null,
+      oceanRenderOrder: g.ocean?.plane?.renderOrder ?? null,
     };
   });
-  expect(pre.hasSpike, '尖刺层须已装配（无贴图依赖 ⇒ 恒装配）').toBe(true);
+  expect(pre.hasSpike, '尖刺层须已装配').toBe(true);
   // ⚠️ ConeGeometry.parameters 的键是 `radius`（不是 CylinderGeometry 的 radiusBottom/radiusTop）；
   // 「顶端是尖的」由 `geometry.type === 'ConeGeometry'` 保证（它内部向 super 传 radiusTop=0）。
   expect(pre.geoType, '必须是锥体而不是柱体').toBe('ConeGeometry');
@@ -158,7 +162,20 @@ test('焰魔尖刺 Tier 4：火焰尖锥真的画出来了（橙红像素，带�
   expect(pre.height, '基准高度取 IGNIS_SPIKE.height').toBe(1.6);
   expect(pre.idleVisible, '零活跃时不得提交渲染（draw call 基线）').toBe(false);
   expect(pre.idleActive).toBe(0);
-  expect(pre.blending, 'additive 混合须生效（否则是不透明橙块）').toBe(pre.additiveConst);
+  /**
+   * ⚠️ **v3.24 推翻了旧断言**（原本是 `blending === AdditiveBlending`）。
+   *
+   * 实测结论：additive 下最终像素 = 背景 + 增益，而焰魔在开阔地战斗时锥体上半段的
+   * 背景总是**亮天空 (169,208,219)** ⇒ R/G 必然撞到 255 ⇒ 金色剑纹物理上出不来
+   * （四档参数扫下来 warmPct 全在 0~3.7%）。用户 2026-11-20 裁定改成**正常混合**。
+   * 按新语义改写而不是放宽：这里钉的变成「正常混合 + 纹理真的挂上了 + 排在海面之后」。
+   */
+  expect(pre.blending, 'v3.24 起用正常混合（additive 在亮天空前会钳白）').toBe(pre.normalConst);
+  expect(pre.textured, '装配层须把焰魔贴图传进来（否则是纯色锥）').toBe(true);
+  expect(pre.materialType, '剑纹材质须是 TSL（普通 Map 材质给不出色相映射）')
+    .toBe('MeshBasicNodeMaterial');
+  expect(pre.renderOrder, '锥体必须排在海面之后（否则被水色冲淡 1.77 倍）')
+    .toBeGreaterThan(pre.oceanRenderOrder);
 
   // ---- 藏掉焰魔渲染实例（单变量对照的关键，见文件头）----
   const hid = await page.evaluate((eid) => {

@@ -169,6 +169,74 @@ export const SPIKE_SPARK_FX = Object.freeze({
    */
   particleIdleSeconds: 2.0,
 
+  // ---- v3.24：锥面剑纹（用户 2026-11-20）----
+  //
+  // 「我想给从地表升起的尖刺的锥体表面挂上一些纹理，纹理的颜色图案类比焰魔的剑的图案
+  //   贴图，可以随机一些，不要是单纯的没有纹理的锥体。」
+  //
+  // 纹理**直接复用已加载的 `assets/ignis/ignis.png`**（零新增贴图、零烘焙）：
+  // 只把 UV 重映射到「剑身核心的长侧嵌纹带」——那 7 行是焰魔贴图里**唯一 100% 不透明**
+  // 的剑身 UV 矩形（列 90..170 / 行 128..134，实测不透明率 100.0%）。
+  // 其余剑身 UV 都有透明镂空（剑身平面 61.7%、侧面 17.7%）⇒ 采到那里会出黑洞。
+  //
+  // ⚠️ **`ignis.png` 是 `TextureLoader` 加载的（flipY=true）**：图片行号 y 越大 ⇒ v 越小。
+  // 换贴图时必须重算这两个 v（`test-spike-fx.js` 用同一份 PNG 内容级钉住）。
+  /** 剑身嵌纹带在 ignis.png 里的像素矩形 `[x0, y0, w, h]`（256×256） */
+  textureRect: Object.freeze([90, 128, 82, 7]),
+  /**
+   * 锥面环绕方向重复份数区间 `[min, max)`。**逐根随机**（用户要「可以随机一些」）。
+   *
+   * ⚠️ 用户 2026-11-20 第二轮的反馈是**「锥体太花了，纹理有点乱」** ⇒ 从 `[2,5)` 降到 `[1,3)`。
+   * 剑纹带本身是 82×7 的碎嵌纹，铺 2~4 圈后每块纹样在锥面上只有十几像素 ⇒ 读作噪点。
+   * 取 1~2 圈，纹样块变大，才看得出是「纹理」而不是「花斑」。
+   */
+  wrapTiles: Object.freeze([1, 3]),
+  /** 沿母线（纵向）重复份数区间 —— 同理由，太密会糊成噪点 */
+  riseTiles: Object.freeze([1, 3]),
+  // ---- 表面着色：**烧炭**（正常混合，不是 additive）----
+  //
+  // 用户 2026-11-20 第二轮原话：「这个锥体要是一个被炭烧了的物体，烧炭你见过吗，
+  // 有黑色的暗区，但整体是红色的烧着的纹理……让纹理里的暗条纹也变亮一些，
+  // 整体呈现出一种刚从火中拿出的烧炭的感觉」。
+  //
+  // ⚠️⚠️ **不能再用「贴图原色 × 基色」**（v3.24 首版的写法）：贴图的暗紫底 `#512930`
+  // 乘完基色后是**接近黑的暗紫**，读作「脏」而不是「高温的炭」。烧炭的暗区是**发光的暗红**。
+  // ⇒ 改为把纹理**亮度**重映射到一条炭火色阶上（`charcoalRamp`），色相由色阶决定，
+  // 贴图只贡献「哪里暗、哪里亮」这一层信息。
+  //
+  // 放弃 additive 的理由见 git 历史（additive 在亮天空前必然钳白，金色纹样出不来）；
+  // 现在色相由色阶给定，**不再依赖背景**，所以正常混合下暗红也能压得住。
+  /**
+   * 炭火色阶（温度从低到高）。纹理亮度 t 在 `charcoalRamp` 上取色：
+   *   t=0（最暗的纹路）→ 暗红（**不是黑**：烧着的炭暗区也在发光）
+   *   t=1（金纹）→ 白热的橙黄
+   * ⚠️ 三个停靠点顺序 = 温度顺序，改顺序会让「暗处比亮处更亮」而结构判据全绿。
+   */
+  charcoalRamp: Object.freeze([
+    Object.freeze([0.55, 0.06, 0.02]),   // 暗红：炭的暗区（仍发光）
+    Object.freeze([1.05, 0.26, 0.04]),   // 橙红：主体
+    Object.freeze([1.55, 0.72, 0.22]),   // 白热：金色纹路
+  ]),
+  /**
+   * 纹理亮度 → 色阶位置的**重映射窗口**。
+   *
+   * ⚠️⚠️ **下沿必须压在纹理暗部之上**：剑纹带的暗紫底线性亮度约 **0.21**，
+   * 若窗口从 0 起（`[0, 0.9]`）会把暗底映射到色阶最左端 ⇒ 整锥偏红但**看不出纹理**。
+   * 从 0.10 起 + 上沿 0.85 ⇒ 暗底落在色阶 ~0.15（暗红），金纹落在 ~1.0（白热），
+   * 这才读作「烧炭表面的纹理」。改它等价于改「暗条纹被压住多少」。
+   */
+  charcoalWindow: Object.freeze([0.10, 0.85]),
+  /**
+   * 整体亮度倍率。⚠️ 用户两轮都说「不够亮」⇒ 1.35（而不是 1.0）。
+   * 它是**单一旋钮**：觉得暗就调它，色阶的相对关系不变。
+   */
+  charcoalGain: 1.35,
+  /**
+   * 不透明度。取 1.0：烧炭是实体，透出背景会让它读作「红色玻璃」而不是「烧着的石头」。
+   * 通透感由 `depthWrite=false` + 正常混合保留（仍走 transparent 队列）。
+   */
+  opacity: 1.0,
+
   /** 总增益。⚠️ 暖色 additive 的增益必须按像素标定，不得照抄冷色（v3.21 实测） */
   gain: 1.0,
 
@@ -263,4 +331,47 @@ export function spikeSparkSeeds(spike, progress, kind, count, rand, cfg = SPIKE_
     });
   }
   return out;
+}
+/**
+ * 纹理矩形 `[x0, y0, w, h]`（图片像素，**左上原点**）→ UV 矩形 `[u0, v0, u1, v1]`。
+ *
+ * ⚠️⚠️ **`flipY` 必须显式折算**：`ignis.png` 走 `TextureLoader`（默认 `flipY = true`），
+ * v=0 对应图片**底边**。直接 `v = y / size` 会把纹样上下颠倒 ——
+ * 而「锥面有纹理」这个事实仍然成立，所有结构判据全绿（`zombie-model.js` 记过同一类坑）。
+ * 本函数是**唯一的换算入口**，几何侧只拿返回值，不自己再算一次。
+ *
+ * @param {readonly number[]} rect `[x0, y0, w, h]` 图片像素
+ * @param {number} size 贴图边长（`ignis.png` = 256）
+ * @returns {{u0:number, v0:number, u1:number, v1:number}} `v0 < v1`
+ */
+export function spikeTexUvRect(rect, size) {
+  const [x0, y0, w, h] = rect;
+  const u0 = x0 / size;
+  const u1 = (x0 + w) / size;
+  // 图片行号 → v：flipY ⇒ 行号大的一端 v 小
+  const vTop = 1 - y0 / size;             // 带子上沿（图片 y 小）⇒ v 大
+  const vBot = 1 - (y0 + h) / size;       // 带子下沿 ⇒ v 小
+  return { u0, v0: vBot, u1, v1: vTop };
+}
+
+/**
+ * 单根尖刺的**纹理铺贴参数**（逐根随机 ⇒ 「可以随机一些」）。
+ *
+ * 纯函数、`rand` 注入 ⇒ Tier 1 可复现断言。渲染器把结果写进逐实例属性，
+ * shader 侧只做算术（不得在 TSL 里再抽一次随机 —— 那是第二个权威）。
+ *
+ * @param {() => number} rand [0,1) 均匀随机
+ * @param {object} [cfg]
+ * @returns {{tiles:number, reps:number, phase:number, mirror:number}}
+ *   `tiles` 环绕份数（整数）、`reps` 纵向份数（整数）、`phase` u 相位 0..1、
+ *   `mirror` 0 或 1（1 = 纹样左右镜像 ⇒ 同一条带能出两种读法）
+ */
+export function spikeTexPattern(rand, cfg = SPIKE_SPARK_FX) {
+  const pick = ([lo, hi]) => lo + Math.floor(rand() * Math.max(1, hi - lo));
+  return {
+    tiles: pick(cfg.wrapTiles),
+    reps: pick(cfg.riseTiles),
+    phase: rand(),
+    mirror: rand() < 0.5 ? 0 : 1,
+  };
 }
