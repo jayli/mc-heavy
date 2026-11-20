@@ -800,11 +800,16 @@ export class Game {
     // 渲染器：加载失败不得让整个游戏起不来（与龙/武器模型/蓝图同一容错口径）
     try {
       const ignisAsset = await loadIgnisAsset();
+      // v3.26：产物另存一份给尖刺的剑体几何（零重烘 —— 剑的顶点已在产物里）。
+      // ⚠️ 漏了这行的形态是「剑体静默退回锥体」：Node 单测自己传 asset 所以全绿，
+      // 只有浏览器里才现形（本轮 Tier 4 实测拓到）。
+      this._ignisAsset = ignisAsset;
       this.ignisRenderer = new IgnisRenderer(this.scene, ignisAsset);
       await this.ignisRenderer.loadTexture();
     } catch (err) {
       console.warn('[ignis] 渲染器加载失败，焰魔不显示（不影响游戏）:', err);
       this.ignisRenderer = null;
+      this._ignisAsset = null;
     }
 
     // ---- 末影守卫装配（废弃堡垒的 Boss1 + **围场的 Boss1**，v3.09）----
@@ -3998,7 +4003,7 @@ export class Game {
           const y = this._findSigilGroundY(p.x, p.z, req.at[1]);
           // 扫不到地面（未加载列 / 悬崖外）⇒ **跳过该根**，同法阵口径。
           if (y === null) continue;
-          spikes.push({ x: p.x, y, z: p.z, delayMs: p.delayMs });
+          spikes.push({ x: p.x, y, z: p.z, delayMs: p.delayMs, yaw: p.yaw });
         }
         if (spikes.length > 0) this.spikeFx?.spawn(spikes, nowMs);
         // 伤害：玩家 AABB 与任一根尖刺的**那一格**正体积重叠

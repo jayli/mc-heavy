@@ -516,6 +516,20 @@ test('spike fx 结算: 30 根都找到地面并 spawn（开阔地夹具）', () 
   for (const p of f.spawned) assertEqual(p.y, 10, '每根都贴地面顶面');
 });
 
+test('spike fx 结算: 逐根朝向透传到 spikeFx.spawn（漏了会全部同向）', () => {
+  const f = spikeGameFixture({ playerPos: [0.5, 10, -40] });
+  f.state.attackFxRequest = { at: [0.5, 10, 0.5], yaw: 0.9, kind: 'spikeSlash' };
+  f.game._consumeIgnisFxRequests(1000);
+  assertEqual(f.spawned.length, 30);
+  const want = spikeSpawnPoints([0.5, 10, 0.5], 0.9);
+  for (let i = 0; i < f.spawned.length; i++) {
+    assertClose(f.spawned[i].yaw, want[i].yaw, 1e-9, `第 ${i} 根朝向须透传`);
+  }
+  // 负向锚点：装配层漏写 `yaw: p.yaw` ⇒ undefined ⇒ 上面必红
+  assertTrue(new Set(f.spawned.map((p) => p.yaw)).size >= 5,
+    '30 根不得全部同向（五向至少 5 个不同朝向）');
+});
+
 test('spike fx 结算: 另两招不出尖刺（招式过滤在装配层）', () => {
   for (const kind of ['shieldSmash', 'shieldBash', 'swing', 'spin']) {
     const f = spikeGameFixture({ playerPos: [0.5, 10, -5.5] });
