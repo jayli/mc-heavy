@@ -22,17 +22,37 @@
 // 5 根延迟只差 0~200ms，材质取「活跃根 opacity 最大值」会让**先缩回的根被后根拖着满亮**
 // ⇒ `spikeScaleAt` 的包络在画面上基本不生效（纯函数单测全绿，只有逐实例判据能抓）。
 //
+// ## v3.23：破土火星 + 上浮余烬（用户 2026-11-20）
+//
+// 「尖刺升起的时候带有粒子特效……就好像蹦出的火星一样」。两项裁定：
+// **破土猛迸 + 余烬渐稀**（缩回时停）、**条状火星 + 少量上浮余烬**（不加烟）。
+// 观感量与出生数据在 `spike-fx-config.js`（three-free），TSL 在 `spike-fx-material.js`。
+// 本文件只负责**逐根按累计配额差值发射** —— 与尖锥共用同一份 `spikeScaleAt` 进度
+// ⇒ 火星必然跟着那一根的破土时刻与升起高度走，不存在第二套时序。
+//
+// ⚠️⚠️ **粒子用 `THREE.Mesh` + InstancedBufferGeometry，不能用 `InstancedMesh`**：
+// 后者的 instanceMatrix 会接管 modelViewMatrix，把由 aOrigin 定位的粒子全塌到原点
+// （v3.21 实测：落点变一条白色竖糊，而 visible / 计数 / draw call 全绿）。
+//
 // **主线程专用**：构造 InstancedMesh/材质必然依赖 three。归属 `render/`（不在
 // `tools/check-architecture.mjs` 的 `ISOMORPHIC_DIRS` 里 → 天然不受同构检查）。
 import * as THREE from 'three';
 import { IGNIS_SPIKE } from '../entities/ignis/ignis-config.js';
+import {
+  SPIKE_SPARK_FX as SPARK, spikeSparkQuotaAt, spikeSparkSeeds,
+} from './spike-fx-config.js';
+import {
+  createSpikeSparkMaterial, createSpikeEmberMaterial, createSpikeSparkGeometry,
+} from './spike-fx-material.js';
 
 /**
  * 尖锥的节奏与容量（冻结，渲染层不得改写）。
  *
  * ⚠️ **几何/节奏/容量全部从 `IGNIS_SPIKE` 派生**（红线 1：同一事实只有一份权威）——
  * 玩法侧与渲染侧各写一份的形态是「伤害判定用的格与画出来的刺不在同一处」。
- * 本表只额外持有**纯观感**的两项：`shrinkFrom`（缩零起点）与 `color`（火焰色）。
+ * 本表只额外持有**纯观感**的一项：`color`（火焰色）；`shrinkFrom` 派生自
+ * `SPIKE_SPARK_FX`（那边是「停止发射火星」的时刻，两者必须同一个数，
+ * 权威放在 three-free 的 config 里是为了避免循环 import）。
  */
 export const SPIKE_FX = Object.freeze({
   riseMs: IGNIS_SPIKE.riseMs,
@@ -40,8 +60,8 @@ export const SPIKE_FX = Object.freeze({
   height: IGNIS_SPIKE.height,
   radius: IGNIS_SPIKE.radius,
   maxActive: IGNIS_SPIKE.maxActive,
-  /** 寿命进度到此开始缩零（前 70% 保持满尺寸，含升起段） */
-  shrinkFrom: 0.7,
+  /** 寿命进度到此开始缩零（前 70% 保持满尺寸，含升起段）；火星同时停发 */
+  shrinkFrom: SPARK.shrinkFrom,
   /**
    * 火焰橙红。比 `IGNIS_DEATH_COLOR`（1.0, 0.84, 0.25 偏黄）更红 ——
    * 读作「烧红的刺」而不是「一团火炸开」。additive 下它也是亮度上限。
@@ -52,6 +72,8 @@ export const SPIKE_FX = Object.freeze({
 const _matrix = new THREE.Matrix4();
 const _zero = new THREE.Matrix4().makeScale(0, 0, 0);
 const _color = new THREE.Color();
+/** 粒子出生数据的临时载体（每帧零分配，不新建对象） */
+const _spikeAt = { x: 0, y: 0, z: 0 };
 
 /**
  * 5 根尖刺的落点（**不含 y** —— 渲染层不查体素，地面高度由调用方算，
@@ -127,12 +149,14 @@ const _env = { scale: 0, visible: false, done: false };
 
 export class SpikeFxRenderer {
   /**
-   * @param {{scene: THREE.Scene, maxActive?: number}} deps
-   *   **无贴图依赖**（程序化几何 + 逐实例颜色）⇒ 恒装配，不像法阵那样可能退 null。
+   * @param {{scene: THREE.Scene, maxActive?: number, rand?: () => number}} deps
+   *   **无贴图依赖**（程序化几何 + 逐实例颜色 + TSL 粒子）⇒ 恒装配，不像法阵那样可能退 null。
+   *   `rand` 可注入（单测要可复现，同 FireRingRenderer）。
    */
-  constructor({ scene, maxActive = SPIKE_FX.maxActive }) {
+  constructor({ scene, maxActive = SPIKE_FX.maxActive, rand = Math.random }) {
     this.scene = scene;
     this.maxActive = maxActive;
+    this._rand = rand;
 
     // 6 棱锥（像素风）；`translate` 把底面移到 y=0 ⇒ 实例 position 就是地面顶面
     const geometry = new THREE.ConeGeometry(SPIKE_FX.radius, SPIKE_FX.height, 6);
@@ -155,11 +179,38 @@ export class SpikeFxRenderer {
     this.mesh.instanceColor.needsUpdate = true;
     this.scene.add(this.mesh);
 
-    /** @type {Array<{slot:number, x:number, y:number, z:number, delayMs:number, bornAt:number}>} */
+    /** @type {Array<{slot:number, x:number, y:number, z:number, delayMs:number, bornAt:number, sparkEmitted:number, emberEmitted:number}>} */
     this._active = [];
     this._nextSlot = 0;
     this._geometry = geometry;
     this._material = material;
+
+    // ---- v3.23：破土火星 / 上浮余烬两个共享 GPU 池 ----
+    // ☠️ 两组 uniform **各自独立**（闭包捕获）：共享一份会让两个池互相覆写 uTime。
+    const sparkMade = createSpikeSparkMaterial();
+    const emberMade = createSpikeEmberMaterial();
+    this._sparkMaterial = sparkMade.spark;
+    this._sparkUniforms = sparkMade.uniforms;
+    this._emberMaterial = emberMade.ember;
+    this._emberUniforms = emberMade.uniforms;
+    this._sparkGeo = createSpikeSparkGeometry(SPARK.capacity);
+    this._emberGeo = createSpikeSparkGeometry(SPARK.capacity);
+    this._sparkSlot = 0;
+    this._emberSlot = 0;
+    /** 粒子最后一次发射时刻（绝对秒）—— 空闲超时后隐藏，让在飞的自然衰亡 */
+    this._sparkLastEmit = -1;
+    this.sparkMesh = new THREE.Mesh(this._sparkGeo, this._sparkMaterial);
+    this.sparkMesh.name = 'ignis:spike-spark';
+    this.emberMesh = new THREE.Mesh(this._emberGeo, this._emberMaterial);
+    this.emberMesh.name = 'ignis:spike-ember';
+    for (const m of [this.sparkMesh, this.emberMesh]) {
+      m.frustumCulled = false;
+      m.renderOrder = SPARK.renderOrder;
+      m.visible = false;
+      this.scene.add(m);
+    }
+    /** 供水面倒影的 hidden 列表展开（与 stormLance / cinderFall / fireRing 同口径） */
+    this.meshes = [this.mesh, this.sparkMesh, this.emberMesh];
   }
 
   /** 活跃根数（测试钩子） */
@@ -186,6 +237,10 @@ export class SpikeFxRenderer {
         slot, x: p.x, y: p.y, z: p.z,
         delayMs: Number.isFinite(p.delayMs) ? p.delayMs : 0,
         bornAt: nowMs,
+        // v3.23：逐根的累计发射量（配额差值的基准）—— 不得共享一个全局计数器，
+        // 否则 5 根只有第一根会喷火星（其余四根的配额被它吃掉）。
+        sparkEmitted: 0,
+        emberEmitted: 0,
       });
       // 延迟期内先摆成零 scale（不可见），update 到点后再摆出来
       this.mesh.setMatrixAt(slot, _zero);
@@ -195,12 +250,51 @@ export class SpikeFxRenderer {
   }
 
   /**
-   * 每帧推进：延迟到点的根升起、保持、缩回、寿命结束的回收。
+   * 写一批粒子（CPU 只写出生数据，运动全在 GPU）。零分配：用模块级 `_spikeAt`。
+   *
+   * ⚠️ `aSpawn` 写**绝对秒**（nowMs/1000）—— 与 shader 的 `uTime` 同一个时钟。
+   * 写毫秒会让 `age = uTime − aSpawn` 恒负 ⇒ 粒子全灭而计数/可见性全绿（v3.20 实测）。
+   *
+   * @param {object} s 活跃根 @param {'spark'|'ember'} kind
+   * @param {number} progress 该根升起进度 0..1 @param {number} count
+   * @param {number} tSec 绝对秒
+   */
+  _emitSparks(s, kind, progress, count, tSec) {
+    if (count <= 0) return;
+    const ember = kind === 'ember';
+    const g = ember ? this._emberGeo : this._sparkGeo;
+    _spikeAt.x = s.x; _spikeAt.y = s.y; _spikeAt.z = s.z;
+    const seeds = spikeSparkSeeds(_spikeAt, progress, kind, count, this._rand, SPARK);
+    const key = ember ? '_emberSlot' : '_sparkSlot';
+    for (const p of seeds) {
+      const i = this[key];
+      this[key] = (i + 1) % SPARK.capacity;
+      g.getAttribute('aOrigin').setXYZ(i, p.pos[0], p.pos[1], p.pos[2]);
+      g.getAttribute('aVel').setXYZ(i, p.vel[0], p.vel[1], p.vel[2]);
+      g.getAttribute('aSpawn').setX(i, tSec);
+      g.getAttribute('aLife').setX(i, p.life);
+      g.getAttribute('aSize').setX(i, p.size);
+      g.getAttribute('aSeed').setX(i, this._rand() * 100);
+    }
+    for (const name of ['aOrigin', 'aVel', 'aSpawn', 'aLife', 'aSize', 'aSeed']) {
+      g.getAttribute(name).needsUpdate = true;
+    }
+    this._sparkLastEmit = tSec;
+    (ember ? this.emberMesh : this.sparkMesh).visible = true;
+  }
+
+  /**
+   * 每帧推进：延迟到点的根升起、保持、缩回、寿命结束的回收；逐根按配额差值喷火星。
    * @param {number} nowMs `performance.now()` 基准
    */
   update(nowMs) {
+    if (!Number.isFinite(nowMs)) return;
+    const tSec = nowMs / 1000;
+    this._sparkUniforms.uTime.value = tSec;
+    this._emberUniforms.uTime.value = tSec;
     if (this._active.length === 0) {
       if (this.mesh.visible) this.mesh.visible = false;
+      this._decayParticles(tSec);
       return;
     }
     let anyVisible = false;
@@ -232,18 +326,81 @@ export class SpikeFxRenderer {
       _color.setRGB(SPIKE_FX.color[0] * k, SPIKE_FX.color[1] * k, SPIKE_FX.color[2] * k);
       this.mesh.setColorAt(s.slot, _color);
       colorDirty = true;
+
+      /**
+       * v3.23：按**累计配额差值**喷火星 / 余烬。
+       *
+       * ☠️ `lived = age − delay`（自**破土**起）而不是 `age` —— 用 age 会让延迟期
+       * 内的根提前喷火星（刺还在地里就先冒火）。
+       * ☠️ 配额函数在 `lived ≥ lifeMs × shrinkFrom` 后**不再增长** ⇒ 缩回段自然停发，
+       * 不需要另写一道「是否在缩回」的门（两处各写一份就是第二个权威）。
+       * ☠️ 进度传 `env.scale`：升起段它 0→1（出生高度跟着锥面上爬），
+       * 保持段恒 1，缩回段下降但那时已停发 ⇒ 不会出现「火星跟着刺往下钻」。
+       */
+      const lived = nowMs - s.bornAt - s.delayMs;
+      const wantSpark = spikeSparkQuotaAt(lived, 'spark', SPARK);
+      if (wantSpark > s.sparkEmitted) {
+        this._emitSparks(s, 'spark', env.scale, wantSpark - s.sparkEmitted, tSec);
+        s.sparkEmitted = wantSpark;
+      }
+      const wantEmber = spikeSparkQuotaAt(lived, 'ember', SPARK);
+      if (wantEmber > s.emberEmitted) {
+        this._emitSparks(s, 'ember', env.scale, wantEmber - s.emberEmitted, tSec);
+        s.emberEmitted = wantEmber;
+      }
     }
     this.mesh.instanceMatrix.needsUpdate = true;
     if (colorDirty && this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true;
     // 全部仍在递延期或已全部结束 ⇒ 不提交渲染（draw call 回到基线）
     this.mesh.visible = anyVisible;
+    this._decayParticles(tSec);
+  }
+
+  /**
+   * 粒子层空闲回收：最后一次发射后过 `particleIdleSeconds` 才隐藏。
+   *
+   * ⚠️ **不得在尖锥回收那一帧硬切**：那时仍有火星/余烬在飞（余烬寿命 0.95s
+   * 远长于尖锥剩下的寿命）⇒ 硬切会让它们凭空消失（同 Cinder / 火圈口径）。
+   */
+  _decayParticles(tSec) {
+    if (this._sparkLastEmit >= 0 && tSec - this._sparkLastEmit > SPARK.particleIdleSeconds) {
+      this.sparkMesh.visible = false;
+      this.emberMesh.visible = false;
+      this._sparkLastEmit = -1;
+    }
+  }
+
+  /** 清空全部活跃特效（Tier 4 fixture 用来隔离对照组，同 FireRingRenderer.reset） */
+  reset() {
+    for (const s of this._active) this.mesh.setMatrixAt(s.slot, _zero);
+    this.mesh.instanceMatrix.needsUpdate = true;
+    this._active.length = 0;
+    this.mesh.visible = false;
+    this.sparkMesh.visible = false;
+    this.emberMesh.visible = false;
+    this._sparkLastEmit = -1;
+    this._sparkSlot = 0;
+    this._emberSlot = 0;
+    for (const g of [this._sparkGeo, this._emberGeo]) {
+      const spawn = g.getAttribute('aSpawn');
+      const life = g.getAttribute('aLife');
+      for (let i = 0; i < SPARK.capacity; i++) { spawn.setX(i, -1e3); life.setX(i, 1e-3); }
+      spawn.needsUpdate = true;
+      life.needsUpdate = true;
+    }
   }
 
   dispose() {
-    this.scene.remove(this.mesh);
+    for (const m of this.meshes) this.scene.remove(m);
     this.mesh.dispose();        // 释放 instanceMatrix / instanceColor 缓冲
     this._geometry.dispose();
     this._material.dispose();   // InstancedMesh.dispose 不释放材质
+    this._sparkGeo.dispose();
+    this._emberGeo.dispose();
+    this._sparkMaterial.dispose();
+    this._emberMaterial.dispose();
     this._active.length = 0;
+    this.meshes.length = 0;
+    this._sparkLastEmit = -1;
   }
 }

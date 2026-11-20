@@ -193,7 +193,7 @@ export const UNIT_NODE_SAFE = [
   'test-playground.js', 'test-progress.js', 'test-projectiles.js', 'test-rain.js', 'test-raycast.js',
   'test-ruined-citadel-gen.js', 'test-runner-tiers.js', 'test-scatter.js', 'test-shadow-manager.js',
   'test-shallow-tarn-gen.js', 'test-shallow-water-bridge.js', 'test-shallow-water-tarns.js',
-  'test-sky-structures.js', 'test-smoke.js', 'test-spike-fx.js', 'test-step-lift.js',
+  'test-sky-structures.js', 'test-smoke.js', 'test-spike-fx.js', 'test-spike-sparks.js', 'test-step-lift.js',
   'test-stone-bricks.js',
   'test-structure-json.js', 'test-structure-layout.js', 'test-sun-shade.js', 'test-tarn-altar.js',
   'test-tarn-terrain.js', 'test-tarn-zone-gen.js', 'test-tarn-zone.js', 'test-terrain.js',

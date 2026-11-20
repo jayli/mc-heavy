@@ -988,6 +988,7 @@ export class Game {
 
     // v3.06：焰魔尖刺攻击的火焰尖锥（程序化几何，**无贴图依赖** ⇒ 恒装配）。
     // 原版无尖刺素材（它是把地面方块整块掀飞），本仓新建几何 —— 用户裁定「火焰尖锥」。
+    // v3.23：同一渲染器另带**破土火星 + 上浮余烬**两个 GPU 粒子池（共 3 个 mesh）。
     this.spikeFx = new SpikeFxRenderer({ scene: this.scene });
 
     // v3.22：持盾冲撞 / 举盾砸击的**扩散火圈**（程序化几何 + TSL，零贴图依赖 ⇒ 恒装配）。
@@ -1502,6 +1503,7 @@ export class Game {
       // v3.04：焰魔法阵推进（递延点亮 / 自转 / 末段淡出；全部结束后 visible=false）
       this.flameSigil?.update(nowMs);
       // v3.06：焰魔尖刺推进（递延升起 / 保持 / 缩回；全部结束后 visible=false）
+      // v3.23：同一调用里逐根喷破土火星 / 上浮余烬（粒子层空闲超时后才隐藏）
       this.spikeFx?.update(nowMs);
       // v3.22：焰魔扩散火圈推进（半径外扩 / 末段淡出 / 环缘撒火星；结束后 visible=false）
       this.fireRing?.update(nowMs);
@@ -1833,6 +1835,8 @@ export class Game {
     if (this.cinderFall) hidden.push(...this.cinderFall.meshes);
     // v3.22：焰魔火圈同理（环 + 火星）—— 反射 pass 的成本主杠杆是 draw call 数。
     if (this.fireRing) hidden.push(...this.fireRing.meshes);
+    // v3.23：尖锥 + 破土火星 + 余烬同理（三个 mesh）。
+    if (this.spikeFx) hidden.push(...this.spikeFx.meshes);
     this.ocean.renderReflection(cam, this.ocean.plane.material, hidden);
   }
 

@@ -226,7 +226,10 @@ test('spike fx: NaN nowMs / NaN 落点不污染池', () => {
 test('spike fx: dispose 从场景移除并释放几何/材质', () => {
   const scene = new THREE.Scene();
   const r = new SpikeFxRenderer({ scene });
-  assertEqual(scene.children.length, 1);
+  // v3.23：尖锥 + 破土火星 + 上浮余烬 = 3 个 mesh（读 `meshes.length` 而不写死 3，
+  // 但另钉一条「不得少于 3」防退化回只挂尖锥）。
+  assertEqual(scene.children.length, r.meshes.length);
+  assertTrue(r.meshes.length >= 3, '尖锥与两个粒子池都须挂进场景');
   r.dispose();
   assertEqual(scene.children.length, 0);
 });
