@@ -248,6 +248,17 @@ scheduler/physics）再加 `npm run bench -- --check`。计划里标「冻结」
 `pointer-events:none` → 判「在最上层」只能走像素，`elementFromPoint` 会跳过它们。
 面板里「点了没反应」的报告先查这一条。血心与看板同层（常驻信息）；伤害数字高于看板
 （可能飘到面板底色上方）、低于一切交互元素。
+- ⚠️ **`PANEL_CSS` 是 JS 模板字面量，注释里不得出现反引号**（v3.25 实测踩了两次，形态是
+  `SyntaxError: Unexpected identifier` 让整页白屏）。文件里已有两条同形警告仍会踩 —— 写完
+  `node --check src/ui/settings-panel.js` 一秒能拓。
+- ⚠️ **设置弹窗的高度改成固定值后才能做「切 Tab 尺寸不变」**（v3.25）：旧布局是 `auto` 高度（内容
+  决定），两 Tab 内容高不同 ⇒ 切换必跳。定高（用户定 **560px**，content-box ⇒ 外框 818×608）后
+  内部三段为 Tab 栏 40+14 / 页内容区 `flex:1` / 底栏 58，可视高 **448px** 恰好容下两页（436 / 441）。
+  判据只能用 `getBoundingClientRect` **逐位相等**，不能用「看着没变」；同时要量 `scrollHeight ===
+  clientHeight`（压过头时盒子尺寸照样"不变"，只是多出滚动条）。
+- ⚠️ **大图（14MB）不得在面板构造时设 `src`**：把 `src` 延迟到首次切到该页（`_aboutImageSrcSet`
+  只设一次），否则每次开游戏都在后台拉一次。路径必须走 `resourceUrl()` —— 站点根绝对路径在
+  子路径部署下 404，而**只在切到那页时表现为破图，零报错**。
 
 **渲染与 GPU**
 - ⚠️⚠️⚠️ **反射/阴影类额外 pass 必须在主 `renderer.render()` 之前跑**（水面倒影 v3.17 实测）：

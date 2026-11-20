@@ -89,6 +89,10 @@ const {
 const {
   SOUND_IDS: SOUND_IDS_FOR_GATE, BGM_TRACKS, BOSS_BGM_TRACK, soundFileName,
 } = await import('../src/render/audio-config.js');
+// v3.25：设置面板「关于游戏」Tab 的配图路径 —— 从运行时代码 import（红线 1：不在门禁里写第二份）。
+// ⚠️ settings-panel.js 只 import 纯函数模块 + resource-url（无 three、无 DOM 顶层副作用），
+// node 侧可安全 import（与 `src/tests/test-ui.js` 同口径）。
+const { ABOUT_IMAGE_PATH } = await import('../src/ui/settings-panel.js');
 // 矿车冻结数据 —— 门禁据此断言铁轨类型集合与 config 单一权威一致（红线 1）
 const {
   MINECART_ITEM, TRACK_BLOCK_TYPES,
@@ -4008,10 +4012,15 @@ async function checkAzaleaTrees() {
  *   ② `BGM_TRACKS` + `BOSS_BGM_TRACK` 同理（三首随机选，缺一首就有一半开局时间没音乐；
  *     boss 曲缺了就是召唤 Boss 后战斗音乐静默）；
  *   ③ loading 占位图与 favicon 素材存在（缺了就是破图 + 空白图标）。
+ *   ④ v3.25：设置面板「关于游戏」Tab 的配图存在（路径与说明文字**从运行时代码 import** ——
+ *     在门禁里再写一份路径就是第二份权威）。
  *
  * ⚠️ **清单必须从运行时代码 import**：在门禁里再写一份 id 列表就是红线 1 的第二份权威，
  * 改了 `SOUND_IDS` 而忘改门禁时它仍然全绿。
  * ⚠️ **扩展名走 `soundFileName(id)`**（v2.64）：写死 `.mp3` 会让 7 个 `.ogg` 音效恒报缺失。
+ * ⚠️ **关于页配图只查存在性不查内容**：它是用户原图（4032×3024 / 14MB 手写笔记），
+ * 没有烘焙产物可言，也**不进指纹**；真正的加载成功由 `tests/about-tab.spec.mjs` 在真实
+ * 浏览器里钉 `img.complete + naturalWidth === 4032`。
  */
 function checkAudioAssets() {
   const missing = [];
@@ -4031,11 +4040,15 @@ function checkAudioAssets() {
   for (const f of ['Minecraft-Logo.png', 'icon.png']) {
     if (!fs.existsSync(path.join(ROOT, 'assets', 'ui', f))) missing.push(`启动图 assets/ui/${f}`);
   }
+  // v3.25：设置面板「关于游戏」Tab 的配图（路径取运行时常量，不在门禁里再写一份）
+  if (!fs.existsSync(path.join(ROOT, ABOUT_IMAGE_PATH))) {
+    missing.push(`关于游戏配图 ${ABOUT_IMAGE_PATH}`);
+  }
   if (missing.length > 0) {
     failures.push(`[音效] 缺素材或清单与磁盘不一致：${missing.join(', ')}`);
     return;
   }
-  infos.push(`[音效] ${SOUND_IDS_FOR_GATE.length} 个效果音 + ${BGM_TRACKS.length} 首背景音乐（${BGM_TRACKS.join('/')}）+ Boss 曲 ${BOSS_BGM_TRACK} 均有对应文件；启动图 assets/ui/ 两件齐备`);
+  infos.push(`[音效] ${SOUND_IDS_FOR_GATE.length} 个效果音 + ${BGM_TRACKS.length} 首背景音乐（${BGM_TRACKS.join('/')}）+ Boss 曲 ${BOSS_BGM_TRACK} 均有对应文件；启动图 assets/ui/ 两件齐备；关于游戏配图 ${ABOUT_IMAGE_PATH} 在位`);
 }
 
 const REGISTRY = await buildDefaultRegistry();

@@ -13,7 +13,7 @@
 // 的图标契约检查（背包每项都有图标 + 图标未过期）。
 import { test } from './runner.js';
 import { assertEqual, assertTrue, assertFalse } from './assert.js';
-import { resourceUrl } from '../core/resource-url.js';
+import { resourceUrl, resourceUrlFrom } from '../core/resource-url.js';
 import { DEFAULT_SETTINGS, resolveSettings, VIEW_DISTANCE_OPTIONS, VIEW_DISTANCE_MIN, VIEW_DISTANCE_MAX, VISUAL_STYLE_OPTIONS, CHUNK_PACE_MIN, CHUNK_PACE_MAX } from '../ui/settings.js';
 import { loadIconManifest, iconCss } from '../ui/icons.js';
 // M9：创造台面板的两态文案常量与错误映射是**导出的单一口径**（见下方用例说明）。
@@ -27,6 +27,7 @@ import {
   TELEPORT_CITADEL_LABEL,
   TELEPORT_AUTO_CLOSE_MS,
   RESOLUTION_ROW_TITLE, RESOLUTION_LABELS,
+  TAB_SETTINGS_LABEL, TAB_ABOUT_LABEL, ABOUT_PARAGRAPH, ABOUT_IMAGE_PATH,
 } from '../ui/settings-panel.js';
 import {
   PIXEL_RATIO_MODE_OPTIONS, DEFAULT_PIXEL_RATIO_MODE,
@@ -613,5 +614,46 @@ test('生命系统显示层的 z-index 必须嵌进既有层级不等式', () =>
     `血心(${HEALTH_Z_INDEX}) 不得压过启动错误遮罩(${BOOT_ERROR_Z})`);
   assertTrue(DAMAGE_NUMBER_Z_INDEX < BOOT_ERROR_Z,
     `伤害数字(${DAMAGE_NUMBER_Z_INDEX}) 不得压过启动错误遮罩(${BOOT_ERROR_Z})`);
+});
+
+/**
+ * v3.25：设置弹窗的两个 Tab（用户 2026-11-20：「增加一个 Tab，第一个 Tab 就是现在的配置信息
+ * 『游戏设置』，第二个 Tab 是『关于游戏』」）。
+ *
+ * 这里钉的是**常量当唯一权威**（文案、配图路径、正文），不是布局 ——
+ * 「弹框尺寸切换不变」「确定按钮在内容之外」「确定按钮宽度翻倍」三条布局契约在
+ * `tests/about-tab.spec.mjs` 里用真实浏览器量取（单测拿不到 computed style）。
+ *
+ * 三条判据各自防的缺陷形态：
+ * ① 文案/顺序：Tab 栏是玩家找设置的第一入口，改一个字或换序都会改变惯性；
+ * ② 配图路径：写成站点根绝对路径（`/assets/...`）在子路径部署时 404，而**只在切到关于页时
+ *    表现为破图**，没有任何报错。`check:arch` 守住字面量形式，这里守住「经 resourceUrl 派生」
+ *    这个事实 —— `resourceUrl()` 的结果以仓库根为基址，与运行位置无关；
+ * ③ 正文完整性：它是用户给的私人文字，被摘要/改字都不属于技术改动。
+ */
+test('设置弹窗的两个 Tab：文案与顺序、配图路径走 resourceUrl、关于页正文不被改写', () => {
+  assertEqual(TAB_SETTINGS_LABEL, '游戏设置');
+  assertEqual(TAB_ABOUT_LABEL, '关于游戏');
+
+  // 配图路径：仓库相对（禁前导斜杠），且经 resourceUrl 解析出的 URL 以它结尾
+  assertFalse(ABOUT_IMAGE_PATH.startsWith('/'),
+    `配图路径不得是站点根绝对路径（子路径部署下 404）：${ABOUT_IMAGE_PATH}`);
+  assertEqual(ABOUT_IMAGE_PATH, 'assets/about/prompt.png');
+  const url = resourceUrl(ABOUT_IMAGE_PATH);
+  // ⚠️ 断言里**不得写 `'/assets/...'` 字面量** —— `check:arch` 的资源 URL 检查扫的是
+  // 「非注释代码行里出现那个字串」（不管它是不是在一个传给 endsWith 的常量里）。
+  assertTrue(url.endsWith(`/${ABOUT_IMAGE_PATH}`),
+    `resourceUrl 结果必须以仓库相对路径结尾：${url}`);
+  assertTrue(url.startsWith('http'), `必须是绝对 URL：${url}`);
+  // 子路径部署下也必须正确（与 `test-resource-url` 同口径，这里只钉关于页这条具体引用）
+  const nested = resourceUrlFrom('http://host/mc-heavy/src/core/resource-url.js', ABOUT_IMAGE_PATH);
+  assertEqual(nested, 'http://host/mc-heavy/assets/about/prompt.png');
+
+  // ③ 正文：用户原话的几个锚点必须在（钉住「没有被摘要/改写」）
+  assertTrue(ABOUT_PARAGRAPH.includes('我上小学三年级'));
+  assertTrue(ABOUT_PARAGRAPH.includes('爸爸给我做了一个“我的世界”让我偷偷玩'));
+  assertTrue(ABOUT_PARAGRAPH.includes('只要我语文再考优'));
+  // 用户指定的那段话**不含**旁白句（2026-11-20 裁定删掉）
+  assertFalse(ABOUT_PARAGRAPH.includes('三年级小朋友写的一张提示词'));
 });
 

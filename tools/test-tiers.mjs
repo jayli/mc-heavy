@@ -57,6 +57,7 @@ const UI = [
   'health-hud',
   'minimap',
   'settings-resolution',
+  'about-tab',          // v3.25 设置弹窗两 Tab（尺寸不变 / 确定按钮在内容之外 / 关于页配图）
   'loading-overlay',
   'progress',
   'teleport',

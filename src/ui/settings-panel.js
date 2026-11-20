@@ -21,6 +21,8 @@ import {
 // 面板只引值集合与文案并排显示；换算/钳制一概不在这里做。
 import { PIXEL_RATIO_MODE_OPTIONS } from '../render/pixel-ratio.js';
 import { Toast } from './toast.js';
+// 资源 URL 唯一权威（红线：禁止站点根绝对路径 —— 仓库挂子路径部署时会全 404）
+import { resourceUrl } from '../core/resource-url.js';
 
 const STYLE_ID = 'mc-settings-style';
 /**
@@ -41,6 +43,28 @@ const TELEPORT_TOAST_MS = 3200;
 export const TELEPORT_AUTO_CLOSE_MS = 100;
 /** 「删除缓存」按钮的常态文案。复位与构造必须共用同一份 —— 写两处会漂移（红线 1 精神） */
 const CLEAR_SAVE_LABEL = '删除缓存';
+
+/**
+ * v3.25：设置弹窗的两个 Tab 标题（用户 2026-11-20 需求：「增加一个 Tab，第一个 Tab 就是现在的
+ * 配置信息『游戏设置』，第二个 Tab 是『关于游戏』」）。
+ * 导出供 `src/tests/test-ui.js` 钉死（单一口径：构造 Tab 栏与断言共用一份文案）。
+ */
+export const TAB_SETTINGS_LABEL = '游戏设置';
+export const TAB_ABOUT_LABEL = '关于游戏';
+/**
+ * 「关于游戏」Tab 的正文。**用户原话照抄**（2026-11-20），只做排版规整（去掉多余空格）。
+ * ⚠️ 这是玩家可见的私人文字，改字、缩写或「润色」都不属技术改动 —— 需要用户本人改。
+ */
+export const ABOUT_PARAGRAPH = '我上小学三年级，妈妈让我专心学习，不让我用 Pad 玩“我的世界”，但是爸爸给我做了一个“我的世界”让我偷偷玩。我还能加武器、建造坦克、设计Boss的招式，我也写了好多“提示词”，爸爸说，只要我语文再考优，就让我设计多多的好玩功能、加多多炫酷的技能。';
+/** 「关于游戏」里那张图的替代文案（无障碍：图是手写笔记，读屏用户靠 alt 获得语义）。
+ *  ⚠️ 图旁**不加旁白**（用户 2026-11-20 裁定：「三年级小朋友写的一张提示词」这句不需要）。 */
+export const ABOUT_IMAGE_ALT = '三年级小朋友手写的招式设计提示词：双手把大剑举起，用力向下劈向目标，再接第二刀，向前 5 格内放出尖刺……';
+/**
+ * 「关于游戏」的配图路径（**仓库相对**，消费端经 `resourceUrl()` 转 URL）。
+ * 用户 2026-11-20 指定的文件即 `assets/about/prompt.png`（4032×3024）。
+ * ⚠️ 图片只在该 Tab **首次被切到**时才设 `src`：14MB 的 PNG 不该拖慢游戏启动与常规设置路径。
+ */
+export const ABOUT_IMAGE_PATH = 'assets/about/prompt.png';
 
 /**
  * M9：创造台按钮的**两态文案单一口径**（导出供 `src/tests/test-ui.js` 钉死）。
@@ -183,14 +207,55 @@ const PANEL_CSS = `
 }
 #settings-modal .mc-content {
   background: #c6c6c6; border: 4px solid #555; padding: 20px;
-  width: 770px; min-height: 250px; border-radius: 4px;   /* mc-lite #settings-content 同宽 */
+  width: 770px; height: 560px; max-height: 84vh; border-radius: 4px;   /* 高度固定 = 两 Tab 切换时弹框尺寸不变 */
   box-shadow: 5px 5px 0 #000;
   display: flex; flex-direction: column; text-align: center;
-  max-height: 84vh; overflow: auto;
+  /* 默认 content-box（本仓没有全局 border-box） ⇒ height 就是内部内容区高，
+     实际外框 = 770+40+8 = 818 宽、560+40+8 = 608 高。
+     高度是**用户指定的固定值**（2026-11-20：「这个高度改为 height: 560px」）——
+     它是「切 Tab 尺寸不变」的直接前提（旧布局是 auto 高度，由内容决定）。
+     内部三段 = Tab 栏 40+14 / 页内容区 flex:1 / 底栏 58 ⇒ 页面可视高 560−54−58 = **448px**。
+     实测两页都不溢出：「游戏设置」自然内容 **436px**、关于页靠图片缩放自适应 **448px** ⇒
+     两 Tab 都是 overflow 为 0（实测 mainScroll/aboutScroll 的 scrollHeight === clientHeight）。
+     ⚠️ 再往下压到 490（可视 378）就会先让「游戏设置」出现纵向滚动条 —— 两列面板压不下去。
+     max-height: 84vh 是视口比 608px 矮时的兜底（两个页面板自己 overflow:auto）。 */
 }
-#settings-modal h2 {
-  margin: 0 0 12px; text-align: left; font-size: 18px; font-weight: bold; color: #333;
+/* Tab 栏（v3.25）：两个页签横排，选中态沿用面板既有的绿色 #559944（与档位按钮同一套语言）。
+   ⚠️ 页签高度写死 40px —— 两个 Tab 切换时它不得变化，否则「弹框尺寸不变」的契约靠不住。 */
+#settings-modal .mc-tabs { display: flex; gap: 8px; margin-bottom: 14px; }
+#settings-modal .mc-tab {
+  flex: 1; height: 40px; padding: 0 4px; font-size: 14px;
+  background: #8b8b8b; border: 2px solid #fff;
+  border-right-color: #373737; border-bottom-color: #373737;
+  color: #fff; cursor: pointer; font-family: inherit; font-weight: bold;
+  text-shadow: 1px 1px 0 #000;
 }
+#settings-modal .mc-tab:hover { background: #999; }
+#settings-modal .mc-tab.active {
+  background: #559944; border: 2px solid #373737;
+  border-right-color: #fff; border-bottom-color: #fff;
+}
+/* 页内内容区：两个 Tab 共用同一块空间（只有 display 不同）⇒ 切换不推动下方确定按钮。
+   ⚠️ 高度由 flex:1 决定（内容盒固定 604px、扣掉 Tab 栏与底栏），不是百分比 ——
+   百分比在这里要跟 min-height 打架。 */
+#settings-modal .mc-tab-panels { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+#settings-modal .mc-tab-panel { display: none; }
+#settings-modal .mc-tab-panel.active {
+  display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: auto;
+}
+/* 「关于游戏」：纯文案 + 一张手写图（用户 2026-11-20）。
+   本类带 overflow:auto —— 只在内容比可视区高时出现滚动条（图片限高就是为了让它不出来）。 */
+#settings-modal .mc-about { gap: 12px; }
+#settings-modal .mc-about-text {
+  margin: 0; text-align: left; font-size: 14px; line-height: 1.7; color: #333;
+}
+#settings-modal .mc-about-image {
+  display: block; flex: 1; min-height: 0; margin: 0 auto;
+  max-width: 100%; max-height: 100%;
+  width: auto; height: auto; object-fit: contain;
+  border: 2px solid #888; background: #fff;
+}
+#settings-modal .mc-tabs { display: flex; gap: 8px; margin-bottom: 14px; }
 /* 两列布局：每列独立纵向堆叠，列间分隔线画在列内各项之间（非列首项）。
    分隔线只作用于 .mc-item（行型）—— 写成通配 :first-child 会连带抹掉 .mc-combined
    合并盒自己的装饰边框（实测踩坑：#settings-modal .mc-column > :first-child 特异性
@@ -261,7 +326,12 @@ const PANEL_CSS = `
 #settings-modal .mc-footer {
   margin-top: auto; display: flex; justify-content: center; padding-top: 20px;
 }
-#settings-modal .mc-footer button { flex: none; padding: 8px 24px; font-size: 13px; }
+/* 确定按钮（v3.25）：宽度是改前（78px）的**两倍** —— 用 min-width 而不是 width，
+   两个字的文案宽度（实测 26px + padding 48 + border 4 = 78px）不再决定按钮尺寸，
+   字号/文案将来变动也不会把它缩回去。 */
+#settings-modal .mc-footer button {
+  flex: none; min-width: 156px; padding: 8px 24px; font-size: 13px;
+}
 `;
 
 /** 注入面板样式表（幂等） */
@@ -311,9 +381,40 @@ export class SettingsPanel {
     this.el.style.display = 'none';
     const box = document.createElement('div');
     box.className = 'mc-content';
-    const h2 = document.createElement('h2');
-    h2.textContent = '游戏设置';
-    box.appendChild(h2);
+
+    // v3.25：Tab 栏（用户 2026-11-20：「增加一个 Tab……切换 Tab 的时候整个设置弹框的尺寸不变。
+    // 确定按钮在 Tab 内容之外」）。两页签**等宽**（flex:1）且高度写死 40px ⇒ 切换时布局不动。
+    // 默认停在「游戏设置」（第 1 个 Tab 就是现在的配置信息）。
+    this._tab = 'settings';
+    const tabs = document.createElement('div');
+    tabs.className = 'mc-tabs';
+    box.appendChild(tabs);
+    /** 页签按钮按 key 索引（切换与断言都靠它，不靠 DOM 顺序下标） */
+    this._tabButtons = {};
+    const mkTab = (key, label) => {
+      const b = document.createElement('button');
+      b.className = 'mc-tab';
+      b.id = `settings-tab-${key}`;
+      b.textContent = label;
+      b.addEventListener('click', () => this.setTab(key));
+      tabs.appendChild(b);
+      this._tabButtons[key] = b;
+      return b;
+    };
+    mkTab('settings', TAB_SETTINGS_LABEL);
+    mkTab('about', TAB_ABOUT_LABEL);
+
+    // 页内容区：两面板**同时存在于 DOM**，只切 display（`mc-tab-panel.active`）。
+    // ⚠️ 两面板都常驻（不是每次切换重建）—— 重建会让创造台按钮的引用与 armed 态复位逻辑失效，
+    // 也会让关于页的图片在每次切换时重新请求。
+    const panels = document.createElement('div');
+    panels.className = 'mc-tab-panels';
+    box.appendChild(panels);
+
+    const settingsPanel = document.createElement('div');
+    settingsPanel.className = 'mc-tab-panel';
+    settingsPanel.id = 'settings-panel-main';
+    panels.appendChild(settingsPanel);
     this.el.appendChild(box);
     root.appendChild(this.el);
     // 点击遮罩关闭（mc-lite settingsModal.onclick 语义）
@@ -329,7 +430,7 @@ export class SettingsPanel {
     left.className = right.className = 'mc-column';
     columns.appendChild(left);
     columns.appendChild(right);
-    box.appendChild(columns);
+    settingsPanel.appendChild(columns);
 
     left.appendChild(this._combinedBlurGunDamage()); // 画质 + 枪械破坏共用一行
     left.appendChild(this._rowVisualStyle());
@@ -347,6 +448,11 @@ export class SettingsPanel {
     right.appendChild(this._combinedTntProgress());
     right.appendChild(this._rowWorld());             // 新世界 + 删除缓存共用一行
 
+    // 第二个 Tab（「关于游戏」）：纯文案 + 一张手写提示词图。图片 `src` 延迟到
+    // 首次切到该 Tab 才设（14MB PNG，不占启动与常规设置路径的带宽）。
+    panels.appendChild(this._panelAbout());
+
+    // 确定按钮：在**Tab 内容之外**（用户 2026-11-20 明确要求），两个 Tab 共用同一个。
     const footer = document.createElement('div');
     footer.className = 'mc-footer';
     const closeBtn = document.createElement('button');
@@ -355,6 +461,67 @@ export class SettingsPanel {
     closeBtn.addEventListener('click', () => this.close());
     footer.appendChild(closeBtn);
     box.appendChild(footer);
+
+    this.setTab('settings');   // 初始页签（也把 active 类第一次写上）
+  }
+
+  /**
+   * v3.25：「关于游戏」Tab 的面板。
+   *
+   * 内容 = 用户 2026-11-20 给的私人文字（`ABOUT_PARAGRAPH`，**逐字照抄**）+ 配图
+   * `assets/about/prompt.png`（三年级小朋友手写的招式提示词）。
+   *
+   * ⚠️ **图片 `src` 必须延迟到首次切页**：原图 4032×3024 / 14MB，提前设 `src` 会让每次打开
+   * 游戏都在后台拉这 14MB。`_aboutImageSrcSet` 保证只设一次，`src` 一旦开始加载浏览器就缓存。
+   * ⚠️ **URL 必须经 `resourceUrl()`**（禁站点根绝对路径）：仓库挂子路径部署时会全 404。
+   */
+  _panelAbout() {
+    const panel = document.createElement('div');
+    panel.className = 'mc-tab-panel mc-about';
+    panel.id = 'settings-panel-about';
+
+    const p = document.createElement('p');
+    p.className = 'mc-about-text';
+    p.textContent = ABOUT_PARAGRAPH;
+    panel.appendChild(p);
+
+    // 配图直接放（**不加任何旁白**，用户 2026-11-20 明确裁定）—— 语义全靠 alt。
+    const img = document.createElement('img');
+    img.className = 'mc-about-image';
+    img.id = 'about-image';
+    img.alt = ABOUT_IMAGE_ALT;
+    img.decoding = 'async';
+    this._aboutImage = img;
+    this._aboutImageSrcSet = false;
+    panel.appendChild(img);
+
+    return panel;
+  }
+
+  /**
+   * v3.25：切换 Tab。
+   *
+   * 两个面板等大小（同一块 `.mc-tab-panels` 区域）⇒ **弹框尺寸不变**（用户明确要求）。
+   * 故这里只切 `active` 类与 `this._tab`，不改任何尺寸/可见性之外的容器属性。
+   *
+   * @param {'settings' | 'about'} key
+   */
+  setTab(key) {
+    if (!this._tabButtons[key]) return;   // 未知 key 不得静默清空两个面板
+    this._tab = key;
+    for (const [k, b] of Object.entries(this._tabButtons)) {
+      b.classList.toggle('active', k === key);
+    }
+    const main = this.el.querySelector('#settings-panel-main');
+    const about = this.el.querySelector('#settings-panel-about');
+    main.classList.toggle('active', key === 'settings');
+    about.classList.toggle('active', key === 'about');
+
+    // 首次进入关于页才真正开始拉图（见 `_panelAbout` 的注释）
+    if (key === 'about' && !this._aboutImageSrcSet) {
+      this._aboutImageSrcSet = true;
+      this._aboutImage.src = resourceUrl(ABOUT_IMAGE_PATH);
+    }
   }
 
   // ---- 行构造（mc-lite .setting-item + .btn-group：标题左对齐、按钮等宽一行、选中态绿色） ----
@@ -1123,6 +1290,8 @@ export class SettingsPanel {
 
   open() {
     this.el.style.display = 'flex';
+    // 每次打开都回到「游戏设置」：玩家上次停在关于页、下次按 ⚙ 时预期看到的是设置。
+    this.setTab('settings');
     this._resetDangerArmed(); // 破坏性按钮复位，避免上次残留的 armed 态被误触
     this._syncPlaygroundState(); // M9：创造台按钮状态同步到服务真实状态
     this.game.pushModal('settings'); // M3.1 模态栈（§4.5.4）：原 uiModal=true 会与背包互踩
