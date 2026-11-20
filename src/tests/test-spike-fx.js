@@ -256,6 +256,38 @@ test('spike fx: 给了产物就走剑体几何，尺寸取剑体度量', async (
   }
 });
 
+test('spike fx: 剑体逐实例色不得把贴图染橙（用户「贴图跟剑一模一样」）', async () => {
+  const r = new SpikeFxRenderer({
+    scene: new THREE.Scene(), asset: await loadIgnisAssetForTest(), texture: fakeTex(),
+  });
+  try {
+    const pts = spikeSpawnPoints([0, 5, 0], 0).map((p) => ({ ...p, y: 5 }));
+    r.spawn(pts, 1000);
+    r.update(1000 + 250 + SPIKE_FX.riseMs);   // 全部升满（scale=1）
+    const c = new THREE.Color();
+    for (let i = 0; i < pts.length; i++) {
+      r.mesh.getColorAt(i, c);
+      // ☠️ three 的 setupDiffuseColor 把 instanceColor **乘到 colorNode（含 map）**
+      //（`three.webgpu.js:21619`）⇒ 写火焰橙 (1.0,0.45,0.12) 会把剑贴图染成橙色，
+      // 违背用户「剑体贴图就跟焰魔手里拿着的剑一模一样」。满尺寸时必须是白。
+      assertClose(c.r, 1, 1e-5, `第 ${i} 根 instanceColor.r`);
+      assertClose(c.g, 1, 1e-5, `第 ${i} 根 instanceColor.g`);
+      assertClose(c.b, 1, 1e-5, `第 ${i} 根 instanceColor.b`);
+    }
+    // 淡出仍要生效（缩回段亮度递减）—— 不能为了“不染橙”直接把淡出关掉
+    const shrinkMid = SPIKE_FX.lifeMs * SPIKE_FX.shrinkFrom
+      + (SPIKE_FX.lifeMs - SPIKE_FX.lifeMs * SPIKE_FX.shrinkFrom) * 0.5;
+    r.update(1000 + shrinkMid);
+    r.mesh.getColorAt(0, c);
+    assertTrue(c.r < 0.95 && c.r > 0.05,
+      `缩回中段须真的淡出（实得 r=${c.r}）—— 淡出不得被一并关掉`);
+    assertClose(c.g, c.r, 1e-5, '淡出必须是**中性灰**（三通道等比）而不是只压 g/b');
+    assertClose(c.b, c.r, 1e-5);
+  } finally {
+    r.dispose();
+  }
+});
+
 test('spike fx: 无产物时退回锥体且不抛错，阵列不回落（§6.2）', () => {
   const r = new SpikeFxRenderer({ scene: new THREE.Scene(), asset: null, texture: null });
   try {

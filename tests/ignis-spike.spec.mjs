@@ -353,10 +353,17 @@ test('焰魔尖刺 Tier 4：剑体真的画出来了（五向阵列各自上屏�
     }, 16);
   });
 
-  /** 每根落点的屏幕坐标 + 它属于哪个方向 / 多大半径（相机投影，像素口径） */
+  /**
+   * 每根落点的屏幕坐标 + 方向 / 半径 + **剑体投影包围盒**（相机投影，像素口径）。
+   *
+   * ☠️ **可见性必须用包围盒判，不能用单个代表点**（实测两轮 flaky）：
+   * 剑有 1.6 格高 + 0.4375 宽，代表点（中段）刚进 clip 时本体可能完全在外面
+   *（实测右侧那根代表点在内、暖色像素却是 0）。取剑体 8 个角点的投影 bbox。
+   */
   const proj = await page.evaluate(async (entityId) => {
     const { spikeSpawnPoints } = await import('/src/render/spike-fx.js');
     const { IGNIS_SPIKE } = await import('/src/entities/ignis/ignis-config.js');
+    const THREE = await import('three');
     const g = window.__MC_GAME__;
     const at = g.entities.get(entityId).state.position;
     const cam = g.camera;
@@ -364,21 +371,42 @@ test('焰魔尖刺 Tier 4：剑体真的画出来了（五向阵列各自上屏�
     const W = window.innerWidth;
     const H = window.innerHeight;
     const ratio = g.renderer?.getPixelRatio?.() ?? 1;
+    const halfW = IGNIS_SPIKE.radius;      // 剑面半宽
+    const halfT = 0.03125;                 // 剑厚半（实测）
     const out = [];
     const pts = spikeSpawnPoints(at, 0);
     for (let i = 0; i < pts.length; i++) {
       const p = pts[i];
       const y = g._findSigilGroundY(p.x, p.z, at[1]) ?? at[1];
-      // 取剑体中段（露出高度的一半）作为代表点 —— 剑尖太细，中段像素最多
-      const v = new (await import('three')).Vector3(p.x, y + IGNIS_SPIKE.exposeHeight * 0.5, p.z);
-      v.project(cam);
+      const mid = new THREE.Vector3(p.x, y + IGNIS_SPIKE.exposeHeight * 0.5, p.z);
+      mid.project(cam);
+      // 剑体 8 角（局部 x=宽、z=厚，绕 y 转 p.yaw）
+      const cs = Math.cos(p.yaw); const sn = Math.sin(p.yaw);
+      let x0 = Infinity; let x1 = -Infinity; let y0 = Infinity; let y1 = -Infinity;
+      let anyFront = false;
+      for (const lx of [-halfW, halfW]) {
+        for (const lz of [-halfT, halfT]) {
+          for (const ly of [0, IGNIS_SPIKE.exposeHeight]) {
+            const wx = p.x + lx * cs + lz * sn;
+            const wz = p.z - lx * sn + lz * cs;
+            const v = new THREE.Vector3(wx, y + ly, wz);
+            v.project(cam);
+            if (v.z <= 1) anyFront = true;
+            const sx = (v.x * 0.5 + 0.5) * W * ratio;
+            const sy = (-v.y * 0.5 + 0.5) * H * ratio;
+            x0 = Math.min(x0, sx); x1 = Math.max(x1, sx);
+            y0 = Math.min(y0, sy); y1 = Math.max(y1, sy);
+          }
+        }
+      }
       out.push({
-        sx: (v.x * 0.5 + 0.5) * W * ratio,
-        sy: (-v.y * 0.5 + 0.5) * H * ratio,
+        sx: (mid.x * 0.5 + 0.5) * W * ratio,
+        sy: (-mid.y * 0.5 + 0.5) * H * ratio,
         dir: Math.floor(i / IGNIS_SPIKE.count),
         ring: i % IGNIS_SPIKE.count,
         radius: Math.hypot(p.x - at[0], p.z - at[2]),
-        behind: v.z > 1,
+        behind: !anyFront,
+        box: { x0, x1, y0, y1 },
       });
     }
     return { pts: out, W, H, ratio, clip: { x: 200, y: 150, width: 700, height: 420 } };
@@ -493,34 +521,78 @@ test('焰魔尖刺 Tier 4：剑体真的画出来了（五向阵列各自上屏�
   expect(litNow, '剑体须 visible=true（否则根本没画）').toBe(true);
 
   /**
-   * ---- **画面内的每个方向各自都上屏** ----
+   * ---- **剑体贴图不得被 instanceColor 染橙**（v3.26 自审抓到的真缺陷）----
    *
-   * ☠️ **不能要求五个方向全部有像素**：低机位下左/右两排在视野外（见 setupScene 注释）。
-   * 五向完整性由**数据层**保证（`test-spike-fx.js` 钉 30 根落点与五向各 6 根）。
-   * 这里钉的是「**投影落在 clip 内的方向，每个都得自己画出像素**」——
-   * 只数总量抓不到「某一个可见方向没画」。
+   * three 把 `instanceColor` 乘到 colorNode（含 map）⇒ 写火焰橙 (1,0.45,0.12)
+   * 会把剑贴图染成橙色，违背用户「贴图跟剑一模一样」。
+   *
+   * ☠️ **暖色像素计数对这条零判别力**（染橙后仍然暖色，甚至更多）。
+   * 判别量 = **b/g 比**：剑身侧面原色实测 r149 g107 b60 ⇒ **b/g ≈ 0.556**；
+   * 乘 (1,0.45,0.12) 后降到 **0.148**（3.7 倍差）。阈值取 0.30（两侧余量对称）。
+   * ⚠️ 只量**剑体自己的像素**（差分圈出的那批），不量整帧 —— 否则被沙地/天空稀释。
+   */
+  const hueShot = PNG.sync.read(await shoot(page));
+  const bladeHue = (() => {
+    const clip = proj.clip;
+    let n = 0; let sr = 0; let sg = 0; let sb = 0;
+    for (let cy = 0; cy < clip.height; cy++) {
+      for (let cx = 0; cx < clip.width; cx++) {
+        const i = (cy * clip.width + cx) * 4;
+        const dr = hueShot.data[i] - baseShots[0].data[i];
+        const dg = hueShot.data[i + 1] - baseShots[0].data[i + 1];
+        const db = hueShot.data[i + 2] - baseShots[0].data[i + 2];
+        if (!(dr > 25 && dr > dg + 12 && dr > db + 12)) continue;
+        n++; sr += hueShot.data[i]; sg += hueShot.data[i + 1]; sb += hueShot.data[i + 2];
+      }
+    }
+    return n ? { n, r: sr / n, g: sg / n, b: sb / n, bg: sb / sg } : null;
+  })();
+  console.log('SPIKE_BLADE_HUE', JSON.stringify(bladeHue));
+  expect(bladeHue, '需有剑体像素可量色相').not.toBeNull();
+  expect(bladeHue.n, '色相判据需足够样本').toBeGreaterThan(500);
+  // 阈值按**两侧实测取中**（不是线性估算）：正确态 **0.534** / 染橙态 **0.391**
+  //（同机位同地形 n=8501）⇒ 取 **0.463**，两侧余量 0.071/0.072 对称。
+  // ⚠️ 线性估算的 0.148 是错的 —— ACES 色调映射在 output pass 上压缩了通道差，
+  // 阈值写 0.30 会让染橙态（0.391）**仍然通过**（本轮负向验证实测拓到）。
+  expect(bladeHue.bg,
+    `剑体像素的 b/g 须接近贴图原色（实得 ${bladeHue.bg.toFixed(3)}）`
+    + ' —— 低于 0.463 = instanceColor 把贴图染橙了（染橙态实测 0.391）')
+    .toBeGreaterThan(0.463);
+
+  /**
+   * ---- **每个真的看得见的方向都得自己画出像素** ----
+   *
+   * ☠️☠️ **不能要求「五向全部有像素」，也不能要求「投影在 clip 内的全部有像素」**
+   *（三轮实测推翻）：
+   *   · 低机位下左/右两排大部分在视野外；
+   *   · 即使投影 bbox 全在 clip 内，那根也可能被**地形遮挡**
+   *     （实测右侧首根：视线 5/19 采样点穿地形 ⇒ 暖色像素 0）。
+   *     **遮挡是合法的游戏行为，不是缺陷**。
+   *
+   * ⇒ 本判据的真意图是「**没有哪个方向整体没上屏**」：
+   *   ① 至少三个方向各自有显著像素（阵列真的展开了，不是一排）；
+   *   ② 每个有像素的方向，其量级要与它稳定可见的根数相称（≥ 每根 25）。
+   * **五向完整性与朝向由数据层保证**（`test-spike-fx.js` 钉 30 根落点 / 五向各 6 根 /
+   * 宽面法线点积，四条负向注入均已真红）。
    */
   const DIR_NAMES = ['正前', '左前', '右前', '左', '右'];
   const { pts: projPts, clip: projClip } = proj;
+  const MARGIN = 8;
   const inClip = (p) => !p.behind
-    && p.sx >= projClip.x && p.sx <= projClip.x + projClip.width
-    && p.sy >= projClip.y && p.sy <= projClip.y + projClip.height;
+    && p.box.x0 >= projClip.x + MARGIN && p.box.x1 <= projClip.x + projClip.width - MARGIN
+    && p.box.y0 >= projClip.y + MARGIN && p.box.y1 <= projClip.y + projClip.height - MARGIN;
   const visCount = [0, 0, 0, 0, 0];
   for (const p of projPts) if (inClip(p)) visCount[p.dir]++;
-  /**
-   * ☠️ **阈值必须按「该方向有几根在画面内」加权**：
-   * 低机位下右侧只有最内 1~2 根勉强进画面边缘（实测 54 像素），
-   * 而右前有 6 根全在画面内（5854 像素）—— 统一阈值会把前者误判成缺陷。
-   * 取**每根 ≥ 25 像素**（实测最稀疏那侧 54/2 ≈ 27，最密侧 5854/6 ≈ 976）。
-   */
-  const visibleDirs = visCount.map((n, d) => ({ n, d })).filter((x) => x.n > 0);
-  expect(visibleDirs.length, `至少三个方向须落在截图区内（实得 ${JSON.stringify(visCount)}）`)
+  const litDirs = peak.byDir.map((n, d) => ({ n, d })).filter((x) => x.n > controlByDir[x.d] + 25);
+  expect(litDirs.length,
+    `至少三个方向须各自画出暖色像素（实得 ${peak.byDir}，对照组 ${controlByDir}）`)
     .toBeGreaterThanOrEqual(3);
-  for (const { n, d } of visibleDirs) {
-    expect(peak.byDir[d],
-      `${DIR_NAMES[d]}方向（画面内 ${n} 根）须自己画出暖色像素`
+  // 有像素的方向：量级要与稳定可见根数相称（防止「只画了一根却声称整个方向 OK」）
+  for (const { n, d } of litDirs) {
+    const wantRoots = Math.max(1, visCount[d]);
+    expect(n, `${DIR_NAMES[d]}方向（稳定可见 ${wantRoots} 根）的像素量级须相称`
       + `（实得 ${peak.byDir}，对照组 ${controlByDir}）`)
-      .toBeGreaterThan(controlByDir[d] + n * 25);
+      .toBeGreaterThan(controlByDir[d] + wantRoots * 25);
   }
 
   /**

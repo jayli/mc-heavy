@@ -1,16 +1,16 @@
-// src/render/spike-fx.js — 焰魔尖刺攻击的火焰尖锥（v3.06）
+// src/render/spike-fx.js — 焰魔尖刺攻击：**剑体刺出地面 + 五向半圆阵列**（v3.26）
 //
 // ⚠️⚠️ **原版没有尖刺几何**：`Ignis_Entity.java` 的 `ShieldSmashDamage` / `UltimateAttack`
 // 都是生成 `Cm_Falling_Block_Entity`（把地面方块**整块掀飞**，真实体方块）+ 对该格 AABB
-// 内的生物扣血。本仓的火焰尖锥是**新建的程序化几何**（用户 2026-11-15 裁定「火焰尖锥，
-// 橙红发光」）—— 零新增贴图文件，颜色走逐实例 `instanceColor`。
+// 内的生物扣血。本仓的尖刺是**新建几何**：v3.06~v3.24 是程序化火焰锥，
+// **v3.26 改成从产物抽焰魔宝剑的剑身**（用户 2026-11-21）—— 仍是零新增贴图文件。
 //
 // 与 `flame-sigil.js`（地面火焰法阵）的三处刻意差异：
-//   ① **首根在正前方 2 格，不在脚底**（法阵 `firstOffset = 0`）：用户要「向**前** 10 格内
-//      放出尖刺」，首根长在自己脚下读不出「向前」。落点 = 2/4/6/8/10 格。
-//   ② **几何是竖直锥体而不是贴地 quad**：读作「从地里刺出来」。
-//   ③ **带伤害**（`IGNIS_SPIKE.damage = 18`，在 `game.js` 结算）：法阵是纯视觉（v3.04 裁定），
-//      本轮用户明确要尖刺带 18 ⇒ 新招新口径，不改法阵。
+//   ① **首根在前方 2 格，不在脚底**（法阵 `firstOffset = 0`）：首根长在自己脚下读不出「向前」。
+//      v3.26 落点 = **五向（前/左前/右前/左/右）各 6 根**，每向 2/4/6/8/10/12 格。
+//   ② **几何是竖直剑体而不是贴地 quad**：读作「剑从地里刺出来」（剑尖朝上、护手全埋）。
+//   ③ **带伤害**（`IGNIS_SPIKE.damage = 18`，在 `game.js` 结算）：法阵是纯视觉（v3.04 裁定）。
+//      ⚠️ 阵列扩到 30 根后命中面积变大，但**一次命中帧仍只扣一次 18**（命中即 break）。
 //
 // ⚠️ 三条池化硬约束（与 flame-sigil / explosion-renderer 同口径，M6 实测教训）：
 //   · 空闲 slot 零 scale，且**零活跃时 `visible=false`** —— 否则恒增 draw call，
@@ -19,8 +19,11 @@
 //   · 时间基准 `performance.now()`，禁止 `Date.now()`。
 //
 // ⚠️⚠️ **逐根亮度必须走 `instanceColor`，不能写共享 `material.opacity`**（v3.04b 实测教训）：
-// 5 根延迟只差 0~200ms，材质取「活跃根 opacity 最大值」会让**先缩回的根被后根拖着满亮**
+// 逐根延迟只差 0~250ms，材质取「活跃根 opacity 最大值」会让**先缩回的根被后根拖着满亮**
 // ⇒ `spikeScaleAt` 的包络在画面上基本不生效（纯函数单测全绿，只有逐实例判据能抓）。
+// ☠️☠️ **但剑体路径的 instanceColor 必须是中性灰**（v3.26 自审实测）：three 把它
+// **乘到 colorNode（含 map）**（`three.webgpu.js:21619`）⇒ 写火焰橙会把剑贴图**染成橙色**，
+// 违背用户「贴图跟剑一模一样」。锥体回落（无 map）仍用火焰橙。
 //
 // ## v3.23：破土火星 + 上浮余烬（用户 2026-11-20）
 //
@@ -408,10 +411,24 @@ export class SpikeFxRenderer {
       _matrix.scale(_scaleVec.set(env.scale, env.scale, env.scale));
       _matrix.setPosition(s.x, s.y, s.z);
       this.mesh.setMatrixAt(s.slot, _matrix);
-      // ⚠️⚠️ **逐根亮度走 instanceColor，不写共享 material.opacity**（见文件头）：
-      // additive 下「颜色 × 系数」等价调亮度 ⇒ 用它做逐根淡出。
+      /**
+       * ⚠️⚠️ **逐根亮度走 instanceColor，不写共享 material.opacity**（见文件头）。
+       *
+       * ☠️☠️ **剑体路径必须用中性灰，不能用火焰橙**（v3.26 自审抓到的真缺陷）：
+       * three 的 `setupDiffuseColor` 把 `instanceColor` **乘到 colorNode（含 map）**
+       *（`three.webgpu.js:21619`）⇒ 写 `(1.0, 0.45, 0.12)` 会把剑贴图**染成橙色**，
+       * 违背用户「剑体贴图就跟焰魔手里拿着的剑一模一样」。
+       * 形态隐蔽：材质基色是白的（单测钉过）、贴图也挂上了，只有逐实例色在染色。
+       *
+       * 锥体回落（无产物 / 无贴图）仍用火焰橙 —— 那条路径没有 map，
+       * additive 下「颜色 × 系数」等价调亮度（旧观感，不得改）。
+       */
       const k = env.scale;
-      _color.setRGB(SPIKE_FX.color[0] * k, SPIKE_FX.color[1] * k, SPIKE_FX.color[2] * k);
+      if (this.textured && this.blade) {
+        _color.setRGB(k, k, k);          // 中性灰：只调亮度，不改色相
+      } else {
+        _color.setRGB(SPIKE_FX.color[0] * k, SPIKE_FX.color[1] * k, SPIKE_FX.color[2] * k);
+      }
       this.mesh.setColorAt(s.slot, _color);
       colorDirty = true;
 
