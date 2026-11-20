@@ -418,16 +418,45 @@ cutout（`opaqueTable=0`）下跳过省 6 面/格，opaque（`opaqueTable=1`）�
 | **静态架构门** | `npm run check:arch` | 285ms | **每次改 `src/**`**（红线回退当场拦住） |
 | **数据契约门** | `npm run check:data` | ~2s | 改了 `faces-data` / `inventory` / `tools/` / atlas / 背包内方块的贴图或几何 / **分档清单** |
 | **lint** | `npm run lint` | 1.1s | 每次改 `src/**/*.js`（0 error，warning 可接受） |
-| **Node 单测轻档** | `npm run test:unit` | **39.6s**（94 文件 1909 例） | 改了 Tier 1 纯函数/协议/数据模型（**不需浏览器**） |
-| **Node 单测全量** | `npm run test:unit:all` | **170.5s**（100 文件 2064 例） | 改了 `gen/**` 等重 GEN 对象 |
+| **Node 单测轻档** | `npm run test:unit` | **36.0s**（104 文件 2219 例，2026-11-21 实测） | 改了 Tier 1 纯函数/协议/数据模型（**不需浏览器**） |
+| **Node 单测全量** | `npm run test:unit:all` | 轻档 + 6 个重 GEN 文件（执行期 **217.7s**） | 改了 `gen/**` 等重 GEN 对象 |
 | **浏览器轻档** | `npx playwright test tests/unit-fast.spec.mjs` | **26.8s** | 需要真浏览器语义时（DOM/Canvas 那 17 个文件） |
 | **浏览器默认档全集** | `npx playwright test tests/harness.spec.mjs` | 见 §6.2 | 里程碑收尾 |
 | **浏览器慢档**（全量 GEN） | `npm run test:slow` | — | 改了 `gen/**`；**`npm test` 已含它** |
 | **分档 E2E** | `npm run test:core` / `:ui` / `:entity` / `:struct` / `:pixel` | — | 按改动区域选（见 §6.1） |
-| **全量门** | `npm test` | — | 提交前。**= Node 全量单测 + 全部 spec**（含慢档）⇒ 覆盖只增不减 |
+| **全量门** | `npm test` | 分钟级~十几分钟级（见 §6.0） | **仅三种情形**：用户明确要求 / 里程碑收尾发版 / 改动本身是全局基础设施。**不是「每次提交前」** ⇒ 覆盖只增不减，但日常不跑它 |
 | **性能门禁** | `npm run bench -- --check` | ~5min | **碰了热路径**（mesher / materials / render-world / scheduler / physics） |
 
-**便利入口**：`npm run check` = `check:arch` + `check:data` + `lint`（**2.6s 实测**，日常改动的最小门）。
+**便利入口**：`npm run check` = `check:arch` + `check:data` + `lint`（**5.4s** 实测，2026-11-21；日常改动的最小门）。
+
+### 6.0 何时跑全套、何时禁止跑全套（硬规则）
+
+> 动机：历史上反复犯的错是「改一个模块却跑 `npm test`」，把 20 分钟花在根本不 import
+> 被改模块的 spec 上（2026-11-21 被用户当场打断）。**默认最小充分集，全套要理由。**
+
+**默认（绝大多数改动）= 最小充分集**：
+1. `npm run check`（秒级，**每次都跑**）；
+2. `npm run test:unit`（改了纯函数/协议/数据模型才跑）；
+3. **只跑消费本改动的 spec** —— `grep` 出哪些 `tests/*.spec.mjs` import 了被改模块
+   （或经 `game.js` 装配段消费它），再加上共享装配段的邻居 spec；
+4. 只有**碰了热路径**才加 `npm run bench -- --check`。
+
+**只有这三种情形跑全套（`npm test`）**，且要在报告里写明理由：
+1. 用户明确要求；
+2. **里程碑收尾 / 发版前的最终门**（不是每个 Task、不是每次合并）；
+3. **改动本身就是全局基础设施**：`tools/test-tiers.mjs` / runner / `playwright.config.mjs` /
+   `check-*.mjs` / `src/tests/index.html` 注册 / 方块注册序 / `resource-url.js`
+   —— 这个集合的消费方是**全部** spec，最小集在结构上不成立。
+
+**禁止跑全套的情形**：
+- 改文案 / 贴图地址 / alias / 单个参数（Tier 3）⇒ 只 `npm run check`；
+- 改一个 Epic 的玩法或特效 ⇒ 该 Epic 的 spec + Node 轻档；
+- **每个 Task 完成后**、**每次 commit 前**、**合并进 main 后** —— 都不是全套的时机；
+- 为了「确认没弄坏别的」而跑全套 ⇒ 用 grep 证明别的 spec 不 import 被改模块，便宜得多；
+- 排查 flaky 靠反复跑全套 ⇒ 用 **HEAD 副本 + 交替对照**定性一次即可。
+
+长跑纪律：预计 >1min 的命令用后台任务，不前台阻塞；测试命令**不接管道**
+（`| tail` 会把退出码换成管道末端工具的，测试没跑也显示 exit 0）。
 
 ### 6.1 分级 → 门禁映射
 
@@ -437,7 +466,7 @@ cutout（`opaqueTable=0`）下跳过省 6 面/格，opaque（`opaqueTable=1`）�
 | 改物品集合 / `FLAT_BLOCKS` / atlas（Tier 2） | `npm run check` |
 | 改纯函数算法 / 协议 / 数据模型（Tier 1） | `npm run check` + `npm run test:unit` |
 | 改 UI / 面板 / HUD / 存档交互 | `npm run check` + `npm run test:ui` |
-| 改实体玩法 / AI / 武器 | `npm run check` + `npm run test:unit` + `npm run test:entity` |
+| 改实体玩法 / AI / 武器 | `npm run check` + `npm run test:unit` + **消费本改动的那几个 entity spec**（改动横跨整个区域时才用 `npm run test:entity`） |
 | 改地形 / 结构生成（`gen/**`） | `npm run check` + `npm run test:unit:all` + `npm run test:struct` |
 | 改热路径（mesher/materials/render/scheduler/physics） | 上述 + `npm run bench -- --check` |
 | 改 GPU 材质效果（Tier 4） | 上述 + `npm run test:pixel`（像素级实测） |
@@ -445,6 +474,7 @@ cutout（`opaqueTable=0`）下跳过省 6 面/格，opaque（`opaqueTable=1`）�
 
 **不要**：为了改一个贴图地址而跑 5 分钟 bench 或全量 E2E。
 **也不要**：改了 mesher 几何却只跑 `check`（热路径必须跑 bench）。
+**更不要**：把「改了东西」当成跑 `npm test` 的理由 —— 见 §6.0。
 
 ### 6.2 为何需要分档（v3.15 实测动机）
 
