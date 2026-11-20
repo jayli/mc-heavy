@@ -350,10 +350,13 @@ test('焰魔尖刺 Tier 4：破土火星与余烬真的画出来了（藏宿主�
   const id = await setupScene(page);
 
   // ---- 前提断言（排除「层没装配 / 用错 mesh 类型」造成的假绿）----
-  const pre = await page.evaluate(() => {
+  const pre = await page.evaluate(async () => {
     const g = window.__MC_GAME__;
     const r = g.spikeFx;
+    // 容量从**常量模块**读（不在 spec 里写第二份 —— 写硬值会在改容量时静默过期）
+    const { SPIKE_SPARK_FX } = await import('/src/render/spike-fx-config.js');
     return {
+      cfgCapacity: SPIKE_SPARK_FX.capacity,
       meshCount: r?.meshes?.length ?? 0,
       sparkIsInstancedMesh: r?.sparkMesh?.isInstancedMesh === true,
       emberIsInstancedMesh: r?.emberMesh?.isInstancedMesh === true,
@@ -375,7 +378,7 @@ test('焰魔尖刺 Tier 4：破土火星与余烬真的画出来了（藏宿主�
   expect(pre.emberBlending, '余烬 additive').toBe(2);
   expect(pre.idleAllHidden, '零活跃时全部 mesh 不得提交渲染').toBe(true);
   expect(pre.renderOrder, '与闪电/Cinder/火圈同档 3').toBe(3);
-  expect(pre.capacity, '池容量取常量').toBe(768);
+  expect(pre.capacity, '池容量须等于常量（不写硬值，改容量时自动跟上）').toBe(pre.cfgCapacity);
 
   // ---- 夹具：藏宿主 + 钉玩家 + 冻海面 + 真实交战距离（4 格）----
   const fixture = await page.evaluate((eid) => {
