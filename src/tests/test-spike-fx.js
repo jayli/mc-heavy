@@ -111,7 +111,7 @@ test('spike fx: 首根在正前方 2 格，不在脚底；最外圈 12 格', () 
   const radii = pts.map((p) => Math.hypot(p.x, p.z));
   assertTrue(Math.min(...radii) >= 2 - 1e-9,
     `最近一根距脚底 ${Math.min(...radii)} 格 —— 不得长在自己脚下`);
-  assertClose(Math.max(...radii), 12, 1e-9, '最外圈（v3.26 从 10 扩到 12）');
+  assertClose(Math.max(...radii), 12, 1e-9, '最外圈（v3.27 从 10 扩到 12）');
 });
 
 test('spike fx: 同一半径的 5 根同延迟（先内圈再外圈）', () => {
@@ -274,15 +274,72 @@ test('spike fx: 剑体逐实例色不得把贴图染橙（用户「贴图跟剑�
       assertClose(c.g, 1, 1e-5, `第 ${i} 根 instanceColor.g`);
       assertClose(c.b, 1, 1e-5, `第 ${i} 根 instanceColor.b`);
     }
-    // 淡出仍要生效（缩回段亮度递减）—— 不能为了“不染橙”直接把淡出关掉
+    // ☠️ **剑体不做亮度淡出**（v3.27b 用户裁定「尺寸恒定、直接从地下伸出」）：
+    // 进出地面靠**竖直位移**，再叠变暗会读作「剑在地下就发黑」⇒ 恒白。
+    // （旧断言「缩回段须真的淡出」属缩放语义，已被新需求推翻。）
     const shrinkMid = SPIKE_FX.lifeMs * SPIKE_FX.shrinkFrom
       + (SPIKE_FX.lifeMs - SPIKE_FX.lifeMs * SPIKE_FX.shrinkFrom) * 0.5;
     r.update(1000 + shrinkMid);
     r.mesh.getColorAt(0, c);
-    assertTrue(c.r < 0.95 && c.r > 0.05,
-      `缩回中段须真的淡出（实得 r=${c.r}）—— 淡出不得被一并关掉`);
-    assertClose(c.g, c.r, 1e-5, '淡出必须是**中性灰**（三通道等比）而不是只压 g/b');
-    assertClose(c.b, c.r, 1e-5);
+    assertClose(c.r, 1, 1e-5, '缩回段仍恒白（不靠变暗做退场）');
+    assertClose(c.g, 1, 1e-5);
+    assertClose(c.b, 1, 1e-5);
+    // 退场靠位移：缩回中段必须已沉下去
+    const m = new THREE.Matrix4();
+    r.mesh.getMatrixAt(0, m);
+    assertTrue(m.elements[13] < 5 - 1e-3,
+      `退场靠下沉而不是变暗（实得 y=${m.elements[13]}）`);
+  } finally {
+    r.dispose();
+  }
+});
+
+test('spike fx: 剑体**尺寸恒定**地从地下伸出（不缩放，用户 2026-11-21 实玩裁定）', async () => {
+  const r = new SpikeFxRenderer({
+    scene: new THREE.Scene(), asset: await loadIgnisAssetForTest(), texture: fakeTex(),
+  });
+  try {
+    const pts = [{ x: 0.5, y: 5, z: -2, delayMs: 0, yaw: 0 }];
+    r.spawn(pts, 1000);
+    const m = new THREE.Matrix4();
+    const colLen = (e, c) => Math.hypot(e[c], e[c + 1], e[c + 2]);
+    const rise = SPIKE_FX.riseMs;
+    const H = IGNIS_SPIKE.exposeHeight;
+    const buried = r.blade.buriedDepth;
+    /**
+     * ☠️☠️ **用户实玩裁定：剑不能「从小涨到大」**。
+     * 旧实现用三轴等比 `scale` ⇒ 剑体在升起段整体膨胀（录像里读作「小剑长成大剑」）。
+     * 正解：**尺寸恒为 1**，靠**竖直位移**从地下伸出 ——
+     *   y = groundY − (buried + H) × (1 − progress)
+     * ⇒ progress=0 时整根在地下（剑尖恰在地面），progress=1 时露出 H。
+     */
+    for (const p of [0.15, 0.4, 0.7, 1]) {
+      r.update(1000 + rise * p);
+      r.mesh.getMatrixAt(0, m);
+      const e = m.elements;
+      // ① 三个基向量长度恒为 1（零缩放）—— 膨胀实现下这里是 p
+      assertClose(colLen(e, 0), 1, 1e-5, `progress=${p} 的 X 基向量长`);
+      assertClose(colLen(e, 4), 1, 1e-5, `progress=${p} 的 Y 基向量长`);
+      assertClose(colLen(e, 8), 1, 1e-5, `progress=${p} 的 Z 基向量长`);
+      // ② 竖直位移按公式走（水平不动）
+      assertClose(e[12], 0.5, 1e-6, 'x 不得变');
+      assertClose(e[14], -2, 1e-6, 'z 不得变');
+      assertClose(e[13], 5 - (buried + H) * (1 - p), 1e-5,
+        `progress=${p} 的竖直位置`);
+    }
+    // ③ 升起完成后的保持段：位置与尺寸都不再变
+    r.update(1000 + rise + 100);
+    r.mesh.getMatrixAt(0, m);
+    assertClose(m.elements[13], 5, 1e-6, '保持段剑体底座回到地面 y');
+    assertClose(colLen(m.elements, 4), 1, 1e-5);
+    // ④ 缩回段：**沉回去**而不是缩小
+    const shrinkFrom = SPIKE_FX.lifeMs * SPIKE_FX.shrinkFrom;
+    const mid = shrinkFrom + (SPIKE_FX.lifeMs - shrinkFrom) * 0.5;
+    r.update(1000 + mid);
+    r.mesh.getMatrixAt(0, m);
+    assertClose(colLen(m.elements, 4), 1, 1e-5, '缩回段也不得缩放');
+    assertTrue(m.elements[13] < 5 - 1e-3,
+      `缩回段须往下沉（实得 y=${m.elements[13]}）`);
   } finally {
     r.dispose();
   }
@@ -572,7 +629,7 @@ test('spike fx 结算: 另两招不出尖刺（招式过滤在装配层）', () 
   }
 });
 
-// ---------- v3.26：剑体原色直采（用户 2026-11-21）----------
+// ---------- v3.27：剑体原色直采（用户 2026-11-21）----------
 //
 // 「剑体贴图就跟焰魔手里拿着的剑一模一样……现在的圆锥体的带有纹路的尖刺模型不要了」。
 //

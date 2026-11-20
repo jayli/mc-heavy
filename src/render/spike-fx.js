@@ -1,13 +1,13 @@
-// src/render/spike-fx.js — 焰魔尖刺攻击：**剑体刺出地面 + 五向半圆阵列**（v3.26）
+// src/render/spike-fx.js — 焰魔尖刺攻击：**剑体刺出地面 + 五向半圆阵列**（v3.27）
 //
 // ⚠️⚠️ **原版没有尖刺几何**：`Ignis_Entity.java` 的 `ShieldSmashDamage` / `UltimateAttack`
 // 都是生成 `Cm_Falling_Block_Entity`（把地面方块**整块掀飞**，真实体方块）+ 对该格 AABB
 // 内的生物扣血。本仓的尖刺是**新建几何**：v3.06~v3.24 是程序化火焰锥，
-// **v3.26 改成从产物抽焰魔宝剑的剑身**（用户 2026-11-21）—— 仍是零新增贴图文件。
+// **v3.27 改成从产物抽焰魔宝剑的剑身**（用户 2026-11-21）—— 仍是零新增贴图文件。
 //
 // 与 `flame-sigil.js`（地面火焰法阵）的三处刻意差异：
 //   ① **首根在前方 2 格，不在脚底**（法阵 `firstOffset = 0`）：首根长在自己脚下读不出「向前」。
-//      v3.26 落点 = **五向（前/左前/右前/左/右）各 6 根**，每向 2/4/6/8/10/12 格。
+//      v3.27 落点 = **五向（前/左前/右前/左/右）各 6 根**，每向 2/4/6/8/10/12 格。
 //   ② **几何是竖直剑体而不是贴地 quad**：读作「剑从地里刺出来」（剑尖朝上、护手全埋）。
 //   ③ **带伤害**（`IGNIS_SPIKE.damage = 18`，在 `game.js` 结算）：法阵是纯视觉（v3.04 裁定）。
 //      ⚠️ 阵列扩到 30 根后命中面积变大，但**一次命中帧仍只扣一次 18**（命中即 break）。
@@ -21,7 +21,7 @@
 // ⚠️⚠️ **逐根亮度必须走 `instanceColor`，不能写共享 `material.opacity`**（v3.04b 实测教训）：
 // 逐根延迟只差 0~250ms，材质取「活跃根 opacity 最大值」会让**先缩回的根被后根拖着满亮**
 // ⇒ `spikeScaleAt` 的包络在画面上基本不生效（纯函数单测全绿，只有逐实例判据能抓）。
-// ☠️☠️ **但剑体路径的 instanceColor 必须是中性灰**（v3.26 自审实测）：three 把它
+// ☠️☠️ **但剑体路径的 instanceColor 必须是中性灰**（v3.27 自审实测）：three 把它
 // **乘到 colorNode（含 map）**（`three.webgpu.js:21619`）⇒ 写火焰橙会把剑贴图**染成橙色**，
 // 违背用户「贴图跟剑一模一样」。锥体回落（无 map）仍用火焰橙。
 //
@@ -64,7 +64,7 @@ export const SPIKE_FX = Object.freeze({
   lifeMs: IGNIS_SPIKE.lifeMs,
   height: IGNIS_SPIKE.height,
   radius: IGNIS_SPIKE.radius,
-  /** v3.26：剑体露出地面的高度（几何侧读它） */
+  /** v3.27：剑体露出地面的高度（几何侧读它） */
   exposeHeight: IGNIS_SPIKE.exposeHeight,
   maxActive: IGNIS_SPIKE.maxActive,
   /** 寿命进度到此开始缩零（前 70% 保持满尺寸，含升起段）；火星同时停发 */
@@ -202,7 +202,7 @@ export class SpikeFxRenderer {
     this._rand = rand;
 
     /**
-     * v3.26：几何二选一 —— **有产物走剑体，无产物退回锥体**。
+     * v3.27：几何二选一 —— **有产物走剑体，无产物退回锥体**。
      *
      * ⚠️ **几何看 `asset`、贴图看 `texture`，两者独立判断**：
      * 贴图加载失败不应让剑体退回锥体（那会把两个无关的失败绑在一起）。
@@ -231,7 +231,7 @@ export class SpikeFxRenderer {
     }
 
     /**
-     * 材质：有贴图走**原色直采**（v3.26），否则退回纯色版。
+     * 材质：有贴图走**原色直采**（v3.27），否则退回纯色版。
      * `textured` 标志供单测与 Tier 4 断言。
      */
     this.textured = texture !== null && texture !== undefined;
@@ -317,7 +317,7 @@ export class SpikeFxRenderer {
       if (existing !== -1) this._active.splice(existing, 1);
       this._active.push({
         slot, x: p.x, y: p.y, z: p.z,
-        // v3.26：逐根朝向（宽面朝焰魔）—— 缺省 0 而不是 NaN（NaN 会污染整个实例矩阵）
+        // v3.27：逐根朝向（宽面朝焰魔）—— 缺省 0 而不是 NaN（NaN 会污染整个实例矩阵）
         yaw: Number.isFinite(p.yaw) ? p.yaw : 0,
         delayMs: Number.isFinite(p.delayMs) ? p.delayMs : 0,
         bornAt: nowMs,
@@ -398,35 +398,47 @@ export class SpikeFxRenderer {
       }
       anyVisible = true;
       /**
-       * v3.26：先转向再缩放再摆位。
+       * v3.27b：**剑体尺寸恒定，靠竖直位移从地下伸出**（用户实玩裁定）。
        *
-       * ☠️ **三步的顺序是载荷性的**：`makeRotationY` 会清掉位移，`scale` 是右乘
-       *（等比缩放下与旋转可交换），**`setPosition` 必须最后** ——
-       * 放前面的话位移会被后一步清掉（`explosion-renderer.js` 记过同类坑）。
+       * ☠️☠️ 用户原话：「剑体保持大小不变（即不要缩放），直接从地下伸出来
+       * ……不要膨胀着冒出来好像从小涨到大似的」。
+       * 旧实现用三轴等比 `scale` ⇒ 升起段整根剑在**膨胀**（录像里读作小剑长成大剑）。
        *
-       * 三轴同比例缩放 ⇒ 读作「整根从地里长出来」；剑体几何的地面切口已在 y=0
-       * ⇒ 缩放后 y 范围 `[−buried×s, expose×s]`，地面不动 ⇒ 露出高度恰好 `expose×s`。
+       * 正解：实例缩放恒为 **1**，只把整根剑沿 y 平移：
+       *   `y = groundY − (buried + exposeHeight) × (1 − progress)`
+       * ⇒ progress=0 时整根埋在地下（剑尖恰在地面），progress=1 时露出 exposeHeight。
+       * 缩回段同公式反向 ⇒ 读作「沉回地里」而不是「缩小」。
+       *
+       * ⚠️ **锥体回落仍用缩放**：那条路径的几何底面在 y=0、没有埋入段，
+       * 平移会让它整根浮在空中 ⇒ 保留旧观感（它只在产物加载失败时出现）。
+       *
+       * ☠️ `makeRotationY` 会清掉位移 ⇒ `setPosition` 必须在它之后。
        */
       _matrix.makeRotationY(s.yaw);
-      _matrix.scale(_scaleVec.set(env.scale, env.scale, env.scale));
-      _matrix.setPosition(s.x, s.y, s.z);
+      if (this.blade) {
+        const travel = this.blade.buriedDepth + this.blade.exposeHeight;
+        _matrix.setPosition(s.x, s.y - travel * (1 - env.scale), s.z);
+      } else {
+        _matrix.scale(_scaleVec.set(env.scale, env.scale, env.scale));
+        _matrix.setPosition(s.x, s.y, s.z);
+      }
       this.mesh.setMatrixAt(s.slot, _matrix);
       /**
        * ⚠️⚠️ **逐根亮度走 instanceColor，不写共享 material.opacity**（见文件头）。
        *
-       * ☠️☠️ **剑体路径必须用中性灰，不能用火焰橙**（v3.26 自审抓到的真缺陷）：
+       * ☠️☠️ **剑体路径必须用中性灰，不能用火焰橙**（v3.27 自审抓到的真缺陷）：
        * three 的 `setupDiffuseColor` 把 `instanceColor` **乘到 colorNode（含 map）**
        *（`three.webgpu.js:21619`）⇒ 写 `(1.0, 0.45, 0.12)` 会把剑贴图**染成橙色**，
        * 违背用户「剑体贴图就跟焰魔手里拿着的剑一模一样」。
-       * 形态隐蔽：材质基色是白的（单测钉过）、贴图也挂上了，只有逐实例色在染色。
        *
-       * 锥体回落（无产物 / 无贴图）仍用火焰橙 —— 那条路径没有 map，
-       * additive 下「颜色 × 系数」等价调亮度（旧观感，不得改）。
+       * ⚠️ **剑体不做亮度淡出**（v3.27b）：既然尺寸恒定、靠位移进出地面，
+       * 再叠一层变暗会读作「剑在地下就发黑」—— 恒白即可（进出由地形遮住）。
+       * 锥体回落（无 map）仍用火焰橙 × scale（additive 下等价调亮度，旧观感）。
        */
-      const k = env.scale;
       if (this.textured && this.blade) {
-        _color.setRGB(k, k, k);          // 中性灰：只调亮度，不改色相
+        _color.setRGB(1, 1, 1);          // 恒白：不改色相、不变暗
       } else {
+        const k = env.scale;
         _color.setRGB(SPIKE_FX.color[0] * k, SPIKE_FX.color[1] * k, SPIKE_FX.color[2] * k);
       }
       this.mesh.setColorAt(s.slot, _color);

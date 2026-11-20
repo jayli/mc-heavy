@@ -243,7 +243,7 @@ assertTrue(total * 4 <= IGNIS_SPIKE.maxActive,
 另加一条新用例钉半径语义：
 
 ```js
-test('焰魔(v3.26): 尖刺半径 = 剑体半宽（不是锥底半径）', () => {
+test('焰魔(v3.27): 尖刺半径 = 剑体半宽（不是锥底半径）', () => {
   assertClose(IGNIS_SPIKE.radius, 0.4375 / 2, 1e-9,
     'radius 语义已改为剑面宽的一半（破土环由它派生）');
   assertTrue(IGNIS_SPIKE.radius !== 0.35, '不得留着旧锥底半径');
@@ -757,14 +757,14 @@ git commit -m "test(ignis): 尖刺剑体与五向阵列的 Tier 4 像素实测"
 ### Task 7: 文档与收尾
 
 **Files:**
-- Modify: `docs/roadmap.md`（v3.26 行）
+- Modify: `docs/roadmap.md`（v3.27 行）
 - Modify: `CLAUDE.md`（高频坑：bind 下 skinning 恒等 / 速率÷6 的反直觉）
 
 **Interfaces:**
 - Consumes: 前六个 Task 的实测数据。
 - Produces: 无代码接口。
 
-- [ ] **Step 1: 写 roadmap v3.26 行**
+- [ ] **Step 1: 写 roadmap v3.27 行**
 
 按既有版本表的格式写：改了什么、实测数据（剑体 48 顶点 / 露出 1.6 / 埋入 1.055625 / 30 根五向 / 最近间距 1.5307 / 粒子每根 27+9 / 池 4096）、验证结果（各命令与实际读数）、被推翻的旧断言清单。
 
@@ -789,7 +789,7 @@ Expected: 两条都 exit 0。记下文件数与用例总数（与改动前对比
 
 ```bash
 git add docs/roadmap.md CLAUDE.md docs/superpowers/specs/2026-11-21-ignis-spike-blade-array-design.md docs/superpowers/plans/2026-11-21-ignis-spike-blade-array.md
-git commit -m "docs(ignis): v3.26 剑体阵列的进度、设计与两条高频坑"
+git commit -m "docs(ignis): v3.27 剑体阵列的进度、设计与两条高频坑"
 ```
 
 - [ ] **Step 5: 停掉 dev server**

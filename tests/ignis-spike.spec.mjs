@@ -79,7 +79,7 @@ async function waitWorldReady(page) {
  * `g._teleportTo(x, 45, z)` + 固定等 2.5s。
  * ⚠️ 改用 `player.spawn` 会 30s 超时（它不加载目标 column，玩家悬在空列里）。
  *
- * v3.26：传**绝对坐标**（不再用 offset）—— 阵列扩到 12 格半径，机位必须按数据选。
+ * v3.27：传**绝对坐标**（不再用 offset）—— 阵列扩到 12 格半径，机位必须按数据选。
  */
 async function gotoOpenField(page, { x = 1200, z = 1200 } = {}) {
   await page.evaluate(async ([wx, wz]) => {
@@ -90,7 +90,7 @@ async function gotoOpenField(page, { x = 1200, z = 1200 } = {}) {
 }
 
 /**
- * **按数据搜索机位**（v3.26）—— 30 根落点必须同高、干燥、无建筑。
+ * **按数据搜索机位**（v3.27）—— 30 根落点必须同高、干燥、无建筑。
  *
  * ⚠️ **不得写死坐标**：AGENTS.md 记过「spec 里写死的坐标可能落在湿列」——
  * 湿列上裙边零抬升、画面 20% 是水 ⇒ 零判别力。换 seed 时本搜索自动跟上。
@@ -241,7 +241,7 @@ test('焰魔尖刺 Tier 4：剑体真的画出来了（五向阵列各自上屏�
   });
   expect(pre.hasSpike, '尖刺层须已装配').toBe(true);
   /**
-   * ⚠️ **v3.26 推翻了旧断言**（原本是 `geoType === 'ConeGeometry'` + `radialSegments === 6`）。
+   * ⚠️ **v3.27 推翻了旧断言**（原本是 `geoType === 'ConeGeometry'` + `radialSegments === 6`）。
    * 用户裁定「圆锥体的带有纹路的尖刺模型不要了，换成焰魔宝剑刺出地面的样子」
    * ⇒ 按新语义改写：钉**剑体度量**（48 顶点 / 24 三角 / 宽 0.4375 / 厚 0.0625）
    * 与**露出/埋入的 y 极值**（护手不得进几何）。
@@ -493,10 +493,53 @@ test('焰魔尖刺 Tier 4：剑体真的画出来了（五向阵列各自上屏�
       t, { timeout: 15_000 });
     // ☠️ **读真实 age，不用请求的 t**：CDP 往返 + 截图耗时会让实际采样时刻漂
     //（实测 t=60 那一帧有时已过第一批 ⇒ 质心 6.18 而非 0，首末差只剩 1.64）。
-    const age = await page.evaluate(() => performance.now() - window.__T0__);
+    /**
+     * ☠️☠️ **age 与实例矩阵必须在**同一次 evaluate** 里取**：
+     * 拆成两次会多一个 CDP 往返，实测把 age 从 60 拖到 80、430 拖到 619
+     * ⇒ 「及时样本」判据假红。合并后只一次往返。
+     *
+     * 矩阵判据钉「尺寸恒定 + 竖直位移」（用户 2026-11-21 实玩裁定：
+     * 「不要膨胀着冒出来好像从小涨到大似的」）—— 直接量**真实 GPU 上传缓冲**。
+     */
+    const snap = await page.evaluate(() => {
+      const r = window.__MC_GAME__.spikeFx;
+      const a = r.mesh.instanceMatrix.array;
+      const mats = [];
+      for (let i = 0; i < r.activeCount; i++) {
+        const o = i * 16;
+        const sy = Math.hypot(a[o + 4], a[o + 5], a[o + 6]);
+        // ☠️ **不能用 sy 过滤「未破土」**：膨胀实现下已破土的 sy 也 <1，
+        // 那会把它们当成未破土跳过 ⇒ 判据失去判别力（本轮负向验证实测拓到）。
+        // 改用**位移列是否非零**判 slot 已启用（未破土的 slot 是零矩阵）。
+        const alive = a[o + 12] !== 0 || a[o + 13] !== 0 || a[o + 14] !== 0;
+        if (!alive) continue;
+        mats.push({ sy, y: a[o + 13] });
+      }
+      return { age: performance.now() - window.__T0__, mats, active: r.activeCount };
+    });
+    const { age, mats } = snap;
     const shot = PNG.sync.read(await shoot(page));
-    samples.push({ t, age, ...analyse(baseShots[0], shot), white: nearWhiteCount(shot) });
+    samples.push({
+      t, age, mats, active: snap.active, ...analyse(baseShots[0], shot),
+      white: nearWhiteCount(shot),
+    });
   }
+  /**
+   * 尺寸恒定判据：**所有已破土实例的 Y 基向量长恒为 1**（零缩放）。
+   * ⚠️ 膨胀实现下它等于 progress（0.33/0.67/1…）⇒ 这条必红。
+   * 另钉「同一帧里已破土的各根 y 不得全相等」—— 它们按圈递延，高度应有层次。
+   */
+  for (const s of samples) {
+    for (const m of s.mats) {
+      expect(m.sy, `age=${s.age.toFixed(0)}ms 时剑体不得缩放（实得 scaleY=${m.sy}）`)
+        .toBeCloseTo(1, 4);
+    }
+  }
+  const risingFrame = samples.find((s) => s.mats.length >= 5 && s.mats.length < 30);
+  expect(risingFrame, '需有一帧处于「部分破土」状态（才能验高度层次）').toBeTruthy();
+  expect(new Set(risingFrame.mats.map((m) => m.y.toFixed(3))).size,
+    '部分破土那一帧，各圈高度应有层次（递延生效）')
+    .toBeGreaterThan(1);
   const peak = samples.reduce((a, b) => (b.total > a.total ? b : a), samples[0]);
   const onCount = peak.total;
   const onWhite = Math.max(...samples.map((s) => s.white));
@@ -517,11 +560,18 @@ test('焰魔尖刺 Tier 4：剑体真的画出来了（五向阵列各自上屏�
     .toBeGreaterThan(controlFloor + 1500);
   expect(onCount, '暖色像素过多 = 几何炸开或过曝').toBeLessThan(60000);
   expect(onWhite, '不得出现大面积近白').toBeLessThan(294000 * 0.02);
-  expect(onActive, '30 根应仍在活跃（寿命 900ms，采样在 ≤430ms）').toBe(injected.spawned);
   expect(litNow, '剑体须 visible=true（否则根本没画）').toBe(true);
+  /**
+   * ☠️ **activeCount 要用采样当时的值，不能事后读**：截图耗时会让 age 漂过寿命
+   *（实测请求 430ms 而真实 age 740ms）⇒ 事后读到的 0 是「已正常回收」而不是缺陷。
+   * 改钉「**最早那一帧**（age 最小）时 30 根全在活跃」。
+   */
+  const earliest = samples.reduce((a, b) => (b.age < a.age ? b : a), samples[0]);
+  expect(earliest.active, `最早采样（age=${earliest.age.toFixed(0)}ms）时 30 根应全在活跃`)
+    .toBe(injected.spawned);
 
   /**
-   * ---- **剑体贴图不得被 instanceColor 染橙**（v3.26 自审抓到的真缺陷）----
+   * ---- **剑体贴图不得被 instanceColor 染橙**（v3.27 自审抓到的真缺陷）----
    *
    * three 把 `instanceColor` 乘到 colorNode（含 map）⇒ 写火焰橙 (1,0.45,0.12)
    * 会把剑贴图染成橙色，违背用户「贴图跟剑一模一样」。
@@ -596,33 +646,90 @@ test('焰魔尖刺 Tier 4：剑体真的画出来了（五向阵列各自上屏�
   }
 
   /**
-   * ---- **先内圈再外圈**：暖色像素的半径质心单调不减 ----
+   * ---- **先内圈再外圈**：每圈的**破土时刻**随半径递增 ----
    *
-   * ⚠️ **与「出生点自己在动」那条教训不同**：那条说的是粒子出生高度随主动作上爬，
-   * 屏幕绝对位置被污染；本判据量的是「**哪些根已破土**」，而落点是**固定**的
-   *（不随时间移动）⇒ 半径质心直接反映「已亮的那批有多远」，无混淆项。
-   * 后来者不要把这里改成「相对位移」—— 那是粒子判据的口径，不适用于固定落点。
+   * ☠️☠️ **不能用「逐帧截图 + 暖色像素半径质心」**（四轮实测 flaky）：
+   * 截图耗时在本机不稳定，实测请求 t=60/120/180 而真实 age 漂到 87/321/386
+   * ⇒ 「及时样本」永远凑不齐。这不是阈值问题，是**采样手段选错了**。
    *
-   * ☠️☠️ **必须按真实 age 筛样本，不能用请求的 t**（实测 flaky）：
-   * CDP 往返 + 截图耗时让「t=60ms」那一帧有时已跑到 400ms+（质心 6.18 而非 0），
-   * 首末差只剩 1.64 ⇒ 假红。只取 **age ≤ 请求 t + 120ms** 的样本做单调与首末差判据；
-   * 若最早的样本已错过内圈（age > 180）则**重跑一次采样**而不是放宽阈值。
+   * 正解：时序信息就在**实例矩阵的 y** 里（每根的高度 = 它自己的破土进度）。
+   * 在**页面内一次连续采样**（rAF 逐帧，零 CDP 往返、零截图），
+   * 记录每根**首次离开地面**的时刻 ⇒ 直接量「圈序号 vs 破土时刻」。
+   * 这比像素质心更直接：不受遮挡/视野/背景色影响。
    */
-  const timely = samples.filter((s) => s.age <= s.t + 120);
-  const centroids = timely.map((s) => s.radiusCentroid);
-  expect(timely.length, `需至少 4 个及时样本（实得 ${samples.map((s) => `${s.t}/${s.age.toFixed(0)}`)}）`)
-    .toBeGreaterThanOrEqual(4);
-  for (let i = 1; i < centroids.length; i++) {
-    expect(centroids[i],
-      `半径质心须单调不减（age=${timely[i].age.toFixed(0)}ms 实得 ${centroids.map((c) => c.toFixed(2))}）`)
-      .toBeGreaterThanOrEqual(centroids[i - 1] - 0.35);
+  const ringTiming = await page.evaluate(async (entityId) => {
+    const { spikeSpawnPoints } = await import('/src/render/spike-fx.js');
+    const { IGNIS_SPIKE } = await import('/src/entities/ignis/ignis-config.js');
+    const g = window.__MC_GAME__;
+    const r = g.spikeFx;
+    const at = g.entities.get(entityId).state.position;
+    const want = spikeSpawnPoints(at, 0);
+    const groundY = want.map((p) => g._findSigilGroundY(p.x, p.z, at[1]));
+    r.reset();
+    const pts = want.map((p, i) => ({
+      x: p.x, y: groundY[i], z: p.z, delayMs: p.delayMs, yaw: p.yaw,
+    })).filter((p) => p.y !== null);
+    const t0 = performance.now();
+    r.spawn(pts, t0);
+    // ☠️ **slot 不是 0..n−1**：`reset()` 不归零 `_nextSlot`（AGENTS.md 记过这个坑）
+    // ⇒ 按 i*16 直读会取到空 slot。用**位置匹配**把实例认回对应的根。
+    const travel = r.blade.buriedDepth + r.blade.exposeHeight;
+    const firstUp = new Array(pts.length).fill(null);
+    const scales = [];
+    await new Promise((done) => {
+      const tick = () => {
+        const now = performance.now();
+        const a = r.mesh.instanceMatrix.array;
+        for (let s = 0; s < r.maxActive; s++) {
+          const o = s * 16;
+          const x = a[o + 12]; const y = a[o + 13]; const z = a[o + 14];
+          if (x === 0 && y === 0 && z === 0) continue;
+          const sy = Math.hypot(a[o + 4], a[o + 5], a[o + 6]);
+          scales.push(sy);
+          // 按水平位置认出它属于哪一根（落点互不相同，实测 30 个不同格）
+          let k = -1;
+          for (let i = 0; i < pts.length; i++) {
+            if (Math.abs(pts[i].x - x) < 1e-3 && Math.abs(pts[i].z - z) < 1e-3) { k = i; break; }
+          }
+          if (k < 0) continue;
+          if (firstUp[k] === null && y > pts[k].y - travel + 0.02) firstUp[k] = now - t0;
+        }
+        if (now - t0 > 500) { done(); return; }
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
+    return {
+      count: pts.length,
+      rings: Array.from({ length: IGNIS_SPIKE.count }, (_, ring) => {
+        const idx = [];
+        for (let i = ring; i < pts.length; i += IGNIS_SPIKE.count) idx.push(i);
+        const ts = idx.map((i) => firstUp[i]).filter((v) => v !== null);
+        return { ring, n: ts.length, mean: ts.length ? ts.reduce((a, b) => a + b, 0) / ts.length : null };
+      }),
+      scaleMin: scales.length ? Math.min(...scales) : null,
+      scaleMax: scales.length ? Math.max(...scales) : null,
+    };
+  }, id);
+  console.log('SPIKE_RING_TIMING', JSON.stringify(ringTiming));
+  expect(ringTiming.count, '时序探针需 30 根').toBe(30);
+  // ① 尺寸恒定：整个升起过程里所有非零 scale **恒为 1**
+  expect(ringTiming.scaleMin, `升起全程不得缩放（最小 scaleY=${ringTiming.scaleMin}）`)
+    .toBeCloseTo(1, 4);
+  expect(ringTiming.scaleMax).toBeCloseTo(1, 4);
+  // ② 每圈都有根破土，且平均破土时刻**随圈序号递增**
+  const means = ringTiming.rings.map((x) => x.mean);
+  for (const r of ringTiming.rings) {
+    expect(r.n, `第 ${r.ring} 圈需有根破土`).toBeGreaterThan(0);
   }
-  // 首末差：最早样本必须真的落在内圈阶段（age < 300ms），否则这条没有判别力
-  expect(timely[0].age, `最早样本须落在内圈阶段（实得 ${timely[0].age.toFixed(0)}ms）`)
-    .toBeLessThan(300);
-  expect(centroids[centroids.length - 1] - centroids[0],
-    `首末质心差须 > 2 格（实得 ${(centroids[centroids.length - 1] - centroids[0]).toFixed(2)}）`)
-    .toBeGreaterThan(2);
+  for (let i = 1; i < means.length; i++) {
+    expect(means[i], `第 ${i} 圈须晚于第 ${i - 1} 圈破土（实得 ${means.map((m) => m.toFixed(0))}）`)
+      .toBeGreaterThan(means[i - 1] + 15);
+  }
+  // ③ 首末圈差要接近递延总量（5 × 50 = 250ms）
+  expect(means[means.length - 1] - means[0],
+    `首末圈破土时差须 ≈250ms（实得 ${(means[means.length - 1] - means[0]).toFixed(0)}）`)
+    .toBeGreaterThan(180);
 
   // ---- 寿命结束后回到 visible=false（draw call 回基线）----
   await page.waitForTimeout(1200);
@@ -774,7 +881,7 @@ test('焰魔尖刺 Tier 4：破土火星与余烬真的画出来了（藏宿主�
     let aiFrozen = false;
     if (g.ignises?.update) { g.ignises.update = () => {}; aiFrozen = true; }
     // ① 钉玩家（不钉则相机仍在下落，整帧差分被相机运动主导）
-    // ☠️☠️ **必须先 clearInterval，且 pitch 要与 setupScene 一致**（v3.26 实测的根因）：
+    // ☠️☠️ **必须先 clearInterval，且 pitch 要与 setupScene 一致**（v3.27 实测的根因）：
     // setupScene 已建一个钉 −0.35 的定时器，本处旧写法又建一个钉 **−0.30** 的
     // ⇒ **两个定时器每帧互相覆写 pitch**，相机在两个角度间抖 ⇒ 确定性的 **1638** 尖峰
     //（单跑时恒 0、跑全套必现 —— 看着像「前面用例泄漏状态」，实际是本用例自己造成的）。
@@ -816,7 +923,7 @@ test('焰魔尖刺 Tier 4：破土火星与余烬真的画出来了（藏宿主�
     const dn = g.dayNight || g.daynight;
     let dnFrozen = false;
     if (dn?.update) { dn.update = () => {}; dnFrozen = true; }
-    // ⑤ **天气/雨也要冻**（v3.26）：`?weather=clear` 只定初始天气，不阻止它逐帧推进。
+    // ⑤ **天气/雨也要冻**（v3.27）：`?weather=clear` 只定初始天气，不阻止它逐帧推进。
     if (g.weather?.update) g.weather.update = () => {};
     if (g.rain?.update) g.rain.update = () => {};
     return { ok: true, froze, coneHidden: m.visible === false, armHidden, dnFrozen, aiFrozen, bobFrozen };
@@ -856,7 +963,7 @@ test('焰魔尖刺 Tier 4：破土火星与余烬真的画出来了（藏宿主�
   }
   expect(settled, `画面须在预算内静止（实得相邻差分 ${settleTries}）—— 否则还有未冻住的动态源`)
     .toBe(true);
-  // 静止后再连拍 3 张确认噪声底；☠️ **偶发尖峰要重试而不是直接失败**（v3.26）：
+  // 静止后再连拍 3 张确认噪声底；☠️ **偶发尖峰要重试而不是直接失败**（v3.27）：
   // 单跑本用例噪声底 [0,0,0]，但**跑全套时偶发 [0,0,1638]** —— 前面用例留下的
   // 流式上传/光照推进尾巴。重试一轮（再等静止）而不是放宽阈值。
   let idleShots = [baseline];
@@ -1085,7 +1192,7 @@ test('焰魔尖刺 Tier 4：破土火星与余烬真的画出来了（藏宿主�
 
   // ---- ④ 色相：是火不是白弧（直接量像素自身 r > g）----
   /**
-   * ☠️ **色相不能取「峰值帧」，要取「样本足够的帧」**（v3.26 实测）：
+   * ☠️ **色相不能取「峰值帧」，要取「样本足够的帧」**（v3.27 实测）：
    * 早期帧粒子少（实测 n=38）、均值被背景稀释 ⇒ r≈g（118.9 vs 119.5），
    * 而同一实现的晚期帧是 r201.7 g175.8。跑全套时峰值帧可能落在早期 ⇒ 假红。
    * 取**粒子数 ≥ 峰值 30%** 的帧里暖色最强的那帧（阈值 20/40 一字未改）。
@@ -1117,7 +1224,7 @@ test('焰魔尖刺 Tier 4：破土火星与余烬真的画出来了（藏宿主�
 });
 
 /**
- * v3.26 **RF-4：剑宽面朝向**的同机位单变量对照。
+ * v3.27 **RF-4：剑宽面朝向**的同机位单变量对照。
  *
  * 剑体宽 0.4375 / 厚 0.0625（差 **7 倍**）⇒ 朝向错了就从「看宽面」变成「看窄边」，
  * 投影面积差约 7.8 倍。而 `DoubleSide` 让正视图几乎一样 ⇒ **只靠肉眼分不出**。

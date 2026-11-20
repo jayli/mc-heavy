@@ -145,7 +145,7 @@ test('spike spark: 余烬数量少于火星（用户裁定「少量上浮余烬�
 });
 
 test('spike spark: 池账 —— 按**真实重叠窗口**算容量（不是拍一个数）', () => {
-  // ☠️ **总根数 = count × 方向数**（v3.26）—— `IGNIS_SPIKE.count` 是**每方向**根数（6）。
+  // ☠️ **总根数 = count × 方向数**（v3.27）—— `IGNIS_SPIKE.count` 是**每方向**根数（6）。
   // 按 count 算的形态是「账按 6 根算而实际喷 30 根」，把容量改小也仍然绿（判别力丢失）。
   const totalSpikes = IGNIS_SPIKE.count * IGNIS_SPIKE.directionsDeg.length;
   // 同一只焰魔两刀的最小间隔 = 第二命中帧 − 第一命中帧

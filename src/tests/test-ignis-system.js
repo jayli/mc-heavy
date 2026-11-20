@@ -999,7 +999,7 @@ test('焰魔(v3.06): spikeSlash 档案取设计文档标定值', () => {
     `双刀时长 ${IGNIS_SPIKE.doubleSeconds} 必须 > 第二刀命中帧 ${IGNIS_SPIKE.secondHitFrame}`);
 });
 
-test('焰魔(v3.26): IGNIS_SPIKE 常量取用户裁定值', () => {
+test('焰魔(v3.27): IGNIS_SPIKE 常量取用户裁定值', () => {
   assertEqual(IGNIS_SPIKE.count, 6, '用户 2026-11-21 裁定「五排各 6 根」');
   assertDeepEqual([...IGNIS_SPIKE.directionsDeg], [0, -45, 45, -90, 90],
     '五向：前 / 左前 / 右前 / 左 / 右（左侧 = −90，见 spec §4.1 实测）');
@@ -1027,7 +1027,7 @@ test('焰魔(v3.26): IGNIS_SPIKE 常量取用户裁定值', () => {
   assertTrue(Object.isFrozen(IGNIS_SPIKE), '常量须冻结');
 });
 
-test('焰魔(v3.26): 尖刺半径 = 剑体半宽（不是锥底半径）', () => {
+test('焰魔(v3.27): 尖刺半径 = 剑体半宽（不是锥底半径）', () => {
   // radius 语义已从「锥底半径 0.35」改成「剑面宽 0.4375 的一半」——
   // 破土环半径由它派生（spikeSparkSeeds 的 ringR = radius × ringSpread）。
   assertClose(IGNIS_SPIKE.radius, 0.4375 / 2, 1e-9,
