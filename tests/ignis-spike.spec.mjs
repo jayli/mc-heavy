@@ -463,8 +463,11 @@ test('焰魔尖刺 Tier 4：剑体真的画出来了（五向阵列各自上屏�
   for (const t of [60, 120, 180, 240, 300, 430]) {
     await page.waitForFunction((ms) => performance.now() - window.__T0__ >= ms,
       t, { timeout: 15_000 });
+    // ☠️ **读真实 age，不用请求的 t**：CDP 往返 + 截图耗时会让实际采样时刻漂
+    //（实测 t=60 那一帧有时已过第一批 ⇒ 质心 6.18 而非 0，首末差只剩 1.64）。
+    const age = await page.evaluate(() => performance.now() - window.__T0__);
     const shot = PNG.sync.read(await shoot(page));
-    samples.push({ t, ...analyse(baseShots[0], shot), white: nearWhiteCount(shot) });
+    samples.push({ t, age, ...analyse(baseShots[0], shot), white: nearWhiteCount(shot) });
   }
   const peak = samples.reduce((a, b) => (b.total > a.total ? b : a), samples[0]);
   const onCount = peak.total;
@@ -527,13 +530,24 @@ test('焰魔尖刺 Tier 4：剑体真的画出来了（五向阵列各自上屏�
    * 屏幕绝对位置被污染；本判据量的是「**哪些根已破土**」，而落点是**固定**的
    *（不随时间移动）⇒ 半径质心直接反映「已亮的那批有多远」，无混淆项。
    * 后来者不要把这里改成「相对位移」—— 那是粒子判据的口径，不适用于固定落点。
+   *
+   * ☠️☠️ **必须按真实 age 筛样本，不能用请求的 t**（实测 flaky）：
+   * CDP 往返 + 截图耗时让「t=60ms」那一帧有时已跑到 400ms+（质心 6.18 而非 0），
+   * 首末差只剩 1.64 ⇒ 假红。只取 **age ≤ 请求 t + 120ms** 的样本做单调与首末差判据；
+   * 若最早的样本已错过内圈（age > 180）则**重跑一次采样**而不是放宽阈值。
    */
-  const centroids = samples.map((s) => s.radiusCentroid);
+  const timely = samples.filter((s) => s.age <= s.t + 120);
+  const centroids = timely.map((s) => s.radiusCentroid);
+  expect(timely.length, `需至少 4 个及时样本（实得 ${samples.map((s) => `${s.t}/${s.age.toFixed(0)}`)}）`)
+    .toBeGreaterThanOrEqual(4);
   for (let i = 1; i < centroids.length; i++) {
     expect(centroids[i],
-      `半径质心须单调不减（t=${samples[i].t}ms 实得 ${centroids.map((c) => c.toFixed(2))}）`)
+      `半径质心须单调不减（age=${timely[i].age.toFixed(0)}ms 实得 ${centroids.map((c) => c.toFixed(2))}）`)
       .toBeGreaterThanOrEqual(centroids[i - 1] - 0.35);
   }
+  // 首末差：最早样本必须真的落在内圈阶段（age < 300ms），否则这条没有判别力
+  expect(timely[0].age, `最早样本须落在内圈阶段（实得 ${timely[0].age.toFixed(0)}ms）`)
+    .toBeLessThan(300);
   expect(centroids[centroids.length - 1] - centroids[0],
     `首末质心差须 > 2 格（实得 ${(centroids[centroids.length - 1] - centroids[0]).toFixed(2)}）`)
     .toBeGreaterThan(2);
