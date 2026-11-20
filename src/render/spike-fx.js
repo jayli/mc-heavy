@@ -84,30 +84,57 @@ const _color = new THREE.Color();
 const _spikeAt = { x: 0, y: 0, z: 0 };
 
 /**
- * 5 根尖刺的落点（**不含 y** —— 渲染层不查体素，地面高度由调用方算，
+ * **五向半圆阵列**的落点（**不含 y** —— 渲染层不查体素，地面高度由调用方算，
  * 与 `flame-sigil.js` / `block-hit-fx.js` 同口径）。
  *
- * ⚠️ **yaw 用本仓口径**：正前方 = `(−sin yaw, −cos yaw)`
- * （与 `entities/bosses/dragon-boss-agent.js` 的移动方向同一份语义）。
- * **不得照抄原版 `cos(yaw+90°)/sin(yaw+90°)`** —— 原版 yaw 定义不同，照抄会整排偏 90°，
- * 而根数/间距/延迟全部仍然正确（静默失效）。
+ * 用户 2026-11-21：「增加四个方向，分别是焰魔的左侧、右侧、左前侧、右前侧，
+ * 各有六个尖刺冒出来，把焰魔围成一个半圆圈……先内圈，再逐渐外圈出现」。
+ *
+ * ## 三条载荷性口径
+ *
+ * ① **yaw 用本仓口径**：正前方 = `(−sin yaw, −cos yaw)`
+ *    （与 `entities/bosses/dragon-boss-agent.js` 的移动方向同一份语义）。
+ *    **不得照抄原版 `cos(yaw+90°)/sin(yaw+90°)`** —— 原版 yaw 定义不同，照抄会整排偏 90°，
+ *    而根数/间距/延迟全部仍然正确（静默失效）。
+ *
+ * ② **左侧 = −90°**（`IGNIS_SPIKE.directionsDeg[3]`）—— 实测：`deg = −90` 的方向与
+ *    模型 **+X**（`left_arm` / 盾所在侧）点积恒 **+1.00**。本仓 yaw 顺时针增长，
+ *    `+90` 在数学直觉里是「左转」但实际落在模型**右手侧** ⇒ 写反会让整个阵列左右镜像，
+ *    而根数/间距/延迟/半圆轮廓全部仍正确。
+ *
+ * ③ **延迟只跟半径序号 `i`**（不跟方向）⇒ 同一半径的 5 根**同帧**破土
+ *    = 天然的「先内圈再外圈」，不需要新时序机制。
+ *
+ * ## 逐根朝向：宽面朝焰魔
+ *
+ * 剑体宽沿局部 X（0.4375）、厚沿局部 Z（0.0625）⇒ 宽面法线 = 局部 ±Z。
+ * 实例 `rotation.y = θ` 后法线 = `(sin θ, cos θ)`；径向 outward = `(−sin ang, −cos ang)`
+ * ⇒ 取 **θ = ang + π** 时法线与径向点积恒 **+1.000**（五个方向逐一实测）。
+ * 不加 π 的形态是从焰魔/玩家方向看到 **0.0625 厚的窄边**而不是宽面
+ *（投影面积差 **7.8 倍**），而 `DoubleSide` 让正视图几乎一样 ⇒ 静默失效。
  *
  * @param {number[]} at 焰魔身体位置 `[x,y,z]`（脚底）
  * @param {number} yaw 本仓 yaw（弧度）
  * @param {object} [cfg] 缺省 `IGNIS_SPIKE`
- * @returns {Array<{x:number, z:number, delayMs:number}>}
+ * @returns {Array<{x:number, z:number, delayMs:number, yaw:number}>}
+ *   长度 = `cfg.count × cfg.directionsDeg.length`（30）；顺序 = 方向外层、半径内层。
+ *   `yaw` 是该根的**实例朝向**（弧度，已含 +π）。
  */
 export function spikeSpawnPoints(at, yaw, cfg = IGNIS_SPIKE) {
-  const fx = -Math.sin(yaw);
-  const fz = -Math.cos(yaw);
   const points = [];
-  for (let i = 0; i < cfg.count; i++) {
-    const d = cfg.spacing * (i + 1) + (cfg.firstOffset - cfg.spacing);
-    points.push({
-      x: at[0] + fx * d,
-      z: at[2] + fz * d,
-      delayMs: i * cfg.delayPerSegmentMs,
-    });
+  for (const deg of cfg.directionsDeg) {
+    const ang = yaw + deg * Math.PI / 180;
+    const dx = -Math.sin(ang);
+    const dz = -Math.cos(ang);
+    for (let i = 0; i < cfg.count; i++) {
+      const d = cfg.spacing * (i + 1) + (cfg.firstOffset - cfg.spacing);
+      points.push({
+        x: at[0] + dx * d,
+        z: at[2] + dz * d,
+        delayMs: i * cfg.delayPerSegmentMs,
+        yaw: ang + Math.PI,
+      });
+    }
   }
   return points;
 }

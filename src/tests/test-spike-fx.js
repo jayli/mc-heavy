@@ -45,44 +45,123 @@ test('spike fx: 渲染常量与玩法常量一致（同一事实不得两份）'
 
 // ---------- 落点与朝向 ----------
 
-test('spike fx: 5 根落点 = 正前方 2/4/6/8/10 格（本仓 yaw 口径）', () => {
+test('spike fx: 30 根落点 = 五向 × 2/4/6/8/10/12 格（本仓 yaw 口径）', () => {
   const pts = spikeSpawnPoints([10, 5, 20], 0);
-  assertEqual(pts.length, 5);
-  for (let i = 0; i < 5; i++) {
-    const d = 2 + 2 * i;
-    // yaw=0 ⇒ 正前方 = (−sin0, −cos0) = (0, −1) ⇒ 只动 z
-    assertClose(pts[i].x, 10, 1e-9, `第 ${i} 根 x`);
-    assertClose(pts[i].z, 20 - d, 1e-9, `第 ${i} 根 z`);
-  }
+  assertEqual(pts.length, 30);
+  // yaw=0：正前方 = (0,−1)，左侧(−90°) = (+1,0)，右侧(+90°) = (−1,0)
+  // ⇒ 只有正前方那一排的 x 恒 = 10（左右两排 z 恒 = 20、x 在变）
+  const front = pts.filter((p) => Math.abs(p.x - 10) < 1e-9);
+  assertEqual(front.length, 6);
+  assertDeepEqual(front.map((p) => +(20 - p.z).toFixed(6)), [2, 4, 6, 8, 10, 12]);
   // yaw = π/2 ⇒ 正前方 = (−1, 0) ⇒ 只动 x
   const p2 = spikeSpawnPoints([10, 5, 20], Math.PI / 2);
-  assertClose(p2[0].x, 8, 1e-9, 'yaw=π/2 首根 x');
-  assertClose(p2[0].z, 20, 1e-9, 'yaw=π/2 首根 z');
+  const front2 = p2.filter((p) => Math.abs(p.z - 20) < 1e-9);
+  assertEqual(front2.length, 6);
+  assertClose(10 - front2[0].x, 2, 1e-9, 'yaw=π/2 首根 x');
 });
 
-test('spike fx: 首根在正前方 2 格，不在脚底（Review Focus 5）', () => {
-  const pts = spikeSpawnPoints([0, 0, 0], 0);
-  assertTrue(Math.hypot(pts[0].x, pts[0].z) >= 2 - 1e-9,
-    `首根距脚底 ${Math.hypot(pts[0].x, pts[0].z)} 格 —— 不得长在自己脚下`);
-  // 最远一根 = 10 格（用户草图「向前 10 格内」）
-  const last = pts[pts.length - 1];
-  assertClose(Math.hypot(last.x, last.z), 10, 1e-9, '最远一根');
+test('spike fx: 左侧方向落在模型左手侧（RF-1，符号写反会整阵镜像）', () => {
+  // ☠️ **几何锚点必须独立于 `directionsDeg`**：从那张表推导方向的判据是自证循环
+  // （把表改成左右镜像后，「表里的左侧」与「表算出的方向」仍一致 ⇒ 恒绿）。
+  // 模型左向量由 **three 的 yaw 旋转**独立算出（与落点公式不同源）。
+  const modelLeftOf = (yaw) => {
+    const v = new THREE.Vector3(1, 0, 0).applyEuler(new THREE.Euler(0, yaw, 0, 'YXZ'));
+    return [v.x, v.z];
+  };
+  for (const yaw of [0, 0.7, Math.PI / 2, 2.3]) {
+    const modelLeft = modelLeftOf(yaw);
+    const pts = spikeSpawnPoints([0, 0, 0], yaw);
+    const sideOf = (p) => {
+      const r = Math.hypot(p.x, p.z);
+      return (p.x / r) * modelLeft[0] + (p.z / r) * modelLeft[1];
+    };
+    const leftPts = pts.filter((p) => sideOf(p) > 0.99);
+    const rightPts = pts.filter((p) => sideOf(p) < -0.99);
+    assertEqual(leftPts.length, 6, `yaw=${yaw} 模型左手侧须恰有 6 根`);
+    assertEqual(rightPts.length, 6, `yaw=${yaw} 模型右手侧须恰有 6 根`);
+    // 左前 / 右前 各 6 根（与左向量点积 ≈ ±cos45°）
+    const c45 = Math.SQRT1_2;
+    assertEqual(pts.filter((p) => Math.abs(sideOf(p) - c45) < 1e-6).length, 6,
+      `yaw=${yaw} 左前 45° 须有 6 根`);
+    assertEqual(pts.filter((p) => Math.abs(sideOf(p) + c45) < 1e-6).length, 6,
+      `yaw=${yaw} 右前 45° 须有 6 根`);
+    // 正前方 6 根（与左向量垂直）
+    assertEqual(pts.filter((p) => Math.abs(sideOf(p)) < 1e-6).length, 6,
+      `yaw=${yaw} 正前方须有 6 根`);
+    // 方向表的左侧项必须是 −90（实测：与模型 +X 点积 +1.00）
+    assertEqual(IGNIS_SPIKE.directionsDeg[3], -90);
+    assertEqual(IGNIS_SPIKE.directionsDeg[4], 90);
+  }
 });
 
-test('spike fx: 延迟序列 0/50/100/150/200ms（递延点亮）', () => {
+test('spike fx: 首根在正前方 2 格，不在脚底；最外圈 12 格', () => {
   const pts = spikeSpawnPoints([0, 0, 0], 0);
-  assertDeepEqual(pts.map((p) => p.delayMs), [0, 50, 100, 150, 200]);
+  const radii = pts.map((p) => Math.hypot(p.x, p.z));
+  assertTrue(Math.min(...radii) >= 2 - 1e-9,
+    `最近一根距脚底 ${Math.min(...radii)} 格 —— 不得长在自己脚下`);
+  assertClose(Math.max(...radii), 12, 1e-9, '最外圈（v3.26 从 10 扩到 12）');
+});
+
+test('spike fx: 同一半径的 5 根同延迟（先内圈再外圈）', () => {
+  const pts = spikeSpawnPoints([0, 0, 0], 0.4);
+  for (let i = 0; i < 6; i++) {
+    const ring = pts.filter((p) => Math.abs(Math.hypot(p.x, p.z) - 2 * (i + 1)) < 1e-6);
+    assertEqual(ring.length, 5, `半径 ${2 * (i + 1)} 那一圈须有 5 根`);
+    const delays = new Set(ring.map((p) => p.delayMs));
+    assertEqual(delays.size, 1, `同圈延迟必须相同，实得 ${[...delays]}`);
+    assertEqual([...delays][0], i * IGNIS_SPIKE.delayPerSegmentMs);
+  }
+  // 负向锚点：延迟若按「方向 × 6 + 半径」递增，同圈会有 5 个不同值 ⇒ 上面必红
+});
+
+test('spike fx: 延迟序列每方向 0/50/100/150/200/250ms', () => {
+  const pts = spikeSpawnPoints([0, 0, 0], 0);
+  const front = pts.filter((p) => Math.abs(p.x) < 1e-9 && p.z < 0);
+  assertDeepEqual(front.map((p) => p.delayMs), [0, 50, 100, 150, 200, 250]);
+});
+
+test('spike fx: 30 根占 30 个互不相同的格，最近两点不穿模', () => {
+  const pts = spikeSpawnPoints([0.5, 0, 0.5], 0);
+  const cells = new Set(pts.map((p) => `${Math.floor(p.x)},${Math.floor(p.z)}`));
+  assertEqual(cells.size, 30, '落点不得共格（共格会让两根剑叠在一起）');
+  let min = Infinity;
+  for (let i = 0; i < pts.length; i++) {
+    for (let j = i + 1; j < pts.length; j++) {
+      min = Math.min(min, Math.hypot(pts[i].x - pts[j].x, pts[i].z - pts[j].z));
+    }
+  }
+  assertClose(min, 1.530734, 1e-4, '最近两点间距（实测）');
+  assertTrue(min > IGNIS_SPIKE.radius * 2, '间距须大于剑面宽，否则穿模');
+});
+
+test('spike fx: 逐根 yaw 让剑宽面朝焰魔（RF-4）', () => {
+  const yaw = 0.9;
+  const pts = spikeSpawnPoints([0, 0, 0], yaw);
+  for (const p of pts) {
+    // 剑宽沿局部 X、厚沿局部 Z ⇒ 宽面法线 = 局部 ±Z
+    // 实例 rotation.y = p.yaw 后，局部 +Z 的世界方向 = (sin p.yaw, cos p.yaw)
+    const n = [Math.sin(p.yaw), Math.cos(p.yaw)];
+    const r = Math.hypot(p.x, p.z);
+    const radial = [p.x / r, p.z / r];
+    const dot = n[0] * radial[0] + n[1] * radial[1];
+    assertTrue(dot > 0.999, `(${p.x.toFixed(2)},${p.z.toFixed(2)}) 宽面法线 · 径向 = ${dot}，须 ≈1`);
+  }
+  // 负向锚点：yaw 不加 π ⇒ dot ≈ −1 ⇒ 上面必红
 });
 
 test('spike fx: 落点随 yaw 旋转等变（不是固定 −Z）', () => {
   const yaw = 0.7;
-  const pts = spikeSpawnPoints([3, 0, -4], yaw);
-  const fx = -Math.sin(yaw);
-  const fz = -Math.cos(yaw);
-  for (let i = 0; i < pts.length; i++) {
-    const d = 2 + 2 * i;
-    assertClose(pts[i].x, 3 + fx * d, 1e-9, `第 ${i} 根 x`);
-    assertClose(pts[i].z, -4 + fz * d, 1e-9, `第 ${i} 根 z`);
+  const a = spikeSpawnPoints([3, 0, -4], 0);
+  const b = spikeSpawnPoints([3, 0, -4], yaw);
+  // 逐点绕 y 旋转 yaw 后必须与 b 重合（等变性，比逐根算公式更难写错）
+  for (let i = 0; i < a.length; i++) {
+    const dx = a[i].x - 3;
+    const dz = a[i].z + 4;
+    const rx = dx * Math.cos(yaw) + dz * Math.sin(yaw);
+    const rz = -dx * Math.sin(yaw) + dz * Math.cos(yaw);
+    assertClose(b[i].x, 3 + rx, 1e-9, `第 ${i} 根 x`);
+    assertClose(b[i].z, -4 + rz, 1e-9, `第 ${i} 根 z`);
+    assertClose(b[i].yaw - a[i].yaw, yaw, 1e-9, '朝向也要跟着转');
   }
 });
 
@@ -183,29 +262,31 @@ test('spike fx: 零活跃 visible=false，spawn 后 true，寿命结束后回 fa
   }
 });
 
-test('spike fx: 5 根一次 spawn，逐根延迟到点后可见数递增', () => {
+test('spike fx: 30 根一次 spawn，逐圈延迟到点后可见数递增', () => {
   const r = new SpikeFxRenderer({ scene: new THREE.Scene() });
   try {
     const pts = spikeSpawnPoints([0, 5, 0], 0).map((p) => ({ ...p, y: 5 }));
     r.spawn(pts, 1000);
-    assertEqual(r.activeCount, 5);
-    // t=1000+60：只有前两根（延迟 0/50）已过延迟期
-    r.update(1000 + 60);
-    let visible = 0;
+    assertEqual(r.activeCount, 30);
     const m = new THREE.Matrix4();
-    for (let i = 0; i < 5; i++) {
-      r.mesh.getMatrixAt(i, m);
-      if (Math.abs(m.elements[0]) > 1e-9) visible++;
-    }
-    assertEqual(visible, 2, `t=60ms 时应只有 2 根可见，实得 ${visible}`);
-    // t=1000+250：全部过延迟期
-    r.update(1000 + 250);
-    visible = 0;
-    for (let i = 0; i < 5; i++) {
-      r.mesh.getMatrixAt(i, m);
-      if (Math.abs(m.elements[0]) > 1e-9) visible++;
-    }
-    assertEqual(visible, 5, '全部延迟过后 5 根都可见');
+    const countVisible = () => {
+      let n = 0;
+      for (let i = 0; i < pts.length; i++) {
+        r.mesh.getMatrixAt(i, m);
+        if (Math.abs(m.elements[0]) > 1e-9) n++;
+      }
+      return n;
+    };
+    // t=1000+60：延迟 0 与 50 两圈都已过 ⇒ 10 根（五向 × 2 圈）
+    // —— 这就是「先内圈」的数据层证据：可见数按**圈的整倍数**长，不是逐根
+    r.update(1000 + 60);
+    assertEqual(countVisible(), 10, 't=60ms 时最内两圈共 10 根可见');
+    // t=1000+120：延迟 0/50/100 三圈 ⇒ 15 根
+    r.update(1000 + 120);
+    assertEqual(countVisible(), 15, 't=120ms 时前三圈共 15 根可见');
+    // t=1000+300：全部过延迟期（最大 250）
+    r.update(1000 + 300);
+    assertEqual(countVisible(), 30, '全部延迟过后 30 根都可见');
   } finally {
     r.dispose();
   }
@@ -341,11 +422,11 @@ test('spike fx 结算: 尖刺伤害不看视线（与原版 ShieldSmashDamage �
   assertDeepEqual(f.damages, [18], '隔墙仍扣（原版特效与 AoE 都不看视线）');
 });
 
-test('spike fx 结算: 5 根都找到地面并 spawn（开阔地夹具）', () => {
-  const f = spikeGameFixture({ playerPos: [0.5, 10, -20] });
+test('spike fx 结算: 30 根都找到地面并 spawn（开阔地夹具）', () => {
+  const f = spikeGameFixture({ playerPos: [0.5, 10, -40] });
   f.state.attackFxRequest = { at: [0.5, 10, 0.5], yaw: 0, kind: 'spikeSlash' };
   f.game._consumeIgnisFxRequests(1000);
-  assertEqual(f.spawned.length, 5, `应 spawn 5 根，实得 ${f.spawned.length}`);
+  assertEqual(f.spawned.length, 30, `应 spawn 30 根，实得 ${f.spawned.length}`);
   for (const p of f.spawned) assertEqual(p.y, 10, '每根都贴地面顶面');
 });
 
