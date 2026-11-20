@@ -165,7 +165,10 @@ function pixelIdentical(a, b) {
 test('雾色融入天空：远景向地平线天色移动，天空与近景逐位不变', async ({ page }) => {
   test.setTimeout(180_000);
   // 不传 &style：pinView 里 setVisualStyle 需要走真实日夜循环路径才能冻结
-  await page.goto('/?vd=8&seed=12345&weather=clear&fog=0');
+  // ?ambient=0 是观测口径隔离（v3.26）：本 spec 的 pinView 机位是「出生点+400」≈(400,400)，
+  // getBiome 实测 **FOREST** ⇒ 环境特效会引入持续动画，打破下面的「噪声底必须为 0」与
+  // waitForStableFrame。断言与阈值逐字未动。
+  await page.goto('/?vd=8&seed=12345&weather=clear&fog=0&ambient=0');
   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
   await pinView(page);
 
@@ -262,7 +265,10 @@ async function pinLookDown(page) {
 
 test('俯视时雾色仍向地平线天色移动（防「采样到天底」回归）', async ({ page }) => {
   test.setTimeout(180_000);
-  await page.goto('/?vd=8&seed=12345&weather=clear&fog=0');
+  // ?ambient=0 是观测口径隔离（v3.26）：本 spec 的 pinView 机位是「出生点+400」≈(400,400)，
+  // getBiome 实测 **FOREST** ⇒ 环境特效会引入持续动画，打破下面的「噪声底必须为 0」与
+  // waitForStableFrame。断言与阈值逐字未动。
+  await page.goto('/?vd=8&seed=12345&weather=clear&fog=0&ambient=0');
   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
   await pinLookDown(page);
 
@@ -286,7 +292,10 @@ test('俯视时雾色仍向地平线天色移动（防「采样到天底」回�
 
 test('雾色开关关闭时逐位回到固定雾色（v1.58 行为不变式）', async ({ page }) => {
   test.setTimeout(180_000);
-  await page.goto('/?vd=8&seed=12345&weather=clear&fog=0');
+  // ?ambient=0 是观测口径隔离（v3.26）：本 spec 的 pinView 机位是「出生点+400」≈(400,400)，
+  // getBiome 实测 **FOREST** ⇒ 环境特效会引入持续动画，打破下面的「噪声底必须为 0」与
+  // waitForStableFrame。断言与阈值逐字未动。
+  await page.goto('/?vd=8&seed=12345&weather=clear&fog=0&ambient=0');
   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
   await pinView(page);
 
@@ -318,7 +327,10 @@ test('雾色开关关闭时逐位回到固定雾色（v1.58 行为不变式）',
 
 test('夜间雾色同样生效（防「夜里雾距过远 → 无物可染」回归）', async ({ page }) => {
   test.setTimeout(240_000);
-  await page.goto('/?vd=8&seed=12345&weather=clear&fog=0');
+  // ?ambient=0 是观测口径隔离（v3.26）：本 spec 的 pinView 机位是「出生点+400」≈(400,400)，
+  // getBiome 实测 **FOREST** ⇒ 环境特效会引入持续动画，打破下面的「噪声底必须为 0」与
+  // waitForStableFrame。断言与阈值逐字未动。
+  await page.goto('/?vd=8&seed=12345&weather=clear&fog=0&ambient=0');
   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
   await pinView(page, 'night');   // 冻结到黑夜
 
@@ -385,10 +397,11 @@ test('夜间雾色同样生效（防「夜里雾距过远 → 无物可染」回
   }
 });
 
-test('启动默认开启雾色（用户 2026-10-25 裁定）', async ({ page }) => {
+test('启动默认开启雾色（用户 2026-10-25 裁定）；面板那一格已是环境特效开关（v3.26）', async ({ page }) => {
   test.setTimeout(180_000);
-  // 不传 ?fog —— 钉的正是「默认值本身」
-  await page.goto('/?vd=8&seed=12345&weather=clear');
+  // 不传 ?fog —— 钉的正是「默认值本身」。
+  // ?ambient=0 是观测口径隔离（v3.26）：本 spec 机位落在 FOREST，环境特效会引入持续动画。
+  await page.goto('/?vd=8&seed=12345&weather=clear&ambient=0');
   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
 
   const r = await page.evaluate(() => ({
@@ -396,20 +409,31 @@ test('启动默认开启雾色（用户 2026-10-25 裁定）', async ({ page }) 
     mix: window.__MC_GAME__.fog.uFogColorMix.value,
     enabled: window.__MC_GAME__.fogColorEnabled,
     hasSky: window.__MC_GAME__.sky !== null,
+    ambientSetting: window.__MC_GAME__.settings.ambientFx,
+    ambientWanted: window.__MC_GAME__.ambientFxEnabled,
   }));
   expect(r.hasSky, '这条用例需要天空盒（否则开关本就该被静默关掉）').toBe(true);
   expect(r.setting, '设置默认值须为开').toBe(true);
   expect(r.mix, '材质 uniform 须在启动时就被写成 1（不是靠面板点击才生效）').toBe(1);
   expect(r.enabled, '启动后 fogColorEnabled 须为 true').toBe(true);
+  // v3.26：面板那一格换成了环境特效开关 ⇒ 高亮断言改钉新开关。
+  // ⚠️ 本用例 URL 带 `?ambient=0`，而 `resolveSettings` **也认它**（玩家意图那一道）
+  // ⇒ `settings.ambientFx` 必为 false。故这里钉的是**两个位都被隔离关掉**，
+  // 「默认开」由不带参数的下面那条面板用例与本文件单测共同钉住。
+  expect(r.ambientSetting, '?ambient=0 经 resolveSettings ⇒ 玩家意图位也被置 false').toBe(false);
+  expect(r.ambientWanted, '?ambient=0 是代码级隔离 ⇒ 生效值取 AND，应为 false').toBe(false);
 
   // 面板高亮必须同步（默认开启但面板显示「关闭」会静默撕裂）
   await page.evaluate(() => document.getElementById('settings-btn').click());
   await page.waitForTimeout(300);
-  const row = page.locator('#settings-modal .mc-combined-col', { hasText: '雾色' });
-  await expect(row.locator('button.active')).toHaveText('开启');
+  const { AMBIENT_ROW_TITLE } = await import('../src/ui/settings-panel.js');
+  const row = page.locator('#settings-modal .mc-combined-col', { hasText: AMBIENT_ROW_TITLE });
+  // ⚠️ 本用例带了 ?ambient=0 ⇒ 面板当前值就是「关闭」（settings.ambientFx=false）。
+  // 钉「高亮与 settings 同步」而不是钉某个固定文案 —— 后者会把隔离参数当成默认值。
+  await expect(row.locator('button.active')).toHaveText('关闭');
 
   // `?fog=0` 仍可关闭（默认翻转不得把入口锁死）
-  await page.goto('/?vd=8&seed=12345&weather=clear&fog=0');
+  await page.goto('/?vd=8&seed=12345&weather=clear&fog=0&ambient=0');
   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
   expect(await page.evaluate(() => window.__MC_GAME__.fogColorEnabled),
     '`?fog=0` 必须仍能关闭').toBe(false);
@@ -418,7 +442,7 @@ test('启动默认开启雾色（用户 2026-10-25 裁定）', async ({ page }) 
 test('?skybox=0 时雾色开关静默保持关闭（没有立方图可采样）', async ({ page }) => {
   test.setTimeout(180_000);
   // 不传 ?fog：默认「开」也必须在没有天空盒时静默退回关闭（不得谎报生效）
-  await page.goto('/?vd=8&seed=12345&skybox=0');
+  await page.goto('/?vd=8&seed=12345&skybox=0&ambient=0');
   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
 
   const r = await page.evaluate(() => {
@@ -440,35 +464,38 @@ test('?skybox=0 时雾色开关静默保持关闭（没有立方图可采样）'
   expect(r.enabled).toBe(false);
 });
 
-test('面板「雾色」行落在左列环境风格下方，且无天空盒时整组禁用', async ({ page }) => {
+test('面板「萤火虫和落叶」行落在左列环境风格下方、与背景音乐同盒（v3.26）', async ({ page }) => {
   test.setTimeout(180_000);
+  // ?ambient=0 只影响池的可见性，不影响面板意图位（本条要验点击真的写进游戏）。
+  // ⚠️ 故本条**不带** ?ambient=0：要验的就是「点开启 ⇒ ambientFxEnabled 真的 true」。
   await page.goto('/?vd=8&seed=12345');
   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
   await page.evaluate(() => document.getElementById('settings-btn').click());
   await page.waitForTimeout(300);
 
-  const row = page.locator('#settings-modal .mc-combined-col', { hasText: '雾色' });
+  const { AMBIENT_ROW_TITLE, AMBIENT_LABELS } = await import('../src/ui/settings-panel.js');
+  const row = page.locator('#settings-modal .mc-combined-col', { hasText: AMBIENT_ROW_TITLE });
   await expect(row).toHaveCount(1);
-  // 左列（第 1 列）且**紧跟环境风格之后**（用户 2026-10-21 指定：同属观感）。
-  // v1.98：雾色与背景音乐共处一个合并盒 → 标题顺序仍是「环境风格 → 雾色 → 背景音乐」。
+  // 左列（第 1 列）且**紧跟环境风格之后**（沿用原雾色那一格的位置）。
   const cols = await page.evaluate(() => {
     const rows = [...document.querySelectorAll('#settings-modal .mc-column')];
     return rows.map((c) => [...c.querySelectorAll('.mc-title')].map((t) => t.textContent));
   });
-  expect(cols[1], '右列不该出现「雾色」（已按用户要求挑到左列）').not.toContain('雾色');
-  expect(cols[0], '「雾色」必须在左列').toContain('雾色');
+  expect(cols[1], '右列不该出现环境特效行（沿用原雾色的左列落位）').not.toContain(AMBIENT_ROW_TITLE);
+  expect(cols[0], '环境特效行必须在左列').toContain(AMBIENT_ROW_TITLE);
   const styleIdx = cols[0].indexOf('环境风格');
-  expect(cols[0].indexOf('雾色'), '「雾色」必须紧接在环境风格下面').toBe(styleIdx + 1);
-  // v1.98：与背景音乐同盒（左半 / 右半），默认都带「关闭」「开启」两个按钮
-  expect(cols[0].indexOf('背景音乐'), '背景音乐紧跟在雾色之后（同一合并盒的右半）')
+  expect(cols[0].indexOf(AMBIENT_ROW_TITLE), '必须紧接在环境风格下面').toBe(styleIdx + 1);
+  expect(cols[0].indexOf('背景音乐'), '背景音乐紧跟在它之后（同一合并盒的右半）')
     .toBe(styleIdx + 2);
-  const sameBox = await page.evaluate(() => {
-    const box = (title) => [...document.querySelectorAll('#settings-modal .mc-combined-col')]
-      .find((r) => r.querySelector('.mc-title')?.textContent === title);
-    const a = box('雾色'), b = box('背景音乐');
+  // 雾色那一组已不存在（用户裁定恒开、不再可关）
+  expect(cols[0], '面板不得再有「雾色」组').not.toContain('雾色');
+  const sameBox = await page.evaluate((title) => {
+    const box = (t) => [...document.querySelectorAll('#settings-modal .mc-combined-col')]
+      .find((r) => r.querySelector('.mc-title')?.textContent === t);
+    const a = box(title), b = box('背景音乐');
     return !!a && !!b && a.parentElement === b.parentElement;
-  });
-  expect(sameBox, '雾色与背景音乐必须共用合并盒（用户 2026-10-31 要求）').toBe(true);
+  }, AMBIENT_ROW_TITLE);
+  expect(sameBox, '环境特效与背景音乐必须共用合并盒（沿用用户 2026-10-31 的排布）').toBe(true);
 
   // 环境风格的「自动」按钮必须还在（它是日夜循环的唯一 UI 入口）
   const styleBtns = await page.evaluate(() => {
@@ -478,17 +505,43 @@ test('面板「雾色」行落在左列环境风格下方，且无天空盒时�
   });
   expect(styleBtns, '「自动」不得被替掉（会失去日夜循环入口）').toContain('自动');
 
-  // 有两个按钮且都可点（有天空盒时不置灰）
+  // 两个按钮且都可点（**无异步前置条件 ⇒ 不置灰**，与旧雾色组相反）
   const btns = row.locator('button');
   await expect(btns).toHaveCount(2);
   await expect(btns.nth(0)).toBeEnabled();
+  await expect(btns.nth(1)).toBeEnabled();
+  await expect(btns.nth(0)).toHaveText(AMBIENT_LABELS[0]);
+  await expect(btns.nth(1)).toHaveText(AMBIENT_LABELS[1]);
 
   // 默认开 → 「开启」已是 active；点「关闭」必须真的关掉，再点「开启」恢复
+  //（Review Focus #5：只写 settings 不调 game.setAmbientFxEnabled 的形态是高亮变了而特效不变）
   await expect(row.locator('button.active')).toHaveText('开启');
   await btns.nth(0).click();
   await page.waitForTimeout(200);
-  expect(await page.evaluate(() => window.__MC_GAME__.fogColorEnabled), '点「关闭」须真的关闭').toBe(false);
+  expect(await page.evaluate(() => window.__MC_GAME__.ambientFxEnabled), '点「关闭」须真的关闭').toBe(false);
+  expect(await page.evaluate(() => window.__MC_GAME__.settings.ambientFx), '意图须落进 settings').toBe(false);
   await btns.nth(1).click();
   await page.waitForTimeout(200);
-  expect(await page.evaluate(() => window.__MC_GAME__.fogColorEnabled)).toBe(true);
+  expect(await page.evaluate(() => window.__MC_GAME__.ambientFxEnabled)).toBe(true);
+  expect(await page.evaluate(() => window.__MC_GAME__.settings.ambientFx)).toBe(true);
+
+  // 标题与两个按钮文案的**行盒数恒为 1**（合并盒半标宽约 171px，6 字标题不得折行）。
+  // ⚠️ `scrollWidth<=clientWidth` 对折行无判别力（折行时两者仍相等）⇒ 用 Range.getClientRects()。
+  const lineBoxes = await page.evaluate((title) => {
+    const countLines = (el) => {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      return range.getClientRects().length;
+    };
+    const col = [...document.querySelectorAll('#settings-modal .mc-combined-col')]
+      .find((r) => r.querySelector('.mc-title')?.textContent === title);
+    return {
+      title: countLines(col.querySelector('.mc-title')),
+      buttons: [...col.querySelectorAll('button')].map(countLines),
+    };
+  }, AMBIENT_ROW_TITLE);
+  expect(lineBoxes.title, `标题行盒数须为 1（实测 ${lineBoxes.title}）`).toBe(1);
+  for (const n of lineBoxes.buttons) {
+    expect(n, `按钮文案行盒数须为 1（实测 ${n}）`).toBe(1);
+  }
 });

@@ -46,6 +46,11 @@ export const DEFAULT_SETTINGS = {
   // 天空盒一开，固定 0x87ceeb 的远景就与照片天空对不上（实测 R 差 54），融入天空才是正常观感。
   // 关掉的路径仍在：面板「关闭」按钮 + `?fog=0`（关闭逐位回到 v1.58 的固定色）。
   fogColor: true,
+  // 环境特效（v3.26）：森林落叶 + 草地萤火虫，默认开（用户 2026-11-20 裁定）。
+  // ⚠️ **不需要 settingsVersion 迁移** —— 旧存档根本没有这个字段，缺字段自然回落新默认
+  // （与 `pixelRatio` / `chunkPace` 同理）。
+  // 性能档自动减量由装配层按 `settings.pixelRatio` 派生粒子容量，不在本字段里表达。
+  ambientFx: true,
   bgm: true, // v1.63：背景音乐（默认开 = mc-lite 进游戏即播；音量固定 BGM_VOLUME 0.15，不接 volume 档）
   // 区块铺开节奏：每帧最多发布几个 section（0 = 不限）。**观感旋钮，不是性能旋钮** ——
   // 2026-10-27 实测两者帧时完全相同（p95 9.1~9.2 / 120fps），因为上传耗时本来就不是
@@ -150,7 +155,10 @@ export function resolveSettings(stored, params) {
     if (stored.budgetProfile !== undefined) s.budgetProfile = normBudget(stored.budgetProfile);
     if (typeof stored.gunBlockDamage === 'boolean') s.gunBlockDamage = stored.gunBlockDamage;
     if (typeof stored.tntDamage === 'boolean') s.tntDamage = stored.tntDamage;
-    if (typeof stored.fogColor === 'boolean') s.fogColor = stored.fogColor;
+    // ⚠️ **雾色恒开（v3.26）**：面板那一组已换成「萤火虫和落叶」，玩家侧再无雾色入口
+    // ⇒ 存储里的 `fogColor` 不可信（旧值大多是「默认值是关时顺带落盘的假值」），不再采信。
+    // `?fog=0` 的 URL 分支与 `migrateStored` 一字未动 —— Tier 4 隔离入口仍在。
+    if (typeof stored.ambientFx === 'boolean') s.ambientFx = stored.ambientFx;
     if (typeof stored.bgm === 'boolean') s.bgm = stored.bgm;
     if (stored.chunkPace !== undefined) s.chunkPace = clampChunkPace(stored.chunkPace);
     if (stored.pixelRatio !== undefined) s.pixelRatio = normPixelRatio(stored.pixelRatio);
@@ -165,6 +173,10 @@ export function resolveSettings(stored, params) {
     if (params.has('tntDamage')) s.tntDamage = params.get('tntDamage') === '1';
     if (params.has('fog')) s.fogColor = params.get('fog') === '1';
     if (params.has('bgm')) s.bgm = params.get('bgm') === '1';
+    // ?ambient=0|1（v3.26）：环境特效的玩家意图（**持久化**，面板同一个字段）。
+    // ⚠️ 与 main.js 的构造选项 `ambient` **两条都要**：设置项是玩家意图（要落盘），
+    // 构造选项是代码级隔离（不持久化，供 spec 不改存档就能关掉持续动画）；生效值取 AND。
+    if (params.has('ambient')) s.ambientFx = params.get('ambient') === '1';
     if (params.has('chunkpace')) s.chunkPace = clampChunkPace(params.get('chunkpace'));
     // ?res=sharp|perf 分辨率档位（v2.27）。⚠️ 接受 `perf` 简写：URL 是手敲的，
     // 而存储值与档位常量一律用全名 `performance`（归一化后统一）。

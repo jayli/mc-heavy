@@ -124,6 +124,7 @@ const STRUCT = [
 
 /** Tier 4：GPU 像素实测 */
 const PIXEL = [
+  'ambient-fx',
   'ao-visual',
   'ao-corner-visual',
   'daynight-visual',
@@ -173,6 +174,7 @@ export const SPEC_TIERS = {
  * 其余 94 文件 1910 例串行 36.0s。**import 期六个重文件合计仅 209ms**。
  */
 export const UNIT_NODE_SAFE = [
+  'test-ambient-fx.js',
   'test-arena-gen.js', 'test-arena.js', 'test-azalea-trees-gen.js', 'test-azalea-trees.js',
   'test-block-color.js', 'test-block-hit-fx.js', 'test-boss-agent.js', 'test-boss-hit-sound.js',
   'test-boss-map.js', 'test-budget.js', 'test-burning-arena-gen.js', 'test-bush-grass-gen.js',

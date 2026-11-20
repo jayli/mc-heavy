@@ -358,6 +358,47 @@ scheduler/physics）再加 `npm run bench -- --check`。计划里标「冻结」
 - 常驻实例池在零实例时必须 `visible = false`，否则每个 mesh 恒增 1 个 draw call。
 - BatchedMesh 的 draw call **不是每通道一次**：每个可见 geometry slot 各发一次（加新几何前别假设 +0）。
 - WebGPU canvas 的像素回读必须在 `renderer.render()` **之后**；Tier 4 逐帧读像素要在 rAF 回调内。
+- ⚠️⚠️⚠️ **WebGPU 的 `maxVertexBuffers` 是 8，一个 `InstancedBufferGeometry` 最多 7 个逐实例属性**
+  （环境特效 v3.26 实测）：position + 8 个属性 = 9 ⇒ `Vertex buffer count (9) exceeds the maximum
+  number of vertex buffers (8)` ⇒ **render pipeline 创建失败、整池零像素**，而
+  visible / count / 属性值 / biome 门控 **全对**。正解：**把标量打包成 vec2/vec3/vec4**
+  （本轮：落叶 born+alpha → `aLife` vec2；萤火虫 size+alive+breatheFreq+breathePhase → **vec4**、
+  born+life → vec2、driftX/Z+ground → vec3）。判据：`Object.keys(geometry.attributes).length <= 8`。
+  ⚠️ 这类缺陷**只会在浏览器 console 里报 GPUValidationError**，Node 单测与所有数值判据零判别力。
+
+**体素查询与地面扫描（v3.26 实测，全部静默失效型）**
+- ⚠️⚠️ **`world.isSolid` / `getBlockId` 必须传整数 x/z**：`blockIndex(x - cx*16, …)` 对小数坐标
+  算出**小数数组下标** ⇒ undefined ⇒ 全读成 air。而**玩家坐标恒带 .5** ⇒ 直接拿 `player.physics.pos`
+  去扫地面会整片扫不到（本轮：220 片叶全跳过、零报错）。
+- ⚠️⚠️ **向下扫描的下界必须钳在 `WORLD_MIN_Y` 之上**：`getBlockId` 对 `y < WORLD_MIN_Y` 返回
+  **bedrock**（防穿底）⇒ 未加载 column 全 air 时会一直命中世界底 ⇒ 地面解成 −32，
+  粒子全出生在地下（实测 origin.y≈−20 / minY=−31.98，而 visible=true、count 全对）。
+- **扫描深度要按「玩家高度 − 地面」定，不是按粒子自己的高度带**：既有 spec 的标准落点是
+  `_teleportTo(x, 45, z)`，而森林真地面在 y≈8 ⇒ 相距 **37 格**。取 24 会整池播不出来；
+  `rain.js` 用的是 **56**，同类粒子场照它。
+- **地面要从玩家脚下往下扫，不能从粒子出生带顶部扫**：传送落点常在**树冠下**，
+  从头顶扫会把叶层顶当成地面（实测 y=55 的树冠 ⇒ 地面解成 56）。
+- **播种不能用一次性布尔标志**：首次进目标 biome 时 column 可能尚未加载 ⇒ 全部跳过，
+  而标志已置位 ⇒ **属性永远全 0**。要逐片记成败数 + 每帧重试差额。
+
+**环境特效 / 持续动画类 Tier 4（v3.26，四条判据选型均被实测推翻）**
+- ⚠️⚠️ **被测对象自己就是动画时，「相邻帧差分」与「开的下限 > 关的上限」都必 flaky**：
+  落叶是自由翻转薄片（侧面投影只 1~2px），**同实现同机位两轮读数 [0,0,0] vs [324,502,316]**；
+  萤火虫呼吸三次幂让多数帧很暗（单张 0~108）。正解：**「关态固定基线 → 开态 N 帧并集」**
+  （单调不减、随时序稳定，仍是单变量对照）。
+- ⚠️⚠️ **draw call 不得跨机位比**：不同机位可见 geometry slot 数差异巨大
+  （实测沙漠 353 / 森林 308 / 草地 300）⇒「森林−沙漠」得 **−45**。只能**同机位开/关差**；
+  单池实测 **+2**（池自身 1 + three 把新 transparent mesh 插入排序列表带来的额外一次提交）。
+- ⚠️ **「粒子在画面下半部」不能凭直觉定采样区**：落叶出生在地面+3..13 而相机眼高仅 +1.62
+  ⇒ 多数叶子在相机**之上**。实测秋色命中 712 中 top 665 / mid 47 / **lower 0** ⇒ 取下半屏零判别力。
+- ⚠️ **「注入后计数为 0」不是权重类负向判据**：真实叶种比例里仍有 25% 黄叶 ⇒ 计数仍非零。
+  要钉**占比**（暖色命中 / 全部变化像素）：秋色档 0.111 vs 真实比例档 0.030。
+  注入生效确认要读**真实 GPU 属性色分布**，不只读常量（实测 yellow 154→52 / green 20→136）。
+- **机位要避开巨树树冠**：(−400,−400) 的整数落点恰在树冠内（y=39 是 `giant_spruce_leaves`，
+  真地面 y=9）⇒ 玩家停在叶层顶 y=40、相机高于全部落叶。传送到**远高于树冠的 y 后等 `onGround`**；
+  反复搜索式传送会让玩家在未加载 column 间坠落（实测到 y=−23）。
+- **切开关后等 2.5s、冻完环境再等 4s**：池要重新播种/迁移，且远处 column 仍在流式上传
+  （700ms / 2s 时读数几乎为 0，会被误读成「特效没画出来」）。
 
 **通道容量与预算**
 - 判据是 **reserved（= 1.25 × 已用顶点）相对初始容量常量**，不是已用占比。Node 侧估算先 ×1.25。

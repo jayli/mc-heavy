@@ -19,7 +19,7 @@ import {
   REFLECT_HEIGHT_FULL, REFLECT_HEIGHT_ZERO, REFLECT_GRAZE, REFLECT_RESOLUTION_SCALE, REFLECT_TINT,
 } from '../render/water-reflect-config.js';
 import { setupSky, placeCelestial } from '../render/sky.js';
-import { DayNight, SUN_LIGHT_BASE_HEX, SUN_LIGHT_BASE_RGB } from '../render/daynight.js';
+import { DayNight, SUN_LIGHT_BASE_HEX, SUN_LIGHT_BASE_RGB, nightBlendOf } from '../render/daynight.js';
 import { ShadowScheduler, SUN_DIR_GATE_DEG, sunDirectionChanged, texelSnapOffset } from '../render/shadow-manager.js';
 import { RainEffect } from '../render/rain.js';
 import { WeatherState, RAIN } from '../render/weather.js';
@@ -36,6 +36,10 @@ import { ExplosionRenderer } from '../render/explosion-renderer.js';
 import { BlockHitFxRenderer, IGNIS_DEATH_BURST } from '../render/block-hit-fx.js';
 import { FlameSigilRenderer, loadFlameSigilTexture, sigilSpawnPoints } from '../render/flame-sigil.js';
 import { SpikeFxRenderer, spikeSpawnPoints } from '../render/spike-fx.js';
+// v3.26：环境特效（森林落叶 / 草地萤火虫）—— 两个独立 GPU 实例池，各 1 draw call。
+import { LeafFxRenderer } from '../render/leaf-fx.js';
+import { FireflyFxRenderer } from '../render/firefly-fx.js';
+import { ambientParticleCount } from '../render/ambient-fx-config.js';
 // v3.22：持盾冲撞 / 举盾砸击的扩散火圈（取代原碎石圆环）
 import { FireRingRenderer } from '../render/fire-ring-renderer.js';
 import { createAtlasColorResolver } from '../render/block-color.js';
@@ -215,11 +219,15 @@ export class Game {
    *   像素，照片天空会让那个判据失去意义，故它们 pin 该开关。
    * @param {boolean} [opts.reflect] 水面倒影开关（v3.17，默认 true）。false = 不跑反射 pass
    *   且混合强度恒 0（逐位回到无倒影的原式）—— `?reflect=0` URL 入口，Tier 4 单变量 A/B 用。
+   * @param {boolean} [opts.ambient] 环境特效（落叶/萤火虫）的**代码级隔离开关**（v3.26，默认 true）。
+   *   `?ambient=0` URL 入口，**不持久化**。与 `settings.ambientFx`（玩家意图，持久化）
+   *   取 **AND**：既有 4 个 Tier 4 spec 的机位落在 FOREST/PLAINS，新池会引入持续动画
+   *   而打破它们的「噪声底必须为 0」断言（spec §3.4 实测）⇒ 必须能不改存档就隔离。
    * @param {import('./load-watchdog.js').LoadWatchdog} [opts.watchdog] 启动进展计时器（v2.99）。
    *   ⚠️ **全仓唯一实例**：`main.js` 建好后传进来，本类再传给 `Scheduler` → `StructureIndex`。
    *   缺省（fixture 页直建 Game）自建一个 —— 那些页面不启动 loading UI，自建只保证内部不必判空。
    */
-  constructor({ canvas, registry, seed = null, viewDistance = 8, hudRoot, blurMipmap = false, budgetProfile = 'auto', chunkPace = 8, startWeather = null, shadows = true, skybox = true, reflect = true, settings = null, watchdog = null }) {
+  constructor({ canvas, registry, seed = null, viewDistance = 8, hudRoot, blurMipmap = false, budgetProfile = 'auto', chunkPace = 8, startWeather = null, shadows = true, skybox = true, reflect = true, ambient = true, settings = null, watchdog = null }) {
     this._settings = settings;
     /**
      * 启动进展计时器（v2.99）。**全仓唯一实例**，见 `core/load-watchdog.js` 的「单一权威」段。
@@ -247,6 +255,10 @@ export class Game {
     this._shadowsOption = shadows;
     this._skyboxOption = skybox;
     this._reflectOption = reflect;
+    // v3.26：环境特效的两个位——`_ambientOption` 是代码级隔离（?ambient=0，不持久化），
+    // `_ambientWanted` 是玩家意图（面板，持久化到 settings.ambientFx）。生效值 = 两者 AND。
+    this._ambientOption = ambient !== false;
+    this._ambientWanted = true;
     this.registry = registry;
     this.seed = seed; // null → start() 中无存档时 randomSeed()（有存档恒读存档）
     this.viewDistance = viewDistance;
@@ -1150,6 +1162,47 @@ export class Game {
     this._lastSavedPosAt = performance.now();
     this.scene.add(this.player.highlight);
 
+    /**
+     * v3.26：环境特效——**森林落叶**（FOREST）与**草地萤火虫**（PLAINS）。
+     *
+     * 两个独立 GPU 实例池，各 1 draw call；非目标 biome 时 `visible=false` 且零成本
+     * （不查体素、不推进粒子）⇒ 沙漠出生点的 bench 冻结基线不受影响。
+     *
+     * ⚠️ **落叶的颜色复用上面那个 `blockColorResolver`**（红线 1）：不再调一次
+     * `createAtlasColorResolver`（那会把 2048² 的 atlas 再读一遍像素 = 第二份缓存）。
+     * resolver 为 null（取色失败）时**跳过落叶装配**（同 `flameSigil` 口径）——
+     * 不拿兼底灰建一个「颜色错了但看得见」的池。萤火虫不依赖取色（常量色）⇒ 恒装配。
+     *
+     * ⚠️ **装配位置必须在 `player.spawn` 之后**（本轮实测踩到）：plan 原写「`blockHitFx`
+     * 之后」，但那里 `this.player` 还是 null（它在更下面才构造）⇒ 读 `physics.pos` 抛
+     * `Cannot read properties of null` ⇒ **整页启动失败**（实测：about-tab / audio-fx / bgm 全红）。
+     * `blockColorResolver` 是同一函数作用域的局部变量，移到这里仍可读。
+     *
+     * ⚠️ **昼夜亮度直接传体素那两个 uniform 实例**（不是新建）：白天逐位乘 1（零回归）、
+     * 夜里自动跟着体素变暗，且日夜插值无需 CPU 每帧写任何东西。
+     */
+    const voxelDayNight = this.renderWorld?.materials?.dayNight || {};
+    this.leafFx = blockColorResolver
+      ? new LeafFxRenderer({
+        scene: this.scene,
+        world: this.world,
+        seed: this.seed,
+        colorResolver: blockColorResolver,
+        playerPos: this.player.physics.pos,
+        capacity: ambientParticleCount(this.settings.pixelRatio, 'leaf'),
+        skyDim: voxelDayNight.uSkyDim,
+        shadowStrength: voxelDayNight.uShadowStrength,
+      })
+      : null;
+    this.fireflyFx = new FireflyFxRenderer({
+      scene: this.scene,
+      world: this.world,
+      seed: this.seed,
+      playerPos: this.player.physics.pos,
+      capacity: ambientParticleCount(this.settings.pixelRatio, 'firefly'),
+    });
+    this.setAmbientFxEnabled(this.settings.ambientFx);
+
     // M6：把实体查询注入**同一个** M4 controller（M6 规格 §2）。只注入两个函数 ——
     // ① `EntityManager.raycast()`：实体命中唯一入口（红线 6 禁止 Raycaster，地形仍走 DDA）；
     // ② `ZombieService.damage()`：立即改权威 state + 置 flashedUntil。
@@ -1449,6 +1502,14 @@ export class Game {
       this.weather.update(dt);
       this.rain.setIntensity(this.weather.intensity);
       if (this.weather.isRaining) this.rain.update(this.player.physics.pos, dt);
+      // v3.26：环境特效跟随玩家（内部 biome 门控 + 30Hz 距离检查 + 分批迁移）。
+      // 非目标 biome / 关闭时直接 return（零成本）；uTime 仍累计 ⇒ 回来时 age 不跳变。
+      // 夜间因子直接调既有权威 `nightBlendOf`（不自己写公式、不从 skyDim 倒算）。
+      if (this.leafFx || this.fireflyFx) {
+        const pp = this.player.physics.pos;
+        this.leafFx?.update(pp, dt);
+        this.fireflyFx?.update(pp, dt, nightBlendOf(this.dayNight.params));
+      }
       // v2.51：雨声（用户 2026-11-04：「雨声只有在下雨的时候才播放」）。
       // 强度直接当循环音量 → 淡入淡出与天气状态机同步（无雨时 intensity=0 → 停播）。
       this._syncRainSound();
@@ -1693,6 +1754,7 @@ export class Game {
     const m = normPixelRatioMode(mode);
     this._applyPixelRatio(m);
     this._rebuildRain(m);
+    this._rebuildAmbientFx(m);
     return m;
   }
 
@@ -1721,6 +1783,72 @@ export class Game {
       ? RAIN.PARTICLE_COUNT_PERFORMANCE
       : RAIN.PARTICLE_COUNT;
   }
+
+  /**
+   * 按分辨率档重建两个环境特效池（v3.26）。粒子数是 `InstancedBufferGeometry` 的容量，
+   * 构造期固定 ⇒ 只能 dispose 重建（同 `_rebuildRain`）。
+   *
+   * ⚠️⚠️ **重建后必须重新喂一次开关**（Review Focus #1）：不喂的形态是「玩家点『性能』后
+   * 落叶没了」，而 draw call / 计数 / 面板高亮全对（静默失效）。biome 门控不需重喂：
+   * 新池首帧 `update` 自己算（每帧算 biome，无迟滞）。
+   *
+   * ⚠️ 落叶只在首次已装配时重建：resolver 为 null 时 `leafFx` 恒 null，切档不得凭空
+   * 把它造出来（那会得到颜色错的中性绿叶子）。故从旧池取回 resolver 引用。
+   * @param {'sharp'|'performance'} mode
+   */
+  _rebuildAmbientFx(mode) {
+    if (!this.scene || !this.player) return;
+    const pp = this.player.physics.pos;
+    const voxelDayNight = this.renderWorld?.materials?.dayNight || {};
+    if (this.leafFx) {
+      const resolver = this.leafFx.colorResolver;
+      this.leafFx.dispose();
+      this.leafFx = new LeafFxRenderer({
+        scene: this.scene,
+        world: this.world,
+        seed: this.seed,
+        colorResolver: resolver,
+        playerPos: pp,
+        capacity: ambientParticleCount(mode, 'leaf'),
+        skyDim: voxelDayNight.uSkyDim,
+        shadowStrength: voxelDayNight.uShadowStrength,
+      });
+    }
+    if (this.fireflyFx) {
+      this.fireflyFx.dispose();
+      this.fireflyFx = new FireflyFxRenderer({
+        scene: this.scene,
+        world: this.world,
+        seed: this.seed,
+        playerPos: pp,
+        capacity: ambientParticleCount(mode, 'firefly'),
+      });
+    }
+    this.setAmbientFxEnabled(this._ambientWanted);
+  }
+
+  /**
+   * 环境特效开关（面板与 `?ambient=0` 共用此入口，v3.26）。
+   *
+   * 生效值 = **玩家意图 AND 代码级隔离开关**（写成 OR 会让 `?ambient=0` 的 spec 隔离失效）。
+   * @param {boolean} enabled @returns {boolean} 实际生效值
+   */
+  setAmbientFxEnabled(enabled) {
+    this._ambientWanted = !!enabled;
+    const eff = this._ambientWanted && this._ambientOption;
+    this.leafFx?.setEnabled(eff);
+    this.fireflyFx?.setEnabled(eff);
+    return eff;
+  }
+
+  /**
+   * 环境特效的**开关状态**（面板高亮 / E2E 断言用）。
+   *
+   * ⚠️ **刻意不读 `mesh.visible`**（与 `fogColorEnabled` 读 uniform 的口径不同）：
+   * 特效可见性还受 **biome 门控**，在沙漠里恒为 false —— 拿它当开关状态会让面板
+   * 在沙漠里把「开启」显示成未高亮（玩家以为没生效）。
+   */
+  get ambientFxEnabled() { return this._ambientWanted && this._ambientOption; }
 
   /**
    * 模态标志（M3.1，§4.5.4）：栈非空即 true —— 主循环跳过 `player.update`、
@@ -1844,6 +1972,9 @@ export class Game {
     if (this.fireRing) hidden.push(...this.fireRing.meshes);
     // v3.23：尖锥 + 破土火星 + 余烬同理（三个 mesh）。
     if (this.spikeFx) hidden.push(...this.spikeFx.meshes);
+    // v3.26：落叶与萤火虫同理（各一个 mesh）—— 反射 pass 的成本主杠杆是 draw call 数。
+    if (this.leafFx) hidden.push(...this.leafFx.meshes);
+    if (this.fireflyFx) hidden.push(...this.fireflyFx.meshes);
     this.ocean.renderReflection(cam, this.ocean.plane.material, hidden);
   }
 
@@ -4285,6 +4416,8 @@ export class Game {
     this.flameSigil?.dispose();
     this.spikeFx?.dispose();
     this.fireRing?.dispose();
+    this.leafFx?.dispose();
+    this.fireflyFx?.dispose();
     // v3.20：Storm Lance 渲染器与蓄力环（与启动顺序相反）
     this.stormLance?.dispose();
     this.cinderFall?.dispose();

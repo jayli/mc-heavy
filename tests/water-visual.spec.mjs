@@ -134,7 +134,9 @@ const shot = async (page) => PNG.sync.read(await page.screenshot());
 
 test('M2 验收：海面可见 + 跟随相机 + 帧率达标 + 水色深蓝不泛白不脏', async ({ page }) => {
   test.setTimeout(240_000);
-  await page.goto('/?vd=8&seed=12345');
+    // ?ambient=0 是观测口径隔离（v3.26）：本 spec 的机位落在 PLAINS/FOREST（spec §3.4 实测），
+// 环境特效（落叶/萤火虫）会引入持续动画 ⇒ 噪声底断言失效。断言与阈值逐字未动。
+  await page.goto('/?vd=8&seed=12345&ambient=0');
   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
 
   // 找一片海：扫描窗口内最低点（保证视野中心是水面）
@@ -262,7 +264,9 @@ test('M2 验收：海面可见 + 跟随相机 + 帧率达标 + 水色深蓝不�
  */
 test('v2.1：傍晚与夜晚的水面亮度随环境风格变暗（晨午零回归）', async ({ page }) => {
   test.setTimeout(240_000);
-  await page.goto('/?vd=8&seed=12345');
+    // ?ambient=0 是观测口径隔离（v3.26）：本 spec 的机位落在 PLAINS/FOREST（spec §3.4 实测），
+// 环境特效（落叶/萤火虫）会引入持续动画 ⇒ 噪声底断言失效。断言与阈值逐字未动。
+  await page.goto('/?vd=8&seed=12345&ambient=0');
   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
 
   const sea = await page.evaluate(async () => {
@@ -372,7 +376,9 @@ test('v2.2：启动即傍晚/夜晚时，第一帧的水面配色就是目标风
   test.setTimeout(240_000);
 
   // 期望值从真实风格数据读（不在测试里写第二份字面量）
-  const expected = await page.goto('/?vd=2&seed=12345').then(async () => {
+    // ?ambient=0 是观测口径隔离（v3.26）：本 spec 的机位落在 PLAINS/FOREST（spec §3.4 实测），
+// 环境特效（落叶/萤火虫）会引入持续动画 ⇒ 噪声底断言失效。断言与阈值逐字未动。
+  const expected = await page.goto('/?vd=2&seed=12345&ambient=0').then(async () => {
     await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
     return page.evaluate(async () => {
       const { VISUAL_STYLES } = await import('/src/render/daynight.js');
@@ -387,7 +393,9 @@ test('v2.2：启动即傍晚/夜晚时，第一帧的水面配色就是目标风
 
   for (const style of ['dusk', 'night']) {
     // 走 URL（等价于面板持久化：两者都经 resolveSettings → settings.visualStyle）
-    await page.goto(`/?vd=2&seed=12345&style=${style}`);
+      // ?ambient=0 是观测口径隔离（v3.26）：本 spec 的机位落在 PLAINS/FOREST（spec §3.4 实测），
+// 环境特效（落叶/萤火虫）会引入持续动画 ⇒ 噪声底断言失效。断言与阈值逐字未动。
+  await page.goto(`/?vd=2&seed=12345&style=${style}&ambient=0`);
     await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
     const boot = await page.evaluate(() => {
       const g = window.__MC_GAME__;
@@ -437,7 +445,9 @@ test('v2.2：启动即傍晚/夜晚时，第一帧的水面配色就是目标风
  */
 test('v2.3：远景海面也必须跟着风格变暗（tint 须乘在雾色混合之后）', async ({ page }) => {
   test.setTimeout(240_000);
-  await page.goto('/?vd=8&seed=12345');
+    // ?ambient=0 是观测口径隔离（v3.26）：本 spec 的机位落在 PLAINS/FOREST（spec §3.4 实测），
+// 环境特效（落叶/萤火虫）会引入持续动画 ⇒ 噪声底断言失效。断言与阈值逐字未动。
+  await page.goto('/?vd=8&seed=12345&ambient=0');
   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
 
   const sea = await page.evaluate(async () => {

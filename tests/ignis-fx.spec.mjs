@@ -345,7 +345,10 @@ test('焰魔特效 Tier 4：地面火焰法阵真的画出来了（金黄像素�
  */
 test('焰魔特效 Tier 4：扩散火圈走真实命中帧路径，圆心在脚底且逐渐向外扩张', async ({ page }) => {
   test.setTimeout(200_000);
-  await page.goto(`/?vd=3&seed=${SEED}&stats=0`);
+  // ?ambient=0 是观测口径隔离（v3.26）：**只本条**的机位（offset 900）落在 FOREST
+  //（spec §3.4 实测），环境特效会引入持续动画 ⇒ noiseFloor 断言失效。
+  // 其余三条（offset 600 / 1800）机位是 DESERT，不动。断言与阈值逐字未动。
+  await page.goto(`/?vd=3&seed=${SEED}&stats=0&ambient=0`);
   await waitWorldReady(page);
   await gotoOpenField(page, { offsetX: 900, offsetZ: 900 });
   const id = await setupScene(page);

@@ -27,6 +27,7 @@ import {
   TELEPORT_CITADEL_LABEL,
   TELEPORT_AUTO_CLOSE_MS,
   RESOLUTION_ROW_TITLE, RESOLUTION_LABELS,
+  AMBIENT_ROW_TITLE, AMBIENT_LABELS,
   TAB_SETTINGS_LABEL, TAB_ABOUT_LABEL, ABOUT_PARAGRAPH, ABOUT_IMAGE_PATH,
 } from '../ui/settings-panel.js';
 import {
@@ -163,13 +164,14 @@ test('settings: pixelRatio 默认清晰，存储/URL 均可覆盖，且旧存档
  * 钉三道入口都通：漏任何一道的表现都是「面板高亮对了，但进去远景还是固定色」。
  * ⚠️ **关闭**的路径必须仍然完整 —— 默认翻转不得把开关做成只能开不能关。
  */
-test('settings: fogColor 默认开，存储与 ?fog= 均可覆盖', () => {
+test('settings: fogColor 恒开（v3.26 面板已无入口），?fog= 仍是隔离入口', () => {
   assertEqual(DEFAULT_SETTINGS.fogColor, true, '默认开（用户 2026-10-25 裁定）');
   assertEqual(resolveSettings(null, new URLSearchParams('')).fogColor, true);
-  // ⚠️ 存储里必须带当前版本号才被采信 —— 旧存档的 false 会被迁移掉（见下方用例）。
   const v = DEFAULT_SETTINGS.settingsVersion;
+  // ⚠️ v3.26：面板那一组已换成「萤火虫和落叶」，玩家侧再无雾色入口
+  // ⇒ **存储里的 false 不再被采信**（旧值大多是默认值为关时顺带落盘的假值）。
   assertEqual(resolveSettings({ settingsVersion: v, fogColor: false }, new URLSearchParams('')).fogColor,
-    false, '当前版本的存储关生效（玩家真的选了关）');
+    true, '存储值不再被采信 ⇒ 恒开');
   assertEqual(resolveSettings({ settingsVersion: v, fogColor: false }, new URLSearchParams('fog=1')).fogColor,
     true, 'URL 优先于存储');
   assertEqual(resolveSettings({ settingsVersion: v, fogColor: true }, new URLSearchParams('fog=0')).fogColor, false);
@@ -467,6 +469,15 @@ test('瞬移：跳转成功后自动关面板的延迟是导出的单一常量�
   // 必须真的延迟（不能是 0/负数）——setTimeout 传 0 会退化成「下一轮宏任务」窗口，
   // 而 100ms 是给鼠标抬起与 toast 首帧留出的确定余量。
   assertTrue(TELEPORT_AUTO_CLOSE_MS > 0, '延迟必须为正 —— 0 会让面板与点击收尾挤在同一帧');
+});
+
+test('环境特效行：标题与两个按钮文案是导出的单一口径常量', () => {
+  assertEqual(AMBIENT_ROW_TITLE, '萤火虫和落叶');
+  assertEqual(AMBIENT_LABELS.length, 2);
+  assertEqual(AMBIENT_LABELS[0], '关闭');
+  assertEqual(AMBIENT_LABELS[1], '开启');
+  // 与既有组标题不得撞名（面板按标题定位按钮组）
+  assertFalse(AMBIENT_ROW_TITLE === RESOLUTION_ROW_TITLE, '不得与分辨率行撞名');
 });
 
 test('分辨率行：标题与两个档位文案是导出的单一口径常量，且与档位值逐项对齐', () => {

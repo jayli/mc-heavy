@@ -152,6 +152,20 @@ export const TELEPORT_JUNGLE_LABEL = '要塞';
  */
 export const RESOLUTION_ROW_TITLE = '分辨率';
 export const RESOLUTION_LABELS = ['清晰', '性能'];
+
+/**
+ * v3.26：「萤火虫和落叶」行的标题与两个按钮文案。导出供 `src/tests/test-ui.js` 钉死。
+ *
+ * 用户 2026-11-20：「默认开启，性能档自动减量，把设置面板中的雾色去掉，雾色默认就是开启，
+ * 不要关闭了，把雾色配置换成‘萤火虫和落叶’，有开启和关闭两个按钮。」
+ *
+ * 落位 = **沿用原雾色那一格**（左列、紧跟「环境风格」、与「背景音乐」同合并盒）
+ * ⇒ **面板高度逐位不变**（同一个 `_makeCombined`、同样两按钮）。
+ * ⚠️ 标题 6 字，与既有最长组标题同量级；行盒数由 `tests/fog-color.spec.mjs` 实测钉住
+ *（`scrollWidth<=clientWidth` 对折行无判别力）。
+ */
+export const AMBIENT_ROW_TITLE = '萤火虫和落叶';
+export const AMBIENT_LABELS = ['关闭', '开启'];
 /** 导出 / 导入模型按钮文案（创造台模型，与下行的**进度包**是两个不同粒度） */
 const EXPORT_LABEL = '导出模型';
 const IMPORT_LABEL = '导入模型';
@@ -434,10 +448,10 @@ export class SettingsPanel {
 
     left.appendChild(this._combinedBlurGunDamage()); // 画质 + 枪械破坏共用一行
     left.appendChild(this._rowVisualStyle());
-    // v1.98：雾色 + 背景音乐合并为一行（用户 2026-10-31：「做成跟画质+枪械破坏这部分一样
+    // v1.98：氛围组 + 背景音乐合并为一行（用户 2026-10-31：「做成跟画质+枪械破坏这部分一样
     // 的按钮排布，放到一行里，分左右两部分，一块两个按钮」）—— 两组都是两按钮开关、同属
-    // 「氛围」，合并后左列少一行。
-    left.appendChild(this._combinedFogMusic());
+    // 「氛围」，合并后左列少一行。v3.26：左半由「雾色」换成「萤火虫和落叶」（高度不变）。
+    left.appendChild(this._combinedAmbientMusic());
     left.appendChild(this._rowTeleport());           // v1.92：瞬移（用户要求在背景音乐下面）
     right.appendChild(this._combinedViewDistanceResolution()); // 视距 + 分辨率共用一行（v2.27）
     right.appendChild(this._rowBudget());
@@ -671,38 +685,29 @@ export class SettingsPanel {
   }
 
   /**
-   * v1.59：「雾色」开关 —— 雾色不再是固定 0x87ceeb，而是沿视线方向采样天空盒。
+   * v3.26：「萤火虫和落叶」开关（**取代原「雾色」那一格**，用户 2026-11-20）。
    *
-   * 默认**开**（用户 2026-10-25 裁定：「游戏启动的时候默认就开启『雾色』按钮」）。
-   * v1.59 交付时默认关是「默认值 = 旧行为」的口径；实玩后改为默认开 —— 天空盒一开，固定
-   * 0x87ceeb 的远景就与照片天空对不上（实测 R 差 54）。**关**的路径完整保留（本行「关闭」按钮
-   * 与 `?fog=0`），关闭时走 `mix()` 插值逐位回到 v1.58 的固定色。
-   * 落位 = **左列，紧跟「环境风格」**（用户 2026-10-21 指定，同属「画面观感」）；
-   * v1.98 起与「背景音乐」共用**合并盒**（左半），次序仍是「环境风格 → 雾色+背景音乐」。
-   * ⚠️ **不改「自动」按钮**：它同时是 `daynight.setStyle(null)`（恢复日夜
-   * 循环）的唯一 UI 入口，且被 `sun-shadow.spec` / `daynight-visual.spec` 的
-   * `setVisualStyle(null)` 用例依赖 —— 替掉它会让日夜循环失去入口。
+   * 两个 GPU 实例池：森林 biome 的秋色落叶 + 草地 biome 的萤火虫。默认**开**，
+   * 性能档自动减量（粒子容量按 `settings.pixelRatio` 派生，在渲染层）。
    *
-   * ⚠️ **不制造「无效开关」**：`?skybox=0` 或天空盒加载失败时没有立方图可采样，
-   * `setFogColorEnabled()` 会返回 false。那种情况下整组按钮**置灰禁用**并给 title 说明，
-   * 否则玩家按下去看不到任何变化，会误以为功能坏了。
-   * ⚠️ 判据用 `game.sky`（运行时真实状态）而不是 `?skybox` URL 参数 —— 加载失败也走降级路径。
+   * 落位与原雾色完全一致：左列、紧跟「环境风格」、与「背景音乐」共用合并盒（左半）
+   * ⇒ 面板高度逐位不变（「面板不得出现纵向滚动条」的冻结断言仍守得住）。
+   *
+   * ⚠️ **不置灰**（与原雾色相反）：本开关无异步前置条件 —— 它只写两个池的 enabled，
+   * 即使当前 biome 不是森林/草地（池 invisible）也能点，走到那里就生效。
+   * 按「异步条件未就绪就置灰」会得到一个在沙漠里永久禁用的错初始态。
+   *
+   * ⚠️ **雾色恒开**：`setFogColorEnabled` / `fogColorEnabled` 两个 API 与 `?fog=0` 全部保留
+   *（`fog-color.spec` 的像素不变式靠它们做单变量对照），只是玩家侧不再有入口。
    */
-  _rowFogColor(wrap = 'mc-item') {
-    const row = this._makeGroup('雾色', [false, true], ['关闭', '开启'],
-      this.settings.fogColor,
+  _rowAmbientFx(wrap = 'mc-item') {
+    return this._makeGroup(AMBIENT_ROW_TITLE, [false, true], AMBIENT_LABELS,
+      this.settings.ambientFx,
       (v) => {
-        this.settings.fogColor = v;
+        this.settings.ambientFx = v;
         this._save();
-        this.game.setFogColorEnabled(v); // 开启需天空盒；无天空盒时静默保持关
+        this.game.setAmbientFxEnabled(v);
       }, wrap);
-    if (!this.game.sky) {
-      for (const b of row.querySelectorAll('button')) {
-        b.disabled = true;
-        b.title = '需要开启天空盒';
-      }
-    }
-    return row;
   }
 
   /**
@@ -730,18 +735,18 @@ export class SettingsPanel {
   }
 
   /**
-   * v1.98：「雾色 + 背景音乐」合并盒（用户 2026-10-31：「做成跟画质+枪械破坏这部分一样的
+   * v1.98：「氛围 + 背景音乐」合并盒（用户 2026-10-31：「做成跟画质+枪械破坏这部分一样的
    * 按钮排布，放到一行里，分左右两部分，一块两个按钮」）。
    *
    * 两组都是「两个按钮 + 持久化 + 运行时即时生效」的开关，且同属「氛围」，合在一行与
    * 画质+枪械破坏那一盒同构（`_makeCombined` 同一份实现 → `.mc-combined-box` 两列 grid）。
-   * ⚠️ **雾色那一组的置灰逻辑必须跟着搬进合并盒**：`_rowFogColor` 的 wrap 参数就是为了这个
-   * —— 没有天空盒时它得把**自己那两按钮**禁用，不能因为换了容器就丢掉（丢掉的形态是
-   * 「?skybox=0 下按了没反应」，静默失效）。
+   *
+   * v3.26：左半从「雾色」换成「萤火虫和落叶」（用户裁定）—— **仍是两按钮、同一容器**
+   * ⇒ 面板高度逐位不变。新开关**无置灰逻辑**（无异步前置条件，见 `_rowAmbientFx`）。
    */
-  _combinedFogMusic() {
+  _combinedAmbientMusic() {
     return this._makeCombined([
-      this._rowFogColor('mc-combined-col'),
+      this._rowAmbientFx('mc-combined-col'),
       this._rowMusic('mc-combined-col'),
     ]);
   }

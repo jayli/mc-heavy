@@ -98,7 +98,9 @@ async function gotoAndView(page, pos, yaw, pitch) {
 
 test('丛林要塞：真实按钮瞬移 → 城西丛林里有石砖要塞（Worker GEN + 世界方块 + 画面）', async ({ page }) => {
   test.setTimeout(500_000);
-  await page.goto('/?vd=8&seed=12345&skybox=0');
+    // ?ambient=0 是观测口径隔离（v3.26）：本 spec 的机位落在 PLAINS/FOREST（spec §3.4 实测），
+// 环境特效（落叶/萤火虫）会引入持续动画 ⇒ 噪声底断言失效。断言与阈值逐字未动。
+  await page.goto('/?vd=8&seed=12345&skybox=0&ambient=0');
   await page.waitForFunction(READY, null, { timeout: 120_000 });
   await page.waitForFunction(STABLE, null, { timeout: 90_000, polling: 500 });
 
@@ -307,7 +309,9 @@ async function pickSkirtCamera(page, anchor) {
 
 test('丛林要塞：接壤阶梯过渡裙边 —— 逐级抬升的台地真的写进世界，且无悬崖', async ({ page }) => {
   test.setTimeout(500_000);
-  await page.goto('/?vd=8&seed=12345&skybox=0');
+    // ?ambient=0 是观测口径隔离（v3.26）：本 spec 的机位落在 PLAINS/FOREST（spec §3.4 实测），
+// 环境特效（落叶/萤火虫）会引入持续动画 ⇒ 噪声底断言失效。断言与阈值逐字未动。
+  await page.goto('/?vd=8&seed=12345&skybox=0&ambient=0');
   await page.waitForFunction(READY, null, { timeout: 120_000 });
   await page.waitForFunction(STABLE, null, { timeout: 90_000, polling: 500 });
   const anchor = await page.evaluate(async () => {

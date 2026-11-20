@@ -61,7 +61,9 @@ function waterDiff(a, b) {
 const shot = async (page) => PNG.sync.read(await page.screenshot());
 
 async function openGame(page) {
-  await page.goto(`/?seed=${SEED}&vd=8&style=noon`);
+    // ?ambient=0 是观测口径隔离（v3.26）：本 spec 的机位落在 PLAINS/FOREST（spec §3.4 实测），
+// 环境特效（落叶/萤火虫）会引入持续动画 ⇒ 噪声底断言失效。断言与阈值逐字未动。
+  await page.goto(`/?seed=${SEED}&vd=8&style=noon&ambient=0`);
   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 150_000 });
   await page.evaluate(() => window.__MC_GAME__.setShadowsEnabled(false));
   await page.evaluate(([px, pz]) => window.__MC_GAME__._teleportTo(px, 30, pz), [STAND.x, STAND.z]);

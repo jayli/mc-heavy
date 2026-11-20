@@ -274,6 +274,15 @@ async function boot() {
   // 默认开，只有显式 '0' 关。不进 resolveSettings（不持久化）—— 它是 Tier 4 做
   // 单变量 A/B 的隔离入口，玩家侧的开关在右下角常驻调参坞。
   const reflect = params.get('reflect') !== '0';
+  // ?ambient=0 关掉环境特效（森林落叶 / 草地萤火虫，v3.26）。同一反向口径：默认开，只有 '0' 关。
+  //
+  // ⚠️⚠️ **本轮 `?ambient=` 两条都要**（与 `?fog=` 只走设置、`?reflect=` 只走构造选项都不同）：
+  //   · `resolveSettings` 里的 `ambientFx` 是**玩家意图**（面板那一组要持久化）；
+  //   · 本行的构造选项是**代码级隔离**（不持久化）—— spec §3.4 实测出 4 个既有 Tier 4
+  //     spec 的机位落在 FOREST/PLAINS，新池会引入持续动画而打破它们的噪声底断言，
+  //     必须能**不改玩家存档**就隔离。
+  // 生效值取两者的 **AND**（`Game#setAmbientFxEnabled`）。
+  const ambient = params.get('ambient') !== '0';
   setLoadingStage('正在生成世界…');
   loadingPhase = 'p2';
   const game = new Game({
@@ -288,6 +297,7 @@ async function boot() {
     shadows,
     skybox,
     reflect,
+    ambient,
     settings,
     // 启动进展计时器的唯一实例（见文件头注释：全仓只允许一个）
     watchdog,
