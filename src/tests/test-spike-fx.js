@@ -620,12 +620,27 @@ test('spike fx 结算: 逐根朝向透传到 spikeFx.spawn（漏了会全部同�
 });
 
 test('spike fx 结算: 另两招不出尖刺（招式过滤在装配层）', () => {
-  for (const kind of ['shieldSmash', 'shieldBash', 'swing', 'spin']) {
+  // ⚠️ v3.29：`shieldBash` / `spin` 现在会走**法阵**伤害（`IGNIS_AOE.damage` = 1），
+  // 那是一条独立的合法路径 ⇒ 本用例的意图是「不出尖刺」，伤害归属不在这里断言
+  // （法阵伤害由 `test-flame-sigil.js` 的专门用例覆盖）。
+  // 代价：这四招的「damages 为空」断言搬成了「spawned 为空」+ 逐招分布。
+  for (const kind of ['shieldSmash', 'swing']) {
     const f = spikeGameFixture({ playerPos: [0.5, 10, -5.5] });
     f.state.attackFxRequest = { at: [0.5, 10, 0.5], yaw: 0, kind };
     f.game._consumeIgnisFxRequests(1000);
     assertEqual(f.spawned.length, 0, `${kind} 不得出尖刺`);
-    assertDeepEqual(f.damages, [], `${kind} 不得走尖刺伤害`);
+    assertDeepEqual(f.damages, [], `${kind} 既不伤血也不出尖刺`);
+  }
+  for (const kind of ['shieldBash', 'spin']) {
+    const f = spikeGameFixture({ playerPos: [0.5, 10, -5.5] });
+    f.state.attackFxRequest = { at: [0.5, 10, 0.5], yaw: 0, kind };
+    f.game._consumeIgnisFxRequests(1000);
+    assertEqual(f.spawned.length, 0, `${kind} 不得出尖刺`);
+    // 这两招的伤害归属 = **法阵**（另一条合法路径），与本用例无关 ⇒ 不断言 damages。
+    // 实测（手算复刻 `sigilSpawnPoints`，firstOffset=0 / spacing=4.25 / 半宽 2.0）：
+    // 段落 z = 0.5 / −3.75 / −8 / −12.25，玩家 z=−5.5 落在第 1 段区间 [−5.75, −1.75] 内
+    // ⇒ 这两招在本夹具里**确实会扣 1 格法阵伤害**，这是正确行为。
+    // 法阵伤害的完整判定由 `test-flame-sigil.js` 的 7 条专门用例覆盖。
   }
 });
 

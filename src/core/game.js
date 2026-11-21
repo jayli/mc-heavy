@@ -74,7 +74,7 @@ import { computeTurretUpdates, hasLineOfSight, shortestAngleDiff } from '../enti
 import { DRAGON_TYPE, FIREBALL_TYPE, FIREBALL, DRAGON_CORE_OBB } from '../entities/dragons/dragon-config.js';
 import { dragonDefinition, DragonService } from '../entities/dragons/dragon-system.js';
 import { fireballDefinition, judgeFireball } from '../entities/dragons/fireball-system.js';
-import { IGNIS_TYPE, IGNIS, IGNIS_ATTACKS, IGNIS_SPIKE } from '../entities/ignis/ignis-config.js';
+import { IGNIS_TYPE, IGNIS, IGNIS_ATTACKS, IGNIS_SPIKE, IGNIS_AOE } from '../entities/ignis/ignis-config.js';
 import { ignisDefinition, IgnisService } from '../entities/ignis/ignis-system.js';
 import { IgnisRenderer } from '../render/ignis-renderer.js';
 import { loadIgnisAsset, IGNIS_DEATH_COLOR } from '../render/ignis-model.js';
@@ -4154,9 +4154,17 @@ export class Game {
       // ---- 地面火焰法阵（举盾砸击 + 旋斩）----
       // v3.09：旋斩也铺法阵（用户 2026-11-16「旋转攻击也要加上法阵的图案，跟盾击攻击一样，
       // 图案的位置也跟盾击攻击一样」）。
+      // v3.29（用户 2026-11-21）：「法阵的图案如果在玩家脚底生成，玩家也掉 1 格血」。
+      //
       // ⚠️ **复用同一套 `sigilSpawnPoints` + `_findSigilGroundY`**，不得为旋斩另写落点公式 ——
       // 第二份权威会让两招位置漂移，而段数/间距/延迟/寿命全部仍然正确（静默失效）。
-      if ((req.kind !== 'shieldBash' && req.kind !== 'spin') || !this.flameSigil || !this.world) continue;
+      //
+      // ⚠️⚠️ **门槛里刻意不含 `!this.flameSigil`**：伤害是玩法，渲染器是观感。
+      // `flame_sigil.png` 加载失败时 `this.flameSigil` 为 null（`flame-sigil.js` 文件头明确
+      // 允许这个降级）⇒ 若把伤害写进 `!this.flameSigil` 门控，观感降级会连带让**玩法伤害
+      // 静默消失**，而单测用 `flameSigil: null` 造壳还会把它读成「不扣血 = 正常」。
+      // 伤害只依赖 `world` 与 `player`。
+      if ((req.kind !== 'shieldBash' && req.kind !== 'spin') || !this.world) continue;
       const points = [];
       for (const p of sigilSpawnPoints(req.at, req.yaw)) {
         const y = this._findSigilGroundY(p.x, p.z, req.at[1]);
@@ -4165,7 +4173,38 @@ export class Game {
         if (y === null) continue;
         points.push({ x: p.x, y, z: p.z, delayMs: p.delayMs });
       }
-      if (points.length > 0) this.flameSigil.spawn(points, nowMs);
+      if (points.length === 0) continue;
+
+      // 玩法：玩家 AABB 与任一段法阵的 XZ 足迹相交 ⇒ 扣 1 格，命中即 break
+      //（四段共用一次机会，「一次攻击最多扣 1 格」是用户 2026-11-21 的裁定）。
+      //
+      // ⚠️ **在 spawn 那一刻一次性判全部四段**，不追求「逐段在各自点亮时刻判定」：
+      // 四段的点亮延迟（`sigilDelayMs` = 0/50/150/200ms）由 `flame-sigil.js` 渲染器
+      // 内部按 `age >= delayMs` 决定，装配层完全看不到；而 `attackFxRequest` 是瞬态，
+      // 本方法只在命中帧拿得到它。用户说的「图案在玩家脚底**生成**」就是这一刻。
+      //
+      // ⚠️ 判定用 **XZ 矩形重叠**，不是 `overlapsBlock`（那是单格）：法阵画出来是
+      // `2 × sigilHalfExtent` = 4×4 格的面。高度不判 —— 法阵贴地，玩家不可能在它下方。
+      //
+      // ⚠️ 玩家半宽 0.3 与 `PlayerPhysics.PLAYER_WIDTH/2` 同值：此处不 import physics
+      // （它会拖进整个物理模块到本热路径的判定里），靠 `test-flame-sigil.js` 的用例
+      // 与 `test-spike-fx.js` 夹具的同一份 `hw = 0.3` 保持同口径。
+      const phys = this.player?.physics?.pos;
+      if (phys) {
+        const hw = 0.3;
+        const pMaxX = phys.x + hw, pMinX = phys.x - hw;
+        const pMaxZ = phys.z + hw, pMinZ = phys.z - hw;
+        const e = IGNIS_AOE.sigilHalfExtent;
+        for (const s of points) {
+          if (pMaxX > s.x - e && pMinX < s.x + e
+            && pMaxZ > s.z - e && pMinZ < s.z + e) {
+            this._damagePlayer(IGNIS_AOE.damage);
+            break;
+          }
+        }
+      }
+
+      this.flameSigil?.spawn(points, nowMs);
     }
   }
 
