@@ -550,13 +550,13 @@ function spikeGameFixture({ playerPos, groundY = 10 }) {
   return { game, state, damages, spawned };
 }
 
-test('spike fx 结算: 玩家站在尖刺格内扣 18，格外不扣', () => {
+test('spike fx 结算: 玩家站在尖刺格内扣 1 格，格外不扣', () => {
   // 焰魔在原点脚底 y=10、yaw=0 ⇒ 尖刺在 z = −2/−4/−6/−8/−10（格中心 −1.5/−3.5/…）
-  // 玩家站在第 3 根（前方 6 格 ⇒ 刺心 z=−5.5，格 z∈[−6,−5)）⇒ 扣 18
+  // 玩家站在第 3 根（前方 6 格 ⇒ 刺心 z=−5.5，格 z∈[−6,−5)）⇒ 扣 1 格
   const hit = spikeGameFixture({ playerPos: [0.5, 10, -5.5] });
   hit.state.attackFxRequest = { at: [0.5, 10, 0.5], yaw: 0, kind: 'spikeSlash' };
   hit.game._consumeIgnisFxRequests(1000);
-  assertDeepEqual(hit.damages, [18], `站在刺上须扣 18，实得 ${JSON.stringify(hit.damages)}`);
+  assertDeepEqual(hit.damages, [1], `站在刺上须扣 1 格，实得 ${JSON.stringify(hit.damages)}`);
 
   // 玩家在两根之间的间隙：刺格集合 = {−2,−4,−6,−8,−10}（刺心 0.5−d）
   // 玩家 z=−6.5 ⇒ AABB z∈[−6.8,−6.2] 只与格 −7 重叠，不在刺格集合里 ⇒ 不扣
@@ -573,10 +573,10 @@ test('spike fx 结算: 一次命中帧只扣一次（Review Focus 2）', () => {
   // 瞬态字段：Agent 下一帧清 null ⇒ 后续帧不再结算
   f.state.attackFxRequest = null;
   for (let i = 0; i < 30; i++) f.game._consumeIgnisFxRequests(1000 + i * 16);
-  assertDeepEqual(f.damages, [18], `30 帧后仍只扣一次，实得 ${JSON.stringify(f.damages)}`);
+  assertDeepEqual(f.damages, [1], `30 帧后仍只扣一次，实得 ${JSON.stringify(f.damages)}`);
 });
 
-test('spike fx 结算: 玩家同时压住两根刺也只扣一次（不是每根 18）', () => {
+test('spike fx 结算: 玩家同时压住两根刺也只扣一次（不是每根 1 格）', () => {
   // 玩家宽 0.6，站在 z=−5.0 边界上会同时压住 −5 与 −6 格；刺只在 −6 ⇒ 仍一次。
   // 造「两根都压住」需要玩家跨两格且两格都有刺 —— 间距 2 格时不可能，
   // 故本条钉的是「命中即 break」的实现（若写成逐根累加，未来间距改 1 就会翻倍）。
@@ -594,7 +594,7 @@ test('spike fx 结算: 尖刺伤害不看视线（与原版 ShieldSmashDamage �
   f.game.world.isSolid = (x, y, z) => (z === -3 && y >= 10 && y <= 12) || origSolid(x, y, z);
   f.state.attackFxRequest = { at: [0.5, 10, 0.5], yaw: 0, kind: 'spikeSlash' };
   f.game._consumeIgnisFxRequests(1000);
-  assertDeepEqual(f.damages, [18], '隔墙仍扣（原版特效与 AoE 都不看视线）');
+  assertDeepEqual(f.damages, [1], '隔墙仍扣（原版特效与 AoE 都不看视线）');
 });
 
 test('spike fx 结算: 30 根都找到地面并 spawn（开阔地夹具）', () => {

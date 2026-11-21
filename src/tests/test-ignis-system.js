@@ -14,8 +14,9 @@ import { assertEqual, assertTrue, assertNull, assertNotNull, assertFalse, assert
 // config 与 system 分开 import（system 只 re-export 它需要的东西，不是全部）
 import {
   IGNIS_TYPE, IGNIS, IGNIS_AI, IGNIS_ATTACKS, IGNIS_ATTACK_IDS, IGNIS_CORE_OBB, IGNIS_MODEL_CENTER,
-  IGNIS_SPIKE, ignisEntityIdFor,
+  IGNIS_SPIKE, IGNIS_AOE, ignisEntityIdFor,
 } from '../entities/ignis/ignis-config.js';
+import { FLAME_SIGIL } from '../render/flame-sigil.js';
 import { ignisDefinition, IgnisService, ignisAabbFor } from '../entities/ignis/ignis-system.js';
 import { EntityManager } from '../entities/entity-manager.js';
 // 命中盒 ↔ 画面的交叉用例要用真实渲染器 + 烘焙产物（`test-ignis-render.js` 同款装配）
@@ -1008,7 +1009,7 @@ test('焰魔(v3.27): IGNIS_SPIKE 常量取用户裁定值', () => {
   assertEqual(IGNIS_SPIKE.exposeHeight, 1.6, '露出高度与原锥体一致');
   assertEqual(IGNIS_SPIKE.spacing, 2);
   assertEqual(IGNIS_SPIKE.firstOffset, 2, '首根在正前方 2 格，不在脚底');
-  assertEqual(IGNIS_SPIKE.damage, 18, '用户草图「伤害 18 点」');
+  assertEqual(IGNIS_SPIKE.damage, 1, '用户 2026-11-21：剑阵刺到玩家掉 1 格血');
   assertEqual(IGNIS_SPIKE.secondRange, 4, '用户草图「距离 4 格以内就连续再劈第二刀」');
   assertTrue(IGNIS_SPIKE.soloSeconds < IGNIS_SPIKE.doubleSeconds);
   assertTrue(Math.abs(IGNIS_SPIKE.soloSeconds - 1.9666666666666668) < 1e-9);
@@ -1035,10 +1036,25 @@ test('焰魔(v3.27): 尖刺半径 = 剑体半宽（不是锥底半径）', () =>
   assertTrue(IGNIS_SPIKE.radius !== 0.35, '不得留着旧锥底半径');
 });
 
-test('焰魔(v3.06): 尖刺伤害与刀砍伤害是两份独立权威（刀砍仍 14）', () => {
-  // 用户裁定「只尖刺 18，刀砍仍 14」⇒ 不得把 IGNIS.attackDamage 改成 18
+test('焰魔(v3.29): 尖刺伤害走 IGNIS_AOE，与刀砍 14 是两份独立权威', () => {
+  // 用户 2026-11-21 把尖刺从草图的 18 降到 1（「剑阵攻击的剑阵刺到玩家，玩家也掉 1 格血」）。
+  // 刀砍本来就是另一份权威（另四招共用 IGNIS.attackDamage=14），本轮不动。
   assertEqual(IGNIS.attackDamage, 14, '刀砍伤害不变（另四招共用它）');
-  assertEqual(IGNIS_SPIKE.damage, 18);
+  assertEqual(IGNIS_SPIKE.damage, IGNIS_AOE.damage, '尖刺伤害必须派生自 IGNIS_AOE（红线 1）');
   assertTrue(IGNIS_SPIKE.damage !== IGNIS.attackDamage,
-    '两个数必须不同 —— 相等时「只尖刺 18」的裁定看不出是否生效');
+    '两个数必须不同 —— 相等时「尖刺与刀砍是两份权威」的裁定看不出是否生效');
+});
+
+test('ignis aoe: 法阵与尖刺共用 1 格伤害（用户 2026-11-21）', () => {
+  assertEqual(IGNIS_AOE.damage, 1, '两处新增伤害各 1 格');
+  assertEqual(IGNIS_AOE.sigilHalfExtent, 2.0, '法阵足迹半宽 = 4×4 格的一半');
+  assertTrue(IGNIS_AOE.damage < IGNIS.attackDamage, '小额伤害必须严格小于挥砍');
+});
+
+test('ignis aoe: 法阵足迹与渲染层的实时尺寸必须相等（跨层等式，唯一能比对的地方）', () => {
+  // ⚠️ src/entities/ 在同构目录里（tools/check-architecture.mjs 的 ISOMORPHIC_DIRS），
+  // 不得 import src/render/ ⇒ 这条单测是唯一的跨层守卫。
+  // 不钉它的形态：有人把 FLAME_SIGIL.radius 改成 3（画面 6×6）而判定仍 4×4，
+  // 所有数值断言全绿，只有「看着踩在图案上却不扣血」的手感抱怨。
+  assertEqual(IGNIS_AOE.sigilHalfExtent, FLAME_SIGIL.radius);
 });
