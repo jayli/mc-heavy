@@ -103,6 +103,7 @@ import { Player } from '../player/player.js';
 import { Persistence } from '../save/persistence.js';
 import { CoordsHUD } from '../ui/coords-hud.js';
 import { HealthHUD } from '../ui/health-hud.js';
+import { DamageFlash } from '../ui/damage-flash.js';
 import { DamageNumbers } from '../ui/damage-numbers.js';
 import { Minimap } from '../ui/minimap.js';
 import { WaterReflectDock } from '../ui/water-reflect-dock.js';
@@ -1250,6 +1251,10 @@ export class Game {
     // ① 玩家血心 —— 10 颗心紧挨性能看板右侧。血量权威在 `player.health`（当前阶段恒满，
     //    掉血逻辑用户后续添加）；血量 → 心形的换算权威在 `player/health.js` 的 `heartsFor()`。
     this._healthHud = new HealthHUD(this._hudRoot, this.player);
+    // 受伤红闪（用户 2026-11-21）：屏幕四周 40px 红色渐变，0.35s 淡出。
+    // 挂 `#hud-root` 下 ⇒ Tier 4 像素用例隐藏 HUD 时一并被隐藏（与血心同口径）。
+    // 触发点在 `_damagePlayer()` —— 伤害的唯一入口，未来任何新伤害源自动覆盖。
+    this._damageFlash = new DamageFlash(this._hudRoot);
     // ② 丧尸/Boss 受击浮动数字 —— DOM 覆盖层（零 draw call），显示「掉血后还剩的血量」。
     //    投影函数在这里注入（本模块 three-free，`src/ui/` 既有口径）。
     //    ⚠️ **必须先判「相机背后」再投影**：`Vector3.project()` 对背后的点会除以负 w，
@@ -1454,9 +1459,9 @@ export class Game {
       // v2.55：焰魔的挥剑命中结算（消费 attackRequest）。
       // 位置与龙的火球无关，但同样必须在 `entities.update` 之后 —— Agent 本帧写入的
       // `attackRequest` 才存在。
-      this._consumeIgnisAttackRequests();
+      this._consumeIgnisAttackRequests(nowMs);
       // 守卫的四招命中结算（同口径：必须在 entities.update 之后）
-      this._consumeGuardianAttackRequests();
+      this._consumeGuardianAttackRequests(nowMs);
       // v3.04：焰魔砸击特效（地面火焰法阵 / 碎石圆环）。读的是 `attackFxRequest`，
       // 与伤害结算分开 —— 特效不受命中帧的新鲜视线复查影响（原版同口径）。
       this._consumeIgnisFxRequests(nowMs);
@@ -1531,6 +1536,8 @@ export class Game {
       this._hotbar.update(this.player.hotbarIndex);
       // 玩家血心：血量没变时内部直接 return（当前阶段恒满 → 每帧一次数值比较）
       this._healthHud.update(nowMs);
+      // 受伤红闪（v3.29）：未激活时内部一次比较就 return（同血心的口径）
+      this._damageFlash.update(nowMs);
       // v3.16：Boss 召唤提示（内部 250ms 节流，未到期直接 return = 一次时间比较）。
       // 放在血心之后、实体发布之前：它只读 player.pos 与 entities，与渲染无关。
       this._bossHint.update(nowMs);
@@ -4039,8 +4046,11 @@ export class Game {
    *
    * ⚠️ **常态零分配门控**：`activeEntities()` 会新建数组，而本方法每帧都跑 ——
    * 场上没焰魔时用 `count()` 直接返回（与 `_consumeDragonFireRequests` 同一手法）。
+   *
+   * @param {number} nowMs 帧循环的 `performance.now()` 基准 —— 一路透传给 `_damagePlayer`
+   *   作红闪起点（不得在本方法内另取，同 `_consumeIgnisFxRequests` 口径）。
    */
-  _consumeIgnisAttackRequests() {
+  _consumeIgnisAttackRequests(nowMs) {
     if (!this.ignises || !this.player) return;
     if (this.entities.count(IGNIS_TYPE) === 0) return;
     const p = this.player.physics?.pos;
@@ -4066,7 +4076,7 @@ export class Game {
       const to = [p.x, p.y + 1.0, p.z];
       if (!hasLineOfSight({ world: this.world, registry: this.registry, from, to })) continue;
       // 三条全过 → 扣血（钳制在 applyDamage 里）
-      this._damagePlayer(IGNIS.attackDamage);
+      this._damagePlayer(IGNIS.attackDamage, nowMs);
     }
   }
 
@@ -4143,7 +4153,7 @@ export class Game {
         if (phys) {
           for (const s of spikes) {
             if (phys.overlapsBlock(Math.floor(s.x), Math.floor(s.y), Math.floor(s.z))) {
-              this._damagePlayer(IGNIS_SPIKE.damage);
+              this._damagePlayer(IGNIS_SPIKE.damage, nowMs);
               break;
             }
           }
@@ -4198,7 +4208,7 @@ export class Game {
         for (const s of points) {
           if (pMaxX > s.x - e && pMinX < s.x + e
             && pMaxZ > s.z - e && pMinZ < s.z + e) {
-            this._damagePlayer(IGNIS_AOE.damage);
+            this._damagePlayer(IGNIS_AOE.damage, nowMs);
             break;
           }
         }
@@ -4241,8 +4251,10 @@ export class Game {
    *（那是焰魔旋斩的口径，守卫踩踏是环形近战，spec §4.3）。
    * ⚠️ **只在该帧判定一次**：`attackRequest` 是瞬态，Agent 下一帧自动置 null。
    * ⚠️ **常态零分配门控**：`activeEntities()` 会新建数组，而本方法每帧都跑。
+   *
+   * @param {number} nowMs 帧循环的 `performance.now()` 基准（透传给 `_damagePlayer`）。
    */
-  _consumeGuardianAttackRequests() {
+  _consumeGuardianAttackRequests(nowMs) {
     if (!this.guardians || !this.player) return;
     if (this.entities.count(GUARDIAN_TYPE) === 0) return;
     const p = this.player.physics?.pos;
@@ -4264,7 +4276,7 @@ export class Game {
       const from = [ex, ey + GUARDIAN.height * 0.5, ez];
       const to = [p.x, p.y + 1.0, p.z];
       if (!hasLineOfSight({ world: this.world, registry: this.registry, from, to })) continue;
-      this._damagePlayer(GUARDIAN.attackDamage);
+      this._damagePlayer(GUARDIAN.attackDamage, nowMs);
     }
   }
 
@@ -4279,16 +4291,34 @@ export class Game {
    * 音效本可以直接写在那里。但「不管被谁击中」是一条**对未来生效**的约束 ——
    * 散在调用点的音效无法保证它，唯一入口可以。
    *
-   * ⚠️ **血量没真的变（已是 0）时不响**：用户裁定「只扣血、不做死亡」，血停在 0 后
+   * ⚠️ **血量没真的变（已是 0）时音效不响**：用户裁定「只扣血、不做死亡」，血停在 0 后
    * 再被砍不算「被击中」的新反馈（否则站在焰魔面前会持续响，读作音效卡住）。
    *
+   * ⚠️⚠️ **红闪的判据与音效不同**（v3.29，用户 2026-11-21 明确要求）：
+   * 音效看 `after < before`，而**红闪看 `amount > 0`** ——
+   * 用户原话「如果血量掉完，受到攻击时也显示这个掉血的动画」。血停在 0 后
+   * `after === before === 0`，用「血量真的变了」作红闪判据会让所有受击都不再闪。
+   *
+   * ⚠️ 当前四条伤害路径（焰魔 attackRequest / 尖刺 attackFxRequest / 法阵 attackFxRequest /
+   * 守卫 attackRequest）**全部是瞬态的一次性判定**，不是每帧 —— 所以「血量为 0 时也用
+   * amount > 0 判闪」不会刷成常亮。将来若接入持续伤害源（出血/着火），红闪要自带最小重复间隔。
+   *
    * @param {number} amount 伤害格数
+   * @param {number} nowMs 帧循环的 `performance.now()` 基准时间戳。
+   *   ⚠️ **必须由调用方传入**，不得在方法内新取 —— 同帧两个时基会让红闪的起点与
+   *   `_damageFlash.update(nowMs)` 的基准错开一截（帧内耗时），淡出曲线跟着漂。
+   *   同 `_consumeIgnisFxRequests` / `_syncBossAudio` 口径。
    * @returns {number} 扣血后的剩余血量
    */
-  _damagePlayer(amount) {
+  _damagePlayer(amount, nowMs) {
     const before = this.player.health;
     const after = applyDamage(before, amount);
     this.player.health = after;
+    // 红闪：任何正伤害都闪（**不看血量是否真的变了** —— 血为 0 时也要闪）
+    if (Number.isFinite(amount) && amount > 0) {
+      this._damageFlash?.show(nowMs);
+    }
+    // 音效：只在血量真的减少了才响（血为 0 时不刷音效）
     if (after < before) {
       this.audioManager?.play('ignis_hurt', SOUND_VOLUMES.ignis_hurt);
     }
@@ -4430,6 +4460,8 @@ export class Game {
     this._reflectDock?.dispose();
     // v3.16：Boss 召唤提示（同口径：纯 DOM）
     this._bossHint?.dispose();
+    // v3.29：受伤红闪（纯 DOM，摘除节点即可）
+    this._damageFlash?.dispose();
     // M4：反向释放武器运行时（Player → Audio → ModelLoader → WorkerPool → renderer）
     this.player?.dispose();
     this.audioManager?.dispose();

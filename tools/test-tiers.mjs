@@ -55,6 +55,7 @@ const UI = [
   'inventory-tooltip',
   'crosshair',
   'health-hud',
+  'damage-flash',       // v3.29 受伤红闪（Tier 4 像素：四周 40px 带 vs 中心区差分）
   'minimap',
   'settings-resolution',
   'about-tab',          // v3.25 设置弹窗两 Tab（尺寸不变 / 确定按钮在内容之外 / 关于页配图）
