@@ -3,15 +3,21 @@
 // 纯常量 + 纯函数模块：**无 DOM、无 three** —— 与 `render/pixel-ratio.js` 同口径，
 // 可在浏览器内单测（`src/tests/test-health.js`）里安全 import。
 //
-// ## 口径（原版 Minecraft）
+// ## 口径（原版 Minecraft，v3.29 起血量翻倍）
 //
-// - 满血 = **20 格**（`PLAYER_MAX_HEALTH`）；
-// - 用 **10 颗心**表示（`PLAYER_MAX_HEARTS`），每颗心 = 2 格血；
+// - 满血 = **40 格**（`PLAYER_MAX_HEALTH`）；
+// - 用 **20 颗心**表示（`PLAYER_MAX_HEARTS`），每颗心 = 2 格血；
 // - **半颗心 = 1 格血**（用户明确要求，与原版一致）。
+//
+// ⚠️ **v3.29（用户 2026-11-21）：「玩家的血量默认在增加一倍」** ⇒ 20 → 40 格、10 → 20 颗心。
+// 每颗心仍代表 2 格血（半心 = 1 格），所以 `heartsFor()` 的换算逻辑**一行未改** ——
+// 它按 `HEALTH_PER_HEART` 派生、按 `PLAYER_MAX_HEARTS` 定长度，两个常量改完就自动跟着变。
+// 翻倍的原因是同期给焰魔新增了两处小额伤害源（法阵 1 格 / 尖刺 1 格）：20 格上这些数字读不出分量。
+// 连带推翻的旧标定：焰魔一刀 14 ⇒ 原本「两刀即死」的压迫感，现在变成三刀（40 ÷ 14）。
 //
 // ## 为什么单独成模块
 //
-// 「血量 → 10 颗心形态」的换算是**有对错可言的逻辑**（半心、越界、非法值的边界），
+// 「血量 → 心形数组」的换算是**有对错可言的逻辑**（半心、越界、非法值的边界），
 // 必须能被 Tier 1 单测钉住。渲染层（`ui/health-hud.js`）只消费 `heartsFor()` 的输出，
 // 不自己再算一遍（红线 1：同一事实只有一份权威）。
 //
@@ -26,28 +32,28 @@
 // 这是有意的取舍 —— 把 health 写进存档需要 `settingsVersion` 迁移，而「重进就回满」
 // 对「只扣血不死亡」的当前阶段是合理语义（用户没要求持久化）。
 
-/** 玩家满血格数（原版口径：20 格 = 10 颗心 × 2） */
-export const PLAYER_MAX_HEALTH = 20;
+/** 玩家满血格数（原版口径 20；v3.29 用户 2026-11-21 裁定翻倍到 40） */
+export const PLAYER_MAX_HEALTH = 40;
 
-/** 血心的颗数（原版口径：10 颗） */
-export const PLAYER_MAX_HEARTS = 10;
+/** 血心的颗数（原版口径 10；v3.29 用户 2026-11-21 裁定翻倍到 20） */
+export const PLAYER_MAX_HEARTS = 20;
 
 /** 每颗心对应的血量格数（2 = 半颗心 1 格血的数学表达） */
 const HEALTH_PER_HEART = PLAYER_MAX_HEALTH / PLAYER_MAX_HEARTS;
 
 /**
- * 把血量换算成 10 颗心的形态数组（渲染层按位画，长度恒为 `PLAYER_MAX_HEARTS`）。
+ * 把血量换算成 `PLAYER_MAX_HEARTS` 颗心的形态数组（渲染层按位画，长度恒为 `PLAYER_MAX_HEARTS`）。
  *
  * 每颗心取值 `'full'`（满）/ `'half'`（半）/ `'empty'`（空），从左到右排列。
  * 换算规则：每颗心 = 2 格血，半颗心 = 1 格血（原版口径）。
  *
  * ⚠️ **越界与非法值一律钳制，不抛异常**：
- *   - `health > PLAYER_MAX_HEALTH` → 全满（未来若有吸收/增益不画出第 11 颗心）；
+ *   - `health > PLAYER_MAX_HEALTH` → 全满（未来若有吸收/增益不画出第 21 颗心）；
  *   - `health < 0` / `NaN` / 非数 → 全空（缺陷形态是静默画错，不是崩溃）；
  *   - 小数血向下取整到格（`1.9 → 1` 格亮点 = 首颗半心）。
  *
  * @param {number} health 当前血量（格）
- * @returns {Array<'full'|'half'|'empty'>} 长度恒为 10 的心形数组
+ * @returns {Array<'full'|'half'|'empty'>} 长度恒为 `PLAYER_MAX_HEARTS` 的心形数组
  */
 export function heartsFor(health) {
   // 钳制到 [0, PLAYER_MAX_HEALTH] 并向下取整到格。
