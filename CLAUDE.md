@@ -215,7 +215,7 @@ npm run validate:weapon-assets
 - **`AGENTS.md` 是 `CLAUDE.md` 的符号链接** ⇒ 改规范一律 `git add CLAUDE.md`，
   并用 `git show --stat` 核对它真的在提交里。
 - **UI 层级不等式**（改任一层必须重核）：hotbar 40 < 迷你地图 45 < 坐标/性能面板 50 = 血心 50 <
-  伤害数字 55 < 设置按钮 60 < 设置面板 70 < 背包 80 < 背包 hover 浮层 85 < toast 90 <
+  伤害数字 55 < **受伤红闪 56** < 设置按钮 60 < 设置面板 70 < 背包 80 < 背包 hover 浮层 85 < toast 90 <
   启动 loading 95 < 启动错误遮罩 100。**不得取 100+**。toast 与浮层 `pointer-events:none`
   ⇒ 判「在最上层」只能走像素。「点了没反应」先查这条。
 

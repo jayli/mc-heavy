@@ -593,18 +593,18 @@ test('玩家受击：焰魔砍中玩家 → 扣血 + 播 ignis_hurt', async ({ p
   expect(sum.ok, `前置：焰魔召唤成功（${sum.reason ?? ''}）`).toBe(true);
 
   const hurtBase = (await counts(page)).ignis_hurt ?? 0;
-  // 等玩家真的被砍到（血量下降）。焰魔 14 伤害 / 玩家 20 格血 ⇒ 第二刀就到 0，
-  // 故窗口内只要看到一次扣血即可（不要求多次）。
+  // 等玩家真的被砍到（血量下降）。焰魔 14 伤害 / 玩家 40 格血（v3.29 血量翻倍）
+  // ⇒ 需要三刀才归 0，故窗口内只要看到一次扣血即可（不要求多次）。
   await page.waitForFunction(() => {
     const g = window.__MC_GAME__;
-    return (g.audioDebugState().playRequests.ignis_hurt ?? 0) > 0 && g.player.health < 20;
+    return (g.audioDebugState().playRequests.ignis_hurt ?? 0) > 0 && g.player.health < 40;
   }, null, { timeout: 40_000 });
 
   const r = await page.evaluate(() => {
     const g = window.__MC_GAME__;
     return { health: g.player.health, hurt: g.audioDebugState().playRequests.ignis_hurt ?? 0 };
   });
-  expect(r.health, '前置：玩家真的被砍到了（血量下降）').toBeLessThan(20);
+  expect(r.health, '前置：玩家真的被砍到了（血量下降）').toBeLessThan(40);
   expect(r.hurt, '玩家被击中必须播 ignis_hurt').toBeGreaterThan(hurtBase);
 });
 

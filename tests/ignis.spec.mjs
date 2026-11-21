@@ -713,10 +713,10 @@ test.describe('焰魔（Ignis）Tier 4', () => {
     });
 
     expect(r.err).toBeUndefined();
-    expect(r.hpStart, '起始满血').toBe(20);
+    expect(r.hpStart, '起始满血 40（v3.29 血量翻倍）').toBe(40);
     // **上下界同时钉**：只钉「掉血」抓不到「一下掉到 0」或「扣错量」
     expect(r.damage, `应为一次完整伤害 ${r.expectedDamage}`).toBe(r.expectedDamage);
-    expect(r.hpEnd, '20 − 14 = 6').toBe(6);
+    expect(r.hpEnd, '40 − 14 = 26').toBe(26);
   });
 
   /**
@@ -1963,4 +1963,88 @@ test.describe('焰魔（Ignis）Tier 4', () => {
       `yaw 与「朝真实玩家」的最大夹角只有 ${(r.maxYawOff * 180 / Math.PI).toFixed(1)}°（应 > 8.6°，否则就是每帧精确跟随）`)
       .toBeGreaterThan(0.15);
   });
+});
+
+/**
+ * v3.29（用户 2026-11-21）：焰魔的两处小额 AoE 伤害各扣玩家 1 格。
+ *
+ * 用户原文：「剑阵攻击的剑阵刺到玩家，玩家也掉 1 格血，法阵的图案如果在玩家脚底生成，
+ * 玩家也掉 1 格血」。
+ *
+ * ## 驱动方式
+ *
+ * 与既有「旋斩锥宽」用例同一手法：把 `attackFxRequest` 直接塞进 state → **同步**调一次
+ * 唯一的消费点 `_consumeIgnisFxRequests`。`attackFxRequest` 是瞬态（Agent 下一帧清 null），
+ * 等 AI 自然起手不可控且慢。
+ *
+ * ## 站位（真实落点，不是手算想象）
+ *
+ * - 法阵：`sigilSpawnPoints` 的段落 z = 焰魔z − {0, 4.25, 8.5, 12.75}，半宽 2.0。
+ *   玩家站在焰魔脚底 ⇒ 首段（z=焰魔z）压住。
+ * - 尖刺：`spikeSpawnPoints` 的正前方（deg=0）六根刺心 z = 焰魔z − {2,4,6,8,10,12}。
+ *   玩家站在焰魔z − 6（第 3 根，格 z ∈ [焰魔z−7, 焰魔z−6)）⇒ 命中。
+ */
+test('战斗(v3.29)：法阵落在玩家脚下 ⇒ 扣 1 格', async ({ page }) => {
+  test.setTimeout(180_000);
+  await page.goto(`/?seed=${SEED}`);
+  await waitWorldReady(page);
+  await teleportToTarnCenter(page);
+  await waitPlayerLanded(page);
+
+  const r = await page.evaluate(async () => {
+    const g = window.__MC_GAME__;
+    const { IGNIS_AOE } = await import('/src/entities/ignis/ignis-config.js');
+    const p = g.player.physics.pos;
+    // 焰魔召到玩家正前方 1 格，然后把玩家放回它脚底（法阵首段就在脚底）
+    const sum = g.ignises.summon('tarn:e2e:aoe', Math.floor(p.x), Math.floor(p.z) - 1, 1);
+    if (!sum.ok) return { err: sum.reason };
+    const ent = g.entities.get(sum.id);
+    if (!ent) return { err: 'entity-missing' };
+    const e = ent;
+    const at = e.state.position;
+    g.player.physics.pos.x = at[0];
+    g.player.physics.pos.z = at[2];
+    const hpBefore = g.player.health;
+    e.state.attackFxRequest = { at: [...at], yaw: 0, kind: 'shieldBash' };
+    g._consumeIgnisFxRequests(performance.now());
+    return { hpBefore, hpAfter: g.player.health, expect: IGNIS_AOE.damage };
+  });
+
+  expect(r.err).toBeUndefined();
+  expect(r.hpBefore - r.hpAfter, `法阵须扣 ${r.expect} 格（实得 ${r.hpBefore} → ${r.hpAfter}）`)
+    .toBe(r.expect);
+});
+
+test('战斗(v3.29)：剑阵尖刺刺到玩家 ⇒ 扣 1 格（不是 18）', async ({ page }) => {
+  test.setTimeout(180_000);
+  await page.goto(`/?seed=${SEED}`);
+  await waitWorldReady(page);
+  await teleportToTarnCenter(page);
+  await waitPlayerLanded(page);
+
+  const r = await page.evaluate(async () => {
+    const g = window.__MC_GAME__;
+    const { IGNIS_AOE } = await import('/src/entities/ignis/ignis-config.js');
+    const p = g.player.physics.pos;
+    const sum = g.ignises.summon('tarn:e2e:spike2', Math.floor(p.x), Math.floor(p.z) - 6, 1);
+    if (!sum.ok) return { err: sum.reason };
+    const ent = g.entities.get(sum.id);
+    if (!ent) return { err: 'entity-missing' };
+    const e = ent;
+    const at = e.state.position;   // 脚底
+    // yaw=0 ⇒ 正前方 = z 递减；第 3 根刺心 = at[2] − 6（格 z ∈ [at[2]−7, at[2]−6)）
+    // ⚠️ **y 也要对齐焰魔脚底**：实测焰魔落在地表 y=3 而玩家可能站在更高的一层（y=5），
+    // 只改 x/z 会让玩家悬在刺上方 2 格 ⇒ 刺的格与玩家 AABB 不重叠 ⇒ 静默不扣血。
+    g.player.physics.pos.x = at[0];
+    g.player.physics.pos.z = at[2] - 6;
+    g.player.physics.pos.y = at[1];
+    g.player.physics.vel.y = 0;
+    const hpBefore = g.player.health;
+    e.state.attackFxRequest = { at: [...at], yaw: 0, kind: 'spikeSlash' };
+    g._consumeIgnisFxRequests(performance.now());
+    return { hpBefore, hpAfter: g.player.health, expect: IGNIS_AOE.damage };
+  });
+
+  expect(r.err).toBeUndefined();
+  expect(r.hpBefore - r.hpAfter, `尖刺须扣 ${r.expect} 格（不再是 18）`).toBe(r.expect);
 });
