@@ -95,7 +95,9 @@ export class LeafFxRenderer {
     this._lastPos = { x: playerPos.x, y: playerPos.y, z: playerPos.z };
     this._target = { x: playerPos.x, y: playerPos.y, z: playerPos.z };
 
-    // 逐实例秋色（构造时抽一次；迁移只改位置不改色 ⇒ 减少上传）
+    // 逐实例秋色（构造时抽一次；迁移只改位置不改色）。
+    // ⚠️ 这里省下的只是 CPU 侧的 setXYZ 与取色，**不省上传**：aColor 仍每帧全缓冲上传，
+    // 原因见 leaf-fx-material.js 的 setUsage 处（WebGPU 后端对 DynamicDrawUsage 无条件上传）。
     this._fillColors();
   }
 
@@ -270,8 +272,9 @@ export class LeafFxRenderer {
   }
 
   /**
-   * 迁移一片：**只改 origin/params（地面），不改 sway/spin/size/color**（减少上传）。
-   * 相位与速度保留 ⇒ 迁移中的叶子不会「集体重置成同一相位」。
+   * 迁移一片：**只改 origin/params（地面），不改 sway/spin/size/color**。
+   * 相位与速度保留 ⇒ 迁移中的叶子不会「集体重置成同一相位」（这是本写法的主要理由）。
+   * ⚠️ 不改那几项**不减少上传字节**（它们照样每帧全刷，见 material 的 setUsage 处）。
    */
   _moveLeaf(i, center) {
     const o = this._geometry.getAttribute(LEAF_ATTR.origin);
@@ -372,7 +375,20 @@ export class LeafFxRenderer {
     this._flushStatic();
   }
 
-  /** 只把真的改过的属性置 needsUpdate（每帧零分配、零多余上传） */
+  /**
+   * 只把真的改过的属性置 needsUpdate（每帧零分配）。
+   *
+   * ⚠️⚠️ **`needsUpdate` 在 WebGPU 后端不决定「要不要上传」**（实测 v3.26 诊断）：
+   * `three.webgpu.js:31003` 的门是 `data.version < version || usage === DynamicDrawUsage`
+   * ⇒ 本池所有属性都是 `DynamicDrawUsage`（见 material），于是**每帧无条件全缓冲上传**，
+   * 与本函数的 dirty 判据无关。实测每帧 7 次 `writeBuffer` / **14960 B**（清晰档 220 片），
+   * 其中连构造后永不变的 `aColor` 也占 2640 B；整帧其他地方的 buffer 上传是 **0 B**。
+   *
+   * 因此本函数的真实作用是「零分配 + 语义上标明哪些属性被改过」，**不是省上传**。
+   * 改成 `StaticDrawUsage` 可让上传降到 2.2 次 / 4320 B（−71%，画面像素并集不退化），
+   * 但**实测净收益仅 0.001 ms/帧**（批量微基准 400 次重复；帧时 p50 逐位相同 8.3ms、
+   * fps 均 120）⇒ 刻意不改，收益在噪声以下。容量放大到万级时才值得重新评估。
+   */
   _flushStatic() {
     if (!this._dirtyStatic) return;
     this._dirtyStatic = false;

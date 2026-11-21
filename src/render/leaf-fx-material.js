@@ -93,6 +93,13 @@ export function createLeafGeometry(capacity) {
 
   for (const [name, itemSize] of Object.entries(LEAF_ATTR_SIZE)) {
     const attr = new THREE.InstancedBufferAttribute(new Float32Array(cap * itemSize), itemSize);
+    // ⚠️⚠️ **`DynamicDrawUsage` 在 WebGPU 后端 = 每帧无条件全缓冲上传**（实测 v3.26 诊断）：
+    // `three.webgpu.js:31003` 的上传门是 `data.version < version || usage === DynamicDrawUsage`
+    // ⇒ 只要设了 Dynamic，`needsUpdate` / `_flushStatic` 的 dirty 判据**全部被绕过**，
+    // 连构造后永不变的 `aColor` 也每帧刷。实测每帧 7 次 writeBuffer / 14960 B（220 片）。
+    // 改 Static 可降 71% 字节且画面不退化，但**净收益实测仅 0.001 ms/帧**（帧时 p50 逐位
+    // 相同 8.3ms、fps 均 120）⇒ 刻意保留 Dynamic，与本仓其余粒子池（rain / 各特效池）同口径。
+    // 容量到万级时上传才进入 0.1ms 量级，那时再评估。
     attr.setUsage(THREE.DynamicDrawUsage);
     geometry.setAttribute(name, attr);
   }

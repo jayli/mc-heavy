@@ -96,6 +96,8 @@ export function createFireflyGeometry(capacity) {
 
   for (const [name, itemSize] of Object.entries(FIREFLY_ATTR_SIZE)) {
     const attr = new THREE.InstancedBufferAttribute(new Float32Array(cap * itemSize), itemSize);
+    // ⚠️⚠️ **Dynamic ⇒ 每帧无条件全缓冲上传**（`three.webgpu.js:31003`，`needsUpdate` 被绕过）。
+    // 实测本池 7 次 / 7056 B 每帧（夜间 84 只）。完整实测与取舍见 `leaf-fx-material.js` 同位置。
     attr.setUsage(THREE.DynamicDrawUsage);
     geometry.setAttribute(name, attr);
   }

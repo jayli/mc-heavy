@@ -145,7 +145,10 @@ export class FireflyFxRenderer {
     return true;
   }
 
-  /** 迁移一只：**只改 origin / ground**，不改 amp/freq/phase/size（减少上传、保相位） */
+  /**
+   * 迁移一只：**只改 origin / ground**，不改 amp/freq/phase/size（保相位）。
+   * ⚠️ 「不改那几项」**不减少上传字节**：它们照样每帧全刷（见 material 的 setUsage 处）。
+   */
   _moveFly(i, center) {
     const g = this._geometry;
     const o = g.getAttribute(FIREFLY_ATTR.origin);
@@ -216,7 +219,13 @@ export class FireflyFxRenderer {
     this._flushStatic();
   }
 
-  /** 只把真的改过的属性置 needsUpdate */
+  /**
+   * 只把真的改过的属性置 needsUpdate。
+   *
+   * ⚠️⚠️ **它不决定上传量**：WebGPU 后端对 `DynamicDrawUsage` 属性每帧无条件全缓冲上传
+   * （`three.webgpu.js:31003`）。实测本池每帧 7 次 `writeBuffer` / **7056 B**（夜间 84 只）。
+   * 完整实测与「为何不改 usage」的结论写在 `leaf-fx.js:_flushStatic`（两池同一口径）。
+   */
   _flushStatic() {
     if (!this._dirtyStatic) return;
     this._dirtyStatic = false;
@@ -226,7 +235,7 @@ export class FireflyFxRenderer {
   }
 
   /**
-   * 夜间联动：gain 每帧写（uniform，零上传成本），count 变了才重写 aAlive。
+   * 夜间联动：gain 每帧写（uniform，不过 instanced 属性缓冲），count 变了才重写 aAlive。
    * ⚠️ 容量按夜间上限分配，但**性能档容量只有一半** ⇒ count 必须按容量比例缩放，
    * 否则性能档夜里会把全部实例点亮（密度反而比清晰档高）。
    */
