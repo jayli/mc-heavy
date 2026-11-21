@@ -778,7 +778,7 @@ test.describe('焰魔（Ignis）Tier 4', () => {
           attackRequest: { at: [ex, ey, ez], yaw: 0, kind },
         };
         // 同步调**唯一**的结算入口（与真实战斗同一方法；不走 AI 的瞬态覆写）
-        g._consumeIgnisAttackRequests();
+        g._consumeIgnisAttackRequests(performance.now());
         return g.player.health;
       };
 
@@ -952,7 +952,7 @@ test.describe('焰魔（Ignis）Tier 4', () => {
           ...e.state, yaw: 0,
           attackRequest: { at: [ex, ey, ez], yaw: 0, kind },
         };
-        g._consumeIgnisAttackRequests();
+        g._consumeIgnisAttackRequests(performance.now());
         return g.player.health;
       };
 
@@ -1021,7 +1021,7 @@ test.describe('焰魔（Ignis）Tier 4', () => {
         g.player.health = 20;
         const e = g.entities.get(id);
         e.state = { ...e.state, yaw: 0, attackRequest: { at: [ex, ey, ez], yaw: 0, kind } };
-        g._consumeIgnisAttackRequests();
+        g._consumeIgnisAttackRequests(performance.now());
         return g.player.health;
       };
 
@@ -1079,7 +1079,7 @@ test.describe('焰魔（Ignis）Tier 4', () => {
         g.player.health = 20;
         const e = g.entities.get(id);
         e.state = { ...e.state, yaw: 0, attackRequest: { at: [ex, ey, ez], yaw: 0, kind } };
-        g._consumeIgnisAttackRequests();
+        g._consumeIgnisAttackRequests(performance.now());
         return g.player.health;
       };
       const hitAngle = (deg, kind) => {
@@ -1089,7 +1089,7 @@ test.describe('焰魔（Ignis）Tier 4', () => {
         g.player.health = 20;
         const e = g.entities.get(id);
         e.state = { ...e.state, yaw: 0, attackRequest: { at: [ex, ey, ez], yaw: 0, kind } };
-        g._consumeIgnisAttackRequests();
+        g._consumeIgnisAttackRequests(performance.now());
         return g.player.health;
       };
       const out = {
