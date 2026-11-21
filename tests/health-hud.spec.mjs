@@ -26,11 +26,11 @@ async function boot(page, query = '') {
   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
 }
 
-/** 等血心的 10 张图全部加载完成（异步解码；截图断言的前提） */
+/** 等血心的 20 张图全部加载完成（异步解码；截图断言的前提） */
 async function waitHeartsLoaded(page) {
   await page.waitForFunction(() => {
     const imgs = document.querySelectorAll('#mc-health img');
-    return imgs.length === 10 && [...imgs].every((i) => i.complete && i.naturalWidth === 9);
+    return imgs.length === 20 && [...imgs].every((i) => i.complete && i.naturalWidth === 9);
   }, null, { timeout: 15_000 });
 }
 
@@ -38,7 +38,7 @@ async function waitHeartsLoaded(page) {
 const VISIBLE_NUMBERS = () => [...document.querySelectorAll('#mc-damage-numbers div')]
   .filter((d) => d.style.display !== 'none').map((d) => d.textContent);
 
-test('玩家血心：10 颗红心真的画出来（像素断言）且紧挨性能看板右侧', async ({ page }) => {
+test('玩家血心：20 颗红心分成两排画出来（像素断言）且紧挨性能看板右侧', async ({ page }) => {
   test.setTimeout(180_000);
   await boot(page);
   await waitHeartsLoaded(page);
@@ -48,12 +48,22 @@ test('玩家血心：10 颗红心真的画出来（像素断言）且紧挨性�
     const health = document.getElementById('mc-health');
     const perf = g._hud.el.getBoundingClientRect();
     const hr = health.getBoundingClientRect();
+    const rows = ['#mc-health-row0', '#mc-health-row1'].map((s) => {
+      const node = document.querySelector(s);
+      if (!node) return null;
+      const r = node.getBoundingClientRect();
+      return {
+        top: r.top, left: r.left, width: r.width,
+        count: node.querySelectorAll('img').length,
+      };
+    });
     const imgs = [...health.querySelectorAll('img')];
     return {
       count: imgs.length,
       srcs: imgs.map((i) => i.src.split('/').pop()),
       sizes: imgs.map((i) => [i.getBoundingClientRect().width, i.getBoundingClientRect().height]),
       pixelated: imgs.every((i) => getComputedStyle(i).imageRendering === 'pixelated'),
+      rows,
       zIndex: getComputedStyle(health).zIndex,
       gap: hr.left - perf.right,
       top: hr.top, perfTop: perf.top,
@@ -61,14 +71,27 @@ test('玩家血心：10 颗红心真的画出来（像素断言）且紧挨性�
     };
   });
 
-  expect(m.count, '必须恰好 10 颗心').toBe(10);
-  expect(m.srcs, '满血 = 10 张红心图').toEqual(Array(10).fill('heart.png'));
-  expect(m.hudHearts, 'HUD 内部状态 = 全满').toEqual(Array(10).fill('full'));
+  expect(m.count, '必须恰好 20 颗心').toBe(20);
+  expect(m.srcs, '满血 = 20 张红心图').toEqual(Array(20).fill('heart.png'));
+  expect(m.hudHearts, 'HUD 内部状态 = 全满 20 颗').toEqual(Array(20).fill('full'));
   for (const [w, h] of m.sizes) {
     expect(w, '显示宽 = 18px（9px 源图 × 2 整数倍）').toBeCloseTo(18, 0);
     expect(h, '显示高 = 18px').toBeCloseTo(18, 0);
   }
   expect(m.pixelated, '像素风放大必须 pixelated（否则描边发糊）').toBe(true);
+
+  // ---- 两排布局（唯一能抓住「把 20 颗画成一排」的判据）----
+  // 单排 20 颗 = 360px 宽，屏宽 1280 时不会溢出，像素计数也照样过 400
+  // ⇒ 只有几何位置能区分「两排」与「单排」。
+  expect(m.rows[0], '第一排容器必须存在（#mc-health-row0）').not.toBeNull();
+  expect(m.rows[1], '第二排容器必须存在（#mc-health-row1）').not.toBeNull();
+  expect(m.rows.map((r) => r.count), '两排各 10 颗').toEqual([10, 10]);
+  expect(m.rows[1].top - m.rows[0].top, '第二排在第一条正下方，行距 = 心高 18px')
+    .toBeCloseTo(18, 0);
+  expect(m.rows[0].left, '两排左缘对齐').toBeCloseTo(m.rows[1].left, 0);
+  expect(m.rows[0].width, '每排宽 = 10 × 18px').toBeCloseTo(180, 0);
+  expect(m.rows[1].width, '每排宽 = 10 × 18px').toBeCloseTo(180, 0);
+
   expect(m.zIndex, '血心与性能/坐标面板同层（50）').toBe('50');
   // 「紧挨性能看板右侧」：左缘 = 看板右缘 + 8px 间距（perf-hud left:8 + 宽 330 + 8 = 346）
   expect(m.gap, '血心左缘与看板右缘的间距应为 8px').toBeGreaterThan(6);
@@ -76,8 +99,8 @@ test('玩家血心：10 颗红心真的画出来（像素断言）且紧挨性�
   expect(m.top, '与看板同高（top:8px）').toBeCloseTo(m.perfTop, 0);
 
   // ---- 像素断言：心形真的画出来了（404 → 全透明，DOM 断言抓不到）----
-  // 素材是红心（255,19,19）+ 黑描边：数裁剪区内的偏红像素。10 颗心 × 每颗 ~26 红像素
-  // × 4 倍面积（2× 放大）≈ 1000+，取 200 作下界（留足世界背景偶然红色的余量）。
+  // 素材是红心（255,19,19）+ 黑描边：数裁剪区内的偏红像素。20 颗心 × 每颗 ~26 红像素
+  // × 4 倍面积（2× 放大）≈ 2000+，取 400 作下界（心数翻倍，下界跟着翻倍）。
   const hr = await page.evaluate(() => {
     const r = document.getElementById('mc-health').getBoundingClientRect();
     return { x: Math.floor(r.left), y: Math.floor(r.top), w: Math.ceil(r.width), h: Math.ceil(r.height) };
@@ -90,14 +113,14 @@ test('玩家血心：10 颗红心真的画出来（像素断言）且紧挨性�
       if (png.data[i] > 150 && png.data[i + 1] < 90 && png.data[i + 2] < 90) red += 1;
     }
   }
-  expect(red, `血心行内偏红像素必须足够多（实测 ${red}）—— 0 说明图片 404 或没画`).toBeGreaterThan(200);
+  expect(red, `血心区偏红像素必须足够多（实测 ${red}）—— 0 说明图片 404 或没画`).toBeGreaterThan(400);
 });
 
-test('玩家血量当前恒为满血 20（掉血逻辑未接入，用户后续添加）', async ({ page }) => {
+test('玩家血量当前恒为满血 40（v3.29 血量翻倍）', async ({ page }) => {
   test.setTimeout(180_000);
   await boot(page);
   const hp = await page.evaluate(() => window.__MC_GAME__.player.health);
-  expect(hp, '当前阶段血量权威 = 满血 20').toBe(20);
+  expect(hp, '血量权威 = 满血 40').toBe(40);
 });
 
 test('丧尸受击：头顶弹「剩余血量」数字，致命一击显示 0', async ({ page }) => {
