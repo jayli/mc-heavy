@@ -220,25 +220,28 @@ test('M2 验收：海面可见 + 跟随相机 + 帧率达标 + 水色深蓝不�
     .toBeLessThan(0.02);
 
   // ---- ② 亮度双侧带 ----------------
-  // 实测五点：mc-lite 183 / v1.82 灰蓝 148 / **现行 123** / v1.83 深青绿 92 / 基色归黑 80。
-  // 上界 145：距现行 22、距 v1.82 的 148 只有 3 → 改取 **140**（距现行 17、距 148 为 8）；
-  // 下界 105：距现行 18、距 v1.83 的 92 为 13、距基色归黑的 80 为 25。
+  // v3.28 重标（用户 2026-11-21 裁定：倒影强度 0.60→0.80、视角影响 0.45→0.15）：
+  // 本用例机位（正午、最深处海面、未切风格序列）实测 luma **106**、G−R 18、B−G 23。
+  // 旧带下界 105 / 上界 140 未越，但 G−R 下界 24 已不成立（原因见 ③）。
+  // 亮度带改动只为对齐新实测：上界拦 v1.83 深青绿的 **137**，下界拦「压成脏水」。
   const near = nearWater(withPlane);
   expect(near, '近处水面必须能采到样（画面下部有水体像素）').not.toBeNull();
-  expect(near.luma, `近处水面不得泛白（mc-lite 183 / v1.82 灰蓝 148），`
-    + `实测 ${near.luma} rgb=${near.rgb.join('/')}`).toBeLessThan(140);
+  expect(near.luma, `近处水面不得泛白（mc-lite 183 / v1.82 灰蓝 148 / v1.83 深青绿 137），`
+    + `实测 ${near.luma} rgb=${near.rgb.join('/')}`).toBeLessThan(136);
   expect(near.luma, `但也不得暗成脏水（v1.83 深青绿 92 / 基色归黑 80），实测 ${near.luma}`)
-    .toBeGreaterThan(105);
+    .toBeGreaterThan(95);
 
-  // ---- ③ 色相：海蓝（三个条件，见文件头「为什么 ③ 要三个条件」）----
-  // 实测：现行 G−R 45 / B−G 33；v1.83 深青绿 32 / **2**（被 B−G 下界拦住）；
-  // mc-lite 23（被 G−R 下界拦住）；基色归黑 14 / 10（两个都拦住）。
-  expect(near.gMinusR, `海面的 G 必须明显高于 R（参照图 +40），实测 rgb=${near.rgb.join('/')} `
-    + `G−R=${near.gMinusR}`).toBeGreaterThanOrEqual(24);
+  // ---- ③ 色相：亮蓝、非黑、非青绿（v3.28 把主判据从 G−R 移到 B−G 双侧）----
+  // ⚠️ 原因（实测，不是口味）：倒影强度 0.80 后水面含更多天空色，G−R 在三种状态下
+  // 互相穿插（现行 18 / 基色归黑 15 / v1.83 17 / mc-lite 24）⇒ **G−R 已失去判别力**。
+  // B−G 则完全分开：现行 **23** / 基色归黑 18 / v1.83 深青绿 15 / mc-lite 42。
+  // 取 [20, 33]：距现行 3、距两类缺陷态最近点 2，两侧都不贴线。
+  expect(near.gMinusR, `海面的 G 必须仍高于 R（参照图 +40；新默认实测 18），`
+    + `实测 rgb=${near.rgb.join('/')} G−R=${near.gMinusR}`).toBeGreaterThan(8);
   expect(near.bMinusG, `海面必须偏蓝（B 高于 G）（参照图 +17），实测 rgb=${near.rgb.join('/')} `
-    + `B−G=${near.bMinusG}`).toBeGreaterThanOrEqual(8);
-  expect(near.bMinusG, `但不得紫得发假（v1.83 之前的紫蓝态 B−G 达 40），实测 B−G=${near.bMinusG}`)
-    .toBeLessThanOrEqual(45);
+    + `B−G=${near.bMinusG}`).toBeGreaterThan(20);
+  expect(near.bMinusG, `但不得紫得发假（v1.83 之前的紫蓝态 B−G 达 40+，mc-lite 原实现 42），`
+    + `实测 B−G=${near.bMinusG}`).toBeLessThan(33);
 
   console.log('WATER VISUAL: ' + JSON.stringify({
     near, animDiff: +animDiff.toFixed(3), signal: +signal.toFixed(3), noise: +noise.toFixed(3),
@@ -307,13 +310,27 @@ test('v2.1：傍晚与夜晚的水面亮度随环境风格变暗（晨午零回�
   }
   console.log('WATER STYLE: ' + JSON.stringify(readings));
 
-  // ① 晨午零回归：必须仍在既有色阶带内（v1.85 实测 116）
-  for (const style of ['morning', 'noon']) {
+  // ① 晨午零回归：必须仍在既有色阶带内。
+  //
+  // ⚠️ **v3.28 重标定（用户 2026-11-21 裁定：倒影强度 0.60→0.80、视角影响 0.45→0.15）**：
+  // 旧带是 (108,124)（v1.85 基准 116 ±8），新默认实测 morning **130** / noon **99**。
+  // 归因已用**单变量对照**锁死：固定掩膜均值（避众数峰跳档）实测
+  //   0.60/0.45 → luma 129.4 G−R 29.0；0.80/0.45 → luma 129.4 G−R 25.4；
+  //   0.60/0.15 → luma 129.3 G−R 25.0；0.80/0.15 → luma 128.9 G−R 20.2。
+  // ⇒ 亮度几乎不动，**被拉走的是色相**（反射天空占比愈高，水面愈偏天空的灰蓝）。
+  // 新带取「实测 ±6 / ±7」并仍在**两侧**钉住：上方拦住 v1.83 深青绿的 noon **137**，
+  // 下方拦住「压成死水」那一类。⚠️ 这不是无底线放宽 —— 判别力改由 ④ 的 B−G 双侧承担
+  //（实测：现行 21~26 / 基色归黑 ≤18 / mc-lite 原实现 ≥42，三种状态完全分开）。
+  const MORNING_BAND = [124, 137];
+  const NOON_BAND = [92, 106];
+  for (const [style, band] of [['morning', MORNING_BAND], ['noon', NOON_BAND]]) {
     expect(readings[style], `${style} 必须能采到水面样本`).not.toBeNull();
-    expect(readings[style].luma, `${style} 的水面亮度必须保持不变（v1.85 基准 116，允许 ±8）`)
-      .toBeGreaterThan(108);
-    expect(readings[style].luma, `${style} 的水面亮度必须保持不变（v1.85 基准 116，允许 ±8）`)
-      .toBeLessThan(124);
+    expect(readings[style].luma,
+      `${style} 的水面亮度必须落在 v3.28 重标带 [${band[0]}, ${band[1]}]（实测新默认 morning 130 / noon 99）`)
+      .toBeGreaterThan(band[0]);
+    expect(readings[style].luma,
+      `${style} 的水面亮度必须落在 v3.28 重标带 [${band[0]}, ${band[1]}]`)
+      .toBeLessThan(band[1]);
   }
 
   // ② 傍晚/夜晚显著变暗 —— **v2.3 重标定**（用户 2026-10-28 第二轮：「依然过于明亮」）
@@ -331,29 +348,43 @@ test('v2.1：傍晚与夜晚的水面亮度随环境风格变暗（晨午零回�
     .toBeLessThan(100);
 
   // ③ 但不得压成死水（上一条只看上界会被“全黑”骗过 —— v1.45 的教训）
-  //    **下界必须同时钉**：现测 dusk 96 / night 84；取 80/70 留标定漂移余量，
-  //    同时离「一潭墨」（<40）很远 —— 波纹明暗差与海蓝色相都要还能看见。
+  //    **下界必须同时钉**：实测 dusk 90 / night 47。
   //
-  // ⚠️ **v3.17 重标定 night 下界 70 → 55**（用户 2026-11-18 裁定）：
-  // 倒影默认值改为「吸收 40% / 强度 60%」后，夜里的**暗夜空倒影**会把水面拉暗，
-  // 实测 night luma **62**（旧下界要求 `>70`）。
-  // 实测强度扇扫（众数峰 luma）证明这是参数本身的结果、不是实现缺陷：
-  //   night strength 0→85 / 0.2→77 / 0.4→68 / 0.6→61。
-  // 用户裁定「就调参数、不为它加新机制」。
-  // ⚠️ **仍不是无底线放宽**：55 距「一潭墨」（<40）径 15，波纹明暗差与海蓝色相仍可辨；
-  // 该值的作用仍是拓「纯黑/死水」那个方向，只是不再卡在旧参数的 1 分误差上。
+  // ⚠️ **v3.17 重标定 night 下界 70 → 55**（用户 2026-11-18 裁定）：倒影默认
+  // 「吸收 40% / 强度 60%」后，夜里的**暗夜空倒影**会把水面拉暗，实测 night luma 62。
+  // ⚠️ **v3.28 再次重标 55 → 40**（用户 2026-11-21 裁定强度 60% → 80%）：
+  // 同一个机制再走一步 —— 倒影占比从 60% 升到 80%，而夜里的反射 RT 本身就是暗夜空，
+  // 实测 night **47**。判定它**不是死水**的依据是色相而非亮度：实测 rgb **28/50/76**
+  //（B−G 26、G−R 22，与白天的 24/19 同量级海蓝倾向），而真正的死水是接近中性灰的；
+  // 且 ④ 的 B−G 双侧仍在四个风格上逐个钉住。故本下界仍只负责拓「直接压黑」那个方向：
+  // 基色归黑的实测是 33 / 20 / 51（远在下界之下）。
   expect(readings.dusk.luma, `傍晚不得压成死水，实测 ${readings.dusk.luma}`)
     .toBeGreaterThan(80);
   expect(readings.night.luma, `夜晚不得压成死水（波纹明暗差会消失），实测 ${readings.night.luma}`)
-    .toBeGreaterThan(55);
+    .toBeGreaterThan(40);
 
-  // ④ 色相不变：四风格仍须是海蓝（只调亮度，不改色相）
+  // ④ 色相不变：四风格仍须是「亮蓝、非黑、非青绿」（只调亮度，不改色相）
+  //
+  // ⚠️⚠️ **v3.28 把主判据从 G−R 移到 B−G 双侧**（新实测逼出来的，不是随意换）：
+  // 倒影强度抬到 0.80 后水面含更多天空色，**G−R 在三种状态下互相穿插（正常 16~22、
+  // 基色归黑 14~15、mc-lite 24~31）⇒ 它已失去判别力**（继续用 G−R≥24 会把正常态判红，
+  // 改成 G−R≥16 又会把「基色归黑」放行）。
+  // 实测（同口径、每种状态连跑 3 次读数逐位相同）：
+  //   | 状态 | morning B−G | noon B−G | dusk B−G | night B−G |
+  //   | 现行 | 21 | 24 | 26 | 26 |
+  //   | 基色归黑 | 18 | 18 | 18 | 16 |
+  //   | v1.83 深青绿 | 16 | 15 | 15 | 11 |
+  //   | mc-lite 原实现 | 45 | 42 | 45 | 48 |
+  // ⇒ 取 [20, 33]：距现行最近点 1、距两类缺陷态最近点 2，两侧都不贴线。
+  // G 仍须高于 R（只保留为**下界**，拓「紫蓝」方向：R > G 时直接红）。
   for (const style of ['morning', 'noon', 'dusk', 'night']) {
     const r = readings[style];
-    expect(r.gMinusR, `${style} 的水面必须仍是海蓝（G 明显高于 R），实测 rgb=${r.rgb.join('/')}`)
-      .toBeGreaterThanOrEqual(24);
-    expect(r.bMinusG, `${style} 的水面必须仍偏蓝，实测 rgb=${r.rgb.join('/')} B−G=${r.bMinusG}`)
-      .toBeGreaterThanOrEqual(8);
+    expect(r.gMinusR, `${style} 的水面 G 必须仍高于 R（参照图 +40；新默认实测 16~22），`
+      + `实测 rgb=${r.rgb.join('/')} G−R=${r.gMinusR}`).toBeGreaterThan(8);
+    expect(r.bMinusG, `${style} 的水面必须仍偏蓝（B 高于 G），但不能紫得发假：`
+      + `实测 rgb=${r.rgb.join('/')} B−G=${r.bMinusG}`).toBeGreaterThan(20);
+    expect(r.bMinusG, `${style} 的水面不得紫蓝（v1.83 之前的紫蓝态达 40+），`
+      + `实测 rgb=${r.rgb.join('/')} B−G=${r.bMinusG}`).toBeLessThan(33);
   }
 });
 

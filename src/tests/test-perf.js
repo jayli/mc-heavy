@@ -72,19 +72,31 @@ test('PerfHUD: statsLog 开 → 2s 节奏 console.log 世界数据', () => {
  *
  * 钉的不变式：① 首行 fps 与按钮在折叠后仍在（它不能被一起收掉 —— 收起的意义是留视野，
  * 不是隐藏 fps）；② 折叠区的行确实让出去了（max-height 归 0，而不是仅视觉透明）；
- * ③ 启动态恒为展开且按钮文案与状态一致（含 `aria-expanded`，读屏与自测都靠它）。
+ * ③ **启动态恒为收起**（用户 2026-11-21 裁定，推翻 v1.79 的「启动态恒展开」）且
+ * 按钮文案/`aria-expanded` 与状态一致（读屏与自测都靠它）。
  * 不断言动画时长/缓动 —— 那是观感，肉眼可判。
  */
-test('PerfHUD: 折叠只留首行、展开恢复全部行，启动态恒展开', () => {
+test('PerfHUD: 折叠只留首行、展开恢复全部行，启动态恒收起', () => {
   setDebugFlags({ worldStats: true, statsLog: false });
   const container = document.createElement('div');
   const hud = new PerfHUD(new PerfMonitor(), container, () => makeFakeStats());
   hud.update(250); // 首帧刷一次，body 才有多行内容
 
-  assertEqual(hud._collapsed, false, '启动态必须展开（收起状态不持久化）');
+  assertEqual(hud._collapsed, true, '启动态必须收起（用户 2026-11-21 裁定；收起状态仍不持久化）');
+  assertEqual(hud.btn.textContent, '[+]', '启动态按钮显示 [+]');
+  assertEqual(hud.btn.getAttribute('aria-expanded'), 'false');
+  assertTrue(hud.bodyEl.textContent.includes('frame p50'), '帧时分位行仍要在折叠区内（只是被收起来）');
+  // 启动态必须**真的**让出高度：构造期不播动画（animate=false）⇒ 直接落 0px
+  assertEqual(hud.bodyEl.style.maxHeight, '0px', '启动收起时折叠区必须真正让出高度（不是仅透明）');
+  assertEqual(hud.helpEl.style.maxHeight, '0px', '启动收起时操作说明同步折叠');
+  assertTrue(hud.fpsEl.textContent.startsWith('fps '), `启动态首行就显示 fps=${hud.fpsEl.textContent}`);
+
+  // 展开 → 全部行回来
+  hud.setCollapsed(false);
   assertEqual(hud.btn.textContent, '[-]', '展开态按钮显示 [-]');
   assertEqual(hud.btn.getAttribute('aria-expanded'), 'true');
-  assertTrue(hud.bodyEl.textContent.includes('frame p50'), '展开态折叠区有帧时分位行');
+  assertTrue(hud.bodyEl.style.maxHeight.endsWith('px'), '展开从实测像素起步（不能从 none 起过渡）');
+  assertTrue(hud.helpEl.style.maxHeight.endsWith('px'), '操作说明展开同样从实测像素起步');
 
   hud.setCollapsed(true);
   assertEqual(hud._collapsed, true);

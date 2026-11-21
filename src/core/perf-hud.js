@@ -116,8 +116,10 @@ export class PerfHUD {
     this._lastUpdate = 0;
     this._lastWorldUpdate = -2000; // 首帧即刷一次
     this._worldLines = [];
-    // 启动态恒为展开（用户裁定：收起状态**不持久化**，刷新/重开存档都恢复完整面板）
-    this._collapsed = false;
+    // 启动态**默认收起**（用户 2026-11-21 裁定，推翻 v1.79 的「每次启动都展开」）：
+    // 进游戏先给画面留视野，需要数据时点首行右侧的 `[+]` 展开。
+    // 折叠状态仍**不持久化**（与 v1.79 同口径）：刷新/重开存档一律回到收起。
+    this._collapsed = true;
     this._applyCollapsedState();
   }
 

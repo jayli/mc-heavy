@@ -15,9 +15,8 @@
 // 快捷栏在底部居中，本坞靠右且底边留 12px —— 1280 宽下实测右缘不与快捷栏相交。
 //
 // ## 折叠态
-// 标题栏可点击收起（只留标题条），与性能面板的 `[-]/[+]` 同手法。
-// **不持久化**（每次启动都展开，与性能面板同口径）—— 它是调试/调参入口，
-// 玩家收起来只是为了临时看画面，不该跨会话记住。
+// 标题栏可点击收起（只留标题条）。与性能面板用同一套状态语义：**默认折起、不持久化**
+// —— 它是调试/调参入口，展开会遮住右下角水面，玩家只在调参时临时展开。
 import {
   REFLECT_STRENGTH, REFLECT_DISTORT, REFLECT_MIP_LEVEL, REFLECT_REFRESH_EVERY,
   REFLECT_HEIGHT_FULL, REFLECT_HEIGHT_ZERO, REFLECT_GRAZE, REFLECT_RESOLUTION_SCALE, REFLECT_TINT,
