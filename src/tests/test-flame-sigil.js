@@ -20,6 +20,7 @@ import {
   FLAME_SIGIL, sigilSpawnPoints, sigilDelayMs, sigilRotationRad, sigilOpacityAt,
   FlameSigilRenderer,
 } from '../render/flame-sigil.js';
+import { IGNIS_AOE, IGNIS_TYPE } from '../entities/ignis/ignis-config.js';
 
 /** 浮点比较（经 sin/cos 后无法精确等于字面量）。同 `test-zombies.js` 的同名局部工具。 */
 function assertClose(actual, expected, tolerance, message = '') {
@@ -335,5 +336,119 @@ test('flame sigil: 满亮段的实例色是白（不整体压暗）', () => {
     assertClose(c.b, 1, 1e-6);
   } finally {
     r.dispose();
+  }
+});
+
+// ==================== 装配层：法阵对玩家的 1 格伤害（v3.29）====================
+//
+// 用户 2026-11-21：「法阵的图案如果在玩家脚底生成，玩家也掉 1 格血」。
+//
+// 用 `Object.create(Game.prototype)` 造壳（同 `test-fire-ring.js` / `test-spike-fx.js` 的既有手法）：
+// `_consumeIgnisFxRequests` 只碰 world / ignises / entities / fireRing / flameSigil / spikeFx / player，
+// 不需要 DOM / WebGPU。
+
+/**
+ * 装配层壳：法阵伤害用例专用。
+ * 玩家 AABB 宽 0.6（半宽 0.3）、高 1.8，与 `PlayerPhysics` 同口径。
+ */
+function sigilGameFixture({ playerPos, groundY = 10, flameSigil = true } = {}) {
+  const game = Object.create(Game.prototype);
+  const isSolid = (_x, y, _z) => y < groundY;
+  game.world = { isSolid, getBlockId: (x, y, z) => (isSolid(x, y, z) ? 1 : 0) };
+  game.registry = { nameOf: () => 'stone' };
+  const damages = [];
+  game._damagePlayer = (n) => { damages.push(n); return 40 - n; };
+  const hw = 0.3;
+  game.player = {
+    physics: {
+      pos: { x: playerPos[0], y: playerPos[1], z: playerPos[2] },
+      overlapsBlock: (x, y, z) => {
+        const [px, py, pz] = playerPos;
+        return px - hw < x + 1 && px + hw > x
+          && py < y + 1 && py + 1.8 > y
+          && pz - hw < z + 1 && pz + hw > z;
+      },
+    },
+  };
+  const spawned = [];
+  game.fireRing = { spawn: () => {} };
+  game.spikeFx = { spawn: () => {} };
+  // ⚠️ flameSigil: false 模拟 flame_sigil.png 加载失败（渲染器为 null 是允许的降级）
+  game.flameSigil = flameSigil ? { spawn: (pts) => spawned.push(...pts) } : null;
+  const state = { attackFxRequest: null };
+  game.ignises = { activeEntities: () => [{ id: 'ignis:t:0', state }] };
+  game.entities = { count: (t) => (t === IGNIS_TYPE ? 1 : 0) };
+  return { game, state, damages, spawned };
+}
+
+test('法阵伤害: 玩家站在首段图案中心 ⇒ 扣 1 格（走 IGNIS_AOE.damage）', () => {
+  // 焰魔在 (0.5, 10, 0.5)、yaw=0 ⇒ 正前方 = z 递减
+  // 首段 firstOffset=0 ⇒ 落点在焰魔脚底 (0.5, 0.5)，半宽 2.0 ⇒ z ∈ [-1.5, 2.5]
+  const f = sigilGameFixture({ playerPos: [0.5, 10, 0.5] });
+  f.state.attackFxRequest = { at: [0.5, 10, 0.5], yaw: 0, kind: 'shieldBash' };
+  f.game._consumeIgnisFxRequests(1000);
+  assertDeepEqual(f.damages, [IGNIS_AOE.damage],
+    `首段压到玩家须扣 1 格，实得 ${JSON.stringify(f.damages)}`);
+  assertTrue(f.spawned.length > 0, '前置：法阵确实生成了');
+});
+
+test('法阵伤害: 玩家横向偏离到足迹外 ⇒ 不扣', () => {
+  // 各段的 x 恒 = 焰魔脚底 x = 0.5，半宽 2.0 ⇒ x ∈ [-1.5, 2.5]
+  // 玩家 x = 6.0 ⇒ 远离所有段（沿 X 偏出去，因为沿 Z 偏会撞上第 2/3/4 段）
+  const f = sigilGameFixture({ playerPos: [6.0, 10, 0.5] });
+  f.state.attackFxRequest = { at: [0.5, 10, 0.5], yaw: 0, kind: 'shieldBash' };
+  f.game._consumeIgnisFxRequests(1000);
+  assertDeepEqual(f.damages, [], `足迹外不得扣血，实得 ${JSON.stringify(f.damages)}`);
+  assertTrue(f.spawned.length > 0, '前置：法阵仍生成了（只是玩家不在里面）');
+});
+
+test('法阵伤害: 两段同时压到玩家也只扣一次（break，不是每段各扣）', () => {
+  // ⚠️⚠️ **构型必须真的有多段重叠，否则这条用例零判别力**（实测拓到）：
+  // 玩家站在**首段中心**（z=0.5）时只有段 0 重叠（段 1 的区间 [−5.75,−1.75] 不含 0.5）
+  // ⇒ 把 `break` 删掉也照样只扣一次 ⇒ 负向验证不会红。
+  //
+  // 正解：站到段 0 与段 1 的**间隙中点**。段 0 区间 [−1.5, 2.5]、段 1 区间 [−5.75, −1.75]
+  // ⇒ 间隙仅 0.25 格（[−1.75, −1.5]），而玩家 AABB 宽 0.6 ⇒ 站间隙中点 z=−1.625
+  // 时**必同时压住两段**（这就是「相邻段边隙 < 玩家半宽」那个事实的另一个后果）。
+  const f = sigilGameFixture({ playerPos: [0.5, 10, -1.625] });
+  f.state.attackFxRequest = { at: [0.5, 10, 0.5], yaw: 0, kind: 'shieldBash' };
+  f.game._consumeIgnisFxRequests(1000);
+  assertTrue(f.spawned.length >= 4, `前置：至少 4 段法阵生成，实得 ${f.spawned.length}`);
+  assertDeepEqual(f.damages, [IGNIS_AOE.damage],
+    `多段重叠仍只扣一次，实得 ${JSON.stringify(f.damages)}`);
+});
+
+test('法阵伤害: 扫不到地面（未加载列）⇒ 不扣，也不生成法阵', () => {
+  const f = sigilGameFixture({ playerPos: [0.5, 10, 0.5], groundY: -100 });   // 全 air
+  f.state.attackFxRequest = { at: [0.5, 10, 0.5], yaw: 0, kind: 'shieldBash' };
+  f.game._consumeIgnisFxRequests(1000);
+  assertEqual(f.spawned.length, 0, '未加载列不生成法阵');
+  assertDeepEqual(f.damages, [], '未加载列不得扣血（回落 y 会在空中判伤害）');
+});
+
+test('法阵伤害: 法阵渲染器为 null（贴图加载失败）时伤害仍然生效', () => {
+  // ⚠️ 这是审稿抓到的静默失效：伤害若写在 `!this.flameSigil` 门控内，
+  // flame_sigil.png 加载失败 ⇒ 观感没了、玩法伤害也静默没了，
+  // 而单测用 flameSigil: null 造壳还会把它读成「不扣血 = 正常」。
+  const f = sigilGameFixture({ playerPos: [0.5, 10, 0.5], flameSigil: false });
+  f.state.attackFxRequest = { at: [0.5, 10, 0.5], yaw: 0, kind: 'shieldBash' };
+  f.game._consumeIgnisFxRequests(1000);
+  assertEqual(f.game.flameSigil, null, '前置：渲染器缺席');
+  assertDeepEqual(f.damages, [IGNIS_AOE.damage], '伤害不得挂在渲染器存在性上');
+});
+
+test('法阵伤害: 旋斩（spin）也铺法阵并扣 1 格（与举盾砸击同源）', () => {
+  const f = sigilGameFixture({ playerPos: [0.5, 10, 0.5] });
+  f.state.attackFxRequest = { at: [0.5, 10, 0.5], yaw: 0, kind: 'spin' };
+  f.game._consumeIgnisFxRequests(1000);
+  assertDeepEqual(f.damages, [IGNIS_AOE.damage], 'spin 也扣 1 格');
+});
+
+test('法阵伤害: 另两招（swing / shieldSmash）不走法阵判定', () => {
+  for (const kind of ['swing', 'shieldSmash']) {
+    const f = sigilGameFixture({ playerPos: [0.5, 10, 0.5] });
+    f.state.attackFxRequest = { at: [0.5, 10, 0.5], yaw: 0, kind };
+    f.game._consumeIgnisFxRequests(1000);
+    assertDeepEqual(f.damages, [], `${kind} 不得走法阵判定`);
   }
 });

@@ -55,6 +55,7 @@ const UI = [
   'inventory-tooltip',
   'crosshair',
   'health-hud',
+  'damage-flash',       // v3.29 受伤红闪（Tier 4 像素：四周 40px 带 vs 中心区差分）
   'minimap',
   'settings-resolution',
   'about-tab',          // v3.25 设置弹窗两 Tab（尺寸不变 / 确定按钮在内容之外 / 关于页配图）
@@ -178,7 +179,7 @@ export const UNIT_NODE_SAFE = [
   'test-arena-gen.js', 'test-arena.js', 'test-azalea-trees-gen.js', 'test-azalea-trees.js',
   'test-block-color.js', 'test-block-hit-fx.js', 'test-boss-agent.js', 'test-boss-hit-sound.js',
   'test-boss-map.js', 'test-budget.js', 'test-burning-arena-gen.js', 'test-bush-grass-gen.js',
-  'test-bush-grass.js', 'test-caves.js', 'test-chunk-column.js', 'test-cinder-fall.js', 'test-cinder-render.js', 'test-daynight.js',
+  'test-bush-grass.js', 'test-caves.js', 'test-chunk-column.js', 'test-cinder-fall.js', 'test-cinder-render.js', 'test-damage-flash.js', 'test-daynight.js',
   'test-dragon-bake.js', 'test-dragon-boss-agent.js', 'test-dragon-facing.js', 'test-dragon-render.js',
   'test-dragon-system.js', 'test-entity-manager.js', 'test-explosion-sprite.js', 'test-explosion.js',
   'test-fireball-render.js', 'test-fireball.js', 'test-fire-ring.js', 'test-flame-sigil.js', 'test-fog-sky-direction.js',

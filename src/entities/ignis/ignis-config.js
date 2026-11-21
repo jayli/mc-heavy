@@ -353,6 +353,40 @@ export const IGNIS_ATTACKS = Object.freeze({
 });
 
 /**
+ * 焰魔的**小额 AoE 伤害**（地面法阵 + 剑阵尖刺）—— 唯一权威（用户 2026-11-21）。
+ *
+ * 用户原话：「剑阵攻击的剑阵刺到玩家，玩家也掉 1 格血，法阵的图案如果在玩家脚底生成，
+ * 玩家也掉 1 格血」。
+ *
+ * | 消费方 | 判定 | 数值 |
+ * |---|---|---|
+ * | 地面火焰法阵（`shieldBash` / `spin`） | 玩家 AABB 与落点 ±`sigilHalfExtent` 的 XZ 矩形相交 | `damage` |
+ * | 剑阵尖刺（`spikeSlash`） | 玩家 AABB 与任一刺所在格重叠 | `damage` |
+ *
+ * ⚠️ **与 `IGNIS.attackDamage`（14）是两份独立权威**：挥砍 / 旋斩 / 头部撞击 / 举盾砸击 /
+ * 剑阵的刀砍仍扣 14，只有这两处「碰到就掉」的小额伤害是 1（用户本轮择「新增三处各 1 格」，
+ * 而非「所有攻击统一 1 格」）。
+ *
+ * ⚠️ **扩散火圈（`render/fire-ring-*`）不读本表** —— 用户 2026-11-21 明确「为了简单起见，
+ * 火圈扫到玩家不掉血了，火圈纯粹是一个视觉特效来对待」。
+ *
+ * ⚠️⚠️ **`sigilHalfExtent` 必须等于 `FLAME_SIGIL.radius`**（`render/flame-sigil.js` 里
+ * 「画多大」的那个数）。`src/entities/` 在 `tools/check-architecture.mjs` 的 `ISOMORPHIC_DIRS` 里
+ * ⇒ 不得 import `render/`，等式只能由 `test-ignis-system.js` 的单测跳层钉住。
+ * 不钉它的形态：有人把 `FLAME_SIGIL.radius` 改成 3（画面 6×6）而判定仍 4×4，
+ * 所有数值断言全绿，只有「看着踩在图案上却不扣血」的手感抱怨。
+ *
+ * ⚠️ `sigilHalfExtent` 是**半宽**：法阵画出来是 `radius` 乘基准 `PlaneGeometry(2,2)`
+ * ⇒ 实际边长 = `2 × radius` = 4 格。
+ */
+export const IGNIS_AOE = Object.freeze({
+  /** 两处小额 AoE 的伤害（格）—— 「碰到就掉 1 格」 */
+  damage: 1,
+  /** 法阵足迹的半宽（格）= 4×4 格的一半，等于 `FLAME_SIGIL.radius` */
+  sigilHalfExtent: 2.0,
+});
+
+/**
  * 尖刺攻击的**尖刺与双刀参数**（v3.06）—— 唯一权威（红线 1）。
  *
  * 与 `IGNIS_ATTACKS.spikeSlash` 分工：那张表是「命中判据与动画时长」（五招同形状），
@@ -394,11 +428,15 @@ export const IGNIS_SPIKE = Object.freeze({
    */
   firstOffset: 2,
   /**
-   * 尖刺伤害（格）—— 用户草图「伤害 18 点」。
-   * ⚠️ **与 `IGNIS.attackDamage`（14）是两份独立权威**：用户裁定「只尖刺 18，刀砍仍 14」。
-   * 玩家站在尖刺格内会吃 14 + 18 = 32，按既有「只扣血不死亡」钳到 1。
+   * 尖刺伤害（格）—— **派生自 `IGNIS_AOE.damage`**（红线 1，不在这里写第二份字面量）。
+   *
+   * 用户 2026-11-21：「剑阵攻击的剑阵刺到玩家，玩家也掉 1 格血」。
+   *
+   * ⚠️ **本条推翻了同日上午草图里的「伤害 18 点」**：草图给的是 18，但同一天稍后用户
+   * 明确要求「刺到掉 1 格血」⇒ 以最新指令为准。从 18 降到 1 后，一次完整尖刺攻击的
+   * 总伤害 = 刀砍 14 + 刺 1 = 15（玩家 40 格血可承受 2 次完整尖刺攻击）。
    */
-  damage: 18,
+  damage: IGNIS_AOE.damage,
   /**
    * 接第二刀的距离门（格）—— 用户草图「玩家距离 4 格以内就连续再劈第二刀」。
    * ⚠️ **判据用第一刀命中帧时刻的水平距**，不是起手时刻 ——

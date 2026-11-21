@@ -62,6 +62,15 @@ export const HEALTH_Z_INDEX = 50;
  */
 const LEFT_PX = 8 + 330 + 8;
 
+/**
+ * 每排多少颗心 —— **派生自 `PLAYER_MAX_HEARTS`**（红线 1，不写死 10）。
+ *
+ * 20 颗心分两排各 10 颗（用户 2026-11-21 裁定）。
+ * ⚠️ **不用 `flex-wrap`**：它会在父容宽变化时不可控地重排 —— 第 11 颗落到上排
+ * 还是下排取决于父宽，而两排的语义是固定的。显式两个行容器才能钉住布局。
+ */
+const PER_ROW = PLAYER_MAX_HEARTS / 2;
+
 export class HealthHUD {
   /**
    * @param {HTMLElement} root HUD 容器（`#hud-root`）
@@ -73,26 +82,36 @@ export class HealthHUD {
     this.el.id = 'mc-health';
     this.el.style.cssText =
       `position:fixed;top:8px;left:${LEFT_PX}px;z-index:${HEALTH_Z_INDEX};` +
-      `display:flex;gap:0;pointer-events:none;` +
-      `height:${HEART_SIZE_PX}px;`;
+      `display:flex;flex-direction:column;gap:0;pointer-events:none;` +
+      `height:${HEART_SIZE_PX * 2}px;`;
 
     /**
-     * 10 个心形 `<img>`（构造期一次建好，之后只换 `src`）。
+     * 心形 `<img>`（构造期一次建好，之后只换 `src`），分两排各 `PER_ROW` 颗。
      *
-     * ⚠️ **不每帧重建 DOM**：血量变化是低频事件（当前阶段恒不变），但即便将来接了
-     * 掉血，重建 10 个 img 也会触发 10 次图片解码请求。换 `src` 走浏览器图片缓存。
+     * ⚠️ **不每帧重建 DOM**：血量变化是低频事件，但重建 20 个 img 会触发 20 次
+     * 图片解码请求。换 `src` 走浏览器图片缓存。
+     *
+     * ⚠️ **`this._imgs` 的顺序就是 `heartsFor()` 的索引顺序**：
+     * 先 row0 的 0..9，再 row1 的 0..9。`_paint()` 与 `hearts()` 依赖这一点，
+     * 两排布局对它们完全透明（它们不知道行容器存在）。
      */
     this._imgs = [];
-    for (let i = 0; i < PLAYER_MAX_HEARTS; i += 1) {
-      const img = document.createElement('img');
-      img.style.cssText =
-        `width:${HEART_SIZE_PX}px;height:${HEART_SIZE_PX}px;` +
-        'image-rendering:pixelated;display:block;';
-      img.draggable = false;
-      // 装饰性图像：读屏软件跳过（血量数值不是可交互内容）
-      img.alt = '';
-      this.el.appendChild(img);
-      this._imgs.push(img);
+    for (let row = 0; row < 2; row += 1) {
+      const rowEl = document.createElement('div');
+      rowEl.id = `mc-health-row${row}`;
+      rowEl.style.cssText = `display:flex;gap:0;height:${HEART_SIZE_PX}px;`;
+      for (let i = 0; i < PER_ROW; i += 1) {
+        const img = document.createElement('img');
+        img.style.cssText =
+          `width:${HEART_SIZE_PX}px;height:${HEART_SIZE_PX}px;` +
+          'image-rendering:pixelated;display:block;';
+        img.draggable = false;
+        // 装饰性图像：读屏软件跳过（血量数值不是可交互内容）
+        img.alt = '';
+        rowEl.appendChild(img);
+        this._imgs.push(img);
+      }
+      this.el.appendChild(rowEl);
     }
     root.appendChild(this.el);
 

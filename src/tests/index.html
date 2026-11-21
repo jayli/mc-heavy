@@ -193,8 +193,10 @@
     import './test-fire-ring.js';
     // 焰魔 / 末影守卫受击音统一为 gun_hit（用户 2026-11-18）
     import './test-boss-hit-sound.js';
-    // 玩家血心（生命系统显示层）：血量 → 10 颗心形态的纯函数契约
+    // 玩家血心（生命系统显示层）：血量 → 心形数组的纯函数契约
     import './test-health.js';
+    // 受伤红闪（v3.29）：淡出包络的纯函数契约（DOM 像素由 damage-flash.spec 覆盖）
+    import './test-damage-flash.js';
     // 分档执行器自身的契约（v3.15）：文件归属 / only/tier 过滤 / 失配硬失败
     import './test-runner-tiers.js';
 
