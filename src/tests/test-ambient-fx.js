@@ -71,13 +71,15 @@ test('ambient: 地面扫描深度须容得下传送落点高度（否则整池�
   assertTrue(FIREFLY_FX.searchDepth >= 45, `萤火虫 searchDepth=${FIREFLY_FX.searchDepth} 太浅`);
 });
 
-test('ambient: 落叶飘速与萤火虫密度是用户裁定的翻倍值（v3.26b）', () => {
+test('ambient: 落叶飘速与萤火虫密度是用户裁定的翻倍值（v3.26b + v3.26c）', () => {
   // 用户 2026-11-20：「落叶飘速度快一倍，萤火虫数量多一倍」。
   // 钉**相对首版的倍率**而不是裸数字：首版 fallSpeed [0.55,0.90]、countDay 28 / countNight 42。
   assertEqual(LEAF_FX.fallSpeed[0], 1.10, '下界翻倍');
   assertEqual(LEAF_FX.fallSpeed[1], 1.80, '上界翻倍');
-  assertEqual(FIREFLY_FX.countDay, 56, '白天只数翻倍');
-  assertEqual(FIREFLY_FX.countNight, 84, '夜里只数翻倍');
+  assertEqual(FIREFLY_FX.countDay, 112, '白天只数再翻倍');
+  // ⚠️ 用户 2026-11-21：「数量太少，再增加一倍」⇒ 白天与夜间**同比例**再×2
+  // （只抬夜间会让白天进游戏的人一点变化都看不到；2:3 的比保持不变）。
+  assertEqual(FIREFLY_FX.countNight, 168, '夜里只数再翻倍');
   // 容量必须跟着抬（否则 aAlive 写越界 / 夜间只数被静默钳住）
   assertTrue(FIREFLY_FX.capacity >= FIREFLY_FX.countNight,
     `容量 ${FIREFLY_FX.capacity} 装不下夜间 ${FIREFLY_FX.countNight}`);
@@ -696,12 +698,12 @@ test('firefly 池: 走出草地再走回来不闪断（visible 恢复 / 缓冲�
 test('firefly 池: 性能档容量减半时只数按比例缩（不得反而比清晰档密）', () => {
   const r = makeFly({ capacity: FIREFLY_FX.capacityPerformance });
   // ⚠️ 用**白天**档量：夜间 count=countNight=capacity 两侧都被容量钳住 ⇒ 零判别力（实测过）。
-  // 白天 countDay=56、性能档容量 42：按比例应得 28，而直接钳容量会得 42。
+  // 白天 countDay=112、性能档容量 84：按比例应得 56，而直接钳容量会得 84。
   r.update({ x: -350, y: 6, z: -150 }, 0.016, 0);
   const st = r.debugState();
   assertTrue(st.count <= FIREFLY_FX.capacityPerformance, 'count 不得越界');
   // ⚠️ 不能钉「< countDay」：性能档容量本身就小于 countDay ⇒ 直接钳容量的错写法也绿（实测过）。
-  // 钉**比例关系式**：容量减半 ⇒ 只数也减半（56 × 42/84 = 28）。
+  // 钉**比例关系式**：容量减半 ⇒ 只数也减半（112 × 84/168 = 56）。
   assertEqual(st.count, Math.round(FIREFLY_FX.countDay * (FIREFLY_FX.capacityPerformance / FIREFLY_FX.capacity)),
     '只数须按容量比例缩');
   const alive = r.mesh.geometry.getAttribute(FIREFLY_ATTR.sizeAlive);

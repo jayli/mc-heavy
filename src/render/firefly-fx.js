@@ -223,7 +223,8 @@ export class FireflyFxRenderer {
    * 只把真的改过的属性置 needsUpdate。
    *
    * ⚠️⚠️ **它不决定上传量**：WebGPU 后端对 `DynamicDrawUsage` 属性每帧无条件全缓冲上传
-   * （`three.webgpu.js:31003`）。实测本池每帧 7 次 `writeBuffer` / **7056 B**（夜间 84 只）。
+   * （`three.webgpu.js:31003`）。实测本池每帧 7 次 `writeBuffer` / **7056 B**（容量 84 时的口径
+   * ≈ 84 B/只；2026-11-21 容量抬到 168 ⇒ 估算 ≈14112 B/帧，按容量线性缩放，未重新实测）。
    * 完整实测与「为何不改 usage」的结论写在 `leaf-fx.js:_flushStatic`（两池同一口径）。
    */
   _flushStatic() {
