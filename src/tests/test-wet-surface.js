@@ -12,6 +12,7 @@ import { test } from './runner.js';
 import { assertEqual, assertTrue, assertDeepEqual } from './assert.js';
 import { createRegistry } from '../voxel/block-registry.js';
 import { BLOCKS } from '../voxel/blocks-data.js';
+import { buildSectionMesh } from '../mesh/mesher.js';
 import { WET_CLASS, WET_CLASS_COUNT, WET_CLASS_DATA, wetClassOf } from '../voxel/wet-material-data.js';
 import {
   WET_CLASS_PARAMS, WET_WALL_FACTOR, WET_SHININESS,
@@ -149,4 +150,56 @@ test('wetRoughnessAt / wetSpecGainAt / wetDarkenAt: 积水处更滑更亮更暗�
   assertTrue(wetDarkenAt(c, 1) < wetDarkenAt(c, 0), '积水更暗');
   assertTrue(wetSpecGainAt(WET_CLASS.POLISHED, 1) <= 1, 'specGain 钳 ≤1');
   assertTrue(wetRoughnessAt(WET_CLASS.FABRIC, 0, 0) <= 1, 'rough 钳 ≤1');
+});
+
+// ---------- mesher 类位（Review Focus #5：高位不得污染 bit0-14）----------
+
+/**
+ * 单方块 section 构建（18³ halo，中心放方块，light 全 0xF0）——
+ * 与 test-mesher.js 的 meshSingle 同口径（全亮、无邻居 ⇒ 六面全出）。
+ * ⚠️ atlasMeta 传空对象：mesher 对缺失 tile 回落 DEFAULT_TILE，本组只关心 packed 位。
+ */
+function meshOne(reg, name) {
+  const data = new Uint16Array(18 * 18 * 18);
+  const light = new Uint8Array(18 * 18 * 18);
+  const vIdx = (dx, dy, dz) => dx + dz * 18 + dy * 324;
+  data[vIdx(9, 9, 9)] = reg.idOf(name);
+  for (let i = 0; i < light.length; i++) light[i] = 0xF0;
+  return buildSectionMesh({ data, light, missing: false }, reg, {}, 0, 0, 0);
+}
+
+test('mesher: 每个渲染通道方块的 bit15-18 === registry.wetClassTable', () => {
+  for (const def of BLOCKS) {
+    if (def.cullMode !== 'opaque' && def.cullMode !== 'cutout') continue;
+    const r = meshOne(REG, def.name);
+    const ch = r[def.cullMode];
+    assertTrue(ch.vertexCount > 0, `${def.name} 有顶点`);
+    const want = REG.wetClassTable[REG.idOf(def.name)];
+    for (let i = 0; i < ch.vertexCount; i++) {
+      assertEqual((ch.packed[i] >>> 15) & 0xF, want, `${def.name} vert${i} 类位`);
+    }
+  }
+});
+
+test('mesher: 类位不污染 bit0-14（掩掉类位后既有位段语义仍成立）', () => {
+  for (const name of ['cloud', 'stone', 'grass', 'hanging_lamp', 'smooth_stone']) {
+    const r = meshOne(REG, name);
+    const ch = r[name === 'hanging_lamp' ? 'cutout' : 'opaque'];
+    assertTrue(ch.vertexCount > 0, `${name} 有顶点`);
+    for (let i = 0; i < ch.vertexCount; i++) {
+      const low = ch.packed[i] & 0x7FFF;
+      assertEqual(low & 0xFF, 0xF0, `${name} vert${i} light 位未变`);
+      assertTrue(((low >>> 10) & 0x7) <= 5, `${name} vert${i} face 位仍在 0-5`);
+      assertTrue(((low >>> 8) & 0x3) <= 3, `${name} vert${i} AO 位合法`);
+    }
+  }
+});
+
+test('mesher: cloud 的类位是 0 且 bit14 仍置位（两条语义独立）', () => {
+  const r = meshOne(REG, 'cloud');
+  assertTrue(r.opaque.vertexCount > 0, 'cloud 在 opaque 通道');
+  for (let i = 0; i < r.opaque.vertexCount; i++) {
+    assertEqual((r.opaque.packed[i] >>> 15) & 0xF, 0, `cloud vert${i} 类位 = NONE`);
+    assertEqual((r.opaque.packed[i] >>> 14) & 1, 1, `cloud vert${i} bit14 不投影`);
+  }
 });
