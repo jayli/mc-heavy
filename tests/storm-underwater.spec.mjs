@@ -1,19 +1,15 @@
 import { test, expect } from 'playwright/test';
 import { PNG } from 'pngjs';
 
-// v3.30g：用户 2026-11-22 实玩报告的两组缺陷的回归门。
+// 雨天的**四项水下排除**回归门（v3.30g 引入，v3.31 保留）。
 //
-// ① 「光栅扫描线还在动来动去，像 CRT 雪花」——**第三个根因**（前两个见 storm-rain-visual）：
-//    颗粒的种子用了 `hash(vec2)`，而 three r185.1 的 TSL `hash` 是 **PCG 标量哈希**，
-//    `seed.toUint()` 对 vec2 走 `format()` 的收窄分支 ⇒ **取 `.x`，y 整条丢掉**
-//    ⇒ 颗粒沿 y 恒定 ⇒ 整列同亮同暗的竖纹，且 `fract(uTime*7.31)*113` 每帧重掷。
-//    上游 FXAA_FRAG 自带真二维 hash，所以它没有这个问题。
-//    ⇒ 判据：**颗粒层自身**（开-关差分）的「列内沿 y std / 行内沿 x std」必须 ≈1，
-//      且列均值不得逐帧大幅重掷。⚠️ 缺陷态实测比值 0.11、列均值时间 std 5.19。
+// 用户裁定：落叶 / 雨滴 / 水花 / 地面反光都不得出现在水面以下。
+// ⇒ 判据落在**真实 GPU 属性**（雨丝 aMinY、水花 aSpawn、落叶 aOrigin/aParams）
+//   与**像素差分**（湿表面水下门），不读常量。
 //
-// ② 四项水下排除：落叶 / 雨滴 / 水花 / 湿地面反光都不得出现在水面以下。
-//    ⇒ 判据落在**真实 GPU 属性**（雨丝 aMinY、水花 aSpawn、落叶 aOrigin/aParams）
-//      与**像素差分**（湿地面水下门），不读常量。
+// ⚠️ v3.31：原有的两条「胶片颗粒各向同性」用例已删 —— 整条后处理链（含颗粒）
+// 按用户 2026-11-22 裁定整体移除，那两条守的失效路径已不存在。
+// 湿表面的材质分层 / 零光晕 / 不过曝判据在 `tests/wet-surface.spec.mjs`。
 //
 // ⚠️ 机位与噪声源冻结口径同既有 Tier 4 spec。
 
@@ -59,150 +55,6 @@ async function waitWorldStable(page) {
     }
   });
 }
-
-// ============================================================================
-// ① 颗粒各向同性
-// ============================================================================
-
-/**
- * 颗粒层 = (grainOn − grainOff) 的逐像素差。它是**纯加项** ⇒ 差分把场景内容完全消掉。
- *
- * ⚠️⚠️ **判据选型**：不能用「相邻像素差为 0 的比例」（那是 v3.30d 抓硬格子用的），
- * 也不能用整幅的符号翻转次数（那是 v3.30e 抓走样用的，会被场景纹理淹没）。
- * 竖纹的定义是「沿 y 恒定、沿 x 变化」⇒ 直接量**列内 std 与行内 std 的比值**。
- */
-function grainStats(onPng, offPng, x0, y0, x1, y1) {
-  const d = (x, y) => {
-    const o = (y * onPng.width + x) * 4;
-    const lum = (p) => 0.2126 * p.data[o] + 0.7152 * p.data[o + 1] + 0.0722 * p.data[o + 2];
-    return lum(onPng) - lum(offPng);
-  };
-  const mean = (a) => a.reduce((s, v) => s + v, 0) / a.length;
-  const std = (a) => { const m = mean(a); return Math.sqrt(a.reduce((s, v) => s + (v - m) ** 2, 0) / a.length); };
-  const cols = []; const rows = [];
-  for (let x = x0; x < x1; x++) { const c = []; for (let y = y0; y < y1; y++) c.push(d(x, y)); cols.push(c); }
-  for (let y = y0; y < y1; y++) { const r = []; for (let x = x0; x < x1; x++) r.push(d(x, y)); rows.push(r); }
-  return {
-    colStd: +mean(cols.map(std)).toFixed(3),
-    rowStd: +mean(rows.map(std)).toFixed(3),
-    amp: +mean(cols.map((c) => mean(c.map(Math.abs)))).toFixed(3),
-    colMeans: cols.map(mean),
-  };
-}
-
-/** 只留颗粒（雾/bloom/CA/暗角/冷调全归零）+ 冻帧 */
-async function isolateGrain(page) {
-  await page.evaluate(async () => {
-    const g = window.__MC_GAME__;
-    g.setStormLighting(true);
-    await new Promise((r) => setTimeout(r, 1500));
-  });
-  await waitWorldStable(page);
-  await page.evaluate(() => {
-    const g = window.__MC_GAME__;
-    g.renderer.setAnimationLoop(null);
-    g.stormRain.setEnabled(false);
-    g.renderWorld.materials.wet.uWet.value = 0;
-    g.ocean.plane.visible = false;
-    const U = g.stormGrade.uniforms;
-    U.uFogGain.value = 0; U.uBloomGain.value = 0; U.uCA.value = 0;
-    U.uVignette.value = 0; U.uCold.value = 0;
-    g.player.pitch = 0.12; g.player.yaw = 0.4;
-    g.player.update(0.016);
-  });
-}
-
-const renderAt = (t) => {
-  const g = window.__MC_GAME__;
-  g.stormGrade.uniforms.uTime.value = t;
-  g._renderWaterReflection();
-  g.stormGrade.pipeline.render();
-};
-
-/** 逐列时间 std（去掉每帧全局亮度漂移后） */
-function colTimeStd(arrs) {
-  const n = arrs[0].length; let s = 0;
-  for (let i = 0; i < n; i++) {
-    const ser = arrs.map((a) => a[i]);
-    const m = ser.reduce((x, v) => x + v, 0) / ser.length;
-    s += Math.sqrt(ser.reduce((x, v) => x + (v - m) ** 2, 0) / ser.length);
-  }
-  return +(s / n).toFixed(3);
-}
-
-async function measureGrain(page) {
-  await page.evaluate(renderAt, 8.0); await page.waitForTimeout(200);
-  await page.evaluate(renderAt, 8.0); await page.waitForTimeout(200);
-  const p0 = PNG.sync.read(await page.screenshot());
-  const W = p0.width; const H = p0.height;
-  const regions = {
-    sky: [Math.round(W * 0.36), Math.round(H * 0.03), Math.round(W * 0.64), Math.round(H * 0.13)],
-    mid: [Math.round(W * 0.25), Math.round(H * 0.28), Math.round(W * 0.58), Math.round(H * 0.42)],
-    ground: [Math.round(W * 0.17), Math.round(H * 0.60), Math.round(W * 0.52), Math.round(H * 0.75)],
-  };
-  const out = {};
-  for (const [name, [x0, y0, x1, y1]] of Object.entries(regions)) {
-    const shots = [];
-    for (const t of [8.0, 8.07, 8.29, 8.53]) {
-      await page.evaluate(() => { window.__MC_GAME__.stormGrade.uniforms.uGrain.value = 0.045; });
-      await page.evaluate(renderAt, t); await page.waitForTimeout(170);
-      const on = PNG.sync.read(await page.screenshot());
-      await page.evaluate(() => { window.__MC_GAME__.stormGrade.uniforms.uGrain.value = 0; });
-      await page.evaluate(renderAt, t); await page.waitForTimeout(170);
-      const off = PNG.sync.read(await page.screenshot());
-      shots.push(grainStats(on, off, x0, y0, x1, y1));
-    }
-    const s0 = shots[0];
-    out[name] = {
-      colStd: s0.colStd, rowStd: s0.rowStd,
-      ratio: +(s0.colStd / Math.max(s0.rowStd, 1e-6)).toFixed(3),
-      amp: s0.amp,
-      colTimeStd: colTimeStd(shots.map((s) => s.colMeans)),
-    };
-  }
-  return out;
-}
-
-test('雨天：颗粒是各向同性噪声，不是逐帧乱跳的竖纹（CRT 扫描线根因）', async ({ page }) => {
-  test.setTimeout(300_000);
-  const errs = await BOOT(page);
-  await isolateGrain(page);
-  const r = await measureGrain(page);
-  console.log('GRAIN ISOTROPY:', JSON.stringify(r));
-  for (const [name, v] of Object.entries(r)) {
-    expect(v.amp, `${name}: 颗粒必须仍可见（不是被改成 0 蒙过去）`).toBeGreaterThan(0.5);
-    expect(v.ratio, `${name}: 列内/行内 std 比值须 ≈1（缺陷态 0.11 = 沿 y 恒定的竖纹）`)
-      .toBeGreaterThan(0.7);
-    expect(v.ratio, `${name}: 比值上界（反向缺陷：沿 x 恒定的横纹）`).toBeLessThan(1.4);
-    expect(v.colTimeStd, `${name}: 列均值不得逐帧大幅重掷（缺陷态 5.19）`)
-      .toBeLessThan(v.rowStd / 4);
-  }
-  expect(errs, '不得有 console 错误').toEqual([]);
-});
-
-test('负向：颗粒种子改回 hash(vec2) ⇒ 各向同性判据必须 FAIL', async ({ page }) => {
-  test.setTimeout(300_000);
-  // 注入 v3.30e 的原始写法（vec2 直接喂 PCG 标量 hash）
-  await routeModule(page, 'storm-grade.js', (b) => b
-    .replace('const g = hash(gp.x.add(gp.y.mul(65536))).sub(0.5);',
-      'const g = hash(gp).sub(0.5);'));
-  const errs = await BOOT(page);
-  await isolateGrain(page);
-  // 注入生效确认：读回浏览器侧源码（否则是「注入没落地的假红/假绿」）
-  const injected = await page.evaluate(async () => {
-    const src = await (await fetch('/src/render/storm-grade.js')).text();
-    return { hasOld: src.includes('hash(gp).sub(0.5)'), hasNew: src.includes('gp.y.mul(65536)') };
-  });
-  console.log('NEG-GRAIN INJECT:', JSON.stringify(injected));
-  expect(injected.hasOld, '注入须真的落地').toBe(true);
-  expect(injected.hasNew, '新写法须已被替换掉').toBe(false);
-  const r = await measureGrain(page);
-  console.log('NEG-GRAIN ISOTROPY:', JSON.stringify(r));
-  // 缺陷态：比值 ≈0.11（沿 y 恒定）⇒ 必须跌破正向阈值 0.7
-  const worst = Math.min(...Object.values(r).map((v) => v.ratio));
-  expect(worst, `注入后必须至少一个区域的比值跌破 0.7（实测最低 ${worst}）`).toBeLessThan(0.7);
-  expect(errs).toEqual([]);
-});
 
 // ============================================================================
 // ② 四项水下排除
@@ -345,7 +197,6 @@ test('雨天水下：湿地面反光在水面以下逐位归零（片元门，�
       waterY: WATER_SURFACE_Y,
       uWet: wet.uWet.value,
       uWetWaterY: wet.uWetWaterY.value,
-      mirrorY: g.groundReflect.mirrorY,
     };
   });
   console.log('UNDERWATER WET STATE:', JSON.stringify(st));
@@ -360,7 +211,7 @@ test('雨天水下：湿地面反光在水面以下逐位归零（片元门，�
       wet.uWetWaterY.value = wy;
       wet.uWetTime.value = 12.0;
       g._renderWaterReflection();
-      g.stormGrade.pipeline.render();
+      g.renderer.render(g.scene, g.camera);
     }, waterY);
     await page.waitForTimeout(260);
     return PNG.sync.read(await page.screenshot());

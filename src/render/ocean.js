@@ -129,40 +129,6 @@ function waveField(pos, dist, uTime) {
  * @param {THREE.Scene} scene
  * @returns {{update: (camera: THREE.Camera, dt: number) => void, plane: THREE.Mesh}}
  */
-/**
- * v3.30d：NDC → uv 的 bias 矩阵（上游 `this._bias` 同口径，y 行取负）。
- *
- * 上游（WebGL）：`[0.5,0,0,0.5; 0,0.5,0,0.5; 0,0,0.5,0.5; 0,0,0,1]`。
- * 本仓采样的是 **RenderTarget 纹理**，其 v 方向与屏幕相反（同 ocean 自己的
- * `screenUV.flipX()` 所处理的那个 flip 语义）⇒ y 行取 **−0.5 / +0.5**。
- * ⚠️ 弄反的形态是「倒影上下颠倒」—— 而那看起来也有点像倒影，极易误判为正确
- *（ocean.js 已记过同一条）⇒ 由像素判据钉（镜面物体的上下关系）。
- */
-const REFLECT_BIAS = new THREE.Matrix4().set(
-  0.5, 0, 0, 0.5,
-  0, -0.5, 0, 0.5,
-  0, 0, 0.5, 0.5,
-  0, 0, 0, 1,
-);
-
-/**
- * v3.30：反射 pass 期间给湿地面用的**1×1 占位纹理**（懒建、全局共享）。
- *
- * ⚠️ 必须是**真实 Texture**（不是 null）：节点采样 null 会报绑定错误。
- * 颜色取黑（反射项在 pass 期间本来就不应贡献）。
- * ⚠️ `colorSpace = NoColorSpace`：它不参与颜色计算，避免 sRGB 转换开销。
- */
-let _wetPlaceholder = null;
-function placeholderTexture() {
-  if (!_wetPlaceholder) {
-    const data = new Uint8Array([0, 0, 0, 255]);
-    _wetPlaceholder = new THREE.DataTexture(data, 1, 1, THREE.RGBAFormat);
-    _wetPlaceholder.needsUpdate = true;
-    _wetPlaceholder.colorSpace = THREE.NoColorSpace;
-  }
-  return _wetPlaceholder;
-}
-
 export function setupOcean(scene) {
   const waterGeo = new THREE.PlaneGeometry(800, 800);
 
@@ -561,73 +527,17 @@ export function setupOcean(scene) {
         }
       }
       /**
-       * v3.30：反射期间也要藏掉**采样同一张 RT 的其他对象**（湿地面的体素通道）。
+       * 跑反射 pass。`hidden` 由调用方给（第一人称物件 / 各特效池）——
+       * 它们在镜像相机下会成巨大手臂/枪，且成本主杠杆是 draw call 数。
        *
-       * ⚠️⚠️ **不藏会报 WebGPU 验证错误**（本轮实测）：
-       * `Texture … usage (TextureBinding|RenderAttachment) includes writable usage
-       *  and another usage in the same synchronization scope` —— 反射 pass 把 RT 当
-       * 渲染目标（写），而体素 opaque 材质在同一 pass 里采样它（读）。
-       * three 的 reflector 只藏掉**自己的** material（水面），不知道还有别的消费者。
-       * ⇒ 由调用方把「其他采样者」一并传进 `hidden`（装配层才知道哪些通道挂了湿分支）。
-       * ⚠️ 藏掉它们不影响主画面：反射 pass 结束后 finally 里恢复 visible，
-       * 主 pass 照常画它们（只是反射里看不到地面 —— 而那正是上游的做法：
-       * 它反射时也藏掉全部 groundMeshes）。
+       * ⚠️ **v3.31：不再需要「藏掉其他采样者」或「换占位图」**。
+       * 旧湿地面分支会在同一 pass 里采样本 RT（读）而 pass 正在写它
+       * ⇒ WebGPU 报 `writable usage and another usage in the same synchronization scope`
+       * ⇒ 整个 CommandBuffer 作废 ⇒ 全屏黑。新湿表面**不采样任何 RT**
+       * ⇒ 那类读写冲突在结构上不存在了。
        */
       try {
-        /**
-         * v3.30：反射 pass 期间把**湿地面的反射采样**临时换成占位纹理。
-         *
-         * ⚠️⚠️ **为何必须这么做**（本轮单变量 A/B 实测）：
-         * 反射 pass 把 RT 当渲染目标（写），而体素 opaque 的湿分支在同一 pass 里
-         * 采样它（读）⇒ WebGPU 报 `writable usage and another usage in the same
-         * synchronization scope`。
-         * **藏掉 opaque 通道能消错，但会让水面倒影映不到地面**⇒ 水色真的变了
-         * （morning 130→127 / noon 99→146 / share 4600→12000，撞冻结色阶）。
-         * ⇒ 唯一两全的解法：**只把湿分支的采样源换成 1×1 占位图**，
-         * 地面仍在反射里可见（水面倒影不变），而读写冲突消失。
-         * ⚠️ `reflectNode.value` 每帧被 reflector 内部写成真 RT（见 three 源码），
-         * 故只需在 pass **前**换成占位图、pass **后**不需手动恢复
-         * （下一次 reflectUpdate 会自己写回）—— 但为了当帧主 pass 能立即用到真 RT，
-         * 这里仍在 finally 里显式写回。
-         */
-        const wetNode = this._wetReflectNode;
-        let savedTex = null;
-        if (wetNode) {
-          savedTex = wetNode.value;
-          wetNode.value = placeholderTexture();
-        }
-        try {
-          reflectUpdate({ scene, camera, renderer: this._renderer, material });
-        } finally {
-          /**
-           * ⚠️⚠️ **pass 后必须把 clone.value 同步为 base 的真 RT**（本轮实测的根因）：
-           * reflector 内部只写 `base.textureNode.value`，clone 的 value 是独立的
-           * ⇒ 不同步的话 clone 永远停在默认占位 RT（从未被渲染）⇒ 湿地面反射恒黑。
-           * 实测：同步前 A/B diff = 0；同步后 diff = 860002（93% 像素）。
-           * ⚠️ 不能写成 `savedTex`（那是 clone 自己的旧值 = 占位图）。
-           */
-          if (wetNode) {
-            const real = reflectBase.textureNode?.value;
-            wetNode.value = real || savedTex;
-          }
-          /**
-           * v3.30d：写**镜面投影矩阵**（湿地面采样坐标的唯一权威）。
-           *
-           * 上游 `uReflMatrix = bias · reflProj · reflView`，bias 把 NDC 的 [-1,1]
-           * 映到 uv 的 [0,1]。本仓 WebGPU 的 NDC y 与 WebGL **同向**（three 内部
-           * 已处理 coordinateSystem），但 RT 采样需 **flipY**（与 ocean 自己的
-           * `screenUV.flipX()` 同一回事：RT 的 flipY 语义）⇒ bias 的 y 行取负。
-           * ⚠️ 必须用**镜像相机**（reflectBase.virtualCameras 里的那一个），
-           * 而不是主相机 —— 用主相机就回到了「片元自己的 screenUV」那个缺陷。
-           */
-          const vc = reflectBase.virtualCameras?.get?.(camera);
-          if (vc && this._wetReflectMatrix) {
-            this._wetReflectMatrix.value
-              .copy(REFLECT_BIAS)
-              .multiply(vc.projectionMatrix)
-              .multiply(vc.matrixWorldInverse);
-          }
-        }
+        reflectUpdate({ scene, camera, renderer: this._renderer, material });
       } finally {
         // ⚠️ **必须在 finally 里恢复**：反射 pass 抛异常时若手臂永久隐身，
         // 玩家看到的是「手没了」—— 比倒影出错严重得多。
@@ -637,36 +547,16 @@ export function setupOcean(scene) {
     /** 反射句柄（供测试与面板读 RT 尺寸/倍率） */
     reflect: reflectBase,
     /**
-     * v3.30：**反射纹理节点**句柄（雨天湿地面用）。
+     * **反射纹理节点**句柄（可采样、可改 uvNode/levelNode 的 TextureNode）。
      *
-     * ⚠️ 与 `reflect`（base 节点，管 pass 调度）是两回事：湿地面要的是可采样、
-     * 可改 uvNode/levelNode 的**TextureNode**。交出去让体素材质复用**同一条 pass**
-     * （不新建第二个 reflector —— 两条 pass 会互相覆写 BatchedMesh 的 indirect
-     * 索引表 ⇒ 天空撕成黑多边形，v3.17 实测）。
-     *
-     * ⚠️⚠️ **交的是 clone，但它的 value 必须每帧跟住 base 的真 RT**（本轮实测）：
-     * `ReflectorNode.clone()` 只共享 base，**value 是独立的**，而 reflector 内部
-     * 只把真 RT 写进 `base.textureNode.value` ⇒ clone 永远停在构造时的默认占位 RT
-     * （实测：clone.uuid ≠ base.textureNode.uuid，且 clone 不在 base.renderTargets 里）
-     * ⇒ 湿地面采到的是**从未被渲染过的空 RT** ⇒ 反射项恒黑（A/B diff = 0）。
-     * ⇒ 由 `renderReflection` 在 pass 后把 clone.value 同步为 base 的真 RT（见下）。
-     * 仍用 clone 的理由：反射 pass 期间要把**湿分支的**采样源换成占位图（避免同 pass
-     * 读写同一张 RT），而水面自己的采样不受影响。
+     * ⚠️ 与 `reflect`（base 节点，管 pass 调度）是两回事。
+     * ⚠️ **v3.31 起本仓内部无消费方**：湿表面改成程序化天空反光，不采样任何 RT。
+     * 句柄保留（它是 v3.30 之前就有的公开接口，删它属超范围）。
+     * ⚠️ 若将来有消费方：`ReflectorNode.clone()` 只共享 base，**value 独立**，
+     * 而 reflector 内部只把真 RT 写进 `base.textureNode.value`
+     * ⇒ clone 会停在从未渲染过的默认占位 RT（实测 A/B diff = 0）⇒ 必须每帧同步。
      */
     reflectTexture: reflectNode.clone(),
-    /**
-     * v3.30d：**镜面投影矩阵** uniform（湿地面用）。
-     *
-     * ⚠️⚠️ **为何必需它**（本轮用户报告「像在地下又有一层模糊的透射」的根因）：
-     * 湿地面原本用**片元自己的 screenUV** 采样反射 RT。但反射 RT 是从**镜像相机**
-     * 渲的 ⇒ 同一屏幕坐标在两张图里对应**不同的世界点**。
-     * 地面高于镜面（本仓地形 y≈22、镜面 −1.5，差 **23.5 格**）时偏差极大
-     * ⇒ 采到的是「该屏幕位置下方的另一个物体」⇒ 读作地下一层模糊透射。
-     * 上游 `GROUND_VERT` 用的是 `vReflPos = uReflMatrix * vec4(wp.x, 0.0, wp.z, 1.0)`
-     * —— 把世界点**压到镜面高度**后过反射相机的 bias·proj·view。
-     * 本 uniform 就是那个 `uReflMatrix`，由 `renderReflection` 每帧写入。
-     */
-    reflectMatrix: { value: new THREE.Matrix4() },
     /** 倒影强度 uniform（0 = 逐位回到无倒影的原式） */
     uReflectStrength,
     /** 随波扰动幅度 uniform */
@@ -681,16 +571,6 @@ export function setupOcean(scene) {
     uReflectTint,
     /** 注入 renderer（反射 pass 需要它；Game 在 renderer.init() 后调一次） */
     setRenderer(renderer) { this._renderer = renderer; },
-    /**
-     * v3.30：登记「湿地面的反射采样节点」（反射 pass 期间要临时换成占位图）。
-     * 由装配层在创建 RenderWorld 后调一次（它才知道把哪个节点交给了体素材质）。
-     */
-    setWetReflectNode(node) { this._wetReflectNode = node || null; },
-    /**
-     * v3.30d：登记镜面投影矩阵 uniform（由装配层从本模块的 `reflectMatrix` 交过来，
-     * 再传给体素材质）。pass 后写入它，湿地面靠它把世界点压到镜面高度再投影。
-     */
-    setWetReflectMatrix(u) { this._wetReflectMatrix = u || null; },
     /**
      * 改反射 RT 的分辨率倍率（0.1~1）。
      * ⚠️ **它不是性能旋钮**：实测 0.125 与 0.5 的提交耗时只差 0.1ms（成本在 draw call 数）。

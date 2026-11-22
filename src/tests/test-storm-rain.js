@@ -1,7 +1,10 @@
-// src/tests/test-storm-rain.js — 持续雨 / 湿地面 / 后处理的常量关系式与纯函数（Tier 1）
+// src/tests/test-storm-rain.js — 持续雨（雨丝 / 水花 / 雨声）的常量关系式与纯函数（Tier 1）
 //
-// 上游对照：`bj-shooting-game/night-heron-src/src/fx/rain.js` + `gfx/renderer.js`
-// 判据是**关系式与上游原值**（本模块是常量/纯函数移植，真值来自上游代码）。
+// 上游对照：`bj-shooting-game/night-heron-src/src/fx/rain.js`（**只有雨**这一块仍是对照移植）。
+// 判据是关系式与上游原值。
+//
+// ⚠️ v3.31：湿地面与后处理链已按用户裁定**整体删除并从零重做** ——
+// 新的湿表面判据在 `test-wet-surface.js`，本文件只留雨 + 「被删模块真的不存在」的防线。
 import { test } from './runner.js';
 import { assertEqual, assertTrue } from './assert.js';
 import {
@@ -9,14 +12,7 @@ import {
   stormStreakCount, stormSplashRate, stormStreakDensity,
   stormStreakRawPos, stormSplashSize, stormSplashFade,
 } from '../render/storm-rain-config.js';
-import {
-  WET_RIPPLE, WET_PUDDLE, WET_REFLECT_STRENGTH, WET_ALBEDO_DARKEN,
-  wetnessAt, wetRippleFade, wetFresnel, wetAboveWaterGate,
-} from '../render/wet-ground-config.js';
-import {
-  STORM_FOG, STORM_BLOOM, STORM_GRADE,
-  stormBloomLevels, bloomSoftKnee, vignetteAt, chromaticOffset,
-} from '../render/storm-grade-config.js';
+import { WET_STRENGTH_MAX } from '../render/wet-surface-config.js';
 import { CARBINE_AUDIO_IDS } from '../render/carbine-audio-recipes.js';
 import { RAIN_CEILING_Y } from '../render/rain-shelter.js';
 import { WATER_SURFACE_Y } from '../render/water-surface.js';
@@ -141,144 +137,27 @@ test('storm audio: 雨声与雷声 id 都在烘焙产物清单里（拼错 = 静
   assertTrue(lo > 0 && hi > lo, '雷声间隔下限必须 >0（否则每帧都响）');
 });
 
-// ---------- 湿地面 ----------
-
-test('wet ground: 水下门 —— 片元在水面以下恒不湿（v3.30g 用户裁定）', () => {
-  const W = WATER_SURFACE_Y;
-  assertEqual(wetAboveWaterGate(W - 0.01, W), 0, '水面之下 ⇒ 不湿');
-  assertEqual(wetAboveWaterGate(W - 5, W), 0, '湖底 ⇒ 不湿');
-  assertEqual(wetAboveWaterGate(W, W), 1, '恰好共面 ⇒ 算水上（边界不抖）');
-  assertEqual(wetAboveWaterGate(W + 0.01, W), 1, '水面之上 ⇒ 可湿');
-  assertEqual(wetAboveWaterGate(22, W), 1, '陆地高处 ⇒ 可湿');
-  // 非法输入退化为「可湿」（不因 NaN 把整片地面关掉）
-  assertEqual(wetAboveWaterGate(NaN, W), 1);
-  assertEqual(wetAboveWaterGate(22, NaN), 1);
-});
-
-test('wet ground: 水下门的水面基准与海面平面共面（两份口径不得漂）', () => {
-  assertClose(WATER_SURFACE_Y, WATER_LEVEL_OFFSET, 1e-12,
-    '湿地面水下门与海面平面必须同高（否则湖底门与实际水面错位）');
-});
-
-test('wet ground: 湿度公式 = 上游 clamp(uWet*(0.3+0.7*up+0.55*streak))', () => {
-  assertClose(wetnessAt(1, 1, 0), 1, 1e-12, '朝上无纹 ⇒ 0.3+0.7=1');
-  assertClose(wetnessAt(1, 0, 0), 0.3, 1e-12, '侧面无纹 ⇒ 0.3');
-  assertClose(wetnessAt(0, 1, 1), 0, 1e-12, '总开关 0 ⇒ 全干');
-  // 上界钳到 1（三项相加可 >1）
-  assertClose(wetnessAt(1, 1, 1), 1, 1e-12);
-  // 单调性
-  assertTrue(wetnessAt(1, 1, 0.5) > wetnessAt(1, 0.5, 0.5));
-  assertTrue(wetnessAt(0.5, 1, 0.5) < wetnessAt(1, 1, 0.5));
-});
-
-test('wet ground: 涟漪近处全额、远处归零、中间单调', () => {
-  assertClose(wetRippleFade(0), 1, 1e-12);
-  assertClose(wetRippleFade(WET_RIPPLE.fadeNear), 1, 1e-12);
-  assertClose(wetRippleFade(WET_RIPPLE.fadeFar), 0, 1e-12);
-  assertClose(wetRippleFade(100), 0, 1e-12);
-  let prev = 1;
-  for (let d = WET_RIPPLE.fadeNear; d <= WET_RIPPLE.fadeFar; d += 0.5) {
-    const v = wetRippleFade(d);
-    assertTrue(v <= prev + 1e-9, '必须单调不增');
-    prev = v;
-  }
-});
-
-test('wet ground: 菲涅尔 —— 掠射（noV→0）比垂直（noV=1）反射强', () => {
-  const graze = wetFresnel(0.05, 0.025);
-  const perp = wetFresnel(1.0, 0.025);
-  assertTrue(graze > perp * 5, `掠射 ${graze} 应远强于垂直 ${perp}`);
-  assertTrue(perp > 0, '垂直也要有地板（否则低头时反光完全消失）');
-  // 积水更多 ⇒ f0 更大
-  assertTrue(wetFresnel(0.5, 0.025, 1) > wetFresnel(0.5, 0.025, 0));
-});
-
-test('wet ground: 反射强度上限 < 1（复用水面 RT，防互反射亮斑）', () => {
-  assertTrue(WET_REFLECT_STRENGTH > 0);
-  assertTrue(WET_REFLECT_STRENGTH < 1);
-  assertTrue(WET_ALBEDO_DARKEN < 1, '湿表面应比干表面暗');
-  assertTrue(WET_PUDDLE > 0 && WET_PUDDLE < 1);
-});
-
-// ---------- 后处理 ----------
-
-test('storm grade: bloom 阈值/增益 = 上游原值，级数按档减', () => {
-  assertClose(STORM_BLOOM.threshold, 0.9, 1e-12);
-  assertClose(STORM_BLOOM.gain, 0.16, 1e-12);
-  assertClose(STORM_BLOOM.kneeRatio, 0.6, 1e-12);
-  assertEqual(STORM_BLOOM.clampMax, 40);
-  assertEqual(stormBloomLevels('performance'), stormBloomLevels('sharp') - 1);
-});
-
-test('storm grade: 软膝 —— 阈值以下不贡献、阈值以上单调增', () => {
-  assertClose(bloomSoftKnee(0.1), 0, 1e-6, '暗像素不该进 bloom');
-  // ⚠️ **软膝的意义就是「阈值前一点就开始轻微贡献」**（上游同式）：
-  // knee = 0.9×0.6 = 0.54，br=0.5 时 soft = 0.5−0.9+0.54 = 0.14 ⇒ 比例 0.018。
-  // 写「0.5 应为 0」是错的（那要求硬阈值，会把辉光边缘切成硬边）。
-  // 正确判据：远低于膝部起点（thr−knee = 0.36）时为 0，膝部内少量贡献。
-  assertClose(bloomSoftKnee(0.3), 0, 1e-6, '低于膝部起点应为 0');
-  assertTrue(bloomSoftKnee(0.5) < 0.05, '膝部内只应有少量贡献');
-  const a = bloomSoftKnee(1.0);
-  const b = bloomSoftKnee(2.0);
-  const c = bloomSoftKnee(8.0);
-  assertTrue(a > 0, '刚过阈值应有贡献');
-  assertTrue(b > a && c > b, '越亮贡献越大');
-  assertTrue(c <= 1 + 1e-6, '比例不得超过 1');
-});
-
-test('storm grade: 暗角 —— 中心 1、四角最暗、单调', () => {
-  assertClose(vignetteAt(0), 1, 1e-12, '屏幕中心不该被压暗');
-  const corner = vignetteAt(0.5);
-  assertTrue(corner < 1, '四角应被压暗');
-  assertTrue(corner > 0, '不该压到全黑');
-  assertClose(vignetteAt(0, 0), 1, 1e-12, '强度 0 ⇒ 无暗角（A/B 锚点）');
-  let prev = 1;
-  for (let r2 = 0; r2 <= 0.5; r2 += 0.02) {
-    const v = vignetteAt(r2);
-    assertTrue(v <= prev + 1e-9, '暗角必须单调不增');
-    prev = v;
-  }
-});
-
-test('storm grade: 色差 —— 中心零偏移、边缘偏移随半径增', () => {
-  assertClose(chromaticOffset(0, 0), 0, 1e-12, '中心无偏移');
-  const mid = Math.abs(chromaticOffset(0.2, 0.04));
-  const edge = Math.abs(chromaticOffset(0.5, 0.5));
-  assertTrue(edge > mid, '边缘偏移应更大');
-  assertClose(chromaticOffset(0.5, 0.5, 0), 0, 1e-12, '强度 0 ⇒ 无色差（A/B 锚点）');
-  // 左右对称（符号相反、幅度相同）
-  assertClose(chromaticOffset(-0.3, 0.09), -chromaticOffset(0.3, 0.09), 1e-12);
-});
+// ---------- 被删模块的结构性防线（v3.31 用户裁定：从零重做，不参考上游）----------
 
 /**
- * v3.30e：远景雨幕整层已移除（用户裁定）—— 本用例从「三层参数递增关系」
- * 改成钉「它真的不存在了」：防止将来凭直觉把那一层「补齐」而竖纹复活。
- * 根因：柱面投影 1.4~5.7 texel/px 欠采样，上游靠 FXAA 抹平、本仓 MSAA 无效。
+ * 上游湿地面（wet-ground / ground-reflect）与整条后处理链（storm-grade）已**整体删除**。
+ * 本用例钉「它们真的不存在」——防止将来凭直觉把那些层「补齐」而让岩壁亮带 /
+ * 高空云层光晕 / 屏幕竖纹复活（三条缺陷的根因取证见 spec §2）。
  */
-test('storm grade: 远景雨幕已整层移除（不得重新引入高频柱面雨帘）', async () => {
-  const mod = await import('../render/storm-grade-config.js');
-  assertTrue(mod.STORM_FAR_RAIN === undefined,
-    'STORM_FAR_RAIN 必须不存在（整层已按用户裁定移除）');
+test('storm: 上游湿地面与后处理链已整体移除（不得凭直觉补齐）', async () => {
+  for (const p of ['wet-ground.js', 'wet-ground-config.js', 'ground-reflect.js',
+    'ground-reflect-config.js', 'storm-grade.js', 'storm-grade-config.js']) {
+    let gone = false;
+    try { await import(`../render/${p}`); } catch { gone = true; }
+    assertTrue(gone, `${p} 必须已删除`);
+  }
 });
 
-test('storm grade: 体积雾的散射色是冷蓝（雨夜），太阳项是暖白', () => {
-  const sky = STORM_FOG.skyColor;
-  assertTrue(sky[2] > sky[0], '天空散射应偏蓝');
-  const sun = STORM_FOG.sunColor;
-  assertTrue(sun[0] > sun[2], '太阳散射应偏暖');
-  assertTrue(STORM_FOG.maxDistance > 0);
-  assertTrue(STORM_FOG.sunSharpness > 1, '太阳项应有方向性（不是各向同性）');
+test('storm: WET_STRENGTH_MAX 由新 config 提供且仍为 1.0（装配层句柄语义不变）', async () => {
+  assertClose(WET_STRENGTH_MAX, 1.0, 1e-12);
 });
 
-test('storm grade: ACES 不在本表（renderer 已应用，不双重色调映射）', () => {
-  // 本表只持有 ACES 之前/之后的量；曝光取中性 1.0 避免与 renderer 的曝光叠乘
-  assertClose(STORM_GRADE.exposure, 1.0, 1e-12);
-  assertTrue(!('aces' in STORM_GRADE), '不得在本表再写一份 ACES');
-  assertTrue(STORM_GRADE.ca > 0 && STORM_GRADE.vignette > 0,
-    'CA 与暗角本仓此前零实现 ⇒ 必须移植（用户第二轮裁定）');
-});
-
-test('storm grade: 雨幕盒顶不得高于云层（与 rain-shelter 同一上界）', () => {
+test('storm rain: 雨幕盒顶不得高于云层（与 rain-shelter 同一上界）', () => {
   // 盒心钳制公式的边界：playerY 很大时盒顶恰好 = 上界
   const H = ST.box[1];
   const centerY = Math.min(1000, RAIN_CEILING_Y - H / 2);

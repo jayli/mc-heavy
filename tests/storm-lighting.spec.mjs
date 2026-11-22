@@ -100,9 +100,7 @@ test('雨天光影：持续雨上屏（雨丝 + 水花），且循环雨滴被�
         drawCalls: g.renderStats().drawCalls,
       },
       storm: st,
-      gradeEnabled: g.stormGrade?.uniforms.uEnabled.value,
       wet: g.renderWorld.materials.wet.uWet.value,
-      hasPipeline: !!g.stormGrade,
     };
   });
   console.log('STORM ON:', JSON.stringify(r));
@@ -114,9 +112,7 @@ test('雨天光影：持续雨上屏（雨丝 + 水花），且循环雨滴被�
   expect(r.storm.streakVisible).toBe(true);
   expect(r.storm.splashVisible).toBe(true);
   expect(r.storm.capacity).toBeGreaterThan(1000);
-  // 后处理链与湿地面都接线
-  expect(r.hasPipeline).toBe(true);
-  expect(r.gradeEnabled).toBe(1);
+  // 湿表面接线（v3.31：不再有后处理链）
   expect(r.wet).toBeGreaterThan(0);
 });
 
@@ -135,8 +131,8 @@ test('雨天光影：雨丝真的画出像素（Tier 4 差分，开关单变量�
   const total = PNG.sync.read(on).width * PNG.sync.read(on).height;
   const ratio = diff / total;
   console.log('STORM PIXELS:', JSON.stringify({ diff, total, ratio: +ratio.toFixed(4) }));
-  // 雨丝 + 水花 + 雾 + bloom + 暗角 ⇒ 差异必须显著（不是零）
-  expect(ratio, '开启雨天档后画面必须有显著变化（零差异 = 整条链没上屏）')
+  // 雨丝 + 水花 + 湿表面 ⇒ 差异必须显著（不是零）
+  expect(ratio, '开启雨天档后画面必须有显著变化（零差异 = 雨与湿表面都没上屏）')
     .toBeGreaterThan(0.01);
 });
 
@@ -241,7 +237,7 @@ test('雨天光影：玩家飞到云上时雨幕不跟着上去', async ({ page 
   expect(r.high).toBeLessThan(80);                    // 没跟着飞到 80
 });
 
-test('雨天光影：关闭后逐位回到改动前（雨丝/水花/湿/链全关）', async ({ page }) => {
+test('雨天光影：关闭后逐位回到改动前（雨丝/水花/湿表面全关）', async ({ page }) => {
   test.setTimeout(240_000);
   await BOOT(page);
   const r = await page.evaluate(async () => {
@@ -251,7 +247,6 @@ test('雨天光影：关闭后逐位回到改动前（雨丝/水花/湿/链全�
     const on = {
       streak: g.stormRain.streakMesh.visible,
       wet: g.renderWorld.materials.wet.uWet.value,
-      grade: g.stormGrade.uniforms.uEnabled.value,
       drawCalls: g.renderStats().drawCalls,
     };
     g.setStormLighting(false);
@@ -260,7 +255,6 @@ test('雨天光影：关闭后逐位回到改动前（雨丝/水花/湿/链全�
       streak: g.stormRain.streakMesh.visible,
       splash: g.stormRain.splashMesh.visible,
       wet: g.renderWorld.materials.wet.uWet.value,
-      grade: g.stormGrade.uniforms.uEnabled.value,
       drawCalls: g.renderStats().drawCalls,
       stormActive: g.stormLighting,
     };
@@ -269,12 +263,10 @@ test('雨天光影：关闭后逐位回到改动前（雨丝/水花/湿/链全�
   console.log('STORM OFF:', JSON.stringify(r));
   expect(r.on.streak).toBe(true);
   expect(r.on.wet).toBeGreaterThan(0);
-  expect(r.on.grade).toBe(1);
   expect(r.off.stormActive).toBe(false);
   expect(r.off.streak).toBe(false);
   expect(r.off.splash).toBe(false);
   expect(r.off.wet).toBe(0);
-  expect(r.off.grade).toBe(0);
 });
 
 test('雨天光影：雨声换成上游雨床，且与既有 rain 互斥', async ({ page }) => {
@@ -303,24 +295,24 @@ test('雨天光影：雨声换成上游雨床，且与既有 rain 互斥', async
   expect(r.off.rain_storm === undefined || r.off.rain_storm.playing === false).toBe(true);
 });
 
-test('雨天光影：性能档雨丝减半、bloom 级数减一', async ({ page }) => {
+test('雨天光影：性能档雨丝减半（v3.31：bloom 已删，不再有级数）', async ({ page }) => {
   test.setTimeout(240_000);
   await BOOT(page);
   const r = await page.evaluate(async () => {
-    const g = window.__MC_GAME__;
-    const { stormStreakCount, stormBloomLevels } = await Promise.all([
-      import('/src/render/storm-rain-config.js'),
-      import('/src/render/storm-grade-config.js'),
-    ]).then(([a, b]) => ({ stormStreakCount: a.stormStreakCount, stormBloomLevels: b.stormBloomLevels }));
+    const { stormStreakCount } = await import('/src/render/storm-rain-config.js');
+    const gradeGone = await import('/src/render/storm-grade-config.js')
+      .then(() => false).catch(() => true);
     return {
       sharpCount: stormStreakCount('sharp'),
       perfCount: stormStreakCount('performance'),
-      sharpLevels: stormBloomLevels('sharp'),
-      perfLevels: stormBloomLevels('performance'),
+      gradeGone,
+      hasGrade: !!window.__MC_GAME__.stormGrade,
     };
   });
   console.log('STORM PERF:', JSON.stringify(r));
   expect(r.perfCount).toBeLessThan(r.sharpCount);
   expect(r.perfCount).toBe(Math.floor(r.sharpCount / 2));
-  expect(r.perfLevels).toBe(r.sharpLevels - 1);
+  // 结构性防线：后处理链已整体删除（防将来凭直觉补齐而让高空光晕复活）
+  expect(r.gradeGone, 'storm-grade-config.js 必须已删除').toBe(true);
+  expect(r.hasGrade, 'Game 不得再持有 stormGrade').toBe(false);
 });
