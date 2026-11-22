@@ -70,11 +70,17 @@ async function routeModule(page, file, transform) {
  * 造一个「云 + 岩壁 + 地面」同框的夹具，并把相机摆好。
  *
  * 几何（全部走唯一写入口 editor）：
- *   · 地面：y=P 铺 25×25 石头（玩家脚下那一层）
+ *   · 地面：y=P 铺 25×25 石头
  *   · 岩壁：x∈[-8,8]、y∈[P+1,P+6]、z=oz-6（法线 ±Z，正对相机）
- *   · 云簇：y=P+16 的 7×7 cloud（远高于地面 ⇒ 上游那套投影必然错位）
- *   · 其余上方清空（避免既有建筑污染取样区）
- * 相机：站在墙南侧 12 格、眼高 P+3，仰角约 +0.25 ⇒ 下半屏地面、中部墙、上部云。
+ *   · 云簇：y=P+16..P+18 的 9×9×3 cloud（**加厚**：1 格厚在屏幕上只有几像素高）
+ *   · 其余上方清空
+ *
+ * ⚠️⚠️ **取样区由真实投影算出，不写死相对坐标**（本轮实测的判据坑）：
+ * 上一版写死 cloud=[0.30,0.02,0.70,0.20] / wall=[0.30,0.34,0.70,0.52]，
+ * 而真实投影是 cloudCenter fy=0.043、wallMid fy=0.641、wallTop fy=0.500
+ * ⇒ 那两个区**取到的是天空**，「云/墙不变」两条判据恒真
+ * （负向注入落地却 frac 不变，正是这个原因）。
+ * ⇒ 现在把每类几何的 8 个角点 project 到屏幕，取包围盒并内缩 15% 防边缘混入。
  */
 async function buildScene(page) {
   const geo = await page.evaluate(async () => {
@@ -87,48 +93,98 @@ async function buildScene(page) {
     const changes = [];
     // 清空上方（云/空岛/建筑）
     for (let y = P + 1; y <= P + 24; y++) {
-      for (let dx = -14; dx <= 14; dx++) for (let dz = -14; dz <= 14; dz++) {
+      for (let dx = -14; dx <= 14; dx++) for (let dz = -14; dz <= 22; dz++) {
         if (g.world.getBlockId(ox + dx, y, oz + dz) !== 0) changes.push({ x: ox + dx, y, z: oz + dz, id: 0 });
       }
     }
     // 地面
-    for (let dx = -12; dx <= 12; dx++) for (let dz = -12; dz <= 12; dz++) {
+    for (let dx = -12; dx <= 12; dx++) for (let dz = -12; dz <= 20; dz++) {
       changes.push({ x: ox + dx, y: P, z: oz + dz, id: stone });
     }
     // 岩壁（法线 ±Z）
     for (let dx = -8; dx <= 8; dx++) for (let dy = 1; dy <= 6; dy++) {
       changes.push({ x: ox + dx, y: P + dy, z: oz - 6, id: stone });
     }
-    // 云簇
-    for (let dx = -3; dx <= 3; dx++) for (let dz = -3; dz <= 3; dz++) {
-      changes.push({ x: ox + dx, y: P + 16, z: oz - 6 + dz, id: cloud });
+    // 云簇（加厚到 3 格，否则屏幕上取不到样）
+    for (let dx = -4; dx <= 4; dx++) for (let dz = -4; dz <= 4; dz++) for (let dy = 16; dy <= 18; dy++) {
+      changes.push({ x: ox + dx, y: P + dy, z: oz - 6 + dz, id: cloud });
     }
     g.editor.setBlocks(changes);
     return { ox, oz, P };
   });
   await waitWorldStable(page);
-  await page.evaluate(({ ox, oz, P }) => {
+  const regions = await page.evaluate(({ ox, oz, P }) => {
     const g = window.__MC_GAME__;
     g.setStormLighting(true);
     g.renderer.setAnimationLoop(null);
     g.stormRain.setEnabled(false);      // 雨丝会污染差分 ⇒ 只量湿表面
     g.player.physics.step = () => {};
     g.camera.up.set(0, 1, 0);
-    g.camera.position.set(ox + 0.5, P + 3, oz + 6.5);
-    g.camera.lookAt(ox + 0.5, P + 6, oz - 6);
+    /**
+     * 机位由**几何算出**，不凭直觉（本轮实测）：
+     * 相机 fov=70°（半角 35°）。三个目标相对眼高的仰角：
+     *   云 y=P+17（+14）、墙 y=P+3.5（+0.5）、地面 y=P+1（−2）
+     * 相机在 oz+d 处、看向 z=oz-6：span(d=16)=37.0° < 70°×0.85 ⇒ 三者均入画。
+     * 上一版用 d=3.5 + lookAt(P+8) 时实测 cloud fy=−0.116、ground fy=1.621
+     * ⇒ 云与地面**都在画面外**，夹具前提断言当场抦下（那正是它存在的意义）。
+     */
+    const camZ = oz + 16;
+    const camY = P + 3;
+    g.camera.position.set(ox + 0.5, camY, camZ);
+    // 看向「云与地面的中点」：pitch ≈ +11.8°（上表 d=16 行）
+    const pitch = 11.8 * Math.PI / 180;
+    g.camera.lookAt(ox + 0.5, camY + Math.tan(pitch) * 22, camZ - 22);
     g.camera.updateMatrixWorld();
     g.camera.updateProjectionMatrix();
+    const V = g.camera.position.constructor;
+    /** 一组世界角点 → 屏幕相对包围盒（内缩 15%，钳到 [0.02,0.98]） */
+    const box = (pts) => {
+      let x0 = 1e9; let x1 = -1e9; let y0 = 1e9; let y1 = -1e9; let ok = 0;
+      for (const [x, y, z] of pts) {
+        const v = new V(x, y, z); v.project(g.camera);
+        if (v.z > 1) continue;                     // 在相机后方
+        const fx = v.x * 0.5 + 0.5; const fy = -v.y * 0.5 + 0.5;
+        x0 = Math.min(x0, fx); x1 = Math.max(x1, fx);
+        y0 = Math.min(y0, fy); y1 = Math.max(y1, fy); ok++;
+      }
+      if (ok < 4) return null;
+      const mx = (x1 - x0) * 0.15; const my = (y1 - y0) * 0.15;
+      const c = (v) => Math.max(0.02, Math.min(0.98, v));
+      return [c(x0 + mx), c(y0 + my), c(x1 - mx), c(y1 - my)];
+    };
+    const corners = (xa, xb, ya, yb, za, zb) => {
+      const out = [];
+      for (const x of [xa, xb]) for (const y of [ya, yb]) for (const z of [za, zb]) out.push([x, y, z]);
+      return out;
+    };
+    const fyOf = (x, y, z) => { const v = new V(x, y, z); v.project(g.camera); return +(-v.y * 0.5 + 0.5).toFixed(3); };
+    return {
+      // 云：朝相机那一面（z = oz-2 是云簇近边）
+      cloud: box(corners(ox - 3, ox + 4, P + 16, P + 18.5, oz - 2, oz - 1.5)),
+      // 墙：朝相机那一面（z = oz-5），取中段
+      wall: box(corners(ox - 6, ox + 7, P + 2, P + 5.5, oz - 5, oz - 4.9)),
+      // 地面：墙前方到相机之间那一段（相机已退到 oz+16，故取 oz+2..oz+10）
+      ground: box(corners(ox - 8, ox + 9, P + 1, P + 1.01, oz + 2, oz + 10)),
+      proj: {
+        cloudMid: fyOf(ox + 0.5, P + 17, oz - 2),
+        wallMid: fyOf(ox + 0.5, P + 3.5, oz - 5),
+        groundMid: fyOf(ox + 0.5, P + 1, oz),
+      },
+    };
   }, geo);
   await page.waitForTimeout(700);
-  return geo;
+  console.log('SCENE REGIONS:', JSON.stringify(regions));
+  // 前提断言：三个区都必须算出来、不退化、且上下不重叠
+  // （否则判据取样在别的东西上 = 恒真，本轮已踩过）
+  for (const k of ['cloud', 'wall', 'ground']) {
+    if (!regions[k]) throw new Error(`[夹具] ${k} 区投影失败（角点不足 4 个在视锥内）`);
+    const [x0, y0, x1, y1] = regions[k];
+    if (!(x1 > x0 && y1 > y0)) throw new Error(`[夹具] ${k} 区退化：${regions[k]}`);
+  }
+  if (!(regions.cloud[3] < regions.wall[1])) throw new Error(`[夹具] 云区必须在墙区上方：${JSON.stringify(regions)}`);
+  if (!(regions.wall[3] < regions.ground[1])) throw new Error(`[夹具] 墙区必须在地面区上方：${JSON.stringify(regions)}`);
+  return { ...geo, regions };
 }
-
-/** 三个取样区（相对屏幕坐标）：云 / 墙 / 地面 */
-const REGIONS = {
-  cloud: [0.30, 0.02, 0.70, 0.20],
-  wall: [0.30, 0.34, 0.70, 0.52],
-  ground: [0.15, 0.78, 0.85, 0.97],
-};
 
 function regionDiff(on, off, [fx0, fy0, fx1, fy1]) {
   let n = 0; let changed = 0; let sumOn = 0; let sumOff = 0;
@@ -151,8 +207,8 @@ function regionDiff(on, off, [fx0, fy0, fx1, fy1]) {
   };
 }
 
-/** 单变量 uWet 0↔1，返回三区读数 */
-async function wetAB(page) {
+/** 单变量 uWet 0↔1，返回三区读数（regions 由 buildScene 的**真实投影**给出） */
+async function wetAB(page, regions) {
   const grab = async (v) => {
     await page.evaluate((w) => {
       const g = window.__MC_GAME__;
@@ -165,25 +221,38 @@ async function wetAB(page) {
   const off = await grab(0);
   const on = await grab(1);
   const out = {};
-  for (const [k, r] of Object.entries(REGIONS)) out[k] = regionDiff(on, off, r);
+  for (const k of ['cloud', 'wall', 'ground']) out[k] = regionDiff(on, off, regions[k]);
   return { out, on, off };
 }
 
 test('湿表面①：云与岩壁零光晕，同时地面必须显著变湿（用户报告缺陷的直接防线）', async ({ page }) => {
   test.setTimeout(300_000);
   const errs = await BOOT(page);
-  await buildScene(page);
-  const { out } = await wetAB(page);
+  const scene = await buildScene(page);
+  const { out } = await wetAB(page, scene.regions);
   console.log('WET ZERO-GLOW:', JSON.stringify(out));
   // 云：完全不湿（NONE 类）⇒ 逐位不变
-  expect(out.cloud.frac, `云区不得被湿表面改变（缺陷态：云吃满强度湿分支 ⇒ 高空光晕）`)
+  expect(out.cloud.frac, '云区不得被湿表面改变（缺陷态：云吃满强度湿分支 ⇒ 高空光晕）')
     .toBeLessThan(0.02);
-  // 墙：只有极弱压暗与极弱广角反光 ⇒ 变化远小于地面
-  expect(out.wall.frac, '墙面变化必须远小于地面（缺陷态：竖直长条亮带）')
-    .toBeLessThan(out.ground.frac * 0.5);
+  /**
+   * ⚠️⚠️ **墙面必须量「亮度幅度」而不是「变化像素计数」**（本轮实测的判据坑）：
+   * 光晕的定义是「局部**变亮**」，而正确实现是「轻微**压暗**」。
+   * 实测：墙面 up=0 ⇒ wet 0.187、albedo 乘数 0.9476（压暗 **5.2%**）、
+   * reflK **0.001666**（反光近乎零）；顶面对照压暗 23.8%。
+   * 5% 压暗会让大量像素超过 d>8 的计数阈值（实测 frac 0.667），
+   * 但那**不是光晕** —— 用计数当判据会把正确实现判成红。
+   * 缺陷态（上游那套）在墙面 reflK 上限 0.283 ⇒ **必然变亮**，下面两条都能抓。
+   */
+  const wallDelta = out.wall.lumaOn - out.wall.lumaOff;
+  const groundDelta = out.ground.lumaOn - out.ground.lumaOff;
+  expect(wallDelta, `墙面不得变亮（缺陷态：竖直长条亮带），实测 Δluma=${wallDelta.toFixed(1)}`)
+    .toBeLessThanOrEqual(0.5);
+  expect(Math.abs(wallDelta), '墙面压暗幅度必须远小于顶面（墙面只极弱湿）')
+    .toBeLessThan(Math.abs(groundDelta) * 0.5);
   // 地面：必须显著变（防「整体没生效」的恒真）
   expect(out.ground.frac, '地面必须显著变湿（0 = 湿表面根本没上屏）')
     .toBeGreaterThan(0.10);
+  expect(groundDelta, '地面必须真的压暗（湿表面比干表面暗）').toBeLessThan(-2);
   expect(errs, '不得有 console 错误').toEqual([]);
 });
 
@@ -263,34 +332,44 @@ test('湿表面②：材质分层 —— 同法线单变量下反光强度按类
     }
     return { luma: +(sum / n).toFixed(2), over: +(bright / n).toFixed(5) };
   };
-  // 从「完全不湿」到「布」到「土」到「木」到「石」到「抛光」——specGain 递增
+  /**
+   * ⚠️⚠️ **darken 一律固定为 1**（本轮实测的判据坑）：
+   * 最终 luma 同时吃「压暗」与「反光」两个**反向**项 —— SOIL 压暗最狠（0.62），
+   * 尽管它的反光比 FABRIC 强，最终 luma 反而更低。用最终 luma 排序会把
+   * 「分类正确」判成红（实测 wood 168.89 > stone 166.91）。
+   * ⇒ 本用例只量**反光项**：把 darken 钉成 1，让 rough/specGain 成为唯一变量。
+   * 压暗那一侧由用例①的「地面 frac > 0.10」覆盖。
+   *
+   * 序关系取自 CPU 同构纯函数的分解实测（反光增量，线性空间）：
+   *   FABRIC 0.00021 < SOIL 0.00123 < WOOD 0.00185 < STONE 0.00286 < POLISHED 0.00863
+   * （PLANT 因 wetGain 0.35 更低，单独排在最前）
+   */
   const ladder = {
     none: [0, 1, 1, 0],
-    fabric: [1, 0.55, 0.90, 0.04],
-    plant: [0.35, 0.88, 0.85, 0.05],
-    soil: [1, 0.62, 0.62, 0.18],
-    wood: [0.80, 0.74, 0.45, 0.35],
-    stone: [0.85, 0.72, 0.35, 0.45],
-    polished: [1, 0.82, 0.06, 1.00],
+    fabric: [1, 1, 0.90, 0.04],
+    soil: [1, 1, 0.62, 0.18],
+    wood: [1, 1, 0.45, 0.35],
+    stone: [1, 1, 0.35, 0.45],
+    polished: [1, 1, 0.06, 1.00],
   };
   const r = {};
   for (const [k, p] of Object.entries(ladder)) r[k] = await grab(p);
   console.log('WET MATERIAL LADDER:', JSON.stringify(r));
-  // 反光强度单调（luma 越高 = 混入的天空色越多）
+  // 反光强度单调（darken 恒 1 ⇒ luma 越高 = 混入的天空色越多）
   expect(r.polished.luma, '抛光 > 石').toBeGreaterThan(r.stone.luma);
   expect(r.stone.luma, '石 > 木').toBeGreaterThan(r.wood.luma);
   expect(r.wood.luma, '木 > 土').toBeGreaterThan(r.soil.luma);
   expect(r.soil.luma, '土 > 布').toBeGreaterThan(r.fabric.luma);
-  expect(r.fabric.luma, '布 > 不湿').toBeGreaterThan(r.none.luma - 0.01);
-  // 分类退化的反向防线：若把四类参数写成一样，上面四条会全红
+  expect(r.fabric.luma, '布 > 不湿（布几乎无镜面，但仍有一点）').toBeGreaterThan(r.none.luma);
+  // 分类退化的反向防线：若把各类参数写成一样，上面五条会全红
   expect(errs, '不得有 console 错误').toEqual([]);
 });
 
 test('湿表面③：不过曝（反光是 mix 不是 add）', async ({ page }) => {
   test.setTimeout(300_000);
   await BOOT(page);
-  await buildScene(page);
-  const { on, off } = await wetAB(page);
+  const scene = await buildScene(page);
+  const { on, off } = await wetAB(page, scene.regions);
   const overFrac = (png) => {
     let n = 0; let b = 0;
     for (let i = 0; i < png.width * png.height; i++) {
@@ -309,14 +388,17 @@ test('湿表面③：不过曝（反光是 mix 不是 add）', async ({ page }) 
 test('湿表面④：积水斑不是轴对齐矩形（连续噪声，不是 hash(floor)）', async ({ page }) => {
   test.setTimeout(300_000);
   await BOOT(page);
-  await buildScene(page);
-  const { on, off } = await wetAB(page);
+  const scene = await buildScene(page);
+  const { on, off } = await wetAB(page, scene.regions);
   // 量**效应层自身**（开−关差分）的「相邻像素差为 0 的比例」：
   // 硬格子 ⇒ 该比例极高（同一 cell 整体同值）；连续噪声 ⇒ 接近场景水平。
+  // ⚠️ 取样区用**真实投影**给出的地面区（不写死相对坐标）。
+  const [gx0, gy0, gx1, gy1] = scene.regions.ground;
+  const bounds = (p) => [Math.floor(p.width * gx0), Math.floor(p.height * gy0),
+    Math.floor(p.width * gx1), Math.floor(p.height * gy1)];
   const sameRate = (dx, dy) => {
     let n = 0; let same = 0;
-    const x0 = Math.floor(on.width * 0.15); const x1 = Math.floor(on.width * 0.85);
-    const y0 = Math.floor(on.height * 0.78); const y1 = Math.floor(on.height * 0.97);
+    const [x0, y0, x1, y1] = bounds(on);
     const d = (p, x, y) => {
       const o = (y * p.width + x) * 4;
       return (p.data[o] - off.data[o]) + (p.data[o + 1] - off.data[o + 1]) + (p.data[o + 2] - off.data[o + 2]);
@@ -329,8 +411,7 @@ test('湿表面④：积水斑不是轴对齐矩形（连续噪声，不是 hash
   };
   const sceneSame = (() => {
     let n = 0; let same = 0;
-    const x0 = Math.floor(on.width * 0.15); const x1 = Math.floor(on.width * 0.85);
-    const y0 = Math.floor(on.height * 0.78); const y1 = Math.floor(on.height * 0.97);
+    const [x0, y0, x1, y1] = bounds(off);
     for (let y = y0; y < y1; y++) for (let x = x0; x < x1 - 1; x++) {
       const o = (y * off.width + x) * 4; const p = o + 4;
       n++;
@@ -340,9 +421,15 @@ test('湿表面④：积水斑不是轴对齐矩形（连续噪声，不是 hash
   })();
   const eff = sameRate(1, 0);
   console.log('WET PUDDLE CONTINUITY:', JSON.stringify({ eff: +eff.toFixed(4), scene: +sceneSame.toFixed(4) }));
-  // 硬格子态该比例会接近 1（v3.30d 实测 82%）；连续噪声应远低于它
-  expect(eff, '积水斑不得是硬格子（相邻像素差分恒等的比例过高 = 轴对齐矩形斑）')
-    .toBeLessThan(0.60);
+  /**
+   * ⚠️⚠️ **必须用相对判据，不能用绝对阈值**（本轮实测的判据坑）：
+   * 本机位地面是匀质石头贴图，**场景本身**的相邻像素相同率就有 0.8521，
+   * 效应层 0.8506 与它几乎相同 —— 写「eff < 0.60」会把正确实现判成红。
+   * 硬格子（hash(floor)）的形态是效应层**显著高于**场景水平
+   * （v3.30d 实测：雨幕层 82.06% vs 场景 4.6%）⇒ 判据是「不得显著高于场景」。
+   */
+  expect(eff, `积水斑不得比场景本身更「块状」（效应层 ${eff.toFixed(4)} vs 场景 ${sceneSame.toFixed(4)}）`)
+    .toBeLessThan(sceneSame + 0.05);
 });
 
 test('湿表面⑤：关闭后逐位回到未开启（同一 page 内单变量）', async ({ page }) => {
@@ -432,8 +519,8 @@ test('负向①：把 cloud 改成 STONE ⇒ 零光晕判据必须 FAIL', async 
   console.log('NEG-CLOUD INJECT:', JSON.stringify(injected));
   expect(injected.hasOld, '注入须真的落地').toBe(true);
   expect(injected.hasNew, '原写法须已被替换').toBe(false);
-  await buildScene(page);
-  const { out } = await wetAB(page);
+  const scene = await buildScene(page);
+  const { out } = await wetAB(page, scene.regions);
   console.log('NEG-CLOUD ZERO-GLOW:', JSON.stringify(out));
   expect(out.cloud.frac, '注入后云区必须被改变（否则判据对缺陷零判别力）')
     .toBeGreaterThan(0.02);
@@ -447,13 +534,18 @@ test('负向②：把反光 mix 改成 add ⇒ 不过曝判据必须 FAIL', asyn
   await BOOT(page);
   const injected = await page.evaluate(async () => {
     const src = await (await fetch('/src/render/wet-surface.js')).text();
-    return { hasAdd: src.includes('skyEnv.mul(reflK.mul(6.0))'), hasMix: src.includes('mix(albedo, skyEnv, reflK)') };
+    // ⚠️ 只看**代码行**：jsdoc 里也有同串公式说明，全文件 includes 会恒真
+    const codeLines = src.split('\n').filter((l) => !l.trim().startsWith('*') && !l.trim().startsWith('//'));
+    return {
+      hasAdd: codeLines.some((l) => l.includes('skyEnv.mul(reflK.mul(6.0))')),
+      hasMix: codeLines.some((l) => l.includes('mix(albedo, skyEnv, reflK)')),
+    };
   });
   console.log('NEG-ADD INJECT:', JSON.stringify(injected));
   expect(injected.hasAdd, '注入须真的落地').toBe(true);
   expect(injected.hasMix, '原写法须已被替换').toBe(false);
-  await buildScene(page);
-  const { on, off } = await wetAB(page);
+  const scene = await buildScene(page);
+  const { on, off } = await wetAB(page, scene.regions);
   const overFrac = (png) => {
     let n = 0; let b = 0;
     for (let i = 0; i < png.width * png.height; i++) {
