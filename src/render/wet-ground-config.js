@@ -143,6 +143,28 @@ export const WET_REFLECT_MIP = 2;
 export const WET_UP_EPS = 0.5;
 
 /**
+ * 水下排除门（v3.30g，用户「地面反光特效不要在水面以下出现」）。
+ *
+ * ⚠️⚠️ **必须是逐片元门，不能只靠 CPU 的 `uWet` 总强度**：
+ * 站在岸上看湖底是「**相机在水上、片元在水下**」—— 总强度门对它零判别力。
+ *
+ * 判据：片元世界 y **严格小于**水面高度 ⇒ wet 归 0（mix 取左端，逐位回到原色）。
+ * 水面高度取 `water-surface.js` 的 `WATER_SURFACE_Y`（= −1.5）—— 本仓所有暴露水面
+ * 严格共面（三处写水都以 SEA_Y 为上界 + mesher 统一下沉），该前提由
+ * `test-water-surface.js` 用**真实 fillColumn** 钉住。
+ *
+ * ⚠️ 取**严格**不等号：恰好共面不算水下（防边界逐帧翻转）。
+ *
+ * @param {number} worldY 片元世界高度
+ * @param {number} waterY 水面高度
+ * @returns {number} 1 = 可湿（0 = 水下，完全不湿）
+ */
+export function wetAboveWaterGate(worldY, waterY) {
+  if (!Number.isFinite(worldY) || !Number.isFinite(waterY)) return 1;
+  return worldY < waterY ? 0 : 1;
+}
+
+/**
  * 湿度 → 有效强度的纯函数（上游 clamp 口径）。
  * @param {number} strength 0..1（总开关）
  * @param {number} up 面法线 y（0..1）

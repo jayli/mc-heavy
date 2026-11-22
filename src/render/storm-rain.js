@@ -29,7 +29,8 @@ import {
   createStormStreakGeometry, createStormStreakMaterial,
   createStormSplashGeometry, createStormSplashMaterial,
 } from './storm-rain-material.js';
-import { rainShelterY, isUnderRoof, rainBoxCenterY, RAIN_CEILING_Y } from './rain-shelter.js';
+import { rainStopY, isUnderRoof, rainBoxCenterY, RAIN_CEILING_Y } from './rain-shelter.js';
+import { waterSurfaceYAt } from './water-surface.js';
 
 
 /** 遮挡解析的节流（秒）= 10Hz。雨滴位置每帧在动，但**遮挡关系**变化慢。 */
@@ -205,6 +206,7 @@ export class StormRain {
     const seedAttr = this.streakGeo.getAttribute('aSeed');
     const minYAttr = this.streakGeo.getAttribute('aMinY');
     const shAttr = this.streakGeo.getAttribute('aShelter');
+    const wcAttr = this.streakGeo.getAttribute('aWaterCol');
     const end = Math.min(this._shelterCursor + SHELTER_BATCH, this.capacity);
     const half = [ST.box[0] / 2, ST.box[1] / 2, ST.box[2] / 2];
     let sheltered = 0;
@@ -220,8 +222,18 @@ export class StormRain {
       const wx = mod(rawX - this._center.x + half[0], ST.box[0]) - half[0] + this._center.x;
       const wy = mod(rawY - this._center.y + half[1], ST.box[1]) - half[1] + this._center.y;
       const wz = mod(rawZ - this._center.z + half[2], ST.box[2]) - half[2] + this._center.z;
-      // 截停面（屋顶/地面顶面）；null ⇒ 无截停
-      const shelter = rainShelterY(this.world, this.registry, wx, wz, wy, 24);
+      // 截停面（屋顶/地面顶面 **或水面**，取更高者）；null ⇒ 无截停
+      // ⚠️ v3.30g：用户「雨滴不要在水下出现」⇒ 雨丝钳在水面而不是穿过水落到湖底。
+      const shelter = rainStopY(this.world, this.registry, wx, wz, wy, 24);
+      /**
+       * 该列有没有暴露水面（v3.30g）—— GPU 侧水下门的**列级**因子。
+       * ⚠️ 与「滴的 y 在不在水下」分开：后者每帧在变，必须 GPU 逐顶点判；
+       * 前者（列的水陆属性）变化慢，10Hz 采样足够。
+       * ⚠️ 扫描起点与 rainStopY 同口径（否则飞高时窗口够不到水体 ⇒ 门静默失效）。
+       */
+      const wStart = Math.min(Math.floor(wy), RAIN_CEILING_Y);
+      const surf = waterSurfaceYAt(this.world, this.registry, wx, wz, wStart, 24);
+      wcAttr.setX(i, surf === null ? 0 : 1);
       if (shelter === null) {
         minYAttr.setX(i, -1e9);
         shAttr.setX(i, 0);
@@ -235,6 +247,7 @@ export class StormRain {
     }
     minYAttr.needsUpdate = true;
     shAttr.needsUpdate = true;
+    wcAttr.needsUpdate = true;
     this._shelterCursor = end >= this.capacity ? 0 : end;
     // 诊断计数取整轮的近似（每批覆盖 1/10，乘回去）
     this._shelteredDrops = Math.round(sheltered * (this.capacity / SHELTER_BATCH));
@@ -260,7 +273,9 @@ export class StormRain {
       const x = playerPos.x + Math.sin(a) * r;
       const z = playerPos.z + Math.cos(a) * r;
       // 落点：从眼高往上一点开始往下扫（上游 groundAt(x,z,camY+1.2,0.3)）
-      const y = rainShelterY(this.world, this.registry, x, z, playerPos.y + 1.6, 24);
+      // ⚠️ v3.30g：取 max(挡雨面, 水面) ⇒ **被水淹住的湖底不生成水花**，
+      // 而**湖面本身生成**（用户裁定）—— 落在水面顶面上。
+      const y = rainStopY(this.world, this.registry, x, z, playerPos.y + 1.6, 24);
       if (y === null) continue;
       if (y > playerPos.y + SP.maxAboveEye) continue;
       // 该点在屋顶下 ⇒ 不溅水花（用户约束①：室内不生效）

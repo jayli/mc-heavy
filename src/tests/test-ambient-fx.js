@@ -27,6 +27,15 @@ import {
 } from '../render/firefly-fx-material.js';
 import { FireflyFxRenderer } from '../render/firefly-fx.js';
 import { DEFAULT_SETTINGS, resolveSettings } from '../ui/settings.js';
+import { createRegistry } from '../voxel/block-registry.js';
+import { BLOCKS } from '../voxel/blocks-data.js';
+import { SEA_Y, WORLD_MIN_Y } from '../voxel/constants.js';
+import { WATER_SURFACE_Y } from '../render/water-surface.js';
+
+// v3.30g 水下排除用：真实 registry（判据走表，不写名字白名单）
+const WATER_REG = createRegistry();
+for (const def of BLOCKS) WATER_REG.register(def.name, def);
+WATER_REG.freeze();
 
 /** 取真正的 TSL 函数体（照 test-spike-sparks.js 的 nodeSource/nodeCode，含去注释） */
 function nodeSource(node, depth = 0) {
@@ -496,6 +505,125 @@ test('leaf 池: 地面暂未加载时不得把实例写成全 0，加载后须�
     assertTrue(o.getY(i) > 8, `第 ${i} 片须真的出生在地面之上（实得 ${o.getY(i)}）`);
     assertTrue(born.getX(i) > -100, `第 ${i} 片的 born 须已写入`);
   }
+  r.dispose();
+});
+
+// ---------- v3.30g：落叶不得在水下出现（用户裁定）----------
+
+/**
+ * 带水的假 world：同时实现 isSolid（物理口径）与 getBlockId（水体判据口径）。
+ * 湖底实心在 y = floorY，水从 floorY+1 填到 SEA_Y。
+ */
+function waterWorld(floorY = -8) {
+  const waterId = WATER_REG.idOf('water');
+  const sandId = WATER_REG.idOf('sand');
+  const w = {
+    calls: 0,
+    isSolid(_x, y, _z) { w.calls++; return y <= floorY; },
+    getBlockId(_x, y, _z) {
+      if (y < WORLD_MIN_Y) return WATER_REG.idOf('bedrock');
+      if (y <= floorY) return sandId;
+      if (y <= SEA_Y) return waterId;
+      return 0;
+    },
+  };
+  return w;
+}
+
+test('leaf 水下: 落点钳在水面而不是湖底（叶子不会全程在水下飘）', () => {
+  const w = waterWorld(-8);
+  const r = makeLeaf({ world: w, registry: WATER_REG, capacity: 24,
+    playerPos: { x: -400, y: 2, z: -400 } });
+  r.update({ x: -400, y: 2, z: -400 }, 0.016);
+  assertTrue(r.debugState().seeded > 0, '水面上方有出生带 ⇒ 应真的播种了');
+  const p = r.mesh.geometry.getAttribute(LEAF_ATTR.params);
+  const o = r.mesh.geometry.getAttribute(LEAF_ATTR.origin);
+  for (let i = 0; i < p.count; i++) {
+    if (o.getY(i) === 0) continue;   // 未播种
+    // minY = 落点 + floorOffset；落点必须 ≥ 水面
+    assertTrue(p.getX(i) >= WATER_SURFACE_Y - 1e-5,
+      `第 ${i} 片落点 ${p.getX(i)} 低于水面 ${WATER_SURFACE_Y} ⇒ 叶子会在水下`);
+    assertTrue(o.getY(i) >= WATER_SURFACE_Y - 1e-5,
+      `第 ${i} 片出生点 ${o.getY(i)} 在水下`);
+  }
+  r.dispose();
+});
+
+test('leaf 水下: 无水列行为逐位不变（零回归）', () => {
+  const dry = { calls: 0, isSolid(_x, y, _z) { dry.calls++; return y <= 8; },
+    getBlockId(_x, y, _z) { return y <= 8 ? WATER_REG.idOf('grass') : 0; } };
+  const withReg = makeLeaf({ world: dry, registry: WATER_REG, capacity: 16 });
+  const noReg = makeLeaf({ world: fakeWorld(), capacity: 16 });
+  withReg.update({ x: -400, y: 9, z: -400 }, 0.016);
+  noReg.update({ x: -400, y: 9, z: -400 }, 0.016);
+  assertEqual(withReg.debugState().seeded, noReg.debugState().seeded,
+    '陆地列上两条路径的播种数必须相同');
+  const pa = withReg.mesh.geometry.getAttribute(LEAF_ATTR.params);
+  const pb = noReg.mesh.geometry.getAttribute(LEAF_ATTR.params);
+  for (let i = 0; i < pa.count; i++) {
+    assertEqual(pa.getX(i), pb.getX(i), `第 ${i} 片的落点必须逐位相同`);
+  }
+  withReg.dispose(); noReg.dispose();
+});
+
+test('leaf 水下: 玩家自己潜在水里 ⇒ 不播种也不画（出生带整段在水下）', () => {
+  const w = waterWorld(-8);
+  const r = makeLeaf({ world: w, registry: WATER_REG, capacity: 16,
+    playerPos: { x: -400, y: -6, z: -400 } });
+  r.update({ x: -400, y: -6, z: -400 }, 0.016);
+  assertEqual(r.debugState().seeded, 0,
+    '水下无处可落 ⇒ 一片也不得播种（回落湖底就是用户报告的缺陷）');
+  assertEqual(r.debugState().underwater, true);
+  assertEqual(r.mesh.visible, false, '水下不得上屏');
+  // 浮回水面之上 ⇒ 立即恢复（不清缓冲、不需重建）
+  r.update({ x: -400, y: 2, z: -400 }, LEAF_FX.seedRetryInterval + 0.01);
+  assertEqual(r.debugState().underwater, false);
+  assertTrue(r.debugState().seeded > 0, '出水后须自愈播种');
+  assertEqual(r.mesh.visible, true);
+  r.dispose();
+});
+
+test('leaf 水下: 湖底下的干洞穴不算水下（头顶有水但中间隔岩层）', () => {
+  // 水在 y=−2..−1，岩层 y=−6..−3，洞穴空气 y=−8（玩家站这里）
+  const waterId = WATER_REG.idOf('water');
+  const stoneId = WATER_REG.idOf('stone');
+  const w = {
+    isSolid: (_x, y) => y <= -9 || (y >= -6 && y <= -3),
+    getBlockId(_x, y) {
+      if (y < WORLD_MIN_Y) return WATER_REG.idOf('bedrock');
+      if (y >= -2 && y <= -1) return waterId;
+      if (y >= -6 && y <= -3) return stoneId;
+      if (y <= -9) return stoneId;
+      return 0;   // 洞穴空气
+    },
+  };
+  const r = makeLeaf({ world: w, registry: WATER_REG, capacity: 8,
+    playerPos: { x: -400, y: -8, z: -400 } });
+  r.update({ x: -400, y: -8, z: -400 }, 0.016);
+  assertEqual(r.debugState().underwater, false,
+    '洞穴里头顶虽有水，但身体不在水里 ⇒ 不算水下（同 physics.inWater 口径）');
+  r.dispose();
+});
+
+test('leaf 水下: 玩家造的高处水面也能被识别（不依赖全局 −1.5）', () => {
+  // 本轮浏览器实测：森林机位在 y=56，玩家在那里造了一格水
+  // ⇒ 拿 WATER_SURFACE_Y（−1.5）做扫描下界会永远看不到它。
+  const waterId = WATER_REG.idOf('water');
+  const grassId = WATER_REG.idOf('grass');
+  const w = {
+    isSolid: (_x, y) => y <= 55,
+    getBlockId(_x, y) {
+      if (y < WORLD_MIN_Y) return WATER_REG.idOf('bedrock');
+      if (y === 56) return waterId;
+      if (y <= 55) return grassId;
+      return 0;
+    },
+  };
+  const r = makeLeaf({ world: w, registry: WATER_REG, capacity: 8,
+    playerPos: { x: -400, y: 55.7, z: -400 } });
+  r.update({ x: -400, y: 55.7, z: -400 }, 0.016);
+  assertEqual(r.debugState().underwater, true, 'y=56 的水面必须被识别（全局常量只对天然地形成立）');
+  assertEqual(r.mesh.visible, false);
   r.dispose();
 });
 

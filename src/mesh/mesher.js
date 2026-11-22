@@ -1,7 +1,7 @@
 // src/mesh/mesher.js — 逐面网格化（§4.3，DR-15）
 // Worker/主线程同构：本文件不得 import three。
 import { getFaceTile } from '../voxel/faces-data.js';
-import { SECTION_SIZE } from '../voxel/constants.js';
+import { SECTION_SIZE, WATER_SURFACE_SINK } from '../voxel/constants.js';
 import { DEBUG_FLAGS } from '../core/debug-config.js';
 
 // 面方向：0:+X, 1:-X, 2:+Y, 3:-Y, 4:+Z, 5:-Z
@@ -442,10 +442,10 @@ export const TEMPLATES = {
 const DOUBLE_SIDE_CUBES = new Set([]);
 
 // 暴露水面下沉（issue #2 遗留）：water/swamp_water 上方无 opaque/同类水覆盖时，
-// 顶面与侧面顶边下沉 0.5，与海面平面（SEA_Y+0.5）共面，消除俯视可见的蓝色顶面模。
+// 顶面与侧面顶边下沉 WATER_SURFACE_SINK，与海面平面（SEA_Y+0.5）共面，消除俯视可见的蓝色顶面模。
 // 方块逻辑/物理仍占整格，仅渲染几何下沉。
+// ⚠️ v3.30g：下沉量已提级到 `voxel/constants.js`（`render/water-surface.js` 共用同一口径）。
 const WATER_LIKE = new Set(['water', 'swamp_water']);
-const WATER_SURFACE_SINK = 0.5;
 // 不透明通道但同类相邻仍剔除共享面：cloud（M2-7 通道勘误，opaque 材质语义；
 // 云簇内部相邻面不发射，避免体素爆发；water/glass 走 cullMode>=2 同规则）
 const SAME_TYPE_CULL = new Set(['cloud']);

@@ -1284,6 +1284,7 @@ export class Game {
       ? new LeafFxRenderer({
         scene: this.scene,
         world: this.world,
+        registry: this.registry,
         seed: this.seed,
         colorResolver: blockColorResolver,
         playerPos: this.player.physics.pos,
@@ -1981,6 +1982,7 @@ export class Game {
       this.leafFx = new LeafFxRenderer({
         scene: this.scene,
         world: this.world,
+        registry: this.registry,
         seed: this.seed,
         colorResolver: resolver,
         playerPos: pp,

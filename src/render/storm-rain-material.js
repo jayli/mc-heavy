@@ -28,6 +28,7 @@ import {
   normalize, length, cross, Discard,
 } from 'three/tsl';
 import { STORM_STREAK as ST, STORM_SPLASH as SP } from './storm-rain-config.js';
+import { WATER_SURFACE_Y } from './water-surface.js';
 
 const QUAD_POS = Object.freeze([-0.5, 0, 0, 0.5, 0, 0, 0.5, 1, 0, -0.5, 1, 0]);
 const QUAD_IDX = Object.freeze([0, 1, 2, 0, 2, 3]);
@@ -74,16 +75,20 @@ function tuneAdditive(mat) {
  *   aSeed  [0,1)³ —— 盒内初始位置比例（上游 `position` 属性就是种子）
  *   aMinY  该滴的截停高度（CPU 按体素解析；−1e9 = 无截停）
  *   aShelter 该滴是否被屋顶完全遮住（0/1；1 ⇒ 整滴不可见）
+ *   aWaterCol 该滴所在列有没有暴露水面（0/1，v3.30g）—— 与 GPU 侧的
+ *             `uWaterY` 相乘成水下门；分开是因为「列有水」变化慢（可 10Hz 采样）
+ *             而「滴的 y」每帧在变（必须 GPU 逐顶点判）。
  *
  * ⚠️ **aMinY 与 aShelter 分开**：前者是「落到哪一层」（雨丝底部钳住），
  * 后者是「这一格整个在屋顶下」（整滴不画）。合成一个会丢掉「雨中庭」的情形
  * （头顶有盖但侧面漏雨 —— 上游用 shelter 贴图的高度比较表达，本仓两项等价）。
  */
 export function createStormStreakGeometry(capacity = ST.count) {
-  const g = instancedQuad(capacity, { aSeed: 3, aMinY: 1, aShelter: 1 });
+  const g = instancedQuad(capacity, { aSeed: 3, aMinY: 1, aShelter: 1, aWaterCol: 1 });
   const minY = g.getAttribute('aMinY');
   const sh = g.getAttribute('aShelter');
-  for (let i = 0; i < g.instanceCount; i++) { minY.setX(i, -1e9); sh.setX(i, 1); }
+  const wc = g.getAttribute('aWaterCol');
+  for (let i = 0; i < g.instanceCount; i++) { minY.setX(i, -1e9); sh.setX(i, 1); wc.setX(i, 0); }
   return g;
 }
 
@@ -111,6 +116,21 @@ export function createStormStreakMaterial({ skyDim, shadowStrength } = {}) {
     uShadowStrength: shadowStrength || uniform(1),
     // 雨幕盒心（装配层每帧写；已钳在云层之下）
     uCenter: uniform(new THREE.Vector3()),
+    /**
+     * v3.30g：**水面高度**（世界 y）—— GPU 侧水下门的基准。
+     *
+     * ⚠️⚠️ **为何不能只靠 CPU 的 `aShelter`**（本轮浏览器实测）：
+     * 雨丝在 18 格高的盒子里循环，而 `aShelter` 是 **10Hz 分批采样**的
+     * ⇒ 某滴被采样时在盒子顶部（水上、sh=0），下一帧已绕到盒底（水下）
+     * ⇒ sh 仍是 0 ⇒ **水下雨丝照样上屏**（实测 994 滴 sh=0 但位置在水下）。
+     *
+     * ⚠️⚠️ **但不能无条件把「y < 水面」当成水下**：本仓地形有低于海平面的
+     * **干坑/峡谷**（实测 29 滴在无水列且 y < −1.5）—— 那里的雨是合法的。
+     * ⇒ 与 `aWaterCol`（该列有没有暴露水面，CPU 逐列解析）相乘：
+     * **只有水体列才适用这道门**。列的水陆属性变化慢（不像滴的 y 每帧变）
+     * ⇒ 10Hz 采样对它足够，而对 y 不够 —— 两者分工正是本修法的要点。
+     */
+    uWaterY: uniform(WATER_SURFACE_Y),
   };
   const vCol = varyingProperty('vec3', 'vStormStCol');
   const vC = varyingProperty('vec2', 'vStormStC');
@@ -118,6 +138,7 @@ export function createStormStreakMaterial({ skyDim, shadowStrength } = {}) {
     const seed = attribute('aSeed', 'vec3');
     const minY = attribute('aMinY', 'float');
     const shelter = attribute('aShelter', 'float');
+    const waterCol = attribute('aWaterCol', 'float');
     const box = vec3(ST.box[0], ST.box[1], ST.box[2]);
     const sp = float(ST.speedMin).add(
       fract(seed.x.mul(7.31).add(seed.z.mul(3.17))).mul(ST.speedRange));
@@ -138,7 +159,16 @@ export function createStormStreakMaterial({ skyDim, shadowStrength } = {}) {
     // 遮雨门：低于截停高度 / 整格在屋顶下 ⇒ 宽度归零（整滴不可见）
     const aboveFloor = step(minY, p.y);
     const notSheltered = oneMinus(shelter);
-    const fade = near.mul(far).mul(aboveFloor).mul(notSheltered);
+    /**
+     * ⚠️⚠️ **水下门（v3.30g，用户「雨滴不要在水下出现」）**：
+     * 逐顶点判「该滴此刻是不是在水面之下」—— y 每帧在变，故这道门不能交给
+     * 10Hz 采样的 aShelter（实测会漏 994 滴）。而「该列有没有水」变化慢，
+     * 由 aWaterCol 给 ⇒ 两者相乘：水体列 ∧ y < 水面 ⇒ 不画。
+     * 干坑/峡谷（无水列）的雨不受影响。
+     * `mix(1, step(waterY, p.y), waterCol)`：waterCol=0 ⇒ 恒 1；=1 ⇒ 取水上判定。
+     */
+    const aboveWater = mix(float(1), step(U.uWaterY, p.y), waterCol);
+    const fade = near.mul(far).mul(aboveFloor).mul(notSheltered).mul(aboveWater);
     // 亮度：天空环境色（冷蓝）× 日夜。⚠️ 显式拆分量（口径⑤）
     const amb = vec3(0.62, 0.72, 0.92);
     const dim = mix(float(1), U.uSkyDim, U.uShadowStrength);
@@ -241,7 +271,7 @@ export function createStormSplashMaterial({ skyDim, shadowStrength } = {}) {
 
 /** 属性名清单（几何与渲染器共用，避免两处字面量漂移） */
 export const STORM_ATTRS = Object.freeze({
-  streak: Object.freeze(['aSeed', 'aMinY', 'aShelter']),
+  streak: Object.freeze(['aSeed', 'aMinY', 'aShelter', 'aWaterCol']),
   splash: Object.freeze(['aSpawn']),
 });
 

@@ -5,7 +5,7 @@
 import * as THREE from 'three';
 import { positionLocal, attribute, uniform, vec3, mod, max } from 'three/tsl';
 import { RAIN } from './weather.js';
-import { rainShelterY, RAIN_CEILING_Y } from './rain-shelter.js';
+import { rainStopY, RAIN_CEILING_Y } from './rain-shelter.js';
 
 /**
  * 雨滴效果（mc-lite RainEffect 移植）：LineSegments + TSL 顶点位移，
@@ -170,11 +170,15 @@ export class RainEffect {
    * 新判据：实心 && 非 cutout && 非 cloud，且扫描上界钳在最低云层之下。
    *
    * ⚠️ 本方法同时被旧雨效（循环雨滴）与新雨效（持续雨）消费 ⇒ 两条路径语义一致。
+   *
+   * ⚠️⚠️ **v3.30g 改走 `rainStopY`（= max(挡雨面, 水面)）**：用户「雨滴不要在
+   * 水下出现」对**两种雨**都成立，不只持续雨 —— 只改一边会留下「关雨天光影后
+   * 循环雨滴又掉进湖里」。
    */
   _resolveRainMinY(x, topY, z, playerY = 0) {
     const defaultMinY = playerY - (this.cycleHeight * 0.35);
     if (!this.world || typeof this.world.getBlockId !== 'function') return defaultMinY;
-    const shelter = rainShelterY(this.world, this.world.registry, x, z, topY, this.searchDepth);
+    const shelter = rainStopY(this.world, this.world.registry, x, z, topY, this.searchDepth);
     if (shelter === null) return defaultMinY;
     return shelter + this.floorOffset;
   }

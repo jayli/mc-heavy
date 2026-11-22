@@ -11,7 +11,7 @@ import {
 } from '../render/storm-rain-config.js';
 import {
   WET_RIPPLE, WET_PUDDLE, WET_REFLECT_STRENGTH, WET_ALBEDO_DARKEN,
-  wetnessAt, wetRippleFade, wetFresnel,
+  wetnessAt, wetRippleFade, wetFresnel, wetAboveWaterGate,
 } from '../render/wet-ground-config.js';
 import {
   STORM_FOG, STORM_BLOOM, STORM_GRADE,
@@ -19,6 +19,8 @@ import {
 } from '../render/storm-grade-config.js';
 import { CARBINE_AUDIO_IDS } from '../render/carbine-audio-recipes.js';
 import { RAIN_CEILING_Y } from '../render/rain-shelter.js';
+import { WATER_SURFACE_Y } from '../render/water-surface.js';
+import { WATER_LEVEL_OFFSET } from '../render/ocean.js';
 
 function assertClose(a, b, eps = 1e-9, msg = '') {
   if (!(Math.abs(a - b) <= eps)) throw new Error(`${msg ? msg + ': ' : ''}期望 ${b}±${eps}，实际 ${a}`);
@@ -140,6 +142,23 @@ test('storm audio: 雨声与雷声 id 都在烘焙产物清单里（拼错 = 静
 });
 
 // ---------- 湿地面 ----------
+
+test('wet ground: 水下门 —— 片元在水面以下恒不湿（v3.30g 用户裁定）', () => {
+  const W = WATER_SURFACE_Y;
+  assertEqual(wetAboveWaterGate(W - 0.01, W), 0, '水面之下 ⇒ 不湿');
+  assertEqual(wetAboveWaterGate(W - 5, W), 0, '湖底 ⇒ 不湿');
+  assertEqual(wetAboveWaterGate(W, W), 1, '恰好共面 ⇒ 算水上（边界不抖）');
+  assertEqual(wetAboveWaterGate(W + 0.01, W), 1, '水面之上 ⇒ 可湿');
+  assertEqual(wetAboveWaterGate(22, W), 1, '陆地高处 ⇒ 可湿');
+  // 非法输入退化为「可湿」（不因 NaN 把整片地面关掉）
+  assertEqual(wetAboveWaterGate(NaN, W), 1);
+  assertEqual(wetAboveWaterGate(22, NaN), 1);
+});
+
+test('wet ground: 水下门的水面基准与海面平面共面（两份口径不得漂）', () => {
+  assertClose(WATER_SURFACE_Y, WATER_LEVEL_OFFSET, 1e-12,
+    '湿地面水下门与海面平面必须同高（否则湖底门与实际水面错位）');
+});
 
 test('wet ground: 湿度公式 = 上游 clamp(uWet*(0.3+0.7*up+0.55*streak))', () => {
   assertClose(wetnessAt(1, 1, 0), 1, 1e-12, '朝上无纹 ⇒ 0.3+0.7=1');

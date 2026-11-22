@@ -149,6 +149,7 @@ const PIXEL = [
   'm3-rain',
   'storm-rain-visual',  // v3.30d/e 雨幕无竖纹 + 湿地面近中远反光 + 天空不撕碎
   'storm-lighting',    // v3.30 雨天光影档：开关/持续雨/室内门/遮挡/高度/湿地面/后处理/雨声
+  'storm-underwater',  // v3.30g 颗粒各向同性（CRT 竖纹根因）+ 四项水下排除
 ];
 
 /**
@@ -183,6 +184,7 @@ export const SPEC_TIERS = {
 export const UNIT_NODE_SAFE = [
   'test-ambient-fx.js',
   'test-carbine.js', 'test-carbine-fx.js', 'test-rain-shelter.js', 'test-storm-rain.js', 'test-ground-reflect.js',
+  'test-water-surface.js',
   'test-arena-gen.js', 'test-arena.js', 'test-azalea-trees-gen.js', 'test-azalea-trees.js',
   'test-block-color.js', 'test-block-hit-fx.js', 'test-boss-agent.js', 'test-boss-hit-sound.js',
   'test-boss-map.js', 'test-budget.js', 'test-burning-arena-gen.js', 'test-bush-grass-gen.js',

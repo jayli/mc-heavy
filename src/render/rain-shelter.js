@@ -28,6 +28,7 @@
 // 本文件不 import three（Node 单测直接构造 registry + 假 world 即可断言）。
 import { WORLD_MIN_Y } from '../voxel/constants.js';
 import { CLOUD_CLUSTER_Y } from '../gen/structures/sky-structures.js';
+import { waterSurfaceYAt } from './water-surface.js';
 
 /**
  * 雨幕的**绝对高度上界**（世界 y，开区间上界）。
@@ -126,4 +127,43 @@ export function isUnderRoof(world, registry, x, y, z, headroom = 24) {
 export function rainBoxCenterY(playerY, boxHeight) {
   const half = boxHeight / 2;
   return Math.min(playerY, RAIN_CEILING_Y - half);
+}
+
+/**
+ * 雨滴 / 水花的**截停面**（v3.30g，用户裁定「雨滴与水珠不要在水面以下出现」）。
+ *
+ * = `max(挡雨面, 水面)` —— 两个语义不同的表面取更高的那个：
+ *   · **挡雨面**（`rainShelterY`）= 屋顶/地面顶面（实心 ∧ 非 cutout ∧ 非云）；
+ *   · **水面**（`waterSurfaceYAt`）= 最上层暴露水体的顶面。
+ *
+ * ⚠️⚠️ **不能把水写进 `blocksRain`**（那样就变成「水挡雨」）：
+ * `blocksRain` 同时被**室内判据** `isUnderRoof` 消费 —— 把水算成屋顶会让
+ * 「站在浅水里」被当成室内 ⇒ 整片雨停掉（用户只要水下个体不画，不要整池停）。
+ * 故截停面单独收口在本函数，`blocksRain` 的「水不挡雨」语义一字不动。
+ *
+ * ⚠️ 两者都扫不到 ⇒ null（调用方跳过，不回落）。
+ *
+ * @param {{getBlockId:Function}} world
+ * @param {object} registry
+ * @param {number} x @param {number} z
+ * @param {number} fromY 扫描起点
+ * @param {number} [searchDepth=48]
+ * @returns {number|null} 截停面世界 y
+ */
+export function rainStopY(world, registry, x, z, fromY, searchDepth = 48) {
+  const shelter = rainShelterY(world, registry, x, z, fromY, searchDepth);
+  /**
+   * ⚠️⚠️ **水面扫描必须与 `rainShelterY` 同口径：起点钳到雨幕上界、深度同值**
+   * （本轮浏览器实测拓到的真缺陷）：
+   * `rainShelterY` 内部 `start = min(floor(fromY), RAIN_CEILING_Y)`，而旧写法把
+   * **未钳的 fromY** 传给水面扫描 ⇒ 玩家飞高时两者窗口不同：
+   * 实测玩家 y=40（fromY 41.6）时水面扫描从 41 往下 24 格只到 17，
+   * **永远到不了 −2 的水体** ⇒ water=null ⇒ 截停面退回湖底（静默失效）。
+   * ⇒ 两边都从 `min(fromY, RAIN_CEILING_Y)` 起、扫同样的 searchDepth。
+   */
+  const start = Math.min(Math.floor(fromY), RAIN_CEILING_Y);
+  const water = waterSurfaceYAt(world, registry, x, z, start, searchDepth);
+  if (shelter === null) return water;
+  if (water === null) return shelter;
+  return Math.max(shelter, water);
 }

@@ -7,10 +7,11 @@ import { assertEqual, assertTrue, assertFalse } from './assert.js';
 import { createRegistry } from '../voxel/block-registry.js';
 import { BLOCKS } from '../voxel/blocks-data.js';
 import { CLOUD_CLUSTER_Y, SINGLE_CLOUD_Y } from '../gen/structures/sky-structures.js';
-import { WORLD_MIN_Y } from '../voxel/constants.js';
+import { WORLD_MIN_Y, SEA_Y } from '../voxel/constants.js';
 import {
-  RAIN_CEILING_Y, blocksRain, rainShelterY, isUnderRoof, rainBoxCenterY,
+  RAIN_CEILING_Y, blocksRain, rainShelterY, rainStopY, isUnderRoof, rainBoxCenterY,
 } from '../render/rain-shelter.js';
+import { WATER_SURFACE_Y } from '../render/water-surface.js';
 
 // ⚠️ buildDefaultRegistry 是 async（延迟 import 破循环依赖）⇒ 单测里同步建表。
 const REG = createRegistry();
@@ -201,4 +202,58 @@ test('rain shelter: 室内判据的扫描上界也钳在云层之下', () => {
   put(cells, 4, CLOUD_CLUSTER_Y, 4, 'cloud');
   const w = fakeWorld(cells);
   assertFalse(isUnderRoof(w, REG, 4.5, 30, 4.5, 64));
+});
+
+// ---------- 截停面 = max(挡雨面, 水面)（v3.30g 水下排除）----------
+
+test('rain stop: 湖底被水淹住 ⇒ 雨停在水面而不是湖底', () => {
+  const cells = new Map();
+  // 湖底 sand 在 y=-8，水从 -7 填到 SEA_Y
+  put(cells, 4, -8, 4, 'sand');
+  for (let y = -7; y <= SEA_Y; y++) put(cells, 4, y, 4, 'water');
+  const w = fakeWorld(cells);
+  // 旧口径（只挡雨面）会穿过水落到湖底顶面 -7
+  assertEqual(rainShelterY(w, REG, 4.5, 4.5, 20), -7, '挡雨面仍是湖底（语义不变）');
+  // 新口径取水面
+  assertEqual(rainStopY(w, REG, 4.5, 4.5, 20), WATER_SURFACE_Y,
+    '截停面必须是水面（否则雨丝全程在水下）');
+  assertTrue(WATER_SURFACE_Y > -7, '水面确实高于湖底（判据有判别力）');
+});
+
+test('rain stop: 陆地无水面 ⇒ 与挡雨面逐位相同（零回归）', () => {
+  const cells = new Map();
+  put(cells, 4, 10, 4, 'grass');
+  const w = fakeWorld(cells);
+  assertEqual(rainStopY(w, REG, 4.5, 4.5, 20), rainShelterY(w, REG, 4.5, 4.5, 20));
+  assertEqual(rainStopY(w, REG, 4.5, 4.5, 20), 11);
+});
+
+test('rain stop: 屋顶高于水面 ⇒ 取屋顶（屋内积水不把雨提到水面）', () => {
+  const cells = new Map();
+  put(cells, 4, -8, 4, 'sand');
+  for (let y = -7; y <= SEA_Y; y++) put(cells, 4, y, 4, 'water');
+  put(cells, 4, 12, 4, 'stone_bricks');   // 屋顶远高于水面
+  const w = fakeWorld(cells);
+  assertEqual(rainStopY(w, REG, 4.5, 4.5, 20), 13, '取更高者 = 屋顶');
+});
+
+test('rain stop: 两者都扫不到 ⇒ null（不回落）', () => {
+  const w = fakeWorld(new Map());
+  assertEqual(rainStopY(w, REG, 4.5, 4.5, 20), null);
+});
+
+test('rain stop: 只有水面（无实心地面）⇒ 取水面', () => {
+  const cells = new Map();
+  for (let y = -7; y <= SEA_Y; y++) put(cells, 4, y, 4, 'water');
+  const w = fakeWorld(cells);
+  assertEqual(rainStopY(w, REG, 4.5, 4.5, 20), WATER_SURFACE_Y);
+});
+
+test('rain stop: 水不算屋顶 —— 站在浅水里不被当成室内（用户：只剔个体不整池停）', () => {
+  const cells = new Map();
+  put(cells, 4, -8, 4, 'sand');
+  for (let y = -7; y <= SEA_Y; y++) put(cells, 4, y, 4, 'water');
+  const w = fakeWorld(cells);
+  assertFalse(isUnderRoof(w, REG, 4.5, -6, 4.5),
+    '头顶全是水 ⇒ 不是室内（把水写进 blocksRain 会让整片雨停掉）');
 });

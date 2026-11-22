@@ -28,7 +28,7 @@
 import * as THREE from 'three';
 import {
   float, vec2, vec3, vec4, uniform, mix, max, min, mul, add, dot, sub, div,
-  abs, sin, pow, floor, fract, normalize, length, smoothstep, oneMinus,
+  abs, sin, pow, floor, fract, normalize, length, smoothstep, oneMinus, step,
   clamp, hash, positionWorld, cameraPosition, mx_noise_float as perlin,
 } from 'three/tsl';
 import {
@@ -39,6 +39,7 @@ import {
   WET_REFLECT_DISTORT_ACROSS, WET_REFLECT_DISTORT_ALONG, WET_REFLECT_DISTORT_PUDDLE_K,
   WET_REFLECT_MIP, WET_FRESNEL_F0, WET_FRESNEL_F0_PUDDLE, WET_FRESNEL_POWER,
 } from './wet-ground-config.js';
+import { WATER_SURFACE_Y } from './water-surface.js';
 
 /**
  * 湿地面的 uniform（**模块级单例**，与 `uSkyDim` / `uSunDirection` 同手法）。
@@ -88,6 +89,16 @@ export const WET_UNIFORMS = Object.freeze({
   uWetMirrorY: uniform(-1.5),
   /** 反射采样的 mip 级别（朦胧度） */
   uWetReflectMip: uniform(WET_REFLECT_MIP),
+  /**
+   * v3.30g：**水面高度**（世界 y）—— 逐片元水下门的基准。
+   *
+   * 用户「地面反光特效不要在水面以下出现」。片元 y < 本值 ⇒ wet 归 0。
+   * ⚠️ **不能只靠 CPU 的 `uWet` 总强度**：站在岸上看湖底是「相机在水上、
+   * 片元在水下」，总强度门对它零判别力。
+   * ⚠️ 初值 = `WATER_SURFACE_Y`（−1.5，与海面平面共面）；写成 uniform 而不是硬编码
+   * 是为了让 Tier 4 能单变量把它推到极低（= 关门）做 A/B。
+   */
+  uWetWaterY: uniform(WATER_SURFACE_Y),
 });
 
 /**
@@ -158,10 +169,18 @@ export function createWetGroundNode({ baseRgb, faceNormal, reflect = null }) {
 
   // ---- 湿度（上游 wet = clamp(uWet*(0.3+0.7*up+0.55*streak), 0, 1)）----
   const up = max(faceNormal.y, float(0));
+  /**
+   * ⚠️⚠️ **水下门（v3.30g，用户裁定）**：片元在水面以下 ⇒ 完全不湿。
+   * `step(waterY, wp.y)` = wp.y ≥ waterY ? 1 : 0（恰好共面算水上，不抖）。
+   * 乘进 wet ⇒ 下游的压暗 / 涟潪 / 菲涅尔 / 反射 **四项一起归零**，
+   * 末尾 `mix(baseRgb, lit, uWet)` 不受影响 ⇒ 水下片元逐位回到原色。
+   * ⚠️ 必须乘在 **wet** 上而不是只乘 reflTerm：只关反射会留下「湖底被压暗 + 涟潪」。
+   */
+  const aboveWater = step(U.uWetWaterY, wp.y);
   const wet = clamp(
     U.uWet.mul(float(WET_UP_BASE).add(up.mul(WET_UP_GAIN)).add(streak.mul(WET_STREAK_GAIN))),
     float(0), float(1),
-  );
+  ).mul(aboveWater);
 
   // ---- 压暗（上游 albedo *= mix(1, 0.6, wet*porous)；体素全是多孔材质）----
   const darkened = baseRgb.mul(mix(float(1), float(WET_ALBEDO_DARKEN), wet));

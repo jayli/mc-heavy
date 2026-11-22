@@ -133,7 +133,9 @@ export const STORM_GRADE = Object.freeze({
   coldWeight: 0.55,
   /** 对比 S 曲线（上游 `col*col*(3−2col)*0.35 + col*0.65`） */
   contrastMix: 0.35,
-  /** 胶片颗粒（上游 FXAA_FRAG 的 `uGrain = 0.045`，暗部更强） */
+  /** 胶片颗粒（上游 FXAA_FRAG 的 `uGrain = 0.045`，暗部更强）。
+   *  ⚠️ v3.30g：颗粒已移到**显示空间**（ACES + sRGB 之后），故暗部权重读的是
+   *  **显示 luma**（同上游 `m.a`）。旧实现在线性空间加 ⇒ 暗部增量被 ACES 放大。 */
   grain: 0.045,
   grainDarkBoost: 0.65,
 });

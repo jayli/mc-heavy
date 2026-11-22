@@ -53,6 +53,35 @@
 // ⇒ **用户裁定整层去掉**。近景雨丝（5200 条真实几何）+ 水花 + 体积雾 + 湿地面反光
 // 全部保留 —— 玩家仍看得到下雨，只是远处天空少了那层屏幕空间雨帘。
 // ⇒ 连带删除：条纹图烘焙产物与加载器、`uRainGain`/`uRainSheetOn`、`setRainSheet()`。
+//
+// ## 第三个根因：颗粒的 hash(vec2) 被 three 收窄成 .x（v3.30g，用户报告「CRT 扫描线在动」）
+//
+// 用户实玩报告「像老式电视信号不好的雪花，扫描线还在动来动去」。**不是远景雨幕**
+// （它已删），真凶是**胶片颗粒**：
+//   · 旧写法 `hash(floor(screenUV*screenSize).add(vec2(t,t)))`；
+//   · 但 three r185.1 的 TSL `hash` 是 **PCG 标量哈希**（`three.webgpu.js` 的
+//     `seed.toUint().mul(747796405)…`），`toUint()` 对 vec2 走 `ConvertNode` →
+//     `builder.format()` 的 `fromTypeLength > toTypeLength` 分支 ⇒ **取 `.x`**；
+//   · ⇒ **y 分量整条丢掉** ⇒ 颗粒只随屏幕 x 与时间变、沿 y 恒定
+//     ⇒ 每一列整列同亮同暗 = 竖纹；`fract(uTime*7.31)*113` 每帧重掷 ⇒ 竖纹逐帧乱跳。
+//
+// **实测（真实 GPU 像素，单变量）**：
+//   | 判据 | 缺陷态 | 对照 |
+//   |---|---|---|
+//   | 列均值的时间 std（grain 开/关） | **5.192** | grain 关 **0.048**（108×） |
+//   | 行均值的时间 std（同一批帧） | **0.09** | — |
+//   | 隔离 grain 层：列内沿 y std / 行内沿 x std | **0.783 / 7.161** | 各向同性应 ≈1:1 |
+//   | 同一列内像素完全相同的比例（天空带） | **85.7%** | — |
+//   | 注入真二维标量种子后 | 列内/行内 **3.498 / 3.988**、列均值 std **3.55→0.556** | 竖纹消失 |
+//
+// **上游为什么没有**：`renderer.js` 的 `FXAA_FRAG` 自带一个**真二维**
+// `hash(vec2 p){ vec3 p3 = fract(vec3(p.xyx)*0.1031); … }`。移植时换成 vendor 的同名
+// `hash` 而两者签名不同 —— 这是「上游能看的层在本仓必然错」的第三个根因。
+// ⇒ 修法：给 PCG 一个**真二维标量种子**（`x + y*65536`，行列都进哈希）。
+//
+// ⚠️ **同时把颗粒移到显示空间**（用户裁定）：上游是在 FXAA 之后加颗粒、暗部权重读
+// 显示 luma（`m.a`）。旧实现加在 **ACES 之前的线性空间** ⇒ 暗部 col≪1 时同样的绝对
+// 增量会被 ACES 放大 ⇒ 暗处噪点格外脏。现在颗粒在 `gradeTailNode`（ACES + sRGB 之后）。
 import * as THREE from 'three';
 import {
   float, vec2, vec3, vec4, uniform, mix, max, min,
@@ -196,21 +225,17 @@ function gradeNode(hdr, bloom) {
    * **平方级压暗**（0.02 → 0.0012）⇒ 再过 ACES ⇒ **天空/暗部近黑**。
    * 实测：全效果天空近黑占比 **0.1436**，关掉分级三项后 **0.0064**（≈ 无链的 0.0088）。
    *
-   * ⇒ 正解：本 pass 只做**线性空间该做的事**（bloom 叠加、曝光、暗角、色差、颗粒），
-   * 把冷调与 S 曲线移到 `renderOutput` **之后**（见 createStormGrade 的 outputColorTransform=false
-   * + 显式 renderOutput + 分级尾段）。
+   * ⇒ 正解：本 pass 只做**线性空间该做的事**（bloom 叠加、曝光、暗角、色差），
+   * 把冷调 / S 曲线 / **颗粒**移到 `renderOutput` **之后**（见 createStormGrade 的
+   * outputColorTransform=false + 显式 renderOutput + 分级尾段）。
+   * ⚠️ v3.30g：**颗粒已从本 pass 移走**（它属于显示空间，见 gradeTailNode）。
    */
-  const g = hash(floor(screenUV.mul(screenSize))
-    .add(vec2(fract(U.uTime.mul(7.31)).mul(113), fract(U.uTime.mul(7.31)).mul(113))))
-    .sub(0.5);
-  const lumaLin = dot(col1, vec3(0.2126, 0.7152, 0.0722));
-  const grainK = U.uGrain.mul(U.uEnabled)
-    .mul(float(1 - GR.grainDarkBoost).add(oneMinus(lumaLin.min(1)).mul(GR.grainDarkBoost)));
-  return vec4(col1.add(g.mul(grainK)), 1);
+  return vec4(col1, 1);
 }
 
 /**
- * 分级尾段（**在 ACES + sRGB 之后**，上游 GRADE_FRAG 的冷调 / S 曲线 / tint 段）。
+ * 分级尾段（**在 ACES + sRGB 之后**，上游 GRADE_FRAG 的冷调 / S 曲线 / tint 段
+ * + FXAA_FRAG 的颗粒段）。
  *
  * ⚠️ 入参是**显示空间**的 vec4（col ∈ [0,1]）—— 与上游 aces() 之后的 col 同一口径。
  * ⚠️ 这里不再做 pow(1/2.2)：`renderOutput` 已完成 sRGB 编码（上游是手写 gamma）。
@@ -224,8 +249,25 @@ function gradeTailNode(displayCol) {
   const col2 = mix(col, col.mul(vec3(GR.coldTint[0], GR.coldTint[1], GR.coldTint[2])), coldK);
   const sc = col2.mul(col2).mul(vec3(3, 3, 3).sub(col2.mul(2)));
   const col3 = mix(col2, sc, float(GR.contrastMix).mul(U.uEnabled));
-  return vec4(col3, displayCol.a);
-
+  /**
+   * 胶片颗粒（上游 FXAA_FRAG 的 `g = hash(gl_FragCoord.xy + fract(uTime*7.31)*113) - 0.5`）。
+   *
+   * ⚠️⚠️ **种子必须是标量，且行列都要进去**（v3.30g 根因，见文件头）：
+   * three 的 TSL `hash` 是 PCG **标量**哈希，喂 vec2 会被 `format()` 收窄成 `.x`
+   * ⇒ y 丢掉 ⇒ 整列同亮同暗的竖纹逐帧重掷（用户读作「CRT 扫描线在动」）。
+   * ⇒ 这里显式合成 `x + y*65536` 一个标量种子（实测列内/行内 std 从 1:9 变成 ≈1:1）。
+   * ⚠️ 65536 远大于任何屏幕高度 ⇒ 不同行不会撞到同一个种子。
+   *
+   * ⚠️ **暗部权重读显示 luma**（上游 `m.a` 就是显示 luma）：本函数在 ACES+sRGB 之后，
+   * 故 col3 已是显示值。旧实现在线性空间读 luma ⇒ 暗部增量被 ACES 放大。
+   */
+  const gp = floor(screenUV.mul(screenSize))
+    .add(vec2(fract(U.uTime.mul(7.31)).mul(113), fract(U.uTime.mul(7.31)).mul(113)));
+  const g = hash(gp.x.add(gp.y.mul(65536))).sub(0.5);
+  const lumaOut = dot(col3, vec3(0.2126, 0.7152, 0.0722));
+  const grainK = U.uGrain.mul(U.uEnabled)
+    .mul(float(1 - GR.grainDarkBoost).add(oneMinus(lumaOut.min(1)).mul(GR.grainDarkBoost)));
+  return vec4(col3.add(g.mul(grainK)), displayCol.a);
 }
 
 /**
