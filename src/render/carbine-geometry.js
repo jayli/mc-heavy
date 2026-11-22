@@ -205,14 +205,38 @@ export function buildCarbineArms() {
 }
 
 /**
- * 枪口 / 抛壳口 / 弹匣挂点的**rig 局部坐标**（上游同名 Object3D 的 position）。
+ * 枪口 / 抛壳口 / 弹匣挂点的**rig 局部坐标**（除枪口外均取上游同名 Object3D 的 position）。
  *
  * ⚠️ **唯一权威**：`carbine-view.js` 建三个空 Object3D 用它们，
  * `carbine-fx.js` 取枪口世界坐标作曳光起点与火光位置。各处写字面量会漂移出
  * 「曳光从枪管旁边射出」（数值判据全绿，只有画面能看出）。
+ *
+ * ⚠️ **`muzzle` 是本仓有意偏离上游的唯一一项**（用户实玩后指定，见其注释）；
+ * 其余四项与上游逐字相同。`flash`（火光组）与 `muzzle`（曳光起点）是
+ * **两个独立锚点**（上游也如此：-0.72 vs -0.7）—— 改 muzzle **不会**带动火光位置。
  */
 export const CARBINE_ANCHORS = Object.freeze({
-  /** 枪口（上游 `this.muzzle.position.set(0, 0.009, -0.5)`） */
+  /**
+   * 枪口。上游原值是 `this.muzzle.position.set(0, 0.006, -0.7)`；
+   * **本仓有意偏离到 `(0, 0.009, -0.5)`**（用户 2026-11-22 实玩后指定）。
+   *
+   * ⚠️ **改这个值就是改曳光与枪口火光的起点**（唯一旋钮）：
+   * `carbine-view.js` 拿它建空锚点 → `muzzleWorld()` → `player.js` 传给
+   * `carbineFx.spawnFromEffect` 的 `ctx.muzzle` → 写进曳光池的 `aA`。
+   *
+   * ⚠️ **坐标是 rig 局部空间**（单位 = 格）：x 右、y 上、**z 负值朝枪口方向**。
+   * 枪管几何的轴向范围是 **[-0.69, -0.57]**（上方两段圆柱），
+   * 故 -0.5 落在枪管**后方**的护木/机匣段 —— 这是用户选定的位置，
+   * 不是笔误；若将来要回到“从枪管末端射出”，z 应取 ≤ -0.69。
+   *
+   * ⚠️ **与 catalog 的 `localStart` / `muzzleOffset` 是两回事**：后者是 controller
+   * 纯逻辑层的回落值（无视图模型的 fixture 用），真实开火走本锚点。
+   * 改这里后若要保持两者一致，需同步 catalog 的那两个数（换算见其注释）。
+   *
+   * ⚠️ **改完跑 `tests/carbine-tracer-origin.spec.mjs`**：它钉「起点逐位等于枪口」
+   * 与「屏幕投影距枪管末端 ≤2px」—— 后一条在本偏离下会红（几何上必然），
+   * 那是判据在描述上游口径而不是缺陷；要接受本偏离就得按新锚点重标那条。
+   */
   muzzle: Object.freeze([0, 0.009, -0.5]),
   /** 抛壳口（上游 `this.port.position.set(0.04, 0.012, -0.02)`） */
   port: Object.freeze([0.04, 0.012, -0.02]),

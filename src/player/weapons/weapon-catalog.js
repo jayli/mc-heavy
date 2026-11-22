@@ -126,18 +126,26 @@ export const WEAPONS = freeze({
     automatic: true,
     carbine: true,
     /**
-     * 枪口与抛壳口的**rig 局部坐标**（上游 `this.muzzle.position` / `this.port.position`）。
+     * 枪口的**相机空间回落坐标**（不是实际曳光起点）。
      *
      * ⚠️ **必须存在**：`_makeEffect` 把 `localStart` 按相机基底展开成曳光起点的世界坐标，
      * 缺席会让它解构 undefined → **开火即抛 TypeError**（本轮实测踩到）。
-     * ⚠️ z 取**正值**：`_makeEffect` 的公式是 `origin + right·x + up·y − forward·z`，
-     * 而枪口在相机**前方**（rig 局部 −Z）⇒ 这里要写 +0.7 才能落到前方。
-     * 上游 rig 基准位 z=−0.31、枪口局部 z=−0.7 ⇒ 相机空间合计 −1.01，故取 1.01。
-     * x/y 同理：0.165+0 = 0.165、−0.175+0.006 = −0.169。
+     * ⚠️ `localStart` 的 z 取**正值**：`_makeEffect` 的公式是
+     * `origin + right·x + up·y − forward·z`，而枪口在相机**前方**（rig 局部 −Z）
+     * ⇒ 这里要写正数才能落到前方；`muzzleOffset` 则直接写相机空间的负 z。
      *
-     * 渲染层另有一份**真实枪口世界坐标**（`carbine-view.js` 的 `muzzle.getWorldPosition()`，
-     * 含后坐/换弹/摆动）—— 曳光起点用它，本字段只是 controller 纯逻辑层的回落值
-     * （fixture / 无视图模型时仍有合理起点）。
+     * ⚠️⚠️ **真实曳光起点不在这里**：渲染层的 `CARBINE_ANCHORS.muzzle`
+     * （`render/carbine-geometry.js`）才是唯一旋钮 —— `carbine-view.js` 拿它建锚点，
+     * `muzzleWorld()` 取世界坐标（含后坐/换弹/摆动）交给特效池。
+     * 本字段只服务 **controller 纯逻辑层**（fixture / 无视图模型时仍有合理起点）。
+     *
+     * ⚠️ **当前两个数对应上游锚点 (0, 0.006, −0.7)，而渲染层已偏离到
+     * (0, 0.009, −0.5)**（用户实玩后指定，见 `CARBINE_ANCHORS.muzzle` 注释）。
+     * 换算口径：rig 基准位 `[0.165, −0.175, −0.31]` + 锚点 ⇒
+     *   x = 0.165 + 锚点x；y = −0.175 + 锚点y；|z| = 0.31 + |锚点z|。
+     * 按新锚点应为 `[0.165, −0.166, ∓0.81]`。**本轮有意不动它们**：
+     * 它们只影响无视图模型的 fixture 路径，而现有单测钉的是旧值；
+     * 要同步得连单测一起重标（属于独立一步，不搐进注释修正）。
      */
     muzzleOffset: [0.165, -0.169, -1.01],
     localStart: [0.165, -0.169, 1.01],
