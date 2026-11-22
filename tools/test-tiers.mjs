@@ -184,7 +184,7 @@ export const SPEC_TIERS = {
 export const UNIT_NODE_SAFE = [
   'test-ambient-fx.js',
   'test-carbine.js', 'test-carbine-fx.js', 'test-rain-shelter.js', 'test-storm-rain.js', 'test-ground-reflect.js',
-  'test-water-surface.js',
+  'test-water-surface.js', 'test-wet-surface.js',
   'test-arena-gen.js', 'test-arena.js', 'test-azalea-trees-gen.js', 'test-azalea-trees.js',
   'test-block-color.js', 'test-block-hit-fx.js', 'test-boss-agent.js', 'test-boss-hit-sound.js',
   'test-boss-map.js', 'test-budget.js', 'test-burning-arena-gen.js', 'test-bush-grass-gen.js',
