@@ -1,15 +1,16 @@
 import { test, expect } from 'playwright/test';
 import { PNG } from 'pngjs';
 
-// v3.30d：用户实玩报告的两个雨天缺陷的回归门。
+// v3.30d/e：用户实玩报告的雨天缺陷的回归门。
 //
-// ① 「下雨时画面像光栅扫描渲染，光栅占满整个屏幕」
-//    根因：远景雨幕与体积雾都用 `hash(floor(uv))` —— **硬格子**，每个 cell 整体亮/暗
-//    ⇒ 屏幕上是一片轴对齐矩形块。实测雨幕层相邻像素**完全相同 82.06%**（场景本身 4.6%）。
-//    修法：雨幕改**烘焙的双线性条纹图**（上游 makeRainSheet 逐字），雾改**连续 perlin**；
-//    视线方向改**真实相机反投影**（旧的固定 fov 近似没转世界空间 ⇒ 雨幕跟着屏幕转）。
+// ① v3.30d「下雨时画面像光栅扫描渲染」→ 根因 hash(floor(uv)) 硬格子。
+//    v3.30e「屏幕上有纹路，让屏幕看上去很粗糙」→ **另一个根因**：换成双线性条纹图后，
+//    柱面投影把 512² 细丝压到 1.37~5.69 texel/像素 ⇒ **欠采样走样**成满屏竖纹。
+//    上游靠链尾 FXAA 抹平，而本仓 MSAA 只抗几何边缘、对 shader 内高频**完全无效**。
+//    ⇒ 用户裁定**远景雨幕整层移除**；本 spec 的首用例改为钉「竖纹不超过无链基线」。
+//    ⚠️ 判据必须用「符号翻转次数」：v3.30d 的「相邻像素差为 0 的比例」对走样零判别力。
 //
-// ② 「有的方块不呈现反射，好像地地下又有一层模糊的透射」
+// ② v3.30d「有的方块不呈现反射，好像地下又有一层模糊的透射」
 //    根因：复用海平面 reflector（镜面 y=−1.5），而本仓地面 y≈22 ⇒ 上游的
 //    「压平到镜面再投影」把地面点推低 23.5 格 ⇒ 投影出画。上游地面就在 y=0（=镜面）
 //    所以那步是 no-op。**复用海平面 reflector 在几何上不可能正确**。
@@ -32,86 +33,103 @@ const BOOT = async (page, extra = '') => {
 };
 
 /**
- * 「块状度」：相邻像素差为 0 的比例。
- * 硬格子（hash(floor(uv))）⇒ 大片平坦色块 ⇒ 该比例极高；
- * 连续噪声 / 双线性纹理 ⇒ 该比例接近场景本身的水平。
+ * v3.30e：用户实玩报告「屏幕上有纹路，让屏幕看上去很粗糙……感觉还不如去掉」。
+ * **根因（单变量像素实测）**：远景雨幕把 512² 细丝纹理按柱面投影铺满屏幕，
+ * 三层 tiles=12/25/50 ⇒ 横向密度 1.37 / 2.85 / 5.69 texel/像素 ⇒ 欠采样走样成竖纹。
+ * 上游同样欠采样（4.91 texel/px），但它链尾有 **FXAA** 抹平；本仓 MSAA 只抗几何边缘、
+ * 对 shader 内采样的高频纹理**完全无效** ⇒ 照搬这一层必然粗糙。
+ * ⇒ **用户裁定整层去掉**。本用例改为钉「竖纹不得超过无链基线」。
+ *
+ * ⚠️ **判据选型**：量「同一行内相邻像素 luma 差的**符号翻转次数**」——
+ * 竖纹是横向高频，翻转次数直接刻画它；而「相邻像素差为 0 的比例」（旧块状度判据）
+ * 对走样零判别力：走样恰恰是**处处都不同**。实测基线 33.5、缺陷态 83.5。
  */
-function zeroDiffFrac(png, x0, y0, x1, y1) {
-  let zero = 0; let n = 0;
+function rowFlipRate(png, y0, y1, x0, x1) {
+  let flips = 0;
+  const lum = (o) => 0.2126 * png.data[o] + 0.7152 * png.data[o + 1] + 0.0722 * png.data[o + 2];
   for (let y = y0; y < y1; y++) {
+    let prevSign = 0;
     for (let x = x0 + 1; x < x1; x++) {
-      const o = (y * png.width + x) * 4;
-      const p = (y * png.width + x - 1) * 4;
-      const d = Math.abs(png.data[o] - png.data[p])
-        + Math.abs(png.data[o + 1] - png.data[p + 1])
-        + Math.abs(png.data[o + 2] - png.data[p + 2]);
-      n++;
-      if (d === 0) zero++;
+      const d = lum((y * png.width + x) * 4) - lum((y * png.width + x - 1) * 4);
+      const sg = d > 0.5 ? 1 : d < -0.5 ? -1 : 0;
+      if (sg !== 0 && prevSign !== 0 && sg !== prevSign) flips++;
+      if (sg !== 0) prevSign = sg;
     }
   }
-  return zero / n;
+  return flips / (y1 - y0);
 }
 
-/** 把「开-关」的差分放大成可视图（128 为中点），用于量效应层自身的块状度 */
-function diffLayer(on, off, gain = 4) {
-  const d = new PNG({ width: on.width, height: on.height });
-  for (let i = 0; i < on.width * on.height; i++) {
-    const o = i * 4;
-    for (let k = 0; k < 3; k++) {
-      d.data[o + k] = Math.max(0, Math.min(255, 128 + (on.data[o + k] - off.data[o + k]) * gain));
-    }
-    d.data[o + 3] = 255;
-  }
-  return d;
-}
-
-test('雨天：远景雨幕不是硬格子（块状度接近场景水平）', async ({ page }) => {
+test('雨天：屏幕上没有走样竖纹（远景雨幕已整层移除）', async ({ page }) => {
   test.setTimeout(240_000);
-  await BOOT(page);
+  const errs = await BOOT(page);
   await page.evaluate(async () => {
     const g = window.__MC_GAME__;
     g.setStormLighting(true);
-    await new Promise((r) => setTimeout(r, 1800));
+    await new Promise((r) => setTimeout(r, 2500));
+    let last = -1; let stable = 0;
+    for (let i = 0; i < 120 && stable < 3; i++) {
+      await new Promise((r) => setTimeout(r, 200));
+      const n = g.renderWorld.slotMap.size;
+      if (n === last) stable++; else { stable = 0; last = n; }
+    }
     g.renderer.setAnimationLoop(null);
-    g.player.pitch = 0.12;          // 略抬头：远景雨幕最明显
-    g.player.update(0.016);
+    // 关颗粒（它按 uTime 逐帧变，会污染横向高频读数）；其余效果全开
+    g.stormGrade.uniforms.uGrain.value = 0;
     g.stormGrade.uniforms.uTime.value = 8.0;
+    g.stormRain.setEnabled(false);   // 只量屏幕空间的层，排除真实几何雨丝
+    g.player.pitch = 0.12; g.player.yaw = 0.4;
+    g.player.update(0.016);
+  });
+  const render = () => {
+    const g = window.__MC_GAME__;
     g._renderWaterReflection();
     g.stormGrade.pipeline.render();
-  });
-  const shot = async (fog, rain) => {
-    await page.evaluate(({ f, r }) => {
-      const g = window.__MC_GAME__;
-      g.stormGrade.uniforms.uFogGain.value = f;
-      g.stormGrade.uniforms.uRainGain.value = r;
-      g.stormGrade.pipeline.render();
-    }, { f: fog, r: rain });
-    await page.waitForTimeout(230);
-    return PNG.sync.read(await page.screenshot());
   };
-  const off = await shot(0, 0);
-  const rainOn = await shot(0, 1.0);
-  const fogOn = await shot(0.02, 0);
-  const base = zeroDiffFrac(off, 100, 60, 1180, 260);
-  const rainFrac = zeroDiffFrac(diffLayer(rainOn, off), 100, 60, 1180, 260);
-  const fogFrac = zeroDiffFrac(diffLayer(fogOn, off), 100, 60, 1180, 260);
-  console.log('RAIN BLOCKINESS:', JSON.stringify({
-    scene: +base.toFixed(4), rainLayer: +rainFrac.toFixed(4), fogLayer: +fogFrac.toFixed(4),
-  }));
-  // 缺陷态：雨幕层 0.8206（硬格子）。修后必须远低于它，且不超过场景水平的 2 倍 + 余量。
-  expect(rainFrac, '远景雨幕不得是硬格子（缺陷态 0.82）').toBeLessThan(0.45);
-  expect(fogFrac, '体积雾不得是硬格子（缺陷态 0.22 且跳变间距集中）').toBeLessThan(0.45);
-  // 雨幕必须真的画出来了（差分非零）
-  let rainChanged = 0;
-  for (let i = 0; i < rainOn.width * rainOn.height; i++) {
-    const o = i * 4;
-    const d = Math.abs(rainOn.data[o] - off.data[o]) + Math.abs(rainOn.data[o + 1] - off.data[o + 1]) + Math.abs(rainOn.data[o + 2] - off.data[o + 2]);
-    if (d > 6) rainChanged++;
-  }
-  expect(rainChanged, '远景雨幕必须真的上屏').toBeGreaterThan(2000);
+  // 预热两帧（RTTNode 首帧才定 RT 尺寸/建缓存 —— 见下方世界锚定用例的注释）
+  await page.evaluate(render); await page.waitForTimeout(200);
+  await page.evaluate(render); await page.waitForTimeout(200);
+
+  const measure = async (gradeOn) => {
+    await page.evaluate((on) => {
+      window.__MC_GAME__.stormGrade.uniforms.uEnabled.value = on ? 1 : 0;
+    }, gradeOn);
+    await page.evaluate(render); await page.waitForTimeout(250);
+    const p = PNG.sync.read(await page.screenshot());
+    const W = p.width; const H = p.height;
+    return {
+      sky: +rowFlipRate(p, Math.round(H * 0.04), Math.round(H * 0.18), Math.round(W * 0.36), Math.round(W * 0.64)).toFixed(1),
+      mid: +rowFlipRate(p, Math.round(H * 0.42), Math.round(H * 0.58), Math.round(W * 0.32), Math.round(W * 0.68)).toFixed(1),
+    };
+  };
+  const on = await measure(true);
+  const off = await measure(false);
+  console.log('STRIPE FLIPS/ROW:', JSON.stringify({ gradeOn: on, gradeOff: off }));
+  /**
+   * 缺陷态实测：sky 83.5 / mid 158.2（无链基线 33.5 / 76.1）。
+   * 整层移除后两者应当**基本相等** —— 分级只剩低频项（雾/bloom/暗角/冷调）。
+   * 阈值取基线 +12 次/行余量（雾的 perlin 与 bloom 会带来少量高频）。
+   */
+  expect(on.sky, `天空竖纹不得超过无链基线 +12（实测缺陷态 83.5，基线 ${off.sky}）`)
+    .toBeLessThan(off.sky + 12);
+  expect(on.mid, `中带竖纹不得超过无链基线 +12（实测缺陷态 158.2，基线 ${off.mid}）`)
+    .toBeLessThan(off.mid + 12);
+  // 结构性判据：那一层的 uniform 与 API 必须真的不存在（防将来「补齐」）
+  const gone = await page.evaluate(() => {
+    const U = window.__MC_GAME__.stormGrade.uniforms;
+    return {
+      rainGain: U.uRainGain === undefined,
+      sheetOn: U.uRainSheetOn === undefined,
+      setRainSheet: typeof window.__MC_GAME__.stormGrade.setRainSheet,
+    };
+  });
+  console.log('FAR RAIN REMOVED:', JSON.stringify(gone));
+  expect(gone.rainGain, 'uRainGain 必须已删').toBe(true);
+  expect(gone.sheetOn, 'uRainSheetOn 必须已删').toBe(true);
+  expect(gone.setRainSheet, 'setRainSheet 必须已删').toBe('undefined');
+  expect(errs, '不得有 console 错误').toEqual([]);
 });
 
-test('雨天：雨幕锚在世界空间（同姿态同时间重渲必须逐位稳定）', async ({ page }) => {
+test('雨天：体积雾锚在世界空间（同姿态同时间重渲必须逐位稳定）', async ({ page }) => {
   test.setTimeout(240_000);
   await BOOT(page);
   await page.evaluate(async () => {
@@ -129,7 +147,7 @@ test('雨天：雨幕锚在世界空间（同姿态同时间重渲必须逐位�
       if (n === last) stable++; else { stable = 0; last = n; }
     }
     g.renderer.setAnimationLoop(null);
-    // 只留远景雨幕（关雾/bloom/CA/暗角/冷调/颗粒），冻时间
+    // 只留体积雾（关 bloom/CA/暗角/冷调/颗粒），冻时间
     const U = g.stormGrade.uniforms;
     U.uFogGain.value = 0; U.uBloomGain.value = 0; U.uCA.value = 0;
     U.uVignette.value = 0; U.uCold.value = 0; U.uGrain.value = 0;
@@ -161,15 +179,33 @@ test('雨天：雨幕锚在世界空间（同姿态同时间重渲必须逐位�
     };
   };
   /**
-   * ⚠️⚠️ **必须先预热两帧再取样**（本轮实测）：后处理链的 RTTNode 首帧才确定
-   * RT 尺寸 / 建立缓存，首两次渲染的输出不同（实测 diff 90%→37% 逐次变化，
-   * 而相机/世界/uniform 状态**逐位相同**）。逐层剥离探针里先跑了 4 档 pair
-   * 预热过 ⇒ 四档 diff 全 0。⇒ 预热是判据的前提，不是被测缺陷。
+   * ⚠️⚠️ **预热必须按「输出收敛」判，不能写固定帧数**（本轮实测）：
+   * 后处理链的 RTTNode 首帧才确定 RT 尺寸 / 建立缓存。定数预热两帧在**单跑**时够
+   * （diff 0），但**多 spec 批次高负载**下不够 —— 实测同一用例单跑 3 轮全 0、
+   * 全 spec 跑也 0，只在 9 个 spec 的批次里 diff **0.373**（而相机/世界/uniform 逐位相同）。
+   * ⇒ 改成**轮询到连续两次截图完全一致**再取样（上限 12 轮），不依赖机器负载。
+   * ⚠️ 这不是「放宽阈值」：阈值仍是 diff<0.005，改的是**取样前的收敛条件**。
    */
+  const shotBuf = async () => PNG.sync.read(await page.screenshot());
+  const sameShot = (a, b) => {
+    for (let i = 0; i < a.data.length; i += 4) {
+      if (a.data[i] !== b.data[i] || a.data[i + 1] !== b.data[i + 1] || a.data[i + 2] !== b.data[i + 2]) return false;
+    }
+    return true;
+  };
   await page.evaluate(render);
   await page.waitForTimeout(200);
-  await page.evaluate(render);
-  await page.waitForTimeout(200);
+  let prev = await shotBuf();
+  let warm = 0;
+  for (let i = 0; i < 12; i++) {
+    await page.evaluate(render);
+    await page.waitForTimeout(200);
+    const cur = await shotBuf();
+    if (sameShot(prev, cur)) { warm = i + 1; break; }
+    prev = cur;
+  }
+  console.log('FOG WARMUP ROUNDS:', warm);
+  expect(warm, '后处理链必须在 12 轮内收敛（否则是真实的不稳定）').toBeGreaterThan(0);
   const st1 = await page.evaluate(render);
   await page.waitForTimeout(250);
   const a = PNG.sync.read(await page.screenshot());
@@ -183,12 +219,12 @@ test('雨天：雨幕锚在世界空间（同姿态同时间重渲必须逐位�
     if (d > 10) diff++;
   }
   const frac = diff / (a.width * a.height);
-  console.log('RAIN WORLD-ANCHOR REPEAT DIFF:', JSON.stringify({ diff, frac: +frac.toFixed(6) }));
+  console.log('FOG WORLD-ANCHOR REPEAT DIFF:', JSON.stringify({ diff, frac: +frac.toFixed(6) }));
   // 状态必须逐位相同（否则差异来自世界/相机而不是雨幕）
   expect(st2.sections).toBe(st1.sections);
   expect(st2.camRotY).toBe(st1.camRotY);
   expect(st2.gradeTime).toBe(st1.gradeTime);
-  expect(frac, '同姿态同时间的雨幕必须逐位稳定（跟着屏幕转的写法会漂）').toBeLessThan(0.005);
+  expect(frac, '同姿态同时间的体积雾必须逐位稳定（跟着屏幕转的写法会漂）').toBeLessThan(0.005);
 });
 
 test('雨天：湿地面反射在近/中/远都生效（不是只有远处有）', async ({ page }) => {

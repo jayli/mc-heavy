@@ -310,3 +310,70 @@ refreshes=51 **全部正常**，只有反射项开/关的画面差分能抓它�
 
 `tests/storm-rain-visual.spec.mjs` **5 passed** + `test-ground-reflect.js` **19 例**；
 `npm run check` 0 error；烘焙两轮逐字节一致。
+
+---
+
+## 11. v3.30e 修订（屏幕竖纹 / 关档后雨声残留）
+
+用户实玩报告两件事，按 systematic-debugging 做了 7 轮取证。
+
+### 11.1 竖纹 = MSAA 不能替代 FXAA
+
+移植时本设计稿写下「**不做 FXAA**：本仓 renderer 已开 MSAA（上游 antialias:false 才需要它）」。
+**那条判断只对几何边缘成立**：MSAA 在光栅化阶段对三角形覆盖多点采样，
+而 shader 内 `texture()` 采出的高频内容**每像素只算一次** ⇒ MSAA 对它完全无效。
+
+远景雨幕把 512² 细丝纹理按柱面投影铺满屏幕，三层 tiles=12/25/50
+⇒ 横向密度 **1.37 / 2.85 / 5.69 texel/像素**（上游 4.91，**同样欠采样**）。
+上游靠链尾 FXAA（`uFxaa=1`）抹平走样，本仓抽掉那一环 ⇒ 必然粗糙。
+
+**单变量像素实测**（走 `setRainSheet` 换纹理内容，唯一生效入口）：
+
+| 变量 | 天空竖纹（符号翻转/行） | 中带 |
+|---|---|---|
+| 原图 512² | **83.5** | 158.2 |
+| 64²（细丝被滤掉） | 63.5 | 126.7 |
+| 16²（只剩大斑） | 36.8 | 82.7 |
+| 纯灰常数图 | **33.1** | 76.1 |
+| 只留纵向渐变 | **33.5** | 76.8 |
+| 只留横向细丝 | **144.9** | 167.7 |
+| 横向 blur R1/R2/R4/R8 | 72.2/64.3/52.3/**40.4** | 143.6/129.4/109/90.9 |
+| mip 开/关/Nearest | 83.4/75.5/95.5 | — |
+
+⇒ 竖纹 100% 来自纹理横向高频；mip 只帮一点忙，解决不了欠采样。
+
+**用户裁定「远景雨幕整层去掉」**（原话「感觉还不如去掉呢」）。删除清单：
+`farRainLayer` / 三层柱面投影 / `uRainGain` / `uRainSheetOn` / `setRainSheet` /
+`STORM_FAR_RAIN` 整表 / `rain-sheet.js` / `bake-rain-sheet{,-params}.mjs` /
+`assets/effects/rain-sheet.{png,json}` / `checkRainSheet` / `npm run rainsheet`。
+
+**雨感由真实几何承担**：近景雨丝 5200 条 + 水花 + 体积雾 + 湿地面反光全部保留。
+
+### 11.2 雨声残留 = 开关型档位没还原全局状态
+
+开启时 `weather.force('rain')` 把天气状态机推成下雨；关闭时只停 `rain_storm`，
+天气却**永久停在 rain** ⇒ 帧循环的 `_syncRainSound()` 按 `weather.intensity`
+把旧的 `rain` 循环放出来。实测：开启前 `loops={}` → 关闭后 `rain` 音量 **0.12** → 4s 后 **0.2**。
+
+**用户裁定「恢复开启前的天气」**：
+- 首次开启时快照 `{kind, intensity, phase}`（**只存一次** —— 重复开启若覆盖，
+  第二次会把自己推成的 rain 当「原状态」⇒ 永远还原不回晴天）；
+- 关闭时 `_restoreWeatherBeforeStorm()` **直接写回稳态值**，不走 `force()` 的 5 秒过渡
+  （否则雨声还响几秒，不符合「关掉就应当关闭」）；
+- 一并复位 `_phase/_timer/_startIntensity/_targetIntensity/stateSeconds`
+  （只改 kind/intensity 会留下「稳态但计时器停在过渡中」的不一致状态）；
+- 关闭分支立即调 `_syncRainSound()` 对齐另一条音轨，不等下一帧。
+
+### 11.3 两条新判据坑
+
+1. **走样必须用「符号翻转次数」判**，不能用 v3.30d 的「相邻像素差为 0 的比例」——
+   后者对走样**零判别力**（走样恰恰处处都不同，那个比例反而更低）。
+2. **换纹理做 A/B 必须换整个 Texture 对象**：改 `tex.image` + `needsUpdate` 不重传
+   （three 按 `source.version` 判定）。实测连换 64²/16²/纯灰三档读数**逐位不变**
+   —— 读数逐位相同就是「注入没落地」的信号，不能读成「这个变量没影响」。
+
+### 11.4 验证
+
+新增 `tests/storm-audio-off.spec.mjs`（3 例）；`storm-rain-visual.spec.mjs` 首用例改为
+「竖纹不得超过无链基线 +12」+ 结构性钉住三个 API 已删；`test-storm-rain.js` 的三层参数
+用例改为钉 `STORM_FAR_RAIN` 不存在。`npm run check` 0 error。

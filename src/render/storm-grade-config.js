@@ -58,30 +58,23 @@ export const STORM_FOG = Object.freeze({
 });
 
 /**
- * 远景雨幕（上游 COMPOSITE_FRAG 的三层 rainLayer）。
+ * ⚠️⚠️ **远景雨幕（STORM_FAR_RAIN）已整表删除**（v3.30e，用户裁定「感觉还不如去掉」）。
  *
- * 上游三层（尺度 L / 平铺 tiles / 速度 speed / 种子 seed / 距离门 / 权重）：
- *   (4, 12, 2.3, 0.00, smoothstep(3,5,T),   0.5)
- *   (8, 25, 1.8, 0.37, smoothstep(7,10,T),  0.65)
- *   (16, 50, 1.3, 0.71, smoothstep(14,19,T), 0.6)
- * 再乘 `1 − smoothstep(0.7, 1.7, |el|)`（仰角太大时不画）。
+ * 用户实玩报告「屏幕上有纹路，让屏幕看上去很粗糙」。单变量像素实测的根因：
+ * 上游 `rainLayer` 把 512² 细丝纹理按柱面投影铺满屏幕，三层 tiles=12/25/50
+ * ⇒ 横向密度 **1.37 / 2.85 / 5.69 texel/像素** ⇒ 严重欠采样走样，细丝混叠成满屏竖纹。
+ *   · 换纹理内容：原图 **83.5** 次符号翻转/行；只留纵向渐变 **33.5**（= 无雨幕基线）；
+ *     只留横向细丝 **144.9** ⇒ 竖纹 100% 来自横向高频。
+ *   · 横向 box blur 半径 0→1→2→4→8：83.5 → 72.2 → 64.3 → 52.3 → **40.4**（单调）。
+ *   · mip 开/关/Nearest：83.4 / 75.5 / 95.5 ⇒ mip 只帮一点忙，解决不了欠采样。
+ *
+ * **上游同样欠采样（4.91 texel/px），但它链尾有 FXAA**（`uFxaa=1`）把走样抹平。
+ * 本仓移植时判断「已开 MSAA 就不做 FXAA」——那条判断对几何边缘成立，
+ * 但 **MSAA 对 shader 内部采样出的高频纹理完全无效** ⇒ 照搬这一层必然粗糙。
+ *
+ * ⇒ 整层移除。雨感由**真实几何**承担：近景雨丝 5200 条 + 水花（`storm-rain-config.js`）
+ * + 体积雾 + 湿地面反光。**不要凭直觉把这三层「补齐」**。
  */
-export const STORM_FAR_RAIN = Object.freeze({
-  layers: Object.freeze([
-    Object.freeze({ L: 4, tiles: 12, speed: 2.3, seed: 0.0, near: 3, far: 5, weight: 0.5 }),
-    Object.freeze({ L: 8, tiles: 25, speed: 1.8, seed: 0.37, near: 7, far: 10, weight: 0.65 }),
-    Object.freeze({ L: 16, tiles: 50, speed: 1.3, seed: 0.71, near: 14, far: 19, weight: 0.6 }),
-  ]),
-  /** 风切变（上游 `el * uWind`，uWind = 0.35） */
-  wind: 0.35,
-  /** 仰角门（上游 `1 − smoothstep(0.7, 1.7, |el|)`） */
-  elevationFrom: 0.7,
-  elevationTo: 1.7,
-  /** 亮度（上游 `(ins*2.4 + amb*0.085) * rain * uRainK`） */
-  insGain: 2.4,
-  ambGain: 0.085,
-  gain: 1.0,
-});
 
 /**
  * Bloom（上游 BLOOM_DOWN / BLOOM_UP）。

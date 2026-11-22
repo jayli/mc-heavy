@@ -41,7 +41,6 @@ import { StormRain } from '../render/storm-rain.js';
 import { STORM_AUDIO } from '../render/storm-rain-config.js';
 import { createStormGrade } from '../render/storm-grade.js';
 import { WET_STRENGTH_MAX } from '../render/wet-ground-config.js';
-import { loadRainSheet } from '../render/rain-sheet.js';
 // v3.30d：湿地面的独立平面反射（镜面 = 玩家脚下地面；海平面 reflector 几何上不可能正确）
 import { setupGroundReflect, createGroundReflectPlaceholderMaterial } from '../render/ground-reflect.js';
 import {
@@ -3091,9 +3090,25 @@ export class Game {
       // 既有循环雨滴彻底停掉（用户：「默认把我现在的循环雨滴装下雨的特效关掉」）
       this.rain?.setIntensity(0);
       // 天气状态机仍推进（雨声/其他消费方读它），但**不再驱动雨滴可见性**
+      // ⚠️⚠️ **必须先快照开启前的天气**（v3.30e 用户报告「关掉雨天光影后声音还留着」的根因）：
+      // 旧实现只 force('rain') 而不记原状态，关闭时只停了 rain_storm，天气却**永久停在 rain**
+      // ⇒ 帧循环的 `_syncRainSound()` 接管，把旧的天气雨声 `rain` 又放出来
+      // （实测：开启前 loops={} → 关闭后 rain 音量 0.12 → 4s 后 0.2）。
+      // ⇒ 关闭时还原成开启前那一瞬（用户 2026-11-22 裁定「恢复开启前的天气」）。
+      // ⚠️ 只在**首次开启**时快照：重复调用若覆盖，第二次开就会把自己推成的 rain
+      // 当成「原状态」存下来 ⇒ 永远还原不回晴天。
+      if (this._stormPrevWeather === undefined) {
+        this._stormPrevWeather = {
+          kind: this.weather.kind,
+          intensity: this.weather.intensity,
+          phase: this.weather._phase,
+        };
+      }
       this.weather.force('rain');
     } else {
       this.stormRain?.setEnabled(false);
+      // 还原开启前的天气（见上方快照注释）—— 不还原就会留下旧的天气雨声
+      this._restoreWeatherBeforeStorm();
       // 恢复既有循环雨滴（由天气强度驱动，帧循环里那行照旧）
       this.rain?.setIntensity(this.weather?.intensity ?? 0);
     }
@@ -3114,23 +3129,11 @@ export class Game {
       });
     }
     if (this.stormGrade) this.stormGrade.uniforms.uEnabled.value = on ? 1 : 0;
-    /**
-     * v3.30d：远景雨幕的**条纹图**（懒加载，只拉一次）。
-     * ⚠️ 缺图时 uRainSheetOn 恒 0 ⇒ 远景雨幕层不画，近景雨丝/水花/雾/湿地面照常。
-     * ⚠️ 这是「雨雾像光栅扫描」的根因修复：shader 里的 hash 格子换成双线性纹理。
-     */
-    if (on && !this._rainSheetLoading) {
-      this._rainSheetLoading = true;
-      loadRainSheet().then((tex) => {
-        this._rainSheetTexture = tex;
-        // ⚠️ 走 setRainSheet（改 TextureNode.value）——直接写 uniform 会让
-        // texture(uniformNode) 抛 NodeError ⇒ 整条链 build 失败 ⇒ 全屏黑。
-        this.stormGrade?.setRainSheet(tex);
-      }).catch((err) => {
-        console.warn('[game] 雨丝条纹图加载失败，本轮不画远景雨幕：', err);
-        this._rainSheetLoading = false;   // 允许下次开启时重试
-      });
-    }
+    // ⚠️⚠️ **远景雨幕已整层移除**（v3.30e，用户裁定「感觉还不如去掉」）：
+    // 它把 512² 细丝纹理按柱面投影铺满屏幕（1.4~5.7 texel/px）⇒ 欠采样走样成竖纹；
+    // 上游靠链尾 FXAA 抹平，而本仓 MSAA 只抗几何边缘、对 shader 内高频无效。
+    // ⇒ 条纹图的懒加载、`loadRainSheet` 与 `setRainSheet` 一并删除（见 storm-grade.js 文件头）。
+    // 雨感由真实几何承担：近景雨丝 5200 条 + 水花 + 体积雾 + 湿地面反光。
 
     // ---- ④ 雨声 ----
     this._syncStormAudio();
@@ -3141,11 +3144,46 @@ export class Game {
   get stormLighting() { return this._stormActive === true; }
 
   /**
+   * 还原「开启雨天档之前」的天气（v3.30e，用户报告关档后声音残留）。
+   *
+   * 为何需要它：开启时 `weather.force('rain')` 把状态机推成下雨，而旧的天气雨声
+   * `rain` 是由帧循环的 `_syncRainSound()` 按 `weather.intensity` 驱动的。只停
+   * `rain_storm` 不还原天气 ⇒ 旧雨声立即接管（实测音量 0.12 → 4s 后 0.2）。
+   *
+   * ⚠️ **不能只调 `force(prev.kind)`**：那会走 5 秒过渡，期间 intensity 仍 >0
+   * ⇒ 雨声还会响几秒（用户要求「关掉就应当关闭」）。故**直接写回快照的稳态值**：
+   * 本来是晴天 ⇒ intensity 立即归 0 ⇒ 同一帧 `_syncRainSound()` 就 stopLoop。
+   * ⚠️ 快照只在首次开启时存（见 setStormLighting），这里消费后**必须清掉**，
+   * 否则下一轮开启会拿到陈旧快照。
+   * ⚠️ `_phase`/`_timer`/`stateSeconds` 也要一并复位：只改 kind/intensity 会留下
+   * 「稳态但计时器停在过渡中」的不一致状态，下一次自动切天气的时机会漂。
+   */
+  _restoreWeatherBeforeStorm() {
+    const prev = this._stormPrevWeather;
+    if (!prev) return;
+    this._stormPrevWeather = undefined;
+    const w = this.weather;
+    if (!w) return;
+    w.kind = prev.kind;
+    w.intensity = prev.intensity;
+    w._phase = 'steady';
+    w._timer = 0;
+    w._startIntensity = prev.intensity;
+    w._targetIntensity = prev.intensity;
+    // 稳态段时长重抽（同 _finishTransition 的口径）—— 不重抽会拿着雨周期当晴周期用
+    w.stateSeconds = prev.kind === 'rain' ? w._nextRain() : w._nextClear();
+  }
+
+  /**
    * 雨声切换（雨天档开 ⇒ 上游四层雨床；关 ⇒ 既有 rain 由天气驱动）。
    *
    * ⚠️ **两条互斥**：同时播会叠成两层雨声（听感是「雨特别大」而不是「换了音源」）。
    * ⚠️ 雨天档的雨声**不随天气强度淡入淡出**（它是持续雨，强度恒 1）；
    * 但**室内要小声**（用户：室内雨特效不生效 ⇒ 声音也该闷下来）。
+   * ⚠️⚠️ **关闭分支必须立即把旧雨声也对齐一次**（v3.30e）：
+   * 只 `stopLoop(rain_storm)` 而等下一帧的 `_syncRainSound()` 会留一帧空隙；
+   * 更重要的是——天气已由 `_restoreWeatherBeforeStorm()` 还原，这里直接按还原后的
+   * 强度对齐，语义上「关档」这一个动作就把两条音轨都安置到位。
    */
   _syncStormAudio() {
     const am = this.audioManager;
@@ -3157,7 +3195,8 @@ export class Game {
       am.playLoop(STORM_AUDIO.rainLoop, STORM_AUDIO.rainVolume * (indoor ? 0.25 : 1));
     } else {
       am.stopLoop(STORM_AUDIO.rainLoop);
-      // 既有 rain 由 `_syncRainSound()` 按天气强度驱动（帧循环里那行照旧）
+      // 既有 rain 按**还原后**的天气强度对齐（晴天 ⇒ intensity 0 ⇒ 立即停）
+      this._syncRainSound();
     }
   }
 

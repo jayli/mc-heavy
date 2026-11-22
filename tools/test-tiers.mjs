@@ -66,6 +66,7 @@ const UI = [
   'view-bob',
   'player-flight',
   'audio-fx',
+  'storm-audio-off',    // v3.30e 关档后两条雨声都停（天气还原）—— 状态机判据，非像素
   'bgm',
   'boss-hint',
 ];
@@ -146,7 +147,7 @@ const PIXEL = [
   'water-reflect',
   'lake-ripple',
   'm3-rain',
-  'storm-rain-visual',  // v3.30d 雨雾非硬格子 + 湿地面近中远反光 + 天空不撕碎
+  'storm-rain-visual',  // v3.30d/e 雨幕无竖纹 + 湿地面近中远反光 + 天空不撕碎
   'storm-lighting',    // v3.30 雨天光影档：开关/持续雨/室内门/遮挡/高度/湿地面/后处理/雨声
 ];
 

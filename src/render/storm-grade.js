@@ -33,43 +33,46 @@
 // ## 两处刻意简化（成本/复杂度取舍，注释里写明）
 //   · **bloom 用双线性 4 抽头降采样**而不是上游的 13 抽头：mip 链本身是低通，
 //     13 抽头的额外质量在 5 级链上肉眼不可辨，而采样数少 3.25×；
-//   · **视线方向用固定 fov 近似**（本仓相机 fov 恒 70）而不是反投影矩阵：
-//     体积雾与远景雨幕都是低频效果，近似误差远小于噪声调制幅度。
+//   · **不做 FXAA**：本仓 renderer 已开 MSAA（上游 antialias:false 才需要它）。
+//     ⚠️⚠️ **这条判断有一个重要例外**（v3.30e 实测）：MSAA 只抗**几何边缘**，
+//     对 shader 内部采样出的高频纹理**完全无效**。上游的远景雨幕正是靠链尾 FXAA
+//     抹掉走样的，所以本仓不能照搬那一层 —— 详见下方「远景雨幕已整层移除」。
+//
+// ## 远景雨幕已整层移除（v3.30e，用户裁定）
+//
+// 用户实玩报告「屏幕上有纹路，让屏幕看上去很粗糙……感觉还不如去掉」。
+// **根因（单变量像素实测，不是猜）**：上游 `rainLayer` 把 512² 细丝纹理按柱面投影
+// 铺满屏幕，三层 tiles=12/25/50 ⇒ 横向密度 **1.37 / 2.85 / 5.69 texel/像素**
+// ⇒ 严重欠采样走样，细丝混叠成满屏竖纹。
+//   · 换纹理内容（走 setRainSheet，唯一生效入口）：原图 **83.5** 次符号翻转/行；
+//     只留纵向渐变（无横向高频）**33.5**（= 无雨幕基线）；只留横向细丝 **144.9**。
+//   · 横向 box blur 半径 0→1→2→4→8：83.5 → 72.2 → 64.3 → 52.3 → **40.4**（单调）。
+//   · mip 开/关/Nearest：83.4 / 75.5 / 95.5 ⇒ mip 只帮一点忙，解决不了欠采样。
+// 上游同样欠采样（4.91 texel/px），但它链尾有 **FXAA**（`uFxaa=1`）把走样抹平；
+// 本仓 MSAA 对此无效 ⇒ 照搬这一层必然粗糙。
+// ⇒ **用户裁定整层去掉**。近景雨丝（5200 条真实几何）+ 水花 + 体积雾 + 湿地面反光
+// 全部保留 —— 玩家仍看得到下雨，只是远处天空少了那层屏幕空间雨帘。
+// ⇒ 连带删除：条纹图烘焙产物与加载器、`uRainGain`/`uRainSheetOn`、`setRainSheet()`。
 import * as THREE from 'three';
 import {
   float, vec2, vec3, vec4, uniform, mix, max, min,
-  abs, pow, dot, atan, normalize, length, smoothstep, oneMinus, clamp,
-  floor, fract, hash, texture, mx_noise_float as perlin,
+  pow, dot, normalize, smoothstep, oneMinus, clamp,
+  floor, fract, hash,
+  mx_noise_float as perlin,
   pass, screenUV, convertToTexture, screenSize, renderOutput,
   cameraProjectionMatrixInverse, cameraWorldMatrix,
 } from 'three/tsl';
 import {
-  STORM_FOG as FO, STORM_FAR_RAIN as FR, STORM_BLOOM as BL, STORM_GRADE as GR,
+  STORM_FOG as FO, STORM_BLOOM as BL, STORM_GRADE as GR,
   stormBloomLevels,
 } from './storm-grade-config.js';
-
-/** 1×1 黑占位图（条纹图未就绪时的安全默认；懒建、全局共享） */
-let _sheetPlaceholder = null;
-function placeholderSheet() {
-  if (!_sheetPlaceholder) {
-    _sheetPlaceholder = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1, THREE.RGBAFormat);
-    _sheetPlaceholder.wrapS = THREE.RepeatWrapping;
-    _sheetPlaceholder.wrapT = THREE.RepeatWrapping;
-    _sheetPlaceholder.colorSpace = THREE.NoColorSpace;
-    _sheetPlaceholder.needsUpdate = true;
-  }
-  return _sheetPlaceholder;
-}
 
 /**
  * 后处理链的 uniform（模块级单例，装配层每帧写）。
  * ⚠️ `uEnabled = 0` 时全部效果中性（增益全 0）⇒ 输出逐位等于输入，供 Tier 4 A/B。
  *
- * ⚠️⚠️ **`uRainSheet` 必须是真实纹理**（本轮用户报告「雨雾像光栅扫描」的根因）：
- * 旧实现用 `hash(floor(uv))` 造雨丝 ⇒ **硬格子**，实测相邻像素 82% 完全相同
- * （场景本身只 4.6%）⇒ 大面积平坦色块 + 硬边界 = 光栅扫描观感。
- * 上游用的是**双线性采样的条纹纹理**（makeRainSheet：900 条竖直渐变细丝）。
- * 缺图时（加载失败）`uRainSheetOn = 0` ⇒ 远景雨幕层整体不画，其余效果照常。
+ * ⚠️ **`uRainGain` / `uRainSheetOn` 已删除**（v3.30e）：远景雨幕整层移除，
+ * 见文件头「远景雨幕已整层移除」的实测根因。
  */
 export const GRADE_UNIFORMS = {
   uEnabled: uniform(0),
@@ -77,48 +80,14 @@ export const GRADE_UNIFORMS = {
   uSunDir: uniform(new THREE.Vector3(0, 0.8, 0.6)),
   uSkyDim: uniform(1),
   uFogGain: uniform(FO.gain),
-  uRainGain: uniform(FR.gain),
   uBloomGain: uniform(BL.gain),
   uCA: uniform(GR.ca),
   uVignette: uniform(GR.vignette),
   uCold: uniform(GR.coldWeight),
   uGrain: uniform(GR.grain),
-  /** 条纹图就绪门（0 = 不画远景雨幕） */
-  uRainSheetOn: uniform(0),
 };
 
-
-/**
- * 远景雨幕的**纹理节点**（模块级单例，构造时绑占位图）。
- *
- * ⚠️⚠️ **必须传真实 Texture 实例，不能传 uniform(Texture)**（本轮全屏黑的根因）：
- * `texture(GRADE_UNIFORMS.uRainSheet, …)` 里第一个参数是 **UniformNode**，
- * 而 `TextureNode.setup` 要求 `value.isTexture === true` ⇒ 抛
- * `THREE.TSL: texture(value) function expects a valid instance of THREE.Texture()`
- * ⇒ **整条后处理链 build 失败 ⇒ 全屏黑（只剩 HUD/面板）**。
- * 正解：用真实 Texture 构造节点一次，加载完成后改 `node.value`（three 支持热替换）。
- */
-const RAIN_SHEET_NODE = texture(placeholderSheet());
-
-/**
- * 一层远景雨幕（上游 `rainLayer` 逐字）。
- *
- * 上游：`uv = (az/2π*tiles + el*wind + seed, el*L*0.22 + t*speed + seed*3.7)`，
- * 采样雨丝贴图的 .r。
- *
- * ⚠️⚠️ **必须采样纹理，不能用 hash 格子**（本轮像素实测的根因）：
- * `hash(floor(vec2(u*32, v*1.5)))` 是**硬格子** —— 每个 cell 整体亮或整体暗
- * ⇒ 屏幕上是一片轴对齐矩形块（用户读作「光栅扫描渲染」）。
- * 实测：雨幕层相邻像素**完全相同 82.06%**（场景本身 4.63%）。
- * 纹理是 900 条**亚像素宽、带纵向渐变的细丝** + 双线性/mip 采样 ⇒ 软、细、无块。
- */
-function farRainLayer(az, el, t, layer) {
-  const u = az.div(6.2831853).mul(layer.tiles).add(el.mul(FR.wind)).add(layer.seed);
-  const v = el.mul(layer.L * 0.22).add(t.mul(layer.speed)).add(layer.seed * 3.7);
-  return RAIN_SHEET_NODE.sample(vec2(u, v)).r;
-}
-
-/** 体积雾 + 远景雨幕（一个 pass，上游 COMPOSITE_FRAG 同口径） */
+/** 体积雾（一个 pass；上游 COMPOSITE_FRAG 的 inscattering 段） */
 function compositeNode(scenePass) {
   const U = GRADE_UNIFORMS;
   const colorNode = scenePass.getTextureNode('output');
@@ -126,10 +95,9 @@ function compositeNode(scenePass) {
    * 视线方向：**用真实相机矩阵反投影**（上游 `uInvProj` + `uCamWorld` 同口径）。
    *
    * ⚠️⚠️ 旧实现用固定 fov 的常量近似 `vec3(c.x*2.24, -c.y*1.4, -1)`，
-   * 且**没有转到世界空间** ⇒ 雾与远景雨幕的柱面坐标跟着屏幕而不是世界
-   * ⇒ 转镜头时雨幕跟着屏幕转（读作贴在屏幕上的一层网格）。
+   * 且**没有转到世界空间** ⇒ 雾的柱面坐标跟着屏幕而不是世界
+   * ⇒ 转镜头时雾跟着屏幕转（读作贴在屏幕上的一层网格）。
    * 现在：屏幕 uv → 相机空间射线（过 inverse projection）→ 世界空间（过 cameraWorldMatrix）。
-   * ⚠️ 宽高比用 `screenSize` 取真实值，不写死 1.6。
    */
   const ndc = screenUV.mul(2).sub(vec2(1, 1));
   const clip = vec4(ndc.x, ndc.y.negate(), float(1), float(1));
@@ -143,7 +111,7 @@ function compositeNode(scenePass) {
    * 体积雾的空间噪声：**连续 Perlin**（上游采样噪声贴图）。
    * ⚠️ 旧实现 `hash(floor(... * 24))` 是硬格子 ⇒ 雾也是一片矩形斑
    * （实测 fogOnly 层相邻像素完全相同 22.34%，且跳变间距集中在 2~6px）。
-   * 改用 `mx_noise_float`（平滑插值）+ 两层 octave ⇒ 连续云难感。
+   * 改用 `mx_noise_float`（平滑插值）+ 两层 octave ⇒ 连续云雾感。
    */
   const nCoord = vec3(
     rd.x.mul(FO.noiseScale).add(rd.y.mul(FO.noiseYScale)),
@@ -161,23 +129,13 @@ function compositeNode(scenePass) {
     .add(vec3(FO.skyColor[0], FO.skyColor[1], FO.skyColor[2]))
     .mul(distK).mul(noiseK).mul(U.uFogGain).mul(U.uSkyDim).mul(U.uEnabled);
 
-  // 远景雨幕（三层柱面投影）
-  const az = atan(rd.x, rd.z);
-  const horiz = max(length(vec2(rd.x, rd.z)), float(0.25));
-  const el = rd.y.div(horiz);
-  const L0 = FR.layers[0]; const L1 = FR.layers[1]; const L2 = FR.layers[2];
-  const rain = farRainLayer(az, el, U.uTime, L0)
-    .mul(smoothstep(float(L0.near), float(L0.far), T)).mul(L0.weight)
-    .add(farRainLayer(az, el, U.uTime, L1)
-      .mul(smoothstep(float(L1.near), float(L1.far), T)).mul(L1.weight))
-    .add(farRainLayer(az, el, U.uTime, L2)
-      .mul(smoothstep(float(L2.near), float(L2.far), T)).mul(L2.weight))
-    .mul(oneMinus(smoothstep(float(FR.elevationFrom), float(FR.elevationTo), abs(el))));
-  const amb = vec3(FO.skyColor[0], FO.skyColor[1], FO.skyColor[2]).mul(U.uSkyDim);
-  const rainLit = ins.mul(FR.insGain).add(amb.mul(FR.ambGain))
-    .mul(rain).mul(U.uRainGain).mul(U.uRainSheetOn).mul(U.uEnabled);
-
-  return vec4(colorNode.rgb.add(ins).add(rainLit), colorNode.a);
+  /**
+   * ⚠️⚠️ **远景雨幕已整层移除**（v3.30e，用户裁定）—— 不要凭直觉把它「补齐」。
+   * 根因与实测读数见文件头；一句话：柱面投影把 512² 细丝压到 1.4~5.7 texel/px，
+   * 欠采样走样成满屏竖纹，而上游靠链尾 FXAA 抹平、本仓 MSAA 对此无效。
+   * 雨感由**真实几何**承担：近景雨丝 5200 条 + 水花（`storm-rain.js`）。
+   */
+  return vec4(colorNode.rgb.add(ins), colorNode.a);
 }
 
 /** 双线性 4 抽头降采样（见文件头「刻意简化」） */
@@ -325,19 +283,6 @@ export function createStormGrade({ renderer, scene, camera, mode = 'sharp', sunD
   return {
     pipeline,
     uniforms: U,
-    /**
-     * v3.30d：注入远景雨幕条纹图（**改 TextureNode.value，不是 uniform**）。
-     * ⚠️ 传 null 表示加载失败 ⇒ 关掉远景雨幕层（其余效果照常）。
-     */
-    setRainSheet(tex) {
-      if (tex) {
-        RAIN_SHEET_NODE.value = tex;
-        U.uRainSheetOn.value = 1;
-      } else {
-        U.uRainSheetOn.value = 0;
-      }
-      return !!tex;
-    },
     setMode(m) {
       const next = stormBloomLevels(m);
       if (next === levels) return levels;

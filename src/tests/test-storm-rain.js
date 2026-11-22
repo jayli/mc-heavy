@@ -14,7 +14,7 @@ import {
   wetnessAt, wetRippleFade, wetFresnel,
 } from '../render/wet-ground-config.js';
 import {
-  STORM_FOG, STORM_FAR_RAIN, STORM_BLOOM, STORM_GRADE,
+  STORM_FOG, STORM_BLOOM, STORM_GRADE,
   stormBloomLevels, bloomSoftKnee, vignetteAt, chromaticOffset,
 } from '../render/storm-grade-config.js';
 import { CARBINE_AUDIO_IDS } from '../render/carbine-audio-recipes.js';
@@ -231,17 +231,15 @@ test('storm grade: 色差 —— 中心零偏移、边缘偏移随半径增', ()
   assertClose(chromaticOffset(-0.3, 0.09), -chromaticOffset(0.3, 0.09), 1e-12);
 });
 
-test('storm grade: 远景雨幕三层 —— 尺度/速度递增关系与距离门不重叠倒置', () => {
-  const L = STORM_FAR_RAIN.layers;
-  assertEqual(L.length, 3);
-  for (let i = 1; i < L.length; i++) {
-    assertTrue(L[i].L > L[i - 1].L, '远层尺度应更大');
-    assertTrue(L[i].tiles > L[i - 1].tiles, '远层平铺应更密');
-    assertTrue(L[i].speed < L[i - 1].speed, '远层视速度应更慢（透视）');
-    assertTrue(L[i].near > L[i - 1].near, '远层的距离门应更远');
-    assertTrue(L[i].far > L[i].near, '每层的门必须 far > near');
-  }
-  assertTrue(STORM_FAR_RAIN.elevationTo > STORM_FAR_RAIN.elevationFrom);
+/**
+ * v3.30e：远景雨幕整层已移除（用户裁定）—— 本用例从「三层参数递增关系」
+ * 改成钉「它真的不存在了」：防止将来凭直觉把那一层「补齐」而竖纹复活。
+ * 根因：柱面投影 1.4~5.7 texel/px 欠采样，上游靠 FXAA 抹平、本仓 MSAA 无效。
+ */
+test('storm grade: 远景雨幕已整层移除（不得重新引入高频柱面雨帘）', async () => {
+  const mod = await import('../render/storm-grade-config.js');
+  assertTrue(mod.STORM_FAR_RAIN === undefined,
+    'STORM_FAR_RAIN 必须不存在（整层已按用户裁定移除）');
 });
 
 test('storm grade: 体积雾的散射色是冷蓝（雨夜），太阳项是暖白', () => {

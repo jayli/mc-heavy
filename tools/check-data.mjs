@@ -4051,50 +4051,6 @@ function checkAudioAssets() {
   infos.push(`[音效] ${SOUND_IDS_FOR_GATE.length} 个效果音 + ${BGM_TRACKS.length} 首背景音乐（${BGM_TRACKS.join('/')}）+ Boss 曲 ${BOSS_BGM_TRACK} 均有对应文件；启动图 assets/ui/ 两件齐备；关于游戏配图 ${ABOUT_IMAGE_PATH} 在位`);
 }
 
-/**
- * [雨幕条纹图] 契约（v3.30d）—— 远景雨幕的双线性条纹纹理。
- *
- * 钉的失效路径（均为**静默**失败）：
- *   ① 参数改了但没重烘 → 产物过期（指纹抓）；
- *   ② 产物缺失 → 加载失败的 catch 吞成一句 warn，远景雨幕**静默不画**；
- *   ③ 覆盖率越界 → 太高糊成白雾、太低看不见（两者都是「雨雾不像雨」）；
- *   ④ **退回 hash 格子**（本轮修的根因）⇒ 由 `storm-rain-visual.spec` 的
- *      块状度像素判据兜住（本环节只管产物，判据在 spec）。
- */
-async function checkRainSheet() {
-  const before = failures.length;
-  const fail = (m) => failures.push(`[雨幕条纹图] ${m}`);
-  const pngPath = path.join(ROOT, 'assets', 'effects', 'rain-sheet.png');
-  const jsonPath = path.join(ROOT, 'assets', 'effects', 'rain-sheet.json');
-  if (!fs.existsSync(pngPath) || !fs.existsSync(jsonPath)) {
-    fail('assets/effects/rain-sheet.{png,json} 不存在 —— 跑 npm run rainsheet');
-    return;
-  }
-  const meta = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
-  const { RAIN_SHEET } = await import('./bake-rain-sheet-params.mjs');
-  const current = Object.entries(RAIN_SHEET).map(([k, v]) => `${k}:${v}`).join(';');
-  if (meta.fingerprints?.input !== current) {
-    fail(`参数已变但产物未重烘（跑 npm run rainsheet）\n      期望 ${current}\n      实际 ${meta.fingerprints?.input}`);
-  }
-  const raw = fs.readFileSync(pngPath);
-  let h = 0x811c9dc5;
-  for (let i = 0; i < raw.length; i++) {
-    h ^= raw[i];
-    h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
-  }
-  const hash = (h >>> 0).toString(36);
-  if (meta.fingerprints?.png !== hash) {
-    fail(`产物被手改或过期（清单 ${meta.fingerprints?.png} ≠ 磁盘 ${hash}）—— 跑 npm run rainsheet`);
-  }
-  const cov = meta.metrics?.coverage ?? 0;
-  if (cov < 0.02 || cov > 0.35) fail(`覆盖率 ${cov} 越界（应 0.02~0.35：太高糊成白雾、太低看不见）`);
-  if ((meta.metrics?.peak ?? 0) < 0.3) fail(`峰值 ${meta.metrics?.peak} 过低`);
-  if (meta.size !== RAIN_SHEET.size) fail(`尺寸 ${meta.size} ≠ 参数 ${RAIN_SHEET.size}`);
-  if (failures.length === before) {
-    infos.push(`[雨幕条纹图] ${meta.size}² 双线性条纹图与参数指纹一致（覆盖率 ${cov} / 峰值 ${meta.metrics.peak}）`);
-  }
-}
-
 const REGISTRY = await buildDefaultRegistry();
 
 /**
@@ -4181,7 +4137,6 @@ checkIgnisAsset();           // v2.55：焰魔烘焙产物契约与指纹（⚠�
 checkGuardianAsset();        // 末影守卫产物契约与指纹（⚠️ 漏了本行则门禁永不执行）
 checkTurretTopGeometry();    // 炮塔塔顶几何产物契约与指纹（⚠️ 漏了本行则门禁永不执行）
 await checkCarbineAudio();   // v3.30：KV-9 / 雨声烘焙产物契约与指纹（⚠️ 同上）
-await checkRainSheet();      // v3.30d：远景雨幕条纹图契约与指纹（⚠️ 同上）
 checkSkyboxAssets();         // v1.58：天空盒立方图完整性（⚠️ 漏了本行则门禁永不执行）
 await checkNightSkyFreshness(); // v1.60：夜空烘焙产物指纹（⚠️ 漏了本行则门禁永不执行）
 await checkGiantTrees();     // 巨树景观：方块/烘焙产物/贴图三方契约（⚠️ 漏了本行则门禁永不执行）
