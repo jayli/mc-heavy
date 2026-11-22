@@ -264,13 +264,14 @@ test('WeaponController: MAG7 单发且无视开关，手枪按住依冷却重复
   assertEqual(editor.singleCalls, 2);
 });
 
-test('WeaponController: R 键循环五次回到徒手（v2.65 追加剑）', () => {
+test('WeaponController: R 键循环六次回到徒手（v3.30 追加 KV-9 卡宾枪）', () => {
   const { controller } = makeControllerFixture();
   assertEqual(controller.debugState().selectedId, 'arm');
   controller.cycle(); assertEqual(controller.debugState().selectedId, 'pistol');
   controller.cycle(); assertEqual(controller.debugState().selectedId, 'mag7');
   controller.cycle(); assertEqual(controller.debugState().selectedId, 'minigun');
   controller.cycle(); assertEqual(controller.debugState().selectedId, 'sword');
+  controller.cycle(); assertEqual(controller.debugState().selectedId, 'carbine');
   controller.cycle(); assertEqual(controller.debugState().selectedId, 'arm');
 });
 

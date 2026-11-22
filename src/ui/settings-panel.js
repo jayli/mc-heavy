@@ -142,6 +142,13 @@ export const TELEPORT_CITADEL_LABEL = '堡垒';
 export const TELEPORT_JUNGLE_LABEL = '要塞';
 
 /**
+ * v3.30：「雨天光影」行的标题与两个档位文案（用户 2026-11-22 需求）。
+ * 导出供单测钉死（单一口径：构造与断言共用一份文案）。
+ */
+export const STORM_ROW_TITLE = '雨天光影';
+export const STORM_LABELS = Object.freeze(['关闭', '开启']);
+
+/**
  * v2.27：「分辨率」行的标题与两个档位文案。导出供 `src/tests/test-ui.js` 钉死（单一口径）。
  *
  * 用户 2026-11-03：「增加一个分辨率的选项，一个是当前默认比较清晰的分辨率，一个是画面
@@ -453,6 +460,9 @@ export class SettingsPanel {
     // 「氛围」，合并后左列少一行。v3.26：左半由「雾色」换成「萤火虫和落叶」（高度不变）。
     left.appendChild(this._combinedAmbientMusic());
     left.appendChild(this._rowTeleport());           // v1.92：瞬移（用户要求在背景音乐下面）
+    // v3.30：雨天光影开关（用户 2026-11-22：「在瞬移区域的下面增加一个雨天光影的
+    // 开关设置按钮」）—— 落位 = 左列、瞬移行**下方**。
+    left.appendChild(this._rowStormLighting());
     right.appendChild(this._combinedViewDistanceResolution()); // 视距 + 分辨率共用一行（v2.27）
     right.appendChild(this._rowBudget());
     right.appendChild(this._rowPlayground());        // M9：创造台（右列，纵向余量更大）
@@ -707,6 +717,29 @@ export class SettingsPanel {
         this.settings.ambientFx = v;
         this._save();
         this.game.setAmbientFxEnabled(v);
+      }, wrap);
+  }
+
+  /**
+   * v3.30：「雨天光影」开关（用户 2026-11-22）。
+   *
+   * 开启后：循环雨滴 → 持续下雨（上游 Rain 移植）+ 地面湿滑反光 +
+   * 体积雾/Bloom/色差/暗角 + 上游雨声床。
+   *
+   * ⚠️ **落位 = 左列、瞬移行下方**（用户明确指定）。它会给左列增一行高，
+   * 而面板有「不得出现纵向滚动条」的冻结断言（teleport.spec / about-tab.spec /
+   * settings-resolution.spec 三处）⇒ **必须实测面板高度**，超了就停下报告，
+   * 不擅自改面板高度或删其他行。
+   * ⚠️ **不置灰**：无异步前置条件（同 _rowAmbientFx 的口径）。
+   * ⚠️ **业务逻辑在 Game**（`setStormLighting`）：面板只做 DOM 与文案。
+   */
+  _rowStormLighting(wrap = 'mc-item') {
+    return this._makeGroup(STORM_ROW_TITLE, [false, true], STORM_LABELS,
+      this.settings.stormLighting,
+      (v) => {
+        this.settings.stormLighting = v;
+        this._save();
+        this.game.setStormLighting(v);
       }, wrap);
   }
 

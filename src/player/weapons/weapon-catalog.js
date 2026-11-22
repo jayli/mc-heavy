@@ -10,9 +10,12 @@
 // v3.20 Nova Beam：伤害**派生**自爆炸常量（红线 1）—— 用户裁定「掉血幅度等同被炸弹炸到」。
 // 在本文件再写一份 50 就是第二份权威，将来调炸弹伤害时光柱会静默不跟。
 import { EXPLOSION_DAMAGE, EXPLOSION_DAMAGE_RADIUS } from '../../voxel/explosion.js';
+// v3.30 KV-9 卡宾枪：弹匣/射速/换弹/曳光参数的唯一权威（three-free，上游 weapon.js 移植）
+import { CARBINE, CARBINE_COOLDOWN } from './carbine.js';
 
 export const WEAPON_IDS = Object.freeze({
   ARM: 'arm', PISTOL: 'pistol', MAG7: 'mag7', MINIGUN: 'minigun', SWORD: 'sword',
+  CARBINE: 'carbine',
 });
 
 /**
@@ -29,6 +32,17 @@ const SWORD_ROTATION_Z = (-168.683 * Math.PI) / 180;
 
 /** 曳光池上限：池满时丢弃最旧的纯视觉曳光，绝不丢弃命中或世界编辑（M4 规格 §4.2） */
 export const MAX_ACTIVE_TRACERS = 32;
+
+/**
+ * 加特林的单发伤害与射程（KV-9 卡宾枪**派生**自它们）。
+ *
+ * ⚠️ **为何抽成常量而不是写 `WEAPONS[MINIGUN].entityDamage`**：`WEAPONS` 正在
+ * 本次 `freeze({...})` 调用里构造，对象字面量内部读不到它自己。
+ * 两个常量是**唯一权威**：加特林与卡宾枪两个条目都引它们 ⇒ 改一处两把枪同时变
+ * （用户裁定「掉血完全一样」，写第二份 35 就是红线 1）。
+ */
+const MINIGUN_DAMAGE = 35;
+const MINIGUN_RANGE = 40;
 
 function freeze(value) {
   if (value && typeof value === 'object' && !Object.isFrozen(value)) {
@@ -66,7 +80,68 @@ export const WEAPONS = freeze({
     tracer: { color: 0xffff00, thickness: 0.5, lifetime: 0.02 }, automatic: true,
     spin: { targetRadiansPerSecond: 25, shootingRetentionAt60Hz: 0.9, idleRetentionAt60Hz: 0.85 },
     // M6 增补：35 → 三发致死
-    entityDamage: 35, entityRange: 40,
+    entityDamage: MINIGUN_DAMAGE, entityRange: MINIGUN_RANGE,
+  },
+
+  /**
+   * KV-9 卡宾枪（v3.30，用户 2026-11-22）—— 从姊妹开源项目
+   * `~/jaylli/bj-shooting-game`（NIGHT HERON）移植的第一件武器。
+   *
+   * 用户原话：「增加那个游戏中的枪，曳光效果，弹丸击中方块、丧尸、boss 等特效等，
+   * 都移植过来……换弹匣的动作也迁移过来，不做按键换弹匣的动作，30 发子弹打光后
+   * 自动换弹匣，无限子弹……击中时的丧尸或者 boss 掉血和原有的机枪击中时的掉血完全一样。」
+   *
+   * ## 四条载荷性口径
+   *
+   * ① **伤害/射程派生自加特林**（红线 1）：用户要「掉血完全一样」，写第二份 35
+   *    将来调机枪伤害时卡宾枪会静默不跟。
+   * ② **弹匣/射速/换弹时长的唯一权威在 `carbine.js`**：本条目只引它，不写字面量。
+   *    那一份同时被视图模型（换弹动画）与单测消费，三处必须同源。
+   * ③ **`carbine: true` 是渲染/玩法分流的判据**（同 `melee` / `stormLance` 的手法）：
+   *    controller 据它走弹匣门与散布抖动，`view-weapon.js` 据它挂 KV-9 视图模型。
+   * ④ **`tracer` 走独立渲染器**（`carbine-fx.js` 的曳光池），不进 `TracerRenderer`：
+   *    上游曳光是「一段沿线推进的亮条」（有头有尾、速度 320 格/秒），而本仓既有曳光是
+   *    「整条瞬现后淡出的圆柱」。两者观感不同，共用池会让其中一方静默退化。
+   *    故本条目**无 `tracer` 字段** —— `player._applyWeaponEffect` 判存在才 spawn，
+   *    缺席即天然不走旧池（与近战剑同一机制）。
+   *
+   * ## 无 `muzzleOffset` / `localStart`
+   * 上游曳光起点是**枪口世界坐标**（`this.muzzle.getWorldPosition()`），由视图模型
+   * 每帧给出，而不是 catalog 里的相机局部常量 —— 枪在换弹/后坐时会动，写死局部偏移
+   * 会让曳光从「枪应该在的位置」而不是「枪实际在的位置」射出。
+   */
+  [WEAPON_IDS.CARBINE]: {
+    id: 'carbine', model: 'carbine',
+    cooldown: CARBINE_COOLDOWN,
+    /** 视图模型后退量由 `carbine-fx` 的 kick 弹簧驱动，不走通用 `_recoil`（故 0） */
+    recoil: 0,
+    sound: 'carbine_fire', volume: 0.5,
+    /**
+     * 视图模型摆放：KV-9 是**程序化几何**（上游 `buildGun()` 的盒/柱批次），
+     * 尺寸已按真实枪械米制建好 ⇒ scale 恒 1、rotation 恒 0，位置由
+     * `carbine-view.js` 的 rig 每帧写（腰射位 + 摆动 + 后坐 + 换弹）。
+     * 这里的 position 是**rig 的基准位**（上游 `lerp(0.165,0,ads)` 等三项的 ads=0 端）。
+     */
+    transform: { scale: [1, 1, 1], position: [0.165, -0.175, -0.31], rotation: [0.03, 0.075, 0] },
+    automatic: true,
+    carbine: true,
+    /**
+     * 枪口与抛壳口的**rig 局部坐标**（上游 `this.muzzle.position` / `this.port.position`）。
+     *
+     * ⚠️ **必须存在**：`_makeEffect` 把 `localStart` 按相机基底展开成曳光起点的世界坐标，
+     * 缺席会让它解构 undefined → **开火即抛 TypeError**（本轮实测踩到）。
+     * ⚠️ z 取**正值**：`_makeEffect` 的公式是 `origin + right·x + up·y − forward·z`，
+     * 而枪口在相机**前方**（rig 局部 −Z）⇒ 这里要写 +0.7 才能落到前方。
+     * 上游 rig 基准位 z=−0.31、枪口局部 z=−0.7 ⇒ 相机空间合计 −1.01，故取 1.01。
+     * x/y 同理：0.165+0 = 0.165、−0.175+0.006 = −0.169。
+     *
+     * 渲染层另有一份**真实枪口世界坐标**（`carbine-view.js` 的 `muzzle.getWorldPosition()`，
+     * 含后坐/换弹/摆动）—— 曳光起点用它，本字段只是 controller 纯逻辑层的回落值
+     * （fixture / 无视图模型时仍有合理起点）。
+     */
+    muzzleOffset: [0.165, -0.169, -1.01],
+    localStart: [0.165, -0.169, 1.01],
+    entityDamage: MINIGUN_DAMAGE, entityRange: MINIGUN_RANGE,
   },
 
   /**

@@ -51,6 +51,22 @@ export const DEFAULT_SETTINGS = {
   // （与 `pixelRatio` / `chunkPace` 同理）。
   // 性能档自动减量由装配层按 `settings.pixelRatio` 派生粒子容量，不在本字段里表达。
   ambientFx: true,
+  /**
+   * 雨天光影档（v3.30，用户 2026-11-22）。默认**关**。
+   *
+   * 开启后：
+   *   · 关掉既有的「循环雨滴」（晴雨周期），改成**持续下雨**（上游 Rain 移植）；
+   *   · 地面湿滑与反光（复用既有 reflector 管线）；
+   *   · 体积雾 / Bloom / 色差 / 暗角（后处理链）；
+   *   · 雨声换成上游的四层雨床（+ 随机远雷）。
+   *
+   * ⚠️ **默认关的理由**：它引入一条后处理链（额外 6~10 个全屏 pass）与
+   * 5200 根雨丝 ⇒ 有真实成本，不该默认给所有玩家。且既有 Tier 4 像素基线
+   * 全部是在无后处理下标定的 ⇒ 默认开会把它们全部弄红。
+   * ⚠️ **不需要 settingsVersion 迁移**：旧存档根本没有这个字段，缺字段自然回落
+   * 新默认（与 pixelRatio / chunkPace / ambientFx 同理）。
+   */
+  stormLighting: false,
   bgm: true, // v1.63：背景音乐（默认开 = mc-lite 进游戏即播；音量固定 BGM_VOLUME 0.15，不接 volume 档）
   // 区块铺开节奏：每帧最多发布几个 section（0 = 不限）。**观感旋钮，不是性能旋钮** ——
   // 2026-10-27 实测两者帧时完全相同（p95 9.1~9.2 / 120fps），因为上传耗时本来就不是
@@ -159,6 +175,7 @@ export function resolveSettings(stored, params) {
     // ⇒ 存储里的 `fogColor` 不可信（旧值大多是「默认值是关时顺带落盘的假值」），不再采信。
     // `?fog=0` 的 URL 分支与 `migrateStored` 一字未动 —— Tier 4 隔离入口仍在。
     if (typeof stored.ambientFx === 'boolean') s.ambientFx = stored.ambientFx;
+    if (typeof stored.stormLighting === 'boolean') s.stormLighting = stored.stormLighting;
     if (typeof stored.bgm === 'boolean') s.bgm = stored.bgm;
     if (stored.chunkPace !== undefined) s.chunkPace = clampChunkPace(stored.chunkPace);
     if (stored.pixelRatio !== undefined) s.pixelRatio = normPixelRatio(stored.pixelRatio);
@@ -177,6 +194,11 @@ export function resolveSettings(stored, params) {
     // ⚠️ 与 main.js 的构造选项 `ambient` **两条都要**：设置项是玩家意图（要落盘），
     // 构造选项是代码级隔离（不持久化，供 spec 不改存档就能关掉持续动画）；生效值取 AND。
     if (params.has('ambient')) s.ambientFx = params.get('ambient') === '1';
+    // ?storm=0|1（v3.30）：雨天光影档的玩家意图（**持久化**，面板同一个字段）。
+    // ⚠️ 与 main.js 的构造选项 `storm` **两条都要**（同 ?ambient 的口径）：
+    // 设置项是玩家意图（要落盘），构造选项是代码级隔离（不持久化，供 spec
+    // 不改存档就能关掉后处理链）；生效值取 AND。
+    if (params.has('storm')) s.stormLighting = params.get('storm') === '1';
     if (params.has('chunkpace')) s.chunkPace = clampChunkPace(params.get('chunkpace'));
     // ?res=sharp|perf 分辨率档位（v2.27）。⚠️ 接受 `perf` 简写：URL 是手敲的，
     // 而存储值与档位常量一律用全名 `performance`（归一化后统一）。

@@ -320,6 +320,234 @@
 - **切开关后等 2.5s、冻完环境再等 4s**：池要重新播种/迁移，且远处 column 仍在流式上传
   （700ms / 2s 时读数几乎为 0，会被误读成「特效没画出来」）。
 
+## 短命特效的断言时机（v3.30，KV-9 / 雨天档）
+
+- ⚠️⚠️ **开火后任何 `await` 都会让短命特效自然过期**：曳光只活 `(L+len)/320 ≈ 0.02s`、
+  枪口火光 0.045s、hitstop 0.022s。在 `page.evaluate` 里开火后接一个 `await import(...)`
+  或 `setTimeout` 再读 `visible`，量到的是「过期后不可见」而不是「开火时可见」。
+  **正解**：模块 import 放在开火**之前**，开火后**同步立刻**取样全部瞬态字段。
+- ⚠️⚠️ **`mount()` 只置标志不写姿态 ⇒ 枪横在屏幕正中心**：Group 默认位置 (0,0,0)，
+  而腰射基准位是 (0.165,−0.175,−0.31)。帧循环下一帧会纠回，但「切枪后立即量位置」
+  的判据读到 0，玩家也看得到那一帧。**mount 必须当场 `update(0, …)` 写一次姿态**。
+- ⚠️⚠️ **`onShot` 只置 `flashT` 等下一帧写 `visible` ⇒ 低帧率下火光一帧也不上屏**：
+  两帧间隔 > 45ms 时 flashT 已减成负。kick/曳光/弹壳全对，只有火光消失（静默）。
+  **开火当场就要点亮并写满功率**，下一帧再按剩余寿命衰减。
+- ⚠️⚠️ **`clear()` 只清 `life` 不清计数与 GPU 属性 ⇒ 弹壳冻在最后一帧永久可见**：
+  下一帧 `_updateCasings` 因 `active===0` 早退，不再写零矩阵。必须同时归零
+  计数、instanceMatrix、各池的逐实例宽度/出生时刻。
+- ⚠️⚠️ **切枪清理只写在「进入」分支 ⇒ 切走时旧特效留在画面上**：已 unmount 的枪
+  不再抛壳，但旧弹壳还在地上躺到 3.5s 寿命结束，而玩家已拿着加特林。
+  **两个分支都要清**（上游 `reset()` 的语义）。
+- ⚠️ **hitstop 计时不钳 0 ⇒ 最后一帧减成负数**：`=== 0` 的「已结束」判据永不成立
+  （实测 −0.0083）。用 `Math.max(0, t - realDt)`。
+- ⚠️ **hitstop 用缩放后的 dt 计时会自我拉长**：0.022s 的 hitstop 实际持续 0.37s
+  （读作卡帧而不是打击感）。计时必须用 realDt，只把**玩法 dt** 缩放。
+
+## 雨的遮挡与高度（v3.30，用户三条硬约束）
+
+- ⚠️⚠️ **`world.isSolid` 不能当「挡雨」判据**：v1.96 起 `cloud.solid=true`（云不可穿越），
+  树叶族也全是 `solid:true` ⇒ 沿用它会让**雨停在树冠上与云顶上**（用户明确否掉）。
+  正解：实心 ∧ **非 cutout** ∧ **非 cloud**（`rain-shelter.js`，21 例单测钉住）。
+- ⚠️ **空岛不需要单独识别**：岛体是石头/泥土（会挡雨），但岛底 Y ∈ [40,70] 都在
+  雨幕上界（34）之上 ⇒ 被高度门整体排除。给岛体加名字白名单是多余的。
+- ⚠️ **高度上界必须派生自 `CLOUD_CLUSTER_Y`**（=35−1=34）：写死 34 会在云层高度
+  改动时静默漂移（雨跑到云上面）。雨幕**盒心**也要钳（`rainBoxCenterY`），
+  否则玩家飞到云上时盒子跟着上去。
+- ⚠️ **「盒心不动」不是高度钳制的正确判据**：低空时盒心本该跟着玩家。
+  正确判据是**盒顶 ≤ 上界**（玩家 y=80 时盒心钳在 25 = 34−18/2）。
+- ⚠️ **室内判据是「头顶有盖」而不是「四周有墙」**：只有顶棚的凉亭同样不该下雨；
+  四面墙但无顶的天井应该下雨。扫描上界同样钳在云层之下（云不算盖）。
+- ⚠️ **雨天档的反射门不能沿用「水面可见性」**：既有 `reflectVisible` 要求相机在
+  水面之上 ∧ 朝下看；玩家站陆地抬头时它是 false ⇒ 反射 pass 不跑 ⇒
+  **湿地面采到空 RT（静默不反光）**。雨天档要放宽成「视野里有地面」。
+
+## 离线音频烘焙的确定性（v3.30）
+
+- ⚠️⚠️ **`OfflineAudioContext` 的节点图在长产物上逐次运行输出不同字节**：
+  12s 雨声床与 6.4s 雷声不稳定，≤0.62s 短音效恰好稳定。去掉 DynamicsCompressor、
+  去掉随机起始相位、每个产物独立 RNG 流之后**仍不稳定** ⇒ 与分块调度/节点内部
+  状态有关，不是配方问题。烘焙产物必须可复现（指纹门禁）⇒ 整条链改确定性 JS
+  （RBJ biquad + 逐样本指数扫频 + FFT 卷积混响）。
+- ⚠️ **共用一条 RNG 流时，新增任一配方会让其余产物变字节**：雨声的噪声取决于
+  它前面所有配方消耗了多少随机数。每产物独立流（种子 = 全局种子 XOR id 的 FNV）。
+- ⚠️ **卷积混响必须做 IR 能量归一化**（ConvolverNode 的 normalize=true 默认语义）：
+  lp 0.45 的一阶低通使相邻抽头强相关，不归一时雷声峰值冲到 **1.95**（削顶）。
+- ⚠️ **模板字面量内的注释不得用反引号**（会提前终止字符串）：本仓 settings-panel
+  已记过同一条，烘焙脚本的 SYNTH 字符串又踩一次（SyntaxError 指向注释里的标识符）。
+
+## 面板与循环音的判据（v3.30）
+
+- ⚠️ **BOOT 隐藏 `#hud-root` 后 `offsetTop`/`scrollHeight` 全 0**：量面板布局前
+  必须临时显形，量完隐回。否则「落位在瞬移行下方」与「无滚动条」两条断言都读到 0。
+- ⚠️ **`debugLoops()` 的字段是 `{playing, volume, target}`**（不是 `wanted`），
+  且**停掉的循环整个键消失**（不是 volume=0）。写 `wanted === undefined` 的判据恒假。
+- ⚠️ **软膝 bloom 在阈值前一点就有少量贡献**（knee=0.54 时 br=0.5 贡献 0.018）：
+  写「阈值以下应为 0」是错的（那要求硬阈值，会把辉光边缘切成硬边）。
+  正确判据：低于膝部起点（thr−knee）时为 0，膝部内少量。
+
+## 雨雾「光栅扫描」与湿地面「地下透射」（v3.30d，用户实玩报告）
+
+### 光栅感 = hash(floor(uv)) 硬格子
+
+- ⚠️⚠️ **`hash(floor(uv * k))` 造不出雨丝/雾，只能造矩形块**：每个 cell 整体亮或整体暗
+  ⇒ 屏幕上是一片轴对齐色块。实测「雨幕层」相邻像素**完全相同 82.06%**（场景本身 4.6%）。
+  上游用的是 **900 条亚像素宽、带纵向渐变的细丝纹理** + 双线性/mip 采样。
+  ⇒ 烘焙 `assets/effects/rain-sheet.png`（`npm run rainsheet`，上游 makeRainSheet 逐字），
+  雾改**连续 perlin 两层 octave**。修后雨幕层 15.9%、雾层 16.7%（接近场景水平）。
+- ⚠️ **块状度判据**：量「相邻像素差为 0 的比例」，而不是看截图。硬格子 ⇒ 该比例极高；
+  连续噪声/双线性纹理 ⇒ 接近场景本身。⚠️ 必须量**效应层自身**（开-关差分放大），
+  量整幅会被场景内容淹没。
+- ⚠️ **视线方向必须转世界空间**：旧实现用固定 fov 常量近似且**没过 cameraWorldMatrix**
+  ⇒ 雾与雨幕的柱面坐标跟着屏幕而不是世界 ⇒ 转镜头时雨幕贴着屏幕转。
+  正解：screenUV → inverse projection → cameraWorldMatrix（上游 uInvProj + uCamWorld 同口径）。
+
+### texture(uniform(Texture)) ⇒ 整条链 build 失败 ⇒ 全屏黑
+
+- ⚠️⚠️ **`texture(GRADE_UNIFORMS.uRainSheet, uv)` 会抛 NodeError**：第一个参数是
+  **UniformNode** 而不是 Texture，`TextureNode.setup` 要求 `value.isTexture === true`
+  ⇒ `THREE.TSL: texture(value) function expects a valid instance of THREE.Texture()`
+  ⇒ **整条后处理链 build 失败 ⇒ 全屏黑（只剩 HUD/面板）**。
+  正解：用**真实 Texture 实例**构造 TextureNode 一次（占位图），加载完成后改 `node.value`。
+- ⚠️ 这个缺陷**只在收集 console 错误的探针里可见**：画面全黑但 `worldReady` 仍 true、
+  所有 uniform 值都对。⇒ 新增后处理项必须配一条「无 console 错误」判据。
+
+### 湿地面反射：复用海平面 reflector 在几何上不可能正确
+
+- ⚠️⚠️ **上游的「压平到镜面再投影」是 no-op，本仓不是**：上游地面就在 y=0、镜面也在 y=0；
+  本仓地面是起伏体素（实测 y≈22），而既有水面 reflector 镜面固定在 −1.5
+  ⇒ 压平把地面点**推低 23.5 格** ⇒ 投影出画：**近处完全没反光、远处采到错位内容**
+  （用户读作「地下一层模糊的透射」）。**与采样坐标怎么写无关**。
+  ⇒ 正解：**独立地面反射 pass**，镜面 = 玩家脚下地面顶面（平滑跟随，瞬移吸附）。
+  修后近/中/远三带反光占比 0.38 / 0.55 / 0.79（缺陷态 near=0）。
+- ⚠️ **rfade 是涟漪的距离衰减，不能乘进反射项**：旧实现把 `rfade`（8~26 格）乘进 reflTerm
+  ⇒ **26 格外完全没反光**（用户：「有的方块并不是呈现反射效果」）。上游只把它用在 nxy 上。
+- ⚠️⚠️ **两条 reflector pass 必须各自套 multi-draw 守卫**：都走 `renderer.render`
+  ⇒ 都覆写 BatchedMesh 的 `_multiDraw*` / `_indirectTexture` ⇒ 第二条覆盖第一条
+  ⇒ 主 pass 读到反射视锥的剔除结果 ⇒ 天空撕成黑多边形（v3.17 同一机制）。
+  新增 `renderWorld.beginReflectGuard()/endReflectGuard()`，每条 pass 前后成对调用。
+- ⚠️⚠️ **采样节点必须是 `node.clone()`**：`base.textureNode === node`（同一对象），
+  reflector 内部 `update()` 会把真 RT 写回它 ⇒ pass 前设的占位图**立即被覆盖**
+  ⇒ 同 pass 读写同一张 RT ⇒ WebGPU 验证错误 ⇒ **整个 CommandBuffer 作废 ⇒ 全屏黑**。
+  clone 共享 base（同一条 pass / 同一张 RT）但 value 独立 ⇒ 可安全换占位图。
+- ⚠️ **WET_UNIFORMS 是 `Object.freeze`** ⇒ 不能 `wetU.uWetReflMatrix = 别的 uniform`
+  （抛 `Cannot assign to read only property` ⇒ **启动期就挂，worldReady 永不 true**）。
+  正解：让写入方持有目标 uniform 的引用，往它的 `.value` 里 copy。
+
+### 分级必须在正确的色彩空间
+
+- ⚠️⚠️ **冷调与 S 曲线必须在 ACES 之后（显示空间）**：上游 GRADE_FRAG 顺序是
+  「暗角 → **aces()** → 冷调 → S曲线 → gamma」。本仓 renderer 已设 ACES，
+  若保持 `outputColorTransform = true`，three 在**最外层**接 renderOutput
+  ⇒ 冷调与 S 曲线落在**线性空间** ⇒ 暗部 col≪1 被 `col²(3−2col)` **平方级压暗**
+  （0.02 → 0.0012）⇒ 天空/暗部近黑（实测近黑占比 0.1436 vs 关分级 0.0064）。
+  正解：`outputColorTransform = false` + **自己调 renderOutput**，分级拆成
+  线性段（bloom/曝光/暗角/色差/颗粒）→ ACES+sRGB → 显示段（冷调/S曲线）。
+- ⚠️ **暗角强度要按本仓亮场景重标**：上游 0.62 是夜景（天空 luma≈20）标定；
+  本仓正午天空 luma≈190 ⇒ 边缘被压到近黑。取 **0.34**（实测边缘近黑 0.30→0.157）。
+
+### 三条判据坑（本轮实测，全部是测量方法错而非实现错）
+
+- ⚠️⚠️ **「天空近黑」不能量整条上带**：本机位左侧 10% 是**建筑/地形**（无链时 luma 54），
+  分级把暗部进一步压暗是正常的 ⇒ 量整条带会把「建筑被压暗」误判成撕碎。
+  正解：量**中心天空区**（x∈[0.35,0.65], y∈[0,0.2]），无缺陷时那里是纯天空。
+- ⚠️⚠️ **后处理链必须预热两帧再取样**：RTTNode 首帧才确定 RT 尺寸/建缓存，
+  首两次渲染输出不同（实测 diff 90%→37% 逐次变化，而相机/世界/uniform **逐位相同**）。
+  预热后 diff **0**。⇒ 「同姿态重渲必须稳定」的判据要先预热。
+- ⚠️ **两次取样之间不得推进 player，也不得让世界继续 streaming**：
+  多调一次 `player.update` ⇒ 相机再走一帧（viewBob/stepLift/sway）；
+  帧循环停了但 Worker 回调仍在发布 section ⇒ 地形还在长。两者都会造成 diff 90%。
+  正解：等 `slotMap.size` 连续 3 次不变再冻帧，两次取样都**只重渲**。
+- ⚠️ **颗粒按 uTime 逐帧变**（上游同口径）⇒ 量「雨幕是否稳定」必须先关 uGrain，
+  否则量到的是颗粒在动。
+
+## 共享 scratch + 延迟求值 ⇒ 锚点串位（v3.30c，用户实玩报告「曳光起点偏右」）
+
+- ⚠️⚠️ **两个 getter 共用同一个 scratch Vector3，调用方延迟求值 ⇒ 前一个被后一个覆写**：
+  ```js
+  muzzleWorld(out = this._v) { … }   // 两个方法默认同一个 this._v
+  portWorld(out = this._v)   { … }
+  const mw = view.muzzleWorld();
+  const pw = view.portWorld();        // ← 此刻 mw 已被 port 覆写
+  fx.spawn({ muzzle: [mw.x,…], port: [pw.x,…] });   // 对象字面量到这里才求值
+  ```
+  ⇒ **曳光从抛壳口射出**。实测偏移 `+0.0908x / −0.0132y / +0.675z`
+  （≈ `port.z − muzzle.z = 0.68`），屏幕上从 (697,437) 跑到 (954,614) —— 右下偏 **257px**。
+  用户看到的是「稍微向右偏了几像素」（远处曳光起点在屏幕上的投影差随距离缩小）。
+- **两道防线都要做**：① 渲染层给每个锚点**独立 scratch**；② 调用方**取完立即展开成数组**
+  （`const muzzle = [mw.x, mw.y, mw.z]`），不持有 Vector3 引用跨越下一次调用。
+- ⚠️ **判据必须读真实 GPU 属性**（曳光池的 `aA`）与**真实几何投影**：
+  锚点局部坐标、rig 姿态、`effect.start` 全都正确 —— 只有写入 GPU 的那个值错了。
+- ⚠️ **容差要按 Float32 量化定**：`aA` 是 Float32Array，世界坐标 ≈283 时量化误差约 **2e-5**
+  ⇒ 写 `< 1e-6` 会把「正确的 float32 存储」判成缺陷（实测 1.96e-6 假红）。取 `1e-4`。
+- ⚠️⚠️ **连射判据必须在开火瞬间取样，不能在帧末**：曳光起点是**开火那一刻**冻结的，
+  而视图模型每帧还在摆动/后坐。在 `v.update()` 之后才取枪口比对 ⇒ 差一帧的摆动量
+  （实测 **0.0445 格**，与 1/120s 的摆动量同量级）—— 那是**测量时机错**不是实现错。
+  正解：包一层 `fx.spawnFromEffect`，在它被调用瞬间同步读枪口（修后 maxDist **1.4e-5**）。
+- ⚠️ **无人消费的共享 scratch 导出是同类缺陷的温床**：本轮顺手删掉
+  `carbineFxScratch` / `stormRainScratch` 两个死导出（全仓零消费点）。
+
+## 视图模型 quad 的 uv 口径（v3.30b，用户实玩报告「火光是方块」）
+
+- ⚠️⚠️ **`PlaneGeometry(w,h)` 的 `position.xy` 是真实尺寸（±w/2, ±h/2），不是单位 quad**。
+  拿 `positionGeometry.xy.mul(2)` 当 uv 用，在 0.24×0.24 的 quad 上只到 **±0.24**
+  ⇒ `r = length(vUv) ≤ 0.34`，**永远到不了 0.7~1.0 的边缘门** ⇒ `edge≡1`、
+  `core=exp(−r²·9)≈1` 恒亮 ⇒ **整片 quad 满亮 = 白方块**（用户读作「纸片一样的方块」）。
+  上游 `vUv = uv`（∈[0,1]）、片元 `c = vUv*2−1`（∈±1）⇒ r 真正覆盖 0..1.41。
+  **正解：`vUv.assign(uv().mul(2).sub(1))`**。
+  ⚠️ 本仓粒子池的 `QUAD_POS` 是 x∈±0.5 / y∈[0,1]，`x*2` 恰好 ∈±1 ⇒ 那些池**没有**这个 bug；
+  只有直接用 `PlaneGeometry` 的视图模型 quad（火光/reticle）踩到。
+- ⚠️⚠️ **暖色 HDR + additive 在亮背景上必钳白**（本仓 fire-ring/cinder 已记的同一条）：
+  上游是 WebGL **夜景**（背景近黑）故 `vec4(col*power, 1)` + additive 成立；
+  本仓正午天空 luma≈200 ⇒ `dst+src` 必削顶。**改 NormalBlending 但 alpha 恒 1 仍是白方块**
+  （整片不透明覆盖）⇒ 必须 **NormalBlending + alpha = gain**（边缘 gain→0 自然羽化 = 柔光）。
+  实测三档：additive+alpha1 → fill 1.00/warm 0；normal+alpha1 → fill 1.00/warm 0；
+  normal+alpha=gain → fill 0.63/warm 2342。
+- ⚠️ **量「火光面积随功率衰减」不能用绝对 luma 阈值**：火光变暗时亮天空露出来，
+  `luma>150` 的计数反而**变大**（实测 13756→16641 的假象）；绝对暖色阈值（r>140）
+  在 power<1 时又全部落空（2325→0→0）。**正解：先拍 power=0 基线，数相对基线的增量**
+  （实测 3274→2538→1394，单调）。
+- ⚠️ **自发光粒子材质要显式 `lights = false`**：`MeshBasicNodeMaterial` 默认
+  `lights = true`，场景有双灯时 colorNode 会被 BasicLightingModel 的 indirect 乘上
+  irradiance。本仓其余粒子池全部显式关了，视图模型的两个 quad 漏了（本轮补上）。
+
+## reflector.clone() 的 value 不跟住真 RT（v3.30b，用户实玩报告「湿地面没反光」）
+
+- ⚠️⚠️ **`ReflectorNode.clone()` 只共享 base，`value` 是独立的**：reflector 内部
+  每帧只把真 RT 写进 `base.textureNode.value`，clone 永远停在构造时的**默认占位 RT**
+  （从未被渲染过）⇒ 湿地面采到空图 ⇒ **反射项恒黑**（单变量 A/B diff = 0）。
+  实测取证：`clone.value.uuid ≠ base.textureNode.value.uuid`，且 clone 不在
+  `base.renderTargets` 里；手动把 clone.value 指向真 RT 后 diff 立刻 0 → 860002。
+  **正解：反射 pass 后把 `clone.value = base.textureNode.value` 同步一次**。
+- ⚠️ **不能同步成 `savedTex`**（pass 前存的旧值）—— 那正是占位图，等于没修。
+- ⚠️ **为何仍要 clone**：反射 pass 期间要把**湿分支的**采样源换成占位图（避免同 pass
+  读写同一张 RT 的 WebGPU 验证错误），而水面自己的采样不受影响。两个需求缺一不可。
+- ⚠️ **这个缺陷的判据必须是像素 A/B**：uniform 值（uWet=1 / uWetReflect=0.35）、
+  节点存在性（hasUvNode / valueIsRT=true）、RT 尺寸（896×504）、refreshes=51
+  **全部正常** —— 只有「反射项开/关的画面差分」能抓它。
+
+## 湿地面复用反射 RT 的两个硬坑（v3.30）
+
+- ⚠️⚠️ **同一 pass 里读写同一张 RT ⇒ WebGPU 验证错误**：反射 pass 把 RT 当渲染目标（写），
+  而挂了湿分支的体素 opaque 材质在同一 pass 里采样它（读）⇒
+  `Texture … usage (TextureBinding|RenderAttachment) includes writable usage and another
+  usage in the same synchronization scope`。
+- ⚠️⚠️ **「反射期间藏掉 opaque 通道」能消错，但是错的修法**（本轮单变量 A/B 实测）：
+  藏掉后反射 RT 里没有地面 ⇒ **水面倒影映的全是天空** ⇒ 水色真的变了
+  （morning 130→127 / noon 99→146 / share 4600→12000，撞冻结色阶）。
+  那是真实观感回归，不是测量误差。**上游反射时也藏 groundMeshes，但它的湿地面
+  不采样同一张 RT**（它用独立的 env cube 兑底）—— 照抄会错。
+- ⚠️⚠️ **正解：给湿分支一个 `reflector.clone()`，反射 pass 期间把 clone 的 value
+  换成 1×1 占位图**。clone 与原节点共享同一个 base（同一条 pass / 同一张 RT），
+  但 value 独立 ⇒ 水面自己的采样不受影响，地面仍在反射里可见。
+  ⚠️ **直接改原节点的 value 无效**：reflector 内部每帧把它写回真 RT
+  （`this.textureNode.value = renderTarget.texture`）⇒ 你的替换被覆盖。
+- ⚠️ **uniform 乘 0 不能消除「节点被采样」的事实**：WebGPU 仍会绑定该纹理 ⇒
+  读写冲突依旧。必须换采样源本身，不能只把贡献乘零。
+- ⚠️ **`createWetGroundNode` 在 `makeMaterial` 里直接调（不在 `Fn()` 体内）⇒
+  不能用 `.toVar()` + `.assign()`**：TSL 的 assign 要求当前有 stack，否则报
+  `No stack defined for assign operation`。**而且画面照常渲染**—— 只有收集 console
+  错误的 spec（water-reflect）能抓它，其他全部全绿。正解：用普通 JS 变量持有节点（三元选）。
+
 ## 通道容量与预算
 
 - 判据是 **reserved（= 1.25 × 已用顶点）相对初始容量常量**，不是已用占比。Node 侧估算先 ×1.25。

@@ -7,6 +7,9 @@ import { isWeaponDestructible } from './weapon-target-policy.js';
 import { collectMag7Changes } from './mag7-pattern.js';
 import { stormChargeProgress, stormLanceAxis, cinderChargeProgress, chargeStageAt } from './storm-lance.js';
 import { cinderLaunch } from './cinder-fall.js';
+import { CARBINE, CarbineMagazine, carbineSpread, carbineJitteredDir,
+  carbineCooldownNext, CARBINE_RELOAD_SOUNDS, CARBINE_RELOAD_VOLUME } from './carbine.js';
+import { raycastVoxel } from '../raycast.js';
 
 /** 无 DDA 命中时曳光延伸距离（mc-lite 40 格 hitscan 语义） */
 const MISS_RANGE = 40;
@@ -20,6 +23,7 @@ const MAG7_MISS_RANGE = WEAPONS[WEAPON_IDS.MAG7].scan.max;
 
 const CYCLE_ORDER = [
   WEAPON_IDS.ARM, WEAPON_IDS.PISTOL, WEAPON_IDS.MAG7, WEAPON_IDS.MINIGUN, WEAPON_IDS.SWORD,
+  WEAPON_IDS.CARBINE,
 ];
 
 export class WeaponController {
@@ -29,11 +33,24 @@ export class WeaponController {
    *          editor: import('../../core/world-editor.js').WorldEditor,
    *          onEffect?: (effect: object) => void}} deps
    */
-  constructor({ registry, blockQuery, editor, onEffect = () => {}, onIgniteTnt = null }) {
+  constructor({ registry, blockQuery, editor, onEffect = () => {}, onIgniteTnt = null, world = null }) {
     this.registry = registry;
     this.blockQuery = blockQuery;
     this.editor = editor;
     this.onEffect = onEffect;
+    /**
+     * v3.30 KV-9：**抖动后的弹道需要自己发一条 DDA**（准心的 `aim.target` 是未抖动方向）。
+     * 注入而非 import：controller 仍不持有体素权威，且 fixture 不传时卡宾枪自动
+     * 回落「用准心 target」（向后兼容，与 `entityQuery` 同一手法）。
+     * ⚠️ 用的仍是**唯一那条 DDA**（`player/raycast.js`）—— 不写第二份射线（红线 6）。
+     * @type {import('../../voxel/world-data.js').WorldData|null}
+     */
+    this.world = world;
+    /**
+     * v3.30 KV-9 弹匣（无限子弹 / 30 发自动换弹）。**只对带 `carbine` 的武器生效**，
+     * 其余武器的路径逐位不变（不读它、不推进它）。
+     */
+    this.carbineMag = new CarbineMagazine();
     /**
      * M8 枪击引爆回调（Game 注入）。缺省 null → 命中 TNT 不引爆也不破坏（fixture 单独构造时）。
      * ⚠️ 引爆**不受** `blockDamageEnabled` 门控 —— mc-lite 同口径
@@ -124,11 +141,13 @@ export class WeaponController {
     // v3.21：第二段同理
     this._cinderStartFired = false;
     this._cinderReadyFired = false;
+    // v3.30：切枪重置弹匣（上游 `reset()` 同口径：换枪即满弹，不带旧枪的换弹进度）
+    this.carbineMag.reset();
     return true;
   }
 
   /**
-   * R 键循环：徒手 → 手枪 → MAG7 → 加特林 → 剑 → 徒手（v2.65 追加剑）。@returns {string} */
+   * R 键循环：徒手 → 手枪 → MAG7 → 加特林 → 剑 → KV-9 → 徒手（v3.30 追加卡宾枪）。@returns {string} */
   cycle() {
     const next = CYCLE_ORDER[(CYCLE_ORDER.indexOf(this.selectedId) + 1) % CYCLE_ORDER.length];
     this.select(next);
@@ -213,12 +232,16 @@ export class WeaponController {
    * @param {number} dt 秒 @param {AimSnapshot} aim @returns {object[]}
    */
   update(dt, aim) {
-    this.cooldown = Math.max(0, this.cooldown - dt);
-    if (!this.triggerHeld) return [];
     const weapon = WEAPONS[this.selectedId];
+    // v3.30：卡宾枪的冷却**允许变负**（自动换弹判据靠它）；其余武器钳 0 逐位不变。
+    this.cooldown = carbineCooldownNext(this.cooldown, dt, !!weapon?.carbine);
+    // v3.30 KV-9：弹匣推进**在 triggerHeld 早退之前** —— 松开左键也得把弹匣换完
+    // （上游同口径：reload 时间线在 update 里无条件跑）。放早退后的形态是「松手即卡住换弹」。
+    const magEffects = this._advanceCarbine(dt, weapon);
+    if (!this.triggerHeld) return magEffects;
     // v3.20：蓄力推进必须在 `automatic` 早退**之前** —— 剑无 `automatic`，
     // 放在后面的形态是「蓄力永不推进」而所有既有剑用例仍全绿（静默失效）。
-    const effects = [];
+    const effects = magEffects;
     const cfg = weapon?.stormLance;
     if (cfg) {
       const was = this.novaChargeElapsed;
@@ -271,6 +294,53 @@ export class WeaponController {
   }
 
   /**
+   * v3.30 KV-9：弹匣推进 + 换弹段音事件。
+   *
+   * ⚠️⚠️ **必须在 `automatic` 早退之前、也在 `_tryFire` 之前调**：
+   *   · 放后面 ⇒ 换弹永不推进（同 v3.20 蓄力那条静默失效）；
+   *   · 放 `_tryFire` 后 ⇒ 换弹刚结束那一帧 ammo 还是 0，白白空放一帧。
+   * ⚠️ 非卡宾枪武器零成本早退（一次字段读）—— 既有四把枪的行为逐位不变。
+   *
+   * @param {number} dt @param {object} weapon @returns {object[]}
+   */
+  _advanceCarbine(dt, weapon) {
+    if (!weapon?.carbine) return [];
+    const mag = this.carbineMag;
+    const wasReloading = mag.reloading;
+    const sound = mag.advance(dt, this.cooldown);
+    const out = [];
+    // 换弹起手（自动触发那一帧）—— 视图模型靠它知道要开始摆姿态
+    if (!wasReloading && mag.reloading) {
+      out.push(this._emitCarbine({ type: 'carbine-reload-start', weapon }));
+    }
+    if (sound >= 0) {
+      out.push(this._emitCarbine({
+        type: 'carbine-reload-stage', weapon, reloadStage: sound,
+        sound: CARBINE_RELOAD_SOUNDS[sound], volume: CARBINE_RELOAD_VOLUME,
+      }));
+    }
+    return out;
+  }
+
+  /**
+   * v3.30：组装卡宾枪的非开火事件（换弹起手 / 三段音）。
+   *
+   * ⚠️ **`recoil` 必须是 0 而不是缺席**（同 `_emitNova` 的教训）：`view-weapon.js:onShot`
+   * 对非 melee 事件写 `this._recoil = effect.recoil`，undefined 会让枪体位置变 NaN
+   * ⇒ **枪从画面上消失**，而换弹音与弹匣计数全绿。
+   * ⚠️ **不写 `lastEffect`**：它是「最后一发」的诊断口径，换弹事件挤进去会让
+   * 「最后一发的 impacts」断言读到换弹事件（既有 spec 依赖 lastEffect）。
+   */
+  _emitCarbine({ type, weapon, sound = null, volume = 0, reloadStage = -1 }) {
+    const effect = {
+      type, weaponId: weapon.id, sound, volume, recoil: 0, impacts: [],
+      reloadStage, ammo: this.carbineMag.ammo,
+    };
+    this.onEffect(effect);
+    return effect;
+  }
+
+  /**
    * 自动化测试/公开 API 入口：走与键鼠完全相同的状态机，仍遵守冷却。
    * @param {AimSnapshot} aim @returns {object[]}
    */
@@ -303,6 +373,8 @@ export class WeaponController {
       cinderCharge: seq ? cinderChargeProgress(this.novaChargeElapsed, seq) : 0,
       cinderCharged: !!c2 && this._cinderReadyFired,
       chargeStage: this._chargeStage(),
+      // v3.30 KV-9：弹匣快照（非卡宾枪时 ammo 恒满、reloading 恒假 —— 无意义但无害）
+      carbine: weapon?.carbine ? this.carbineMag.state : null,
     };
   }
 
@@ -404,16 +476,84 @@ export class WeaponController {
     if (this.selectedId === WEAPON_IDS.ARM) return [];
     if (this.cooldown > 0) return [];
     const weapon = WEAPONS[this.selectedId];
+    // v3.30 KV-9：弹匣门在**扣冷却之前** —— 空匣/换弹中不得把冷却重置，
+    // 否则「换弹结束那一帧」还要再等一个冷却才能开火（上游同口径）。
+    if (weapon.carbine && !this.carbineMag.consume()) return [];
     this.cooldown = weapon.cooldown;
     this.shotsFired++;
     const effect = weapon.id === WEAPON_IDS.MAG7
       ? this._fireMag7(aim, weapon)
       : weapon.melee
         ? this._fireMelee(aim, weapon)
-        : this._fireHitscan(aim, weapon);
+        : weapon.carbine
+          ? this._fireCarbine(aim, weapon)
+          : this._fireHitscan(aim, weapon);
     this.lastEffect = effect;
     this.onEffect(effect);
     return [effect];
+  }
+
+  /**
+   * v3.30 KV-9：一发卡宾枪弹。
+   *
+   * 与手枪/加特林的**三处实质差异**（其余全走同一条 `_fireHitscan`）：
+   *
+   * ① **方向抖动**（上游 `spr`）：在相机 right/up 基底上取圆内均匀一点。
+   *    抖动后必须**重新发一条 DDA**（`aim.target` 是准心方向的结果）——
+   *    不重发的形态是「曳光歪着飞、但每次都打在准心那一格」（静默失效）。
+   *    ⚠️ 用的是**同一条 DDA**（`player/raycast.js`），不写第二份射线（红线 6）。
+   *    未注入 `world` 时回落准心 target（fixture / 旧单测不传则不报错）。
+   * ② **命中反馈带 hitstop / trauma**（上游 `G.hitstop` / `G.shake`）。
+   * ③ **无 `tracer` 字段**：曳光走独立池（`carbine-fx.js`），效果里给 `carbineTracer`。
+   *
+   * 伤害/射程/方块破坏/TNT 引爆全部走既有 `_fireHitscan`（用户：掉血与机枪完全一样）。
+   *
+   * @param {AimSnapshot} aim @param {object} weapon @returns {object}
+   */
+  _fireCarbine(aim, weapon) {
+    const spread = carbineSpread({
+      spread: this.carbineMag.spread,
+      grounded: aim.grounded !== false,
+      speed: aim.speed ?? 0,
+    });
+    const dir = carbineJitteredDir(aim.forward, aim.right, aim.up, spread, Math.random);
+    // 抖动后的 DDA（射程与既有枪同口径 = MISS_RANGE）
+    let target = aim.target;
+    if (this.world) {
+      const r = raycastVoxel(this.world, aim.origin, dir, MISS_RANGE);
+      target = r.hit ? { hit: true, blockPos: r.blockPos, normal: r.normal, dist: r.dist } : null;
+    }
+    const jitteredAim = { ...aim, forward: dir, target };
+    const effect = this._fireHitscan(jitteredAim, weapon);
+    // 曳光：上游参数（颜色/速度/宽度）—— 终点已由 _fireHitscan 算好（实体优先）。
+    // ⚠️ **必须删掉 `tracer`**：`_fireHitscan` 会无条件带上它（catalog 里的旧字段），
+    // 而 `player._applyWeaponEffect` 判 `tracer` 存在就 spawn 旧池 ⇒ 同一发会画**两条曳光**
+    // （一条瞬现圆柱 + 一条推进亮条）—— 计数类判据全绿而观感是重影。
+    delete effect.tracer;
+    effect.carbineTracer = {
+      color: [...CARBINE.tracerColor], speed: CARBINE.tracerSpeed, width: CARBINE.tracerWidth,
+    };
+    // 后坐与镜头反馈（纯数据，渲染/装配层消费）
+    effect.carbineKick = {
+      pitch: CARBINE.recoilPitch,
+      yaw: (Math.random() - 0.5) * 2 * CARBINE.recoilYaw,
+      trauma: CARBINE.shotTrauma,
+    };
+    effect.ammo = this.carbineMag.ammo;
+    // 命中实体：hitstop + 额外震动（上游区分击杀/未死）。
+    // ⚠️ **击杀判据由装配层给**：controller 不持有实体集合，不知道扣完还剩多少血。
+    // 未注入 `wasKilled` 时一律按「未死」取小值（宁可反馈轻一点，不凭空宣称击杀）。
+    if (effect.type === 'entity-hit') {
+      const killed = typeof this.entityQuery?.wasKilled === 'function'
+        ? this.entityQuery.wasKilled(effect.entityId) === true
+        : false;
+      effect.carbineHit = {
+        killed,
+        hitstop: killed ? CARBINE.hitstopKill : CARBINE.hitstopHit,
+        trauma: killed ? CARBINE.traumaKill : CARBINE.traumaHit,
+      };
+    }
+    return effect;
   }
 
   /**

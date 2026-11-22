@@ -9,6 +9,11 @@
 // ⚠️ 加新音效时**只改这里**：`SOUND_IDS` 是唯一权威，`audio-manager.js` 与 `check:data`
 // 都从它派生（在门禁里另写一份 id 列表就是第二份权威，改了代码而忘改门禁时它仍然全绿）。
 
+// v3.30：KV-9 卡宾枪与雨天音效的烘焙配方（three-free / DOM-free，Node 门禁可直接 import）。
+// 产物 id 与扩展名都从它派生，不在本文件手写。
+import { CARBINE_AUDIO_IDS } from './carbine-audio-recipes.js';
+import { CARBINE_AUDIO_EXT } from './carbine-audio-ext.js';
+
 /**
  * 预加载的效果音 id（与 `weapon-catalog` 的 sound 字段一致）。
  * M7 追加 `put` —— 放置成功的音效（mc-lite `src/assets/sound/put.mp3`）。
@@ -92,7 +97,10 @@ export const SOUND_IDS = Object.freeze(['gun_load', 'gun_fire', 'mag7_fire', 'mi
   // 焰魔被击中的时候没有被击中的声音……都用 gun_hit.ogg 这个声音」）。
   // 文件早已在 assets/sounds/ 里（未入清单 ⇒ 从来没被预载过），本次只是接进来，
   // **零新增美术资源**。唯一权威见下面的 `BOSS_HIT_SOUND`。
-  'gun_hit']);
+  'gun_hit',
+  // v3.30 KV-9 卡宾枪与雨天音效（烘焙产物，配方来自 bj-shooting-game 的 Web Audio 合成器）。
+  // ⚠️ **清单派生自 `CARBINE_AUDIO_IDS`**（红线 1）—— 手写 12 个 id 会在新增配方时漏改。
+  ...CARBINE_AUDIO_IDS]);
 
 /**
  * 音效文件的扩展名覆盖表（v2.64）。
@@ -130,6 +138,10 @@ export const SOUND_EXT_OVERRIDES = Object.freeze({
   guardian_die: 'ogg',
   // v3.15 Boss 受击音：磁盘上是 .ogg。漏加本表 = 静默无声（按 .mp3 fetch ⇒ 404 被 catch 吞）
   gun_hit: 'ogg',
+  // v3.30 KV-9 / 雨声：烘焙产物是 **wav**（16-bit PCM，离线合成器写出）。
+  // ⚠️ 漏加本表 = 静默无声（同上面每一条的教训）。清单派生自
+  // `carbine-audio-recipes.js` 的 CARBINE_AUDIO_IDS，不在这里手写 12 行（红线 1）。
+  ...Object.fromEntries(CARBINE_AUDIO_IDS.map((id) => [id, CARBINE_AUDIO_EXT])),
 });
 
 /**

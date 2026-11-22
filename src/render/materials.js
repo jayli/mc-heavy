@@ -19,6 +19,8 @@ import {
   SHADOW_FLOOR, SUN_AMBIENT, SUN_INTENSITY, FACE_NORMALS, NOON_SUN_DIR,
 } from './sun-shade.js';import { HEMI_GROUND } from './hemi-shade.js';
 import { FOG_SKY_Y_FLOOR_EPS } from './fog-sky-direction.js';
+// v3.30 雨天湿地面（上游 GROUND_FRAG / LIT_FRAG 的 rain wetness 段）
+import { createWetGroundNode, WET_UNIFORMS } from './wet-ground.js';
 
 // ---- 顶点阶段 shade（light × AO），float varying 传片元 ----
 // packed 属性解包：bit0-7 light（sky<<4|block），bit8-9 AO，bit10-12 世界面索引，
@@ -134,9 +136,12 @@ const noShadowCastBit = float(packed.shiftRight(14).bitAnd(1));
  * 创建三通道体素材质。
  * @param {THREE.Texture} atlasTexture
  * @param {THREE.DirectionalLight} [sunLight] 太阳灯（传 null 时不乘 shadowFactor，保持原路径）
+ * @param {object} [wetReflect] v3.30 湿地面的反射句柄（`{ node, uvNode, levelNode }`，
+ *   由装配层从 `ocean.js` 的同一个 reflector 交过来）。缺省 null ⇒ 湿分支只做
+ *   压暗/降粗糙度/涟潪，**不采样反射**（fixture / 水面未装配时不报错）。
  * @returns {{opaque: THREE.MeshBasicNodeMaterial, cutout: THREE.MeshBasicNodeMaterial, transparent: THREE.MeshBasicNodeMaterial, dayNight: Object}}
  */
-export function createVoxelMaterials(atlasTexture, sunLight = null) {
+export function createVoxelMaterials(atlasTexture, sunLight = null, wetReflect = null) {
   // 阴影因子（两层 mix，**嵌套顺序是载荷性的，勿交换**）：
   //   内层 `mix(FLOOR, 1, shadow())` = 带地板的阴影：影外 1 / 影内 FLOOR（不再归零）；
   //   外层 `mix(1, 内层, uShadowStrength)` = 浓度调制：strength=0（关阴影/夜里）→ **恒 1 零影响**。
@@ -184,7 +189,7 @@ export function createVoxelMaterials(atlasTexture, sunLight = null) {
   // 此处对齐：transparent 通道完全不参与阴影（不投影也不被压暗）。
   const shadeUnlit = max(mul(vSkyShade, hemiFactor), vBlockShade);
 
-  const makeMaterial = ({ alphaTest = 0, transparent = false, side = THREE.FrontSide, emissive = false, receivesShadow = true }) => {
+  const makeMaterial = ({ alphaTest = 0, transparent = false, side = THREE.FrontSide, emissive = false, receivesShadow = true, wet = false }) => {
     const mat = new THREE.MeshBasicNodeMaterial();
     const uvNode = attribute('uv', 'vec2');
     const texColor = texture(atlasTexture, uvNode);
@@ -195,7 +200,20 @@ export function createVoxelMaterials(atlasTexture, sunLight = null) {
     const rgb = emissive
       ? add(mul(texColor.rgb, shade), mul(EMISSIVE_COLOR, EMISSIVE_INTENSITY).mul(vEmissive))
       : mul(texColor.rgb, shade);
-    mat.colorNode = vec4(rgb, texColor.a);
+    /**
+     * v3.30 雨天湿地面（用户：「重点是地面上湿滑和反光的效果也复用过来」）。
+     *
+     * ⚠️⚠️ **只挂 opaque / cutout，不挂 transparent**：水/玻璃本来就是镜面，
+     * 给它们再叠一层「湿」会双重反光（且水已有自己的 reflector 分支）。
+     * ⚠️ **不新建地面 mesh**（红线 4/5）：效果作为本体素材质的一个可开关分支，
+     * `uWet = 0` 时 `mix` 取左端 ⇒ **逐位回到未开启时的颜色**（零回归锚点）。
+     * ⚠️ 湿分支需要面法线 ⇒ 用已有的 `faceNormalNode`（packed bit10-12），
+     * 不新增顶点属性（WebGPU maxVertexBuffers=8 的硬约束）。
+     */
+    const finalRgb = wet
+      ? createWetGroundNode({ baseRgb: rgb, faceNormal: faceNormalNode, reflect: wetReflect })
+      : rgb;
+    mat.colorNode = vec4(finalRgb, texColor.a);
     // 阴影 pass 逐片元排除不投影方块（bit14=1 → discard）。只在有阴影接线且本通道参与
     // 阴影时挂，fixture / transparent 路径不白付一次位运算。
     if (sunLight && receivesShadow) mat.maskShadowNode = noShadowCastBit.equal(0);
@@ -206,14 +224,18 @@ export function createVoxelMaterials(atlasTexture, sunLight = null) {
   };
 
   return {
-    opaque: makeMaterial({}),
+    opaque: makeMaterial({ wet: true }),
     // cutout = FrontSide + alphaTest 0.3（mc-lite 树叶族口径：leaves 0.3/FrontSide，
     // 树冠内表面背向相机不可见 → 堆积不过密）。cross 植被与 DoubleSide 方块
     // （realistic_oak_leaves）由 mesher 双向绕线复刻双面可见，保持单材质单通道。
     // emissive: true —— hanging_lamp 的材质自发光走本通道（§4.3 bit13）。
+    // ⚠️ cutout **不挂湿分支**：它几乎全是树叶/花草（镂空体）——
+    // 上游对 roughness=1 的植被明确「stay matte in the rain」，给树叶上镜面反光是错的。
     cutout: makeMaterial({ alphaTest: 0.3, side: THREE.FrontSide, emissive: true }),
     transparent: makeMaterial({ transparent: true, receivesShadow: false }),
     dayNight: { uSkyDim, uBlockBoost, uShadowStrength, uSunDirection, uSunStrength, uHemiGround, uSunColor, uAmbientColor },
+    /** v3.30：湿地面的 uniform 句柄（装配层每帧写 uWet / uWetTime） */
+    wet: WET_UNIFORMS,
   };
 }
 

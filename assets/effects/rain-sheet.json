@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "size": 512,
+  "params": {
+    "size": 512,
+    "strokes": 900,
+    "lenMin": 18,
+    "lenMax": 64,
+    "alphaMin": 0.08,
+    "alphaMax": 0.75,
+    "widthMin": 0.6,
+    "widthMax": 1.5,
+    "peakStop": 0.8,
+    "seed": 1212,
+    "version": 1
+  },
+  "metrics": {
+    "peak": 0.7407,
+    "mean": 0.02895,
+    "coverage": 0.2401
+  },
+  "fingerprints": {
+    "input": "size:512;strokes:900;lenMin:18;lenMax:64;alphaMin:0.08;alphaMax:0.75;widthMin:0.6;widthMax:1.5;peakStop:0.8;seed:1212;version:1",
+    "png": "1sdivw4"
+  },
+  "source": "bj-shooting-game/night-heron-src/src/gfx/textures.js makeRainSheet()（逐字移植，离线渲染）"
+}
