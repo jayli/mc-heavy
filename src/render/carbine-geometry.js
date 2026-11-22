@@ -212,8 +212,8 @@ export function buildCarbineArms() {
  * 「曳光从枪管旁边射出」（数值判据全绿，只有画面能看出）。
  */
 export const CARBINE_ANCHORS = Object.freeze({
-  /** 枪口（上游 `this.muzzle.position.set(0, 0.006, -0.7)`） */
-  muzzle: Object.freeze([0, 0.006, -0.7]),
+  /** 枪口（上游 `this.muzzle.position.set(0, 0.009, -0.5)`） */
+  muzzle: Object.freeze([0, 0.009, -0.5]),
   /** 抛壳口（上游 `this.port.position.set(0.04, 0.012, -0.02)`） */
   port: Object.freeze([0.04, 0.012, -0.02]),
   /** 弹匣就位位置（上游 `this.mag.position.set(0, -0.058, -0.1)`） */
