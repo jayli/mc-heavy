@@ -58,15 +58,15 @@ export class RenderWorld {
    * @param {number} [opts.viewDistance]
    * @param {THREE.DirectionalLight} [opts.sunLight] 太阳灯（传入则三通道材质接收阴影；null 保持原路径）
    * @param {Object} [opts.capacity] 测试注入口：按通道覆盖 CAPACITY（{channel: {active, avgVerts}}）
-   * @param {object} [opts.wetReflect] v3.30 雨天湿地面的反射句柄（`{ node }`，
-   *   由装配层从 `ocean.js` 的**同一个** reflector 交过来）。缺省 null ⇒ 湿分支
-   *   只做压暗/涟潪，不采样反射（fixture / 水面未装配时不报错）。
-   *   ⚠️ **不得新建第二个 reflector**：两条反射 pass 会互相覆写 BatchedMesh 的
-   *   indirect 索引表 ⇒ 天空整片撕成黑多边形（v3.17 实测，详见 wet-ground-config.js）。
+   *
+   * ⚠️ **v3.31：不再接受反射句柄**。湿表面改成「按反射方向插值的程序化天空
+   * + 弱太阳高光」，**不采样任何 RT** ⇒ 既不需要第二个 reflector，也不存在
+   * 两条 pass 互相覆写 BatchedMesh indirect 索引表的问题（v3.17 / v3.30d 那类天空撕裂）。
+   * 水面自己的反射 pass 原样保留（它与湿表面无耦合）。
    */
-  constructor({ scene, atlasTexture, viewDistance = 8, sunLight = null, capacity, wetReflect = null }) {
+  constructor({ scene, atlasTexture, viewDistance = 8, sunLight = null, capacity }) {
     this.scene = scene;
-    const materials = createVoxelMaterials(atlasTexture, sunLight, wetReflect);
+    const materials = createVoxelMaterials(atlasTexture, sunLight);
     this.materials = materials;
     const maxInstances = Math.ceil((2 * viewDistance + 1) ** 2 * SECTIONS_PER_COLUMN * 1.2);
     /** @type {Object<string, THREE.BatchedMesh>} */

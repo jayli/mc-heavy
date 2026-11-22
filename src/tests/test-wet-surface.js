@@ -203,3 +203,67 @@ test('mesher: cloud 的类位是 0 且 bit14 仍置位（两条语义独立）',
     assertEqual((r.opaque.packed[i] >>> 14) & 1, 1, `cloud vert${i} bit14 不投影`);
   }
 });
+
+// ---------- uniform 句柄形状（Node 侧有 three/tsl 解析映射，见 tools/three-resolver.mjs）----------
+
+test('wet uniforms: 句柄形状与初值（uWet=0 是零回归锚点）', async () => {
+  const { WET_SURFACE_UNIFORMS: U } = await import('../render/wet-surface.js');
+  assertEqual(U.uWet.value, 0, 'uWet 初值 0 ⇒ 未接线逐位等于原材质');
+  assertTrue(Number.isFinite(U.uWetWaterY.value), '水下门基准是有限数');
+  assertEqual(U.uWetParams.array.length, WET_CLASS_COUNT);
+  for (let i = 0; i < WET_CLASS_COUNT; i++) {
+    const v = U.uWetParams.array[i];
+    assertClose(v.x, WET_CLASS_PARAMS[i][0], 1e-6, `类 ${i} wetGain`);
+    assertClose(v.y, WET_CLASS_PARAMS[i][1], 1e-6, `类 ${i} darken`);
+    assertClose(v.z, WET_CLASS_PARAMS[i][2], 1e-6, `类 ${i} rough`);
+    assertClose(v.w, WET_CLASS_PARAMS[i][3], 1e-6, `类 ${i} specGain`);
+  }
+});
+
+test('wet uniforms: 天空色句柄是 Color（片元要显式拆分量，vec3(Color) 在 WebGPU 输出黑）', async () => {
+  const { WET_SURFACE_UNIFORMS: U } = await import('../render/wet-surface.js');
+  for (const u of [U.uWetHorizon, U.uWetZenith]) {
+    assertTrue(typeof u.value.r === 'number', '有 r 分量');
+    assertTrue(typeof u.value.set === 'function', '有 set 方法（DayNight 写 hex）');
+  }
+});
+
+// ---------- DayNight 接线（Review Focus #3：句柄未接线时反光颜色静默错）----------
+
+test('DayNight: _apply 把风格天空色写给湿表面（与 fogColor/sky 的入参逐位相同）', async () => {
+  const { DayNight, VISUAL_STYLES } = await import('../render/daynight.js');
+  // 独立真值：捕获既有两处写入的入参（不重算 Color 的 sRGB→线性转换）
+  const seen = { fog: null, sky: null };
+  const mkColor = () => ({ value: { r: -1, g: -1, b: -1, set(v) { this.hex = v; } } });
+  const h = mkColor(); const z = mkColor();
+  const dn = new DayNight({
+    scene: { background: { set(v) { seen.sky = v; } } },
+    fog: { fogColor: { value: { set(v) { seen.fog = v; } } }, fogNear: { value: 0 }, fogFar: { value: 0 } },
+    voxelUniforms: {
+      uSkyDim: { value: 0 }, uBlockBoost: { value: 0 }, uShadowStrength: { value: 0 },
+      uWetHorizon: h, uWetZenith: z,
+    },
+    visualStyle: 'dusk',
+  });
+  const d = VISUAL_STYLES.dusk;
+  assertEqual(seen.fog, d.fogColor, '既有 fogColor 写入（独立真值）');
+  assertEqual(seen.sky, d.sky, '既有 background 写入（独立真值）');
+  assertEqual(h.value.hex, seen.fog, 'uWetHorizon 必须等于 fogColor');
+  assertEqual(z.value.hex, seen.sky, 'uWetZenith 必须等于 sky');
+  assertTrue(d.fogColor !== d.sky, 'dusk 两色不同 ⇒ 能区分句柄没接反');
+  // 切风格后必须跟着变（不是只在构造时写一次）
+  dn.setStyle('night');
+  assertEqual(h.value.hex, VISUAL_STYLES.night.fogColor, '切夜后 horizon 跟随');
+  assertEqual(z.value.hex, VISUAL_STYLES.night.sky, '切夜后 zenith 跟随');
+});
+
+test('DayNight: 湿表面句柄缺失时不抛错（既有调用方 / fixture 零回归）', async () => {
+  const { DayNight } = await import('../render/daynight.js');
+  const dn = new DayNight({
+    scene: {},
+    fog: { fogColor: { value: { set() {} } }, fogNear: { value: 0 }, fogFar: { value: 0 } },
+    voxelUniforms: { uSkyDim: { value: 0 }, uBlockBoost: { value: 0 }, uShadowStrength: { value: 0 } },
+  });
+  dn.setStyle('noon');
+  assertTrue(true, '未抛错');
+});
