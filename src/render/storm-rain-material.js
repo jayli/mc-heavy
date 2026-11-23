@@ -26,9 +26,14 @@ import {
   positionGeometry, cameraProjectionMatrix, modelViewMatrix, cameraPosition,
   abs, cos, sin, mix, max, min, smoothstep, oneMinus, step, mod, fract,
   normalize, length, cross, Discard,
+  int, floor, add, mul, textureLoad, ivec3,
 } from 'three/tsl';
 import { STORM_STREAK as ST, STORM_SPLASH as SP } from './storm-rain-config.js';
 import { WATER_SURFACE_Y } from './water-surface.js';
+import { SHELTER_TEXTURE } from './rain-shelter-texture.js';
+import {
+  SHELTER_MAP_SIZE, SHELTER_Y_BASE, SHELTER_EPS,
+} from '../voxel/rain-occlusion-data.js';
 
 const QUAD_POS = Object.freeze([-0.5, 0, 0, 0.5, 0, 0, 0.5, 1, 0, -0.5, 1, 0]);
 const QUAD_IDX = Object.freeze([0, 1, 2, 0, 2, 3]);
@@ -137,7 +142,10 @@ export function createStormStreakMaterial({ skyDim, shadowStrength } = {}) {
   const vertex = Fn(() => {
     const seed = attribute('aSeed', 'vec3');
     const minY = attribute('aMinY', 'float');
+    // ⚠️ `aShelter` 仍由 CPU 写（诊断与单测读它），但 **GPU 不再消费**：
+    // 遮挡已改成逐顶点的 `aboveFloor`（见下）—— 10Hz 采样跟不上滴的水平飘移。
     const shelter = attribute('aShelter', 'float');
+    void shelter;
     const waterCol = attribute('aWaterCol', 'float');
     const box = vec3(ST.box[0], ST.box[1], ST.box[2]);
     const sp = float(ST.speedMin).add(
@@ -156,9 +164,34 @@ export function createStormStreakMaterial({ skyDim, shadowStrength } = {}) {
     const near = smoothstep(float(ST.nearFadeFrom), float(ST.nearFadeTo), dist);
     const far = oneMinus(smoothstep(
       float(ST.box[0] * ST.farFadeFromRatio), float(ST.box[0] * ST.farFadeToRatio), dist));
-    // 遮雨门：低于截停高度 / 整格在屋顶下 ⇒ 宽度归零（整滴不可见）
+    // 遮雨门：低于截停高度 ⇒ 宽度归零（整滴不可见）
     const aboveFloor = step(minY, p.y);
-    const notSheltered = oneMinus(shelter);
+    /**
+     * ⚠️⚠️ **逐顶点遮挡门（v3.34）—— 必须按滴的**当前位置**采高度图**。
+     *
+     * 本轮 Tier 4 连测三次才定位到的真因：`aMinY` / `aShelter` 都是 **10Hz 分批**
+     * 在滴的当时 xz 上采的，而雨有 **1.6 格/s 的水平风** ⇒ 某滴在屋顶**外**被采样
+     * （拿到屋外地面的截停面），下一帧已飘到屋顶**下** ⇒ 属性仍是旧列的值
+     * ⇒ 屋内照旧下雨（实测 5~26 滴，且 mapStopNow 已是屋顶）。
+     * ⇒ **任何 CPU 预采的逐滴列级量都跟不上水平飘移**，刷新频率再高也只是缩短窗口。
+     *
+     * 正解与湿表面片元门同构：在**顶点阶段**按 `p.xz` 的绝对索引 `textureLoad`
+     * 采同一张高度图（模块级单例，非 RT）⇒ 永远是当前列的真值。
+     * 判据用**格顶口径**（与湿表面/CPU 纯函数同一份常量，红线 1）：
+     *   截停面 > floor(p.y) + 1 + EPS ⇒ 头上真的有盖 ⇒ 不画。
+     * ⚠️ 用格顶而不是 `p.y < stop`：后者会把**落在屋顶顶面上**的滴也剔掉
+     * （屋顶自己该淋雨，与湿表面 G4 同一语义）。
+     * ⚠️ 窗外保护：绝对索引会 wrap 到 512 格外的别列 ⇒ 水平距离 > 256 格强制不遮挡。
+     */
+    const shTx = int(floor(p.x)).bitAnd(int(SHELTER_MAP_SIZE - 1));
+    const shTz = int(floor(p.z)).bitAnd(int(SHELTER_MAP_SIZE - 1));
+    const shTex = textureLoad(SHELTER_TEXTURE, ivec3(shTx, shTz, int(0)));
+    const shKnown = step(float(0.5 / 255), shTex.r);
+    const shStop = add(shTex.r.mul(255 / 2), float(SHELTER_Y_BASE));
+    const shCellTop = add(floor(p.y), float(1 + SHELTER_EPS));
+    const shHoriz = length(vec2(p.x.sub(U.uCenter.x), p.z.sub(U.uCenter.z)));
+    const shInWin = oneMinus(step(float(SHELTER_MAP_SIZE / 2), shHoriz));
+    const notSheltered = oneMinus(mul(mul(shKnown, step(shCellTop, shStop)), shInWin));
     /**
      * ⚠️⚠️ **水下门（v3.30g，用户「雨滴不要在水下出现」）**：
      * 逐顶点判「该滴此刻是不是在水面之下」—— y 每帧在变，故这道门不能交给

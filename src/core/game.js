@@ -38,6 +38,8 @@ import { CarbineFx } from '../render/carbine-fx.js';
 import { CARBINE } from '../player/weapons/carbine.js';
 // v3.30 雨天光影档：持续雨（雨丝/水花/雨声）—— 这一块仍是上游移植，用户裁定保留
 import { StormRain } from '../render/storm-rain.js';
+import { RainShelterMap } from '../render/rain-shelter-map.js';
+import { uploadShelterTexture } from '../render/rain-shelter-texture.js';
 import { STORM_AUDIO } from '../render/storm-rain-config.js';
 // v3.31 湿表面：**从零重做**（按材质分类 + 有界天空反光），不参考上游。
 // 上游湿地面（wet-ground / ground-reflect）与整条后处理链（storm-grade）已整体删除：
@@ -964,6 +966,27 @@ export class Game {
     this.editor.subscribe((event) => {
       for (const controller of this.nests.controllers().values()) controller.onWorldChange(event);
       for (const controller of this.turrets.controllers().values()) controller.onWorldChange(event);
+      // v3.34：遮挡高度图失效 —— 玩家挖放当帧重扫该列（插队首，不等轮到）。
+      // ⚠️ 按 column 去重：一次 setBlocks 可能改同一列的几百格。
+      const map = this.rainShelterMap;
+      if (map) {
+        const seen = new Set();
+        for (const c of event.changes) {
+          const cx = Math.floor(c.x / 16); const cz = Math.floor(c.z / 16);
+          const k = cx + ',' + cz;
+          if (seen.has(k)) continue;
+          seen.add(k);
+          map.invalidateColumn(cx, cz);
+        }
+        // ⚠️ **光插队首不够**：高度图重扫了，但雨丝的**逐滴属性**要等
+        // 10Hz 分批轮转（~1 s）才跟上 ⇒ 新盖的屋顶下那期间照旧下雨（实测 7~11 滴）。
+        // ⇒ 同步重扫这几列 + 立即重解全部滴，兼得「当帧跟随」。
+        map.tick(seen.size);
+        if (this.stormRain) {
+          uploadShelterTexture(map.data);
+          this.stormRain.refreshShelterNow();
+        }
+      }
     });
 
     // ---- M8：TNT 爆炸装配 ----
@@ -3010,15 +3033,30 @@ export class Game {
     // ---- ① 雨：循环雨滴 vs 持续雨 ----
     if (on) {
       if (!this.stormRain) {
+        // v3.34：逐列遮挡高度图（三个消费方共用的唯一权威）。
+        // 惰建：关档时不建、不扫、不上传（零成本）。
+        if (!this.rainShelterMap) {
+          this.rainShelterMap = new RainShelterMap({ world: this.world, registry: this.registry });
+        }
         this.stormRain = new StormRain({
           scene: this.scene,
           world: this.world,
           registry: this.registry,
           playerPos: this.player.physics.pos,
+          shelterMap: this.rainShelterMap,
           mode: this.settings.pixelRatio,
           skyDim: this.renderWorld?.materials?.dayNight?.uSkyDim,
           shadowStrength: this.renderWorld?.materials?.dayNight?.uShadowStrength,
         });
+      }
+      // 预热：开档当帧扫玩家周围 3×3 = 9 column（实测 0.11 ms）。
+      // ⚠️ **不得写成「首帧满预算 tick」**：满预算 = 8 column，不足以覆盖 3×3；
+      // 而整窗 1024 column 全扫要 12.5 ms ⇒ 爆帧。远处由 8/帧渐进（~2.1 s 收敛）。
+      {
+        const pp0 = this.player.physics.pos;
+        this.rainShelterMap.setCenter(pp0.x, pp0.z);
+        this.rainShelterMap.warmup(pp0.x, pp0.z);
+        uploadShelterTexture(this.rainShelterMap.data);
       }
       this.stormRain.setEnabled(true);
       this.stormRain.setIntensity(1);
@@ -3125,19 +3163,34 @@ export class Game {
   _updateStorm(nowMs, dt) {
     if (!this._stormActive) return;
     const pp = this.player.physics.pos;
+    /**
+     * v3.34：推进遮挡高度图（每帧最多 8 column，实测 0.098 ms）。
+     *
+     * ⚠️ **上传必须早于本帧所有 render pass**（反射/阴影/主）—— 遮罩纹理是
+     * 模块级单例，反射替身材质也采样它；pass 中途更新会让主画面与 RT 干湿不一致。
+     * 帧循环顺序 `_updateStorm()` → `_renderWaterReflection()` → `renderer.render()` 已满足。
+     * ⚠️ 静止世界 tick 返回 0 ⇒ **零上传**；关档时本函数首行就 return。
+     */
+    const map = this.rainShelterMap;
+    if (map) {
+      map.setCenter(pp.x, pp.z);
+      if (map.tick(8) > 0) uploadShelterTexture(map.data);
+    }
     // 相机前向（水花只在视野前方生成）
     const fwd = this._stormForward || (this._stormForward = new THREE.Vector3());
     this.camera.getWorldDirection(fwd);
     this.stormRain.setForward(fwd.x, fwd.y, fwd.z);
     this.stormRain.update(pp, dt, nowMs);
-    // 湿表面室内门（室内时地面也不该湿 —— 雨没淋到）。
-    // ⚠️ v3.31：**无时钟** —— 新湿表面是静态的（用户未选涟漪/流水动画），
-    // 动的是雨丝与水花。好处：Tier 4 判据天然稳定，不需要冻时间。
+    /**
+     * 湿表面总强度：**恒为 MAX**（v3.34）。
+     *
+     * ⚠️⚠️ 旧写法 `indoor ? 0 : MAX` 是用户报告缺陷的直接原因：
+     * 玩家一进屋，**全世界**地面（包括屋外）一起变干。
+     * 遮挡现已交给**片元门** `uWetShelter`（按世界坐标采高度图）。
+     * ⚠️ v3.31：新湿表面**无时钟**（静态）⇒ Tier 4 判据天然稳定。
+     */
     const wet = this.renderWorld?.materials?.wet;
-    if (wet) {
-      const indoor = this.stormRain.debugState().underRoof;
-      wet.uWet.value = indoor ? 0 : WET_STRENGTH_MAX;
-    }
+    if (wet) wet.uWet.value = WET_STRENGTH_MAX;
     // 雨声（室内衰减）+ 随机远雷
     this._syncStormAudio();
     this._maybeThunder(nowMs);

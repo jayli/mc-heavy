@@ -29,8 +29,7 @@ import {
   createStormStreakGeometry, createStormStreakMaterial,
   createStormSplashGeometry, createStormSplashMaterial,
 } from './storm-rain-material.js';
-import { rainStopY, isUnderRoof, rainBoxCenterY, RAIN_CEILING_Y } from './rain-shelter.js';
-import { waterSurfaceYAt } from './water-surface.js';
+import { isUnderRoof, rainBoxCenterY, RAIN_CEILING_Y } from './rain-shelter.js';
 
 
 /** 遮挡解析的节流（秒）= 10Hz。雨滴位置每帧在动，但**遮挡关系**变化慢。 */
@@ -42,14 +41,18 @@ export class StormRain {
   /**
    * @param {{scene: THREE.Scene, world: object, registry: object,
    *          playerPos: {x:number,y:number,z:number},
+   *          shelterMap: import('./rain-shelter-map.js').RainShelterMap,
    *          mode?: 'sharp'|'performance',
    *          skyDim?: object, shadowStrength?: object,
    *          rand?: () => number}} deps
+   *   `shelterMap` **必填**：逐列遮挡高度图（装配层给）。雨丝/水花查它，
+   *   不再逐滴扫体素 —— 既便宜，又修掉「从滴自己的 y 往下扫看不到屋顶」的缺陷。
    */
-  constructor({ scene, world, registry, playerPos, mode = 'sharp', skyDim, shadowStrength, rand = Math.random }) {
+  constructor({ scene, world, registry, playerPos, shelterMap, mode = 'sharp', skyDim, shadowStrength, rand = Math.random }) {
     this.scene = scene;
     this.world = world;
     this.registry = registry;
+    this.shelterMap = shelterMap;
     this._rand = rand;
     this.capacity = stormStreakCount(mode);
     this.splashRate = stormSplashRate(mode);
@@ -138,6 +141,7 @@ export class StormRain {
       splashVisible: this.splashMesh.visible,
       shelteredDrops: this._shelteredDrops,
       underRoof: this._underRoof,
+      shelterColumns: this.shelterMap?.lastTickColumns ?? 0,
       centerY: this._center.y,
       ceilingY: RAIN_CEILING_Y,
       splashRate: this.splashRate,
@@ -170,17 +174,12 @@ export class StormRain {
     );
     this.streakUniforms.uCenter.value.copy(this._center);
 
-    // ---- 室内门（用户约束①）：玩家头顶有屋顶 ⇒ 整个雨效不生效 ----
-    // ⚠️ 每帧一次扫描（最多 24 格）成本可忽略；它决定的是「玩家所在处是否室内」，
-    // 而逐滴的 aShelter 决定「哪些滴在屋顶下」—— 两者互补：
-    // 站在室内时整片雨停（连窗外远处的雨丝也不画，符合「室内不生效」）；
-    // 站在室外时只有屋顶正下方那些滴被剔掉。
+    // ---- 玩家所在处是否被遮挡（**只喂音频**，不再当视觉总闸）----
+    // ⚠️⚠️ v3.34：**删掉了「玩家室内 ⇒ 两个 mesh visible=false 并 return」的总闸**。
+    // 用户 2026-11-23：「玩家待在屋里向外看，是能看到外面在下雨的」。
+    // 遮挡是**空间属性**，不是玩家的属性 ⇒ 逐滴查列级高度图（下方）。
+    // `_underRoof` 保留但语义收窄为「玩家头顶有没有盖」，喂雨声衰减与远雷门（听感正确）。
     this._underRoof = isUnderRoof(this.world, this.registry, playerPos.x, playerPos.y + 1.6, playerPos.z);
-    if (this._underRoof) {
-      this.streakMesh.visible = false;
-      this.splashMesh.visible = false;
-      return;
-    }
 
     // ---- 逐滴遮挡解析（10Hz + 分批削峰）----
     this._shelterAcc += dt;
@@ -222,18 +221,22 @@ export class StormRain {
       const wx = mod(rawX - this._center.x + half[0], ST.box[0]) - half[0] + this._center.x;
       const wy = mod(rawY - this._center.y + half[1], ST.box[1]) - half[1] + this._center.y;
       const wz = mod(rawZ - this._center.z + half[2], ST.box[2]) - half[2] + this._center.z;
-      // 截停面（屋顶/地面顶面 **或水面**，取更高者）；null ⇒ 无截停
-      // ⚠️ v3.30g：用户「雨滴不要在水下出现」⇒ 雨丝钳在水面而不是穿过水落到湖底。
-      const shelter = rainStopY(this.world, this.registry, wx, wz, wy, 24);
+      // 截停面（屋顶/地面顶面 **或水面**）—— v3.34 改成**查列级高度图**。
+      //
+      // ⚠️⚠️ 旧写法 `rainStopY(world, reg, wx, wz, **wy**, 24)` 的扫描起点是
+      // **雨滴自己当前的 y** ⇒ 屋内 y=5 的滴往下扫只会先撞到 y=0 的地板，
+      // **永远看不到 y=9 的屋顶** ⇒ 雨照画在屋里（被总闸掩盖的静默缺陷）。
+      // 高度图从**云层上界**往下扫 ⇒ 屋内地板那一列的 stop = 屋顶顶面。
+      // null = 未知/无截停/窗外 ⇒ 安全失败（不遮挡）。
+      const shelter = this.shelterMap.stopAt(wx, wz);
       /**
        * 该列有没有暴露水面（v3.30g）—— GPU 侧水下门的**列级**因子。
        * ⚠️ 与「滴的 y 在不在水下」分开：后者每帧在变，必须 GPU 逐顶点判；
        * 前者（列的水陆属性）变化慢，10Hz 采样足够。
-       * ⚠️ 扫描起点与 rainStopY 同口径（否则飞高时窗口够不到水体 ⇒ 门静默失效）。
+       * ⚠️ **语义有意收窄**：单遍扫描遇屋顶即停 ⇒ 「屋顶盖住的水面」列 hasWater=0。
+       * 已穷举证明不可达（5684 列全部 stop > 该列水面 ⇒ 不存在「水下且可见」的区间）。
        */
-      const wStart = Math.min(Math.floor(wy), RAIN_CEILING_Y);
-      const surf = waterSurfaceYAt(this.world, this.registry, wx, wz, wStart, 24);
-      wcAttr.setX(i, surf === null ? 0 : 1);
+      wcAttr.setX(i, this.shelterMap.waterAt(wx, wz) ? 1 : 0);
       if (shelter === null) {
         minYAttr.setX(i, -1e9);
         shAttr.setX(i, 0);
@@ -251,6 +254,30 @@ export class StormRain {
     this._shelterCursor = end >= this.capacity ? 0 : end;
     // 诊断计数取整轮的近似（每批覆盖 1/10，乘回去）
     this._shelteredDrops = Math.round(sheltered * (this.capacity / SHELTER_BATCH));
+  }
+
+  /**
+   * 世界编辑后立即重解全部雨滴的截停面（v3.34）。
+   *
+   * ⚠️⚠️ **光把 column 插队首不够**（本轮 Tier 4 实测拓到的真缺陷）：
+   * 高度图重扫了（`mapStopNow=28` = 屋顶），但**逐滴属性还是旧值**
+   * （`attrMinY=23` = 地板）—— 10Hz 分批轮转要 ~1 s 才轮到那一半滴
+   * ⇒ 新盖的屋顶下那期间**照旧下雨**（实测 7~11 滴），挖掉屋顶同理。
+   * 用户要的是「挖放方块当帧跟随」⇒ 编辑事件必须同时刷逐滴属性。
+   *
+   * 成本：一次查表遍历（无体素扫描），5200 滴 ≈ 0.2 ms，只在编辑帧发生。
+   */
+  refreshShelterNow() {
+    if (!this.shelterMap) return;
+    const saved = this._shelterCursor;
+    this._shelterCursor = 0;
+    // ⚠️ **不能用 `while (cursor < capacity)`**：`_resolveShelterBatch` 末尾会把
+    // 走到尾的 cursor **归 0**（环形轮转）⇒ 那个条件永远成立 ⇒ **主线程死循环**
+    // （本轮实测：浏览器卡在这里，整个 page.evaluate 永不返回）。
+    // 改用**固定批数**：ceil(capacity / 批大小) 趟恰好覆盖全量。
+    const batches = Math.ceil(this.capacity / SHELTER_BATCH);
+    for (let i = 0; i < batches; i++) this._resolveShelterBatch();
+    this._shelterCursor = saved;
   }
 
   /**
@@ -272,14 +299,16 @@ export class StormRain {
       const a = baseAngle + (this._rand() - 0.5) * SP.angleSpread;
       const x = playerPos.x + Math.sin(a) * r;
       const z = playerPos.z + Math.cos(a) * r;
-      // 落点：从眼高往上一点开始往下扫（上游 groundAt(x,z,camY+1.2,0.3)）
-      // ⚠️ v3.30g：取 max(挡雨面, 水面) ⇒ **被水淹住的湖底不生成水花**，
-      // 而**湖面本身生成**（用户裁定）—— 落在水面顶面上。
-      const y = rainStopY(this.world, this.registry, x, z, playerPos.y + 1.6, 24);
+      // 落点：查列级高度图（v3.34）—— 与雨丝同源，不再逐点扫体素。
+      // ⚠️ v3.30g：取 max(挡雨面, 水面) 的语义由高度图的单遍首命中承担
+      // ⇒ **被水淹住的湖底不生成水花**，而**湖面本身生成**（用户裁定）。
+      const y = this.shelterMap.stopAt(x, z);
       if (y === null) continue;
       if (y > playerPos.y + SP.maxAboveEye) continue;
-      // 该点在屋顶下 ⇒ 不溅水花（用户约束①：室内不生效）
-      if (isUnderRoof(this.world, this.registry, x, y + 0.2, z, 12)) continue;
+      // ⚠️ **不需要额外的「在屋顶下」判据**（旧 isUnderRoof 那行已删）：
+      // `stop` 本身就是该列**最高**截停面 ⇒ 落点要么在屋顶**上方**（该淋雨），
+      // 要么被上一行 maxAboveEye 滤掉（屋内地板那一列的 stop = 屋顶顶面 ≫ 眼高）。
+      // 旧写法是对同一个事实的第二次扫描。
       const i = this._splashCursor;
       this._splashCursor = (i + 1) % SP.capacity;
       attr.setXYZW(i, x, y + SP.floorOffset, z, tSec + this._rand() * 0.03);
