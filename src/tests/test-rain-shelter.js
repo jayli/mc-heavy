@@ -59,11 +59,13 @@ test('rain shelter: 屋顶类方块全部挡雨（石/木/砖/台阶/玻璃）',
   }
 });
 
-test('rain shelter: 全部树叶族不挡雨（cutout 通道）', () => {
-  const leaves = BLOCKS.filter((b) => b.cullMode === 'cutout' && /leaves|flowers/.test(b.name));
-  assertTrue(leaves.length >= 8, `树叶族应至少 8 个，实际 ${leaves.length}`);
-  for (const b of leaves) {
-    assertFalse(blocksRain(id(b.name), REG), `${b.name} 是树叶/花，不该挡雨`);
+test('rain shelter: 全部镂空遮挡体不挡雨（13 个树叶族）', () => {
+  // ⚠️ 口径从「cutout 通道」改成「hollowOccluderTable」（= cutout ∧ opaque）：
+  // 台阶/栏杆/柱子也在 cutout 通道，但它们是实心建材，必须挡雨。
+  const hollow = BLOCKS.filter((b) => REG.hollowOccluderTable[id(b.name)] === 1);
+  assertTrue(hollow.length >= 13, `镂空遮挡体应至少 13 个，实际 ${hollow.length}`);
+  for (const b of hollow) {
+    assertFalse(blocksRain(id(b.name), REG), `${b.name} 是镂空遮挡体（树叶），不该挡雨`);
   }
 });
 
@@ -78,15 +80,33 @@ test('rain shelter: 花草/水/空气不挡雨', () => {
   }
 });
 
-test('rain shelter: 判据是「实心且非 cutout 且非云」，不是名字白名单', () => {
+test('rain shelter: 判据是「实心且非镂空遮挡体且非云」，不是名字白名单', () => {
   // 逐个方块核对：判据结果必须与三条声明完全一致
   for (const b of BLOCKS) {
     const bid = id(b.name);
     const expect = REG.solidTable[bid] === 1
-      && REG.cullTable[bid] !== 1
+      && REG.hollowOccluderTable[bid] !== 1
       && b.name !== 'cloud';
     assertEqual(blocksRain(bid, REG), expect, `${b.name} 的挡雨判定与声明不一致`);
   }
+});
+
+test('rain shelter: 台阶/半砖/栏杆/柱子/箱子都挡雨（棚子最常见的建材）', () => {
+  for (const n of ['planks_step', 'planks_step_updown', 'cobblestone_step',
+    'cobblestone_step_updown', 'stone_diorite_step', 'sand_step', 'sand_slab',
+    'half_block_updown', 'obsidian_brick_step', 'obsidian_brick_step_updown',
+    'end_stone_brick_step', 'end_stone_brick_step_updown',
+    'obsidian_brick_slab', 'end_stone_brick_slab',
+    'handrail', 'handrailA', 'handrailB', 'vertical_pillar', 'horizontal_pillar',
+    'chest']) {
+    assertTrue(blocksRain(id(n), REG), `${n} 是实心建材，必须挡雨`);
+  }
+});
+
+// 仙人掌单列：它挡雨对，但 geometry='cactus' 顶面 1.05（超出单元格），
+// 不是常规建材 —— 与台阶并列会让后来者误以为它是同类。
+test('rain shelter: 仙人掌挡雨（顶面 1.05，超出单元格的特例）', () => {
+  assertTrue(blocksRain(id('cactus'), REG));
 });
 
 // ---------- 屋顶扫描 ----------
