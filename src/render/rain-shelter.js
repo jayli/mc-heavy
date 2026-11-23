@@ -7,10 +7,13 @@
 // ## 三条规则的实现口径
 //
 // ① **屋顶拦雨**：从雨幕上界往下扫，遇到「挡雨方块」就停在它的顶面。
-//    挡雨判据 = `solid && cullMode ∈ {opaque, transparent}` —— 即**实心且非镂空**。
-//    房屋屋顶（石砖/木板/台阶/玻璃）全部命中；玻璃也算屋顶（室内不该下雨）。
+//    挡雨判据 = `solid ∧ 非镂空遮挡体 ∧ 非云`。
+//    房屋屋顶（石砖/木板/**台阶**/玻璃）全部命中；玻璃也算屋顶（室内不该下雨）。
+//    ⚠️ **镂空遮挡体 = `hollowOccluderTable`（cutout ∧ opaque），不是整个 cutout 通道**：
+//    台阶/栏杆/柱子虽在 cutout 通道（几何非整格）但是实心建材，必须挡雨。
+//    旧口径读 `cullTable !== 1` 漏判了 21 个建材（含全部台阶）⇒ 木台阶棚子完全不挡雨。
 // ② **树叶/云/空岛不拦**：
-//    · 树叶族 = `cullMode === 'cutout'`（镂空通道）⇒ 排除；
+//    · 树叶族 = `hollowOccluderTable === 1`（镂空遮挡体：cutout ∧ opaque）⇒ 排除；
 //    · 云 = `cloud`（有 `supportsPlayer:true` 且 `shadowCast:false` 的实心块）⇒ 排除；
 //    · 空岛 = 岛体本身是石头/泥土（会挡雨），但**岛在云上**（底 Y ∈ [40,70]）
 //      ⇒ 被规则③的高度上界整体排除，不需要单独识别岛体方块。
@@ -22,7 +25,7 @@
 // 而树叶族也是 `solid:true` ⇒ 既有雨效在树下/云上会停住。用户明确要求这三种不拦。
 //
 // ⚠️ **判据走 registry 的表而不是名字白名单**（红线 1）：新增方块只要按既有口径声明
-// （屋顶类 = opaque/transparent 实心；树叶类 = cutout）就自动纳入，不需要改本文件。
+// （屋顶类 = 实心且非镂空遮挡体；树叶类 = cutout ∧ opaque）就自动纳入，不需要改本文件。
 // 唯一的例外是 `cloud` —— 它按声明是 opaque 实心，必须显式排除（它是「云」不是「屋顶」）。
 //
 // 本文件不 import three（Node 单测直接构造 registry + 假 world 即可断言）。
@@ -44,11 +47,13 @@ export const RAIN_CEILING_Y = CLOUD_CLUSTER_Y - 1;
  *
  * 判据三条（全部读 registry 的表，不写名字白名单）：
  *   ① `solidTable[id] === 1`（实心）；
- *   ② `cullTable[id] !== 1`（**非 cutout**）⇒ 排除全部树叶族与花草；
+ *   ② `hollowOccluderTable[id] !== 1`（**非镂空遮挡体**）⇒ 排除 13 个树叶族；
  *   ③ `id !== cloudId`（云不挡雨，尽管它 solid=true）。
  *
  * ⚠️ **transparent 通道算挡雨**：玻璃屋顶下的室内不该下雨（用户「室内不生效」）。
  * ⚠️ **水不挡雨**：`water.solid = false` ⇒ 第一条就排除（雨落进水里是对的）。
+ * ⚠️ **cutout 通道里的实心建材也算挡雨**：台阶/半砖/栏杆/柱子/箱子虽在 cutout
+ * （几何非整格需要镂空渲染）但它们是建材。旧口径读 `cullTable !== 1` 把它们全漏了。
  *
  * @param {number} id
  * @param {ReturnType<import('../voxel/block-registry.js').createRegistry>} registry
@@ -57,8 +62,9 @@ export const RAIN_CEILING_Y = CLOUD_CLUSTER_Y - 1;
 export function blocksRain(id, registry) {
   if (!Number.isInteger(id) || id <= 0) return false;
   if (registry.solidTable[id] !== 1) return false;
-  // cullMode: opaque 0 / cutout 1 / transparent 2 / none 3
-  if (registry.cullTable[id] === 1) return false;      // 树叶族 / 花草：镂空，不挡
+  // 镂空遮挡体（cutout ∧ opaque）= 13 个树叶族 ⇒ 不挡；
+  // 台阶/栏杆/柱子虽在 cutout 通道但非 opaque ⇒ 不在该表里 ⇒ 仍挡雨。
+  if (registry.hollowOccluderTable[id] === 1) return false;
   if (id === registry.idOf('cloud')) return false;      // 云：显式排除
   return true;
 }
