@@ -161,13 +161,29 @@ git commit -m "fix(rain): 挡雨判据改读镂空遮挡体表，台阶/栏杆/�
   - `tick(budget = 8): number` —— 消费队列（单位 **column**），返回本帧实扫数；>0 表示纹理需重传
   - `debugState(): { queued, scanned, originX, originZ, lastTickColumns }`
 
-- [ ] **Step 1: 写失败测试**
+- [ ] **Step 1: 建文件 + 注册三处，再写失败测试**
 
-新建 `src/tests/test-rain-shelter-map.js`。用 `createRegistry` + `BLOCKS` 建表（照 `test-rain-shelter.js` 口径），用真实 `fillColumn(col, SEED, REG)` 造地形（照 `test-terrain.js` 口径，**注意 fillColumn 是三参**）。断言：
+⚠️ **顺序是载荷性的**：`run-unit-node.mjs --only` 对不在 `UNIT_NODE_SAFE` 的文件
+**硬失败**（实测：报「不在 Node 白名单内」而不是跑测试）。故必须先完成：
+1. 新建 `src/tests/test-rain-shelter-map.js`（先只放 1 条必红用例）；
+2. `src/tests/index.html` 加 `import './test-rain-shelter-map.js';`；
+3. `tools/test-tiers.mjs` 的 `UNIT_NODE_SAFE` 加 `'test-rain-shelter-map.js'`。
+三处缺一不可：漏 2 或 3 会被 `check:data` 的双向门抓红。
+
+用 `createRegistry` + `BLOCKS` 建表（照 `test-rain-shelter.js` 口径），用真实
+`fillColumn(col, SEED, REG)` 造地形（**三参**，已核；照 `test-terrain.js` 口径）。
+⚠️ `col.state = 'ready'` 要手动置（`fillColumn` 不置），否则被测实现若按 state 过滤会扫不到。
+
+断言：
 
 1. 编码往返：对 `[WORLD_MIN_Y+1, WORLD_MIN_Y+1.5, 0, 0.5, RAIN_CEILING_Y+1]` 逐个 `decodeStopY(encodeStopY(y)) === y`；`encodeStopY(null) === 0`、`decodeStopY(0) === null`。
 2. 值域上界：`encodeStopY(RAIN_CEILING_Y + 1) <= 255`（关系式，不写死 136）。
-3. **f32 往返 + EPS**：对全部合法编码 e，`Float32Array` 存 `e/255` 再解出 `stop`，断言 `e/2 + SHELTER_Y_BASE <= stop + SHELTER_EPS`（共面必判遮挡）且 `exact - 0.5 < stop + SHELTER_EPS`（半格之下必判遮挡）。
+3. **f32 往返 + 格顶判据边界**：对全部合法编码 e（`4..encodeStopY(RAIN_CEILING_Y+1)`），
+   `Float32Array` 存 `e/255` 再解出 `stop`；取探针格顶 `cellTop = floor(probeY)+1`，断言：
+   · `probeY = stop - 0.5`（半格之下）⇒ `stop > cellTop + EPS` 为真（必判遮挡）；
+   · `probeY = stop`（探针恰在格顶，即半砖顶面）⇒ `stop > cellTop + EPS` 为假（必判不遮挡）。
+   ⚠️ **不得写成 `exact <= stop + EPS`** —— 那是旧 `probe<=stop` 语义，
+   数值上恒真但**对新判据零判别力**（本轮自审实测：133 个编码全过，即使判据写反也全过）。
 4. 单遍扫描 ≡ `rainStopY`：真实地形上 ≥2000 个格列，`map.stopAt(x+0.5, z+0.5)` 与 `rainStopY(world, REG, x+0.5, z+0.5, RAIN_CEILING_Y, 128)` 逐位相等（null 对 null）。注释写明这条钉的是「单遍首命中 ≡ 两遍取 max」，对挡雨判据本身零判别力。
 5. **屋顶下的格列 stop = 屋顶顶面**：在 (4,4) 列 y=0 铺地板、y=9 盖 `stone_bricks` ⇒ `stopAt(4.5,4.5) === 10`（不是 1）。这是 spec §2.2 缺陷的判别力锚点。
 6. 台阶棚子：屋顶换 `planks_step` ⇒ 同样 `=== 10`（Task 1 的判据在这里被端到端消费）。
@@ -190,8 +206,7 @@ git commit -m "fix(rain): 挡雨判据改读镂空遮挡体表，台阶/栏杆/�
 
 Run: `node tools/run-unit-node.mjs --only=test-rain-shelter-map.js`
 Expected: FAIL —— 模块不存在（import 硬失败，runner 刻意不 catch）。
-
-⚠️ 此时 `--only` 会因文件不在白名单而先报「不在 Node 白名单内」⇒ **Step 1 里就要把注册三处一起做完**（`index.html` + `test-tiers.mjs`），否则测不到真正的 RED。
+⚠️ 若报的是「不在 Node 白名单内」⇒ Step 1 的注册三处没做完，**那不是真正的 RED**。
 
 - [ ] **Step 3: 实现两个模块**
 
@@ -365,6 +380,8 @@ Expected: PASS（uniform 初值用例要加 `uWetShelter === 1`）
 
 Run（后台）: `npx playwright test tests/wet-surface.spec.mjs -g "材质分层"`
 Expected: PASS 且无 `GPUValidationError`。若报 `Unsupported texture format` / 绑定错 ⇒ 停下查纹理格式，不改判据。
+⚠️ 先确认 `-g` 真的命中了用例（输出里的 `1 passed` 而不是 `0 tests`）——
+既有用例名是「湿表面②：材质分层 —— …」，含该词；改名时要同步。
 
 - [ ] **Step 4: Commit**
 
@@ -388,7 +405,9 @@ git commit -m "feat(wet): 湿表面按遮挡高度图逐片元门控（棚下干
 
 - [ ] **Step 1: 重写 Tier 4 用例（先 RED）**
 
-把 `tests/storm-lighting.spec.mjs` 的「室内不生效」整条替换成 spec §5 的 C1~C8 夹具与判据：
+把 `tests/storm-lighting.spec.mjs:139` 的「室内不生效」整条替换成 spec §5 的 C1~C8 夹具与判据：
+⚠️ **新用例名必须仍含「室内」二字**（建议「雨天光影：室内逐点遮挡（棚下干、棚外湿，屋外雨仍上屏）」）
+—— Step 1 的 `-g "室内"` 靠它命中；改名不含该词会让 `-g` **命中 0 条而显示通过**（静默空跑）。
 抛光石地面一半盖 `stone_bricks` 屋顶、相机在屋内朝外、取样区由真实投影算出、三态取样（dry / gated / ungated）、C5/C6 用**位级**差。
 同时加「编辑往返」：挖掉屋顶 ⇒ 屋内地面变湿（`gated` 与 `ungated` 在该区逐字节相同）；盖回去 ⇒ 恢复。
 
