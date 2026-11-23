@@ -47,7 +47,7 @@ export class WeaponController {
      */
     this.world = world;
     /**
-     * v3.30 KV-9 弹匣（无限子弹 / 30 发自动换弹）。**只对带 `carbine` 的武器生效**，
+     * v3.30 KV-9 弹匣（无限子弹 / 打光整匣自动换弹，容量见 `CARBINE.mag`）。**只对带 `carbine` 的武器生效**，
      * 其余武器的路径逐位不变（不读它、不推进它）。
      */
     this.carbineMag = new CarbineMagazine();

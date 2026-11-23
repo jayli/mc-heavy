@@ -1,6 +1,6 @@
 import { test, expect } from 'playwright/test';
 
-// v3.30 KV-9 卡宾枪：视图模型上屏 / 30 发自动换弹 / 五个特效池 / 掉血与机枪一致 /
+// v3.30 KV-9 卡宾枪：视图模型上屏 / 整匣（40 发）自动换弹 / 五个特效池 / 掉血与机枪一致 /
 // hitstop 与震动 / 音效计数。全部从**玩家真实入口**（selectWeapon + fireWeaponOnce）进。
 //
 // ⚠️ 机位与噪声源冻结口径同既有 Tier 4 spec：?skybox=0 固定纯色天空、
@@ -90,7 +90,7 @@ test('KV-9：枪体在画面上非黑且占一定面积（Tier 4 像素）', asy
   expect(ratio, '暗像素占比过高 = 可能整片黑（材质/灯光错）').toBeLessThan(0.75);
 });
 
-test('KV-9：30 发打光自动换弹，三段音各一次，换弹期不开火，之后补满', async ({ page }) => {
+test('KV-9：一匣（40 发）打光自动换弹，三段音各一次，换弹期不开火，之后补满', async ({ page }) => {
   test.setTimeout(200_000);
   await BOOT(page);
   const r = await page.evaluate(async () => {
@@ -105,11 +105,15 @@ test('KV-9：30 发打光自动换弹，三段音各一次，换弹期不开火�
     // 走真实入口：按下左键 + 逐帧 update（与键鼠完全同路径）
     const aim = g.player._buildAim();
     wc.pointerDown(aim);
+    // ⚠️ **目标发数从真值派生**，不写第二份 40（容量唯一权威是 CARBINE.mag）：
+    // 打满两匣 ⇒ 中途必过一次换弹 ⇒ 无限子弹成立。按冷却算 80 发 ≈ 6.9s，
+    // 加 2.15s 换弹 ⇒ 约 1090 帧；上限取 2000 帧（≈16.7s）留足余量。
+    const want = wc.carbineMag.cfg.mag * 2;
     let shots = 0;
     let reloadStarts = 0;
     const stages = [];
     let sawFireDuringReload = false;
-    for (let i = 0; i < 1400; i++) {
+    for (let i = 0; i < 2000; i++) {
       const out = wc.update(1 / 120, g.player._buildAim());
       for (const e of out) {
         if (e.type === 'shot' || e.type === 'entity-hit') {
@@ -119,7 +123,7 @@ test('KV-9：30 发打光自动换弹，三段音各一次，换弹期不开火�
         if (e.type === 'carbine-reload-start') reloadStarts++;
         if (e.type === 'carbine-reload-stage') stages.push(e.reloadStage);
       }
-      if (shots >= 60) break;
+      if (shots >= want) break;
     }
     wc.pointerUp();
     const after = {};
@@ -127,19 +131,21 @@ test('KV-9：30 发打光自动换弹，三段音各一次，换弹期不开火�
     const delta = {};
     for (const id of Object.keys(before)) delta[id] = after[id] - before[id];
     return {
-      shots, reloadStarts, stages, sawFireDuringReload,
+      shots, want, reloadStarts, stages, sawFireDuringReload,
       ammo: wc.carbineMag.ammo, mag: wc.carbineMag.cfg.mag,
       soundDelta: delta,
       state: wc.debugState().carbine,
     };
   });
   console.log('KV9 RELOAD:', JSON.stringify(r));
-  expect(r.shots).toBeGreaterThanOrEqual(60);        // 两匣以上 ⇒ 无限子弹成立
+  expect(r.shots).toBeGreaterThanOrEqual(r.want);     // 两匣 ⇒ 无限子弹成立
   expect(r.reloadStarts).toBeGreaterThanOrEqual(1);
   expect(r.stages.slice(0, 3)).toEqual([0, 1, 2]);
   expect(r.sawFireDuringReload).toBe(false);
   expect(r.ammo).toBeLessThanOrEqual(r.mag);
-  expect(r.soundDelta.carbine_fire).toBeGreaterThanOrEqual(60);
+  // 弹匣容量 = 用户裁定的 40（上游 30 已改）
+  expect(r.mag).toBe(40);
+  expect(r.soundDelta.carbine_fire).toBeGreaterThanOrEqual(r.want);
   expect(r.soundDelta.carbine_reload_out).toBeGreaterThanOrEqual(1);
   expect(r.soundDelta.carbine_reload_in).toBeGreaterThanOrEqual(1);
   expect(r.soundDelta.carbine_reload_rack).toBeGreaterThanOrEqual(1);
@@ -316,5 +322,5 @@ test('KV-9：切回其他枪时视图模型摘下、特效清空、后坐归零'
   expect(r.after.oldGunLoaded).toBe(true);
   expect(r.after.recoilP).toBe(0);
   expect(r.back.mounted).toBe(true);
-  expect(r.back.ammo).toBe(30);
+  expect(r.back.ammo).toBe(40);
 });

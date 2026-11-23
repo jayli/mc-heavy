@@ -22,8 +22,9 @@ function assertClose(actual, expected, eps = 1e-9, msg = '') {
 
 // ---------- 常量：与上游对齐 ----------
 
-test('carbine: 弹匣 30 / 射速 690 / 换弹 2.15s 与上游一致', () => {
-  assertEqual(CARBINE.mag, 30);
+test('carbine: 弹匣 40（用户裁定，上游是 30）/ 射速 690 / 换弹 2.15s', () => {
+  // ⚠️ 40 是用户 2026-11-22 的裁定（上游 WEAPON.mag = 30）：不要拿上游值把它改回去。
+  assertEqual(CARBINE.mag, 40);
   assertEqual(CARBINE.rpm, 690);
   assertEqual(CARBINE.reloadSeconds, 2.15);
   assertClose(CARBINE_COOLDOWN, 60 / 690, 1e-12);
@@ -147,7 +148,7 @@ test('carbine mag: 打光后冷却过期 0.25s 自动进换弹（无需按键）
   assertEqual(m.reloadT, 0);
 });
 
-test('carbine mag: 换弹满 2.15s 后补满 30 发（无限子弹，可重复无限次）', () => {
+test('carbine mag: 换弹满 2.15s 后补满整匣（无限子弹，可重复无限次）', () => {
   const m = new CarbineMagazine();
   for (let round = 0; round < 3; round++) {
     for (let i = 0; i < CARBINE.mag; i++) assertTrue(m.consume());
@@ -322,10 +323,10 @@ function makeCarbineControllerFixture({ entityDist = null, killed = false } = {}
   return { controller, aim, effects, damageCalls, editor, world };
 }
 
-test('carbine controller: 30 发后自动换弹，换弹期不开火，2.15s 后继续连射', () => {
+test('carbine controller: 打光整匣后自动换弹，换弹期不开火，2.15s 后继续连射', () => {
   const { controller, aim } = makeCarbineControllerFixture();
   // ⚠️ **先数 pointerDown 那一发**：它同步返回效果但**不经过 onEffect**
-  // （只有 `_tryFire` 路径才回调）—— 只数 update 返回值会漏计第一发（本轮实测 29 vs 30）。
+  // （只有 `_tryFire` 路径才回调）—— 只数 update 返回值会漏计第一发（实测 29 vs 30）。
   let shots = 0;
   const count = (out) => {
     for (const e of out) {
@@ -337,7 +338,8 @@ test('carbine controller: 30 发后自动换弹，换弹期不开火，2.15s 后
   let reloadStartFrame = -1;
   count(controller.pointerDown(aim));
   // ⚠️ **用 controller 自己的推进路径数发数**，不用「t ≥ (n−1)·cool」的理论值：
-  // 逐帧量化会把第 30 发推到 2.658s（而非 2.522s），写理论值会假红。
+  // ⚠️ 逐帧量化会把最后一发推到理论时刻之后（整匣 40 发时理论 3.391s，实测约 3.5s），
+  //    写理论值会假红。
   // 跑到刚好打光（上限 600 帧 = 5s，远大于所需）
   for (let i = 0; i < 600 && shots < CARBINE.mag; i++) count(controller.update(1 / 120, aim));
   assertEqual(shots, CARBINE.mag, `应恰好打光 ${CARBINE.mag} 发`);
