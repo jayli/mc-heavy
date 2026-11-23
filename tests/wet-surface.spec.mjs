@@ -262,7 +262,21 @@ test('湿表面①：云与岩壁零光晕，同时地面必须显著变湿（�
   // 地面：必须显著变（防「整体没生效」的恒真）
   expect(out.ground.frac, '地面必须显著变湿（0 = 湿表面根本没上屏）')
     .toBeGreaterThan(0.10);
-  expect(groundDelta, '地面必须真的压暗（湿表面比干表面暗）').toBeLessThan(-2);
+  /**
+   * ⚠️ **v3.32 重标：−2 → −1.5**（用户 2026-11-23 裁定「重标为实测值」）。
+   *
+   * 原因：积水镜面反光生效后，水汪处**变亮**抵消了部分水膜压暗
+   * ⇒ 全区加权 Δluma 从 v3.31 的 −3.5 抬到 **−1.80**（实测）。
+   * 这是**预期代价**，不是缺陷 —— 用户要的就是「水汪有反光」。
+   * 按既有裁定（冻结断言因预期代价越线 ⇒ 重标基线，不放宽容差百分比），
+   * 阈值取实测 −1.80 略下方的 **−1.5**（留 0.3 的量化余量）。
+   *
+   * ⚠️ 「湿表面真的上屏」的**主力判据是上面的 frac > 0.10**（实测 0.82，判别力充足），
+   * 本条只是「净效应仍偏压暗」的方向锚点 —— 水汪反光不得强到把整片地面变成镜子。
+   * 水汪自身的变亮幅度由用例⑦（Δ > +2）独立钉住。
+   */
+  expect(groundDelta, '地面净效应仍须偏压暗（水汪反光不得强到把地面变成镜子）')
+    .toBeLessThan(-1.5);
   expect(errs, '不得有 console 错误').toEqual([]);
 });
 
@@ -518,6 +532,315 @@ test('湿表面⑥：水下逐片元归零（相机在水上、片元在水下�
   expect(r.frac, '水下门必须真的改变湖底像素（0 = 门没生效）').toBeGreaterThan(0.10);
   const gpuErrs = errs.filter((e) => /GPUValidationError|Invalid CommandBuffer/.test(e));
   expect(gpuErrs, `不得有 WebGPU 验证错误：${gpuErrs.slice(0, 2).join(' | ')}`).toEqual([]);
+});
+
+// ==================== v3.32 积水斑的镜面反光 ====================
+//
+// 设计稿：docs/superpowers/specs/2026-11-23-puddle-mirror-reflection-design.md
+//
+// 用户 2026-11-23：「水汪没有反光，适当的加一些水汪的反光效果」。
+// 根因（CPU + GPU 双向实测）：specGain 被 min(…,1) 钳死，抛光类本来就是 1.0
+// ⇒ v3.31 的 ×1.60 是恒等，积水 reflK 只 +4% 却额外压暗 12% ⇒ 水汪比周边暗 5.9 luma。
+//
+// ⚠️ 本组全部走**单变量 `uWetPuddleRefl` 1↔0**：几何/相机/太阳/材质参数全不动，
+// 不重 mesh、不换 page ⇒ 差分里只有「积水反光」这一个因子。
+
+/**
+ * 积水夹具：大片**抛光石**地面 + 一面石墙 + 一簇云。
+ *
+ * ⚠️⚠️ **机位必须与 buildScene 不同（本轮实测的判据坑）**：
+ * buildScene 是仰视 11.8° 的**掠射**机位（为了把云/墙/地面三者同时入画），
+ * 它的地面区 noV 只 **0.164**、且取样段落在掩码稀疏处
+ * ⇒ 积水反光实测只 **Δluma +1.30 / frac 0.116**（信号太弱）。
+ * 机位扇描（同一夹具、只改相机）：
+ *   掠射 11.8° → Δ 2.67 / frac 0.230
+ *   **俯视 30°  → Δ 3.60 / frac 0.288**（noV 0.640）
+ *   俯视 45°  → Δ 2.35 / frac 0.232
+ *   俯视 60°  → Δ 2.53 / frac 0.275
+ * ⇒ 本夹具取 **30° 俯视**（信噪比最高），云/墙/地面三区仍由真实投影算包围盒。
+ *
+ * 为什么地面用 smooth_stone：POLISHED 类（specGain 1.0）⇒ 积水反光最强；
+ * 石材的分层由用例②与 Tier 1 承担。
+ */
+async function buildPuddleScene(page) {
+  const geo = await page.evaluate(() => {
+    const g = window.__MC_GAME__;
+    const p = g.player.physics.pos;
+    const ox = Math.floor(p.x); const oz = Math.floor(p.z); const P = Math.floor(p.y);
+    const polished = g.registry.idOf('smooth_stone');
+    const stone = g.registry.idOf('stone');
+    const cloud = g.registry.idOf('cloud');
+    const changes = [];
+    for (let y = P + 1; y <= P + 24; y++) {
+      for (let dx = -14; dx <= 14; dx++) for (let dz = -14; dz <= 22; dz++) {
+        if (g.world.getBlockId(ox + dx, y, oz + dz) !== 0) changes.push({ x: ox + dx, y, z: oz + dz, id: 0 });
+      }
+    }
+    for (let dx = -12; dx <= 12; dx++) for (let dz = -12; dz <= 22; dz++) {
+      changes.push({ x: ox + dx, y: P, z: oz + dz, id: polished });
+    }
+    // 墙：沿 x 延伸、法线 ±Z（与 buildScene 同位置）
+    for (let dx = -8; dx <= 8; dx++) for (let dy = 1; dy <= 6; dy++) {
+      changes.push({ x: ox + dx, y: P + dy, z: oz - 6, id: stone });
+    }
+    // 云簇：抬高到 P+16..18（与 buildScene 同）
+    for (let dx = -4; dx <= 4; dx++) for (let dz = -4; dz <= 4; dz++) for (let dy = 16; dy <= 18; dy++) {
+      changes.push({ x: ox + dx, y: P + dy, z: oz - 6 + dz, id: cloud });
+    }
+    g.editor.setBlocks(changes);
+    return { ox, oz, P };
+  });
+  await waitWorldStable(page);
+  const regions = await page.evaluate(({ ox, oz, P }) => {
+    const g = window.__MC_GAME__;
+    g.setStormLighting(true);
+    g.renderer.setAnimationLoop(null);
+    g.stormRain.setEnabled(false);
+    g.player.physics.step = () => {};
+    g.camera.up.set(0, 1, 0);
+    /**
+     * 30° 俯视机位（扇描选定）：相机 (ox+0.5, P+6, oz+10)，看向 (ox+0.5, P+1, oz-2)。
+     * 地面中心 noV 实测 **0.640**。
+     * ⚠️ 云与墙在本机位下可能出画 ⇒ 它们的取样区由 box() 返回 null 时
+     * 夹具前提断言会当场抦下（而不是静默取到别的东西）。
+     */
+    const camY = P + 6; const camZ = oz + 10;
+    g.camera.position.set(ox + 0.5, camY, camZ);
+    g.camera.lookAt(ox + 0.5, P + 1, oz - 2);
+    g.camera.updateMatrixWorld();
+    g.camera.updateProjectionMatrix();
+    const V = g.camera.position.constructor;
+    const box = (pts) => {
+      let x0 = 1e9; let x1 = -1e9; let y0 = 1e9; let y1 = -1e9; let ok = 0;
+      for (const [x, y, z] of pts) {
+        const v = new V(x, y, z); v.project(g.camera);
+        if (v.z > 1) continue;
+        const fx = v.x * 0.5 + 0.5; const fy = -v.y * 0.5 + 0.5;
+        // 只接受真正落在画面内的角点（否则包围盒会被画外点拉到边缘）
+        if (fx < -0.2 || fx > 1.2 || fy < -0.2 || fy > 1.2) continue;
+        x0 = Math.min(x0, fx); x1 = Math.max(x1, fx);
+        y0 = Math.min(y0, fy); y1 = Math.max(y1, fy); ok++;
+      }
+      if (ok < 4) return null;
+      const mx = (x1 - x0) * 0.15; const my = (y1 - y0) * 0.15;
+      const c = (v) => Math.max(0.02, Math.min(0.98, v));
+      return [c(x0 + mx), c(y0 + my), c(x1 - mx), c(y1 - my)];
+    };
+    const corners = (xa, xb, ya, yb, za, zb) => {
+      const out = [];
+      for (const x of [xa, xb]) for (const y of [ya, yb]) for (const z of [za, zb]) out.push([x, y, z]);
+      return out;
+    };
+    // 地面中心真实 noV（夹具前提：必须是俯视，不是掠射）
+    const gx = ox + 0.5; const gy = P + 1; const gz = oz + 4;
+    const vx = g.camera.position.x - gx; const vy = g.camera.position.y - gy; const vz = g.camera.position.z - gz;
+    return {
+      cloud: box(corners(ox - 3, ox + 4, P + 16.2, P + 18.8, oz - 1.05, oz - 1)),
+      wall: box(corners(ox - 6, ox + 7, P + 2, P + 5.5, oz - 5, oz - 4.9)),
+      ground: box(corners(ox - 5, ox + 6, P + 1, P + 1.01, oz + 1, oz + 7)),
+      groundNoV: +(vy / Math.hypot(vx, vy, vz)).toFixed(4),
+    };
+  }, geo);
+  await page.waitForTimeout(700);
+  console.log('PUDDLE SCENE REGIONS:', JSON.stringify(regions));
+  // 地面区必须存在且机位真的是俯视（否则测的是掠射弱信号，本轮已踩过）
+  if (!regions.ground) throw new Error('[夹具] 地面区投影失败');
+  expect(regions.groundNoV, '机位必须是俯视（noV > 0.5），否则积水反光信号太弱')
+    .toBeGreaterThan(0.5);
+  for (const k of ['cloud', 'wall', 'ground']) {
+    if (!regions[k]) continue;      // 云/墙在本机位可能出画 ⇒ 对应用例自己声明前提
+    const [x0, y0, x1, y1] = regions[k];
+    if (!(x1 > x0 && y1 > y0)) throw new Error(`[夹具] ${k} 区退化：${regions[k]}`);
+  }
+  return { ...geo, regions };
+}
+
+/** 单变量 uWetPuddleRefl 0↔1（uWet 恒 1）；只算存在的区 */
+async function puddleAB(page, regions) {
+  const grab = async (v) => {
+    await page.evaluate((s) => {
+      const g = window.__MC_GAME__;
+      const U = g.renderWorld.materials.wet;
+      U.uWet.value = 1;
+      U.uWetPuddleRefl.value = s;
+      g.renderer.render(g.scene, g.camera);
+    }, v);
+    await page.waitForTimeout(260);
+    return PNG.sync.read(await page.screenshot());
+  };
+  const off = await grab(0);
+  const on = await grab(1);
+  const out = {};
+  for (const k of ['cloud', 'wall', 'ground']) {
+    if (regions[k]) {
+      out[k] = regionDiff(on, off, regions[k]);
+      out[k].bytes = regionDiffBytes(on, off, regions[k]);
+    }
+  }
+  return { out, on, off };
+}
+
+/** 区内逐像素 luma 数组 */
+function regionLumas(png, [fx0, fy0, fx1, fy1]) {
+  const x0 = Math.floor(png.width * fx0); const x1 = Math.floor(png.width * fx1);
+  const y0 = Math.floor(png.height * fy0); const y1 = Math.floor(png.height * fy1);
+  const out = [];
+  for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+    const o = (y * png.width + x) * 4;
+    out.push(0.2126 * png.data[o] + 0.7152 * png.data[o + 1] + 0.0722 * png.data[o + 2]);
+  }
+  return out;
+}
+
+/**
+ * 区内**逐字节**差异计数。
+ *
+ * ⚠️ 比 |Δluma| 阈值**强得多**：位级判据对效应幅度零依赖。
+ * 墙面 wet 只 0.187，即使镜面漏上去效应也只 0.05~0.8 luma
+ * ⇒ 任何 luma 阈值都会被 8bit 量化吞掉（本轮实测：负向注入后 Δ=0.00），
+ * 而位级差异能抓到哪怕 1/255 的变化。
+ */
+function regionDiffBytes(on, off, [fx0, fy0, fx1, fy1]) {
+  const x0 = Math.floor(on.width * fx0); const x1 = Math.floor(on.width * fx1);
+  const y0 = Math.floor(on.height * fy0); const y1 = Math.floor(on.height * fy1);
+  let diff = 0; let n = 0;
+  for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+    const o = (y * on.width + x) * 4;
+    for (let c = 0; c < 3; c++) { n++; if (on.data[o + c] !== off.data[o + c]) diff++; }
+  }
+  return { diff, n, frac: +(diff / Math.max(1, n)).toFixed(6) };
+}
+
+const stdev = (a) => {
+  const m = a.reduce((s, v) => s + v, 0) / Math.max(1, a.length);
+  return Math.sqrt(a.reduce((s, v) => s + (v - m) ** 2, 0) / Math.max(1, a.length));
+};
+
+test('积水反光⑦：水汪真的变亮，而云与岩壁逐位几乎不动', async ({ page }) => {
+  test.setTimeout(300_000);
+  const errs = await BOOT(page);
+  const scene = await buildPuddleScene(page);
+  const { out } = await puddleAB(page, scene.regions);
+  console.log('PUDDLE MIRROR AB:', JSON.stringify(out));
+  const dGround = out.ground.lumaOn - out.ground.lumaOff;
+  /**
+   * ⚠️ 方向是**变亮**（不是「变了」）：本轮根因正是「水汪只压暗不反光」，
+   * 只判 frac>0 会被「水汪变得更暗」蒙过（那恰恰是缺陷态）。
+   *
+   * ⚠️ **v3.32b 重标：2 → 1.2**（用户裁定幅度减半后的实测值）。
+   * 30° 俯视机位实测：MIRROR 0.70 时 Δluma **+3.5** / frac 0.2802；
+   * 减半到 0.44 后 Δluma **+1.9** / frac 0.2048。
+   * 取 1.2（实测 1.9 下方留 0.7 余量）—— 这是**预期代价**而非缺陷，
+   * 按既有裁定（冻结断言因预期代价越线 ⇒ 重标基线，不放宽容差百分比）。
+   * 判别力仍在：若积水反光完全不上屏则 Δ=0，若退化成「只压暗」则 Δ<0，两者都红。
+   */
+  expect(dGround, `地面必须变亮（积水反光），实测 Δluma=${dGround.toFixed(2)}`)
+    .toBeGreaterThan(1.2);
+  expect(out.ground.frac, '地面必须有足够多的像素被改变（0 = 积水反光根本没上屏）')
+    .toBeGreaterThan(0.05);
+  // 云/墙：本机位下可能出画 ⇒ 存在时才判（存在性由夹具的真实投影保证）
+  // ⚠️ 用**位级**判据而不是 |Δluma|<1：墙面 wet 只 0.187，镜面漏上去也只 0.05~0.8 luma
+  // ⇒ luma 阈值会被 8bit 量化吞掉（本轮实测：负向注入后 Δ=0.00，判据零判别力）。
+  if (out.cloud) {
+    expect(out.cloud.bytes.diff, '云区必须逐字节不动（NONE 类 ⇒ wet=0）').toBe(0);
+  }
+  if (out.wall) {
+    expect(out.wall.bytes.diff, '墙面必须逐字节不动（朝向门；缺陷态：水汪镜面爬上墙）').toBe(0);
+  }
+  expect(errs, '不得有 console 错误').toEqual([]);
+});
+
+test('积水反光⑧：水汪内有明暗层次（云影），不是纯色塑料板', async ({ page }) => {
+  test.setTimeout(300_000);
+  const errs = await BOOT(page);
+  const scene = await buildPuddleScene(page);
+  const { on, off } = await puddleAB(page, scene.regions);
+  const lumOn = regionLumas(on, scene.regions.ground);
+  const lumOff = regionLumas(off, scene.regions.ground);
+  // 效应层自身（on − off）的空间标准差：纯色板 ⇒ 效应几乎恒定 ⇒ std 极小
+  const eff = lumOn.map((v, i) => v - lumOff[i]);
+  const effStd = stdev(eff);
+  const effMean = eff.reduce((s, v) => s + v, 0) / eff.length;
+  /**
+   * ⚠️ 用**相对判据**：绝对 std 阈值会被机型/曝光/贴图对比度左右。
+   * 参照量取「效应均值」——纯色板的效应是常量偏移 ⇒ std/mean 接近 0；
+   * 有云影层次时 std 与 mean 同量级。v3.31 用例④的「相对场景水平」是同一思路。
+   */
+  const ratio = effStd / Math.max(1e-6, Math.abs(effMean));
+  console.log('PUDDLE CLOUD LAYERS:', JSON.stringify({
+    effMean: +effMean.toFixed(3), effStd: +effStd.toFixed(3), ratio: +ratio.toFixed(4),
+    sceneStd: +stdev(lumOff).toFixed(3),
+  }));
+  expect(ratio, `水汪效应层必须有空间层次（std/|mean|=${ratio.toFixed(3)}，纯色板接近 0）`)
+    .toBeGreaterThan(0.25);
+  expect(errs, '不得有 console 错误').toEqual([]);
+});
+
+test('积水反光⑨：uWetPuddleRefl=0 是第二级零回归锚点（可重复、且差分只在地面）', async ({ page }) => {
+  test.setTimeout(300_000);
+  const errs = await BOOT(page);
+  const scene = await buildPuddleScene(page);
+  const grab = async (v) => {
+    await page.evaluate((s) => {
+      const g = window.__MC_GAME__;
+      const U = g.renderWorld.materials.wet;
+      U.uWet.value = 1;
+      U.uWetPuddleRefl.value = s;
+      g.renderer.render(g.scene, g.camera);
+    }, v);
+    await page.waitForTimeout(260);
+    return PNG.sync.read(await page.screenshot());
+  };
+  const a = await grab(0);
+  await grab(1);
+  const b = await grab(0);
+  let diff = 0;
+  for (let i = 0; i < a.data.length; i++) if (a.data[i] !== b.data[i]) diff++;
+  console.log('PUDDLE ZERO-REGRESSION:', JSON.stringify({ diffBytes: diff }));
+  expect(diff, 'uWetPuddleRefl 写回 0 必须与首次 0 逐位相同（无状态残留）').toBe(0);
+  expect(errs, '不得有 console 错误').toEqual([]);
+});
+
+test('负向③：去掉积水的两道朝向门 ⇒ 墙面必须不再逐位不动', async ({ page }) => {
+  test.setTimeout(300_000);
+  /**
+   * ⚠️⚠️ **两道朝向门是串联的，必须同时去掉**（本轮实测的注入坑）：
+   * `puddle` 里有 `select(isTop,1,0)`，`puddleW` 里又乘了 `topGate`。
+   * 只删前者时 `puddleW = puddle × 0 × strength = 0`
+   * ⇒ reflK 取左端、skyMul=1 ⇒ 墙面**逐位不动**，注入根本没造出缺陷
+   * （实测：只删一道时墙 Δ=0.00，而 CPU 算的无门效应也才 0.094 luma）。
+   *
+   * ⚠️ 判据用**位级差异**而不是 luma 阈值：墙面 wet 只 0.187，
+   * 镜面漏上去的效应只 0.05~0.8 luma ⇒ 任何 luma 阈值都被 8bit 量化吞掉。
+   * 正向用例⑦同口径钉「墙区 diffBytes == 0」⇒ 两侧对称、判别力无穷。
+   */
+  await routeModule(page, 'wet-surface.js', (b) => b
+    .replace('    .mul(select(isTop, float(1), float(0)))\n', '')
+    .replace('  const topGate = select(isTop, float(1), float(0));',
+      '  const topGate = float(1);'));
+  await BOOT(page);
+  const injected = await page.evaluate(async () => {
+    const src = await (await fetch('/src/render/wet-surface.js')).text();
+    const code = src.split('\n').filter((l) => {
+      const t = l.trim(); return t && !t.startsWith('*') && !t.startsWith('//') && !t.startsWith('/*');
+    });
+    return {
+      hasPuddleGate: code.some((l) => l.includes('.mul(select(isTop, float(1), float(0)))')),
+      hasTopGate: code.some((l) => l.includes('const topGate = select(isTop')),
+      topGateIsOne: code.some((l) => l.includes('const topGate = float(1);')),
+    };
+  });
+  console.log('NEG-TOPGATE INJECT:', JSON.stringify(injected));
+  expect(injected.hasPuddleGate, 'puddle 的朝向门须已删除').toBe(false);
+  expect(injected.hasTopGate, 'topGate 的 select 须已删除').toBe(false);
+  expect(injected.topGateIsOne, 'topGate 须已被改成恒 1').toBe(true);
+  const scene = await buildPuddleScene(page);
+  expect(scene.regions.wall, '本用例需要墙区入画（否则判据无从取样）').not.toBeNull();
+  const { out } = await puddleAB(page, scene.regions);
+  console.log('NEG-TOPGATE AB:', JSON.stringify(out));
+  expect(out.wall.bytes.diff,
+    `注入后墙面必须不再逐位不动（实测 diffBytes=${out.wall.bytes.diff}），否则判据对缺陷零判别力`)
+    .toBeGreaterThan(0);
 });
 
 test('负向①：把 cloud 改成 STONE ⇒ 零光晕判据必须 FAIL', async ({ page }) => {

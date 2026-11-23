@@ -25,6 +25,14 @@
 // ③ **反光用 `mix` 不用 `add`**：`mix(albedo, skyEnv, reflK)` 在 reflK ≤ 1 时天然有界，
 //    不会像上游的加项那样在亮端钳白（本仓 ocean 已实测过加法钳白）。
 //
+// ## v3.32 增量：积水斑的镜面反光（用户 2026-11-23「水汪没有反光」）
+//
+// 设计稿：docs/superpowers/specs/2026-11-23-puddle-mirror-reflection-design.md
+// 根因：`wetSpecGainAt` 被 min(…,1) 钳死，抛光类本来就是 1.0 ⇒ v3.31 的 ×1.60 是恒等
+// ⇒ 积水 reflK 只 +4% 却额外压暗 12% ⇒ 水汪比周边暗 5.9 luma。
+// 修法：给积水一条**独立于菲涅尔的绝对镜面目标**（MIRROR=0.70）+ 低频云影调制，
+// 两者都乘 topGate × uWetPuddleRefl ⇒ 墙面/云/关闭态逐位不动。
+//
 // ## 七条 TSL 口径（本仓已实测的教训，逐条遵守）
 //   ① 节点不与裸 JS 数字算术，一律 `.mul()/.add()/.sub()/.div()`；
 //   ② 常量色**显式拆分量**（`vec3(Color)` 在 WebGPU 静默输出纯黑）；
@@ -48,6 +56,7 @@ import {
   WET_PUDDLE_SCALE, WET_PUDDLE_FROM, WET_PUDDLE_TO,
   WET_PUDDLE_ROUGH_K, WET_PUDDLE_DARK_K, WET_PUDDLE_SPEC_K, WET_PUDDLE_ROUGH_GATE,
   WET_SKY_BAND, WET_FRESNEL_F0_BASE, WET_FRESNEL_F0_RANGE, WET_SHININESS, WET_REFL_FLOOR,
+  WET_PUDDLE_MIRROR, WET_PUDDLE_CLOUD, WET_PUDDLE_CLOUD_SCALE,
 } from './wet-surface-config.js';
 import { WATER_SURFACE_Y } from './water-surface.js';
 
@@ -90,6 +99,18 @@ export const WET_SURFACE_UNIFORMS = {
   uWetParams: uniformArray(
     WET_CLASS_PARAMS.map((p) => new THREE.Vector4(p[0], p[1], p[2], p[3])), 'vec4',
   ),
+  /**
+   * v3.32：**积水镜面反光的开关强度** 0..1（默认 1）。
+   *
+   * 不是为了运行时调参，而是给 Tier 4 一个**只差一个变量**的 A/B 锚点：
+   * 写 0 ⇒ reflK 与 skyMul 两行都退化回 v3.31 的原式（**第二级零回归锚点**，
+   * 与 `uWet = 0` 的第一级并列）。改它不动几何、不重 mesh、不改相机。
+   *
+   * ⚠️ 必须同时乘进 **reflK 的混合权重**与 **skyMul**：
+   * 只把目标值乘 0 会让 `mix(filmK, 0, puddle)` 把水汪**变暗**，
+   * 而不是回到水膜 ⇒ 零回归锚点静默失效。
+   */
+  uWetPuddleRefl: uniform(1),
 };
 
 /**
@@ -152,6 +173,19 @@ export function createWetSurfaceNode({
   const specGain = min(mul(P.w, mix(float(1), float(WET_PUDDLE_SPEC_K), puddle)), float(1));
   const darken = mul(P.y, mix(float(1), float(WET_PUDDLE_DARK_K), puddle));
 
+  /**
+   * v3.32 水汪镜面的**朝向门**（顶面 1 / 侧面与底面 0）。
+   *
+   * ⚠️ 它是**冗余但显式**的：上面 `puddle` 已乘过 `select(isTop,1,0)`。
+   * 写出来的理由是同构：CPU 的 `wetPuddleReflK` / `wetPuddleSkyMul` 接收**裸 puddle**
+   * （不含朝向）并自己乘门，两侧公式逐项对应才好断言。
+   * ⇒ **真正载荷性的朝向门是 `puddle` 里那个 `isTop` 因子**，
+   * Tier 4 负向③注入的是**它**（只删 topGate 零判别力 —— 那会是恒真判据）。
+   * 去掉朝向门后：`puddleAllowed` 对 POLISHED/STONE/METAL/ICE 的竖面仍给
+   * 1.0/0.896/1.0/1.0（实测）⇒ 水汪镜面爬上墙 ⇒ 岩壁光晕缺陷复活。
+   */
+  const topGate = select(isTop, float(1), float(0));
+
   // ---- 有效湿强度（水下门乘在这里 ⇒ 压暗/反光/高光四项一起归零）----
   const aboveWater = step(U.uWetWaterY, wp.y);
   const wet = clamp(mul(mul(U.uWet, P.x), orient), float(0), float(1)).mul(aboveWater);
@@ -163,7 +197,25 @@ export function createWetSurfaceNode({
   const bandHi = mix(float(WET_SKY_BAND.hiNear), float(WET_SKY_BAND.hiFar), rough);
   const horizon = vec3(U.uWetHorizon.r, U.uWetHorizon.g, U.uWetHorizon.b);
   const zenith = vec3(U.uWetZenith.r, U.uWetZenith.g, U.uWetZenith.b);
-  const skyEnv = mix(horizon, zenith, smoothstep(bandLo, bandHi, R.y)).mul(skyDim);
+  /**
+   * v3.32 **水汪内的云影层次**。
+   *
+   * 为什么需要：积水处 rough → 0.015 ⇒ 天空渐变带宽极窄，而正午 `sky` 与 `fogColor`
+   * 同为 0x87ceeb ⇒ skyEnv 在整个水汪内几乎同一颜色。只抬 reflK 会得到一片**纯色塑料板**。
+   * 真实水汪反的是阴天云层（有明暗）⇒ 加一层低频噪声调制。
+   *
+   * ⚠️ z 取 **7.3**（非零常量）：与积水噪声（z=0）在同一 perlin 场上不相关，
+   * 否则水汪边界与云影边界重合，看起来像「每摊水自带一个亮斑」。
+   * ⚠️ 用 perlin 的**原始值域 [−1,1]**（不乘 0.5 加 0.5）：云影要有明有暗，
+   * 取 0..1 只会整体抬亮。与 CPU 的 `wetPuddleSkyMul` 同构。
+   * ⚠️ 尺度 0.09 < 积水尺度 0.32 ⇒ 云斑比水汪大 3.5 倍。
+   */
+  const cloudCoord = vec3(
+    wp.x.mul(WET_PUDDLE_CLOUD_SCALE), wp.z.mul(WET_PUDDLE_CLOUD_SCALE), float(7.3));
+  const cloud = perlin(cloudCoord);
+  const puddleW = mul(mul(puddle, topGate), U.uWetPuddleRefl);
+  const skyMul = add(float(1), mul(mul(cloud, float(WET_PUDDLE_CLOUD)), puddleW));
+  const skyEnv = mix(horizon, zenith, smoothstep(bandLo, bandHi, R.y)).mul(skyDim).mul(skyMul);
 
   // ---- 菲涅尔（Schlick，F0 由粗糙度派生）+ **非物理地板** ----
   // ⚠️ 地板是用户 2026-11-22 裁定（「加非物理地板，反光明显」）：
@@ -185,14 +237,31 @@ export function createWetSurfaceNode({
     .mul(specGain).mul(WET_SUN_SPEC).mul(kill);
 
   // ---- 合成：压暗 → **有界**混合天空 → 加一点点高光 ----
-  // ⚠️ mix 不是 add（口径见文件头③）：reflK ≤ WET_REFL_MAX < 1 ⇒ 结果恒在
+  // ⚠️ mix 不是 add（口径见文件头③）：reflK ≤ 1 ⇒ 结果恒在
   // [albedo, skyEnv] 之间，不会在亮端钳白。
+  // （v3.32：水膜项 ≤ MAX=0.55、积水项 ≤ MIRROR=0.70，两者 mix 后仍 ≤ 0.70。）
   const albedo = mul(baseRgb, mix(float(1), darken, wet));
   // reflK = (F + floor) × specGain × MAX × wet，钳 ≤ MAX（与 config 的 wetReflK 同构）
-  const reflK = min(
+  const reflKFilm = min(
     mul(mul(add(fres, floorTerm), specGain), float(WET_REFL_MAX)).mul(wet),
     float(WET_REFL_MAX),
   );
+  /**
+   * v3.32：积水处把 reflK **拉向一个独立的镜面目标**。
+   *
+   * 根因（实测）：v3.31 的 `specGain × 1.60` 对抛光类是**恒等** ——
+   * `wetSpecGainAt` 被 min(…,1) 钳死而抛光本来就是 1.0
+   * ⇒ 积水 reflK 只从 0.1883 涨到 0.1962（+4%），却额外压暗 12%
+   * ⇒ 屏幕上水汪比周边**暗 5.9 luma**（用户：「水汪没有反光」）。
+   *
+   * ⚠️ 混合权重 `puddleW` 已含 topGate × uWetPuddleRefl：
+   * strength=0 ⇒ 权重 0 ⇒ mix 取左端 ⇒ **逐位回到 v3.31**。
+   * 只把目标值乘 0 是错的（那会把水汪变暗）。
+   * ⚠️ 水膜项 `reflKFilm` 逐字不动（仍受 MAX=0.55 钳制）；
+   * 积水项上界 MIRROR=0.70 < 1 ⇒ mix 仍天然有界，不会钳白。
+   */
+  const mirrorK = mul(mul(float(WET_PUDDLE_MIRROR), specGain), wet);
+  const reflK = min(mix(reflKFilm, mirrorK, puddleW), float(1));
   const withSky = mix(albedo, skyEnv, reflK);
   const lit = add(withSky, mul(vec3(sunColor.x, sunColor.y, sunColor.z), spec).mul(wet));
 

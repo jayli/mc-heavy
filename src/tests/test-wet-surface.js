@@ -17,9 +17,12 @@ import { WET_CLASS, WET_CLASS_COUNT, WET_CLASS_DATA, wetClassOf } from '../voxel
 import {
   WET_CLASS_PARAMS, WET_WALL_FACTOR, WET_SHININESS, WET_REFL_MAX, WET_REFL_FLOOR,
   WET_FRESNEL_F0_BASE, WET_FRESNEL_F0_RANGE,
+  WET_SUN_SPEC, WET_PUDDLE_FROM, WET_PUDDLE_TO, WET_PUDDLE_SCALE,
+  WET_PUDDLE_MIRROR, WET_PUDDLE_CLOUD, WET_PUDDLE_CLOUD_SCALE,
   wetnessAt, wetAboveWaterGate, wetRoughnessAt, puddleAllowed,
   wetFresnel, wetShininess, skyEnvMixAt, wetSpecGainAt, wetDarkenAt,
   wetReflFloor, wetReflK,
+  wetPuddleMirrorK, wetPuddleReflK, wetPuddleSkyMul,
 } from '../render/wet-surface-config.js';
 
 function assertClose(a, b, eps = 1e-9, msg = '') {
@@ -362,4 +365,229 @@ test('wet class: GPU 侧索引必须钳到表长 − 1（防越界读 uniform bu
   '必须有 clsSafe = min(cls, WET_CLASS_COUNT − 1)');
   assertTrue(/uWetParams\.element\(clsSafe\)/.test(code), 'element() 必须吃钳制后的索引');
   assertTrue(!/uWetParams\.element\(cls\)/.test(code), '不得直接用未钳制的 cls');
+});
+
+// ==================== v3.32 积水斑的镜面反光 ====================
+//
+// 设计稿：docs/superpowers/specs/2026-11-23-puddle-mirror-reflection-design.md
+//
+// ## 本轮根因（用户 2026-11-23「水汪没有反光」）
+//
+// v3.31 的积水修正只有 rough×0.25 / specGain×1.60 / albedo×0.88 三项，反光仍走
+// 同一条 reflK。而 **specGain 被 min(…,1) 钳死**、抛光类本来就是 1.0
+// ⇒ ×1.60 后仍是 1.0，**一点没涨**。实测（noV 0.53）抛光 reflK 0.1883 → 0.1962（+4%），
+// 却额外压暗 12% ⇒ 屏幕上水汪比周边**暗 5.9 luma**。
+// ⇒ 必须给积水一条**独立于菲涅尔的绝对镜面目标**，而不是再乘一个系数。
+//
+// ⚠️ 标定代入的是**真实掩码峰值 0.7682**（GPU 探针实测，绕开 ACES），不是 1.0 ——
+// smoothstep(0.52,0.76,n) 而噪声 n 的 p95 才 0.753 ⇒ 按 p=1 算会高估效果 26%。
+
+/** 真实标定口径（与 Tier 4 机位一致）：atlas 基色 / 正午天空 / 俯视 32° / 掩码峰值 */
+const PUDDLE_PROBE = Object.freeze({
+  BASE: 0.3816,                      // Smooth_Stone 线性 luma（真实 atlas 像素）
+  SKY: 0.5529,                       // 0x87ceeb 线性 luma
+  noV: 5 / Math.hypot(5, 8),         // 0.5299
+  p: 0.7682,                         // GPU 实测掩码峰值
+});
+const srgb255 = (v) => (v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055) * 255;
+
+/** 屏幕 luma：albedo 压暗后与天空环境按 reflK 混合（与 TSL 合成同构） */
+function puddleLuma(cls, up, puddle, reflStrength, skyMul = 1) {
+  const { BASE, SKY, noV } = PUDDLE_PROBE;
+  const wet = wetnessAt(1, up, cls, 10, -1.5);
+  const k = wetPuddleReflK(noV, cls, up, puddle, wet, reflStrength);
+  const d = wetDarkenAt(cls, puddle);
+  return srgb255(BASE * d + (SKY * skyMul - BASE * d) * k);
+}
+
+test('puddle mirror: 三条归零门 —— 非朝上面 / 强度 0 / 无积水', () => {
+  const c = WET_CLASS.POLISHED;
+  const w = wetnessAt(1, 1, c, 10, -1.5);
+  assertEqual(wetPuddleMirrorK(c, 1, w, 0, 1), 0, '侧面恒 0（防岩壁光晕复活）');
+  assertEqual(wetPuddleMirrorK(c, 1, w, -1, 1), 0, '底面恒 0');
+  assertEqual(wetPuddleMirrorK(c, 1, w, 1, 0), 0, 'reflStrength=0');
+  assertEqual(wetPuddleMirrorK(c, 0, w, 1, 1), 0, 'puddle=0');
+  // ⚠️ 不写死绝对值（原为 >0.5，那是 MIRROR=0.70 时代的数）：
+  // 目标值随常量标定变，关系式才是判据 —— 满积水顶面应拿到 specGain 加权后的满 MIRROR。
+  assertClose(wetPuddleMirrorK(c, 1, w, 1, 1), WET_PUDDLE_MIRROR * wetSpecGainAt(c, 1) * w,
+    1e-12, '顶面满积水 = MIRROR × specGain × wet');
+  assertTrue(wetPuddleMirrorK(c, 1, w, 1, 1) > 0.3, '顶面满积水仍须有实质镜面目标');
+});
+
+test('puddle refl: reflStrength=0 与 puddle=0 都逐位等于 v3.31 的 wetReflK（第二级零回归锚点）', () => {
+  for (let cls = 0; cls < WET_CLASS_COUNT; cls++) {
+    for (const up of [1, 0, -1]) {
+      for (const p of [0, 0.3, 0.7682, 1]) {
+        for (const noV of [0, 0.2, 0.53, 0.9, 1]) {
+          const wet = wetnessAt(1, up, cls, 10, -1.5);
+          const old = wetReflK(noV, wetRoughnessAt(cls, up, p), wetSpecGainAt(cls, p), wet);
+          assertEqual(wetPuddleReflK(noV, cls, up, p, wet, 0), old,
+            `cls${cls} up${up} p${p} noV${noV}: strength=0 须逐位回到旧式`);
+        }
+      }
+      const wet = wetnessAt(1, up, cls, 10, -1.5);
+      const old0 = wetReflK(0.53, wetRoughnessAt(cls, up, 0), wetSpecGainAt(cls, 0), wet);
+      assertEqual(wetPuddleReflK(0.53, cls, up, 0, wet, 1), old0, `cls${cls} up${up}: puddle=0 须等于旧式`);
+    }
+  }
+});
+
+test('puddle refl: 墙面（up=0）任意积水程度都与 v3.31 逐位相同', () => {
+  for (let cls = 0; cls < WET_CLASS_COUNT; cls++) {
+    for (const p of [0, 0.5, 0.7682, 1]) {
+      for (const noV of [0.15, 0.53, 0.86]) {
+        const wet = wetnessAt(1, 0, cls, 10, -1.5);
+        const old = wetReflK(noV, wetRoughnessAt(cls, 0, p), wetSpecGainAt(cls, p), wet);
+        assertEqual(wetPuddleReflK(noV, cls, 0, p, wet, 1), old, `cls${cls} p${p} noV${noV} 墙面零回归`);
+      }
+    }
+  }
+});
+
+test('puddle refl: 全组合有界（675 组）且顶面积水显著强于水膜', () => {
+  let maxK = 0;
+  for (let cls = 0; cls < WET_CLASS_COUNT; cls++) {
+    for (const up of [1, 0, -1]) {
+      for (const p of [0, 0.25, 0.5, 0.7682, 1]) {
+        for (const noV of [0, 0.2, 0.53, 0.9, 1]) {
+          const wet = wetnessAt(1, up, cls, 10, -1.5);
+          const k = wetPuddleReflK(noV, cls, up, p, wet, 1);
+          assertTrue(k >= 0 && k <= 1, `cls${cls} up${up} p${p} noV${noV}: reflK=${k} 须 ∈[0,1]`);
+          maxK = Math.max(maxK, k);
+        }
+      }
+    }
+  }
+  // ⚠️ 上界是 **max(WET_REFL_MAX, MIRROR)** 而不是单 MIRROR：
+  // 水膜项在掠射（noV→0）时可达 MAX=0.55，减半后 MIRROR=0.44 < 0.55
+  // ⇒ 全组合上界由**水膜项**决定（这是正确行为，不是缺陷）。
+  const bound = Math.max(WET_REFL_MAX, WET_PUDDLE_MIRROR);
+  assertTrue(maxK <= bound + 1e-9, `全组合上界 ${maxK} 不得超过 max(MAX,MIRROR)=${bound}`);
+  // 四类致密材质：顶面积水仍须强于同条件水膜（减半后不得退化成「没效果」）
+  // ⚠️ 倍数从 1.5 降到 1.25：减半后抛光实测 1.34×（原 1.62×），
+  // 仍留判别力（若 MIRROR 退化到 ≤0.30 则比值 <1.1，本条会红）。
+  for (const cls of [WET_CLASS.POLISHED, WET_CLASS.STONE, WET_CLASS.WOOD, WET_CLASS.SOIL]) {
+    const wet = wetnessAt(1, 1, cls, 10, -1.5);
+    const film = wetReflK(0.53, wetRoughnessAt(cls, 1, 0), wetSpecGainAt(cls, 0), wet);
+    const pud = wetPuddleReflK(0.53, cls, 1, PUDDLE_PROBE.p, wet, 1);
+    assertTrue(pud > film * 1.25, `cls${cls}: 积水 reflK ${pud} 须 > 水膜 ${film} 的 1.25 倍`);
+  }
+});
+
+test('puddle sky: 云影调制在非顶面 / 无积水 / 强度 0 时恒 1，值域 ⊂ [1−CLOUD, 1+CLOUD]', () => {
+  for (const cloud of [-1, -0.4, 0, 0.4, 1]) {
+    assertEqual(wetPuddleSkyMul(cloud, 1, 0, 1), 1, '侧面恒 1');
+    assertEqual(wetPuddleSkyMul(cloud, 1, -1, 1), 1, '底面恒 1');
+    assertEqual(wetPuddleSkyMul(cloud, 0, 1, 1), 1, '无积水恒 1');
+    assertEqual(wetPuddleSkyMul(cloud, 1, 1, 0), 1, '强度 0 恒 1');
+    const m = wetPuddleSkyMul(cloud, 1, 1, 1);
+    assertTrue(m >= 1 - WET_PUDDLE_CLOUD - 1e-9 && m <= 1 + WET_PUDDLE_CLOUD + 1e-9,
+      `cloud${cloud}: skyMul=${m} 越界`);
+  }
+  assertTrue(wetPuddleSkyMul(1, 1, 1, 1) > wetPuddleSkyMul(-1, 1, 1, 1), 'cloud 单调递增');
+  assertClose(wetPuddleSkyMul(0, 1, 1, 1), 1, 1e-12, 'cloud=0 ⇒ 中性');
+});
+
+test('puddle 量级带: 抛光相对水膜的总差 ∈[4,12]、布几乎不变、且抛光>石>木>土', () => {
+  const { p } = PUDDLE_PROBE;
+  /**
+   * ⚠️⚠️ **必须乘上真实积水门 `puddleAllowed(rough0)`**（本轮自审发现的恒真判据）：
+   * 布/植被的 rough0 ≥ gate.to(0.80) ⇒ `puddleAllowed` 实测 **0**
+   * ⇒ 真实渲染里它们的 puddle **恒 0**，根本不会出现「布上的水汪」。
+   * 旧写法直接传 p=0.7682 给所有类，测的是**不可达状态**：
+   * M 降低后 mix 目标变小、压暗项相对更突出 ⇒ 布的假 Δ 从 −2.22 变 −3.43，
+   * 而那在屏幕上永远不会发生。⇒ 改成逐类乘真实门后再比。
+   */
+  const effP = (cls) => p * puddleAllowed(wetRoughnessAt(cls, 1, 0));
+  const d = (cls) => puddleLuma(cls, 1, effP(cls), 1) - puddleLuma(cls, 1, 0, 1);
+  const pol = d(WET_CLASS.POLISHED);
+  assertTrue(pol >= 4 && pol <= 12, `抛光总差 Δluma=${pol.toFixed(2)} 须 ∈[4,12]`);
+  // 布/植被：真实门为 0 ⇒ 水汪与水膜逐位相同（这才是「材质分层」的真判据）
+  assertClose(d(WET_CLASS.FABRIC), 0, 1e-9, '布不积水 ⇒ 零差');
+  assertClose(d(WET_CLASS.PLANT), 0, 1e-9, '植被不积水 ⇒ 零差');
+  assertTrue(pol > d(WET_CLASS.STONE), '抛光 > 石');
+  assertTrue(d(WET_CLASS.STONE) > d(WET_CLASS.WOOD), '石 > 木');
+  assertTrue(d(WET_CLASS.WOOD) > d(WET_CLASS.SOIL), '木 > 土');
+});
+
+/**
+ * v3.32b（用户 2026-11-23：「上一版本的积水增量的幅度减半」）。
+ *
+ * ⚠️ **基准是 v3.31（`uWetPuddleRefl = 0`）的水汪亮度，不是水膜亮度**：
+ * 用户说的是「上一版本的**增量**」—— 即本轮引入的那部分，
+ * 而不是「水汪相对周边水膜的总差」。两者相差很大：
+ * 抛光总差 15.85 而本轮增量 **20.37**（v3.31 的水汪比水膜还暗）。
+ * 取错基准会把强度调成 0.50 而不是 0.44。
+ *
+ * 实测（noV 0.53、真实掩码峰值 0.7682）：
+ *   类        v3.31    M=0.70   增量    目标(半)
+ *   POLISHED  156.82   177.20   20.37   10.19
+ *   STONE     143.96   159.15   15.19    7.59
+ *   WOOD      143.41   154.67   11.26    5.63
+ *   SOIL      131.37   140.85    9.48    4.74
+ *   FABRIC    121.62   124.29    2.67    1.33
+ * MIRROR 扇描 0.40 / 0.42 / 0.44 / 0.46 / 0.48 的 RMS 误差
+ *   0.821 / 0.334 / 0.263 / 0.735 / 1.231 ⇒ 取 0.44。
+ */
+test('puddle 减半: 各类相对 v3.31 的增量落在原增量的一半 ±1.5 luma', () => {
+  const { p, BASE, SKY, noV } = PUDDLE_PROBE;
+  // v3.31 的水汪亮度 = reflStrength 0（第二级零回归锚点）
+  const v331 = (cls) => puddleLuma(cls, 1, p, 0);
+  // 原 M=0.70 的读数（写入字面量作为独立真值，不读实现常量互推）
+  const OLD = { [WET_CLASS.POLISHED]: 20.37, [WET_CLASS.STONE]: 15.19,
+    [WET_CLASS.WOOD]: 11.26, [WET_CLASS.SOIL]: 9.48, [WET_CLASS.FABRIC]: 2.67 };
+  void [BASE, SKY, noV];
+  for (const [cls, oldDelta] of Object.entries(OLD)) {
+    const c = Number(cls);
+    const nowDelta = puddleLuma(c, 1, p, 1) - v331(c);
+    const want = oldDelta / 2;
+    assertTrue(Math.abs(nowDelta - want) <= 1.5,
+      `cls${c}: 增量 ${nowDelta.toFixed(2)} 须 ≈ 原 ${oldDelta} 的一半 ${want.toFixed(2)}（±1.5）`);
+  }
+});
+
+test('puddle 云影: 水汪内的 luma 跨度落在 [6,18]（不是纯色塑料板）', () => {
+  const { p } = PUDDLE_PROBE;
+  const amp = WET_PUDDLE_CLOUD * p;      // 云影幅度已 × puddle（与 TSL 同构）
+  const hi = puddleLuma(WET_CLASS.POLISHED, 1, p, 1, 1 + amp);
+  const lo = puddleLuma(WET_CLASS.POLISHED, 1, p, 1, 1 - amp);
+  const span = hi - lo;
+  assertTrue(span >= 6 && span <= 18, `抛光水汪云影跨度 ${span.toFixed(2)} 须 ∈[6,18]`);
+  // 云影不得让水汪过曝：最亮组合仍远低于 250
+  assertTrue(hi < 240, `水汪最亮 ${hi.toFixed(1)} 不得逼近过曝`);
+});
+
+test('puddle 减半: 云影幅度常量减半，且跨度落在双重衰减后的预期值', () => {
+  const { p } = PUDDLE_PROBE;
+  // 常量层面：0.25 的一半（独立真值，不读实现互推）
+  assertClose(WET_PUDDLE_CLOUD, 0.25 / 2, 1e-12, 'CLOUD 必须是原 0.25 的一半');
+  const amp = WET_PUDDLE_CLOUD * p;
+  const span = puddleLuma(WET_CLASS.POLISHED, 1, p, 1, 1 + amp)
+    - puddleLuma(WET_CLASS.POLISHED, 1, p, 1, 1 - amp);
+  /**
+   * ⚠️⚠️ **不能用「原 span 22.44 的一半」当判据**（本轮自审发现的口径错）：
+   * span 同时正比于 **reflK（受 MIRROR 控制）** 与 **CLOUD**，
+   * 两个旋钮都减半 ⇒ span 是**双重衰减**，不是减半。
+   * 实测：M 0.70→0.44 且 CLOUD 0.25→0.125 ⇒ span 22.44 → **7.94**。
+   * 正确判据：固定 M=0.44 下单独扇描 CLOUD 得到的预期值（已写入 config 注释）。
+   */
+  assertTrue(Math.abs(span - 7.94) <= 1.0,
+    `云影跨度 ${span.toFixed(2)} 须 ≈ 7.94（M 与 CLOUD 双双减半后的实测值，±1）`);
+});
+
+test('puddle 常量: 既有四个常量未被偷偷放宽（本轮只加不改）', () => {
+  assertEqual(WET_REFL_MAX, 0.55, 'WET_REFL_MAX 不动');
+  assertEqual(WET_REFL_FLOOR, 0.28, 'WET_REFL_FLOOR 不动');
+  assertEqual(WET_SUN_SPEC, 0.22, 'WET_SUN_SPEC 不动（水汪处 pow 下溢，抬它零作用）');
+  assertEqual(WET_PUDDLE_FROM, 0.52, '积水阈值带不动');
+  assertEqual(WET_PUDDLE_TO, 0.76, '积水阈值带不动');
+  assertEqual(WET_PUDDLE_SCALE, 0.32, '积水噪声尺度不动');
+  assertTrue(WET_PUDDLE_CLOUD_SCALE < WET_PUDDLE_SCALE,
+    '云影斑块必须比积水斑大（否则每摊水自带一个亮斑）');
+});
+
+test('puddle uniforms: uWetPuddleRefl 初值 1，uWet 初值仍 0（两级零回归锚点）', async () => {
+  const { WET_SURFACE_UNIFORMS: U } = await import('../render/wet-surface.js');
+  assertEqual(U.uWetPuddleRefl.value, 1, '积水反光默认开');
+  assertEqual(U.uWet.value, 0, '总强度默认关');
 });

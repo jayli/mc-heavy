@@ -564,3 +564,17 @@ ACES 把高亮压得很扁 ⇒ add×20 后只到 0.00042（上升 5.25 倍），
 - 真 GPU 探针：console errs **[]**、hasGrade/hasGroundReflect **false**、uWet 单变量改变 **79~81%** 像素
 - `npm run bench -- --check` **exit 0**（四场景 fps 120.02~120.36 / p95 9.8~9.9）
 - `blocks-data.js` 与 HEAD **逐字节相同**；`registry.fingerprint()` = `16d99151`（前缀指纹相等）
+
+---
+
+## 12. 后续增量：v3.32 积水斑的镜面反光
+
+本稿的积水修正（`rough×0.25` / `specGain×1.60` / `albedo×0.88`）**不足以让水汪反光** ——
+`wetSpecGainAt` 被 `min(…,1)` 钳死，抛光类本来就是 1.0 ⇒ ×1.60 是恒等。
+用户 2026-11-23 实玩报「水汪没有反光」，实测水汪比周边水膜**暗 5.9 luma**。
+
+⇒ 增量设计稿：[`2026-11-23-puddle-mirror-reflection-design.md`](2026-11-23-puddle-mirror-reflection-design.md)
+（给积水一条独立于菲涅尔的绝对镜面目标 `WET_PUDDLE_MIRROR=0.70` + 低频云影调制）。
+**本稿的 `WET_REFL_MAX` / `WET_REFL_FLOOR` / `WET_SUN_SPEC` / 噪声阈值带一律未动**，
+水膜与墙面的公式逐字保留；新增项全部乘 `topGate × uWetPuddleRefl`，
+后者写 0 即**逐位回到本稿描述的 v3.31 行为**（第二级零回归锚点）。

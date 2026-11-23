@@ -119,6 +119,94 @@ export const WET_PUDDLE_DARK_K = 0.88;
 export const WET_PUDDLE_SPEC_K = 1.60;
 
 /**
+ * 积水的**镜面反光目标**（v3.32，用户 2026-11-23「水汪没有反光，适当加一些反光」）。
+ *
+ * ## 为什么必须是「绝对目标」而不是又一个乘数（本轮根因，实测取证）
+ *
+ * v3.31 的积水修正只有 `rough×0.25` / `specGain×1.60` / `albedo×0.88` 三项，
+ * 反光强度仍走同一条 `reflK = (F+floor)×specGain×WET_REFL_MAX×wet`。
+ * 而 **`wetSpecGainAt` 被 `min(…,1)` 钳死**，抛光/冰类的 specGain 本来就是 **1.0**
+ * ⇒ `×1.60` 后仍是 1.0，**一点没涨**；只有 rough 变小带来的 F0/floor 微增。
+ * 实测（noV 0.53、真实 atlas 基色）：抛光 reflK **0.1883 → 0.1962（+4%）**，
+ * 却额外压暗 12% ⇒ 屏幕上水汪比周边水膜**暗 5.9 luma**（石材暗 3.0）。
+ * GPU 侧交叉验证：开档后地面区 mean luma 181.58 → 178.32（净变暗），方向一致。
+ * ⇒ 积水必须有一条**独立于菲涅尔的绝对镜面目标**。
+ *
+ * ## 为什么不能改 WET_REFL_MAX / FLOOR / SUN_SPEC
+ *
+ * · 抬 MAX/FLOOR 会让**整片湿墙**一起变亮 ⇒ 用户 2026-11-22 报的岩壁光晕缺陷复活；
+ * · 抬 `WET_SUN_SPEC` 对水汪**零作用**：积水处 rough 0.0875 ⇒ shininess **320.6**，
+ *   该机位 N·H 0.677 ⇒ `pow(0.677, 320.6)` = **4.94e-55**（它是掠射角才可见的项）。
+ *
+ * ## 取值 0.70 的扇描依据（代入**真实掩码峰值 0.7682**，不是 1.0）
+ *
+ * Δ = 积水 − 水膜的屏幕 luma（noV 0.53、BASE 0.3816、SKY 0.5529）：
+ *   MIRROR 0.65 → 抛光 +14.0 / 石 +11.3 / 木 +6.7 / 土 +5.2 / 布 −2.4
+ *   MIRROR 0.70 → 抛光 **+15.8** / 石 +12.7 / 木 +7.7 / 土 +6.0 / 布 **−2.2**
+ *   MIRROR 0.80 → 抛光 +19.5 / 石 +15.4 / 木 +9.7 / 土 +7.6 / 布 −1.8
+ *   MIRROR 1.00 → 抛光 +26.6 / 石 +20.6 / 木 +13.6 / 土 +10.9 / 布 −0.8
+ * 取 0.70：抛光落在目标带 [12,28] 中段、布仍几乎不变（材质分层保住），
+ * 且 reflK 全组合上界 **0.70 < 1** ⇒ `mix` 天然有界，不会钳白。
+ *
+ * ⚠️ 掩码峰值 0.7682 是 GPU 实测（绕开 ACES 直接量 puddle）：
+ * `smoothstep(0.52,0.76,n)` 而噪声 n 的 p95 才 0.753 ⇒ **按 p=1 标定会高估 26%**。
+ *
+ * ## v3.32b：幅度减半（用户 2026-11-23「上一版本的积水增量的幅度减半」）
+ *
+ * **0.70 → 0.44**。⚠️ 基准是 **v3.31（`uWetPuddleRefl = 0`）的水汪亮度**，
+ * 不是「水汪相对周边水膜的总差」—— 用户说的是本轮引入的**增量**。
+ * 两者相差很大（v3.31 的水汪比水膜还暗）：抛光总差 15.85 而本轮增量 **20.37**。
+ * 取错基准会调成 0.50（总差减半）而不是 0.44。
+ *
+ * 实测（noV 0.53、p=0.7682）与扇描：
+ *   类        v3.31    M=0.70   增量    目标(半)   M=0.44 实得
+ *   POLISHED  156.82   177.20   20.37   10.19      10.30
+ *   STONE     143.96   159.15   15.19    7.59       7.94
+ *   WOOD      143.41   154.67   11.26    5.63       5.92
+ *   SOIL      131.37   140.85    9.48    4.74       5.08
+ *   FABRIC    121.62   124.29    2.67    1.33       1.45
+ * MIRROR 扇描 0.40 / 0.42 / 0.44 / 0.46 / 0.48 对「目标增量」的 RMS 误差
+ *   = 0.821 / 0.334 / 0.263 / 0.735 / 1.231 ⇒ 0.44 最优。
+ */
+export const WET_PUDDLE_MIRROR = 0.44;
+
+/**
+ * 水汪内天空环境的**云影调制幅度**（±12.5%，v3.32b 减半后）。
+ *
+ * ## 为什么需要它
+ *
+ * 积水处 rough → 0.015 ⇒ 天空渐变带宽极窄（lo −0.155 / hi 0.557），
+ * 而正午 `sky` 与 `fogColor` **同为 0x87ceeb**（v3.31 §7.3）
+ * ⇒ `skyEnv` 在整个水汪内几乎是同一个颜色。只抬 reflK 会得到一片**纯色塑料板**。
+ * 真实水汪反的是阴天云层（有明暗层次）⇒ 给天空环境加一层低频噪声调制。
+ *
+ * 扇描（水汪内 luma 跨度，amp 已 × puddle）：
+ *   0.20 → 抛光 span 17.9 / 石 11.4
+ *   0.25 → 抛光 **22.4** / 石 **14.3**
+ *   0.30 → 抛光 27.0 / 石 17.1
+ * 取 0.25：落在 [12,36]，肉眼有层次但不花。
+ *
+ * ## v3.32b：**0.25 → 0.125**（用户 2026-11-23 裁定幅度减半）
+ *
+ * 云影也是本轮引入的增量 ⇒ 同步减半，否则「亮度降了但层次还是那么花」。
+ * M=0.44 固定下扇描 CLOUD：0.25→span 15.89 / 0.16→10.16 / **0.125→7.94** / 0.10→6.35。
+ * 取 0.125（常量语义上就是减半）得 span **7.94**，仍在「有层次」带 [6,18] 内。
+ * ⚠️ M 与 CLOUD 同时降 ⇒ span 双重衰减，故 7.94 低于「原 22.44 的一半 11.22」；
+ * 这是两个旋钮都减半的必然结果，不是标定错。
+ *
+ * ⚠️ 上界 1.125 ⇒ skyEnv 线性 luma 最大 0.6220，配 reflK 0.44
+ * ⇒ 全组合最大线性 luma 远低于过曝线（Tier 4 用例③仍守）。
+ */
+export const WET_PUDDLE_CLOUD = 0.125;
+
+/**
+ * 云影噪声的世界 xz 尺度（0.09 ⇒ 斑块 ≈11 格，比积水斑大 3.5 倍）。
+ * ⚠️ **必须比 `WET_PUDDLE_SCALE` 小**（= 斑块更大）：否则每摊水自带一个亮斑，
+ * 看起来像「水汪在发光」而不是「水汪映着天上的云」。
+ */
+export const WET_PUDDLE_CLOUD_SCALE = 0.09;
+
+/**
  * 积水门的粗糙度带：rough 越大越不积水（水会被粗糙面吸走 / 散开）。
  * FABRIC 0.90 与 PLANT 0.85 都 ≥ to ⇒ 门恒 0；STONE 0.35 与 POLISHED 0.06 ⇒ 门恒 1。
  */
@@ -303,6 +391,90 @@ export function wetDarkenAt(cls, puddle) {
   const p = WET_CLASS_PARAMS[cls];
   if (!p) return 1;
   return p[1] * lerp(1, WET_PUDDLE_DARK_K, clamp01(puddle));
+}
+
+// ------------------------------------------------ v3.32 积水斑的镜面反光
+//
+// 设计稿：docs/superpowers/specs/2026-11-23-puddle-mirror-reflection-design.md
+// TSL 侧在 wet-surface.js，两侧公式**逐项同构**（红线 1）。
+
+/**
+ * 朝向门：**水汪镜面只在朝上面**（顶面 1 / 侧面与底面 0）。
+ *
+ * ⚠️⚠️ **这条是岩壁光晕缺陷的直接防线**：`puddleAllowed` 只看粗糙度，
+ * 而竖面加成后的 rough0 对 POLISHED/STONE/METAL/ICE 分别是
+ * 0.31/0.60/0.37/0.29 ⇒ 门值 **1.0/0.896/1.0/1.0**（实测）
+ * ⇒ 没有这道门，水汪镜面会**爬上墙**，正是用户 2026-11-22 报的缺陷。
+ * v3.31 的 `puddle` 在 TSL 里已乘 `select(isTop,1,0)`，本函数把同一口径显式化，
+ * 让 CPU 侧也能单独求值与断言。
+ */
+function puddleTopGate(up) {
+  return Number.isFinite(up) && up > 0.5 ? 1 : 0;
+}
+
+/**
+ * 积水的镜面反光**目标值**（不是乘数 —— 见 `WET_PUDDLE_MIRROR` 的根因注释）。
+ *
+ * `mirrorK = MIRROR × specGain(含积水修正) × wet × topGate × reflStrength`
+ *
+ * ⚠️ `specGain` 在这里是**分层旋钮**（抛光 1.0 / 石 0.72 / 土 0.288 / 布 0.064），
+ * 不是「再抬一档」的乘数 —— 它决定各类能反多少，而 MIRROR 是绝对上限。
+ *
+ * @param {number} cls 材质类
+ * @param {number} puddle 积水程度 0..1（真实峰值 0.7682）
+ * @param {number} wet 有效湿强度（`wetnessAt` 的结果）
+ * @param {number} up 面法线 y
+ * @param {number} reflStrength 积水反光开关强度 0..1（0 ⇒ 逐位回到 v3.31）
+ * @returns {number} 0..WET_PUDDLE_MIRROR
+ */
+export function wetPuddleMirrorK(cls, puddle, wet, up, reflStrength) {
+  const sg = wetSpecGainAt(cls, puddle);
+  return WET_PUDDLE_MIRROR * sg * clamp01(wet) * puddleTopGate(up)
+    * clamp01(puddle) * clamp01(reflStrength);
+}
+
+/**
+ * 最终反光系数 = **水膜项与积水镜面项的 mix**。
+ *
+ * `reflK = min(mix(wetReflK(...), MIRROR×specGain×wet, puddle×topGate×strength), 1)`
+ *
+ * ⚠️⚠️ **混合权重必须也乘 topGate × strength**：只把 `mirrorK` 乘门是不够的 ——
+ * `mix(filmK, 0, puddle)` 会让水汪**变暗**而不是回到水膜，
+ * 于是「strength=0 ⇒ 逐位回到 v3.31」这条零回归锚点静默失效。
+ *
+ * ⚠️ 水膜项 `wetReflK` **逐字不动**（仍受 `WET_REFL_MAX = 0.55` 钳制）；
+ * 只有积水项能超过 0.55，上界 `WET_PUDDLE_MIRROR = 0.70 < 1` ⇒ mix 有界。
+ *
+ * @param {number} noV 法线·视线
+ * @param {number} cls @param {number} up @param {number} puddle
+ * @param {number} wet @param {number} reflStrength
+ * @returns {number} 0..1
+ */
+export function wetPuddleReflK(noV, cls, up, puddle, wet, reflStrength) {
+  const p = clamp01(puddle);
+  const rough = wetRoughnessAt(cls, up, p);
+  const sg = wetSpecGainAt(cls, p);
+  const filmK = wetReflK(noV, rough, sg, wet);
+  const w = p * puddleTopGate(up) * clamp01(reflStrength);
+  const mirrorK = WET_PUDDLE_MIRROR * sg * clamp01(wet);
+  return Math.min(lerp(filmK, mirrorK, w), 1);
+}
+
+/**
+ * 水汪内天空环境的云影乘数：`1 + cloud × CLOUD × puddle × topGate × strength`。
+ *
+ * ⚠️ `cloud` 是 `mx_noise_float` 的**原始值域 [−1,1]**（不是 0..1 的积水噪声）——
+ * 云影要有明有暗，取 0..1 只会整体抬亮。
+ * ⚠️ 只调制**水汪**（× puddle）且只在**朝上面**：墙面与云的天空环境逐位不动。
+ *
+ * @param {number} cloud 噪声原始值 −1..1
+ * @param {number} puddle @param {number} up @param {number} reflStrength
+ * @returns {number} 1−CLOUD .. 1+CLOUD
+ */
+export function wetPuddleSkyMul(cloud, puddle, up, reflStrength) {
+  const c = Number.isFinite(cloud) ? Math.max(-1, Math.min(1, cloud)) : 0;
+  const w = clamp01(puddle) * puddleTopGate(up) * clamp01(reflStrength);
+  return 1 + c * WET_PUDDLE_CLOUD * w;
 }
 
 // 类枚举再导出一次：消费方（TSL 侧 / 单测）只 import 本文件即可拿到全套。
