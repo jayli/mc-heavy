@@ -75,6 +75,7 @@ const UI = [
 const ENTITY = [
   'entities',
   'enemy-roster',
+  'enemy-wiring',
   'zombies',
   'zombie-nests',
   'zombie-model',
