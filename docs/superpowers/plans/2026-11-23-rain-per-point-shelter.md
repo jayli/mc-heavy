@@ -18,7 +18,9 @@
   三种 colorSpace 下均与 CPU 写入逐位相同 ⇒ 上传侧无问题、数据纹理不被 sRGB 解码。
 - `tests/tmp-shelter-texload.spec.mjs`：片元 `textureLoad` 取回 8×8 纹理，
   **64/64 texel 三通道全对**（badR=0/badG=0/badB=0），零 GPU 验证错误。
-- CPU 扫描成本：**0.0174 ms/列**，与既有 `rainStopY` 在 4000 个采样点上 **0 处不符**。
+- CPU 扫描成本（`column.blocks` 直读）：**0.0122 ms/column**（= 0.048 µs/格列），
+  8 column/帧 = 0.098 ms；比逐格 `getBlockId` 快 **23.6 倍**。
+  与既有 `rainStopY` 在 4000 个采样点上 **0 处不符**。
 
 ⚠️ **探针自身的三个测量错误已记入 spec §4.6b**，实施时写任何「把数据当颜色读回」
 的探针必须先做两件事：① 关显示变换（`NoToneMapping` + `LinearSRGBColorSpace`）并用常量
@@ -30,10 +32,19 @@
 - 依赖方向 `voxel ← gen ← mesh ← render`；`core/` 是装配层。新增 three-free 模块不得 import three（红线 8/10，`check:arch` 静态门）。
 - **不改** packed 位段布局、顶点字节数、方块声明顺序/数量、任何既有 uniform 的名字与语义。
 - **不改** 雨量/雨丝观感常量/水汪反光强度 —— 本轮只改生效范围。
-- 每帧扫描预算 **8 列**（实测 0.0174 ms/列 ⇒ 0.139 ms）。
-- 窗口 `SHELTER_MAP_SIZE = 512`；编码 `R = (stopY - (WORLD_MIN_Y - 1)) * 2`，`R=0` 是「未知/无截停」哨兵。
+- 每帧扫描预算 **8 个 column**（= 2048 格列）。实测：`column.blocks` 直读 **0.0122 ms/column**
+  ⇒ 8 column/帧 = **0.098 ms**；逐格 `getBlockId` 慢 **23.6 倍**（2.309 ms）⇒ **必须缓存 column 引用后直读**。
+  ⚠️ 「column」= 16×16×128 区块，含 256 个「格列」—— 两个单位不得混用。
+- 窗口 `SHELTER_MAP_SIZE = 512`（= 32×32 = **1024 column**，全扫 12.5 ms ⇒ 不得首帧全扫）；
+  编码 `R = (stopY - (WORLD_MIN_Y - 1)) * 2`，`R=0` 是「未知/无截停」哨兵。
+- **texel 索引用绝对坐标** `floor(x) & 511`，**不是** `(floor(x)-origin) & 511`。
+  后者原点一动整窗失效（实测），且 GPU 侧因此**不需要原点 uniform**。
 - `SHELTER_EPS = 1/512`，CPU/GPU 两侧读同一份。
-- 探针 = `wp + faceNormal * 0.5`；`uWetShelter` 是第四级零回归锚点（写 0 逐位回到 v3.33）。
+- 探针 = `wp + faceNormal * 0.5`；**遮挡判据 = `stopY > floor(probe.y) + 1 + EPS`**
+  （格顶口径）。⚠️ **不得用 `probe.y <= stopY + EPS`** —— 那会把三款 slab、横柱、床的
+  露头顶面判成「干」（几何顶面 0.5/0.65，探针恰好共面）。实测 1032 例穷举 0 不符。
+- `uWetShelter` 是第四级零回归锚点（写 0 逐位回到 v3.33）。
+- 预热：开档当帧扫玩家周围 **3×3 = 9 column**（0.11 ms），**不是**「满预算 8 column」。
 - 挡雨判据 = `solidTable===1 && hollowOccluderTable!==1 && id!==cloudId`。
 - 时间基准一律 `performance.now()`，禁 `Date.now()`。
 - 负向验证注入用 `edit`（不用 `sed`），还原用 `cp` 副本（**不用 `git checkout`**），注入后读回源码确认落地。
@@ -44,9 +55,10 @@
 
 1. **玩家在屋内向外看** —— 屋外雨丝/水花必须仍上屏（这是用户报告的原缺陷，最易在「删总闸」时改成另一个总闸）。Task 5 的 C1。
 2. **台阶/半砖盖的棚子** —— 必须挡雨（现行判据漏掉 21 个方块，含全部台阶）。Task 1 的 Tier 1 逐个断言。
-3. **屋外地面与屋顶顶面** —— 遮挡门一个字节都不许碰它们（探针法线偏移是核心机制，删掉它就全错）。Task 4 的 C5/C6 + 负向①。
-4. **挖掉屋顶 / 搭起棚子** —— 当帧跟随，不等节流轮到。Task 2 的失效用例 + Task 5 的编辑往返。
-5. **关掉雨天光影** —— 逐位回到改动前，且不推进扫描、不上传纹理。Task 5 的 C7 + 零成本断言。
+3. **非整格顶面方块的露头顶面** —— slab/横柱/床 必须湿（探针共面陷阱，静默产生「台阶砖永远不湿」）。Task 3 的 slab 用例 + 负向④。
+4. **屋外地面与屋顶顶面** —— 遮挡门一个字节都不许碰它们（探针法线偏移是核心机制）。Task 4 的 C5/C6 + 负向①。
+5. **挖掉屋顶 / 搭起棚子 / 窗口平移** —— 当帧跟随且绝对索引不漂移。Task 2 的失效/平移用例 + 负向⑤。
+6. **关掉雨天光影** —— 逐位回到改动前，且不推进扫描、不上传纹理。Task 5 的 C7 + 零成本断言。
 
 ---
 
@@ -71,9 +83,15 @@ test('rain shelter: 台阶/半砖/栏杆/柱子/箱子都挡雨（棚子最常�
     'end_stone_brick_step', 'end_stone_brick_step_updown',
     'obsidian_brick_slab', 'end_stone_brick_slab',
     'handrail', 'handrailA', 'handrailB', 'vertical_pillar', 'horizontal_pillar',
-    'chest', 'cactus']) {
+    'chest']) {
     assertTrue(blocksRain(id(n), REG), `${n} 是实心建材，必须挡雨`);
   }
+});
+
+// 仙人掌单列：它挡雨对，但 geometry='cactus' 顶面 1.05（超出单元格），
+// 不是常规建材 —— 与台阶并列会让后来者误以为它是同类。
+test('rain shelter: 仙人掌挡雨（顶面 1.05，超出单元格的特例）', () => {
+  assertTrue(blocksRain(id('cactus'), REG));
 });
 ```
 
@@ -130,15 +148,17 @@ git commit -m "fix(rain): 挡雨判据改读镂空遮挡体表，台阶/栏杆/�
   - `SHELTER_Y_BASE = WORLD_MIN_Y - 1`（= −33）
   - `encodeStopY(y: number|null): number` —— null ⇒ 0；否则 `round((y - SHELTER_Y_BASE) * 2)`
   - `decodeStopY(enc: number): number|null` —— 0 ⇒ null；否则 `enc/2 + SHELTER_Y_BASE`
-  - `shelterTexelIndex(x: number, z: number, originX: number, originZ: number): number` —— `((floor(x)-originX) & 511) + (((floor(z)-originZ) & 511) << 9)`，返回 texel 序号（字节偏移 = ×4）
+  - `shelterTexelIndex(x: number, z: number): number` —— **绝对索引** `(floor(x) & 511) + ((floor(z) & 511) << 9)`，返回 texel 序号（字节偏移 = ×4）。⚠️ **不接 origin 参数** —— 相对索引会让原点一动整窗失效。
+  - `SHELTER_WINDOW_COLS = SHELTER_MAP_SIZE / 16`（= 32，窗口每边多少 column）
 - Produces（`render/rain-shelter-map.js`，three-free class `RainShelterMap`）：
   - `new RainShelterMap({ world, registry })`
   - `data: Uint8Array(512*512*4)` —— 纹理字节，唯一权威
   - `originX / originZ: number` —— 窗口原点（16 对齐）
-  - `stopAt(x, z): number|null`、`waterAt(x, z): boolean` —— 未知一律返回 `null` / `false`
-  - `setCenter(x, z): void` —— 原点跟随（16 格步进），平移时清零失效条带并入队
+  - `stopAt(x, z): number|null`、`waterAt(x, z): boolean` —— 窗外/未知一律返回 `null` / `false`
+  - `setCenter(x, z): void` —— 原点跟随（16 格步进），平移时清零 `(originOLD & 511)..+15` 条带并入队
+  - `warmup(x, z): number` —— 同步扫玩家周围 **3×3 = 9 column**（不走每帧预算），返回实扫数
   - `invalidateColumn(cx, cz): void` —— 插队首
-  - `tick(budget = 8): number` —— 消费队列，返回本帧实扫列数；>0 表示纹理需重传
+  - `tick(budget = 8): number` —— 消费队列（单位 **column**），返回本帧实扫数；>0 表示纹理需重传
   - `debugState(): { queued, scanned, originX, originZ, lastTickColumns }`
 
 - [ ] **Step 1: 写失败测试**
@@ -157,10 +177,14 @@ git commit -m "fix(rain): 挡雨判据改读镂空遮挡体表，台阶/栏杆/�
 10. `invalidateColumn` 插队首：队列里塞满远处列，invalidate 近处某列 ⇒ 下一次 `tick(1)` 扫的是它。
 11. 预算：队列 > 8 时 `tick()` 返回值 `=== 8`；`tick(0)` 返回 0。
 12. 未知安全失败：从未扫过的坐标 `stopAt === null`、`waterAt === false`。
-13. 窗口平移：`setCenter` 移动 16 格后，新露出的格列在被扫到之前必须返回 `null`（**不得读到旧列的高度**）。
-14. **负坐标环形索引**：`shelterTexelIndex(-1, -1, 0, 0)` 必须等于 `511 + (511 << 9)`
-    （与 GPU 侧 `int(...).bitAnd(511)` 逐位同构）。这条钉的是「玩家走到负坐标区不会读错列」。
-15. 静止世界零成本：连扫两轮后第三次 `tick()` 返回 0。
+13. 窗口平移：`setCenter` 移动 16 格后，新露出的格列在被扫到之前必须返回 `null`。
+14. **绝对索引不变性**：`shelterTexelIndex(-1,-1) === 511 + (511<<9)`；
+    且 `setCenter` 前后 **同一绝对坐标的 texel 序号不变**（相对索引会在这里 FAIL）。
+15. **平移清零条带位置**：取 `originX = 0 / 16 / 496 / 1008 / -32`，逐个断言被清零的
+    texel 集合 ≡ `(originX_OLD & 511) .. +15`（环形）。
+    ⚠️ 固定 `[0,15]` 与审阅建议的 `((O+16)&511)..+15` **两种错写均必须在此 FAIL**。
+16. **预热**：`warmup(x,z)` 返回 9，且玩家周围 3×3 column 均已扫（不是 8）。
+17. 静止世界零成本：连扫两轮后第三次 `tick()` 返回 0。
 
 - [ ] **Step 2: 跑测试确认失败**
 
@@ -174,15 +198,19 @@ Expected: FAIL —— 模块不存在（import 硬失败，runner 刻意不 catc
 `voxel/rain-occlusion-data.js`：只有常量与三个纯函数，无状态。
 `render/rain-shelter-map.js`：
 - 构造时按 registry 建 `rainTab` / `waterTab`（`Uint8Array(registry.count)`），热循环只读字节；
-- 扫描单列：`for y = RAIN_CEILING_Y .. WORLD_MIN_Y`，首个 `rainTab[id]` ⇒ `stop=y+1` break；首个 `waterTab[id] && opaqueTable[prev]!==1 && prev!==id` ⇒ `stop=y+1-WATER_SURFACE_SINK`、`hasWater=1` break；`prev=id`；
-- 有效性用**清零**而非哈希（spec §4.4：哈希碰撞会静默读到别的列）：`setCenter` 平移时把失效条带 `data[..]=0`，并把对应 column 入队；
+- **扫描必须缓存 column 引用后直读 `col.blocks`**（实测比逐格 `getBlockId` 快 23.6 倍）：
+  `for y = RAIN_CEILING_Y .. WORLD_MIN_Y`，首个 `rainTab[id]` ⇒ `stop=y+1` break；
+  首个 `waterTab[id] && opaqueTable[prev]!==1 && prev!==id` ⇒ `stop=y+1-WATER_SURFACE_SINK`、`hasWater=1` break；`prev=id`；
+- 有效性用**清零**而非哈希（哈希碰撞会静默读到别的列）；`setCenter` 平移时清
+  **`(originX_OLD & 511) .. +15`**（环形，**不是固定 `[0,15]`、也不是 `+16`**）并把对应 column 入队；
 - 队列按到中心的切比雪夫距离排序，`invalidateColumn` 用 `unshift`；
-- `tick(budget)` 逐列出队 → 扫描 → 写 4 字节 → 记 `version`；返回实扫数。
+- `tick(budget)` 逐 column 出队 → 扫描 → 写 256 个 texel × 4 字节 → 记 `version`；返回实扫数；
+- `warmup(x,z)` 同步扫 3×3 column，**不受 budget 限制**。
 
 - [ ] **Step 4: 跑测试确认通过**
 
 Run: `node tools/run-unit-node.mjs --only=test-rain-shelter-map.js`
-Expected: PASS（15 例）
+Expected: PASS（17 例）
 
 - [ ] **Step 5: 负向验证**
 
@@ -227,10 +255,26 @@ test('wet shelter gate: 未知/关档恒 1，棚下 0，棚外 1（CPU 与 GPU �
   assertEqual(wetShelterGate(5.5, roof, 0), 1, 'strength=0 ⇒ 逐位回到 v3.33');
   assertEqual(wetShelterGate(5.5, roof, 1), 0, '探针在屋顶之下 ⇒ 干');
   assertEqual(wetShelterGate(10.5, roof, 1), 1, '屋顶自身顶面之上 ⇒ 湿');
-  assertEqual(wetShelterGate(10, roof, 1), 0, '共面算遮挡（EPS 保证 f32 往返不翻判）');
-  assertEqual(wetShelterGate(9.5, roof, 1), 0, '半格之下仍遮挡');
+});
+
+// ★ P0-2 的判别力锚点：非整格顶面方块的露头顶面必须湿
+// 实测几何顶面（真实 TEMPLATES）：half_block=0.5、horizontal_pillar=0.65、cactus=1.05
+test('wet shelter gate: 半砖/横柱/仙人掌的露头顶面必须湿（探针共面陷阱）', () => {
+  const ground = encodeStopY(1);       // 方块在 y=0，格顶 stop=1
+  // 半砖：几何顶面 0.5 ⇒ 探针 0.5+0.5 = 1.0（恰好共面）
+  assertEqual(wetShelterGate(1.0, ground, 1), 1, 'sand_slab 露头顶面不得被判干');
+  // 横柱：0.65+0.5 = 1.15
+  assertEqual(wetShelterGate(1.15, ground, 1), 1, 'horizontal_pillar 露头顶面必须湿');
+  // 仙人掌：1.05+0.5 = 1.55
+  assertEqual(wetShelterGate(1.55, ground, 1), 1, 'cactus 露头顶面必须湿');
+  // 半砖棚顶自身（棚顶在 y=4，几何顶面 4.5，探针 5.0，stop=5）
+  assertEqual(wetShelterGate(5.0, encodeStopY(5), 1), 1, '半砖棚顶自身必须湿');
 });
 ```
+
+再加一条**穷举用例**：全部挡雨方块（`solid ∧ 非hollow ∧ 非cloud`）× cellY 0..3 ×
+有/无上方屋顶（y=6），顶面探针 = `cellY + 几何顶面 + 0.5`，期望：有屋顶 ⇒ 干，无 ⇒ 湿。
+实测基准 **1032 例 0 不符**（几何顶面从真实 `TEMPLATES` 算，不写死）。
 
 （`encodeStopY` 从 `voxel/rain-occlusion-data.js` import。）
 
@@ -241,8 +285,14 @@ Expected: FAIL —— `wetShelterGate is not a function`（或 import 报错）
 
 - [ ] **Step 3: 实现**
 
-`wetShelterGate`：`stopEnc <= 0 ⇒ 1`；`strength <= 0 ⇒ 1`；否则解码（**显式走一遍 `Float32Array` 的 `enc/255` 量化再 `×127.5`**，与 GPU 逐位同构）、`probeY <= stop + SHELTER_EPS ? 1 - strength : 1`。
+`wetShelterGate`：`stopEnc <= 0 ⇒ 1`；`strength <= 0 ⇒ 1`；否则解码
+（**显式走一遍 `Float32Array` 的 `enc/255` 量化再 `×127.5`**，与 GPU 逐位同构），
+判据 **`stop > Math.floor(probeY) + 1 + SHELTER_EPS ? 1 - strength : 1`**。
+⚠️ **不得写成 `probeY <= stop + EPS`** —— 那会把半砖/横柱/床的露头顶面判干（P0-2）。
 `rain-shelter-texture.js`：建单例 + `uploadShelterTexture`。⚠️ 头注释写明「本文件依赖 three，故放 render/ 不放 voxel/」。
+构造配方照 spec §4.6（已实测 PASS）：`RGBAFormat` + `UnsignedByteType`、`flipY=false`、
+`generateMipmaps=false`、`min/magFilter=NearestFilter`；`textureLoad` **自带 `setSampler(false)`**，
+不需 `storageTexture` 也不需 `unwrap`。
 
 - [ ] **Step 4: 跑测试确认通过**
 
@@ -265,29 +315,41 @@ git commit -m "feat(rain): 遮挡纹理单例与 CPU 同构遮挡门"
 
 **Interfaces:**
 - Consumes: `SHELTER_TEXTURE`（Task 3）、`SHELTER_MAP_SIZE` / `SHELTER_Y_BASE` / `SHELTER_EPS`（Task 2）。
-- Produces: `WET_SURFACE_UNIFORMS.uWetShelter`（默认 1）、`WET_SURFACE_UNIFORMS.uShelterOrigin`（`Vector2`，窗口原点，装配层每帧写）。
+- Produces: `WET_SURFACE_UNIFORMS.uWetShelter`（默认 1）。⚠️ **不需 `uShelterOrigin`** —— 绝对索引下 GPU 不关心窗口原点。
 
 - [ ] **Step 1: 加 uniform 与片元门**
 
-在 `WET_SURFACE_UNIFORMS` 加两项（注释写明第四级零回归锚点）。
+在 `WET_SURFACE_UNIFORMS` 加 `uWetShelter`（注释写明第四级零回归锚点）。
 在 `createWetSurfaceNode` 里，`const wet = ...` 那行**之后**插入门：
 
 ```js
-// ⚠️ 坐标差可能为负（探针在原点西侧/北侧）⇒ **先 int 再 
- bitAnd**，
-// 不能先 uint（float→uint 转负数是未定义行为，会读到垃圾 texel）。
-// int 的位与在 WGSL 里是二进制补码 ⇒ -1 & 511 = 511，与 JS 的 & 逐位同构。
-const tx = int(floor(probe.x).sub(U.uShelterOrigin.x)).bitAnd(int(SHELTER_MAP_SIZE - 1));
-const tz = int(floor(probe.z).sub(U.uShelterOrigin.y)).bitAnd(int(SHELTER_MAP_SIZE - 1));
+// 探针推到面外半格（法线偏移是核心机制，删不得）
+const probe = add(wp, faceNormal.mul(0.5));
+// ⚠️ 绝对索引（不减窗口原点）；坐标可能为负 ⇒ **先 int 再 bitAnd**
+// （int 位与是二进制补码 ⇒ -1 & 511 = 511，与 JS 的 & 逐位同构；
+//   先 uint 会把负 float 转成未定义值，读到垃圾 texel）
+const tx = int(floor(probe.x)).bitAnd(int(SHELTER_MAP_SIZE - 1));
+const tz = int(floor(probe.z)).bitAnd(int(SHELTER_MAP_SIZE - 1));
 const sh = textureLoad(SHELTER_TEXTURE, ivec3(tx, tz, int(0)));
 const known = step(float(0.5 / 255), sh.r);
 const stopY = add(sh.r.mul(255 / 2), float(SHELTER_Y_BASE));
-const sheltered = mul(known, step(probe.y, stopY.add(float(SHELTER_EPS))));
-const shelterGate = mix(float(1), oneMinus(sheltered), U.uWetShelter);
+// ★ 格顶判据：截停面严格高于探针所在格的格顶 ⇒ 头上真的有盖
+// （而不是「探针撞到自己这一格的表面」—— 后者把半砖/横柱/床的露头顶面判干）
+// ⚠️ step(edge, x) = x >= edge ? 1 : 0 ⇒ **edge 传 cellTop、x 传 stopY，且不取反**。
+// 写反（oneMinus(step(...))）会得到**完全 inverted 的门**：露天全干、棚下全湿
+// （本轮 CPU 同构校验实测 7/8 例判反，已修）。
+const cellTop = add(floor(probe.y), float(1 + SHELTER_EPS));
+const sheltered = mul(known, step(cellTop, stopY));
+// 窗外保护：绝对索引会 wrap 到别的格列 ⇒ 远处强制不遮挡（与难距一致）
+const horiz = length(vec2(probe.x.sub(cameraPosition.x), probe.z.sub(cameraPosition.z)));
+const inWindow = oneMinus(step(float(SHELTER_MAP_SIZE / 2), horiz));
+const shelterGate = mix(float(1), oneMinus(mul(sheltered, inWindow)), U.uWetShelter);
 ```
 
-⚠️ `uShelterOrigin` 用 **`uniform(new THREE.Vector2())`**（float）；`.x/.y` 减完再 `int()`。
-`textureLoad` 的 `ivec3` 接受 int 节点（vendor `generateUV` 对 `sampler===false` 走 `'ivec3'`）。
+⚠️ `step(cellTop, stopY)` = `stopY >= cellTop ? 1 : 0` ⇒ `sheltered=1` 即「stop 高于格顶 = 被挡」。
+**不要再套 `oneMinus`** —— CPU 同构函数与它必须同方向（已用 8 个关键场景逐例校验）。
+⚠️ `textureLoad` 自带 `setSampler(false)`（vendor 已核），直接喂 `DataTexture` 即可，
+不需 `storageTexture`、不需 `unwrap`。`ivec3` 接受 int 节点。
 
 把 `wet` 乘上 `shelterGate`（**五项一起归零**：压暗/水膜/水汪镜面/真倒影/太阳高光都从 `wet` 派生）。
 ⚠️ `puddleW` 也要乘 —— 它独立于 `wet` 参与 `skyMul` 与真倒影权重。
@@ -321,7 +383,7 @@ git commit -m "feat(wet): 湿表面按遮挡高度图逐片元门控（棚下干
 - Modify: `tests/storm-lighting.spec.mjs`（重写「室内不生效」那条为逐点判据）
 
 **Interfaces:**
-- Consumes: `RainShelterMap`（Task 2）、`uploadShelterTexture`（Task 3）、`WET_SURFACE_UNIFORMS.uWetShelter` / `uShelterOrigin`（Task 4）。
+- Consumes: `RainShelterMap`（Task 2）、`uploadShelterTexture`（Task 3）、`WET_SURFACE_UNIFORMS.uWetShelter`（Task 4）。
 - Produces: `StormRain.debugState()` 新增 `shelterColumns`（本帧扫描列数）；`underRoof` 语义改为「玩家所在处是否被遮挡」，**只喂音频**。
 
 - [ ] **Step 1: 重写 Tier 4 用例（先 RED）**
@@ -350,13 +412,14 @@ Expected: FAIL —— C1 屋外雨丝为 0（总闸还在）
 
 `game.js`：
 - `setStormLighting(true)` 分支里惰建 `this.rainShelterMap = new RainShelterMap({ world, registry })`，传给 `StormRain`；
+  建完立即 `map.setCenter(pp.x, pp.z)` → **`map.warmup(pp.x, pp.z)`**（3×3 = 9 column，0.11 ms）
+  → `uploadShelterTexture(map.data)` ⇒ 开档当帧近处就正确（Tier 4 夹具在 ±7 格内，已覆盖）；
 - `this.editor.subscribe(...)` 追加一条：`for (const c of event.changes) map.invalidateColumn(floor(c.x/16), floor(c.z/16))`（去重）；
-- `_updateStorm()`：`map.setCenter(pp.x, pp.z)` → `const n = map.tick(8)` → `n > 0 && uploadShelterTexture(map.data)` → 写 `uShelterOrigin`；
-  ⚠️ **`uShelterOrigin` 必须无条件每帧写**（不只 `n > 0` 时）：窗口平移那一帧可能恰好
-  `n === 0`（队列空），而原点已变 ⇒ 不写会让片元用旧原点索引新数据 ⇒ **整片干湿错位**
-  （同 `game.js` 已记的「uniform 必须先写再判门」教训）。
-  ⚠️ **首次开启要预热**：`setStormLighting(true)` 后立即 `map.setCenter(pp)` + 一次满预算 `tick`，
-  否则第一帧全窗口未知 ⇒ 棚下也是湿的（安全失败方向，但会被 Tier 4 的 C3 当场抓红）。
+- `_updateStorm()`：`map.setCenter(pp.x, pp.z)` → `const n = map.tick(8)` → `n > 0 && uploadShelterTexture(map.data)`；
+  ⚠️ **上传必须早于本帧所有 render pass**（反射/阴影/主）—— 遮罩纹理是模块级单例，
+  反射替身材质也采样它；pass 中途更新会让主画面与 RT 干湿不一致。
+  现有帧循环顺序 `_updateStorm()` → `_renderWaterReflection()` → `renderer.render()` 已满足，不要改顺序。
+  ⚠️ **不需要写任何原点 uniform**（绝对索引）—— 旧稿的 `uShelterOrigin` 已取消。
 - **删掉** `wet.uWet.value = indoor ? 0 : WET_STRENGTH_MAX`，改成恒 `WET_STRENGTH_MAX`（遮挡交给片元门）；
 - `setStormLighting(false)`：不 tick、不上传（零成本）。
 
@@ -365,10 +428,13 @@ Expected: FAIL —— C1 屋外雨丝为 0（总闸还在）
 Run（后台）: `npx playwright test tests/storm-lighting.spec.mjs`
 Expected: PASS（含重写那条的 C1~C8 + 编辑往返）
 
-- [ ] **Step 5: 负向验证三条**
+- [ ] **Step 5: 负向验证五条**
 
 按 spec §5 逐条注入（`edit` 注入 → 读回确认 → 跑 → `cp` 还原）：
-① 删探针法线偏移 ⇒ C5 非零；② 扫描起点改回滴自身 y ⇒ C2 非零；③ 判据改回 `cullTable` ⇒ Task 1 台阶用例红。
+① 删探针法线偏移 ⇒ C5 非零；② 扫描起点改回滴自身 y ⇒ C2 非零；
+③ 判据改回 `cullTable!==1` ⇒ Task 1 台阶用例红；
+④ 格顶判据改回 `probe.y <= stopY + EPS` ⇒ Task 3 的 slab/横柱露头顶面用例红；
+⑤ 绝对索引改回 `(floor(x)-origin) & 511` ⇒ Task 2 的索引不变性与平移条带用例红。
 
 - [ ] **Step 6: 消费方回归**
 
@@ -402,7 +468,8 @@ git commit -m "feat(rain): 删两个室内总闸，雨丝/水花/湿表面统一
 
 - [ ] **Step 1: 写文档**
 
-roadmap 加版本行（改了什么 + 实测证据：扫描 0.0174ms/列、4000 点等价、21 个方块判据修正、Tier 4 各判据读数）。
+roadmap 加版本行（改了什么 + 实测证据：扫描 0.0122 ms/column、8 column/帧 0.098ms、
+直读比 getBlockId 快 23.6×、4000 点等价、21 个方块判据修正、格顶判据 1032 例穷举、Tier 4 各判据读数）。
 pitfalls 追加四条：
 1. 「玩家状态 ⇒ 全局开关」是遮挡类特效的通用错误形态，正解是空间数据 + 逐点门；
 2. 逐滴扫描起点取「滴自己的 y」永远看不到头顶的屋顶（被总闸掩盖的静默缺陷）；
@@ -433,7 +500,7 @@ git commit -m "docs(rain): 逐点遮挡的实测读数与四条坑"
 ## 收尾
 
 - 删除一次性探针（**用 literal path，不用通配符**）：
-  `tests/tmp-shelter-texload.spec.mjs`、`tests/tmp-shelter-rawbytes.spec.mjs`、
-  `tests/tmp-shelter-order.spec.mjs`（后者未跑过，已被前两个取代）、`/tmp/mc-shelter-bench.mjs`。
+  `tests/tmp-shelter-texload.spec.mjs`、`tests/tmp-shelter-rawbytes.spec.mjs`。
+  ⚠️ 删前先把探针 B 的纹理构造与节点写法抄进 spec §4.6（已抄）—— 它是唯一参照样本。
 - 全套 `npm test` **不跑** —— 本改动不属「全局基础设施」，最小充分集已在 Task 5 Step 6/8 覆盖。
 - 提交等用户明确指令（计划里的 commit 步骤是计划的一部分，执行时仍按用户指令）。
