@@ -526,6 +526,16 @@ export function setupOcean(scene) {
           o.visible = false;
         }
       }
+      /**
+       * 跑反射 pass。`hidden` 由调用方给（第一人称物件 / 各特效池）——
+       * 它们在镜像相机下会成巨大手臂/枪，且成本主杠杆是 draw call 数。
+       *
+       * ⚠️ **v3.31：不再需要「藏掉其他采样者」或「换占位图」**。
+       * 旧湿地面分支会在同一 pass 里采样本 RT（读）而 pass 正在写它
+       * ⇒ WebGPU 报 `writable usage and another usage in the same synchronization scope`
+       * ⇒ 整个 CommandBuffer 作废 ⇒ 全屏黑。新湿表面**不采样任何 RT**
+       * ⇒ 那类读写冲突在结构上不存在了。
+       */
       try {
         reflectUpdate({ scene, camera, renderer: this._renderer, material });
       } finally {
@@ -536,6 +546,31 @@ export function setupOcean(scene) {
     },
     /** 反射句柄（供测试与面板读 RT 尺寸/倍率） */
     reflect: reflectBase,
+    /**
+     * **反射纹理节点**句柄（可采样、可改 uvNode/levelNode 的 TextureNode）。
+     *
+     * ⚠️ 与 `reflect`（base 节点，管 pass 调度）是两回事。
+     * ⚠️ **v3.31 起本仓内部无消费方**：湿表面改成程序化天空反光，不采样任何 RT。
+     * 句柄保留（它是 v3.30 之前就有的公开接口，删它属超范围）。
+     * ⚠️ 若将来有消费方：`ReflectorNode.clone()` 只共享 base，**value 独立**，
+     * 而 reflector 内部只把真 RT 写进 `base.textureNode.value`
+     * ⇒ clone 会停在从未渲染过的默认占位 RT（实测 A/B diff = 0）⇒ 必须每帧同步。
+     */
+    reflectTexture: reflectNode.clone(),
+    /**
+     * v3.33：**把真 RT 同步给上面那个 clone**（积水真倒影消费它）。
+     *
+     * ⚠️⚠️ 不同步的后果：clone 永远停在从未渲染过的默认占位 RT
+     * ⇒ 水汪里**没有倒影**，而所有数值判据可能仍绿（本轮实玩截图才发现）。
+     * 必须在**反射 pass 跑完之后**调（pass 内部才把真 RT 写进 base.textureNode.value）。
+     */
+    syncReflectTexture() {
+      const real = reflectBase.textureNode;
+      const clone = this.reflectTexture;
+      if (real && clone && real.value && clone.value !== real.value) {
+        clone.value = real.value;
+      }
+    },
     /** 倒影强度 uniform（0 = 逐位回到无倒影的原式） */
     uReflectStrength,
     /** 随波扰动幅度 uniform */

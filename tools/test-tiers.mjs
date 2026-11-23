@@ -66,6 +66,7 @@ const UI = [
   'view-bob',
   'player-flight',
   'audio-fx',
+  'storm-audio-off',    // v3.30e 关档后两条雨声都停（天气还原）—— 状态机判据，非像素
   'bgm',
   'boss-hint',
 ];
@@ -102,6 +103,9 @@ const ENTITY = [
   'sword',
   'storm-lance',
   'cinder-fall',
+  'carbine-tracer-origin',  // v3.30c 曳光起点必须从枪口发出（用户实玩报告偏右）
+  'carbine-flash-wet',  // v3.30b 火光柔光星芒 + 湿地面反射（用户实玩报告的两个缺陷）
+  'carbine',            // v3.30 KV-9：视图模型/换弹/五池/掉血口径/hitstop（含 Tier 4 枪体像素）
   'tracer-water-occlusion',
 ];
 
@@ -143,6 +147,11 @@ const PIXEL = [
   'water-reflect',
   'lake-ripple',
   'm3-rain',
+  'storm-rain-visual',  // v3.31 雨丝上屏 + 主画面不撕碎 + 关闭零回归（旧三条守的层已删）
+  'storm-lighting',    // v3.30 雨天光影档：开关/持续雨/室内门/遮挡/高度/湿表面/雨声
+  'storm-underwater',  // v3.30g 四项水下排除（v3.31 删颗粒两条：后处理链已整体移除）
+  'wet-surface',       // v3.31 按材质分类的湿表面：零光晕/材质分层/不过曝/积水连续/水下门 + 两条负向
+  'puddle-reflect',    // v3.33 方案 A 积水真倒影（复用 ocean RT）：内容级空间对应/天空墙面零污染/两级零回归 + 一条负向
 ];
 
 /**
@@ -176,11 +185,13 @@ export const SPEC_TIERS = {
  */
 export const UNIT_NODE_SAFE = [
   'test-ambient-fx.js',
+  'test-carbine.js', 'test-carbine-fx.js', 'test-rain-shelter.js', 'test-storm-rain.js',
+  'test-rain-shelter-map.js',
+  'test-water-surface.js', 'test-wet-surface.js', 'test-puddle-reflect.js',
   'test-arena-gen.js', 'test-arena.js', 'test-azalea-trees-gen.js', 'test-azalea-trees.js',
   'test-block-color.js', 'test-block-hit-fx.js', 'test-boss-agent.js', 'test-boss-hit-sound.js',
   'test-boss-map.js', 'test-budget.js', 'test-burning-arena-gen.js', 'test-bush-grass-gen.js',
-  'test-bush-grass.js', 'test-caves.js', 'test-chunk-column.js', 'test-cinder-fall.js', 'test-cinder-render.js', 'test-damage-flash.js', 'test-daynight.js',
-  'test-dragon-bake.js', 'test-dragon-boss-agent.js', 'test-dragon-facing.js', 'test-dragon-render.js',
+  'test-bush-grass.js', 'test-caves.js', 'test-chunk-column.js', 'test-cinder-fall.js', 'test-cinder-render.js', 'test-damage-flash.js', 'test-daynight.js',  'test-dragon-bake.js', 'test-dragon-boss-agent.js', 'test-dragon-facing.js', 'test-dragon-render.js',
   'test-dragon-system.js', 'test-entity-manager.js', 'test-explosion-sprite.js', 'test-explosion.js',
   'test-fireball-render.js', 'test-fireball.js', 'test-fire-ring.js', 'test-flame-sigil.js', 'test-fog-sky-direction.js',
   'test-giant-pyramid-gen.js', 'test-giant-pyramid.js', 'test-giant-trees-column.js',

@@ -526,5 +526,27 @@ export class DayNight {
       );
     }
     if (this.onSunDirection) this.onSunDirection(sunDir);
+    /**
+     * 湿表面反光的天空色（v3.31）—— **复用既有风格数据，不新增权威**（红线 1）。
+     *
+     * 反光反的是「按反射方向在地平线色↔天顶色之间插值」的程序化天空：
+     *   · 地平线色 = `p.fogColor`（远处方块该淡入的那个天色，与场景雾同一份）；
+     *   · 天顶色   = `p.sky`（天空盒未启用时的纯色天空，与 background 同一份）。
+     * ⇒ 反光颜色自动跟着日夜循环/风格切换走，无需 CPU 每帧额外算什么。
+     *
+     * ⚠️ 句柄是 `uniform(new THREE.Color(...))` ⇒ 用 `.value.set(hex)`
+     * （与上面 `this.fog.fogColor.value.set(p.fogColor)` 逐字同手法）。
+     * ⚠️ 句柄缺失（fixture / 旧调用方 / 尚未接线）时跳过 —— 与 uWaterTint 同一容错口径。
+     * ⚠️ 正午两色相同（都是 0x87ceeb）⇒ 天空环境近似单色；傍晚/夜里有层次。
+     * 这是复用既有数据的必然结果，不为了反光去改风格表。
+     */
+    const uWetHorizon = this.voxelUniforms.uWetHorizon;
+    if (uWetHorizon && uWetHorizon.value && typeof uWetHorizon.value.set === 'function') {
+      uWetHorizon.value.set(p.fogColor);
+    }
+    const uWetZenith = this.voxelUniforms.uWetZenith;
+    if (uWetZenith && uWetZenith.value && typeof uWetZenith.value.set === 'function') {
+      uWetZenith.value.set(p.sky);
+    }
   }
 }

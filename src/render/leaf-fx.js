@@ -26,6 +26,7 @@ import {
   LEAF_FX, leafSeedAt, pickAutumnLeaf, leafLandSeconds,
 } from './ambient-fx-config.js';
 import { LEAF_ATTR, createLeafGeometry, createLeafMaterial } from './leaf-fx-material.js';
+import { waterSurfaceYAt, isWaterLike } from './water-surface.js';
 
 /** 取顶面色的法线（复用 resolver 的签名 `(name, normal) => linearRGB`） */
 const TOP_NORMAL = Object.freeze([0, 1, 0]);
@@ -43,8 +44,9 @@ export class LeafFxRenderer {
   /**
    * @param {object} deps
    * @param {THREE.Scene} deps.scene
-   * @param {{isSolid:(x:number,y:number,z:number)=>boolean}} deps.world
-   * @param {number} deps.seed 世界 seed（biome 门控唯一权威 `getBiome`）
+   * @param {{isSolid:(x:number,y:number,z:number)=>boolean,
+   *          getBlockId?:(x:number,y:number,z:number)=>number}} deps.world
+   * @param {object} [deps.registry] 方块注册表（v3.30g 水下判据用；缺省 ⇒ 不做水门）   * @param {number} deps.seed 世界 seed（biome 门控唯一权威 `getBiome`）
    * @param {((name:string, normal:number[]) => number[])|null} [deps.colorResolver]
    * @param {{x:number,y:number,z:number}} deps.playerPos 初始中心
    * @param {number} [deps.capacity]
@@ -54,10 +56,11 @@ export class LeafFxRenderer {
    */
   constructor({
     scene, world, seed, colorResolver = null, playerPos,
-    capacity = LEAF_FX.capacity, rand = Math.random, skyDim, shadowStrength,
+    capacity = LEAF_FX.capacity, rand = Math.random, skyDim, shadowStrength, registry = null,
   }) {
     this.scene = scene;
     this.world = world || null;
+    this.registry = registry || null;
     this.seed = seed;
     this.capacity = Math.max(1, Math.round(capacity));
     this._rand = rand;
@@ -84,6 +87,8 @@ export class LeafFxRenderer {
     this._time = 0;
     this._enabled = true;
     this._biome = null;
+    /** v3.30g：玩家自己是否在水下（出生带整段在水下 ⇒ 不播不画） */
+    this._underwater = false;
     this._refreshAcc = 0;
     this._cursor = 0;
     this._isRefreshing = false;
@@ -142,6 +147,7 @@ export class LeafFxRenderer {
     return {
       enabled: this._enabled,
       biome: this._biome,
+      underwater: this._underwater,
       visible: this.mesh.visible,
       count: this.activeCount,
       seeded: this._seededCount,
@@ -157,6 +163,11 @@ export class LeafFxRenderer {
    *
    * ⚠️ `cloud` 的 solid 是 true，但出生带上限「地面 +13」的扫描窗口到不了 Y=35/55 的云
    * ⇒ 本轮不受影响。抬高出生带前必须重核（见 `LEAF_FX.birthMax` 注释）。
+   *
+   * ⚠️⚠️ **v3.30g：水面也当地面**（用户「落叶不要在水下出现」）：
+   * 水非实心 ⇒ `isSolid` 穿过水一直找到湖底 ⇒ 叶子全程在水下飘。
+   * 现在取 `max(实心地面, 水面)` ⇒ 叶子落在水面上（同雨的 `rainStopY` 口径）。
+   * 落点仍在水下（例如玩家自己潜在水里，扫到的水面在头顶）⇒ 返回 null，跳过该片。
    */
   _resolveGroundY(x, z, fromY) {
     if (!this.world || typeof this.world.isSolid !== 'function') return null;
@@ -168,10 +179,66 @@ export class LeafFxRenderer {
     // 对 `y < WORLD_MIN_Y` 返回 **bedrock**（防穿底）⇒ 未加载 column 全 air 时扫描会
     // 一直命中世界底 ⇒ 地面被解成 −32 ⇒ 叶子全出生在地下（零像素而所有计数全对）。
     const endY = Math.max(WORLD_MIN_Y, startY - LEAF_FX.searchDepth);
+    let solid = null;
     for (let y = startY; y >= endY; y--) {
-      if (this.world.isSolid(ix, y, iz)) return y + 1;
+      if (this.world.isSolid(ix, y, iz)) { solid = y + 1; break; }
     }
-    return null;
+    // 水面（registry 缺失的 fixture 路径 ⇒ 不做水门，行为逐位回到改动前）
+    //
+    // ⚠️⚠️ **水面扫描要从 fromY 上方几格起，不能拿全局水面常量做下界**
+    // （本轮单测 + 浏览器实测两次拓到）：
+    //   · 从 fromY 直接往下扫：玩家潜在水里时 fromY 在水面之下 ⇒ 看不到头顶的水面；
+    //   · 用 `max(fromY, WATER_SURFACE_Y+1)`：那个常量（−1.5）只对**天然地形**成立，
+    //     玩家造的水/山顶水池可在任何高度（实测 y=56）⇒ 下界把扫描窗口拉到水下。
+    // ⇒ 从 `fromY + birthMax` 起扫（盖住整个出生带），与实心扫描的 endY 同深度口径。
+    const water = this.registry
+      ? waterSurfaceYAt(this.world, this.registry, x, z,
+        Math.ceil(fromY) + LEAF_FX.birthMax, LEAF_FX.searchDepth + LEAF_FX.birthMax)
+      : null;
+    const ground = water === null ? solid : (solid === null ? water : Math.max(solid, water));
+    if (ground === null) return null;
+    // 落点本身就在水面之下 ⇒ 该片无处可落，跳过（不回落）
+    if (water !== null && ground < water) return null;
+    return ground;
+  }
+
+  /**
+   * 玩家当前位置是否**在水面以下**（v3.30g，用户「落叶不要在水下出现」）。
+   *
+   * ⚠️⚠️ **它不是「整池停」的开关，而是「出生带无处可放」的判据**：
+   * 落叶的出生带是「**玩家所在那层地面** + [3,13]」（见 `_resetLeaf` 的树冠陷阱注释）。
+   * 玩家潜在水里时那层「地面」就是湖底 ⇒ 整个出生带在水下 ⇒ **一片也不该生**。
+   * 若改用水面当基准，叶子会出生在潜水玩家头顶 8 格之上（语义错）。
+   *
+   * ⚠️ 水面之上的叶子**照常画**（用户裁定：只剔除水下个体，不整池停）——
+   * 本判据只看玩家位置，不去逐叶判可见性；而出生带钳在水面之上保证了
+   * 「y 单调不增 + 落点 ≥ 水面」⇒ **全程不可能入水**（无需逐帧扫描）。
+   *
+   * @param {{x:number,y:number,z:number}} playerPos
+   * @returns {boolean}
+   */
+  _playerUnderwater(playerPos) {
+    if (!this.registry || !this.world || typeof this.world.getBlockId !== 'function') return false;
+    /**
+     * ⚠️⚠️ **两条缺一不可**（本轮单测 + 浏览器实测各拓到一条）：
+     *
+     * ① **扫描起点要高于水面**：从 `py+1` 起不够 —— 玩家在水下 4 格时
+     *   水面在头顶上方，往下扫永远看不到它（实测 py=−6 / 水面 −1.5 ⇒ null）。
+     *   也不能拿全局 `WATER_SURFACE_Y`（−1.5）做下界：它只对**天然地形**成立，
+     *   玩家造的水/山顶水池可在任何高度（实测 y=56）。⇒ 从 `py + birthMax` 起。
+     *
+     * ② **玩家身体那一格必须真的是水**：否则「湖底下的干洞穴」会被误判为水下
+     *   （头顶确实有水面，但中间隔着岩层）—— 与 `physics.inWater` 同口径。
+     *   取脚底与脚底+1 两格（身体高 1.8，刚贴水面时脚底可能还在地面格里）。
+     */
+    const ix = Math.floor(playerPos.x); const iz = Math.floor(playerPos.z);
+    const fy = Math.floor(playerPos.y);
+    const bodyWet = isWaterLike(this.world.getBlockId(ix, fy, iz), this.registry)
+      || isWaterLike(this.world.getBlockId(ix, fy + 1, iz), this.registry);
+    if (!bodyWet) return false;
+    const surf = waterSurfaceYAt(this.world, this.registry, playerPos.x, playerPos.z,
+      Math.ceil(playerPos.y) + LEAF_FX.birthMax, LEAF_FX.searchDepth + LEAF_FX.birthMax);
+    return surf !== null && playerPos.y < surf;
   }
 
   /**
@@ -196,6 +263,18 @@ export class LeafFxRenderer {
     const want = this._biome === 'FOREST' && this._enabled;
     if (!want) {
       // 零成本：不查体素、不迁移、不推进粒子
+      this.mesh.visible = false;
+      return;
+    }
+
+    /**
+     * ⚠️⚠️ **水下门（v3.30g）**：玩家潜在水里 ⇒ 出生带（那层地面 +[3,13]）整段在水下
+     * ⇒ 一片也不生、已播的也不画。回到水面之上立即恢复（不清缓冲，同关闭态口径）。
+     * ⚠️ 这不是「整池停掉雨」那种语义：它只在**玩家自己在水下**时成立；
+     * 站在岸上看湖时叶子照常飘（落点钳在水面，全程不入水）。
+     */
+    this._underwater = this._playerUnderwater(playerPos);
+    if (this._underwater) {
       this.mesh.visible = false;
       return;
     }

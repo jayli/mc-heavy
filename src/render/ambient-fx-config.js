@@ -385,6 +385,9 @@ const _flyOut = { x: 0, y: 0, z: 0 };
  * ⚠️⚠️ **`tEff` 的 min 是载荷性的**：y 被钳在 minY 之后若继续摆荡 / 翻飞，
  * 读作「叶子在地上打转」（spec §4.1）。
  *
+ * ⚠️ **y 单调不增**（匀速下落 + 钳底，无竖直摆荡）⇒ 「会不会入水」只需判
+ * **落点 minY**，不需要逐帧扫全程（v3.30g 水下排除的单调性依据）。
+ *
  * @param {ReturnType<typeof leafSeedAt>} seed
  * @param {number} tSec 自出生起的秒数
  * @param {object} [out] 复用对象；缺省用模块级常量（调用方若要留存须自己拷贝）

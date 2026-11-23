@@ -283,6 +283,10 @@ async function boot() {
   //     必须能**不改玩家存档**就隔离。
   // 生效值取两者的 **AND**（`Game#setAmbientFxEnabled`）。
   const ambient = params.get('ambient') !== '0';
+  // ?storm=0 关掉雨天光影档（v3.30）。同一反向口径：默认关（设置项），
+  // 但构造选项默认 true —— 它是**代码级隔离**（不持久化），供 spec 不改存档
+  // 就能强制关掉后处理链。生效值 = 设置项 AND 本选项（Game#setStormLighting）。
+  const storm = params.get('storm') !== '0';
   setLoadingStage('正在生成世界…');
   loadingPhase = 'p2';
   const game = new Game({
@@ -298,6 +302,7 @@ async function boot() {
     skybox,
     reflect,
     ambient,
+    storm,
     settings,
     // 启动进展计时器的唯一实例（见文件头注释：全仓只允许一个）
     watchdog,

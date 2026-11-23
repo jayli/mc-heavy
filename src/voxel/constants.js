@@ -8,6 +8,16 @@ export const COLUMN_SIZE = 16;
 export const SECTION_SIZE = 16;
 export const SECTIONS_PER_COLUMN = WORLD_HEIGHT / SECTION_SIZE; // 8
 export const SEA_Y = -2; // 与 mc-lite 坐标兼容（海平面）
+/**
+ * 暴露水面的顶面下沉量（格）—— mesher 把水格顶边顶点下压这么多，
+ * 让体素水面与海面平面（`SEA_Y + 0.5`）严格共面，消除俯视可见的蓝色顶面模。
+ *
+ * ⚠️ **方块逻辑/物理仍占整格**，只有渲染几何下沉。
+ * ⚠️ v3.30g 从 `mesh/mesher.js` 的模块私有常量**提级到这里**：
+ * `render/water-surface.js` 要按同一口径算水面高度（雨丝截停 / 水花落点 /
+ * 落叶与湿地面反光的水下门），两处各写一份 0.5 会漂移出「雨停在半格空气里」。
+ */
+export const WATER_SURFACE_SINK = 0.5;
 export const BLOCKS_PER_COLUMN = COLUMN_SIZE * COLUMN_SIZE * WORLD_HEIGHT; // 32768
 export const BLOCKS_PER_SECTION = COLUMN_SIZE * COLUMN_SIZE * SECTION_SIZE; // 4096
 

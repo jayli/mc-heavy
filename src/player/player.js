@@ -150,6 +150,13 @@ export class Player {
     this.audioManager = weaponRuntime?.audioManager ?? null;
     /** 命中方块的特效渲染器（v1.64，Game 装配后注入；fixture 里可为 null） */
     this.blockHitFx = weaponRuntime?.blockHitFx ?? null;
+    /**
+     * v3.30 KV-9 卡宾枪的视图模型与特效池（Game 注入；缺省 null ⇒ 只玩法不出视觉）。
+     * ⚠️ 与 `viewWeapon` **互斥**：同一时刻只能有一个第一人称武器节点挂在相机上，
+     * 否则切到 KV-9 时会同时看到旧枪（两个节点重叠）。
+     */
+    this.carbineView = weaponRuntime?.carbineView ?? null;
+    this.carbineFx = weaponRuntime?.carbineFx ?? null;
     /** Storm Lance 渲染器（v3.20，Game 注入；缺省 null ⇒ 只扣血不出视觉） */
     this.stormLanceRenderer = weaponRuntime?.stormLanceRenderer ?? null;
     /**
@@ -161,6 +168,28 @@ export class Player {
     this.onCinderLaunch = weaponRuntime?.onCinderLaunch ?? null;
     /** @type {WeaponController | null} */
     this.weaponController = null;
+    /**
+     * v3.30 KV-9：相机后坐弹簧（上游 player.js 的 recoilP/Y 与 recoilVP/VY）。
+     *
+     * 上游：`recoilVP += (-recoilP*95 - recoilVP*15)*dt`，`recoilP += recoilVP*dt`，
+     * 且 **一部分爬升留在矄准上**：`pitch += recoilVP*dt*0.22`（连射时枪口往上走）。
+     * ⚠️ 那一项是**真实改变矄准**（不是纯视觉）—— 上游同口径，保留。
+     * ⚠️ 只对 KV-9 生效（其余枪的 recoil 走 viewWeapon 的节点位移，不动相机）。
+     */
+    this._recoilP = 0;
+    this._recoilY = 0;
+    this._recoilVP = 0;
+    this._recoilVY = 0;
+    /** v3.30：意图水平速度（散布用；在物理步里写，见 `_lastInputSpeed` 赋值处） */
+    this._lastInputSpeed = 0;
+    /**
+     * v3.30：hitstop / 震动回调（Game 注入）。缺省 null ⇒ 只扣血不出反馈
+     * （fixture / 旧单测不注入则走缺省，与 `onCinderLaunch` 同一手法）。
+     * @type {((seconds:number)=>void)|null}
+     */
+    this.onHitstop = weaponRuntime?.onHitstop ?? null;
+    /** @type {((amount:number)=>void)|null} */
+    this.onShake = weaponRuntime?.onShake ?? null;
     /**
      * 第一人称手臂（徒手可见 + 挖/放挥动）。由 Game 注入，同 `viewWeapon` 手法。
      * 缺省 null → 无手臂（fixture 单独构造时）。
@@ -224,6 +253,9 @@ export class Player {
       // 保持「去重只有一个入口」（红线 1）：左键挖块与枪击两条路径最终都落到
       // `game.explodeTnt()`，controller 不持有任何去重集合。
       onIgniteTnt: (x, y, z) => this.igniteTnt(x, y, z),
+      // v3.30 KV-9：抖动后的弹道需要自己发一条 DDA（准心 target 是未抖动方向）。
+      // 用的仍是唯一那条 DDA（player/raycast.js）—— 不写第二份射线（红线 6）。
+      world: this.world,
     });
     // 事件监听器保存 bound 引用，dispose 时移除（避免重启/Playwright reload 后监听器叠加）
     this._boundHandlers = {};
@@ -343,6 +375,8 @@ export class Player {
         // 意图水平速度：必须在 `physics.step()` 之前读 —— step 末尾会把 vel.x/vel.z 清零
         // （无惯性手感）。该值是 `physics.move()` 刚写进去的 SPEED×输入，即「本步想走多快」。
         const inputSpeed = Math.hypot(this.physics.vel.x, this.physics.vel.z);
+        // v3.30 KV-9：记下意图速度供散布用（同一个值，不重算 —— 红线 1）。
+        this._lastInputSpeed = inputSpeed;
         this.physics.step(step);
         // 视角晃动**按物理步推进**（不是每渲染帧）——
         // 物理是 60Hz 定步长 + accumulator，120Hz 渲染下隔帧才走一步。若按渲染帧推进，
@@ -361,6 +395,7 @@ export class Player {
       } else {
         // 乘坐期物理不跑（位置由矿车锁定）→ 无自主位移，晃动自然衰减到 0
         this.viewBob.update(step, { dx: 0, dz: 0, inputSpeed: 0 });
+        this._lastInputSpeed = 0;
       }
       this._acc -= step; n++;
     }
@@ -383,6 +418,26 @@ export class Player {
     // 全量 set 天然幂等）。
     const p = this.physics.pos;
     const bob = this.viewBob.offset;
+    /**
+     * v3.30 KV-9：相机后坐弹簧推进（上游 player.js:85-88 逐字）。
+     *
+     * ⚠️ **必须在写相机姿态之前推进**：本帧的 recoilP/Y 要进本帧的相机。
+     * ⚠️ **矄准爬升（pitch += recoilVP*dt*0.22）是真实改变矄准**（上游同口径）：
+     * 连射时枪口往上走，玩家得往下拉 —— 那是后坐力手感的一部分。
+     * 它写进 `this.pitch`（与鼠标输入同一个字段）⇒ 与转向/射线完全同源。
+     * ⚠️ 非 KV-9 时四个量恒 0 ⇒ 本段是四次乘加，成本在噪声内（无需门控）。
+     */
+    this._recoilVP += (-this._recoilP * 95 - this._recoilVP * 15) * dt;
+    this._recoilVY += (-this._recoilY * 95 - this._recoilVY * 15) * dt;
+    this._recoilP += this._recoilVP * dt;
+    this._recoilY += this._recoilVY * dt;
+    if (this._recoilVP !== 0 || this._recoilVY !== 0) {
+      this.pitch += this._recoilVP * dt * 0.22;
+      this.yaw += this._recoilVY * dt * 0.22;
+      // pitch 钳制（与鼠标输入同一上限，防连射把视角翻过头）。
+      // ⚠️ 上限表达式与 onMouseMove 处逐字一致（不另写常量 —— 两处必须同值）。
+      this.pitch = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, this.pitch));
+    }
     const camY = p.y + EYE_HEIGHT + this._stepLift.offset + bob.y;
     this.camera.position.set(p.x + bob.x, camY, p.z);
     this.camera.rotation.set(0, 0, 0);
@@ -396,6 +451,9 @@ export class Player {
     // 幅度由 `viewBob` 自己按 amount 缩放 → 静止时严格为 0，不会残留歪头。
     this.camera.rotateX(this.viewBob.pitch);
     this.camera.rotateZ(this.viewBob.roll);
+    // v3.30 KV-9：后坐的相机分量（局部轴，同上口径）。非 KV-9 时恒 0。
+    if (this._recoilP !== 0) this.camera.rotateX(this._recoilP);
+    if (this._recoilY !== 0) this.camera.rotateY(this._recoilY);
     // 每帧 1 次主射线（§4.5.2）；原点用相机视觉位置（含晃动偏移），交互与画面一致
     const dir = new THREE.Vector3(0, 0, -1).applyEuler(this.camera.rotation);
     const cp = this.camera.position;
@@ -585,6 +643,11 @@ export class Player {
       target: this.target
         ? { hit: true, blockPos: this.target.blockPos, normal: this.target.normal, dist: this.target.dist }
         : null,
+      // v3.30 KV-9：散布需要「是否着地」与「水平速度」（上游 fire() 的 spr 两项）。
+      // ⚠️ 速度用**意图速度**而不是 physics.vel：step() 末尾会把 vel.x/z 清零
+      // （无惯性手感）⇒ 读它恒近 0，移动散布永不生效（静默失效）。
+      grounded: this.physics.onGround,
+      speed: this._lastInputSpeed ?? 0,
     };
   }
 
@@ -622,6 +685,13 @@ export class Player {
       return;
     }
     if (this.viewWeapon) this.viewWeapon.onShot(effect);
+    // v3.30 KV-9：卡宾枪的视觉走**独立路径**（上游 fire() 的视觉段）。
+    // ⚠️ 上面那行 `viewWeapon.onShot` 对 KV-9 无害：它此时 node 为 null（已 unmount）。
+    if (effect.carbineTracer || effect.type === 'carbine-reload-start'
+      || effect.type === 'carbine-reload-stage') {
+      this._applyCarbineEffect(effect);
+      return;
+    }
     // v2.65 近战剑：effect 无 `tracer`（剑不发曳光）—— 判存在才 spawn，枪行为逐位不变
     if (this.tracerRenderer && effect.tracer) this.tracerRenderer.spawn(effect);
     if (this.audioManager) this.audioManager.play(effect.sound, effect.volume);
@@ -644,18 +714,111 @@ export class Player {
   }
 
   /**
+   * v3.30 KV-9：卡宾枪的效果事件消费（上游 fire() 的视觉/听觉段）。
+   *
+   * 三类事件：
+   *   · 开火（带 carbineTracer）→ 视图模型 kick + 火光、五个特效池、枪声、
+   *     命中音、hitstop / 震动；
+   *   · carbine-reload-start → 无额外动作（视图模型自己读 reloadT 摆姿态）；
+   *   · carbine-reload-stage → 播对应那一段换弹音。
+   *
+   * ⚠️ **不调 blockHitFx.spawnFromEffect**：KV-9 的命中反馈是上游那套
+   * （火花 + 烟尘 + 弹孔），与本仓既有枪的「白闪 + 碎块」是**两套不同的观感**。
+   * 同时播会互相打架（白闪盖住火花）。方块破坏本身仍由 controller 走 editor（玩法不变）。
+   * ⚠️ **hitstop / 震动的回调由 Game 注入**（player/ 不反向依赖 core/，依赖方向 §3）。
+   *
+   * @param {object} effect
+   */
+  _applyCarbineEffect(effect) {
+    const am = this.audioManager;
+    if (effect.type === 'carbine-reload-start') return;   // 视图模型自己读 reloadT
+    if (effect.type === 'carbine-reload-stage') {
+      if (am && effect.sound) am.play(effect.sound, effect.volume ?? 0.5);
+      return;
+    }
+    // ---- 开火 ----
+    const view = this.carbineView;
+    if (view?.mounted) view.onShot();
+    if (am) am.play(effect.sound, effect.volume);
+    // 后坐冲量 → 相机弹簧（上游 player.recoil(p,y)：vel += p*34）
+    if (effect.carbineKick) {
+      this._recoilVP += effect.carbineKick.pitch * 34;
+      this._recoilVY += effect.carbineKick.yaw * 34;
+      this.onShake?.(effect.carbineKick.trauma);
+    }
+    // 五个特效池（需要世界空间的枪口/抛壳口与相机基底）
+    const fx = this.carbineFx;
+    if (fx && view?.mounted) {
+      const aim = this._buildAim();
+      /**
+       * ⚠️⚠️ **取完一个锚点就立刻展开成数组，不要持有 Vector3 引用**
+       * （本轮用户实玩报告「曳光起点偏右」的根因）：
+       * 旧写法 `const mw = view.muzzleWorld(); const pw = view.portWorld();`
+       * 两个方法曾共用同一个 scratch ⇒ 对象字面量在两次调用之后才求值
+       * ⇒ `muzzle` 读到的是 **port** 坐标 ⇒ 曳光从抛壳口射出。
+       * 渲染层已拆成两个独立 scratch（第一道防线）；这里再改成
+       * 「取完立即快照」作第二道防线 —— 即使将来又改回共享 scratch 也不会错。
+       */
+      const mw = view.muzzleWorld();
+      const muzzle = [mw.x, mw.y, mw.z];
+      const pw = view.portWorld();
+      const port = [pw.x, pw.y, pw.z];
+      const r = fx.spawnFromEffect(effect, {
+        muzzle,
+        port,
+        right: aim.right, up: aim.up, forward: aim.forward,
+        playerVel: [this.physics.vel.x, this.physics.vel.y, this.physics.vel.z],
+      }, performance.now());
+      if (am && r.impactSound) am.play(r.impactSound, 0.4);
+    }
+    // 命中实体：提示音 + hitstop + 额外震动（上游区分击杀/未死）
+    if (effect.carbineHit) {
+      if (am) am.play(effect.carbineHit.killed ? 'carbine_kill' : 'carbine_hit', 0.5);
+      this.onHitstop?.(effect.carbineHit.hitstop);
+      this.onShake?.(effect.carbineHit.trauma);
+    }
+    // 方块真被破坏 → 销毁音（与既有枪同口径）
+    if (am && effect.impacts?.some((i) => i.destroyed)) am.play('delete', 0.6);
+  }
+
+  /**
    * 选择武器（公开 API）。先由控制器校验/切换，再异步加载视图模型；
    * 非徒手时播放 gun_load。模型加载失败不阻塞玩法（控制器仍可开火）。
    * @param {string} id @returns {Promise<string>} 当前选中 id
    */
   async selectWeapon(id) {
     if (!this.weaponController.select(id)) return this.weaponController.debugState().selectedId;
-    if (this.viewWeapon) await this.viewWeapon.select(id);
+    /**
+     * v3.30 KV-9：视图模型**互斥**切换。
+     *
+     * ⚠️ **两边都要显式做**：只 mount 不 unmount 会两个枪节点重叠；
+     * 只 unmount 不 mount 则 KV-9 没枪（而弹药/音效/特效全对 —— 静默失效）。
+     * ⚠️ `viewWeapon.select(id)` 对 KV-9 会因 `WEAPONS[id]` 存在而去加载 GLB，
+     * 而 catalog 的 `model: 'carbine'` 在 `WEAPON_ASSET_URLS` 里没有 ⇒ 报错。
+     * 故 KV-9 **不走 viewWeapon.select**，而是让它 select(ARM) 把旧节点摸掉。
+     */
+    const isCarbine = !!WEAPONS[id]?.carbine;
+    if (isCarbine) {
+      if (this.viewWeapon) await this.viewWeapon.select(WEAPON_IDS.ARM);
+      this.carbineView?.mount();
+    } else {
+      this.carbineView?.unmount();
+      if (this.viewWeapon) await this.viewWeapon.select(id);
+    }
+    /**
+     * ⚠️⚠️ **两个分支都要清特效与后坐**（本轮浏览器实测）：
+     * 初版只在「进入 KV-9」分支清 ⇒ **切走时弹壳/曳光永久留在画面上**
+     * （已 unmount 的枪不再抛壳，但旧弹壳还在地上躺着直到 3.5s 寿命——
+     * 而玩家已经拿着加特林了）。切枪即清是上游 `reset()` 的语义。
+     */
+    this.carbineFx?.clear();
+    this._recoilP = this._recoilY = this._recoilVP = this._recoilVY = 0;
     // 手臂与持枪视图模型互斥：arm 时显示手臂，其余隐藏（mc-lite `updateArm` 同口径）
     if (this.viewArm) this.viewArm.setWeapon(id);
     // v2.65：近战剑不播 gun_load（那是枪的上膛音；剑的出场音就是挥砍时的 player_swing）
+    // v3.30：KV-9 也不播 —— 它有自己的三段换弹音，叠一声 gun_load 会多一响。
     const weapon = WEAPONS[id];
-    if (id !== WEAPON_IDS.ARM && !weapon?.melee && this.audioManager) {
+    if (id !== WEAPON_IDS.ARM && !weapon?.melee && !weapon?.carbine && this.audioManager) {
       this.audioManager.play('gun_load', 0.4);
     }
     return this.weaponController.debugState().selectedId;

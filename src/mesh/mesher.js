@@ -1,7 +1,7 @@
 // src/mesh/mesher.js — 逐面网格化（§4.3，DR-15）
 // Worker/主线程同构：本文件不得 import three。
 import { getFaceTile } from '../voxel/faces-data.js';
-import { SECTION_SIZE } from '../voxel/constants.js';
+import { SECTION_SIZE, WATER_SURFACE_SINK } from '../voxel/constants.js';
 import { DEBUG_FLAGS } from '../core/debug-config.js';
 
 // 面方向：0:+X, 1:-X, 2:+Y, 3:-Y, 4:+Z, 5:-Z
@@ -442,10 +442,10 @@ export const TEMPLATES = {
 const DOUBLE_SIDE_CUBES = new Set([]);
 
 // 暴露水面下沉（issue #2 遗留）：water/swamp_water 上方无 opaque/同类水覆盖时，
-// 顶面与侧面顶边下沉 0.5，与海面平面（SEA_Y+0.5）共面，消除俯视可见的蓝色顶面模。
+// 顶面与侧面顶边下沉 WATER_SURFACE_SINK，与海面平面（SEA_Y+0.5）共面，消除俯视可见的蓝色顶面模。
 // 方块逻辑/物理仍占整格，仅渲染几何下沉。
+// ⚠️ v3.30g：下沉量已提级到 `voxel/constants.js`（`render/water-surface.js` 共用同一口径）。
 const WATER_LIKE = new Set(['water', 'swamp_water']);
-const WATER_SURFACE_SINK = 0.5;
 // 不透明通道但同类相邻仍剔除共享面：cloud（M2-7 通道勘误，opaque 材质语义；
 // 云簇内部相邻面不发射，避免体素爆发；water/glass 走 cullMode>=2 同规则）
 const SAME_TYPE_CULL = new Set(['cloud']);
@@ -465,6 +465,18 @@ const EMISSIVE_MATERIALS = new Set(['hanging_lamp']);
 // 消费方 = `materials.js` 的 `maskShadowNode`（阴影 pass 逐片元 discard，主 pass 不受影响）。
 // ⚠️ bit14 是 packed 里第一个超过 bit13 的位；Uint32 容量充足（现用 bit0-14）。
 const SHADOW_CAST_BIT = 1 << 14;
+
+// 湿表面材质类（v3.31，packed **bit15–18**，mask 0xF）：权威 = `registry.wetClassTable`
+// （声明侧 `voxel/wet-material-data.js` 的 name→类映射，九类）。
+// 消费方 = `render/wet-surface.js` 在**顶点阶段** `packed.shiftRight(15).bitAnd(15)`
+// 查 `WET_CLASS_PARAMS` 得逐 quad 常量 vec4，经一个 varying 传片元。
+//
+// ⚠️ **为什么走 packed 位而不是新顶点属性**（实测硬约束）：三通道静态 gpuVertexBytes
+// 24B/顶点 = 193.83 MiB，加一个 float 属性 ⇒ 28B/顶点 = 219.68 MiB，
+// 超 `tests/m3-fullscene.spec.mjs` 的 200 MiB 门 19.7 MiB。塞进空闲位是零字节增量。
+// ⚠️ bit15–18 不得挤占 bit0–14（light/AO/face/emissive/noShadowCast）——
+// 挤进去会让阴影投射语义翻转（云开始投影），由 test-wet-surface.js 的位段隔离用例钉住。
+const WET_CLASS_SHIFT = 15;
 
 // 床 UV 变换（2026-09-03 勘误：原口径照 mc-lite 字段名实现了「取上半 + 顶面旋转」，
 // 但实测 mc-lite 的 offset/rotation 是死字段，故此处按**实际行为**而非字段定义实现）。
@@ -523,6 +535,7 @@ export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
   const opaqueTable = registry.opaqueTable;
   const hollowOccluderTable = registry.hollowOccluderTable;
   const shadowCastTable = registry.shadowCastTable;
+  const wetClassTable = registry.wetClassTable;
   const nameOf = registry.nameOf.bind(registry);
   const tiles = atlasMeta.tiles || atlasMeta;
   const occTable = octantOccupancyOf(registry);
@@ -561,6 +574,9 @@ export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
         const blockEmissiveBit = EMISSIVE_MATERIALS.has(blockName) ? (1 << 13) : 0;
         // 阴影不投射标记（§4.4.4 bit14）：逐方块算一次，两条发射路径（模板/立方体）共用。
         const noShadowCastBit = shadowCastTable[id] === 1 ? 0 : SHADOW_CAST_BIT;
+        // 湿表面材质类（v3.31 bit15–18）：逐方块算一次，两条发射路径共用。
+        // 掩 0xF 是防御：表值超出 4 bit 时不得溢到 bit19+（将来扩类要同步改位段布局）。
+        const wetClassBits = (wetClassTable[id] & 0xF) << WET_CLASS_SHIFT;
 
         // 非立方体几何（§4.3 顶点模板）：不做面剔除（mc-lite 实例级渲染同口径）；
         // 光照读自身格（模板面在格内，无"邻居格"语义）；AO 按顶点推导。
@@ -636,7 +652,7 @@ export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
                   [rx, ry, rz], subvoxelAO ? bmin : null, subvoxelAO ? bmax : null, occTable, AO_OUT);
                 ao = getAO(AO_OUT[0], AO_OUT[1], AO_OUT[2], AO_OUT[3]);
               }
-              packeds.push(selfLight | (ao << 8) | (worldFace << 10) | emissiveBit | noShadowCastBit);
+              packeds.push(selfLight | (ao << 8) | (worldFace << 10) | emissiveBit | noShadowCastBit | wetClassBits);
             }
             pushQuad(ch, positions, uvs, packeds, q.ds);
             emitted++;
@@ -715,7 +731,7 @@ export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
             // 所以 `lighting.js` 的 `lightDirtyMasks` 依赖集合不变。
             aoProbes(data, meta, vx, vy, vz, worldFace, [rx, ry, rz], null, null, occTable, AO_OUT);
             const ao = getAO(AO_OUT[0], AO_OUT[1], AO_OUT[2], AO_OUT[3]);
-            packeds.push(faceLight | (ao << 8) | (worldFace << 10) | blockEmissiveBit | noShadowCastBit);
+            packeds.push(faceLight | (ao << 8) | (worldFace << 10) | blockEmissiveBit | noShadowCastBit | wetClassBits);
           }
           pushQuad(ch, positions, uvs, packeds, doubleSide);
         }

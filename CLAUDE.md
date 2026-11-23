@@ -125,6 +125,7 @@ npm run stonebricks    # 石砖三变体 + 紫珀（之后要 atlas + icons）
 npm run tarn | pyramid | arena | burningarena | ruinedcitadel | junglefortress
 npm run shallowtarns | ship | azaleatrees | gianttrees
 npm run turretop | zombieskin | dragon | ignis | guardian | nightsky
+npm run carbineaudio   # KV-9 / 雨声（改 src/render/carbine-audio-recipes.js 后必跑）
 npm run validate:weapon-assets
 ```
 
@@ -212,6 +213,11 @@ npm run validate:weapon-assets
   而本机 dev server 恒为根路径所以测不出来）。`assets/textures/` 被递归扫描，源图别放进去。
 - **末尾追加方块不得清档**（用 `fingerprintOfPrefix`）；改方块数后要跑一次 `tests/unit-fast.spec.mjs`
   （`test-inventory-ui.js` 需 DOM，不在 Node 白名单）。
+- **短命特效（曳光 0.02s / 火光 0.045s / hitstop 0.022s）的断言必须开火后同步立刻取样**：
+  任何 `await`（含 dynamic import）都会让它们自然过期 ⇒ 断言变成在测「过期后不可见」。
+  同理：`mount()` 要当场写一次姿态、`onShot()` 要当场点亮火光、切枪**两个分支**都要清特效池。
+- **雨的挡雨判据不是 `isSolid`**：云（v1.96 起 solid=true）与树叶族（solid=true）都会拦雨。
+  唯一权威在 `render/rain-shelter.js`：实心 ∧ 非 cutout ∧ 非 cloud，上界 = 云簇高度−1（派生）。
 - **`AGENTS.md` 是 `CLAUDE.md` 的符号链接** ⇒ 改规范一律 `git add CLAUDE.md`，
   并用 `git show --stat` 核对它真的在提交里。
 - **UI 层级不等式**（改任一层必须重核）：hotbar 40 < 迷你地图 45 < 坐标/性能面板 50 = 血心 50 <
@@ -238,6 +244,8 @@ npm run validate:weapon-assets
 | **丧尸行为层（犹豫/后退/徘徊/包络/限速）** | `specs/2026-11-16-zombie-behavior-realism-design.md` + roadmap v3.11 + `pitfalls.md` 丧尸行为层节 |
 | 矿车 / 装置（巢穴、炮塔、创造台） | `specs/2026-09-30-minecart-design.md`、M7/M8/M9 spec + roadmap「方块锚定装置」段 |
 | 放置 / 交互 / 玩家物理 | `specs/2026-10-30-place-nearest-first-design.md`、`specs/2026-10-25-player-flight-design.md` |
+| **KV-9 卡宾枪 / 曳光 / 换弹 / 弹壳** | `specs/2026-11-22-kv9-carbine-and-storm-lighting-design.md` + `pitfalls.md` 短命特效节 + 上游 `~/jaylli/bj-shooting-game/night-heron-src/src/game/weapon.js` |
+| **雨天光影档 / 持续雨 / 湿地面 / 后处理** | 同上设计稿 §10~§11 + `pitfalls.md`「雨雾光栅扫描与湿地面地下透射」「屏幕竖纹粗糙与关档后雨声残留」两节 + `src/render/rain-shelter.js`（遮挡权威）+ `src/render/ground-reflect-config.js`（**湿地面必须独立 pass**：海平面镜面在几何上不可能正确）。⚠️ **远景雨幕已整层移除**（MSAA 不能替代 FXAA，柱面细丝必走样）—— 不要凭直觉补齐 |
 | 面板 / HUD / 小地图 / 音效 | roadmap「面板与 UI」「渲染分辨率档位」段 + `plans/2026-10-29-minimap.md` |
 
 ## 调试入口

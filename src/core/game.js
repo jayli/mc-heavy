@@ -32,6 +32,20 @@ import { ViewWeapon } from '../render/view-weapon.js';
 import { ViewArm } from '../render/view-arm.js';
 import { WEAPON_IDS, WEAPONS } from '../player/weapons/weapon-catalog.js';
 import { TracerRenderer } from '../render/tracer-renderer.js';
+// v3.30 KV-9 卡宾枪（上游 bj-shooting-game 移植）：程序化视图模型 + 五个特效池
+import { CarbineView } from '../render/carbine-view.js';
+import { CarbineFx } from '../render/carbine-fx.js';
+import { CARBINE } from '../player/weapons/carbine.js';
+// v3.30 雨天光影档：持续雨（雨丝/水花/雨声）—— 这一块仍是上游移植，用户裁定保留
+import { StormRain } from '../render/storm-rain.js';
+import { RainShelterMap } from '../render/rain-shelter-map.js';
+import { uploadShelterTexture } from '../render/rain-shelter-texture.js';
+import { STORM_AUDIO } from '../render/storm-rain-config.js';
+// v3.31 湿表面：**从零重做**（按材质分类 + 有界天空反光），不参考上游。
+// 上游湿地面（wet-ground / ground-reflect）与整条后处理链（storm-grade）已整体删除：
+// 它们的前提（独立地面 mesh、地面就在镜面高度）在起伏体素世界里不成立，
+// 是用户报告的岩壁亮带与高空云层光晕的根因（取证见 spec §2）。
+import { WET_STRENGTH_MAX } from '../render/wet-surface-config.js';
 import { ExplosionRenderer } from '../render/explosion-renderer.js';
 import { BlockHitFxRenderer, IGNIS_DEATH_BURST } from '../render/block-hit-fx.js';
 import { FlameSigilRenderer, loadFlameSigilTexture, sigilSpawnPoints } from '../render/flame-sigil.js';
@@ -228,7 +242,7 @@ export class Game {
    *   ⚠️ **全仓唯一实例**：`main.js` 建好后传进来，本类再传给 `Scheduler` → `StructureIndex`。
    *   缺省（fixture 页直建 Game）自建一个 —— 那些页面不启动 loading UI，自建只保证内部不必判空。
    */
-  constructor({ canvas, registry, seed = null, viewDistance = 8, hudRoot, blurMipmap = false, budgetProfile = 'auto', chunkPace = 8, startWeather = null, shadows = true, skybox = true, reflect = true, ambient = true, settings = null, watchdog = null }) {
+  constructor({ canvas, registry, seed = null, viewDistance = 8, hudRoot, blurMipmap = false, budgetProfile = 'auto', chunkPace = 8, startWeather = null, shadows = true, skybox = true, reflect = true, ambient = true, storm = true, settings = null, watchdog = null }) {
     this._settings = settings;
     /**
      * 启动进展计时器（v2.99）。**全仓唯一实例**，见 `core/load-watchdog.js` 的「单一权威」段。
@@ -260,6 +274,11 @@ export class Game {
     // `_ambientWanted` 是玩家意图（面板，持久化到 settings.ambientFx）。生效值 = 两者 AND。
     this._ambientOption = ambient !== false;
     this._ambientWanted = true;
+    // v3.30 雨天光影档：_stormOption 是代码级隔离（?storm=0，不持久化），
+    // _stormWanted 是玩家意图（面板，持久化）。生效值 = 两者 AND（同 ambientFx）。
+    this._stormOption = storm !== false;
+    this._stormWanted = false;
+    this._stormActive = false;
     this.registry = registry;
     this.seed = seed; // null → start() 中无存档时 randomSeed()（有存档恒读存档）
     this.viewDistance = viewDistance;
@@ -300,6 +319,12 @@ export class Game {
     this._startWeather = startWeather;
     this.player = null;
     this._lastFrameMs = -1;
+    /**
+     * v3.30 KV-9 的打击感状态（上游 main.js 的 `hitstopT` 与 player.trauma）。
+     * 两者都是**纯视觉/手感**量，不入存档、不影响玩法判定。
+     */
+    this._hitstopT = 0;
+    this._trauma = 0;
     /**
      * 上一帧的玩家位置（v2.62）—— 只为差分算出玩家速度（焰魔跳跃劈砍的落点预判用）。
      * `null` = 首帧（给 `[0,0,0]`，防 NaN）。
@@ -484,8 +509,19 @@ export class Game {
     this.ocean = setupOcean(this.scene);
     // 反射 pass 需要 renderer 句柄（此时 `renderer.init()` 已 await 完）。
     this.ocean.setRenderer(this.renderer);
-    // ⚠️ 灯光创建必须在 RenderWorld 之前：材质的 shadow() 节点在构建时固定 light 引用。
-    this.renderWorld = new RenderWorld({ scene: this.scene, atlasTexture: texture, viewDistance: this.viewDistance, sunLight });
+    /**
+     * ⚠️ 灯光创建必须在 RenderWorld 之前：材质的 shadow() 节点在构建时固定 light 引用。
+     *
+     * v3.31：湿表面**不采样任何反射 RT** ⇒ 不再需要第二条 reflector pass，
+     * 也不再需要把采样节点/投影矩阵交进材质（旧实现那整套已删）。
+     * 水面自己的反射 pass 原样保留，与湿表面无耦合。
+     */
+    this.renderWorld = new RenderWorld({
+      scene: this.scene, atlasTexture: texture, viewDistance: this.viewDistance, sunLight,
+      // v3.33 方案 A：积水真倒影复用 ocean 已验收的 reflector RT
+      // （ocean 在本行之前已创建，故可直接传句柄）。
+      reflectTexture: this.ocean.reflectTexture,
+    });
     // 日夜循环（M2-6）：正午起步（与 M1 视觉口径一致），1200s 一天
     this.dayNight = new DayNight({
       scene: this.scene,
@@ -930,6 +966,27 @@ export class Game {
     this.editor.subscribe((event) => {
       for (const controller of this.nests.controllers().values()) controller.onWorldChange(event);
       for (const controller of this.turrets.controllers().values()) controller.onWorldChange(event);
+      // v3.34：遮挡高度图失效 —— 玩家挖放当帧重扫该列（插队首，不等轮到）。
+      // ⚠️ 按 column 去重：一次 setBlocks 可能改同一列的几百格。
+      const map = this.rainShelterMap;
+      if (map) {
+        const seen = new Set();
+        for (const c of event.changes) {
+          const cx = Math.floor(c.x / 16); const cz = Math.floor(c.z / 16);
+          const k = cx + ',' + cz;
+          if (seen.has(k)) continue;
+          seen.add(k);
+          map.invalidateColumn(cx, cz);
+        }
+        // ⚠️ **光插队首不够**：高度图重扫了，但雨丝的**逐滴属性**要等
+        // 10Hz 分批轮转（~1 s）才跟上 ⇒ 新盖的屋顶下那期间照旧下雨（实测 7~11 滴）。
+        // ⇒ 同步重扫这几列 + 立即重解全部滴，兼得「当帧跟随」。
+        map.tick(seen.size);
+        if (this.stormRain) {
+          uploadShelterTexture(map.data);
+          this.stormRain.refreshShelterNow();
+        }
+      }
     });
 
     // ---- M8：TNT 爆炸装配 ----
@@ -1118,6 +1175,29 @@ export class Game {
     this.viewArm = new ViewArm({ camera: this.camera });
     this.viewArm.setWeapon(WEAPON_IDS.ARM);
     this.tracerRenderer = new TracerRenderer({ scene: this.scene });
+    /**
+     * v3.30 KV-9 卡宾枪：独立的视图模型 + 五个特效池。
+     *
+     * ⚠️ **为何不复用 `ViewWeapon` / `TracerRenderer`**：
+     *   · 视图模型：KV-9 是**程序化几何**（上游 buildGun 的盒/柱批次）且需要
+     *     独立移动弹匣与左臂（换弹动作的本体）—— GLB 路s径的单一 clone 做不到；
+     *   · 曳光：上游是「沿线推进的亮条」（有头有尾、320 格/秒），而既有池是
+     *     「整条瞬现后淡出的圆柱」—— 共用会让其中一方静默退化。
+     * 两者都是**短寿命视觉对象**，不新增地形渲染通道 / 不污染体素管线（同既有特效池）。
+     *
+     * ⚠️ `groundAt` 由装配层给（渲染层不查体素，与 flame-sigil / spike-fx 同口径）。
+     */
+    this.carbineView = new CarbineView({ camera: this.camera });
+    this.carbineFx = new CarbineFx({
+      scene: this.scene,
+      groundAt: (x, z, fromY) => this._carbineGroundAt(x, z, fromY),
+      blockNameOf: (id) => this.registry.nameOf(id),
+      // 弹壳落地音：逐次减半（上游 `0.2/n` 同口径），最多三声
+      onCasingBounce: (pos, bounce) => {
+        void pos;
+        this.audioManager?.play('carbine_casing', 0.35 / bounce);
+      },
+    });
     // 玩家出生（第一人称，眼高由 Player 管）
     this.player = new Player({
       world: this.world, camera: this.camera, scheduler: this.scheduler,
@@ -1129,6 +1209,12 @@ export class Game {
         tracerRenderer: this.tracerRenderer,
         audioManager: this.audioManager,
         blockHitFx: this.blockHitFx,
+        // v3.30 KV-9：视图模型与特效池（同上，player/ 不 import render/）
+        carbineView: this.carbineView,
+        carbineFx: this.carbineFx,
+        // hitstop / 震动的唯一入口在 Game（帧循环消费）—— 注入而非反向依赖 core/
+        onHitstop: (s) => this.hitstop(s),
+        onShake: (a) => this.shake(a),
         // v3.20：Storm Lance 渲染器（上面刚装配）—— 玩家松手施放时由它出视觉
         stormLanceRenderer: this.stormLance,
         // v3.21：Cinder Fall 的岩石生成（装配层职责，player/ 不持有 EntityManager）
@@ -1196,6 +1282,7 @@ export class Game {
       ? new LeafFxRenderer({
         scene: this.scene,
         world: this.world,
+        registry: this.registry,
         seed: this.seed,
         colorResolver: blockColorResolver,
         playerPos: this.player.physics.pos,
@@ -1228,6 +1315,14 @@ export class Game {
       knockback: (id, dist) => this.knockbackEntity(id, dist),
       // v3.20 Storm Lance：五射线扫描 + 逐个扣血。controller 不持有 world/entities（依赖方向 §3）。
       sweepLance: (aim, cfg) => this._stormLanceSweep(aim, cfg),
+      /**
+       * v3.30 KV-9：「上一发是否击杀」—— hitstop / 震动要区分击杀与未死。
+       *
+       * ⚠️ **读上一次 damage 的返回值而不是重新查实体**：击杀后实体已 despawn，
+       * `entities.get(id)` 返回 null ⇒ 拿它判会恒得「未死」（静默失效）。
+       * 故在 `damageEntity` 里记下最后一次的 dead，本回调只读它。
+       */
+      wasKilled: () => this._lastDamageKilled === true,
     });
 
     // 天气 + 雨效（M3-3）：状态机自动周期（晴 60~180s → 雨 30~90s，5s 过渡），
@@ -1343,6 +1438,9 @@ export class Game {
     // 两条都要显式走：材质初值 `uFogColorMix` 恒 0（= 关闭，`materials.js` 的 mix 左端），
     // 所以「关」也不是空操作 —— 落到这里才把 uniform 写成 0，与设置面板点击同一路径。
     this.setFogColorEnabled(this.settings.fogColor);
+    // v3.30：应用持久化的雨天光影档（默认关 ⇒ 这里通常是 no-op）。
+    // ⚠️ 必须在 renderWorld / ocean / player 都就绪之后（此处已是 start() 尾部）。
+    this.setStormLighting(this.settings.stormLighting);
     this.worldReady = true;
 
     window.addEventListener('resize', () => this._onResize());
@@ -1364,10 +1462,28 @@ export class Game {
     this.renderer.setAnimationLoop((nowMs) => {
       this.perf.tick(nowMs);
       // dt（秒）：首帧为 0，钳制上限 0.1s 防后台切回大步长
-      const dt = this._lastFrameMs < 0 ? 0 : Math.min((nowMs - this._lastFrameMs) / 1000, 0.1);
+      const realDt = this._lastFrameMs < 0 ? 0 : Math.min((nowMs - this._lastFrameMs) / 1000, 0.1);
       // M3-2：预算判档喂原始（未钳制）帧间隔——vsync 量化值正是测量对象
       if (this._lastFrameMs >= 0) this.budget.observeFrame(nowMs - this._lastFrameMs);
       this._lastFrameMs = nowMs;
+      /**
+       * v3.30 KV-9 hit stop（上游 main.js:286 逐字）：命中瞬间把**玩法 dt** 缩到 6%。
+       *
+       * ⚠️ **计时用 realDt 而不是缩放后的 dt**：用后者会让 hitstop 自身也被减速
+       * ⇒ 0.022s 的 hitstop 实际持续 0.37s（读作卡帧而不是打击感）。
+       * ⚠️ **只缩放玩法，不缩放渲染/音频/UI/天气**（上游同口径）。
+       */
+      let dt = realDt;
+      if (this._hitstopT > 0) {
+        // ⚠️ 钳到 0：不钳的话最后一帧会把它减成负数，而「hitstop 已结束」的判据
+        // 如果写 `=== 0` 就会永不成立（本轮 spec 实测到 −0.0083）。
+        this._hitstopT = Math.max(0, this._hitstopT - realDt);
+        dt = realDt * CARBINE.hitstopTimeScale;
+      }
+      // trauma 衰减（上游 trauma - dt*1.7）。⚠️ 用 realDt：震动不应被 hitstop 拉长。
+      if (this._trauma > 0) {
+        this._trauma = Math.max(0, this._trauma - realDt * CARBINE.traumaDecayPerSecond);
+      }
       // 设置面板打开时跳过玩家输入/物理（世界调度继续：后台填充不受 UI 阻塞）
       if (!this.uiModal) this.player.update(dt);
       // 模态期 `player.update` 被跳过而下面 `entities.update` 照跑 → 矿车继续移动
@@ -1514,8 +1630,14 @@ export class Game {
       this.dayNight.update(dt);
       // 天气状态机推进 + 雨强度接线 + 雨幕跟随玩家（30Hz 内部检查）
       this.weather.update(dt);
-      this.rain.setIntensity(this.weather.intensity);
-      if (this.weather.isRaining) this.rain.update(this.player.physics.pos, dt);
+      // v3.30：雨天光影档开启时**循环雨滴彻底停掉**（用户：改成持续下雨）。
+      // 天气状态机仍推进（雨声/其他消费方读它），但不再驱动雨滴可见性。
+      if (!this._stormActive) {
+        this.rain.setIntensity(this.weather.intensity);
+        if (this.weather.isRaining) this.rain.update(this.player.physics.pos, dt);
+      }
+      // 雨天档的每帧推进（未开启时一次布尔判断即返回）
+      this._updateStorm(nowMs, realDt);
       // v3.26：环境特效跟随玩家（内部 biome 门控 + 30Hz 距离检查 + 分批迁移）。
       // 非目标 biome / 关闭时直接 return（零成本）；uTime 仍累计 ⇒ 回来时 age 不跳变。
       // 夜间因子直接调既有权威 `nightBlendOf`（不自己写公式、不从 skyDim 倒算）。
@@ -1526,7 +1648,7 @@ export class Game {
       }
       // v2.51：雨声（用户 2026-11-04：「雨声只有在下雨的时候才播放」）。
       // 强度直接当循环音量 → 淡入淡出与天气状态机同步（无雨时 intensity=0 → 停播）。
-      this._syncRainSound();
+      if (!this._stormActive) this._syncRainSound();
       this._hud.update(nowMs);
       this._coordsHud.update(nowMs);
       // 迷你地图（v2.8）：内部 10Hz / 20Hz 双节流，每帧调用零成本（未到期直接 return）
@@ -1584,6 +1706,35 @@ export class Game {
       this.explosionSprite.update(nowMs);
       // 枪击方块命中特效推进（碎块抛物线/自旋、白闪的保持与淡出）
       this.blockHitFx.update(nowMs);
+      /**
+       * v3.30 KV-9：视图模型动效 + 五个特效池推进。
+       *
+       * ⚠️ **必须在 player.update 之后**：视图模型要读弹匣的 reloadT（本帧刚推进过）
+       * 与相机朝向（sway 的输入）。放前面会让换弹动画滞后一帧。
+       * ⚠️ **视图模型用 realDt**：换弹/后坐/火光是**视觉计时**，不该被 hitstop 拉长
+       * （上游同口径：hitstop 只改玩法 dt，weapon.update 拿的是缩放后的 dt ——
+       *  但上游的 reload 时间线也在那个 dt 里；本仓刻意用 realDt，理由见下）。
+       *
+       * ⚠️⚠️ **为何本仓与上游在这一点上有意偏离**：上游 hitstop 只在**命中实体**时触发
+       * （0.022~0.075s），而它的换弹是 2.15s 的长动作 —— 两者几乎不重叠。本仓的
+       * hitstop 同样只在命中时触发，但连射打丧尸时每 0.087s 就来一次 0.022s
+       * ⇒ 换弹期间若用缩放 dt，2.15s 会被拉长到约 2.4s，而**弹匣补弹的计时用的是
+       * 玩法 dt**（controller.update）⇒ 动画与补弹时刻分家（枪还在摆而弹药已满）。
+       * 故视图模型统一用 realDt，与弹匣计时的**视觉表现**对齐。
+       */
+      if (this.carbineView?.mounted) {
+        const wc = this.player.weaponController;
+        this.carbineView.update(realDt, {
+          reloadT: wc.carbineMag.reloadT,
+          bobPhase: this.player.viewBob.timer,
+          bobAmp: this.player.viewBob.amount / 0.15,
+          yaw: this.player.yaw,
+          pitch: this.player.pitch,
+        });
+      }
+      this.carbineFx?.update(nowMs, realDt);
+      // 镜头震动（trauma²）—— 叠在 player 写好的相机姿态**之后**（局部轴，同 viewBob 口径）。
+      this._applyCarbineShake(nowMs);
       // v3.04：焰魔法阵推进（递延点亮 / 自转 / 末段淡出；全部结束后 visible=false）
       this.flameSigil?.update(nowMs);
       // v3.06：焰魔尖刺推进（递延升起 / 保持 / 缩回；全部结束后 visible=false）
@@ -1641,6 +1792,8 @@ export class Game {
       // 水面倒影（v3.17）：**必须在主 render 之前** —— 后置会让 BatchedMesh 的
       // indirect 索引表被反射相机覆写 → 天空整片撕成黑多边形（详见 ocean.js 反射段）。
       this._renderWaterReflection();
+      // v3.31：雨天档也走**单 pass** renderer.render —— 整条后处理链已按用户裁定删除
+      // （体积雾/bloom/色差/暗角/冷调/颗粒）。ACES 仍由 renderer 那份应用（v1.70）。
       this.renderer.render(this.scene, this.camera);
       // 准心配色（v1.64）：**必须在 render 之后** —— WebGPU canvas 在 render 前不可读
       // （实测读到恒为 0，会让准心永远判为暗背景而恒白）。内部 100ms 节流 + 迟滞。
@@ -1822,6 +1975,7 @@ export class Game {
       this.leafFx = new LeafFxRenderer({
         scene: this.scene,
         world: this.world,
+        registry: this.registry,
         seed: this.seed,
         colorResolver: resolver,
         playerPos: pp,
@@ -1991,7 +2145,31 @@ export class Game {
     // v3.26：落叶与萤火虫同理（各一个 mesh）—— 反射 pass 的成本主杠杆是 draw call 数。
     if (this.leafFx) hidden.push(...this.leafFx.meshes);
     if (this.fireflyFx) hidden.push(...this.fireflyFx.meshes);
-    this.ocean.renderReflection(cam, this.ocean.plane.material, hidden);
+    // v3.30：KV-9 的五个特效池同理（反射 pass 的成本主杠杆是 draw call 数）。
+    // ⚠️ 视图模型也要隐：它挂在 camera 下，不隐的话水里会出现一条巨大的枪。
+    if (this.carbineFx) hidden.push(...this.carbineFx.meshes);
+    if (this.carbineView?.mounted) hidden.push(this.carbineView.root);
+    // v3.30：雨丝与水花同理（additive 粒子在镜像相机下的观感未标定，且省 draw call）
+    if (this.stormRain) hidden.push(...this.stormRain.meshes);
+    // ⚠️ 套 multi-draw 守卫：反射 pass 走 renderer.render ⇒ 会覆写 BatchedMesh 的
+    // _multiDraw* / _indirectTexture，不隔离的话主 pass 读到反射视锥的剔除结果
+    // ⇒ 主视锥内、反射视锥外的几何整帧不绘制（v3.17 天空撕裂同一条机制）。
+    // ⚠️ v3.31：一帧内只剩**一条**反射 pass（水面）—— 地面那条已删。
+    // 守卫仍保留：阴影 pass 与主 pass 也共用那份列表，隔离仍是必需的。
+    this.renderWorld.beginReflectGuard();
+    // v3.33 方案 A：积水真倒影采样同一张 RT ⇒ 反射 pass 期间必须把体素三通道
+    // 换成**不引用该 RT** 的替身材质（单靠 uPuddleReflect=0 不够：texture 节点
+    // 仍在 bind group 里，WebGPU 按绑定算 usage ⇒ writable usage 冲突、整帧作废）。
+    const swap = this.renderWorld.beginReflectMaterialSwap();
+    try {
+      this.ocean.renderReflection(cam, this.ocean.plane.material, hidden);
+      // v3.33：**pass 跑完立即把真 RT 同步给 clone**（积水真倒影采样的是 clone）。
+      // 不同步 ⇒ clone 停在占位 RT ⇒ 水汪里没倒影（实玩截图才发现，数值判据全绿）。
+      this.ocean.syncReflectTexture();
+    } finally {
+      swap();
+      this.renderWorld.endReflectGuard();
+    }
   }
 
   /**
@@ -2821,7 +2999,303 @@ export class Game {
     };
   }
 
+  // ==================== 雨天光影档（v3.30 引入，v3.31 重做湿表面） ====================
+
+  /**
+   * 雨天光影档的**唯一开关入口**（面板 + `?storm=` 共用）。
+   *
+   * 开启时做三件事：
+   *   ① 关掉既有「循环雨滴」（`rain.setIntensity(0)` + 天气不再驱动它），
+   *      改成**持续下雨**（`StormRain`，上游 Rain 移植 —— 这一块用户裁定保留）；
+   *   ② **按材质分类的湿表面**（`renderWorld.materials.wet.uWet`）——
+   *      v3.31 从零重做：压暗 + 有界天空反光 + 弱太阳高光 + 积水斑，不采样任何 RT；
+   *   ③ 雨声换成上游四层雨床（`rain_storm` 循环）+ 随机远雷。
+   *
+   * 关闭时**逐位回到改动前**：
+   *   · `uWet = 0` ⇒ 体素材质 mix 取左端（零回归锚点）；
+   *   · 雨丝/水花 visible=false（draw call 回基线）；
+   *   · 雨声切回既有 `rain`（由天气强度驱动）+ 还原开启前的天气快照。
+   *
+   * ⚠️ **生效值 = 玩家意图 AND 代码级隔离**（`?storm=0`）—— 与 ambientFx 同口径。
+   * ⚠️ **v3.31：不再有后处理链**。体积雾/bloom/色差/暗角/冷调/颗粒整条删除
+   * （用户裁定）：它们是高空云层光晕的放大器，且带来预热收敛/色彩空间分段/
+   * 屏幕竖纹三类已知坑。雨夜氛围由**既有** DayNight 风格系统承担（傍晚/黑夜）。
+   * ⇒ 帧循环恒走单 `renderer.render()`，雨天档的帧时不高于晴天档。
+   *
+   * @param {boolean} enabled
+   * @returns {boolean} 实际生效值
+   */
+  setStormLighting(enabled) {
+    this._stormWanted = !!enabled;
+    const on = this._stormWanted && this._stormOption;
+    this._stormActive = on;
+
+    // ---- ① 雨：循环雨滴 vs 持续雨 ----
+    if (on) {
+      if (!this.stormRain) {
+        // v3.34：逐列遮挡高度图（三个消费方共用的唯一权威）。
+        // 惰建：关档时不建、不扫、不上传（零成本）。
+        if (!this.rainShelterMap) {
+          this.rainShelterMap = new RainShelterMap({ world: this.world, registry: this.registry });
+        }
+        this.stormRain = new StormRain({
+          scene: this.scene,
+          world: this.world,
+          registry: this.registry,
+          playerPos: this.player.physics.pos,
+          shelterMap: this.rainShelterMap,
+          mode: this.settings.pixelRatio,
+          skyDim: this.renderWorld?.materials?.dayNight?.uSkyDim,
+          shadowStrength: this.renderWorld?.materials?.dayNight?.uShadowStrength,
+        });
+      }
+      // 预热：开档当帧扫玩家周围 3×3 = 9 column（实测 0.11 ms）。
+      // ⚠️ **不得写成「首帧满预算 tick」**：满预算 = 8 column，不足以覆盖 3×3；
+      // 而整窗 1024 column 全扫要 12.5 ms ⇒ 爆帧。远处由 8/帧渐进（~2.1 s 收敛）。
+      {
+        const pp0 = this.player.physics.pos;
+        this.rainShelterMap.setCenter(pp0.x, pp0.z);
+        this.rainShelterMap.warmup(pp0.x, pp0.z);
+        uploadShelterTexture(this.rainShelterMap.data);
+      }
+      this.stormRain.setEnabled(true);
+      this.stormRain.setIntensity(1);
+      // 既有循环雨滴彻底停掉（用户：「默认把我现在的循环雨滴装下雨的特效关掉」）
+      this.rain?.setIntensity(0);
+      // 天气状态机仍推进（雨声/其他消费方读它），但**不再驱动雨滴可见性**
+      // ⚠️⚠️ **必须先快照开启前的天气**（v3.30e 用户报告「关掉雨天光影后声音还留着」的根因）：
+      // 旧实现只 force('rain') 而不记原状态，关闭时只停了 rain_storm，天气却**永久停在 rain**
+      // ⇒ 帧循环的 `_syncRainSound()` 接管，把旧的天气雨声 `rain` 又放出来
+      // （实测：开启前 loops={} → 关闭后 rain 音量 0.12 → 4s 后 0.2）。
+      // ⇒ 关闭时还原成开启前那一瞬（用户 2026-11-22 裁定「恢复开启前的天气」）。
+      // ⚠️ 只在**首次开启**时快照：重复调用若覆盖，第二次开就会把自己推成的 rain
+      // 当成「原状态」存下来 ⇒ 永远还原不回晴天。
+      if (this._stormPrevWeather === undefined) {
+        this._stormPrevWeather = {
+          kind: this.weather.kind,
+          intensity: this.weather.intensity,
+          phase: this.weather._phase,
+        };
+      }
+      this.weather.force('rain');
+    } else {
+      this.stormRain?.setEnabled(false);
+      // 还原开启前的天气（见上方快照注释）—— 不还原就会留下旧的天气雨声
+      this._restoreWeatherBeforeStorm();
+      // 恢复既有循环雨滴（由天气强度驱动，帧循环里那行照旧）
+      this.rain?.setIntensity(this.weather?.intensity ?? 0);
+    }
+
+    // ---- ② 湿表面（v3.31 按材质分类，不采样任何 RT）----
+    const wet = this.renderWorld?.materials?.wet;
+    if (wet) wet.uWet.value = on ? WET_STRENGTH_MAX : 0;
+
+    // ---- ③ 雨声 ----
+    this._syncStormAudio();
+    return on;
+  }
+
+  /** 当前雨天光影档是否生效（测试 / HUD） */
+  get stormLighting() { return this._stormActive === true; }
+
+  /**
+   * 还原「开启雨天档之前」的天气（v3.30e，用户报告关档后声音残留）。
+   *
+   * 为何需要它：开启时 `weather.force('rain')` 把状态机推成下雨，而旧的天气雨声
+   * `rain` 是由帧循环的 `_syncRainSound()` 按 `weather.intensity` 驱动的。只停
+   * `rain_storm` 不还原天气 ⇒ 旧雨声立即接管（实测音量 0.12 → 4s 后 0.2）。
+   *
+   * ⚠️ **不能只调 `force(prev.kind)`**：那会走 5 秒过渡，期间 intensity 仍 >0
+   * ⇒ 雨声还会响几秒（用户要求「关掉就应当关闭」）。故**直接写回快照的稳态值**：
+   * 本来是晴天 ⇒ intensity 立即归 0 ⇒ 同一帧 `_syncRainSound()` 就 stopLoop。
+   * ⚠️ 快照只在首次开启时存（见 setStormLighting），这里消费后**必须清掉**，
+   * 否则下一轮开启会拿到陈旧快照。
+   * ⚠️ `_phase`/`_timer`/`stateSeconds` 也要一并复位：只改 kind/intensity 会留下
+   * 「稳态但计时器停在过渡中」的不一致状态，下一次自动切天气的时机会漂。
+   */
+  _restoreWeatherBeforeStorm() {
+    const prev = this._stormPrevWeather;
+    if (!prev) return;
+    this._stormPrevWeather = undefined;
+    const w = this.weather;
+    if (!w) return;
+    w.kind = prev.kind;
+    w.intensity = prev.intensity;
+    w._phase = 'steady';
+    w._timer = 0;
+    w._startIntensity = prev.intensity;
+    w._targetIntensity = prev.intensity;
+    // 稳态段时长重抽（同 _finishTransition 的口径）—— 不重抽会拿着雨周期当晴周期用
+    w.stateSeconds = prev.kind === 'rain' ? w._nextRain() : w._nextClear();
+  }
+
+  /**
+   * 雨声切换（雨天档开 ⇒ 上游四层雨床；关 ⇒ 既有 rain 由天气驱动）。
+   *
+   * ⚠️ **两条互斥**：同时播会叠成两层雨声（听感是「雨特别大」而不是「换了音源」）。
+   * ⚠️ 雨天档的雨声**不随天气强度淡入淡出**（它是持续雨，强度恒 1）；
+   * 但**室内要小声**（用户：室内雨特效不生效 ⇒ 声音也该闷下来）。
+   * ⚠️⚠️ **关闭分支必须立即把旧雨声也对齐一次**（v3.30e）：
+   * 只 `stopLoop(rain_storm)` 而等下一帧的 `_syncRainSound()` 会留一帧空隙；
+   * 更重要的是——天气已由 `_restoreWeatherBeforeStorm()` 还原，这里直接按还原后的
+   * 强度对齐，语义上「关档」这一个动作就把两条音轨都安置到位。
+   */
+  _syncStormAudio() {
+    const am = this.audioManager;
+    if (!am) return;
+    if (this._stormActive) {
+      am.stopLoop('rain');
+      // 室内衰减到 25%（屋顶隔雨的真实听感；判据与视觉同一个 isUnderRoof）
+      const indoor = this.stormRain?.debugState().underRoof === true;
+      am.playLoop(STORM_AUDIO.rainLoop, STORM_AUDIO.rainVolume * (indoor ? 0.25 : 1));
+    } else {
+      am.stopLoop(STORM_AUDIO.rainLoop);
+      // 既有 rain 按**还原后**的天气强度对齐（晴天 ⇒ intensity 0 ⇒ 立即停）
+      this._syncRainSound();
+    }
+  }
+
+  /**
+   * 雨天档的每帧推进（帧循环调；未开启时**一次布尔判断即返回**）。
+   *
+   * @param {number} nowMs @param {number} dt 秒
+   */
+  _updateStorm(nowMs, dt) {
+    if (!this._stormActive) return;
+    const pp = this.player.physics.pos;
+    /**
+     * v3.34：推进遮挡高度图（每帧最多 8 column，实测 0.098 ms）。
+     *
+     * ⚠️ **上传必须早于本帧所有 render pass**（反射/阴影/主）—— 遮罩纹理是
+     * 模块级单例，反射替身材质也采样它；pass 中途更新会让主画面与 RT 干湿不一致。
+     * 帧循环顺序 `_updateStorm()` → `_renderWaterReflection()` → `renderer.render()` 已满足。
+     * ⚠️ 静止世界 tick 返回 0 ⇒ **零上传**；关档时本函数首行就 return。
+     */
+    const map = this.rainShelterMap;
+    if (map) {
+      map.setCenter(pp.x, pp.z);
+      if (map.tick(8) > 0) uploadShelterTexture(map.data);
+    }
+    // 相机前向（水花只在视野前方生成）
+    const fwd = this._stormForward || (this._stormForward = new THREE.Vector3());
+    this.camera.getWorldDirection(fwd);
+    this.stormRain.setForward(fwd.x, fwd.y, fwd.z);
+    this.stormRain.update(pp, dt, nowMs);
+    /**
+     * 湿表面总强度：**恒为 MAX**（v3.34）。
+     *
+     * ⚠️⚠️ 旧写法 `indoor ? 0 : MAX` 是用户报告缺陷的直接原因：
+     * 玩家一进屋，**全世界**地面（包括屋外）一起变干。
+     * 遮挡现已交给**片元门** `uWetShelter`（按世界坐标采高度图）。
+     * ⚠️ v3.31：新湿表面**无时钟**（静态）⇒ Tier 4 判据天然稳定。
+     */
+    const wet = this.renderWorld?.materials?.wet;
+    if (wet) wet.uWet.value = WET_STRENGTH_MAX;
+    // 雨声（室内衰减）+ 随机远雷
+    this._syncStormAudio();
+    this._maybeThunder(nowMs);
+  }
+
+  /**
+   * 随机远雷（上游 `thunder()`；间隔随机而不是固定周期）。
+   * ⚠️ 室内不响（与雨声同一门控口径：屋顶隔住了外面的天气）。
+   */
+  _maybeThunder(nowMs) {
+    if (this._nextThunderMs === undefined) {
+      const [lo, hi] = STORM_AUDIO.thunderInterval;
+      this._nextThunderMs = nowMs + (lo + Math.random() * (hi - lo)) * 1000;
+      return;
+    }
+    if (nowMs < this._nextThunderMs) return;
+    const [lo, hi] = STORM_AUDIO.thunderInterval;
+    this._nextThunderMs = nowMs + (lo + Math.random() * (hi - lo)) * 1000;
+    if (this.stormRain?.debugState().underRoof) return;
+    this.audioManager?.play(STORM_AUDIO.thunder, STORM_AUDIO.thunderVolume);
+  }
+
   // ---- M4 公开 API（Playwright 与 UI 都走这些方法，委派给同一控制器，不复制玩法逻辑）----
+
+  /**
+   * v3.30 KV-9：弹壳落地高度探针（渲染层不查体素，由装配层给）。
+   *
+   * 从 `fromY` 往下找第一个**实心**方块的顶面（同 `rain._resolveRainMinY` 的语义，
+   * 但这里只找 8 格 —— 弹壳不会被抛到很高，深扫是白付成本）。
+   * ⚠️ 未加载列 / 扫不到 → null（弹壳继续下落直到寿命结束，仍可见）。
+   *
+   * @param {number} x @param {number} z @param {number} fromY
+   * @returns {number|null} 地面顶面世界 y
+   */
+  _carbineGroundAt(x, z, fromY) {
+    const top = Math.floor(fromY);
+    for (let y = top; y >= top - 8; y--) {
+      if (this.world.isSolid(x, y, z)) return y + 1;
+    }
+    return null;
+  }
+
+  /**
+   * v3.30 KV-9：hit stop（命中瞬间的时间减速）。
+   *
+   * 上游 `G.hitstop(s)` = `hitstopT = max(hitstopT, s)`，帧循环里
+   * `if (hitstopT > 0) { hitstopT -= realDt; dt = realDt * 0.06; }`。
+   *
+   * ⚠️ **只缩放玩法 dt，不缩放渲染/音频/UI**：上游同口径（它也只改 dt）。
+   * 把渲染也冻住会让画面真的卡住（读作掉帧而不是「打击感」）。
+   * ⚠️ **取 max 而不是累加**：连射时多次命中不得叠成好几秒的冻帧。
+   *
+   * @param {number} seconds
+   */
+  hitstop(seconds) {
+    if (!(seconds > 0)) return;
+    this._hitstopT = Math.max(this._hitstopT, seconds);
+  }
+
+  /**
+   * v3.30 KV-9：镜头震动（trauma 模型，上游 `G.shake(a)`）。
+   *
+   * 上游：`trauma = min(1, trauma + a)`，每帧 `trauma -= dt*1.7`，
+   * 相机偏移幅度 ∝ `trauma²`（平方 ⇒ 小震动很轻、大震动明显）。
+   * 噪声是三个不同频率的双正弦叠加（上游 `n(s)`）—— 不是白噪（白噪读作抖而不是晃）。
+   *
+   * @param {number} amount
+   */
+  shake(amount) {
+    if (!(amount > 0)) return;
+    this._trauma = Math.min(1, this._trauma + amount);
+  }
+
+  /**
+   * v3.30 KV-9：镜头震动（上游 player.js 的 applyCamera 震动段逐字）。
+   *
+   * 幅度 ∝ trauma²（平方 ⇒ 小震动很轻、大震动明显），噪声是三个不同频率的
+   * 双正弦叠加（上游 n(s) = sin(t*s*1.3+s)*0.6 + sin(t*s*2.9+s*3.1)*0.4）——
+   * **不是白噪声**：白噪读作「抖」而不是「晃」。
+   *
+   * ⚠️ **必须叠在 player.update 写好的相机姿态之后、用局部轴**（同 viewBob 的口径）：
+   * 先把 roll 加进 this.yaw 会把视角的水平方向一起转 ⇒ 玩家撞向侧面。
+   * ⚠️ **全量重写不安全**：本方法只做增量 rotate/translate，而 player.update 每帧
+   * 全量 set 相机姿态 ⇒ 增量天然不累积（同 viewBob 的既有做法）。
+   * ⚠️ trauma=0 时**零操作**（不进任何三角函数）—— 常态零成本。
+   *
+   * @param {number} nowMs
+   */
+  _applyCarbineShake(nowMs) {
+    const tr = this._trauma;
+    if (!(tr > 0)) return;
+    const sh = tr * tr;
+    const t = nowMs / 1000;
+    const n = (s) => Math.sin(t * s * 1.3 + s) * 0.6 + Math.sin(t * s * 2.9 + s * 3.1) * 0.4;
+    const cam = this.camera;
+    // 上游：pitch/yaw 各 0.035、roll 0.03、眼高 0.02（弧度 / 格）
+    cam.rotateX(n(37) * sh * 0.035);
+    cam.rotateY(n(43) * sh * 0.035);
+    cam.rotateZ(n(53) * sh * 0.03);
+    cam.position.y += n(31) * sh * 0.02;
+  }
+  /** 当前 hitstop / trauma（测试与 HUD） */
+  get carbineFeel() {
+    return { hitstop: this._hitstopT, trauma: this._trauma };
+  }
 
   /** 选择武器（arm/pistol/mag7/minigun）。@returns {Promise<string>} 当前选中 id */
   selectWeapon(id) { return this.player.selectWeapon(id); }
@@ -2881,6 +3355,10 @@ export class Game {
     // 打中但没死不该响。音量表在 `audio-config.js`（红线 1，不在装配层写字面量）。
     // ⚠️ TNT 爆炸炸死丧尸走另一条路（`_damageEntitiesInRadius`），那里也要接（同一助手）。
     if (result?.dead) this._onEntityDeath(entity, nowMs);
+    // v3.30 KV-9：记下本次是否击杀（供 `wasKilled` 回调读）。
+    // ⚠️ 必须在 `_onEntityDeath` 之后也保持有效：击杀后实体已 despawn，
+    // 重新查 `entities.get(id)` 会得 null ⇒ 不能靠它判。
+    this._lastDamageKilled = result?.dead === true;
     // 生命系统显示层：受击后在头顶弹「掉血后还剩的血量」数字。
     // ⚠️ **必须在 `damage()` 之后**（`result.health` 才是掉血后的值），且与死亡音效同位点
     // —— 两条伤害路径（本方法 + `_damageEntitiesInRadius`）都要接，口径一致。
@@ -4493,6 +4971,10 @@ export class Game {
     this.explosionRenderer?.dispose();
     this.explosionSprite?.dispose();
     this.blockHitFx?.dispose();
+    // v3.30 KV-9：视图模型与五个特效池
+    this.carbineView?.dispose();
+    this.carbineFx?.dispose();
+    this.stormRain?.dispose();
     this.flameSigil?.dispose();
     this.spikeFx?.dispose();
     this.fireRing?.dispose();

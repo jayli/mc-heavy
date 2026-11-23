@@ -5,6 +5,7 @@
 import * as THREE from 'three';
 import { positionLocal, attribute, uniform, vec3, mod, max } from 'three/tsl';
 import { RAIN } from './weather.js';
+import { rainStopY, RAIN_CEILING_Y } from './rain-shelter.js';
 
 /**
  * 雨滴效果（mc-lite RainEffect 移植）：LineSegments + TSL 顶点位移，
@@ -119,7 +120,13 @@ export class RainEffect {
     const angle = this.rng() * Math.PI * 2;
     const r = Math.sqrt(this.rng()) * this.radius;
     const x = playerPos.x + Math.cos(angle) * r;
-    const topY = playerPos.y + 30 + this.rng() * 20;
+    /**
+     * v3.30：出生高度钳在**云层之下**（用户：雨特效生效高度不得高于云朵）。
+     * 旧实现是 `playerY + 30 + rng*20` ⇒ 玩家站在地面（y≈2）时雨顶到 52，
+     * 已经穿过云簇（35）接近单云层（55）。
+     */
+    const rawTop = playerPos.y + 30 + this.rng() * 20;
+    const topY = Math.min(rawTop, RAIN_CEILING_Y);
     const z = playerPos.z + Math.sin(angle) * r;
     const minY = this._resolveRainMinY(x, topY, z, playerPos.y);
 
@@ -153,18 +160,27 @@ export class RainEffect {
   }
 
   /**
-   * 雨滴可见最低高度（mc-lite 语义）：下方 searchDepth 内有实心方块 → 停在其顶面
-   * （地面截停，雨滴不穿地）；无遮挡 → 默认循环最低高度（playerY - 0.35×cycleHeight）。
+   * 雨滴可见最低高度。
+   *
+   * ⚠️⚠️ **v3.30 改走 `rain-shelter.js` 的挡雨判据**（用户 2026-11-22）：
+   * 「雨要被房屋的屋顶拦住，但不要被树叶、云彩、空岛所拦住，
+   *   雨特效生效的高度不应该高于云朵。」
+   * 旧实现用 `world.isSolid` ⇒ **树叶与云都会拦雨**（v1.96 起 cloud.solid=true，
+   * 树叶族也是 solid=true）—— 那是用户明确否掉的行为。
+   * 新判据：实心 && 非 cutout && 非 cloud，且扫描上界钳在最低云层之下。
+   *
+   * ⚠️ 本方法同时被旧雨效（循环雨滴）与新雨效（持续雨）消费 ⇒ 两条路径语义一致。
+   *
+   * ⚠️⚠️ **v3.30g 改走 `rainStopY`（= max(挡雨面, 水面)）**：用户「雨滴不要在
+   * 水下出现」对**两种雨**都成立，不只持续雨 —— 只改一边会留下「关雨天光影后
+   * 循环雨滴又掉进湖里」。
    */
   _resolveRainMinY(x, topY, z, playerY = 0) {
     const defaultMinY = playerY - (this.cycleHeight * 0.35);
-    if (!this.world || typeof this.world.isSolid !== 'function') return defaultMinY;
-    const startY = Math.floor(topY);
-    const endY = Math.floor(Math.max(defaultMinY, topY - this.searchDepth));
-    for (let y = startY; y >= endY; y--) {
-      if (this.world.isSolid(x, y, z)) return y + 1 + this.floorOffset;
-    }
-    return defaultMinY;
+    if (!this.world || typeof this.world.getBlockId !== 'function') return defaultMinY;
+    const shelter = rainStopY(this.world, this.world.registry, x, z, topY, this.searchDepth);
+    if (shelter === null) return defaultMinY;
+    return shelter + this.floorOffset;
   }
 
   /** 启动分批刷新：雨幕中心逐步迁移到目标点（mc-lite 削峰语义） */

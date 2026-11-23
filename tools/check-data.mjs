@@ -4053,6 +4053,66 @@ function checkAudioAssets() {
 
 const REGISTRY = await buildDefaultRegistry();
 
+/**
+ * [卡宾枪音效] 契约（v3.30）—— KV-9 与雨天音效的烘焙产物。
+ *
+ * 钉的失效路径（均为**静默**失败）：
+ *   ① 配方改了但没重烘 → 产物过期（指纹拓）；
+ *   ② 产物缺失/空文件 → `preload()` 的 catch 把它吞成一句 warn，页面照常能玩；
+ *   ③ 削顶 → 听感是破音，而时长/采样率/文件存在全对；
+ *   ④ 时长与配方不符 → 尾部被截（换弹音听起来「没完」）；
+ *   ⑤ 清单与 `SOUND_IDS` 脉络断开 → 运行时不去预载（永远不会响）。
+ *
+ * ⚠️ **不钉逐字节哈希的期望值**（那会把产物变成「改动放大器」）：
+ * 只钉「清单里的 hash == 磁盘重算的 hash」与「输入指纹 == 当前配方指纹」。
+ */
+async function checkCarbineAudio() {
+  const fp = await import('./carbine-audio-fingerprint.mjs');
+  const before = failures.length;
+  const fail = (m) => failures.push(`[卡宾枪音效] ${m}`);
+  if (!fs.existsSync(fp.CARBINE_MANIFEST)) {
+    fail('assets/sounds/carbine.json 不存在 —— 跑 npm run carbineaudio');
+    return;
+  }
+  const manifest = JSON.parse(fs.readFileSync(fp.CARBINE_MANIFEST, 'utf8'));
+  // ① 清单 id 集合 ≡ 配方 id 集合
+  const listed = Object.keys(manifest.files ?? {}).sort();
+  const want = [...fp.CARBINE_AUDIO_IDS].sort();
+  if (listed.join(',') !== want.join(',')) {
+    fail(`清单 id 与配方不一致：清单 ${listed.join(',')} / 配方 ${want.join(',')}`);
+  }
+  // ② 每个产物存在 + hash 一致 + 时长/峰值/非静音契约
+  for (const id of want) {
+    const file = path.join(fp.SOUND_DIR, fp.carbineAudioFileName(id));
+    if (!fs.existsSync(file)) { fail(`缺产物 ${id}.wav —— 跑 npm run carbineaudio`); continue; }
+    const entry = manifest.files?.[id];
+    const hash = fp.fileHash(file);
+    if (entry?.hash !== hash) {
+      fail(`${id} 产物被手改或过期（清单 ${entry?.hash} ≠ 磁盘 ${hash}）—— 跑 npm run carbineaudio`);
+    }
+    const s = fp.wavStats(file);
+    const recipe = fp.CARBINE_RECIPES[id]
+      ?? (id === fp.RAIN_STORM_RECIPE.id ? fp.RAIN_STORM_RECIPE : fp.THUNDER_RECIPE);
+    if (Math.abs(s.seconds - recipe.dur) > 0.002) {
+      fail(`${id} 时长 ${s.seconds.toFixed(3)}s ≠ 配方 ${recipe.dur}s（尾部被截）`);
+    }
+    if (s.rate !== fp.CARBINE_AUDIO_RATE) fail(`${id} 采样率 ${s.rate} ≠ ${fp.CARBINE_AUDIO_RATE}`);
+    if (s.peak > 0.999) fail(`${id} 峰值削顶 ${s.peak.toFixed(4)}（听感是破音）`);
+    if (s.nonSilentRatio < 0.05) fail(`${id} 几乎全静音（nonSilent=${s.nonSilentRatio.toFixed(3)}）`);
+  }
+  // ③ 输入指纹（配方/种子/增益/合成版本变了就报过期）
+  const current = fp.carbineAudioInputFingerprint();
+  if (manifest.fingerprints?.input !== current) {
+    fail(`配方已变但产物未重烘（跑 npm run carbineaudio）\n      期望 ${current}\n      实际 ${manifest.fingerprints?.input}`);
+  }
+  // ④ 与运行时清单接线（漏了 = 永远不预载 ⇒ 静默无声）
+  const notListed = want.filter((id) => !SOUND_IDS_FOR_GATE.includes(id));
+  if (notListed.length) fail(`未进 SOUND_IDS（不会被预载）：${notListed.join(', ')}`);
+  if (failures.length === before) {
+    infos.push(`[卡宾枪音效] ${want.length} 个烘焙产物与配方指纹一致（枪声/三段换弹/弹壳/三种命中/命中与击杀/雨声床/雷声）`);
+  }
+}
+
 checkAudioAssets();         // v2.51：音效/音乐/启动图素材与清单一致性（⚠️ 漏了本行则门禁永不执行）
 
 checkReferenceIntegrity();
@@ -4076,6 +4136,7 @@ checkDragonAsset();          // v2.41：祭坛飞龙烘焙产物契约与指纹�
 checkIgnisAsset();           // v2.55：焰魔烘焙产物契约与指纹（⚠️ 同上）
 checkGuardianAsset();        // 末影守卫产物契约与指纹（⚠️ 漏了本行则门禁永不执行）
 checkTurretTopGeometry();    // 炮塔塔顶几何产物契约与指纹（⚠️ 漏了本行则门禁永不执行）
+await checkCarbineAudio();   // v3.30：KV-9 / 雨声烘焙产物契约与指纹（⚠️ 同上）
 checkSkyboxAssets();         // v1.58：天空盒立方图完整性（⚠️ 漏了本行则门禁永不执行）
 await checkNightSkyFreshness(); // v1.60：夜空烘焙产物指纹（⚠️ 漏了本行则门禁永不执行）
 await checkGiantTrees();     // 巨树景观：方块/烘焙产物/贴图三方契约（⚠️ 漏了本行则门禁永不执行）

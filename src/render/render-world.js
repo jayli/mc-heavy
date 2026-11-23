@@ -58,11 +58,19 @@ export class RenderWorld {
    * @param {number} [opts.viewDistance]
    * @param {THREE.DirectionalLight} [opts.sunLight] 太阳灯（传入则三通道材质接收阴影；null 保持原路径）
    * @param {Object} [opts.capacity] 测试注入口：按通道覆盖 CAPACITY（{channel: {active, avgVerts}}）
+   *
+   * ⚠️ **v3.31：不再接受反射句柄**。湿表面改成「按反射方向插值的程序化天空
+   * + 弱太阳高光」，**不采样任何 RT** ⇒ 既不需要第二个 reflector，也不存在
+   * 两条 pass 互相覆写 BatchedMesh indirect 索引表的问题（v3.17 / v3.30d 那类天空撕裂）。
+   * 水面自己的反射 pass 原样保留（它与湿表面无耦合）。
    */
-  constructor({ scene, atlasTexture, viewDistance = 8, sunLight = null, capacity }) {
+  constructor({ scene, atlasTexture, viewDistance = 8, sunLight = null, capacity, reflectTexture = null }) {
     this.scene = scene;
-    const materials = createVoxelMaterials(atlasTexture, sunLight);
+    const materials = createVoxelMaterials(atlasTexture, sunLight, reflectTexture);
     this.materials = materials;
+    /** v3.33：atlas 与 sunLight 句柄（反射替身材质要用它们重建同构着色）。 */
+    this.atlasTexture = atlasTexture;
+    this._sunLight = sunLight;
     const maxInstances = Math.ceil((2 * viewDistance + 1) ** 2 * SECTIONS_PER_COLUMN * 1.2);
     /** @type {Object<string, THREE.BatchedMesh>} */
     this.meshes = {};
@@ -173,6 +181,87 @@ export class RenderWorld {
       }
       return r;
     };
+  }
+
+  /**
+   * v3.33 方案 A：**反射 pass 期间的材质替身**。
+   *
+   * 为什么需要：积水真倒影让体素材质采样 ocean 的反射 RT，而反射 pass 正在**写**它
+   * ⇒ WebGPU `writable usage and another usage in the same synchronization scope`
+   * ⇒ 整帧 CommandBuffer 作废。把采样权重 uniform 置 0 **不够**：texture 节点仍在
+   * bind group 里，WebGPU 按**绑定**算 usage，不看是否真的采样。
+   *
+   * 替身材质 = **同一个 `createVoxelMaterials`，只是不传 reflectTexture**
+   * ⇒ 除了不引用 RT，其余着色（atlas / packed / 阴影 / 湿表面）与主材质**完全一致**
+   * ⇒ RT 里的建筑/树颜色与主画面一致（自建那轮用常量基色替身导致 RT 内容错，本轮避开）。
+   *
+   * ⚠️ 惰构造 + 缓存：只在首次反射时建一次（建材质 = 编译着色器，每帧建会卡帧）。
+   * @returns {() => void} 恢复函数（必须在 finally 里调）
+   */
+  beginReflectMaterialSwap() {
+    if (!this._reflectMats) {
+      this._reflectMats = createVoxelMaterials(this.atlasTexture, this._sunLight || null, null);
+      // 日夜/湿表面 uniform 是**模块级单例**（materials.js 顶层）⇒ 替身自动跟随，无需同步。
+    }
+    const saved = {};
+    for (const k of CHANNELS) {
+      const bm = this.meshes[k];
+      if (!bm) continue;
+      saved[k] = bm.material;
+      bm.material = this._reflectMats[k];
+    }
+    return () => {
+      for (const [k, m] of Object.entries(saved)) this.meshes[k].material = m;
+    };
+  }
+
+  /**
+   * v3.30d：**反射 pass 的 multi-draw 列表守卫**（与阴影守卫同款手法）。
+   *
+   * ⚠️⚠️ **为什么反射也需要它**（本轮新增第二条 reflector 后暴露）：
+   * 反射 pass 走的是 `renderer.render(scene, virtualCamera)` ⇒ 同样调
+   * `BatchedMesh.onBeforeRender()` ⇒ **覆写同一组实例字段**
+   * （`_multiDrawStarts/_multiDrawCounts/_multiDrawCount/_indirectTexture`）。
+   * 一帧内有**两条**反射 pass（水面 + 地面）时，第二条会把第一条的列表覆盖掉，
+   * 而主 pass 的 `backend.draw` 读到最后一次写入 ⇒ 主视锥内、反射视锥外的几何
+   * **整帧不绘制**（v3.17 的「天空撕成黑多边形」同一条机制）。
+   *
+   * 用法：装配层在**每条**反射 pass 前后成对调用 `beginReflectGuard()` /
+   * `endReflectGuard()`，把该 pass 的覆写隔离掉。
+   * ⚠️ 与阴影守卫**互不干扰**：阴影走 onBeforeShadow/onAfterShadow（另一对钩子）。
+   * ⚠️ 缓冲复用（不每次 slice 新分配）：两条 pass × 30Hz × ~450 项。
+   */
+  beginReflectGuard() {
+    const g = this._reflectGuard || (this._reflectGuard = new Map());
+    for (const bm of Object.values(this.meshes)) {
+      const n = bm._multiDrawCount;
+      const starts = bm._multiDrawStarts;
+      const counts = bm._multiDrawCounts;
+      const indirect = bm._indirectTexture.image.data;
+      let saved = g.get(bm);
+      if (!saved || saved.starts.length < starts.length) {
+        saved = { n: 0, starts: new Int32Array(starts.length), counts: new Int32Array(counts.length), indirect: new Uint32Array(indirect.length) };
+        g.set(bm, saved);
+      }
+      saved.n = n;
+      saved.starts.set(starts.subarray(0, n));
+      saved.counts.set(counts.subarray(0, n));
+      saved.indirect.set(indirect.subarray(0, n));
+    }
+  }
+
+  /** 恢复 beginReflectGuard 快照的列表（必须在同一条 pass 结束后立刻调） */
+  endReflectGuard() {
+    const g = this._reflectGuard;
+    if (!g) return;
+    for (const [bm, saved] of g) {
+      bm._multiDrawCount = saved.n;
+      bm._multiDrawStarts.set(saved.starts.subarray(0, saved.n));
+      bm._multiDrawCounts.set(saved.counts.subarray(0, saved.n));
+      bm._indirectTexture.image.data.set(saved.indirect.subarray(0, saved.n));
+      // CPU 侧改回后必须再置 needsUpdate，否则 GPU 仍读反射 pass 的索引
+      bm._indirectTexture.needsUpdate = true;
+    }
   }
 
   /**

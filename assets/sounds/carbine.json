@@ -1,0 +1,147 @@
+{
+  "synthVersion": 1,
+  "rate": 44100,
+  "masterGain": 0.28,
+  "seed": 20261122,
+  "format": "pcm-s16le-wav",
+  "fingerprints": {
+    "input": "synth:1;rate:44100;gain:0.28;seed:20261122;buffers:white:white,2,1,0|pink:pink,4,2,0|brown:brown,5,2,0|patter:patter,6,2,520;ir:seconds:2.6,channels:2,lp:0.45,decayPow:2.2,decayExp:1.6,fadeIn:0.012,reflections:0.11.0.23,reflectionGain:2,sendGain:0.55,normalize:true;comp:threshold:-14,knee:12,ratio:5,attack:0.003,release:0.2;recipes:carbine_fire=dur:0.62|noise,white,highpass,2600,,,,0.035,0.5,0,0,,,;noise,white,lowpass,3800,320,0.6,,0.15,1,0,0.5,,,;tone,,,165,46,,,0.11,1,0,0,,,;noise,white,bandpass,1200,,0.7,0.01,0.4,0.12,0,1.6,,,;tone,,square,2100,,,,0.012,0.1,0.035,0,,,|carbine_reload_out=dur:0.32|noise,white,,1800,,2,,0.06,0.5,0,0,,,;tone,,square,600,300,,,0.05,0.2,0,0,,,;noise,white,,900,,1,,0.12,0.25,0.12,0,,,|carbine_reload_in=dur:0.2|noise,white,,2400,,2.5,,0.05,0.6,0,0,,,;tone,,square,900,1500,,,0.04,0.22,0,0,,,;tone,,,180,90,,,0.06,0.5,0,0,,,|carbine_reload_rack=dur:0.24|noise,white,,2800,,2,,0.045,0.55,0,0,,,;noise,white,,3400,,2,,0.05,0.6,0.09,0,,,;tone,,square,1300,,,,0.02,0.2,0.09,0,,,|carbine_casing=dur:0.14|tone,,,4950,,,,0.07,0.2,0,0,,,;tone,,,7326,,,,0.05,0.1,0,0,,,|carbine_impact_stone=dur:0.2|noise,white,,2000,700,0.7,,0.09,1.3,0,0,,,;tone,,,190,80,,,0.05,0.7,0,0,,,|carbine_impact_metal=dur:0.3|tone,,triangle,2450,1150,,,0.16,0.7,0,0,,,;noise,white,,4200,,1.2,,0.05,0.9,0,0,,,|carbine_impact_wet=dur:0.26|noise,white,,1500,500,0.8,,0.12,1.1,0,0,,,;noise,white,highpass,3600,,,,0.09,0.4,0,0,,,|carbine_hit=dur:0.1|tone,,square,1900,,,,0.035,0.17,0,0,,,|carbine_kill=dur:0.36|tone,,square,1900,,,,0.035,0.17,0,0,,,;tone,,triangle,1250,,,,0.09,0.3,0.05,0,,,;tone,,triangle,1870,,,,0.16,0.3,0.12,0.4,,,|rain_storm=beds:12|white,highpass,5200,0.5,0.045,0,0;pink,bandpass,1500,0.4,0.22,0.11,0.05;brown,lowpass,420,0.5,0.2,0,0;patter,highpass,900,0.5,0.42,0,0|rain_thunder=dur:6.4|noise,brown,lowpass,420,60,0.4,0.06,4.2,1.25,0,0.6,,,;noise,brown,lowpass,160,40,0.4,0.6,5.5,0.9,0.5,0,,,;noise,white,bandpass,2600,500,0.6,0.004,0.5,0.22,0,0.8,,,"
+  },
+  "files": {
+    "carbine_fire": {
+      "file": "carbine_fire.wav",
+      "hash": "mtcgkk",
+      "seconds": 0.62,
+      "channels": 2
+    },
+    "carbine_reload_out": {
+      "file": "carbine_reload_out.wav",
+      "hash": "1s6ness",
+      "seconds": 0.32,
+      "channels": 2
+    },
+    "carbine_reload_in": {
+      "file": "carbine_reload_in.wav",
+      "hash": "1x6xnrd",
+      "seconds": 0.2,
+      "channels": 2
+    },
+    "carbine_reload_rack": {
+      "file": "carbine_reload_rack.wav",
+      "hash": "479vvu",
+      "seconds": 0.24,
+      "channels": 2
+    },
+    "carbine_casing": {
+      "file": "carbine_casing.wav",
+      "hash": "6cd6u4",
+      "seconds": 0.14002267573696145,
+      "channels": 2
+    },
+    "carbine_impact_stone": {
+      "file": "carbine_impact_stone.wav",
+      "hash": "13imrxt",
+      "seconds": 0.2,
+      "channels": 2
+    },
+    "carbine_impact_metal": {
+      "file": "carbine_impact_metal.wav",
+      "hash": "9soygy",
+      "seconds": 0.3,
+      "channels": 2
+    },
+    "carbine_impact_wet": {
+      "file": "carbine_impact_wet.wav",
+      "hash": "171afxm",
+      "seconds": 0.26,
+      "channels": 2
+    },
+    "carbine_hit": {
+      "file": "carbine_hit.wav",
+      "hash": "15a50bh",
+      "seconds": 0.1,
+      "channels": 2
+    },
+    "carbine_kill": {
+      "file": "carbine_kill.wav",
+      "hash": "db615q",
+      "seconds": 0.36,
+      "channels": 2
+    },
+    "rain_storm": {
+      "file": "rain_storm.wav",
+      "hash": "kshjb8",
+      "seconds": 12,
+      "channels": 2
+    },
+    "rain_thunder": {
+      "file": "rain_thunder.wav",
+      "hash": "34n52o",
+      "seconds": 6.4,
+      "channels": 2
+    }
+  },
+  "metrics": {
+    "carbine_fire": {
+      "peak": 0.4708,
+      "rms": 0.02345,
+      "nonSilentRatio": 0.9694
+    },
+    "carbine_reload_out": {
+      "peak": 0.0854,
+      "rms": 0.00687,
+      "nonSilentRatio": 0.3802
+    },
+    "carbine_reload_in": {
+      "peak": 0.2607,
+      "rms": 0.01682,
+      "nonSilentRatio": 0.2702
+    },
+    "carbine_reload_rack": {
+      "peak": 0.0844,
+      "rms": 0.00632,
+      "nonSilentRatio": 0.2816
+    },
+    "carbine_casing": {
+      "peak": 0.0827,
+      "rms": 0.00843,
+      "nonSilentRatio": 0.4358
+    },
+    "carbine_impact_stone": {
+      "peak": 0.2845,
+      "rms": 0.02287,
+      "nonSilentRatio": 0.3168
+    },
+    "carbine_impact_metal": {
+      "peak": 0.2423,
+      "rms": 0.02164,
+      "nonSilentRatio": 0.4507
+    },
+    "carbine_impact_wet": {
+      "peak": 0.1996,
+      "rms": 0.01389,
+      "nonSilentRatio": 0.3193
+    },
+    "carbine_hit": {
+      "peak": 0.0475,
+      "rms": 0.00827,
+      "nonSilentRatio": 0.3467
+    },
+    "carbine_kill": {
+      "peak": 0.0823,
+      "rms": 0.01145,
+      "nonSilentRatio": 0.935
+    },
+    "rain_storm": {
+      "peak": 0.1241,
+      "rms": 0.016,
+      "nonSilentRatio": 0.9976
+    },
+    "rain_thunder": {
+      "peak": 0.14,
+      "rms": 0.01168,
+      "nonSilentRatio": 0.6768
+    }
+  },
+  "source": "bj-shooting-game/night-heron-src/src/audio.js（合成配方逐字移植，纯 JS 离线渲染）"
+}
