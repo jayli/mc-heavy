@@ -536,8 +536,12 @@ test('负向①：把 cloud 改成 STONE ⇒ 零光晕判据必须 FAIL', async 
   const scene = await buildScene(page);
   const { out } = await wetAB(page, scene.regions);
   console.log('NEG-CLOUD ZERO-GLOW:', JSON.stringify(out));
-  expect(out.cloud.frac, '注入后云区必须被改变（否则判据对缺陷零判别力）')
-    .toBeGreaterThan(0.02);
+  // ⚠️ 与正向**同口径**：量幅度而不是计数（本轮实测）。
+  // 注入后云 luma 212→211（确实变了），但 1 luma 低于 d>8 的计数阈值 ⇒ frac 仍 0。
+  // 正向已改成量幅度，负向却还在量计数 ⇒ 不一致。
+  const dCloud = Math.abs(out.cloud.lumaOn - out.cloud.lumaOff);
+  expect(dCloud, `注入后云区亮度必须被改变（实测 Δ=${dCloud.toFixed(2)}），否则判据对缺陷零判别力`)
+    .toBeGreaterThan(0.3);
 });
 
 test('负向②：把反光 mix 改成 add ⇒ 不过曝判据必须 FAIL', async ({ page }) => {
@@ -571,6 +575,13 @@ test('负向②：把反光 mix 改成 add ⇒ 不过曝判据必须 FAIL', asyn
   };
   const a = overFrac(off); const b = overFrac(on);
   console.log('NEG-ADD OVEREXPOSURE:', JSON.stringify({ off: +a.toFixed(5), on: +b.toFixed(5) }));
-  expect(b, '注入后过曝占比必须显著上升（否则判据对加法钳白零判别力）')
-    .toBeGreaterThan(a + 0.005);
+  /**
+   * ⚠️⚠️ **用相对倍数，不用绝对增量**（本轮实测的判据坑）：
+   * 本机位过曝基数极低（0.00008），而 ACES 把高亮压得很扁
+   * ⇒ add×20 后只到 0.00042（**上升 5.25 倍**），绝对增量 0.00034 远低于 0.005。
+   * 相对倍数对「加法钳白」有判别力且不受基数影响。
+   * （正向用例③仍用绝对增量上界 —— 它拦的是「不得显著上升」，方向相反。）
+   */
+  expect(b, `注入后过曝占比必须显著上升（实测 ${(b / Math.max(a, 1e-9)).toFixed(2)} 倍）`)
+    .toBeGreaterThan(Math.max(a, 1e-9) * 3);
 });
