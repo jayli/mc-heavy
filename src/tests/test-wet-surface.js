@@ -15,10 +15,11 @@ import { BLOCKS } from '../voxel/blocks-data.js';
 import { buildSectionMesh } from '../mesh/mesher.js';
 import { WET_CLASS, WET_CLASS_COUNT, WET_CLASS_DATA, wetClassOf } from '../voxel/wet-material-data.js';
 import {
-  WET_CLASS_PARAMS, WET_WALL_FACTOR, WET_SHININESS,
+  WET_CLASS_PARAMS, WET_WALL_FACTOR, WET_SHININESS, WET_REFL_MAX, WET_REFL_FLOOR,
   WET_FRESNEL_F0_BASE, WET_FRESNEL_F0_RANGE,
   wetnessAt, wetAboveWaterGate, wetRoughnessAt, puddleAllowed,
   wetFresnel, wetShininess, skyEnvMixAt, wetSpecGainAt, wetDarkenAt,
+  wetReflFloor, wetReflK,
 } from '../render/wet-surface-config.js';
 
 function assertClose(a, b, eps = 1e-9, msg = '') {
@@ -266,4 +267,61 @@ test('DayNight: 湿表面句柄缺失时不抛错（既有调用方 / fixture �
   });
   dn.setStyle('noon');
   assertTrue(true, '未抛错');
+});
+
+// ---------- 反光量级地板（v3.31，用户 2026-11-22 裁定「加非物理地板，反光明显」）----------
+
+/**
+ * 为什么需要地板：Schlick 菲涅尔在半俯视（noV≈0.53）时 F≈0.068 ——
+ * 物理上湿石头在该角度只反射约 7% 的光，屏幕上 Δluma 仅 1.5（8bit 量化后分不开）。
+ * 三个旋钮（WET_REFL_MAX / 菲涅尔幂 / F0 基数）全扇描完最强也只 3.81，
+ * 低于设计稿目标带下界 6 ⇒ 用户裁定加一个**非物理地板**。
+ *
+ * ⚠️ 地板必须**随粗糙度衰减**（`FLOOR × (1−rough)`）：
+ * 否则布/植被也会反光，材质分层就没了（用户明确否决「只有一种反光材质」）。
+ */
+test('wet refl: 地板随粗糙度衰减 —— 抛光拿满、布几乎拿不到', () => {
+  const rPol = WET_CLASS_PARAMS[WET_CLASS.POLISHED][2];
+  const rFab = WET_CLASS_PARAMS[WET_CLASS.FABRIC][2];
+  const kPol = wetReflFloor(rPol);
+  const kFab = wetReflFloor(rFab);
+  assertTrue(kPol > kFab * 8, `抛光地板 ${kPol} 须远大于布 ${kFab}`);
+  assertClose(wetReflFloor(1), 0, 1e-12, '完全粗糙 ⇒ 无地板');
+  assertClose(wetReflFloor(0), WET_REFL_FLOOR, 1e-12, '完全光滑 ⇒ 满地板');
+});
+
+test('wet refl: 半俯视（noV=0.53）抛光石的 Δluma 落在目标带 [6,40]', () => {
+  // 口径与设计稿 §6.1b 一致：真实 atlas 基色 + 正午天空色，sRGB 0~255
+  const BASE = 0.3816;   // Smooth_Stone 的线性 luma（真实 atlas 像素实测）
+  const SKY = 0.5529;    // 0x87ceeb 的线性 luma
+  const noV = 5 / Math.hypot(5, 8);   // 用例②机位：俯视 32°
+  const srgb = (v) => (v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055);
+  const dLuma = (cls) => {
+    const rough = wetRoughnessAt(cls, 1, 0);
+    const k = wetReflK(noV, rough, wetSpecGainAt(cls, 0), wetnessAt(1, 1, cls, 10, -1.5));
+    return (srgb(BASE + (SKY - BASE) * k) - srgb(BASE)) * 255;
+  };
+  const pol = dLuma(WET_CLASS.POLISHED);
+  assertTrue(pol >= 6 && pol <= 40, `抛光石 Δluma=${pol.toFixed(2)} 须 ∈[6,40]`);
+  // 材质分层在真实像素上也成立：布的变化必须远小于抛光
+  assertTrue(dLuma(WET_CLASS.FABRIC) < pol / 10, '布的 Δluma 须 < 抛光的 1/10');
+  // 序关系（反光项，不含压暗）
+  assertTrue(dLuma(WET_CLASS.STONE) > dLuma(WET_CLASS.WOOD), '石 > 木');
+  assertTrue(dLuma(WET_CLASS.WOOD) > dLuma(WET_CLASS.SOIL), '木 > 土');
+  assertTrue(dLuma(WET_CLASS.SOIL) > dLuma(WET_CLASS.FABRIC), '土 > 布');
+});
+
+test('wet refl: reflK 恒有界（含积水与金属/冰的极端组合）—— mix 不会钳白', () => {
+  for (let cls = 0; cls < WET_CLASS_COUNT; cls++) {
+    for (const up of [1, 0, -1]) {
+      for (const puddle of [0, 1]) {
+        for (const noV of [0, 0.2, 0.53, 0.9, 1]) {
+          const rough = wetRoughnessAt(cls, up, puddle);
+          const k = wetReflK(noV, rough, wetSpecGainAt(cls, puddle), wetnessAt(1, up, cls, 10, -1.5));
+          assertTrue(k >= 0 && k <= WET_REFL_MAX,
+            `cls${cls} up${up} puddle${puddle} noV${noV}: reflK=${k} 须 ∈[0,${WET_REFL_MAX}]`);
+        }
+      }
+    }
+  }
 });

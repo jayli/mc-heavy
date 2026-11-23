@@ -209,7 +209,7 @@ test('雨天水下：湿地面反光在水面以下逐位归零（片元门，�
       const wet = g.renderWorld.materials.wet;
       wet.uWet.value = 1;
       wet.uWetWaterY.value = wy;
-      wet.uWetTime.value = 12.0;
+      // ⚠️ v3.31：新湿表面**无时钟**（静态，用户未选涟漪/流水动画）⇒ 不再写 uWetTime。
       g._renderWaterReflection();
       g.renderer.render(g.scene, g.camera);
     }, waterY);

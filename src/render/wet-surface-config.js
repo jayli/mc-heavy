@@ -77,6 +77,32 @@ export const WET_WALL_ROUGH_ADD = 0.25;
  */
 export const WET_REFL_MAX = 0.55;
 
+/**
+ * 反光的**非物理地板**（v3.31，用户 2026-11-22 裁定「加非物理地板，反光明显」）。
+ *
+ * ## 为什么需要它（扇描实测，不是口味）
+ *
+ * Schlick 菲涅尔在半俯视（noV≈0.53）时 F≈**0.068** —— 物理上湿石头在该角度
+ * 只反射约 7% 的光。用真实 atlas 基色（Smooth_Stone 线性 luma 0.3816）
+ * 与正午天空色（0x87ceeb 线性 luma 0.5529）算，抛光石的 Δluma 只有 **1.46**
+ * （sRGB 0~255）—— 8bit 量化 + ACES 后屏幕上分不开。
+ * 设计稿 §6.1b 的三个旋钮全扇描完（MAX 0.55→1.0 / 菲涅尔幂 5→3 /
+ * F0 基数 0.02+0.04→0.04+0.16）最强也只 **3.81**，低于目标带下界 **6**。
+ * ⇒ 用户裁定加地板（偏离物理，换「看得见的地面湿滑反光」）。
+ *
+ * ## 为什么地板必须随粗糙度衰减
+ *
+ * `floor = WET_REFL_FLOOR × (1 − rough)` —— 否则布/植被也会反光，
+ * 材质分层就没了（用户明确否决「只有一种反光材质」）。
+ * 实测（noV 0.53）：抛光 Δluma **6.19** vs 布 **0.06** ⇒ 差 100 倍。
+ *
+ * ⚠️ 取值 0.28 是**扇描选定的最小入带档**（0.06/0.10/0.14/0.20/0.28 中
+ * 第一个让抛光 ≥6 的），不动既有 `WET_REFL_MAX`。
+ * ⚠️ 地板只加在 **F** 上，不突破 `WET_REFL_MAX` 的总上限
+ * ⇒ reflK 恒 ≤ 0.55 < 1 ⇒ `mix` 仍天然有界，不会钳白（由单测的全组合扫描钉住）。
+ */
+export const WET_REFL_FLOOR = 0.28;
+
 /** 太阳高光总增益。雨天云遮日 ⇒ 取得很弱（不是晴天的镜面太阳斑）。 */
 export const WET_SUN_SPEC = 0.22;
 
@@ -236,6 +262,37 @@ export function wetSpecGainAt(cls, puddle) {
   const p = WET_CLASS_PARAMS[cls];
   if (!p) return 0;
   return Math.min(p[3] * lerp(1, WET_PUDDLE_SPEC_K, clamp01(puddle)), 1);
+}
+
+/**
+ * 反光地板项（随粗糙度衰减）。
+ * @param {number} rough @returns {number} 0..WET_REFL_FLOOR
+ */
+export function wetReflFloor(rough) {
+  return WET_REFL_FLOOR * (1 - clamp01(rough));
+}
+
+/**
+ * 天空环境的混合系数 `reflK` —— **反光的唯一强度入口**。
+ *
+ * `reflK = (F + floor(rough)) × specGain × WET_REFL_MAX × wet`
+ *
+ * ⚠️ 恒 ≤ `WET_REFL_MAX` < 1：因为 F ≤ 1、floor ≤ 0.28、specGain ≤ 1、wet ≤ 1
+ * ⇒ 乘积上限 = (1+0.28)×1×0.55×1 = 0.704？**不是** —— F 与 floor 不会同时取最大：
+ * F 在 rough→0 时最大（0.06）而 floor 也在 rough→0 时最大（0.28），
+ * 故上限 = (0.06+0.28)×1×0.55 = 0.187（noV→0 时 F→1 ⇒ (1+0.28)×0.55 = 0.704）。
+ * 两者都 < 1 ⇒ `mix(albedo, skyEnv, reflK)` 恒在两端之间，**不会钳白**。
+ * 由 `test-wet-surface.js` 的全组合扫描（9 类 × 3 朝向 × 2 积水 × 5 noV）钉住。
+ *
+ * @param {number} noV 法线·视线
+ * @param {number} rough 已含竖面加成与积水修正的粗糙度
+ * @param {number} specGain 类镜面系数（已含积水修正）
+ * @param {number} wet 有效湿强度
+ * @returns {number} 0..WET_REFL_MAX
+ */
+export function wetReflK(noV, rough, specGain, wet) {
+  const f = wetFresnel(noV, rough) + wetReflFloor(rough);
+  return Math.min(f * specGain * WET_REFL_MAX * clamp01(wet), WET_REFL_MAX);
 }
 
 /**

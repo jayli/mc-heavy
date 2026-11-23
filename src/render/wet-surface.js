@@ -47,7 +47,7 @@ import {
   WET_WALL_FACTOR, WET_WALL_ROUGH_ADD, WET_REFL_MAX, WET_SUN_SPEC,
   WET_PUDDLE_SCALE, WET_PUDDLE_FROM, WET_PUDDLE_TO,
   WET_PUDDLE_ROUGH_K, WET_PUDDLE_DARK_K, WET_PUDDLE_SPEC_K, WET_PUDDLE_ROUGH_GATE,
-  WET_SKY_BAND, WET_FRESNEL_F0_BASE, WET_FRESNEL_F0_RANGE, WET_SHININESS,
+  WET_SKY_BAND, WET_FRESNEL_F0_BASE, WET_FRESNEL_F0_RANGE, WET_SHININESS, WET_REFL_FLOOR,
 } from './wet-surface-config.js';
 import { WATER_SURFACE_Y } from './water-surface.js';
 
@@ -154,11 +154,16 @@ export function createWetSurfaceNode({
   const zenith = vec3(U.uWetZenith.r, U.uWetZenith.g, U.uWetZenith.b);
   const skyEnv = mix(horizon, zenith, smoothstep(bandLo, bandHi, R.y)).mul(skyDim);
 
-  // ---- 菲涅尔（Schlick，F0 由粗糙度派生）----
+  // ---- 菲涅尔（Schlick，F0 由粗糙度派生）+ **非物理地板** ----
+  // ⚠️ 地板是用户 2026-11-22 裁定（「加非物理地板，反光明显」）：
+  // Schlick 在半俯视（noV≈0.53）只给 F≈0.068，屏幕上 Δluma 仅 1.46，
+  // 三个旋钮全扇描完最强也只 3.81 < 目标带下界 6（详见 config 的 WET_REFL_FLOOR 注释）。
+  // ⚠️ 地板**随粗糙度衰减**（×(1−rough)）⇒ 布/植被仍几乎不反光，材质分层保住。
   const noV = clamp(dot(faceNormal, V), float(0), float(1));
   const f0 = add(float(WET_FRESNEL_F0_BASE),
     mul(float(WET_FRESNEL_F0_RANGE), oneMinus(rough)));
   const fres = add(f0, mul(oneMinus(f0), pow(oneMinus(noV), 5)));
+  const floorTerm = mul(float(WET_REFL_FLOOR), oneMinus(rough));
 
   // ---- 太阳高光（Blinn-Phong；雨天云遮日 ⇒ 总增益很弱；影区复用既有 shadowKill）----
   const H = normalize(add(sunDirection, V));
@@ -172,7 +177,11 @@ export function createWetSurfaceNode({
   // ⚠️ mix 不是 add（口径见文件头③）：reflK ≤ WET_REFL_MAX < 1 ⇒ 结果恒在
   // [albedo, skyEnv] 之间，不会在亮端钳白。
   const albedo = mul(baseRgb, mix(float(1), darken, wet));
-  const reflK = mul(mul(fres, specGain), float(WET_REFL_MAX)).mul(wet);
+  // reflK = (F + floor) × specGain × MAX × wet，钳 ≤ MAX（与 config 的 wetReflK 同构）
+  const reflK = min(
+    mul(mul(add(fres, floorTerm), specGain), float(WET_REFL_MAX)).mul(wet),
+    float(WET_REFL_MAX),
+  );
   const withSky = mix(albedo, skyEnv, reflK);
   const lit = add(withSky, mul(vec3(sunColor.x, sunColor.y, sunColor.z), spec).mul(wet));
 
