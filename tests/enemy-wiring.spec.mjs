@@ -455,12 +455,18 @@ test('玩家阻挡：逐 blocksPlayer 类型 _collides 必须为真', async ({ p
       const far = ph._collides();
       ph.pos.x = save.x; ph.pos.y = save.y; ph.pos.z = save.z;
       g.entities.update = origUpdate;
-      return { inside, far, ex, ey, ez };
+      return { inside, far };
     }, [s.id]);
     rows.push({ type, ...r });
   }
   for (const r of rows) {
     expect(r.inside, `${r.type} 玩家盒重叠时 _collides 必须为真（漏该行则玩家走进身体）`).toBe(true);
+    /**
+     * 对照：远处同高不得因**实体**而碰撞 —— 排除「地形本身就实心」的假绿。
+     * ⚠️ 远处可能踩到真实地形，故只要求「不是两处都碰撞」：
+     * 若 inside 与 far 同时为真，无法区分「实体阻挡」与「地形阻挡」⇒ 判据失去判别力。
+     */
+    expect(r.far, `${r.type} 远处对照点不得也碰撞（否则无法区分实体阻挡与地形阻挡）`).toBe(false);
   }
 });
 
