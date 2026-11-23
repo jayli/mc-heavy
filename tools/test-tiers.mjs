@@ -74,6 +74,7 @@ const UI = [
 /** 实体玩法 / AI / 武器 */
 const ENTITY = [
   'entities',
+  'enemy-roster',
   'zombies',
   'zombie-nests',
   'zombie-model',
