@@ -20,6 +20,7 @@
 //    关系式（序、单调、归零）是判据，绝对值可调。
 
 import { WET_CLASS, WET_CLASS_COUNT } from '../voxel/wet-material-data.js';
+import { SHELTER_Y_BASE, SHELTER_EPS } from '../voxel/rain-occlusion-data.js';
 
 /**
  * 湿度总强度上限（装配层写 `uWet` 时用；0 = 完全干，逐位回到未开启的体素材质）。
@@ -479,3 +480,39 @@ export function wetPuddleSkyMul(cloud, puddle, up, reflStrength) {
 
 // 类枚举再导出一次：消费方（TSL 侧 / 单测）只 import 本文件即可拿到全套。
 export { WET_CLASS, WET_CLASS_COUNT };
+
+// ------------------------------------------------ v3.34 逐点遮挡门
+//
+// 设计稿：docs/superpowers/specs/2026-11-23-rain-per-point-shelter-design.md §4.6
+// TSL 侧在 wet-surface.js，两侧公式**逐项同构**（红线 1）。
+
+/** 解码时的 f32 量化 scratch（与 GPU 的 8bit 归一化 + f32 算术逐位同构）。 */
+const _encF32 = new Float32Array(1);
+
+/**
+ * 遮挡门：该探针是否被头顶的屋顶挡住雨。
+ *
+ * ⚠️⚠️ **判据是「截停面严格高于探针所在格的格顶」**，不是 `probeY <= stopY`：
+ * `stopY` 是**格顶**（y+1，与既有 rainShelterY 同源），而探针落在**几何顶面**外半格。
+ * 对整格方块两者恰好差 0.5，但对**非整格顶面**的方块会共面：
+ *   · 三款 slab / 床：几何顶面 0.5 ⇒ 探针 1.0，stop=1 ⇒ `probe<=stop` 成立
+ *     ⇒ **露天半砖永远不湿**（静默缺陷）；
+ *   · horizontal_pillar 0.65 同理。
+ * 格顶口径把「自身格表面」从「遮挡」里结构性地排除 ⇒ 屋顶自身顶面也正确判湿。
+ *
+ * ⚠️ **解码必须显式走一遗 f32 量化**（`Float32Array(enc/255)` 再 `×127.5`）：
+ * GPU 侧读的是 8bit 归一化后的 f32，直接用 `enc/2` 会与 GPU 差最多 3.78e-6。
+ *
+ * @param {number} probeY 探针世界 y（= 片元 y + 法线 y × 0.5）
+ * @param {number} stopEnc R 通道编码（0 = 未知/无截停面）
+ * @param {number} strength `uWetShelter` 0..1（0 ⇒ 逐位回到 v3.33，第四级零回归锚点）
+ * @returns {number} 1 = 可湿；0 = 被遮挡（干）
+ */
+export function wetShelterGate(probeY, stopEnc, strength) {
+  if (!(stopEnc > 0)) return 1;                 // 未知 ⇒ 安全失败（不遮挡）
+  if (!(strength > 0)) return 1;                // 关档 ⇒ 逐位回到改动前
+  _encF32[0] = stopEnc / 255;
+  const stop = _encF32[0] * (255 / 2) + SHELTER_Y_BASE;
+  const cellTop = Math.floor(probeY) + 1 + SHELTER_EPS;
+  return stop > cellTop ? 1 - strength : 1;
+}

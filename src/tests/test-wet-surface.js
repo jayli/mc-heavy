@@ -591,3 +591,64 @@ test('puddle uniforms: uWetPuddleRefl 初值 1，uWet 初值仍 0（两级零回
   assertEqual(U.uWetPuddleRefl.value, 1, '积水反光默认开');
   assertEqual(U.uWet.value, 0, '总强度默认关');
 });
+
+// ------------------------------------------------ v3.34 逐点遮挡门（CPU 同构）
+//
+// 设计稿：docs/superpowers/specs/2026-11-23-rain-per-point-shelter-design.md §4.6
+// TSL 侧在 wet-surface.js，两侧**判据与常量必须逐位同构**（红线 1）。
+
+test('wet shelter gate: 未知/关档恒 1，棚下 0，棚外 1（CPU 与 GPU 同构）', async () => {
+  const { wetShelterGate } = await import('../render/wet-surface-config.js');
+  const { encodeStopY } = await import('../voxel/rain-occlusion-data.js');
+  const roof = encodeStopY(10);        // 屋顶顶面 y=10
+  assertEqual(wetShelterGate(10.5, 0, 1), 1, 'R=0 未知 ⇒ 不遮挡');
+  assertEqual(wetShelterGate(5.5, roof, 0), 1, 'strength=0 ⇒ 逐位回到 v3.33');
+  assertEqual(wetShelterGate(5.5, roof, 1), 0, '探针在屋顶之下 ⇒ 干');
+  assertEqual(wetShelterGate(10.5, roof, 1), 1, '屋顶自身顶面之上 ⇒ 湿');
+});
+
+// ★ P0-2 的判别力锚点：非整格顶面方块的露头顶面必须湿
+// 实测几何顶面（真实 TEMPLATES）：half_block=0.5、horizontal_pillar=0.65、cactus=1.05
+test('wet shelter gate: 半砖/横柱/仙人掌的露头顶面必须湿（探针共面陷阱）', async () => {
+  const { wetShelterGate } = await import('../render/wet-surface-config.js');
+  const { encodeStopY } = await import('../voxel/rain-occlusion-data.js');
+  const ground = encodeStopY(1);       // 方块在 y=0，格顶 stop=1
+  assertEqual(wetShelterGate(1.0, ground, 1), 1, 'sand_slab 露头顶面不得被判干');
+  assertEqual(wetShelterGate(1.15, ground, 1), 1, 'horizontal_pillar 露头顶面必须湿');
+  assertEqual(wetShelterGate(1.55, ground, 1), 1, 'cactus 露头顶面必须湿');
+  assertEqual(wetShelterGate(5.0, encodeStopY(5), 1), 1, '半砖棚顶自身必须湿');
+});
+
+test('wet shelter gate: 穷举全部挡雨方块 × cellY 0..3 × 有无屋顶（几何顶面从真实 TEMPLATES 算）', async () => {
+  const { wetShelterGate } = await import('../render/wet-surface-config.js');
+  const { encodeStopY } = await import('../voxel/rain-occlusion-data.js');
+  const { TEMPLATES } = await import('../mesh/mesher.js');
+  const { blocksRain } = await import('../render/rain-shelter.js');
+
+  /** 该方块几何的真实顶面（逐顶点取 max y，不写死数字） */
+  const topOf = (def) => {
+    const tpl = TEMPLATES[def.geometry || 'cube'];
+    if (!Array.isArray(tpl)) return 1;
+    let top = -Infinity;
+    for (const q of tpl) for (const v of q.v) if (v[1] > top) top = v[1];
+    return Number.isFinite(top) ? top : 1;
+  };
+
+  let n = 0;
+  for (const def of BLOCKS) {
+    const bid = REG.idOf(def.name);
+    if (!blocksRain(bid, REG)) continue;
+    const top = topOf(def);
+    for (let cellY = 0; cellY <= 3; cellY++) {
+      const probeY = cellY + top + 0.5;      // 探针 = 几何顶面 + 法线偏移 0.5
+      // ① 无上方屋顶：stop = 自己这一格的格顶 ⇒ 必须湿
+      assertEqual(wetShelterGate(probeY, encodeStopY(cellY + 1), 1), 1,
+        `${def.name}@y=${cellY} 露天顶面必须湿（几何顶面 ${top}）`);
+      // ② 上方 y=6 有屋顶：stop=7 ⇒ 必须干
+      assertEqual(wetShelterGate(probeY, encodeStopY(7), 1), 0,
+        `${def.name}@y=${cellY} 屋顶下必须干`);
+      n += 2;
+    }
+  }
+  assertTrue(n >= 1000, `穷举应 >= 1000 例，实际 ${n}`);
+});
