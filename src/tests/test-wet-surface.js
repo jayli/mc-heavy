@@ -325,3 +325,41 @@ test('wet refl: reflK 恒有界（含积水与金属/冰的极端组合）——
     }
   }
 });
+
+// ---------- 类位越界防御（Final review 自审发现的 Important）----------
+
+/**
+ * `packed` 类位是 **4 bit**（能表达 0..15），而参数表只有 **9** 项。
+ * CPU 侧纯函数有 `if (!p) return` 回落，但 GPU 侧 `.element(cls)` 会**越界读
+ * uniform buffer**（WGSL undefined behavior：可能读 0、读邻项、或触发验证错误
+ * ⇒ 整片材质不上屏）。
+ *
+ * 真实可达路径：将来扩类到 >9 却忘了扩数组、或旧 section 缓存里的高位残留。
+ * ⇒ 两侧必须同构：GPU 侧也要把索引钳到 `WET_CLASS_COUNT − 1`。
+ *
+ * ⚠️ 钳到最后一项（PLANT，极弱湿）而不是 NONE：钳到 0 需要额外一次 select，
+ * 而 PLANT 的 wetGain 0.35 / specGain 0.05 已经是「几乎不湿」的安全侧。
+ */
+test('wet class: 类位越界（9..15）时 CPU 侧安全回落，且与 GPU 钳制口径一致', () => {
+  for (let cls = WET_CLASS_COUNT; cls <= 15; cls++) {
+    // CPU 侧：表外的类一律不湿（params[cls] undefined ⇒ 早退）
+    assertEqual(wetnessAt(1, 1, cls, 10, -1.5), 0, `cls ${cls} 不湿`);
+    assertEqual(wetSpecGainAt(cls, 0), 0, `cls ${cls} 无镜面`);
+    assertEqual(wetDarkenAt(cls, 0), 1, `cls ${cls} 不压暗`);
+    assertEqual(wetRoughnessAt(cls, 1, 0), 1, `cls ${cls} 全粗糙`);
+  }
+});
+
+test('wet class: GPU 侧索引必须钳到表长 − 1（防越界读 uniform buffer）', async () => {
+  const fs = await import('node:fs');
+  const src = fs.readFileSync(new URL('../render/wet-surface.js', import.meta.url), 'utf8');
+  const code = src.split('\n')
+    .filter((l) => { const t = l.trim(); return t && !t.startsWith('*') && !t.startsWith('//') && !t.startsWith('/*'); })
+    .join('\n');
+  // 必须存在 min(cls, WET_CLASS_COUNT-1) 这类钳制，且 element() 吃的是钳制后的值
+  assertTrue(/const clsSafe = min\(cls, (?:float|int|uint)\(WET_CLASS_COUNT - 1\)\)/.test(code)
+    || /const clsSafe = min\(cls, WET_CLASS_COUNT - 1\)/.test(code),
+  '必须有 clsSafe = min(cls, WET_CLASS_COUNT − 1)');
+  assertTrue(/uWetParams\.element\(clsSafe\)/.test(code), 'element() 必须吃钳制后的索引');
+  assertTrue(!/uWetParams\.element\(cls\)/.test(code), '不得直接用未钳制的 cls');
+});

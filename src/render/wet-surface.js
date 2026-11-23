@@ -37,7 +37,7 @@
 //   ⑦ 噪声用 `mx_noise_float`（连续），**不用 `hash(floor(...))`**（会出轴对齐矩形斑）。
 import * as THREE from 'three';
 import {
-  float, vec2, vec3, uniform, uniformArray, attribute, varying, vertexStage,
+  float, vec2, vec3, uniform, uniformArray, attribute, varying, vertexStage, uint,
   mix, max, min, mul, add, sub, dot, pow, clamp, normalize, smoothstep, oneMinus,
   step, select, reflect, mx_noise_float as perlin,
   positionWorld, cameraPosition,
@@ -115,7 +115,18 @@ export function createWetSurfaceNode({
   // 虽然 flat 对常量恰好无害，但顶点查表更省一次片元位运算，且绕开那条坑。
   const packed = attribute('packed', 'uint');
   const cls = packed.shiftRight(WET_CLASS_SHIFT).bitAnd(WET_CLASS_MASK);
-  const P = varying(vertexStage(U.uWetParams.element(cls)), 'vWetParams');
+  /**
+   * ⚠️⚠️ **索引必须钳到表长 − 1**（自审发现的 Important）：
+   * 类位是 **4 bit**（能表达 0..15）而参数表只有 **9** 项
+   * ⇒ `.element(cls)` 在 cls ∈ [9,15] 时**越界读 uniform buffer**
+   * （WGSL undefined behavior：可能读 0、读邻项、或触发验证错误 ⇒ 整片材质不上屏）。
+   * 真实可达路径：将来扩类到 >9 却忘了扩数组、或旧 section 缓存里的高位残留。
+   * CPU 侧纯函数有 `if (!p) return` 回落 ⇒ 两侧必须同构（红线 1）。
+   * ⚠️ 钳到**最后一项**（PLANT，wetGain 0.35 / specGain 0.05 = 几乎不湿）
+   * 而不是 NONE：后者需额外一次 select，而 PLANT 已在安全侧。
+   */
+  const clsSafe = min(cls, uint(WET_CLASS_COUNT - 1));
+  const P = varying(vertexStage(U.uWetParams.element(clsSafe)), 'vWetParams');
 
   const wp = positionWorld;
   const up = faceNormal.y;
