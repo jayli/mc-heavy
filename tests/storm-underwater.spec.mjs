@@ -128,8 +128,13 @@ test('雨天水下：雨丝与水花都截停在水面，不落进湖底', async
       const surf = waterSurfaceYAt(g.world, g.registry, wx, wz,
         Math.max(wy, WATER_SURFACE_Y + 1), 48);
       // GPU 侧真实的可见性（与 storm-rain-material 的 fade 同式，略去远近衰减）
+      // ⚠️ v3.34：遮挡门已改成**逐顶点按当前 xz 采高度图**（aShelter 降为诊断量）
+      // —— 10Hz 预采跟不上 1.6 格/s 的水平飘移。判据必须读同一份权威，
+      // 否则量的是旧量（会把「已遮住的滴」当成可见，或反之）。
       const aboveWater = wc.getX(i) === 1 ? (wy >= waterY ? 1 : 0) : 1;
-      const visible = sh.getX(i) === 0 && aboveWater === 1 && wy >= v;
+      const stopNow = g.rainShelterMap.stopAt(wx, wz);
+      const shelteredNow = stopNow !== null && stopNow > Math.floor(wy) + 1 + 1 / 512;
+      const visible = !shelteredNow && aboveWater === 1 && wy >= v;
       if (visible) visibleTotal++;
       if (surf === null) { onLand++; continue; }
       if (Math.abs(v - surf) < 1e-4) atWater++;
@@ -330,12 +335,21 @@ test('负向：去掉雨的水下两道门 ⇒ 水下判据必须 FAIL', async (
    * 只把 GPU 的 `aboveWater` 退为恒 1 **不够** —— 实测分解：2046 滴位置在水下，
    * 其中 1003 被 `aShelter` 拦、剩下 1043 被 `step(aMinY, y)` 拦（aMinY 已是水面 −1.5）
    * ⇒ visibleBelow **仍为 0**，会误读成「判据失效」。
-   * ⇒ 同时退回**两道门**：CPU 的截停面去掉水面项（rainStopY）+ GPU 的 aboveWater。
+   * ⇒ 同时退回**两道门**：CPU 的截停面去掉水面项 + GPU 的 aboveWater。
    * 那才是 v3.30e 的真实行为（雨丝穿过水落到湖底）。
+   *
+   * ⚠️⚠️ **v3.34：注入点必须跟着权威走**。持续雨的截停面已从 `rainStopY`
+   * 改成**逐列高度图**（`rain-shelter-map.js` 的 `_scanColumn`）⇒ 再注入 rain-shelter.js
+   * **到不了产物**（实测 below 从基线 62 变 0，而它并非真缺陷）。
+   * ⇒ CPU 侧注入改成把扫描里的**水体分支**整段短路，与旧注入等效。
+   * （`rain.js` 循环雨滴仍走 rainStopY，故那一处注入也保留。）
    */
   await routeModule(page, 'rain-shelter.js', (b) => b.replace(
     '  const water = waterSurfaceYAt(world, registry, x, z, start, searchDepth);',
     '  const water = null;'));
+  await routeModule(page, 'rain-shelter-map.js', (b) => b.replace(
+    'if (waterTab[cid] === 1 && opaque[prev] !== 1 && prev !== cid) {',
+    'if (false && waterTab[cid] === 1 && opaque[prev] !== 1 && prev !== cid) {'));
   await routeModule(page, 'storm-rain-material.js', (b) => b.replace(
     'const aboveWater = mix(float(1), step(U.uWaterY, p.y), waterCol);',
     'const aboveWater = float(1);'));
@@ -369,15 +383,20 @@ test('负向：去掉雨的水下两道门 ⇒ 水下判据必须 FAIL', async (
       const wz = mod(sz * box[2] + ST.vel[2] * t - c.z + half[2], box[2]) - half[2] + c.z;
       const surf = waterSurfaceYAt(g.world, g.registry, wx, wz, Math.max(wy, WATER_SURFACE_Y + 1), 48);
       if (surf === null) continue;
-      // 注入后的可见性：aboveWater 恒 1
-      const visible = sh.getX(i) === 0 && wy >= v;
+      // 注入后的可见性：aboveWater 恒 1；遮挡门仍逐顶点按当前 xz 采高度图
+      // ⚠️ v3.34：GPU 不再消费 aShelter（10Hz 预采跟不上水平飘移）⇒ 判据必须读高度图。
+      const stopNow = g.rainShelterMap.stopAt(wx, wz);
+      const shelteredNow = stopNow !== null && stopNow > Math.floor(wy) + 1 + 1 / 512;
+      const visible = !shelteredNow && wy >= v;
       if (visible && wy < surf - 1e-4) below++;
     }
     // 注入生效确认：读回浏览器侧两个模块的源码
     const srcMat = await (await fetch('/src/render/storm-rain-material.js')).text();
     const srcSh = await (await fetch('/src/render/rain-shelter.js')).text();
+    const srcMap = await (await fetch('/src/render/rain-shelter-map.js')).text();
     return { WATER_SURFACE_Y, resolved, below,
-      injected: srcMat.includes('const aboveWater = float(1);') && srcSh.includes('const water = null;'),
+      injected: srcMat.includes('const aboveWater = float(1);') && srcSh.includes('const water = null;')
+        && srcMap.includes('if (false && waterTab[cid] === 1'),
       hasReal: srcMat.includes('step(U.uWaterY, p.y), waterCol') };
   });
   console.log('NEG-RAIN-GATE:', JSON.stringify(r));
