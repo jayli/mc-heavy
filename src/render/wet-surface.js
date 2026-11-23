@@ -49,6 +49,7 @@ import {
   mix, max, min, mul, add, sub, dot, pow, clamp, normalize, smoothstep, oneMinus,
   step, select, reflect, mx_noise_float as perlin,
   positionWorld, cameraPosition,
+  int, floor, length, textureLoad, ivec3,
 } from 'three/tsl';
 import {
   WET_CLASS_PARAMS, WET_CLASS_COUNT,
@@ -60,6 +61,10 @@ import {
 } from './wet-surface-config.js';
 import { WATER_SURFACE_Y } from './water-surface.js';
 import { createPuddleReflectNode } from './puddle-reflect.js';
+import { SHELTER_TEXTURE } from './rain-shelter-texture.js';
+import {
+  SHELTER_MAP_SIZE, SHELTER_Y_BASE, SHELTER_EPS,
+} from '../voxel/rain-occlusion-data.js';
 
 /** packed 里材质类位的偏移与掩码（唯一权威在 mesher 的 WET_CLASS_SHIFT，两处必须一致）。 */
 const WET_CLASS_SHIFT = 15;
@@ -119,6 +124,16 @@ export const WET_SURFACE_UNIFORMS = {
    * 因为 texture 节点仍在 bind group 里，WebGPU 按绑定算 usage）。
    */
   uPuddleReflect: uniform(1),
+  /**
+   * v3.34：**逐点遮挡门开关** 0..1（默认 1）—— **第四级零回归锚点**。
+   *
+   * 写 0 ⇒ 遮挡门恒 1 ⇒ 湿表面逐位回到 v3.33（前三级：`uWet` /
+   * `uWetPuddleRefl` / `uPuddleReflect`）。Tier 4 的 `gated` vs `ungated` 单变量 A/B 靠它。
+   *
+   * ⚠️ 它**不是**「玩家室内 ⇒ 全世界干」的总闸（那是本轮要删的东西）：
+   * 遮挡是**空间属性**，逐片元按世界坐标采高度图判定。
+   */
+  uWetShelter: uniform(1),
 };
 
 /**
@@ -196,7 +211,52 @@ export function createWetSurfaceNode({
 
   // ---- 有效湿强度（水下门乘在这里 ⇒ 压暗/反光/高光四项一起归零）----
   const aboveWater = step(U.uWetWaterY, wp.y);
-  const wet = clamp(mul(mul(U.uWet, P.x), orient), float(0), float(1)).mul(aboveWater);
+
+  /**
+   * v3.34 **逐点遮挡门**（棚下干、棚外湿）。
+   *
+   * 设计稿 §4.6。三个不可自行决定的要点：
+   *
+   * ① **探针 = wp + faceNormal × 0.5**（法线偏移是核心机制，删不得）：
+   *    屋内地板顶面的探针落在屋内空气里 ⇒ 读到屋顶高度 ⇒ 干；
+   *    屋外地面 / 屋顶自身顶面的探针落在露天 ⇒ 湿；
+   *    内墙面（法线朝屋内）⇒ 干，外墙面（法线朝屋外）⇒ 湿。
+   *    删掉偏移 ⇒ 探针恰在自身表面 ⇒ 屋外地面也被判干（Tier 4 负向①）。
+   *
+   * ② **绝对 texel 索引**（不减窗口原点），且坐标可能为负 ⇒ **先 int 再 bitAnd**：
+   *    int 位与是二进制补码 ⇒ -1 & 511 = 511，与 JS 的 & 逐位同构；
+   *    先 uint 会把负 float 转成未定义值 ⇒ 读到垃圾 texel。
+   *    相对索引会让原点一动整窗失效（已实测）⇒ GPU 侧不需要原点 uniform。
+   *
+   * ③ **格顶判据**：截停面严格高于**探针所在格的格顶** ⇒ 头上真的有盖。
+   *    不得写 `probe.y <= stopY`：那会把半砖/横柱/床的**露头顶面**判干
+   *    （几何顶面 0.5/0.65，探针恰好与 stop 共面）—— 实测 1032 例穷举钉住。
+   *    ⚠️ `step(edge, x) = x >= edge ? 1 : 0` ⇒ **edge 传 cellTop、x 传 stopY，且不取反**。
+   *    套 oneMinus 会得到**完全 inverted 的门**（露天全干、棚下全湿）。
+   *    CPU 同构函数 `wetShelterGate` 与本式同方向。
+   *
+   * ⚠️ `textureLoad` 自带 `setSampler(false)`（vendor 已核）⇒ 直接喂 DataTexture，
+   *    不需 storageTexture / unwrap。Nearest 无插值 ⇒ 屋檐边不出「半湿」渐变带。
+   */
+  const probe = add(wp, faceNormal.mul(0.5));
+  const tx = int(floor(probe.x)).bitAnd(int(SHELTER_MAP_SIZE - 1));
+  const tz = int(floor(probe.z)).bitAnd(int(SHELTER_MAP_SIZE - 1));
+  const sh = textureLoad(SHELTER_TEXTURE, ivec3(tx, tz, int(0)));
+  const known = step(float(0.5 / 255), sh.r);
+  const stopY = add(sh.r.mul(255 / 2), float(SHELTER_Y_BASE));
+  const cellTop = add(floor(probe.y), float(1 + SHELTER_EPS));
+  const sheltered = mul(known, step(cellTop, stopY));
+  /**
+   * 窗外保护：绝对索引下窗外坐标会 **wrap 到窗内某个 texel**（模 512），
+   * 而那个 texel 装的是 512 格外的另一个格列 ⇒ 高度可能不对（不是「未知」）。
+   * ⇒ 水平距离 > 256 格强制不遮挡（安全失败方向，且与难距一致 ⇒ 观感无差）。
+   */
+  const horiz = length(vec2(probe.x.sub(cameraPosition.x), probe.z.sub(cameraPosition.z)));
+  const inWindow = oneMinus(step(float(SHELTER_MAP_SIZE / 2), horiz));
+  const shelterGate = mix(float(1), oneMinus(mul(sheltered, inWindow)), U.uWetShelter);
+
+  const wet = clamp(mul(mul(U.uWet, P.x), orient), float(0), float(1))
+    .mul(aboveWater).mul(shelterGate);
 
   // ---- 反光的「天空」：按反射方向 y 在雾色↔天顶色之间插值（口径②：显式拆分量）----
   const V = normalize(sub(cameraPosition, wp));
@@ -221,7 +281,9 @@ export function createWetSurfaceNode({
   const cloudCoord = vec3(
     wp.x.mul(WET_PUDDLE_CLOUD_SCALE), wp.z.mul(WET_PUDDLE_CLOUD_SCALE), float(7.3));
   const cloud = perlin(cloudCoord);
-  const puddleW = mul(mul(puddle, topGate), U.uWetPuddleRefl);
+  // ⚠️ puddleW 也要乘 shelterGate：它**独立于 wet** 参与 skyMul 与真倒影权重，
+  // 只乘 wet 会让棚下的水汪仍映天空/建筑（用户要的「棚下无水汪」漏一半）。
+  const puddleW = mul(mul(mul(puddle, topGate), U.uWetPuddleRefl), shelterGate);
   const skyMul = add(float(1), mul(mul(cloud, float(WET_PUDDLE_CLOUD)), puddleW));
   const skyEnv = mix(horizon, zenith, smoothstep(bandLo, bandHi, R.y)).mul(skyDim).mul(skyMul);
 

@@ -213,6 +213,7 @@ test('mesher: cloud 的类位是 0 且 bit14 仍置位（两条语义独立）',
 test('wet uniforms: 句柄形状与初值（uWet=0 是零回归锚点）', async () => {
   const { WET_SURFACE_UNIFORMS: U } = await import('../render/wet-surface.js');
   assertEqual(U.uWet.value, 0, 'uWet 初值 0 ⇒ 未接线逐位等于原材质');
+  assertEqual(U.uWetShelter.value, 1, 'uWetShelter 初值 1（第四级零回归锚点，写 0 回到 v3.33）');
   assertTrue(Number.isFinite(U.uWetWaterY.value), '水下门基准是有限数');
   assertEqual(U.uWetParams.array.length, WET_CLASS_COUNT);
   for (let i = 0; i < WET_CLASS_COUNT; i++) {
