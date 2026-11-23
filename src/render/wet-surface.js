@@ -59,6 +59,7 @@ import {
   WET_PUDDLE_MIRROR, WET_PUDDLE_CLOUD, WET_PUDDLE_CLOUD_SCALE,
 } from './wet-surface-config.js';
 import { WATER_SURFACE_Y } from './water-surface.js';
+import { createPuddleReflectNode } from './puddle-reflect.js';
 
 /** packed 里材质类位的偏移与掩码（唯一权威在 mesher 的 WET_CLASS_SHIFT，两处必须一致）。 */
 const WET_CLASS_SHIFT = 15;
@@ -111,6 +112,13 @@ export const WET_SURFACE_UNIFORMS = {
    * 而不是回到水膜 ⇒ 零回归锚点静默失效。
    */
   uWetPuddleRefl: uniform(1),
+  /**
+   * v3.33：**积水真倒影（复用 ocean reflector RT）开关** 0..1（默认 1）。
+   * 写 0 ⇒ 逐位回到 v3.32b（程序化天空 + 云影），第三级零回归锚点。
+   * ⚠️ 反射 pass 期间由装配层临时置 0（但**单靠它不够** —— 还需换替身材质，
+   * 因为 texture 节点仍在 bind group 里，WebGPU 按绑定算 usage）。
+   */
+  uPuddleReflect: uniform(1),
 };
 
 /**
@@ -127,7 +135,7 @@ export const WET_SURFACE_UNIFORMS = {
  * @returns {object} vec3 最终颜色
  */
 export function createWetSurfaceNode({
-  baseRgb, faceNormal, skyDim, sunDirection, sunColor, shadowKill = null,
+  baseRgb, faceNormal, skyDim, sunDirection, sunColor, shadowKill = null, reflectTexture = null,
 }) {
   const U = WET_SURFACE_UNIFORMS;
 
@@ -263,7 +271,20 @@ export function createWetSurfaceNode({
   const mirrorK = mul(mul(float(WET_PUDDLE_MIRROR), specGain), wet);
   const reflK = min(mix(reflKFilm, mirrorK, puddleW), float(1));
   const withSky = mix(albedo, skyEnv, reflK);
-  const lit = add(withSky, mul(vec3(sunColor.x, sunColor.y, sunColor.z), spec).mul(wet));
+  /**
+   * v3.33 **真倒影**：复用 ocean 已验收的 reflector RT（方案 A）。
+   * 用户：「水汪里要映出建筑和树，可以模糊一些，但镜面反射要有」。
+   * ⚠️ 叠在 withSky 之上；权重已含 puddleW（topGate × 两个开关）⇒ 墙面/云/关档逐位不动。
+   * ⚠️ 边缘淡出 ⇒ 贴边/出界处回落程序化天空，观感连续（不出硬斑）。
+   */
+  let withReflect = withSky;
+  if (reflectTexture) {
+    const r = createPuddleReflectNode({
+      reflectTexture, puddleW, uStrength: U.uPuddleReflect,
+    });
+    withReflect = mix(withSky, r.rgb, r.k);
+  }
+  const lit = add(withReflect, mul(vec3(sunColor.x, sunColor.y, sunColor.z), spec).mul(wet));
 
   // ⚠️ `uWet = 0` ⇒ wet=0 ⇒ albedo=baseRgb、reflK=0、spec 项乘 0
   //    ⇒ mix 取左端 ⇒ **逐位回到原色**（零回归锚点）。

@@ -64,10 +64,13 @@ export class RenderWorld {
    * 两条 pass 互相覆写 BatchedMesh indirect 索引表的问题（v3.17 / v3.30d 那类天空撕裂）。
    * 水面自己的反射 pass 原样保留（它与湿表面无耦合）。
    */
-  constructor({ scene, atlasTexture, viewDistance = 8, sunLight = null, capacity }) {
+  constructor({ scene, atlasTexture, viewDistance = 8, sunLight = null, capacity, reflectTexture = null }) {
     this.scene = scene;
-    const materials = createVoxelMaterials(atlasTexture, sunLight);
+    const materials = createVoxelMaterials(atlasTexture, sunLight, reflectTexture);
     this.materials = materials;
+    /** v3.33：atlas 与 sunLight 句柄（反射替身材质要用它们重建同构着色）。 */
+    this.atlasTexture = atlasTexture;
+    this._sunLight = sunLight;
     const maxInstances = Math.ceil((2 * viewDistance + 1) ** 2 * SECTIONS_PER_COLUMN * 1.2);
     /** @type {Object<string, THREE.BatchedMesh>} */
     this.meshes = {};
@@ -177,6 +180,38 @@ export class RenderWorld {
         this._indirectTexture.needsUpdate = true;
       }
       return r;
+    };
+  }
+
+  /**
+   * v3.33 方案 A：**反射 pass 期间的材质替身**。
+   *
+   * 为什么需要：积水真倒影让体素材质采样 ocean 的反射 RT，而反射 pass 正在**写**它
+   * ⇒ WebGPU `writable usage and another usage in the same synchronization scope`
+   * ⇒ 整帧 CommandBuffer 作废。把采样权重 uniform 置 0 **不够**：texture 节点仍在
+   * bind group 里，WebGPU 按**绑定**算 usage，不看是否真的采样。
+   *
+   * 替身材质 = **同一个 `createVoxelMaterials`，只是不传 reflectTexture**
+   * ⇒ 除了不引用 RT，其余着色（atlas / packed / 阴影 / 湿表面）与主材质**完全一致**
+   * ⇒ RT 里的建筑/树颜色与主画面一致（自建那轮用常量基色替身导致 RT 内容错，本轮避开）。
+   *
+   * ⚠️ 惰构造 + 缓存：只在首次反射时建一次（建材质 = 编译着色器，每帧建会卡帧）。
+   * @returns {() => void} 恢复函数（必须在 finally 里调）
+   */
+  beginReflectMaterialSwap() {
+    if (!this._reflectMats) {
+      this._reflectMats = createVoxelMaterials(this.atlasTexture, this._sunLight || null, null);
+      // 日夜/湿表面 uniform 是**模块级单例**（materials.js 顶层）⇒ 替身自动跟随，无需同步。
+    }
+    const saved = {};
+    for (const k of CHANNELS) {
+      const bm = this.meshes[k];
+      if (!bm) continue;
+      saved[k] = bm.material;
+      bm.material = this._reflectMats[k];
+    }
+    return () => {
+      for (const [k, m] of Object.entries(saved)) this.meshes[k].material = m;
     };
   }
 

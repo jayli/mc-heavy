@@ -516,6 +516,9 @@ export class Game {
      */
     this.renderWorld = new RenderWorld({
       scene: this.scene, atlasTexture: texture, viewDistance: this.viewDistance, sunLight,
+      // v3.33 方案 A：积水真倒影复用 ocean 已验收的 reflector RT
+      // （ocean 在本行之前已创建，故可直接传句柄）。
+      reflectTexture: this.ocean.reflectTexture,
     });
     // 日夜循环（M2-6）：正午起步（与 M1 视觉口径一致），1200s 一天
     this.dayNight = new DayNight({
@@ -2131,9 +2134,17 @@ export class Game {
     // ⚠️ v3.31：一帧内只剩**一条**反射 pass（水面）—— 地面那条已删。
     // 守卫仍保留：阴影 pass 与主 pass 也共用那份列表，隔离仍是必需的。
     this.renderWorld.beginReflectGuard();
+    // v3.33 方案 A：积水真倒影采样同一张 RT ⇒ 反射 pass 期间必须把体素三通道
+    // 换成**不引用该 RT** 的替身材质（单靠 uPuddleReflect=0 不够：texture 节点
+    // 仍在 bind group 里，WebGPU 按绑定算 usage ⇒ writable usage 冲突、整帧作废）。
+    const swap = this.renderWorld.beginReflectMaterialSwap();
     try {
       this.ocean.renderReflection(cam, this.ocean.plane.material, hidden);
+      // v3.33：**pass 跑完立即把真 RT 同步给 clone**（积水真倒影采样的是 clone）。
+      // 不同步 ⇒ clone 停在占位 RT ⇒ 水汪里没倒影（实玩截图才发现，数值判据全绿）。
+      this.ocean.syncReflectTexture();
     } finally {
+      swap();
       this.renderWorld.endReflectGuard();
     }
   }

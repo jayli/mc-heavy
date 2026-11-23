@@ -151,6 +151,7 @@ const PIXEL = [
   'storm-lighting',    // v3.30 雨天光影档：开关/持续雨/室内门/遮挡/高度/湿表面/雨声
   'storm-underwater',  // v3.30g 四项水下排除（v3.31 删颗粒两条：后处理链已整体移除）
   'wet-surface',       // v3.31 按材质分类的湿表面：零光晕/材质分层/不过曝/积水连续/水下门 + 两条负向
+  'puddle-reflect',    // v3.33 方案 A 积水真倒影（复用 ocean RT）：内容级空间对应/天空墙面零污染/两级零回归 + 一条负向
 ];
 
 /**
@@ -185,7 +186,7 @@ export const SPEC_TIERS = {
 export const UNIT_NODE_SAFE = [
   'test-ambient-fx.js',
   'test-carbine.js', 'test-carbine-fx.js', 'test-rain-shelter.js', 'test-storm-rain.js',
-  'test-water-surface.js', 'test-wet-surface.js',
+  'test-water-surface.js', 'test-wet-surface.js', 'test-puddle-reflect.js',
   'test-arena-gen.js', 'test-arena.js', 'test-azalea-trees-gen.js', 'test-azalea-trees.js',
   'test-block-color.js', 'test-block-hit-fx.js', 'test-boss-agent.js', 'test-boss-hit-sound.js',
   'test-boss-map.js', 'test-budget.js', 'test-burning-arena-gen.js', 'test-bush-grass-gen.js',

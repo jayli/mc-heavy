@@ -340,6 +340,15 @@ test('湿表面②：材质分层 —— 同法线单变量下反光强度按类
       const g = window.__MC_GAME__;
       const U = g.renderWorld.materials.wet;
       U.uWet.value = 1;
+      /**
+       * ⚠️ **v3.33：本用例必须关掉真倒影**（单变量原则）。
+       * 它量的是**程序化天空反光**按材质类的分层；真倒影（复用 ocean RT）
+       * 叠在同一画面上会成为**额外变量**，把 luma 排序打乱
+       * （实测：wood 176.57 < soil 176.96，而关倒影时 wood 184.1 > soil 182.5）。
+       * ⇒ 不是放宽阈值，而是把无关变量置 0，恢复本用例原有的判别力。
+       * 真倒影自己的判据在 tests/puddle-reflect.spec.mjs（内容级空间对应）。
+       */
+      U.uPuddleReflect.value = 0;
       const v = U.uWetParams.array[1];   // POLISHED
       v.set(p[0], p[1], p[2], p[3]);
       g.renderer.render(g.scene, g.camera);
@@ -663,6 +672,13 @@ async function puddleAB(page, regions) {
       const U = g.renderWorld.materials.wet;
       U.uWet.value = 1;
       U.uWetPuddleRefl.value = s;
+      /**
+       * ⚠️ **v3.33：本组用例量的是程序化天空反光，必须关掉真倒影**（单变量）。
+       * 真倒影映的是建筑/树，它们比天空**暗** ⇒ 叠进来后地面 Δluma 从 +1.9 变 **−4.5**，
+       * 把「水汪变亮」这条判据判成红 —— 但那是**两个功能叠加**的正常结果，不是缺陷。
+       * ⇒ 置 0 恢复本组原有判别力；真倒影自己的判据在 tests/puddle-reflect.spec.mjs。
+       */
+      U.uPuddleReflect.value = 0;
       g.renderer.render(g.scene, g.camera);
     }, v);
     await page.waitForTimeout(260);

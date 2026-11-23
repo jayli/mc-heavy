@@ -136,9 +136,10 @@ const noShadowCastBit = float(packed.shiftRight(14).bitAnd(1));
  * 创建三通道体素材质。
  * @param {THREE.Texture} atlasTexture
  * @param {THREE.DirectionalLight} [sunLight] 太阳灯（传 null 时不乘 shadowFactor，保持原路径）
+ * @param {object} [reflectTexture] v3.33 积水真倒影：ocean 交出的 reflectTexture（null = 不挂）
  * @returns {{opaque: THREE.MeshBasicNodeMaterial, cutout: THREE.MeshBasicNodeMaterial, transparent: THREE.MeshBasicNodeMaterial, dayNight: Object, wet: Object}}
  */
-export function createVoxelMaterials(atlasTexture, sunLight = null) {
+export function createVoxelMaterials(atlasTexture, sunLight = null, reflectTexture = null) {
   // 阴影因子（两层 mix，**嵌套顺序是载荷性的，勿交换**）：
   //   内层 `mix(FLOOR, 1, shadow())` = 带地板的阴影：影外 1 / 影内 FLOOR（不再归零）；
   //   外层 `mix(1, 内层, uShadowStrength)` = 浓度调制：strength=0（关阴影/夜里）→ **恒 1 零影响**。
@@ -221,6 +222,7 @@ export function createVoxelMaterials(atlasTexture, sunLight = null) {
         sunDirection: uSunDirection,
         sunColor: uSunColor,
         shadowKill,
+        reflectTexture,
       })
       : rgb;
     mat.colorNode = vec4(finalRgb, texColor.a);

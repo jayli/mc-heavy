@@ -557,6 +557,20 @@ export function setupOcean(scene) {
      * ⇒ clone 会停在从未渲染过的默认占位 RT（实测 A/B diff = 0）⇒ 必须每帧同步。
      */
     reflectTexture: reflectNode.clone(),
+    /**
+     * v3.33：**把真 RT 同步给上面那个 clone**（积水真倒影消费它）。
+     *
+     * ⚠️⚠️ 不同步的后果：clone 永远停在从未渲染过的默认占位 RT
+     * ⇒ 水汪里**没有倒影**，而所有数值判据可能仍绿（本轮实玩截图才发现）。
+     * 必须在**反射 pass 跑完之后**调（pass 内部才把真 RT 写进 base.textureNode.value）。
+     */
+    syncReflectTexture() {
+      const real = reflectBase.textureNode;
+      const clone = this.reflectTexture;
+      if (real && clone && real.value && clone.value !== real.value) {
+        clone.value = real.value;
+      }
+    },
     /** 倒影强度 uniform（0 = 逐位回到无倒影的原式） */
     uReflectStrength,
     /** 随波扰动幅度 uniform */
