@@ -1,5 +1,5 @@
 import { test, expect } from 'playwright/test';
-import { ENEMY_ROSTER } from './enemy-roster.mjs';
+import { ENEMY_ROSTER, headTopOffset, bodyCenterOffset, blastEdgeRadius } from './enemy-roster.mjs';
 
 /**
  * 敌人/Boss **接线完整性门**（方案 2）。
@@ -262,5 +262,104 @@ test('伤害/击退/受击音/死亡音与爆散：逐类型接线', async ({ pa
     } else {
       expect(r.debrisDelta, `${r.type} 刻意不做爆散（不是遗漏）`).toBe(0);
     }
+  }
+});
+
+/**
+ * 头顶数字锚点：`_emitDamageNumber` 的 headY 三元链是否覆盖该类型。
+ *
+ * ⚠️ **必须多等几帧**（health-hud.spec.mjs:273）：`update()` 逐帧用 `anchor()` 覆盖
+ * `lastPos`，首帧的 `initial` 不算数 —— 只读首帧抓不到「anchor 漏分支」，而那正是本项要防的缺陷。
+ *
+ * ⚠️ **期望值用 `headTopOffset`（已按 semantics 分派）**，不额外减 height：
+ * 龙的 position 已是体心，offset 实为 offsetFromCenter。
+ */
+test('头顶锚点：逐类型 = 派生的 headTopOffset', async ({ page }) => {
+  test.setTimeout(600_000);
+  await page.goto(`/?vd=2&seed=${SEED}`);
+  await waitWorldReady(page);
+  const rows = [];
+  for (const type of Object.keys(ENEMY_ROSTER)) {
+    const s = await summonFor(page, type);
+    const r = await page.evaluate(async ([t, id, baseY]) => {
+      const g = window.__MC_GAME__;
+      g._damageNumbers.reset?.();
+      g.damageEntity(id, 1, performance.now());
+      // 多等几帧让 anchor() 覆盖 lastPos（首帧 initial 不算数）
+      await new Promise((res) => setTimeout(res, 400));
+      const e = g.entities.get(id);
+      const nowY = e ? e.state.position[1] : baseY;
+      const slots = g._damageNumbers._slots.filter((x) => x.active && x.entityId === id)
+        .map((x) => ({ offset: x.lastPos[1] - nowY }));
+      return { slots, nowY };
+    }, [type, s.id, s.baseY]);
+    rows.push({ type, ...r });
+  }
+  for (const r of rows) {
+    const want = headTopOffset(r.type);
+    expect(r.slots.length, `${r.type} 受击后头顶应恰有一个数字`).toBe(1);
+    expect(Math.abs(r.slots[0].offset - want),
+      `${r.type} 锚点应在 position.y + ${want}，实测 + ${r.slots[0].offset.toFixed(4)}`)
+      .toBeLessThan(1e-6);
+  }
+});
+
+/**
+ * 溅射判定中心：`_cinderBlast` 的 half 三元链是否覆盖该类型。
+ *
+ * ⚠️⚠️ **边界几何是判别力的全部来源**（spec §7.2，设计期实测）：
+ * 朴素写法（爆心放实体正上方 h/2）对三个脚底类型**全部零判别力** ——
+ * 漏改时 dist = h/2 = 0.9 / 1.625 / 1.9，全都仍在 blastRadius=4 内 ⇒ 漏改也扣血。
+ *
+ * 正解：爆心放在**水平距离 r = blastEdgeRadius(type)、垂直高度 = 实体真实中心**：
+ *   · 正确实现 dist = r ≤ 4     ⇒ 扣血
+ *   · 漏改（half 落 0）dist = hypot(r, h/2) > 4 ⇒ 不扣血
+ *
+ * ⚠️ **坐标口径**：`_cinderBlast` 用 `const [cx,cy,cz] = at`，**不加 0.5**
+ * （TNT 的 `_damageEntitiesInRadius` 才 +0.5）。搬错引入 0.5 格误差，
+ * 而 zombie 的 r 区间只有 0.103 格宽 ⇒ 判据翻转。
+ *
+ * ⚠️ **只遍历 feet 语义**：龙是体心（half 本就 0），漏改与正确一致 ⇒ 无判别力，
+ * **刻意排除，不是遗漏**。
+ *
+ * ⚠️ **实体必须静止**：AI 每帧在动 ⇒ 取样前冻住 entities.update，否则 r 精度失守。
+ */
+test('溅射中心：边界几何下逐 feet 类型必须扣血', async ({ page }) => {
+  test.setTimeout(600_000);
+  await page.goto(`/?vd=2&seed=${SEED}`);
+  await waitWorldReady(page);
+  const feetTypes = Object.keys(ENEMY_ROSTER)
+    .filter((t) => ENEMY_ROSTER[t].semantics === 'feet');
+  const rows = [];
+  for (const type of feetTypes) {
+    const s = await summonFor(page, type);
+    const r = await page.evaluate(async ([t, id]) => {
+      const { ENEMY_ROSTER, bodyCenterOffset, blastEdgeRadius } = await import('/tests/enemy-roster.mjs');
+      const g = window.__MC_GAME__;
+      // 冻住 AI/物理推进：r 的判别区间最窄只有 0.103 格，实体动一点就失守
+      const origUpdate = g.entities.update.bind(g.entities);
+      g.entities.update = () => {};
+      const e = g.entities.get(id);
+      const [ex, ey, ez] = e.state.position;
+      const c = bodyCenterOffset(t);
+      const rr = blastEdgeRadius(t);
+      const hp0 = e.state.health;
+      // 爆心：水平 +rr（沿 +X）、垂直 = 实体真实中心 ey + c
+      const at = [ex + rr, ey + c, ez];
+      g._cinderBlast(at, 'block', null, performance.now(), [0, 1, 0]);
+      const after = g.entities.get(id);
+      const hp1 = after ? after.state.health : 0;
+      g.entities.update = origUpdate;
+      return { hp0, hp1, rr, c, distCorrect: rr, distIfMissing: Math.hypot(rr, c) };
+    }, [type, s.id]);
+    rows.push({ type, ...r });
+  }
+  for (const r of rows) {
+    // 前置：几何本身必须有判别力（否则这条 test 是恒真的）
+    expect(r.distCorrect, `${r.type} 正确实现的 dist 必须 ≤ 4`).toBeLessThanOrEqual(4);
+    expect(r.distIfMissing, `${r.type} 漏改时 dist 必须 > 4`).toBeGreaterThan(4);
+    // 主判据：正确实现下必须扣血
+    expect(r.hp1, `${r.type} 边界几何下溅射必须命中（half 三元链漏该类型则不扣血）`)
+      .toBeLessThan(r.hp0);
   }
 });
