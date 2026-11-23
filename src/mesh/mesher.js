@@ -466,6 +466,18 @@ const EMISSIVE_MATERIALS = new Set(['hanging_lamp']);
 // ⚠️ bit14 是 packed 里第一个超过 bit13 的位；Uint32 容量充足（现用 bit0-14）。
 const SHADOW_CAST_BIT = 1 << 14;
 
+// 湿表面材质类（v3.31，packed **bit15–18**，mask 0xF）：权威 = `registry.wetClassTable`
+// （声明侧 `voxel/wet-material-data.js` 的 name→类映射，九类）。
+// 消费方 = `render/wet-surface.js` 在**顶点阶段** `packed.shiftRight(15).bitAnd(15)`
+// 查 `WET_CLASS_PARAMS` 得逐 quad 常量 vec4，经一个 varying 传片元。
+//
+// ⚠️ **为什么走 packed 位而不是新顶点属性**（实测硬约束）：三通道静态 gpuVertexBytes
+// 24B/顶点 = 193.83 MiB，加一个 float 属性 ⇒ 28B/顶点 = 219.68 MiB，
+// 超 `tests/m3-fullscene.spec.mjs` 的 200 MiB 门 19.7 MiB。塞进空闲位是零字节增量。
+// ⚠️ bit15–18 不得挤占 bit0–14（light/AO/face/emissive/noShadowCast）——
+// 挤进去会让阴影投射语义翻转（云开始投影），由 test-wet-surface.js 的位段隔离用例钉住。
+const WET_CLASS_SHIFT = 15;
+
 // 床 UV 变换（2026-09-03 勘误：原口径照 mc-lite 字段名实现了「取上半 + 顶面旋转」，
 // 但实测 mc-lite 的 offset/rotation 是死字段，故此处按**实际行为**而非字段定义实现）。
 // 床侧面只取贴图下半：mc-lite 定义 `repeat:[1,0.5]` + `offset:[0,0.5]`，但 `offset` 全仓
@@ -523,6 +535,7 @@ export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
   const opaqueTable = registry.opaqueTable;
   const hollowOccluderTable = registry.hollowOccluderTable;
   const shadowCastTable = registry.shadowCastTable;
+  const wetClassTable = registry.wetClassTable;
   const nameOf = registry.nameOf.bind(registry);
   const tiles = atlasMeta.tiles || atlasMeta;
   const occTable = octantOccupancyOf(registry);
@@ -561,6 +574,9 @@ export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
         const blockEmissiveBit = EMISSIVE_MATERIALS.has(blockName) ? (1 << 13) : 0;
         // 阴影不投射标记（§4.4.4 bit14）：逐方块算一次，两条发射路径（模板/立方体）共用。
         const noShadowCastBit = shadowCastTable[id] === 1 ? 0 : SHADOW_CAST_BIT;
+        // 湿表面材质类（v3.31 bit15–18）：逐方块算一次，两条发射路径共用。
+        // 掩 0xF 是防御：表值超出 4 bit 时不得溢到 bit19+（将来扩类要同步改位段布局）。
+        const wetClassBits = (wetClassTable[id] & 0xF) << WET_CLASS_SHIFT;
 
         // 非立方体几何（§4.3 顶点模板）：不做面剔除（mc-lite 实例级渲染同口径）；
         // 光照读自身格（模板面在格内，无"邻居格"语义）；AO 按顶点推导。
@@ -636,7 +652,7 @@ export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
                   [rx, ry, rz], subvoxelAO ? bmin : null, subvoxelAO ? bmax : null, occTable, AO_OUT);
                 ao = getAO(AO_OUT[0], AO_OUT[1], AO_OUT[2], AO_OUT[3]);
               }
-              packeds.push(selfLight | (ao << 8) | (worldFace << 10) | emissiveBit | noShadowCastBit);
+              packeds.push(selfLight | (ao << 8) | (worldFace << 10) | emissiveBit | noShadowCastBit | wetClassBits);
             }
             pushQuad(ch, positions, uvs, packeds, q.ds);
             emitted++;
@@ -715,7 +731,7 @@ export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
             // 所以 `lighting.js` 的 `lightDirtyMasks` 依赖集合不变。
             aoProbes(data, meta, vx, vy, vz, worldFace, [rx, ry, rz], null, null, occTable, AO_OUT);
             const ao = getAO(AO_OUT[0], AO_OUT[1], AO_OUT[2], AO_OUT[3]);
-            packeds.push(faceLight | (ao << 8) | (worldFace << 10) | blockEmissiveBit | noShadowCastBit);
+            packeds.push(faceLight | (ao << 8) | (worldFace << 10) | blockEmissiveBit | noShadowCastBit | wetClassBits);
           }
           pushQuad(ch, positions, uvs, packeds, doubleSide);
         }

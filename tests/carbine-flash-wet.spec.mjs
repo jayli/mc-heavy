@@ -1,17 +1,17 @@
 import { test, expect } from 'playwright/test';
 import { PNG } from 'pngjs';
 
-// v3.30b 修复验证（用户报告的两个缺陷）：
-// ① 枪口火光是「方块纸片」而不是柔光星芒；
-// ② 雨天湿地面反光没呈现。
+// KV-9 枪口火光的 Tier 4 回归门（v3.30b）。
 //
-// 根因（GPU 像素逐层取证，见 pitfalls「视图模型 quad 的 uv 口径」与
-// 「reflector.clone 的 value 不跟住真 RT」两节）：
+// 用户报告「枪口火焰是一个方块，应该是有柔光的」。根因（GPU 像素逐层取证，
+// 见 pitfalls「视图模型 quad 的 uv 口径」节）：
 // ① PlaneGeometry 的 position.xy 是**真实尺寸**（±0.12）而不是单位 quad ⇒
 //    vUv=position*2 只到 ±0.24 ⇒ r 永远到不了边缘门 ⇒ 整片满亮；
-//    且 additive + HDR 在正午亮天空上必钳白（本仓 fire-ring/cinder 同一条教训）。
-// ② ReflectorNode.clone() 的 value 独立，reflector 内部只写 base.textureNode.value
-//    ⇒ clone 永远停在从未渲染过的默认占位 RT ⇒ 反射项恒黑。
+// ② additive + HDR 在正午亮天空上必钳白（本仓 fire-ring/cinder 同一条教训）。
+//
+// ⚠️ v3.31：原有的两条「雨天湿地面反射」用例已删 —— 上游湿地面与第二条反射 pass
+// 按用户 2026-11-22 裁定整体移除。新湿表面的判据在 `tests/wet-surface.spec.mjs`。
+// 文件名保留（火光两条仍在这里，改名会动分档清单）。
 
 const BOOT = async (page) => {
   await page.goto('/?vd=4&seed=12345&skybox=0&weather=clear');
@@ -144,90 +144,4 @@ test('KV-9 火光：功率衰减时火光自身像素单调减少（柔光包络
   console.log('FLASH ENVELOPE (delta):', JSON.stringify(counts));
   expect(counts[0]).toBeGreaterThan(counts[1]);
   expect(counts[1]).toBeGreaterThan(counts[2]);
-});
-
-test('雨天湿地面：反射项真的改变像素（Tier 4 单变量 A/B）', async ({ page }) => {
-  test.setTimeout(240_000);
-  await BOOT(page);
-  const st = await page.evaluate(async () => {
-    const g = window.__MC_GAME__;
-    g.setStormLighting(true);
-    await new Promise((r) => setTimeout(r, 900));
-    g.renderer.setAnimationLoop(null);
-    g.player.pitch = -0.7;      // 朝下看地面（湿地面只在朝上面生效）
-    g.player.update(0.016);
-    // v3.30d：湿分支改用**独立地面反射**（镜面 = 玩家脚下地面）。
-    // ⚠️ 不再读 ocean.reflectTexture —— 海平面镜面在几何上不可能正确（见设计稿 §10.4）。
-    const gr = g.groundReflect;
-    const sample = gr.texture;
-    const base = gr.base;
-    return {
-      stormActive: g.stormLighting,
-      uWet: g.renderWorld.materials.wet.uWet.value,
-      // 采样节点必须已跟住地面 pass 的真 RT（不是 1×1 占位图）
-      cloneIsRealRT: sample.value === base.textureNode.value,
-      cloneW: sample.value?.image?.width,
-      mirrorY: gr.mirrorY,
-      playerY: g.player.physics.pos.y,
-      refreshes: gr.refreshes,
-    };
-  });
-  console.log('WET FIXED STATE:', JSON.stringify(st));
-  expect(st.stormActive).toBe(true);
-  expect(st.uWet).toBeGreaterThan(0);
-  expect(st.cloneIsRealRT, '湿分支的反射节点必须指向真 RT（不是默认占位图）').toBe(true);
-  expect(st.refreshes, '地面反射 pass 必须真的跑过').toBeGreaterThan(0);
-  expect(Math.abs(st.mirrorY - st.playerY), '镜面必须贴玩家脚下地面').toBeLessThan(2);
-
-  const grab = async (refl) => {
-    await page.evaluate((v) => {
-      const g = window.__MC_GAME__;
-      g.renderWorld.materials.wet.uWet.value = 1;
-      g.renderWorld.materials.wet.uWetReflect.value = v;
-      g.renderWorld.materials.wet.uWetTime.value = 12.0;
-      g._renderWaterReflection();
-      g.renderer.render(g.scene, g.camera);
-    }, refl);
-    await page.waitForTimeout(220);
-    return page.screenshot();
-  };
-  const off = await grab(0);
-  const on = await grab(0.35);
-  const pa = PNG.sync.read(off); const pb = PNG.sync.read(on);
-  let diff = 0; let brighter = 0;
-  for (let i = 0; i < pa.width * pa.height; i++) {
-    const o = i * 4;
-    const d = Math.abs(pa.data[o] - pb.data[o]) + Math.abs(pa.data[o + 1] - pb.data[o + 1]) + Math.abs(pa.data[o + 2] - pb.data[o + 2]);
-    if (d > 12) {
-      diff++;
-      const la = 0.299 * pa.data[o] + 0.587 * pa.data[o + 1] + 0.114 * pa.data[o + 2];
-      const lb = 0.299 * pb.data[o] + 0.587 * pb.data[o + 1] + 0.114 * pb.data[o + 2];
-      if (lb > la) brighter++;
-    }
-  }
-  const frac = diff / (pa.width * pa.height);
-  console.log('WET REFLECT FIXED AB:', JSON.stringify({ diff, brighter, frac: +frac.toFixed(5) }));
-  // 缺陷态 diff = 0（反射项恒黑）；修后必须显著非零
-  expect(frac, '湿地面反射项必须真的改变画面（0 = 采到空 RT）').toBeGreaterThan(0.02);
-  // 反射是**加项**（上游 col += refl*fres）⇒ 必须有变亮的像素
-  expect(brighter, '反射必须让部分地面变亮（镜面高光）').toBeGreaterThan(1000);
-});
-
-test('雨天湿地面：关闭雨天档后反射节点不再影响画面（零回归）', async ({ page }) => {
-  test.setTimeout(240_000);
-  await BOOT(page);
-  const r = await page.evaluate(async () => {
-    const g = window.__MC_GAME__;
-    g.setStormLighting(true);
-    await new Promise((res) => setTimeout(res, 700));
-    g.setStormLighting(false);
-    await new Promise((res) => setTimeout(res, 500));
-    return {
-      uWet: g.renderWorld.materials.wet.uWet.value,
-      stormActive: g.stormLighting,
-    };
-  });
-  console.log('WET OFF:', JSON.stringify(r));
-  expect(r.stormActive).toBe(false);
-  expect(r.uWet).toBe(0);
 });

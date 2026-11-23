@@ -147,9 +147,10 @@ const PIXEL = [
   'water-reflect',
   'lake-ripple',
   'm3-rain',
-  'storm-rain-visual',  // v3.30d/e 雨幕无竖纹 + 湿地面近中远反光 + 天空不撕碎
-  'storm-lighting',    // v3.30 雨天光影档：开关/持续雨/室内门/遮挡/高度/湿地面/后处理/雨声
-  'storm-underwater',  // v3.30g 颗粒各向同性（CRT 竖纹根因）+ 四项水下排除
+  'storm-rain-visual',  // v3.31 雨丝上屏 + 主画面不撕碎 + 关闭零回归（旧三条守的层已删）
+  'storm-lighting',    // v3.30 雨天光影档：开关/持续雨/室内门/遮挡/高度/湿表面/雨声
+  'storm-underwater',  // v3.30g 四项水下排除（v3.31 删颗粒两条：后处理链已整体移除）
+  'wet-surface',       // v3.31 按材质分类的湿表面：零光晕/材质分层/不过曝/积水连续/水下门 + 两条负向
 ];
 
 /**
@@ -183,8 +184,8 @@ export const SPEC_TIERS = {
  */
 export const UNIT_NODE_SAFE = [
   'test-ambient-fx.js',
-  'test-carbine.js', 'test-carbine-fx.js', 'test-rain-shelter.js', 'test-storm-rain.js', 'test-ground-reflect.js',
-  'test-water-surface.js',
+  'test-carbine.js', 'test-carbine-fx.js', 'test-rain-shelter.js', 'test-storm-rain.js',
+  'test-water-surface.js', 'test-wet-surface.js',
   'test-arena-gen.js', 'test-arena.js', 'test-azalea-trees-gen.js', 'test-azalea-trees.js',
   'test-block-color.js', 'test-block-hit-fx.js', 'test-boss-agent.js', 'test-boss-hit-sound.js',
   'test-boss-map.js', 'test-budget.js', 'test-burning-arena-gen.js', 'test-bush-grass-gen.js',

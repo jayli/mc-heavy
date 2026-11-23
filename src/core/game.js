@@ -36,18 +36,14 @@ import { TracerRenderer } from '../render/tracer-renderer.js';
 import { CarbineView } from '../render/carbine-view.js';
 import { CarbineFx } from '../render/carbine-fx.js';
 import { CARBINE } from '../player/weapons/carbine.js';
-// v3.30 雨天光影档：持续雨 / 湿地面 / 后处理链
+// v3.30 雨天光影档：持续雨（雨丝/水花/雨声）—— 这一块仍是上游移植，用户裁定保留
 import { StormRain } from '../render/storm-rain.js';
 import { STORM_AUDIO } from '../render/storm-rain-config.js';
-import { createStormGrade } from '../render/storm-grade.js';
-import { WET_STRENGTH_MAX } from '../render/wet-ground-config.js';
-// v3.30d：湿地面的独立平面反射（镜面 = 玩家脚下地面；海平面 reflector 几何上不可能正确）
-import { setupGroundReflect, createGroundReflectPlaceholderMaterial } from '../render/ground-reflect.js';
-import {
-  GROUND_REFLECT_STRENGTH, groundMirrorCandidate, groundMirrorAdvance,
-  groundReflectDue, groundReflectVisible,
-} from '../render/ground-reflect-config.js';
-import { blocksRain } from '../render/rain-shelter.js';
+// v3.31 湿表面：**从零重做**（按材质分类 + 有界天空反光），不参考上游。
+// 上游湿地面（wet-ground / ground-reflect）与整条后处理链（storm-grade）已整体删除：
+// 它们的前提（独立地面 mesh、地面就在镜面高度）在起伏体素世界里不成立，
+// 是用户报告的岩壁亮带与高空云层光晕的根因（取证见 spec §2）。
+import { WET_STRENGTH_MAX } from '../render/wet-surface-config.js';
 import { ExplosionRenderer } from '../render/explosion-renderer.js';
 import { BlockHitFxRenderer, IGNIS_DEATH_BURST } from '../render/block-hit-fx.js';
 import { FlameSigilRenderer, loadFlameSigilTexture, sigilSpawnPoints } from '../render/flame-sigil.js';
@@ -512,39 +508,15 @@ export class Game {
     // 反射 pass 需要 renderer 句柄（此时 `renderer.init()` 已 await 完）。
     this.ocean.setRenderer(this.renderer);
     /**
-     * v3.30d：湿地面的**独立平面反射**（镜面 = 玩家脚下地面，每帧跟随）。
-     * ⚠️ 必须在 RenderWorld 之前建好（材质构造时就要拿采样节点）。
-     * ⚠️ pass 只在雨天光影档开启时跑（关闭 ⇒ 零成本）。
+     * ⚠️ 灯光创建必须在 RenderWorld 之前：材质的 shadow() 节点在构建时固定 light 引用。
+     *
+     * v3.31：湿表面**不采样任何反射 RT** ⇒ 不再需要第二条 reflector pass，
+     * 也不再需要把采样节点/投影矩阵交进材质（旧实现那整套已删）。
+     * 水面自己的反射 pass 原样保留，与湿表面无耦合。
      */
-    this.groundReflect = setupGroundReflect({ scene: this.scene });
-    this.groundReflect.setRenderer(this.renderer);
-    this._groundReflectPlaceholder = createGroundReflectPlaceholderMaterial();
-    this._groundMirrorY = null;
-    this._groundReflectFrame = 0;
-    this._groundReflectLast = -1;
-    // ⚠️ 灯光创建必须在 RenderWorld 之前：材质的 shadow() 节点在构建时固定 light 引用。
     this.renderWorld = new RenderWorld({
       scene: this.scene, atlasTexture: texture, viewDistance: this.viewDistance, sunLight,
-      // v3.30d：湿地面改用**独立地面反射**（镜面 = 玩家脚下地面）。
-      // ⚠️ 不再复用海平面 reflector：地面 y≈22 而镜面 −1.5，压平会把点推低 23.5 格
-      // ⇒ 投影出画（近处无反光、远处错位内容 = 用户报告的「地下一层模糊透射」）。
-      wetReflect: { node: this.groundReflect.texture },
     });
-    // v3.30：记下「湿地面已接反射线」—— 反射 pass 要据此藏掉 opaque 通道
-    // （否则同一 pass 里读写同一张 RT ⇒ WebGPU 验证错误）。
-    this._wetReflectWired = true;   // v3.30d：地面反射恒接线（pass 只在雨天档跑）
-    // v3.30：把湿分支的采样节点登记给 ocean —— 反射 pass 期间它要临时换成占位图
-    // （否则同一 pass 读写同一张 RT ⇒ WebGPU 验证错误；而藏掉 opaque 通道会让
-    //  水面倒影映不到地面 ⇒ 水色回归，本轮单变量 A/B 实测）。
-    {
-      const wetU = this.renderWorld.materials.wet;
-      // 镜面投影矩阵与镜面高度都由**地面反射**每帧写（它才知道镜像相机与地面高度）
-      // ⚠️ WET_UNIFORMS 是 Object.freeze ⇒ **不能替换成员**，只能写它的 value。
-      // 故把地面反射的矩阵 uniform 交给 wet-ground 侧**同一个对象**：
-      // 让 groundReflect 直接写到 wetU.uWetReflMatrix（见下 setMatrixTarget）。
-      this.groundReflect.setMatrixTarget(wetU.uWetReflMatrix);
-      wetU.uWetReflect.value = GROUND_REFLECT_STRENGTH;
-    }
     // 日夜循环（M2-6）：正午起步（与 M1 视觉口径一致），1200s 一天
     this.dayNight = new DayNight({
       scene: this.scene,
@@ -1486,8 +1458,6 @@ export class Game {
       if (this._trauma > 0) {
         this._trauma = Math.max(0, this._trauma - realDt * CARBINE.traumaDecayPerSecond);
       }
-      // v3.30d：地面反射的镜面平滑用真实 dt（不受 hitstop 影响）
-      this._lastGroundDt = realDt;
       // 设置面板打开时跳过玩家输入/物理（世界调度继续：后台填充不受 UI 阻塞）
       if (!this.uiModal) this.player.update(dt);
       // 模态期 `player.update` 被跳过而下面 `entities.update` 照跑 → 矿车继续移动
@@ -1796,12 +1766,9 @@ export class Game {
       // 水面倒影（v3.17）：**必须在主 render 之前** —— 后置会让 BatchedMesh 的
       // indirect 索引表被反射相机覆写 → 天空整片撕成黑多边形（详见 ocean.js 反射段）。
       this._renderWaterReflection();
-      // v3.30：雨天光影档走后处理链（体积雾/Bloom/色差/暗角）。
-      // ⚠️ **关闭时逐位回到 renderer.render**（整条链不跑，零成本）。
-      // ⚠️ pipeline.render() 内部临时置 NoToneMapping 并在链尾接 renderOutput
-      // ⇒ ACES 只应用一次（renderer 那份，v1.70 用户拍板）。
-      if (this._stormActive && this.stormGrade) this.stormGrade.pipeline.render();
-      else this.renderer.render(this.scene, this.camera);
+      // v3.31：雨天档也走**单 pass** renderer.render —— 整条后处理链已按用户裁定删除
+      // （体积雾/bloom/色差/暗角/冷调/颗粒）。ACES 仍由 renderer 那份应用（v1.70）。
+      this.renderer.render(this.scene, this.camera);
       // 准心配色（v1.64）：**必须在 render 之后** —— WebGPU canvas 在 render 前不可读
       // （实测读到恒为 0，会让准心永远判为暗背景而恒白）。内部 100ms 节流 + 迟滞。
       this.crosshair.update(nowMs);
@@ -2135,10 +2102,7 @@ export class Game {
     const fade = reflectHeightFade(cam.position.y, WATER_LEVEL_OFFSET,
       this._reflectHeightFull, this._reflectHeightZero);
     if (this.ocean.uReflectHeightFade) this.ocean.uReflectHeightFade.value = fade;
-    // v3.30：雨天档的湿地面也要反射 ⇒ 放宽可见性门（只看「视野里有地面」，
-    // 不看水面高度）。否则站在陆地抬头时反射 pass 不跑 ⇒ 湿地面采到空 RT（静默失效）。
-    const gateVisible = this._stormActive ? this._stormReflectVisible() : visible;
-    if (!this.reflectScheduler.tick(gateVisible && (this._stormActive || fade > 0.001))) return;
+    if (!this.reflectScheduler.tick(visible && fade > 0.001)) return;
     const hidden = this._reflectHidden || (this._reflectHidden = []);
     hidden.length = 0;
     if (this.viewArm?.mesh) hidden.push(this.viewArm.mesh);
@@ -2161,59 +2125,17 @@ export class Game {
     if (this.carbineView?.mounted) hidden.push(this.carbineView.root);
     // v3.30：雨丝与水花同理（additive 粒子在镜像相机下的观感未标定，且省 draw call）
     if (this.stormRain) hidden.push(...this.stormRain.meshes);
-    // v3.30d：套 multi-draw 守卫 —— 一帧内有两条反射 pass（水面 + 地面），
-    // 不隔离的话第二条会覆写第一条的列表，主 pass 读到反射视锥的剔除结果
+    // ⚠️ 套 multi-draw 守卫：反射 pass 走 renderer.render ⇒ 会覆写 BatchedMesh 的
+    // _multiDraw* / _indirectTexture，不隔离的话主 pass 读到反射视锥的剔除结果
     // ⇒ 主视锥内、反射视锥外的几何整帧不绘制（v3.17 天空撕裂同一条机制）。
+    // ⚠️ v3.31：一帧内只剩**一条**反射 pass（水面）—— 地面那条已删。
+    // 守卫仍保留：阴影 pass 与主 pass 也共用那份列表，隔离仍是必需的。
     this.renderWorld.beginReflectGuard();
     try {
       this.ocean.renderReflection(cam, this.ocean.plane.material, hidden);
     } finally {
       this.renderWorld.endReflectGuard();
     }
-    // v3.30d：紧接着跑地面反射（雨天档才跑）
-    this._renderGroundReflection(hidden);
-  }
-
-  /**
-   * v3.30d：湿地面的地面反射 pass（**只在雨天光影档开启时跑**）。
-   *
-   * 镜面 = 玩家脚下地面顶面（平滑跟随，见 ground-reflect-config 的几何取证）。
-   * ⚠️ 必须在水面 pass **之后、主 render 之前**，且各自套守卫（不可交错）。
-   * ⚠️ 额外藏掉**水面平面**：否则地面会映出水面（互反射亮斑）。
-   *
-   * @param {THREE.Object3D[]} hidden 水面 pass 已收集的隐身清单（复用，零分配）
-   */
-  _renderGroundReflection(hidden) {
-    if (!this._stormActive || !this.groundReflect || !this.player) return;
-    const pp = this.player.physics.pos;
-    const cam = this.camera;
-    // ① 镜面高度：探针 + 平滑（台阶/跳跃不跳变，瞬移直接吸附）
-    const cand = groundMirrorCandidate(this.world, this.registry, pp.x, pp.y, pp.z, blocksRain);
-    const dt = this._lastGroundDt ?? 0.016;
-    this._groundMirrorY = groundMirrorAdvance(this._groundMirrorY, cand, dt);
-    if (!this.groundReflect.setMirrorY(this._groundMirrorY)) return;
-    // ② 可见性 + 节流
-    const fwd = this._reflectForward || (this._reflectForward = new THREE.Vector3());
-    cam.getWorldDirection(fwd);
-    const halfFov = (cam.fov * Math.PI / 180) / 2;
-    const visible = groundReflectVisible(cam.position.y, this._groundMirrorY, fwd.y, halfFov);
-    this._groundReflectFrame++;
-    if (!groundReflectDue(this._groundReflectFrame, this._groundReflectLast, visible)) return;
-    this._groundReflectLast = this._groundReflectFrame;
-    // ③ 额外藏水面平面（地面不该映出水面）
-    const water = this.ocean?.plane;
-    const savedWater = water ? water.visible : null;
-    if (water) water.visible = false;
-    this.renderWorld.beginReflectGuard();
-    try {
-      this.groundReflect.render(cam, hidden, this._groundReflectPlaceholder);
-    } finally {
-      this.renderWorld.endReflectGuard();
-      if (water) water.visible = savedWater;
-    }
-    // ④ 镜面高度写给湿分支（它把世界点压到这个高度再投影）
-    const wetU = this.renderWorld?.materials?.wet;
-    if (wetU) wetU.uWetMirrorY.value = this._groundMirrorY;
   }
 
   /**
@@ -3043,28 +2965,28 @@ export class Game {
     };
   }
 
-  // ==================== 雨天光影档（v3.30，用户 2026-11-22） ====================
+  // ==================== 雨天光影档（v3.30 引入，v3.31 重做湿表面） ====================
 
   /**
    * 雨天光影档的**唯一开关入口**（面板 + `?storm=` 共用）。
    *
-   * 开启时做五件事（用户需求的五项）：
+   * 开启时做三件事：
    *   ① 关掉既有「循环雨滴」（`rain.setIntensity(0)` + 天气不再驱动它），
-   *      改成**持续下雨**（`StormRain`，上游 Rain 移植）；
-   *   ② 地面湿滑与反光（`renderWorld.materials.wet.uWet`，复用既有 reflector）；
-   *   ③ 后处理链（体积雾 / Bloom / 色差 / 暗角；ACES 沿用 renderer 那份）；
-   *   ④ 雨声换成上游四层雨床（`rain_storm` 循环）+ 随机远雷；
-   *   ⑤ 帧循环改走 `pipeline.render()`。
+   *      改成**持续下雨**（`StormRain`，上游 Rain 移植 —— 这一块用户裁定保留）；
+   *   ② **按材质分类的湿表面**（`renderWorld.materials.wet.uWet`）——
+   *      v3.31 从零重做：压暗 + 有界天空反光 + 弱太阳高光 + 积水斑，不采样任何 RT；
+   *   ③ 雨声换成上游四层雨床（`rain_storm` 循环）+ 随机远雷。
    *
    * 关闭时**逐位回到改动前**：
    *   · `uWet = 0` ⇒ 体素材质 mix 取左端（零回归锚点）；
-   *   · `uEnabled = 0` 且**整条链不跑**（直接 renderer.render）；
    *   · 雨丝/水花 visible=false（draw call 回基线）；
-   *   · 雨声切回既有 `rain`（由天气强度驱动）。
+   *   · 雨声切回既有 `rain`（由天气强度驱动）+ 还原开启前的天气快照。
    *
    * ⚠️ **生效值 = 玩家意图 AND 代码级隔离**（`?storm=0`）—— 与 ambientFx 同口径。
-   * ⚠️ **后处理链懒建**：首次开启才 createStormGrade（它要编译一串着色器，
-   * 默认关的玩家不该付这个启动成本）。
+   * ⚠️ **v3.31：不再有后处理链**。体积雾/bloom/色差/暗角/冷调/颗粒整条删除
+   * （用户裁定）：它们是高空云层光晕的放大器，且带来预热收敛/色彩空间分段/
+   * 屏幕竖纹三类已知坑。雨夜氛围由**既有** DayNight 风格系统承担（傍晚/黑夜）。
+   * ⇒ 帧循环恒走单 `renderer.render()`，雨天档的帧时不高于晴天档。
    *
    * @param {boolean} enabled
    * @returns {boolean} 实际生效值
@@ -3115,29 +3037,11 @@ export class Game {
       this.rain?.setIntensity(this.weather?.intensity ?? 0);
     }
 
-    // ---- ② 湿地面 ----
+    // ---- ② 湿表面（v3.31 按材质分类，不采样任何 RT）----
     const wet = this.renderWorld?.materials?.wet;
     if (wet) wet.uWet.value = on ? WET_STRENGTH_MAX : 0;
 
-    // ---- ③ 后处理链（懒建）----
-    if (on && !this.stormGrade) {
-      this.stormGrade = createStormGrade({
-        renderer: this.renderer,
-        scene: this.scene,
-        camera: this.camera,
-        mode: this.settings.pixelRatio,
-        sunDir: this.renderWorld?.materials?.dayNight?.uSunDirection,
-        skyDim: this.renderWorld?.materials?.dayNight?.uSkyDim,
-      });
-    }
-    if (this.stormGrade) this.stormGrade.uniforms.uEnabled.value = on ? 1 : 0;
-    // ⚠️⚠️ **远景雨幕已整层移除**（v3.30e，用户裁定「感觉还不如去掉」）：
-    // 它把 512² 细丝纹理按柱面投影铺满屏幕（1.4~5.7 texel/px）⇒ 欠采样走样成竖纹；
-    // 上游靠链尾 FXAA 抹平，而本仓 MSAA 只抗几何边缘、对 shader 内高频无效。
-    // ⇒ 条纹图的懒加载、`loadRainSheet` 与 `setRainSheet` 一并删除（见 storm-grade.js 文件头）。
-    // 雨感由真实几何承担：近景雨丝 5200 条 + 水花 + 体积雾 + 湿地面反光。
-
-    // ---- ④ 雨声 ----
+    // ---- ③ 雨声 ----
     this._syncStormAudio();
     return on;
   }
@@ -3215,15 +3119,14 @@ export class Game {
     this.camera.getWorldDirection(fwd);
     this.stormRain.setForward(fwd.x, fwd.y, fwd.z);
     this.stormRain.update(pp, dt, nowMs);
-    // 湿地面时钟 + 室内门（室内时地面也不该湿 —— 雨没淋到）
+    // 湿表面室内门（室内时地面也不该湿 —— 雨没淋到）。
+    // ⚠️ v3.31：**无时钟** —— 新湿表面是静态的（用户未选涟漪/流水动画），
+    // 动的是雨丝与水花。好处：Tier 4 判据天然稳定，不需要冻时间。
     const wet = this.renderWorld?.materials?.wet;
     if (wet) {
-      wet.uWetTime.value = nowMs / 1000;
       const indoor = this.stormRain.debugState().underRoof;
       wet.uWet.value = indoor ? 0 : WET_STRENGTH_MAX;
     }
-    // 后处理时钟
-    if (this.stormGrade) this.stormGrade.uniforms.uTime.value = nowMs / 1000;
     // 雨声（室内衰减）+ 随机远雷
     this._syncStormAudio();
     this._maybeThunder(nowMs);
@@ -3246,25 +3149,7 @@ export class Game {
     this.audioManager?.play(STORM_AUDIO.thunder, STORM_AUDIO.thunderVolume);
   }
 
-  /**
-   * 雨天档的反射门控扩展。
-   *
-   * ⚠️⚠️ **湿地面需要反射，但既有反射门只看水面可见性**（`reflectVisible`：
-   * 相机在水面之上 ∧ 朝下看）。玩家站在陆地上抬头看天时那个门是 false
-   * ⇒ 反射 pass 不跑 ⇒ **湿地面采到的是旧 RT 或空 RT**（静默失效：地面不反光）。
-   * ⇒ 雨天档开启时**放宽门控**：只要相机朝下能看到地面就跑（不看水面高度）。
-   *
-   * ⚠️ 仍保留节流与高度衰减（成本主杠杆不变）。
-   * @returns {boolean} 本帧是否应跑反射 pass
-   */
-  _stormReflectVisible() {
-    const cam = this.camera;
-    const fwd = this._stormForward || (this._stormForward = new THREE.Vector3());
-    cam.getWorldDirection(fwd);
-    // 朝下看（视线 y < 半视场角的正弦）⇒ 视野里有地面
-    const halfFov = (cam.fov * Math.PI / 180) / 2;
-    return fwd.y <= Math.sin(halfFov);
-  }  // ---- M4 公开 API（Playwright 与 UI 都走这些方法，委派给同一控制器，不复制玩法逻辑）----
+  // ---- M4 公开 API（Playwright 与 UI 都走这些方法，委派给同一控制器，不复制玩法逻辑）----
 
   /**
    * v3.30 KV-9：弹壳落地高度探针（渲染层不查体素，由装配层给）。
@@ -5026,9 +4911,6 @@ export class Game {
     this.carbineView?.dispose();
     this.carbineFx?.dispose();
     this.stormRain?.dispose();
-    this.groundReflect?.dispose();
-    this._groundReflectPlaceholder?.dispose();
-    this.stormGrade?.dispose();
     this.flameSigil?.dispose();
     this.spikeFx?.dispose();
     this.fireRing?.dispose();

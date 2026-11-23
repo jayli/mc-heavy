@@ -1,6 +1,8 @@
 // src/voxel/block-registry.js — 方块注册表 + typed 属性表（设计文档 §4.1）
 // 不依赖 three；主线程/Worker 同构可用。
 
+import { wetClassOf } from './wet-material-data.js';
+
 const CULL_MODES = { opaque: 0, cutout: 1, transparent: 2, none: 3 };
 const MAX_BLOCKS = 512; // Uint16 ID 空间内预留
 
@@ -34,6 +36,17 @@ export function createRegistry() {
    * 看到背后的空气（用户报告）；代价 = 每条「实心↔镂空体」接触面 +1 面。
    */
   const hollowOccluderTable = new Uint8Array(MAX_BLOCKS);
+  /**
+   * 湿表面材质类表（v3.31）：值域 0..8，唯一权威是 `wet-material-data.js` 的 name→类映射。
+   *
+   * 唯一消费方是 mesher（写 `packed` **bit15–18**）→ `materials.js` 的湿表面分支
+   * 在顶点阶段查 `WET_CLASS_PARAMS` 得逐 quad 常量。
+   * ⚠️ **为什么走 packed 位而不是新顶点属性**：加一个 float 属性会让三通道静态
+   * `gpuVertexBytes` 从 193.83 MiB 涨到 219.68 MiB，超 `m3-fullscene` 的 200 MiB 门。
+   * 塞进 packed 空闲位是**零字节增量**（详见 wet-material-data.js 文件头）。
+   * ⚠️ **不进指纹**：`fingerprintOfPrefix` 只哈希有序名字串 ⇒ 本表不影响旧存档。
+   */
+  const wetClassTable = new Uint8Array(MAX_BLOCKS);
   const geometryNames = []; // index → geometryType 字符串
   let count = 0;
   let frozen = false;
@@ -41,7 +54,7 @@ export function createRegistry() {
   return {
     get count() { return count; },
     solidTable, opaqueTable, cullTable, emissiveTable, geometryTable, orientationModesTable,
-    supportsPlayerTable, indestructibleTable, shadowCastTable, hollowOccluderTable,
+    supportsPlayerTable, indestructibleTable, shadowCastTable, hollowOccluderTable, wetClassTable,
 
     /**
      * @param {string} name
@@ -71,6 +84,9 @@ export function createRegistry() {
       orientationModesTable[id] = def.orientationModes ?? 0;
       indestructibleTable[id] = def.indestructible ? 1 : 0;
       shadowCastTable[id] = (def.shadowCast ?? true) ? 1 : 0;
+      // 湿表面材质类（v3.31）：按**名字**查旁路映射，未列出回落 NONE（不湿）。
+      // 不走 def 字段：分类是渲染语义，不该让 blocks-data 的声明侧再长一列。
+      wetClassTable[id] = wetClassOf(name);
       return id;
     },
 
