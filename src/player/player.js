@@ -14,6 +14,7 @@ import { WEAPON_IDS, WEAPONS } from './weapons/weapon-catalog.js';
 import { NEST_ALIAS_BLOCK } from '../entities/zombie-nests/nest-config.js';
 import { TURRET_ALIAS_BLOCK, defaultTurretRotation } from '../entities/turrets/turret-config.js';
 import { MINECART_ITEM, MINECART_TYPE, MINECART } from '../entities/minecarts/minecart-config.js';
+import { footstepSurfaceOf, FOOTSTEP_LOOPS, otherFootstepId } from './footstep-surface.js';
 
 const EYE_HEIGHT = 1.62;
 const REACH = 40; // mc-lite 枪的 far 语义
@@ -92,7 +93,7 @@ export class Player {
    * @param {() => boolean} [opts.isModal] 模态谓词（M3.1）：返回 true 时 keydown 全部拦截。
    *        注入而非直接引用 Game，保持 Player 不反向依赖 core/（依赖方向 §3）
    */
-  constructor({ world, camera, scheduler, registry, canvas, editor, weaponRuntime = null, isModal = () => false, onSpawnZombie = null, onSpawnSoldier = null, onPlayerShot = null, onSummonBoss = null, nests = null, turrets = null, minecarts = null, onIgniteTnt = null }) {
+  constructor({ world, camera, scheduler, registry, canvas, editor, weaponRuntime = null, isModal = () => false, onSpawnZombie = null, onSpawnSoldier = null, onPlayerShot = null, onSummonBoss = null, nests = null, turrets = null, minecarts = null, onIgniteTnt = null, isRainWetGround = null }) {
     this.world = world;
     this.camera = camera;
     this.scheduler = scheduler;
@@ -115,6 +116,14 @@ export class Player {
      * 缺省 null → B 键无效果（Player 单独构造时，如测试 fixture）。
      */
     this._onSummonBoss = onSummonBoss;
+    /**
+     * v3.38：玩家此刻是否站在**被雨淋着的湿地**上（Game 注入
+     * `() => this._isOnRainWetGround()`，判据本体在 `render/rain-shelter.js`）。
+     * 注入而非直接 import `render/` —— 与 `isModal` / `onSpawnZombie` 同一手法
+     * （依赖方向 §3：`player/` 不反向依赖 `render/`）。
+     * 缺省 null ⇒ 恒 false ⇒ 脚步声恒 `running_land`（fixture 单独构造时安全）。
+     */
+    this._isRainWetGround = isRainWetGround;
     /**
      * M7 巢穴服务（Game 注入）。同样注入而非直接引用 —— `src/entities/**` 是同构层，
      * Player 不得反向依赖它；缺省 null → alias 右键放置无效果（fixture 单独构造时）。
@@ -481,17 +490,25 @@ export class Player {
   }
 
   /**
-   * 跑动脚步声（v2.51，用户 2026-11-04：「跑步的声音」）。
+   * 跑动脚步声（v2.51，用户 2026-11-04：「跑步的声音」；v3.38 加雨天湿地档）。
    *
-   * 两个循环音效互斥：陆上 `running_land`（0.2）/ 入水 `running_wet`（0.25）——
-   * 音量与“入水换音效”的语义照搬 mc-lite `PlayerInteraction.js:911-915`。
+   * 三档地表，选哪一路由 `footstep-surface.js` 的 `footstepSurfaceOf()` 决定（唯一权威）：
+   *   · `water` 入水（`physics.inWater`）→ `running_wet` 0.25；
+   *   · `wet` 雨天被雨淋着的湿地 → `running_wet` **0.2**（v3.38，用户 2026-11-24）；
+   *   · `land` 其余 → `running_land` 0.2。
+   * 音量与「入水换音效」的语义照搬 mc-lite `PlayerInteraction.js:911-915`。
+   *
    * 判据用 `viewBob.walking`（v2.54；单一权威在 `ViewBob.shouldBob`，按水中阻力折算）
-   * + `physics.inWater`（水体判据同 `physics.js`），停下或上台阶时两路一起停
+   * + `physics.inWater` + 注入的 `_isRainWetGround()`，停下或上台阶时两路一起停
    * （`stopLoop` 幂等，重复调用无成本）。
    *
    * ⚠️ **不得改回读 `viewBob.active`**：`active` 是镜头判据（强制 `drag: 1`），水中恒 false
    * → 脚步声永不播（v2.51~v2.53 的实际缺陷，实测 0/120 帧）。用户裁定 2026-11-05：
    * **只让声音响、镜头保持不晃** —— 故两个标志刻意分开，不是遗漏。
+   *
+   * ⚠️ **v3.38：`water` 与 `wet` 共用 `running_wet` 这个 id**（同一素材、不同音量）⇒
+   * 「停另一路」不能靠 id 互斥（`playLoop` 同名只改音量、不会重建），
+   * 必须只停 `otherFootstepId()` 给出的那一条。
    *
    * ⚠️ **乘坐矿车时不播** —— 玩家没有自主移动，播放会变成“车开着我却一直在跑”。
    */
@@ -504,13 +521,22 @@ export class Player {
       am.stopLoop('running_wet');
       return;
     }
-    if (this.physics.inWater) {
-      am.stopLoop('running_land');
-      am.playLoop('running_wet', 0.25);
-    } else {
-      am.stopLoop('running_wet');
-      am.playLoop('running_land', 0.2);
+    /**
+     * `_isRainWetGround` 缺省 null（fixture）⇒ `onRainWetGround` 为 false ⇒ `land`。
+     * 谓词抛错不得弄崩帧循环：本函数在每帧的 `update()` 里调，一次异常就是黑屏。
+     */
+    let wetGround = false;
+    if (typeof this._isRainWetGround === 'function') {
+      try { wetGround = this._isRainWetGround() === true; } catch { wetGround = false; }
     }
+    const surface = footstepSurfaceOf({
+      inWater: this.physics.inWater === true,
+      onRainWetGround: wetGround,
+    });
+    const loop = FOOTSTEP_LOOPS[surface];
+    const other = otherFootstepId(surface);
+    if (other) am.stopLoop(other);
+    am.playLoop(loop.id, loop.volume);
   }
 
   /**

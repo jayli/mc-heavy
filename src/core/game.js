@@ -39,6 +39,7 @@ import { CARBINE } from '../player/weapons/carbine.js';
 // v3.30 雨天光影档：持续雨（雨丝/水花/雨声）—— 这一块仍是上游移植，用户裁定保留
 import { StormRain } from '../render/storm-rain.js';
 import { RainShelterMap } from '../render/rain-shelter-map.js';
+import { rainWetGround } from '../render/rain-shelter.js';
 import { uploadShelterTexture } from '../render/rain-shelter-texture.js';
 import { STORM_AUDIO } from '../render/storm-rain-config.js';
 // v3.31 湿表面：**从零重做**（按材质分类 + 有界天空反光），不参考上游。
@@ -993,6 +994,13 @@ export class Game {
     this.editor.subscribe((event) => {
       for (const controller of this.nests.controllers().values()) controller.onWorldChange(event);
       for (const controller of this.turrets.controllers().values()) controller.onWorldChange(event);
+      /**
+       * v3.38：方块变了 ⇒ 脚步声的「雨天湿地」缓存作废。
+       * ⚠️ **必须在这里失效**：按格缓存只看「跨格」，而玩家可以**原地不动**就
+       * 给自己头顶盖屋顶（或把脚下挖空）—— 那种情形下永不跨格，缓存会永久停在旧值
+       *（听感＝「盖了屋顶仍踩出踩水声」）。
+       */
+      this._wetGroundCache = null;
       // v3.34：遮挡高度图失效 —— 玩家挖放当帧重扫该列（插队首，不等轮到）。
       // ⚠️ 按 column 去重：一次 setBlocks 可能改同一列的几百格。
       const map = this.rainShelterMap;
@@ -1270,6 +1278,9 @@ export class Game {
       // 真的引爆了（false = 去重命中）。左键挖块与枪击命中两条路径都经此函数落到
       // `explodeTnt()`（去重集合的单一权威在本类，见其注释）。
       onIgniteTnt: (x, y, z) => this.explodeTnt(x, y, z),
+      // v3.38：跑动脚步声的「雨天湿地」判据（用户 2026-11-24）。
+      // 注入而非让 `player/` import `render/`（依赖方向 §3，与 isModal 同手法）。
+      isRainWetGround: () => this._isOnRainWetGround(),
     });
     this.player.spawn(startX, startY, startZ);
     // v2.62：把焰魔服务注入玩家物理（用户缺陷⑦「不动如山」）—— 玩家撞上焰魔身体盒
@@ -3085,6 +3096,8 @@ export class Game {
     this._stormWanted = !!enabled;
     const on = this._stormWanted && this._stormOption;
     this._stormActive = on;
+    // v3.38：开关翻转 ⇒ 脚步声的湿地缓存作废（关→开时不得沿用上一轮的旧值）。
+    this._wetGroundCache = null;
 
     // ---- ① 雨：循环雨滴 vs 持续雨 ----
     if (on) {
@@ -3153,6 +3166,45 @@ export class Game {
 
   /** 当前雨天光影档是否生效（测试 / HUD） */
   get stormLighting() { return this._stormActive === true; }
+
+  /**
+   * v3.38：玩家足下是否**此刻是一块被雨淋着的湿地**（脚步声换 `running_wet` 的判据）。
+   *
+   * 用户 2026-11-24：「开启雨天光影的时候，当玩家进入被雨淋的湿地的时候，跑动时的脚步声音
+   * 用 running_wet.wav，而不是继续用 running_land.mp3，当回到非被淋雨的区域时，才用回
+   * running_land.mp3，当未开启雨天光影的时候，玩家跑动时的音效始终都是 running_land.mp3」。
+   *
+   * ⚠️ **判据本体在 `render/rain-shelter.js` 的 `rainWetGround`**（头顶无挡雨面 ∧
+   * 脚下方块会湿），本方法只做**挡位判断 + 按格缓存**，不重写任何一条判据（红线 1）。
+   *
+   * ⚠️ **缓存按「格」而不是按时间**：本方法每帧被调（`_updateFootsteps`），
+   * 而头顶扫描最多 24 格 —— 不缓存就是每帧 24 次 `getBlockId`。跨格才重算：
+   * 站立不动/原地跑时 y 不变，屋里屋外移动则必然跨格（同一格内不可能进出屋檐）。
+   * 缓存键包含 `_stormActive`：开关翻转当场失效（关档 → 立即回陆地音）。
+   *
+   * ⚠️ **场景未就绪时返回 false**（安全失败方向：宁可响陆地音也不要报错
+   *—— 本方法在帧循环的错误带里，一次异常就是黑屏）。
+   *
+   * @returns {boolean}
+   */
+  _isOnRainWetGround() {
+    if (this._stormActive !== true) return false;          // 用户裁定：未开启则恒陆地音
+    const p = this.player?.physics?.pos;
+    if (!p) return false;
+    const cx = Math.floor(p.x);
+    const cy = Math.floor(p.y - 1e-4);   // 脚底格（站稳时 y 在支撑块顶面）
+    const cz = Math.floor(p.z);
+    const c = this._wetGroundCache;
+    if (c && c.x === cx && c.y === cy && c.z === cz) return c.wet;
+    let wet = false;
+    try {
+      wet = rainWetGround(this.world, this.registry, p.x, p.y, p.z) === true;
+    } catch {
+      wet = false;
+    }
+    this._wetGroundCache = { x: cx, y: cy, z: cz, wet };
+    return wet;
+  }
 
   /**
    * 还原「开启雨天档之前」的天气（v3.30e，用户报告关档后声音残留）。

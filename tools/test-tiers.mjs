@@ -223,6 +223,8 @@ export const UNIT_NODE_SAFE = [
   'test-enemy-counts.js',
   // v3.37：水中脚步声烘焙产物（零 node 依赖的 dsp 模块 + fetch 读 wav ⇒ Node 可跑）
   'test-footstep-water.js',
+  // v3.38：跑动脚步声按地表选路（纯函数 + 真实 registry，零 three/DOM）
+  'test-footstep-surface.js',
 ];
 
 /**

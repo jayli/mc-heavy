@@ -31,6 +31,7 @@
 // 本文件不 import three（Node 单测直接构造 registry + 假 world 即可断言）。
 import { WORLD_MIN_Y } from '../voxel/constants.js';
 import { CLOUD_CLUSTER_Y } from '../gen/structures/sky-structures.js';
+import { WET_CLASS } from '../voxel/wet-material-data.js';
 import { waterSurfaceYAt } from './water-surface.js';
 
 /**
@@ -172,4 +173,41 @@ export function rainStopY(world, registry, x, z, fromY, searchDepth = 48) {
   if (shelter === null) return water;
   if (water === null) return shelter;
   return Math.max(shelter, water);
+}
+
+/**
+ * 该格**此刻是否是一块被雨淋着的湿地**（v3.38，用户 2026-11-24：「开启雨天光影的时候，
+ * 当玩家进入被雨淋的湿地的时候，跑动时的脚步声音用 running_wet.wav」）。
+ *
+ * 两个条件同时成立才算：
+ *   ① **头顶无挡雨面** —— 直接复用 `isUnderRoof`（屋顶/玻璃/台阶挡，树叶/云/空岛不挡），
+ *      所以屋里、棚下、洞穴里是干的，树下仍是湿的（与雨效、雨声同一判据）；
+ *   ② **该方块会变湿** —— `registry.wetClassTable[id] !== WET_CLASS.NONE`，
+ *      即湿地面着色器用的**同一张材质分类表**（`voxel/wet-material-data.js`）。
+ *      ⇒ 云、装置占位块、自发光体（glowstone/lava）上不会响踩水声，
+ *      与「看不出湿的地面」对齐（红线 1：听感与画面共用一份权威，不再立第二张名单）。
+ *
+ * ⚠️ **空气 / 水 / 未加载格一律 false**：`wetClassTable[0] === NONE` 已覆盖空气；
+ *    水另行由玩家物理判（`physics.inWater` 优先于本函数，见 `player/footstep-surface.js`）。
+ * ⚠️ **y 传「玩家脚底所在的那一格」**（站立格），不是脚下支撑块的格 ——
+ *    本函数自己往下找一格支撑块：玩家站在 y=21.0 时脚底格 = 21，支撑块在 20。
+ *
+ * @param {{getBlockId:Function}} world
+ * @param {ReturnType<import('../voxel/block-registry.js').createRegistry>} registry
+ * @param {number} x @param {number} y @param {number} z 玩家脚底（物理 pos 口径）
+ * @returns {boolean}
+ */
+export function rainWetGround(world, registry, x, y, z) {
+  const ix = Math.floor(x);
+  const iz = Math.floor(z);
+  /**
+   * 支撑块 = 脚底所在格的**下一格**。
+   * ⚠️ 不能写 `floor(y - 1e-4) - 1`：玩家站稳时 `pos.y` 恰等于支撑块顶面（y=21 对 block y=20），
+   * 那式会得到 19（空气）⇒ 所有露天草地都被判干（实测：9 例中 4 例当场红）。
+   * `floor(y) - 1` 对「顶面共面」（21.0）与「格内任意高度」（21.42）两种口径都对。
+   */
+  const support = world.getBlockId(ix, Math.floor(y) - 1, iz);
+  if (!Number.isInteger(support) || support <= 0) return false;
+  if (registry.wetClassTable[support] === WET_CLASS.NONE) return false;
+  return !isUnderRoof(world, registry, x, y, z);
 }

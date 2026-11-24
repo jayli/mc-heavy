@@ -251,6 +251,189 @@ test('水中行走：播 running_wet（不是 running_land），停下即停；�
   expect(walked.afterStop.land, '停下后陆上脚步声也必须停').toBeNull();
 });
 
+test('雨天湿地：开雨天档后跑动换 running_wet，盖屋顶/关档后回到 running_land', async ({ page }) => {
+  test.setTimeout(240_000);
+  /**
+   * v3.38（用户 2026-11-24）：「开启雨天光影的时候，当玩家进入被雨淋的湿地的时候，跑动时的
+   * 脚步声音用 running_wet.wav，而不是继续用 running_land.mp3，当回到非被雨淋的区域时，
+   * 才用回 running_land.mp3，当未开启雨天光影的时候，玩家跑动时的音效始终都是 running_land.mp3」。
+   *
+   * 四个阶段全在一个 evaluate 里跑完（中间不 await 外部）：
+   *   ① 开档前跑 → land；
+   *   ② 开档 + 露天草地跑 → wet（且 land 不播）；
+   *   ③ 同位置给头顶盖石砖屋顶 → 回 land（且 wet 不播）；
+   *   ④ 拆屋顶 → 回 wet；
+   *   ⑤ 关档（原地跑）→ 恒 land。
+   *
+   * ⚠️ 判据读 `debugLoops()` 的 **playing / target**，不读常量：
+   * 缺陷形态是「两个分支都合法但选错了那一路」，而任何请求计数类判据都拓不到。
+   * ⚠️ 湿地必须自己造一个**露天干地平台**：出生点附近可能本来就在水里/棚下。
+   */
+  await boot(page, '&weather=clear');
+  const r = await page.evaluate(async () => {
+    const g = window.__MC_GAME__;
+    const pl = g.player;
+    const frame = () => new Promise((res) => requestAnimationFrame(res));
+
+    /**
+     * 造一条**长露天石廊**（会湿的材质）并清空头顶。
+     * ⚠️ 实测教训：第一版只铺 5×5 石台，按 W 跑 40 帧就走出去了（玩家 8 格/秒，
+     * 40 帧≈15 格），后面几个窗口实际在自然地形上跑 —— 第五个窗口撞进林地时
+     * `walking` 只剩 2 帧（前置判据当红抓到）。走廊必须比「每窗口跑动距离 × 窗口数」长。
+     * 长度方向沿 +X（`_applyInput` 对 KeyW 的方向由 yaw 决定，这里改为直接按 X 轴推速度，
+     * 让走廊方向确定）。
+     */
+    const px = Math.floor(pl.physics.pos.x);
+    const pz = Math.floor(pl.physics.pos.z);
+    let groundY = -1;
+    for (let y = Math.floor(pl.physics.pos.y); y > Math.floor(pl.physics.pos.y) - 12; y--) {
+      if (g.world.getBlockId(px, y, pz) !== 0) { groundY = y; break; }
+    }
+    const feetY = groundY + 1;
+    const stone = g.registry.idOf('stone');
+    const bricks = g.registry.idOf('stone_bricks');
+    const CORRIDOR = 72;             // 走廊长度（格，沿 +X）
+    const HALF_Z = 3;
+    for (let dx = -6; dx <= CORRIDOR; dx++) for (let dz = -HALF_Z; dz <= HALF_Z; dz++) {
+      // 清空头顶 8 格（保证露天），再铺一层石台
+      for (let y = feetY; y <= feetY + 8; y++) g.editor.setBlock({ x: px + dx, y, z: pz + dz, id: 0 });
+      g.editor.setBlock({ x: px + dx, y: feetY - 1, z: pz + dz, id: stone });
+    }
+
+    /** 回到走廊起点（每个窗口前重置，消除「跑动会逐窗口漂移」） */
+    const resetPos = async () => {
+      pl.keys.delete('KeyW');
+      pl.physics.pos.x = px + 0.5;
+      pl.physics.pos.y = feetY;
+      pl.physics.pos.z = pz + 0.5;
+      pl.physics.vel.x = 0; pl.physics.vel.y = 0; pl.physics.vel.z = 0;
+      // yaw 让 KeyW 朝 +X（走廊方向）：前向 (sin(−yaw), 0, −cos(yaw)) = (+1,0,0) ⇒ yaw = −π/2
+      pl.yaw = -Math.PI / 2;
+      for (let i = 0; i < 4; i++) await frame();
+    };
+    await resetPos();
+
+    /** 跑 n 帧并统计两路各自在播的帧数与目标音量 */
+    const sample = async (label, frames = 40) => {
+      await resetPos();
+      pl.keys.add('KeyW');
+      const st = { label, frames: 0, land: 0, wet: 0, landTarget: null, wetTarget: null,
+        wetAt02: 0, wetAt025: 0, walking: 0, inWater: 0, stepped: [] };
+      for (let i = 0; i < frames; i++) {
+        await frame();
+        st.frames++;
+        if (pl.viewBob.walking) st.walking++;
+        if (pl.physics.inWater) st.inWater++;
+        const loops = g.audioManager.debugLoops();
+        if (loops.running_land?.playing) { st.land++; st.landTarget = loops.running_land.target; }
+        if (loops.running_wet?.playing) {
+          st.wet++; st.wetTarget = loops.running_wet.target;
+          if (Math.abs(loops.running_wet.target - 0.2) < 1e-6) st.wetAt02++;
+          if (Math.abs(loops.running_wet.target - 0.25) < 1e-6) st.wetAt025++;
+        }
+        st.stepped.push(pl._isRainWetGround());
+      }
+      pl.keys.delete('KeyW');
+      for (let i = 0; i < 10; i++) await frame();
+      st.afterStop = {
+        land: g.audioManager.debugLoops().running_land ?? null,
+        wet: g.audioManager.debugLoops().running_wet ?? null,
+      };
+      return st;
+    };
+
+    const before = await sample('before');           // ① 未开档
+    g.setStormLighting(true);
+    for (let i = 0; i < 4; i++) await frame();
+    const on = await sample('storm-on');             // ② 开档 + 露天
+    /**
+     * ③ 给**整条走廊**盖屋顶（玩家在里面怎么跑都在屋顶下）。
+     * ⚠️ 不能只盖起点那 5×5：按 W 跑 40 帧就走了 15 格，会跑出屋顶覆盖区
+     * （第一版实测就是这样，`roofed` 窗口的 stepped 全 true）。
+     */
+    const roofY = feetY + 4;
+    for (let dx = -6; dx <= CORRIDOR; dx++) for (let dz = -HALF_Z; dz <= HALF_Z; dz++) {
+      g.editor.setBlock({ x: px + dx, y: roofY, z: pz + dz, id: bricks });
+    }
+    for (let i = 0; i < 4; i++) await frame();
+    const roofed = await sample('roofed');           // ④ 屋顶下
+    // ⑤ 拆屋顶 → 回湿地
+    for (let dx = -6; dx <= CORRIDOR; dx++) for (let dz = -HALF_Z; dz <= HALF_Z; dz++) {
+      g.editor.setBlock({ x: px + dx, y: roofY, z: pz + dz, id: 0 });
+    }
+    for (let i = 0; i < 4; i++) await frame();
+    const unroofed = await sample('unroofed');
+    // ⑥ 关档（仍在露天石廊上）⇒ 恒 land
+    g.setStormLighting(false);
+    // ⚠️ 生效值必须在**关档那一刻**采样：下面第 ⑦ 步会重新开档，末尾再读恒为 true
+    // （第一版就是这样，前置判据以「关档后生效值必须为 false」红）。
+    const stormActiveAfterOff = g.stormLighting;
+    for (let i = 0; i < 4; i++) await frame();
+    const off = await sample('storm-off');
+
+    /**
+     * ⑦ 单次「原地不跑」的缓存失效专测（与位置无关）：
+     *    玩家停在起点，落地后给头顶盖一格屋顶 —— 缓存键（格）不变，
+     *    只有编辑事件能让它失效。旧写法（只在跨格时重算）在这里静默不过。
+     */
+    await resetPos();
+    g.setStormLighting(true);
+    for (let i = 0; i < 4; i++) await frame();
+    const stillOpen = pl._isRainWetGround();
+    g.editor.setBlock({ x: px, y: roofY, z: pz, id: bricks });
+    for (let i = 0; i < 3; i++) await frame();
+    const stillRoofed = pl._isRainWetGround();
+    g.editor.setBlock({ x: px, y: roofY, z: pz, id: 0 });
+    for (let i = 0; i < 3; i++) await frame();
+    const stillBack = pl._isRainWetGround();
+
+    return { feetY, roofY, stone, bricks, corridor: CORRIDOR,
+      stormActiveAfterOff,
+      before, on, roofed, unroofed, off, stillOpen, stillRoofed, stillBack };
+  });
+  console.log('WET FOOTSTEP:', JSON.stringify(r));
+
+  // 前置：五个窗口都真的跑起来了（否则后面的「有没有湿声」是在测静止）
+  for (const k of ['before', 'on', 'roofed', 'unroofed', 'off']) {
+    expect(r[k].walking, `前置（${k}）：按 W 期间必须真的进入跑动判据`).toBeGreaterThan(30);
+    expect(r[k].inWater, `前置（${k}）：不该落进水里（否则测的是入水那一路）`).toBe(0);
+  }
+  // ① 未开档 ⇒ 恒 land，wet 一帧都不许有
+  expect(r.before.land, '未开档：跑动必须播 running_land').toBeGreaterThan(30);
+  expect(r.before.wet, '未开档：running_wet 一帧都不许播').toBe(0);
+  // ② 开档 + 露天草地/石台 ⇒ 换 wet，音量 0.2，land 一帧不许有
+  expect(r.on.wet, '开档 + 露天：必须播 running_wet').toBeGreaterThan(30);
+  expect(r.on.wetAt02, '湿地那一路的意图音量必须是 0.2（与陆地同档）').toBe(r.on.wet);
+  expect(r.on.wetAt025, '湿地不得用入水那档的 0.25').toBe(0);
+  expect(r.on.land, '两路互斥：湿地上不得同时播 running_land').toBe(0);
+  expect(r.on.stepped.every((v) => v === true), '开档 + 露天：谓词每帧都应为 true').toBe(true);
+  // ③ 原地盖屋顶 ⇒ 当场回 land（缓存必须被编辑事件失效，而不是等玩家跨格）
+  expect(r.roofed.stepped.every((v) => v === false), '有屋顶：谓词每帧都应为 false').toBe(true);
+  expect(r.roofed.land, '屋顶下：必须回 running_land').toBeGreaterThan(30);
+  expect(r.roofed.wet, '屋顶下：running_wet 一帧都不许播').toBe(0);
+  // ④ 拆屋顶 ⇒ 当轮回湿地（证明③不是「开档被关掉了」）
+  expect(r.unroofed.wet, '拆屋顶后：必须回 running_wet').toBeGreaterThan(30);
+  expect(r.unroofed.land, '拆屋顶后：不得再播 running_land').toBe(0);
+  // ⑤ 关档 ⇒ 恒 land（用户裁定：未开启时始终 running_land）
+  expect(r.stormActiveAfterOff, '关档后生效值必须为 false').toBe(false);
+  expect(r.off.land, '关档：必须回到 running_land').toBeGreaterThan(30);
+  expect(r.off.wet, '关档：running_wet 一帧都不许播').toBe(0);
+  // 每个窗口停下后两路都收掉（不得残留）
+  for (const k of ['before', 'on', 'roofed', 'unroofed', 'off']) {
+    expect(r[k].afterStop.land, `停下后（${k}）陆上脚步声必须停`).toBeNull();
+    expect(r[k].afterStop.wet, `停下后（${k}）湿/水脚步声必须停`).toBeNull();
+  }
+  /**
+   * ⑦ 缓存失效专测（玩家**不跨格**）：
+   *   玩家停在同一格、落地后盖一格屋顶 → 谓词必须当场变 false，拆掉再回 true。
+   * ⚠️ 这是「按格缓存」最容易漏的那条：只靠跨格失效时，原地盖屋顶永远不会重算，
+   * 静默形态是「盖了屋顶仍然踩出踩水声」。
+   */
+  expect(r.stillOpen, '前置：起点露天时谓词为 true').toBe(true);
+  expect(r.stillRoofed, '原地盖屋顶（不跨格）后谓词必须当场变 false').toBe(false);
+  expect(r.stillBack, '拆掉屋顶后谓词必须回到 true').toBe(true);
+});
+
 test('死亡：丧尸被击杀播 z_die + 绿色碎块爆散，打中但没死时两者都不出', async ({ page }) => {
   test.setTimeout(180_000);
   await boot(page, '&weather=clear');
