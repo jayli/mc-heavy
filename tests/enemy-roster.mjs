@@ -18,6 +18,7 @@
 import { ZOMBIE } from '../src/entities/zombies/zombie-config.js';
 import { IGNIS } from '../src/entities/ignis/ignis-config.js';
 import { GUARDIAN } from '../src/entities/guardian/guardian-config.js';
+import { SOLDIER } from '../src/entities/soldiers/soldier-config.js';
 import { DRAGON_CORE_OBB } from '../src/entities/dragons/dragon-config.js';
 import { TURRET } from '../src/entities/turrets/turret-config.js';
 import { EXPLOSION_DAMAGE_RADIUS } from '../src/voxel/explosion.js';
@@ -63,6 +64,16 @@ export const ENEMY_ROSTER = Object.freeze({
     service: 'guardians', semantics: 'feet', height: GUARDIAN.height,
     boss: true, blocksPlayer: true, deathSound: 'guardian_die', burst: true,
     hitSound: BOSS_HIT_SOUND,
+  }),
+  /**
+   * 士兵（士兵 Epic）。三条刻意登记：
+   * · `boss: false` —— 士兵在场**不得**拉起 Boss 战 BGM（与丧尸同）；
+   * · `blocksPlayer: false` —— 10 个士兵在 8~20 格环上游走，若都是实心盒会把玩家围住（与丧尸同）；
+   * · `deathSound: 'z_die'` —— 用户裁定本轮不做士兵专属音效，复用既有素材（近似替代，不是原音）。
+   */
+  soldier: Object.freeze({
+    service: 'soldiers', semantics: 'feet', height: SOLDIER.height,
+    boss: false, blocksPlayer: false, deathSound: 'z_die', burst: true,
   }),
 });
 

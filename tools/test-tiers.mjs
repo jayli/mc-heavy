@@ -76,6 +76,7 @@ const ENTITY = [
   'entities',
   'enemy-roster',
   'enemy-wiring',
+  'soldier',
   'zombies',
   'zombie-nests',
   'zombie-model',

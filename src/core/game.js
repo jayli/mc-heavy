@@ -74,6 +74,13 @@ import { EntityManager } from '../entities/entity-manager.js';
 import { probeDefinition, WEAPON_HITTABLE_TYPES } from '../entities/entity-types.js';
 import { EntityRenderLayer, createProbeRenderDef } from '../render/entity-render-layer.js';
 import { ZombieService, zombieDefinition } from '../entities/zombies/zombie-system.js';
+import { SoldierService, soldierDefinition } from '../entities/soldiers/soldier-system.js';
+import { SOLDIER, SOLDIER_TYPE, SOLDIER_SHOT, SOLDIER_TRACER } from '../entities/soldiers/soldier-config.js';
+import { soldierHitChance, soldierMissPoint, judgeSoldierShot } from '../entities/soldiers/soldier-shooting.js';
+import { SoldierRenderer } from '../render/soldier-renderer.js';
+import { SoldierMuzzleFx } from '../render/soldier-muzzle-fx.js';
+import { SOLDIER_COLORS } from '../render/soldier-geometry.js';
+import { carbineSparkSeeds, carbineSparkParams } from '../render/carbine-fx-config.js';
 import { ZombieRenderer } from '../render/zombie-renderer.js';
 import { loadZombieSkinTexture } from '../render/zombie-skin-texture.js';
 import { TurretRenderer } from '../render/turret-renderer.js';
@@ -684,7 +691,8 @@ export class Game {
         // （Scheduler 只 try/catch 不消费该值，故改语义安全，见 scheduler.js:324）。
         commit: () => {
           const zombies = this.zombies?.despawnColumn(key) ?? 0;
-          const n = zombies + unload.commit();
+          const soldiers = this.soldiers?.despawnColumn(key) ?? 0;
+          const n = zombies + soldiers + unload.commit();
           // 矿车：commit 回收了该 column 的持久矿车 → 重建位置索引（清掉已回收车的条目）
           if (this.minecarts) this.minecarts.syncIndex();
           return n;
@@ -808,6 +816,24 @@ export class Game {
       onKnockback: (id, dx, dz) => this.zombieRenderer.noteKnockback(id, dx, dz),
     });
     this.entities.registerType('zombie', zombieDefinition);
+
+    // ---- 士兵装配（士兵 Epic，2026-11-24）----
+    // 与丧尸同段同手法：先 renderer 后 service（钩子闭包引用 renderer）。
+    // 材质走炮塔那套金属 TSL，太阳 uniform **必须复用 renderWorld 的三个句柄**
+    // （自己 new 会让日夜变了而士兵高光钉在正午方向）。
+    this.soldierRenderer = new SoldierRenderer({
+      scene: this.scene,
+      sunDirection: this.renderWorld.materials.dayNight.uSunDirection,
+      sunStrength: this.renderWorld.materials.dayNight.uSunStrength,
+      sunColor: this.renderWorld.materials.dayNight.uSunColor,
+    });
+    this.soldierMuzzleFx = new SoldierMuzzleFx({ scene: this.scene });
+    this.soldiers = new SoldierService({
+      entities: this.entities, world: this.world,
+      onDespawn: () => {},   // slot 由 renderer 差集驱动，不需逐个归还
+      onKnockback: (id, dx, dz) => this.soldierRenderer.noteKnockback(id, dx, dz),
+    });
+    this.entities.registerType(SOLDIER_TYPE, soldierDefinition);
 
     // ---- 祭坛飞龙装配（v2.41）----
     // 龙是**景观实体**：全世界恰好一条，在带祭坛的高台地带上空盘旋。
@@ -1225,6 +1251,9 @@ export class Game {
       isModal: () => this.uiModal,
       // M6：X 键生成丧尸（调试键，对齐 mc-lite）。注入回调而非传 Game（依赖方向 §3，与 isModal 同手法）
       onSpawnZombie: () => this.spawnZombieNearPlayer(),
+      // 士兵 Epic：C 键召唤士兵 + 玩家开火时通知士兵班组（听枪声搜索）
+      onSpawnSoldier: () => this.spawnSoldierNearPlayer(),
+      onPlayerShot: (pos) => this.soldiers?.hearShot(pos, performance.now()),
       // v2.43：B 键召唤玩家所在地图的 Boss。注入回调而非传 Game（依赖方向 §3，同手法）
       onSummonBoss: () => this.summonBoss(),
       // M7：巢穴服务注入。同样注入而非传 Game —— `src/entities/**` 是同构层，
@@ -1530,6 +1559,9 @@ export class Game {
       // entities.update 之前（mc-lite 的 frameReservations 同生命周期）
       this.minecarts.beginFrame();
       this.zombies.update(dt, { playerPosition: [pp.x, pp.y, pp.z] });
+      // 士兵的班组节拍 + 寻路拍（同帧序：**必须在 entities.update 之前**）。
+      // 它还要把班组情报（bursting / lastKnown / advancerId）喂给 Agent —— 经下面的 ctx。
+      this.soldiers?.update(dt, { playerPosition: [pp.x, pp.y, pp.z], nowMs });
       // v2.61：焰魔的寻路拍（A\* + 决策），与丧尸同帧序 —— **必须在 entities.update 之前**，
       // 那样 Agent 本帧的移动意图才能读到本帧最新写好的 `state.navDir`。
       // 反序会让它用上帧的方向走一步（形态：长墙拐角晚一拍、看着像抖动）。
@@ -1551,7 +1583,16 @@ export class Game {
         world: this.world, registry: this.registry,
         minecarts: this.minecarts,
         // v2.62：多传 `velocity`（焰魔跳跃劈砍的落点预判）。矿车/丧尸不读它，零影响。
-        player: { position: [pp.x, pp.y, pp.z], velocity: pvel },
+        // 士兵 Epic：速度另用于命中率公式（玩家跑得越快越难被打中），
+        // 且 grounded 供「腾空惩罚」项。
+        player: {
+          position: [pp.x, pp.y, pp.z], velocity: pvel,
+          speed: Math.hypot(pvel[0], pvel[2]),
+          grounded: this.player.physics.onGround === true,
+          aabb: this._playerAabbLocal,
+        },
+        // 士兵 Agent 的班组上下文（由 SoldierService.update 本帧算好）
+        ...(this.soldiers ? this.soldiers.agentContext() : {}),
       });
       // 跨车写入统一生效 + 位置索引同步（设计文档 §3.4：必须在 entities.update 之后）
       this.minecarts.applyDeferred();
@@ -1578,6 +1619,8 @@ export class Game {
       this._consumeIgnisAttackRequests(nowMs);
       // 守卫的四招命中结算（同口径：必须在 entities.update 之后）
       this._consumeGuardianAttackRequests(nowMs);
+      // 士兵 Epic：消费本帧的开火意图（必须在 entities.update 之后 —— shotRequest 才存在）。
+      this._consumeSoldierShots(nowMs);
       // v3.04：焰魔砸击特效（地面火焰法阵 / 碎石圆环）。读的是 `attackFxRequest`，
       // 与伤害结算分开 —— 特效不受命中帧的新鲜视线复查影响（原版同口径）。
       this._consumeIgnisFxRequests(nowMs);
@@ -1679,6 +1722,10 @@ export class Game {
       // M6：丧尸六部件实例发布（只读 pose → 位置/朝向 + 步态 + 200ms 红闪）。
       // 传时间戳而非 dt —— renderer 自己算 dt 累积步态相位（mc-lite `_walkTime` 口径）。
       this.zombieRenderer.sync(this.zombies, nowMs);
+      // 士兵：7 部件实例发布（含留尸的倒地动画）+ 枪口火光池推进。
+      // ⚠️ 传 activeEntities()（**含留尸**）而不是只数活的 —— 否则尸体不画。
+      if (this.soldierRenderer) this.soldierRenderer.sync(this.soldiers.activeEntities(), nowMs);
+      this.soldierMuzzleFx?.update(nowMs);
       // 祭坛飞龙（v2.41）：pose 发布（位置/yaw/bank + 动画采样 + 红闪）。无实体时
       // visible=false → draw call 归零。⚠️ 传 `nowMs`（performance.now 基准，红闪判定）。
       if (this.dragonRenderer) this.dragonRenderer.sync(this.dragons.activeEntities(), nowMs);
@@ -3329,6 +3376,19 @@ export class Game {
     if (!entity) return null;
     let result = null;
     if (entity.type === 'zombie') result = this.zombies.damage(id, amount, nowMs);
+    else if (entity.type === SOLDIER_TYPE) {
+      // 士兵：同形状契约（红闪 + 致死置 dead 留尸，1.2s 后由 Service 回收）
+      if (!this.soldiers) return null;
+      result = this.soldiers.damage(id, amount, nowMs);
+      // 班组报警：挨打即入战并通知 34 格内同伴（上游 damage() 的 enterCombat + alertOthers）
+      if (result && !result.dead) {
+        const e = this.entities.get(id);
+        if (e && e.state.mode !== 'combat') {
+          e.state = { ...e.state, mode: 'combat', awareness: 1, reaction: 0, nextBurst: 0 };
+        }
+        this.soldiers.alertNearby(id, nowMs);
+      }
+    }
     else if (entity.type === DRAGON_TYPE) {
       if (!this.dragons) return null;
       result = this.dragons.damage(id, amount, nowMs);
@@ -3406,6 +3466,7 @@ export class Game {
     const dx = ((ex - p.x) / d) * amount;
     const dz = ((ez - p.z) / d) * amount;
     if (entity.type === 'zombie') return this.zombies.knockback(id, dx, dz);
+    if (entity.type === SOLDIER_TYPE) return this.soldiers ? this.soldiers.knockback(id, dx, dz) : false;
     if (entity.type === IGNIS_TYPE) return this.ignises ? this.ignises.knockback(id, dx, dz) : false;
     if (entity.type === DRAGON_TYPE) return this.dragons ? this.dragons.knockback(id, dx, dz) : false;
     /**
@@ -3463,6 +3524,14 @@ export class Game {
       const color = [((hex >> 16) & 255) / 255, ((hex >> 8) & 255) / 255, (hex & 255) / 255];
       const [x, y, z] = entity.state.position;
       this.blockHitFx.spawnDeathBurst([x, y + ZOMBIE.height / 2, z], color, nowMs);
+    } else if (type === SOLDIER_TYPE) {
+      // 士兵：用户裁定本轮不做专属音效 ⇒ 复用既有 z_die（近似替代，不是原音）。
+      // 爆散色取装甲灰（从 soldier-geometry 的常量派生，不写字面量）。
+      if (!silent) this.audioManager?.play('z_die', SOUND_VOLUMES.z_die);
+      const hex = SOLDIER_COLORS.ARMOR;
+      const color = [((hex >> 16) & 255) / 255, ((hex >> 8) & 255) / 255, (hex & 255) / 255];
+      const [x, y, z] = entity.state.position;
+      this.blockHitFx.spawnDeathBurst([x, y + SOLDIER.height / 2, z], color, nowMs);
     } else if (type === DRAGON_TYPE || type === IGNIS_TYPE) {
       this.audioManager?.play('ignis_die', SOUND_VOLUMES.ignis_die);
       // v2.64b：焰魔死亡碎块爆散（火焰色，Boss 口径）。飞龙不做（用户未要求）。
@@ -3514,6 +3583,8 @@ export class Game {
     // 头顶 y 的唯一权威（`initial` 与逐帧 `anchor` 共用，见上方说明）
     const headY = (t, baseY) => t === 'zombie'
       ? baseY + ZOMBIE.height
+      : t === SOLDIER_TYPE
+        ? baseY + SOLDIER.height
       : t === IGNIS_TYPE
         // ⚠️ 焰魔的 `position` 是**脚底**（地面实体）⇒ 头顶 = y + IGNIS.height
         ? baseY + IGNIS.height
@@ -3896,6 +3967,7 @@ export class Game {
       // 中心 y 按类型取：丧尸/焰魔/守卫是**脚底**语义，飞龙是**身体中心**
       // （与 `_emitDamageNumber` 的 headY 同一套口径，常量均来自各自 config）
       const half = entity.type === 'zombie' ? ZOMBIE.height / 2
+        : entity.type === SOLDIER_TYPE ? SOLDIER.height / 2
         : entity.type === IGNIS_TYPE ? IGNIS.height / 2
           : entity.type === GUARDIAN_TYPE ? GUARDIAN.height / 2
             : 0;
@@ -3932,30 +4004,89 @@ export class Game {
   }
 
   /**
-   * 半径内丧尸伤害。枚举 `ZombieService.activeEntities()`（slot 表是单一权威），
-   * **不扫 EntityManager 全量集合** —— 那会把未来其它实体类型（弹丸/炮塔）也炸伤。
+   * 士兵开火结算（士兵 Epic）。消费 Agent 本帧写的 `shotRequest`。
+   *
+   * ⚠️ **必须在 `entities.update` 之后调**（同 `_consumeIgnisAttackRequests`）。
+   * ⚠️ **常态零分配门控**：无士兵时一次 count() 就返回。
+   * ⚠️ **命中骰子与几何判定是两件事，都要过**：骰子算「这一发算不算打中玩家」，
+   * DDA 算「弹道有没有被墙挡住」（体素世界随时被挖改，Agent 的 10Hz 视线缓存可能已过期）。
+   *
+   * @param {number} nowMs `performance.now()` 基准
+   */
+  _consumeSoldierShots(nowMs) {
+    if (!this.soldiers || this.entities.count(SOLDIER_TYPE) === 0) return;
+    const pp = this.player.physics.pos;
+    const playerBox = {
+      position: [pp.x, pp.y, pp.z],
+      aabb: this._playerAabbLocal,
+    };
+    for (const entity of this.soldiers.activeEntities()) {
+      const req = entity.state.shotRequest;
+      if (!req) continue;
+      const st = entity.state;
+      // 命中骰子（上游 shootAt 的 chance）—— 只对「有视线且矄准玩家」的那一发掷
+      const dist = Math.hypot(pp.x - req.muzzle[0], pp.z - req.muzzle[2]);
+      const chance = soldierHitChance({
+        accuracy: req.accuracy,
+        distance: dist,
+        playerSpeed: Math.hypot(this.player.physics.vel.x, this.player.physics.vel.z),
+        playerGrounded: this.player.physics.onGround === true,
+      });
+      const willHit = req.hasLos && Math.random() < chance;
+      // 未命中 ⇒ 弹着点改到玩家周围的散布点（上游同口径）
+      const target = willHit
+        ? [pp.x, pp.y + 1.34, pp.z]
+        : soldierMissPoint([pp.x, pp.y, pp.z], Math.random);
+      const shot = judgeSoldierShot({
+        muzzle: req.muzzle, target, world: this.world, registry: this.registry,
+        player: playerBox, maxDistance: SOLDIER_SHOT.maxDistance,
+      });
+      // 扣血：骰子过 ∧ 几何上真的打到玩家盒（墙更近则 shot.hitPlayer 为假）
+      if (willHit && shot.hitPlayer) this._damagePlayer(SOLDIER_SHOT.playerDamage, nowMs);
+      // 视觉：曳光 + 枪口火光 + 火花（全部复用 KV-9 已过像素实测的池）
+      this.carbineFx?.spawnTracer(req.muzzle, shot.end, SOLDIER_TRACER, nowMs);
+      this.soldierMuzzleFx?.fire(req.muzzle, nowMs, this.camera.quaternion);
+      const normal = shot.normal || [0, 1, 0];
+      this.carbineFx?.spawnSparksAt(
+        carbineSparkSeeds(shot.end, normal, carbineSparkParams(shot.hitPlayer ? 'entity' : 'wall'), Math.random),
+        shot.normal && shot.normal[1] > 0.5 ? shot.end[1] : -1e9,
+      );
+      // 班组情报：开火的那只知道玩家在哪
+      this.soldiers.lastKnown = [pp.x, pp.y, pp.z];
+      if (req.hasLos) this.soldiers.lastSeenAny = nowMs;
+      void st;
+    }
+  }
+
+  /**
+   * 半径内实体伤害（TNT 路径）。
+   *
+   * ⚠️ **士兵 Epic：从「只遍历丧尸」改为「丧尸 + 士兵」**（用户明确要 TNT 也能击伤士兵）。
+   * 仍**不扫 EntityManager 全量集合** —— 那会把弹丸/矿车也炸伤（既有对照用例钉着 probe 不受影响）。
    * @param {[number,number,number]} center @param {number} radius
    * @param {number} damage @param {number} nowMs
    */
   _damageEntitiesInRadius(center, radius, damage, nowMs) {
     const cx = center[0] + 0.5, cy = center[1] + 0.5, cz = center[2] + 0.5;
     let killed = false;
-    for (const entity of this.zombies.activeEntities()) {
-      const [px, py, pz] = entity.state.position;
-      const dy = py + ZOMBIE.height / 2;   // 度量用丧尸 AABB 中心（mc-lite 同口径）
-      if (Math.hypot(px - cx, dy - cy, pz - cz) <= radius) {
-        // v2.51/v2.64：爆炸炸死也算「丧尸被消灭」→ 死亡音效 + 碎块爆散。
-        // ⚠️ **本函数绕过 `damageEntity()`**（它直接调 service），所以死亡处理要在这里再接一次；
-        // 两处都只在 `dead` 上触发，且同一帧内只响一声（`killed` 聚合，`silent` 传入），
-        // 否则一发 TNT 炸死 5 只会变成 5 连击音；但**碎块不聚合** —— 每只都要爆。
-        if (this.zombies.damage(entity.id, damage, nowMs)?.dead) {
+    const groups = [
+      { list: this.zombies.activeEntities(), svc: this.zombies, half: ZOMBIE.height / 2 },
+      // 士兵与丧尸同尺寸，但 half 从各自 config 派生（不共享字面量）
+      ...(this.soldiers ? [{
+        list: this.soldiers.activeEntities().filter((e) => !e.state.dead),
+        svc: this.soldiers, half: SOLDIER.height / 2,
+      }] : []),
+    ];
+    for (const group of groups) {
+      for (const entity of group.list) {
+        const [px, py, pz] = entity.state.position;
+        const dy = py + group.half;
+        if (Math.hypot(px - cx, dy - cy, pz - cz) > radius) continue;
+        if (group.svc.damage(entity.id, damage, nowMs)?.dead) {
           killed = true;
           this._onEntityDeath(entity, nowMs, { silent: true });
         }
-        // 生命系统显示层：TNT 路径也要弹数字（与 `damageEntity` 同口径）。
-        // ⚠️ **本函数绕过 `damageEntity()`**，故显示也要在这里再接一次 ——
-        // 与死亡音效的两站点模式一致（v2.51 注释同源）。读掉血后的剩余血量。
-        const after = this.zombies.get(entity.id);
+        const after = group.svc.get(entity.id);
         this._emitDamageNumber(entity, after ? after.health : 0, nowMs);
       }
     }
@@ -4228,6 +4359,7 @@ export class Game {
     }
     const controller = new ZombieNestController({
       world: this.world, zombies: this.zombies, editor: this.editor, anchor: entity,
+      soldiers: this.soldiers,
       onInvalidated: (nid) => this._invalidateNest(nid),
     });
     this.nests.setController(id, controller);
@@ -4404,6 +4536,12 @@ export class Game {
     // 守卫的 position 是脚底 ⇒ 用缺省 bodyOffsetY（抬到胸部），同丧尸/焰魔。
     for (const g of this.guardians?.activeEntities() ?? []) {
       targets.push({ id: g.id, position: [...g.state.position] });
+    }
+    // 士兵 Epic：炮塔也打士兵（脚底语义 ⇒ 用缺省 bodyOffsetY 抬到胸部）。
+    // ⚠️ 留尸的不索敌（否则炮塔对着尸体开火）。
+    for (const s of this.soldiers?.activeEntities() ?? []) {
+      if (s.state.dead) continue;
+      targets.push({ id: s.id, position: [...s.state.position] });
     }
     const { updates } = computeTurretUpdates({
       turrets, targets, world: this.world, registry: this.registry,
@@ -4927,6 +5065,39 @@ export class Game {
     return { spawned: null, position: null, attempts, count: this.zombies.count() };
   }
 
+  /**
+   * 在玩家附近生成一名士兵（C 键）。落点逻辑照 `spawnZombieNearPlayer`
+   * （随机角度 + 2~10 格 + 向下扫 64 格找地面），只把 service 换成 soldiers。
+   * @returns {{spawned:string|null, position:number[]|null, attempts:number, count:number}}
+   */
+  spawnSoldierNearPlayer() {
+    const p = this.player.physics.pos;
+    let attempts = 0;
+    for (let attempt = 0; attempt < 8; attempt++) {
+      attempts++;
+      const angle = Math.random() * Math.PI * 2;
+      const distance = Math.random() * 8 + 2;
+      const x = Math.floor(p.x + Math.cos(angle) * distance);
+      const z = Math.floor(p.z + Math.sin(angle) * distance);
+      for (let y = Math.floor(p.y); y >= Math.floor(p.y) - 64; y--) {
+        if (this.world.getBlockId(x, y, z) === 0
+          && this.world.getBlockId(x, y + 1, z) === 0
+          && this.world.isSolid(x, y - 1, z)) {
+          const id = this.soldiers.spawn([x + 0.5, y, z + 0.5], { source: 'debug-key' });
+          return {
+            spawned: id, position: [x + 0.5, y, z + 0.5], attempts, count: this.soldiers.count(),
+          };
+        }
+      }
+    }
+    return { spawned: null, position: null, attempts, count: this.soldiers.count() };
+  }
+
+  /** 只读士兵诊断（测试/HUD）。 */
+  soldiersDebugState() {
+    return this.soldiers ? this.soldiers.debugState() : { alive: 0, dead: 0, bursting: 0, advancerId: null };
+  }
+
   dispose() {
     this.renderer.setAnimationLoop(null);
     // M3.1：背包面板在 window 上挂 keydown 监听，不清理会跨实例串扰
@@ -4951,6 +5122,10 @@ export class Game {
     // —— 与启动顺序相反。反序会让 manager.dispose 触发 despawn 时 renderer 已不存在。
     this.zombies?.dispose();
     this.zombieRenderer?.dispose();
+    // 士兵：同口径（service 回收实体后释放渲染器与火光池）
+    this.soldiers?.dispose();
+    this.soldierRenderer?.dispose();
+    this.soldierMuzzleFx?.dispose();
     // 祭坛飞龙（v2.41）：service 回收实体后释放渲染器（与启动顺序相反）
     this.dragons?.dispose();
     this.dragonRenderer?.dispose();

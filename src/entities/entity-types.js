@@ -31,8 +31,12 @@ export const PROBE_AABB = Object.freeze({
  * 本次加 `guardian`（末影守卫）：同理可被武器/炮塔击中。
  * ⚠️ **光加本表不够**：本表只管「能不能被打中」，**炮塔索敌是另一份清单**
  *（`game.js` 的 `_runTurretAi` 构造 `targets`）—— 两处都要加，否则炮塔看不见守卫。
+ *
+ * 士兵 Epic（2026-11-24）加 `soldier`：用户要「被机枪/散弹枪/刀/卡宾枪等现有武器击伤，
+ * 包括 tnt」。⚠️ **TNT 是第三份清单**（`_damageEntitiesInRadius` 原本只遍历丧尸），
+ * 必须同时改那里，否则形态是「枪打得到而 TNT 炸不到」。
  */
-export const WEAPON_HITTABLE_TYPES = Object.freeze(['zombie', 'dragon', 'ignis', 'guardian']);
+export const WEAPON_HITTABLE_TYPES = Object.freeze(['zombie', 'dragon', 'ignis', 'guardian', 'soldier']);
 
 /**
  * position 合法性：必须是 3 个有限数。

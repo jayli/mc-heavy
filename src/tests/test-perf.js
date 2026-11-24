@@ -158,7 +158,7 @@ test('PerfHUD: 面板宽度固定 + 操作说明四行入面板', () => {
 
   // 操作说明：三行原文、在 el 内、不在 bodyEl 内
   assertTrue(hud.helpEl.textContent.includes('操作：a←s↓d→w↑ | Space：跳'));
-  assertTrue(hud.helpEl.textContent.includes('Z：背包 | X：生成丧尸 | R：换枪'));
+  assertTrue(hud.helpEl.textContent.includes('Z：背包 | X：丧尸 | C：士兵 | R：换枪'));
   assertTrue(hud.helpEl.textContent.includes('Ctrl+鼠标左键：点燃TNT，矿车启动'));
   assertTrue(hud.helpEl.textContent.includes('F：飞行开关'), '飞行开关的键位须出现在操作说明里');
   assertTrue(hud.helpEl.textContent.includes('Space：升') && hud.helpEl.textContent.includes('Shift：降'),

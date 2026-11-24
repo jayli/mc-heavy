@@ -39,7 +39,7 @@ const SEP = '──────────';
 const HELP_LINES = [
   '操作：a←s↓d→w↑ | Space：跳 | B：召唤Boss',
   'F：飞行开关 | 飞行中 Space：升 / Shift：降',
-  'Z：背包 | X：生成丧尸 | R：换枪',
+  'Z：背包 | X：丧尸 | C：士兵 | R：换枪',
   'Ctrl+鼠标左键：点燃TNT，矿车启动',
   // v3.20：持剑蓄力大招。行宽必须 < 内容区可用 310px（330 − 20 padding），
   // 否则撑宽面板 ⇒ tests/player-flight.spec.mjs 的「面板宽 330 + 无横向溢出」会红。

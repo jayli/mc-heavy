@@ -92,7 +92,7 @@ export class Player {
    * @param {() => boolean} [opts.isModal] 模态谓词（M3.1）：返回 true 时 keydown 全部拦截。
    *        注入而非直接引用 Game，保持 Player 不反向依赖 core/（依赖方向 §3）
    */
-  constructor({ world, camera, scheduler, registry, canvas, editor, weaponRuntime = null, isModal = () => false, onSpawnZombie = null, onSummonBoss = null, nests = null, turrets = null, minecarts = null, onIgniteTnt = null }) {
+  constructor({ world, camera, scheduler, registry, canvas, editor, weaponRuntime = null, isModal = () => false, onSpawnZombie = null, onSpawnSoldier = null, onPlayerShot = null, onSummonBoss = null, nests = null, turrets = null, minecarts = null, onIgniteTnt = null }) {
     this.world = world;
     this.camera = camera;
     this.scheduler = scheduler;
@@ -105,6 +105,10 @@ export class Player {
      * 缺省 null → X 键无效果（Player 单独构造时，如测试 fixture）。
      */
     this._onSpawnZombie = onSpawnZombie;
+    /** 士兵 Epic：C 键召唤士兵（Game 注入；缺省 null ⇒ C 键无效果，fixture 安全） */
+    this._onSpawnSoldier = onSpawnSoldier;
+    /** 士兵 Epic：玩家开火时通知士兵班组（听枪声搜索）。缺省 null ⇒ 不通知 */
+    this._onPlayerShot = onPlayerShot;
     /**
      * v2.43 B 键召唤 Boss 的回调（Game 注入 `() => this.summonBoss()`）。
      * 注入而非直接引用 Game —— 保持 Player 不反向依赖 core/（依赖方向 §3，与 `isModal` 同手法）。
@@ -293,6 +297,10 @@ export class Player {
       // 否则按住 X 会以键盘重复率（约 30Hz）连续生成，瞬间填满 20 上限。
       // 上限校验由 `ZombieService.spawn()` 负责（满额返回 null），这里不重复判断。
       if (e.code === 'KeyX' && !e.repeat && this._onSpawnZombie) this._onSpawnZombie();
+      // 士兵 Epic：KeyC 召唤一名士兵（上限 10 由 SoldierService.spawn 负责，这里不重复判）。
+      // 同样非重复事件才触发 —— 按住 C 会以键盘重复率连续召唤。
+      // C 曾是 Boss 召唤键（v2.43 改为 B），现已空闲。
+      if (e.code === 'KeyC' && !e.repeat && this._onSpawnSoldier) this._onSpawnSoldier();
       // v2.43：KeyB 召唤玩家所在地图的 Boss（用户 2026-11-07：从 C 改为 B，C 不再绑定）。
       // 同样**非重复事件**才触发 —— 按住 B 会以
       // 键盘重复率（约 30Hz）连续调用，虽然 `summon` 对已占槽位幂等（返回 'exists'），
@@ -695,6 +703,12 @@ export class Player {
     // v2.65 近战剑：effect 无 `tracer`（剑不发曳光）—— 判存在才 spawn，枪行为逐位不变
     if (this.tracerRenderer && effect.tracer) this.tracerRenderer.spawn(effect);
     if (this.audioManager) this.audioManager.play(effect.sound, effect.volume);
+    // 士兵 Epic：枪响通知班组（48 格内 patrol 士兵转 search 并走向声源）。
+    // ⚠️ 只枪类走到这里 —— 近战剑在上面已 return，故挥刀不会惊动士兵（上游 hearShot 同源）。
+    if (this._onPlayerShot) {
+      const p = this.physics.pos;
+      this._onPlayerShot([p.x, p.y, p.z]);
+    }
     // v2.65 近战剑：砍中敌人的音效（`emp_activated`）—— 与挥砍音分开：
     // 挥空也响 `effect.sound`（player_swing），只有命中才响 `hitSound`。
     if (this.audioManager && effect.hitSound) {
