@@ -219,6 +219,53 @@ test('士兵子弹命中玩家播 carbine_impact_wet（用户 2026-11-24 裁定�
   expect(r.hurtDelta, '枪击路径不得再播 ignis_hurt（否则叠两声）').toBe(0);
 });
 
+test('血为 0 时被击中仍有音效（用户 2026-11-24：不管还有没有血）', async ({ page }) => {
+  test.setTimeout(200_000);
+  await page.goto(URL);
+  await waitWorldReady(page);
+  await gotoOpenField(page);
+  await waitPlayerLanded(page);
+  /**
+   * ⚠️ **这条专抓「血空即静音」**：原守卫是 `if (after < before)`，
+   * 血停在 0 后 after===before ⇒ 音效不响。用户实玩报告「杀一个 soldier 后就没声了」，
+   * 探针查明真因是血被打空（不是击杀本身）。
+   * 判据走**唯一入口** `_damagePlayer`，排除士兵 AI 时序变量。
+   */
+  const r = await page.evaluate(async () => {
+    const g = window.__MC_GAME__;
+    document.querySelector('canvas')?.click();
+    await g.audioManager?.unlock?.();
+    const cnt = (k) => g.audioDebugState().playRequests[k] ?? 0;
+    const hit = (sound) => {
+      const w0 = cnt(sound);
+      g._damagePlayer(2, performance.now(), sound ? { sound } : undefined);
+      return cnt(sound) - w0;
+    };
+    // ① 满血
+    g.player.health = 40;
+    const atFull = hit('carbine_impact_wet');
+    // ② 血空（用户要的核心场景）
+    g.player.health = 0;
+    const atZeroGun = hit('carbine_impact_wet');
+    // ③ 血空 + Boss 近战路径（缺省音）—— 用户说「只要被击中」，不限枪击
+    const h0 = cnt('ignis_hurt');
+    g._damagePlayer(14, performance.now());
+    const atZeroMelee = cnt('ignis_hurt') - h0;
+    // ④ 零伤害不该响（不是「被击中」）—— ⚠️ 必须显式传 0，
+    // 上面的 hit() 恒传 2，用它测「零伤害」是测不到的（首轮实测踩到）。
+    g.player.health = 0;
+    const z0 = cnt('carbine_impact_wet');
+    g._damagePlayer(0, performance.now(), { sound: 'carbine_impact_wet' });
+    const zeroAmount = cnt('carbine_impact_wet') - z0;
+    return { atFull, atZeroGun, atZeroMelee, zeroAmount, hp: g.player.health };
+  });
+  expect(r.atFull, '前置：满血时须响').toBe(1);
+  expect(r.atZeroGun, '血为 0 时枪击仍须响').toBe(1);
+  expect(r.atZeroMelee, '血为 0 时 Boss 近战仍须响').toBe(1);
+  expect(r.zeroAmount, '零伤害不算被击中，不得响').toBe(0);
+  expect(r.hp, '血量仍停在 0（不做死亡的裁定不变）').toBe(0);
+});
+
 test('士兵子弹不穿墙（Review Focus 3）', async ({ page }) => {
   test.setTimeout(200_000);
   await page.goto(URL);
