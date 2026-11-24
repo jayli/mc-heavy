@@ -209,6 +209,27 @@ export class CarbineFx {
     return out;
   }
 
+  /**
+   * 公开薄方法（士兵 Epic）—— 一行转调私有实现，**不含新逻辑**。
+   * 士兵的曳光走同一个池（池管理与 CPU 模拟仍只有一份，红线 1）。
+   * ⚠️ 收 **ms**（装配层的 nowMs 口径），内部转绝对秒 —— `_fireTracer` 收的是秒。
+   * @param {number[]} from @param {number[]} to
+   * @param {{color:number[], speed:number, width:number}} cfg @param {number} nowMs
+   */
+  spawnTracer(from, to, cfg, nowMs) {
+    this._fireTracer(from, to, cfg, nowMs / 1000);
+  }
+
+  /** 公开薄方法：火花（seeds 由 `carbineSparkSeeds` 算好） */
+  spawnSparksAt(seeds, floorY) {
+    this._spawnSparks(seeds, floorY);
+  }
+
+  /** 公开薄方法：烟尘 */
+  spawnPuffAt(o) {
+    this._spawnPuff(o);
+  }
+
   /** 曳光：写一个 slot 的三条属性（起点/出生秒、终点/速度、颜色/半宽） */
   _fireTracer(from, to, cfg, tSec) {
     const i = this._tracerCursor;
@@ -465,41 +486,56 @@ export class CarbineFx {
    * 且下一帧 `_updateCasings` 会因 `active===0` 早退而**不再写零矩阵**
    * ⇒ 弹壳冻在最后一帧的位置上永久可见（静默失效）。
    */
-  clear() {
-    const sg = this.sparkGeo;
-    for (let i = 0; i < SP.capacity; i++) {
-      this._sparks[i].life = 0;
-      sg.getAttribute('aPos').setW(i, 0);
-      sg.getAttribute('aVel').setW(i, 0);
+  clear({ keepWorldFx = false } = {}) {
+    // ⚠️ **缺省行为逐位不变**（全清）—— `carbine.spec.mjs:319` 实测钉着切枪后 sparks===0。
+    // `keepWorldFx: true` 只给士兵在场时的切枪路径用：曳光/火花/烟是「世界里已发生的事」，
+    // 与玩家手里拿什么枪无关；弹壳/弹孔是玩家专属，仍清。
+    if (!keepWorldFx) {
+      const sg = this.sparkGeo;
+      for (let i = 0; i < SP.capacity; i++) {
+        this._sparks[i].life = 0;
+        sg.getAttribute('aPos').setW(i, 0);
+        sg.getAttribute('aVel').setW(i, 0);
+      }
+      sg.getAttribute('aPos').needsUpdate = true;
+      sg.getAttribute('aVel').needsUpdate = true;
+      const pg = this.puffGeo;
+      for (let i = 0; i < PU.capacity; i++) {
+        this._puffs[i].life = 0;
+        pg.getAttribute('aPos').setW(i, 0);
+        pg.getAttribute('aCol').setW(i, 0);
+      }
+      pg.getAttribute('aPos').needsUpdate = true;
+      pg.getAttribute('aCol').needsUpdate = true;
     }
-    sg.getAttribute('aPos').needsUpdate = true;
-    sg.getAttribute('aVel').needsUpdate = true;
-    const pg = this.puffGeo;
-    for (let i = 0; i < PU.capacity; i++) {
-      this._puffs[i].life = 0;
-      pg.getAttribute('aPos').setW(i, 0);
-      pg.getAttribute('aCol').setW(i, 0);
-    }
-    pg.getAttribute('aPos').needsUpdate = true;
-    pg.getAttribute('aCol').needsUpdate = true;
     for (let i = 0; i < CA.capacity; i++) {
       this._casings[i].life = 0;
       this.casingMesh.setMatrixAt(i, _zero);
     }
     this.casingMesh.instanceMatrix.needsUpdate = true;
-    // 曳光：把全部 slot 的出生时刻推到远过去 ⇒ shader 的 alive 门恒 0
-    const tg = this.tracerGeo;
-    for (let i = 0; i < TR.capacity; i++) tg.getAttribute('aA').setW(i, -1e3);
-    tg.getAttribute('aA').needsUpdate = true;
+    if (!keepWorldFx) {
+      // 曳光：把全部 slot 的出生时刻推到远过去 ⇒ shader 的 alive 门恒 0
+      const tg = this.tracerGeo;
+      for (let i = 0; i < TR.capacity; i++) tg.getAttribute('aA').setW(i, -1e3);
+      tg.getAttribute('aA').needsUpdate = true;
+    }
     // 弹孔：尺寸归零（shader 的 quad 退化 ⇒ 不可见）
     const hg = this.holeGeo;
     for (let i = 0; i < HO.capacity; i++) hg.getAttribute('aP').setW(i, 0);
     hg.getAttribute('aP').needsUpdate = true;
-    this._sparkActive = this._puffActive = this._casingActive = 0;
+    this._casingActive = 0;
     this._holeCount = 0;
-    this._tracerUntil = 0;
-    this._tracerCursor = this._sparkCursor = this._puffCursor = this._casingCursor = this._holeCursor = 0;
-    for (const m of this.meshes) m.visible = false;
+    this._casingCursor = this._holeCursor = 0;
+    if (!keepWorldFx) {
+      this._sparkActive = this._puffActive = 0;
+      this._tracerUntil = 0;
+      this._tracerCursor = this._sparkCursor = this._puffCursor = 0;
+    }
+    // ⚠️ 保留世界特效时不能无条件隐藏全部 mesh（那会把还在飞的士兵曳光藏掉）
+    for (const m of this.meshes) {
+      if (keepWorldFx && (m === this.tracerMesh || m === this.sparkMesh || m === this.puffMesh)) continue;
+      m.visible = false;
+    }
   }
 
   /** 从 scene 移除并释放全部 GPU 资源。 */

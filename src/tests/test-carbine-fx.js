@@ -14,6 +14,14 @@ import { CARBINE, CARBINE_COOLDOWN } from '../player/weapons/carbine.js';
 import { CARBINE_RECIPES, CARBINE_AUDIO_IDS } from '../render/carbine-audio-recipes.js';
 import { BLOCKS } from '../voxel/blocks-data.js';
 import { WEAPONS, WEAPON_IDS } from '../player/weapons/weapon-catalog.js';
+import * as THREE from 'three';
+import { CarbineFx } from '../render/carbine-fx.js';
+import { SoldierMuzzleFx } from '../render/soldier-muzzle-fx.js';
+
+/** CarbineFx 夹具（真实构造器；groundAt 缺省 null ⇒ 弹壳不落地，仍可计数） */
+function makeFx() {
+  return new CarbineFx({ scene: new THREE.Scene(), rand: () => 0.5 });
+}
 
 function assertClose(a, b, eps = 1e-9, msg = '') {
   if (!(Math.abs(a - b) <= eps)) throw new Error(`${msg ? msg + ': ' : ''}期望 ${b}±${eps}，实际 ${a}`);
@@ -229,4 +237,101 @@ test('carbine fx: hitstop/trauma 常量 = 上游原值，且击杀 > 未死', ()
   assertTrue(CARBINE.traumaKill > CARBINE.traumaHit);
   assertTrue(CARBINE.hitstopTimeScale > 0 && CARBINE.hitstopTimeScale < 1,
     'hitstop 缩放必须在 (0,1) —— 0 会完全冻帧、1 等于没效果');
+});
+// ==================== 士兵 Epic Task 7：公开薄方法 + clear 可选参数 ====================
+//
+// ⚠️ **clear() 缺省行为必须逐位不变**：`tests/carbine.spec.mjs:319` 实测钉着
+// 「切枪后 sparks===0」。士兵借用本池，故新增 keepWorldFx 分支而不是改缺省。
+
+test('CarbineFx: spawnTracer 公开薄方法真的写进曳光池（读 GPU 属性）', () => {
+  const fx = makeFx();
+  // ⚠️ **counts.tracers 是 0/1 的可见性标志，不是条数** ⇒ 用它做「增长」断言会恒真。
+  // 判据落在真实 GPU 属性：起点/终点/出生秒必须逐位等于传入值。
+  fx.spawnTracer([0, 1, 0], [0, 1, 10], { color: [12, 3.5, 1.5], speed: 170, width: 0.013 }, 1000);
+  const a = fx.tracerGeo.getAttribute('aA');
+  const b = fx.tracerGeo.getAttribute('aB');
+  assertEqual(a.getX(0), 0); assertEqual(a.getY(0), 1); assertEqual(a.getZ(0), 0);
+  assertEqual(a.getW(0), 1, '出生秒 = nowMs/1000');
+  assertEqual(b.getZ(0), 10, '终点须写进 aB');
+  assertEqual(b.getW(0), 170, '速度须写进 aB.w');
+  assertTrue(fx.tracerMesh.visible, '有曳光时须提交渲染');
+});
+
+test('CarbineFx: spawnSparksAt / spawnPuffAt 公开薄方法真的入池', () => {
+  const fx = makeFx();
+  const seeds = carbineSparkSeeds([0, 1, 0], [0, 1, 0], carbineSparkParams('entity'), () => 0.5);
+  fx.spawnSparksAt(seeds, -1e9);
+  assertTrue(fx.counts.sparks > 0, '火花须入池');
+  fx.spawnPuffAt({ x: 0, y: 1, z: 0, vx: 0, vy: 0.4, vz: 0, size: 0.12, grow: 0.9, life: 0.5, alpha: 0.25, color: [0.12, 0.12, 0.14] });
+  assertTrue(fx.counts.puffs > 0, '烟尘须入池');
+});
+
+test('CarbineFx: clear() 缺省仍全清（既有用例零回归）', () => {
+  const fx = makeFx();
+  fx.spawnTracer([0, 1, 0], [0, 1, 10], { color: [12, 3.5, 1.5], speed: 170, width: 0.013 }, 1000);
+  fx.spawnSparksAt(carbineSparkSeeds([0, 1, 0], [0, 1, 0], carbineSparkParams('entity'), () => 0.5), -1e9);
+  fx.clear();
+  assertEqual(fx.counts.sparks, 0, '缺省须清火花（carbine.spec 钉这条）');
+  assertEqual(fx.counts.tracers, 0, '缺省须清曳光（可见性归 0）');
+  assertEqual(fx.counts.puffs, 0, '缺省须清烟尘');
+});
+
+test('CarbineFx: clear({keepWorldFx:true}) 只清弹壳/弹孔，世界特效保留', () => {
+  const fx = makeFx();
+  fx.spawnTracer([0, 1, 0], [0, 1, 10], { color: [12, 3.5, 1.5], speed: 170, width: 0.013 }, 1000);
+  fx.spawnSparksAt(carbineSparkSeeds([0, 1, 0], [0, 1, 0], carbineSparkParams('entity'), () => 0.5), -1e9);
+  fx.update(1000, 0.016);
+  const tracersBefore = fx.counts.tracers;
+  const sparksBefore = fx.counts.sparks;
+  fx.clear({ keepWorldFx: true });
+  assertEqual(fx.counts.tracers, tracersBefore, '士兵曳光不得被玩家切枪清掉');
+  assertEqual(fx.counts.sparks, sparksBefore, '士兵火花同理');
+  assertEqual(fx.counts.casings, 0, '弹壳是玩家专属，仍须清');
+  assertTrue(fx.tracerMesh.visible, '保留时不得把曳光 mesh 隐藏');
+});
+
+test('士兵火光池: fire 后可见，寿命结束后归 0 且隐藏', () => {
+  const scene = new THREE.Scene();
+  const fx = new SoldierMuzzleFx({ scene });
+  assertEqual(fx.activeCount(), 0);
+  for (const m of fx.meshes) assertEqual(m.visible, false, '空载须隐藏');
+  fx.fire([0, 1.4, 0], 1000);
+  assertEqual(fx.activeCount(), 1, 'fire 后须活跃');
+  assertTrue(fx.meshes.some((m) => m.visible), '活跃时须提交渲染');
+  // 超过寿命（0.045s = 45ms）
+  fx.update(1000 + 60);
+  assertEqual(fx.activeCount(), 0, '到期须回收');
+  for (const m of fx.meshes) assertEqual(m.visible, false, '到期须隐藏');
+});
+
+test('士兵火光池: 每个 slot 独立 uniform（多只士兵不同步亮灭）', () => {
+  const fx = new SoldierMuzzleFx({ scene: new THREE.Scene() });
+  fx.fire([0, 1, 0], 1000);
+  fx.fire([2, 1, 0], 1030);
+  fx.update(1030);
+  assertEqual(fx.activeCount(), 2);
+  const powers = fx.meshes.map((_, i) => fx._slots[i].uniforms.uPower.value);
+  assertTrue(powers[0] !== powers[1], `两发的亮度须不同（各自时钟），实测 ${powers}`);
+});
+
+test('士兵火光池: dispose 摘除全部并释放', () => {
+  const scene = new THREE.Scene();
+  const fx = new SoldierMuzzleFx({ scene });
+  assertTrue(scene.children.length > 0);
+  fx.dispose();
+  assertEqual(scene.children.length, 0);
+});
+
+test('火光材质: 提取后 carbine-view 不再自己定义（只有一份实现）', async () => {
+  // ⚠️ 判据落在**源码文本**：读 TSL 内部结构无稳定口径。
+  // Node 侧可直接读文件；浏览器侧走 fetch（两侧都能跑）。
+  let text;
+  if (typeof window === 'undefined') {
+    const fs = await import('node:fs');
+    text = fs.readFileSync(new URL('../render/carbine-view.js', import.meta.url), 'utf8');
+  } else {
+    text = await (await fetch(new URL('../render/carbine-view.js', import.meta.url))).text();
+  }
+  assertTrue(text.includes('createMuzzleFlashMaterial'), 'carbine-view 须 import 共用工厂');
+  assertFalse(text.includes('function makeFlashMaterial'), 'carbine-view 不得再自己定义火光材质');
 });

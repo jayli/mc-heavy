@@ -31,10 +31,12 @@
 //
 // ⚠️ **零贴图、零烘焙产物**：全部纯色盒/柱（上游也是）。
 import * as THREE from 'three';
+// ⚠️ 火光材质已提取到 `muzzle-flash-material.js`（士兵 Epic Task 7），
+// 它用的 pow/cos/atan/exp 等 TSL 导入随函数一起搬走了 —— 本文件只留 reticle 与枪体所需。
 import {
-  Fn, float, vec2, vec3, vec4, uniform, attribute, varyingProperty,
+  Fn, float, vec3, vec4, uniform, attribute, varyingProperty,
   positionGeometry, uv, cameraProjectionMatrix, modelViewMatrix,
-  abs, pow, cos, sin, atan, exp, mix, max, min, smoothstep, oneMinus, Discard, length,
+  abs, max, min, smoothstep, oneMinus, Discard, length,
 } from 'three/tsl';
 import { WEAPONS, WEAPON_IDS } from '../player/weapons/weapon-catalog.js';
 import { CARBINE, carbineReloadPose } from '../player/weapons/carbine.js';
@@ -42,6 +44,7 @@ import {
   buildCarbineGun, buildCarbineMag, buildCarbineArms,
   CARBINE_ANCHORS, CARBINE_FLASH_QUADS, CARBINE_RETICLE_SIZE,
 } from './carbine-geometry.js';
+import { createMuzzleFlashMaterial } from './muzzle-flash-material.js';
 
 /**
  * 动效参数（**上游原值**，冻结）。与玩法量分开：`CARBINE` 管弹匣/散布/后坐冲量，
@@ -142,82 +145,6 @@ function makeCarbineMaterial() {
 }
 
 /**
- * 枪口火光材质（上游 `FLASH_FRAG` 逐字移植成 TSL）。
- *
- * 形状 = 径向核 + 角向尖刺：
- *   spikes = |cos(a*2.5 + seed*6)|^10 + 0.6*|cos(a*3.5 − seed*9)|^6
- *   core   = exp(−r²*9)
- *   flare  = exp(−r*4.5) * (0.35 + spikes)
- *   col    = 橙 * flare * 5 + 暖白 * core * 7，再乘 power 与边缘 smoothstep
- *
- * ⚠️⚠️ **径向量必须在片元算**（本仓已记的 TSL 教训）：PlaneGeometry 只有 4 个顶点，
- * 顶点算 length 插值后恒为常数 ⇒ 整片 quad 一起亮再整片消失。故用 varying 传 uv，
- * 在 colorNode（片元）里算 r 与 a。
- * ⚠️ **additive + depthTest:false**（上游同口径）：火光是自发光，不该被枪管挡住。
- */
-function makeFlashMaterial() {
-  const U = {
-    uSeed: uniform(0),
-    uPower: uniform(0),
-  };
-  const vUv = varyingProperty('vec2', 'vCarbFlashUv');
-  const vertex = Fn(() => {
-    /**
-     * ⚠️⚠️ **必须用 `uv()` 而不是 `positionGeometry.xy.mul(2)`**（本轮像素实测的根因）：
-     * `PlaneGeometry(0.24, 0.24)` 的 position.xy ∈ **±0.12**（它是真实尺寸，不是单位 quad）
-     * ⇒ ×2 后只到 ±0.24 ⇒ `r = length(vUv) ≤ 0.34`，**永远到不了 0.7~1.0 的边缘门**
-     * ⇒ `edge ≡ 1`、`core = exp(−r²·9) ≈ 0.9~1.0` 恒亮 ⇒ **整片 quad 满亮 = 白方块**。
-     * 上游 `vUv = uv`（∈[0,1]）、片元里 `c = vUv*2−1`（∈±1）⇒ r 真正覆盖 0..1.41。
-     * 实测对照（同机位只改这一个变量）：position×2 → fill 1.00 / warm 0；
-     * uv×2−1 → fill 0.63 / warm 2342（星芒形状与暖色回来）。
-     */
-    vUv.assign(uv().mul(2).sub(1));
-    return cameraProjectionMatrix.mul(modelViewMatrix.mul(vec4(positionGeometry, 1)));
-  });
-  const color = Fn(() => {
-    const r = length(vUv);
-    const a = atan(vUv.y, vUv.x);
-    const spikes = pow(abs(cos(a.mul(2.5).add(U.uSeed.mul(6.0)))), 10.0)
-      .add(pow(abs(cos(a.mul(3.5).sub(U.uSeed.mul(9.0)))), 6.0).mul(0.6));
-    const core = exp(r.mul(r).mul(9.0).negate());
-    const flare = exp(r.mul(4.5).negate()).mul(spikes.add(0.35));
-    const col = vec3(1.0, 0.55, 0.18).mul(flare).mul(5.0)
-      .add(vec3(1.0, 0.9, 0.7).mul(core).mul(7.0));
-    const edge = oneMinus(smoothstep(float(0.7), float(1.0), r));
-    const gain = U.uPower.mul(edge);
-    Discard(gain.lessThanEqual(0.002));
-    /**
-     * ⚠️⚠️ **alpha 必须 = gain，不能恒 1**（本轮像素实测的第二个根因）：
-     * 上游是 **WebGL 夜景**（背景近黑）且 additive，故 `vec4(col*power, 1)` 成立。
-     * 本仓是 **WebGPU + 正午亮天空（luma≈200）+ ACES**：
-     *   · additive 下 `dst + src`，而 src 的 HDR 值（flare×5 + core×7）远大于 1
-     *     ⇒ 任何背景上都被推到削顶 ⇒ **整片白**（实测 fill 1.00 / warm 0）；
-     *   · 改 NormalBlending 但 alpha 恒 1 ⇒ 整片不透明覆盖，仍是白方块。
-     * ⇒ **NormalBlending + alpha = gain**：边缘 gain→0 自然羽化（柔光），
-     *   中心 col 仍 HDR 但经 ACES 滚落成暖白而不是硬白块。
-     * 实测：additive+alpha1 → fill 1.00/warm 0；normal+alpha1 → fill 1.00/warm 0；
-     *       normal+alpha=gain → fill 0.63/warm 2342。
-     * 与本仓 fire-ring / cinder 尾巴的同一条教训（暖色 additive 在亮背景必钳白）。
-     */
-    return vec4(col.mul(gain), gain);
-  });
-  const mat = new THREE.MeshBasicNodeMaterial();
-  mat.vertexNode = vertex();
-  mat.colorNode = color();
-  mat.transparent = true;
-  // ⚠️ NormalBlending（不是 additive）—— 理由见 colorNode 里的实测对照
-  mat.blending = THREE.NormalBlending;
-  mat.depthWrite = false;
-  mat.depthTest = false;
-  mat.side = THREE.DoubleSide;
-  mat.fog = false;
-  // ⚠️ 自发光粒子不吃场景灯（本仓其余粒子池全部 lights=false）
-  mat.lights = false;
-  mat.toneMapped = false;
-  return { material: mat, uniforms: U };
-}
-
-/**
  * holo reticle 材质（上游 `RETICLE_FRAG` 逐字：环 + 中心点 + 四向刻度）。
  * ⚠️ 同样在片元算径向（4 顶点 quad 的教训）。
  */
@@ -299,7 +226,7 @@ export class CarbineView {
     this._geometries.push(this.reticle.geometry);
 
     // 枪口火光：星芒 + 两片沿枪管的十字 blade（上游三片）
-    const fl = makeFlashMaterial();
+    const fl = createMuzzleFlashMaterial();
     this.flashMaterial = fl.material;
     this.flashUniforms = fl.uniforms;
     this.flash = new THREE.Group();
