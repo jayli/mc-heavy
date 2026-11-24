@@ -22,6 +22,15 @@ export const NEST = Object.freeze({
   /** 每个偏移按 dy = 3..-2 降序尝试，合计**六层**（mc-lite 同口径）。不是笼统的「半径 3 / 五层」 */
   spawnDyTop: 3,
   spawnDyBottom: -2,
+  /**
+   * 产出类型的**交替序列**（士兵 Epic，用户 2026-11-24：「丧尸和 soldier 可以间隔生成」）。
+   *
+   * ⚠️ **顺序是载荷性的**：首项是 soldier ⇒ 新放下的巢穴第一次先出士兵。
+   * ⚠️ **满额回落不改序列**：首选类型 spawn 返回 null 时试另一种，
+   * 但 `_spawnIndex` **只在真的产出一只后推进**（否则满额时会空转推进，恢复后节奏错乱）。
+   * ⚠️ controller 未注入 `soldiers` 时退化为只产丧尸（既有 fixture 零回归）。
+   */
+  spawnOrder: Object.freeze(['soldier', 'zombie']),
 });
 
 /** 受控创造模式选择入口的物品名（M7 规格 §2：不扩展 Hotbar/Inventory Epic） */

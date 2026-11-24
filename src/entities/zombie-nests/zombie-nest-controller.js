@@ -21,12 +21,22 @@ export class ZombieNestController {
    *        引用 —— 与本仓库既有惯例一致（`isModal` / `onSpawnZombie` / `damage` 都是注入），
    *        且让 controller 可独立单测（不必造完整 service fixture）。缺省 null → 只上报不删锚点。
    */
-  constructor({ world, zombies, editor, anchor, onInvalidated = null }) {
+  constructor({ world, zombies, editor, anchor, onInvalidated = null, soldiers = null }) {
     this.world = world;
     this.zombies = zombies;
+    /**
+     * 士兵服务（士兵 Epic）。**可选**：缺省 null ⇒ 退化为只产丧尸。
+     * ⚠️ 既有 20 余条单测的 fake 只有 `zombies`，不传 soldiers 必须逐位回到旧行为。
+     */
+    this.soldiers = soldiers;
     this.editor = editor;
     this.anchor = anchor;
     this._onInvalidated = onInvalidated;
+    /**
+     * 交替指针（士兵 Epic）。**派生节奏，不入 blockEntity**：
+     * column 卸载后从 0 重开可接受；写进存档会让 anchor 多一个字段且要迁移旧档。
+     */
+    this._spawnIndex = 0;
     /** 最近一次刷怪尝试时刻（ms，performance 基准）。与 anchor.lastSpawnAt 同源同步。 */
     this.lastSpawnAt = anchor?.lastSpawnAt ?? 0;
     this.id = anchor?.id ?? null;
@@ -81,12 +91,37 @@ export class ZombieNestController {
     if (nowMs - this.lastSpawnAt < NEST.spawnIntervalMs) return false;
     const position = this._findSpawnPosition();
     let spawned = false;
-    if (position) {
-      // M6 口径：spawn 返回 `string | null`（满额/落点非法 → null），不是 false
-      spawned = this.zombies.spawn(position, { source: this.id }) !== null;
-    }
+    if (position) spawned = this._spawnAlternating(position);
     this._writeBackSpawnClock(nowMs);
     return spawned;
+  }
+
+  /**
+   * 交替产出 + 满额回落（士兵 Epic，用户：「soldier 足够多了就只好生成丧尸」）。
+   *
+   * 顺序：按 `_spawnIndex` 取首选 → 试 spawn → 返回 null 则试另一种 → 都 null 则不产出。
+   * ⚠️ **`_spawnIndex` 只在真的产出一只后推进**：满额那拍不推进，否则恢复后节奏错乱。
+   * ⚠️ **`soldiers` 缺省时首选恒为 zombie**（既有 fixture 零回归）。
+   * ⚠️ 落点扫描与 8 秒节流一行未改（冻结口径）。
+   *
+   * @param {number[]} position @returns {boolean}
+   */
+  _spawnAlternating(position) {
+    const order = NEST.spawnOrder;
+    const services = { soldier: this.soldiers, zombie: this.zombies };
+    // 未注入 soldiers ⇒ 只留 zombie（退化为旧行为）
+    const usable = order.filter((kind) => services[kind]);
+    if (usable.length === 0) return false;
+    const first = usable[this._spawnIndex % usable.length];
+    const candidates = [first, ...usable.filter((k) => k !== first)];
+    for (const kind of candidates) {
+      // M6 口径：spawn 返回 `string | null`（满额/落点非法 → null），不是 false
+      if (services[kind].spawn(position, { source: this.id }) !== null) {
+        this._spawnIndex = (this._spawnIndex + 1) % usable.length;
+        return true;
+      }
+    }
+    return false;
   }
 
   /**
@@ -136,6 +171,7 @@ export class ZombieNestController {
     this._invalidated = true;
     this.world = null;
     this.zombies = null;
+    this.soldiers = null;
     this.editor = null;
   }
 }

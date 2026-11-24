@@ -775,3 +775,103 @@ test('hydrate：未加载 column 的锚点仍计入上限（第九个返回 limi
   assertEqual(nests.controllers().size, 0, '没有任何 controller');
   await persistence.clearAllEdits();
 });
+
+// ==================== 士兵 Epic Task 6：巢穴交替产出士兵与丧尸 ====================
+//
+// ⚠️ **既有 20 余条用例一行不改**：它们的 fake `zombies` 只有 spawn 方法、没有 soldiers
+// ⇒ controller 必须容忍 soldiers 缺省 null 并退化为只产丧尸（零回归的判据就是那些用例本身）。
+
+/** 交替夹具：两个 fake service，各自记录调用；可单独设成满额（返回 null） */
+function makeAlternatingFixture({ soldierFull = false, zombieFull = false, withSoldiers = true } = {}) {
+  const f = makeSpawnFixture();
+  const soldierCalls = [];
+  const soldiers = {
+    spawn(position, opts) {
+      soldierCalls.push({ position, source: opts?.source ?? null });
+      return soldierFull ? null : 's-1';
+    },
+  };
+  // ⚠️ **必须替换 zombies.spawn**：既有 fixture 的那个恒返回 'z-1'，
+  // 不认 zombieFull 标志 ⇒「丧尸满额」场景根本没被造出来（实测：两条用例假红）。
+  const zombies = {
+    spawn(position, opts) {
+      f.spawnCalls.push({ position, source: opts?.source ?? null });
+      return zombieFull ? null : 'z-1';
+    },
+  };
+  // 重建 controller 并注入 soldiers（既有 fixture 的 controller 没有它）
+  const controller = new ZombieNestController({
+    world: f.world, zombies, editor: f.editor, anchor: f.anchor,
+    ...(withSoldiers ? { soldiers } : {}),
+  });
+  // 让首个候选合法（全空气世界里唯一合法位置）
+  const c0 = f.candidateAt(0, 3);
+  f.supportAt(c0.x, c0.footY, c0.z);
+  return { ...f, controller, zombies, soldiers, soldierCalls };
+}
+
+test('巢穴交替: 连续四次到期产出 soldier/zombie/soldier/zombie（Review Focus 4）', () => {
+  const f = makeAlternatingFixture();
+  const order = [];
+  for (let i = 1; i <= 4; i++) {
+    const zBefore = f.spawnCalls.length;
+    const sBefore = f.soldierCalls.length;
+    f.controller.update(i * 8_000);
+    if (f.soldierCalls.length > sBefore) order.push('soldier');
+    else if (f.spawnCalls.length > zBefore) order.push('zombie');
+    else order.push('none');
+  }
+  assertDeepEqual(order, ['soldier', 'zombie', 'soldier', 'zombie'], '必须严格交替');
+});
+
+test('巢穴回落: 士兵满额时改产丧尸', () => {
+  const f = makeAlternatingFixture({ soldierFull: true });
+  f.controller.update(8_000);
+  assertEqual(f.soldierCalls.length, 1, '先试士兵');
+  assertEqual(f.spawnCalls.length, 1, '士兵满额须回落丧尸');
+});
+
+test('巢穴回落: 丧尸满额时改产士兵', () => {
+  const f = makeAlternatingFixture({ zombieFull: true });
+  // 第一次首选士兵 → 成功；第二次首选丧尸（满）→ 回落士兵
+  f.controller.update(8_000);
+  f.controller.update(16_000);
+  assertEqual(f.soldierCalls.length, 2, '丧尸满额那一拍须回落到士兵');
+});
+
+test('巢穴: 两者都满 ⇒ 不产出但仍写回 lastSpawnAt', () => {
+  const f = makeAlternatingFixture({ soldierFull: true, zombieFull: true });
+  const spawned = f.controller.update(8_000);
+  assertEqual(spawned, false, '都满时不得报成功');
+  assertEqual(f.entityWrites.length, 1, '失败也须写回时钟（避免每帧重试扫描）');
+  assertEqual(f.entityWrites[0].value.lastSpawnAt, 8_000);
+});
+
+test('巢穴: soldiers 未注入时退化为只产丧尸（既有 fixture 零回归）', () => {
+  const f = makeAlternatingFixture({ withSoldiers: false });
+  f.controller.update(8_000);
+  f.controller.update(16_000);
+  assertEqual(f.spawnCalls.length, 2, '两次都产丧尸');
+  assertEqual(f.soldierCalls.length, 0, '未注入 soldiers 时不得调它');
+});
+
+test('巢穴: _spawnIndex 只在真的产出一只后推进（满额那拍不推进）', () => {
+  const f = makeAlternatingFixture({ soldierFull: true });
+  // 第 1 拍：首选士兵失败 → 回落丧尸成功 ⇒ index 推进到「下一次首选丧尸」
+  f.controller.update(8_000);
+  assertEqual(f.spawnCalls.length, 1);
+  // 第 2 拍：首选丧尸成功
+  f.controller.update(16_000);
+  assertEqual(f.spawnCalls.length, 2);
+  assertEqual(f.soldierCalls.length, 1, '第 2 拍不该再试士兵（节奏未被满额打乱）');
+});
+
+test('巢穴: 交替不改变 8 秒节流与落点扫描（既有冻结口径）', () => {
+  const f = makeAlternatingFixture();
+  f.controller.update(7_999);
+  assertEqual(f.soldierCalls.length + f.spawnCalls.length, 0, '未到 8 秒不产');
+  f.controller.update(8_000);
+  assertEqual(f.soldierCalls.length, 1);
+  assertEqual(f.soldierCalls[0].position[0], f.origin[0] + 0.5, '落点仍是首个合法候选');
+  assertEqual(f.soldierCalls[0].source, 'nest-a', '士兵 spawn 也须带 source=nestId');
+});
