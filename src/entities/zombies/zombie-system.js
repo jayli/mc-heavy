@@ -15,7 +15,9 @@ import {
   ZOMBIE, ZOMBIE_FLASH_MS, ZOMBIE_MAX_STEP, ZOMBIE_MOVING_EPSILON, ZOMBIE_SEPARATION,
   ZOMBIE_BEHAVIOR,
 } from './zombie-config.js';
-import { zombieCollidesAt, zombieStepUpY, steerIntent, displaceGroundEntity } from './zombie-navigation.js';
+import {
+  zombieCollidesAt, zombieStepUpY, steerIntent, displaceGroundEntity, physicsStepAabb,
+} from './zombie-navigation.js';
 import { behaviorFor, recordSample, decideBehavior, steerYawLimited } from './zombie-behavior.js';
 import { PathCache } from './zombie-pathfinder.js';
 import { decideStep, memoryFor } from './zombie-navigator.js';
@@ -189,79 +191,30 @@ const GRAVITY = -24.0;
 // 避障探针要读同一份（红线 1）。`PHYS_EPSILON` 也随 `collides()` 一并搬到 `zombie-navigation.js`。
 
 /**
- * 分轴移动 + 碰撞 + 自动上台阶（与 player/physics.js `_moveAxis`/`_tryStepUp` 同构）。
+ * 丧尸的物理体型（传给 `zombie-navigation.js` 的参数化物理三件）。
  *
- * @param {boolean} zeroVelocityOnHit 撞墙后是否清零该轴速度。
- *   **竖直轴必须清零**（否则重力逐帧累积 → 落地瞬间巨大负速度、穿地抖动）；
- *   **水平轴不得清零** —— 水平速度是 AI 意图（RPC 每 0.05 秒才刷新一次，物理跑 60Hz），
- *   撞墙清零会让丧尸在两次 RPC 之间彻底卡住（实测：清零后丧尸贴墙不动直到下个周期）。
+ * **士兵 Epic Task 1**：物理算法已提取到 `zombie-navigation.js` 供丧尸与士兵共用
+ * （两者体形逐位相同）。本常量只是「丧尸那一组参数」，算法不在这里 ——
+ * 各写一份会漂移出「两个实体在同一地形上走法不同」（红线 1）。
  */
-function moveAxis(state, world, delta, axis, keys, zeroVelocityOnHit) {
-  if (delta === 0) return;
-  const old = state.position[axis];
-  state.position[axis] = old + delta;
-  if (collides(state, world)) {
-    // 水平轴：尝试自动上台阶（mc-lite tryStepUp 手感，MAX_STEP=1.0）
-    if (axis !== 1 && tryStepUp(state, world)) return;
-    // 二分回退到不碰撞位置
-    let lo = 0, hi = 1;
-    for (let i = 0; i < 8; i++) {
-      const mid = (lo + hi) / 2;
-      state.position[axis] = old + delta * mid;
-      if (collides(state, world)) hi = mid; else lo = mid;
-    }
-    state.position[axis] = old + delta * lo;
-    if (axis === 1 && delta < 0) state.onGround = true;
-    if (zeroVelocityOnHit) state.velocity[axis] = 0;
-  }
-}
+const ZOMBIE_PHYS_BOX = Object.freeze({
+  halfWidth: ZOMBIE.width / 2,
+  height: ZOMBIE.height,
+  maxStep: ZOMBIE_MAX_STEP,
+  gravity: GRAVITY,
+});
 
 /**
- * 自动上台阶：水平碰撞时，把脚底抬到上一格整数面。
- * 用完整 AABB 检测保证 2 格高墙抬不上去（目标位仍碰撞）、头顶净空不足抬不上去
- * （1.8 高需 2 格净空）—— 与 player/physics.js `_tryStepUp` 同一判据。
+ * 单个 60Hz 固定步的积分。**转调共用实现**（`physicsStepAabb`），传丧尸体型。
  *
- * **门控不是 `onGround`（v1.72，与 player/physics.js 同步改）**：只在「跳跃上升段」拒绝，
- * 下落中允许 —— 否则丧尸斜蹭台阶边沿时会先失去支撑（`onGround=false`）再被前方台壁挡死，
- * 表现为彻底卡住。根因与实测数据见 `player/physics.js` 的 `_tryStepUp` 注释。
- */
-function tryStepUp(state, world) {
-  if (!state.onGround && state.velocity[1] > 0) return false;
-  const oldY = state.position[1];
-  const lifted = zombieStepUpY(oldY); // 唯一实现在 zombie-navigation.js（探针读同一份）
-  if (lifted - oldY > ZOMBIE_MAX_STEP) return false; // 超过一格台阶不登（mc-lite MAX_STEP 语义）
-  state.position[1] = lifted;
-  if (!collides(state, world)) { state.velocity[1] = 0; return true; }
-  state.position[1] = oldY;
-  return false;
-}
-
-/**
- * 单个 60Hz 固定步的积分（重力 + 分轴碰撞 + step-up）。**原地改写传入 state**。
+ * 三条载荷性细节（竖直先走 / 水平轴不清零速度 / step-up 门控只看跳跃上升段）
+ * 的权威与实测出处都在 `zombie-navigation.js` 的那三个函数上，此处不重复。
+ *
  * @param {object} state @param {import('../../voxel/world-data.js').WorldData} world
  * @param {number} dt 固定步长（1/60）
  */
 function physicsStep(state, world, dt) {
-  const keys = ['x', 'y', 'z'];
-  state.velocity[1] += GRAVITY * dt;
-  // **竖直先走**（顺序与 player/physics.js 一致，step-up 依赖它）：先落地算出本步的
-  // `onGround`，水平轴才能据此判定能否上台阶。把 `onGround = false` 放在水平移动之前
-  // 会让 `tryStepUp` 永远拿不到 onGround → step-up 完全失效（实测踩坑）。
-  state.onGround = false;
-  moveAxis(state, world, state.velocity[1] * dt, 1, keys, true);
-  // AI 意图驱动的水平移动（velocity[0]/[2] 由 RPC 回包写入）
-  moveAxis(state, world, state.velocity[0] * dt, 0, keys, false);
-  moveAxis(state, world, state.velocity[2] * dt, 2, keys, false);
-}
-
-/**
- * 丧尸 AABB 0.6×1.8×0.6 与实心方块采样检测（脚底为 position）。
- *
- * **唯一实现在 `zombie-navigation.js` 的 `zombieCollidesAt`**（v2.40）—— 避障探针要读同一份判据，
- * 两份会漂移成「探针以为能过、物理撞墙」，而那种漂移是静默的（只表现为丧尸莫名卡顿）。
- */
-function collides(state, world) {
-  return zombieCollidesAt(world, state.position[0], state.position[1], state.position[2]);
+  physicsStepAabb(state, world, dt, ZOMBIE_PHYS_BOX);
 }
 
 /**

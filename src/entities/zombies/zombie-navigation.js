@@ -227,3 +227,98 @@ function probeClearAabb(world, x, y, z, dx, dz, halfWidth, height, maxStep, prob
   const lifted = zombieStepUpY(y);
   return lifted - y <= maxStep && !aabbCollidesAt(world, tx, lifted, tz, halfWidth, height);
 }
+
+// ---------------------------------------------------------------------------
+// 参数化物理三件（士兵 Epic Task 1 提取）
+//
+// **为什么在这里而不是各自的 system 里**：丧尸与士兵**体形逐位相同**（0.6×1.8×0.6、
+// 一格台阶），焰魔/守卫也已复用本文件的 `aabbCollidesAt`。物理算法各写一份会漂移出
+// 「两个实体在同一地形上走法不同」，而那种漂移只能靠实玩发现（红线 1）。
+//
+// 三件从 `zombie-system.js` 的私有实现**逐行搬来**，只把三处硬编码换成 `box` 字段：
+//   collides → aabbCollidesAt(box.halfWidth, box.height)
+//   ZOMBIE_MAX_STEP → box.maxStep
+//   GRAVITY → box.gravity
+// 丧尸侧改为转调并传丧尸 box ⇒ 行为逐位不变（由 test-zombies.js 的等价用例钉住）。
+// ---------------------------------------------------------------------------
+
+/**
+ * 分轴移动 + 碰撞 + 自动上台阶（与 player/physics.js `_moveAxis`/`_tryStepUp` 同构）。
+ *
+ * @param {object} state 原地改写（position/velocity/onGround）
+ * @param {{isSolid(x:number,y:number,z:number):boolean}} world
+ * @param {number} delta 本轴位移
+ * @param {number} axis 0=x / 1=y / 2=z
+ * @param {{halfWidth:number, height:number, maxStep:number}} box
+ * @param {boolean} zeroVelocityOnHit 撞墙后是否清零该轴速度。
+ *   **竖直轴必须清零**（否则重力逐帧累积 → 落地瞬间巨大负速度、穿地抖动）；
+ *   **水平轴不得清零** —— 水平速度是 AI 意图（每 0.05 秒才刷新一次，物理跑 60Hz），
+ *   撞墙清零会让实体在两次刷新之间彻底卡住（实测：清零后贴墙不动直到下个周期）。
+ */
+export function moveAxisAabb(state, world, delta, axis, box, zeroVelocityOnHit) {
+  if (delta === 0) return;
+  const hits = () => aabbCollidesAt(
+    world, state.position[0], state.position[1], state.position[2], box.halfWidth, box.height,
+  );
+  const old = state.position[axis];
+  state.position[axis] = old + delta;
+  if (hits()) {
+    // 水平轴：尝试自动上台阶（mc-lite tryStepUp 手感，MAX_STEP=1.0）
+    if (axis !== 1 && tryStepUpAabb(state, world, box)) return;
+    // 二分回退到不碰撞位置
+    let lo = 0, hi = 1;
+    for (let i = 0; i < 8; i++) {
+      const mid = (lo + hi) / 2;
+      state.position[axis] = old + delta * mid;
+      if (hits()) hi = mid; else lo = mid;
+    }
+    state.position[axis] = old + delta * lo;
+    if (axis === 1 && delta < 0) state.onGround = true;
+    if (zeroVelocityOnHit) state.velocity[axis] = 0;
+  }
+}
+
+/**
+ * 自动上台阶：水平碰撞时，把脚底抬到上一格整数面。
+ * 用完整 AABB 检测保证 2 格高墙抬不上去（目标位仍碰撞）、头顶净空不足抬不上去
+ * （1.8 高需 2 格净空）—— 与 player/physics.js `_tryStepUp` 同一判据。
+ *
+ * **门控不是 `onGround`（v1.72，与 player/physics.js 同步改）**：只在「跳跃上升段」拒绝，
+ * 下落中允许 —— 否则实体斜蹭台阶边沿时会先失去支撑（`onGround=false`）再被前方台壁挡死，
+ * 表现为彻底卡住。根因与实测数据见 `player/physics.js` 的 `_tryStepUp` 注释。
+ *
+ * @param {object} state @param {object} world
+ * @param {{halfWidth:number, height:number, maxStep:number}} box
+ * @returns {boolean}
+ */
+export function tryStepUpAabb(state, world, box) {
+  if (!state.onGround && state.velocity[1] > 0) return false;
+  const oldY = state.position[1];
+  const lifted = zombieStepUpY(oldY); // 唯一实现在本文件（探针读同一份）
+  if (lifted - oldY > box.maxStep) return false; // 超过一格台阶不登（mc-lite MAX_STEP 语义）
+  state.position[1] = lifted;
+  if (!aabbCollidesAt(world, state.position[0], lifted, state.position[2], box.halfWidth, box.height)) {
+    state.velocity[1] = 0;
+    return true;
+  }
+  state.position[1] = oldY;
+  return false;
+}
+
+/**
+ * 单个 60Hz 固定步的积分（重力 + 分轴碰撞 + step-up）。**原地改写传入 state**。
+ *
+ * @param {object} state @param {object} world @param {number} dt 固定步长（1/60）
+ * @param {{halfWidth:number, height:number, maxStep:number, gravity:number}} box
+ */
+export function physicsStepAabb(state, world, dt, box) {
+  state.velocity[1] += box.gravity * dt;
+  // **竖直先走**（顺序与 player/physics.js 一致，step-up 依赖它）：先落地算出本步的
+  // `onGround`，水平轴才能据此判定能否上台阶。把 `onGround = false` 放在水平移动之前
+  // 会让 `tryStepUp` 永远拿不到 onGround → step-up 完全失效（实测踩坑）。
+  state.onGround = false;
+  moveAxisAabb(state, world, state.velocity[1] * dt, 1, box, true);
+  // AI 意图驱动的水平移动
+  moveAxisAabb(state, world, state.velocity[0] * dt, 0, box, false);
+  moveAxisAabb(state, world, state.velocity[2] * dt, 2, box, false);
+}

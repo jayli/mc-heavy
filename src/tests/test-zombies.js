@@ -24,7 +24,7 @@ import {
   ZombieService, zombieDefinition, separationForce, computeAiUpdates,
 } from '../entities/zombies/zombie-system.js';
 import {
-  zombieCollidesAt, zombieStepUpY, steerIntent,
+  zombieCollidesAt, zombieStepUpY, steerIntent, physicsStepAabb,
 } from '../entities/zombies/zombie-navigation.js';
 import {
   ZombieRenderer, ZOMBIE_PARTS, ZOMBIE_PART_DEFS, HEAD_FRONT_VERTICES,
@@ -1723,4 +1723,53 @@ test('v3.11 行为层 mode 白名单: hesitating/backing/wandering 不被规范�
     zombies.damage(id, 1, 0);
     assertEqual(zombies.get(id).mode, mode, `createState 路径也须保留 ${mode}`);
   }
+});
+
+// ==================== 士兵 Epic Task 1：物理三件提取为参数化共用实现 ====================
+//
+// ⚠️ **对照必须走丧尸自己的 definition**（唯一权威），不得在用例里复制一份物理公式 ——
+// 那会让「对照脚本与被测代码共享同一个错误假设」，得出「两者一致」的假结论。
+// ⚠️ 两组喂**完全相同的 dt 序列**（每步恰 1/60）且 `_physAccum` 初值都是 0，
+// 否则固定步数不同会造成假红。
+
+test('物理提取: physicsStepAabb(丧尸 box) 与丧尸 definition 逐位等价', () => {
+  const { world, entities, ids } = makeZombieFixture({ withRenderer: false });
+  // 造一格台阶：x=3 那列在 y=1 铺 stone ⇒ 水平移动会撞墙并触发 tryStepUp
+  // （只测平地会让 tryStepUpAabb 完全不被执行 —— 提取错了也全绿）
+  world.setBlock(3, 1, 0, ids.stone);
+  const box = {
+    halfWidth: ZOMBIE.width / 2, height: ZOMBIE.height,
+    maxStep: ZOMBIE_MAX_STEP, gravity: -24.0,
+  };
+  // 对照组：丧尸自己的 definition
+  entities.spawn({
+    id: 'ref', type: 'zombie',
+    state: { position: [0.5, 3, 0.5], velocity: [1.2, 0, 0] },
+  });
+  // 被测组：只调 physicsStepAabb 的临时 definition（其余字段原样透传）
+  entities.registerType('probe-phys', {
+    create: (s) => ({ ...s, position: [...s.position], velocity: [...s.velocity] }),
+    update: (e, dt) => {
+      const s = { ...e.state, position: [...e.state.position], velocity: [...e.state.velocity] };
+      physicsStepAabb(s, world, dt, box);
+      return s;
+    },
+    raycastAabb: () => null, serialize: () => null, deserialize: () => null,
+  });
+  entities.spawn({
+    id: 'got', type: 'probe-phys',
+    state: { position: [0.5, 3, 0.5], velocity: [1.2, 0, 0], onGround: false, _physAccum: 0 },
+  });
+  let sawStepUp = false;
+  let prevY = 3;
+  for (let i = 0; i < 120; i++) {
+    entities.update(1 / 60, { world });
+    const got = entities.get('got').state;
+    const ref = entities.get('ref').state;
+    assertDeepEqual(got.position, ref.position, `第 ${i} 步位置逐位相等`);
+    assertEqual(got.onGround, ref.onGround, `第 ${i} 步 onGround 相等`);
+    if (got.position[1] > prevY + 1e-4) sawStepUp = true;
+    prevY = got.position[1];
+  }
+  assertTrue(sawStepUp, '前置：本用例必须真的触发过一次上台阶（否则 tryStepUpAabb 未被执行）');
 });
