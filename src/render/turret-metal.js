@@ -64,18 +64,35 @@ export const TURRET_METAL = Object.freeze({
 });
 
 /**
+ * 自发光增益（士兵 Epic）—— 护目镜/胸灯的 aGlow 乘它叠到四项叠加之后。
+ * 取 3.0：aGlow 已按上游 e/8 归一（护目镜 4.5/8≈0.56），×3 后约 1.7 ⇒ 经 ACES 滚落成亮红而不钳白。
+ * ⚠️ 只在传了 glowAttribute 时生效，炮塔路径不读它。
+ */
+const SOLDIER_GLOW_GAIN = 3.0;
+
+/**
  * 造一个金属材质。
  *
  * @param {{color: number, sunDirection: object, sunStrength?: object,
- *          sunColor?: object, tones?: readonly number[]}} deps
+ *          sunColor?: object, tones?: readonly number[],
+ *          vertexColor?: boolean, glowAttribute?: string}} deps
  *        `sunDirection` **必须**传 `renderWorld.materials.dayNight.uSunDirection`。
  *        `sunStrength` / `sunColor` 可选（传入则跟随日夜强度与色温）。
  *        `tones` 可选：三档基色 `[顶, 侧, 底]`（v3.14 装甲部件）。
  *        传了则基色由逐顶点 `tone` 属性（0/1/2）选；不传则用单一 `color`
  *        （炮管/副武器走这条，**逐位回到现状**）。
+ *
+ *        **士兵 Epic 新增两个可选项（缺省 undefined ⇒ 一行不走新分支，炮塔逐位不变）**：
+ *        · `vertexColor: true` —— 基色改读逐顶点 `color` 属性（士兵每个盒颜色不同，
+ *          三档 tone 不够表达）。⚠️ **不能用 `vertexColors:true` + colorNode 代替**：
+ *          three 把顶点色乘在 colorNode **之后**，高光/环境/菲涅尔项会用**材质基色**
+ *          而不是顶点色去染色（炮塔侧已记该实测）。故基色必须在进入四项叠加**之前**选好。
+ *        · `glowAttribute: 'aGlow'` —— 自发光项（士兵护目镜 e=4.5 / 胸灯 e=2.5）。
  * @returns {THREE.MeshBasicNodeMaterial}
  */
-export function createTurretMetalMaterial({ color, sunDirection, sunStrength, sunColor, tones }) {
+export function createTurretMetalMaterial({
+  color, sunDirection, sunStrength, sunColor, tones, vertexColor, glowAttribute,
+}) {
   // 基色：单一色 or 三档选色。
   //
   // ⚠️⚠️ **不能用 `vertexColors: true` + `color` 属性代替**（设计文档 §6.1 否决项 B）：
@@ -95,7 +112,10 @@ export function createTurretMetalMaterial({ color, sunDirection, sunStrength, su
   // ⚠️ **用 `select` 链而不是查表数组**：照 `materials.js` 的面法线解码同手法
   // （GLSL 无动态索引常量数组的便携写法）。tone 是逐顶点常量 ⇒ 编译期可折叠。
   let base;
-  if (tones) {
+  if (vertexColor) {
+    // 士兵：逐顶点任意色（已在几何侧转成线性 RGB）
+    base = attribute('color', 'vec3');
+  } else if (tones) {
     const t = attribute('tone');
     const nodes = tones.map((hex) => {
       const c = new THREE.Color(hex);
@@ -145,6 +165,13 @@ export function createTurretMetalMaterial({ color, sunDirection, sunStrength, su
     .add(base.mul(fresBand).mul(fresK));
 
   const material = new THREE.MeshBasicNodeMaterial({ side: THREE.DoubleSide });
-  material.colorNode = clamp(base.mul(shade).add(reflect.mul(strength)), 0, 1);
+  let out = clamp(base.mul(shade).add(reflect.mul(strength)), 0, 1);
+  // 自发光（士兵护目镜/胸灯）：叠在四项叠加之后，不被 shade 压暗。
+  // ⚠️ 缺省无 glowAttribute 时**一行不走**，炮塔输出逐位不变。
+  if (glowAttribute) {
+    const glow = attribute(glowAttribute, 'float');
+    out = clamp(out.add(base.mul(glow).mul(SOLDIER_GLOW_GAIN)), 0, 1);
+  }
+  material.colorNode = out;
   return material;
 }
