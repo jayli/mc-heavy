@@ -4158,15 +4158,8 @@ async function checkFootstepWater() {
   if (fullSha !== fp.FOOTSTEP_WATER_PRODUCT_SHA256) {
     fail(`产物内容与冻结值不符（被手改 / 被换了素材？）\n      期望 ${fp.FOOTSTEP_WATER_PRODUCT_SHA256}\n      实际 ${fullSha}`);
   }
-  // 素材若**恰好在磁盘上**（有人取回来准备重烘），顺手核对它是不是同一份 ——
-  // 不在磁盘是**正常状态**，不报错（用户裁定不入库）。
-  const src = path.join(fp.ROOT, fp.FOOTSTEP_WATER_SOURCE);
-  if (fs.existsSync(src)) {
-    const sha = fp.sourceSha256(src);
-    if (sha !== fp.FOOTSTEP_WATER_SOURCE_SHA256) {
-      fail(`磁盘上的素材与配方留档的 sha256 不符（不是同一份素材，重烘会产出别的声音）\n      期望 ${fp.FOOTSTEP_WATER_SOURCE_SHA256}\n      实际 ${sha}`);
-    }
-  }
+  // ⚠️ **完全不检查素材**（用户 2026-11-24 裁定）：素材已删且不入库，
+  // 门禁只看产物本身。素材 sha256 仅在配方里留档，不参与任何断言。
   // ② 产物 hash + 输入指纹
   const entry = manifest.files?.[fp.FOOTSTEP_WATER_ID];
   const hash = fp.fileHash(file);
