@@ -8,4 +8,10 @@ tests/tmp-*
 # 草贴图的 PNG 中间物（`npm run grasstextures` 用 `sips` 从 jpg 转出来，可重建，不入库）。
 # ⚠️ 只排 src/ 下的同名中间物 —— `assets/textures/procedural/` 里的产物是渲染资源，必须入库。
 assets/grass-textures/src/*.png
+# 水中脚步声的源素材与中间物（用户 2026-11-24 裁定：只提交产物 running_wet.wav）。
+# ⚠️ 产物因此**不可重烘** —— `npm run footstepwater` 会硬失败并打印取回办法，
+#    完整性由 `check:data` 钉产物 sha256 守住（见 footstep-water-recipe.js）。
+assets/sounds/src/
+# 脚步声试听件（给用户听的临时导出，不是游戏资源；游戏读 assets/sounds/running_wet.wav）。
+preview-footstep-*.mp3
 .superpowers/

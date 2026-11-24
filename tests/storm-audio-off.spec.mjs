@@ -1,4 +1,11 @@
 import { test, expect } from 'playwright/test';
+import { STORM_AUDIO } from '../src/render/storm-rain-config.js';
+import { RAIN } from '../src/render/weather.js';
+
+/** 雨天档的雨声音量（从运行时代码 import —— 不在 spec 里写第二份字面量） */
+const STORM_RAIN_VOLUME = STORM_AUDIO.rainVolume;
+/** 天气雨声的满强度音量（同上，`RAIN.SOUND_VOLUME` 是唯一权威） */
+const RAIN_WEATHER_VOLUME = RAIN.SOUND_VOLUME;
 
 // v3.30e 回归门（用户 2026-11-22 实玩报告的两个缺陷）：
 //
@@ -59,9 +66,17 @@ test('雨天光影：晴天开启后关闭，两条雨声都必须停（天气�
   await page.waitForTimeout(1200);
   const on = await page.evaluate(AUDIO_STATE);
   console.log('AUDIO ON:', JSON.stringify(on));
-  expect(on.loops.rain_storm?.playing, '开启时上游雨床在播').toBe(true);
-  expect(on.loops.rain === undefined || on.loops.rain.playing === false,
-    '开启时旧的天气雨声必须停（两条互斥）').toBe(true);
+  /**
+   * ⚠️ v3.36：雨天档雨声改为**复用 `rain.mp3`**（用户 2026-11-24 裁定）
+   * ⇒ 开启时只有 `rain` 一个键，不再有 `rain_storm`。
+   * 判据必须从「键名是 rain_storm」改成「rain 在播且音量 = 雨天档值」——
+   * 只断言「rain.playing」的话，「忘记改音量（还停在天气的 0.2）」也会丝过。
+   */
+  expect(on.loops.rain_storm,
+    'v3.36 起改用 rain.mp3 ⇒ rain_storm 不得再被启播').toBeUndefined();
+  expect(on.loops.rain?.playing, '开启时雨声（rain.mp3）在播').toBe(true);
+  expect(on.loops.rain.target, '音量必须是雨天档值（不是天气的 0.2）')
+    .toBeCloseTo(STORM_RAIN_VOLUME, 2);
 
   await page.evaluate(() => window.__MC_GAME__.setStormLighting(false));
   // ⚠️ 关档后**立即**取样（不等）：用户要求「关掉就应当关闭」，不接受几秒淡出
@@ -69,10 +84,8 @@ test('雨天光影：晴天开启后关闭，两条雨声都必须停（天气�
   console.log('AUDIO OFF (immediate):', JSON.stringify(off));
   expect(off.weatherKind, '天气必须还原成开启前的晴天').toBe('clear');
   expect(off.weatherIntensity, '强度必须立即归 0（不能留 5 秒过渡）').toBe(0);
-  expect(off.loops.rain_storm === undefined || off.loops.rain_storm.playing === false,
-    '上游雨床必须停').toBe(true);
   expect(off.loops.rain === undefined || off.loops.rain.playing === false,
-    '⚠️ 旧的天气雨声也必须停 —— 这正是用户报告的残留').toBe(true);
+    '⚠️ 雨声也必须停 —— 这正是用户报告的残留').toBe(true);
 
   // 再等 4 秒：确认帧循环不会把它重新放出来（旧缺陷正是在这里复现）
   await page.waitForTimeout(4000);
@@ -100,9 +113,10 @@ test('雨天光影：本来就在下雨时开启再关闭，回到天气雨声�
   console.log('RAINY AFTER:', JSON.stringify(after));
   expect(after.weatherKind, '天气还原成 rain').toBe('rain');
   expect(after.weatherIntensity, '强度还原成 1').toBeGreaterThan(0.99);
-  expect(after.loops.rain?.playing, '本来就下雨 ⇒ 关档后回到天气雨声').toBe(true);
-  expect(after.loops.rain_storm === undefined || after.loops.rain_storm.playing === false,
-    '上游雨床必须停').toBe(true);
+  expect(after.loops.rain?.playing, '本来就下雨 ⇒ 关档后雨声继续（同一个音源，音量回到天气值）').toBe(true);
+  expect(after.loops.rain.target, '关档后音量必须回到天气值（不是雨天档的 0.9）')
+    .toBeCloseTo(RAIN_WEATHER_VOLUME, 2);
+  expect(after.loops.rain_storm, 'v3.36 起 rain_storm 不再被启播').toBeUndefined();
 });
 
 test('雨天光影：反复开关不残留（快照只在首次开启时存）', async ({ page }) => {

@@ -87,14 +87,39 @@ export const STORM_SPLASH = Object.freeze({
 });
 
 /**
- * 雨声与雷声（烘焙产物，配方来自上游 `_startAmbience` / `thunder`）。
- * ⚠️ id 必须在 `CARBINE_AUDIO_IDS` 里（单测钉住）。
+ * 雨声与雷声。
+ *
+ * ⚠️ **v3.36 起雨声复用既有 `rain.mp3`**（用户 2026-11-24：「你把雨天光影打开的时候的
+ * 下雨的音效从 rain_storm.wav 改为 rain.mp3，即复用 rain.mp3」）——
+ * **零新增素材、零重烘**。烘焙产物 `rain_storm.wav` 仍在库里（见下条注意）。
+ * ⚠️ **id 必须在 `CARBINE_AUDIO_IDS` 里**（单测钉住）—— 只对雷声仍成立；
+ * 雨声 `rain` 属于 `SOUND_IDS` 的既有 12 个 mp3 之一。
  */
 export const STORM_AUDIO = Object.freeze({
-  /** 雨声床（12s 立体声循环） */
-  rainLoop: 'rain_storm',
-  /** 雨声音量上限（实际 = 本值 × 强度，与既有 rain 的 SOUND_VOLUME 同手法） */
-  rainVolume: 0.5,
+  /**
+   * 雨声床 id。
+   *
+   * ⚠️⚠️ **本值与 `_syncRainSound()` 用的 `'rain'` 是同一个音源，不得分叉**。
+   * 用户 2026-11-24 裁定复用 `rain.mp3` 后，雨天档与天气雨声**共享同一个循环实例**
+   *（`playLoop` 同名只改音量不重建）⇒ 音量必须由**一份**权威给出，
+   * 否则两边每帧互相覆写：`_syncStormAudio` 写 `rainVolume`、`_syncRainSound` 写
+   * `RAIN.SOUND_VOLUME × intensity` ⇒ 实测形态是「音量在两值之间每帧抖动」。
+   */
+  rainLoop: 'rain',
+  /**
+   * 雨天档的雨声音量上限（室内再乘 `indoorGain`）。
+   *
+   * ⚠️ **响度标定不是拍脑袋**（ffmpeg ebur128 实测）：
+   *   `rain_storm.wav` 12s → **−31.6 LUFS**；`rain.mp3` 30s → **−38.5 LUFS**。
+   *   即同一线性增益下 `rain.mp3` **小 6.9 LU**。若继续沿用为 `rain_storm` 估的 0.5，
+   *   换成 mp3 后雨天档会明显变小声（听感＝「没开」）。故按响度差补偿：
+   *   0.5 × 10^(6.9/20) ≈ 1.11 → 钳到 1（0.5 已偏静，且上限是 1）。
+   *   取 **0.9**：比天气雨声（`RAIN.SOUND_VOLUME` = 0.2）显著更满，但不至于顶到上限。
+   *   ⚠️ 调音量只改这一个数，不动任何触发点（红线 1）。
+   */
+  rainVolume: 0.9,
+  /** 室内衰减系数（屋顶隔雨的真实听感；判据与视觉同一个 underRoof） */
+  indoorGain: 0.25,
   /** 远雷 */
   thunder: 'rain_thunder',
   thunderVolume: 0.35,

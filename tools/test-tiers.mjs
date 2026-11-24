@@ -69,6 +69,7 @@ const UI = [
   'storm-audio-off',    // v3.30e 关档后两条雨声都停（天气还原）—— 状态机判据，非像素
   'bgm',
   'boss-hint',
+  'enemy-counts',      // v3.36 敌人计数行（五项存活数 / 不换行 / 窄屏压缩省略号）
 ];
 
 /** 实体玩法 / AI / 武器 */
@@ -219,6 +220,9 @@ export const UNIT_NODE_SAFE = [
   'test-view-bob.js', 'test-water-reflect.js', 'test-water-reflect-height.js', 'test-weapons.js', 'test-world-editor.js', 'test-zombie-behavior.js',
   'test-zombie-model.js', 'test-zombie-pathfinder.js', 'test-zombies.js',
   'test-soldier-config.js', 'test-soldier-shooting.js', 'test-soldier-agent.js', 'test-soldier-system.js', 'test-soldier-render.js',
+  'test-enemy-counts.js',
+  // v3.37：水中脚步声烘焙产物（零 node 依赖的 dsp 模块 + fetch 读 wav ⇒ Node 可跑）
+  'test-footstep-water.js',
 ];
 
 /**

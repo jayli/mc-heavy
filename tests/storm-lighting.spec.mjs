@@ -1,5 +1,12 @@
 import { test, expect } from 'playwright/test';
 import { PNG } from 'pngjs';
+import { STORM_AUDIO } from '../src/render/storm-rain-config.js';
+import { RAIN } from '../src/render/weather.js';
+
+/** 雨天档雨声音量（从运行时代码 import —— 不在 spec 里写第二份字面量） */
+const STORM_RAIN_VOLUME = STORM_AUDIO.rainVolume;
+/** 天气雨声满强度音量（`RAIN.SOUND_VOLUME` 是唯一权威） */
+const RAIN_WEATHER_VOLUME = RAIN.SOUND_VOLUME;
 
 // v3.30 雨天光影档：开关接线 / 持续雨上屏 / 室内不生效 / 树叶云空岛不拦 /
 // 高度不超云层 / 湿地面反光 / 后处理链 / 雨声切换 / 关闭时零回归。
@@ -501,14 +508,20 @@ test('雨天光影：雨声换成上游雨床，且与既有 rain 互斥', async
   });
   console.log('STORM AUDIO:', JSON.stringify(r));
   // ⚠️ debugLoops 的字段是 {playing, volume, target}（不是 wanted）——
-  // 停掉的循环**整个键消失**（本轮实测：on 只有 rain_storm、off 只有 rain）。
-  // 开启：rain_storm 在播且音量 >0，既有 rain 不在播
-  expect(r.on.rain_storm).toBeTruthy();
-  expect(r.on.rain_storm.playing).toBe(true);
-  expect(r.on.rain_storm.volume).toBeGreaterThan(0);
-  expect(r.on.rain === undefined || r.on.rain.playing === false).toBe(true);
-  // 关闭：rain_storm 停（键消失或不在播），既有 rain 回来
-  expect(r.off.rain_storm === undefined || r.off.rain_storm.playing === false).toBe(true);
+  // 停掉的循环**整个键消失**。
+  // v3.36：雨天档雨声改用既有 rain.mp3（用户 2026-11-24 裁定）⇒ **只有一个键**，
+  // 不再有 rain_storm。判据必须钉**音量**而不只是 playing：
+  // 同一个循环实例在两种档位下都在播，忘了写音量的形态是「开了雨天档但雨声没变大」。
+  expect(r.on.rain_storm, 'v3.36 起 rain_storm 不再被启播').toBeUndefined();
+  expect(r.on.rain).toBeTruthy();
+  expect(r.on.rain.playing).toBe(true);
+  expect(r.on.rain.target, '开启时音量 = 雨天档值').toBeCloseTo(STORM_RAIN_VOLUME, 2);
+  // 关闭：音量回到天气驱动值（晴天 ⇒ 不在播）
+  expect(r.off.rain_storm, 'v3.36 起 rain_storm 不再被启播').toBeUndefined();
+  if (r.off.rain) {
+    expect(r.off.rain.target, '关档后音量回到天气值')
+      .toBeLessThanOrEqual(RAIN_WEATHER_VOLUME + 1e-6);
+  }
 });
 
 test('雨天光影：性能档雨丝减半（v3.31：bloom 已删，不再有级数）', async ({ page }) => {

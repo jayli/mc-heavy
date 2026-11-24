@@ -417,7 +417,7 @@ export class Player {
     // 两者共用 `ViewBob.shouldBob()` 同一份实现，区别只在 `active` 强制 `drag: 1`（镜头，水中不晃，
     // 用户裁定 2026-11-05）、`walking` 按真实阻力折算（水中 ratio 回到 1.0 → 能播）。
     // 旧版读 `active` 的后果：本仓物理有水中阻力（mc-lite 没有）→ 水中 actual/expected 恒 0.6
-    // < fullSpeedRatio 0.95 → `active` 恒 false → `running_water` **永不播**（实测 0/120 帧）。
+    // < fullSpeedRatio 0.95 → `active` 恒 false → 水中脚步声 **永不播**（实测 0/120 帧）。
     // 每帧调一次：`playLoop` 同名已在播时只改音量，不会重启（否则听到断续“哒哒哒”）。
     this._updateFootsteps();
     // 相机同步（眼高 1.62 + 台阶缓动偏移 + 跑动晃动）
@@ -483,7 +483,7 @@ export class Player {
   /**
    * 跑动脚步声（v2.51，用户 2026-11-04：「跑步的声音」）。
    *
-   * 两个循环音效互斥：陆上 `running_land`（0.2）/ 入水 `running_water`（0.25）——
+   * 两个循环音效互斥：陆上 `running_land`（0.2）/ 入水 `running_wet`（0.25）——
    * 音量与“入水换音效”的语义照搬 mc-lite `PlayerInteraction.js:911-915`。
    * 判据用 `viewBob.walking`（v2.54；单一权威在 `ViewBob.shouldBob`，按水中阻力折算）
    * + `physics.inWater`（水体判据同 `physics.js`），停下或上台阶时两路一起停
@@ -501,14 +501,14 @@ export class Player {
     const walking = this.viewBob.walking && !this.ridingMinecartId;
     if (!walking) {
       am.stopLoop('running_land');
-      am.stopLoop('running_water');
+      am.stopLoop('running_wet');
       return;
     }
     if (this.physics.inWater) {
       am.stopLoop('running_land');
-      am.playLoop('running_water', 0.25);
+      am.playLoop('running_wet', 0.25);
     } else {
-      am.stopLoop('running_water');
+      am.stopLoop('running_wet');
       am.playLoop('running_land', 0.2);
     }
   }

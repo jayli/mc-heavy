@@ -4113,6 +4113,114 @@ async function checkCarbineAudio() {
   }
 }
 
+// ---------------------------------------------------------------- [水中脚步声] 契约（v3.37）
+
+/**
+ * [水中脚步声] 契约 —— `running_wet.wav` 烘焙产物（用户素材按陆地步频重排成无缝循环）。
+ *
+ * 钉的失效路径（全部**静默**：声音不对但一切数值正常）：
+ *   ① **产物被换成别的声音 / 被手改** → 产物 sha256 与配方冻结值不符；
+ *   ② 产物缺失 / 扩展名没进覆盖表 → 按 .mp3 fetch 拿 404 被 catch 吞 ⇒ 水中走路彻底没声；
+ *   ③ **循环长度 ≠ 步长 × 步数** → 每圈接缝处节奏错拍（用户明确要的「节奏保持住」反面）；
+ *   ④ **步数为奇数** → 左右脚在圈与圈之间对调，重音永远落同一只脚；
+ *   ⑤ **平铺不无缝**（清单记录的 tileMaxError > 0）→ 接缝爆音或空档；
+ *   ⑥ 削顶 / 几乎全静音 / 响度偏离 running_land 太远 → 破音、听不见、或两路脚步声一大一小。
+ *
+ * ⚠️⚠️ **素材已按用户 2026-11-24 裁定从仓库删除**（「只把 running_wet 文件提交」）
+ * ⇒ 本产物**不可重烘**，`npm run footstepwater` 会硬失败并打印取回办法。
+ * 因此这里的口径与其余烘焙门禁**刻意不同**：那些产物可重烘，钉产物哈希期望值会变成
+ * 改动放大器；本产物不可重烘 ⇒ **必须钉死产物 sha256**，否则「换成任何别的声音」全绿。
+ * 素材 sha256 仍留在配方与清单里作**出处留档**，磁盘上没有它是正常状态、不报错。
+ *
+ * ⚠️ **不在门禁里重跑烘焙**（那要 ffmpeg 解码 53s mp3，`check` 是 5.4s 的日常门）：
+ * 只核对产物 sha256 +「清单 hash == 磁盘 hash」+「输入指纹 == 当前配方指纹」+ 从**产物本身**
+ * 读出的长度 / 峰值 / RMS。步频判据落在真实样本上，不是读清单里自己写的数（那是断言读输入）。
+ */
+async function checkFootstepWater() {
+  const fp = await import('./footstep-water-fingerprint.mjs');
+  const before = failures.length;
+  const fail = (m) => failures.push(`[水中脚步声] ${m}`);
+  if (!fs.existsSync(fp.FOOTSTEP_WATER_MANIFEST)) {
+    fail('assets/sounds/footstep-water.json 不存在 —— 跑 npm run footstepwater');
+    return;
+  }
+  const manifest = JSON.parse(fs.readFileSync(fp.FOOTSTEP_WATER_MANIFEST, 'utf8'));
+  const file = path.join(fp.SOUND_DIR, fp.footstepWaterFileName());
+  if (!fs.existsSync(file)) {
+    fail(`缺产物 ${fp.footstepWaterFileName()} —— 跑 npm run footstepwater`);
+    return;
+  }
+  // ① **产物自身的 sha256**（冻结期望值）。
+  // ⚠️ **素材已按用户裁定从仓库删除** ⇒ 本产物不可重烘，素材哈希校验无从进行。
+  // 与其余烘焙门禁「不钉产物哈希期望值」刻意不同：那些可重烘（钉期望值会成改动放大器），
+  // 本产物不可重烘 ⇒ 不钉死的形态是「产物被换成任何别的声音，而数值判据照样全绿」。
+  const fullSha = fp.sourceSha256(file);
+  if (fullSha !== fp.FOOTSTEP_WATER_PRODUCT_SHA256) {
+    fail(`产物内容与冻结值不符（被手改 / 被换了素材？）\n      期望 ${fp.FOOTSTEP_WATER_PRODUCT_SHA256}\n      实际 ${fullSha}`);
+  }
+  // 素材若**恰好在磁盘上**（有人取回来准备重烘），顺手核对它是不是同一份 ——
+  // 不在磁盘是**正常状态**，不报错（用户裁定不入库）。
+  const src = path.join(fp.ROOT, fp.FOOTSTEP_WATER_SOURCE);
+  if (fs.existsSync(src)) {
+    const sha = fp.sourceSha256(src);
+    if (sha !== fp.FOOTSTEP_WATER_SOURCE_SHA256) {
+      fail(`磁盘上的素材与配方留档的 sha256 不符（不是同一份素材，重烘会产出别的声音）\n      期望 ${fp.FOOTSTEP_WATER_SOURCE_SHA256}\n      实际 ${sha}`);
+    }
+  }
+  // ② 产物 hash + 输入指纹
+  const entry = manifest.files?.[fp.FOOTSTEP_WATER_ID];
+  const hash = fp.fileHash(file);
+  if (entry?.hash !== hash) {
+    fail(`产物被手改或过期（清单 ${entry?.hash} ≠ 磁盘 ${hash}）—— 跑 npm run footstepwater`);
+  }
+  const current = fp.footstepWaterInputFingerprint();
+  if (manifest.fingerprints?.input !== current) {
+    fail(`配方已变但产物未重烘（跑 npm run footstepwater）\n      期望 ${current}\n      实际 ${manifest.fingerprints?.input}`);
+  }
+  // ③ 从**产物本身**读长度与统计（不读清单里自己写的数）
+  const { x, rate, channels } = fp.readWavMono(file);
+  if (rate !== fp.FOOTSTEP_WATER_RATE) fail(`采样率 ${rate} ≠ ${fp.FOOTSTEP_WATER_RATE}`);
+  if (channels !== 1) fail(`产物必须单声道（当前 ${channels}）`);
+  const wantSamples = fp.footstepWaterLoopSamples();
+  if (x.length !== wantSamples) {
+    fail(`循环长度 ${x.length} 样本 ≠ 步长 ${fp.footstepWaterPeriodSamples()} × ${fp.FOOTSTEP_WATER_STEPS} 步 = ${wantSamples}`
+      + '（每圈接缝会错拍）');
+  }
+  // ④ 步数偶数（左右脚交替在接缝处才对得上）
+  if (fp.FOOTSTEP_WATER_STEPS % 2 !== 0) fail(`步数必须偶数，当前 ${fp.FOOTSTEP_WATER_STEPS}`);
+  if (fp.FOOTSTEP_WATER_GRAINS.length !== fp.FOOTSTEP_WATER_STEPS
+    || fp.FOOTSTEP_WATER_ALT.length !== fp.FOOTSTEP_WATER_STEPS) {
+    fail('颗粒时刻 / 音量系数个数必须都等于步数');
+  }
+  // ⑤ 无缝性：烘焙时实测的平铺误差必须是 0（配方或算法改坏后重烘会写进非 0）
+  if (!(manifest.metrics?.tileMaxError <= 1e-12)) {
+    fail(`清单记录的平铺误差 ${manifest.metrics?.tileMaxError} ≠ 0（循环接缝有爆音或空档）`);
+  }
+  // ⑥ 产物声学契约
+  const pk = fp.peak(x);
+  const r = fp.rms(x);
+  if (pk > 0.999) fail(`峰值削顶 ${pk.toFixed(4)}（听感是破音）`);
+  if (pk < 0.05) fail(`峰值仅 ${pk.toFixed(4)}（几乎听不见）`);
+  // 响度与 running_land 同档：偏离 ±15% 以上就是「两路脚步声一大一小」
+  const ratio = r / fp.FOOTSTEP_WATER_TARGET_RMS;
+  if (ratio < 0.85 || ratio > 1.15) {
+    fail(`RMS ${r.toFixed(5)} 偏离 running_land 基准 ${fp.FOOTSTEP_WATER_TARGET_RMS}（比值 ${ratio.toFixed(3)}）`);
+  }
+  // ⑦ 与运行时清单接线（漏了 = 永远不预载 / 按错扩展名 fetch ⇒ 静默无声）
+  if (!SOUND_IDS_FOR_GATE.includes(fp.FOOTSTEP_WATER_ID)) {
+    fail(`${fp.FOOTSTEP_WATER_ID} 未进 SOUND_IDS（不会被预载）`);
+  }
+  if (soundFileName(fp.FOOTSTEP_WATER_ID) !== fp.footstepWaterFileName()) {
+    fail(`soundFileName 给出 ${soundFileName(fp.FOOTSTEP_WATER_ID)}，磁盘是 ${fp.footstepWaterFileName()}`
+      + '（扩展名覆盖表漏了 ⇒ fetch 404 被 catch 吞成静默无声）');
+  }
+  if (failures.length === before) {
+    infos.push(`[水中脚步声] ${fp.footstepWaterFileName()} ${(x.length / rate).toFixed(3)}s / `
+      + `${fp.FOOTSTEP_WATER_STEPS} 步 × ${fp.footstepWaterPeriodSamples()} 样本与配方指纹一致；`
+      + `平铺无缝（误差 0）、RMS ${r.toFixed(5)} 与 running_land 同档`);
+  }
+}
+
 checkAudioAssets();         // v2.51：音效/音乐/启动图素材与清单一致性（⚠️ 漏了本行则门禁永不执行）
 
 checkReferenceIntegrity();
@@ -4137,6 +4245,7 @@ checkIgnisAsset();           // v2.55：焰魔烘焙产物契约与指纹（⚠�
 checkGuardianAsset();        // 末影守卫产物契约与指纹（⚠️ 漏了本行则门禁永不执行）
 checkTurretTopGeometry();    // 炮塔塔顶几何产物契约与指纹（⚠️ 漏了本行则门禁永不执行）
 await checkCarbineAudio();   // v3.30：KV-9 / 雨声烘焙产物契约与指纹（⚠️ 同上）
+await checkFootstepWater();  // v3.37：水中脚步声烘焙产物契约与指纹（⚠️ 同上）
 checkSkyboxAssets();         // v1.58：天空盒立方图完整性（⚠️ 漏了本行则门禁永不执行）
 await checkNightSkyFreshness(); // v1.60：夜空烘焙产物指纹（⚠️ 漏了本行则门禁永不执行）
 await checkGiantTrees();     // 巨树景观：方块/烘焙产物/贴图三方契约（⚠️ 漏了本行则门禁永不执行）

@@ -26,7 +26,7 @@ import { WeatherState, RAIN } from '../render/weather.js';
 import { WeaponModelLoader } from '../render/weapon-model-loader.js';
 import { AudioManager } from '../render/audio-manager.js';
 // v2.64：音量表 / 飞龙吼叫间隔 / 死亡爆散配色的唯一权威在各自 config（红线 1：不在装配层写字面量）。
-import { SOUND_VOLUMES, DRAGON_SHOUT, ignisAttackSound, BOSS_HIT_SOUND, PLAYER_GUNSHOT_HURT_SOUND } from '../render/audio-config.js';
+import { SOUND_VOLUMES, DRAGON_SHOUT, ignisAttackSound, BOSS_HIT_SOUND, SOLDIER_HIT_SOUND, SOLDIER_FIRE_SOUND, SOLDIER_DEATH_SOUND, PLAYER_GUNSHOT_HURT_SOUND } from '../render/audio-config.js';
 import { ZOMBIE_MODEL_DEFS } from '../render/zombie-model.js';
 import { ViewWeapon } from '../render/view-weapon.js';
 import { ViewArm } from '../render/view-arm.js';
@@ -124,6 +124,7 @@ import { Player } from '../player/player.js';
 import { Persistence } from '../save/persistence.js';
 import { CoordsHUD } from '../ui/coords-hud.js';
 import { HealthHUD } from '../ui/health-hud.js';
+import { EnemyCountsHUD } from '../ui/enemy-counts.js';
 import { DamageFlash } from '../ui/damage-flash.js';
 import { DamageNumbers } from '../ui/damage-numbers.js';
 import { Minimap } from '../ui/minimap.js';
@@ -1375,6 +1376,11 @@ export class Game {
     // ① 玩家血心 —— 10 颗心紧挨性能看板右侧。血量权威在 `player.health`（当前阶段恒满，
     //    掉血逻辑用户后续添加）；血量 → 心形的换算权威在 `player/health.js` 的 `heartsFor()`。
     this._healthHud = new HealthHUD(this._hudRoot, this.player);
+    // 敌人计数行（用户 2026-11-24）：血心**右侧**一行五项存活数
+    //（丧尸 / 士兵 / 飞龙 / 守卫 / 焰魔）。简写标签、0 也常显、不换行、空间不够压缩成省略号。
+    // ⚠️ 必须在 `this.soldiers` 等 service 装配之后构造，但它自己有 `?.` 兜底
+    // （装配顺序错时读 0，不抛错）。
+    this._enemyCounts = new EnemyCountsHUD(this._hudRoot, this);
     // 受伤红闪（用户 2026-11-21）：屏幕四周 40px 红色渐变，0.35s 淡出。
     // 挂 `#hud-root` 下 ⇒ Tier 4 像素用例隐藏 HUD 时一并被隐藏（与血心同口径）。
     // 触发点在 `_damagePlayer()` —— 伤害的唯一入口，未来任何新伤害源自动覆盖。
@@ -1701,6 +1707,9 @@ export class Game {
       this._hotbar.update(this.player.hotbarIndex);
       // 玩家血心：血量没变时内部直接 return（当前阶段恒满 → 每帧一次数值比较）
       this._healthHud.update(nowMs);
+      // 敌人计数行（用户 2026-11-24）：内部 250ms 节流，未到期只有一次时间比较。
+      // 放在血心之后（它们同层、同一行高度），与坐标/性能面板同节奏。
+      this._enemyCounts.update(nowMs);
       // 受伤红闪（v3.29）：未激活时内部一次比较就 return（同血心的口径）
       this._damageFlash.update(nowMs);
       // v3.16：Boss 召唤提示（内部 250ms 节流，未到期直接 return = 一次时间比较）。
@@ -3056,12 +3065,12 @@ export class Game {
    *      改成**持续下雨**（`StormRain`，上游 Rain 移植 —— 这一块用户裁定保留）；
    *   ② **按材质分类的湿表面**（`renderWorld.materials.wet.uWet`）——
    *      v3.31 从零重做：压暗 + 有界天空反光 + 弱太阳高光 + 积水斑，不采样任何 RT；
-   *   ③ 雨声换成上游四层雨床（`rain_storm` 循环）+ 随机远雷。
+   *   ③ 雨声改为雨天档常驻的更大雨声（**v3.36 起复用 `rain.mp3`**）+ 随机远雷。
    *
    * 关闭时**逐位回到改动前**：
    *   · `uWet = 0` ⇒ 体素材质 mix 取左端（零回归锚点）；
    *   · 雨丝/水花 visible=false（draw call 回基线）；
-   *   · 雨声切回既有 `rain`（由天气强度驱动）+ 还原开启前的天气快照。
+   *   · 雨声按还原后的天气回到天气音量（v3.36 起是同一个音源，只改音量）+ 还原开启前的天气快照。
    *
    * ⚠️ **生效值 = 玩家意图 AND 代码级隔离**（`?storm=0`）—— 与 ambientFx 同口径。
    * ⚠️ **v3.31：不再有后处理链**。体积雾/bloom/色差/暗角/冷调/颗粒整条删除
@@ -3177,27 +3186,33 @@ export class Game {
   }
 
   /**
-   * 雨声切换（雨天档开 ⇒ 上游四层雨床；关 ⇒ 既有 rain 由天气驱动）。
+   * 雨声切换（雨天档开 ⇒ 常驻雨声；关 ⇒ 回到天气驱动的雨声）。
    *
-   * ⚠️ **两条互斥**：同时播会叠成两层雨声（听感是「雨特别大」而不是「换了音源」）。
+   * ⚠️⚠️ **v3.36 起两边是同一个音源**（用户 2026-11-24 裁定雨天档改用 `rain.mp3`）
+   * ⇒ 这里**不得再写 `stopLoop('rain')` 再 `playLoop(...)`**：本方法每帧都被调用，
+   * 而 `stopLoop` 会销毁循环实例 —— 每帧「先停再起」的听感是雨声每秒断续 60 次。
+   * `playLoop` 同名已在播时**只改音量不重建**（`audio-manager.js` 的契约），这正是
+   * 两边切换只需改音量、不需要换实例的原因。
+   *
+   * ⚠️ 音量权威**只有一份**：开档时写 `STORM_AUDIO.rainVolume`，关档时写
+   * `RAIN.SOUND_VOLUME × intensity`。两处不得同时跑（帧循环里 `_syncRainSound()`
+   * 有 `!this._stormActive` 门控），否则同一个实例会被两边每帧互相覆写
+   *（实测形态：音量在两个值之间每帧抖动）。
    * ⚠️ 雨天档的雨声**不随天气强度淡入淡出**（它是持续雨，强度恒 1）；
    * 但**室内要小声**（用户：室内雨特效不生效 ⇒ 声音也该闷下来）。
-   * ⚠️⚠️ **关闭分支必须立即把旧雨声也对齐一次**（v3.30e）：
-   * 只 `stopLoop(rain_storm)` 而等下一帧的 `_syncRainSound()` 会留一帧空隙；
-   * 更重要的是——天气已由 `_restoreWeatherBeforeStorm()` 还原，这里直接按还原后的
-   * 强度对齐，语义上「关档」这一个动作就把两条音轨都安置到位。
+   * ⚠️ 关闭分支必须立即把雨声对齐一次（v3.30e）：不等下一帧的 `_syncRainSound()`，
+   * 「关档」这一个动作就把音量安置到位（晴天 ⇒ 还原后 intensity 0 ⇒ 立即停）。
    */
   _syncStormAudio() {
     const am = this.audioManager;
     if (!am) return;
     if (this._stormActive) {
-      am.stopLoop('rain');
-      // 室内衰减到 25%（屋顶隔雨的真实听感；判据与视觉同一个 isUnderRoof）
+      // 室内衰减真实听感（判据与视觉同一个 isUnderRoof）
       const indoor = this.stormRain?.debugState().underRoof === true;
-      am.playLoop(STORM_AUDIO.rainLoop, STORM_AUDIO.rainVolume * (indoor ? 0.25 : 1));
+      am.playLoop(STORM_AUDIO.rainLoop,
+        STORM_AUDIO.rainVolume * (indoor ? STORM_AUDIO.indoorGain : 1));
     } else {
-      am.stopLoop(STORM_AUDIO.rainLoop);
-      // 既有 rain 按**还原后**的天气强度对齐（晴天 ⇒ intensity 0 ⇒ 立即停）
+      // 雨声按**还原后**的天气强度对齐（晴天 ⇒ intensity 0 ⇒ 立即 stopLoop）
       this._syncRainSound();
     }
   }
@@ -3388,6 +3403,13 @@ export class Game {
         }
         this.soldiers.alertNearby(id, nowMs);
       }
+      // v3.36：士兵受击音（用户 2026-11-24：「soldier 被击中时的声音为
+      // carbine_impact_wet.wav」）。**这里原来一行都没有** ⇒ 士兵挨枪只有枪声、
+      // 没有受击反馈（扣血/红闪/伤害数字/报警全对，纯静默缺陷）。
+      // ⚠️ 致死一击不播：那一下由 `_onEntityDeath` 播 `SOLDIER_DEATH_SOUND`，叠加会变成两声。
+      if (result && !result.dead) {
+        this.audioManager?.play(SOLDIER_HIT_SOUND, SOUND_VOLUMES[SOLDIER_HIT_SOUND]);
+      }
     }
     else if (entity.type === DRAGON_TYPE) {
       if (!this.dragons) return null;
@@ -3525,9 +3547,13 @@ export class Game {
       const [x, y, z] = entity.state.position;
       this.blockHitFx.spawnDeathBurst([x, y + ZOMBIE.height / 2, z], color, nowMs);
     } else if (type === SOLDIER_TYPE) {
-      // 士兵：用户裁定本轮不做专属音效 ⇒ 复用既有 z_die（近似替代，不是原音）。
+      // 士兵阵亡：v3.36c 起用专属音 `carbine_kill.mp3`（用户 2026-11-24 第四轮裁定）。
+      // ⚠️ 在此之前复用丧尸的 `z_die`（v3.35 的「本轮不做士兵专属音效」）。
+      // ⚠️ `silent` 与丧尸分支同口径：TNT 一发炸死 N 只时只响一声（聚合在调用方）。
       // 爆散色取装甲灰（从 soldier-geometry 的常量派生，不写字面量）。
-      if (!silent) this.audioManager?.play('z_die', SOUND_VOLUMES.z_die);
+      if (!silent) {
+        this.audioManager?.play(SOLDIER_DEATH_SOUND, SOUND_VOLUMES[SOLDIER_DEATH_SOUND] ?? 0.11);
+      }
       const hex = SOLDIER_COLORS.ARMOR;
       const color = [((hex >> 16) & 255) / 255, ((hex >> 8) & 255) / 255, (hex & 255) / 255];
       const [x, y, z] = entity.state.position;
@@ -4043,12 +4069,20 @@ export class Game {
       });
       // 扣血：骰子过 ∧ 几何上真的打到玩家盒（墙更近则 shot.hitPlayer 为假）
       if (willHit && shot.hitPlayer) {
-        // 用户 2026-11-24：枪击命中玩家的声音改 carbine_impact_wet（素材已在库）。
+        // 用户 2026-11-24 第二轮：玩家被 soldier 击中的声音 = hited.mp3
+        //（第一轮曾是 carbine_impact_wet，本轮与士兵挨打音**对调**）。
         this._damagePlayer(SOLDIER_SHOT.playerDamage, nowMs, { sound: PLAYER_GUNSHOT_HURT_SOUND });
       }
       // 视觉：曳光 + 枪口火光 + 火花（全部复用 KV-9 已过像素实测的池）
       this.carbineFx?.spawnTracer(req.muzzle, shot.end, SOLDIER_TRACER, nowMs);
       this.soldierMuzzleFx?.fire(req.muzzle, nowMs, this.camera.quaternion);
+      // v3.36b：士兵**开火**的声音（用户 2026-11-24：「soldier 射击的时候，用音效
+      // carbine_bullet.mp3」）。
+      // ⚠️ **每发都播，不看 `willHit` / `shot.hitPlayer`**：开火声是对「开枪」这个动作的
+      // 反馈，受击声（`hited`）才是对「被打中」的。只给命中分支接音的形态是
+      // 「连射时听起来像命中才响」，而数「响了几个音」的判据拓不到。
+      // ⚠️ 位置必须在**判定分支之外**（与曳光/火光同级）—— 这三样都是「这一发发生了」的视觉/听觉。
+      this.audioManager?.play(SOLDIER_FIRE_SOUND, SOUND_VOLUMES[SOLDIER_FIRE_SOUND] ?? 0.5);
       const normal = shot.normal || [0, 1, 0];
       this.carbineFx?.spawnSparksAt(
         carbineSparkSeeds(shot.end, normal, carbineSparkParams(shot.hitPlayer ? 'entity' : 'wall'), Math.random),

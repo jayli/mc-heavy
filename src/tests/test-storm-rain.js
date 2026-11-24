@@ -14,6 +14,8 @@ import {
 } from '../render/storm-rain-config.js';
 import { WET_STRENGTH_MAX } from '../render/wet-surface-config.js';
 import { CARBINE_AUDIO_IDS } from '../render/carbine-audio-recipes.js';
+import { RAIN } from '../render/weather.js';
+import { SOUND_IDS, SOUND_EXT_OVERRIDES, soundFileName } from '../render/audio-config.js';
 import { RAIN_CEILING_Y } from '../render/rain-shelter.js';
 import { WATER_SURFACE_Y } from '../render/water-surface.js';
 import { WATER_LEVEL_OFFSET } from '../render/ocean.js';
@@ -128,11 +130,25 @@ test('storm splash: 池账 —— 容量 ≥ 速率 × 寿命（否则 FIFO 绕�
 
 // ---------- 雨声 id 接线 ----------
 
-test('storm audio: 雨声与雷声 id 都在烘焙产物清单里（拼错 = 静默无声）', () => {
-  assertTrue(CARBINE_AUDIO_IDS.includes(STORM_AUDIO.rainLoop));
+test('storm audio: 雨声复用既有 rain.mp3（v3.36 用户裁定），雷声在烘焙清单里', () => {
+  // 用户 2026-11-24：「你把雨天光影打开的时候的下雨的音效从 rain_storm.wav 改为
+  // rain.mp3，即复用 rain.mp3」。
+  // ⚠️ 两条断言分开：雨声属于 `SOUND_IDS` 的既有 mp3，雷声属于烘焙产物
+  // `CARBINE_AUDIO_IDS`。把雨声也要求进烘焙清单的形态是「换回 wav 才全绿」——
+  // 正好与用户裁定相反。
+  assertEqual(STORM_AUDIO.rainLoop, 'rain', '雨天档雨声 = 既有 rain.mp3（零新增素材）');
+  assertEqual(soundFileName(STORM_AUDIO.rainLoop), 'rain.mp3');
+  assertTrue(SOUND_IDS.includes(STORM_AUDIO.rainLoop), 'rain 必须在预载清单里（否则静默无声）');
+  assertTrue(SOUND_EXT_OVERRIDES[STORM_AUDIO.rainLoop] === undefined,
+    'rain 是 mp3，不得登记进扩展名覆盖表（登成别的 = 404 被 preload 吞掉）');
   assertTrue(CARBINE_AUDIO_IDS.includes(STORM_AUDIO.thunder));
   assertTrue(STORM_AUDIO.rainLoop !== STORM_AUDIO.thunder);
+  // ⚠️ 响度标定：ffmpeg ebur128 实测 rain_storm −31.6 LUFS / rain.mp3 −38.5 LUFS
+  //（同增益下 mp3 小 6.9 LU）⇒ 换音源必须同步抬音量，否则雨天档听感变小声。
   assertTrue(STORM_AUDIO.rainVolume > 0 && STORM_AUDIO.rainVolume <= 1);
+  assertTrue(STORM_AUDIO.rainVolume > RAIN.SOUND_VOLUME,
+    '雨天档是「持续大雨」，必须比天气雨声的 0.2 更满');
+  assertTrue(STORM_AUDIO.indoorGain > 0 && STORM_AUDIO.indoorGain < 1, '室内必须衰减但不静音');
   const [lo, hi] = STORM_AUDIO.thunderInterval;
   assertTrue(lo > 0 && hi > lo, '雷声间隔下限必须 >0（否则每帧都响）');
 });

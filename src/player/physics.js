@@ -24,7 +24,7 @@ const EPSILON = 0.001;
 /**
  * 水中水平阻力系数：`step()` 里水平位移 = vel × dt × drag。
  * 导出供 `player.js` 传给 `viewBob.update`（脚步声判据要按它折算期望位移，
- * 否则水中 actual/expected 恒 0.6 → 误判「被阻挡」→ `running_water` 永不播，v2.54 根因）。
+ * 否则水中 actual/expected 恒 0.6 → 误判「被阻挡」→ 水中脚步声永不播，v2.54 根因）。
  * 红线 1：`step()` 内不得再写字面量 0.6。
  */
 export const WATER_DRAG = 0.6;

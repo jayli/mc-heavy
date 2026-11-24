@@ -159,7 +159,8 @@ test('view-bob: 实际位移不足意图速度 95%（撞墙/半速）不累积�
 // 背景：脚步声（`_updateFootsteps`）与镜头晃动（相机 offset）在 v2.51 共用 `active`。
 // 但本仓物理有**水中阻力**（`physics.js` 的 `WATER_DRAG = 0.6`，mc-lite 没有）：
 // 水中实际位移 = 意图速度 × 0.6 × dt，actual/expected 恒为 0.6 < fullSpeedRatio 0.95
-// → `active` 恒 false → `running_water` 永不播（用户报告：「进入水里行走没有声音」）。
+// → `active` 恒 false → 水中脚步声永不播（用户报告：「进入水里行走没有声音」）。
+// （当时的 id 是 `running_water`，v3.37 已改名 `running_wet`）
 // 修法（用户裁定 2026-11-05：**只让声音响、镜头保持不晃**）：新增 `walking` 标志专供脚步声，
 // 全速判据按 drag 折算期望位移；`active`（驱动镜头）保持原判据不动。
 
@@ -180,7 +181,7 @@ test('view-bob: walking 水中（drag=0.6）为 true，而 active 保持 false�
     bob.update(dt, { dx: inputSpeed * 0.6 * dt, dz: 0, inputSpeed, drag: 0.6 });
   }
   assertFalse(bob.active, '镜头判据不变：水中 actual/expected=0.6 < 0.95 → 不晃');
-  assertTrue(bob.walking, '脚步声判据按 drag 折算后须为 true（否则 running_water 永不播）');
+  assertTrue(bob.walking, '脚步声判据按 drag 折算后须为 true（否则水中脚步声永不播）');
 });
 
 test('view-bob: walking 水中受阻（实际位移远低于 drag 折算期望）为 false', () => {

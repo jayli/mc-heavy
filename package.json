@@ -44,7 +44,8 @@
     "turretop": "node tools/bake-turret-top.mjs",
     "junglefortress": "node tools/bake-jungle-fortress.mjs",
     "stonebricks": "node tools/bake-stone-bricks.mjs",
-    "carbineaudio": "node tools/bake-carbine-audio.mjs"
+    "carbineaudio": "node tools/bake-carbine-audio.mjs",
+    "footstepwater": "node tools/bake-footstep-water.mjs"
   },
   "author": "jayli",
   "repository": "git@github.com:jayli/mc-heavy.git",

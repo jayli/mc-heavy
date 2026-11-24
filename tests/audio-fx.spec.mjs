@@ -152,7 +152,7 @@ test('跑动：全速移动时播陆上脚步声，停下即停', async ({ page 
       await new Promise((r) => requestAnimationFrame(r));
       if (g.player.viewBob.active) sawActive = true;
       if (g.audioManager.debugLoops().running_land?.playing
-        || g.audioManager.debugLoops().running_water?.playing) sawLoop = true;
+        || g.audioManager.debugLoops().running_wet?.playing) sawLoop = true;
     }
     g.player.keys.delete('KeyW');
     // 停下后等几帧让 `_updateFootsteps` 收掉循环
@@ -161,7 +161,7 @@ test('跑动：全速移动时播陆上脚步声，停下即停', async ({ page 
       sawActive, sawLoop, inWater: g.player.physics.inWater,
       afterStop: {
         land: g.audioManager.debugLoops().running_land ?? null,
-        water: g.audioManager.debugLoops().running_water ?? null,
+        water: g.audioManager.debugLoops().running_wet ?? null,
       },
     };
   });
@@ -171,16 +171,16 @@ test('跑动：全速移动时播陆上脚步声，停下即停', async ({ page 
   expect(walked.afterStop.water, '停下后水上脚步声也必须停').toBeNull();
 });
 
-test('水中行走：播 running_water（不是 running_land），停下即停；镜头仍不晃', async ({ page }) => {
+test('水中行走：播 running_wet（不是 running_land），停下即停；镜头仍不晃', async ({ page }) => {
   test.setTimeout(180_000);
   await boot(page, '&weather=clear');
 
   // 缺陷形态（v2.51~v2.53）：本仓物理有**水中阻力**（`WATER_DRAG = 0.6`，mc-lite 没有），
   // 而脚步声判据读的是镜头判据 `viewBob.active`（要求 actual > expected×0.95，expected 未折算阻力）
-  // → 水中 actual/expected 恒 **0.600** → `active` 恒 false → `running_water` **永不播**。
+  // → 水中 actual/expected 恒 **0.600** → `active` 恒 false → `running_wet` **永不播**。
   // 修法（用户裁定 2026-11-05：**只让声音响、镜头保持不晃**）：新增 `viewBob.walking`
   // 按阻力折算期望位移，脚步声改读它；`active` 判据一字未改。
-  // ⚠️ 故本用例**必须同时钉住两侧**：声音要响（walking/running_water）+ 镜头不晃（active=false）。
+  // ⚠️ 故本用例**必须同时钉住两侧**：声音要响（walking/running_wet）+ 镜头不晃（active=false）。
   // 只钉「有声音」的话，把 `active` 也改成折算版（镜头跟着晃）仍会全绿。
   const walked = await page.evaluate(async () => {
     const g = window.__MC_GAME__;
@@ -224,7 +224,7 @@ test('水中行走：播 running_water（不是 running_land），停下即停�
         if (loops.running_land?.playing) landLoopInWater++;
         drag = pl.physics.horizontalDrag;
       }
-      if (loops.running_water?.playing) sawWaterLoop = true;
+      if (loops.running_wet?.playing) sawWaterLoop = true;
     }
     pl.keys.delete('KeyW');
     for (let i = 0; i < 15; i++) await new Promise((r) => requestAnimationFrame(r));
@@ -232,7 +232,7 @@ test('水中行走：播 running_water（不是 running_land），停下即停�
     return {
       frames, waterFrames, walkingInWater, activeInWater, landLoopInWater, drag,
       sawWaterLoop,
-      afterStop: { water: after.running_water ?? null, land: after.running_land ?? null },
+      afterStop: { water: after.running_wet ?? null, land: after.running_land ?? null },
     };
   });
 
@@ -242,7 +242,7 @@ test('水中行走：播 running_water（不是 running_land），停下即停�
   expect(walked.drag, '前置：水中阻力系数 = 0.6（缺陷的成因）').toBeCloseTo(0.6, 10);
   // 核心：水中的每一帧脚步声判据都成立（旧版读 active 恒 false → 此值恒 0）
   expect(walked.walkingInWater, '水中行走的每一帧 walking 判据都必须成立').toBe(walked.waterFrames);
-  expect(walked.sawWaterLoop, '水中行走必须播 running_water').toBe(true);
+  expect(walked.sawWaterLoop, '水中行走必须播 running_wet').toBe(true);
   expect(walked.landLoopInWater, '两路互斥：在水中的帧不得同时播 running_land').toBe(0);
   // 用户裁定：镜头保持不晃（active 判据不变）
   expect(walked.activeInWater, '镜头判据不变：水中的帧 actual/expected=0.6 < 0.95 → 不晃').toBe(0);

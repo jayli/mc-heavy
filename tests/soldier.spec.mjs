@@ -183,7 +183,7 @@ test('士兵子弹打玩家：命中后血量恰好 −2（用户裁定）', asy
   expect(r.drop % SOLDIER_SHOT.playerDamage, `掉血须是 ${SOLDIER_SHOT.playerDamage} 的整数倍`).toBe(0);
 });
 
-test('士兵子弹命中玩家播 carbine_impact_wet（用户 2026-11-24 裁定）', async ({ page }) => {
+test('士兵子弹命中玩家播 hited（用户 2026-11-24 第二轮裁定）', async ({ page }) => {
   test.setTimeout(200_000);
   await page.goto(URL);
   await waitWorldReady(page);
@@ -200,6 +200,14 @@ test('士兵子弹命中玩家播 carbine_impact_wet（用户 2026-11-24 裁定�
     e.state = { ...e.state, mode: 'combat', awareness: 1, crouching: false, crouch: 0, peekT: 99,
       losVisible: true, losTimer: 99, nextBurst: 0, reaction: 0 };
     const cnt = (k) => g.audioDebugState().playRequests[k] ?? 0;
+    /**
+     * v3.36：用户第二轮裁定把两条音**对调**：
+     *   玩家被 soldier 击中 ⇒ `hited.mp3`（本用例）
+     *   soldier 被击中     ⇒ `carbine_impact_wet.wav`（另一条用例）
+     * ⚠️ 成对断言的形态不变（只改这一条路径 + 不叠音）：
+     * 反过来写（仍播 carbine_impact_wet）在「响了几个音」的判据下照样全绿。
+     */
+    const hit0 = cnt('hited');
     const wet0 = cnt('carbine_impact_wet');
     const hurt0 = cnt('ignis_hurt');
     const hp0 = g.player.health;
@@ -208,15 +216,77 @@ test('士兵子弹命中玩家播 carbine_impact_wet（用户 2026-11-24 裁定�
       if (g.player.health < hp0) break;
     }
     const out = { hp0, hp1: g.player.health,
+      hitDelta: cnt('hited') - hit0,
       wetDelta: cnt('carbine_impact_wet') - wet0, hurtDelta: cnt('ignis_hurt') - hurt0 };
     Math.random = origRandom;
     return out;
   }, [f.bx, f.by, f.bz]);
   expect(r.error).toBeUndefined();
   expect(r.hp1, '前置：玩家真的被打中').toBeLessThan(r.hp0);
-  expect(r.wetDelta, '枪击命中玩家必须播 carbine_impact_wet').toBeGreaterThan(0);
-  // ⚠️ 成对断言：只改枪击这一条路径，Boss 近战的 ignis_hurt 不受影响
+  expect(r.hitDelta, '枪击命中玩家必须播 hited.mp3').toBeGreaterThan(0);
+  // ⚠️ 成对断言 ①：carbine_impact_wet 现在是**士兵挨打**的音，玩家这条路径不得再播
+  expect(r.wetDelta, '玩家被击中路径不得再播 carbine_impact_wet（那是士兵的受击音）').toBe(0);
+  // ⚠️ 成对断言 ②：只改枪击这一条路径，Boss 近战的 ignis_hurt 不受影响
   expect(r.hurtDelta, '枪击路径不得再播 ignis_hurt（否则叠两声）').toBe(0);
+});
+
+test('士兵开火播 carbine_bullet.mp3（用户 2026-11-24 第三轮裁定）', async ({ page }) => {
+  test.setTimeout(200_000);
+  await page.goto(URL);
+  await waitWorldReady(page);
+  await gotoOpenField(page);
+  await waitPlayerLanded(page);
+  const f = await makeField(page);
+  const r = await page.evaluate(async ([bx, by, bz]) => {
+    const g = window.__MC_GAME__;
+    const id = g.soldiers.spawn([bx + 10.5, by, bz + 0.5], { source: 'spec' });
+    if (!id) return { error: 'spawn 失败' };
+    const origRandom = Math.random;
+    /**
+     * ⚠️ **必须分两段测，且第二段要把命中骰子钉成必不中**：
+     * 「开火声」是**每发都该响**的（打没打中与枪响无关），而 `_damagePlayer` 的受击音
+     * 只在真命中时响。只测命中那一段的话，「只给命中分支接音」的缺陷形态照样全绿
+     *（连射时听起来像「命中才响」）。
+     */
+    const e = g.entities.get(id);
+    const toCombat = () => {
+      e.state = { ...e.state, mode: 'combat', awareness: 1, crouching: false, crouch: 0, peekT: 99,
+        losVisible: true, losTimer: 99, nextBurst: 0, reaction: 0 };
+    };
+    const cnt = (k) => g.audioDebugState().playRequests[k] ?? 0;
+    // ---- 第一段：命中（骰子必过）----
+    Math.random = () => 0;
+    toCombat();
+    const hit0 = cnt('carbine_bullet');
+    const hp0 = g.player.health;
+    for (let i = 0; i < 100; i++) {
+      await new Promise((res) => setTimeout(res, 50));
+      if (g.player.health < hp0) break;
+    }
+    const onHit = { shots: cnt('carbine_bullet') - hit0, hp0, hp1: g.player.health };
+    /**
+     * ---- 第二段：**必不中**（骰子恒 1 ⇒ `Math.random() < chance` 恒假）----
+     * 此时玩家不掉血，但士兵仍在开枪 ⇒ 开火声**仍必须响**。
+     */
+    Math.random = () => 0.999999;
+    toCombat();
+    const miss0 = cnt('carbine_bullet');
+    const hp1b = g.player.health;
+    for (let i = 0; i < 100; i++) {
+      await new Promise((res) => setTimeout(res, 50));
+      if (cnt('carbine_bullet') - miss0 > 0) break;
+    }
+    const onMiss = { shots: cnt('carbine_bullet') - miss0, hp0: hp1b, hp1: g.player.health };
+    Math.random = origRandom;
+    return { onHit, onMiss };
+  }, [f.bx, f.by, f.bz]);
+  expect(r.error).toBeUndefined();
+  // ---- 第一段：命中 ----
+  expect(r.onHit.hp1, '前置：玩家真的被打中').toBeLessThan(r.onHit.hp0);
+  expect(r.onHit.shots, '开火必须播 carbine_bullet.mp3').toBeGreaterThan(0);
+  // ---- 第二段：未命中 ----
+  expect(r.onMiss.hp1, '前置：骰子钉成必不中 ⇒ 玩家不掉血').toBe(r.onMiss.hp0);
+  expect(r.onMiss.shots, '未命中时开火声仍须响（枪响与是否打中无关）').toBeGreaterThan(0);
 });
 
 test('血为 0 时被击中仍有音效（用户 2026-11-24：不管还有没有血）', async ({ page }) => {
@@ -243,10 +313,10 @@ test('血为 0 时被击中仍有音效（用户 2026-11-24：不管还有没有
     };
     // ① 满血
     g.player.health = 40;
-    const atFull = hit('carbine_impact_wet');
+    const atFull = hit('hited');
     // ② 血空（用户要的核心场景）
     g.player.health = 0;
-    const atZeroGun = hit('carbine_impact_wet');
+    const atZeroGun = hit('hited');
     // ③ 血空 + Boss 近战路径（缺省音）—— 用户说「只要被击中」，不限枪击
     const h0 = cnt('ignis_hurt');
     g._damagePlayer(14, performance.now());
@@ -254,9 +324,9 @@ test('血为 0 时被击中仍有音效（用户 2026-11-24：不管还有没有
     // ④ 零伤害不该响（不是「被击中」）—— ⚠️ 必须显式传 0，
     // 上面的 hit() 恒传 2，用它测「零伤害」是测不到的（首轮实测踩到）。
     g.player.health = 0;
-    const z0 = cnt('carbine_impact_wet');
-    g._damagePlayer(0, performance.now(), { sound: 'carbine_impact_wet' });
-    const zeroAmount = cnt('carbine_impact_wet') - z0;
+    const z0 = cnt('hited');
+    g._damagePlayer(0, performance.now(), { sound: 'hited' });
+    const zeroAmount = cnt('hited') - z0;
     return { atFull, atZeroGun, atZeroMelee, zeroAmount, hp: g.player.health };
   });
   expect(r.atFull, '前置：满血时须响').toBe(1);

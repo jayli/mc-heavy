@@ -1,0 +1,89 @@
+{
+  "implVersion": 1,
+  "rate": 44100,
+  "format": "pcm-s16le-wav",
+  "id": "running_wet",
+  "source": {
+    "file": "assets/sounds/src/wet-mud-source.mp3",
+    "sha256": "0c2c8c65c1065483a8ff7e3c0341fb5fe6b6a0f8afbc29f85c41cfa938309d13",
+    "origin": "用户提供：freesound_community-walking-through-thick-wet-mud-63770.mp3"
+  },
+  "cadence": {
+    "reference": "assets/sounds/running_land.mp3",
+    "gaitCycleSeconds": 0.55981,
+    "periodSamples": 12344,
+    "steps": 8
+  },
+  "fingerprints": {
+    "input": "impl:1;src:0c2c8c65c1065483a8ff7e3c0341fb5fe6b6a0f8afbc29f85c41cfa938309d13;rate:44100;gait:0.55981;steps:8;grain:0.34;pre:0.006;fade:0.045;grains:31.336,20.823,35.227,22.514,39.647,43.568,49.934,15.807;alt:1,0.87,0.96,0.85,1,0.88,0.95,0.86;norm:0.65;eq:hp@180/0.7071/0>hp@180/0.7071/0>highshelf@9000/0.7071/-4>peak@2200/0.8/1.5>peak@550/0.7/3;rms:0.0178;warmup:1;loops:6"
+  },
+  "files": {
+    "running_wet": {
+      "file": "running_wet.wav",
+      "hash": "9e9d472fc3ebcf4e",
+      "seconds": 2.239274,
+      "channels": 1
+    }
+  },
+  "metrics": {
+    "periodSamples": 12344,
+    "loopSamples": 98752,
+    "seconds": 2.239274,
+    "peak": 0.375684,
+    "rms": 0.0178,
+    "loudnessGain": 1.7761,
+    "tileMaxError": 0,
+    "bandShares": [
+      0,
+      0.0036,
+      0.0349,
+      0.1029,
+      0.251,
+      0.2339,
+      0.266,
+      0.1076
+    ],
+    "grains": [
+      {
+        "t": 31.336,
+        "rms": 0.008888,
+        "gain": 1.067739
+      },
+      {
+        "t": 20.823,
+        "rms": 0.005439,
+        "gain": 1.46937
+      },
+      {
+        "t": 35.227,
+        "rms": 0.012819,
+        "gain": 0.841573
+      },
+      {
+        "t": 22.514,
+        "rms": 0.007583,
+        "gain": 1.183893
+      },
+      {
+        "t": 39.647,
+        "rms": 0.01072,
+        "gain": 0.945294
+      },
+      {
+        "t": 43.568,
+        "rms": 0.011,
+        "gain": 0.929608
+      },
+      {
+        "t": 49.934,
+        "rms": 0.014596,
+        "gain": 0.773462
+      },
+      {
+        "t": 15.807,
+        "rms": 0.007606,
+        "gain": 1.181561
+      }
+    ]
+  }
+}

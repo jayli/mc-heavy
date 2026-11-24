@@ -13,6 +13,11 @@
 // 产物 id 与扩展名都从它派生，不在本文件手写。
 import { CARBINE_AUDIO_IDS } from './carbine-audio-recipes.js';
 import { CARBINE_AUDIO_EXT } from './carbine-audio-ext.js';
+// v3.37：水中脚步声改为烘焙产物（用户素材按陆地步频重排成无缝循环）。
+// ⚠️ **id 由 `running_water` 改名 `running_wet`**（用户 2026-11-24 裁定文件名 running_wet.wav）。
+// 文件名走 `soundFileName(id)` 派生 ⇒ 改 id 即可，不另立一张「id→文件名」映射表（红线 1）。
+// 消费方只有 `player._updateFootsteps` 与 `tests/audio-fx.spec.mjs`，两处已同步改名。
+import { FOOTSTEP_WATER_EXT } from './footstep-water-ext.js';
 
 /**
  * 预加载的效果音 id（与 `weapon-catalog` 的 sound 字段一致）。
@@ -23,8 +28,13 @@ import { CARBINE_AUDIO_EXT } from './carbine-audio-ext.js';
  *   `AudioManager.initializeAudio` 的预载清单）：
  *   `delete` — 挖掉方块的音效（mc-lite 侧文件名为 `delete_get.mp3`，本仓入库去掉 `_get` 后缀）；
  *   `rain` — 雨声（**循环**，仅在 `weather.intensity > 0` 时播）；
- *   `running_land` / `running_water` — 跑动脚步声（**循环**，陆地/水中两套，
+ *   `running_land` / `running_wet` — 跑动脚步声（**循环**，陆地/水中两套，
  *      mc-lite `PlayerInteraction.js:891-915` 的 `playSound(..., 0.2|0.25, true)`）；
+ *      ⚠️ **v3.37 起水中那路是本仓烘焙产物 `running_wet.wav`**（不再是 mc-lite 带来的
+ *      `running_water.mp3`）：用户提供的踩湿泥素材按 `running_land` 实测步频（0.27991s/步）
+ *      重排成 8 步 2.239s 的无缝循环，见 `footstep-water-recipe.js`。
+ *      id 同时由 `running_water` **改名 `running_wet`**（用户裁定文件名）——
+ *      文件名走 `soundFileName(id)` 派生，故不另立映射表；扩展名进 `SOUND_EXT_OVERRIDES`；
  *   `z_die` — 丧尸被消灭（mc-lite `TurretManager.js:286` 的 `playSound('z_die', 0.3)`）。
  *      ⚠️ v2.64 起**只用于丧尸**：飞龙/焰魔的死亡音改走 `ignis_die`（用户裁定，见下）。
  *
@@ -62,7 +72,7 @@ import { CARBINE_AUDIO_EXT } from './carbine-audio-ext.js';
  * 不是「能否循环」（BGM 是单槽 + 开关意图 + 跨手势对齐，循环效果音是事件驱动的短生命）。
  */
 export const SOUND_IDS = Object.freeze(['gun_load', 'gun_fire', 'mag7_fire', 'minigun_fire',
-  'put', 'explosion', 'turret_gun_fire', 'delete', 'rain', 'running_land', 'running_water',
+  'put', 'explosion', 'turret_gun_fire', 'delete', 'rain', 'running_land', 'running_wet',
   'z_die',
   // v2.64：Boss 战与击杀音效（.ogg，见 SOUND_EXT_OVERRIDES）
   'ignis_die', 'ignis_attack_swing', 'ignis_burn', 'ignis_hurt', 'ignis_jump',
@@ -98,6 +108,18 @@ export const SOUND_IDS = Object.freeze(['gun_load', 'gun_fire', 'mag7_fire', 'mi
   // 文件早已在 assets/sounds/ 里（未入清单 ⇒ 从来没被预载过），本次只是接进来，
   // **零新增美术资源**。唯一权威见下面的 `BOSS_HIT_SOUND`。
   'gun_hit',
+  // v3.36：**玩家被士兵子弹命中**的受击音（用户 2026-11-24 第二轮裁定）。
+  // 文件 `assets/sounds/hited.mp3`（0.456s）早已躺在库里但**全仓零引用** ⇒ 从未进过本清单，
+  // `preload()` 也就从未加载它。不加这一行 = `play()` 只涨计数、一点声都不出（静默无声）。
+  // 唯一权威见下面的 `PLAYER_GUNSHOT_HURT_SOUND`。
+  'hited',
+  // v3.36b：**士兵开火**的声音（用户 2026-11-24：「soldier 射击的时候，用音效
+  // carbine_bullet.mp3」）。文件已在库里（0.6s / 24kHz 立体声），**零新增音频**。
+  // ⚠️ 它本来就是 `.mp3`，不进 overrides。唯一权威见下面的 `SOLDIER_FIRE_SOUND`。
+  'carbine_bullet',
+  // v3.36c：**士兵阵亡**听用户指定的 `carbine_kill.mp3`。
+  // ⚠️ 该 id 已由下面 `...CARBINE_AUDIO_IDS`（烘焙产物）带进清单 ⇒ **不重复追加**
+  //（重复项没有任何断言能抓到）。选文件靠 `SOUND_EXT_OVERRIDES` 末尾把它覆盖成 `'mp3'`。
   // v3.30 KV-9 卡宾枪与雨天音效（烘焙产物，配方来自 bj-shooting-game 的 Web Audio 合成器）。
   // ⚠️ **清单派生自 `CARBINE_AUDIO_IDS`**（红线 1）—— 手写 12 个 id 会在新增配方时漏改。
   ...CARBINE_AUDIO_IDS]);
@@ -142,6 +164,17 @@ export const SOUND_EXT_OVERRIDES = Object.freeze({
   // ⚠️ 漏加本表 = 静默无声（同上面每一条的教训）。清单派生自
   // `carbine-audio-recipes.js` 的 CARBINE_AUDIO_IDS，不在这里手写 12 行（红线 1）。
   ...Object.fromEntries(CARBINE_AUDIO_IDS.map((id) => [id, CARBINE_AUDIO_EXT])),
+  // v3.36c：**士兵阵亡音听用户指定的 `carbine_kill.mp3`**（用户 2026-11-24：「soldier
+  // 被消灭时的音效改为 carbine_kill.mp3」+「carbine_kill.wav 被我删除的，不要了，你直接
+  // 替换为我指定的文件即可」）。
+  // ⚠️⚠️ **必须盖在上面那行派生之后**：派生把 `carbine_kill` 登记成 `wav`（烘焙产物），
+  // 而用户要的是同名的 `.mp3`（0.792s，不是烘焙那段的 0.36s）。不覆盖的形态是
+  // 「播的是烘焙合成的旧音，而不是用户指定的文件」，而响了几声的断言全绿。
+  carbine_kill: 'mp3',
+  // v3.37：水中脚步声换成烘焙产物（wav）。⚠️ **漏这一行 = 水中走路彻底没声**：
+  // 磁盘上只有 running_wet.wav，按 .mp3 去 fetch 拿 404，被 preload 的 catch
+  // 吞成一句 console.warn ⇒ 页面照常能玩、`playLoop` 照常返回意图、只是永远不出声。
+  running_wet: FOOTSTEP_WATER_EXT,
 });
 
 /**
@@ -193,9 +226,32 @@ export const SOUND_VOLUMES = Object.freeze({
   // v3.15 Boss 受击音：与守卫原受击音同档 0.5（嫌响/嫌轻只改这一个数，不动触发点）。
   // ⚠️ 素材实测 0.750s，比原 `guardian_hurt`（2.579s）短得多 ⇒ 机枪连射时不会叠成长鸣。
   gun_hit: 0.5,
-  // 士兵枪击命中玩家的受击音（用户 2026-11-24）：与 ignis_hurt 同档 0.5。
-  // ⚠️ 素材本体是 KV-9 的「命中湿地面」音，已在库（零新增）。
+  // 士兵枪击命中玩家的受击音（用户 2026-11-24 第一轮）。
+  // ⚠️ v3.36 起这个 id 改为**士兵自己挨打**的音（用户第二轮：「soldier 被击中时的声音为
+  // carbine_impact_wet.wav」）—— 玩家那条路径已换成 `hited`，两条**方向相反**，别写反。
   carbine_impact_wet: 0.5,
+  // v3.36：玩家被士兵子弹命中（`hited.mp3`，0.456s）。取 0.5 与 `ignis_hurt` 同档。
+  hited: 0.5,
+  /**
+   * v3.36b：士兵开火（`carbine_bullet.mp3`）。
+   *
+   * ⚠️ **取 0.5 是按实测响度对齐，不是拄脑袋**（ffmpeg ebur128）：
+   *   `carbine_bullet.mp3` **−28.0 LUFS** / 玩家那把 `carbine_fire.wav` **−27.9 LUFS**
+   *   ⇒ 两者几乎同响，直接用玩家那把的同档音量（`weapon-catalog` 的 0.5）即可。
+   * ⚠️ 士兵是**班组连射**（至多 2 只同时点射、每 0.105s 一发）⇒ 不要因为「比玩家枪声小」
+   *   的直觉把它压低：压低的形态是「远处士兵打你但听不出方向」。
+   */
+  carbine_bullet: 0.5,
+  /**
+   * v3.36c：士兵阵亡（`carbine_kill` 这个 id，听的用户指定的 `carbine_kill.mp3`）。
+   *
+   * ⚠️ **取值按实测响度算**（ffmpeg ebur128）：
+   *   `carbine_kill.mp3` **−16.6 LUFS** vs 丧尸死亡音 `z_die.mp3` **−25.4 LUFS**
+   *   ⇒ 比 `z_die`（音量 0.3）响 **8.8 LU**。直接沿用 0.3 会是「一声爆响」。
+   *   按响度差衰减：0.3 × 10^(−8.8/20) ≈ **0.109** → 取 0.11。
+   * ⚠️ 调音量只改这一个数，不动触发点（红线 1）。
+   */
+  carbine_kill: 0.11,
 });
 
 /**
@@ -218,18 +274,63 @@ export const SOUND_VOLUMES = Object.freeze({
 export const BOSS_HIT_SOUND = 'gun_hit';
 
 /**
- * 玩家被**士兵子弹（carbine 枪击）**命中时的受击音（用户 2026-11-24）。
+ * 玩家被**士兵子弹**命中时的受击音（用户 2026-11-24 第二轮裁定）。
  *
- * 用户原话：「玩家被 carbin 枪击中的时候的声音改成 carbine_impact_wet.wav」。
+ * 用户原话：「玩家被 soldier 击中的声音改为 hited.mp3，soldier 被击中时的声音为
+ * carbine_impact_wet.wav」。
+ *
+ * ⚠️ **两条方向相反，别调头**：本条 = 玩家挨打；`SOLDIER_HIT_SOUND` = 士兵挨打。
+ * 第一轮曾把本条设成 `carbine_impact_wet`（当时士兵还没有任何受击音），本轮按用户
+ * 新裁定对调 —— 写反的形态是「打人和挨打的声音换了」，而「响了几个音」类判据照样全绿。
  *
  * ⚠️ **只覆盖枪击这一条路径**：Boss 近战 / 尖刺 / 法阵仍走 `ignis_hurt`
  *（`tests/boss-audio.spec.mjs` 钉着那条）。两条路径互不相干。
- * ⚠️ **素材已在库**：`carbine_impact_wet.wav` 是 KV-9 烘焙产物（上游命中湿地面的音），
- * 已在 `SOUND_IDS` 里 ⇒ **零新增音频文件、零重烘**。
+ * ⚠️ **素材早已在库**：`assets/sounds/hited.mp3`（0.456s）零新增文件、零烘焙；
+ * 但它在 v3.36 之前**从未进过 `SOUND_IDS`** ⇒ 本轮必须同时加进清单与音量表，漏一处静默无声。
  * ⚠️ **音量归本表**（红线 1）：触发点只写 `play(id, SOUND_VOLUMES[id])`，
- * 不在 game.js 写字面量。取 0.5 与 `ignis_hurt` 同档（嫌响/嫌轻只改这一个数）。
+ * 不在 game.js 写字面量。
  */
-export const PLAYER_GUNSHOT_HURT_SOUND = 'carbine_impact_wet';
+export const PLAYER_GUNSHOT_HURT_SOUND = 'hited';
+
+/**
+ * 士兵（soldier）**自己挨打（没死）**的受击音（用户 2026-11-24 第二轮裁定）。
+ *
+ * 用户原话：「soldier 被击中时的声音为 carbine_impact_wet.wav」。
+ *
+ * ⚠️ **v3.36 之前士兵挨打一声都没有**（`Game.damageEntity` 的 soldier 分支只做班组报警
+ * `alertNearby`）—— 形态是「扣血/红闪/伤害数字/击退/同伴报警全部正常，只是没声音」。
+ * ⚠️ **致死一击不播它**：那一下由 `_onEntityDeath` 播 `SOLDIER_DEATH_SOUND`，叠加会变成两声
+ *（与 `BOSS_HIT_SOUND` 同一口径）。
+ * ⚠️ **素材已在库**：`carbine_impact_wet` 是 KV-9 烘焙产物，早已在 `SOUND_IDS` 里（零新增）。
+ */
+export const SOLDIER_HIT_SOUND = 'carbine_impact_wet';
+
+/**
+ * 士兵**开火**的声音（用户 2026-11-24 第三轮裁定）。
+ *
+ * 用户原话：「soldier 射击的时候，用音效 carbine_bullet.mp3」。
+ *
+ * ⚠️ **v3.36b 之前士兵开火一声都没有**：`_consumeSoldierShots()` 只做曳光 + 枪口火光 + 火花，
+ * 静默下的形态是「子弹曳光飞过、玩家掉血，但听不出是谁开的枪」。
+ * ⚠️ **每发都播，与是否命中无关**：开火声是对「开枪」这个动作的反馈，而受击声
+ *（`hited`）对「被打中」—— 两者不能合并。只给命中分支接音的缺陷形态是
+ *「连射时听起来像命中才响」，而「响了几个音」的判据拓不到。
+ * ⚠️ **素材已在库**：`assets/sounds/carbine_bullet.mp3`（0.6s），零新增音频、零烘焙。
+ */
+export const SOLDIER_FIRE_SOUND = 'carbine_bullet';
+
+/**
+ * 士兵**阵亡**的声音（用户 2026-11-24 第四轮裁定）。
+ *
+ * 用户原话：「soldier 被消灭时的音效改为 carbine_kill.mp3」。
+ *
+ * ⚠️ **v3.36c 之前士兵阵亡复用丧尸的 `z_die`**（v3.35 的裁定「本轮不做士兵专属音效」）。
+ * ⚠️ **用户指定的文件是 `carbine_kill.mp3`（0.792s）**：该 id 原本是 KV-9 的烘焙产物
+ *（`.wav` 0.36s），v3.36c 在 `SOUND_EXT_OVERRIDES` 末尾把它覆盖成 `'mp3'` ⇒ 听的是用户放的那个。
+ * ⚠️ **音量不是 0.3**：实测 `carbine_kill.mp3` −16.6 LUFS 比 `z_die` −25.4 响 8.8 LU，
+ * 沿用 0.3 会是「一声爆响」⇒ 按响度差取 **0.11**（推导见 `SOUND_VOLUMES` 里那条注释）。
+ */
+export const SOLDIER_DEATH_SOUND = 'carbine_kill';
 
 /**
  * 焰魔「哪一招 → 哪个起手音」的唯一权威（v2.79）。

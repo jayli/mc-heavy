@@ -121,7 +121,7 @@ export class ViewBob {
      * 本帧是否处于「在跑动」状态（`shouldBob` 以 `drag: 1` 调用的结果）。
      *
      * **驱动相机晃动**（v1.48 起）。⚠️ v2.51 曾让脚步声也读它，但本仓物理有水中阻力
-     * （mc-lite 没有）→ 水中它恒为 false → `running_water` 永不播。v2.54 起脚步声改读
+     * （mc-lite 没有）→ 水中它恒为 false → 水中脚步声永不播。v2.54 起脚步声改读
      * `walking`（按阻力折算），本标志的判据与行为**一字未改**（用户裁定：镜头保持不晃）。
      * @type {boolean}
      */
@@ -132,7 +132,7 @@ export class ViewBob {
      * **与 `active` 分开的原因 = 本仓物理有水中阻力而 mc-lite 没有**：
      * `physics.js` 的 `WATER_DRAG = 0.6` 让水中实际位移只有意图位移的 0.6 倍，
      * 而 `active` 的全速判据是「actual > expected × 0.95」（expected 未折算阻力）
-     * → 水中 `active` **恒为 false**（实测 ratio 恒 0.600）→ `running_water` 永不播。
+     * → 水中 `active` **恒为 false**（实测 ratio 恒 0.600）→ 水中脚步声永不播。
      * `walking` 把期望位移按阻力折算（`expected = inputSpeed × drag × dt`），
      * 水中 ratio 回到 1.000 → 脚步声正常播。
      *
