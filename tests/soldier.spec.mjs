@@ -100,12 +100,22 @@ test('士兵 combat 态与玩家保持距离（Review Focus 2：不是会开枪�
     const e = g.entities.get(id);
     e.state = { ...e.state, mode: 'combat', awareness: 1, losVisible: true, losTimer: 99 };
     const dists = [];
-    for (let i = 0; i < 60; i++) {
-      await new Promise((res) => setTimeout(res, 100));
+    /**
+     * ⚠️⚠️ **必须钉住站姿**（N5 负向验证暴露的判据缺陷）：
+     * 蹲下时移动意图恒 0，实测 60 拍里有 28 拍 crouch=1 ⇒ 即便注入「恒直冲玩家」，
+     * 6s 内也只从 14.5 挪到 7.49，** never 跌破阈值 6** ⇒ 注入后仍 PASS（判据零判别力）。
+     * 正解：每拍强制 crouching=false / crouch=0 / peekT 大值，让移动不被蹲姿打断，
+     * 并把窗口拉到 12s —— 直冲版会一路贴到玩家身上（<2 格），正确版停在环下界 8 附近。
+     */
+    for (let i = 0; i < 120; i++) {
       const en = g.entities.get(id);
       if (!en) break;
+      en.state = { ...en.state, crouching: false, crouch: 0, peekT: 99 };
+      await new Promise((res) => setTimeout(res, 100));
+      const cur = g.entities.get(id);
+      if (!cur) break;
       const p = g.player.physics.pos;
-      dists.push(Math.hypot(en.state.position[0] - p.x, en.state.position[2] - p.z));
+      dists.push(Math.hypot(cur.state.position[0] - p.x, cur.state.position[2] - p.z));
     }
     return { dists, min: Math.min(...dists), max: Math.max(...dists) };
   }, [f.bx, f.by, f.bz]);

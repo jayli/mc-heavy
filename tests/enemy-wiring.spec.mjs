@@ -198,6 +198,31 @@ async function summonFor(page, type, opts = {}) {
       return { id: e.id, baseY: e.state.position[1] };
     });
   }
+  if (type === 'soldier') {
+    // 士兵 Epic：走真实入口 spawnSoldierNearPlayer（与丧尸同手法，不直接调 service.spawn）
+    await gotoOpenField(page, opts);
+    await waitPlayerLanded(page);
+    const id = await page.evaluate(() => {
+      const g = window.__MC_GAME__;
+      const before = new Set(g.soldiers.activeEntities().map((e) => e.id));
+      g.spawnSoldierNearPlayer();
+      const added = g.soldiers.activeEntities().filter((e) => !before.has(e.id));
+      return added[0]?.id ?? null;
+    });
+    expect(id, 'soldier 前置：spawnSoldierNearPlayer 必须造出一名').not.toBeNull();
+    // 等它自己站稳（照丧尸分支：y 连续 3 次不变，不用 onGround）
+    await page.waitForFunction((i) => {
+      const e = window.__MC_GAME__.entities.get(i);
+      if (!e) return false;
+      const w = window.__S_Y_HIST__ ?? (window.__S_Y_HIST__ = []);
+      w.push(e.state.position[1]);
+      if (w.length > 3) w.shift();
+      return w.length === 3 && w.every((v) => v === w[0]);
+    }, id, { timeout: 30_000, polling: 150 });
+    await page.evaluate(() => { window.__S_Y_HIST__ = []; });
+    const baseY = await page.evaluate((i) => window.__MC_GAME__.entities.get(i).state.position[1], id);
+    return { id, baseY };
+  }
   throw new Error(`summonFor: 未支持的类型 ${type}`);
 }
 
