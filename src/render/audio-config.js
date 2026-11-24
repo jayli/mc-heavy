@@ -193,6 +193,9 @@ export const SOUND_VOLUMES = Object.freeze({
   // v3.15 Boss 受击音：与守卫原受击音同档 0.5（嫌响/嫌轻只改这一个数，不动触发点）。
   // ⚠️ 素材实测 0.750s，比原 `guardian_hurt`（2.579s）短得多 ⇒ 机枪连射时不会叠成长鸣。
   gun_hit: 0.5,
+  // 士兵枪击命中玩家的受击音（用户 2026-11-24）：与 ignis_hurt 同档 0.5。
+  // ⚠️ 素材本体是 KV-9 的「命中湿地面」音，已在库（零新增）。
+  carbine_impact_wet: 0.5,
 });
 
 /**
@@ -213,6 +216,20 @@ export const SOUND_VOLUMES = Object.freeze({
  *（`ignis_die` / `guardian_die`），叠加会变成两声。
  */
 export const BOSS_HIT_SOUND = 'gun_hit';
+
+/**
+ * 玩家被**士兵子弹（carbine 枪击）**命中时的受击音（用户 2026-11-24）。
+ *
+ * 用户原话：「玩家被 carbin 枪击中的时候的声音改成 carbine_impact_wet.wav」。
+ *
+ * ⚠️ **只覆盖枪击这一条路径**：Boss 近战 / 尖刺 / 法阵仍走 `ignis_hurt`
+ *（`tests/boss-audio.spec.mjs` 钉着那条）。两条路径互不相干。
+ * ⚠️ **素材已在库**：`carbine_impact_wet.wav` 是 KV-9 烘焙产物（上游命中湿地面的音），
+ * 已在 `SOUND_IDS` 里 ⇒ **零新增音频文件、零重烘**。
+ * ⚠️ **音量归本表**（红线 1）：触发点只写 `play(id, SOUND_VOLUMES[id])`，
+ * 不在 game.js 写字面量。取 0.5 与 `ignis_hurt` 同档（嫌响/嫌轻只改这一个数）。
+ */
+export const PLAYER_GUNSHOT_HURT_SOUND = 'carbine_impact_wet';
 
 /**
  * 焰魔「哪一招 → 哪个起手音」的唯一权威（v2.79）。

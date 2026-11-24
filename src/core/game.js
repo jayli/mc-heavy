@@ -26,7 +26,7 @@ import { WeatherState, RAIN } from '../render/weather.js';
 import { WeaponModelLoader } from '../render/weapon-model-loader.js';
 import { AudioManager } from '../render/audio-manager.js';
 // v2.64：音量表 / 飞龙吼叫间隔 / 死亡爆散配色的唯一权威在各自 config（红线 1：不在装配层写字面量）。
-import { SOUND_VOLUMES, DRAGON_SHOUT, ignisAttackSound, BOSS_HIT_SOUND } from '../render/audio-config.js';
+import { SOUND_VOLUMES, DRAGON_SHOUT, ignisAttackSound, BOSS_HIT_SOUND, PLAYER_GUNSHOT_HURT_SOUND } from '../render/audio-config.js';
 import { ZOMBIE_MODEL_DEFS } from '../render/zombie-model.js';
 import { ViewWeapon } from '../render/view-weapon.js';
 import { ViewArm } from '../render/view-arm.js';
@@ -4042,7 +4042,10 @@ export class Game {
         player: playerBox, maxDistance: SOLDIER_SHOT.maxDistance,
       });
       // 扣血：骰子过 ∧ 几何上真的打到玩家盒（墙更近则 shot.hitPlayer 为假）
-      if (willHit && shot.hitPlayer) this._damagePlayer(SOLDIER_SHOT.playerDamage, nowMs);
+      if (willHit && shot.hitPlayer) {
+        // 用户 2026-11-24：枪击命中玩家的声音改 carbine_impact_wet（素材已在库）。
+        this._damagePlayer(SOLDIER_SHOT.playerDamage, nowMs, { sound: PLAYER_GUNSHOT_HURT_SOUND });
+      }
       // 视觉：曳光 + 枪口火光 + 火花（全部复用 KV-9 已过像素实测的池）
       this.carbineFx?.spawnTracer(req.muzzle, shot.end, SOLDIER_TRACER, nowMs);
       this.soldierMuzzleFx?.fire(req.muzzle, nowMs, this.camera.quaternion);
@@ -4924,9 +4927,12 @@ export class Game {
    *   ⚠️ **必须由调用方传入**，不得在方法内新取 —— 同帧两个时基会让红闪的起点与
    *   `_damageFlash.update(nowMs)` 的基准错开一截（帧内耗时），淡出曲线跟着漂。
    *   同 `_consumeIgnisFxRequests` / `_syncBossAudio` 口径。
+   * @param {{sound?: string}} [opts] 受击音覆盖（士兵 Epic，用户 2026-11-24）。
+   *   缺省 `ignis_hurt`（Boss 近战 / 尖刺 / 法阵）；士兵子弹传 `PLAYER_GUNSHOT_HURT_SOUND`。
+   *   ⚠️ **只换音，不叠音**：一次伤害只响一声（否则枪击会变成两声）。
    * @returns {number} 扣血后的剩余血量
    */
-  _damagePlayer(amount, nowMs) {
+  _damagePlayer(amount, nowMs, { sound = 'ignis_hurt' } = {}) {
     const before = this.player.health;
     const after = applyDamage(before, amount);
     this.player.health = after;
@@ -4936,7 +4942,7 @@ export class Game {
     }
     // 音效：只在血量真的减少了才响（血为 0 时不刷音效）
     if (after < before) {
-      this.audioManager?.play('ignis_hurt', SOUND_VOLUMES.ignis_hurt);
+      this.audioManager?.play(sound, SOUND_VOLUMES[sound] ?? 0.5);
     }
     return after;
   }

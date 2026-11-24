@@ -183,6 +183,42 @@ test('士兵子弹打玩家：命中后血量恰好 −2（用户裁定）', asy
   expect(r.drop % SOLDIER_SHOT.playerDamage, `掉血须是 ${SOLDIER_SHOT.playerDamage} 的整数倍`).toBe(0);
 });
 
+test('士兵子弹命中玩家播 carbine_impact_wet（用户 2026-11-24 裁定）', async ({ page }) => {
+  test.setTimeout(200_000);
+  await page.goto(URL);
+  await waitWorldReady(page);
+  await gotoOpenField(page);
+  await waitPlayerLanded(page);
+  const f = await makeField(page);
+  const r = await page.evaluate(async ([bx, by, bz]) => {
+    const g = window.__MC_GAME__;
+    const id = g.soldiers.spawn([bx + 10.5, by, bz + 0.5], { source: 'spec' });
+    if (!id) return { error: 'spawn 失败' };
+    const origRandom = Math.random;
+    Math.random = () => 0;   // 命中骰子必过
+    const e = g.entities.get(id);
+    e.state = { ...e.state, mode: 'combat', awareness: 1, crouching: false, crouch: 0, peekT: 99,
+      losVisible: true, losTimer: 99, nextBurst: 0, reaction: 0 };
+    const cnt = (k) => g.audioDebugState().playRequests[k] ?? 0;
+    const wet0 = cnt('carbine_impact_wet');
+    const hurt0 = cnt('ignis_hurt');
+    const hp0 = g.player.health;
+    for (let i = 0; i < 100; i++) {
+      await new Promise((res) => setTimeout(res, 50));
+      if (g.player.health < hp0) break;
+    }
+    const out = { hp0, hp1: g.player.health,
+      wetDelta: cnt('carbine_impact_wet') - wet0, hurtDelta: cnt('ignis_hurt') - hurt0 };
+    Math.random = origRandom;
+    return out;
+  }, [f.bx, f.by, f.bz]);
+  expect(r.error).toBeUndefined();
+  expect(r.hp1, '前置：玩家真的被打中').toBeLessThan(r.hp0);
+  expect(r.wetDelta, '枪击命中玩家必须播 carbine_impact_wet').toBeGreaterThan(0);
+  // ⚠️ 成对断言：只改枪击这一条路径，Boss 近战的 ignis_hurt 不受影响
+  expect(r.hurtDelta, '枪击路径不得再播 ignis_hurt（否则叠两声）').toBe(0);
+});
+
 test('士兵子弹不穿墙（Review Focus 3）', async ({ page }) => {
   test.setTimeout(200_000);
   await page.goto(URL);
