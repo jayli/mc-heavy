@@ -333,6 +333,41 @@ export const SOLDIER_FIRE_SOUND = 'carbine_bullet';
 export const SOLDIER_DEATH_SOUND = 'carbine_kill';
 
 /**
+ * 一次性音效的**并发声道上限**（用户 2026-11-25）。
+ *
+ * 用户原话：「soldier 射击时的声音有时候滞后发出，是有队列吗？我不要队列……
+ * 如果因为声音声道挤占导致某个 soldier 的射击动作没有发出声音，就丢弃掉，
+ * 不要延迟或者滞后再补发声音了。」
+ *
+ * ## 缺陷本体（本轮探针在真实 AudioContext 上实测）
+ *
+ * 旧 `play()` 是**每个 id 一个 `THREE.Audio` 单槽**，同名再播先 `stop()` 再 `play()`：
+ *   3 只士兵 6s 内 **47 次开火请求 → 46 次是「打断上一声再从头重播」**。
+ * `carbine_bullet.mp3` 长 **0.519s**（ffprobe 实测）而班组发间隔 0.105s
+ *（`SOLDIER_SHOT.shotInterval`）⇒ 每一声只响 0.1s 就被下一声顶掉，听起来就是
+ *「枪声卡在起始那一小段、真正的响声迟到」。
+ *
+ * ## 为何取 6（推导，不是拍的）
+ *
+ * 并发上限 = `SOLDIER_SHOT.maxConcurrentBursts`(2) × 素材时长 0.519s
+ * ÷ 发间隔 0.105s ≈ **9.9**，但两名士兵的相位不重合且一轮只 3~6 发；
+ * 取 **6** = “两名 × 一轮最少 3 发”，足以让一轮点射的每一发都完整发声，
+ * 又不会在极端叠射时无上限地堆 source。
+ *
+ * ⚠️ **不在表里的 id 一律走 `DEFAULT_SOUND_VOICES`（= 1，旧行为）**：
+ * 本轮只改士兵开火这一条路径，其余音效（包括玩家枪声/Boss 起手音/死亡音）
+ * 的听感逐位不变 —— 改它们会连带改既有 spec 的听感基线，不属本请求范围。
+ * ⚠️ **声道满 = 丢弃**（不起播、不排队、不打断在播的）—— 用户明确要的语义。
+ * 不得改成“覆盖最旧”（那仍是打断）或“记下来下一帧补发”（那仍是滞后）。
+ */
+export const DEFAULT_SOUND_VOICES = 1;
+
+export const SOUND_VOICE_LIMITS = Object.freeze({
+  // 士兵班组连射：同一素材必须能并发，否则后一发顶掉前一发（听感 = 滞后）
+  carbine_bullet: 6,
+});
+
+/**
  * 焰魔「哪一招 → 哪个起手音」的唯一权威（v2.79）。
  *
  * **为什么需要这张表**：v2.75 起焰魔有多招（v3.01 起三招：`'swing' | 'spin' | 'shieldSmash'`），

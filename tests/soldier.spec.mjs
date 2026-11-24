@@ -516,6 +516,178 @@ test('TNT 半径内士兵掉血、半径外不掉、probe 对照不掉', async (
   expect(r.probeAlive, '非可击中类型不受影响（证明没改成全量枚举）').toBe(true);
 });
 
+/**
+ * ⚠️⚠️ **用户 2026-11-25 实玩报告：「soldier 已经被消灭了，但计数器还残留 1 或 2」》**
+ *
+ * 真因不在计数（探针实测 HUD ≡ `soldiers.count()` 逐位正确），而在**渲染 slot 抢占**：
+ * 旧 `SoldierRenderer` 的 round-robin 指针绕回时不检查占用 ⇒ 新实体覆盖活实体的实例矩阵，
+ * 新实体死后差集回收又把该 slot 清零 ⇒ 仍在场的那只也不画了（或反过来留幽灵）。
+ *
+ * ⚠️ **判据必须是「真实实例矩阵的非零 scale 数」**（画面上真画了几只），
+ * 不是 `soldierRenderer.activeCount()` / `_slots.size`：撞车时那两个读数仍等于实体数
+ *（本轮实测）⇒ 零判别力。同时把 HUD 文本拉进来对账，钉「画面 ≡ 计数器」。
+ * ⚠️ **必须走真实 C 键 + 真实伤害入口**，且循环次数要 **> 渲染池容量 2×maxAlive**，
+ * 否则指针根本没绕回，缺陷不会被触发（本轮前三个探针就是这样全绿的）。
+ */
+test('计数器与画面一一对应：边召边杀 26 轮（超过渲染池容量），非零实例数 ≡ HUD ≡ 真实存活', async ({ page }) => {
+  test.setTimeout(300_000);
+  await page.goto(URL);
+  await waitWorldReady(page);
+  await gotoOpenField(page);
+  await waitPlayerLanded(page);
+  const f = await makeField(page, { radius: 16 });
+  const r = await page.evaluate(async ([bx, by, bz]) => {
+    const g = window.__MC_GAME__;
+    /** 真实 GPU 侧：torso 实例矩阵里非零 scale 的个数 = 画面上真画了几只 */
+    const drawn = () => {
+      const m = g.soldierRenderer.meshes.torso;
+      const arr = m.instanceMatrix.array;
+      let n = 0;
+      for (let i = 0; i < m.count; i++) {
+        if (arr[i * 16] !== 0 || arr[i * 16 + 5] !== 0 || arr[i * 16 + 10] !== 0) n++;
+      }
+      return n;
+    };
+    const hud = () => Number((document.getElementById('mc-enemy-counts-soldier')
+      ?.textContent ?? '兵 0').replace(/[^\d]/g, ''));
+    const rows = [];
+    const snap = (tag) => rows.push({
+      tag, drawn: drawn(), hud: hud(),
+      alive: g.soldiers.count(),
+      total: g.soldiers.activeEntities().length,
+    });
+    // 两只长命士兵（占住低位 slot）+ 不断有第三只进出，把渲染指针推过池容量
+    const keep = [];
+    for (const dx of [4, 6]) {
+      const id = g.soldiers.spawn([bx + dx + 0.5, by, bz + 4.5], { source: 'spec' });
+      if (id) keep.push(id);
+    }
+    if (keep.length < 2) return { error: '前置：两只长命士兵需都生成' };
+    await new Promise((res) => setTimeout(res, 300));
+    snap('keepers');
+    const rounds = g.soldierRenderer.maxActive + 6;
+    for (let i = 0; i < rounds; i++) {
+      // 真实 C 键入口（不是 service.spawn）
+      window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyC', repeat: false, bubbles: true }));
+      window.dispatchEvent(new KeyboardEvent('keyup', { code: 'KeyC', bubbles: true }));
+      // ⚠️ **必须等过一个完整 HUD 刷新周期**（`ENEMY_COUNTS_INTERVAL_MS` = 250ms）：
+      // 只等 120ms 就读 DOM 会拿到旧值 ⇒ 26 拍全红的**假红**（本轮实测踩到）。
+      // 那不是缺陷，是夹具没跨过节流窗口；不得因此放宽阈值。
+      await new Promise((res) => setTimeout(res, 320));
+      snap(`r${i}-spawn`);
+      // 把本轮新生的那只打死（长命的两只不动）
+      for (const e of g.soldiers.activeEntities()) {
+        if (!keep.includes(e.id) && !e.state.dead) g.damageEntity(e.id, 100000, performance.now());
+      }
+      await new Promise((res) => setTimeout(res, 320));
+      snap(`r${i}-kill`);
+      await new Promise((res) => setTimeout(res, 1300));   // 等留尸 1.2s 回收
+      snap(`r${i}-settled`);
+    }
+    return { rows, rounds, poolSize: g.soldierRenderer.maxActive };
+  }, [f.bx, f.by, f.bz]);
+  expect(r.error ?? null, '前置：两只长命士兵需都生成').toBeNull();
+  expect(r.rounds, '前置：循环次数必须超过渲染池容量（否则指针没绕回）')
+    .toBeGreaterThan(r.poolSize);
+  // ① 每一拍：画面上真画出来的只数 ≡ 集合里的士兵数（含留尸）
+  const drawnBad = r.rows.filter((x) => x.drawn !== x.total);
+  expect(drawnBad.length, `画面必须逐拍画出全部士兵（失配样本：${JSON.stringify(drawnBad.slice(0, 3))}）`).toBe(0);
+  // ② 每一拍：HUD 计数 ≡ 真实存活数（排除留尸）
+  const hudBad = r.rows.filter((x) => x.hud !== x.alive);
+  expect(hudBad.length, `HUD 必须逐拍等于真实存活数（失配样本：${JSON.stringify(hudBad.slice(0, 3))}）`).toBe(0);
+  // ③ 收尾：长命两只仍在场且都画着（撞车会把它们抹掉）
+  const last = r.rows[r.rows.length - 1];
+  expect(last.alive, '收尾：两只长命士兵必须仍存活').toBe(2);
+  expect(last.drawn, '收尾：两只长命士兵必须仍画在屏幕上').toBe(2);
+  expect(last.hud, '收尾：HUD 必须是 2').toBe(2);
+});
+
+/**
+ * 士兵开火声：**不得互相打断**（用户 2026-11-25：「不要队列、不要滞后补发，
+ * 声道挤占就丢弃」）。
+ *
+ * ⚠️⚠️ **判据不能落在 `playRequests`**：旧单槽实现与新多声道实现的请求计数
+ * 完全相同（探针实测 47 vs 47）⇒ 零判别力。有判别力的是真实 Web Audio 层的
+ * `AudioBufferSourceNode` start/stop 账：打断次数必须为 0、且真的并发过多路。
+ * ⚠️ 探针包 `context.createBufferSource`（而不是读 `debugVoices()` 自己的计数），
+ * 避开「断言读自己的输入」那类假绿。
+ */
+test('士兵开火声：班组连射不互相打断，声道满则丢弃（不排队、不补发）', async ({ page }) => {
+  test.setTimeout(300_000);
+  await page.goto(URL);
+  await waitWorldReady(page);
+  await gotoOpenField(page);
+  await waitPlayerLanded(page);
+  const f = await makeField(page);
+  const r = await page.evaluate(async ([bx, by, bz]) => {
+    const g = window.__MC_GAME__;
+    document.querySelector('canvas')?.click();
+    await g.audioManager?.unlock?.();
+    const am = g.audioManager;
+    const ctx = am.listener.context;
+    // 在真实 Web Audio 层记账（只针对士兵开火素材的 source）
+    const orig = ctx.createBufferSource.bind(ctx);
+    const recs = [];
+    ctx.createBufferSource = () => {
+      const src = orig();
+      const rec = { started: false, stopped: false, buffer: null };
+      recs.push(rec);
+      const os = src.start.bind(src);
+      const ost = src.stop.bind(src);
+      src.start = (...a) => { rec.started = true; rec.buffer = src.buffer; return os(...a); };
+      src.stop = (...a) => { rec.stopped = true; return ost(...a); };
+      return src;
+    };
+    const fireBuf = am._buffers.get('carbine_bullet');
+    const fireRecs = () => recs.filter((x) => x.buffer === fireBuf);
+    const ids = [];
+    for (let i = 0; i < 3; i++) {
+      const id = g.soldiers.spawn([bx + 9 + i * 2 + 0.5, by, bz + 0.5], { source: 'spec' });
+      if (id) ids.push(id);
+    }
+    if (ids.length < 2) { ctx.createBufferSource = orig; return { error: 'spawn 失败' }; }
+    const origRandom = Math.random;
+    Math.random = () => 0.999999;   // 必不中：只测枪声，不受玩家掉血干扰
+    const cnt = () => g.audioDebugState().playRequests.carbine_bullet ?? 0;
+    const t0 = cnt();
+    let maxLive = 0;
+    for (let i = 0; i < 140; i++) {
+      for (const id of ids) {
+        const e = g.entities.get(id);
+        if (e && !e.state.dead) {
+          e.state = { ...e.state, mode: 'combat', awareness: 1, crouching: false, crouch: 0,
+            peekT: 99, losVisible: true, losTimer: 99, reaction: 0 };
+        }
+      }
+      await new Promise((res) => setTimeout(res, 50));
+      const live = fireRecs().filter((x) => x.started && !x.stopped).length;
+      if (live > maxLive) maxLive = live;
+      if (cnt() - t0 >= 20) break;
+    }
+    Math.random = origRandom;
+    ctx.createBufferSource = orig;
+    const fr = fireRecs();
+    return {
+      requests: cnt() - t0,
+      started: fr.filter((x) => x.started).length,
+      interrupted: fr.filter((x) => x.started && x.stopped).length,
+      maxLive,
+      cap: am.debugVoices().carbine_bullet?.cap ?? null,
+      bufferDuration: fireBuf?.duration ?? null,
+    };
+  }, [f.bx, f.by, f.bz]);
+  expect(r.error ?? null).toBeNull();
+  expect(r.requests, '前置：必须真的开了多发（≥20）').toBeGreaterThanOrEqual(20);
+  expect(r.bufferDuration, '前置：素材已解码').toBeGreaterThan(0.3);
+  // ⭐ 核心：一声都不得被打断（旧实现实测 47 次请求 46 次打断）
+  expect(r.interrupted, `开火声不得互相打断（实测打断 ${r.interrupted} 次）`).toBe(0);
+  // 并发真的发生过（否则“不打断”可能是因为只出了一声）
+  expect(r.maxLive, `必须真的并发过多路（实测最多 ${r.maxLive} 路）`).toBeGreaterThan(1);
+  // 声道上限存在且被尊重（丢弃语义：起播数 ≤ 请求数）
+  expect(r.cap, '士兵开火声必须是多声道').toBeGreaterThan(1);
+  expect(r.started, '起播数不得超过请求数（丢弃不得补发）').toBeLessThanOrEqual(r.requests);
+});
+
 test('draw call：无士兵 = 基线，有士兵 = 基线 + 7', async ({ page }) => {
   test.setTimeout(200_000);
   // ⚠️ 关阴影：日夜循环下阴影重渲帧会造成 draw 尖峰（zombies.spec 已记该 flaky）

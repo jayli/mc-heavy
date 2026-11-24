@@ -11,12 +11,14 @@ import { resourceUrl } from '../core/resource-url.js';
 import {
   SOUND_IDS, BGM_TRACKS, BGM_VOLUME, pickBgmTrack,
   soundFileName, BOSS_BGM_TRACK, BOSS_BGM_FADE_MS,
+  SOUND_VOICE_LIMITS, DEFAULT_SOUND_VOICES,
 } from './audio-config.js';
 
 // 再导出供既有 import 路径（`test-bgm.js` 等）继续工作 —— 只是一层转发，不是第二份定义。
 export {
   SOUND_IDS, BGM_TRACKS, BGM_VOLUME, pickBgmTrack,
   soundFileName, BOSS_BGM_TRACK, BOSS_BGM_FADE_MS,
+  SOUND_VOICE_LIMITS, DEFAULT_SOUND_VOICES,
 };
 
 /**
@@ -45,7 +47,16 @@ export class AudioManager {
     this._buffers = new Map();
     /** @type {Map<string, number>} 只读播放请求计数 */
     this._counts = new Map();
-    /** @type {Map<string, THREE.Audio>} 复用的 Audio 实例 */
+    /**
+     * @type {Map<string, THREE.Audio[]>} 一次性音效的声道池（每 id 一组）。
+     *
+     * ⚠️⚠️ **旧实现是 `Map<string, THREE.Audio>` 单槽 + 同名再播先 stop**
+     *（用户 2026-11-25：「soldier 射击的声音有时候滞后发出…我不要队列」）：
+     * 实测 3 只士兵 6s 内 47 次开火，**46 次把上一声打断重播** ⇒ 素材 0.519s
+     * 而发间隔 0.105s，每一声只响 0.1s。现在是多声道：未满就新开一路，
+     * **满了就丢弃**（不排队、不打断、不补发）。声道上限权威在 `SOUND_VOICE_LIMITS`。
+     * ⚠️ 缺省 1 声道的 id 行为逐位回到旧实现（stop + 重播），既有听感零回归。
+     */
     this._voices = new Map();
     /** @type {Map<string, THREE.Audio>} 循环音效实例（rain / running_*），与 `_voices` 分开 */
     this._loops = new Map();
@@ -344,25 +355,82 @@ export class AudioManager {
   }
 
   /**
-   * 播放音效。无论能否出声都递增播放请求计数（测试以此断言效果事件，
+   * 播放一次性音效。无论能否出声都递增播放请求计数（测试以此断言效果事件，
    * 不以操作系统是否允许出声作为断言）。
+   *
+   * ## 声道语义（用户 2026-11-25）
+   *
+   * 每个 id 的并发上限 = `SOUND_VOICE_LIMITS[id] ?? DEFAULT_SOUND_VOICES`：
+   *   · 未满 ⇒ **新开一路立即发声**，不碰已在播的任何一路；
+   *   · 已满 ∧ 上限 > 1 ⇒ **丢弃本次**（返回 false）—— 不排队、不延迟补发、
+   *     也不打断最旧那一路（用户明确要的语义）；
+   *   · 已满 ∧ 上限 == 1 ⇒ **逐位回到旧实现**（stop 后重播），既有音效听感不变。
+   *
+   * ⚠️⚠️ **不得把丢弃改成“记下来下一帧补发”**：那就是用户说的「滞后再补发」。
+   * ⚠️ **判据不能落在 `playRequests`**：它对单槽/多声道两种实现读数完全相同
+   *（实测 47 vs 47）⇒ 零判别力。有判别力的是真实 `AudioBufferSourceNode` 的
+   * start/stop 账（见 `test-audio-voices.js`）。
+   * ⚠️ **声道归还靠 `onEnded`**（three 内部复位 `isPlaying`），不用定时器：
+   * 定时器与帧不同源且页面隐藏时被节流（本仓已记的坑）。
+   *
    * @param {string} id @param {number} volume @returns {boolean} 是否实际出声
    */
   play(id, volume = 1) {
     this._counts.set(id, (this._counts.get(id) ?? 0) + 1);
     const buffer = this._buffers.get(id);
     if (!buffer || this.listener.context.state !== 'running') return false;
-    let voice = this._voices.get(id);
+    const cap = Math.max(1, SOUND_VOICE_LIMITS[id] ?? DEFAULT_SOUND_VOICES);
+    let pool = this._voices.get(id);
+    if (!pool) { pool = []; this._voices.set(id, pool); }
+    // 空闲声道 = 未在播的（onEnded 已把 isPlaying 置 false）
+    let voice = pool.find((v) => !v.isPlaying);
     if (!voice) {
-      voice = new THREE.Audio(this.listener);
-      voice.setBuffer(buffer);
-      voice.onEnded = () => { /* THREE.Audio 内部处理 isPlaying 复位 */ };
-      this._voices.set(id, voice);
+      if (pool.length >= cap) {
+        // 单声道：旧语义（同名再播重启）—— 既有音效逐位不变
+        if (cap === 1) {
+          voice = pool[0];
+          voice.stop();
+        } else {
+          // 多声道已满：**丢弃**。不新建 source、不 stop 别人、不留待发队列。
+          return false;
+        }
+      } else {
+        voice = new THREE.Audio(this.listener);
+        voice.setBuffer(buffer);
+        pool.push(voice);
+      }
     }
-    if (voice.isPlaying) voice.stop();
     voice.setVolume(volume);
     voice.play();
     return true;
+  }
+
+  /**
+   * 停掉全部一次性声道（幂等）。`dispose()` 与单测 teardown 共用。
+   * ⚠️ 单测不得用 `dispose()` 收尾：three 的 listener 拿全局 AudioContext 单例，
+   * `context.close()` 会把全页后续用例砸掉（`test-bgm.js` 已记该实测）。
+   */
+  stopAllVoices() {
+    for (const pool of this._voices.values()) {
+      for (const voice of pool) if (voice.isPlaying) voice.stop();
+    }
+    this._voices.clear();
+  }
+
+  /**
+   * 只读声道诊断（供 E2E / 探针）。无头环境听不到声音，断言只能落在可观测状态上。
+   * @returns {Record<string, {cap:number, live:number, pooled:number}>}
+   */
+  debugVoices() {
+    const out = {};
+    for (const [id, pool] of this._voices) {
+      out[id] = {
+        cap: Math.max(1, SOUND_VOICE_LIMITS[id] ?? DEFAULT_SOUND_VOICES),
+        live: pool.filter((v) => v.isPlaying).length,
+        pooled: pool.length,
+      };
+    }
+    return out;
   }
 
   // ---- 循环效果音（v2.51）：雨声 / 跑动脚步声 ----
@@ -474,10 +542,7 @@ export class AudioManager {
 
   /** 停止 active sound、从 camera 移除 listener、清空 buffer/计数。 */
   dispose() {
-    for (const voice of this._voices.values()) {
-      if (voice.isPlaying) voice.stop();
-    }
-    this._voices.clear();
+    this.stopAllVoices();
     for (const entry of this._loops.values()) {
       if (entry.audio?.isPlaying) entry.audio.stop();
     }

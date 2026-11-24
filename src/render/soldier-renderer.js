@@ -91,6 +91,22 @@ export class SoldierRenderer {
     /** @type {Map<string,number>} id → slot（差集驱动，本层自己分配） */
     this._slots = new Map();
     this._nextSlot = 0;
+    /**
+     * 空闲 slot 栈（低位优先）—— **分配不得抢占仍被占用的 slot**。
+     *
+     * ⚠️⚠️ **用户 2026-11-25 实玩报告「soldier 已经被消灭了，计数器还残留 1 或 2」的真因**：
+     * 旧写法是 `slot = this._nextSlot; this._nextSlot = (…+1) % maxActive`，**不检查占用**
+     * ⇒ 指针绕回时新实体拿到一个仍被活实体占用的 slot，把后者的 7 个实例矩阵覆盖掉；
+     * 而那个新实体死后差集回收又把该 slot 清零 ⇒ **仍在场的那只也跟着不画了**。
+     * 形态：3 只活着只画出 2 只，或「都杀完了画面上还站着 1~2 只」—— 用户读作「计数器残留」。
+     * 计数本身实测逐位正确（HUD ≡ `soldiers.count()`），错的是画面。
+     *
+     * ⚠️ **不能用 `_nextSlot` 扫描 + “跳过已占”代替显式空闲栈**：回收路径必须把 slot 真的
+     * 归还，否则池会被“曾经用过”的 slot 占死（与 Service 的 slot 池同口径）。
+     * `_nextSlot` 保留作只读诊断（旧测试与探针读它）。
+     */
+    this._freeSlots = [];
+    for (let i = maxActive - 1; i >= 0; i--) this._freeSlots.push(i);
     /** 逐 slot 的渲染态（缓动/相位/上一帧物理量） */
     this._poses = new Array(maxActive).fill(null).map(() => ({
       entityId: null,
@@ -118,9 +134,15 @@ export class SoldierRenderer {
       live.add(e.id);
       let slot = this._slots.get(e.id);
       if (slot === undefined) {
-        slot = this._nextSlot;
-        this._nextSlot = (this._nextSlot + 1) % this.maxActive;
+        // 从空闲栈取（**不抢占已占用的 slot**，见构造器里那条 ⚠️⚠️）。
+        // 池容量 = 2×maxAlive = Service 的 slot 池容量 ⇒ 正常情况下不可能耗尽；
+        // 耗尽就是真 bug（回收路径漏归还），故招回一个已占 slot 以外的唯一出路是报错。
+        slot = this._freeSlots.pop();
+        if (slot === undefined) {
+          throw new Error('SoldierRenderer: slot 池耗尽（回收路径漏归还）');
+        }
         this._slots.set(e.id, slot);
+        this._nextSlot = (slot + 1) % this.maxActive;
       }
       const pose = this._poses[slot];
       // 实例复用给新实体：重置全部逐实例状态（否则继承上一只的缓动与相位）
@@ -143,6 +165,9 @@ export class SoldierRenderer {
       }
       this._poses[slot].entityId = null;
       this._slots.delete(id);
+      // 归还空闲栈（与 Service 的 `_releaseSlot` 同口径）。去重守卫：同一 slot 不得进两次，
+      // 否则两个实体会拿到同一个 slot ⇒ 又回到互相覆盖。
+      if (!this._freeSlots.includes(slot)) this._freeSlots.push(slot);
     }
     const any = this._slots.size > 0;
     for (const part of SOLDIER_PARTS) this.meshes[part].visible = any;
@@ -295,5 +320,6 @@ export class SoldierRenderer {
     for (const g of Object.values(this._geometries)) g.dispose();
     this._material.dispose();
     this._slots.clear();
+    this._freeSlots.length = 0;
   }
 }

@@ -1548,6 +1548,45 @@
 - **`vd=2` 下 36~40 格外的 column 永远不加载**（`waitForFunction` 60s 超时）⇒
   在那里 spawn 必返回 null。测「半径界外不生效」改用**移动声源**而不是远处生成实体。
 
+### 「计数器残留」的真因在渲染 slot，不在计数（v3.39，用户 2026-11-25 实玩报告）
+
+- 用户原话：「soldier 已经被消灭了，但计数器还残留 1 或者 2 或者更多」。
+  **探针在真实页面上跑了 5 轮召唤/击杀：HUD ≡ `soldiers.count()` 逐位正确**
+  ⇒ 计数链（`readEnemyCounts` / `activeEntities().filter(!dead)`）没有问题。
+- 真因：`SoldierRenderer` 的 slot 是 `slot = _nextSlot; _nextSlot = (++…) % maxActive`，
+  **不检查该 slot 是否仍被占用** ⇒ 指针绕回时新实体覆盖活实体的 7 个实例矩阵；
+  新实体死后差集回收又把该 slot 清零 ⇒ **仍在场的那只也跟着不画**。
+  用户看到的是「画面上的士兵数与数字对不上」，读作「计数器残留」。
+- **触发条件是累计 spawn 次数 ≥ 池容量（2×maxAlive = 20）且此刻仍有 ≥2 只在场**。
+  前三个探针（每轮全杀完再召、或只空转不留长命实体）**全绿** —— 指针绕回时池恰好是空的。
+  ⇒ 复现必须「留两只长命的 + 让第三只不断进出」，纯 Node 最小复现第 18 轮即红。
+- **判据只能是真实实例矩阵的非零 scale 数**：撞车时 `_slots.size` 与 `activeCount()`
+  仍等于实体数（3 条 slot、报 3），而 GPU 侧只有 2 个非零实例 ⇒ 那两个判据零判别力。
+- 修法：渲染层改用**显式空闲 slot 栈**（与 `SoldierService` 同口径），回收时归还。
+  不要用「扫描跳过已占」代替归还 —— 池会被曾用过的 slot 占死。
+
+### HUD 读数的 250ms 节流会造成整批假红（v3.39）
+
+- 新用例在 spawn 后只等 **120ms** 就读 `#mc-enemy-counts-soldier`，26 拍**全部**失配
+  （hud=2 / alive=3）。那不是缺陷：`ENEMY_COUNTS_INTERVAL_MS = 250`，夹具没跨过节流窗口。
+  ⇒ 读 HUD 文本前必须等 **> 一个完整刷新周期**（取 320ms），**不得放宽断言**。
+
+### 一次性音效的单槽 = 「枪声滞后」（v3.39，用户 2026-11-25）
+
+- 用户原话：「soldier 射击时的声音有时候滞后发出，是有队列吗？我不要队列……
+  声道挤占就丢弃掉，不要延迟或者滞后再补发」。
+- **没有队列**，真因是 `AudioManager.play()` **每个 id 一个 `THREE.Audio` 单槽**，
+  同名再播先 `stop()` 再 `play()`。真实 AudioContext 探针：3 只士兵 6s 内
+  **47 次开火请求 → 46 次是「打断上一声从头重播」**。素材 `carbine_bullet.mp3`
+  长 **0.519s**（ffprobe）而发间隔 0.105s ⇒ 每声只响 0.1s，听感就是「响声迟到」。
+- **`playRequests` 对两种实现读数完全相同（47 vs 47）⇒ 零判别力**。
+  有判别力的判据：包一层 `context.createBufferSource`，记每个 source 的 start/stop ⇒
+  ① 打断次数必须 0；② 真的并发过 >1 路；③ 声道满时起播数不增（丢弃，不排队不补发）。
+- 修法：`_voices` 改 `Map<string, THREE.Audio[]>` 声道池，上限权威在
+  `audio-config.SOUND_VOICE_LIMITS`（缺省 1 = 旧行为，其余音效听感逐位不变）。
+  ⚠️ 改 `_voices` 形状必须同步 `test-bgm.js` 的 teardown —— 它原来遍历单槽读
+  `v.isPlaying`，在数组上恒 undefined ⇒ 声道不停、下个用例前置失真。
+
 ### 计数字段不一定是计数
 
 - `CarbineFx.counts.tracers` 是 **0/1 的可见性标志**，不是条数 ⇒ `> before` 在已可见时恒真。

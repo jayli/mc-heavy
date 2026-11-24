@@ -186,6 +186,76 @@ test('士兵渲染: 实例复用给新实体时重置缓动（不继承上一只
   assertEqual(renderer.knockOffsetXOf(slot), 0, '复用 slot 时不得继承上一只的击退偏移');
 });
 
+/**
+ * ⚠️⚠️ **本轮最重要的一条：slot 分配不得抢占仍被占用的 slot**（用户 2026-11-25 实玩报告
+ * 「soldier 已经被消灭了，但计数器还残留 1 或 2」）。
+ *
+ * 真因不在计数：`readEnemyCounts` 与 `soldiers.count()` 实测逐位正确（探针在真实页面上
+ * 召唤/击杀 5 轮，HUD 与 `activeEntities().filter(!dead)` 全程一致）。错的是**画面**：
+ * 旧实现 `slot = this._nextSlot; this._nextSlot = (…+1) % maxActive` **不检查占用**
+ * ⇒ 指针绕回时新实体拿到一个仍被活实体占用的 slot，把后者的 7 个实例矩阵覆盖掉。
+ * 形态：3 只活着只画出 2 只（少画），或反过来「杀完了画面上还站着 1~2 只」——
+ * 用户读作「计数器残留」。
+ *
+ * ⚠️ **判据必须落在真实实例矩阵的非零 scale 数**（画面上真画了几只），不是
+ * `_slots.size` / `activeCount()`：撞车时 `_slots` 仍有 3 条、`activeCount()` 仍报 3，
+ * 而 GPU 侧只有 2 个非零实例 ⇒ 那两个判据**零判别力**（本轮实测）。
+ */
+function drawnSlotCount(renderer) {
+  const mesh = renderer.meshes.torso;
+  const arr = mesh.instanceMatrix.array;
+  let n = 0;
+  for (let i = 0; i < mesh.count; i++) {
+    // 列主序：m11/m22/m33 是对角（零矩阵 makeScale(0,0,0) 三项全 0）
+    if (arr[i * 16] !== 0 || arr[i * 16 + 5] !== 0 || arr[i * 16 + 10] !== 0) n++;
+  }
+  return n;
+}
+
+test('士兵渲染: slot 指针绕回时不得抢占仍在场的实体（画面上少画一只）', () => {
+  const { renderer, entities } = makeRenderFixture(2);
+  const [keepA, keepB] = entities;   // 两只长命士兵，占住 slot 0 / 1
+  renderer.sync([keepA, keepB], 0);
+  assertEqual(drawnSlotCount(renderer), 2, '前置：两只都画出来了');
+  // 空转 maxActive 轮「第三只进出」，把 round-robin 指针推回 0（= keepA 占的 slot）
+  const tmp = { id: 'churn', type: 'soldier', state: keepA.state };
+  for (let i = 0; i < renderer.maxActive; i++) {
+    renderer.sync([keepA, keepB, tmp], 16 + i * 32);
+    assertEqual(drawnSlotCount(renderer), 3,
+      `第 ${i} 轮：3 只在场必须画出 3 只（抢占 slot 会让某只静默消失）`);
+    renderer.sync([keepA, keepB], 32 + i * 32);
+    assertEqual(drawnSlotCount(renderer), 2,
+      `第 ${i} 轮：第三只走后必须恰好剩 2 只（不得把长命士兵的矩阵一起清掉）`);
+  }
+  // 每只的 slot 必须互不相同（一 slot 两主人 = 互相覆盖）
+  const slots = [renderer.slotOf(keepA.id), renderer.slotOf(keepB.id), renderer.slotOf('churn')];
+  assertEqual(new Set(slots.filter((s) => s !== null)).size, slots.filter((s) => s !== null).length,
+    'slot 必须一实体一个，不得两只共用');
+});
+
+test('士兵渲染: 每只士兵的实例矩阵落在自己的位置（撞车会把它画到别人身上）', () => {
+  const { renderer, entities } = makeRenderFixture(2);
+  const [keepA, keepB] = entities;
+  renderer.sync([keepA, keepB], 0);
+  const tmp = { id: 'churn', type: 'soldier', state: createSoldierState({ position: [40.5, 1, 0.5], yaw: 0 }) };
+  for (let i = 0; i < renderer.maxActive + 2; i++) {
+    renderer.sync([keepA, keepB, tmp], 16 + i * 32);
+    renderer.sync([keepA, keepB], 32 + i * 32);
+  }
+  renderer.sync([keepA, keepB], 4000);
+  // 判据：每只的 torso 世界 x/z 必须与它自己的 state.position 一致（±0.6 容差给击退/缓动）
+  const m = new THREE.Matrix4();
+  for (const e of [keepA, keepB]) {
+    const slot = renderer.slotOf(e.id);
+    assertTrue(slot !== null, `${e.id} 必须仍有 slot`);
+    renderer.meshes.torso.getMatrixAt(slot, m);
+    const dx = Math.abs(m.elements[12] - e.state.position[0]);
+    const dz = Math.abs(m.elements[14] - e.state.position[2]);
+    assertTrue(dx < 0.6 && dz < 0.6,
+      `${e.id} 的实例必须画在它自己位置上（实测偏移 dx=${dx.toFixed(2)} dz=${dz.toFixed(2)}）`);
+  }
+});
+
 test('士兵渲染: dispose 从 scene 摘掉全部 mesh', () => {
   const { scene, renderer } = makeRenderFixture(1);
   const before = scene.children.length;

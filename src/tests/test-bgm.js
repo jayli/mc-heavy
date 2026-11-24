@@ -63,8 +63,10 @@ async function blockAutoplay(mgr) {
  * 之后页面本就重新加载（单例随之重建）。
  */
 function teardown(mgr) {
-  for (const v of mgr._voices.values()) if (v.isPlaying) v.stop();
-  mgr._voices.clear();
+  // ⚠️ `_voices` 自 2026-11-25 起是**声道池**（`Map<string, THREE.Audio[]>`），
+  // 不再是单槽。走 `stopAllVoices()` 而不是自己遍历 —— 否则 `v.isPlaying` 读在数组上
+  // 恒 undefined ⇒ 声道不停，下个用例的前置断言失真。
+  mgr.stopAllVoices();
   for (const id of [...mgr._loops.keys()]) mgr.stopLoop(id);
   mgr.setMusicEnabled(false);
   mgr._music = null;
