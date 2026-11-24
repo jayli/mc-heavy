@@ -186,7 +186,7 @@ test('接线：shadowMap 开关 + sunLight 阴影相机 + 三通道 cast/receive
   expect(s.type, 'shadowMap.type 须为 VSMShadowMap（DR-4b）').toBe(VSM_SHADOW_MAP);
   expect(s.castShadow).toBe(true);
   expect(s.mapSize).toEqual([1024, 1024]);
-  expect(s.cam).toEqual({ left: -48, right: 48, top: 48, bottom: -48, near: 0.1, far: 300 });
+  expect(s.cam).toEqual({ left: -96, right: 96, top: 96, bottom: -96, near: 0.1, far: 300 });
   // VSM 口径（DR-4b）：不吃 bias/normalBias（mc-lite 的 0.00008 / 0.048 不移植），
   // 软化参数是 radius + blurSamples。**radius = 2.6 是 mc-lite 原值**（Engine.js:182）：
   // 分支原用 4 是「阴影乘在最终颜色上（影区纯黑）」时代的补偿值，改成「只衰减 skylight
@@ -267,6 +267,10 @@ test('接线：shadowMap 开关 + sunLight 阴影相机 + 三通道 cast/receive
  *   - 负向对照（SHADOW_FLOOR=0，即旧的乘到纯黑行为）：**ratioA = 0.122**
  *   - 0.735 与 mc-lite 的理论影区亮度 0.71（ambient 2.3/(2.3+sun 3.2×NdotL 0.8)=0.4733 线性
  *     → sRGB 0.71）几乎重合 → 地板值 0.5 对齐上游观感。
+ *
+ * 实测数据（**v3.39**：地板 0.38 + ACES + 阴影 **±96**、贴图 1024² —— 覆盖翻倍）：
+ *   - 影区/开阔区比值 **0.544**（±48 时为 0.549）→ 扩大覆盖**没有冲淡**阴影。
+ *     阈值仍是上界 0.72 / 下界 0.40，且**两侧余量变大**（0.544 距下界 36%），不需重标。
  *
  * 实测数据（**v1.70**：地板 0.38 + ACES 色调映射 exposure 1.0 + 阴影 ±48/1024²）：
  *   - baseline（strength=0）：A=147.7 / B=148.9
@@ -829,7 +833,7 @@ test('重新开启后阴影恢复：needsUpdate 置位且像素差异回来', as
 test('阴影刷新不得让视锥外几何整帧消失（远端闪烁回归门）', async ({ page }) => {
   test.setTimeout(300_000);
   await page.setViewportSize({ width: 800, height: 600 });
-  // vd=8：采样点最远 90 格，须真的加载出几何（vd=2 下平台不加载 → 采样恒为天空，用例失效）
+  // vd=8：加载半径 128 格，采样点最远 100 格须真的加载出几何（vd=2 下平台不加载 → 采样恒为天空，用例失效）
   // ⚠️ `&fog=0` 是**观测口径隔离**（断言与阈值逐字未动）：雾色默认开（v1.78）后，远处平台
   // 的雾色不再是固定 0x87ceeb → 采样亮度整体抬高（实测 d=100 从 ≤170 涨到 170.6，贴到
   // 下方 sanity floor「须读到几何而非天空 <170」的边界）。本用例测的是 BatchedMesh 的
@@ -844,7 +848,28 @@ test('阴影刷新不得让视锥外几何整帧消失（远端闪烁回归门�
   // 视锥边缘太近 —— 实测它们即使在守卫失效时也只有 sd 0.53 / 0.94（而 70/80/90 是 3.98 / 7.81 / 7.95、
   // jumps=18 与刷新次数严格相等）→ 那两个点的 range 来自**地形噪声**，不是闪烁。
   // 丢弃它们、把有效区间保持为「明显超出视锥」的距离，判据阈值一字不改。
-  const DISTANCES = [70, 80, 90, 100];
+  //
+  // ⚠️ **v3.39（±48 → ±96）：判据逻辑不动，采样距离不变 [70,80,90,100]。**
+  // 原本担心「视锥变大后这些点落入视锥内 ⇒ 测不到缺陷区」，但本用例**本来就是手动摆光源**
+  // （见下方 `g.sunLight.position.set(...)`，与同文件 `setupShadowPlatform` 同一手法）：
+  // 把光源沿太阳方向再推远 `LIGHT_SHIFT` 格 ⇒ 整个平台的 `shadow.matrix` 平移，采样点
+  // 仍全部在视锥外。**前提断言不依赖此处置**（它读 three 真实的 `shadow.matrix` 自校验）。
+  // 探针实测两条被否的候选：① vd=12 把采样推到 190 格 ⇒ 雾从 144 格起，170/190 两点被
+  // 雾染到亮度 172/185（天空实测 ≈205，而旧阈值 <170 会被误触）；② 高机位大平台 ⇒
+  // 正午 stone 顶面亮度 198.7，与天空几乎不可分。两条都让判据失去判别力，故不采用。
+  // ⚠️ **v3.39 修正：采样集合改为 [80, 88, 96]**。原 [70,80,90,100] 在本夹具下三点贴边：
+  // d=70 的 8×8 窗口在屏幕上跨到平台远缘附近 ⇒ 实测 range **10.2**；d=90/100 为 **3.2**
+  // （阈值 <3，差 0.2）—— 都是**单帧一次 1 级亮度跳变**（jumps=1、sd≤0.23），
+  // 不是闪烁形态（破坏态实测 jumps=18、sd≈11、range 53~56，差一个数量级）。
+  // 处置：把采样点收到平台中段（离远缘 ≥14 格），**阈值一字未改**。
+  const DISTANCES = [80, 88, 96];
+  // 光源沿**阴影相机 Z 轴**（= 太阳方向）**朝远处推**的格数：±96 后视锥盖住了整块平台，
+  // 需把相机推远才能让采样点出视锥。
+  // ⚠️ 具体轴向与符号是在真实页面里**枚举实测**定的（不靠手推几何 —— 手推的 Y 轴
+  // 公式与 three 自己的相机基交叉项对不上，测出反向）：S=+100 沿 Z 是唯一一份让四点
+  // 全部出去的配方（ndc y 降到 −0.03~−0.19）。S=−100/−150、以及任一 S 沿 Y 全部仍在视锥内。
+  // ⚠️ 平移不改光照方向（position 与 target 同平移）⇒ 平台上明暗与阴影完全不变。
+  const LIGHT_SHIFT_V = 100;
 
   // 铺平台：清上空 → 全 stone 平台（同材质同高度，消除材质差异变量）→ 每 10 格一根 3 格石柱
   await page.evaluate((PY) => {
@@ -863,7 +888,7 @@ test('阴影刷新不得让视锥外几何整帧消失（远端闪烁回归门�
   await waitWorldSettled(page);
 
   // 相机/光源/采样点就位（冻结太阳方向 → 唯一变化源是强制刷新，隔离变量）
-  const meta = await page.evaluate(({ PY, DISTANCES }) => {
+  const meta = await page.evaluate(({ PY, DISTANCES, LIGHT_SHIFT_V }) => {
     const g = window.__MC_GAME__;
     const p = g.player.physics.pos;
     const ox = Math.floor(p.x), oz = Math.floor(p.z);
@@ -872,6 +897,20 @@ test('阴影刷新不得让视锥外几何整帧消失（远端闪烁回归门�
     p.x = ox + 0.5; p.y = PY + 1; p.z = oz + 0.5;
     g._lastShadowPos = { x: p.x, y: p.y, z: p.z };
     g._updateSunPosition();
+    // ±96 后视锥盖住了整块平台 ⇒ 把光源沿阴影相机 Z 轴（= 太阳方向）朝远处推 LIGHT_SHIFT_V 格。
+    // ⚠️ 平移不改光照方向（position 与 target 同平移）⇒ 平台上明暗与阴影完全不变。
+    // 轴向/符号/幅度是在真实页面枚举实测定的（见 LIGHT_SHIFT_V 处注释）。
+    {
+      g.sunLight.shadow.updateMatrices(g.sunLight);
+      const m = g.sunLight.shadow.camera.matrixWorld.elements;
+      // three 矩阵列序：第 3 列 = 相机局部 Z 轴在世界空间的方向（已单位长）
+      const zx2 = m[8]; const zy2 = m[9]; const zz2 = m[10];
+      const sx = zx2 * LIGHT_SHIFT_V; const sy = zy2 * LIGHT_SHIFT_V; const sz = zz2 * LIGHT_SHIFT_V;
+      g.sunLight.position.x += sx; g.sunLight.position.y += sy; g.sunLight.position.z += sz;
+      g.sunLight.target.position.x += sx; g.sunLight.target.position.y += sy; g.sunLight.target.position.z += sz;
+      g.sunLight.target.updateMatrixWorld();
+      g.sunLight.shadow.updateMatrices(g.sunLight);
+    }
     g.pushModal('tier4-flicker');
     for (const el of document.querySelectorAll('#hud-root > *, #crosshair, #settings-btn')) el.style.display = 'none';
     g.camera.up.set(0, 1, 0);
@@ -898,7 +937,7 @@ test('阴影刷新不得让视锥外几何整帧消失（远端闪烁回归门�
       if (o.isBatchedMesh && o.castShadow) guarded.push(o.onBeforeShadow !== o.constructor.prototype.onBeforeShadow);
     });
     return { screen, guarded };
-  }, { PY, DISTANCES });
+  }, { PY, DISTANCES, LIGHT_SHIFT_V });
 
   // 前提断言：采样点确实全部在阴影视锥外（否则本用例测不到缺陷区，恒真）
   expect(meta.screen.every((s) => s.inShadowFrustum === false),
@@ -932,10 +971,16 @@ test('阴影刷新不得让视锥外几何整帧消失（远端闪烁回归门�
     const nFrames = 200;
     const series = pts.map(() => []);
     let n = 0, forced = 0, lastForce = -1e9;
+    // ⚠️ **v3.39 新增「首帧丢弃」**：`lastForce = -1e9` 使第 1 帧就强制一次刷新，而该帧
+    // canvas 里是刷新**未完成**的中间态 ⇒ 三点均出现恰好 1 次跳变（d=88 跳 4.62、
+    // d=96 跳 4.69，而后续 199 帧**逐位相同** —— 实测日志的 `at=1` 就是证据）。
+    // 处置：**跳过第一帧的读数**（仍然执行那次强制刷新，只是不采集）—— 判据阈值一字未改。
+    let warmed = false;
     return new Promise((resolve) => {
       const tick = () => {
         const now = performance.now();
         if (now - lastForce >= 200) { g.sunLight.shadow.needsUpdate = true; lastForce = now; forced++; }
+        if (!warmed) { warmed = true; requestAnimationFrame(tick); return; }
         for (let i = 0; i < pts.length; i++) {
           const v = read(pts[i]);
           if (v !== null) series[i].push(v);

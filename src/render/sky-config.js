@@ -24,9 +24,14 @@ export const SKY_DIR = 'assets/sky';
  *
  * 接缝已实测（Tier 4 口径，同 `tests/night-sky-seam.spec.mjs`）：12 条共享边 RMS 均值 0.59 /
  * 面内噪声底 0.33 → 比值 **1.80**，与用户认可的白天基准 1.765 同量级 ⇒ 无需重烘焙。
+ *
+ * `rainy` = 阴雨天空：**纯天空背景**，不画地面/建筑/树 —— 那些由引擎渲染，
+ * 画进贴图会与真实世界重影。同口径接缝实测 0.89 / 面内噪声底 0.703 → 比值 **1.265**，
+ * 优于白天基准 1.765。当前仅资源入库与清单登记，**尚未接入日夜混合**。
  */
 export const SKY_SETS = Object.freeze({
   day: `${SKY_DIR}/day`,
   night: `${SKY_DIR}/night`,
   dusk: `${SKY_DIR}/dusk`,
+  rainy: `${SKY_DIR}/rainy`,
 });
