@@ -217,6 +217,7 @@ export const UNIT_NODE_SAFE = [
   'test-tnt-chain.js', 'test-turret-top-bake.js', 'test-vegetation-leaves.js', 'test-vegetation.js',
   'test-view-bob.js', 'test-water-reflect.js', 'test-water-reflect-height.js', 'test-weapons.js', 'test-world-editor.js', 'test-zombie-behavior.js',
   'test-zombie-model.js', 'test-zombie-pathfinder.js', 'test-zombies.js',
+  'test-soldier-config.js', 'test-soldier-shooting.js',
 ];
 
 /**
