@@ -126,6 +126,7 @@ import { Persistence } from '../save/persistence.js';
 import { CoordsHUD } from '../ui/coords-hud.js';
 import { HealthHUD } from '../ui/health-hud.js';
 import { EnemyCountsHUD } from '../ui/enemy-counts.js';
+import { EnemyArrows } from '../ui/enemy-arrows.js';
 import { DamageFlash } from '../ui/damage-flash.js';
 import { DamageNumbers } from '../ui/damage-numbers.js';
 import { Minimap } from '../ui/minimap.js';
@@ -1447,6 +1448,18 @@ export class Game {
         (-projVec.y * 0.5 + 0.5) * window.innerHeight,
       ];
     });
+    // ③ 屏外敌人方位箭头（用户 2026-11-26）—— 五类各一个彩色小三角贴在屏幕边框，
+    //    指向该类**屏外最近**那只，旁边标屏外总数与距离。地图很大时用来找敌人。
+    //    相机空间函数在这里注入（本模块 three-free，`src/ui/` 既有口径）。
+    //    ⚠️⚠️ **这个函数只用于判可见性，不算方位**（v3.43）：它含玩家 pitch，
+    //    而方位必须与相机朝向解耦 —— 否则玩家一抬头，身后丧尸的箭头就跑到屏幕上边
+    //    （v3.42 的缺陷，用户实玩报障）。方位走 `arrowDirection(delta, player.yaw)`。
+    //    ⚠️ **每次返回新数组**：目标选择要同时持有多个候选的坐标，复用数组会互相覆盖。
+    const arrowVec = new THREE.Vector3();
+    this._enemyArrows = new EnemyArrows(this._hudRoot, this, (worldPos) => {
+      arrowVec.set(worldPos[0], worldPos[1], worldPos[2]).applyMatrix4(this.camera.matrixWorldInverse);
+      return [arrowVec.x, arrowVec.y, arrowVec.z];
+    });
     // 左下角迷你区域地图（v2.8）：玩家恒在中心，底图随位置滚动。
     // 区域判据在 `ui/minimap-regions.js`（纯函数，复用 gen 的既有权威）；本层只管画布与节流。
     // 启动时显式 `redraw()` 一次：`update()` 的时间节流初值是 `-Infinity`，本可以第一帧就画，
@@ -1905,6 +1918,10 @@ export class Game {
       // `camera.matrixWorldInverse`，而它由 `renderer.render()` 每帧重算 —— 在 render 之前
       // 读到的是上一帧的矩阵，数字会滞后一帧（龙飞 9 格/秒时肉眼可见地甩在身后）。
       this._damageNumbers.update(nowMs);
+      // 屏外敌人方位箭头（用户 2026-11-26）。⚠️ **同样必须在 render 之后**：它读
+      // `camera.matrixWorldInverse`（经注入的 cameraSpaceFn），在 render 之前读的是上一帧
+      // 的矩阵 ⇒ 箭头滞后一帧，龙飞 9 格/秒时肉眼可见地甩在身后。
+      this._enemyArrows.update();
       // info 在每帧 render 前被 autoReset 清零，render 后捕获才是本帧真实值
       // （HUD/测试异步读取 renderer.info 会撞上重置点，必须在此快照）
       this._lastRenderInfo = {
@@ -5260,6 +5277,8 @@ export class Game {
     this._bossHint?.dispose();
     // v3.29：受伤红闪（纯 DOM，摘除节点即可）
     this._damageFlash?.dispose();
+    // v3.42：屏外敌人方位箭头（同口径：纯 DOM）
+    this._enemyArrows?.dispose();
     // M4：反向释放武器运行时（Player → Audio → ModelLoader → WorkerPool → renderer）
     this.player?.dispose();
     this.audioManager?.dispose();

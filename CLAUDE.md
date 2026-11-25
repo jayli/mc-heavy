@@ -221,8 +221,8 @@ npm run validate:weapon-assets
 - **`AGENTS.md` 是 `CLAUDE.md` 的符号链接** ⇒ 改规范一律 `git add CLAUDE.md`，
   并用 `git show --stat` 核对它真的在提交里。
 - **UI 层级不等式**（改任一层必须重核）：hotbar 40 < 迷你地图 45 < 坐标/性能面板 50 = 血心 50 <
-  伤害数字 55 < **受伤红闪 56** < 设置按钮 60 < 设置面板 70 < 背包 80 < 背包 hover 浮层 85 < toast 90 <
-  启动 loading 95 < 启动错误遮罩 100。**不得取 100+**。toast 与浮层 `pointer-events:none`
+  **屏外敌人方位箭头 52** < 伤害数字 55 < **受伤红闪 56** < 设置按钮 60 < 设置面板 70 < 背包 80 <
+  背包 hover 浮层 85 < toast 90 < 启动 loading 95 < 启动错误遮罩 100。**不得取 100+**。toast 与浮层 `pointer-events:none`
   ⇒ 判「在最上层」只能走像素。「点了没反应」先查这条。
 
 ## 子系统路由表 —— 动手前先读
@@ -247,6 +247,7 @@ npm run validate:weapon-assets
 | **KV-9 卡宾枪 / 曳光 / 换弹 / 弹壳** | `specs/2026-11-22-kv9-carbine-and-storm-lighting-design.md` + `pitfalls.md` 短命特效节 + 上游 `~/jaylli/bj-shooting-game/night-heron-src/src/game/weapon.js` |
 | **雨天光影档 / 持续雨 / 湿地面 / 后处理** | 同上设计稿 §10~§11 + `pitfalls.md`「雨雾光栅扫描与湿地面地下透射」「屏幕竖纹粗糙与关档后雨声残留」两节 + `src/render/rain-shelter.js`（遮挡权威）+ `src/render/ground-reflect-config.js`（**湿地面必须独立 pass**：海平面镜面在几何上不可能正确）。⚠️ **远景雨幕已整层移除**（MSAA 不能替代 FXAA，柱面细丝必走样）—— 不要凭直觉补齐 |
 | 面板 / HUD / 小地图 / 音效 | roadmap「面板与 UI」「渲染分辨率档位」段 + `plans/2026-10-29-minimap.md` |
+| **屏外敌人方位箭头 / 敌人计数行** | `specs/2026-11-26-enemy-arrow-intuitive-bearing-design.md`（v3.43，**现行**）+ `src/ui/enemy-arrows.js` 文件头。☠️ v3.42 的 `|cz|` 相机空间方案**已被用户实玩推翻**（抬头时身后丧尸跑到上边）—— 方位只吃 yaw，可见性才用含 pitch 的相机空间 |
 
 ## 调试入口
 
