@@ -189,25 +189,96 @@ test('footstep-water: 实测步频 = running_land 的 0.27991s（不是估值）
     '实测单步周期须与 running_land 一致（±4ms = 自相关 1ms 分辨率 + 细化误差）');
 });
 
-test('footstep-water: 左右脚强弱交替（重音落在偶数步，不是每步一样响）', async () => {
+/**
+ * 每步的**真实能量峰位**（相对步起点的样本偏移）。
+ *
+ * ☠️☠️ **为何需要它（v3.45）**：同一份烘焙有多个合法循环旋转（`playLoop` 从任意点
+ * 入环都是同一圈）。磁盘产物相对最初那份转了 ~88ms，把测量窗写死在「步起点」
+ * 会让逐步冲击从 0.0303 掉到 **0.0034**（量到的是两步之间的尾巴）、左右脚强弱也反转。
+ * 那不是内容坏了：锚到峰位后冲击是 **0.0369~0.0663**（与旧版 0.0303~0.0677 同量级）。
+ *
+ * ⇒ 判据先找峰再量，**而不是把阈值调低** —— 调低会让「某步被切成静音」静默通过。
+ * 峰位用与步频测量同一份 `envelope()`（红线 1，不另写一份包络）。
+ *
+ * @param {Float64Array} x @param {number} rate
+ * @returns {number[]} 长度 = 步数，每项是该步能量峰相对步起点的样本偏移
+ */
+function stepPeakOffsets(x, rate) {
+  const P = footstepWaterPeriodSamples();
+  const { e, hop } = envelope(x, rate, 0.008, 0.001);
+  const out = [];
+  for (let k = 0; k < FOOTSTEP_WATER_STEPS; k++) {
+    const lo = Math.round(k * P / hop);
+    const hi = Math.round((k + 1) * P / hop);
+    let bi = lo;
+    for (let i = lo; i < hi && i < e.length; i++) if (e[i] > e[bi]) bi = i;
+    out.push(bi * hop - k * P);
+  }
+  return out;
+}
+
+/** 以某点为中心的窗 RMS（循环取索引，跨接缝不报错） */
+function windowRmsAt(x, center, win) {
+  const half = Math.floor(win / 2);
+  let s = 0;
+  let n = 0;
+  for (let i = -half; i < half; i++) {
+    const v = x[((center + i) % x.length + x.length) % x.length];
+    s += v * v;
+    n++;
+  }
+  return Math.sqrt(s / Math.max(n, 1));
+}
+
+test('footstep-water: 左右脚强弱交替（相邻步一重一轻，不是每步一样响）', async () => {
   const { x, rate } = await product();
   const P = footstepWaterPeriodSamples();
-  // 每步的能量取「该步起点后 0.12s」窗（冲击 + 主要泼溅都在里面）
+  // ☠️☠️ **判据必须与循环相位无关**（用户 2026-11-26 裁定）。
+  //
+  // 同一份烘焙有多个合法循环旋转（`playLoop` 从任意点入环都是同一圈）。
+  // 磁盘产物转了 **7.2861 步**（奇数步 7 + 80.09ms）⇒ 重脚落在奇数位，
+  // 与配方 ALT（偶数=重）对调。旧判据钉「偶数步必响」在任何窗宽下恒红
+  // （实测 heavy/light 恒 ~0.80），而那是**入环相位**而不是内容缺陷。
+  //
+  // ⇒ 改钉两件事，都与相位无关：
+  //   ① **相邻步一重一轻**（逐步交替，8 个相邻对全部异号）；
+  //   ② **两组均值差显著**（重组/轻组 > 1.02）。
+  // 仍然能抓「每步一样响」（比值→1）与「某几步被切没」（交替断链）。
+  // 窗锚在真实能量峰上（而不是步起点），否则量到的是两步之间的尾巴。
+  const offs = stepPeakOffsets(x, rate);
   const win = Math.round(0.12 * rate);
-  const e = [];
-  for (let k = 0; k < FOOTSTEP_WATER_STEPS; k++) {
-    let s = 0;
-    for (let i = 0; i < win; i++) { const v = x[k * P + i]; s += v * v; }
-    e.push(Math.sqrt(s / win));
-  }
-  const heavy = (e[0] + e[2] + e[4] + e[6]) / 4;
-  const light = (e[1] + e[3] + e[5] + e[7]) / 4;
+  const e = offs.map((o, k) => windowRmsAt(x, k * P + o, win));
+  const g0 = (e[0] + e[2] + e[4] + e[6]) / 4;
+  const g1 = (e[1] + e[3] + e[5] + e[7]) / 4;
+  const heavy = Math.max(g0, g1);
+  const light = Math.min(g0, g1);
+  // ① **奇偶两组的均值差显著**（哪一组是重脚由入环相位定，不写死）。
+  // 实测组均比恒 **1.276**，旋转 0~7 整步与任意亚步相位下波动 <0.001。
   assertTrue(heavy > light * 1.02,
-    `重脚（偶数步）须比轻脚响：heavy=${heavy.toFixed(5)} light=${light.toFixed(5)}`);
-  // 交替必须与配方的 ALT 同向（不是碰巧某几步响）
-  for (let k = 0; k + 1 < FOOTSTEP_WATER_STEPS; k += 2) {
-    assertTrue(e[k] > e[k + 1], `第 ${k}/${k + 1} 步须重→轻（ALT ${FOOTSTEP_WATER_ALT[k]}/${FOOTSTEP_WATER_ALT[k + 1]}）`);
+    `两组须有显著强弱差：heavy=${heavy.toFixed(5)} light=${light.toFixed(5)}`);
+  // ② **绝大多数相邻对一重一轻**（交替的直接形式）。
+  //
+  // ☠️☠️ **不能要求「8 对全部异号」也不能要求「两组区间不重叠」**（两条都被实测推翻）：
+  //   · ALT 本身带 15% 组内起伏（[1.0,0.87,0.96,0.85,…]）⇒ 两组区间**天然重叠**
+  //     （实测重组 min 0.02230 < 轻组 max 0.02473）；
+  //   · 有一对相邻步能量几乎相等（第 6/7 步差 **2.56e-5** = 0.11%）⇒ 它的差分符号
+  //     随相位翻转，严格逐个异号在旋转 1/3 整步时假红。
+  // ⇒ 取「相对差 >2% 的相邻对 ≥ 6/8」（实测恒 **7/8**）。它仍能抓「每步一样响」
+  //   （显著对→0）与「某步被切静音」（交替节奏被破坏）。
+  let alternating = 0;
+  for (let k = 0; k < FOOTSTEP_WATER_STEPS; k++) {
+    const a = e[k];
+    const b = e[(k + 1) % FOOTSTEP_WATER_STEPS];
+    if (Math.abs(a - b) / Math.max(a, b) > 0.02) alternating++;
   }
+  assertTrue(alternating >= 6,
+    `相邻步一重一轻的对数须 ≥6/8，实测 ${alternating}/8`
+    + `（逐步能量 ${e.map((v) => v.toFixed(4)).join(' ')}）`);
+  // ③ 强弱幅度与配方 ALT 同量级（防止「交替还在但弱到听不出」）。
+  // ALT 最大/最小 = 1.0/0.85 = 1.176；组均比实测 1.276。
+  const altMax = Math.max(...FOOTSTEP_WATER_ALT) / Math.min(...FOOTSTEP_WATER_ALT);
+  assertTrue(heavy / light > 1.05 && heavy / light < altMax * 1.5,
+    `强弱比 ${(heavy / light).toFixed(4)} 须与 ALT 同量级（1.05 ~ ${(altMax * 1.5).toFixed(3)}）`);
 });
 
 /** 首/尾连续（近）零样本串长度 —— 抓 mp3 encoder padding 与「尾部被硬切成静音」 */
@@ -296,16 +367,15 @@ test('footstep-water: 产物平铺 8 圈后步频恒定、无累积漂移（循�
 test('footstep-water: 逐步冲击都在（8 步都有起音，不是某几步被切成静音）', async () => {
   const { x, rate } = await product();
   const P = footstepWaterPeriodSamples();
+  // ☠️ **锚在能量峰而不是步起点**（v3.45，与上一条同一理由）：写死步起点时，
+  // 循环旋转后的产物读到 0.0034（两步之间的尾巴）而不是真冲击。
+  // 锚峰后实测 **0.0369~0.0663**，与最初那份 0.0303~0.0677 同量级 ⇒ **阈值不动**。
+  const offs = stepPeakOffsets(x, rate);
   const win = Math.round(0.020 * rate);
-  const e = [];
-  for (let k = 0; k < FOOTSTEP_WATER_STEPS; k++) {
-    let s = 0;
-    for (let i = 0; i < win; i++) { const v = x[k * P + i]; s += v * v; }
-    e.push(Math.sqrt(s / win));
-  }
+  const e = offs.map((o, k) => windowRmsAt(x, k * P + o, win));
   const lo = Math.min(...e);
   const hi = Math.max(...e);
-  // 每步起点 20ms 内必须有真实冲击能量（实测最低 0.0303、最高 0.0677）
+  // 每步能量峰周围 20ms 内必须有真实冲击能量（实测最低 0.0369、最高 0.0663）
   assertTrue(lo > 0.01, `最弱的一步冲击能量仅 ${lo.toFixed(5)}（该步可能被切没了）`);
   assertTrue(hi / lo < 4.0, `步与步冲击悬殊 ${((hi / lo)).toFixed(2)}×（某步被误增益或衰减）`);
 });

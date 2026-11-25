@@ -20,7 +20,7 @@
   "files": {
     "running_wet": {
       "file": "running_wet.wav",
-      "hash": "9e9d472fc3ebcf4e",
+      "hash": "7b7dabe8ee03d116",
       "seconds": 2.239274,
       "channels": 1
     }
@@ -29,19 +29,19 @@
     "periodSamples": 12344,
     "loopSamples": 98752,
     "seconds": 2.239274,
-    "peak": 0.375684,
-    "rms": 0.0178,
+    "peak": 0.375671,
+    "rms": 0.017794,
     "loudnessGain": 1.7761,
     "tileMaxError": 0,
     "bandShares": [
       0,
       0.0036,
-      0.0349,
-      0.1029,
-      0.251,
-      0.2339,
-      0.266,
-      0.1076
+      0.0336,
+      0.098,
+      0.2623,
+      0.2355,
+      0.2618,
+      0.105
     ],
     "grains": [
       {
