@@ -222,12 +222,14 @@ export const GUARDIAN_AI = Object.freeze({
    * 自动上台阶的最大抬升（格）。
    *
    * ⚠️⚠️ **取 1.0，不取原版 `maxUpStep 1.75F`** —— 已实测定案，不是待验证项：
-   * `zombie-navigation.js` 的 `zombieStepUpY(y) = Math.floor(y + 0.01) + 1` **恒抬 1 格**，
+   * 守卫的 `_tryStepUp` 读 `zombieStepUpY(y) = Math.floor(y + 0.01) + 1`，**恒抬 1 格**，
    * `maxStep` 只做「抬升量 ≤ maxStep」的门控 ⇒ **1.75 与 1.0 逐位等价**
    * （实测 2 格高台阶下 `_tryStepUp` 与 `isWalkable` 两侧均 false）。
    * 写 1.75 只会得到一个看着生效实际无效的死值。
    *
-   * 真要支持 >1 格台阶得改 `zombieStepUpY` 本身 —— 那是影响丧尸/焰魔/玩家三方的独立改动。
+   * ⚠️ **v3.44 起共用层有了 `resolveStepUpY`**（按 `maxStep` 逐级试，士兵取 2.0）。
+   * 守卫要支持 >1 格得把 `_tryStepUp` / `isWalkable` 改成转调它（而不是改
+   * `zombieStepUpY` 本身 —— 那会连带丧尸/焰魔/玩家）。本轮有意不动守卫。
    */
   maxStep: 1.0,
   /** 寻路节流周期（秒） */

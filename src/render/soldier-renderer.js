@@ -110,7 +110,9 @@ export class SoldierRenderer {
     /** 逐 slot 的渲染态（缓动/相位/上一帧物理量） */
     this._poses = new Array(maxActive).fill(null).map(() => ({
       entityId: null,
-      lift: new StepLift(),
+      // ☠️ **必须传 SOLDIER.maxStep**（士兵能一次上 2 格）：缺省封顶 1 格会把
+      // 2 格抬升截断成「瞬时跳 1 格 + 缓动 1 格」（用户 2026-11-26 裁定要整段缓动）。
+      lift: new StepLift(SOLDIER.maxStep),
       knock: new KnockbackEase(),
       prevY: null,
       walkPhase: 0,
@@ -303,6 +305,9 @@ export class SoldierRenderer {
 
   /** @returns {number} 只读：实际发布的 root y */
   renderYOf(slot) { return this._poses[slot]?.renderY ?? 0; }
+
+  /** @returns {number} 只读：当前上台阶缓动偏移（负值 = 渲染位置欠下物理位置） */
+  liftOffsetOf(slot) { return this._poses[slot]?.lift.offset ?? 0; }
 
   /** @returns {number} 只读：当前倒地倾倒角（弧度） */
   bodyTiltOf(slot) { return this._poses[slot]?.bodyTilt ?? 0; }

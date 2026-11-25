@@ -8,10 +8,14 @@ import { createRegistry } from '../voxel/block-registry.js';
 import { ChunkColumn } from '../voxel/chunk-column.js';
 import { WorldData } from '../voxel/world-data.js';
 import { EntityManager } from '../entities/entity-manager.js';
-import { SOLDIER, SOLDIER_AI, SOLDIER_TYPE } from '../entities/soldiers/soldier-config.js';
+import { SOLDIER, SOLDIER_AI, SOLDIER_TYPE, SOLDIER_STEERING } from '../entities/soldiers/soldier-config.js';
 import {
   SoldierService, soldierDefinition, SOLDIER_AABB,
 } from '../entities/soldiers/soldier-system.js';
+import { physicsStepAabb, steerIntentAabb } from '../entities/zombies/zombie-navigation.js';
+import { planStep } from '../entities/zombies/zombie-pathfinder.js';
+import { ZOMBIE_MAX_STEP } from '../entities/zombies/zombie-config.js';
+import { playerHitboxLocal } from '../player/physics.js';
 
 /** 全空气 + y=0 地面，cx/cz 0..3 已加载（覆盖 x,z ∈ [0,64)） */
 function makeSoldierFixture({ maxAlive = SOLDIER.maxAlive } = {}) {
@@ -209,4 +213,230 @@ test('士兵 definition: update 返回全新对象与数组（跨 column 索引�
   });
   assertFalse(next === before, '不得返回同一对象');
   assertFalse(next.position === before.position, 'position 须新数组');
+});
+
+// ---------------------------------------------------------------------------
+// 上台阶能力：1 格 → 2 格（3 格仍上不去）—— 用户 2026-11-26
+//
+// ☠️☠️ **只改 `SOLDIER.maxStep` 是无效的**：`zombieStepUpY(y) = floor(y+0.01)+1`
+// 恒抬 1 格，`maxStep` 只是「抬升量 ≤ maxStep」的门控 ⇒ 1.0 与 2.0 逐位等价
+// （`docs/pitfalls.md`「maxStep 是死值」）。所以本组用例必须走**真实
+// `physicsStepAabb`**，而不是断言常量等于 2.0 —— 后者在只改常量的缺陷版下照样全绿。
+// ---------------------------------------------------------------------------
+
+/**
+ * 台阶夹具：`y < top` 全实心（地面），`x >= wallX` 的列额外加高 `stepH` 格。
+ * 士兵从 x=3.5 沿 +X 全速跑向 x=5 的台壁。
+ */
+function makeStepWorld(stepH, { top = 10, wallX = 5 } = {}) {
+  return {
+    isSolid(x, y) {
+      if (y < top) return true;
+      if (x >= wallX) return y < top + stepH;
+      return false;
+    },
+  };
+}
+
+/** 沿 +X 跑 seconds 秒的真实 60Hz 物理，返回末态与抬升历史 */
+function runStepPhysics(stepH, { maxStep = SOLDIER.maxStep, seconds = 4, speed = 4, top = 10 } = {}) {
+  const world = makeStepWorld(stepH, { top });
+  const box = {
+    halfWidth: SOLDIER.width / 2, height: SOLDIER.height,
+    maxStep, gravity: SOLDIER.gravity,
+  };
+  const s = { position: [3.5, top, 3.5], velocity: [speed, 0, 0], onGround: true };
+  const lifts = [];
+  const n = Math.round(seconds * 60);
+  for (let i = 0; i < n; i++) {
+    const before = s.position[1];
+    physicsStepAabb(s, world, 1 / 60, box);
+    if (s.position[1] > before + 1e-9) lifts.push(+(s.position[1] - before).toFixed(6));
+    s.velocity[0] = speed;   // AI 意图每拍覆写（与真实 Agent 同口径）
+  }
+  return { state: s, lifts };
+}
+
+test('士兵物理: 1 格台阶能上（既有能力零回归）', () => {
+  const { state, lifts } = runStepPhysics(1);
+  assertEqual(state.position[1], 11, '顶面 y=11');
+  assertTrue(state.position[0] > 6, `须真的走过去了，实测 x=${state.position[0]}`);
+  assertTrue(lifts.includes(1), `抬升历史里须有一次 +1，实测 ${JSON.stringify(lifts)}`);
+});
+
+test('士兵物理: 2 格台阶能上（用户本轮要求）', () => {
+  const { state, lifts } = runStepPhysics(2);
+  assertEqual(state.position[1], 12, `2 格台阶顶面 y=12，实测 ${state.position[1]}`);
+  assertTrue(state.position[0] > 6, `须越过台壁，实测 x=${state.position[0]}`);
+  assertTrue(lifts.some((d) => d >= 1.999),
+    `需一次抬到顶（或两次 +1），实测抬升历史 ${JSON.stringify(lifts)}`);
+});
+
+test('士兵物理: 3 格台阶上不去（上限就是 2）', () => {
+  const { state, lifts } = runStepPhysics(3);
+  assertEqual(state.position[1], 10, `3 格不得上去，实测 y=${state.position[1]}`);
+  assertTrue(state.position[0] < 5, `不得穿墙，实测 x=${state.position[0]}`);
+  assertEqual(lifts.length, 0, '不得有任何 step-up 抬升');
+});
+
+test('士兵物理: maxStep=1 的 box 在 2 格台阶上仍卡住（丧尸/焰魔/守卫零回归守卫）', () => {
+  // ☠️ 这条是「只改士兵」的唯一守卫：若实现改成直接改 `zombieStepUpY` 本身，
+  // 丧尸那一组参数（maxStep=1.0）也会能上 2 格 ⇒ 本例真红。
+  const { state } = runStepPhysics(2, { maxStep: ZOMBIE_MAX_STEP });
+  assertEqual(state.position[1], 10, `maxStep=1 不得上 2 格，实测 y=${state.position[1]}`);
+  assertTrue(state.position[0] < 5, `不得穿墙，实测 x=${state.position[0]}`);
+});
+
+test('士兵物理: 空中贴高墙下落不得被一格格「爬」上去', () => {
+  // 8 格高墙（y>=10 且 x>=5 全实心），士兵从 y=18 贴墙下落。
+  // ☠️ 多级抬升最容易引入的回归：把「下落中允许 step-up」变成「凭空爬墙」。
+  const world = { isSolid: (x, y) => (y < 10 ? true : x >= 5) };
+  const box = {
+    halfWidth: SOLDIER.width / 2, height: SOLDIER.height,
+    maxStep: SOLDIER.maxStep, gravity: SOLDIER.gravity,
+  };
+  const s = { position: [4.69, 18, 3.5], velocity: [4, -2, 0], onGround: false };
+  let maxY = 18;
+  for (let i = 0; i < 120; i++) {
+    physicsStepAabb(s, world, 1 / 60, box);
+    s.velocity[0] = 4;
+    maxY = Math.max(maxY, s.position[1]);
+  }
+  assertEqual(maxY, 18, `下落中不得升高，实测 maxY=${maxY}`);
+});
+
+test('士兵避障探针: 2 格台阶不算障碍（与物理同口径，否则贴台壁反复试探）', () => {
+  const world = makeStepWorld(2);
+  const r = steerIntentAabb({
+    world, position: [4.5, 10, 3.5], vx: 4, vz: 0,
+    halfWidth: SOLDIER.width / 2, height: SOLDIER.height,
+    maxStep: SOLDIER.maxStep, steering: SOLDIER_STEERING,
+  });
+  assertFalse(r.blocked, '2 格台阶物理能上 ⇒ 探针不得判 blocked');
+  assertEqual(r.vx, 4, '前方能上台阶 ⇒ 不该偏转（0° 命中逐位原样返回）');
+  assertEqual(r.vz, 0);
+});
+
+test('士兵避障探针: 3 格台阶仍算障碍（靠偏转绕，不是直撞）', () => {
+  // ☠️ 夹具不能用「无限长墙」（首版就这么写，实测假红）：±90° 候选沿墙走本来就通，
+  // 3 格墙也会返回 blocked=false。要钉「3 格不可通行」必须把侧向也堵死：
+  // 只留 x∈[3,5) × z∈[3,4) 一条 1 格宽走廊，前方是 3 格台壁。
+  const world = {
+    isSolid(x, y, z) {
+      if (y < 10) return true;
+      if (x >= 5) return y < 13;          // 3 格台阶
+      return !(x >= 3 && z >= 3 && z < 4); // 走廊之外全实心（堵侧向）
+    },
+  };
+  const r = steerIntentAabb({
+    world, position: [4.5, 10, 3.5], vx: 4, vz: 0,
+    halfWidth: SOLDIER.width / 2, height: SOLDIER.height,
+    maxStep: SOLDIER.maxStep, steering: SOLDIER_STEERING,
+  });
+  assertTrue(r.blocked, '3 格台壁 + 侧向堵死 ⇒ 必须判不可通行');
+  // 同一夹具改成 2 格 ⇒ 必须通行（证明 blocked 源于台阶高度而不是夹具全堵）
+  const two = {
+    isSolid(x, y, z) {
+      if (y < 10) return true;
+      if (x >= 5) return y < 12;
+      return !(x >= 3 && z >= 3 && z < 4);
+    },
+  };
+  const r2 = steerIntentAabb({
+    world: two, position: [4.5, 10, 3.5], vx: 4, vz: 0,
+    halfWidth: SOLDIER.width / 2, height: SOLDIER.height,
+    maxStep: SOLDIER.maxStep, steering: SOLDIER_STEERING,
+  });
+  assertFalse(r2.blocked, '同夹具 2 格必须通行（否则上一条零判别力）');
+});
+
+test('士兵 A*: 2 格台阶上的目标可达（规划得出且物理走得通）', () => {
+  const world = makeStepWorld(2);
+  const box = { halfWidth: SOLDIER.width / 2, height: SOLDIER.height, maxStep: SOLDIER.maxStep };
+  const r = planStep(world, [3.5, 10, 3.5], [9.5, 12, 3.5], { box });
+  assertTrue(r.reachable, '2 格台阶后的目标必须可达');
+  assertTrue(r.nextStep !== null && r.nextStep[0] > 0,
+    `第一步须朝 +X 台壁，实测 ${JSON.stringify(r.nextStep)}`);
+});
+
+test('士兵 A*: maxStep=1 时同一地形不可达（零回归守卫）', () => {
+  const world = makeStepWorld(2);
+  const box = { halfWidth: SOLDIER.width / 2, height: SOLDIER.height, maxStep: ZOMBIE_MAX_STEP };
+  const r = planStep(world, [3.5, 10, 3.5], [9.5, 12, 3.5], { box });
+  assertFalse(r.reachable, '丧尸口径下 2 格台阶仍是墙');
+});
+
+test('士兵 Service: 2 格深坑里的士兵能自己走出来（用户报的真实场景）', () => {
+  // 真实 WorldData：坑底 y=1，周围地面 y=3（2 格高差），玩家在坑外。
+  //
+  // ☠️☠️ **必须走真实帧序**：`soldiers.update`（编排/寻路拍）→ `entities.update`
+  // （Agent 决策 + 60Hz 物理）。首版只调前者，实测 240 拍位置恒 [2.5,1,0.5]、
+  // 速度恒 0、`nav.decisions=0` —— 那是在测「根本没推进」，与台阶能力无关。
+  const { world, registry, entities, soldiers } = makeSoldierFixture();
+  const stone = registry.idOf('stone');
+  for (let x = 6; x < 32; x++) {
+    for (let z = 0; z < 16; z++) {
+      world.setBlock(x, 1, z, stone);
+      world.setBlock(x, 2, z, stone);
+    }
+  }
+  const id = soldiers.spawn([2.5, 1, 8.5], { source: 'pit' });
+  assertTrue(id !== null, '前置：坑底落点合法');
+  // ☠️ **玩家必须远于站定环上界 20 格**（首版放 10 格外，实测假红）：
+  // 环内是纯侧向游走，士兵会沿 −Z 走出地板掉进虚空（y → −930），
+  // 根本不会朝台壁推进。取 24 格 ⇒ 径向推进分量 towardFar 生效。
+  const player = { position: [26.5, 3, 8.5], aabb: playerHitboxLocal(), speed: 0, grounded: true };
+  const e = entities.get(id);
+  e.state = {
+    ...e.state, mode: 'combat', awareness: 1, losVisible: true, losTimer: 99,
+    crouching: false, crouch: 0, peekT: 99,
+  };
+  let maxY = 1;
+  const dt = 1 / 60;
+  for (let i = 0; i < 600; i++) {
+    const cur = entities.get(id);
+    if (!cur) break;
+    // 钉站姿（否则蹲下时移动意图恒 0 —— 距离环用例已记的教训）
+    cur.state = { ...cur.state, crouching: false, crouch: 0, peekT: 99 };
+    const nowMs = 1000 + i * dt * 1000;
+    soldiers.update(dt, { playerPosition: player.position, nowMs });
+    entities.update(dt, {
+      world, registry, player, nowMs, ...soldiers.agentContext(),
+    });
+    maxY = Math.max(maxY, entities.get(id)?.state.position[1] ?? maxY);
+  }
+  const after = entities.get(id)?.state;
+  assertTrue(after !== undefined, '士兵不得消失');
+  assertTrue(maxY >= 3 - 1e-6, `必须爬上 2 格高差到 y=3，实测 maxY=${maxY}`);
+  assertTrue(after.position[0] > 6, `必须真的走出坑，实测 x=${after.position[0]}`);
+});
+
+test('士兵 Service: 3 格深坑里出不来（上限就是 2，真实帧序）', () => {
+  const { world, registry, entities, soldiers } = makeSoldierFixture();
+  const stone = registry.idOf('stone');
+  for (let x = 6; x < 32; x++) {
+    for (let z = 0; z < 16; z++) {
+      for (let y = 1; y <= 3; y++) world.setBlock(x, y, z, stone);
+    }
+  }
+  const id = soldiers.spawn([2.5, 1, 8.5], { source: 'pit3' });
+  assertTrue(id !== null, '前置：坑底落点合法');
+  const player = { position: [26.5, 4, 8.5], aabb: playerHitboxLocal(), speed: 0, grounded: true };
+  const e = entities.get(id);
+  e.state = {
+    ...e.state, mode: 'combat', awareness: 1, losVisible: true, losTimer: 99,
+    crouching: false, crouch: 0, peekT: 99,
+  };
+  let maxY = 1;
+  const dt = 1 / 60;
+  for (let i = 0; i < 600; i++) {
+    const cur = entities.get(id);
+    if (!cur) break;
+    cur.state = { ...cur.state, crouching: false, crouch: 0, peekT: 99 };
+    const nowMs = 1000 + i * dt * 1000;
+    soldiers.update(dt, { playerPosition: player.position, nowMs });
+    entities.update(dt, { world, registry, player, nowMs, ...soldiers.agentContext() });
+    maxY = Math.max(maxY, entities.get(id)?.state.position[1] ?? maxY);
+  }
+  assertTrue(maxY < 4 - 1e-6, `3 格高差不得上去，实测 maxY=${maxY}`);
 });

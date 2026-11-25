@@ -604,6 +604,7 @@ export class GuardianBossAgent extends BossAgent {
    * ⚠️ 门控不是 `onGround` 本身：只在「跳跃上升段」拒绝，下落中允许
    * （否则斜蹭台阶边沿时会先失去支撑再被前方台壁挡死）。
    * ⚠️ `zombieStepUpY` 恒抬 1 格 ⇒ `maxStep` 1.75 与 1.0 等价（见 config 注释）。
+   * 共用层自 v3.44 有 `resolveStepUpY`（按 maxStep 逐级试，士兵取 2），守卫本轮有意不转调。
    */
   _tryStepUp(world, x, y, z, onGround, vy) {
     if (!onGround && vy > 0) return false;

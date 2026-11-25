@@ -17,10 +17,16 @@ test('士兵: SOLDIER_TYPE 是稳定的字符串常量', () => {
   assertEqual(SOLDIER_TYPE, 'soldier');
 });
 
-test('士兵: 体形与丧尸逐位同尺寸（复用寻路缺省 box 的前提）', () => {
-  assertEqual(SOLDIER.width, ZOMBIE.width, '宽 = 丧尸宽（PathCache DEFAULT_BOX 可直接用）');
+test('士兵: 体形与丧尸同宽同高（复用寻路/碰撞几何的前提）', () => {
+  assertEqual(SOLDIER.width, ZOMBIE.width, '宽 = 丧尸宽');
   assertEqual(SOLDIER.height, ZOMBIE.height, '高 = 丧尸高');
-  assertEqual(SOLDIER.maxStep, ZOMBIE_MAX_STEP, '一格台阶 = 丧尸口径');
+});
+
+test('士兵: 上台阶上限 2 格，且严格强于丧尸（用户 2026-11-26）', () => {
+  // ☠️ 常量断言只能钉「意图」，不能证明能力生效 —— `maxStep` 在旧实现下是死值
+  // （`zombieStepUpY` 恒抬 1 格）。真实能力由 test-soldier-system.js 的物理用例守。
+  assertEqual(SOLDIER.maxStep, 2.0, '士兵能上 2 格');
+  assertTrue(SOLDIER.maxStep > ZOMBIE_MAX_STEP, '必须严格强于丧尸（只改士兵）');
 });
 
 test('士兵: 上限 10、血量 100、留尸 1.2s（用户裁定）', () => {

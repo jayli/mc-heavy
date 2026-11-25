@@ -16,11 +16,14 @@ export const SOLDIER_TYPE = 'soldier';
 /**
  * 体形与生命。
  *
- * ⚠️ **width/height/maxStep 与丧尸逐位相同是载荷性的**：`zombie-pathfinder.js` 的
+ * ⚠️ **width/height 与丧尸逐位相同是载荷性的**：`zombie-pathfinder.js` 的
  * `DEFAULT_BOX`、`zombieCollidesAt`、`steerIntentAabb` 的缺省参数全部按 0.6×1.8×1.0 标定。
- * 同尺寸 ⇒ 士兵可直接复用那一整套寻路/避障/物理，零新几何。改这三个值会静默让
+ * 同尺寸 ⇒ 士兵可直接复用那一整套寻路/避障/物理，零新几何。改这两个值会静默让
  * 「规划得出、物理走不通」（本仓已记的漂移形态）。
  * 上游 `radius 0.32`（直径 0.64）取整到 0.6 与丧尸对齐 —— 有意偏离，理由是复用。
+ *
+ * ⚠️ **`maxStep` 是唯一有意与丧尸不同的几何参数**（用户 2026-11-26）：士兵 2.0 / 丧尸 1.0。
+ * 它不影响 AABB，只影响「能抬多高」，且所有调用方都**显式传 box**（不用缺省值）。
  */
 export const SOLDIER = Object.freeze({
   /** 同时存活上限（用户裁定 10）。⚠️ 判定只数**活着的**，留尸不占名额 */
@@ -39,8 +42,18 @@ export const SOLDIER = Object.freeze({
    * （那会把尸体算进名额，形态是「打死后 1.2s 内按 C 没反应」而数值全对）。
    */
   deadLingerSeconds: 1.2,
-  /** 一格台阶上限（与丧尸 `ZOMBIE_MAX_STEP` 同值） */
-  maxStep: 1.0,
+  /**
+   * 台阶上限（格）—— **士兵 2 格，有意强于丧尸的 1 格**（用户 2026-11-26：
+   * 「现在 soldier 掉进坑里一般情况是出不来的……可以上 2 级台阶，三级台阶就上不去了」）。
+   *
+   * ⚠️⚠️ **光改本常量曾经无效**：旧实现的 `zombieStepUpY` 恒抬 1 格，`maxStep` 只是
+   * 上限门控 ⇒ 1.0 与 2.0 逐位等价（`docs/pitfalls.md`「maxStep 是死值」）。
+   * 现在共用层的 `resolveStepUpY` 按本值逐级试，它才真的生效。
+   *
+   * ⚠️ **渲染层的 `StepLift` 必须传同一个值**（`soldier-renderer.js`）：缺省封顶 1 格
+   * 会把 2 格抬升截断成「瞬时跳 1 格 + 缓动 1 格」。
+   */
+  maxStep: 2.0,
   /** 重力（格/秒²，与丧尸/玩家同口径 −24） */
   gravity: -24.0,
 });

@@ -688,6 +688,93 @@ test('士兵开火声：班组连射不互相打断，声道满则丢弃（不�
   expect(r.started, '起播数不得超过请求数（丢弃不得补发）').toBeLessThanOrEqual(r.requests);
 });
 
+// ---------------------------------------------------------------------------
+// 上台阶能力：2 格能上 / 3 格上不去（用户 2026-11-26）
+//
+// ☠️☠️ **玩家必须站在坑外的高台上且远于站定环上界 20 格**：环内是纯侧向游走，
+// 士兵不会朝坑壁推进（Node 侧已实测：10 格时它侧向走出地板掉进虚空）。
+// 取 26 格 ⇒ 径向推进 towardFar 生效，士兵必须爬上台壁才能靠近玩家。
+// ---------------------------------------------------------------------------
+
+/**
+ * 铺一个「坑底 + 高台」地形：x < wallX 保持玩家落地高度（坑底），
+ * x >= wallX 堆高 stepH 格（顶面 = by + stepH）。士兵生在坑底，玩家在高台上。
+ */
+async function makePit(page, { stepH, radius = 30 }) {
+  return page.evaluate(([h, r]) => {
+    const g = window.__MC_GAME__;
+    const p = g.player.physics.pos;
+    const bx = Math.floor(p.x), by = Math.floor(p.y), bz = Math.floor(p.z);
+    const stone = g.registry.idOf('stone');
+    const wallX = bx + 4;
+    for (let dx = -8; dx <= r; dx++) {
+      for (let dz = -8; dz <= 8; dz++) {
+        const x = bx + dx, z = bz + dz;
+        // 坑底地板（by-1）+ 清空 by..by+6
+        g.editor.setBlock({ x, y: by - 1, z, id: stone });
+        for (let dy = 0; dy <= 6; dy++) g.editor.setBlock({ x, y: by + dy, z, id: 0 });
+        if (x >= wallX) {
+          for (let dy = 0; dy < h; dy++) g.editor.setBlock({ x, y: by + dy, z, id: stone });
+        }
+      }
+    }
+    return { bx, by, bz, wallX };
+  }, [stepH, radius]);
+}
+
+for (const stepH of [2, 3]) {
+  test(`士兵上台阶：${stepH} 格高台${stepH === 2 ? '能爬上去' : '爬不上去'}（真实地形 + 真实 AI）`, async ({ page }) => {
+    test.setTimeout(240_000);
+    await page.goto(URL);
+    await waitWorldReady(page);
+    await gotoOpenField(page);
+    await waitPlayerLanded(page);
+    const f = await makePit(page, { stepH });
+    const r = await page.evaluate(async ([bx, by, bz, wallX, h]) => {
+      const g = window.__MC_GAME__;
+      // 玩家搬到高台上、远于站定环上界（26 格）
+      const topY = by + h;
+      g._teleportTo(wallX + 22, topY + 2, bz);
+      await new Promise((res) => setTimeout(res, 2000));
+      const id = g.soldiers.spawn([bx + 0.5, by, bz + 0.5], { source: 'pit-spec' });
+      if (!id) return { error: 'spawn 失败' };
+      const e = g.entities.get(id);
+      e.state = {
+        ...e.state, mode: 'combat', awareness: 1, losVisible: true, losTimer: 99,
+        crouching: false, crouch: 0, peekT: 99,
+      };
+      let maxY = by;
+      const samples = [];
+      for (let i = 0; i < 160; i++) {
+        const cur = g.entities.get(id);
+        if (!cur) break;
+        // 钉站姿（蹲下时移动意图恒 0 —— 距离环用例已记的教训）
+        cur.state = { ...cur.state, crouching: false, crouch: 0, peekT: 99 };
+        await new Promise((res) => setTimeout(res, 100));
+        const now = g.entities.get(id);
+        if (!now) break;
+        maxY = Math.max(maxY, now.state.position[1]);
+        if (i % 20 === 0) samples.push([+now.state.position[0].toFixed(2), +now.state.position[1].toFixed(2)]);
+      }
+      const after = g.entities.get(id)?.state;
+      return {
+        maxY: +maxY.toFixed(3), topY, by, wallX,
+        finalX: after ? +after.position[0].toFixed(2) : null,
+        finalY: after ? +after.position[1].toFixed(2) : null,
+        samples,
+      };
+    }, [f.bx, f.by, f.bz, f.wallX, stepH]);
+    expect(r.error, JSON.stringify(r)).toBeUndefined();
+    if (stepH === 2) {
+      expect(r.maxY, `必须爬上 2 格高台（顶面 y=${r.topY}），实测 maxY=${r.maxY}`).toBeGreaterThanOrEqual(r.topY - 1e-6);
+      expect(r.finalX, `必须真的越过台壁 x=${r.wallX}，实测 ${r.finalX}`).toBeGreaterThan(r.wallX);
+    } else {
+      expect(r.maxY, `3 格高台不得上去（顶面 y=${r.topY}），实测 maxY=${r.maxY}`).toBeLessThan(r.topY - 1e-6);
+      expect(r.finalX, `不得穿墙 x=${r.wallX}，实测 ${r.finalX}`).toBeLessThan(r.wallX);
+    }
+  });
+}
+
 test('draw call：无士兵 = 基线，有士兵 = 基线 + 7', async ({ page }) => {
   test.setTimeout(200_000);
   // ⚠️ 关阴影：日夜循环下阴影重渲帧会造成 draw 尖峰（zombies.spec 已记该 flaky）

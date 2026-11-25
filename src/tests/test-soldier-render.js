@@ -256,6 +256,55 @@ test('士兵渲染: 每只士兵的实例矩阵落在自己的位置（撞车会
   }
 });
 
+// ---------------------------------------------------------------------------
+// 上 2 格台阶的观感（用户 2026-11-26 裁定「整段 2 格都缓动」）
+//
+// ☠️☠️ `StepLift` 缺省封顶 1 格 ⇒ 不传 maxLag 时 `trigger(2)` 只欠下 −1，
+// 画面上是「瞬时跳 1 格 + 缓动 1 格」。判据必须落在**偏移量本身**（−2），
+// 而不是「最终追平了物理 y」—— 后者在截断版下也成立（零判别力）。
+// ---------------------------------------------------------------------------
+
+test('士兵渲染: 一次抬 2 格时整段欠下 −2 偏移（不是被截断成 −1）', () => {
+  const { renderer, entities } = makeRenderFixture(1);
+  renderer.sync(entities, 0);                     // 首帧对齐（y=1）
+  const lifted = [{
+    ...entities[0],
+    state: createSoldierState({ ...entities[0].state, position: [0.5, 3, 0.5] }),
+  }];
+  renderer.sync(lifted, 16);                      // 物理瞬时 +2
+  // ☠️ 同一帧里 `trigger` 之后立即跑了一次 `update(dt)` ⇒ 偏移已经衰减了 16ms。
+  // 首版断言「恰等 −2」是错的（实测 −1.6506）—— 阈值取**衰减后的理论值**，
+  // 不是放宽：−2·e^(−12·0.016) = −1.65061…，而截断版是 −1·e^(…) = −0.8253。
+  const off = renderer.liftOffsetOf(0);
+  const wantFull = -SOLDIER.maxStep * Math.exp(-12 * 0.016);
+  assertTrue(Math.abs(off - wantFull) < 1e-6,
+    `偏移须是整段 ${SOLDIER.maxStep} 格衰减后的 ${wantFull.toFixed(6)}，实测 ${off}`);
+  assertTrue(off < -1.5, `必须明显超过缺省封顶 1 格所能给出的 −0.825，实测 ${off}`);
+  assertTrue(Math.abs(renderer.renderYOf(0) - (3 + off)) < 1e-9,
+    `renderY 须含偏移，实测 ${renderer.renderYOf(0)} vs ${3 + off}`);
+});
+
+test('士兵渲染: 2 格抬升后单调上升且 ~200ms 内追平 85%', () => {
+  const { renderer, entities } = makeRenderFixture(1);
+  renderer.sync(entities, 0);
+  const lifted = [{
+    ...entities[0],
+    state: createSoldierState({ ...entities[0].state, position: [0.5, 3, 0.5] }),
+  }];
+  let prev = -Infinity;
+  let last = 0;
+  for (let i = 1; i <= 13; i++) {
+    renderer.sync(lifted, i * 16);
+    const y = renderer.renderYOf(0);
+    assertTrue(y >= prev - 1e-9, `须单调上升，第 ${i} 帧 ${y} < ${prev}`);
+    prev = y;
+    last = y;
+  }
+  // 208ms 后残差 ≤ 15%（与玩家相机/丧尸同一口径：DECAY_RATE=12）
+  assertTrue(3 - last <= 2 * 0.15,
+    `208ms 后残差须 ≤15%，实测还差 ${(3 - last).toFixed(4)} 格`);
+});
+
 test('士兵渲染: dispose 从 scene 摘掉全部 mesh', () => {
   const { scene, renderer } = makeRenderFixture(1);
   const before = scene.children.length;

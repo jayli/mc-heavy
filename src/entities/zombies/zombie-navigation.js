@@ -3,7 +3,8 @@
 // 同构层：**无 DOM、无 three、不新建 Worker**（`npm run check:arch` 静态门守）。
 // 本模块是三件事的**唯一实现**（红线 1：同一判据只留一份，物理与探针共用）：
 //   ① `zombieCollidesAt` —— 丧尸 AABB 0.6×1.8×0.6 与实心方块是否相交
-//   ② `zombieStepUpY`    —— 一格台阶的落点脚底高度
+//   ② `resolveStepUpY`  —— 多级台阶的落点脚底高度（按 box.maxStep）
+//   ②b `zombieStepUpY`  —— 一格台阶落点（maxStep=1 的特例，既有调用方保留）
 //   ③ `steerIntent`      —— 局部转向探针（只换方向、不改速度长度）
 //
 // ## 为什么避障在主线程而不在 worker
@@ -129,15 +130,55 @@ export function displaceGroundEntity(world, position, dx, dz, halfWidth, height)
 }
 
 /**
- * 一格台阶的落点脚底高度（物理 `tryStepUp` 与探针共用，红线 1）。
+ * 一格台阶的落点脚底高度（`resolveStepUpY` 的 `maxStep=1` 特例，保留给既有调用方）。
  *
  * `+0.01` 是浮点容错：站立时脚底 ≈ 整数，不加容错会算出「上一格」而不是「上两格」。
  * 漂移的形态是「探针以为能上台阶、物理抬不上去」→ 丧尸贴着台阶反复试探（静默）。
+ *
+ * ⚠️ **恒抬 1 格**：`maxStep` 只做上限门控 ⇒ 传 1.75 与 1.0 逐位等价（已记 pitfalls）。
+ * 要支持 >1 格请用 `resolveStepUpY`，**不要改本函数** —— 丧尸/焰魔/守卫/玩家都读它。
  *
  * @param {number} y 当前脚底高度 @returns {number} 抬升后的脚底高度
  */
 export function zombieStepUpY(y) {
   return Math.floor(y + 0.01) + 1;
+}
+
+/**
+ * 多级台阶的落点脚底高度（物理 `tryStepUpAabb`、避障探针、A\* 的 `standable`、
+ * 各 service 的 `isWalkable` **共用这一份**，红线 1）。
+ *
+ * 从 `floor(y+0.01)+1` 逐级往上试，取**第一个 AABB 不碰撞**的高度；抬升量超 `maxStep` 即停。
+ * 全不可站返回 `null`。
+ *
+ * ## 为什么需要它（用户 2026-11-26：士兵要能上 2 格台阶）
+ *
+ * 旧实现只有 `zombieStepUpY`（恒抬 1 格）+ 「抬升量 ≤ maxStep」门控 ⇒ **`maxStep` 是死值**，
+ * 把它写成 2.0 也上不了 2 格（实测：2 格台阶前卡在 x=4.70、y 恒 10）。
+ *
+ * ## 零回归
+ *
+ * `maxStep = 1.0` 时循环只跑一次（`base+1`，抬升量 ≤ 1）⇒ 与直接调 `zombieStepUpY`
+ * **逐位等价**。丧尸 / 焰魔 / 末影守卫 / 玩家的能力一格不动。
+ *
+ * ⚠️ **不会「凭空爬墙」**：候选高度必须 AABB 无碰撞，而高墙内部任何高度都撞
+ * （实测：空中贴 8 格高墙下落 120 帧，maxY 恒 18.00 不升高）。
+ *
+ * @param {{isSolid(x:number,y:number,z:number):boolean}} world
+ * @param {number} x 脚底中心 x @param {number} y 当前脚底 y @param {number} z 脚底中心 z
+ * @param {number} halfWidth @param {number} height AABB 参数
+ * @param {number} maxStep 最大抬升（格）
+ * @returns {number|null} 可站的脚底高度；全不可站返回 null
+ */
+export function resolveStepUpY(world, x, y, z, halfWidth, height, maxStep) {
+  const base = Math.floor(y + 0.01);
+  const levels = Math.floor(Number.isFinite(maxStep) ? maxStep : 0);
+  for (let k = 1; k <= levels; k++) {
+    const lifted = base + k;
+    if (lifted - y > maxStep) break;
+    if (!aabbCollidesAt(world, x, lifted, z, halfWidth, height)) return lifted;
+  }
+  return null;
 }
 
 /**
@@ -224,8 +265,7 @@ function probeClearAabb(world, x, y, z, dx, dz, halfWidth, height, maxStep, prob
   const tx = x + dx * probeDistance;
   const tz = z + dz * probeDistance;
   if (!aabbCollidesAt(world, tx, y, tz, halfWidth, height)) return true;
-  const lifted = zombieStepUpY(y);
-  return lifted - y <= maxStep && !aabbCollidesAt(world, tx, lifted, tz, halfWidth, height);
+  return resolveStepUpY(world, tx, y, tz, halfWidth, height, maxStep) !== null;
 }
 
 // ---------------------------------------------------------------------------
@@ -279,9 +319,12 @@ export function moveAxisAabb(state, world, delta, axis, box, zeroVelocityOnHit) 
 }
 
 /**
- * 自动上台阶：水平碰撞时，把脚底抬到上一格整数面。
- * 用完整 AABB 检测保证 2 格高墙抬不上去（目标位仍碰撞）、头顶净空不足抬不上去
+ * 自动上台阶：水平碰撞时，把脚底抬到 `box.maxStep` 以内**最低的可站整数面**。
+ * 用完整 AABB 检测保证超高墙抬不上去（目标位仍碰撞）、头顶净空不足抬不上去
  * （1.8 高需 2 格净空）—— 与 player/physics.js `_tryStepUp` 同一判据。
+ *
+ * ⚠️ **`maxStep` 不再是死值**（用户 2026-11-26）：改读 `resolveStepUpY` 后，
+ * `maxStep=2` 真的能一次抬 2 格。`maxStep=1` 的调用方行为逐位不变。
  *
  * **门控不是 `onGround`（v1.72，与 player/physics.js 同步改）**：只在「跳跃上升段」拒绝，
  * 下落中允许 —— 否则实体斜蹭台阶边沿时会先失去支撑（`onGround=false`）再被前方台壁挡死，
@@ -294,15 +337,15 @@ export function moveAxisAabb(state, world, delta, axis, box, zeroVelocityOnHit) 
 export function tryStepUpAabb(state, world, box) {
   if (!state.onGround && state.velocity[1] > 0) return false;
   const oldY = state.position[1];
-  const lifted = zombieStepUpY(oldY); // 唯一实现在本文件（探针读同一份）
-  if (lifted - oldY > box.maxStep) return false; // 超过一格台阶不登（mc-lite MAX_STEP 语义）
+  // 唯一实现在本文件的 `resolveStepUpY`（探针与 A* 读同一份）。
+  // maxStep=1 时与旧的 `zombieStepUpY` 逐位等价；士兵（maxStep=2）能一次上 2 格。
+  const lifted = resolveStepUpY(
+    world, state.position[0], oldY, state.position[2], box.halfWidth, box.height, box.maxStep,
+  );
+  if (lifted === null) return false;
   state.position[1] = lifted;
-  if (!aabbCollidesAt(world, state.position[0], lifted, state.position[2], box.halfWidth, box.height)) {
-    state.velocity[1] = 0;
-    return true;
-  }
-  state.position[1] = oldY;
-  return false;
+  state.velocity[1] = 0;
+  return true;
 }
 
 /**

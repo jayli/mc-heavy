@@ -19,7 +19,7 @@ import {
 import { SoldierAgent, createSoldierState } from './soldier-agent.js';
 import { normalizePosition, raycastAabbSlab } from '../entity-types.js';
 import {
-  aabbCollidesAt, zombieStepUpY, displaceGroundEntity, physicsStepAabb,
+  aabbCollidesAt, resolveStepUpY, displaceGroundEntity, physicsStepAabb,
 } from '../zombies/zombie-navigation.js';
 import { PathCache } from '../zombies/zombie-pathfinder.js';
 import { decideStep, memoryFor } from '../zombies/zombie-navigator.js';
@@ -30,7 +30,7 @@ export const SOLDIER_AABB = Object.freeze({
   max: Object.freeze([SOLDIER.width / 2, SOLDIER.height, SOLDIER.width / 2]),
 });
 
-/** 传给共用物理的体型（与丧尸逐位相同，见 soldier-config 的注释） */
+/** 传给共用物理的体型（宽/高与丧尸逐位相同；maxStep 有意取 2，见 soldier-config） */
 const PHYS_BOX = Object.freeze({
   halfWidth: SOLDIER.width / 2,
   height: SOLDIER.height,
@@ -349,9 +349,9 @@ export class SoldierService {
     if (!Array.isArray(playerPosition)) return;
     const isWalkable = (w, bx, y, bz) => {
       if (!aabbCollidesAt(w, bx + 0.5, y, bz + 0.5, SOLDIER.width / 2, SOLDIER.height)) return true;
-      const lifted = zombieStepUpY(y);
-      return lifted - y <= SOLDIER.maxStep
-        && !aabbCollidesAt(w, bx + 0.5, lifted, bz + 0.5, SOLDIER.width / 2, SOLDIER.height);
+      return resolveStepUpY(
+        w, bx + 0.5, y, bz + 0.5, SOLDIER.width / 2, SOLDIER.height, SOLDIER.maxStep,
+      ) !== null;
     };
     const active = this.activeEntities().filter((e) => !e.state.dead);
     // 清理已消失士兵的寻路残留（column 卸载绕过本服务）

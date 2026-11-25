@@ -10,15 +10,15 @@
 //
 // ## 与物理的关系
 //
-// 可走性**复用** `zombie-navigation.js`（红线 1）：一层台阶算可走（物理 step-up 会抬上去），
-// 两格高算墙。写第二份判据会漂移成「规划得出、物理走不通」，而那种缺陷只能靠实玩发现。
+// 可走性**复用** `zombie-navigation.js`（红线 1）：`box.maxStep` 以内的台阶算可走（物理 step-up 会抬上去），
+// 更高的算墙。写第二份判据会漂移成「规划得出、物理走不通」，而那种缺陷只能靠实玩发现。
 //
 // ## 非目标
 //
 // 不做跨层寻路（不搜上下楼梯）—— 三维搜索成本 ×几十，而当前玩法里丧尸追的是同一层平面上的
 // 玩家。不做全图寻路 —— 半径 24 格有界，超出即 `truncated`（回落到 v1 的局部决策）。
 import { PATHFIND, DIRECTION_ORDER, ZOMBIE, ZOMBIE_MAX_STEP } from './zombie-config.js';
-import { AABB_EPSILON, aabbCollidesAt, zombieStepUpY } from './zombie-navigation.js';
+import { AABB_EPSILON, aabbCollidesAt, resolveStepUpY } from './zombie-navigation.js';
 
 /**
  * 缺省的可走性体型 = **丧尸**（v2.61 参数化后的缺省值，保证零回归）。
@@ -57,7 +57,7 @@ export function directionNameOf(dx, dz) {
 }
 
 /**
- * 该格能否站（一层台阶算能站 —— 与物理 step-up 同口径）。
+ * 该格能否站（`box.maxStep` 以内的台阶算能站 —— 与物理 step-up 同口径）。
  *
  * ⚠️ **快路径是载荷性的**（实测：BFS 最坏单次 0.75ms，其中 20% 花在 `getBlockId`）。
  * 绝大多数格是「空 + 脚下实心」，那种情况下完整 AABB 扫描（丧尸 3×3×2 = 6~18 格、
@@ -87,9 +87,7 @@ function standable(world, x, y, z, box) {
     if (clear) return true;
   }
   if (!aabbCollidesAt(world, x + 0.5, y, z + 0.5, box.halfWidth, box.height)) return true;
-  const lifted = zombieStepUpY(y);
-  return lifted - y <= box.maxStep
-    && !aabbCollidesAt(world, x + 0.5, lifted, z + 0.5, box.halfWidth, box.height);
+  return resolveStepUpY(world, x + 0.5, y, z + 0.5, box.halfWidth, box.height, box.maxStep) !== null;
 }
 
 /**
