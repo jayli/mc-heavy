@@ -87,8 +87,17 @@ test('puddle reflect: 装配层在反射 pass 前后成对调用守卫与替身'
   const fs = await import('node:fs');
   const src = fs.readFileSync(new URL('../core/game.js', import.meta.url), 'utf8');
   const i = src.indexOf('beginReflectGuard()');
-  const seg = src.slice(i, i + 900);
+  // ⚠️ **窗口按「到 endReflectGuard() 为止」取，不用固定字符数**（v3.41 实测踩坑）：
+  // 原写法 `slice(i, i + 900)` 在本段插入阴影刷新权隔离的注释后，`endReflectGuard()`
+  // 落到 900 字符之外（实测跨度 1388）⇒ 判据对**正确的代码**真红。
+  // 固定窗口会把「注释变长」误报成「守卫漏调」——判据须锚在结构上，不锚在字节数上。
+  const end = src.indexOf('endReflectGuard()', i);
+  assertTrue(end > i, 'beginReflectGuard() 之后必须能找到 endReflectGuard()');
+  const seg = src.slice(i, end + 'endReflectGuard()'.length);
   assertTrue(seg.includes('beginReflectMaterialSwap()'), '守卫后必须换替身材质');
   assertTrue(/finally\s*\{[\s\S]*?swap\(\)[\s\S]*?endReflectGuard\(\)/.test(seg),
     '必须在 finally 里先恢复材质再结束守卫（异常时不留永久替身）');
+  // v3.41：反射期必须冻结阴影刷新权并在 finally 里写回（否则替身 ShadowNode 抢走主贴图刷新）
+  assertTrue(/needsUpdate\s*=\s*false[\s\S]*?finally\s*\{[\s\S]*?needsUpdate\s*=\s*\w+/.test(seg),
+    '反射期须冻结 shadow.needsUpdate 并在 finally 写回（v3.41 阴影刷新权隔离）');
 });

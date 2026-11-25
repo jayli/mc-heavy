@@ -121,6 +121,56 @@
 
 ## 渲染与 GPU
 
+### ☠️☠️☠️ 同一盏灯挂两个 `ShadowNode` ⇒ 争抢单一 `needsUpdate` 却共享 `shadow.matrix`（v3.41，v3.40 五轮没找到的真根因）
+
+用户报「走动时身边影子跳变」+「整片沙漠突然全是阴影」。**真根因不在阴影管线本身，
+在水面倒影的反射替身材质**：`render-world.js` 的 `beginReflectMaterialSwap()` 用
+`createVoxelMaterials(atlas, this._sunLight, null)` 造替身（v3.33 为避 WebGPU 读写冲突），
+而 `materials.js` 里 `shadow(sunLight)` **每次调用都 new 一个 ShadowNode** ⇒ 全场景多出第二个。
+
+- **共享与独立的部分要分清**（three r185.1）：`shadow.needsUpdate`（单一标志）、
+  `shadow.matrix`（单一 Matrix4）、`shadow.camera` 都是**共享**的；
+  而 `shadowMap` / `vsmShadowMapHorizontal` 是 `setupShadow` 里 `builder.createRenderTarget`
+  ⇒ **每 node 独立**。这个「标志共享、贴图独立」的组合就是缺陷。
+- **失效链**：`_renderWaterReflection()` 在主 `renderer.render()` **之前**跑 ⇒ 替身 node 先
+  消费 `needsUpdate`（渲完置 false，`three.webgpu.js:45504`），并在 `renderShadow` 里
+  `updateMatrices` 写**共享矩阵**（:45331）⇒ 主 node 看到 false 不渲 ⇒
+  **主 pass 用新矩阵采样旧贴图**。反射每 2 帧 + 200ms 节流 ⇒ 刷新权随机交替 ⇒「时有时无」。
+- **修法**：反射期把 `needsUpdate` 暂存置 false、`finally` 里原样写回（`game.js`）。
+  代价是替身自己的贴图长期陈旧 ⇒ **倒影里**地形阴影偏旧，主画面不受影响。
+  ⚠️ 不要为修倒影让替身也渲 —— 那正是成因。
+- ☠️ **判据必须量「主 pass 实际采样那张 RT 的刷新归属」**，不是「阴影刷新有没有发生」。
+  主 RT 身份要从 `renderObject.getBindings()` 按 `texture.id` 反查
+  （实测主 node 是 **idx=2**，不是第 0 个 —— 按序号假设会量错对象）。
+  实测 40 帧每帧 request：主 RT 只刷 **1** 次，其余全落在别的 RT。
+- ☠️ **只量矩阵一致性抓不到它**（v3.40 第 2 轮 desync 恒 0 的原因）：矩阵的 JS 值与 GPU 字节
+  **都是新的、完全一致**，旧的是**贴图内容**那一半。判据要落在
+  `gap = (z − mean) × (far − near)` 守恒 + 主 RT 刷新次数（下界）**与其它 node 刷新次数 = 0（上界）**。
+- **交替对照 3 轮**（每轮换源码、新页面）：修复态 mainRefresh 62/64/61、otherRefresh **恒 0**、
+  gapSpread **恒 0**；缺陷态 mainRefresh 13/11/7、otherRefresh 49/51/54、gapSpread 245/11.5/245、flips 恒 2。
+
+### ⚠️⚠️ 「采样点在影区」不能写成 sanity floor（v3.41，负向验证的判别力陷阱）
+
+新 Tier 4 用例首版把 `gapMin > 0` / `litFrac < 0.5` 放在**前提断言**里。
+负向注入后**先撞 sanity 而红**（实测 gapMin −236.116）⇒ 证明不了「主判据有判别力」。
+处置：影区归属改由**主判据**承担（修复态 gap 恒正 2.6838，缺陷态掉负），
+sanity 只留「与缺陷无关的观测前提」（反射跑了 / 替身存在 / 相机动了 / 采样入图）。
+改完负向落在主判据 `mainRefresh=49 < 60` 上，判别力才成立。
+
+### ⚠️⚠️ 反射类夹具必须让 pass **真的跑**：`reflectHeightFade` 读的是**相机** y（v3.41）
+
+首版标定探针照抄既有 `setupShadowPlatform`（平台 y=80、相机 y=102），
+而 `REFLECT_HEIGHT_ZERO=48` ⇒ fade=0 ⇒ 反射 pass 整个不跑 ⇒ 替身不消费刷新权 ⇒ **判据全绿毫无意义**
+（实测 `reflectDelta=0`）。处置：平台压到 y=6、相机 y≈9。
+⚠️ 同源坑：手动摆光源会与帧循环的 `_updateSunPosition()` 打架（实测 z 在两个值间跳）⇒
+夹具应把光源交给游戏自己的移动阈值路径。
+
+### ⚠️ 源码结构型断言不要用固定字符窗口（v3.41，既有守卫被注释长度误伤）
+
+`test-puddle-reflect.js` 用 `src.slice(i, i + 900)` 取反射装配段。本轮在该段插入注释后
+`endReflectGuard()` 落到 900 字符外（实测跨度 **1388**）⇒ 守卫对**正确的代码**真红。
+处置：窗口按「到 `endReflectGuard()` 为止」取。判据要锚在结构上，不锚在字节数上。
+
 ### ☠️☠️☠️ 「把光源沿太阳方向的分量钉死」会把阴影深度推出远平面（v3.40，我引入的回归）
 
 用户报「眼前的树一会有影一会没影」，我据「沿 dir 平移会改变正交深度编码」这个**正确的观察**，

@@ -2263,12 +2263,27 @@ export class Game {
     // 换成**不引用该 RT** 的替身材质（单靠 uPuddleReflect=0 不够：texture 节点
     // 仍在 bind group 里，WebGPU 按绑定算 usage ⇒ writable usage 冲突、整帧作废）。
     const swap = this.renderWorld.beginReflectMaterialSwap();
+    // v3.41 阴影刷新权隔离（根因见 docs/shadow-root-cause-2026-11-25.md）：
+    // 替身材质由同一个 `createVoxelMaterials(atlas, sunLight, null)` 造 ⇒ 它**也**带一个
+    // `ShadowNode`。两个 node 共享 `sunLight.shadow` 的**单一** `needsUpdate` 标志与
+    // **单一** `shadow.matrix`，却各自持有**独立**的 VSM 贴图。反射 pass 在主 pass 之前跑
+    // ⇒ 替身先消费 `needsUpdate`：渲自己的贴图 + 把共享矩阵更新到当前相机；主 pass 于是
+    // 不刷新（贴图陈旧）却用新矩阵采样 ⇒「矩阵新 + 贴图旧」错配 ⇒ 走动时身边影子跳变、
+    // 整片地形明暗错乱（用户报障 A/B 同源）。
+    // 处置：反射期把刷新权暂存并置 false，pass 结束后原样写回 ⇒ 替身不消费、主 pass 正常消费。
+    // ⚠️ **必须 try/finally 成对**（与 swap / guard 同一不变式）：异常时若把 false 留在标志上，
+    // 该帧的刷新请求会被静默吞掉。
+    // ⚠️ 代价（已接受）：替身自己的 VSM 贴图因此长期陈旧 ⇒ **倒影里**的地形阴影偏旧；
+    // 主画面阴影不受影响。不要为修倒影去让替身也渲 —— 那正是本缺陷的成因。
+    const shadowRefreshHeld = this.sunLight.shadow.needsUpdate;
+    this.sunLight.shadow.needsUpdate = false;
     try {
       this.ocean.renderReflection(cam, this.ocean.plane.material, hidden);
       // v3.33：**pass 跑完立即把真 RT 同步给 clone**（积水真倒影采样的是 clone）。
       // 不同步 ⇒ clone 停在占位 RT ⇒ 水汪里没倒影（实玩截图才发现，数值判据全绿）。
       this.ocean.syncReflectTexture();
     } finally {
+      this.sunLight.shadow.needsUpdate = shadowRefreshHeld;
       swap();
       this.renderWorld.endReflectGuard();
     }

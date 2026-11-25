@@ -1177,3 +1177,214 @@ test('纹素对齐：固定世界点在分数纹素步长移动下亮度恒定�
 
   await page.evaluate(() => window.__MC_GAME__.popModal('tier4-shadow'));
 });
+
+/**
+ * 用例 11（Tier 4）：**反射 pass 不得抢走主阴影贴图的刷新权**（v3.41 回归门）。
+ *
+ * 根因（`docs/shadow-root-cause-2026-11-25.md`）：水面倒影的反射替身材质由同一个
+ * `createVoxelMaterials(atlas, sunLight, null)` 造 ⇒ 它**也**带一个 `ShadowNode`。
+ * 两个 node 共享 `sunLight.shadow` 的**单一** `needsUpdate` 与**单一** `shadow.matrix`，
+ * 却各自持有**独立**的 VSM 贴图。反射 pass 在主 pass 之前跑（`game.js` 的
+ * `_renderWaterReflection()`）⇒ 替身先消费刷新权：渲自己的贴图 + 把共享矩阵更新到当前相机；
+ * 主 pass 于是不刷新（贴图陈旧）却用新矩阵采样 ⇒「矩阵新 + 贴图旧」错配。
+ * 表现：走动时身边影子跳变（报障 A）、整片地形明暗错乱（报障 B）。
+ *
+ * **判据落在不变式上，不量屏幕亮度**（复盘 §8.2 / §6.5 教训）：
+ *   ① 主 pass 实际采样那张 VSM RT 的**刷新次数** ≥ 强制请求次数（下界），
+ *      且**其它 node 的刷新次数 = 0**（上界 —— 复盘 §6.6：只设下界会让修过头也绿）；
+ *   ② 固定世界点的世界深度差 `gap = (z − mean) × (far − near)` **守恒**；
+ *   ③ 该点 `isLit`（此刻有影/无影）**零翻转**。
+ *
+ * **实测标定**（探针 `tests/tmp-shadow-calib2.spec.mjs`，同夹具各跑一次）：
+ *   · 修复态：forced 60 → mainRefresh **62**、otherRefresh **0**、gapSpread **0**、flips **0**
+ *   · 缺陷态（注掉冻结与写回）：mainRefresh **14**、otherRefresh **48**、
+ *     gapSpread **11.64**（−2.44~9.20）、flips **2**
+ * 阈值：mainRefresh ≥ forced（缺陷 14 差 4.3×）、otherRefresh = 0（缺陷 48）、
+ * gapSpread ≤ 0.5（缺陷 11.64 差 23×）、flips = 0。均不贴线。
+ *
+ * ⚠️ **夹具必须让反射 pass 真的跑**：`reflectHeightFade` 读的是**相机** y（不是玩家 y），
+ * 高于 `REFLECT_HEIGHT_ZERO=48` 时 fade=0 ⇒ pass 整个不跑 ⇒ 替身不消费 ⇒ 用例恒真。
+ * 故平台压在 y=6、相机 y≈9（首版探针把平台放 y=80 实测 reflectDelta=0，判据全绿毫无意义）。
+ * ⚠️ **光源交给游戏自己的移动阈值路径**，不手动摆：手动摆会与帧循环的
+ * `_updateSunPosition()` 打架（首版实测 z 在两个值间跳，夹具无效）。
+ * ⚠️ 主 RT 身份**必须**从 `renderObject.getBindings()` 里按 texture.id 反查，
+ * 不能假设「第 0 个 ShadowNode 就是主的」（实测主 node 是 idx=2）。
+ */
+test('反射 pass 不得抢走主阴影贴图刷新权（走动时影子跳变回归门）', async ({ page }) => {
+  test.setTimeout(300_000);
+  await page.goto(URL);
+  await waitWorldSettled(page);
+
+  const setup = await page.evaluate(() => {
+    const g = window.__MC_GAME__;
+    const P = 6;                       // 平台顶面 y：相机 y≈9 < REFLECT_HEIGHT_FULL ⇒ 反射 fade=1
+    const p0 = g.player.physics.pos;
+    const ox = Math.floor(p0.x), oz = Math.floor(p0.z);
+    const stone = g.registry.idOf('stone');
+    for (let y = P + 1; y <= 60; y++)
+      for (let dx = -16; dx <= 16; dx++) for (let dz = -16; dz <= 16; dz++)
+        if (g.world.getBlockId(ox + dx, y, oz + dz) !== 0) g.editor.setBlock({ x: ox + dx, y, z: oz + dz, id: 0 });
+    for (let dx = -16; dx <= 16; dx++) for (let dz = -16; dz <= 16; dz++)
+      g.editor.setBlock({ x: ox + dx, y: P, z: oz + dz, id: stone });
+    for (let dy = 1; dy <= 3; dy++) g.editor.setBlock({ x: ox, y: P + dy, z: oz - 4, id: stone });
+    p0.x = ox + 0.5; p0.y = P + 1; p0.z = oz + 0.5;
+    g._lastShadowPos = { x: p0.x, y: p0.y, z: p0.z };
+    g._updateSunPosition();
+    g.pushModal('tier4-reflect-shadow');
+    for (const el of document.querySelectorAll('#hud-root > *, #crosshair, #settings-btn')) el.style.display = 'none';
+    g.setReflectEnabled(true);
+    return { ox, oz, P };
+  });
+  await waitWorldSettled(page);
+  await page.waitForTimeout(1500);
+
+  const r = await page.evaluate(async ({ ox, oz, P }) => {
+    /** VSM RT 是 RG16Float ⇒ 回读是半浮点位模式，须解码 */
+    const half = (h) => {
+      const s = (h & 0x8000) >> 15, e = (h & 0x7C00) >> 10, f = h & 0x03FF;
+      if (e === 0) return (s ? -1 : 1) * Math.pow(2, -14) * (f / 1024);
+      if (e === 31) return f ? NaN : (s ? -Infinity : Infinity);
+      return (s ? -1 : 1) * Math.pow(2, e - 15) * (1 + f / 1024);
+    };
+    const g = window.__MC_GAME__;
+    const rr = g.renderer;
+    const shadow = g.sunLight.shadow;
+    const p = g.player.physics.pos;
+
+    // 低空斜俯视：看得到平台，视线朝下（forwardY<0 ⇒ reflectVisible 过）
+    g.camera.up.set(0, 1, 0);
+    g.camera.position.set(ox + 0.5, P + 3, oz + 8.5);
+    g.camera.lookAt(ox + 0.5, P + 1, oz - 6);
+    g.camera.updateMatrixWorld();
+    g.camera.updateProjectionMatrix();
+
+    // 收集全部 ShadowNode（替身在首次反射时才惰构造 ⇒ 每帧补收）
+    const nodes = rr._nodes;
+    const found = [], seen = new Set(), rtIds = new Map();
+    const collect = () => {
+      for (const st of (nodes.nodeBuilderCache?.values?.() || [])) {
+        for (const n of (st.updateBeforeNodes || [])) {
+          if (n.isShadowNode && n.vsmShadowMapHorizontal && !seen.has(n)) {
+            seen.add(n); found.push(n);
+            rtIds.set(n.vsmShadowMapHorizontal.texture.id, found.length - 1);
+          }
+        }
+      }
+    };
+    collect();
+    // 主 RT = 主 pass（主相机 + opaque 通道）实际采样的那张
+    let mainIdx = null;
+    const bindings = rr._bindings;
+    const origUpd = bindings.updateForRender.bind(bindings);
+    bindings.updateForRender = function (ro) {
+      const out = origUpd(ro);
+      collect();
+      if (mainIdx === null && ro.object === g.renderWorld.meshes.opaque && ro.camera === g.camera) {
+        for (const bg of ro.getBindings()) for (const b of bg.bindings) {
+          if (b.isSampledTexture && rtIds.has(b.texture?.id)) mainIdx = rtIds.get(b.texture.id);
+        }
+      }
+      return out;
+    };
+    // 刷新归属：包每个 node 的 updateShadow
+    const refresh = [];
+    const hookAll = () => {
+      found.forEach((n, i) => {
+        if (n.__tier4Hooked) return;
+        n.__tier4Hooked = true;
+        const o = n.updateShadow.bind(n);
+        n.updateShadow = function (f) { refresh.push(i); return o(f); };
+      });
+    };
+    hookAll();
+
+    const near = shadow.camera.near, far = shadow.camera.far;
+    const W = shadow.mapSize.width, H = shadow.mapSize.height;
+    const WP = [ox + 0.5, P + 1.02, oz - 6.0];   // 石柱影子落点（柱在 oz-4，noon 影朝 −Z）
+    const proj = (m, q) => {
+      const [x, y, z] = q;
+      const o = [0, 0, 0, 0];
+      for (let i = 0; i < 4; i++) o[i] = m[i] * x + m[i + 4] * y + m[i + 8] * z + m[i + 12];
+      return [o[0] / o[3], o[1] / o[3], o[2] / o[3]];
+    };
+    const gaps = [], lits = [], targets = [];
+    const N = 60;
+    const refl0 = g.reflectScheduler.refreshes;
+    for (let i = 0; i < N; i++) {
+      p.x = ox + 0.5 + i;                // 沿 X 走 1 格/帧 ⇒ 每 5 帧触发游戏自己的光源重定位
+      p.y = P + 1; p.z = oz + 0.5;
+      shadow.needsUpdate = true;         // 每帧强制请求（隔离节流变量，唯一变量是刷新权归属）
+      hookAll();
+      await new Promise((rs) => requestAnimationFrame(() => rs()));
+      await new Promise((rs) => requestAnimationFrame(() => rs()));
+      const sc = proj(Array.from(shadow.matrix.elements), WP);
+      const px = Math.floor(sc[0] * W), py = Math.floor((1 - sc[1]) * H);
+      const rt = found[mainIdx]?.vsmShadowMapHorizontal;
+      if (rt && px >= 0 && px < W && py >= 0 && py < H) {
+        const buf = await rr.readRenderTargetPixelsAsync(rt, px, py, 1, 1);
+        const mean = half(buf[0]);
+        gaps.push(+((sc[2] - mean) * (far - near)).toFixed(4));
+        lits.push(sc[2] <= mean);
+      }
+      targets.push(+g.sunLight.target.position.x.toFixed(3));
+    }
+    bindings.updateForRender = origUpd;
+    let flips = 0;
+    for (let i = 1; i < lits.length; i++) if (lits[i] !== lits[i - 1]) flips++;
+    const mainRefresh = refresh.filter((i) => i === mainIdx).length;
+    const otherRefresh = refresh.filter((i) => i !== mainIdx).length;
+    return {
+      mainIdx, nodeCount: found.length, forced: N, mainRefresh, otherRefresh,
+      gapSpread: gaps.length ? +(Math.max(...gaps) - Math.min(...gaps)).toFixed(4) : null,
+      gapMin: gaps.length ? Math.min(...gaps) : null, gapMax: gaps.length ? Math.max(...gaps) : null,
+      flips, samples: gaps.length,
+      litFrac: lits.length ? +(lits.filter(Boolean).length / lits.length).toFixed(3) : null,
+      targetTravel: +(Math.max(...targets) - Math.min(...targets)).toFixed(3),
+      reflectDelta: g.reflectScheduler.refreshes - refl0,
+      gaps,
+    };
+  }, setup);
+
+  console.log('SUN-SHADOW REFRESH-OWNER:', JSON.stringify({ ...r, gaps: undefined }));
+
+  // sanity floor ①：反射 pass 须真的跑了 —— 否则替身不消费刷新权，用例恒真
+  expect(r.reflectDelta,
+    `反射 pass 须真的跑（相机 y 须低于 REFLECT_HEIGHT_ZERO）：实测只刷 ${r.reflectDelta} 次`)
+    .toBeGreaterThan(r.forced / 4);
+  // sanity floor ②：替身 ShadowNode 须真的存在（否则测不到争抢）
+  expect(r.nodeCount, `须存在 ≥2 个 ShadowNode（主 + 反射替身）：实测 ${r.nodeCount}`).toBeGreaterThanOrEqual(2);
+  expect(r.mainIdx, '须能从主 pass 的 bindings 反查到主 VSM RT').not.toBeNull();
+  // sanity floor ③：阴影相机须真的随玩家移动（否则「守恒」是因为什么都没做）
+  expect(r.targetTravel,
+    `阴影相机须真的移动（玩家走了 ${r.forced} 格）：target 位移 ${r.targetTravel}`)
+    .toBeGreaterThan(5);
+  // sanity floor ④：采样点须真的落在贴图内（否则 gap 序列为空，守恒判据恒真）
+  expect(r.samples, '采样点须落在贴图内').toBeGreaterThan(r.forced * 0.8);
+  // ⚠️ **「采样点在影区」不能写成 sanity floor**（v3.41 首版踩坑）：
+  // 用 `gapMin > 0` / `litFrac < 0.5` 当前提，会让**缺陷态先撞 sanity 而红**——
+  // 负向验证就证明不了「主判据有判别力」（实测缺陷态 gapMin −236.116 先触发 sanity）。
+  // 影区归属改由**主判据 ④** 承担：修复态 gap 恒为正（实测 2.6838），缺陷态会掉到负值。
+  // sanity 只保留「与缺陷无关的观测前提」（反射跑了 / 替身存在 / 相机动了 / 采样入图）。
+
+  // 主判据 ①（下界）：每次强制请求都必须落到**主** RT
+  expect(r.mainRefresh,
+    `主 VSM RT 刷新次数须 ≥ 强制请求次数（缺陷态实测 14 / 60）：mainRefresh=${r.mainRefresh} forced=${r.forced}`)
+    .toBeGreaterThanOrEqual(r.forced);
+  // 主判据 ①（上界，复盘 §6.6）：其它 node 一次都不许渲
+  expect(r.otherRefresh,
+    `反射替身不得消费阴影刷新权（缺陷态实测 48 次）：otherRefresh=${r.otherRefresh}`)
+    .toBe(0);
+  // 主判据 ②：固定世界点的世界深度差守恒（缺陷态实测 spread 11.64）
+  expect(r.gapSpread,
+    `固定世界点的 (z−mean) 世界深度差须守恒（缺陷态实测 11.64）：spread=${r.gapSpread} 区间 [${r.gapMin}, ${r.gapMax}]`)
+    .toBeLessThanOrEqual(0.5);
+  // 主判据 ③：有影/无影状态零翻转（缺陷态实测 2 次）
+  expect(r.flips, `固定世界点的有影/无影状态不得翻转（缺陷态实测 2 次）：flips=${r.flips}`).toBe(0);
+  // 主判据 ④：采样点须始终在影区（gap 恒为正）—— 兼任「采样点选对了」的自校验。
+  // 修复态实测 gap 恒 2.6838；缺陷态掉到 −236.116（采样到陈旧贴图的错误区域）。
+  expect(r.gapMin,
+    `固定世界点须始终被遮挡（gap>0；修复态恒 2.68，缺陷态实测 −236.12）：gapMin=${r.gapMin}`)
+    .toBeGreaterThan(0);
+
+  await page.evaluate(() => window.__MC_GAME__.popModal('tier4-reflect-shadow'));
+});
