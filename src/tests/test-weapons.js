@@ -8,9 +8,18 @@ import { createRegistry } from '../voxel/block-registry.js';
 import {
   WEAPON_IDS, WEAPONS, MAX_ACTIVE_TRACERS,
 } from '../player/weapons/weapon-catalog.js';
-import { isWeaponDestructible, isMag7Candidate } from '../player/weapons/weapon-target-policy.js';
+import { isWeaponDestructible, isMag7Candidate, isGunPassThrough } from '../player/weapons/weapon-target-policy.js';
 import { collectMag7Changes } from '../player/weapons/mag7-pattern.js';
 import { WeaponController } from '../player/weapons/weapon-controller.js';
+import { BLOCKS } from '../voxel/blocks-data.js';
+
+/** 登记**全部生产方块**的 registry（成员判据必须落在真实声明上，不是桩件的想象） */
+function makeFullRegistry() {
+  const registry = createRegistry();
+  for (const def of BLOCKS) registry.register(def.name, def);
+  registry.freeze();
+  return registry;
+}
 
 const WEAPON_BLOCK_NAMES = ['air', 'stone', 'water', 'bedrock', 'end_stone',
   'end_stone_bricks', 'playground_block', 'playground_center_block'];
@@ -923,6 +932,97 @@ test('WeaponController: 剑超射程（>3 格）不命中，且被方块遮挡�
   blocked.controller.select('sword');
   blocked.controller.fireOnce(blocked.aim);
   assertEqual(blocked.damageCalls.length, 0, '被方块遮挡时不得扣血');
+});
+
+// ---------- 枪械射穿装饰性非实心方块（2026-11-25）----------
+//
+// 用户裁定：破坏开关关闭时 pistol/minigun/carbine 要**射穿**藤蔓/枯草/蘑菇这类
+// 「玩家踩不住、撞不上」的装饰方块；开关开启时逐位回到今天（击中即消除）。
+// 范围取「非实心 ∧ cutout」= 既有 `registry.isPlant`（用户在三档里选了它）。
+
+test('枪械射穿: 成员判据落在真实 registry 上 —— 11 项植物 + 吊灯可射穿', () => {
+  const registry = makeFullRegistry();
+  const passThrough = ['flower', 'short_grass', 'allium', 'azure_bluet', 'dead_bush',
+    'oxeye_daisy', 'red_mushroom', 'vine', 'lilypad', 'bush_grass', 'hanging_lamp'];
+  for (const name of passThrough) {
+    const id = registry.idOf(name);
+    // 前置自检：这些方块必须真的无碰撞（否则本用例测的是想象世界）
+    assertEqual(registry.solidTable[id], 0, `sanity：${name} 必须非实心`);
+    assertEqual(registry.supportsPlayerTable[id], 0, `sanity：${name} 玩家踩不住`);
+    assertTrue(isGunPassThrough(id, registry), `${name} 应可被枪械射穿`);
+  }
+});
+
+test('枪械射穿: 实心方块（玻璃/树叶/云/台阶/栏杆/仙人掌）仍挡子弹', () => {
+  const registry = makeFullRegistry();
+  // ⚠️ 玻璃与树叶是判别性样本：它们**透明/cutout**，若判据误写成「不透明才挡」
+  // 或「cutout 就放行」，这两条会真红。用户口径是「玩家撞不上的才放行」。
+  for (const name of ['stone', 'glass_block', 'leaves', 'cloud', 'cobblestone_step',
+    'handrail', 'cactus', 'tnt', 'bedrock']) {
+    const id = registry.idOf(name);
+    assertEqual(registry.solidTable[id], 1, `sanity：${name} 必须实心`);
+    assertFalse(isGunPassThrough(id, registry), `${name} 不得被射穿`);
+  }
+});
+
+test('枪械射穿: 水与两个 alias 不在放行集合（水本来就跳过，alias 不是方块）', () => {
+  const registry = makeFullRegistry();
+  for (const name of ['air', 'water', 'swamp_water', 'mine_cart', 'bed_alias_block']) {
+    assertFalse(isGunPassThrough(registry.idOf(name), registry), `${name} 不算装饰性植物`);
+  }
+  assertFalse(isGunPassThrough(undefined, registry), '未知 id 不放行');
+  assertFalse(isGunPassThrough(9999, registry), '越界 id 不放行');
+});
+
+test('枪械射穿: 判据与 registry.isPlant 同源（不得出现第二份名单）', () => {
+  const registry = makeFullRegistry();
+  for (const { id } of registry.all()) {
+    assertEqual(isGunPassThrough(id, registry), registry.isPlant(id),
+      `${registry.nameOf(id)} 两个判据必须逐项一致`);
+  }
+});
+
+test('枪械射穿: gunOccludes 三态门 —— 开关关时放行植物，开关开时逐字回到今天', () => {
+  const registry = makeFullRegistry();
+  const controller = new WeaponController({
+    registry,
+    blockQuery: { getBlockId: () => registry.idOf('stone') },
+    editor: { setBlock() {}, setBlocks() {} },
+  });
+  const id = (n) => registry.idOf(n);
+  // ① 开关关闭（默认）：植物不挡，实心方块仍挡，空气/水不挡
+  controller.setBlockDamage(false);
+  for (const n of ['vine', 'short_grass', 'red_mushroom', 'dead_bush', 'bush_grass', 'hanging_lamp']) {
+    assertFalse(controller.gunOccludes(id(n)), `开关关：${n} 不得挡住子弹`);
+  }
+  for (const n of ['stone', 'glass_block', 'leaves', 'cloud', 'tnt', 'bedrock']) {
+    assertTrue(controller.gunOccludes(id(n)), `开关关：${n} 仍须挡住子弹`);
+  }
+  assertFalse(controller.gunOccludes(id('air')), '空气不挡');
+  assertFalse(controller.gunOccludes(id('water')), '水不挡（与缺省 DDA 同口径）');
+  // ② 开关开启：植物也挡（击中即消除，跟原来一样）
+  controller.setBlockDamage(true);
+  for (const n of ['vine', 'short_grass', 'red_mushroom', 'hanging_lamp']) {
+    assertTrue(controller.gunOccludes(id(n)), `开关开：${n} 必须挡住子弹（否则打不到也消不了）`);
+  }
+  assertFalse(controller.gunOccludes(id('air')), '开关开：空气仍不挡');
+  assertFalse(controller.gunOccludes(id('water')), '开关开：水仍不挡');
+});
+
+test('枪械射穿: gunOccludes 开关开时 ≡ raycastVoxel 缺省判据（逐 id 对账）', () => {
+  const registry = makeFullRegistry();
+  const controller = new WeaponController({
+    registry,
+    blockQuery: { getBlockId: () => 0 },
+    editor: { setBlock() {}, setBlocks() {} },
+  });
+  controller.setBlockDamage(true);
+  const airId = registry.idOf('air');
+  const waterId = registry.idOf('water');
+  for (const { id } of registry.all()) {
+    assertEqual(controller.gunOccludes(id), id !== airId && id !== waterId,
+      `${registry.nameOf(id)}：开关开时必须与「非空气且非水即命中」逐位一致`);
+  }
 });
 
 test('WeaponController: 剑单发 —— 按住不连砍，冷却期内不重复', () => {

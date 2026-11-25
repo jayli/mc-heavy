@@ -45,3 +45,29 @@ export function isWeaponDestructible(id, registry) {
 export function isMag7Candidate(id, registry) {
   return isWeaponDestructible(id, registry);
 }
+
+/**
+ * 枪械（pistol / minigun / carbine）可否**射穿**该方块 —— 即「子弹不被它挡住」。
+ *
+ * 用户 2026-11-25：「射击到藤蔓、地面上的蘑菇、枯草方块的时候，要求可以射穿……
+ * 这些装饰性非实心（即玩家无法踩上去的方块，玩家无法跟他发生碰撞）的方块」。
+ *
+ * 判据 = **转调 `registry.isPlant`**（`solidTable=0 && cullTable=cutout`，v3.13 为炮塔落地新增）：
+ * 它正好是「无碰撞的装饰件」这一类（9 个花草族 + bush_grass + hanging_lamp），
+ * 且**派生而非名字白名单** ⇒ 新植物按既有口径声明即自动纳入（红线 1）。
+ *
+ * ⚠️ **不得在这里重写 `solidTable=0 && cutout`**：那是第二份判据，将来改 isPlant 时本处静默不跟。
+ * ⚠️ **玻璃/树叶/云/台阶/栏杆/仙人掌不在此列**（它们 `solid:true`，玩家撞得上）——
+ * 判据不是「透明就放行」也不是「cutout 就放行」，test-weapons.js 用玻璃与树叶两条钉住。
+ * ⚠️ 水与两个 alias（`mine_cart`/`bed_alias_block`）刻意不算：水本就被主 DDA 跳过，
+ * 而矿车在世界里是**实体**（不写方块）、床已从背包移除。
+ *
+ * 本函数存在的意义是给「枪械可射穿」一个命名入口（与 `isWeaponDestructible` 并列）：
+ * 将来若要与 isPlant 分道（例如保住吊灯），改这一处即可。
+ *
+ * @param {number} id @param {ReturnType<import('../../voxel/block-registry.js').createRegistry>} registry
+ * @returns {boolean}
+ */
+export function isGunPassThrough(id, registry) {
+  return registry.isPlant(id);
+}

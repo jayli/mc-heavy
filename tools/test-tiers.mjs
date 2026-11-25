@@ -110,6 +110,7 @@ const ENTITY = [
   'carbine-tracer-origin',  // v3.30c 曳光起点必须从枪口发出（用户实玩报告偏右）
   'carbine-flash-wet',  // v3.30b 火光柔光星芒 + 湿地面反射（用户实玩报告的两个缺陷）
   'carbine',            // v3.30 KV-9：视图模型/换弹/五池/掉血口径/hitstop（含 Tier 4 枪体像素）
+  'gun-foliage-passthrough',  // 2026-11-25 三枪射穿装饰性非实心方块（开关关穿过 / 开关开消除 / MAG7 不变）
   'tracer-water-occlusion',
 ];
 

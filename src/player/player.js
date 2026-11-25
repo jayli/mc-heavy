@@ -236,6 +236,21 @@ export class Player {
     this.inventory = createCreativeInventory(registry);
     this.target = null; // 当前射线命中
     /**
+     * 武器专用射线命中（2026-11-25）—— **与 `this.target` 分开的一份**。
+     *
+     * 用户裁定：破坏开关关闭时 pistol/minigun/carbine 要射穿藤蔓/枯草/蘑菇这类
+     * 「玩家踩不住、撞不上」的装饰性非实心方块。而**交互**（准心高亮框 / 徒手挖块 /
+     * 右键放置 / 矿车交互）仍须命中那些方块 —— 否则玩家挖不掉草、也贴不上方块。
+     * ⇒ 两条射线各自一份结果：`target` 管交互，本字段管子弹。
+     *
+     * null = 本帧不适用（徒手 / MAG7 / 剑 / 破坏开关开启）⇒ `_buildAim()` 回落 `target`，
+     * 行为与改动前逐位相同。**不额外发一条射线**（零开销）。
+     * ⚠️ **`{hit:false}` 与 `null` 必须分开**：前者 = 适用且真的打空（前方全是草），
+     * 后者 = 不适用。两者混用的形态是「子弹穿过草后又回退到命中草格」（静默失效）。
+     * @type {{hit:boolean, blockPos?:number[], normal?:number[], prevPos?:number[], dist?:number}|null}
+     */
+    this.weaponTarget = null;
+    /**
      * M3.2 方块朝向交互态（§4.3，对齐 mc-lite `Player.js:164,168`）。
      * 二者都是 **UI 交互态，不入世界数据、不持久化**——世界权威只有 meta 通道；
      * player 侧记录归第二阶段（v1.15 ②）。
@@ -476,6 +491,8 @@ export class Player {
     const cp = this.camera.position;
     const r = raycastVoxel(this.world, [cp.x, cp.y, cp.z], [dir.x, dir.y, dir.z], REACH);
     this.target = r.hit ? r : null;
+    // 武器专用射线（2026-11-25）：只在「三把枪 + 破坏开关关」时多发一条，判据放行装饰性非实心方块。
+    this.weaponTarget = this._castWeaponTarget([cp.x, cp.y, cp.z], [dir.x, dir.y, dir.z]);
     if (this.target) {
       this._highlight.visible = true;
       this._highlight.position.set(r.blockPos[0] + 0.5, r.blockPos[1] + 0.5, r.blockPos[2] + 0.5);
@@ -674,15 +691,35 @@ export class Player {
       up: [_up.x, _up.y, _up.z],
       // v1.64：`normal` = 命中面法线（`raycastVoxel` 已经算好了，此前被丢掉）。
       // 命中特效靠它把碎块朝被打的那一面外推、并选出正确的面贴图/平均色。
-      target: this.target
-        ? { hit: true, blockPos: this.target.blockPos, normal: this.target.normal, dist: this.target.dist }
-        : null,
+      target: this._aimTarget(),
       // v3.30 KV-9：散布需要「是否着地」与「水平速度」（上游 fire() 的 spr 两项）。
       // ⚠️ 速度用**意图速度**而不是 physics.vel：step() 末尾会把 vel.x/z 清零
       // （无惯性手感）⇒ 读它恒近 0，移动散布永不生效（静默失效）。
       grounded: this.physics.onGround,
       speed: this._lastInputSpeed ?? 0,
     };
+  }
+
+  /**
+   * aim 快照里的 `target`（2026-11-25）—— **子弹用哪一条射线的结果**。
+   *
+   * 适用（三把枪 + 破坏开关关）时读 `weaponTarget`（可射穿装饰性非实心方块），
+   * 否则读交互 `target`。MAG7 与剑恒走后者 ⇒ 它们的扫描/曳光终点/近战遮挡逐位不变。
+   *
+   * ⚠️ **读时再校验一次适用条件**：切枪/拨开关后未跑 update 的那一帧不得用陈旧的
+   * 武器射线（否则「刚开启破坏开关就开一枪」会仍穿过草）。
+   * ⚠️ **`weaponTarget.hit === false` 不得回落交互 target**：那是「前方全是草、真的打空」，
+   * 回落会让子弹穿过草后又钉回草格（静默失效）。
+   *
+   * @returns {{hit:boolean, blockPos:number[], normal:number[]|null, dist:number}|null}
+   */
+  _aimTarget() {
+    const wc = this.weaponController;
+    const useWeapon = wc && !wc.blockDamageEnabled && wc.usesGunPassThrough();
+    const t = (useWeapon && this.weaponTarget) ? this.weaponTarget : this.target;
+    return t && t.hit
+      ? { hit: true, blockPos: t.blockPos, normal: t.normal, dist: t.dist }
+      : null;
   }
 
   /** 效果事件统一出口：视图模型后坐 → 曳光 → 音效 → 命中特效（顺序固定，M4 规格 §4.2）。 */
@@ -912,7 +949,27 @@ export class Player {
     const forward = new THREE.Vector3(0, 0, -1).applyEuler(this.camera.rotation);
     const r = raycastVoxel(this.world, [p.x, camY, p.z], [forward.x, forward.y, forward.z], REACH);
     this.target = r.hit ? r : null;
+    // 与 update() 同款：武器专用射线（否则 setTestAim 后开火用的是旧口径的 target）
+    this.weaponTarget = this._castWeaponTarget([p.x, camY, p.z], [forward.x, forward.y, forward.z]);
     return { yaw: this.yaw, pitch: this.pitch, target: this.target };
+  }
+
+  /**
+   * 武器专用 DDA（2026-11-25）：**持 pistol/minigun/carbine 且破坏开关关闭**时，
+   * 用 `controller.gunOccludes` 作遮挡判据再发一条射线；其余情形返回 null（调用方回落交互 target）。
+   *
+   * ⚠️ **仍是唯一那条 DDA**（`player/raycast.js` 的第 5 参数扩展点，弹丸/火球在用）——
+   * 不写第二份射线实现（红线 6）。
+   * ⚠️ **不得改写 `this.target`**：高亮框/挖块/放置/矿车交互都读它，改了会让玩家挖不掉草。
+   * ⚠️ 开关开启时**不多发射线**（判据与缺省逐字相同，多发一条只是浪费）。
+   *
+   * @param {number[]} origin @param {number[]} dir
+   * @returns {object|null} null = 不适用；`{hit:false}` = 适用但打空（不得回落交互 target）
+   */
+  _castWeaponTarget(origin, dir) {
+    const wc = this.weaponController;
+    if (!wc || wc.blockDamageEnabled || !wc.usesGunPassThrough()) return null;
+    return raycastVoxel(this.world, origin, dir, REACH, (id) => wc.gunOccludes(id));
   }
 
   /** 设置普通枪是否破坏方块（MAG7 不受限）。@param {boolean} enabled @returns {boolean} */

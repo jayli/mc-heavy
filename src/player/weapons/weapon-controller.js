@@ -3,7 +3,7 @@
 // 处理切枪、冷却、持续射击、普通 hitscan 与 MAG7 变更列表；返回纯效果事件（曳光/音效/后坐），
 // 不创建 three 对象、不播放声音、不 import three。
 import { WEAPON_IDS, WEAPONS } from './weapon-catalog.js';
-import { isWeaponDestructible } from './weapon-target-policy.js';
+import { isWeaponDestructible, isGunPassThrough } from './weapon-target-policy.js';
 import { collectMag7Changes } from './mag7-pattern.js';
 import { stormChargeProgress, stormLanceAxis, cinderChargeProgress, chargeStageAt } from './storm-lance.js';
 import { cinderLaunch } from './cinder-fall.js';
@@ -158,6 +158,45 @@ export class WeaponController {
   setBlockDamage(enabled) {
     this.blockDamageEnabled = !!enabled;
     return this.blockDamageEnabled;
+  }
+
+  /**
+   * 当前武器是否走「可射穿装饰性非实心方块」的遮挡判据（2026-11-25）。
+   *
+   * = **非徒手 ∧ 非近战 ∧ 非 MAG7**（当前就是 pistol / minigun / carbine 三把）。
+   * 用**排除法而不是白名单**：将来新增一把普通枪自动纳入，而 MAG7（体积扫描，用户明确
+   * 「逻辑不变」）与剑（近战，不写方块）永远在外。
+   * controller 不持有武器分类的第二份名单（红线 1：catalog 的 melee / scan 字段就是权威）。
+   *
+   * @returns {boolean}
+   */
+  usesGunPassThrough() {
+    const weapon = WEAPONS[this.selectedId];
+    return !!weapon && !weapon.melee && this.selectedId !== WEAPON_IDS.MAG7;
+  }
+
+  /**
+   * 这一格是否挡住 **pistol / minigun / carbine** 的子弹（三态门，2026-11-25）。
+   *
+   * 用户裁定：「当设置了枪械无法破坏方块……射击到藤蔓、蘑菇、枯草……要求可以射穿」，
+   * 而「只有当设置了枪械可以破坏方块，才让这两个枪可以击中这些方块，击中即消除」。
+   * ⇒ **开关开启时逐字回到今天**（非空气且非水即命中），关闭时额外放行装饰性非实心方块。
+   *
+   * ⚠️ **为何必须落在射线的遮挡判据上而不是破坏分支**：三把枪的命中全部来自
+   * `Player` 那条主 DDA 的 `target.dist`。只改 `destroyed` 判定的形态是「没写世界但子弹仍停在草上」
+   * —— 数值判据全绿而观感完全没变（设计稿 §1 的反目标 A1）。
+   *
+   * ⚠️ **只对这三把枪生效**：MAG7（体积扫描）与剑（近战）仍走 `raycastVoxel` 的缺省判据，
+   * 故它们的 `aim.target` 逐位不变（用户：「mag7 的逻辑不变」）。
+   *
+   * ⚠️ 水的 id 从 registry 取（与 `raycast.js` 缺省判据同源），不写字面量 2。
+   *
+   * @param {number} id @returns {boolean}
+   */
+  gunOccludes(id) {
+    if (id === this.registry.idOf('air') || id === this.registry.idOf('water')) return false;
+    if (this.blockDamageEnabled) return true;
+    return !isGunPassThrough(id, this.registry);
   }
 
   /**
@@ -518,9 +557,13 @@ export class WeaponController {
     });
     const dir = carbineJitteredDir(aim.forward, aim.right, aim.up, spread, Math.random);
     // 抖动后的 DDA（射程与既有枪同口径 = MISS_RANGE）
+    // ⚠️ **遮挡判据必须与准心那条射线同源**（`gunOccludes`，2026-11-25）：
+    // 只改 Player 那条主射线、这里仍用缺省判据的形态是「曳光看着穿过草、命中却钉在草格」
+    // —— 抖动后这条 DDA 的结果会**覆盖** aim.target，于是修得静默失效。
     let target = aim.target;
     if (this.world) {
-      const r = raycastVoxel(this.world, aim.origin, dir, MISS_RANGE);
+      const r = raycastVoxel(this.world, aim.origin, dir, MISS_RANGE,
+        (id) => this.gunOccludes(id));
       target = r.hit ? { hit: true, blockPos: r.blockPos, normal: r.normal, dist: r.dist } : null;
     }
     const jitteredAim = { ...aim, forward: dir, target };

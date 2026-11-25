@@ -12,6 +12,10 @@ import {
 import { WEAPONS, WEAPON_IDS } from '../player/weapons/weapon-catalog.js';
 import { WeaponController } from '../player/weapons/weapon-controller.js';
 import { createRegistry } from '../voxel/block-registry.js';
+import { BLOCKS } from '../voxel/blocks-data.js';
+import { WorldData } from '../voxel/world-data.js';
+import { ChunkColumn } from '../voxel/chunk-column.js';
+import { blockIndex } from '../voxel/constants.js';
 
 /** 浮点近似断言（本仓 `assert.js` 无此函数，同 test-boss-agent.js 的 assertApprox 手法） */
 function assertClose(actual, expected, eps = 1e-9, msg = '') {
@@ -474,4 +478,99 @@ test('carbine controller: 其余四把枪的 cooldown 仍钳 0（逐位不变）
   controller.cooldown = 0;
   controller.update(0.5, aim);
   assertTrue(controller.cooldown < 0, '卡宾枪冷却必须能变负');
+});
+
+// ==================== 射穿装饰性非实心方块（2026-11-25）====================
+//
+// 用户：「carbine 枪械也是一样的逻辑……也和 pistol、minigun 一样，让 carbine 可以射击穿过非实心方块」。
+// KV-9 的特殊之处：它在散布抖动后**自己重发一条 DDA**（`_fireCarbine`）—— 只改准心那条射线的形态是
+// 「曳光看着穿过但命中仍钉在草格」（静默失效）。故本组用**真实 WorldData + 真实 registry**，
+// 把一株草放在枪口与石墙之间，判据落在**命中格坐标 / 曳光终点 / editor 是否被调**。
+
+/** 真实世界：x=3 一株 short_grass，x=6 一堵 stone（都在 y=0,z=0） */
+function makeFoliageWorld({ plant = 'short_grass' } = {}) {
+  const registry = createRegistry();
+  for (const def of BLOCKS) registry.register(def.name, def);
+  registry.freeze();
+  const world = new WorldData(registry);
+  const col = new ChunkColumn(0, 0);
+  col.blocks[blockIndex(3, 0, 0)] = registry.idOf(plant);
+  col.blocks[blockIndex(6, 0, 0)] = registry.idOf('stone');
+  world.add(col);
+  return { world, registry };
+}
+
+function makeFoliageCarbineFixture({ plant = 'short_grass', blockDamage = false } = {}) {
+  const { world, registry } = makeFoliageWorld({ plant });
+  const editor = {
+    singleCalls: 0,
+    last: null,
+    setBlock(c) { this.singleCalls++; this.last = c; world.setBlock(c.x, c.y, c.z, c.id, 0); return { changes: [c] }; },
+    setBlocks() { return { changes: [] }; },
+  };
+  const controller = new WeaponController({
+    registry, world,
+    blockQuery: { getBlockId: (x, y, z) => world.getBlockId(x, y, z) },
+    editor,
+  });
+  controller.select(WEAPON_IDS.CARBINE);
+  controller.setBlockDamage(blockDamage);
+  const aim = {
+    origin: [0, 0.5, 0.5], forward: [1, 0, 0], right: [0, 0, 1], up: [0, 1, 0],
+    target: { hit: true, blockPos: [3, 0, 0], normal: [-1, 0, 0], dist: 3 },
+    grounded: true, speed: 0,
+  };
+  return { controller, aim, editor, world, registry };
+}
+
+test('carbine 射穿: 开关关时穿过草丛命中后方石墙（不写草、不报草的 impact）', () => {
+  const f = makeFoliageCarbineFixture();
+  // 前置自检：草真的在枪口与石墙之间，且无碰撞
+  assertEqual(f.world.getBlockId(3, 0, 0), f.registry.idOf('short_grass'));
+  assertEqual(f.registry.solidTable[f.registry.idOf('short_grass')], 0);
+  const out = f.controller.fireOnce(f.aim);
+  assertEqual(out.length, 1);
+  const imp = out[0].impacts;
+  assertEqual(imp.length, 1, '应命中后方石墙（而不是无命中）');
+  assertEqual(imp[0].blockPos.join(','), '6,0,0', '命中格必须是石墙，不是草格');
+  assertEqual(imp[0].blockId, f.registry.idOf('stone'));
+  assertEqual(imp[0].destroyed, false, '开关关：不写世界');
+  assertEqual(f.editor.singleCalls, 0);
+  assertEqual(f.world.getBlockId(3, 0, 0), f.registry.idOf('short_grass'), '草必须原样保留');
+  // 曳光终点也须推到石墙（否则观感上子弹仍停在草上）
+  // ⚠️ **必须留浮点余量**：抖动后的方向不是精确的 [1,0,0]，斜射到 x=6 平面时
+  // end[0] 实测为 5.999999999999999（差 1 ulp）—— 写 `>= 6` 会偶发假红。
+  // 判别力不损：缺陷态（停在草格）的 end[0] ≈ 3，与 6 差整 3 格。
+  assertTrue(out[0].end[0] > 5.99, `曳光终点 x=${out[0].end[0]} 应推到石墙（≈6）而不是草格（≈3）`);
+});
+
+test('carbine 射穿: 开关开时击中草即消除（逐字回到今天）', () => {
+  const f = makeFoliageCarbineFixture({ blockDamage: true });
+  const out = f.controller.fireOnce(f.aim);
+  assertEqual(out[0].impacts.length, 1);
+  assertEqual(out[0].impacts[0].blockPos.join(','), '3,0,0', '开关开：命中草格');
+  assertEqual(out[0].impacts[0].destroyed, true);
+  assertEqual(f.editor.singleCalls, 1);
+  assertEqual(f.world.getBlockId(3, 0, 0), 0, '草被消除');
+  assertEqual(f.world.getBlockId(6, 0, 0), f.registry.idOf('stone'), '后方石墙不受影响');
+});
+
+test('carbine 射穿: 实心透明方块（玻璃）仍挡住子弹 —— 不是「cutout/透明就放行」', () => {
+  const f = makeFoliageCarbineFixture({ plant: 'glass_block' });
+  assertEqual(f.registry.solidTable[f.registry.idOf('glass_block')], 1, 'sanity：玻璃实心');
+  const out = f.controller.fireOnce(f.aim);
+  assertEqual(out[0].impacts[0].blockPos.join(','), '3,0,0', '玻璃必须挡住（即使开关关）');
+  assertEqual(f.world.getBlockId(3, 0, 0), f.registry.idOf('glass_block'));
+});
+
+test('carbine 射穿: 抖动后的 DDA 与准心射线用同一判据（最大散布下也不打草）', () => {
+  const f = makeFoliageCarbineFixture();
+  const hitCells = new Set();
+  for (let i = 0; i < 60; i++) {
+    f.controller.carbineMag.spread = CARBINE.spreadMax;
+    f.controller.cooldown = 0;
+    const out = f.controller.fireOnce({ ...f.aim, grounded: false, speed: 8 });
+    for (const e of out) for (const im of e.impacts ?? []) hitCells.add(im.blockPos.join(','));
+  }
+  assertFalse(hitCells.has('3,0,0'), `抖动弹道不得命中草格（实际命中集：${[...hitCells].join(' | ')}）`);
 });
