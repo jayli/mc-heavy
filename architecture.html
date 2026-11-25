@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>mc-heavy 技术架构图</title>
+<link rel="icon" type="image/png" href="./assets/ui/icon.png">
+<style>
+  /* 单文件、零外部依赖。与 index.html 同目录，资源一律 './' 相对路径。 */
+  :root {
+    --bg: #0d1117; --bg-soft: #131a23; --box: #161d27; --box2: #1b232e;
+    --line: #2a3542; --line2: #1e2733;
+    --fg: #d7dee8; --dim: #8b98a9; --faint: #66727f;
+    --voxel: #d98b4a; --gen: #6fbf73; --mesh: #58a6d8; --render: #b07fd8;
+    --core: #e0c15c; --worker: #4ec9b0; --red: #e06c75;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+                 "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    font-size: 14px; line-height: 1.6;
+  }
+  code, .mono { font-family: var(--mono); font-size: 0.92em; }
+  code { background: #1c2530; border: 1px solid var(--line2); border-radius: 3px; padding: 0 4px; color: #b9c6d4; }
+  a { color: #6cb6ff; }
+
+  .wrap { display: flex; align-items: flex-start; max-width: 1500px; margin: 0 auto; }
+  /* 窄屏（≤1100px）目录改顶部横排：侧栏固定 200px 会把正文挤到折行。
+     移到顶部后 main 拿整个视口宽，最长段（实测 553px）仍放得下。 */
+  @media (max-width: 1100px) {
+    .wrap { display: block; }
+    nav {
+      position: static; height: auto; overflow: visible;
+      border-right: none; border-bottom: 1px solid var(--line);
+      padding: 14px 18px;
+    }
+    nav ol { display: flex; flex-wrap: wrap; gap: 2px 6px; }
+    nav .back { margin-top: 10px; padding-top: 8px; }
+    main { padding: 20px 18px 60px; }
+  }
+  nav {
+    position: sticky; top: 0; flex: 0 0 200px; height: 100vh; overflow-y: auto;
+    padding: 24px 14px 30px 22px; border-right: 1px solid var(--line); background: var(--bg-soft);
+  }
+  nav ol { list-style: none; margin: 0; padding: 0; counter-reset: s; }
+  nav li { counter-increment: s; }
+  nav a {
+    display: block; padding: 5px 8px; border-radius: 4px; font-size: 13px;
+    color: var(--dim); text-decoration: none; border-left: 2px solid transparent;
+  }
+  nav a::before { content: counter(s) ". "; font-family: var(--mono); color: var(--faint); font-size: 11px; }
+  nav a:hover { background: #1b2430; color: var(--fg); border-left-color: var(--mesh); }
+  nav .back { margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--line); }
+  nav .back a { color: #7fc253; border-left: none; }
+  nav .back a::before { content: "← "; }
+
+  main { flex: 1 1 auto; min-width: 0; padding: 26px 34px 70px; }
+  h1 { margin: 0 0 22px; font-size: 22px; }
+  section { margin: 0 0 40px; scroll-margin-top: 16px; }
+  h2 { font-size: 16px; margin: 0 0 14px; padding-bottom: 7px; border-bottom: 1px solid var(--line2); }
+  h2 .n { font-family: var(--mono); color: var(--faint); margin-right: 9px; font-size: 13px; }
+
+  /* 图容器 */
+  .fig { border: 1px solid var(--line); border-radius: 6px; background: #101720; padding: 10px; overflow-x: auto; }
+  svg { display: block; width: 100%; height: auto; }
+  svg text { font-family: var(--mono); }
+  /* 中文说明行走系统字体（等宽栈里中文回落不可控，宽度会算不准） */
+  svg text.zh { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; }
+  /* 窄屏不缩字：图保持最小宽度，容器横向滚动 ⇒ 不会折行也不会糊 */
+  .fig > svg { min-width: 860px; }
+
+  /* 分层盒 */
+  .layers { display: flex; flex-direction: column; gap: 8px; }
+  .layer { display: flex; gap: 12px; border: 1px solid var(--line); border-left-width: 3px; border-radius: 5px; background: var(--box); padding: 9px 12px; }
+  .layer .nm { flex: 0 0 150px; font-family: var(--mono); font-size: 13px; }
+  .layer .body { flex: 1 1 auto; min-width: 0; }
+  /* 说明与文件名各占一行（显式分行，不依赖自然折行）。
+     长清单在 · 分隔处用 .brk 显式断行：每段 nowrap，段内永不折，
+     段间只在预设位置换行 ⇒ 任何视口下都不会把文件名截成两半。 */
+  .layer .zh { display: block; font-size: 12.5px; color: #b6c2d0; white-space: nowrap; }
+  .layer .files { display: block; margin-top: 2px; font-family: var(--mono); font-size: 12px; color: var(--dim); }
+  .layer .files b { color: #cfd8e3; font-weight: 600; }
+  .seg { white-space: nowrap; }
+  .brk { display: block; }
+  .l-voxel { border-left-color: var(--voxel); } .l-voxel .nm { color: var(--voxel); }
+  .l-gen { border-left-color: var(--gen); } .l-gen .nm { color: var(--gen); }
+  .l-mesh { border-left-color: var(--mesh); } .l-mesh .nm { color: var(--mesh); }
+  .l-render { border-left-color: var(--render); } .l-render .nm { color: var(--render); }
+  .l-core { border-left-color: var(--core); } .l-core .nm { color: var(--core); }
+  .l-side { border-left-color: #7d8b9c; } .l-side .nm { color: #9aa8b8; }
+  .arrow { text-align: center; font-family: var(--mono); font-size: 11px; color: var(--faint); margin: -3px 0; }
+
+  /* 两栏 */
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 1000px) { .cols { grid-template-columns: 1fr; } }
+  .pane { border: 1px solid var(--line); border-radius: 6px; background: var(--box); overflow: hidden; }
+  .pane > h3 { margin: 0; padding: 7px 12px; font-family: var(--mono); font-size: 12.5px; border-bottom: 1px solid var(--line); background: var(--box2); }
+  .pane.m > h3 { color: var(--core); }
+  .pane.w > h3 { color: var(--worker); }
+  .pane.g > h3 { color: var(--render); }
+  .pane > div { padding: 10px 12px; }
+
+  /* 流程节点 */
+  .flow { display: flex; flex-direction: column; }
+  .nd { border: 1px solid var(--line); border-radius: 5px; background: var(--box); padding: 8px 12px; font-family: var(--mono); font-size: 12.5px; }
+  .nd .zh { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 12.5px; color: #b6c2d0; margin-top: 2px; white-space: nowrap; }
+  .nd .sub { color: var(--faint); font-size: 11.5px; margin-top: 2px; }
+  .nd .sub .seg { white-space: nowrap; }
+  .nd.m { border-left: 3px solid var(--core); }
+  .nd.w { border-left: 3px solid var(--worker); }
+  .nd.d { border-left: 3px solid var(--voxel); }
+  .nd.g { border-left: 3px solid var(--render); }
+  .dn { align-self: center; font-family: var(--mono); font-size: 11px; color: var(--faint); padding: 4px 0; text-align: center; }
+  .dn em { font-style: normal; color: #5b6672; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th, td { border: 1px solid var(--line); padding: 5px 9px; text-align: left; }
+  th { background: var(--box2); color: #c3ccd8; font-size: 12px; }
+  td.k { font-family: var(--mono); color: #cbd5e1; white-space: nowrap; }
+  td.v { font-family: var(--mono); color: var(--core); }
+  tbody tr:nth-child(even) { background: #141b24; }
+
+  ol.rl { list-style: none; counter-reset: r; margin: 0; padding: 0; }
+  ol.rl > li {
+    counter-increment: r; position: relative; padding: 7px 10px 7px 38px; margin-bottom: 6px;
+    border: 1px solid var(--line); border-left: 3px solid var(--red); border-radius: 5px;
+    background: var(--box); font-size: 13px;
+  }
+  ol.rl > li::before { content: counter(r); position: absolute; left: 11px; top: 7px; font-family: var(--mono); color: var(--red); }
+  ol.rl b { color: #fff; }
+
+  ul.plain { margin: 0; padding-left: 18px; font-size: 13px; }
+  ul.plain li { margin: 3px 0; }
+  footer { border-top: 1px solid var(--line); margin-top: 30px; padding-top: 14px; font-size: 12px; color: var(--faint); }
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav>
+  <ol>
+    <li><a href="#layers">分层与依赖</a></li>
+    <li><a href="#frame">帧序与线程边界</a></li>
+    <li><a href="#gen">列加载管线</a></li>
+    <li><a href="#edit">方块编辑管线</a></li>
+    <li><a href="#publish">发布与 GPU</a></li>
+    <li><a href="#light">光照数据流</a></li>
+    <li><a href="#data">权威与派生</a></li>
+    <li><a href="#const">常量</a></li>
+    <li><a href="#redlines">红线</a></li>
+  </ol>
+  <p class="back"><a href="./index.html">回到游戏</a></p>
+</nav>
+
+<main>
+<h1>mc-heavy 技术架构图</h1>
+
+<!-- 1 -->
+<section id="layers">
+  <h2><span class="n">01</span>分层与依赖</h2>
+  <div class="fig">
+  <svg viewBox="0 0 1000 330" role="img" aria-label="分层依赖方向图">
+    <defs>
+      <marker id="a1" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 z" fill="#6b7887"/></marker>
+      <marker id="a2" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 z" fill="#e0c15c"/></marker>
+    </defs>
+    <!-- 主链 -->
+    <g font-size="12">
+      <rect x="20" y="20" width="180" height="76" rx="5" fill="#1d1a15" stroke="#d98b4a"/>
+      <text x="34" y="42" fill="#d98b4a">src/voxel/</text>
+      <text x="34" y="60" fill="#8b98a9" font-size="11">blocks · meta · registry</text>
+      <text x="34" y="82" fill="#b6c2d0" font-size="11" class="zh">体素数据唯一权威</text>
+
+      <rect x="240" y="20" width="180" height="76" rx="5" fill="#151f16" stroke="#6fbf73"/>
+      <text x="254" y="42" fill="#6fbf73">src/gen/</text>
+      <text x="254" y="60" fill="#8b98a9" font-size="11">terrain · structures</text>
+      <text x="254" y="82" fill="#b6c2d0" font-size="11" class="zh">地形与结构生成</text>
+
+      <rect x="460" y="20" width="180" height="76" rx="5" fill="#141d26" stroke="#58a6d8"/>
+      <text x="474" y="42" fill="#58a6d8">src/mesh/</text>
+      <text x="474" y="60" fill="#8b98a9" font-size="11">mesher · lighting</text>
+      <text x="474" y="82" fill="#b6c2d0" font-size="11" class="zh">体素转顶点与光照</text>
+
+      <rect x="680" y="20" width="180" height="76" rx="5" fill="#1c1626" stroke="#b07fd8"/>
+      <text x="694" y="42" fill="#b07fd8">src/render/</text>
+      <text x="694" y="60" fill="#8b98a9" font-size="11">render-world · materials</text>
+      <text x="694" y="82" fill="#b6c2d0" font-size="11" class="zh">合批发布与材质</text>
+
+      <line x1="240" y1="58" x2="204" y2="58" stroke="#6b7887" stroke-width="1.5" marker-end="url(#a1)"/>
+      <line x1="460" y1="58" x2="424" y2="58" stroke="#6b7887" stroke-width="1.5" marker-end="url(#a1)"/>
+      <line x1="680" y1="58" x2="644" y2="58" stroke="#6b7887" stroke-width="1.5" marker-end="url(#a1)"/>
+      <text x="206" y="50" fill="#66727f" font-size="10">import</text>
+      <text x="426" y="50" fill="#66727f" font-size="10">import</text>
+      <text x="646" y="50" fill="#66727f" font-size="10">import</text>
+    </g>
+    <!-- core 装配 -->
+    <rect x="20" y="124" width="840" height="64" rx="5" fill="#201e14" stroke="#e0c15c"/>
+    <text x="34" y="146" fill="#e0c15c" font-size="12">src/core/</text>
+    <text x="34" y="164" fill="#8b98a9" font-size="11">game.js · scheduler.js · worker-pool.js · world-editor.js · resource-url.js · budget.js</text>
+    <text x="34" y="182" fill="#b6c2d0" font-size="11" class="zh">装配全部子系统，编排任务与版本协议</text>
+    <g stroke="#e0c15c" stroke-width="1.2" stroke-dasharray="4 3">
+      <line x1="110" y1="124" x2="110" y2="100" marker-end="url(#a2)"/>
+      <line x1="330" y1="124" x2="330" y2="100" marker-end="url(#a2)"/>
+      <line x1="550" y1="124" x2="550" y2="100" marker-end="url(#a2)"/>
+      <line x1="770" y1="124" x2="770" y2="100" marker-end="url(#a2)"/>
+    </g>
+    <!-- 旁挂 -->
+    <g font-size="11.5">
+      <rect x="20" y="212" width="200" height="64" rx="5" fill="#161d27" stroke="#7d8b9c"/>
+      <text x="34" y="234" fill="#9aa8b8">src/player/</text>
+      <text x="34" y="252" fill="#66727f" font-size="10.5">physics · raycast · weapons</text>
+      <text x="34" y="270" fill="#b6c2d0" font-size="11" class="zh">输入、物理与武器</text>
+      <rect x="240" y="212" width="200" height="64" rx="5" fill="#161d27" stroke="#7d8b9c"/>
+      <text x="254" y="234" fill="#9aa8b8">src/entities/</text>
+      <text x="254" y="252" fill="#66727f" font-size="10.5">entity-manager · bosses</text>
+      <text x="254" y="270" fill="#b6c2d0" font-size="11" class="zh">动态实体与 AI</text>
+      <rect x="460" y="212" width="200" height="64" rx="5" fill="#161d27" stroke="#7d8b9c"/>
+      <text x="474" y="234" fill="#9aa8b8">src/ui/ · src/save/</text>
+      <text x="474" y="252" fill="#66727f" font-size="10.5">HUD · persistence</text>
+      <text x="474" y="270" fill="#b6c2d0" font-size="11" class="zh">界面与存档</text>
+      <rect x="680" y="212" width="180" height="64" rx="5" fill="#14201f" stroke="#4ec9b0"/>
+      <text x="694" y="234" fill="#4ec9b0">src/workers/</text>
+      <text x="694" y="252" fill="#66727f" font-size="10.5">world-worker.js</text>
+      <text x="694" y="270" fill="#b6c2d0" font-size="11" class="zh">唯一 Worker 脚本</text>
+    </g>
+    <!-- 同构层框 -->
+    <rect x="12" y="292" width="856" height="30" rx="4" fill="none" stroke="#4ec9b0" stroke-dasharray="5 4"/>
+    <text x="24" y="312" fill="#4ec9b0" font-size="11" class="zh">Worker 同构层：voxel · gen · mesh · entities · workers　—　无 DOM、无 three、不自建 Worker</text>
+  </svg>
+  </div>
+
+  <div class="layers" style="margin-top:12px">
+    <div class="layer l-voxel"><div class="nm">src/voxel/</div><div class="body"><span class="zh">体素数据的唯一权威</span><span class="files"><span class="seg"><b>blocks-data.js</b> 方块声明 → <b>block-registry.js</b> typed 表 · <b>world-data.js</b> 主线程体素</span><span class="seg brk"><b>chunk-column.js</b> 列存储 · <b>constants.js</b> 坐标常量</span><span class="seg brk">explosion.js 爆炸范围</span></span></div></div>
+    <div class="arrow">▲ 被 gen 依赖</div>
+    <div class="layer l-gen"><div class="nm">src/gen/</div><div class="body"><span class="zh">由 seed 确定性生成地形与结构</span><span class="files"><span class="seg"><b>terrain.js</b> generateHeight / fillColumn · <b>noise.js</b> biome · caves.js 洞穴</span><span class="seg brk"><b>structure-index.js</b> region 布局 · <b>structures/apply.js</b> 层序</span><span class="seg brk">scatter.js 撒布</span></span></div></div>
+    <div class="arrow">▲ 被 mesh 依赖</div>
+    <div class="layer l-mesh"><div class="nm">src/mesh/</div><div class="body"><span class="zh">体素转顶点缓冲，并算光照</span><span class="files"><span class="seg"><b>mesher.js</b> TEMPLATES / FACE_VERTICES / FACE_UVS</span><span class="seg brk"><b>lighting.js</b> skylight / blocklight · iso-icon.js 图标</span><span class="seg brk">atlas-loader.js 图集</span></span></div></div>
+    <div class="arrow">▲ 被 render 依赖</div>
+    <div class="layer l-render"><div class="nm">src/render/</div><div class="body"><span class="zh">合批发布到 GPU，材质与特效</span><span class="files"><span class="seg"><b>render-world.js</b> 三通道发布 · <b>materials.js</b> TSL · ocean*.js 海面</span><span class="seg brk">shadow-manager.js 阴影 · rain-shelter.js 挡雨</span><span class="seg brk">实体渲染器与特效池</span></span></div></div>
+    <div class="layer l-core"><div class="nm">src/core/</div><div class="body"><span class="zh">装配全部子系统，编排任务与版本协议</span><span class="files"><span class="seg"><b>game.js</b> 装配 · <b>scheduler.js</b> 编排与版本协议 · <b>budget.js</b> 帧预算</span><span class="seg brk"><b>worker-pool.js</b> 唯一 Worker 入口 · <b>world-editor.js</b> 唯一写入口</span><span class="seg brk"><b>resource-url.js</b> 资源 URL</span></span></div></div>
+    <div class="layer l-side"><div class="nm">旁挂</div><div class="body"><span class="zh">玩家、实体、界面与存档</span><span class="files"><span class="seg">player/（physics · raycast DDA · orientation · weapons）</span><span class="seg brk">entities/（entity-manager · zombies · bosses · turrets）</span><span class="seg brk">ui/ 界面 · save/ 存档</span></span></div></div>
+  </div>
+</section>
+
+<!-- 2 -->
+<section id="frame">
+  <h2><span class="n">02</span>帧序与线程边界</h2>
+  <div class="fig">
+  <svg viewBox="0 0 1000 260" role="img" aria-label="主线程帧序与 Worker 池的 RPC 交换">
+    <defs>
+      <marker id="b1" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 z" fill="#4ec9b0"/></marker>
+      <marker id="b2" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 z" fill="#6b7887"/></marker>
+    </defs>
+    <rect x="14" y="14" width="440" height="232" rx="6" fill="#161d27" stroke="#e0c15c"/>
+    <text x="28" y="36" fill="#e0c15c" font-size="12.5">主线程　setAnimationLoop</text>
+    <g font-size="11.5" fill="#c9d4e0">
+      <rect x="28" y="48" width="412" height="24" rx="4" fill="#1d2530" stroke="#2a3542"/><text x="40" y="64">perf.tick → dt ≤ 0.1s → budget.observeFrame</text>
+      <rect x="28" y="78" width="412" height="24" rx="4" fill="#1d2530" stroke="#2a3542"/><text x="40" y="94">player.update(dt)　输入 · 物理 · 武器</text>
+      <rect x="28" y="108" width="412" height="24" rx="4" fill="#1d2530" stroke="#2a3542"/><text x="40" y="124">zombies / soldiers / bosses → entities.update(dt)</text>
+      <rect x="28" y="138" width="412" height="24" rx="4" fill="#1d2530" stroke="#2a3542"/><text x="40" y="154">scheduler.update(px, pz)</text>
+      <rect x="28" y="168" width="412" height="24" rx="4" fill="#1d2530" stroke="#2a3542"/><text x="40" y="184">entityLayer.sync + 各渲染器 sync / update</text>
+      <rect x="28" y="198" width="412" height="24" rx="4" fill="#231d2e" stroke="#40304f"/><text x="40" y="214" fill="#b07fd8">shadow.tick → 倒影 pass → renderer.render</text>
+    </g>
+    <rect x="546" y="14" width="440" height="232" rx="6" fill="#161d27" stroke="#4ec9b0"/>
+    <text x="560" y="36" fill="#4ec9b0" font-size="12.5">Worker 池　N = max(3, CPU − 1)</text>
+    <g font-size="11.5" fill="#c9d4e0">
+      <rect x="560" y="48" width="412" height="24" rx="4" fill="#14201f" stroke="#2c4a45"/><text x="572" y="64">layout　region 布局 → layouts</text>
+      <rect x="560" y="78" width="412" height="24" rx="4" fill="#14201f" stroke="#2c4a45"/><text x="572" y="94">gen　列生成 → blocks / meta / light buffer</text>
+      <rect x="560" y="108" width="412" height="24" rx="4" fill="#14201f" stroke="#2c4a45"/><text x="572" y="124">mesh　section → opaque / cutout / transparent</text>
+      <rect x="560" y="138" width="412" height="24" rx="4" fill="#14201f" stroke="#2c4a45"/><text x="572" y="154">light　3×3 区域 → 中心列 light buffer</text>
+      <rect x="560" y="168" width="412" height="24" rx="4" fill="#1a1a1a" stroke="#333" stroke-dasharray="4 3"/><text x="572" y="184" fill="#8b98a9">ai　handler 在，生产不派发</text>
+      <text x="572" y="214" fill="#66727f" font-size="11">最闲优先 · call() → {id, promise} · cancel(id)</text>
+    </g>
+    <line x1="460" y1="106" x2="540" y2="106" stroke="#4ec9b0" stroke-width="1.5" marker-end="url(#b1)"/>
+    <text x="462" y="98" fill="#4ec9b0" font-size="10">RPC + transfer</text>
+    <line x1="540" y1="154" x2="460" y2="154" stroke="#6b7887" stroke-width="1.5" marker-end="url(#b2)"/>
+    <text x="462" y="174" fill="#8b98a9" font-size="10">零拷贝回传</text>
+    <text x="462" y="190" fill="#66727f" font-size="10">(key, version)</text>
+  </svg>
+  </div>
+
+  <div class="cols" style="margin-top:12px">
+    <div class="pane m">
+      <h3>版本协议</h3>
+      <div>
+        <ul class="plain">
+          <li>任务带 <code>(columnKey, version)</code>；<code>blocks/meta</code> 变更即 <code>version++</code></li>
+          <li>回包版本不符 → 丢弃 + 重新派发</li>
+          <li>上传排队期间版本变了 → 同样丢弃重发</li>
+          <li>LIGHT 另校验输入集合：3×3 新到达就绪列 → 整体重算</li>
+          <li>纯 <code>blockEntity</code> 写不 bump、不 remesh</li>
+        </ul>
+      </div>
+    </div>
+    <div class="pane w">
+      <h3>帧预算</h3>
+      <div>
+        <table>
+          <thead><tr><th>档</th><th>上传预算</th><th>每帧 mesh 下发</th></tr></thead>
+          <tbody>
+            <tr><td class="k">high ≥120Hz</td><td class="v">3 ms</td><td class="v">64</td></tr>
+            <tr><td class="k">low 60Hz</td><td class="v">6 ms</td><td class="v">128</td></tr>
+          </tbody>
+        </table>
+        <ul class="plain" style="margin-top:8px">
+          <li>判档：120 帧窗口内快帧（&lt;11ms）比例 ≥5% → high，=0 → low，判一次锁定</li>
+          <li><code>meshUploadPerFrameLimit</code> 默认 0；<code>?chunkpace=N</code> 可调</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 3 -->
+<section id="gen">
+  <h2><span class="n">03</span>列加载管线</h2>
+  <div class="flow">
+    <div class="nd m">scheduler.update(px, pz)<div class="zh">按玩家位置决定加载哪些列</div><div class="sub"><span class="seg">目标 (2R+1)² 列按切比雪夫距离升序</span><span class="seg brk">超出 R+2 走两阶段滞回卸载</span></div></div>
+    <div class="dn">↓ <em>前置：查询域 9 个 region 的 layouts 就绪</em></div>
+    <div class="nd w">pool.call('layout', {regionX, regionZ, seed})<div class="zh">先算大区域的地标摆放</div><div class="sub"><span class="seg">region 400² → 地标锚点 + 撒布数组</span><span class="seg brk">主线程 StructureIndex 缓存后随 GEN 下发</span></div></div>
+    <div class="dn">↓</div>
+    <div class="nd w">pool.call('gen', {cx, cz, seed, edits, layouts})<div class="zh">在 Worker 里生成一整列方块</div><div class="sub"><span class="seg">fillColumn → carveCaves → applyStructuresToColumn</span><span class="seg brk">→ applyEdits → computeSkylightColumn → computeBlocklightRegion</span></div></div>
+    <div class="dn">↓ <em>transfer：blocks / meta / light 三份 ArrayBuffer</em></div>
+    <div class="nd d">_onGenResult → ChunkColumn → world.add<div class="zh">主线程接管为唯一权威</div><div class="sub">重建 edits Map 与 blockEntities → state = ready</div></div>
+    <div class="dn">↓ <em>halo：正交邻居 ready 才 mesh</em></div>
+    <div class="nd w">pool.call('mesh', {cx, sy, cz, data, light, meta, version})<div class="zh">逐 section 把方块转成顶点</div><div class="sub">buildSectionMesh：面剔除 + AO + 朝向 + packed → 三通道</div></div>
+    <div class="dn">↓ <em>版本校验 → 上传队列（每帧 ≤ 预算 ms）</em></div>
+    <div class="nd g">RenderWorld.uploadSection(cx, sy, cz, channel, geom, version)<div class="zh">按预算上传到三个合批网格</div><div class="sub">opaque / cutout / transparent 三个 BatchedMesh</div></div>
+  </div>
+
+  <div class="pane m" style="margin-top:12px">
+    <h3>apply.js 阶段层序</h3>
+    <div>
+      <p class="mono" style="margin:0;font-size:12px;line-height:1.9;color:#c3ccd8">
+        1 地形整形 → 2.45 浅水高台 → 2.4 高台地带 → 2 JSON 结构 → 2.7 撒布 →
+        2.75 高台 · 2.76 金字塔 · 2.8 巨树 · 2.85 杜鹃 · 2.9 竞技场 · 2.93 大竞技场 · 2.94 废弃堡垒
+        → 2.5 空中结构 → 3 植被
+      </p>
+      <p style="margin:6px 0 0;font-size:12.5px;color:var(--dim)">结构 JSON 按 layouts 命中惰性预载。</p>
+    </div>
+  </div>
+</section>
+
+<!-- 4 -->
+<section id="edit">
+  <h2><span class="n">04</span>方块编辑管线</h2>
+  <div class="flow">
+    <div class="nd m">Player.digBlock / placeBlock<div class="zh">玩家挖一块或放一块</div><div class="sub"><span class="seg">raycast.js 体素 DDA（Amanatides-Woo）</span><span class="seg brk">放置 AABB 守卫 + orientation 派生</span></div></div>
+    <div class="dn">↓</div>
+    <div class="nd m">WorldEditor.setBlock(change, {fastPath})<div class="zh">所有方块写入的唯一入口</div><div class="sub">过滤：越界 / 列缺失 / 基岩 / no-change</div></div>
+    <div class="dn">↓</div>
+    <div class="nd d">WorldData.setBlock → version++ → edits 记账<div class="zh">改权威数据并升版本</div><div class="sub"><span class="seg">同步重算单列垂直 skylight（只升不降）</span><span class="seg brk">返回 affected sections：本格 + 正交相邻</span></div></div>
+    <div class="dn">↓ <em>同一份 buildSectionMesh</em></div>
+    <div class="cols">
+      <div class="pane m"><h3>fastPath = true　玩家挖放</h3><div><p class="mono" style="margin:0;font-size:12px">主线程同步 buildSectionMesh → uploadSection</p><p style="margin:4px 0 0;font-size:12.5px;color:var(--dim)">当帧生效；对角 AO 由常规 MESH 收敛</p></div></div>
+      <div class="pane w"><h3>fastPath = false　爆炸 / 批量</h3><div><p class="mono" style="margin:0;font-size:12px">setBlocks → markDirty → mesh 队列 → Worker</p><p style="margin:4px 0 0;font-size:12.5px;color:var(--dim)">每列只 bump 一次版本；逐列 enqueueLight</p></div></div>
+    </div>
+    <div class="dn">↓ <em>enqueueLight = O(1) Set.add</em></div>
+    <div class="nd w">pool.call('light', {cx, cz, columns})<div class="zh">后台重算跨列光照</div><div class="sub">3×3 = 9 列参与，只写回中心列；每帧下发上限 1</div></div>
+    <div class="dn">↓</div>
+    <div class="nd m">_emit('block-changed')<div class="zh">通知装置、音效与粒子</div><div class="sub"><span class="seg">装置 controller / 音频 / 粒子</span><span class="seg brk">事件不进 Worker、不参与版本判定</span></div></div>
+  </div>
+</section>
+
+<!-- 5 -->
+<section id="publish">
+  <h2><span class="n">05</span>发布与 GPU</h2>
+  <div class="cols">
+    <div class="pane g">
+      <h3>三通道（reserved = active × avgVerts × 1.25）</h3>
+      <div>
+        <table>
+          <thead><tr><th>通道</th><th>active</th><th>avgVerts</th><th>reserved</th></tr></thead>
+          <tbody>
+            <tr><td class="k">opaque</td><td class="v">1800</td><td class="v">1900</td><td class="v">4,275,000</td></tr>
+            <tr><td class="k">cutout</td><td class="v">550</td><td class="v">3200</td><td class="v">2,200,000</td></tr>
+            <tr><td class="k">transparent</td><td class="v">240</td><td class="v">1000</td><td class="v">300,000</td></tr>
+          </tbody>
+        </table>
+        <ul class="plain" style="margin-top:8px">
+          <li>实例上限 = <code>ceil((2·vd+1)² × 8 × 1.2)</code></li>
+          <li>发布 / 回收粒度：<code>uploadSection</code> / <code>removeSection</code> / <code>removeColumn</code></li>
+        </ul>
+      </div>
+    </div>
+    <div class="pane m">
+      <h3>缓冲耗尽三级兜底</h3>
+      <div>
+        <div class="flow">
+          <div class="nd m"><span class="seg">unusedVertexCount / unusedIndexCount 够</span><span class="seg brk">→ addGeometry</span></div>
+          <div class="dn">↓ 不够</div>
+          <div class="nd m"><span class="seg">bm.optimize()　回收空洞后重试</span></div>
+          <div class="dn">↓ 仍不够</div>
+          <div class="nd m"><span class="seg">bm.setGeometrySize(newV, newI)</span><span class="seg brk">×1.5 扩容后重试</span></div>
+        </div>
+        <ul class="plain" style="margin-top:8px">
+          <li>主 pass 与阴影 / 倒影 pass 共用 BatchedMesh 实例字段 → 装 multi-draw 列表快照恢复守卫</li>
+          <li>倒影 pass 必须在主 <code>render</code> 之前</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 6 -->
+<section id="light">
+  <h2><span class="n">06</span>光照数据流</h2>
+  <div class="fig">
+  <svg viewBox="0 0 1000 190" role="img" aria-label="光照从体素到顶点属性的流向">
+    <defs><marker id="c1" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 z" fill="#6b7887"/></marker></defs>
+    <g font-size="11.5">
+      <rect x="14" y="20" width="180" height="60" rx="5" fill="#1d1a15" stroke="#d98b4a"/>
+      <text x="28" y="42" fill="#d98b4a">blocks + emissive</text>
+      <text x="28" y="60" fill="#8b98a9" font-size="10.5">权威</text>
+      <text x="28" y="74" fill="#66727f" font-size="10.5">opaqueTable 决定遮挡</text>
+
+      <rect x="234" y="20" width="200" height="60" rx="5" fill="#141d26" stroke="#58a6d8"/>
+      <text x="248" y="42" fill="#58a6d8">light Uint8Array</text>
+      <text x="248" y="60" fill="#8b98a9" font-size="10.5">高4位 skylight</text>
+      <text x="248" y="74" fill="#8b98a9" font-size="10.5">低4位 blocklight</text>
+
+      <rect x="474" y="20" width="220" height="60" rx="5" fill="#141d26" stroke="#58a6d8"/>
+      <text x="488" y="42" fill="#58a6d8">mesher packed 属性</text>
+      <text x="488" y="60" fill="#8b98a9" font-size="10.5">light 字节 + AO 2bit</text>
+      <text x="488" y="74" fill="#8b98a9" font-size="10.5">+ 湿材质类 bit15–18</text>
+
+      <rect x="734" y="20" width="252" height="60" rx="5" fill="#1c1626" stroke="#b07fd8"/>
+      <text x="748" y="42" fill="#b07fd8">materials.js（TSL）</text>
+      <text x="748" y="60" fill="#8b98a9" font-size="10.5">顶点算 float shade → float varying</text>
+      <text x="748" y="74" fill="#8b98a9" font-size="10.5">片元 max(sky × 太阳项, block)</text>
+
+      <line x1="198" y1="50" x2="230" y2="50" stroke="#6b7887" stroke-width="1.5" marker-end="url(#c1)"/>
+      <line x1="438" y1="50" x2="470" y2="50" stroke="#6b7887" stroke-width="1.5" marker-end="url(#c1)"/>
+      <line x1="698" y1="50" x2="730" y2="50" stroke="#6b7887" stroke-width="1.5" marker-end="url(#c1)"/>
+    </g>
+    <g font-size="11">
+      <rect x="14" y="106" width="480" height="66" rx="5" fill="#161d27" stroke="#2a3542"/>
+      <text x="28" y="126" fill="#c9d4e0">重算路径</text>
+      <text x="28" y="144" fill="#8b98a9" font-size="10.5">编辑快路径：recomputeSkylightAt 单列垂直，O(128)，只升不降</text>
+      <text x="28" y="160" fill="#8b98a9" font-size="10.5">收敛：3×3 区域走 Worker → lightDirtyMasks → 置脏 section</text>
+      <rect x="514" y="106" width="472" height="66" rx="5" fill="#161d27" stroke="#2a3542"/>
+      <text x="528" y="126" fill="#c9d4e0">光照模型</text>
+      <text x="528" y="144" fill="#8b98a9" font-size="10.5">skylight 垂直不衰减 + 水平 BFS 每格 −1</text>
+      <text x="528" y="160" fill="#8b98a9" font-size="10.5">blocklight flood fill，光强 15 → 最远 14 格；阴影只衰减太阳项</text>
+    </g>
+  </svg>
+  </div>
+</section>
+
+<!-- 7 -->
+<section id="data">
+  <h2><span class="n">07</span>权威与派生</h2>
+  <div class="fig">
+  <svg viewBox="0 0 1000 196" role="img" aria-label="权威数据、派生数据与存档的关系">
+    <defs><marker id="d1" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 z" fill="#6b7887"/></marker></defs>
+    <g font-size="11.5">
+      <rect x="14" y="14" width="290" height="168" rx="6" fill="#1d1a15" stroke="#d98b4a"/>
+      <text x="28" y="36" fill="#d98b4a">权威</text>
+      <text x="28" y="54" fill="#b6c2d0" font-size="11" class="zh">世界真相只在这里</text>
+      <text x="28" y="78" fill="#c9d4e0">blocks　Uint16Array</text>
+      <text x="28" y="98" fill="#c9d4e0">meta　　Uint8Array</text>
+      <text x="28" y="118" fill="#c9d4e0">blockEntities　稀疏 Map</text>
+      <text x="28" y="144" fill="#8b98a9" font-size="10.5">index = x + z·16 + (y−MIN_Y)·256</text>
+      <text x="28" y="164" fill="#8b98a9" font-size="10.5">version：blocks/meta 变更即 ++</text>
+
+      <rect x="354" y="14" width="290" height="168" rx="6" fill="#161d27" stroke="#58a6d8"/>
+      <text x="368" y="36" fill="#58a6d8">派生（可重建）</text>
+      <text x="368" y="54" fill="#b6c2d0" font-size="11" class="zh">丢了能从权威重算</text>
+      <text x="368" y="78" fill="#c9d4e0">light 数组</text>
+      <text x="368" y="98" fill="#c9d4e0">三通道顶点缓冲 + AO</text>
+      <text x="368" y="118" fill="#c9d4e0">section 脏标记 / mesh 状态</text>
+      <text x="368" y="144" fill="#8b98a9" font-size="10.5">碰撞与可见性查询</text>
+      <text x="368" y="164" fill="#8b98a9" font-size="10.5">无第二份逻辑副本</text>
+
+      <rect x="694" y="14" width="292" height="168" rx="6" fill="#151f16" stroke="#6fbf73"/>
+      <text x="708" y="36" fill="#6fbf73">存档　IndexedDB</text>
+      <text x="708" y="54" fill="#b6c2d0" font-size="11" class="zh">只存玩家改动的差量</text>
+      <text x="708" y="78" fill="#c9d4e0">edits：{index, id, meta}</text>
+      <text x="708" y="98" fill="#c9d4e0">entities：实体快照</text>
+      <text x="708" y="118" fill="#c9d4e0">settings：面板档位</text>
+      <text x="708" y="144" fill="#8b98a9" font-size="10.5">5s 防抖 flush；地形不入库</text>
+      <text x="708" y="164" fill="#8b98a9" font-size="10.5">进度包 = JSON 导入导出</text>
+
+      <line x1="310" y1="98" x2="348" y2="98" stroke="#6b7887" stroke-width="1.5" marker-end="url(#d1)"/>
+      <line x1="650" y1="98" x2="688" y2="98" stroke="#6b7887" stroke-width="1.5" marker-end="url(#d1)"/>
+      <text x="312" y="90" fill="#66727f" font-size="10">派生</text>
+      <text x="652" y="90" fill="#66727f" font-size="10">diff</text>
+    </g>
+  </svg>
+  </div>
+  <div class="pane m" style="margin-top:12px">
+    <h3>存档兼容</h3>
+    <div>
+      <ul class="plain">
+        <li>方块 ID = 注册顺序；清单指纹 FNV-1a 32bit = <code>16d99151</code></li>
+        <li>末尾追加：<code>fingerprintOfPrefix</code> 判前缀 → 不清档</li>
+        <li>中间插入 / 删除 / 换序 → 清档</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- 8 -->
+<section id="const">
+  <h2><span class="n">08</span>常量</h2>
+  <table>
+    <thead><tr><th>项</th><th>值</th><th>位置</th></tr></thead>
+    <tbody>
+      <tr><td class="k">WORLD_MIN_Y / MAX_Y</td><td class="v">−32 / 96</td><td class="k">voxel/constants.js</td></tr>
+      <tr><td class="k">COLUMN_SIZE / WORLD_HEIGHT</td><td class="v">16 / 128</td><td class="k">voxel/constants.js</td></tr>
+      <tr><td class="k">SECTION_SIZE / SECTIONS_PER_COLUMN</td><td class="v">16 / 8</td><td class="k">voxel/constants.js</td></tr>
+      <tr><td class="k">SEA_Y / WATER_SURFACE_SINK</td><td class="v">−2 / 0.5</td><td class="k">voxel/constants.js</td></tr>
+      <tr><td class="k">REGION_SIZE</td><td class="v">400</td><td class="k">gen/structures/region-config.js</td></tr>
+      <tr><td class="k">方块 / 背包物品</td><td class="v">159 / 149</td><td class="k">voxel/blocks-data.js · player/inventory.js</td></tr>
+      <tr><td class="k">registry 派生表 / ID 上限</td><td class="v">11 / 512</td><td class="k">voxel/block-registry.js</td></tr>
+      <tr><td class="k">视距档位 / 卸载滞回</td><td class="v">8 · 12 · 16 / R+2</td><td class="k">ui/settings.js · core/scheduler.js</td></tr>
+      <tr><td class="k">LIGHT_REGION_OFFSETS</td><td class="v">3×3 = 9</td><td class="k">mesh/lighting.js</td></tr>
+      <tr><td class="k">LIGHT_DISPATCH_PER_FRAME</td><td class="v">1</td><td class="k">core/scheduler.js</td></tr>
+      <tr><td class="k">Worker 池</td><td class="v">max(3, CPU − 1)</td><td class="k">core/worker-pool.js</td></tr>
+      <tr><td class="k">PLAYER_WIDTH / HEIGHT</td><td class="v">0.6 / 1.8</td><td class="k">player/physics.js</td></tr>
+      <tr><td class="k">GRAVITY / JUMP / SPEED</td><td class="v">−24 / 10 / 8</td><td class="k">player/physics.js</td></tr>
+      <tr><td class="k">MAX_STEP</td><td class="v">1.0</td><td class="k">player/physics.js</td></tr>
+      <tr><td class="k">WEAPON_HITTABLE_TYPES</td><td class="v">zombie dragon ignis guardian soldier</td><td class="k">entities/entity-types.js</td></tr>
+      <tr><td class="k">WEAPONS</td><td class="v">pistol mag7 minigun carbine sword</td><td class="k">player/weapons/weapon-catalog.js</td></tr>
+      <tr><td class="k">three</td><td class="v">r185 · WebGPU 唯一后端</td><td class="k">vendor/three/</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- 9 -->
+<section id="redlines">
+  <h2><span class="n">09</span>红线</h2>
+  <ol class="rl">
+    <li><b>一份权威</b>：主线程 typed array 体素；网格 / AO / 光照全是派生</li>
+    <li><b>无预生成</b>：seed 确定性生成，存档只存 edits diff</li>
+    <li><b>重计算在 Worker</b>：GEN / MESH / LIGHT；主线程只做输入 · 物理 · 调度 · 上传 · 渲染</li>
+    <li><b>单一 meshing 管线</b>：面剔除在 mesher 内部；无独立 FaceCulling / consolidation / 地形 InstancedMesh</li>
+    <li><b>发布粒度 section 16³</b>：三通道 BatchedMesh + 三级兜底</li>
+    <li><b>体素 DDA</b>：禁止对地形 mesh 用 THREE.Raycaster</li>
+    <li><b>版本协议</b>：(columnKey, version) 不符即丢弃重发；无 epoch / 防抖 / staging</li>
+    <li><b>同构纯函数</b>：gen / mesh 无 DOM 无 three，两条路径同一份代码</li>
+    <li><b>WebGPU 唯一后端</b>：不做 WebGL2 降级</li>
+    <li><b>Worker 相对路径 import</b>：不继承 import map，禁止 import three</li>
+    <li><b>光照</b>：skylight 垂直不衰减 + 水平每格 −1；快路径只升不降；shade 走顶点 float varying</li>
+    <li><b>物理手感</b>：onGround 自动上台阶 MAX_STEP = 1.0</li>
+  </ol>
+  <div class="pane m" style="margin-top:12px">
+    <h3>资源 URL</h3>
+    <div>
+      <ul class="plain">
+        <li><code>src/**</code> 一律经 <code>resourceUrl()</code>（模块 URL 上溯两级 = 仓库根）</li>
+        <li>根目录 HTML 用 <code>./</code> 相对路径（按文档基址）</li>
+        <li>禁站点根绝对路径 <code>/assets/…</code>：子路径部署会 404</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <p>静态快照，数值取自源码。细节见 <code>docs/phase-1-engine-design.md</code> · <code>docs/roadmap.md</code> · <code>CLAUDE.md</code>。<a href="./index.html">回到游戏</a></p>
+</footer>
+</main>
+</div>
+</body>
+</html>

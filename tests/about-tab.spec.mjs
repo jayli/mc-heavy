@@ -10,6 +10,11 @@
 //   ② 「确定按钮在 Tab 内容之外」= 它不得是任一面板的 DOM 后代，且两个 Tab 下尺寸位置一致；
 //   ③ 图片真的从 `resourceUrl()` 解析出的地址加载成功（4032×3024）—— 路径写错只会在
 //      「切到关于页」时表现为破图，绝不会有报错。
+//
+// **用户 2026-11-26 追加**：「在设置面板里关于游戏 tab 的内容里的右下角放一个链接，点击链接
+// 跳转到这个技术架构图的 html，这个 html 和游戏的 html 在同一个目录，路径也要用相对路径」。
+// 第二条用例守它。⚙️ 链接**不经** `resourceUrl()`（那是仓库根基址），而是 './architecture.html'
+// 按**文档基址**解析 —— 用户要的「同目录」语义只有后者能保证，故判据比**解析后的目录**而不是字串后缀。
 import { test, expect } from 'playwright/test';
 
 const READY = () => window.__MC_GAME__?.worldReady === true;
@@ -168,4 +173,145 @@ test('关于游戏 Tab：两个页签、切换弹框尺寸不变、确定按钮�
   await page.evaluate(() => document.exitPointerLock?.());
   await openPanel(page);
   expect(await page.evaluate(() => window.__MC_GAME__.settingsPanel._tab)).toBe('settings');
+});
+
+/**
+ * 用户 2026-11-26：关于页右下角的技术架构图链接。
+ *
+ * **为什么必须 E2E 而不是单测**：要证的四件事全部只在真浏览器里成立 ——
+ *   ① **位置**：「与图片底边对齐的右下角」是布局事实（链接组底边 ≈ 图片底边、竖直区间在图片内），只有真排版能算；
+ *   ② **相对路径且同目录**：必须比 `new URL(href, location.href)` 解析后的**目录**与游戏页相等，
+ *      而不是钉字串 —— 写成 '/architecture.html' 在根部署下看起来一模一样，子路径部署才 404；
+ *   ③ **新标签真的打开且真的是架构图**：只断言 `target=_blank` 拓不到「文件不存在 / 404」；
+ *   ④ **不推高弹框**：链接行不得把关于页撑出纵向滚动条（第一条用例已钉总契约）。
+ *
+ * ⚠️ **不写死屏幕坐标**：面板位置随视口变，全部判据取 getBoundingClientRect() 的相对关系。
+ * ⚠️ **新标签里不能等 `__MC_GAME__`**：架构图是纯静态页（不引 three / 不开 Worker），它永远不会有。
+ */
+test('关于页右下角：技术架构图链接在同目录、新标签真的打开架构图', async ({ page, context }) => {
+  test.setTimeout(180_000);
+  await page.goto('/?vd=2&seed=12345');
+  await page.waitForFunction(READY, null, { timeout: 90_000 });
+  await openPanel(page);
+  await page.locator('#settings-tab-about').click();
+  await expect(page.locator('#settings-panel-about')).toBeVisible();
+
+  const link = page.locator('#about-arch-link');
+  await expect(link, '关于页必须有架构图链接').toBeVisible();
+
+  // ---- ① 属性：相对路径 / 新标签 / 有文案 ----
+  const attrs = await link.evaluate((a) => ({
+    href: a.getAttribute('href'),
+    resolved: a.href,
+    target: a.getAttribute('target'),
+    rel: a.getAttribute('rel'),
+    text: a.textContent,
+    docDir: new URL('.', location.href).href,
+    linkDir: new URL('.', a.href).href,
+    gamePath: location.pathname,
+    linkPath: new URL(a.href).pathname,
+  }));
+  expect(attrs.text.trim(), '链接必须有可读文案').not.toBe('');
+  expect(attrs.text.trim(), '文案是「架构图」（用户 2026-11-26 改短）').toBe('架构图');
+  expect(attrs.href.startsWith('/'), 'href 不得是站点根绝对路径（子路径部署会 404）').toBe(false);
+  expect(attrs.href, 'href 必须是指向同目录 html 的相对路径').toMatch(/^\.\/[^/]+\.html$/);
+  expect(attrs.target, '必须新标签打开（当前页跳转会离开游戏）').toBe('_blank');
+  expect(attrs.rel, '新标签需 noopener').toContain('noopener');
+
+  // ---- ② 同目录（用户明确要求）—— 比解析后的目录，不是比字串 ----
+  expect(attrs.linkDir, '架构图必须与游戏页在**同一目录**').toBe(attrs.docDir);
+  expect(attrs.linkPath.split('/').pop(), '文件名必须是 architecture.html').toBe('architecture.html');
+  expect(attrs.gamePath.split('/').pop() || 'index.html', '游戏页本身是 index.html').toBe('index.html');
+
+  // ---- ③ 位置：与图片底边对齐的右下角（**不另起一行**）----
+  // ⚠️ 用户 2026-11-26 追加：「改为和图片底边对齐，不要再新起一行了」。
+  // 故判据从「链接在图片**下方**」反转为「链接底边 ≈ 图片底边」，且链接不得占据独立行：
+  // 它的竖直区间必须**落在图片的竖直区间内**（叠在图片容器右下角空白处）。
+  const geom = await page.evaluate(() => {
+    const panel = document.getElementById('settings-panel-about');
+    const a = document.getElementById('about-arch-link');
+    const repo = document.getElementById('about-repo-link');
+    const harness = document.getElementById('about-harness-link');
+    const img = document.getElementById('about-image');
+    const box = document.getElementById('about-arch-link').parentElement;
+    const r = (el) => {
+      const b = el.getBoundingClientRect();
+      return { top: b.top, bottom: b.bottom, left: b.left, right: b.right, w: b.width, h: b.height };
+    };
+    return {
+      panel: r(panel), link: r(a), repo: r(repo), harness: r(harness), img: r(img), links: r(box),
+      pos: getComputedStyle(box).position,
+      order: [...box.querySelectorAll('a')].map((x) => x.id),
+      panelScroll: [panel.scrollHeight, panel.clientHeight],
+    };
+  });
+  expect(geom.link.w, '链接必须真的渲染出面积').toBeGreaterThan(20);
+  expect(geom.link.h).toBeGreaterThan(8);
+  expect(geom.pos, '链接组必须绝对定位（否则会占一行把图片顶短）').toBe('absolute');
+  // 右对齐：三条链接右边缘一致且贴面板右
+  expect(geom.panel.right - geom.link.right, '架构图链接必须靠面板右侧').toBeLessThanOrEqual(2);
+  expect(geom.panel.right - geom.repo.right, '仓库链接必须右对齐').toBeLessThanOrEqual(2);
+  expect(geom.panel.right - geom.harness.right, 'harness 链接必须右对齐').toBeLessThanOrEqual(2);
+  expect(Math.abs(geom.link.right - geom.repo.right), '架构图与仓库右边缘必须对齐').toBeLessThanOrEqual(1);
+  expect(Math.abs(geom.repo.right - geom.harness.right), '仓库与 harness 右边缘必须对齐').toBeLessThanOrEqual(1);
+  expect(geom.link.left, '链接只占右下角，不得横跨整行')
+    .toBeGreaterThan(geom.panel.left + geom.panel.w * 0.5);
+  // 底边对齐（本轮的核心诉求）：链接组底边 ≈ 图片底边，而不是在图片下方另起一行
+  expect(Math.abs(geom.links.bottom - geom.img.bottom), '链接组底边必须与图片底边对齐')
+    .toBeLessThanOrEqual(2);
+  expect(geom.links.top, '链接组不得另起一行（竖直区间必须在图片内）')
+    .toBeGreaterThanOrEqual(geom.img.top - 1);
+  // 上下顺序：架构图 → 仓库地址 → harness 工具（用户指定的次序）
+  expect(geom.order, '链接顺序必须是架构图 / 仓库地址 / harness 工具')
+    .toEqual(['about-arch-link', 'about-repo-link', 'about-harness-link']);
+  expect(geom.repo.top, '仓库链接必须在架构图链接下方').toBeGreaterThanOrEqual(geom.link.bottom - 1);
+  expect(geom.harness.top, 'harness 链接必须在仓库链接下方').toBeGreaterThanOrEqual(geom.repo.bottom - 1);
+  expect(geom.harness.bottom, '最后一条链接不得溢出面板').toBeLessThanOrEqual(geom.panel.bottom + 1);
+  expect(geom.img.bottom, '图片仍须完整在面板内').toBeLessThanOrEqual(geom.panel.bottom + 1);
+  expect(geom.panelScroll[0], '关于页仍不得出现纵向滚动条')
+    .toBeLessThanOrEqual(geom.panelScroll[1] + 1);
+
+  // ---- ③b 仓库链接：外站 GitHub、新标签 ----
+  const repoAttrs = await page.locator('#about-repo-link').evaluate((a) => ({
+    href: a.getAttribute('href'), target: a.getAttribute('target'),
+    rel: a.getAttribute('rel'), text: a.textContent,
+  }));
+  expect(repoAttrs.href, '仓库地址必须是用户指定的 GitHub 地址')
+    .toBe('https://github.com/jayli/mc-heavy');
+  expect(repoAttrs.target, '仓库链接也要新标签打开').toBe('_blank');
+  expect(repoAttrs.rel, '外站新标签需 noopener').toContain('noopener');
+  expect(repoAttrs.text.trim(), '仓库链接必须有可读文案').not.toBe('');
+
+  // ---- ③c harness 工具链接：外站 pi.dev、新标签 ----
+  const harnessAttrs = await page.locator('#about-harness-link').evaluate((a) => ({
+    href: a.getAttribute('href'), target: a.getAttribute('target'),
+    rel: a.getAttribute('rel'), text: a.textContent,
+  }));
+  expect(harnessAttrs.href, 'harness 地址必须是用户指定的 pi.dev 包地址')
+    .toBe('https://pi.dev/packages/@bachi/pi-coder');
+  expect(harnessAttrs.target, 'harness 链接也要新标签打开').toBe('_blank');
+  expect(harnessAttrs.rel, '外站新标签需 noopener').toContain('noopener');
+  expect(harnessAttrs.text.trim(), '文案是「harness 工具」').toBe('harness 工具');
+
+  // ---- ④ 真的点下去：新标签打开的确实是架构图（而不只是 target 属性对）----
+  const popupPromise = context.waitForEvent('page');
+  await link.click();
+  const arch = await popupPromise;
+  await arch.waitForLoadState('domcontentloaded');
+  // 直接请求同一 URL 核 HTTP 状态：文件不存在时 popup 会拿到 404 页，光看 title 拓不到
+  const status = (await arch.request.get(arch.url())).status();
+  expect(status, '架构图 URL 必须 200（文件真的在游戏页同目录）').toBe(200);
+  expect(new URL(arch.url()).pathname, '新标签地址必须与 href 解析结果一致')
+    .toBe(new URL(attrs.resolved).pathname);
+  await expect(arch).toHaveTitle(/技术架构图/);
+  // 首屏内容：分层图与两条管线的锚点真的存在（不是空页 / 不是 404 页）
+  expect(await arch.locator('#layers').count(), '架构图必须有分层节').toBe(1);
+  expect(await arch.locator('#gen').count(), '架构图必须有 GEN 管线节').toBe(1);
+  expect(await arch.locator('#edit').count(), '架构图必须有编辑管线节').toBe(1);
+  expect(await arch.locator('#redlines').count(), '架构图必须有红线节').toBe(1);
+  const backHref = await arch.locator('nav .back a').getAttribute('href');
+  expect(backHref, '返回链接也必须是相对路径').toBe('./index.html');
+  expect(await page.evaluate(() => window.__MC_GAME__?.worldReady === true),
+    '游戏页必须仍在运行（链接不得把当前页导航走）').toBe(true);
+  await arch.close();
 });

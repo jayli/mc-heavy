@@ -65,6 +65,38 @@ export const ABOUT_IMAGE_ALT = '三年级小朋友手写的招式设计提示词
  * ⚠️ 图片只在该 Tab **首次被切到**时才设 `src`：14MB 的 PNG 不该拖慢游戏启动与常规设置路径。
  */
 export const ABOUT_IMAGE_PATH = 'assets/about/prompt.png';
+/**
+ * 「关于游戏」右下角技术架构图链接（用户 2026-11-26 需求）。
+ *
+ * ⚠️ **这里刻意不经 `resourceUrl()`**，与同文件的 `ABOUT_IMAGE_PATH` 不同：
+ * 用户要求「这个 html 和游戏的 html 在同一个目录，路径也要用相对路径」。
+ * `resourceUrl()` 以**仓库根**为基址（模块自身 URL 上溯两级），而本链接要以
+ * **文档基址**为基址 —— 两者在根部署时结果相同，但语义不同：写成 './architecture.html'
+ * 才能保证「与当前游戏页同目录」，且子路径部署（http://host/mc-heavy/）下同样正确。
+ * 红线只禁**站点根绝对路径**（'/assets/…' 这类），'./' 相对路径不违反 —— 根目录的
+ * index.html 引 './src/main.js' 是同一手法。`check:arch` 只扫 src/ 下的 js/html。
+ *
+ * ⚠️ **新标签页打开**（用户裁定）：当前页跳转会离开游戏，回来要重新加载世界。
+ */
+export const ABOUT_ARCH_HREF = './architecture.html';
+export const ABOUT_ARCH_LABEL = '架构图';
+/** 链接的 title（鼠标悬停提示，说明它去哪儿）。导出供单测钉住单一口径。 */
+export const ABOUT_ARCH_TITLE = '在新标签页打开 mc-heavy 技术架构图';
+/**
+ * 仓库地址链接（用户 2026-11-26：放在架构图链接**下方**，同样右对齐、外跳 GitHub）。
+ * 它是**站外绝对 URL**，与 `ABOUT_ARCH_HREF` 的「同目录相对路径」不是一回事 ——
+ * 红线只禁**本站**资源的站点根绝对路径（'/assets/…'），完整的外站 https URL 不受此限。
+ */
+export const ABOUT_REPO_HREF = 'https://github.com/jayli/mc-heavy';
+export const ABOUT_REPO_LABEL = '仓库地址';
+export const ABOUT_REPO_TITLE = '在新标签页打开 GitHub 仓库 jayli/mc-heavy';
+/**
+ * harness 工具链接（用户 2026-11-26：放在仓库地址**下方**，同样右对齐、外跳）。
+ * 与仓库链接同属站外绝对 URL（不受本站资源路径红线约束）。
+ */
+export const ABOUT_HARNESS_HREF = 'https://pi.dev/packages/@bachi/pi-coder';
+export const ABOUT_HARNESS_LABEL = 'harness 工具';
+export const ABOUT_HARNESS_TITLE = '在新标签页打开 harness 工具 @bachi/pi-coder';
 
 /**
  * M9：创造台按钮的**两态文案单一口径**（导出供 `src/tests/test-ui.js` 钉死）。
@@ -276,6 +308,25 @@ const PANEL_CSS = `
   width: auto; height: auto; object-fit: contain;
   border: 2px solid #888; background: #fff;
 }
+/* 右下角链接组（用户 2026-11-26：架构图 + 仓库地址 + harness 工具，上下三行右对齐）。
+   ⚠️ **不得新起一行**（用户同日追加：「改为和图片底边对齐」）：
+   旧写法把它作为 flex 兄弟排在图片下方，图片（flex:1）会让出高度 ⇒ 多出一行。
+   现在图片与链接组同住在 .mc-about-figure 里，链接组 **position:absolute 贴底右**，
+   叠在图片容器右下角的空白处（图片 aspect 4032:3024 居中，两侧恒有空白）。
+   ⚠️ 链接组 pointer-events 保持可点；它不进布局流 ⇒ 图片高度与旧版逐位相同。 */
+#settings-modal .mc-about-figure {
+  position: relative; flex: 1; min-height: 0;
+  display: flex; flex-direction: column; align-items: center;
+}
+#settings-modal .mc-about-links {
+  position: absolute; right: 0; bottom: 0;
+  display: flex; flex-direction: column; align-items: flex-end; gap: 2px;
+}
+#settings-modal .mc-about-link {
+  font-size: 12px; font-weight: bold; color: #2f5d8a;
+  text-decoration: underline; cursor: pointer; white-space: nowrap;
+}
+#settings-modal .mc-about-link:hover { color: #1d7fd1; }
 #settings-modal .mc-tabs { display: flex; gap: 8px; margin-bottom: 14px; }
 /* 两列布局：每列独立纵向堆叠，列间分隔线画在列内各项之间（非列首项）。
    分隔线只作用于 .mc-item（行型）—— 写成通配 :first-child 会连带抹掉 .mc-combined
@@ -517,7 +568,34 @@ export class SettingsPanel {
     img.decoding = 'async';
     this._aboutImage = img;
     this._aboutImageSrcSet = false;
-    panel.appendChild(img);
+
+    // 图片与链接组同住一个定位容器：链接组绝对定位贴右下角，**不另起一行**
+    // （用户 2026-11-26：「改为和图片底边对齐，不要再新起一行了」）。
+    const figure = document.createElement('div');
+    figure.className = 'mc-about-figure';
+    figure.appendChild(img);
+
+    // 右下角三条链接：架构图（同目录相对路径）+ 仓库地址（GitHub）+ harness 工具（pi.dev）。
+    // 三者都新标签打开（不离开游戏）；rel=noopener 断掉新页对 window.opener 的引用。
+    const links = document.createElement('div');
+    links.className = 'mc-about-links';
+    const mkLink = (id, href, label, title) => {
+      const a = document.createElement('a');
+      a.className = 'mc-about-link';
+      a.id = id;
+      a.href = href;
+      a.target = '_blank';
+      a.rel = 'noopener';
+      a.title = title;
+      a.textContent = label;
+      links.appendChild(a);
+      return a;
+    };
+    mkLink('about-arch-link', ABOUT_ARCH_HREF, ABOUT_ARCH_LABEL, ABOUT_ARCH_TITLE);
+    mkLink('about-repo-link', ABOUT_REPO_HREF, ABOUT_REPO_LABEL, ABOUT_REPO_TITLE);
+    mkLink('about-harness-link', ABOUT_HARNESS_HREF, ABOUT_HARNESS_LABEL, ABOUT_HARNESS_TITLE);
+    figure.appendChild(links);
+    panel.appendChild(figure);
 
     return panel;
   }
