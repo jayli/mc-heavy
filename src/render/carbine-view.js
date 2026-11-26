@@ -45,6 +45,7 @@ import {
   CARBINE_ANCHORS, CARBINE_FLASH_QUADS, CARBINE_RETICLE_SIZE,
 } from './carbine-geometry.js';
 import { createMuzzleFlashMaterial } from './muzzle-flash-material.js';
+import { VIEW_BOB } from './view-bob-config.js';
 
 /**
  * 动效参数（**上游原值**，冻结）。与玩法量分开：`CARBINE` 管弹匣/散布/后坐冲量，
@@ -75,10 +76,12 @@ export const CARBINE_VIEW = Object.freeze({
   swayPitch: 1.6,
   swayYaw: 2.2,
   swayRoll: -1.4,
-  /** 步态摆动（上游 `cos(ph)*0.012*amp` / `-|sin(ph)|*0.014*amp` / `sin(ph)*0.018*amp`） */
-  bobX: 0.012,
-  bobY: 0.014,
-  bobRoll: 0.018,
+  /** 步态摆动（上游 `cos(ph)*0.012*amp` / `-|sin(ph)|*0.014*amp` / `sin(ph)*0.018*amp`）
+   * ⚠️ **v3.46 起从 `VIEW_BOB` 派生**（三个视图模型共用同一组数，红线 1）。
+   * 数值逐位不变 ⇒ KV-9 的步态表现零回归。 */
+  bobX: VIEW_BOB.x,
+  bobY: VIEW_BOB.y,
+  bobRoll: VIEW_BOB.roll,
   /** 待机呼吸（上游 `sin(idle*1.4)*0.0022` / `sin(idle*1.1)*0.003`） */
   idleY: 0.0022,
   idleYHz: 1.4,

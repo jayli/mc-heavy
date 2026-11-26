@@ -38,6 +38,7 @@
     "shallowtarns": "node tools/bake-shallow-tarns.mjs",
     "ship": "node tools/bake-medieval-ship.mjs",
     "zombieskin": "node tools/bake-zombie-skin.mjs",
+    "playerskin": "node tools/bake-player-skin.mjs",
     "dragon": "node tools/bake-dragon.mjs",
     "ignis": "node tools/bake-ignis.mjs",
     "guardian": "node tools/bake-guardian.mjs",

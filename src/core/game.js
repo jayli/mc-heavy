@@ -29,7 +29,8 @@ import { AudioManager } from '../render/audio-manager.js';
 import { SOUND_VOLUMES, DRAGON_SHOUT, ignisAttackSound, BOSS_HIT_SOUND, SOLDIER_HIT_SOUND, SOLDIER_FIRE_SOUND, SOLDIER_DEATH_SOUND, PLAYER_GUNSHOT_HURT_SOUND } from '../render/audio-config.js';
 import { ZOMBIE_MODEL_DEFS } from '../render/zombie-model.js';
 import { ViewWeapon } from '../render/view-weapon.js';
-import { ViewArm } from '../render/view-arm.js';
+import { ViewArm, loadPlayerSkinTexture } from '../render/view-arm.js';
+import { BOB } from '../player/view-bob.js';
 import { WEAPON_IDS, WEAPONS } from '../player/weapons/weapon-catalog.js';
 import { TracerRenderer } from '../render/tracer-renderer.js';
 // v3.30 KV-9 卡宾枪（上游 bj-shooting-game 移植）：程序化视图模型 + 五个特效池
@@ -1245,6 +1246,14 @@ export class Game {
     // 故这里就置为可见（对齐 mc-lite：进入游戏即能看到手臂）。
     this.viewArm = new ViewArm({ camera: this.camera });
     this.viewArm.setWeapon(WEAPON_IDS.ARM);
+    /**
+     * v3.46：手臂皮肤（离线烘焙产物，照 OpusCraft `steveSkin()` 的配色与分段）。
+     * ⚠️ **异步加载不阻断启动**：失败时手臂退回中性肤色（构造器里的兜底），
+     * 与丧尸皮肤同口径 —— 不因为一张贴图 404 而整页起不来。
+     */
+    loadPlayerSkinTexture()
+      .then((tex) => this.viewArm?.setTexture(tex))
+      .catch((err) => console.warn('[game] 手臂皮肤加载失败，退回中性肤色：', err));
     this.tracerRenderer = new TracerRenderer({ scene: this.scene });
     /**
      * v3.30 KV-9 卡宾枪：独立的视图模型 + 五个特效池。
@@ -1280,6 +1289,16 @@ export class Game {
         tracerRenderer: this.tracerRenderer,
         audioManager: this.audioManager,
         blockHitFx: this.blockHitFx,
+        /**
+         * v3.46：徒手挖块碎片。**同一个池实例**（不开第二个池，红线 1），
+         * 只是把「挖块」那个入口与取色器单独喂给 player（它拿不到武器效果事件）。
+         * ⚠️ resolver 为 null（atlas 取色失败）时仍装配：渲染层会退回中性灰，
+         * 不阻断「挖块有碎片」这个反馈（与枪击碎块同口径）。
+         */
+        blockDigFx: {
+          spawnDigBurst: (pos, color, nowMs) => this.blockHitFx.spawnDigBurst(pos, color, nowMs),
+          colorResolver: blockColorResolver,
+        },
         // v3.30 KV-9：视图模型与特效池（同上，player/ 不 import render/）
         carbineView: this.carbineView,
         carbineFx: this.carbineFx,
@@ -1842,7 +1861,7 @@ export class Game {
         this.carbineView.update(realDt, {
           reloadT: wc.carbineMag.reloadT,
           bobPhase: this.player.viewBob.timer,
-          bobAmp: this.player.viewBob.amount / 0.15,
+          bobAmp: this.player.viewBob.amount / BOB.intensity,
           yaw: this.player.yaw,
           pitch: this.player.pitch,
         });

@@ -5,6 +5,11 @@
 // 加特林视图节点在应用绕局部 x 轴的枪管旋转前设 rotation.order='YXZ'（避免万向锁）。
 import * as THREE from 'three';
 import { WEAPONS, WEAPON_IDS } from '../player/weapons/weapon-catalog.js';
+import { VIEW_BOB } from './view-bob-config.js';
+
+/** 逐帧复用的临时对象（步态 bob 用，禁止在 update 里 new） */
+const _bobT = new THREE.Matrix4();
+const _bobR = new THREE.Matrix4();
 
 /**
  * 近战挥砍曲线（v2.70：只有「扫向准心 + 收回」两段，且**纯平移、不旋转**）。
@@ -102,9 +107,15 @@ export class ViewWeapon {
   /**
    * 每帧推进：举枪缓动、后坐衰减、加特林枪管旋转，并把 catalog transform 写入节点。
    * 帧率无关：插值系数用 Math.pow(retention, dt*60) 折算到 60Hz 口径。
-   * @param {number} dt 秒 @param {{recoil?: number, shooting?: boolean}} [opts]
+   *
+   * @param {number} dt 秒
+   * @param {{recoil?: number, shooting?: boolean, bobPhase?: number, bobAmp?: number}} [opts]
+   *   `bobPhase` / `bobAmp` = 步态晃动（v3.46，由装配层从 `ViewBob` 喂）。
+   *   ⚠️ **只对近战（剑）生效**：用户 2026-11-27「除了卡宾枪以外的枪就先保奔跑时不晃动」
+   *   ⇒ pistol / mag7 / minigun 的分支**逐位不变**（卡宾枪走独立的 `carbine-view.js`，
+   *   它 v3.30 起已有 bob）。漏这道门控的形态是「三把枪也跟着晃」，而所有计数判据全绿。
    */
-  update(dt, { shooting = false } = {}) {
+  update(dt, { shooting = false, bobPhase = 0, bobAmp = 0 } = {}) {
     if (!this.node) return;
     const weapon = WEAPONS[this.selectedId];
     if (!weapon) return;
@@ -174,12 +185,44 @@ export class ViewWeapon {
       const shift = amount * (w.shift ?? 0);
       const M = new THREE.Matrix4().makeTranslation(shift, 0, 0)
         .multiply(dR).multiply(baseM).multiply(new THREE.Matrix4().makeTranslation(c.x, c.y, c.z));
+      this._applyBob(M, bobPhase, bobAmp);
       M.decompose(this.node.position, this.node.quaternion, this.node.scale);
       return;
     }
     this.node.position.set(px, py - drawOffset, pz + this._recoil);
     this.node.rotation.set(rx, ry, rz);
     this.node.scale.set(sx, sy, sz);
+    // 静止持剑（未在挥砍）也要随步伐晃 —— 否则跑动时剑会「时晃时不晃」
+    if (bobAmp !== 0) {
+      _bobT.makeTranslation(
+        Math.cos(bobPhase) * VIEW_BOB.x * bobAmp,
+        -Math.abs(Math.sin(bobPhase)) * VIEW_BOB.y * bobAmp,
+        0,
+      );
+      this.node.position.applyMatrix4(_bobT);
+      this.node.rotateZ(Math.sin(bobPhase) * VIEW_BOB.roll * bobAmp);
+    }
+  }
+
+  /**
+   * 把步态 bob 叠到挥砍矩阵的**最外层**（v3.46）。
+   *
+   * ⚠️ **不改支点补偿 `c`**：bob 是相机空间的整体平移 + 绕 Z 滚转，与挥砍的
+   * 支点几何无关 ⇒ 既有 8 条挥砍轨迹判据（剑柄钉在屏下 / 剑尖扫向准心 /
+   * 恰好一个位移峰）的几何关系不变。叠进内层会被挥砍旋转带走，读作「剑自己在扭」。
+   *
+   * ⚠️ `amp === 0` 时**零操作**（不进任何三角函数）—— 静止夹具下逐位回到改动前。
+   */
+  _applyBob(M, phase, amp) {
+    if (amp === 0) return;
+    _bobT.makeTranslation(
+      Math.cos(phase) * VIEW_BOB.x * amp,
+      -Math.abs(Math.sin(phase)) * VIEW_BOB.y * amp,
+      0,
+    );
+    M.premultiply(_bobT);
+    _bobR.makeRotationZ(Math.sin(phase) * VIEW_BOB.roll * amp);
+    M.premultiply(_bobR);
   }
 
   /** @returns {{selectedId: string, loaded: boolean, rotationOrder: string | undefined, swingProgress: number}} */

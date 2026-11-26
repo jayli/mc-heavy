@@ -4,7 +4,7 @@ import { raycastVoxel } from './raycast.js';
 import { scanPlaceCells } from './place-ray.js';
 import { PlayerPhysics } from './physics.js';
 import { StepLift } from './step-lift.js';
-import { ViewBob } from './view-bob.js';
+import { ViewBob, BOB } from './view-bob.js';
 import { HOTBAR_ITEMS as HOTBAR } from './hotbar-items.js';
 import { createCreativeInventory } from './inventory.js';
 import { getPlacementOrientation, recordRemovedBlock } from './orientation.js';
@@ -45,6 +45,12 @@ export const SPAWN_YAW = Math.PI;
  * 只列四个移动键 —— 不要泛化成「所有 Arrow*」（没意义），也不要扩到 F5/F12 这类浏览器快捷键。
  */
 const ARROW_CODES = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
+
+/**
+ * 挖块碎片的取色法线（顶面）—— 模块级常量，每次挖块不新建数组。
+ * 挖块没有「命中面」语义，顶面是最常见的可见面（与 `block-color.js` 的缺省面同口径）。
+ */
+const DIG_TOP_NORMAL = Object.freeze([0, 1, 0]);
 
 // _buildAim 复用的临时向量（避免每帧分配）
 const _forward = new THREE.Vector3();
@@ -163,6 +169,16 @@ export class Player {
     this.audioManager = weaponRuntime?.audioManager ?? null;
     /** 命中方块的特效渲染器（v1.64，Game 装配后注入；fixture 里可为 null） */
     this.blockHitFx = weaponRuntime?.blockHitFx ?? null;
+    /**
+     * 徒手挖块碎片（v3.46，Game 注入）。形状 = `{ spawnDigBurst, colorResolver }`。
+     *
+     * ⚠️ **与 `blockHitFx` 分开注入而不是直接用它**：`blockHitFx` 的语义是「枪击命中」
+     *（`spawnFromEffect` 吃武器效果事件），而挖块没有武器事件。两者在渲染层是**同一个池**
+     *（`BlockHitFxRenderer`），装配层把同一个实例的两个能力分别喂进来 —— 不开第二个池。
+     * 缺省 null ⇒ fixture 单独构造时不出碎片、不报错。
+     * @type {{spawnDigBurst: Function, colorResolver: Function|null}|null}
+     */
+    this.blockDigFx = weaponRuntime?.blockDigFx ?? null;
     /**
      * v3.30 KV-9 卡宾枪的视图模型与特效池（Game 注入；缺省 null ⇒ 只玩法不出视觉）。
      * ⚠️ 与 `viewWeapon` **互斥**：同一时刻只能有一个第一人称武器节点挂在相机上，
@@ -501,8 +517,23 @@ export class Player {
     // aim 每帧从当前相机姿态重建（plain arrays），控制器不 import three。
     const aim = this._buildAim();
     this.weaponController.update(dt, aim);
-    if (this.viewWeapon) this.viewWeapon.update(dt, { shooting: this.weaponController.debugState().triggerHeld });
-    if (this.viewArm) this.viewArm.update(dt);
+    /**
+     * v3.46：步态晃动的相位与幅度 —— **与相机晃动同源**（`ViewBob` 是唯一权威）。
+     * 距离驱动相位 ⇒ 晚步自动贴合步伐；静止时 `amount → 0` ⇒ bob 严格归零。
+     * ⚠️ **除 `BOB.intensity` 而不是字面量 0.15**（红线 1）：写死会在调 intensity 时
+     * 静默漂移成「相机晃得大、手臂晃得小」。
+     */
+    const bobState = {
+      bobPhase: this.viewBob.timer,
+      bobAmp: this.viewBob.amount / BOB.intensity,
+    };
+    if (this.viewWeapon) {
+      this.viewWeapon.update(dt, {
+        shooting: this.weaponController.debugState().triggerHeld,
+        ...bobState,
+      });
+    }
+    if (this.viewArm) this.viewArm.update(dt, bobState);
     if (this.tracerRenderer) this.tracerRenderer.update(dt, aim);
   }
 
@@ -1104,6 +1135,22 @@ export class Player {
       try { this.audioManager.play('delete', 0.6); } catch (err) {
         console.warn('[audio] delete play failed:', err);
       }
+    }
+    /**
+     * v3.46：挖掉方块的碎片洒落（用户 2026-11-27）。
+     *
+     * ⚠️ **判据与上面那条音效完全相同**（`removed.changes` 非空 = 真删掉了）：
+     * `editor.setBlock` 对本来就是空气的格返回零 changes，无条件播会让「按住左键
+     * 挖空气」变成连发碎屑。
+     * ⚠️ **方块名用删除前读到的 `id`**：删完再读恒为 air(0) ⇒ 碎片退化成中性灰
+     *（特效照样播，只是与方块材质无关 —— 静默失效，同枪击 `impacts.blockId` 那条教训）。
+     * ⚠️ **取顶面色**（法线 [0,1,0]）：挖块没有「命中面」语义，顶面是最常见的可见面。
+     */
+    if (removed?.changes?.length > 0 && this.blockDigFx) {
+      const name = this.registry.nameOf(id);
+      const color = this.blockDigFx.colorResolver
+        ? this.blockDigFx.colorResolver(name, DIG_TOP_NORMAL) : null;
+      this.blockDigFx.spawnDigBurst([x, y, z], color, performance.now());
     }
     // ⚠️ 挥手**不在这里** —— 已提到函数顶部（v1.50：试图挖就挥手，与是否成功无关）。
   }

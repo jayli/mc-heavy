@@ -1,17 +1,24 @@
 // src/tests/test-view-bob.js — 跑动视角晃动 + 第一人称手臂（Tier 1）
 //
-// 覆盖：Bob 的移动/全速判据、静止归零、相位关系（sin / cos(2t)）、帧率无关性；
-// ViewArm 的站位/刻度/静止角、挥动编排从静止角→谷底→静止角、时长与 dt 的关系、显隐规则。
+// 覆盖：Bob 的移动/全速判据、静止归零、相位关系、帧率无关性；
+// ViewArm（**v3.46 整体照抄 OpusCraft / vanilla**）的几何与 UV 契约、
+// 11 步变换链的**相机空间锚点**、挥动编排、步态 bob、显隐规则。
 //
-// 派生量一律从**冻结常量**算出（`VIEW_ARM` / `BOB`），不硬编码被测代码写入的字面量 ——
-// docs/testing-policy.md §2.5：抄同一个值会让「常量改错但关系式仍成立」的缺陷恒过。
+// ⚠️ **判据不落在欧拉角上**：变换链是 11 步右乘复合，`mesh.rotation` 是 decompose
+// 出来的等价欧拉角（随旋转序变化，同一姿态有多种表示）—— 钉它等于钉一个派生量。
+//
+// 派生量一律从**冻结常量**算出（`VIEW_ARM` / `BOB` / `VIEW_BOB`）；
+// 而**上游字面量（几何尺寸 / UV 矩形 / 时长）反过来必须写死**，不从被测常量派生
+//（docs/testing-policy.md §2.7 第 7 类：抄同一个值会让注入缺陷时断言恒真）。
 import * as THREE from 'three';
 import { test } from './runner.js';
 import {
-  assertEqual, assertFalse, assertTrue, assertNotEqual, assertNotNull, AssertionError,
+  assertEqual, assertFalse, assertTrue, assertNotEqual, assertNotNull,
+  assertUndefined, AssertionError,
 } from './assert.js';
 import { BOB, ViewBob } from '../player/view-bob.js';
-import { VIEW_ARM, ViewArm } from '../render/view-arm.js';
+import { VIEW_ARM, ViewArm, ARM_POSE, PLAYER_SKIN_UV } from '../render/view-arm.js';
+import { VIEW_BOB } from '../render/view-bob-config.js';
 
 /** 浮点比较（sin/cos 与指数收敛无法精确等于字面量） */
 function assertClose(actual, expected, tolerance, message = '') {
@@ -359,8 +366,17 @@ test('view-bob: 静止时旋转仍为 0；平移归零但左右平移本身保�
 
 
 // ------------------------------------------------------------------ ViewArm
+//
+// **v3.46 整体重标**：手臂从 mc-lite 的素色小盒换成 OpusCraft / vanilla 口径
+//（4×12×4 像素 + 皮肤贴图 + 11 步变换链）。旧的「静止角 −0.8 / 谷底 −1.67 /
+// 顶点色六面明暗 / 参考肤色 0xeebb99」整套判据**描述的是已不存在的实现**，
+// 留着对后来者是陷阱 ⇒ 按新口径重写（对照表见设计稿 §4.5）。
+//
+// ⚠️ **判据落在相机空间坐标与 UV 契约上，不落在欧拉角上**：
+// 变换链是 11 步右乘复合，`mesh.rotation` 是 decompose 出来的等价欧拉角 ——
+// 它随旋转序变化，且同一个姿态可以有多种欧拉表示。钉欧拉角等于钉一个派生量。
 
-test('view-arm: 徒手可见；持枪时隐藏（对齐 mc-lite updateArm）', () => {
+test('view-arm: 徒手可见；持枪时隐藏；dispose 无残留', () => {
   const { camera, arm } = makeArm();
   arm.setWeapon('arm');
   assertTrue(arm.mesh.visible, '徒手须显示手臂');
@@ -370,330 +386,349 @@ test('view-arm: 徒手可见；持枪时隐藏（对齐 mc-lite updateArm）', (
   assertEqual(camera.children.length, 0, 'dispose 后相机不得残留节点');
 });
 
-test('view-arm: 造型/站位/刻度逐字对齐 mc-lite', () => {
-  // ⚠️ **字面量必须与 mc-lite 源码逐字一致，不得从 `VIEW_ARM` 派生**（testing-policy §2.7 第 7 类）：
-  // 断言输入若抄了被测常量，注入「size: 0.4 → 0.5」时输入也变 0.5 → 断言恒真（实测已证）。
-  // 下面的数字来自 mc-lite `Player.js:137-139` 与 `PlayerInteraction.js:927-928`。
+test('view-arm: 几何是 vanilla 4×12×4 像素盒 + 袖子（合并成一个 Mesh）', () => {
+  // ⚠️ **字面量取自上游 `model.ts:161` 的 cube，不从 VIEW_ARM 派生**（policy §2.7 第 7 类）：
+  // 断言输入若抄被测常量，注入「w: 4 → 5」时输入也变 5 → 断言恒真。
   const { arm } = makeArm();
-  arm.update(1); // drawProgress 收敛到 1
-  const g = arm.mesh.geometry.parameters;
-  assertEqual(g.width, 0.4, '宽（mc-lite BoxGeometry 0.4）');
-  assertEqual(g.height, 1.2, '高（mc-lite BoxGeometry 1.2）');
-  assertEqual(g.depth, 0.4, '深（mc-lite BoxGeometry 0.4）');
-  assertClose(arm.mesh.scale.x, 0.1, 1e-12, 'scale.x（mc-lite 0.1）');
-  assertClose(arm.mesh.scale.y, 0.1, 1e-12, 'scale.y');
-  assertClose(arm.mesh.scale.z, 0.1, 1e-12, 'scale.z');
-  assertClose(arm.mesh.rotation.x, -0.8, 1e-12, '静止俯仰（mc-lite −0.8）');
-  // 就位位置：mc-lite `position.set(0.07, -0.10, -0.12)` 且 drawProgress=1 时 drop=0
-  assertClose(arm.mesh.position.x, 0.07, 1e-12, 'x（mc-lite 0.07）');
-  assertClose(arm.mesh.position.y, -0.10, 1e-12, 'y（mc-lite −0.10，就位后无 drop）');
-  assertClose(arm.mesh.position.z, -0.12, 1e-12, 'z（mc-lite −0.12）');
+  const pos = arm.mesh.geometry.attributes.position;
+  // 手臂 24 顶点 + 袖子 24 顶点 = 48（合并几何，一份材质一个 Mesh）
+  assertEqual(pos.count, 48, '手臂 + 袖子共 48 顶点（两个 BoxGeometry 合并）');
+  assertNotNull(arm.mesh.geometry.attributes.uv, '须带 UV（皮肤贴图）');
+  assertNotNull(arm.mesh.geometry.attributes.color, '须带灰阶顶点色（面间亮度，v3.46b）');
+
+  // 手臂本体（前 24 顶点）的包围盒 = cube/16：x[-3,1]/16, y[-2,10]/16, z[-2,2]/16
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+  for (let i = 0; i < 24; i++) {
+    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+    x0 = Math.min(x0, x); x1 = Math.max(x1, x);
+    y0 = Math.min(y0, y); y1 = Math.max(y1, y);
+    z0 = Math.min(z0, z); z1 = Math.max(z1, z);
+  }
+  assertClose(x1 - x0, 4 / 16, 1e-6, '手臂宽 = 4px/16 = 0.25 格');
+  assertClose(y1 - y0, 12 / 16, 1e-6, '手臂长 = 12px/16 = 0.75 格');
+  assertClose(z1 - z0, 4 / 16, 1e-6, '手臂厚 = 4px/16 = 0.25 格');
+  assertClose(x0, -3 / 16, 1e-6, '最小角 x = −3px/16');
+  assertClose(y0, -2 / 16, 1e-6, '最小角 y = −2px/16');
+
+  // 袖子（后 24 顶点）各向外扩 0.25px ⇒ 每维比手臂大 0.5px/16
+  let sx0 = Infinity, sx1 = -Infinity;
+  for (let i = 24; i < 48; i++) { sx0 = Math.min(sx0, pos.getX(i)); sx1 = Math.max(sx1, pos.getX(i)); }
+  assertClose((sx1 - sx0) - (x1 - x0), 0.5 / 16, 1e-6, '袖子比手臂宽 0.5px/16（inflate 0.25 两侧）');
+  assertTrue(sx0 < x0, '袖子须包住手臂（外侧）');
   arm.dispose();
 });
 
-test('view-arm: drawProgress 从 0 起，持械后渐入到就位位（幂等收敛）', () => {
-  // 单帧落点用**冻结字面量**：mc-lite `:926` 的 `dt*4` + `:927` 的 `(1−p)²×0.5` 下，
-  // dt=1/60 → p=0.0666…、drop=0.4356 → y=−0.5356。若实现改成「瞬跳 p=1」（无渐入），
-  // 单帧后 y 就是 −0.10，与下面的断言差 0.43（一个数量级），能真区分。
+test('view-arm: 六面 UV 落在皮肤图内，且手臂/袖子各取自己的段', () => {
+  const { arm } = makeArm();
+  const uv = arm.mesh.geometry.attributes.uv;
+  const S = 64;
+  // 全部 UV 必须在 [0,1]（越界会采到别的部件或 wrap 到边缘）
+  for (let i = 0; i < uv.count; i++) {
+    const u = uv.getX(i), v = uv.getY(i);
+    assertTrue(u >= 0 && u <= 1 && v >= 0 && v <= 1, `UV[${i}] 越界：(${u},${v})`);
+  }
+  // 手臂段（前 24）：u ∈ [40,56]/64，v_tex ∈ [1−32/64, 1−16/64] = [0.5, 0.75]
+  for (let i = 0; i < 24; i++) {
+    const u = uv.getX(i) * S, vPx = (1 - uv.getY(i)) * S;
+    assertTrue(u >= 40 - 1e-6 && u <= 56 + 1e-6, `手臂 u 须在 [40,56]，实测 ${u}`);
+    assertTrue(vPx >= 16 - 1e-6 && vPx <= 32 + 1e-6, `手臂 v_px 须在 [16,32]，实测 ${vPx}`);
+  }
+  // 袖子段（后 24）：v_px ∈ [32,48]
+  for (let i = 24; i < 48; i++) {
+    const vPx = (1 - uv.getY(i)) * S;
+    assertTrue(vPx >= 32 - 1e-6 && vPx <= 48 + 1e-6, `袖子 v_px 须在 [32,48]，实测 ${vPx}`);
+  }
+  arm.dispose();
+});
+
+test('view-arm: 侧面几何上端 ↔ 贴图上行（v 轴不翻、前后面不镜像）', () => {
+  // ⚠️ 这条抓的是 **v 轴翻转 + 面映射**两个静默失效：
+  //   · v 不翻 ⇒ 整条手臂上下颠倒（所有计数判据全绿）；
+  //   · front/back 写反 ⇒ 前后两面对调。
+  // ⚠️ **v3.46b 后整条都是肤色**（用户裁定），故本条不再靠「袖口在哪一端」判，
+  // 而是直接钉 **几何 y ↔ 贴图 v_px 的对应关系**（与配色无关，更稳）。
+  const { arm } = makeArm();
+  const pos = arm.mesh.geometry.attributes.position;
+  const uv = arm.mesh.geometry.attributes.uv;
+  const S = 64;
+  // 只看手臂本体的四个侧面（|ny| < 0.5），按 y 分成上端/下端两组
+  const nor = arm.mesh.geometry.attributes.normal;
+  let topMaxV = -Infinity;   // 几何上端顶点的 v_px 最大值
+  let bottomMinV = Infinity; // 几何下端顶点的 v_px 最小值
+  const yMid = (-2 + 12 / 2) / 16;
+  for (let i = 0; i < 24; i++) {
+    if (Math.abs(nor.getY(i)) > 0.5) continue;   // 跳过顶/底面
+    const vPx = (1 - uv.getY(i)) * S;
+    if (pos.getY(i) > yMid) topMaxV = Math.max(topMaxV, vPx);
+    else bottomMinV = Math.min(bottomMinV, vPx);
+  }
+  // 侧面 v_px 跨度 20..32（12 行）；几何上端 ↔ 贴图上行（v_px 小）
+  assertClose(topMaxV, 20, 1e-6, '几何上端须对应贴图 v_px=20（侧面起始行）');
+  assertClose(bottomMinV, 32, 1e-6, '几何下端须对应贴图 v_px=32（侧面末行）');
+  arm.dispose();
+});
+
+test('view-arm: 面间亮度是灰阶（只改亮度不改色相）且两可见面拉开', () => {
+  /**
+   * v3.46b：用户裁定「整条手臂全肤色」后，Tier 4 实测到**78.6% 像素挤在同一
+   * 亮度桶、无双峰** —— 即 v1.56「一个颜色、没立体感」的回归。根因：静止姿态下
+   * 只有两个面可见（实测屏幕面积 +Z 3.57 / −X 2.09），而两面采同一张贴图
+   * ⇒ 面间零明暗差。修法 = 烘焙**灰阶**面间亮度。
+   *
+   * ⚠️ **灰阶（r=g=b）是载荷性的**：用户要的是「跟手臂一样的色调」，
+   * 任何带色偏的系数都会把肤色拉向另一个颜色（旧版 v1.57 那套幂律重映射就改色相）。
+   */
+  const { arm } = makeArm();
+  const colors = arm.mesh.geometry.attributes.color;
+  assertNotNull(colors, '几何须带 color 属性（面间亮度）');
+  assertEqual(colors.itemSize, 3, '顶点色须为 RGB 三通道');
+  // ① **逐顶点严格灰阶**
+  for (let i = 0; i < colors.count; i++) {
+    const r = colors.getX(i), g = colors.getY(i), b = colors.getZ(i);
+    assertTrue(r === g && g === b,
+      `顶点 ${i} 须是灰阶（不改色相），实测 (${r},${g},${b})`);
+    assertTrue(r > 0.5 && r <= 1.0, `面亮度须在 (0.5,1]（不发黑），实测 ${r}`);
+  }
+  // ② **静止姿态的两个可见面（+Z 与 −X）须拉开**。
+  // 实测屏幕面积 +Z 3.57 / −X 2.09，其余四面被几何自身挡住
+  // ⇒ 它俩的差就是玩家能看到的全部立体感。
+  const nor = arm.mesh.geometry.attributes.normal;
+  const shadeOf = (pred) => {
+    for (let i = 0; i < 24; i++) {
+      if (pred(nor.getX(i), nor.getY(i), nor.getZ(i))) return colors.getX(i);
+    }
+    return null;
+  };
+  const pz = shadeOf((x, y, z) => z > 0.5);
+  const nx = shadeOf((x) => x < -0.5);
+  assertNotNull(pz, '需找到 +Z 面');
+  assertNotNull(nx, '需找到 −X 面');
+  const gap = (pz - nx) / pz;
+  // 实测：pz=0.94 / nx=0.78 ⇒ gap 17.0%；阈 10% 两侧都不贴线。
+  // 注入「六面同值」⇒ gap=0 ⇒ 真红（那正是本轮实测到的变平形态）。
+  assertTrue(gap > 0.10,
+    `两可见面亮度差须 > 10%（否则读作一个色块），实测 ${(gap * 100).toFixed(1)}%`);
+  // ③ 顶面最亮、底面最暗（vanilla 面遮挡的方向不得写反）
+  const py = shadeOf((x, y) => y > 0.5);
+  const ny = shadeOf((x, y) => y < -0.5);
+  assertTrue(py >= pz && py >= nx, '顶面须最亮');
+  assertTrue(ny <= pz && ny <= nx, '底面须最暗');
+  arm.dispose();
+});
+
+test('view-arm: 静止姿态的相机空间锚点（上游变换链在本仓相机下可直接用）', () => {
+  // ⚠️ **锚点是实测值，不是从 VIEW_ARM 算出来的**（policy §2.7 第 7 类）。
+  // 来源：复刻上游 11 步链投影手臂盒 8 角（fov 70 / near 0.1）的离线探针，
+  // 见设计稿 §4.3 的表。这里判**手端中心**（几何 y 最小端的中心）与**肩端中心**。
+  const { arm } = makeArm();
+  arm.update(1);   // drawProgress → 1，equip = 0
+  const m = new THREE.Matrix4().compose(arm.mesh.position, arm.mesh.quaternion, arm.mesh.scale);
+  // 手臂盒局部角：手端 y = −2/16，肩端 y = 10/16；x/z 中心 = (−3+1)/2/16 与 0
+  const hand = new THREE.Vector3((-3 + 2) / 16, -2 / 16, 0).applyMatrix4(m);
+  const shoulder = new THREE.Vector3((-3 + 2) / 16, 10 / 16, 0).applyMatrix4(m);
+  // 实测（swing=0）：整盒 z ∈ [−1.185, −0.438]，全部顶点在近平面之外
+  assertTrue(hand.z < -0.1, `手端须在相机前方（z < −0.1），实测 ${hand.z}`);
+  assertTrue(shoulder.z < -0.1, `肩端须在相机前方，实测 ${shoulder.z}`);
+  assertTrue(hand.z > -1.6 && hand.z < -0.3, `手端 z 须落在实测带 [−1.6,−0.3]，实测 ${hand.z}`);
+  // 手臂在**右侧**（相机空间 x > 0）且偏下（y < 0）—— 原版第一人称右手的方位
+  assertTrue(hand.x > 0, `右手须在相机空间右侧，实测 x=${hand.x}`);
+  assertTrue(hand.y < 0, `右手须偏下，实测 y=${hand.y}`);
+  arm.dispose();
+});
+
+test('view-arm: 挥动时长 = 上游 6 tick（0.1s），结束严格回位', () => {
+  const { arm } = makeArm();
+  arm.update(1);
+  // 字面量 6/60（上游 `swingDuration()` 返回 6 tick @20tps）
+  assertClose(VIEW_ARM.swingDuration, 0.1, 1e-12, '挥动时长须是 6 tick = 0.1s');
+  const rest = arm.mesh.position.clone();
+  const restQ = arm.mesh.quaternion.clone();
+  arm.swing();
+  assertEqual(arm.swingProgress, 0, 'swing() 后进度从 0 起');
+  arm.update(0.1);
+  assertEqual(arm.swingProgress, 1, '一个时长后进度到 1');
+  // ⚠️ **逐位回位**（不是「接近」）：上游 swing=1 时四条曲线全部归零，
+  // 变换链逐条与 swing=0 相同 ⇒ 矩阵逐位相同。
+  assertClose(arm.mesh.position.distanceTo(rest), 0, 1e-12, '结束位置须逐位回到静止');
+  assertClose(Math.abs(arm.mesh.quaternion.dot(restQ)), 1, 1e-12, '结束姿态须逐位回到静止');
+  arm.dispose();
+});
+
+test('view-arm: 挥动中手端向前下方探出（快出曲线，峰值在前半段）', () => {
+  const { arm } = makeArm();
+  arm.update(1);
+  const m = new THREE.Matrix4();
+  const handZ = () => {
+    m.compose(arm.mesh.position, arm.mesh.quaternion, arm.mesh.scale);
+    return new THREE.Vector3((-3 + 2) / 16, -2 / 16, 0).applyMatrix4(m).z;
+  };
+  const restZ = handZ();
+  arm.swing();
+  const samples = [];
+  // 20 等分采样（每步 0.005s = 时长 1/20）
+  for (let i = 1; i <= 20; i++) {
+    arm.update(0.1 / 20);
+    samples.push({ p: arm.swingProgress, z: handZ() });
+  }
+  const deepest = samples.reduce((a, b) => (b.z < a.z ? b : a), samples[0]);
+  // 手端须真的向前探（z 更负）—— 实测 swing=0.5 时整盒 zMin 从 −1.185 到 −1.533
+  assertTrue(deepest.z < restZ - 0.05,
+    `挥动须让手端向前探（Δz < −0.05），实测 rest=${restZ} deepest=${deepest.z}`);
+  // 快出：峰值在前 60%（上游主摆动 `sin(√p·π)` 峰在 p=0.25，复合后实测偏后一点）
+  assertTrue(deepest.p <= 0.6, `前探峰值须在前 60%（快出），实测 p=${deepest.p}`);
+  arm.dispose();
+});
+
+test('view-arm: 挥动有横摆与甩腕（长轴真的转了，不是单轴下压）', () => {
+  /**
+   * ⚠️ **判据落在「手臂长轴的朝向」而不是「手端 x 位移」**（本轮实测踩到）：
+   * 上游 `f2 = −0.3·sin(√p·π)` 的横向平移在**骨骼空间**，经 11 步链后落到相机空间
+   * 只剩 **0.0357 格**（实测）—— 拿 0.05 当阈是假红。而真正读作「挥臂」的是
+   * **长轴转向**：实测长轴夹角峰 **58.5°**、水平投影角峰 **69.3°**
+   *（对应上游 `rotY(f·sin(√p·π)·70)` 的主摆动 70°）。
+   */
+  const { arm } = makeArm();
+  arm.update(1);
+  const m = new THREE.Matrix4();
+  const at = (ly) => {
+    m.compose(arm.mesh.position, arm.mesh.quaternion, arm.mesh.scale);
+    return new THREE.Vector3(-1 / 16, ly, 0).applyMatrix4(m);
+  };
+  const axis = () => at(10 / 16).sub(at(-2 / 16)).normalize();
+  const restAxis = axis();
+  const restYaw = Math.atan2(restAxis.x, -restAxis.z);
+  arm.swing();
+  let maxAngle = 0; let maxYaw = 0; let peakP = 0;
+  for (let i = 1; i <= 40; i++) {
+    arm.update(0.1 / 40);
+    const a = axis();
+    const ang = a.angleTo(restAxis);
+    if (ang > maxAngle) { maxAngle = ang; peakP = arm.swingProgress; }
+    maxYaw = Math.max(maxYaw, Math.abs(Math.atan2(a.x, -a.z) - restYaw));
+  }
+  // 主摆动：上游 70°，实测长轴夹角峰 58.5° / 水平投影角峰 69.3°
+  // 阈取 40°（两侧都不贴线）；注入「去掉 rotY(70°) 那一步」⇒ 长轴只剩 pitch 分量 ⇒ 真红。
+  assertTrue(maxAngle > 40 * Math.PI / 180,
+    `长轴夹角峰须 > 40°（上游主摆动 70°），实测 ${(maxAngle * 180 / Math.PI).toFixed(1)}°`);
+  assertTrue(maxYaw > 40 * Math.PI / 180,
+    `长轴水平投影角峰须 > 40°（横摆），实测 ${(maxYaw * 180 / Math.PI).toFixed(1)}°`);
+  // 快出：主摆动峰在 p≈0.25（实测 0.27）
+  assertTrue(peakP <= 0.45, `横摆峰须在前 45%（sin(√p·π) 峰在 0.25），实测 p=${peakP}`);
+  arm.dispose();
+});
+
+test('view-arm: drawProgress 从 0 起渐入（equip 下移），完成后就位', () => {
   const { arm } = makeArm();
   arm.setWeapon('arm');
+  const y0 = arm.mesh.position.y;
   arm.update(1 / 60);
-  assertClose(arm.mesh.position.y, -0.5355555555555556, 1e-12, '首帧落点（mc-lite 渐入公式）');
+  const y1 = arm.mesh.position.y;
+  assertTrue(y1 > y0, `渐入须让手臂上移（equip 下移量减小），实测 ${y0} → ${y1}`);
   for (let i = 0; i < 60; i++) arm.update(1 / 60);
-  assertClose(arm.mesh.position.y, -0.10, 1e-12, '渐入完成后落在 mc-lite 就位位 −0.10');
+  const yRest = arm.mesh.position.y;
+  arm.update(1 / 60);
+  assertClose(arm.mesh.position.y, yRest, 1e-12, '就位后须幂等（不再移动）');
   arm.dispose();
 });
 
-test('view-arm: 挥动为 p∈[0,1] 的单峰，谷底 = 静止角 − swingArc', () => {
-  const { arm } = makeArm();
-  arm.update(1);
-  arm.swing();
-  // 字面量（mc-lite `PlayerInteraction.js:930/932`）：静止 −0.8、幅度 0.87 → 谷底 −1.67。
-  // ⚠️ 谷底位置已从 p=0.5 改到 **p=0.25**（原版 `sin(√p·π)` 快出曲线，峰在 p=0.25）。
-  arm.update(1 / 24); // duration 1/6 的四分之一 → p = 0.25
-  assertClose(arm.mesh.rotation.x, -1.67, 1e-9, 'p=0.25 须在谷底 −1.67');
-  arm.swing();
-  arm.update(1 / 6); // p = 1
-  assertClose(arm.mesh.rotation.x, -0.8, 1e-9, 'p=1 回到静止角 −0.8');
-  arm.dispose();
-});
-
-test('view-arm: 挥动期间 rotation.x 快出慢收（前段下降比后段回升快）', () => {
-  // 原版曲线不对称：p=0→0.25 就完成整个下劈，0.25→1 慢慢回位。
-  // 断言用「等长时间段内的角度变化量」对比：起手 1/4 时长的变化须明显大于末段 1/4 时长。
-  const { arm } = makeArm();
-  arm.update(1);
-  const rest = arm.mesh.rotation.x;
-  arm.swing();
-  arm.update(1 / 24);            // p = 0.25
-  const atQuarter = arm.mesh.rotation.x;
-  const downStroke = Math.abs(atQuarter - rest);
-  arm.update(1 / 12);            // p = 0.75
-  const atThreeQuarter = arm.mesh.rotation.x;
-  arm.update(1 / 24);            // p = 1.0
-  const upStroke = Math.abs(arm.mesh.rotation.x - atThreeQuarter);
-  assertTrue(downStroke > upStroke * 2,
-    `起手须明显快于回位：down=${downStroke} up=${upStroke}`);
-  assertTrue(atThreeQuarter > atQuarter, 'p=0.75 须已明显回位');
-  arm.dispose();
-});
-
-test('view-arm: 挥动是 dt 基定长（有意偏离 mc-lite 的每帧 swingTime--）', () => {
-  // 同一物理时长（0.1s）用 2 次大步长与 4 次小步长推进，角度须一致。
-  // 注入「每帧按固定量递减」的实现时，两次的中间帧数不同 → 角度不同 → 该断言 FAIL。
+test('view-arm: 帧率无关 —— 粗步长与细步长在同一时刻落到同一姿态', () => {
   const coarse = makeArm();
-  coarse.arm.update(1);
-  coarse.arm.swing();
-  for (let i = 0; i < 2; i++) coarse.arm.update(0.05);
-  const coarseAngle = coarse.arm.mesh.rotation.x;
-  coarse.arm.dispose();
-
   const fine = makeArm();
-  fine.arm.update(1);
-  fine.arm.swing();
-  for (let i = 0; i < 4; i++) fine.arm.update(0.025);
-  const fineAngle = fine.arm.mesh.rotation.x;
-  fine.arm.dispose();
-
-  assertClose(coarseAngle, fineAngle, 1e-9, '帧率无关：同物理时长须同角度');
+  coarse.arm.update(1); fine.arm.update(1);
+  coarse.arm.swing(); fine.arm.swing();
+  // 粗：2 步 × 0.025s；细：25 步 × 0.002s ⇒ 同为 0.05s（p=0.5）
+  for (let i = 0; i < 2; i++) coarse.arm.update(0.025);
+  for (let i = 0; i < 25; i++) fine.arm.update(0.002);
+  assertClose(coarse.arm.swingProgress, fine.arm.swingProgress, 1e-9, '进度须帧率无关');
+  assertClose(coarse.arm.mesh.position.distanceTo(fine.arm.mesh.position), 0, 1e-9,
+    '同一时刻位置须帧率无关');
+  coarse.arm.dispose(); fine.arm.dispose();
 });
 
-test('view-arm: 挥动结束后回到静止角且不残留（可重复触发）', () => {
+test('view-arm: 连续挥动每次都从头开始，不残留上一次的弧', () => {
   const { arm } = makeArm();
   arm.update(1);
+  const rest = arm.mesh.position.clone();
   for (let n = 0; n < 3; n++) {
     arm.swing();
-    // 推进 0.2s（> swingDuration 的 1/6≈0.167s）—— 结束后必须回到 mc-lite 静止角 −0.8。
-    // 若实现不在结束时归零，残留弧会是 sin(1·π)·0.87 ≈ 1.07e−16 级别 —— 故断言必须用
-    // **不带容差的严格比较**：浮点下 −0.8 − 1.07e−16 ≠ −0.8（实测），能真区分。
-    for (let i = 0; i < 12; i++) arm.update(1 / 60);
-    assertEqual(arm.mesh.rotation.x, -0.8, `第 ${n + 1} 次挥动后须严格等于静止角（无残留弧）`);
+    arm.update(VIEW_ARM.swingDuration);
+    assertClose(arm.mesh.position.distanceTo(rest), 0, 1e-12,
+      `第 ${n + 1} 次挥动后须逐位回到静止（无残留弧）`);
   }
   arm.dispose();
 });
 
-test('view-arm: 挥动单向（谷底低于起点，不回摆到正向）', () => {
+test('view-arm: 步态 bob 静止时严格归零，跑动时有位移与滚转', () => {
   const { arm } = makeArm();
   arm.update(1);
-  arm.swing();
-  assertClose(arm.mesh.rotation.x, -0.8, 1e-9, '挥动起点 = 静止角 −0.8');
-  arm.update(1 / 12); // p = 0.5
-  assertTrue(arm.mesh.rotation.x < -0.8, '中点须低于起点（单向下压，不摆动到正向）');
+  const rest = arm.mesh.position.clone();
+  const restQ = arm.mesh.quaternion.clone();
+  // amp = 0（静止）⇒ 逐位等于无 bob
+  arm.update(1 / 60, { bobPhase: 1.234, bobAmp: 0 });
+  assertClose(arm.mesh.position.distanceTo(rest), 0, 1e-12, 'amp=0 时位置须逐位不变');
+  assertClose(arm.mesh.quaternion.angleTo(restQ), 0, 1e-12, 'amp=0 时姿态须逐位不变');
+  // amp = 1（全速）⇒ 位移与滚转都要发生
+  let maxD = 0; let maxAngle = 0;
+  for (let i = 0; i < 60; i++) {
+    arm.update(1 / 60, { bobPhase: i * 0.2, bobAmp: 1 });
+    maxD = Math.max(maxD, arm.mesh.position.distanceTo(rest));
+    maxAngle = Math.max(maxAngle, arm.mesh.quaternion.angleTo(restQ));
+  }
+  // 幅度上界 = 两个平移分量的合成 **+ 滚转绕相机原点的杆臂效应**。
+  // ⚠️ **不能只取 hypot(bobX, bobY)**（本轮实测踩到）：bob 的 roll 是绕**相机原点**
+  // 转整个手臂，而手臂中心离原点 **1.168 格** ⇒ 额外带来 ≈ 1.168 × 0.018 = 0.021 格
+  // 位移。实测总位移峰 **0.0283**，而纯平移上界只有 0.0184 ⇒ 旧阈是假红。
+  const restLen = rest.length();
+  const bound = Math.hypot(VIEW_ARM.bobX, VIEW_ARM.bobY) + restLen * VIEW_ARM.bobRoll;
+  assertTrue(maxD > Math.hypot(VIEW_ARM.bobX, VIEW_ARM.bobY) * 0.5,
+    `跑动位移须达平移量级，实测 ${maxD}`);
+  assertTrue(maxD <= bound + 1e-9, `跑动位移不得超上界 ${bound}，实测 ${maxD}`);
+  assertTrue(maxAngle > VIEW_ARM.bobRoll * 0.5,
+    `跑动须有滚转（>${VIEW_ARM.bobRoll * 0.5} rad），实测 ${maxAngle}`);
+  assertTrue(maxAngle <= VIEW_ARM.bobRoll + 1e-9,
+    `滚转不得超配置上界 ${VIEW_ARM.bobRoll}，实测 ${maxAngle}`);
   arm.dispose();
 });
 
-test('view-arm: castShadow 关闭（视图模型不投影，同 M4 枪口径）', () => {
-  const { arm } = makeArm();
-  let casting = 0;
-  arm.mesh.traverse((o) => { if (o.isMesh && o.castShadow) casting++; });
-  assertEqual(casting, 0, '手臂不得 castShadow');
-  arm.dispose();
-});
-
-test('view-arm: 挥动为快出慢收（原版 sin(√p·π)，峰值在 p=0.25）', () => {
-  // 原版第一人称空手挥动（`ItemInHandRenderer` / MC 的 `MathHelper.sin(sqrt(p)·π)`）：
-  // 起手极快 —— p=0.25 就到峰值，随后回落较慢。mc-lite 的 `sin(p·π)` 是对称的（峰在 p=0.5），
-  // 这就是“看着生硬”的根源。判据：p=0.25 处的 progress 须接近峰值，而 p=0.75 处明显更低。
+test('view-arm: 步态 y 只向下（脚步落地的观感），x 双侧摆动', () => {
   const { arm } = makeArm();
   arm.update(1);
-  arm.swing();
-  arm.update(VIEW_ARM.swingDuration * 0.25);
-  const peak = arm.mesh.rotation.x;
-  arm.swing();
-  arm.update(VIEW_ARM.swingDuration * 0.75);
-  const late = arm.mesh.rotation.x;
-  // 峰值处须已达到 full arc（原版 attack 在 p=0.25 就是 1.0）
-  assertClose(peak, -VIEW_ARM.restPitch - VIEW_ARM.swingArc, 0.05,
-    'p=0.25 处须接近满幅度（快出）');
-  // 对称曲线在 p=0.25 与 p=0.75 幅度相同（sin(π/4)=sin(3π/4)）；快出曲线则后段明显小
-  assertTrue(late > peak + VIEW_ARM.swingArc * 0.3,
-    `p=0.75 须明显回位（快出慢收），peak=${peak} late=${late}`);
-  arm.dispose();
-});
-
-test('view-arm: 滚转（甩腕）滞后跟随 —— 峰值在 p≈0.707（原版 sin(p²·π)）', () => {
-  // 原版有两个不同峰值的曲线：主臂用 sin(√p·π)（峰 p=0.25），滚转用 sin(p²π)（峰 p≈0.707）。
-  // 两者错开才产生“甩腕”而不是整体平移。断言滚转在 p=0.25 时明显小于 p=0.707 时。
-  const { arm } = makeArm();
-  arm.update(1);
-  arm.swing();
-  arm.update(VIEW_ARM.swingDuration * 0.25);
-  const rollEarly = Math.abs(arm.mesh.rotation.z);
-  arm.swing();
-  arm.update(VIEW_ARM.swingDuration * 0.707);
-  const rollPeak = Math.abs(arm.mesh.rotation.z);
-  assertTrue(rollPeak > rollEarly * 2,
-    `滚转须滞后（峰在后段）：early=${rollEarly} peak=${rollPeak}`);
-  assertClose(rollPeak, VIEW_ARM.swingRoll, 0.02, 'p=0.707 处滚转须接近满幅度');
-  arm.dispose();
-});
-
-test('view-arm: 横摆（yaw）也随挥动变化 —— 多轴而非单轴', () => {
-  const { arm } = makeArm();
-  arm.update(1);
-  const yawRest = arm.mesh.rotation.y;
-  assertClose(yawRest, 0, 1e-12, '静止时无 yaw');
-  arm.swing();
-  arm.update(VIEW_ARM.swingDuration * 0.25);
-  assertTrue(Math.abs(arm.mesh.rotation.y) > VIEW_ARM.swingYaw * 0.5,
-    `挥动中须有 yaw 分量，got ${arm.mesh.rotation.y}`);
-  arm.dispose();
-});
-
-test('view-arm: 挥动带位移（下劈时手臂向前下探）', () => {
-  const { arm } = makeArm();
-  arm.update(1);
-  const restZ = arm.mesh.position.z;
   const restY = arm.mesh.position.y;
-  arm.swing();
-  arm.update(VIEW_ARM.swingDuration * 0.25);
-  // ⚠️ **分轴断言**：先写的是 `|Δz| + |Δy| > 0.01`，注入「去掉向前位移」后**仍全绿** ——
-  // 因为 Y 轴的下探项独立地让总和过了阈值（断言没对准被测轴）。故两根轴分开断。
-  assertTrue(Math.abs(arm.mesh.position.z - restZ) > VIEW_ARM.swingForward * 0.9,
-    `向前位移须达配置幅度，实测 Δz=${arm.mesh.position.z - restZ}`);
-  assertTrue(arm.mesh.position.y < restY - VIEW_ARM.swingDrop * 0.9,
-    `向下位移须达配置幅度，实测 Δy=${arm.mesh.position.y - restY}`);
+  const restX = arm.mesh.position.x;
+  let up = 0; let down = 0; let left = 0; let right = 0;
+  for (let i = 0; i < 120; i++) {
+    arm.update(1 / 120, { bobPhase: i * 0.1, bobAmp: 1 });
+    const dy = arm.mesh.position.y - restY;
+    const dx = arm.mesh.position.x - restX;
+    if (dy > 1e-9) up++; else if (dy < -1e-9) down++;
+    if (dx > 1e-9) right++; else if (dx < -1e-9) left++;
+  }
+  // 上游 `-|sin(ph)|*bobY*amp` ⇒ y 恒非正
+  assertEqual(up, 0, `步态 y 须只向下，实测有 ${up} 帧向上`);
+  assertTrue(down > 60, `步态 y 须确实下探，实测 ${down} 帧`);
+  // 上游 `cos(ph)*bobX*amp` ⇒ x 双侧
+  assertTrue(left > 20 && right > 20, `步态 x 须双侧摆动，实测 左${left}/右${right}`);
   arm.dispose();
 });
 
-test('view-arm: 六面有烘焙明暗（顶最亮 / 侧面最暗），不是单一颜色', () => {
-  // 用户反馈「手臂的横面和竖面没有光影效果，感觉就是一个颜色，没有立体感」。
-  // 做法 = 顶点色烘焙明暗（面系数 × 固定光向 Lambert，再重映射到 `shadeLow..shadeHigh`），
-  // 而不是换受光材质（本仓全场景 unlit，受光材质会让肤色随日夜灯光漂移 —— v1.48 已记录的取舍）。
-  const { arm } = makeArm();
-  const colors = arm.mesh.geometry.attributes.color;
-  assertNotNull(colors, '几何体须带 color 属性（顶点色烘焙明暗）');
-  assertEqual(colors.itemSize, 3, '顶点色须为 RGB 三通道');
-  // BoxGeometry 24 顶点 = 6 面 × 4，按 +X,-X,+Y,-Y,+Z,-Z 顺序。
-  // **取每面 4 顶点的均值**，不取单点：烘焙里含「沿长度方向的渐变」（见 lengthFade 注释），
-  // 单点取到的只是根部或远端的某一端，跨面比较会得出误导性结论（实测踩到）。
-  const faceLum = [];
-  for (let f = 0; f < 6; f++) {
-    let sum = 0;
-    for (let v = 0; v < 4; v++) {
-      const i = f * 4 + v;
-      sum += (colors.getX(i) + colors.getY(i) + colors.getZ(i)) / 3;
-    }
-    faceLum.push(sum / 4);
-  }
-  const [px, nx, py, ny, pz, nz] = faceLum;
-  // **六面亮度须两两不同**（这是「立体感」的定义：不同朝向不同亮度）。
-  // ⚠️ 不能用「对称面同亮度」当判据：烘焙里除 vanilla 面遮挡系数外还有**固定光向的 Lambert 项**
-  // （见 `VIEW_ARM.lightDir` 的注释），故 +X 与 −X、+Z 与 −Z 天然不同（一面向光一面向背）。
-  const all = [px, nx, py, ny, pz, nz];
-  const uniq = new Set(all.map((v) => Math.round(v * 1e4)));
-  assertEqual(uniq.size, 6, `六面须有 6 种不同亮度，实测 ${uniq.size} 种：${all.map(v=>v.toFixed(3))}`);
-  // 顶面（+Y，朝光最多）须最亮
-  assertEqual(py, Math.max(...all), '顶面须最亮');
-  // 底面（−Y，背光且遮挡系数最低）须最暗
-  //
-  // ⚠️ 注意 `all` 与 `faceLum` 是**线性和**（顶点色缓冲是线性工作色空间）。
-  // v1.57 的幂律（shadeLow..shadeHigh 重映射）使最暗面不一定是 −Y（线性下 ±X 与 −Y 只差
-  // 面系数 0.6 vs 0.5，重映射后 −Y 会略高于 −X）—— 这是对的：玩家可见的那几面里 −Y 仍最暗，
-  // 而被看见的 3 个面（+Z/−Y/±X）的亮度排序由上一个用例按 **sRGB** 断言。
-  // 故这里只钉「底面属于最暗一档」（与最暗值的差 < 面间跨度的 15%），
-  // 不再钉「必须是绝对最小值」—— 后者是幂律重映射下的伪约束。
-  const span = Math.max(...all) - Math.min(...all);
-  assertTrue(ny - Math.min(...all) < span * 0.15,
-    `底面须属于最暗一档（与最暗值差 < 面间跨度的 15%），实测差 ${((ny - Math.min(...all)) / span * 100).toFixed(1)}%`);
-  // 明暗对比度须足够（否则「看起来仍是一个颜色」）
-  const contrast = (Math.max(...all) - Math.min(...all)) / Math.max(...all);
-  assertTrue(contrast > 0.35, `明暗对比须足够（>35%），实测 ${(contrast * 100).toFixed(1)}%`);
-  // **侧面内须有沿长度的梯度**（这是 lengthFade 的存在意义）：
-  // 46° 俯角下手臂只露出两个面（底面 + 前面），若单面是纯色，屏幕上仍只有两种颜色
-  // —— 实测直方图会变成「两个尖峰、中间空」。
-  // ⚠️ 只检查**侧面**（面 0/1/4/5）：`BoxGeometry` 的顶面(2)/底面(3) 四个顶点 y 完全相同
-  // （实测 [0.60,0.60,0.60,0.60] / [−0.60,…]），沿 y 的渐变在它们上面必然是常数。
-  // 这不是缺陷 —— 那两面在 46° 姿态下几乎不可见，且它们的亮度差异由「面系数」提供。
-  for (const f of [0, 1, 4, 5]) {
-    const lums = [];
-    for (let v = 0; v < 4; v++) {
-      const i = f * 4 + v;
-      lums.push((colors.getX(i) + colors.getY(i) + colors.getZ(i)) / 3);
-    }
-    const inner = (Math.max(...lums) - Math.min(...lums)) / Math.max(...lums);
-    assertTrue(inner > 0.1, `侧面 ${f} 内须有亮度梯度（>10%），实测 ${(inner * 100).toFixed(1)}%`);
-  }
-  arm.dispose();
-});
-
-test('view-arm: 显示色阶落在参考肤色附近（v1.57「过于暗」回归门）', () => {
-  // 用户反馈「手臂的颜色过于暗」，根因是三层系数直接相乘：静止姿态露出的
-  // 底面/前面分别只有 0.27/0.59 —— 实测屏幕均值 RGB(163,146,134)，而参考肤色是
-  // mc-lite 的 0xeebb99 = (238,187,153)。不但整体暗一档，还因为三通道压得不一样而发灰。
-  //
-  // 修法 = 面间差只决定「哪面更亮」，其取值区间重映射到 `shadeLow..shadeHigh`（屏幕空间）；
-  // 顶点色再经 `srgbToLinear` 写入线性缓冲。于是「参考色」与「显示结果」是同一份数据。
-  //
-  // 本用例钉住的是**显示色阶本身**（不只是亮度排序）：后者已由上一个用例覆盖，
-  // 而「排序对但整体暗」恰好就是被修复的那个缺陷（负向验证：把 shadeLow/High 退回
-  // 旧版直接相乘的 0..1 区间时本用例 FAIL 而亮度排序用例仍绿）。
-  const { arm } = makeArm();
-  const colors = arm.mesh.geometry.attributes.color;
-  // 线性 → sRGB（顶点色缓冲是线性工作色空间，屏幕输出才是 sRGB）
-  const lin2srgb = (v) => (v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055);
-  const srgb = (i) => [colors.getX(i), colors.getY(i), colors.getZ(i)].map((v) => lin2srgb(v));
-  // 静止姿态（rotation.x=-0.8）下玩家**实际看到**的是这几面：
-  // +Z（前面，法线朝相机）+ −Y（底面）+ ±X（左右侧面）；+Y 顶面朝上后方，被自身挡住。
-  // 顶点索引：BoxGeometry 的 6 个面固定按 +X,-X,+Y,-Y,+Z,-Z 排列、每面 4 顶点，
-  // 而**同一面内 4 个顶点的长度渐变值不同**（两侧各两个极端 t=0/t=1）。
-  // 这里取每面的两个极端里**更亮**的一端（t=0，无长度衰减）—— 那是「参考色」的锚点。
-  const VISIBLE_FACES = { '+X': 0, '-X': 4, '-Y': 12, '+Z': 16 };
-  const ref = [0xee / 255, 0xbb / 255, 0x99 / 255];
-  const near = {};
-  for (const [name, base] of Object.entries(VISIBLE_FACES)) {
-    let best = null;
-    for (let v = 0; v < 4; v++) {
-      const c = srgb(base + v);
-      if (!best || c[0] + c[1] + c[2] > best[0] + best[1] + best[2]) best = c;
-    }
-    near[name] = best;
-  }
-  // ① **亮度不再整体偏暗**：每个可见面的近端亮度须在参考亮的 0.85 以上。
-  //    旧实现在此得 0.55~0.72（实测），新版 0.85~0.99；阈值 0.82 两侧都不贴线。
-  const lumOf = (rgb) => (rgb[0] + rgb[1] + rgb[2]) / 3;
-  const refLum = lumOf(ref);
-  for (const [name, rgb] of Object.entries(near)) {
-    const ratio = lumOf(rgb) / refLum;
-    assertTrue(ratio > 0.82, `${name} 近端亮度须 ≥ 参考色 82%，实测 ${(ratio * 100).toFixed(1)}%`);
-  }
-  // ② **不发灰**：R−B 差（肤色饱和度的关键）不得比参考色小太多。
-  //    旧实现 R−B 差 从 85 掉到 29（实测）；新版保持 ≥ 52。
-  const refRB = (ref[0] - ref[2]) * 255;
-  for (const [name, rgb] of Object.entries(near)) {
-    const rb = (rgb[0] - rgb[2]) * 255;
-    assertTrue(rb > refRB * 0.6,
-      `${name} 的 R−B 差须 ≥ 参考色 60%（否则发灰），实测 ${rb.toFixed(0)} vs ${refRB.toFixed(0)}`);
-  }
-  // ③ 可见面之间仍须有**可辨的**亮度差（不能为了「亮」而把立体感抹平）：
-  //    最暗可见面 ≤ 最亮可见面的 0.93。实测新版 0.834（旧版 0.672）。
-  //    ⚠️ 0.672 也满足 <0.93 —— 这条**不是**用来抓旧实现的（①② 才是），它抓的是
-  //    「以后有人为了更亮而把 shadeLow/shadeHigh 收窄成一条窄带」。
-  const lums = Object.values(near).map(lumOf);
-  const spread = Math.min(...lums) / Math.max(...lums);
-  assertTrue(spread < 0.93,
-    `可见面之间须保留明暗差（最暗/最亮 < 0.93），实测 ${spread.toFixed(3)}`);
-  arm.dispose();
-});
-
-test('view-arm: 面明暗常量冻结，且与 vanilla 方块面遮挡一致', () => {
-  assertTrue(Object.isFrozen(VIEW_ARM.faceShade), 'faceShade 须冻结');
-  assertTrue(Object.isFrozen(VIEW_ARM.lightDir), 'lightDir 须冻结');
-  // vanilla ModelBlockRenderer / 图集 shading 的六面系数
-  assertEqual(VIEW_ARM.faceShade.up, 1.0, '+Y');
-  assertEqual(VIEW_ARM.faceShade.down, 0.5, '−Y');
-  assertEqual(VIEW_ARM.faceShade.z, 0.8, '±Z');
-  assertEqual(VIEW_ARM.faceShade.x, 0.6, '±X');
-  // 顺序断言：顶最亮 > 前后面 > 左右面 > 底面（防有人把 up/down 写反）
-  assertTrue(VIEW_ARM.faceShade.up > VIEW_ARM.faceShade.z, 'up > z');
-  assertTrue(VIEW_ARM.faceShade.z > VIEW_ARM.faceShade.x, 'z > x');
-  assertTrue(VIEW_ARM.faceShade.x > VIEW_ARM.faceShade.down, 'x > down');
-  // 光向须朝上（天光自上而下）且归一化后各分量有限
-  assertTrue(VIEW_ARM.lightDir.y > Math.abs(VIEW_ARM.lightDir.x), '光向须偏上方');
-  assertTrue(VIEW_ARM.ambient > 0 && VIEW_ARM.ambient < 1, '环境项须在 (0,1)');
-});
-
-test('view-arm: VIEW_ARM 常量冻结', () => {
+test('view-arm: 常量冻结，且步态幅度与共享配置同源（红线 1）', () => {
   assertTrue(Object.isFrozen(VIEW_ARM), 'VIEW_ARM 须冻结');
-  assertTrue(VIEW_ARM.swingDuration > 0, 'swingDuration 须为正');
+  assertTrue(Object.isFrozen(VIEW_ARM.cube), 'cube 须冻结');
+  assertTrue(Object.isFrozen(VIEW_ARM.pivot), 'pivot 须冻结');
+  assertTrue(Object.isFrozen(ARM_POSE), 'ARM_POSE 须冻结');
+  assertTrue(Object.isFrozen(PLAYER_SKIN_UV.arm), 'UV 表须冻结');
+  // ⚠️ **同源断言**：三个视图模型（KV-9 / 手臂 / 剑）共用 VIEW_BOB，
+  // 任一处写死字面量都会让这条 FAIL（那是「改一处另两处不跟」的静默漂移）。
+  assertEqual(VIEW_ARM.bobX, VIEW_BOB.x, 'bobX 须来自 VIEW_BOB');
+  assertEqual(VIEW_ARM.bobY, VIEW_BOB.y, 'bobY 须来自 VIEW_BOB');
+  assertEqual(VIEW_ARM.bobRoll, VIEW_BOB.roll, 'bobRoll 须来自 VIEW_BOB');
+  // 旧实现的常量必须**真的不存在**（留着就是死字段，改它们不会有任何可见变化）
+  assertUndefined(VIEW_ARM.faceShade);
+  assertUndefined(VIEW_ARM.lightDir);
+  assertUndefined(VIEW_ARM.shadeLow);
+  assertUndefined(VIEW_ARM.shadeHigh);
+  assertUndefined(VIEW_ARM.lengthFade);
+  assertUndefined(VIEW_ARM.restPitch);
+  assertUndefined(VIEW_ARM.swingArc);
+  assertUndefined(VIEW_ARM.color);
 });

@@ -21,6 +21,8 @@ import {
   staggerTimes, heatDecay,
   // v2.64：宿主实体死亡爆散（丧尸 / 焰魔）
   DEATH_BURST, IGNIS_DEATH_BURST, createDeathBurstSeeds, BlockHitFxRenderer,
+  // v3.46：徒手挖块碎片（复用同一个池，见 DIG_BURST 注释）
+  DIG_BURST,
 } from '../render/block-hit-fx.js';
 
 /** 确定性 LCG：同一 seed 产出同一序列（特效是随机的，测试必须可复现） */
@@ -33,6 +35,21 @@ function makeRand(seed = 1) {
 }
 
 function dot(a, b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+
+/**
+ * 实例矩阵是不是「空闲 slot」。
+ *
+ * ⚠️ **看前 3×3（旋转/缩放块），不看整个矩阵**：池用的 `_zeroMatrix = makeScale(0,0,0)`
+ * 只把旋转/缩放块归零，**`elements[15]`（齐次分量）仍是 1** ⇒
+ * `elements.every(v => v === 0)` 恒 false，128 个 slot 全被当成活跃（本轮实测：
+ * 期望 224 个分量、实得 2048）。位移列也不能看 —— 已回收的 slot 保留着旧位置。
+ */
+function isIdleSlot(m) {
+  const e = m.elements;
+  return e[0] === 0 && e[1] === 0 && e[2] === 0
+    && e[4] === 0 && e[5] === 0 && e[6] === 0
+    && e[8] === 0 && e[9] === 0 && e[10] === 0;
+}
 
 // ---------- 配置目录 ----------
 
@@ -453,6 +470,141 @@ test('ignis death burst: 渲染器入口按 burst 参数出块（缺省仍是丧
     fx.update(1000 + IMPACT_FX.debris.lifeMs + 1);
     assertEqual(fx.activeDebrisCount, 0, '到期全部回收');
     assertFalse(fx.debrisMesh.visible, '回收后回到不可见');
+  } finally {
+    fx.dispose();
+  }
+});
+
+// ---------- v3.46：徒手挖块碎片（用户 2026-11-27「删除方块会有一个碎片洒落的动效」）----------
+//
+// 上游 OpusCraft `particles.ts:193` 的 `blockBreak` 是 4×4×4=64 片**贴图 billboard** +
+// 逐 tick 碰撞物理（落地后水平速度 ×0.7）。用户裁定「复用现有池只加调用」⇒ 本仓拿到的是
+// **实心小立方 + 平均色 + 抛物线**（见设计稿 §2 偏离 ①②）。这里钉的是**复用后仍必须成立**
+// 的那几条：块数装得进池、锚点是块心、颜色由调用方给、到期回收、确定性。
+
+test('dig burst: 配置合法且一次爆散装得进碎块池', () => {
+  assertTrue(Object.isFrozen(DIG_BURST), 'DIG_BURST 须冻结（渲染层不得改写）');
+  assertTrue(Object.isFrozen(DIG_BURST.size), 'size 区间须冻结');
+  assertTrue(DIG_BURST.count > 0, '挖块必须出碎块');
+  // ⚠️ 与丧尸/焰魔同一条约束：一次爆散超池容量时后面的块会覆盖**同一次**的前面几块
+  //（FIFO 绕回）⇒ 观感是「只炸出半边」，而计数判据全绿。
+  assertTrue(DIG_BURST.count <= IMPACT_FX.debris.maxActive,
+    `一次挖块须装得进池（${DIG_BURST.count} <= ${IMPACT_FX.debris.maxActive}）`);
+  // 尺寸下界：与枪击碎块同一条实测教训 —— 0.055~0.11 在 6 格外几乎看不见。
+  assertTrue(DIG_BURST.size[0] > 0.08, `碎片边长须肉眼可见：${DIG_BURST.size[0]}`);
+  assertTrue(DIG_BURST.size[1] >= DIG_BURST.size[0], '尺寸区间上下界不得倒置');
+  assertTrue(DIG_BURST.speed[1] > DIG_BURST.speed[0], '速度区间上下界不得倒置');
+  assertTrue(DIG_BURST.spin[1] > DIG_BURST.spin[0], '自旋区间上下界不得倒置');
+  // 单格方块（1×1×1）比丧尸（0.6×1.8×0.6）体积大但「被挖掉」不是「被打爆」
+  // ⇒ 块数与初速都低于死亡爆散一档。负向锚点：照抄 DEATH_BURST 的 20 块/2.2~4.8 会让这两条 FAIL。
+  assertTrue(DIG_BURST.count < DEATH_BURST.count,
+    `挖块块数须少于死亡爆散（${DIG_BURST.count} vs ${DEATH_BURST.count}）`);
+  assertTrue(DIG_BURST.speed[1] < DEATH_BURST.speed[1],
+    `挖块初速须低于死亡爆散（${DIG_BURST.speed[1]} vs ${DEATH_BURST.speed[1]}）`);
+});
+
+test('dig burst: 渲染器入口真把碎片推进池，锚点是块心而非命中面', () => {
+  const scene = new THREE.Scene();
+  const fx = new BlockHitFxRenderer({ scene });
+  try {
+    fx.reset();
+    assertEqual(fx.activeDebrisCount, 0, '前置：池空');
+    assertFalse(fx.debrisMesh.visible, '前置：空闲池不提交渲染（draw call 基线）');
+
+    // 块角 [4,10,6] ⇒ 块心 [4.5,10.5,6.5]
+    fx.spawnDigBurst([4, 10, 6], [0.5, 0.5, 0.5], 1000, { rand: makeRand(7) });
+    assertEqual(fx.activeDebrisCount, DIG_BURST.count, '碎片全部入池');
+    assertTrue(fx.debrisMesh.visible, '有碎片时必须可见');
+
+    // ⚠️ **锚点判据落在真实实例矩阵上**，不是「函数返回值」——
+    // 取 age=0 时刻（矩阵尚未被重力推开），实例位置须**恰好**是块心。
+    // 负向锚点：改用 impactPosition（块心 + 法线×0.5）会让这条差 0.5 格而 FAIL。
+    fx.update(1000);
+    const m = new THREE.Matrix4();
+    const p = new THREE.Vector3();
+    let checked = 0;
+    for (let i = 0; i < IMPACT_FX.debris.maxActive; i++) {
+      fx.debrisMesh.getMatrixAt(i, m);
+      // ⚠️ **空闲判据看旋转/缩放块（前 3×3），不能看整个矩阵**（本轮实测踩到）：
+      // `_zeroMatrix = makeScale(0,0,0)` 的 `elements[15]` 仍是 **1**（齐次分量）
+      // ⇒ `every(v => v === 0)` 恒 false，128 个 slot 全被当成「活跃」。
+      if (isIdleSlot(m)) continue;
+      p.setFromMatrixPosition(m);
+      assertTrue(Math.abs(p.x - 4.5) < 1e-6 && Math.abs(p.y - 10.5) < 1e-6 && Math.abs(p.z - 6.5) < 1e-6,
+        `age=0 的碎片须落在块心 [4.5,10.5,6.5]，实测 [${p.x},${p.y},${p.z}]`);
+      checked++;
+    }
+    assertEqual(checked, DIG_BURST.count, '每个活跃 slot 都要被核到（防止零矩阵混过判据）');
+
+    fx.update(1000 + IMPACT_FX.debris.lifeMs + 1);
+    assertEqual(fx.activeDebrisCount, 0, '到期必须全部回收（不得泄漏 slot）');
+    assertFalse(fx.debrisMesh.visible, '回收后回到不可见');
+  } finally {
+    fx.dispose();
+  }
+});
+
+test('dig burst: 同 rand 可复现、异 rand 有差异；全球面散开（不是半球）', () => {
+  const scene = new THREE.Scene();
+  const fx = new BlockHitFxRenderer({ scene });
+  /**
+   * 取一次爆散的实例矩阵。
+   *
+   * ⚠️ **只收非零 slot、按遇到顺序排**，不按固定 slot 下标比（本轮实测踩到）：
+   * `reset()` 清的是 `_debris` 与矩阵，**不复位 `_nextDebrisSlot`**（既有语义，
+   * `spawnDeathBurst` 的同类用例也如此）⇒ 第二次 grab 从 slot 14 开始写。
+   * 比全缓冲会把「slot 分配不同」误报成「随机不可复现」。
+   */
+  const grab = (seed) => {
+    fx.reset();
+    fx.spawnDigBurst([0, 0, 0], [0.5, 0.5, 0.5], 1000, { rand: makeRand(seed) });
+    fx.update(1000 + 120);
+    const m = new THREE.Matrix4();
+    const out = [];
+    for (let i = 0; i < IMPACT_FX.debris.maxActive; i++) {
+      fx.debrisMesh.getMatrixAt(i, m);
+      if (isIdleSlot(m)) continue;   // 空闲 slot
+      out.push(...m.elements);
+    }
+    return out;
+  };
+  try {
+    const a = grab(11);
+    const b = grab(11);
+    const c = grab(12);
+    assertEqual(a.length, DIG_BURST.count * 16, '前提：量到的正好是这一次爆散的全部碎片');
+    assertTrue(a.every((v, i) => v === b[i]), '同 rand 须逐位可复现（红线 2）');
+    assertTrue(a.some((v, i) => v !== c[i]), '异 rand 须有差异（否则是同一份拷贝）');
+    // 全球面：age=1ms 时的位移方向向上/向下都要有（复用 createDeathBurstSeeds 的上下半球各一半）
+    fx.reset();
+    fx.spawnDigBurst([0, 0, 0], [0.5, 0.5, 0.5], 1000, { rand: makeRand(3) });
+    fx.update(1001);
+    const m = new THREE.Matrix4();
+    const p = new THREE.Vector3();
+    let up = 0; let down = 0;
+    for (let i = 0; i < IMPACT_FX.debris.maxActive; i++) {
+      fx.debrisMesh.getMatrixAt(i, m);
+      if (isIdleSlot(m)) continue;
+      p.setFromMatrixPosition(m);
+      if (p.y > 0.5) up++; else if (p.y < 0.5) down++;
+    }
+    assertTrue(up >= 3 && down >= 3, `全球面覆盖：向上 ${up} / 向下 ${down}`);
+  } finally {
+    fx.dispose();
+  }
+});
+
+test('dig burst: 缺色/NaN 位置走纵深防御，不污染实例矩阵', () => {
+  const scene = new THREE.Scene();
+  const fx = new BlockHitFxRenderer({ scene });
+  try {
+    fx.reset();
+    // NaN 位置：直接跳过（一个 NaN 会让整个实例缓冲失效 ⇒ 全池零像素而计数全对）
+    fx.spawnDigBurst([NaN, 0, 0], [0.5, 0.5, 0.5], 1000);
+    assertEqual(fx.activeDebrisCount, 0, 'NaN 位置不得入池');
+    // 缺色：退回中性灰但**照常出碎片**（不阻断玩法，同 spawnDeathBurst 口径）
+    fx.spawnDigBurst([0, 0, 0], null, 1000);
+    assertEqual(fx.activeDebrisCount, DIG_BURST.count, '缺色仍须出碎片');
   } finally {
     fx.dispose();
   }

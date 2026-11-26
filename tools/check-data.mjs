@@ -43,6 +43,12 @@ const {
   SKIN_PNG, SKIN_JSON, SKIN_SIZE, SKIN_LAYOUT_VERSION, SKIN_REGIONS,
   SKIN_REGION_MIN_DIST, skinInputFingerprint,
 } = await import('./zombie-skin-fingerprint.mjs');
+// 第一人称手臂皮肤（v3.46，只烘手臂两段）同理 —— 与 bake-player-skin.mjs 同一份逻辑
+const {
+  PLAYER_SKIN_PNG, PLAYER_SKIN_JSON, PLAYER_SKIN_SIZE, PLAYER_SKIN_LAYOUT_VERSION,
+  PLAYER_SKIN_UV, PLAYER_SKIN_FAR_ROWS, PLAYER_SKIN_MAX_DIST,
+  playerSkinInputFingerprint,
+} = await import('./player-skin-fingerprint.mjs');
 // 祭坛飞龙（v2.41）的烘焙参数/度量/指纹走共享模块（红线 1：与烘焙脚本同一份逻辑）
 const {
   DRAGON_JSON, DRAGON_PNG, DRAGON_META, DRAGON_BAKE_PARAMS, DRAGON_METRICS,
@@ -602,6 +608,98 @@ function checkZombieSkinTexture() {
     infos.push(`[丧尸皮肤] skin.png ${SKIN_SIZE}×${SKIN_SIZE} 版式 ${SKIN_LAYOUT_VERSION}`
       + ` + 三区色距 ${d01.toFixed(0)}/${d12.toFixed(0)}/${d02.toFixed(0)}（阈值 ${SKIN_REGION_MIN_DIST}）`
       + ' + 指纹匹配');
+  }
+}
+
+// ---------------------------------------------------------------- [手臂皮肤] 契约（v3.46）
+
+/**
+ * 第一人称手臂皮肤（64×64 标准版式，只烘手臂基础层）。
+ *
+ * 失效路径与丧尸皮肤同类：皮肤是**派生产物**，权威输入是
+ * `tools/player-skin-fingerprint.mjs` 的参数 + re-export 的 `view-arm-data.js` UV 表。
+ * 改了参数却忘跑 `npm run playerskin` → 渲染旧图（肉眼只觉得「颜色怪怪的」）。
+ *
+ * 五条断言：
+ *   ① PNG 存在 + 尺寸 = 64×64；
+ *   ② 版式版本与当前 UV 表匹配；
+ *   ③ **远端段与近端段的均值色距 ≤ 阈**（上界！）→ 抓「又出现异色袖口」；
+ *   ④ **外套层（sleeve）整段 alpha = 0** → 抓「inflate 外包盒把本体遮死」；
+ *   ⑤ 输入指纹匹配 → 抓「改了参数忘重烘」。
+ *
+ * ⚠️⚠️ **③ 是上界而不是下界**（v3.46b 口径反转，用户 2026-11-27：
+ * 「手臂前方的蓝色部分也烘焙成跟手臂一样的色调」）：
+ *   · v3.46 旧口径是色距 **≥ 60**（抓「整条手臂一个颜色」）；
+ *   · 现在「一个颜色」正是用户要的 ⇒ 改成 **≤ 12**。
+ * 实测：全肤色下两段均值差 **1.0**；衬衫色 vs 肤色是 **188** ⇒ 两侧都有巨大余量。
+ *
+ * ⚠️ **④ 不可省**：袖子盒是 `inflate 0.25` 的外包盒，只要它有任何不透明像素
+ * 就会在那些位置盖住本体。历史实测：整段涂实 ⇒ 19550 个手臂像素全 teal、肤色 0。
+ */
+function checkPlayerSkinTexture() {
+  const TAG = '[手臂皮肤]';
+  if (!fs.existsSync(PLAYER_SKIN_PNG)) {
+    failures.push(`${TAG} assets/player/skin.png 不存在 —— 跑 npm run playerskin`);
+    return;
+  }
+  const png = PNG.sync.read(fs.readFileSync(PLAYER_SKIN_PNG));
+  if (png.width !== PLAYER_SKIN_SIZE || png.height !== PLAYER_SKIN_SIZE) {
+    failures.push(`${TAG} PNG ${png.width}×${png.height} 与期望 ${PLAYER_SKIN_SIZE}×${PLAYER_SKIN_SIZE} 不符`);
+    return;
+  }
+  if (!fs.existsSync(PLAYER_SKIN_JSON)) {
+    failures.push(`${TAG} assets/player/skin.json 不存在 —— 跑 npm run playerskin`);
+    return;
+  }
+  const manifest = JSON.parse(fs.readFileSync(PLAYER_SKIN_JSON, 'utf8'));
+  if (manifest.layout !== PLAYER_SKIN_LAYOUT_VERSION) {
+    failures.push(`${TAG} 版式版本 ${manifest.layout} ≠ 期望 ${PLAYER_SKIN_LAYOUT_VERSION}`
+      + '（UV 表与皮肤布局不同步，重跑 npm run playerskin）');
+  }
+
+  const rectOf = ([u1, v1, u2, v2]) => ({
+    x0: Math.min(u1, u2), x1: Math.max(u1, u2),
+    y0: Math.min(v1, v2), y1: Math.max(v1, v2),
+  });
+
+  // ③ 远端段 vs 近端段（只取四个侧面，顶/底面不参与）—— **上界门**
+  const sides = ['px', 'nx', 'pz', 'nz'].map((f) => rectOf(PLAYER_SKIN_UV.arm[f]));
+  const far = sides.map((r) => ({ ...r, y1: r.y0 + PLAYER_SKIN_FAR_ROWS }));
+  const near = sides.map((r) => ({ ...r, y0: r.y0 + PLAYER_SKIN_FAR_ROWS }));
+  const mf = regionMean(png, far);
+  const mn = regionMean(png, near);
+  const dist = Math.hypot(mf[0] - mn[0], mf[1] - mn[1], mf[2] - mn[2]);
+  if (dist > PLAYER_SKIN_MAX_DIST) {
+    failures.push(`${TAG} 远端与近端的均值色距 ${dist.toFixed(1)} > ${PLAYER_SKIN_MAX_DIST}`
+      + `（${mf.map(Math.round)} vs ${mn.map(Math.round)}）—— 手臂又出现异色袖口`
+      + '（用户 2026-11-27 裁定整条全肤色）');
+  }
+
+  // ④ 外套层必须整段透明
+  let sleeveOpaque = 0;
+  for (const f of ['px', 'nx', 'pz', 'nz', 'py', 'ny']) {
+    const r = rectOf(PLAYER_SKIN_UV.sleeve[f]);
+    for (let y = r.y0; y < r.y1; y++) {
+      for (let x = r.x0; x < r.x1; x++) {
+        if (png.data[(y * png.width + x) * 4 + 3] > 0) sleeveOpaque++;
+      }
+    }
+  }
+  if (sleeveOpaque > 0) {
+    failures.push(`${TAG} 外套层有 ${sleeveOpaque} 个不透明像素（应 = 0）`
+      + ' —— inflate 外包盒会在那些位置盖住手臂本体');
+  }
+
+  const current = playerSkinInputFingerprint();
+  if (manifest.fingerprint !== current) {
+    failures.push(`${TAG} 参数已变但皮肤未重烘（跑 npm run playerskin）`
+      + `\n      期望 ${current}\n      实际 ${manifest.fingerprint}`);
+  }
+
+  if (!failures.some((f) => f.startsWith(TAG))) {
+    infos.push(`${TAG} skin.png ${PLAYER_SKIN_SIZE}×${PLAYER_SKIN_SIZE} 版式 ${PLAYER_SKIN_LAYOUT_VERSION}`
+      + ` / 全肤色（远端-近端色距 ${dist.toFixed(1)} ≤ ${PLAYER_SKIN_MAX_DIST}）`
+      + ' / 外套层全透明 + 指纹匹配');
   }
 }
 
@@ -4233,6 +4331,7 @@ checkGeometryAuthority();
 await checkScatterStructureIntegrity();
 checkStructureJsonOrphans();   // 2026-09-30：tall_well 悬空宝箱回归防线（⚠️ 漏了本行则门禁永不执行）
 checkZombieSkinTexture();
+checkPlayerSkinTexture();    // v3.46：第一人称手臂皮肤契约与指纹（⚠️ 漏了本行则门禁永不执行）
 checkDragonAsset();          // v2.41：祭坛飞龙烘焙产物契约与指纹（⚠️ 漏了本行则门禁永不执行）
 checkIgnisAsset();           // v2.55：焰魔烘焙产物契约与指纹（⚠️ 同上）
 checkGuardianAsset();        // 末影守卫产物契约与指纹（⚠️ 漏了本行则门禁永不执行）

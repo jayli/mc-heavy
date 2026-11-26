@@ -100,6 +100,7 @@ const ENTITY = [
   'tnt',
   'explosion-sprite',
   'block-hit-fx',
+  'dig-debris',         // v3.46 徒手挖块碎片（走 digBlock 主路径 + 材质取色 Tier 4）
   'weapons',
   'weapons-world-edit',
   'weapons-performance',
@@ -219,7 +220,7 @@ export const UNIT_NODE_SAFE = [
   'test-structure-json.js', 'test-structure-layout.js', 'test-sun-shade.js', 'test-tarn-altar.js',
   'test-tarn-terrain.js', 'test-tarn-zone-gen.js', 'test-tarn-zone.js', 'test-terrain.js',
   'test-tnt-chain.js', 'test-turret-top-bake.js', 'test-vegetation-leaves.js', 'test-vegetation.js',
-  'test-view-bob.js', 'test-water-reflect.js', 'test-water-reflect-height.js', 'test-weapons.js', 'test-world-editor.js', 'test-zombie-behavior.js',
+  'test-view-bob.js', 'test-view-bob-wiring.js', 'test-water-reflect.js', 'test-water-reflect-height.js', 'test-weapons.js', 'test-world-editor.js', 'test-zombie-behavior.js',
   'test-zombie-model.js', 'test-zombie-pathfinder.js', 'test-zombies.js',
   'test-soldier-config.js', 'test-soldier-shooting.js', 'test-soldier-agent.js', 'test-soldier-system.js', 'test-soldier-render.js',
   'test-enemy-counts.js',

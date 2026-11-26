@@ -125,6 +125,7 @@ npm run stonebricks    # 石砖三变体 + 紫珀（之后要 atlas + icons）
 npm run tarn | pyramid | arena | burningarena | ruinedcitadel | junglefortress
 npm run shallowtarns | ship | azaleatrees | gianttrees
 npm run turretop | zombieskin | dragon | ignis | guardian | nightsky
+npm run playerskin     # 第一人称手臂皮肤（改 view-arm-data.js 的 UV 或指纹参数后必跑）
 npm run carbineaudio   # KV-9 / 雨声（改 src/render/carbine-audio-recipes.js 后必跑）
 npm run validate:weapon-assets
 ```
@@ -245,6 +246,8 @@ npm run validate:weapon-assets
 | 矿车 / 装置（巢穴、炮塔、创造台） | `specs/2026-09-30-minecart-design.md`、M7/M8/M9 spec + roadmap「方块锚定装置」段 |
 | 放置 / 交互 / 玩家物理 | `specs/2026-10-30-place-nearest-first-design.md`、`specs/2026-10-25-player-flight-design.md` |
 | **KV-9 卡宾枪 / 曳光 / 换弹 / 弹壳** | `specs/2026-11-22-kv9-carbine-and-storm-lighting-design.md` + `pitfalls.md` 短命特效节 + 上游 `~/jaylli/bj-shooting-game/night-heron-src/src/game/weapon.js` |
+| **第一人称手臂 / 挖块碎片 / 奔跑晃动** | `specs/2026-11-27-opuscraft-dig-fx-and-view-arm-design.md` + `pitfalls.md`「第一人称视图模型」节 + 上游 `~/jaylli/OpusCraft`（`render/handRenderer.ts` / `textures/skin.ts`）。⚠️ 三个视图模型的步态幅度唯一权威在 `render/view-bob-config.js`；手臂几何/UV 在 three-free 的 `render/view-arm-data.js` |
+| **地形多样性（OpusCraft 候选）** | `docs/opuscraft-terrain-migration-survey.md`（2026-11-27，含成本/形态/选址/可走性实测）—— 与 Tectonic 那份是同一 Epic 的两个候选上游 |
 | **雨天光影档 / 持续雨 / 湿地面 / 后处理** | 同上设计稿 §10~§11 + `pitfalls.md`「雨雾光栅扫描与湿地面地下透射」「屏幕竖纹粗糙与关档后雨声残留」两节 + `src/render/rain-shelter.js`（遮挡权威）+ `src/render/ground-reflect-config.js`（**湿地面必须独立 pass**：海平面镜面在几何上不可能正确）。⚠️ **远景雨幕已整层移除**（MSAA 不能替代 FXAA，柱面细丝必走样）—— 不要凭直觉补齐 |
 | 面板 / HUD / 小地图 / 音效 | roadmap「面板与 UI」「渲染分辨率档位」段 + `plans/2026-10-29-minimap.md` |
 | **屏外敌人方位箭头 / 敌人计数行** | `specs/2026-11-26-enemy-arrow-intuitive-bearing-design.md`（v3.43，**现行**）+ `src/ui/enemy-arrows.js` 文件头。☠️ v3.42 的 `|cz|` 相机空间方案**已被用户实玩推翻**（抬头时身后丧尸跑到上边）—— 方位只吃 yaw，可见性才用含 pitch 的相机空间 |

@@ -1,233 +1,320 @@
-// src/render/view-arm.js — 第一人称手臂（徒手时可见 + 挖/放挥动）
+// src/render/view-arm.js — 第一人称手臂（v3.46：**整体照抄 OpusCraft / vanilla 口径**）
+//
 // 只在主线程引入 three：单个 Mesh 挂到 camera 下（一个相机子节点，不新增地形渲染通道 /
-// InstancedMesh / BatchedMesh）。与 `view-weapon.js`（持枪视图模型）互斥：
+// InstancedMesh / BatchedMesh）。与 `view-weapon.js`（持枪/持剑视图模型）互斥：
 // 同一时刻只显示其中一个，由 `setWeapon(id)` 切换。
 //
-// 造型/站位/刻度/静止角/挥动公式**逐字对齐 mc-lite**（`Player.js:137-141` 建模型 +
-// `PlayerInteraction.js:923-933` 更新）：
-//   BoxGeometry(0.4, 1.2, 0.4)、scale 0.1、静止 rotation.x = −0.8、
-//   位置 (0.07, −0.10 − (1−drawProgress)²·0.5, −0.12)、
-//   挥动 rotation.x = −0.8 − sin(p·π)·0.87。
+// ## 上游出处（逐条）
 //
-// **三处有意偏离 mc-lite**：
-//  ① 材质用 `MeshBasicMaterial`（unlit）而非上游的 `MeshStandardMaterial`：本仓库体素/实体
-//     全走 unlit 管线，场景里的 AmbientLight + DirectionalLight 只为枪的 PBR 模型而设
-//     （`game.js` 构造处注释）。跟随上游用受光材质会让肤色随日夜灯光漂移，且比同一画面里
-//     的方块亮一档（`minecart-renderer.js` 用 MeshBasicMaterial 是先例）。
-//  ② 挥动时长改为 **dt 基定长**（`swingDuration` 秒）。上游 `swingTime--` 是「每渲染帧减 1」，
-//     120Hz 下挥动只有 60Hz 的一半时长（10 帧 → 83ms vs 167ms），是帧率依赖的实现缺陷。
-//     这里按 60Hz 的 10 帧折算成 1/6 秒，公式与幅度不变。
-//  ③ 肤色 **口径改为「屏幕上的参考色」**（v1.57）：上游用受光材质，`0xeebb99` 是线性基色，
-//     最终屏幕值由双灯决定（实测亮面 255,231,191、暗面 179,151,133）。本仓 unlit，
-//     故把同一肤色当作**目标显示色**、面间差映射到它附近（见 `shadeLow/shadeHigh`），
-//     而不是让三层系数把线性基色乘到 0.27（那正是「手指过于暗」的根因）。
+// 上游 = `~/jaylli/OpusCraft`（从零重写的 MC Java 1.21，TS + WebGL2，MIT），
+// 它的手臂是**逐行照 vanilla `ItemInHandRenderer` / `PlayerRenderer.renderRightHand`** 写的。
+//
+//   · 几何：`src/render/model.ts:161` 的 `right_arm`
+//       cube {x:-3, y:-2, z:-2, w:4, h:12, d:4, u:40, v:16}，pivot [-5, 2, 0]
+//       袖子 {同上, u:40, v:32, inflate:0.25}
+//     几何单位是**像素 /16**（`bakeCube` 里 `p[i]/16`）⇒ 手臂 0.25 × 0.75 × 0.25 格。
+//   · 挥动：`src/render/handRenderer.ts` 的 `renderArm`（11 步变换链，见 `ARM_POSE`）。
+//   · 皮肤：`src/textures/skin.ts` 的 `steveSkin()`（本仓离线烘焙，见 `tools/bake-player-skin.mjs`）。
+//   · 步态：`VIEW_BOB`（`render/view-bob-config.js`，three-free 共享配置）。
+//
+// ## 三条有意偏离（完整表见设计稿 §2）
+//
+//  ① **材质 unlit**（`MeshBasicMaterial({ map })`）而非上游的 lightmap 受光：
+//     本仓全场景 unlit，受光材质会让肤色随日夜漂移、且比同屏方块亮一档
+//     （v1.48 已记录的取舍，`minecart-renderer.js` / 枪的 PBR 是例外）。
+//     明暗改由**皮肤贴图自带**（三档色 + 逐像素噪声），不再烘焙顶点色。
+//  ② **手臂 + 袖子合并进同一 geometry**（两组顶点、一份材质、一个 Mesh）：
+//     本仓 WebGPU 后端 `getMaterial()` 不遍历 `geometry.groups`
+//     （`zombie-skin-texture.js` 已记）⇒ 两个 mesh 要多一份材质与一个 draw call。
+//     合并保住「camera 只增 1 个节点」的既有断言。
+//  ③ **挥动时长固定 6 tick = 0.1s**：上游 `swingDuration()` 受 haste/挖掘疲劳影响，
+//     本仓无药水效果系统。
+//
+// ## 已实测：上游常数在本仓相机下可直接用（不需缩放重标定）
+//
+// 复刻变换链投影手臂盒 8 角（fov 70 / near 0.1 / 1280×720）：
+//   swing=0     近平面内 0/8，z ∈ [−1.185, −0.438]，屏幕 bbox x[902,1378] y[506,1322]
+//   swing=0.25  近平面内 0/8，z ∈ [−1.360, −0.660]
+//   swing=0.5   近平面内 0/8，z ∈ [−1.533, −0.750]（手端最远）
+//   swing=1     与 swing=0 **逐位相同**（严格回位）
+// ⇒ 右下角一条粗手臂、下缘出屏 = 原版观感。
+//
+// ⚠️ **改任何变换常数前先重跑 `test-view-bob.js` 的相机空间锚点断言** ——
+// 那些数值是逐条实测定出来的，不是推导值。
 import * as THREE from 'three';
+import { resourceUrl } from '../core/resource-url.js';
+import { VIEW_BOB } from './view-bob-config.js';
+import {
+  PLAYER_SKIN_SIZE, PLAYER_SKIN_UV, ARM_CUBE, ARM_PIVOT, ARM_SLEEVE_INFLATE,
+  ARM_REST_ROLL, ARM_SWING_DURATION, ARM_POSE,
+} from './view-arm-data.js';
+
+// re-export：数据层的唯一权威在 `view-arm-data.js`（three-free，烘焙脚本与门禁读那份）。
+// 这里透出一份是为了让浏览器侧消费方不必记住两个路径（同 zombie-model 的口径）。
+export { PLAYER_SKIN_SIZE, PLAYER_SKIN_UV, ARM_POSE };
 
 /**
- * 手臂几何与动画参数（冻结常量，单一权威）。数值逐字取自 mc-lite：
- * 尺寸/刻度/静止角/挥动幅度见 `Player.js:137-141` 与 `PlayerInteraction.js:927-932`。
+ * 手臂几何与动画参数（冻结常量，单一权威）。**数值逐条取自上游**，出处见各项注释。
  */
 export const VIEW_ARM = Object.freeze({
-  /** 截面边长（格，mc-lite BoxGeometry 的 width / depth） */
-  size: 0.4,
-  /** 长度（格，mc-lite BoxGeometry 的 height） */
-  height: 1.2,
-  /** 整体缩放（mc-lite `arm.scale.set(0.1, 0.1, 0.1)`） */
-  scale: 0.1,
-  /**
-   * 肤色（mc-lite `0xeebb99`，材质用 unlit —— 见文件头偏离 ①）。
-   * **口径 = 屏幕上的参考色**（v1.57）：面亮度带映射出来的中间档要正好落在这个颜色上，
-   * 而不是「线性基色被各种系数乘一遍」的起点。
-   */
-  color: 0xeebb99,
-  /**
-   * 面间明暗的**屏幕空间亮度带**（乘在参考色上）。
-   * `shadeLow` = 最暗面（底面）的显示比例，`shadeHigh` = 最亮面（顶面）的显示比例。
-   *
-   * ⚠️ **为什么要有这个带**（v1.57，用户反馈「手臂的颜色过于暗」）：三层系数直接相乘时，
-   * 静止姿态露出的底面 / 前面分别只有 0.27 / 0.59 —— 实测屏幕均值 **RGB(163,146,134)**，
-   * 而参考肤色是 (238,187,153)：不但整体暗一档，还因为三通道压得不一样而**发灰**
-   * （R−B 差 85 → 29）。带子把面间差**重映射**到参考色附近，保住三维明暗顺序的同时
-   * 让可见面落在 `color` 附近。
-   *
-   * **标定方法（实测，可复现）**：固定 `faceShade` / `lightDir` / `ambient`（它们只决定
-   * 「哪面更亮」），扫 `shadeLow × shadeHigh × lengthFade` 读屏幕像素，取
-   * ① 均值贴近参考色 ② 面间双峰仍分离 ③ 单面内梯度 ≥ 10% 的参数。
-   * 当前值下实测：屏幕均值 **RGB(235,188,154)**（参考色 238,187,153）、亮度档位 16、
-   * 最大单色占比 43.7%、面间峰距 19.5%（阈 15%，两侧都不贴线）。
-   *
-   * ⚠️ `shadeHigh > 1.07`（R 通道饱和点）是**有意的**：上端只作用于 +Y 顶面，
-   * 而顶面在静止（`rotation.x=-0.8`，法线朝上后方）与挥动谷底（`-1.67`，朝外）都
-   * **几何上被自身挡住**，玩家看不到（见 `test-view-bob.js` 的六面亮度断言）。
-   * 那段余量把可见面的对比度拉开 —— 否则可见两面只能挤在窄带里，「立体感」会退化。
-   *
-   * ⚠️ **改这里的数值前先量屏幕像素**：这三个参数是逐档实测定出来的，不是推导值。
-   */
-  shadeLow: 0.88,
-  shadeHigh: 1.48,
-  /**
-   * 六面烘焙明暗系数（**vanilla 方块面遮挡系数**，顶 1.0 / 前后 0.8 / 左右 0.6 / 底 0.5）。
-   *
-   * 用户反馈「横面和竖面没有光影效果，一个颜色，没有立体感」。做法是把明暗**烘焙进顶点色**，
-   * 而不是换受光材质：本仓全场景 unlit（场景双灯只为枪的 PBR 模型而设），换受光材质会让肤色
-   * 随日夜灯光漂移、且比同屏方块亮一档（v1.48 已记录的取舍，`minecart-renderer.js` 同手法）。
-   * 与 `mesh/iso-icon.js` 的 `ISO_SHADE` **不是同一口径**：那是 UI 图标惯例的三面系数，
-   * 这里是世界内 vanilla 方块的面系数，二者不可复用（同「吊灯 blocklight vs 材质自发光」的区分）。
-   *
-   * ⚠️ v1.57 起这两层（含下面的 `lightDir` / `ambient`）只决定**面与面的相对强弱**，
-   * 它们合出来的取值区间会被归一化映射到 `shadeLow..shadeHigh`（屏幕空间），不再直接乘基色 ——
-   * 改这里的数值会改变「哪面更亮」，但不会把整个手臂压暗。
-   */
-  faceShade: Object.freeze({ up: 1.0, down: 0.5, z: 0.8, x: 0.6 }),
-  /**
-   * 固定光照方向（世界空间，与手臂无关）—— 与 `faceShade` **相乘**得到每面亮度。
-   *
-   * ⚠️ **只有面遮挡系数不够**（实测踩到）：手臂 `rotation.x = -0.8`（≈46°）时，
-   * 朝向相机的是**底面（0.5）与前面（0.8）**，顶面（1.0）转到背面 —— 屏幕上只剩两档、
-   * 相差 37.5%，直方图实测 78.9% / 19.5% 两个峰，看起来仍然「平」。
-   * 乘上一个朝左上前方的固定 Lambert 项后：底面 0.45 / 前面 0.67 / 左右面 0.64 —— 三档明显分离，
-   * 且**不管挥动到哪个姿态**都有明暗梯度（不是只对某个固定角度成立）。
-   * 取 (0.35, 0.85, 0.4)：略偏右上与前方，与体素世界「天光自上而下」一致。
-   */
-  lightDir: Object.freeze({ x: 0.35, y: 0.85, z: 0.4 }),
-  /** 环境项：把 Lambert 的 `[0,1]` 抬到 `[ambient, 1]`，避免背光面全黑 */
-  ambient: 0.45,
-  /**
-   * 沿手臂长度方向的亮度衰减（远端比根部暗）。
-   *
-   * ⚠️ **为什么还需要它**（实测）：`rotation.x = -0.8`（≈46°）下手臂只露出**两个面**
-   * （底面 + 前面），第三个面被几何本身挡住 —— 所以「六面系数」再准，屏幕上也只有两档亮度，
-   * 单个面内部仍然是纯色（直方图实测 79% / 19.6% 两个尖峰，中间几乎无过渡）。
-   * 加一层沿长度方向的渐变后，**每个面内部都有梯度** → 观感从「两块色板」变成「有曲面的柱体」。
-   * 物理依据：远侧离玩家/场景主光更远；vanilla 的视图模型远端本来也略暗。
-   *
-   * v1.57 起这一层**在屏幕空间施加**（乘在重映射后的面亮度上，不参与面间归一化），
-   * 故 0.78 → 0.88：屏幕空间的等比衰减比线性空间显眼得多，沿用 0.78 会让远端显脏；
-   * 同时它也是「单面内梯度 ≥ 10%」这条断言的实际来源，往下调前先跑单测。
-   */
-  lengthFade: 0.88,
-  /** 静止俯仰（弧度，mc-lite `rotation.x = -0.8`） */
-  restPitch: 0.8,
-  /** 挥动幅度（弧度，mc-lite `sin(progress·π)·0.87`） */
-  swingArc: 0.87,
-  /**
-   * 滚转幅度（弧度，绕 Z 轴）—— **原版 `ItemInHandRenderer` 的甩腕分量**。
-   * 原版：`rotate(sin(p²·π) · -20°, Z)`，取 20° = 0.349 rad。峰值在 p≈0.707（滞后于主臂）。
-   */
-  swingRoll: 0.349,
-  /**
-   * 横摆幅度（弧度，绕 Y 轴）—— **原版的主摆动轴**。
-   * 原版：`rotate(sin(√p·π) · 70°, Y)`，本仓远小于此（70° 是整条手臂骨豁空间里的角度），
-   * 取 0.14 rad（≈8°）—— 足够看出“手在往里摆”而不过头。
-   */
-  swingYaw: 0.14,
-  /** 挥动时向前的位移（格）—— 原版 `swingZ = -0.4·sin(p·π)` 在骨豁空间的量级缩放到本仓 */
-  swingForward: 0.05,
-  /** 挥动时向下的位移（格）—— 原版 `swingY = 0.4·sin(√p·2π)`（双频）的量级缩放 */
-  swingDrop: 0.035,
-  /** 挥动总时长（秒）—— mc-lite 是「10 帧@60Hz」，折算 1/6 秒（见文件头偏离 ②） */
-  swingDuration: 1 / 6,
-  /** 就位位置（相机局部坐标，mc-lite `position.set(0.07, -0.10, -0.12)`） */
-  position: [0.07, -0.10, -0.12],
-  /** 举手臂下移量：`(1 - drawProgress)² × 0.5`（mc-lite `:927`） */
-  drawDrop: 0.5,
-  /** drawProgress 收敛速度（每秒增量，mc-lite `:926` 的 `dt * 4`） */
-  drawSpeed: 4,
-  /** 选中这个武器 id 时显示手臂；其余（持枪）隐藏 —— mc-lite `updateArm` 同口径 */
+  /** 手臂盒（像素，上游 `right_arm` 的 cube；渲染时 /16） */
+  cube: ARM_CUBE,
+  /** 部件支点（像素，上游 `ModelPart` 的 pivot；渲染时 /16） */
+  pivot: ARM_PIVOT,
+  /** 袖子外扩（像素，上游 `inflate: 0.25`） */
+  sleeveInflate: ARM_SLEEVE_INFLATE,
+  /** 静止时手臂绕 Z 的外张角（**弧度**，上游 `drawArm` 的 `arm.zRot = 0.1`） */
+  restRoll: ARM_REST_ROLL,
+  /** 挥动总时长（秒）—— 上游 6 tick @60Hz */
+  swingDuration: ARM_SWING_DURATION,
+  /** 选中这个武器 id 时显示手臂；其余（持枪/持剑）隐藏 */
   weaponId: 'arm',
+  /** drawProgress 收敛速度（每秒增量，本仓既有口径，喂 `equip = (1−p)²`） */
+  drawSpeed: 4,
+  /**
+   * 步态摆动幅度 —— **从 `VIEW_BOB` 派生，不复制字面量**（红线 1）。
+   * 上游 `cos(ph)*0.012*amp` / `-|sin(ph)|*0.014*amp` / `sin(ph)*0.018*amp`。
+   */
+  bobX: VIEW_BOB.x,
+  bobY: VIEW_BOB.y,
+  bobRoll: VIEW_BOB.roll,
 });
 
 /**
- * 把六面明暗**烘焙进顶点色**（每面一个系数，面内均匀 —— 与 vanilla 方块的面级遮挡一致）。
+ * 加载手臂皮肤（64×64 标准版式，只烘了手臂两段 + 袖子两段）。
  *
- * `BoxGeometry` 的顶点顺序是固定的 `+X, -X, +Y, -Y, +Z, -Z`，每面 4 个顶点
- * （实测 24 顶点 / 6 组，见 `test-view-bob.js` 的断言）。故按 `f * 4` 直接索引，
- * 不需要读 normal —— 但**读 normal 更稳**（万一将来换几何体，顺序假设会失效）：
- * 这里用 normal 的分量判断朝向，顺序变了也不会错。
+ * ⚠️ 走 `resourceUrl()`（部署路径无关，子路径部署也不 404）。
+ * ⚠️ Nearest 采样：皮肤是 1px 尺度的图案（袖口分界），线性采样会糊掉。
+ * ⚠️ 不开 mipmap：手臂恒在近处（z ≈ −0.5~−1.5），远处看不见。
  *
- * @param {import('three').BoxGeometry} geometry 原地写入 `color` 属性
- * @param {number} baseColor 基色（0xRRGGBB）
- * @param {{up:number, down:number, z:number, x:number}} shade 六面系数（±X 同、±Z 同）
+ * @returns {Promise<THREE.Texture>}
  */
-/** sRGB 编码值 → 线性值（顶点色缓冲是**线性**工作色空间，见 `bakeFaceShading` 注释） */
-function srgbToLinear(c) {
-  return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+export async function loadPlayerSkinTexture() {
+  const texture = await new THREE.TextureLoader().loadAsync(resourceUrl('assets/player/skin.png'));
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.magFilter = THREE.NearestFilter;
+  texture.minFilter = THREE.NearestFilter;
+  texture.generateMipmaps = false;
+  return texture;
 }
 
-function bakeFaceShading(geometry, baseColor, shade, lightDir, ambient, lengthFade, shadeLow, shadeHigh) {
-  const L = lightDir;
-  const len = Math.hypot(L.x, L.y, L.z) || 1;
-  const lx = L.x / len;
-  const ly = L.y / len;
-  const lz = L.z / len;
-  const pos = geometry.attributes.position;
-  const nor = geometry.attributes.normal;
-  const colors = new Float32Array(pos.count * 3);
-  // 沿长度方向的归一化位置：盒子局部 y ∈ [-h/2, +h/2] → t ∈ [0,1]
-  const halfH = (VIEW_ARM.height / 2) || 1;
+/**
+ * 面间亮度系数（**灰阶**，乘在皮肤贴图上）—— v3.46b 补回立体感。
+ *
+ * ## 为什么需要它（实测，不是凭直觉）
+ *
+ * 用户裁定「整条手臂全肤色」后，Tier 4 实测：**78.6% 像素挤在同一个亮度桶、
+ * 无双峰**（`secondPeakShare = 0`）—— 这正是 v1.56「一个颜色、没立体感」的读数
+ *（当年修复前是 78.9%）。根因：静止姿态下只有**两个面**可见
+ *（实测屏幕面积 +Z 3.57 / −X 2.09，其余四面被几何自身挡住），
+ * 而两面采同一张肤色贴图 ⇒ **面间零明暗差**。
+ *
+ * ## 为什么是灰阶而不是旧版那套三层烘焙
+ *
+ * 用户要的是「跟手臂一样的色调」⇒ **不得改色相**。灰阶系数（r=g=b）
+ * 只缩放亮度，皮肤的 R>G>B 关系逐位保持 ⇒ 仍是同一个肤色，只是有向光/背光。
+ * 旧版 v1.57 那套 `shadeLow/shadeHigh` 幂律重映射会**改色相**（当时就是为了修发灰），
+ * 本轮不重引入。
+ *
+ * ## 数值来源
+ *
+ * vanilla `ModelBlockRenderer` 的六面遮挡系数（顶 1.0 / 前后 0.8 / 左右 0.6 / 底 0.5），
+ * 但**重标到 [0.72, 1.0]**：原值跨度 0.5~1.0 在屏幕空间会把背光面压得太暗
+ *（v1.57 用户报过「手臂颜色过于暗」）。取 0.72 下界：实测两可见面峰距 ~18%，
+ * 远高于「双峰可辨」的 10% 阈，且暗面仍在参考肤色的 72%（不发黑）。
+ *
+ * ⚠️ **面键用的是贴图版式名**（px/nx/py/ny/pz/nz），与 `PLAYER_SKIN_UV` 同口径。
+ */
+export const ARM_FACE_SHADE = Object.freeze({
+  py: 1.0,    // 顶（+Y，朝天光）
+  ny: 0.72,   // 底（−Y，背光）
+  pz: 0.94,   // +Z（静止姿态下正对相机的主可见面）
+  nz: 0.86,   // −Z
+  px: 0.88,   // +X
+  nx: 0.78,   // −X（静止姿态下的第二个可见面，须与 pz 拉开）
+});
 
-  // ---- 第一遍：只算「面间亮度」并求它的取值区间 ----
-  // ①② 两层（vanilla 面系数 × 固定光向 Lambert）决定面与面的差异；③ 沿长度渐变**不**参与，
-  // 否则归一化会把它的梯度压扁（v1.57 实测：并进去后单面内部梯度只剩 5%，低于「有立体感」的门槛）。
-  const faceMask = new Float32Array(pos.count);
-  let mMin = Infinity;
-  let mMax = -Infinity;
+/**
+ * 把一个盒子的 24 顶点 + UV 写进目标数组（**手臂与袖子共用这一份**）。
+ *
+ * ⚠️ **面归属按法线判，不按下标**：`BoxGeometry` 的面序当前是 `+X,−X,+Y,−Y,+Z,−Z`，
+ * 但写死下标会在将来换几何时静默错位（同 `bakeFaceShading` 旧版的取舍）。
+ *
+ * ⚠️ **UV 的 v 轴翻转**：皮肤 PNG 是左上原点（v 向下），而 three 的 UV 是左下原点
+ *（v 向上）⇒ `v_tex = 1 − v_px/64`。不翻会让整条手臂上下颠倒（袖口跑到手上）。
+ *
+ * ⚠️ **面内归一化位置直接用 `BoxGeometry` 自带的 uv 属性**，不手写切向轴：
+ * ±X / ±Y / ±Z 三组面的切向方向各不相同（有的还带镜像），手写极易错一轴。
+ *
+ * @param {THREE.BoxGeometry} box 已建好的盒（24 顶点）
+ * @param {object} uvRects 六面 UV 矩形
+ * @param {number[]} outPos @param {number[]} outUv @param {number[]} outIdx
+ * @param {number} vertexOffset 本盒在目标数组里的起始顶点号
+ * @param {number[]} [outColor] 传入时同时烘焙**面间亮度**（灰阶顶点色，不改色相）
+ */
+function appendBox(box, uvRects, outPos, outUv, outIdx, vertexOffset, outColor) {
+  const pos = box.attributes.position;
+  const nor = box.attributes.normal;
+  const S = PLAYER_SKIN_SIZE;
   for (let i = 0; i < pos.count; i++) {
-    const nx = nor.getX(i);
-    const ny = nor.getY(i);
-    const nz = nor.getZ(i);
-    // ① vanilla 面遮挡系数：竖直分量优先（±Y），其余按 X/Z 区分侧面
-    const faceK = Math.abs(ny) > 0.5 ? (ny > 0 ? shade.up : shade.down)
-      : (Math.abs(nx) > 0.5 ? shade.x : shade.z);
-    // ② 固定光向的 Lambert 项（抬到 [ambient, 1]，背光面不归零）
-    const lambert = Math.max(0, nx * lx + ny * ly + nz * lz);
-    const m = faceK * (ambient + (1 - ambient) * lambert);
-    faceMask[i] = m;
-    if (m < mMin) mMin = m;
-    if (m > mMax) mMax = m;
+    outPos.push(pos.getX(i), pos.getY(i), pos.getZ(i));
+    const nx = nor.getX(i), ny = nor.getY(i), nz = nor.getZ(i);
+    const key = Math.abs(nx) > 0.5 ? (nx > 0 ? 'px' : 'nx')
+      : Math.abs(ny) > 0.5 ? (ny > 0 ? 'py' : 'ny')
+        : (nz > 0 ? 'pz' : 'nz');
+    const [u1, v1, u2, v2] = uvRects[key];
+    const bu = box.attributes.uv.getX(i);
+    const bv = box.attributes.uv.getY(i);
+    const uPx = u1 + (u2 - u1) * bu;
+    const vPx = v1 + (v2 - v1) * (1 - bv);
+    outUv.push(uPx / S, 1 - vPx / S);
+    if (outColor) {
+      const k = ARM_FACE_SHADE[key];
+      outColor.push(k, k, k);
+    }
   }
-  const span = (mMax - mMin) || 1;
+  const idx = box.index;
+  for (let i = 0; i < idx.count; i++) outIdx.push(idx.getX(i) + vertexOffset);
+}
 
-  // ---- 第二遍：面间差重映射到 [shadeLow, shadeHigh]，再乘屏幕空间的长度渐变 ----
-  // **屏幕空间（sRGB）口径**：`color` 是「可见面该显示成什么颜色」的参考色，不是线性基色。
-  // 乘完再 `srgbToLinear` 写进顶点色（three 的顶点色缓冲按线性工作色空间解释）。
-  // 这样「参考色」与「显示结果」是同一份数据，不会出现「改了基色但屏幕还是另一个颜色」
-  // （红线 1：明暗与基色同源）。
-  const r0 = ((baseColor >> 16) & 0xff) / 255;
-  const g0 = ((baseColor >> 8) & 0xff) / 255;
-  const b0 = (baseColor & 0xff) / 255;
-  for (let i = 0; i < pos.count; i++) {
-    const norm = (faceMask[i] - mMin) / span;              // 0 = 最暗面，1 = 最亮面
-    const face = shadeLow + norm * (shadeHigh - shadeLow);  // 屏幕空间面亮度
-    const t = Math.min(1, Math.max(0, (pos.getY(i) / halfH + 1) / 2));
-    const k = face * (1 - (1 - lengthFade) * t);           // × 沿长度渐变的显示比例
-    colors[i * 3] = srgbToLinear(Math.min(1, r0 * k));
-    colors[i * 3 + 1] = srgbToLinear(Math.min(1, g0 * k));
-    colors[i * 3 + 2] = srgbToLinear(Math.min(1, b0 * k));
-  }
-  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+/**
+ * 造手臂几何（手臂盒 + 袖子盒合并，一份材质一个 Mesh —— 见文件头偏离 ②）。
+ * @returns {THREE.BufferGeometry}
+ */
+export function createArmGeometry() {
+  const C = VIEW_ARM.cube;
+  const S = 16;   // 像素 → 格
+  const g = VIEW_ARM.sleeveInflate;
+  const positions = [];
+  const uvs = [];
+  const colors = [];
+  const indices = [];
+  const cx = (C.x + C.w / 2) / S;
+  const cy = (C.y + C.h / 2) / S;
+  const cz = (C.z + C.d / 2) / S;
+
+  // 手臂本体：cube 的 (x,y,z) 是**最小角**，(w,h,d) 是尺寸 ⇒ 中心 = 最小角 + 尺寸/2
+  const armBox = new THREE.BoxGeometry(C.w / S, C.h / S, C.d / S);
+  armBox.translate(cx, cy, cz);
+  appendBox(armBox, PLAYER_SKIN_UV.arm, positions, uvs, indices, 0, colors);
+  const armVerts = armBox.attributes.position.count;
+  armBox.dispose();
+
+  // 袖子：同盒各向外扩 inflate（上游 `inflate: 0.25` 像素）。
+  // ⚠️ v3.46b 起它整段透明（不上屏），但仍给它烘焙同一套面间亮度 ——
+  // 将来若有人把袖子改回可见，不会得到一个新的一色块。
+  const sleeveBox = new THREE.BoxGeometry(
+    (C.w + g * 2) / S, (C.h + g * 2) / S, (C.d + g * 2) / S,
+  );
+  sleeveBox.translate(cx, cy, cz);
+  appendBox(sleeveBox, PLAYER_SKIN_UV.sleeve, positions, uvs, indices, armVerts, colors);
+  sleeveBox.dispose();
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  // 灰阶顶点色（r=g=b）：只缩放亮度，**不改色相** ⇒ 仍是同一个肤色。
+  // ⚠️ 顶点色缓冲是**线性**工作色空间，而面系数是屏幕空间的观感比例
+  // ⇒ 这里直接写线性值（与 three 的 `instanceColor` 同口径），不再做 sRGB 转换：
+  // 旧版 v1.57 那套幂律重映射会改色相，本轮不重引入（见 ARM_FACE_SHADE 注释）。
+  geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+/** 逐帧复用的临时对象（禁止在 update 里 new） */
+const _m = new THREE.Matrix4();
+const _tmp = new THREE.Matrix4();
+const _pos = new THREE.Vector3();
+const _quat = new THREE.Quaternion();
+const _scale = new THREE.Vector3();
+const _axisX = new THREE.Vector3(1, 0, 0);
+const _axisY = new THREE.Vector3(0, 1, 0);
+const _axisZ = new THREE.Vector3(0, 0, 1);
+const DEG = Math.PI / 180;
+
+/**
+ * 上游 `PoseStack` 的右乘语义：`M ← M · T` / `M ← M · R`。
+ * three 的 `Matrix4.multiply(m)` 同为右乘 ⇒ 逐条 `.multiply()`，**顺序不能反**。
+ */
+function poseTranslate(m, x, y, z) {
+  return m.multiply(_tmp.makeTranslation(x, y, z));
+}
+function poseRotate(m, axis, rad) {
+  return m.multiply(_tmp.makeRotationAxis(axis, rad));
+}
+
+/**
+ * 上游 `renderArm` 的完整变换链（纯函数，返回写入 `out`）。
+ *
+ * @param {number} swing 挥动进度 0..1（1 = 未在挥动，此时曲线全部归零）
+ * @param {number} equip 收起进度 0..1（0 = 就位，1 = 完全收起）
+ * @param {THREE.Matrix4} out 复用矩阵
+ * @returns {THREE.Matrix4} out
+ */
+export function armPoseMatrix(swing, equip, out = new THREE.Matrix4()) {
+  const P = ARM_POSE;
+  const f = 1;                       // 右手（本仓无副手）
+  const swinging = swing < 1;
+  const sq = Math.sqrt(swing);
+  const f1 = swinging ? sq : 0;
+  const f2 = swinging ? P.swingX * Math.sin(f1 * Math.PI) : 0;
+  const f3 = swinging ? P.swingY * Math.sin(f1 * Math.PI * 2) : 0;
+  const f4 = swinging ? P.swingZ * Math.sin(swing * Math.PI) : 0;
+  const f5 = swinging ? Math.sin(swing * swing * Math.PI) : 0;
+  const f6 = swinging ? Math.sin(f1 * Math.PI) : 0;
+
+  out.identity();
+  poseTranslate(out,
+    f * (f2 + P.baseX),
+    f3 + P.baseY + equip * P.equipDrop,
+    f4 + P.baseZ);
+  poseRotate(out, _axisY, f * P.baseYaw * DEG);
+  poseRotate(out, _axisY, f * f6 * P.swingYaw * DEG);
+  poseRotate(out, _axisZ, f * f5 * P.swingRoll * DEG);
+  poseTranslate(out, f * P.boneShift[0], P.boneShift[1], P.boneShift[2]);
+  poseRotate(out, _axisZ, f * P.boneRoll * DEG);
+  poseRotate(out, _axisX, P.bonePitch * DEG);
+  poseRotate(out, _axisY, f * P.boneYaw * DEG);
+  poseTranslate(out, f * P.boneOffsetX, 0, 0);
+  // drawArm：arm.resetPose(); xRot=0; zRot=0.1（**弧度**）→ translateAndRotate(pivot/16)
+  const pv = VIEW_ARM.pivot;
+  poseTranslate(out, pv[0] / 16, pv[1] / 16, pv[2] / 16);
+  poseRotate(out, _axisZ, VIEW_ARM.restRoll);
+  return out;
 }
 
 export class ViewArm {
   /**
-   * @param {{camera: import('three').PerspectiveCamera}} deps
+   * @param {{camera: import('three').PerspectiveCamera, texture?: import('three').Texture|null}} deps
+   *   `texture` 可注入（单测传假纹理免加载）；缺省 null ⇒ 用中性肤色材质兜底，
+   *   装配层随后调 `setTexture()` 换成真皮肤（同丧尸渲染器的容错口径）。
    */
-  constructor({ camera }) {
+  constructor({ camera, texture = null }) {
     this.camera = camera;
-    this.geometry = new THREE.BoxGeometry(VIEW_ARM.size, VIEW_ARM.height, VIEW_ARM.size);
-    bakeFaceShading(this.geometry, VIEW_ARM.color, VIEW_ARM.faceShade, VIEW_ARM.lightDir,
-      VIEW_ARM.ambient, VIEW_ARM.lengthFade, VIEW_ARM.shadeLow, VIEW_ARM.shadeHigh);
-    // MeshBasicMaterial（unlit）+ 顶点色烘焙明暗：见文件头偏离 ① 与 `faceShade` 注释。
-    // 材质色保持白色，实际颜色全部来自顶点色 —— 这样明暗与基色是同一份数据，
-    // 不会出现「材质调了色但顶点色没跟上」的两份权威（红线 1）。
-    this.material = new THREE.MeshBasicMaterial({ vertexColors: true });
+    this.geometry = createArmGeometry();
+    // unlit + 贴图（见文件头偏离 ①）。材质色保持白，颜色全部来自皮肤贴图。
+    this.material = new THREE.MeshBasicMaterial({
+      map: texture,
+      color: texture ? 0xffffff : 0xb68a6f,
+      // 灰阶顶点色乘在贴图上（面间亮度，不改色相）—— 见 ARM_FACE_SHADE。
+      vertexColors: true,
+      // ⚠️ **alphaTest 是载荷性的**：外套层整段 alpha=0（v3.46b）。
+      // 不开 alphaTest 的话那些透明像素会写成**黑色实心**（MeshBasicMaterial 默认
+      // transparent=false ⇒ alpha 被忽略）⇒ 袖子盒把整条手臂遮住。
+      // 取 0.5 而不是 0：边缘抗锯齿像素（alpha 介于 0~1）寁可不要，避免半透明排序。
+      alphaTest: 0.5,
+      toneMapped: true,
+    });
     this.mesh = new THREE.Mesh(this.geometry, this.material);
-    this.mesh.scale.setScalar(VIEW_ARM.scale);
+    this.mesh.name = 'view-arm';
     // 视图模型不投影：挂相机上的几何投影没有意义且会随转头闪烁
-    // （`sun-shadow.spec.mjs` 对枪模型钉着同一条不变式）
     this.mesh.castShadow = false;
     this.mesh.receiveShadow = false;
     this.mesh.visible = false;
+    // 手臂恒在近平面附近，包围球按局部几何算会被误剔除
+    this.mesh.frustumCulled = false;
     camera.add(this.mesh);
     /** 举手臂进度（0 = 完全收起，1 = 就位） */
     this.drawProgress = 0;
@@ -237,83 +324,100 @@ export class ViewArm {
     this.swingElapsed = VIEW_ARM.swingDuration;
     /** 当前挥动进度的稳定快照（0..1，1 表示未在挥动） */
     this.swingProgress = 1;
+    /** 步态相位（弧度）与幅度（0..1），由装配层从 `ViewBob` 喂进来 */
+    this._bobPhase = 0;
+    this._bobAmp = 0;
     this._apply();
   }
 
   /**
+   * 换皮肤贴图（装配层加载完成后调）。
+   * @param {import('three').Texture} texture
+   */
+  setTexture(texture) {
+    if (!texture) return;
+    this.material.map = texture;
+    this.material.color.setHex(0xffffff);
+    this.material.needsUpdate = true;
+  }
+
+  /**
    * 切换显示（由武器选择驱动）。`arm` 时显示 + 重播「举起」，其余隐藏。
-   * @param {string} id 当前武器 id（`WEAPON_IDS.ARM` / `'pistol'` / `'mag7'` / `'minigun'`）
+   * @param {string} id
    */
   setWeapon(id) {
     const wasArm = this.selectedId === VIEW_ARM.weaponId;
     this.selectedId = id;
     const isArm = id === VIEW_ARM.weaponId;
     this.mesh.visible = isArm;
-    if (isArm && !wasArm) {
-      // 从徒手以外切回徒手 → 重播举起（mc-lite 切武器时 drawProgress 归零）
-      this.drawProgress = 0;
-    }
+    if (isArm && !wasArm) this.drawProgress = 0;
     this._apply();
   }
 
-  /** 触发一次挥动（挖块成功 / 放置成功时调用）。重复触发时从 0 重播。 */
+  /** 触发一次挥动（挖块 / 放置成功时调用）。重复触发时从 0 重播。 */
   swing() {
     this.swingElapsed = 0;
     this.swingProgress = 0;
   }
 
   /**
-   * 每渲染帧推进：举手臂缓动 + 挥动进度，并把姿态写入 mesh。
-   * 帧率无关：`drawProgress` 按 dt 增量（mc-lite 同式），挥动按 dt 累计（偏离 ②）。
+   * 每渲染帧推进：举手臂缓动 + 挥动进度 + 步态，并把姿态写入 mesh。
+   * 帧率无关：`drawProgress` 按 dt 增量，挥动按 dt 累计。
+   *
    * @param {number} dt 秒
+   * @param {{bobPhase?: number, bobAmp?: number}} [state]
+   *   `bobPhase` = `player.viewBob.timer`（**距离驱动**，与相机晃动同源）；
+   *   `bobAmp` = `amount / BOB.intensity`（0..1，静止时收敛到 0）。
+   *   缺省 ⇒ 无步态（fixture / 旧单测不传则行为逐位等于改动前）。
    */
-  update(dt) {
+  update(dt, state = {}) {
     if (this.drawProgress < 1) {
       this.drawProgress = Math.min(1, this.drawProgress + dt * VIEW_ARM.drawSpeed);
     }
     if (this.swingElapsed < VIEW_ARM.swingDuration) {
-      // 上限夹住：一次大 dt（如切页回来）不得让进度越过 1
       this.swingElapsed = Math.min(VIEW_ARM.swingDuration, this.swingElapsed + dt);
       this.swingProgress = this.swingElapsed / VIEW_ARM.swingDuration;
     } else {
       this.swingProgress = 1;
     }
+    this._bobPhase = Number.isFinite(state.bobPhase) ? state.bobPhase : 0;
+    this._bobAmp = Number.isFinite(state.bobAmp) ? state.bobAmp : 0;
     this._apply();
   }
 
-  /** 把当前状态写进 mesh（位置/旋转/刻度）。纯派生，无副作用。 */
+  /** 把当前状态写进 mesh。纯派生，无副作用，每帧零分配。 */
   _apply() {
-    const [baseX, baseY, z] = VIEW_ARM.position;
-    const drop = Math.pow(1 - this.drawProgress, 2) * VIEW_ARM.drawDrop;
-    const p = this.swingProgress;
-    const swinging = p < 1;
-
-    // ---- 曲线（v1.49：对齐原版 `ItemInHandRenderer` 的双曲线，取代 mc-lite 的对称单曲线）----
-    // 原版有两个**峰值错开**的曲线：
-    //   · `attack = sin(√p·π)` —— 峰值在 p=0.25（快出）。主臂下劈跟这条。
-    //   · `whip   = sin(p²·π)` —— 峰值在 p≈0.707（滞后）。甩腕（roll）跟这条。
-    // mc-lite 只有 `sin(p·π)`（峰在 p=0.5、前后等速）→ 看着生硬，没有“快落慢收”与甩腕。
-    const attack = swinging ? Math.sin(Math.sqrt(p) * Math.PI) : 0;
-    const whip = swinging ? Math.sin(p * p * Math.PI) : 0;
-
-    // 位移：下劈时向前向下探（原版是骨豁空间的 swingX/swingY/swingZ，这里等比缩到本仓尺度）
-    this.mesh.position.set(
-      baseX,
-      baseY - drop - attack * VIEW_ARM.swingDrop,
-      z - attack * VIEW_ARM.swingForward,
-    );
-    this.mesh.scale.setScalar(VIEW_ARM.scale);
-
-    // 三轴同步：pitch（主下劈，快出曲线）、yaw（横摆，快出曲线）、roll（甩腕，滞后曲线）
-    this.mesh.rotation.x = -VIEW_ARM.restPitch - attack * VIEW_ARM.swingArc;
-    this.mesh.rotation.y = attack * VIEW_ARM.swingYaw;
-    // 静止时两个曲线都归 0 → 三轴严格回零（roll/yaw 不残留）
-    this.mesh.rotation.z = whip * VIEW_ARM.swingRoll;
+    const equip = Math.pow(1 - this.drawProgress, 2);
+    armPoseMatrix(this.swingProgress, equip, _m);
+    // 步态叠在**最外层**（相机空间）：M_bob · M_arm。
+    // ⚠️ 不叠进变换链内部 —— 那会被后面的骨骼旋转带走，读作「手臂自己在扭」而不是「随步伐晃」。
+    const amp = this._bobAmp;
+    if (amp !== 0) {
+      const ph = this._bobPhase;
+      _tmp.makeTranslation(
+        Math.cos(ph) * VIEW_ARM.bobX * amp,
+        -Math.abs(Math.sin(ph)) * VIEW_ARM.bobY * amp,
+        0,
+      );
+      _m.premultiply(_tmp);
+      _tmp.makeRotationZ(Math.sin(ph) * VIEW_ARM.bobRoll * amp);
+      _m.premultiply(_tmp);
+    }
+    _m.decompose(_pos, _quat, _scale);
+    this.mesh.position.copy(_pos);
+    this.mesh.quaternion.copy(_quat);
+    this.mesh.scale.copy(_scale);
   }
 
-  /** 只读状态（测试 / 调试用）。@returns {{selectedId: string|null, visible: boolean, swingProgress: number}} */
+  /** 只读状态（测试 / 调试用）。 */
   get state() {
-    return { selectedId: this.selectedId, visible: this.mesh.visible, swingProgress: this.swingProgress };
+    return {
+      selectedId: this.selectedId,
+      visible: this.mesh.visible,
+      swingProgress: this.swingProgress,
+      bobPhase: this._bobPhase,
+      bobAmp: this._bobAmp,
+    };
   }
 
   /** 从相机移除并释放几何/材质（Player.dispose 调用，防 reload 后节点叠加）。 */

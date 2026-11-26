@@ -139,6 +139,35 @@ export const DEATH_BURST = freezeDeep({
 });
 
 /**
+ * 徒手挖块碎片（v3.46，用户 2026-11-27：「删除方块会有一个碎片洒落的动效」）。
+ *
+ * 上游 = OpusCraft `src/render/particles.ts:193` 的 `ParticleEngine.destroy`：按碰撞盒
+ * **4×4×4 = 64 片**，每片取该方块贴图的一个随机 **4×4 texel 子区**（billboard 薄片），
+ * 逐 tick 物理（`dy -= 0.04`、摩擦 0.98、**落地后水平速度 ×0.7**）。
+ *
+ * ⚠️ **本实现有意只取它的「从块心向外球状散开」语义**（用户裁定「复用现有池只加调用」）：
+ *   · 形态 = 现有池的**实心小立方**（不是贴图 billboard）⇒ 看不到方块纹理；
+ *   · 颜色 = 该方块顶面在 atlas 里的**平均色**（走装配层已有的 `blockColorResolver`）；
+ *   · 运动 = 现有抛物线 `v·t + ½gt²`，**不撞地**、末段缩零 ⇒ 碎片不停在地面上。
+ * 完整取舍与代价见设计稿 §2 偏离表 ①②。
+ *
+ * ⚠️ **不开第二个池、不写第二套抽样数学**（红线 1）：`createDeathBurstSeeds` /
+ * `debrisOffset` / `debrisSizeAt` 与枪击碎块、实体死亡爆散完全共用。
+ *
+ * ⚠️ **块数与初速都比死亡爆散低一档**：单格方块虽然体积比丧尸大，但「被挖掉」不是
+ * 「被打爆」—— 照抄 20 块 / 2.2~4.8 会让挖一块土看起来像炸了一颗雷。
+ *
+ * ⚠️ `count` 必须 ≤ `IMPACT_FX.debris.maxActive`（单测钉住）：一次爆散就超池容量时，
+ * 后面的碎片会覆盖前面**同一次**的（FIFO 绕回），观感是「只洒出半边」。
+ */
+export const DIG_BURST = freezeDeep({
+  count: 14,             // 单格方块（1×1×1）的碎块数
+  size: [0.10, 0.20],    // 边长（方块=1）：比枪击碎块（0.15~0.26）小一档
+  speed: [1.6, 3.4],     // 初速区间（世界单位/秒）
+  spin: [5, 12],         // 自旋角速度区间（弧度/秒）
+});
+
+/**
  * 焰魔死亡爆散（v2.64b）。与丧尸同一套池与曲线，差别只在**体型与颜色**：
  * 焰魔 1×3.25×1（丧尸的近 2 倍高）⇒ 块数更多、块更大、炸得更开；颜色 = 火焰橙
  * （与丧尸的「皮肤绿」同位点 —— 颜色由调用方给，见 `Game._onEntityDeath`）。
@@ -665,6 +694,29 @@ export class BlockHitFxRenderer {
     }
     if (this._debrisMesh.instanceColor) this._debrisMesh.instanceColor.needsUpdate = true;
     this._debrisMesh.visible = true;
+  }
+
+  /**
+   * 徒手挖掉一格方块的碎片洒落（v3.46）。
+   *
+   * 与 `spawnDeathBurst` 共用同一个池、同一套抛物线/自旋/缩零曲线，差别只有两处：
+   *   · **锚点 = 块心**（`blockCenter`）而不是命中面 —— 挖块没有「命中面」语义，
+   *     用 `impactPosition` 会偏半格（碎块从方块表面而不是内部洒出来）；
+   *   · **配置 = `DIG_BURST`**（块数/尺寸/初速都比死亡爆散低一档）。
+   *
+   * ⚠️ **不出白闪**：白闪的语义是「枪打中了这块方块」，挖块是玩家自己的动作，
+   * 盖一层白立方会读作「被击中」而不是「被挖掉」。
+   *
+   * @param {number[]} blockPos **块角**整数坐标（不是块心）
+   * @param {number[]|null} colorRgb 0..1 三分量（该方块顶面的 atlas 平均色，由调用方给）
+   * @param {number} nowMs `performance.now()` 基准（**禁止 `Date.now()`**）
+   * @param {{count?: number, rand?: () => number, burst?: object}} [opts]
+   */
+  spawnDigBurst(blockPos, colorRgb, nowMs, { count, rand = Math.random, burst = DIG_BURST } = {}) {
+    // 块角 → 块心。⚠️ 复用 `blockCenter`（唯一权威），不在此另写 `+0.5`。
+    if (!Array.isArray(blockPos) || blockPos.length !== 3) return;
+    const center = blockCenter(blockPos);
+    this.spawnDeathBurst(center, colorRgb, nowMs, { count, rand, burst });
   }
 
   /**

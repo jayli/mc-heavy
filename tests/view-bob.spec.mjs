@@ -15,13 +15,28 @@ import { test, expect } from 'playwright/test';
  * 这里断言的是「玩家按键/点击后会发生什么」。
  */
 
-const ARM_REST = -0.8;      // mc-lite 静止角（PlayerInteraction.js:932）
-const ARM_BOTTOM = -1.67;   // 静止角 − 0.87（:930）。v1.49 起谷底出现在 p=0.25（原版快出曲线）
+/**
+ * v3.46：手臂整体照抄 OpusCraft / vanilla 口径后，**旧的三个欧拉角常量已作废**：
+ *   ARM_REST = −0.8 / ARM_BOTTOM = −1.67 / SWING_ROLL = 0.349
+ * 它们描述的是 mc-lite 的单轴下压实现；新实现是 11 步右乘变换链，
+ * `mesh.rotation` 是 decompose 出来的**等价欧拉角**（随旋转序变化，同一姿态多种表示）。
+ *
+ * ⇒ 判据改落在**手臂长轴的相机空间朝向**与**手端位置**上（与
+ * `src/tests/test-view-bob.js` 同口径）。下面的阀值均为**实测值**，不是推导值。
+ */
+// 手臂长轴（手端→肩端）在挥动中的夹角峰：实测 **58.5°**（上游主摆动 70°）
+const SWING_AXIS_PEAK_DEG = 58.5;
+// 手端向前探的最大位移（相机 −Z）：实测 **0.308 格**
+const SWING_FORWARD_MIN = 0.15;
 const INTENSITY = 0.15;     // v1.57：用户「晃动幅度还不够大，可以稍微大一些」（原版上限 0.1）
 // ⚠️ 标称值 ≠ 实际幅度：一阶平滑在 1.35Hz 处通过率 ≈ 0.916，故实际 y 峰 ≈ 0.1375、x 峰 ≈ 0.0687。
 // v1.51：旋转全部归零（用户要求「跑动时镜头始终水平，不要歪头」）→ 相机 roll/pitch 必须恒为 0。
 // 跑动感全部来自位置平移（左右微移不改变任何朝向）。
-const SWING_ROLL = 0.349;   // v1.49：原版甩腕 20°（sin(p²·π)，峰在 p≈0.707）
+
+/**
+ * 手臂长轴与手端的相机空间量（与单测同口径，各用例内联定义 `probe()`）。
+ * 几何局部坐标：手端 y = −2/16、肩端 y = 10/16，x 中心 = −1/16。
+ */
 
 async function boot(page, vd = 2) {
   await page.goto(`/?seed=12345&vd=${vd}`);
@@ -191,14 +206,22 @@ test('跑动时相机出现周期晃动，幅度受 intensity 约束；静止时
   expect(Math.abs(result.last.pitch), '停下后相机 pitch 须为 0').toBe(0);
 });
 
-test('挖块走玩家主路径触发手臂挥动（原版多轴：快出主劈 + 滞后甩腕）', async ({ page }) => {
+test('挖块走玩家主路径触发手臂挥动（v3.46 vanilla 变换链：长轴横摆 + 手端前探）', async ({ page }) => {
   await boot(page);
-  const result = await page.evaluate(async ({ rest, bottom, roll }) => {
+  const result = await page.evaluate(async ({ axisPeakDeg, forwardMin }) => {
+    const THREE = await import('three');
     const g = window.__MC_GAME__;
     const pl = g.player;
     const frame = () => new Promise((r) => requestAnimationFrame(r));
+    // 手臂长轴与手端的相机空间量（与单测同口径）
+    const probe = () => {
+      const m = new THREE.Matrix4().compose(
+        g.viewArm.mesh.position, g.viewArm.mesh.quaternion, g.viewArm.mesh.scale);
+      const at = (ly) => new THREE.Vector3(-1 / 16, ly, 0).applyMatrix4(m);
+      const hand = at(-2 / 16);
+      return { hand, axis: at(10 / 16).sub(hand).normalize(), p: g.viewArm.swingProgress };
+    };
     const p0 = pl.physics.pos;
-    // 在正前方 3 格放一块石头并瞄准（与真人「看着方块挖」等价）
     const bx = Math.floor(p0.x);
     const by = Math.floor(p0.y) + 1;
     const bz = Math.floor(p0.z) - 3;
@@ -206,69 +229,59 @@ test('挖块走玩家主路径触发手臂挥动（原版多轴：快出主劈 +
     await new Promise((r) => setTimeout(r, 600));
     pl.setTestAim([0, 0, -1]);
 
-    const before = { rot: g.viewArm.mesh.rotation.x, progress: g.viewArm.swingProgress };
+    const rest = probe();
+    const restHand = rest.hand.clone();
+    const restAxis = rest.axis.clone();
     const hadTarget = !!pl.target;
-    // 玩家主路径
     pl.digBlock({});
     const blockGone = g.world.getBlockId(bx, by, bz) === 0;
     const progressJustAfter = g.viewArm.swingProgress;
 
-    // 逐帧采样挥动轨迹（含三轴与位移）
-    const rows = [{
-      p: g.viewArm.swingProgress,
-      rot: g.viewArm.mesh.rotation.x,
-      yaw: g.viewArm.mesh.rotation.y,
-      roll: g.viewArm.mesh.rotation.z,
-      z: g.viewArm.mesh.position.z,
-    }];
+    // 逐帧采样（挥动 0.1s @120Hz ≈ 12 帧，采 24 帧盖完整段 + 回位）
+    const rows = [];
     for (let i = 0; i < 24; i++) {
       await frame();
+      const s = probe();
       rows.push({
-        p: g.viewArm.swingProgress,
-        rot: g.viewArm.mesh.rotation.x,
-        yaw: g.viewArm.mesh.rotation.y,
-        roll: g.viewArm.mesh.rotation.z,
-        z: g.viewArm.mesh.position.z,
+        p: s.p,
+        angle: s.axis.angleTo(restAxis),
+        forward: restHand.z - s.hand.z,      // 正 = 向相机 −Z 探出
+        lateral: Math.abs(s.hand.x - restHand.x),
       });
     }
-    // 主劈谷底（rotation.x 最小值）与它的进度 p：原版快出曲线下须落在 **p≤0.35**
-    const deepest = rows.reduce((a, b) => (b.rot < a.rot ? b : a), rows[0]);
-    // 甩腕峰值（|roll| 最大）与它的进度 p：滞后曲线下须落在 **p≥0.5**
-    const maxRollRow = rows.reduce((a, b) => (Math.abs(b.roll) > Math.abs(a.roll) ? b : a), rows[0]);
-    const maxYaw = Math.max(...rows.map((r) => Math.abs(r.yaw)));
-    const minZ = Math.min(...rows.map((r) => r.z));
+    const peak = rows.reduce((a, b) => (b.angle > a.angle ? b : a), rows[0]);
+    const deepest = rows.reduce((a, b) => (b.forward > a.forward ? b : a), rows[0]);
+    const last = probe();
     return {
-      hadTarget, blockGone, before, progressJustAfter,
-      minRot: deepest.rot, deepestP: deepest.p,
-      maxRoll: maxRollRow.roll, maxRollP: maxRollRow.p,
-      maxYaw, minZ,
-      finalRot: rows[rows.length - 1].rot,
-      finalRoll: rows[rows.length - 1].roll,
-      finalYaw: rows[rows.length - 1].yaw,
-      rest, bottom, roll,
+      hadTarget, blockGone, progressJustAfter,
+      peakAngleDeg: peak.angle * 180 / Math.PI,
+      peakP: peak.p,
+      maxForward: deepest.forward,
+      forwardP: deepest.p,
+      maxLateral: Math.max(...rows.map((r) => r.lateral)),
+      finalGap: last.hand.distanceTo(restHand),
+      finalAngle: last.axis.angleTo(restAxis),
+      axisPeakDeg, forwardMin,
     };
-  }, { rest: ARM_REST, bottom: ARM_BOTTOM, roll: SWING_ROLL });
+  }, { axisPeakDeg: SWING_AXIS_PEAK_DEG, forwardMin: SWING_FORWARD_MIN });
 
   expect(result.hadTarget, '须先命中方块（前提断言）').toBe(true);
   expect(result.blockGone, '挖块须真的移除方块（前提断言）').toBe(true);
-  expect(result.before.progress, '挖之前不在挥动中').toBe(1);
   expect(result.progressJustAfter, '挖之后挥动进度须从头开始').toBe(0);
-  // 主劈谷底：与 mc-lite 的 −1.67 差不超过一帧的弧度步长（逐帧采样，峰值可能差一帧）
-  expect(result.minRot, `挥动须到达谷底附近，实测 ${result.minRot}`).toBeLessThan(result.bottom + 0.1);
-  expect(result.minRot, `挥动不得超出静态幅度，实测 ${result.minRot}`).toBeGreaterThanOrEqual(result.bottom - 1e-6);
-  // **快出**：主劈谷底须在前 35% 的进度内到达（mc-lite 对称曲线是 50%）
-  expect(result.deepestP, `主劈须快出（谷底在 p≤0.35），实测 p=${result.deepestP}`).toBeLessThanOrEqual(0.35);
-  // **甩腕滞后**：滚转峰值须在后半段（原版 sin(p²·π) 峰在 p≈0.707）
-  expect(result.maxRollP, `滚转须滞后（峰在 p≥0.5），实测 p=${result.maxRollP}`).toBeGreaterThanOrEqual(0.5);
-  expect(Math.abs(result.maxRoll), `滚转须达配置幅度，实测 ${result.maxRoll}`).toBeGreaterThan(result.roll * 0.85);
-  expect(Math.abs(result.maxRoll), `滚转不得超过配置幅度，实测 ${result.maxRoll}`).toBeLessThanOrEqual(result.roll + 1e-9);
-  // 多轴：yaw 与向前位移都须发生（单轴还原会让画面「只是转了一下」）
-  expect(result.maxYaw, `须有 yaw 分量，实测 ${result.maxYaw}`).toBeGreaterThan(0.05);
-  expect(result.minZ, `须向前探，实测 z=${result.minZ}`).toBeLessThan(-0.12 - 0.01);
-  // 结束严格回位（三轴都不残留）
-  expect(result.finalRot, `挥动结束须回到静止角 ${result.rest}，实测 ${result.finalRot}`).toBeCloseTo(result.rest, 6);
-  expect(result.finalRoll, `结束 roll 须归零，实测 ${result.finalRoll}`).toBeCloseTo(0, 6);
-  expect(result.finalYaw, `结束 yaw 须归零，实测 ${result.finalYaw}`).toBeCloseTo(0, 6);
+  // 主判据：长轴真的转了（上游主摆动 70°，实测夹角峰 58.5°）。
+  // 阈取实测值的 70%（两侧都不贴线）；注入「去掉 rotY(70°) 那一步」⇒ 真红。
+  expect(result.peakAngleDeg,
+    `长轴夹角峰须达实测量级（>${result.axisPeakDeg * 0.7}°），实测 ${result.peakAngleDeg.toFixed(1)}°`)
+    .toBeGreaterThan(result.axisPeakDeg * 0.7);
+  // 快出：峰值在前 45%（上游 sin(√p·π) 峰在 p=0.25，实测 0.27）
+  expect(result.peakP, `横摆峰须在前 45%（快出），实测 p=${result.peakP}`).toBeLessThanOrEqual(0.45);
+  // 手端向前探（实测最大 0.308 格）
+  expect(result.maxForward,
+    `手端须向前探（>${result.forwardMin} 格），实测 ${result.maxForward.toFixed(3)}`)
+    .toBeGreaterThan(result.forwardMin);
+  // 结束严格回位（位置与朝向都不残留）
+  expect(result.finalGap, `挥动结束手端须回到静止，实测偏差 ${result.finalGap}`).toBeLessThan(1e-6);
+  expect(result.finalAngle, '结束长轴朝向须回到静止').toBeLessThan(1e-6);
 });
 
 test('放置方块走玩家主路径触发手臂挥动', async ({ page }) => {
@@ -341,71 +354,116 @@ test('挖空（未命中方块）也挥动 —— 玩家意图是「挖」，不
 
 test('挖掘触发的挥动不依赖世界是否真的改变（同一个挥动路径）', async ({ page }) => {
   await boot(page);
-  const result = await page.evaluate(async ({ rest }) => {
+  const result = await page.evaluate(async ({ axisPeakDeg, forwardMin }) => {
+    const THREE = await import('three');
     const g = window.__MC_GAME__;
     const pl = g.player;
     const frame = () => new Promise((r) => requestAnimationFrame(r));
+    const probe = () => {
+      const m = new THREE.Matrix4().compose(
+        g.viewArm.mesh.position, g.viewArm.mesh.quaternion, g.viewArm.mesh.scale);
+      const at = (ly) => new THREE.Vector3(-1 / 16, ly, 0).applyMatrix4(m);
+      const hand = at(-2 / 16);
+      return { hand, axis: at(10 / 16).sub(hand).normalize(), p: g.viewArm.swingProgress };
+    };
     // 无命中挖一次，记录完整挥动轨迹 —— 采样式断言证明它走的是**同一个**挥动实现，
     // 而不是「只置了进度但姿态不动」的假挥手。
     pl.setTestAim([0, 1, 0]);
+    const rest = probe();
+    const restHand = rest.hand.clone();
+    const restAxis = rest.axis.clone();
     pl.digBlock({});
     const rows = [];
     for (let i = 0; i < 24; i++) {
       await frame();
+      const s = probe();
       rows.push({
-        p: g.viewArm.swingProgress,
-        rot: g.viewArm.mesh.rotation.x,
-        roll: g.viewArm.mesh.rotation.z,
+        p: s.p,
+        angle: s.axis.angleTo(restAxis),
+        forward: restHand.z - s.hand.z,
       });
     }
-    const deepest = rows.reduce((a, b) => (b.rot < a.rot ? b : a), rows[0]);
-    const maxRoll = rows.reduce((a, b) => (Math.abs(b.roll) > Math.abs(a.roll) ? b : a), rows[0]);
+    const peak = rows.reduce((a, b) => (b.angle > a.angle ? b : a), rows[0]);
+    const last = probe();
     return {
-      minRot: deepest.rot,
-      deepestP: deepest.p,
-      maxRoll: maxRoll.roll,
-      finalRot: rows[rows.length - 1].rot,
-      rest,
+      peakAngleDeg: peak.angle * 180 / Math.PI,
+      peakP: peak.p,
+      maxForward: Math.max(...rows.map((r) => r.forward)),
+      finalGap: last.hand.distanceTo(restHand),
+      axisPeakDeg, forwardMin,
     };
-  }, { rest: ARM_REST });
-  // 完整挥动（与成功挖掘走同一曲线）：快出谷底、滞后挂腕、结束严格回位
-  expect(result.minRot, `须到达谷底附近，实测 ${result.minRot}`).toBeLessThan(ARM_BOTTOM + 0.1);
-  expect(result.deepestP, `谷底须在前段（快出），实测 p=${result.deepestP}`).toBeLessThanOrEqual(0.35);
-  expect(Math.abs(result.maxRoll), `须有挂腕分量，实测 ${result.maxRoll}`).toBeGreaterThan(SWING_ROLL * 0.85);
-  expect(result.finalRot, `结束须回静止角，实测 ${result.finalRot}`).toBeCloseTo(result.rest, 6);
+  }, { axisPeakDeg: SWING_AXIS_PEAK_DEG, forwardMin: SWING_FORWARD_MIN });
+  // 完整挥动（与成功挖掘走同一曲线）：长轴横摆达同一量级、快出、结束严格回位
+  expect(result.peakAngleDeg,
+    `长轴夹角峰须达实测量级，实测 ${result.peakAngleDeg.toFixed(1)}°`)
+    .toBeGreaterThan(result.axisPeakDeg * 0.7);
+  expect(result.peakP, `峰值须在前段（快出），实测 p=${result.peakP}`).toBeLessThanOrEqual(0.45);
+  expect(result.maxForward, `手端须向前探，实测 ${result.maxForward.toFixed(3)}`)
+    .toBeGreaterThan(result.forwardMin);
+  expect(result.finalGap, '结束须回静止').toBeLessThan(1e-6);
 });
 
-test('手臂有立体感：像素亮度分布须铺开（不是单一颜色）', async ({ page }) => {
-  // 用户反馈「手臂的横面和竖面没有光影效果，感觉就是一个颜色，没有立体感」。
-  // v1.56 修法 = 顶点色烘焙三层明暗（vanilla 面系数 × 固定光向 Lambert × 沿长度渐变），
-  // 保持 unlit（不随日夜灯光漂移）。
+test('手臂皮肤 Tier 4：整条手臂全肤色，朝前远端不得是异色块（差分像素）', async ({ page }) => {
+  // **v3.46b 口径反转**（用户 2026-11-27：「手臂前方的蓝色部分也烘焙成跟手臂
+  // 一样的色调，不然看起来感觉怪怪的」）：
+  //   · v3.46 旧判据要求 teal（袖口）**≥ 200 且占比 > 5%** —— 那正是用户否掉的形态；
+  //   · 新判据：**teal 近于 0**，且肤色占绝大多数。
   //
-  // **判据为什么是「分布铺开」而不是「最大-最小差值」**：修好之前手臂本来就有 2 档
-  // （底面/前面），最大最小差也能过 —— 但那正是「看着平」的状态。
-  // 真正区分「平」与「有立体感」的是**中间过渡是否存在**：
-  // 实测修复前 78.9% 像素挤在同一个亮度桶、只有 2 个桶；修复后 46.8%、11 个桶。
-  test.setTimeout(90_000);
+  // ⚠️ **光判「teal = 0」零判别力**：皮肤没加载 / UV 全错位 / 手臂根本没画，
+  // teal 也是 0。故必须配三条正向判据：肤色像素数 / 肤色占比 / **远端分区也有肤色**。
+  //
+  // ⚠️ **远端分区是本条的核心**：沿手臂长轴（手端→肩端）分 10 档，
+  // 实测旧版的 teal 12500 像素**全在 bin 8~9**（几何 y 最大端 = z 更负/y 更高
+  // = 屏幕上朝前的远端）。只判全图均值会把那小块稀释掉。
+  //
+  // ⚠️ **仍用差分口径**（on = 有手臂 / off = 藏手臂）：真游戏页背景是整个世界。
+  test.setTimeout(120_000);
   await boot(page);
   const result = await page.evaluate(async () => {
+    const THREE = await import('three');
     const g = window.__MC_GAME__;
-    g.setVisualStyle('noon');                       // 冻结日夜漂移，否则相邻两帧世界色会变
+    g.setVisualStyle('noon');                       // 冻结日夜漂移
+    g.ocean.update = () => {};                      // 冻海面波纹
     for (const el of document.querySelectorAll('#hud-root > *, #crosshair, #settings-btn')) el.style.display = 'none';
     await new Promise((r) => setTimeout(r, 800));
-    const grab = () => new Promise((res) => requestAnimationFrame(() => {
+    const grab = () => new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(() => {
       const cv = g.renderer.domElement;
       const c = document.createElement('canvas');
       c.width = cv.width; c.height = cv.height;
       const ctx = c.getContext('2d');
       ctx.drawImage(cv, 0, 0);
       res({ w: c.width, h: c.height, d: ctx.getImageData(0, 0, c.width, c.height).data });
-    }));
+    })));
+    // 手端 / 肩端的屏幕坐标（定义长轴方向）
+    const arm = g.viewArm;
+    const m = new THREE.Matrix4().compose(arm.mesh.position, arm.mesh.quaternion, arm.mesh.scale);
+    const cam = g.camera;
+    const tanFov = Math.tan((cam.fov / 2) * Math.PI / 180);
+    const scr = (ly) => {
+      const v = new THREE.Vector3(-1 / 16, ly, 0).applyMatrix4(m);
+      return [((v.x / (-v.z * tanFov * cam.aspect)) + 1) / 2 * innerWidth,
+        (1 - v.y / (-v.z * tanFov)) / 2 * innerHeight];
+    };
+    const hand = scr(-2 / 16);
+    const shoulder = scr(10 / 16);
+    const ax = shoulder[0] - hand[0], ay = shoulder[1] - hand[1];
+    const axisLen = Math.hypot(ax, ay) || 1;
+    const ux = ax / axisLen, uy = ay / axisLen;
+
     const on = await grab();
-    g.viewArm.mesh.visible = false;
+    arm.mesh.visible = false;
     await new Promise((r) => setTimeout(r, 300));
     const off = await grab();
-    g.viewArm.mesh.visible = true;
-    const hist = new Map();
+    arm.mesh.visible = true;
+
     let n = 0;
+    let teal = 0;   // 衬衫色（应近于 0）
+    let skinPx = 0; // 肤色：R > G > B 且 R−B 差显著
+    let sx = 0; let sy = 0;
+    // 远端（bin 8~9）与近端（bin 0~6）各自的肤色 / teal 计数
+    let farSkin = 0; let farTeal = 0; let farN = 0;
+    // 亮度直方图（立体感回归门，5 为一桶）
+    const hist = new Map();
     for (let y = 0; y < on.h; y++) {
       for (let x = 0; x < on.w; x++) {
         const i = (on.w * y + x) * 4;
@@ -413,53 +471,78 @@ test('手臂有立体感：像素亮度分布须铺开（不是单一颜色）',
           + Math.abs(on.d[i + 2] - off.d[i + 2]);
         if (diff <= 8) continue;
         n++;
+        sx += x; sy += y;
         const lum = Math.round((on.d[i] + on.d[i + 1] + on.d[i + 2]) / 3 / 5) * 5;
         hist.set(lum, (hist.get(lum) ?? 0) + 1);
+        const t = ((x - hand[0]) * ux + (y - hand[1]) * uy) / axisLen;
+        const isFar = t >= 0.8;
+        if (isFar) farN++;
+        const r = on.d[i], gg = on.d[i + 1], b = on.d[i + 2];
+        const isTeal = r < 110 && gg > 90 && b > 90 && Math.abs(gg - b) < 40 && gg - r > 30;
+        const isSkin = r > gg && gg > b && r - b > 30 && r > 110;
+        if (isTeal) { teal++; if (isFar) farTeal++; }
+        if (isSkin) { skinPx++; if (isFar) farSkin++; }
       }
     }
     const buckets = [...hist.values()].sort((a, b) => b - a);
-    // 亮度分位数（用于识别「面间双峰」：面间差 >> 面内渐变）
     const lums = [];
     for (const [lum, c] of hist) for (let i = 0; i < c; i++) lums.push(lum);
     lums.sort((a, b) => a - b);
     const p95 = lums[Math.min(lums.length - 1, Math.floor(lums.length * 0.95))] || 1;
-    // **找第二个峰**：按像素数排序后的第二个局部极大（与最大峰相隔 >10% 亮度）。
-    // 这是「面间差异」的直接证据 —— 面内渐变只会拉出一个宽峰，不会产生两个分离峰。
     const peaks = [...hist.entries()].sort((a, b) => b[1] - a[1]).map(([lum, c]) => ({ lum, c }));
     const first = peaks[0] || { lum: 0, c: 0 };
     const second = peaks.find((pk) => Math.abs(pk.lum - first.lum) / p95 > 0.10 && pk.c > 50) || null;
     return {
-      armPixels: n,
-      uniqueBuckets: hist.size,
+      armPixels: n, teal, skinPx, farN, farSkin, farTeal,
+      centroidX: n ? sx / n / on.w : 0,
+      centroidY: n ? sy / n / on.h : 0,
+      hasMap: !!arm.material.map,
       largestBucketShare: buckets.length ? buckets[0] / n : 1,
-      secondPeakShare: second ? second.c / n : 0,
       peakSeparation: second ? Math.abs(second.lum - first.lum) / p95 : 0,
     };
   });
-  // 前提：手臂确实占了一块屏幕
+
+  // 前提：皮肤真的挂上了（没挂上会退回中性肤色兜底，那时本条会假绿）
+  expect(result.hasMap, '皮肤贴图须已加载并挂到材质上').toBe(true);
   expect(result.armPixels, `须测到手臂像素，实测 ${result.armPixels}`).toBeGreaterThan(2000);
-  // ① 亮度桶数量：平色 = 1~2 个；有立体感 = 多个过渡档
-  expect(result.uniqueBuckets, `亮度档位须 >= 6（修复前是 2），实测 ${result.uniqueBuckets}`).toBeGreaterThanOrEqual(6);
-  // ② 最大单色占比：修复前 78.9%，修复后 46.8% —— 阈值取 65%，两侧都不贴线
-  expect(result.largestBucketShare, `最大单色占比须 < 65%（修复前 78.9%），实测 ${(result.largestBucketShare * 100).toFixed(1)}%`)
-    .toBeLessThan(0.65);
-  // ③ **面间差异**（不能只靠同面渐变）：负向验证实测——把 Lambert 项或六面系数去掉后，
-  //    上面两条仍会绿（长度渐变单独就能把分布铺开），所以必须额外钉「不同朝向的亮度不同」。
-  //    判据 = 直方图须有**两个显著峰**且峰距够大。⚠️ 不能用 p75−p25：面内渐变会把分位数
-  //    拉在两个峰之间（实测只有 6.3%），而真实面间差是 155 vs 115 ≈ 26%。
-  expect(result.secondPeakShare, `须有第二个亮度峰（面间差异），实测 ${(result.secondPeakShare * 100).toFixed(1)}%`)
-    .toBeGreaterThan(0.1);
-  // ④ 面间峰距。
-  // ⚠️ **v1.70 由 15% 重标为 11%**（用户裁定「重标阈值」）：v1.70 接入 ACES 色调映射后，
-  // 高光肩部压缩会**缩小面间差** —— 实测（只差 toneMapping 一个变量）
-  //   NoToneMapping：峰 200 vs 160 → 峰距 **15.7%**（旧阈值 15 恰好能过）
-  //   ACES        ：峰 205 vs 175 → 峰距 **11.8%**（spec 口径）/ **14.6%**（本用例口径，除 p95）
-  // 根因是 ACES 曲线本身（亮面被推向肩部、暗面仍在近线性段），**不是手臂变平了**：
-  // 同一次实测里亮度桶仍 14 个、最大单色占比 52.4%（阈值 65%）、第二峰占比 13.6%（阈值 10%）
-  // 全部宽松通过 —— 只有峰距贴线。新阈值 11% 相对本口径实测 14.6% 留 24.7% 余量，
-  // 而「去掉 Lambert 项 / 六面系数」的破坏态仍会真 FAIL。
-  expect(result.peakSeparation, `两个亮度峰须相距 > 11%（v1.70 ACES 口径），实测 ${(result.peakSeparation * 100).toFixed(1)}%`)
-    .toBeGreaterThan(0.11);
+  // ① **肤色占绝大多数**（实测 17212/17274 = 99.6%）。
+  // 注入「UV 全指向外套层」⇒ 全透明 ⇒ armPixels 崩 ⇒ 前提断言真红。
+  const skinShare = result.skinPx / result.armPixels;
+  expect(skinShare, `肤色占比须 > 85%，实测 ${(skinShare * 100).toFixed(1)}%`)
+    .toBeGreaterThan(0.85);
+  // ② **衬衫色近于消失**（实测 0）。阈取手臂像素的 2%：
+  // 旧版 teal 占 65%（12500/19192）⇒ 把袖口改回衬衫色会真红。
+  const tealShare = result.teal / result.armPixels;
+  expect(tealShare, `衬衫色占比须 < 2%（用户要求全肤色），实测 ${(tealShare * 100).toFixed(1)}%`)
+    .toBeLessThan(0.02);
+  // ③ **朝前的远端分区也是肤色**（本条的核心 —— 全图均值会把它稀释掉）。
+  // 实测远端 bin 8~9 共 14383 像素，其中肤色 14383（旧版那一带是 teal 12420）。
+  expect(result.farN, `前提：远端分区须有像素，实测 ${result.farN}`).toBeGreaterThan(500);
+  const farSkinShare = result.farSkin / result.farN;
+  expect(farSkinShare,
+    `朝前远端须也是肤色（> 85%），实测 ${(farSkinShare * 100).toFixed(1)}%`)
+    .toBeGreaterThan(0.85);
+  expect(result.farTeal / result.farN,
+    `朝前远端不得是蓝块（teal < 2%），实测 ${(result.farTeal / result.farN * 100).toFixed(1)}%`)
+    .toBeLessThan(0.02);
+  // ④ 手臂在**右下象限**（原版第一人称右手的方位）
+  expect(result.centroidX, `手臂重心须在右半屏，实测 ${result.centroidX.toFixed(3)}`)
+    .toBeGreaterThan(0.5);
+  expect(result.centroidY, `手臂重心须在下半屏，实测 ${result.centroidY.toFixed(3)}`)
+    .toBeGreaterThan(0.5);
+  // ⑤ **立体感回归门**（v3.46b）：全肤色后曾实测到 **78.6% 像素挤在同一亮度桶、
+  // 无双峰** —— 即 v1.56「一个颜色、没立体感」的回归。补灰阶面间亮度后实测
+  // **39.7% / 峰距 15.2%**。两条阈都取两侧不贴线的档位：
+  //   · 最大单桶 < 60%（变平态 78.6% 真红，当前 39.7% 留 20 点余量）；
+  //   · 峰距 > 10%（变平态 0 真红，当前 15.2%）。
+  // ⚠️ 这两条与上面的色相判据**互补**：色相判据抓「颜色不对」，
+  // 这两条抓「颜色对了但变成一块色板」—— 后者正是本轮踩到的。
+  expect(result.largestBucketShare,
+    `最大单色占比须 < 60%（否则是一块色板），实测 ${(result.largestBucketShare * 100).toFixed(1)}%`)
+    .toBeLessThan(0.60);
+  expect(result.peakSeparation,
+    `须有两个分离的亮度峰（面间差 > 10%），实测 ${(result.peakSeparation * 100).toFixed(1)}%`)
+    .toBeGreaterThan(0.10);
 });
 
 test('手臂不投影（castShadow=false），且只给 camera 增 1 个节点', async ({ page }) => {
