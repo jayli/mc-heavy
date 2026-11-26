@@ -98,8 +98,10 @@ function makeSunSprite() {
  * 装配天空盒 + 日轮/月轮。
  *
  * 三张立方图三层混合（v1.71）：`mix(mix(day, night, uNightBlend), dusk, uDuskBlend)`。
- * ⚠️ **嵌套顺序是载荷性的**：`uDuskBlend = 0` 时内层 mix 就是 v1.70 的原奇表达式 →
- * 逐位回到双图交叉淡入。写成 `mix(day, mix(night, dusk, ...), ...)` 也能算出 0，但两条路径
+ * v3.44 加第四层：`mix(上式, normal, uNormalBlend)`。
+ * ⚠️ **嵌套顺序是载荷性的，勿交换**：`uDuskBlend = 0` 时内层 mix 就是 v1.70 的原奇表达式 →
+ * 逐位回到双图交叉淡入；`uNormalBlend = 0` 时外层取左端 → 逐位回到 v1.71。
+ * 写成 `mix(day, mix(night, dusk, ...), ...)` 也能算出 0，但两条路径
  * 各自漂移一次就没人能预判结果了。
  *
  * @param {THREE.Scene} scene
@@ -110,16 +112,19 @@ function makeSunSprite() {
  * }>}
  */
 export async function setupSky(scene) {
-  const [dayCube, nightCube, duskCube] = await Promise.all([
+  const [dayCube, nightCube, duskCube, normalCube] = await Promise.all([
     loadCube(SKY_SETS.day),
     loadCube(SKY_SETS.night),
     loadCube(SKY_SETS.dusk),
+    loadCube(SKY_SETS.normal),
   ]);
 
   // 夜间程度 0..1（由 DayNight 从既有 skyDim 派生后写入，见 daynight.js 的 nightBlendOf）。
   const uNightBlend = uniform(0);
   // 黄昏程度 0..1（v1.71）：只有手动选「傍晚」时是 1，自动循环恒 0（见 daynight.js）。
   const uDuskBlend = uniform(0);
+  // 「普通」程度 0..1（v3.44）：只有手动选「普通」时是 1，自动循环与其余四档恒 0。
+  const uNormalBlend = uniform(0);
   // ⚠️ **不传 uvNode**：three 会把 `backgroundRotation.mul(normalWorldGeometry)` 从上下文注入
   // （three.webgpu.js:48924-48928 → CubeTextureNode.setupUV 走 builder.context.getUV）。
   // 自己传方向会绕开它的 x 轴取反约定 → 天空左右镜像（肉眼很难察觉，须靠像素判据抓）。
@@ -127,7 +132,11 @@ export async function setupSky(scene) {
   // 这条路径确实对 x 轴镜像 —— 所以 skyBox2 里落盘在 -X/+Z 的日落会出现在 **+X/+Z**
   // 象限（azim ≈ +44°），`VISUAL_STYLES.dusk.sunDirection` 就是按渲染结果定的。
   const dayNightMix = mix(cubeTexture(dayCube), cubeTexture(nightCube), uNightBlend);
-  scene.backgroundNode = mix(dayNightMix, cubeTexture(duskCube), uDuskBlend);
+  const duskMix = mix(dayNightMix, cubeTexture(duskCube), uDuskBlend);
+  // 第四层（v3.44）：「普通」天空叠在**最上层**。
+  // ⚠️ **嵌套顺序是载荷性的**：`uNormalBlend = 0` 时外层 mix 取左端
+  // ⇒ 逐位回到 v1.71 的三层表达式（其余四档与自动循环零回归）。
+  scene.backgroundNode = mix(duskMix, cubeTexture(normalCube), uNormalBlend);
   // 双设：`getBackgroundNode()` 优先读 backgroundNode（:55681），但保留 background = null
   // 让 DayNight 的 `scene.background.set(...)` 纯色路径自动跳过（它判 `background && .set`）。
   scene.background = null;
@@ -142,9 +151,11 @@ export async function setupSky(scene) {
   return {
     uNightBlend,
     uDuskBlend,
+    uNormalBlend,
     dayCube,
     nightCube,
     duskCube,
+    normalCube,
     sunSprite,
     moonSprite,
     dispose() {
@@ -158,6 +169,7 @@ export async function setupSky(scene) {
       dayCube.dispose();
       nightCube.dispose();
       duskCube.dispose();
+      normalCube.dispose();
     },
   };
 }

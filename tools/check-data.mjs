@@ -1693,6 +1693,41 @@ async function checkNightSkyFreshness() {
   infos.push('[夜空] 烘焙指纹匹配（无缝立方图当前）');
 }
 
+/**
+ * [普通天空] 契约（v3.44）：「普通」风格的立方图是**离线烘焙**上游大气公式的结果，
+ * 指纹必须与当前烘焙参数一致。
+ *
+ * 与 [夜空] 同一条失效路径：改了 `tools/normal-sky-fingerprint.mjs` 的参数（时刻/曝光/
+ * 天底地面色比例…）却忘跑 `npm run normalsky` → 贴图**静默过期**（仍渲染旧天空）。
+ *
+ * ⚠️ **不用颜色/接缝做门禁**：node 侧没有 JPEG 解码器（只有 pngjs）。
+ * 接缝与内容由 `tests/normal-style.spec.mjs` 在浏览器里实测。
+ * ⚠️ 主流程是逐个显式调用 —— 漏了那行则门禁永不执行（本仓已因此出过两次事故）。
+ */
+async function checkNormalSkyFreshness() {
+  const { NORMAL_SKY_FINGERPRINT_JSON, normalSkyFingerprint } = await import('./normal-sky-fingerprint.mjs');
+  const jsonPath = path.join(ROOT, NORMAL_SKY_FINGERPRINT_JSON);
+  if (!fs.existsSync(jsonPath)) {
+    failures.push(`[普通天空] 缺指纹文件 ${NORMAL_SKY_FINGERPRINT_JSON}（跑 npm run normalsky）`);
+    return;
+  }
+  let meta;
+  try {
+    meta = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+  } catch {
+    failures.push(`[普通天空] ${NORMAL_SKY_FINGERPRINT_JSON} 不是合法 JSON（重跑 npm run normalsky）`);
+    return;
+  }
+  const expected = normalSkyFingerprint();
+  if (meta.fingerprint !== expected) {
+    failures.push(
+      `[普通天空] 贴图已过期：指纹不匹配（烘焙时 "${meta.fingerprint}" vs 当前 "${expected}"）→ 跑 npm run normalsky`,
+    );
+    return;
+  }
+  infos.push('[普通天空] 烘焙指纹匹配（ASHLAR 大气立方图当前）');
+}
+
 // ---------------------------------------------------------------- [高台地带] 契约（Cloudland Tarn Zone）
 
 /**
@@ -4340,6 +4375,7 @@ await checkCarbineAudio();   // v3.30：KV-9 / 雨声烘焙产物契约与指纹
 await checkFootstepWater();  // v3.37：水中脚步声烘焙产物契约与指纹（⚠️ 同上）
 checkSkyboxAssets();         // v1.58：天空盒立方图完整性（⚠️ 漏了本行则门禁永不执行）
 await checkNightSkyFreshness(); // v1.60：夜空烘焙产物指纹（⚠️ 漏了本行则门禁永不执行）
+await checkNormalSkyFreshness(); // v3.44：「普通」天空烘焙指纹（⚠️ 漏了本行则门禁永不执行）
 await checkGiantTrees();     // 巨树景观：方块/烘焙产物/贴图三方契约（⚠️ 漏了本行则门禁永不执行）
 await checkAzaleaTrees();    // 杜鹃树：烘焙产物/方块声明/运行时常量三方契约（⚠️ 漏了本行则门禁永不执行）
 await checkCloudlandTarnZone(); // 高台地带：35 产物/映射表/通道/台顶材质契约（⚠️ 漏了本行则门禁永不执行）

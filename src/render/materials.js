@@ -16,7 +16,7 @@ import {
 } from 'three/tsl';
 
 import {
-  SHADOW_FLOOR, SUN_AMBIENT, SUN_INTENSITY, FACE_NORMALS, NOON_SUN_DIR,
+  SHADOW_FLOOR, SUN_INTENSITY, FACE_NORMALS, NOON_SUN_DIR,
 } from './sun-shade.js';import { HEMI_GROUND } from './hemi-shade.js';
 import { FOG_SKY_Y_FLOOR_EPS } from './fog-sky-direction.js';
 // v3.31 雨天湿表面（**从零实现**，不参考上游；按材质分类 + 有界天空反光）
@@ -120,15 +120,27 @@ const uAmbientColor = uniform(new THREE.Vector3(1, 1, 1));
 const uHemiGround = uniform(HEMI_GROUND);
 const hemiFactor = mix(uHemiGround, float(1.0), mul(faceNormalNode.y, 0.5).add(0.5));
 
+// ---- per-style 光影地板与太阳强度（v3.44，「普通」档）----
+// 背景：上游 ASHLAR 的照片感主因实测是**直射/环境比**（上游 4.26 vs 本仓正午 1.63），
+// 而这两个量在本仓是全局常量（写死）⇒ 任何风格都改不了它。
+// 现在做成 uniform，由 `DayNight._apply` 按风格写：
+//   · 「普通」档：floor 0.14 / intensity 0.956（配合 hemiGround 0.12）
+//   · 其余四档与自动循环：写入全局常量 ⇒ **公式逐位回到现状**（零回归锚点）
+// ⚠️ 初值 = 全局常量（权威在 shade-params.js，经 sun-shade.js re-export，此处不写字面量）。
+// ⚠️ **uniform 走 uniform buffer，不占顶点属性** ⇒ gpuVertexBytes 零增量（200MiB 门不受影响）。
+const uShadowFloor = uniform(SHADOW_FLOOR);
+const uSunIntensity = uniform(SUN_INTENSITY);
+
 /**
  * 阴影不投射标记（packed bit14，mesher 从 registry.shadowCastTable 写入）：在**阴影 pass**
  * 逐片元 discard（mc-lite `isShadowEnabled:false` 的 cloud/花草/藤/灯等不投影）。
  * ⚠️ `maskShadowNode` 只被阴影 pass 消费（three.webgpu.js `_getShadowNodes`），主 pass 的
  * `setupDiffuseColor` 只读 `maskNode` → 这些方块在主渲染里照常显示，只是不写阴影深度。
  *
- * 注：`SHADOW_FLOOR`（0.5）的推导与完整注释见 `sun-shade.js`（v1.58 起它是那里导出的常量，
- * 同时充当太阳项的环境地板 `SUN_AMBIENT`）。本文件 import 后继续用作阴影地板 —— 两个值
- * 必须恒等，否则「背光面」与「影区」的亮度会撕裂。
+ * 注：影区地板与太阳项环境地板是**同一个值**（`SHADOW_FLOOR ≡ SUN_AMBIENT`，
+ * 权威在 `shade-params.js`）。v3.44 起它由 `uShadowFloor` 提供初值，
+ * 且**同一个 uniform 实例**同时当影区地板与 `shadowKill` 的归一化分母 ——
+ * 结构上不可能不同步（而不是靠两处各写同一个值）。
  */
 const noShadowCastBit = float(packed.shiftRight(14).bitAnd(1));
 
@@ -150,7 +162,7 @@ export function createVoxelMaterials(atlasTexture, sunLight = null, reflectTextu
   // 函数 —— PCF 滤波由 renderer.shadowMap.type 自动映射（PCFSoftShadowMap → PCFSoftShadowFilter）。
   // 误传 filter 函数会让 setupRenderTarget 读 shadow.mapSize 崩溃。故只传单参数。
   const shadowFactor = sunLight
-    ? mix(float(1), mix(float(SHADOW_FLOOR), float(1), shadow(sunLight)), uShadowStrength)
+    ? mix(float(1), mix(uShadowFloor, float(1), shadow(sunLight)), uShadowStrength)
     : null;
 
   // 最终亮度 = max(sky × 太阳项, block)。
@@ -170,12 +182,18 @@ export function createVoxelMaterials(atlasTexture, sunLight = null, reflectTextu
   // （与阴影只衰减 skylight 项同一道理）。
   // ⚠️ transparent 通道（水/玻璃）**不接**太阳：海面已有自己的 Blinn-Phong 高光（ocean.js），
   // 而且那个通道恰好是零回归的安全垫。
+  // ⚠️⚠️ **分母必须用同一个 `uShadowFloor`**（v3.44）：per-style 化之前两处都是
+  // 全局 SHADOW_FLOOR，天然同步；现在地板可随风格变，只改一处就会撕裂。
+  // 实测缺陷形态（floor 0.14 但分母仍 0.62）：**两个端点完全一致**（影区 0 / 受光 1），
+  // 变的是**半影中间调** —— shadowFactor 0.30 处同步 0.1860 / 不同步 **0.0000**
+  // ⇒ 半影那一半太阳被吃掉，而所有「地板值对不对」的数值判据全绿。
+  // CPU 参考实现是 `shadowKillFor`（sun-shade.js），两边同公式（红线 1）。
   const shadowKill = shadowFactor
-    ? clamp(float(1).sub(float(1).sub(shadowFactor).div(1 - SHADOW_FLOOR)), 0, 1)
+    ? clamp(float(1).sub(float(1).sub(shadowFactor).div(float(1).sub(uShadowFloor))), 0, 1)
     : float(1);
   // 逐通道：直接项×直射色、环境项×环境色（见上方同名字段的注释）
-  const sunTermFull = mul(uSunColor, float(SUN_INTENSITY).mul(mul(vSunDot, shadowKill)))
-    .add(mul(uAmbientColor, float(SUN_AMBIENT)));
+  const sunTermFull = mul(uSunColor, uSunIntensity.mul(mul(vSunDot, shadowKill)))
+    .add(mul(uAmbientColor, uShadowFloor));
   const sunTerm = mix(float(1), sunTermFull, uSunStrength);
 
   const shadeLit = max(mul(mul(vSkyShade, hemiFactor), sunTerm), vBlockShade);
@@ -247,6 +265,10 @@ export function createVoxelMaterials(atlasTexture, sunLight = null, reflectTextu
     transparent: makeMaterial({ transparent: true, receivesShadow: false }),
     dayNight: {
       uSkyDim, uBlockBoost, uShadowStrength, uSunDirection, uSunStrength, uHemiGround, uSunColor, uAmbientColor,
+      // v3.44：per-style 光影地板 / 半球 / 太阳强度（「普通」档用，其余档写全局常量）。
+      // ⚠️ uShadowFloor 同时是影区地板**与** shadowKill 的归一化分母 —— 同一个 uniform 实例，
+      // 结构上不可能不同步（而不是靠两处各写同一个值）。
+      uShadowFloor, uSunIntensity,
       // v3.31：湿表面反光的天顶/地平线色（指向**同一 uniform 实例**，红线 1）。
       // DayNight._apply 写它们 ⇒ 反光颜色跟着既有风格/日夜循环走，不新增权威。
       uWetHorizon: WET_SURFACE_UNIFORMS.uWetHorizon,
@@ -322,7 +344,13 @@ export function setupFog(scene, viewDistance, sky = null) {
     // 与背后的暖色天空完全对不上（而这正是雾色功能存在的意义）。
     // ⚠️ 与背景共用同一个 `uDuskBlend` uniform 实例（与 uNightBlend 同一口径）。
     const duskSample = cubeTexture(sky.duskCube, skyDir);
-    const skyColor = mix(dayNight, duskSample.rgb, sky.uDuskBlend);
+    const duskMix = mix(dayNight, duskSample.rgb, sky.uDuskBlend);
+    // 第四层（v3.44）：「普通」天空。**与背景共用同一个 `uNormalBlend` 实例**
+    // 且**同嵌套顺序**（叠在最上层）—— 不做这层的话，开着「难色」时难采样的是
+    // 白天/夜空/黄昏贴图 ⇒ 远处方块染成蓝白色，与背后的普通天空完全对不上
+    // （而那正是难色功能存在的意义）。`uNormalBlend = 0` 时取左端 ⇒ 逐位零回归。
+    const normalSample = cubeTexture(sky.normalCube, skyDir);
+    const skyColor = mix(duskMix, normalSample.rgb, sky.uNormalBlend);
     colorNode = mix(fogColor, skyColor, uFogColorMix);
   }
 

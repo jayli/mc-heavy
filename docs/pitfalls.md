@@ -121,6 +121,43 @@
 
 ## 渲染与 GPU
 
+### ⚠️⚠️ 接缝「比值判据」不能从照片贴图照搬到程序化平滑天空（v3.47）
+
+新烘的「普通」天空照搬 `night-sky-seam.spec` 的「接缝 RMS / 面内噪声底」判据，
+实测 **2.459 > 白天基准 1.765** 而报红 —— 但那张图**几何上完全无缝**。
+
+- **判决性证据是编码前真值**：posy.bottom 与 posz.top 是同一批方向，
+  方向差 **0.00e+0**、未编码接缝 RMS **0.000000**；四条 negy 共享边在磁盘上就是 **0**。
+  磁盘上那 ±1~2 灰阶全部来自 JPEG 量化。
+- **失效机制**：JPEG 量化残差是**固定的 ±1~2**，不随内容平滑而变小；而分母会。
+  程序化天空噪声底 **0.144** vs 照片 **1.075**（小 7.5 倍）⇒ 比值反而「更差」，
+  而它的**绝对接缝 0.353 比照片 1.897 小 5.4 倍**。
+- ⇒ 归一化到自身噪声水平只在「分母与分子同源」时成立。跨内容类型搬相对判据要重验。
+- **处置**：绝对接缝 ≤ 白天基准 + 单条边最大 < 1.5（量化残差量级）。
+  负向验证：posy 整面 +12 灰阶 ⇒ 接缝 0.353→4.112、max 11.998，断言真红。
+
+### ⚠️ per-style 换色调映射不必修帧循环；但地板类常量 per-style 化有两个隐坑（v3.47）
+
+- **换曲线的最小路径**：`renderer.library.addToneMapping(Fn, id)` + 写 `renderer.toneMapping`
+  就真实上屏（`getOutputCacheKey()` 含 toneMapping）⇒ **不需要 RenderPipeline / pass()**。
+  GPU 实测：线性 0.2 → 自定义 AgX **110** / three 内置 AgX **133** / ACES **135**；
+  切回 ACES 读数**逐位还原**。⇒ 准心/箭头/伤害数字/info 快照的「render 之后」时机全不受影响。
+  ⚠️ `addType` 对已存在 id **warn 并拒绝覆盖** ⇒ 自定义 id 避开 0~7、只注册一次；
+  注册必须在写 toneMapping **之前**（否则静默回落无色调映射）。
+- ☠️ **`skyDim` 同时驱动阴影浓度**：`_apply` 把 `uShadowStrength` 写成 `p.skyDim`
+  ⇒ 为压暗而设 skyDim<1 会**让阴影跟着变浅**，正好抵消想要的深阴影。
+  新档要「强直射+深阴影」就必须 skyDim=1，暗部交给 floor/曝光。
+- ☠️ **`shadowKill` 的归一化分母必须同步**：分母 `1−floor` 与影区地板要用**同一个 uniform 实例**。
+  实测缺陷形态**不是「阴影消失」而是「半影中间调被压掉」**：
+  两个端点完全一致（影区 0 / 受光 1）⇒ **只钉端点是恒真判据**；
+  shadowFactor 0.30 处 同步 0.1860 / 不同步 **0.0000**。
+- ⚠️ **`nightBlend` 只钉「混合结果 0」是恒真判据**：skyDim=1 时从 skyDim 倒算也得 0。
+  必须钉「显式字段存在」，否则将来改 skyDim 就静默混入星空。
+- ⚠️ **风格数据表反向 import 光影常量会循环初始化**：`sun-shade.js` 顶层就要读
+  `VISUAL_STYLES.noon` ⇒ daynight 再从它取常量会 `ReferenceError: Cannot access
+  'VISUAL_STYLES' before initialization`。处置：纯数值搬到 three-free 的 `shade-params.js`，
+  两边 re-export（既有 import 路径不变）+ 一致性守卫。
+
 ### ☠️☠️☠️ 同一盏灯挂两个 `ShadowNode` ⇒ 争抢单一 `needsUpdate` 却共享 `shadow.matrix`（v3.41，v3.40 五轮没找到的真根因）
 
 用户报「走动时身边影子跳变」+「整片沙漠突然全是阴影」。**真根因不在阴影管线本身，

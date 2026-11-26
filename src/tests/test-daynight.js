@@ -287,10 +287,14 @@ test('DayNight：renderer 缺省 null 时不抛错（stub / 尚未装配）', ()
 // 新增第四种视觉风格，挂 mc-lite `skyBox2`（日落）。**自动日夜循环不参与它** ——
 // 它是纯手动风格，`paramsAtHour()` 与 `KEYFRAMES` 一行不动（不变式见下）。
 
-test('dusk：风格存在且为第四种（自动循环的四组关键帧仍是 morning/noon/night）', () => {
+test('dusk：风格存在（自动循环的四组关键帧仍是 morning/noon/night）', () => {
   assertEqual(VISUAL_STYLE_KEYS.DUSK, 'dusk');
   const keys = Object.keys(VISUAL_STYLES).sort();
-  assertEqual(keys.join(','), 'dusk,morning,night,noon', '风格表只应有这四项');
+  // v3.44：新增第五项 normal（「普通」，ASHLAR 光影移植）。
+  // ⚠️ **判据语义不变**：仍钉「风格表是闭合集合」（漏写/多写都真红），
+  // 只是集合从四项扩到五项 —— **不是放宽阈值**。
+  // 「不参与自动循环」这条不变式由下方 normalBlend/duskBlend 的全 24h 扫描承担。
+  assertEqual(keys.join(','), 'dusk,morning,night,noon,normal', '风格表应恰为这五项');
 });
 
 test('dusk：色温字段齐全，且暖直射 + 冷环境（截图里地平线是暖的、天顶是灰蓝紫）', () => {

@@ -28,10 +28,19 @@ export const SKY_DIR = 'assets/sky';
  * `rainy` = 阴雨天空：**纯天空背景**，不画地面/建筑/树 —— 那些由引擎渲染，
  * 画进贴图会与真实世界重影。同口径接缝实测 0.89 / 面内噪声底 0.703 → 比值 **1.265**，
  * 优于白天基准 1.765。当前仅资源入库与清单登记，**尚未接入日夜混合**。
+ *
+ * `normal` = 「普通」风格专用（v3.44，ASHLAR 光影移植）：**离线烘焙**上游大气散射
+ * 公式的结果（`tools/bake-normal-sky.mjs`）。上游天空是程序化 LUT + 体积云，
+ * **没有贴图文件可搬** ⇒ 只能把公式在 Node 里求值后烘成同规格的六面立方图。
+ * 烘焙 = 数据格式转换，不产生新美术资源。同样是**纯天空背景**（天底半给中性地面色，
+ * 不画地形）—— 上游 `skyColor(rd)` 在 rd.y<0 时另画「远处海面」，那部分不能搬进贴图。
+ * ⚠️ `normal` 也是**手动风格专用**：`DayNight` 用独立的 `uNormalBlend` 叠在最上层，
+ * 自动日夜循环全程 `uNormalBlend = 0`（与 dusk 同款不变式，单测钉死）。
  */
 export const SKY_SETS = Object.freeze({
   day: `${SKY_DIR}/day`,
   night: `${SKY_DIR}/night`,
   dusk: `${SKY_DIR}/dusk`,
   rainy: `${SKY_DIR}/rainy`,
+  normal: `${SKY_DIR}/normal`,
 });

@@ -4,7 +4,17 @@
 // 黑夜：uSkyDim 压暗 skylight + uBlockBoost 相对增强 blocklight（§7 M2-6 口径）。
 // 不依赖 three（颜色用整数 hex 手工插值；.set(hex) 由调用方 Color/uniform 接受）。
 
-export const VISUAL_STYLE_KEYS = { MORNING: 'morning', NOON: 'noon', DUSK: 'dusk', NIGHT: 'night' };
+// v3.44：「普通」档的自定义色调映射 id（纯数据常量，three-free）。
+// 真正建 TSL 节点的入口在 `ashlar-tonemap.js`（它 import three）—— 两者分开，
+// 否则 three 依赖会传染进本风格数据表，让纯函数单测全部跑不起来。
+import { ASHLAR_TONE_MAPPING, ACES_FILMIC_TONE_MAPPING } from './ashlar-tonemap-config.js';
+// v3.44：三个 per-style 光影参数的**回落权威**（不写字面量，红线 1）。
+// ⚠️ **必须从 `shade-params.js` 而不是 `sun-shade.js` 取**：后者顶层 import 本模块
+// （读 VISUAL_STYLES.noon 派生 NOON_SUN_DIR）⇒ 从它取会成环，实测 ReferenceError。
+// `shade-params.js` 不 import 任何东西，不可能成环。
+import { SHADOW_FLOOR, SUN_INTENSITY, HEMI_GROUND } from './shade-params.js';
+
+export const VISUAL_STYLE_KEYS = { MORNING: 'morning', NOON: 'noon', DUSK: 'dusk', NIGHT: 'night', NORMAL: 'normal' };
 
 /** 中性色温（相对乘数，全 1 = 不改变颜色）；与 `sun-shade.js` 的 `NEUTRAL_LIGHT_COLOR` 同语义。 */
 const NEUTRAL_COLOR = Object.freeze([1, 1, 1]);
@@ -222,6 +232,73 @@ export const VISUAL_STYLES = {
     // 关键对照：修前远景带 **182**（比正午 156 还亮）才是「像发光」的主因；现在远景 116 已低于正午。
     waterTint: Object.freeze([0.39, 0.39, 0.39]),
   },
+  /**
+   * 普通（v3.44）—— 移植上游 ASHLAR 的环境光影。
+   * 设计文档：`docs/superpowers/specs/2026-11-27-normal-env-style-ashlar-port-design.md`
+   *
+   * **与其它四档的本质区别**：它不只改全局乘数，而是改**直射/环境比**。
+   * 上游照片感的主因实测是那个比值（上游 4.26 vs 本仓正午 1.63），不是色调映射。
+   * 故本档新增三个 per-style 字段（`shadowFloor` / `hemiGround` / `sunIntensity`），
+   * 它们在全局常量里是写死的（`sun-shade.js` / `hemi-shade.js`）。
+   *
+   * ⚠️ **`skyDim` 必须为 1**（设计 §3.4.1）：`_apply` 把 `uShadowStrength` 写成 `p.skyDim`
+   * ⇒ skyDim 同时驱动「skylight 亮度」与「阴影浓度」。设 <1 会让阴影跟着变浅，
+   * 正好抵消本档要的深阴影。暗部全交给 shadowFloor / 曝光。
+   *
+   * ⚠️ **`nightBlend` 必须显式写 0**：不写的话 `nightBlendOf` 会从 skyDim 倒算。
+   * 本档 skyDim=1 时倒算恰好也是 0，所以「只断言混合结果为 0」是**恒真判据** ——
+   * 将来改 skyDim 就会静默混入星空（dusk 那轮踩过）。单测钉「显式字段存在」。
+   *
+   * 太阳方向 = 上游 `Sky.update(8.5)` 的原值（未归一化，消费前统一归一化）：
+   *   a = (8.5−6)/24×2π; sun = (cos a, sin a×0.9, sin a×0.36+0.12)
+   *   ⇒ 仰角 **32.42°**、方位（本仓 atan2(x,z) 口径）**66.85°**
+   * 用户裁定取 h≈8~9 区间，8.5 是中点：影子够长有立体感，又不致于像黄昏那样地面偏暗。
+   *
+   * 三个新参数的标定来源（把上游截图 sRGB 反解回线性、再套本仓公式解方程，设计 §3.4）：
+   *   影/亮 = floor/(floor + I·N·L) = 0.249（草地树影 34 / 受光 92）
+   *   顶/侧 = 7.16（stone 顶 161 / 阴侧 64）⇒ 侧面 hemi 0.561 ⇒ HEMI_GROUND ≈ 0.122
+   * CPU 屏幕口径实测（基色 0.5、本档 AgX+punch、曝光 2.2）：
+   *   顶 174 / 阴侧 69 ⇒ 顶/暗侧 **2.52**（上游实测 2.51，几乎重合）
+   * ⚠️ 这是 **CPU 标定口径**，真实机位须按 Tier 4 重标（真实方块贴图比 0.5 基色暗）。
+   */
+  normal: {
+    // sky/fogColor：天空盒**加载失败**时的降级纯色（取本档天空的天顶↔地平中间调）。
+    sky: 0x8fa8c8, fogColor: 0xb9c6d4, fogScale: 1.0,
+    // ⚠️ 两项必须为 1（见上方 skyDim 耦合注释）
+    skyDim: 1.0, blockBoost: 1.0,
+    // 上游 h=8.5 原值（未归一化）
+    sunDirection: [0.7934, 0.5479, 0.3392],
+    // 曝光 2.2：本档地板降到 0.14，暗部比正午低得多；AgX 在低亮度区压缩比 ACES 更陡，
+    // 不补曝光会把暗部吃掉。CPU 扫描（1.4/1.8/2.2）取 2.2 才让顶/暗侧落在上游 2.51 附近。
+    toneMappingExposure: 2.2,
+    // 月亮：方位 = 本档太阳方位（66.85°）、仰角 35.4241°（既有全局不变式）。
+    // 白昼不画月亮，但方位必须与太阳一致 —— 否则将来插值段会抳出天顶弧。
+    moonDirection: [0.749280, 0.579624, 0.320337], moonVisible: false, moonSize: 20,
+    // 色温：暖直射（上游 key [11.291,9.466,7.147] 归一化）+ 冷环境。
+    sunColor: Object.freeze([1.214, 1.018, 0.768]),
+    // 环境冷色：上游 SH 上半球 [0.196,0.312,0.499] 归一化 → [0.584,0.929,1.487]，
+    // **幅度衰减到 0.35**（用户 2026-11-27 裁定）。原色相会把石头变蓝砖
+    // （ghibli 那轮实测背光面 R−B −95）；0.35 实测 R−B ≈ −32，明显更冷但仍不饱和。
+    // ⚠️ 本仓 ambientColor 是**单一乘数（各面同色）**，上游 SH 是逐方向的
+    // ⇒ 「上蓝下黄」的方向性由标量 hemiGround 表达，无法逐通道。
+    ambientColor: Object.freeze([0.8544, 0.97515, 1.17045]),
+    duskBlend: 0,
+    // 显式 0（不靠 skyDim 倒算，见上方注释）
+    nightBlend: 0,
+    // 本档天空盒混合因子：只有 normal 是 1，自动循环与其余四档恒 0。
+    normalBlend: 1,
+    // ---- 三个 per-style 光影参数（其它四档不写 ⇒ 回落全局常量，逐位零回归）----
+    shadowFloor: 0.14,
+    hemiGround: 0.12,
+    sunIntensity: 0.956,
+    // 上游 AgX + display-space punch（`ashlar-tonemap.js` 注册到 renderer.library）。
+    // 其余四档不写此字段 ⇒ 回落 ACES。
+    toneMapping: ASHLAR_TONE_MAPPING,
+    // 水面亮度：曝光 2.2 会连带提亮 unlit 海面（v2.1 既有教训）⇒ 必须压暗。
+    // 初值取 0.55（介于正午 1.0 与傍晚 0.60 之间偏下），**待 Tier 4 真实机位重标**。
+    // ⚠️ 三通道必须相等（只调亮度不改色相，既有全局断言）。
+    waterTint: Object.freeze([0.55, 0.55, 0.55]),
+  },
 };
 
 // 日夜关键帧（小时 → 风格参数线性插值）：夜→晨→午→晨(暖)→夜
@@ -248,6 +325,18 @@ function lerpHex(a, b, t) {
 function normalizeDirection(v) {
   const len = Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
   return [v[0] / len, v[1] / len, v[2] / len];
+}
+
+/**
+ * 可选数值字段的插值（v3.44）—— **两端都显式给了数值**时才插值，否则 undefined。
+ *
+ * 用 undefined 作为「未指定」信号（与 `nightBlend` 同一口径）：0 是合法显式值，
+ * 两者语义不同。缺省必须保持 undefined 而不是回落常量 —— 回落由 `_apply` 单点负责，
+ * 在这里写常量字面量会多出一份权威（红线 1）。
+ */
+function lerpOptional(a, b, t) {
+  if (typeof a !== 'number' || typeof b !== 'number') return undefined;
+  return a + (b - a) * t;
 }
 
 function lerpParams(a, b, t) {
@@ -285,6 +374,9 @@ function lerpParams(a, b, t) {
     ],
     // 黄昏天空盒混合因子（v1.71）：两风格都是 0（自动循环从不引用 dusk）→ 结果恒 0。
     duskBlend: (a.duskBlend || 0) + ((b.duskBlend || 0) - (a.duskBlend || 0)) * t,
+    // 「普通」天空盒混合因子（v3.44）：同款容错 —— 旧四档不写该字段，
+    // 自动循环的关键帧也不引用 normal ⇒ 插值结果恒 0（不变式，单测钉死）。
+    normalBlend: (a.normalBlend || 0) + ((b.normalBlend || 0) - (a.normalBlend || 0)) * t,
     // 显式夜空混合（可选）：只在**两端都显式给了值**时才插值；否则交给 nightBlendOf 派生。
     // 用 undefined 作为「未指定」信号，不写 0（0 是合法显式值，两者语义不同）。
     nightBlend: (typeof a.nightBlend === 'number' && typeof b.nightBlend === 'number')
@@ -305,6 +397,16 @@ function lerpParams(a, b, t) {
     //  取右端则与“黎明已亮”同步：早晨段直接关掉。）
     moonVisible: t > 0 ? b.moonVisible : a.moonVisible,
     moonSize: a.moonSize + (b.moonSize - a.moonSize) * t,
+    // ---- v3.44：三个 per-style 光影参数 + 色调映射 id ----
+    // ⚠️ **缺字段 → undefined**，不写全局常量的字面量：权威在 sun-shade.js / hemi-shade.js，
+    // 由 `_apply` 统一回落（红线 1：不得在本表里多一份副本）。
+    // 旧四档与自动循环两端都不写 ⇒ 插值结果恒 undefined ⇒ 逐位零回归。
+    shadowFloor: lerpOptional(a.shadowFloor, b.shadowFloor, t),
+    hemiGround: lerpOptional(a.hemiGround, b.hemiGround, t),
+    sunIntensity: lerpOptional(a.sunIntensity, b.sunIntensity, t),
+    // 色调映射 id 是**开关语义**（不是连续量），不插值 —— 取插值段右端的值，
+    // 与 `moonVisible` 同一口径。自动循环两端都缺省 ⇒ 恒 undefined ⇒ 回落 ACES。
+    toneMapping: t > 0 ? b.toneMapping : a.toneMapping,
   };
 }
 
@@ -363,7 +465,8 @@ export class DayNight {
    * @param {{uSkyDim: Object, uBlockBoost: Object, uShadowStrength?: Object, uSunDirection?: Object}} opts.voxelUniforms 体素材质日夜 uniform
    *   （uShadowStrength / uSunDirection 句柄由 createVoxelMaterials 提供、本类消费；句柄缺失时跳过写入）
    * @param {{uNightBlend?: {value: number}} | null} [opts.skyUniforms] 天空盒 uniform 句柄
-   *   （`setupSky` 提供；`?skybox=0` 或加载失败时为 null —— 本类必须容错）
+   *   （`setupSky` 提供；`?skybox=0` 或加载失败时为 null —— 本类必须容错）。
+   *   v3.44 补：`uNormalBlend`（第四层）与 `uWaterTint` 同一容错口径。
    * @param {number} [opts.baseFogNear] @param {number} [opts.baseFogFar] 视距基准雾距（fogScale 乘算）
    * @param {number} [opts.cycleSeconds] 一天时长（秒），默认 1200
    * @param {number} [opts.startHour] 初始小时，默认 12（正午，与 M1 视觉口径一致）
@@ -443,6 +546,8 @@ export class DayNight {
     p.sunColor = [...p.sunColor];
     p.ambientColor = [...p.ambientColor];
     p.waterTint = [...p.waterTint];
+    // v3.44：三个 per-style 参数是标量，浅拷贝已足够（无数组引用风险）。
+    // 缺字段时保持 undefined，由 `_apply` 回落全局常量 —— 不在这里写常量字面量。
     return p;
   }
 
@@ -489,6 +594,11 @@ export class DayNight {
     // 自动循环与其余三风格恒 0 → 天空**逐位**回到 v1.70 的双图交叉淡入。
     const uDuskBlend = this.skyUniforms && this.skyUniforms.uDuskBlend;
     if (uDuskBlend) uDuskBlend.value = p.duskBlend || 0;
+    // 「普通」天空盒混合因子（v3.44）：第四层天空（离线烘焙的 ASHLAR 大气立方图）。
+    // 只有 `setStyle('normal')` 时是 1，自动循环与其余四档恒 0
+    // ⇒ 天空**逐位**回到 v1.71 的三层混合（不变式，单测钉死）。
+    const uNormalBlend = this.skyUniforms && this.skyUniforms.uNormalBlend;
+    if (uNormalBlend) uNormalBlend.value = p.normalBlend || 0;
     // 色温（v1.71）：直射光 / 环境光两路乘数写给体素材质。
     // 句柄缺失（fixture / 尚未接线）时跳过 —— 与 uShadowStrength / uSunDirection 同一容错口径。
     // ⚠️ **用 `.value.set(x,y,z)` 而不是 `.setRGB()`**：这两个句柄都是 `uniform(new THREE.Vector3())`
@@ -547,6 +657,39 @@ export class DayNight {
     const uWetZenith = this.voxelUniforms.uWetZenith;
     if (uWetZenith && uWetZenith.value && typeof uWetZenith.value.set === 'function') {
       uWetZenith.value.set(p.sky);
+    }
+    /**
+     * v3.44：三个 per-style 光影参数（「普通」档用，其它四档与自动循环回落全局常量）。
+     *
+     * **为什么必须 per-style**：上游照片感的主因实测是直射/环境比（4.26 vs 本仓 1.63），
+     * 而 `SHADOW_FLOOR` / `SUN_INTENSITY` / `HEMI_GROUND` 在全局常量里是写死的。
+     *
+     * ⚠️ **回落权威是 import 来的常量，不写字面量**（红线 1）。
+     * ⚠️ **句柄缺失时跳过**（fixture / 尚未接线）—— 与 uSunColor 同一容错口径。
+     * ⚠️ **中性值下公式逐位回到现状**：旧四档不写这三个字段 ⇒ 写入的就是全局常量。
+     */
+    const uShadowFloor = this.voxelUniforms.uShadowFloor;
+    if (uShadowFloor) uShadowFloor.value = typeof p.shadowFloor === 'number' ? p.shadowFloor : SHADOW_FLOOR;
+    const uHemiGround = this.voxelUniforms.uHemiGround;
+    if (uHemiGround) uHemiGround.value = typeof p.hemiGround === 'number' ? p.hemiGround : HEMI_GROUND;
+    const uSunIntensity = this.voxelUniforms.uSunIntensity;
+    if (uSunIntensity) uSunIntensity.value = typeof p.sunIntensity === 'number' ? p.sunIntensity : SUN_INTENSITY;
+    /**
+     * v3.44：色调映射按风格切（「普通」用上游 AgX+punch，其它档回落 ACES）。
+     *
+     * **已 GPU 实测**：`renderer.library.addToneMapping(Fn, id)` + 写 `renderer.toneMapping`
+     * 就能真实上屏，且切回 ACES 后读数**逐位回到原值** ⇒ per-style 来回切不残留，
+     * **不需要 RenderPipeline、不改帧循环**（准心/箭头/伤害数字的 render-后时机不受影响）。
+     *
+     * ⚠️ 注册必须在写入之前完成（否则 `getToneMappingFunction` 返 null → 输出 pass 报
+     * 「Unsupported Tone Mapping configuration」）。注册由装配层调 `ensureAshlarToneMapping(renderer)`，
+     * 本处只写 id —— 本类不依赖 three（无法建 TSL 节点）。
+     * ⚠️ 句柄缺失（单测 stub / 尚未装配）时跳过 —— 与 toneMappingExposure 同一口径。
+     */
+    if (this.renderer) {
+      this.renderer.toneMapping = typeof p.toneMapping === 'number'
+        ? p.toneMapping
+        : ACES_FILMIC_TONE_MAPPING;
     }
   }
 }

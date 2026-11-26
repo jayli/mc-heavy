@@ -11,27 +11,25 @@
 // 户外 skylight 恒 15 → **一个方块六面亮度完全相同**，不存在任何朝向差异（「光影太平淡」的根因）。
 // 本模块提供 N·L 方向光那一项的标定，materials.js 负责把它接进 TSL。
 import { VISUAL_STYLES } from './daynight.js';
+// v3.44：三个标定常量搬到 `shade-params.js`（three-free 纯数据）—— 因为 `daynight.js`
+// 现在要读它们做 per-style 缺省回落，而本模块顶层就要读 VISUAL_STYLES
+// ⇒ 直接相互 import 会循环初始化（已实测 ReferenceError）。
+// **继续 re-export**：既有调用方（materials.js / 单测）的 import 路径一字不动。
+import {
+  SHADOW_FLOOR, SUN_AMBIENT, SUN_INTENSITY, NOON_SUN_Y_FOR_INTENSITY,
+} from './shade-params.js';
+
+export { SHADOW_FLOOR, SUN_AMBIENT, SUN_INTENSITY };
 
 /**
- * 影区 / 背光面的环境地板。同时是太阳项的环境地板（见 `SUN_AMBIENT`）。
+ * 影区/背光面环境地板（`SHADOW_FLOOR`）、太阳项环境地板（`SUN_AMBIENT`）、
+ * 太阳强度（`SUN_INTENSITY`）—— **权威已搬到 `shade-params.js`**（v3.44）。
  *
- * **取值 0.38（v1.70，用户拍板的实测标定值）**。
- *
- * 历史：v1.58 取 0.5，依据是 mc-lite 的 `ambient/(ambient + sun·NdotL)`
- * = 2.3/(2.3 + 3.2×0.8) = 0.4733 → 四舍五入 0.5。但那个推导回答的是「mc-lite 的影区
- * 有多亮」，而不是「本仓该有多亮」—— mc-lite 的材质是受光的 `MeshStandardNodeMaterial`，
- * 而本仓是 unlit 管线，两边暗部基准不同（同 v1.45 的 `shadow.radius` 教训）。
- *
- * 0.38 的实测依据（960×540，`style=noon`，真实世界，16 组扫描）：
- *   · 暗部 p5：52（地板 0.5）→ **29**（地板 0.38）→ 22（地板 0.28，已发闷）
- *   · 对比跨度 p95−p5：163 → **183**
- *   · 迎光/背光比：1.302 → **1.46**
- * 0.28 的暗部更黑但影区内都会发闷，0.38 是「拉开动态范围」与「暗部不死黑」的交点。
+ * 搬家理由：`daynight.js` 现在要读它们做 per-style 缺省回落，而本模块顶层就要读
+ * `VISUAL_STYLES.noon.sunDirection` ⇒ 相互 import 会循环初始化（已实测 ReferenceError）。
+ * 本模块顶部 **re-export** 保持既有 import 路径不变；
+ * 取值依据（v1.70 的 16 组实测扫描）与完整历史见 `shade-params.js` 的注释。
  */
-export const SHADOW_FLOOR = 0.38;
-
-/** 太阳项的环境地板 —— **恒等于 SHADOW_FLOOR**（同一语义，见上）。 */
-export const SUN_AMBIENT = SHADOW_FLOOR;
 
 /**
  * 六个世界面法线（索引与 `mesher.js` 的 `FACE_DIRS` / packed bit10-12 **完全同序**）。
@@ -56,16 +54,30 @@ export const NOON_SUN_DIR = Object.freeze([
 /** 正午太阳方向归一化后的 y 分量（= 0.8）。 */
 export const NOON_SUN_Y = NOON_SUN_DIR[1];
 
+// ⚠️ **一致性守卫**（v3.44）：`SUN_INTENSITY` 现在由 `shade-params.js` 的
+// `NOON_SUN_Y_FOR_INTENSITY` 派生（为了断开循环依赖）。两者必须相等，
+// 否则「正午顶面亮度 ≡ 1.0」这条零回归不变式会静默失效。
+// 改风格表太阳方向时这里会立刻抛错（不是靠注释约定）。
+if (Math.abs(NOON_SUN_Y - NOON_SUN_Y_FOR_INTENSITY) > 1e-12) {
+  throw new Error(
+    `[sun-shade] 正午太阳 y 分量（${NOON_SUN_Y}）与 shade-params.js 的 `
+    + `NOON_SUN_Y_FOR_INTENSITY（${NOON_SUN_Y_FOR_INTENSITY}）不一致 —— `
+    + '改了 VISUAL_STYLES.noon.sunDirection 就必须同步那个常量，'
+    + '否则 SUN_INTENSITY 的零回归不变式失效。',
+  );
+}
+
 /**
- * 太阳强度。取 `(1 − SUN_AMBIENT) / NOON_SUN_Y` 是**唯一**能让
+ * 太阳强度 `SUN_INTENSITY` 的权威同样在 `shade-params.js`（顶部 re-export）。
+ *
+ * 它取 `(1 − SUN_AMBIENT) / noonSunY` 是**唯一**能让
  * `SUN_AMBIENT + SUN_INTENSITY × noonSunY ≡ 1.0` 成立的取值 —— 也就是
- * **正午顶面亮度恒等于 v1.57 的 1.0**（零回归不变式，本项改动只动背光面与影区）。
+ * **正午顶面亮度恒等于 v1.57 的 1.0**（零回归不变式）。
+ * 上面那条一致性守卫保证「派生用的 y 分量」与风格表里的真值不会漂移。
  *
  * 落地值（地板 0.38 → 强度 0.775；noon，strength=1，无阴影）：
  * 顶面 1.000（**不变**）/ +Z 0.845 / ±X 0.380 / −Z、−X 0.380。
- * 对比度（顶面/背光面）**2.63×**（v1.58 的 0.5 地板时代是 2.0×）。
  */
-export const SUN_INTENSITY = (1 - SUN_AMBIENT) / NOON_SUN_Y;
 
 /**
  * 中性色温（= 不改变颜色）。其余三种风格与自动日夜循环全程用它 → **逐位回到**无颜色管线。
@@ -96,18 +108,26 @@ export const NEUTRAL_LIGHT_COLOR = Object.freeze([1, 1, 1]);
  *   (1 − SHADOW_FLOOR), 0, 1)`。无太阳灯（fixture 路径）时传 1。
  * @param {readonly number[]} [sunColor] 直射光色温乘数（RGB，均值 ≈1）
  * @param {readonly number[]} [ambientColor] 环境光色温乘数（RGB，均值 ≈1）
+ * @param {{shadowFloor?: number, sunIntensity?: number}} [params] v3.44：per-style 光影参数。
+ *   **缺省回落全局常量** ⇒ 既有 16 处调用方（含单测与 materials.js）一字不动、逐位零回归。
+ *   「普通」档传 `{shadowFloor: 0.14, sunIntensity: 0.956}`。
+ *   ⚠️ 只接受这两个：`hemiGround` 是独立因子（由 `hemiFactorFor` 消费），不属于本公式。
  * @returns {[number, number, number]} 乘在 skylight 项上的太阳因子（逐通道）
  */
 export function sunTermRGBFor(
   normalIndex, sunDir, strength, shadowKill,
   sunColor = NEUTRAL_LIGHT_COLOR, ambientColor = NEUTRAL_LIGHT_COLOR,
+  params = null,
 ) {
+  // 缺省回落：权威是 import 来的常量，不写字面量（红线 1）。
+  const floor = typeof params?.shadowFloor === 'number' ? params.shadowFloor : SUN_AMBIENT;
+  const intensity = typeof params?.sunIntensity === 'number' ? params.sunIntensity : SUN_INTENSITY;
   const n = FACE_NORMALS[normalIndex];
   const dot = Math.max(n[0] * sunDir[0] + n[1] * sunDir[1] + n[2] * sunDir[2], 0);
-  const direct = SUN_INTENSITY * dot * shadowKill;
+  const direct = intensity * dot * shadowKill;
   const out = [0, 0, 0];
   for (let c = 0; c < 3; c++) {
-    const full = SUN_AMBIENT * ambientColor[c] + direct * sunColor[c];
+    const full = floor * ambientColor[c] + direct * sunColor[c];
     out[c] = 1 + (full - 1) * strength; // mix(1, full, strength)
   }
   return out;
@@ -121,10 +141,39 @@ export function sunTermRGBFor(
  * @param {readonly number[]} sunDir 已归一化的太阳方向
  * @param {number} strength `uSunStrength`
  * @param {number} shadowKill 阴影把太阳拿走的比例
+ * @param {{shadowFloor?: number, sunIntensity?: number}} [params] v3.44：per-style 参数（透传给 RGB 版）
  * @returns {number} 乘在 skylight 项上的太阳因子
  */
-export function sunTermFor(normalIndex, sunDir, strength, shadowKill) {
-  return sunTermRGBFor(normalIndex, sunDir, strength, shadowKill)[0];
+export function sunTermFor(normalIndex, sunDir, strength, shadowKill, params = null) {
+  return sunTermRGBFor(normalIndex, sunDir, strength, shadowKill, undefined, undefined, params)[0];
+}
+
+/**
+ * 阴影把太阳拿走的比例（CPU 参考实现，与 `materials.js` 的 TSL 同公式）。
+ *
+ * ```
+ * shadowFactor = mix(1, mix(floor, 1, shadow()), strength)
+ * shadowKill   = clamp(1 − (1 − shadowFactor) / (1 − floor), 0, 1)
+ * ```
+ *
+ * ⚠️⚠️ **分母里的 floor 必须与影区地板是同一个值**（v3.44）。
+ * per-style 化之前两处都是全局 `SHADOW_FLOOR`，天然同步；现在地板可随风格变，
+ * 若只改一处就会撕裂：影区地板是 0.14 而分母还是 0.62
+ * ⇒ `shadowKill` 在影区算出 **0.774** 而不是 0 ⇒ 影区竟然还有 77% 的太阳
+ * ⇒ 阴影几乎消失，而所有「地板值对不对」的数值判据全绿。
+ *
+ * 故把这段换算收成一个函数，让 TSL 与单测共用同一份公式（红线 1）。
+ *
+ * @param {number} shadowFactor 阴影因子（影区 = floor，受光 = 1）
+ * @param {number} [floor] 影区地板（缺省 = 全局 `SHADOW_FLOOR`）
+ * @returns {number} 0..1
+ */
+export function shadowKillFor(shadowFactor, floor = SHADOW_FLOOR) {
+  const denom = 1 - floor;
+  // 防御：floor→1 时分母趋零（关阴影档）→ 退化为「太阳全拿不走」，不产 NaN/Inf。
+  if (!(denom > 1e-9)) return 1;
+  const k = 1 - (1 - shadowFactor) / denom;
+  return Math.min(1, Math.max(0, k));
 }
 
 /**

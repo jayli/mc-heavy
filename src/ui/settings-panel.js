@@ -756,14 +756,18 @@ export class SettingsPanel {
   }
 
   /**
-   * 环境风格：自动 / 早晨 / 正午 / 傍晚 / 黑夜（v1.71 新增傍晚，用户指定放在正午右边）。
+   * 环境风格：自动 / 早晨 / 正午 / 傍晚 / 黑夜 / 普通
+   * （v1.71 新增傍晚，用户指定放在正午右边；v3.44 新增普通，用户指定放**末位**）。
    *
    * ⚠️ 文案顺序必须与 `VISUAL_STYLE_OPTIONS` **逐项对齐**（`_makeGroup` 按下标取值）；
    * 单测钉的是「傍晚下标 = 正午下标 + 1」这条关系，加档位时不必改断言。
+   * ⚠️ **漏写文案的形态是「按钮存在但文字为空」**（v3.44 实测踩到）——
+   * 档位数与文案数不一致时 `_makeGroup` 的 `labels[i]` 取到 undefined，
+   * 按钮照样渲染、照样能点，只是看不见字 ⇒ 靠 Tier 4 的文案断言拓。
    * ⚠️ **不改「自动」按钮**：它同时是 `daynight.setStyle(null)`（恢复日夜循环）的唯一 UI 入口。
    */
   _rowVisualStyle() {
-    return this._makeRow('环境风格', VISUAL_STYLE_OPTIONS, ['自动', '早晨', '正午', '傍晚', '黑夜'],
+    return this._makeRow('环境风格', VISUAL_STYLE_OPTIONS, ['自动', '早晨', '正午', '傍晚', '黑夜', '普通'],
       this.settings.visualStyle,
       (v) => {
         this.settings.visualStyle = v;

@@ -16,15 +16,22 @@
 //     时它**仍然生效**。若把它接进太阳项，关掉方向光会让半球差异一起消失，且夜间月光下
 //     朝下面不暗 —— 这是一个用户可见的语义错误。
 import { FACE_NORMALS } from './sun-shade.js';
+// v3.44：`HEMI_GROUND` 权威搬到 `shade-params.js`（断开 daynight ↔ sun-shade 循环依赖），
+// 本模块 re-export 保持既有 import 路径不变。取值依据见那边的注释。
+import { HEMI_GROUND } from './shade-params.js';
+
+export { HEMI_GROUND };
 
 /**
- * 朝下面收到的环境光相对朝上面的比例。0 = 底面全黑，1 = 关闭半球光。
+ * 朝下面收到的环境光相对朝上面的比例 `HEMI_GROUND` ——
+ * **权威已搬到 `shade-params.js`**（v3.44，顶部 re-export 保持 import 路径不变）。
  *
- * 取值 0.6 的依据：实测 ground=0.2 时朝下面亮度 −56%（97.1 → 42.8）而朝上面逐位不变，
- * 说明这一项的作用量级足够。0.6 是「明显但不夸张」的中档 —— 底面 60% 天空光，
- * 符合室外地面反照率（草地/石地约 0.2~0.4 反射率叠加多次弹射后的经验量级）。
+ * 取值 0.6 的依据：实测 ground=0.2 时朝下面亮度 −56%（97.1 → 42.8）而朝上面逐位不变。
+ * 0.6 是「明显但不夸张」的中档。完整说明见 `shade-params.js`。
+ *
+ * ⚠️ v3.44 起它是**缺省值**：「普通」档用 per-style 的 `hemiGround`（0.12），
+ * 其余四档与自动循环回落到这里 ⇒ 逐位零回归。
  */
-export const HEMI_GROUND = 0.6;
 
 /**
  * 某面法线的半球环境光因子（CPU 参考实现，与 `materials.js` 的 TSL 同公式）。

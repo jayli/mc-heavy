@@ -159,6 +159,7 @@ const PIXEL = [
   'storm-underwater',  // v3.30g 四项水下排除（v3.31 删颗粒两条：后处理链已整体移除）
   'wet-surface',       // v3.31 按材质分类的湿表面：零光晕/材质分层/不过曝/积水连续/水下门 + 两条负向
   'puddle-reflect',    // v3.33 方案 A 积水真倒影（复用 ocean RT）：内容级空间对应/天空墙面零污染/两级零回归 + 一条负向
+  'normal-style',      // v3.44 「普通」风格（ASHLAR 光影移植）：天空第5套/色调映射/直射环境比/四档零回归/面板末位/启动即生效
 ];
 
 /**
@@ -210,6 +211,8 @@ export const UNIT_NODE_SAFE = [
   'test-jungle-fortress-gen.js', 'test-knockback-ease.js', 'test-landmarks.js', 'test-light-writeback.js',
   'test-lighting.js', 'test-load-progress.js', 'test-load-watchdog.js', 'test-medieval-ship.js',
   'test-mesher.js', 'test-minimap.js', 'test-molang.js', 'test-moonlight.js', 'test-storm-lance.js',
+  // v3.44：「普通」环境风格（ASHLAR 光影移植）—— 纯数据/纯函数，Node 可跑
+  'test-normal-style.js',
   'test-ocean-mask.js',
   'test-orientation.js', 'test-physics.js', 'test-pixel-ratio.js', 'test-place-ray.js',
   'test-playground.js', 'test-progress.js', 'test-projectiles.js', 'test-rain.js', 'test-raycast.js',

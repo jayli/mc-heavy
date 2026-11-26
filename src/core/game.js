@@ -19,6 +19,9 @@ import {
   REFLECT_HEIGHT_FULL, REFLECT_HEIGHT_ZERO, REFLECT_GRAZE, REFLECT_RESOLUTION_SCALE, REFLECT_TINT,
 } from '../render/water-reflect-config.js';
 import { setupSky, placeCelestial } from '../render/sky.js';
+// v3.44：「普通」档的上游 AgX+punch 色调映射（注册到 renderer.library）。
+// 已 GPU 实测：这条路径**不需要改帧循环**（详见该模块文件头）。
+import { ensureAshlarToneMapping } from '../render/ashlar-tonemap.js';
 import { DayNight, SUN_LIGHT_BASE_HEX, SUN_LIGHT_BASE_RGB, nightBlendOf } from '../render/daynight.js';
 import { ShadowScheduler, SUN_DIR_GATE_DEG, sunDirectionChanged, texelSnapOffset } from '../render/shadow-manager.js';
 import { RainEffect } from '../render/rain.js';
@@ -569,12 +572,23 @@ export class Game {
       reflectTexture: this.ocean.reflectTexture,
     });
     // 日夜循环（M2-6）：正午起步（与 M1 视觉口径一致），1200s 一天
+    // ⚠️ v3.44：**必须先注册自定义色调映射**，再建 DayNight —— 后者构造末尾就会
+    // `_apply` 一次（启动即目标风格），而「普通」档会写 `renderer.toneMapping = 91`。
+    // 未注册时 `getToneMappingFunction` 返 null ⇒ 输出 pass 报
+    // 「Unsupported Tone Mapping configuration」并回落无色调映射（首帧就错）。
+    ensureAshlarToneMapping(this.renderer);
     this.dayNight = new DayNight({
       scene: this.scene,
       fog: fogUniforms,
       voxelUniforms: this.renderWorld.materials.dayNight,
       skyUniforms: this.sky
-        ? { uNightBlend: this.sky.uNightBlend, uDuskBlend: this.sky.uDuskBlend, uWaterTint: this.ocean.uWaterTint }
+        ? {
+          uNightBlend: this.sky.uNightBlend,
+          uDuskBlend: this.sky.uDuskBlend,
+          // v3.44：第四层「普通」天空（与难色采样共用同一个 uniform 实例）
+          uNormalBlend: this.sky.uNormalBlend,
+          uWaterTint: this.ocean.uWaterTint,
+        }
         : { uWaterTint: this.ocean.uWaterTint },
       // 启动即目标风格（用户 2026-10-31）：持久化的「傍晚/黑夜」必须在**构造首帧**就生效，
       // 而不是等 start() 尾部的 setVisualStyle() 补 —— 否则首帧（含水面 tint）是正午值。
