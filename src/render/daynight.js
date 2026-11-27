@@ -7,7 +7,11 @@
 // v3.44：「普通」档的自定义色调映射 id（纯数据常量，three-free）。
 // 真正建 TSL 节点的入口在 `ashlar-tonemap.js`（它 import three）—— 两者分开，
 // 否则 three 依赖会传染进本风格数据表，让纯函数单测全部跑不起来。
-import { ASHLAR_TONE_MAPPING, ACES_FILMIC_TONE_MAPPING } from './ashlar-tonemap-config.js';
+// v3.51：punch 两参数的缺省回落权威也在这里（运行时值由 uniform 提供，烘焙脚本仍吃这两个常量）。
+import {
+  ASHLAR_TONE_MAPPING, ACES_FILMIC_TONE_MAPPING,
+  ASHLAR_PUNCH_GAMMA, ASHLAR_PUNCH_SAT,
+} from './ashlar-tonemap-config.js';
 // v3.44：三个 per-style 光影参数的**回落权威**（不写字面量，红线 1）。
 // ⚠️ **必须从 `shade-params.js` 而不是 `sun-shade.js` 取**：后者顶层 import 本模块
 // （读 VISUAL_STYLES.noon 派生 NOON_SUN_DIR）⇒ 从它取会成环，实测 ReferenceError。
@@ -482,11 +486,15 @@ export class DayNight {
    *   色温（v1.71）必须同时写到灯上：它是枪 PBR 高光的源，否则傍晚里枪身高光仍是中性白。
    *   缺省 null（单测 / fixture）→ 跳过。
    * @param {(dir: [number, number, number]) => void} [opts.onSunDirection] 太阳方向变化回调（已归一化）
+   * @param {{uPunchGamma?: {value: number}, uPunchSat?: {value: number}}|null} [opts.punchUniforms]
+   *   v3.51：AgX display-space punch 两参数的 uniform 句柄（`ASHLAR_PUNCH_UNIFORMS`）。
+   *   本类不依赖 three，无法自建 —— 由装配层传进来。缺省 null（单测 / fixture）→ 跳过写入，
+   *   与 uSunColor / toneMappingExposure 同一容错口径。
    * @param {string|null} [opts.visualStyle] 启动时的视觉风格（`VISUAL_STYLE_KEYS` 的值，或 null
    *   = 自动日夜循环）。**构造即生效**：首帧就 apply 这个风格，而不是先 apply 正午再等外部补
    *   `setStyle()`。见构造器末尾的注释（用户 2026-10-31 反馈）。
    */
-  constructor({ scene, fog, voxelUniforms, skyUniforms = null, baseFogNear, baseFogFar, cycleSeconds = 1200, startHour = 12, renderer = null, sunLight = null, onSunDirection = null, visualStyle = null }) {
+  constructor({ scene, fog, voxelUniforms, skyUniforms = null, baseFogNear, baseFogFar, cycleSeconds = 1200, startHour = 12, renderer = null, sunLight = null, onSunDirection = null, visualStyle = null, punchUniforms = null }) {
     this.scene = scene;
     this.fog = fog;
     this.voxelUniforms = voxelUniforms;
@@ -498,6 +506,8 @@ export class DayNight {
     this.cycleSeconds = cycleSeconds;
     this.hour = startHour;
     this.onSunDirection = onSunDirection;
+    /** v3.51：punch 两参数的 uniform 句柄（只写 `.value`，标量）。缺省 null → 跳过。 */
+    this.punchUniforms = punchUniforms;
     this._styleOverride = null;
     /**
      * v3.51：「光影微调」Tab 的 per-style override（`Map<风格键, {key: 值}>`）。
@@ -793,6 +803,20 @@ export class DayNight {
       this.renderer.toneMapping = typeof p.toneMapping === 'number'
         ? p.toneMapping
         : ACES_FILMIC_TONE_MAPPING;
+    }
+    /**
+     * v3.51：AgX display-space punch 两参数（「光影微调」Tab 可拖）。
+     *
+     * ⚠️ **回落权威是 import 来的常量，不写字面量**（红线 1）：未调参时曲线逐位回到 v3.50。
+     * ⚠️ **与 toneMapping 无关地写**：其余四档走 ACES，这两个 uniform 不被那条曲线消费，
+     * 但仍须写回常量 —— 否则从普通档切过去再切回来时残留旧值（形态同 toneMapping 回落）。
+     * ⚠️ 句柄缺失（单测 stub / 尚未装配）时跳过 —— 与 uSunColor 同一容错口径。
+     */
+    if (this.punchUniforms) {
+      const ug = this.punchUniforms.uPunchGamma;
+      const us = this.punchUniforms.uPunchSat;
+      if (ug) ug.value = typeof p.punchGamma === 'number' ? p.punchGamma : ASHLAR_PUNCH_GAMMA;
+      if (us) us.value = typeof p.punchSat === 'number' ? p.punchSat : ASHLAR_PUNCH_SAT;
     }
   }
 }

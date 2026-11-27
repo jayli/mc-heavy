@@ -21,7 +21,7 @@ import {
 import { setupSky, placeCelestial } from '../render/sky.js';
 // v3.44：「普通」档的上游 AgX+punch 色调映射（注册到 renderer.library）。
 // 已 GPU 实测：这条路径**不需要改帧循环**（详见该模块文件头）。
-import { ensureAshlarToneMapping } from '../render/ashlar-tonemap.js';
+import { ensureAshlarToneMapping, ASHLAR_PUNCH_UNIFORMS } from '../render/ashlar-tonemap.js';
 import { DayNight, SUN_LIGHT_BASE_HEX, SUN_LIGHT_BASE_RGB, nightBlendOf } from '../render/daynight.js';
 import { ShadowScheduler, SUN_DIR_GATE_DEG, sunDirectionChanged, texelSnapOffset } from '../render/shadow-manager.js';
 import { RainEffect } from '../render/rain.js';
@@ -593,6 +593,9 @@ export class Game {
       // 启动即目标风格（用户 2026-10-31）：持久化的「傍晚/黑夜」必须在**构造首帧**就生效，
       // 而不是等 start() 尾部的 setVisualStyle() 补 —— 否则首帧（含水面 tint）是正午值。
       visualStyle: this.settings.visualStyle || null,
+      // v3.51：punch 两参数的 uniform 句柄（「光影微调」Tab 拖对比度/饱和度靠它）。
+      // DayNight 不依赖 three，句柄必须由装配层递进去（与 voxelUniforms 同一手法）。
+      punchUniforms: ASHLAR_PUNCH_UNIFORMS,
       baseFogNear: this.viewDistance * 16 * 0.75,
       baseFogFar: (this.viewDistance + 2) * 16 * 0.95,
       // ACES 曝光写入目标（v1.70）：DayNight._apply 是唯一收口点（setStyle 与日夜循环共用）。

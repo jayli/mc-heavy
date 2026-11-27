@@ -288,3 +288,46 @@ test('光影微调：不动任何滑块时 params 与风格表逐位一致（零
     assertEqual(a[k], b[k], `${k}: 未调整时不得偏离风格表`);
   }
 });
+
+// ==================== ⑦ punch 两参数的运行时 uniform ====================
+//
+// ⚠️ **不 import `ashlar-tonemap.js`**（它 import three，Node 白名单跑不了）。
+// 这里只测 DayNight 侧的**写入接线**，用 stub 句柄；TSL 曲线真的读 uniform
+// 由 Tier 4（tests/light-tuning.spec.mjs 的像素对照）拓。
+
+/** punch 句柄 stub（标量 uniform，与真实 `uniform(number)` 同形） */
+function punchStub() {
+  return { uPunchGamma: { value: 0 }, uPunchSat: { value: 0 } };
+}
+
+test('光影微调：_apply 把 punch 两值写给句柄', () => {
+  const punchUniforms = punchStub();
+  makeDayNight({ visualStyle: 'normal', punchUniforms });
+  assertEqual(punchUniforms.uPunchGamma.value, ASHLAR_PUNCH_GAMMA, 'gamma 首帧写入常量');
+  assertEqual(punchUniforms.uPunchSat.value, ASHLAR_PUNCH_SAT, 'sat 首帧写入常量');
+});
+
+test('光影微调：setTuning(punchGamma) 真的改句柄', () => {
+  const punchUniforms = punchStub();
+  const { dayNight } = makeDayNight({ visualStyle: 'normal', punchUniforms });
+  assertEqual(dayNight.setTuning('punchGamma', 1.6), 1.6, '返回生效值');
+  assertEqual(punchUniforms.uPunchGamma.value, 1.6, 'uniform 被写');
+  dayNight.setTuning('punchSat', 0.4);
+  assertEqual(punchUniforms.uPunchSat.value, 0.4, 'sat 同理');
+});
+
+test('光影微调：punch 句柄缺失时不抛错（fixture / 尚未装配）', () => {
+  const { dayNight } = makeDayNight({ visualStyle: 'normal' });   // 不传 punchUniforms
+  assertEqual(dayNight.setTuning('punchSat', 1.3), 1.3, '仍返回生效值');
+  assertEqual(dayNight.tuningValues.punchSat, 1.3, 'params 里有值（只是没句柄可写）');
+});
+
+test('光影微调：切回其余四档 punch 回落常量', () => {
+  const punchUniforms = punchStub();
+  const { dayNight } = makeDayNight({ visualStyle: 'normal', punchUniforms });
+  dayNight.setTuning('punchGamma', 1.6);
+  dayNight.setStyle('noon');
+  assertEqual(punchUniforms.uPunchGamma.value, ASHLAR_PUNCH_GAMMA, '正午回落常量（零回归）');
+  dayNight.setStyle('normal');
+  assertEqual(punchUniforms.uPunchGamma.value, 1.6, '切回普通仍是调过的值');
+});

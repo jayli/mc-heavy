@@ -26,7 +26,7 @@
 // ⚠️ 常量（矩阵/ev 区间/punch 参数）权威在 `ashlar-tonemap-config.js`（three-free），
 // 本模块只负责建 TSL 节点 —— 那边能被 daynight.js 与 node 单测直接 import。
 import * as THREE from 'three';
-import { Fn, vec3, float, mat3, log2, pow, max, clamp, mix } from 'three/tsl';
+import { Fn, vec3, float, mat3, log2, pow, max, clamp, mix, uniform } from 'three/tsl';
 import {
   ASHLAR_TONE_MAPPING, ACES_FILMIC_TONE_MAPPING,
   ASHLAR_AGX_INSET, ASHLAR_AGX_OUTSET,
@@ -94,9 +94,9 @@ const ashlarAgxToneMapping = Fn(([color, exposure]) => {
   c.assign(clamp(log2(c), minEv, maxEv).sub(minEv).div(maxEv.sub(minEv)));
   c.assign(agxContrast(c));
   // display-space punch
-  c.assign(pow(max(c, vec3(0.0)), vec3(ASHLAR_PUNCH_GAMMA)));
+  c.assign(pow(max(c, vec3(0.0)), vec3(uPunchGamma)));
   const l = c.dot(lumaW);
-  c.assign(mix(vec3(l), c, float(ASHLAR_PUNCH_SAT)));
+  c.assign(mix(vec3(l), c, uPunchSat));
   c.assign(outset.mul(c));
   return pow(max(c, vec3(0.0)), vec3(2.2));
 }).setLayout({
@@ -107,6 +107,26 @@ const ashlarAgxToneMapping = Fn(([color, exposure]) => {
     { name: 'exposure', type: 'float' },
   ],
 });
+
+/**
+ * v3.51：display-space punch 两参数的**运行时 uniform**（「光影微调」Tab 可拖）。
+ *
+ * ## 为什么是 uniform 而不是改 config 常量
+ *
+ * `ASHLAR_PUNCH_GAMMA` / `ASHLAR_PUNCH_SAT` 同时被**离线烘焙**
+ * （`tools/normal-sky-tonemap.mjs`）消费 —— 改常量会连带改烘焙输入，
+ * `check:data` 的【普通天空】指纹门会判贴图过期 ⇒ 要重烘六面。
+ * 改成 uniform 后烘焙脚本继续吃常量，**产物与指纹逐位不动**。
+ *
+ * ⚠️ **初值 = 那两个常量**（不写字面量，红线 1）⇒ 未调参时曲线逐位回到 v3.50。
+ * ⚠️ **模块顶层单例**：`renderer.library.addToneMapping` 只注册一次，曲线节点只建一份，
+ * 句柄放顶层才能被 `DayNight._apply` 拿同一份写（与 `uSkyDim` 同口径）。
+ * ⚠️ **副作用（不是 bug）**：天空立方图已经过一次 AgX+punch（预烘），运行时再调
+ * punch 会让天空与方块一起变，但天空是「二次经过曲线」—— 预烘天空架构的必然结果。
+ */
+const uPunchGamma = uniform(ASHLAR_PUNCH_GAMMA);
+const uPunchSat = uniform(ASHLAR_PUNCH_SAT);
+export const ASHLAR_PUNCH_UNIFORMS = { uPunchGamma, uPunchSat };
 
 /**
  * 把自定义曲线注册到 renderer 的 NodeLibrary（**幂等**）。
@@ -122,8 +142,7 @@ const ashlarAgxToneMapping = Fn(([color, exposure]) => {
  * @returns {boolean} 本次是否真的执行了注册（已注册过则 false）
  */
 const registered = new WeakSet();
-export function ensureAshlarToneMapping(renderer) {
-  if (!renderer || !renderer.library) return false;
+export function ensureAshlarToneMapping(renderer) {  if (!renderer || !renderer.library) return false;
   if (registered.has(renderer)) return false;
   renderer.library.addToneMapping(ashlarAgxToneMapping, ASHLAR_TONE_MAPPING);
   registered.add(renderer);
