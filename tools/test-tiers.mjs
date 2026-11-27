@@ -215,6 +215,8 @@ export const UNIT_NODE_SAFE = [
   'test-mesher.js', 'test-minimap.js', 'test-molang.js', 'test-moonlight.js', 'test-storm-lance.js',
   // v3.44：「普通」环境风格（ASHLAR 光影移植）—— 纯数据/纯函数，Node 可跑
   'test-normal-style.js',
+  // v3.51：光影微调参数表（three-free 纯数据 + 纯函数，Node 可跑）
+  'test-light-tuning.js',
   'test-ocean-mask.js',
   'test-orientation.js', 'test-physics.js', 'test-pixel-ratio.js', 'test-place-ray.js',
   'test-playground.js', 'test-progress.js', 'test-projectiles.js', 'test-rain.js', 'test-raycast.js',
