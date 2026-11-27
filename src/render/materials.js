@@ -18,6 +18,10 @@ import {
 import {
   SHADOW_FLOOR, SUN_INTENSITY, FACE_NORMALS, NOON_SUN_DIR,
 } from './sun-shade.js';import { HEMI_GROUND } from './hemi-shade.js';
+// v3.50 云专属着色地板（three-free 常量与 CPU 参考实现，与 TSL 同公式 —— 红线 1）
+import {
+  AO_CURVE_K, cloudSunFloorFor, cloudHemiFloorFor, cloudAoFloorFor,
+} from './cloud-shade.js';
 import { FOG_SKY_Y_FLOOR_EPS } from './fog-sky-direction.js';
 // v3.31 雨天湿表面（**从零实现**，不参考上游；按材质分类 + 有界天空反光）
 import { createWetSurfaceNode, WET_SURFACE_UNIFORMS } from './wet-surface.js';
@@ -34,7 +38,46 @@ const sky = float(lightByte.shiftRight(4)).div(15).mul(uSkyDim);
 const block = float(lightByte.bitAnd(0xF)).div(15).mul(uBlockBoost);
 const ao = float(packed.shiftRight(8).bitAnd(3));
 // AO 曲线（mc-lite AONodeSystem.js:129 口径）：ao=3（开阔）→1.0，ao=0（墙角）→0.1
-const aoFactor = float(1).sub(float(3).sub(ao).div(3).mul(0.9));
+// ⚠️ v3.50：系数从字面量 0.9 改为 import 的 `AO_CURVE_K`（唯一权威在 cloud-shade.js）——
+// 云 AO 地板要用同一个曲线算最暗值，两处各写一份会漂移。
+const aoFactor = float(1).sub(float(3).sub(ao).div(3).mul(AO_CURVE_K));
+
+// ---- 云专属着色地板（v3.50）----
+// 用户 2026-11-27：「云方块组成的云朵不会这么硬（像飘在空中的石头方块一样）」。
+// 云贴图实测是 64×64 全 255 纯白零细节 ⇒ 立体感 100% 来自与石头共用的着色公式：
+// 正午底面屏幕亮度 145 vs 顶面 226（比 1.559）、云簇凹角侧面掉到 99。
+//
+// 做法：给三个致暗因子（AO / 半球 / 太阳项）各加一个**地板**，用 `max(原值, 地板)`。
+// ⚠️ **`max` 是载荷性的**：原值已高于地板的面恒等返回 ⇒ **亮面逐位不动**，
+// 结构上不可能过曝，也不动 crosshair 的「最亮方块 < 200」阈值。
+// 改 hemiGround/shadowFloor 系数会把顶面与迎光面一起抬亮；wrap lighting 连顶面的 dot 也抬。
+//
+// ⚠️ **模块顶层单例**：反射替身由同一个 `createVoxelMaterials` 造
+// （render-world.js:203）⇒ 放顶层就自动跟随，无需同步（与 uSkyDim / WET_SURFACE_UNIFORMS 同口径）。
+// ⚠️ 两个 per-style 地板由 `DayNight._apply` 每帧写（由当前 floor/ground 派生）；
+// AO 地板与 style 无关，只由本初值提供。
+export const CLOUD_SURFACE_UNIFORMS = {
+  /** 柔和总强度 0..1。**0 = 逐位回到 v3.49**（零回归锚点，也是 Tier 4 单变量 A/B 旋钮）。 */
+  uCloudSoften: uniform(1.0),
+  /** 太阳项地板（初值 = 全局档派生值 0.597）。 */
+  uCloudSunFloor: uniform(cloudSunFloorFor(SHADOW_FLOOR)),
+  /** 半球环境地板（初值 = 全局档派生值 0.8）。 */
+  uCloudHemiFloor: uniform(cloudHemiFloorFor(HEMI_GROUND)),
+  /** AO 地板（0.7，与 style 无关）。 */
+  uCloudAoFloor: uniform(cloudAoFloorFor()),
+};
+const uCloudSoften = CLOUD_SURFACE_UNIFORMS.uCloudSoften;
+const uCloudSunFloor = CLOUD_SURFACE_UNIFORMS.uCloudSunFloor;
+const uCloudHemiFloor = CLOUD_SURFACE_UNIFORMS.uCloudHemiFloor;
+const uCloudAoFloor = CLOUD_SURFACE_UNIFORMS.uCloudAoFloor;
+// 逐 quad 标记（mesher 从方块名写 packed bit19）。**逐顶点常量** ⇒ 无需渐变。
+const cloudBit = float(packed.shiftRight(19).bitAnd(1));
+// ⚠️ **mix 而非 if**：非云方块 cloudBit=0 ⇒ cloudT 恒 0 ⇒ mix 取左端 ⇒ **结构性零回归**
+// （已预验 `mix(a,b,0) = a + (b−a)×0` 在非整比输入上逐位等于 a）。
+// 写 if 会出两条代码路径，未测的那条静默劣化（本仓 setupFog 已记这条教训）。
+const cloudT = mul(cloudBit, uCloudSoften);
+// AO 地板：云簇凹角不再像石缝（ao=1 时 0.4 → 0.7）。
+const aoSoft = mix(aoFactor, max(aoFactor, uCloudAoFloor), cloudT);
 // 太阳阴影只衰减 skylight 项，不碰 blocklight（对齐 mc-lite 的混合模型：它的阴影只拿走
 // 方向光贡献，AmbientLight(2.3) 不受影响 → 影区是「暗一档」而非全黑）。故 sky/block 分开
 // 传片元（max(sky,block)×ao ≡ max(sky×ao, block×ao)，ao≥0 → 拆分无损）；片元只把阴影因子
@@ -45,8 +88,8 @@ const aoFactor = float(1).sub(float(3).sub(ao).div(3).mul(0.9));
 // 实际影响面极小：skylight 恒 15（DR-14）而 blocklight 稀疏，胜者很少在 quad 内切换；
 // 且 AO fixture（skylight=15 / blocklight=0）下 block 项恒 0 → 两写法**逐位等价**。
 // 多付一个 float varying（vSkyShade + vBlockShade 取代 vShade）。
-const vSkyShade = varying(vertexStage(mul(sky, aoFactor)), 'vSkyShade');
-const vBlockShade = varying(vertexStage(mul(block, aoFactor)), 'vBlockShade');
+const vSkyShade = varying(vertexStage(mul(sky, aoSoft)), 'vSkyShade');
+const vBlockShade = varying(vertexStage(mul(block, aoSoft)), 'vBlockShade');
 
 // ---- 材质自发光（§4.3 bit13，v1.21）----
 // 对齐 mc-lite `MeshStandardNodeMaterial` 的 emissive：实测 mc-lite **只有 hanging_lamp**
@@ -119,6 +162,9 @@ const uAmbientColor = uniform(new THREE.Vector3(1, 1, 1));
 // 取 1.0 时因子恒等 1 → **逐位回到 v1.69**，可作 A/B 隔离。
 const uHemiGround = uniform(HEMI_GROUND);
 const hemiFactor = mix(uHemiGround, float(1.0), mul(faceNormalNode.y, 0.5).add(0.5));
+// 云半球地板（v3.50）：云底不再是黑底板（全局档 0.6 → 0.8）。
+// ⚠️ 与太阳项同口径：只作用于 skylight 那一支（hemiFactor 本身只乘 vSkyShade）。
+const hemiSoft = mix(hemiFactor, max(hemiFactor, uCloudHemiFloor), cloudT);
 
 // ---- per-style 光影地板与太阳强度（v3.44，「普通」档）----
 // 背景：上游 ASHLAR 的照片感主因实测是**直射/环境比**（上游 4.26 vs 本仓正午 1.63），
@@ -195,15 +241,21 @@ export function createVoxelMaterials(atlasTexture, sunLight = null, reflectTextu
   const sunTermFull = mul(uSunColor, uSunIntensity.mul(mul(vSunDot, shadowKill)))
     .add(mul(uAmbientColor, uShadowFloor));
   const sunTerm = mix(float(1), sunTermFull, uSunStrength);
+  // 云太阳项地板（v3.50）：背光面不再死暗（全局档 0.38 → 0.597）。
+  // ⚠️⚠️ **必须在 `sunTerm` 之后**，不是在 `vSunDot` 上 —— sunTerm 已含色温与 shadowKill；
+  // 在 dot 上抬会绕过阴影因子（阴影语义被改，用户明确「阴影完全不动」）。
+  // ⚠️ 副作用已记在设计稿 §7：影区的云也会被抬到地板 ⇒ 「云在阴影里比石头亮」。
+  // 那正是「云自己散射」的语义；若实玩否掉，处置是把地板乘 shadowKill（一行）。
+  const sunTermSoft = mix(sunTerm, max(sunTerm, uCloudSunFloor), cloudT);
 
-  const shadeLit = max(mul(mul(vSkyShade, hemiFactor), sunTerm), vBlockShade);
+  const shadeLit = max(mul(mul(vSkyShade, hemiSoft), sunTermSoft), vBlockShade);
   // 不接收阴影的通道（transparent = 水/玻璃）用无阴影亮度。
   // ⚠️ **不能只靠 `receiveShadow=false`**：那个标志只门控 three 的**灯光管线**
   // （three.webgpu.js:46101 `if (builder.object.receiveShadow) setupShadow()`），而本材质是
   // unlit + colorNode 里**显式**引用 `shadow(sunLight)` 节点 → 该节点不受 receiveShadow 门控，
   // 水面照样被压暗。mc-lite 对 water/glass 是 cast+receive 双 false（GlobalInstancedMeshManager.js:76-84），
   // 此处对齐：transparent 通道完全不参与阴影（不投影也不被压暗）。
-  const shadeUnlit = max(mul(vSkyShade, hemiFactor), vBlockShade);
+  const shadeUnlit = max(mul(vSkyShade, hemiSoft), vBlockShade);
 
   const makeMaterial = ({ alphaTest = 0, transparent = false, side = THREE.FrontSide, emissive = false, receivesShadow = true, wet = false }) => {
     const mat = new THREE.MeshBasicNodeMaterial();
@@ -273,9 +325,16 @@ export function createVoxelMaterials(atlasTexture, sunLight = null, reflectTextu
       // DayNight._apply 写它们 ⇒ 反光颜色跟着既有风格/日夜循环走，不新增权威。
       uWetHorizon: WET_SURFACE_UNIFORMS.uWetHorizon,
       uWetZenith: WET_SURFACE_UNIFORMS.uWetZenith,
+      // v3.50：云柔和总强度（与既有 uHemiGround 并列）。两个 per-style 地板也在里面，
+      // 由 `_apply` 写（指向**同一 uniform 实例**，红线 1）。
+      uCloudSoften,
+      uCloudSunFloor,
+      uCloudHemiFloor,
     },
     /** v3.31：湿表面的 uniform 句柄（装配层每帧写 uWet） */
     wet: WET_SURFACE_UNIFORMS,
+    /** v3.50：云专属着色地板的句柄（Tier 4 经它写 uCloudSoften 做单变量 A/B） */
+    cloud: CLOUD_SURFACE_UNIFORMS,
   };
 }
 

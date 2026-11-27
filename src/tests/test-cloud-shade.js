@@ -159,3 +159,86 @@ test('cloud-shade: soften=0 与 sun-shade/hemi-shade 的既有公式交叉一致
     }
   }
 });
+// ==================== 接线断言（Task 3）====================
+//
+// 手法与 test-wet-surface.js 的「GPU 侧索引必须钳到表长 − 1」完全一致：
+// Node 侧**读源码**而不是 import TSL（TSL 节点在 GPU 求值，Node 侧读不到片元行为）。
+// ⚠️ **必须滤掉注释行**：jsdoc 里有同串公式说明，全文件 includes 会恒真。
+
+/** 读源码并只保留代码行（滤掉 `*` / `//` / `/*` 开头的行） */
+async function codeOf(relPath) {
+  const fs = await import('node:fs');
+  const src = fs.readFileSync(new URL(relPath, import.meta.url), 'utf8');
+  return src.split('\n')
+    .filter((l) => { const t = l.trim(); return t && !t.startsWith('*') && !t.startsWith('//') && !t.startsWith('/*'); })
+    .join('\n');
+}
+
+test('materials: AO 地板同时作用于 vSkyShade 与 vBlockShade（漏一个会让火把照亮的云凹角不一致）', async () => {
+  const code = await codeOf('../render/materials.js');
+  assertTrue(/vertexStage\(mul\(sky,\s*aoSoft\)\)/.test(code),
+    'vSkyShade 必须吃 aoSoft');
+  assertTrue(/vertexStage\(mul\(block,\s*aoSoft\)\)/.test(code),
+    'vBlockShade 必须吃 aoSoft（只改 sky 会让火把照亮的云凹角与太阳照亮的不一致）');
+  assertTrue(!/vertexStage\(mul\(sky,\s*aoFactor\)\)/.test(code),
+    '不得留旧的 vertexStage(mul(sky, aoFactor))');
+  assertTrue(!/vertexStage\(mul\(block,\s*aoFactor\)\)/.test(code),
+    '不得留旧的 vertexStage(mul(block, aoFactor))');
+});
+
+test('materials: 三个地板都走 mix 且 t 是 cloudT（无 if 分支）', async () => {
+  const code = await codeOf('../render/materials.js');
+  // cloudT 必须 = cloudBit × uCloudSoften（非云方块 cloudBit=0 ⇒ t 恒 0 ⇒ 结构性零回归）
+  assertTrue(/const cloudT = mul\(cloudBit,\s*uCloudSoften\)/.test(code),
+    'cloudT 必须是 mul(cloudBit, uCloudSoften)');
+  assertTrue(/const cloudBit = float\(packed\.shiftRight\(19\)\.bitAnd\(1\)\)/.test(code),
+    'cloudBit 必须解 packed bit19');
+  for (const [name, orig, floor] of [
+    ['aoSoft', 'aoFactor', 'uCloudAoFloor'],
+    ['hemiSoft', 'hemiFactor', 'uCloudHemiFloor'],
+    ['sunTermSoft', 'sunTerm', 'uCloudSunFloor'],
+  ]) {
+    const re = new RegExp(`const ${name} = mix\\(${orig},\\s*max\\(${orig},\\s*${floor}\\),\\s*cloudT\\)`);
+    assertTrue(re.test(code), `${name} 必须是 mix(${orig}, max(${orig}, ${floor}), cloudT)`);
+  }
+  // 无 if 分支（写 if 会出两条代码路径，未测的那条静默劣化）
+  assertTrue(!/if\s*\(\s*cloudBit/.test(code), '不得用 if (cloudBit ...) 分支');
+  assertTrue(!/if\s*\(\s*cloudT/.test(code), '不得用 if (cloudT ...) 分支');
+});
+
+test('materials: 云地板加在 sunTerm 之后（不是 vSunDot 上 —— 否则改阴影语义）', async () => {
+  const code = await codeOf('../render/materials.js');
+  const sunTermAt = code.indexOf('const sunTerm = ');
+  const cloudSunAt = code.indexOf('const sunTermSoft = ');
+  assertTrue(sunTermAt >= 0, '必须有 const sunTerm = ');
+  assertTrue(cloudSunAt > sunTermAt,
+    'sunTermSoft 必须在 sunTerm 之后（sunTerm 已含色温与 shadowKill；在 dot 上抬会绕过阴影因子）');
+  // vSunDot 的定义式里不得含云地板
+  const dotStart = code.indexOf('const vSunDot = ');
+  const dotEnd = code.indexOf(';', dotStart);
+  assertTrue(dotStart >= 0 && dotEnd > dotStart, 'vSunDot 定义式可定位');
+  assertTrue(!code.slice(dotStart, dotEnd).includes('uCloudSunFloor'),
+    'vSunDot 定义式里不得含 uCloudSunFloor');
+});
+
+test('daynight: 云地板复用 floor/ground 局部量（不重新读 p，防 per-style 撕裂）', async () => {
+  const code = await codeOf('../render/daynight.js');
+  assertTrue(/cloudSunFloorFor\(floor\)/.test(code),
+    '云太阳地板必须吃局部量 floor（与刚写给 uShadowFloor 的是同一个值）');
+  assertTrue(/cloudHemiFloorFor\(ground\)/.test(code),
+    '云半球地板必须吃局部量 ground');
+  assertTrue(!/cloudSunFloorFor\(\s*typeof p\./.test(code), '不得重新读一遍 p.shadowFloor');
+  assertTrue(!/cloudSunFloorFor\(\s*p\.shadowFloor/.test(code), '不得直接吃 p.shadowFloor');
+  assertTrue(!/cloudHemiFloorFor\(\s*typeof p\./.test(code), '不得重新读一遍 p.hemiGround');
+  assertTrue(!/cloudHemiFloorFor\(\s*p\.hemiGround/.test(code), '不得直接吃 p.hemiGround');
+  // AO 地板与 style 无关 ⇒ _apply 不写它
+  assertTrue(!/uCloudAoFloor/.test(code), 'uCloudAoFloor 与 style 无关，_apply 不得写它');
+});
+
+test('cloud uniforms: 句柄形状与初值（uCloudSoften=1 满档；三个地板等于派生值）', async () => {
+  const { CLOUD_SURFACE_UNIFORMS: U } = await import('../render/materials.js');
+  assertEqual(U.uCloudSoften.value, 1, 'uCloudSoften 初值 1（满档柔和）');
+  assertEqual(U.uCloudSunFloor.value, cloudSunFloorFor(SHADOW_FLOOR), '太阳地板初值 = 全局档派生值');
+  assertEqual(U.uCloudHemiFloor.value, cloudHemiFloorFor(HEMI_GROUND), '半球地板初值 = 全局档派生值');
+  assertEqual(U.uCloudAoFloor.value, cloudAoFloorFor(), 'AO 地板初值 = 派生值');
+});

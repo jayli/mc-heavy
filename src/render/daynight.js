@@ -13,6 +13,8 @@ import { ASHLAR_TONE_MAPPING, ACES_FILMIC_TONE_MAPPING } from './ashlar-tonemap-
 // （读 VISUAL_STYLES.noon 派生 NOON_SUN_DIR）⇒ 从它取会成环，实测 ReferenceError。
 // `shade-params.js` 不 import 任何东西，不可能成环。
 import { SHADOW_FLOOR, SUN_INTENSITY, HEMI_GROUND } from './shade-params.js';
+// v3.50：云专属着色地板的派生函数（`cloud-shade.js` 零 import，同样不可能成环）。
+import { cloudSunFloorFor, cloudHemiFloorFor } from './cloud-shade.js';
 
 export const VISUAL_STYLE_KEYS = { MORNING: 'morning', NOON: 'noon', DUSK: 'dusk', NIGHT: 'night', NORMAL: 'normal' };
 
@@ -669,11 +671,30 @@ export class DayNight {
      * ⚠️ **中性值下公式逐位回到现状**：旧四档不写这三个字段 ⇒ 写入的就是全局常量。
      */
     const uShadowFloor = this.voxelUniforms.uShadowFloor;
-    if (uShadowFloor) uShadowFloor.value = typeof p.shadowFloor === 'number' ? p.shadowFloor : SHADOW_FLOOR;
     const uHemiGround = this.voxelUniforms.uHemiGround;
-    if (uHemiGround) uHemiGround.value = typeof p.hemiGround === 'number' ? p.hemiGround : HEMI_GROUND;
     const uSunIntensity = this.voxelUniforms.uSunIntensity;
+    // v3.50：两个值提成局部量再复用（值逐位不变）—— 云地板必须吃**同一份** floor/ground。
+    // ⚠️ 不得在云地板那两行重新写一遍三元：两处各算一遍会漂移出
+    // 「两个端点一致而中间调撕裂」（本仓 uShadowFloor 当分母那轮已实测过这个形态）。
+    const floor = typeof p.shadowFloor === 'number' ? p.shadowFloor : SHADOW_FLOOR;
+    const ground = typeof p.hemiGround === 'number' ? p.hemiGround : HEMI_GROUND;
+    if (uShadowFloor) uShadowFloor.value = floor;
+    if (uHemiGround) uHemiGround.value = ground;
     if (uSunIntensity) uSunIntensity.value = typeof p.sunIntensity === 'number' ? p.sunIntensity : SUN_INTENSITY;
+    /**
+     * v3.50：云专属着色地板随风格派生（设计稿 §5.4）。
+     *
+     * 云地板 = `floor + (1−floor)×lift`，故 per-style 自动跟随：
+     * 「普通」档 floor 0.14 ⇒ 云地板 0.441；其余四档回落 0.38 ⇒ 0.597。
+     * 写成全局字面量会让「普通」档的云比石头还暗（地板 0.597 > 该档顶面 0.6525 的近邻）。
+     *
+     * ⚠️ `uCloudAoFloor` **与 style 无关**（AO 曲线是全局常量）⇒ 只由模块初值提供，本处不写。
+     * ⚠️ 句柄缺失时跳过（单测 stub / 尚未装配）—— 与 uShadowFloor 同一容错口径。
+     */
+    const uCloudSunFloor = this.voxelUniforms.uCloudSunFloor;
+    if (uCloudSunFloor) uCloudSunFloor.value = cloudSunFloorFor(floor);
+    const uCloudHemiFloor = this.voxelUniforms.uCloudHemiFloor;
+    if (uCloudHemiFloor) uCloudHemiFloor.value = cloudHemiFloorFor(ground);
     /**
      * v3.44：色调映射按风格切（「普通」用上游 AgX+punch，其它档回落 ACES）。
      *
