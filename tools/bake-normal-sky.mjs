@@ -295,6 +295,22 @@ const smoothstep = (e0, e1, x) => {
 };
 
 /**
+ * 大气天空辐射的幂律调色（v3.49，用户「蓝天过于明亮」；v3.49b 改取两端点亮度中点）。
+ *
+ * `graded_c = skyGradeGain_c × L_c ^ skyGradePower`，p<1 压平仰角梯度、逐通道 gain 定色相。
+ * 参数与取值依据全在 `normal-sky-fingerprint.mjs`（唯一权威，参与指纹）。
+ *
+ * ⚠️ **只作用于大气天空**：云（`S`）、日轮/光晕、云透射率 `T` 一律不过这道调色 ——
+ * 用户只要求改背景天空，云要仍是白云。云的环境光回调也仍喂**未调色**的天空
+ * （否则云跟着变暗，与参考截图的白云不符）。
+ * ⚠️ 天底半的地面色由**调色后**的地平线色派生（见 main 里的 horizonColor），
+ * 否则两半编码不同源 → 地平线处出现台阶。
+ */
+function gradeSky(L) {
+  return [0, 1, 2].map((c) => P.skyGradeGain[c] * Math.pow(Math.max(L[c], 1e-8), P.skyGradePower));
+}
+
+/**
  * 日轮 + 光晕（上游 `23_glsl_lighting.js` 的 `skyColor()` 太阳段，逐字）。
  *
  *   ang = acos(dot(rd, sunDir))
@@ -335,8 +351,8 @@ function buildFace(faceIdx, sunDir, sampleTrans, sampleMS, horizonColor, clouds)
       const dir = faceDir(faceIdx, x / denom, y / denom);
       let rgb;
       if (dir[1] >= P.groundBlend) {
-        // 上半：纯大气 + 日轮/光晕 + 体积云（v3.48）
-        const sky = skyRadiance(dir, sunDir, sampleTrans, sampleMS);
+        // 上半：纯大气（经 v3.49 幂律调色，v3.49b 取中点亮度）+ 日轮/光晕 + 体积云（v3.48）
+        const sky = gradeSky(skyRadiance(dir, sunDir, sampleTrans, sampleMS));
         const disc = sunDisc(dir, sunDir, sampleTrans);
         const base = [0, 1, 2].map((c) => sky[c] + disc[c]);
         // ⚠️ 云在**线性空间**里合成（`base×T + S`），与上游 lighting pass 的
@@ -354,7 +370,7 @@ function buildFace(faceIdx, sunDir, sampleTrans, sampleMS, horizonColor, clouds)
         // ⚠️ 地面色原本在「线性 × bakeExposure」空间里定的（旧口径）⇒
         // 这里把它反推回线性，再与天空一起走 AgX，保证两半的编码同源、地平线不出现台阶。
         const upDir = norm3([dir[0], Math.max(dir[1], 0.002), dir[2]]);
-        const skyLin = skyRadiance(upDir, sunDir, sampleTrans, sampleMS);
+        const skyLin = gradeSky(skyRadiance(upDir, sunDir, sampleTrans, sampleMS));
         const groundLin = horizonColor.map((v) => (v / P.bakeExposure) * P.groundFactor);
         const w = smoothstep(-P.groundBlend, P.groundBlend, dir[1]);
         const mixed = [0, 1, 2].map((c) => groundLin[c] + (skyLin[c] - groundLin[c]) * w);
@@ -383,8 +399,10 @@ async function main() {
   const sampleMS = makeSampler(ms, P.msSize, P.msSize);
 
   // 地平线色（天底半的中性地面色由它派生）：取朝阳侧地平方向的辐射
+  // ⚠️ v3.49：必须先过 `gradeSky` 再乘 bakeExposure —— 天底半的天空分量也过了调色，
+  // 两半同源才不会出现地平线台阶（buildFace 里除回 bakeExposure 的口径不变）。
   const horizDir = norm3([sunDir[0], 0.02, sunDir[2]]);
-  const horizonColor = skyRadiance(horizDir, sunDir, sampleTrans, sampleMS)
+  const horizonColor = gradeSky(skyRadiance(horizDir, sunDir, sampleTrans, sampleMS))
     .map((v) => v * P.bakeExposure);
   console.log(`[normalsky] 地平线色（线性）${horizonColor.map((v) => v.toFixed(4)).join(', ')}`);
 

@@ -9,5 +9,5 @@
   "negz.jpg"
  ],
  "source": "ASHLAR atmosphere (22_sky.js transPass/msPass/skyPass) → 方向求值 → 立方图",
- "fingerprint": "size:1024;src:ashlar-atmosphere;h:8.5;exp:0.55;sr:0.0105;sd:820;sun:13;alt:0.12;gnd:0.5;gb:0.06;q:0.92;tmap:3.5;trans:256x64;ms:32;cov:0.35;cgain:0.15;cdens:0.3;csteps:64;cmax:6500;ccamy:12;cgalb:0.13,0.12,0.07"
+ "fingerprint": "size:1024;src:ashlar-atmosphere;h:8.5;exp:0.55;sr:0.0105;sd:820;sun:13;alt:0.12;gnd:0.5;gb:0.06;q:0.92;tmap:3.5;trans:256x64;ms:32;cov:0.35;cgain:0.15;cdens:0.3;csteps:64;cmax:6500;ccamy:12;cgalb:0.13,0.12,0.07;sgp:0.699;sgg:0.507,0.433,0.405"
 }
