@@ -110,7 +110,7 @@ export const NEUTRAL_LIGHT_COLOR = Object.freeze([1, 1, 1]);
  * @param {readonly number[]} [ambientColor] 环境光色温乘数（RGB，均值 ≈1）
  * @param {{shadowFloor?: number, sunIntensity?: number}} [params] v3.44：per-style 光影参数。
  *   **缺省回落全局常量** ⇒ 既有 16 处调用方（含单测与 materials.js）一字不动、逐位零回归。
- *   「普通」档传 `{shadowFloor: 0.14, sunIntensity: 0.956}`。
+ *   「普通」档传 `{shadowFloor: 0.399, sunIntensity: 1.282}`（v3.53 用户实调值）。
  *   ⚠️ 只接受这两个：`hemiGround` 是独立因子（由 `hemiFactorFor` 消费），不属于本公式。
  * @returns {[number, number, number]} 乘在 skylight 项上的太阳因子（逐通道）
  */

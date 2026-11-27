@@ -7,11 +7,13 @@
 //   ② 三个新 uniform 在中性值下不逐位回到现状 ⇒ 其余四档与自动循环被静默改色；
 //   ③ `shadowFloor` 与 `shadowKill` 的归一化分母不同步 ⇒ 影区地板与「太阳被拿走的比例」撕裂；
 //   ④ `nightBlend` 漏写显式 0 ⇒ 从 skyDim 倒算，天空混入星空（dusk 那轮踩过）；
-//   ⑤ `skyDim < 1` ⇒ 阴影浓度跟着降（`_apply` 把 uShadowStrength 写成 skyDim），
-//      正好抵消本档要的深阴影。
+//   ⑤ `skyDim` 与 `uShadowStrength` 不同源 ⇒ 阴影浓度与 skylight 亮度撕裂（两者共用同一个值）。
 //
-// ⚠️ 判据选型：④ 不能只钉「混合结果为 0」—— skyDim=1 时倒算也得 0，那样断言恒真。
-//    必须钉「显式字段存在」。
+// ⚠️ 判据选型：④ 不能只钉「混合结果为 0」—— v3.53 起 skyDim=0.95 倒算得 0.0667（非 0），
+//    故先钉「倒算值非 0」作前提，再钉「显式字段存在且为 0」。
+// ⚠️ v3.53（用户 2026-11-27 实调）重标了三条旧不变式：skyDim 1→0.95、
+//    shadowFloor 「低于正午」→ 0.399（高于正午 0.38）、直射/环境比「>正午×1.5」→ >正午。
+//    重标理由与新实测值见 `docs/roadmap.md` v3.53 行。
 import { test } from './runner.js';
 import { assertEqual, assertTrue } from './assert.js';
 import {
@@ -98,31 +100,41 @@ test('normal：只有 normal 档的 normalBlend 为 1，其余四档为 0', () =
 });
 
 // ==================== ③ skyDim 与阴影浓度的耦合（builder check 发现） ====================
+//
+// ⚠️ v3.53 重标：用户 2026-11-27 实调取 skyDim **0.95**（v3.44 的「必须为 1」作废）。
+// 判据语义不变 —— 仍钉「两个 uniform 同源」，只是期望值从 1 改成 0.95。
 
-test('normal：skyDim 必须为 1（否则 uShadowStrength 跟着降，抵消深阴影）', () => {
+test('normal：skyDim 取用户实调值 0.95，且 blockBoost 仍为户外基准 1', () => {
   const s = VISUAL_STYLES.normal;
-  assertEqual(s.skyDim, 1, 'normal.skyDim 须为 1（设计 §3.4.1）');
+  assertEqual(s.skyDim, 0.95, 'normal.skyDim 须为 0.95（v3.53 用户实调）');
   assertEqual(s.blockBoost, 1, 'normal.blockBoost 须为 1（户外基准）');
 });
 
-test('normal：apply 后 uShadowStrength 读回 1（阴影不被 skyDim 削弱）', () => {
+test('normal：apply 后 uShadowStrength 与 uSkyDim 同源（都读回 0.95）', () => {
   const { dayNight, voxelUniforms } = makeStub();
   dayNight.setStyle('normal');
-  assertEqual(voxelUniforms.uShadowStrength.value, 1, '开阴影时浓度须为 1');
-  assertEqual(voxelUniforms.uSkyDim.value, 1, 'skylight 不压暗');
+  // 耦合本身是判据：两个 uniform 必须等于同一个 skyDim，不得只改其一。
+  assertEqual(voxelUniforms.uShadowStrength.value, VISUAL_STYLES.normal.skyDim,
+    '开阴影时浓度须等于本档 skyDim');
+  assertEqual(voxelUniforms.uSkyDim.value, VISUAL_STYLES.normal.skyDim, 'skylight 吃同一个值');
+  assertEqual(voxelUniforms.uShadowStrength.value, voxelUniforms.uSkyDim.value,
+    '两个 uniform 必须逐位相等（耦合不得被拆）');
 });
 
 // ==================== ④ nightBlend 必须显式给 0 ====================
 
 test('normal：nightBlend 显式为 0（不能靠 skyDim 倒算）', () => {
   const s = VISUAL_STYLES.normal;
-  // ⚠️ 只断言 nightBlendOf(s)===0 是恒真判据：skyDim=1 时倒算也是 0。
-  // 必须钉「显式字段存在且为数值 0」，否则将来改 skyDim 就会静默混入星空。
+  // ☠️ v3.53 起这条**不再是恒真判据**：skyDim=0.95 时倒算得 0.0667（非 0），
+  // 所以显式字段现在真的在拦住「天空混入 6.7% 星空」。下面先钉住这个前提。
+  const derived = nightBlendOf({ skyDim: s.skyDim });
+  assertTrue(derived > 0.05,
+    `前提：本档 skyDim 倒算必须非 0（否则本用例恒真）：实测 ${derived}`);
   assertTrue(Object.prototype.hasOwnProperty.call(s, 'nightBlend'),
     'normal 必须显式写 nightBlend 字段（缺省会从 skyDim 倒算）');
   assertEqual(typeof s.nightBlend, 'number', 'nightBlend 须是数值（0 是合法显式值）');
   assertEqual(s.nightBlend, 0, 'normal 不叠星空');
-  assertEqual(nightBlendOf(s), 0, '混合结果为 0');
+  assertEqual(nightBlendOf(s), 0, '混合结果为 0（显式值赢过倒算）');
 });
 
 test('normal：duskBlend 为 0（不叠黄昏天空盒）', () => {
@@ -139,22 +151,29 @@ test('normal：风格数据带 shadowFloor / hemiGround / sunIntensity 三个新
   }
 });
 
-test('normal：直射/环境比显著高于正午（上游照片感的主因）', () => {
+test('normal：直射/环境比高于正午（本档立体感的来源之一）', () => {
   const s = VISUAL_STYLES.normal;
   const sunDir = normalize(s.sunDirection);
   // 顶面 N·L（本档太阳方向的 y 分量）
   const normalRatio = (s.sunIntensity * sunDir[1]) / s.shadowFloor;
   const noonRatio = (SUN_INTENSITY * NOON_SUN_DIR[1]) / SHADOW_FLOOR;
-  assertTrue(normalRatio > noonRatio * 1.5,
-    `普通档直射/环境比须显著高于正午：normal=${normalRatio.toFixed(3)} noon=${noonRatio.toFixed(3)}`);
+  // ⚠️ v3.53 重标：旧断言「> 正午 ×1.5」作废 —— 用户实调取更柔的对比，
+  // 实测 1.7223 vs 正午 1.6316。下界 1.65 防滑回正午水平（那时 per-style 等于白写）。
+  assertTrue(normalRatio > noonRatio,
+    `普通档直射/环境比须高于正午：normal=${normalRatio.toFixed(4)} noon=${noonRatio.toFixed(4)}`);
+  assertTrue(normalRatio > 1.65,
+    `普通档比值须 >1.65（防滑回正午水平）：实测 ${normalRatio.toFixed(4)}`);
 });
 
-test('normal：环境地板低于正午（暗部更黑）且半球更暗（朝下面更暗）', () => {
+test('normal：影区地板取实调值 0.399，立体感靠半球方向性而不是压黑影区', () => {
   const s = VISUAL_STYLES.normal;
-  assertTrue(s.shadowFloor < SHADOW_FLOOR,
-    `普通档地板须低于正午 ${SHADOW_FLOOR}：实测 ${s.shadowFloor}`);
+  // ⚠️ v3.53：旧断言「地板须低于正午 0.38」作废（新值 0.399 高于它）。
+  // 改成钉住实调值 + 保留「半球方向性仍远强于正午」这条真正承载立体感的判据。
+  assertEqual(s.shadowFloor, 0.399, 'normal 影区地板须为 0.399（v3.53 用户实调）');
   assertTrue(s.hemiGround < HEMI_GROUND,
     `普通档半球地面因子须低于正午 ${HEMI_GROUND}：实测 ${s.hemiGround}`);
+  assertTrue(s.hemiGround < HEMI_GROUND * 0.5,
+    `普通档半球方向性须显著强于正午（至少两倍）：实测 ${s.hemiGround} vs ${HEMI_GROUND}`);
 });
 
 test('新 uniform：缺省（不传）时 sunTermRGBFor 逐位等于现有常量口径', () => {
@@ -264,10 +283,57 @@ test('normal：waterTint 三分量相等且落在 (0.15,1]（既有全局不变�
     `waterTint 三通道须相等（只调亮度不改色相）：${t.join(',')}`);
 });
 
-test('normal：曝光高于正午（暗部不死黑，配合更低的地板）', () => {
+test('normal：曝光高于正午（暗部不死黑），且取实调值 1.63', () => {
   const s = VISUAL_STYLES.normal;
+  assertEqual(s.toneMappingExposure, 1.63, 'normal 曝光须为 1.63（v3.53 用户实调）');
   assertTrue(s.toneMappingExposure > VISUAL_STYLES.noon.toneMappingExposure,
     `普通档曝光须高于正午：normal=${s.toneMappingExposure} noon=${VISUAL_STYLES.noon.toneMappingExposure}`);
+});
+
+// ==================== ⑥b v3.53：punch 两参数 per-style 化 ====================
+//
+// ☠️ **为什么不改全局常量**：`ASHLAR_PUNCH_GAMMA/SAT` 同时被离线天空烘焙
+// （`tools/normal-sky-tonemap.mjs`）消费 ⇒ 改它们会让 `check:data` 判贴图过期、要重烘六面。
+// 写成 per-style 字段后产物与指纹逐位不动，其余四档仍回落常量。
+
+test('normal：punch 两参数显式写本档值，其余四档不写（零回归）', async () => {
+  const { ASHLAR_PUNCH_GAMMA, ASHLAR_PUNCH_SAT } = await import('../render/ashlar-tonemap-config.js');
+  const s = VISUAL_STYLES.normal;
+  assertEqual(s.punchGamma, 1.34, 'normal.punchGamma 须为 1.34（用户实调）');
+  assertEqual(s.punchSat, 0.94, 'normal.punchSat 须为 0.94（用户实调）');
+  // 全局常量一个字节不动（烘焙输入不变 ⇒ 不重烘）
+  assertEqual(ASHLAR_PUNCH_GAMMA, 1.28, '全局 gamma 常量仍 1.28（烘焙契约）');
+  assertEqual(ASHLAR_PUNCH_SAT, 1.17, '全局 sat 常量仍 1.17（烘焙契约）');
+  // 本档值必须真的偏离常量（否则上面两条是恒真判据）
+  assertTrue(s.punchGamma !== ASHLAR_PUNCH_GAMMA && s.punchSat !== ASHLAR_PUNCH_SAT,
+    '本档 punch 必须偏离全局常量（否则 per-style 化无意义）');
+  for (const key of ['morning', 'noon', 'dusk', 'night']) {
+    assertTrue(VISUAL_STYLES[key].punchGamma === undefined,
+      `${key} 不得写 punchGamma（缺省回落常量，零回归）`);
+    assertTrue(VISUAL_STYLES[key].punchSat === undefined,
+      `${key} 不得写 punchSat`);
+  }
+});
+
+test('normal：_apply 把本档 punch 写给句柄，切回正午回落全局常量', async () => {
+  const { ASHLAR_PUNCH_GAMMA, ASHLAR_PUNCH_SAT } = await import('../render/ashlar-tonemap-config.js');
+  const punchUniforms = { uPunchGamma: { value: 0 }, uPunchSat: { value: 0 } };
+  const { dayNight } = makeStub({ visualStyle: 'normal', punchUniforms });
+  assertEqual(punchUniforms.uPunchGamma.value, 1.34, '构造首帧就写本档 gamma');
+  assertEqual(punchUniforms.uPunchSat.value, 0.94, '构造首帧就写本档 sat');
+  dayNight.setStyle('noon');
+  assertEqual(punchUniforms.uPunchGamma.value, ASHLAR_PUNCH_GAMMA, '正午回落全局 gamma（不残留）');
+  assertEqual(punchUniforms.uPunchSat.value, ASHLAR_PUNCH_SAT, '正午回落全局 sat');
+  dayNight.setStyle('normal');
+  assertEqual(punchUniforms.uPunchGamma.value, 1.34, '切回普通仍是本档值');
+});
+
+test('normal：自动日夜循环全程 punch 两字段恒 undefined（不混进插值）', () => {
+  for (let h = 0; h <= 24; h += 0.5) {
+    const p = paramsAtHour(h);
+    assertTrue(p.punchGamma === undefined, `h=${h} 的 punchGamma 须缺省`);
+    assertTrue(p.punchSat === undefined, `h=${h} 的 punchSat 须缺省`);
+  }
 });
 
 // ==================== ⑦ 色调映射：per-style 且不残留 ====================
@@ -366,20 +432,33 @@ test('shadowKill：分母不同步会压掉半影中间调（实测缺陷形态�
   const { shadowKillFor } = await import('../render/sun-shade.js');
   const s = VISUAL_STYLES.normal;
   // ⚠️ **两个端点完全一致**（影区 0 / 受光 1）⇒ 只钉端点是**恒真判据**。
-  // 实测（floor 0.14、分母错用全局 0.38）真正变的是**中间调**：
-  //   shadowFactor 0.30：同步 0.1860 / 不同步 **0.0000**（半影那一半太阳被吃掉）
-  //   shadowFactor 0.50：同步 0.4186 / 不同步 0.1935
-  // ⇒ 判据必须落在中间调上。
-  const mid = 0.3;
+  //
+  // ☠️ v3.53 重标：本档地板从 0.14 抬到 **0.399**，与全局 0.38 只差 **0.019**
+  // ⇒ 旧判据「中间调绝对差 > 0.1」在结构上不可能成立（实测最大绝对差仅 0.0306），
+  // 且旧取样点 0.3 已**低于新地板** ⇒ 两侧都被 clamp 成 0，判据彻底失效。
+  // 换成**相对口径** + **紧贴地板上方取样**（判别力最大处，实测相对差 94.8%）：
+  //   shadowFactor 0.400：同步 0.001664 / 不同步 0.032258
+  //   shadowFactor 0.500：同步 0.168053 / 不同步 0.193548
+  const mid = s.shadowFloor + 0.001;
   const synced = shadowKillFor(mid, s.shadowFloor);
   const desync = shadowKillFor(mid, SHADOW_FLOOR);
-  assertTrue(synced > 0.1,
-    `同步时半影中间调须保留部分太阳：实测 ${synced.toFixed(4)}`);
-  assertTrue(Math.abs(synced - desync) > 0.1,
-    `同步与不同步在中间调上必须显著不同（否则无判别力）：${synced.toFixed(4)} vs ${desync.toFixed(4)}`);
-  // 端点一致性也钉上（它们是clamp 的边界，不得因 per-style 而跑飞）
-  assertTrue(Math.abs(shadowKillFor(s.shadowFloor, SHADOW_FLOOR)) < 1e-12,
-    '影区端点仍为 0（所以端点判据拓不到本缺陷）');
+  assertTrue(desync > 0.01,
+    `前提：错用全局分母时该取样点须真的拿到太阳（否则本用例恒真）：实测 ${desync.toFixed(6)}`);
+  assertTrue(synced < desync * 0.2,
+    `同步时紧贴地板处该几乎拿不到太阳（分母撕裂会多拿 5 倍以上）：同步 ${synced.toFixed(6)} vs 不同步 ${desync.toFixed(6)}`);
+  // 中段也钉一条（证明差异不只在地板附近）
+  const mid2 = 0.5;
+  const s2 = shadowKillFor(mid2, s.shadowFloor), d2 = shadowKillFor(mid2, SHADOW_FLOOR);
+  assertTrue(s2 > 0.1 && s2 < d2,
+    `中段同步值须保留部分太阳且小于错分母值：同步 ${s2.toFixed(6)} vs 不同步 ${d2.toFixed(6)}`);
+  // 端点一致性：受光端恒为 1（clamp 上界不得因 per-style 而跑飞）
+  assertTrue(Math.abs(shadowKillFor(1, SHADOW_FLOOR) - 1) < 1e-12,
+    '受光端点仍为 1（所以端点判据拓不到本缺陷）');
+  // ☠️ 影区端点在**错分母**下不再是 0（旧档差 0.6129，新档仅 0.0306）——
+  // 这正是「绝对差判据失效」的量化证据，钉住它防将来又把判据改回绝对口径。
+  const endpointLeak = shadowKillFor(s.shadowFloor, SHADOW_FLOOR);
+  assertTrue(endpointLeak > 0 && endpointLeak < 0.1,
+    `错分母时影区端点泄漏须落在 (0, 0.1)（新地板靠近全局值）：实测 ${endpointLeak.toFixed(6)}`);
 });
 
 test('shadowKill：缺省地板时逐位回到全局常量口径（零回归）', async () => {

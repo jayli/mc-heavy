@@ -5,7 +5,7 @@
 // ## 被测内容
 //
 // 第 5 档手动风格 `normal`：离线烘焙的 ASHLAR 大气立方图 + 上游 AgX+punch 色调映射
-// + per-style 的直射/环境比（shadowFloor 0.14 / hemiGround 0.12 / sunIntensity 0.956）。
+// + per-style 的直射/环境比（v3.53 用户实调：shadowFloor 0.399 / hemiGround 0.12 / sunIntensity 1.282）。
 //
 // ## 判据为什么这样定（都是实测口径，不是想象）
 //
@@ -120,9 +120,12 @@ async function lookSky(page, azimDeg, elevDeg = 12, height = 260) {
 
 /** 读本档全部相关 uniform / renderer 状态（判据的接线证据） */
 async function readState(page) {
-  return page.evaluate(() => {
+  return page.evaluate(async () => {
     const g = window.__MC_GAME__;
     const u = g.renderWorld.materials.dayNight;
+    // v3.53：punch 两参数 per-style 化 ⇒ 读**真实运行时 uniform**（GPU 侧接线证据）。
+    // 模块顶层单例，dynamic import 拿到的就是 DayNight._apply 写的那一份。
+    const tm = await import('/src/render/ashlar-tonemap.js');
     return {
       normalBlend: g.sky?.uNormalBlend?.value ?? null,
       duskBlend: g.sky?.uDuskBlend?.value ?? null,
@@ -135,6 +138,8 @@ async function readState(page) {
       toneMapping: g.renderer.toneMapping,
       exposure: g.renderer.toneMappingExposure,
       style: g.dayNight._styleOverride,
+      punchGamma: tm.ASHLAR_PUNCH_UNIFORMS.uPunchGamma.value,
+      punchSat: tm.ASHLAR_PUNCH_UNIFORMS.uPunchSat.value,
     };
   });
 }
@@ -217,21 +222,38 @@ test('普通②：色调映射与光影参数真的生效（关天空盒做单�
   // ① toneMapping 真的切了（这是「注册 + 写入」两步都成功的证据）
   expect(normalState.toneMapping, '普通档须用自定义 AgX id').toBe(ASHLAR_TONE_MAPPING);
   expect(noonState.toneMapping, '正午档须回落 ACES（零回归）').toBe(ACES_FILMIC_TONE_MAPPING);
-  // ② 三个光影参数真的写了本档值
-  expect(normalState.shadowFloor, '普通档地板须为 0.14').toBeCloseTo(0.14, 6);
+  // ② 三个光影参数真的写了本档值（v3.53 用户实调）
+  expect(normalState.shadowFloor, '普通档地板须为 0.399').toBeCloseTo(0.399, 6);
   expect(normalState.hemiGround, '普通档半球须为 0.12').toBeCloseTo(0.12, 6);
-  expect(normalState.sunIntensity, '普通档太阳强度须为 0.956').toBeCloseTo(0.956, 6);
+  expect(normalState.sunIntensity, '普通档太阳强度须为 1.282').toBeCloseTo(1.282, 6);
   expect(noonState.shadowFloor, '正午地板须回落 0.38').toBeCloseTo(0.38, 6);
   expect(noonState.hemiGround, '正午半球须回落 0.6').toBeCloseTo(0.6, 6);
-  // ③ skyDim 耦合：普通档 skyDim=1 ⇒ 阴影浓度不被削弱（设计 §3.4.1）
-  expect(normalState.skyDim, '普通档 skyDim 须为 1').toBe(1);
+  // ③ skyDim 耦合：本档取 0.95（v3.53，不再钉 1）。
+  // ⚠️ **不能在本用例里钉 shadowStrength === skyDim**：本 spec 开头已
+  // `setShadowsEnabled(false)` 隔离阴影这个变量（既有口径）⇒ shadowStrength 恒 0，
+  // 那是**正确的关阴影行为**，不是耦合被拆。耦合判据另开一条开阴影的用例（下方⑧）。
+  expect(normalState.skyDim, '普通档 skyDim 须为 0.95').toBeCloseTo(0.95, 6);
+  expect(normalState.shadowStrength, '关阴影时浓度须为 0（既有隔离口径）').toBe(0);
+  // ③b v3.53：punch 两参数 per-style 化，真的写到运行时 uniform
+  expect(normalState.punchGamma, '普通档对比度须为 1.34').toBeCloseTo(1.34, 6);
+  expect(normalState.punchSat, '普通档饱和度须为 0.94').toBeCloseTo(0.94, 6);
+  expect(noonState.punchGamma, '正午回落全局常量 1.28（per-style 不残留）').toBeCloseTo(1.28, 6);
+  expect(noonState.punchSat, '正午回落全局常量 1.17').toBeCloseTo(1.17, 6);
   // ④ 画面真的不同（关天空盒后唯一变量就是色调映射 + 光影参数）
   const delta = Math.abs(normal.lum - noon.lum);
   expect(delta, `关天空盒后两档画面仍须可区分（证明色调映射/光影参数生效）：Δ=${delta.toFixed(2)}`)
     .toBeGreaterThan(2);
-  // ⑤ 动态范围拉开（上游照片感的核心：暗部更黑）
+  // ⑤ 动态范围：暗部仍比正午黑
+  // ⚠️⚠️ **v3.53 实测：这条已贴线**（normal p5 **35.9** vs noon **36**，只差 0.1 灰阶）。
+  // 原因：新档地板 0.399 + 曝光 1.63 把暗部整体抬亮，而该机位的 p5 分位并不落在
+  // 最暗的底面上。**阈值不改**（它仍是正确的方向判据），但判别力已接近零。
   expect(normal.p5, `普通档暗部须比正午更黑：normal p5=${normal.p5.toFixed(1)} noon p5=${noon.p5.toFixed(1)}`)
     .toBeLessThan(noon.p5);
+  // ⑤b **强判别量：亮端被压缩**（v3.53 补）—— 同机位 p95 实测 **163.8 vs 200.5**，
+  // 差 **36.7 灰阶**。这才是本档「对比更柔」的可观测形态：AgX 肩部 + 低曝光把亮端拉下来。
+  // 下界 10 灰阶：远低于实测差，但足以拓「两档曲线没真的切换」（那时 p95 会趋同）。
+  expect(normal.p95, `普通档亮端须明显低于正午（曲线真的切了）：normal p95=${normal.p95.toFixed(1)} noon p95=${noon.p95.toFixed(1)}`)
+    .toBeLessThan(noon.p95 - 10);
 });
 
 test('普通③：其余四档与自动循环逐位零回归', async ({ page }) => {
@@ -439,9 +461,19 @@ test('普通⑤：启动即普通档时首帧就是目标状态（不等外部�
   console.log('NORMAL-BOOT:', JSON.stringify(state));
   expect(state.style, 'URL style=normal 须进 override').toBe('normal');
   expect(state.normalBlend, '首帧天空就是第 5 套').toBeCloseTo(1, 6);
-  expect(state.shadowFloor, '首帧地板就是本档值').toBeCloseTo(0.14, 6);
+  expect(state.shadowFloor, '首帧地板就是本档值').toBeCloseTo(0.399, 6);
   expect(state.toneMapping, '首帧色调映射就是自定义 AgX').toBe(ASHLAR_TONE_MAPPING);
-  expect(state.exposure, '首帧曝光就是本档值').toBeCloseTo(2.2, 6);
+  expect(state.exposure, '首帧曝光就是本档值').toBeCloseTo(1.63, 6);
+  // v3.53：punch 两参数也必须首帧就位（不得等外部补 setTuning）
+  expect(state.punchGamma, '首帧对比度就是本档值').toBeCloseTo(1.34, 6);
+  expect(state.punchSat, '首帧饱和度就是本档值').toBeCloseTo(0.94, 6);
+  expect(state.skyDim, '首帧天空亮度就是本档值').toBeCloseTo(0.95, 6);
+  // ☠️ **耦合判据必须开阴影量**（v3.53）：其余用例都 `setShadowsEnabled(false)`
+  // 隔离阴影变量 ⇒ 在那里 shadowStrength 恒 0，钉「等于 skyDim」会假红。
+  // 本用例没关阴影（boot 后未调 setShadowsEnabled）⇒ 这里才能验同源。
+  expect(state.shadowStrength, '开阴影时浓度须等于本档 skyDim（耦合不得被拆）')
+    .toBeCloseTo(state.skyDim, 6);
+  expect(state.shadowStrength, '前提：阴影真的开着（否则上一条恒真）').toBeGreaterThan(0);
 });
 // ---------------------------------------------------------------------------
 // v3.48：立方图里真的有云

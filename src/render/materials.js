@@ -196,7 +196,7 @@ const hemiSoft = mix(hemiFactor, max(hemiFactor, uCloudHemiFloor), cloudT);
 // 背景：上游 ASHLAR 的照片感主因实测是**直射/环境比**（上游 4.26 vs 本仓正午 1.63），
 // 而这两个量在本仓是全局常量（写死）⇒ 任何风格都改不了它。
 // 现在做成 uniform，由 `DayNight._apply` 按风格写：
-//   · 「普通」档：floor 0.14 / intensity 0.956（配合 hemiGround 0.12）
+//   · 「普通」档：floor 0.399 / intensity 1.282（配合 hemiGround 0.12）—— v3.53 用户实调值
 //   · 其余四档与自动循环：写入全局常量 ⇒ **公式逐位回到现状**（零回归锚点）
 // ⚠️ 初值 = 全局常量（权威在 shade-params.js，经 sun-shade.js re-export，此处不写字面量）。
 // ⚠️ **uniform 走 uniform buffer，不占顶点属性** ⇒ gpuVertexBytes 零增量（200MiB 门不受影响）。

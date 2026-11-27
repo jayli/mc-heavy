@@ -27,7 +27,7 @@ import { ASHLAR_PUNCH_GAMMA, ASHLAR_PUNCH_SAT } from './ashlar-tonemap-config.js
  * 范围取值理由（都是「覆盖现有全部风格值 + 留调整余量」，不是凭空取整）：
  *   · `shadowFloor` 上界 **0.9 而非 1**：`materials.js` 的 shadowKill 拿
  *     `1 − uShadowFloor` 当归一化分母，取 1 会除零 ⇒ 整屏 NaN。
- *   · `sunIntensity` / 色温三通道上界 2：现有最大值是 normal 的 `sunColor[0] = 1.214`，
+ *   · `sunIntensity` / 色温三通道上界 2：现有最大值是 normal 的 `sunIntensity = 1.282`（v3.53），
  *     留约 1.65 倍余量；下界 0 = 该项关闭（语义合法，sunTerm 退化到纯环境）。
  *   · `skyDim` 上界 1.5：现有最大 1.0（morning 0.8 / night 0.25）。
  *     ⚠️ 它**同时驱动 uShadowStrength**（`_apply` 把阴影浓度写成 skyDim）⇒ 调它会连带
@@ -132,8 +132,11 @@ const BY_KEY = new Map(LIGHT_TUNING_PARAMS.map((d) => [d.key, d]));
  * 它们的生效值由 `_apply` 回落常量决定 —— 这里必须用同一份常量，否则滑块显示的值
  * 与实际生效值不一致（「显示 0.38 而实际 0.14」这类静默漂移）。
  *
- * ⚠️ punch 两项**不在 params 里**（它们是色调映射的 uniform，不是风格字段）：
+ * ⚠️ punch 两项**不在旧四档的 params 里**（它们是色调映射的 uniform）：
  * 本函数只给缺省 = 烘焙常量；有 override 时 `applyTuningOverride` 会把它们写进 params。
+ * v3.53：「普通」档现在**显式写** `punchGamma: 1.34` / `punchSat: 0.94`（用户实调），
+ * 故缺省常量只服务其余四档与自动循环。**全局常量仍 1.28 / 1.17 不动** ——
+ * 它们同时被离线天空烘焙消费，改常量会连带判贴图过期（要重烘六面）。
  *
  * @param {object} params VISUAL_STYLES[key] 或 paramsAtHour(h) 的结果
  * @returns {Record<string, number>}

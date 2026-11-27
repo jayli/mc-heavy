@@ -142,7 +142,7 @@ export function aoFactorFor(ao) {
 /**
  * 云的太阳项地板 —— 由**当前生效的**影区地板派生，不写字面量。
  *
- * ⚠️ 入参必须是调用方刚写给 `uShadowFloor` 的那个值（per-style：normal 档 0.14，
+ * ⚠️ 入参必须是调用方刚写给 `uShadowFloor` 的那个值（per-style：normal 档 0.399，
  * 其余四档回落全局 0.38）。两处各算一遍会漂移出「两个端点一致而半影撕裂」
  * ——本仓 `uShadowFloor` 同时当影区地板与 shadowKill 分母那轮已实测过这个形态。
  *

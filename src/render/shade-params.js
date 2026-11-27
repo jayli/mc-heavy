@@ -34,7 +34,7 @@
  *   · 迎光/背光比：1.302 → **1.46**
  * 0.28 的暗部更黑但影区内都会发闷，0.38 是「拉开动态范围」与「暗部不死黑」的交点。
  *
- * ⚠️ v3.44 起它是**缺省值**：「普通」档用 per-style 的 `shadowFloor`（0.14），
+ * ⚠️ v3.44 起它是**缺省值**：「普通」档用 per-style 的 `shadowFloor`（v3.53 实调为 0.399），
  * 其余四档与自动循环回落到这里 ⇒ 逐位零回归。
  */
 export const SHADOW_FLOOR = 0.38;
@@ -61,7 +61,7 @@ export const NOON_SUN_Y_FOR_INTENSITY = 0.8;
  * 落地值（地板 0.38 → 强度 0.775；noon，strength=1，无阴影）：
  * 顶面 1.000（**不变**）/ +Z 0.845 / ±X 0.380 / −Z、−X 0.380。
  *
- * ⚠️ v3.44 起它是**缺省值**：「普通」档用 per-style 的 `sunIntensity`（0.956）。
+ * ⚠️ v3.44 起它是**缺省值**：「普通」档用 per-style 的 `sunIntensity`（v3.53 实调为 1.282）。
  */
 export const SUN_INTENSITY = (1 - SUN_AMBIENT) / NOON_SUN_Y_FOR_INTENSITY;
 

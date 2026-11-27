@@ -170,11 +170,10 @@ test('光影微调②：15 个滑块两列 8/7、无滚动条、初值等于当�
   }
 
   // 零回归锚点：不动滑块时，滑块值逐项等于生效值，且 uniform 仍是 normal 档原值。
-  // ☠️ **比较必须容 step 量化**（实测）：HTML range 把 value 吸到 step 网格，
-  // normal 档的 ambientColor 三项是四位小数（0.8544 / 0.97515 / 1.17045），step=0.001
-  // ⇒ 滑块显示 0.854 / 0.975 / 1.170，实测最大偏差 **0.00045 < step/2**。
-  // 其余 12 项偏差逐位为 0。这不是接线错，是 range 控件的固有行为；
-  // 写成逐位相等会把「控件正常工作」判成缺陷。真的接线错（读了别的档的值）差的是 0.1 量级。
+  // ☠️ **比较必须容 step 量化**（实测）：HTML range 把 value 吸到 step 网格。
+  // v3.53 后 normal 档 ambientColor 改成三位小数（0.854 / 0.975 / 1.170）⇒ 15 项偏差均应为 0；
+  // 但容差断言**不改** —— 它守的是控件固有行为（将来又出现四位小数参数时不该被当成接线错）。
+  // 真的接线错（读了别的档的值）差的是 0.1 量级，远超此容差。
   const st = await page.evaluate(STATE);
   for (const d of defs) {
     const got = layout.vals.find((v) => v.id === `lt-${d.domKey}`);
@@ -183,8 +182,8 @@ test('光影微调②：15 个滑块两列 8/7、无滚动条、初值等于当�
       `${d.key} 滑块初值须等于生效值（容 step/2 量化）`)
       .toBeLessThanOrEqual(d.step / 2 + 1e-9);
   }
-  expect(st.shadowFloor, '未调整时 normal 档地板仍是 0.14').toBeCloseTo(0.14, 6);
-  expect(st.exposure, '未调整时曝光仍是 2.2').toBeCloseTo(2.2, 6);
+  expect(st.shadowFloor, '未调整时 normal 档地板仍是 0.399').toBeCloseTo(0.399, 6);
+  expect(st.exposure, '未调整时曝光仍是 1.63').toBeCloseTo(1.63, 6);
 });
 
 test('光影微调③：拖滑块真改 uniform，拖到上界分母仍为正', async ({ page }) => {
@@ -278,8 +277,8 @@ test('光影微调⑤：非法输入不写 NaN；恢复默认回到风格缺省'
   await page.locator('#lt-reset').click();
   const st = await page.evaluate(STATE);
   const defs = await loadDefs(page);
-  expect(st.shadowFloor, '恢复默认后回 normal 档 0.14').toBeCloseTo(0.14, 6);
-  expect(st.exposure).toBeCloseTo(2.2, 6);
+  expect(st.shadowFloor, '恢复默认后回 normal 档 0.399').toBeCloseTo(0.399, 6);
+  expect(st.exposure).toBeCloseTo(1.63, 6);
   for (const d of defs) {
     const v = await page.locator(`#lt-${d.domKey}`).inputValue();
     expect(Math.abs(Number(v) - st.values[d.key]),
@@ -343,7 +342,7 @@ test('光影微调⑦：复制参数文本格式正确；剪贴板失败时给�
   const lines = text.split('\n');
   expect(lines.length, '首行风格 + 15 项').toBe(16);
   expect(lines[0]).toBe('风格，visualStyle: normal');
-  expect(lines, '须含用户举例的那一行').toContain('强光，sunIntensity: 0.956');
+  expect(lines, '须含用户举例的那一行').toContain('强光，sunIntensity: 1.282');
   for (const line of lines.slice(1)) {
     expect(line, '每行格式「参数名，变量名:值」').toMatch(/^.+，[A-Za-z][\w[\]]*: -?\d+\.\d{3}$/);
   }
@@ -370,6 +369,18 @@ test('光影微调⑧：对比度/饱和度只在普通档可调，且真的改�
 
   expect(await page.locator('#lt-punchGamma').isDisabled(), '普通档下对比度可调').toBe(false);
   expect(await page.locator('#lt-punchSat').isDisabled()).toBe(false);
+
+  // v3.53：未拖滑块时两项须是**本档实调值** 1.34 / 0.94（不是全局常量 1.28 / 1.17）。
+  // 这条是 per-style 接线的直接证据：只验「拖了能变」拓不到「初值读错档」。
+  const init = await page.evaluate(async () => {
+    const m = await import('/src/render/ashlar-tonemap.js');
+    return {
+      gamma: m.ASHLAR_PUNCH_UNIFORMS.uPunchGamma.value,
+      sat: m.ASHLAR_PUNCH_UNIFORMS.uPunchSat.value,
+    };
+  });
+  expect(init.gamma, '普通档初值对比度须为 1.34').toBeCloseTo(1.34, 6);
+  expect(init.sat, '普通档初值饱和度须为 0.94').toBeCloseTo(0.94, 6);
 
   await slide(page, 'punchGamma', 1.6);
   const punch = await page.evaluate(async () => {

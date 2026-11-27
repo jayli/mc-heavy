@@ -28,6 +28,37 @@ import {
   srgbEncode, acesFilmic,
 } from '../render/sun-shade.js';
 import { HEMI_GROUND, hemiFactorFor } from '../render/hemi-shade.js';
+// v3.53：削顶判据要按**本档真实曲线**算 ⇒ 需 AgX 常量（three-free config，不碰 three）。
+import {
+  ASHLAR_TONE_MAPPING as ASHLAR_TONE_MAPPING_ID,
+  ASHLAR_AGX_INSET, ASHLAR_AGX_OUTSET,
+  ASHLAR_AGX_MIN_EV, ASHLAR_AGX_MAX_EV, ASHLAR_LUMA_WEIGHTS,
+  ASHLAR_PUNCH_GAMMA, ASHLAR_PUNCH_SAT,
+} from '../render/ashlar-tonemap-config.js';
+
+/**
+ * 上游 AgX + display-space punch 的 CPU 参考实现（测试侧独立写，不 import 被测模块）。
+ * 与 `tools/normal-sky-tonemap.mjs` 同公式，但这里只返回**单通道屏幕灰阶**。
+ * ⚠️ 矩阵列主序：`out[i] = Σ_j m[j][i] * v[j]`。
+ */
+function agxScreen(lin, exposure = 1, gamma = ASHLAR_PUNCH_GAMMA, sat = ASHLAR_PUNCH_SAT) {
+  const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+  const mul = (m, v) => [0, 1, 2].map((i) => m[0][i] * v[0] + m[1][i] * v[1] + m[2][i] * v[2]);
+  // 单通道输入 ⇒ 三通道同值（本判据只问「该通道会不会被钳平」）
+  let v = mul(ASHLAR_AGX_INSET, [0, 1, 2].map(() => Math.max(lin * exposure, 1e-10)));
+  v = v.map((c) => (clamp(Math.log2(c), ASHLAR_AGX_MIN_EV, ASHLAR_AGX_MAX_EV) - ASHLAR_AGX_MIN_EV)
+    / (ASHLAR_AGX_MAX_EV - ASHLAR_AGX_MIN_EV));
+  v = v.map((x) => {
+    const x2 = x * x, x4 = x2 * x2;
+    return 15.5 * x4 * x2 - 40.14 * x4 * x + 31.96 * x4 - 6.868 * x2 * x + 0.4298 * x2 + 0.1191 * x - 0.00232;
+  });
+  v = v.map((c) => Math.pow(Math.max(c, 0), gamma));
+  const l = v[0] * ASHLAR_LUMA_WEIGHTS[0] + v[1] * ASHLAR_LUMA_WEIGHTS[1] + v[2] * ASHLAR_LUMA_WEIGHTS[2];
+  v = v.map((c) => l + sat * (c - l));
+  v = mul(ASHLAR_AGX_OUTSET, v);
+  // 上游收尾 pow(2.2) 回线性，再由 renderOutput 做 sRGB 编码
+  return srgbEncode(clamp(Math.pow(Math.max(v[0], 0), 2.2), 0, 1)) * 255;
+}
 
 /** 归一化（测试侧独立实现，不复用被测代码的 helper） */
 function norm(v) {
@@ -135,16 +166,19 @@ test('cloud-shade: soften=1 时暗面变亮、亮面逐位不变、任何面都�
 test('cloud-shade: 地板随 floor/ground 单调，且 normal 档派生值正确', () => {
   assertTrue(cloudSunFloorFor(0.14) < cloudSunFloorFor(0.38), '同 lift 下 floor 越大地板越大');
   assertTrue(cloudHemiFloorFor(0.12) < cloudHemiFloorFor(0.6), '同 lift 下 ground 越大地板越大');
-  // 派生实测值（spec §5.1）
-  assertTrue(Math.abs(cloudSunFloorFor(0.14) - 0.441) < 1e-12, `normal 档太阳地板 ${cloudSunFloorFor(0.14)}`);
-  assertTrue(Math.abs(cloudHemiFloorFor(0.12) - 0.56) < 1e-12, `normal 档半球地板 ${cloudHemiFloorFor(0.12)}`);
+  // 派生实测值（spec §5.1）—— 0.14 是 v3.44 旧档值，保留作为单调性取样点
+  assertTrue(Math.abs(cloudSunFloorFor(0.14) - 0.441) < 1e-12, `floor 0.14 的太阳地板 ${cloudSunFloorFor(0.14)}`);
+  assertTrue(Math.abs(cloudHemiFloorFor(0.12) - 0.56) < 1e-12, `ground 0.12 的半球地板 ${cloudHemiFloorFor(0.12)}`);
   assertTrue(Math.abs(cloudAoFloorFor() - 0.7) < 1e-12, `AO 地板 ${cloudAoFloorFor()}`);
   assertTrue(Math.abs(cloudSunFloorFor(SHADOW_FLOOR) - 0.597) < 1e-12, '全局档太阳地板 0.597');
   assertTrue(Math.abs(cloudHemiFloorFor(HEMI_GROUND) - 0.8) < 1e-12, '全局档半球地板 0.8');
+  // v3.53：normal 档地板抬到 0.399（用户实调）⇒ 派生云地板 0.60935
+  assertTrue(Math.abs(cloudSunFloorFor(0.399) - 0.60935) < 1e-12,
+    `normal 档（v3.53）太阳地板 ${cloudSunFloorFor(0.399)}`);
   // normal 档顶面也不动（per-style 跟随的关键：地板由当前 floor 派生，不是字面量）
   const nd = norm([0.7934, 0.5479, 0.3392]);
-  const stNormal = 0.14 + 0.956 * nd[1];
-  assertEqual(Math.max(stNormal, cloudSunFloorFor(0.14)), stNormal, 'normal 档顶面 max 恒等');
+  const stNormal = 0.399 + 1.282 * nd[1];
+  assertEqual(Math.max(stNormal, cloudSunFloorFor(0.399)), stNormal, 'normal 档顶面 max 恒等');
 });
 
 test('cloud-shade: soften=0 与 sun-shade/hemi-shade 的既有公式交叉一致（不留第二份公式）', () => {
@@ -332,13 +366,34 @@ async function styleParams() {
       ambientColor: p.ambientColor,
       sunColor: p.sunColor,
       skyDim: p.skyDim,
+      // v3.53：削顶判据必须走**本档自己的曲线**（normal 走 AgX，其余 ACES）。
+      // 缺省 undefined ⇒ ACES；toneMappingExposure 与 punch 两项同样按风格取。
+      toneMapping: p.toneMapping,
+      exposure: p.toneMappingExposure,
+      punchGamma: p.punchGamma,
+      punchSat: p.punchSat,
     };
   }
   return out;
 }
 
-/** 线性 → 屏幕灰阶（ACES + sRGB，与 Tier 4 同口径；normal 档走 AgX 故本表只作标定起点） */
+/** 线性 → 屏幕灰阶（ACES + sRGB）—— 四档 ACES 风格的口径，也是既有标定表的基准 */
 const screenOf = (lin) => srgbEncode(acesFilmic(Math.max(0, lin))) * 255;
+
+/**
+ * 线性 → 屏幕灰阶，**按本档真实曲线**（v3.53）。
+ *
+ * ☠️ 为什么需要它：normal 档走自定义 AgX（log2 编码，上界 EV 4.026 ⇒ 线性 16.29 才钳顶），
+ * 而 ACES 在 1.0 附近就进肩部。用 ACES 的钳位阈值去判 AgX 档是**错的仪器**：
+ * 实测 normal 云侧面线性 1.1371，经 AgX 后屏幕仅 211.2、R−B 仍 8.05（根本没削顶）。
+ *
+ * ⚠️ 常量全部从 three-free 的 config import（不 import `ashlar-tonemap.js`，它依赖 three）。
+ * ⚠️ 矩阵**列主序**，punch 在 display 空间（顺序载荷性，与上游逐字对应）。
+ */
+function screenForStyle(st, lin) {
+  if (st.toneMapping !== ASHLAR_TONE_MAPPING_ID) return screenOf(lin * (st.exposure ?? 1));
+  return agxScreen(lin, st.exposure, st.punchGamma, st.punchSat);
+}
 
 /**
  * 逐通道 shade（含色温 + skyDim + 面类别 gain）—— **独立参考实现**，
@@ -420,29 +475,54 @@ test('cloud-face-gain: 五档侧/底屏幕比 ≥1.15，且侧亮/顶暗/底暗�
   }
 });
 
-test('cloud-face-gain: 全档全面最大线性 <1.0（不削顶），且侧 gain 1.42 时该扫描 >1', async () => {
+test('cloud-face-gain: 按**本档曲线**全档全面不削顶，且侧 gain 1.42 时 ACES 档越线', async () => {
   const styles = await styleParams();
+  // ☠️☠️ **v3.53 换仪器**：旧判据对五档统一用 **ACES 口径的「线性 <1.0」**。
+  // normal 档地板抬到 0.399 + intensity 1.282 后云侧面线性达 **1.1371**，旧判据真红；
+  // 但它走的是 **AgX**（log2 编码，上界 EV 4.026 ⇒ 线性 16.29 才钳顶），
+  // 实测屏幕仅 211.2、R−B 仍 8.05 ⇒ **根本没削顶**。对 AgX 档用 ACES 的钳位阈值
+  // 是**错的仪器**（同 pitfalls「接缝比值判据不能照搬」那类）。
+  //
+  // 改成：**每档走自己的色调映射**，判据落在「屏幕值是否被钳到 255」。
+  // 判别力保留：dusk（ACES）面4 ao3 在 gain 1.42 时线性 1.0133 > 1 ⇒ 仍被抓。
+  const { ASHLAR_TONE_MAPPING } = await import('../render/ashlar-tonemap-config.js');
   const scan = (sideGain) => {
-    let max = 0, where = '';
+    let maxLin = 0, whereLin = '', maxScreen = 0, whereScreen = '';
+    let acesClip = 0, whereClip = '';
     for (const [key, st] of Object.entries(styles)) {
+      const isAgx = st.toneMapping === ASHLAR_TONE_MAPPING;
       for (let n = 0; n < 6; n++) {
         for (const ao of [0, 1, 2, 3]) {
           const rgb = faceRgb(st, n, ao, { contrast: 1, sideGain });
           for (let c = 0; c < 3; c++) {
-            if (rgb[c] > max) { max = rgb[c]; where = `${key} 面${n} ao${ao} ch${c}`; }
+            if (rgb[c] > maxLin) { maxLin = rgb[c]; whereLin = `${key} 面${n} ao${ao} ch${c}`; }
+            // ACES 档：线性 ≥1 即进钳位区（三通道被压平 ⇒ 色相消失）
+            if (!isAgx && rgb[c] >= 1.0) { acesClip++; if (!whereClip) whereClip = `${key} 面${n} ao${ao} ch${c}`; }
+            const s = screenForStyle(st, rgb[c]);
+            if (s > maxScreen) { maxScreen = s; whereScreen = `${key} 面${n} ao${ao} ch${c}`; }
           }
         }
       }
     }
-    return { max, where };
+    return { maxLin, whereLin, maxScreen, whereScreen, acesClip, whereClip };
   };
   const ok = scan(CLOUD_SIDE_FACE_GAIN);
-  assertTrue(ok.max < 1.0,
-    `批准幅度下全档全面最大线性须 <1.0（削顶会钳平三通道抹掉色相），实测 ${ok.max.toFixed(4)} @ ${ok.where}`);
-  // 判别力：这条判据不是恒真 —— 把侧 gain 抬到 1.42 就必须越线
+  // ① ACES 四档：线性不得进钳位区（原判据语义，只是不再误伤 AgX 档）
+  assertEqual(ok.acesClip, 0,
+    `批准幅度下 ACES 四档不得有通道 ≥1.0（钳平会抹掉色相），实测 ${ok.acesClip} 处 @ ${ok.whereClip}`);
+  // ② 全档屏幕值不得贴到 255（真削顶的可观测形态，与曲线无关）
+  assertTrue(ok.maxScreen < 254,
+    `批准幅度下全档屏幕最大值须 <254（贴顶即削顶），实测 ${ok.maxScreen.toFixed(2)} @ ${ok.whereScreen}`);
+  // ③ 判别力：把侧 gain 抬到 1.42，ACES 档必须越线（证明①不是恒真）
   const bad = scan(1.42);
-  assertTrue(bad.max > 1.0,
-    `侧 gain 1.42 时该扫描须 >1.0（证明削顶判据有判别力），实测 ${bad.max.toFixed(4)} @ ${bad.where}`);
+  assertTrue(bad.acesClip > 0,
+    `侧 gain 1.42 时 ACES 档须出现 ≥1.0 的通道（证明削顶判据有判别力），实测 ${bad.acesClip} 处`);
+  // ④ AgX 档的钳顶阈值远高于 ACES —— 钉住这个事实，防将来又把判据改回统一 1.0
+  const normalLin = faceRgb(styles.normal, 0, 3, { contrast: 1 });
+  assertTrue(Math.max(...normalLin) > 1.0,
+    `前提：normal 档云侧面线性确实 >1（否则本用例的换仪器理由不成立）：实测 ${Math.max(...normalLin).toFixed(4)}`);
+  assertTrue(screenForStyle(styles.normal, Math.max(...normalLin)) < 230,
+    '同一个 >1 的线性值经 AgX 后远未贴顶 ⇒ 证明它不该被当成削顶');
 });
 
 test('cloud-face-gain: 非中性色温档底面 R−B 符号不变且偏移 <8 灰阶（灰阶保色相）', async () => {

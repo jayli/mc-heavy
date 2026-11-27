@@ -83,13 +83,30 @@ test('光影微调：readTuningValues 缺 per-style 字段时回落全局常量'
 
 test('光影微调：readTuningValues 读 normal 档的实测标定值', () => {
   const v = readTuningValues(VISUAL_STYLES.normal);
-  assertEqual(v.shadowFloor, 0.14, 'normal 影区地板');
+  // v3.53 用户实调值（v3.44 的 0.14 / 0.956 / 2.2 已作废）
+  assertEqual(v.shadowFloor, 0.399, 'normal 影区地板');
   assertEqual(v.hemiGround, 0.12, 'normal 半球');
-  assertEqual(v.sunIntensity, 0.956, 'normal 太阳强度');
-  assertEqual(v.toneMappingExposure, 2.2, 'normal 曝光');
-  assertEqual(v.punchGamma, ASHLAR_PUNCH_GAMMA, 'punch gamma 缺省取常量');
-  assertEqual(v.punchSat, ASHLAR_PUNCH_SAT, 'punch sat 缺省取常量');
+  assertEqual(v.sunIntensity, 1.282, 'normal 太阳强度');
+  assertEqual(v.toneMappingExposure, 1.63, 'normal 曝光');
+  assertEqual(v.skyDim, 0.95, 'normal 天空亮度');
+  // v3.53：punch 两项现在是**本档显式值**，不再等于全局常量
+  assertEqual(v.punchGamma, 1.34, 'punch gamma 取本档实调值');
+  assertEqual(v.punchSat, 0.94, 'punch sat 取本档实调值');
+  assertTrue(v.punchGamma !== ASHLAR_PUNCH_GAMMA && v.punchSat !== ASHLAR_PUNCH_SAT,
+    '本档 punch 必须偏离全局常量（否则上两条拓不到 per-style 没生效）');
   assertEqual(v['waterTint'], VISUAL_STYLES.normal.waterTint[0], '水面亮度取 R 通道');
+});
+
+test('光影微调：其余四档的 punch 仍回落全局常量（per-style 零回归）', () => {
+  for (const key of ['morning', 'noon', 'dusk', 'night']) {
+    const v = readTuningValues(VISUAL_STYLES[key]);
+    assertEqual(v.punchGamma, ASHLAR_PUNCH_GAMMA, `${key} gamma 回落常量`);
+    assertEqual(v.punchSat, ASHLAR_PUNCH_SAT, `${key} sat 回落常量`);
+  }
+  // 自动循环同样回落（KEYFRAMES 不引用 normal）
+  const auto = readTuningValues(paramsAtHour(12));
+  assertEqual(auto.punchGamma, ASHLAR_PUNCH_GAMMA, '自动循环 gamma 回落常量');
+  assertEqual(auto.punchSat, ASHLAR_PUNCH_SAT, '自动循环 sat 回落常量');
 });
 
 // ==================== ③ override 不污染权威 ====================
@@ -100,7 +117,7 @@ test('光影微调：applyTuningOverride 不改入参，且数组字段是新副
   assertEqual(out.shadowFloor, 0.3, '返回值须带 override');
   assertEqual(out.sunColor[0], 1.5, '色温分量须带 override');
   // 权威一个字节不动
-  assertEqual(src.shadowFloor, 0.14, 'VISUAL_STYLES.normal.shadowFloor 不得被改');
+  assertEqual(src.shadowFloor, 0.399, 'VISUAL_STYLES.normal.shadowFloor 不得被改');
   assertEqual(src.sunColor[0], 1.214, 'VISUAL_STYLES.normal.sunColor[0] 不得被改');
   assertTrue(out.sunColor !== src.sunColor, 'sunColor 必须是新数组');
   assertTrue(out.ambientColor !== src.ambientColor, 'ambientColor 必须是新数组');
@@ -158,7 +175,7 @@ test('光影微调：formatTuningText 行数与逐行格式（用户指定的格
   const lines = text.split('\n');
   assertEqual(lines.length, 16, '首行风格 + 15 项参数');
   assertEqual(lines[0], '风格，visualStyle: normal', '首行是风格键');
-  assertTrue(lines.includes('强光，sunIntensity: 0.956'), '须含用户举例的那一行');
+  assertTrue(lines.includes('强光，sunIntensity: 1.282'), '须含用户举例的那一行');
   for (const line of lines.slice(1)) {
     assertTrue(/^.+，[A-Za-z][\w[\]]*: -?\d+\.\d{3}$/.test(line),
       `行格式不符「参数名，变量名:值」：${line}`);
@@ -210,7 +227,7 @@ function makeDayNight(opts = {}) {
 
 test('光影微调：setTuning 写 override 并立即生效', () => {
   const { dayNight, voxelUniforms } = makeDayNight({ visualStyle: 'normal' });
-  assertEqual(voxelUniforms.uShadowFloor.value, 0.14, '前提：构造首帧就是 normal 值');
+  assertEqual(voxelUniforms.uShadowFloor.value, 0.399, '前提：构造首帧就是 normal 值');
   assertEqual(dayNight.setTuning('shadowFloor', 0.3), 0.3, '返回生效值');
   assertEqual(voxelUniforms.uShadowFloor.value, 0.3, 'uniform 立即被写');
   assertEqual(dayNight.tuningValues.shadowFloor, 0.3, 'tuningValues 读回新值');
@@ -241,8 +258,8 @@ test('光影微调：resetTuning 回到风格表缺省', () => {
   dayNight.setTuning('shadowFloor', 0.3);
   dayNight.setTuning('sunIntensity', 1.5);
   dayNight.resetTuning();
-  assertEqual(voxelUniforms.uShadowFloor.value, 0.14, '地板回 normal 缺省');
-  assertEqual(voxelUniforms.uSunIntensity.value, 0.956, '强度回 normal 缺省');
+  assertEqual(voxelUniforms.uShadowFloor.value, 0.399, '地板回 normal 缺省');
+  assertEqual(voxelUniforms.uSunIntensity.value, 1.282, '强度回 normal 缺省');
 });
 
 test('光影微调：override 全程不改 VISUAL_STYLES 权威', () => {
@@ -251,10 +268,10 @@ test('光影微调：override 全程不改 VISUAL_STYLES 权威', () => {
   dayNight.setTuning('sunColor[0]', 1.5);
   dayNight.setTuning('waterTint', 0.2);
   dayNight.setTuning('ambientColor[2]', 1.9);
-  assertEqual(VISUAL_STYLES.normal.shadowFloor, 0.14, '风格表地板未被改');
+  assertEqual(VISUAL_STYLES.normal.shadowFloor, 0.399, '风格表地板未被改');
   assertEqual(VISUAL_STYLES.normal.sunColor[0], 1.214, '风格表直射色未被改');
   assertEqual(VISUAL_STYLES.normal.waterTint[0], 0.55, '风格表水面亮度未被改');
-  assertEqual(VISUAL_STYLES.normal.ambientColor[2], 1.17045, '风格表环境色未被改');
+  assertEqual(VISUAL_STYLES.normal.ambientColor[2], 1.170, '风格表环境色未被改');
 });
 
 test('光影微调：自动循环下 setTuning 冻结日夜推进，resetTuning 解冻', () => {
@@ -303,8 +320,9 @@ function punchStub() {
 test('光影微调：_apply 把 punch 两值写给句柄', () => {
   const punchUniforms = punchStub();
   makeDayNight({ visualStyle: 'normal', punchUniforms });
-  assertEqual(punchUniforms.uPunchGamma.value, ASHLAR_PUNCH_GAMMA, 'gamma 首帧写入常量');
-  assertEqual(punchUniforms.uPunchSat.value, ASHLAR_PUNCH_SAT, 'sat 首帧写入常量');
+  // v3.53：normal 档显式写 1.34 / 0.94（不再是全局常量）
+  assertEqual(punchUniforms.uPunchGamma.value, VISUAL_STYLES.normal.punchGamma, 'gamma 首帧写入本档值');
+  assertEqual(punchUniforms.uPunchSat.value, VISUAL_STYLES.normal.punchSat, 'sat 首帧写入本档值');
 });
 
 test('光影微调：setTuning(punchGamma) 真的改句柄', () => {
