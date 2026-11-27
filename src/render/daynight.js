@@ -15,6 +15,9 @@ import { ASHLAR_TONE_MAPPING, ACES_FILMIC_TONE_MAPPING } from './ashlar-tonemap-
 import { SHADOW_FLOOR, SUN_INTENSITY, HEMI_GROUND } from './shade-params.js';
 // v3.50：云专属着色地板的派生函数（`cloud-shade.js` 零 import，同样不可能成环）。
 import { cloudSunFloorFor, cloudSunFloorRGBFor, cloudHemiFloorFor } from './cloud-shade.js';
+// v3.51：「光影微调」Tab 的参数表与纯函数（three-free，不 import 任何东西之外的渲染层）。
+// ⚠️ 本模块只做「读值 / 施加 override / 钳制」，真正的写入收口点仍是下面的 `_apply`。
+import { readTuningValues, applyTuningOverride, clampTuningValue } from './light-tuning-config.js';
 
 export const VISUAL_STYLE_KEYS = { MORNING: 'morning', NOON: 'noon', DUSK: 'dusk', NIGHT: 'night', NORMAL: 'normal' };
 
@@ -496,6 +499,27 @@ export class DayNight {
     this.hour = startHour;
     this.onSunDirection = onSunDirection;
     this._styleOverride = null;
+    /**
+     * v3.51：「光影微调」Tab 的 per-style override（`Map<风格键, {key: 值}>`）。
+     *
+     * **为什么存在这里而不是面板直接写 uniform**：`_apply` 是唯一写入收口点，
+     * 日夜循环下 `update()` 每帧调它 ⇒ 绕过它写的值下一帧就被覆写回去
+     * （`shadowEnabled` 那段注释记着这个已实测的静默失效形态）。
+     *
+     * ⚠️ **按风格分桶**：切风格换一套，切回来还记得（用户裁定「作用在当前生效风格」）。
+     * ⚠️ **绝不写回 `VISUAL_STYLES`**：那是权威数据，`test-daynight.js` 冻结了四档
+     * sunDirection 的字面值；override 经 `applyTuningOverride` 产生新对象。
+     * 自动循环（`_styleOverride === null`）用键 `'auto'`。
+     */
+    this._tuning = new Map();
+    /**
+     * v3.51：自动循环下是否已因调参而冻结日夜推进。
+     *
+     * 自动档每帧 `paramsAtHour(hour)` 重算 ⇒ 不冻结的话滑块值会被插值结果抹掉
+     * （玩家看到「拖了没反应」）。`resetTuning()` 解冻。
+     * 手动风格下 `update()` 本来就 early-return，本标志无额外作用。
+     */
+    this._tuningFrozen = false;
     // 阴影总开关标志（Game.setShadowsEnabled 写入）：_apply 每次日夜推进都写
     // uShadowStrength，必须遵守该标志 —— 否则「关阴影」会在正常日夜循环的下一帧
     // 被覆写回 skyDim（静默失效；override 风格下 update() early-return 测不出来）。
@@ -519,7 +543,7 @@ export class DayNight {
     if (visualStyle) {
       // 与 setStyle() 同一收口（经 _apply），且只 apply 一次 —— 不先写正午再写目标风格。
       this._styleOverride = visualStyle;
-      this._apply({ ...VISUAL_STYLES[visualStyle] });
+      this._apply(this.params);
     } else {
       this._apply(paramsAtHour(this.hour));
     }
@@ -528,7 +552,10 @@ export class DayNight {
   /** 固定风格（M3 设置面板用）；null 恢复日夜循环 */
   setStyle(key) {
     this._styleOverride = key;
-    if (key) this._apply({ ...VISUAL_STYLES[key] });
+    // v3.51：走 `this.params` 而不是 `{ ...VISUAL_STYLES[key] }` —— 后者绕过了 per-style
+    // override，形态是「切回本档后调过的值丢了」。params 已归一化方向，_apply 里再归一化
+    // 对长度 1 的向量是幂等的（与既有两条路径同口径）。
+    if (key) this._apply(this.params);
   }
 
   /** 直接设置时间（测试/调试） */
@@ -539,7 +566,10 @@ export class DayNight {
 
   /** 当前生效参数（测试断言用）；sunDirection / moonDirection 与 paramsAtHour 同口径（已归一化） */
   get params() {
-    if (!this._styleOverride) return paramsAtHour(this.hour);
+    if (!this._styleOverride) {
+      // 自动循环：插值结果同样要套 override（键 'auto'）
+      return applyTuningOverride(paramsAtHour(this.hour), this._tuning.get('auto'));
+    }
     const p = { ...VISUAL_STYLES[this._styleOverride] };
     p.sunDirection = normalizeDirection(p.sunDirection);
     p.moonDirection = normalizeDirection(p.moonDirection);
@@ -550,11 +580,51 @@ export class DayNight {
     p.waterTint = [...p.waterTint];
     // v3.44：三个 per-style 参数是标量，浅拷贝已足够（无数组引用风险）。
     // 缺字段时保持 undefined，由 `_apply` 回落全局常量 —— 不在这里写常量字面量。
-    return p;
+    // v3.51：套 override（`applyTuningOverride` 内部再拷贝一次数组，成本是三个小数组，
+    // 且它同时负责「只认表里的 key」的过滤）。
+    return applyTuningOverride(p, this._tuning.get(this._styleOverride));
   }
 
+  /**
+   * v3.51：调一个光影参数（「光影微调」Tab 的唯一写入口）。
+   *
+   * 钳制后立即 `_apply` ⇒ 拖动即生效。非法值（NaN / 字符串 / 未知 key）**拒绝写入**并返回 null，
+   * 调用方据此把滑块回写成真实生效值（照 `water-reflect-dock.js` 的既有口径）。
+   *
+   * @param {string} key LIGHT_TUNING_PARAMS 里的 key
+   * @param {unknown} value
+   * @returns {number|null} 实际生效值；非法输入 → null（未写入）
+   */
+  setTuning(key, value) {
+    const v = clampTuningValue(key, value);
+    if (v === null) return null;
+    const bucket = this._styleOverride ?? 'auto';
+    const cur = this._tuning.get(bucket) || {};
+    this._tuning.set(bucket, { ...cur, [key]: v });
+    // 自动档：冻结日夜推进，否则下一帧插值就把这个值抹掉
+    if (!this._styleOverride) this._tuningFrozen = true;
+    this._apply(this.params);
+    return v;
+  }
+
+  /**
+   * v3.51：把当前风格的调参清空，回到风格表缺省（面板「恢复默认」按钮）。
+   * 自动档同时**解冻**日夜推进 —— 否则点了恢复默认天还是不动。
+   */
+  resetTuning() {
+    this._tuning.delete(this._styleOverride ?? 'auto');
+    this._tuningFrozen = false;
+    this._apply(this.params);
+  }
+
+  /** v3.51：当前 15 项生效值（面板建滑块与复制文本都读它） */
+  get tuningValues() { return readTuningValues(this.params); }
+
+  /** v3.51：当前风格键（null = 自动循环）。复制文本的首行与 punch 置灰判据都靠它。 */
+  get tuningStyleKey() { return this._styleOverride; }
+
   update(dt) {
-    if (this._styleOverride) return;
+    if (this._styleOverride || this._tuningFrozen) return;
     this.hour = (this.hour + dt * 24 / this.cycleSeconds) % 24;
     this._apply(paramsAtHour(this.hour));
   }

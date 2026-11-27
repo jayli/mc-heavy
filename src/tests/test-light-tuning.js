@@ -18,7 +18,7 @@ import {
   LIGHT_TUNING_PARAMS, LIGHT_TUNING_KEYS,
   readTuningValues, applyTuningOverride, clampTuningValue, formatTuningText,
 } from '../render/light-tuning-config.js';
-import { VISUAL_STYLES, paramsAtHour } from '../render/daynight.js';
+import { VISUAL_STYLES, paramsAtHour, DayNight } from '../render/daynight.js';
 import { SHADOW_FLOOR, SUN_INTENSITY } from '../render/sun-shade.js';
 import { HEMI_GROUND } from '../render/hemi-shade.js';
 import { ASHLAR_PUNCH_GAMMA, ASHLAR_PUNCH_SAT } from '../render/ashlar-tonemap-config.js';
@@ -175,5 +175,116 @@ test('光影微调：formatTuningText 覆盖全部 15 个变量名（漏项 = �
   const text = formatTuningText(readTuningValues(VISUAL_STYLES.normal), 'normal');
   for (const d of LIGHT_TUNING_PARAMS) {
     assertTrue(text.includes(`，${d.varName}: `), `复制文本漏了 ${d.varName}`);
+  }
+});
+
+// ==================== ⑥ DayNight 集成：per-style override ====================
+
+/**
+ * DayNight 的 stub（无 three）。句柄形状必须与真实 uniform 一致：
+ * 标量是 `{value}`，vec3 是 `{value:{set(x,y,z)}}` —— `_apply` 对 vec3 句柄调 `.value.set`。
+ * ⚠️ 写成 `.setRGB` 会在真实页面白屏（既有教训），stub 里也只给 `set`。
+ */
+function makeDayNight(opts = {}) {
+  const vec3 = () => ({ value: { x: 0, y: 0, z: 0, set(x, y, z) { this.x = x; this.y = y; this.z = z; } } });
+  const voxelUniforms = {
+    uSkyDim: { value: 0 },
+    uBlockBoost: { value: 0 },
+    uShadowStrength: { value: 0 },
+    uShadowFloor: { value: 0 },
+    uHemiGround: { value: 0 },
+    uSunIntensity: { value: 0 },
+    uSunDirection: vec3(),
+    uSunColor: vec3(),
+    uAmbientColor: vec3(),
+  };
+  const dayNight = new DayNight({
+    scene: {},
+    fog: { fogColor: { value: { set() {} } }, fogNear: { value: 0 }, fogFar: { value: 0 } },
+    voxelUniforms,
+    skyUniforms: { uWaterTint: vec3() },
+    ...opts,
+  });
+  return { dayNight, voxelUniforms };
+}
+
+test('光影微调：setTuning 写 override 并立即生效', () => {
+  const { dayNight, voxelUniforms } = makeDayNight({ visualStyle: 'normal' });
+  assertEqual(voxelUniforms.uShadowFloor.value, 0.14, '前提：构造首帧就是 normal 值');
+  assertEqual(dayNight.setTuning('shadowFloor', 0.3), 0.3, '返回生效值');
+  assertEqual(voxelUniforms.uShadowFloor.value, 0.3, 'uniform 立即被写');
+  assertEqual(dayNight.tuningValues.shadowFloor, 0.3, 'tuningValues 读回新值');
+  assertEqual(dayNight.tuningStyleKey, 'normal', '当前风格键');
+});
+
+test('光影微调：setTuning 非法值不写（NaN 不得进 uniform）', () => {
+  const { dayNight, voxelUniforms } = makeDayNight({ visualStyle: 'normal' });
+  dayNight.setTuning('shadowFloor', 0.3);
+  assertNull(dayNight.setTuning('shadowFloor', NaN), 'NaN 拒绝');
+  assertEqual(voxelUniforms.uShadowFloor.value, 0.3, 'uniform 保持上一次的值');
+  assertNull(dayNight.setTuning('nope', 1), '未知 key 拒绝');
+  assertNull(dayNight.setTuning('shadowFloor', '0.5'), '字符串拒绝');
+  assertEqual(voxelUniforms.uShadowFloor.value, 0.3, '仍不变');
+});
+
+test('光影微调：切风格互不污染，切回来还记得调过的值', () => {
+  const { dayNight, voxelUniforms } = makeDayNight({ visualStyle: 'normal' });
+  dayNight.setTuning('shadowFloor', 0.3);
+  dayNight.setStyle('noon');
+  assertEqual(voxelUniforms.uShadowFloor.value, SHADOW_FLOOR, '正午回落全局常量（不被 normal 的 override 污染）');
+  dayNight.setStyle('normal');
+  assertEqual(voxelUniforms.uShadowFloor.value, 0.3, '切回 normal 仍是调过的值');
+});
+
+test('光影微调：resetTuning 回到风格表缺省', () => {
+  const { dayNight, voxelUniforms } = makeDayNight({ visualStyle: 'normal' });
+  dayNight.setTuning('shadowFloor', 0.3);
+  dayNight.setTuning('sunIntensity', 1.5);
+  dayNight.resetTuning();
+  assertEqual(voxelUniforms.uShadowFloor.value, 0.14, '地板回 normal 缺省');
+  assertEqual(voxelUniforms.uSunIntensity.value, 0.956, '强度回 normal 缺省');
+});
+
+test('光影微调：override 全程不改 VISUAL_STYLES 权威', () => {
+  const { dayNight } = makeDayNight({ visualStyle: 'normal' });
+  dayNight.setTuning('shadowFloor', 0.3);
+  dayNight.setTuning('sunColor[0]', 1.5);
+  dayNight.setTuning('waterTint', 0.2);
+  dayNight.setTuning('ambientColor[2]', 1.9);
+  assertEqual(VISUAL_STYLES.normal.shadowFloor, 0.14, '风格表地板未被改');
+  assertEqual(VISUAL_STYLES.normal.sunColor[0], 1.214, '风格表直射色未被改');
+  assertEqual(VISUAL_STYLES.normal.waterTint[0], 0.55, '风格表水面亮度未被改');
+  assertEqual(VISUAL_STYLES.normal.ambientColor[2], 1.17045, '风格表环境色未被改');
+});
+
+test('光影微调：自动循环下 setTuning 冻结日夜推进，resetTuning 解冻', () => {
+  const { dayNight, voxelUniforms } = makeDayNight();   // 无 visualStyle = 自动循环
+  dayNight.setTuning('skyDim', 0.5);
+  const h0 = dayNight.hour;
+  dayNight.update(10); dayNight.update(10); dayNight.update(10);
+  assertEqual(dayNight.hour, h0, '冻结后 hour 逐位不变');
+  assertEqual(voxelUniforms.uSkyDim.value, 0.5, 'override 值稳得住（不被每帧插值抹掉）');
+  dayNight.resetTuning();
+  dayNight.update(10);
+  assertTrue(dayNight.hour > h0, `解冻后 hour 须前进：${h0} → ${dayNight.hour}`);
+});
+
+test('光影微调：get params 带 override 且数组是新副本', () => {
+  const { dayNight } = makeDayNight({ visualStyle: 'normal' });
+  dayNight.setTuning('sunColor[0]', 1.5);
+  const p = dayNight.params;
+  assertEqual(p.sunColor[0], 1.5, 'params 带 override');
+  assertTrue(p.sunColor !== VISUAL_STYLES.normal.sunColor, '必须是新数组');
+  // 方向仍归一化（_apply 与消费方都依赖这个口径）
+  const len = Math.sqrt(p.sunDirection[0] ** 2 + p.sunDirection[1] ** 2 + p.sunDirection[2] ** 2);
+  assertTrue(Math.abs(len - 1) < 1e-9, `太阳方向须归一化，实测长度 ${len}`);
+});
+
+test('光影微调：不动任何滑块时 params 与风格表逐位一致（零回归锚点）', () => {
+  const { dayNight } = makeDayNight({ visualStyle: 'normal' });
+  const a = readTuningValues(dayNight.params);
+  const b = readTuningValues(VISUAL_STYLES.normal);
+  for (const k of LIGHT_TUNING_KEYS) {
+    assertEqual(a[k], b[k], `${k}: 未调整时不得偏离风格表`);
   }
 });
