@@ -28,7 +28,7 @@ import {
   TELEPORT_AUTO_CLOSE_MS,
   RESOLUTION_ROW_TITLE, RESOLUTION_LABELS,
   AMBIENT_ROW_TITLE, AMBIENT_LABELS,
-  TAB_SETTINGS_LABEL, TAB_ABOUT_LABEL, TAB_TUNING_LABEL, ABOUT_PARAGRAPH, ABOUT_IMAGE_PATH,
+  TAB_SETTINGS_LABEL, TAB_ABOUT_LABEL, TAB_TUNING_LABEL, ABOUT_IMAGE_PATH,
 } from '../ui/settings-panel.js';
 import {
   PIXEL_RATIO_MODE_OPTIONS, DEFAULT_PIXEL_RATIO_MODE,
@@ -189,6 +189,12 @@ test('settings: fogColor 恒开（v3.26 面板已无入口），?fog= 仍是隔�
  * 钉三件事：① 无版本号 / 旧版本号的 false 被丢弃 → 回落到开；② 迁移后写上新版本号
  * （否则每次启动都重跑一次迁移，玩家真点「关闭」后会被反复翻回开）；③ 迁移只针对
  * `fogColor`，**其它字段不得被触碰**（泛化迁移会静默改掉玩家别的设置）。
+ *
+ * ⚠️ **v3.26 起语义又进了一步：雾色恒开**。面板那一格换成了「萤火虫和落叶」，
+ * `resolveSettings` **完全不读 `stored.fogColor`** ⇒ 存储值无论新旧真假都回落默认开。
+ * 故本用例里「当前版本存档的 false」那一条期望值已于 2026-11-27 按用户裁定改为 **true**
+ *（旧期望 false 是 v1.78 时代的语义，自 v3.26 起就与实现不符）。
+ * `?fog=0` URL 分支与 `setFogColorEnabled` API 保留，供 Tier 4 单变量对照。
  */
 test('settings: 旧存档的 fogColor=false 被迁移成默认开（其它字段不动）', () => {
   // 无版本号的老存档（v1.59 ~ v1.77 期间落盘的）
@@ -202,10 +208,15 @@ test('settings: 旧存档的 fogColor=false 被迁移成默认开（其它字段
     '迁移后必须写上新版本号（否则玩家真点「关闭」会被反复翻回开）');
   assertTrue(!('fogColor' in legacy), '被丢弃的旧值不得残留在存储对象里');
 
-  // 已迁移过（当前版本号）+ 玩家真的点了「关闭」→ 必须尊重
+  // ☠️ **当前版本存档里的 false 也不再被尊重**（v3.26 起）—— 用户 2026-11-27 裁定把这条
+  // 过时断言改成 true。根因不是迁移逻辑，而是**`resolveSettings` 已完全不读 `stored.fogColor`**：
+  // v3.26 把面板那一格换成「萤火虫和落叶」、雾色恒开（玩家侧再无入口），所以无论存档
+  // 带不带版本号、值是 true 还是 false，**结果恒为默认开**。
+  // 旧断言期望 false 是 v1.78（默认值翻转）时代的语义，自 v3.26 起就与实现不符。
+  // ⚠️ `?fog=0` 的 URL 分支与 `setFogColorEnabled` API **保留**（Tier 4 单变量对照靠它们）。
   const current = { settingsVersion: DEFAULT_SETTINGS.settingsVersion, fogColor: false };
-  assertEqual(resolveSettings(current, new URLSearchParams('')).fogColor, false,
-    '当前版本里玩家确实选的关必须被尊重');
+  assertEqual(resolveSettings(current, new URLSearchParams('')).fogColor, true,
+    '雾色恒开（v3.26）：存储里的 fogColor 不再被采信，带版本号的 false 也回落默认开');
 
   // 旧存档里 fogColor 是 true（玩家曾经手动开过）—— 迁移不必动它，结果本就是开
   const legacyOn = { fogColor: true };
@@ -631,22 +642,25 @@ test('生命系统显示层的 z-index 必须嵌进既有层级不等式', () =>
  * v3.25：设置弹窗的两个 Tab（用户 2026-11-20：「增加一个 Tab，第一个 Tab 就是现在的配置信息
  * 『游戏设置』，第二个 Tab 是『关于游戏』」）。
  *
- * 这里钉的是**常量当唯一权威**（文案、配图路径、正文），不是布局 ——
- * 「弹框尺寸切换不变」「确定按钮在内容之外」「确定按钮宽度翻倍」三条布局契约在
- * `tests/about-tab.spec.mjs` 里用真实浏览器量取（单测拿不到 computed style）。
+ * 这里钉的是**常量当唯一权威**（Tab 标题文案、配图路径），不是布局 ——
+ * 「弹框尺寸切换不变」「页签等宽等高」在 `tests/light-tuning.spec.mjs` 用例① 里用真实
+ * 浏览器量取（单测拿不到 computed style）。
  *
- * 三条判据各自防的缺陷形态：
- * ① 文案/顺序：Tab 栏是玩家找设置的第一入口，改一个字或换序都会改变惯性；
+ * 两条判据各自防的缺陷形态：
+ * ① Tab 标题/顺序：Tab 栏是玩家找设置的第一入口，改一个字或换序都会改变惯性；
  * ② 配图路径：写成站点根绝对路径（`/assets/...`）在子路径部署时 404，而**只在切到关于页时
  *    表现为破图**，没有任何报错。`check:arch` 守住字面量形式，这里守住「经 resourceUrl 派生」
- *    这个事实 —— `resourceUrl()` 的结果以仓库根为基址，与运行位置无关；
- * ③ 正文完整性：它是用户给的私人文字，被摘要/改字都不属于技术改动。
+ *    这个事实 —— `resourceUrl()` 的结果以仓库根为基址，与运行位置无关。
+ *
+ * ☠️ **关于页正文不入测试**（用户 2026-11-27 裁定：「文案不需要测试」）：
+ * 那是玩家可见的私人文字，改字属用户本人的决定而不是技术改动；拿断言钉它只会在
+ * 用户改文案时制造假红（历史上已发生：断言写「我上小学三年级」而文案是「我小学三年级」）。
  */
-test('设置弹窗的两个 Tab：文案与顺序、配图路径走 resourceUrl、关于页正文不被改写', () => {
+test('设置弹窗的 Tab：标题文案与顺序、配图路径走 resourceUrl', () => {
   assertEqual(TAB_SETTINGS_LABEL, '游戏设置');
   assertEqual(TAB_ABOUT_LABEL, '关于游戏');
   // v3.51：第三个 Tab（用户 2026-11-27 裁定放**中间**）。
-  // 页签顺序与等宽等布局契约在 tests/about-tab.spec.mjs 用真实浏览器量取。
+  // 页签顺序与等宽等布局契约在 tests/light-tuning.spec.mjs 用例① 用真实浏览器量取。
   assertEqual(TAB_TUNING_LABEL, '光影微调');
 
   // 配图路径：仓库相对（禁前导斜杠），且经 resourceUrl 解析出的 URL 以它结尾
@@ -662,12 +676,5 @@ test('设置弹窗的两个 Tab：文案与顺序、配图路径走 resourceUrl�
   // 子路径部署下也必须正确（与 `test-resource-url` 同口径，这里只钉关于页这条具体引用）
   const nested = resourceUrlFrom('http://host/mc-heavy/src/core/resource-url.js', ABOUT_IMAGE_PATH);
   assertEqual(nested, 'http://host/mc-heavy/assets/about/prompt.png');
-
-  // ③ 正文：用户原话的几个锚点必须在（钉住「没有被摘要/改写」）
-  assertTrue(ABOUT_PARAGRAPH.includes('我上小学三年级'));
-  assertTrue(ABOUT_PARAGRAPH.includes('爸爸给我做了一个“我的世界”让我偷偷玩'));
-  assertTrue(ABOUT_PARAGRAPH.includes('只要我语文再考优'));
-  // 用户指定的那段话**不含**旁白句（2026-11-20 裁定删掉）
-  assertFalse(ABOUT_PARAGRAPH.includes('三年级小朋友写的一张提示词'));
 });
 

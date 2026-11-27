@@ -4152,8 +4152,10 @@ async function checkAzaleaTrees() {
  * 改了 `SOUND_IDS` 而忘改门禁时它仍然全绿。
  * ⚠️ **扩展名走 `soundFileName(id)`**（v2.64）：写死 `.mp3` 会让 7 个 `.ogg` 音效恒报缺失。
  * ⚠️ **关于页配图只查存在性不查内容**：它是用户原图（4032×3024 / 14MB 手写笔记），
- * 没有烘焙产物可言，也**不进指纹**；真正的加载成功由 `tests/about-tab.spec.mjs` 在真实
- * 浏览器里钉 `img.complete + naturalWidth === 4032`。
+ * 没有烘焙产物可言，也**不进指纹**。
+ * ☠️ v3.51：原本由 `tests/about-tab.spec.mjs` 在真实浏览器里钉 `img.complete +
+ * naturalWidth === 4032`，**该 spec 已按用户 2026-11-27 裁定删除**（「about-tab.spec 也删掉」）
+ * ⇒ 现在关于页配图的**加载成功无自动化覆盖**，只靠本门的存在性检查。
  */
 function checkAudioAssets() {
   const missing = [];

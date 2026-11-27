@@ -58,7 +58,6 @@ const UI = [
   'damage-flash',       // v3.29 受伤红闪（Tier 4 像素：四周 40px 带 vs 中心区差分）
   'minimap',
   'settings-resolution',
-  'about-tab',          // v3.25 设置弹窗两 Tab（尺寸不变 / 确定按钮在内容之外 / 关于页配图）
   'light-tuning',       // v3.51 第三个 Tab「光影微调」（15 滑块接线 / 切风格同步 / 复制文本 / 尺寸不变）
   'loading-overlay',
   'progress',

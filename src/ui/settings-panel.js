@@ -1017,9 +1017,9 @@ export class SettingsPanel {
    * ⚠️ v3.31：整条后处理链（体积雾/Bloom/色差/暗角/冷调/颗粒）已按用户裁定删除。
    *
    * ⚠️ **落位 = 左列、瞬移行下方**（用户明确指定）。它会给左列增一行高，
-   * 而面板有「不得出现纵向滚动条」的冻结断言（teleport.spec / about-tab.spec /
-   * settings-resolution.spec 三处）⇒ **必须实测面板高度**，超了就停下报告，
-   * 不擅自改面板高度或删其他行。
+   * 而面板有「不得出现纵向滚动条」的冻结断言（teleport.spec / settings-resolution.spec
+   * 两处；v3.51 前还有 about-tab.spec，已按用户 2026-11-27 裁定删除）⇒ **必须实测面板高度**，
+   * 超了就停下报告，不擅自改面板高度或删其他行。
    * ⚠️ **不置灰**：无异步前置条件（同 _rowAmbientFx 的口径）。
    * ⚠️ **业务逻辑在 Game**（`setStormLighting`）：面板只做 DOM 与文案。
    */
