@@ -331,15 +331,15 @@ test('负向②：把 max 换成加法（整体提亮）⇒ 云顶面不变判�
   test.setTimeout(300_000);
   await page.setViewportSize({ width: 960, height: 540 });
   await routeModule(page, 'materials.js', (b) => b.replace(
-    'const sunTermSoft = mix(sunTerm, max(sunTerm, uCloudSunFloor), cloudT);',
-    'const sunTermSoft = sunTerm.add(uCloudSunFloor.mul(cloudT).mul(0.3));',
+    'const sunTermSoft = mix(sunTerm, max(sunTerm, uCloudSunFloorRGB), cloudT);',
+    'const sunTermSoft = sunTerm.add(uCloudSunFloorRGB.mul(cloudT).mul(0.3));',
   ));
   await page.goto(URL);
   await waitWorldSettled(page);
   const code = await browserCode(page, '/src/render/materials.js');
-  expect(code.includes('sunTerm.add(uCloudSunFloor.mul(cloudT).mul(0.3))'),
+  expect(code.includes('sunTerm.add(uCloudSunFloorRGB.mul(cloudT).mul(0.3))'),
     '注入须真的落地').toBe(true);
-  expect(code.includes('const sunTermSoft = mix(sunTerm, max(sunTerm, uCloudSunFloor), cloudT);'),
+  expect(code.includes('const sunTermSoft = mix(sunTerm, max(sunTerm, uCloudSunFloorRGB), cloudT);'),
     '原写法须已被替换').toBe(false);
 
   const geo = await buildSlabs(page);

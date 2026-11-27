@@ -14,7 +14,7 @@ import { ASHLAR_TONE_MAPPING, ACES_FILMIC_TONE_MAPPING } from './ashlar-tonemap-
 // `shade-params.js` 不 import 任何东西，不可能成环。
 import { SHADOW_FLOOR, SUN_INTENSITY, HEMI_GROUND } from './shade-params.js';
 // v3.50：云专属着色地板的派生函数（`cloud-shade.js` 零 import，同样不可能成环）。
-import { cloudSunFloorFor, cloudHemiFloorFor } from './cloud-shade.js';
+import { cloudSunFloorFor, cloudSunFloorRGBFor, cloudHemiFloorFor } from './cloud-shade.js';
 
 export const VISUAL_STYLE_KEYS = { MORNING: 'morning', NOON: 'noon', DUSK: 'dusk', NIGHT: 'night', NORMAL: 'normal' };
 
@@ -693,6 +693,18 @@ export class DayNight {
      */
     const uCloudSunFloor = this.voxelUniforms.uCloudSunFloor;
     if (uCloudSunFloor) uCloudSunFloor.value = cloudSunFloorFor(floor);
+    /**
+     * 逐通道版（自审修复）：同一个 floor + **当前风格的 ambientColor**。
+     * ☠️ 标量地板做 `max(vec3, float)` 会把云的背光面抹成中性灰
+     * （dusk/night/normal 三档的冷环境光 R−B −0.129/−0.097/−0.044 → 0）。
+     * ⚠️ 必须吃**同一个 floor 局部量**（与 uCloudSunFloor 同源，不得重读 p）。
+     * ⚠️ `.value.set(x,y,z)`：建的是 `uniform(new THREE.Vector3())`，没有 setRGB。
+     */
+    const uCloudSunFloorRGB = this.voxelUniforms.uCloudSunFloorRGB;
+    if (uCloudSunFloorRGB && uCloudSunFloorRGB.value && typeof uCloudSunFloorRGB.value.set === 'function') {
+      const rgb = cloudSunFloorRGBFor(floor, p.ambientColor);
+      uCloudSunFloorRGB.value.set(rgb[0], rgb[1], rgb[2]);
+    }
     const uCloudHemiFloor = this.voxelUniforms.uCloudHemiFloor;
     if (uCloudHemiFloor) uCloudHemiFloor.value = cloudHemiFloorFor(ground);
     /**

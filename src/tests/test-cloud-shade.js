@@ -196,7 +196,9 @@ test('materials: 三个地板都走 mix 且 t 是 cloudT（无 if 分支）', as
   for (const [name, orig, floor] of [
     ['aoSoft', 'aoFactor', 'uCloudAoFloor'],
     ['hemiSoft', 'hemiFactor', 'uCloudHemiFloor'],
-    ['sunTermSoft', 'sunTerm', 'uCloudSunFloor'],
+    // ⚠️ 太阳项用**逐通道**地板（自审修复）：sunTerm 是 vec3，
+    // 标量 max 会抹掉傍晚/黑夜/普通档的色相。详见下面两条专项用例。
+    ['sunTermSoft', 'sunTerm', 'uCloudSunFloorRGB'],
   ]) {
     const re = new RegExp(`const ${name} = mix\\(${orig},\\s*max\\(${orig},\\s*${floor}\\),\\s*cloudT\\)`);
     assertTrue(re.test(code), `${name} 必须是 mix(${orig}, max(${orig}, ${floor}), cloudT)`);
@@ -241,4 +243,58 @@ test('cloud uniforms: 句柄形状与初值（uCloudSoften=1 满档；三个地�
   assertEqual(U.uCloudSunFloor.value, cloudSunFloorFor(SHADOW_FLOOR), '太阳地板初值 = 全局档派生值');
   assertEqual(U.uCloudHemiFloor.value, cloudHemiFloorFor(HEMI_GROUND), '半球地板初值 = 全局档派生值');
   assertEqual(U.uCloudAoFloor.value, cloudAoFloorFor(), 'AO 地板初值 = 派生值');
+});
+
+// ==================== Final review 修复：地板必须保色相 ====================
+//
+// ☠️ 自审发现的真缺陷：`sunTerm` 是 **vec3**（含 uSunColor/uAmbientColor 色温），
+// 而 `uCloudSunFloor` 是标量 ⇒ `max(vec3, float)` 逐分量取大 ⇒ 背光面三通道
+// 被抬到同一个值 ⇒ **傍晚/黑夜/普通三档的冷色环境光被抹成中性灰**。
+// 实测背光面 R−B：dusk −0.129 → 0、night −0.097 → 0、normal −0.044 → 0。
+// 全部既有判据都在 noon（中性色温）下 ⇒ 结构上抓不到。
+
+test('cloud-shade: 逐通道地板保色相 —— 非中性色温下 R−B 不得被抹平', async () => {
+  const { cloudSunFloorRGBFor } = await import('../render/cloud-shade.js');
+  const { VISUAL_STYLES } = await import('../render/daynight.js');
+  for (const key of ['dusk', 'night', 'normal']) {
+    const p = VISUAL_STYLES[key];
+    const floor = typeof p.shadowFloor === 'number' ? p.shadowFloor : SHADOW_FLOOR;
+    const ac = p.ambientColor;
+    const rgb = cloudSunFloorRGBFor(floor, ac);
+    const cloudFloor = cloudSunFloorFor(floor);
+    // 背光面（dot=0）的 sunTerm_c = ambientColor_c × floor
+    const st = [0, 1, 2].map((c) => ac[c] * floor);
+    const lifted = st.map((v, c) => Math.max(v, rgb[c]));
+    const rbBefore = st[0] - st[2];
+    const rbAfter = lifted[0] - lifted[2];
+    // ① 色相方向必须保持（冷环境仍偏蓝 ⇒ R−B 仍为负）
+    assertTrue(rbBefore < 0, `${key} 档本身必须是冷环境（前提断言）`);
+    assertTrue(rbAfter < 0,
+      `${key} 档云背光面须仍偏冷（R−B ${rbAfter.toFixed(4)}），标量地板会抹成 0`);
+    // ② 三通道的**均值**必须等于标量地板（亮度语义不变，只换色相分配）
+    const mean = (rgb[0] + rgb[1] + rgb[2]) / 3;
+    assertTrue(Math.abs(mean - cloudFloor) < 1e-12,
+      `${key} 档逐通道地板均值须等于标量地板 ${cloudFloor}，实测 ${mean}`);
+    // ③ 中性色温（全 1）时逐通道地板退化成标量（零回归）
+    const neutral = cloudSunFloorRGBFor(floor, [1, 1, 1]);
+    for (let c = 0; c < 3; c++) {
+      assertTrue(Math.abs(neutral[c] - cloudFloor) < 1e-12,
+        `中性色温下通道 ${c} 须等于标量地板`);
+    }
+  }
+});
+
+test('materials: 云太阳地板必须逐通道（防标量 max 抹掉色相）', async () => {
+  const code = await codeOf('../render/materials.js');
+  // 必须存在一个 vec3 的地板节点，且 sunTermSoft 吃它而不是标量 uniform
+  assertTrue(/uCloudSunFloorRGB/.test(code),
+    '必须有逐通道地板 uCloudSunFloorRGB（标量 max 会把傍晚/黑夜/普通档的云抹成灰）');
+  assertTrue(/const sunTermSoft = mix\(sunTerm,\s*max\(sunTerm,\s*uCloudSunFloorRGB\),\s*cloudT\)/.test(code),
+    'sunTermSoft 必须吃逐通道地板');
+});
+
+test('daynight: 逐通道云地板由同一个 floor 与当前 ambientColor 派生', async () => {
+  const code = await codeOf('../render/daynight.js');
+  assertTrue(/cloudSunFloorRGBFor\(floor,\s*p\.ambientColor\)/.test(code),
+    '逐通道地板须吃局部量 floor 与当前风格的 ambientColor');
 });

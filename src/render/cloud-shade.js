@@ -82,6 +82,39 @@ export function cloudSunFloorFor(floor, lift = CLOUD_SUN_LIFT) {
 }
 
 /**
+ * 云太阳项地板的**逐通道**版 —— 保色相（v3.50 自审修复）。
+ *
+ * ☠️☠️ **为什么必须逐通道**：`materials.js` 的 `sunTerm` 是 **vec3**
+ * （已乘 `uSunColor` / `uAmbientColor` 色温），而标量地板做 `max(vec3, float)`
+ * 是**逐分量取大** ⇒ 背光面三通道被抬到同一个值 ⇒ **色相被抹成中性灰**。
+ * 实测背光面 R−B：dusk **−0.129 → 0**、night **−0.097 → 0**、normal **−0.044 → 0**
+ * ⇒ 傍晚的「暖光冷影」在云上消失。正午色温中性（全 1）故当时没暴露。
+ *
+ * 做法：把标量地板按**当前环境色的相对比例**分配到三通道，
+ * 并归一化使**三通道均值 ≡ 标量地板** ⇒ 亮度语义不变，只换色相分配。
+ * 中性色温（全 1）时三通道都等于标量地板 ⇒ **逐位零回归**。
+ *
+ * ⚠️ 用 `ambientColor` 而不是 `sunColor`：地板抬的是**背光面**，
+ * 而背光面的 sunTerm 只剩环境项（`ambientColor × floor`）—— 两者必须同源。
+ *
+ * @param {number} floor 当前影区地板（与 `cloudSunFloorFor` 同一入参）
+ * @param {readonly number[]} ambientColor 当前环境色温乘数（均值 ≈1）
+ * @param {number} [lift] 缺省 `CLOUD_SUN_LIFT`
+ * @returns {number[]} 长度 3 的**新数组**（绝不暴露入参权威数组）
+ */
+export function cloudSunFloorRGBFor(floor, ambientColor, lift = CLOUD_SUN_LIFT) {
+  const base = cloudSunFloorFor(floor, lift);
+  const mean = (ambientColor[0] + ambientColor[1] + ambientColor[2]) / 3;
+  // 防御：均值非正（异常色温）时退化为标量地板，不产 NaN/Inf
+  if (!(mean > 1e-9)) return [base, base, base];
+  return [
+    base * ambientColor[0] / mean,
+    base * ambientColor[1] / mean,
+    base * ambientColor[2] / mean,
+  ];
+}
+
+/**
  * 云的半球环境地板 —— 由当前 `uHemiGround` 派生（同上口径）。
  * @param {number} ground 当前朝下面的环境光比例
  * @param {number} [lift] 缺省 `CLOUD_HEMI_LIFT`；传 0 ⇒ 逐位返回 ground

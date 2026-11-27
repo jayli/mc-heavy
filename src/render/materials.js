@@ -21,8 +21,7 @@ import {
 // v3.50 云专属着色地板（three-free 常量与 CPU 参考实现，与 TSL 同公式 —— 红线 1）
 import {
   AO_CURVE_K, cloudSunFloorFor, cloudHemiFloorFor, cloudAoFloorFor,
-} from './cloud-shade.js';
-import { FOG_SKY_Y_FLOOR_EPS } from './fog-sky-direction.js';
+} from './cloud-shade.js';import { FOG_SKY_Y_FLOOR_EPS } from './fog-sky-direction.js';
 // v3.31 雨天湿表面（**从零实现**，不参考上游；按材质分类 + 有界天空反光）
 import { createWetSurfaceNode, WET_SURFACE_UNIFORMS } from './wet-surface.js';
 
@@ -59,8 +58,23 @@ const aoFactor = float(1).sub(float(3).sub(ao).div(3).mul(AO_CURVE_K));
 export const CLOUD_SURFACE_UNIFORMS = {
   /** 柔和总强度 0..1。**0 = 逐位回到 v3.49**（零回归锚点，也是 Tier 4 单变量 A/B 旋钮）。 */
   uCloudSoften: uniform(1.0),
-  /** 太阳项地板（初值 = 全局档派生值 0.597）。 */
+  /**
+   * 太阳项地板的**标量权威**（初值 = 全局档派生值 0.597）。
+   * ⚠️ **着色器不直接吃它** —— 消费方是下面的 RGB 版（vec3）。
+   * 保留它的理由：① 亮度语义的单一权威（RGB 版三通道均值 ≡ 它）；
+   * ② Tier 4 与单测读它校对派生值（比读 vec3 直观）。
+   */
   uCloudSunFloor: uniform(cloudSunFloorFor(SHADOW_FLOOR)),
+  /**
+   * 太阳项地板的**逐通道**版（v3.50 自审修复）。
+   * ☠️ `sunTerm` 是 vec3（含色温），标量 `max(vec3, float)` 逐分量取大
+   * ⇒ 把傍晚/黑夜/普通档的冷色环境光抹成中性灰（实测 R−B −0.129/−0.097/−0.044 → 0）。
+   * 由 `DayNight._apply` 每帧写（同一个 floor + 当前 ambientColor）。
+   * 初值取中性色温 ⇒ 三通道都 = 标量地板（逐位零回归）。
+   */
+  uCloudSunFloorRGB: uniform(new THREE.Vector3(
+    cloudSunFloorFor(SHADOW_FLOOR), cloudSunFloorFor(SHADOW_FLOOR), cloudSunFloorFor(SHADOW_FLOOR),
+  )),
   /** 半球环境地板（初值 = 全局档派生值 0.8）。 */
   uCloudHemiFloor: uniform(cloudHemiFloorFor(HEMI_GROUND)),
   /** AO 地板（0.7，与 style 无关）。 */
@@ -68,6 +82,7 @@ export const CLOUD_SURFACE_UNIFORMS = {
 };
 const uCloudSoften = CLOUD_SURFACE_UNIFORMS.uCloudSoften;
 const uCloudSunFloor = CLOUD_SURFACE_UNIFORMS.uCloudSunFloor;
+const uCloudSunFloorRGB = CLOUD_SURFACE_UNIFORMS.uCloudSunFloorRGB;
 const uCloudHemiFloor = CLOUD_SURFACE_UNIFORMS.uCloudHemiFloor;
 const uCloudAoFloor = CLOUD_SURFACE_UNIFORMS.uCloudAoFloor;
 // 逐 quad 标记（mesher 从方块名写 packed bit19）。**逐顶点常量** ⇒ 无需渐变。
@@ -246,7 +261,9 @@ export function createVoxelMaterials(atlasTexture, sunLight = null, reflectTextu
   // 在 dot 上抬会绕过阴影因子（阴影语义被改，用户明确「阴影完全不动」）。
   // ⚠️ 副作用已记在设计稿 §7：影区的云也会被抬到地板 ⇒ 「云在阴影里比石头亮」。
   // 那正是「云自己散射」的语义；若实玩否掉，处置是把地板乘 shadowKill（一行）。
-  const sunTermSoft = mix(sunTerm, max(sunTerm, uCloudSunFloor), cloudT);
+  // ⚠️⚠️ **必须用逐通道地板 `uCloudSunFloorRGB`**（自审修复）：sunTerm 是 vec3，
+  // 标量 `max(vec3, float)` 逐分量取大会把三通道抬到同一值 ⇒ 抹掉色相。
+  const sunTermSoft = mix(sunTerm, max(sunTerm, uCloudSunFloorRGB), cloudT);
 
   const shadeLit = max(mul(mul(vSkyShade, hemiSoft), sunTermSoft), vBlockShade);
   // 不接收阴影的通道（transparent = 水/玻璃）用无阴影亮度。
@@ -329,6 +346,7 @@ export function createVoxelMaterials(atlasTexture, sunLight = null, reflectTextu
       // 由 `_apply` 写（指向**同一 uniform 实例**，红线 1）。
       uCloudSoften,
       uCloudSunFloor,
+      uCloudSunFloorRGB,
       uCloudHemiFloor,
     },
     /** v3.31：湿表面的 uniform 句柄（装配层每帧写 uWet） */
