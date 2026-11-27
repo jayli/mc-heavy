@@ -295,19 +295,31 @@ test('光影微调⑥：自动循环下拖动冻结日夜，恢复默认解冻',
   await openPanel(page);
   await openTuning(page);
 
-  const h0 = await page.evaluate(() => window.__MC_GAME__.dayNight.hour);
+  // ☠️ **先量「不冻结时同窗口会走多少」作对照**：没有这条，「hour 不变」在
+  // 主循环恰好没跑的环境下是恒真判据（本仓 pitfalls：判据必须能区分两种世界）。
+  const a0 = await page.evaluate(() => window.__MC_GAME__.dayNight.hour);
+  await page.waitForTimeout(600);
+  const a1 = await page.evaluate(() => window.__MC_GAME__.dayNight.hour);
+  expect(a1, '前提：未调参时 600ms 内日夜必须真的在走（否则下面的冻结判据恒真）')
+    .toBeGreaterThan(a0);
+
+  // ☠️ **基准必须在拖动落地之后取**（实测踩过）：旧写法先读 h0 再拖，
+  // 而读 h0 到 input 事件落地之间主循环还在跑 ⇒ 实测差 **0.000166 小时 ≈ 一帧**
+  // （0.02s × 24/1200 = 0.0004 同量级）—— 那是测量方法错，不是冻结失效。
   await slide(page, 'skyDim', 0.5);
+  await page.waitForTimeout(100);
+  const h1 = await page.evaluate(() => window.__MC_GAME__.dayNight.hour);
   await page.waitForTimeout(600);
   const frozen = await page.evaluate(STATE);
   expect(frozen.style, '仍是自动循环').toBeNull();
-  expect(frozen.hour, '冻结后 hour 逐位不变（否则滑块值被每帧插值抹掉）').toBe(h0);
+  expect(frozen.hour, '冻结后 hour 逐位不变（否则滑块值被每帧插值抹掉）').toBe(h1);
   expect(frozen.skyDim, 'override 值稳得住').toBeCloseTo(0.5, 6);
 
   await page.locator('#lt-reset').click();
-  // 面板是模态，主循环跳过 player.update 但 dayNight.update 仍在跑 —— 实测口径见下
+  // 面板是模态，主循环跳过 player.update 但 dayNight.update 仍在跑（game.js:1620 只对 player 门控）
   await page.waitForTimeout(600);
   const resumed = await page.evaluate(() => window.__MC_GAME__.dayNight.hour);
-  expect(resumed, '恢复默认后日夜必须继续走').toBeGreaterThan(h0);
+  expect(resumed, '恢复默认后日夜必须继续走').toBeGreaterThan(h1);
 });
 
 test('光影微调⑦：复制参数文本格式正确；剪贴板失败时给失败提示（不静默）', async ({ page }) => {

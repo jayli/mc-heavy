@@ -672,8 +672,10 @@ export class SettingsPanel {
    * 两个面板等大小（同一块 `.mc-tab-panels` 区域）⇒ **弹框尺寸不变**（用户明确要求）。
    * 故这里只切 `active` 类与 `this._tab`，不改任何尺寸/可见性之外的容器属性。
    *
-   * v3.51：三个页签（新增 tuning）—— 改成**遍历 `_tabPanelIds`** 而不是写三段 if：
+   * v3.51：三个页签（新增 tuning）—— 改成**遍历 `_tabButtons` 的键**而不是写三段 if：
    * 写死三个 querySelector 再加第四个 Tab 时会静默漏切（旧面板留着 active ⇒ 两个页同时显示）。
+   * ⚠️ 面板 id 与页签 key **不同名**：settings 对应 `#settings-panel-main`（既有命名），
+   * 其余两个同名 ⇒ 这里只做这一项映射，不另立第二份清单。
    *
    * @param {'settings' | 'tuning' | 'about'} key
    */
