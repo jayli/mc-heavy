@@ -933,6 +933,67 @@ test('mesher: bit14 不污染既有位段（light/AO/face/emissive 各位段独�
   }
 });
 
+// packed bit19 = 云专属着色标记（v3.50）。消费方 = materials.js 的三个着色地板
+// （太阳项 / 半球环境 / AO），令云的暗面不再死暗而亮面逐位不动。
+const CLOUD_SOFT_BIT = (1 << 19);
+
+test('mesher: cloud 置 bit19（云专属着色），stone/snow/marble/leaves 不置', () => {
+  const reg = makeRegistry();
+  // ⚠️ **判别性用例**：实现若写成「整个 opaque 通道都置位」，
+  // stone/snow/marble 三条真红 —— 而那正是「全世界的背光面都被抬亮」的缺陷形态。
+  const cases = [
+    ['cloud', 'opaque', 1],
+    ['stone', 'opaque', 0],
+    ['snow', 'opaque', 0],
+    ['marble', 'opaque', 0],
+    ['leaves', 'cutout', 0],
+  ];
+  for (const [name, channel, expectBit] of cases) {
+    const ch = meshSingle(reg, name)[channel];
+    // 前提断言：防「零顶点时循环不跑」的恒真
+    assertTrue(ch.vertexCount > 0, `${name} 在 ${channel} 通道有顶点`);
+    for (let i = 0; i < ch.vertexCount; i++) {
+      assertEqual((ch.packed[i] & CLOUD_SOFT_BIT) ? 1 : 0, expectBit,
+        `${name} vert${i} bit19 应为 ${expectBit}`);
+    }
+  }
+});
+
+test('mesher: cloud 的 bit19 不污染 bit0-18（位段隔离）', () => {
+  const reg = makeRegistry();
+  const ch = meshSingle(reg, 'cloud').opaque;
+  assertTrue(ch.vertexCount > 0, 'cloud 在 opaque 通道');
+  for (let i = 0; i < ch.vertexCount; i++) {
+    const p = ch.packed[i];
+    assertEqual(p & 0xFF, 0xF0, `cloud vert${i} light 位未变`);
+    assertTrue(((p >>> 8) & 3) <= 3, `cloud vert${i} AO 位合法`);
+    assertTrue(((p >>> 10) & 7) <= 5, `cloud vert${i} face 位在 0-5`);
+    assertEqual((p >>> 13) & 1, 0, `cloud vert${i} 非自发光`);
+    // ⚠️ 这两条是本轮最易被挤占的：bit14 挤了会让云**开始投影**（用户明确阴影不动），
+    // bit15-18 挤了会翻转湿表面分类（云吃满强度湿分支 ⇒ 高空光晕，v3.31 用户报告过）。
+    assertEqual((p >>> 14) & 1, 1, `cloud vert${i} bit14 不投影（语义未动）`);
+    assertEqual((p >>> 15) & 0xF, 0, `cloud vert${i} wetClass = NONE`);
+  }
+});
+
+test('mesher: bit19 只对 cloud 置位 —— 与方块名双向一致（全 registry 扫描）', () => {
+  const reg = makeRegistry();
+  let checked = 0;
+  for (const def of BLOCKS) {
+    if (def.cullMode === 'none') continue;   // 无渲染通道 ⇒ 无顶点可验
+    const ch = meshSingle(reg, def.name)[def.cullMode];
+    if (ch.vertexCount === 0) continue;
+    const expectBit = def.name === 'cloud' ? 1 : 0;
+    for (let i = 0; i < ch.vertexCount; i++) {
+      assertEqual((ch.packed[i] & CLOUD_SOFT_BIT) ? 1 : 0, expectBit,
+        `${def.name} vert${i} bit19 应为 ${expectBit}`);
+    }
+    checked++;
+  }
+  // 防「全部跳过」的恒真
+  assertTrue(checked > 100, `实际验了 ${checked} 个方块（需 > 100）`);
+});
+
 test('mesher: bed_head 半高块 + null 面剔除（4 面渲染）', () => {
   const reg = makeRegistry();
   const result = meshSingle(reg, 'bed_head');

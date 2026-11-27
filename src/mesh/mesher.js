@@ -466,6 +466,21 @@ const EMISSIVE_MATERIALS = new Set(['hanging_lamp']);
 // ⚠️ bit14 是 packed 里第一个超过 bit13 的位；Uint32 容量充足（现用 bit0-14）。
 const SHADOW_CAST_BIT = 1 << 14;
 
+// 云专属着色标记（v3.50 packed **bit19**）：消费方 = `render/materials.js` 的三个
+// 着色地板（太阳项 / 半球环境 / AO）—— 令云的背光面/底面/凹角不再死暗，
+// 而亮面（顶面/迎光面）因 `max(原值, 地板)` 而**逐位不动**。设计稿：
+// docs/superpowers/specs/2026-11-27-cloud-soft-translucency-design.md
+//
+// ⚠️ **为何用方块名而不是新声明字段**：与 `SAME_TYPE_CULL` / `EMISSIVE_MATERIALS` /
+// `DOUBLE_SIDE_CUBES` 同一性质 —— 这是**材质语义**（「这块的贴图是匀质白云」），
+// 不是 BlockData 的方块属性。`blocks-data.js` 是 mc-lite `BlockData.js` 的转换产物，
+// 不给它长一列渲染专用字段（`cloud` 已在 `SAME_TYPE_CULL` 里按名字表达同类语义）。
+//
+// ⚠️ **bit19 不得挤占 bit0–18**：挤 bit14 会让云**开始投影**（用户明确阴影不动），
+// 挤 bit15–18 会翻转湿表面分类（云吃满强度湿分支 ⇒ 高空光晕，v3.31 用户报告过）。
+// 由 `test-mesher.js` 的位段隔离用例与全 registry 扫描双向钉住。
+const CLOUD_SOFT_BIT = 1 << 19;
+
 // 湿表面材质类（v3.31，packed **bit15–18**，mask 0xF）：权威 = `registry.wetClassTable`
 // （声明侧 `voxel/wet-material-data.js` 的 name→类映射，九类）。
 // 消费方 = `render/wet-surface.js` 在**顶点阶段** `packed.shiftRight(15).bitAnd(15)`
@@ -577,6 +592,9 @@ export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
         // 湿表面材质类（v3.31 bit15–18）：逐方块算一次，两条发射路径共用。
         // 掩 0xF 是防御：表值超出 4 bit 时不得溢到 bit19+（将来扩类要同步改位段布局）。
         const wetClassBits = (wetClassTable[id] & 0xF) << WET_CLASS_SHIFT;
+        // 云专属着色标记（v3.50 bit19）：逐方块算一次。只有立方体分支消费它 ——
+        // `cloud` 的 `geometry:'box'` 不在 `TEMPLATES` 里（走立方体路径），模板分支里没有云。
+        const cloudSoftBit = blockName === 'cloud' ? CLOUD_SOFT_BIT : 0;
 
         // 非立方体几何（§4.3 顶点模板）：不做面剔除（mc-lite 实例级渲染同口径）；
         // 光照读自身格（模板面在格内，无"邻居格"语义）；AO 按顶点推导。
@@ -731,7 +749,7 @@ export function buildSectionMesh(view, registry, atlasMeta, _cx, _sy, _cz) {
             // 所以 `lighting.js` 的 `lightDirtyMasks` 依赖集合不变。
             aoProbes(data, meta, vx, vy, vz, worldFace, [rx, ry, rz], null, null, occTable, AO_OUT);
             const ao = getAO(AO_OUT[0], AO_OUT[1], AO_OUT[2], AO_OUT[3]);
-            packeds.push(faceLight | (ao << 8) | (worldFace << 10) | blockEmissiveBit | noShadowCastBit | wetClassBits);
+            packeds.push(faceLight | (ao << 8) | (worldFace << 10) | blockEmissiveBit | noShadowCastBit | wetClassBits | cloudSoftBit);
           }
           pushQuad(ch, positions, uvs, packeds, doubleSide);
         }
