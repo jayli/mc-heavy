@@ -28,7 +28,7 @@ import {
   TELEPORT_AUTO_CLOSE_MS,
   RESOLUTION_ROW_TITLE, RESOLUTION_LABELS,
   AMBIENT_ROW_TITLE, AMBIENT_LABELS,
-  TAB_SETTINGS_LABEL, TAB_ABOUT_LABEL, ABOUT_PARAGRAPH, ABOUT_IMAGE_PATH,
+  TAB_SETTINGS_LABEL, TAB_ABOUT_LABEL, TAB_TUNING_LABEL, ABOUT_PARAGRAPH, ABOUT_IMAGE_PATH,
 } from '../ui/settings-panel.js';
 import {
   PIXEL_RATIO_MODE_OPTIONS, DEFAULT_PIXEL_RATIO_MODE,
@@ -645,6 +645,9 @@ test('生命系统显示层的 z-index 必须嵌进既有层级不等式', () =>
 test('设置弹窗的两个 Tab：文案与顺序、配图路径走 resourceUrl、关于页正文不被改写', () => {
   assertEqual(TAB_SETTINGS_LABEL, '游戏设置');
   assertEqual(TAB_ABOUT_LABEL, '关于游戏');
+  // v3.51：第三个 Tab（用户 2026-11-27 裁定放**中间**）。
+  // 页签顺序与等宽等布局契约在 tests/about-tab.spec.mjs 用真实浏览器量取。
+  assertEqual(TAB_TUNING_LABEL, '光影微调');
 
   // 配图路径：仓库相对（禁前导斜杠），且经 resourceUrl 解析出的 URL 以它结尾
   assertFalse(ABOUT_IMAGE_PATH.startsWith('/'),

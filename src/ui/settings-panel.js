@@ -20,6 +20,11 @@ import {
 // 分辨率档位的值集合（'sharp' / 'performance'）— 唯一权威在 render/pixel-ratio.js。
 // 面板只引值集合与文案并排显示；换算/钳制一概不在这里做。
 import { PIXEL_RATIO_MODE_OPTIONS } from '../render/pixel-ratio.js';
+// v3.51：光影微调的参数表（单一权威：DOM / 初值 / 复位 / 复制文本全从它派生）。
+// 它是 three-free 的纯数据模块，不会把渲染层依赖传染进 UI。
+import { LIGHT_TUNING_PARAMS } from '../render/light-tuning-config.js';
+// 当前风格是不是 AgX 曲线（punch 两项只在那条曲线下有效）—— 从 three-free 的 config 取 id。
+import { ASHLAR_TONE_MAPPING } from '../render/ashlar-tonemap-config.js';
 import { Toast } from './toast.js';
 // 资源 URL 唯一权威（红线：禁止站点根绝对路径 —— 仓库挂子路径部署时会全 404）
 import { resourceUrl } from '../core/resource-url.js';
@@ -51,6 +56,21 @@ const CLEAR_SAVE_LABEL = '删除缓存';
  */
 export const TAB_SETTINGS_LABEL = '游戏设置';
 export const TAB_ABOUT_LABEL = '关于游戏';
+/**
+ * v3.51：第三个 Tab「光影微调」（用户 2026-11-27）。**放中间**（用户同日裁定）：
+ * 游戏设置 | 光影微调 | 关于游戏 —— 两个“调东西”的页相邻，关于页在末位。
+ *
+ * 它是**标定工具**而不是玩法开关：产出是一段可粘贴的参数文本（「复制参数」），
+ * 故滑块值**不持久化**（用户裁定：只在本次会话有效，照 water-reflect-dock 口径）。
+ * 导出供单测钉死（单一口径：构造 Tab 栏与断言共用一份文案）。
+ */
+export const TAB_TUNING_LABEL = '光影微调';
+/** v3.51：光影微调页底部两个动作按钮与提示文案（导出供 spec 钉单一口径）。 */
+export const TUNING_COPY_LABEL = '复制参数';
+export const TUNING_RESET_LABEL = '恢复默认';
+export const TUNING_COPY_OK = '已复制 15 项参数';
+export const TUNING_COPY_FAIL = '复制失败，请手动选取';
+export const TUNING_HINT = '调的是当前环境风格，切风格换一套；自动循环下调整会暂停日夜推进。对比度/饱和度仅「普通」档生效。刷新页面即回默认。';
 /**
  * 「关于游戏」Tab 的正文。**用户原话照抄**（2026-11-20），只做排版规整（去掉多余空格）。
  * ⚠️ 这是玩家可见的私人文字，改字、缩写或「润色」都不属技术改动 —— 需要用户本人改。
@@ -398,6 +418,45 @@ const PANEL_CSS = `
 #settings-modal .mc-footer {
   margin-top: auto; display: flex; justify-content: center; padding-top: 20px;
 }
+/* 光影微调页（v3.51）：两列滑块 + 底部固定按钮区。
+   ⚠️ **页内可视高只有 448px**（.mc-content 写死 560 − Tab 栏 54 − 底栏 58），
+   15 行单列放不下 ⇒ 两列 8/7。行高必须紧凑：标题+滑块+读数同一行（grid 三段）。
+   ⚠️ 底部按钮区在滚动区**之外** ⇒ 滚到任何位置都能复制/复位。 */
+#settings-modal .mc-tuning { gap: 8px; }
+#settings-modal .mc-tuning-scroll { flex: 1; min-height: 0; overflow: auto; }
+#settings-modal .mc-tuning-col { gap: 4px; }
+/* 一行 = 标题 / 滑块 / 读数。标题列定宽 108px（最长文案「弱光（影区地板）」9 字），
+   读数列 44px 容得下 -0.000 六位字符（等宽字体 11px）。
+   ⚠️ 本文件在 JS 模板字面量内，注释里**不得用反引号**包裹标识符（会提前终止模板字符串）。 */
+#settings-modal .mc-tuning-row {
+  display: grid; grid-template-columns: 108px minmax(0, 1fr) 44px;
+  align-items: center; gap: 6px;
+}
+#settings-modal .mc-tuning-label {
+  font-size: 11px; font-weight: bold; color: #333; text-align: left;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+#settings-modal .mc-tuning-val {
+  font: bold 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #2f5d8a; text-align: right;
+}
+#settings-modal .mc-tuning-off { opacity: 0.45; }
+#settings-modal .mc-tuning-row input[type=range] {
+  -webkit-appearance: none; appearance: none;
+  width: 100%; height: 14px; margin: 0; background: transparent; cursor: pointer;
+}
+#settings-modal .mc-tuning-row input[type=range]::-webkit-slider-runnable-track {
+  height: 6px; background: #8b8b8b;
+  border: 1px solid #fff; border-right-color: #373737; border-bottom-color: #373737;
+}
+#settings-modal .mc-tuning-row input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 10px; height: 14px; margin-top: -5px; background: #559944;
+  border: 1px solid #373737; border-right-color: #fff; border-bottom-color: #fff;
+}
+#settings-modal .mc-tuning-row input[type=range]:disabled { cursor: default; }
+#settings-modal .mc-tuning-footer { display: flex; flex-direction: column; gap: 6px; }
+#settings-modal .mc-tuning-footer .mc-hint { line-height: 1.4; }
 /* 确定按钮（v3.25）：宽度是改前（78px）的**两倍** —— 用 min-width 而不是 width，
    两个字的文案宽度（实测 26px + padding 48 + border 4 = 78px）不再决定按钮尺寸，
    字号/文案将来变动也不会把它缩回去。 */
@@ -474,6 +533,8 @@ export class SettingsPanel {
       return b;
     };
     mkTab('settings', TAB_SETTINGS_LABEL);
+    // v3.51：「光影微调」插在**中间**（用户 2026-11-27 裁定）。
+    mkTab('tuning', TAB_TUNING_LABEL);
     mkTab('about', TAB_ABOUT_LABEL);
 
     // 页内容区：两面板**同时存在于 DOM**，只切 display（`mc-tab-panel.active`）。
@@ -523,7 +584,12 @@ export class SettingsPanel {
     right.appendChild(this._combinedTntProgress());
     right.appendChild(this._rowWorld());             // 新世界 + 删除缓存共用一行
 
-    // 第二个 Tab（「关于游戏」）：纯文案 + 一张手写提示词图。图片 `src` 延迟到
+    // 第二个 Tab（v3.51：「光影微调」）—— 15 个滑块，两列 8/7。
+    // ⚠️ 页内可视高只有 448px（.mc-content 写死 560 − Tab 栏 54 − 底栏 58），
+    // 单列 15 行放不下 ⇒ 必须两列（沿用面板既有 .mc-columns 手法）。
+    panels.appendChild(this._panelLightTuning());
+
+    // 第三个 Tab（「关于游戏」）：纯文案 + 一张手写提示词图。图片 `src` 延迟到
     // 首次切到该 Tab 才设（14MB PNG，不占启动与常规设置路径的带宽）。
     panels.appendChild(this._panelAbout());
 
@@ -606,23 +672,159 @@ export class SettingsPanel {
    * 两个面板等大小（同一块 `.mc-tab-panels` 区域）⇒ **弹框尺寸不变**（用户明确要求）。
    * 故这里只切 `active` 类与 `this._tab`，不改任何尺寸/可见性之外的容器属性。
    *
-   * @param {'settings' | 'about'} key
+   * v3.51：三个页签（新增 tuning）—— 改成**遍历 `_tabPanelIds`** 而不是写三段 if：
+   * 写死三个 querySelector 再加第四个 Tab 时会静默漏切（旧面板留着 active ⇒ 两个页同时显示）。
+   *
+   * @param {'settings' | 'tuning' | 'about'} key
    */
   setTab(key) {
-    if (!this._tabButtons[key]) return;   // 未知 key 不得静默清空两个面板
+    if (!this._tabButtons[key]) return;   // 未知 key 不得静默清空全部面板
     this._tab = key;
     for (const [k, b] of Object.entries(this._tabButtons)) {
       b.classList.toggle('active', k === key);
     }
-    const main = this.el.querySelector('#settings-panel-main');
-    const about = this.el.querySelector('#settings-panel-about');
-    main.classList.toggle('active', key === 'settings');
-    about.classList.toggle('active', key === 'about');
+    for (const k of Object.keys(this._tabButtons)) {
+      const el = this.el.querySelector(`#settings-panel-${k === 'settings' ? 'main' : k}`);
+      if (el) el.classList.toggle('active', k === key);
+    }
 
     // 首次进入关于页才真正开始拉图（见 `_panelAbout` 的注释）
     if (key === 'about' && !this._aboutImageSrcSet) {
       this._aboutImageSrcSet = true;
       this._aboutImage.src = resourceUrl(ABOUT_IMAGE_PATH);
+    }
+    // v3.51：每次进调参页都重读生效值 —— 风格可能在其它页被改过，
+    // 不同步的形态是「滑块显示 0.14 而实际生效 0.38」。
+    if (key === 'tuning') this._syncTuning();
+  }
+
+  /**
+   * v3.51：「光影微调」页。两列滑块（左 8 / 右 7）+ 底部两个动作按钮。
+   *
+   * **参数表是唯一权威**：DOM / 初值 / 复位 / 复制文本全从 `LIGHT_TUNING_PARAMS` 派生
+   * （照 `ui/water-reflect-dock.js` 的 `REFLECT_SLIDERS` 既有手法）。
+   *
+   * ⚠️ **业务逻辑全在 Game / DayNight**：本方法只做 DOM 与文案（依赖方向 §3）。
+   * ⚠️ **底部按钮固定在页底**（不在滚动区里）：玩家滚到任何位置都能复制/复位。
+   */
+  _panelLightTuning() {
+    const panel = document.createElement('div');
+    panel.className = 'mc-tab-panel mc-tuning';
+    panel.id = 'settings-panel-tuning';
+
+    // 滚动区：两列滑块。底部按钮在外面 ⇒ 滚动时它们不动。
+    const scroll = document.createElement('div');
+    scroll.className = 'mc-tuning-scroll';
+    const columns = document.createElement('div');
+    columns.className = 'mc-columns';
+    /** 滑块与读数句柄（按 key 索引，同步与断言都靠它，不靠 DOM 顺序下标） */
+    this._tuningInputs = new Map();
+    this._tuningVals = new Map();
+    for (const col of ['left', 'right']) {
+      const c = document.createElement('div');
+      c.className = 'mc-column mc-tuning-col';
+      c.id = `lt-col-${col}`;
+      for (const def of LIGHT_TUNING_PARAMS.filter((d) => d.col === col)) {
+        c.appendChild(this._makeTuningRow(def));
+      }
+      columns.appendChild(c);
+    }
+    scroll.appendChild(columns);
+    panel.appendChild(scroll);
+
+    const footer = document.createElement('div');
+    footer.className = 'mc-tuning-footer';
+    const btns = document.createElement('div');
+    btns.className = 'mc-btn-group';
+    const copyBtn = document.createElement('button');
+    copyBtn.id = 'lt-copy';
+    copyBtn.textContent = TUNING_COPY_LABEL;
+    copyBtn.addEventListener('click', async () => {
+      const ok = await this.game.copyLightTuningText();
+      this._toast?.show(ok ? TUNING_COPY_OK : TUNING_COPY_FAIL);
+    });
+    const resetBtn = document.createElement('button');
+    resetBtn.id = 'lt-reset';
+    resetBtn.textContent = TUNING_RESET_LABEL;
+    resetBtn.addEventListener('click', () => {
+      this.game.resetLightTuning();
+      this._syncTuning();
+    });
+    btns.append(copyBtn, resetBtn);
+    footer.appendChild(btns);
+    const hint = document.createElement('div');
+    hint.className = 'mc-hint';
+    hint.textContent = TUNING_HINT;
+    footer.appendChild(hint);
+    panel.appendChild(footer);
+    return panel;
+  }
+
+  /**
+   * v3.51：一行滑块（左标题 / 中滑块 / 右数值）。
+   *
+   * ⚠️ **滑块回写真实生效值**：Game 侧可能钳制过（越界）或拒绝过（非法值）。
+   * 不回写的形态是「滑块显示 5 而实际生效 0.9」，玩家会以为功能坏了
+   * （与 `water-reflect-dock.js` 的 `_apply` 同一口径）。
+   * ⚠️ **id 里的下标要转义**：`sunColor[0]` 的方括号在 CSS 选择器里是属性语法，
+   * 直接拼进 id 会让 `#lt-sunColor[0]` 选不中（静默失效）⇒ 换成 `-`。
+   */
+  _makeTuningRow(def) {
+    const domKey = def.key.replace(/[[\]]/g, '-');
+    const row = document.createElement('div');
+    row.className = 'mc-tuning-row';
+    row.title = def.hint;
+    const label = document.createElement('span');
+    label.className = 'mc-tuning-label';
+    label.textContent = def.label;
+    const input = document.createElement('input');
+    input.type = 'range';
+    input.id = `lt-${domKey}`;
+    input.min = String(def.min);
+    input.max = String(def.max);
+    input.step = String(def.step);
+    input.title = def.hint;
+    const val = document.createElement('span');
+    val.className = 'mc-tuning-val';
+    val.id = `lt-val-${domKey}`;
+    input.addEventListener('input', () => {
+      const actual = this.game.setLightTuning(def.key, Number(input.value));
+      if (actual === null) {
+        // 非法值：把滑块与读数回写当前生效值（不静默接受）
+        this._syncTuning();
+        return;
+      }
+      val.textContent = actual.toFixed(3);
+      if (Number(input.value) !== actual) input.value = String(actual);
+    });
+    row.append(label, input, val);
+    this._tuningInputs.set(def.key, input);
+    this._tuningVals.set(def.key, val);
+    return row;
+  }
+
+  /**
+   * v3.51：把 15 个滑块与读数同步到**当前生效值**，并按风格置灰 punch 两项。
+   *
+   * 调用点：进本页时、切风格后、复位后、非法输入后。
+   * ⚠️ **置灰判据读真实 toneMapping id**，不靠风格名字符串：将来另加一个用 AgX 的档
+   * 时，写死 `=== 'normal'` 会把那一档的 punch 滑块误置灰。
+   */
+  _syncTuning() {
+    if (!this._tuningInputs) return;
+    const values = this.game.lightTuningValues;
+    const agx = (this.game.renderer?.toneMapping ?? null) === ASHLAR_TONE_MAPPING;
+    for (const def of LIGHT_TUNING_PARAMS) {
+      const input = this._tuningInputs.get(def.key);
+      const val = this._tuningVals.get(def.key);
+      const v = values[def.key];
+      if (input) {
+        input.value = String(v);
+        const off = def.agxOnly === true && !agx;
+        input.disabled = off;
+        input.parentElement.classList.toggle('mc-tuning-off', off);
+      }
+      if (val) val.textContent = Number(v).toFixed(3);
     }
   }
 
@@ -773,6 +975,9 @@ export class SettingsPanel {
         this.settings.visualStyle = v;
         this._save();
         this.game.setVisualStyle(v); // null = 恢复日夜循环（M2-6）
+        // v3.51：风格变了 ⇒ 调参页的 15 个滑块与 punch 置灰态必须跟着换一套。
+        // 不同步的形态是「滑块显示上一档的值而实际生效本档值」。
+        this._syncTuning();
       });
   }
 

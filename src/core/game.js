@@ -23,6 +23,8 @@ import { setupSky, placeCelestial } from '../render/sky.js';
 // 已 GPU 实测：这条路径**不需要改帧循环**（详见该模块文件头）。
 import { ensureAshlarToneMapping, ASHLAR_PUNCH_UNIFORMS } from '../render/ashlar-tonemap.js';
 import { DayNight, SUN_LIGHT_BASE_HEX, SUN_LIGHT_BASE_RGB, nightBlendOf } from '../render/daynight.js';
+// v3.51：「光影微调」Tab 的复制文本格式（单一权威，与面板滑块表同一模块）。
+import { formatTuningText } from '../render/light-tuning-config.js';
 import { ShadowScheduler, SUN_DIR_GATE_DEG, sunDirectionChanged, texelSnapOffset } from '../render/shadow-manager.js';
 import { RainEffect } from '../render/rain.js';
 import { WeatherState, RAIN } from '../render/weather.js';
@@ -2202,6 +2204,59 @@ export class Game {
   perfSnapshot() { return this.perf.snapshot(); }
   /** 切换视觉风格（'morning'/'noon'/'night'，null 恢复日夜循环；M2-6，M3 设置面板接入） */
   setVisualStyle(key) { this.dayNight.setStyle(key); }
+
+  /**
+   * v3.51：「光影微调」Tab 的四个薄封装（面板不得直连 dayNight，与 setVisualStyle 同口径）。
+   *
+   * 业务逻辑全在 `DayNight`（override 分桶 / 钳制 / 自动档冻结）—— 这里只转发。
+   * @param {string} key LIGHT_TUNING_PARAMS 里的 key
+   * @param {unknown} value
+   * @returns {number|null} 实际生效值；非法输入 → null（面板据此把滑块回写）
+   */
+  setLightTuning(key, value) { return this.dayNight.setTuning(key, value); }
+
+  /** v3.51：当前风格的全部调参清空，回风格表缺省（自动档同时解冻日夜推进）。 */
+  resetLightTuning() { this.dayNight.resetTuning(); }
+
+  /** v3.51：当前 15 项生效值（面板建滑块 / 同步读数都读它）。 */
+  get lightTuningValues() { return this.dayNight.tuningValues; }
+
+  /** v3.51：当前风格键（null = 自动循环）。 */
+  get lightTuningStyleKey() { return this.dayNight.tuningStyleKey; }
+
+  /**
+   * v3.51：把当前 15 项参数复制成文本（用户指定格式：每行 `参数名，变量名:值`）。
+   *
+   * ⚠️ **两条路径都要**：`navigator.clipboard` 在非安全上下文 / 无头环境 / 权限拒绝时
+   * 不可用或抛错，回落隐藏 textarea + `execCommand('copy')`。两条都失败返回 false，
+   * 由面板给失败 toast —— **不得静默失败**（玩家看到的就是「点了没反应」）。
+   * ⚠️ 文本组装走 `formatTuningText`（单一权威），不在这里拼第二份格式。
+   * @returns {Promise<boolean>} 是否真的写进了剪贴板
+   */
+  async copyLightTuningText() {
+    const text = formatTuningText(this.lightTuningValues, this.lightTuningStyleKey);
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch { /* 回落下一条路径 */ }
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      // 不能用 display:none / visibility:hidden —— 那样 select() 选不中，复制会静默空内容
+      ta.style.position = 'fixed';
+      ta.style.left = '-9999px';
+      ta.style.top = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand('copy');
+      ta.remove();
+      return ok === true;
+    } catch {
+      return false;
+    }
+  }
 
   /**
    * 光源跟随玩家（mc-lite Game.js:556-558 口径）：光源放在「玩家位置 + 太阳方向 × 60」，
