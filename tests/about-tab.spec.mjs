@@ -57,7 +57,7 @@ const MEASURE = () => {
   };
 };
 
-test('关于游戏 Tab：两个页签、切换弹框尺寸不变、确定按钮在内容之外且宽度翻倍', async ({ page }) => {
+test('关于游戏 Tab：三个页签、切换弹框尺寸不变、确定按钮在内容之外且宽度翻倍', async ({ page }) => {
   test.setTimeout(180_000);
   // 记录关于页图片的请求时机 —— 图片是 14MB，必须延迟到首次切页才请求
   const imageRequests = [];
@@ -70,15 +70,27 @@ test('关于游戏 Tab：两个页签、切换弹框尺寸不变、确定按钮�
   // ---- ① 页签：两个、等宽、文案与顺序是用户指定的 ----
   const init = await page.evaluate(MEASURE);
   expect(init.tab, '打开面板默认停在第一个 Tab「游戏设置」').toBe('settings');
-  expect(init.tabs.map((t) => t.text)).toEqual(['游戏设置', '关于游戏']);
-  expect(init.tabs.map((t) => t.id)).toEqual(['settings-tab-settings', 'settings-tab-about']);
+  expect(init.tabs.map((t) => t.text)).toEqual(['游戏设置', '光影微调', '关于游戏']);
+  expect(init.tabs.map((t) => t.id)).toEqual(['settings-tab-settings', 'settings-tab-tuning', 'settings-tab-about']);
   expect(init.tabs[0].active).toBe(true);
   expect(init.tabs[1].active).toBe(false);
+  expect(init.tabs[2].active).toBe(false);
   expect(init.mainShown).toBe(true);
   expect(init.aboutShown).toBe(false);
-  // 两个页签等宽（flex:1 平分）—— 这条同时钉住「高度写死 40px」不被文案撑开
-  expect(init.tabs[0].box.w).toBe(init.tabs[1].box.w);
+  // 两个页签等宽（flex:1 平分）—— 这条同时钉住「高度写死 40px」不被文案撑开。
+  // v3.51：第三个页签（光影微调，在中间）—— 期望值由两项改三项是**需求变更**，
+  // 不是放宽阈值；等高/尺寸不变/确定按钮位置三条契约一字未动。
+  // ☠️ **等宽容差是实测逼出来的，不是放宽**：三份 flex:1 平分 754px = 251.333…，
+  // Chrome 按 1/64px 量化 ⇒ 实测 251.328125 / 251.34375 / 251.328125（最大差 0.015625px）。
+  // 两份时 754/2 = 377 整除，所以旧断言的逐位相等从未暴露过量化。
+  // 0.02px 容差只盖量化单位；真的不等宽（文案撑开某项）差几到几十 px，仍会真红。
+  const SUBPIXEL = 0.02;
+  expect(Math.abs(init.tabs[0].box.w - init.tabs[1].box.w), '页签等宽（容 1/64px 量化）')
+    .toBeLessThanOrEqual(SUBPIXEL);
+  expect(Math.abs(init.tabs[1].box.w - init.tabs[2].box.w), '三个页签必须等宽')
+    .toBeLessThanOrEqual(SUBPIXEL);
   expect(init.tabs[0].box.h).toBe(init.tabs[1].box.h);
+  expect(init.tabs[1].box.h).toBe(init.tabs[2].box.h);
   expect(init.tabs[0].box.h, '页签高度固定 40px（切换时不得变）').toBe(40);
 
   // ---- ② 确定按钮：在 Tab 内容之外 + 宽度是改前（78px）的两倍 ----
@@ -104,7 +116,8 @@ test('关于游戏 Tab：两个页签、切换弹框尺寸不变、确定按钮�
   }, null, { timeout: 60_000 });
   const about = await page.evaluate(MEASURE);
   expect(about.tab).toBe('about');
-  expect(about.tabs[1].active).toBe(true);
+  expect(about.tabs[1].active).toBe(false);
+  expect(about.tabs[2].active).toBe(true);
   expect(about.tabs[0].active).toBe(false);
   expect(about.mainShown).toBe(false);
 
