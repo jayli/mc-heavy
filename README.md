@@ -22,27 +22,4 @@ npm run atlas        # 重新生成 assets/atlas.png + atlas.json（世界渲染
 - 打开 `http://localhost:8081`。
 - 浏览器内单测入口：`http://localhost:8081/src/tests/index.html`。
 
-## 文档索引
-
-| 文档 | 说明 |
-|---|---|
-| [docs/roadmap.md](docs/roadmap.md) | **项目进度唯一总览**（里程碑总表 + 依赖链 + 扩展点 + 去哪找细节） |
-| [docs/tectonic-terrain-migration-survey.md](docs/tectonic-terrain-migration-survey.md) | **下阶段 TODO「丰富地图多样性」的选型依据** —— Tectonic 地形模块可抽离部分的调研报告（三档分级 + 与 `genP95`/红线 1 的冲突实测） |
-| [docs/phase-1-engine-design.md](docs/phase-1-engine-design.md) | **架构唯一权威**；历次口径变更见其修订说明（v1.1~v1.30） |
-| [docs/testing-policy.md](docs/testing-policy.md) | **测试分级唯一权威**（Tier 1~4 判据 + 门禁分层） |
-| [CLAUDE.md](CLAUDE.md) | 协作规范（重构红线 / 对标 mc-lite 取舍 / 技术约束 / 活跃约束） |
-| [docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md](docs/superpowers/plans/2026-08-20-phase1-remaining-roadmap.md) | 任务级执行清单 + v1.19~v1.30 历次改造记录 |
-| docs/superpowers/{specs,plans}/2026-08-23-m4-* | M4 玩家第一人称武器（第二阶段首个 Epic） |
-| docs/superpowers/{specs,plans}/2026-08-23-m5-* | M5 实体运行时 |
-| docs/superpowers/{specs,plans}/2026-08-23-m6-* | M6 丧尸 |
-| docs/superpowers/{specs,plans}/2026-08-23-m7-* | M7 玩家放置丧尸巢穴 |
-| docs/superpowers/plans/2026-08-19-m0-engine-skeleton.md | M0 实施计划（已完成） |
-| docs/superpowers/plans/2026-08-19-m1-voxel-core-loop.md | M1 实施计划（已完成） |
-| docs/superpowers/{specs,plans}/2026-08-23-m2-sky-structures* | M2-7 悬浮空岛与云层（已完成） |
-| docs/m0-bench-report.md / docs/m1-acceptance-report.md / docs/m2-m3-performance-report.md | 实测与验收报告（M3-6 性能报告 = 冻结基线） |
-| docs/m4-weapons-acceptance-report.md / docs/m5-entity-runtime-acceptance-report.md / docs/m6-zombies-acceptance-report.md | 第二阶段 M4~M6 验收报告 |
-| docs/m7-zombie-nests-acceptance-report.md | M7 丧尸巢穴验收报告（含 18 条负向验证实测与交替对照） |
-| docs/m2-seed12345-comparison.md | M2 同 seed 人工比对清单 |
-
-
-
+<img width="1228" height="701" alt="wallpaper" src="https://github.com/user-attachments/assets/46c872f6-206b-4c66-b879-9af9399f3599" />
