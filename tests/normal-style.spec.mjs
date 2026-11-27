@@ -443,3 +443,132 @@ test('普通⑤：启动即普通档时首帧就是目标状态（不等外部�
   expect(state.toneMapping, '首帧色调映射就是自定义 AgX').toBe(ASHLAR_TONE_MAPPING);
   expect(state.exposure, '首帧曝光就是本档值').toBeCloseTo(2.2, 6);
 });
+// ---------------------------------------------------------------------------
+// v3.48：立方图里真的有云
+//
+// ⚠️ **判据全部落在交付物文件上**，不碰实现细节（云怎么算的是烘焙期的自由）。
+// 用户 2026-11-27 指出 v3.47 的天空「完全没有云」，而截图里大片积云是最显眼的元素。
+// ---------------------------------------------------------------------------
+test('普通⑦：立方图里有体积云，且形态正确（覆盖率/亮度/结构/梯度）', async ({ page }) => {
+  test.setTimeout(180_000);
+  await page.goto('/?vd=2&seed=12345');
+
+  const measure = async (dir) => page.evaluate(async (dir) => {
+    const NAMES = ['posx', 'negx', 'posy', 'negy', 'posz', 'negz'];
+    const faces = {};
+    for (const n of NAMES) {
+      const img = new Image();
+      img.src = `${dir}/${n}.jpg`;
+      await img.decode();
+      const c = document.createElement('canvas');
+      c.width = img.width; c.height = img.height;
+      const ctx = c.getContext('2d');
+      ctx.drawImage(img, 0, 0);
+      faces[n] = { w: img.width, h: img.height, data: ctx.getImageData(0, 0, img.width, img.height).data };
+    }
+    const pix = (f, x, y) => {
+      const a = faces[f]; const i = ((y * a.w) + x) * 4;
+      return [a.data[i], a.data[i + 1], a.data[i + 2]];
+    };
+    const lum = (p) => 0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2];
+
+    // 只看**天空那一半**：posy/negy/posx/negx/posz/negz 的上半（v < 0.5）
+    // ⚠️ 只取每面**上半的 0~35% 行**，**不要取到 50%**。
+    // 实测教训（负向验证打出）：旧的无云图在 y≈480 处（地平面过渡带）有大量「亮且不偏蓝」
+    // 的像素 —— 那是天空→地面色的过渡，不是云。取到 50% 会把地面算成云，
+    // 使旧图凭空获得 17.1% 的「覆盖率」、块 SD 33.1（几乎追上新图），判据几乎失效。
+    const SKY_ROWS = 0.35;
+    let cloudN = 0, skyN = 0, cloudLum = 0, skyLum = 0, clipped = 0, total = 0;
+    const blocks = [];
+    const grads = [];
+    for (const n of NAMES) {
+      const a = faces[n];
+      for (let by = 0; by < a.h * SKY_ROWS; by += 16) {
+        let bs = 0, bn = 0;
+        for (let x = 0; x < a.w; x += 4) {
+          for (let y = by; y < Math.min(by + 16, a.h * SKY_ROWS); y += 4) {
+            const q = pix(n, x, y), L = lum(q);
+            total++;
+            if (L >= 254) clipped++;
+            // 云 = 亮 且 不偏蓝（天空的 B 明显大于 R；云接近中性/暖）
+            if (L > 130 && (q[2] - q[0]) < 22) { cloudN++; cloudLum += L; }
+            else { skyN++; skyLum += L; }
+            bs += L; bn++;
+          }
+        }
+        if (bn > 0) blocks.push(bs / bn);
+      }
+      // 局部梯度：相邻像素亮度差（云边缘是高梯度，纯渐变是低梯度）
+      for (let y = 2; y < a.h * SKY_ROWS; y += 2) {
+        for (let x = 2; x < a.w - 2; x += 2) {
+          grads.push(Math.abs(lum(pix(n, x, y)) - lum(pix(n, x + 1, y))));
+        }
+      }
+    }
+    grads.sort((p, q) => p - q);
+    // 高梯度像素占比（|∇| > 3 灰阶）。用**占比**而不是分位比值：
+    // 平坦天空区在 JPEG 里会被压成相邻同值 ⇒ p50 可能恰好是 0，比值退化。
+    const hiGradPct = (grads.filter((v) => v > 3).length / grads.length) * 100;
+    const avg = blocks.reduce((s, v) => s + v, 0) / blocks.length;
+    const sd = Math.sqrt(blocks.reduce((s, v) => s + (v - avg) ** 2, 0) / blocks.length);
+    return {
+      cloudPct: (cloudN / (cloudN + skyN)) * 100,
+      cloudLum: cloudLum / Math.max(cloudN, 1),
+      skyLum: skyLum / Math.max(skyN, 1),
+      blockSd: sd,
+      hiGradPct,
+      gradP50: grads[(grads.length * 0.5) | 0],
+      gradP99: grads[(grads.length * 0.99) | 0],
+      clippedPct: (clipped / total) * 100,
+    };
+  }, dir);
+
+  const now = await measure('/assets/sky/normal');
+  const day = await measure('/assets/sky/day');
+  console.log('NORMAL-CLOUD:', JSON.stringify({
+    normal: {
+      cloudPct: +now.cloudPct.toFixed(1), cloudLum: +now.cloudLum.toFixed(1),
+      skyLum: +now.skyLum.toFixed(1), blockSd: +now.blockSd.toFixed(1),
+      hiGradPct: +now.hiGradPct.toFixed(2),
+      gradP50: +now.gradP50.toFixed(2), gradP99: +now.gradP99.toFixed(2),
+      clipped: +now.clippedPct.toFixed(2),
+    },
+    day: { cloudPct: +day.cloudPct.toFixed(1), blockSd: +day.blockSd.toFixed(1), hiGradPct: +day.hiGradPct.toFixed(2) },
+  }));
+
+  // ① 有云，但没糊死天空。
+  //    下限 25：实测新图 **40.5%**、旧的无云图 **16.8%**（那个 16.8 是渐变+日晕被误判，
+  //    不是云）。取 25 使旧图真红。上限 75 挡「整片白」。
+  expect(now.cloudPct, `云覆盖率 ${now.cloudPct.toFixed(1)}% 过低（没烘出云？）`).toBeGreaterThan(25);
+  expect(now.cloudPct, `云覆盖率 ${now.cloudPct.toFixed(1)}% 过高（天空被糊死）`).toBeLessThan(75);
+
+  // ② 云比天空亮 —— 这是「云」与「一块灰」的区别。
+  //    ⚠️ 判别力**弱**：旧的无云图因日晕也有 ~60 的差。保留它作为 sanity，
+  //    但不能当作「有云」的证据。
+  const contrast = now.cloudLum - now.skyLum;
+  expect(contrast, `云(${now.cloudLum.toFixed(1)}) 必须比天空(${now.skyLum.toFixed(1)}) 亮，实测差 ${contrast.toFixed(1)}`)
+    .toBeGreaterThan(18);
+
+  // ③ 结构性：云是斑块 ⇒ 块均值标准差高于纯渐变。
+  //    ⚠️ 判别力也弱（旧图实测 27.2、新图 35.5，只因渐变本身跨很大亮度范围）。
+  expect(now.blockSd, `块均值标准差 ${now.blockSd.toFixed(1)} 过低（像纯渐变，不像云）`).toBeGreaterThan(28);
+
+  // ④ ☠️ **主判别判据**：高梯度像素的占比。
+  //
+  // 这是负向验证打出来的结论 —— 实测（取 0~35% 行）：
+  //   新（有云）**0.77%** / 旧（v3.47 无云）**0.04%** / day（照片云）1.26%
+  // ⇒ 新旧差 **19 倍**，而 ①②③ 的差只有 1.2~2.4 倍，几乎分不开。
+  // 机理：体积云的**边缘**是真正的高空间频率；而渐变天空（哪怕加日晕）在相邻像素上
+  // 几乎不变。旧图被压成相邻同值 ⇒ 高梯度几乎为 0。
+  //
+  // ⚠️ 原来写的是「p99/p50 比值」，在本档**已实测退化**：平坦天空区在 JPEG 里被压成
+  // 相邻像素完全相同 ⇒ p25/p50 都是 **0** ⇒ 除数恒 0，判据变成恒真（实测报 257）。
+  expect(now.hiGradPct,
+    `高梯度像素占比 ${now.hiGradPct.toFixed(2)}% 过低（云的边缘被磨平了 / 根本没云？）`)
+    .toBeGreaterThan(0.25);
+
+  // ⑤ **不得削顶成死白**：v3.48 第一版实测云像素 lum 251.1、整片纯白。
+  //    这条是那个缺陷的直接回归守卫。
+  expect(now.clippedPct, `削顶像素 ${now.clippedPct.toFixed(2)}% —— 云过曝成死白（丢掉顶亮底灰的层次）`)
+    .toBeLessThan(3);
+});

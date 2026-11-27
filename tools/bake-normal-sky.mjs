@@ -38,6 +38,9 @@ import {
   NORMAL_SKY_FACES, NORMAL_SKY_SIZE, NORMAL_SKY_PARAMS, normalSkyFingerprint,
   NORMAL_SKY_FINGERPRINT_JSON,
 } from './normal-sky-fingerprint.mjs';
+import { bakeWeatherNoise, bakeCloudNoise } from './normal-sky-noise.mjs';
+import { makeCloudShader } from './normal-sky-clouds.mjs';
+import { agxToneMap } from './normal-sky-tonemap.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const OUT_DIR = path.join(__dirname, '..', 'assets', 'sky', 'normal');
@@ -324,7 +327,7 @@ function sunDisc(dir, sunDir, sampleTrans) {
   return out;
 }
 
-function buildFace(faceIdx, sunDir, sampleTrans, sampleMS, horizonColor) {
+function buildFace(faceIdx, sunDir, sampleTrans, sampleMS, horizonColor, clouds) {
   const png = new PNG({ width: SIZE, height: SIZE });
   const denom = SIZE - 1;
   for (let y = 0; y < SIZE; y++) {
@@ -332,21 +335,34 @@ function buildFace(faceIdx, sunDir, sampleTrans, sampleMS, horizonColor) {
       const dir = faceDir(faceIdx, x / denom, y / denom);
       let rgb;
       if (dir[1] >= P.groundBlend) {
-        // 上半：纯大气 + 日轮/光晕
+        // 上半：纯大气 + 日轮/光晕 + 体积云（v3.48）
         const sky = skyRadiance(dir, sunDir, sampleTrans, sampleMS);
         const disc = sunDisc(dir, sunDir, sampleTrans);
-        rgb = [0, 1, 2].map((c) => (sky[c] + disc[c]) * P.bakeExposure);
+        const base = [0, 1, 2].map((c) => sky[c] + disc[c]);
+        // ⚠️ 云在**线性空间**里合成（`base×T + S`），与上游 lighting pass 的
+        // `col*cl.a + cl.rgb` 同构。先 sRGB 再合成会得到发灰的云。
+        const shaded = clouds ? clouds.shadeSkyWithClouds(dir, base) : base;
+        // ⚠️ v3.48 改走 AgX+punch，不再用线性 bakeExposure：
+        // 云的线性亮度是天空的 21~50 倍，线性路线必然削顶成死白
+        // （实测：云像素 lum 251.1、整片纯白）。曲线与运行时同源。
+        rgb = agxToneMap(shaded.map((v) => v * P.bakeTonemapExposure));
       } else {
         // 天底半：中性地面色（不画地形 —— 用户红线）。
         // 过渡带内与「贴地平线的天空」平滑混合，避免地平线处出现硬边。
+        // ⚠️ 天底半**不画云**：那里是地面，`t=(CB-camY)/sin(elev)` 在仰角≤0 时也无解。
+        //
+        // ⚠️ 地面色原本在「线性 × bakeExposure」空间里定的（旧口径）⇒
+        // 这里把它反推回线性，再与天空一起走 AgX，保证两半的编码同源、地平线不出现台阶。
         const upDir = norm3([dir[0], Math.max(dir[1], 0.002), dir[2]]);
-        const sky = skyRadiance(upDir, sunDir, sampleTrans, sampleMS).map((v) => v * P.bakeExposure);
-        const ground = horizonColor.map((v) => v * P.groundFactor);
+        const skyLin = skyRadiance(upDir, sunDir, sampleTrans, sampleMS);
+        const groundLin = horizonColor.map((v) => (v / P.bakeExposure) * P.groundFactor);
         const w = smoothstep(-P.groundBlend, P.groundBlend, dir[1]);
-        rgb = [0, 1, 2].map((c) => ground[c] + (sky[c] - ground[c]) * w);
+        const mixed = [0, 1, 2].map((c) => groundLin[c] + (skyLin[c] - groundLin[c]) * w);
+        rgb = agxToneMap(mixed.map((v) => v * P.bakeTonemapExposure));
       }
       const o = ((y * SIZE) + x) << 2;
-      for (let c = 0; c < 3; c++) png.data[o + c] = Math.round(srgbEncode(rgb[c]) * 255);
+      // `agxToneMap` 已返回 sRGB 0..1 ⇒ 直接量化，不再 `srgbEncode`。
+      for (let c = 0; c < 3; c++) png.data[o + c] = Math.round(Math.min(1, Math.max(0, rgb[c])) * 255);
       png.data[o + 3] = 255;
     }
   }
@@ -372,13 +388,52 @@ async function main() {
     .map((v) => v * P.bakeExposure);
   console.log(`[normalsky] 地平线色（线性）${horizonColor.map((v) => v.toFixed(4)).join(', ')}`);
 
+  // ---------------------------------------------------------------- 体积云（v3.48）
+  // 三个噪声输入全部在 Node 生成（确定性），再交给云求值器。
+  console.log('[normalsky] 生成云噪声：weather 256² + cloudNoise 96³ + cloudDetail 40³');
+  const tNoise = Date.now();
+  const weatherNoise = bakeWeatherNoise(256);
+  const cloudNoise = bakeCloudNoise(96, false);
+  const cloudDetail = bakeCloudNoise(40, true);
+  console.log(`  噪声就绪 ${((Date.now() - tNoise) / 1000).toFixed(1)}s`);
+
+  // sunColor = 上游 `uLightColor` = transmittance(0.25, sunY) × sunIllum × sunFade
+  const sunT = (() => {
+    const [tu, tv] = transUV(RG + 0.25, Math.max(sunDir[1], -0.02));
+    return sampleTrans(tu, tv);
+  })();
+  const sunFade = smoothstep(-0.045, 0.035, sunDir[1]);
+  const cloudSunColor = sunT.map((t) => t * P.sunIllum * sunFade);
+  console.log(`[normalsky] 云光照 uLightColor = ${cloudSunColor.map((v) => v.toFixed(3)).join(', ')}`);
+
+  const clouds = makeCloudShader({
+    weatherNoise, weatherSize: 256,
+    cloudNoise, cloudNoiseRes: 96,
+    cloudDetail, cloudDetailRes: 40,
+    params: {
+      cloudCover: P.cloudCover,
+      cloudDensity: P.cloudDensity,
+      cloudSteps: P.cloudSteps,
+      cloudMaxDist: P.cloudMaxDist,
+      cloudCamY: P.cloudCamY,
+      cloudGain: P.cloudGain,
+      sunDir,
+      sunColor: cloudSunColor,
+      groundAlbedo: P.cloudGroundAlbedo,
+    },
+    skyRadiance: (d) => skyRadiance(d, sunDir, sampleTrans, sampleMS),
+  });
+  console.log(`[normalsky] 云环境光 ambTop=${clouds._ambient.ambTop.map((v) => v.toFixed(3)).join(',')}`
+    + ` ambBot=${clouds._ambient.ambBot.map((v) => v.toFixed(3)).join(',')}`);
+
   // node 无原生 JPEG 编码器 → 借 chromium canvas（本仓既有手法，同 bake-night-sky）
   const browser = await chromium.launch();
   const page = await browser.newPage();
   await page.goto('data:text/html,<canvas id=c></canvas>');
 
   for (let i = 0; i < NORMAL_SKY_FACES.length; i++) {
-    const png = buildFace(i, sunDir, sampleTrans, sampleMS, horizonColor);
+    const tFace = Date.now();
+    const png = buildFace(i, sunDir, sampleTrans, sampleMS, horizonColor, clouds);
     const b64 = png.data.toString('base64');
     const out = await page.evaluate(async ({ w, h, data, q }) => {
       const c = document.getElementById('c');
@@ -396,7 +451,8 @@ async function main() {
     }, { w: SIZE, h: SIZE, data: b64, q: P.jpegQuality });
     const file = path.join(OUT_DIR, NORMAL_SKY_FACES[i]);
     fs.writeFileSync(file, Buffer.from(out, 'base64'));
-    console.log(`  ✓ ${NORMAL_SKY_FACES[i]}  ${(fs.statSync(file).size / 1024).toFixed(0)}KB`);
+    console.log(`  ✓ ${NORMAL_SKY_FACES[i]}  ${(fs.statSync(file).size / 1024).toFixed(0)}KB`
+      + `  (${((Date.now() - tFace) / 1000).toFixed(1)}s)`);
   }
   await browser.close();
 
