@@ -21,6 +21,7 @@ import {
 // v3.50 云专属着色地板（three-free 常量与 CPU 参考实现，与 TSL 同公式 —— 红线 1）
 import {
   AO_CURVE_K, cloudSunFloorFor, cloudHemiFloorFor, cloudAoFloorFor,
+  CLOUD_SIDE_FACE_GAIN, CLOUD_TOP_FACE_GAIN, CLOUD_BOTTOM_FACE_GAIN,
 } from './cloud-shade.js';import { FOG_SKY_Y_FLOOR_EPS } from './fog-sky-direction.js';
 // v3.31 雨天湿表面（**从零实现**，不参考上游；按材质分类 + 有界天空反光）
 import { createWetSurfaceNode, WET_SURFACE_UNIFORMS } from './wet-surface.js';
@@ -79,12 +80,22 @@ export const CLOUD_SURFACE_UNIFORMS = {
   uCloudHemiFloor: uniform(cloudHemiFloorFor(HEMI_GROUND)),
   /** AO 地板（0.7，与 style 无关）。 */
   uCloudAoFloor: uniform(cloudAoFloorFor()),
+  /**
+   * v3.51 面间明暗对比强度 0..1（侧 1.38 / 顶 0.95 / 底 0.72）。
+   *
+   * ⚠️⚠️ **必须是独立旋钮，不得复用 `uCloudSoften`**：后者 =0 会同时关掉 v3.50 的
+   * 三个地板 ⇒ 那不是本轮的单变量对照。本 uniform =0 ⇒ gain 恒 1 ⇒ **逐位回到 v3.50**
+   * （CPU 实测五档 × 6 面 × 4 AO 最大屏幕差 **0**）。
+   * 与 style 无关（灰阶比例）⇒ `DayNight._apply` 不写它，同 `uCloudAoFloor` 口径。
+   */
+  uCloudFaceContrast: uniform(1.0),
 };
 const uCloudSoften = CLOUD_SURFACE_UNIFORMS.uCloudSoften;
 const uCloudSunFloor = CLOUD_SURFACE_UNIFORMS.uCloudSunFloor;
 const uCloudSunFloorRGB = CLOUD_SURFACE_UNIFORMS.uCloudSunFloorRGB;
 const uCloudHemiFloor = CLOUD_SURFACE_UNIFORMS.uCloudHemiFloor;
 const uCloudAoFloor = CLOUD_SURFACE_UNIFORMS.uCloudAoFloor;
+const uCloudFaceContrast = CLOUD_SURFACE_UNIFORMS.uCloudFaceContrast;
 // 逐 quad 标记（mesher 从方块名写 packed bit19）。**逐顶点常量** ⇒ 无需渐变。
 const cloudBit = float(packed.shiftRight(19).bitAnd(1));
 // ⚠️ **mix 而非 if**：非云方块 cloudBit=0 ⇒ cloudT 恒 0 ⇒ mix 取左端 ⇒ **结构性零回归**
@@ -265,14 +276,32 @@ export function createVoxelMaterials(atlasTexture, sunLight = null, reflectTextu
   // 标量 `max(vec3, float)` 逐分量取大会把三通道抬到同一值 ⇒ 抹掉色相。
   const sunTermSoft = mix(sunTerm, max(sunTerm, uCloudSunFloorRGB), cloudT);
 
-  const shadeLit = max(mul(mul(vSkyShade, hemiSoft), sunTermSoft), vBlockShade);
+  // ---- v3.51 面间明暗分离（用户：「小云朵与背后大云岛底色完全一样，肉眼分辨不出来」）----
+  //
+  // 根因是一个**恒等式**：`CLOUD_HEMI_LIFT = 0.50` 使半球地板 `(1+g)/2`
+  // 恰好等于四个侧面的 hemi 因子；而侧面与底面的 N·L 都 ≤0 ⇒ 太阳项落到同一地板
+  // ⇒ **底面与四侧面逐位同色**（五档侧/底屏幕比实测全是 1.000）。
+  //
+  // 做法：在**最终 shade** 上乘一个逐面类别的**灰阶** gain。
+  // ⚠️ **灰阶是载荷性的**：标量等比缩放整个 vec3 ⇒ 保色相（用户要「更白」不是「换色」）。
+  // ⚠️ **乘在 max(sky×hemi×sunTerm, block) 之外**：只乘 sky 项会让火把照亮的云面不参与对比。
+  // ⚠️ **面类别复用已有的 `faceNormalNode`**（packed bit10-12）—— 新增 float 属性会撞
+  //    200MiB 的 gpuVertexBytes 门（实测 193.83 → 219.68）。
+  // ⚠️ **1.38 是实测安全上界**（1.42 时 dusk +Z 面线性 1.0133 > 1 ⇒ ACES 钳平三通道、
+  //    色相消失，而所有亮度判据仍绿）—— 权威与扫描表在 cloud-shade.js。
+  // ⚠️ **mix 而非 if**：非云方块 cloudBit=0 ⇒ t 恒 0 ⇒ gain 恒 1 ⇒ **结构性零回归**。
+  const cloudFaceK = select(faceNormalNode.y.greaterThan(0.5), float(CLOUD_TOP_FACE_GAIN),
+    select(faceNormalNode.y.lessThan(-0.5), float(CLOUD_BOTTOM_FACE_GAIN), float(CLOUD_SIDE_FACE_GAIN)));
+  const cloudFaceGain = mix(float(1), cloudFaceK, mul(cloudBit, uCloudFaceContrast));
+
+  const shadeLit = mul(max(mul(mul(vSkyShade, hemiSoft), sunTermSoft), vBlockShade), cloudFaceGain);
   // 不接收阴影的通道（transparent = 水/玻璃）用无阴影亮度。
   // ⚠️ **不能只靠 `receiveShadow=false`**：那个标志只门控 three 的**灯光管线**
   // （three.webgpu.js:46101 `if (builder.object.receiveShadow) setupShadow()`），而本材质是
   // unlit + colorNode 里**显式**引用 `shadow(sunLight)` 节点 → 该节点不受 receiveShadow 门控，
   // 水面照样被压暗。mc-lite 对 water/glass 是 cast+receive 双 false（GlobalInstancedMeshManager.js:76-84），
   // 此处对齐：transparent 通道完全不参与阴影（不投影也不被压暗）。
-  const shadeUnlit = max(mul(vSkyShade, hemiSoft), vBlockShade);
+  const shadeUnlit = mul(max(mul(vSkyShade, hemiSoft), vBlockShade), cloudFaceGain);
 
   const makeMaterial = ({ alphaTest = 0, transparent = false, side = THREE.FrontSide, emissive = false, receivesShadow = true, wet = false }) => {
     const mat = new THREE.MeshBasicNodeMaterial();
@@ -348,6 +377,8 @@ export function createVoxelMaterials(atlasTexture, sunLight = null, reflectTextu
       uCloudSunFloor,
       uCloudSunFloorRGB,
       uCloudHemiFloor,
+      // v3.51：面间对比强度（独立旋钮，与 style 无关 ⇒ _apply 不写）。
+      uCloudFaceContrast,
     },
     /** v3.31：湿表面的 uniform 句柄（装配层每帧写 uWet） */
     wet: WET_SURFACE_UNIFORMS,

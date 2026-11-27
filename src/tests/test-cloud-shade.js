@@ -20,9 +20,12 @@ import { assertEqual, assertTrue } from './assert.js';
 import {
   CLOUD_SUN_LIFT, CLOUD_HEMI_LIFT, CLOUD_AO_LIFT, AO_CURVE_K,
   aoFactorFor, cloudSunFloorFor, cloudHemiFloorFor, cloudAoFloorFor, cloudShadeFor,
+  CLOUD_SIDE_FACE_GAIN, CLOUD_TOP_FACE_GAIN, CLOUD_BOTTOM_FACE_GAIN, cloudFaceGainFor,
+  cloudSunFloorRGBFor,
 } from '../render/cloud-shade.js';
 import {
   SHADOW_FLOOR, SUN_INTENSITY, NOON_SUN_DIR, FACE_NORMALS, sunTermRGBFor,
+  srgbEncode, acesFilmic,
 } from '../render/sun-shade.js';
 import { HEMI_GROUND, hemiFactorFor } from '../render/hemi-shade.js';
 
@@ -297,4 +300,229 @@ test('daynight: 逐通道云地板由同一个 floor 与当前 ambientColor 派�
   const code = await codeOf('../render/daynight.js');
   assertTrue(/cloudSunFloorRGBFor\(floor,\s*p\.ambientColor\)/.test(code),
     '逐通道地板须吃局部量 floor 与当前风格的 ambientColor');
+});
+
+// ==================== v3.51：面间明暗分离（侧面提亮 / 顶底压暗）====================
+//
+// 设计稿：docs/superpowers/specs/2026-11-27-cloud-side-face-contrast-design.md
+//
+// ## 根因（一个恒等式，不是参数没调够）
+//
+// `CLOUD_HEMI_LIFT = 0.50` ⇒ `cloudHemiFloorFor(g, 0.5) = (1+g)/2`
+// **恰好等于四个侧面的 hemi 因子**；同时侧面与底面的 N·L 都 ≤0 ⇒ 太阳项落到同一地板
+// ⇒ **底面与四侧面逐位同色**（五档侧/底屏幕比实测全是 1.000）。
+// 用户实玩：「小云朵与背后大云岛的底色完全一样，肉眼分辨不出来」。
+//
+// 修法 = 在最终 shade 上乘一个**逐面类别的灰阶 gain**（侧 1.38 / 顶 0.95 / 底 0.72）。
+// ⚠️ 灰阶是载荷性的：gain 是标量、等比缩放整个 vec3 ⇒ 保色相（用户要「更白」不是「换色」）。
+// ⚠️ 1.38 是**实测安全上界**：1.42 时 dusk +Z 面线性 1.0133 > 1 ⇒ ACES 钳平三通道、色相消失。
+
+/** 五档光影参数（缺省回落全局常量，与 DayNight._apply 同口径） */
+async function styleParams() {
+  const { VISUAL_STYLES } = await import('../render/daynight.js');
+  const out = {};
+  for (const [key, p] of Object.entries(VISUAL_STYLES)) {
+    const raw = p.sunDirection;
+    const len = Math.hypot(raw[0], raw[1], raw[2]);
+    out[key] = {
+      sunDir: [raw[0] / len, raw[1] / len, raw[2] / len],
+      shadowFloor: typeof p.shadowFloor === 'number' ? p.shadowFloor : SHADOW_FLOOR,
+      sunIntensity: typeof p.sunIntensity === 'number' ? p.sunIntensity : SUN_INTENSITY,
+      hemiGround: typeof p.hemiGround === 'number' ? p.hemiGround : HEMI_GROUND,
+      ambientColor: p.ambientColor,
+      sunColor: p.sunColor,
+      skyDim: p.skyDim,
+    };
+  }
+  return out;
+}
+
+/** 线性 → 屏幕灰阶（ACES + sRGB，与 Tier 4 同口径；normal 档走 AgX 故本表只作标定起点） */
+const screenOf = (lin) => srgbEncode(acesFilmic(Math.max(0, lin))) * 255;
+
+/**
+ * 逐通道 shade（含色温 + skyDim + 面类别 gain）—— **独立参考实现**，
+ * 不 import cloudShadeFor（那条交叉一致性另有专项用例）。
+ * ⚠️ 地板走 cloudSunFloorRGBFor（保色相），与 materials.js 的 uCloudSunFloorRGB 同源。
+ */
+function faceRgb(st, normalIndex, ao, { contrast = 1, sideGain = CLOUD_SIDE_FACE_GAIN } = {}) {
+  const n = FACE_NORMALS[normalIndex];
+  const dot = Math.max(n[0] * st.sunDir[0] + n[1] * st.sunDir[1] + n[2] * st.sunDir[2], 0);
+  const hemiRaw = st.hemiGround + (1 - st.hemiGround) * (n[1] * 0.5 + 0.5);
+  const aoRaw = 1 - (3 - ao) / 3 * 0.9;
+  const hemiFloor = cloudHemiFloorFor(st.hemiGround);
+  const aoFloor = cloudAoFloorFor();
+  const floorRGB = cloudSunFloorRGBFor(st.shadowFloor, st.ambientColor);
+  const faceK = n[1] > 0.5 ? CLOUD_TOP_FACE_GAIN
+    : n[1] < -0.5 ? CLOUD_BOTTOM_FACE_GAIN : sideGain;
+  const gain = 1 + (faceK - 1) * contrast;
+  const out = [0, 0, 0];
+  for (let c = 0; c < 3; c++) {
+    const raw = st.shadowFloor * st.ambientColor[c] + st.sunIntensity * dot * st.sunColor[c];
+    out[c] = Math.max(raw, floorRGB[c])
+      * Math.max(hemiRaw, hemiFloor)
+      * Math.max(aoRaw, aoFloor)
+      * gain * st.skyDim;
+  }
+  return out;
+}
+
+/** 屏幕三通道均值（与 Tier 4 的 regionLuma 同口径） */
+const lumaOf = (rgb) => (screenOf(rgb[0]) + screenOf(rgb[1]) + screenOf(rgb[2])) / 3;
+
+test('cloud-face-gain: contrast=0 时六面 gain 逐位 1（零回归锚点）', async () => {
+  for (let n = 0; n < 6; n++) assertEqual(cloudFaceGainFor(n, 0), 1, `面 ${n}`);
+  // cloudShadeFor 缺省与显式 0 都必须逐位等于现有公式（非整比输入，防重建缺陷恒等）
+  const base = {
+    sunDir: norm([0.31, 0.71, 0.63]), shadowKill: 0.3719,
+    shadowFloor: 0.2713, sunIntensity: 0.6173, hemiGround: 0.4319, soften: 1,
+  };
+  for (let n = 0; n < 6; n++) {
+    for (const ao of [0, 1, 2, 3]) {
+      assertEqual(cloudShadeFor({ ...base, normalIndex: n, ao }),
+        cloudShadeFor({ ...base, normalIndex: n, ao, faceContrast: 0 }),
+        `面${n} ao${ao}：缺省须等于显式 faceContrast=0`);
+    }
+  }
+});
+
+test('cloud-face-gain: contrast=1 时四侧面 1.38 / 顶 0.95 / 底 0.72（批准幅度）', () => {
+  assertEqual(CLOUD_SIDE_FACE_GAIN, 1.38, '侧面 gain（批准幅度，不得擅改）');
+  assertEqual(CLOUD_TOP_FACE_GAIN, 0.95, '顶面 gain');
+  assertEqual(CLOUD_BOTTOM_FACE_GAIN, 0.72, '底面 gain');
+  for (const n of [0, 1, 4, 5]) {
+    assertEqual(cloudFaceGainFor(n, 1), CLOUD_SIDE_FACE_GAIN, `侧面 ${n}`);
+  }
+  assertEqual(cloudFaceGainFor(2, 1), CLOUD_TOP_FACE_GAIN, '顶面');
+  assertEqual(cloudFaceGainFor(3, 1), CLOUD_BOTTOM_FACE_GAIN, '底面');
+  // 中间档线性插值（与 TSL 的 mix(1, k, t) 同形）
+  assertTrue(Math.abs(cloudFaceGainFor(0, 0.5) - (1 + (1.38 - 1) * 0.5)) < 1e-12, '半档插值');
+});
+
+test('cloud-face-gain: 五档侧/底屏幕比 ≥1.15，且侧亮/顶暗/底暗同时成立', async () => {
+  const styles = await styleParams();
+  for (const [key, st] of Object.entries(styles)) {
+    for (const ao of [1, 3]) {
+      const sideOn = lumaOf(faceRgb(st, 1, ao, { contrast: 1 }));
+      const sideOff = lumaOf(faceRgb(st, 1, ao, { contrast: 0 }));
+      const topOn = lumaOf(faceRgb(st, 2, ao, { contrast: 1 }));
+      const topOff = lumaOf(faceRgb(st, 2, ao, { contrast: 0 }));
+      const botOn = lumaOf(faceRgb(st, 3, ao, { contrast: 1 }));
+      const botOff = lumaOf(faceRgb(st, 3, ao, { contrast: 0 }));
+      const ratio = sideOn / botOn;
+      assertTrue(ratio >= 1.15,
+        `${key} ao${ao} 侧/底屏幕比须 ≥1.15（原版参考 218/182=1.198），实测 ${ratio.toFixed(4)}`);
+      // 三条方向判据：只判比值会被「整体压暗」蒙过
+      assertTrue(sideOn > sideOff, `${key} ao${ao} 侧面须变亮：${sideOff.toFixed(1)} → ${sideOn.toFixed(1)}`);
+      assertTrue(topOn < topOff, `${key} ao${ao} 顶面须变暗：${topOff.toFixed(1)} → ${topOn.toFixed(1)}`);
+      assertTrue(botOn < botOff, `${key} ao${ao} 底面须变暗：${botOff.toFixed(1)} → ${botOn.toFixed(1)}`);
+    }
+  }
+});
+
+test('cloud-face-gain: 全档全面最大线性 <1.0（不削顶），且侧 gain 1.42 时该扫描 >1', async () => {
+  const styles = await styleParams();
+  const scan = (sideGain) => {
+    let max = 0, where = '';
+    for (const [key, st] of Object.entries(styles)) {
+      for (let n = 0; n < 6; n++) {
+        for (const ao of [0, 1, 2, 3]) {
+          const rgb = faceRgb(st, n, ao, { contrast: 1, sideGain });
+          for (let c = 0; c < 3; c++) {
+            if (rgb[c] > max) { max = rgb[c]; where = `${key} 面${n} ao${ao} ch${c}`; }
+          }
+        }
+      }
+    }
+    return { max, where };
+  };
+  const ok = scan(CLOUD_SIDE_FACE_GAIN);
+  assertTrue(ok.max < 1.0,
+    `批准幅度下全档全面最大线性须 <1.0（削顶会钳平三通道抹掉色相），实测 ${ok.max.toFixed(4)} @ ${ok.where}`);
+  // 判别力：这条判据不是恒真 —— 把侧 gain 抬到 1.42 就必须越线
+  const bad = scan(1.42);
+  assertTrue(bad.max > 1.0,
+    `侧 gain 1.42 时该扫描须 >1.0（证明削顶判据有判别力），实测 ${bad.max.toFixed(4)} @ ${bad.where}`);
+});
+
+test('cloud-face-gain: 非中性色温档底面 R−B 符号不变且偏移 <8 灰阶（灰阶保色相）', async () => {
+  const styles = await styleParams();
+  for (const key of ['dusk', 'night', 'normal']) {
+    const st = styles[key];
+    for (const n of [1, 3, 5]) {
+      const on = faceRgb(st, n, 3, { contrast: 1 }).map(screenOf);
+      const off = faceRgb(st, n, 3, { contrast: 0 }).map(screenOf);
+      const rbOn = on[0] - on[2], rbOff = off[0] - off[2];
+      assertTrue(rbOff < 0, `${key} 面${n} 前提：本身偏冷（R−B ${rbOff.toFixed(1)}）`);
+      assertTrue(rbOn < 0,
+        `${key} 面${n} 改后须仍偏冷（R−B ${rbOn.toFixed(1)}）—— 带色偏的重映射会把它抹成 0`);
+      assertTrue(Math.abs(rbOn - rbOff) < 8,
+        `${key} 面${n} 色相偏移须 <8 灰阶，实测 ${(rbOn - rbOff).toFixed(1)}`);
+    }
+  }
+});
+
+test('cloud-face-gain: cloudShadeFor 的 gain 与独立参考实现交叉一致（不留第二份公式）', async () => {
+  const styles = await styleParams();
+  for (const [key, st] of Object.entries(styles)) {
+    // 中性色温档才能与标量 cloudShadeFor 比（它不含色温）
+    if (st.ambientColor.some((v) => v !== 1) || st.sunColor.some((v) => v !== 1)) continue;
+    for (let n = 0; n < 6; n++) {
+      for (const ao of [0, 1, 2, 3]) {
+        const got = cloudShadeFor({
+          normalIndex: n, ao, sunDir: st.sunDir, shadowKill: 1,
+          shadowFloor: st.shadowFloor, sunIntensity: st.sunIntensity,
+          hemiGround: st.hemiGround, soften: 1, faceContrast: 1,
+        });
+        const ref = cloudShadeFor({
+          normalIndex: n, ao, sunDir: st.sunDir, shadowKill: 1,
+          shadowFloor: st.shadowFloor, sunIntensity: st.sunIntensity,
+          hemiGround: st.hemiGround, soften: 1, faceContrast: 0,
+        }) * cloudFaceGainFor(n, 1);
+        assertTrue(Math.abs(got - ref) < 1e-12, `${key} 面${n} ao${ao}: ${got} vs ${ref}`);
+      }
+    }
+  }
+});
+
+// ==================== v3.51 接线断言（materials / daynight）====================
+
+test('materials: 面类别 gain 由 cloudBit × uCloudFaceContrast 门控，且乘在 shadeLit/shadeUnlit 两处', async () => {
+  const code = await codeOf('../render/materials.js');
+  assertTrue(/uCloudFaceContrast:\s*uniform\(1\.0\)/.test(code),
+    '必须有初值 1.0 的**独立** uniform（复用 uCloudSoften 会同时关掉 v3.50 地板 ⇒ 不是单变量）');
+  assertTrue(/const cloudFaceGain = mix\(float\(1\),\s*cloudFaceK,\s*mul\(cloudBit,\s*uCloudFaceContrast\)\)/.test(code),
+    'gain 必须是 mix(float(1), cloudFaceK, mul(cloudBit, uCloudFaceContrast))');
+  assertTrue(/const shadeLit = mul\(max\([\s\S]*?\),\s*cloudFaceGain\)/.test(code),
+    'shadeLit 必须整体乘 gain（只乘 sky 项会漏掉火把照亮的云面）');
+  assertTrue(/const shadeUnlit = mul\(max\([\s\S]*?\),\s*cloudFaceGain\)/.test(code),
+    'shadeUnlit 必须整体乘 gain（两通道口径一致）');
+  assertTrue(!/if\s*\(\s*cloudFaceContrast/.test(code), '不得用 if 分支（未测的那条会静默劣化）');
+  assertTrue(!/if\s*\(\s*cloudFaceGain/.test(code), '不得用 if 分支');
+});
+
+test('materials: 面类别由 faceNormalNode.y 判（不新增顶点属性），三个 gain 常量从 cloud-shade import', async () => {
+  const code = await codeOf('../render/materials.js');
+  assertTrue(/const cloudFaceK = select\(faceNormalNode\.y\.greaterThan\(0\.5\)/.test(code),
+    '面类别必须复用已有的 faceNormalNode.y（新增 float 属性会撞 200MiB gpuVertexBytes 门）');
+  assertTrue(/CLOUD_SIDE_FACE_GAIN/.test(code) && /CLOUD_TOP_FACE_GAIN/.test(code)
+    && /CLOUD_BOTTOM_FACE_GAIN/.test(code), '三个 gain 常量必须 import，不得写字面量（红线 1）');
+  assertTrue(!/vec3\(\s*CLOUD_SIDE_FACE_GAIN/.test(code),
+    'gain 不得是逐通道 vec3（等比缩放才保色相）');
+  // gain 必须在 faceNormalNode 之后定义（否则 TDZ）
+  const fnAt = code.indexOf('const faceNormalNode = ');
+  const gainAt = code.indexOf('const cloudFaceK = ');
+  assertTrue(fnAt >= 0 && gainAt > fnAt, 'cloudFaceK 必须在 faceNormalNode 之后（防 TDZ）');
+});
+
+test('daynight: _apply 不写 uCloudFaceContrast（三个 gain 与 style 无关）', async () => {
+  const code = await codeOf('../render/daynight.js');
+  assertTrue(!/uCloudFaceContrast/.test(code),
+    'gain 是灰阶比例、与 style 无关 ⇒ 只由模块初值提供（同 uCloudAoFloor 口径）');
+});
+
+test('cloud uniforms: uCloudFaceContrast 初值 1 且与 v3.50 三个地板并列', async () => {
+  const { CLOUD_SURFACE_UNIFORMS: U } = await import('../render/materials.js');
+  assertEqual(U.uCloudFaceContrast.value, 1, '初值 1（满档面间对比）');
+  assertEqual(U.uCloudSoften.value, 1, 'v3.50 柔和仍满档（两个旋钮独立）');
 });

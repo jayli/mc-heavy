@@ -52,6 +52,79 @@ export const CLOUD_HEMI_LIFT = 0.50;
  */
 export const CLOUD_AO_LIFT = 2 / 3;
 
+// ==================== v3.51：面间明暗分离（侧面提亮 / 顶底压暗）====================
+//
+// 设计稿：docs/superpowers/specs/2026-11-27-cloud-side-face-contrast-design.md
+//
+// ## 要解决什么（用户 2026-11-27，附缺陷图与 MC 原版参考图）
+//
+// 「小云朵就模糊不清……因为云朵底色、垂直的面的颜色和背后的大云岛的底色完全一样，
+//   肉眼分辨不出来。我希望让云方块的侧面的四个面比顶面和底面更亮一些、更白一些。」
+//
+// ## 根因是一个恒等式，不是参数没调够
+//
+// `CLOUD_HEMI_LIFT = 0.50` ⇒ `cloudHemiFloorFor(g, 0.5) = (1+g)/2`
+// **恰好等于四个侧面的 hemi 因子**（g=0.6 两边都是 0.8；g=0.12 都是 0.56）；
+// 同时正午太阳 [0,0.8,0.6] 下侧面与底面的 N·L 都 ≤0 ⇒ 太阳项落到同一地板 0.597。
+// 两项相乘 ⇒ **底面与四侧面逐位同色**（五档侧/底屏幕比实测全是 1.000）。
+// 实测缺陷图：大云岛底面 160.9 / 准心处小云朵 152.1；原版参考：底 182 / 侧面亮带 218（比 1.198）。
+//
+// ## 为什么是「逐面灰阶 gain」而不是改 lift / 改地板
+//
+// 三条都算过（五档 × 6 面 × 4 AO = 120 组 CPU 扫描，设计稿 §4.1）：
+//   · 只压暗底面 ⇒ 侧面没变白，与用户「更亮更白」的字面要求不符；
+//   · 改三个 lift 让地板按面分档 ⇒ normal 档底面掉到 93、侧/底 1.98，档间失衡；
+//   · 逐面灰阶 gain ⇒ 五档侧/底 ∈ [1.175, 1.502]，最小差 33 灰阶。
+//
+// ⚠️ **灰阶是载荷性的**：gain 是**标量**，等比缩放整个 vec3 ⇒ 色相不变。
+// 逐通道给不同 gain 会把云拉出色偏，与「更白」相背（同 v3.46b 手臂那轮的裁定）。
+//
+// ⚠️ **不加 cap 兜底**：实测 `min(v, 1)` 会把 night +Z 面的 R−B 从 −32.4 抹成 **0**；
+// 等比钳 `min(v, base×k)` 则吃掉对比增益。正解是把幅度取在安全上界内（见下）。
+
+/**
+ * 四个侧面（|N.y| < 0.5）的亮度 gain。
+ *
+ * ⚠️⚠️ **1.38 是实测安全上界，不是随手取的**（设计稿 §4.2，全 5 档 × 6 面 × 4 AO 扫描）：
+ *   1.30 → 最大线性 0.9500 / 1.35 → 0.9634 / **1.38 → 0.9848** / 1.40 → 0.9990（贴线）
+ *   / **1.42 → 1.0133 ❌ 削顶** / 1.45 → 1.0347 ❌
+ * 越线的位置恒为 dusk 的 +Z 面（暖直射色 R 通道 1.5 倍）。
+ * 削顶 ⇒ ACES 钳平三通道 ⇒ 色相消失，而所有亮度判据仍绿。
+ * 由 `test-cloud-shade.js` 的「全档全面最大线性 <1.0」用例钉住（含 1.42 的判别力对照）。
+ */
+export const CLOUD_SIDE_FACE_GAIN = 1.38;
+
+/** 顶面 gain（略压暗，让「顶底比侧面暗」成立）。noon 实测 231.6 → 230.2。 */
+export const CLOUD_TOP_FACE_GAIN = 0.95;
+
+/** 底面 gain（压暗最多 —— 它正是与侧面糊在一起的那个面）。noon 实测 203.6 → 185.4。 */
+export const CLOUD_BOTTOM_FACE_GAIN = 0.72;
+
+/**
+ * 面类别亮度 gain（CPU 参考实现，与 `materials.js` 的 TSL 同式 —— 红线 1）。
+ *
+ * ```
+ * faceK = N.y > 0.5 ? TOP : N.y < −0.5 ? BOTTOM : SIDE
+ * gain  = 1 + (faceK − 1) × contrast     ≡ mix(1, faceK, contrast)
+ * ```
+ *
+ * ⚠️ 写成 `1 + (k−1)×contrast` 而非 `contrast ? k : 1`：与 TSL 的 `mix` 同形，
+ * 保 `contrast=0` 的**逐位**性两侧同源（同三个地板的口径）。
+ *
+ * ⚠️ `contrast` 由**独立** uniform `uCloudFaceContrast` 提供，**不是 `uCloudSoften`** ——
+ * 后者 =0 会同时关掉 v3.50 的三个地板，那就不是本轮的单变量对照了。
+ *
+ * @param {number} normalIndex 0..5，`FACE_NORMALS` 索引（= packed bit10-12）
+ * @param {number} [contrast] 0..1，缺省 1（满档）；0 ⇒ 恒 1（逐位回到 v3.50）
+ * @returns {number}
+ */
+export function cloudFaceGainFor(normalIndex, contrast = 1) {
+  const ny = CLOUD_FACE_NORMALS[normalIndex][1];
+  const k = ny > 0.5 ? CLOUD_TOP_FACE_GAIN
+    : ny < -0.5 ? CLOUD_BOTTOM_FACE_GAIN : CLOUD_SIDE_FACE_GAIN;
+  return 1 + (k - 1) * contrast;
+}
+
 /**
  * AO 曲线系数（`1 − (3−ao)/3 × K`）：ao=3（开阔）→ 1.0，ao=0（墙角）→ 1−K。
  * **唯一权威在此**：`materials.js` 原先写字面量 0.9，v3.50 起 import 本常量（红线 1）。
@@ -162,11 +235,13 @@ export function cloudAoFloorFor(lift = CLOUD_AO_LIFT) {
  * @param {number} o.sunIntensity 当前太阳强度
  * @param {number} o.hemiGround 当前半球地面比例
  * @param {number} o.soften `uCloudSoften` 0..1（0 ⇒ 逐位回到现状）
+ * @param {number} [o.faceContrast] v3.51 面间对比强度 0..1。**缺省 0 = 逐位回到 v3.50**
+ *   （既有 7 组不变式与 7776 组零回归用例一字不动）；1 ⇒ 侧 1.38 / 顶 0.95 / 底 0.72。
  * @returns {number}
  */
 export function cloudShadeFor({
   normalIndex, ao, sunDir, shadowKill,
-  shadowFloor, sunIntensity, hemiGround, soften,
+  shadowFloor, sunIntensity, hemiGround, soften, faceContrast = 0,
 }) {
   // 面法线：与 FACE_NORMALS 同序（+X,-X,+Y,-Y,+Z,-Z）。
   // 本模块零 import ⇒ 这里必须自带一份；由 test-cloud-shade 的交叉一致性用例
@@ -181,7 +256,8 @@ export function cloudShadeFor({
   const aoFloor = cloudAoFloorFor();
   return Math.max(sunTerm, sunTerm + (sunFloor - sunTerm) * soften)
     * Math.max(hemi, hemi + (hemiFloor - hemi) * soften)
-    * Math.max(aoF, aoF + (aoFloor - aoF) * soften);
+    * Math.max(aoF, aoF + (aoFloor - aoF) * soften)
+    * cloudFaceGainFor(normalIndex, faceContrast);
 }
 
 /**
