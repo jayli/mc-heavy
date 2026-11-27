@@ -230,6 +230,8 @@ export const UNIT_NODE_SAFE = [
   'test-view-bob.js', 'test-view-bob-wiring.js', 'test-water-reflect.js', 'test-water-reflect-height.js', 'test-weapons.js', 'test-world-editor.js', 'test-zombie-behavior.js',
   'test-zombie-model.js', 'test-zombie-pathfinder.js', 'test-zombies.js',
   'test-soldier-config.js', 'test-soldier-shooting.js', 'test-soldier-agent.js', 'test-soldier-system.js', 'test-soldier-render.js',
+  // C 键落点的连通空间判据（用户 2026-11-27）—— three-free 纯函数 + 真实地形，Node 可跑
+  'test-soldier-spawn-site.js',
   'test-enemy-counts.js',
   'test-enemy-arrows.js',
   'test-enemy-arrow-bearing.js',

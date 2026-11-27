@@ -265,7 +265,19 @@ spawnPuffAt(o)                         // 转调 _spawnPuff
 
 ### 5.8 召唤与巢穴交替
 
-**C 键**：`player.js` 加 `KeyC && !e.repeat` → `onSpawnSoldier()`（Game 注入 `spawnSoldierNearPlayer()`）。落点逻辑照 `spawnZombieNearPlayer`（随机角度 + 2~10 格 + 向下扫 64 格找地面），改调 `SoldierService.spawn`。
+**C 键**：`player.js` 加 `KeyC && !e.repeat` → `onSpawnSoldier()`（Game 注入 `spawnSoldierNearPlayer()`），改调 `SoldierService.spawn`。
+
+> ☠️☠️ **落点逻辑已于 v3.54 推翻重写**（用户 2026-11-27 实玩：「按 c 有时候会把 soldier 生成到地下矿洞里」）。
+> 本节原写「落点逻辑照 `spawnZombieNearPlayer`（随机角度 + 2~10 格 + 向下扫 64 格找地面）」——
+> **那条判据只问「这一格能不能站」，不问它与玩家是否连通** ⇒ 洞穴顶板天然满足它。
+> 实测：真实按键 20 次出现 −32 / −28 / −26；洞口密集点 47/60 落到地下。
+>
+> **现行口径**：`entities/soldiers/soldier-spawn-site.js` 的 `findSoldierSpawnSite()` ——
+> **从玩家脚格出发的有界连通洪泛** + 高度带 **±3 格**（用户裁定）+ 空气通路判据；
+> 三级兜底（玩家脚底 → 自身列支撑面 → 放宽带 ±8），全空则不生成 + toast。
+> 水平取距 2~10 格与返回值形状 `{spawned, position, attempts, count}` 逐位不变。
+> 详见 `docs/roadmap.md` v3.54 行与 `.pi/plans/2026-11-27-soldier-spawn-connected-space.md`。
+> **丧尸 X 键与巢穴刷怪仍用旧口径**（本轮未动）。
 
 > ⚠️ C 键曾是 Boss 召唤键（v2.43 改为 B），现已空闲（全仓 grep `KeyC` 零命中）。
 

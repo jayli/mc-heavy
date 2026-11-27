@@ -84,6 +84,7 @@ import { ZombieService, zombieDefinition } from '../entities/zombies/zombie-syst
 import { SoldierService, soldierDefinition } from '../entities/soldiers/soldier-system.js';
 import { SOLDIER, SOLDIER_TYPE, SOLDIER_SHOT, SOLDIER_TRACER } from '../entities/soldiers/soldier-config.js';
 import { soldierHitChance, soldierMissPoint, judgeSoldierShot } from '../entities/soldiers/soldier-shooting.js';
+import { findSoldierSpawnSite } from '../entities/soldiers/soldier-spawn-site.js';
 import { SoldierRenderer } from '../render/soldier-renderer.js';
 import { SoldierMuzzleFx } from '../render/soldier-muzzle-fx.js';
 import { SOLDIER_COLORS } from '../render/soldier-geometry.js';
@@ -5323,31 +5324,45 @@ export class Game {
   }
 
   /**
-   * 在玩家附近生成一名士兵（C 键）。落点逻辑照 `spawnZombieNearPlayer`
-   * （随机角度 + 2~10 格 + 向下扫 64 格找地面），只把 service 换成 soldiers。
-   * @returns {{spawned:string|null, position:number[]|null, attempts:number, count:number}}
+   * 在玩家附近生成一名士兵（C 键）。
+   *
+   * ## ☠️ 落点不再照 `spawnZombieNearPlayer`（用户 2026-11-27 实玩推翻）
+   *
+   * 用户原话：「我在地上的时候，按 c，有时候会把 soldier 生成到地下矿洞里……尽量生成在
+   * 跟玩家一个水平线上的空间内，即便有高度差，也要在一个联通的空间内，高度差不要太大。」
+   *
+   * 旧口径（随机角度 2~10 格 + **向下扫 64 格**）只问「这一格能不能站」，不问它与玩家
+   * 是否连通 ⇒ 洞穴顶板天然满足它。实测（真实 seed 12345）8 点 × 200 次最深 **−39 格**；
+   * 浏览器真实按键 20 次里出现 −32 / −28 / −26，洞口密集区 47/60 落到地下。
+   *
+   * 现在走 `findSoldierSpawnSite`（**从玩家出发的有界连通洪泛** + 高度带 ±3）——
+   * 可达性由构造保证，云与矿洞结构性到不了（唯一权威在那个模块，含空气通路判据）。
+   *
+   * ⚠️ **返回值形状一字不改**（`{spawned, position, attempts, count}`）：4 个既有 spec
+   * 消费它。`attempts` 现在的语义 = 洪泛命中的兜底级（1/2/3），仍是「试了几轮」。
+   * 新增 `dy` / `stage` 两个**只读诊断**字段，不影响既有解构。
+   *
+   * ⚠️ **三级全空时不退回旧算法**（那会让缺陷从兜底路径复活）：如实返回 null 并给 toast
+   * —— 照 `summonBoss` 既有裁定，静默失败会让玩家以为按键坏了。
+   *
+   * @returns {{spawned:string|null, position:number[]|null, attempts:number, count:number,
+   *            dy:number|null, stage:number}}
    */
   spawnSoldierNearPlayer() {
     const p = this.player.physics.pos;
-    let attempts = 0;
-    for (let attempt = 0; attempt < 8; attempt++) {
-      attempts++;
-      const angle = Math.random() * Math.PI * 2;
-      const distance = Math.random() * 8 + 2;
-      const x = Math.floor(p.x + Math.cos(angle) * distance);
-      const z = Math.floor(p.z + Math.sin(angle) * distance);
-      for (let y = Math.floor(p.y); y >= Math.floor(p.y) - 64; y--) {
-        if (this.world.getBlockId(x, y, z) === 0
-          && this.world.getBlockId(x, y + 1, z) === 0
-          && this.world.isSolid(x, y - 1, z)) {
-          const id = this.soldiers.spawn([x + 0.5, y, z + 0.5], { source: 'debug-key' });
-          return {
-            spawned: id, position: [x + 0.5, y, z + 0.5], attempts, count: this.soldiers.count(),
-          };
-        }
-      }
+    const site = findSoldierSpawnSite(this.world, [p.x, p.y, p.z]);
+    if (!site) {
+      this._bossToast('附近没有可站的地方');
+      return {
+        spawned: null, position: null, attempts: 0, count: this.soldiers.count(),
+        dy: null, stage: 0,
+      };
     }
-    return { spawned: null, position: null, attempts, count: this.soldiers.count() };
+    const id = this.soldiers.spawn(site.position, { source: 'debug-key' });
+    return {
+      spawned: id, position: site.position, attempts: site.stage, count: this.soldiers.count(),
+      dy: site.dy, stage: site.stage,
+    };
   }
 
   /** 只读士兵诊断（测试/HUD）。 */

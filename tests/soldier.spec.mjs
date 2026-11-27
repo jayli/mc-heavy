@@ -64,6 +64,104 @@ async function makeField(page, { radius = 12 } = {}) {
 
 test.describe.configure({ mode: 'serial' });
 
+/**
+ * ☠️☠️ **用户 2026-11-27 实玩缺陷：「我在地上的时候，按 c，有时候会把 soldier
+ * 生成到地下矿洞里」**。
+ *
+ * 真因不在 service（它的四道门全对），而在 `Game.spawnSoldierNearPlayer` 的落点算法：
+ * 旧口径「随机角度 2~10 格 + 从玩家高度向下扫 64 格」只问「这一格能不能站」，
+ * 洞穴顶板天然满足它。实测（真实按键 20 次，玩家 y=4）出现 **−32 / −28 / −26**；
+ * 同算法在洞口密集点 47/60 落到地下。
+ *
+ * ⚠️ **必须不钺测试场**（不调 `makeField`）：钺一块平整石地会把真实洞穴盖掉
+ * ⇒ 缺陷根本不出现，判据恒真（本轮探针实测：钺场后 dy 恒 0）。
+ * ⚠️ **走真实 C 键**，不直接调 service.spawn（后者绕过了整个落点算法）。
+ * ⚠️ **对照组必需**：同夹具跑旧算法必须真的落到深洞，否则本用例没判别力。
+ */
+test('C 键落点：自然地形速按 24 次，高度差恒在 ±3 内且不落进矿洞（旧算法对照必须真红）', async ({ page }) => {
+  test.setTimeout(300_000);
+  await page.goto(`/?vd=4&seed=${SEED}`);
+  await waitWorldReady(page);
+  // 洞口密集区（本轮探针实测：玩家站干地 y=9、露天，旧算法 **11/60** 落 −8 以下、最深 −35）
+  // ⚠️ 偏移是实测选的，两个候选都被否定过：
+  //   (200,−500) → 玩家被传到 y=56（云面/高台），旧算法 **0/60** 落深洞 ⇒ 对照组恒绿；
+  //   (180,−460) → 玩家站**水里**（y=−2 = SEA_Y），四周同高度全是水 ⇒ 新算法正确地不出人
+  //   （service 本来就要求严格 air）⇒ 前置「24 次都造出」恒红。那是夹具选错地方，不是缺陷。
+  await gotoOpenField(page, { offsetX: 620, offsetZ: 640 });
+  await waitPlayerLanded(page);
+  const r = await page.evaluate(async () => {
+    const g = window.__MC_GAME__;
+    const w = g.world;
+    const openSky = (x, y, z) => {
+      for (let yy = y + 1; yy < 96; yy++) if (w.isSolid(x, yy, z)) return false;
+      return true;
+    };
+    /** 旧算法的独立复刻（只算落点不生成）—— 判别力对照 */
+    const legacyPick = () => {
+      const p = g.player.physics.pos;
+      for (let a = 0; a < 8; a++) {
+        const ang = Math.random() * Math.PI * 2;
+        const dist = Math.random() * 8 + 2;
+        const x = Math.floor(p.x + Math.cos(ang) * dist);
+        const z = Math.floor(p.z + Math.sin(ang) * dist);
+        for (let y = Math.floor(p.y); y >= Math.floor(p.y) - 64; y--) {
+          if (w.getBlockId(x, y, z) === 0 && w.getBlockId(x, y + 1, z) === 0 && w.isSolid(x, y - 1, z)) return y;
+        }
+      }
+      return null;
+    };
+    const p0 = g.player.physics.pos;
+    const playerY = Math.floor(p0.y);
+    const playerSky = openSky(Math.floor(p0.x), playerY, Math.floor(p0.z));
+    const legacy = [];
+    for (let i = 0; i < 60; i++) {
+      const y = legacyPick();
+      if (y !== null) legacy.push(y - playerY);
+    }
+    // 真实 C 键 24 次（每轮清掉上一只，避免撞上限 10）
+    // ⚠️ **必须在按键后同步立刻取样**：士兵 AI 当帧就会走（combat 态 4 格/秒），
+    // 等一拍再读位置会把「它自己走远了」误报成「落点取距越线」（本轮实测：dist 1.58）。
+    const rows = [];
+    for (let i = 0; i < 24; i++) {
+      // ⚠️ **必须快照**：`physics.pos` 是活对象，持有引用再读会拿到「按键之后」的值
+      const p = { x: g.player.physics.pos.x, y: g.player.physics.pos.y, z: g.player.physics.pos.z };
+      const before = new Set(g.soldiers.activeEntities().map((e) => e.id));
+      window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyC', repeat: false, bubbles: true }));
+      window.dispatchEvent(new KeyboardEvent('keyup', { code: 'KeyC', bubbles: true }));
+      const fresh = g.soldiers.activeEntities().filter((e) => !before.has(e.id))[0];
+      rows.push(fresh ? {
+        dy: fresh.state.position[1] - Math.floor(p.y),
+        sky: openSky(Math.floor(fresh.state.position[0]), fresh.state.position[1], Math.floor(fresh.state.position[2])),
+        at: [Math.floor(fresh.state.position[0]), fresh.state.position[1], Math.floor(fresh.state.position[2])],
+        playerAt: [+p.x.toFixed(3), +p.y.toFixed(3), +p.z.toFixed(3)],
+        entAt: [...fresh.state.position],
+        dist: +Math.hypot(fresh.state.position[0] - p.x, fresh.state.position[2] - p.z).toFixed(2),
+      } : null);
+      for (const e of g.soldiers.activeEntities()) g.soldiers.damage(e.id, 100000, performance.now());
+      await new Promise((res) => setTimeout(res, 1400));   // 等留尸 1.2s 回收
+    }
+    return { playerY, playerSky, legacy, rows };
+  });
+  const ok = r.rows.filter(Boolean);
+  // 前置：玩家真的站在露天（否则「不落进矿洞」无从谈起）
+  expect(r.playerSky, `前置：玩家须站在露天（y=${r.playerY}）`).toBe(true);
+  expect(ok.length, '前置：24 次按键须都造出士兵').toBe(24);
+  // ⭐ 判别力对照：旧算法在同一夹具必须真的落到深洞
+  expect(Math.min(...r.legacy), `旧算法对照：必须真的出现深落差（实测最深 ${Math.min(...r.legacy)}）`)
+    .toBeLessThanOrEqual(-8);
+  // ① 高度差恒在 ±3 内
+  const bad = ok.filter((x) => Math.abs(x.dy) > 3);
+  expect(bad.length, `落点高度差须恒在 ±3（越线样本：${JSON.stringify(bad.slice(0, 3))}）`).toBe(0);
+  // ② 一个都不得落在**地下**（这才是用户报的缺陷）。
+  // ⚠️ 判据不能写成「必须见天」：本轮探针实测到 1/6 落点不见天但 dy 只有 −1~0，
+  // 那是**树冠/悬挑下方**—— 与玩家同一水平连通空间，正是用户要的，不是缺陷。
+  const underground = ok.filter((x) => !x.sky && x.dy <= -4);
+  expect(underground.length, `不得生成到地下矿洞（样本：${JSON.stringify(underground.slice(0, 3))}）`).toBe(0);
+  // ③ 取距口径不变
+  const distBad = ok.filter((x) => x.dist < 2 - 1e-6 || x.dist > 10 + 1e-6);
+  expect(distBad.length, `水平距须恒在 2~10（越线：${JSON.stringify(distBad.slice(0, 3))}）`).toBe(0);
+});
+
 test('C 键召唤士兵，连按 11 次恰好 10 只（上限 = 用户裁定 10）', async ({ page }) => {
   test.setTimeout(180_000);
   await page.goto(URL);
