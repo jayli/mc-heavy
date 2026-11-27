@@ -206,6 +206,7 @@ export const UNIT_NODE_SAFE = [
   'test-giant-trees-gen.js', 'test-giant-trees.js', 'test-grass-tint.js',
   'test-guardian-boss-agent.js', 'test-guardian-collision.js', 'test-guardian-config.js',
   'test-guardian-render.js', 'test-guardian-skinning.js', 'test-guardian-system.js',
+  'test-cloud-shade.js',
   'test-guardian-uv.js', 'test-health.js', 'test-hemi.js', 'test-ignis-boss-agent.js',
   'test-ignis-collision.js', 'test-ignis-render.js', 'test-ignis-system.js', 'test-inventory.js',
   'test-jungle-fortress-gen.js', 'test-knockback-ease.js', 'test-landmarks.js', 'test-light-writeback.js',
