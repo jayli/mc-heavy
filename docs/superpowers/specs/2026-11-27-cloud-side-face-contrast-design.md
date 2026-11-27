@@ -260,7 +260,7 @@ npm run bench -- --check      # 碰了 materials 热路径
 | `src/render/materials.js` | `uCloudFaceContrast` + 面类别 gain + 两处 shade 相乘 + 透出句柄 |
 | `src/tests/test-cloud-shade.js` | 新增 6 组不变式（含削顶上界与保色相） |
 | `tests/cloud-softness.spec.mjs` | 侧面机位 + 5 条判据 + 2 条负向 |
-| `docs/roadmap.md` | v3.51 行 |
+| `docs/roadmap.md` | v3.52 行 |
 | `docs/pitfalls.md` | 若实测踩到新坑则追加 |
 
 **零产物改动、零 mesher 改动、零 daynight 改动。**

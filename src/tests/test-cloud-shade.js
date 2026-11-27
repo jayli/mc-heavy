@@ -302,7 +302,7 @@ test('daynight: 逐通道云地板由同一个 floor 与当前 ambientColor 派�
     '逐通道地板须吃局部量 floor 与当前风格的 ambientColor');
 });
 
-// ==================== v3.51：面间明暗分离（侧面提亮 / 顶底压暗）====================
+// ==================== v3.52：面间明暗分离（侧面提亮 / 顶底压暗）====================
 //
 // 设计稿：docs/superpowers/specs/2026-11-27-cloud-side-face-contrast-design.md
 //
@@ -485,7 +485,7 @@ test('cloud-face-gain: cloudShadeFor 的 gain 与独立参考实现交叉一致�
   }
 });
 
-// ==================== v3.51 接线断言（materials / daynight）====================
+// ==================== v3.52 接线断言（materials / daynight）====================
 
 test('materials: 面类别 gain 由 cloudBit × uCloudFaceContrast 门控，且乘在 shadeLit/shadeUnlit 两处', async () => {
   const code = await codeOf('../render/materials.js');

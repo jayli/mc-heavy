@@ -81,7 +81,7 @@ export const CLOUD_SURFACE_UNIFORMS = {
   /** AO 地板（0.7，与 style 无关）。 */
   uCloudAoFloor: uniform(cloudAoFloorFor()),
   /**
-   * v3.51 面间明暗对比强度 0..1（侧 1.38 / 顶 0.95 / 底 0.72）。
+   * v3.52 面间明暗对比强度 0..1（侧 1.38 / 顶 0.95 / 底 0.72）。
    *
    * ⚠️⚠️ **必须是独立旋钮，不得复用 `uCloudSoften`**：后者 =0 会同时关掉 v3.50 的
    * 三个地板 ⇒ 那不是本轮的单变量对照。本 uniform =0 ⇒ gain 恒 1 ⇒ **逐位回到 v3.50**
@@ -276,7 +276,7 @@ export function createVoxelMaterials(atlasTexture, sunLight = null, reflectTextu
   // 标量 `max(vec3, float)` 逐分量取大会把三通道抬到同一值 ⇒ 抹掉色相。
   const sunTermSoft = mix(sunTerm, max(sunTerm, uCloudSunFloorRGB), cloudT);
 
-  // ---- v3.51 面间明暗分离（用户：「小云朵与背后大云岛底色完全一样，肉眼分辨不出来」）----
+  // ---- v3.52 面间明暗分离（用户：「小云朵与背后大云岛底色完全一样，肉眼分辨不出来」）----
   //
   // 根因是一个**恒等式**：`CLOUD_HEMI_LIFT = 0.50` 使半球地板 `(1+g)/2`
   // 恰好等于四个侧面的 hemi 因子；而侧面与底面的 N·L 都 ≤0 ⇒ 太阳项落到同一地板
@@ -377,7 +377,7 @@ export function createVoxelMaterials(atlasTexture, sunLight = null, reflectTextu
       uCloudSunFloor,
       uCloudSunFloorRGB,
       uCloudHemiFloor,
-      // v3.51：面间对比强度（独立旋钮，与 style 无关 ⇒ _apply 不写）。
+      // v3.52：面间对比强度（独立旋钮，与 style 无关 ⇒ _apply 不写）。
       uCloudFaceContrast,
     },
     /** v3.31：湿表面的 uniform 句柄（装配层每帧写 uWet） */

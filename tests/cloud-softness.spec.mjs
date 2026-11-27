@@ -130,7 +130,7 @@ async function buildSlabs(page) {
 /**
  * 取一个机位下一块板的采样点亮度。
  * @param {{dx:number, atY:number, up?:number[]}} cam dx = 板中心相对 ox 的偏移；atY = 采样面世界 y 相对 P
- *   ⚠️ v3.51：`up` 可选。既有四个机位是俯/仰视（视线近垂直）⇒ up 必须 (0,0,-1) 避 lookAt 退化；
+ *   ⚠️ v3.52：`up` 可选。既有四个机位是俯/仰视（视线近垂直）⇒ up 必须 (0,0,-1) 避 lookAt 退化；
  *   新增的**侧面机位是水平视线** ⇒ up 必须 (0,1,0)，否则 up 与视线平行同样退化。
  *   缺省仍 (0,0,-1) ⇒ 既有四机位逐位不变。
  */
@@ -163,7 +163,7 @@ async function sample(page, geo, cam) {
 /**
  * 取一个机位下**指定世界点**的采样亮度（取样点与机位解耦）。
  *
- * ⚠️ v3.51：侧面机位不能沿用 `sample()` —— 它把相机放在目标正下/正上方，
+ * ⚠️ v3.52：侧面机位不能沿用 `sample()` —— 它把相机放在目标正下/正上方，
  * 水平视线看侧面时那个布局只能看到底面。故把「相机位」与「取样点」拆开。
  * 取样点仍由**真实 `camera.project`** 算（不写死屏幕坐标 —— wet-surface 那轮实测过写死会取到天空）。
  *
@@ -226,7 +226,7 @@ test('云柔和化：云底面变亮、云顶面与石头板逐位不动', async
   await waitWorldSettled(page);
   const geo = await buildSlabs(page);
   /**
-   * ⚠️⚠️ **v3.51：本用例必须把面间对比钉死在 0**（单变量隔离）。
+   * ⚠️⚠️ **v3.52：本用例必须把面间对比钉死在 0**（单变量隔离）。
    * 本轮新增的 `uCloudFaceContrast` 常开（初值 1）会把底面再乘 0.72
    * ⇒ 不钉住的话本用例的 A/B 混进**两个**变量，读数从 v3.50 记录的 145→195
    * 漂到 **121→174**（已实测）。钉 0 后回到纯粋的 v3.50 语义，阈值一个不改。
@@ -346,7 +346,7 @@ test('负向①：mesher 不给 cloud 置 bit19 ⇒ 云底面变亮判据必须 
   ));
   await page.goto(URL);
   await waitWorldSettled(page);
-  // v3.51：两条负向验的是 **v3.50 柔和机制**，同样要把面间对比钉 0（单变量）。
+  // v3.52：两条负向验的是 **v3.50 柔和机制**，同样要把面间对比钉 0（单变量）。
   await setContrast(page, 0);
   // 注入生效确认：读回浏览器侧源码（只看代码行）
   const code = await browserCode(page, '/src/mesh/mesher.js');
@@ -386,7 +386,7 @@ test('负向②：把 max 换成加法（整体提亮）⇒ 云顶面不变判�
   ));
   await page.goto(URL);
   await waitWorldSettled(page);
-  await setContrast(page, 0);   // v3.51：单变量隔离（同负向①）
+  await setContrast(page, 0);   // v3.52：单变量隔离（同负向①）
   const code = await browserCode(page, '/src/render/materials.js');
   expect(code.includes('sunTerm.add(uCloudSunFloorRGB.mul(cloudT).mul(0.3))'),
     '注入须真的落地').toBe(true);
@@ -409,7 +409,7 @@ test('负向②：把 max 换成加法（整体提亮）⇒ 云顶面不变判�
     .toBeGreaterThan(0.01);
 });
 
-// ==================== v3.51：面间明暗分离（侧面 vs 底面）====================
+// ==================== v3.52：面间明暗分离（侧面 vs 底面）====================
 //
 // 设计稿：docs/superpowers/specs/2026-11-27-cloud-side-face-contrast-design.md
 //

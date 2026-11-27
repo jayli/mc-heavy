@@ -52,7 +52,7 @@ export const CLOUD_HEMI_LIFT = 0.50;
  */
 export const CLOUD_AO_LIFT = 2 / 3;
 
-// ==================== v3.51：面间明暗分离（侧面提亮 / 顶底压暗）====================
+// ==================== v3.52：面间明暗分离（侧面提亮 / 顶底压暗）====================
 //
 // 设计稿：docs/superpowers/specs/2026-11-27-cloud-side-face-contrast-design.md
 //
@@ -235,7 +235,7 @@ export function cloudAoFloorFor(lift = CLOUD_AO_LIFT) {
  * @param {number} o.sunIntensity 当前太阳强度
  * @param {number} o.hemiGround 当前半球地面比例
  * @param {number} o.soften `uCloudSoften` 0..1（0 ⇒ 逐位回到现状）
- * @param {number} [o.faceContrast] v3.51 面间对比强度 0..1。**缺省 0 = 逐位回到 v3.50**
+ * @param {number} [o.faceContrast] v3.52 面间对比强度 0..1。**缺省 0 = 逐位回到 v3.50**
  *   （既有 7 组不变式与 7776 组零回归用例一字不动）；1 ⇒ 侧 1.38 / 顶 0.95 / 底 0.72。
  * @returns {number}
  */

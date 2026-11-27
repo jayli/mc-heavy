@@ -121,7 +121,7 @@
 
 ## 渲染与 GPU
 
-### ☠️☠️ worktree 里跑 `npm run bench` 会对着**主仓**跑（v3.51 实测）
+### ☠️☠️ worktree 里跑 `npm run bench` 会对着**主仓**跑（v3.52 实测）
 
 `src/bench/baseline.mjs` 的 `PORT` **写死 8081**（不像 `playwright.config.mjs` 读 `MC_PORT`），
 且它的服务策略是「8081 已有服务则复用」。主仓的 dev server 常驻在 8081
@@ -137,9 +137,9 @@
 **通用形态**：任何「固定端口 + 复用既有服务」的工具在 worktree 里都有这个陷阱。
 判据不是「命令 exit 0」，而是「那个端口背后的进程 cwd 是哪里」。
 
-### ☠️☠️ 新加的「常开」旋钮会静默污染既有 A/B 用例（v3.51 实测）
+### ☠️☠️ 新加的「常开」旋钮会静默污染既有 A/B 用例（v3.52 实测）
 
-v3.51 给云加面间对比 gain，新 uniform `uCloudFaceContrast` **初值 1（常开）**。
+v3.52 给云加面间对比 gain，新 uniform `uCloudFaceContrast` **初值 1（常开）**。
 既有 `cloud-softness.spec.mjs` 的「云柔和化」用例靠写 `uCloudSoften` 0↔1 做单变量对照 ——
 新 gain 常开会把底面**再乘 0.72** ⇒ 那条 A/B 变成**两个变量一起动**。
 
@@ -153,7 +153,7 @@ v3.51 给云加面间对比 gain，新 uniform `uCloudFaceContrast` **初值 1�
 **通用形态**：任何「新增一个默认开启的视觉/玩法参数」的改动，都要 grep 出**已有的单变量
 A/B 用例**并逐个判断是否需要钉住新参数。判据仍绿是这类缺陷的常态，不是安全信号。
 
-### ☠️ 侧面机位不能沿用「相机在目标正下/正上方」的夹具（v3.51）
+### ☠️ 侧面机位不能沿用「相机在目标正下/正上方」的夹具（v3.52）
 
 `cloud-softness.spec.mjs` 的 `sample()` 把相机放在取样点**正下方或正上方**
 （那是为俯视顶面 / 仰视底面设计的，`camera.up` 写死 (0,0,-1) 避 lookAt 退化）。

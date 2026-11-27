@@ -283,7 +283,7 @@ Expected: PASS，打印的 R−B 偏移显著。
 ### Task 5: 消费方回归 + 热路径门禁 + 文档
 
 **Files:**
-- Modify: `docs/roadmap.md`（v3.51 行）
+- Modify: `docs/roadmap.md`（v3.52 行）
 - Modify: `docs/pitfalls.md`（仅当实测踩到新坑）
 
 - [ ] **Step 1: 消费方 spec（grep 出的最小充分集）**
@@ -297,7 +297,7 @@ Expected: 全绿；**已知既有 flaky**（crosshair 极亮天区时序型、we
 Run: `npm run bench -- --check`（后台跑，~5min）
 Expected: exit 0；`docs/m3-baseline.*` 未被改写（若被改写要 `git checkout` 恢复 —— 那是冻结基线）。
 
-- [ ] **Step 3: 写 roadmap v3.51 行**
+- [ ] **Step 3: 写 roadmap v3.52 行**
 
 内容：用户原话与两张截图路径、根因恒等式、三个 gain 与实测逐档表、独立 uniform 的理由、
 1.38 的安全上界扫描、验证证据（各命令的实际输出）、已知代价。
