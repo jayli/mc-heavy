@@ -254,3 +254,106 @@ test('云柔和化：云底面变亮、云顶面与石头板逐位不动', async
 
   expect(errs, '不得有 console 错误').toEqual([]);
 });
+/**
+ * 注册模块内容替换（**必须在 goto 之前调**，否则注入静默失效）。
+ * 照 tests/wet-surface.spec.mjs 的 routeModule：模式未命中就 throw，
+ * 防「注入没落地却全绿」那类假绿（testing-policy §2.7）。
+ */
+async function routeModule(page, file, transform) {
+  await page.route(`**/${file}*`, async (route) => {
+    const res = await route.fetch();
+    const body = await res.text();
+    const next = transform(body);
+    if (next === body) throw new Error(`[负向对照] ${file} 的注入模式未命中 —— 注入静默失效`);
+    await route.fulfill({
+      response: res, body: next,
+      headers: { ...res.headers(), 'content-type': 'application/javascript' },
+    });
+  });
+}
+
+/** 读回浏览器侧源码的**代码行**（滤掉注释 —— 全文件 includes 会因 jsdoc 恒真） */
+async function browserCode(page, path) {
+  return page.evaluate(async (p) => {
+    const src = await (await fetch(p)).text();
+    return src.split('\n')
+      .filter((l) => { const t = l.trim(); return t && !t.startsWith('*') && !t.startsWith('//') && !t.startsWith('/*'); })
+      .join('\n');
+  }, path);
+}
+
+/**
+ * 负向①：mesher 不给 cloud 置 bit19 ⇒ **判据①（云底面变亮）必须失效**。
+ *
+ * ⚠️ **方向**：本用例 PASS 意味着「缺陷被抓到」——
+ * 它断言的是「注入后云底面不再变亮」，不是「注入后功能仍正常」。
+ * 若注入后云底面照旧变亮，说明判据①对被测机制零判别力（那才是真问题）。
+ */
+test('负向①：mesher 不给 cloud 置 bit19 ⇒ 云底面变亮判据必须 FAIL', async ({ page }) => {
+  test.setTimeout(300_000);
+  await page.setViewportSize({ width: 960, height: 540 });
+  await routeModule(page, 'mesher.js', (b) => b.replace(
+    "const cloudSoftBit = blockName === 'cloud' ? CLOUD_SOFT_BIT : 0;",
+    "const cloudSoftBit = false ? CLOUD_SOFT_BIT : 0;",
+  ));
+  await page.goto(URL);
+  await waitWorldSettled(page);
+  // 注入生效确认：读回浏览器侧源码（只看代码行）
+  const code = await browserCode(page, '/src/mesh/mesher.js');
+  expect(code.includes('const cloudSoftBit = false ? CLOUD_SOFT_BIT : 0;'),
+    '注入须真的落地').toBe(true);
+  expect(code.includes("const cloudSoftBit = blockName === 'cloud' ? CLOUD_SOFT_BIT : 0;"),
+    '原写法须已被替换').toBe(false);
+
+  const geo = await buildSlabs(page);
+  await setSoften(page, 0);
+  const off = await grabAll(page, geo);
+  await setSoften(page, 1);
+  const on = await grabAll(page, geo);
+  const ratio = on.botCloud / off.botCloud;
+  console.log('NEG-BIT19:', JSON.stringify({
+    botCloudOff: +off.botCloud.toFixed(1), botCloudOn: +on.botCloud.toFixed(1),
+    ratio: +ratio.toFixed(4),
+  }));
+  // 注入后 bit19 恒 0 ⇒ cloudT 恒 0 ⇒ 三个地板全部不生效 ⇒ 云底面不该变亮
+  expect(ratio,
+    `注入后云底面不该再变亮（实测比值 ${ratio.toFixed(4)}），否则判据①对缺陷零判别力`)
+    .toBeLessThan(1.02);
+});
+
+/**
+ * 负向②：把太阳项的 `max` 换成加法（整体提亮）⇒ **判据②（云顶面不变）必须失效**。
+ *
+ * 这条证明「云顶面逐位不变」不是恒真判据 —— 改系数 / wrap lighting / 加法
+ * 这三类「整体提亮冒充柔和」的实现都会被它抓到。
+ */
+test('负向②：把 max 换成加法（整体提亮）⇒ 云顶面不变判据必须 FAIL', async ({ page }) => {
+  test.setTimeout(300_000);
+  await page.setViewportSize({ width: 960, height: 540 });
+  await routeModule(page, 'materials.js', (b) => b.replace(
+    'const sunTermSoft = mix(sunTerm, max(sunTerm, uCloudSunFloor), cloudT);',
+    'const sunTermSoft = sunTerm.add(uCloudSunFloor.mul(cloudT).mul(0.3));',
+  ));
+  await page.goto(URL);
+  await waitWorldSettled(page);
+  const code = await browserCode(page, '/src/render/materials.js');
+  expect(code.includes('sunTerm.add(uCloudSunFloor.mul(cloudT).mul(0.3))'),
+    '注入须真的落地').toBe(true);
+  expect(code.includes('const sunTermSoft = mix(sunTerm, max(sunTerm, uCloudSunFloor), cloudT);'),
+    '原写法须已被替换').toBe(false);
+
+  const geo = await buildSlabs(page);
+  await setSoften(page, 0);
+  const off = await grabAll(page, geo);
+  await setSoften(page, 1);
+  const on = await grabAll(page, geo);
+  const topRatio = on.topCloud / off.topCloud;
+  console.log('NEG-ADDITIVE:', JSON.stringify({
+    topCloudOff: +off.topCloud.toFixed(1), topCloudOn: +on.topCloud.toFixed(1),
+    topRatio: +topRatio.toFixed(4),
+  }));
+  // 加法把顶面也抬 ⇒ 顶面必须变（证明判据②有判别力）
+  expect(Math.abs(topRatio - 1),
+    `注入后云顶面必须变（实测比值 ${topRatio.toFixed(4)}），否则判据②是恒真判据`)
+    .toBeGreaterThan(0.01);
+});
