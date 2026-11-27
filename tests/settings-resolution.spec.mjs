@@ -199,9 +199,12 @@ test('分辨率：并存档里的性能档在重进游戏后仍生效', async ({
   expect(after.rain, 'reload 后的雨滴数也必须按存档档位初始化').toBe(120);
 });
 
-test('分辨率：行布局 —— 视距与分辨率同处一个合并盒、同一行、文案不折行、面板不出现滚动条', async ({ page }) => {
+test('分辨率：行布局 —— 「分辨率 | 画质」两列同一大方块、中间竖线、四个按钮不折行、面板不出现滚动条', async ({ page }) => {
   // 用户 2026-11-03 指定：「把原本视距这一排改为两列，类似『雾色』与『背景音乐』两列占据一行」
   // —— 因此本行不只是「加两个按钮」，还背着一个**布局契约**（与 v1.98/v2.10 同一个约束家族）。
+  // ⚠️ v3.55（用户 2026-11-28 定稿）：「分辨率和画质也是在一个大方块里，中间有一个竖线隔开，
+  // 这个大方块里也是一共四个按钮」⇒ 本盒 = 分辨率 | 画质（各两按钮，中间一道竖线）。
+  // 契约：① 两组同盒、左右两列、同 top；② 两组之间的竖线在；③ 两组标题与四个按钮都不折行/不溢出。
   await boot(page);
   await openPanel(page);
   const layout = await page.evaluate(() => {
@@ -210,6 +213,8 @@ test('分辨率：行布局 —— 视距与分辨率同处一个合并盒、同
       .find((r) => r.querySelector('.mc-title')?.textContent === title);
     const vd = boxOf('视距');
     const res = boxOf('分辨率');
+    const blur = boxOf('画质（远处纹理）');
+    const progress = boxOf('进度管理');
     const btns = (el) => [...el.querySelectorAll('button')];
     const lines = (b) => {
       const r = document.createRange();
@@ -217,31 +222,60 @@ test('分辨率：行布局 —— 视距与分辨率同处一个合并盒、同
       return new Set([...r.getClientRects()].map((x) => Math.round(x.top))).size;
     };
     const content = modal.querySelector('.mc-content');
+    const colOf = (el) => {
+      const col = el?.closest('.mc-column');
+      if (!col) return -1;
+      return [...modal.querySelectorAll('.mc-columns > .mc-column')].indexOf(col);
+    };
+    const boxEl = res?.closest('.mc-combined');
+    const firstCol = boxEl?.querySelector('.mc-combined-col');
     return {
-      vdExists: !!vd,
       resExists: !!res,
-      sameBox: !!vd && !!res && vd.parentElement === res.parentElement,
-      sameRow: !!vd && !!res
-        && Math.round(vd.getBoundingClientRect().top) === Math.round(res.getBoundingClientRect().top),
-      vdCount: vd ? btns(vd).length : 0,
-      resCount: res ? btns(res).length : 0,
-      resLabels: res ? btns(res).map((b) => b.textContent) : [],
+      blurExists: !!blur,
+      sameBox: !!res && !!blur && res.parentElement === blur.parentElement,
+      groupCount: boxEl ? boxEl.querySelectorAll('.mc-combined-col').length : 0,
+      // 两组之间的那道竖线（左列 border-right），与其它合并盒同一手法
+      divider: firstCol ? getComputedStyle(firstCol).borderRightWidth : null,
+      resLeftOfBlur: !!res && !!blur
+        && res.getBoundingClientRect().left < blur.getBoundingClientRect().left,
+      sameRow: !!res && !!blur
+        && Math.round(res.getBoundingClientRect().top) === Math.round(blur.getBoundingClientRect().top),
+      titlesOneLine: [res, blur].filter(Boolean)
+        .every((g) => lines(g.querySelector('.mc-title')) === 1),
+      titlesFit: [res, blur].filter(Boolean).every((g) => {
+        const t = g.querySelector('.mc-title');
+        return t.scrollWidth <= t.clientWidth + 1;
+      }),
+      btnCount: (res ? btns(res).length : 0) + (blur ? btns(blur).length : 0),
       // ⚠️ `scrollWidth <= clientWidth` 对「折行」没有判别力（中文可任意字间断行），
       // 实测 v2.19 就是这么被咬的 —— 真正的信号是行盒数。
-      noWrap: res ? btns(res).every((b) => b.scrollWidth <= b.clientWidth && lines(b) === 1) : false,
+      noWrap: [res, blur].filter(Boolean)
+        .every((g) => btns(g).every((b) => b.scrollWidth <= b.clientWidth && lines(b) === 1)),
+      boxCol: colOf(res),
+      resLabels: res ? btns(res).map((b) => b.textContent) : [],
+      // 视距已搬去「视距 | 进度管理」盒（右列首位），不再与分辨率同盒
+      vdWithRes: !!vd && !!res && vd.parentElement === res.parentElement,
+      vdWithProgress: !!vd && !!progress && vd.parentElement === progress.parentElement,
       scroll: { h: content.scrollHeight, c: content.clientHeight },
       panelW: Math.round(content.getBoundingClientRect().width),
     };
   });
-  expect(layout.vdExists, '视距组必须仍在（只加列不换掉）').toBe(true);
   expect(layout.resExists, '必须有分辨率组').toBe(true);
-  expect(layout.sameBox, '视距与分辨率必须共用同一个合并盒（用户要求的「两列占一行」）').toBe(true);
+  expect(layout.blurExists, '画质组必须与分辨率同盒（用户 2026-11-28：「分辨率和画质也是在一个大方块里」）').toBe(true);
+  expect(layout.sameBox, '分辨率与画质必须共用同一个合并盒').toBe(true);
+  expect(layout.groupCount, '盒内必须恰好两组（两列）').toBe(2);
+  expect(layout.divider, '两列之间必须有竖线（与既有合并盒同一样式）').toBe('1px');
+  expect(layout.resLeftOfBlur, '分辨率在左列、画质在右列').toBe(true);
   expect(layout.sameRow, '两组必须在同一行（同一 top）').toBe(true);
-  expect(layout.vdCount, '视距仍是三档（8/12/16），不得被改动').toBe(3);
-  expect(layout.resCount).toBe(2);
+  expect(layout.titlesOneLine, '两组标题均不得折行').toBe(true);
+  expect(layout.titlesFit, '两组标题均不得溢出列宽').toBe(true);
+  expect(layout.btnCount, '该大方块里一共四个按钮').toBe(4);
   expect(layout.resLabels).toEqual(['清晰', '性能']);
-  expect(layout.noWrap, '分辨率按钮文案不得折行/溢出').toBe(true);
-  // 面板不得因新增这一列出现纵向滚动条（v1.63/v1.98 的既定判据：面板高度不涨）
+  expect(layout.noWrap, '四个按钮文案均不得折行/溢出').toBe(true);
+  // 视距已按用户新归属搬去「视距 | 进度管理」盒
+  expect(layout.vdWithRes, '视距不得再与分辨率同盒').toBe(false);
+  expect(layout.vdWithProgress, '视距必须与进度管理同盒（用户 2026-11-28）').toBe(true);
+  // 面板不得因换盒出现纵向滚动条（v1.63/v1.98 的既定判据：面板高度不涨）
   expect(layout.scroll.h, '面板内容不得溢出（出现纵向滚动条 = 高度涨了一档）')
     .toBeLessThanOrEqual(layout.scroll.c + 1);
   expect(layout.panelW, '面板宽度仍应为 770 + 边框/内边距（实测量级）').toBeGreaterThan(700);

@@ -3,8 +3,8 @@ import fs from 'node:fs';
 import { PNG } from 'pngjs';
 
 /**
- * v1.43 验收：设置面板的进度导入 / 导出（v1.98 起按钮改名为「导入 / 导出」，与 TNT 破坏同处
- * 一个合并盒 —— 文案变短是布局的必然，见 `_combinedTntProgress()` 注释）。
+ * v1.43 验收：设置面板的进度导入 / 导出（v1.98 起按钮改名为「导入 / 导出」—— 文案变短是布局的
+ * 必然；v3.55 起与「视距」同处一个两列大方块，见 `_combinedViewDistanceProgress()` 注释）。
  *
  * 关键回归（Tier 1）两条，都**在方块层面看不出差别**，只有端到端才能暴露：
  * ① **导出前必须先 `flushNow`** —— 刚放下的方块还在内存 edits 里（5s 防抖未到），
@@ -285,7 +285,7 @@ test('进度导入/导出：busy 锁拒绝并发点击（异步文件读取期�
   expect(result.after).toBe(result.before);
 });
 
-test('面板布局：创造台与（TNT破坏+进度管理）合并盒分成两行；进度按钮在不换行的情况下与 TNT 同行', async ({ page }) => {
+test('面板布局：创造台与「视距 | 进度管理」大方块各行；进度五按钮不折行', async ({ page }) => {
   test.setTimeout(180_000);
   await boot(page);
   await page.locator('#settings-btn').click();
@@ -295,11 +295,17 @@ test('面板布局：创造台与（TNT破坏+进度管理）合并盒分成两�
     const panel = window.__MC_GAME__.settingsPanel;
     const main = document.getElementById('btn-playground');
     const pgRow = main.closest('.mc-item');
-    // v1.98：进度行不再是独立 `.mc-item`，而是与 TNT 破坏共用的合并盒里的右半（`mc-combined-col`）
+    // ⚠️ v3.55（用户 2026-11-28 定稿）：进度管理已搬到「视距 | 进度管理」大方块（右列首位），
+    // **不再与 TNT 破坏同盒**。左列那一格换成「视距」，其余口径不变（仍是大方块两列 + 竖线）。
     const importBtn = document.getElementById('btn-progress-import');
     const progressRow = importBtn.closest('.mc-combined-col');
     const combined = importBtn.closest('.mc-combined');
-    const tntRow = combined.querySelector('.mc-combined-col');
+    const vdRow = combined.querySelector('.mc-combined-col');
+    const lines = (el) => {
+      const r = document.createRange();
+      r.selectNodeContents(el);
+      return new Set([...r.getClientRects()].map((x) => Math.round(x.top))).size;
+    };
     const group = main.parentElement;
     const box = (el) => { const r = el.getBoundingClientRect(); return { w: Math.round(r.width), h: Math.round(r.height), top: Math.round(r.top) }; };
     const vis = (el) => getComputedStyle(el).display !== 'none';
@@ -307,16 +313,27 @@ test('面板布局：创造台与（TNT破坏+进度管理）合并盒分成两�
     const out = {
       pgTitle: pgRow.querySelector('.mc-title').textContent,
       progressTitle: progressRow.querySelector('.mc-title').textContent,
-      tntTitle: tntRow.querySelector('.mc-title').textContent,
+      vdTitle: vdRow.querySelector('.mc-title').textContent,
       importLabel: importBtn.textContent,
       exportLabel: document.getElementById('btn-progress-export').textContent,
-      // 进度与 TNT 同一个合并盒（本次改动的核心）+ 它们在同一个按钮组的 top 上
-      inSameCombined: progressRow.parentElement === tntRow.parentElement
+      // 进度与视距同一个大方块（用户 2026-11-28 的核心要求）
+      inSameCombined: progressRow.parentElement === vdRow.parentElement
         && combined !== null,
-      // 合并盒与创造台行是两个不同的盒子，且合并盒在创造台**下方**（用户 2026-09-30 裁定）
+      // 该盒恰好两列；视距在左、进度在右；中间一道竖线
+      groupCount: combined.querySelectorAll('.mc-combined-col').length,
+      divider: getComputedStyle(vdRow).borderRightWidth,
+      // 「视距是三个按钮，进度管理是两个按钮」（用户原话）
+      vdButtons: vdRow.querySelectorAll('button').length,
+      progressButtons: progressRow.querySelectorAll('button').length,
+      // 合并盒与创造台行是两个不同的盒子
       rowsAreDistinct: pgRow !== combined,
+      // v3.55：该盒在右列首位 ⇒ 它在创造台**上方**。
+      // 旧裁定「进度管理在创造台下方」（2026-09-30）随本次重排失效，以新指令为准。
       combinedBelowPlayground: combined.getBoundingClientRect().top
         > pgRow.getBoundingClientRect().bottom,
+      // 五个按钮（3 视距 + 2 进度）必须各自单行、不溢出
+      allButtonsOneLine: [...combined.querySelectorAll('button')].every((b) => lines(b) === 1
+        && b.scrollWidth <= b.clientWidth + 1),
       // 模型按钮与主按钮**同一个按钮组**（既有口径，本次不得回归）
       modelSameGroup: document.getElementById('btn-playground-export').parentElement === group
         && document.getElementById('btn-playground-import').parentElement === group,
@@ -325,13 +342,12 @@ test('面板布局：创造台与（TNT破坏+进度管理）合并盒分成两�
       main: box(main),
       progressImport: box(importBtn),
       progressExport: box(document.getElementById('btn-progress-export')),
-      tntClose: box(tntRow.querySelector('button')),
       progressVisible: vis(importBtn) && vis(document.getElementById('btn-progress-export')),
-      // 四个按钮必须同一行（合并盒的两列各自一行）
-      progressSameRowAsTnt: box(importBtn).top === box(tntRow.querySelector('button')).top,
+      // 两列的按钮必须落在同一行（合并盒两列各自一行）
+      progressSameRowAsVd: box(importBtn).top === box(vdRow.querySelector('button')).top,
       // 文案不得被压到换行/溢出（合并盒列窄，这是本次唯一真实的布局风险）
       progressNoOverflow: noOverflow(importBtn) && noOverflow(document.getElementById('btn-progress-export')),
-      tntTitleNoOverflow: noOverflow(tntRow.querySelector('.mc-title')),
+      vdTitleNoOverflow: noOverflow(vdRow.querySelector('.mc-title')),
       modelsVisibleBefore: vis(document.getElementById('btn-playground-export')),
       modelExport: box(document.getElementById('btn-playground-export')),
       mainScrollW: main.scrollWidth,
@@ -362,16 +378,25 @@ test('面板布局：创造台与（TNT破坏+进度管理）合并盒分成两�
 
   expect(layout.pgTitle).toBe('创造台');
   expect(layout.progressTitle).toBe('进度管理');
-  expect(layout.tntTitle).toBe('TNT 破坏');
+  expect(layout.vdTitle).toBe('视距');
   expect(layout.importLabel).toBe('导入');       // v1.98 改名
   expect(layout.exportLabel).toBe('导出');
-  expect(layout.inSameCombined, 'TNT 破坏与进度管理必须在同一个合并盒里').toBe(true);
+  expect(layout.inSameCombined, '视距与进度管理必须在同一个大方块里').toBe(true);
   expect(layout.rowsAreDistinct).toBe(true);     // 合并盒与创造台仍是两行
-  expect(layout.combinedBelowPlayground, '进度管理仍在创造台下方（用户 2026-09-30 裁定）').toBe(true);
+  // v3.55：该盒已上移到右列首位 ⇒ 它在创造台**上方**
+  expect(layout.combinedBelowPlayground,
+    'v3.55 重排后，「视距 | 进度管理」盒应在创造台上方（旧断言「在下方」已随重排失效）').toBe(false);
+  expect(layout.groupCount, '该大方块必须恰好两列').toBe(2);
+  expect(layout.divider, '两列之间必须有竖线（与既有样式一致）').toBe('1px');
+  expect(layout.vdButtons, '视距三个按钮').toBe(3);
+  expect(layout.progressButtons, '进度管理两个按钮').toBe(2);
+  expect(layout.allButtonsOneLine, '该盒内五个按钮均不得折行/溢出').toBe(true);
   expect(layout.progressVisible).toBe(true);     // 进度按钮常驻（与创造台状态无关）
-  expect(layout.progressSameRowAsTnt, '四个按钮（TNT 两个 + 进度两个）必须同一行').toBe(true);
+  expect(layout.progressSameRowAsVd, '两列的按钮必须落在同一行').toBe(true);
   expect(layout.progressNoOverflow, '合入窄列后文案不得溢出').toBe(true);
-  expect(layout.tntTitleNoOverflow, '「TNT 破坏」是面板最长的组标题，不得溢出列宽').toBe(true);
+  expect(layout.vdTitleNoOverflow, '「视距」标题不得溢出列宽').toBe(true);
+  // 两列盒下每组约 171px：进度两按钮各约 81px（v1.98 的标定）。真正的判据仍是
+  // 「文字不被压折行」= 上面的 `progressNoOverflow` + `allButtonsOneLine`。
   expect(layout.progressImport.w).toBeGreaterThan(60);
   expect(layout.progressExport.w).toBeGreaterThan(60);
   expect(layout.mainLabel).toBe('打开创造台');

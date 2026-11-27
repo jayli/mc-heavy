@@ -6,9 +6,15 @@
 // （组件自带样式，不依赖宿主页面；重复构造只注入一次）。
 // **布局**：沿用 mc-lite 的两列盒（`.settings-columns` + `.setting-combined-item`），
 // 但行列分配按 mc-heavy 当前档位需要重排（面板是后续功能的配置入口，须留扩展余量）：
-// 左列 = 画质+枪械破坏合并盒 / 环境风格 / 雾色+背景音乐合并盒 / 瞬移；
-// 右列 = 视距+分辨率合并盒（v2.27）/ 帧预算 / 创造台 / TNT 破坏+进度管理合并盒 / 世界
-// （新世界 + 删除缓存）。
+// 左列 = **TNT 破坏 | 枪械破坏**合盒（v3.55 定稿）/ 环境风格 /
+// 萤火虫+背景音乐合盒 / 瞬移 / 雨天光影；
+// 右列 = **视距 | 进度管理**合盒（v3.55）/ **分辨率 | 画质**合盒（v3.55）/ 帧预算 / 创造台 /
+// 世界（新世界 + 删除缓存）。
+// ⚠️ v3.55 三盒归属（用户 2026-11-28）：「枪械破坏和 TNT 破坏作为在一个大方块里的两列」、
+//   「另个大方块里的两列是视距和进度管理」、「分辨率和画质也是在一个大方块里」。
+//   每块都是一道竖线隔开的两列、各自一共 4/5/4 个按钮。
+// ⚠️「合并盒落在列首位」时有专属 CSS（`.mc-combined:not(:first-child)` 加分隔线、
+//   `:first-child` 不加）—— v3.55 起左列首位 = 盒①，右列首位 = 盒②。
 // 档位：视距（持久化+重载生效，面板 3 档）/ 画质 blur（重载生效）/ 视觉风格（运行时即时）
 // / 帧预算档位（运行时即时，M3-2）/ 枪械破坏（运行时即时）/ 世界操作（新世界 / 删除缓存）。
 // 音量不入面板（默认 100% 开启，`settings.js` 仍持久化 + `?volume=` URL 可达，待音频消费方接线）。
@@ -205,7 +211,8 @@ export const STORM_LABELS = Object.freeze(['关闭', '开启']);
  *
  * 用户 2026-11-03：「增加一个分辨率的选项，一个是当前默认比较清晰的分辨率，一个是画面
  * 分辨率更低的按钮，分为两个按钮表达，清晰，性能」—— 文案就是用户点名的两个字。
- * 落位 = **与「视距」共用合并盒**（右列第一行左半视距、右半分辨率）。
+ * 落位 = **盒③「分辨率 | 画质」的左列**（v3.55 按用户 2026-11-28 的新归属：分辨率与画质同盒；
+ * v2.27~v3.54 它曾与视距同盒）。
  * ⚠️ 档位值（`'sharp'`/`'performance'`）不在这里写 —— 唯一权威是 `render/pixel-ratio.js`
  * 的 `PIXEL_RATIO_MODE_OPTIONS`，本处只负责显示文案（按下标对齐）。
  */
@@ -392,11 +399,12 @@ const PANEL_CSS = `
 }
 #settings-modal .mc-combined-col:first-child { border-right: 1px solid #888; padding-left: 0; }
 #settings-modal .mc-combined-col:last-child { padding-right: 0; }
-/* 合并盒出现在**列中间**时（v1.98：左列的雾色+背景音乐、右列的 TNT+进度），要跟它上方的
+/* 合并盒出现在**列中间**时（v1.98：左列的萤火虫+背景音乐、右列的分辨率+画质），要跟它上方的
    普通行一样有一条分隔线，否则那一块与上一行之间只剩 10px 空白、视觉节奏断掉。
    ⚠️ **只覆写 border-top-color 与 padding-top，不用 border 简写** —— 简写会连带改掉
    .mc-combined 自身方框的左右下三边（v1.35 踩过同型的特异性陷阱：一条 border-top:none
-   把合并盒上边框抹掉，方框缺一边）。首位的合并盒（左列画质+枪械破坏）不加线，与既有观感一致。
+   把合并盒上边框抹掉，方框缺一边）。首位的合并盒（v3.55 起 = 左列 TNT|枪械 /
+   右列 视距|进度）不加线，与既有观感一致。
    ⚠️ 本文件在 JS 模板字面量内，注释里**不得用反引号**包裹标识符（会提前终止模板字符串）。 */
 #settings-modal .mc-column > .mc-combined:not(:first-child) {
   border-top-color: #999; padding-top: 10px;
@@ -553,9 +561,17 @@ export class SettingsPanel {
     // 点击遮罩关闭（mc-lite settingsModal.onclick 语义）
     this.el.addEventListener('click', (e) => { if (e.target === this.el) this.close(); });
 
-    // 两列盒（mc-lite `.settings-columns`）。分配按「档位数 + 文案长度」排：
-    // 左列吃两组两按钮档位（合并盒）+ 四档风格；右列吃三档视距/帧预算 + 世界操作。
+    // 两列盒（mc-lite `.settings-columns`）。分配按「档位数 + 文案长度」排。
     // 后续新配置优先往右列填（右列纵向余量更大），避免继续增高左列。
+    //
+    // v3.55（用户 2026-11-28 三轮沟通后的**定稿**）：「一个大方块里两列、中间一道竖线」是
+    // 既有合并盒形态（`.mc-combined` + 两列 grid + `.mc-combined-col` 的右边框）。
+    // 三个大方块（每块两组 = 两列）而非任何三列盒：
+    //   ① TNT 破坏 | 枪械破坏（四个按钮：关/开 + 关/开）
+    //   ② 视距    | 进度管理（五个按钮：8/12/16 + 导入/导出）
+    //   ③ 分辨率 | 画质（四个按钮：清晰/性能 + 像素风/平滑）
+    // ⚠️ 行的宽度有限：三个盒子各占**一行**，每行只能容一个（两个方块并排就是四列了）。
+    // ⇒ 左列首位 = 盒①、右列依次 = 盒②、盒③ —— 上方两排仍是左/右各一个方块。
     const columns = document.createElement('div');
     columns.className = 'mc-columns';
     const left = document.createElement('div');
@@ -565,7 +581,8 @@ export class SettingsPanel {
     columns.appendChild(right);
     settingsPanel.appendChild(columns);
 
-    left.appendChild(this._combinedBlurGunDamage()); // 画质 + 枪械破坏共用一行
+    // 盒① TNT 破坏 | 枪械破坏（左列首位）。
+    left.appendChild(this._combinedTntGun());
     left.appendChild(this._rowVisualStyle());
     // v1.98：氛围组 + 背景音乐合并为一行（用户 2026-10-31：「做成跟画质+枪械破坏这部分一样
     // 的按钮排布，放到一行里，分左右两部分，一块两个按钮」）—— 两组都是两按钮开关、同属
@@ -575,13 +592,11 @@ export class SettingsPanel {
     // v3.30：雨天光影开关（用户 2026-11-22：「在瞬移区域的下面增加一个雨天光影的
     // 开关设置按钮」）—— 落位 = 左列、瞬移行**下方**。
     left.appendChild(this._rowStormLighting());
-    right.appendChild(this._combinedViewDistanceResolution()); // 视距 + 分辨率共用一行（v2.27）
+    // 盒② 视距 | 进度管理 → 盒③ 分辨率 | 画质（右列，各占一行）。
+    right.appendChild(this._combinedViewDistanceProgress());
+    right.appendChild(this._combinedResolutionBlur());
     right.appendChild(this._rowBudget());
     right.appendChild(this._rowPlayground());        // M9：创造台（右列，纵向余量更大）
-    // v1.98：TNT 破坏 + 进度管理合并为一行（用户同日要求，同样是为了「节省控制面板的空间」）。
-    // 落位 = 原「进度管理」的位置（**创造台之后**）—— 「进度管理在创造台下方」是用户 2026-09-30
-    // 明确裁定过的排布，而 TNT 破坏此前没有指定位置，故由它跟随进度这一行走。
-    right.appendChild(this._combinedTntProgress());
     right.appendChild(this._rowWorld());             // 新世界 + 删除缓存共用一行
 
     // 第二个 Tab（v3.51：「光影微调」）—— 15 个滑块，两列 8/7。
@@ -922,11 +937,18 @@ export class SettingsPanel {
       }, 'mc-combined-col');
   }
 
-  /** v2.27：视距 + 分辨率共用一个合并盒（用户 2026-11-03 指定「视距这一排改为两列」） */
-  _combinedViewDistanceResolution() {
+  /**
+   * v3.55：「分辨率 | 画质」两列合盒（用户 2026-11-28 定稿：「分辨率和画质也是在一个大方块
+   * 里，中间有一个竖线隔开，这个大方块里也是一共四个按钮」）。
+   *
+   * 两组各两按钮（清晰/性能 + 像素风/平滑），形态与其它合并盒完全同构。
+   * ⚠️ 取代 v2.27 的「视距+分辨率」盒与 v1.98 的「画质+枪械破坏」盒——两者按用户新归属
+   * 拆开：视距去盒②（与进度管理同行），枪械破坏去盒①（与 TNT 破坏同行）。
+   */
+  _combinedResolutionBlur() {
     return this._makeCombined([
-      this._rowViewDistance('mc-combined-col'),
       this._groupResolution(),
+      this._groupBlur(),
     ]);
   }
 
@@ -954,10 +976,9 @@ export class SettingsPanel {
       }, 'mc-combined-col');
   }
 
-  // 画质与枪械破坏都是两按钮档位，各占一行浪费版面 → 合并盒共用一行（mc-lite 同手法）。
-  _combinedBlurGunDamage() {
-    return this._makeCombined([this._groupBlur(), this._groupGunDamage()]);
-  }
+  // 画质自 v3.55 起与「分辨率」同盒（盒③，用户 2026-11-28：「分辨率和画质也是在一个大方块
+  // 里，中间有一个竖线隔开」）；枪械破坏与「TNT 破坏」同盒（盒①）。
+  // ⇒ v1.98~v3.54 的「画质 + 枪械破坏」两列盒**已不存在**。
 
   /**
    * 环境风格：自动 / 早晨 / 正午 / 傍晚 / 黑夜 / 普通
@@ -1282,7 +1303,10 @@ export class SettingsPanel {
    * `game.canTntDestroyBlocks`）。mc-heavy 走 `game.setTntBlockDamage(enabled)`，默认 false
    * （mc-lite `Game.js:92` 同口径：默认只伤害 + 连锁、不动地形）。
    *
-   * ⚠️ **落位 = 右列（v1.98 起与「进度管理」共用合并盒的左半）**。v1.98 之前的落位理由「单组
+   * ⚠️ **落位 = 左列首位、盒①「TNT 破坏 | 枪械破坏」的左列**（v3.55 定稿，用户 2026-11-28：
+   * 「枪械破坏和 TNT 破坏作为在一个大方块里的两列而存在」）。v1.98 的「TNT+进度同盒」
+   * 已随本次重排拆开（进度管理搬去盒②，与视距同行）。
+   * v1.98 之前的落位理由「单组
    * 不进合并盒」已**因用户新要求失效**（2026-10-31：「同样的处理方式，也处理一下 TNT 破坏和
    * 进度管理」）—— 那两条（合并盒已满 / 单组不适用）都是**当时**的档位状态，现在要合的是
    * 两组、各两个按钮，与画质+枪械破坏那一盒完全同构。
@@ -1300,18 +1324,32 @@ export class SettingsPanel {
   }
 
   /**
-   * v1.98：「TNT 破坏 + 进度管理」合并盒（用户 2026-10-31：「同样的处理方式，也处理一下
-   * 【TNT破坏】和【进度管理】，其中进度管理里的两个按钮分别改名为【导入】和【导出】」）。
+   * v3.55：「TNT 破坏 | 枪械破坏」两列合盒（用户 2026-11-28 定稿：「枪械破坏和TNT破坏作为
+   * 在一个大方块里的两列而存在，这个大方块内一共四个按钮……中间有一个竖线，跟现在的样式一样」）。
    *
-   * 改名不是审美选择，是**布局的必然**：合并后每组只剩约 171px 列宽（`_combinedBlurGunDamage`
-   * 实测同构盒的每组宽度）， 两按钮各约 81px 且还要摊 4px 间隙与斜角边框 ——
-   * 「导入进度」「导出进度」四个字正好贴边；「导入 / 导出」与同盒的「关闭 / 开启」节奏一致。
-   * 代价：文案不再自带「进度」二字 → 归属靠**组标题「进度管理」**表达（与「导出模型 / 导入模型」
-   * 靠「创造台」标题区分是同一手法）。
+   * 两组各两个按钮（关/开 × 2），左列 `border-right` 就是那道竖线——与其它合并盒完全同构。
+   * ⚠️ 取代 v1.98 的「TNT 破坏 + 进度管理」盒（进度管理已按用户新归属搬到盒②、与视距同行）。
+   * ⚠️ 「TNT 破坏」是面板里最长的组标题之一，两列盒下每组 ~171px 绰绰有余；
+   * 不折行/不溢出由 `tnt.spec` 的 `scrollWidth ≤ clientWidth` + 行盒数实测钉住。
    */
-  _combinedTntProgress() {
+  _combinedTntGun() {
     return this._makeCombined([
       this._rowTntDamage('mc-combined-col'),
+      this._groupGunDamage(),
+    ]);
+  }
+
+  /**
+   * v3.55：「视距 | 进度管理」两列合盒（用户 2026-11-28 定稿：「另个大方块里的两列是视距和
+   * 进度管理，视距是三个按钮，进度管理是两个按钮，中间有一个竖线，跟现在的样式一样」）。
+   *
+   * ⚠️ 盒内两列的按钮数不同（3 vs 2）—— 这正是用户描述的形态，不是缺陷：`.mc-btn-group`
+   * 在各自列内 `flex:1` 平分列宽，所以视距三按钮更窄、进度两按钮更宽。
+   * ⚠️ **进度管理至此不再与 TNT 同盒**（v1.98 的排布已被用户 2026-11-28 重排推翻）。
+   */
+  _combinedViewDistanceProgress() {
+    return this._makeCombined([
+      this._rowViewDistance('mc-combined-col'),
       this._rowProgress('mc-combined-col'),
     ]);
   }

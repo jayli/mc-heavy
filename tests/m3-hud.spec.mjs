@@ -69,16 +69,27 @@ test('M3-4：设置面板交互（uiModal 门控 + 风格/帧预算/枪械破坏
   await expect(page.locator('#settings-modal')).toBeVisible();
   expect(await page.evaluate(() => window.__MC_GAME__.uiModal)).toBe(true);
 
-  // 合并盒（画质+枪械破坏）四边框必须完整 —— 钉 CSS 特异性回归（实测踩坑）：
+  // 合并盒四边框必须完整 —— 钉 CSS 特异性回归（实测踩坑）：
   // 分隔线规则曾写成 `#settings-modal .mc-column > :first-child`（特异性 1,2,0），
   // 压过 `#settings-modal .mc-combined`（1,1,0）的装饰边框 → 列首的合并盒上边框被置
   // none，方框缺一边。用户报告的正是这个观感缺陷（肉眼看不出是特异性冲突）。
   // 故规则只作用于 `.mc-item`（行型），这条断言钉住「合并盒四边都在」。
+  // ⚠️ v3.55：两列首位各是一个合并盒（左：视距+分辨率 / 右：TNT+进度），**两个都要查** ——
+  // 只查文档序第一个时，换位会让它静默变成「另一个盒也在列首」的巧合绿。
   const combinedSides = await page.evaluate(() => {
-    const cs = getComputedStyle(document.querySelector('#settings-modal .mc-combined'));
-    return ['Top', 'Right', 'Bottom', 'Left'].map((s) => cs[`border${s}Style`]);
+    const heads = [...document.querySelectorAll('#settings-panel-main .mc-column')]
+      .map((c) => c.querySelector(':scope > .mc-combined'))
+      .filter(Boolean);
+    return {
+      count: heads.length,
+      sides: heads.map((el) => {
+        const cs = getComputedStyle(el);
+        return ['Top', 'Right', 'Bottom', 'Left'].map((s) => cs[`border${s}Style`]);
+      }),
+    };
   });
-  expect(combinedSides.every((s) => s === 'solid')).toBe(true);
+  expect(combinedSides.count, '两列首位各应有一个合并盒').toBe(2);
+  for (const sides of combinedSides.sides) expect(sides.every((s) => s === 'solid')).toBe(true);
 
   // 面板打开时玩家输入暂停：按住 W 位置不动
   const posBefore = await page.evaluate(() => ({ ...window.__MC_GAME__.player.physics.pos }));
@@ -109,9 +120,13 @@ test('M3-4：设置面板交互（uiModal 门控 + 风格/帧预算/枪械破坏
 
   // 枪械破坏开启：运行时即时生效（weaponController.blockDamageEnabled）+ 持久化
   // （M4 遗留 TODO：对齐 mc-lite「枪械破坏」开/关两按钮，委派 game.setGunBlockDamage）
+  // ⚠️ **必须按组标题作用域定位**：面板里「开启」有多组重复（枪械破坏 / 萤火虫和落叶 /
+  // 背景音乐 / TNT 破坏），全局找第一个命中的会点到别的组（v3.52 换位后首个「开启」变成
+  // 萤火虫和落叶 —— 实测点击静默落空，本用例红在 waitForFunction 超时而不是定位处）。
   await page.evaluate(() => {
-    const btns = [...document.querySelectorAll('#settings-modal button')];
-    btns.find((b) => b.textContent === '开启').click();
+    const row = [...document.querySelectorAll('#settings-modal .mc-combined-col')]
+      .find((r) => r.querySelector('.mc-title')?.textContent === '枪械破坏');
+    [...row.querySelectorAll('button')].find((b) => b.textContent === '开启').click();
   });
   await page.waitForFunction(() => {
     const g = window.__MC_GAME__;

@@ -367,36 +367,72 @@ test('枪击命中 TNT 引爆，且不受「枪械破坏」开关门控（mc-lit
   expect(r.id).toBe(0);
 });
 
-test('设置面板：TNT 破坏开关落在右列、生效且持久化', async ({ page }) => {
+test('设置面板：TNT 破坏开关落在左列大方块首位、生效且持久化', async ({ page }) => {
   test.setTimeout(120_000);
   await page.goto(URL);
   await page.waitForFunction(() => window.__MC_GAME__?.worldReady === true, null, { timeout: 90_000 });
   await page.locator('#settings-btn').click();
   await expect(page.locator('#settings-modal')).toBeVisible();
 
-  // ⚠️ 落位断言：该组必须落在**右列**（`.mc-columns` 的第二个 `.mc-column`），
-  // 且 v1.98 起与「进度管理」共用合并盒（用户 2026-10-31：「同样的处理方式，也处理一下
-  // TNT破坏和进度管理」）。断言钉住两件事：① 仍在右列；② 与进度同盒（被挪回独立一行
-  // 或跨列都会失败）。
+  // ⚠️ 落位断言（v3.55 定稿，用户 2026-11-28）：
+  //   ① 「枪械破坏和 TNT 破坏作为在一个大方块里的两列而存在，这个大方块内一共四个按钮……
+  //      中间有一个竖线」—— 本盒 = TNT 破坏 | 枪械破坏，各两按钮，左列 border-right 即竖线；
+  //   ② 「另个大方块里的两列是视距和进度管理」—— 进度管理已搬去与视距同盒（见下）；
+  //   ③ 「分辨率和画质也是在一个大方块里」—— 见 `settings-resolution.spec`。
+  // ⚠️ 选择器必须用 `#settings-panel-main .mc-columns`（只取「设置」页签）：
+  // 「光影微调」页签也用了 `.mc-columns` 两列手法，全局查 `.mc-columns > .mc-column`
+  // 会同时命中 4 个（2 + 2）—— 实测这里会读到 `cols: 4`，cols[1] 含义错位。
   const placement = await page.evaluate(() => {
-    const cols = [...document.querySelectorAll('#settings-modal .mc-columns > .mc-column')];
+    const main = document.getElementById('settings-panel-main');
+    const cols = [...main.querySelectorAll('.mc-columns > .mc-column')];
     if (cols.length !== 2) return { cols: cols.length };
     const inCol = (col, title) => [...col.querySelectorAll('.mc-title')]
       .some((t) => t.textContent === title);
-    const combined = document.getElementById('btn-progress-import')?.closest('.mc-combined');
-    const titles = combined
-      ? [...combined.querySelectorAll('.mc-title')].map((t) => t.textContent) : [];
+    const groupOf = (title) => [...main.querySelectorAll('.mc-title')]
+      .find((t) => t.textContent === title)?.closest('.mc-combined');
+    const tntBox = groupOf('TNT 破坏');
+    const vdBox = groupOf('视距');
+    const resBox = groupOf('分辨率');
+    const titlesOf = (b) => (b ? [...b.querySelectorAll('.mc-title')].map((t) => t.textContent) : []);
+    const lines = (el) => {
+      const r = document.createRange();
+      r.selectNodeContents(el);
+      return new Set([...r.getClientRects()].map((x) => Math.round(x.top))).size;
+    };
+    const firstCol = tntBox?.querySelector('.mc-combined-col');
+    const tntGroups = tntBox ? [...tntBox.querySelectorAll('.mc-combined-col')] : [];
     return {
       cols: 2,
-      tntInRight: inCol(cols[1], 'TNT 破坏'),
       tntInLeft: inCol(cols[0], 'TNT 破坏'),
-      sameCombined: titles.includes('TNT 破坏') && titles.includes('进度管理'),
+      tntInRight: inCol(cols[1], 'TNT 破坏'),
+      tntBoxTitles: titlesOf(tntBox),
+      // ① 枪械破坏与 TNT 破坏同盒、TNT 在左列
+      gunWithTnt: titlesOf(tntBox).includes('枪械破坏'),
+      tntLeftOfGun: tntGroups.length === 2
+        && tntGroups[0].querySelector('.mc-title')?.textContent === 'TNT 破坏'
+        && tntGroups[1].querySelector('.mc-title')?.textContent === '枪械破坏',
+      tntBoxButtons: tntBox ? tntBox.querySelectorAll('button').length : 0,
+      tntDivider: firstCol ? getComputedStyle(firstCol).borderRightWidth : null,
+      noWrapTnt: tntGroups.every((g) => lines(g.querySelector('.mc-title')) === 1
+        && [...g.querySelectorAll('button')].every((b) => lines(b) === 1 && b.scrollWidth <= b.clientWidth + 1)),
+      // ② 进度管理已与视距同盒（不再与 TNT 同盒）
+      progressWithTnt: titlesOf(tntBox).includes('进度管理'),
+      progressWithVd: titlesOf(vdBox).includes('进度管理'),
+      // ③ 画质与分辨率同盒
+      blurWithRes: titlesOf(resBox).includes('画质（远处纹理）'),
     };
   });
   expect(placement.cols).toBe(2);
-  expect(placement.tntInRight, '「TNT 破坏」必须在右列').toBe(true);
-  expect(placement.tntInLeft).toBe(false);
-  expect(placement.sameCombined, 'TNT 破坏与进度管理必须同处一个合并盒').toBe(true);
+  expect(placement.tntInLeft, 'v3.55：「TNT 破坏 | 枪械破坏」盒在左列').toBe(true);
+  expect(placement.tntInRight).toBe(false);
+  expect(placement.gunWithTnt, '枪械破坏必须与 TNT 破坏同盒（用户 2026-11-28）').toBe(true);
+  expect(placement.tntLeftOfGun, 'TNT 破坏在左列、枪械破坏在右列').toBe(true);
+  expect(placement.tntBoxButtons, '该大方块内一共四个按钮').toBe(4);
+  expect(placement.tntDivider, '两列之间必须有竖线（与现有样式一致）').toBe('1px');
+  expect(placement.noWrapTnt, '该盒内的标题与四个按钮均不得折行/溢出').toBe(true);
+  expect(placement.progressWithTnt, '进度管理不得再与 TNT 同盒').toBe(false);
+  expect(placement.progressWithVd, '进度管理必须与视距同盒（用户 2026-11-28）').toBe(true);
+  expect(placement.blurWithRes, '画质必须与分辨率同盒（用户 2026-11-28）').toBe(true);
 
   // ⚠️ **不能用全局文本匹配点按钮** —— 「关闭/开启」文案在面板里有**多组重复**
   // （枪械破坏 / TNT 破坏 / 雾色 / 背景音乐），全局查找会先命中其它组。
