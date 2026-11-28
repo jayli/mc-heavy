@@ -35,6 +35,7 @@
     "check:data": "node tools/check-data.mjs",
     "check": "npm run check:arch && npm run check:data && npm run lint",
     "validate:weapon-assets": "node tools/validate-weapon-assets.mjs",
+    "survey:minecolonies": "node tools/minecolonies-blueprint-probe.mjs",
     "grasstextures": "node tools/bake-grass-textures.mjs",
     "shallowtarns": "node tools/bake-shallow-tarns.mjs",
     "ship": "node tools/bake-medieval-ship.mjs",
