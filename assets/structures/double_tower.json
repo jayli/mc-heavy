@@ -96,14 +96,14 @@
       "y": 23,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -17,
       "y": 24,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -17,
@@ -117,14 +117,14 @@
       "y": 23,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -17,
       "y": 24,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -17,
@@ -138,14 +138,14 @@
       "y": 23,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -17,
       "y": 24,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -17,
@@ -159,14 +159,14 @@
       "y": 23,
       "z": -3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -17,
       "y": 24,
       "z": -3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -17,
@@ -180,14 +180,14 @@
       "y": 23,
       "z": -2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -17,
       "y": 24,
       "z": -2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -17,
@@ -201,14 +201,14 @@
       "y": 23,
       "z": -1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -17,
       "y": 24,
       "z": -1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -17,
@@ -222,14 +222,14 @@
       "y": 23,
       "z": 0,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -17,
       "y": 24,
       "z": 0,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -17,
@@ -243,14 +243,14 @@
       "y": 23,
       "z": 1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -17,
       "y": 24,
       "z": 1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -17,
@@ -264,14 +264,14 @@
       "y": 23,
       "z": 2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -17,
       "y": 24,
       "z": 2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -17,
@@ -299,14 +299,14 @@
       "y": 23,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -16,
       "y": 24,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -16,
@@ -327,28 +327,28 @@
       "y": 23,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -16,
       "y": 24,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -16,
       "y": 25,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -16,
       "y": 26,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -16,
@@ -369,28 +369,28 @@
       "y": 23,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -16,
       "y": 24,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -16,
       "y": 25,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -16,
       "y": 26,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -16,
@@ -411,28 +411,28 @@
       "y": 23,
       "z": -3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -16,
       "y": 24,
       "z": -3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -16,
       "y": 25,
       "z": -3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -16,
       "y": 26,
       "z": -3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -16,
@@ -453,14 +453,14 @@
       "y": 25,
       "z": -2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -16,
       "y": 26,
       "z": -2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -16,
@@ -481,28 +481,28 @@
       "y": 23,
       "z": -1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -16,
       "y": 24,
       "z": -1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -16,
       "y": 25,
       "z": -1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -16,
       "y": 26,
       "z": -1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -16,
@@ -523,28 +523,28 @@
       "y": 23,
       "z": 0,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -16,
       "y": 24,
       "z": 0,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -16,
       "y": 25,
       "z": 0,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -16,
       "y": 26,
       "z": 0,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -16,
@@ -565,28 +565,28 @@
       "y": 23,
       "z": 1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -16,
       "y": 24,
       "z": 1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -16,
       "y": 25,
       "z": 1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -16,
       "y": 26,
       "z": 1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -16,
@@ -600,14 +600,14 @@
       "y": 23,
       "z": 2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -16,
       "y": 24,
       "z": 2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -16,
@@ -635,14 +635,14 @@
       "y": 23,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -15,
       "y": 24,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -15,
@@ -663,28 +663,28 @@
       "y": 23,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -15,
       "y": 24,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -15,
       "y": 25,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -15,
       "y": 26,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -15,
@@ -838,35 +838,35 @@
       "y": 23,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -15,
       "y": 24,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -15,
       "y": 25,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -15,
       "y": 26,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -15,
       "y": 27,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -15,
@@ -1020,21 +1020,21 @@
       "y": 25,
       "z": -3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -15,
       "y": 26,
       "z": -3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -15,
       "y": 27,
       "z": -3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -15,
@@ -1174,7 +1174,7 @@
       "y": 27,
       "z": -2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -15,
@@ -1328,21 +1328,21 @@
       "y": 25,
       "z": -1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -15,
       "y": 26,
       "z": -1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -15,
       "y": 27,
       "z": -1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -15,
@@ -1496,35 +1496,35 @@
       "y": 23,
       "z": 0,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -15,
       "y": 24,
       "z": 0,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -15,
       "y": 25,
       "z": 0,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -15,
       "y": 26,
       "z": 0,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -15,
       "y": 27,
       "z": 0,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -15,
@@ -1545,28 +1545,28 @@
       "y": 23,
       "z": 1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -15,
       "y": 24,
       "z": 1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -15,
       "y": 25,
       "z": 1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -15,
       "y": 26,
       "z": 1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -15,
@@ -1580,14 +1580,14 @@
       "y": 23,
       "z": 2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -15,
       "y": 24,
       "z": 2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -15,
@@ -1615,14 +1615,14 @@
       "y": 23,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -14,
       "y": 24,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -14,
@@ -1643,28 +1643,28 @@
       "y": 23,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -14,
       "y": 24,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -14,
       "y": 25,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -14,
       "y": 26,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -14,
@@ -1818,21 +1818,21 @@
       "y": 25,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -14,
       "y": 26,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -14,
       "y": 27,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -14,
@@ -1860,21 +1860,21 @@
       "y": 27,
       "z": -3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -14,
       "y": 28,
       "z": -3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -14,
       "y": 29,
       "z": -3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -14,
@@ -1902,14 +1902,14 @@
       "y": 28,
       "z": -2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -14,
       "y": 29,
       "z": -2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -14,
@@ -1937,21 +1937,21 @@
       "y": 27,
       "z": -1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -14,
       "y": 28,
       "z": -1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -14,
       "y": 29,
       "z": -1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -14,
@@ -2105,21 +2105,21 @@
       "y": 25,
       "z": 0,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -14,
       "y": 26,
       "z": 0,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -14,
       "y": 27,
       "z": 0,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -14,
@@ -2140,28 +2140,28 @@
       "y": 23,
       "z": 1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -14,
       "y": 24,
       "z": 1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -14,
       "y": 25,
       "z": 1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -14,
       "y": 26,
       "z": 1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -14,
@@ -2175,14 +2175,14 @@
       "y": 23,
       "z": 2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -14,
       "y": 24,
       "z": 2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -14,
@@ -2210,14 +2210,14 @@
       "y": 23,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -13,
       "y": 24,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -13,
@@ -2238,14 +2238,14 @@
       "y": 25,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -13,
       "y": 26,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -13,
@@ -2399,7 +2399,7 @@
       "y": 27,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -13,
@@ -2427,14 +2427,14 @@
       "y": 28,
       "z": -3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -13,
       "y": 29,
       "z": -3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -13,
@@ -2518,14 +2518,14 @@
       "y": 28,
       "z": -1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -13,
       "y": 29,
       "z": -1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -13,
@@ -2651,7 +2651,7 @@
       "y": 27,
       "z": 0,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -13,
@@ -2672,14 +2672,14 @@
       "y": 25,
       "z": 1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -13,
       "y": 26,
       "z": 1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -13,
@@ -2693,14 +2693,14 @@
       "y": 23,
       "z": 2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -13,
       "y": 24,
       "z": 2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -13,
@@ -2728,14 +2728,14 @@
       "y": 23,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -12,
       "y": 24,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -12,
@@ -2756,28 +2756,28 @@
       "y": 23,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -12,
       "y": 24,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -12,
       "y": 25,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -12,
       "y": 26,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -12,
@@ -2931,21 +2931,21 @@
       "y": 25,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -12,
       "y": 26,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -12,
       "y": 27,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -12,
@@ -3197,21 +3197,21 @@
       "y": 25,
       "z": 0,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -12,
       "y": 26,
       "z": 0,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -12,
       "y": 27,
       "z": 0,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -12,
@@ -3232,28 +3232,28 @@
       "y": 23,
       "z": 1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -12,
       "y": 24,
       "z": 1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -12,
       "y": 25,
       "z": 1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -12,
       "y": 26,
       "z": 1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -12,
@@ -3267,14 +3267,14 @@
       "y": 23,
       "z": 2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -12,
       "y": 24,
       "z": 2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -12,
@@ -3302,14 +3302,14 @@
       "y": 23,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -11,
       "y": 24,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -11,
@@ -3330,28 +3330,28 @@
       "y": 23,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -11,
       "y": 24,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -11,
       "y": 25,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -11,
       "y": 26,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -11,
@@ -4212,28 +4212,28 @@
       "y": 23,
       "z": 1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -11,
       "y": 24,
       "z": 1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -11,
       "y": 25,
       "z": 1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -11,
       "y": 26,
       "z": 1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -11,
@@ -4247,14 +4247,14 @@
       "y": 23,
       "z": 2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -11,
       "y": 24,
       "z": 2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -11,
@@ -4282,14 +4282,14 @@
       "y": 23,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -10,
       "y": 24,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -10,
@@ -4639,14 +4639,14 @@
       "y": 23,
       "z": 2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -10,
       "y": 24,
       "z": 2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -10,
@@ -5066,42 +5066,42 @@
       "y": 30,
       "z": -7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -7,
       "y": 31,
       "z": -7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -7,
       "y": 30,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -7,
       "y": 31,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -7,
       "y": 30,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -7,
       "y": 31,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -7,
@@ -5115,14 +5115,14 @@
       "y": 30,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -7,
       "y": 31,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -7,
@@ -5143,14 +5143,14 @@
       "y": 30,
       "z": -3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -7,
       "y": 31,
       "z": -3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -7,
@@ -5192,14 +5192,14 @@
       "y": 30,
       "z": -2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -7,
       "y": 31,
       "z": -2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -7,
@@ -5227,14 +5227,14 @@
       "y": 30,
       "z": -1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -7,
       "y": 31,
       "z": -1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -7,
@@ -5262,14 +5262,14 @@
       "y": 30,
       "z": 1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -7,
       "y": 31,
       "z": 1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -7,
@@ -5283,154 +5283,154 @@
       "y": 30,
       "z": 2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -7,
       "y": 31,
       "z": 2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -7,
       "y": 30,
       "z": 3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -7,
       "y": 31,
       "z": 3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -7,
       "y": 30,
       "z": 4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -7,
       "y": 31,
       "z": 4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -7,
       "y": 30,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -7,
       "y": 31,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -7,
       "y": 30,
       "z": 6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -7,
       "y": 31,
       "z": 6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -7,
       "y": 30,
       "z": 7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -7,
       "y": 31,
       "z": 7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -6,
       "y": 30,
       "z": -7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -6,
       "y": 31,
       "z": -7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -6,
       "y": 30,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -6,
       "y": 31,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -6,
       "y": 32,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -6,
       "y": 33,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -6,
       "y": 30,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -6,
       "y": 31,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -6,
       "y": 32,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -6,
       "y": 33,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -6,
@@ -5444,28 +5444,28 @@
       "y": 30,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -6,
       "y": 31,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -6,
       "y": 32,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -6,
       "y": 33,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -6,
@@ -5493,28 +5493,28 @@
       "y": 30,
       "z": -3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -6,
       "y": 31,
       "z": -3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -6,
       "y": 32,
       "z": -3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -6,
       "y": 33,
       "z": -3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -6,
@@ -5563,28 +5563,28 @@
       "y": 30,
       "z": -2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -6,
       "y": 31,
       "z": -2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -6,
       "y": 32,
       "z": -2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -6,
       "y": 33,
       "z": -2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -6,
@@ -5619,14 +5619,14 @@
       "y": 32,
       "z": -1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -6,
       "y": 33,
       "z": -1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -6,
@@ -5668,14 +5668,14 @@
       "y": 32,
       "z": 1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -6,
       "y": 33,
       "z": 1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -6,
@@ -5696,28 +5696,28 @@
       "y": 30,
       "z": 2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -6,
       "y": 31,
       "z": 2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -6,
       "y": 32,
       "z": 2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -6,
       "y": 33,
       "z": 2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -6,
@@ -5731,189 +5731,189 @@
       "y": 30,
       "z": 3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -6,
       "y": 31,
       "z": 3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -6,
       "y": 32,
       "z": 3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -6,
       "y": 33,
       "z": 3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -6,
       "y": 30,
       "z": 4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -6,
       "y": 31,
       "z": 4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -6,
       "y": 32,
       "z": 4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -6,
       "y": 33,
       "z": 4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -6,
       "y": 30,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -6,
       "y": 31,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -6,
       "y": 32,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -6,
       "y": 33,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -6,
       "y": 30,
       "z": 6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -6,
       "y": 31,
       "z": 6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -6,
       "y": 32,
       "z": 6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -6,
       "y": 33,
       "z": 6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -6,
       "y": 30,
       "z": 7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -6,
       "y": 31,
       "z": 7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -5,
       "y": 30,
       "z": -7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -5,
       "y": 31,
       "z": -7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -5,
       "y": 30,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -5,
       "y": 31,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -5,
       "y": 32,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -5,
       "y": 33,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -5,
       "y": 12,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 20,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 24,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
@@ -5955,35 +5955,35 @@
       "y": 30,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 31,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 32,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 33,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 34,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
@@ -5997,21 +5997,21 @@
       "y": 12,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 20,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 24,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
@@ -6053,35 +6053,35 @@
       "y": 30,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 31,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 32,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 33,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 34,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
@@ -6102,21 +6102,21 @@
       "y": 12,
       "z": -3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 20,
       "z": -3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 24,
       "z": -3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
@@ -6158,35 +6158,35 @@
       "y": 30,
       "z": -3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 31,
       "z": -3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 32,
       "z": -3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 33,
       "z": -3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 34,
       "z": -3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
@@ -6214,7 +6214,7 @@
       "y": 12,
       "z": -2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
@@ -6235,14 +6235,14 @@
       "y": 20,
       "z": -2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 24,
       "z": -2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
@@ -6284,21 +6284,21 @@
       "y": 32,
       "z": -2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 33,
       "z": -2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 34,
       "z": -2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
@@ -6326,21 +6326,21 @@
       "y": 12,
       "z": -1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 20,
       "z": -1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 24,
       "z": -1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
@@ -6361,7 +6361,7 @@
       "y": 34,
       "z": -1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
@@ -6389,21 +6389,21 @@
       "y": 12,
       "z": 0,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 20,
       "z": 0,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 24,
       "z": 0,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
@@ -6466,21 +6466,21 @@
       "y": 12,
       "z": 1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 20,
       "z": 1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 24,
       "z": 1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
@@ -6501,7 +6501,7 @@
       "y": 34,
       "z": 1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
@@ -6529,21 +6529,21 @@
       "y": 12,
       "z": 2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 20,
       "z": 2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 24,
       "z": 2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
@@ -6585,21 +6585,21 @@
       "y": 32,
       "z": 2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 33,
       "z": 2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 34,
       "z": 2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
@@ -6620,21 +6620,21 @@
       "y": 12,
       "z": 3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 20,
       "z": 3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 24,
       "z": 3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
@@ -6676,35 +6676,35 @@
       "y": 30,
       "z": 3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 31,
       "z": 3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 32,
       "z": 3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 33,
       "z": 3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 34,
       "z": 3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
@@ -6718,21 +6718,21 @@
       "y": 12,
       "z": 4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 20,
       "z": 4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 24,
       "z": 4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
@@ -6774,56 +6774,56 @@
       "y": 30,
       "z": 4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 31,
       "z": 4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 32,
       "z": 4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 33,
       "z": 4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 34,
       "z": 4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 12,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 20,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 24,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
@@ -6865,119 +6865,119 @@
       "y": 30,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 31,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 32,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 33,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 34,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -5,
       "y": 30,
       "z": 6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -5,
       "y": 31,
       "z": 6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -5,
       "y": 32,
       "z": 6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -5,
       "y": 33,
       "z": 6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -5,
       "y": 30,
       "z": 7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -5,
       "y": 31,
       "z": 7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -4,
       "y": 30,
       "z": -7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -4,
       "y": 31,
       "z": -7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -4,
       "y": 30,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -4,
       "y": 31,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -4,
       "y": 32,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -4,
       "y": 33,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -4,
@@ -6991,21 +6991,21 @@
       "y": 12,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -4,
       "y": 20,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -4,
       "y": 24,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -4,
@@ -7047,35 +7047,35 @@
       "y": 30,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -4,
       "y": 31,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -4,
       "y": 32,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -4,
       "y": 33,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -4,
       "y": 34,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -4,
@@ -7229,49 +7229,49 @@
       "y": 30,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -4,
       "y": 31,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -4,
       "y": 32,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -4,
       "y": 33,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -4,
       "y": 34,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -4,
       "y": 35,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -4,
       "y": 36,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -4,
@@ -7432,35 +7432,35 @@
       "y": 32,
       "z": -3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -4,
       "y": 33,
       "z": -3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -4,
       "y": 34,
       "z": -3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -4,
       "y": 35,
       "z": -3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -4,
       "y": 36,
       "z": -3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -4,
@@ -7628,21 +7628,21 @@
       "y": 34,
       "z": -2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -4,
       "y": 35,
       "z": -2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -4,
       "y": 36,
       "z": -2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -4,
@@ -7810,14 +7810,14 @@
       "y": 35,
       "z": -1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -4,
       "y": 36,
       "z": -1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -4,
@@ -8132,14 +8132,14 @@
       "y": 35,
       "z": 1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -4,
       "y": 36,
       "z": 1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -4,
@@ -8307,21 +8307,21 @@
       "y": 34,
       "z": 2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -4,
       "y": 35,
       "z": 2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -4,
       "y": 36,
       "z": 2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -4,
@@ -8482,35 +8482,35 @@
       "y": 32,
       "z": 3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -4,
       "y": 33,
       "z": 3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -4,
       "y": 34,
       "z": 3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -4,
       "y": 35,
       "z": 3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -4,
       "y": 36,
       "z": 3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -4,
@@ -8664,49 +8664,49 @@
       "y": 30,
       "z": 4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -4,
       "y": 31,
       "z": 4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -4,
       "y": 32,
       "z": 4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -4,
       "y": 33,
       "z": 4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -4,
       "y": 34,
       "z": 4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -4,
       "y": 35,
       "z": 4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -4,
       "y": 36,
       "z": 4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -4,
@@ -8720,21 +8720,21 @@
       "y": 12,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -4,
       "y": 20,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -4,
       "y": 24,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -4,
@@ -8776,91 +8776,91 @@
       "y": 30,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -4,
       "y": 31,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -4,
       "y": 32,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -4,
       "y": 33,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -4,
       "y": 34,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -4,
       "y": 30,
       "z": 6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -4,
       "y": 31,
       "z": 6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -4,
       "y": 32,
       "z": 6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -4,
       "y": 33,
       "z": 6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -4,
       "y": 30,
       "z": 7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -4,
       "y": 31,
       "z": 7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -3,
       "y": 30,
       "z": -7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -3,
       "y": 31,
       "z": -7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -3,
@@ -8874,28 +8874,28 @@
       "y": 30,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -3,
       "y": 31,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -3,
       "y": 32,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -3,
       "y": 33,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -3,
@@ -8916,21 +8916,21 @@
       "y": 12,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -3,
       "y": 20,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -3,
       "y": 24,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -3,
@@ -8972,35 +8972,35 @@
       "y": 30,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -3,
       "y": 31,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -3,
       "y": 32,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -3,
       "y": 33,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -3,
       "y": 34,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -3,
@@ -9161,35 +9161,35 @@
       "y": 32,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -3,
       "y": 33,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -3,
       "y": 34,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -3,
       "y": 35,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -3,
       "y": 36,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -3,
@@ -9224,28 +9224,28 @@
       "y": 34,
       "z": -3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -3,
       "y": 35,
       "z": -3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -3,
       "y": 36,
       "z": -3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -3,
       "y": 37,
       "z": -3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -3,
@@ -9287,21 +9287,21 @@
       "y": 35,
       "z": -2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -3,
       "y": 36,
       "z": -2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -3,
       "y": 37,
       "z": -2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -3,
@@ -9343,7 +9343,7 @@
       "y": 37,
       "z": -1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -3,
@@ -9420,7 +9420,7 @@
       "y": 37,
       "z": 1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -3,
@@ -9462,21 +9462,21 @@
       "y": 35,
       "z": 2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -3,
       "y": 36,
       "z": 2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -3,
       "y": 37,
       "z": 2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -3,
@@ -9511,28 +9511,28 @@
       "y": 34,
       "z": 3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -3,
       "y": 35,
       "z": 3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -3,
       "y": 36,
       "z": 3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -3,
       "y": 37,
       "z": 3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -3,
@@ -9693,35 +9693,35 @@
       "y": 32,
       "z": 4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -3,
       "y": 33,
       "z": 4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -3,
       "y": 34,
       "z": 4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -3,
       "y": 35,
       "z": 4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -3,
       "y": 36,
       "z": 4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -3,
@@ -9742,21 +9742,21 @@
       "y": 12,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -3,
       "y": 20,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -3,
       "y": 24,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -3,
@@ -9798,35 +9798,35 @@
       "y": 30,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -3,
       "y": 31,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -3,
       "y": 32,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -3,
       "y": 33,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -3,
       "y": 34,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -3,
@@ -9840,42 +9840,42 @@
       "y": 30,
       "z": 6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -3,
       "y": 31,
       "z": 6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -3,
       "y": 32,
       "z": 6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -3,
       "y": 33,
       "z": 6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -3,
       "y": 30,
       "z": 7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -3,
       "y": 31,
       "z": 7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -2,
@@ -9889,14 +9889,14 @@
       "y": 30,
       "z": -7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -2,
       "y": 31,
       "z": -7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -2,
@@ -9917,28 +9917,28 @@
       "y": 30,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -2,
       "y": 31,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -2,
       "y": 32,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -2,
       "y": 33,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -2,
@@ -9966,21 +9966,21 @@
       "y": 12,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -2,
       "y": 20,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -2,
       "y": 24,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -2,
@@ -10022,21 +10022,21 @@
       "y": 32,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -2,
       "y": 33,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -2,
       "y": 34,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -2,
@@ -10204,21 +10204,21 @@
       "y": 34,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -2,
       "y": 35,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -2,
       "y": 36,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -2,
@@ -10260,21 +10260,21 @@
       "y": 35,
       "z": -3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -2,
       "y": 36,
       "z": -3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -2,
       "y": 37,
       "z": -3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -2,
@@ -10316,21 +10316,21 @@
       "y": 37,
       "z": -2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -2,
       "y": 38,
       "z": -2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -2,
       "y": 39,
       "z": -2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -2,
@@ -10372,14 +10372,14 @@
       "y": 38,
       "z": -1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -2,
       "y": 39,
       "z": -1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -2,
@@ -10456,14 +10456,14 @@
       "y": 38,
       "z": 1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -2,
       "y": 39,
       "z": 1,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -2,
@@ -10505,21 +10505,21 @@
       "y": 37,
       "z": 2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -2,
       "y": 38,
       "z": 2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -2,
       "y": 39,
       "z": 2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 2
     },
     {
       "x": -2,
@@ -10561,21 +10561,21 @@
       "y": 35,
       "z": 3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -2,
       "y": 36,
       "z": 3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -2,
       "y": 37,
       "z": 3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -2,
@@ -10743,21 +10743,21 @@
       "y": 34,
       "z": 4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -2,
       "y": 35,
       "z": 4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -2,
       "y": 36,
       "z": 4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -2,
@@ -10785,21 +10785,21 @@
       "y": 12,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -2,
       "y": 20,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -2,
       "y": 24,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -2,
@@ -10841,21 +10841,21 @@
       "y": 32,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -2,
       "y": 33,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -2,
       "y": 34,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -2,
@@ -10876,28 +10876,28 @@
       "y": 30,
       "z": 6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -2,
       "y": 31,
       "z": 6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -2,
       "y": 32,
       "z": 6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -2,
       "y": 33,
       "z": 6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -2,
@@ -10911,14 +10911,14 @@
       "y": 30,
       "z": 7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -2,
       "y": 31,
       "z": 7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -1,
@@ -10932,14 +10932,14 @@
       "y": 30,
       "z": -7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -1,
       "y": 31,
       "z": -7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -1,
@@ -10960,14 +10960,14 @@
       "y": 32,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -1,
       "y": 33,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -1,
@@ -10995,21 +10995,21 @@
       "y": 12,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -1,
       "y": 20,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -1,
       "y": 24,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -1,
@@ -11030,7 +11030,7 @@
       "y": 34,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -1,
@@ -11170,14 +11170,14 @@
       "y": 35,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -1,
       "y": 36,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -1,
@@ -11219,7 +11219,7 @@
       "y": 37,
       "z": -3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -1,
@@ -11261,14 +11261,14 @@
       "y": 38,
       "z": -2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -1,
       "y": 39,
       "z": -2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": -1,
@@ -11429,14 +11429,14 @@
       "y": 38,
       "z": 2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -1,
       "y": 39,
       "z": 2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -1,
@@ -11478,7 +11478,7 @@
       "y": 37,
       "z": 3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -1,
@@ -11646,14 +11646,14 @@
       "y": 35,
       "z": 4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -1,
       "y": 36,
       "z": 4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -1,
@@ -11681,21 +11681,21 @@
       "y": 12,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -1,
       "y": 20,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -1,
       "y": 24,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -1,
@@ -11716,7 +11716,7 @@
       "y": 34,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -1,
@@ -11737,14 +11737,14 @@
       "y": 32,
       "z": 6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -1,
       "y": 33,
       "z": 6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -1,
@@ -11758,14 +11758,14 @@
       "y": 30,
       "z": 7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": -1,
       "y": 31,
       "z": 7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 0,
@@ -11814,21 +11814,21 @@
       "y": 12,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 0,
       "y": 20,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 0,
       "y": 24,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 0,
@@ -12465,21 +12465,21 @@
       "y": 12,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 0,
       "y": 20,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 0,
       "y": 24,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 0,
@@ -12549,14 +12549,14 @@
       "y": 30,
       "z": -7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 1,
       "y": 31,
       "z": -7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 1,
@@ -12577,14 +12577,14 @@
       "y": 32,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 1,
       "y": 33,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 1,
@@ -12612,21 +12612,21 @@
       "y": 12,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 1,
       "y": 20,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 1,
       "y": 24,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 1,
@@ -12647,7 +12647,7 @@
       "y": 34,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 1,
@@ -12815,14 +12815,14 @@
       "y": 35,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 1,
       "y": 36,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 1,
@@ -12864,7 +12864,7 @@
       "y": 37,
       "z": -3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 1,
@@ -12906,14 +12906,14 @@
       "y": 38,
       "z": -2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 1,
       "y": 39,
       "z": -2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 1,
@@ -13074,14 +13074,14 @@
       "y": 38,
       "z": 2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 1,
       "y": 39,
       "z": 2,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 1,
@@ -13123,7 +13123,7 @@
       "y": 37,
       "z": 3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 1,
@@ -13277,14 +13277,14 @@
       "y": 35,
       "z": 4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 1,
       "y": 36,
       "z": 4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 1,
@@ -13312,21 +13312,21 @@
       "y": 12,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 1,
       "y": 20,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 1,
       "y": 24,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 1,
@@ -13347,7 +13347,7 @@
       "y": 34,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 1,
@@ -13368,14 +13368,14 @@
       "y": 32,
       "z": 6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 1,
       "y": 33,
       "z": 6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 1,
@@ -13389,14 +13389,14 @@
       "y": 30,
       "z": 7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 1,
       "y": 31,
       "z": 7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 2,
@@ -13410,14 +13410,14 @@
       "y": 30,
       "z": -7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 2,
       "y": 31,
       "z": -7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 2,
@@ -13438,28 +13438,28 @@
       "y": 30,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 2,
       "y": 31,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 2,
       "y": 32,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 2,
       "y": 33,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 2,
@@ -13487,21 +13487,21 @@
       "y": 12,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 2,
       "y": 20,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 2,
       "y": 24,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 2,
@@ -13543,21 +13543,21 @@
       "y": 32,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 2,
       "y": 33,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 2,
       "y": 34,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 2,
@@ -13725,21 +13725,21 @@
       "y": 34,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 2,
       "y": 35,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 2,
       "y": 36,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 2,
@@ -13781,21 +13781,21 @@
       "y": 35,
       "z": -3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 2,
       "y": 36,
       "z": -3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 2,
       "y": 37,
       "z": -3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 2,
@@ -14082,21 +14082,21 @@
       "y": 35,
       "z": 3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 2,
       "y": 36,
       "z": 3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 2,
       "y": 37,
       "z": 3,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 2,
@@ -14264,21 +14264,21 @@
       "y": 34,
       "z": 4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 2,
       "y": 35,
       "z": 4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 2,
       "y": 36,
       "z": 4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 2,
@@ -14306,21 +14306,21 @@
       "y": 12,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 2,
       "y": 20,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 2,
       "y": 24,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 2,
@@ -14362,21 +14362,21 @@
       "y": 32,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 2,
       "y": 33,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 2,
       "y": 34,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 2,
@@ -14397,28 +14397,28 @@
       "y": 30,
       "z": 6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 2,
       "y": 31,
       "z": 6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 2,
       "y": 32,
       "z": 6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 2,
       "y": 33,
       "z": 6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 2,
@@ -14432,28 +14432,28 @@
       "y": 30,
       "z": 7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 2,
       "y": 31,
       "z": 7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 3,
       "y": 30,
       "z": -7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 3,
       "y": 31,
       "z": -7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 3,
@@ -14467,28 +14467,28 @@
       "y": 30,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 3,
       "y": 31,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 3,
       "y": 32,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 3,
       "y": 33,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 3,
@@ -14509,21 +14509,21 @@
       "y": 12,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 3,
       "y": 20,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 3,
       "y": 24,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 3,
@@ -14565,35 +14565,35 @@
       "y": 30,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 3,
       "y": 31,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 3,
       "y": 32,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 3,
       "y": 33,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 3,
       "y": 34,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 3,
@@ -14754,35 +14754,35 @@
       "y": 32,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 3,
       "y": 33,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 3,
       "y": 34,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 3,
       "y": 35,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 3,
       "y": 36,
       "z": -4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 3,
@@ -15293,35 +15293,35 @@
       "y": 32,
       "z": 4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 3,
       "y": 33,
       "z": 4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 3,
       "y": 34,
       "z": 4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 3,
       "y": 35,
       "z": 4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 3,
       "y": 36,
       "z": 4,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 3,
@@ -15342,21 +15342,21 @@
       "y": 12,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 3,
       "y": 20,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 3,
       "y": 24,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 3,
@@ -15398,35 +15398,35 @@
       "y": 30,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 3,
       "y": 31,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 3,
       "y": 32,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 3,
       "y": 33,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 3,
       "y": 34,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 3,
@@ -15440,84 +15440,84 @@
       "y": 30,
       "z": 6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 3,
       "y": 31,
       "z": 6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 3,
       "y": 32,
       "z": 6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 3,
       "y": 33,
       "z": 6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 3,
       "y": 30,
       "z": 7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 3,
       "y": 31,
       "z": 7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 4,
       "y": 30,
       "z": -7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 4,
       "y": 31,
       "z": -7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 4,
       "y": 30,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 4,
       "y": 31,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 4,
       "y": 32,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 4,
       "y": 33,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 4,
@@ -15531,21 +15531,21 @@
       "y": 12,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 4,
       "y": 20,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 4,
       "y": 24,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 4,
@@ -15587,35 +15587,35 @@
       "y": 30,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 4,
       "y": 31,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 4,
       "y": 32,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 4,
       "y": 33,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 4,
       "y": 34,
       "z": -5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 4,
@@ -17260,21 +17260,21 @@
       "y": 12,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 4,
       "y": 20,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 4,
       "y": 24,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 4,
@@ -17316,119 +17316,119 @@
       "y": 30,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 4,
       "y": 31,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 4,
       "y": 32,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 4,
       "y": 33,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 4,
       "y": 34,
       "z": 5,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 4,
       "y": 30,
       "z": 6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 4,
       "y": 31,
       "z": 6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 4,
       "y": 32,
       "z": 6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 4,
       "y": 33,
       "z": 6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 4,
       "y": 30,
       "z": 7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 4,
       "y": 31,
       "z": 7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 5,
       "y": 30,
       "z": -7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 5,
       "y": 31,
       "z": -7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 5,
       "y": 30,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 5,
       "y": 31,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 5,
       "y": 32,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 5,
       "y": 33,
       "z": -6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 5,
@@ -18429,56 +18429,56 @@
       "y": 30,
       "z": 6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 5,
       "y": 31,
       "z": 6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 5,
       "y": 32,
       "z": 6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 5,
       "y": 33,
       "z": 6,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 5,
       "y": 30,
       "z": 7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 5,
       "y": 31,
       "z": 7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 6,
       "y": 30,
       "z": -7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 6,
       "y": 31,
       "z": -7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 1
     },
     {
       "x": 6,
@@ -18877,14 +18877,14 @@
       "y": 30,
       "z": 7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 6,
       "y": 31,
       "z": 7,
       "type": "cobblestone_step",
-      "direction": 0
+      "direction": 3
     },
     {
       "x": 7,
