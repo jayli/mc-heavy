@@ -72,6 +72,36 @@ async function bootFrozen(page) {
   await page.waitForTimeout(300);
 }
 
+/**
+ * 把玩家挪到**城堡回血范围之外**（v3.56 起必需）。
+ *
+ * ⚠️ **为什么红闪用例必须离开出生点**：出生点 = City 中心的城堡（`spawnX/spawnZ` 就是
+ * castle 中心），而 v3.56 加了「在城堡里每 100ms 回 1 格」。下面的用例会先把血打到 0
+ * 再等 600ms 让红闪淡出 —— 这 600ms 里回血机制会**合法地**把血从 0 推到 6，于是
+ * 「前置：血量仍是 0（不死）」这条断言真红（实测 0 → 6）。
+ *
+ * 那不是实现缺陷，是**测试的取样环境落在了另一个新机制的作用域里**。红闪与回血是两个
+ * 独立特性，用例只该测红闪 ⇒ 把玩家放到两者不重叠的地方。
+ * 偏移取 `CASTLE_HEAL_HALF * 4`（≈104 格）：仍在 City bounds（halfSize 实测 283）内，
+ * 画面与本用例原本的机位（城中心广场）同属地面开阔区，不引入新的遮挡/光照变量。
+ */
+async function leaveCastleHealZone(page) {
+  await page.evaluate(async () => {
+    const g = window.__MC_GAME__;
+    const { CASTLE_HEAL_HALF } = await import('/src/player/castle-heal.js');
+    g._teleportTo(g.spawnX + CASTLE_HEAL_HALF * 4, g.spawnY + 2, g.spawnZ);
+    await new Promise((r) => setTimeout(r, 500));
+  });
+  await page.waitForFunction(() => {
+    const g = window.__MC_GAME__;
+    const p = g.player.physics.pos;
+    return g.world.isSolid(Math.floor(p.x), Math.floor(p.y - 0.5), Math.floor(p.z))
+      && !g.isInCastleHealZone();
+  }, null, { timeout: 30_000 });
+  await page.waitForFunction(() => !window.__MC_GAME__._damageFlash.active, null, { timeout: 10_000 });
+  await page.waitForTimeout(300);
+}
+
 test('受伤红闪 Tier 4：掉血后屏幕四周 40px 带变红，中心区基本不动', async ({ page }) => {
   test.setTimeout(180_000);
   await bootFrozen(page);
@@ -120,6 +150,8 @@ test('受伤红闪 Tier 4：0.35 秒后自动消失，opacity 回到 0 且节点
 test('受伤红闪 Tier 4：血量已为 0 时受击仍然闪（用户明确要求）', async ({ page }) => {
   test.setTimeout(180_000);
   await bootFrozen(page);
+  // ⚠️ v3.56：必须离开城堡回血范围 —— 本用例要求「血停在 0」，而出生点就是城堡中心
+  await leaveCastleHealZone(page);
 
   // 把血打到 0（用户裁定：不死、停在 0）
   const hp = await page.evaluate(() => {

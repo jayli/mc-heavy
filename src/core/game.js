@@ -112,6 +112,7 @@ import { guardianDefinition, GuardianService } from '../entities/guardian/guardi
 import { GuardianRenderer } from '../render/guardian-renderer.js';
 import { loadGuardianAsset, GUARDIAN_DEATH_COLOR } from '../render/guardian-model.js';
 import { applyDamage } from '../player/health.js';
+import { CastleHeal, isInCastleHealZone } from '../player/castle-heal.js';
 import { FireballRenderer } from '../render/fireball-renderer.js';
 import { playerHitboxLocal } from '../player/physics.js';
 import { bossMapAt, warmBossAnchors } from '../entities/bosses/boss-map.js';
@@ -135,6 +136,7 @@ import { HealthHUD } from '../ui/health-hud.js';
 import { EnemyCountsHUD } from '../ui/enemy-counts.js';
 import { EnemyArrows } from '../ui/enemy-arrows.js';
 import { DamageFlash } from '../ui/damage-flash.js';
+import { HealGlow } from '../ui/heal-glow.js';
 import { DamageNumbers } from '../ui/damage-numbers.js';
 import { Minimap } from '../ui/minimap.js';
 import { WaterReflectDock } from '../ui/water-reflect-dock.js';
@@ -1471,6 +1473,16 @@ export class Game {
     // 挂 `#hud-root` 下 ⇒ Tier 4 像素用例隐藏 HUD 时一并被隐藏（与血心同口径）。
     // 触发点在 `_damagePlayer()` —— 伤害的唯一入口，未来任何新伤害源自动覆盖。
     this._damageFlash = new DamageFlash(this._hudRoot);
+    // 回城回血（用户 2026-11-28）：屏幕四周 40px 淡绿呼吸边（与红闪同宽、同层，
+    // 靠插入顺序压在红闪之上）。
+    // ⚠️ **必须在 `_damageFlash` 之后构造**：两者 z-index 都是 56，后插入者在 DOM 序更后
+    // ⇒ 同时在显示时绿边在上。挨打的同时在城堡里回血是真实情形（焰魔能追进城），
+    // 此时「正在回血」这个持续状态比「刚挨了一刀」的瞬时闪更该被看见。
+    this._healGlow = new HealGlow(this._hudRoot);
+    // 回血推进器（用户 2026-11-28 裁定：每 100ms 回 1 格 = 半颗心）。
+    // 纯推进器：本类只在帧循环里喂位置与 nowMs、把返回值写回 `player.health`
+    // （唯一权威仍是 `player.health`，红线 1 —— 推进器不持有血量副本）。
+    this._castleHeal = new CastleHeal();
     // ② 丧尸/Boss 受击浮动数字 —— DOM 覆盖层（零 draw call），显示「掉血后还剩的血量」。
     //    投影函数在这里注入（本模块 three-free，`src/ui/` 既有口径）。
     //    ⚠️ **必须先判「相机背后」再投影**：`Vector3.project()` 对背后的点会除以负 w，
@@ -1796,6 +1808,17 @@ export class Game {
       // v2.51：雨声（用户 2026-11-04：「雨声只有在下雨的时候才播放」）。
       // 强度直接当循环音量 → 淡入淡出与天气状态机同步（无雨时 intensity=0 → 停播）。
       if (!this._stormActive) this._syncRainSound();
+      // 回城回血（用户 2026-11-28）：玩家回到 City 中心的城堡范围内时每 100ms 回 1 格。
+      //
+      // 位置取本帧 `player.update(dt)` 之后的 `physics.pos`（早一帧读会拿上一帧位置 ——
+      // 跑进城门那一帧会晚回一拍，且出城那一帧会多回一格）。
+      //
+      // ⚠️ **必须在两个 HUD update 之前**：它写 `player.health`，而血心与回血边缘层都是
+      // 本帧读该值的消费方。放到后面会让两者晚一帧（形态：回满后绿边多留一帧）。
+      //
+      // ⚠️ **`nowMs` 用帧循环透传的那个**（与 `_damageFlash.update` 同一时基），
+      // 不得在这里新取 `performance.now()`。
+      this._updateCastleHeal(nowMs);
       this._hud.update(nowMs);
       this._coordsHud.update(nowMs);
       // 迷你地图（v2.8）：内部 10Hz / 20Hz 双节流，每帧调用零成本（未到期直接 return）
@@ -1804,12 +1827,14 @@ export class Game {
       this._reflectDock?.update();
       this._hotbar.update(this.player.hotbarIndex);
       // 玩家血心：血量没变时内部直接 return（当前阶段恒满 → 每帧一次数值比较）
-      this._healthHud.update(nowMs);
+      this._healthHud.update(nowMs, this._castleHeal.active);
       // 敌人计数行（用户 2026-11-24）：内部 250ms 节流，未到期只有一次时间比较。
       // 放在血心之后（它们同层、同一行高度），与坐标/性能面板同节奏。
       this._enemyCounts.update(nowMs);
       // 受伤红闪（v3.29）：未激活时内部一次比较就 return（同血心的口径）
       this._damageFlash.update(nowMs);
+      // 回血绿边（v3.56）：与红闪同层同宽，未激活时一次比较就 return
+      this._healGlow.update(nowMs);
       // v3.16：Boss 召唤提示（内部 250ms 节流，未到期直接 return = 一次时间比较）。
       // 放在血心之后、实体发布之前：它只读 player.pos 与 entities，与渲染无关。
       this._bossHint.update(nowMs);
@@ -2648,6 +2673,15 @@ export class Game {
     // v2.62：传送后位置突变，重置玩家速度差分的基准 —— 否则下一帧会算出
     // 「新pos − 旧pos」的伪速度（可达几万格/秒）传进焰魔跳劈预判（final review P1-1）。
     this._prevPlayerPos = null;
+    // v3.56：传送同样重置回血推进器的时间基准。
+    //
+    // ⚠️ **为什么不是可选项**：`advance` 用「上一帧 nowMs」算 dt，而 dt 上限是 100ms。
+    // 传送到城堡里时不会出问题（上限把它钳住了），但**离开**城堡时若不重置，
+    // `reset()` 已把 `_lastMs` 置空 ⇒ 自然无害。真正需要它的场景是「传送前后都在范围内」
+    // （例如从城墙上「回家」到中心）：累积的余数会跟到新位置，让第一格回得早一拍。
+    // 同 `DamageFlash` 在 `reset()` 里清基准的口径。
+    this._castleHeal?.reset();
+    this._healGlow?.reset();
     // 解卡（近处传送）：目标 column 已加载时，落点可能已被地形/结构埋住 → 当场抬出来。
     // 远处传送此刻读到的全是空气（column 未加载），这里是 no-op，由 `onColumnReady`
     // 的那一次接管（见 `_resolvePlayerStuck`）。
@@ -5200,6 +5234,65 @@ export class Game {
   }
 
   /**
+   * 回城回血（用户 2026-11-28）。
+   *
+   * ## 语义
+   *
+   * 玩家站在 **City 中心的城堡**范围内（`castle-heal.js` 的方形 footprint，中心 = 出生点）
+   * 时，每 100ms 回 1 格（= 半颗心）直到满血；离开范围立刻停、满血也停。
+   *
+   * ## 为什么中心用 `spawnX/spawnZ` 而不是重新查 layout
+   *
+   * `castle` 在 `buildCityLayout` 里是**固定在 City 中心的唯一 placement**
+   *（`city-layout.js:463`），而 `spawnX/spawnZ` 就来自 `getCitySpawnPoint(city)`
+   *（`city.layout.js:568`）——**同一个点**，已有 spec 钉住
+   *（`tests/city-visual.spec.mjs:56`：castle 落点 === spawnX/spawnZ）。
+   * 再查一次 layout 就是第二份权威（红线 1），而且 `buildCityLayout` 实测 10~12ms。
+   *
+   * ## 三条口径（都是有对错可言的）
+   *
+   * 1. **只看水平距离，不看 y**：玩家在城墙上、屋顶上、地下室里都算「回到了城堡」。
+   *    若把 y 纳入，站在二楼就会静默失去回血（城堡中心列最高方块实测 y=21、整体到 y=74）。
+   * 2. **离开不减血**：回血只是「不继续回」，永远不会因为走出城而掉血。
+   * 3. **满血也把推进器复位**：否则站在城堡里满血待很久，出去挨一刀再回来，
+   *    累积的时间还在 ⇒ 一回去就瞬间回一格（用户要的是可见的逐格过程）。
+   *
+   * ## 为什么写在这里而不是 `player.update` 里
+   *
+   * `player.update` 按秒推进物理/输入，**不持有** `performance.now()` 基准（它拿 `dt`）；
+   * 而回血必须按**绝对时间**推进（每 100ms 一格，不能拿被 hitstop 缩放过的 `dt`）。
+   * 与 `_damagePlayer` 同一层（帧循环里的玩法结算段），也保证两个方向的血量写入相邻：
+   * 扣血与回血各有一个入口，都不散落到子系统里。
+   *
+   * @param {number} nowMs 帧循环的 `performance.now()` 基准（调用方透传）
+   * @returns {number} 本帧结束时的血量（格）
+   */
+  _updateCastleHeal(nowMs) {
+    const pos = this.player?.physics?.pos;
+    // 防御：`pos` 缺失（构造期/测试桩）时不回血也不报错 —— 同 `_damagePlayer` 的 `?.` 口径
+    if (!pos) return this.player?.health ?? 0;
+    const inZone = isInCastleHealZone(pos.x, pos.z, { x: this.spawnX, z: this.spawnZ });
+    this.player.health = this._castleHeal.advance({
+      health: this.player.health, inZone, nowMs,
+    });
+    // 绿边跟随推进器的 active（离开城堡/满血时内部 reset 会让它转 false）
+    if (this._castleHeal.active) this._healGlow?.show(nowMs);
+    else this._healGlow?.reset();
+    return this.player.health;
+  }
+
+  /**
+   * 是否在城堡回血范围内（只读查询，供面板/调试/spec 断言）。
+   * **不推进回血** —— 推进唯一发生在 `_updateCastleHeal`。
+   * @returns {boolean}
+   */
+  isInCastleHealZone() {
+    const pos = this.player?.physics?.pos;
+    if (!pos) return false;
+    return isInCastleHealZone(pos.x, pos.z, { x: this.spawnX, z: this.spawnZ });
+  }
+
+  /**
    * 帧循环内判定火球（放在 `entities.update` 之后 —— 位置已推进，本方法只判定 + 爆炸 + despawn）。
    *
    * ⚠️ **推进不能做两遍**（同 `_updateProjectiles`）：位置推进已由 `fireballDefinition.update`
@@ -5383,6 +5476,8 @@ export class Game {
     this._bossHint?.dispose();
     // v3.29：受伤红闪（纯 DOM，摘除节点即可）
     this._damageFlash?.dispose();
+    // v3.56：回血绿边（纯 DOM，与红闪同口径）
+    this._healGlow?.dispose();
     // v3.42：屏外敌人方位箭头（同口径：纯 DOM）
     this._enemyArrows?.dispose();
     // M4：反向释放武器运行时（Player → Audio → ModelLoader → WorkerPool → renderer）

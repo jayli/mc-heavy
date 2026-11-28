@@ -56,6 +56,7 @@ const UI = [
   'crosshair',
   'health-hud',
   'damage-flash',       // v3.29 受伤红闪（Tier 4 像素：四周 40px 带 vs 中心区差分）
+  'castle-heal',        // v3.56 回城回血：帧循环接线 + HUD 动画 + 真实 GPU 像素（用户 2026-11-28）
   'minimap',
   'settings-resolution',
   'light-tuning',       // v3.51 第三个 Tab「光影微调」（15 滑块接线 / 切风格同步 / 复制文本 / 尺寸不变）
@@ -209,6 +210,8 @@ export const UNIT_NODE_SAFE = [
   'test-guardian-render.js', 'test-guardian-skinning.js', 'test-guardian-system.js',
   'test-cloud-shade.js',
   'test-guardian-uv.js', 'test-health.js', 'test-hemi.js', 'test-ignis-boss-agent.js',
+  // v3.56：回城回血（纯函数 + 纯常量，three-free / 无 DOM ⇒ Node 可跑）
+  'test-castle-heal.js',
   'test-ignis-collision.js', 'test-ignis-render.js', 'test-ignis-system.js', 'test-inventory.js',
   'test-jungle-fortress-gen.js', 'test-knockback-ease.js', 'test-landmarks.js', 'test-light-writeback.js',
   'test-lighting.js', 'test-load-progress.js', 'test-load-watchdog.js', 'test-medieval-ship.js',
